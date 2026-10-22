@@ -39,8 +39,20 @@ Tested on one PC: CachyOS (Arch-based, kernel 7.2), 24 threads, 31 GB RAM, NVIDI
   <dump>/romfs/          data.arc and the rest of the RomFS
   <dump>/sysdata/fonts/  optional, the console's shared fonts (see "Fonts" below)
   ```
-  From `.nsp` files and your own keys: `deps/venv/bin/python tools/extract/romfs_extract.py <base.nsp> <update.nsp> <out>`
-  and `tools/extract/nca_exefs.py`; they read the keys from `~/.switch/prod.keys`.
+  From `.nsp` / `.xci` files and your own keys, in one step (about 7 minutes, writes `<dump>/exefs` and `<dump>/romfs`;
+  the keys are read from `~/.switch/prod.keys`):
+  ```
+  deps/venv/bin/python tools/extract/dump_folder.py <base.nsp> <update.nsp> <dump folder>
+  ```
+- **DLC (optional):** the DLC fighters, stages and costumes are part of the update's data; the game only needs to be told
+  which add-on contents you own. `setup.py` does not do that on Linux (the Windows installer does). From the folder of your
+  DLC `.nsp` files (only their names are read, `[01006A800016Fxxx]` in each):
+  ```
+  deps/venv/bin/python tools/audit/dlc_list.py <folder with your DLC .nsp files> build-linux/config/dlc.txt
+  ```
+  The game reads that file when it first asks for add-on content; `~/.local/share/ssbu-recomp/last_run.log` then has
+  `nn::aoc: N add-on content(s) owned`. The default output of `dlc_list.py` is `build/config/dlc.txt`, which is the
+  Windows build folder: give the path above for Linux. The file survives a rebuild but not deleting `build-linux/`.
 - **RAM:** 16 GB or more. `setup.py` runs one compiler per CPU thread by default (at most 24; `--jobs N` overrides it),
   and the compilers share RAM - 4 GB: each one reserves what its file is expected to need before it starts (at least
   1.5 GB; most files need well under 1 GB, a few need many GB) and is held to it. A file that needs more is compiled again
