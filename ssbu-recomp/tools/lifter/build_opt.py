@@ -215,10 +215,10 @@ def run_limited(cmd, limit, mem=0):
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=(os.name != 'nt'))
     try:
         out, _ = p.communicate(timeout=limit)
-        out = out.decode('latin-1')[-2000:]
-        if out_of_memory(p.returncode, out):
+        out = out.decode('latin-1')
+        if out_of_memory(p.returncode, out):         # the whole output: clang's stack dump after "LLVM ERROR: out of memory" fills the tail
             return None, OOM, time.time() - t
-        return p.returncode, out, time.time() - t
+        return p.returncode, out[-2000:], time.time() - t
     except subprocess.TimeoutExpired:
         if os.name == 'nt':
             subprocess.run(['taskkill', '/PID', str(p.pid), '/T', '/F'], capture_output=True)      # this compiler and its -cc1 child only
@@ -458,6 +458,9 @@ def cmd_main(jobs):
         print('the game objects were compiled %s the inlined helpers: all %d are compiled again (once)' % ('with' if have == '1' else 'without', len(old)), flush=True)
         for n in old:
             os.remove(os.path.join(build.OBJ, n))
+    os.makedirs(build.OBJ, exist_ok=True)
+    with open(stamp, 'w') as f:          # now, not after the compile: an interrupted or failed compile must not lose its objects on the next start
+        f.write(want + chr(10))
     def order_key(n):                    # slowest first by the time it took before (same source and flags), else by size
         h = hints(build.OBJ).get(n[:-2] + '.obj')
         size = os.path.getsize(os.path.join(build.GEN, n))
@@ -472,8 +475,6 @@ def cmd_main(jobs):
     report(build.OBJ)
     if rc:
         return rc
-    with open(stamp, 'w') as f:
-        f.write(want + chr(10))
     rc = build.build_game_dll()
     print('main: compile + link %.0fs' % (time.time() - t0))
     return rc
