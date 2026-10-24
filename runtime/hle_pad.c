@@ -85,6 +85,7 @@ typedef struct DevCfg {
     int layout;                   /* -1 unset, 0 positional, 1 labels */
     int style;                    /* -1 unset, 0 auto, 1 pro, 2 gamecube */
     int deadzone, rumble, trigger;   /* percent; -1 unset */
+    int invert;                      /* -1 unset, else a mask of the axes to flip (1 leftx, 2 lefty, 4 rightx, 8 righty) */
     Source map[16][MAXSRC]; u8 nmap[16], has_map[16];
 } DevCfg;
 
@@ -105,7 +106,7 @@ static void config_defaults(void) {
     cfg.keyboard_slot = 0;
     cfg.background = 1;
     cfg.rumble = 1;
-    cfg.def.layout = cfg.def.style = cfg.def.deadzone = cfg.def.rumble = cfg.def.trigger = -1;
+    cfg.def.layout = cfg.def.style = cfg.def.deadzone = cfg.def.rumble = cfg.def.trigger = cfg.def.invert = -1;
     memcpy(cfg.path, path, sizeof path);
 }
 
@@ -146,6 +147,9 @@ static const char DEFAULT_INI[] =
     "; trigger_threshold = 1-99, percent: how far a trigger is pulled to press ZL / ZR. (As a GameCube controller,\n"
     ";                     the game itself decides how far L and R are pulled.)\n"
     "trigger_threshold = 25\n"
+    "; invert = axes to flip: leftx, lefty, rightx, righty (a list, or none). For a pad whose stick reads\n"
+    ";          the wrong way, e.g. a GameCube adapter in PC mode whose C-stick comes up inverted.\n"
+    "; invert = rightx, righty\n"
     "; Remap: <console button> = <pad control>[, <pad control> ...]\n"
     ";   console buttons: A B X Y L R ZL ZR PLUS MINUS LSTICK RSTICK UP DOWN LEFT RIGHT\n"
     ";   pad controls:    south east west north leftshoulder rightshoulder lefttrigger righttrigger start back\n"
@@ -158,7 +162,13 @@ static const char DEFAULT_INI[] =
     "; Settings for one kind of pad, or one pad: [device <type, name or GUID>], with the keys above.\n"
     "; Types: xbox360 xboxone ps3 ps4 ps5 switchpro joyconpair gamecube ...\n"
     "; [device ps5]\n"
-    "; rumble = 60\n";
+    "; rumble = 60\n"
+    "\n"
+    "; A Mayflash GameCube adapter (USB 0079:1844) in its PC mode reports the C-stick inverted;\n"
+    "; flip it back. By the pad's GUID, so a GameCube pad in Wii U mode (the same name, read\n"
+    "; straight from the adapter) is left alone.\n"
+    "[device 03004271790000004418000000016800]\n"
+    "invert = rightx, righty\n";
 
 static char *trim(char *s) {
     while (*s == ' ' || *s == '\t') s++;
@@ -166,6 +176,8 @@ static char *trim(char *s) {
     while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n')) *--e = 0;
     return s;
 }
+
+static const char *const AXIS_NAMES[4] = {"leftx", "lefty", "rightx", "righty"};
 
 static int parse_source(const char *name, Source *out) {
     if (!_stricmp(name, "none")) { out->kind = SRC_NONE; return 1; }
@@ -195,6 +207,15 @@ static void config_line(DevCfg *dc, const char *key, char *value, int line) {
     } else if (!_stricmp(key, "deadzone")) dc->deadzone = atoi(value) < 0 ? 0 : atoi(value) > 50 ? 50 : atoi(value);
     else if (!_stricmp(key, "rumble")) dc->rumble = atoi(value) < 0 ? 0 : atoi(value) > 100 ? 100 : atoi(value);
     else if (!_stricmp(key, "trigger_threshold")) dc->trigger = atoi(value) < 1 ? 1 : atoi(value) > 99 ? 99 : atoi(value);
+    else if (!_stricmp(key, "invert")) {
+        dc->invert = 0;
+        for (char *t = strtok(value, ", \t"); t; t = strtok(NULL, ", \t")) {
+            int a;
+            for (a = 0; a < 4 && _stricmp(t, AXIS_NAMES[a]); a++);
+            if (a < 4) dc->invert |= 1 << a;
+            else if (_stricmp(t, "none")) fprintf(stderr, "[input] controllers.ini line %d: no axis '%s'\n", line, t);
+        }
+    }
     else if ((b = npad_button(key)) >= 0) {
         dc->has_map[b] = 1;
         dc->nmap[b] = 0;
@@ -230,7 +251,7 @@ static void config_parse(FILE *f) {
                 else if (cfg.ndev < (int)(sizeof cfg.dev / sizeof *cfg.dev)) {
                     dc = &cfg.dev[cfg.ndev++];
                     memset(dc, 0, sizeof *dc);
-                    dc->layout = dc->style = dc->deadzone = dc->rumble = dc->trigger = -1;
+                    dc->layout = dc->style = dc->deadzone = dc->rumble = dc->trigger = dc->invert = -1;
                     snprintf(dc->match, sizeof dc->match, "%s", what);
                 } else dc = NULL;
             } else fprintf(stderr, "[input] controllers.ini line %d: unknown section [%s]\n", line, name);
@@ -280,6 +301,7 @@ typedef struct Dev {
 #endif
     char guid[40], name[96], type[24], serial[64], path[192];
     int deadzone, rumble, trigger, layout;
+    int invert;                   /* mask of the axes to flip (1 leftx, 2 lefty, 4 rightx, 8 righty) */
     int gc;                       /* plays as a GameCube controller */
     int labels[4], has_labels;    /* the letters on its face buttons (dev_configure) */
     char section[96];             /* the [device ...] it takes settings from ("" = only default) */
@@ -320,7 +342,7 @@ static void dev_configure(Dev *d, const int labels[4]) {
     const DevCfg *layers[2] = {&cfg.def, best};
     snprintf(d->section, sizeof d->section, "%s", best ? best->match : "");
     int layout = 0, style = 0, gamecube = dev_is_gamecube(d);
-    d->deadzone = 0; d->rumble = 100; d->trigger = 25;
+    d->deadzone = 0; d->rumble = 100; d->trigger = 25; d->invert = 0;
     for (int l = 0; l < 2; l++) {
         if (!layers[l]) continue;
         if (layers[l]->layout >= 0) layout = layers[l]->layout;
@@ -328,6 +350,7 @@ static void dev_configure(Dev *d, const int labels[4]) {
         if (layers[l]->deadzone >= 0) d->deadzone = layers[l]->deadzone;
         if (layers[l]->rumble >= 0) d->rumble = layers[l]->rumble;
         if (layers[l]->trigger >= 0) d->trigger = layers[l]->trigger;
+        if (layers[l]->invert >= 0) d->invert = layers[l]->invert;
     }
     /* positional: the console's A is the right face button, B the bottom, X the top, Y the left */
     static const struct { int npad; Source src; } POSITIONAL[16] = {
@@ -441,8 +464,10 @@ static void dev_state(const Dev *d, const Raw *raw, PadState *o) {
                 break;
             }
         }
-    stick(d->deadzone, raw->axis[RA_LEFTX], raw->axis[RA_LEFTY], &o->lx, &o->ly);
-    stick(d->deadzone, raw->axis[RA_RIGHTX], raw->axis[RA_RIGHTY], &o->rx, &o->ry);
+    stick(d->deadzone, d->invert & 1 ? -raw->axis[RA_LEFTX] : raw->axis[RA_LEFTX],
+          d->invert & 2 ? -raw->axis[RA_LEFTY] : raw->axis[RA_LEFTY], &o->lx, &o->ly);
+    stick(d->deadzone, d->invert & 4 ? -raw->axis[RA_RIGHTX] : raw->axis[RA_RIGHTX],
+          d->invert & 8 ? -raw->axis[RA_RIGHTY] : raw->axis[RA_RIGHTY], &o->rx, &o->ry);
 }
 
 /* ---- the slot table, shared with guest threads ------------------------------------- */
