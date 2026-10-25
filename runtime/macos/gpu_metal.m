@@ -2451,7 +2451,25 @@ static void texture_index_add(Texture *t) {
  * float format is one a comparing (shadow) sampler takes. */
 enum { CONV_NONE, CONV_R24, CONV_R16_UNORM, CONV_RGBA4, CONV_U8, CONV_S8, CONV_U16, CONV_S16 };
 typedef struct Kept { MTLPixelFormat format; u8 conv, channels, integer; } Kept;
+/* ASTC (gpu_texture.h's DXGI_ASTC), as Metal's: Apple's GPUs read every LDR block size. */
+static MTLPixelFormat astc_format(DXGI_FORMAT f) {
+    static const struct { u8 w, h; MTLPixelFormat linear, srgb; } ASTC[] = {
+        {4, 4, MTLPixelFormatASTC_4x4_LDR, MTLPixelFormatASTC_4x4_sRGB}, {5, 4, MTLPixelFormatASTC_5x4_LDR, MTLPixelFormatASTC_5x4_sRGB},
+        {5, 5, MTLPixelFormatASTC_5x5_LDR, MTLPixelFormatASTC_5x5_sRGB}, {6, 5, MTLPixelFormatASTC_6x5_LDR, MTLPixelFormatASTC_6x5_sRGB},
+        {6, 6, MTLPixelFormatASTC_6x6_LDR, MTLPixelFormatASTC_6x6_sRGB}, {8, 5, MTLPixelFormatASTC_8x5_LDR, MTLPixelFormatASTC_8x5_sRGB},
+        {8, 6, MTLPixelFormatASTC_8x6_LDR, MTLPixelFormatASTC_8x6_sRGB}, {8, 8, MTLPixelFormatASTC_8x8_LDR, MTLPixelFormatASTC_8x8_sRGB},
+        {10, 5, MTLPixelFormatASTC_10x5_LDR, MTLPixelFormatASTC_10x5_sRGB}, {10, 6, MTLPixelFormatASTC_10x6_LDR, MTLPixelFormatASTC_10x6_sRGB},
+        {10, 8, MTLPixelFormatASTC_10x8_LDR, MTLPixelFormatASTC_10x8_sRGB}, {10, 10, MTLPixelFormatASTC_10x10_LDR, MTLPixelFormatASTC_10x10_sRGB},
+        {12, 10, MTLPixelFormatASTC_12x10_LDR, MTLPixelFormatASTC_12x10_sRGB}, {12, 12, MTLPixelFormatASTC_12x12_LDR, MTLPixelFormatASTC_12x12_sRGB},
+    };
+    u32 w = (u32)f >> 8 & 15, h = (u32)f >> 4 & 15, srgb = (u32)f & 1;
+    for (u32 i = 0; i < sizeof ASTC / sizeof *ASTC; i++)
+        if (ASTC[i].w == w && ASTC[i].h == h) return srgb ? ASTC[i].srgb : ASTC[i].linear;
+    return MTLPixelFormatInvalid;
+}
+
 static Kept texture_format(DXGI_FORMAT f) {
+    if (DXGI_IS_ASTC(f)) return (Kept){astc_format(f), 0, 0, 0};
     switch (f) {
     case DXGI_FORMAT_R32G32B32A32_FLOAT: return (Kept){MTLPixelFormatRGBA32Float, 0, 0, 0};
     case DXGI_FORMAT_R32G32B32A32_UINT: case DXGI_FORMAT_R32G32B32A32_SINT: return (Kept){MTLPixelFormatRGBA32Float, 0, 0, 1};

@@ -3,6 +3,13 @@
 #include "host.h"
 #include <dxgiformat.h>
 
+#ifdef __APPLE__
+/* (macOS) ASTC, which Direct3D has no format for and Apple's GPUs read as it is: this stands for
+ * it in TextureDesc.dxgi - blocks of w x h texels, linear or sRGB (macos/gpu_metal.m). */
+#define DXGI_ASTC(w, h, srgb) ((DXGI_FORMAT)(0x4000 | (w) << 8 | (h) << 4 | (srgb)))
+#define DXGI_IS_ASTC(f) (((u32)(f) & 0xF000) == 0x4000)
+#endif
+
 typedef struct TextureDesc {
     u64 address;                  /* GPU virtual address */
     u32 format, type, header_version, swizzle, srgb;
