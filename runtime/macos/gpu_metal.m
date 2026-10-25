@@ -2022,31 +2022,53 @@ static void resident_patch(View dst, u64 va, u64 size) {
  * The copies are blits, and a blit ends the render pass: an effect's draws, each binding the same
  * range around compute results (particles), began a pass again for each one, storing and loading
  * the targets every draw (hundreds a frame: the GPU and this thread were the frame's limit). So a
- * view composed since the last commit is used again for the same range while the guest's bytes
- * are the same (still in its CPU side: the copies run after the commit) and no resident region
- * has changed since (resident_gen). */
+ * view composed since the last commit is used again for the same range while no resident region
+ * has changed since (resident_gen) and the guest's bytes are the same: untouched by the GPU's own
+ * writes in this submission (untouched_since, as upload_gpu: nothing else changes them), else
+ * compared (its CPU side holds them: the copies run after the commit). Thousands of such reads a
+ * frame (four players, the Ice Climbers) made even reading and comparing them the frame's limit,
+ * so composed_find runs before the guest's data is read. */
 enum { COMPOSED_KEPT = 32 };
-static struct { u64 va, serial, gen; u32 size; View v; } composed_kept[COMPOSED_KEPT];
+static struct { u64 va, serial, gen, batch, seq, g; u32 size; View v; } composed_kept[COMPOSED_KEPT];
 static u32 composed_next;
 
-static View upload_composed(int stage, u32 slot, u64 va, const void *data, u32 size) {
-    u32 need_ = (size + 15) & ~15u;
-    gfx_stat_upload_bytes += size;
-    gfx_stat_composed++;
-    if (!need_) return upload_raw(stage, slot, data, size);
+/* A view composed before that is still right for [va, va + size); data, when given, is the
+ * guest's bytes there now (else only the write log can say they are unchanged). */
+static int composed_find(u64 va, u32 size, const void *data, View *out) {
     for (u32 i = 0; i < nresidents; i++)   /* (the CPU's writes into the regions first: resident_patch's own sync) */
         if (residents[i].va < va + size && va < residents[i].va + residents[i].size) {
             residents[i].used = op_seq;
             resident_sync(&residents[i], 0);
         }
     for (u32 i = 0; i < COMPOSED_KEPT; i++) {
-        View *k = &composed_kept[i].v;
-        if (k->b && composed_kept[i].va == va && composed_kept[i].size == size && composed_kept[i].serial == cmd_serial &&
-            composed_kept[i].gen == resident_gen && !memcmp(k->b->cpu, data, size)) {
-            gfx_stat_composed_reused++;
-            return *k;
+        __typeof__(composed_kept[0]) *k = &composed_kept[i];
+        if (!k->v.b || k->va != va || k->size != size || k->serial != cmd_serial || k->gen != resident_gen) continue;
+        if (k->g && untouched_since(k->batch, k->seq, k->g, size)) { *out = k->v; return 1; }
+        if (data && !memcmp(k->v.b->cpu, data, size)) {
+            k->batch = gpu_stat_batches;
+            k->seq = wrote_seq;
+            *out = k->v;
+            return 1;
         }
     }
+    return 0;
+}
+
+/* (callers: before reading the guest's data) the view composed before, if it is still right */
+static int composed_again(u64 va, u32 size, View *out) {
+    if (!size || !composed_find(va, size, NULL, out)) return 0;
+    gfx_stat_composed++;
+    gfx_stat_composed_reused++;
+    return 1;
+}
+
+static View upload_composed(int stage, u32 slot, u64 va, const void *data, u32 size) {
+    u32 need_ = (size + 15) & ~15u;
+    gfx_stat_upload_bytes += size;
+    gfx_stat_composed++;
+    if (!need_) return upload_raw(stage, slot, data, size);
+    View kept;
+    if (composed_find(va, size, data, &kept)) { gfx_stat_composed_reused++; return kept; }
     GBuf *b = pool_get(need_, 1);
     if (!b) return (View){0};
     memcpy(b->cpu, data, size);   /* (a buffer no work uses: written as it is) */
@@ -2058,6 +2080,10 @@ static View upload_composed(int stage, u32 slot, u64 va, const void *data, u32 s
     composed_kept[composed_next].size = size;
     composed_kept[composed_next].serial = cmd_serial;
     composed_kept[composed_next].gen = resident_gen;
+    composed_kept[composed_next].batch = gpu_stat_batches;
+    composed_kept[composed_next].seq = wrote_seq;
+    u64 g = gpu_va_to_guest(va);
+    composed_kept[composed_next].g = g && gpu_va_to_guest(va + size - 1) == g + size - 1 ? g : 0;   /* (one mapping: the log can tell) */
     composed_kept[composed_next].v = v;
     composed_next = (composed_next + 1) % COMPOSED_KEPT;
     return v;
@@ -3095,6 +3121,11 @@ static void bind_resources(const u32 *regs, const CbBinding cb[STAGES][18], int 
                 need(v.b, 0);
                 continue;
             }
+            if (partly && !draw_logging && composed_again(va, size, &v)) {
+                out->bt.gm[k] = bind_of(v);
+                need(v.b, 0);
+                continue;
+            }
             if (size > gcap) { gdata = realloc(gdata, size); gcap = size; }
             read_gpu(va, size, gdata);
             if (partly && (v = upload_composed(stage, 96 + k, va, gdata, size)).b) {   /* partly: the guest's data around the GPU's */
@@ -3574,6 +3605,7 @@ void gfx_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
         if (!v.b) {
             Resident *part = resident_overlapping(start, (u32)size);
             if (!part && !draw_logging) v = upload_gpu(SHADER_VERTEX, 18 + n, start, (u32)size);
+            else if (part && !draw_logging && composed_again(start, (u32)size, &v)) {}
             else {
                 if (size > stream_cap) { stream_data = realloc(stream_data, size + 16); stream_cap = (u32)size; }
                 read_gpu(start, (u32)size, stream_data);
