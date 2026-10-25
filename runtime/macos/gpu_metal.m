@@ -1326,6 +1326,35 @@ static void enqueue_shader(Shader *s) { enqueue(&s->job, s->cached ? 0 : 1, s->c
 
 void gfx_status_lines(void) {}   /* (no lines of its own yet) */
 
+/* (gpu.c's copy engine) a 4-byte colour surface starting at `guest`, read back: the work recorded
+ * before is done first (a wait for the GPU), and render scale's larger texture sampled back to the
+ * game's size. Rare - a picture copied out of what was drawn (Mii fighters' icons). */
+int gfx_surface_pixels(u64 guest, u32 *width, u32 *height, u8 **pixels) {
+    if (!enter()) return 0;
+    Surface *s = NULL;
+    for (u32 i = 0; i < nsurfaces && !s; i++)
+        if (surfaces[i].tex && !surfaces[i].depth && surfaces[i].guest == guest) s = &surfaces[i];
+    if (!s || (s->storage != MTLPixelFormatRGBA8Unorm && s->storage != MTLPixelFormatBGRA8Unorm)) { leave(); return 0; }
+    if (s->clear) settle(s);
+    u32 hw = s->hw, hh = s->hh, w = s->width, h = s->height;
+    id<MTLBuffer> buf = [dev newBufferWithLength:(NSUInteger)hw * hh * 4 options:MTLResourceStorageModeShared];
+    u8 *out = buf ? malloc((size_t)w * h * 4) : NULL;
+    if (!out) { leave(); return 0; }
+    [blits() copyFromTexture:s->tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(hw, hh, 1)
+                    toBuffer:buf destinationOffset:0 destinationBytesPerRow:(NSUInteger)hw * 4 destinationBytesPerImage:(NSUInteger)hw * hh * 4];
+    gfx_stat_gpu_waits++;
+    submit(1);
+    const u8 *in = buf.contents;
+    for (u32 y = 0; y < h; y++)
+        for (u32 x = 0; x < w; x++) {   /* (the texel nearest each of the game's pixels) */
+            u32 sx = (u32)(((u64)x * 2 + 1) * hw / (2ull * w)), sy = (u32)(((u64)y * 2 + 1) * hh / (2ull * h));
+            memcpy(out + ((u64)y * w + x) * 4, in + ((u64)sy * hw + sx) * 4, 4);
+        }
+    *width = w; *height = h; *pixels = out;
+    leave();
+    return 1;
+}        /* (the settings menu's Quit: nothing to do before the game ends, unlike Direct3D's) */
+
 /* For a crash or freeze report: what each compiler thread is doing (to line, a line at a time),
  * its program kept next to the disk cache (shadercrash/) so it can be compiled again outside the
  * game. */
