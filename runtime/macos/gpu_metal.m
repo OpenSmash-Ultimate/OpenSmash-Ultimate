@@ -781,7 +781,11 @@ void gfx_hotkey(int n) { if (n >= 0 && n < 6) InterlockedOr(&hotkeys, 1 << n); }
 static u32 enter_depth;
 static u64 enter_t0;
 static void *enter_pool;
-u64 gfx_stat_busy_ns, gfx_stat_composed, gfx_stat_upload_kind[4];
+u64 gfx_stat_busy_ns, gfx_stat_composed, gfx_stat_composed_reused, gfx_stat_upload_kind[4];
+/* Bumped by everything that may change what resident regions hold on the GPU (compute, the CPU's
+ * writes taken into them, the copy engine, regions made, merged or dropped): a composed view made
+ * before is only the same as a new one while it has not moved (upload_composed). */
+static u64 resident_gen;
 static struct { u32 size, bank, extent; char shader[24]; } gfx_stat_biggest_cb;
 
 static volatile DWORD last_enter_thread;
@@ -1785,6 +1789,7 @@ static int watch_written(u64 g, u64 size, u64 *seen) {
 }
 
 static void resident_drop(Resident *r) {
+    resident_gen++;
     gbuf_free(r->buf);
     free(r->edge);
     *r = residents[--nresidents];
@@ -1833,6 +1838,7 @@ static int resident_take_edge(Resident *r, u64 g, u8 *was, u32 n) {
         if (!memcmp(was + at, now + at, piece)) continue;
         memcpy(was + at, now + at, piece);
         gpu_write(r->buf, g + at - r->guest, was + at, piece);
+        resident_gen++;
         gfx_stat_resident_pages++;
     }
     return 1;
@@ -1879,6 +1885,7 @@ static void resident_sync(Resident *r, int every_frame) {
         while (n < sizeof now && pg + n < hi && watch_next(pg + n, pg + n + 0x1000, seen) == pg + n) n += 0x1000;
         if (read_guarded(now, pg, n)) {   /* (gone: left as it is) */
             gpu_write(r->buf, pg - r->guest, now, n);
+            resident_gen++;
             gfx_stat_resident_pages += n >> 12;
         }
         pg = watch_next(pg + n, hi, seen);
@@ -1916,6 +1923,7 @@ u64 gfx_stat_residents_given_up;
 u64 gfx_stat_residents_retired;
 
 static Resident *resident_create(u64 va, u32 size) {
+    resident_gen++;
     if (nresidents == 512) {
         /* The table is full: the region used longest ago goes - never one this call uses (bound
          * already, or about to be merged). What the GPU wrote there is lost to guest memory, as
@@ -1950,6 +1958,7 @@ static Resident *resident_create(u64 va, u32 size) {
  * overlap: a range that overlaps some becomes one region over all of them, with the CPU's
  * data underneath and each old region's GPU data copied over it. */
 static Resident *resident_acquire(u64 va, u32 size) {
+    resident_gen++;   /* (it may merge regions, or widen one: what they hold moves) */
     u64 lo = va, hi = va + size;
     int overlaps = 0;
     for (u32 i = 0; i < nresidents; i++) {
@@ -2008,12 +2017,36 @@ static void resident_patch(View dst, u64 va, u64 size) {
 /* A range only partly held by resident regions, as the GPU sees it: the guest's data (in data)
  * with the regions' parts copied over it, in a buffer of its own (handed back at once: it is not
  * given out again before the work recorded now is done). Regions are never widened for a read:
- * what lies around them is the CPU's, and it keeps changing in guest memory. */
+ * what lies around them is the CPU's, and it keeps changing in guest memory.
+ *
+ * The copies are blits, and a blit ends the render pass: an effect's draws, each binding the same
+ * range around compute results (particles), began a pass again for each one, storing and loading
+ * the targets every draw (hundreds a frame: the GPU and this thread were the frame's limit). So a
+ * view composed since the last commit is used again for the same range while the guest's bytes
+ * are the same (still in its CPU side: the copies run after the commit) and no resident region
+ * has changed since (resident_gen). */
+enum { COMPOSED_KEPT = 32 };
+static struct { u64 va, serial, gen; u32 size; View v; } composed_kept[COMPOSED_KEPT];
+static u32 composed_next;
+
 static View upload_composed(int stage, u32 slot, u64 va, const void *data, u32 size) {
     u32 need_ = (size + 15) & ~15u;
     gfx_stat_upload_bytes += size;
     gfx_stat_composed++;
     if (!need_) return upload_raw(stage, slot, data, size);
+    for (u32 i = 0; i < nresidents; i++)   /* (the CPU's writes into the regions first: resident_patch's own sync) */
+        if (residents[i].va < va + size && va < residents[i].va + residents[i].size) {
+            residents[i].used = op_seq;
+            resident_sync(&residents[i], 0);
+        }
+    for (u32 i = 0; i < COMPOSED_KEPT; i++) {
+        View *k = &composed_kept[i].v;
+        if (k->b && composed_kept[i].va == va && composed_kept[i].size == size && composed_kept[i].serial == cmd_serial &&
+            composed_kept[i].gen == resident_gen && !memcmp(k->b->cpu, data, size)) {
+            gfx_stat_composed_reused++;
+            return *k;
+        }
+    }
     GBuf *b = pool_get(need_, 1);
     if (!b) return (View){0};
     memcpy(b->cpu, data, size);   /* (a buffer no work uses: written as it is) */
@@ -2021,12 +2054,19 @@ static View upload_composed(int stage, u32 slot, u64 va, const void *data, u32 s
     View v = {b, 0, need_};
     resident_patch(v, va, size);
     pool_put(b, 1);
+    composed_kept[composed_next].va = va;
+    composed_kept[composed_next].size = size;
+    composed_kept[composed_next].serial = cmd_serial;
+    composed_kept[composed_next].gen = resident_gen;
+    composed_kept[composed_next].v = v;
+    composed_next = (composed_next + 1) % COMPOSED_KEPT;
     return v;
 }
 
 /* The copy engine and resident data. */
 int gfx_copy_resident(u64 dst_va, u64 src_va, u64 bytes) {
     if (!bytes || bytes > (256u << 20) || !enter()) return 0;
+    resident_gen++;
     Resident *src = resident_overlapping(src_va, (u32)bytes);
     if (!src || src_va < src->va || src_va + bytes > src->va + src->size) {
         leave();
@@ -2103,6 +2143,7 @@ void gfx_resident_written(u64 va, u64 bytes) {
         u8 *data = malloc((size_t)(hi - lo));
         read_gpu(lo, (u32)(hi - lo), data);
         gpu_write(r->buf, lo - r->va, data, (u32)(hi - lo));
+        resident_gen++;
         free(data);
         if (r->guest >= ALIAS_BASE && r->guest + r->size <= ALIAS_BASE + ALIAS_SIZE) { resident_watch_reset(r); resident_snapshot(r); }
     }
@@ -4189,6 +4230,7 @@ void gfx_guest_unmapped(u64 addr, u64 size) {
 
 void gfx_dispatch(const u32 *regs, const u32 *q) {
     if (!enter()) return;
+    resident_gen++;   /* (compute writes resident regions) */
     kept_flush();
     if (draw_logging) save_sampled();
     u64 region = (u64)regs[M_PROGRAM_REGION] << 32 | regs[M_PROGRAM_REGION + 1];
@@ -4498,7 +4540,7 @@ void gfx_present(u64 guest, u32 width, u32 height) {
     if (profile_at >= 0 && rt_now_ns() > (u64)(profile_at * 1e9)) { profile_at = -2; keys |= 32; }
     if (keys & 32) profile_start(10.0);   /* F6 */
     static char detail[1800], hint[640];
-    static u64 last_ns, last_presented, last_drawn, last_dispatched, last_skipped, last_watch, last_busy, last_upload, last_waits, last_composed, last_reused, last_kind[4];
+    static u64 last_ns, last_presented, last_drawn, last_dispatched, last_skipped, last_watch, last_busy, last_upload, last_waits, last_composed, last_composed_reused, last_reused, last_kind[4];
     u64 now = rt_now_ns();
     if (now - last_ns >= 500000000ull) {   /* the details, twice a second */
         double secs = (now - last_ns) / 1e9;
@@ -4510,7 +4552,7 @@ void gfx_present(u64 guest, u32 width, u32 height) {
         u64 gpu_frames = gfx_stat_inflight_frames - last_inflight_frames;
         snprintf(detail, sizeof detail,
                  "GPU behind by %.1f frames  Present blocked %.1f ms/frame\n"
-                 "renderer %.1f ms/frame  uploads %.1f MB/frame (%llu composed, %llu reused)\n"
+                 "renderer %.1f ms/frame  uploads %.1f MB/frame (%llu composed, %llu of them kept, %llu reused)\n"
                  "  constants %.1f  vertices %.1f  storage %.1f  textures %.1f MB/frame\n"
                  "draws %llu/frame  compute %llu/frame  GPU waits %llu  skipped %.0f/s\n"
                  "shaders %llu (%ld compiling, prewarm %ld/%ld)  textures %u  surfaces %u\n"
@@ -4521,7 +4563,7 @@ void gfx_present(u64 guest, u32 width, u32 height) {
                  (gfx_stat_present_ticks - last_present_ticks) * 1000.0 / (double)freq.QuadPart / frames,
                  (gfx_stat_busy_ns - last_busy) / 1e6 / frames,
                  (gfx_stat_upload_bytes - last_upload) / 1048576.0 / frames, (gfx_stat_composed - last_composed) / frames,
-                 (gfx_stat_reused - last_reused) / frames,
+                 (gfx_stat_composed_reused - last_composed_reused) / frames, (gfx_stat_reused - last_reused) / frames,
                  (gfx_stat_upload_kind[0] - last_kind[0]) / 1048576.0 / frames, (gfx_stat_upload_kind[1] - last_kind[1]) / 1048576.0 / frames,
                  (gfx_stat_upload_kind[2] - last_kind[2]) / 1048576.0 / frames, (gfx_stat_upload_kind[3] - last_kind[3]) / 1048576.0 / frames,
                  (gfx_stat_drawn - last_drawn) / frames, (gfx_stat_dispatched - last_dispatched) / frames, gfx_stat_gpu_waits - last_waits,
@@ -4567,7 +4609,7 @@ void gfx_present(u64 guest, u32 width, u32 height) {
         last_ns = now; last_presented = gfx_stat_presented; last_drawn = gfx_stat_drawn;
         last_dispatched = gfx_stat_dispatched; last_skipped = gfx_stat_skipped; last_watch = gfx_stat_watch_us;
         memcpy(last_kind, gfx_stat_upload_kind, sizeof last_kind);
-        last_busy = gfx_stat_busy_ns; last_upload = gfx_stat_upload_bytes; last_waits = gfx_stat_gpu_waits; last_composed = gfx_stat_composed; last_reused = gfx_stat_reused;
+        last_busy = gfx_stat_busy_ns; last_upload = gfx_stat_upload_bytes; last_waits = gfx_stat_gpu_waits; last_composed = gfx_stat_composed; last_composed_reused = gfx_stat_composed_reused; last_reused = gfx_stat_reused;
         last_inflight = gfx_stat_inflight; last_inflight_frames = gfx_stat_inflight_frames; last_present_ticks = gfx_stat_present_ticks;
     }
 
