@@ -168,6 +168,11 @@ Terminal window that shows the game's log as it goes; closing that window leaves
 The same as on Windows ([Playing](PLAYING.md#controls)): plug in a controller and press a button, and
 each pad becomes the next free player, up to eight. The keyboard plays as player 1.
 
+A Wii U GameCube adapter (in Wii U mode) works too ([GameCube controllers](PLAYING.md#gamecube-controllers)),
+with [GCAdapterDriver](https://github.com/secretkeysio/GCAdapterDriver) on and libusb installed
+(`brew install libusb`): the game reads it through libusb, as Dolphin does. Its controllers play as
+GameCube controllers, with the game's own GameCube controls. `SSBU_GC_USB=0` leaves the adapter alone.
+
 | Switch button | Keyboard |
 | :--- | :--- |
 | Left stick | Arrow keys |
