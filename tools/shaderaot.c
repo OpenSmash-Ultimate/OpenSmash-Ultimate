@@ -2,14 +2,20 @@
  * packs them) into the renderer's disk cache, translated and compiled exactly as the renderer
  * would, so that a program's first use loads its DXBC instead of compiling it.
  *
- * Usage: shaderaot <pack> <cache dir> <part> <parts> [--dry] [--keys <file>]
- *   Every process translates all vertex programs (their outputs are the paired pixel programs'
- *   inputs) and compiles the keys that are <part> modulo <parts> - by the key, not by where the
- *   program is in the pack (the same program is often packed more than once): each key is one
- *   part's, so the parts' counts add up to the distinct shaders. --dry translates only
- *   and prints the cache key of each program ("vs <hash>", "ps <hash> <vs outputs>"); --keys
- *   compiles only the keys listed in a file of such lines. On stderr, "progress <done> <of>" lines
- *   say how far it is, in keys, and a last line what it did.
+ * Usage: shaderaot <pack> <cache dir> [<part> <parts>] [--dry] [--keys <file>] [--serve]
+ *   Part mode (the default, part 0 of 1): the process translates all vertex programs (their
+ *   outputs are the paired pixel programs' inputs) and compiles the keys that are <part> modulo
+ *   <parts> - by the key, not by where the program is in the pack (the same program is often
+ *   packed more than once): each key is one part's, so the parts' counts add up to the distinct
+ *   shaders. --dry translates only and prints the cache key of each program and its size in
+ *   bytes ("vs <hash> <size>", "ps <hash> <vs outputs> <size>"); --keys compiles only the keys
+ *   listed in a file of such lines. On stderr, "progress <done> <of>" lines say how far it is,
+ *   in keys, and a last line what it did.
+ *   Serve mode (--serve, what tools/shader_aot.py runs): no preamble; the programs are indexed
+ *   by their hash, then each key read from stdin ("vs <hash>", "ps <hash> <vs outputs>") is
+ *   compiled and answered on stdout with "done <key> <outcome> <ms>", outcome one of compiled,
+ *   existing, tables, failed, untranslated, missing (not in the pack), until stdin ends. The
+ *   last line on stderr says what it did, as in part mode.
  *
  * Pack: "SAOT", u32 count; then per program u32 stage (0 vertex, 1 pixel), u32 length, u32 pairs,
  * u32 pair[pairs] (the vertex programs found before it in its containers), then its bytes
@@ -33,6 +39,17 @@
 #include <unistd.h>
 #define _fseeki64 fseeko
 #define _ftelli64 ftello
+#endif
+
+/* Milliseconds from a fixed point: how long a compile takes (serve mode). */
+#ifdef _WIN32
+static unsigned long long clock_ms(void) { return GetTickCount64(); }
+#else
+static unsigned long long clock_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (unsigned long long)t.tv_sec * 1000 + (unsigned long long)t.tv_nsec / 1000000;
+}
 #endif
 
 #include "../runtime/gpu_shader_cache.h"
@@ -115,9 +132,11 @@ static void progress(void) {
     }
 }
 
-/* Compile and write one cache file, dated as not yet used. */
-static void compile_to(const char *hlsl, const char *name, int stage, const char *path) {
+/* Compile and write one cache file, dated as not yet used. 1 compiled, 0 failed (a compile the
+ * compiler refused, or a file that could not be written: both said on stderr). */
+static int compile_to(const char *hlsl, const char *name, int stage, const char *path) {
     ID3DBlob *code, *errors;
+    int ok = 0;
     HRESULT hr = shader_cache_compile(hlsl, name, stage, &code, &errors);
     if (FAILED(hr)) {
         count.failed++;
@@ -131,10 +150,15 @@ static void compile_to(const char *hlsl, const char *name, int stage, const char
             fclose(f);
             publish(tmp, path);
             count.compiled++;
+            ok = 1;
+        } else {
+            count.failed++;
+            fprintf(stderr, "%s: the cache file could not be written: %s\n", name, tmp);
         }
     }
     if (code) code->lpVtbl->Release(code);
     if (errors) errors->lpVtbl->Release(errors);
+    return ok;
 }
 
 /* Sets of keys: the ones this process has seen (the same program is often packed more than
@@ -166,15 +190,91 @@ static int first_time(u64 key) { return ours(key) && add_key(&seen, key) && (!on
 /* the same, ahead of the compiling: for counting the keys to do (seen in the same order) */
 static int to_count(u64 key) { return ours(key) && add_key(&counted, key) && (!only.slot || has_key(&only, key)); }
 
+/* ---- serve mode: keys from stdin, one at a time, answered on stdout ------------------------------
+ * No preamble: a pixel key brings its vertex outputs with it, so no vertex program need be
+ * translated to find them. The programs are indexed by (stage, cache hash); the same program
+ * packed more than once is indexed once. */
+typedef struct Index { u64 *hash; u32 *at; u32 cap; } Index;   /* (at: pack index + 1; 0 marks a free slot) */
+
+static void index_put(Index *x, u64 hash, int stage, u32 i) {
+    u64 k = slot_key(hash * (stage == SHADER_VERTEX ? 3 : 5));
+    for (u32 j = (u32)(k * 0x9E3779B97F4A7C15ull >> 40) & (x->cap - 1);; j = (j + 1) & (x->cap - 1)) {
+        if (x->at[j] && x->hash[j] == k) return;
+        if (!x->at[j]) { x->hash[j] = k; x->at[j] = i + 1; return; }
+    }
+}
+static Program *index_get(const Index *x, Program *prog, u64 hash, int stage) {
+    u64 k = slot_key(hash * (stage == SHADER_VERTEX ? 3 : 5));
+    for (u32 j = (u32)(k * 0x9E3779B97F4A7C15ull >> 40) & (x->cap - 1);; j = (j + 1) & (x->cap - 1)) {
+        if (!x->at[j]) return NULL;
+        if (x->hash[j] == k) return &prog[x->at[j] - 1];
+    }
+}
+
+static int serve_keys(Program *prog, u32 total, const char *dir) {
+    Index x = {0, 0, 1u << 16};
+    while (x.cap < 2 * total) x.cap <<= 1;
+    x.hash = calloc(x.cap, sizeof *x.hash);
+    x.at = calloc(x.cap, sizeof *x.at);
+    if (!x.hash || !x.at) { fprintf(stderr, "out of memory\n"); return 1; }
+    for (u32 i = 0; i < total; i++) {   /* (as the preamble sizes and hashes them, without translating) */
+        Program *p = &prog[i];
+        if (p->length <= 0x50) continue;
+        p->size = shader_size(p->bytes, p->length);
+        if (p->size <= 0x50 || p->size >= MAX_SIZE) { p->size = 0; continue; }
+        p->hash = shader_cache_hash(shader_program_hash(p->bytes, p->size), p->bytes, p->size, p->stage);
+        index_put(&x, p->hash, p->stage, i);
+    }
+    fprintf(stderr, "serving %u programs\n", total);
+    fflush(stderr);
+    ShaderInfo info;
+    char line[128], kind[4], path[1200], name[64];
+    unsigned long long hash;
+    unsigned mask;
+    while (fgets(line, sizeof line, stdin)) {
+        mask = 0;
+        int n = sscanf(line, "%3s %llx %x", kind, &hash, &mask);
+        int stage = n >= 2 && !strcmp(kind, "vs") ? SHADER_VERTEX : n == 3 && !strcmp(kind, "ps") ? SHADER_PIXEL : -1;
+        if (stage < 0) { fprintf(stderr, "bad key: %s", line); continue; }
+        unsigned long long t0 = clock_ms();
+        const char *outcome;
+        Program *p = index_get(&x, prog, hash, stage);
+        count.keys++;
+        if (!p) outcome = "missing";
+        else {
+            u32 vs_outputs = stage == SHADER_VERTEX ? 0 : mask;
+            snprintf(name, sizeof name, "%s_%016llx", stage == SHADER_VERTEX ? "vs" : "ps", hash);
+            shader_cache_file(path, sizeof path, dir, stage, p->hash, vs_outputs, 0);
+            if (exists(path)) { count.existing++; outcome = "existing"; }
+            else {
+                char *hlsl = translate(p, vs_outputs, &info);
+                if (!hlsl) { count.translate_failed++; outcome = "untranslated"; }
+                else if (info.ntables) { count.tables++; outcome = "tables"; }
+                else outcome = compile_to(hlsl, name, stage, path) ? "compiled" : "failed";
+                free(hlsl);
+            }
+        }
+        if (stage == SHADER_VERTEX) printf("done vs %016llx %s %llu\n", hash, outcome, clock_ms() - t0);
+        else printf("done ps %016llx %08x %s %llu\n", hash, mask, outcome, clock_ms() - t0);
+        fflush(stdout);
+    }
+    fprintf(stderr, "served: %u keys; %u compiled, %u already cached, %u with jump tables (left out), %u fxc failures, %u not translated\n",
+            count.keys, count.compiled, count.existing, count.tables, count.failed, count.translate_failed);
+    return 0;
+}
+
 int main(int argc, char **argv) {
-    if (argc < 5) { fprintf(stderr, "usage: shaderaot <pack> <cache dir> <part> <parts> [--dry]\n"); return 2; }
+    if (argc < 3) { fprintf(stderr, "usage: shaderaot <pack> <cache dir> [<part> <parts>] [--dry] [--keys <file>] [--serve]\n"); return 2; }
     const char *dir = argv[2];
-    part = (u32)atoi(argv[3]);
-    parts = (u32)atoi(argv[4]);
-    if (!parts || part >= parts) { fprintf(stderr, "bad part %u of %u\n", part, parts); return 2; }
-    int dry = 0;
-    for (int a = 5; a < argc; a++) {
+    int dry = 0, serve = 0, positional = 0;
+    part = 0;
+    parts = 1;
+    for (int a = 3; a < argc; a++) {
         if (!strcmp(argv[a], "--dry")) dry = 1;
+        else if (!strcmp(argv[a], "--serve")) serve = 1;
+        else if (argv[a][0] != '-' && positional < 2) {   /* <part> <parts> */
+            if (positional++ == 0) part = (u32)atoi(argv[a]); else parts = (u32)atoi(argv[a]);
+        }
         else if (!strcmp(argv[a], "--keys") && a + 1 < argc) {
             FILE *k = fopen(argv[++a], "r");
             char kind[4];
@@ -189,7 +289,9 @@ int main(int argc, char **argv) {
             if (k) fclose(k);
             if (!only.slot) add_key(&only, 0);   /* (an empty list: nothing) */
         }
+        else { fprintf(stderr, "unknown argument %s\n", argv[a]); return 2; }
     }
+    if (!parts || part >= parts) { fprintf(stderr, "bad part %u of %u\n", part, parts); return 2; }
     FILE *f = fopen(argv[1], "rb");
     if (!f) { fprintf(stderr, "cannot open %s\n", argv[1]); return 1; }
     _fseeki64(f, 0, SEEK_END);
@@ -214,6 +316,7 @@ int main(int argc, char **argv) {
     }
     ShaderInfo info;
     char path[1200], name[64];
+    if (serve) return serve_keys(prog, total, dir);
     /* every vertex program: its key and outputs (what the pixel programs paired with it read);
        which of them are this part's to compile */
     for (u32 i = 0; i < total; i++) {
@@ -261,7 +364,7 @@ int main(int argc, char **argv) {
             count.keys++;
             snprintf(name, sizeof name, "vs_%016llx", (unsigned long long)p->hash);
             shader_cache_file(path, sizeof path, dir, SHADER_VERTEX, p->hash, 0, 0);
-            if (dry) { printf("vs %016llx\n", (unsigned long long)p->hash); continue; }
+            if (dry) { printf("vs %016llx %u\n", (unsigned long long)p->hash, p->size); continue; }
             if (p->ntables) { count.tables++; continue; }
             if (exists(path)) { count.existing++; continue; }
             char *hlsl = translate(p, 0, &info);
@@ -277,7 +380,7 @@ int main(int argc, char **argv) {
             count.keys++;
             snprintf(name, sizeof name, "ps_%016llx", (unsigned long long)p->hash);
             shader_cache_file(path, sizeof path, dir, SHADER_PIXEL, p->hash, p->masks[m], 0);
-            if (dry) { printf("ps %016llx %08x\n", (unsigned long long)p->hash, p->masks[m]); continue; }
+            if (dry) { printf("ps %016llx %08x %u\n", (unsigned long long)p->hash, p->masks[m], p->size); continue; }
             if (exists(path)) { count.existing++; continue; }
             char *hlsl = translate(p, p->masks[m], &info);
             if (!hlsl) { count.translate_failed++; continue; }
