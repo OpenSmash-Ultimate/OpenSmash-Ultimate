@@ -3516,16 +3516,18 @@ void gfx_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
         if (!ps_used || !(ps_used->info.color_mask >> i & 1)) rgba = 0;   /* (a target the program does not write is left as it is) */
         pk.mask[i] = (u8)write_mask(rgba);
         if (!(regs[M_BLEND_ENABLE(i)] & 1) || (gfx_debug() & 8) || s->kind) continue;   /* (integer targets do not blend) */
+        /* The alpha op and factors apply as written, whatever the "separate for alpha" flag says (as in yuzu/Eden,
+         * and gpu_d3d11.c since 9326fd2): the game never sets that flag. Copying the colour ones into alpha wrote the
+         * shader's alpha where the game keeps the target's, in pictures drawn to be put together later (the results
+         * cards, the menus' parts). */
         u32 base = regs[M_BLEND_STATE_PER_TARGET] & 1 ? M_BLEND_PER_TARGET(i) + 1 : 0;
         u32 cop, csrc, cdst, aop, asrc, adst;
         if (base) {
             cop = regs[base]; csrc = regs[base + 1]; cdst = regs[base + 2]; aop = regs[base + 3]; asrc = regs[base + 4]; adst = regs[base + 5];
-            if (!(regs[base - 1] & 1)) { aop = cop; asrc = csrc; adst = cdst; }   /* the target's own "separate alpha" */
         }
         else {
             cop = regs[M_BLEND_COLOR_OP]; csrc = regs[M_BLEND_COLOR_SRC]; cdst = regs[M_BLEND_COLOR_DST];
             aop = regs[M_BLEND_ALPHA_OP]; asrc = regs[M_BLEND_ALPHA_SRC]; adst = regs[M_BLEND_ALPHA_DST];
-            if (!(regs[M_BLEND_SEPARATE_ALPHA] & 1)) { aop = cop; asrc = csrc; adst = cdst; }
         }
         u8 *bl = pk.blend[i];
         bl[0] = 1;
