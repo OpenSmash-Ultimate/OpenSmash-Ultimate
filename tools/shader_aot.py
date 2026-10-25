@@ -2,7 +2,7 @@
 """Compile the game's shaders ahead of time, into the renderer's disk cache.
 
 Usage:
-  shader_aot.py [--jobs N] [--dry]
+  shader_aot.py [--jobs N] [--dry] [--parts]
 
 The game's GPU programs are stored in data.arc as they are uploaded: in the effect files
 (.eff), the shader databases (.nushdb) and nested archives (.arc); a few more are built into the
@@ -18,12 +18,25 @@ The files are dated 2001-01-01 until the game first uses them, so the start's pr
 makes the shaders the game has used. Programs with indirect branches are left out (their key
 depends on a draw's constant buffers), as are compute programs (on their launch's size).
 --dry translates without compiling and compares the keys with the cache that is there.
+
+How the work is shared out: one discovery pass (shaderaot --dry) lists every key once; the
+keys not in the cache yet go into one queue, longest compile first (by the times recorded in
+dump/aot/compile_times.txt on earlier runs; keys never timed go first of all, vertex
+programs before pixel programs, larger first), and N worker processes (shaderaot --serve) each
+pull the next key from it until it is empty, so no worker sits idle while another finishes a
+long one. --parts runs the older way instead: the keys split between N processes by hash.
+Measured on a 16-thread Linux desktop, 14 processes, a cold cache: 46 min split by hash (the
+last 2 % took 16 min, on two processes), 34 min queued on a first run, 33 min with the times
+of an earlier run, which is the floor: 450 CPU-minutes over 14, with the two longest compiles,
+29 and 20 min each, started first.
 """
 import argparse
+import collections
 import hashlib
 import os
 import re
 import struct
+import queue
 import subprocess
 import sys
 import threading
@@ -253,6 +266,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--jobs", type=int, default=default_jobs())
     ap.add_argument("--dry", action="store_true")
+    ap.add_argument("--parts", action="store_true", help="split the keys between the processes by hash (the older way)")
     a = ap.parse_args()
     tree = ROOT
     t0 = time.time()
@@ -277,28 +291,360 @@ def main():
     build_tool(exe)
     cache = os.path.join(tree, "dump", "shadercache")
     os.makedirs(cache, exist_ok=True)
-    jobs = 1 if a.dry else a.jobs
-    procs = [subprocess.Popen([exe, pack, cache, str(i), str(jobs)] + (["--dry"] if a.dry else []),
-                              stdout=subprocess.PIPE if a.dry else subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-                              **low_priority())
-             for i in range(jobs)]
-    if a.dry:
-        outs = [p.communicate() for p in procs]
-        print("\n".join(line for _out, err in outs for line in err.splitlines() if line.startswith("part ")))
-    else:
+    try:
+        if a.parts and not a.dry:
+            run_parts(exe, pack, cache, a.jobs)
+        else:
+            run_queue(exe, pack, cache, a.jobs, a.dry)
+    except KeyboardInterrupt:   # (said by run_parts or run_queue, under the bar)
+        return 1
+    print(f"done in {time.time() - t0:.0f} s")
+    return 0
+
+
+STOPPED = "stopped: what is done stays done; run this again to carry on"
+
+
+def run_parts(exe, pack, cache, jobs):
+    """The older way: N processes, each translating every vertex program and compiling the keys
+    that are its by hash (shaderaot <part> <parts>)."""
+    procs = [subprocess.Popen([exe, pack, cache, str(i), str(jobs)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                              text=True, **low_priority()) for i in range(jobs)]
+    print(f"compiling with {jobs} processes at low priority (the PC stays usable; stop it with " + ("Ctrl+C" if LINUX else "closing this window") + ": "
+          "what is done stays done)", flush=True)
+    try:
+        parts = follow(procs, Progress(sys.stdout))
+    except KeyboardInterrupt:
+        print("\n" + STOPPED)
+        raise
+    totals = totals_from_parts(parts)
+    print(summary(totals) if totals else "\n".join(parts))
+
+
+def run_queue(exe, pack, cache, jobs, dry):
+    """Discovery once, then the keys not cached yet through N workers pulling from one queue."""
+    print("getting ready: listing the shaders (translating the vertex programs)...", flush=True)
+    keys, untranslated = discover(exe, pack, cache)
+    have = cached_keys(cache)
+    todo = [k for k in keys if k.key not in have]
+    if dry:
+        print(f"the cache has {len(have)} vertex/pixel keys; {len(have & {k.key for k in keys})} of them are among the {len(keys)} found here"
+              + (f"; {untranslated} programs not translated (no key)" if untranslated else ""))
+        return
+    times_dir = os.path.dirname(pack)   # (dump/aot: the times outlive a cleared cache)
+    times = load_times(times_dir)
+    todo = order(todo, times)
+    print(f"{len(keys):,} shaders, {len(keys) - len(todo):,} in the cache already, {len(todo):,} to compile"
+          + (f"; {sum(1 for k in todo if k.key in times):,} of them timed on an earlier run (longest first)" if times else ""), flush=True)
+    totals = collections.Counter()
+    totals["keys"] = len(keys)
+    totals["existing"] = len(keys) - len(todo)
+    totals["untranslated"] = untranslated   # (the discovery pass's: the workers add any of their own)
+    if todo:
+        jobs = max(1, min(jobs, len(todo)))
         print(f"compiling with {jobs} processes at low priority (the PC stays usable; stop it with " + ("Ctrl+C" if LINUX else "closing this window") + ": "
               "what is done stays done)", flush=True)
-        parts = follow(procs, Progress(sys.stdout))
-        print(summary(parts) or "\n".join(parts))
-    if a.dry:
-        keys = {tuple(l.split()) for l in outs[0][0].splitlines()}
-        have = set()
-        for name in os.listdir(cache):
-            parts = name[:-5].split("_") if name.endswith(".dxbc") else []
-            if len(parts) == 5 and parts[0] == "v" + str(cache_version()) and parts[1] in ("vs", "ps"):
-                have.add(("vs", parts[2]) if parts[1] == "vs" else ("ps", parts[2], parts[3]))
-        print(f"the cache has {len(have)} vertex/pixel keys; {len(have & keys)} of them are among the {len(keys)} found here")
-    print(f"done in {time.time() - t0:.0f} s")
+
+        kept = []   # (what the last save wrote: said once the bar's line is complete, or the stop said)
+
+        def save(snapshot, last):
+            saved = save_times(times_dir, snapshot)
+            if last:
+                kept.append(len(saved))
+
+        def kept_said():
+            if kept:
+                print(f"compile times kept for {kept[-1]:,} shaders ({os.path.join(os.path.relpath(times_dir, ROOT), TIMES_FILE)})", flush=True)
+        try:
+            totals.update(serve(exe, pack, cache, todo, jobs, times, Progress(sys.stdout, window=None), save=save))
+        except KeyboardInterrupt:
+            print("\n" + STOPPED)
+            kept_said()
+            raise
+        kept_said()
+    print(summary(totals))
+
+
+# ---- the queue: discovery, ordering, the workers ---------------------------------------------------------
+Key = collections.namedtuple("Key", "kind hash mask size")   # kind "vs" or "ps"; mask None for a vertex program
+TIMES_FILE = "compile_times.txt"   # (in dump/aot, with the pack: "<kind> <hash> [<mask>] <ms>" per key compiled)
+
+
+def key_of(kind, hash_, mask):
+    """What a key is known by in sets and the times file: ("vs", hash) or ("ps", hash, mask)."""
+    return (kind, hash_) if kind == "vs" else (kind, hash_, mask)
+
+
+Key.key = property(lambda k: key_of(k.kind, k.hash, k.mask))
+Key.line = property(lambda k: f"{k.kind} {k.hash}" if k.kind == "vs" else f"{k.kind} {k.hash} {k.mask}")
+
+
+def parse_key_line(line):
+    """A key of shaderaot --dry's output ("vs <hash> <size>", "ps <hash> <mask> <size>"; the size
+    is optional, as older tools printed none), else None."""
+    p = line.split()
+    if len(p) >= 2 and p[0] == "vs" and len(p[1]) == 16:
+        return Key("vs", p[1].lower(), None, int(p[2]) if len(p) > 2 and p[2].isdigit() else 0)
+    if len(p) >= 3 and p[0] == "ps" and len(p[1]) == 16 and len(p[2]) == 8:
+        return Key("ps", p[1].lower(), p[2].lower(), int(p[3]) if len(p) > 3 and p[3].isdigit() else 0)
+    return None
+
+
+def parse_done_line(line):
+    """A worker's answer ("done vs <hash> <outcome> <ms>", "done ps <hash> <mask> <outcome> <ms>"):
+    (key, outcome, ms), else None."""
+    p = line.split()
+    if len(p) == 5 and p[0] == "done" and p[1] == "vs":
+        return key_of("vs", p[2].lower(), None), p[3], int(p[4]) if p[4].isdigit() else 0
+    if len(p) == 6 and p[0] == "done" and p[1] == "ps":
+        return key_of("ps", p[2].lower(), p[3].lower()), p[4], int(p[5]) if p[5].isdigit() else 0
+    return None
+
+
+def discover(exe, pack, cache):
+    """Every key once, in pack order, and how many programs got no key because the translator gave
+    up on them: shaderaot --dry (one process: it translates the vertex programs to know the pixel
+    programs' inputs; a vertex program it cannot translate, or a pixel program with no vertex
+    program whose inputs it cannot read, is listed in no key, only counted on its last line)."""
+    r = subprocess.run([exe, pack, cache, "0", "1", "--dry"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if r.returncode:
+        raise SystemExit(f"shaderaot --dry failed (code {r.returncode}): {r.stderr.strip().splitlines()[-1] if r.stderr.strip() else ''}")
+    keys = [k for k in (parse_key_line(l) for l in r.stdout.splitlines()) if k]
+    counts = totals_from_parts([l for l in r.stderr.splitlines() if l.startswith("part ")])
+    return keys, counts["untranslated"] if counts else 0
+
+
+def cache_file_name(key, version):
+    """The cache file a key is kept in (runtime/gpu_shader_cache.h: jump-table hash 0)."""
+    return f"v{version}_{key.kind}_{key.hash}_{key.mask or '00000000'}_{'0' * 16}.dxbc"
+
+
+def cached_keys(cache, version=None):
+    """The keys of this version's files in the cache folder."""
+    version = cache_version() if version is None else version
+    have = set()
+    for name in os.listdir(cache):
+        k = parse_cache_file_name(name, version)
+        if k:
+            have.add(k)
+    return have
+
+
+def parse_cache_file_name(name, version):
+    parts = name[:-5].split("_") if name.endswith(".dxbc") else []
+    if len(parts) == 5 and parts[0] == "v" + str(version) and parts[1] in ("vs", "ps") and parts[4] == "0" * 16:
+        return key_of(parts[1], parts[2], parts[3])
+    return None
+
+
+def load_times(folder):
+    """The compile times recorded by earlier runs: {key: ms}. A missing or damaged file is empty."""
+    times = {}
+    try:
+        with open(os.path.join(folder, TIMES_FILE), encoding="utf-8") as f:
+            for line in f:
+                p = line.split()
+                if len(p) == 3 and p[0] == "vs" and p[2].isdigit():
+                    times[key_of("vs", p[1].lower(), None)] = int(p[2])
+                elif len(p) == 4 and p[0] == "ps" and p[3].isdigit():
+                    times[key_of("ps", p[1].lower(), p[2].lower())] = int(p[3])
+    except OSError:
+        pass
+    return times
+
+
+def save_times(folder, times):
+    """The times merged with what the file has (a run that stopped keeps the earlier records),
+    written whole, through a temporary file."""
+    merged = load_times(folder)
+    merged.update(times)
+    path = os.path.join(folder, TIMES_FILE)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        for key, ms in merged.items():
+            f.write(" ".join(key) + f" {ms}\n")
+    os.replace(tmp, path)
+    return merged
+
+
+MS_PER_BYTE = {"vs": 0.16, "ps": 0.10}   # (a compile's cost by its input's size, where no time is recorded: measured on one
+                                         # PC, only their ratio matters; recalibrated from the timed keys when there are any)
+
+
+def weights(keys, times):
+    """How much of the work each key is, by key: its recorded compile time where there is one,
+    else its input's size at the going rate for its kind, from the keys of that kind that were
+    timed (the sizes track the times closely: a rank correlation of 0.96 over the game's)."""
+    rate = dict(MS_PER_BYTE)
+    for kind in rate:
+        timed = [(times[k.key], k.size) for k in keys if k.kind == kind and k.key in times and k.size > 0]
+        if timed:
+            rate[kind] = sum(ms for ms, _size in timed) / sum(size for _ms, size in timed)
+    return {k.key: float(times[k.key]) if k.key in times else k.size * rate[k.kind] + 1.0 for k in keys}
+
+
+def order(keys, times):
+    """The queue's order: keys never timed first (an unknown is taken for expensive until measured),
+    vertex programs before pixel programs and larger first among them; then the timed ones,
+    longest first. Ties keep the order given (the pack's)."""
+    def rank(ik):
+        i, k = ik
+        ms = times.get(k.key)
+        return (0, k.kind != "vs", -k.size, i) if ms is None else (1, -ms, i)
+    return [k for _i, k in sorted(enumerate(keys), key=rank)]
+
+
+class Worker:
+    """One shaderaot --serve process: keys written to it, answers read back."""
+    IN_FLIGHT = 1   # keys a worker holds at once: one. A second sent ahead would wait behind the first,
+                    # and the queue's first keys are its longest compiles (a key behind the 29-minute one
+                    # waits 29 minutes); the pipe's round trip is well under a millisecond against an
+                    # average compile of about 400 ms, so nothing is gained by it either.
+
+    def __init__(self, proc):
+        self.proc = proc
+        self.pending = collections.deque()   # keys sent, not answered yet
+        self.errors = []                     # compiler failures it reported (its stderr)
+        self.drain = threading.Thread(target=self._drain_stderr, daemon=True)
+        self.drain.start()
+
+    def _drain_stderr(self):   # (the compiler's own chatter would fill the pipe and stop the worker)
+        for line in self.proc.stderr:
+            if ("shader compiler failed" in line or "could not be written" in line) and len(self.errors) < 50:
+                self.errors.append(line.rstrip())
+
+    def send(self, key):
+        self.proc.stdin.write(key.line + "\n")
+        self.proc.stdin.flush()
+        self.pending.append(key)
+
+    def receive(self):
+        """(key, outcome, ms) of the next answer; None once the worker has stopped."""
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                return None
+            got = parse_done_line(line)
+            if got:
+                return got
+
+    def close(self):
+        try:
+            self.proc.stdin.close()
+        except OSError:
+            pass
+
+
+def offer(worker, todo):
+    """The queue's next key to the worker; False when the queue is empty or the worker is gone."""
+    try:
+        key = todo.get_nowait()
+    except queue.Empty:
+        return False
+    try:
+        worker.send(key)
+    except (OSError, ValueError):   # (gone: feed() reports its pending keys, this one among them)
+        worker.pending.append(key)
+        return False
+    return True
+
+
+def feed(worker, todo, report):
+    """(a thread) The worker's share of the queue: whatever is next, once it has answered its last,
+    until the queue is empty. report(key, outcome, ms) for each answer; a worker that stops with a
+    key pending reports it as "died"."""
+    while True:
+        while len(worker.pending) < Worker.IN_FLIGHT and offer(worker, todo):
+            pass
+        if not worker.pending:
+            break
+        got = worker.receive()
+        if got is None:
+            for key in worker.pending:
+                report(key.key, "died", 0)
+            worker.pending.clear()
+            break
+        worker.pending.popleft()   # (a worker answers in the order asked)
+        reported, outcome, ms = got
+        report(reported, outcome, ms)
+    worker.close()
+
+
+def serve(exe, pack, cache, todo, jobs, times, show, every=1.0, popen=None, out=None, save=None, save_every=30.0):
+    """The keys compiled by `jobs` workers pulling from one queue, the progress shown through
+    `show` ([(done, of)], work=(done, of) in compile time, by weights()) and the compiler's
+    failures printed to `out`; compile times recorded in `times`, and given to save(times, last)
+    every save_every seconds and once at the end - from a thread of its own, which a Ctrl+C (a
+    KeyboardInterrupt lands in the main thread alone, and twice when pressed twice) cannot cut
+    short: the last save is waited for before the interrupt goes on. Returns the outcomes counted."""
+    out = out or sys.stdout
+    popen = popen or (lambda: subprocess.Popen([exe, pack, cache, "--serve"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                               stderr=subprocess.PIPE, text=True, bufsize=1, **low_priority()))
+    q = queue.Queue()
+    for k in todo:
+        q.put(k)
+    weight = weights(todo, times)
+    work_of = sum(weight.values())
+    totals = collections.Counter()
+    lock = threading.Lock()
+    done = [0]
+    work = [0.0]
+
+    def report(key, outcome, ms):
+        with lock:
+            totals[outcome] += 1
+            done[0] += 1
+            work[0] += weight.get(key, 0.0)
+            if outcome == "compiled":
+                times[key] = ms
+
+    procs = [popen() for _ in range(jobs)]   # (all started before any thread: low_priority's preexec_fn)
+    stop = threading.Event()
+
+    def saving():   # (joined in the finally below, so that its last save is waited for, Ctrl+C or not)
+        main = threading.main_thread()
+        last = time.monotonic()
+        while not stop.is_set() and main.is_alive():
+            stop.wait(min(1.0, save_every))
+            if not stop.is_set() and time.monotonic() - last >= save_every:
+                with lock:
+                    snapshot = dict(times)
+                save(snapshot, False)
+                last = time.monotonic()
+        with lock:
+            snapshot = dict(times)
+        save(snapshot, True)
+    saver = threading.Thread(target=saving) if save else None
+    workers = [Worker(p) for p in procs]   # (each is given one key, and its next once that is answered: longest
+                                           # first, so the longest compiles go to as many workers as there are)
+    feeders = [threading.Thread(target=feed, args=(w, q, report), daemon=True) for w in workers]
+    try:
+        if saver:
+            saver.start()
+        for t in feeders:
+            t.start()
+        while any(t.is_alive() for t in feeders):
+            show([(done[0], len(todo))], work=(work[0], work_of))
+            time.sleep(every)
+        for w in workers:
+            w.proc.wait()
+            w.drain.join()
+            w.proc.stdout.close()
+            w.proc.stderr.close()
+        show([(done[0], len(todo))], work=(work[0], work_of), final=True)
+    finally:
+        stop.set()   # (the saver's last save follows the bar's last line, or an interrupted bar's;
+        while saver and saver.is_alive():   # a second Ctrl+C waits for it too, the file is written whole)
+            try:
+                saver.join()
+            except KeyboardInterrupt:
+                pass
+    errors = [e for w in workers for e in w.errors]
+    for e in errors[:20]:
+        print(e, file=out)
+    if len(errors) > 20:
+        print(f"... and {len(errors) - 20} more compiler failures", file=out)
+    return totals
 
 
 # ---- progress: shaderaot's "progress <done> <of>" lines, from every part, as one bar ------------
@@ -310,24 +656,35 @@ def parse_progress(line):
     return None
 
 
-def progress_text(done, of, rate=None, width=30):
-    """The bar, the share done, and the time left at `rate` shaders a second (once there is one)."""
-    frac = min(1.0, done / of) if of else 1.0
+def progress_text(done, of, rate=None, width=30, work=None):
+    """The bar, the share done, and the time left at `rate` shaders a second (once there is one).
+    With `work` (done, of) in units of compile time, the share and the time left go by it, at
+    `rate` units a second: the queue starts with its longest compiles, so the count says little."""
+    wdone, wof = work if work and work[1] else (done, of)
+    frac = share(done, of, work)
     text = f"{bar(frac, width)} {frac:4.0%}  {done:,} of {of:,} shaders"
-    if rate and 0 < done < of:
-        text += ", " + time_left((of - done) / rate)
+    if rate and 0 < done < of and wdone < wof:
+        text += ", " + time_left((wof - wdone) / rate)
     return text
 
 
+def share(done, of, work=None):
+    """The share done, by work when there is any, else by count."""
+    wdone, wof = work if work and work[1] else (done, of)
+    return min(1.0, wdone / wof) if wof else 1.0
+
+
 class Progress:
-    """Shows the parts' combined progress: one line drawn over itself in a console, else a line
-    every 5 % (for a log)."""
+    """Shows the progress (the parts' combined, or the queue's): one line drawn over itself in a
+    console, else a line every 5 % (for a log)."""
 
-    WINDOW = 120   # seconds of recent pace the time left goes by (the pace picks up after the start)
+    WINDOW = 120   # seconds of recent pace the time left goes by (the parts' pace picks up after the start);
+                   # None for the pace since the start (the queue's, by work: steadier than a window a long compile lands in)
 
-    def __init__(self, out, console=None):
+    def __init__(self, out, console=None, window=WINDOW):
         self.out = out
         self.console = out.isatty() if console is None else console
+        self.window = window
         self.samples = []   # (time, shaders done), once every part has said how much it has
         self.ready_said = False
         self.shown = -1     # (the last 5 % step a log line was written for)
@@ -335,14 +692,14 @@ class Progress:
         self.width = 0
 
     def rate(self, now, done):
-        """Shaders a second over the last WINDOW seconds, once there are 10 seconds of them."""
+        """Shaders (or work) a second over the last `window` seconds, once there are 10 seconds of them."""
         self.samples.append((now, done))
-        while len(self.samples) > 2 and self.samples[1][0] <= now - self.WINDOW:
+        while self.window is not None and len(self.samples) > 2 and self.samples[1][0] <= now - self.window:
             self.samples.pop(0)
         t0, d0 = self.samples[0]
         return (done - d0) / (now - t0) if now - t0 >= 10 and done > d0 else None
 
-    def __call__(self, state, now=None, final=False):
+    def __call__(self, state, now=None, final=False, work=None):
         now = time.time() if now is None else now
         if any(of is None for _done, of in state):
             if not self.ready_said:
@@ -351,13 +708,13 @@ class Progress:
                 self.ready_said = True
             return
         done, of = sum(d for d, _o in state), sum(o for _d, o in state)
-        text = progress_text(done, of, self.rate(now, done))
+        text = progress_text(done, of, self.rate(now, work[0] if work else done), work=work)
         if self.console:
             self.out.write("\r" + text.ljust(self.width) + ("\n" if final else ""))
             self.width = len(text)
             self.out.flush()
         else:
-            step = int(100 * done / of) // 5 if of else 20
+            step = int(100 * share(done, of, work)) // 5
             if step > self.shown or (final and text != self.last):
                 self.out.write(text + "\n")
                 self.out.flush()
@@ -388,10 +745,11 @@ def follow(procs, show, every=1.0):
     return lasts
 
 
-def summary(lines):
-    """The parts' last lines added up into one, or None if they don't read as expected."""
-    fields = ("keys", "compiled", "already cached", "with jump tables", "fxc failures", "not translated")
-    total = dict.fromkeys(fields, 0)
+def totals_from_parts(lines):
+    """The parts' last lines (--parts) added up: the outcomes counted as serve() counts them, or
+    None if a line doesn't read as expected."""
+    fields = ("keys", "compiled", "existing", "tables", "failed", "untranslated")
+    total = collections.Counter()
     for line in lines:
         m = re.search(r": (\d+) keys; (\d+) compiled, (\d+) already cached, (\d+) with jump tables \(left out\), "
                       r"(\d+) fxc failures, (\d+) not translated", line)
@@ -399,9 +757,19 @@ def summary(lines):
             return None
         for k, v in zip(fields, m.groups()):
             total[k] += int(v)
-    return (f"{total['keys']:,} shaders: {total['compiled']:,} compiled, {total['already cached']:,} already there, "
-            f"{total['with jump tables']:,} left out (jump tables), {total['fxc failures']:,} that fxc could not compile, "
-            f"{total['not translated']:,} not translated")
+    return total
+
+
+def summary(totals):
+    """One line of what was done, from the outcomes counted (serve(), totals_from_parts())."""
+    t = collections.Counter(totals)
+    text = (f"{t['keys']:,} shaders: {t['compiled']:,} compiled, {t['existing']:,} already there, "
+            f"{t['tables']:,} left out (jump tables), {t['failed']:,} that fxc could not compile, "
+            f"{t['untranslated']:,} not translated")
+    extra = {k: v for k, v in t.items() if v and k in ("missing", "died")}
+    if extra:
+        text += " (" + ", ".join(f"{v:,} {'not in the pack' if k == 'missing' else 'lost when a worker stopped'}" for k, v in extra.items()) + ")"
+    return text
 
 
 def cache_version():
@@ -410,4 +778,4 @@ def cache_version():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
