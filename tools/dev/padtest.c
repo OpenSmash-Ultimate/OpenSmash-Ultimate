@@ -18,7 +18,7 @@ static int failures, checks;
 static void load_text(const char *text) {
     memset(&cfg, 0, sizeof cfg);
     cfg.keyboard_slot = 0; cfg.background = 1; cfg.rumble = 1;
-    cfg.def.layout = cfg.def.style = cfg.def.deadzone = cfg.def.rumble = cfg.def.trigger = -1;
+    cfg.def.layout = cfg.def.style = cfg.def.deadzone = cfg.def.rumble = cfg.def.trigger = cfg.def.invert = -1;
     char path[MAX_PATH], dir[MAX_PATH];
     GetTempPathA(sizeof dir, dir);
     GetTempFileNameA(dir, "pad", 0, path);
@@ -66,12 +66,13 @@ static int plug(int i, Dev d) {
 
 static void test_config(void) {
     load_text("[general]\nkeyboard_player = 3\nbackground = 0\n[players]\n2 = DualSense Wireless Controller ; mine\n9 = x\n"
-              "[device default]\nlayout = labels\ndeadzone = 80\nrumble = 40\ntrigger_threshold = 50\nZR = rightshoulder, misc1\n"
+              "[device default]\nlayout = labels\ndeadzone = 80\nrumble = 40\ntrigger_threshold = 50\ninvert = rightx, lefty\nZR = rightshoulder, misc1\n"
               "[device ps5]\nrumble = 70\nA = south\n[device 0300abcd]\nlayout = positional\n");
     CHECK(cfg.keyboard_slot == 2, "keyboard slot %d", cfg.keyboard_slot);
     CHECK(cfg.background == 0, "background");
     CHECK(!strcmp(cfg.pin[1], "DualSense Wireless Controller"), "pin '%s' (comment after a value)", cfg.pin[1]);
     CHECK(cfg.def.layout == 1 && cfg.def.deadzone == 50 && cfg.def.rumble == 40 && cfg.def.trigger == 50, "defaults (deadzone clamped)");
+    CHECK(cfg.def.invert == (4 | 2), "invert mask from a list");
     CHECK(cfg.def.has_map[N_ZR] && cfg.def.nmap[N_ZR] == 2, "ZR remap with two controls");
     CHECK(cfg.ndev == 2 && !strcmp(cfg.dev[0].match, "ps5") && cfg.dev[0].rumble == 70 && cfg.dev[0].has_map[N_A], "[device ps5]");
     load_text("keyboard_player = 0\n[general]\nkeyboard_player = 0\n");
@@ -167,6 +168,18 @@ static void test_gamecube(void) {
     CHECK(o.lt == 32767 && o.buttons == (1ull << N_A | 1ull << N_ZR), "remaps: L on a button, ZR = south: %d %llx", o.lt,
           (unsigned long long)o.buttons);
     CHECK(state(&gc, 0, 30000, 0).lt == 0, "L remapped away from the trigger");
+
+    load_text("[device default]\ninvert = rightx, righty\n");
+    Dev inv = make_dev("i", "", "", "Pad", "ps5");
+    dev_configure(&inv, NULL);
+    Raw r = {0, {10000, -20000, 20000, -10000, 0, 0}};
+    dev_state(&inv, &r, &o);
+    CHECK(o.lx == 10000 && o.ly == 20000 && o.rx == -20000 && o.ry == -10000, "invert rightx/righty: %d %d %d %d", o.lx, o.ly,
+          o.rx, o.ry);
+    load_text("[device default]\ninvert = none\n");
+    dev_configure(&inv, NULL);
+    dev_state(&inv, &r, &o);
+    CHECK(o.rx == 20000 && o.ry == 10000, "invert = none leaves the sticks alone");
 }
 
 static void test_sticks(void) {
