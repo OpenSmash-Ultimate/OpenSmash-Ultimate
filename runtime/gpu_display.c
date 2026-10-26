@@ -369,6 +369,12 @@ HWND display_create_window(HINSTANCE inst, const wchar_t *cls, const wchar_t *ti
     if (!h) return NULL;
     game_window = h;
     current_mode = MODE_WINDOWED;
+    if (getenv("SSBU_HEADLESS") && !strcmp(getenv("SSBU_HEADLESS"), "1")) {   /* (test runs: shown off every screen, never focused, so it still draws) */
+        SetWindowPos(h, NULL, -32000, -32000, 640, 360, SWP_NOZORDER | SWP_NOACTIVATE);
+        ShowWindow(h, SW_SHOWNOACTIVATE);
+        SetTimer(h, 1, 500, NULL);
+        return h;
+    }
     RECT r = windowed_rect(h);
     SetWindowPos(h, NULL, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
     if (!probe && cfg.mode != MODE_WINDOWED) set_mode(h, cfg.mode);

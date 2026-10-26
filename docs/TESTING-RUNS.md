@@ -13,6 +13,7 @@ These switches make a scripted run of the game quicker and less dependent on the
 | `SSBU_SEQ_LOG=<n>` | With `SSBU_SEQ`: logs the draw calls of the last frame shown every n polls, to find the ranges for `@draws`. |
 | `SSBU_SEQ_KEYBOARD=1` | With `SSBU_SEQ`: the keyboard still plays. It is ignored otherwise. |
 | `SSBU_SKIP_MOVIES=<n>` | Every movie's stream ends after n samples (`1` means 12), and the game ends the movie as it ends any movie. |
+| `SSBU_HEADLESS=1` | The window is placed off every screen and never takes the focus, so a test run draws as usual without covering the desktop (Windows). |
 | `SSBU_FIGHT_HASH=<file>` | One line per fighter per fight frame, with a running hash, to `<file>` (`1`: to the standard output). |
 | `SSBU_DETERMINISTIC=1` | Meant to make the same input give the same fight: fixed random generators, no extra logic frames, `SSBU_SEQ` counted in fight frames. `SSBU_DET_OFF=<mask>` turns parts off. |
 | `SSBU_FIXED_SEED=<n>` | The clock reads and random bytes the game seeds its generators from come from n. |
