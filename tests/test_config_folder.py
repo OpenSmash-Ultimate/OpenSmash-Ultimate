@@ -89,17 +89,6 @@ player 3 = none
   B = east
 '''
 
-# the same read on top of this port's default controllers.ini, whose [device ...]
-# sections (a Mayflash adapter and DragonRise-chip clones in PC mode, their C-sticks
-# inverted, flipped back) ride along
-SR_PADS_READ_DEFAULTS = SR_PADS_READ.replace(
-    '[device default] layout=0 style=1 deadzone=15 rumble=50 trigger_threshold=40\n',
-    '[device default] layout=0 style=1 deadzone=15 rumble=50 trigger_threshold=40\n'
-    '[device 03004271790000004418000000016800] layout=-1 style=-1 deadzone=-1 rumble=-1 trigger_threshold=-1\n'
-    '[device Mayflash GameCube Controller] layout=-1 style=-1 deadzone=-1 rumble=-1 trigger_threshold=-1\n'
-    '[device Nintendo GameCube Controller Adapter] layout=-1 style=-1 deadzone=-1 rumble=-1 trigger_threshold=-1\n'
-    '[device 0300f3b1790000004618000010010000] layout=-1 style=-1 deadzone=-1 rumble=-1 trigger_threshold=-1\n')
-
 SR_GRAPHICS = '\r\n'.join([
     '; graphics.ini (made up)',
     'renderer = vulkan',
@@ -270,7 +259,7 @@ class FolderTests(ConfigTestCase):
         self.assertNotIn('config/ssbu-recomp/dlc.txt', after)   # (not a setting: the DLC the installer found)
         self.assertIn(f'ssbu-recomp = build{SEP}config: controllers.ini, graphics.ini', self.version())
         # controllers.ini in this port's terms, read as ssbu-recomp's was
-        self.assertEqual(self.dump(self.top / 'config' / 'controllers.ini'), SR_PADS_READ_DEFAULTS)
+        self.assertEqual(self.dump(self.top / 'config' / 'controllers.ini'), SR_PADS_READ)
         pads = after['config/controllers.ini'].decode()
         self.assertTrue(pads.startswith('; controllers.ini: how pads become players.'), pads[:80])
         for kept in ('outer_zone = 0.95', 'ignore = 0300000000000000aaaa000000000000', 'ignore = 0300000000000000bbbb000000000000',
@@ -307,7 +296,7 @@ class FolderTests(ConfigTestCase):
         self.sr_install('ssbu-recomp/build')
         self.paths()
         self.assertIn(f'ssbu-recomp = ssbu-recomp{SEP}build{SEP}config: controllers.ini, graphics.ini', self.version())
-        self.assertEqual(self.dump(self.top / 'config' / 'controllers.ini'), SR_PADS_READ_DEFAULTS)
+        self.assertEqual(self.dump(self.top / 'config' / 'controllers.ini'), SR_PADS_READ)
 
     def test_both_layouts(self):
         """WindowSmash's files are the base; ssbu-recomp's fill in what it has not."""
@@ -408,7 +397,7 @@ class ControllersTests(ConfigTestCase):
         write(self.top / 'sr.ini', SR_PADS)
         self.run_test('convert', str(self.top / 'sr.ini'), str(self.top / 'c.ini'))
         self.assertFalse((self.top / 'c.ini.new').exists())
-        self.assertEqual(self.dump(self.top / 'c.ini'), SR_PADS_READ_DEFAULTS)
+        self.assertEqual(self.dump(self.top / 'c.ini'), SR_PADS_READ)
         self.assertEqual(self.dump(self.top / 'sr.ini'), SR_PADS_READ)   # (its own file untouched)
         self.assertEqual((self.top / 'sr.ini').read_bytes(), SR_PADS)
         c = str(self.top / 'c.ini')
