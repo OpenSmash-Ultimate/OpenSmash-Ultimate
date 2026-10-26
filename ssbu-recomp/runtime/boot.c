@@ -276,6 +276,7 @@ static DWORD WINAPI guest_main(LPVOID arg) {
     }
 
     { void debug_mode_init(void); debug_mode_init(); }       /* debug_mode.c: test-only fast mode, nothing without SSBU_* variables */
+    { void matchup_hold_init(void); matchup_hold_init(); }   /* matchup_hold.c: nothing unless graphics.ini matchup_screen_min > 0 */
     printf("[phase 3] nnMain\n");
     trace_printf("=== phase 3: nnMain\n");
     call_guest(&c, NN_MAIN);

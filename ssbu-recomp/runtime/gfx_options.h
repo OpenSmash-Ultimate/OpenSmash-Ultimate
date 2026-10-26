@@ -26,6 +26,7 @@ int gfx_menu(void);                       /* menu = off 0 | on 1 (the in-game se
 int gfx_volume(void);                     /* volume = auto -1 | 0..100 (the copies a person plays; nnaudio.c) */
 const char *gfx_language(void);           /* language = auto "" | a language code of the game (nnmisc.c) */
 const char *gfx_monitor(void);            /* monitor = auto "" | a number of the list | a part of the monitor's name (display.c, Linux) */
+int gfx_matchup_screen_min_ms(void);      /* matchup_screen_min = 0 (default: as the game) | seconds, here in ms (matchup_hold.c) */
 void gfx_set_overlay(int on);             /* frame_time_overlay, changed while running */
 int gfx_ini_set(const char *key, const char *value);      /* writes `key = value` into graphics.ini (the line replaced, comments kept; appended when missing); 1 = written */
 #endif

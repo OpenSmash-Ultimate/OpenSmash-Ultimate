@@ -37,6 +37,7 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x2c55e0, 0x2c55e0},       /* nninitStartup */
     {0x2c5620, 0x2c5620},       /* nnMain */
     {0x653240, 0x653240},       /* entry set-up (debug_mode.c) */
+    {0x135dc30, 0x135dc30},     /* transient scene: update (matchup_hold.c), 39 / 39 words */
     {0x147f330, 0x147f330},     /* path formatter (newmodule_host.c) */
     {0x1519430, 0x1519430},     /* hook self-test function (hook_host.c) */
     {0x1780440, 0x17802a0},     /* match controls set-up (debug_mode.c, room rollback: each player's own controls; 63 / 63 words) */

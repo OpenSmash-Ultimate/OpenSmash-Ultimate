@@ -27,6 +27,8 @@ int gfx_volume(void) { gfx_options(); return g_gfx_volume; }
 const char *gfx_language(void) { gfx_options(); return g_gfx_language; }
 static char g_gfx_monitor[96];                       /* monitor = auto ("") | a number of the list | a part of the monitor's name (display.c) */
 const char *gfx_monitor(void) { gfx_options(); return g_gfx_monitor; }
+static int g_gfx_matchup_ms;                         /* matchup_screen_min = 0 (default) | seconds (matchup_hold.c) */
+int gfx_matchup_screen_min_ms(void) { gfx_options(); return g_gfx_matchup_ms; }
 
 static const char *const k_default_ini =
 "; graphics.ini: display and rendering options of the native build (read once at start by gfx_options.c).\r\n"
@@ -156,7 +158,13 @@ static const char *const k_default_ini =
 "\r\n"
 "; language = auto | ja | en-US | en-GB | fr | fr-CA | de | it | es | es-419 | zh-Hans | zh-Hant | ko | nl | ru\r\n"
 ";   auto: the Windows display language. SSBU_LANGUAGE=<code> wins. Read at start.\r\n"
-"language = auto\r\n";
+"language = auto\r\n"
+"\r\n"
+"; matchup_screen_min = 0 | <seconds>\r\n"
+";   The loading screen that names the next fight (\"ROUND 1 / Vs.\" in Classic Mode) stays up at least this long, counted\r\n"
+";   from its start. 0: as the game does it: it goes as soon as the fight is loaded, which here is a fraction of a second.\r\n"
+";   3.5 kept the names up for about 2.3 s (Classic Mode). Never in a Local Wireless room (online). Read at start.\r\n"
+"matchup_screen_min = 0\r\n";
 
 #define GFX_LOW_SCALE 0.5f
 #define GFX_LOW_SCALE_TEXT "0.50"
@@ -234,6 +242,7 @@ static BOOL CALLBACK opt_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
         else if (!_stricmp(key, "volume")) { g_gfx_volume = -1; if (_stricmp(val, "auto")) { int v = atoi(val); g_gfx_volume = v < 0 ? 0 : v > 100 ? 100 : v; } }
         else if (!_stricmp(key, "language")) { g_gfx_language[0] = 0; if (_stricmp(val, "auto")) snprintf(g_gfx_language, sizeof g_gfx_language, "%s", val); }
         else if (!_stricmp(key, "monitor")) { g_gfx_monitor[0] = 0; if (_stricmp(val, "auto")) snprintf(g_gfx_monitor, sizeof g_gfx_monitor, "%s", val); }
+        else if (!_stricmp(key, "matchup_screen_min")) { double v = atof(val); g_gfx_matchup_ms = v > 0 ? (int)(v * 1000.0 + 0.5) : 0; if (g_gfx_matchup_ms > 30000) g_gfx_matchup_ms = 30000; }
         else unknown++;
     }
     if (f) fclose(f);
