@@ -2,13 +2,14 @@
 """WindowSmash on Linux in one go: what install-windowsmash.sh runs (the Linux counterpart of
 Install WindowSmash.bat, tools/install_windowsmash.ps1).
 
-Usage: bash install-windowsmash.sh [--game <dir>] [--keys <dir>] [--firmware <dir>] [--online-name <name>]
+Usage: bash install-windowsmash.sh [--game <dir>] [--keys <dir>] [--firmware <dir> | --no-firmware] [--online-name <name>]
                                    [--jobs N] [--skip-build] [--no-update] [--no-packages] [--yes] [--dry-run]
 
   1. update     the newest WindowSmash from GitHub: a git checkout of main is pulled; a ZIP
                 download gets the files of the newer commit (tools/source_version.txt says which
                 commit it is), then this installer starts again as the new version
-  2. this PC    x86-64 with AVX2, the memory, the free space
+  2. this PC    x86-64 with SSE4.2 (x86-64-v2; with AVX2 the game is built for AVX2, without it for
+                older processors, expected to be slower: tools/isa.py), the memory, the free space
   3. packages   from the distribution, through sudo (apt, dnf, pacman or zypper): clang, lld and
                 llvm, bison and flex, SDL2, libopus and libvpx, Vulkan, zenity, Python's venv; and
                 the headers the build needs, put back where a package is installed without them
@@ -16,7 +17,9 @@ Usage: bash install-windowsmash.sh [--game <dir>] [--keys <dir>] [--firmware <di
   5. parts      DXVK 3.1.1 and its headers, vkd3d 2.1 and SPIRV-Headers, downloaded into
                 deps/linux-toolchain (each checked against its SHA-256)
   6. your files the folders with the game, the keys and the firmware (found in yuzu's, its forks'
-                and Ryujinx's folders, then asked), and the name other players see online
+                and Ryujinx's folders, then asked), and the name other players see online. The
+                firmware is optional, for your console's own fonts: without it the game uses the
+                open fonts of third_party/fonts_open (no Chinese, Japanese or Korean text)
   7. launchers  WindowSmash in the applications menu (play-ssbu.sh)
   8. build      tools/build_game.py with those folders: the game's program, fonts, data, DLC and
                 fighters, then build-linux/ssbu, which compiles the whole game the first time
@@ -44,7 +47,9 @@ import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-REPO_OWNER, REPO_NAME, BRANCH = "OpenSmash-Ultimate", "WindowSmash", "main"
+sys.path.insert(0, os.path.join(ROOT, "tools"))   # (isa.py: what the game is compiled for)
+import isa  # noqa: E402
+REPO_OWNER, REPO_NAME, BRANCH = "OpenSmash-Ultimate", "OpenSmash-Ultimate", "main"
 REPO_API = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}"
 SOURCE_VERSION = os.path.join("tools", "source_version.txt")   # "<commit> <date>": GitHub's ZIP fills it in
 USER_AGENT = "WindowSmash-installer"
@@ -221,16 +226,15 @@ def libstdcxx_package(gcc_versions, has_headers):
 
 
 def cpu_info(text):
-    """(processor name, has AVX2 or None) from /proc/cpuinfo."""
-    name, flags = None, None
-    for line in text.splitlines():
-        key, _, value = line.partition(":")
-        key = key.strip()
-        if key == "model name" and name is None:
-            name = " ".join(value.split())
-        elif key == "flags" and flags is None:
-            flags = value.split()
-    return name or "unknown processor", (None if flags is None else "avx2" in flags)
+    """(processor name, the build it runs: avx2, x86-64-v2, None below that, "" unknown, what it lacks
+    of the next one up) from /proc/cpuinfo (tools/isa.py)."""
+    name = next((" ".join(v.split()) for k, _, v in (l.partition(":") for l in text.splitlines()) if k.strip() == "model name"),
+                None) or "unknown processor"
+    features = isa.cpuinfo_features(text)
+    if features is None:
+        return name, "", []
+    best = isa.best(features)
+    return name, best, [] if best == "avx2" else isa.missing("avx2" if best else "x86-64-v2", features)
 
 
 def mem_total_gb(text):
@@ -319,10 +323,21 @@ def check_keys(folder):
     return True, "prod.keys and title.keys found"
 
 
+def nca_count(folder):
+    try:
+        return sum(1 for f in os.listdir(folder) if f.lower().endswith(".nca"))
+    except OSError:
+        return 0
+
+
 def check_firmware(folder):
-    if not folder or not os.path.isdir(folder):
+    """(ok, what it says) for a firmware folder: optional, so none is fine (the open fonts)."""
+    if not folder:
+        return True, ("optional; without it the game uses the open fonts of third_party/fonts_open: no Chinese, Japanese "
+                      "or Korean text")
+    if not os.path.isdir(folder):
         return False, "choose the folder with your firmware (a few hundred .nca files)"
-    n = sum(1 for f in os.listdir(folder) if f.lower().endswith(".nca"))
+    n = nca_count(folder)
     if not n:
         return False, "there are no .nca files here"
     return True, f"{n} .nca files (the game's fonts are taken out of them)"
@@ -550,6 +565,17 @@ def read_text(path):
         return ""
 
 
+def config_file(name, root=None):
+    """Where the game reads a settings file (runtime/config_folder.h): config/ once the game has made it
+    (config/version.ini), else the folder itself; online_server.txt is config/'s only once there is
+    one there."""
+    root = root or ROOT
+    inside = os.path.join(root, "config", name)
+    if os.path.isfile(os.path.join(root, "config", "version.ini")) and (name != "online_server.txt" or os.path.isfile(inside)):
+        return inside
+    return os.path.join(root, name)
+
+
 def folder_gb(path):
     total = 0
     for root, _dirs, files in os.walk(path):
@@ -570,11 +596,19 @@ def step_check_pc():
     info(f"{fields.get('PRETTY_NAME', 'Linux')}, kernel {platform.release()}, {platform.machine()}")
     if platform.machine() not in ("x86_64", "AMD64"):
         raise Stop(f"WindowSmash needs an x86-64 (64-bit Intel or AMD) PC; this one is {platform.machine()}.")
-    name, avx2 = cpu_info(read_text("/proc/cpuinfo"))
-    if avx2 is False:
-        raise Stop(f"The processor ({name}) has no AVX2, which the game needs: WindowSmash cannot run on it. (In a "
-                   "virtual machine, the host's processor must have it and pass it through.)")
-    info(f"{name} - has AVX2" if avx2 else f"{name} - whether it has AVX2 is unknown; the game only starts if it does")
+    name, best, lacks = cpu_info(read_text("/proc/cpuinfo"))
+    if best is None:
+        raise Stop(f"The processor ({name}) lacks {', '.join(lacks)}, which the game needs at the least (x86-64-v2: Intel "
+                   "processors since 2008, AMD since 2011): WindowSmash cannot run on it. (In a virtual machine, the host's "
+                   "processor must have them and pass them through.)")
+    if best == "avx2":
+        info(f"{name} - has AVX2")
+    elif best:
+        info(f"{name} - lacks {', '.join(lacks)}: the game is built for older processors (x86-64-v2), expected to be slower. "
+             "(In a virtual machine, the host's processor may have AVX2 and not pass it through.)")
+    else:
+        info(f"{name} - its extensions are unknown: the game is built for older processors (x86-64-v2), expected to be "
+             "slower (with AVX2: docs/LINUX.md, SSBU_ISA)")
     ram = mem_total_gb(read_text("/proc/meminfo"))
     if ram is not None and ram < MIN_RAM_GB:
         raise Stop(f"This PC has {ram:.1f} GB of RAM; WindowSmash needs at least 8 GB (16 GB is comfortable).")
@@ -879,7 +913,7 @@ def detected_folders():
                           sorted(glob.glob(os.path.join(home, ".var", "app", "*"))))
     saved = load_saved_folders(os.path.join(ROOT, "dump", "build_folders.txt"))
     keys = saved.get("keys") or next((d for d in c["keys"] if os.path.isfile(os.path.join(d, "prod.keys"))), None)
-    firmware = saved.get("firmware") or next((d for d in c["firmware"] if os.path.isdir(d)), None)
+    firmware = saved.get("firmware") or next((d for d in c["firmware"] if nca_count(d)), None)   # (an emulator's, if it has one)
     game = saved.get("game") or next((d for d in c["game"] if os.path.isdir(d)), None)
     return {"game": game, "keys": keys, "firmware": firmware}
 
@@ -912,14 +946,19 @@ def ask(label, default, interactive):
 
 
 def ask_folder(label, value, check, interactive):
-    """A folder that passes `check` ((ok, text)), asked until it does (or given and checked once)."""
+    """A folder that passes `check` ((ok, text)), asked until it does (or given and checked once).
+    None when there is none and that will do (the firmware: "none" is none too)."""
     while True:
+        if label == "firmware" and (value or "").strip().lower() == "none":
+            value = None
         ok, text = check(value)
         info(f"{label}: {value or '(none)'} - {text}")
         if ok:
-            return os.path.abspath(value)
+            return os.path.abspath(value) if value else None
         if not interactive:
-            raise Stop(f"The {label} folder is not usable ({text}). Name it with --{label} (see bash install-windowsmash.sh --help).")
+            other = " (or --no-firmware: the open fonts)" if label == "firmware" else ""
+            raise Stop(f"The {label} folder is not usable ({text}). Name it with --{label}{other} (see bash install-windowsmash.sh "
+                       "--help).")
         value = ask(f"{label.capitalize()} folder", value, True)
 
 
@@ -936,7 +975,7 @@ def step_files(a):
     if not (a.game or a.keys or a.firmware) and not a.dry_run and os.path.isfile(venv_python()) and files_ready():
         info("already read from your game files (dump/): not asking for them again. To build from other game files, "
              "run: bash install-windowsmash.sh --game <folder>")
-        name_file = os.path.join(ROOT, "online_name.txt")
+        name_file = config_file("online_name.txt")
         name = a.online_name or read_text(name_file).strip()
         if name and name != read_text(name_file).strip():
             with open(name_file, "w", encoding="utf-8", newline="\n") as f:
@@ -948,21 +987,27 @@ def step_files(a):
     for key in ("game", "keys", "firmware"):
         if getattr(a, key):
             found[key] = os.path.abspath(os.path.expanduser(getattr(a, key)))
+    if a.firmware == "":   # (--no-firmware)
+        found["firmware"] = None
     interactive = sys.stdin.isatty() and not a.yes
     if interactive:
         info("Press Enter to keep the folder in [brackets], or type another.")
-    name_file = os.path.join(ROOT, "online_name.txt")
+    name_file = config_file("online_name.txt")
     default_name = a.online_name or read_text(name_file).strip() or f"Player{int.from_bytes(os.urandom(2), 'big') % 9000 + 1000}"
     if a.dry_run:
         for key in ("game", "keys", "firmware"):
-            info(f"{key}: {found[key] or 'not found on this PC (to be asked)'}")
+            none = "none (optional: the open fonts without it)" if key == "firmware" else "not found on this PC (to be asked)"
+            info(f"{key}: {found[key] or none}")
         would(f"ask for these folders and the online name ('{default_name}'), then build with the answers")
         return {**found, "name": default_name}
     if interactive and not a.keys:
         found["keys"] = ask("Keys folder (with prod.keys)", found["keys"], True)
     keys = ask_folder("keys", found["keys"], check_keys, interactive)
-    if interactive and not a.firmware:
-        found["firmware"] = ask("Firmware folder (.nca files)", found["firmware"], True)
+    if interactive and a.firmware is None:
+        info("The firmware is optional: the game takes your console's own fonts from it, with Chinese, Japanese and Korean "
+             "text. Without it the game uses the open fonts of third_party/fonts_open: Latin text in Open Sans, the button "
+             "icons from yuzu's icon font, no Chinese, Japanese or Korean text; fights are the same. Type none for none.")
+        found["firmware"] = ask("Firmware folder (.nca files; optional)", found["firmware"], True)
     firmware = ask_folder("firmware", found["firmware"], check_firmware, interactive)
     if interactive and not a.game:
         found["game"] = ask("Game folder (the game's .nca, .nsp or .xci files, with its 13.0.5 update)", found["game"], True)
@@ -1014,6 +1059,8 @@ def step_build(a, files):
     for key in ("game", "keys", "firmware"):
         if files.get(key):   # (none when the game files were read already: files_ready)
             cmd += [f"--{key}", files[key]]
+    if files.get("game") and not files.get("firmware"):   # (asked for, and none: the open fonts, and not asked again)
+        cmd.append("--no-firmware")
     if a.jobs:
         cmd += ["--jobs", str(a.jobs)]
     if a.skip_build:
@@ -1034,7 +1081,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="install-windowsmash.sh", description="Set up WindowSmash on Linux in one go.")
     ap.add_argument("--game", help="the folder with the game's files (found or asked)")
     ap.add_argument("--keys", help="the folder with prod.keys and title.keys (found or asked)")
-    ap.add_argument("--firmware", help="the folder with the firmware's .nca files (found or asked)")
+    ap.add_argument("--firmware", help="the folder with the firmware's .nca files, for your console's own fonts (optional: "
+                                       "found or asked)")
+    ap.add_argument("--no-firmware", dest="firmware", action="store_const", const="",
+                    help="no firmware: the game uses the open fonts of third_party/fonts_open (no Chinese, Japanese or Korean text)")
     ap.add_argument("--online-name", help="the name other players see online (asked; kept in online_name.txt)")
     ap.add_argument("--jobs", type=int, help="how many files to compile at a time (default: by the RAM)")
     ap.add_argument("--skip-build", action="store_true", help="everything but compiling the game")

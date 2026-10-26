@@ -3,24 +3,35 @@
 Used by census.py (facts table) and acmd_decomp.py (ACMD decompiler). Only the game's own files are read.
 """
 import bisect
-import json
 import os
 import struct
 
-import capstone
-from capstone import arm64_const as A
+import sdk_paths
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-STUDY = os.path.normpath(os.path.join(HERE, '..', '..'))
-NRO_DIR = os.path.join(STUDY, 'ro_study', 'nro')
+HERE = sdk_paths.HERE
+STUDY = sdk_paths.WORK
+_md = None
 
-_md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
-_md.detail = True
+
+def disassembler():
+    """capstone's arm64 disassembler (imported when first needed: the rest reads the file without it)."""
+    global _md
+    if _md is None:
+        import capstone
+        _md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+        _md.detail = True
+    return _md
+
+
+_map = None
 
 
 def nro_map():
-    with open(os.path.join(STUDY, 'ro_study', 'nro_map.json')) as f:
-        return json.load(f)
+    """The game's script modules: sdk_paths.nro_modules() (where they are looked for)."""
+    global _map
+    if _map is None:
+        _map = sdk_paths.nro_modules()
+    return _map
 
 
 class Nro:
@@ -29,9 +40,13 @@ class Nro:
             name = 'lua2cpp_' + name
         self.name = name
         self.short = name[len('lua2cpp_'):]
-        entry = next(e for e in nro_map() if e['name'] == name)
+        entry = next((e for e in nro_map() if e['name'] == name), None)
+        if entry is None:
+            raise sdk_paths.Missing('%s is not among the game\'s script modules (%d found: %s)'
+                                    % (name, len(nro_map()), os.path.dirname(nro_map()[0]['file']) if nro_map() else 'none'))
         self.base = int(entry['base'], 16)
-        d = self.d = open(os.path.join(NRO_DIR, entry['file']), 'rb').read()
+        with open(entry['file'], 'rb') as f:
+            d = self.d = f.read()
         (self.text_off, self.text_size, self.ro_off, self.ro_size, self.data_off, self.data_size,
          self.bss_size) = struct.unpack_from('<7I', d, 0x20)
         m = struct.unpack_from('<I', d, 4)[0]
@@ -142,7 +157,7 @@ class Nro:
         return None
 
     def disasm(self, off, size):
-        return list(_md.disasm(self.d[off:off + size], off))
+        return list(disassembler().disasm(self.d[off:off + size], off))
 
 
 def demangle_simple(n):

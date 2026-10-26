@@ -8,6 +8,9 @@ has put in one match talk to each other.
 
     python3 ssbu_online_lobby.py [the lobby's options] [--state DIR] [--nex-log 0|1|2]
 
+ssbu-recomp's games are served only with --su-port (none by default: ssbu_relay.py's lobby on the
+same machine has SU's usual port), and without the game server: it is WindowSmash's games' only.
+
 Python 3.8+, standard library only."""
 import argparse
 import asyncio
@@ -99,13 +102,16 @@ class OnlineLobby(relay.Lobby):
         c = self.by_ip.get(ip_int(ip))
         if c is not None:
             src = ip_int(src_ip) if src_ip else GATEWAY
-            self.send(relay.header(relay.DATA) + struct.pack(">IIHH", src, c.ip, sport, port) + data, c.at)
+            self.to(c, self.data_header(c) + struct.pack(">IIHH", src, c.ip, sport, port) + data)   # (in its version)
 
     def new_ip(self):
         ip = super().new_ip()
         return super().new_ip() if ip == NAT_CHECK_SECOND else ip   # (nncs2's address is the server's)
 
     def on_game(self, c, p, dst):
+        if c.wire is self.su:   # (the game server is WindowSmash's games' only)
+            super().on_game(c, p, dst)
+            return
         if dst in (GATEWAY, NAT_CHECK_SECOND):
             _src, _dst, sport, dport = struct.unpack_from(">IIHH", p, 4)
             self.nex.datagram((relay.ip_text(c.ip), sport), dport, p[16:], time.monotonic(),
@@ -113,8 +119,8 @@ class OnlineLobby(relay.Lobby):
             return
         if dst not in relay.BROADCASTS:
             m = self.by_ip.get(dst)
-            if m is not None and m is not c and self.nex.may_talk(relay.ip_text(c.ip), relay.ip_text(dst)):
-                self.send(p, m.at)
+            if m is not None and m is not c and m.wire is not self.su and self.nex.may_talk(relay.ip_text(c.ip), relay.ip_text(dst)):
+                self.to(m, p)
                 return
         super().on_game(c, p, dst)
 
@@ -170,7 +176,7 @@ class OnlineLobby(relay.Lobby):
                 return
             vip, vport, port = struct.unpack(">IHH", head[8:])
             c = self.by_ip.get(vip)
-            if c is None or not c.verified or c.at[0] != peer[0]:
+            if c is None or not c.verified or c.at[0] != peer[0] or c.wire is self.su:
                 self.say(f"NEX stream from {peer[0]} for {relay.ip_text(vip)}: not that player's")
                 return
             mine = self.streams.setdefault(vip, set())
@@ -262,11 +268,12 @@ class OnlineLobby(relay.Lobby):
 
 async def main(o):
     loop = asyncio.get_running_loop()
-    transport, lobby = await loop.create_datagram_endpoint(lambda: OnlineLobby(o), local_addr=(o.bind, o.port))
+    transport, lobby = await relay.serve(o, OnlineLobby)
     port = transport.get_extra_info('sockname')[1]
     streams = await asyncio.start_server(lobby.stream, o.bind, port)   # NEX's TCP, on the same port number
     relay.Lobby.say(f"SSBU netplay lobby with Online on UDP and TCP {o.bind}:{port} "
                     f"(protocol {relay.PROTOCOL}; NEX at 10.13.0.1)")
+    relay.say_more(o, lobby)
     task = asyncio.ensure_future(lobby.run())
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -280,7 +287,7 @@ async def main(o):
     finally:
         lobby.nex.flush(time.monotonic(), force=True)   # (accounts and ratings not written yet)
         streams.close()
-        transport.close()
+        lobby.close_ports()
         relay.Lobby.say("stopped")
 
 

@@ -92,6 +92,11 @@ void display_fit(unsigned w, unsigned h, unsigned *x, unsigned *y, unsigned *fw,
     *y = (h - *fh) / 2;
 }
 int display_latency(void) { return 2; }
+int kernel_watch_shared;   /* (kernel.c's: the write watch the system's own, as without SSBU_ROLLBACK_RING) */
+UINT kernel_watch_query(int who, DWORD flags, PVOID base, SIZE_T size, PVOID *addresses, ULONG_PTR *count, ULONG *granularity) {
+    (void)who;
+    return GetWriteWatch(flags, base, size, addresses, count, granularity);
+}
 float display_render_scale(void) { return 1.0f; }   /* (test_scale changes the renderer's: gfx_metal_set_render_scale) */
 int display_window_mode(void) { return DISPLAY_WINDOWED; }
 void display_set_tearing(int supported) { (void)supported; }

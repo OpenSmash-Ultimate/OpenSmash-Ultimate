@@ -26,7 +26,7 @@ static HICON g_icon_small, g_icon_big;                /* the title bar's small i
 static volatile LONG g_ready;
 static volatile LONG64 g_frames;
 volatile LONG64 g_prof15_frame;                       /* presented frames, read by prof15.c (SSBU_PROF15, test only; included by boot.c) */
-void nvn_gl_start(void *hwnd);                        /* nvn_gl.c */
+void nvn_gl_start(void *hwnd);                        /* nvn_front.c */
 void nvn_gl_report(FILE *out);
 static uint64_t g_vsync_event;
 static LARGE_INTEGER g_freq;
@@ -88,7 +88,7 @@ static volatile LONG g_lock_k;                         /* display lock: refreshe
 static double g_lock_phase = 0.5;                      /* the tick's place between two vblanks */
 static volatile LONG64 g_hold_target;                  /* tick the planned present waits for, 0 = present at once */
 static volatile LONG64 g_defer_target;                 /* a finished frame is kept on the render thread for this tick (display_present_defer) */
-void nvn_front_post_present_flush(void);               /* nvn_gl.c: the kept present, as a job of the render thread */
+void nvn_front_post_present_flush(void);               /* nvn_front.c: the kept present, as a job of the render thread */
 static volatile LONG g_planned;
 volatile LONG g_display_close;                         /* the window was closed (WM_CLOSE): nvn_vk_m4.c ends its first-run hold */
 volatile LONG g_display_holding;                      /* hitch.c: the render thread is holding a finished frame for its tick = pacing */
@@ -659,11 +659,11 @@ void display_init(void) {
 /* Called after every presented frame (nvn_gl.c has already put it in the window): holds the caller to 60 Hz. */
 static volatile LONG g_interval = 1;         /* nvnWindowSetPresentInterval: display refreshes per presented frame (0 = do not wait) */
 void display_set_interval(int n) { InterlockedExchange(&g_interval, n < 0 ? 0 : n > 5 ? 5 : n); }
-void nvn_pf_pace(LONG64 ticks);            /* nvn_gl.c: timing scopes */
+void nvn_pf_pace(LONG64 ticks);            /* nvn_front.c: timing scopes */
 /* SSBU_CLOCKSTAT=1: per 600 presented frames, the real time, the vsync signals sent, the refreshes the game counted
  * (its frame counter at 0x710593a440: 600 = one step per presented frame) and the refreshes this thread slept through. */
 static LONG64 g_cs_steps, g_cs_hist[4];      /* game steps (1 + refreshes skipped) and the histogram of "refreshes counted since the last present" 0, 1, 2, 3+ */
-/* nvn_gl.c, at nvnWindowAcquireTexture: the game's window object is the index pointer - 0x30; + 0x138 = refreshes its
+/* nvn_front.c, at nvnWindowAcquireTexture: the game's window object is the index pointer - 0x30; + 0x138 = refreshes its
  * VSync Count Thread has counted, + 0x140 = the count at its previous present. Right after this call the game computes
  * steps = max(count - last, 1) (0x710386fc30) and then stores last = count. */
 uint64_t display_wnd_count_addr(void) { return g_wnd_count_addr; }      /* track R1 round 5 (r1_state.c run-ahead): the refresh count is wall time, not rolled back */
@@ -805,7 +805,7 @@ void display_l1_poll(uint64_t buttons, long long fight_ticks, long long poll) {
     }
     prev = buttons;
 }
-/* L1 early present (nvn_gl.c l1_early_present): called at the start of the game's wait for the window texture. Also counts
+/* L1 early present (nvn_front.c l1_early_present): called at the start of the game's wait for the window texture. Also counts
  * the game's submissions between that wait and its present (must be 0 for the early present to show the whole picture). */
 static volatile LONG g_l1_waited, g_l1_subs_now;
 static LONG64 g_l1_chk_frames, g_l1_chk_bad, g_l1_chk_subs, g_l1_early_skips;
@@ -943,7 +943,7 @@ void display_present_plan(int vulkan) {
  * against 1.8 %, CPU time of every game thread up by 40 %): the game was held where it does not expect to wait.
  * Now the game's thread returns from its present at once and waits where it always did (the window texture's sync). */
 static volatile LONG64 g_defer_target;                 /* a finished frame is kept on the render thread for this tick */
-void nvn_front_post_present_flush(void);               /* nvn_gl.c: the kept present, as a job of the render thread */
+void nvn_front_post_present_flush(void);               /* nvn_front.c: the kept present, as a job of the render thread */
 int display_present_defer(void) {
     { static DWORD tid; if (tid != GetCurrentThreadId()) { tid = GetCurrentThreadId(); display_perf_thread(); } }      /* the render thread: performance cores */
     LONG64 tgt = InterlockedExchange64(&g_hold_target, 0);

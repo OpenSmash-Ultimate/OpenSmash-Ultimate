@@ -60,6 +60,25 @@ def file_cost(insns, biggest):
     return PER_INSN * insns + PER_BIGGEST_SQUARED * biggest * biggest
 
 
+def level_cost(insns, biggest, level, cxx=False):
+    """file_cost at a level (tools/ladder.py's): /Od, whose time does not grow with the square, as -O0's
+    below; a biggest function left optimised when the longer ones are not."""
+    return PER_INSN * insns if level == "/Od" else file_cost(insns, biggest)
+
+
+# The same with clang for Linux (tools/linux/build_linux.py; the macOS build's ladder goes by it too),
+# measured on 13.0.5's main and lua2cpp_master compiled for Linux: the square counts half as much as
+# with clang-cl, a file compiled as C++ takes a third longer, and -O0 (giant functions full of landing
+# sites) has no square at all.
+CLANG_PER_INSN, CLANG_PER_BIGGEST_SQUARED, CLANG_CXX, CLANG_PER_INSN_O0 = 1.05e-4, 6e-9, 1.35, 9e-5
+
+
+def clang_cost(insns, biggest, level, cxx=False):
+    if level == "-O0":
+        return CLANG_PER_INSN_O0 * insns
+    return (CLANG_PER_INSN * insns + CLANG_PER_BIGGEST_SQUARED * biggest * biggest) * (CLANG_CXX if cxx else 1.0)
+
+
 def makespan(costs, loads):
     """When `costs`, handed out in order to whichever worker is free first, are all done; the
     workers (one entry each) are busy for `loads` first."""
@@ -99,6 +118,7 @@ class Build:
         self.running = {}          # (compile) source -> (estimate, started at)
         self.compiled = 0          # (compile) files finished
         self.samples = []          # (when, seconds, estimate) of every file compiled
+        self.unpaced = set()       # (compile) files the ladder compiles again another way: no sample of the pace
         self.gen_samples = []      # the same of every module whose C was written
         self.shown = 0.0
         self.label = ""
@@ -131,7 +151,7 @@ class Build:
                 self._set_files(name, files)
             self.step, self.since = (kind, name), self.clock()
             if kind == "compile":
-                self.queue, self.running, self.compiled = dict(self.files[name]), {}, 0
+                self.queue, self.running, self.compiled, self.unpaced = dict(self.files[name]), {}, 0, set()
             self.label = self._label()
 
     def started(self, job):
@@ -142,8 +162,27 @@ class Build:
         with self.lock:
             cost, _t = self.running.pop(job[0], (0.0, 0.0))
             self.compiled += 1
-            self.samples.append((self.clock(), seconds, cost))
+            if job[0] in self.unpaced:
+                self.unpaced.discard(job[0])
+            else:
+                self.samples.append((self.clock(), seconds, cost))
             self.label = self._label()
+
+    def stepped(self, job, estimate):
+        """The ladder stopped a file over its time limit and compiles it again another way (tools/ladder.py):
+        what is left of it is that try's estimate, from now. Its time says nothing of this PC's pace (its
+        estimate was not what it took), so it is not a sample of it."""
+        with self.lock:
+            if job[0] in self.running:
+                self.running[job[0]] = (estimate, self.clock())
+            self.unpaced.add(job[0])
+
+    def requeued(self, job, estimate):
+        """The compiler crashed on a file: compiled again once the others are done (started again then)."""
+        with self.lock:
+            self.running.pop(job[0], None)
+            self.queue[job[0]] = estimate
+            self.unpaced.add(job[0])
 
     def end(self, kind, name=None):
         with self.lock:

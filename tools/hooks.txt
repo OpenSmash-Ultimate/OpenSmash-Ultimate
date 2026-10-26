@@ -1,0 +1,56 @@
+# Guest functions where a hook needs the whole register state of the code that calls them, and
+# the ones a hook can take over at run time through a slot (tools/recomp.py hook_list, read at
+# every build; a change generates the C again).
+#
+# The register cache (tools/regcache.py) keeps guest registers in C locals and brings the Cpu
+# context up to date only with what the ABI lets the other side read: before a call x0-x18,
+# x29, x30 and SP; after it, x0-x18 and x30 are read back. So a hook that reads a caller's
+# x19-x28 finds stale values there, and what it writes to x19-x28, x29 or SP is lost. An entry
+# here changes that:
+#
+#   exact-callee <address> [<signature>] <name>
+#       every direct call (bl) to the function stores every register the caller has changed
+#       before the call and reads back every register the caller uses after it
+#   exact-caller <address> [<signature>] <name>
+#       every call the function makes (direct, indirect, svc) does the same
+#   hookable <address> [<signature>] <name>
+#       the function gets a hook slot (runtime/hookable.h): every direct call, tail call,
+#       indirect call and import stub reaches it through a pointer a hook can swap at run time,
+#       and its own code is never inlined or folded into another function. It is an
+#       exact-callee too (list it once, as hookable), with the same limit: a hook sees and
+#       changes x19-x28 of a caller through a pointer (blr) only if that caller is listed as
+#       an exact-caller; x0-x18 always. A function whose calls become the host's setjmp cannot
+#       be hookable.
+#
+# A hook's caller is the code it returns to (where its LR points), so an exact-callee also
+# makes exact, in every module:
+#   - the calls to a function that reaches it without a call of its own (by b, b.cond, cbz or
+#     tbz, or by running on into it), directly or through others that do
+#   - the calls through an import stub bound to its exported name, or to the exported name of
+#     a function that reaches it as above (a wrapper ending in `b impl`): calls from another
+#     module go through these. The names are those main, subsdk0 and sdk export, bound as the
+#     loader binds them; what a fighter module exports is followed only inside that module.
+# A call through a pointer (blr), or a jump through a register (br), cannot be known to reach
+# it: list the function such a call returns to as an exact-caller. (For the same reason, what
+# an exact-caller jumps to without a call sees registers only as exact as the call that reached
+# the exact-caller.) A register the caller never writes holds what the context held when the
+# caller was entered, which is exact only if that call was too. docs/TECHNICAL.md has the rest.
+#
+# <address>  where the function starts in game version 13.0.5, in main, subsdk0 or sdk (a
+#            fighter module's address is each install's own)
+# <signature>  optional: `<n> words, sha256 <16 hex digits>`, as `tools/recomp.py wrap-sig
+#            <module> <address>` prints it for an HLE_WRAP; the build stops if the function
+#            there does not begin that way
+# <name>     what the function is, for people
+#
+# Addresses and names only: never instruction words (CONTRIBUTING.md, rule 1). The build stops
+# at a line it cannot read, or at anything that could be a word, comments included: a run of 8
+# or more hex digits other than an address or a signature's hash (after `sha256 `), hex digits
+# masked with a run of dots as old signatures spelled them, or a row of 4 or more bytes.
+#
+# Empty for now. The hooks that need it (ssbu-recomp's loose files and new-fighter registry)
+# add their entries when they are ported. Examples, with made-up addresses:
+#
+# exact-callee 7100001000 16 words, sha256 0123456789abcdef example_hooked_function
+# exact-caller 7100002000 example_caller
+# hookable 7100003000 example_hookable_function

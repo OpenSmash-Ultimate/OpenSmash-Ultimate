@@ -1,11 +1,14 @@
-"""Build one fighter's C++ source into fighters_bin\\<name>.dll.
+"""Build one fighter's C++ source into fighters_bin\\<name>.dll (<name>.so on Linux, <name>.dylib on macOS).
 
     python fighter_sdk/tools/build_fighter.py mario
 
-Compiles fighters/<name>/**/*.cpp and fighter_sdk/src/fighter_rt.cpp (only what changed), links the DLL.
-Neither the game code nor the exe is rebuilt. The game loads the DLL when it loads the fighter's script module.
+Compiles fighters/<name>/**/*.cpp and fighter_sdk/src/fighter_rt.cpp (only what changed), links the library.
+Neither the game code nor the exe is rebuilt. The game loads the library when it loads the fighter's script module.
+The compiler and its flags are the game's own (fighter_cc.py); a change of them compiles every object again.
+fighters/ is under the work folder (sdk_paths.py: SSBU_FIGHTER_WORK, else the folder fighter_sdk is in).
 """
 import concurrent.futures
+import json
 import os
 import re
 import subprocess
@@ -13,22 +16,45 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-STUDY = os.path.normpath(os.path.join(HERE, '..', '..'))
-CLANG = r'C:\llvm-8.0.0\bin\clang.exe'
+sys.path.insert(0, HERE)
+import fighter_cc  # noqa: E402
+import sdk_paths   # noqa: E402
+
+STUDY = sdk_paths.WORK
+GENERATED = ('lua_bind.h', 'lua_const.h', 'fs_syms.inc')       # gen_sdk.py's, in fighters/<SSBU_FIGHTER_SDK>
 
 
 def newest(paths):
     return max(os.path.getmtime(p) for p in paths)
 
 
+def rel(path, start):
+    try:
+        return os.path.relpath(path, start)
+    except ValueError:              # (another drive)
+        return path
+
+
+def object_name(src):
+    """fighters_<name>_acmd_game, fighter_sdk_src_fighter_rt: the source's path in its tree, as before."""
+    base = sdk_paths.TREE if os.path.abspath(src).startswith(sdk_paths.SDK + os.sep) else STUDY
+    return rel(src, base).replace(os.sep, '_').replace('/', '_')[:-4]
+
+
 def main():
+    if len(sys.argv) != 2 or sys.argv[1].startswith('-'):
+        print(__doc__)
+        return 2
     name = sys.argv[1]
     t0 = time.time()
     # S10: SSBU_FIGHTERS_ROOT=<folder under fighters\>: the sources of a work run (status_decomp.py); own object folder
     froot = os.environ.get('SSBU_FIGHTERS_ROOT') or ''
     fdir = os.path.join(STUDY, 'fighters', froot, name)
-    inc =os.path.join(STUDY, 'fighter_sdk', 'include')
-    src_rt = os.path.join(STUDY, 'fighter_sdk', 'src')
+    inc = sdk_paths.INCLUDE
+    src_rt = sdk_paths.SRC
+    if not os.path.isdir(fdir):
+        raise sdk_paths.missing('The sources of fighter %s' % name, [fdir],
+                                'batch.py decompiles them from the game\'s script modules, new_fighter.py copies a donor\'s.')
     objdir = os.path.join(STUDY, 'obj_fighters', name)
     bindir = os.path.join(STUDY, os.environ.get('SSBU_FIGHTER_BIN') or 'fighters_bin')     # S3: work in progress goes to its own folder
     os.makedirs(objdir, exist_ok=True)
@@ -53,6 +79,8 @@ def main():
             continue
         sources += [os.path.join(root, f) for f in sorted(files) if f.endswith('.cpp')]
     gen = os.path.join(STUDY, 'fighters', sdk)                  # lua_bind.h, lua_const.h, fs_syms.inc: made by gen_sdk.py from the game
+    for f in GENERATED:
+        sdk_paths.first('The generated SDK header %s' % f, [os.path.join(gen, f)], 'gen_sdk.py makes them from the game\'s script modules.')
     bind_src = os.path.join(fdir, 'generated', 'bindings.inc')
     status_binds = os.path.join(fdir, 'generated', 'status_bindings.inc')
     merged_dir = None
@@ -68,7 +96,7 @@ def main():
     # NEW: it gets a synthetic place in the module (an odd offset: never a function entry; nnro.c hands a call of
     # such an address to the fighter host) and the constant FS_OFF_<name>, so status_function(name), the install
     # tables and the script registration take it like any other. Build products only; no generated file is edited.
-    new_flags = []
+    force = []                  # included before every source
     bound = set(re.findall(r'_BIND\(\s*\w+\s*,\s*(\w+)\s*,', open(bind_src).read())) if os.path.exists(bind_src) else set()
     new = []
     for s in sources[1:]:
@@ -88,7 +116,7 @@ def main():
                 with open(path, 'w', newline='\n') as f:
                     f.write(body)
         bind_src = os.path.join(merged_dir, 'bindings.inc')
-        new_flags = ['-include', os.path.join(merged_dir, 'fs_new_functions.h')]
+        force = [os.path.join(merged_dir, 'fs_new_functions.h')]
         print('%s: %d functions exist only in the source: %s' % (name, len(new), ' '.join(n for k, n in new)[:400]))
     # S11 (part 4): registry of NEW work variables. `FS_NEW_WORK_VAR(INSTANCE|STATUS, INT|FLOAT|FLAG, NAME);` in a source
     # or header of the fighter declares a variable the game does not have; it gets the first free index of that kind
@@ -144,21 +172,24 @@ def main():
         if not os.path.exists(path) or open(path).read() != text:
             with open(path, 'w', newline='\n') as f:
                 f.write(text)
-        new_flags += ['-include', path]
+        force.append(path)
         print('%s: %d new work variables: %s' % (name, len(work_new), ' '.join('%s=%s' % (c, re.search(r'%s = (0x[0-9A-F]+)' % c, text).group(1)) for a, b, c in work_new)))
+    if not os.path.exists(bind_src):
+        raise sdk_paths.missing('The bindings of fighter %s' % name, [bind_src], 'The decompilers write them with the sources (batch.py).')
     headers = [os.path.join(inc, f) for f in os.listdir(inc)] + [os.path.join(gen, f) for f in os.listdir(gen)] + [bind_src]
     if with_status and os.path.exists(os.path.join(fdir, 'generated', 'status_local.h')):
         headers.append(os.path.join(fdir, 'generated', 'status_local.h'))
     dep = newest(headers)
-    flags = ['-x', 'c++', '-std=c++14', '-O1', '-c', '-fno-exceptions', '-fno-rtti', '-Wall', '-Wno-unused-parameter', '-Wno-unused-variable',
-             '-Wno-unused-const-variable', '-Wno-unused-function', '-I', inc, '-I', gen, '-I', src_rt, '-I', os.path.join(fdir, 'generated')] + new_flags
+    tc = fighter_cc.toolchain()
+    includes = [inc, gen, src_rt, os.path.join(fdir, 'generated')]
+    defines = []
     # S6: SSBU_FIGHTER_SCRIBBLE=1: a TEST build (own object folder; put it in its own SSBU_FIGHTER_BIN) in which the dead
     # stack is overwritten before every game call (fighter_sdk.h FS_SCRIBBLE); =byvalue also puts the S4 bug back, to
     # show that the offline test then reports it. Never install such a DLL.
     scribble = os.environ.get('SSBU_FIGHTER_SCRIBBLE')
     if scribble:
         # =byvalue_quiet: the bug without the scribble (the control: the offline test of S4, which did not see it)
-        flags += ([] if scribble == 'byvalue_quiet' else ['-DFS_SCRIBBLE']) + (['-DFS_TEST_BYVALUE'] if scribble.startswith('byvalue') else [])
+        defines += ([] if scribble == 'byvalue_quiet' else ['FS_SCRIBBLE']) + (['FS_TEST_BYVALUE'] if scribble.startswith('byvalue') else [])
         objdir = objdir + '_scribble_' + scribble         # S8: next to the object folder in use (the default one: obj_fighters\<name>_scribble_<x>, as before)
         os.makedirs(objdir, exist_ok=True)
     jobs = []
@@ -184,46 +215,57 @@ def main():
                     kept += 1
                 g.write(line)
         print('%s: SSBU_FIGHTER_ONLY: %d bindings kept for %d lines of the list' % (name, kept, len(keep)))
+    # the objects are as current as their sources only if they were compiled with today's command (another
+    # compiler, instruction set or flag compiles them all again)
+    stamp_path = os.path.join(objdir, 'compile.json')
+    stamp = json.dumps(tc.compile_command('<source>', '<object>', includes, force, defines))
+    try:
+        with open(stamp_path) as f:
+            same_command = f.read() == stamp
+    except OSError:
+        same_command = False
+    only_obj = '.only' + tc.obj
     for s in sources:
-        o = os.path.join(objdir, os.path.relpath(s, STUDY).replace(os.sep, '_')[:-4] + '.obj')
+        o = os.path.join(objdir, object_name(s) + tc.obj)
         rt_only = only and os.path.basename(s) == 'fighter_rt.cpp'
         if rt_only:
-            o = o[:-4] + '.only.obj'
+            o = o[:-len(tc.obj)] + only_obj
         objs.append(o)
-        if rt_only or not os.path.exists(o) or os.path.getmtime(o) < max(os.path.getmtime(s), dep):
+        if rt_only or not same_command or not os.path.exists(o) or os.path.getmtime(o) < max(os.path.getmtime(s), dep):
             jobs.append((s, o))
+    if jobs and not same_command:
+        print('%s: compiler %s' % (name, tc.about))
 
     def compile_one(job):
-        extra = ['-I', only_dir] if job[1].endswith('.only.obj') else []
+        extra = [only_dir] if job[1].endswith(only_obj) else []
         if merged_dir and os.path.basename(job[0]) == 'fighter_rt.cpp':
-            extra += ['-I', merged_dir]                  # S8: found before generated\bindings.inc (the -I of flags comes later)
-        r = subprocess.run([CLANG] + extra + flags + [job[0], '-o', job[1]], capture_output=True, text=True)
+            extra.append(merged_dir)                    # S8: found before generated\bindings.inc (the folders of `includes` come later)
+        r = subprocess.run(tc.compile_command(job[0], job[1], extra + includes, force, defines), capture_output=True, text=True)
         return job[0], r.returncode, (r.stdout + r.stderr)[-6000:]
 
     failed = 0
     with concurrent.futures.ThreadPoolExecutor(int(os.environ.get('SSBU_BUILD_JOBS') or 8)) as pool:      # S18: SSBU_BUILD_JOBS=<n> compiles of one fighter at a time (default 8, as before)
         for s, code, err in pool.map(compile_one, jobs):
             if code or err.strip():
-                print('%s %s\n%s' % ('FAILED' if code else 'warnings in', os.path.relpath(s, STUDY), err))
+                print('%s %s\n%s' % ('FAILED' if code else 'warnings in', rel(s, STUDY), err))
             failed += 1 if code else 0
     if failed:
         return 1
-    dll = os.path.join(bindir, name + '.dll')
-    link = [CLANG, '-shared'] + objs + ['-o', dll]
+    with open(stamp_path, 'w') as f:
+        f.write(stamp)
+    dll = os.path.join(bindir, tc.library(name))
+    link = tc.link_command(objs, dll)
     if sum(len(a) + 3 for a in link) > 30000:             # S8: a fighter with hundreds of status files (kirby): Windows' command-line limit
-        rsp = os.path.join(objdir, 'link.rsp')
-        with open(rsp, 'w') as f:
-            f.write('\n'.join('"%s"' % o.replace('\\', '/') for o in objs))
-        link = [CLANG, '-shared', '@' + rsp, '-o', dll]
+        link = tc.link_command(objs, dll, tc.response_file(objs, os.path.join(objdir, 'link.rsp')))
     r = subprocess.run(link, capture_output=True, text=True)
     if r.returncode:
         print((r.stdout + r.stderr)[-4000:])
         return 1
-    for ext in ('.lib', '.exp'):
-        p = dll[:-4] + ext
+    for ext in ('.lib', '.exp'):                           # (the linker's import library, on Windows)
+        p = os.path.splitext(dll)[0] + ext
         if os.path.exists(p):
             os.remove(p)
-    print('%s: %d source files, %d compiled, %s %.0f KB, %.1f s' % (name, len(sources), len(jobs), os.path.relpath(dll, STUDY), os.path.getsize(dll) / 1024.0, time.time() - t0))
+    print('%s: %d source files, %d compiled, %s %.0f KB, %.1f s' % (name, len(sources), len(jobs), rel(dll, STUDY), os.path.getsize(dll) / 1024.0, time.time() - t0))
     return 0
 
 

@@ -524,6 +524,8 @@ class Logs(Case):
             self.refused(call(c, 10, 2, login_param()), rmc.CORE_NOT_IMPLEMENTED)   # (to the secure server)
             self.refused(call(c, 110, 99, struct.pack("<Q", NSA) + str(NSA).encode()), rmc.CORE_NOT_IMPLEMENTED)
             self.refused(call(c, 110, 98, b"harmless"), rmc.CORE_NOT_IMPLEMENTED)
+            # (an application buffer can hold account data too: it must not reach the log either)
+            selftest.auto_matchmake(c, app_buffer=b"rules" + struct.pack("<Q", NSA))
         return "\n".join(self.net.log) + "\n" + out.getvalue()
 
     def test_logs_hold_no_nsa_id_or_token_at_any_level(self):
@@ -540,6 +542,8 @@ class Logs(Case):
                     self.assertIn("undecodable RMC message", log)
                     self.assertIn("they hold the account's NSA id", log)
                     self.assertIn(b"harmless".hex(" "), log)   # (other calls' parameters are still shown)
+                    self.assertIn("AutoMatchmake from", log)
+                    self.assertIn("B (not shown)", log)
                 requests = os.path.join(tmp, "requests")
                 saved = os.listdir(requests) if os.path.isdir(requests) else []
                 self.assertEqual([f for f in saved if f.startswith("10-")], [])   # (nor are logins kept)

@@ -24,6 +24,7 @@
  * thread that calls (but the command stream's pending writes, below: kept_flush). */
 #define _CRT_SECURE_NO_WARNINGS
 #include "gpu_metal.h"
+#include "kernel_watch.h"   /* (kernel_write_watch) */
 #include <dirent.h>
 #include <math.h>
 #include <mach/mach.h>
@@ -1734,7 +1735,9 @@ static WatchChunk *watch_chunks[ALIAS_SIZE / (WATCH_CHUNK * 0x1000ull)];
 static u64 watch_clock;   /* stamps given so far */
 
 /* Take the write watch's news for guest pages [lo, hi) (4 KiB aligned, watched): resetting the
- * bits as they are read (under the shim's lock: a write is either reported now or news next time). */
+ * bits as they are read (under the shim's lock: a write is either reported now or news next time).
+ * (Through the kernel, which shares the system's bits with the rollback ring when that is on:
+ * kernel_watch.h.) */
 static void watch_take(u64 lo, u64 hi) {
     static void *pages[65536];   /* (256 MB: the largest range asked about, in one call) */
     void *first;
@@ -1742,10 +1745,10 @@ static void watch_take(u64 lo, u64 hi) {
     ULONG granularity;
     /* (asking is cheap, resetting is not - it protects the host pages again, even where nothing
      * was written: so ask first) */
-    if (GetWriteWatch(0, G2H(lo), hi - lo, &first, &count, &granularity) != 0 || !count) return;
+    if (kernel_write_watch(WATCH_RENDERER, 0, G2H(lo), hi - lo, &first, &count, &granularity) != 0 || !count) return;
     for (u64 at = H2G(first); at < hi;) {
         count = 65536;
-        if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, G2H(at), hi - at, pages, &count, &granularity) != 0 || !count) return;
+        if (kernel_write_watch(WATCH_RENDERER, WRITE_WATCH_FLAG_RESET, G2H(at), hi - at, pages, &count, &granularity) != 0 || !count) return;
         u64 stamp = ++watch_clock;
         for (ULONG_PTR k = 0; k < count; k++) {
             u64 p = (H2G(pages[k]) - ALIAS_BASE) >> 12;

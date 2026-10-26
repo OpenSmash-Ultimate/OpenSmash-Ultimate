@@ -1,5 +1,5 @@
-/* U1: the settings menu's drawing (menu.cpp builds the Dear ImGui frame; plan\phases\U1_settings_menu.md). Included by
- * nvn_vk_draw.c: render thread only, uses that file's device (V), loader functions, memory and command helpers.
+/* U1: the settings menu's drawing (menu.cpp builds the Dear ImGui frame; plan\phases\U1_settings_menu.md). A build unit
+ * of its own: render thread only, uses the back end's device (V), loader functions, memory and command helpers.
  *
  * overlay_draw calls menu_vk_draw with the swapchain image in TRANSFER_DST layout, inside the present's command buffer,
  * after the game's picture was blitted into it: TRANSFER_DST -> COLOR_ATTACHMENT, a dynamic-rendering pass that LOADS the
@@ -8,6 +8,11 @@
  * One pipeline (made again when the swapchain's format changes: UNORM or SRGB; with SRGB the vertex colours are made linear
  * first), one font texture, one view per swapchain image (dropped by nvn_vk.c swapchain_destroy), vertex and index buffers
  * in a ring of NSLOT + 1 (a buffer is written again only after its command buffer has certainly finished). */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <windows.h>
+#include "nvn_vk_int.h"
 #include "menu.h"
 #include "menu_spv.h"
 
@@ -25,7 +30,7 @@ static struct {
 } g_mu;
 
 const char *nvn_vk_device_name(void) { return V.props.deviceName; }
-static void menu_vk_views_drop(void) {             /* nvn_vk.c swapchain_destroy: the device is idle, the swapchain is about to go */
+void menu_vk_views_drop(void) {                    /* nvn_vk.c swapchain_destroy: the device is idle, the swapchain is about to go */
     for (int i = 0; i < 16; i++) if (g_mu.views[i]) { vkDestroyImageView(V.device, g_mu.views[i], NULL); g_mu.views[i] = NULL; }
     g_mu.views_sc = NULL;
 }
@@ -169,7 +174,7 @@ static void mu_shot_write(void) {
     vkDestroyBuffer(V.device, g_mu.shot, NULL); vmem_free(g_mu.shot_mem); g_mu.shot = NULL;
     menu_shot_done(g_mu.shot_path, w, h, ok);
 }
-static void menu_vk_draw(uint32_t index) {
+void menu_vk_draw(uint32_t index) {
     if (!menu_enabled() || g_mu.failed) return;
     mu_shot_write();
     MenuDraw d;

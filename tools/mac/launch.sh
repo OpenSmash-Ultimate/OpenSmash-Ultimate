@@ -137,19 +137,31 @@ pick_game() {
     done < <(if [ "$(head -n 1 "$cfg" | tr -d '\r')" = layered ]; then tail -n +2 "$cfg"; else head -n 1 "$cfg"; fi)
 }
 
+# Where the game reads a settings file (runtime/config_folder.h): config/ once the game has made it
+# (config/version.ini), else here; online_server.txt is config/'s only once there is one there.
+config_file() {
+    if [ -f config/version.ini ] && { [ "$1" != online_server.txt ] || [ -f "config/$1" ]; }; then
+        printf '%s\n' "config/$1"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
 # Online play (docs/MULTIPLAYER.md): the lobby is the first line of online_server.txt that is not a
 # comment - host:port, then an optional lobby code (only players with the same code see each other's
 # rooms) - or "off". The name the other players see is kept in online_name.txt, asked the first time.
 go_online() {
     local relay code rest name pick direct
-    if [ -f online_server.txt ]; then
+    local server_file name_file direct_file
+    server_file=$(config_file online_server.txt) name_file=$(config_file online_name.txt) direct_file=$(config_file online_direct.txt)
+    if [ -f "$server_file" ]; then
         while read -r relay code rest || [ -n "$relay" ]; do
             relay=${relay%$'\r'} code=${code%$'\r'}
             case "$relay" in
                 '' | '#'*) relay= code= ; continue ;;
             esac
             break
-        done < online_server.txt
+        done < "$server_file"
         [ "$(lower "$relay")" = off ] && relay=
         if [ -n "$relay" ]; then
             SSBU_NET_RELAY=$relay
@@ -157,11 +169,11 @@ go_online() {
         fi
     fi
     if [ -n "$SSBU_NET_RELAY" ]; then
-        if [ ! -f online_name.txt ]; then
+        if [ ! -f "$name_file" ]; then
             pick="Player$((RANDOM % 9000 + 1000))"
-            say "Online, other players see your name (it is kept in online_name.txt)."
+            say "Online, other players see your name (it is kept in $name_file)."
             name=$(ask "Your online name" "$pick") || exit 0
-            printf '%s\n' "$name" > online_name.txt
+            printf '%s\n' "$name" > "$name_file"
         fi
         while IFS= read -r name || [ -n "$name" ]; do
             name=${name%$'\r'}
@@ -169,11 +181,11 @@ go_online() {
                 SSBU_NET_NAME=$name
                 break
             fi
-        done < online_name.txt
+        done < "$name_file"
     fi
     # "off" in online_direct.txt: all of a room's traffic through the lobby (no direct connections, so
     # the players in your rooms don't learn your internet address)
-    if [ -f online_direct.txt ]; then
+    if [ -f "$direct_file" ]; then
         while read -r direct rest || [ -n "$direct" ]; do
             direct=${direct%$'\r'}
             case "$direct" in
@@ -181,7 +193,7 @@ go_online() {
             esac
             [ "$(lower "$direct")" = off ] && SSBU_NET_DIRECT=0
             direct=
-        done < online_direct.txt
+        done < "$direct_file"
     fi
     if [ -z "$SSBU_NET_RELAY" ]; then
         say "Playing offline (no lobby in online_server.txt)."

@@ -22,8 +22,8 @@ GAME_PORT = 12345
 
 
 class Server:
-    """A lobby on its own event loop and thread, with short timeouts."""
-    def __init__(self, **over):
+    """A lobby on its own event loop and thread, with short timeouts (make: R.serve's)."""
+    def __init__(self, make=None, **over):
         settings = dict(bind="127.0.0.1", port=0, stats=0, tick=0.05, client_timeout=10.0, pending_timeout=0.5,
                         listed_for=3.5, listing_timeout=10.0, per_ip=1000, gate_rate=1000.0, gate_burst=1000)
         settings.update(over)   # (every player here comes from 127.0.0.1)
@@ -33,7 +33,7 @@ class Server:
 
         def run():
             asyncio.set_event_loop(self.loop)
-            self.transport, self.lobby = self.loop.run_until_complete(R.serve(o))
+            self.transport, self.lobby = self.loop.run_until_complete(R.serve(o, make))
             self.task = self.loop.create_task(self.lobby.run())
             ready.set()
             self.loop.run_forever()
@@ -50,7 +50,7 @@ class Server:
                 await self.task
             except asyncio.CancelledError:
                 pass
-            self.transport.close()
+            self.lobby.close_ports()
         asyncio.run_coroutine_threadsafe(end(), self.loop).result(5)
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.thread.join(5)
@@ -167,6 +167,19 @@ class Player:
             ip, name, flags, pip, pport, lip, lport, secret = R.PEER.unpack_from(p, 17 + i * R.PEER.size)
             out.append((ip, name.rstrip(b"\0"), flags & 1, (pip, pport), (lip, lport), secret, flags))
         return version, out
+
+    def introduced(self, ip, wait=3.0):
+        """The first PEERS (within wait seconds) that has ip introduced: (version, [entries]), or the
+        newest one if none does (None if none came). For a change the lobby may send late: it sends a
+        player two PEERS PEERS_GAP apart at the soonest, and a slow runner can add to that."""
+        newest, until = None, time.monotonic() + wait
+        while time.monotonic() < until:
+            got = self.peers(0.1)
+            if got:
+                newest = got
+                if any(e[0] == ip and e[2] for e in got[1]):
+                    break
+        return newest
 
     def bcast(self, skip, payload, dst=BCAST, sport=GAME_PORT, dport=GAME_PORT, src=None):
         self.send(R.header(R.BCAST) + bytes((len(skip),)) + b"".join(struct.pack(">I", ip) for ip in skip) +
@@ -514,6 +527,23 @@ def talk(*players):
         p.recv(0.15)
 
 
+def talk_until_introduced(a, b, wait=3.0):
+    """talk(a, b) until a's PEERS has b introduced, for up to wait seconds: (version, [entries]), or the
+    newest PEERS if none does. As two games do: their packets keep coming, so a game packet lost on the
+    way (the lobby introduces two players once it has carried one each way) is sent again, and each
+    PING says which PEERS came last, so a lost PEERS is sent again (on_ping_ext)."""
+    newest, until = None, time.monotonic() + wait
+    while time.monotonic() < until:
+        talk(a, b)
+        a.ping()
+        got = a.introduced(b.ip, 0.4)
+        if got:
+            newest = got
+            if any(e[0] == b.ip and e[2] for e in got[1]):
+                break
+    return newest
+
+
 class Peers(LobbyTest):
     def test_introduced_once_their_games_talk(self):
         host, session, (a,) = self.room(1, ext=True)
@@ -597,19 +627,18 @@ class Peers(LobbyTest):
         a = self.player(name="Guest", ext=True, lan=(0x0A000006, 6000))
         a.ldn(host.ip, R.LM_JOIN, session + bytes(34))
         host.advertise(session, [a.ip])
-        talk(host, a)
-        self.assertEqual(host.peers()[1][0][4], (0x0A000006, 6000))   # (both 127.0.0.1: same router)
-        self.assertEqual(a.peers()[1][0][4], (0x0A000005, 5000))
+        self.assertEqual({e[0]: e for e in talk_until_introduced(host, a)[1]}[a.ip][4], (0x0A000006, 6000))   # (both 127.0.0.1: same router)
+        self.assertEqual({e[0]: e for e in talk_until_introduced(a, host)[1]}[host.ip][4], (0x0A000005, 5000))
         try:
             far = self.player(name="Far", ext=True, lan=(0x0A000007, 7000), bind="127.0.0.2")
         except OSError:
             self.skipTest("no 127.0.0.2 here")
         far.ldn(host.ip, R.LM_JOIN, session + bytes(34))
         host.advertise(session, [a.ip, far.ip])
-        talk(host, far)
-        entries = {e[0]: e for e in host.peers()[1]}
+        entries = {e[0]: e for e in talk_until_introduced(host, far)[1]}
         self.assertEqual(entries[far.ip][2:5], (1, (R.address_number("127.0.0.2"), far.s.getsockname()[1]), (0, 0)))
-        self.assertEqual(far.peers()[1][0][4], (0, 0))
+        to_host = {e[0]: e for e in talk_until_introduced(far, host)[1]}[host.ip]
+        self.assertEqual(to_host[2:5], (1, (LOCAL, host.s.getsockname()[1]), (0, 0)))   # (another router: no LAN address)
 
     def test_leaving_empties_and_coming_back_is_a_new_secret(self):
         host, session, (a, b) = self.room(2, ext=True)

@@ -27,6 +27,21 @@ def write_main(tree, build_id):
     path.write_bytes(head)
 
 
+def write_save(tree):
+    """A made-up <tree>/save/user/save_data/system_data.bin of the known layout; (its path, its bytes)."""
+    save = tree / 'save/user/save_data/system_data.bin'
+    save.parent.mkdir(parents=True)
+    data = bytearray(SAVE_SIZE)
+    struct.pack_into('<I', data, 0, len(data))
+    for n in ORIGINAL['STARTERS']:
+        data[FLAGS + n * 8] = 1
+    # A locked rematch candidate with an existing encounter order.
+    data[FLAGS + 10 * 8 + 1] = 3
+    data[FLAGS + 10 * 8 + 4] = 1
+    save.write_bytes(data)
+    return save, bytes(data)
+
+
 @unittest.skipUnless(PS.exists(), 'Windows PowerShell only')
 class UnlockTests(unittest.TestCase):
     def setUp(self):
@@ -34,17 +49,7 @@ class UnlockTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         write_main(self.root, BUILD_ID)
-        self.save = self.root / 'save/user/save_data/system_data.bin'
-        self.save.parent.mkdir(parents=True)
-        data = bytearray(SAVE_SIZE)
-        struct.pack_into('<I', data, 0, len(data))
-        for n in ORIGINAL['STARTERS']:
-            data[FLAGS + n * 8] = 1
-        # A locked rematch candidate with an existing encounter order.
-        data[FLAGS + 10 * 8 + 1] = 3
-        data[FLAGS + 10 * 8 + 4] = 1
-        self.before = bytes(data)
-        self.save.write_bytes(data)
+        self.save, self.before = write_save(self.root)
 
     def invoke(self, *args, mock_processes=True):
         # Only the process listing is mocked: the user's real running game stays untouched.
@@ -122,6 +127,38 @@ class UnlockTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Close every SSBU', result.stdout)
         self.assertEqual(self.save.read_bytes(), self.before)
+
+    def test_unfinished_save_refused(self):
+        (self.root / 'save/user.commit').write_text('ssbu-save-journal 1\n')
+        result = self.invoke()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('stopped while it saved', result.stdout)
+        self.assertEqual(self.save.read_bytes(), self.before)
+        self.assertFalse((self.root / 'save_backups').exists())
+
+
+class UnfinishedSaveTests(unittest.TestCase):
+    """The game stopped mid-commit leaves save/<user>.commit, and its next start finishes that commit
+    (runtime/hle_fs.c), which could write over an unlock made before: unlock_all.py refuses."""
+
+    def test_refused(self):
+        temp = tempfile.TemporaryDirectory(prefix='unlock-test-', dir=WORK)
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        write_main(root, BUILD_ID)
+        save, before = write_save(root)
+        (root / 'save/user.commit').write_text('ssbu-save-journal 1\n')
+        result = subprocess.run([sys.executable, str(WORK.parent / 'tools/unlock_all.py'), '--root', str(root), '--save', str(save)],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('stopped while it saved', result.stdout + result.stderr)
+        self.assertEqual(save.read_bytes(), before)
+        self.assertFalse((root / 'save_backups').exists())
+        (root / 'save/user.commit').unlink()
+        result = subprocess.run([sys.executable, str(WORK.parent / 'tools/unlock_all.py'), '--root', str(root), '--save', str(save)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotEqual(save.read_bytes(), before)
 
 
 if __name__ == '__main__':

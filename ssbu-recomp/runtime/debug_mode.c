@@ -30,7 +30,9 @@ static uint64_t fighter_info_record(int id) {
 /* SSBU_DEBUG_SCAN=1: once, when entry 1's record exists, every other copy of the pattern in it (HP 999.0 followed by
  * ff bytes, record + 0x40) in committed memory is printed with 0x60 bytes in front of it: finds the structure the record was built from. */
 static void scan_copies(uint64_t rec) {
-    static const uint8_t pat[16] = {0x00, 0xc0, 0x79, 0x44, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    uint8_t pat[16];
+    const float hp = 999.0f;
+    memcpy(pat, &hp, 4); memset(pat + 4, 0xff, 12);
     SYSTEM_INFO si; GetSystemInfo(&si);
     uint8_t *p = (uint8_t *)si.lpMinimumApplicationAddress;
     MEMORY_BASIC_INFORMATION mi;
@@ -39,7 +41,7 @@ static void scan_copies(uint64_t rec) {
         if (mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) && (mi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE | PAGE_READONLY)) && mi.RegionSize < (1ull << 31)) {
             const uint8_t *b = mi.BaseAddress;
             for (size_t i = 0; i + 16 <= mi.RegionSize; i += 4)
-                if (b[i] == 0x00 && b[i + 1] == 0xc0 && memcmp(b + i, pat, 16) == 0 && (uint64_t)(b + i) != rec + 0x40 && hits < 12) {
+                if (b[i] == pat[0] && b[i + 1] == pat[1] && memcmp(b + i, pat, 16) == 0 && (uint64_t)(b + i) != rec + 0x40 && hits < 12) {
                     hits++;
                     printf("debug scan: copy at %p (record base would be %p), region %p+%llx\n", b + i, b + i - 0x40, mi.BaseAddress, (unsigned long long)mi.RegionSize);
                     if (i >= 0x40) for (int k = -0x40; k < 0x40; k += 16) {

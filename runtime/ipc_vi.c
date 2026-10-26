@@ -15,6 +15,9 @@
 #include "present.h"
 #include "display.h"
 #include "gpu.h"   /* (gpu_queue_mark / gpu_queue_wait) */
+#include "input_seq.h"
+
+void test_fight_presented(void);   /* (hle_fight_test.c) SSBU_DEBUG_END's count of fight frames */
 
 #define DISPLAY_ID 1
 #define LAYER_ID 1
@@ -34,7 +37,7 @@ typedef struct Slot { int state, has_buffer; u8 buffer[0x400]; u32 buffer_size; 
 static struct {
     Slot slots[SLOTS];
     u32 buffer_event, vsync_event;
-    CONDITION_VARIABLE freed;
+    CONDITION_VARIABLE freed, queued;   /* (queued: SSBU_SPEED's consumer waits on it) */
     SRWLOCK lock;
     int started;
     u64 frames;
@@ -57,36 +60,93 @@ static void queue_unlock(void) {
 DWORD present_queue_holder(u64 *since_ms) { DWORD t = queue_holder; *since_ms = queue_held_since; return t; }
 
 /* ---- the consumer: vsync -------------------------------------------------------- */
+static u8 shown[sizeof queue.slots[0].buffer];
+static u32 shown_size;
+static u64 shown_mark;
+static int speed_mode, report_draws;   /* SSBU_SPEED (not 1), SSBU_SEQ: decided at start */
+
+/* Under the queue's lock: the oldest queued buffer becomes the one shown (copied to `shown`) and
+ * the one shown before is free again. Returns its slot, or -1 if none is queued. */
+static int take_oldest(void) {
+    int oldest = -1;
+    for (int i = 0; i < SLOTS; i++)
+        if (queue.slots[i].state == QUEUED && (oldest < 0 || queue.slots[i].queued_at < queue.slots[oldest].queued_at)) oldest = i;
+    if (oldest >= 0) {
+        for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == ACQUIRED) queue.slots[i].state = FREE;
+        queue.slots[oldest].state = ACQUIRED;
+        queue.frames++;
+        shown_size = queue.slots[oldest].buffer_size;
+        memcpy(shown, queue.slots[oldest].buffer, shown_size);
+        shown_mark = queue.slots[oldest].gpu_mark;
+    }
+    return oldest;
+}
+
+/* Shown outside the queue's lock: a present can wait for the graphics card (frames behind), and
+ * meanwhile the game queues its next frame and goes on with the one after. */
+static void show(void) {
+    gpu_queue_wait(shown_mark);   /* the frame drawn: what was submitted before it was queued has run */
+    if (report_draws) input_seq_presented(gpu_queue_draws(shown_mark));
+    present_frame(shown, shown_size);
+    test_fight_presented();
+    kernel_signal_event(queue.buffer_event);
+    WakeAllConditionVariable(&queue.freed);
+}
+
+/* SSBU_SPEED (docs/TESTING-RUNS.md): no clock of refreshes. Each frame the game queues is shown
+ * at its time - n x 60 a second, or at once when uncapped - and makes exactly one refresh, so
+ * the game counts one refresh per frame shown however fast this PC is. With nothing queued there
+ * is no refresh, however long that lasts (a load, a shader compile): the game would count one as
+ * a dropped frame and run an extra logic frame. ssbu-recomp ran no vsync thread at all in this
+ * mode and the game still booted to a fight (ssbu-recomp/tests/DEBUG_MODE.md). Meanwhile the
+ * loop only wakes to write the second's line. */
+static void speed_loop(void) {
+    u64 frames = 0, second = GetTickCount64();
+    for (;;) {
+        queue_lock();
+        int queued = 0;
+        for (;;) {
+            for (int i = 0; i < SLOTS && !queued; i++) queued = queue.slots[i].state == QUEUED;
+            u64 waited = GetTickCount64() - second;
+            if (queued || waited >= 1000) break;
+            queue_holder = 0;   /* (asleep, not holding it) */
+            SleepConditionVariableSRW(&queue.queued, &queue.lock, (DWORD)(1000 - waited), 0);
+            queue_held_since = GetTickCount64();
+            queue_holder = GetCurrentThreadId();
+        }
+        queue_unlock();
+        if (queued) {
+            display_speed_tick();   /* (only this thread takes a queued buffer: it is still there) */
+            queue_lock();
+            int oldest = take_oldest();
+            queue_unlock();
+            if (oldest >= 0) {
+                show();
+                frames++;
+                kernel_signal_event(queue.vsync_event);   /* the frame's one refresh */
+            }
+        }
+        u64 now = GetTickCount64();
+        if (now - second >= 1000) {
+            fprintf(stderr, "[display] speed: %llu frames shown in the last %.2f s (%.0f a second)\n", (unsigned long long)frames,
+                    (now - second) / 1000.0, frames * 1000.0 / (double)(now - second));
+            frames = 0;
+            second = now;
+        }
+    }
+}
+
 static DWORD WINAPI vsync_thread(LPVOID unused) {
     (void)unused;
     SetThreadDescription(GetCurrentThread(), L"vsync");
     timeBeginPeriod(1);
-    static u8 shown[sizeof queue.slots[0].buffer];
-    u64 gpu_mark = 0;
+    if (speed_mode) speed_loop();
     for (;;) {
         display_wait_tick();   /* the next refresh (display.ini's pacing) */
         queue_lock();
-        int oldest = -1;
-        u32 shown_size = 0;
-        for (int i = 0; i < SLOTS; i++)
-            if (queue.slots[i].state == QUEUED && (oldest < 0 || queue.slots[i].queued_at < queue.slots[oldest].queued_at)) oldest = i;
-        if (oldest >= 0) {
-            for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == ACQUIRED) queue.slots[i].state = FREE;
-            queue.slots[oldest].state = ACQUIRED;
-            queue.frames++;
-            shown_size = queue.slots[oldest].buffer_size;
-            memcpy(shown, queue.slots[oldest].buffer, shown_size);
-            gpu_mark = queue.slots[oldest].gpu_mark;
-        }
+        int oldest = take_oldest();
         queue_unlock();
-        /* Shown outside the queue's lock: a present can wait for the graphics card (frames
-         * behind), and meanwhile the game queues its next frame and goes on with the one after. */
-        if (oldest >= 0) {
-            gpu_queue_wait(gpu_mark);   /* the frame drawn: what was submitted before it was queued has run */
-            present_frame(shown, shown_size);
-            kernel_signal_event(queue.buffer_event);
-            WakeAllConditionVariable(&queue.freed);
-        }
+        if (oldest >= 0) show();
         kernel_signal_event(queue.vsync_event);
     }
 }
@@ -95,8 +155,13 @@ static void start(void) {
     if (queue.started) return;
     queue.started = 1;
     InitializeConditionVariable(&queue.freed);
+    InitializeConditionVariable(&queue.queued);
     queue.buffer_event = kernel_create_event();
     queue.vsync_event = kernel_create_event();
+    double speed = display_speed();
+    speed_mode = speed != 1;
+    report_draws = input_seq_on();
+    if (speed_mode) fprintf(stderr, "[display] SSBU_SPEED=%g: one refresh per frame shown and none without one, %s\n", speed, speed > 0 ? "paced at n x 60 a second" : "uncapped");
     CreateThread(NULL, 0, vsync_thread, NULL, 0, NULL);
 }
 
@@ -187,6 +252,7 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
             queue.slots[slot].state = QUEUED;
             queue.slots[slot].queued_at = rt_now_ns();
             queue.slots[slot].gpu_mark = gpu_queue_mark();
+            if (speed_mode) WakeConditionVariable(&queue.queued);
         }
         queue_output(out);
         w32(out, 0);

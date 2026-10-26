@@ -1,4 +1,4 @@
-/* NVN entry points closed in the round "close4" (2026-10-09) whose code does not need nvn_gl.c's state.
+/* NVN entry points closed in the round "close4" (2026-10-09) whose code does not need nvn_front.c's state.
  *
  * nvnCommandBufferDrawTexture(cmdbuf, textureHandle, const NVNdrawTextureRegion *dst, const NVNdrawTextureRegion *src)  [sdk 0x438210]
  *   NVNdrawTextureRegion = four floats {x0, y0, x1, y1} (read with `ldp d0, d1, [x2]` and `ldp s3, s4, [x3]` / `ldp s1, s2, [x3, #8]`).

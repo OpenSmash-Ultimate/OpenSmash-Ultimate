@@ -1,4 +1,4 @@
-/* Track V, session 11: the CONTAINER STORE made by the host itself (included by nvn_vk_m4.c; not a build unit of its own).
+/* Track V, session 11: the CONTAINER STORE made by the host itself (a build unit of its own; what it shares with nvn_vk_m4.c: nvn_vk_int.h).
  *
  * Until session 10 the folder ..\cache\vk_containers was written by tools_vk/bnsh_extract.py; a PC that has never run that
  * tool had no preparation and no index. This file does the same reading in the host, on the preparation thread's helpers:
@@ -15,7 +15,13 @@
  * our threads; the decoder itself is pure (tables in the image's read-only data). One guest register context and one guest
  * stack per helper thread.
  * While a build is under way the folder holds "store_building.txt"; a start that finds it builds again. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <windows.h>
 #include "hostrt.h"
+#include "nvn_front.h"
+#include "nvn_vk_int.h"
 
 #define VKS_DCTX_SIZE 0x271f0u
 #define VKS_ZSTD_DECOMPRESS GA(0x71039a4040ULL)
@@ -202,7 +208,7 @@ static DWORD WINAPI vks_thread(void *arg) {
  * caller (the preparation thread) until done; the helpers run at normal priority: it is the first thing a first start
  * needs and it is seconds. */
 void display_title_note(const char *note);      /* display.c */
-static int vks_build(const char *dir) {
+int vks_build(const char *dir) {
     char arc[400], mark[400];
     const char *rom = getenv("SSBU_ROMFS");
     LARGE_INTEGER fq, sz;

@@ -8,6 +8,10 @@
 #include "../../runtime/hle_pad.c"
 #include "../../runtime/hle_padusb.c"
 
+/* (what hle_pad.c reaches outside itself; the file is not read here, and nothing is converted) */
+const char *config_path(enum ConfigFile file) { (void)file; return "controllers.ini"; }
+int settings_ini_set(const char *path, const char *section, const char *key, const char *value) { (void)path; (void)section; (void)key; (void)value; return 0; }
+
 static int failures, checks;
 #define CHECK(cond, ...) do { checks++; if (!(cond)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 

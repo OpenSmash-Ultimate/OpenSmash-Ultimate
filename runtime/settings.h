@@ -1,11 +1,13 @@
 /* Settings written back (hle_settings.c): the settings menu (gpu_menu.c) changes display.ini,
- * controllers.ini and the online_*.txt files in place, keeping their comments and every line it
- * does not change, so the files stay what players and the docs edit by hand.
+ * controllers.ini and the online_*.txt files (in config/: config_folder.h) in place, keeping their
+ * comments and every line it does not change, so the files stay what players and the docs edit
+ * by hand.
  *
  * Started with --online (Play SSBU.bat, play-ssbu.sh), the game takes its netplay settings from
  * online_server.txt, online_name.txt and online_direct.txt itself (net_relay.c); SSBU_NET_*
  * variables still win. */
 #pragma once
+#include <stddef.h>
 
 void settings_args(int argc, char **argv);   /* host.c's main, first: --online */
 int settings_online(void);                   /* started with --online */
@@ -22,6 +24,9 @@ int settings_ini_set(const char *path, const char *section, const char *key, con
  * Play SSBU.bat reads it. write replaces that line (or adds it), keeping the comments. */
 int settings_line_read(const char *path, char *out, int size);
 int settings_line_write(const char *path, const char *line);
+
+/* A whole file in one step, as the writes above (<file>.tmp first). Returns 1 on success. */
+int settings_file_write(const char *path, const void *data, size_t size);
 
 /* Starts the game again, with the same command line and folder, and ends this one. With
  * --online, the SSBU_NET_* variables are dropped first, so the files' new values count. */

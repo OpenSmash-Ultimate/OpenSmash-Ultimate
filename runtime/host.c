@@ -6,7 +6,9 @@
  * OS layer, runs the game's nninitStartup, asks the linker to run every module's static
  * constructors, and finally calls the game's nnMain.
  *
- * Usage: ssbu <directory with *.reloc.bin images> [--trace] */
+ * Usage: ssbu <directory with *.reloc.bin images> [--trace]
+ * Built with the game's modules in a library of their own (tools/game_dll.py, runtime/game_dll.h),
+ * also: ssbu --game-library, which loads and checks that library and stops (0: it can be used). */
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdarg.h>
 #include <stdio.h>
@@ -15,7 +17,12 @@
 #include "host.h"
 #include "clock.h"
 #include "display.h"
+#include "hookable.h"
+#include "input_seq.h"
 #include "settings.h"
+/* rt_cpu_needs: what this file was compiled for, which cpu_check.c checks the processor for first */
+#define RT_CPU_DEFINE_NEEDS
+#include "cpu_check.h"
 #ifdef _WIN32
 #include <dbghelp.h>
 #else
@@ -24,7 +31,17 @@
 #include <unistd.h>
 #endif
 
-extern const RtModule rt_module_main, rt_module_subsdk0, rt_module_sdk;
+#ifdef SSBU_GAME_DLL
+/* The game's modules are in a library of their own (runtime/game_dll.h), which game_open loads at
+ * start: the boot modules' tables are copied here, where the rest of the runtime finds them
+ * (net_relay.c reads main's build id), and the NROs' list is the library's. */
+#include "game_dll.h"
+RtModule rt_module_main, rt_module_subsdk0, rt_module_sdk;
+static const RtModule *const *game_nros;
+static u32 game_nro_count;
+#define rt_nro_modules game_nros
+#define rt_nro_count game_nro_count
+#endif
 #define BOOT_MODULES 3
 #define MAX_MODULES 1024
 /* Loaded modules in load (and symbol search) order: the three the process starts with, then
@@ -48,6 +65,8 @@ extern u64 gpu_stat_batches, gpu_stat_lists, gpu_stat_draws, gpu_stat_dispatches
     gfx_stat_shaders, gfx_stat_shader_failures, gfx_stat_textures, gfx_stat_unpacked, gfx_stat_watch_us, gfx_skip_shader, gfx_skip_topology,
     gfx_skip_target, gfx_stat_unmap_dropped;
 u64 present_frames(void);
+void movie_test_start(void);   /* (hle_movie_skip.c) SSBU_SKIP_MOVIES, SSBU_SEQ's mark movie */
+void test_fight_start(void);   /* (hle_fight_test.c) SSBU_FIGHT_HASH, SSBU_DETERMINISTIC, SSBU_DEBUG_MATCH... */
 void gfx_report_compiles(void (*line)(const char *text));
 void gfx_status_lines(void);
 #ifdef _WIN32
@@ -87,6 +106,12 @@ static u64 guest_of(u64 pc) {
     }
     return lo && pc - by_host[lo - 1].host <= (4u << 20) ? by_host[lo - 1].guest : 0;
 }
+
+/* A backtrace frame's guest function. A frame is a return address, looked up as its call (ra - 1),
+ * unless it is a faulting or stopped context's own pc (is_pc). Looked up as it is, a return address
+ * is the next function's first instruction when the call was the caller's last (to abort, rt_trap,
+ * rt_fatal, a C++ terminate: noreturn), and names that function instead. */
+static u64 guest_of_frame(u64 frame, int is_pc) { return guest_of(is_pc ? frame : frame - 1); }
 
 /* A host code address in recompiled code, as the guest function's place ("main+0x1234"); NULL
  * for any other code (debug_profile.c's thread dumps). */
@@ -240,11 +265,12 @@ int rt_write_dump(const char *path, DWORD tid, EXCEPTION_POINTERS *e, DWORD wait
 }
 #endif
 
-static void print_frames(void **frames, int n) {
+/* (from_pc: frames[0] is the faulting context's pc; every other frame is a return address) */
+static void print_frames(void **frames, int n, int from_pc) {
     char name[96];
     out("guest backtrace (innermost first):\n");
     for (int i = 0, shown = 0; i < n && shown < 28; i++) {
-        u64 guest = guest_of((u64)frames[i]);
+        u64 guest = guest_of_frame((u64)frames[i], i == 0 && from_pc);
         if (!guest) {   /* runtime code: its offset in the executable (see the linker map) */
             static u64 image;
             if (!image) image = (u64)GetModuleHandleW(NULL);
@@ -258,7 +284,7 @@ static void print_frames(void **frames, int n) {
 
 void rt_backtrace(void) {
     void *frames[62];
-    print_frames(frames, CaptureStackBackTrace(1, 62, frames, NULL));
+    print_frames(frames, CaptureStackBackTrace(1, 62, frames, NULL), 0);
 }
 
 #ifdef _WIN32
@@ -294,7 +320,7 @@ void rt_backtrace_thread(HANDLE thread, int max_frames) {
     if (host_frames < 0) host_frames = getenv("SSBU_HOST_FRAMES") != NULL;
     u64 image = (u64)GetModuleHandleW(NULL);
     for (int i = 0, shown = 0; i < n && shown < max_frames; i++) {
-        u64 guest = guest_of((u64)frames[i]);
+        u64 guest = guest_of_frame((u64)frames[i], i == 0);   /* (frames[0]: its context's pc) */
         if (!guest) {
             if (host_frames && (u64)frames[i] - image < 0x40000000ull) fprintf(stderr, "      [host +%#llx]\n", (u64)frames[i] - image);
             else if (host_frames) {
@@ -361,7 +387,7 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
     }
     gfx_report_compiles(out_line);   /* (a fault in the driver's shader compiler names the program) */
     void *frames[62];
-    print_frames(frames, unwind(*e->ContextRecord, frames, 62));   /* from the faulting frame */
+    print_frames(frames, unwind(*e->ContextRecord, frames, 62), 1);   /* from the faulting frame */
     char dump[MAX_PATH];
     snprintf(dump, sizeof dump, "%.*s.dmp", (int)strlen(report) - 4, report);
     int dumped = report_file != INVALID_HANDLE_VALUE && rt_write_dump(dump, tid, e, 100000);
@@ -428,10 +454,12 @@ static void host_frame(const char *indent, void *pc) {   /* "[module +offset]" *
 #ifdef __APPLE__
 /* A frame walk's second frame is the link register when the innermost function had not saved it:
  * not a frame of its own when it points back into that same (recompiled) function. (Allocates
- * and locks nothing: also for a stopped thread.) */
+ * and locks nothing: also for a stopped thread. lr is a return address, looked up as its call: as
+ * it is, a caller that ended in its call to the innermost function, placed right after it, would
+ * be taken for that function and dropped.) */
 static int walk_frames(u64 pc, u64 lr, u64 fp, void **frames, int max) {
     int n = rt_frame_walk(pc, lr, fp, frames, max);
-    if (n > 1 && (u64)frames[1] == lr && guest_of(pc) && guest_of(lr) == guest_of(pc)) {
+    if (n > 1 && (u64)frames[1] == lr && guest_of(pc) && guest_of_frame(lr, 0) == guest_of(pc)) {
         memmove(frames + 1, frames + 2, sizeof *frames * (size_t)(n - 2));
         n--;
     }
@@ -444,10 +472,10 @@ void rt_backtrace_thread(HANDLE thread, int max_frames) {
     RtTid tid = rt_thread_tid(thread);
     if (!tid) return;
     void *frames[96];
-    int n;
+    int n, self = tid == pthread_mach_thread_np(pthread_self());   /* (another thread's walk starts at its pc; this one's are all return addresses) */
     u64 pc = 0, lr = 0;
-    if (tid == pthread_mach_thread_np(pthread_self())) n = CaptureStackBackTrace(0, 96, frames, NULL);
-    else if ((n = rt_thread_frames(tid, frames, 96, &pc, &lr)) > 1 && (u64)frames[1] == lr && guest_of(pc) && guest_of(lr) == guest_of(pc)) {
+    if (self) n = CaptureStackBackTrace(0, 96, frames, NULL);
+    else if ((n = rt_thread_frames(tid, frames, 96, &pc, &lr)) > 1 && (u64)frames[1] == lr && guest_of(pc) && guest_of_frame(lr, 0) == guest_of(pc)) {
         memmove(frames + 1, frames + 2, sizeof *frames * (size_t)(n - 2));   /* (as walk_frames) */
         n--;
     }
@@ -455,7 +483,7 @@ void rt_backtrace_thread(HANDLE thread, int max_frames) {
     if (host_frames < 0) host_frames = getenv("SSBU_HOST_FRAMES") != NULL;
     char name[96];
     for (int i = 0, shown = 0; i < n && shown < max_frames; i++) {
-        u64 guest = guest_of((u64)frames[i]);
+        u64 guest = guest_of_frame((u64)frames[i], i == 0 && !self);
         if (!guest) { if (host_frames) host_frame("      ", frames[i]); continue; }
         fprintf(stderr, "      %s\n", rt_describe(guest, name, sizeof name));
         shown++;
@@ -492,7 +520,7 @@ void rt_backtrace_thread(HANDLE thread, int max_frames) {
         if (host_frames < 0) host_frames = getenv("SSBU_HOST_FRAMES") != NULL;
         char name[96];
         for (int i = 2, shown = 0; i < bt_count && shown < max_frames; i++) {   /* (past the handler and the signal frame) */
-            u64 guest = guest_of((u64)bt_frames[i]);
+            u64 guest = guest_of_frame((u64)bt_frames[i], i == 2);   /* (bt_frames[2]: where the signal stopped it) */
             if (!guest) { if (host_frames) host_frame("      ", bt_frames[i]); continue; }
             fprintf(stderr, "      %s\n", rt_describe(guest, name, sizeof name));
             shown++;
@@ -554,14 +582,14 @@ static void on_fault(int sig, siginfo_t *si, void *ucv) {
     host_frame("  ", (void *)pc);
     void *frames[64];
 #ifdef __APPLE__   /* (from the faulting context: a leaf function's caller is in the link register) */
-    int n = walk_frames(pc, uc->uc_mcontext->__ss.__lr, uc->uc_mcontext->__ss.__fp, frames, 64), from = 0;
+    int n = walk_frames(pc, uc->uc_mcontext->__ss.__lr, uc->uc_mcontext->__ss.__fp, frames, 64), from = 0, from_pc = 1;
 #else
-    int n = backtrace(frames, 64), from = 0;
-    for (int i = 0; i < n; i++) if ((u64)frames[i] == pc) { from = i; break; }   /* (the faulting frame onwards) */
+    int n = backtrace(frames, 64), from = 0, from_pc = 0;
+    for (int i = 0; i < n; i++) if ((u64)frames[i] == pc) { from = i; from_pc = 1; break; }   /* (the faulting frame onwards) */
 #endif
     for (int i = from + 1; i < n && i < from + 24; i++) host_frame("  host frame ", frames[i]);
     gfx_report_compiles(out_line);   /* (a fault in the shader compiler names the program) */
-    print_frames(frames + from, n - from);
+    print_frames(frames + from, n - from, from_pc);
     report_close(report);
     fflush(stderr);
     _exit(5);
@@ -752,6 +780,14 @@ static struct Sym *sym_slot(const char *name) {
 
 u64 rt_symbol(const char *name) { return sym_slot(name)->addr; }
 
+const char *rt_symbol_at(u64 addr, const char *prefix) {   /* (every export looked at: for start-up checks) */
+    size_t n = strlen(prefix);
+    for (u32 m = 0; m < module_count; m++)
+        for (u32 i = 0; i < modules[m]->export_count; i++)
+            if (modules[m]->exports[i].addr == addr && !strncmp(modules[m]->exports[i].name, prefix, n)) return modules[m]->exports[i].name;
+    return NULL;
+}
+
 /* Functions the loader wraps so that progress through start-up is visible. */
 static u64 real_startup, real_main;
 static void wrap_startup(Cpu *c) { phase = "nninitStartup"; printf("[boot] nninitStartup\n"); fflush(stdout); rt_call(c, real_startup); phase = "start-up after nninitStartup"; }
@@ -854,18 +890,22 @@ static u32 bind_module(u32 m) {
 }
 
 static void load(const char *dir) {
-    u32 funcs = 0, exports = 0, relocs = 0;
+    u32 funcs = 0, exports = 0, relocs = 0, hooked = 0;
     for (u32 m = 0; m < module_count; m++) { funcs += modules[m]->func_count; exports += modules[m]->export_count; }
     for (u32 m = 0; m < rt_nro_count; m++) exports += rt_nro_modules[m]->export_count;
+    for (RtHook *h = rt_hook_list(); h; h = h->next) hooked++;
     for (symtab_size = 1024; symtab_size < exports * 3 + 65536; symtab_size *= 2) {}
     symtab = calloc(symtab_size, sizeof *symtab);
-    by_host_cap = funcs + 16;
+    by_host_cap = funcs + hooked + 16;
     by_host = malloc(sizeof *by_host * by_host_cap);
 
     for (u32 m = 0; m < module_count; m++) {
         map_module(m, dir);
         publish_exports(m);
     }
+    /* a hookable function's own code (hookable.h): the module's table holds only what calls it
+     * through its slot */
+    for (RtHook *h = rt_hook_list(); h; h = h->next) by_host[by_host_count++] = (struct HostFn){(u64)h->body, h->addr};
     /* The NROs the game loads later each have a fixed address: keep their ranges free now,
      * before the graphics driver and the heap start taking address space (they did, and a
      * fighter's module then could not be mapped). */
@@ -923,6 +963,11 @@ u64 rt_load_nro(Cpu *c, u64 image) {
     printf("[ro] loaded %s at %#llx: %u functions, %u exports, %u symbol relocations\n",
            mod->name, mod->base, mod->func_count, mod->export_count, relocs);
     fflush(stdout);
+    if (input_seq_on()) {   /* (SSBU_SEQ's @module:<name>) */
+        char mark[SEQ_TEXT];
+        snprintf(mark, sizeof mark, "module:%s", mod->name);
+        input_seq_mark(mark);
+    }
     if (mod->init != mod->base) rt_call(c, mod->init);
     return mod->base;
 }
@@ -976,6 +1021,7 @@ static void print_status(void) {
     fiber_counts(&fiber_slots, &fibers_finalized, &fibers_made);
     fprintf(stderr, "[status] fibers: %llu started, %u host fibers (%u finalized, kept for the next ones)\n",
             (unsigned long long)fibers_made, fiber_slots, fibers_finalized);
+    kernel_map_status();
     kernel_dump_threads();
     fflush(stderr);
 }
@@ -1065,6 +1111,127 @@ static void mac_start(int argc, char **argv, const char **dir, int *options) {
 }
 #endif
 
+#ifdef SSBU_GAME_DLL
+/* The game library cannot be used: why (detail, for the log), and what a player does about it. */
+static int game_refused(int quiet, const char *path, const char *detail) {
+    static const char text[] =
+        "This WindowSmash's game library (" RT_GAME_LIBRARY ") is missing, or was built for another version of "
+        "WindowSmash. Run Install WindowSmash again: it builds the game for this version.";
+    fprintf(stderr, "[boot] cannot use the game library %s: %s\n%s\n", path, detail, text);
+#ifdef _WIN32
+    if (!quiet) MessageBoxA(NULL, text, "WindowSmash", MB_OK | MB_ICONERROR);
+#else
+    (void)quiet;
+#endif
+    return 0;
+}
+
+/* The game library (runtime/game_dll.h), from beside the program (on macOS the app's
+ * Frameworks): loaded, its interface checked against this runtime's, then bound - each runtime
+ * function it calls, by name; each HLE_WRAP's original; its hook slots, which its constructors
+ * listed as it loaded (added here in their order, as the program's own would have been); its
+ * modules. 0 if it cannot be used, said why. quiet: no message box (ssbu --game-library). */
+static int game_open(int quiet) {
+    char path[4096], detail[512];
+#ifdef _WIN32
+    wchar_t wide[MAX_PATH + 32];
+    DWORD n = GetModuleFileNameW(NULL, wide, MAX_PATH);
+    wchar_t *slash = n && n < MAX_PATH ? wcsrchr(wide, L'\\') : NULL;
+    if (!slash) return game_refused(quiet, RT_GAME_LIBRARY, "the program's own folder is not known");
+    wcscpy(slash + 1, L"" RT_GAME_LIBRARY);
+    snprintf(path, sizeof path, "%ls", wide);
+    HMODULE lib = LoadLibraryExW(wide, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (!lib) {
+        snprintf(detail, sizeof detail, "it could not be loaded (error %lu)", GetLastError());
+        return game_refused(quiet, path, detail);
+    }
+    RtGameEntry *entry = (RtGameEntry *)(void *)GetProcAddress(lib, RT_GAME_ENTRY);
+#else
+#ifdef __APPLE__
+    snprintf(path, sizeof path - 64, "%s", rt_exe_path());   /* <app>/Contents/MacOS/ssbu */
+    char *slash = strrchr(path, '/');
+    if (slash) { *slash = 0; slash = strrchr(path, '/'); }
+    if (slash) snprintf(slash, sizeof path - (size_t)(slash - path), "/Frameworks/%s", RT_GAME_LIBRARY);
+#else
+    ssize_t len = readlink("/proc/self/exe", path, sizeof path - 64);
+    path[len > 0 ? len : 0] = 0;
+    char *slash = strrchr(path, '/');
+    if (slash) snprintf(slash + 1, sizeof path - (size_t)(slash + 1 - path), "%s", RT_GAME_LIBRARY);
+#endif
+    if (!slash) return game_refused(quiet, RT_GAME_LIBRARY, "the program's own folder is not known");
+    void *lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!lib) return game_refused(quiet, path, dlerror());
+    RtGameEntry *entry = (RtGameEntry *)dlsym(lib, RT_GAME_ENTRY);
+#endif
+    if (!entry) return game_refused(quiet, path, "it has no " RT_GAME_ENTRY ": not a game library");
+    const RtGameTables *t = entry();
+    if (!t || t->abi != RT_GAME_ABI) {
+        snprintf(detail, sizeof detail, "it is built for game interface %u, and this runtime's is %u", t ? t->abi : 0, RT_GAME_ABI);
+        return game_refused(quiet, path, detail);
+    }
+    static const u32 sizes[4] = RT_GAME_SIZES;
+    if (memcmp(t->sizes, sizes, sizeof sizes)) {
+        snprintf(detail, sizeof detail, "its structures are not this runtime's (their sizes %u %u %u %u, here %u %u %u %u): "
+                 "built from other runtime headers", t->sizes[0], t->sizes[1], t->sizes[2], t->sizes[3], sizes[0], sizes[1],
+                 sizes[2], sizes[3]);
+        return game_refused(quiet, path, detail);
+    }
+    if (!t->isa || strcmp(t->isa, RT_GAME_ISA)) {
+        snprintf(detail, sizeof detail, "it is compiled for %s, and this runtime for %s", t->isa ? t->isa : "?", RT_GAME_ISA);
+        return game_refused(quiet, path, detail);
+    }
+    /* the runtime functions it calls: each one this runtime must have, and every HLE and HLE_WRAP
+     * it has must be among them (the game's C is written for one set of them: tools/recomp.py) */
+    u32 hle = 0, wraps = 0, wraps_here = 0;
+    for (u32 k = 0; k < rt_game_func_count; k++) wraps_here += !strncmp(rt_game_funcs[k].name, "hle_", 4);
+    for (u32 i = 0; i < t->import_count; i++) {
+        const char *name = t->imports[i].name;
+        RtGameFn *fn = NULL;
+        for (u32 k = 0; k < rt_game_func_count && !fn; k++)
+            if (!strcmp(rt_game_funcs[k].name, name)) { fn = rt_game_funcs[k].fn; wraps += !strncmp(name, "hle_", 4); }
+        for (u32 k = 0; k < hle_count && !fn && !strncmp(name, "hle_", 4); k++)
+            if (!strcmp(hle_table[k].name, name + 4)) { fn = (RtGameFn *)hle_table[k].fn; hle++; }
+        if (!fn) {
+            snprintf(detail, sizeof detail, "it calls %s, which this runtime does not have: built from other runtime sources", name);
+            return game_refused(quiet, path, detail);
+        }
+        *t->imports[i].slot = fn;
+    }
+    if (hle != hle_count || wraps != wraps_here) {
+        snprintf(detail, sizeof detail, "it is built for other native functions (%u of this runtime's %u HLE, %u of its %u "
+                 "HLE_WRAP): built from other runtime sources", hle, hle_count, wraps, wraps_here);
+        return game_refused(quiet, path, detail);
+    }
+    for (u32 k = 0; k < rt_game_func_count; k++) {
+        if (!rt_game_funcs[k].orig) continue;
+        u32 i = 0;
+        while (i < t->orig_count && t->origs[i].addr != rt_game_funcs[k].addr) i++;
+        if (i == t->orig_count) {
+            snprintf(detail, sizeof detail, "it has no original of HLE_WRAP(%llx): built from other runtime sources",
+                     (unsigned long long)rt_game_funcs[k].addr);
+            return game_refused(quiet, path, detail);
+        }
+        *rt_game_funcs[k].orig = t->origs[i].fn;
+    }
+    u32 hooks = 0;
+    for (RtHook *h = *t->hooks; h; h = h->next) hooks++;
+    RtHook **list = hooks ? malloc(hooks * sizeof *list) : NULL;
+    if (hooks && !list) return game_refused(quiet, path, "no memory for its hook slots' list");
+    u32 at = 0;
+    for (RtHook *h = *t->hooks; h; h = h->next) list[at++] = h;
+    while (at) rt_hook_add(list[--at]);   /* (rt_hook_add puts each in front: the oldest goes in first) */
+    free(list);
+    rt_module_main = *t->boot[0];
+    rt_module_subsdk0 = *t->boot[1];
+    rt_module_sdk = *t->boot[2];
+    game_nros = t->nros;
+    game_nro_count = t->nro_count;
+    fprintf(stderr, "[boot] game library %s: interface %u, %u runtime functions bound, %u hook slots, %u NROs\n", path,
+            t->abi, t->import_count, hooks, t->nro_count);
+    return 1;
+}
+#endif
+
 /* The game is version 13.0.5: its main module's build id (tools/game_version.py MAIN_BUILD_ID, which
  * tests/test_game_version.py checks this against). The build refuses other versions; a game built
  * from one before that (or by hand) says so plainly and stops - not a crash report, not a bug. */
@@ -1104,6 +1271,9 @@ int main(int argc, char **argv) {
 #ifdef __APPLE__
     mac_start(argc, argv, &dir, &options);
 #endif
+#ifdef SSBU_GAME_DLL
+    if (argc == 2 && !strcmp(argv[1], "--game-library")) return game_open(1) ? 0 : 4;
+#endif
     if (!dir) { fprintf(stderr, "usage: ssbu <directory with *.reloc.bin images> [--trace]\n"); return 2; }
     display_dpi_aware();
 #ifdef _WIN32
@@ -1136,6 +1306,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[boot] %s, built %04d-%02d-%02d %02d:%02d\n", exe, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
     }
 #endif
+#ifdef SSBU_GAME_DLL
+    if (!game_open(0)) return 4;
+#endif
     if (!game_version_ok()) return 4;
     for (int i = options; i < argc; i++) {
         if (!strcmp(argv[i], "--trace")) rt_trace = 1;
@@ -1155,6 +1328,8 @@ int main(int argc, char **argv) {
     rt_data_dir = dir;
     kernel_init();
     load(dir);
+    movie_test_start();
+    test_fight_start();
 #ifndef _WIN32
     rt_window_init();   /* (SDL wants its window and events on the main thread, which then runs them) */
 #endif

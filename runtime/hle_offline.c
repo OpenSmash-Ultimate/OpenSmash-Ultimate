@@ -31,7 +31,9 @@ HLE(_ZN2nn8settingseqERKNS0_12LanguageCodeERKNS0_8LanguageE) { c->x[0] = ld64(c-
 HLE(_ZN2nn8settingseqERKNS0_8LanguageERKNS0_12LanguageCodeE) { c->x[0] = ld64(c->x[1]) == language_code(ld32(c->x[0])); }
 
 /* ---- nn::crypto: the secure random source ----------------------------------------- */
+int test_fixed_random(u64 buffer, u64 size, const char *who, u64 caller);   /* (hle_fight_test.c) SSBU_FIXED_SEED */
 HLE(_ZN2nn6crypto36GenerateCryptographicallyRandomBytesEPvm) {
+    if (test_fixed_random(c->x[0], c->x[1], "nn::crypto::GenerateCryptographicallyRandomBytes", c->x[30] - 4)) return;
     u8 *p = P(u8, c->x[0]);
     for (u64 i = 0; i < c->x[1]; i++) {
         unsigned int r;

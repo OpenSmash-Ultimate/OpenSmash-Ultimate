@@ -6,14 +6,21 @@
 // import. With no hook installed the game runs exactly the code it ran before (see fighter_sdk\hook_host.c).
 //
 // A mod is a DLL in the folder named by SSBU_MODS=<folder> that exports
-//     extern "C" __declspec(dllexport) void mod_init(const HookApi *api);
+//     extern "C" MOD_EXPORT void mod_init(const HookApi *api);
 // The port calls it once, before the game starts. Build:  python fighter_sdk\tools\build_mod.py <mod.cpp>
+// (the port loads mods on Windows only: hook_host.c)
 //
 // A replacement gets the register context of the calling game thread: arguments in c->x[0..7] (integers, pointers;
 // a function that returns an L2CValue gets the result buffer in c->x[8]) and c->v[0..7] (floats); results go to
 // c->x[0] / c->v[0]. `orig(c)` runs the function as it was before this hook (the original, or an older hook).
 #pragma once
 #include <stdint.h>
+
+#ifdef _WIN32
+#define MOD_EXPORT __declspec(dllexport)
+#else
+#define MOD_EXPORT __attribute__((visibility("default")))
+#endif
 
 #ifndef SSBU_CTX_DEFINED
 #define SSBU_CTX_DEFINED

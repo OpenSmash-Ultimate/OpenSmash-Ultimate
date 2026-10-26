@@ -71,7 +71,7 @@ cd tools
 python -m nex.selftest
 ```
 
-Tests that start the game should be scripted, not played by hand. The base presses buttons on a timetable (`SSBU_INPUT`), saves frames (`SSBU_CAPTURE`) and has run scripts in `tools/dev/` such as `autobattle.sh` and `menurun.sh` (see the [tool reference](docs/TECHNICAL.md#7-tool-reference)). ssbu-recomp also has test modes the base doesn't have yet: speed-up, movie skip, direct choice of fighters and stage, and a fixed end after a number of fight frames (`ssbu-recomp/tests/DEBUG_MODE.md`). Frame-time measurements run at normal speed.
+Tests that start the game should be scripted, not played by hand. The base presses buttons on a timetable (`SSBU_INPUT`) or in sequences counted in frames (`SSBU_SEQ`), saves frames (`SSBU_CAPTURE`), runs fast-forward (`SSBU_SPEED`), cuts movies short (`SSBU_SKIP_MOVIES`), logs a hash of every fight frame (`SSBU_FIGHT_HASH`), makes the fight repeat (`SSBU_DETERMINISTIC`, `SSBU_FIXED_SEED`), picks the fighters and stage (`SSBU_DEBUG_MATCH`) and ends after a number of fight frames (`SSBU_DEBUG_END`): see [Test runs](docs/TESTING-RUNS.md). It has run scripts in `tools/dev/` such as `autobattle.sh` and `menurun.sh` (see the [tool reference](docs/TECHNICAL.md#7-tool-reference)). Frame-time measurements run at normal speed.
 
 Two checks carry most of the weight:
 

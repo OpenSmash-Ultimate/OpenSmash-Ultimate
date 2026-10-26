@@ -180,10 +180,39 @@ class SystemTests(unittest.TestCase):
         self.assertIsNone(il.libstdcxx_package([], lambda v: False))
 
     def test_cpu_and_memory(self):
-        cpu = 'processor\t: 0\nmodel name\t: AMD Ryzen 9  7950X 16-Core Processor\nflags\t\t: fpu sse2 avx avx2 bmi2\n'
-        self.assertEqual(il.cpu_info(cpu), ('AMD Ryzen 9 7950X 16-Core Processor', True))
-        self.assertEqual(il.cpu_info(cpu.replace(' avx2', '')), ('AMD Ryzen 9 7950X 16-Core Processor', False))
-        self.assertEqual(il.cpu_info(''), ('unknown processor', None))
+        # (made-up flags lines: what the build for each needs, tools/isa.py)
+        v2 = 'fpu sse2 pni ssse3 cx16 sse4_1 sse4_2 popcnt'
+        cpu = f'processor\t: 0\nmodel name\t: AMD Ryzen 9  7950X 16-Core Processor\nflags\t\t: {v2} avx avx2 fma bmi1 bmi2 abm\n'
+        name = 'AMD Ryzen 9 7950X 16-Core Processor'
+        self.assertEqual(il.cpu_info(cpu), (name, 'avx2', []))
+        self.assertEqual(il.cpu_info(cpu.replace(' avx2', '')), (name, 'x86-64-v2', ['avx2']))   # built for older processors
+        self.assertEqual(il.cpu_info(cpu.replace(' avx ', ' ')), (name, 'x86-64-v2', ['avx']))   # (no YMM state: Linux leaves avx out)
+        self.assertEqual(il.cpu_info(cpu.replace(' sse4_2', '')), (name, None, ['sse4.2']))   # below x86-64-v2: stopped
+        self.assertEqual(il.cpu_info(''), ('unknown processor', '', []))
+
+    def test_pc_check_by_the_processor(self):
+        # step 2: AVX2 recommended, x86-64-v2 the least; stopped only below it
+        v2 = 'fpu sse2 pni ssse3 cx16 sse4_1 sse4_2 popcnt'
+        files = {'/etc/os-release': 'PRETTY_NAME="Made-up Linux 1"\n', '/proc/meminfo': 'MemTotal:       33554432 kB\n'}
+        m = unittest.mock
+
+        def check(flags):
+            files['/proc/cpuinfo'] = f'model name\t: Made-up CPU\nflags\t\t: {flags}\n' if flags is not None else ''
+            out = io.StringIO()
+            with m.patch.object(il, 'read_text', lambda p: files.get(p, '')), m.patch.object(il.os, 'geteuid', lambda: 1000, create=True), \
+                    m.patch.object(il.platform, 'machine', lambda: 'x86_64'), m.patch.object(il, 'folder_gb', lambda p: 0), \
+                    m.patch.object(il.shutil, 'disk_usage', lambda p: types.SimpleNamespace(free=500 * 2**30)), \
+                    contextlib.redirect_stdout(out):
+                try:
+                    il.step_check_pc()
+                except il.Stop as e:
+                    return 'STOPPED: ' + str(e)
+            return out.getvalue()
+        self.assertIn('Made-up CPU - has AVX2', check(v2 + ' avx avx2 fma bmi1 bmi2 abm'))
+        self.assertIn('Made-up CPU - lacks avx, avx2, fma, bmi1, bmi2, lzcnt: the game is built for older processors (x86-64-v2)', check(v2))
+        self.assertIn('its extensions are unknown: the game is built for older processors', check(None))
+        self.assertIn('STOPPED: The processor (Made-up CPU) lacks sse4.2, popcnt, which the game needs at the least',
+                      check(v2.replace(' sse4_2 popcnt', '')))
         self.assertAlmostEqual(il.mem_total_gb('MemTotal:       16303232 kB\nMemFree: 1 kB\n'), 15.55, places=2)
         self.assertIsNone(il.mem_total_gb(''))
         self.assertEqual(il.disk_need_gb(40, 12.5), 27.5)
@@ -213,6 +242,10 @@ class SystemTests(unittest.TestCase):
             open(os.path.join(tmp, 'prod.keys'), 'w').close()
             self.assertEqual(il.check_keys(tmp), (True, 'prod.keys found; no title.keys (needed for games bought from the eShop)'))
             self.assertFalse(il.check_firmware(tmp)[0])
+            self.assertFalse(il.check_firmware(os.path.join(tmp, 'none'))[0])   # (named, and not there)
+            ok, text = il.check_firmware(None)   # (optional: none is fine)
+            self.assertTrue(ok)
+            self.assertIn('the open fonts of third_party/fonts_open', text)
             open(os.path.join(tmp, 'a.nca'), 'w').close()
             self.assertTrue(il.check_firmware(tmp)[0])
 
@@ -307,7 +340,7 @@ class BuildOnLinuxTests(unittest.TestCase):
         self.vkd3d = top / 'build-vkd3d'
         self.calls = []
         self.ns = runpy.run_path(str(ROOT / 'tools/build_game.py'), run_name='build_game_linux')['build'].__globals__
-        fake_tc = types.SimpleNamespace(VKD3D_BUILD=str(self.vkd3d))
+        fake_tc = types.SimpleNamespace(VKD3D_BUILD=str(self.vkd3d), ISA='avx2')
         self.ns.update(
             LINUX=True, ROOT=str(top / 'port'), DUMP=str(dump), EXEFS=str(dump / 'exefs'), FONTS=str(dump / 'fonts'),
             MODULES=str(dump / 'modules'), SAVED=str(dump / 'build_folders.txt'), SOURCE=str(dump / 'game_source.txt'),
@@ -337,9 +370,18 @@ class BuildOnLinuxTests(unittest.TestCase):
     def test_vkd3d_once(self):
         (self.vkd3d / 'linux').mkdir(parents=True)
         (self.vkd3d / 'linux' / 'libvkd3d-shader.a').write_bytes(b'')
+        # no record: an older version built it, with flags no instruction set has today (tools/isa.py): built again
+        self.ns['build'](self.args)
+        self.assertEqual(self.tools_run(), ['arc.py', 'recomp.py', 'build_vkd3d.py', 'build_linux.py'])
+        il.isa.record(str(self.vkd3d / 'linux'), 'avx2', False)   # (what build_vkd3d.py writes)
+        self.calls.clear()
         self.ns['build'](self.args)
         self.assertEqual(self.tools_run(), ['arc.py', 'recomp.py', 'build_linux.py'])
-
+        # built for another instruction set: built again
+        il.isa.record(str(self.vkd3d / 'linux'), 'x86-64-v2', False)
+        self.calls.clear()
+        self.ns['build'](self.args)
+        self.assertEqual(self.tools_run(), ['arc.py', 'recomp.py', 'build_vkd3d.py', 'build_linux.py'])
 
     def test_game_files_not_asked_for_when_read(self):
         # an update's build: dump/ has everything from the game files, so no folder is asked for
@@ -405,6 +447,30 @@ class RebuildTests(unittest.TestCase):
             files = il.step_files(self.args())
         self.assertEqual(files, {'game': None, 'keys': None, 'firmware': None, 'name': 'Me'})
 
+    def test_online_name_in_config_folder(self):
+        """online_name.txt where the game reads it (runtime/config_folder.h): config/ once the game has made it
+        (config/version.ini), else the folder itself; online_server.txt stays the folder's own."""
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.object(il, 'ROOT', tmp), \
+                unittest.mock.patch.object(il, 'detected_folders', lambda: {'game': None, 'keys': None, 'firmware': None}), \
+                unittest.mock.patch.object(il, 'files_ready', return_value=True), \
+                unittest.mock.patch.object(il, 'venv_python', return_value=sys.executable), \
+                unittest.mock.patch.object(il, 'ask', side_effect=AssertionError('asked')), \
+                contextlib.redirect_stdout(io.StringIO()):
+            Path(tmp, 'online_name.txt').write_text('Old Name\n')
+            self.assertEqual(il.config_file('online_name.txt'), os.path.join(tmp, 'online_name.txt'))
+            self.assertEqual(il.step_files(self.args(dry_run=True))['name'], 'Old Name')
+            os.makedirs(os.path.join(tmp, 'config'))
+            Path(tmp, 'config', 'version.ini').write_text('version = 1\n')
+            Path(tmp, 'config', 'online_name.txt').write_text('Made-up Name\n')
+            self.assertEqual(il.config_file('online_name.txt'), os.path.join(tmp, 'config', 'online_name.txt'))
+            self.assertEqual(il.config_file('online_server.txt'), os.path.join(tmp, 'online_server.txt'))
+            self.assertEqual(il.step_files(self.args(dry_run=True))['name'], 'Made-up Name')
+            self.assertEqual(il.step_files(self.args(online_name='New Name'))['name'], 'New Name')
+            self.assertEqual(Path(tmp, 'config', 'online_name.txt').read_text(), 'New Name\n')
+            self.assertEqual(Path(tmp, 'online_name.txt').read_text(), 'Old Name\n')   # (the old file as it was)
+            Path(tmp, 'config', 'online_server.txt').write_text('off\n')
+            self.assertEqual(il.config_file('online_server.txt'), os.path.join(tmp, 'config', 'online_server.txt'))
+
     def test_a_named_game_folder_is_looked_at(self):
         with unittest.mock.patch.object(il, 'files_ready', side_effect=AssertionError('checked')),                 unittest.mock.patch.object(il, 'venv_python', return_value=sys.executable),                 unittest.mock.patch.object(il, 'check_keys', return_value=(False, 'no')),                 contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(il.Stop):   # (not interactive: the keys folder it was given is no good)
@@ -416,8 +482,90 @@ class RebuildTests(unittest.TestCase):
         with unittest.mock.patch.object(il.subprocess, 'run', run), contextlib.redirect_stdout(io.StringIO()):
             il.step_build(self.args(), {'game': None, 'keys': None, 'firmware': None})
             il.step_build(self.args(), {'game': '/g', 'keys': '/k', 'firmware': '/f'})
+            il.step_build(self.args(), {'game': '/g', 'keys': '/k', 'firmware': None})
         self.assertNotIn('--game', seen[0])
+        self.assertNotIn('--no-firmware', seen[0])   # (read already: build_game.py knows how the fonts were done)
         self.assertEqual(seen[1][seen[1].index('--game') + 1], '/g')
+        self.assertEqual(seen[1][seen[1].index('--firmware') + 1], '/f')
+        self.assertNotIn('--no-firmware', seen[1])
+        self.assertIn('--no-firmware', seen[2])   # (none chosen: the open fonts, not asked again by the build)
+        self.assertNotIn('--firmware', seen[2])
+
+
+class TtyInput(io.StringIO):
+    def isatty(self):
+        return True
+
+
+class NoFirmwareTests(unittest.TestCase):
+    """Step 6 with the firmware optional (only for the console's own fonts): none found, --no-firmware, none typed."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='linux-firmware-test-')
+        self.addCleanup(self.temp.cleanup)
+        self.top = Path(self.temp.name)
+        self.dirs = {n: self.top / n for n in ('game', 'keys', 'firmware', 'emulator firmware')}
+        for d in self.dirs.values():
+            d.mkdir()
+        (self.dirs['keys'] / 'prod.keys').write_text('')
+        (self.dirs['keys'] / 'title.keys').write_text('')
+        (self.dirs['firmware'] / '0100.nca').write_bytes(b'')   # (a made-up firmware: an .nca file is all the check looks at)
+
+    def args(self, **kw):
+        return types.SimpleNamespace(**{**dict(game=str(self.dirs['game']), keys=str(self.dirs['keys']), firmware=None,
+                                               dry_run=False, online_name='Me', yes=True, jobs=None, skip_build=False), **kw})
+
+    def files(self, a, found_firmware=None, typed=None):
+        found = {'game': None, 'keys': None, 'firmware': found_firmware}
+        stdin = TtyInput() if typed is not None else io.StringIO()
+        with unittest.mock.patch.object(il, 'ROOT', str(self.top)), \
+                unittest.mock.patch.object(il, 'detected_folders', lambda: dict(found)), \
+                unittest.mock.patch.object(il, 'scan_game', lambda folder, keys: (True, 'the game: 13.0.5')), \
+                unittest.mock.patch.object(il.sys, 'stdin', stdin), \
+                unittest.mock.patch('builtins.input', side_effect=list(typed or []) or AssertionError('asked')), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            files = il.step_files(a)
+        return files, out.getvalue()
+
+    def test_none_found(self):
+        files, out = self.files(self.args())
+        self.assertIsNone(files['firmware'])
+        self.assertIn('firmware: (none) - optional; without it the game uses the open fonts of third_party/fonts_open', out)
+        self.assertEqual(files['game'], str(self.dirs['game']))
+
+    def test_no_firmware_over_the_one_found(self):
+        files, _out = self.files(self.args(firmware=''), found_firmware=str(self.dirs['firmware']))
+        self.assertIsNone(files['firmware'])
+
+    def test_found_and_given_as_before(self):
+        files, _out = self.files(self.args(), found_firmware=str(self.dirs['firmware']))
+        self.assertEqual(files['firmware'], str(self.dirs['firmware']))
+        with self.assertRaises(il.Stop) as stop:   # (one named that is no firmware: a mistake, it stops)
+            self.files(self.args(firmware=str(self.dirs['emulator firmware'])))
+        self.assertIn('Name it with --firmware (or --no-firmware: the open fonts)', str(stop.exception))
+
+    def test_asked(self):
+        # the question says it is optional and what for; Enter on nothing, or none over the one found, is none
+        a = self.args(yes=False, game=None, keys=None)
+        typed = [str(self.dirs['keys']), '', str(self.dirs['game'])]
+        files, out = self.files(a, typed=typed)
+        self.assertIsNone(files['firmware'])
+        self.assertIn('The firmware is optional', out)
+        self.assertIn('Chinese, Japanese and Korean', out)
+        files, out = self.files(a, found_firmware=str(self.dirs['firmware']), typed=[str(self.dirs['keys']), 'none',
+                                                                                   str(self.dirs['game'])])
+        self.assertIsNone(files['firmware'])
+        files, out = self.files(a, found_firmware=str(self.dirs['firmware']), typed=[str(self.dirs['keys']), '',
+                                                                                   str(self.dirs['game'])])
+        self.assertEqual(files['firmware'], str(self.dirs['firmware']))
+
+    def test_an_emulator_folder_without_firmware_is_not_suggested(self):
+        c = {'keys': [], 'game': [], 'firmware': [str(self.dirs['emulator firmware']), str(self.dirs['firmware'])]}
+        with unittest.mock.patch.object(il, 'ROOT', str(self.top)), \
+                unittest.mock.patch.object(il, 'folder_candidates', lambda *x: c):
+            self.assertEqual(il.detected_folders()['firmware'], str(self.dirs['firmware']))
+            c['firmware'] = c['firmware'][:1]   # (an emulator installed without its firmware)
+            self.assertIsNone(il.detected_folders()['firmware'])
 
 
 class CheckToolsTests(unittest.TestCase):
@@ -453,9 +601,9 @@ class GenerateOnlyTests(unittest.TestCase):
                 check=lambda e, mods=None: 0, tools_fingerprint=lambda: 'fp', image=lambda nso, img: done.append(('image', nso)),
                 Module=lambda nso: types.SimpleNamespace(build_id='b' * 64, text=types.SimpleNamespace(mem=0, end=4000)),
                 MODULES={'main': 1, 'sdk': 2}, stale_files=lambda target: [],
-                build=lambda nso, target, jobs, per_file: done.append(('build', os.path.basename(target))),
-                compile_dir=lambda target, jobs, shown=None: done.append(('compile', target)) or True,
-                link=lambda dirs, exe: done.append(('link', exe)) or True,
+                build=lambda nso, target, jobs, per_file, imports=None: done.append(('build', os.path.basename(target))),
+                compile_dir=lambda target, jobs, shown=None, steps=None: done.append(('compile', target)) or True,
+                link=lambda dirs, exe, steps=None: done.append(('link', exe)) or True,
                 modcache=types.SimpleNamespace(build_info=lambda t: None, find_built=lambda *x: None,
                                                write_stamp=lambda t, *x: stamps.append(os.path.basename(t))))
             no_title = unittest.mock.patch.object(g['progress'], 'save_title', return_value=None)   # (the bar's)
@@ -538,6 +686,21 @@ class LauncherTests(unittest.TestCase):
     def test_online_off_plays_offline(self):
         r = self.run_launcher('play-ssbu.sh')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('Playing offline (no lobby in online_server.txt).', r.stdout)
+
+    def test_online_files_in_config_folder(self):
+        """Once the game has made config/ (runtime/config_folder.h: its version.ini), online_name.txt is read
+        there; online_server.txt stays the port's own until there is one there."""
+        (self.top / 'online_server.txt').write_text('lobby.example:39421 FRIENDS\n', newline='\n')
+        (self.top / 'online_name.txt').write_text('Old Name\n', newline='\n')
+        (self.top / 'config').mkdir()
+        (self.top / 'config' / 'version.ini').write_text('version = 1\n', newline='\n')
+        (self.top / 'config' / 'online_name.txt').write_text('Made-up Name\n', newline='\n')
+        r = self.run_launcher('play-ssbu.sh')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('Online: lobby lobby.example:39421 (lobby code FRIENDS), as Made-up Name.', r.stdout)
+        (self.top / 'config' / 'online_server.txt').write_text('off\n', newline='\n')
+        r = self.run_launcher('play-ssbu.sh')
         self.assertIn('Playing offline (no lobby in online_server.txt).', r.stdout)
 
     def test_data_gone(self):

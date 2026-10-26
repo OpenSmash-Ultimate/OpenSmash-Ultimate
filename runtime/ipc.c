@@ -44,7 +44,7 @@ void ipc_push(Ipc *ipc, const void *data, u32 size) {
     ipc->out_size += size;
 }
 
-void ipc_copy_handle(Ipc *ipc, u32 handle) { ipc->copy_out[ipc->ncopy_out++] = handle; }
+void ipc_copy_handle(Ipc *ipc, u32 handle) { kernel_copy_handle(handle); ipc->copy_out[ipc->ncopy_out++] = handle; }
 void ipc_object(Ipc *ipc, IpcObject *object) { ipc->objects_out[ipc->nobjects_out++] = object; }
 
 u64 ipc_out_buffer(Ipc *ipc, u32 i, u64 *size) {

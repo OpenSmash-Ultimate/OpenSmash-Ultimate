@@ -1,7 +1,7 @@
 """Facts about the lua2cpp script modules: functions by kind, sizes, names, imports.
 
     python census.py mario            one module, detailed
-    python census.py all              all 98 modules: totals (writes census_all.json next to this file)
+    python census.py all              all 98 modules: totals (writes fighters/tools_out/census_all.json)
 
 A function = one entry of the module's .eh_frame_hdr table (every function with unwind information); PLT stubs
 are counted apart. Kinds are decided from the code alone:
@@ -21,7 +21,8 @@ import sys
 
 import numpy as np
 
-from nrolib import Nro, nro_map, demangle_simple, HERE
+import sdk_paths
+from nrolib import Nro, nro_map, demangle_simple
 
 SET_FN_HASH = '_ZN3lib8L2CAgent20sv_set_function_hashEPvN3phx6Hash40E'
 SET_STATUS = '_ZN7lua2cpp12L2CAgentBase18sv_set_status_funcERKN3lib8L2CValueES4_Pv'
@@ -36,13 +37,12 @@ def script_labels():
     if _labels is None:
         import zlib
         _labels = {}
-        ref = os.path.normpath(os.path.join(HERE, '..', '..', '..', 'reference', 'param-labels'))
         for rel in (('motion_list', 'Labels.txt'), ('sqb', 'Labels.txt')):
-            for line in open(os.path.join(ref, *rel), encoding='utf-8', errors='replace'):
+            for line in open(sdk_paths.reference('param-labels', *rel), encoding='utf-8', errors='replace'):
                 s = line.strip()
                 if s:
                     _labels[zlib.crc32(s.encode()) | (len(s) << 32)] = s
-        for line in open(os.path.join(ref, 'ParamLabels.csv'), encoding='utf-8', errors='replace'):
+        for line in open(sdk_paths.reference('param-labels', 'ParamLabels.csv'), encoding='utf-8', errors='replace'):
             h, _, s = line.strip().partition(',')
             if s:
                 _labels.setdefault(int(h, 16), s)
@@ -256,7 +256,8 @@ def main():
     for g, c in groups.most_common(14):
         print('  %-44s %d' % (g, c))
     if what == 'all':
-        with open(os.path.join(HERE, '..', '..', 'fighters', 'tools_out', 'census_all.json'), 'w') as f:      # S3: game-derived output, not next to the tools
+        os.makedirs(os.path.join(sdk_paths.WORK, 'fighters', 'tools_out'), exist_ok=True)
+        with open(os.path.join(sdk_paths.WORK, 'fighters', 'tools_out', 'census_all.json'), 'w') as f:      # S3: game-derived output, not next to the tools
             json.dump({'per_module': per, 'total': {k: list(v) for k, v in total.items()}}, f, indent=1)
 
 

@@ -25,6 +25,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nrolib  # noqa: E402
+from capstone.arm64_const import ARM64_OP_IMM  # noqa: E402
 
 STUDY = nrolib.STUDY
 HEAD = re.compile(r'^(?:L2C_(?:VOID_)?FUNCTION\d?\(\s*(\w+)\s*,\s*|L2CValue (local)::)(\w+)')    # S8: also a fighter's plain helper functions
@@ -110,7 +111,7 @@ class LocalName(str):
 def binary_calls(nro, off, size, by_off):
     calls, fp = collections.Counter(), 0
     for ins in nro.disasm(off, size):
-        if ins.mnemonic in ('bl', 'b') and ins.operands and ins.operands[0].type == nrolib.A.ARM64_OP_IMM:
+        if ins.mnemonic in ('bl', 'b') and ins.operands and ins.operands[0].type == ARM64_OP_IMM:
             t = ins.operands[0].imm
             if off <= t < off + size:
                 continue

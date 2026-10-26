@@ -45,6 +45,7 @@ import luaconst                  # noqa: E402
 import mangle                    # noqa: E402
 import status_decomp as SD       # noqa: E402
 from acmd_decomp import NotMechanical   # noqa: E402
+import sdk_paths                 # noqa: E402
 from nrolib import STUDY, demangle_simple   # noqa: E402
 
 OUT = os.path.join(STUDY, 'fighters', 'tools_out', 'status_s8')
@@ -1194,7 +1195,7 @@ def run_offline(mods, trace=False, skipfile=None):
         env['SSBU_FIGHTER_OFFLINE_SKIP'] = skipfile
     if trace:
         env['SSBU_FIGHTER_OFFLINE_TRACE'] = '1'
-    p = subprocess.Popen([os.path.join(STUDY, EXE), os.path.join('..', 'binaries', '13.0.4', 'main.elf'), '900'], cwd=STUDY, env=env,
+    p = subprocess.Popen([sdk_paths.program(EXE, 'S2_EXE'), sdk_paths.main_elf(), '900'], cwd=STUDY, env=env,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     try:
         out, _ = p.communicate(timeout=1500)

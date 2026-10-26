@@ -1,5 +1,5 @@
 // Run-time of a fighter DLL: binding with the host, the script adapters, L2CValue, the Lua stack protocol.
-// Compiled into every fighters_bin\<name>.dll together with that fighter's sources (build_fighter.py).
+// Compiled into every fighters_bin\<name>.dll (.so, .dylib) together with that fighter's sources (build_fighter.py).
 #include "fighter_sdk.h"
 
 FsHost fs_host;
@@ -25,7 +25,7 @@ static const FsOverride fs_overrides[] = {
 #undef ACMD_BIND
 #undef L2C_BIND
 
-extern "C" __declspec(dllexport) void fighter_bind(const FsHost *host, FsTable *t) {
+extern "C" FS_EXPORT void fighter_bind(const FsHost *host, FsTable *t) {
     fs_host = *host;
     t->syms = fs_syms;
     t->sym_count = (int)(sizeof fs_syms / sizeof fs_syms[0]);
@@ -37,7 +37,7 @@ extern "C" __declspec(dllexport) void fighter_bind(const FsHost *host, FsTable *
 // N13 (plan\phases\N13_own_articles.md): the host-side components (the kind component's own articles) find a fighter's
 // own functions by name: i-th function's name and offset in the module (-1 past the end). The guest ADDRESS of an
 // offset comes from fs_module_address, which a fighter source with status_local.h exports (FS_EXPORT_MODULE_ADDRESS).
-extern "C" __declspec(dllexport) const char *fs_function_at(int i, int64_t *off) {
+extern "C" FS_EXPORT const char *fs_function_at(int i, int64_t *off) {
     int n = (int)(sizeof fs_overrides / sizeof fs_overrides[0]) - 1;
     if (i < 0 || i >= n) return nullptr;
     if (off) *off = fs_overrides[i].off;

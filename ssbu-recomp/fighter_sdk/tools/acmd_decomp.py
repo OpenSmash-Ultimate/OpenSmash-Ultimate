@@ -1,7 +1,7 @@
 """Mechanical decompiler for the ACMD scripts of a lua2cpp module (AArch64 -> readable C++ calls).
 
     python acmd_decomp.py mario            writes fighters/<name>/acmd/*.cpp, fighters/<name>/generated/bindings.inc,
-                                           fighter_sdk/tools/out/<name>_acmd.json (per script: ok / why not)
+                                           fighters/tools_out/<name>_acmd.json (per script: ok / why not)
     python acmd_decomp.py mario --stats    only the numbers
     python acmd_decomp.py all --stats      numbers for all modules (nothing written)
 

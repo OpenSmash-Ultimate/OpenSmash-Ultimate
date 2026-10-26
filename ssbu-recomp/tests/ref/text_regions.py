@@ -21,11 +21,11 @@ import refcfg
 
 S = 1.5          # boxes below were read off 1280x720 reductions
 BOXES = {
-    'rules': [('Mischia > Selezione regole', 95, 12, 380, 40), ('Usate per ultime', 270, 108, 245, 36), ('Crea un set di regole', 232, 205, 380, 48),
-              ('Tempo: 2:30 (list)', 315, 408, 260, 46), ('A vite', 930, 118, 120, 48), ('Vite', 890, 216, 70, 36), ('3', 1040, 214, 30, 40),
-              ('Tempo', 878, 292, 105, 38), ('2:30', 1048, 290, 90, 40), ('Spiriti', 890, 368, 95, 38), ('Nessuno', 1055, 366, 160, 40),
-              ('A vittorie', 872, 444, 145, 38), ('Modifica', 815, 634, 100, 28)],
-    'stage_select': [('Vite: 3/Tempo: 2:30 (header)', 215, 8, 280, 38), ('Standard', 828, 14, 82, 36)],
+    'rules': [('title', 95, 12, 380, 40), ('recent rule sets', 270, 108, 245, 36), ('create rule set', 232, 205, 380, 48),
+              ('list entry time', 315, 408, 260, 46), ('rule style', 930, 118, 120, 48), ('stock label', 890, 216, 70, 36), ('stock value', 1040, 214, 30, 40),
+              ('time label', 878, 292, 105, 38), ('time value', 1048, 290, 90, 40), ('spirits label', 890, 368, 95, 38), ('spirits value', 1055, 366, 160, 40),
+              ('fifth setting', 872, 444, 145, 38), ('edit button', 815, 634, 100, 28)],
+    'stage_select': [('rules header', 215, 8, 280, 38), ('stage form', 828, 14, 82, 36)],
 }
 
 

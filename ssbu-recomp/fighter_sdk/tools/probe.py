@@ -13,8 +13,8 @@ Every mode runs with SSBU_FIGHT_HEALTH=5 (hook_host.c): per fighter, status chan
 damage from the game's own getters; the verdict line says HEALTHY or FROZEN, and one line per fighter follows. A match
 that reaches the results with a FROZEN fighter is not a pass.
 
-A probe = exe (PROBE_EXE, default ssbu_s4.exe) + tests/seq_battle_play.txt on a FRESH copy of ..\\userdata
-(tests/s4_userdata, removed and copied again every run), SSBU_FIXED_SEED=1 SSBU_PAIR_WARM=0, log tests/logs/s4_<tag>.log,
+A probe = exe (PROBE_EXE, default ssbu_s4.exe) + tests/seq_battle_play.txt on a FRESH copy of your save folder
+(SSBU_FIGHTER_USERDATA, else ..\\userdata; into tests/s4_userdata, removed and copied again every run), SSBU_FIXED_SEED=1 SSBU_PAIR_WARM=0, log tests/logs/s4_<tag>.log,
 report tests/logs/s4_<tag>.report.txt. It is stopped (own process only) as soon as the verdict is known:
     TRAP      the log shows "GUEST TRAP" / "HOST EXCEPTION", or the exe ended by itself with a non-zero code
     RUNNING   the fighter report counts PROBE_CALLS (default 30000) calls of lua2cpp_common functions, no trap
@@ -29,7 +29,10 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-STUDY = os.path.normpath(os.path.join(HERE, '..', '..'))
+sys.path.insert(0, HERE)
+import sdk_paths  # noqa: E402
+
+STUDY = sdk_paths.WORK
 LOGS = os.path.join(STUDY, 'tests', 'logs')
 
 
@@ -76,12 +79,15 @@ def health(text, show=True):
 
 
 def run(tag, env_extra, mode='run'):
-    exe = os.environ.get('PROBE_EXE', 'ssbu_s4.exe')
+    exe = sdk_paths.program(os.environ.get('PROBE_EXE', 'ssbu_s4.exe'), 'PROBE_EXE')
+    main_elf = sdk_paths.main_elf()
+    saves = sdk_paths.userdata()
     secs = int(os.environ.get('PROBE_SECS', '240' if mode == 'run' else '600'))
     need = int(os.environ.get('PROBE_CALLS', '30000'))
     ud = os.path.join(STUDY, 'tests', 's4_userdata')
     shutil.rmtree(ud, ignore_errors=True)
-    shutil.copytree(os.path.join(STUDY, '..', 'userdata'), ud)
+    shutil.copytree(saves, ud)
+    os.makedirs(LOGS, exist_ok=True)
     log = os.path.join(LOGS, 's4_%s.log' % tag)
     rep = os.path.join(LOGS, 's4_%s.report.txt' % tag)
     for p in (log, rep):
@@ -89,7 +95,7 @@ def run(tag, env_extra, mode='run'):
             os.remove(p)
     given = lambda k: k in os.environ or any(a.startswith(k + '=') for a in env_extra)     # tests\DEBUG_MODE.md: the debug variables switch the fast mode on (uncapped unless PROBE_FAST says otherwise)
     fast = os.environ.get('PROBE_FAST') or ('0' if any(given(k) for k in ('SSBU_DEBUG_MATCH', 'SSBU_DEBUG_MATCH_LIST', 'SSBU_DEBUG_END')) else '')
-    with open(os.path.join(STUDY, 'tests', os.environ.get('PROBE_SEQ', 'seq_debug_list.txt' if given('SSBU_DEBUG_MATCH_LIST') else 'seq_battle_play_fast.txt' if fast else 'seq_battle_play.txt'))) as f:
+    with open(os.path.join(sdk_paths.TREE, 'tests', os.environ.get('PROBE_SEQ', 'seq_debug_list.txt' if given('SSBU_DEBUG_MATCH_LIST') else 'seq_battle_play_fast.txt' if fast else 'seq_battle_play.txt'))) as f:
         seq = ' '.join(l.strip() for l in f if not l.startswith('#'))
     env = dict(os.environ)
     env.update(SSBU_SEQ=seq, SSBU_USERDATA=ud, SSBU_FIXED_SEED='1', SSBU_PAIR_WARM='0', SSBU_FIGHTER_REPORT=rep,
@@ -109,7 +115,7 @@ def run(tag, env_extra, mode='run'):
     t0 = time.time()
     verdict, loaded_seen, unloaded = 'TIMEOUT', False, False
     with open(log, 'w') as out:
-        p = subprocess.Popen([os.path.join(STUDY, exe), os.path.join(STUDY, '..', 'binaries', '13.0.4', 'main.elf'), str(secs + 60)],
+        p = subprocess.Popen([exe, main_elf, str(secs + 60)],
                              cwd=STUDY, env=env, stdout=out, stderr=subprocess.STDOUT)
         while time.time() - t0 < secs:
             time.sleep(2)

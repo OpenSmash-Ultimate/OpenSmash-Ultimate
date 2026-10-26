@@ -1,11 +1,14 @@
 """Which 64-bit hash does lib::lua_bind_get_value use for constant names? Try the usual ones against the key table."""
 import re
 import zlib
+
+import sdk_paths
 from nrolib import Nro
 
 n = Nro('common')
 keys = set(n.u64(0x6a5b70 + 8 * i) for i in range(0x4c0d))
-names = re.findall(r'^\s+([A-Z0-9_a-z]+): (0x[0-9A-Fa-f]+|-?\d+),', open(r'..\..\..\reference\skyline-smash\src\lua_const.rs').read(), re.M)
+with open(sdk_paths.reference('skyline-smash', 'src', 'lua_const.rs'), encoding='utf-8') as f:
+    names = re.findall(r'^\s+([A-Z0-9_a-z]+): (0x[0-9A-Fa-f]+|-?\d+),', f.read(), re.M)
 print(len(keys), 'keys', len(names), 'names')
 M = (1 << 64) - 1
 

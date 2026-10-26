@@ -3,7 +3,7 @@
 Install WindowSmash.bat, tools/install_windowsmash.ps1, and of tools/linux/install_linux.py, whose
 platform-neutral helpers it uses: the update, the downloads, the folder checks).
 
-Usage: Install WindowSmash.command [--game <dir>] [--keys <dir>] [--firmware <dir>] [--online-name <name>]
+Usage: Install WindowSmash.command [--game <dir>] [--keys <dir>] [--firmware <dir> | --no-firmware] [--online-name <name>]
                                    [--jobs N] [--skip-build] [--no-update] [--no-wizard] [--yes] [--dry-run]
 
   1. update     the newest WindowSmash from GitHub (the BRANCH below): a git checkout of it is
@@ -20,7 +20,9 @@ Usage: Install WindowSmash.command [--game <dir>] [--keys <dir>] [--firmware <di
                 then tools/build_game.py --check tries everything the build needs
   6. your files the folders with the game, the keys and the firmware (found in Ryujinx's and in
                 yuzu's forks' folders), the name other players see online, and the options: in
-                dialogs, or with --no-wizard in this window
+                dialogs, or with --no-wizard in this window. The firmware is optional, for your
+                console's own fonts: without it the game uses the open fonts of
+                third_party/fonts_open (no Chinese, Japanese or Korean text)
   7. build      tools/build_game.py with those folders, kept awake (caffeinate): the game's
                 program, fonts, data, DLC and fighters, then build-mac/WindowSmash.app, which
                 compiles the whole game the first time
@@ -52,9 +54,9 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "tools", "linux"))
 import install_linux as il  # noqa: E402  (the update, download and folder helpers)
 
-# Updates come from this branch: the macOS port's own until it is merged into main (then: "main").
+# Updates come from this branch (the macOS port is in main).
 # SSBU_UPDATE_BRANCH names another, for testing one.
-BRANCH = os.environ.get("SSBU_UPDATE_BRANCH") or "macos-port"
+BRANCH = os.environ.get("SSBU_UPDATE_BRANCH") or "main"
 DEPS = il.DEPS
 VENV = il.VENV
 DOWNLOADS = os.path.join(DEPS, "downloads")
@@ -862,14 +864,20 @@ class Checks:
 LABELS = {"game": "Game files", "keys": "Keys", "firmware": "Firmware"}
 PROMPTS = {"game": "Choose the folder with your game files: the game (.nsp, .xci or .nca files), its 13.0.5 update and DLC.",
            "keys": "Choose the folder with prod.keys and title.keys.",
-           "firmware": "Choose the folder with your firmware: a few hundred .nca files."}
+           "firmware": "Choose the folder with your firmware: a few hundred .nca files (optional: for your console's own "
+                       "fonts, with Chinese, Japanese and Korean text)."}
+# (the firmware is only for the fonts: without it, the open fonts of third_party/fonts_open)
+FIRMWARE_OPTIONAL = ("The firmware is optional: the game takes your console's own fonts from it, with Chinese, Japanese and "
+                     "Korean text. Without it the game uses the open fonts of third_party/fonts_open: Latin text in Open Sans, "
+                     "the button icons from yuzu's icon font, no Chinese, Japanese or Korean text. Fights are the same.")
 
 
 def summary(f, checks, name, options, firewall):
     lines = ["WindowSmash builds the game from these folders. Choose Change… for any that is wrong or empty.", ""]
     for key in ("game", "keys", "firmware"):
         ok, text = checks[key]
-        lines += [f"{LABELS[key]}: {shown(f[key]) if f[key] else '(none yet)'}", f"    {'✓' if ok else '✗'} {text}", ""]
+        none = "(none)" if key == "firmware" else "(none yet)"
+        lines += [f"{LABELS[key]}: {shown(f[key]) if f[key] else none}", f"    {'✓' if ok else '✗'} {text}", ""]
     lines.append(f"Online name (what other players see): {name}")
     chosen = [OPTION_LAUNCHER] if options["launcher"] else []
     if firewall == "on" and options["firewall"]:
@@ -901,6 +909,12 @@ def wizard(found, name, options, firewall, checks):
         if not picked:
             continue
         key = {v: k for k, v in LABELS.items()}.get(picked[0])
+        if key == "firmware" and f[key]:   # (optional: it may go, for the open fonts)
+            button = dialog(FIRMWARE_OPTIONAL, ["Cancel", "No firmware", "Choose…"], "Choose…", "Cancel")
+            if button == "No firmware":
+                f[key] = None
+            if button != "Choose…":
+                continue
         if key:
             folder = choose_folder(PROMPTS[key], f[key] or os.path.join(os.path.expanduser("~"), "Library", "Application Support"))
             if folder:
@@ -918,14 +932,19 @@ def wizard(found, name, options, firewall, checks):
 
 
 def ask_folder(label, key, value, check, interactive):
-    """A folder that passes `check` ((ok, text)), asked until it does (or given and checked once)."""
+    """A folder that passes `check` ((ok, text)), asked until it does (or given and checked once).
+    None when there is none and that will do (the firmware: "none" is none too)."""
     while True:
+        if key == "firmware" and (value or "").strip().lower() == "none":
+            value = None
         ok, text = check(value)
         info(f"{label}: {value or '(none)'} - {text}")
         if ok:
-            return os.path.abspath(value)
+            return os.path.abspath(value) if value else None
         if not interactive:
-            raise Stop(f"The {label} folder is not usable ({text}). Name it with --{key} (see Install WindowSmash.command --help).")
+            other = " (or --no-firmware: the open fonts)" if key == "firmware" else ""
+            raise Stop(f"The {label} folder is not usable ({text}). Name it with --{key}{other} (see Install WindowSmash.command "
+                       "--help).")
         value = ask(f"{label.capitalize()} folder", value, True)
 
 
@@ -947,8 +966,9 @@ def terminal_answers(a, found, name, options, firewall, checks, interactive):
     if interactive and not a.keys:
         found["keys"] = ask("Keys folder (with prod.keys)", found["keys"], True)
     keys = ask_folder("keys", "keys", found["keys"], checks.keys, interactive)
-    if interactive and not a.firmware:
-        found["firmware"] = ask("Firmware folder (.nca files)", found["firmware"], True)
+    if interactive and a.firmware is None:
+        info(FIRMWARE_OPTIONAL + " Type none for none.")
+        found["firmware"] = ask("Firmware folder (.nca files; optional)", found["firmware"], True)
     firmware = ask_folder("firmware", "firmware", found["firmware"], checks.firmware, interactive)
     if interactive and not a.game:
         found["game"] = ask("Game folder (the game's .nca, .nsp or .xci files, with its 13.0.5 update)", found["game"], True)
@@ -969,11 +989,14 @@ def terminal_answers(a, found, name, options, firewall, checks, interactive):
 def step_files(a, firewall):
     step_header(6, "Your game files")
     found = detected_folders()
+    if a.firmware == "":   # (--no-firmware)
+        found["firmware"] = None
     for key in ("game", "keys", "firmware"):
         if getattr(a, key):
             found[key] = os.path.abspath(os.path.expanduser(getattr(a, key)))
-        info(f"{key}: {found[key] or 'not found on this Mac (to be chosen)'}")
-    name_file = os.path.join(ROOT, "online_name.txt")
+        none = "none (optional: the open fonts without it)" if key == "firmware" else "not found on this Mac (to be chosen)"
+        info(f"{key}: {found[key] or none}")
+    name_file = il.config_file("online_name.txt", ROOT)
     name = clean_name(a.online_name or read_text(name_file).strip()) or f"Player{int.from_bytes(os.urandom(2), 'big') % 9000 + 1000}"
     # (--yes: no question that needs an answer, the administrator's password included)
     options = {"launcher": True, "firewall": firewall == "on" and not a.yes}
@@ -994,12 +1017,12 @@ def step_files(a, firewall):
     if answers is None:
         answers = terminal_answers(a, found, name, options, firewall, checks, interactive)
     folders, name, options = answers
-    folders = {k: os.path.abspath(v) for k, v in folders.items()}
+    folders = {k: os.path.abspath(v) if v else None for k, v in folders.items()}   # (the firmware may be none)
     if name != read_text(name_file).strip():
         with open(name_file, "w", encoding="utf-8", newline="\n") as f:
             f.write(name + "\n")
     for key in ("game", "keys", "firmware"):
-        info(f"{key}: {folders[key]}")
+        info(f"{key}: {folders[key] or 'none: the open fonts'}")
     info(f"online name: {name}")
     return {**folders, "name": name, **options}
 
@@ -1007,8 +1030,9 @@ def step_files(a, firewall):
 # ---- step 7: the build -------------------------------------------------------------------------------------
 def build_command(a, files):
     cmd = [venv_python(), os.path.join(ROOT, "tools", "build_game.py")]
-    for key in ("game", "keys", "firmware"):
+    for key in ("game", "keys"):
         cmd += [f"--{key}", files[key] or f"<the {key} folder>"]   # (a dry run's may be still to be chosen)
+    cmd += ["--firmware", files["firmware"]] if files.get("firmware") else ["--no-firmware"]   # (none: the open fonts)
     if a.jobs:
         cmd += ["--jobs", str(a.jobs)]
     if a.skip_build:
@@ -1193,7 +1217,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="Install WindowSmash.command", description="Set up WindowSmash on this Mac in one go.")
     ap.add_argument("--game", help="the folder with the game's files (found or asked)")
     ap.add_argument("--keys", help="the folder with prod.keys and title.keys (found or asked)")
-    ap.add_argument("--firmware", help="the folder with the firmware's .nca files (found or asked)")
+    ap.add_argument("--firmware", help="the folder with the firmware's .nca files, for your console's own fonts (optional: "
+                                       "found or asked)")
+    ap.add_argument("--no-firmware", dest="firmware", action="store_const", const="",
+                    help="no firmware: the game uses the open fonts of third_party/fonts_open (no Chinese, Japanese or Korean text)")
     ap.add_argument("--online-name", help="the name other players see online (asked; kept in online_name.txt)")
     ap.add_argument("--jobs", type=int, help="how many files to compile at a time (default: by the memory)")
     ap.add_argument("--skip-build", action="store_true", help="everything but compiling the game")

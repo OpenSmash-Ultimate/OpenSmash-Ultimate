@@ -389,7 +389,7 @@ class Matchmaking:
             raise rmc.NexError(rmc.CORE_INVALID_ARGUMENT, f"{len(criteria)} criteria, {len(targets)} targets")
         joining = max(count, 1 + len(extra))
         self.info(f"AutoMatchmake from {self.nex.name(conn)}: {source} option {option} count {count} "
-                  f"criteria {criteria} targets {targets}; buffer {source.app_buffer[:64].hex()}")
+                  f"criteria {criteria} targets {targets}; buffer {len(source.app_buffer)} B (not shown)")
         part = conn.user.get("part")
         mine = self.rating_of(conn.pid)
         now = time.monotonic()

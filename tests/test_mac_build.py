@@ -48,6 +48,10 @@ def stub_toolchain(runtime=ROOT / 'runtime', sdl3_dir=ROOT / 'deps' / 'SDL3'):
     tc.SDL3_DIR, tc.SDL3_FRAMEWORK = str(sdl3_dir), str(Path(sdl3_dir) / 'SDL3.framework')
     tc.compile_each = lambda jobs, n=16, extra=(): []
     tc.run = lambda cmd: (0, '')
+    tc.wrapped = lambda cmd: (['nice', '-n', '10', *cmd], {})
+    tc.compile_command = lambda src, obj, opt, flags=(), extra=(), header=None: [
+        tc.CLANG, '-c', opt, *tc.CFLAGS, *(tc.CXXFLAGS if src.endswith('.cpp') else []), *extra, *flags,
+        *(['-include', header] if header else []), src, '-o', obj]
     return tc
 
 
@@ -249,6 +253,53 @@ class BuildMacTests(unittest.TestCase):
         self.compile(self.ns['game_jobs']())
         self.assertEqual(self.ns['game_jobs'](), [])
 
+    def test_hook_slots_follow_hookable_h(self):
+        """A file with hook slots includes hookable.h (tools/recomp.py): an object of one older than
+        hookable.h is compiled again; the others, and objects newer than it, are kept."""
+        runtime = self.top / 'runtime'
+        for n in ('recomp.h', 'module.h', 'hookable.h'):
+            write(runtime / n, '#pragma once\n')
+        self.ns['RUNTIME'] = str(runtime)
+        main = self.tree / 'build' / 'main'
+        write(main / 'g0000.c', '#include "recomp.h"\n#include "hookable.h"\nvoid f(void) {}\n')
+        self.compile(self.ns['game_jobs']())   # (objects an hour from now)
+        self.assertEqual(self.ns['game_jobs'](), [])
+        later = time.time() + 7200
+        os.utime(runtime / 'hookable.h', (later, later))
+        again = [os.path.relpath(j[1], self.ns['OBJ']) for j in self.ns['game_jobs']()]
+        self.assertEqual(again, [os.path.join('main', 'g0000.o')])
+
+    def test_hook_slots_looked_for_in_the_head_of_the_c(self):
+        """Once hookable.h has changed, the objects of files without slots stay older than it, so they are
+        asked about at every build: only the head of the C is read for that, not the whole file."""
+        runtime = self.top / 'runtime'
+        for n in ('recomp.h', 'module.h', 'hookable.h'):
+            write(runtime / n, '#pragma once\n')
+        self.ns['RUNTIME'] = str(runtime)
+        write(self.tree / 'build' / 'main' / 'g0000.c', '#include "recomp.h"\n\nvoid f(void) {\n' + '    x = x + 1;\n' * 4000 + '}\n')
+        self.compile(self.ns['game_jobs']())   # (objects an hour from now)
+        later = time.time() + 7200
+        os.utime(runtime / 'hookable.h', (later, later))
+        read, real = [], open
+
+        class Spy(io.BytesIO):
+            def close(self):
+                read.append(self.tell())
+                super().close()
+
+        def spy(path, mode='r', *args, **kwargs):   # (the C opened as bytes: how much of it is read)
+            if 'b' in mode and str(path).endswith('.c'):
+                with real(path, mode) as f:
+                    return Spy(f.read())
+            return real(path, mode, *args, **kwargs)
+        self.ns['open'] = spy
+        try:
+            self.assertEqual(self.ns['game_jobs'](), [])
+        finally:
+            del self.ns['open']
+        self.assertTrue(read)
+        self.assertLessEqual(max(read), 256)
+
     def test_stopped_half_way(self):
         """What a build stopped part of the way through compiled is kept: each object is recorded
         as it is compiled."""
@@ -411,6 +462,23 @@ class BuildMacTests(unittest.TestCase):
         self.assertIn('could not draw the overlay font', out.getvalue())
         text = (Path(ns['GEN']) / 'overlay_font.h').read_text()
         self.assertEqual(text, 'static const unsigned char overlay_font[27648] = {0};\n')
+
+    def test_link_errors_name_the_missing_symbol(self):
+        """What ld prints for a symbol nothing defines (made-up names): the symbol and what refers to it kept,
+        though their lines say neither "error" nor "undefined"; the rest of the output left out."""
+        out = ('ld: warning: a made-up warning\n'
+               'Undefined symbols for architecture arm64:\n'
+               '  "_rt_made_up", referenced from:\n'
+               '      _rt_caller in hle_made_up.o\n'
+               '  "_rt_made_up_too", referenced from:\n'
+               '      _rt_other in hle_other.o\n'
+               'ld: symbol(s) not found for architecture arm64\n'
+               'clang: error: linker command failed with exit code 1 (use -v to see invocation)\n')
+        self.assertEqual(self.ns['link_errors'](out), [
+            'Undefined symbols for architecture arm64:', '  "_rt_made_up", referenced from:', '      _rt_caller in hle_made_up.o',
+            '  "_rt_made_up_too", referenced from:', '      _rt_other in hle_other.o',
+            'clang: error: linker command failed with exit code 1 (use -v to see invocation)'])
+        self.assertEqual(self.ns['link_errors']('something else\n  went wrong\n'), ['something else', '  went wrong'])
 
 
 @unittest.skipUnless(DARWIN, 'needs Core Text, sips, iconutil and codesign')
@@ -674,13 +742,11 @@ class TestProgramTests(unittest.TestCase):
                     'runtime/macos/platform.c', 'runtime/macos/profile.c']
             host, exe = os.path.join(tmp, 'host.o'), os.path.join(tmp, 'shimtest')
             self.build(*f, '-Dmain=rt_host_main', '-c', 'runtime/host.c', '-o', host)
-            self.build(*f, '-DSHIMTEST_HOST', 'tools/mac/shimtest.c', host, 'runtime/kernel.c', 'runtime/linux/upnp.c', *shim, '-o', exe)
+            self.build(*f, '-DSHIMTEST_HOST', 'tools/mac/shimtest.c', host, 'runtime/kernel.c', 'runtime/hle_hooks.c',
+                       'runtime/linux/upnp.c', *shim, '-o', exe)
             with open(os.path.join(tmp, 'ssbu.syms'), 'w') as syms:   # (the profiler's names)
                 subprocess.run(['nm', '-n', '--defined-only', exe], stdout=syms, check=True)
             out = self.run_program(exe, cwd=tmp)
-            for line in out.splitlines():   # (a known runtime bug, let through only in the layout that shows it: shimtest.c)
-                if line.startswith('KNOWN BUG '):
-                    print(f'::warning title=shimtest: known runtime bug::{line}', flush=True)
             self.assertRegex(out, r'\n\d+ checks, 0 failed\n$')
 
     def test_msltest(self):

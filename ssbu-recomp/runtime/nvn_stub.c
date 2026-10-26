@@ -1,5 +1,5 @@
 /* Graphics entry points: hands out a host function for every NVN name the game asks for.
- * Device information, memory pools and buffers are here; everything else is in nvn_gl.c (OpenGL).
+ * Device information, memory pools and buffers are here; everything else is in nvn_front.c and its back ends.
  * A name that neither implements is MISSING: it is announced when the game fetches it, and calling it stops the game with
  * the function's name (SSBU_NVN_MISSING=warn: report the call, answer 0 and go on, for exploration). The audit of all names
  * is plan\phases\G1_nvn_audit.md (python nvn_audit.py). */
@@ -89,7 +89,7 @@ static void nobj_drop(uint64_t key) {                                   /* the o
         if ((*pp)->key == key) { NvnObj *o = *pp; *pp = o->next; free(o); break; }
     ReleaseSRWLockExclusive(&g_objs_lock);
 }
-void nvn_label_set(uint64_t obj, const char *text);                    /* nvn_gl.c */
+void nvn_label_set(uint64_t obj, const char *text);                    /* nvn_front.c */
 void nvn_label_drop(uint64_t obj);
 void nvn_gl_memory_written(uint64_t addr, uint64_t size);
 static uint64_t g_device;
@@ -99,7 +99,7 @@ static void builder_get_device(Ctx *c) { RET(g_device); }
 static void pool_builder_get_memory(Ctx *c) { RET(nobj(A0)->memory); }
 static void pool_builder_get_size(Ctx *c) { RET(nobj(A0)->size); }
 static void pool_builder_get_flags(Ctx *c) { RET(nobj(A0)->flags); }
-void nvn_front_memory_retire(uint64_t addr, uint64_t size);      /* PR #41 (nvn_gl.c): finish deferred reads and compute copy-back before the guest releases this storage */
+void nvn_front_memory_retire(uint64_t addr, uint64_t size);      /* PR #41 (nvn_front.c): finish deferred reads and compute copy-back before the guest releases this storage */
 static void pool_finalize(Ctx *c) {
     NvnObj *o = nobj(A0);
     nvn_front_memory_retire(o->memory, o->size);
@@ -122,7 +122,7 @@ static void buffer_finalize(Ctx *c) {
 static void obj_debug_id(Ctx *c) { RET(A0); }
 static void pool_builder_storage(Ctx *c) { log_call(c); NvnObj *b = nobj(A0); b->memory = A1; b->size = A2; }   /* (builder, memory, size) */
 static void pool_builder_flags(Ctx *c) { nobj(A0)->flags = A1; }                                               /* (builder, flags) */
-void nvn_front_pool_made(uint64_t memory, uint64_t size);      /* nvn_gl.c: V1 session 6, a pool laid over the code section of a shader container announces the container */
+void nvn_front_pool_made(uint64_t memory, uint64_t size);      /* nvn_front.c: V1 session 6, a pool laid over the code section of a shader container announces the container */
 static void pool_initialize(Ctx *c) { log_call(c); NvnObj *p = nobj(A0), *b = nobj(A1); p->memory = b->memory; p->size = b->size; p->flags = b->flags; nvn_front_pool_made((uint64_t)p->memory, (uint64_t)p->size); RET(1); }
 static void pool_flags(Ctx *c) { RET(nobj(A0)->flags); }
 /* nvnMemoryPoolMapVirtual(pool, numRequests, const NVNmappingRequest *requests) [sdk 0x41ec70]: takes the NVN lock and calls the
@@ -135,12 +135,12 @@ static void pool_flags(Ctx *c) { RET(nobj(A0)->flags); }
  *     NvRmGpuAddressSpaceAllocationRemap: the GPU address range of the virtual pool then shows the physical pool's pages
  *     (a request without a pool unmaps). 1 when every batch succeeded.
  * NOT IMPLEMENTED for a virtual pool: here a pool is the game's own host memory and every texture reads its texels through one
- * contiguous pointer (nvn_gl.c Tex.mem); a virtual pool has no memory of its own (its builder must pass none [0x42b208]) and its
+ * contiguous pointer (nvn_front.c Tex.mem); a virtual pool has no memory of its own (its builder must pass none [0x42b208]) and its
  * pages alias pages of other pools, which needs either operating-system aliasing of memory the game allocated (not possible
  * for memory that was not created as a section) or a page table consulted by every texture read / write-back in nvn_gl.c.
  * So the name stays without a handler (MISSING: a call stops with the function's name), also for ordinary pools, where the
  * answer would be 0. */
-/* For nvn_gl.c: where a memory pool's storage is. */
+/* For nvn_front.c: where a memory pool's storage is. */
 int nvn_pool_range(uint64_t pool, uint64_t *mem, uint64_t *size) {
     NvnObj *p = nobj(pool);
     *mem = p->memory; *size = p->size;
@@ -164,7 +164,7 @@ static void buffer_map(Ctx *c) { log_call(c); RET(nobj(A0)->memory); }
 static void buffer_address(Ctx *c) { log_call(c); RET(nobj(A0)->memory); }   /* GPU address: the same value for now */
 static void buffer_size(Ctx *c) { log_call(c); RET(nobj(A0)->size); }
 
-ImportFn nvn_gl_pick(const char *name);     /* nvn_gl.c: the OpenGL backend */
+ImportFn nvn_gl_pick(const char *name);     /* nvn_front.c: the NVN entry points */
 static ImportFn pick(const char *name);
 static void nvn_get_proc(Ctx *c) {                                   /* (device, const char *name) */
     const char *name = (const char *)(uintptr_t)A1;

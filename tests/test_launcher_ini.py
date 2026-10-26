@@ -231,6 +231,32 @@ class LauncherIniTests(unittest.TestCase):
                             '-Root', str(self.dir)], capture_output=True, text=True, timeout=120)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
 
+    def test_config_folder(self):
+        """The files where the game reads them (runtime/config_folder.h): config\\ once it has a version.ini;
+        online_server.txt config\\'s only once there is one there."""
+        names = ('display.ini', 'controllers.ini', 'launcher.ini', 'online_server.txt', 'online_name.txt', 'online_direct.txt')
+        script = dot_source(self.dir) + ''.join(f'(Get-ConfigPath {ps_quote(n)}).Substring($Root.Length)\n' for n in names)
+        r = run_ps(script)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), ['\\' + n for n in names])
+        (self.dir / 'config').mkdir()
+        (self.dir / 'config' / 'version.ini').write_bytes(b'version = 1\r\n')
+        r = run_ps(script)
+        self.assertEqual(r.stdout.splitlines(), ['\\online_server.txt' if n == 'online_server.txt' else '\\config\\' + n for n in names])
+        (self.dir / 'config' / 'online_server.txt').write_bytes(b'off\r\n')
+        r = run_ps(script)
+        self.assertEqual(r.stdout.splitlines()[3], '\\config\\online_server.txt')
+
+    def test_show_launcher_in_config_folder(self):
+        (self.dir / 'launcher.ini').write_bytes(b'show_launcher = 0\r\n')
+        script = dot_source(self.dir) + '[string](Test-ShowLauncher)\n'
+        self.assertEqual(run_ps(script).stdout.strip(), 'False')
+        (self.dir / 'config').mkdir()
+        (self.dir / 'config' / 'version.ini').write_bytes(b'version = 1\r\n')
+        self.assertEqual(run_ps(script).stdout.strip(), 'True')   # (the folder's file is the one read: none there yet)
+        (self.dir / 'config' / 'launcher.ini').write_bytes(b'show_launcher = 0\r\n')
+        self.assertEqual(run_ps(script).stdout.strip(), 'False')
+
 
 DRIVER = r'''
 #include "%s"

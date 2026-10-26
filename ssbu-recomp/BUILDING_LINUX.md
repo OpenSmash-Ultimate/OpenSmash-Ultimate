@@ -191,7 +191,7 @@ shows the log only when the game's output goes to a file (`play.sh` does that).
 ## Fonts
 
 The game asks the system for the console's shared fonts, which are not part of the game dump. Without them, the
-open-source replacements the runtime ships in `runtime/fonts_open` are used, as on Windows (see its README: Latin
+open-source replacements the runtime ships in `../third_party/fonts_open` are used, as on Windows (see its README: Latin
 text in Open Sans and Source Sans Pro, no Chinese, Japanese or Korean characters). With a firmware dump from your
 console: `deps/venv/bin/python tools/extract/fw_fonts.py <firmware folder> <dump>/sysdata/fonts`, then run setup with
 the same `--dump` (add `--redo convert` if you built before).

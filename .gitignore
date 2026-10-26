@@ -17,10 +17,12 @@
 # The online lobby's game server: players' accounts and ratings (tools/ssbu_online_lobby.py --state)
 /tools/nex/state/
 # This PC's settings, written on the first start (docs/PLAYING.md)
+/config/
 /controllers.ini
 /display.ini
 /launcher.ini
 /online_direct.txt
+/online_protocol.txt
 # Crash, freeze and stop reports with their minidumps (docs/PLAYING.md)
 /reports/
 # Third-party packages as downloaded (SDL3 for controllers: docs/BUILDING.md)

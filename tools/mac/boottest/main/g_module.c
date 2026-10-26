@@ -8,6 +8,8 @@ GuestFn f_7100001100;
 GuestFn f_7100001200;
 GuestFn f_7100001300;
 GuestFn f_7100001400;
+GuestFn f_7100001500;
+GuestFn f_7100001580;
 GuestFn f_7100007f00;
 GuestFn f_7100007f10;
 
@@ -20,6 +22,8 @@ static const RtFunc funcs[] = {
     {0x7100001200ull, f_7100001200},
     {0x7100001300ull, f_7100001300},
     {0x7100001400ull, f_7100001400},
+    {0x7100001500ull, f_7100001500},
+    {0x7100001580ull, f_7100001580},
     {0x7100007F00ull, f_7100007f00},
     {0x7100007F10ull, f_7100007f10},
 };
@@ -46,5 +50,5 @@ static const RtReloc relocs[] = {
 /* (13.0.5's build id: the runtime starts no other main module - runtime/host.c game_version_ok) */
 const RtModule rt_module_main = {
     "main", 0x7100000000ull, 0x20000ull, 0x8000ull, 0x7100000100ull,
-    funcs, 10, exports, 2, imports, import_weak, 4, relocs, 4, "21450C647B8C5940ED5B68218EA128FD3C5D597D",
+    funcs, 12, exports, 2, imports, import_weak, 4, relocs, 4, "21450C647B8C5940ED5B68218EA128FD3C5D597D",
 };

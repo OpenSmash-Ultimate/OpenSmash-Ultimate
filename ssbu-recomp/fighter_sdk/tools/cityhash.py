@@ -1,4 +1,8 @@
-"""CityHash64 as used by libc++'s std::hash<std::string> (public algorithm, libc++ __murmur2_or_cityhash<size_t, 64>)."""
+"""CityHash64 as used by libc++'s std::hash<std::string> (public algorithm, libc++ __murmur2_or_cityhash<size_t, 64>).
+
+libc++'s differs from Google's CityHash in two places, kept here: for 4 to 8 bytes the first word is shifted
+as a 32-bit value (libc++'s stable ABI: _LIBCPP_ABI_FIX_CITYHASH_IMPLEMENTATION is off), and for 33 to 64
+bytes the last word is added to z instead of replacing it."""
 M = (1 << 64) - 1
 K0 = 0xc3a5c85c97cb3127
 K1 = 0xb492b66fbe98f273
@@ -44,7 +48,7 @@ def _len0_16(s):
     if n >= 4:
         a = _u32(s, 0)
         b = _u32(s, n - 4)
-        return _h16((n + (a << 3)) & M, b)
+        return _h16((n + ((a << 3) & 0xffffffff)) & M, b)
     if n > 0:
         a, b, c = s[0], s[n >> 1], s[n - 1]
         y = a + (b << 8)
@@ -88,7 +92,7 @@ def _len33_64(s):
     vf = (a + z) & M
     vs = (b + _rot(a, 31) + c) & M
     a = (_u64(s, 16) + _u64(s, n - 32)) & M
-    z = _u64(s, n - 8)
+    z = (z + _u64(s, n - 8)) & M
     b = _rot((a + z) & M, 52)
     c = _rot(a, 37)
     a = (a + _u64(s, n - 24)) & M

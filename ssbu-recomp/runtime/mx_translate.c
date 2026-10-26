@@ -191,6 +191,7 @@ static const char *fmz_mul(Mx *e, const char *a, const char *b, int fmz) {
 static const char *attr_in(Mx *e, unsigned a, int vertex_reg_ok) {
     unsigned c = (a >> 2) & 3, st = (unsigned)e->in->stage;
     (void)vertex_reg_ok;
+    if (st == MX_COMPUTE && e->in->target == 2) { fail(e, "attribute read", "attribute 0x%x read in a compute shader (Metal: no such input)", a); return "0u"; }
     if (a >= 0x80 && a < 0x280) {
         unsigned n = (a - 0x80) >> 4;
         e->in_attr |= 1u << n;
@@ -201,19 +202,23 @@ static const char *attr_in(Mx *e, unsigned a, int vertex_reg_ok) {
         return S(e, "U(in_attr%u[%u])", n, c);
     }
     if (st == MX_FRAGMENT) {
-        if (a >= 0x70 && a < 0x80 && c < 2 && e->in->screen_scale && e->in->target == 1) { e->uses_fcs = 1; return S(e, "U(gl_FragCoord[%u] * mx_fcs)", c); }      /* track O: the game's pixel position */
+        if (a >= 0x70 && a < 0x80 && c < 2 && e->in->screen_scale && e->in->target != 0) { e->uses_fcs = 1; return S(e, "U(gl_FragCoord[%u] * mx_fcs)", c); }      /* track O: the game's pixel position */
         if (a >= 0x70 && a < 0x80) return S(e, "U(gl_FragCoord[%u])", c);
         if (a == 0x3fc) return "(gl_FrontFacing ? 0xffffffffu : 0u)";
-        if ((a == 0x2e0 || a == 0x2e4) && e->in->target == 1 && c == 1) return "U(1.0 - gl_PointCoord[1])";      /* Vulkan: t runs the other way (flipped viewport) */
+        if ((a == 0x2e0 || a == 0x2e4) && e->in->target != 0 && c == 1) return "U(1.0 - gl_PointCoord[1])";      /* Vulkan (flipped viewport), Metal: t runs the other way */
         if (a == 0x2e0 || a == 0x2e4) return S(e, "U(gl_PointCoord[%u])", c);
         if (a == 0x60) return "uint(gl_PrimitiveID)";
         if (a == 0x64) return "uint(gl_Layer)";
         if (a == 0x68) return "uint(gl_ViewportIndex)";
-        if (a >= 0x2c0 && a < 0x2e0) return S(e, "U(gl_ClipDistance[%u])", (a - 0x2c0) >> 2);
+        if (a >= 0x2c0 && a < 0x2e0) {
+            if (e->in->target != 2) return S(e, "U(gl_ClipDistance[%u])", (a - 0x2c0) >> 2);
+            fail(e, "attribute read", "clip distance read in a fragment shader (Metal: not an input)");
+            return "0u";
+        }
     }
     if (st == MX_VERTEX) {
-        if (a == 0x2f8) return e->in->target == 1 ? "uint(gl_InstanceIndex - gl_BaseInstance)" : "uint(gl_InstanceID)";
-        if (a == 0x2fc) return e->in->target == 1 ? "uint(gl_VertexIndex)" : "uint(gl_VertexID)";
+        if (a == 0x2f8) return e->in->target != 0 ? "uint(gl_InstanceIndex - gl_BaseInstance)" : "uint(gl_InstanceID)";
+        if (a == 0x2fc) return e->in->target != 0 ? "uint(gl_VertexIndex)" : "uint(gl_VertexID)";
         if (a == 0x400) return "uint(gl_BaseInstance)";
         if (a == 0x404) return "uint(gl_BaseVertex)";
         if (a == 0x408) return "uint(gl_DrawID)";
@@ -225,19 +230,20 @@ static const char *attr_in(Mx *e, unsigned a, int vertex_reg_ok) {
  * GL_CLIP_DISTANCEi is enabled, and nvn_gl.c never enables one; Vulkan clips by every element the vertex stage DECLARES,
  * and an element the code did not write on the path taken is undefined (the array is sized by the highest index written).
  * SSBU_VK_CLIP: 0 = as before (declared, not initialised); 1 = every element starts at 0.0 (on the plane = kept) and is
- * clipped only by what the code writes; 2 = the writes go to a plain array and nothing is clipped, as in OpenGL. */
+ * clipped only by what the code writes; 2 = the writes go to a plain array and nothing is clipped, as in OpenGL. The Metal text
+ * (target 2) is always 2. */
 #define MX_VK_CLIP_DEFAULT 0
 static int mx_vk_clip(const MxIn *in) {
     static int m = -1;
     if (m < 0) { const char *s = getenv("SSBU_VK_CLIP"); m = s && s[0] ? atoi(s) : MX_VK_CLIP_DEFAULT; }
-    return in->target == 1 ? m : 0;
+    return in->target == 1 ? m : in->target == 2 ? 2 : 0;
 }
 static void attr_out(Mx *e, unsigned a, const char *v) {
     unsigned c = (a >> 2) & 3;
     if (e->in->stage != MX_VERTEX) { fail(e, "attribute store", "attribute store in stage %d", e->in->stage); return; }
-    if (a >= 0x70 && a < 0x80) emit(e, " %s[%u] = F(%s);", e->in->target == 1 && e->in->stage == MX_VERTEX ? "mx_position" : "gl_Position", c, v);
+    if (a >= 0x70 && a < 0x80) emit(e, " %s[%u] = F(%s);", e->in->target != 0 && e->in->stage == MX_VERTEX ? "mx_position" : "gl_Position", c, v);
     else if (a >= 0x80 && a < 0x280) { e->out_attr |= 1u << ((a - 0x80) >> 4); emit(e, " out_attr%u[%u] = F(%s);", (a - 0x80) >> 4, c, v); }
-    else if (a == 0x6c) { e->uses_psize = 1; emit(e, e->in->target == 1 ? " mx_psize = F(%s);" : " gl_PointSize = F(%s);", v); }
+    else if (a == 0x6c) { e->uses_psize = 1; emit(e, e->in->target != 0 ? " mx_psize = F(%s);" : " gl_PointSize = F(%s);", v); }
     else if (a >= 0x2c0 && a < 0x2e0) { e->clip_out |= 1u << ((a - 0x2c0) >> 2); emit(e, mx_vk_clip(e->in) == 2 ? " mx_clip[%u] = F(%s);" : " gl_ClipDistance[%u] = F(%s);", (a - 0x2c0) >> 2, v); }
     else if (a == 0x64) { e->uses_layer_out = 1; emit(e, " gl_Layer = int(%s);", v); }
     else if (a == 0x68) { e->uses_vp_out = 1; emit(e, " gl_ViewportIndex = int(%s);", v); }
@@ -253,18 +259,74 @@ static int tex_unit(Mx *e, uint64_t i) {
     e->tex_units |= 1u << ((off - 8) / 2);
     return (int)(off - 8) / 2;
 }
+/* Target 2: the Metal texture behind each GLSL sampler type, and the wrapper giving it GLSL's texture functions (written by
+ * msl_kind_code with these strings in place of @c, @x, ...: c = the GLSL coordinates, x = the wrapper). Coordinates come
+ * as GLSL packs them (the layer and the shadow reference last); Metal takes the layer apart as a uint. 1D textures are 2D
+ * ones one texel high (Metal's 1D textures have no mips), sampled along the middle of the row; texelFetch out of range
+ * reads 0; gather offsets past Metal's -8..7 move the coordinates (as WindowSmash's gpu_shader.c). */
+static const struct MslKind {
+    const char *name, *tex;     /* GLSL sampler type without "sampler" and the i / u prefix; Metal's texture type */
+    const char *c, *x, *l;      /* sample coordinates: GLSL type (NULL: no sampling), Metal's, Metal's layer argument */
+    const char *o, *p;          /* texel offset: GLSL type (NULL: none), Metal's */
+    const char *g, *d;          /* textureGrad: GLSL derivative type (NULL: none), Metal's gradient */
+    const char *f, *fo, *fr;    /* texelFetch: coordinate type (NULL: none), the coordinates moved by offset o, the bounds test and read */
+    const char *q, *qx;         /* textureQueryLod coordinates (NULL: none) */
+    const char *r;              /* shadow kinds: the reference (NULL: not a shadow kind; "r": a separate argument) */
+    const char *gc, *gx, *gl;   /* textureGather coordinates: GLSL type (NULL: no gather), Metal's, layer */
+    int goff;                   /* gathers take offsets */
+} k_msl_kind[] = {
+    {"1D", "texture2d", "float", "float2(c, 0.5)", "", "int", "int2(o, 0)", "float", "gradient2d(float2(dx, 0.0), float2(dy, 0.0))",
+     "int", "c + o", "l < x.t.get_num_mip_levels() && uint(c) < x.t.get_width(l) ? x.t.read(uint2(uint(c), 0u), l)", "float", "float2(c, 0.5)", NULL, NULL, NULL, NULL, 0},
+    {"1DArray", "texture2d_array", "float2", "float2(c.x, 0.5)", ", mx_layer(c.y, x.t.get_array_size())", "int", "int2(o, 0)", "float", "gradient2d(float2(dx, 0.0), float2(dy, 0.0))",
+     "int2", "c + int2(o, 0)", "l < x.t.get_num_mip_levels() && uint(c.x) < x.t.get_width(l) && uint(c.y) < x.t.get_array_size() ? x.t.read(uint2(uint(c.x), 0u), uint(c.y), l)",
+     "float", "float2(c, 0.5)", NULL, NULL, NULL, NULL, 0},
+    {"2D", "texture2d", "float2", "c", "", "int2", "o", "float2", "gradient2d(dx, dy)",
+     "int2", "c + o", "l < x.t.get_num_mip_levels() && uint(c.x) < x.t.get_width(l) && uint(c.y) < x.t.get_height(l) ? x.t.read(uint2(c), l)", "float2", "c", NULL, "float2", "c", "", 1},
+    {"2DArray", "texture2d_array", "float3", "c.xy", ", mx_layer(c.z, x.t.get_array_size())", "int2", "o", "float2", "gradient2d(dx, dy)",
+     "int3", "c + int3(o, 0)", "l < x.t.get_num_mip_levels() && uint(c.x) < x.t.get_width(l) && uint(c.y) < x.t.get_height(l) && uint(c.z) < x.t.get_array_size() ? x.t.read(uint2(c.xy), uint(c.z), l)",
+     "float2", "c", NULL, "float3", "c.xy", ", mx_layer(c.z, x.t.get_array_size())", 1},
+    {"3D", "texture3d", "float3", "c", "", "int3", "o", NULL, NULL,
+     "int3", "c + o", "l < x.t.get_num_mip_levels() && uint(c.x) < x.t.get_width(l) && uint(c.y) < x.t.get_height(l) && uint(c.z) < x.t.get_depth(l) ? x.t.read(uint3(c), l)",
+     "float3", "c", NULL, NULL, NULL, NULL, 0},
+    {"Cube", "texturecube", "float3", "c", "", NULL, NULL, NULL, NULL, NULL, NULL, NULL, "float3", "c", NULL, "float3", "c", "", 0},
+    {"CubeArray", "texturecube_array", "float4", "c.xyz", ", mx_layer(c.w, x.t.get_array_size())", NULL, NULL, NULL, NULL, NULL, NULL, NULL, "float3", "c", NULL,
+     "float4", "c.xyz", ", mx_layer(c.w, x.t.get_array_size())", 0},
+    {"2DMS", "texture2d_ms", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+     "int2", NULL, "uint(c.x) < x.t.get_width() && uint(c.y) < x.t.get_height() && l < x.t.get_num_samples() ? x.t.read(uint2(c), l)", NULL, NULL, NULL, NULL, NULL, NULL, 0},
+    {"2DMSArray", "texture2d_ms_array", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+     "int3", NULL, "uint(c.x) < x.t.get_width() && uint(c.y) < x.t.get_height() && uint(c.z) < x.t.get_array_size() && l < x.t.get_num_samples() ? x.t.read(uint2(c.xy), uint(c.z), l)",
+     NULL, NULL, NULL, NULL, NULL, NULL, 0},
+    {"1DShadow", "depth2d", "float3", "float2(c.x, 0.5)", "", "int", "int2(o, 0)", NULL, NULL, NULL, NULL, NULL, NULL, NULL, "c.z", NULL, NULL, NULL, 0},
+    {"1DArrayShadow", "depth2d_array", "float3", "float2(c.x, 0.5)", ", mx_layer(c.y, x.t.get_array_size())", "int", "int2(o, 0)", NULL, NULL, NULL, NULL, NULL, NULL, NULL, "c.z",
+     NULL, NULL, NULL, 0},
+    {"2DShadow", "depth2d", "float3", "c.xy", "", "int2", "o", NULL, NULL, NULL, NULL, NULL, NULL, NULL, "c.z", "float2", "c", "", 1},
+    {"2DArrayShadow", "depth2d_array", "float4", "c.xy", ", mx_layer(c.z, x.t.get_array_size())", "int2", "o", NULL, NULL, NULL, NULL, NULL, NULL, NULL, "c.w",
+     "float3", "c.xy", ", mx_layer(c.z, x.t.get_array_size())", 1},
+    {"CubeShadow", "depthcube", "float4", "c.xyz", "", NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, "c.w", "float3", "c", "", 0},
+    {"CubeArrayShadow", "depthcube_array", "float4", "c.xyz", ", mx_layer(c.w, x.t.get_array_size())", NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, "r",
+     "float4", "c.xyz", ", mx_layer(c.w, x.t.get_array_size())", 0},
+};
+/* the kind of a GLSL sampler type name ("usampler2DArray"), NULL when Metal has none (sampler3DShadow) */
+static const struct MslKind *msl_kind_of(const char *type) {
+    const char *n = type + (type[0] == 'i' || type[0] == 'u') + 7;      /* (after "sampler") */
+    for (size_t k = 0; k < sizeof k_msl_kind / sizeof k_msl_kind[0]; k++) if (!strcmp(k_msl_kind[k].name, n)) return &k_msl_kind[k];
+    return NULL;
+}
 /* sampler of the given GLSL base type ("2D", "2DArray", "Cube", ...) for a bound unit */
 static const char *SMP(Mx *e, int unit, const char *base, int shadow) {
     const char *pre = "";
     if (!shadow && (e->in->int_tex >> unit & 1)) pre = (e->in->sint_tex >> unit & 1) ? "i" : "u";
-    if (e->in->target == 1) {                /* Vulkan: a named sampler per (unit, type), declared in the header from e->smp */
+    if (e->in->target != 0) {                /* Vulkan: a named sampler per (unit, type), declared in the header from e->smp (Metal: a texture and a sampler) */
         char type[24];
-        int k, same_unit = 0;
+        int k, same_unit = 0, msl = e->in->target == 2;
         snprintf(type, sizeof type, "%ssampler%s%s", pre, base, shadow ? "Shadow" : "");
         for (k = 0; k < e->nsmp; k++) { if (e->smp[k].unit != unit) continue; if (!strcmp(e->smp[k].type, type)) break; same_unit++; }
         if (k == e->nsmp) {
-            if (same_unit > 1 || e->nsmp == 64) { fail(e, "texture unit with three sampler types", "texture unit %d is used with more than two sampler types (%s)", unit, type); return "mx_none"; }
-            e->smp[k].unit = (uint8_t)unit; e->smp[k].shadow = (uint8_t)shadow; e->smp[k].binding = (uint16_t)(e->in->tex_base + (same_unit ? 240u : 0u) + (unsigned)unit);
+            if (msl && !msl_kind_of(type)) { fail(e, type, "no Metal texture for %s", type); return "mx_none"; }
+            if (msl && e->nsmp == 16) { fail(e, "more than 16 samplers", "more than 16 texture and sampler types (Metal has 16 samplers)"); return "mx_none"; }
+            if (!msl && (same_unit > 1 || e->nsmp == 64)) { fail(e, "texture unit with three sampler types", "texture unit %d is used with more than two sampler types (%s)", unit, type); return "mx_none"; }
+            e->smp[k].unit = (uint8_t)unit; e->smp[k].shadow = (uint8_t)shadow;
+            e->smp[k].binding = (uint16_t)(msl ? e->in->tex_base + (unsigned)k : e->in->tex_base + (same_unit ? 240u : 0u) + (unsigned)unit);
             snprintf(e->smp[k].type, sizeof e->smp[k].type, "%s", type);
             e->nsmp++;
         }
@@ -405,7 +467,7 @@ static void op_texs(Mx *e, uint64_t i) {
  * the game was told (c2 words 96 + 4u, the table TXQ reads); it returns them unchanged when the two are equal. An offset
  * is added first (then *off is cleared). */
 static const char *tf_scaled(Mx *e, int unit, const char *smp, const char *coords, const char **off) {
-    if (!e->in->screen_scale || e->in->target != 1 || e->in->stage != MX_FRAGMENT) return coords;
+    if (!e->in->screen_scale || e->in->target == 0 || e->in->stage != MX_FRAGMENT) return coords;
     unsigned w = 96 + 4 * (unsigned)unit;
     e->uses_tf = 1; e->cbufs |= 4;
     if (off && *off) { coords = S(e, "(%s + %s)", coords, *off); *off = NULL; }
@@ -450,7 +512,7 @@ static void op_tlds(Mx *e, uint64_t i) {
     switch (enc) {
     case 0: call = S(e, "texelFetch(%s, %s, 0)", SMP(e, unit, "1D", 0), IR(e, a)); break;
     case 1: call = S(e, "texelFetch(%s, %s, %s)", SMP(e, unit, "1D", 0), IR(e, a), IR(e, b)); break;
-#define TLDS_RS (e->in->screen_scale && e->in->target == 1 && e->in->stage == MX_FRAGMENT)       /* track O: see tf_scaled */
+#define TLDS_RS (e->in->screen_scale && e->in->target != 0 && e->in->stage == MX_FRAGMENT)       /* track O: see tf_scaled */
     case 2: if (TLDS_RS) { const char *sm = SMP(e, unit, "2D", 0); call = S(e, "texelFetch(%s, %s, 0)", sm, tf_scaled(e, unit, sm, S(e, "ivec2(%s, %s)", IR(e, a), IR(e, b)), NULL)); break; }
         call = S(e, "texelFetch(%s, ivec2(%s, %s), 0)", SMP(e, unit, "2D", 0), IR(e, a), IR(e, b)); break;
     case 4: off = tex_offset(e, 2, X(e, b), 4);
@@ -1428,8 +1490,8 @@ static void analyze(Mx *e) {
                 if (ft == 0 || ft == 28) continue;
                 unsigned tgt = s.tgt[k];
                 s.n = k;
+                if (tgt >= e->words) { fail(e, mx_op_name[op], "target outside the code"); break; }      /* (before leader[tgt]: an SSY target is not checked) */
                 e->jt[pc] = tgt; e->leader[tgt] = 1; e->any_jump = 1;
-                if (tgt >= e->words) { fail(e, mx_op_name[op], "target outside the code"); break; }
                 if (nw >= cap) break;
                 wpc[nw] = tgt; wst[nw++] = (uint16_t)stk_id(e, &s);
                 if (always && ft == 15) break;
@@ -1479,6 +1541,410 @@ static const char *const k_prelude =
     "  if (kind == 3u) return uint(int(clamp(f, -32768.0, 32767.0)));\n"
     "  return uint(clamp(f, 0.0, 65535.0)); }\n";
 
+/* ---------------------------------------------------------------- target 2: Metal Shading Language */
+/* GLSL's names for what the body calls, in MSL. The bit functions are defined for every argument (MSL's leave some undefined). */
+static const char *const k_msl_prelude =
+    "#include <metal_stdlib>\nusing namespace metal;\n"
+    "typedef float2 vec2; typedef float3 vec3; typedef float4 vec4; typedef int2 ivec2; typedef int3 ivec3; typedef int4 ivec4;\n"
+    "typedef uint2 uvec2; typedef uint3 uvec3; typedef uint4 uvec4; typedef bool2 bvec2;\n"
+    "#define F(x) as_type<float>(x)\n#define U(x) as_type<uint>(x)\n#define discard { discard_fragment(); return; }\n"
+    "inline uint bitfieldExtract(uint v, int o, int n) { return n <= 0 || o >= 32 ? 0u : (v >> uint(o)) & (0xffffffffu >> uint(32 - min(n, 32))); }\n"
+    "inline int bitfieldExtract(int v, int o, int n) { if (n <= 0) return 0; if (o >= 32) return v >> 31; int t = min(o + n, 32);\n"
+    "  return as_type<int>(as_type<uint>(v) << uint(32 - t)) >> uint(32 - t + o); }\n"
+    "inline uint bitfieldInsert(uint b, uint s, int o, int n) { if (n <= 0 || o >= 32) return b; uint m = (0xffffffffu >> uint(32 - min(n, 32 - o))) << uint(o);\n"
+    "  return (b & ~m) | ((s << uint(o)) & m); }\n"
+    "inline uint bitfieldReverse(uint x) { return reverse_bits(x); }\n"
+    "inline uint bitCount(uint x) { return popcount(x); }\n"
+    "inline int findMSB(uint x) { return x == 0u ? -1 : int(31u - clz(x)); }\n"
+    "inline int findMSB(int x) { return findMSB(as_type<uint>(x < 0 ? ~x : x)); }\n"
+    "inline uint packHalf2x16(float2 v) { return as_type<uint>(half2(v)); }\n"
+    "inline float2 unpackHalf2x16(uint x) { return float2(as_type<half2>(x)); }\n"
+    "inline ulong packUint2x32(uint2 v) { return ulong(v.x) | (ulong(v.y) << 32); }\n"
+    "inline uint2 unpackUint2x32(ulong v) { return uint2(uint(v), uint(v >> 32)); }\n"
+    "inline float roundEven(float x) { return rint(x); }\n"
+    "inline float inversesqrt(float x) { return rsqrt(x); }\n"
+    "inline float2 mix(float2 a, float2 b, bool2 c) { return select(a, b, c); }\n"
+    "inline float2 H(uint r, uint s) { float2 v = unpackHalf2x16(r); return s == 0u ? v : s == 1u ? float2(F(r)) : s == 2u ? v.xx : v.yy; }\n"
+    "inline uint HM(uint d, float2 v, uint m) { uint p = packHalf2x16(v); return m == 0u ? p : m == 1u ? U(v.x) : m == 2u ? ((d & 0xffff0000u) | (p & 0xffffu)) : ((d & 0xffffu) | (p & 0xffff0000u)); }\n"
+    "inline uint mx_bfe(uint base, uint ctl, bool sgn) { uint off = ctl & 255u, cnt = (ctl >> 8) & 255u;\n"
+    "  if (cnt == 0u) return 0u;\n"
+    "  if (off >= 32u) return sgn && int(base) < 0 ? 0xffffffffu : 0u;\n"
+    "  if (off + cnt >= 32u) return sgn ? uint(int(base) >> off) : base >> off;\n"
+    "  return sgn ? uint(bitfieldExtract(int(base), int(off), int(cnt))) : bitfieldExtract(base, int(off), int(cnt)); }\n"
+    "inline uint mx_bfi(uint base, uint ins, uint ctl) { uint off = ctl & 255u, cnt = (ctl >> 8) & 255u;\n"
+    "  if (off >= 32u || cnt == 0u) return base; cnt = min(cnt, 32u - off); return bitfieldInsert(base, ins, int(off), int(cnt)); }\n"
+    "inline uint mx_f2i(float f, uint kind) {   /* kind: 0 u32, 1 s32, 2 u16, 3 s16; NaN -> 0 */\n"
+    "  if (isnan(f)) return 0u;\n"
+    "  if (kind == 1u) return f >= 2147483648.0 ? 0x7fffffffu : f <= -2147483648.0 ? 0x80000000u : uint(int(f));\n"
+    "  if (kind == 0u) return f >= 4294967296.0 ? 0xffffffffu : f <= 0.0 ? 0u : uint(f);\n"
+    "  if (kind == 3u) return uint(int(clamp(f, -32768.0, 32767.0)));\n"
+    "  return uint(clamp(f, 0.0, 65535.0)); }\n"
+    "/* buffers (MxMslBinds in mx_translate.h): words past the size read 0 and are not written */\n"
+    "struct MxBind { device uint *p; uint size, pad; };\n"
+    "struct MxBinds { MxBind cb[18], sb[16], wm; };\n"
+    "struct MxParams { uint2 alpha; float point_size, fcs; uint clip, pad0, pad1, pad2; };\n"
+    "struct mx_cbuf { device const uint *p; uint n; uint operator[](uint i) const { return i < n ? p[i] : 0u; } };\n"
+    "struct mx_sbuf { device uint *p; uint n; uint operator[](uint i) const { return i < n ? p[i] : 0u; } void st(uint i, uint v) const { if (i < n) p[i] = v; } };\n";
+
+static const char *const k_msl_vote =
+    "inline bool allInvocationsARB(bool b) { return simd_all(b); }\n"
+    "inline bool anyInvocationARB(bool b) { return simd_any(b); }\n"
+    "inline bool allInvocationsEqualARB(bool b) { return simd_all(b) || !simd_any(b); }\n"
+    "inline ulong ballotARB(bool b) { return ulong(simd_vote::vote_t(simd_ballot(b))); }\n";
+
+static const char *const k_msl_lanes =      /* (a SIMD group has 32 threads on Apple GPUs, as a warp) */
+    "#define gl_SubGroupEqMaskARB (1ul << gl_SubGroupInvocationARB)\n"
+    "#define gl_SubGroupLtMaskARB ((1ul << gl_SubGroupInvocationARB) - 1ul)\n"
+    "#define gl_SubGroupLeMaskARB ((2ul << gl_SubGroupInvocationARB) - 1ul)\n"
+    "#define gl_SubGroupGtMaskARB (~((2ul << gl_SubGroupInvocationARB) - 1ul))\n"
+    "#define gl_SubGroupGeMaskARB (~((1ul << gl_SubGroupInvocationARB) - 1ul))\n";
+
+static const char *const k_msl_tex =
+    "inline uint mx_layer(float l, uint n) { return min(uint(max(rint(l), 0.0)), n - 1u); }   /* rounded and clamped */\n"
+    "inline int2 mx_near(int2 o) { return clamp(o, int2(-8), int2(7)); }   /* the part of a gather's offset Metal applies */\n"
+    "inline float2 mx_at(float2 c, int2 o, uint w, uint h) { return c + float2(o - mx_near(o)) / float2(float(w), float(h)); }\n";
+
+static const char *const k_msl_images =
+    "template <typename T, access A> vec<T, 4> imageLoad(texture1d<T, A> t, int c) { return uint(c) < t.get_width() ? t.read(uint(c)) : vec<T, 4>(0); }\n"
+    "template <typename T, access A> void imageStore(texture1d<T, A> t, int c, vec<T, 4> v) { if (uint(c) < t.get_width()) t.write(v, uint(c)); }\n"
+    "template <typename T, access A> vec<T, 4> imageLoad(texture_buffer<T, A> t, int c) { return uint(c) < t.get_width() ? t.read(uint(c)) : vec<T, 4>(0); }\n"
+    "template <typename T, access A> void imageStore(texture_buffer<T, A> t, int c, vec<T, 4> v) { if (uint(c) < t.get_width()) t.write(v, uint(c)); }\n"
+    "template <typename T, access A> vec<T, 4> imageLoad(texture1d_array<T, A> t, int2 c) {\n"
+    "  return uint(c.x) < t.get_width() && uint(c.y) < t.get_array_size() ? t.read(uint(c.x), uint(c.y)) : vec<T, 4>(0); }\n"
+    "template <typename T, access A> void imageStore(texture1d_array<T, A> t, int2 c, vec<T, 4> v) {\n"
+    "  if (uint(c.x) < t.get_width() && uint(c.y) < t.get_array_size()) t.write(v, uint(c.x), uint(c.y)); }\n"
+    "template <typename T, access A> vec<T, 4> imageLoad(texture2d<T, A> t, int2 c) {\n"
+    "  return uint(c.x) < t.get_width() && uint(c.y) < t.get_height() ? t.read(uint2(c)) : vec<T, 4>(0); }\n"
+    "template <typename T, access A> void imageStore(texture2d<T, A> t, int2 c, vec<T, 4> v) {\n"
+    "  if (uint(c.x) < t.get_width() && uint(c.y) < t.get_height()) t.write(v, uint2(c)); }\n"
+    "template <typename T, access A> vec<T, 4> imageLoad(texture2d_array<T, A> t, int3 c) {\n"
+    "  return uint(c.x) < t.get_width() && uint(c.y) < t.get_height() && uint(c.z) < t.get_array_size() ? t.read(uint2(c.xy), uint(c.z)) : vec<T, 4>(0); }\n"
+    "template <typename T, access A> void imageStore(texture2d_array<T, A> t, int3 c, vec<T, 4> v) {\n"
+    "  if (uint(c.x) < t.get_width() && uint(c.y) < t.get_height() && uint(c.z) < t.get_array_size()) t.write(v, uint2(c.xy), uint(c.z)); }\n"
+    "template <typename T, access A> vec<T, 4> imageLoad(texture3d<T, A> t, int3 c) {\n"
+    "  return uint(c.x) < t.get_width() && uint(c.y) < t.get_height() && uint(c.z) < t.get_depth() ? t.read(uint3(c)) : vec<T, 4>(0); }\n"
+    "template <typename T, access A> void imageStore(texture3d<T, A> t, int3 c, vec<T, 4> v) {\n"
+    "  if (uint(c.x) < t.get_width() && uint(c.y) < t.get_height() && uint(c.z) < t.get_depth()) t.write(v, uint3(c)); }\n";
+
+typedef struct { char *s; size_t len, cap; } MxStr;
+static void sput(MxStr *b, const char *fmt, ...) {
+    va_list ap, aq;
+    va_start(ap, fmt);
+    va_copy(aq, ap);
+    int n = vsnprintf(NULL, 0, fmt, aq);
+    va_end(aq);
+    if (n > 0) {
+        if (b->len + (size_t)n + 1 > b->cap) { b->cap = (b->len + (size_t)n + 1) * 2 + 4096; b->s = realloc(b->s, b->cap); }
+        vsnprintf(b->s + b->len, b->cap - b->len, fmt, ap);
+        b->len += (size_t)n;
+    }
+    va_end(ap);
+}
+/* one line of a texture wrapper: @K wrapper, @N kind name, @T Metal type, the others the MslKind fields */
+static void msl_line(MxStr *b, const struct MslKind *k, const char *tpl) {
+    for (const char *p = tpl; *p; p++) {
+        const char *v = NULL;
+        if (*p != '@' || !p[1]) { sput(b, "%c", *p); continue; }
+        switch (*++p) {
+        case 'K': sput(b, "mx_k%s", k->name); continue;
+        case 'N': v = k->name; break; case 'T': v = k->tex; break;
+        case 'c': v = k->c; break; case 'x': v = k->x; break; case 'l': v = k->l; break; case 'o': v = k->o; break; case 'p': v = k->p; break;
+        case 'g': v = k->g; break; case 'd': v = k->d; break; case 'f': v = k->f; break; case 'e': v = k->fo; break; case 'F': v = k->fr; break;
+        case 'q': v = k->q; break; case 'Q': v = k->qx; break; case 'r': v = k->r; break;
+        case 'G': v = k->gc; break; case 'X': v = k->gx; break; case 'L': v = k->gl; break;
+        }
+        sput(b, "%s", v ? v : "");
+    }
+}
+/* the wrapper of a texture kind: templates, so that only what the body calls is compiled (sampling with an implicit level of
+ * detail is declared in fragment functions only) */
+static void msl_kind_code(MxStr *b, const struct MslKind *k, int frag) {
+    static const char *const comp[4] = {"x", "y", "z", "w"};
+    msl_line(b, k, "template <typename T> struct @K { @T<T> t; sampler s; };\n");
+    if (k->r) {
+        msl_line(b, k, "typedef @K<float> sampler@N;\n");
+        if (!strcmp(k->r, "r")) { if (frag) msl_line(b, k, "template <typename T> float texture(@K<T> x, @c c, float r) { return x.t.sample_compare(x.s, @x@l, r); }\n"); }
+        else {
+            if (frag) {
+                msl_line(b, k, "template <typename T> float texture(@K<T> x, @c c) { return x.t.sample_compare(x.s, @x@l, @r); }\n");
+                msl_line(b, k, "template <typename T> float texture(@K<T> x, @c c, float b) { return x.t.sample_compare(x.s, @x@l, @r, bias(b)); }\n");
+            }
+            msl_line(b, k, "template <typename T> float textureLod(@K<T> x, @c c, float lv) { return x.t.sample_compare(x.s, @x@l, @r, level(lv)); }\n");
+            if (k->o) {
+                if (frag) {
+                    msl_line(b, k, "template <typename T> float textureOffset(@K<T> x, @c c, @o o) { return x.t.sample_compare(x.s, @x@l, @r, @p); }\n");
+                    msl_line(b, k, "template <typename T> float textureOffset(@K<T> x, @c c, @o o, float b) { return x.t.sample_compare(x.s, @x@l, @r, bias(b), @p); }\n");
+                }
+                msl_line(b, k, "template <typename T> float textureLodOffset(@K<T> x, @c c, float lv, @o o) { return x.t.sample_compare(x.s, @x@l, @r, level(lv), @p); }\n");
+            }
+        }
+        if (k->gc) msl_line(b, k, "template <typename T> vec4 textureGather(@K<T> x, @G c, float r) { return x.t.gather_compare(x.s, @X@L, r); }\n");
+        if (k->gc && k->goff)
+            msl_line(b, k, "template <typename T> vec4 textureGatherOffset(@K<T> x, @G c, float r, int2 o) {\n"
+                           "  return x.t.gather_compare(x.s, mx_at(@X, o, x.t.get_width(), x.t.get_height())@L, r, mx_near(o)); }\n");
+        return;
+    }
+    msl_line(b, k, "typedef @K<float> sampler@N; typedef @K<int> isampler@N; typedef @K<uint> usampler@N;\n");
+    if (k->c) {
+        if (frag) {
+            msl_line(b, k, "template <typename T> vec<T, 4> texture(@K<T> x, @c c) { return x.t.sample(x.s, @x@l); }\n");
+            msl_line(b, k, "template <typename T> vec<T, 4> texture(@K<T> x, @c c, float b) { return x.t.sample(x.s, @x@l, bias(b)); }\n");
+        }
+        msl_line(b, k, "template <typename T> vec<T, 4> textureLod(@K<T> x, @c c, float lv) { return x.t.sample(x.s, @x@l, level(lv)); }\n");
+        if (k->o) {
+            if (frag) {
+                msl_line(b, k, "template <typename T> vec<T, 4> textureOffset(@K<T> x, @c c, @o o) { return x.t.sample(x.s, @x@l, @p); }\n");
+                msl_line(b, k, "template <typename T> vec<T, 4> textureOffset(@K<T> x, @c c, @o o, float b) { return x.t.sample(x.s, @x@l, bias(b), @p); }\n");
+            }
+            msl_line(b, k, "template <typename T> vec<T, 4> textureLodOffset(@K<T> x, @c c, float lv, @o o) { return x.t.sample(x.s, @x@l, level(lv), @p); }\n");
+        }
+        if (k->g) {
+            msl_line(b, k, "template <typename T> vec<T, 4> textureGrad(@K<T> x, @c c, @g dx, @g dy) { return x.t.sample(x.s, @x@l, @d); }\n");
+            if (k->o) msl_line(b, k, "template <typename T> vec<T, 4> textureGradOffset(@K<T> x, @c c, @g dx, @g dy, @o o) { return x.t.sample(x.s, @x@l, @d, @p); }\n");
+        }
+    }
+    if (k->f) {
+        msl_line(b, k, "template <typename T> vec<T, 4> texelFetch(@K<T> x, @f c, int lv) { uint l = uint(lv); return @F : vec<T, 4>(0); }\n");
+        if (k->fo) msl_line(b, k, "template <typename T> vec<T, 4> texelFetchOffset(@K<T> x, @f c, int lv, @o o) { return texelFetch(x, @e, lv); }\n");
+    }
+    if (k->gc) {
+        msl_line(b, k, "template <typename T> vec<T, 4> textureGather(@K<T> x, @G c, int k) { switch (k) {");
+        for (int n = 3; n >= 0; n--) {
+            sput(b, n ? " case %d: " : " default: ", n);
+            msl_line(b, k, k->goff ? "return x.t.gather(x.s, @X@L, int2(0), " : "return x.t.gather(x.s, @X@L, ");
+            sput(b, "component::%s);", comp[n]);
+        }
+        sput(b, " } }\n");
+    }
+    if (k->gc && k->goff) {
+        msl_line(b, k, "template <typename T> vec<T, 4> textureGatherOffset(@K<T> x, @G c, int2 o, int k) {\n"
+                       "  float2 a = mx_at(@X, o, x.t.get_width(), x.t.get_height()); int2 n = mx_near(o); switch (k) {");
+        for (int n = 3; n >= 0; n--) {
+            sput(b, n ? " case %d: " : " default: ", n);
+            msl_line(b, k, "return x.t.gather(x.s, a@L, n, ");
+            sput(b, "component::%s);", comp[n]);
+        }
+        sput(b, " } }\n");
+    }
+    if (k->q && frag)
+        msl_line(b, k, "template <typename T> float2 textureQueryLod(@K<T> x, @q c) { return float2(x.t.calculate_clamped_lod(x.s, @Q), x.t.calculate_unclamped_lod(x.s, @Q)); }\n");
+    if (!strcmp(k->name, "2D")) msl_line(b, k, "template <typename T> int2 textureSize(@K<T> x, int lv) { return int2(int(x.t.get_width(uint(lv))), int(x.t.get_height(uint(lv)))); }\n");
+}
+
+/* The whole text: prelude, texture wrappers, the program (struct MxProg: its resources and inputs as members, filled by the
+ * entry point; run() is the GLSL main), the entry point. The body is the one the GLSL text gets. */
+static char *msl_text(Mx *e) {
+    const MxIn *in = e->in;
+    const char *body = e->s ? e->s : "";
+    const int vs = in->stage == MX_VERTEX, fs = in->stage == MX_FRAGMENT, cs = in->stage == MX_COMPUTE;
+    MxStr o = {0}, m = {0}, ini = {0}, arg = {0};
+    uint32_t omap = 0, flags = 0, kinds = 0;
+    int binds = 0, lane = 0, nrt = 0, any;
+    if (fs) { memcpy(&omap, in->code + 0x48, 4); memcpy(&flags, in->code + 0x4c, 4); }
+    for (unsigned rt = 0; rt < 8; rt++) if ((omap >> (rt * 4)) & 15) nrt++;
+#define USES(t) (strstr(body, t) || strstr(e->exitcode, t))
+    sput(&o, "%s", k_msl_prelude);
+    if (USES("InvocationsARB") || USES("ballotARB")) sput(&o, "%s", k_msl_vote);
+    if (USES("gl_SubGroup")) { sput(&o, "%s", k_msl_lanes); lane = 1; }
+    if (USES("gl_HelperInvocation")) sput(&o, "#define gl_HelperInvocation simd_is_helper_thread()\n");
+    if (USES("gl_DrawID")) sput(&o, "#define gl_DrawID 0u   /* (Metal has no draw index) */\n");
+    if (e->uses_tf)
+        sput(&o, "inline int2 mx_tf(int2 p, int2 real, uint gw, uint gh) { int2 g = int2(int(gw), int(gh));\n"
+                 "  return (g.x <= 0 || g.y <= 0 || all(g == real)) ? p : int2(floor((float2(p) + 0.5) * float2(real) / float2(g))); }\n");
+    if (e->nsmp) sput(&o, "%s", k_msl_tex);
+    for (int k = 0; k < e->nsmp; k++) {
+        const struct MslKind *kd = msl_kind_of(e->smp[k].type);
+        unsigned bit = (unsigned)(kd - k_msl_kind);
+        if (!(kinds >> bit & 1)) msl_kind_code(&o, kd, fs);
+        kinds |= 1u << bit;
+    }
+    if (e->images) sput(&o, "%s", k_msl_images);
+
+    /* the program: first the members the entry point fills (in the order of its initialiser), then the others */
+    if (e->uses_alpha) { sput(&m, "  uint2 mx_alpha;\n"); sput(&ini, ", params.alpha"); }
+    if (e->uses_fcs) { sput(&m, "  float mx_fcs;\n"); sput(&ini, ", params.fcs"); }
+    for (unsigned n = 0; n < 32; n++)   /* (banks past the hardware's 18 read 0) */
+        if (e->cbufs >> n & 1) {
+            sput(&m, "  mx_cbuf c%u;\n", n);
+            if (n < 18) { sput(&ini, ", {bt.cb[%u].p, bt.cb[%u].size >> 2}", n, n); binds = 1; }
+            else sput(&ini, ", {nullptr, 0u}");
+        }
+    for (unsigned k = 0; k < 16; k++) if (e->ssbos >> k & 1) { sput(&m, "  mx_sbuf s%u;\n", k); sput(&ini, ", {bt.sb[%u].p, bt.sb[%u].size >> 2}", k, k); binds = 1; }
+    if (e->uses_gstore && in->track_writes) { sput(&m, "  device atomic_uint *mx_wm;\n"); sput(&ini, ", (device atomic_uint *)bt.wm.p"); binds = 1; }
+    for (int k = 0; k < e->nsmp; k++) {
+        const struct MslKind *kd = msl_kind_of(e->smp[k].type);
+        const char *ty = e->smp[k].type, *el = kd->r ? "float" : ty[0] == 'i' ? "int" : ty[0] == 'u' ? "uint" : "float";
+        sput(&m, "  %s mx_t%u_%s;\n", ty, (unsigned)e->smp[k].unit, ty);
+        sput(&ini, ", {mx_tex%d, mx_smp%d}", k, k);
+        sput(&arg, ", %s<%s> mx_tex%d [[texture(%u)]], sampler mx_smp%d [[sampler(%d)]]", kd->tex, el, k, (unsigned)e->smp[k].binding, k, k);
+    }
+    for (unsigned k = 0; k < 8; k++) {
+        static const char *const ity[6] = {"texture1d", "texture_buffer", "texture1d_array", "texture2d", "texture2d_array", "texture3d"};
+        int cls = 0;
+        if (!(e->images >> k & 1)) continue;
+        img_qualifier(e->image_fmt[k], &cls);
+        const char *acc = !(e->images_written >> k & 1) ? "read" : !(e->images_read >> k & 1) ? "write" : "read_write";
+        char ty[64];
+        snprintf(ty, sizeof ty, "%s<%s, access::%s>", ity[e->image_type[k]], cls == 1 ? "uint" : cls == 2 ? "int" : "float", acc);
+        sput(&m, "  %s mx_img%u;\n", ty, k);
+        sput(&ini, ", mx_img%u", k);
+        sput(&arg, ", %s mx_img%u [[texture(%u)]]", ty, k, in->image_base + k);
+    }
+    if (e->uses_smem) { sput(&m, "  threadgroup uint *smem;\n"); sput(&ini, ", mx_smem"); }
+    if (vs) {
+        for (unsigned n = 0; n < 32; n++)
+            if (e->in_attr >> n & 1) {
+                sput(&m, "  %s in_attr%u;\n", n < 16 && (in->int_attrs >> (16 + n) & 1) ? "uint4" : n < 16 && (in->int_attrs >> n & 1) ? (in->sint_attrs >> n & 1 ? "int4" : "uint4") : "float4", n);
+                sput(&ini, ", mx_in.a%u", n);
+            }
+        if (USES("gl_VertexIndex")) { sput(&m, "  uint gl_VertexIndex;\n"); sput(&ini, ", mx_vid"); sput(&arg, ", uint mx_vid [[vertex_id]]"); }
+        if (USES("gl_InstanceIndex")) { sput(&m, "  uint gl_InstanceIndex;\n"); sput(&ini, ", mx_iid"); sput(&arg, ", uint mx_iid [[instance_id]]"); }
+        if (USES("gl_BaseVertex")) { sput(&m, "  uint gl_BaseVertex;\n"); sput(&ini, ", mx_bv"); sput(&arg, ", uint mx_bv [[base_vertex]]"); }
+        if (USES("gl_BaseInstance")) { sput(&m, "  uint gl_BaseInstance;\n"); sput(&ini, ", mx_bi"); sput(&arg, ", uint mx_bi [[base_instance]]"); }
+    } else if (fs) {
+        for (unsigned n = 0; n < 32; n++) if (e->in_attr >> n & 1) { sput(&m, "  float4 in_attr%u;\n", n); sput(&ini, ", mx_in.a%u", n); }
+        if (USES("gl_FragCoord")) { sput(&m, "  float4 gl_FragCoord;\n"); sput(&ini, ", mx_in.pos"); }
+        if (USES("gl_FrontFacing")) { sput(&m, "  bool gl_FrontFacing;\n"); sput(&ini, ", mx_ff"); sput(&arg, ", bool mx_ff [[front_facing]]"); }
+        if (USES("gl_PointCoord")) { sput(&m, "  float2 gl_PointCoord;\n"); sput(&ini, ", mx_pc"); sput(&arg, ", float2 mx_pc [[point_coord]]"); }
+        if (USES("gl_PrimitiveID")) { sput(&m, "  uint gl_PrimitiveID;\n"); sput(&ini, ", mx_prim"); sput(&arg, ", uint mx_prim [[primitive_id]]"); }
+        if (USES("gl_Layer")) { sput(&m, "  uint gl_Layer;\n"); sput(&ini, ", mx_rtai"); sput(&arg, ", uint mx_rtai [[render_target_array_index]]"); }
+        if (USES("gl_ViewportIndex")) { sput(&m, "  uint gl_ViewportIndex;\n"); sput(&ini, ", mx_vpi"); sput(&arg, ", uint mx_vpi [[viewport_array_index]]"); }
+    } else if (cs) {
+        if (USES("gl_LocalInvocationID")) { sput(&m, "  uint3 gl_LocalInvocationID;\n"); sput(&ini, ", mx_lid"); sput(&arg, ", uint3 mx_lid [[thread_position_in_threadgroup]]"); }
+        if (USES("gl_WorkGroupID")) { sput(&m, "  uint3 gl_WorkGroupID;\n"); sput(&ini, ", mx_wid"); sput(&arg, ", uint3 mx_wid [[threadgroup_position_in_grid]]"); }
+    }
+    if (lane) {
+        sput(&m, "  uint gl_SubGroupInvocationARB;\n"); sput(&ini, ", mx_lane");
+        if (!vs) sput(&arg, ", uint mx_lane [[thread_index_in_simdgroup]]");      /* (a vertex function has no such input: see the entry point) */
+    }
+    sput(&m, "  bool cz, cs, ccf, cov;\n");
+    if (vs) {
+        sput(&m, "  float4 mx_position;\n  float mx_psize;\n");
+        for (unsigned n = 0; n < 32; n++) if (e->out_attr >> n & 1) sput(&m, "  float4 out_attr%u;\n", n);
+        if (e->clip_out) sput(&m, "  float mx_clip[8];\n");
+        if (e->uses_layer_out) sput(&m, "  int gl_Layer;\n");
+        if (e->uses_vp_out) sput(&m, "  int gl_ViewportIndex;\n");
+    }
+    if (fs) {
+        for (unsigned rt = 0; rt < 8; rt++) if ((omap >> (rt * 4)) & 15) sput(&m, "  float4 frag%u;\n", rt);
+        if (flags & 2) sput(&m, "  float gl_FragDepth;\n");
+        if (flags & 1) sput(&m, "  int gl_SampleMask[1];\n");
+    }
+    sput(&o, "struct MxProg {\n%s", m.s);
+    sput(&o, "  uint mx_addc(uint a, uint b, uint ci) { uint r1 = a + b, r = r1 + ci; cz = r == 0u; cs = int(r) < 0; ccf = r1 < a || r < r1;\n"
+             "    cov = (((a ^ r) & (b ^ r)) >> 31) != 0u; return r; }\n");
+    if (e->uses_alpha)
+        sput(&o, "  bool mx_alpha_ok(float a) { uint f = mx_alpha.x; float r = F(mx_alpha.y);\n"
+                 "    return f == 0u || f >= 8u ? true : f == 1u ? false : f == 2u ? a < r : f == 3u ? a == r : f == 4u ? a <= r : f == 5u ? a > r : f == 6u ? a != r : a >= r; }\n");
+    if (e->uses_gmem) {
+        sput(&o, "  uint mx_ldg(uint ad) { uint o = (ad & 0x07ffffffu) >> 2; switch (ad >> 27) {\n");
+        for (unsigned k = 0; k < 16; k++) if (e->ssbos >> k & 1) sput(&o, "   case %uu: return s%u[o];\n", k + 1, k);
+        for (unsigned k = 0; k < 15; k++) if (e->gubos >> k & 1) sput(&o, "   case %uu: return c%u[o];\n", 17 + k, 3 + k);
+        sput(&o, "   } return 0u; }\n");
+    }
+    if (e->uses_gstore) {
+        sput(&o, "  void mx_stg(uint ad, uint v) { uint o = (ad & 0x07ffffffu) >> 2; switch (ad >> 27) {\n");
+        for (unsigned k = 0; k < 16; k++)
+            if (e->ssbos >> k & 1) {
+                sput(&o, "   case %uu: s%u.st(o, v);", k + 1, k);
+                if (in->track_writes) sput(&o, " if (mx_wm) atomic_fetch_or_explicit(mx_wm, %uu, memory_order_relaxed);", 1u << k);
+                sput(&o, " break;\n");
+            }
+        sput(&o, "   } }\n");
+    }
+    sput(&o, "  void run() {\n");
+    if (vs) {
+        sput(&o, " mx_position = vec4(0.0, 0.0, 0.0, 1.0);\n");
+        for (unsigned n = 0; n < 32; n++) if (e->out_attr >> n & 1) sput(&o, " out_attr%u = vec4(0.0, 0.0, 0.0, 1.0);\n", n);
+    }
+    any = 0;
+    for (unsigned r = 0; r < 255; r++) if (e->regs[r]) { sput(&o, "%s r%u = 0u", any ? "," : " uint", r); any = 1; }
+    sput(&o, "%s uint rz = 0u;\n", any ? ";\n" : "");
+    any = 0;
+    for (unsigned p = 0; p < 7; p++) if (e->preds[p]) { sput(&o, "%s p%u = false", any ? "," : " bool", p); any = 1; }
+    if (any) sput(&o, ";\n");
+    if (e->uses_lmem) sput(&o, " uint lmem[%u] = {};\n", e->lmem_words);
+    if (e->any_jump) sput(&o, " uint pc = 1u;\n for (;;) { switch (pc) {\n");
+    if (e->len) { if (o.len + e->len + 1 > o.cap) { o.cap = o.len + e->len + 65536; o.s = realloc(o.s, o.cap); } memcpy(o.s + o.len, body, e->len); o.len += e->len; o.s[o.len] = 0; }
+    if (e->any_jump) sput(&o, " default: %s return;\n } }\n}\n", e->exitcode);
+    else sput(&o, " %s\n}\n", e->exitcode);
+    sput(&o, "};\n");
+
+    /* the entry point */
+    if (vs || (fs && (e->uses_alpha || e->uses_fcs))) sput(&arg, ", constant MxParams &params [[buffer(%d)]]", MX_MSL_PARAMS);
+    if (binds) sput(&arg, ", constant MxBinds &bt [[buffer(%d)]]", MX_MSL_BINDS);
+    const char *args = arg.s ? arg.s : ", ";
+    if (vs) {
+        if (e->in_attr) {
+            sput(&o, "struct MxVIn {\n");
+            for (unsigned n = 0; n < 32; n++)
+                if (e->in_attr >> n & 1)
+                    sput(&o, "  %s a%u [[attribute(%u)]];\n", n < 16 && (in->int_attrs >> (16 + n) & 1) ? "uint4" : n < 16 && (in->int_attrs >> n & 1) ? (in->sint_attrs >> n & 1 ? "int4" : "uint4") : "float4", n, n);
+            sput(&o, "};\n");
+        }
+        sput(&o, "constant bool mx_points_ [[function_constant(%d)]];   /* drawing points: write the point size (not allowed otherwise) */\n"
+                 "constant bool mx_points = is_function_constant_defined(mx_points_) && mx_points_;\n", MX_MSL_POINTS);
+        sput(&o, "struct MxVOut {\n  float4 pos [[position, invariant]];\n  float psize [[point_size, function_constant(mx_points)]];\n");
+        for (unsigned n = 0; n < 32; n++) if (e->out_attr >> n & 1) sput(&o, "  float4 a%u [[user(attr%u)]];\n", n, n);
+        if (e->uses_layer_out) sput(&o, "  uint layer [[render_target_array_index]];\n");
+        if (e->uses_vp_out) sput(&o, "  uint vpi [[viewport_array_index]];\n");
+        sput(&o, "};\nvertex MxVOut mx_main(%s%s) {\n", e->in_attr ? "MxVIn mx_in [[stage_in]]" : "", e->in_attr ? args : args + 2);
+        if (lane) sput(&o, "  uint mx_lane = simd_prefix_exclusive_sum(1u);   /* (every thread of the SIMD group is active here) */\n");
+        sput(&o, "  MxProg p = {%s};\n  p.run();\n  MxVOut o;\n  float4 q = p.mx_position;\n", ini.s ? ini.s + 2 : "");
+        sput(&o, "  if ((params.clip & %uu) != 0u) q.y = -q.y;\n  if ((params.clip & %uu) != 0u) q.z = (q.z + q.w) * 0.5;\n", MX_MSL_FLIP_Y, MX_MSL_Z_HALF);
+        sput(&o, "  o.pos = q;\n  if (mx_points) o.psize = params.point_size;\n");
+        for (unsigned n = 0; n < 32; n++) if (e->out_attr >> n & 1) sput(&o, "  o.a%u = p.out_attr%u;\n", n, n);
+        if (e->uses_layer_out) sput(&o, "  o.layer = uint(p.gl_Layer);\n");
+        if (e->uses_vp_out) sput(&o, "  o.vpi = uint(p.gl_ViewportIndex);\n");
+        sput(&o, "  return o;\n}\n");
+    } else if (fs) {
+        sput(&o, "struct MxFIn {\n  float4 pos [[position]];\n");
+        for (unsigned n = 0; n < 32; n++) {
+            if (!(e->in_attr >> n & 1)) continue;
+            unsigned md = in->code[0x18 + n], eff = 0;
+            for (int k = 0; k < 4; k++) if ((md >> (k * 2)) & 3) eff = (md >> (k * 2)) & 3;
+            sput(&o, "  float4 a%u [[user(attr%u)%s]];\n", n, n, eff == 1 ? ", flat" : eff == 3 ? ", center_no_perspective" : "");
+        }
+        sput(&o, "};\n");
+        if (nrt || flags & 3) {
+            if (nrt) sput(&o, "constant uint mx_rt_types [[function_constant(%d)]];   /* 2 bits a render target: float (0), uint (1), int (2) */\n"
+                              "constant uint mx_rtt = is_function_constant_defined(mx_rt_types) ? mx_rt_types : 0u;\n", MX_MSL_RT_TYPES);
+            for (unsigned rt = 0; rt < 8; rt++)
+                if ((omap >> (rt * 4)) & 15)
+                    sput(&o, "constant bool mx_c%uf = (mx_rtt >> %uu & 3u) == 0u, mx_c%uu = (mx_rtt >> %uu & 3u) == 1u, mx_c%ui = (mx_rtt >> %uu & 3u) == 2u;\n", rt, 2 * rt, rt, 2 * rt, rt, 2 * rt);
+            sput(&o, "struct MxFOut {\n");
+            for (unsigned rt = 0; rt < 8; rt++)
+                if ((omap >> (rt * 4)) & 15)
+                    sput(&o, "  float4 c%uf [[color(%u), function_constant(mx_c%uf)]];\n  uint4 c%uu [[color(%u), function_constant(mx_c%uu)]];\n"
+                             "  int4 c%ui [[color(%u), function_constant(mx_c%ui)]];\n", rt, rt, rt, rt, rt, rt, rt, rt, rt);
+            if (flags & 2) sput(&o, "  float depth [[depth(any)]];\n");
+            if (flags & 1) sput(&o, "  uint mask [[sample_mask]];\n");
+            sput(&o, "};\n");
+        }
+        sput(&o, "fragment %s mx_main(MxFIn mx_in [[stage_in]]%s) {\n", nrt || flags & 3 ? "MxFOut" : "void", arg.s ? arg.s : "");
+        sput(&o, "  MxProg p = {%s};\n  p.run();\n", ini.s ? ini.s + 2 : "");
+        if (nrt || flags & 3) {
+            sput(&o, "  MxFOut o;\n");
+            for (unsigned rt = 0; rt < 8; rt++)
+                if ((omap >> (rt * 4)) & 15)
+                    sput(&o, "  if (mx_c%uf) o.c%uf = p.frag%u;\n  if (mx_c%uu) o.c%uu = as_type<uint4>(p.frag%u);\n  if (mx_c%ui) o.c%ui = as_type<int4>(p.frag%u);\n",
+                         rt, rt, rt, rt, rt, rt, rt, rt, rt);
+            if (flags & 2) sput(&o, "  o.depth = p.gl_FragDepth;\n");
+            if (flags & 1) sput(&o, "  o.mask = uint(p.gl_SampleMask[0]);\n");
+            sput(&o, "  return o;\n");
+        }
+        sput(&o, "}\n");
+    } else {
+        unsigned lx = in->local_size[0] ? in->local_size[0] : 1, ly = in->local_size[1] ? in->local_size[1] : 1, lz = in->local_size[2] ? in->local_size[2] : 1;
+        sput(&o, "[[max_total_threads_per_threadgroup(%u)]]\nkernel void mx_main(%s) {\n", lx * ly * lz, arg.s ? arg.s + 2 : "");
+        if (e->uses_smem) sput(&o, "  threadgroup uint mx_smem[%u];\n", e->smem_words);
+        sput(&o, "  MxProg p = {%s};\n  p.run();\n}\n", ini.s ? ini.s + 2 : "");
+    }
+#undef USES
+    free(m.s); free(ini.s); free(arg.s);
+    return o.s;
+}
+
 int mx_translate(const MxIn *in, MxOut *out) {
     Mx *e = calloc(1, sizeof *e);
     char *res = NULL;
@@ -1504,6 +1970,7 @@ int mx_translate(const MxIn *in, MxOut *out) {
         e->ssbo_word0 = in->stage == MX_COMPUTE ? 0x310 / 4 : (0x110 + 0x100 * hw[in->stage]) / 4;
     }
     if (in->stage != MX_VERTEX && in->stage != MX_FRAGMENT && in->stage != MX_COMPUTE) fail(e, in->stage == MX_GEOMETRY ? "geometry stage" : "tessellation stage", "stage %d is not supported", in->stage);
+    if (in->target < 0 || in->target > 2) fail(e, "target", "target %d", in->target);
 
     /* the code that ends the shader (EXIT): fragment outputs from the registers, alpha test, depth */
     if (in->stage == MX_FRAGMENT) {
@@ -1539,7 +2006,10 @@ int mx_translate(const MxIn *in, MxOut *out) {
     }
 
     /* assemble: header, declarations, helpers, main */
-    {
+    if (in->target == 2) {
+        if (in->stage == MX_VERTEX) e->out_attr |= in->force_out;
+        res = msl_text(e);
+    } else {
         Mx h;
         memset(&h, 0, sizeof h);
         h.in = in;

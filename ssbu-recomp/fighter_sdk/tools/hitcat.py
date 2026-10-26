@@ -21,7 +21,10 @@ import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-STUDY = os.path.normpath(os.path.join(HERE, '..', '..'))
+sys.path.insert(0, HERE)
+import sdk_paths  # noqa: E402
+
+STUDY = sdk_paths.WORK
 OUT = os.path.join(STUDY, 'fighters', 'catalog')
 
 COLS = ['id', 'part', 'bone', 'damage', 'angle', 'kbg', 'fkb', 'bkb', 'size', 'x', 'y', 'z', 'x2', 'y2', 'z2',

@@ -1,4 +1,4 @@
-/* nvn_vk_wd.c (session 12; included at the end of nvn_vk_draw.c: not a build unit of its own).
+/* nvn_vk_wd.c (session 12; a build unit of its own: what it shares with the rest of the back end is in nvn_vk_int.h).
  *
  * THE FREEZE WATCHDOG. On by default in the Vulkan renderer (SSBU_VK_WATCHDOG=0 off, =<seconds> another limit; default 5).
  * A thread looks twice a second at the time of the last frame that reached the window. When no frame was presented for the
@@ -15,6 +15,14 @@
  * to that folder instead of next to the exe.
  * It only reads: nothing is unblocked or killed. Threads are suspended one at a time for the few microseconds of the unwind;
  * nothing is printed or allocated while one is suspended. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#include <windows.h>
+#include <psapi.h>
+#include "hostrt.h"
+#include "nvn_vk_int.h"
 #include <tlhelp32.h>
 #ifndef _WIN32
 #include <dirent.h>
@@ -28,8 +36,10 @@ static HANDLE g_wd_thread;
 static FILE *g_wd_fp;
 static DWORD g_wd_main_tid;
 typedef struct { uint32_t rva; char name[68]; } WdSym;
+#ifdef _WIN32                                      /* the exe's map: only the Windows report reads it (wd_map_load) */
 static WdSym *g_wd_sym;
 static int g_wd_nsym, g_wd_map_tried;
+#endif
 static void wdp(const char *fmt, ...) {
     char b[1400];
     va_list ap;
@@ -122,7 +132,7 @@ static int wd_walk(CONTEXT *ctx, uint64_t *pcs, int max) {
 }
 #endif
 static const char *wd_tname(DWORD tid, char *buf, size_t n) {
-    const char *g = tid == g_render_tid ? "render (host)" : tid == g_wd_main_tid ? "the process's first thread (boot.c main: waits for the game)" : guest_thread_name_of(tid);
+    const char *g = tid == g_vk_render_tid ? "render (host)" : tid == g_wd_main_tid ? "the process's first thread (boot.c main: waits for the game)" : guest_thread_name_of(tid);
     if (g) return g;
     for (int i = 0; i < g_pw_nthread; i++) if (g_pw_thread[i] && GetThreadId(g_pw_thread[i]) == tid) { snprintf(buf, n, "shader worker %d (host)", i); return buf; }
     if (g_prep_thread && GetThreadId(g_prep_thread) == tid) return "preparation (host)";
@@ -143,7 +153,7 @@ static void wd_owner(const char *name, CRITICAL_SECTION *cs) {
 #endif
     else wdp("  lock %s: free\n", name);
 }
-unsigned long nvn_front_present_tid(void);         /* nvn_gl.c */
+unsigned long nvn_front_present_tid(void);         /* nvn_front.c */
 static void wd_dump(double stall_s, LONG64 tries_since) {
     static struct { DWORD tid; ULONGLONG cpu0, cpu1, born; int prio, nfr; uint64_t pc[28]; } th[400];
     char path[2 * MAX_PATH], tb[48], ab[400];
@@ -156,7 +166,7 @@ static void wd_dump(double stall_s, LONG64 tries_since) {
     wdp("  presents: %lld frames reached the window so far; present attempts since the last one that did: %lld (%s); frames not presented %lld, failed Vulkan calls %lld, swapchain made again %lld times; window %s\n",
         (long long)g_vk_frames, (long long)tries_since, tries_since ? "the game still presents but nothing reaches the window: see the failures" : "none: the game's present never came, or the render thread is held",
         (long long)g_vk_skipped, (long long)g_vk_errors, (long long)g_vk_recreated, IsIconic((HWND)nvn_front_hwnd()) ? "MINIMISED" : "not minimised");
-    wdp("  render thread %lu, place in its present: %s; %s; fight near: %s\n", (unsigned long)g_render_tid, g_wd_where == 1 ? "the loading barrier (waits for the workers, at most 20 s)" : g_wd_where == 2 ? "vkAcquireNextImageKHR" : g_wd_where == 3 ? "blit and submit" : g_wd_where == 4 ? "vkQueuePresentKHR" : "not in a present",
+    wdp("  render thread %lu, place in its present: %s; %s; fight near: %s\n", (unsigned long)g_vk_render_tid, g_wd_where == 1 ? "the loading barrier (waits for the workers, at most 20 s)" : g_wd_where == 2 ? "vkAcquireNextImageKHR" : g_wd_where == 3 ? "blit and submit" : g_wd_where == 4 ? "vkQueuePresentKHR" : "not in a present",
         g_in_fight ? "the last frame was a FIGHT frame" : "the last frame was not a fight frame", fight_recent() ? "yes" : "no");
     wdp("  workers: %d threads; foreground jobs %lld queued / %lld done, background %lld / %lld, preparation %lld / %lld (%lld running); preparation state %d (0 not started, 1 running, 2 finished, 3 no containers, 5 store being built)%s, %d of %d containers read; loading-barrier holds %lld (time-outs %lld)\n",
         g_pw_nthread, (long long)g_jq_queued, (long long)g_jq_done, (long long)g_bq_queued, (long long)g_bq_done, (long long)g_pq_queued, (long long)g_pq_done, (long long)g_pq_running, g_prep_state, g_prep_marked ? ", marked start" : "", g_prep_read, g_prep_nfiles,
@@ -284,12 +294,12 @@ static void wd_dump(double stall_s, LONG64 tries_since) {
  * presents and the render thread, 10 return addresses each; the line is written when the next frame arrives, with the
  * length, where the render thread was in its present, whether a fight was near, the workers' queues, the page faults
  * and the CPU time of the process during the gap. Gaps while the window is minimised are not written. */
-unsigned long nvn_front_present_tid(void);         /* nvn_gl.c */
+unsigned long nvn_front_present_tid(void);         /* nvn_front.c */
 #ifndef _WIN32
 static void wd_stall_sample(char *out, size_t cap) { snprintf(out, cap, "    (no call stacks in the Linux build)\n"); }
 #else
 static void wd_stall_sample(char *out, size_t cap) {
-    DWORD tids[2] = {(DWORD)nvn_front_present_tid(), g_render_tid};
+    DWORD tids[2] = {(DWORD)nvn_front_present_tid(), g_vk_render_tid};
     size_t at = 0;
     out[0] = 0;
     for (int i = 0; i < 2; i++) {
@@ -378,7 +388,7 @@ static DWORD WINAPI wd_main(void *arg) {
     }
     return 0;
 }
-static void wd_start(void) {
+void wd_start(void) {
     static double limit = 1.0;                      /* session 13: was 5 s; the owner's freezes left no report */
     const char *e = getenv("SSBU_VK_WATCHDOG");
     if (e) limit = atof(e);
@@ -388,11 +398,11 @@ static void wd_start(void) {
     if (g_wd_thread) SetThreadPriority(g_wd_thread, THREAD_PRIORITY_ABOVE_NORMAL);
     printf("nvn_vk_watchdog: on: a report of every thread (locks, waits, call stacks) is written to the log and to <exe>_freeze.txt when no frame reaches the window for %.0f s (SSBU_VK_WATCHDOG=<seconds>, 0 = off; SSBU_MINIDUMP=freeze: also a minidump from 5 s)\n", limit);
 }
-/* Session 13, TEST ONLY (SSBU_STACKS_AT=<seconds>, read in nvn_gl.c): the report of every thread once, with either renderer
+/* Session 13, TEST ONLY (SSBU_STACKS_AT=<seconds>, read in nvn_front.c): the report of every thread once, with either renderer
  * (found with it: why SSBU_RENDERER=gl stood still at its start). The Vulkan fields of the report are zero under OpenGL. */
 static DWORD WINAPI wd_once(void *a) { Sleep((DWORD)(uintptr_t)a * 1000); wd_dump(0, 0); return 0; }
 void nvn_vk_stacks_at(int seconds) { HANDLE h = CreateThread(NULL, 0, wd_once, (void *)(uintptr_t)seconds, 0, NULL); if (h) CloseHandle(h); }
-static void wd_stop(void) {
+void wd_stop(void) {
     g_wd_quit = 1;
     if (g_wd_thread) { WaitForSingleObject(g_wd_thread, 3000); CloseHandle(g_wd_thread); g_wd_thread = NULL; }
 }

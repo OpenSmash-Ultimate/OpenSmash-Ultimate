@@ -10,6 +10,7 @@
 #include <stdio.h>
 
 #include "pad.h"
+#include "input_seq.h"
 
 enum { STYLE_FULLKEY = 1u << 0, STYLE_GC = 1u << 5 };
 enum { NPAD_NO1 = 0, NPAD_HANDHELD = 0x20 };
@@ -21,21 +22,113 @@ enum {   /* nn::hid::NpadButton */
 
 static volatile LONG64 sampling;
 
+/* SSBU_SEQ (input_seq.h): player 1 is the sequence's - its pad is not read - and the keyboard is
+ * nobody's unless SSBU_SEQ_KEYBOARD=1, so that a run goes the same way whatever is plugged in or
+ * typed. Players 2-8 keep their pads. */
+static Seq seq;
+static int seq_on, seq_keyboard, seq_log_every;
+static SeqStepsFn *volatile seq_steps;
+static volatile long seq_draws = -1;   /* draw calls of the last frame shown (-1: none yet) */
+enum { SEQ_MARKS = 512 };   /* (a mark per module the game loads, and a few more) */
+static SRWLOCK seq_marks_lock = SRWLOCK_INIT;
+static char seq_marks[SEQ_MARKS][SEQ_TEXT];
+static int seq_mark_count;
+
+static BOOL CALLBACK seq_start(PINIT_ONCE once, PVOID param, PVOID *ctx) {
+    (void)once; (void)param; (void)ctx;
+    const char *text = getenv("SSBU_SEQ"), *v;
+    if (!text) return TRUE;
+    char why[200];
+    int n = seq_parse(&seq, text, why, sizeof why);
+    if (n < 0) {   /* (at start-up: main asks first, through movie_test_start) */
+        fprintf(stderr, "[seq] SSBU_SEQ: %s\n", why);
+        fflush(stderr);
+        exit(2);
+    }
+    if (n == 0) {   /* (as an empty SSBU_SPEED: e.g. SSBU_SEQ="$(cat run.seq)" of a missing file) */
+        fprintf(stderr, "[seq] SSBU_SEQ has no steps: no sequence, player 1 plays as usual\n");
+        return TRUE;
+    }
+    seq_keyboard = (v = getenv("SSBU_SEQ_KEYBOARD")) && atoi(v) != 0;
+    seq_log_every = (v = getenv("SSBU_SEQ_LOG")) ? atoi(v) : 0;
+    fprintf(stderr, "[seq] %d steps, counted in player 1's polls; player 1's pad is not read, the keyboard is %s\n", n,
+            seq_keyboard ? "read (SSBU_SEQ_KEYBOARD)" : "nobody's");
+    seq_on = 1;
+    return TRUE;
+}
+
+int input_seq_on(void) {
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    InitOnceExecuteOnce(&once, seq_start, NULL, NULL);
+    return seq_on;
+}
+
+static int seq_seen(const char *mark, void *unused) {
+    (void)unused;
+    int found = 0;
+    AcquireSRWLockShared(&seq_marks_lock);
+    for (int i = 0; i < seq_mark_count && !found; i++) found = !strcmp(seq_marks[i], mark);
+    ReleaseSRWLockShared(&seq_marks_lock);
+    return found;
+}
+
+void input_seq_mark(const char *what) {
+    if (!input_seq_on()) return;
+    int known = 0, kept = 0;
+    AcquireSRWLockExclusive(&seq_marks_lock);
+    for (int i = 0; i < seq_mark_count && !known; i++) known = !strcmp(seq_marks[i], what);
+    if (!known && (kept = seq_mark_count < SEQ_MARKS)) snprintf(seq_marks[seq_mark_count++], sizeof seq_marks[0], "%s", what);
+    ReleaseSRWLockExclusive(&seq_marks_lock);
+    if (kept) fprintf(stderr, "[seq] mark %s\n", what);
+    else if (!known) fprintf(stderr, "[seq] mark %s not kept: %d marks already, so a step waiting for it waits for ever\n", what, SEQ_MARKS);
+}
+
+void input_seq_set_steps(SeqStepsFn *steps_per_poll) { seq_steps = steps_per_poll; }
+
+void input_seq_presented(u64 draws_total) {   /* (the vsync thread only) */
+    static u64 last;
+    seq_draws = (long)(draws_total - last);
+    last = draws_total;
+}
+
+static long long seq_polls;
+static void seq_log(const char *line, void *unused) { (void)unused; fprintf(stderr, "[seq] poll %lld: %s\n", seq_polls, line); }
+
+/* One poll of player 1: the sequence moves on, and gives this poll's keys. */
+static void seq_player_poll(u64 *buttons, i32 *lx, i32 *ly) {
+    static SRWLOCK lock = SRWLOCK_INIT;
+    static int ended;
+    AcquireSRWLockExclusive(&lock);
+    seq_polls++;
+    long draws = seq_draws;
+    seq_poll(&seq, seq_steps, draws, seq_seen, seq_log, NULL);
+    long long polls = seq_polls;
+    if (!ended && seq_finished(&seq)) { ended = 1; fprintf(stderr, "[seq] poll %lld: the sequence has ended\n", polls); }
+    if (seq_log_every > 0 && polls % seq_log_every == 0) fprintf(stderr, "[seq] poll %lld: %ld draw calls in the last frame shown\n", polls, draws);
+    *buttons |= seq.buttons;
+    if (seq.lx) *lx = seq.lx;
+    if (seq.ly) *ly = seq.ly;
+    ReleaseSRWLockExclusive(&lock);
+}
+
+static int seq_player(u32 id) { return id == NPAD_NO1 && input_seq_on(); }
+static int keyboard_slot(void) { return input_seq_on() && !seq_keyboard ? -1 : pad_keyboard_slot(); }
+
 /* A player is connected while a pad drives it, while it is the keyboard's, and (player 1) during
  * a scripted run. */
 static int pad_connected(u32 id) {
     static int scripted = -1;
-    if (scripted < 0) scripted = getenv("SSBU_INPUT") != NULL;
+    if (scripted < 0) scripted = getenv("SSBU_INPUT") != NULL || input_seq_on();
     if (id >= PAD_SLOTS) return 0;
     PadState p;
-    return pad_get(id, &p) || (int)id == pad_keyboard_slot() || (id == NPAD_NO1 && scripted);
+    return (!seq_player(id) && pad_get(id, &p)) || (int)id == keyboard_slot() || (id == NPAD_NO1 && scripted);
 }
 
 /* The player's style: a GameCube controller while its pad plays as one, else a Pro Controller. */
 static u32 pad_style(u32 id) {
     if (!pad_connected(id)) return 0;
     PadState p;
-    return pad_get(id, &p) && p.gc ? STYLE_GC : STYLE_FULLKEY;
+    return !seq_player(id) && pad_get(id, &p) && p.gc ? STYLE_GC : STYLE_FULLKEY;
 }
 
 static const char *const BUTTON_NAMES[] = {"A", "B", "X", "Y", "LSTICK", "RSTICK", "L", "R", "ZL", "ZR", "PLUS", "MINUS",
@@ -119,13 +212,14 @@ static void npad_state(u64 out, u32 id, u32 style) {
     if (style && pad_style(id) == style) {
         attributes = ATTR_CONNECTED | ATTR_WIRED;
         PadState p;
-        if (pad_get(id, &p) && (pad_background() || gfx_window_focused())) {
+        if (seq_player(id)) seq_player_poll(&buttons, &lx, &ly);
+        else if (pad_get(id, &p) && (pad_background() || gfx_window_focused())) {
             buttons = p.buttons;
             lx = p.lx; ly = p.ly; rx = p.rx; ry = p.ry;
             lt = p.lt; rt = p.rt;
         }
         if (id == NPAD_NO1) buttons |= scripted_buttons(&lx, &ly);
-        if ((int)id == pad_keyboard_slot()) buttons |= keyboard_buttons(&lx, &ly, &rx, &ry);
+        if ((int)id == keyboard_slot()) buttons |= keyboard_buttons(&lx, &ly, &rx, &ry);
         if (menu_blocks_input()) { buttons = 0; lx = ly = rx = ry = 0; }   /* the settings menu has them (still connected) */
         {
             /* the stick directions also exist as buttons */

@@ -152,19 +152,31 @@ vulkan_installed() {
     return 1
 }
 
+# Where the game reads a settings file (runtime/config_folder.h): config/ once the game has made it
+# (config/version.ini), else here; online_server.txt is config/'s only once there is one there.
+config_file() {
+    if [ -f config/version.ini ] && { [ "$1" != online_server.txt ] || [ -f "config/$1" ]; }; then
+        printf '%s\n' "config/$1"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
 # Online play (see docs/MULTIPLAYER.md): the lobby is the first line of online_server.txt that is not a
 # comment - host:port, then an optional lobby code (only players with the same code see each
 # other's rooms) - or "off". SSBU_NET_RELAY (and SSBU_NET_ROOM) set beforehand name a lobby
 # outright. The name the other players see is kept in online_name.txt, asked for the first time.
 go_online() {
     local relay code rest name pick
+    local server_file name_file direct_file
+    server_file=$(config_file online_server.txt) name_file=$(config_file online_name.txt) direct_file=$(config_file online_direct.txt)
     unset SSBU_NET_HOST
-    if [ -z "$SSBU_NET_RELAY" ] && [ -f online_server.txt ]; then
+    if [ -z "$SSBU_NET_RELAY" ] && [ -f "$server_file" ]; then
         while read -r relay code rest || [ -n "$relay" ]; do
             relay=${relay%$'\r'} code=${code%$'\r'}
             case "$relay" in '' | '#'*) relay= code= ; continue ;; esac
             break
-        done < online_server.txt
+        done < "$server_file"
         [ "${relay,,}" = off ] && relay=
         SSBU_NET_RELAY=$relay
         [ -n "$code" ] && SSBU_NET_ROOM=$code
@@ -175,25 +187,25 @@ go_online() {
         return 0
     fi
     if [ -z "$SSBU_NET_NAME" ]; then
-        if [ ! -s online_name.txt ]; then
+        if [ ! -s "$name_file" ]; then
             pick="Player$((RANDOM % 9000 + 1000))"
-            echo "Online, other players see your name (it is kept in online_name.txt)."
+            echo "Online, other players see your name (it is kept in $name_file)."
             read -r -p "Your online name [$pick]: " name || echo
-            printf '%s\n' "${name:-$pick}" > online_name.txt
+            printf '%s\n' "${name:-$pick}" > "$name_file"
         fi
-        IFS= read -r SSBU_NET_NAME < online_name.txt
+        IFS= read -r SSBU_NET_NAME < "$name_file"
         SSBU_NET_NAME=${SSBU_NET_NAME%$'\r'}
     fi
     # "off" in online_direct.txt: all of a room's traffic through the lobby (no direct connections,
     # so the players in your rooms don't learn your internet address)
-    if [ -z "$SSBU_NET_DIRECT" ] && [ -f online_direct.txt ]; then
+    if [ -z "$SSBU_NET_DIRECT" ] && [ -f "$direct_file" ]; then
         local direct
         while read -r direct rest || [ -n "$direct" ]; do
             direct=${direct%$'\r'}
             case "$direct" in '' | '#'*) continue ;; esac
             [ "${direct,,}" = off ] && export SSBU_NET_DIRECT=0
             break
-        done < online_direct.txt
+        done < "$direct_file"
     fi
     export SSBU_NET_RELAY SSBU_NET_NAME
     [ -n "$SSBU_NET_ROOM" ] && export SSBU_NET_ROOM

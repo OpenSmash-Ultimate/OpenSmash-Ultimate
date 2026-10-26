@@ -12,6 +12,7 @@ their comments and every line it does not change:
   online_name.txt   the online name (empty: the game picks one at its first online start)
   online_direct.txt on / off: direct connections
   launcher.ini      show_launcher = 0: Play SSBU.bat starts the game directly (hold Shift for this window)
+They are in config\ once the game has made that folder (runtime/config_folder.h), in the port's folder before.
 Play saves only the values changed in the window, then starts what Play SSBU.bat starts: the game
 with --online, its output in build\play.log. Close starts nothing and saves nothing. The game
 version shown is version.txt's (what the build wrote: 13.0.5).
@@ -266,9 +267,21 @@ function Get-Number([string]$s) {
     return 0
 }
 
+function Get-ConfigPath([string]$Name) {
+    <# Where the game reads a settings file (runtime/config_folder.h): config\ once the game has made it
+       (config\version.ini), else the port's folder; online_server.txt is config\'s only once there
+       is one there. #>
+    $inFolder = Join-Path (Join-Path $Root 'config') $Name
+    if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $Root 'config') 'version.ini') -PathType Leaf) -or
+        ($Name -eq 'online_server.txt' -and -not (Test-Path -LiteralPath $inFolder -PathType Leaf))) {
+        return Join-Path $Root $Name
+    }
+    return $inFolder
+}
+
 function Test-ShowLauncher {
     <# launcher.ini's show_launcher: missing or anything but 0 shows the window. #>
-    $v = Get-IniValue (Join-Path $Root 'launcher.ini') '' 'show_launcher'
+    $v = Get-IniValue (Get-ConfigPath 'launcher.ini') '' 'show_launcher'
     return $null -eq $v -or $v -eq '' -or (Get-Number $v) -ne 0
 }
 
@@ -291,12 +304,12 @@ if ($Auto -and -not (Test-ShowLauncher) -and -not ([Windows.Forms.Control]::Modi
     exit 0
 }
 
-$displayIni = Join-Path $Root 'display.ini'
-$padsIni = Join-Path $Root 'controllers.ini'
-$launcherIni = Join-Path $Root 'launcher.ini'
-$serverFile = Join-Path $Root 'online_server.txt'
-$nameFile = Join-Path $Root 'online_name.txt'
-$directFile = Join-Path $Root 'online_direct.txt'
+$displayIni = Get-ConfigPath 'display.ini'
+$padsIni = Get-ConfigPath 'controllers.ini'
+$launcherIni = Get-ConfigPath 'launcher.ini'
+$serverFile = Get-ConfigPath 'online_server.txt'
+$nameFile = Get-ConfigPath 'online_name.txt'
+$directFile = Get-ConfigPath 'online_direct.txt'
 
 function Get-Setting([string]$Path, [string]$Section, [string]$Key) {
     <# The value the game uses: the file's, else its default. #>

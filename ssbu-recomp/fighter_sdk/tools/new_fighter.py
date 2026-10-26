@@ -3,7 +3,7 @@
     python fighter_sdk\\tools\\new_fighter.py <name> --donor <fighter> [options]
     python fighter_sdk\\tools\\new_fighter.py <name> --build            (rebuild the DLL of an existing folder)
 
-Creates <characters>\\<name>\\ (default characters folder: ..\\characters next to recomp-study):
+Creates <characters>\\<name>\\ (default characters folder: ..\\characters next to the work folder):
     fighter.json          the manifest the registry reads (name, donor, dll, kind auto, own_name)
     fighter\\<name>\\...    the donor's files under the new name, extracted from the archive on this PC:
     effect\\fighter\\<name>   the model description, every animation and the motion list, the two parameter files, the
@@ -14,7 +14,7 @@ Creates <characters>\\<name>\\ (default characters folder: ..\\characters next t
                           the donor's generated C++ script sources (move scripts, status functions, bindings) with the
                           fighter's name in the source macros and in the names of its own functions
     build.cmd             ONE command: builds src\\ into <name>.dll in the folder
-    <name>.dll            the script DLL (built at the end unless --no-build)
+    <name>.dll            the script DLL (built at the end unless --no-build; <name>.so on Linux, .dylib on macOS)
     README.txt            which file to replace to change what
 
 Options:
@@ -44,7 +44,11 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-STUDY = os.path.normpath(os.path.join(HERE, '..', '..'))
+sys.path.insert(0, HERE)
+import fighter_cc  # noqa: E402
+import sdk_paths  # noqa: E402
+
+STUDY = sdk_paths.WORK
 SDK_ROOT = 'work_new'                 # recomp-study\fighters\work_new\sdk_generated: a frozen copy of the generated SDK headers
 
 TOKEN = re.compile(r'"(?:\\.|[^"\\\n])*"|[A-Za-z_][A-Za-z0-9_]*')
@@ -71,8 +75,8 @@ def flag(args, key):
 def clone_files(name, donor, out_root, dry=False):
     """The donor's files under the new name. The list of paths is what the engine asks for with a fighter's name
     (seen in the registry's log for the test fighters): three single files, three folders, the sound files."""
-    sys.path.insert(0, os.path.join(STUDY, 'tests'))
-    sys.path.insert(0, os.path.join(STUDY, 'ro_study'))
+    sys.path.insert(0, os.path.dirname(sdk_paths.tree_file(os.path.join('tests', 'n5_clone_files.py'))))
+    sys.path.insert(0, sdk_paths.nro_tools())
     import n5_clone_files as cf
     import arc_extract
     arc = arc_extract.Arc()
@@ -241,14 +245,16 @@ def clone_sources(name, donor, sroot, src_dir, with_status):
     return count
 
 
-ROW_TABLE = os.path.join(STUDY, 'mods_n12_src', 'fighter_param_row.txt')   # N12: name -> type, offset of the parameter row
+def row_table():
+    """N12: name -> type, offset of the parameter row (a file of ssbu-recomp's mods, staged without mods/)"""
+    return sdk_paths.tree_file(os.path.join('mods', 'mods_n12_src', 'fighter_param_row.txt'), os.path.join('mods_n12_src', 'fighter_param_row.txt'))
 
 
 def donor_article_count(donor):
     """N12: the number of rows of the donor's article list, read from the game image (the record returned by the
     engine's per-kind description lookup 0x710064b730: record + 8 -> { rows, count }; see plan\\phases\\N12)."""
     import struct
-    sys.path.insert(0, STUDY)
+    sys.path.insert(0, os.path.dirname(sdk_paths.tree_file(os.path.join('tools', 'lifter', 'recomp.py'), 'recomp.py')))
     import recomp      # noqa: E402  (the game image on this PC; nothing of it is written anywhere)
     import luaconst    # noqa: E402
     kind = dict((n, v) for n, v in luaconst.table_names() if n).get('FIGHTER_KIND_' + donor.upper())
@@ -294,9 +300,10 @@ def manifest_products(name, folder):
         return 0
     row = man.get('parameter_row', {}).get('set', {}) if isinstance(man.get('parameter_row'), dict) else {}
     if row:
-        known = set(l.split()[0] for l in open(ROW_TABLE) if l.strip() and not l.startswith('#'))
+        with open(row_table()) as f:
+            known = set(l.split()[0] for l in f if l.strip() and not l.startswith('#'))
         bad = [k for k in row if k not in known]
-        print('parameter_row.set: %d values, %s' % (len(row), ('UNKNOWN names (not in %s): %s' % (ROW_TABLE, ' '.join(bad))) if bad else 'all names in the row table'))
+        print('parameter_row.set: %d values, %s' % (len(row), ('UNKNOWN names (not in %s): %s' % (row_table(), ' '.join(bad))) if bad else 'all names in the row table'))
         if bad:
             return 1
     arts = man.get('articles')
@@ -337,7 +344,7 @@ def build(name, folder):
     else:
         env.pop('SSBU_FIGHTER_STATUS', None)
     rc = subprocess.call([sys.executable, os.path.join(HERE, 'build_fighter.py'), name], cwd=STUDY, env=env)
-    dll = os.path.join(folder, name + '.dll')
+    dll = os.path.join(folder, fighter_cc.library(name))
     print('build: exit code %d; %s %s' % (rc, dll, ('%d bytes' % os.path.getsize(dll)) if os.path.exists(dll) else 'MISSING'))
     return rc
 
@@ -432,7 +439,7 @@ def main():
         # tests\n10_model.py swap), from the donor ("donor", the consistent choice: its animations and parameters fit
         # that skeleton) or from another fighter / costume ("<fighter>" or "<fighter>:cNN")
         src, _, cc = (donor if model == 'donor' else model).partition(':')
-        rc = subprocess.call([sys.executable, os.path.join(STUDY, 'tests', 'n10_model.py'), 'swap', chars, name, src, cc or 'c00'], cwd=STUDY)
+        rc = subprocess.call([sys.executable, sdk_paths.tree_file(os.path.join('tests', 'n10_model.py')), 'swap', chars, name, src, cc or 'c00'], cwd=STUDY)
         shutil.rmtree(os.path.join(folder, '_model_before'), ignore_errors=True)     # the runtime would scan it as fighter files
         print('model: the whole body model of %s (%s) is in the folder (exit code %d)%s' % (src, cc or 'c00', rc,
               '' if src == donor else '; NOTE: animations, parameters and scripts are the donor\'s: they fit only a skeleton of the donor\'s build'))

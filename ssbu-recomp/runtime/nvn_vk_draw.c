@@ -1,5 +1,5 @@
-/* NVN on Vulkan, the drawing part (session 2; design: plan\phases\V1_vulkan.md). Included at the end of nvn_vk.c: it uses
- * that file's device (V), loader functions and error helpers. Render thread only.
+/* NVN on Vulkan, the drawing part (session 2; design: plan\phases\V1_vulkan.md). A build unit of its own: it uses
+ * nvn_vk.c's device (V), loader functions and error helpers (nvn_vk_int.h). Render thread only.
  *
  * What is here: device features, a block allocator, the stream ring (guest memory -> one mapped buffer, at most one copy
  * of a range per batch), images and views made at first use from the front end's texture source, samplers, translated
@@ -9,22 +9,18 @@
  *
  * Debug: SSBU_VK_DEBUG=1 turns on the checks that stand in for the validation layer that is not installed (image used
  * after destroy, barrier inside a pass, a view of an image in an unexpected layout) and prints every new pipeline. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <windows.h>
+#include "gfx_options.h"
+#include "nvn_vk_int.h"
 #include <stdarg.h>
 #include <math.h>
 #include "tex_decode.h"
 static int have_targets_live(void);
 
-#define VKD(X) X(vkCreateBuffer) X(vkDestroyBuffer) X(vkGetBufferMemoryRequirements) X(vkAllocateMemory) X(vkFreeMemory) X(vkBindBufferMemory) X(vkMapMemory) \
-    X(vkCreateImage) X(vkDestroyImage) X(vkGetImageMemoryRequirements) X(vkBindImageMemory) X(vkCreateImageView) X(vkDestroyImageView) X(vkCreateSampler) X(vkDestroySampler) \
-    X(vkCreateShaderModule) X(vkDestroyShaderModule) X(vkCreateDescriptorSetLayout) X(vkDestroyDescriptorSetLayout) X(vkCreatePipelineLayout) X(vkDestroyPipelineLayout) \
-    X(vkCreateGraphicsPipelines) X(vkDestroyPipeline) X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkResetDescriptorPool) X(vkAllocateDescriptorSets) X(vkUpdateDescriptorSets) \
-    X(vkCmdBeginRendering) X(vkCmdEndRendering) X(vkCmdBindPipeline) X(vkCmdBindDescriptorSets) X(vkCmdPushConstants) X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdSetDepthBias) \
-    X(vkCmdSetBlendConstants) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetStencilReference) X(vkCmdSetLineWidth) X(vkCmdSetCullMode) X(vkCmdSetFrontFace) \
-    X(vkCmdSetPrimitiveTopology) X(vkCmdSetDepthTestEnable) X(vkCmdSetDepthWriteEnable) X(vkCmdSetDepthCompareOp) X(vkCmdSetStencilTestEnable) X(vkCmdSetStencilOp) \
-    X(vkCmdSetDepthBiasEnable) X(vkCmdSetPrimitiveRestartEnable) X(vkCmdSetRasterizerDiscardEnable) X(vkCmdBindVertexBuffers) X(vkCmdBindIndexBuffer) X(vkCmdDraw) X(vkCmdDrawIndexed) \
-    X(vkCmdClearAttachments) X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer) X(vkCmdBlitImage) X(vkCmdResolveImage) X(vkCmdClearDepthStencilImage) X(vkGetFenceStatus) \
-    X(vkCreateComputePipelines) X(vkCmdDispatch) X(vkCreateQueryPool) X(vkDestroyQueryPool) X(vkCmdResetQueryPool) X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults) X(vkCreatePipelineCache) X(vkGetPipelineCacheData) X(vkDestroyPipelineCache) X(vkCmdCopyBuffer)
-#define X(n) static PFN_##n n;
+#define X(n) PFN_##n pfn_##n;      /* VKD and the names its calls use: nvn_vk_int.h */
 VKD(X)
 #undef X
 static PFN_vkCmdSetVertexInputEXT vkCmdSetVertexInputEXT;
@@ -34,40 +30,19 @@ static PFN_vkGetPhysicalDeviceFeatures2 vkGetPhysicalDeviceFeatures2;
 static PFN_vkGetPhysicalDeviceFormatProperties vkGetPhysicalDeviceFormatProperties;
 static PFN_vkGetPhysicalDeviceMemoryProperties vkGetPhysicalDeviceMemoryProperties;
 static PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr;
-#define VKC(call) do { VkResult r_ = (call); if (r_ != VK_SUCCESS) vk_fatal(#call, r_); } while (0)
-static void ckpt_op(const char *what, uint64_t obj, int a, int b, int c);      /* PR #32, device loss report: a marker before a command that is not a draw */
-#define CKPT_OP(what, obj, a, b, c) do { if (D.has_ckpt) ckpt_op(what, (uint64_t)(uintptr_t)(obj), (int)(a), (int)(b), (int)(c)); } while (0)
 
-static struct {
-    VkPhysicalDeviceFeatures2 f2; VkPhysicalDeviceVulkan11Features f11; VkPhysicalDeviceVulkan12Features f12; VkPhysicalDeviceVulkan13Features f13;
-    VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT vids; VkPhysicalDeviceCustomBorderColorFeaturesEXT cbc; VkPhysicalDeviceProvokingVertexFeaturesEXT pv;
-    VkPhysicalDeviceIndexTypeUint8FeaturesEXT iu8; VkPhysicalDevicePrimitiveTopologyListRestartFeaturesEXT plr; VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT vad;
-    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3;
-    VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl;
-    VkPhysicalDeviceFaultFeaturesEXT fault;
-#ifdef VK_KHR_portability_subset
-    VkPhysicalDevicePortabilitySubsetFeaturesKHR port; int has_port;
-#endif
-    const char *exts[16]; uint32_t next;
-    int has_vids, has_cbc, has_pv, has_iu8, has_plr, has_vad, has_push, has_eds3, debug;
-    int has_gpl, ext_gpl, ext_so, has_fault, has_ckpt;
-    VkPhysicalDeviceMemoryProperties mp;
-} D;
-/* V_novids (2026-10-21): a GPU without VK_EXT_vertex_input_dynamic_state keeps its own pipeline list: its keys name a
- * vertex layout (nvk_vl_*), those of the other GPUs do not (the layout of pipes.bin and its keys are unchanged there).
- * macOS keeps the layout inside the key (MAC2) and its pipes.bin. */
-#ifdef __APPLE__
-#define VK_PIPES_NOVI "pipes.bin"
-#define VK_VL_FILE "the keys themselves"
-#else
-#define VK_PIPES_NOVI "pipes_novi.bin"
-#define VK_VL_FILE "vi_layouts.bin"
-#endif
-#define VK_PIPES_BIN (D.has_vids ? "pipes.bin" : VK_PIPES_NOVI)
+struct VFeatures D;                                     /* the members: nvn_vk_int.h */
 static PFN_vkGetDeviceFaultInfoEXT vkGetDeviceFaultInfoEXT;
 static PFN_vkCmdSetCheckpointNV vkCmdSetCheckpointNV;
 static PFN_vkGetQueueCheckpointDataNV vkGetQueueCheckpointDataNV;
-static void vkd_fail(const char *fmt, ...) {
+static PFN_vkCmdSetColorBlendEnableEXT vkCmdSetColorBlendEnableEXT;
+static PFN_vkCmdSetColorBlendEquationEXT vkCmdSetColorBlendEquationEXT;
+static PFN_vkCmdSetColorWriteMaskEXT vkCmdSetColorWriteMaskEXT;
+static PFN_vkCmdSetPolygonModeEXT vkCmdSetPolygonModeEXT;
+static PFN_vkCmdSetAlphaToCoverageEnableEXT vkCmdSetAlphaToCoverageEnableEXT;
+static PFN_vkCmdSetDepthClampEnableEXT vkCmdSetDepthClampEnableEXT;
+static PFN_vkCmdSetSampleMaskEXT vkCmdSetSampleMaskEXT;
+void vkd_fail(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt); printf("nvn_vk: FATAL: "); vprintf(fmt, ap); printf("\n"); va_end(ap); fflush(stdout); ExitProcess(6);
 }
 #define DBG_ASSERT(c, ...) do { if (D.debug && !(c)) vkd_fail(__VA_ARGS__); } while (0)
@@ -76,7 +51,7 @@ static void vkd_fail(const char *fmt, ...) {
 #ifndef VK_GPL_DEFAULT
 #define VK_GPL_DEFAULT 2                           /* session 11: on by default where the driver has the extension (validation run s11v3 and the first-run table of V1_vulkan.md "Session 11"); -DVK_GPL_DEFAULT=0 or SSBU_VK_GPL=0 for the old path */
 #endif
-static int vk_gpl_mode(void) {
+int vk_gpl_mode(void) {
     static int m = -1;
     if (m < 0) {
         const char *e = getenv("SSBU_VK_GPL");
@@ -90,7 +65,7 @@ static int vk_gpl_mode(void) {
 }
 
 /* ---------------------------------------------------------------- device features */
-static void vkd_device_info(VkDeviceCreateInfo *di, const VkExtensionProperties *dext, uint32_t ndext) {
+void vkd_device_info(VkDeviceCreateInfo *di, const VkExtensionProperties *dext, uint32_t ndext) {
     void **tail;
     vkGetPhysicalDeviceFeatures2 = vk_sym("vkGetPhysicalDeviceFeatures2");
     vkGetPhysicalDeviceFormatProperties = vk_sym("vkGetPhysicalDeviceFormatProperties");
@@ -167,12 +142,11 @@ static void vkd_device_info(VkDeviceCreateInfo *di, const VkExtensionProperties 
 }
 
 /* ---------------------------------------------------------------- memory: 64 MB blocks per memory type and class, first fit */
-typedef struct { int block; uint64_t off, size; void *map; VkDeviceMemory mem; } VMem;
 typedef struct { VkDeviceMemory mem; uint64_t size; void *map; uint32_t type; int cls, nfree, used; struct { uint64_t off, size; } fr[512]; } VBlock;
 static VBlock *g_blk[2048];
 static int g_nblk;
 static LONG64 g_mem_total, g_mem_leak;
-static VMem vmem_alloc(VkMemoryRequirements rq, VkFlags want, int cls) {
+VMem vmem_alloc(VkMemoryRequirements rq, VkFlags want, int cls) {
     VMem m = {-1, 0, 0, NULL, NULL};
     uint32_t type = 32;
     for (uint32_t i = 0; i < D.mp.memoryTypeCount && type == 32; i++) if ((rq.memoryTypeBits >> i & 1) && (D.mp.memoryTypes[i].propertyFlags & want) == want) type = i;
@@ -213,7 +187,7 @@ static VMem vmem_alloc(VkMemoryRequirements rq, VkFlags want, int cls) {
     vkd_fail("allocation of %llu bytes failed in a fresh block", (unsigned long long)rq.size);
     return m;
 }
-static void vmem_free(VMem m) {
+void vmem_free(VMem m) {
     if (m.block < 0) return;
     VBlock *k = g_blk[m.block];
     if (--k->used == 0 && k->cls >= 100) { vkFreeMemory(V.device, k->mem, NULL); g_mem_total -= (LONG64)k->size; free(k); g_blk[m.block] = NULL; return; }
@@ -225,7 +199,7 @@ static void vmem_free(VMem m) {
     memmove(&k->fr[i + 1], &k->fr[i], sizeof k->fr[0] * (size_t)(k->nfree - i)); k->nfree++;
     k->fr[i].off = m.off; k->fr[i].size = m.size;
 }
-static VkBuffer vbuf_new(uint64_t size, VkFlags usage, VMem *mem) {
+VkBuffer vbuf_new(uint64_t size, VkFlags usage, VMem *mem) {
     VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     VkBuffer b;
     VkMemoryRequirements rq;
@@ -258,45 +232,11 @@ static VkBuffer vbuf_new(uint64_t size, VkFlags usage, VMem *mem) {
 }
 
 /* ---------------------------------------------------------------- command buffers in flight */
-#define NSLOT 8
-typedef struct { VkCommandBuffer cmd; VkFence fence; VkDescriptorPool pool[16]; int npool, ipool, pending; uint64_t serial; LONG64 ts_frame; } Slot;
-typedef struct VTex VTex;
-static struct {
-    Slot slot[NSLOT]; int cur, recording; uint64_t serial, done;      /* serial: number of the last submission; done: every submission up to here has finished */
-    VkCommandBuffer cmd;
-    /* stream ring */
-    VkBuffer ring; VMem ring_mem; uint64_t ring_pos, ring_size; uint32_t gen;
-    struct { uint64_t addr, size, off; uint32_t gen; } acache[8192];
-    VkBuffer zero; VMem zero_mem;
-    /* pass */
-    int in_pass, pass_w, pass_h;
-    int pass_rs; float pass_sx, pass_sy;           /* track O: the pass draws into scaled images (pass_w, pass_h are the images'; sx, sy = image / game) */
-    /* NVN state as left by the commands executed so far */
-    TexPool *tpool; SamplerPool *spool;
-    Prog *prog[6];
-    Range ubo[6][16], ssbo[6][32], vbuf[32];
-    uint64_t nvn_tex[6][32], c2[6][112];
-    uint32_t tex_int[6], tex_sint[6];
-    uint32_t vattr[32]; int nattr;
-    struct { uint32_t stride, divisor; } vstream[32];
-    uint64_t ds; uint32_t chanmask, sample_mask;
-    int sref[2], svmask[2], swmask[2];
-    float alpha_ref; int alpha_func;
-    uint8_t blend[8][8], blend_on, logic, poly[4], ms[24];
-    float viewport[4], drange[2], blendc[4], point_size, line_width, polyoff[3];
-    int scissor[4], have_viewport, have_scissor, rast_discard, depth_clamp, restart, render_off;
-    int ncol; TargetRef col[8], depth; int have_targets;
-    int64_t row_stride, image_stride;
-    int dyn_dirty, vi_dirty, dyn3_dirty, dyn3_samples;      /* dyn3: the extended-dynamic-state-3 group (blend, masks, polygon mode, multisample) */
-    void *pipe_bound;
-    LONG64 frame_draws, frame_skipped, frame_clears, pipelines, modules, uploads, upload_bytes, images, images_live, views, ring_wraps, feedback, flushes, sets;
-    LONG64 sets_reused, tset_collisions, dummy_kind;
-    LONG64 dispatches, cb_bytes, cb_syncs, cb_draws, cb_made, cb_waits, cb_wait_ticks, cb_guest_words, cb_conflict_words, readbacks;
-} R;
+struct VRender R;                                       /* the members: nvn_vk_int.h */
 
 static void pass_end(void) { if (R.in_pass) { vkCmdEndRendering(R.cmd); R.in_pass = 0; CKPT_OP("pass end (w, h)", 0, R.pass_w, R.pass_h, 0); } }
-static LONG64 g_tm[12];                          /* ticks: 0 wait for a submission, 1 copy-back, 2 dispatch, 3 batch replay, 4 present, 5 pipelines, 6 modules, 7 copy-back wait at batch start, 8 draw preparation */
-static LONG64 tk(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
+LONG64 g_tm[12];                                 /* ticks: 0 wait for a submission, 1 copy-back, 2 dispatch, 3 batch replay, 4 present, 5 pipelines, 6 modules, 7 copy-back wait at batch start, 8 draw preparation */
+LONG64 tk(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
 /* Session 5, SSBU_VK_GPUTIME=1: two timestamp queries per command buffer (written at its first and after its last command),
  * read when the buffer has finished; "nvn_vk_gpu:" line every 300 frames. The span of a buffer includes the time the GPU
  * gave to other processes while it ran. */
@@ -309,7 +249,7 @@ static LONG64 g_ts_n;
 #define FRSTAT_N 40000
 static float g_fr_gpu[FRSTAT_N], g_fr_wall[FRSTAT_N];
 static uint8_t g_fr_fight[FRSTAT_N];
-static LONG64 g_cur_frame, g_battle_frames;
+static LONG64 g_cur_frame; LONG64 g_battle_frames;
 /* Round 16 (P3 section 15), all test / switch code:
  * SSBU_VK_PASSTIME=1 (with SSBU_VK_GPUTIME=1): a timestamp at the start of every pass (and of every run of compute
  *   dispatches, and of the present blit); the time to the next mark of the same command buffer is that segment's GPU time.
@@ -332,7 +272,7 @@ static struct { int n, fight, last_what; uint8_t kind[PT_MAX]; LONG64 d0; } g_pt
  * pass signature) is drawn for the FIRST time is counted with what that cost; SSBU_VK_FIRSTLOG=1 prints a line per such
  * frame ("nvn_vk_first:"); the sums are printed at exit in any case. linked = made at this draw by a link of ready stage
  * libraries; made = compiled at the draw or waited for; newsig = the pass signature (render-target formats) was new. */
-static LONG64 g_fu_fr_n, g_fu_fr_linked, g_fu_fr_made, g_fu_fr_tk, g_fu_fr_newsig;
+LONG64 g_fu_fr_n, g_fu_fr_linked, g_fu_fr_made, g_fu_fr_tk, g_fu_fr_newsig;
 static LONG64 g_fu_frames, g_fu_total, g_fu_linked, g_fu_made, g_fu_newsig, g_fu_tk, g_fu_slow, g_fu_fight_frames, g_fu_fight_slow, g_fu_slow_tex;
 #define VK_SPLIT_DEFAULT 0
 static LONG64 g_tl_t0, g_tl_first, g_tl_last, g_tl_sum[8], g_tl_n;      /* sums: 0 first submission, 1 last submission, 2 present job, 3 fence waits (count), 4 fence wait ticks, 5 end of a fence wait after the batch start */
@@ -391,7 +331,6 @@ static void cmd_begin(void) {
     g_cmd_draws = 0;
     garbage_collect();
 }
-static volatile LONG g_in_fight;
 /* SSBU_VK_PASSTIME: a mark in the command buffer being recorded (see the comment at PT_MAX). */
 static void pt_mark(int w, int h, int ncol, int cf, int depth, int win, int what) {
     if (g_pt_on <= 0 || !R.recording) return;
@@ -489,7 +428,7 @@ static VkFormat tex_vkfmt(int nf, int *expand, int *decode) {
     }
     return VK_FORMAT_UNDEFINED;
 }
-static VkFlags fmt_aspect(VkFormat f) {
+VkFlags fmt_aspect(VkFormat f) {
     switch (f) {
     case VK_FORMAT_D16_UNORM: case VK_FORMAT_X8_D24_UNORM_PACK32: case VK_FORMAT_D32_SFLOAT: return VK_IMAGE_ASPECT_DEPTH_BIT;
     case VK_FORMAT_S8_UINT: return VK_IMAGE_ASPECT_STENCIL_BIT;
@@ -530,14 +469,6 @@ static VkFormat vertex_vkfmt(int nf) {
 }
 
 /* ---------------------------------------------------------------- images */
-typedef struct VView { EView e; int vtype, attach; VkImageView view; struct VView *next; } VView;
-struct VTex {
-    uint32_t magic; Tex *t; VkImage img; VMem mem; VkFormat fmt; VkImageLayout layout; VkFlags aspect;
-    int w, h, d, levels, layers, samples, expand, decode, is3d, feedback, bpb, bw, bh;
-    int rs; float sx, sy;                          /* track O: rs = 1 when the image is scaled from the game's texture, smaller or larger (w, h are the image's; sx, sy = image / game; PR #8) */
-    VView *views; VTex *next, *prev;
-    VTex *shadow; int shadow_ok;                   /* 2026-10-21 (AMD render bugs): a copy of this depth target for the shaders that sample it while it is bound (depth_copy_on) */
-};
 /* ---- Track O: internal resolution scale (graphics.ini resolution_scale; SSBU_VK_SCALE wins; plan\phases\O1_options.md, session 7).
  * A texture of the screen class (2D, one layer, attachable, the game's size exactly 1920x1080 >> k, k = 0..6) gets an image
  * of round(size * scale); everything the game says in ITS pixels about such an image is converted where it is used:
@@ -546,10 +477,10 @@ struct VTex {
  * reads keep the game's sizes. Fragment stages are translated with MxIn.screen_scale (another hash: ssrc_hb). At 1.0 none
  * of this runs: every branch is behind RS_ON or VTex.rs / R.pass_rs, which are then 0. */
 static float g_rs = -1.0f;
-static LONG64 g_rs_images, g_rs_stages, g_rs_fcs, g_rs_tf, g_rs_up, g_rs_down, g_rs_blits;
+static LONG64 g_rs_images; LONG64 g_rs_stages, g_rs_fcs, g_rs_tf; static LONG64 g_rs_up, g_rs_down, g_rs_blits;
 static LONG64 g_rs_bytes;                          /* PR #8 review: device memory taken by the scaled images made (reported at exit: what a scale above 1.0 costs) */
 #define RS_MAX 2.0f                                /* PR #8 (stephenjayakar): the upper limit of resolution_scale / SSBU_VK_SCALE (was 1.0; the PR's 4.0 capped at 2.0) */
-static float rs_scale(void) {
+float rs_scale(void) {
     if (g_rs < 0) {
         const char *e = getenv("SSBU_VK_SCALE");
         float v = e && atof(e) > 0 ? (float)atof(e) : gfx_options()->scale;
@@ -562,11 +493,10 @@ static float rs_scale(void) {
     }
     return g_rs;
 }
-#define RS_ON (rs_scale() != 1.0f)
 static int rs_screen_class(int w, int h) { for (int k = 0; k < 7; k++) if (w == 1920 >> k && h == 1080 >> k) return 1; return 0; }
 /* A coordinate of the game's grid on a scaled image (nearest image texel edge, inside 0..max). */
 static int rs_edge(int v, float s, int max) { int r = (int)floorf((float)v * s + 0.5f); return r < 0 ? 0 : r > max ? max : r; }
-/* Session 9: the textures of the game's window (nvn_gl.c win_initialize keeps the list; also noted here at every present).
+/* Session 9: the textures of the game's window (nvn_front.c win_initialize keeps the list; also noted here at every present).
  * SSBU_VK_UI_NATIVE=1 (resolution scale, experiment): a window texture is NOT scaled, so what the game draws straight into it
  * (its last full-screen pass and the 2D interface after it) is drawn at the game's 1920x1080. */
 int nvn_front_tex_is_window(const Tex *t);
@@ -587,7 +517,7 @@ static VkFlags layout_access(VkImageLayout l) {
     default: return 0;
     }
 }
-static void image_barrier(VkImage img, VkFlags aspect, VkImageLayout from, VkImageLayout to) {
+void image_barrier(VkImage img, VkFlags aspect, VkImageLayout from, VkImageLayout to) {
     VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     DBG_ASSERT(!R.in_pass, "debug: an image layout change inside a render pass");
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.image = img;
@@ -785,7 +715,6 @@ static void vt_put(Tex *t, int level, int layer, int w, int h, int d, const void
 /* Session 8: textures made and read AHEAD of their first draw (tex_ahead, below), and what is still made at a draw. */
 static LONG64 g_ta_n, g_ta_bytes, g_ta_tk, g_ta_max_tk, g_late_n, g_late_tk, g_late_fight_n, g_late_fight_tk, g_up_fr_tk, g_up_fr_bytes;
 static int g_up_fr_n, g_ta_inside;
-static volatile LONG g_in_fight;                   /* nvn_vk_m4.c (included further down) */
 static VTex *vt_get2(Tex *t, int sync) {
     VTex *vt = t->vk;
     LONG64 tu0 = 0, ub0 = R.upload_bytes;
@@ -870,10 +799,7 @@ static VTex *vt_get(Tex *t) { return vt_get2(t, 1); }
  * very large one can exceed it): the loading screen absorbs the work. Only compressed formats: they cannot be render
  * targets, so nothing the GPU is about to write is touched; if the game fills the memory later, the draw sees the change
  * (nvn_front_tex_changed) and reads it again, as before. SSBU_VK_TEXAHEAD=0 = as before (everything at the first draw). */
-static int fight_recent(void);                     /* nvn_vk_m4.c */
-static void present_progress(float frac);          /* session 11: the held loading screen presented again with the progress bar (defined above vk_present) */
-static LONG64 g_ovl_presents, g_ovl_frames;        /* extra presents of a held loading screen; normal frames drawn with the thin bar */
-static int holdlog_on(void);
+LONG64 g_ovl_presents, g_ovl_frames;               /* extra presents of a held loading screen; normal frames drawn with the thin bar */
 static void tex_ahead(LONG64 frame) {
     static int on = -1;
     static Tex *done_head;
@@ -939,7 +865,6 @@ static void eview_of(Tex *t, VTex *vt, const View *v, EView *e) {
     if (e->target == 8 && e->nlay != 6) e->target = e->nlay == 1 ? 1 : 4;
     if (e->target == 9 && e->nlay % 6) e->target = 4;
 }
-enum { DIM_1D, DIM_2D, DIM_3D, DIM_CUBE, DIM_1DA, DIM_2DA, DIM_CUBEA };
 static const VkImageViewType k_vtype[7] = {VK_IMAGE_VIEW_TYPE_1D, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_VIEW_TYPE_3D, VK_IMAGE_VIEW_TYPE_CUBE, VK_IMAGE_VIEW_TYPE_1D_ARRAY, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_IMAGE_VIEW_TYPE_CUBE_ARRAY};
 static int target_dim(int target) { static const int m[10] = {DIM_1D, DIM_2D, DIM_3D, DIM_1DA, DIM_2DA, DIM_2D, DIM_2DA, DIM_2D, DIM_CUBE, DIM_CUBEA}; return target >= 0 && target < 10 ? m[target] : DIM_2D; }
 /* dim < 0: an attachment view (one level, one layer, both aspects, no swizzle). */
@@ -1027,33 +952,6 @@ static VkSampler sampler_get(const SamplerParams *p) {
     return s;
 }
 
-/* MAC2 / V_novids (2026-10-21). A GPU without VK_EXT_vertex_input_dynamic_state (MoltenVK; an RX 550 / Polaris on AMD's
- * Windows driver): the vertex layout of a draw (per location: format, binding, offset; per binding: instance rate,
- * divisor) is part of the pipeline, the strides stay dynamic (VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE, Vulkan 1.3).
- * Where the layout lives in the key:
- *   - macOS: inside it (PKEY_VI = NvkVl vi: the MAC2 fields under one name, the same bytes), in pipes.bin as before;
- *   - elsewhere: the three pad bytes of the key hold the NUMBER of the layout (nvk_vl_id: 24 bits of a hash of the
- *     layout, the next free number on a collision), the layouts are in ../cache/vk/vi_layouts.bin, the keys in
- *     pipes_novi.bin. On a GPU that has the extension the pad bytes stay zero: PKey, pipes.bin and the prepared markers
- *     are those of before, to the byte. nvn_vk_m4.c only names PKEY_VI / NVK_VI_PIPE / VK_PIPES_BIN / nvk_vl_rec_ok on
- *     lines it already had (its WD_SLEEP uses __LINE__). */
-typedef struct { uint32_t na, nb, rate; uint32_t loc[16], fmt[16], bind[16], off[16], div[17]; } NvkVl;
-#ifdef __APPLE__
-#define PKEY_VI NvkVl vi;
-#else
-#define PKEY_VI
-#endif
-typedef struct {
-    VkVertexInputBindingDescription b[17];
-    VkVertexInputAttributeDescription a[16];
-    VkVertexInputBindingDivisorDescriptionEXT dd[17];
-    VkPipelineVertexInputDivisorStateCreateInfoEXT di;
-    VkPipelineVertexInputStateCreateInfo vi;
-} NvkVi;
-static void nvk_vi_pipe(const void *key, VkDynamicState *dyn, VkGraphicsPipelineCreateInfo *gi, NvkVi *s);
-static int nvk_vl_rec_ok(const void *key);         /* a key of the pipeline list whose layout is known (else it is not prewarmed) */
-#define NVK_VI_PIPE(k, dyn, gi) NvkVi nvk_vi_; nvk_vi_pipe(k, dyn, gi, &nvk_vi_);
-#include "nvn_vk_m4.c"                             /* session 4: stages, pipelines, workers (M4) */
 #ifndef __APPLE__
 /* The layout table: 8192 slots, open addressing by number. Filled only by the render thread (vi_key) and at start
  * (nvk_vl_load); the workers read it (nvk_vi_pipe): a layout is written before its number, and a number reaches a worker
@@ -1106,12 +1004,12 @@ static uint32_t nvk_vl_id(const NvkVl *l) {        /* render thread: the number 
     nvn_vk_missing("more than 6144 distinct vertex layouts without VK_EXT_vertex_input_dynamic_state");
     return 0;
 }
-static int nvk_vl_rec_ok(const void *key) { uint32_t id = nvk_vl_get(key); return D.has_vids || !id || nvk_vl_find(id) != NULL; }
+int nvk_vl_rec_ok(const void *key) { uint32_t id = nvk_vl_get(key); return D.has_vids || !id || nvk_vl_find(id) != NULL; }
 #else
-static int nvk_vl_rec_ok(const void *key) { (void)key; return 1; }
+int nvk_vl_rec_ok(const void *key) { (void)key; return 1; }
 #endif
 /* pipe_make without dynamic vertex input: the key's layout becomes the pipeline's; the strides come with the buffers */
-static void nvk_vi_pipe(const void *key, VkDynamicState *dyn, VkGraphicsPipelineCreateInfo *gi, NvkVi *s) {
+void nvk_vi_pipe(const void *key, VkDynamicState *dyn, VkGraphicsPipelineCreateInfo *gi, NvkVi *s) {
     static const NvkVl empty;
     uint32_t nvdd = 0;
     if (D.has_vids) return;
@@ -1431,7 +1329,6 @@ static VkImageView target_view(const TargetRef *r, VTex *vt) {
     if ((r->view.set & 0x84) == 0x84 && r->view.format) e.format = r->view.format;
     return vt_view(vt, &e, -1, 1);
 }
-static void fl_pass(int w, int h, int fmt, int win, int ncol, int depth);      /* nvn_vk_flash.c (session 13) */
 static int g_vk_test;                              /* session 13, TEST ONLY: SSBU_VK_TEST (see the dynamic state) */
 static int pass_begin(void) {
     VkRenderingAttachmentInfo ca[8], da;
@@ -1559,7 +1456,7 @@ static void ckpt_mark(int kind, unsigned prim, uint32_t count, uint32_t inst, ui
     } else d->prog = R.prog[5] ? R.prog[5]->serial : -1;
     vkCmdSetCheckpointNV(R.cmd, (void *)(uintptr_t)seq);
 }
-static void ckpt_op(const char *what, uint64_t obj, int a, int b, int c) {      /* through CKPT_OP (D.has_ckpt) */
+void ckpt_op(const char *what, uint64_t obj, int a, int b, int c) {             /* through CKPT_OP (D.has_ckpt) */
     if (!R.cmd) return;
     uint32_t seq = ++g_drec_seq;
     DrawRec *d = &g_drec[seq % DREC_N];
@@ -1580,7 +1477,7 @@ static void drec_print(const char *tag, uint32_t seq) {
     }
     printf("\n");
 }
-static void vkd_lost_report(void) {                /* nvn_vk.c vk_fatal: once, whichever thread lost the device first */
+void vkd_lost_report(void) {                       /* nvn_vk.c vk_fatal: once, whichever thread lost the device first */
     static volatile LONG once;
     if (InterlockedExchange(&once, 1)) return;
     printf("nvn_vk_lost: the device is lost; submissions made %llu, seen finished %llu\n", (unsigned long long)R.serial, (unsigned long long)R.done);
@@ -1832,7 +1729,7 @@ static int g_cb_merge = -1;                        /* SSBU_VK_CBMERGE=0: the who
  * (buffer copies, texel copies), or when two batches have passed without a dispatch into it. What a draw reads is the
  * same bytes as before as long as the GAME does not write the range itself between two dispatches (it would be
  * overwritten by the old copy-back as well, one batch later) and does not read compute's output from guest memory.
- * The game writing the range is not left to luck: the game's heap is write-watched (nvn_gl.c, ww_newest); before a
+ * The game writing the range is not left to luck: the game's heap is write-watched (nvn_front.c, ww_newest); before a
  * kept buffer is taken again the watch is asked, and when a page of the range was written by the CPU since the buffer
  * was filled, the buffer lands with the word-by-word merge of session 5 (a word the game changed stays the game's) and is
  * filled from guest memory again: what the old path did every batch, now only when there was a write (counted). Memory
@@ -1845,7 +1742,7 @@ static int g_cb_merge = -1;                        /* SSBU_VK_CBMERGE=0: the who
 static int g_cb_keep = -1, g_cb_nkept, g_cb_dl = -1;
 static uint64_t g_kept_lo = ~0ull, g_kept_hi, g_live_lo = ~0ull, g_live_hi;      /* g_live_*: bounds of the buffers live in this batch (cb_inside / cb_overlap are not asked for a range outside them) */
 static LONG64 g_ck_hits, g_ck_fills, g_ck_fill_bytes, g_ck_land[5], g_ck_land_bytes, g_ck_guard_fail, g_ck_unwatched, g_ck_gwords, g_ck_conflicts, g_ck_land_tk, g_ck_land_max;     /* landings by cause: 0 not dispatched into for two batches, 1 a read of an overlapping range, 2 a new compute buffer over another extent, 3 a guest-memory command, 4 the game wrote a page of the range */
-uint64_t nvn_front_mem_newest(const void *p, size_t n);      /* nvn_gl.c */
+uint64_t nvn_front_mem_newest(const void *p, size_t n);      /* nvn_front.c */
 static SRWLOCK g_cg_lock = SRWLOCK_INIT;
 static struct { uintptr_t lo, hi; DWORD old; } g_cg[256];
 static volatile LONG64 g_cg_reads, g_cg_writes, g_cg_render;
@@ -2433,7 +2330,6 @@ static int buf_ref(uint64_t addr, uint64_t size, uint64_t align, BufRef *b) {
     b->off = ring_put(addr, size); b->buf = R.ring;      /* in this order: a ring wrap submits */
     return 0;
 }
-static void compute_pipe_make(VStage *v);
 static void compute_dispatch_run(Prog *p, Stage *st, VStage *v, uint32_t gx, uint32_t gy, uint32_t gz);
 static void compute_dispatch(uint32_t gx, uint32_t gy, uint32_t gz) {
     Prog *p = R.prog[5];
@@ -2458,7 +2354,7 @@ static void compute_dispatch(uint32_t gx, uint32_t gy, uint32_t gz) {
     }
     compute_dispatch_run(p, st, v, gx, gy, gz);
 }
-static void compute_pipe_make(VStage *v) {         /* any thread */
+void compute_pipe_make(VStage *v) {                /* any thread */
     {
         VkDescriptorSetLayoutBinding b0[40], b1[64];
         int n0 = 0, n1 = 0;
@@ -2813,7 +2709,7 @@ static int draw_prepare(unsigned prim) {
 
 /* The pass formats of a target set as the pipeline key holds them (also used by the look-ahead of nvn_vk_m4.c on targets
  * that are not bound yet). Returns 0 when one of the images does not exist yet. */
-static int pkey_targets_of(PKey *k, int ncol, const TargetRef *col, const TargetRef *depth) {
+int pkey_targets_of(PKey *k, int ncol, const TargetRef *col, const TargetRef *depth) {
     int all = 1;
     k->ncolor = (uint8_t)ncol; k->samples = 1;
     for (int i = 0; i < ncol; i++) {
@@ -2828,7 +2724,7 @@ static int pkey_targets_of(PKey *k, int ncol, const TargetRef *col, const Target
     if (depth->tex) { VTex *vt = depth->tex->vk; if (!vt) all = 0; else { k->dfmt = (int32_t)vt->fmt; k->samples = (uint8_t)vt->samples; } }
     return all;
 }
-static void pkey_targets(PKey *k) { pkey_targets_of(k, R.ncol, R.col, &R.depth); }
+void pkey_targets(PKey *k) { pkey_targets_of(k, R.ncol, R.col, &R.depth); }
 #if 0   /* session 3's form */
 static void pkey_targets(PKey *k) {
     k->ncolor = (uint8_t)R.ncol; k->samples = 1;
@@ -2951,7 +2847,7 @@ static void copy_buf_tex(const Cmd *m) {
     int r[6];
     if (!t || t->dead || !m->a[0]) return;
     memcpy(&v, BLOB(m), sizeof v); memcpy(r, BLOB(m) + 24, 24);
-    write_region(t, &v, r, P(m->a[0]), (int64_t)m->a[5], (int64_t)m->a[6]);     /* PR #14 (xtlg511): the strides of its own command buffer (nvn_gl.c cmd_copy_buf_tex) */
+    write_region(t, &v, r, P(m->a[0]), (int64_t)m->a[5], (int64_t)m->a[6]);     /* PR #14 (xtlg511): the strides of its own command buffer (nvn_front.c cmd_copy_buf_tex) */
 }
 static void vk_write_texels(void *arg) {
     WriteJob *j = arg;
@@ -3087,7 +2983,7 @@ static void blit_tex(Tex *s, const View *sv, const int *sr, Tex *d, const View *
  * of the bytes in the Vulkan buffer at the bound offset when the draw was recorded (ring = the stream ring's copy; cb = a
  * compute buffer, whose content at that moment is not what the GPU will read), and the state values set for the draw. */
 #include "nvn_dt.h"
-int nvn_front_draw_tag(void); int nvn_front_draw_tag_next(void); void nvn_front_draw_tag_clear(void);      /* nvn_gl.c */
+int nvn_front_draw_tag(void); int nvn_front_draw_tag_next(void); void nvn_front_draw_tag_clear(void);      /* nvn_front.c */
 static uint64_t g_dt_voff[16];
 static VkBuffer g_dt_vb[16];
 static void *dt_host(uint64_t a) { return P(a); }
@@ -3359,7 +3255,6 @@ static void replay(uint64_t handle, int depth) {
 }
 
 /* ---------------------------------------------------------------- the RBackend members */
-static void prewarm_wait(void);
 static void vk_submit(void *arg) {
     SubmitJob *j = arg;
     if (!V.alive) return;                          /* after the shutdown at exit: the device is gone */
@@ -3565,7 +3460,6 @@ static void osk_draw(uint32_t index) {
     b.dstOffsets[0].x = d4[0]; b.dstOffsets[0].y = d4[1]; b.dstOffsets[1].x = d4[0] + d4[2]; b.dstOffsets[1].y = d4[1] + d4[3]; b.dstOffsets[1].z = 1;
     vkCmdBlitImage(R.cmd, g_osk.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, V.images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
 }
-static void menu_vk_draw(uint32_t index);          /* U1: the settings menu (nvn_vk_menu.c, included below) */
 static void overlay_draw(uint32_t index) {
     osk_draw(index);
     menu_vk_draw(index);                           /* U1: over the keyboard; returns at once unless SSBU_MENU / graphics.ini menu = on */
@@ -3620,7 +3514,6 @@ static void vk_present2(void *arg, int progress);
  * made again at the next present (not in the middle of a frame's commands). */
 int display_present_defer(void); int display_present_due(void); void display_present_flushed(void); void display_present_done(int fight);      /* display.c */
 static struct { int on, suboptimal, fight, recreate; VkSwapchainKHR sc; uint32_t index; VkSemaphore rend; } g_pend;
-static volatile LONG64 g_gap_prev, g_gap_max, g_wd_beat;
 static void present_flush(void) {
     if (!g_pend.on) return;
     g_pend.on = 0;
@@ -3635,10 +3528,8 @@ static void present_flush(void) {
     if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) { LONG64 nowt = tk(); if (g_gap_prev && nowt - g_gap_prev > g_gap_max) g_gap_max = nowt - g_gap_prev; g_gap_prev = nowt; g_wd_beat = nowt; }
 }
 void nvn_vk_present_flush_job(void *arg) { (void)arg; if (V.alive) present_flush(); }
-#include "nvn_vk_menu.c"                          /* U1: the settings menu over the picture (menu.cpp builds it) */
-#include "nvn_vk_flash.c"                         /* session 13: the white-flash detector (fl_pass, fl_capture, fl_shutdown) */
 /* nvn_vk_m4.c m4_barrier, render thread, g_sh_lock NOT held: the held loading screen once more, with the bar at `frac` */
-static void present_progress(float frac) { if (!g_ovl.bar_arg) return; g_ovl.frac = frac; g_ovl.thick = 8; vk_present2(g_ovl.bar_arg, 1); g_ovl.thick = 0; }
+void present_progress(float frac) { if (!g_ovl.bar_arg) return; g_ovl.frac = frac; g_ovl.thick = 8; vk_present2(g_ovl.bar_arg, 1); g_ovl.thick = 0; }
 /* Session 14, THE FIRST-RUN PREPARATION (the owner's order: "all at the first launch, then never again, with a percentage").
  * graphics.ini shader_prepare = first_run (default) | background | off; SSBU_VK_PREPARE=<the same words> wins.
  * At the game's FIRST present of a start without the preparation's marker (first start on this GPU + driver + version of
@@ -3749,7 +3640,7 @@ static void vk_present2(void *arg, int progress) {
         g_ovl.thick = 4;
         g_ovl.frac = g_prep_state == 5 ? (float)g_store_pct / 100.0f : g_prep_nfiles ? (float)g_pq_done / (float)(g_pq_queued > 0 ? g_pq_queued + (LONG64)(g_prep_nfiles - g_prep_read) * 90 : 1) : 0;      /* about 90 variations a file */
     }
-    g_render_tid = GetCurrentThreadId();
+    g_vk_render_tid = GetCurrentThreadId();
     if (g_skip_fr_n) { g_skip_frames++; printf("nvn_vk_skipf: frame %lld (%s): %lld draws left out (shader_wait = skip)\n", (long long)frame, g_in_fight ? "fight" : "no fight", (long long)g_skip_fr_n); g_skip_fr_n = 0; }
     if (shot == -2) { shot = getenv("SSBU_SHOT") ? atoi(getenv("SSBU_SHOT")) : -1; every = getenv("SSBU_SHOT_EVERY") ? atoi(getenv("SSBU_SHOT_EVERY")) : 0; shot_from = getenv("SSBU_SHOT_FROM") ? atoi(getenv("SSBU_SHOT_FROM")) : 0; }
     pass_end();
@@ -4035,8 +3926,10 @@ void nvn_vk_shot_job(void *arg) {
     VTex *vt = t && !t->dead ? t->vk : NULL;
     if (j->shot_fight && vt) { char path[300]; const char *dir = getenv("SSBU_SHOT_DIR"); snprintf(path, sizeof path, "%s%sfight_%05d.bmp", dir ? dir : "", dir ? "/" : "", j->shot_fight); save_bmp_vk(path, vt); printf("shot: fight frame %d saved from window texture %d (pipe, not presented again)%c", j->shot_fight, j->index, 10); }
 }
+/* RBackend init: the device for the window (nvn_vk.c), then the hitch log learns the render thread. */
+static void vk_init(void) { void hitch_set_render(void); nvn_vk_init(nvn_front_hwnd()); hitch_set_render(); }
 const RBackend rb_vk = {"vk", vk_submit, vk_submit_async, vk_present, vk_present_movie, vk_fence, vk_sync_wait, vk_server_wait, vk_sync_drop, vk_flush, vk_finish, vk_write_texels, vk_read_texels, vk_housekeeping,
-                        vk_reset_status, vk_no_grid, vk_idle};
+                        vk_reset_status, vk_no_grid, vk_idle, vk_init, nvn_vk_report, NULL, nvn_vk_program_set};
 
 /* ---------------------------------------------------------------- start and end */
 static VTex *dummy_image(VkImageType type, uint32_t layers, VkFlags flags) {
@@ -4167,8 +4060,7 @@ static void pcache_save(void) {
     free(data);
 }
 #endif
-#include "nvn_vk_wd.c"                             /* session 12: the freeze watchdog (wd_start / wd_stop) */
-static void vkd_init(void) {
+void vkd_init(void) {
 #define X(n) n = (PFN_##n)vkGetDeviceProcAddr(V.device, #n); if (!n) vkd_fail("the device has no " #n);
     VKD(X)
 #undef X
@@ -4276,7 +4168,7 @@ static void frstat_report(void) {
         }
     }
 }
-static void vkd_shutdown(void) {
+void vkd_shutdown(void) {
     wd_stop();
     if (!R.ring) return;
     {   LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);

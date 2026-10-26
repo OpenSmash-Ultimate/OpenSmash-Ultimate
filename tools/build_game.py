@@ -2,7 +2,7 @@
 """Build the game from your own files in one go: what launchers\\Build WindowSmash.bat runs.
 
 Usage:
-  build_game.py [--game <dir>] [--keys <dir>] [--firmware <dir>] [--jobs N] [--prepare-only]
+  build_game.py [--game <dir>] [--keys <dir>] [--firmware <dir> | --no-firmware] [--jobs N] [--prepare-only]
   build_game.py --check
 
 It does the setup guide's steps (docs/BUILDING.md) one after the other and stops at the first
@@ -22,7 +22,8 @@ the game files made is cleared first (reset_game_files); the save and the settin
                to 8 run (from the end of step 2: the packages), and waits for it at step 9
   2. packages  requirements.txt, installed with pip unless they are already
   3. folders   where the game files, keys and firmware are: asked (the answers are the defaults
-               next time, in dump/build_folders.txt) unless --game, --keys, --firmware say
+               next time, in dump/build_folders.txt) unless --game, --keys, --firmware say. The
+               firmware is optional: it is only for the fonts (step 5)
   4. program   the Program NCA among the game folder's files (tools/gamefiles.py: the guide's
                folder, an emulator's installed-content folder, an update .nsp; of base and
                update, the update's); its ExeFS into dump/exefs, checked to be 13.0.5's (the
@@ -30,7 +31,10 @@ the game files made is cleared first (reset_game_files); the save and the settin
                dump/game_source.txt - a later run with a game folder holding other files of the
                game stops rather than mix the two
   5. fonts     the .bfttf fonts of every firmware NCA into dump/fonts (or the six from a fonts
-               folder in the game folder)
+               folder in the game folder). Without a firmware (--no-firmware, or none answered):
+               nothing, the game uses the open fonts of third_party/fonts_open in their place
+               (runtime/hle_pl.c), and dump/fonts.none says so, so the firmware isn't asked for
+               again; --firmware later takes its fonts after all
   6. data      dump/modules/romfs.cfg: the game folder's romfs.bin, checked and set by
                tools/Configure-Game-Data.ps1; without one, the program NCA's own RomFS, read in
                place when it is decrypted (tools/nca.py romfs-cfg), else decrypted first into
@@ -42,8 +46,11 @@ the game files made is cleared first (reset_game_files); the save and the settin
   8. fighters  the fighter modules in data.arc into dump/nro (tools/arc.py nro, which skips the
                ones there already)
   9. build     build/ssbu.exe (tools/recomp.py all), unless it is newer than everything it is
-               made from; --jobs defaults to what the installed RAM allows: 4 under 16 GB, 8 with
-               16 GB, 16 with 32 GB or more
+               made from and compiled for today's instruction set (tools/isa.py: avx2, or
+               x86-64-v2 on a processor without AVX2; step 1 says which); --jobs defaults to what
+               the installed RAM allows: 4 under 16 GB, 8 with 16 GB, 16 with 32 GB or more;
+               --game-dll links the game's modules into a library of their own beside the
+               program (build/ssbu_game.dll; tools/game_dll.py), which the program loads
 
 On Linux (what install-windowsmash.sh runs), step 1 checks clang, lld, bison and flex, the parts
 tools/linux/toolchain.py names, and a test link with SDL2, libopus and libvpx; step 9 builds
@@ -90,6 +97,13 @@ EXEFS_FILES = ("main", "main.npdm", "rtld", "sdk", "subsdk0")
 FONT_FILES = ("nintendo_udsg-r_std_003.bfttf", "nintendo_udsg-r_org_zh-cn_003.bfttf",
               "nintendo_udsg-r_ext_zh-cn_003.bfttf", "nintendo_udjxh-db_zh-tw_003.bfttf",
               "nintendo_udsg-r_ko_003.bfttf", "nintendo_ext_003.bfttf")
+# the open fonts the game uses in place of each firmware font that isn't there (runtime/hle_pl.c, which
+# finds them from dump/modules: ../../third_party/fonts_open), and what they make of the game (their README.md)
+OPEN_FONTS = os.path.join(ROOT, "third_party", "fonts_open")
+OPEN_FONT_FILES = tuple(n[:-len(".bfttf")] + ".ttf" for n in FONT_FILES)
+WITH_OPEN_FONTS = ("Latin text is in Open Sans and Source Sans Pro instead of the console's typefaces; Chinese, Japanese "
+                   "and Korean text and most symbols are missing; the button icons come from yuzu's icon font. Fights are "
+                   "not affected.")
 PROGRAM = 0   # an NCA's content type (nca.py info's type=Program)
 
 
@@ -176,13 +190,19 @@ def aoc_done(modules=None):
     return os.path.exists(os.path.join(modules, "aoc.cfg")) or os.path.exists(os.path.join(modules, "aoc.none"))
 
 
+def fonts_done():
+    """The font step is done: the firmware's fonts are in dump/fonts, or there was no firmware and the
+    game uses the open fonts (dump/fonts.none)."""
+    return not missing_fonts(FONTS) or os.path.exists(FONTS + ".none")
+
+
 def prepared():
     """Everything step 3 to 8 make from the game files is there: the program (13.0.5's), the
-    fonts, the game data's cfg (and the files it reads) and the DLC step. Then the game files are
-    not asked for."""
+    fonts (or the open ones), the game data's cfg (and the files it reads) and the DLC step. Then
+    the game files are not asked for."""
     return (not [n for n in EXEFS_FILES if not os.path.isfile(os.path.join(EXEFS, n))]
             and old_folder_version() is None
-            and not missing_fonts(FONTS) and romfs_cfg_ok(os.path.join(MODULES, "romfs.cfg")) and aoc_done())
+            and fonts_done() and romfs_cfg_ok(os.path.join(MODULES, "romfs.cfg")) and aoc_done())
 
 
 def old_folder_version():
@@ -244,6 +264,8 @@ def check_tools(fetch=True):
         raise Failed(f"this is Python {sys.version.split()[0]}: WindowSmash needs Python 3.10 or newer "
                      + ("(Install WindowSmash.command makes deps/venv with one: docs/MACOS.md)." if MACOS else "(setup guide step 3)."))
     log(f"  Python {sys.version.split()[0]}: {sys.executable}")
+    if not MACOS:
+        log("  instruction set: {}: {}".format(*instruction_set()))
     if LINUX:
         check_linux_tools()
         return None
@@ -258,6 +280,21 @@ def check_tools(fetch=True):
         raise Failed(problem)
     log(f"  {problem.splitlines()[0]}")
     return CompilerDownload.ask(broken=bool(cc.WINSYSROOT))
+
+
+def instruction_set():
+    """(target, why): what the game is compiled for on Windows and Linux (tools/isa.py), or Failed for
+    an SSBU_ISA that names none, or for a processor below x86-64-v2 unless SSBU_ISA chose."""
+    import isa
+    try:
+        target, told, why = isa.target(os.path.dirname(EXE))
+    except SystemExit as e:
+        raise Failed(str(e))
+    features = isa.cpu_features()
+    if not told and features is not None and isa.best(features) is None:
+        raise Failed(f"this PC's processor lacks {', '.join(isa.missing('x86-64-v2', features))}, which WindowSmash needs "
+                     "(at the least SSE4.2 and POPCNT: x86-64-v2, Intel processors since 2008 and AMD since 2011).")
+    return target, why
 
 
 def windows_compiler_problem(cc):
@@ -544,7 +581,9 @@ FOLDERS = {
              lambda p: None if os.path.isdir(p) else f"There is no folder {p}."),
     "keys": ("Folder with your keys", "~/MyKeys" if LINUX or MACOS else r"D:\MyKeys",
              lambda p: None if os.path.isfile(os.path.join(p, "prod.keys")) else f"There is no prod.keys in {p}."),
-    "firmware": ("Folder with your firmware", "~/MyFirmware" if LINUX or MACOS else r"D:\MyFirmware",
+    # (optional: "none", the default without last time's answer, is no firmware: the open fonts)
+    "firmware": ("Folder with your firmware, for your console's own fonts (optional; none: the open fonts, without "
+                 "Chinese, Japanese or Korean text)", "none",
                  lambda p: None if os.path.isdir(p) and any(f.lower().endswith(".nca") for f in os.listdir(p))
                  else f"There are no .nca files in {p}."),
 }
@@ -565,7 +604,8 @@ def typed_folder(text):
 
 
 def ask_folder(key, given, saved):
-    """A folder from the command line, or asked, with last time's answer as the default."""
+    """A folder from the command line, or asked, with last time's answer as the default. The
+    firmware's may be "none": None, no firmware."""
     label, default, check = FOLDERS[key]
     default = saved.get(key, default)
     while True:
@@ -581,6 +621,8 @@ def ask_folder(key, given, saved):
                 log()
                 answer = given = default
         answer = os.path.expanduser(answer)
+        if key == "firmware" and answer.strip().lower() == "none":
+            return None
         problem = check(answer)
         if not problem:
             saved[key] = os.path.abspath(answer)
@@ -757,6 +799,31 @@ def missing_fonts(folder):
     return [n for n in FONT_FILES if not os.path.isfile(os.path.join(folder, n))]
 
 
+def use_open_fonts():
+    """Step 5 without a firmware: the game uses the open fonts, which must be there (without a
+    font the game stops); dump/fonts.none records it (nothing goes into dump/fonts)."""
+    gone = [n for n in OPEN_FONT_FILES if not os.path.isfile(os.path.join(OPEN_FONTS, n))]
+    folder = shown(os.path.relpath(OPEN_FONTS, ROOT))
+    if gone:
+        raise Failed(f"Without your firmware the game uses the open fonts of {folder}, and these of them are not there: "
+                     f"{', '.join(gone)}. Restore that folder (run the installer again, or git), or give your firmware "
+                     "folder (--firmware).")
+    if os.path.exists(FONTS + ".none"):
+        log(f"  already done: no firmware, so the game uses the open fonts of {folder}")
+        return
+    again = ("run  bash install-windowsmash.sh --firmware <folder>" if LINUX else
+             "run Install WindowSmash.command again and choose it" if MACOS else
+             "run Install WindowSmash.bat again and fill it in")
+    log(f"  no firmware: the game uses the open fonts of {folder} in place of your console's "
+        f"({shown(os.path.join(folder, 'README.md'))})")
+    log(f"  {WITH_OPEN_FONTS}")
+    log(f"  For your console's own fonts, give your firmware's folder (its .nca files): {again}.")
+    os.makedirs(DUMP, exist_ok=True)
+    with open(FONTS + ".none", "w", newline="\n") as f:   # (so that the firmware is not asked for again for this)
+        f.write("no firmware was given: the game uses the open fonts of third_party/fonts_open; give --firmware to take "
+                "your firmware's\n")
+
+
 def program_problem(rec, game, main):
     """None when the main module at `main` (copied out of the program `rec`) is 13.0.5's, else
     what to say. A build id it doesn't know is named by the files' metadata, unless that says
@@ -816,7 +883,7 @@ def write_romfs_cfg(game, keys, the_program):
     if os.path.isfile(romfs_bin):
         run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
              os.path.join("tools", "Configure-Game-Data.ps1"), "-NonInteractive", "-RomfsPath", romfs_bin,
-             "-FontsDirectory", FONTS],
+             *(["-FontsDirectory", FONTS] if not missing_fonts(FONTS) else [])],   # (none: the open fonts, step 5)
             f"{romfs_bin} could not be used (see above): it must be the game's data, unencrypted and with "
             "the 13.0.5 update applied (setup guide part 2).")
         return
@@ -890,13 +957,28 @@ def write_version():
     log(f"  game version {data} (version.txt)")
 
 
-def build_is_current():
+def game_library():
+    """--game-dll's library, beside EXE (on macOS in the app's Frameworks): tools/game_dll.py."""
+    if MACOS:
+        return os.path.join(os.path.dirname(os.path.dirname(EXE)), "Frameworks", "ssbu_game.dylib")
+    return os.path.join(os.path.dirname(EXE), "ssbu_game.so" if LINUX else "ssbu_game.dll")
+
+
+def build_is_current(dll=False):
     """build/ssbu.exe is newer than the runtime, the tools and the modules it is built from, and
     has SDL3.dll beside it if SDL3 is there to build with (on Linux: build-linux/ssbu, also newer
     than the Linux runtime and tools; on macOS: build-mac/WindowSmash.app's program, also newer
-    than the platform layers it is made with and the macOS tools, with SDL3.framework in the app)."""
-    if not os.path.isfile(EXE):
+    than the platform layers it is made with and the macOS tools, with SDL3.framework in the app). Not
+    on Windows and Linux when it was compiled for another instruction set than today's (tools/isa.py).
+    dll (--game-dll): with game_library(), which is newer than all of that too; without it, with
+    none (the builds remove it when they link the game into the program)."""
+    library = game_library()
+    if not os.path.isfile(EXE) or os.path.isfile(library) != dll:
         return False
+    if not MACOS:
+        import isa
+        if isa.built_for(os.path.dirname(EXE)) != isa.target(os.path.dirname(EXE))[0]:
+            return False
     if MACOS and not os.path.isfile(os.path.join(os.path.dirname(os.path.dirname(EXE)), "Frameworks", "SDL3.framework", "SDL3")):
         return False
     if not LINUX and not MACOS:
@@ -916,7 +998,8 @@ def build_is_current():
     inputs += [os.path.join(EXEFS, n) for n in os.listdir(EXEFS)]
     nro = os.path.join(DUMP, "nro")
     inputs += [os.path.join(nro, n) for n in os.listdir(nro) if n.endswith(".nro")] if os.path.isdir(nro) else []
-    return os.path.getmtime(EXE) > max(os.path.getmtime(p) for p in inputs if os.path.isfile(p))
+    newest = max(os.path.getmtime(p) for p in inputs if os.path.isfile(p))
+    return os.path.getmtime(EXE) > newest and (not dll or os.path.getmtime(library) > newest)
 
 
 def installed_ram_gb():
@@ -998,11 +1081,21 @@ def build(a):
     if a.game or old or not (exefs_done and romfs_done and aoc_done()):
         game = ask_folder("game", a.game, saved)
     if missing_fonts(FONTS):
-        fonts_from = "game" if game and not missing_fonts(os.path.join(game, "fonts")) else "firmware"
-    if game or fonts_from == "firmware":
+        # (no firmware: --no-firmware (a.firmware ""), or none last time (dump/fonts.none) unless --firmware names one now)
+        if game and not missing_fonts(os.path.join(game, "fonts")):
+            fonts_from = "game"
+        elif a.firmware == "" or (a.firmware is None and os.path.exists(FONTS + ".none")):
+            fonts_from = "open"
+        else:
+            fonts_from = "firmware"
+    if game:
         keys = ask_folder("keys", a.keys, saved)
     if fonts_from == "firmware":
-        firmware = ask_folder("firmware", a.firmware, saved)
+        firmware = ask_folder("firmware", a.firmware, saved)   # (None: none, the open fonts)
+        if not firmware:
+            fonts_from = "open"
+        elif not keys:
+            keys = ask_folder("keys", a.keys, saved)
     if not keys:
         log("  none needed: the steps that read them are done")
 
@@ -1029,9 +1122,11 @@ def build(a):
         extract_exefs(the_program()[2], keys)
         check_program(the_program()[2], game)
 
-    log(shown("\n[5/9] Take the fonts out of your firmware (dump\\fonts)"))
+    log(shown("\n[5/9] The fonts: your firmware's (dump\\fonts), or the open ones without it"))
     if fonts_from is None:
         log("  already done")
+    elif fonts_from == "open":
+        use_open_fonts()
     elif fonts_from == "game":
         os.makedirs(FONTS, exist_ok=True)
         for n in FONT_FILES:
@@ -1043,7 +1138,10 @@ def build(a):
         if missing:
             raise Failed(f"These fonts were not in {firmware}: {', '.join(missing)}. Check that it holds all of "
                          "your firmware's .nca files, and that your keys are from after your Switch's latest "
-                         "system update.")
+                         "system update. Or leave the firmware out (in the installer, or --no-firmware here): the game "
+                         "then uses the open fonts of third_party/fonts_open, without Chinese, Japanese or Korean text.")
+    if fonts_from in ("game", "firmware") and os.path.exists(FONTS + ".none"):   # (the firmware's now, not the open ones)
+        os.remove(FONTS + ".none")
 
     log(shown("\n[6/9] Connect your game data (dump\\modules\\romfs.cfg)"))
     if romfs_done:
@@ -1084,27 +1182,31 @@ def build(a):
     if a.prepare_only:
         log("  not now (--prepare-only): everything the build needs is ready")
         return
-    if build_is_current():
+    dll = getattr(a, "game_dll", False)
+    if build_is_current(dll):
         log(f"  {exe} is newer than everything it is built from: nothing to do (delete it to build again)")
     else:
         if in_use(EXE):
             raise Failed(f"The game is running from {exe}: close it, then run this again.")
+        if not MACOS:
+            log("  for {}: {}".format(*instruction_set()))
         jobs = a.jobs
         if not jobs:
             gb = installed_ram_gb()
             jobs = jobs_for_ram(gb) if gb else 4
             log(f"  {jobs} jobs at a time, for {gb:.0f} GB of RAM" if gb else f"  {jobs} jobs at a time (the RAM size is unknown)")
         if LINUX:
-            build_linux_program(jobs)
+            build_linux_program(jobs, dll)
         elif MACOS:
-            build_mac_program(jobs)
+            build_mac_program(jobs, dll)
         else:
             import cc
             if not cc.SDL3_DLL:
                 log("  (no SDL3 in deps\\SDL3: Xbox controllers and the keyboard only - setup guide's SDL3 step)")
-            log("  the first build takes from 30 minutes to a few hours, later ones minutes; if it stops, run this again to carry on")
+            log("  the first build takes from 30 minutes to a few hours, later ones minutes unless the compiler, its flags or "
+                "runtime/recomp.h changed; if it stops, run this again to carry on")
             run([sys.executable, os.path.join("tools", "recomp.py"), "all", os.path.join("dump", "exefs"),
-                 "--out", "build", "--jobs", str(jobs)],
+                 "--out", "build", "--jobs", str(jobs), *(["--game-dll"] if dll else [])],
                 "The build failed (see above). If the PC ran out of memory, build with fewer jobs at a time: open "
                 "PowerShell in this folder and run  & \".\\launchers\\Build WindowSmash.bat\" --jobs 4")
     if LINUX:
@@ -1115,29 +1217,35 @@ def build(a):
         log("\nDone: build\\ssbu.exe is ready. Start the game with Play SSBU.bat.")
 
 
-def build_linux_program(jobs):
-    """build-linux/ssbu: the game's C generated into build/, then compiled and linked for Linux."""
+def build_linux_program(jobs, dll=False):
+    """build-linux/ssbu: the game's C generated into build/, then compiled and linked for Linux (dll: --game-dll)."""
     retry = (f"If the PC ran out of memory, build with fewer jobs at a time: bash install-windowsmash.sh --jobs "
              f"{max(1, jobs // 2)}")
-    log("  the first build takes one to a few hours, later ones minutes; if it stops, run this again to carry on")
+    log("  the first build takes one to a few hours, later ones minutes unless the compiler, its flags or "
+        "runtime/recomp.h changed; if it stops, run this again to carry on")
     log("  the game's code, as C:")
     run([sys.executable, os.path.join("tools", "recomp.py"), "all", os.path.join("dump", "exefs"), "--out", "build",
          "--jobs", str(jobs), "--generate-only"],
         "The game's code could not be turned into C (see above). " + retry)
     tc = linux_toolchain()
-    if not os.path.isfile(os.path.join(tc.VKD3D_BUILD, "linux", "libvkd3d-shader.a")):
-        log("  the shader compiler (vkd3d-shader), once:")
+    import isa
+    vkd3d = os.path.join(tc.VKD3D_BUILD, "linux")
+    # (built again for another instruction set; and without a record, as an older version built it: with its
+    # flags, isa.LEGACY_CLANG, which are no target's today)
+    if not os.path.isfile(os.path.join(vkd3d, "libvkd3d-shader.a")) or (isa.recorded(vkd3d) or (None,))[0] != tc.ISA:
+        log(f"  the shader compiler (vkd3d-shader), once (for {tc.ISA}):")
         run([sys.executable, os.path.join("tools", "linux", "build_vkd3d.py"), "linux"],
             "vkd3d-shader could not be built (see above).")
     log("  compiling it for Linux:")
     run([sys.executable, os.path.join("tools", "linux", "build_linux.py"), "--port", ROOT, "--out", "build-linux",
-         "--jobs", str(jobs)],
+         "--jobs", str(jobs), *(["--game-dll"] if dll else [])],
         "The build failed (see above). " + retry)
 
 
-def build_mac_program(jobs):
+def build_mac_program(jobs, dll=False):
     """build-mac/WindowSmash.app: the game's C generated into build/, then compiled and linked for
-    macOS, with the Mac kept from sleeping while this runs (an idle Mac would stop the build)."""
+    macOS, with the Mac kept from sleeping while this runs (an idle Mac would stop the build). dll:
+    --game-dll."""
     rebuild = '"launchers/Build WindowSmash.command"'
     if not os.path.isfile(os.path.join(ROOT, "launchers", "Build WindowSmash.command")):
         rebuild = (os.path.relpath(sys.executable, ROOT) if sys.executable.startswith(ROOT + os.sep) else sys.executable) + \
@@ -1148,13 +1256,15 @@ def build_mac_program(jobs):
         subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         pass
-    log("  the first build takes one to a few hours, later ones minutes; if it stops, run this again to carry on")
+    log("  the first build takes one to a few hours, later ones minutes unless the compiler, its flags or "
+        "runtime/recomp.h changed; if it stops, run this again to carry on")
     log("  the game's code, as C:")
     run([sys.executable, os.path.join("tools", "recomp.py"), "all", os.path.join("dump", "exefs"), "--out", "build",
          "--jobs", str(jobs), "--generate-only"],
         "The game's code could not be turned into C (see above). " + retry)
     log("  compiling it for macOS:")
-    run([sys.executable, os.path.join("tools", "mac", "build_mac.py"), "--port", ROOT, "--jobs", str(jobs)],
+    run([sys.executable, os.path.join("tools", "mac", "build_mac.py"), "--port", ROOT, "--jobs", str(jobs),
+         *(["--game-dll"] if dll else [])],
         "The build failed (see above). " + retry)
 
 
@@ -1163,10 +1273,17 @@ def main():
     ap = argparse.ArgumentParser(description=f"Build the game from your own files ({launcher}).")
     ap.add_argument("--game", help=f"the folder with the game's files (asked; default {FOLDERS['game'][1]})")
     ap.add_argument("--keys", help=f"the folder with prod.keys and title.keys (asked; default {FOLDERS['keys'][1]})")
-    ap.add_argument("--firmware", help=f"the folder with the firmware's .nca files (asked; default {FOLDERS['firmware'][1]})")
+    ap.add_argument("--firmware", help="the folder with the firmware's .nca files, for your console's own fonts "
+                                       "(optional: asked; without one the game uses the open fonts of third_party/fonts_open)")
+    ap.add_argument("--no-firmware", dest="firmware", action="store_const", const="",
+                    help="no firmware, and not asked for: the game uses the open fonts of third_party/fonts_open (no Chinese, "
+                         "Japanese or Korean text); fonts taken from a firmware before stay")
     ap.add_argument("--jobs", type=int, help="how many files to compile at a time (default: by the RAM)")
     ap.add_argument("--check", action="store_true", help="only check the tools (step 1) and stop")
     ap.add_argument("--prepare-only", action="store_true", help="do every step but the build itself (9)")
+    ap.add_argument("--game-dll", action="store_true",
+                    help="link the game's modules into a library of their own beside the program, which the program "
+                         "loads at start, rather than into the program (tools/game_dll.py)")
     ap.add_argument("--check-ready", action="store_true",
                     help="only say (exit status 0) whether steps 3 to 8 are done, so that no game files are needed")
     a = ap.parse_args()

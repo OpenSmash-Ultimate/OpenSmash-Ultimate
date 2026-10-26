@@ -35,7 +35,17 @@
  *
  * Direct connections: the lobby introduces the players of a room to each other, and their games
  * then send the room's traffic straight to each other where their routers let them (UDP hole
- * punching), through the lobby where not. See "direct connections" below. */
+ * punching), through the lobby where not. See "direct connections" below.
+ *
+ * Protocol 3 (SSBU_NET_PROTOCOL=3 or online_protocol.txt, net.h), the online lobby's: version 2
+ * and more, on the same port; tools/ssbu_relay.py's comment has every message. The client's JOIN
+ * adds this game's simulation version (sim_version.h) and mod set; WELCOME's flags say what the
+ * lobby has (4 the room browser, 8 matchmaking, 16 rollback); PONG adds two counts. Every packet
+ * of the client is then of version 3, to the lobby and to the other players alike (two games of
+ * version 3 talk in version 3: a lobby of version 3 puts players of version 2 and 3 in rooms of
+ * their own). A lobby or relay of version 2 answers a JOIN of version 3 with REJECT reason 2: the
+ * client then joins it in version 2, as a game of version 2 does. A private room's relay (below)
+ * speaks version 2 only, so the host's own game joins it in version 2. */
 #define _CRT_SECURE_NO_WARNINGS
 #define _CRT_RAND_S
 #define COBJMACROS
@@ -61,14 +71,18 @@ typedef int SOCKET;
 #include <stdlib.h>
 #include <string.h>
 
+#include "config_folder.h"
 #include "host.h"
 #include "net.h"
 #include "settings.h"
+#include "sim_version.h"
 
 #define MAGIC0 'S'
 #define MAGIC1 'N'
 enum { T_JOIN = 1, T_WELCOME, T_REJECT, T_PING, T_PONG, T_DATA, T_MEMBERS, T_LEAVE, T_LIST, T_LISTING, T_LIST_END,
        T_PEERS, T_BCAST, T_PUNCH, T_DIRECT };
+enum { W_LOBBY = 1, W_INTRODUCES = 2, W_ROOMS = 4, W_MATCH = 8, W_RB = 16 };   /* WELCOME's flags (4, 8, 16: version 3's) */
+#define R_VERSION 2   /* REJECT's reason: another netplay version */
 #define NAME_LEN 32
 #define BUILD_LEN 40
 #define JOIN_SIZE (4 + 8 + 2 * NAME_LEN + BUILD_LEN)
@@ -78,8 +92,6 @@ enum { T_JOIN = 1, T_WELCOME, T_REJECT, T_PING, T_PONG, T_DATA, T_MEMBERS, T_LEA
 #define NETWORK_INFO 0x480
 #define PING_EXT_SIZE (4 + 8 + 8 + 8 + 2 + 4 + 4 + 2 + 1 + 1)
 
-extern const RtModule rt_module_main;   /* (its build id tells game versions apart) */
-
 static u16 get16(const u8 *p) { return (u16)(p[0] << 8 | p[1]); }
 static u32 get32(const u8 *p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3]; }
 static u64 get64(const u8 *p) { return (u64)get32(p) << 32 | get32(p + 4); }
@@ -87,7 +99,9 @@ static void put16(u8 *p, u16 v) { p[0] = (u8)(v >> 8); p[1] = (u8)v; }
 static void put32(u8 *p, u32 v) { p[0] = (u8)(v >> 24); p[1] = (u8)(v >> 16); p[2] = (u8)(v >> 8); p[3] = (u8)v; }
 static void put64(u8 *p, u64 v) { put32(p, (u32)(v >> 32)); put32(p + 4, (u32)v); }
 static u64 now_ms(void) { return GetTickCount64(); }
-static void header(u8 *p, int type) { p[0] = MAGIC0; p[1] = MAGIC1; p[2] = NET_PROTOCOL; p[3] = (u8)type; }
+static volatile LONG proto = NET_PROTOCOL;   /* the version the client speaks now (configure; a REJECT of version 2's) */
+static void header(u8 *p, int type) { p[0] = MAGIC0; p[1] = MAGIC1; p[2] = (u8)proto; p[3] = (u8)type; }
+static void relay_header(u8 *p, int type) { header(p, type); p[2] = NET_PROTOCOL; }   /* (a private room's relay: version 2) */
 
 /* Every packet goes out here. macOS refuses packets to the local network (EHOSTUNREACH, or
  * EPERM) until the user lets the game reach it - macOS asks the first time; System Settings >
@@ -132,6 +146,7 @@ static int configured = -1, hosting, logging;
 static char relay_text[256], room[NAME_LEN + 1] = "smash", name[NAME_LEN + 1] = "Player";
 static u16 port = NET_DEFAULT_PORT;
 static int direct_ok = 1, test_nat;   /* SSBU_NET_DIRECT; SSBU_NET_TEST_NAT (tests) */
+static int proto_wanted = NET_PROTOCOL;   /* SSBU_NET_PROTOCOL: the version asked for first (proto: spoken now) */
 static u64 test_block_at = ~0ull;     /* SSBU_NET_TEST_BLOCK (tests): no direct packets from then on */
 
 #ifdef _WIN32
@@ -155,19 +170,29 @@ static u64 process_age_ms(void) { return rt_now_ns() / 1000000; }
  * and kept there when it is missing); online_direct.txt: "off" for no direct connections. */
 static void configure_from_files(void) {
     char line[256], host[256] = "", code[NAME_LEN + 1] = "";
-    if (settings_line_read("online_server.txt", line, sizeof line)) sscanf(line, "%255s %32s", host, code);
+    if (settings_line_read(config_path(CONFIG_ONLINE_SERVER), line, sizeof line)) sscanf(line, "%255s %32s", host, code);
     if (!host[0] || !_stricmp(host, "off")) return;
     snprintf(relay_text, sizeof relay_text, "%s", host);
     if (code[0] && !getenv("SSBU_NET_ROOM")) snprintf(room, sizeof room, "%s", code);
     if (!getenv("SSBU_NET_NAME")) {
-        if (!settings_line_read("online_name.txt", line, sizeof line) || !line[0]) {
+        if (!settings_line_read(config_path(CONFIG_ONLINE_NAME), line, sizeof line) || !line[0]) {
             snprintf(line, sizeof line, "Player%04u", 1000 + (unsigned)(GetTickCount64() * 2654435761u >> 7) % 9000);
-            settings_line_write("online_name.txt", line);
+            settings_line_write(config_path(CONFIG_ONLINE_NAME), line);
             fprintf(stderr, "[net] online as %s (change it in the settings: Esc)\n", line);
         }
         snprintf(name, sizeof name, "%s", line);
     }
-    if (!getenv("SSBU_NET_DIRECT") && settings_line_read("online_direct.txt", line, sizeof line) && !_strnicmp(line, "off", 3)) direct_ok = 0;
+    if (!getenv("SSBU_NET_DIRECT") && settings_line_read(config_path(CONFIG_ONLINE_DIRECT), line, sizeof line) && !_strnicmp(line, "off", 3)) direct_ok = 0;
+}
+
+/* online_protocol.txt (the settings menu's Online > Netplay version): 3 or 2, the version to ask for
+ * first; anything else, or no file: otherwise. Read with any lobby, as SSBU_NET_PROTOCOL is: the
+ * macOS and Linux launchers name the lobby in SSBU_NET_RELAY. */
+static int protocol_from_file(int otherwise) {
+    char line[16];
+    if (!settings_line_read(config_path(CONFIG_ONLINE_PROTOCOL), line, sizeof line)) return otherwise;
+    int v = atoi(line);
+    return v == NET_PROTOCOL || v == NET_PROTOCOL_V3 ? v : otherwise;
 }
 
 static void configure(void) {
@@ -191,6 +216,11 @@ static void configure(void) {
     else if (r && *r) { if (_stricmp(r, "off")) snprintf(relay_text, sizeof relay_text, "%s", r); }
     else if (settings_online()) configure_from_files();
     configured = hosting || relay_text[0];
+    proto_wanted = NET_PROTOCOL_DEFAULT;   /* SSBU_NET_PROTOCOL=2|3, else online_protocol.txt's; hosting: its own relay's, 2 */
+    if ((v = getenv("SSBU_NET_PROTOCOL")) && (atoi(v) == NET_PROTOCOL || atoi(v) == NET_PROTOCOL_V3)) proto_wanted = atoi(v);
+    else if (configured && !hosting) proto_wanted = protocol_from_file(proto_wanted);
+    if (hosting) proto_wanted = NET_PROTOCOL;
+    proto = proto_wanted;
 }
 
 static void start(void);
@@ -221,7 +251,7 @@ static int member_list(const Room *r, u8 *p) {
 
 static void tell_members(const Room *r) {
     u8 p[4 + 1 + ROOM_MEMBERS * (4 + NAME_LEN)];
-    header(p, T_MEMBERS);
+    relay_header(p, T_MEMBERS);
     int n = 4 + member_list(r, p + 4);
     for (int i = 0; i < r->count; i++) send_udp(relay_sock, p, n, &r->members[i].at);
 }
@@ -238,7 +268,7 @@ static void relay_packet(const u8 *p, int n, const struct sockaddr_in *from) {
     if (p[2] != NET_PROTOCOL) {   /* another version of the game's netplay: say so */
         if (n >= 4 + 8 + 2 * NAME_LEN && p[3] == T_JOIN) {   /* (only to a whole JOIN: no small packet gets a bigger answer) */
             memset(out, 0, 4 + 8 + 1 + 64);
-            header(out, T_REJECT);
+            relay_header(out, T_REJECT);
             memcpy(out + 4, p + 4, 8);
             out[12] = 2;
             snprintf((char *)out + 13, 64, "different netplay version (relay %d, you %d)", NET_PROTOCOL, p[2]);
@@ -274,7 +304,7 @@ static void relay_packet(const u8 *p, int n, const struct sockaddr_in *from) {
                             : r->count && memcmp(r->build, build, BUILD_LEN) ? "the host has another game version" : NULL;
             if (why) {
                 memset(out, 0, 4 + 8 + 1 + 64);
-                header(out, T_REJECT);
+                relay_header(out, T_REJECT);
                 put64(out + 4, nonce);
                 out[12] = r && r->count < ROOM_MEMBERS ? 3 : 1;
                 snprintf((char *)out + 13, 64, "%s", why);
@@ -298,7 +328,7 @@ static void relay_packet(const u8 *p, int n, const struct sockaddr_in *from) {
             tell_members(r);
         }
         r->members[m].seen = now_ms();
-        header(out, T_WELCOME);
+        relay_header(out, T_WELCOME);
         put64(out + 4, nonce);
         put32(out + 12, r->members[m].ip);
         put64(out + 16, 0);   /* (cookie: a private room's relay checks none) */
@@ -310,7 +340,7 @@ static void relay_packet(const u8 *p, int n, const struct sockaddr_in *from) {
     case T_PING:
         if (m < 0 || n < 20) return;
         r->members[m].seen = now_ms();
-        header(out, T_PONG);
+        relay_header(out, T_PONG);
         memcpy(out + 4, p + 12, 8);
         put16(out + 12, (u16)r->count);
         put16(out + 14, 0);
@@ -476,9 +506,14 @@ static volatile LONG lobby;            /* ...from a lobby */
 static volatile u32 my_ip;
 static u64 nonce, cookie, last_pong, unjoined_since;
 static volatile LONG members, rooms_open, ping_ms = -1;
+static volatile LONG lobby_flags;                         /* the last WELCOME's (W_*) */
+static volatile LONG key_searching = -1, code_players = -1;   /* version 3's PONG: players of this key searching; of the code */
+static int fell_back;                                     /* a relay of version 2 said no to version 3: version 2 since */
 static char reject_text[80], member_names[ROOM_MEMBERS][NAME_LEN + 1];
 
 u32 net_local_ip(void) { start(); return joined ? my_ip : 0; }
+int net_protocol_wanted(void) { configure(); return proto_wanted; }
+int net_protocol_spoken(void) { start(); return joined ? (int)proto : 0; }
 int net_unreachable(void) { start(); return configured && !joined && now_ms() - unjoined_since > UNREACHABLE_MS; }
 int net_lobby(void) { start(); return joined && lobby; }
 
@@ -851,8 +886,18 @@ static int resolve_relay(void) {
     return 1;
 }
 
+/* Version 3's JOIN ends with this game's mod set: count u8 (32 at most), count x (hash u32, name
+ * length u8 (31 at most), name). The lobby parts players by the hashes (in any order) and shows the
+ * names. WindowSmash loads no mods yet: none. Once it does, a mod's hash must come out the same on
+ * every OS, or players of one mod on Windows, Linux and macOS never meet: ssbu-recomp's rule ports
+ * (its runtime/net_relay.c tree_hash: over each file of the mod, FNV-1a 64 of its path in lower case
+ * with '/' and then of its size, summed and folded to 32 bits), over the files that are the same on
+ * every OS only - never a mod's native code (a .dll, .so or .dylib), which is built for each. */
+static const u8 mod_set[] = {0};
+#define JOIN_V3_SIZE (JOIN_SIZE + 4 + (int)sizeof mod_set)
+
 static void send_join(void) {
-    u8 p[JOIN_SIZE] = {0};
+    u8 p[JOIN_V3_SIZE] = {0};
     header(p, T_JOIN);
     put64(p + 4, nonce);
     memcpy(p + 12, room, strlen(room));
@@ -860,7 +905,11 @@ static void send_join(void) {
     const char *build = rt_module_main.build_id ? rt_module_main.build_id : "";
     size_t build_len = strlen(build);
     memcpy(p + 12 + 2 * NAME_LEN, build, build_len < BUILD_LEN ? build_len : BUILD_LEN);
-    send_udp(client_sock, p, sizeof p, &relay_at);
+    if (proto == NET_PROTOCOL_V3) {   /* (then the simulation version and the mod set) */
+        put32(p + JOIN_SIZE, SIM_VERSION);
+        memcpy(p + JOIN_SIZE + 4, mod_set, sizeof mod_set);
+    }
+    send_udp(client_sock, p, proto == NET_PROTOCOL_V3 ? JOIN_V3_SIZE : JOIN_SIZE, &relay_at);
 }
 
 void net_lobby_list(u32 seq) {
@@ -870,6 +919,289 @@ void net_lobby_list(u32 seq) {
     put64(p + 4, cookie);
     put32(p + 12, seq);
     send_udp(client_sock, p, sizeof p, &relay_at);
+}
+
+/* ---- version 3: the room browser and matchmaking (net.h) --------------------------------
+ * ssbu-recomp's (its runtime/net_relay.c: rooms_ask, rooms_info, rooms_end, net_rooms_get,
+ * room_why and mods_read; mm_find, mm_send, mm_tick, mm_state and net_match_*), in version 3's
+ * header and layouts (a room's simulation version after its build), with WELCOME's flags in place
+ * of its guesses, and no popups: a menu page will show what they say. The lobby says which rooms
+ * this game can join (ROOM_INFO's flag 8: the room's key is this game's); room_why says why not,
+ * from what the room's game is. Rollback messages (RB) are not read here yet. */
+enum { T_RB = 16, T_ROOMS, T_ROOM_INFO, T_ROOMS_END, T_MATCH, T_MATCH_STATE };
+#define ROOMS_MAX 32
+#define MODS_MAX 32
+#define MOD_NAME 31
+#define ROOM_INFO_MIN (4 + 4 + 3 + NAME_LEN + BUILD_LEN + 4 + 1)   /* (its body, with a mod set of none) */
+#define MATCH_STATE_SIZE (4 + 3 + 4 + NAME_LEN + 2 + 2 + 2)
+#define ROOMS_WAIT_MS 3000   /* a ROOMS unanswered this long: NET_ROOMS_NO_ANSWER */
+typedef struct Mod { char name[MOD_NAME + 1]; u32 hash; } Mod;
+
+static int lobby_has(int flag) { return joined && lobby && proto == NET_PROTOCOL_V3 && (lobby_flags & flag); }
+static void printable(char *out, const u8 *p, int n) {   /* (out: n + 1 bytes) */
+    for (int k = 0; k < n; k++) out[k] = p[k] && p[k] < 0x20 ? '?' : (char)p[k];
+    out[n] = 0;
+}
+static void names_add(char *out, size_t n, const char *what) {   /* (", " between) */
+    size_t t = strlen(out);
+    snprintf(out + t, n - t, "%s%s", t ? ", " : "", what);
+}
+static void line_add(char *out, size_t n, const char *head, const char *what, const char *tail) {   /* (a line each; none for "") */
+    size_t t = strlen(out);
+    if (what[0]) snprintf(out + t, n - t, "%s%s%s%s", t ? "\n" : "", head, what, tail);
+}
+
+/* A mod set (count u8, count x (hash u32, name length u8, name)) into out (max at most): how many
+ * mods it has, or -1 when it is not one. */
+static int mods_read(const u8 *p, int n, Mod *out, int max) {
+    if (n < 1 || p[0] > MODS_MAX) return -1;
+    int count = p[0], k = 0, o = 1;
+    for (int i = 0; i < count; i++) {
+        if (o + 5 > n || p[o + 4] > MOD_NAME || o + 5 + p[o + 4] > n) return -1;
+        if (k < max) {
+            int l = p[o + 4];
+            out[k].hash = get32(p + o);
+            for (int c = 0; c < l; c++) out[k].name[c] = p[o + 5 + c] >= 0x20 && p[o + 5 + c] < 0x7F ? (char)p[o + 5 + c] : '?';
+            out[k].name[l] = 0;
+            k++;
+        }
+        o += 5 + p[o + 4];
+    }
+    return k;
+}
+
+/* Why this game cannot join a room whose game is of build b, simulation version sim and mods m:
+ * the first that differs of the build, the simulation version and the mods (by name); which one
+ * in *kind (NET_WHY_*). */
+static void room_why(const char *b, u32 sim, const Mod *m, int nm, char *out, size_t n, int *kind) {
+    const char *mine = rt_module_main.build_id ? rt_module_main.build_id : "";
+    out[0] = 0;
+    *kind = _stricmp(b, mine) ? NET_WHY_BUILD : sim != SIM_VERSION ? NET_WHY_SIM : NET_WHY_MODS;
+    if (_stricmp(b, mine)) { snprintf(out, n, "Another version of the game: this room's is build %.8s, yours %.8s", b, mine); return; }
+    if (sim != SIM_VERSION) {
+        snprintf(out, n, "Another version of WindowSmash: this room's simulation version is %u, yours %u (the older one needs updating)",
+                 (unsigned)sim, (unsigned)SIM_VERSION);
+        return;
+    }
+    Mod own[MODS_MAX];
+    int no = mods_read(mod_set, (int)sizeof mod_set, own, MODS_MAX);
+    char missing[256] = "", other[256] = "", extra[256] = "";
+    for (int i = 0; i < nm; i++) {
+        int found = -1;
+        for (int k = 0; k < no && found < 0; k++) if (!_stricmp(m[i].name, own[k].name)) found = k;
+        if (found < 0) names_add(missing, sizeof missing, m[i].name);
+        else if (own[found].hash != m[i].hash) names_add(other, sizeof other, m[i].name);
+    }
+    for (int k = 0; k < no; k++) {
+        int found = 0;
+        for (int i = 0; i < nm && !found; i++) found = !_stricmp(m[i].name, own[k].name);
+        if (!found) names_add(extra, sizeof extra, own[k].name);
+    }
+    line_add(out, n, "Mods you don't have: ", missing, "");
+    line_add(out, n, "Another copy of: ", other, " (yours differs from the room's)");
+    line_add(out, n, "Mods not in this room: ", extra, " (turn them off to join)");
+    if (!out[0]) snprintf(out, n, "Other mods, of the same names");
+}
+
+/* The room browser. room_next is the client thread's, filled by ROOM_INFOs; ROOMS_END makes it
+ * room_list, which net_rooms_get reads. */
+static SRWLOCK rooms_lock = SRWLOCK_INIT;
+static NetRoom room_list[ROOMS_MAX], room_next[ROOMS_MAX];
+static int nroom_list, nroom_next;
+static u32 rooms_seq;
+static volatile LONG rooms_wanted, rooms_waiting, rooms_listed;   /* net_rooms_ask's; a ROOMS unanswered; a list since joined */
+static volatile u64 rooms_sent;
+
+static void rooms_ask(u64 t) {   /* (client thread) */
+    u8 p[4 + 8 + 4];
+    header(p, T_ROOMS);
+    put64(p + 4, cookie);
+    put32(p + 12, ++rooms_seq);
+    nroom_next = 0;
+    rooms_sent = t;
+    InterlockedExchange(&rooms_waiting, 1);
+    send_udp(client_sock, p, sizeof p, &relay_at);
+}
+
+static void rooms_info(const u8 *p, int n) {   /* (client thread) a ROOM_INFO's body */
+    if (n < ROOM_INFO_MIN || get32(p) != rooms_seq || !rooms_waiting || nroom_next >= ROOMS_MAX) return;
+    NetRoom *r = &room_next[nroom_next++];
+    Mod m[MODS_MAX];
+    memset(r, 0, sizeof *r);
+    r->host = get32(p + 4);
+    r->players = p[8];
+    r->most = p[9];
+    r->open = p[10] & 1;
+    r->mine = (p[10] & 2) != 0;
+    r->joinable = (p[10] & 8) != 0;
+    printable(r->name, p + 11, NAME_LEN);
+    printable(r->build, p + 11 + NAME_LEN, BUILD_LEN);
+    r->sim = get32(p + 11 + NAME_LEN + BUILD_LEN);
+    int at = 11 + NAME_LEN + BUILD_LEN + 4, nm = mods_read(p + at, n - at, m, MODS_MAX);
+    if (nm < 0) snprintf(r->mods, sizeof r->mods, "(unreadable)");
+    r->nmods = nm < 0 ? 0 : nm;
+    for (int i = 0; i < r->nmods; i++) names_add(r->mods, sizeof r->mods, m[i].name);
+    if (!r->joinable) room_why(r->build, r->sim, m, r->nmods, r->why, sizeof r->why, &r->why_kind);
+}
+
+static void rooms_end(const u8 *p, int n) {   /* (client thread) a ROOMS_END's body */
+    if (n < 5 || get32(p) != rooms_seq || !rooms_waiting) return;
+    static int said = -1;
+    int can = 0;
+    AcquireSRWLockExclusive(&rooms_lock);
+    memcpy(room_list, room_next, sizeof room_list[0] * (size_t)nroom_next);
+    nroom_list = nroom_next;
+    for (int i = 0; i < nroom_list; i++) can += room_list[i].joinable && !room_list[i].mine;
+    ReleaseSRWLockExclusive(&rooms_lock);
+    InterlockedExchange(&rooms_listed, 1);
+    InterlockedExchange(&rooms_waiting, 0);
+    if (nroom_next != said) fprintf(stderr, "[net] rooms of lobby code %s: %d (%d this game can join)\n", room, nroom_next, can);
+    said = nroom_next;
+}
+
+void net_rooms_ask(void) { InterlockedExchange(&rooms_wanted, 1); }
+
+int net_rooms_get(NetRoom *out, int max, int *state) {
+    int st = NET_ROOMS_OFF, n = 0;
+    if (lobby_has(W_ROOMS)) {
+        if (!rooms_listed && !rooms_waiting) net_rooms_ask();   /* (the first time: ask) */
+        st = rooms_waiting ? (now_ms() - rooms_sent > ROOMS_WAIT_MS ? NET_ROOMS_NO_ANSWER : NET_ROOMS_ASKING)
+           : rooms_listed ? NET_ROOMS_LISTED : NET_ROOMS_ASKING;
+        AcquireSRWLockShared(&rooms_lock);
+        n = nroom_list < max ? nroom_list : max;
+        if (n > 0) memcpy(out, room_list, sizeof *out * (size_t)n);
+        ReleaseSRWLockShared(&rooms_lock);
+    }
+    if (state) *state = st;
+    return n;
+}
+
+/* Matchmaking: while this game searches or is matched, MATCH (op 1, the search's id) goes every
+ * 2 s, each answered with a MATCH_STATE (the lobby sends one itself when something changes); a
+ * cancel is MATCH op 0, sent until the lobby says idle (3 times at most). */
+static SRWLOCK match_lock = SRWLOCK_INIT;
+static NetMatch match_now;   /* (match_lock, as match_id; zero: NET_MATCH_IDLE) */
+static u32 match_id;
+static volatile LONG match_want, match_cancels, match_soon;   /* searching or matched; cancels left to send; send at once */
+static u64 match_sent;                                         /* (client thread) */
+
+static void match_send(int op) {   /* (client thread) */
+    u8 p[4 + 8 + 1 + 4];
+    header(p, T_MATCH);
+    put64(p + 4, cookie);
+    p[12] = (u8)op;
+    AcquireSRWLockShared(&match_lock);
+    put32(p + 13, match_id);
+    ReleaseSRWLockShared(&match_lock);
+    send_udp(client_sock, p, sizeof p, &relay_at);
+}
+
+static void match_tick(u64 t) {   /* (client thread, joined) */
+    if (match_cancels > 0) {
+        if (InterlockedExchange(&match_soon, 0) || t - match_sent >= 300) { match_send(0); match_sent = t; InterlockedDecrement(&match_cancels); }
+        return;
+    }
+    if (!match_want || !(InterlockedExchange(&match_soon, 0) || t - match_sent >= 2000)) return;
+    match_send(1);
+    match_sent = t;
+}
+
+static void match_state(const u8 *p) {   /* (client thread) a MATCH_STATE's body */
+    static const char *const ended[] = {"no opponent found in time", "the other player cancelled or left",
+                                        "both in one room", "the match expired (not in one room in time)"};
+    int st = p[4], role = p[5], flags = p[6];
+    char other[NAME_LEN + 1];
+    printable(other, p + 11, NAME_LEN);
+    AcquireSRWLockExclusive(&match_lock);
+    if (get32(p) != match_id || st > NET_MATCH_EXPIRED) { ReleaseSRWLockExclusive(&match_lock); return; }
+    if (!match_want) {   /* (cancelled, or over: the lobby's idle ends the cancel; the rest came late) */
+        if (st == NET_MATCH_IDLE) InterlockedExchange(&match_cancels, 0);
+        ReleaseSRWLockExclusive(&match_lock);
+        return;
+    }
+    int was = match_now.state, was_open = match_now.room_open;
+    match_now.state = st;
+    match_now.role = role;
+    match_now.room_open = flags & 1;
+    match_now.peer = get32(p + 7);
+    memcpy(match_now.peer_name, other, sizeof match_now.peer_name);
+    match_now.searching = get16(p + 43);
+    match_now.players = get16(p + 45);
+    match_now.waited_s = get16(p + 47);
+    ReleaseSRWLockExclusive(&match_lock);
+    if (st >= NET_MATCH_TIMEOUT) InterlockedExchange(&match_want, 0);   /* (over: nothing more to ask) */
+    if (st == NET_MATCH_MATCHED && was != NET_MATCH_MATCHED)
+        fprintf(stderr, "[net] match: matched with %s: %s\n", other, role == NET_MATCH_HOST ? "this game hosts (Local Wireless > Create Room)"
+                        : "this game joins their room (Local Wireless > Rooms List: theirs comes first)");
+    if (st == NET_MATCH_MATCHED && role == NET_MATCH_JOIN && (flags & 1) && !(was == NET_MATCH_MATCHED && was_open))
+        fprintf(stderr, "[net] match: %s's room is open\n", other);
+    if (st >= NET_MATCH_TIMEOUT && st != was)
+        fprintf(stderr, "[net] match: %s%s%s\n", ended[st - NET_MATCH_TIMEOUT], st == NET_MATCH_TIMEOUT ? "" : ": ", st == NET_MATCH_TIMEOUT ? "" : other);
+}
+
+void net_match_find(void) {
+    if (!lobby_has(W_MATCH)) return;   /* (net_match_get says NET_MATCH_OFF) */
+    AcquireSRWLockExclusive(&match_lock);
+    match_id = (u32)random64() | 1;
+    memset(&match_now, 0, sizeof match_now);
+    match_now.state = NET_MATCH_ASKING;
+    ReleaseSRWLockExclusive(&match_lock);
+    InterlockedExchange(&match_cancels, 0);
+    InterlockedExchange(&match_want, 1);
+    InterlockedExchange(&match_soon, 1);
+    fprintf(stderr, "[net] match: searching for an opponent (lobby code %s)\n", room);
+}
+
+void net_match_cancel(void) {
+    AcquireSRWLockExclusive(&match_lock);
+    int was = match_now.state;
+    if (was == NET_MATCH_SEARCHING || was == NET_MATCH_MATCHED || was == NET_MATCH_ASKING) match_now.state = NET_MATCH_IDLE;
+    ReleaseSRWLockExclusive(&match_lock);
+    if (InterlockedExchange(&match_want, 0)) {
+        InterlockedExchange(&match_cancels, 3);
+        InterlockedExchange(&match_soon, 1);
+        fprintf(stderr, "[net] match: cancelled\n");
+    }
+}
+
+void net_match_get(NetMatch *out) {
+    AcquireSRWLockShared(&match_lock);
+    *out = match_now;
+    ReleaseSRWLockShared(&match_lock);
+    if (!lobby_has(W_MATCH)) {
+        memset(out, 0, sizeof *out);
+        out->state = NET_MATCH_OFF;
+        out->players = out->searching = out->code_players = -1;
+        return;
+    }
+    if (out->state != NET_MATCH_SEARCHING && out->state != NET_MATCH_MATCHED) {   /* (between searches: the PONG's counts) */
+        out->players = (int)members;
+        out->searching = (int)key_searching;
+    }
+    out->code_players = (int)code_players;
+}
+
+/* (client thread) A new start with the lobby: the last one's rooms and search went with it; a
+ * search goes on as a new one. */
+static void v3_new_start(void) {
+    AcquireSRWLockExclusive(&rooms_lock);
+    nroom_list = 0;
+    ReleaseSRWLockExclusive(&rooms_lock);
+    InterlockedExchange(&rooms_listed, 0);
+    InterlockedExchange(&rooms_waiting, 0);
+    InterlockedExchange(&key_searching, -1);
+    InterlockedExchange(&code_players, -1);
+    InterlockedExchange(&match_cancels, 0);
+    AcquireSRWLockExclusive(&match_lock);
+    if (match_want) match_now.state = NET_MATCH_ASKING;
+    else if (match_now.state != NET_MATCH_IDLE) memset(&match_now, 0, sizeof match_now);
+    ReleaseSRWLockExclusive(&match_lock);
+    InterlockedExchange(&match_soon, 1);
+}
+
+static void v3_tick(u64 t) {   /* (client thread, joined) what the room browser and matchmaking have to send */
+    if (InterlockedExchange(&rooms_wanted, 0) && lobby_has(W_ROOMS)) rooms_ask(t);
+    if (lobby_has(W_MATCH)) match_tick(t);
 }
 
 static void read_members(const u8 *p, int n) {
@@ -921,18 +1253,22 @@ static DWORD WINAPI client_thread(LPVOID unused) {
             InterlockedExchange(&joined, 0);   /* the relay is gone: keep asking to join again */
             InterlockedExchange(&ping_ms, -1);
             clear_peers();
+            InterlockedExchange(&lobby_flags, 0);
+            InterlockedExchange(&proto, proto_wanted);   /* (asked in its version again: it may be another lobby now) */
+            fell_back = 0;
             fprintf(stderr, "[net] lost the relay %s; reconnecting\n", relay_text);
         }
         if (joined && t - last_tick >= 50) { peers_tick(t); last_tick = t; }
+        if (joined) v3_tick(t);
         struct sockaddr_in from;
         socklen_t flen = sizeof from;
         int n = recvfrom(client_sock, (char *)buf, sizeof buf, 0, (struct sockaddr *)&from, &flen);
         if (n < 4 || buf[0] != MAGIC0 || buf[1] != MAGIC1) continue;
         if (!same_addr(&from, &relay_at)) {   /* (another player, straight) */
-            if (buf[2] == NET_PROTOCOL && joined) direct_packet(buf, n, &from);
+            if (buf[2] == proto && joined) direct_packet(buf, n, &from);
             continue;
         }
-        if (buf[2] != NET_PROTOCOL && buf[3] != T_REJECT) continue;   /* (a REJECT comes in our own version) */
+        if (buf[2] != proto && buf[3] != T_REJECT) continue;   /* (a REJECT comes in the JOIN's version, or a relay's own) */
         switch (buf[3]) {
         case T_DATA:
             if (n >= 16 && joined) {
@@ -942,21 +1278,31 @@ static DWORD WINAPI client_thread(LPVOID unused) {
             break;
         case T_WELCOME:
             if (n < 26 || get64(buf + 4) != nonce) break;
-            if (!joined) clear_peers();   /* (a new start: the lobby counts PEERS from 1 again) */
+            if (!joined) { clear_peers(); v3_new_start(); }   /* (a new start: the lobby counts PEERS from 1 again) */
             my_ip = get32(buf + 12);
             cookie = get64(buf + 16);
-            InterlockedExchange(&lobby, buf[24] & 1);
+            InterlockedExchange(&lobby, buf[24] & W_LOBBY);
+            InterlockedExchange(&lobby_flags, buf[24]);
             read_members(buf + 25, n - 25);
             last_pong = now_ms();
             last_ping = 0;   /* (a ping at once: a lobby answers nothing else until it has seen the cookie) */
             reject_text[0] = 0;
-            if (!joined && lobby) fprintf(stderr, "[net] joined the lobby on %s as 10.13.%u.%u (lobby code %s)\n", relay_text, my_ip >> 8 & 255, my_ip & 255, room);
+            if (!joined && lobby) fprintf(stderr, "[net] joined the lobby on %s as 10.13.%u.%u (lobby code %s)%s\n", relay_text, my_ip >> 8 & 255, my_ip & 255, room,
+                                          proto == NET_PROTOCOL_V3 ? ", protocol 3" : "");
             else if (!joined) fprintf(stderr, "[net] joined room %s on %s as 10.13.%u.%u (%ld players)\n", room, relay_text, my_ip >> 8 & 255, my_ip & 255, (long)members);
             InterlockedExchange(&joined, 1);
             break;
         case T_REJECT:
             if (n >= 13 + 1 && get64(buf + 4) == nonce) {
-                snprintf(reject_text, sizeof reject_text, "%.64s", (const char *)buf + 13);
+                if (fell_back && buf[2] == NET_PROTOCOL_V3) break;   /* (the answer to a JOIN of version 3, sent before) */
+                if (proto == NET_PROTOCOL_V3 && buf[12] == R_VERSION) {   /* a lobby or relay of version 2: join it in version 2 */
+                    InterlockedExchange(&proto, NET_PROTOCOL);
+                    fell_back = 1;
+                    last_join = 0;   /* (at once) */
+                    fprintf(stderr, "[net] %s speaks netplay version 2: joining it in version 2 (no room browser or matchmaking there)\n", relay_text);
+                    break;
+                }
+                snprintf(reject_text, sizeof reject_text, "%.64s", (const char *)buf + 13);   /* (also version 3's reason 5: a mod set it can't read) */
                 fprintf(stderr, "[net] the relay refused: %s\n", reject_text);
                 Sleep(2000);
             }
@@ -966,6 +1312,10 @@ static DWORD WINAPI client_thread(LPVOID unused) {
                 last_pong = now_ms();
                 InterlockedExchange(&ping_ms, (LONG)(last_pong - get64(buf + 4)));
                 if (lobby) { InterlockedExchange(&members, get16(buf + 12)); InterlockedExchange(&rooms_open, get16(buf + 14)); }
+                if (proto == NET_PROTOCOL_V3 && n >= 21) {   /* (version 3's: players of this key searching, players of the code) */
+                    InterlockedExchange(&key_searching, get16(buf + 17));
+                    InterlockedExchange(&code_players, get16(buf + 19));
+                }
             }
             break;
         case T_MEMBERS:
@@ -979,6 +1329,15 @@ static DWORD WINAPI client_thread(LPVOID unused) {
             break;
         case T_PEERS:
             if (n >= 4 + 8 + 5 && lobby && get64(buf + 4) == cookie) read_peers(buf + 12, n - 12);
+            break;
+        case T_ROOM_INFO:
+            if (lobby_has(W_ROOMS)) rooms_info(buf + 4, n - 4);
+            break;
+        case T_ROOMS_END:
+            if (lobby_has(W_ROOMS)) rooms_end(buf + 4, n - 4);
+            break;
+        case T_MATCH_STATE:
+            if (n >= 4 + MATCH_STATE_SIZE && lobby_has(W_MATCH)) match_state(buf + 4);
             break;
         }
     }

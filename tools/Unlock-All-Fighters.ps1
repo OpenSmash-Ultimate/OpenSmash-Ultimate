@@ -38,6 +38,12 @@ try {
         throw 'No save found. Start the updated game once, reach the main menu, close it, then run launchers\Unlock All Fighters.bat again.'
     }
     $SavePath = (Resolve-Path -LiteralPath $SavePath).Path
+    # save\<user>.commit: the game stopped while it saved; its next start finishes that save, which
+    # could write over what this tool changes
+    $commitMarker = (Split-Path -Parent (Split-Path -Parent $SavePath)) + '.commit'
+    if (Test-Path -LiteralPath $commitMarker) {
+        throw 'The game was stopped while it saved. Start the game once, reach the main menu (it finishes that save), close it, then run launchers\Unlock All Fighters.bat again.'
+    }
     $originalInfo = Get-Item -LiteralPath $SavePath
     $originalWriteTime = $originalInfo.LastWriteTimeUtc
     [byte[]]$data = [System.IO.File]::ReadAllBytes($SavePath)

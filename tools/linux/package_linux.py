@@ -7,7 +7,10 @@ Usage: package_linux.py [--port <dir>] [--build <build-linux dir>] [--out <dir>]
 <out>/ssbu-linux/ (default <out>: dist-linux in this checkout) gets the program and its DXVK
 libraries, the module images, fonts, the add-on content list and shader cache from the game
 tree's dump/, a copy of its save (unless --no-save), the launchers (run.sh goes online: the
-lobby is in online_server.txt), the guides and the unlock tool. <port>
+lobby is in online_server.txt), the guides and the unlock tool, and this checkout's
+third_party/fonts_open as it is, licences and README included: the open fonts the game uses in
+place of each firmware font that dump/fonts lacks (all of them, built without a firmware),
+found where runtime/hle_pl.c looks from dump/modules (../../third_party/fonts_open). <port>
 is the tree the build was made from (its port.txt; see build_linux.py), and a package holds one
 tree's game: package another tree's into another <out>, or give
 --replace to start this one over - never one the game was played from. The game's RomFS stays
@@ -57,6 +60,18 @@ def copy_tree(src, dst, keep=lambda name: True, folders=False):
             if keep(f):
                 n += copy(os.path.join(root, f), os.path.join(dst, os.path.relpath(root, src), f))
     return n
+
+
+FONT_NAMES = ("nintendo_udsg-r_std_003", "nintendo_udsg-r_org_zh-cn_003", "nintendo_udsg-r_ext_zh-cn_003",
+              "nintendo_udjxh-db_zh-tw_003", "nintendo_udsg-r_ko_003", "nintendo_ext_003")   # (runtime/hle_pl.c's names)
+OPEN_FONTS = os.path.join(REPO, "third_party", "fonts_open")
+
+
+def fonts_left_out(fonts, open_fonts):
+    """(the firmware fonts not in `fonts`, the fonts in neither folder): the game uses the open
+    font of each of the first, and has none of the second (which it does not start without)."""
+    firmware = [n for n in FONT_NAMES if not os.path.isfile(os.path.join(fonts, n + ".bfttf"))]
+    return firmware, [n for n in firmware if not os.path.isfile(os.path.join(open_fonts, n + ".ttf"))]
 
 
 def shader_cache_version():
@@ -136,6 +151,10 @@ def main():
     dump = os.path.join(PORT, "dump")
     modules = os.path.join(dump, "modules")
     kind, layer_map, nca_offset, romfs = romfs_files(os.path.join(modules, "romfs.cfg"))
+    open_fonts_used, no_font = fonts_left_out(os.path.join(dump, "fonts"), OPEN_FONTS)
+    if no_font:
+        raise SystemExit(f"neither {os.path.join(dump, 'fonts')} nor {OPEN_FONTS} has {', '.join(no_font)}: the game would "
+                         "stop without it. Restore third_party/fonts_open (git), or build with your firmware's fonts")
     start_bundle()
     os.makedirs(BUNDLE, exist_ok=True)
     copied = copy(exe, os.path.join(BUNDLE, "ssbu"))
@@ -147,6 +166,8 @@ def main():
     # (the unlock tool reads which game version the save belongs to from main's build id)
     copied += copy(os.path.join(dump, "exefs", "main"), os.path.join(BUNDLE, "dump", "exefs", "main"))
     copied += copy_tree(os.path.join(dump, "fonts"), os.path.join(BUNDLE, "dump", "fonts"))
+    # (the open fonts with their licence texts, where the runtime finds them from dump/modules: ../../third_party/fonts_open)
+    copied += copy_tree(OPEN_FONTS, os.path.join(BUNDLE, "third_party", "fonts_open"))
     version = shader_cache_version()   # (only the current translator's compiles: older ones are never read)
     cache = os.path.join(dump, "shadercache")   # (and only what the game has used)
     copied += copy_tree(cache, os.path.join(BUNDLE, "dump", "shadercache"),
@@ -182,6 +203,9 @@ def main():
     total = sum(os.path.getsize(os.path.join(r, f)) for r, _d, fs in os.walk(BUNDLE) for f in fs)
     print(f"{BUNDLE}: {PORT}'s game, {total / 2**30:.2f} GB ({copied / 2**20:,.0f} MB copied now); the game data "
           f"stays in {', '.join(f'{name} ({size / 1e9:.1f} GB)' for _v, name, size, _f in romfs)}")
+    if open_fonts_used:
+        print(f"fonts: the open ones of third_party/fonts_open for {len(open_fonts_used)} of the 6, which dump/fonts lacks "
+              "(no Chinese, Japanese or Korean text)")
 
     if "--tar" in sys.argv:
         tar_path = os.path.join(OUT, "ssbu-linux.tar")

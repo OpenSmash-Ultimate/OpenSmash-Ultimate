@@ -8,16 +8,16 @@ public algorithm; 19,308 of the 19,469 keys get a name this way). Names: referen
 
     table_names()  ->  list: index in const_value_table__ -> (name or None, value from lua_const.rs or None)
 """
-import os
 import re
-from nrolib import Nro, STUDY
+
+import sdk_paths
+from nrolib import Nro
 
 M = (1 << 64) - 1
 P1, P2, P3, P4, P5 = 0x9E3779B185EBCA87, 0xC2B2AE3D27D4EB4F, 0x165667B19E3779F9, 0x85EBCA77C2B2AE63, 0x27D4EB2F165667C5
 
 KEYS_OFF = 0x6a5b70
 COUNT = 0x4c0d
-LUA_CONST_RS = os.path.normpath(os.path.join(STUDY, '..', 'reference', 'skyline-smash', 'src', 'lua_const.rs'))
 
 
 def _rotl(v, n):
@@ -66,7 +66,8 @@ def xxh64(data, seed=0):
 
 
 def lua_const_names():
-    text = open(LUA_CONST_RS).read()
+    with open(sdk_paths.reference('skyline-smash', 'src', 'lua_const.rs'), encoding='utf-8') as f:
+        text = f.read()
     out = {}
     for nm, v in re.findall(r'^\s+([A-Za-z0-9_]+): (-?0x[0-9A-Fa-f]+|-?\d+),', text, re.M):
         out.setdefault(nm, int(v, 0))

@@ -119,7 +119,7 @@ extern int g_game_build;                                /* hostrt.c */
 uint64_t ga(uint64_t addr_13_0_4);                      /* hostrt.c (GA) */
 void host_fixed_random_reseed(uint64_t seed);           /* os_threads.c: nn::os::GenerateRandomBytes from the agreed seed on */
 void menu_notice(const char *text);                     /* menu.cpp (menu_stub.c: nothing) */
-void nvn_front_osk_redraw(void); long long nvn_front_presents(void);      /* nvn_gl.c: the last frame presented again (with the notice) */
+void nvn_front_osk_redraw(void); long long nvn_front_presents(void);      /* nvn_front.c: the last frame presented again (with the notice) */
 uint64_t nnhid_menu_buttons(void);                      /* nnhid.c: every controller's buttons, Npad bit order (B = bit 1), not seen by the game */
 static SRWLOCK g_hs_lock = SRWLOCK_INIT;
 static volatile LONG g_hs_round;                        /* this game's match set-ups so far (log lines) */

@@ -2,7 +2,7 @@
  *
  * Each file is looked up in %SSBU_FONTS% (else ..\sysdata\fonts): the user's own firmware fonts
  * (extract-tools/fw_fonts.py); then in fonts_open\ beside the exe: the open-source replacements the runtime
- * ships (Open Sans, Source Sans Pro, the yuzu project's extension font; runtime\fonts_open\README.md). They lack
+ * ships (Open Sans, Source Sans Pro, the yuzu project's extension font; ..\third_party\fonts_open\README.md). They lack
  * many characters (no CJK, few symbols); nnfontll.c draws their .notdef box where the game needs U+25A1.
  * Only a file found in neither place stops the game (code 7), as a console always has its fonts.
  *
@@ -55,7 +55,7 @@ static void load_font(unsigned type) {
         printf("nn::pl: shared font %u %s (%s, %zu bytes)\n", type, g_fonts[type].data ? "loaded" : "NOT FOUND", path, g_fonts[type].size);
         if (!g_fonts[type].data) {                        /* close4: a console always has its system fonts; "loaded, size 0" was a made-up state */
             printf("nn::pl: %s is neither in %s nor in fonts_open\\ beside the exe. The runtime ships open-source fonts in "
-                   "runtime\\fonts_open (copied beside the exe by scripts/setup.py): copy that folder there again, or give your own "
+                   "..\\third_party\\fonts_open (copied beside the exe by scripts/setup.py): copy that folder there again, or give your own "
                    "firmware's fonts (tools/extract/fw_fonts.py, SSBU_FONTS=<folder>): stopping\n", font_files[type], dirs[0]);
             fflush(stdout);
             report_and_exit(7);

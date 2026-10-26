@@ -78,6 +78,19 @@ smash.recomps.wtf:39421 ourcode
 
 The overlay shows the code after `Online`. A lobby code is not a password: anyone who knows it can join.
 
+### Room browser and matchmaking (being tried out)
+
+Netplay version 3 adds two things to the online lobby, on the **Lobby** page of the settings: a list of every room of your lobby code, the ones you can't join too, and matchmaking, which pairs you with another player who is searching. Version 2 is still the default.
+
+1. Press <kbd>Esc</kbd> in the game and go to **Online**.
+2. Set **Netplay version** to **3**, then choose **Restart now**.
+3. Open the settings again and go to the **Lobby** page (the number key <kbd>5</kbd>).
+
+- **Rooms** lists each room's host, players, and whether it is open. A room you can't join says why: another game version, another WindowSmash version (and whose is older), or other mods. The list is asked for each time the page opens; select **Rooms** to ask again. To join a room, close the settings and pick it in **Local Wireless → Rooms List**, where the rooms you can join are too.
+- **Find a match** searches for another player with the same game, WindowSmash, mods and lobby code. You can close the settings while it searches: a message says when a match is found and who hosts. The host creates a room (**Local Wireless → Create a Room**), and the other player finds it first in their **Rooms List**. **Stop searching** or **Leave the match** ends it.
+
+With version 3 set, a lobby or private room of version 2 still works: the game joins it in version 2, and the Lobby page says why it has no rooms to show. Hosting a private room always uses version 2. `SSBU_NET_PROTOCOL=3` ([below](#reference-environment-variables)) or `3` in `online_protocol.txt` does the same as the setting.
+
 ### Playing offline
 
 - `launchers\Play SSBU Offline.bat` never goes online.
@@ -240,6 +253,7 @@ The game server's log (`--nex-log`: `0` quiet, `1` each call, `2` every packet, 
 | `SSBU_NET_UPNP=0` | Don't ask the router to open the port. |
 | `SSBU_NET_BIND` | Limit which address the built-in relay listens on; used by local tests. |
 | `SSBU_NET_DIRECT=0` | Online, send all traffic through the lobby. `Play SSBU.bat` sets it when `online_direct.txt` says `off`. |
+| `SSBU_NET_PROTOCOL=3` | Being tried out: join the lobby in netplay version 3, which has the [room browser and matchmaking](#room-browser-and-matchmaking-being-tried-out). A lobby of version 2 says no, and the game joins it in version 2. `2`, the default, is version 2 only. Without it, `online_protocol.txt` decides (`3` or `2`; the settings' **Online → Netplay version** writes it). Hosting a private room is always version 2. |
 | `SSBU_NET_TEST_NAT=1`, `SSBU_NET_TEST_BLOCK=<seconds>` | Local tests: filter incoming packets as a router would, or cut direct paths that many seconds after the start. |
 | `SSBU_NET_LOG=1` / `2` | Network logging: a summary, or more detail. |
 | `SSBU_ONLINE_COUNTRY` | The country Online mode reports, as two letters such as `GB`. Default `US`. |

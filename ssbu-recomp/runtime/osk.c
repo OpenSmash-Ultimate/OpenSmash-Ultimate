@@ -35,9 +35,9 @@ int osk_run(const wchar_t *header, const wchar_t *guide, const wchar_t *initial,
 #define OSK_MAX 500
 
 uint64_t nnhid_menu_buttons(void);                 /* nnhid.c */
-int nvn_front_osk_ready(void);                     /* nvn_gl.c: 1 when the Vulkan renderer runs (the only one that draws it) */
-void nvn_front_osk_redraw(void);                   /* nvn_gl.c: present the last frame again with the keyboard over it */
-long long nvn_front_presents(void);                /* nvn_gl.c: frames presented so far */
+int nvn_front_osk_ready(void);                     /* nvn_front.c: 1 when the Vulkan renderer runs (the only one that draws it) */
+void nvn_front_osk_redraw(void);                   /* nvn_front.c: present the last frame again with the keyboard over it */
+long long nvn_front_presents(void);                /* nvn_front.c: frames presented so far */
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN };
 

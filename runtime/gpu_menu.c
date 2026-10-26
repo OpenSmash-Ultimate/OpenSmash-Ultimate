@@ -6,23 +6,27 @@
  * It runs on the vsync thread, inside the renderer's present: menu_frame reads the pads (their
  * console buttons, as the game would get them) and the keys the window queued, menu_draw
  * draws it over the picture with the overlay's quads. Pages: Display, Controllers (with a page
- * of a pad's buttons), Online, Game.
+ * of a pad's buttons), Online, Game, Lobby (the online lobby's room browser and matchmaking, in
+ * netplay version 3: net.h).
  *
  * Tests: SSBU_MENU_AT=<seconds> opens it then; SSBU_MENU_KEYS="<seconds>:<key>,..." presses
  * UP DOWN LEFT RIGHT ENTER ESC TAB BKSP DEL, SHOT (a screenshot with the menu), or types
  * =<text>. */
 #define _CRT_SECURE_NO_WARNINGS
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "host.h"
+#include "config_folder.h"
 #include "display.h"
 #include "gpu_menu.h"
 #include "gpu_overlay.h"
 #include "net.h"
 #include "pad.h"
 #include "settings.h"
+#include "sim_version.h"
 
 int gfx_window_focused(void);
 void gfx_closing(void);   /* (gpu_d3d11.c) the game is about to end */
@@ -69,16 +73,18 @@ enum {   /* (from keys, pads or the test script) */
 };
 
 /* ---- the rows of a page ------------------------------------------------------------------ */
-enum { P_DISPLAY, P_PADS, P_ONLINE, P_GAME, P_REMAP };
-static const char *const PAGE_NAMES[4] = {"Display", "Controllers", "Online", "Game"};
+enum { P_DISPLAY, P_PADS, P_ONLINE, P_GAME, P_LOBBY, P_REMAP, PAGES = P_REMAP };   /* (the pad's buttons: no key of their own) */
+static const char *const PAGE_NAMES[PAGES] = {"Display", "Controllers", "Online", "Game", "Lobby"};
 enum { K_INFO, K_CHOICE, K_ACTION, K_TEXT };
 enum { W_NONE, W_NOW, W_RESTART };
 enum {
     R_NONE, R_WINDOW, R_PACING, R_LATENCY, R_CURSOR, R_OVERLAY, R_SIZE, R_SCALE, R_GPU,
     R_PAD, R_PAD_PLAYER, R_PAD_LAYOUT, R_PAD_DEADZONE, R_PAD_RUMBLE, R_PAD_TRIGGER, R_PAD_REMAP, R_PAD_TEST, R_PAD_RESET,
     R_RUMBLE, R_KEYBOARD, R_BACKGROUND, R_PADS_FILE,
-    R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT,
-    R_RESTART, R_QUIT, R_REMAP_BACK, R_REMAP_FIRST = 100   /* + console button */
+    R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
+    R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
+    R_RESTART, R_QUIT, R_REMAP_BACK, R_ROOM_FIRST = 60,   /* + the room's place in the list */
+    R_REMAP_FIRST = 100   /* + console button */
 };
 
 typedef struct Row { int id, kind, when; char label[48], value[112], note[64]; const char *help; } Row;
@@ -94,7 +100,7 @@ static Row *add(int id, int kind, int when, const char *label, const char *help)
 }
 
 /* ---- state ---------------------------------------------------------------------------- */
-static int page, sel[5], top[5];
+static int page, sel[P_REMAP + 1], top[P_REMAP + 1];
 static int pad_slot = -1;                /* the pad the Controllers page sets up */
 static int confirm;                      /* a row asking yes or no */
 static int editing, grid_r, grid_c;      /* a text row being typed */
@@ -110,23 +116,27 @@ static ULONGLONG rumble_stop;
 static char version[64];
 static char gpus[8][64];
 static int ngpus;
+static int built_page = -1;              /* the page build() made last (-1: none since the menu opened) */
 
-static struct { int mode; char custom[128], code[40], name[40]; int direct; } net;
+static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol; } net;
 enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE };
 static const char *const NET_MODES[4] = {"public lobby", "private lobby (a code)", "your own server", "offline"};
 
 static void net_load(void) {
     char line[256] = "", host[128] = "", code[40] = "";
-    settings_line_read("online_server.txt", line, sizeof line);
+    settings_line_read(config_path(CONFIG_ONLINE_SERVER), line, sizeof line);
     sscanf(line, "%127s %39s", host, code);
     memset(&net, 0, sizeof net);
     snprintf(net.code, sizeof net.code, "%s", code);
     if (!host[0] || !_stricmp(host, "off")) net.mode = NET_OFFLINE;
     else if (!_stricmp(host, PUBLIC_LOBBY)) net.mode = code[0] ? NET_PRIVATE : NET_PUBLIC;
     else { net.mode = NET_CUSTOM; snprintf(net.custom, sizeof net.custom, "%s", host); }
-    settings_line_read("online_name.txt", net.name, sizeof net.name);
+    settings_line_read(config_path(CONFIG_ONLINE_NAME), net.name, sizeof net.name);
     char direct[16] = "";
-    net.direct = !(settings_line_read("online_direct.txt", direct, sizeof direct) && !_strnicmp(direct, "off", 3));
+    net.direct = !(settings_line_read(config_path(CONFIG_ONLINE_DIRECT), direct, sizeof direct) && !_strnicmp(direct, "off", 3));
+    char protocol[16] = "";   /* (net_relay.c reads it the same way) */
+    int v = settings_line_read(config_path(CONFIG_ONLINE_PROTOCOL), protocol, sizeof protocol) ? atoi(protocol) : 0;
+    net.protocol = v == NET_PROTOCOL || v == NET_PROTOCOL_V3 ? v : NET_PROTOCOL_DEFAULT;
 }
 
 static void net_save_server(void) {
@@ -138,7 +148,7 @@ static void net_save_server(void) {
         snprintf(line, sizeof line, "%s %s", PUBLIC_LOBBY, net.code);
     }
     else snprintf(line, sizeof line, "%s%s%s", net.custom[0] ? net.custom : "127.0.0.1:39420", net.code[0] ? " " : "", net.code);
-    settings_line_write("online_server.txt", line);
+    settings_line_write(config_path(CONFIG_ONLINE_SERVER), line);
 }
 
 static void load_version(void) {
@@ -175,6 +185,7 @@ static void close_menu(void) {
     capture_button = -1;
     releasing = 1;   /* (the game gets input back once nothing is held) */
     open_ = 0;
+    built_page = -1;   /* (the Lobby page lists the rooms again when it shows next) */
     fprintf(stderr, "[menu] closed\n");
 }
 
@@ -231,7 +242,231 @@ static void note_env(Row *r, const char *var) {
 static const int SIZES[][2] = {{1280, 720}, {1600, 900}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
 static const int REMAP_ORDER[16] = {0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 4, 5, 13, 15, 12, 14};   /* A B X Y L R ZL ZR + - sticks, d-pad */
 
+/* ---- the Lobby page: the online lobby's rooms and matchmaking (net.h, netplay version 3) ----
+ * Joining stays the game's own: a room this game can join is in Local Wireless > Rooms List, and
+ * matchmaking's host creates a room there, which comes first in the other player's list. The page
+ * says what to do, and asks the lobby for the rooms again each time it shows (and on A). */
+enum { LOBBY_ROOMS = 32 };
+static NetRoom lobby_rooms[LOBBY_ROOMS];
+static int nlobby_rooms, rooms_state;
+static NetMatch match;
+static ULONGLONG match_started;          /* when the menu's search started (the time it shows) */
+static int match_followed, match_said, match_said_open;   /* that search, followed while the menu is closed too */
+static char helps[40][420];              /* help made for a row (help_set) */
+
+static void help_set(Row *r, const char *fmt, ...) {
+    char *h = helps[r - rows];
+    va_list a;
+    va_start(a, fmt);
+    vsnprintf(h, sizeof helps[0], fmt, a);
+    va_end(a);
+    r->help = h;
+}
+
+static const char *who(const char *name) { return name[0] ? name : "the other player"; }
+
+static const char *const PROTOCOL_HELP = "3: the online lobby's room browser and matchmaking (the Lobby page), being tried out. A "
+                                         "lobby or private room of version 2 still works: the game joins it in 2. 2: as before.";
+
+static void add_protocol_row(void) {
+    Row *r = add(R_NET_PROTOCOL, K_CHOICE, W_RESTART, "Netplay version", PROTOCOL_HELP);
+    snprintf(r->value, sizeof r->value, "%s", net.protocol == NET_PROTOCOL_V3 ? "3 (being tried out)" : "2");
+    if (net_configured() && !net_relay_address()) snprintf(r->note, sizeof r->note, "hosting: 2");
+    note_env(r, "SSBU_NET_PROTOCOL");
+}
+
+enum { LB_OFFLINE, LB_HOSTING, LB_NEEDS_V3, LB_CONNECTING, LB_PRIVATE, LB_V2_LOBBY, LB_NONE, LB_ON };
+static int lobby_state(void) {
+    if (!net_configured()) return LB_OFFLINE;
+    if (!net_relay_address()) return LB_HOSTING;
+    if (net_protocol_wanted() != NET_PROTOCOL_V3) return LB_NEEDS_V3;
+    if (!net_local_ip()) return LB_CONNECTING;
+    if (!net_lobby()) return LB_PRIVATE;
+    if (net_protocol_spoken() != NET_PROTOCOL_V3) return LB_V2_LOBBY;
+    if (rooms_state == NET_ROOMS_OFF && match.state == NET_MATCH_OFF) return LB_NONE;
+    return LB_ON;
+}
+
+static void match_rows(void) {
+    const NetMatch *m = &match;
+    const char *other = who(m->peer_name);
+    ULONGLONG now = GetTickCount64();
+    int waited = match_started && now >= match_started ? (int)((now - match_started) / 1000) : m->waited_s;
+    Row *r = add(R_MATCH_FIND, K_ACTION, W_NONE, "Find a match", NULL);
+    switch (m->state) {
+    case NET_MATCH_ASKING:
+    case NET_MATCH_SEARCHING:
+        if (m->state == NET_MATCH_ASKING) snprintf(r->value, sizeof r->value, "asking the lobby...");
+        else snprintf(r->value, sizeof r->value, "searching... %d:%02d", waited / 60, waited % 60);
+        help_set(r, "Searching for another player of your game, WindowSmash and mods, with your lobby code. You can close this menu "
+                    "and play meanwhile: a message says when a match is found.");
+        break;
+    case NET_MATCH_MATCHED:
+        if (m->role == NET_MATCH_HOST) {
+            snprintf(r->value, sizeof r->value, "with %.32s: you host", other);
+            help_set(r, "You host: close this menu, then Local Wireless > Create a Room (or keep yours open). %s finds it first in "
+                        "their Rooms List.", other);
+        } else if (m->room_open) {
+            snprintf(r->value, sizeof r->value, "with %.32s: their room is open", other);
+            help_set(r, "%s hosts, and their room is open: close this menu, then Local Wireless > Rooms List. Their room comes first.", other);
+        } else {
+            snprintf(r->value, sizeof r->value, "with %.32s: they host", other);
+            help_set(r, "%s hosts: once their room is open, it comes first in Local Wireless > Rooms List. A message says when.", other);
+        }
+        break;
+    case NET_MATCH_TIMEOUT:
+        snprintf(r->value, sizeof r->value, "no opponent found in time");
+        help_set(r, "Nobody of your game, WindowSmash, mods and lobby code searched in time. A: search again.");
+        break;
+    case NET_MATCH_LEFT:
+        snprintf(r->value, sizeof r->value, "%.32s cancelled or left", other);
+        help_set(r, "%s cancelled or left the match. A: search again.", other);
+        break;
+    case NET_MATCH_TOGETHER:
+        snprintf(r->value, sizeof r->value, "in one room with %.32s", other);
+        help_set(r, "You and %s are in one room: the match is made. A: search again.", other);
+        break;
+    case NET_MATCH_EXPIRED:
+        snprintf(r->value, sizeof r->value, "expired: not in one room in time");
+        help_set(r, "You and %s weren't in one room in time. A: search again.", other);
+        break;
+    default:
+        snprintf(r->value, sizeof r->value, "not searching");
+        help_set(r, "Pairs you with another player of your game, WindowSmash and mods, with your lobby code, and says who hosts. A: "
+                    "search. You can close this menu meanwhile: a message says when a match is found.");
+    }
+    if (m->state == NET_MATCH_ASKING || m->state == NET_MATCH_SEARCHING || m->state == NET_MATCH_MATCHED) {
+        r = add(R_MATCH_CANCEL, K_ACTION, W_NONE, m->state == NET_MATCH_MATCHED ? "Leave the match" : "Stop searching", NULL);
+        if (m->state == NET_MATCH_MATCHED) help_set(r, "Ends the match: %s is told.", other);
+        else help_set(r, "Stops the search.");
+    }
+}
+
+/* Why a room can't be joined, in a few words (the help has the whole of it). */
+static const char *room_short(const NetRoom *x) {
+    if (x->why_kind == NET_WHY_BUILD) return "another game version";
+    if (x->why_kind == NET_WHY_SIM) return x->sim > SIM_VERSION ? "update your WindowSmash" : "their WindowSmash is older";
+    return "other mods";
+}
+
+static void room_rows(void) {
+    int can = 0;
+    for (int i = 0; i < nlobby_rooms; i++) can += lobby_rooms[i].joinable && !lobby_rooms[i].mine;
+    Row *r = add(R_ROOMS, K_ACTION, W_NONE, "Rooms", "Every room of your lobby code, of any game version or mods. A: list them again. "
+                                                    "The ones you can join are in Local Wireless > Rooms List too.");
+    if (rooms_state == NET_ROOMS_ASKING) snprintf(r->value, sizeof r->value, "asking the lobby...");
+    else if (rooms_state == NET_ROOMS_NO_ANSWER) snprintf(r->value, sizeof r->value, "no answer from the lobby (A: ask again)");
+    else if (!nlobby_rooms) snprintf(r->value, sizeof r->value, "none");
+    else snprintf(r->value, sizeof r->value, "%d, %d you can join", nlobby_rooms, can);
+    for (int i = 0; i < nlobby_rooms; i++) {
+        const NetRoom *x = &lobby_rooms[i];
+        const char *host = x->name[0] ? x->name : "(no name)";
+        r = add(R_ROOM_FIRST + i, K_ACTION, W_NONE, "", NULL);
+        snprintf(r->label, sizeof r->label, "%.30s%s", host, x->mine ? " (you)" : "");
+        if (!x->joinable) {
+            snprintf(r->value, sizeof r->value, "can't join: %s", room_short(x));
+            help_set(r, "%s%s", x->why, x->why_kind != NET_WHY_SIM ? "" : x->sim > SIM_VERSION ? "\nYours is the older one: update WindowSmash to join."
+                                                                                               : "\nTheirs is the older one: the host needs to update.");
+            continue;
+        }
+        snprintf(r->value, sizeof r->value, "%d/%d players, %s", x->players, x->most, x->open ? "open" : "full or closed");
+        if (x->mine) help_set(r, "Your own room, %d of %d players: other players of your game find it in their Rooms List.", x->players, x->most);
+        else if (x->open) help_set(r, "%s's room, %d of %d players. To join it, close this menu, then Local Wireless > Rooms List and pick %s's room.%s%s",
+                                   host, x->players, x->most, host, x->nmods ? "\nMods: " : "", x->mods);
+        else help_set(r, "%s's room is full or closed for now (%d of %d players). Once it opens, it is in Local Wireless > Rooms List.",
+                      host, x->players, x->most);
+    }
+}
+
+/* The Lobby page's rows (fresh: the page shows anew, so the rooms are asked for again). */
+static void build_lobby(int fresh) {
+    nlobby_rooms = net_rooms_get(lobby_rooms, LOBBY_ROOMS, &rooms_state);
+    net_match_get(&match);
+    if (fresh && (rooms_state == NET_ROOMS_LISTED || rooms_state == NET_ROOMS_NO_ANSWER)) net_rooms_ask();   /* (asking: once is enough) */
+    int st = lobby_state();
+    Row *r = add(R_LOBBY, K_INFO, W_NONE, "Lobby", NULL);
+    switch (st) {
+    case LB_OFFLINE:
+        snprintf(r->value, sizeof r->value, "offline");
+        r->help = "The online lobby's room browser and matchmaking. You're offline: choose a lobby in Online > Play online in, set "
+                  "Netplay version to 3 (below), then restart the game.";
+        break;
+    case LB_HOSTING:
+        snprintf(r->value, sizeof r->value, "hosting a private room");
+        r->help = "You host a private room: its players find your room in Local Wireless > Rooms List. The room browser and "
+                  "matchmaking are the online lobby's.";
+        break;
+    case LB_NEEDS_V3:
+        snprintf(r->value, sizeof r->value, "needs netplay version 3");
+        r->help = "The lobby's room browser and matchmaking need netplay version 3, which is being tried out. To turn it on, set "
+                  "Netplay version to 3 (below, or on the Online page) and restart the game, or start it with SSBU_NET_PROTOCOL=3.";
+        break;
+    case LB_CONNECTING:
+        snprintf(r->value, sizeof r->value, "%s", net_unreachable() ? "no answer from the lobby" : "connecting...");
+        r->help = "Waiting for the lobby (Online > Now says more).";
+        break;
+    case LB_PRIVATE:
+        snprintf(r->value, sizeof r->value, "in a private room");
+        r->help = "You're in a host player's private room: its players find each other's rooms in Local Wireless > Rooms List. The "
+                  "room browser and matchmaking are the online lobby's.";
+        break;
+    case LB_V2_LOBBY:
+        snprintf(r->value, sizeof r->value, "this lobby speaks version 2 only");
+        r->help = "This lobby speaks netplay version 2 only, so it has no room browser or matchmaking. Its rooms are in Local "
+                  "Wireless > Rooms List, as before.";
+        break;
+    case LB_NONE:
+        snprintf(r->value, sizeof r->value, "no room browser in this lobby");
+        r->help = "This lobby speaks netplay version 3, but without a room browser or matchmaking.";
+        break;
+    default:
+        if (match.players >= 0 && match.searching >= 0)
+            snprintf(r->value, sizeof r->value, "%d player%s, %d searching", match.players, match.players == 1 ? "" : "s", match.searching);
+        else snprintf(r->value, sizeof r->value, "version 3");
+        r->help = "The players of your lobby code who can play with you (the same game, WindowSmash and mods), and how many of them "
+                  "are searching for a match.";
+    }
+    if (st == LB_ON) {
+        if (match.state != NET_MATCH_OFF) match_rows();
+        if (rooms_state != NET_ROOMS_OFF) room_rows();
+    } else if (st == LB_OFFLINE || st == LB_NEEDS_V3) add_protocol_row();
+    if (restart_pending) add(R_RESTART, K_ACTION, W_NONE, "Restart now", "Starts the game again, with the changes. A match in progress is lost.");
+}
+
+/* A search the menu started, followed while the menu is closed too: a message when it is matched,
+ * when the host's room opens, and when it ends. */
+static void match_follow(void) {
+    if (!match_followed) return;
+    NetMatch m;
+    net_match_get(&m);
+    const char *other = who(m.peer_name);
+    char t[160] = "";
+    if (m.state != match_said) {
+        switch (m.state) {
+        case NET_MATCH_MATCHED:
+            if (m.role == NET_MATCH_HOST) snprintf(t, sizeof t, "Matched with %.32s: you host (Local Wireless > Create a Room)", other);
+            else if (m.room_open) snprintf(t, sizeof t, "Matched with %.32s: their room is open (Local Wireless > Rooms List)", other);
+            else snprintf(t, sizeof t, "Matched with %.32s: they host (their room comes first in Rooms List)", other);
+            break;
+        case NET_MATCH_TIMEOUT: snprintf(t, sizeof t, "Matchmaking: no opponent found in time"); break;
+        case NET_MATCH_LEFT: snprintf(t, sizeof t, "Matchmaking: %.32s cancelled or left", other); break;
+        case NET_MATCH_TOGETHER: snprintf(t, sizeof t, "Matchmaking: you and %.32s are in one room", other); break;
+        case NET_MATCH_EXPIRED: snprintf(t, sizeof t, "Matchmaking: the match expired (not in one room in time)"); break;
+        }
+        match_said = m.state;
+    } else if (m.state == NET_MATCH_MATCHED && m.role == NET_MATCH_JOIN && m.room_open && !match_said_open)
+        snprintf(t, sizeof t, "%.32s's room is open (Local Wireless > Rooms List)", other);
+    if (t[0]) menu_toast(t);
+    match_said_open = m.state == NET_MATCH_MATCHED && m.room_open;
+    if (m.state == NET_MATCH_IDLE || (m.state >= NET_MATCH_TIMEOUT && m.state <= NET_MATCH_EXPIRED)) match_followed = 0;
+}
+
 static void build(void) {
+    /* (the Lobby page: the row under the cursor, by what it is, so the cursor stays on it when the
+     * rooms or the search change around it) */
+    int same = built_page == page, was = same && sel[page] < nrows ? rows[sel[page]].id : R_NONE;
+    u32 was_host = was >= R_ROOM_FIRST && was < R_ROOM_FIRST + nlobby_rooms ? lobby_rooms[was - R_ROOM_FIRST].host : 0;
+    built_page = page;
     nrows = 0;
     Row *r;
     DisplaySettings ds;
@@ -350,9 +585,19 @@ static void build(void) {
             if (launcher) snprintf(rows[i].note, sizeof rows[i].note, "%s", launcher);
             else if (!settings_online()) snprintf(rows[i].note, sizeof rows[i].note, "for Play SSBU");
         }
+        add_protocol_row();   /* (read with any lobby: no launcher's note) */
         if (restart_pending) add(R_RESTART, K_ACTION, W_NONE, "Restart now", "Starts the game again, with the changes. A match in progress is lost.");
         break;
     }
+    case P_LOBBY:
+        build_lobby(!same);
+        if (was == R_NONE) break;
+        for (int i = 0; i < nrows; i++)
+            if (was_host ? rows[i].id >= R_ROOM_FIRST && lobby_rooms[rows[i].id - R_ROOM_FIRST].host == was_host : rows[i].id == was) {
+                sel[page] = i;
+                break;
+            }
+        break;
     case P_GAME:
         add(R_RESTART, K_ACTION, W_NONE, "Restart the game", "Starts the game again (for the settings marked 'next start'). A match in progress is lost.");
         add(R_QUIT, K_ACTION, W_NONE, "Quit the game", "Closes the game. A match in progress is lost.");
@@ -386,7 +631,7 @@ static void finish_edit(void) {
     size_t n = strlen(s);
     while (n && s[n - 1] == ' ') s[--n] = 0;
     if (editing == R_NET_NAME) {
-        if (*s) { snprintf(net.name, sizeof net.name, "%.32s", s); settings_line_write("online_name.txt", net.name); changed(W_RESTART); }
+        if (*s) { snprintf(net.name, sizeof net.name, "%.32s", s); settings_line_write(config_path(CONFIG_ONLINE_NAME), net.name); changed(W_RESTART); }
     } else if (!strchr(s, ' ')) {
         if (editing == R_NET_CODE) snprintf(net.code, sizeof net.code, "%s", s);
         else if (editing == R_NET_SERVER && *s) snprintf(net.custom, sizeof net.custom, "%s", s);
@@ -514,7 +759,11 @@ static void change(const Row *row, int dir) {
         break;
     case R_NET_DIRECT:
         net.direct = !net.direct;
-        settings_line_write("online_direct.txt", net.direct ? "on" : "off");
+        settings_line_write(config_path(CONFIG_ONLINE_DIRECT), net.direct ? "on" : "off");
+        break;
+    case R_NET_PROTOCOL:
+        net.protocol = net.protocol == NET_PROTOCOL_V3 ? NET_PROTOCOL : NET_PROTOCOL_V3;
+        settings_line_write(config_path(CONFIG_ONLINE_PROTOCOL), net.protocol == NET_PROTOCOL_V3 ? "3" : "2");
         break;
     default:
         return;
@@ -534,7 +783,38 @@ static void action(const Row *row) {
         capture_until = GetTickCount64() + 6000;
         return;
     }
+    if (row->id >= R_ROOM_FIRST && row->id < R_ROOM_FIRST + nlobby_rooms) {   /* a room: what to do, in the game's own menus */
+        const NetRoom *x = &lobby_rooms[row->id - R_ROOM_FIRST];
+        const char *host = x->name[0] ? x->name : "(no name)";
+        char t[160];
+        if (x->mine) snprintf(t, sizeof t, "This is your own room");
+        else if (!x->joinable) snprintf(t, sizeof t, "Can't join %.32s's room: %s", host, room_short(x));
+        else if (!x->open) snprintf(t, sizeof t, "%.32s's room is full or closed for now", host);
+        else snprintf(t, sizeof t, "Close this menu, then Local Wireless > Rooms List: %.32s's room", host);
+        menu_toast(t);
+        return;
+    }
     switch (row->id) {
+    case R_MATCH_FIND:
+        if (match.state == NET_MATCH_ASKING || match.state == NET_MATCH_SEARCHING) menu_toast("Searching already");
+        else if (match.state == NET_MATCH_MATCHED) {
+            char t[160];
+            snprintf(t, sizeof t, match.role == NET_MATCH_HOST ? "You host: Local Wireless > Create a Room (%.32s joins it)"
+                                                                : "%.32s hosts: their room comes first in Local Wireless > Rooms List", who(match.peer_name));
+            menu_toast(t);
+        } else {
+            net_match_find();
+            match_started = GetTickCount64();
+            match_followed = 1;
+            match_said = NET_MATCH_ASKING;
+            match_said_open = 0;
+        }
+        break;
+    case R_MATCH_CANCEL:
+        menu_toast(match.state == NET_MATCH_MATCHED ? "You left the match" : "Search stopped");
+        net_match_cancel();
+        break;
+    case R_ROOMS: net_rooms_ask(); break;
     case R_PAD_REMAP: if (pad) { page = P_REMAP; sel[P_REMAP] = 1; top[P_REMAP] = 0; } break;
     case R_REMAP_BACK: page = P_PADS; break;
     case R_PAD_TEST:
@@ -690,10 +970,10 @@ static void event(int ev, unsigned ch) {
         break;
     case EV_ESC: close_menu(); break;
     case EV_NEXT: case EV_PREV:
-        page = page == P_REMAP ? P_PADS : cycle(page, 4, ev == EV_NEXT ? 1 : -1);
+        page = page == P_REMAP ? P_PADS : cycle(page, PAGES, ev == EV_NEXT ? 1 : -1);
         break;
     case EV_CHAR:
-        if (ch >= '1' && ch <= '4') page = (int)(ch - '1');
+        if (ch >= '1' && ch < '1' + PAGES) page = (int)(ch - '1');
         else if (ch == ' ' && row && selectable(row)) action(row);
         break;
     }
@@ -809,6 +1089,7 @@ int menu_frame(int *overlay, int f3) {
     }
     if (!open_) nav_held = nb;
     if (releasing && !open_ && !nb && !keys_held()) releasing = 0;
+    match_follow();
     if (open_) {
         build();
         if (sel[page] >= nrows) sel[page] = nrows - 1;
@@ -821,12 +1102,16 @@ int menu_frame(int *overlay, int f3) {
 /* ---- drawing ------------------------------------------------------------------------- */
 static float text_w(const char *s, float size) { return (float)strlen(s) * size / 2; }
 
-/* s wrapped to lines of at most `cols` characters, into out. */
+/* s wrapped to lines of at most `cols` characters, into out (a line s starts itself wrapped on its own). */
 static void wrap(const char *s, int cols, char *out, size_t size) {
     size_t o = 0;
     while (*s && o + 2 < size) {
-        int n = (int)strlen(s);
-        if (n <= cols) { o += (size_t)snprintf(out + o, size - o, "%s", s); break; }
+        int n = (int)strcspn(s, "\n");
+        if (n <= cols) {
+            o += (size_t)snprintf(out + o, size - o, "%.*s%s", n, s, s[n] ? "\n" : "");
+            s += n + (s[n] != 0);
+            continue;
+        }
         int cut = cols;
         while (cut > 0 && s[cut] != ' ') cut--;
         if (!cut) cut = cols;
@@ -888,7 +1173,7 @@ void menu_draw(float w, float h) {
     else if (banner[0]) ovl_text(px + 300 * s, py + 34 * s, 24 * s, strstr(status, "Room:") ? ACCENT : AMBER, banner);
     /* the pages */
     float ty = py + 110 * s;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < PAGES; i++) {
         int on = page == i || (page == P_REMAP && i == P_PADS);
         if (on) ovl_rect(px + 20 * s, ty - 6 * s, 250 * s, 50 * s, OVL_RGBA(55, 62, 90, 255));
         char t[32];
@@ -933,7 +1218,7 @@ void menu_draw(float w, float h) {
     }
     ovl_text(px + 36 * s, py + ph - 44 * s, 22 * s, DIM,
              page == P_REMAP ? "Up/Down: choose   A/Enter: press a new control   Y/Delete: default   B/Backspace: back   Esc: close"
-                             : "Up/Down: choose   Left/Right: change   A/Enter: select   L/R or Tab, 1-4: page   B/Esc: close");
+                             : "Up/Down: choose   Left/Right: change   A/Enter: select   L/R or Tab, 1-5: page   B/Esc: close");
     /* on top: a question, the text being typed, or a control being waited for */
     if (confirm) {
         float bw = 820 * s, bh = 200 * s, bx = (w - bw) / 2, by = (h - bh) / 2;

@@ -131,7 +131,7 @@ static void WINAPI fiber_main(void *param) {
 }
 
 /* nn::os::FinalizeFiber(fiber). */
-/* signature: f81e0ff3 a9017bfd 910043fd 39408408 aa0003f3 34.....8 a9438261 f9402662 9....... f9401e68 3900867f f9002268 3900827f a9417bfd f84207f3 d65f03c0 */
+/* signature: 16 words, sha256 8717d5980efb96a8 */
 HLE_WRAP(710932f130) {
     u64 guest = c->x[0];
     f_710932f130_orig(c);

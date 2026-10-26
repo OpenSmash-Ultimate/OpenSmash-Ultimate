@@ -7,13 +7,13 @@ import os
 import shutil
 import sys
 import tempfile
-import types
 import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 import cc  # noqa: E402
+import ladder  # noqa: E402
 
 HAVE_CLANG = os.name == 'nt' and (os.path.exists(cc.CLANG) or shutil.which(cc.CLANG) is not None)
 
@@ -32,23 +32,23 @@ CRASH = ('PLEASE submit a bug report to https://github.com/llvm/llvm-project/iss
 
 
 class Compiler:
-    """Stands in for subprocess.run: each file's results in turn ((exit code, output); the last one
-    repeats), every command line kept."""
+    """Stands in for ladder.run (the compiler's run): each file's results in turn ((exit code, output);
+    the last one repeats), every command line kept."""
     def __init__(self, results):
         self.results = {name: list(r) for name, r in results.items()}
         self.calls = []
 
-    def __call__(self, args, **kw):
+    def __call__(self, args, limit=None, stop=None, **kw):
         src = next(a for a in args if a.endswith('.c'))
         self.calls.append((src, args[2], args))
         queue = self.results.get(src, [(0, '')])
         code, out = queue.pop(0) if len(queue) > 1 else queue[0]
-        return types.SimpleNamespace(returncode=code, stdout=out, stderr='')
+        return ladder.Run(code, out, 0.0)
 
 
 def run(results, jobs=(('a.c', 'a.obj', '/O2'), ('b.c', 'b.obj', '/O2'))):
     compiler, log = Compiler(results), []
-    with mock.patch.object(cc.subprocess, 'run', side_effect=compiler):
+    with mock.patch.object(ladder, 'run', side_effect=compiler):
         failures = cc.compile_each(list(jobs), 2, log=log.append)
     return failures, compiler.calls, log
 
@@ -62,7 +62,7 @@ class CompileCrashTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         self.assertTrue(all(cc.NO_CRASH_FILES in c[2] for c in calls))
         self.assertEqual(log, ['the compiler crashed on b.c (exception 0xC0000005): compiling it again on its own',
-                               'b.c compiled'])
+                               'b.c compiled in 0 s'])
 
     def test_then_at_O1(self):
         failures, calls, log = run({'b.c': [(1, CRASH), (1, CRASH), (0, '')]})
@@ -70,6 +70,15 @@ class CompileCrashTests(unittest.TestCase):
         self.assertEqual([c[1] for c in calls if c[0] == 'b.c'], ['/O2', '/O2', '/O1'])
         self.assertIn('compiling it again on its own, at /O1', log[1])
         self.assertIn('b.c compiled (at /O1', log[2])
+
+    def test_compiled_says_the_level_it_compiled_at(self):
+        # (the build records each object's key as it compiles: tools/objcache.py, recomp.compile_dir)
+        compiler, done = Compiler({'b.c': [(1, CRASH), (1, CRASH), (0, '')], 'c.c': [(1, 'c.c: error: x\n')]}), []
+        with mock.patch.object(ladder, 'run', side_effect=compiler):
+            failures = cc.compile_each([('a.c', 'a.obj', '/O2'), ('b.c', 'b.obj', '/O2'), ('c.c', 'c.obj', '/O2')], 2,
+                                       log=lambda m: None, compiled=lambda job, level: done.append((job[0], level)))
+        self.assertEqual(sorted(done), [('a.c', '/O2'), ('b.c', '/O1')])
+        self.assertEqual([src for src, _e in failures], ['c.c'])
 
     def test_a_file_that_keeps_crashing_stops_the_build_with_an_explanation(self):
         failures, calls, log = run({'b.c': [(1, CRASH)]})

@@ -29,7 +29,10 @@ import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-STUDY = os.path.normpath(os.path.join(HERE, '..', '..'))
+sys.path.insert(0, HERE)
+import sdk_paths  # noqa: E402
+
+STUDY = sdk_paths.WORK
 FIGHTERS = os.path.join(STUDY, 'fighters')
 OUT = os.path.join(FIGHTERS, 'catalog')
 SKIP_DIRS = {'common', 'catalog', 'sdk_generated', 'sdk_generated_s8', 'tools_out', 'item'}

@@ -6,14 +6,20 @@ and each start's log is checked: the guest's address space reserved, the modules
 guest addresses and linked to each other and to the runtime's own functions, the window with its
 Metal layer, the guest main thread through nn::init::Start (the SDK's start-up, the initialisers,
 nninitStartup, nnMain), nnMain's checks of the kernel - memory, a second guest thread, waits,
-sleeps, atomics, a guest setjmp the runtime's longjmp comes back to - and the process leaving
-cleanly through svcExitProcess. No game files.
+sleeps, atomics, a guest setjmp the runtime's longjmp comes back to, a guest C++ exception thrown
+through a hook slot and caught at its landing pad - and the process leaving cleanly through
+svcExitProcess. No game files.
 
-Usage: boottest.py [--tree <dir>] [--jobs N] [--only direct|open|launcher] [--show]
+Usage: boottest.py [--tree <dir>] [--jobs N] [--only direct|open|launcher|library|refusal] [--show] [--game-dll]
   --tree  the made-up game's folder (default: ~/Library/Caches/WindowSmash/boottest - not in the
           repository, whose own game it is not), laid out as a game tree: build/<module>/ (the C), dump/modules/ (the images), build-mac/
           (what build_mac.py makes: kept, so a second run only links)
   --show  print each start's log
+  --game-dll  build with the game's modules in a library of their own (build_mac.py --game-dll:
+          tools/game_dll.py), which the program loads; then two more checks come first:
+            library  ssbu --game-library: the program loads and binds the library, and says so
+            refusal  in a copy of the app, without the library and then with one built for
+                     another interface (runtime/game_dll.h's RT_GAME_ABI): each refused (exit 4)
 The starts, each showing the game's window for a moment:
   direct    the app's program, <tree>/build-mac/WindowSmash.app/Contents/MacOS/ssbu <tree>/dump/modules,
             run in <tree>
@@ -25,6 +31,7 @@ The starts, each showing the game's window for a moment:
 Exits 0 when the build and every start pass; a failed start's log is printed."""
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -105,14 +112,21 @@ def make_tree(tree):
     write_if_changed(os.path.join(tree, "tools", "recomp.py"), "# tools/mac/boottest: this folder is the port's root, for the game's start\n")
 
 
-def expected(tree, app):
+def library_line(app):
+    """What the program says once it has bound the game library (--game-dll): runtime/host.c game_open."""
+    return (r"\[boot\] game library " + re.escape(os.path.join(app, "Contents", "Frameworks", "ssbu_game.dylib"))
+            + r": interface \d+, \d+ runtime functions bound, 1 hook slots, 0 NROs$")
+
+
+def expected(tree, app, game_dll=False):
     """What a start's log must have, in this order (other lines may come between)."""
     sdk = [t for _a, t in strings("sdk")]
     main = [t for _a, t in strings("main") if "FAILED" not in t]
     lines = [r"\[boot\] " + re.escape(os.path.join(app, "Contents", "MacOS", "ssbu")) + r", built ",
+             *([library_line(app)] if game_dll else []),
              r"\[mem\] write watch: page protection",
              r"\[clock\] ",
-             r"loaded 3 modules: 18 functions, 6 exported symbols, 8 symbol relocations; \d+ symbols bound to native "
+             r"loaded 3 modules: 20 functions, 6 exported symbols, 8 symbol relocations; \d+ symbols bound to native "
              r"code, 0 left undefined \(0 NROs recompiled for loading later\)$",
              r"\[gfx\] window ready \(SDL cocoa video driver, ",
              r"\[boot\] nn::init::Start$",
@@ -154,8 +168,51 @@ def stop_game(exe):
             pass
 
 
-def start(how, tree, app, exe):
+def library_check(how, tree, app, exe):
+    """--game-dll's checks (the module's doc): (output, failure or None)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SSBU_")}
+
+    def run(program):
+        r = subprocess.run([program, "--game-library"], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           timeout=60)
+        return r.returncode, r.stdout + r.stderr
+    if how == "library":
+        code, out = run(exe)
+        if code:
+            return out, f"exit status {code}"
+        return out, check(out, [library_line(app)])
+    copy = os.path.join(tree, "build", "refusal", "WindowSmash.app")   # (the app itself stays as built)
+    shutil.rmtree(os.path.dirname(copy), ignore_errors=True)
+    subprocess.run(["ditto", app, copy], check=True)
+    library = os.path.join(copy, "Contents", "Frameworks", "ssbu_game.dylib")
+    os.remove(library)
+    said = ""
+    code, out = run(os.path.join(copy, "Contents", "MacOS", "ssbu"))
+    said += out
+    if code != 4 or not re.search(r"^\[boot\] cannot use the game library " + re.escape(library) + ": .+$", out, re.M):
+        return said, f"without the library: exit status {code}, not 4 and the reason"
+    sys.path.insert(0, os.path.join(REPO, "tools", "mac"))
+    from toolchain import CFLAGS, CLANG
+    other = os.path.join(tree, "build", "refusal", "other.c")
+    with open(other, "w", encoding="utf-8") as f:   # (a library of the next interface, which this runtime does not know)
+        f.write('#include "game_dll.h"\nstatic RtGameTables t = {RT_GAME_ABI + 1};\n'
+                "RT_GAME_EXPORT const RtGameTables *rt_game_tables(void) { return &t; }\n")
+    r = subprocess.run([CLANG, *CFLAGS, "-I", os.path.join(REPO, "runtime"), "-dynamiclib", other, "-o", library],
+                       capture_output=True, text=True)
+    if r.returncode:
+        return said + r.stdout + r.stderr, "the other interface's library did not build"
+    code, out = run(os.path.join(copy, "Contents", "MacOS", "ssbu"))
+    said += out
+    if code != 4 or not re.search(r": it is built for game interface (\d+), and this runtime's is (\d+)$", out, re.M):
+        return said, f"with another interface's library: exit status {code}, not 4 and the reason"
+    shutil.rmtree(os.path.dirname(copy), ignore_errors=True)
+    return said, None
+
+
+def start(how, tree, app, exe, game_dll=False):
     """Start the game one way: (log text, failure or None)."""
+    if how in ("library", "refusal"):
+        return library_check(how, tree, app, exe)
     build = os.path.join(tree, "build")
     os.makedirs(build, exist_ok=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith("SSBU_")}
@@ -170,12 +227,13 @@ def start(how, tree, app, exe):
                 status = subprocess.run([exe, modules, "--status", "30"], cwd=tree, env=env, stdout=f, stderr=subprocess.STDOUT,
                                         stdin=subprocess.DEVNULL, timeout=60).returncode
         elif how == "open":
-            ini = os.path.join(tree, "display.ini")
-            if os.path.exists(ini):
-                os.remove(ini)
+            inis = [os.path.join(tree, "config", "display.ini"), os.path.join(tree, "display.ini")]   # (config/: runtime/config_folder.h)
+            for ini in inis:
+                if os.path.exists(ini):
+                    os.remove(ini)
             status = subprocess.run(["open", "-n", "-W", "--env", f"SSBU_LOG={log}", "-a", app], env=env, stdin=subprocess.DEVNULL,
                                     capture_output=True, text=True, timeout=60).returncode
-            if not os.path.exists(ini):   # (written where the game works when it is missing: the root found from the app)
+            if not any(os.path.exists(ini) for ini in inis):   # (written where the game works when it is missing: the root found from the app)
                 problem = f"no display.ini written in {tree}: the game did not work in the root it should have found"
         else:
             env.update(SSBU_TREE=tree, SSBU_DISPLAY=os.path.join(tree, "display.ini"))   # (not written into the repository)
@@ -191,19 +249,21 @@ def start(how, tree, app, exe):
     text = read(log) if os.path.exists(log) else ""
     if not problem and status:
         problem = f"exit status {status}"
-    return text, problem or check(text, expected(tree, app))
+    return text, problem or check(text, expected(tree, app, game_dll))
 
 
 def main():
     tree = os.path.abspath(arg("--tree") or TREE)
     jobs = arg("--jobs")
     only = arg("--only")
-    hows = [only] if only else ["direct", "open", "launcher"]
-    if any(h not in ("direct", "open", "launcher") for h in hows):
+    game_dll = "--game-dll" in sys.argv
+    hows = [only] if only else ["library", "refusal"] * game_dll + ["direct", "open", "launcher"]
+    if any(h not in ("direct", "open", "launcher") + ("library", "refusal") * game_dll for h in hows):
         raise SystemExit(__doc__)
     make_tree(tree)
     t0 = time.time()
-    cmd = [sys.executable, os.path.join(REPO, "tools", "mac", "build_mac.py"), "--port", tree] + (["--jobs", jobs] if jobs else [])
+    cmd = [sys.executable, os.path.join(REPO, "tools", "mac", "build_mac.py"), "--port", tree] + (["--jobs", jobs] if jobs else []) \
+        + (["--game-dll"] if game_dll else [])
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
         print(r.stdout + r.stderr)
@@ -215,7 +275,7 @@ def main():
     failed = 0
     for how in hows:
         t0 = time.time()
-        text, problem = start(how, tree, app, exe)
+        text, problem = start(how, tree, app, exe, game_dll)
         lines = len(text.splitlines())
         print(f"{how}: {'FAILED: ' + problem if problem else 'ok'} ({time.time() - t0:.1f} s, {lines} lines of log)")
         if problem or "--show" in sys.argv:

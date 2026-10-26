@@ -3,7 +3,7 @@
 #define NVN_C5_H
 #include "runtime.h"
 #include "hostrt.h"
-ImportFn nvn_gl_pick(const char *name);         /* nvn_gl.c */
+ImportFn nvn_gl_pick(const char *name);         /* nvn_front.c */
 /* Part of the SDK self-test: the five handle functions against the values the SDK's code gives (emulator on sdk.elf). */
 int nvn_c5_selftest(Ctx *c);
 #endif

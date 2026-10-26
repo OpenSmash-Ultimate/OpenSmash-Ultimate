@@ -20,7 +20,7 @@ This first step changes nothing about how either project builds or runs. Later s
 
 ## Play today
 
-WindowSmash's install steps are the path that works today. Its installer still downloads its updates from the WindowSmash repository, so for now download it from **[github.com/OpenSmash-Ultimate/WindowSmash](https://github.com/OpenSmash-Ultimate/WindowSmash)** and follow its guides. The same guides are here in [`docs/`](docs/):
+WindowSmash's install steps are the path that works today. Until OpenSmash-Ultimate's first release, download WindowSmash from **[github.com/OpenSmash-Ultimate/WindowSmash](https://github.com/OpenSmash-Ultimate/WindowSmash)** and follow its guides. The same guides are here in [`docs/`](docs/):
 
 | Guide | Read it to |
 | :--- | :--- |
@@ -33,7 +33,7 @@ WindowSmash's install steps are the path that works today. Its installer still d
 | [macOS](docs/MACOS.md) | install, build and run the experimental version for Macs with Apple silicon. |
 | [How it works](docs/TECHNICAL.md) | understand the recompiler, the runtime and every tool. |
 
-You need game version 13.0.5 and a 64-bit Windows 10 or 11 PC with an AVX2 processor. Linux and macOS (Apple silicon) are experimental. The [setup guide](docs/BUILDING.md) lists everything.
+You need game version 13.0.5 and a 64-bit Windows 10 or 11 PC. A processor with AVX2 is recommended; one with only SSE4.2 (x86-64-v2: Intel since 2008, AMD since 2011) works too, with a build for it that is expected to run slower. Linux and macOS (Apple silicon) are experimental. The [setup guide](docs/BUILDING.md) lists everything.
 
 ## `ssbu-recomp/`: staged code
 
@@ -75,6 +75,7 @@ CI runs these workflows from [`.github/workflows/`](.github/workflows/):
 | Workflow | Runs on | What it checks |
 | :--- | :--- | :--- |
 | WindowSmash tests | Windows, Linux, macOS | The unit tests and the NEX server self-test. |
+| Runtime compile | Windows, Linux, macOS | The whole runtime, with its platform layer, compiles and links into the game's program as a player's build makes it, on a made-up game (`tools/dev/runtime_compile_check.py`); on Windows and Linux for both instruction sets. Every runtime source is in the program unless the script lists it as left out on purpose, and none is in a subfolder no build looks in. |
 | ssbu-recomp Linux runtime | Linux | ssbu-recomp's host runtime compiles; its synthetic differential test, platform self-test and compile-scheduler test pass; `setup.py --tools-only` finds every tool and library the build needs; its log collector leaves game files out of a report. Its installer script, `install_deps.sh`, is only checked for syntax: the workflow installs the packages itself. |
 | ssbu-recomp macOS runtime | macOS (Apple silicon) | The same on macOS, where `install_mac.sh` does run. It also builds the glslang shim, checks that `setup.py` stops at the dump check when given an empty dump, and reports what MoltenVK offers on the runner. |
 | No game data | Linux | No Switch files (`.nca`, `.nsp`, `.nsz`, `.xci`, `.nso`, `.nro`, `.arc`), no key files, and no file over 10 MB, in any commit. |

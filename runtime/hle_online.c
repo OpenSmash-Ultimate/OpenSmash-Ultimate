@@ -85,7 +85,7 @@ static u32 dotted_ip(const char *name) {
 
 /* NEX's login job, the step that works out the game server's address (main+0x249190;
  * the job is x0, its NgsFacade at +360). Give the facade the direct address first. */
-/* signature: f81b0ffc a9015ff8 a90257f6 a9034ff4 a9047bfd 910103fd d10d83ff b9417808 aa0003f3 3100051f 54.....0 9100e3e8 9....... b9403be8 b9418269 4b090108 */
+/* signature: 16 words, sha256 c9c626b15efbb3b4 */
 HLE_WRAP(7100249190) {
     u64 facade = ld64(c->x[0] + 360);
     char host[64];
@@ -106,7 +106,7 @@ HLE_WRAP(7100249190) {
 
 /* NEX's InetAddress from a name (main+0x1becd0; x0 the address, x1 the name -> bool):
  * the address is at +12, in network order. */
-/* signature: d10643ff f900b3fc a9174ff4 a9187bfd 910603fd aa0103f4 aa0003f3 .0.....1 91....21 aa1403e0 9....... 34.....0 .0.....1 91....21 aa1403e0 9....... */
+/* signature: 16 words, sha256 324bea721ad32d31 */
 HLE_WRAP(71001becd0) {
     const char *name = c->x[1] ? P(const char, c->x[1]) : NULL;
     int ours = nintendo_name(name);
@@ -124,7 +124,7 @@ HLE_WRAP(71001becd0) {
  * address is at +8 in host order -> bool): the NAT check servers are the online server too.
  * Pia's NAT check needs its two servers at different addresses: nncs2 gets the last address of
  * the server's /16 (10.13.255.254), which the online lobby keeps for it (tools/nex/server.py). */
-/* signature: d10183ff f9001bf5 a9044ff4 a9057bfd 910143fd aa0103f4 aa0003f5 910003e0 321c07e2 2a1f03e1 aa0403f3 9....... 321f03e8 910003e2 d10063a3 aa1503e0 */
+/* signature: 16 words, sha256 ea3c274364ccadf2 */
 HLE_WRAP(71000ba850) {
     const char *name = c->x[0] ? P(const char, c->x[0]) : NULL;
     int ours = nintendo_name(name);

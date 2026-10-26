@@ -62,7 +62,7 @@ int nnaudio_volume(void); void nnaudio_set_volume(int percent);     /* nnaudio.c
 int nnpad_kb_vk(int idx); void nnpad_kb_bind(int idx, int vk); void nnpad_kb_player_set(int p); int nnpad_kb_player_cfg(void);      /* nnpad_sdl.c */
 const char *nnpad_kb_label(int idx); void nnpad_vk_name(int vk, char *o, int n); int nnpad_describe(char *out, int n); const char *nnpad_config_path(void);
 int nnaoc_owned(const int **list);                                   /* nnmisc.c */
-long long nvn_front_presents(void); void nvn_front_osk_redraw(void); /* nvn_gl.c */
+long long nvn_front_presents(void); void nvn_front_osk_redraw(void); /* nvn_front.c */
 const char *nvn_vk_device_name(void);                                /* nvn_vk_menu.c */
 int osk_active(void);                                                /* osk.c */
 int osk_run(const wchar_t *header, const wchar_t *guide, const wchar_t *initial, int max_len, int min_len, int password, wchar_t *out);      /* osk.c */

@@ -12,7 +12,7 @@
  *    buffer with its current bytes (one copy, done by main + helper threads); the slot of f keeps the list
  *    (id, previous idx) = an undo log: the buffers of the values at the previous capture are not copied, only moved
  *    into the log. Plus per slot: main's registers, the other threads' wait places and registers, the fibers' host
- *    state, the command buffers' recordings in progress (nvn_gl.c's save area, through the linker map);
+ *    state, the command buffers' recordings in progress (nvn_front.c's save area, through the linker map);
  *  - load(g): the undo logs of the slots newer than g are applied newest first, pointers only (no copy); every page
  *    they name, every page marked since the newest capture and every extras page is then copied ONCE from its value at
  *    g into memory; the slots newer than g are dropped (g becomes the newest), older ones stay loadable;
@@ -37,7 +37,7 @@ extern volatile int g_rgp_seg;                            /* (R2 round 3, profil
 #define RG_ENT_RES (64ull << 20)               /* per slot: room for 8 M (id, old) pairs */
 #define RG_FP_RES (256ull << 20)               /* per slot: fibers' host stacks */
 #define RG_CB_RES (64ull << 20)                /* per slot: command-buffer recordings */
-#define RG_CBS_SIZE 144                        /* nvn_gl.c CbSave: CmdBuf *cb; CmdBuf copy (120: data, len, cap, ...); data; cap */
+#define RG_CBS_SIZE 144                        /* nvn_front.c CbSave: CmdBuf *cb; CmdBuf copy (120: data, len, cap, ...); data; cap */
 typedef struct {
     long long frame;
     uint32_t *ent; size_t nent, entcom;
@@ -206,7 +206,7 @@ static uint32_t rg_pool_get_cap(void) {                  /* a buffer for the cap
 static void rg_cb_find(void) {
     if (g_rg_cb_ok >= 0) return;
     uint64_t a = map_sym("g_cbs"), n = map_sym("g_ncbs"), all = map_sym("g_all_cb");
-    size_t nvn_gl_r1_cb_size(void);                      /* (R3 pub1) the entry size from nvn_gl.c itself: the compiler of the package exe put g_ncbs between the two arrays */
+    size_t nvn_gl_r1_cb_size(void);                      /* (R3 pub1) the entry size from nvn_front.c itself: the compiler of the package exe put g_ncbs between the two arrays */
     g_rg_cb_ok = a && n && all && (all - a == 512ull * RG_CBS_SIZE || nvn_gl_r1_cb_size() == RG_CBS_SIZE);
     if (g_rg_cb_ok) { g_rg_cbs = (uint8_t *)(uintptr_t)a; g_rg_ncbs = (int *)(uintptr_t)n; }
     LOG("r1: RING: command-buffer save area of nvn_gl.c %s (g_cbs %llx, g_ncbs %llx, g_all_cb %llx)\n", g_rg_cb_ok ? "found: saved per slot" : "NOT found (layout differs): the newest capture's is put back at every load",

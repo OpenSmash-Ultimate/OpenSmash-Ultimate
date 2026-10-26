@@ -1,6 +1,5 @@
-/* Display options: display.ini (SSBU_DISPLAY=<file>, else in the current directory: the port
- * root, where every launcher starts the game), written with the defaults and their documentation
- * when it does not exist.
+/* Display options: display.ini (SSBU_DISPLAY=<file>, else config/display.ini: config_folder.h), written
+ * with the defaults and their documentation when it does not exist.
  *
  * The window: windowed (resizable, kept 16:9 while dragged), borderless over its monitor, or
  * "fullscreen" (borderless and topmost: no display mode change). F11 or Alt+Enter switches
@@ -36,8 +35,10 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 
+#include "config_folder.h"
 #include "display.h"
 #include "host.h"
+#include "testrun.h"
 #ifndef __APPLE__
 #include <dxgi.h>
 #endif
@@ -50,7 +51,8 @@ static struct {
     int loaded;
     char gpu[64];
     float render_scale;   /* 0: auto */
-} cfg = {MODE_WINDOWED, 1280, 720, 3, 1, 1, PACING_CLOCK, 0, "auto", 1.0f};
+    double speed;         /* SSBU_SPEED (test runs): 1 normal */
+} cfg = {MODE_WINDOWED, 1280, 720, 3, 1, 1, PACING_CLOCK, 0, "auto", 1.0f, 1.0};
 
 static const char DEFAULT_INI[] =
     "; display.ini: the game's window and the pacing of its frames. Read when the game starts; the\n"
@@ -169,8 +171,10 @@ static char *trim(char *s) {
 
 const char *display_ini_path(void) {
     const char *env = getenv("SSBU_DISPLAY");
-    return env && *env ? env : "display.ini";
+    return env && *env ? env : config_path(CONFIG_DISPLAY);
 }
+
+const char *display_default_ini(void) { return DEFAULT_INI; }
 
 static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     (void)once; (void)param; (void)ctx;
@@ -205,6 +209,8 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     if ((env = getenv("SSBU_PACING")) && *env) parse_pacing(env);
     if ((env = getenv("SSBU_WINDOW_SIZE")) && *env) sscanf(env, "%dx%d", &cfg.width, &cfg.height);
     if ((env = getenv("SSBU_RENDER_SCALE")) && *env) parse_render_scale(env);
+    if (!speed_parse(env = getenv("SSBU_SPEED"), &cfg.speed))
+        fprintf(stderr, "[display] SSBU_SPEED is a number of times 60 frames a second, up to %g (0: uncapped), not '%s': normal speed\n", SPEED_MAX, env);
     if (cfg.width < 320) cfg.width = 320;
     if (cfg.height < 180) cfg.height = 180;
     if (cfg.latency < 1) cfg.latency = 1;
@@ -482,7 +488,8 @@ void display_set_tearing(int supported) { tearing = supported; }
 
 unsigned display_present_flags(void) {
     load();
-    return cfg.pacing == PACING_VRR && tearing ? 0x200u /* DXGI_PRESENT_ALLOW_TEARING */ : 0;
+    /* (SSBU_SPEED too: a frame is shown at once, not held to the monitor's refresh rate) */
+    return (cfg.pacing == PACING_VRR || cfg.speed != 1) && tearing ? 0x200u /* DXGI_PRESENT_ALLOW_TEARING */ : 0;
 }
 
 void *gfx_display_output(void);   /* gpu_d3d11.c: the swap chain's output (IDXGIOutput, referenced), or NULL */
@@ -601,5 +608,27 @@ void display_wait_tick(void) {
             if (SetWaitableTimer(timer, &wait, 0, NULL, NULL, FALSE)) { WaitForSingleObject(timer, 100); continue; }
         }
         YieldProcessor();
+    }
+}
+
+/* ---- SSBU_SPEED (test runs: docs/TESTING-RUNS.md) ---------------------------------------- */
+double display_speed(void) { load(); return cfg.speed; }
+
+void display_speed_tick(void) {
+    static LARGE_INTEGER freq;
+    static long long due;
+    load();
+    if (cfg.speed <= 0) return;   /* uncapped */
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    long long step = (long long)((double)freq.QuadPart / (60.0 * cfg.speed));
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    due = speed_due(due, now.QuadPart, step);
+    for (;;) {
+        QueryPerformanceCounter(&now);
+        long long left = due - now.QuadPart;
+        if (left <= 0) break;
+        if (left * 1000 > 2 * freq.QuadPart) Sleep(1);
+        else YieldProcessor();
     }
 }

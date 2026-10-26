@@ -96,7 +96,7 @@ static int script_key(int vk) {
  *   @movie            wait until the opening movie is created (input_mark("movie") from nnmovie_mf.c)
  *   @module:<name>    wait until nn::ro has loaded that script module (input_mark("module:lua2cpp_mario") from nnro.c)
  *   @draws:<lo>-<hi>[/<n>]  wait until the presented frames had between lo and hi draw calls for n polls in a
- *                     row (default 20): a screen is recognised by its draw count (nvn_gl.c reports it per frame),
+ *                     row (default 20): a screen is recognised by its draw count (nvn_front.c / nvn_gl.c report it per frame),
  *                     whatever the loading time was
  *   @until:<lo>-<hi>[/<n>]:<keys>/<period>  press the keys (8 polls) every <period> polls until the draw count has
  *                     been in lo..hi for n polls in a row (default 20), e.g. to skip the opening movie, which
@@ -120,7 +120,7 @@ void input_mark(const char *what) {                       /* any thread: somethi
     LONG i = InterlockedIncrement(&g_mark_count) - 1;
     if (i < MARK_MAX) { strncpy(g_marks[i], what, sizeof g_marks[i] - 1); MemoryBarrier(); }
 }
-void input_frame_draws(int draws) { g_frame_draws_seen = draws; }       /* nvn_gl.c, once per presented frame */
+void input_frame_draws(int draws) { g_frame_draws_seen = draws; }       /* nvn_front.c / nvn_gl.c, once per presented frame */
 
 static int mark_seen(const char *what) {
     LONG n = g_mark_count;
@@ -272,7 +272,7 @@ static int key(int vk) { return scripted(vk) || script_key(vk) || seq_key(vk) ||
  *
  * Anchors make the clock independent of loading times. Poll counts alone are not: the time between two screens
  * depends on how long this run took to load them. The run is divided by SCREEN CHANGES, recognised from the number
- * of draw calls per frame (reported by nvn_gl.c), in four classes: black (<= 12 draws: every fade between screens),
+ * of draw calls per frame (reported by nvn_front.c / nvn_gl.c), in four classes: black (<= 12 draws: every fade between screens),
  * low (13..60: movie, title logo, loading icon), mid (61..240: character select), high (> 240: menus, stage select,
  * battle). Anchor 0 is the creation of the opening movie; each later anchor is the first poll of a class that then
  * lasted 30 polls (shorter blips while a screen builds up are ignored). An input is replayed when the same anchor

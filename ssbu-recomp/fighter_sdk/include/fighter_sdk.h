@@ -8,6 +8,13 @@
 #pragma once
 #include <stdint.h>
 
+// what the host looks up in a fighter's library by name (GetProcAddress, dlsym; macOS builds hide everything else)
+#ifdef _WIN32
+#define FS_EXPORT __declspec(dllexport)
+#else
+#define FS_EXPORT __attribute__((visibility("default")))
+#endif
+
 // ---------------------------------------------------------------- the lifted code's register context (runtime.h)
 struct Ctx {
     uint64_t x[32];                        // x[31] = sp
@@ -301,10 +308,10 @@ void fs_return(Ctx *c, const L2CValue &r);
 // and the real-call differential do not compare it with the game's original and report it as MODIFIED instead of
 // differing; every other function is still compared. (A function that does not exist in the game at all needs no
 // mark: build_fighter.py gives it an address of its own and the tests report it as NEW.)
-#define FS_MODIFIED(name) extern "C" __declspec(dllexport) const char fs_modified_##name = 1
+#define FS_MODIFIED(name) extern "C" FS_EXPORT const char fs_modified_##name = 1
 // N13: once, in a source that includes status_local.h: the guest address of an offset of this fighter's module, for
 // the host components (an own article's agent is made by the kind component from the DLL's functions)
-#define FS_EXPORT_MODULE_ADDRESS() extern "C" __declspec(dllexport) uint64_t fs_module_address(uint32_t off) { return (uint64_t)(uintptr_t)fs_module_function(off); }
+#define FS_EXPORT_MODULE_ADDRESS() extern "C" FS_EXPORT uint64_t fs_module_address(uint32_t off) { return (uint64_t)(uintptr_t)fs_module_function(off); }
 
 // S11 (part 4): NEW WORK VARIABLES by name.
 //   FS_NEW_WORK_VAR(STATUS, FLOAT, MECH_CHARGE_FLOAT_CHARGE);       at file scope, in a source or header of the fighter

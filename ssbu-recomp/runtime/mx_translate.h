@@ -54,7 +54,8 @@ typedef struct {
      * the same unit: tex_base + 240 + u; a third fails with its name) instead of a bindless handle read from c2; the alpha
      * test operands and the point size come from the push-constant block MXPC { uvec2 mx_alpha; float mx_point_size; };
      * gl_VertexIndex / gl_InstanceIndex - gl_BaseInstance; gl_PointCoord.y flipped (the viewport is flipped by the back end);
-     * gl_PointSize is always the push constant's (the OpenGL path never enables program point size). */
+     * gl_PointSize is always the push constant's (the OpenGL path never enables program point size).
+     * target 2 = Metal Shading Language (Metal 3, Apple silicon), see "target 2" below. */
     int target;
     unsigned tex_base;
     /* vertex stage: generic outputs to declare (and leave at (0, 0, 0, 1)) although the code never writes them: the inputs
@@ -80,10 +81,41 @@ typedef struct {
     uint16_t image_gl_format[8];     /* internal format each used image must be bound with (typed accesses name their own) */
     uint32_t int_dep;                /* which bits of int_attrs / int_tex influenced the code (vertex: attrs, fragment: textures) */
     int insns, blocks, uses_alpha;
-    /* target 1: the samplers the text declares in set 1 (the back end binds a view of that type, or a dummy of that type) */
+    /* target 1: the samplers the text declares in set 1 (the back end binds a view of that type, or a dummy of that type);
+     * target 2: the textures and samplers of the entry point (see below) */
     struct { uint8_t unit, shadow; uint16_t binding; char type[24]; } smp[64];
     int nsmp;
 } MxOut;
+
+/* target 2: Metal Shading Language (the same code paths as target 1, written as WindowSmash's runtime/gpu_shader.c writes MSL).
+ * MSL has no global resources: the program is a struct whose members are its resources, filled by the entry point from its
+ * arguments. One entry point, "mx_main" (vertex, fragment or kernel function).
+ *   - buffer(MX_MSL_PARAMS): MxMslParams. buffer(MX_MSL_BINDS): MxMslBinds, the GPU addresses and sizes of constant buffer n
+ *     (cb[n], read as c<n> as above) and storage buffer k (sb[k], the s<k> of LDG / STG), and of the write mask (wm,
+ *     track_writes). binding_base, ssbo_base and wmask_binding are not used. Reads past a buffer's size give 0, writes are dropped.
+ *   - out->smp[k] (k < 16) is the texture at texture(binding = tex_base + k) and its sampler at sampler(k); its type names the
+ *     GLSL sampler type it replaces: sampler1D* and sampler1DArray* are 2D textures one texel high (Metal's 1D textures have
+ *     no mips), *Shadow are depth textures, i/u prefixes are int / uint textures; layers are rounded and clamped.
+ *   - image k is the texture at texture(image_base + k), access read, write or read_write.
+ *   - vertex: generic input n is [[attribute(n)]] (float4, or uint4 / int4 as int_attrs / sint_attrs), generic output n is
+ *     [[user(attr<n>)]], the position [[position, invariant]]; the point size (MxMslParams.point_size) only when the bool
+ *     function constant MX_MSL_POINTS is true (Metal refuses a point size in a pipeline of lines or triangles).
+ *   - fragment: input n is [[user(attr<n>)]] (flat or center_no_perspective from the program header); render target n is
+ *     [[color(n)]], typed by function constant MX_MSL_RT_TYPES (2 bits a target: 0 float, 1 uint, 2 int; float when not
+ *     defined). Clip distances are not clipped.
+ *   - Metal's conventions are those of target 1: clip space y up, framebuffer origin upper left (no flip needed),
+ *     point coordinate t flipped. MxMslParams.clip can still flip y or map z from -w..w to 0..w. */
+enum { MX_TARGET_GL = 0, MX_TARGET_VK = 1, MX_TARGET_MSL = 2 };
+enum { MX_MSL_PARAMS = 0, MX_MSL_BINDS = 1, MX_MSL_RT_TYPES = 0, MX_MSL_POINTS = 1 };
+#define MX_MSL_FLIP_Y 1u                 /* MxMslParams.clip: position y = -y */
+#define MX_MSL_Z_HALF 2u                 /* position z = (z + w) / 2 */
+typedef struct {
+    uint32_t alpha[2];                   /* alpha test: NVN compare function 1..8, reference as float bits (as target 1's mx_alpha) */
+    float point_size, fcs;               /* the point size (vertex); screen_scale's mx_fcs (fragment) */
+    uint32_t clip, pad[3];               /* MX_MSL_FLIP_Y | MX_MSL_Z_HALF (vertex) */
+} MxMslParams;
+typedef struct { uint64_t address; uint32_t size, pad; } MxMslBind;      /* MTLBuffer gpuAddress (+ offset) and size in bytes; the buffer must be made resident (useResource) */
+typedef struct { MxMslBind cb[18], sb[16], wm; } MxMslBinds;
 
 /* Returns 1 on success. out->glsl must be freed by the caller. */
 int mx_translate(const MxIn *in, MxOut *out);

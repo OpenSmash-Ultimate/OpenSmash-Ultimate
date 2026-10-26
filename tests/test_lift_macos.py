@@ -60,6 +60,9 @@ class AcquireTests(unittest.TestCase):
         (0x885FFC22, 'ldaxr w2, [x1]', '{ ex_a = X(1); ex_v = lda32(ex_a); X(2) = ex_v; }'),
         (0x485FFC22, 'ldaxrh w2, [x1]', '{ ex_a = X(1); ex_v = lda16(ex_a); X(2) = ex_v; }'),
         (0x085FFC22, 'ldaxrb w2, [x1]', '{ ex_a = X(1); ex_v = lda8(ex_a); X(2) = ex_v; }'),
+        (0xC87F8820, 'ldaxp x0, x2, [x1]',
+         '{ ex_a = X(1); u128 p_ = lda128(ex_a); ex_v = (u64)p_; ex_w = (u64)(p_ >> 64); X(0) = ex_v; X(2) = ex_w; }'),
+        (0x887F8820, 'ldaxp w0, w2, [x1]', '{ ex_a = X(1); ex_v = lda64(ex_a); X(0) = (u32)(ex_v); X(2) = (u32)(ex_v >> 32); }'),
     ]
 
     def test_acquire_loads_are_lda(self):
@@ -105,9 +108,9 @@ class AcquireTests(unittest.TestCase):
                 self.assertEqual(body(word), want)
 
     def test_unlifted_forms_still_trap(self):
-        """Exclusive pairs and the RCpc loads (ARMv8.3: not on the console's CPU) were never lifted:
-        they stay traps, never plain loads."""
-        for word, name in ((0xC87F8820, 'ldaxp x0, x2, [x1]'), (0xC87F0820, 'ldxp x0, x2, [x1]'),
+        """Compare-and-swap (LSE, ARMv8.1) and the RCpc loads (ARMv8.3), not on the console's CPU, were
+        never lifted: they stay traps, never plain loads. (Exclusive pairs: tests/test_exclusive_pairs.py.)"""
+        for word, name in ((0x4860FC82, 'caspal x0, x1, x2, x3, [x4]'), (0xC8E0FC22, 'casal x0, x2, [x1]'),
                            (0xB8BFC020, 'ldapr w0, [x1]'), (0x38BFC020, 'ldaprb w0, [x1]')):
             with self.subTest(name):
                 text, reasons = lifted(word, RET)
@@ -140,6 +143,15 @@ class SystemTests(unittest.TestCase):
         self.assertIn('static inline T lda##N(u64 a) { return __atomic_load_n((T *)RT_HOST(a), __ATOMIC_SEQ_CST); }', text)
         # (and off macOS the offset is no code at all)
         self.assertRegex(text, r'#else\n#define RT_MEMBASE 0ull\n#define RT_HOST\(a\) \(\(void \*\)\(uintptr_t\)\(a\)\)\n#endif')
+
+    def test_recomp_h_pair_helpers_are_seq_cst(self):
+        """ldaxp after stlr, off x86-64 (tests/test_exclusive_pairs.py): lda128 is a fence, then a seq_cst load (a
+        seq_cst ldp alone is ldp; dmb, which may pass an earlier stlr); stxp's cas128 is seq_cst, as cas is."""
+        text = (ROOT / 'runtime' / 'recomp.h').read_text(encoding='utf-8')
+        arm = text.partition('#define RT_CX16')[2].partition('#else\n')[2].partition('#endif')[0]
+        self.assertRegex(arm, r'static inline u128 lda128\(u64 a\) \{\n    __atomic_thread_fence\(__ATOMIC_SEQ_CST\);.*\n'
+                              r'    return __atomic_load_n\(\(u128 \*\)RT_HOST\(a\), __ATOMIC_SEQ_CST\);\n\}')
+        self.assertIn('(u128)hi << 64 | lo, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);', arm)
 
 
 # ---- built and run on an arm64 Mac ------------------------------------------------------
@@ -337,6 +349,19 @@ class MacBuildTests(unittest.TestCase):
         self.assertIn('ldarb\t', asm)
         self.assertIn('__setjmp', asm)
         self.assertNotIn('ldapr', asm)
+
+    def test_pair_helpers_keep_the_guest_order(self):
+        """ldaxp after stlr (lda128 after sta64): a dmb between the stlr and the ldp. stlxp (cas128): caspal."""
+        src = self.dir / 'pair.c'
+        src.write_text('#include "recomp.h"\n'
+                       'u128 sta_lda(u64 a, u64 b, u64 v) { sta64(a, v); return lda128(b); }\n'
+                       'u32 pair_cas(u64 a, u64 e0, u64 e1, u64 v0, u64 v1) { return cas128(a, e0, e1, v0, v1); }\n',
+                       encoding='utf-8')
+        obj = self.dir / 'pair.o'
+        self.cc('-O2', '-c', str(src), '-o', str(obj))
+        ops = re.findall(r'^\s+[0-9a-f]+:\s+(\w+)', self.disassembly(obj), re.M)
+        self.assertIn('dmb', ops[ops.index('stlr'):ops.index('ldp')], ops)
+        self.assertIn('caspal', ops)
 
 
 if __name__ == '__main__':

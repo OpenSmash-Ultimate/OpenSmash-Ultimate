@@ -161,8 +161,8 @@ The game draws its text with the console's 7 shared system fonts. A firmware is 
 
 - **With** your firmware (the installer's Firmware field, `dump_folder.py --firmware`, or `tools/extract/fw_fonts.py`
   into `<dump>/sysdata/fonts`), the game uses your console's own fonts and looks exactly as on the console.
-- **Without** it, the runtime uses the open-source replacements shipped in `runtime/fonts_open` (Open Sans, Source Sans
-  Pro and the yuzu project's button-icon font, from suyu; licences and sources in `runtime/fonts_open/README.md`;
+- **Without** it, the runtime uses the open-source replacements shipped in `../third_party/fonts_open` (Open Sans, Source Sans
+  Pro and the yuzu project's button-icon font, from suyu; licences and sources in `../third_party/fonts_open/README.md`;
   `tools/extract/open_fonts.py` makes them again from their source). `scripts/setup.py` stages them beside the exe.
   What changes: menus and texts use a different typeface; Chinese, Japanese and Korean characters and most symbols
   are missing (each is drawn as an empty box), so play in a Latin-alphabet language; the button icons are yuzu's.

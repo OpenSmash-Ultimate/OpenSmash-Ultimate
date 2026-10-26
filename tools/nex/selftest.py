@@ -157,11 +157,11 @@ def stats(c, category):
     return r.u32()
 
 
-def auto_matchmake(c):
+def auto_matchmake(c, app_buffer=b"rules"):
     ms = Session()
     ms.data_level = 0
     ms.min_participants, ms.max_participants = 2, 2
-    ms.game_mode, ms.attribs, ms.app_buffer = 3, [1, 0, 0, 0, 0, 0], b"rules"
+    ms.game_mode, ms.attribs, ms.app_buffer = 3, [1, 0, 0, 0, 0, 0], app_buffer
     param = StreamOut()
 
     def p(o):

@@ -1,9 +1,9 @@
 """Generate the SDK headers from what the decompiled scripts use.
 
-    python gen_sdk.py            reads out/*_acmd.json (acmd_decomp.py) and writes
-        ../include/lua_const.h   the named Lua constants (index in const_value_table__)
-        ../include/lua_bind.h    symbol slots + one inline wrapper per game function the scripts call
-        ../src/fs_syms.inc       name + argument description of every slot (for binding and the differential test)
+    python gen_sdk.py            reads fighters/tools_out/*_acmd.json (acmd_decomp.py) and writes, in fighters/sdk_generated/:
+        lua_const.h   the named Lua constants (index in const_value_table__)
+        lua_bind.h    symbol slots + one inline wrapper per game function the scripts call
+        fs_syms.inc   name + argument description of every slot (for binding and the differential test)
 
 Parameter types come from the mangled names; return types from reference/skyline-smash/src/cpp.rs (public
 bindings) where it lists the function, otherwise uint64_t (x0).
@@ -18,7 +18,8 @@ import re
 import luaconst
 import mangle
 from acmd_decomp import wrapper_name, singleton_name
-from nrolib import Nro, HERE, STUDY
+import sdk_paths
+from nrolib import Nro, STUDY
 
 INC = SRC = os.path.join(STUDY, 'fighters', 'sdk_generated')      # S3: generated from the game -> with the generated sources, not with the SDK
 # S8 (options, the default is unchanged): SSBU_SDK_DIR=<folder under fighters\> writes the headers there instead (work
@@ -69,7 +70,8 @@ RUST_RET = {'bool': 'bool', 'f32': 'float', 'u64': 'uint64_t', 'usize': 'uint64_
 
 
 def rust_returns():
-    text = open(os.path.join(STUDY, '..', 'reference', 'skyline-smash', 'src', 'cpp.rs'), encoding='utf-8').read()
+    with open(sdk_paths.reference('skyline-smash', 'src', 'cpp.rs'), encoding='utf-8') as f:
+        text = f.read()
     out = {}
     for m in re.finditer(r'link_name = "\\u\{1\}(\w+)"\]\s*pub fn \w+\s*\(([^;]*?)\)\s*(?:->\s*([^;]+?))?\s*;', text, re.S):
         out[m.group(1)] = (m.group(3) or '').strip()

@@ -6,13 +6,15 @@ Usage: build_vkd3d.py [linux|windows]...   (default: linux)
 The parsers come from vkd3d's grammar files through bison and flex, generated once into
 build-vkd3d/gen (tools: SSBU_BISON / SSBU_FLEX, else the system's bison and flex on Linux,
 linux-toolchain/winflexbison on Windows). The windows build is only for checking shaders on a
-Windows machine (tools/linux/hlsltest)."""
+Windows machine (tools/linux/hlsltest). The linux build is compiled for the game's instruction set
+(tools/isa.py), which it writes into build-vkd3d/linux/isa.txt."""
 import glob
 import os
 import subprocess
 import sys
 
-from toolchain import CLANG, CFLAGS, HOST_LINUX, LLVM, LLVM_AR, TOOLCHAIN, VKD3D_BUILD, VKD3D_SRC, compile_each
+from toolchain import CLANG, CFLAGS, HOST_LINUX, ISA, ISA_TOLD, LLVM, LLVM_AR, TOOLCHAIN, VKD3D_BUILD, VKD3D_SRC, compile_each
+import isa  # noqa: E402  (tools/, which toolchain puts on the path)
 
 GEN = os.path.join(VKD3D_BUILD, "gen")
 SPIRV = (glob.glob(os.path.join(TOOLCHAIN, "src", "SPIRV-Headers-*", "include")) or [""])[0]
@@ -123,7 +125,9 @@ def build(target):
     if os.path.exists(lib):
         os.remove(lib)
     subprocess.run([LLVM_AR, "rcs", lib, *objs], check=True)
-    print(f"{target}: {lib} ({os.path.getsize(lib) / 1048576:.1f} MB)")
+    if target == "linux":   # (what it was compiled for: build_game.py builds it again for another instruction set)
+        isa.record(out, ISA, ISA_TOLD)
+    print(f"{target}: {lib} ({os.path.getsize(lib) / 1048576:.1f} MB)" + (f", for {ISA}" if target == "linux" else ""))
     return True
 
 

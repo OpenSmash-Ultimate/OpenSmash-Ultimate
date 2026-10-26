@@ -83,6 +83,17 @@ static int text_load(const char *path, Text *t) {
     return 1;
 }
 
+/* <file>.tmp, written and closed (ok: whether that went well), put in the file's place. */
+static int replace_with_tmp(const char *tmp, const char *path, int ok) {
+#ifdef _WIN32
+    ok = ok && MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+#else
+    ok = ok && rename(tmp, path) == 0;
+#endif
+    if (!ok) { fprintf(stderr, "[settings] cannot replace %s\n", path); remove(tmp); }
+    return ok;
+}
+
 static int text_save(const char *path, const Text *t) {
     char tmp[1024];
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
@@ -92,12 +103,21 @@ static int text_save(const char *path, const Text *t) {
     for (int i = 0; i < t->n && ok; i++)
         ok = fputs(t->line[i], f) >= 0 && fputs(t->crlf ? "\r\n" : "\n", f) >= 0;
     ok = fclose(f) == 0 && ok;
-#ifdef _WIN32
-    ok = ok && MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-#else
-    ok = ok && rename(tmp, path) == 0;
-#endif
-    if (!ok) { fprintf(stderr, "[settings] cannot replace %s\n", path); remove(tmp); }
+    return replace_with_tmp(tmp, path, ok);
+}
+
+int settings_file_write(const char *path, const void *data, size_t size) {
+    char tmp[1024];
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    AcquireSRWLockExclusive(&lock);
+    FILE *f = fopen(tmp, "wb");
+    int ok = 0;
+    if (!f) fprintf(stderr, "[settings] cannot write %s\n", tmp);
+    else {
+        ok = fwrite(data, 1, size, f) == size;
+        ok = replace_with_tmp(tmp, path, fclose(f) == 0 && ok);
+    }
+    ReleaseSRWLockExclusive(&lock);
     return ok;
 }
 

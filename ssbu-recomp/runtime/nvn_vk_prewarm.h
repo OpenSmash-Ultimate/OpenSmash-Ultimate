@@ -67,7 +67,7 @@ static VkResult pw_graphics(VkPipelineCache cache, const VkGraphicsPipelineCreat
     pw_feedback((ci.flags & VK_PIPELINE_CREATE_LIBRARY_BIT_KHR) ? PW_LIBRARY : ci.stageCount ? PW_WHOLE : PW_LINK, r, t0, &f);
     return r;
 }
-static VkResult pw_compute(const VkComputePipelineCreateInfo *info, VkPipeline *out) {      /* any thread: vkCreateComputePipelines of one pipeline, g_pcache */
+VkResult pw_compute(const VkComputePipelineCreateInfo *info, VkPipeline *out) {             /* any thread: vkCreateComputePipelines of one pipeline, g_pcache */
     if (!g_pw_profile) return vkCreateComputePipelines(V.device, g_pcache, 1, info, NULL, out);
     VkComputePipelineCreateInfo ci = *info;
     VkPipelineCreationFeedback f = {0};

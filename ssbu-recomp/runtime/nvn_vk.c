@@ -1,8 +1,8 @@
 /* NVN on Vulkan: the second back end of the graphics layer (design, milestones, state: plan\phases\V1_vulkan.md).
  *
  * Selected with SSBU_RENDERER=vk (default: gl). The front end (NVN entry points, command lists, the job queue and its
- * render thread) is in nvn_gl.c; in Vulkan mode that render thread calls nvn_vk_init() instead of creating an OpenGL
- * context and gives its jobs to the functions below (nvn_gl.c, vk_route: seam step S0).
+ * render thread) is in nvn_front.c; in Vulkan mode that render thread calls nvn_vk_init() instead of creating an OpenGL
+ * context and gives its jobs to the back end below (rb_vk, nvn_vk_draw.c; seam steps S0 and S2).
  *
  * What exists (milestone M1): instance, device selection (discrete GPU preferred), a swapchain on the game window,
  * clear + present, paced by the one 60 Hz clock of display.c, a clean shutdown. Everything else stops the game with
@@ -23,25 +23,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
-/* Session 2: the Khronos headers (reference\upstream\Vulkan-Headers\include, -I in build.py) replace our own vk_min.h subset. */
-#ifdef _WIN32
-#define VK_USE_PLATFORM_WIN32_KHR
-#endif
-#define VK_NO_PROTOTYPES
-#ifdef __APPLE__
-#define VK_ENABLE_BETA_EXTENSIONS                       /* VK_KHR_portability_subset (MoltenVK) is declared in vulkan_beta.h */
-#endif
-#include <vulkan/vulkan.h>
+#include "nvn_vk_int.h"                                /* the Khronos headers; what the files of this back end share */
 #ifndef _WIN32
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>                         /* Linux build: the window is an SDL window; SDL makes the surface */
 #endif
 #include "nvn_front.h"
 #include "gfx_options.h"
-#define P(a) ((void *)(uintptr_t)(a))                     /* guest addresses are host addresses (as in nvn_gl.c) */
-static void vkd_device_info(VkDeviceCreateInfo *di, const VkExtensionProperties *dext, uint32_t ndext);     /* nvn_vk_draw.c (included at the end) */
-static void vkd_init(void);
-static void vkd_shutdown(void);
 
 typedef char vk_min_check_properties[sizeof(VkPhysicalDeviceProperties) == 824 ? 1 : -1];
 typedef char vk_min_check_caps[sizeof(VkSurfaceCapabilitiesKHR) == 52 ? 1 : -1];
@@ -49,59 +37,13 @@ typedef char vk_min_check_swapchain[sizeof(VkSwapchainCreateInfoKHR) == 104 ? 1 
 typedef char vk_min_check_barrier[sizeof(VkImageMemoryBarrier) == 72 ? 1 : -1];
 typedef char vk_min_check_submit[sizeof(VkSubmitInfo) == 72 ? 1 : -1];
 
-void nvn_render_run(void (*fn)(void *), void *arg);       /* nvn_gl.c: run on the render thread and wait */
+void nvn_render_run(void (*fn)(void *), void *arg);       /* nvn_front.c: run on the render thread and wait */
 void display_pace(void);                                  /* display.c */
 int display_wait_refresh(void);
 void display_before_present(void);
 
 /* ---------------------------------------------------------------- the loader's functions */
-#ifdef _WIN32
-#define VKF_SURFACE(X) X(VkResult, vkCreateWin32SurfaceKHR, (VkInstance, const VkWin32SurfaceCreateInfoKHR *, const VkAllocationCallbacks *, VkSurfaceKHR *))
-#else
-#define VKF_SURFACE(X)
-#endif
-#define VKF(X) \
-    X(VkResult, vkEnumerateInstanceLayerProperties, (uint32_t *, VkLayerProperties *)) \
-    X(VkResult, vkEnumerateInstanceExtensionProperties, (const char *, uint32_t *, VkExtensionProperties *)) \
-    X(VkResult, vkCreateInstance, (const VkInstanceCreateInfo *, const VkAllocationCallbacks *, VkInstance *)) \
-    X(void, vkDestroyInstance, (VkInstance, const VkAllocationCallbacks *)) \
-    X(PFN_vkVoidFunction, vkGetInstanceProcAddr, (VkInstance, const char *)) \
-    X(VkResult, vkEnumeratePhysicalDevices, (VkInstance, uint32_t *, VkPhysicalDevice *)) \
-    X(void, vkGetPhysicalDeviceProperties, (VkPhysicalDevice, VkPhysicalDeviceProperties *)) \
-    X(void, vkGetPhysicalDeviceQueueFamilyProperties, (VkPhysicalDevice, uint32_t *, VkQueueFamilyProperties *)) \
-    X(VkResult, vkEnumerateDeviceExtensionProperties, (VkPhysicalDevice, const char *, uint32_t *, VkExtensionProperties *)) \
-    VKF_SURFACE(X) \
-    X(void, vkDestroySurfaceKHR, (VkInstance, VkSurfaceKHR, const VkAllocationCallbacks *)) \
-    X(VkResult, vkGetPhysicalDeviceSurfaceSupportKHR, (VkPhysicalDevice, uint32_t, VkSurfaceKHR, VkBool32 *)) \
-    X(VkResult, vkGetPhysicalDeviceSurfaceCapabilitiesKHR, (VkPhysicalDevice, VkSurfaceKHR, VkSurfaceCapabilitiesKHR *)) \
-    X(VkResult, vkGetPhysicalDeviceSurfaceFormatsKHR, (VkPhysicalDevice, VkSurfaceKHR, uint32_t *, VkSurfaceFormatKHR *)) \
-    X(VkResult, vkGetPhysicalDeviceSurfacePresentModesKHR, (VkPhysicalDevice, VkSurfaceKHR, uint32_t *, VkPresentModeKHR *)) \
-    X(VkResult, vkCreateDevice, (VkPhysicalDevice, const VkDeviceCreateInfo *, const VkAllocationCallbacks *, VkDevice *)) \
-    X(void, vkDestroyDevice, (VkDevice, const VkAllocationCallbacks *)) \
-    X(void, vkGetDeviceQueue, (VkDevice, uint32_t, uint32_t, VkQueue *)) \
-    X(VkResult, vkDeviceWaitIdle, (VkDevice)) \
-    X(VkResult, vkCreateSwapchainKHR, (VkDevice, const VkSwapchainCreateInfoKHR *, const VkAllocationCallbacks *, VkSwapchainKHR *)) \
-    X(void, vkDestroySwapchainKHR, (VkDevice, VkSwapchainKHR, const VkAllocationCallbacks *)) \
-    X(VkResult, vkGetSwapchainImagesKHR, (VkDevice, VkSwapchainKHR, uint32_t *, VkImage *)) \
-    X(VkResult, vkAcquireNextImageKHR, (VkDevice, VkSwapchainKHR, uint64_t, VkSemaphore, VkFence, uint32_t *)) \
-    X(VkResult, vkQueuePresentKHR, (VkQueue, const VkPresentInfoKHR *)) \
-    X(VkResult, vkQueueSubmit, (VkQueue, uint32_t, const VkSubmitInfo *, VkFence)) \
-    X(VkResult, vkCreateCommandPool, (VkDevice, const VkCommandPoolCreateInfo *, const VkAllocationCallbacks *, VkCommandPool *)) \
-    X(void, vkDestroyCommandPool, (VkDevice, VkCommandPool, const VkAllocationCallbacks *)) \
-    X(VkResult, vkAllocateCommandBuffers, (VkDevice, const VkCommandBufferAllocateInfo *, VkCommandBuffer *)) \
-    X(VkResult, vkBeginCommandBuffer, (VkCommandBuffer, const VkCommandBufferBeginInfo *)) \
-    X(VkResult, vkEndCommandBuffer, (VkCommandBuffer)) \
-    X(VkResult, vkResetCommandBuffer, (VkCommandBuffer, VkFlags)) \
-    X(void, vkCmdPipelineBarrier, (VkCommandBuffer, VkFlags, VkFlags, VkFlags, uint32_t, const void *, uint32_t, const void *, uint32_t, const VkImageMemoryBarrier *)) \
-    X(void, vkCmdClearColorImage, (VkCommandBuffer, VkImage, VkImageLayout, const VkClearColorValue *, uint32_t, const VkImageSubresourceRange *)) \
-    X(void, vkCmdCopyImage, (VkCommandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout, uint32_t, const VkImageCopy *)) \
-    X(VkResult, vkCreateSemaphore, (VkDevice, const VkSemaphoreCreateInfo *, const VkAllocationCallbacks *, VkSemaphore *)) \
-    X(void, vkDestroySemaphore, (VkDevice, VkSemaphore, const VkAllocationCallbacks *)) \
-    X(VkResult, vkCreateFence, (VkDevice, const VkFenceCreateInfo *, const VkAllocationCallbacks *, VkFence *)) \
-    X(void, vkDestroyFence, (VkDevice, VkFence, const VkAllocationCallbacks *)) \
-    X(VkResult, vkWaitForFences, (VkDevice, uint32_t, const VkFence *, VkBool32, uint64_t)) \
-    X(VkResult, vkResetFences, (VkDevice, uint32_t, const VkFence *))
-#define X(ret, name, args) static ret (VKAPI_PTR *name) args;
+#define X(ret, name, args) ret (VKAPI_PTR *pfn_##name) args;      /* VKF and the names its calls use: nvn_vk_int.h */
 VKF(X)
 #undef X
 static VkResult (VKAPI_PTR *vkEnumerateInstanceVersion)(uint32_t *);          /* absent from a Vulkan 1.0 loader */
@@ -109,33 +51,11 @@ static VkResult (VKAPI_PTR *vkCreateDebugUtilsMessengerEXT)(VkInstance, const Vk
 static void (VKAPI_PTR *vkDestroyDebugUtilsMessengerEXT)(VkInstance, VkDebugUtilsMessengerEXT, const VkAllocationCallbacks *);
 
 /* ---------------------------------------------------------------- state (render thread only, except the counters) */
-static struct {
-    HWND hwnd;
-    HMODULE loader;
-    VkInstance instance;
-    VkDebugUtilsMessengerEXT messenger;
-    VkPhysicalDevice gpu;
-    VkPhysicalDeviceProperties props;
-    uint32_t family;
-    VkDevice device;
-    VkQueue queue;
-    VkSurfaceKHR surface;
-    VkSwapchainKHR swapchain;
-    VkSurfaceFormatKHR format;
-    VkPresentModeKHR mode;
-    VkExtent2D extent;
-    VkImage images[16];
-    uint32_t image_count;
-    VkCommandPool pool;
-    VkCommandBuffer cmd;
-    VkSemaphore acquired, rendered;
-    VkFence fence;
-    int fence_pending, alive, validate;
-} V;
-static volatile LONG64 g_vk_frames, g_vk_recreated, g_vk_skipped, g_vk_errors, g_vk_messages, g_vk_missing_calls;
+struct VDevice V;                                       /* the members: nvn_vk_int.h */
+volatile LONG64 g_vk_frames, g_vk_recreated, g_vk_skipped, g_vk_errors; static volatile LONG64 g_vk_messages, g_vk_missing_calls;
 static int g_vk_missing_warn = -1;
 
-static const char *vk_result_name(VkResult r) {
+const char *vk_result_name(VkResult r) {
     static char buf[32];
     switch (r) {
     case VK_SUCCESS: return "VK_SUCCESS"; case VK_NOT_READY: return "VK_NOT_READY"; case VK_TIMEOUT: return "VK_TIMEOUT"; case VK_INCOMPLETE: return "VK_INCOMPLETE";
@@ -146,9 +66,8 @@ static const char *vk_result_name(VkResult r) {
     snprintf(buf, sizeof buf, "VkResult %d", (int)r);
     return buf;
 }
-static void vkd_lost_report(void);                                    /* nvn_vk_draw.c (PR #32): what the driver and the markers say about the loss */
 static void vk_unavailable(void);
-static void vk_fatal(const char *what, VkResult r) {
+void vk_fatal(const char *what, VkResult r) {
     printf("nvn_vk: %s failed: %s\n", what, vk_result_name(r));
     fflush(stdout);
     if (r == VK_ERROR_DEVICE_LOST && V.device) vkd_lost_report();
@@ -164,7 +83,7 @@ static void vk_fatal(const char *what, VkResult r) {
     ExitProcess(5);
 }
 /* A call that may fail while running (present path): counted, reported a few times, the frame goes on. */
-static int vk_ok(const char *what, VkResult r) {
+int vk_ok(const char *what, VkResult r) {
     if (r == VK_SUCCESS) return 1;
     if (InterlockedIncrement64(&g_vk_errors) <= 20) { printf("nvn_vk: %s: %s\n", what, vk_result_name(r)); fflush(stdout); }
     return 0;
@@ -196,16 +115,15 @@ static VkBool32 VKAPI_PTR vk_debug_cb(VkFlags severity, VkFlags types, const VkD
     return VK_FALSE;
 }
 
-static int has_name(const VkExtensionProperties *e, uint32_t n, const char *name) {
+int has_name(const VkExtensionProperties *e, uint32_t n, const char *name) {
     for (uint32_t i = 0; i < n; i++) if (!strcmp(e[i].extensionName, name)) return 1;
     return 0;
 }
 
 /* ---------------------------------------------------------------- swapchain */
 static void wait_last_submit(void);
-static void menu_vk_views_drop(void);                  /* U1 (nvn_vk_menu.c): its views of the swapchain images */
-static int g_mu_shot_src;                               /* U1: the swapchain images can be read back (SSBU_MENU_TEST only) */
-static void swapchain_destroy(void) {
+int g_mu_shot_src;                                      /* U1: the swapchain images can be read back (SSBU_MENU_TEST only) */
+void swapchain_destroy(void) {
     if (!V.swapchain) return;
     wait_last_submit();                                  /* also resets the fence for the next submit */
     vkDeviceWaitIdle(V.device);
@@ -214,7 +132,7 @@ static void swapchain_destroy(void) {
     V.swapchain = NULL; V.image_count = 0;
 }
 /* Returns 0 when there is nothing to present to (a minimised window has a zero-sized surface). */
-static int swapchain_create(void) {
+int swapchain_create(void) {
     VkSurfaceCapabilitiesKHR caps;
     VkResult r = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(V.gpu, V.surface, &caps);
     if (r != VK_SUCCESS) vk_fatal("vkGetPhysicalDeviceSurfaceCapabilitiesKHR", r);
@@ -258,7 +176,7 @@ static int swapchain_create(void) {
 }
 
 /* ---------------------------------------------------------------- start */
-static void *vk_sym(const char *name) {
+void *vk_sym(const char *name) {
     void *p = (void *)GetProcAddress(V.loader, name);
     if (!p) { printf("nvn_vk: vulkan-1.dll does not export %s\n", name); fflush(stdout); ExitProcess(5); }
     return p;
@@ -648,5 +566,3 @@ void nvn_vk_selftest_hook(void) {
     fflush(stdout);
     ExitProcess(g_vk_errors || g_vk_skipped ? 1 : 0);
 }
-
-#include "nvn_vk_draw.c"                                   /* everything that draws (session 2): not a build unit of its own */

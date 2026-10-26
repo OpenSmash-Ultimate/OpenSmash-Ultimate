@@ -26,6 +26,18 @@ The VP9 decoder of the WebM Project's libvpx, release v1.15.2, is included as so
 
 libopus 1.5.2 (Xiph.Org Foundation and contributors) is included as source in [`third_party/opus/`](third_party/opus/) and compiled into the game when it is built (the game's music is Opus), under its [BSD license](third_party/opus/COPYING). [`third_party/README.md`](third_party/README.md) says which files. One line is changed: in `silk/x86/NSQ_del_dec_avx2.c`, a test for Microsoft's compiler now leaves clang out, so older clang-cl versions can build the file ([Local changes](third_party/README.md#local-changes)).
 
+### Open fonts
+
+[`third_party/fonts_open/`](third_party/fonts_open/) holds seven TrueType fonts that both runtimes use in place of a firmware font that isn't there ([`runtime/hle_pl.c`](runtime/hle_pl.c), font by font; [`ssbu-recomp/runtime/nnpl.c`](ssbu-recomp/runtime/nnpl.c)). They are open-source fonts the yuzu project put together for the same purpose, taken unmodified (only renamed) from the suyu repository at commit `c0dd2ff554327657f0c6318f29b740ac7e329ea0`. [Their README](third_party/fonts_open/README.md) lists each file with the SHA-256 of its source, and the license texts are beside them. They are separate files the game reads when it runs, not compiled into it; the Linux package (`tools/linux/package_linux.py`) carries the folder as it is, with its README and license texts. The files stay as they are: WindowSmash's runtime adds U+25A1 to the character map of the copy it loads, in memory.
+
+| Font | Copyright | License |
+| :--- | :--- | :--- |
+| Open Sans 1.10 (Regular, Light) | 2010-2011 Google Corporation | [Apache-2.0](third_party/fonts_open/LICENSE-Apache-2.0.txt) |
+| Source Sans Pro 2.021 | 2010, 2012, 2014 Adobe Systems Incorporated, with Reserved Font Name "Source" | [OFL-1.1](third_party/fonts_open/LICENSE-OFL-1.1.txt) |
+| YuzuOSSExtension 1.000 | 2019 yuzu Emulator Project | [GPL-2.0-or-later](third_party/fonts_open/LICENSE-GPL-2.0-or-later.txt) |
+
+Open Sans is a trademark of Google. Source is a trademark of Adobe Systems Incorporated.
+
 ### SDL3
 
 Controller input can use [SDL3](https://www.libsdl.org/) (Simple DirectMedia Layer), copyright Sam Lantinga, under the [zlib license](https://github.com/libsdl-org/SDL/blob/main/LICENSE.txt).
@@ -59,18 +71,6 @@ These are external dependencies, not bundled implementations. Their own licenses
 A developer can link their own libopus or libvpx builds instead of the included sources (`SSBU_OPUS_LIBS`, `SSBU_VPX_DIR`: [`tools/cc.py`](tools/cc.py)). No binaries of any library are checked into this repository.
 
 ## ssbu-recomp (`ssbu-recomp/`)
-
-### Open fonts
-
-[`ssbu-recomp/runtime/fonts_open/`](ssbu-recomp/runtime/fonts_open/) holds seven TrueType fonts that the runtime uses when no firmware fonts are given. They are open-source fonts the yuzu project put together for the same purpose, taken unmodified (only renamed) from the suyu repository at commit `c0dd2ff554327657f0c6318f29b740ac7e329ea0`. [Its README](ssbu-recomp/runtime/fonts_open/README.md) lists each file with the SHA-256 of its source, and the license texts are beside them.
-
-| Font | Copyright | License |
-| :--- | :--- | :--- |
-| Open Sans 1.10 (Regular, Light) | 2010-2011 Google Corporation | [Apache-2.0](ssbu-recomp/runtime/fonts_open/LICENSE-Apache-2.0.txt) |
-| Source Sans Pro 2.021 | 2010, 2012, 2014 Adobe Systems Incorporated, with Reserved Font Name "Source" | [OFL-1.1](ssbu-recomp/runtime/fonts_open/LICENSE-OFL-1.1.txt) |
-| YuzuOSSExtension 1.000 | 2019 yuzu Emulator Project | [GPL-2.0-or-later](ssbu-recomp/runtime/fonts_open/LICENSE-GPL-2.0-or-later.txt) |
-
-Open Sans is a trademark of Google. Source is a trademark of Adobe Systems Incorporated.
 
 ### Code and data derived from yuzu and suyu
 

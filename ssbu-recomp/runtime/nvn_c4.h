@@ -1,4 +1,4 @@
-/* NVN functions closed in the round "close4" that do not need nvn_gl.c's state: see nvn_c4.c. */
+/* NVN functions closed in the round "close4" that do not need nvn_front.c's state: see nvn_c4.c. */
 #ifndef NVN_C4_H
 #define NVN_C4_H
 #include <stdint.h>

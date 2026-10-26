@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / 'tests'))
 import test_arc_table as arc_table  # noqa: E402  (made-up data.arc's)
 pick_program, jobs_for_ram, romfs_cfg_ok = BUILD['pick_program'], BUILD['jobs_for_ram'], BUILD['romfs_cfg_ok']
 Failed = BUILD['Failed']
+FONT_FILES = BUILD['FONT_FILES']
 PROGRAM, META, CONTROL = 0, 1, 2
 BASE, UPDATE = 0x01006A800016E000, 0x01006A800016E800
 MAIN_13 = '21450C647B8C5940ED5B68218EA128FD3C5D597D'   # (13.0.5's main module; 11.0.0's below)
@@ -318,6 +319,209 @@ class BuildStepsTests(unittest.TestCase):
                       'this folder.', str(e.exception))
         self.assertEqual(sorted(str(p) for p in port.rglob('*')), before)   # (nothing cleared)
         self.assertEqual(self.calls, [])
+
+    # ---- the fonts (step 5): the firmware's, the game folder's, or without a firmware the open ones
+
+    def fonts_for_real(self, open_fonts=FONT_FILES):
+        """The font step as it is (missing_fonts not stood in for), with made-up open fonts in the
+        port's third_party/fonts_open and extract_fonts standing in for reading the firmware."""
+        self.ns['missing_fonts'] = BUILD['missing_fonts']
+        self.open_dir = self.top / 'port' / 'third_party' / 'fonts_open'
+        self.open_dir.mkdir(parents=True)
+        for n in open_fonts:
+            (self.open_dir / n.replace('.bfttf', '.ttf')).write_bytes(b'open-font-fixture')
+        self.ns['OPEN_FONTS'] = str(self.open_dir)
+        self.fonts, self.marker = self.top / 'port' / 'dump' / 'fonts', self.top / 'port' / 'dump' / 'fonts.none'
+        self.extracted_from = []
+
+        def extract(firmware, keys, fonts=FONT_FILES):
+            self.extracted_from.append(firmware)
+            self.fonts.mkdir(parents=True, exist_ok=True)
+            for n in fonts:
+                (self.fonts / n).write_bytes(b'firmware-font-fixture')
+        self.ns['extract_fonts'] = extract
+        self.asked = []
+        folders = {'game': str(self.game), 'keys': str(self.top / 'keys'), 'firmware': str(self.top / 'firmware')}
+        self.ns['ask_folder'] = lambda key, given, saved: self.asked.append(key) or folders[key]
+        return folders
+
+    def test_no_firmware_the_open_fonts(self):
+        # --no-firmware: the firmware is not asked for, nothing goes into dump/fonts, and the log says what it means
+        self.fonts_for_real()
+        self.args.firmware = ''
+        self.ns['build'](self.args)
+        self.assertEqual(self.asked, ['game', 'keys'])
+        self.assertEqual(self.extracted_from, [])
+        self.assertFalse(self.fonts.exists())
+        self.assertTrue(self.marker.is_file())
+        shown = '\n'.join(self.logged)
+        self.assertIn(f"  no firmware: the game uses the open fonts of third_party{os.sep}fonts_open in place of your console's", shown)
+        self.assertIn("Chinese, Japanese and Korean text and most symbols are missing; the button icons come from yuzu's icon "
+                      "font. Fights are not affected.", shown)
+        self.assertIn("For your console's own fonts, give your firmware's folder", shown)
+        self.assertTrue(any('arc.py' in ' '.join(c) for c in self.calls))   # (and on to the fighters)
+        self.assertTrue(self.ns['fonts_done']())
+        # the next run asks for no firmware, and says so
+        self.args.firmware = None
+        self.logged.clear()
+        self.asked.clear()
+        self.ns['build'](self.args)
+        self.assertEqual(self.asked, ['game', 'keys'])
+        self.assertIn('  already done: no firmware, so the game uses the open fonts of third_party' + os.sep + 'fonts_open',
+                      self.logged)
+        self.assertFalse(self.fonts.exists())
+
+    def test_no_firmware_answered(self):
+        # asked, and none given (Enter on [none]): the open fonts; only the game needed the keys
+        self.fonts_for_real()
+        self.args.firmware = None
+        self.ns['ask_folder'] = lambda key, given, saved: self.asked.append(key) or (None if key == 'firmware' else str(self.top))
+        self.ns['build'](self.args)
+        self.assertEqual(self.asked, ['game', 'keys', 'firmware'])
+        self.assertEqual(self.extracted_from, [])
+        self.assertTrue(self.marker.is_file())
+        self.assertFalse(self.fonts.exists())
+
+    def test_no_game_and_no_firmware_no_keys(self):
+        # the game files read already, the fonts not: without a firmware the keys are not needed either
+        self.fonts_for_real()
+        self.args.game = None
+        (self.top / 'port' / 'dump' / 'modules' / 'aoc.none').write_text('')
+        self.ns['ask_folder'] = lambda key, given, saved: self.asked.append(key) or None
+        self.ns['build'](self.args)
+        self.assertEqual(self.asked, ['firmware'])
+        self.assertIn('  none needed: the steps that read them are done', self.logged)
+        self.assertTrue(self.marker.is_file())
+
+    def test_firmware_fonts_as_before(self):
+        folders = self.fonts_for_real()
+        self.ns['build'](self.args)
+        self.assertEqual(self.asked, ['game', 'keys', 'firmware'])
+        self.assertEqual(self.extracted_from, [folders['firmware']])
+        self.assertEqual(sorted(os.listdir(self.fonts)), sorted(FONT_FILES))
+        self.assertFalse(self.marker.exists())
+        self.assertFalse(any('open fonts' in m for m in self.logged))
+
+    def test_firmware_given_after_the_open_fonts(self):
+        # set up without one first; --firmware later takes the firmware's fonts, and the open ones are not used
+        folders = self.fonts_for_real()
+        self.marker.write_text('no firmware\n')
+        self.args.firmware = folders['firmware']
+        self.ns['build'](self.args)
+        self.assertEqual(self.extracted_from, [folders['firmware']])
+        self.assertEqual(sorted(os.listdir(self.fonts)), sorted(FONT_FILES))
+        self.assertFalse(self.marker.exists())
+
+    def test_firmware_without_the_fonts_stops(self):
+        # a firmware folder given that lacks fonts is a mistake: it stops, as it always did, and does not fall back
+        folders = self.fonts_for_real()
+        self.ns['extract_fonts'] = lambda firmware, keys: self.extracted_from.append(firmware)
+        with self.assertRaises(self.ns['Failed']) as e:
+            self.ns['build'](self.args)
+        self.assertIn(f"These fonts were not in {folders['firmware']}: nintendo_udsg-r_std_003.bfttf", str(e.exception))
+        self.assertIn('Or leave the firmware out (in the installer, or --no-firmware here)', str(e.exception))
+        self.assertFalse(self.marker.exists())
+        self.assertFalse(self.ns['fonts_done']())
+
+    def test_game_folder_fonts_as_before(self):
+        self.fonts_for_real()
+        (self.game / 'fonts').mkdir()
+        for n in FONT_FILES:
+            (self.game / 'fonts' / n).write_bytes(b'game-folder-font')
+        self.marker.write_text('no firmware\n')   # (even after the open fonts: the game folder's come first)
+        self.ns['build'](self.args)
+        self.assertEqual(self.asked, ['game', 'keys'])
+        self.assertEqual((self.fonts / FONT_FILES[0]).read_bytes(), b'game-folder-font')
+        self.assertFalse(self.marker.exists())
+
+    def test_no_firmware_and_no_open_fonts_stops(self):
+        self.fonts_for_real(open_fonts=FONT_FILES[:-1])
+        self.args.firmware = ''
+        with self.assertRaises(self.ns['Failed']) as e:
+            self.ns['build'](self.args)
+        self.assertIn('the game uses the open fonts of third_party' + os.sep + 'fonts_open, and these of them are not there: '
+                      'nintendo_ext_003.ttf', str(e.exception))
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.calls, [])   # (no game data step, no fighters)
+
+    def test_prepared_without_firmware(self):
+        # the installers ask for the game files again unless this says the steps are done
+        self.fonts_for_real()
+        (self.top / 'port' / 'dump' / 'modules' / 'aoc.none').write_text('')
+        self.assertFalse(self.ns['prepared']())
+        self.marker.write_text('no firmware\n')
+        self.assertTrue(self.ns['prepared']())
+
+    def test_romfs_bin_on_windows_without_fonts(self):
+        # Configure-Game-Data.ps1 is given the fonts only when there are some: without, it sets up the data alone
+        self.fonts_for_real()
+        self.ns.update(LINUX=False, MACOS=False)
+        (self.game / 'romfs.bin').write_bytes(b'romfs')
+        self.ns['write_romfs_cfg'](str(self.game), None, None)
+        self.assertNotIn('-FontsDirectory', self.calls[-1])
+        self.assertIn('Configure-Game-Data.ps1', ' '.join(self.calls[-1]))
+        self.fonts.mkdir()
+        for n in FONT_FILES:
+            (self.fonts / n).write_bytes(b'firmware-font-fixture')
+        self.ns['write_romfs_cfg'](str(self.game), None, None)
+        self.assertEqual(self.calls[-1][self.calls[-1].index('-FontsDirectory') + 1], str(self.fonts))
+
+
+class FirmwareQuestionTests(unittest.TestCase):
+    """Step 3's firmware question: optional, "none" for none."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='firmware-question-test-')
+        self.addCleanup(self.temp.cleanup)
+        self.top = Path(self.temp.name)
+        self.ns = runpy.run_path(str(ROOT / 'tools/build_game.py'), run_name='build_game_firmware')['build'].__globals__
+        self.ns.update(SAVED=str(self.top / 'build_folders.txt'), log=lambda msg='': None)
+        self.firmware = self.top / 'My Firmware'
+        self.firmware.mkdir()
+        (self.firmware / 'a.nca').write_bytes(b'')
+
+    def answer(self, typed, saved=None, given=None):
+        saved = dict(saved or {}, hinted=True)
+        answers = iter(typed)
+
+        def typing(prompt):
+            self.prompts.append(prompt)
+            text = next(answers)
+            if text is EOFError:
+                raise EOFError
+            return text
+        self.prompts = []
+        with mock.patch('builtins.input', typing):
+            return self.ns['ask_folder']('firmware', given, saved)
+
+    def test_optional(self):
+        self.assertIsNone(self.answer(['']))   # (Enter: the default, none)
+        self.assertIn('optional', self.prompts[0])
+        self.assertTrue(self.prompts[0].endswith('[none]: '))
+        self.assertIsNone(self.answer([EOFError]))   # (nobody to answer)
+        self.assertIsNone(self.answer(['None']))
+        self.assertFalse((self.top / 'build_folders.txt').exists())   # (nothing to remember)
+        self.assertEqual(self.answer([str(self.firmware)]), str(self.firmware))
+        self.assertIn('firmware=' + str(self.firmware), (self.top / 'build_folders.txt').read_text())
+        # last time's folder is the default; none is still an answer
+        self.assertEqual(self.answer([''], saved={'firmware': str(self.firmware)}), str(self.firmware))
+        self.assertIsNone(self.answer(['none'], saved={'firmware': str(self.firmware)}))
+
+    def test_a_folder_without_nca_files(self):
+        empty = self.top / 'empty'
+        empty.mkdir()
+        self.assertEqual(self.answer([str(empty), str(self.firmware)]), str(self.firmware))   # (asked again)
+        with self.assertRaises(self.ns['Failed']):   # (given: stops)
+            self.answer([], given=str(empty))
+
+    def test_no_firmware_argument(self):
+        # (build() tells "not given" (None, asked) from --no-firmware ("") and a folder)
+        given = []
+        self.ns['build'] = given.append
+        for argv, firmware in (([], None), (['--no-firmware'], ''), (['--firmware', 'F'], 'F')):
+            with mock.patch.object(sys, 'argv', ['build_game.py', *argv]):
+                self.assertEqual(self.ns['main'](), 0)
+            self.assertEqual(given[-1].firmware, firmware)
 
 
 class CompilerDownloadTests(unittest.TestCase):

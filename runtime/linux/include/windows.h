@@ -82,6 +82,8 @@ typedef int errno_t;
 #define ERROR_NOT_ENOUGH_MEMORY 8
 #define ERROR_INVALID_PARAMETER 87
 #define ERROR_NO_MORE_FILES 18
+#define ERROR_SHARING_VIOLATION 32   /* (never on POSIX: nothing locks a file against others) */
+#define ERROR_LOCK_VIOLATION 33
 #define ERROR_HANDLE_EOF 38
 #define ERROR_FILE_EXISTS 80
 #define ERROR_DISK_FULL 112
@@ -351,6 +353,8 @@ static inline void _aligned_free(void *p) { free(p); }
 #define FILE_BEGIN 0
 #define FILE_CURRENT 1
 #define FILE_END 2
+#define MOVEFILE_REPLACE_EXISTING 0x1   /* (rename always replaces) */
+#define MOVEFILE_WRITE_THROUGH 0x8      /* the move is on the disk when MoveFileExA returns */
 typedef struct OVERLAPPED {
     ULONG_PTR Internal, InternalHigh;
     union { struct { DWORD Offset, OffsetHigh; }; PVOID Pointer; };

@@ -39,6 +39,10 @@ void display_set_tearing(int supported);
 unsigned display_present_flags(void);
 /* The vsync thread: returns when the next refresh the game sees is due. */
 void display_wait_tick(void);
+/* SSBU_SPEED (test runs): 1 = normal; else the vsync thread gives one refresh per frame shown,
+ * n x 60 a second (display_speed_tick waits for the next one's time), 0 = uncapped. */
+double display_speed(void);
+void display_speed_tick(void);
 
 /* The settings menu (gpu_menu.c), which saves display.ini itself: the settings in effect, and
  * changes that take effect now. The window's size and the graphics card count at the next start. */

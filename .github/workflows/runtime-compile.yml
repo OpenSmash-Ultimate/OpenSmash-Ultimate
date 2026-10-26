@@ -1,0 +1,108 @@
+# The whole WindowSmash runtime (runtime/ and its platform layer) compiled and linked into the game's program on
+# Windows, Linux and macOS, by the build a player's runs (tools/dev/runtime_compile_check.py): tools/recomp.py's
+# compile and link, tools/linux/build_linux.py, tools/mac/build_mac.py. The game is tools/mac/boottest's made-up one:
+# no dump, no game files, nothing derived from the game. On Windows and Linux for both instruction sets players'
+# builds compile for (tools/isa.py). The program is not started. A runtime source the program lacks fails the job
+# unless the driver's LEFT_OUT says why it is left out, and so does any source in a subfolder of runtime/ other than
+# linux/ and macos/, where no build looks. Each system also builds as build_game.py --game-dll does (dll: the game's
+# modules in a library of their own, the program the runtime alone: tools/game_dll.py); then the program is started,
+# but only to load that library and check it (ssbu --game-library), and the job fails if it does not accept it.
+name: Runtime compile
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    name: runtime (${{ matrix.os }}${{ matrix.isa && format(', {0}', matrix.isa) || '' }}${{ matrix.dll && ', game library' || '' }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-2025, isa: avx2}
+          - {os: windows-2025, isa: x86-64-v2}
+          - {os: ubuntu-24.04, isa: avx2}
+          - {os: ubuntu-24.04, isa: x86-64-v2}
+          - {os: macos-15}
+          - {os: windows-2025, isa: avx2, dll: true}
+          - {os: ubuntu-24.04, isa: avx2, dll: true}
+          - {os: macos-15, dll: true}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      SSBU_ISA: ${{ matrix.isa }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.14: the Python the Windows installer puts in deps/python
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      # clang-cl is Visual Studio's (tools/cc.py finds it). SDL3 3.4.18's VC package (the SHA-256
+      # tools/install_windowsmash.ps1 pins) in deps\SDL3, as the installer puts it: without it the runtime is
+      # compiled without its SDL3 controllers.
+      - name: Windows packages
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force deps | Out-Null
+          $zip = 'deps\SDL3-devel-3.4.18-VC.zip'
+          Invoke-WebRequest -Uri 'https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-devel-3.4.18-VC.zip' `
+            -OutFile $zip -MaximumRetryCount 3
+          if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne '78d84602ae616cfe26b33a73b7d3b9b6b56e8a6650e53d92c9c6ca938f747acd') {
+            throw "$zip does not match its SHA-256"
+          }
+          Expand-Archive -LiteralPath $zip -DestinationPath deps\SDL3-extract
+          $inner = Get-ChildItem -LiteralPath deps\SDL3-extract -Directory |
+            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'include\SDL3\SDL_gamepad.h') } | Select-Object -First 1
+          if (-not $inner) { throw "$zip does not hold include\SDL3" }
+          Move-Item -LiteralPath $inner.FullName -Destination deps\SDL3
+
+      # what install-windowsmash.sh installs for the build (tools/linux/install_linux.py's apt packages), and Pillow
+      # for the overlay's font (tools/linux/make_overlay_font.py)
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld llvm g++ bison flex libsdl2-dev libopus-dev libvpx-dev fontconfig fonts-dejavu-core
+          python -m pip install --upgrade pip
+          python -m pip install pillow
+
+      # DXVK and its headers, vkd3d and SPIRV-Headers, as the installer downloads them (each checked against its
+      # SHA-256) into deps/linux-toolchain; the downloads kept from one run to the next
+      - name: Linux parts (the downloads)
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: deps/linux-toolchain/downloads
+          key: linux-parts-${{ hashFiles('tools/linux/install_linux.py') }}
+
+      - name: Linux parts
+        if: runner.os == 'Linux'
+        run: python -c "import sys, types; sys.path.insert(0, 'tools/linux'); import install_linux; install_linux.step_parts(types.SimpleNamespace(dry_run=False))"
+
+      # SDL3 3.4.18's DMG (the SHA-256 tools/mac/install_mac.py pins) and the framework in it, as Install
+      # WindowSmash.command puts them; clang and the macOS SDK are the runner's Xcode
+      - name: macOS packages
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p deps/downloads
+          curl -fsSL --retry 3 -o deps/downloads/SDL3-3.4.18.dmg \
+            https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.dmg
+          echo "c1adf3da91108dbc3e4205da5dacebc203085d283fa89e86eb2c889abd03a853  deps/downloads/SDL3-3.4.18.dmg" | shasum -a 256 -c
+          python -c "import sys; sys.path.insert(0, 'tools/mac'); import install_mac; install_mac.install_sdl3_framework('deps/downloads/SDL3-3.4.18.dmg', 'deps/SDL3')"
+
+      # in a folder with a space in its name, as players' often are; the job's page says what was linked
+      - name: Compile and link the runtime
+        run: python tools/dev/runtime_compile_check.py --tree "${{ runner.temp }}/made-up game" ${{ matrix.dll && '--game-dll' || '' }}

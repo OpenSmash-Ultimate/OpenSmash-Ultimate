@@ -10,6 +10,7 @@
  * (tests/test_settings.py builds and runs it.) Exit code 0 when every check passes. */
 #include "../../runtime/net_relay.c"
 #include "../../runtime/hle_settings.c"
+#include "../../runtime/hle_config.c"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
@@ -25,6 +26,8 @@ void vsock_deliver(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const voi
 int ldn_in_network(u32 ip) { return 0; }
 void ldn_listing(u32 seq, u32 owner, const u8 *info) {}
 void ldn_list_end(u32 seq) {}
+int pad_ini_convert(const char *from, const char *to) { return 0; }   /* (hle_config.c's, for an ssbu-recomp install: none here) */
+const char *display_default_ini(void) { return ""; }
 
 static int failures, checks;
 #define CHECK(cond, ...) do { checks++; if (!(cond)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -103,8 +106,12 @@ int main(int argc, char **argv) {
         DeleteFileA(file);
         snprintf(file, sizeof file, "%s\\online_server.txt", dir);
         DeleteFileA(file);
-        snprintf(file, sizeof file, "%s\\online_name.txt", dir);   /* (picked by the game when online) */
+        snprintf(file, sizeof file, "%s\\config\\online_name.txt", dir);   /* (picked by the game when online) */
         DeleteFileA(file);
+        snprintf(file, sizeof file, "%s\\config\\version.ini", dir);   /* (the settings folder, made at the first start) */
+        DeleteFileA(file);
+        snprintf(file, sizeof file, "%s\\config", dir);
+        RemoveDirectoryA(file);
         RemoveDirectoryA(dir);
     }
     printf("%d checks, %d failed\n", checks, failures);

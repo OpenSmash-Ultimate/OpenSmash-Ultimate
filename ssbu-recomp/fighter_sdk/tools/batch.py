@@ -10,7 +10,8 @@
     python batch.py table                 out/batch_table.txt: per module scripts / readable / equal / refused by reason
 
 Refusals found by the build or the test are kept in out/<name>_exclude.json ("script@offset": reason); delete the
-file to try again after the decompiler has changed. Environment: S2_EXE (default ssbu_s2.exe), S2_JOBS (default 6).
+file to try again after the decompiler has changed. Environment: S2_EXE (default ssbu_s2.exe), S2_JOBS (default 6);
+the game's files are found as fighter_sdk/README.md says (RECOMP_BIN for main.elf).
 A script counts as converted only when it is in the DLL and the test found it equal on all 3 passes.
 """
 import collections
@@ -23,11 +24,13 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-STUDY = os.path.normpath(os.path.join(HERE, '..', '..'))
+sys.path.insert(0, HERE)
+import sdk_paths  # noqa: E402
+
+STUDY = sdk_paths.WORK
 OUT = os.path.join(STUDY, 'fighters', 'tools_out')      # S3: everything derived from the game lives under fighters\ (not part of the published tree)
 EXE = os.environ.get('S2_EXE', 'ssbu_s2.exe')
 JOBS = int(os.environ.get('S2_JOBS', '6'))
-sys.path.insert(0, HERE)
 
 
 def all_modules():
@@ -148,7 +151,7 @@ def run_offline(mods, trace=False):
     if trace:
         env['SSBU_FIGHTER_OFFLINE_TRACE'] = '1'
     try:
-        r = subprocess.run([os.path.join(STUDY, EXE), os.path.join('..', 'binaries', '13.0.4', 'main.elf'), '900'], cwd=STUDY, env=env,
+        r = subprocess.run([sdk_paths.program(EXE, 'S2_EXE'), sdk_paths.main_elf(), '900'], cwd=STUDY, env=env,
                            capture_output=True, text=True, errors='replace', timeout=1500)
         return r.stdout + r.stderr
     except subprocess.TimeoutExpired as e:

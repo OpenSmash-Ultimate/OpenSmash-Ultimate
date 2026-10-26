@@ -11,9 +11,10 @@ import regcache  # noqa: E402
 from lift import mark_syncs  # noqa: E402
 
 
-def run(stmts, careful=False):
-    """stmts: [(pc, C statement, falls through)] as the lifter makes them (unmarked)."""
-    decl, out = regcache.apply([(pc, mark_syncs(s), f) for pc, s, f in stmts], set(), careful)
+def run(stmts, careful=False, exact=False, exact_at=()):
+    """stmts: [(pc, C statement, falls through)] as the lifter makes them (unmarked). exact: an
+    exact-caller; exact_at: pcs of direct calls to an exact-callee (tools/hooks.txt)."""
+    decl, out = regcache.apply([(pc, mark_syncs(s, pc in exact_at), f) for pc, s, f in stmts], set(), careful, exact)
     return decl, [s for _pc, s in out]
 
 
@@ -75,6 +76,49 @@ class RegcacheTests(unittest.TestCase):
         _decl, out = run([(0, "X(19) = 0x9ull;", True), (4, "if (!RT_SETJMP(*rt_setjmp(c))) X(0) = 0;", True), (8, "return;", False)])
         self.assertIn("c->x[19] = x_19;", out[1])
         self.assertIn("else { x_0 = c->x[0]; x_19 = c->x[19];", out[1])
+
+
+    # ---- the exact list (tools/hooks.txt)
+    BODY = [(0, "X(19) = 0x5ull;", True), (4, "X(20) = X(0);", True), (8, "SP = SP - 0x20ull;", True), (12, CALL, True),
+            (16, "X(0) = X(19) + X(20);", True), (20, "return;", False)]
+
+    def test_exact_call_stores_and_reads_back_every_register(self):
+        _decl, out = run(self.BODY, exact_at={12})
+        self.assertEqual(stores(out[3]), {'19', '20', '30', 'sp'})
+        self.assertEqual(loads(out[3]), {'0', '19', '20', '30'})
+        self.assertIn('x_sp = c->sp;', out[3])
+        self.assertNotIn('@', out[3])
+        self.assertEqual(stores(out[5]), {'0'})   # nothing else is dirty after it
+
+    def test_unmarked_call_is_as_before(self):
+        _decl, out = run(self.BODY)
+        self.assertEqual(stores(out[3]), {'30', 'sp'})
+        self.assertEqual(loads(out[3]), {'0', '30'})
+        self.assertEqual(stores(out[5]), {'0', '19', '20'})   # (SP went with the call)
+        self.assertEqual(run(self.BODY, exact_at={4}), (_decl, out))   # (a mark on a statement with no call: nothing)
+
+    def test_exact_caller_makes_every_call_exact(self):
+        body = [(0, "X(19) = 0x5ull;", True), (4, "{ u64 t_ = X(8); X(30) = 0x7100001008ull; rt_lookup(t_)(c); }", True),
+                (8, "X(21) = 0x1ull;", True), (12, "rt_svc(c, 0x1);", True), (16, CALL, True), (20, "return;", False)]
+        _decl, out = run(body, exact=True)
+        self.assertEqual((stores(out[1]), loads(out[1])), ({'19', '30'}, {'8', '19', '21', '30'}))
+        self.assertEqual((stores(out[3]), loads(out[3])), ({'21'}, {'8', '19', '21', '30'}))
+        self.assertEqual((stores(out[4]), loads(out[4])), ({'30'}, {'8', '19', '21', '30'}))
+        _decl, plain = run(body)
+        self.assertEqual(stores(plain[1]), {'30'})
+        self.assertEqual(loads(plain[1]), {'8', '30'})
+
+    def test_exact_call_at_a_landing_pad(self):
+        pad = ("{ u64 sp_ = SP; int lp_ = 0; __try { " + CALL + " } __except (rt_eh_filter(GetExceptionInformation(), sp_, "
+               "0x7100001010ull)) { lp_ = 1; } if (lp_) goto L_10; }")
+        body = [(0, "X(19) = X(0);", True), (4, pad, True), (8, "X(1) = X(19);", True), (12, "return;", False),
+                (0x10, "X(0) = X(19);", True), (0x14, "return;", False)]
+        _decl, out = run(body, careful=True, exact_at={4})
+        call = out[1].split("f_7100002000(c);")[1].split("}")[0]
+        self.assertEqual(loads(call), {'0', '1', '19', '30'})   # x19 too, after a normal return
+        self.assertIn("if (lp_) { x_0 = c->x[0]; x_1 = c->x[1]; x_19 = c->x[19]; x_30 = c->x[30]; x_sp = c->sp;", out[1])
+        _decl, careful = run(body, careful=True)
+        self.assertEqual(loads(careful[1].split("f_7100002000(c);")[1].split("}")[0]), {'0', '1', '30'})
 
 
 if __name__ == '__main__':

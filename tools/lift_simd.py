@@ -17,20 +17,35 @@ def vop(rd, rn, rm, lanes, out, expr):
             f"for (int i_ = 0; i_ < {lanes}; i_++) r_.{out}[i_] = {expr}; c->v[{rd}] = r_; }}")
 
 
-def vset(rd, rn, rm, assigns, keep=False):
-    """Explicit per-lane assignments; `keep` starts from the old destination value."""
+def vfp(rd, rn, rm, lanes, esize, expr, form, index=-1):
+    """vop for floating-point arithmetic: when a lane came out NaN, recomp.h's rt_vnanS / D makes it
+    Arm's NaN from the operands (`form` and `index` say which), out of line; never on arm64."""
+    return (f"{{ V128 a_ = c->v[{rn}], b_ = c->v[{rm}], d_ = c->v[{rd}], r_ = {{0}}; "
+            f"for (int i_ = 0; i_ < {lanes}; i_++) r_.{FF[esize]}[i_] = {expr}; "
+            f"if (rt_nan_any{esize}(&r_)) r_ = rt_vnan{'D' if esize == 64 else 'S'}(r_, a_, b_, d_, {form}, {index}); "
+            f"c->v[{rd}] = r_; }}")
+
+
+def vset(rd, rn, rm, assigns, keep=False, then=""):
+    """Explicit per-lane assignments; `keep` starts from the old destination value, `then` follows them."""
     body = " ".join(f"r_.{dst} = {src};" for dst, src in assigns)
     return (f"{{ V128 a_ = c->v[{rn}], b_ = c->v[{rm}], d_ = c->v[{rd}], r_ = {'d_' if keep else '{0}'}; "
-            f"{body} c->v[{rd}] = r_; }}")
+            f"{body} {then}c->v[{rd}] = r_; }}")
 
 
-def vpair(rd, rn, rm, lanes, field, fmt):
+def vpair(rd, rn, rm, lanes, field, fmt, nan=None):
+    """Pairwise: the result's lanes from a's pairs, then b's. `nan` (recomp.h's fnan2S / D, for an
+    addition): a lane that came out NaN made Arm's NaN from its pair, looked at only when some did."""
     half = lanes // 2
-    assigns = []
+    pairs = []
     for i in range(half):
-        assigns.append((f"{field}[{i}]", fmt.format(x=f"a_.{field}[{2 * i}]", y=f"a_.{field}[{2 * i + 1}]")))
-        assigns.append((f"{field}[{half + i}]", fmt.format(x=f"b_.{field}[{2 * i}]", y=f"b_.{field}[{2 * i + 1}]")))
-    return vset(rd, rn, rm, assigns)
+        pairs.append((f"{field}[{i}]", f"a_.{field}[{2 * i}]", f"a_.{field}[{2 * i + 1}]"))
+        pairs.append((f"{field}[{half + i}]", f"b_.{field}[{2 * i}]", f"b_.{field}[{2 * i + 1}]"))
+    then = ""
+    if nan:
+        fix = " ".join(f"r_.{dst} = {nan}(r_.{dst}, {x}, {y});" for dst, x, y in pairs)
+        then = f"if (rt_nan_any{64 if field == 'g' else 32}(&r_)) {{ {fix} }} "
+    return vset(rd, rn, rm, [(dst, fmt.format(x=x, y=y)) for dst, x, y in pairs], then=then)
 
 
 def hexf(value, single):
@@ -139,17 +154,22 @@ class SimdMixin:
         fma, fabs_ = ("fma", "fabs") if sz else ("fmaf", "fabsf")
         a, b, d = f"a_.{f}[i_]", f"b_.{f}[i_]", f"d_.{f}[i_]"
         key = (opcode, u, hi)
-        arith = {
+        arith = {   # (helpers that make Arm's NaNs themselves)
             (0x18, 0, 0): f"fmaxnm{p}({a}, {b})", (0x18, 0, 1): f"fminnm{p}({a}, {b})",
-            (0x19, 0, 0): f"{fma}({a}, {b}, {d})", (0x19, 0, 1): f"{fma}(-{a}, {b}, {d})",
-            (0x1A, 0, 0): f"{a} + {b}", (0x1A, 0, 1): f"{a} - {b}", (0x1A, 1, 1): f"{fabs_}({a} - {b})",
-            (0x1B, 0, 0): f"rt_fmulx{esize}({a}, {b})", (0x1B, 1, 0): f"{a} * {b}",
+            (0x1B, 0, 0): f"rt_fmulx{esize}({a}, {b})",
             (0x1E, 0, 0): f"fmax{p}({a}, {b})", (0x1E, 0, 1): f"fmin{p}({a}, {b})",
             (0x1F, 0, 0): f"rt_frecps{esize}({a}, {b})", (0x1F, 0, 1): f"rt_frsqrts{esize}({a}, {b})",
-            (0x1F, 1, 0): f"{a} / {b}",
         }
         if key in arith:
             return vop(rd, rn, rm, lanes, f, arith[key])
+        nan = {   # (expression, rt_vnan's form: its operands)
+            (0x19, 0, 0): (f"{fma}({a}, {b}, {d})", "3"), (0x19, 0, 1): (f"{fma}(-{a}, {b}, {d})", "3 | RT_VNAN_NEG"),
+            (0x1A, 0, 0): (f"{a} + {b}", "2"), (0x1A, 0, 1): (f"{a} - {b}", "2"),
+            (0x1A, 1, 1): (f"{fabs_}({a} - {b})", "2 | RT_VNAN_ABS"), (0x1B, 1, 0): (f"{a} * {b}", "2"),
+            (0x1F, 1, 0): (f"{a} / {b}", "2"),
+        }
+        if key in nan:
+            return vfp(rd, rn, rm, lanes, esize, *nan[key])
         compare = {(0x1C, 0, 0): f"{a} == {b}", (0x1C, 1, 0): f"{a} >= {b}", (0x1C, 1, 1): f"{a} > {b}",
                    (0x1D, 1, 0): f"{fabs_}({a}) >= {fabs_}({b})", (0x1D, 1, 1): f"{fabs_}({a}) > {fabs_}({b})"}
         if key in compare:
@@ -157,7 +177,7 @@ class SimdMixin:
         pairwise = {(0x1A, 1, 0): "{x} + {y}", (0x1E, 1, 0): f"fmax{p}({{x}}, {{y}})", (0x1E, 1, 1): f"fmin{p}({{x}}, {{y}})",
                     (0x18, 1, 0): f"fmaxnm{p}({{x}}, {{y}})", (0x18, 1, 1): f"fminnm{p}({{x}}, {{y}})"}
         if key in pairwise and not scalar:
-            return vpair(rd, rn, rm, lanes, f, pairwise[key])
+            return vpair(rd, rn, rm, lanes, f, pairwise[key], f"fnan2{p}" if key == (0x1A, 1, 0) else None)
         raise Unsupported(f"simd: three-same fp opcode {opcode:#x}")
 
     # ------------------------------------------------------------------ two-register miscellaneous
@@ -190,6 +210,11 @@ class SimdMixin:
                 m, wide = 64 // esize, UF[esize * 2]
                 return vset(rd, rn, rn, [(f"{wide}[{i}]", f"(u64)a_.{uf}[{i + (m if q else 0)}] << {esize}")
                                          for i in range(m)])
+            if opcode in (2, 6) and size != 3:           # saddlp / uaddlp, sadalp / uadalp (6: accumulating)
+                xf, wide = (UF if u else SF)[esize], UF[esize * 2]
+                cast = "(u64)" if u else "(u64)(i64)"
+                acc = f"(u64)d_.{wide}[i_] + " if opcode == 6 else ""
+                return vop(rd, rn, rn, lanes // 2, wide, f"{acc}{cast}a_.{xf}[2 * i_] + {cast}a_.{xf}[2 * i_ + 1]")
         if opcode in (8, 9, 10, 11):
             if (scalar and size != 3) or (size == 3 and not (q or scalar)):
                 raise Unsupported("simd: reserved element size")
@@ -214,7 +239,7 @@ class SimdMixin:
         if key in zero_compare:
             return vop(rd, rn, rn, n, fu, f"{a} {zero_compare[key]} 0 ? -1 : 0")
         unary = {
-            (0x0F, 0, 1): f"fabs{x}({a})", (0x0F, 1, 1): f"-{a}", (0x1F, 1, 1): f"sqrt{x}({a})",
+            (0x0F, 0, 1): f"fabs{x}({a})", (0x0F, 1, 1): f"-{a}",
             (0x18, 0, 0): f"__builtin_roundeven{x}({a})", (0x18, 1, 0): f"round{x}({a})", (0x18, 0, 1): f"ceil{x}({a})",
             (0x19, 0, 0): f"floor{x}({a})", (0x19, 1, 0): f"rint{x}({a})", (0x19, 0, 1): f"trunc{x}({a})",
             (0x19, 1, 1): f"nearbyint{x}({a})",
@@ -223,6 +248,8 @@ class SimdMixin:
         }
         if key in unary:
             return vop(rd, rn, rn, n, ff, unary[key])
+        if key == (0x1F, 1, 1):
+            return vfp(rd, rn, rn, n, fe, f"sqrt{x}({a})", "1")
         to_int = {(0x1B, 1): "{}", (0x1A, 0): "__builtin_roundeven({})", (0x1A, 1): "ceil({})", (0x1B, 0): "floor({})",
                   (0x1C, 0): "round({})"}.get((opcode, hi))
         if to_int:
@@ -247,7 +274,8 @@ class SimdMixin:
             sz = size & 1
             f, p = FF[64 if sz else 32], "D" if sz else "S"
             x, y = f"a_.{f}[0]", f"a_.{f}[1]"
-            expr = {(0x0D, 0): f"{x} + {y}", (0x0F, 0): f"fmax{p}({x}, {y})", (0x0F, 1): f"fmin{p}({x}, {y})",
+            expr = {(0x0D, 0): f"fnan2{p}({x} + {y}, {x}, {y})", (0x0F, 0): f"fmax{p}({x}, {y})",
+                    (0x0F, 1): f"fmin{p}({x}, {y})",
                     (0x0C, 0): f"fmaxnm{p}({x}, {y})", (0x0C, 1): f"fminnm{p}({x}, {y})"}.get((opcode, size >> 1))
             if expr is None or not u:
                 raise Unsupported(f"simd: scalar pairwise opcode {opcode:#x}")
@@ -401,7 +429,7 @@ class SimdMixin:
             if opcode == 0x1C:
                 return vop(rd, rn, rn, n, ff, f"(f{esize})a_.{uf if u else sf_}[i_] * {hexf(2.0 ** -rsh, esize == 32)}")
             return vop(rd, rn, rn, n, uf, f"f2{'u' if u else 'i'}{esize}((f64)a_.{ff}[i_] * {hexf(2.0 ** rsh, False)})")
-        if opcode in (0x10, 0x14):
+        if opcode in (0x10, 0x11, 0x14):
             if scalar or esize == 64:
                 raise Unsupported("simd: reserved")
             m, wide = 64 // esize, UF[esize * 2]
@@ -411,18 +439,30 @@ class SimdMixin:
                 return vset(rd, rn, rn, [(f"{wide}[{i}]", f"{src.format(i + part)} << {lsh}") for i in range(m)])
             if u:
                 raise Unsupported("simd: saturating narrow")
-            return vset(rd, rn, rn, [(f"{uf}[{i + part}]", f"a_.{wide}[{i}] >> {rsh}") for i in range(m)], bool(q))
+            # shrn / rshrn (and the "2" forms: the upper half, the lower one kept). rshrn rounds in
+            # 64 bits: a carry out of them would land above the narrow lane.
+            src = f"a_.{wide}[{{}}] >> {rsh}" if opcode == 0x10 else f"((u64)a_.{wide}[{{}}] + {const(1 << (rsh - 1))}) >> {rsh}"
+            return vset(rd, rn, rn, [(f"{uf}[{i + part}]", src.format(i)) for i in range(m)], bool(q))
         if (scalar and esize != 64) or (esize == 64 and not (q or scalar)):
             raise Unsupported("simd: reserved element size")
         n = 1 if scalar else (64 << q) // esize
         ua, sa, ud = f"a_.{uf}[i_]", f"a_.{sf_}[i_]", f"d_.{uf}[i_]"
         right = ("0" if rsh == esize else f"{ua} >> {rsh}") if u else f"{sa} >> {min(rsh, esize - 1)}"
+        rounded = f"(u64)({right}) + (({ua} >> {rsh - 1}) & 1)"   # (x + 2^(rsh-1)) >> rsh, with no overflow
+        ones = (1 << esize) - 1
+        sli = f"({ud} & {const((1 << lsh) - 1)}) | ((u64){ua} << {lsh})"
         if opcode == 0x00:
             return vop(rd, rn, rn, n, uf, right)
         if opcode == 0x02:
             return vop(rd, rn, rn, n, uf, f"(u64){ud} + (u64)({right})")
-        if opcode == 0x0A and not u:
-            return vop(rd, rn, rn, n, uf, f"(u64){ua} << {lsh}")
+        if opcode == 0x04:   # srshr / urshr
+            return vop(rd, rn, rn, n, uf, rounded)
+        if opcode == 0x06:   # srsra / ursra
+            return vop(rd, rn, rn, n, uf, f"(u64){ud} + {rounded}")
+        if opcode == 0x08 and u:   # sri: the destination keeps its top rsh bits
+            return vop(rd, rn, rn, n, uf, ud if rsh == esize else f"({ud} & {const(ones ^ ones >> rsh)}) | ({ua} >> {rsh})")
+        if opcode == 0x0A:   # shl / sli (which keeps the destination's low lsh bits)
+            return vop(rd, rn, rn, n, uf, sli if u else f"(u64){ua} << {lsh}")
         raise Unsupported(f"simd: shift-by-immediate opcode {opcode:#x}")
 
     # ------------------------------------------------------------------ vector x indexed element
@@ -440,11 +480,13 @@ class SimdMixin:
             n, f = 1 if scalar else (64 << q) // esize, FF[esize]
             fma = "fma" if esize == 64 else "fmaf"
             a, d, e = f"a_.{f}[i_]", f"d_.{f}[i_]", f"b_.{f}[{index}]"
-            expr = {(1, 0): f"{fma}({a}, {e}, {d})", (5, 0): f"{fma}(-{a}, {e}, {d})", (9, 0): f"{a} * {e}",
-                    (9, 1): f"rt_fmulx{esize}({a}, {e})"}.get((opcode, u))
+            if (opcode, u) == (9, 1):
+                return vop(rd, rn, rm, n, f, f"rt_fmulx{esize}({a}, {e})")
+            expr = {(1, 0): (f"{fma}({a}, {e}, {d})", "3"), (5, 0): (f"{fma}(-{a}, {e}, {d})", "3 | RT_VNAN_NEG"),
+                    (9, 0): (f"{a} * {e}", "2")}.get((opcode, u))
             if expr is None:
                 raise Unsupported("simd: reserved")
-            return vop(rd, rn, rm, n, f, expr)
+            return vfp(rd, rn, rm, n, esize, *expr, index)
         if size not in (1, 2):
             raise Unsupported("simd: reserved element size")
         esize = 8 << size

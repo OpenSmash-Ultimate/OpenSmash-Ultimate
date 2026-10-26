@@ -3,6 +3,7 @@ PowerShell with made-up inputs. No downloads, no installs, no game files."""
 from pathlib import Path
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -44,6 +45,19 @@ SDL_RELEASES = json.dumps([
     {"tag_name": "release-2.32.0", "prerelease": False, "draft": False,
      "assets": [{"name": "SDL2-devel-2.32.0-VC.zip", "browser_download_url": "https://x/sdl2.zip"}]},
 ])
+
+
+# Step-CheckPc's surroundings, made up: Windows 10 build 19045 with a Ryzen and 40 GB, a drive whose free space is not
+# known, a .NET whose C# compiler is broken (Add-Type throws), and a $Root with no build folder (no build\isa.txt)
+PC_MOCKS = ("function Add-Type { throw '(0) : Unable to find messages file ''cscui.dll''' }; "
+            "function Get-PSDrive { $null }; "
+            "function Get-CimInstance { [CmdletBinding()] param([string]$ClassName) switch ($ClassName) { "
+            "'Win32_OperatingSystem' { [pscustomobject]@{ Caption = 'Microsoft Windows 10 Home'; Version = '10.0.19045'; "
+            "BuildNumber = '19045'; OSArchitecture = '64-bit' } } "
+            "'Win32_Processor' { [pscustomobject]@{ Name = 'AMD Ryzen 7 3700X 8-Core Processor' } } "
+            "'Win32_ComputerSystem' { [pscustomobject]@{ TotalPhysicalMemory = 40GB } } } }; "
+            "$Root = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString()); ")
+PC_STEP = "try { Step-CheckPc } catch { 'STOPPED: ' + $_.Exception.Message }"
 
 
 @unittest.skipUnless(PS.exists(), 'Windows PowerShell only')
@@ -151,6 +165,46 @@ class InstallerDecisionTests(unittest.TestCase):
         self.assertIsNone(got['none'])
         self.assertTrue(got['ryugame'] and got['ryufw'] and got['switch'])
 
+    def test_firmware_optional(self):
+        # (only for the fonts: none is fine, a folder that is named must be a firmware; an emulator's is suggested only
+        # when it has one)
+        with tempfile.TemporaryDirectory() as tmp:
+            fw, empty = os.path.join(tmp, 'fw'), os.path.join(tmp, 'empty')
+            for d in (fw, empty):
+                os.makedirs(d)
+            open(os.path.join(fw, '0100.nca'), 'w').close()
+            got = ps(f"@{{ none = (Test-FirmwareFolder ''); empty = (Test-FirmwareFolder '{empty}'); "
+                     f"gone = (Test-FirmwareFolder '{tmp}\\missing'); fw = (Test-FirmwareFolder '{fw}') }}")
+            self.assertTrue(got['none']['Ok'])
+            self.assertIn('the open fonts of third_party\\fonts_open', got['none']['Text'])
+            self.assertEqual([got['empty']['Ok'], got['gone']['Ok'], got['fw']['Ok']], [False, False, True])
+            detect = ("function Get-SavedFolders { @{} }; "
+                      "function Get-FolderCandidates { @{ Keys = @(); Firmware = $global:fws; Game = @() } }; ")
+            got = ps(detect + f"$global:fws = @('{empty}', '{fw}'); $a = (Get-DetectedFolders).Firmware; "
+                     f"$global:fws = @('{empty}'); @{{ a = $a; b = (Get-DetectedFolders).Firmware }}")
+            self.assertEqual(got['a'], fw)
+            self.assertIsNone(got['b'])
+
+    def test_build_with_and_without_firmware(self):
+        out = ps_text("$DryRun = $true; $Script:Python = @('python'); "
+                      "Step-Build @{ Game = 'D:\\G'; Keys = 'D:\\K'; Firmware = '' } | Out-Null; "
+                      "Step-Build @{ Game = 'D:\\G'; Keys = 'D:\\K'; Firmware = 'D:\\F' } | Out-Null")
+        self.assertIn('--game D:\\G --keys D:\\K --no-firmware', out)
+        self.assertIn('--game D:\\G --keys D:\\K --firmware D:\\F', out)
+
+    def test_firmware_question_optional(self):
+        # -NoWizard: the question says it is optional and what for; Enter on nothing, or none over the one found, is none
+        mocks = ("$global:prompts = @(); "
+                 "function Read-Host { param([string]$Prompt) $global:prompts += $Prompt; $a = $global:q[0]; $global:q.RemoveAt(0); $a }; "
+                 "function Test-GameFolder { @{ Ok = $true; Text = 'the game' } }; function Test-KeysFolder { @{ Ok = $true; Text = 'keys' } }; ")
+        for typed, found in (("''", '$null'), ("'none'", "'D:\\FW'")):
+            out = ps_text(mocks + f"$global:q = [Collections.ArrayList]@('D:\\G', 'D:\\K', {typed}, 'Me', 'n', 'n', 'n'); "
+                          f"$r = Read-Answers @{{ Game = $null; Keys = $null; Firmware = {found} }} 'P'; "
+                          "'RESULT firmware=[' + $r.Firmware + '] prompt=[' + $global:prompts[2] + ']'")
+            self.assertIn('RESULT firmware=[] prompt=[Folder with your firmware', out)
+            self.assertIn('(optional; none: the open fonts) [none]]' if found == '$null' else '[D:\\FW]]', out)
+            self.assertIn('The firmware is optional', out)
+
     def test_avx2_by_processor_name(self):
         cases = {
             'Intel(R) Core(TM) i5-4590 CPU @ 3.30GHz': True,
@@ -168,28 +222,188 @@ class InstallerDecisionTests(unittest.TestCase):
         for name, want in cases.items():
             self.assertEqual(got[name], want, name)
 
+    SSE42_BY_NAME = {   # (below x86-64-v2: no SSE4.2, False; else not known by name, None)
+        'Intel(R) Core(TM)2 Duo CPU E8400 @ 3.00GHz': False,
+        'AMD Phenom(tm) II X4 965 Processor': False,
+        'AMD Athlon(tm) II X2 250 Processor': False,
+        'AMD Athlon(tm) 64 X2 Dual Core Processor 4200+': False,
+        'Intel(R) Atom(TM) CPU N270 @ 1.60GHz': False,
+        'Intel(R) Atom(TM) CPU D2700 @ 2.13GHz': False,
+        'AMD A8-3850 APU with Radeon(tm) HD Graphics': False,
+        'AMD A6-3420M APU with Radeon(tm) HD Graphics': False,
+        'Intel(R) Atom(TM) CPU Z3735F @ 1.33GHz': None,   # (Silvermont: SSE4.2)
+        'AMD A10-7850K Radeon R7, 12 Compute Cores 4C+8G': None,
+        'AMD Athlon(tm) X4 860K Quad Core Processor': None,
+        'Intel(R) Core(TM) i7 CPU 920 @ 2.67GHz': None,
+        'Intel(R) Core(TM) i7-3770 CPU @ 3.40GHz': None,
+        'AMD Ryzen 5 3600 6-Core Processor': None,
+        'Intel(R) Celeron(R) N4000 CPU': None,
+        # Core 2's Pentiums, Celerons and Xeons; Pentium 4 and D
+        'Pentium(R) Dual-Core CPU E5700 @ 3.00GHz': False,
+        'Pentium(R) Dual-Core CPU T4200 @ 2.00GHz': False,
+        'Intel(R) Pentium(R) Dual CPU E2180 @ 2.00GHz': False,
+        'Intel(R) Pentium(R) 4 CPU 3.00GHz': False,
+        'Intel(R) Pentium(R) D CPU 3.40GHz': False,
+        'Intel(R) Celeron(R) CPU E3300 @ 2.50GHz': False,
+        'Celeron(R) Dual-Core CPU T3000 @ 1.80GHz': False,
+        'Intel(R) Celeron(R) CPU 430 @ 1.80GHz': False,
+        'Intel(R) Celeron(R) CPU 900 @ 2.20GHz': False,
+        'Intel(R) Celeron(R) M CPU 520 @ 1.60GHz': False,
+        'Intel(R) Xeon(R) CPU E5450 @ 3.00GHz': False,
+        'Intel(R) Xeon(R) CPU X5460 @ 3.16GHz': False,
+        'Intel(R) Xeon(R) CPU 5160 @ 3.00GHz': False,
+        'Intel(R) Xeon(R) CPU X3360 @ 2.83GHz': False,
+        'Intel(R) Pentium(R) CPU G620 @ 2.60GHz': None,       # (Sandy Bridge)
+        'Intel(R) Pentium(R) CPU G6950 @ 2.80GHz': None,      # (Clarkdale)
+        'Intel(R) Pentium(R) CPU P6200 @ 2.13GHz': None,      # (Arrandale)
+        'Intel(R) Pentium(R) CPU N3700 @ 1.60GHz': None,      # (Airmont)
+        'Intel(R) Pentium(R) Silver N5000 CPU @ 1.10GHz': None,
+        'Intel(R) Pentium(R) Gold G5400 CPU @ 3.70GHz': None,
+        'Intel(R) Celeron(R) CPU 847 @ 1.10GHz': None,        # (Sandy Bridge)
+        'Intel(R) Celeron(R) CPU 787 @ 1.30GHz': None,        # (Sandy Bridge: 7xx left out, Penryn's too)
+        'Intel(R) Celeron(R) CPU G530 @ 2.40GHz': None,
+        'Intel(R) Celeron(R) CPU B820 @ 1.70GHz': None,
+        'Intel(R) Celeron(R) CPU 1007U @ 1.50GHz': None,
+        'Intel(R) Celeron(R) CPU 2957U @ 1.40GHz': None,
+        'Intel(R) Celeron(R) CPU N2840 @ 2.16GHz': None,      # (Silvermont)
+        'Intel(R) Celeron(R) CPU J1900 @ 1.99GHz': None,
+        'Intel(R) Xeon(R) CPU X5650 @ 2.67GHz': None,         # (Westmere)
+        'Intel(R) Xeon(R) CPU E5520 @ 2.27GHz': None,         # (Nehalem)
+        'Intel(R) Xeon(R) CPU X3440 @ 2.53GHz': None,         # (Lynnfield)
+        'Intel(R) Xeon(R) CPU W3520 @ 2.67GHz': None,         # (Bloomfield)
+        'Intel(R) Xeon(R) CPU E5-2670 0 @ 2.60GHz': None,
+        'Intel(R) Xeon(R) CPU E31230 @ 3.20GHz': None,        # (Sandy Bridge, as its first ones were named)
+        'Intel(R) Xeon(R) CPU E3-1230 V2 @ 3.30GHz': None,
+        # Atom 230 and 330 (Diamondville)
+        'Intel(R) Atom(TM) CPU 230 @ 1.60GHz': False,
+        'Intel(R) Atom(TM) CPU 330 @ 1.60GHz': False,
+        'Intel(R) Atom(TM) CPU C2758 @ 2.40GHz': None,        # (Avoton)
+        'Intel(R) Atom(TM) CPU E3845 @ 1.91GHz': None,        # (Bay Trail)
+        'Intel(R) Atom(TM) x5-Z8350 CPU @ 1.44GHz': None,
+        # K8 and K10: Athlon, Turion, Sempron
+        'AMD Athlon(tm) X2 Dual Core Processor BE-2400': False,
+        'AMD Athlon(tm) Dual Core Processor 5050e': False,
+        'AMD Athlon(tm) X2 Dual-Core QL-60': False,
+        'AMD Athlon(tm) Processor LE-1640': False,
+        'AMD Athlon(tm) 7750 Dual-Core Processor': False,
+        'AMD Turion(tm) 64 X2 Mobile Technology TL-60': False,
+        'AMD Turion(tm) II Dual-Core Mobile M520': False,
+        'AMD Turion(tm) II Neo K625 Dual-Core Processor': False,
+        'AMD Sempron(tm) Processor 3100+': False,
+        'AMD Sempron(tm) Processor LE-1250': False,
+        'AMD Sempron(tm) 140 Processor': False,
+        'AMD Sempron(tm) X2 190 Dual Core Processor': False,
+        'AMD Athlon(tm) X2 340 Dual Core Processor': None,    # (Trinity)
+        'AMD Athlon(tm) X4 750K Quad Core Processor': None,
+        'AMD Athlon(tm) 5350 APU with Radeon(tm) R3': None,   # (Jaguar)
+        'AMD Athlon(tm) Silver 3050U with Radeon Graphics': None,
+        'AMD Athlon 3000G with Radeon Vega Graphics': None,
+        'AMD Sempron(tm) 2650 APU with Radeon(tm) R3': None,  # (Jaguar)
+        'AMD Sempron(tm) 3850 APU with Radeon(tm) R3': None,
+        # Bobcat; Llano's E2-3200
+        'AMD E-350 Processor': False,
+        'AMD E-450 APU with Radeon(tm) HD Graphics': False,
+        'AMD C-60 APU with Radeon(tm) HD Graphics': False,
+        'AMD E1-1200 APU with Radeon(tm) HD Graphics': False,
+        'AMD E2-1800 APU with Radeon(tm) HD Graphics': False,
+        'AMD E2-3200 APU with Radeon(tm) HD Graphics': False,
+        'AMD E2-3000 APU with Radeon(TM) HD Graphics': None,   # (Jaguar)
+        'AMD E1-2500 APU with Radeon(TM) HD Graphics': None,
+        'AMD E2-3800 APU with Radeon(TM) HD Graphics': None,
+        'AMD E1-6010 APU with AMD Radeon R2 Graphics': None,   # (Puma)
+        'AMD E2-9000e RADEON R2, 4 COMPUTE CORES 2C+2G': None,  # (Excavator)
+        'AMD A4-5000 APU with Radeon(TM) HD Graphics': None,   # (Jaguar)
+        'AMD R-464L APU with Radeon(tm) HD Graphics': None,    # (Trinity)
+    }
+
+    def test_sse42_by_processor_name(self):
+        names = '; '.join(f"'{n}' = (Test-Sse42ByName '{n}')" for n in self.SSE42_BY_NAME)
+        got = ps('@{ ' + names + ' }')
+        for name, want in self.SSE42_BY_NAME.items():
+            self.assertEqual(got[name], want, name)
+
     def test_pc_check_without_csharp_compiler(self):
         # a PC whose .NET C# compiler is broken: Add-Type -MemberDefinition stopped step 2 with
         # "Unable to find messages file 'cscui.dll'"; the AVX2 question must not need the compiler
-        mocks = ("function Add-Type { throw '(0) : Unable to find messages file ''cscui.dll''' }; "
-                 "function Get-PSDrive { $null }; "
-                 "function Get-CimInstance { [CmdletBinding()] param([string]$ClassName) switch ($ClassName) { "
-                 "'Win32_OperatingSystem' { [pscustomobject]@{ Caption = 'Microsoft Windows 10 Home'; Version = '10.0.19045'; "
-                 "BuildNumber = '19045'; OSArchitecture = '64-bit' } } "
-                 "'Win32_Processor' { [pscustomobject]@{ Name = 'AMD Ryzen 7 3700X 8-Core Processor' } } "
-                 "'Win32_ComputerSystem' { [pscustomobject]@{ TotalPhysicalMemory = 40GB } } } }; ")
-        step = "try { Step-CheckPc } catch { 'STOPPED: ' + $_.Exception.Message }"
+        mocks, step = PC_MOCKS, PC_STEP
         got = ps(mocks + "@{ sse2 = (Test-CpuFeature 10); avx2 = (Test-CpuFeature 40) }")
         self.assertIs(got['sse2'], True)              # every x64 processor: Windows answered
         self.assertIn(got['avx2'], (True, False))
         out = ps_text(mocks + step)
         self.assertNotIn('cscui', out)
         self.assertIn('AMD Ryzen 7 3700X 8-Core Processor - has', out)
-        out = ps_text(mocks + "function Test-CpuFeature { $null }; " + step)   # Windows cannot be asked: the name
+        isa = "; 'isa=' + $env:SSBU_ISA"   # what the build is told (the installer's environment is the build's)
+        unknown = "$env:SSBU_ISA = $null; function Test-CpuFeature { $null }; "   # Windows cannot be asked: the name
+        out = ps_text(mocks + unknown + step + isa)
         self.assertIn('AMD Ryzen 7 3700X 8-Core Processor - has AVX2', out)
+        self.assertIn('isa=avx2', out)   # (and the build is told: it cannot ask either)
         self.assertNotIn('STOPPED', out)
-        out = ps_text(mocks + "function Test-CpuFeature { $false }; " + step)
-        self.assertIn('STOPPED: The processor (AMD Ryzen 7 3700X 8-Core Processor) has no AVX2', out)
+        out = ps_text(mocks + unknown + "$env:SSBU_ISA = 'x86-64-v2'; " + step + isa)
+        self.assertIn('isa=x86-64-v2', out)   # what the person set stays
+        # SSE4.2 without AVX2: built for older processors (x86-64-v2), said, not stopped
+        out = ps_text(mocks + "$env:SSBU_ISA = $null; function Test-CpuFeature { param([int]$Feature) $Feature -ne 40 }; "
+                      + step + isa)
+        self.assertIn('AMD Ryzen 7 3700X 8-Core Processor - has no AVX2: the game is built for older processors (x86-64-v2)', out)
+        self.assertIn('isa=\n', out.replace('\r', '') + '\n')   # (the build asks Windows itself)
+        self.assertNotIn('STOPPED', out)
+        out = ps_text(mocks + "function Test-CpuFeature { $false }; " + step)   # below x86-64-v2: stopped
+        self.assertIn('STOPPED: The processor (AMD Ryzen 7 3700X 8-Core Processor) has no SSE4.2', out)
+        # Windows before 10 version 2004 (build 19041) cannot be asked: the name, which stops a family without SSE4.2
+        older = mocks.replace('19045', '18363')
+        for name, said in (('Intel(R) Core(TM)2 Duo CPU E8400', 'STOPPED: The processor (Intel(R) Core(TM)2 Duo CPU E8400) '
+                                                                 'has no SSE4.2'),
+                           ('Intel(R) Core(TM) i7-3770 CPU @ 3.40GHz', 'Intel(R) Core(TM) i7-3770 CPU @ 3.40GHz - has no AVX2: '
+                                                                        'the game is built for older processors (x86-64-v2)')):
+            with self.subTest(name):
+                out = ps_text(older.replace('AMD Ryzen 7 3700X 8-Core Processor', name) + "$env:SSBU_ISA = $null; " + step + isa)
+                self.assertIn(said, out)
+                self.assertNotIn('isa=avx2', out)
+
+    def test_pc_check_keeps_the_build_folder_s_choice(self):
+        # What build\isa.txt says (tools/isa.py): a choice SSBU_ISA made for the last build ('told', what the game's
+        # start-up message has a player do: SSBU_ISA=x86-64-v2) is not overridden by the name on a Windows that cannot be
+        # asked (before build 19041); a folder an older version built (ssbu.exe, no isa.txt) stays avx2 when the name
+        # does not say. What the installer sets is what the build is told (its environment is the build's).
+        def check(name, files, windows='18363', features='$null', env='$null'):
+            with tempfile.TemporaryDirectory(prefix='installer-test-') as tmp:
+                for rel, text in files.items():
+                    Path(tmp, 'build').mkdir(exist_ok=True)
+                    Path(tmp, 'build', rel).write_text(text, newline='\n')
+                mocks = PC_MOCKS.replace('AMD Ryzen 7 3700X 8-Core Processor', name).replace('19045', windows)
+                out = ps_text(mocks + f"$Root = '{tmp}'; $env:SSBU_ISA = {env}; "
+                              f"function Test-CpuFeature {{ param([int]$Feature) {features} }}; "
+                              + PC_STEP + "; 'isa=' + $env:SSBU_ISA")
+            return out.replace('\r', '') + '\n'
+        avx2, unknown = 'Intel(R) Core(TM) i5-4590 CPU @ 3.30GHz', 'Intel(R) Xeon(R) CPU E5-2680 v3 @ 2.50GHz'
+        told = 'x86-64-v2\ntold\n# the instruction set this folder\'s build is compiled for\n'
+        out = check(avx2, {'isa.txt': told, 'ssbu.exe': 'MZ'})
+        self.assertIn(f'{avx2} - has AVX2: the game stays built for x86-64-v2, as SSBU_ISA chose for the last build', out)
+        self.assertIn('isa=\n', out)   # (not told avx2: the build keeps build\isa.txt's choice)
+        self.assertNotIn('STOPPED', out)
+        out = check(avx2, {'isa.txt': 'avx2\ntold\n'})   # (the installer's own SSBU_ISA=avx2, kept)
+        self.assertIn('the game stays built for avx2, as SSBU_ISA chose for the last build', out)
+        self.assertIn('isa=\n', out)
+        out = check(avx2, {'isa.txt': 'x86-64-v2\nchosen\n'})   # (not told: the name says, as before)
+        self.assertIn('isa=avx2\n', out)
+        out = check(avx2, {'isa.txt': told}, env="'avx2'")   # (SSBU_ISA set: what the person set stays)
+        self.assertIn('isa=avx2\n', out)
+        self.assertNotIn('stays built for', out)
+        # Windows asked (build 19041 and later): a told choice is kept on a processor with AVX2, and said
+        out = check(avx2, {'isa.txt': told}, windows='19045', features='$true')
+        self.assertIn(f'{avx2} - has AVX2: the game stays built for x86-64-v2, as SSBU_ISA chose', out)
+        self.assertIn('isa=\n', out)
+        out = check(avx2, {'isa.txt': told}, windows='19045', features='$Feature -ne 40')   # (one without: x86-64-v2 anyway)
+        self.assertIn(f'{avx2} - has no AVX2: the game is built for older processors (x86-64-v2)', out)
+        # a name that does not say: the folder an older version built stays avx2; with no build, x86-64-v2
+        out = check(unknown, {'ssbu.exe': 'MZ'})
+        self.assertIn(f'{unknown} - whether it has AVX2 is unknown: the game stays built for avx2, as it was (Windows cannot '
+                      'be asked; if the game then says the processor lacks AVX2, build it with SSBU_ISA=x86-64-v2', out)
+        self.assertIn('isa=\n', out)
+        out = check(unknown, {'isa.txt': 'x86-64-v2\nchosen\n', 'ssbu.exe': 'MZ'})
+        self.assertIn('the game stays built for x86-64-v2, as it was (Windows cannot be asked; SSBU_ISA=avx2 builds for AVX2', out)
+        out = check(unknown, {})
+        self.assertIn(f'{unknown} - whether it has AVX2 is unknown: the game is built for older processors (x86-64-v2)', out)
+        self.assertIn('isa=\n', out)
 
     def test_source_version(self):
         sha = '9fdc8fd21b3fde86c3e58a1e634a7e76a87220c7'
@@ -236,6 +450,18 @@ class InstallerDecisionTests(unittest.TestCase):
         got = ps(expr)
         for k, (_l, _o, _n, want) in cases.items():
             self.assertEqual(got[k].replace('\r\n', '\n'), want, k)
+
+    def test_config_path(self):
+        """online_name.txt where the game reads it (runtime/config_folder.h): config\\ once the game has made it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            expr = (f"$r = '{tmp}'; @(foreach ($n in 'online_name.txt', 'online_server.txt') "
+                    "{ (Get-ConfigPath $r $n).Substring($r.Length) })")
+            self.assertEqual(ps(expr), ['\\online_name.txt', '\\online_server.txt'])
+            os.makedirs(os.path.join(tmp, 'config'))
+            Path(tmp, 'config', 'version.ini').write_text('version = 1\n')
+            self.assertEqual(ps(expr), ['\\config\\online_name.txt', '\\online_server.txt'])
+            Path(tmp, 'config', 'online_server.txt').write_text('off\n')
+            self.assertEqual(ps(expr), ['\\config\\online_name.txt', '\\config\\online_server.txt'])
 
     def test_command_line_round_trip(self):
         args = ['plain', 'with space', 'quote"inside', 'trailing\\', 'back\\"quote', 'C:\\My Dump\\', '']
@@ -349,6 +575,34 @@ class InstallerDecisionTests(unittest.TestCase):
         self.assertEqual([got['v1'], got['v2'], got['v3'], got['v4'], got['v5']], [True, True, False, False, False])
         self.assertEqual(got['d1'], 35)
         self.assertEqual(got['d2'], 0)
+
+
+class InstallerPatternTests(unittest.TestCase):
+    """Test-Sse42ByName's patterns, read from the installer and tried with Python's re where PowerShell is not there to
+    run test_sse42_by_processor_name: the same names. Not case-sensitive, as PowerShell's -match; the constructs they
+    use (\\b, \\s, \\d, classes, groups, alternation) mean the same to .NET's regex."""
+    def test_sse42_by_processor_name(self):
+        text = SCRIPT.read_text(encoding='utf-8')
+        body = text[text.index('function Test-Sse42ByName'):]
+        body = body[:body.index('\n}\n')]
+        families = re.findall(r"'([^']*)'", body[body.index('$families = @('):body.index('foreach')])
+        self.assertGreaterEqual(len(families), 14)
+        self.assertIn('if ($Name -match $family) { return $false }', body)
+        for name, want in InstallerDecisionTests.SSE42_BY_NAME.items():
+            got = False if any(re.search(family, name, re.I) for family in families) else None
+            self.assertEqual(got, want, name)
+
+
+    def test_config_path_as_the_launcher(self):
+        """The installer finds online_name.txt by the launcher's rule (tests/test_launcher_ini.py runs that one)."""
+        def rule(text):
+            body = text[text.index('function Get-ConfigPath'):]
+            body = body[body.index('$inFolder ='):]
+            return body[:body.index('\n}\n')].replace('\r', '')
+        text = SCRIPT.read_text(encoding='utf-8')
+        self.assertEqual(rule(text), rule((ROOT / 'tools/launcher.ps1').read_text(encoding='utf-8')))
+        self.assertIn("$nameFile = Get-ConfigPath $Root 'online_name.txt'", text)
+        self.assertNotRegex(text, r"Join-Path \$Root '(display\.ini|controllers\.ini|launcher\.ini|online_name\.txt|online_direct\.txt)'")
 
 
 if __name__ == '__main__':

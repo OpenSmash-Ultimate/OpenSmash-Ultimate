@@ -1265,9 +1265,20 @@ BOOL SetEndOfFile(HANDLE h) {
     return at < 0 || ftruncate(o->fd, at) ? fail_errno() : TRUE;
 }
 
+/* To the disk itself: macOS's fsync leaves the data in the drive's cache, F_FULLFSYNC has the
+ * drive write it out (as FlushFileBuffers does on Windows); fsync where the file system has no
+ * F_FULLFSYNC. */
+static int full_fsync(int fd) {
+#ifdef __APPLE__
+    if (!fcntl(fd, F_FULLFSYNC)) return 0;
+#endif
+    return fsync(fd);
+}
+
 BOOL FlushFileBuffers(HANDLE h) {
     Obj *o = obj_of(h, H_FILE);
-    return o && !fsync(o->fd) ? TRUE : fail_errno();
+    if (!o) { last_error = ERROR_INVALID_HANDLE; return FALSE; }
+    return full_fsync(o->fd) ? fail_errno() : TRUE;
 }
 
 #ifdef __APPLE__   /* (stat's times by their Darwin names; macOS keeps a real creation time) */
@@ -1318,10 +1329,23 @@ BOOL RemoveDirectoryA(LPCSTR path) {
     return rmdir(rt_unix_path(path, buf, sizeof buf)) ? fail_errno() : TRUE;
 }
 
+/* rename(): atomic, and it replaces an existing file whatever the flags say. With
+ * MOVEFILE_WRITE_THROUGH the file and the folder now holding its name are flushed before it
+ * returns, so the move survives a power cut (the folder to the disk itself on macOS). */
 BOOL MoveFileExA(LPCSTR from, LPCSTR to, DWORD flags) {
-    (void)flags;
     char a[4096], b[4096];
-    return rename(rt_unix_path(from, a, sizeof a), rt_unix_path(to, b, sizeof b)) ? fail_errno() : TRUE;
+    if (rename(rt_unix_path(from, a, sizeof a), rt_unix_path(to, b, sizeof b))) return fail_errno();
+    if (!(flags & MOVEFILE_WRITE_THROUGH)) return TRUE;
+    int fd = open(b, O_RDONLY | O_CLOEXEC), ok = fd >= 0 && !fsync(fd);
+    if (fd >= 0) close(fd);
+    char *slash = strrchr(b, '/');
+    if (slash == b) slash[1] = 0;
+    else if (slash) *slash = 0;
+    else snprintf(b, sizeof b, ".");
+    fd = open(b, O_RDONLY | O_CLOEXEC);
+    ok = ok && fd >= 0 && !full_fsync(fd);
+    if (fd >= 0) close(fd);
+    return ok ? TRUE : fail_errno();
 }
 
 DWORD GetFileAttributesA(LPCSTR path) {

@@ -22,9 +22,15 @@ brought up to date only where something else reads it:
                                   unwinder, or longjmp, put the frame's state there).
   exits (return, tail calls, traps)
                                   every dirty register.
+  calls on the exact list (tools/hooks.txt)
+                                  every dirty register before the call, every register the
+                                  function uses read back after it, so that a hook there sees
+                                  and can change all of them: at a direct call to an
+                                  exact-callee (marked @E@), at every call of an exact-caller.
 
-The lifter marks the places with tokens this pass replaces: @S@ / @R@ around a call, @F@ / @A@
-around setjmp and before a landing pad's goto (@A@: read everything back), @X@ before an exit.
+The lifter marks the places with tokens this pass replaces: @S@ / @R@ around a call (@E@ before
+@S@: an exact one), @F@ / @A@ around setjmp and before a landing pad's goto (@A@: read everything
+back), @X@ before an exit.
 """
 import re
 
@@ -60,9 +66,10 @@ def load(m):
     return "".join(f"x_{r} = c->x[{r}]; " if r != SP else "x_sp = c->sp; " for r in regs_of(m))
 
 
-def apply(body, labels, careful):
+def apply(body, labels, careful, exact=False):
     """body: [(pc, stmt, falls)]; labels: pcs that are goto targets. careful: the function has
-    landing pads or setjmp (spill everything at calls). Returns (declarations, new body)."""
+    landing pads or setjmp (spill everything at calls). exact: an exact-caller (every call as
+    exact as one marked @E@). Returns (declarations, new body)."""
     n = len(body)
     writes, used = [], 0
     index = {pc: i for i, (pc, _s, _f) in enumerate(body)}
@@ -85,7 +92,7 @@ def apply(body, labels, careful):
         d = dirty[i] | writes[i]
         pad = None
         if "@S@" in s:
-            d &= ~(spillable | CALLER_MASK)          # spilled, or read back after the call
+            d &= ~(ALL if exact or "@E@" in s else (spillable | CALLER_MASK))   # spilled, or read back after the call
             if "@A@" in s:                           # a landing pad: everything read back
                 pad = 0
         elif "@F@" in s:
@@ -108,7 +115,9 @@ def apply(body, labels, careful):
         s = RE_USE.sub(r"x_\1", s)
         s = RE_SP_USE.sub("x_sp", s)
         dw = (d | writes[i]) & used
-        if "@S@" in s:
+        if "@S@" in s and (exact or "@E@" in s):
+            s = s.replace("@E@", "").replace("@S@", store(dw)).replace("@R@", load(used))
+        elif "@S@" in s:
             s = s.replace("@S@", store(dw & spillable)).replace("@R@", load(used & CALLER_MASK))
         if "@F@" in s:
             s = s.replace("@F@", store(dw))

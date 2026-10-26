@@ -63,7 +63,7 @@ def place(name, size, rows):
 # ---- module build dirs ---------------------------------------------------------------
 def fingerprint(extra):
     """The tools' fingerprint: the generator's sources and `extra` (the runtime's set of
-    native functions and wraps, which change what is generated)."""
+    native functions and wraps, and tools/hooks.txt's entries, which change what is generated)."""
     h = hashlib.sha256()
     for n in GENERATOR:
         with open(os.path.join(TOOLS, n), "rb") as f:

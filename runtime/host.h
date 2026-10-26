@@ -27,6 +27,9 @@
 /* `HLE_WRAP(address) { ... }` wraps a guest function no module exports, at that (hex) address:
  * the recompiler keeps it as f_<address>_orig and sends every caller here instead. */
 #define HLE_WRAP(addr) GuestFn f_##addr##_orig; void hle_wrap_##addr(Cpu *c)
+/* `HLE_WRAP_EXPORT(name) { ... }` wraps the function exported under that (mangled) name in every
+ * module that defines it, wherever the module lies (a fighter module's); `orig(c)` runs it. */
+#define HLE_WRAP_EXPORT(sym) void hle_wrap_##sym(Cpu *c, GuestFn *orig)
 /* Guest memory is mapped RT_MEMBASE above the guest's addresses (recomp.h: 0 but on macOS), so
  * a guest address handed to the host - as a pointer, to the C library, to the OS - goes through
  * these, as recomp.h's ld and st helpers do. */
@@ -48,6 +51,7 @@ u64 rt_clock_ns(void);                                 /* monotonic time on the 
 u64 rt_guest_copy(const void *data, size_t size);      /* permanent guest-visible copy (e.g. a string) */
 u64 rt_native(GuestFn *fn, const char *name);          /* guest address for a native function */
 u64 rt_symbol(const char *name);                       /* guest address of an exported symbol, or 0 */
+const char *rt_symbol_at(u64 addr, const char *prefix);   /* a name exported at that address starting so, or NULL */
 const char *rt_describe(u64 guest_addr, char *buf, size_t n);   /* "module+0x1234" */
 void rt_backtrace(void);
 void rt_backtrace_thread(HANDLE thread, int max_frames);   /* another thread's guest frames */
@@ -55,6 +59,14 @@ void kernel_dump_threads(void);
 _Noreturn void rt_fatal(const char *fmt, ...);         /* message + guest backtrace, then exit */
 extern int rt_trace;
 extern const char *rt_data_dir;                        /* where the module images (and romfs.cfg) live */
+/* The game's three boot modules. The game's C defines them const; a --game-dll build
+ * (SSBU_GAME_DLL) has them in a library of its own, and host.c holds copies of its tables,
+ * filled in at load. */
+#ifdef SSBU_GAME_DLL
+extern RtModule rt_module_main, rt_module_subsdk0, rt_module_sdk;
+#else
+extern const RtModule rt_module_main, rt_module_subsdk0, rt_module_sdk;
+#endif
 u64 rt_load_nro(Cpu *c, u64 image);                     /* load the recompiled NRO; 0 if none matches */
 void account_save_id(u64 uid[2]);                       /* (hle_env.c) the id naming a user's save folder */
 
@@ -62,10 +74,12 @@ void account_save_id(u64 uid[2]);                       /* (hle_env.c) the id na
 void kernel_init(void);
 void kernel_add_region(u64 base, u64 size, u32 state, u32 perm);   /* for svcQueryMemory */
 int kernel_read64(u64 addr, u64 *out);                  /* 0 if no mapped memory holds addr */
+void kernel_map_status(void);                           /* the status line of svcMapMemory's mappings */
 Cpu *kernel_main_thread(u32 *handle);                  /* context + handle for the initial thread */
 u32 kernel_new_session(void *session);                 /* a handle for a native IPC session */
 void *kernel_session_of(u32 handle);
 u32 kernel_create_event(void);                         /* a kernel event handle, for native code */
+void kernel_copy_handle(u32 handle);                   /* native code hands the guest that handle again */
 void fiber_counts(u32 *slots, u32 *finalized, u64 *made);   /* (hle_fiber.c) host fibers in use, spare; guest fibers started */
 
 /* ---- native system services (ipc.c) ----------------------------------------------- */

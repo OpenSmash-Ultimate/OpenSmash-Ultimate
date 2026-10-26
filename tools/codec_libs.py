@@ -18,8 +18,11 @@ those two still win when they are set.
 Why plain C for libvpx: its x86 assembly needs nasm, one more tool to install, and the
 intrinsics-only files depend on symbols from that assembly. Measured on the game's 1280x720
 title movie (1,069 frames, four decoder threads): about 570 frames a second in plain C against
-1,100 with the assembly - either far above the 30 the game shows. libopus keeps its SSE and
-AVX2 intrinsics, which are plain C for a compiler told /arch:AVX2 (the whole program is).
+1,100 with the assembly - either far above the 30 the game shows. libopus keeps its SSE, SSE4.1
+and AVX2 intrinsics, which are plain C for a compiler told the instruction set the whole program
+is built for (tools/isa.py): all of them for avx2; for x86-64-v2, SSE4.1 at most, without opus's
+AVX2 files. A library is built again when its sources or its compile command change (another
+instruction set): build/codecs/<library>.flags says what it was built with.
 
 The macOS build (arm64, tools/mac/build_mac.py) has `build_static()` make them with clang and ar
 into <its folder>/codecs: both in plain C there - opus without its x86 code (its ARM code is not
@@ -27,6 +30,7 @@ vendored), libvpx with config-arm64/, the same configuration for arm64 in C only
 """
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -48,11 +52,12 @@ VPX_LIB = os.path.join(OUT, "libvpx.lib")
 OPUS_FOLDERS = ("celt", "celt/x86", "silk", "silk/x86", "silk/float", "silk/float/x86", "src")
 OPUS_INCLUDES = ("include", "celt", "silk", "silk/float", "src", "")
 # opus's build-system defines: no config.h; alloca for its scratch buffers (no C99 VLAs with
-# clang-cl); the x86 intrinsics present and presumed (the program needs AVX2 anyway, so there is
-# nothing to detect at run time)
+# clang-cl); the x86 intrinsics present and presumed (the program needs the instruction set it is
+# built for anyway, so there is nothing to detect at run time): avx2's, then x86-64-v2's (SSE4.1 at most)
 OPUS_DEFINES = ("OPUS_BUILD", "USE_ALLOCA", "HAVE_LRINT", "HAVE_LRINTF", 'PACKAGE_VERSION="1.5.2"',
                 "OPUS_X86_MAY_HAVE_SSE", "OPUS_X86_MAY_HAVE_SSE2", "OPUS_X86_MAY_HAVE_SSE4_1", "OPUS_X86_MAY_HAVE_AVX2",
                 "OPUS_X86_PRESUME_SSE", "OPUS_X86_PRESUME_SSE2", "OPUS_X86_PRESUME_SSE4_1", "OPUS_X86_PRESUME_AVX2")
+OPUS_DEFINES_V2 = tuple(d for d in OPUS_DEFINES if not d.endswith("_AVX2"))
 VPX_FOLDERS = ("vp9", "vp9/common", "vp9/decoder", "vpx/src", "vpx_dsp", "vpx_mem", "vpx_ports",
                "vpx_scale", "vpx_scale/generic", "vpx_util")
 VPX_INCLUDES = ("config", "")   # config/: the headers libvpx's configure and make generate
@@ -114,15 +119,34 @@ def archiver(clang):
     return None
 
 
-def build_lib(name, lib, root, folders, includes, defines, jobs, log):
+def wanted(src, defines):
+    """Whether a library's source is built with these defines: opus's AVX2 files only with its AVX2
+    code (they use AVX2 intrinsics unguarded, which a compiler not told AVX2 refuses)."""
+    return "OPUS_X86_MAY_HAVE_AVX2" in defines or not re.search(r"_avx2?\.c$", os.path.basename(src))
+
+
+def windows_flags(root, includes, defines, target):
+    """The Windows build's flags for one library: the program's own for the instruction set `target`
+    (cc.base_cflags), /O2, the library's include folders and defines."""
+    import cc
+    flags = [*cc.base_cflags(target), "/O2"]
+    for inc in includes:
+        flags += ["/I", os.path.join(root, inc) if inc else root]
+    return flags + ["/D" + d for d in defines]
+
+
+def windows_command(root, includes, defines, target):
+    """What a Windows library's .flags records: the compiler and its flags."""
+    import cc
+    return subprocess.list2cmdline([cc.CLANG, *windows_flags(root, includes, defines, target)]) + "\n"
+
+
+def build_lib(name, lib, root, folders, includes, defines, jobs, log, target):
     import cc
     objdir = os.path.join(OUT, name)
     os.makedirs(objdir, exist_ok=True)
-    flags = [*cc.BASE_CFLAGS, "/O2"]
-    for inc in includes:
-        flags += ["/I", os.path.join(root, inc) if inc else root]
-    flags += ["/D" + d for d in defines]
-    srcs = sources(root, folders)
+    flags = windows_flags(root, includes, defines, target)
+    srcs = [s for s in sources(root, folders) if wanted(s, defines)]
     t0 = time.time()
 
     def one(src):
@@ -152,23 +176,36 @@ def build_lib(name, lib, root, folders, includes, defines, jobs, log):
     log(f"  {os.path.relpath(lib, ROOT)}: {len(objs)} files in {time.time() - t0:.1f}s")
 
 
-LIBRARIES = {
-    "opus": (OPUS_LIB, OPUS, OPUS_FOLDERS, OPUS_INCLUDES, OPUS_DEFINES, have_opus),
-    "libvpx": (VPX_LIB, VPX, VPX_FOLDERS, VPX_INCLUDES, VPX_DEFINES, have_vpx),
-}
+def libraries(target="avx2"):
+    """name -> (library, root, folders, includes, defines, have) of the Windows build's libraries for
+    an instruction set (tools/isa.py)."""
+    return {
+        "opus": (OPUS_LIB, OPUS, OPUS_FOLDERS, OPUS_INCLUDES, OPUS_DEFINES if target == "avx2" else OPUS_DEFINES_V2, have_opus),
+        "libvpx": (VPX_LIB, VPX, VPX_FOLDERS, VPX_INCLUDES, VPX_DEFINES, have_vpx),
+    }
 
 
-def build(which=("opus", "libvpx"), jobs=16, force=False, log=print):
-    """Build the named libraries whose sources are there and whose library is stale. Returns
-    the libraries that are there afterwards."""
+LIBRARIES = libraries()
+
+
+def build(which=("opus", "libvpx"), jobs=16, force=False, log=print, target=None):
+    """Build the named libraries whose sources are there and whose library is stale or was built with
+    other flags (another instruction set: `target`, cc.ISA unless given). Returns the libraries that
+    are there afterwards."""
+    if target is None:
+        import cc
+        target = cc.ISA
     libs = []
     for name in which:
-        lib, root, folders, includes, defines, have = LIBRARIES[name]
+        lib, root, folders, includes, defines, have = libraries(target)[name]
         if not have():
             continue
-        if force or not is_current(lib, root, folders, includes):
-            log(f"  building {name} from {os.path.relpath(root, ROOT)}")
-            build_lib(name, lib, root, folders, includes, defines, jobs, log)
+        command = windows_command(root, includes, defines, target)
+        if force or not static_is_current(lib, root, folders, includes, command):
+            log(f"  building {name} from {os.path.relpath(root, ROOT)} for {target}")
+            build_lib(name, lib, root, folders, includes, defines, jobs, log, target)
+            with open(lib + ".flags", "w", encoding="utf-8", newline="\n") as f:
+                f.write(command)
         libs.append(lib)
     return libs
 
@@ -288,9 +325,13 @@ def main():
     a = ap.parse_args()
     if sys.platform == "darwin":
         return main_mac(a)
-    for name, (lib, root, folders, includes, defines, have) in LIBRARIES.items():
-        state = "no sources" if not have() else "up to date" if is_current(lib, root, folders, includes) else "to build"
-        print(f"{name}: {len(sources(root, folders))} sources, {os.path.relpath(lib, ROOT)} {state}")
+    import cc
+    print(f"instruction set: {cc.ISA} ({cc.ISA_WHY})")
+    for name, (lib, root, folders, includes, defines, have) in libraries(cc.ISA).items():
+        current = static_is_current(lib, root, folders, includes, windows_command(root, includes, defines, cc.ISA))
+        state = "no sources" if not have() else "up to date" if current else "to build"
+        srcs = [s for s in sources(root, folders) if wanted(s, defines)]
+        print(f"{name}: {len(srcs)} sources, {os.path.relpath(lib, ROOT)} {state}")
     if a.status:
         return 0
     try:

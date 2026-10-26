@@ -1,14 +1,19 @@
 #include "recomp.h"
+#include "hookable.h"
 
 /* The boot test's main (tools/mac/boottest): hand-written as tools/recomp.py writes a module's code,
  * at main's address. nnMain checks what the loader and the kernel did and exercises system calls:
  * memory, a second guest thread, waits, sleeps, atomics, a guest setjmp the runtime's longjmp comes
- * back to; each check's line is in x20/x21 as it runs (said once it passes; a failure says it and
- * stops with svcBreak), then svcExitProcess. A string is at the address before it ("..."):
- * tools/mac/boottest/boottest.py puts it in the image there.
+ * back to, a guest C++ exception thrown through a hook slot (f_7100001500) by libunwind's jumpto
+ * (the runtime's, rt_unwind_jumpto) and caught at its landing pad (with build_mac.py --game-dll,
+ * thrown in the program and caught in the game's library: tools/game_dll.py); each check's line is
+ * in x20/x21 as it runs (said once it passes; a failure says it and stops with svcBreak), then
+ * svcExitProcess. A string is at the address before it ("..."): tools/mac/boottest/boottest.py
+ * puts it in the image there.
  *   heap + 0x4000  the thread's argument: its event's handle; + 0x8 its result, + 0x10 its handle,
  *                  + 0x18 the argument as it saw it
  *   heap + 0x5000  the counter both threads increment
+ *   heap + 0x7000  the exception's context, as libunwind's Registers_arm64 has it (jumpto loads it)
  *   0x7701000000   the thread's stack (64 KiB), mapped from heap + 0x1000000 */
 
 GuestFn f_7100000100;
@@ -19,8 +24,11 @@ GuestFn f_7100001100;
 GuestFn f_7100001200;
 GuestFn f_7100001300;
 GuestFn f_7100001400;
+GuestFn f_7100001500;
+GuestFn f_7100001580;
 GuestFn f_7100007f00;
 GuestFn f_7100007f10;
+extern RtHook rt_hook_7100001500;
 
 void f_7100000100(Cpu *c) {
     u32 nf = 0, zf = 0, cf = 0, vf = 0; u64 ex_a = 0, ex_v = 0;
@@ -324,6 +332,28 @@ L_770:;
     if (X(9) != 0) goto L_ff0;
     X(30) = 0x7100000788ull; f_7100001200(c);
 
+    X(20) = 0x7100008C00ull; X(21) = 77;   /* "boottest: a guest C++ exception resumed its landing pad, x19 from its context" */
+    X(8) = X(22) + 0x7000ull;
+    X(9) = 0x1A1Aull;
+    st64(X(8) + 0x98ull, (u64)X(9));
+    st64(X(8) + 0xA0ull, (u64)X(20));
+    st64(X(8) + 0xA8ull, (u64)X(21));
+    st64(X(8) + 0xB0ull, (u64)X(22));
+    st64(X(8) + 0xE8ull, (u64)X(29));
+    X(9) = SP + 0x0ull;
+    st64(X(8) + 0xF8ull, (u64)X(9));
+    X(9) = 0x7100000E00ull;
+    st64(X(8) + 0x100ull, (u64)X(9));
+    X(0) = X(8);
+    X(19) = 0xDEADull;
+    { u64 sp_ = SP; int lp_ = 0; __try { X(30) = 0x7100000D3Cull; RT_HOOK(rt_hook_7100001500)(c); } __except (rt_eh_filter(GetExceptionInformation(), sp_, 0x7100000E00ull)) { lp_ = 1; } if (lp_) goto L_e00; }
+    goto L_ff0;
+L_e00:;
+    X(10) = 0x1A1Aull;
+    X(9) = X(19) ^ X(10);
+    if (X(9) != 0) goto L_ff0;
+    X(30) = 0x7100000E10ull; f_7100001200(c);
+
     X(0) = 0x7100008B00ull; X(1) = 43;   /* "boottest: all checks passed: svcExitProcess" */
     rt_svc(c, 0x27);
     rt_svc(c, 0x7);
@@ -414,3 +444,15 @@ void f_7100007f10(Cpu *c) {
     X(16) = X(16) + 0x8ull;
     { static RtCache k_; GuestFn *t_ = rt_target(X(17), &k_); __attribute__((musttail)) return t_(c); }
 }
+
+GuestFn f_7100001500_body;
+RtHook rt_hook_7100001500 = {0x7100001500ull, f_7100001500_body, f_7100001500_body};
+RT_HOOK_ADD(rt_hook_7100001500)
+void f_7100001500(Cpu *c) { TAIL(RT_HOOK(rt_hook_7100001500)) }
+RT_HOOKABLE void f_7100001500_body(Cpu *c) {
+    u32 nf = 0, zf = 0, cf = 0, vf = 0; u64 ex_a = 0, ex_v = 0;
+    TAIL(f_7100001580)
+}
+
+GuestFn rt_unwind_jumpto;
+void f_7100001580(Cpu *c) { rt_unwind_jumpto(c); }

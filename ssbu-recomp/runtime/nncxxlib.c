@@ -14,9 +14,10 @@
  * default seed 5489 inside the object (624 words, index at +0x9c0) and operator() is the generator's next output, so
  * every random_device yields the same sequence 3499211612, 581869302, ... The game sees the same here.
  *
- * Locale facets [sdk]: ctype<char> = { vptr, refs, const unsigned short *table, bool del }, classic table copied from
- * the SDK (mask bits: 0x1 blank, 0x2 cntrl, 0x4 punct, 0x100 upper, 0x200 lower, 0x400 alpha, 0x800 digit,
- * 0x1000 xdigit, 0x2000 space, 0x4000 print); numpunct<char> = { vptr, refs, char '.', char ',', string grouping "" }.
+ * Locale facets [sdk]: ctype<char> = { vptr, refs, const unsigned short *table, bool del }, classic table built
+ * from the C locale's ASCII classes (mask bits: 0x1 blank, 0x2 cntrl, 0x4 punct, 0x100 upper, 0x200 lower,
+ * 0x400 alpha, 0x800 digit, 0x1000 xdigit, 0x2000 space, 0x4000 print); numpunct<char> = { vptr, refs, char '.',
+ * char ',', string grouping "" }.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -221,16 +222,25 @@ static void rd_dtor(Ctx *c) { RET(A0); }
 static void rd_entropy(Ctx *c) { vzero(&c->v[0]); c->v[0].df[0] = 0.0; }
 
 /* ================================================================ locale facets of the classic locale */
-static const uint16_t classic_table[256] = {            /* [sdk] ctype<char>::classic_table(), entries 0..127; the rest are 0 */
-    0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x2003, 0x2002, 0x2002, 0x2002, 0x2002, 0x002, 0x002,
-    0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002,
-    0x6001, 0x4004, 0x4004, 0x4004, 0x4004, 0x4004, 0x4004, 0x4004, 0x4004, 0x4004, 0x4004, 0x4004, 0x4004, 0x4004, 0x4004, 0x4004,
-    0x5800, 0x5800, 0x5800, 0x5800, 0x5800, 0x5800, 0x5800, 0x5800, 0x5800, 0x5800, 0x4004, 0x4004, 0x4004, 0x4004, 0x4004, 0x4004,
-    0x4004, 0x5500, 0x5500, 0x5500, 0x5500, 0x5500, 0x5500, 0x4500, 0x4500, 0x4500, 0x4500, 0x4500, 0x4500, 0x4500, 0x4500, 0x4500,
-    0x4500, 0x4500, 0x4500, 0x4500, 0x4500, 0x4500, 0x4500, 0x4500, 0x4500, 0x4500, 0x4500, 0x4004, 0x4004, 0x4004, 0x4004, 0x4004,
-    0x4004, 0x5600, 0x5600, 0x5600, 0x5600, 0x5600, 0x5600, 0x4600, 0x4600, 0x4600, 0x4600, 0x4600, 0x4600, 0x4600, 0x4600, 0x4600,
-    0x4600, 0x4600, 0x4600, 0x4600, 0x4600, 0x4600, 0x4600, 0x4600, 0x4600, 0x4600, 0x4600, 0x4004, 0x4004, 0x4004, 0x4004, 0x002,
-};
+/* ctype<char>'s classic table, built at init from the C locale's ASCII classes; entries 128..255 stay 0 */
+enum { CT_BLANK = 0x1, CT_CNTRL = 0x2, CT_PUNCT = 0x4, CT_UPPER = 0x100, CT_LOWER = 0x200, CT_ALPHA = 0x400,
+       CT_DIGIT = 0x800, CT_XDIGIT = 0x1000, CT_SPACE = 0x2000, CT_PRINT = 0x4000 };
+static uint16_t classic_table[256];
+static void classic_table_init(void) {
+    for (int ch = 0; ch < 0x80; ch++) {
+        int up = ch >= 'A' && ch <= 'Z', lo = ch >= 'a' && ch <= 'z', dig = ch >= '0' && ch <= '9';
+        int print = ch >= 0x20 && ch < 0x7f, hex = dig || ((ch | 0x20) >= 'a' && (ch | 0x20) <= 'f');
+        uint16_t m = print ? CT_PRINT : CT_CNTRL;
+        if (ch == ' ' || ch == '\t') m |= CT_BLANK;
+        if (ch == ' ' || (ch >= '\t' && ch <= '\r')) m |= CT_SPACE;
+        if (up) m |= CT_UPPER | CT_ALPHA;
+        if (lo) m |= CT_LOWER | CT_ALPHA;
+        if (dig) m |= CT_DIGIT;
+        if (hex) m |= CT_XDIGIT;
+        if (print && ch != ' ' && !up && !lo && !dig) m |= CT_PUNCT;
+        classic_table[ch] = m;
+    }
+}
 static uint64_t g_id_ctype[2], g_id_numpunct[2];        /* the imported locale::id objects: only their addresses matter */
 static uint64_t g_vt_ctype[13], g_ti_ctype[2], g_ctype[4];
 static uint64_t g_vt_numpunct[10], g_ti_numpunct[2], g_numpunct[6];
@@ -402,6 +412,7 @@ void cxxlib_install_data(void) {
     g_ti_ctype[0] = vt_class; g_ti_ctype[1] = P64("NSt3__15ctypeIcEE");
     g_vt_ctype[0] = 0; g_vt_ctype[1] = P64(g_ti_ctype);
     for (int i = 0; i < 11; i++) g_vt_ctype[2 + i] = hostfn_address(ct[i].name, ct[i].fn);
+    classic_table_init();
     g_ctype[0] = P64(&g_vt_ctype[2]); g_ctype[1] = 0x7fffffff; g_ctype[2] = P64(classic_table); g_ctype[3] = 0;
     g_ti_numpunct[0] = vt_class; g_ti_numpunct[1] = P64("NSt3__18numpunctIcEE");
     g_vt_numpunct[0] = 0; g_vt_numpunct[1] = P64(g_ti_numpunct);

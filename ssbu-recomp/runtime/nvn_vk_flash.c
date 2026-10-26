@@ -1,4 +1,4 @@
-/* Track V session 13: the FLASH DETECTOR (included by nvn_vk_draw.c, render thread only). The owner reported "sometimes
+/* Track V session 13: the FLASH DETECTOR (a build unit of its own, render thread only). The owner reported "sometimes
  * white flashes on screen" from real play. Every presented frame the window texture is blitted a second time into a
  * 16x9 image, copied into a small host-visible buffer, and read 8 presents later (the command buffer that wrote it has
  * been waited for by then: there are 8 in flight). Cost: one blit of 144 texels and one copy of 576 bytes per frame.
@@ -10,6 +10,12 @@
  * list of the passes (size, format, window texture or not, draws in it) and the 16x9 brightness map.
  * SSBU_VK_FLASHLOG=0 off; =2 also reports every jump to near white that does NOT come back within 3 frames (a scene
  * change to a white screen is the game's own; for diagnosis). Default 1. Nothing here changes what is drawn. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <windows.h>
+#include "nvn_vk_int.h"
 #define FL_W 16
 #define FL_H 9
 #define FL_RING 8
@@ -32,7 +38,7 @@ static struct {
 
 static int fl_on(void) { if (g_fl.on < 0) { const char *e = getenv("SSBU_VK_FLASHLOG"); g_fl.on = e ? atoi(e) : 1; } return g_fl.on; }
 /* pass_begin: one entry per pass of the frame being drawn */
-static void fl_pass(int w, int h, int fmt, int win, int ncol, int depth) {
+void fl_pass(int w, int h, int fmt, int win, int ncol, int depth) {
     if (!fl_on()) return;
     int i = g_fl.cur.npass++;
     if (i >= FL_PASSES) return;
@@ -93,7 +99,7 @@ static void fl_analyse(FlFrame *f, const uint8_t *px) {
         && !(last >= 5 && fl_bright(&g_fl.hist[last - 4], &g_fl.hist[last - 5]))) { g_fl.jumps++; fl_report(last - 3, 4, 0); }
 }
 /* vk_present2, inside the command buffer of the present, right after the blit to the swapchain image. vt is in TRANSFER_SRC. */
-static void fl_capture(VTex *vt, const int *s4, LONG64 frame, int layout_before) {
+void fl_capture(VTex *vt, const int *s4, LONG64 frame, int layout_before) {
     if (!fl_on()) return;
     if (!g_fl.made) {
         VkImageCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -145,7 +151,7 @@ static void fl_capture(VTex *vt, const int *s4, LONG64 frame, int layout_before)
     }
     g_fl.n++;
 }
-static void fl_shutdown(void) {
+void fl_shutdown(void) {
     if (!g_fl.made) return;
     printf("nvn_vk_flash: %lld presented frames looked at, %lld WHITE FLASHES (1-3 frames near white and back), %lld jumps that stayed (counted only with SSBU_VK_FLASHLOG=2)\n", (long long)g_fl.n, (long long)g_fl.flashes, (long long)g_fl.jumps);
     for (int i = 0; i < FL_RING; i++) { vkDestroyBuffer(V.device, g_fl.buf[i], NULL); vmem_free(g_fl.bmem[i]); }

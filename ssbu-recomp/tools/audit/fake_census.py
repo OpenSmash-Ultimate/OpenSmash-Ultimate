@@ -30,8 +30,10 @@ def _default_exe():
     p = os.path.join(OUT, 'bind_exe.txt')
     return open(p).read().strip() if os.path.exists(p) else 'ssbu_audit.exe'
 EXE = os.path.splitext(os.environ.get('RECOMP_EXE') or _default_exe())[0]
-GRAPHICS = {'nvn_gl.c', 'nvn_stub.c', 'display.c', 'mx_translate.c', 'mx_translate.h', 'mx_ops.h', 'tex_decode.c'}
-HOST = ['hostrt.c', 'boot.c', 'nnsdk.c', 'libcxx.c', 'os_threads.c', 'nvn_stub.c', 'nvn_gl.c', 'nnfs.c', 'clib.c', 'nntime.c', 'nnhid.c',
+GRAPHICS = {'nvn_front.c', 'nvn_front_gl.h', 'nvn_gl.c', 'nvn_stub.c', 'display.c', 'mx_translate.c', 'mx_translate.h', 'mx_ops.h',
+            'tex_decode.c'}      # nvn_front.c and nvn_front_gl.h: the NVN front end, which was in nvn_gl.c until it was split off
+HOST = ['hostrt.c', 'boot.c', 'nnsdk.c', 'libcxx.c', 'os_threads.c', 'nvn_stub.c', 'nvn_front.c', 'nvn_front_gl.h', 'nvn_gl.c', 'nnfs.c',
+        'clib.c', 'nntime.c', 'nnhid.c',
         'sdkdata.c', 'display.c', 'nnpl.c', 'nnfontll.c', 'nnmovie.c', 'nnmisc.c', 'nnaudio.c', 'nnro.c', 'nro_registry.c', 'nnmovie_mf.c',
         'nniostream.c', 'nncxxrt.c', 'nncxxlib.c', 'nnlibc2.c', 'sdklift_rt.c', 'nnsdk2.c', 'nnmii.c', 'nnapplet.c', 'nnalbum.c', 'nnnet.c',
         'nnfsdir.c', 'nnunwind.c', 'nro_shim.c', 'gamedll.c', 'game_shim_eh.c']

@@ -25,7 +25,9 @@ tests, docs and build system.
 `codec_libs.py` compiles them with the defines opus's build system would set for this
 configuration: `OPUS_BUILD`, `USE_ALLOCA`, `HAVE_LRINT`, `HAVE_LRINTF`, `PACKAGE_VERSION`, and
 `OPUS_X86_MAY_HAVE_*` with `OPUS_X86_PRESUME_*` for SSE, SSE2, SSE4.1 and AVX2 (the whole program
-is built for AVX2, so there is nothing to detect at run time).
+is built for AVX2, so there is nothing to detect at run time). For the build for older processors
+(`x86-64-v2`, `tools/isa.py`) the AVX2 pair is left out, and with it the AVX2 files
+(`silk/x86/NSQ_del_dec_avx2.c`, `silk/float/x86/inner_product_FLP_avx2.c`, `celt/x86/pitch_avx.c`).
 
 ## libvpx/
 
@@ -60,6 +62,12 @@ configure run is needed:
 `config-arm64/` is the same for the macOS build (arm64, plain C): see its `README.md`. On arm64,
 `tools/codec_libs.py` (`build_static`) compiles opus without the `x86` folders and the
 `OPUS_X86_*` defines, and libvpx with `config-arm64/` in place of `config/`.
+
+## fonts_open/
+
+Not a library: open fonts used in place of a firmware font that isn't there, taken unmodified
+(only renamed) from the suyu repository. [Its README](fonts_open/README.md) says which runtime
+reads them, and lists each file's source, checksum and licence.
 
 ## Local changes
 

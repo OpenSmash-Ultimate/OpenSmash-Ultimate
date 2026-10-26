@@ -1,7 +1,7 @@
 /* Round 17 (track V session 17), TEST ONLY: the inputs of every draw of ONE tagged game frame, printed the same way by both
  * back ends, so that a draw that paints wrongly in Vulkan can be compared with the same draw in OpenGL.
  *   SSBU_DRAWTAG=1 with SSBU_SHOT_FIGHT=<n>[,..]: the submissions of the game frame whose present is saved as fight_<n>.bmp
- *   are tagged (nvn_gl.c queue_submit, on the game's thread); every draw command of them prints one "DT" line:
+ *   are tagged (nvn_front.c queue_submit, on the game's thread); every draw command of them prints one "DT" line:
  *   command data, hashes of the bytes in GUEST memory at the moment the back end prepares the draw (index range, every
  *   vertex stream an attribute names, every uniform / storage range), the program codes' hashes, the vertex layout.
  *   SSBU_DRAWTAG_DUMP=<i>[,<i>..]: the raw bytes of those draw numbers go to files dt_<back end>_<fight>_<draw>_*.bin in

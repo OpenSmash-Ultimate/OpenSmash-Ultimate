@@ -72,7 +72,7 @@ HLE(_ZN2nn4nifm22GetCurrentProxySettingEPNS0_12ProxySettingE) { c->x[0] = R_UNAV
 /* (debugging: every failure the game records in an nn::err::ErrorResultVariant, with where)
  * The addresses are 13.0.5's; the recompiler checks that the function there begins as the
  * signature on the line before says (tools/recomp.py wrap-sig prints one). */
-/* signature: 320003e8 b9000008 b9400028 b9000408 d65f03c0 */
+/* signature: 5 words, sha256 257a3315f09364b5 */
 HLE_WRAP(7109199790) {
     u32 r = c->x[1] ? ld32(c->x[1]) : 0;
     if (r && net_log() > 1) {
@@ -83,7 +83,7 @@ HLE_WRAP(7109199790) {
 }
 /* (and every Pia job - room creation, joining, ... - that ends in failure: Pia's own result
  * codes, which go nowhere near ErrorResultVariant) */
-/* signature: d10143ff a9034ff4 a9047bfd 910103fd aa0003f3 910043e0 9....... 91001274 910043e1 aa1403e0 9....... 320007e8 910003e0 aa1403e1 b9000268 9....... */
+/* signature: 16 words, sha256 e3cc6071822c8ffc */
 HLE_WRAP(71000b41f0) {
     if (net_log() > 1) {
         u32 r = c->x[1] ? ld32(c->x[1]) : 0;

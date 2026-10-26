@@ -9,9 +9,9 @@
  * (same GUID and serial number, else the same device path, else the first free player such a
  * pad had); [players] in controllers.ini keeps a player for one pad.
  *
- * controllers.ini (SSBU_CONTROLLERS=<file>, else in the current directory: the port root, where
- * every launcher starts the game) says how pads become players; it is written with the defaults
- * and their documentation when it does not exist.
+ * controllers.ini (SSBU_CONTROLLERS=<file>, else config/controllers.ini: config_folder.h) says how pads
+ * become players; it is written with the defaults and their documentation when it does not exist.
+ * ssbu-recomp's controllers.ini reads as one too (see below).
  *
  * GameCube controllers (on Nintendo's adapter or one in its "Wii U" mode, which SDL3 reads with its
  * own driver, or any pad SDL names a GameCube controller) play as the console's GameCube controllers:
@@ -32,8 +32,10 @@
 #include <math.h>
 #include <stdio.h>
 
+#include "config_folder.h"
 #include "pad.h"
 #include "padusb.h"
+#include "settings.h"
 #ifdef SSBU_HAVE_SDL3
 #include <SDL3/SDL_init.h>
 #include <SDL3/SDL_gamepad.h>
@@ -227,57 +229,290 @@ static void config_line(DevCfg *dc, const char *key, char *value, int line) {
     } else fprintf(stderr, "[input] controllers.ini line %d: unknown setting '%s'\n", line, key);
 }
 
-static void config_parse(FILE *f) {
-    char buf[512];
-    int section = 0, line = 0;   /* 0 none, 1 general, 2 players, 3 device */
-    DevCfg *dc = NULL;
-    while (fgets(buf, sizeof buf, f)) {
-        line++;
-        char *s = trim(buf);
-        if (*s == ';' || *s == '#' || !*s) continue;
-        for (char *p = s; *p; p++)   /* a comment after a value */
-            if ((*p == ';' || *p == '#') && (p[-1] == ' ' || p[-1] == '\t')) { *p = 0; s = trim(s); break; }
-        if (*s == '[') {
-            char *end = strchr(s, ']');
-            if (end) *end = 0;
-            char *name = trim(s + 1);
-            section = 0;
-            if (!_stricmp(name, "general")) section = 1;
-            else if (!_stricmp(name, "players")) section = 2;
-            else if (!_strnicmp(name, "device", 6) && (name[6] == ' ' || name[6] == '\t' || !name[6])) {
-                char *what = trim(name + 6);
-                section = 3;
-                if (!*what || !_stricmp(what, "default")) dc = &cfg.def;
-                else if (cfg.ndev < (int)(sizeof cfg.dev / sizeof *cfg.dev)) {
-                    dc = &cfg.dev[cfg.ndev++];
-                    memset(dc, 0, sizeof *dc);
-                    dc->layout = dc->style = dc->deadzone = dc->rumble = dc->trigger = dc->invert = -1;
-                    snprintf(dc->match, sizeof dc->match, "%s", what);
-                } else dc = NULL;
-            } else fprintf(stderr, "[input] controllers.ini line %d: unknown section [%s]\n", line, name);
-            continue;
+/* ---- ssbu-recomp's controllers.ini -----------------------------------------------------------
+ * The other port's file (config_folder.h carries it over from an ssbu-recomp install) has these sections
+ * with keys of its own:
+ *   [general]   layout = positional | labels | auto, deadzone and trigger_threshold as fractions
+ *               (0.10), rumble = on | off, rumble_strength (0-2), gamecube_style = native | pro,
+ *               outer_zone, ignore = <GUID>
+ *   [players]   player1 ... player8 = auto | none | <GUID>
+ *   [keyboard]  player = auto | none | 1-8, and the key of each button
+ *   [device <GUID>], [type xbox | playstation | switch | gamecube | generic | joystick]: [general]'s
+ *               pad keys, name, map.<button> = <controls>, axis.<stick axis>, invert.<stick axis>
+ * They read as this file's: [general]'s pad keys are [device default]'s, a [type] is the
+ * [device <type>] of each kind of pad SDL names, map.A is A (STICK_L is LSTICK), playerN is N, the
+ * keyboard's player is keyboard_player, a fraction is a percent, a strength the rumble's percent.
+ * A file can have both: this file's own keys win. What has nothing to stand for here is passed over
+ * quietly: a joystick's own numbers among a button's controls (button3, axis1+, hat0up) and the
+ * sticks' halves, the stick directions, the keyboard's keys, outer_zone, ignore, name, axis., invert. */
+enum { LINE_OURS, LINE_CARRIED, LINE_PART, LINE_KEPT };   /* this file's; ssbu-recomp's, carried over, in part, not at all */
+enum { SR_MAX = 4 };
+typedef struct SrSet { char section[104], key[24], value[160]; int late; } SrSet;   /* late: after the others (rumble = off) */
+
+static const char *const SR_BUTTONS[16] = {"A", "B", "X", "Y", "STICK_L", "STICK_R", "L", "R", "ZL", "ZR", "PLUS", "MINUS",
+                                           "LEFT", "UP", "RIGHT", "DOWN"};   /* (NPAD_BUTTON_NAMES' order) */
+static const struct { const char *kind, *types[SR_MAX]; } SR_TYPES[] = {
+    {"xbox", {"xbox360", "xboxone"}}, {"playstation", {"ps3", "ps4", "ps5"}},
+    {"switch", {"switchpro", "joyconleft", "joyconright", "joyconpair"}}, {"gamecube", {"gamecube"}}, {"generic", {"standard"}}};
+
+static int is_number(const char *v) {
+    char *end;
+    strtod(v, &end);
+    while (*end == ' ' || *end == '\t') end++;
+    return end != v && !*end;
+}
+
+static int sr_on(const char *v) { return !(_stricmp(v, "off") && _stricmp(v, "0") && _stricmp(v, "no") && _stricmp(v, "false")) ? 0 : 1; }
+
+static void sr_put(SrSet *out, int *n, const char *section, const char *key, const char *value, int late) {
+    if (*n >= SR_MAX) return;
+    snprintf(out[*n].section, sizeof out->section, "%s", section);
+    snprintf(out[*n].key, sizeof out->key, "%s", key);
+    snprintf(out[*n].value, sizeof out->value, "%s", value);
+    out[*n].late = late;
+    (*n)++;
+}
+
+/* What a line of [section] means in this file's terms: up to SR_MAX settings in out (*n). */
+static int sr_line(const char *section, const char *key, const char *value, SrSet out[SR_MAX], int *n) {
+    char dev[SR_MAX][104], v[160];
+    int ndev = 0, sr_values = 0;   /* sr_values: its values are ssbu-recomp's whatever their form */
+    *n = 0;
+    if (!_stricmp(section, "general")) {
+        if (!_stricmp(key, "rumble") && !is_number(value)) { sr_put(out, n, "general", "rumble", sr_on(value) ? "1" : "0", 0); return LINE_CARRIED; }
+        if (!_stricmp(key, "gamecube_style")) { sr_put(out, n, "device default", "style", !_stricmp(value, "pro") ? "pro" : "auto", 0); return LINE_CARRIED; }
+        if (!_stricmp(key, "outer_zone") || !_stricmp(key, "ignore")) return LINE_KEPT;
+        if (_stricmp(key, "layout") && _stricmp(key, "deadzone") && _stricmp(key, "trigger_threshold") && _stricmp(key, "rumble_strength"))
+            return LINE_OURS;
+        snprintf(dev[ndev++], sizeof dev[0], "device default");
+        sr_values = 1;
+    } else if (!_stricmp(section, "players")) {
+        if (_strnicmp(key, "player", 6) || key[6] < '1' || key[6] > '8' || key[7]) return LINE_OURS;
+        char k[2] = {key[6], 0};
+        if (*value && _stricmp(value, "auto")) sr_put(out, n, "players", k, value, 0);   /* (none: a player kept for no pad, as here) */
+        return LINE_CARRIED;
+    } else if (!_stricmp(section, "keyboard")) {
+        if (_stricmp(key, "player")) return LINE_KEPT;
+        if (!_stricmp(value, "none")) sr_put(out, n, "general", "keyboard_player", "0", 0);
+        else if (atoi(value) >= 1 && atoi(value) <= PAD_SLOTS) sr_put(out, n, "general", "keyboard_player", value, 0);
+        return LINE_CARRIED;   /* (auto: here the keyboard is player 1's) */
+    } else if (!_strnicmp(section, "type ", 5)) {
+        for (u32 t = 0; t < sizeof SR_TYPES / sizeof *SR_TYPES; t++)
+            if (!_stricmp(section + 5, SR_TYPES[t].kind))
+                for (int i = 0; i < SR_MAX && SR_TYPES[t].types[i]; i++) snprintf(dev[ndev++], sizeof dev[0], "device %s", SR_TYPES[t].types[i]);
+        if (!ndev) return LINE_KEPT;   /* (joystick: pads SDL has no mapping for, which are not used here) */
+        sr_values = 1;
+    } else if (!_strnicmp(section, "device ", 7)) snprintf(dev[ndev++], sizeof dev[0], "%s", section);
+    else return LINE_OURS;
+
+    if (!_stricmp(key, "layout")) {
+        if (!sr_values && (!_stricmp(value, "positional") || !_stricmp(value, "labels"))) return LINE_OURS;
+        snprintf(v, sizeof v, "%s", !_stricmp(value, "labels") || !_stricmp(value, "label") ? "labels" : "positional");   /* (auto: GameCube controllers go by their letters here anyway) */
+    } else if (!_stricmp(key, "deadzone") || !_stricmp(key, "trigger_threshold")) {
+        if (!sr_values && !strchr(value, '.')) return LINE_OURS;
+        snprintf(v, sizeof v, "%d", (int)lround(atof(value) * 100));
+    } else if (!_stricmp(key, "rumble")) {
+        if (!sr_values && is_number(value)) return LINE_OURS;
+        if (sr_on(value)) return LINE_CARRIED;   /* (on: as strong as its rumble_strength, or the default, says) */
+        for (int i = 0; i < ndev; i++) sr_put(out, n, dev[i], "rumble", "0", 1);
+        return LINE_CARRIED;
+    } else if (!_stricmp(key, "rumble_strength")) {
+        int p = (int)lround(atof(value) * 100);
+        snprintf(v, sizeof v, "%d", p > 100 ? 100 : p);
+        key = "rumble";
+    } else if (!_strnicmp(key, "map.", 4)) {
+        int b = -1, dropped = 0;
+        for (int i = 0; i < 16; i++) if (!_stricmp(key + 4, SR_BUTTONS[i])) b = i;
+        if (b < 0) return LINE_KEPT;   /* (a stick direction) */
+        char list[160], *t, *next;
+        snprintf(list, sizeof list, "%s", value);
+        v[0] = 0;
+        for (t = list; t; t = next) {   /* (not strtok: config_line's) */
+            if ((next = strchr(t, ',')) != NULL) *next++ = 0;
+            char *c = trim(t);
+            size_t len = strlen(c);
+            Source s;
+            if (len > 1 && c[len - 1] == '+') {   /* (a trigger's pull, as ssbu-recomp may write it) */
+                c[len - 1] = 0;
+                if (_stricmp(c, "lefttrigger") && _stricmp(c, "righttrigger")) c[len - 1] = '+';
+            }
+            if (!*c || !parse_source(c, &s)) { dropped = 1; continue; }
+            snprintf(v + strlen(v), sizeof v - strlen(v), "%s%s", v[0] ? ", " : "", c);
         }
-        char *eq = strchr(s, '=');
-        if (!eq) continue;
-        *eq = 0;
-        char *key = trim(s), *value = trim(eq + 1);
-        if (section == 1 && !_stricmp(key, "keyboard_player")) {
-            int n = atoi(value);
-            cfg.keyboard_slot = n >= 1 && n <= PAD_SLOTS ? n - 1 : -1;
-        } else if (section == 1 && !_stricmp(key, "background")) cfg.background = atoi(value) != 0;
-        else if (section == 1 && !_stricmp(key, "rumble")) cfg.rumble = atoi(value) != 0;
-        else if (section == 2) {
-            int n = atoi(key);
-            if (n >= 1 && n <= PAD_SLOTS) snprintf(cfg.pin[n - 1], sizeof cfg.pin[n - 1], "%s", value);
-            else fprintf(stderr, "[input] controllers.ini line %d: players are 1-8, not '%s'\n", line, key);
-        } else if (section == 3 && dc) config_line(dc, key, value, line);
-        else if (section) fprintf(stderr, "[input] controllers.ini line %d: unknown setting '%s'\n", line, key);
+        if (!v[0] && dropped) return LINE_KEPT;
+        if (!v[0]) snprintf(v, sizeof v, "none");
+        for (int i = 0; i < ndev; i++) sr_put(out, n, dev[i], NPAD_BUTTON_NAMES[b], v, 0);
+        return dropped ? LINE_PART : LINE_CARRIED;
+    } else if (!_stricmp(key, "name") || !_stricmp(key, "outer_zone") || !_strnicmp(key, "axis.", 5) || !_strnicmp(key, "invert.", 7)) {
+        return LINE_KEPT;
+    } else if (sr_values && !_stricmp(section, "general")) return LINE_OURS;
+    else if (sr_values) snprintf(v, sizeof v, "%s", value);   /* (a key of this file's in a [type]: for each kind) */
+    else return LINE_OURS;
+    for (int i = 0; i < ndev; i++) sr_put(out, n, dev[i], key, v, 0);
+    return LINE_CARRIED;
+}
+
+/* The file's lines (each cut at 511 characters, as before). */
+static char (*read_lines(FILE *f, int *n))[512] {
+    char (*lines)[512] = NULL;
+    int cap = 0;
+    *n = 0;
+    for (;;) {
+        if (*n == cap) {
+            void *more = realloc(lines, (size_t)(cap = cap ? cap * 2 : 128) * sizeof *lines);
+            if (!more) break;
+            lines = more;
+        }
+        if (!fgets(lines[*n], sizeof *lines, f)) break;
+        (*n)++;
     }
+    return lines;
+}
+
+/* One line's key and value (in buf), or its section's name (into section): 1 key, 2 section, 0 neither. */
+static int split_line(char *buf, char **key, char **value, char *section, int size) {
+    char *s = trim(buf);
+    if (*s == ';' || *s == '#' || !*s) return 0;
+    for (char *p = s; *p; p++)   /* a comment after a value */
+        if ((*p == ';' || *p == '#') && (p[-1] == ' ' || p[-1] == '\t')) { *p = 0; s = trim(s); break; }
+    if (*s == '[') {
+        char *end = strchr(s, ']'), *name;
+        if (end) *end = 0;
+        name = trim(s + 1);
+        if (!_strnicmp(name, "device", 6) && (name[6] == ' ' || name[6] == '\t')) snprintf(section, (size_t)size, "device %s", trim(name + 6));
+        else if (!_strnicmp(name, "type", 4) && (name[4] == ' ' || name[4] == '\t')) snprintf(section, (size_t)size, "type %s", trim(name + 4));
+        else snprintf(section, (size_t)size, "%s", name);
+        return 2;
+    }
+    char *eq = strchr(s, '=');
+    if (!eq) return 0;
+    *eq = 0;
+    *key = trim(s);
+    *value = trim(eq + 1);
+    return 1;
+}
+
+/* [device <what>]'s settings: [device default]'s, or the one for what (made the first time). */
+static DevCfg *dev_cfg(const char *what) {
+    if (!*what || !_stricmp(what, "default")) return &cfg.def;
+    for (int i = 0; i < cfg.ndev; i++)
+        if (!_stricmp(cfg.dev[i].match, what)) return &cfg.dev[i];
+    if (cfg.ndev == (int)(sizeof cfg.dev / sizeof *cfg.dev)) return NULL;
+    DevCfg *dc = &cfg.dev[cfg.ndev++];
+    memset(dc, 0, sizeof *dc);
+    dc->layout = dc->style = dc->deadzone = dc->rumble = dc->trigger = dc->invert = -1;
+    snprintf(dc->match, sizeof dc->match, "%s", what);
+    return dc;
+}
+
+/* key = value of [section] (general, players, device ...), this file's own. */
+static void config_set(const char *section, const char *key, char *value, int line) {
+    if (!_stricmp(section, "general") && !_stricmp(key, "keyboard_player")) {
+        int n = atoi(value);
+        cfg.keyboard_slot = n >= 1 && n <= PAD_SLOTS ? n - 1 : -1;
+    } else if (!_stricmp(section, "general") && !_stricmp(key, "background")) cfg.background = atoi(value) != 0;
+    else if (!_stricmp(section, "general") && !_stricmp(key, "rumble")) cfg.rumble = atoi(value) != 0;
+    else if (!_stricmp(section, "players")) {
+        int n = atoi(key);
+        if (n >= 1 && n <= PAD_SLOTS) snprintf(cfg.pin[n - 1], sizeof cfg.pin[n - 1], "%s", value);
+        else fprintf(stderr, "[input] controllers.ini line %d: players are 1-8, not '%s'\n", line, key);
+    } else if (!_strnicmp(section, "device", 6) && (section[6] == ' ' || !section[6])) {
+        DevCfg *dc = dev_cfg(section[6] ? section + 7 : "");
+        if (dc) config_line(dc, key, value, line);
+    } else if (section[0]) fprintf(stderr, "[input] controllers.ini line %d: unknown setting '%s'\n", line, key);
+}
+
+static int known_section(const char *s) {
+    return !_stricmp(s, "general") || !_stricmp(s, "players") || (!_strnicmp(s, "device", 6) && (s[6] == ' ' || !s[6])) ||
+           !_stricmp(s, "keyboard") || !_strnicmp(s, "type ", 5);   /* (the last two ssbu-recomp's) */
+}
+
+/* Three passes: ssbu-recomp's lines, their rumble = off, then this file's own, which win. */
+static void config_parse(FILE *f) {
+    int n;
+    char (*lines)[512] = read_lines(f, &n);
+    for (int pass = 0; pass < 3; pass++) {
+        char section[104] = "";
+        for (int i = 0; i < n; i++) {
+            char buf[512], *key, *value;
+            memcpy(buf, lines[i], sizeof buf);
+            int kind = split_line(buf, &key, &value, section, sizeof section);
+            if (kind == 2 && pass == 2 && !known_section(section))
+                fprintf(stderr, "[input] controllers.ini line %d: unknown section [%s]\n", i + 1, section);
+            if (kind != 1 || (pass == 2 && !known_section(section) && section[0])) continue;
+            SrSet set[SR_MAX];
+            int nset;
+            if (sr_line(section, key, value, set, &nset) == LINE_OURS) {
+                if (pass == 2 && known_section(section)) config_set(section, key, value, i + 1);
+                continue;
+            }
+            for (int k = 0; k < nset; k++)
+                if (pass < 2 && set[k].late == pass) config_set(set[k].section, set[k].key, set[k].value, i + 1);
+        }
+    }
+    free(lines);
+}
+
+const char *pad_default_ini(void) { return DEFAULT_INI; }
+
+int pad_ini_convert(const char *from, const char *to) {
+    FILE *f = fopen(from, "r");
+    if (!f) return 0;
+    int n, carried = 0, kept = 0;
+    char (*lines)[512] = read_lines(f, &n);
+    fclose(f);
+    char tmp[MAX_PATH + 8];
+    snprintf(tmp, sizeof tmp, "%s.new", to);
+    FILE *w = fopen(tmp, "w");
+    int ok = w && fputs(DEFAULT_INI, w) >= 0;
+    if (w) ok = fclose(w) == 0 && ok;
+    size_t cap = 4096, len = 0;
+    char *rest = malloc(cap), last[104] = "\x01";   /* what is kept as it was, by section */
+    for (int pass = 0; pass < 2 && ok && rest; pass++) {
+        char section[104] = "";
+        for (int i = 0; i < n && ok; i++) {
+            char buf[512], *key, *value;
+            memcpy(buf, lines[i], sizeof buf);
+            if (split_line(buf, &key, &value, section, sizeof section) != 1) continue;
+            SrSet set[SR_MAX];
+            int nset, kind = sr_line(section, key, value, set, &nset);
+            if (kind == LINE_OURS && pass == 0 && known_section(section) && _stricmp(section, "keyboard") && _strnicmp(section, "type ", 5)) {
+                ok = settings_ini_set(tmp, section, key, value);   /* (one of this file's keys there already) */
+                carried++;
+                continue;
+            }
+            for (int k = 0; k < nset && ok; k++)
+                if (set[k].late == pass) { ok = settings_ini_set(tmp, set[k].section, set[k].key, set[k].value); carried++; }
+            if (pass == 0 && section[0] && (kind == LINE_KEPT || kind == LINE_PART || kind == LINE_OURS)) {
+                if (len + strlen(section) + strlen(key) + strlen(value) + 16 > cap) {
+                    char *more = realloc(rest, cap *= 2);
+                    if (!more) { ok = 0; break; }
+                    rest = more;
+                }
+                if (strcmp(section, last)) len += (size_t)sprintf(rest + len, "[%s]\n", section);
+                snprintf(last, sizeof last, "%s", section);
+                len += (size_t)sprintf(rest + len, "%s%s = %s\n", kind == LINE_PART ? "; " : "", key, value);
+                kept++;
+            }
+        }
+    }
+    if (ok && rest && len && (w = fopen(tmp, "a")) != NULL) {
+        ok = fprintf(w, "\n; ---- ssbu-recomp's settings this port has none for yet, as they were in %s\n"
+                        "; (a line it reads only in part: as a comment). That file is kept as it was.\n%.*s", from, (int)len, rest) > 0;
+        ok = fclose(w) == 0 && ok;
+    } else if (len) ok = 0;
+    free(rest);
+    free(lines);
+    ok = ok && MoveFileExA(tmp, to, MOVEFILE_WRITE_THROUGH);
+    if (!ok) { fprintf(stderr, "[input] cannot write %s from %s\n", to, from); remove(tmp); return 0; }
+    fprintf(stderr, "[input] %s: ssbu-recomp's %s in this port's terms (%d setting%s; %d line%s kept as written)\n", to, from, carried,
+            carried == 1 ? "" : "s", kept, kept == 1 ? "" : "s");
+    return 1;
 }
 
 static void config_load(void) {
     const char *env = getenv("SSBU_CONTROLLERS");
-    snprintf(cfg.path, sizeof cfg.path, "%s", env && *env ? env : "controllers.ini");
+    snprintf(cfg.path, sizeof cfg.path, "%s", env && *env ? env : config_path(CONFIG_CONTROLLERS));
     FILE *f = fopen(cfg.path, "r");
     if (!f && !(env && *env)) {
         FILE *w = fopen(cfg.path, "w");

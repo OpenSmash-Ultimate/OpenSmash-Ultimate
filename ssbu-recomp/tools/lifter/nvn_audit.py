@@ -3,7 +3,7 @@
     python nvn_audit.py <counts file> [--md <out.md>] [--missing]
 
 <counts file> is written by a run with SSBU_AUDIT_COUNTS=<file> (hostrt.c): every run-time host function with its call count.
-The handler of each name is read from the sources (the table k_nvn in nvn_gl.c, `special` in nvn_stub.c); the meaning of each
+The handler of each name is read from the sources (the table k_nvn in nvn_front.c, `special` in nvn_stub.c); the meaning of each
 function and why a handler may legitimately do nothing comes from nvn_audit_notes.tsv (name <tab> class <tab> text), where class
 is `real` or `noop` (no effect on this platform by the API's own semantics; the text says why). A name with a handler but no
 note is listed as `real (no note)`; a name without a handler is `MISSING`."""
@@ -15,10 +15,10 @@ TRIVIAL = {'n_nop', 'n_zero', 'n_true', 'nvn_true', 'nvn_generic'}
 
 def handlers():
     h = {}
-    gl = open(os.path.join(HERE, 'nvn_gl.c'), encoding='latin1').read()
-    table = gl[gl.index('} k_nvn[] = {'):]
+    front = open(os.path.join(HERE, 'nvn_front.c'), encoding='latin1').read()      # the NVN front end: k_nvn and its handlers
+    table = front[front.index('} k_nvn[] = {'):]
     for name, fn in re.findall(r'\{"(nvn\w+)",\s*(\w+)\}', table):
-        h[name] = ('nvn_gl.c', fn)
+        h[name] = ('nvn_front.c', fn)
     st = open(os.path.join(HERE, 'nvn_stub.c'), encoding='latin1').read()
     for name, fn in re.findall(r'\{"(nvn\w+)",\s*(\w+)\}', st):
         h.setdefault(name, ('nvn_stub.c', fn))

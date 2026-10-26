@@ -1,12 +1,13 @@
 /* NVN: round "close5" (2026-10-09), helper C. Self-test of the guest-visible handle values.
  *
  * Until this round nvn_gl.c answered  nvnDeviceGetTextureHandle = textureID | samplerID << 32  and the bare ID for the texel
- * fetch, separate texture and separate sampler handles. The real functions (sdk.elf, addresses from sdknvn.py):
- *   nvnDeviceGetTextureHandle         [sdk 0x41bc80]  orr w8, w1, w2, lsl #20; sxtw x8, w8; orr x0, x8, #0x100000000
- *   nvnDeviceGetTexelFetchHandle      [sdk 0x41bc70]  sxtw x8, w1; orr x0, x8, #0x100000000
- *   nvnDeviceGetImageHandle           [sdk 0x41bc00]  sxtw x0, w1
- *   nvnDeviceGetSeparateTextureHandle [sdk 0x41bc60]  sxtw x8, w1; orr x0, x8, #0x100000000
- *   nvnDeviceGetSeparateSamplerHandle [sdk 0x41bc50]  sbfiz x0, x1, #20, #32
+ * fetch, separate texture and separate sampler handles. What the real functions return (sdk.elf, addresses from sdknvn.py;
+ * "id" is the low 32 bits of the argument, sign-extended to 64 bits):
+ *   nvnDeviceGetTextureHandle         [sdk 0x41bc80]  (textureID | samplerID << 20) as a 32-bit value, sign-extended, | 1 << 32
+ *   nvnDeviceGetTexelFetchHandle      [sdk 0x41bc70]  textureID sign-extended, | 1 << 32
+ *   nvnDeviceGetImageHandle           [sdk 0x41bc00]  imageID sign-extended
+ *   nvnDeviceGetSeparateTextureHandle [sdk 0x41bc60]  textureID sign-extended, | 1 << 32
+ *   nvnDeviceGetSeparateSamplerHandle [sdk 0x41bc50]  samplerID sign-extended, then << 20
  * The table below is the output of `PYTHONPATH=. python tools_audit/patches/close5/uc_nvn_e.py handles` (those five functions
  * run in the Unicorn emulator on sdk.elf, upper halves of the argument registers filled with garbage).
  * What the game does with the value (Ghidra, main 13.0.4): FUN_71038037d0 and its five siblings (pointer kept at 0x710593f938)

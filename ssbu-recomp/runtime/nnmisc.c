@@ -92,18 +92,14 @@ FWD(nnos_ConvertTickToNanoSeconds, OS("17ConvertToTimeSpanENS0_4TickE"))
 
 /* ---------------------------------------------------------------- setjmp / longjmp
  * The game has exactly one setjmp call (0x71038faf40) and one longjmp call (0x71038fae7c):
- * Lua's luaD_rawrunprotected and luaD_throw. [game] the call site is
- *
- *     bl   setjmp              ; x0 = &lj.b   (lj on the stack, jmp_buf 0x138 bytes)
- *     cbnz w0, after
- *     mov  x0, x19
- *     mov  x1, x21
- *     blr  x20                 ; the protected call
- *   after:                     ; reads lj.status from memory, not from setjmp's value
+ * Lua's luaD_rawrunprotected and luaD_throw. [game] At the call site, setjmp gets x0 = &lj.b (lj is on the stack, a
+ * jmp_buf of 0x138 bytes). A non-zero result branches to the code after the protected call (call it `after`). A zero
+ * result falls through to the protected call: the function in x20, called with x19 and x21 as its two arguments. The
+ * code at `after` reads lj.status from memory, not setjmp's return value.
  *
  * Lifted code runs each guest function as a host function on the host stack, so the host
  * handler of setjmp cannot "return a second time" once it has returned. Instead the handler
- * performs the protected call itself (the three instructions after the cbnz) while its own
+ * performs the protected call itself (x20 called with x19 and x21) while its own
  * host frame is still alive, and then returns non-zero so the lifted code continues at
  * `after`. A guest longjmp unwinds the host stack back into that handler with the host's
  * longjmp, restores the guest callee-saved registers and stack pointer saved at setjmp time,

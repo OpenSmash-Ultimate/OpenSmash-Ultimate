@@ -12,8 +12,13 @@ Steps, each skipped when it is already done, so running it again carries on wher
                removed, and online_server.txt keeps a lobby code or address you set. A git checkout
                of main with no changes of its own is fast-forwarded with git pull. Anything else
                (another branch, a commit GitHub does not have, no internet) is left as it is.
-  2. check     64-bit Windows 10 or 11, a processor with AVX2, the installed RAM, the free space
-               on this drive (about 60 GB for the build). A failed check stops with a plain message.
+  2. check     64-bit Windows 10 or 11, a processor with SSE4.2 (x86-64-v2; with AVX2 the game
+               is built for AVX2, without it for older processors, expected to be slower: tools\
+               isa.py; when Windows cannot be asked, the processor's name: SSBU_ISA=avx2 is set for
+               the build when it says AVX2, unless SSBU_ISA chose for the last build, which build\
+               isa.txt keeps, and a family without SSE4.2 stops it), the installed RAM, the free
+               space on this drive (about 60 GB for the build). A failed check stops with a plain
+               message.
   3. python    a Python 3.10 or newer with the packages (deps\python, then python on the PATH, then
                the py launcher); otherwise python.org's embeddable Python 3.14 into deps\python, with
                pip and requirements.txt. Every later Python call uses the one found.
@@ -33,7 +38,9 @@ Steps, each skipped when it is already done, so running it again carries on wher
                game build (tools\codec_libs.py).
   7. files     a window asking where your game files, keys and firmware are, filled in from yuzu's
                or Ryujinx's folders when they have them, showing what was found, and your online
-               name (online_name.txt), so the first start asks nothing.
+               name (online_name.txt), so the first start asks nothing. The firmware is optional,
+               for your console's own fonts: left empty, the game uses the open fonts of
+               third_party\fonts_open (no Chinese, Japanese or Korean text).
   8. extras    a desktop shortcut to Play SSBU.bat and, if ticked, a Windows Firewall rule for
                build\ssbu.exe (asks for administrator rights once).
   9. build     tools\build_game.py with those folders: the game's program, fonts, data, DLC,
@@ -53,6 +60,9 @@ Say what each step would do and do nothing: no downloads, no installs, no wizard
 .PARAMETER Keys
 .PARAMETER Firmware
 The folders, instead of the wizard's auto-detection (the wizard still shows them unless -NoWizard).
+The firmware is optional.
+.PARAMETER NoFirmware
+No firmware, over one found: the game uses the open fonts of third_party\fonts_open.
 .PARAMETER OnlineName
 The online name to write into online_name.txt.
 .PARAMETER NoWizard
@@ -72,6 +82,7 @@ param(
     [string]$Game,
     [string]$Keys,
     [string]$Firmware,
+    [switch]$NoFirmware,
     [string]$OnlineName,
     [switch]$NoWizard,
     [switch]$SkipBuild,
@@ -114,7 +125,7 @@ $UserAgent = 'WindowSmash-installer'
 $ZstdCheck = 'import sys, importlib.util as u; sys.exit(0 if u.find_spec(''zstandard'') or (sys.version_info >= (3, 14) and u.find_spec(''compression.zstd'')) else 1)'
 # where updates come from: this repository's branch
 $RepoOwner = 'OpenSmash-Ultimate'
-$RepoName = 'WindowSmash'
+$RepoName = 'OpenSmash-Ultimate'
 $UpdateBranch = 'main'
 $RepoApi = "https://api.github.com/repos/$RepoOwner/$RepoName"
 $SourceVersionFile = 'tools\source_version.txt'   # "<commit> <date>": GitHub's ZIP download fills it in
@@ -194,6 +205,19 @@ function Merge-OnlineServer {
         return ($newLines -join "`n")
     }
     return $Local
+}
+
+function Get-ConfigPath {
+    <# Where the game reads a settings file (runtime/config_folder.h): config\ once the game has made it
+       (config\version.ini), else the port's folder; online_server.txt is config\'s only once there
+       is one there. (tools\launcher.ps1 has the same.) #>
+    param([string]$Root, [string]$Name)
+    $inFolder = Join-Path (Join-Path $Root 'config') $Name
+    if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $Root 'config') 'version.ini') -PathType Leaf) -or
+        ($Name -eq 'online_server.txt' -and -not (Test-Path -LiteralPath $inFolder -PathType Leaf))) {
+        return Join-Path $Root $Name
+    }
+    return $inFolder
 }
 
 function Join-CommandLine {
@@ -342,6 +366,52 @@ function Test-Avx2ByName {
     $m = [regex]::Match($Name, '\bi[3579]-(\d{4,5})')
     if ($m.Success) { return ([int]$m.Groups[1].Value -ge 4000) }
     if ($Name -match 'Core\(TM\)2|Core\(TM\)\s+i[3579]\s+\d{3}\b|Phenom|Athlon\s+(64|II|X[24])\b|Atom|A[468]-\d{4}|A10-\d{4}') { return $false }
+    return $null
+}
+
+function Test-Sse42ByName {
+    <# Whether a processor has SSE4.2 (x86-64-v2, what the game needs at the least), from its name, when
+       Windows cannot be asked (before 20H1): $false for the families known to lack it, else $null. Each
+       pattern is a family no later processor shares a name with (a wrong $false stops the installer):
+         Intel  Core 2, and the Pentium Dual-Core, Pentium Dual, Pentium 4 and D of its time; its Celerons
+                (E1xxx, E3xxx, T1xxx, T3xxx, and 2xx to 6xx and 9xx: not 8xx, Sandy Bridge's, nor 7xx,
+                where Penryn's and Sandy Bridge's meet) and Xeons (3000 to 3300, 5100 to 5400: not 5500
+                and up, Nehalem's); the Atoms before Silvermont (N, D and Z with three digits or 2 and
+                three, 230, 330)
+         AMD    Phenom; Athlon 64 and II, and the other K8 and K10 Athlons (X2 Dual Core, Dual Core,
+                LE-1xxx, 7x50 Dual-Core); Turion; the K8 and K10 Semprons (NNNN+, LE-1xxx, 1xx, X2 1xx:
+                not Jaguar's, four digits and APU); Bobcat (C-xx, E-xxx, E1-1xxx, E2-1xxx); Llano
+                (A4, A6 and A8-3xxx, E2-3200: not Jaguar's E2-3000 and E1-2xxx)
+       (-match: not case-sensitive.) #>
+    param([string]$Name)
+    $families = @(
+        'Core\(TM\)2', 'Pentium\(R\)\s+(Dual(-Core)?|4|D)\s+CPU\b',
+        'Celeron\(R\)\s+(Dual-Core\s+|M\s+)?CPU\s+([ET][13]\d{3}|[2-69]\d{2})\b', 'Xeon\(R\)\s+CPU\s+[EXL]?(3[0-3]|5[1-4])\d{2}\b',
+        'Atom\(TM\)\s+CPU\s+([NDZ]2?\d{3}|[23]30)\b',
+        'Phenom', 'Athlon(\(tm\))?\s+(64|II)\b',
+        'Athlon\(tm\)\s+((X2\s+)?Dual[-\s]Core\s+(Processor|QL-)|Processor\s+LE-1\d{3}\b|7[4-8]50\s+Dual-Core)',
+        'Turion', 'Sempron\(tm\)\s+(Processor\s+(LE-1\d{3}\b|\d{4}\+)|X2\s+1\d{2}\b|1\d{2}\s+Processor)',
+        '\bAMD\s+[CE]-\d{2,3}\b', '\bE[12]-1\d{3}\b', '\bA[468]-3\d{3}', '\bE2-3200\b')
+    foreach ($family in $families) {
+        if ($Name -match $family) { return $false }
+    }
+    return $null
+}
+
+function Get-BuildIsa {
+    <# What a build folder (build\) says it was built for (tools\isa.py): @{ Target; Told }, Told when
+       SSBU_ISA chose it, which the build keeps (isa.txt: the target, then 'told' or 'chosen'). Without an
+       isa.txt, a folder an older version linked ssbu.exe in is avx2's, chosen (every older version built
+       for avx2; isa.py keeps it when the processor cannot be asked); else $null. #>
+    param([string]$Folder)
+    $file = Join-Path $Folder 'isa.txt'
+    if (Test-Path -LiteralPath $file -PathType Leaf) {
+        $lines = @(Get-Content -LiteralPath $file -ErrorAction SilentlyContinue)
+        if ($lines.Count -ge 1 -and @('avx2', 'x86-64-v2') -ccontains ([string]$lines[0]).Trim()) {
+            return @{ Target = ([string]$lines[0]).Trim(); Told = ($lines.Count -ge 2 -and [string]$lines[1] -ceq 'told') }
+        }
+    }
+    if (Test-Path -LiteralPath (Join-Path $Folder 'ssbu.exe') -PathType Leaf) { return @{ Target = 'avx2'; Told = $false } }
     return $null
 }
 
@@ -663,12 +733,38 @@ function Step-CheckPc {
 
     $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
     $name = ($cpu.Name -replace '\s+', ' ').Trim()
+    $sse42 = $null
     $avx2 = $null
-    if ($build -ge 19041) { $avx2 = Test-CpuFeature 40 }   # Windows 10 version 2004 and later can be asked about AVX2 (feature 40)
-    if ($null -eq $avx2) { $avx2 = Test-Avx2ByName $name }
-    if ($avx2 -eq $true) { Write-Info "$name - has AVX2" }
-    elseif ($avx2 -eq $false) { throw "The processor ($name) has no AVX2, which the game needs: WindowSmash cannot run on it." }
-    else { Write-Warn "$name - whether it has AVX2 is unknown; the game will only start if it does (the setup guide's step 1 says which do)" }
+    if ($build -ge 19041) {   # Windows 10 version 2004 and later can be asked about SSE4.2 and AVX2 (features 38 and 40)
+        $sse42 = Test-CpuFeature 38
+        $avx2 = Test-CpuFeature 40
+    }
+    if ($null -eq $sse42) { $sse42 = Test-Sse42ByName $name }
+    if ($sse42 -eq $false) {
+        throw "The processor ($name) has no SSE4.2, which the game needs at the least (x86-64-v2: Intel processors since 2008, AMD since 2011): WindowSmash cannot run on it."
+    }
+    $byName = $null -eq $avx2
+    if ($byName) { $avx2 = Test-Avx2ByName $name }
+    # What the build chooses (tools\isa.py) when SSBU_ISA is not set: what SSBU_ISA chose for the last build (build\isa.txt
+    # says 'told') on a processor with AVX2 or one it cannot ask; else by Windows' answer. Where Windows cannot be asked
+    # (before build 19041), nor can the build: avx2 when the name says AVX2 (the build is told so, and build\isa.txt keeps
+    # it), else what the last build was for (an older version's: avx2), else x86-64-v2.
+    $last = $null
+    if (-not $env:SSBU_ISA) { $last = Get-BuildIsa (Join-Path $Root 'build') }
+    $has = if ($avx2 -eq $true) { 'has AVX2' } elseif ($avx2 -eq $false) { 'has no AVX2' } else { 'whether it has AVX2 is unknown' }
+    if ($last -and $last.Told -and ($byName -or $avx2 -eq $true)) {
+        Write-Info "$name - $($has): the game stays built for $($last.Target), as SSBU_ISA chose for the last build (build\isa.txt; SSBU_ISA=auto chooses by the processor)"
+    } elseif ($avx2 -eq $true) {
+        Write-Info "$name - has AVX2"
+        if ($byName -and -not $env:SSBU_ISA) {
+            $env:SSBU_ISA = 'avx2'
+            Write-Info 'the game is built for AVX2 (SSBU_ISA=avx2): Windows cannot be asked, the name says'
+        }
+    } elseif ($byName -and $last) {
+        $other = if ($last.Target -eq 'avx2') { 'if the game then says the processor lacks AVX2, build it with SSBU_ISA=x86-64-v2' } else { 'SSBU_ISA=avx2 builds for AVX2' }
+        Write-Info "$name - $($has): the game stays built for $($last.Target), as it was (Windows cannot be asked; $($other): docs\BUILDING.md)"
+    } elseif ($avx2 -eq $false) { Write-Info "$name - has no AVX2: the game is built for older processors (x86-64-v2), expected to be slower" }
+    else { Write-Warn "$name - whether it has AVX2 is unknown: the game is built for older processors (x86-64-v2), expected to be slower (with AVX2: docs\BUILDING.md, SSBU_ISA)" }
 
     $ramGb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
     if ($ramGb -lt $MinRamGb) { throw "This PC has $ramGb GB of RAM; WindowSmash needs at least $MinRamGb GB (16 GB is comfortable)." }
@@ -981,9 +1077,11 @@ function Get-DetectedFolders {
     $saved = Get-SavedFolders
     $c = Get-FolderCandidates $env:APPDATA $env:USERPROFILE
     $exists = { param($p) Test-Path -LiteralPath $p -PathType Container }
+    $hasNca = { param($p) (Test-Path -LiteralPath $p -PathType Container) -and @(Get-ChildItem -LiteralPath $p -Filter '*.nca' -ErrorAction SilentlyContinue).Count -gt 0 }
     $keys = $null; $firmware = $null; $game = $null
     if ($saved.ContainsKey('keys')) { $keys = $saved['keys'] } else { $keys = Resolve-FirstExisting ($c.Keys | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'prod.keys') }) $exists }
-    if ($saved.ContainsKey('firmware')) { $firmware = $saved['firmware'] } else { $firmware = Resolve-FirstExisting $c.Firmware $exists }
+    # (an emulator's firmware folder only when it has one: the firmware is optional)
+    if ($saved.ContainsKey('firmware')) { $firmware = $saved['firmware'] } else { $firmware = Resolve-FirstExisting $c.Firmware $hasNca }
     if ($saved.ContainsKey('game')) { $game = $saved['game'] } else { $game = Resolve-FirstExisting $c.Game $exists }
     return @{ Game = $game; Keys = $keys; Firmware = $firmware }
 }
@@ -999,8 +1097,10 @@ function Test-KeysFolder {
 }
 
 function Test-FirmwareFolder {
+    <# The firmware is optional (only for the fonts): none is fine, and the game uses the open fonts. #>
     param([string]$Folder)
-    if (-not $Folder -or -not (Test-Path -LiteralPath $Folder -PathType Container)) { return @{ Ok = $false; Text = 'Choose the folder with your firmware (a few hundred .nca files).' } }
+    if (-not $Folder) { return @{ Ok = $true; Text = "None: the game uses the open fonts of third_party\fonts_open, without Chinese, Japanese or Korean text. Your firmware gives your console's own fonts." } }
+    if (-not (Test-Path -LiteralPath $Folder -PathType Container)) { return @{ Ok = $false; Text = 'Choose the folder with your firmware (a few hundred .nca files), or leave this empty.' } }
     $n = @(Get-ChildItem -LiteralPath $Folder -Filter '*.nca' -ErrorAction SilentlyContinue).Count
     if ($n -eq 0) { return @{ Ok = $false; Text = 'There are no .nca files here.' } }
     return @{ Ok = $true; Text = "$n .nca files (the game's fonts are taken out of them)." }
@@ -1055,7 +1155,7 @@ function Show-Wizard {
     foreach ($spec in @(
         @{ Key = 'Game'; Title = 'Game files'; Hint = "yuzu's or Ryujinx's game folder, or yours: the game (.xci/.nsp/.nca), its 13.0.5 update, DLC" },
         @{ Key = 'Keys'; Title = 'Keys'; Hint = "The folder with prod.keys and title.keys" },
-        @{ Key = 'Firmware'; Title = 'Firmware'; Hint = "The folder with your Switch firmware's .nca files (for the fonts)" }
+        @{ Key = 'Firmware'; Title = 'Firmware'; Hint = "Optional: its .nca files give the console's own fonts (with Chinese, Japanese and Korean text)" }
     )) {
         $title = New-Object Windows.Forms.Label
         $title.Text = "$($spec.Title):  $($spec.Hint)"
@@ -1195,13 +1295,17 @@ function Read-Answers {
     <# The same questions in this window, for -NoWizard. #>
     param([hashtable]$Detected, [string]$DefaultName)
     $answers = @{}
-    foreach ($spec in @(@{ Key = 'Game'; Q = 'Folder with your game files' }, @{ Key = 'Keys'; Q = 'Folder with prod.keys and title.keys' }, @{ Key = 'Firmware'; Q = "Folder with your firmware's .nca files" })) {
+    foreach ($spec in @(@{ Key = 'Game'; Q = 'Folder with your game files' }, @{ Key = 'Keys'; Q = 'Folder with prod.keys and title.keys' }, @{ Key = 'Firmware'; Q = "Folder with your firmware's .nca files (optional; none: the open fonts)" })) {
         $default = [string]$Detected[$spec.Key]
+        if ($spec.Key -eq 'Firmware') {
+            Write-Host "The firmware is optional: the game takes your console's own fonts from it, with Chinese, Japanese and Korean text. Without it the game uses the open fonts of third_party\fonts_open: Latin text in Open Sans, the button icons from yuzu's icon font, no Chinese, Japanese or Korean text. Fights are the same."
+        }
         while ($true) {
             $prompt = $spec.Q
-            if ($default) { $prompt += " [$default]" }
+            if ($default) { $prompt += " [$default]" } elseif ($spec.Key -eq 'Firmware') { $prompt += ' [none]' }
             $a = (Read-Host $prompt).Trim().Trim('"')
             if (-not $a) { $a = $default }
+            if ($spec.Key -eq 'Firmware' -and $a -eq 'none') { $a = '' }
             $r = switch ($spec.Key) { 'Keys' { Test-KeysFolder $a } 'Firmware' { Test-FirmwareFolder $a } default { Test-GameFolder $a $answers['Keys'] } }
             Write-Host "  $($r.Text)"
             if ($r.Ok) { $answers[$spec.Key] = $a; break }
@@ -1222,10 +1326,11 @@ function Step-GameFiles {
     if ($Game) { $detected.Game = $Game }
     if ($Keys) { $detected.Keys = $Keys }
     if ($Firmware) { $detected.Firmware = $Firmware }
+    if ($NoFirmware) { $detected.Firmware = $null }
     foreach ($k in @('Game', 'Keys', 'Firmware')) {
-        if ($detected[$k]) { Write-Info "$($k.ToLower()): $($detected[$k])" } else { Write-Info "$($k.ToLower()): not found on this PC (to be chosen)" }
+        if ($detected[$k]) { Write-Info "$($k.ToLower()): $($detected[$k])" } elseif ($k -eq 'Firmware') { Write-Info 'firmware: none (optional: without it the game uses the open fonts of third_party\fonts_open)' } else { Write-Info "$($k.ToLower()): not found on this PC (to be chosen)" }
     }
-    $nameFile = Join-Path $Root 'online_name.txt'
+    $nameFile = Get-ConfigPath $Root 'online_name.txt'
     $default = $OnlineName
     if (-not $default -and (Test-Path -LiteralPath $nameFile)) { $default = ([IO.File]::ReadAllText($nameFile)).Trim() }
     if (-not $default) { $default = 'Player' + (Get-Random -Minimum 1000 -Maximum 9999) }
@@ -1305,7 +1410,8 @@ function Step-Extras {
 function Step-Build {
     param([hashtable]$Answers)
     Write-Step '[9/10] Build the game'
-    $build = @((Join-Path $Root 'tools\build_game.py'), '--game', $Answers.Game, '--keys', $Answers.Keys, '--firmware', $Answers.Firmware)
+    $build = @((Join-Path $Root 'tools\build_game.py'), '--game', $Answers.Game, '--keys', $Answers.Keys)
+    if ($Answers.Firmware) { $build += @('--firmware', $Answers.Firmware) } else { $build += '--no-firmware' }   # (none: the open fonts)
     if ($Jobs) { $build += @('--jobs', "$Jobs") }
     if ($SkipBuild) { $build += '--prepare-only' }
     if ($DryRun) { Write-Would ('run: ' + ($Script:Python -join ' ') + ' ' + ($build -join ' ')); return $false }

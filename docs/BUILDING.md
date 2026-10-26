@@ -12,7 +12,7 @@ This guide takes you from a fresh download to playing. No programming knowledge 
 
 ## Install in one go
 
-**What you need:** a Windows 10 or 11 PC (64-bit, a processor with AVX2, 16 GB of RAM is comfortable, about 60 GB free) and your own game files: the game as dumped from your Switch, with its **13.0.5 update** (WindowSmash needs version 13.0.5), your console's keys (`prod.keys` and `title.keys`) and its firmware. If you have played the game in **yuzu or Ryujinx on this PC, updated to 13.0.5, you already have all three**, and the installer finds them by itself. Otherwise, put the game (its `.xci`, `.nsp` or `.nca` files), its 13.0.5 update `.nsp` and your DLC `.nsp` files in one folder; [Part 2](#part-2-gather-your-game-files) below says what the files are.
+**What you need:** a Windows 10 or 11 PC (64-bit, a processor with AVX2 or at the least SSE4.2 ([which](#the-instruction-set)), 16 GB of RAM is comfortable, about 60 GB free) and your own game files: the game as dumped from your Switch, with its **13.0.5 update** (WindowSmash needs version 13.0.5), your console's keys (`prod.keys` and `title.keys`) and its firmware. If you have played the game in **yuzu or Ryujinx on this PC, updated to 13.0.5, you already have all three**, and the installer finds them by itself. Otherwise, put the game (its `.xci`, `.nsp` or `.nca` files), its 13.0.5 update `.nsp` and your DLC `.nsp` files in one folder; [Part 2](#part-2-gather-your-game-files) below says what the files are.
 
 1. On **<https://github.com/OpenSmash-Ultimate/WindowSmash>**, click the green **Code** button, then **Download ZIP**. Extract the ZIP somewhere with room, for example to `C:\WindowSmash`. Keep it out of the Desktop and Documents folders: OneDrive may try to upload them, and the finished build is around 30 GB.
 2. Double-click **`Install WindowSmash.bat`** in that folder. Windows asks whether to run it (**The publisher could not be verified**): click **Run**. On some PCs a blue **Windows protected your PC** box comes instead: click **More info**, then **Run anyway**. Windows asks this about anything downloaded that isn't signed; the installer takes that mark off WindowSmash's other files, so it asks only this once.
@@ -28,7 +28,7 @@ This guide takes you from a fresh download to playing. No programming knowledge 
 Each step is skipped when it is already done, so running it again never repeats work:
 
 - **Updates WindowSmash first:** it asks GitHub whether a newer WindowSmash is out than the one in your folder, and if so downloads it and replaces the files that changed, then carries on with the new version. Your game files, settings, save and builds stay as they are, and so does a lobby code you added to `online_server.txt`. A folder made with Git is updated with `git pull` instead, when it is on the `main` branch with no changes of its own.
-- **Checks the PC:** 64-bit Windows 10 or 11, a processor with AVX2, the installed RAM, and the free space on the drive. A failed check stops with a message saying what is missing.
+- **Checks the PC:** 64-bit Windows 10 or 11, the processor (with AVX2 the game is built for AVX2; with SSE4.2 but no AVX2, for older processors, which is expected to run slower; without SSE4.2 it stops: [the instruction set](#the-instruction-set)), the installed RAM, and the free space on the drive. A failed check stops with a message saying what is missing.
 - **Python:** uses the Python you have if it is 3.10 or newer, otherwise puts a copy of Python 3.14 into `deps\python`. Nothing else on the PC changes: no PATH, no file associations.
 - **The compiler:** if none works yet, it first downloads one that needs no Visual Studio: LLVM's clang from LLVM's releases on GitHub, and Microsoft's C runtime and Windows SDK from Microsoft's own servers, into `deps\llvm` and `deps\msvc` (about 570 MB to download, 550 MB on disk, no administrator rights). Microsoft's parts are under Microsoft's license terms: the installer shows where to read them and asks whether you accept them before it downloads anything ([what it downloads](#the-compiler-without-visual-studio)). If that download or the check after it fails, it installs the free Visual Studio Build Tools with the C++ workload and Clang instead, through winget, which is part of Windows: about 4 GB to download, with a progress window. If you already have Visual Studio without them, it adds them to that one instead (Windows asks for administrator rights first). Without winget, it prints the link and the two boxes to tick.
 - **SDL3** for PlayStation, Switch Pro and other controllers, into `deps\SDL3`, from SDL's own releases, checked against the SHA-256 the release lists.
@@ -76,7 +76,7 @@ Open **Settings → System → About** and check:
 | :--- | :--- |
 | **System type** | **64-bit operating system**. |
 | **Installed RAM** | 16 GB is comfortable. Note the number: [step 14](#step-14-build-the-game) uses it. |
-| **Processor** | One with AVX2: an Intel Core i3, i5, i7 or i9 with a model number of 4000 or higher (for example *i5-4590* or *i7-12700*), an Intel Core Ultra, or any AMD Ryzen. Most Pentium and Celeron processors don't have it. |
+| **Processor** | Best with AVX2: an Intel Core i3, i5, i7 or i9 with a model number of 4000 or higher (for example *i5-4590* or *i7-12700*), an Intel Core Ultra, or any AMD Ryzen. Older ones with SSE4.2 work too: earlier Core i3, i5 and i7 (from 2008), AMD FX and later, and Pentium and Celeron processors from 2013 on. The game is built for them, and is expected to run slower ([the instruction set](#the-instruction-set)). Without SSE4.2 (Core 2, Phenom, Athlon 64 and II) it can't run. |
 
 You also need **about 60 GB free on drive C:** for WindowSmash, plus about 17 GB wherever your game files go, and a graphics card or chip with DirectX 11 and an up-to-date driver.
 
@@ -365,6 +365,7 @@ python tools/recomp.py all dump/exefs --out build --jobs 16
 
 - It takes **30 minutes to a few hours**, and prints a lot while it works. The PC can be slow meanwhile. A bar on the last line shows how far it has got and the time left (once the first files are compiled); the window's title shows it too.
 - If it's interrupted (a restart, the PC going to sleep), run the same command again: it carries on where it stopped.
+- Now and then the compiler crashes on a file, or takes far longer on one than it should. The build then compiles that file again another way and carries on: on its own, a little less optimised, or with its longest functions unoptimised. It says so in the log, lists those files again at the end, and adds them to `build\ladder_report.txt`. Nothing needs doing.
 - It's finished when a line says `linked … objects into build\ssbu.exe` and the `PS C:\WindowSmash>` line comes back.
 
 > [!TIP]
@@ -400,7 +401,7 @@ The game's graphics programs (*shaders*) are prepared the first time each one is
 
 ### Update WindowSmash
 
-Double-click **`Install WindowSmash.bat`** again. It downloads the newest WindowSmash from GitHub if there is one, replaces the files that changed, and builds again, which takes minutes rather than hours. Your game files, settings, save and a lobby code in `online_server.txt` stay as they are.
+Double-click **`Install WindowSmash.bat`** again. It downloads the newest WindowSmash from GitHub if there is one, replaces the files that changed, and builds again. That takes minutes, unless the update changes the compile flags or the header the game's code includes (`runtime/recomp.h`), or the compiler is new (a Visual Studio update): then the whole game is compiled again, about as long as the first build, and the build's log says why. If it stops, run it again to carry on. Your game files, settings, save and a lobby code in `online_server.txt` stay as they are.
 
 **Built from another game version before?** WindowSmash used to build other game versions too, most often 11.0.0. Such a folder is set up again as 13.0.5 the next time `Install WindowSmash.bat` runs, once your game folder has the 13.0.5 update: the game's files are prepared again and the game is built again, while your save, settings and prepared shaders stay. [A folder built from another version](UPDATES.md#a-folder-built-from-another-version) has the details, including what to do with an old `v13.0.5` folder.
 
@@ -410,7 +411,7 @@ By hand: download the ZIP again, unblock it as in [step 5](#step-5-download-wind
 
 | What you see | What to do |
 | :--- | :--- |
-| `Install WindowSmash.bat` stops at a check | It says what the PC lacks: 64-bit Windows 10 or 11, a processor with AVX2, 8 GB of RAM, or free space (about 60 GB, less what is built already). Free some space or move WindowSmash to a drive with room, then run it again. |
+| `Install WindowSmash.bat` stops at a check | It says what the PC lacks: 64-bit Windows 10 or 11, a processor with SSE4.2, 8 GB of RAM, or free space (about 60 GB, less what is built already). Free some space or move WindowSmash to a drive with room, then run it again. |
 | `Install WindowSmash.bat` says winget is not available | The compiler download didn't work either (the message above it says why). Install the compiler by hand: download the **Build Tools for Visual Studio** from <https://visualstudio.microsoft.com/visual-cpp-build-tools/>, tick **Desktop development with C++** and, under Installation details, **C++ Clang tools for Windows**, install, then run `Install WindowSmash.bat` again. |
 | `Microsoft's license terms were not accepted` | The compiler needs Microsoft's C runtime and Windows SDK, and those come under Microsoft's license terms, whichever way you get them. To accept them, run `Install WindowSmash.bat` again and type `yes` when it asks. |
 | The installer's window says a folder has a problem | The line under the folder says what: no `prod.keys`, no `.nca` files, no program among the game files. Point it at the right folder ([Part 2](#part-2-gather-your-game-files)) and click **Check files**. |
@@ -429,6 +430,7 @@ By hand: download the ZIP again, unblock it as in [step 5](#step-5-download-wind
 | Step 13 fails with `romfs.cfg` or `data.arc` in the message | The game data isn't connected yet. Do [step 10](#step-10-connect-your-game-data) first. |
 | `The system cannot find the file specified`, or `clang-cl` in an error, when the build starts | No compiler was found. Get one ([step 4](#step-4-install-the-compiler)); with Visual Studio, check the Clang tick (the tip at the end of that step). `python tools\build_game.py --check` tries the compiler and says which one it found. |
 | The build says `FAILED`, or the PC runs out of memory | Run the build again with a smaller `--jobs` number, such as `--jobs 4`. |
+| `did not finish compiling within its time limit` | A file took longer than its time limit every way the build tried. The PC is most likely short of memory: close other programs and run the build again with a smaller `--jobs`. To give each file more time, set `SSBU_COMPILE_LIMIT` to seconds before building (`$env:SSBU_COMPILE_LIMIT = '7200'`), or to `0` for no limit. |
 | `The game isn't built here yet` when starting the game | The build hasn't finished. Run [step 14](#step-14-build-the-game) again. |
 | The game closes, or stays black | Look at the end of `C:\WindowSmash\build\play.log` and in the `reports` folder. [Getting help](../README.md#getting-help) says what to send. |
 | No music, or movies don't play | The build was made before the codecs came with WindowSmash. Download the newest WindowSmash and build again ([Update WindowSmash](#update-windowsmash)); see [Audio and video codecs](#audio-and-video-codecs). |
@@ -462,7 +464,7 @@ python tools/recomp.py all dump/exefs --out build --jobs 16
 | Item | Requirement |
 | :--- | :--- |
 | Operating system | Windows 10 or 11, 64-bit. |
-| CPU | x64 with AVX2, FMA and F16C. |
+| CPU | x64 with AVX2, FMA, BMI1, BMI2 and LZCNT for the default build; at the least x86-64-v2 (SSE4.2 and POPCNT), with the build for it ([the instruction set](#the-instruction-set)). |
 | Graphics | A Direct3D 11 GPU and a working driver. |
 | Python | **3.10 or newer**, with the packages from `requirements.txt` (`pycryptodomex`, and `zstandard` on Pythons before 3.14, which has `compression.zstd` built in). `Install WindowSmash.bat` puts a copy of 3.14 into `deps/python` when there is none. |
 | C toolchain | `clang-cl` and `lld-link` with Microsoft's C runtime and a Windows SDK: either `deps/llvm` with `deps/msvc` from `tools/msvc_deps.py` ([without Visual Studio](#the-compiler-without-visual-studio)), or Visual Studio 2022 or newer, or its Build Tools, with **Desktop development with C++** (which includes a Windows SDK) and **C++ Clang tools for Windows**. `tools/cc.py` takes `deps` when both folders are there, else finds Visual Studio's `clang-cl`; set `SSBU_CLANG` to use another (it wins over both). |
@@ -582,9 +584,39 @@ How it works:
 - `python tools\msvc_deps.py plan` lists what it would download, without downloading; `status` shows what is set up and its sizes; `remove` deletes both folders, after which the build looks for Visual Studio again.
 - Unpacking LLVM's archive takes about 1.2 GB of memory for a few seconds. The downloads go to `deps\downloads` and are deleted afterwards.
 
+### The instruction set
+
+The game is compiled for one of two instruction sets ([`tools/isa.py`](../tools/isa.py)):
+
+| Name | Processors | What the code may use |
+| :--- | :--- | :--- |
+| `avx2`, the default | Intel since Haswell (2013), AMD since Excavator (2015) | AVX2, FMA, BMI1, BMI2, LZCNT |
+| `x86-64-v2` | Intel since Nehalem (2008), AMD since Bulldozer (2011) | SSE4.2 and POPCNT, no AVX |
+
+`x86-64-v2` is expected to run slower: the Switch's fused multiply-add is a call into the C runtime there (`fma()`), and nothing is vectorised wider than 128 bits. How much slower is not measured. Below x86-64-v2 the game can't run.
+
+The build takes `avx2` when this PC's processor has AVX2, else `x86-64-v2`. It asks Windows which extensions the processor has (Windows 10 version 2004 or later; on Linux, `/proc/cpuinfo`); when Windows can't be asked, the installer goes by the processor's name and tells the build `avx2` when the name says AVX2 (it also stops for a processor family whose name says it has no SSE4.2). Otherwise the build keeps what the game was built for last (`avx2` for a game an older version built, as they all were), and takes `x86-64-v2` for a first build. To choose yourself, for example to build for another PC, set `SSBU_ISA` to `avx2` or `x86-64-v2` before building. Once a build for it has finished, the choice is kept for later builds, the installer's included (unless the processor is known to lack what it needs); a build stopped before then does not keep it, so set it again. `SSBU_ISA=auto` goes back to choosing by the processor:
+
+```powershell
+$env:SSBU_ISA = 'x86-64-v2'
+& ".\launchers\Build WindowSmash.bat"
+```
+
+`build\isa.txt` (on Linux, `build-linux/isa.txt`) says what the game was built for. When today's choice is another, the game is built again, all of it: every object's compile command changed ([incremental builds](TECHNICAL.md#incremental-builds)). A game an older version built is built again once, all of it, for either: it was compiled with other flags. libopus is compiled for the same one, its AVX2 code for `avx2` only.
+
+The game checks the processor as it starts, before any of its own code runs. One built for AVX2, started on a processor without it, stops with a message box saying what the processor lacks and to run `Install WindowSmash.bat` again, instead of crashing at its first AVX instruction. If the message comes back (a Windows older than 10 version 2004, where neither the installer nor the build can ask Windows: the processor's name says AVX2 where the PC, a virtual machine say, has none, or the name says nothing and the game was built for AVX2 before), set `SSBU_ISA=x86-64-v2` as above and run `Install WindowSmash.bat` again. Once that build has finished, the installer keeps the choice.
+
 ### What the build does
 
-`tools/recomp.py all` translates each module (`main`, `subsdk0`, `sdk` and the fighter modules) to C, makes the relocation images and registries, compiles everything with `clang-cl`, compiles the runtime, and links `build/ssbu.exe`. Builds after the first are incremental. The first build gives each fighter module an address and records it in `dump/nro/bases.txt`; keep that file with your build, and don't copy it from another build.
+`tools/recomp.py all` translates each module (`main`, `subsdk0`, `sdk` and the fighter modules) to C, makes the relocation images and registries, compiles everything with `clang-cl`, compiles the runtime, and links `build/ssbu.exe`. Builds after the first are incremental: a file is compiled again when its C, the runtime headers it includes, the compile flags or the compiler change ([how](TECHNICAL.md#incremental-builds)). The first build gives each fighter module an address and records it in `dump/nro/bases.txt`; keep that file with your build, and don't copy it from another build.
+
+A file the compiler crashes on is compiled again on its own once the others are done, then at `/O1`. A file still compiling well past its estimate (never sooner than 10 minutes; time the PC spends asleep doesn't count) is stopped and compiled again with its longest functions unoptimised, then whole at `/Od` ([the compile ladder](TECHNICAL.md#the-compile-ladder)). Such a file stays compiled that way until its C or the flags change. Each file's compile time is kept in `build\compile_times.json`, so the next build's time left is closer. Three switches, set before building:
+
+| Switch | What it does |
+| :--- | :--- |
+| `SSBU_COMPILE_LIMIT=<seconds>` | Every game file gets this time limit instead of one from its estimate. `0`: no limit, and files compiled another way are compiled again the normal way. |
+| `SSBU_OPTNONE_ABOVE=<instructions>` | For benchmarking only; off unless set. Compiles every function longer than this unoptimised from the start, and the rest of its file at the level it would have without them. |
+| `SSBU_LONGEST_FIRST=1` | For benchmarking only; off unless set. Starts the files that took longest last time first, instead of in the manifest's order. |
 
 Before compiling, it lists imported symbols that nothing provides in `build/imports.unresolved.txt`; a *strong* one there is the first sign that the game needs something the runtime doesn't have yet ([the imports check](TECHNICAL.md#the-imports-check)). It also checks that each of the runtime's hooks into the game's code finds the 13.0.5 function it expects, and stops if one doesn't ([code tied to the game version](TECHNICAL.md#code-tied-to-the-game-version)).
 

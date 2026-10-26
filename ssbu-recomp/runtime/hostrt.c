@@ -26,7 +26,7 @@
 int g_game_build = -1;                               /* set by load_layout */
 MainLayout g_main;
 static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets from GUEST_BASE, sorted by the first */
-    {0x0382a0, 0x0382a0},       /* FUN_71000382a0 (nvn_gl.c), 2,884 bytes in both */
+    {0x0382a0, 0x0382a0},       /* FUN_71000382a0 (nvn_front.c), 2,884 bytes in both */
     {0x047d20, 0x047d20},       /* clock read return address (nnsdk.c, fixed seed) */
     {0x081980, 0x081980},       /* allocation site, caller of a 1.4 MB block (rb_learned.c, the presentation pool) */
     {0x0a3fd8, 0x0a3fd8},       /* allocation site, caller of an 8 MB block (rb_learned.c) */

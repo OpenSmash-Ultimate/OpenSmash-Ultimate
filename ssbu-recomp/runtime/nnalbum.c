@@ -46,7 +46,7 @@
  *    +0x20 frame rate 30, +0x24 key frame interval 30, +0x28 audio bit rate 128000, +0x2c sample rate 48000,
  *    +0x30 channels 2, +0x34 sample format 2).
  *    FRAME SOURCE = OPEN: the pictures must come from the graphics backend.  GetMovieMakerNativeWindow returns
- *    album_movie_native_window(); nvn_gl.c has to recognise an nvnWindow built on that value and, in its present job,
+ *    album_movie_native_window(); nvn_front.c has to recognise an nvnWindow built on that value and, in its present job,
  *    read the presented texture back (RGBA8) and call album_movie_push_frame() instead of blitting to the screen and
  *    pacing.  Until the backend announces that with album_movie_frame_source_attach(), PrecheckToStartMovieMaker
  *    answers 0xcad6 (the SDK's "any other failure"), so the game reports an error instead of recording a video
@@ -444,7 +444,7 @@ static void mm_lock(void) {
 #endif
 }
 static void mm_unlock(void) { LeaveCriticalSection(&g_mm.lock); }
-/* for the graphics backend (nvn_gl.c): the value GetMovieMakerNativeWindow hands to the game, and "pictures will be delivered" */
+/* for the graphics backend (nvn_front.c, nvn_gl.c): the value GetMovieMakerNativeWindow hands to the game, and "pictures will be delivered" */
 uint64_t album_movie_native_window(void) { return (uint64_t)(uintptr_t)g_mm_window_token; }
 void album_movie_frame_source_attach(void) { g_mm.frame_source = 1; }
 

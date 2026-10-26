@@ -3,7 +3,7 @@
  *
  * How: a watchdog thread (time-critical priority) wakes about once per millisecond and looks at the main guest thread:
  *   - sleeping in the frame limiter                      -> "pace" (not a cost; never counted)
- *   - waiting for the render thread (gl_run)             -> "render: <what the render thread is doing>" (scope markers in nvn_gl.c)
+ *   - waiting for the render thread (gl_run)             -> "render: <what the render thread is doing>" (scope markers in nvn_front.c / nvn_gl.c)
  *   - inside an import or a run-time host function       -> "main: import <name>" (+ a note, e.g. the file being read);
  *                                                           "(blocked)" when the thread used no CPU during the sample, and then
  *                                                           the guest thread that did run is recorded as well
@@ -22,7 +22,7 @@
 #include "hostrt.h"
 
 int g_hitch_ms;                                   /* threshold; 0 = off */
-volatile const char *g_hitch_rt = "idle";         /* render thread: current scope (nvn_gl.c) */
+volatile const char *g_hitch_rt = "idle";         /* render thread: current scope (nvn_front.c / nvn_gl.c) */
 volatile uint64_t g_hitch_rt_arg;
 
 typedef struct { DWORD tid; HANDLE h; Ctx *volatile ctx; volatile LONG wait_render, pacing; char note[160]; } HRec;

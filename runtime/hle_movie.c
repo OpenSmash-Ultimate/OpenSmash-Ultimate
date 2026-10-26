@@ -36,7 +36,7 @@ static void empty_buffers(Cpu *c, u64 vector) {
 }
 
 /* The audio renderer's Close. */
-/* signature: f81b0ff9 a9015ff8 a90257f6 a9034ff4 a9047bfd 910103fd 320003e8 9102e014 aa0003f3 39004008 aa1403e0 9....... a945a668 cb080129 d343fd29 5295556a */
+/* signature: 16 words, sha256 86bd7e6ce224f325 */
 HLE_WRAP(71036f6400) {
     u64 renderer = c->x[0], lr = c->x[30];
     rt_callsym(c, "_ZNSt3__15mutex4lockEv", 1, renderer + RENDERER_LOCK);

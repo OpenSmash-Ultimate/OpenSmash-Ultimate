@@ -42,7 +42,9 @@ As on Windows, the game must be version 13.0.5, its last update
 `install-windowsmash.sh` does everything in one go: it gets the newest WindowSmash, installs what
 the build needs, finds your game files, and builds the game. It needs:
 
-- **An x86-64 PC with AVX2**, a Vulkan driver, and 8 GB of RAM or more (16 GB builds faster).
+- **An x86-64 PC with AVX2** (recommended) **or at the least SSE4.2** (x86-64-v2: the game is built for it, and is
+  expected to run slower; [the instruction set](BUILDING.md#the-instruction-set)), a Vulkan driver, and 8 GB of RAM or
+  more (16 GB builds faster).
 - **About 30 GB of free space**, and an internet connection.
 - **Your password for `sudo`**, to install packages. It knows the package managers of Ubuntu,
   Debian, Linux Mint, Fedora, Arch, Manjaro and openSUSE, and the families built on them. On an
@@ -141,8 +143,9 @@ what changed and builds only that: your game files aren't asked for again (they 
 into `dump/`), and the game's code is compiled again only when the update changes it. An update
 of the program's own parts (the graphics, the audio, the kernel: the files in `runtime/`) compiles
 those files and links the program again, which takes minutes. An update that changes how the
-game's code is translated (a performance change to the translator, say) compiles the game's code
-again, once: about as long as the first build. To build from other
+game's code is translated (a performance change to the translator, say), the header the game's
+code includes (`runtime/recomp.h`) or the compile flags, or a new compiler, compiles the game's
+code again, once: about as long as the first build. To build from other
 game files, name them: `bash install-windowsmash.sh --game <folder>`.
 
 A folder an older WindowSmash built from another game version, such as 11.0.0, is set up again
@@ -170,7 +173,7 @@ These are for the package from Windows.
 | | Requirement |
 | :--- | :--- |
 | **Linux** | 64-bit, with glibc 2.35 or newer: Ubuntu 22.04 or later, Debian 12 or later, Fedora 36 or later. |
-| **Processor** | One with AVX2 (Intel Haswell / AMD Excavator or newer). Virtual machines normally pass it through. |
+| **Processor** | One with what the package was built for, which the program checks as it starts: AVX2 (Intel Haswell / AMD Excavator or newer), or SSE4.2 for a package built for older processors (x86-64-v2: Intel Nehalem / AMD Bulldozer or newer; [the instruction set](BUILDING.md#the-instruction-set)). Virtual machines normally pass AVX2 through. |
 | **Graphics** | A Vulkan driver. Mesa's (`mesa-vulkan-drivers`) covers AMD, Intel and, without a GPU, the software renderer *lavapipe*. NVIDIA needs its proprietary driver. |
 | **Memory** | About 6 GB for the game on top of the desktop, so 12 GB or more for the whole machine is comfortable. |
 | **Game data** | The files the Windows build reads its RomFS from (its `romfs.cfg`): one NCA or RomFS image with 13.0.5 in it, or, when the Windows installer applied the 13.0.5 update itself, the game's own file and the update's `romfs_patch.bin`. |
@@ -368,6 +371,14 @@ the system's clang and lld. The third-party parts then live in `deps/linux-toolc
 installer puts them, and the overlay's font is drawn from the system's monospace font
 (`tools/linux/make_overlay_font.py`, with Pillow).
 
+Both compile for the instruction set [`tools/isa.py`](../tools/isa.py) chooses: `avx2`, or `x86-64-v2` on a processor
+without AVX2 ([the instruction set](BUILDING.md#the-instruction-set)). Set `SSBU_ISA` to choose, for example for a
+package for other PCs: by default it is this machine's processor. `build-linux/isa.txt` says what the game was
+built for and `build-vkd3d/linux/isa.txt` what vkd3d-shader was; `build_linux.py` stops when they differ, or
+when vkd3d-shader has none (an older version built it, with other flags), and `build_game.py` builds it again.
+`build_linux.py --link-only` links only when nothing is left to compile, so that `build-linux/isa.txt` says
+what all of it is compiled for.
+
 On Windows, the Linux program is cross-compiled next to the Windows build. It compiles the same
 generated C again, so build the game for Windows first (`tools/build_game.py`, or
 `tools/recomp.py` by hand). You also need Visual Studio's Clang (`clang.exe` and `ld.lld.exe`, or name
@@ -403,7 +414,7 @@ python tools/linux/package_linux.py --tar
 | Command | What it does |
 | :--- | :--- |
 | `build_vkd3d.py` | Builds vkd3d-shader, once. |
-| `build_linux.py` | Builds the checkout's game (its `dump/` and `build/`) into `build-linux/ssbu`, about 1.2 GB, with `ssbu.syms` for the profiler. `--port <folder>` builds another checkout's game instead; each output folder holds one game, so give that one its own `--out`. The first build compiles every game file again, about 25 minutes with 20 jobs; later builds only redo what changed. |
+| `build_linux.py` | Builds the checkout's game (its `dump/` and `build/`) into `build-linux/ssbu`, about 1.2 GB, with `ssbu.syms` for the profiler. `--port <folder>` builds another checkout's game instead; each output folder holds one game, so give that one its own `--out`. The first build compiles every game file again, about 25 minutes with 20 jobs; later builds only redo what changed. A file the compiler crashes on, or that runs past its time limit, is compiled again another way and listed in `build-linux/ladder_report.txt` ([the compile ladder](TECHNICAL.md#the-compile-ladder); `SSBU_COMPILE_LIMIT` as in [what the build does](BUILDING.md#what-the-build-does)). |
 | `package_linux.py` | Makes `dist-linux/ssbu-linux` from it, and `ssbu-linux.tar` with `--tar`. `--build` and `--out` package another tree's build. |
 
 To check the Linux renderer path without a Linux machine, `python tools/linux/wintest.py --vkd3d`

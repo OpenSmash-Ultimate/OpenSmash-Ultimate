@@ -370,7 +370,7 @@ extern DWORD g_r1_fls_idx;
  * saved / restored with the fiber. */
 static uint64_t g_fls_var;
 
-/* (R3 pub1) The statics of other files that are part of the state (nnunwind.c's catch table, fighter_host.c's FLS index, nvn_gl.c's
+/* (R3 pub1) The statics of other files that are part of the state (nnunwind.c's catch table, fighter_host.c's FLS index, nvn_front.c's
  * command-buffer save area) were found by name in the exe's linker map (<exe>.map beside it). The prebuilt runtime package (setup.py
  * --rollback) ships ssbu_native_rb.exe WITHOUT its map (and an exe copied under another name has none either): every lookup gave 0,
  * so the catch table was never captured nor restored by the ring and a load put a coroutine's host stack back without the
@@ -609,7 +609,7 @@ static void fibers_report(void) {
 static const char *where(uint8_t *a);
 static int g_mark; static int mark_setup(void); static void blk1_init(void);
 static int g_ra, g_save_failed; static int ra_hold_quiet(double limit); static const char *g_ra_busy_first_save(void);      /* (R3 lwr) the thread that kept the first save from being made */
-size_t nvn_r1_cb_save(void); void nvn_r1_cb_restore(void); static size_t g_ra_cb_bytes;      /* nvn_gl.c */
+size_t nvn_r1_cb_save(void); void nvn_r1_cb_restore(void); static size_t g_ra_cb_bytes;      /* nvn_front.c */
 static size_t g_saved_bytes;
 static void save(Ctx *c) {
     double t0 = now_ms();
@@ -1430,8 +1430,8 @@ static char *g_ra_kind; static long long g_ra_nkind, g_ra_kcap;              /* 
 static volatile LONG g_ra_lines;
 static PadRec g_ra_pad;
 int r1_ra_phase(void) { return g_ra > 0 ? g_ra_phase : 0; }
-int r1_ra_quiet(void) { return g_ra > 0 && g_ra_phase == 2; }          /* nvn_gl.c: the real pass's submission is not presented, the game not held */
-/* nvn_gl.c queue_present: 0 = as usual; 1 = bookkeeping only (the picture went to the window at the submission); 2 = nothing */
+int r1_ra_quiet(void) { return g_ra > 0 && g_ra_phase == 2; }          /* nvn_front.c: the real pass's submission is not presented, the game not held */
+/* nvn_front.c queue_present: 0 = as usual; 1 = bookkeeping only (the picture went to the window at the submission); 2 = nothing */
 int r1_ra_present_mode(void) {
     if (g_ra <= 0) return 0;
     if (g_ra_phase == 2) return g_ra_submit_mode ? 1 : 2;      /* (submit mode: the real pass's frame end is the only one of the tick) */

@@ -1,4 +1,4 @@
-"""Make the open-source replacement system fonts (runtime/fonts_open) from their published source.
+"""Make the open-source replacement system fonts (../third_party/fonts_open) from their published source.
 
     python open_fonts.py <output_dir> [--from <folder with the six .cpp files>]
 
@@ -8,7 +8,7 @@ project put together for the same purpose (Open Sans, Source Sans Pro and its ow
 kept in the suyu repository as C++ arrays of the plain TrueType bytes. This script downloads those six source
 files at one fixed commit (or reads them from --from), checks each against its pinned SHA-256, turns the array
 back into the .ttf it holds and writes it under the name the runtime (nnpl.c) asks for. The output is byte for
-byte the files in runtime/fonts_open; their licences are in runtime/fonts_open/README.md.
+byte the files in ../third_party/fonts_open; their licences are in ../third_party/fonts_open/README.md.
 Only the Python standard library is needed.
 """
 import hashlib

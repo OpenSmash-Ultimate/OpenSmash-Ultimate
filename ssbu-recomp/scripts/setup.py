@@ -10,7 +10,7 @@
 <folder> holds what you dumped from YOUR console (see BUILDING.md):
     <folder>/exefs/    the title's ExeFS files: main  sdk  (rtld, subsdk0, main.npdm are not used), update applied
     <folder>/romfs/    the title's RomFS (data.arc ...), update applied
-    optional: <folder>/sysdata/fonts (your console's system fonts; without them the open-source ones of runtime/fonts_open
+    optional: <folder>/sysdata/fonts (your console's system fonts; without them the open-source ones of ../third_party/fonts_open
               are used) and <folder>/sysdata/zoneinfo
 
 Nothing of the game is stored in the repository: every step below derives its files from the dump, into <repo>/build
@@ -57,8 +57,10 @@ STEPS =['deps', 'stage', 'convert', 'modules', 'tables', 'lift', 'sdk', 'compile
 GAME_BUILDS = {0x39c7e90: '13.0.4', 0x39c8440: '13.0.5'}
 SDK_TEXT_SIZE = 0x540950
 EXE = 'ssbu_native.exe'
-# what step_stage copies into build/work: (repository folder, folder in work, only files ending with)
-STAGE_PLAN = [('runtime', '', None), ('tools/lifter', '', None), ('tools/nro', 'ro_study', '.py'), ('tools/audit', 'tools_audit', '.py'),
+# what step_stage copies into build/work: (repository folder, folder in work, only files ending with); the open fonts
+# beside the exe, where nnpl.c looks for them, from the merged repository's third_party/fonts_open
+STAGE_PLAN = [('runtime', '', None), ('../third_party/fonts_open', 'fonts_open', None), ('tools/lifter', '', None),
+              ('tools/nro', 'ro_study', '.py'), ('tools/audit', 'tools_audit', '.py'),
               ('fighter_sdk', 'fighter_sdk', None), ('tests', 'tests', None), ('mods', '', None)]
 # files the build writes that may sit in a source folder of an in-tree build (all ignored by git): not part of the tree
 GENERATED_NAMES = {'sdklift_gen.c', 'sdkdata.c', 'sdklift_install.h', 'zstd_gen.c', 'nro_registry.c', 'fake_whitelist.h', 'fake_openlist.h',
@@ -860,11 +862,11 @@ def check_dump(cx):
         cx.state['dump']['sysdata'] = os.path.abspath(sysdata)
         say('  dump: exefs, romfs, sysdata (fonts%s)' % (', zoneinfo' if os.path.isdir(os.path.join(sysdata, 'zoneinfo')) else ''))
     else:
-        say('  dump: exefs, romfs   (no sysdata\\fonts: the open-source fonts of runtime\\fonts_open are used, staged beside the exe; '
+        say('  dump: exefs, romfs   (no sysdata\\fonts: the open-source fonts of ..\\third_party\\fonts_open are used, staged beside the exe; '
             'no Chinese, Japanese or Korean characters. Your console\'s own: tools/extract/fw_fonts.py, BUILDING.md)')
-        shipped = os.path.join(REPO, 'runtime', 'fonts_open')
+        shipped = os.path.join(os.path.dirname(REPO), 'third_party', 'fonts_open')
         if not os.path.isdir(shipped) or sum(n.lower().endswith('.ttf') for n in os.listdir(shipped)) < 7:
-            raise Fail('runtime\\fonts_open lacks its 7 font files and the dump has no sysdata\\fonts: the game would stop at start. '
+            raise Fail('..\\third_party\\fonts_open lacks its 7 font files and the dump has no sysdata\\fonts: the game would stop at start. '
                        'Restore the folder (scripts/update.py, git) or make it with tools/extract/open_fonts.py')
     if a.sdk_roots:
         if not os.path.isfile(a.sdk_roots):

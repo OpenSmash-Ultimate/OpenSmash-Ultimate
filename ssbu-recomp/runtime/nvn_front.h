@@ -1,16 +1,15 @@
 /* NVN front end: the types both render back ends share (plan\phases\V1_vulkan.md, section 1, seam steps S1 and S2).
  * Moved here from nvn_gl.c without renames. The front end itself (entry points, command recording, the job queue, the
- * texture source logic) still lives in nvn_gl.c until step S3; what the Vulkan back end needs of it is declared at the
- * end of this file (the nvn_front_* functions, defined at the end of nvn_gl.c). */
+ * texture source logic) is nvn_front.c since step S3; what the Vulkan back end needs of it is declared at the end of
+ * this file (the nvn_front_* functions, defined at the end of nvn_front.c). */
 #ifndef NVN_FRONT_H
 #define NVN_FRONT_H
 #include <stdio.h>
 #include <stdint.h>
 #include <windows.h>
-#include <GL/gl.h>
 #include "mx_translate.h"
 
-typedef struct { uint16_t internal, format, type; uint8_t bpb, bw, bh, kind; } Fmt;   /* kind: 0 colour, 1 depth, 2 stencil, 3 depth+stencil, 4 compressed */
+typedef struct { uint8_t bpb, bw, bh, kind; } Fmt;   /* bytes per block, block width and height in texels; kind: 0 colour, 1 depth, 2 stencil, 3 depth+stencil, 4 compressed */
 
 /* Small state objects and builders keep their contents in the guest's own memory (the game copies them
  * around freely); textures, programs, command buffers, pools and windows keep a pointer to a host struct
@@ -29,7 +28,10 @@ typedef struct {                                                                
     uint32_t glname;                       /* nvnTextureBuilderSetGLTextureName (OpenGL interop of the Windows NVN; only stored) */
 } TexBuilder;
 
-typedef struct { GLuint gl; int nh, alias; struct { GLuint smp; uint64_t h; } *h; } TexObj;
+/* The OpenGL back end's data (nvn_gl.c) is kept in these records: TexObj (Tex.o, Tex.views) and Stage.gl, glsl and the
+ * glsl_* fields; only OpenGL compiles the NV assembly text the front end keeps in Stage.text. The Vulkan back end keeps its
+ * own behind .vk. The names are GLuint there, which is unsigned int, as uint32_t is. */
+typedef struct { uint32_t gl; int nh, alias; struct { uint32_t smp; uint64_t h; } *h; } TexObj;
 typedef struct { int target, format, lvl0, nlvl, lay0, nlay, dsmode; uint8_t swz[4]; } EView;
 typedef struct VNode { EView e; TexObj o; struct VNode *next; } VNode;
 typedef struct Tex {
@@ -53,7 +55,7 @@ Tex *nvn_front_tex_first(void);            /* the newest texture record; ->all_n
 typedef struct { Tex *tex; View view; } TexPoolEnt;
 typedef struct { int count; TexPoolEnt *e; uint64_t mempool, offset; } TexPool;
 typedef struct { int count; SamplerParams *e; uint8_t *used; uint64_t mempool, offset; } SamplerPool;
-typedef struct { char *text; int len, state, nbuf; GLuint gl; uint8_t map[16]; uint32_t storage, storage_w, glsl_ssbo_w, local[3], smem_bytes, lmem_bytes, glsl_images, glsl_images_w, glsl_images_r; uint16_t glsl_img_key[8], glsl_img_fmt[8]; const uint8_t *code; int code_len, dumped, glsl_state, glsl_alpha; GLuint glsl; uint32_t glsl_cbufs, glsl_ssbos, glsl_dep, glsl_tex, glsl_key[4], ctl[8]; void *vk; } Stage;   /* state: 0 none, 1 text ready, 2 compiled, 3 rejected, 4 machine code only; vk: the Vulkan back end's last variant of this stage */
+typedef struct { char *text; int len, state, nbuf; uint32_t gl; uint8_t map[16]; uint32_t storage, storage_w, glsl_ssbo_w, local[3], smem_bytes, lmem_bytes, glsl_images, glsl_images_w, glsl_images_r; uint16_t glsl_img_key[8], glsl_img_fmt[8]; const uint8_t *code; int code_len, dumped, glsl_state, glsl_alpha; uint32_t glsl; uint32_t glsl_cbufs, glsl_ssbos, glsl_dep, glsl_tex, glsl_key[4], ctl[8]; void *vk; } Stage;   /* state: 0 none, 1 text ready, 2 compiled, 3 rejected, 4 machine code only; vk: the Vulkan back end's last variant of this stage */
 typedef struct { Stage st[6]; int serial, sample_shading, label_dirty; volatile LONG dead; uint64_t guest; } Prog;
 typedef struct { uint32_t op, size; uint64_t a[7]; } Cmd;                                                    /* a blob may follow */
 typedef struct {
@@ -87,9 +89,10 @@ typedef struct { SyncObj *o; int flags; uint64_t timeout; int result; } SyncJob;
 typedef struct { Tex *tex; View view; int has_view; int region[6]; const void *data; int64_t row_stride; } WriteJob;
 typedef struct { Tex *tex; View view; int has_view, to_pool; int region[6]; void *out; int64_t row_stride, image_stride; } ReadJob;      /* to_pool: nvnTextureInvalidateTexels */
 
-/* Seam step S2: what a render back end is. Every member runs on the render thread with the argument the entry point
- * built (the type is named beside it); the entry points call rb_run / rb_post (g_rb-><member>, argument). A member a
- * back end does not implement stops the game with the NVN operation's name (nvn_vk_missing). */
+/* Seam step S2: what a render back end is. Every member up to idle runs on the render thread with the argument the entry
+ * point built (the type is named beside it); the entry points call rb_run / rb_post (g_rb-><member>, argument). A member a
+ * back end does not implement stops the game with the NVN operation's name (nvn_vk_missing). The members after idle are
+ * called directly, where the comment says. */
 typedef struct RBackend {
     const char *name;                       /* "gl" | "vk" */
     void (*submit)(void *);                 /* SubmitJob: replay the command lists */
@@ -108,6 +111,10 @@ typedef struct RBackend {
     void (*reset_status)(void *);           /* int * */
     void (*sample_grid)(void *);            /* int[2] */
     void (*idle)(void);                     /* before every job (GL: deferred deletion); may be NULL */
+    void (*init)(void);                     /* render thread, once, before its job loop: the context or device for the window (nvn_front_hwnd) */
+    void (*report)(FILE *out);              /* the back end's lines of the exit report (nvn_gl_report) */
+    void (*frame_stats)(void);              /* render thread, every 300 frames after the nvn_perf: lines (pf_frame_mark); may be NULL */
+    void (*program_set)(Prog *p);           /* GUEST thread, nvnProgramSetShaders, once the stages are read: they go to the back end's shader workers */
 } RBackend;
 extern const RBackend rb_gl, rb_vk;
 extern const RBackend *g_rb;
@@ -115,11 +122,10 @@ void nvn_vk_memory_retire(void *arg);        /* PR #41: Range, render thread: dr
 void nvn_vk_container_seen(uint64_t control, uint64_t prog);      /* Vulkan, GUEST thread, from nvnProgramSetShaders: the "BNSH" container around this control section / variation program is scanned when new (nvn_vk_m4.c) */
 /* Session 8: where one nvnProgramSetShaders call spent its time, in performance-counter ticks, per calling thread:
  * 0 gl_barrier, 1 container_seen (all), 2 container search, 3 container copy / walk, 4 program_set (all), 5 hashing + job copy,
- * 6 waiting for the shader lock, 7 caller held for the workers. Printed by nvn_gl.c prog_set_shaders ("nvn_setsh:"). */
+ * 6 waiting for the shader lock, 7 caller held for the workers. Printed by nvn_front.c prog_set_shaders ("nvn_setsh:"). */
 extern __declspec(thread) long long nvn_setsh_part[8];
-void nvn_vk_program_set(void *prog);        /* Vulkan, GUEST thread, from nvnProgramSetShaders: the program's stages go to the workers (nvn_vk_m4.c) */
 
-/* ---------------------------------------------------------------- front-end services for the Vulkan back end (end of nvn_gl.c) */
+/* ---------------------------------------------------------------- front-end services for the Vulkan back end (end of nvn_front.c) */
 int nvn_front_fmt(int nvn_format, Fmt *f);                                  /* fmt_get */
 uint8_t *nvn_front_list(uint64_t handle, size_t *len);                      /* list_lookup */
 void nvn_front_batch_begin(void);                                           /* a new submitted batch: texture memory is looked at again once */

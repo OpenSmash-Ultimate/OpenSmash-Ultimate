@@ -1,0 +1,59 @@
+# ssbu-recomp's rollback netcode, the parts that do not touch the game (ssbu-recomp/runtime/rb.h: the input queues,
+# the wire format, the time sync; rb_hs.h's handshake record), through its own test, ssbu-recomp/tests/rb_test.c, on
+# Windows, Linux and macOS: tests/test_rollback_netcode.py builds it and runs it. Made-up pads over a simulated link:
+# no game, no network. The game side (rb_rollback.c, rb_learned.c) and the online session (rb_net.c) need the game's
+# runtime and are not built here.
+name: Rollback netcode
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - ssbu-recomp/runtime/rb.h
+      - ssbu-recomp/runtime/rb_hs.h
+      - ssbu-recomp/runtime/rb_input.c
+      - ssbu-recomp/runtime/rb_wire.c
+      - ssbu-recomp/runtime/rb_timesync.c
+      - ssbu-recomp/tests/rb_test.c
+      - tests/test_rollback_netcode.py
+      - .github/workflows/rollback-netcode.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rb_test:
+    name: rb_test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.14, as windowsmash-tests.yml (the test needs the standard library only)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      # clang as windowsmash-tests.yml installs it. macOS: Apple's clang. Windows: clang-cl, which tools/cc.py finds
+      # (Visual Studio's C++ Clang tools, or LLVM's installer: the runner has both)
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang
+
+      # RB_TEST_NEED_CLANG: no compiler is a failure here, not a skip
+      - name: rb_test
+        run: python -m unittest discover -s tests -p test_rollback_netcode.py -v
+        env:
+          RB_TEST_NEED_CLANG: '1'

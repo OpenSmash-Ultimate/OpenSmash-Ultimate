@@ -25,7 +25,9 @@ layout (same save format 0x1b at offset 4; offset 8 is the version that last wro
 
 A copy of the save is written first, to save_backups/ beside the save folder
 (system_data.bin.before-unlock-<time>); copy it back over system_data.bin to undo.
-Run it only while the game is closed: the game writes its save from memory.
+Run it only while the game is closed: the game writes its save from memory. It changes nothing
+while a save the game was writing is unfinished (save/<user>.commit: the game finishes it at its
+next start).
 """
 import argparse
 import datetime
@@ -83,10 +85,16 @@ def main():
     version, SAVE_SIZE, FLAGS, RECORDS = LAYOUTS[build_id]
     a.save = a.save or os.path.join(a.root, SAVE)
     print(f"game version {version}: {a.save}")
+    launcher = "launchers/Unlock All Fighters.command" if sys.platform == "darwin" else "Unlock All Fighters"
     if not os.path.isfile(a.save):   # (the game makes it: the first time it reaches the main menu)
-        launcher = "launchers/Unlock All Fighters.command" if sys.platform == "darwin" else "Unlock All Fighters"
         raise SystemExit(f"No save found ({a.save}). Start the game once, reach the main menu, close it, then run "
                          f"{launcher} again.")
+    # save/<user>.commit: the game stopped while it saved; its next start finishes that save
+    # (runtime/hle_fs.c), which could write over what this tool changes
+    marker = os.path.dirname(os.path.dirname(os.path.abspath(a.save))) + ".commit"
+    if os.path.exists(marker):
+        raise SystemExit(f"The game was stopped while it saved ({marker} is there). Start the game once, reach the main "
+                         f"menu (it finishes that save), close it, then run {launcher} again.")
 
     data = bytearray(open(a.save, "rb").read())
     if len(data) != SAVE_SIZE or struct.unpack_from("<I", data, 0)[0] != SAVE_SIZE:

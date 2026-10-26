@@ -37,7 +37,7 @@ landing_frame                 f32   0x0a0
 scale                         f32   0x0a8
 attack_combo_max              i32   0x0cc
 jump_count_max                i32   0x12c
-# W1 (2026-10-15): measured with N4_ROW_FIND on a copy of Terry's row (run w1jd1: 14.85 found at +0x48 only)
+# W1 (2026-10-15): measured with N4_ROW_FIND on a copy of Terry's row (run w1jd1: the value was found at +0x48 only)
 jump_initial_y                f32   0x048
-# W1: 0.8 (Terry's value) found at +0x44 (+0x45c, +0x474 are other fields) in run w1mv1 with jump_speed_x already 0.87
+# W1: Terry's value found at +0x44 (+0x45c, +0x474 are other fields) in run w1mv1 with jump_speed_x already changed
 jump_aerial_speed_x_mul       f32   0x044

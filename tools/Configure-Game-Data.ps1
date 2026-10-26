@@ -21,19 +21,19 @@ try {
         $offsetInput = Read-Host 'RomFS byte offset [0 for raw romfs.bin]'
         if ($offsetInput) { $Offset = [long]::Parse($offsetInput) }
     }
-    if (-not $FontsDirectory) {
-        if ($NonInteractive) { throw 'FontsDirectory is required.' }
-        $FontsDirectory = Read-Host 'Folder containing your six firmware .bfttf fonts'
+    # (the firmware's fonts are optional: without them the game uses the open fonts of third_party\fonts_open)
+    if (-not $FontsDirectory -and -not $NonInteractive) {
+        $FontsDirectory = Read-Host 'Folder containing your six firmware .bfttf fonts [Enter for none: the open fonts, without Chinese, Japanese or Korean text]'
     }
     if (-not $AocConfig -and -not $NonInteractive) {
         $AocConfig = Read-Host 'Optional path to your existing aoc.cfg [Enter to leave DLC configuration unchanged]'
     }
     $RomfsPath = $RomfsPath.Trim().Trim('"')
-    $FontsDirectory = $FontsDirectory.Trim().Trim('"')
+    if ($FontsDirectory) { $FontsDirectory = $FontsDirectory.Trim().Trim('"') }
     if (-not (Test-Path -LiteralPath $RomfsPath -PathType Leaf)) { throw 'RomFS input file not found.' }
-    if (-not (Test-Path -LiteralPath $FontsDirectory -PathType Container)) { throw 'Font directory not found.' }
+    if ($FontsDirectory -and -not (Test-Path -LiteralPath $FontsDirectory -PathType Container)) { throw 'Font directory not found.' }
     $RomfsPath = (Resolve-Path -LiteralPath $RomfsPath).Path
-    $FontsDirectory = (Resolve-Path -LiteralPath $FontsDirectory).Path
+    if ($FontsDirectory) { $FontsDirectory = (Resolve-Path -LiteralPath $FontsDirectory).Path }
     $pathEncoding = [Text.Encoding]::Default
     if ($pathEncoding.GetString($pathEncoding.GetBytes($RomfsPath)) -cne $RomfsPath) {
         throw 'The runtime cannot represent this RomFS path. Use a path supported by the Windows system code page.'
@@ -62,10 +62,21 @@ try {
         'nintendo_udsg-r_ext_zh-cn_003.bfttf', 'nintendo_udjxh-db_zh-tw_003.bfttf',
         'nintendo_udsg-r_ko_003.bfttf', 'nintendo_ext_003.bfttf'
     )
-    foreach ($name in $fonts) {
-        $font = Join-Path $FontsDirectory $name
-        if (-not (Test-Path -LiteralPath $font -PathType Leaf)) { throw ('Missing required font: ' + $name) }
-        if ((Get-Item -LiteralPath $font).Length -lt 8) { throw ('Truncated font file: ' + $name) }
+    if ($FontsDirectory) {
+        foreach ($name in $fonts) {
+            $font = Join-Path $FontsDirectory $name
+            if (-not (Test-Path -LiteralPath $font -PathType Leaf)) { throw ('Missing required font: ' + $name) }
+            if ((Get-Item -LiteralPath $font).Length -lt 8) { throw ('Truncated font file: ' + $name) }
+        }
+    } else {
+        # the runtime (runtime\hle_pl.c) takes each font the firmware's do not give from there
+        foreach ($name in $fonts) {
+            $open = [IO.Path]::ChangeExtension($name, '.ttf')
+            if (-not (Test-Path -LiteralPath (Join-Path $installRoot ('third_party\fonts_open\' + $open)) -PathType Leaf)) {
+                throw ('No firmware fonts were given, and the open font in their place is missing: third_party\fonts_open\' + $open + '. Restore that folder, or give your firmware fonts (-FontsDirectory).')
+            }
+        }
+        Write-Host 'No firmware fonts: the game uses the open fonts of third_party\fonts_open instead (its README.md says more). Latin text is in Open Sans and Source Sans Pro rather than the console''s typefaces; Chinese, Japanese and Korean text and most symbols are missing; the button icons come from yuzu''s icon font. Fights are not affected.'
     }
     if ($AocConfig) {
         $AocConfig = $AocConfig.Trim().Trim('"')
@@ -73,20 +84,23 @@ try {
         $AocConfig = (Resolve-Path -LiteralPath $AocConfig).Path
     }
     if ($DryRun) {
-        Write-Host 'RomFS header, offset and six font files validated. Dry run: nothing written.'
+        if ($FontsDirectory) { Write-Host 'RomFS header, offset and six font files validated. Dry run: nothing written.' }
+        else { Write-Host 'RomFS header and offset validated; the open fonts. Dry run: nothing written.' }
         exit 0
     }
     $moduleDir = Join-Path $installRoot 'dump\modules'
     $fontDir = Join-Path $installRoot 'dump\fonts'
     [void][IO.Directory]::CreateDirectory($moduleDir)
-    [void][IO.Directory]::CreateDirectory($fontDir)
     $stamp = (Get-Date -Format 'yyyyMMdd_HHmmss_fff') + '-' + [guid]::NewGuid().ToString('N')
-    foreach ($name in $fonts) {
-        $source = Join-Path $FontsDirectory $name
-        $target = Join-Path $fontDir $name
-        if ([IO.Path]::GetFullPath($source) -ieq [IO.Path]::GetFullPath($target)) { continue }
-        if (Test-Path -LiteralPath $target) { [IO.File]::Copy($target, ($target + '.before-setup-' + $stamp), $false) }
-        [IO.File]::Copy($source, $target, $true)
+    if ($FontsDirectory) {
+        [void][IO.Directory]::CreateDirectory($fontDir)
+        foreach ($name in $fonts) {
+            $source = Join-Path $FontsDirectory $name
+            $target = Join-Path $fontDir $name
+            if ([IO.Path]::GetFullPath($source) -ieq [IO.Path]::GetFullPath($target)) { continue }
+            if (Test-Path -LiteralPath $target) { [IO.File]::Copy($target, ($target + '.before-setup-' + $stamp), $false) }
+            [IO.File]::Copy($source, $target, $true)
+        }
     }
     if ($AocConfig) {
         $aocTarget = Join-Path $moduleDir 'aoc.cfg'

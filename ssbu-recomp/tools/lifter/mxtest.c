@@ -1,6 +1,6 @@
 /* Offline test of the Maxwell -> GLSL translator against the real OpenGL driver.
  *
- *   mxtest <dir> [options]          <dir> holds the stages dumped with SSBU_SHADERDUMP_ALL=<dir> (s<program>_<i>.mxd, see nvn_gl.c)
+ *   mxtest <dir> [options]          <dir> holds the stages dumped with SSBU_SHADERDUMP_ALL=<dir> (s<program>_<i>.mxd, see nvn_front.c)
  *     -v0            use the first translator (mx_translate_v0.c) instead of mx_translate.c, for a before/after table
  *     -n             translate only, do not compile
  *     -o <file>      one line per unique stage: file, stage, status (OK / NOTR / REJECT), opcode or error, detail

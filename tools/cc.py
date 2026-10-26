@@ -2,12 +2,14 @@
 import glob
 import json
 import os
-import re
 import subprocess
-import time
 from concurrent.futures import ThreadPoolExecutor
 
 import codec_libs   # (this folder, which every importer of cc puts on sys.path)
+import isa
+import ladder
+import progress
+from ladder import CRASH_SIGNS, RETRY, crash_cause, crash_report, crashed  # noqa: F401 (the crash retry's, here before)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUNTIME = os.path.join(ROOT, "runtime")
@@ -52,12 +54,26 @@ def _find_toolchain():
 
 
 CLANG, WINSYSROOT, TOOLCHAIN = _find_toolchain()
+# The instruction set (tools/isa.py): avx2, or x86-64-v2 for older processors; why, in words; and
+# whether SSBU_ISA chose it (build/isa.txt keeps that for the next build).
+ISA, ISA_TOLD, ISA_WHY = isa.target(os.path.join(ROOT, "build"))
 # Guest FP semantics need IEEE-exact arithmetic: no contraction, no fast-math. (BASE_CFLAGS is
 # also what the codec libraries are compiled with: same instruction set, same C runtime.) With
 # deps\msvc, /winsysroot is where the C runtime's and the Windows SDK's headers and libraries are.
-BASE_CFLAGS = ["/nologo", "/arch:AVX2", "-mfma", "-mf16c", "-fno-strict-aliasing", "/clang:-ffp-contract=off", "-w",
-               *(["/winsysroot", WINSYSROOT] if WINSYSROOT else [])]
+def base_cflags(target):
+    """BASE_CFLAGS for an instruction set (tools/isa.py)."""
+    return ["/nologo", *isa.CLANG_CL[target], "-fno-strict-aliasing", "/clang:-ffp-contract=off", "-w",
+            *(["/winsysroot", WINSYSROOT] if WINSYSROOT else [])]
+
+
+BASE_CFLAGS = base_cflags(ISA)
 CFLAGS = [*BASE_CFLAGS, "/I", RUNTIME]
+# runtime/cpu_check.c's: for any x64 processor, as it checks the processor before anything else runs
+CHECK_CFLAGS = [*base_cflags(isa.ANY), "/I", RUNTIME]
+# The generated C's flags: it includes recomp.h or module.h, which read none of the runtime's defines and
+# include folders added to CFLAGS below (SDL3, libopus, libvpx). So their coming and going compiles the
+# runtime again (minutes), not the game (hours: tools/objcache.py keys each object on its command).
+GAME_CFLAGS = [*BASE_CFLAGS, "/I", RUNTIME]
 # Linking through clang-cl: with lld-link when it is next to clang-cl (else Visual Studio's link.exe),
 # and LINK_OPTIONS after /link. With deps\msvc both are given the system root. clang-cl, given
 # /winsysroot, hands lld-link the root's library folders (-libpath:). lld-link, given /winsysroot:,
@@ -112,37 +128,15 @@ else:
     SDL3_DLL = None
 EXTRA_LIBS = OPUS_LIBS + VPX_LIBS + (["/NODEFAULTLIB:msvcrt.lib"] if EXTERNAL_LIBS else [])
 
-# Compiler crashes. A player's build stopped on two files that clang-cl crashed on (access violations,
-# one in the parser, one in the optimiser) where the very same clang-cl compiles them here: a PC short
-# of memory, or one not quite stable, does that, and it rarely happens twice to the same file. So
-# compile_each compiles a file the compiler crashed on again, on its own once the others are done, at
-# these levels: its own, then /O1 (fewer optimiser passes; the giant functions are built at /O1 anyway).
-# Never /Od: the C's huge functions would want huge stack frames. A crash is told from an error in the
-# code by what clang prints (it exits with 1 either way): its crash handler's report, or LLVM's own fatal
-# errors such as running out of memory; a clang-cl that crashes outright exits with the exception code.
-RETRY = {"/O2": ("/O2", "/O1"), "/O1": ("/O1", "/O1")}
-CRASH_SIGNS = ("PLEASE submit a bug report", "Stack dump:", "frontend command failed", "LLVM ERROR:")
-# and without a bug report's files: after a crash clang would preprocess the file again, into %TEMP%
+# Compiler crashes, and compiles that run too long (tools/ladder.py). A player's build stopped on two files
+# that clang-cl crashed on (access violations, one in the parser, one in the optimiser) where the very same
+# clang-cl compiles them here: a PC short of memory, or one not quite stable, does that, and it rarely
+# happens twice to the same file. So compile_each compiles a file the compiler crashed on again, on its own
+# once the others are done, at its own level, then /O1 (RETRY: fewer optimiser passes; the giant functions
+# are built at /O1 anyway). A crash is never retried at /Od: that, after the longest functions unoptimised,
+# is for a generated file that runs over its time limit. Compiled without a bug report's files: after a
+# crash clang would preprocess the file again, into %TEMP%.
 NO_CRASH_FILES = "-fno-crash-diagnostics"
-
-
-def crashed(code, out):
-    """Whether a failed compile (exit code, output) was the compiler crashing."""
-    return code < 0 or code >= 0xC0000000 or any(sign in out for sign in CRASH_SIGNS)
-
-
-def crash_cause(code, out):
-    """A crash's cause in a few words, for the build's log."""
-    if "LLVM ERROR: out of memory" in out:
-        return "out of memory"
-    found = re.search(r"Exception Code: (0x[0-9A-Fa-f]+)", out)
-    return f"exception {found.group(1)}" if found else f"exception 0x{code:08X}" if code >= 0xC0000000 else "a crash"
-
-
-def crash_report(out):
-    """A crash's output without the compiler's command line and its raw stack frames."""
-    return "\n".join(line for line in out.splitlines() if line.strip() and not re.match(r"\s*#\d+ 0x", line)
-                     and "Program arguments:" not in line and not line.startswith("PLEASE submit"))
 
 
 def compile_one(src, obj, opt="/O2"):
@@ -158,49 +152,27 @@ def compile_many(sources, jobs=16, opt="/O2"):
         return list(pool.map(lambda s: compile_one(s, os.path.splitext(s)[0] + ".obj", opt), sources))
 
 
-def _compile(src, obj, opt):
-    r = subprocess.run([CLANG, "/c", opt, *CFLAGS, NO_CRASH_FILES, src, "/Fo" + obj], capture_output=True, text=True)
-    return r.returncode, r.stdout + r.stderr
+def compile_command(src, obj, opt, flags=None, header=None):
+    """The command compile_each compiles a file with (and what objcache.py keys its object on);
+    flags: CFLAGS unless given (GAME_CFLAGS for the generated C); header: the ladder's optnone header,
+    given before the file (/FI), when it has one."""
+    return [CLANG, "/c", opt, *(CFLAGS if flags is None else flags), NO_CRASH_FILES, *(["/FI" + header] if header else []),
+            src, "/Fo" + obj]
 
 
-def compile_each(jobs_list, jobs=16, started=None, finished=None, log=print):
-    """Compile (src, obj, opt) triples in parallel, in order; returns [(src, error text)] for
-    failures. started(job) and finished(job, seconds), if given, are called (from the worker
-    threads) as each one starts and ends. A file the compiler crashed on is compiled again once
-    the others are done, on its own (RETRY); log() says so."""
-    def one(job):
-        src, obj, opt = job
-        if started:
-            started(job)
-        t0 = time.time()
-        code, out = _compile(src, obj, opt)
-        if finished:
-            finished(job, time.time() - t0)
-        return (job, code, out) if code else None
-    with ThreadPoolExecutor(jobs) as pool:
-        failed = [f for f in pool.map(one, jobs_list) if f]
-    return [f for f in (_compile_again(*f, log) for f in failed) if f]
-
-
-def _compile_again(job, code, out, log):
-    """A failed compile's (src, error text), or None if it was a crash and the file compiles now."""
-    src, obj, opt = job
-    name = os.path.basename(src)
-    if not crashed(code, out):
-        return src, out
-    for again in RETRY.get(opt, (opt, opt)):
-        log(f"the compiler crashed on {name} ({crash_cause(code, out)}): compiling it again on its own"
-            + (f", at {again}" if again != opt else ""))
-        code, out = _compile(src, obj, again)
-        if not code:
-            log(f"{name} compiled" + (f" (at {again}: a little less optimised, works the same)" if again != opt else ""))
-            return None
-        if not crashed(code, out):
-            return src, out
-    return src, (f"the compiler (clang-cl) crashed on this file {1 + len(RETRY.get(opt, (opt, opt)))} times. The same "
-                 "file compiles on other PCs with the same compiler, so this PC most likely ran out of memory or is not "
-                 "quite stable (overclocked, or overheating). Close other programs and run the build again: it carries "
-                 "on where it stopped.\n" + crash_report(out))
+def compile_each(jobs_list, jobs=16, started=None, finished=None, log=print, compiled=None, flags=None, shown=None,
+                 infos=None, steps=None, times=None):
+    """Compile (src, obj, opt) triples in parallel, in order, with flags (CFLAGS unless given); returns
+    [(src, error text)] for failures. started(job) and finished(job, seconds), if given, are called
+    (from the worker threads) as each one starts and ends (shown: a progress.Build, which also hears
+    of a file compiled again), and compiled(job, level[, step]) as each one compiles, with the level
+    it compiled at. A file the compiler crashed on is compiled again once the others are done, on its
+    own (RETRY); log() says so. infos {obj: ladder.Info}: the generated files, which have a time limit
+    and the rest of the ladder (steps: the build's ladder.Ladder, else one of its own); times: the
+    build folder's ladder.Times."""
+    steps = steps or ladder.Ladder(progress.level_cost, "clang-cl", log)
+    return steps.compile(jobs_list, jobs, lambda job, level, header: compile_command(job[0], job[1], level, flags, header),
+                         infos, shown, started, finished, compiled, times)
 
 
 def link_command(rsp, exe, options=(), libs=()):
@@ -214,7 +186,7 @@ def link(objs, exe, options=()):
     """Link objects into an executable; `options` go to the linker. The codec libraries built
     from third_party/ are made first if they are missing or stale (a few seconds)."""
     if BUILT_CODECS:
-        codec_libs.build(BUILT_CODECS, log=lambda m: print(m, flush=True))
+        codec_libs.build(BUILT_CODECS, log=lambda m: print(m, flush=True), target=ISA)
     rsp = exe + ".rsp"
     with open(rsp, "w") as f:
         f.write("\n".join(f'"{o}"' for o in objs))
@@ -225,3 +197,25 @@ def link(objs, exe, options=()):
         errors = [l for l in lines if "error" in l.lower()] or lines   # (the third-party libraries' CRT warnings drown them)
         raise RuntimeError("link failed\n" + "\n".join(errors)[:4000])
     return exe
+
+
+def library_command(rsp, dll):
+    """clang-cl's command that links the objects listed in `rsp` into the DLL `dll`: the game's modules
+    (--game-dll: tools/game_dll.py), as link() links the program but with none of its libraries, which only
+    the runtime calls (the game's C reaches the runtime through the tables the library hands it). Placed as
+    the program is (/HIGHENTROPYVA:NO); its one export is the function that hands over those tables."""
+    return [CLANG, "/nologo", "/LD", *LINK_FLAGS, "@" + rsp, "/Fe" + dll, "/link", *LINK_OPTIONS, "/HIGHENTROPYVA:NO",
+            "/MAP:" + dll[:-4] + ".map"]
+
+
+def link_library(objs, dll):
+    """Link objects into a DLL (library_command)."""
+    rsp = dll + ".rsp"
+    with open(rsp, "w") as f:
+        f.write("\n".join(f'"{o}"' for o in objs))
+    r = subprocess.run(library_command(rsp, dll), capture_output=True, text=True)
+    if r.returncode:
+        lines = (r.stdout + r.stderr).splitlines()
+        errors = [l for l in lines if "error" in l.lower()] or lines
+        raise RuntimeError("the game library's link failed\n" + "\n".join(errors)[:4000])
+    return dll

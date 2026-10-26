@@ -24,6 +24,7 @@ int gpu_threaded(void);                                   /* is there one (SSBU_
 void gpu_queue_submit(u32 channel, const u64 *entries, u32 count, u32 syncpoint, u32 fence);
 u64 gpu_queue_mark(void);                                 /* submissions queued so far */
 void gpu_queue_wait(u64 mark);                            /* until that many have run */
+u64 gpu_queue_draws(u64 mark);                            /* (SSBU_SEQ) draw calls run once they had */
 void gpu_queue_drain(void);                               /* until everything queued has run */
 void gpu_memory_unmapping(u64 addr, u64 size);            /* guest memory about to be decommitted (hle_nv.c) */
 /* Until sync point `id` reaches `threshold` (or `timeout_ms` passes; ~0u: no limit): 1 reached. */

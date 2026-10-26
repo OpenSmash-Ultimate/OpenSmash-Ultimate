@@ -1,4 +1,6 @@
 -r ../requirements.txt
 # Optional disassembly and game-backed differential testing tools.
-capstone
-unicorn
+# Pinned: the synthetic difftest keeps the words capstone decodes, so its run depends on the version
+# (capstone 5.0.9's module reports itself as 5.0.7).
+capstone==5.0.9
+unicorn==2.1.4

@@ -275,7 +275,7 @@ int guest_thread_info(int i, Ctx **c, const char **name, HANDLE *h) {
     return 1;
 }
 void hitch_cur_ctx(Ctx *c);
-/* Name of the guest thread running on host thread `tid`, or NULL (nvn_gl.c: CPU time per thread, P3). */
+/* Name of the guest thread running on host thread `tid`, or NULL (nvn_front.c: CPU time per thread, P3). */
 const char *guest_thread_name_of(DWORD tid) {
     for (int i = 0; i < g_threads_n && i < 256; i++) {
         Obj *o = g_threads[i].o;
@@ -480,7 +480,7 @@ static void mtx_init(Ctx *c) { (void)obj(A0); }
 /* Round 17, MEASUREMENT (SSBU_MUTEXSTAT=1; nothing runs without it): calls of the libc++ / nn::os mutex lock import, the
  * time in the table look-up and in the lock itself, and how many calls found the mutex taken, for the thread that
  * queues the presents (the game's main thread) and for all other threads; a line every 200,000 calls of the main thread. */
-unsigned long nvn_front_present_tid(void);                 /* nvn_gl.c */
+unsigned long nvn_front_present_tid(void);                 /* nvn_front.c */
 static int g_mstat = -1;
 static volatile LONG64 g_ms_calls[2], g_ms_look[2], g_ms_enter[2], g_ms_cont[2], g_ms_cont_tk[2];
 static void mtx_lock_stat(Ctx *c) {

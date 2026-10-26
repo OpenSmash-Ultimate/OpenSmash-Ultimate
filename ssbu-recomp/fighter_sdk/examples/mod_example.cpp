@@ -22,7 +22,7 @@ static void my_check_jump(Ctx *c, void *user) {
     result[0] = 1; result[1] = 0;                      // L2CValue(false): type 1 = bool, value 0; the original is not called
 }
 
-extern "C" __declspec(dllexport) void mod_init(const HookApi *a) {
+extern "C" MOD_EXPORT void mod_init(const HookApi *a) {
     api = a;
     api->install_name("_ZN7lua2cpp16L2CFighterCommon16status_JumpSquatEv", my_jump_squat, nullptr, &orig_jump_squat);
     if (getenv("SSBU_MOD_NOJUMP"))
