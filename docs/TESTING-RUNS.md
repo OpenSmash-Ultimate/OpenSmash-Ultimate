@@ -246,7 +246,7 @@ Only whole hash lines are read, so a cut last line and the game's other output (
 
 ## The Phase 2 gate: the fight hash across two runs
 
-The gate is passed when two runs of the same scripted match give the same hash log. Nobody has run it yet. The recipe:
+The gate is passed when two runs of the same scripted match give the same hash log. First run on 2026-10-26 (Windows, Direct3D 11, `SSBU_SPEED=4`, `SSBU_FIXED_SEED=1`, Mario against a level 9 CPU Donkey Kong on Final Destination): two runs with player 1's input below were the same over 5,203 lines (2,602 fight frames), and two runs without player 1's input over 5,234. Wait for the fight with a plain `@fight`: an `@untilmark:fight:A` ends only once its press under way is over, so the fight's steps then start up to 8 ticks late, a different number in each run (two such runs went apart at the first input). Without `SSBU_FIXED_SEED` the fighters' starting sides changed from run to run, and once with it too, in a run with `SSBU_ROLLBACK_RING` on: something chosen before the fight still depends on timing. The recipe:
 
 1. Build as usual. Player 1 is the sequence's; unplug the other pads, so that players 2 to 8 get no input.
 2. Write the sequence, `gate.seq`. Your steps to *Ready to fight* go first: their draw counts are your build's, so find them with `SSBU_SEQ_LOG` ([an example run](#an-example-run) shows how). The fighters and stage you pick don't matter, as `SSBU_DEBUG_MATCH` replaces them. Then the fight, as below. From `@fight` on, a step is a fight frame, so the input lands on the same frame in both runs. The wait of 520 fight frames is for the countdown, as in ssbu-recomp's own sequence for this test (`ssbu-recomp/tests/seq_det_play.txt`). The input itself is made up.
