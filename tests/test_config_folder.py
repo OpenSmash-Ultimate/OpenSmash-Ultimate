@@ -96,6 +96,7 @@ SR_PADS_READ_DEFAULTS = SR_PADS_READ.replace(
     '[device default] layout=0 style=1 deadzone=15 rumble=50 trigger_threshold=40\n',
     '[device default] layout=0 style=1 deadzone=15 rumble=50 trigger_threshold=40\n'
     '[device 03004271790000004418000000016800] layout=-1 style=-1 deadzone=-1 rumble=-1 trigger_threshold=-1\n'
+    '[device Mayflash GameCube Controller] layout=-1 style=-1 deadzone=-1 rumble=-1 trigger_threshold=-1\n'
     '[device Nintendo GameCube Controller Adapter] layout=-1 style=-1 deadzone=-1 rumble=-1 trigger_threshold=-1\n'
     '[device 0300f3b1790000004618000010010000] layout=-1 style=-1 deadzone=-1 rumble=-1 trigger_threshold=-1\n')
 
