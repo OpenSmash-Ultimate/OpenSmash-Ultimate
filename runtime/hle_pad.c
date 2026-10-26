@@ -170,7 +170,17 @@ static const char DEFAULT_INI[] =
     "; flip it back. By the pad's GUID, so a GameCube pad in Wii U mode (the same name, read\n"
     "; straight from the adapter) is left alone.\n"
     "[device 03004271790000004418000000016800]\n"
-    "invert = rightx, righty\n";
+    "invert = rightx, righty\n"
+    "\n"
+    "; A PC-mode adapter on the same DragonRise chip (USB 0079:1846, sold under many\n"
+    "; names) reads the same way: the C-stick comes up inverted. SDL names it\n"
+    "; \"Nintendo GameCube Controller Adapter\"; on Linux its GUID is the one below.\n"
+    "[device Nintendo GameCube Controller Adapter]\n"
+    "invert = rightx, righty\n"
+    "[device 0300f3b1790000004618000010010000]\n"
+    "invert = rightx, righty\n"
+    "; Nintendo's own adapter (USB 057e:0337) needs no section: SDL reads it with its\n"
+    "; GameCube driver and the C-stick is already the right way up.\n";
 
 static char *trim(char *s) {
     while (*s == ' ' || *s == '\t') s++;

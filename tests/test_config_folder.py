@@ -89,12 +89,15 @@ player 3 = none
   B = east
 '''
 
-# the same read on top of this port's default controllers.ini, whose [device 03004271...]
-# section (a Mayflash adapter's inverted C-stick, flipped back) rides along
+# the same read on top of this port's default controllers.ini, whose [device ...]
+# sections (a Mayflash adapter and DragonRise-chip clones in PC mode, their C-sticks
+# inverted, flipped back) ride along
 SR_PADS_READ_DEFAULTS = SR_PADS_READ.replace(
     '[device default] layout=0 style=1 deadzone=15 rumble=50 trigger_threshold=40\n',
     '[device default] layout=0 style=1 deadzone=15 rumble=50 trigger_threshold=40\n'
-    '[device 03004271790000004418000000016800] layout=-1 style=-1 deadzone=-1 rumble=-1 trigger_threshold=-1\n')
+    '[device 03004271790000004418000000016800] layout=-1 style=-1 deadzone=-1 rumble=-1 trigger_threshold=-1\n'
+    '[device Nintendo GameCube Controller Adapter] layout=-1 style=-1 deadzone=-1 rumble=-1 trigger_threshold=-1\n'
+    '[device 0300f3b1790000004618000010010000] layout=-1 style=-1 deadzone=-1 rumble=-1 trigger_threshold=-1\n')
 
 SR_GRAPHICS = '\r\n'.join([
     '; graphics.ini (made up)',
