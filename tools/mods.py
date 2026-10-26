@@ -2012,6 +2012,7 @@ def apply(tree, log=print):
         # the real ARCropolis is among the standard plugins: it reads the turned-on mods from
         # sd:/ultimate/mods (runtime/hle_fs.c) as the game loads, so the game keeps its own data
         characters_mod(tree, log)
+        hide_shadowed_sources(tree, on, log)
         missing_shares(tree, on, log)
         select_screen_arcropolis(tree, on, log)
         sync_plugins(tree, log)
@@ -2132,6 +2133,30 @@ def characters_mod(tree, log):
         f.writelines(h + "\n" for h in hidden)
     if hidden:
         log("the new characters' select-screen files include these mods' own copies: " + ", ".join(hidden))
+
+
+def hide_shadowed_sources(tree, on, log):
+    """A mod that ships a file both whole and as ARCropolis' text source next to it - Knuckles'
+    fighter/sonic/motion/body/c120/motion_list.bin and motion_list.yml - has ARCropolis build the
+    file from the text, and a .yml of an older format than this ARCropolis reads (missing a field)
+    then left the file unloaded and the match crashed. The whole file is what the mod's author
+    tested: its .yml is added to dump/skyline/hidden.txt (runtime/hle_fs.c hides it from ARCropolis)."""
+    hidden_path = os.path.join(tree.root, "dump", "skyline", "hidden.txt")
+    shadowed = []
+    for name in on:
+        for root in find_roots(os.path.join(tree.mods, name)) or [os.path.join(tree.mods, name)]:
+            for dp, _dirs, files in os.walk(root):
+                lower = {f.lower() for f in files}
+                for f in files:
+                    stem, ext = os.path.splitext(f)
+                    if ext.lower() == ".yml" and (stem + ".bin").lower() in lower:
+                        shadowed.append(os.path.relpath(os.path.join(dp, f), tree.mods).replace(os.sep, "/"))
+    if not shadowed:
+        return
+    with open(hidden_path, "a", encoding="utf-8", newline="\n") as f:
+        f.writelines(h + "\n" for h in shadowed)
+    log(f"{len(shadowed)} text source(s) left to the whole file beside them (ARCropolis would build that "
+        "file from the text): " + ", ".join(shadowed[:5]) + (" ..." if len(shadowed) > 5 else ""))
 
 
 ARRANGEMENT = ("ui", "param", "menu", "chara_icon_arrangement.prc")
