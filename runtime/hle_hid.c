@@ -201,8 +201,9 @@ static u64 keyboard_buttons(i32 *lx, i32 *ly, i32 *rx, i32 *ry) {
 }
 
 /* State shared by every style: { s64 sampling; u64 buttons; s32 lx, ly; s32 rx, ry; u32 attributes; u32 reserved }.
- * The attributes say connected only in the player's own style. A GameCube state goes on with
- * { u32 trigger l, trigger r (0..32767); u32 reserved }: the game presses L and R itself when a
+ * The attributes say connected only in the player's own style. Unlike the common state, a GameCube
+ * state has trigger_l at +36 and trigger_r at +40, then padding to 48 bytes (public libnx
+ * HidNpadGcState, nx/include/switch/services/hid.h). The game presses L and R itself when a
  * trigger is past 0x27FF, whatever the buttons say, so the keyboard's L and R pull them fully. */
 static void npad_state(u64 out, u32 id, u32 style) {
     u64 buttons = 0;
@@ -237,12 +238,12 @@ static void npad_state(u64 out, u32 id, u32 style) {
     st32(out + 16, (u32)lx); st32(out + 20, (u32)ly);
     st32(out + 24, (u32)rx); st32(out + 28, (u32)ry);
     st32(out + 32, attributes);
-    st32(out + 36, 0);
+    if (style != STYLE_GC) st32(out + 36, 0);
     if (style == STYLE_GC) {
         if (buttons & 1ull << B_L) lt = 32767;
         if (buttons & 1ull << B_R) rt = 32767;
-        st32(out + 40, (u32)lt); st32(out + 44, (u32)rt);
-        st32(out + 48, 0);
+        st32(out + 36, (u32)lt); st32(out + 40, (u32)rt);
+        st32(out + 44, 0);
     }
 }
 
