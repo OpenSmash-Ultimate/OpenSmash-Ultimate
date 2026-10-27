@@ -9,7 +9,7 @@
  *  - the safe point after each pass (the kick after the submission 0x7103749b24, the same as run-ahead / SSBU_RB_SIM):
  *    received messages are applied; a wrong guess at frame m -> the ring state of frame m - 1 is loaded and the passes
  *    m .. now are run again with the corrected pads (re-run passes but the last skip presentation work: SSBU_RB_SIM_SKIP /
- *    SSBU_RB_SIM_LITE, default 49 / 127 here); then the next real pass waits for its 60 Hz tick (SSBU_RB_NET_PACE=0: no
+ *    SSBU_RB_SIM_LITE, default 49 / 127 here, 49 / 123 on Linux); then the next real pass waits for its 60 Hz tick (SSBU_RB_NET_PACE=0: no
  *    wait), and for the other player when it is more than SSBU_RB_NET_AHEAD frames behind.
  * Frames: the ring's base capture (the first safe point of the fight) is frame 0; real pass n is frame n.
  * No game content in this file. SPDX-License-Identifier: GPL-3.0-or-later */
@@ -21,6 +21,7 @@ void rbn_pass_hash(long long f); void rbn_finalize(long long cur); double rbn_pa
 int rbn_delay(void); int rbn_rtt_ms(void); double rbn_offset_ms(void); void rbn_resend(void); void rbn_status(char *out, size_t n); void rbn_hello(void); int rbn_peer_started(void); void rbn_choose_delay(void);
 
 int rbn_match_cancelled(void); void rbn_match_reset(void); int rbn_match_number(void);      /* (hs12) */
+int rbn_agreed_pending(void);
 void rbn_set_lockstep(int on); int rbn_loop(void);      /* (hs13) */
 /* (hs13) a match WITHOUT the ring (r1_ring.c g_rg_nomem: not enough memory for the snapshot ring, e.g. a PC short of commit
  * memory: tw1j crashed there): the pads are still exchanged, but every real pass waits until the other player's pad of
@@ -39,6 +40,7 @@ static int g_rbg_in_match, g_rbg_rebase; static double g_rbg_quit_t0;
  * from the first safe point with the fight on (g_rbg_ff_first) on both games: a base made `late` passes later is frame `late`,
  * and the passes before it get no pad (as frames 1..delay on the other game). SSBU_RB_NET_BASEFIX=0: the old way (test). */
 static long long g_rbg_ff_first = -1; static int g_rbg_basefix = -1;
+static long long g_rbg_pre_input;                     /* pad reads with input taken away before the base (rbg_pad), this match */
 static int g_rbg = -1;
 static int rbg_on(void) { if (g_rbg < 0) g_rbg = rbn_on() > 0; return g_rbg; }
 static long long g_rbg_rb, g_rbg_k[RG_MAXSLOT + 2], g_rbg_rerun, g_rbg_miss, g_rbg_stalls, g_rbg_capfail, g_rbg_capskip, g_rbg_lastlocal, g_rbg_real, g_rbg_gone;
@@ -76,7 +78,7 @@ static double g_rbg_t_pre, g_rbg_t_load, g_rbg_t_rerun, g_rbg_t_recap, g_rbg_t_p
 static long long g_rbg_short_waits;
 /* (R3 pub1) a load refused at a wrong guess at frame g_rbg_pend (r1_ring_load -1): the state before it must stay in the ring
  * until the rollback is made next tick; g_rbg_refused_tick: no second try in the same tick (each try may hold for 500 ms) */
-static int g_rbg_pend, g_rbg_refused_tick;
+static int g_rbg_pend, g_rbg_refused_tick; static long long g_rbg_older;     /* states tried older than the newest one (a job fiber that cannot be put back) */
 void rbn_put_mismatch(int m);
 static int rbg_capture(long long i, Ctx *c) { g_rg_need = rbn_confirmed(); if (g_rbg_pend > 0 && g_rbg_pend - 1 < g_rg_need) g_rg_need = g_rbg_pend - 1; return r1_ring_capture(i, c); }
 void rbn_stats(int *delay, int *last, int *maxk) { *delay = rbn_delay(); *last = (int)g_rbg_last_k; *maxk = (int)g_rbg_max_k; }   /* net_relay.c net_stats_get (F2) */
@@ -102,6 +104,16 @@ static int rbg_rollback(Ctx *c, long long i, int m) {
     if (!g_ra_wh_on) { g_rbg_rb_unheld++; if (g_rbg_rb_unheld <= 10) LOG("r1: RB NET: rollback at frame %lld while the task workers are NOT held (watchdog releases so far %lld): the load may leave the job system waiting\n", i, g_ra_wd_fired); }
     if (g_rbg_refused_tick) { rbn_put_mismatch(m); return 0; }      /* (R3 pub1) refused once this tick: next tick */
     int lr = r1_ring_load(best, c);
+    /* (Linux pair run ur13: the state of frame 61 refused 8 times for a job fiber that had been running in it and was switched
+     * away since, then loaded anyway: desync) such a state never becomes loadable; up to 3 older ones are tried at once, in
+     * which that fiber may have been switched away (its stack kept), at the price of more frames run again */
+    for (int t = 0; lr < 0 && g_rg_fiber_refused && t < 3; t++) {
+        long long older = -1;
+        for (int s = 0; s < g_rg_count; s++) { long long f = rg_slot(s)->frame; if (f < best && f > older) older = f; }
+        if (older < 0) break;
+        g_rbg_older++; if (g_rbg_older <= 20) LOG("r1: RB NET: the state of frame %lld has a job fiber that cannot be put back: the older state of frame %lld is tried\n", best, older);
+        best = older; lr = r1_ring_load(best, c);
+    }
     if (lr < 0) { g_rbg_refused_tick = 1; g_rbg_pend = m; rbn_put_mismatch(m); return 0; }      /* (R3 pub1) refused (a thread running): the wrong guess stays pending */
     if (!lr) { g_rbg_miss++; return 0; }
     g_rbg_pend = 0;
@@ -122,6 +134,15 @@ static int rbg_sched(long long i, int m) {
     return m;
 }
 /* at the safe point (H2) of every pass while the fight runs (r1_ring.c rgs_step) */
+/* The last re-run pass is the one whose picture is shown after a rollback. Windows: it skips the presentation work like the
+ * others (default on, proven exact for the fight's state: rl4L, rl4K). Linux: it runs fully. With the skips its picture
+ * kept the lighting and the camera of the state loaded: the fighters tinted (magenta on Final Destination, red on Small
+ * Battlefield) and the stage jumping back and forth (measured 2026-10-22: SSBU_RB_NET=loop,4, battle frame 600). */
+#ifdef _WIN32
+#define RBG_LASTLITE_DEFAULT 1
+#else
+#define RBG_LASTLITE_DEFAULT 0
+#endif
 static void rbg_step_body(Ctx *c) {
     long long i = g_rgs_next;
     g_rbg_refused_tick = 0;
@@ -165,11 +186,12 @@ static void rbg_step_body(Ctx *c) {
         g_rbg_wd_before = g_ra_wd_fired;                /* (releases before the match, e.g. at its slow first passes, are harmless: no state in the ring yet) */
         g_rgs_next = i + 1;
         if (g_rbg_pace < 0) { const char *e = getenv("SSBU_RB_NET_PACE"); g_rbg_pace = !e || atoi(e) != 0; }
-        { const char *e = getenv("SSBU_RB_NET_LASTLITE"); g_rgs_lastlite = !e || atoi(e) != 0; }      /* default on here: proven exact (rl4L, rl4K); =0 runs the last re-run pass fully */
+        { const char *e = getenv("SSBU_RB_NET_LASTLITE"); g_rgs_lastlite = e ? atoi(e) != 0 : RBG_LASTLITE_DEFAULT; }      /* =1 the last re-run pass skips too, =0 it runs fully */
         if (!g_rbg_timer) g_rbg_timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
         if (!g_rbg_timer) g_rbg_timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
         if (!g_rbg_work) { g_rbg_work = calloc(RBG_NT, sizeof *g_rbg_work); g_rbg_gap = calloc(RBG_NT, sizeof *g_rbg_gap); g_rbg_wcyc = calloc(RBG_NT, sizeof *g_rbg_wcyc); g_rbg_wk = calloc(RBG_NT, 1); }
-        LOG("r1: RB NET: match start, base state = frame %lld (fight frame %lld); pacing %s; re-run skip mask %d, lite mask %d%s\n", i, g_ff, g_rbg_pace ? "60 Hz" : "off", g_rgs_skip, g_rgs_lite, g_rgs_lastlite ? " (the last re-run pass too)" : "");
+        LOG("r1: RB NET: match start, base state = frame %lld (fight frame %lld); pacing %s; re-run skip mask %d, lite mask %d%s; pad reads with input before the base, taken away: %lld\n", i, g_ff, g_rbg_pace ? "60 Hz" : "off", g_rgs_skip, g_rgs_lite, g_rgs_lastlite ? " (the last re-run pass too)" : "", g_rbg_pre_input);
+        g_rbg_pre_input = 0;
         {   /* start barrier: both games begin frame 1 together (the one that finished loading first waits here, at frame 0,
              * instead of stalling seconds at frame 8 with states it might have to roll back to: rnh2 / rnh3 hung after that) */
             double tb = now_ms(), lastx = 0;
@@ -306,6 +328,9 @@ static void rbt_body(void) {
     rbg_step_body(g_rbt_c);
 }
 static void rbg_step(Ctx *c) {
+#ifndef _WIN32
+    rbg_step_body(c); return;                            /* (SSBU_RB_NET_TEST_STK: Windows only) */
+#endif
     if (g_rbt < 0) {
         const char *e = getenv("SSBU_RB_NET_TEST_STK"); g_rbt = e && atoi(e) > 0;
         for (uint64_t a = 0x7180000000ull; g_rbt && !g_rbt_stk && a < 0x7300000000ull; a += 0x10000000ull)
@@ -316,6 +341,7 @@ static void rbg_step(Ctx *c) {
     }
     if (!g_rbt) { rbg_step_body(c); return; }
     g_rbt_c = c;
+#ifdef _WIN32
     NT_TIB *tib = (NT_TIB *)NtCurrentTeb(); void *ob = tib->StackBase, *ol = tib->StackLimit;
     uint8_t *top = g_rbt_stk + (1u << 20) - 256;
     tib->StackBase = g_rbt_stk + (1u << 20); tib->StackLimit = g_rbt_stk;
@@ -327,6 +353,7 @@ static void rbg_step(Ctx *c) {
                      : : "r"(top), "r"(rbt_body)
                      : "rbx", "rax", "rcx", "rdx", "r8", "r9", "r10", "r11", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "cc", "memory");
     tib->StackBase = ob; tib->StackLimit = ol;
+#endif
 }
 /* nnhid.c (through r1_pad / r1_pad_id): the pad of port id (0 / 1) in the pass now running */
 static void rbg_pad(int id, uint64_t *b, int *lx, int *ly, int *rx, int *ry) {
@@ -354,6 +381,10 @@ static void rbg_pad(int id, uint64_t *b, int *lx, int *ly, int *rx, int *ry) {
         if (id == 0 && el < 20000) stick = -32767;
         else if (id == 0) { long long t = (long long)(el - 20000) % 4000; if (t >= 300 && t < 450) bb = 1ull << 10; else if (t >= 1200 && t < 3600) bb = (1ull << 6) | (1ull << 7) | 1ull; }
         *b = bb; *lx = stick; *ly = *rx = *ry = 0; return;
+    }
+    if (!g_rbg_in_match && (id == 0 || id == 1) && rbn_agreed_pending()) {    /* an agreed match's loading and countdown, to the base: no input on either game (rb_net.c) */
+        if (*b || *lx || *ly || *rx || *ry) g_rbg_pre_input++;
+        *b = 0; *lx = *ly = *rx = *ry = 0; return;
     }
     if (!g_rbg_in_match && g_rbg_ff_first >= 0 && g_rbg_basefix > 0 && (id == 0 || id == 1)) { *b = 0; *lx = *ly = *rx = *ry = 0; return; }   /* (net3) a pass before a late base: no pad */
     if ((!g_rg_ready && !g_rbg_noring) || g_ra_off || !rbn_started() || id < 0 || id > 1) return;
@@ -405,7 +436,7 @@ static void rbg_report(void) {
     LOG("r1: RB NET report: ring memory (hs14, fix %s): captures given up %lld, old states freed early %lld, captures skipped to keep the oldest needed state %lld\n",
         g_rg_poolfix ? "on" : "OFF", g_rg_short_n, g_rg_freed_slots, g_rg_skip_full);
     LOG("r1: RB NET report: task-worker watchdog releases %lld (since the process start), rollbacks with the workers not held %lld (watchdog paused at H2: %s)\n", g_ra_wd_fired, g_rbg_rb_unheld, g_rbg_wdfix ? "yes" : "NO");
-    LOG("r1: RB NET report: loads that took the sound thread at another wait after 5 ms %lld; threads not at their wait after 500 ms %d (last load); loads refused, a thread still running (pub1) %lld\n", g_th_audio_other, g_th_mismatch, g_rg_refused);
+    LOG("r1: RB NET report: loads that took the sound thread at another wait after 5 ms %lld; threads not at their wait after 500 ms %d (last load); loads refused, a thread not back at its wait (pub1) %lld\n", g_th_audio_other, g_th_mismatch, g_rg_refused);
     LOG("r1: RB NET report: fiber host stacks in use at a load (not copied back) %lld, seen %lld; fibers found running by their thread (TEB) at a capture %lld; catch table at loads: entries dropped %lld, live entries put back %lld, loads changed %lld (hs13)\n", g_fib_live_skip, g_fib_live_seen, g_fib_teb_running, g_rgc_dropped, g_rgc_kept, g_rgc_loads_changed);
     { void nnunwind_catch_stats(long long *, long long *, long long *, long long *, long long *); long long l, d, cr, fu, mp; nnunwind_catch_stats(&l, &d, &cr, &fu, &mp);
       LOG("r1: RB NET report: catch table (hs15): %lld live records, %lld removed slots, %lld puts found no free slot in their window, %lld table full, longest probe %lld; dead records dropped at loads %lld (host fiber stacks known %zu)\n", l, d, cr, fu, mp, g_rgc_dead, g_nbf); }

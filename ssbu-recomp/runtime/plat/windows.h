@@ -93,6 +93,7 @@ typedef UINT MMRESULT;
 #define ERROR_DIR_NOT_EMPTY 145
 #define ERROR_ALREADY_EXISTS 183
 #define ERROR_INVALID_ADDRESS 487
+#define ERROR_NOACCESS 998                  /* EFAULT: the kernel could not write a buffer (a read-only page: r1_state.c rollback) */
 #define LOWORD(l) ((WORD)((DWORD_PTR)(l) & 0xffff))
 #define HIWORD(l) ((WORD)(((DWORD_PTR)(l) >> 16) & 0xffff))
 #define MAKEWORD(a, b) ((WORD)(((BYTE)(a)) | ((WORD)((BYTE)(b))) << 8))
@@ -112,7 +113,23 @@ typedef struct { ULONG_PTR Internal, InternalHigh; union { struct { DWORD Offset
 typedef struct { LONG left, top, right, bottom; } RECT;
 typedef struct { LONG x, y; } POINT;
 typedef struct { uint32_t Data1; uint16_t Data2, Data3; uint8_t Data4[8]; } GUID;
+#if defined(__linux__) && defined(__x86_64__)
+/* Linux x86-64: the parts of Windows' exception records the rollback (r1_state.c) reads; plat_posix.c fills them from the
+ * signal's ucontext (AddVectoredExceptionHandler) and from a suspended thread (GetThreadContext) */
+typedef struct { DWORD ContextFlags; DWORD64 Rax, Rcx, Rdx, Rbx, Rsp, Rbp, Rsi, Rdi, R8, R9, R10, R11, R12, R13, R14, R15, Rip, EFlags; } CONTEXT;
+#define CONTEXT_CONTROL 0x100001
+#define CONTEXT_INTEGER 0x100002
+#define CONTEXT_FULL 0x10000b
+typedef struct { DWORD ExceptionCode, ExceptionFlags; void *ExceptionRecord; PVOID ExceptionAddress; DWORD NumberParameters; ULONG_PTR ExceptionInformation[15]; } EXCEPTION_RECORD;
+typedef struct EXCEPTION_POINTERS { EXCEPTION_RECORD *ExceptionRecord; CONTEXT *ContextRecord; } EXCEPTION_POINTERS;
+#define EXCEPTION_ACCESS_VIOLATION 0xC0000005u
+#define EXCEPTION_CONTINUE_SEARCH 0
+#define EXCEPTION_CONTINUE_EXECUTION (-1)
+typedef LONG (*PVECTORED_EXCEPTION_HANDLER)(EXCEPTION_POINTERS *);
+PVOID AddVectoredExceptionHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER fn);   /* SIGSEGV / SIGBUS: access violations only */
+#else
 typedef struct EXCEPTION_POINTERS EXCEPTION_POINTERS;        /* opaque: only passed along (hostrt.c diag_minidump, which is Windows-only) */
+#endif
 typedef GUID IID, CLSID;
 #define IsEqualGUID(a, b) (memcmp((a), (b), sizeof(GUID)) == 0)
 
@@ -208,6 +225,9 @@ typedef INIT_ONCE *PINIT_ONCE;
 #define INIT_ONCE_STATIC_INIT {0}
 typedef BOOL (*PINIT_ONCE_FN)(PINIT_ONCE, PVOID, PVOID *);
 BOOL InitOnceExecuteOnce(INIT_ONCE *once, PINIT_ONCE_FN fn, PVOID param, PVOID *ctx);
+#define INIT_ONCE_INIT_FAILED 0x4
+BOOL InitOnceBeginInitialize(INIT_ONCE *once, DWORD flags, BOOL *pending, PVOID *ctx);   /* synchronous form only (flags 0) */
+BOOL InitOnceComplete(INIT_ONCE *once, DWORD flags, PVOID ctx);
 
 /* ---- handles: threads, events, semaphores, mutexes, timers, files ---- */
 typedef DWORD (*LPTHREAD_START_ROUTINE)(LPVOID);
@@ -215,7 +235,10 @@ typedef DWORD (*LPTHREAD_START_ROUTINE)(LPVOID);
 #define STACK_SIZE_PARAM_IS_A_RESERVATION 0x10000
 HANDLE CreateThread(SECURITY_ATTRIBUTES *sa, SIZE_T stack, LPTHREAD_START_ROUTINE fn, LPVOID arg, DWORD flags, DWORD *tid);
 DWORD ResumeThread(HANDLE h);
-DWORD SuspendThread(HANDLE h);                           /* not possible here: (DWORD)-1 */
+DWORD SuspendThread(HANDLE h);                           /* Linux: a signal holds the thread (threads of CreateThread only); macOS: not possible, (DWORD)-1 */
+#if defined(__linux__) && defined(__x86_64__)
+BOOL GetThreadContext(HANDLE h, CONTEXT *c);             /* a thread held by SuspendThread: its registers where it was stopped */
+#endif
 HANDLE GetCurrentThread(void);
 HANDLE GetCurrentProcess(void);
 DWORD GetCurrentThreadId(void);
@@ -287,6 +310,12 @@ void SwitchToFiber(LPVOID fiber);
 void DeleteFiber(LPVOID fiber);
 LPVOID GetCurrentFiber(void);
 LPVOID GetFiberData(void);
+/* (Linux, r1_state.c rollback) what Windows keeps in its fiber block and TEB: a fiber block's size (it is copied whole), the
+ * host stack of a fiber block (or of a copy of one) and its saved stack pointer, the fiber a thread runs now */
+size_t plat_fiber_block_size(void);
+int plat_fiber_stack_of(const void *fiber, uint64_t *lo, uint64_t *hi, uint64_t *sp);
+void *plat_thread_fiber(HANDLE h);
+int plat_thread_stacks(uint64_t (*out)[2], int max);      /* the host stacks of the threads CreateThread made and of the main thread */
 
 /* ---- virtual memory (mmap, with a page-state map for VirtualQuery) ---- */
 #define MEM_COMMIT 0x1000

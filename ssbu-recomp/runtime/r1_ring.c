@@ -59,6 +59,8 @@ static uint8_t **g_rg_xa, **g_rg_xb;                   /* extras page e: its add
 static uint8_t *g_rg_pool; static uint32_t g_rg_bump, g_rg_pcom, *g_rg_free, g_rg_nfree;
 static uint8_t *g_rg_cbs; static int *g_rg_ncbs; static int g_rg_cb_ok = -1;
 static double g_rg_park_ms = 30;
+static int g_rg_refuse_run; static long long g_rg_refuse_gaveup;      /* (R3 pub1) refusals of the rollback now pending in a row; loads made anyway after 8 */
+static int g_rg_fiber_refused;                          /* the last load was refused for a job fiber of that state alone (fibers_unrestorable) */
 static int g_rg_keep, g_rg_kept, g_rg_keep_on = -1; static long long g_rg_kept_n, g_rg_kept_same;   /* capture -> load at the same safe point: threads stay held */
 static long long g_rg_caps, g_rg_cap_fail, g_rg_loads, g_rg_overflow;
 static double g_rg_last[2];
@@ -431,6 +433,7 @@ int r1_ring_rebase(long long frame, Ctx *c) {
     double t1 = now_ms();
     hs_exclude_all();
     int nmod = 0;
+#ifdef _WIN32                                             /* (Linux: no game build with marks) */
     {   HANDLE sn = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
         MODULEENTRY32 me; me.dwSize = sizeof me;
         for (BOOL ok = sn != INVALID_HANDLE_VALUE && Module32First(sn, &me); ok; ok = Module32Next(sn, &me)) {
@@ -440,6 +443,7 @@ int r1_ring_rebase(long long frame, Ctx *c) {
             if (*a1 != *pm1) { *a1 = *pm1; *a2 = *pm2; *l1 = (uint64_t)(uintptr_t)g_win1; MemoryBarrier(); *n2 = WN2; *n1 = g_wn1; nmod++; LOG("r1: RING rebase: mark maps set in %s (loaded after the first save)\n", me.szModule); }
         }
         if (sn != INVALID_HANDLE_VALUE) CloseHandle(sn); }
+#endif
     rg_sweep(rg_noop);                                    /* marks since the last capture: the copy below takes everything */
     g_rg_ntl = 0;
     collect(c);
@@ -456,7 +460,8 @@ int r1_ring_rebase(long long frame, Ctx *c) {
                 if (w2 ? g_ns2[pi] : g_ns1[pi]) continue;                    /* not simulation (a host stack) */
                 in[w2 ? g_rg_n1 + pi : pi] = 1;
                 if (!sh_commit(sh, cm, pi)) { free(in); g_rg_nomem = 2; unpark(); LOG("r1: RING rebase: commit of the shadow FAILED (out of memory): no rollback ring for the rest of this session\n"); return 0; }
-                memcpy(sh, a, PG); copied++;
+                if (!ls_lazy()) memcpy(sh, a, PG);              /* (SSBU_LS_LAZY: the first write copies it, ls_open) */
+                copied++;
                 if (!w2) g_dc[pi] = 0;
             } else if (nnx < 8192) {
                 if (nnx && nx[nnx - 1].a + nx[nnx - 1].n == a) nx[nnx - 1].n += PG;
@@ -501,8 +506,8 @@ int r1_ring_rebase(long long frame, Ctx *c) {
     ls_rebase();                                          /* R4: the windows read-only again, the learned set emptied */
     unpark();
     g_rg_caps++;
-    LOG("r1: RING rebase: base state (frame %lld) made again in %.1f ms (hold %.1f, copy %.1f): %zu window pages copied into the shadow (%.1f MB), %zu pool buffers freed, %zu shadow pages of pages not committed now dropped; extras %d ranges %.1f MB (%zu pages); %d modules got the mark maps\n",
-        frame, now_ms() - t0, t1 - t0, t2 - t1, copied, copied * (double)PG / 1048576.0, freed, dropped, g_nx, g_xbytes / 1048576.0, g_rg_nx, nmod);
+    LOG("r1: RING rebase: base state (frame %lld) made again in %.1f ms (hold %.1f, copy %.1f): %zu window pages %s the shadow (%.1f MB), %zu pool buffers freed, %zu shadow pages of pages not committed now dropped; extras %d ranges %.1f MB (%zu pages); %d modules got the mark maps\n",
+        frame, now_ms() - t0, t1 - t0, t2 - t1, copied, ls_lazy() ? "pending (lazy: copied at their first write) in" : "copied into", copied * (double)PG / 1048576.0, freed, dropped, g_nx, g_xbytes / 1048576.0, g_rg_nx, nmod);
     return 1;
 }
 /* (R3 hs13: tl4 / nmr / le3a / lg2a / lh4, c00000ff in ntdll's unwinder at a lua2cpp L2CExceptionShutdown throw, about 1 loop
@@ -567,6 +572,7 @@ int r1_ring_load(long long frame, Ctx *c) {
     if (si < 0) return 0;
     double t0 = now_ms(); g_rgp_seg = 5;
     RgSlot *g = rg_slot(si);
+    g_rg_fiber_refused = 0;
     int k = g_rg_count - 1 - si;
     static Th cur[256]; int ncur = g_rg_kept ? g_nth : 0;  /* threads still held from the capture just made (g_rg_keep) */
     if (ncur) memcpy(cur, g_th, (size_t)ncur * sizeof *cur);
@@ -592,22 +598,38 @@ int r1_ring_load(long long frame, Ctx *c) {
      * ... now guest code") a thread that is still RUNNING guest code (not blocked at a wait) after the hold's 500 ms was suspended in
      * the middle of its code, and the load then changed the memory under its registers. Now such a load is REFUSED: every thread
      * goes on, nothing was changed yet, the wrong guess stays pending (rb_rollback.c) and the next tick loads again (one frame
-     * further back). SSBU_R1_RUNFIX=0: the old way (loaded anyway). SSBU_RB_NET_TEST_REFUSE=<n> (TEST ONLY): every n-th load is
-     * refused as if a thread were running (the timeline must not change). */
+     * further back). (Linux pair run p2j: ResLoadingThread, held at its WaitEvent in the capture, was BLOCKED in SleepThread in the
+     * middle of a load after the 500 ms; the load went on and the loader then read its rewound lists: NULL node, crash.) A thread
+     * blocked at another wait is refused the same way: its stack and registers belong to a later state than the memory loaded.
+     * SSBU_R1_RUNFIX=1: only a running thread refuses (as before); 0: the old way (loaded anyway). SSBU_RB_NET_TEST_REFUSE=<n>
+     * (TEST ONLY): every n-th load is refused as if a thread were running (the timeline must not change). */
     {   static int runfix = -1, tn = -1; static long long tc;
-        if (runfix < 0) { const char *e = getenv("SSBU_R1_RUNFIX"); runfix = !(e && e[0] == '0'); e = getenv("SSBU_RB_NET_TEST_REFUSE"); tn = e ? atoi(e) : 0; }
+        if (runfix < 0) { const char *e = getenv("SSBU_R1_RUNFIX"); runfix = e && e[0] ? atoi(e) : 2; e = getenv("SSBU_RB_NET_TEST_REFUSE"); tn = e ? atoi(e) : 0; }
         int forced = tn > 0 && ++tc % tn == 0;
-        if ((runfix && g_th_running) || forced) {
+        /* a job fiber still running after the 200 ms above (not at a waiting import), or one that cannot be put back as it was
+         * in that state (fibers_unrestorable), is in the same place as a running thread: the load would change the memory under
+         * it. Refused the same way (they were loaded anyway, logged "fibers still busy" / "fibers not restored") */
+        int fibers_busy = runfix >= 2 && g_ra_busy_fibers, fibers_unrest = runfix >= 2 ? fibers_unrestorable(g->fib, g->nfib) : 0;
+        int refuse = (runfix == 1 && g_th_running) || (runfix >= 2 && g_th_mismatch) || fibers_busy || fibers_unrest;
+        g_rg_fiber_refused = refuse && !forced && !(runfix == 1 && g_th_running) && !(runfix >= 2 && g_th_mismatch) && !fibers_busy;   /* only that: an older state may do (rb_rollback.c) */
+        /* the same rollback refused 8 times in a row (4 s): loaded the old way rather than freezing the match (logged) */
+        if (refuse && !forced && g_rg_refuse_run >= 8) {
+            refuse = 0; g_rg_refuse_gaveup++;
+            LOG("r1: RING load of frame %lld (k %d): refused %d times in a row; loaded anyway (%lld such loads)\n", frame, k, g_rg_refuse_run, g_rg_refuse_gaveup);
+        }
+        if (refuse || forced) {
+            g_rg_refuse_run++;
             unpark();
             Ctx *tc2; const char *nm2; HANDLE h2;                  /* the threads made after that frame (stop_born_threads) go on too */
             for (int i = g_ninfo; guest_thread_info(i, &tc2, &nm2, &h2); i++) if (h2 && GetThreadId(h2) != GetCurrentThreadId()) ResumeThread(h2);
             g_rg_refused++;
             if (g_rg_refused <= 20 || g_rg_refused % 100 == 0) LOG("r1: RING load of frame %lld (k %d) REFUSED (%lld so far): %s; every thread goes on, the rollback is tried again next tick\n",
-                frame, k, g_rg_refused, forced ? "test switch SSBU_RB_NET_TEST_REFUSE" : "a thread still running guest code after 500 ms");
+                frame, k, g_rg_refused, forced ? "test switch SSBU_RB_NET_TEST_REFUSE" : g_th_running ? "a thread still running guest code after 500 ms" : g_th_mismatch ? "a thread blocked at another wait than in that state after 500 ms" : fibers_busy ? "a job fiber still running after 200 ms" : "a job fiber that cannot be put back as it was in that state");
             g_rgp_seg = 1;
             return -1;
         }
     }
+    g_rg_refuse_run = 0;
     double t1 = now_ms();
     R1_CTR("load (state of frame)", frame, 0);
     rgc_before();
@@ -809,6 +831,9 @@ static RgsS *rgss_slot(uint64_t fn) {
     return NULL;
 }
 static DWORD WINAPI rgss_thread(void *p) {
+#ifndef _WIN32
+    (void)p; return 0;                                   /* (Windows only: RtlVirtualUnwind) */
+#else
     (void)p; uint64_t fr[64]; int nf;
     double next = now_ms();
     for (;;) {
@@ -837,8 +862,13 @@ static DWORD WINAPI rgss_thread(void *p) {
         for (int i = 0; i < nf; i++) { int dup = 0; for (int j = 0; j < i; j++) if (fr[j] == fr[i]) dup = 1; if (dup) continue; RgsS *q = rgss_slot(fr[i]); if (q) q->incl[kd][seg]++; }
     }
     return 0;
+#endif
 }
 static void rgs_samp_start(void) {
+#ifndef _WIN32
+    if (g_rgs_prof == 3 && !g_rgss_run) { g_rgss_run = 1; LOG("r1: RB PROF 3 (sampling the main thread) is Windows only\n"); }
+    return;
+#endif
     if (g_rgss_run || g_rgs_prof != 3) return;
     g_rgss_run = 1;
     DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &g_rgss_main, 0, FALSE, DUPLICATE_SAME_ACCESS);

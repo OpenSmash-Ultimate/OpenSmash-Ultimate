@@ -164,6 +164,12 @@ uint64_t rbn_match_seed(void) {
 static volatile LONG g_hs_room;                         /* (pub2) the last set-up was inside a Local Wireless room (until the next set-up: the fight-off of the
                                                            * room's waiting-stage fight comes AFTER the room match's set-up, run rm4) */
 int rbn_match_cancelled(void) { return g_hs_room ? 2 : (int)g_hs_cancelled; }      /* 0, 1 (not agreed: walk off) or 2 (pub2: a room fight, the game's own netcode) */
+/* (Linux room pairs lw2 / lw3) an agreed match not started yet: its loading and countdown, up to the pass whose end state is
+ * the base. Each game read its own devices for ports 1 and 2 then, and the base kept what they did: the room maker's stick
+ * held at "GO!" made its fighter walk on that game only, and the two games played different matches from frame 1 with the
+ * same pads. rb_rollback.c rbg_pad gives both ports no input in that time (at most 120 s, then the pads are the player's). */
+static volatile LONG64 g_hs_pending_ms;
+int rbn_agreed_pending(void) { LONG64 t = g_hs_pending_ms; return t && GetTickCount64() - (ULONGLONG)t < 120000; }
 /* (R3 lwr) debug_mode.c tells which set-up this is: 1 = a Local Wireless room's waiting-stage fight (the record builder called from
  * the waiting-stage set-up, one player), 0 = any other (the select screens' "ready to fight", also the room's match) */
 static int g_setup_waiting, g_hs_lwr;
@@ -485,6 +491,7 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
     g_hs_lwr = lwr;
     g_hs_seed = out->seed; g_match_id = (uint32_t)(out->seed ^ (out->seed >> 32)) | 1u;
     host_fixed_random_reseed(g_hs_seed);
+    InterlockedExchange64(&g_hs_pending_ms, (LONG64)GetTickCount64());
     printf("[rbnet] handshake %ld agreed after %.2f s (messages sent %lld, received %lld; match id %08x; notice updates %llu, frames shown again %llu)\n", (long)round, (GetTickCount64() - t0) / 1000.0, g_hs_tx, g_hs_rx, g_match_id,
            (unsigned long long)notes, (unsigned long long)redraws);
     hs_print("the match", out);
@@ -644,6 +651,7 @@ static int auto_delay(void) {
 }
 void rbn_start(long long f0) {
     g_f0 = f0; g_started = 1; g_match_n++;
+    InterlockedExchange64(&g_hs_pending_ms, 0);
     if (g_hlog) { fprintf(g_hlog, "m %d id %08x\n", g_match_n, g_match_id); fflush(g_hlog); }      /* (rbn_cmp.py: frames are per match) */
     g_remote = 1 - g_local;
     if (g_peerdelay < 0) { const char *e = getenv("SSBU_RB_NET_PEERDELAY"); g_peerdelay = !(e && e[0] == '0'); }

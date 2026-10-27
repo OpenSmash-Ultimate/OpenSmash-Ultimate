@@ -1065,8 +1065,8 @@ static void sec_experimental(void) {
     ImGui::SameLine(); ImGui::Text("Online play");
     tag(1, (O.mode != 0) != (O0.mode != 0));
     ImGui::SameLine(); ImGui::TextDisabled("play with others through the game's Local Wireless menu");
-#ifndef _WIN32
-    if (O.mode) ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "Online play is not in the Linux / macOS build yet: these settings are kept for when it is.");
+#ifdef __APPLE__
+    if (O.mode) ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "Online play is not in the macOS build yet: these settings are kept for when it is.");
 #endif
     if (O.mode) {
         /* (4) rollback netcode over the online connection: Play SSBU.bat (scripts/run.py) starts the normal exe with
@@ -1074,7 +1074,7 @@ static void sec_experimental(void) {
         static int rb_have = -1, rb_on = -1, rb_on0;
         if (rb_have < 0) {
             char v[16];
-#ifdef _WIN32
+#if defined(_WIN32) || (defined(__linux__) && defined(__x86_64__))
             rb_have = 1;
 #else
             rb_have = 0;
@@ -1086,7 +1086,7 @@ static void sec_experimental(void) {
         tag(1, rb_on != rb_on0);
         ImGui::SameLine();
         if (rb_have) ImGui::TextDisabled("smooth online fights at high ping (experimental); both players need it on");
-        else ImGui::TextDisabled("not in the Linux / macOS build yet");
+        else ImGui::TextDisabled("not in the macOS build yet");
         if (getenv("SSBU_RB_NET")) ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.45f, 1), "Rollback is active in this run (SSBU_RB_NET=%s).", getenv("SSBU_RB_NET"));
         sec_online();
     }

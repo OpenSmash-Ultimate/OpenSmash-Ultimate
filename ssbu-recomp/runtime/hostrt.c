@@ -1104,6 +1104,12 @@ static void crash_signal(int sig, siginfo_t *si, void *uc) {
         install_crash_handler();                    /* SA_RESETHAND took the handler away on entry */
         return;
     }
+#if defined(__linux__) && defined(__x86_64__)
+    {   /* the vectored exception handlers (plat_posix.c; r1_state.c rollback), when this handler was set after theirs */
+        int plat_veh_fault(int sig, siginfo_t *si, void *uc); void plat_veh_install(void);
+        if (plat_veh_fault(sig, si, uc)) { install_crash_handler(); plat_veh_install(); return; }
+    }
+#endif
     ucontext_t *u = uc;
     uintptr_t rip = UC_PC(u), rsp = UC_SP(u), bad = (uintptr_t)si->si_addr;
     printf("\nHOST SIGNAL %d (%s) at address %p\n", sig, sig == SIGSEGV ? "segmentation fault" : sig == SIGBUS ? "bus error" : sig == SIGILL ? "illegal instruction" : sig == SIGFPE ? "arithmetic" : "?", si->si_addr);

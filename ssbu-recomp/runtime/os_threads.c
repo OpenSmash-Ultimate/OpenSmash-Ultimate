@@ -344,7 +344,7 @@ void os_r1_objs(void (*cb)(uint64_t key, int signaled, int count, uint64_t len, 
         for (Obj *o = g_table[h]; o; o = o->next)
             cb(o->key, o->signaled, o->count, o->len, (uint64_t)(uintptr_t)o->thread | (uint64_t)(uintptr_t)o->fiber, o->thread ? o->stack : 0, o->thread ? o->stack_size : 0);
 }
-/* R1: every fiber that has run: its guest context and stack */
+/* R1: every fiber that has run: its guest context and stack (cb NULL: only the cache is brought up to date) */
 /* (R2 round 3) the objects that have a host fiber are cached in table order: the full walk of the 65,536 buckets cost
  * ~0.15 ms per call, 3 calls per ring capture. The cache is rebuilt when a fiber is made or handed back (g_fib_gen). */
 static volatile LONG g_fib_gen = 1; static LONG g_fib_cgen; static Obj **g_fib_c; static int g_fib_cn, g_fib_ccap;
@@ -356,7 +356,14 @@ void os_r1_fibers(void (*cb)(uint64_t key, Ctx *c, uint64_t stack, uint64_t stac
                 if (o->fiber) { if (g_fib_cn >= g_fib_ccap) { g_fib_ccap = g_fib_ccap ? g_fib_ccap * 2 : 256; g_fib_c = realloc(g_fib_c, (size_t)g_fib_ccap * sizeof *g_fib_c); } g_fib_c[g_fib_cn++] = o; }
         g_fib_cgen = gen;
     }
-    for (int i = 0; i < g_fib_cn; i++) { Obj *o = g_fib_c[i]; if (o->fiber) cb(o->key, o->fctx, o->stack, o->stack_size, o->fiber); }
+    if (cb) for (int i = 0; i < g_fib_cn; i++) { Obj *o = g_fib_c[i]; if (o->fiber) cb(o->key, o->fctx, o->stack, o->stack_size, o->fiber); }
+}
+/* R1 (r1_state.c holds): the guest context of the fiber host thread `tid` runs now; NULL = none known (its own context runs,
+ * or the fiber was made after the cache was last built). The cache is walked as it is: called with threads held, and a
+ * rebuild allocates (a held thread may hold the allocator's lock). */
+Ctx *os_r1_running_fiber_ctx(DWORD tid) {
+    for (int i = 0; i < g_fib_cn; i++) { Obj *o = g_fib_c[i]; if (o->fiber && o->run_tid == tid) return o->fctx; }
+    return NULL;
 }
 void os_thread_report(FILE *out) {
     if (!g_oslog_n) return;
