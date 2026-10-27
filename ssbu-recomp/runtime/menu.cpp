@@ -58,6 +58,7 @@ uint64_t nnhid_preview(int id, int st[4]); void nnhid_kb_player_refresh(void); i
 void nnhid_test_key(int vk); long nnhid_test_result(uint64_t *buttons); int nnpad_kb_default(int idx);
 uint64_t nnhid_menu_buttons(void);                                   /* nnhid.c: every pad, Npad bit order, no effect on the game */
 void display_set_window_mode(int mode); void display_set_client_size(int w, int h); int display_window_mode(void);      /* display.c */
+int display_monitors(char (*names)[96], int max, int *primary, int *current); void display_monitor_name(int i, char *out, int n); void display_set_monitor(int i);
 int nnaudio_volume(void); void nnaudio_set_volume(int percent);     /* nnaudio.c */
 int nnpad_kb_vk(int idx); void nnpad_kb_bind(int idx, int vk); void nnpad_kb_player_set(int p); int nnpad_kb_player_cfg(void);      /* nnpad_sdl.c */
 const char *nnpad_kb_label(int idx); void nnpad_vk_name(int vk, char *o, int n); int nnpad_describe(char *out, int n); const char *nnpad_config_path(void);
@@ -363,7 +364,7 @@ static const char *const k_size_name[] = {"1280 x 720", "1600 x 900", "1920 x 10
 #define N(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 struct Settings {
-    int window, size, vsync, latency, renderer, aniso, profile, wait, prepare, load, console, overlay, volume, runahead, lang, kb_player, stats;
+    int window, monitor_auto, size, vsync, latency, renderer, aniso, profile, wait, prepare, load, console, overlay, volume, runahead, lang, kb_player, stats;
     float scale;
     char gpu[64];
 };
@@ -375,7 +376,7 @@ static int idx_of(const char *const *names, int n, const char *v) { for (int i =
 static void settings_init(int cw, int ch) {
     const GfxOptions *o = gfx_options();
     memset(&S, 0, sizeof S);
-    S.window = o->window_mode; S.vsync = o->present >= 0 && o->present < N(k_vsync) ? o->present : 5; S.latency = gfx_latency(); S.renderer = o->renderer;
+    S.window = o->window_mode; S.monitor_auto = !gfx_monitor()[0]; S.vsync = o->present >= 0 && o->present < N(k_vsync) ? o->present : 5; S.latency = gfx_latency(); S.renderer = o->renderer;
     S.aniso = 0; for (int i = 0; i < N(k_aniso_v); i++) if (k_aniso_v[i] == o->aniso) S.aniso = i;
     S.profile = o->profile; S.wait = o->shader_skip; S.prepare = o->shader_prepare; S.load = o->shader_load; S.console = o->handheld; S.overlay = o->overlay;
     S.volume = gfx_volume(); S.runahead = gfx_runahead(); S.scale = o->scale;
@@ -564,6 +565,27 @@ static void sec_display(int cw, int ch) {
     S.window = wm;
     if (combo("Window", &S.window, k_window, N(k_window))) { display_set_window_mode(S.window); ini("window", k_window[S.window]); }
     tag(0, 0);
+    {   /* graphics.ini monitor (display.c): the SDL window; the Windows build lists none */
+        static char names[9][96], auto_name[128];
+        const char *items[9];
+        int prim, cur, n = display_monitors(names + 1, 8, &prim, &cur);
+        if (n > 0) {
+            snprintf(auto_name, sizeof auto_name, "auto (primary: %s)", names[1 + prim]);
+            items[0] = auto_name;
+            for (int i = 0; i < n; i++) items[i + 1] = names[i + 1];
+            int sel = S.monitor_auto || cur < 0 ? 0 : cur + 1;
+            if (combo("Monitor", &sel, items, n + 1)) {
+                char nm[96] = "auto";
+                S.monitor_auto = sel == 0;
+                display_set_monitor(sel - 1);
+                if (sel) display_monitor_name(sel - 1, nm, sizeof nm);
+                ini("monitor", nm);
+            }
+            tag(0, 0);
+            help("The game opens on this monitor (auto: the system's primary one). On Wayland the desktop places a window "
+                 "itself: the choice moves the game in fullscreen; a window moves with the desktop's shortcut (GNOME: Super + Shift + arrow key).");
+        }
+    }
     {   /* a screen that is not k x 60 Hz (75, 144, 165 Hz ...): the game is 60 frames per second, so frames cannot all stay
          * on screen equally long and motion stutters (testers, 2026-10-20: "frame pacing is terrible, 144 Hz screen") */
         double hz; int k; display_refresh_info(&hz, &k);

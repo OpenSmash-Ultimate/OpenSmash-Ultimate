@@ -25,6 +25,8 @@ static int g_gfx_stats;                              /* U1: stats_overlay = off 
 int gfx_stats_overlay(void) { gfx_options(); return g_gfx_stats; }
 int gfx_volume(void) { gfx_options(); return g_gfx_volume; }
 const char *gfx_language(void) { gfx_options(); return g_gfx_language; }
+static char g_gfx_monitor[96];                       /* monitor = auto ("") | a number of the list | a part of the monitor's name (display.c) */
+const char *gfx_monitor(void) { gfx_options(); return g_gfx_monitor; }
 
 static const char *const k_default_ini =
 "; graphics.ini: display and rendering options of the native build (read once at start by gfx_options.c).\r\n"
@@ -44,6 +46,13 @@ static const char *const k_default_ini =
 "window = windowed\r\n"
 "width = 1280\r\n"
 "height = 720\r\n"
+"\r\n"
+"; monitor = auto | <number> | <name>      (Linux)\r\n"
+";   The monitor the game opens on. auto: the system's primary monitor. A number: that monitor of the list in the log\r\n"
+";   ('display: monitor' lines, from 1); a name: the monitor whose name contains it (F1 > Display writes the name).\r\n"
+";   A monitor that is not connected: the primary one. On Wayland the desktop places a window itself: the choice\r\n"
+";   applies to fullscreen (and to borderless on X11).\r\n"
+"monitor = auto\r\n"
 "\r\n"
 "; vsync = auto | display | clock | off | on | mailbox      (Vulkan)\r\n"
 ";   auto:    the refresh rate of the monitor is measured at start. 60, 120, 240 Hz (within 1.1 %: 59.94, 119.88 too):\r\n"
@@ -224,6 +233,7 @@ static BOOL CALLBACK opt_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
         else if (!_stricmp(key, "menu")) g_gfx_menu = !_stricmp(val, "on") || !strcmp(val, "1");      /* U1 (menu.cpp) */
         else if (!_stricmp(key, "volume")) { g_gfx_volume = -1; if (_stricmp(val, "auto")) { int v = atoi(val); g_gfx_volume = v < 0 ? 0 : v > 100 ? 100 : v; } }
         else if (!_stricmp(key, "language")) { g_gfx_language[0] = 0; if (_stricmp(val, "auto")) snprintf(g_gfx_language, sizeof g_gfx_language, "%s", val); }
+        else if (!_stricmp(key, "monitor")) { g_gfx_monitor[0] = 0; if (_stricmp(val, "auto")) snprintf(g_gfx_monitor, sizeof g_gfx_monitor, "%s", val); }
         else unknown++;
     }
     if (f) fclose(f);
