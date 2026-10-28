@@ -459,12 +459,17 @@ static DWORD WINAPI window_thread(LPVOID arg) {
     while (GetMessageA(&msg, NULL, 0, 0) > 0) { TranslateMessage(&msg); DispatchMessageA(&msg); }
     return 0;
 }
+void display_pump(int ms) { (void)ms; }      /* Windows: the window thread above pumps its own messages; main only waits */
 
 #else
-/* Linux build: an SDL3 window (X11 or Wayland) made and serviced by its own thread, as the Win32 one is. Vulkan draws
+/* Linux and macOS build: an SDL3 window (X11, Wayland or Cocoa) made and serviced by the process's MAIN thread. Vulkan draws
  * into it (nvn_vk.c makes the surface with SDL). The keyboard state that nnhid.c reads (GetAsyncKeyState, plat_posix.c)
- * is SDL's, which this thread's event pumping keeps current; nnpad_sdl.c flushes the queue on its own thread, so the
- * close request is caught by an event watch rather than read from the queue. */
+ * is SDL's, which the event pumping keeps current; nnpad_sdl.c flushes the queue on its own thread, so the close request is
+ * caught by an event watch rather than read from the queue.
+ * It has to be the main thread on macOS: SDL's Cocoa driver refuses every other one (Cocoa_CreateDevice returns NULL when
+ * ![NSThread isMainThread], and SDL_VideoInit then reports "No available video device"), and AppKit wants the event pump
+ * there as well. So display_init() opens the window on the thread that calls it (main, boot.c) and main pumps it with
+ * display_pump() while it waits for the guest, instead of blocking in WaitForSingleObject. */
 #include <SDL3/SDL.h>
 /* U3: no loading animation in the SDL window yet (the Windows one is loading_anim.c) */
 static volatile LONG g_la_first = 1;
@@ -511,8 +516,8 @@ static void window_mode_service(SDL_Window *w) {
     }
 }
 void menu_sdl_attach(void *window); void menu_sdl_service(void);      /* menu.cpp (or menu_stub.c): the settings menu's input */
-static DWORD WINAPI window_thread(LPVOID arg) {
-    (void)arg;
+/* Opens the window. Called by display_init() on the thread that called it, which must be the main thread on macOS. */
+static void window_open(void) {
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "1");
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) { printf("display: SDL video cannot start: %s\n", SDL_GetError()); fflush(stdout); ExitProcess(5); }
@@ -534,14 +539,17 @@ static DWORD WINAPI window_thread(LPVOID arg) {
     g_hwnd = (HWND)w;
     plat_game_window = (HWND)w;
     InterlockedExchange(&g_ready, 1);
-    for (;;) {
-        SDL_Event e;
-        if (SDL_WaitEventTimeout(&e, 8)) { while (SDL_PollEvent(&e)) {} }       /* the watch saw them; the keyboard state is current */
-        plat_window_service();
-        window_mode_service(w);
-        menu_sdl_service();
-    }
-    return 0;
+}
+/* One turn of the window: the events, the changes other threads asked for (plat_posix.c queues the title and the show
+ * state), the settings menu's. Called from main (boot.c) while it waits for the guest thread; ms is how long to wait for
+ * an event when there is nothing to do. */
+void display_pump(int ms) {
+    SDL_Window *w = (SDL_Window *)g_hwnd;
+    SDL_Event e;
+    if (SDL_WaitEventTimeout(&e, ms)) { while (SDL_PollEvent(&e)) {} }       /* the watch saw them; the keyboard state is current */
+    plat_window_service();
+    if (w) window_mode_service(w);
+    menu_sdl_service();
 }
 #endif
 /* Signals the guest's vsync event 60 times per second. */
@@ -647,8 +655,12 @@ void display_init(void) {
      * SSBU_TIMER_PERIOD=<ms> (default 1; 0 = leave the system default). */
     { const char *e = getenv("SSBU_TIMER_PERIOD"); int ms = e ? atoi(e) : 1; if (ms > 0) { MMRESULT r = timeBeginPeriod((UINT)ms); printf("display: system timer period %d ms requested (%s)%c", ms, r == TIMERR_NOERROR ? "ok" : "refused", 10); } }
     hitch_init();
+#ifdef _WIN32
     CreateThread(NULL, 0, window_thread, NULL, 0, NULL);
     while (!g_ready) Sleep(1);
+#else
+    window_open();                     /* the main thread: macOS's SDL video refuses any other (see the note above) */
+#endif
     nvn_gl_start(g_hwnd);
     speed_init();
     if (!g_lockstep && !old_pacing()) CreateThread(NULL, 0, vblank_thread, NULL, 0, NULL);      /* session 14: the display's vblanks, timed */

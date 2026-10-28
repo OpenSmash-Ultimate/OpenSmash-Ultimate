@@ -119,6 +119,7 @@ void cxxrt_install_data(void);           /* nncxxrt.c: vtables / typeinfo object
 void register_unwind_imports(void);      /* nnunwind.c: C++ exception unwinding through lifted module code */
 void register_cxxrt_imports(void);       /* nncxxrt.c + nncxxlib.c + nnlibc2.c: C and C++ runtime, fills what is still missing */
 void display_init(void);
+void display_pump(int ms);               /* display.c: one turn of the window; the window is on this thread off Windows */
 int guest_thread_count(void);
 extern uint64_t g_main_stack_base, g_main_stack_size;
 
@@ -503,9 +504,34 @@ int main(int argc, char **argv) {
     HANDLE t = CreateThread(NULL, (SIZE_T)1 << 30, guest_main, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
     if (getenv("SSBU_PROF")) { g_prof_target = t; CloseHandle(CreateThread(NULL, 0, profiler, NULL, 0, NULL)); }
     { void prof15_start(void); prof15_start(); }         /* prof15.c: SSBU_PROF15, every busy thread (test only; nothing without the variable) */
-    DWORD wr = WaitForSingleObject(t, seconds > 0 ? (DWORD)seconds * 1000 : INFINITE);
-    {   unsigned nvn_gl_held_ms(void);                   /* nvn_gl.c: time the presents were held for shader preparation is not run time */
-        for (unsigned done = 0, h; wr == WAIT_TIMEOUT && (h = nvn_gl_held_ms()) > done + 50; done = h) wr = WaitForSingleObject(t, h - done);
+    /* Off Windows the window is on this thread (display.c), so the wait for the guest pumps it in short steps instead of
+     * blocking in WaitForSingleObject; display_pump does nothing on Windows, where the window has its own thread. Presents
+     * held for shader preparation are not run time (nvn_gl.c), so that wait does not count against the time limit. */
+    DWORD wr = WAIT_TIMEOUT;
+    {
+        unsigned nvn_gl_held_ms(void);
+        unsigned long long left = seconds > 0 ? (unsigned long long)seconds * 1000 : 0;
+        unsigned done = 0;
+        LARGE_INTEGER freq, t0;
+        QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&t0);
+        for (;;) {
+            unsigned h = nvn_gl_held_ms();
+            int held = h > done + 50;
+            DWORD step = 8;
+            if (held) step = h - done;
+            else if (seconds > 0 && left < step) step = (DWORD)left;
+            if (!step) step = 1;
+            wr = WaitForSingleObject(t, step);
+            if (wr == WAIT_OBJECT_0) break;
+            if (held) { done = h; continue; }                  /* still preparing shaders: wait on, do not pump */
+            {   LARGE_INTEGER now; QueryPerformanceCounter(&now);
+                unsigned long long ms = (unsigned long long)((now.QuadPart - t0.QuadPart) * 1000 / freq.QuadPart);
+                t0 = now;
+                if (seconds > 0) { left = ms >= left ? 0 : left - ms; if (!left) break; }
+            }
+            display_pump(8);
+        }
     }
     if (wr == WAIT_TIMEOUT) {
         printf("\nstill running after %d s with %d guest thread(s) started: stopping here.\n", seconds, guest_thread_count());
