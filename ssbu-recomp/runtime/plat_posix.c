@@ -211,7 +211,14 @@ static BOOL cv_wait(CONDITION_VARIABLE *cv, DWORD ms, void (*unlock)(void *), vo
         break;
     }
     lock(l);
-    if (r == -1 && e == ETIMEDOUT) { t_lasterr = 1460; return FALSE; }      /* ERROR_TIMEOUT */
+    /* A wait that did not wake is a timeout, and both errno values mean exactly that: Linux's futex answers a
+     * zero timeout with ETIMEDOUT, macOS's os_sync_wait_on_address_with_timeout with EINVAL (measured on 27.0.1 /
+     * arm64: 0 ns -> EINVAL whether the word matches or not; 1 ms + matching word -> ETIMEDOUT; 1 ms + a changed
+     * word -> success). EINVAL was read as "woken", so ev_wait_ms's "while (!signaled)" loop (os_threads.c) ran
+     * again and again inside one nn::os::TryWaitSystemEvent call: the game's main thread spun at 100 % of a core
+     * while the frame loop stood still after its second frame (macOS only; Windows returns FALSE and Linux's futex
+     * ETIMEDOUT, so both were fine). */
+    if (r == -1 && (e == ETIMEDOUT || e == EINVAL)) { t_lasterr = 1460; return FALSE; }      /* ERROR_TIMEOUT */
     return TRUE;
 }
 static void cs_unlock(void *l) { pthread_mutex_unlock(l); }
