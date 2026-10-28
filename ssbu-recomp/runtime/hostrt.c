@@ -1249,6 +1249,15 @@ void runtime_init(const char *elf, const char *trace_path) {
 
 /* 0 = real code; 1 = empty body; 2 = only stores constants (x0 := *x0 when *sets_x0) */
 int audit_trivial(ImportFn fn, long long *x0, int *sets_x0) {
+#if !defined(__x86_64__) && !defined(_M_X64)
+    /* the loop below reads x86-64 machine code (0xE9 jmp rel32, 0xC3 ret, ...). The host is ARM64 here (macOS on Apple
+     * Silicon), where the same bytes are another instruction set: an 0xE9 follows a "jump" into an unmapped address and
+     * audit_startup stops the SDK self-test with SIGSEGV (2026-10-28; whether it happens depends on the code the linker
+     * placed there). Nothing is classified: 0 = real code, which no caller acts on. */
+    (void)fn;
+    *x0 = 0; *sets_x0 = 0;
+    return 0;
+#else
     const unsigned char *p = (const unsigned char *)fn;
     int stores = 0;
     long long rax = 0;
@@ -1280,6 +1289,7 @@ int audit_trivial(ImportFn fn, long long *x0, int *sets_x0) {
         return 0;
     }
     return 0;
+#endif
 }
 
 static int audit_listed(const char *name) {
