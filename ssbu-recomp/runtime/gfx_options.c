@@ -161,22 +161,26 @@ static void trim(char *s) {
     while (*b == ' ' || *b == '\t') b++;
     if (b != s) memmove(s, b, strlen(b) + 1);
 }
-static void opt_path(char *out) {
+/* out is GfxOptions.path, 260 bytes on every platform (the Windows MAX_PATH); MAX_PATH is 1024 in the Linux / macOS
+ * shim, so its size is passed rather than MAX_PATH: snprintf of _FORTIFY_SOURCE stops the process ("detected buffer
+ * overflow") when the size given is larger than the buffer, and a path over 260 would overrun it for real. The pad
+ * self-test sets SSBU_CONFIG (nnpad_sdl.c), so the first run of it stopped there with SIGTRAP on macOS (2026-10-28). */
+static void opt_path(char *out, size_t n) {
     const char *e = getenv("SSBU_GRAPHICS_CONFIG"), *c = getenv("SSBU_CONFIG");
     char tmp[MAX_PATH], exe[MAX_PATH];
-    if (e && e[0]) { snprintf(out, MAX_PATH, "%s", e); return; }
+    if (e && e[0]) { snprintf(out, n, "%s", e); return; }
     if (c && c[0]) {
         snprintf(tmp, sizeof tmp, "%s", c);
         char *s = strrchr(tmp, '\\'), *s2 = strrchr(tmp, '/');
         if (s2 > s) s = s2;
-        if (s) { *s = 0; snprintf(out, MAX_PATH, "%s\\graphics.ini", tmp); } else snprintf(out, MAX_PATH, "graphics.ini");
+        if (s) { *s = 0; snprintf(out, n, "%s\\graphics.ini", tmp); } else snprintf(out, n, "graphics.ini");
         return;
     }
     GetModuleFileNameA(NULL, exe, MAX_PATH);
     char *s = strrchr(exe, '\\');
     if (s) *s = 0;
     snprintf(tmp, sizeof tmp, "%s\\..\\config\\graphics.ini", exe);
-    if (!_fullpath(out, tmp, MAX_PATH)) snprintf(out, MAX_PATH, "%s", tmp);
+    if (!_fullpath(out, tmp, n)) snprintf(out, n, "%s", tmp);
 }
 static BOOL CALLBACK opt_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
     (void)once; (void)arg; (void)ctx;
@@ -184,7 +188,7 @@ static BOOL CALLBACK opt_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
     int written = 0, unknown = 0;
     memset(o, 0, sizeof *o);
     o->width = 1280; o->height = 720; o->scale = 1.0f; o->present = 5;      /* vsync = auto when the key is missing (track V session 14) */
-    opt_path(o->path);
+    opt_path(o->path, sizeof o->path);
     FILE *f = fopen(o->path, "rb");
     if (!f) {
         char b[MAX_PATH];
