@@ -1143,6 +1143,44 @@ UINT ResetWriteWatch(LPVOID base, SIZE_T size) {
     return i < 0;
 }
 #endif
+/* A fixed map that landed elsewhere. On macOS MAP_FIXED_NOREPLACE is 0 (above): the address is a hint, and when the system
+ * already owns the range the kernel puts the mapping somewhere else and VirtualAlloc reports the failure (hostrt.c: "cannot
+ * map import area", sdklift_rt.c: "cannot map the SDK image"). Seen in about a quarter of the starts: a large PROT_NONE
+ * reservation at a random address (0x73a4000000..0x76a4c00000, 0x72c4000000..0x75c4c00000, ...) covers one of the guest's
+ * addresses. Those addresses are baked into the lifted code, so they cannot move; nothing of the guest is built yet when a
+ * map fails, so a fresh image of ourselves is a complete retry, and ASLR gives a new layout every time.
+ * SSBU_MAP_RETRY counts the restarts (MAP_RETRY_MAX of them, a collision then has to repeat itself); SSBU_NO_MAP_RETRY=1
+ * turns it off. */
+#define MAP_RETRY_MAX 16
+void plat_map_retry(const char *what, unsigned long long want) {
+#ifdef __APPLE__
+    if (getenv("SSBU_NO_MAP_RETRY")) return;
+    unsigned tries = (unsigned)(getenv("SSBU_MAP_RETRY") ? atoi(getenv("SSBU_MAP_RETRY")) : 0);
+    if (tries >= MAP_RETRY_MAX) {
+        printf("macOS: %s at 0x%llx is still taken after %u restarts: run the game again\n", what, want, tries);
+        return;
+    }
+    if (!__argv) return;
+    uint32_t n = 4096;
+    char *path = malloc(n);
+    if (!path) return;
+    if (_NSGetExecutablePath(path, &n) != 0) {
+        char *bigger = realloc(path, n);                 /* it answers the size it needs */
+        if (!bigger) { free(path); return; }
+        path = bigger;
+        if (_NSGetExecutablePath(path, &n) != 0) { free(path); return; }
+    }
+    char buf[16];
+    snprintf(buf, sizeof buf, "%u", tries + 1);
+    setenv("SSBU_MAP_RETRY", buf, 1);
+    printf("macOS: %s at 0x%llx is taken by something else (start %u of %d): starting over\n", what, want, tries + 1, MAP_RETRY_MAX);
+    fflush(NULL);
+    execv(path, __argv);
+    free(path);                                         /* execv failed: the caller reports the map failure as before */
+#else
+    (void)what; (void)want;
+#endif
+}
 /* MEM_RESERVE maps the range PROT_NONE (address space only) and MEM_COMMIT is an mprotect; reservations start on 64 KB, the
  * Windows allocation granularity. Decommit (VirtualFree MEM_DECOMMIT) drops the pages, so a new commit reads zeros as on Windows. */
 LPVOID VirtualAlloc(LPVOID addr, SIZE_T size, DWORD type, DWORD prot) {

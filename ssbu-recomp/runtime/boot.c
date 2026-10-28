@@ -120,6 +120,9 @@ void register_unwind_imports(void);      /* nnunwind.c: C++ exception unwinding 
 void register_cxxrt_imports(void);       /* nncxxrt.c + nncxxlib.c + nnlibc2.c: C and C++ runtime, fills what is still missing */
 void display_init(void);
 void display_pump(int ms);               /* display.c: one turn of the window; the window is on this thread off Windows */
+#ifndef _WIN32
+void plat_map_retry(const char *what, unsigned long long want);   /* plat_posix.c: macOS starts a fresh image when a fixed address is taken */
+#endif
 int guest_thread_count(void);
 extern uint64_t g_main_stack_base, g_main_stack_size;
 
@@ -455,8 +458,20 @@ int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--write-dump")) { int diag_dump_helper(int, char **); return diag_dump_helper(argc, argv); }   /* hostrt.c: minidump of the crashed game, written from outside */
     g_elf = argc > 1 ? argv[1] : "..\\binaries\\13.0.4\\main.elf";
     setvbuf(stdout, NULL, _IONBF, 0);
+    __argc = argc; __argv = argv;      /* plat_posix.c's constructor sets these too; plat_map_retry re-executes with them */
     print_build_identity();
     launch_defaults();
+#ifndef _WIN32
+    {   /* TEST ONLY, SSBU_MAP_RETRY_TEST=<n>: the restart a taken fixed address causes (plat_posix.c), n times in a row */
+        const char *t = getenv("SSBU_MAP_RETRY_TEST");
+        if (t && atoi(t) > 0) {
+            char b[16];
+            snprintf(b, sizeof b, "%d", atoi(t) - 1);
+            setenv("SSBU_MAP_RETRY_TEST", b, 1);
+            plat_map_retry("the import area", IMPORT_BASE);
+        }
+    }
+#endif
     {   /* pad tools and their self-test (nnpad_sdl.c): no game is started */
         int nnhid_pad_selftest(void), nnpad_tool(int, char **);
         int tool;

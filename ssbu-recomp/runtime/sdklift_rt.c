@@ -17,6 +17,10 @@
 #include <windows.h>
 #include "sdklift.h"
 
+#ifndef _WIN32
+void plat_map_retry(const char *what, unsigned long long want);   /* plat_posix.c: macOS starts a fresh image when a fixed address is taken */
+#endif
+
 static int g_ready;
 static uint8_t *g_file;                   /* sdk.elf as read from disk */
 static size_t g_file_size;
@@ -55,7 +59,7 @@ static int load_image(void) {
     if (fread(g_file, 1, g_file_size, f) != g_file_size || memcmp(g_file, "\x7f" "ELF", 4)) { fclose(f); printf("sdklift: %s is not readable as an ELF\n", path); return 0; }
     fclose(f);
     uint8_t *img = VirtualAlloc((void *)(uintptr_t)SDK_BASE, SDK_IMAGE_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (img != (uint8_t *)(uintptr_t)SDK_BASE) { printf("sdklift: cannot map the SDK image at %llx\n", (unsigned long long)SDK_BASE); return 0; }
+    if (img != (uint8_t *)(uintptr_t)SDK_BASE) { printf("sdklift: cannot map the SDK image at %llx\n", (unsigned long long)SDK_BASE); plat_map_retry("the SDK image", SDK_BASE); return 0; }
     uint64_t phoff = *(uint64_t *)(g_file + 0x20);
     int phnum = *(uint16_t *)(g_file + 0x38);
     uint64_t dynoff = 0;

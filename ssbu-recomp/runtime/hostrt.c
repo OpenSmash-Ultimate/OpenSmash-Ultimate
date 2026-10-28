@@ -11,6 +11,9 @@
 
 #define FILE_OFF 0x1000ULL
 #define IMAGE_SIZE 0x7500000ULL          /* the whole image with bss: 13.0.4 and 13.0.5 both end below it */
+#ifndef _WIN32
+void plat_map_retry(const char *what, unsigned long long want);   /* plat_posix.c: macOS starts a fresh image when a fixed address is taken */
+#endif
 
 /* ---------------------------------------------------------------- game builds (docs/VERSIONS.md)
  * The layout of main is read from main.elf (load_layout): its PT_LOAD segments (nso2elf.py writes text, read-only data,
@@ -1179,10 +1182,10 @@ void runtime_init(const char *elf, const char *trace_path) {
 #endif
 
     void *mem = VirtualAlloc((void *)GUEST_BASE, IMAGE_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (mem != (void *)GUEST_BASE) { fprintf(stderr, "cannot map guest image at 0x%llx\n", GUEST_BASE); exit(1); }
+    if (mem != (void *)GUEST_BASE) { fprintf(stderr, "cannot map guest image at 0x%llx\n", GUEST_BASE); plat_map_retry("the guest image", GUEST_BASE); exit(1); }
     /* data symbols provided by other modules: zero-filled placeholders, IMPORT_SLOT bytes each */
     void *imp = VirtualAlloc((void *)IMPORT_BASE, (SIZE_T)dyn_sym_count * IMPORT_SLOT, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (imp != (void *)IMPORT_BASE) { fprintf(stderr, "cannot map import area\n"); exit(1); }
+    if (imp != (void *)IMPORT_BASE) { fprintf(stderr, "cannot map import area\n"); plat_map_retry("the import area", IMPORT_BASE); exit(1); }
     FILE *f = fopen(elf, "rb");
     if (!f) { fprintf(stderr, "cannot open %s\n", elf); exit(1); }
     load_layout(f, elf);
