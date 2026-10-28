@@ -64,6 +64,11 @@ MEM_LIMIT = 0
 # reservation is also the compiler's address-space limit: a file that passes it is compiled again with twice as much (up
 # to MEM_BUDGET) before it takes the next step of the fallback ladder. macOS enforces no limit: there it only paces.
 MEM_BUDGET = 0
+# A compile waiting for its share of RAM checks the queue this often, and prints one line each time it has waited this long
+# (RECOMP_MEM_WAIT_WARN, seconds; 0: never): a step that stops making progress then says so in logs/compile.log instead of
+# going quiet, which is what made the 2026-10-22 report (issue 75) take days to read.
+MEM_WAIT_TICK = 5.0
+MEM_WAIT_WARN = float(os.environ.get('RECOMP_MEM_WAIT_WARN', '120'))
 POSIX_TARGET = os.environ.get('RECOMP_TARGET') in ('linux', 'macos')
 DEF = re.compile(r'^(?:static )?void (\w+)\((Ctx \*c(?:, uint64_t rp)?)\) \{$')
 
@@ -159,16 +164,32 @@ _mem_queue = collections.deque()
 
 
 def mem_acquire(n):
-    """Wait until n bytes of MEM_BUDGET are free, first come first served (a large reservation is not overtaken forever)."""
+    """Wait until n bytes of MEM_BUDGET are free, first come first served (a large reservation is not overtaken forever).
+    Returns what was granted, to be given back with mem_release: n is cut to MEM_BUDGET, because a reservation larger than
+    the whole budget waits at the head of the queue for room nothing can free - every compile behind it stops with no
+    compiler running and no message (2026-10-22, issue 75: the inlined compile of c_00a3.c asked 16.4 GB of the 12 GB a
+    16 GB Mac shares and step 8 sat there for good; its reservation now is the whole budget, so it runs alone)."""
     global _mem_used
+    n = min(n, MEM_BUDGET)
     me = object()
     with _mem_cv:
         _mem_queue.append(me)
-        while _mem_queue[0] is not me or _mem_used + n > MEM_BUDGET:
-            _mem_cv.wait()
-        _mem_queue.popleft()
-        _mem_used += n
-        _mem_cv.notify_all()
+        try:
+            t0 = time.time()
+            while _mem_queue[0] is not me or _mem_used + n > MEM_BUDGET:
+                _mem_cv.wait(MEM_WAIT_TICK)          # timed, so a wait that does not end can say how long it has been
+                if (MEM_WAIT_WARN and _mem_queue[0] is me and _mem_used + n > MEM_BUDGET
+                        and time.time() - t0 >= MEM_WAIT_WARN):
+                    print('  waiting %.0fs for %.1f GB of RAM (%.1f of %.1f GB held by other compiles)' % (
+                        time.time() - t0, n / 2.0 ** 30, _mem_used / 2.0 ** 30, MEM_BUDGET / 2.0 ** 30), flush=True)
+                    t0 = time.time()
+            _mem_queue.popleft()
+            _mem_used += n
+        finally:
+            if me in _mem_queue:                     # Ctrl+C while waiting: no dead entry left at the head
+                _mem_queue.remove(me)
+            _mem_cv.notify_all()
+    return n
 
 
 def mem_release(n):
@@ -309,7 +330,7 @@ def compile_file(src, obj, base_flags, time_limit=None, extra=None):
         cmd = [CLANG, '-c', OPT] + extra + base_flags + (['-include', hdr] if hdr else []) + [src, '-o', obj]
         while True:
             if want:
-                mem_acquire(want)
+                want = mem_acquire(want)                 # what is granted (never over the budget) is what is given back
             try:
                 code, out, secs = run_limited(cmd, time_limit, want)
             finally:
@@ -371,9 +392,12 @@ def compile_file_inline(src, obj, base_flags, time_limit=None):
     if n == 1:
         hdr, count, lines = optnone_header(src, obj, OPTNONE_LINES)
         cmd = [CLANG, '-c', OPT] + EXTRA + [INLINE_FLAG] + base_flags + (['-include', hdr] if hdr else []) + [src, '-o', obj]
-        want = mem_estimate(src, function_sizes(src)) * 2 if MEM_BUDGET else 0
+        # the inlined compile holds more than the plain one (the inliner's IR), but never more than the whole budget: a
+        # request over it is one mem_acquire can never grant and stops every compile of the step (2026-10-22, issue 75).
+        # A file that needs that much then runs alone instead.
+        want = min(MEM_BUDGET, mem_estimate(src, function_sizes(src)) * 2) if MEM_BUDGET else 0
         if want:
-            mem_acquire(want)
+            want = mem_acquire(want)
         try:
             # a file known to make it inlined (same source and flags) gets room for a busier PC: without it ~30 of the files
             # measured at 15-19 s went over the limit on the next full build and lost the inlined helpers
