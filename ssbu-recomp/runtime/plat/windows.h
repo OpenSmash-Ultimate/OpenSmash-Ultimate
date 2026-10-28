@@ -639,6 +639,7 @@ BOOL EnumWindows(WNDENUMPROC fn, LPARAM lp);
 BOOL ShowWindow(HWND h, int cmd);
 BOOL SetWindowTextA(HWND h, LPCSTR text);
 void plat_window_service(void);                          /* the window thread applies title / show requests */
+int plat_window_call(int (*fn)(void *), void *arg);      /* run fn(arg) on the window thread and wait: SDL / AppKit want the window touched by its own thread */
 #define ES_SYSTEM_REQUIRED 0x1
 #define ES_DISPLAY_REQUIRED 0x2
 #define ES_CONTINUOUS 0x80000000u

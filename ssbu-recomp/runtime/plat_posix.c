@@ -2069,10 +2069,43 @@ BOOL IsWindowVisible(HWND h) { return h && !(SDL_GetWindowFlags((SDL_Window *)h)
 BOOL IsWindow(HWND h) { return h && h == plat_game_window; }
 BOOL EnumWindows(WNDENUMPROC fn, LPARAM lp) { if (plat_game_window) fn(plat_game_window, lp); return TRUE; }
 /* Window changes asked from other threads are applied by the window's own thread (plat_window_service, display.c):
- * SDL wants a window touched by the thread that made it. */
+ * SDL wants a window touched by the thread that made it. That covers calls SDL does not merely queue as well, such as
+ * SDL_Vulkan_CreateSurface: on macOS it adds an NSView and a CAMetalLayer to the window (AppKit), and made from another
+ * thread the layer is never composited, so presents succeed and the window stays black. plat_window_call hands such a
+ * call to the window thread and waits for its result. */
 static pthread_mutex_t g_win_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_win_job_done = PTHREAD_COND_INITIALIZER;
 static char g_win_title[256];
 static int g_win_title_new, g_win_show = -1;
+static int (*g_win_job)(void *);                     /* the call the window thread has to make, if any */
+static void *g_win_job_arg;
+static int g_win_job_state;                          /* 0 = idle, 1 = queued, 3 = running on the window thread, 2 = done */
+static int g_win_job_result;
+/* Runs fn(arg) on the window thread and waits for it (one display_pump is 8 ms; 5 s is only the safety net). Returns fn's
+ * result, or -1 when the window thread did not run it. Not for use on the window thread itself. */
+int plat_window_call(int (*fn)(void *), void *arg) {
+    struct timespec until;
+    int r = -1;
+    pthread_mutex_lock(&g_win_lock);
+    while (g_win_job_state) pthread_cond_wait(&g_win_job_done, &g_win_lock);        /* one call at a time */
+    g_win_job = fn; g_win_job_arg = arg; g_win_job_result = -1; g_win_job_state = 1;
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_sec += 5;
+    while (g_win_job_state != 2) {
+        if (g_win_job_state == 1) {              /* not claimed yet: a timeout may take it back (no stale pointer is called) */
+            if (pthread_cond_timedwait(&g_win_job_done, &g_win_lock, &until) == ETIMEDOUT && g_win_job_state == 1) {
+                g_win_job = NULL; g_win_job_arg = NULL; g_win_job_state = 0;
+                pthread_cond_broadcast(&g_win_job_done);
+                break;
+            }
+        } else pthread_cond_wait(&g_win_job_done, &g_win_lock);                      /* running: wait for the result */
+    }
+    if (g_win_job_state == 2) r = g_win_job_result;
+    g_win_job = NULL; g_win_job_arg = NULL; g_win_job_state = 0;
+    pthread_cond_broadcast(&g_win_job_done);
+    pthread_mutex_unlock(&g_win_lock);
+    return r;
+}
 BOOL ShowWindow(HWND h, int cmd) {
     if (!h) return FALSE;
     pthread_mutex_lock(&g_win_lock); g_win_show = cmd; pthread_mutex_unlock(&g_win_lock);
@@ -2086,15 +2119,24 @@ BOOL SetWindowTextA(HWND h, LPCSTR text) {
 void plat_window_service(void) {
     SDL_Window *w = (SDL_Window *)plat_game_window;
     char title[256] = ""; int set = 0, show;
+    int (*job)(void *) = NULL; void *job_arg = NULL;
     if (!w) return;
     pthread_mutex_lock(&g_win_lock);
     if (g_win_title_new) { memcpy(title, g_win_title, sizeof title); g_win_title_new = 0; set = 1; }
     show = g_win_show; g_win_show = -1;
+    if (g_win_job_state == 1) { job = g_win_job; job_arg = g_win_job_arg; g_win_job_state = 3; }
     pthread_mutex_unlock(&g_win_lock);
     if (set) SDL_SetWindowTitle(w, title);
     if (show == SW_HIDE) SDL_HideWindow(w);
     else if (show == SW_MINIMIZE || show == SW_SHOWMINIMIZED || show == SW_SHOWMINNOACTIVE) SDL_MinimizeWindow(w);
     else if (show >= 0) { SDL_ShowWindow(w); SDL_RestoreWindow(w); }
+    if (job) {                                   /* SDL / AppKit work that must not be done on the caller's thread */
+        int r = job(job_arg);
+        pthread_mutex_lock(&g_win_lock);
+        g_win_job_result = r; g_win_job_state = 2;
+        pthread_cond_broadcast(&g_win_job_done);
+        pthread_mutex_unlock(&g_win_lock);
+    }
 }
 DWORD SetThreadExecutionState(DWORD flags) {
     static DWORD prev = ES_CONTINUOUS;
