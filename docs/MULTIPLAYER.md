@@ -138,7 +138,7 @@ The overlay's second line shows each player in your room, for example `Room: Bra
 Direct connections need a lobby running this version of `tools/ssbu_relay.py`. With an older lobby, or a player with an older WindowSmash, play goes through the lobby as before.
 
 > [!NOTE]
-> **Your internet address.** The players in a room with you learn your internet (IP) address, as they would playing online on a console. The lobby introduces only players whose games are already playing together in a room, and introduces each player in at most 20 rooms an hour.
+> **Your internet address.** The players in a room with you learn your internet (IP) address, as they would when playing online on a console. The lobby introduces only players whose games are already playing together in a room, and introduces each player in at most 20 rooms an hour.
 >
 > To keep your address to yourself, turn **Direct connections** off in the settings (**Online** page), then restart the game. Or create a file named `online_direct.txt` next to `Play SSBU.bat` (on Linux, next to `run.sh`) containing the word `off`. All your traffic then goes through the lobby, which gives your address to nobody.
 
