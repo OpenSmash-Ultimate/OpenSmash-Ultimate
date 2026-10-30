@@ -657,8 +657,11 @@ static void panel_copy_hook(Ctx *c, void *user) {
         printf("debug panels: entry 1 copied as type %u: made none (SSBU_RB_NET_P2NONE)\n", rd32(e + 0x30));
         wr32(e + 0x30, 3); wr32(e + 0x34, 0xffffffffu); wr64(e + 0x38, 0xc1ffff0000000000ull); wr64(e + 0x40, 0xc1ffff0000000000ull);
     }
-    int nnldn_role(void);
-    if (g_autop2 > 0 && rd32(e + 0x30) == 3 && !nnldn_role()) {        /* the CPU panel a save brings (run pnB); (R3 pub2) never in a Local Wireless room: its fights are the game's own */
+    int nnldn_on(void);
+    /* the CPU panel a save brings (run pnB); (R3 pub2) never in Local Wireless: its fights are the game's own. The table is copied
+     * when the Local Wireless screen opens, BEFORE any room exists, and a room made after it keeps that player 2 (shown there as an
+     * amiibo panel that cannot be removed): so the test is "Local Wireless on", not "in a room" */
+    if (g_autop2 > 0 && rd32(e + 0x30) == 3 && !nnldn_on()) {
         wr8(e, 0xff); wr32(e + 0x28, 2); wr32(e + 0x34, 0xffffffffu);
         wr64(e + 0x38, 0xc100000fd5f7fa78ull); wr64(e + 0x40, 0xc100000fd5f7fa78ull); wr8(e + 0x48, 0); wr8(e + 0x49, 3);
         wr32(e + 0x30, 1);
