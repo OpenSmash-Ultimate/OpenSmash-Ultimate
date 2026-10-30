@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WindowSmash Mods</title>
+<link rel="stylesheet" href="/ui/app.css">
+<link rel="icon" href="/ui/icon.svg">
+</head>
+<body>
+<div id="app">
+  <nav id="rail">
+    <div class="brand">
+      <img src="/ui/icon.svg" alt="">
+      <div><b>WINDOWSMASH</b><span>MODS</span></div>
+    </div>
+    <button class="tab active" data-view="library"><i>&#9670;</i>My mods <em id="count-on"></em></button>
+    <button class="tab" data-view="browse"><i>&#9733;</i>GameBanana</button>
+    <button class="tab" data-view="packs"><i>&#9632;</i>Modpacks</button>
+    <button class="tab" data-view="add"><i>&#43;</i>Add a mod</button>
+    <button class="tab" data-view="settings"><i>&#9881;</i>Settings</button>
+    <div class="rail-foot">
+      <div id="game-state" class="pill"></div>
+      <div id="online-state"></div>
+      <div id="applied-state"></div>
+      <button id="apply" class="big">Apply to game</button>
+      <button id="build-plugins" class="ghost small" hidden title="Compiles the turned-on mods' code plugins (movesets, new characters) into the game: a few minutes">Build plugins into the game</button>
+      <button id="vanilla" class="ghost small">Play without mods</button>
+    </div>
+  </nav>
+
+  <main>
+    <!-- my mods -->
+    <section id="view-library" class="view active">
+      <header class="slab">
+        <h1>My mods</h1>
+        <div class="tools">
+          <input id="lib-filter" type="search" placeholder="Filter">
+          <button id="check" class="ghost">Check for clashes</button>
+          <button id="make-pack" class="ghost" disabled>Make a modpack</button>
+        </div>
+      </header>
+      <p class="hint">Drag to set the order: a mod lower in the list wins where two change the same file. Turn mods on and off, then <b>Apply to game</b>.</p>
+      <div id="issues"></div>
+      <div id="lib-list" class="list"></div>
+      <div id="lib-empty" class="empty hidden">
+        <h2>No mods yet</h2>
+        <p>Find some on <a href="#" data-goto="browse">GameBanana</a>, or drop a .zip / .7z / .rar anywhere on this window.</p>
+      </div>
+    </section>
+
+    <!-- GameBanana -->
+    <section id="view-browse" class="view">
+      <header class="slab">
+        <h1>GameBanana</h1>
+        <div class="tools">
+          <input id="gb-search" type="search" placeholder="Search Smash Ultimate mods">
+          <select id="gb-sort">
+            <option value="liked">Most liked</option>
+            <option value="downloaded">Most downloaded</option>
+            <option value="newest">Newest</option>
+            <option value="updated">Recently updated</option>
+          </select>
+        </div>
+      </header>
+      <div id="gb-cats" class="chips"></div>
+      <div id="gb-fighters" class="chips fighters hidden"></div>
+      <div id="gb-grid" class="grid"></div>
+      <div class="more-row"><button id="gb-more" class="ghost hidden">More</button></div>
+    </section>
+
+    <!-- modpacks -->
+    <section id="view-packs" class="view">
+      <header class="slab">
+        <h1>Modpacks</h1>
+        <div class="tools">
+          <button id="pack-new" class="ghost">New from my mods</button>
+        </div>
+      </header>
+      <div class="import card">
+        <h3>Got a modpack from a friend?</h3>
+        <p>Paste its code, or drop its <b>.wsmodpack</b> file on this window. The mods it needs are downloaded, checked for clashes and turned on together.</p>
+        <div class="row">
+          <textarea id="pack-code" rows="2" placeholder="WSPACK1:..."></textarea>
+          <button id="pack-read">Open</button>
+        </div>
+      </div>
+      <div id="pack-list" class="grid packs"></div>
+    </section>
+
+    <!-- add -->
+    <section id="view-add" class="view">
+      <header class="slab"><h1>Add a mod</h1></header>
+      <div class="card">
+        <h3>From a link</h3>
+        <p>A GameBanana page, or a direct download link (Discord, Google Drive, Dropbox, GitHub releases...).</p>
+        <div class="row">
+          <input id="url" type="url" placeholder="https://">
+          <button id="url-go">Install</button>
+        </div>
+      </div>
+      <label class="card drop" id="drop-card">
+        <input id="file-pick" type="file" accept=".zip,.7z,.rar,.wsmodpack" multiple hidden>
+        <h3>From a file</h3>
+        <p>Drop a <b>.zip</b>, <b>.7z</b> or <b>.rar</b> here (or anywhere on the window), or click to choose one. ARCropolis mods (the kind GameBanana has for a Switch) work as they are.</p>
+      </label>
+      <div class="card subtle">
+        <h3>What works</h3>
+        <ul>
+          <li>Skins, including new costume slots (c08 and up)</li>
+          <li>Stages, UI, music, effects, text and param patches (.xmsbt, .prcx, .prcxml)</li>
+          <li>Movesets and new characters: their Skyline plugins (.nro) are compiled into the game (Build plugins into the game), on the real ARCropolis, Smashline 2, One Slot Effects and CSK Collection (Settings: Community plugins)</li>
+          <li>More than 4 new characters: with the CSS 91+ Layout Fix (the select screen has room for 4 otherwise; My mods offers it when you need it)</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- settings -->
+    <section id="view-settings" class="view">
+      <header class="slab"><h1>Settings</h1></header>
+      <div class="card">
+        <h3>Look</h3>
+        <p>How WindowSmash Mods looks.</p>
+        <div class="seg" id="theme-seg">
+          <button data-theme-choice="dark"><span class="swatch dark"></span>Dark</button>
+          <button data-theme-choice="light"><span class="swatch light"></span>Light</button>
+          <button data-theme-choice="system"><span class="swatch system"></span>Match my computer</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Community plugins</h3>
+        <p>The Skyline plugins movesets and new characters are built on, from their official releases: the same ones a Switch runs, compiled into the game with your mods' own (Build plugins into the game gets any that's missing).</p>
+        <div id="std-plugins" class="mini"></div>
+        <button id="std-fetch" class="ghost small">Download them again</button>
+      </div>
+      <div class="card">
+        <h3>Share WindowSmash Mods</h3>
+        <p>Make an installer your friends can run on Windows or Mac to get this mod manager. (To share mods too, make it from a modpack.)</p>
+        <button id="inst-plain" class="ghost">Make the installer</button>
+      </div>
+      <div class="card danger-card">
+        <h3>Uninstall WindowSmash Mods</h3>
+        <p>Back to the game as it was: the mods are turned off in the game, the modded data is deleted and this mod manager is removed (files it replaced are put back). You choose whether your downloaded mods are deleted too.</p>
+        <button id="uninstall" class="ghost danger">Uninstall…</button>
+      </div>
+      <div class="card subtle">
+        <h3>About</h3>
+        <p id="about"></p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- a GameBanana mod -->
+<div id="drawer" class="hidden">
+  <div class="drawer-bg" data-close></div>
+  <article class="drawer-panel">
+    <button class="x" data-close>&times;</button>
+    <div id="mod-detail"></div>
+  </article>
+</div>
+
+<!-- dialogs -->
+<div id="dialog" class="hidden">
+  <div class="drawer-bg" data-close></div>
+  <div class="dialog-panel" id="dialog-body"></div>
+</div>
+
+<div id="jobs"></div>
+<div id="dropzone" class="hidden"><div>Drop to install</div></div>
+<div id="toast" class="hidden"></div>
+
+<script src="/ui/app.js"></script>
+</body>
+</html>

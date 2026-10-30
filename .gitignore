@@ -7,6 +7,8 @@
 /firmware/
 /dist/
 /save/
+# Your own Miis (tools/miis.py)
+/miis/
 /save_backups/
 /cache/
 /screenshots/
@@ -82,3 +84,4 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+tools/modmanager/installed.json

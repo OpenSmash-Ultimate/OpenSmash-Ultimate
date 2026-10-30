@@ -455,14 +455,53 @@ def read_channel():
 
 
 def ask_license(url):
-    """Shows Microsoft's license notice and asks; True when the answer is yes."""
+    """Shows Microsoft's license notice and asks; True when the answer is yes.
+
+    A terminal reads the line. The launcher has no terminal, so it writes
+    deps\\.msvc-license-answer when Yes or Cancel is clicked.
+    """
     log(LICENSE_NOTICE.format(url=url))
     log("Type yes and press Enter to accept (anything else: no):")
-    try:
-        answer = sys.stdin.readline()
-    except (OSError, ValueError):
-        answer = ""
+    answer = read_license_answer()
     return answer.strip().lower() in ("yes", "y")
+
+
+def read_license_answer():
+    """The typed line, or the file the launcher writes when there is no terminal."""
+    import io
+    stdin = sys.stdin
+    try:
+        if stdin is not None and stdin.isatty():
+            return stdin.readline()
+    except (OSError, ValueError, AttributeError):
+        pass
+    # The tests pass the answer on a StringIO. A hidden window does not.
+    if isinstance(stdin, io.StringIO):
+        try:
+            return stdin.readline()
+        except (OSError, ValueError):
+            return ""
+    path = os.path.join(DEPS, ".msvc-license-answer")
+    try:
+        os.makedirs(DEPS, exist_ok=True)
+        os.remove(path)
+    except OSError:
+        pass
+    # Half an hour, then treat it as no so the install can stop.
+    for _ in range(6000):
+        try:
+            with open(path, encoding="utf-8") as f:
+                answer = f.read()
+        except OSError:
+            answer = ""
+        if answer.strip():
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return answer
+        time.sleep(0.3)
+    return ""
 
 
 def msi_log_error(logfile):

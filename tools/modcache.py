@@ -21,7 +21,7 @@ import re
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 NRO_BASE, NRO_LIMIT, SLOT = 0x7200000000, 0x7400000000, 0x1000000
 # the sources whose output is the generated C (a change in any of them generates it again)
-GENERATOR = ("recomp.py", "lift.py", "lift_simd.py", "a64.py", "funcs.py", "eh.py", "nso.py", "regcache.py")
+GENERATOR = ("recomp.py", "lift.py", "lift_simd.py", "a64.py", "funcs.py", "eh.py", "nso.py", "regcache.py", "plugin_eh.py")
 
 
 def replace_file(path, text):

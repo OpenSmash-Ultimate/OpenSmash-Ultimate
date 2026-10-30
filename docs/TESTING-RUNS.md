@@ -169,6 +169,7 @@ Settings are separated by commas. A setting left out keeps what the menus chose.
 | :--- | :--- |
 | `p1=<fighter>`, `p2=<fighter>` | Player 1's or player 2's fighter, by the name in its `ui_chara_` id: `mario`, `donkey`, `kirby`, ... |
 | `p3=<fighter>`, `p4=<fighter>` | Two more CPU players. A player 3 or 4 that the menus didn't make a CPU becomes one, with player 2's choice and its own colour. |
+| `c1=<0-7>` ... `c4=<0-7>` | A player's costume (its colour on the select screen, `c00` to `c07`), as ssbu-recomp's `c1`..`c8`. |
 | `p2=cpu`, `p2=human` | Player 2's type. |
 | `cpu=<1-9>` | The CPU players' level. |
 | `stage=<name>` | The stage, by the name in its `ui_stage_` id: `end`, `battle_field`, `mario_castle64`, ... `fd` and `final_destination` mean `end`; `battlefield` means `battle_field`. |

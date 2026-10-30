@@ -1,0 +1,63 @@
+# The CSK Collection 5.0.6 (built for game 13.0.4): its addresses in main, 13.0.4 -> 13.0.5 (tools/port_plugin.py).
+# Evidence: f = a function hook/call target, a function start in 13.0.5 only at that shift; r = the region's shift
+# from address pairs of plugins released for both versions (Smashline 1.6.8's 13.0.5 commit, One Slot Effects'
+# 13.0.4 and 13.0.5 builds, HewDraw Remix's 13.0.5 offsets: 0x16b6bb0-0x178ab60 -0x1a0, 0x1792c60-0x1798ac8 -0xe0,
+# 0x17df4a8-0x17f0048 -0x40, 0x2017860-0x22a5780 0, 0x2310b68 +0x1bc, 0x2335184-0x2623350 +0x450, 0x297d6ac-0x2981edc
+# +0x490, 0x3097ae8-0x38f86a0 +0x5b0, data and read-only data +0x1000); c = the code there fits what the plugin does
+# with it (an inline hook's callback's registers, a patch's instruction); (guess) = not checked yet. Addresses at the
+# same place in both are left out (CSK's hooks at 0x85xxxx-0x1520000 and 0x1846880-0x1eea8b0: function starts at 0,
+# or found by CSK's own code search at run time).
+sha256 4d91c3d771b5c846a58ba31e123ff2aca5847614493235e754930a621c19c892
+0x1788260 0x17880c0   # fn, -0x1a0, f
+0x178ab74 0x178a9d4   # inline, -0x1a0, r c (callback reads x0/x1: a function's prologue there)
+0x17939ec 0x179390c   # inline, -0xe0, r c (callback tests x21 for -3 and 1: right after "sub w21, w8, #3")
+# (0x230c304, a patch that nops a call: unshifted - a bl there, as at 0x1eec2ec it nops the same way; +0x1bc and +0x450
+#  land on stack stores)
+0x23cbf8c 0x23cc3dc   # inline, +0x450, r (after a call, at the branch on its result)
+0x23f0d88 0x23f11d8   # inline, +0x450, r c (callback indexes the stage table with x22: a loop index there)
+0x2407308 0x2407758   # inline, +0x450, r c (callback reads the "SLI" file in x20: right after it is loaded, before its magic check)
+0x2418700 0x2418b50   # patch "...; ret" (stubs a function), +0x450, r c (a function start there, after padding)
+0x2419d50 0x241a1a0   # patch "...; ret" (stubs a function), +0x450, r c (a function start there, after padding)
+0x25f7ffc 0x25f844c   # stage-table reference left alone, +0x450, r c (the same adrp/add of the stage table there)
+0x25fdf30 0x25fe380   # inline, +0x450, r f (a function start there)
+0x3040718 0x3040cc8   # stage-table reference left alone, +0x5b0, c (the same adrp/add of the stage table there)
+0x32384c0 0x3238a70   # fn, +0x5b0, f
+0x32387b0 0x3238d60   # use unknown, +0x5b0, r
+0x323bf30 0x323c4e0   # fn, +0x5b0, f
+0x323eda4 0x323f354   # inline, +0x5b0, r
+0x3252ecc 0x325347c   # use unknown, +0x5b0, r
+0x325e000 0x325e5b0   # use unknown, +0x5b0, r
+0x3262f90 0x3263540   # fn, +0x5b0, f
+0x32639d0 0x3263f80   # use unknown, +0x5b0, r
+0x3263be8 0x3264198   # use unknown, +0x5b0, r
+0x3263f58 0x3264508   # use unknown, +0x5b0, r
+0x32648c0 0x3264e70   # fn, +0x5b0, f
+0x3264df0 0x32653a0   # fn, +0x5b0, f
+0x326eaf4 0x326f0a4   # use unknown, +0x5b0, r
+0x326eafc 0x326f0ac   # use unknown, +0x5b0, r
+0x326eb1c 0x326f0cc   # use unknown, +0x5b0, r
+0x326eb44 0x326f0f4   # use unknown, +0x5b0, r
+0x326ebe4 0x326f194   # use unknown, +0x5b0, r
+0x326ebf8 0x326f1a8   # use unknown, +0x5b0, r
+0x326ec34 0x326f1e4   # use unknown, +0x5b0, r
+0x326ec84 0x326f234   # use unknown, +0x5b0, r
+0x326ec98 0x326f248   # use unknown, +0x5b0, r
+0x326ecac 0x326f25c   # use unknown, +0x5b0, r
+0x32b4b30 0x32b50e0   # fn, +0x5b0, f
+0x3314610 0x3314bc0   # use unknown, +0x5b0, r
+0x36e4c00 0x36e51b0   # fn, +0x5b0, f
+0x37207cc 0x3720d7c   # use unknown, +0x5b0, r
+0x373c4b0 0x373ca60   # use unknown, +0x5b0, r
+0x373c534 0x373cae4   # use unknown, +0x5b0, r
+0x373c604 0x373cbb4   # use unknown, +0x5b0, r
+0x373c6e0 0x373cc90   # use unknown, +0x5b0, r
+0x3779c80 0x377a230   # use unknown, +0x5b0, r
+0x3779eac 0x377a45c   # use unknown, +0x5b0, r
+0x3779eb0 0x377a460   # use unknown, +0x5b0, r
+0x377a930 0x377aee0   # use unknown, +0x5b0, r
+0x395fe70 0x3960420   # use unknown, +0x5b0, r
+0x4545070 0x4546070   # data, +0x1000, r
+0x45497e8 0x454a7e8   # data, +0x1000, r (0x454a7e8 holds stage names in 13.0.5)
+0x53057b8 0x53067b8   # data, +0x1000, r
+0x5306788 0x5307788   # data, +0x1000, r
+0x5323680 0x5324680   # data, +0x1000, r

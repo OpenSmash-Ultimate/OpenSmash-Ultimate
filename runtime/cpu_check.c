@@ -94,7 +94,7 @@ int rt_cpu_message(unsigned needs, unsigned has, char *out, size_t size) {
             strcat(list, names[i]);
         }
 #ifdef _WIN32
-#define RT_CPU_AGAIN "Run Install WindowSmash.bat again: it builds the game for this processor"
+#define RT_CPU_AGAIN "Run OpenSmash.exe again: it builds the game for this processor"
 #else
 #define RT_CPU_AGAIN "Run install-windowsmash.sh again: it builds the game for this processor"
 #endif

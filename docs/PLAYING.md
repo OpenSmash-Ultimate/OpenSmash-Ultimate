@@ -13,6 +13,7 @@ Everything about playing once the game is built: how to start it, the controls, 
 - [Window and display](#window-and-display)
 - [Shaders and first-time stutter](#shaders-and-first-time-stutter)
 - [Low frame rate](#low-frame-rate)
+- [Your own Miis](#your-own-miis)
 - [Where your files are](#where-your-files-are)
 - [Problem reports](#problem-reports)
 
@@ -198,6 +199,16 @@ If matches run slowly on a PC that should manage them (press <kbd>F1</kbd> for t
 - **NVIDIA's shader cache is off.** In NVIDIA Control Panel → *Manage 3D settings*, set **Shader Cache Size** to *Driver default* (not *Disabled*). Without it, the graphics driver redoes its part of every shader each time the game starts.
 - **Windows uses a slow system timer.** Some "gaming tweaks" set Windows to time everything with an old, slow timer (the HPET). WindowSmash notices and works around it, and says so near the top of `build\play.log`: a `[clock]` line ending in *slow*. Other programs stay slower, though; to undo the tweak, run `bcdedit /deletevalue useplatformclock` in a Command Prompt opened as administrator, then restart the PC.
 
+## Your own Miis
+
+The game lists your own Miis wherever it lists Miis, such as **Games & More → Mii Fighters**, after its six default ones. WindowSmash has no Mii editor of its own, so you make them somewhere else and import them:
+
+1. Make your Miis in an emulator's Mii editor (Ryujinx's **Mii Edit Applet**, yuzu's or its forks' **Open Mii Editor**, in their menus), or on Mii Studio, or bring a Mii file.
+2. Double-click **`launchers\Import Miis.bat`** (on a Mac, `launchers/Import Miis.command`). It imports the Miis of every emulator it finds on this PC, then lets you paste Mii Studio links: on Mii Studio, right-click your Mii's picture, choose **Copy image address**, and paste it. To import Mii files instead, drop them on `Import Miis.bat`: `.charinfo`, `.nfsd` and `.nfcd` from a Switch, `.ffsd` and `.cfsd` from a 3DS or Wii U (not QR codes), or an emulator's `MiiDatabase.dat`.
+3. Restart the game.
+
+Each Mii becomes one file in the `miis` folder, `miis\<name>.charinfo`. To give a Mii to a friend, send them that file to put in their own `miis` folder. To remove one, delete its file. The game reads at most 100. A Mii Fighter you make from one of your Miis is kept in your save, so it stays even after you remove the Mii's file. From PowerShell, `python tools/miis.py list` lists them and `python tools/miis.py import --help` shows every option.
+
 ## Where your files are
 
 All of these are in the WindowSmash folder:
@@ -205,6 +216,7 @@ All of these are in the WindowSmash folder:
 | What | Where |
 | :--- | :--- |
 | Your save | `save\` |
+| Your own Miis | `miis\` ([above](#your-own-miis)) |
 | Screenshots (<kbd>F3</kbd>) | `screenshots\` |
 | The game's log | `build\play.log` |
 | Crash and freeze reports | `reports\` |

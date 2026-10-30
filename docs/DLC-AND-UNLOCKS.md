@@ -56,7 +56,7 @@ The game starts with only the original eight fighters unlocked. `launchers\Unloc
 4. Read what it says. It makes a dated backup of your save in `save_backups\` first: keep it.
 5. Start the game again. Unlock notices appear for the new fighters: skip each with the **X** button (<kbd>C</kbd> on the keyboard).
 
-**Mii Fighters** may need to be made first, under **Games & More → Mii Fighters**, before they appear on character select.
+**Mii Fighters** may need to be made first, under **Games & More → Mii Fighters**, before they appear on character select. To give them your own Miis' faces, import your Miis first ([Your own Miis](PLAYING.md#your-own-miis)).
 
 The tool runs with Windows' built-in PowerShell, so it doesn't need Python. It refuses to run while the game is open, works only when the game built here is 13.0.5 (it changes nothing otherwise), and replaces the save only after making the backup. Running it again once every fighter is unlocked changes nothing.
 

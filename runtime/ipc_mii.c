@@ -1,18 +1,25 @@
 /* The Mii database (mii:e / mii:u), natively.
  *
- * The console keeps the user's Miis in a system save; here the database is empty, so the
- * game sees only the six built-in default Miis. BuildDefault/BuildRandom produce characters
- * the way the service does - as a CharInfo (0x58 bytes, layout taken from the SDK's own
- * CharInfoAccessor getters). */
+ * The console keeps the user's Miis in a system save; here they are the files in the miis
+ * folder, one CharInfo (0x58 bytes) each - tools/miis.py imports them from an emulator's Mii
+ * database, Mii Studio or a 3DS / Wii U Mii file - read once, in file-name order, up to the
+ * console's 100. After them come the six built-in default Miis. BuildDefault/BuildRandom
+ * produce characters the way the service does - as a CharInfo (layout taken from the SDK's
+ * own CharInfoAccessor getters). */
 #define _CRT_RAND_S
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "ipc.h"
 
-#define SOURCE_DATABASE 1
+#define SOURCE_DATABASE 1               /* (SourceFlag: which Miis a Get asks for) */
 #define SOURCE_DEFAULT  2
+#define ELEMENT_DATABASE 0              /* (Source: where a CharInfoElement's Mii is from) */
+#define ELEMENT_DEFAULT  1
 #define DEFAULT_COUNT   6
+#define DATABASE_MAX    100
+#define MIIS_DIR        "miis"
 
 typedef struct CharInfo {
     u8 create_id[16];
@@ -84,17 +91,85 @@ static CharInfo build_random(u32 age, u32 gender, u32 race) {
     return m;
 }
 
-static u32 count(u32 source) { return source & SOURCE_DEFAULT ? DEFAULT_COUNT : 0; }
+/* ---- the user's Miis: miis/<name>.charinfo ------------------------------------------- */
+static CharInfo database_miis[DATABASE_MAX];
+static u32 database_count;
 
-/* Get: fill the output buffer with CharInfos (or CharInfoElements, which add a u32 source). */
+/* Within the ranges the service accepts (nn::mii's CharInfo verification): a Mii outside
+ * them could index past the game's face-part tables. */
+static int valid(const CharInfo *m) {
+    static const u8 zero[16];
+    if (!memcmp(m->create_id, zero, 16) || !m->nickname[0] || m->nickname[10]) return 0;
+    const u8 *v = &m->font_region;
+    static const u8 max[] = {   /* font_region ... mole_y, in the struct's order */
+        3, 11, 1, 127, 127, 1, 3,  11, 9, 11, 11,  131, 99, 1,  59, 99, 7, 6, 7, 12, 18,
+        23, 99, 8, 6, 11, 12, 18,  17, 8, 18,  35, 99, 8, 6, 18,  99, 5, 5, 8, 16,
+        19, 99, 7, 20,  1, 8, 16, 30,
+    };
+    _Static_assert(sizeof max == offsetof(CharInfo, padding) - offsetof(CharInfo, font_region), "limits");
+    for (u32 i = 0; i < sizeof max; i++)
+        if (v[i] > max[i]) return 0;
+    return m->eyebrow_y >= 3;   /* (kept 3 higher than in the console's stored form) */
+}
+
+static int by_name(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
+
+static void load_database(void) {
+    static char names[DATABASE_MAX][MAX_PATH];
+    u32 n = 0;
+    WIN32_FIND_DATAA fd;
+    HANDLE fh = FindFirstFileA(MIIS_DIR "\\*", &fd);
+    if (fh == INVALID_HANDLE_VALUE) return;
+    do {
+        const char *dot = strrchr(fd.cFileName, '.');
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && dot && !_stricmp(dot, ".charinfo") && n < DATABASE_MAX)
+            snprintf(names[n++], MAX_PATH, "%s", fd.cFileName);
+    } while (FindNextFileA(fh, &fd));
+    FindClose(fh);
+    qsort(names, n, sizeof *names, by_name);
+    for (u32 i = 0; i < n; i++) {
+        char path[MAX_PATH + 8];
+        snprintf(path, sizeof path, MIIS_DIR "/%s", names[i]);
+        FILE *f = fopen(path, "rb");
+        CharInfo m;
+        size_t got = f ? fread(&m, 1, sizeof m, f) : 0;
+        int extra = f && fgetc(f) != EOF;
+        if (f) fclose(f);
+        if (got != sizeof m || extra || !valid(&m)) {
+            fprintf(stderr, "[mii] %s/%s is not a Mii WindowSmash can use: skipped\n", MIIS_DIR, names[i]);
+            continue;
+        }
+        int dup = 0;
+        for (u32 k = 0; k < database_count; k++) dup |= !memcmp(database_miis[k].create_id, m.create_id, 16);
+        if (dup) {
+            fprintf(stderr, "[mii] %s/%s is a Mii already loaded (the same id): skipped\n", MIIS_DIR, names[i]);
+            continue;
+        }
+        database_miis[database_count++] = m;
+    }
+    if (database_count) fprintf(stderr, "[mii] %u of your Miis, from %s/\n", database_count, MIIS_DIR);
+}
+
+static i32 database_index(const u8 *create_id) {
+    for (u32 i = 0; i < database_count; i++)
+        if (!memcmp(database_miis[i].create_id, create_id, 16)) return (i32)i;
+    return -1;
+}
+
+static u32 count(u32 source) {
+    return (source & SOURCE_DATABASE ? database_count : 0) + (source & SOURCE_DEFAULT ? DEFAULT_COUNT : 0);
+}
+
+/* Get: fill the output buffer with CharInfos (or CharInfoElements, which add a u32 source):
+ * the user's Miis, then the defaults. */
 static void get(Ipc *ipc, u32 element_size) {
     u32 source = ipc_u32(ipc, 0);
     u64 size, b = ipc_out_buffer(ipc, 0, &size);
-    u32 n = 0;
+    u32 n = 0, mine = source & SOURCE_DATABASE ? database_count : 0;
     for (u32 i = 0; i < count(source) && b && (n + 1) * element_size <= size; i++, n++) {
-        CharInfo m = build_default(i);
+        CharInfo m = i < mine ? database_miis[i] : build_default(i - mine);
         memcpy(P(void, b + (u64)n * element_size), &m, sizeof m);
-        if (element_size > sizeof m) st32(b + (u64)n * element_size + sizeof m, SOURCE_DEFAULT);
+        if (element_size > sizeof m) st32(b + (u64)n * element_size + sizeof m, i < mine ? ELEMENT_DATABASE : ELEMENT_DEFAULT);
     }
     if (b) ipc_wrote(ipc, 0, (u64)n * element_size);
     IPC_PUSH(ipc, n);
@@ -112,8 +187,8 @@ static void database(IpcObject *self, Ipc *ipc) {
     case 6: m = build_random(ipc_u32(ipc, 0), ipc_u32(ipc, 4), ipc_u32(ipc, 8)); ipc_push(ipc, &m, sizeof m); return;
     case 7: m = build_default(ipc_u32(ipc, 0) % DEFAULT_COUNT); ipc_push(ipc, &m, sizeof m); return;
     case 8: case 9: IPC_PUSH(ipc, (u32)0); return;                         /* Get2/Get3 (store data): none */
-    case 11: IPC_PUSH(ipc, (i32)-1); return;                               /* FindIndex: not in the database */
-    case 21: IPC_PUSH(ipc, (i32)-1); return;                               /* GetIndex */
+    case 11: IPC_PUSH(ipc, database_index(ipc->in)); return;               /* FindIndex(create id, special) */
+    case 21: IPC_PUSH(ipc, database_index(ipc->in)); return;               /* GetIndex(CharInfo): by its id */
     case 22: return;                                                       /* SetInterfaceVersion */
     case 23: case 24:                                                      /* Convert(Ver3StoreData / CoreData) */
         m = build_default(0); new_id(&m); ipc_push(ipc, &m, sizeof m); return;
@@ -129,7 +204,16 @@ static void static_service(IpcObject *self, Ipc *ipc) {
     ipc_unknown(ipc, self);
 }
 
+/* "Create Mii" (Mii Fighters, and the like): the system's Mii editor, a library applet. There
+ * is none (hle_applet.c), so it behaves as if the player opened it and backed out: the game
+ * keeps its list as it is. Without this, starting the applet reads a null applet creator. */
+HLE(_ZN2nn3mii9AppendMiiEPi) { c->x[0] = RESULT(162, 1); }
+
 IpcObject *service_mii(const char *name) {
-    if (!strcmp(name, "mii:e") || !strcmp(name, "mii:u")) return ipc_new_object(name, static_service, NULL);
+    static int loaded;
+    if (!strcmp(name, "mii:e") || !strcmp(name, "mii:u")) {
+        if (!loaded) { loaded = 1; load_database(); }
+        return ipc_new_object(name, static_service, NULL);
+    }
     return NULL;
 }

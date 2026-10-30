@@ -60,12 +60,15 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
+#include <dirent.h>
 #include <unistd.h>
 typedef int SOCKET;
 #define INVALID_SOCKET (-1)
 #define closesocket close
 #endif
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -91,6 +94,8 @@ enum { W_LOBBY = 1, W_INTRODUCES = 2, W_ROOMS = 4, W_MATCH = 8, W_RB = 16 };   /
 #define UNREACHABLE_MS 5000   /* unanswered this long: the game plays offline (and keeps asking) */
 #define NETWORK_INFO 0x480
 #define PING_EXT_SIZE (4 + 8 + 8 + 8 + 2 + 4 + 4 + 2 + 1 + 1)
+
+extern const RtModule rt_module_main;   /* (its build id tells game versions apart) */
 
 static u16 get16(const u8 *p) { return (u16)(p[0] << 8 | p[1]); }
 static u32 get32(const u8 *p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3]; }
@@ -888,16 +893,206 @@ static int resolve_relay(void) {
 
 /* Version 3's JOIN ends with this game's mod set: count u8 (32 at most), count x (hash u32, name
  * length u8 (31 at most), name). The lobby parts players by the hashes (in any order) and shows the
- * names. WindowSmash loads no mods yet: none. Once it does, a mod's hash must come out the same on
- * every OS, or players of one mod on Windows, Linux and macOS never meet: ssbu-recomp's rule ports
- * (its runtime/net_relay.c tree_hash: over each file of the mod, FNV-1a 64 of its path in lower case
- * with '/' and then of its size, summed and folded to 32 bits), over the files that are the same on
- * every OS only - never a mod's native code (a .dll, .so or .dylib), which is built for each. */
-static const u8 mod_set[] = {0};
-#define JOIN_V3_SIZE (JOIN_SIZE + 4 + (int)sizeof mod_set)
+ * names. A mod's hash must come out the same on every OS, or players of one mod on Windows, Linux
+ * and macOS never meet: ssbu-recomp's rule (its runtime/net_relay.c tree_hash: over each file of the
+ * mod, FNV-1a 64 of its path in lower case with '/' and then of its size, summed and folded to 32
+ * bits), over the files that are the same on every OS only - never a mod's native code (a .dll, .so
+ * or .dylib), which is built for each, nor a mod's notes for the mod manager (info.toml, its preview
+ * and readme), which the game never reads.
+ *
+ * The mods are tools/mods.py's: the turned-on ones of the last apply (dump/mods/applied.json,
+ * "mods"), in the port's mods/ folder - apply makes them the game's data (romfs.cfg), so two games
+ * with different mods applied are parted (their matches would not stay the same). All of them, by
+ * name (case not counted), whatever order a folder listing has: a skin pack has hundreds, and
+ * ssbu-recomp's first 32 in the listing's order gave two copies of one pack different sets (the order
+ * differs between filesystems and machines). More than 32: the first 31, then "and <n> more", hashed
+ * over the rest's names and hashes. None applied: none, as before. */
+#define MODS_MAX 32
+#define MOD_NAME 31
+static u8 mod_set[1 + MODS_MAX * (5 + MOD_NAME)] = {0};   /* (count 0: none) */
+static int mod_set_len = 1;
+#define JOIN_V3_MAX (JOIN_SIZE + 4 + (int)sizeof mod_set)
+
+#define FNV0 0xcbf29ce484222325ull
+static u64 fnv64(u64 h, const void *p, size_t n) {
+    const u8 *b = p;
+    for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 0x100000001b3ull;
+    return h;
+}
+static int starts_ci(const char *s, const char *prefix) {   /* (case not counted) */
+    for (; *prefix; s++, prefix++) if (tolower((unsigned char)*s) != tolower((unsigned char)*prefix)) return 0;
+    return 1;
+}
+static int mod_file_hashed(const char *name) {
+    static const char *const native[] = {".dll", ".so", ".dylib"};
+    size_t n = strlen(name);
+    if (name[0] == '.' || !_stricmp(name, "info.toml") || starts_ci(name, "preview.") || starts_ci(name, "readme.")) return 0;
+    for (size_t k = 0; k < sizeof native / sizeof *native; k++) {
+        size_t l = strlen(native[k]);
+        if (n > l && !_stricmp(name + n - l, native[k])) return 0;
+    }
+    return 1;
+}
+/* The sum over the files below dir (rel: their path in the mod, '/' between) of FNV-1a 64 of the path
+ * in lower case, then of the size (8 bytes, little-endian): ssbu-recomp's tree_hash. */
+static u64 mod_tree_hash(const char *dir, const char *rel, int depth, int *files) {
+    u64 sum = 0;
+    char sub[1024], r[1024];
+#ifdef _WIN32
+    char pat[1024];
+    WIN32_FIND_DATAA fd;
+    snprintf(pat, sizeof pat, "%s\\*", dir);
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        const char *nm = fd.cFileName;
+        int isdir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        u64 size = (u64)fd.nFileSizeHigh << 32 | fd.nFileSizeLow;
+        snprintf(sub, sizeof sub, "%s/%s", dir, nm);
+#else
+    DIR *dp = opendir(dir);
+    if (!dp) return 0;
+    for (struct dirent *de; (de = readdir(dp));) {
+        const char *nm = de->d_name;
+        struct stat st;
+        snprintf(sub, sizeof sub, "%s/%s", dir, nm);
+        if (stat(sub, &st)) continue;   /* (stat: a mod that is a link is read through it) */
+        int isdir = S_ISDIR(st.st_mode);
+        u64 size = (u64)st.st_size;
+#endif
+        if (strcmp(nm, ".") && strcmp(nm, "..")) {
+            snprintf(r, sizeof r, "%s%s%s", rel, *rel ? "/" : "", nm);
+            if (isdir) {
+                if (depth < 16) sum += mod_tree_hash(sub, r, depth + 1, files);
+            } else if (mod_file_hashed(nm)) {
+                u8 le[8];
+                for (char *s = r; *s; s++) *s = (char)tolower((unsigned char)*s);
+                for (int k = 0; k < 8; k++) le[k] = (u8)(size >> (8 * k));
+                sum += fnv64(fnv64(FNV0, r, strlen(r)), le, 8);
+                (*files)++;
+            }
+        }
+#ifdef _WIN32
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+#else
+    }
+    closedir(dp);
+#endif
+    return sum;
+}
+static u32 hex4(const char *p) {
+    char t[5] = {p[0], p[0] ? p[1] : 0, 0, 0, 0};
+    if (t[1]) { t[2] = p[2]; if (t[2]) t[3] = p[3]; }
+    return (u32)strtoul(t, NULL, 16);
+}
+/* The names of applied.json's "mods": [...], decoded (json.dump writes \uXXXX for what isn't ASCII:
+ * made UTF-8, a folder's name on disk) */
+static int applied_mods(const char *js, char (*out)[256], int max) {
+    const char *p = strstr(js, "\"mods\"");
+    if (!p || !(p = strchr(p, '['))) return 0;
+    int n = 0;
+    for (p++; *p && *p != ']' && n < max;) {
+        if (*p != '"') { p++; continue; }
+        char *o = out[n];
+        size_t k = 0;
+        for (p++; *p && *p != '"'; p++) {
+            u32 c = (u8)*p;
+            if (c == '\\' && p[1]) {
+                p++;
+                if (*p == 'u') {
+                    c = hex4(p + 1);
+                    p += strnlen(p + 1, 4);
+                    if (c >= 0xD800 && c < 0xDC00 && p[1] == '\\' && p[2] == 'u') {
+                        u32 lo = hex4(p + 3);
+                        if (lo >= 0xDC00 && lo < 0xE000) { c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00); p += 6; }
+                    }
+                } else c = *p == 'n' ? '\n' : *p == 't' ? '\t' : (u8)*p;
+            }
+            u8 e[4];
+            int l = 0;
+            if (c < 0x80) e[l++] = (u8)c;
+            else if (c < 0x800) { e[l++] = (u8)(0xC0 | c >> 6); e[l++] = (u8)(0x80 | (c & 0x3F)); }
+            else if (c < 0x10000) { e[l++] = (u8)(0xE0 | c >> 12); e[l++] = (u8)(0x80 | (c >> 6 & 0x3F)); e[l++] = (u8)(0x80 | (c & 0x3F)); }
+            else { e[l++] = (u8)(0xF0 | c >> 18); e[l++] = (u8)(0x80 | (c >> 12 & 0x3F)); e[l++] = (u8)(0x80 | (c >> 6 & 0x3F)); e[l++] = (u8)(0x80 | (c & 0x3F)); }
+            for (int q = 0; q < l && k + 1 < 256; q++) o[k++] = (char)e[q];
+        }
+        o[k] = 0;
+        if (*p) p++;
+        n++;
+    }
+    return n;
+}
+typedef struct ModSum { char name[MOD_NAME + 1]; u32 hash; } ModSum;
+static int modsum_cmp(const void *a, const void *b) { return _stricmp(((const ModSum *)a)->name, ((const ModSum *)b)->name); }
+/* mod_set from the last apply's mods, once (a game started before an apply keeps the set it started with) */
+static void mod_set_make(void) {
+    static int done;
+    if (done) return;
+    done = 1;
+    const char *data = rt_data_dir ? rt_data_dir : "dump/modules";
+    char path[1024];
+    snprintf(path, sizeof path, "%s/../mods/applied.json", data);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    static char js[1 << 20];
+    size_t n = fread(js, 1, sizeof js - 1, f);
+    fclose(f);
+    js[n] = 0;
+    /* Only what the game reads (mods.py's Tree.is_modded): romfs.cfg the modded layer map, or the real
+     * ARCropolis loading the listed mods. "mods.py vanilla" keeps applied.json's list as it was. */
+    char cfg[4096] = "";
+    snprintf(path, sizeof path, "%s/romfs.cfg", data);
+    if ((f = fopen(path, "rb"))) { cfg[fread(cfg, 1, sizeof cfg - 1, f)] = 0; fclose(f); }
+    if (!strstr(cfg, "romfs_mods.layers") && !strstr(js, "\"arcropolis\": true")) return;
+    static char names[4096][256];
+    int count = applied_mods(js, names, 4096);
+    ModSum *m = count ? calloc((size_t)count, sizeof *m) : NULL;
+    if (!m) return;
+    for (int i = 0; i < count; i++) {
+        char dir[1024];
+        int files = 0;
+        snprintf(dir, sizeof dir, "%s/../../mods/%s", data, names[i]);
+        u64 h = mod_tree_hash(dir, "", 0, &files);
+        size_t k = 0;
+        for (const char *s = names[i]; *s && k < MOD_NAME; s++) m[i].name[k++] = (u8)*s >= 0x20 && *s != ',' ? *s : ' ';
+        m[i].name[k] = 0;
+        m[i].hash = (u32)(h ^ h >> 32);
+    }
+    qsort(m, (size_t)count, sizeof *m, modsum_cmp);
+    int listed = count <= MODS_MAX ? count : MODS_MAX - 1;
+    u8 *w = mod_set;
+    *w++ = (u8)(count <= MODS_MAX ? count : MODS_MAX);
+    for (int i = 0; i < listed; i++) {
+        size_t l = strlen(m[i].name);
+        put32(w, m[i].hash);
+        w[4] = (u8)l;
+        memcpy(w + 5, m[i].name, l);
+        w += 5 + l;
+    }
+    if (count > MODS_MAX) {   /* the rest, by name and hash, as one entry */
+        u64 h = FNV0;
+        for (int i = listed; i < count; i++) {
+            u8 le[4];
+            put32(le, m[i].hash);
+            h = fnv64(fnv64(h, m[i].name, strlen(m[i].name) + 1), le, 4);
+        }
+        char rest[MOD_NAME + 1];
+        snprintf(rest, sizeof rest, "and %d more", count - listed);
+        size_t l = strlen(rest);
+        put32(w, (u32)(h ^ h >> 32));
+        w[4] = (u8)l;
+        memcpy(w + 5, rest, l);
+        w += 5 + l;
+    }
+    mod_set_len = (int)(w - mod_set);
+    printf("[online] mods: %d applied (dump/mods/applied.json): a mod set of %d entr%s\n", count, mod_set[0], mod_set[0] == 1 ? "y" : "ies");
+    free(m);
+}
 
 static void send_join(void) {
-    u8 p[JOIN_V3_SIZE] = {0};
+    u8 p[JOIN_V3_MAX] = {0};
+    mod_set_make();
     header(p, T_JOIN);
     put64(p + 4, nonce);
     memcpy(p + 12, room, strlen(room));
@@ -907,9 +1102,9 @@ static void send_join(void) {
     memcpy(p + 12 + 2 * NAME_LEN, build, build_len < BUILD_LEN ? build_len : BUILD_LEN);
     if (proto == NET_PROTOCOL_V3) {   /* (then the simulation version and the mod set) */
         put32(p + JOIN_SIZE, SIM_VERSION);
-        memcpy(p + JOIN_SIZE + 4, mod_set, sizeof mod_set);
+        memcpy(p + JOIN_SIZE + 4, mod_set, (size_t)mod_set_len);
     }
-    send_udp(client_sock, p, proto == NET_PROTOCOL_V3 ? JOIN_V3_SIZE : JOIN_SIZE, &relay_at);
+    send_udp(client_sock, p, proto == NET_PROTOCOL_V3 ? JOIN_SIZE + 4 + mod_set_len : JOIN_SIZE, &relay_at);
 }
 
 void net_lobby_list(u32 seq) {
@@ -930,8 +1125,6 @@ void net_lobby_list(u32 seq) {
  * from what the room's game is. Rollback messages (RB) are not read here yet. */
 enum { T_RB = 16, T_ROOMS, T_ROOM_INFO, T_ROOMS_END, T_MATCH, T_MATCH_STATE };
 #define ROOMS_MAX 32
-#define MODS_MAX 32
-#define MOD_NAME 31
 #define ROOM_INFO_MIN (4 + 4 + 3 + NAME_LEN + BUILD_LEN + 4 + 1)   /* (its body, with a mod set of none) */
 #define MATCH_STATE_SIZE (4 + 3 + 4 + NAME_LEN + 2 + 2 + 2)
 #define ROOMS_WAIT_MS 3000   /* a ROOMS unanswered this long: NET_ROOMS_NO_ANSWER */
@@ -984,7 +1177,8 @@ static void room_why(const char *b, u32 sim, const Mod *m, int nm, char *out, si
         return;
     }
     Mod own[MODS_MAX];
-    int no = mods_read(mod_set, (int)sizeof mod_set, own, MODS_MAX);
+    mod_set_make();
+    int no = mods_read(mod_set, mod_set_len, own, MODS_MAX);
     char missing[256] = "", other[256] = "", extra[256] = "";
     for (int i = 0; i < nm; i++) {
         int found = -1;

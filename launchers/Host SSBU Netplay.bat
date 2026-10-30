@@ -12,7 +12,7 @@ rem The address to give the other players appears in the game's overlay (F2) and
 rem netplay_address.txt; the log goes to build\play.log. Every player needs game version 13.0.5.
 cd /d "%~dp0.."
 setlocal
-if not exist build\ssbu.exe (echo The game isn't built here yet: run Install WindowSmash.bat. & pause & exit /b 1)
+if not exist build\ssbu.exe (echo The game isn't built here yet: run OpenSmash.exe. & pause & exit /b 1)
 echo Every player needs game version 13.0.5, as you have.
 set "SSBU_NET_NAME=%USERNAME%"
 set /p "SSBU_NET_NAME=Your player name [%SSBU_NET_NAME%]: "

@@ -229,7 +229,7 @@ class SimdMixin:
 
         hi, sz = size >> 1, size & 1
         fe = 64 if sz else 32
-        if sz and not (q or scalar):
+        if sz and not (q or scalar) and opcode not in (0x16, 0x17):   # (fcvtn/fcvtl: the 64-bit side is the other one)
             raise Unsupported("simd: reserved element size")
         ff, fu, fs = FF[fe], UF[fe], SF[fe]
         n = 1 if scalar else (64 << q) // fe

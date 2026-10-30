@@ -41,11 +41,11 @@ Steps, each skipped when it is already done, so running it again carries on wher
                name (online_name.txt), so the first start asks nothing. The firmware is optional,
                for your console's own fonts: left empty, the game uses the open fonts of
                third_party\fonts_open (no Chinese, Japanese or Korean text).
-  8. extras    a desktop shortcut to Play SSBU.bat and, if ticked, a Windows Firewall rule for
+  8. extras    a desktop shortcut to OpenSmash.exe and, if ticked, a Windows Firewall rule for
                build\ssbu.exe (asks for administrator rights once).
   9. build     tools\build_game.py with those folders: the game's program, fonts, data, DLC,
                fighters, then the build itself (30 minutes to a few hours; minutes after an update).
- 10. shaders   if ticked, launchers\Prepare Shaders.bat in a window of its own, at low priority.
+ 10. shaders   if ticked, compiled in this same window. The setup window asks low, medium, or high.
 Everything is written to install.log next to this folder's launchers.
 
 Why the embeddable Python and not `winget install Python.Python.3.14`: the embeddable zip goes
@@ -66,7 +66,11 @@ No firmware, over one found: the game uses the open fonts of third_party\fonts_o
 .PARAMETER OnlineName
 The online name to write into online_name.txt.
 .PARAMETER NoWizard
-Ask in this window instead of opening the wizard.
+Ask in this window instead of opening the wizard. With -Game and -Keys, those answers are used and nothing is asked.
+.PARAMETER Shortcut
+.PARAMETER Firewall
+.PARAMETER Shaders
+With -NoWizard -Game -Keys: put the desktop shortcut on, add the firewall rule, and prepare shaders after the build. The setup window asks these when it opens.
 .PARAMETER SkipBuild
 Prepare the game files (program, fonts, data, DLC, fighters) but stop before the build itself.
 .PARAMETER Jobs
@@ -75,6 +79,12 @@ Passed to the build: how many files to compile at a time (default: by the instal
 Do not look for a newer WindowSmash (the updated installer is started with it).
 .PARAMETER BuildTools
 For the compiler, install the Visual Studio Build Tools rather than download it into deps\.
+.PARAMETER Rebuild
+Build the game even when nothing that goes into it changed (without it, an update that changed only
+the mod manager or other tools skips the build: tools\skyline.py uptodate).
+.PARAMETER AcceptLicense
+The setup window's checkbox: Microsoft's license terms for the C runtime and Windows SDK are already
+accepted, so the compiler download does not ask again.
 #>
 [CmdletBinding()]
 param(
@@ -85,10 +95,15 @@ param(
     [switch]$NoFirmware,
     [string]$OnlineName,
     [switch]$NoWizard,
+    [switch]$Shortcut,
+    [switch]$Firewall,
+    [switch]$Shaders,
     [switch]$SkipBuild,
     [int]$Jobs,
     [switch]$NoUpdate,
-    [switch]$BuildTools
+    [switch]$BuildTools,
+    [switch]$Rebuild,
+    [switch]$AcceptLicense
 )
 
 $ErrorActionPreference = 'Stop'
@@ -868,6 +883,12 @@ function Step-Python {
         if ((Invoke-Python @('-m', 'pip', 'install', '-r', (Join-Path $Root 'requirements.txt'))) -ne 0) { throw 'pip could not install the packages (see above).' }
         if (-not (Test-PythonPackages)) { throw 'The packages are still missing after pip install.' }
     }
+    # py7zr: the Mods app opens .7z mods with it when 7-Zip isn't installed (Windows' tar can't).
+    # Optional: without it, only .7z mods need 7-Zip
+    if (-not $DryRun -and (Get-PythonOutput @('-c', 'import py7zr')).Code -ne 0) {
+        Write-Info 'adding py7zr (opens .7z mods)'
+        if ((Invoke-Python @('-m', 'pip', 'install', '--quiet', 'py7zr')) -ne 0) { Write-Info 'py7zr could not be added: .7z mods need 7-Zip (7-zip.org)' }
+    }
 }
 
 # ---- step 4: the compiler ---------------------------------------------------------------------------
@@ -915,7 +936,9 @@ function Invoke-VsModify {
 function Install-PortableCompiler {
     <# tools\msvc_deps.py install, in this window: it shows Microsoft's license terms and asks before it
        downloads anything. 'done', 'declined' or 'failed' (it said why). #>
-    $code = Invoke-Python @((Join-Path $Root 'tools\msvc_deps.py'), 'install')
+    $py = @((Join-Path $Root 'tools\msvc_deps.py'), 'install')
+    if ($AcceptLicense) { $py += '--accept-license' }
+    $code = Invoke-Python $py
     if ($code -eq 0) { return 'done' }
     if ($code -eq 2) { return 'declined' }
     return 'failed'
@@ -942,7 +965,7 @@ function Step-PortableCompiler {
     $how = Install-PortableCompiler
     if ($how -eq 'declined') {
         throw ("Microsoft's license terms were not accepted, so the C runtime and the Windows SDK, which the game is built with, " +
-               "cannot be downloaded. The Visual Studio Build Tools come under the same terms. Run Install WindowSmash.bat again to " +
+               "cannot be downloaded. The Visual Studio Build Tools come under the same terms. Run OpenSmash.exe again to " +
                "accept them, or install Visual Studio yourself (setup guide step 4).")
     }
     if ($how -eq 'done') {
@@ -1002,7 +1025,7 @@ function Step-Compiler {
     $check = Test-Compiler
     if (-not $check.Ok) {
         throw ("The compiler still does not work after the install:`n" + $check.Output +
-               "`nA restart may be needed. After it, run Install WindowSmash.bat again.")
+               "`nA restart may be needed. After it, run OpenSmash.exe again.")
     }
     foreach ($line in ($check.Output -split "`n")) { if ($line -match 'clang-cl|toolchain') { Write-Info $line.Trim() } }
 }
@@ -1197,9 +1220,9 @@ function Show-Wizard {
 
     $checks = @{}
     foreach ($spec in @(
-        @{ Key = 'Shortcut'; Text = 'Put a shortcut to Play SSBU.bat on the desktop'; On = $true },
+        @{ Key = 'Shortcut'; Text = 'Make a desktop shortcut'; On = $true },
         @{ Key = 'Firewall'; Text = 'Allow the game through Windows Firewall now (asks for administrator rights once; needed for playing online)'; On = $true },
-        @{ Key = 'Shaders'; Text = 'After the build, prepare the shaders in the background (minutes to two hours at low priority; stops the first-time stutter of effects)'; On = $true }
+        @{ Key = 'Shaders'; Text = 'After the build, prepare the shaders in this window (you pick low, medium, or high; stops the first-time stutter of effects)'; On = $true }
     )) {
         $cb = New-Object Windows.Forms.CheckBox
         $cb.Text = $spec.Text
@@ -1212,7 +1235,7 @@ function Show-Wizard {
     }
 
     $note = New-Object Windows.Forms.Label
-    $note.Text = 'Then the game is built, which takes 30 minutes to a few hours. If it stops, run Install WindowSmash.bat again: it carries on where it stopped.'
+    $note.Text = 'Then the game is built, which takes 30 minutes to a few hours. If it stops, run OpenSmash.exe again: it carries on where it stopped.'
     $note.Location = New-Object Drawing.Point(16, ($y + 4))
     $note.Size = New-Object Drawing.Size(728, 40)
     $form.Controls.Add($note)
@@ -1316,7 +1339,7 @@ function Read-Answers {
     $answers['OnlineName'] = $n
     $answers['Shortcut'] = ((Read-Host 'Put a shortcut on the desktop? [Y/n]').Trim() -notmatch '^n')
     $answers['Firewall'] = ((Read-Host 'Allow the game through Windows Firewall (asks for administrator rights)? [Y/n]').Trim() -notmatch '^n')
-    $answers['Shaders'] = ((Read-Host 'Prepare the shaders after the build (minutes to two hours, low priority)? [Y/n]').Trim() -notmatch '^n')
+    $answers['Shaders'] = ((Read-Host 'Prepare the shaders after the build, in this window? [Y/n]').Trim() -notmatch '^n')
     return $answers
 }
 
@@ -1334,6 +1357,21 @@ function Step-GameFiles {
     $default = $OnlineName
     if (-not $default -and (Test-Path -LiteralPath $nameFile)) { $default = ([IO.File]::ReadAllText($nameFile)).Trim() }
     if (-not $default) { $default = 'Player' + (Get-Random -Minimum 1000 -Maximum 9999) }
+    # The OpenSmash window already asked. -NoWizard with -Game and -Keys uses those answers and does not open this window or ask in the console.
+    if ($NoWizard -and $ScriptBound.ContainsKey('Game') -and $ScriptBound.ContainsKey('Keys')) {
+        $fw = if ($NoFirmware -or -not $Firmware) { '' } else { $Firmware }
+        foreach ($pair in @(
+            @{ Name = 'keys'; Result = (Test-KeysFolder $Keys) },
+            @{ Name = 'firmware'; Result = (Test-FirmwareFolder $fw) },
+            @{ Name = 'game'; Result = (Test-GameFolder $Game $Keys) }
+        )) {
+            Write-Info "$($pair.Name): $($pair.Result.Text)"
+            if (-not $pair.Result.Ok -and -not $DryRun) { throw $pair.Result.Text }
+        }
+        if (-not $DryRun -and $default -and -not (Test-Path -LiteralPath $nameFile)) { [IO.File]::WriteAllText($nameFile, $default + "`r`n") }
+        Write-Info "online name: $default"
+        return @{ Game = $Game; Keys = $Keys; Firmware = $fw; OnlineName = $default; Shortcut = [bool]$Shortcut; Firewall = [bool]$Firewall; Shaders = [bool]$Shaders }
+    }
     if ($DryRun) {
         if ($detected.Game -and $detected.Keys) { Write-Info ('game folder check: ' + (Test-GameFolder $detected.Game $detected.Keys).Text) }
         Write-Would "open the setup window with these folders and the online name '$default', then build with the answers"
@@ -1342,7 +1380,7 @@ function Step-GameFiles {
     $answers = $null
     if (-not $NoWizard) {
         try { $answers = Show-Wizard $detected $default } catch { Write-Warn "the setup window could not open ($($_.Exception.Message)); asking here instead"; $NoWizard = $true }
-        if (-not $NoWizard -and -not $answers) { throw 'Cancelled. Run Install WindowSmash.bat again when you are ready.' }
+        if (-not $NoWizard -and -not $answers) { throw 'Cancelled. Run OpenSmash.exe again when you are ready.' }
     }
     if ($NoWizard) { $answers = Read-Answers $detected $default }
     if (($answers.OnlineName -and $answers.OnlineName -ne $default) -or -not (Test-Path -LiteralPath $nameFile)) {
@@ -1370,20 +1408,21 @@ function Test-FirewallRule {
 function Step-Extras {
     param([hashtable]$Answers)
     Write-Step '[8/10] Shortcut and firewall'
-    $lnk = Join-Path (Get-DesktopFolder) 'Play SSBU.lnk'
+    $lnk = Join-Path (Get-DesktopFolder) 'OpenSmash.lnk'
+    $launcher = Join-Path $Root 'OpenSmash.exe'
     if (-not $Answers.Shortcut) {
         Write-Info 'shortcut: not wanted'
     } elseif (Test-Path -LiteralPath $lnk) {
         Write-Info "shortcut: already on the desktop"
     } elseif ($DryRun) {
-        Write-Would "put $lnk on the desktop, pointing at Play SSBU.bat"
+        Write-Would "put $lnk on the desktop, pointing at OpenSmash.exe"
     } else {
         $ws = New-Object -ComObject WScript.Shell
         $s = $ws.CreateShortcut($lnk)
-        $s.TargetPath = Join-Path $Root 'Play SSBU.bat'
+        $s.TargetPath = $launcher
         $s.WorkingDirectory = $Root
-        $s.IconLocation = (Join-Path $Root 'docs\assets\windowsmash.ico') + ',0'
-        $s.Description = 'Super Smash Bros. Ultimate (WindowSmash)'
+        $s.IconLocation = $launcher + ',0'
+        $s.Description = 'OpenSmash'
         $s.Save()
         Write-Info "shortcut: $lnk"
     }
@@ -1415,10 +1454,27 @@ function Step-Build {
     if ($Jobs) { $build += @('--jobs', "$Jobs") }
     if ($SkipBuild) { $build += '--prepare-only' }
     if ($DryRun) { Write-Would ('run: ' + ($Script:Python -join ' ') + ' ' + ($build -join ' ')); return $false }
+    # (an update of the mod manager or other tools only: the game is as it was, no build - its own check)
+    if (-not $Rebuild -and -not $SkipBuild -and (Test-Path (Join-Path $Root 'build\ssbu.exe')) -and
+        (Invoke-Python @((Join-Path $Root 'tools\skyline.py'), 'uptodate')) -eq 0) {
+        Write-Info 'nothing that goes into the game changed: no build (run OpenSmash.exe again to build it anyway)'
+        return $true
+    }
     if ($SkipBuild) { Write-Info 'the program, fonts, data, DLC and fighters; not the build itself (-SkipBuild)' }
     else { Write-Info 'the program, fonts, data, DLC and fighters, then the build: 30 minutes to a few hours' }
-    if ((Invoke-Python $build) -ne 0) { throw 'The build stopped (the message above says why). Fix that, then run Install WindowSmash.bat again: it carries on where it stopped.' }
+    if ((Invoke-Python $build) -ne 0) { throw 'The build stopped (the message above says why). Fix that, then run OpenSmash.exe again: it carries on where it stopped.' }
     if ($SkipBuild) { return $false }
+    # the community's Skyline plugins that mods need (ARCropolis, Smashline 2, One Slot Effects, nro_hook),
+    # from their own releases (tools\std_plugins.py checks each), then built into the game with the mods' own
+    Write-Info 'the standard Skyline plugins: fetched from their releases and built in (tools\std_plugins.py, tools\skyline.py)'
+    Write-Warn 'building the plugins into the game can take a while: do not start the game until this window says Done'
+    if ((Invoke-Python @((Join-Path $Root 'tools\std_plugins.py'), 'fetch')) -ne 0) {
+        Write-Warn 'the plugins could not be fetched (see above): mods that need them will not work until this runs again'
+    } else {
+        $sky = @((Join-Path $Root 'tools\skyline.py'), 'build')
+        if ($Jobs) { $sky += @('--jobs', "$Jobs") }
+        if ((Invoke-Python $sky) -ne 0) { Write-Warn 'building the plugins in stopped (see above); the game itself is built' }
+    }
     return $true
 }
 
@@ -1427,9 +1483,20 @@ function Step-Shaders {
     param([hashtable]$Answers, [bool]$Built)
     Write-Step '[10/10] Shaders'
     if (-not $Answers.Shaders) { Write-Info 'not wanted (launchers\Prepare Shaders.bat does it any time)'; return }
-    if ($DryRun -or -not $Built) { Write-Would 'start launchers\Prepare Shaders.bat in a window of its own'; return }
-    Start-Process -FilePath (Join-Path $Root 'launchers\Prepare Shaders.bat') -WorkingDirectory $Root
-    Write-Info 'launchers\Prepare Shaders.bat runs in its own window at low priority; you can play meanwhile, and close it any time'
+    if ($DryRun -or -not $Built) { Write-Would 'ask low, medium, or high, then compile the shaders in this window'; return }
+    Write-Host ''
+    Write-Host 'How hard should this PC work on the shaders? low keeps it usable, high finishes sooner.'
+    Write-Host 'SHADER_PRIORITY?'
+    $choice = ''
+    try { $choice = [Console]::In.ReadLine() } catch { $choice = '' }
+    if ($null -eq $choice) { $choice = '' }
+    $choice = $choice.Trim().ToLower()
+    if ($choice -notin @('low', 'medium', 'high')) { $choice = 'low' }
+    Write-Info "shader priority: $choice"
+    $py = @((Join-Path $Root 'tools\shader_aot.py'), '--priority', $choice)
+    if ((Invoke-Python $py) -ne 0) {
+        Write-Warn 'the shader compile stopped (see above). What finished is kept; launchers\Prepare Shaders.bat runs the rest.'
+    }
 }
 
 function Main {
@@ -1461,7 +1528,7 @@ function Main {
         Step-Shaders $answers $built
         Write-Host ''
         if ($built) {
-            Write-Host 'Done. Start the game with Play SSBU.bat, or the shortcut on the desktop.' -ForegroundColor Green
+            Write-Host 'Done. Start the game with OpenSmash.exe, or the shortcut on the desktop.' -ForegroundColor Green
         } else {
             Write-Host 'Setup done.' -ForegroundColor Green
         }

@@ -193,7 +193,8 @@ void overlay_present_metal(id<MTLDevice> dev, id<MTLRenderCommandEncoder> enc, M
     /* draw it all */
     id<MTLBuffer> vbuf = vbufs[frame++ % FRAMES];
     memcpy(vbuf.contents, verts, nverts * sizeof *verts);
-    float inv[2] = {1.0f / (float)w, 1.0f / (float)h};
+    float k = display_overlay_scale();   /* (display.ini's overlay_scale: the whole panel, from its corner) */
+    float inv[2] = {k / (float)w, k / (float)h};
     [enc setRenderPipelineState:pso];
     [enc setDepthStencilState:no_depth];
     [enc setCullMode:MTLCullModeNone];

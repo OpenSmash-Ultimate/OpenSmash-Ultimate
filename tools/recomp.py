@@ -47,6 +47,7 @@ subsdk0 and sdk from --exefs (dump/exefs if not given) for the names other modul
 """
 import bisect
 import hashlib
+import json
 import mmap
 import os
 import re
@@ -70,6 +71,7 @@ from lift import Lifter  # noqa: E402
 from nso import Module  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TREE = ROOT   # (the tree whose dump/skyline/hooks.txt is read: tools/skyline.py points it at another)
 # Load addresses, in the order the console's loader places (and searches) the modules.
 MODULES = {"main": 0x7100000000, "subsdk0": 0x7108000000, "sdk": 0x7109000000}
 # Modules the game loads at run time (NROs). The runtime saves each one it is handed that is
@@ -538,6 +540,43 @@ def hookables(base, setjmp=()):
                          "host's setjmp, which cannot go through a slot")
     return found
 
+def hookable(name):
+    """Offsets in module `name` that Skyline plugins hook (dump/skyline/hooks.txt, which the runtime
+    writes: "<module> <offset>" a line). Each becomes a function its direct callers also reach
+    through the dispatch table, where a hook goes (lift.py)."""
+    path = os.path.join(TREE, "dump", "skyline", "hooks.txt")
+    out = set()
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                p = line.split()
+                if len(p) == 2 and p[0] == name:
+                    out.add(int(p[1], 16))
+    return sorted(out)
+
+
+def inline_points(name):
+    """Offsets in module `name` where Skyline plugins put inline hooks (hooks.txt lines "<module>
+    <offset> inline"): rt_inline_hook runs there (lift.py), with the registers to read and change."""
+    path = os.path.join(TREE, "dump", "skyline", "hooks.txt")
+    out = set()
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                p = line.split()
+                if len(p) == 3 and p[0] == name and p[2] == "inline":
+                    out.add(int(p[1], 16))
+    return sorted(out)
+
+
+def module_fingerprint(fp, name):
+    """tools_fingerprint, with the module's hook targets: a new one generates its C again."""
+    hooks, inline, patches = hookable(name), inline_points(name), plugin_patches(name)
+    if not hooks and not inline and not patches:
+        return fp
+    return modcache.fingerprint(fp + "\nhooks " + " ".join(f"{h:x}" for h in hooks) + "\ninline " + " ".join(f"{h:x}" for h in inline) +
+                                "\npatches " + " ".join(f"{o:x}:{w:x}" for o, _v, w in patches))
+
 
 def tools_fingerprint():
     """What the generated C depends on besides the module and its address (modcache)."""
@@ -563,10 +602,128 @@ def write_if_changed(path, text):
 
 
 def _init(image_path, entries, base, forward, setjmp=None, pads=None, exact_callees=None, exact_callers=None,
-          hookable=None):
+          hookable=None, patches=None, inline=None):
     f = open(image_path, "rb")
     _state["img"] = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-    _state["args"] = (entries, base, forward, setjmp, pads, exact_callees, exact_callers, hookable)
+    _state["args"] = (entries, base, forward, setjmp, pads, exact_callees, exact_callers, hookable, patches, inline)
+
+
+# Code patches, as ARCropolis (github.com/Raytwo/ARCropolis, src/fixes.rs) makes them on the
+# console, for costume slots a mod adds (c08 and up, tools/mods.py): the game checks a color
+# against 8 in places, and aborts (or Inkling reads past its ink table) for a higher one.
+# {module build id: [(offset, original word, [words], what)]}: one word replaces the instruction
+# at that offset; with several, the first ones run before the last, as an inline hook would (a
+# branch to the offset runs them too). A patch whose original word is not there is left out.
+CODE_PATCHES = {
+    "21450C647B8C5940ED5B68218EA128FD3C5D597D": [   # main, 13.0.5 (ARCropolis' list is for 13.0.5, though it says 13.0.2)
+        # Pyra/Mythra (Aegis): cmp xN, #8 -> #256. ARCropolis' 0x183527c, a b.eq, is a slip for 0x183526c.
+        (0x183526C, 0xF100227F, [0xF104027F], "cmp x19, #256 (Aegis)"),
+        (0x18355BC, 0xF100227F, [0xF104027F], "cmp x19, #256 (Aegis)"),
+        (0x18355D8, 0xF100211F, [0xF104011F], "cmp x8, #256 (Aegis)"),
+        (0x18359A8, 0xF10022FF, [0xF10402FF], "cmp x23, #256 (Aegis)"),
+        (0x1835E3C, 0xF100211F, [0xF104011F], "cmp x8, #256 (Aegis)"),
+        (0x1836594, 0xF100227F, [0xF104027F], "cmp x19, #256 (Aegis)"),
+        (0x18368B0, 0xF100213F, [0xF104013F], "cmp x9, #256 (Aegis)"),
+        (0x1A1CDF0, 0xF100211F, [0xF104011F], "cmp x8, #256 (Aegis)"),
+        (0x1A1CE34, 0xF100211F, [0xF104011F], "cmp x8, #256 (Aegis)"),
+        # Terry
+        (0x14DE31C, 0x7100213F, [0x7104013F], "cmp w9, #256 (Terry)"),
+        (0x14E1624, 0x710022FF, [0x710402FF], "cmp w23, #256 (Terry)"),
+        (0x14E17B0, 0x7100211F, [0x7104011F], "cmp w8, #256 (Terry)"),
+        # Tourney Mode
+        (0x1A56084, 0x94603F7B, [0x52800020], "mov w0, #1 (Tourney)"),
+        (0x1A561B4, 0xF100211F, [0xF104011F], "cmp x8, #256 (Tourney)"),
+        (0x1A55A74, 0x7100215F, [0x7104015F], "cmp w10, #256 (Tourney)"),
+        (0x1A55B0C, 0x7100201F, [0x7104001F], "cmp w0, #256 (Tourney)"),
+        (0x1A55B38, 0xF100201F, [0xF104001F], "cmp x0, #256 (Tourney)"),
+        (0x1A55AA0, 0xF100201F, [0xF104001F], "cmp x0, #256 (Tourney)"),
+        (0x1A55AD4, 0x7100217F, [0x7104017F], "cmp w11, #256 (Tourney)"),
+        # A player whose color is over 7 is taken for a cheat ("An error has been detected.
+        # Disconnecting.", pop_online_cheat_error) when Classic Mode starts: not in ARCropolis' list
+        (0x1799ACC, 0x71001D1F, [0x7103FD1F], "cmp w8, #255 (the player check)"),
+        # Classic Mode: the color it keeps for the run, modulo 8 (set_global_color_for_classic_mode)
+        (0x23DA5CC, 0xB9001AA9, [0x12000929, 0xB9001AA9], "and w9, w9, #7 before str w9, [x21, #0x18] (Classic)"),
+        # Inkling: no color check before the ink table (inkling_patch), the ink cleared with
+        # color modulo 8 (clear_ink_patch), and two calls skipped for c10+ (inkling_c10plus)
+        (0x35BC504, 0x7100229F, [0xD503201F], "nop: cmp w20, #8 (Inkling)"),
+        (0x35BC508, 0x54003D62, [0xD503201F], "nop: b.hs (Inkling)"),
+        (0x35BCF90, 0x7100231F, [0x12000B18, 0x7100231F], "and w24, w24, #7 before cmp w24, #8 (Inkling ink)"),
+        (0xB0B614, 0xF9400008, [0x1400000E], "b +0x38 (Inkling c10+)"),
+        # Inkling's ink color list (8 colors), read with the color in three places: the index wraps
+        # instead of aborting past the end (not in ARCropolis' list; with Inkling c08 the match
+        # stopped loading, and refilling ink stopped the game)
+        (0x46D904, 0x93407E68, [0x93407E68, 0x9ACA090B, 0x9B0AA168], "sxtw x8, w19; udiv x11, x8, x10; msub x8, x11, x10, x8 (ink color)"),
+        (0x46DA04, 0x93407E88, [0x93407E88, 0x9ACA090B, 0x9B0AA168], "sxtw x8, w20; udiv x11, x8, x10; msub x8, x11, x10, x8 (ink color)"),
+        (0x69378C, 0x2A1303E8, [0x2A1303E8, 0x9ACA090B, 0x9B0AA168], "mov w8, w19; udiv x11, x8, x10; msub x8, x11, x10, x8 (ink color)"),
+    ],
+}
+
+
+def plugin_patches(name):
+    """[(offset, old word, new word)] the Skyline plugins write into module `name`'s code
+    (dump/skyline/patches.txt, which the runtime writes: sky_memcpy)."""
+    path = os.path.join(TREE, "dump", "skyline", "patches.txt")
+    out = []
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                p = line.split()
+                if len(p) == 4 and p[0] == name:
+                    out.append((int(p[1], 16), int(p[2], 16), int(p[3], 16)))
+    return out
+
+
+ANY_SP = 1 << 62   # (a landing pad that sets its own sp: whatever sp the unwinder resumes it with - lift.py landing)
+
+
+def adr_landing_pads(mod, funcs):
+    """{function start: [(range start, range end, landing pad)]} for plugin code that resumes an
+    exception at a label of its own, not through an LSDA: a function that takes the address of a
+    label inside itself (`adr xN, label`) has it as the landing pad of each call after that - as
+    Smashline's interpreter does (__smashline_interpreter_landing_pad, which its libunwind patch
+    resumes at)."""
+    out = {}
+    for start, size in funcs:
+        words = struct.unpack_from(f"<{size // 4}I", mod.image, start)
+        pad = None
+        for i, w in enumerate(words):
+            pc = start + 4 * i
+            if w & 0x9F000000 == 0x10000000:   # adr
+                imm = ((w >> 5) & 0x7FFFF) << 2 | (w >> 29) & 3
+                t = pc + (imm - (1 << 21) if imm & (1 << 20) else imm)
+                if start <= t < start + size and t > pc:
+                    pad = t + 4 if words[(t - start) // 4] == 0xD503201F else t   # (resumed past a leading nop)
+            elif pad is not None and w & 0xFC000000 == 0x94000000 and pc < pad:   # bl, before the pad
+                out.setdefault(start, []).append((pc, pc + 4, pad | ANY_SP))
+    return out
+
+
+def code_patches(mod, name):
+    """offset -> [words] of CODE_PATCHES and the plugins' patches for this module, each checked
+    against its code."""
+    out = {}
+    patches = plugin_patches(name)
+    # Smashline's inline hooks: a `bl` to a code cave at the hooked call, the cave nops and a `b` to
+    # the original target; the runtime puts the hook before the call instead (hle_skyline.c
+    # A64InlineHook), so a call site with an inline point keeps its code and the cave stays as it was
+    inline, caves = set(inline_points(name)), set()
+    for off, _was, now in patches:
+        if now & 0xFC000000 == 0x94000000 and off in inline:
+            cave = off + (((now & 0x3FFFFFF) ^ 0x2000000) - 0x2000000) * 4
+            caves |= {off} | set(range(cave, cave + 0x18, 4))
+    for off, was, now in patches:
+        if off in caves:
+            continue
+        if off + 4 <= len(mod.image) and mod.u32(off) == was:
+            out[off] = [now]
+        else:
+            print(f"{name}: a plugin's code patch at {off:#x} left out: not {was:08x} there")
+    for off, was, words, what in CODE_PATCHES.get(mod.build_id, []):
+        if mod.u32(off) == was:
+            out[off] = words
+        else:
+            print(f"{name}: code patch at {off:#x} ({what}) left out: {mod.u32(off):08x} is there, not {was:08x}")
+    return out
 
 
 def unwind_jumpto(mod, found):
@@ -646,6 +803,78 @@ def _emit(args):
     return name, ext - own, insns, max(s for _, s in funcs) // 4, bad, lifter.unresolved, problems
 
 
+def branch_target(w, pc):
+    """Where a direct branch (b, b.cond, cbz/cbnz, tbz/tbnz) at pc goes; None for anything else."""
+    if w & 0x7C000000 == 0x14000000 and not w >> 31:                    # b
+        imm, bits = w & 0x3FFFFFF, 26
+    elif w & 0xFF000010 == 0x54000000 or w & 0x7E000000 == 0x34000000:  # b.cond, cbz/cbnz
+        imm, bits = (w >> 5) & 0x7FFFF, 19
+    elif w & 0x7E000000 == 0x36000000:                                  # tbz/tbnz
+        imm, bits = (w >> 5) & 0x3FFF, 14
+    else:
+        return None
+    return pc + (imm - (1 << bits) if imm >> (bits - 1) else imm) * 4
+
+
+def sizes_of(mod):
+    from funcs import eh_frame_functions
+    return dict(eh_frame_functions(mod))
+
+
+def plugin_like(mod, found, sizes):
+    """A module built the way Skyline plugins are (Rust, panic=abort): with no unwind table, or one
+    that describes hardly any of its code (a debug build's: just its assembly stubs)."""
+    covered = sum(sizes.get(a, 0) for a, src in found.items() if "eh" in src)
+    return covered * 4 < mod.text.end - mod.text.mem
+
+
+def tail_entries(mod, found):
+    """A module without an unwind table (a Skyline plugin: Rust built with panic=abort) has its
+    functions only from calls, symbols and relocations; a function reached by tail branches
+    alone is not among them. Each function runs to the next entry, so a branch that leaves the
+    stretch it is in goes to another function: its target is one, until no branch leaves."""
+    lo, hi = mod.text.mem, mod.text.end
+    branches = []
+    for pc in range(lo, hi, 4):
+        t = branch_target(mod.u32(pc), pc)
+        if t is not None and lo <= t < hi:
+            branches.append((pc, t))
+    # Functions whose address the code takes itself (adr, or adrp + add: fn pointers handed to
+    # Smashline, Skyline's hooks, closures) are reached only by indirect calls. Not a jump
+    # table's anchor (adr xA, then add xA, xA, wE, lsl #2 a few instructions on).
+    for pc in range(lo, hi, 4):
+        w = mod.u32(pc)
+        if w & 0x1F000000 != 0x10000000:
+            continue
+        rd, imm = w & 31, (((w >> 5) & 0x7FFFF) << 2) | ((w >> 29) & 3)
+        imm -= (1 << 21) if imm >> 20 else 0
+        if w >> 31:   # adrp: with the add that follows
+            nxt = next((mod.u32(q) for q in range(pc + 4, min(pc + 16, hi), 4)
+                        if mod.u32(q) & 0xFFC003E0 == 0x91000000 | rd << 5), None)
+            if nxt is None or (nxt >> 22) & 1:
+                continue
+            t = (pc & ~0xFFF) + (imm << 12) + ((nxt >> 10) & 0xFFF)
+        else:
+            t = pc + imm
+            # (a jump table's anchor: added to the entry it loads, shifted or not - a debug build's
+            # is the adr's own address)
+            if t == pc or any(mod.u32(q) & 0xFF200000 == 0x8B000000 and rd in ((mod.u32(q) >> 5) & 31, (mod.u32(q) >> 16) & 31)
+                              for q in range(pc + 4, min(pc + 24, hi), 4)):
+                continue
+        if lo <= t < hi and not t & 3 and t not in found:
+            found[t] = {"adr"}
+    while True:
+        marks = sorted(set(found) | {lo, hi})
+        added = 0
+        for pc, t in branches:
+            k = bisect.bisect_right(marks, pc) - 1
+            if not marks[k] <= t < marks[k + 1] and t not in found:
+                found[t] = {"b"}
+                added += 1
+        if not added:
+            return
+
+
 def load(path):
     """(module, {entry: sources}, [(entry, size)]) with every function that has code."""
     mod = Module(path)
@@ -655,6 +884,8 @@ def load(path):
 def functions(mod):
     """({entry: sources}, [(entry, size)]) with every function of a module that has code."""
     found, sizes = discover(mod)
+    if plugin_like(mod, found, sizes):
+        tail_entries(mod, found)
     funcs = sorted((a, sizes[a]) for a, src in found.items() if "eh" in src or "plt" in src)
     # Hand-written assembly (system-call wrappers, memcpy, setjmp, ...) has no unwind entry.
     # Such a routine runs from its entry to the next known entry or described function,
@@ -695,7 +926,11 @@ def image_file(mod):
     build_dir = os.path.join(ROOT, "build")
     os.makedirs(build_dir, exist_ok=True)
     path = os.path.join(build_dir, f"image-{mod.build_id[:16]}.img")
-    if not os.path.exists(path) or os.path.getsize(path) != len(mod.image):
+    same = os.path.exists(path) and os.path.getsize(path) == len(mod.image)
+    if same:   # (same size, other bytes: a plugin ported in place, tools/port_plugin.py)
+        with open(path, "rb") as f:
+            same = f.read() == mod.image
+    if not same:
         with open(path, "wb") as f:
             f.write(mod.image)
     return path
@@ -781,9 +1016,27 @@ def emit(path, roots, out, depth, sample=0):
     print(f"wrote {out}: {len(bodies)} functions, {len(stubs)} stubs")
 
 
+def unwind_tables(path):
+    """For a module without an unwind table (a Skyline plugin): (offset, bytes, header size) of
+    the ones tools/plugin_eh.py makes, which go after its image; else None."""
+    mod, found, funcs = load(path)
+    if not plugin_like(mod, found, sizes_of(mod)):
+        return None
+    import plugin_eh
+    return plugin_eh.tables(mod, funcs)
+
+
 def image(path, out):
     mod, base = Module(path), base_of(path)
     img = bytearray(mod.image) + bytes(mod.mem_end - len(mod.image))
+    eh = unwind_tables(path) if path.endswith(".nro") else None
+    if eh:
+        import plugin_eh
+        at, data, hdr_size = eh
+        img = img.ljust(at, b"\0") + data
+        o, patch = plugin_eh.mod0_patch(mod, at, hdr_size)
+        img[o:o + len(patch)] = patch
+        print(f"{module_key(path)}: unwind tables made for it ({len(data):,} bytes after its image)")
     n = 0
     for off, typ, _sym, addend in mod.relocs:
         if typ == 1027:
@@ -794,8 +1047,9 @@ def image(path, out):
     print(f"wrote {out}: {len(img):,} bytes, {n:,} base relocations applied for {base:#x}")
 
 
-def module_table(mod, name, base, funcs, missing):
-    """C source for a module's loader tables: functions, exports, and symbol relocations."""
+def module_table(mod, name, base, funcs, missing, hooks=()):
+    """C source for a module's loader tables: functions, exports, and symbol relocations; a
+    Skyline hook target's function under the name its dispatcher calls (`_orig`)."""
     imports, relocs = {}, []
     for off, typ, sym, addend in mod.relocs:
         if typ == 1027:
@@ -804,12 +1058,13 @@ def module_table(mod, name, base, funcs, missing):
         index = imports.setdefault(sname, (len(imports), info >> 4 == 2))[0]
         relocs.append((off, addend, index))
     defined = [a for a, _ in funcs]
+    hooks = set(hooks)
     out = ['#include "module.h"\n\n']
-    out += [f"GuestFn f_{base + a:x};\n" for a in defined]
+    out += [f"GuestFn f_{base + a:x}{'_orig' if a in hooks else ''};\n" for a in defined]
     out += [f'void f_{base + a:x}(Cpu *c) {{ rt_trap(c, 0x{base + a:X}ull, "no code at call target"); }}\n'
             for a in sorted(missing)]
     out.append("\nstatic const RtFunc funcs[] = {\n")
-    out += [f"    {{0x{base + a:X}ull, f_{base + a:x}}},\n" for a in defined]
+    out += [f"    {{0x{base + a:X}ull, f_{base + a:x}{'_orig' if a in hooks else ''}}},\n" for a in defined]
     out.append("};\nstatic const RtSym exports[] = {\n")
     out += [f'    {{"{n}", 0x{base + v:X}ull}},\n' for n, v, _s, _i, _x in mod.exports]
     out.append("};\nstatic const char *const imports[] = {\n")
@@ -818,8 +1073,10 @@ def module_table(mod, name, base, funcs, missing):
     out.append("static const RtReloc relocs[] = {\n")
     out += [f"    {{0x{o:X}ull, {a}, {i}}},\n" for o, a, i in relocs]
     out.append("    {0, 0, 0}\n};\n\n")
+    eh = unwind_tables(mod.path) if mod.path.endswith(".nro") else None
+    size = eh[0] + len(eh[1]) if eh else mod.mem_end
     out.append(f"const RtModule rt_module_{name} = {{\n"
-               f'    "{name}", 0x{base:X}ull, 0x{mod.mem_end:X}ull, 0x{mod.text.end:X}ull, 0x{base + mod.dyn.get(12, 0):X}ull,\n'
+               f'    "{name}", 0x{base:X}ull, 0x{size:X}ull, 0x{mod.text.end:X}ull, 0x{base + mod.dyn.get(12, 0):X}ull,\n'
                f"    funcs, {len(defined)}, exports, {len(mod.exports)}, imports, import_weak, {len(imports)}, "
                f'relocs, {len(relocs)}, "{mod.build_id}",\n}};\n')
     return "".join(out), len(imports), len(relocs)
@@ -843,15 +1100,73 @@ def forwards(mod, base, found, funcs, name):
 def build(path, outdir, jobs, per_file, imports=None):
     """imports: hook_imports, for this module's import stubs (none: the stubs are not exact)."""
     mod, found, funcs = load(path)
+    # A module without an unwind table (a Skyline plugin) is LLVM's code with its machine
+    # outliner's helpers, which a `bl` reaches and which use the caller's callee-saved registers
+    # as their own: lift.py's register cache (callee-saved registers kept in C locals across a
+    # call) does not hold for those. Every register in the context, as with SSBU_REGCACHE=0.
+    plain = plugin_like(mod, found, sizes_of(mod))
+    regcache_was = os.environ.get("SSBU_REGCACHE")
+    if plain:
+        os.environ["SSBU_REGCACHE"] = "0"
+        os.environ["SSBU_DYNAMIC_JUMPS"] = "1"
+        os.environ["SSBU_FLAGS_XFER"] = "1"
+    try:
+        _build(mod, found, funcs, path, outdir, jobs, per_file, imports)
+    finally:
+        if plain:
+            os.environ.pop("SSBU_DYNAMIC_JUMPS", None)
+            os.environ.pop("SSBU_FLAGS_XFER", None)
+            if regcache_was is None:
+                del os.environ["SSBU_REGCACHE"]
+            else:
+                os.environ["SSBU_REGCACHE"] = regcache_was
+
+
+def plugin_modules():
+    """The module names of every Skyline plugin placed (tools/skyline.py's record, dump/skyline/plugins.json)."""
+    try:
+        with open(os.path.join(ROOT, "dump", "skyline", "plugins.json"), encoding="utf-8") as f:
+            return {r["module"] for r in json.load(f).values()}
+    except (OSError, ValueError):
+        return set()
+
+
+def standard_plugins():
+    """The module names of the standard plugins (tools/skyline.py's record, dump/skyline/plugins.json)."""
+    try:
+        with open(os.path.join(ROOT, "dump", "skyline", "plugins.json"), encoding="utf-8") as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        return set()
+    return {r["module"] for r in record.values() if str(r.get("mod", "")).startswith("(standard) ")}
+
+
+def _build(mod, found, funcs, path, outdir, jobs, per_file, imports):
     name, base = module_key(path), base_of(path)
     os.makedirs(outdir, exist_ok=True)
     modcache.clear_stamp(outdir)   # (until generated and compiled again)
-    forward = forwards(mod, base, found, funcs, name)
+    own = os.environ.get("SSBU_OWN_EXPORTS") == "1" or name in standard_plugins()
+    if own:
+        # a standard plugin keeps its own exports (the real Smashline, the CSK Collection)
+        forward = {}
+        forward.update(unwind_jumpto(mod, found))
+        forward.update(resolve_wraps(mod, base, dict(funcs), name))
+    else:
+        forward = forwards(mod, base, found, funcs, name)
+    sizes = dict(funcs)
+    hooks = [off for off in hookable(name) if off in sizes and off not in forward]
+    forward.update({off: ("hook", None) for off in hooks})
     exact_callees, exact_callers = resolve_hooks(mod, base, dict(funcs), name, set(found), imports, native_only(forward))
     setjmp = setjmp_targets(mod)
-    hookable = hookables(base, setjmp)
+    slots = hookables(base, setjmp)
     from eh import landing_pads
     pads = landing_pads(mod)
+    if os.environ.get("SSBU_FLAGS_XFER") == "1":   # (a plugin: see adr_landing_pads)
+        for f, sites in adr_landing_pads(mod, funcs).items():
+            pads.setdefault(f, []).extend(sites)
+    patches = code_patches(mod, name)
+    write_if_changed(os.path.join(outdir, "plugin_patches.txt"),   # (tools/skyline.py stale_hooks compares)
+                     "".join(f"{o:x} {v:08x} {w:08x}\n" for o, v, w in plugin_patches(name)))
     chunks, cur, count = [], [], 0
     for a, size in funcs:   # a function bigger than the budget gets a file to itself
         if cur and count + size // 4 > per_file:
@@ -863,19 +1178,28 @@ def build(path, outdir, jobs, per_file, imports=None):
         chunks.append(cur)
     defined = {a for a, _ in funcs}
     missing, manifest, bad, unresolved, problems = set(), [], 0, [], []
+    inline = set(inline_points(name)) & {pc for a, size in funcs for pc in range(a, a + size, 4)}
     with Pool(jobs, _init, (image_file(mod), set(found), base, forward, setjmp, pads, exact_callees, exact_callers,
-                            hookable)) as pool:
+                            slots, patches, inline)) as pool:
         tasks = [(i, c, outdir) for i, c in enumerate(chunks)]
+        done, total, started, last = 0, max(1, len(tasks)), time.time(), 0.0
         for fname, ext, insns, biggest, b, unres, probs in pool.imap_unordered(_emit, tasks):
             missing |= ext - defined
             manifest.append((fname, insns, biggest))
             bad += b
             unresolved += unres
             problems += probs
+            done += 1
+            now = time.time()
+            if done == total or now - last >= 0.4:
+                last = now
+                frac = done / total
+                left = ((now - started) / done) * (total - done) if done < total else 0
+                print(progress.line_text(frac, left, f"writing {name}'s C, {done} of {total} files"), flush=True)
     if problems:   # (the stamp stays cleared: the next build generates the C again)
         raise SystemExit(f"{name}: a hookable function is reached other than through its slot (tools/hook_inline_check.py): "
                          + "; ".join(sorted(problems)[:5]))
-    table, imports, relocs = module_table(mod, name, base, funcs, missing)
+    table, imports, relocs = module_table(mod, name, base, funcs, missing, hooks)
     write_if_changed(os.path.join(outdir, "g_module.c"), table)
     keep = {n for n, _i, _b in manifest} | {"g_module.c"}
     for old in os.listdir(outdir):   # drop files left over from a different partitioning
@@ -885,8 +1209,9 @@ def build(path, outdir, jobs, per_file, imports=None):
     size = sum(os.path.getsize(os.path.join(outdir, n)) for n, _i, _b in manifest)
     print(f"{name}: {len(manifest)} files, {size / 1048576:,.0f} MB of C, {len(defined):,} functions, "
           f"{sum(i for _n, i, _b in manifest):,} instructions; {bad} untranslated, {len(missing)} calls to nowhere, "
-          f"{len(unresolved)} unresolved jump tables, {len(forward)} replaced natively; "
-          f"{imports:,} symbols referenced by {relocs:,} relocations" + (f"; {len(hookable)} hookable" if hookable else ""))
+          f"{len(unresolved)} unresolved jump tables, {len(forward)} replaced natively, {len(patches)} code patches, "
+          f"{len(hooks)} plugin hooks, {len(inline)} inline hooks; "
+          f"{imports:,} symbols referenced by {relocs:,} relocations" + (f"; {len(slots)} hookable" if slots else ""))
 
 
 def build_folder(outdir):
@@ -975,6 +1300,8 @@ def compile_dir(outdir, jobs, shown=None, steps=None):
     ladder.settings()
     times = ladder.Times(build_folder(outdir))
     todo, record, keys, why, infos = plan(outdir, times)
+    if not todo:
+        return True
     if objcache.summary(why):
         print(f"{os.path.basename(outdir)}: {objcache.summary(why)}")
     record.forget([obj for _src, obj, _opt, _cost in todo])
@@ -1048,8 +1375,12 @@ def link(dirs, exe, rt_dir=None, steps=None):
                      + f"    {{0, 0}}\n}};\nconst u32 hle_count = {len(names)};\n")
     want(table, table[:-2] + ".obj", "/O1", rt_flags)
     # The run-time loadable modules (NROs) linked in, for nn::ro to find by build id.
-    nros = [os.path.basename(os.path.normpath(d)) for d in dirs
-            if os.path.basename(os.path.dirname(os.path.normpath(d))) == "nro"]
+    # A mod's own plugin is not one of them: it is translated once into build/plugins/<name>.dll
+    # and loaded at start (runtime/host.c). ARCropolis, Smashline and the CSK Collection stay here.
+    skip = plugin_modules() - standard_plugins()
+    def mod_plugin(d):
+        return os.path.basename(os.path.dirname(os.path.normpath(d))) == "nro" and os.path.basename(os.path.normpath(d)) in skip
+    nros = [os.path.basename(os.path.normpath(d)) for d in dirs if os.path.basename(os.path.dirname(os.path.normpath(d))) == "nro" and not mod_plugin(d)]
     nro_table = os.path.join(rt_dir, "nro_table.c")
     write_if_changed(nro_table, '#include "module.h"\n\n'
                      + "".join(f"extern const RtModule rt_module_{n};\n" for n in nros)
@@ -1086,6 +1417,8 @@ def link(dirs, exe, rt_dir=None, steps=None):
     objs = [os.path.join(rt_dir, n[:-2] + ".obj") for n in sources] + [check, table[:-2] + ".obj", nro_table[:-2] + ".obj"]
     game = []
     for d in dirs:
+        if mod_plugin(d):
+            continue
         game += sorted(os.path.join(d, n) for n in os.listdir(d) if n.endswith(".obj"))
     game_lib = os.path.join(os.path.dirname(os.path.abspath(exe)), game_dll.DLL)
     if os.path.exists(game_lib):   # (a --game-dll build's: made again below, or not wanted)
@@ -1097,7 +1430,14 @@ def link(dirs, exe, rt_dir=None, steps=None):
     else:
         objs += game
         # a wrap no module has (a made-up game's modules, tools/mac/boottest): its original is a stub nothing calls
-        cc.link(objs, exe, [f"/alternatename:f_{a:x}_orig=rt_wrap_missing" for a in sorted(hle_wraps())])
+        # A wrapped function's body is f_<addr>_orig. This build's objects named it f_<addr>_orig_orig,
+        # so the name the wrapper calls was missing and the game stopped at startup. The first
+        # alias reaches that body; the second is only for a wrap whose module is not in this link.
+        alts = []
+        for a in sorted(hle_wraps()):
+            alts.append(f"/alternatename:f_{a:x}_orig=f_{a:x}_orig_orig")
+            alts.append(f"/alternatename:f_{a:x}_orig_orig=rt_wrap_missing")
+        cc.link(objs, exe, alts)
     isa.record(os.path.dirname(os.path.abspath(exe)), cc.ISA, cc.ISA_TOLD)   # (what build_game.py's build_is_current compares)
     # the controllers' SDL3.dll, which the runtime loads from the exe's own folder
     if cc.SDL3_DLL:
@@ -1162,12 +1502,13 @@ def build_all(exefs, out, jobs, compile_c=True):
     targets = {name: os.path.join(out, "nro", name) if os.path.dirname(nso) == NRO_DIR else os.path.join(out, name)
                for name, nso in paths.items()}
     shown = progress.Build(min(jobs, 16), compile=compile_c, link=progress.LINK if compile_c else None)
+    fps = {name: module_fingerprint(fp, name) for name in mods}
 
     def stale(target):   # (for the bar; none when the C is compiled elsewhere: --generate-only)
         return [(t[0], t[3]) for t in stale_files(target)] if compile_c else []
     generate = False
     for name, mod in mods.items():
-        current = modcache.build_info(targets[name]) == (mod.build_id, MODULES[name], name, fp)
+        current = modcache.build_info(targets[name]) == (mod.build_id, MODULES[name], name, fps[name])
         generate |= not current
         shown.module(name, (mod.text.end - mod.text.mem) // 4, stale(targets[name]) if current else None)
     build_ids = {name: mod.build_id for name, mod in mods.items()}
@@ -1179,32 +1520,42 @@ def build_all(exefs, out, jobs, compile_c=True):
     with progress.Line(shown.status, title=f"building {os.path.basename(exe)}" if compile_c else "writing the game's C"):
         reused = 0
         for name, nso in paths.items():
-            shown.begin("gen", name)
             target, build_id, base = targets[name], build_ids[name], MODULES[name]
             img = os.path.join(ROOT, "dump", "modules", name + ".reloc.bin")
             if not os.path.exists(img) or os.path.getmtime(img) < os.path.getmtime(nso):
                 image(nso, img)
-            if modcache.build_info(target) == (build_id, base, name, fp):
+            current = modcache.build_info(target) == (build_id, base, name, fps[name])
+            # An up-to-date fighter is not named on the bar. A plugin build links every module, but
+            # only the ones whose hooks changed (main, the shared lua, the mod's own plugin) are rewritten.
+            if not current:
+                shown.begin("gen", name)
+                build(nso, target, jobs, 40000, imports)
+            else:
                 print(f"{name}: C up to date (build id {build_id[:16]}, same tools)")
                 reused += 1
-            else:
-                build(nso, target, jobs, 40000, imports)
             if not compile_c:
-                modcache.write_stamp(target, build_id, base, name, fp)
+                modcache.write_stamp(target, build_id, base, name, fps[name])
             shown.written(name, stale(target))
             shown.end("gen", name)
         print(f"{reused} of {len(paths)} modules reused without generating their C again")
         if not compile_c:
             print(f"the C of {len(paths)} modules is in {out} (--generate-only: not compiled here)")
             return True
+        plugins, left_out = plugin_modules(), []
         steps = ladder.Ladder(progress.level_cost, "clang-cl")   # (one pace and one report for the whole build)
         try:
             for name in paths:
                 if not compile_dir(targets[name], min(jobs, 16), shown, steps):
-                    return False
-                modcache.write_stamp(targets[name], build_ids[name], MODULES[name], name, fp)
+                    if name not in plugins:
+                        return False
+                    # (a mod's plugin that doesn't compile: the game is built without it, not stopped)
+                    print(f"{name}: this plugin did not compile (above): the game is built without it, so its mod's "
+                          "moves or character won't work - send the message above to WindowSmash")
+                    left_out.append(name)
+                    continue
+                modcache.write_stamp(targets[name], build_ids[name], MODULES[name], name, fps[name])
             shown.begin("link")
-            ok = link(list(targets.values()), exe, steps=steps)
+            ok = link([t for n, t in targets.items() if n not in left_out], exe, steps=steps)
             shown.end("link")
             return ok
         finally:

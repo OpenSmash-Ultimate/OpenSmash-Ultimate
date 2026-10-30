@@ -12,7 +12,7 @@ python -c "import sys; sys.exit(sys.version_info < (3, 10))" >nul 2>&1 && set "P
 if defined PY exit /b 0
 py -3 -c "import sys; sys.exit(sys.version_info < (3, 10))" >nul 2>&1 && set "PY=py -3"
 if defined PY exit /b 0
-echo Python 3.10 or newer was not found. Double-click "Install WindowSmash.bat" to set everything
+echo Python 3.10 or newer was not found. Double-click "OpenSmash.exe" to set everything
 echo up, or install Python as the setup guide says ^(docs\BUILDING.md^), with "Add python.exe to
 echo PATH" ticked, then run this again.
 exit /b 1

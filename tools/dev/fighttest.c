@@ -133,6 +133,22 @@ static void test_player(void) {
     memcpy(before, st[1], DM_STATE);
     dm_player(&only, 1, st[1], 1, NULL);
     CHECK(!memcmp(before, st[1], DM_STATE), "p2=cpu alone changes nothing (as in ssbu-recomp: only with p2's fighter)");
+    DebugMatch col;   /* c1..c4: a player's costume */
+    dm_init(&col);
+    dm_parse(&col, "p1=dedede,c1=0,p2=dedede,c2=4,p3=kirby,c3=6");
+    CHECK(col.colour[0] == 0 && col.colour[1] == 4 && col.colour[2] == 6 && col.colour[3] == -1, "c1..c4 parsed, c4 not set");
+    st[0][0x90] = 5;
+    dm_player(&col, 0, st[0], 0, NULL);
+    CHECK(st[0][0x90] == 0, "player 1: colour 0");
+    dm_player(&col, 1, st[1], 0, NULL);
+    CHECK(st[1][0x90] == 4, "player 2: colour 4");
+    fight_put32(st[2] + 0x78, 3);
+    dm_player(&col, 2, st[2], 3, st[1]);
+    CHECK(st[2][0x90] == 6, "player 3, made from player 2's state: its own colour 6");
+    memset(none, 0, sizeof none);
+    fight_put32(none + 0x78, 3);
+    dm_player(&col, 0, none, 3, NULL);
+    CHECK(none[0x90] == 0 && get64(none + 0x88) == 0, "a player with no panel: no colour either");
 }
 
 static void test_stage(void) {

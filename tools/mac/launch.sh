@@ -2,7 +2,7 @@
 # The macOS launchers' shared part: Play SSBU.command, launchers/*.command and the Play SSBU app the
 # installer makes (~/Applications) run it, as Play SSBU.bat and launchers\*.bat do on Windows.
 #
-#   launch.sh [--gui] play|offline|host|join|unlock|build [arguments for unlock_all.py or build_game.py]
+#   launch.sh [--gui] play|offline|host|join|unlock|miis|build [arguments for unlock_all.py, miis.py or build_game.py]
 #
 #   play     the game, online: it joins the lobby online_server.txt names, where Local Wireless lists
 #            everyone's rooms (docs/MULTIPLAYER.md), as the name in online_name.txt (asked the first
@@ -14,6 +14,7 @@
 #            them shows here, from netplay_address.txt, and in the overlay (F2)
 #   join     the game joining a host's room (or a standalone relay, tools/ssbu_relay.py)
 #   unlock   tools/unlock_all.py on the game's save, with the game closed
+#   miis     tools/miis.py import: your own Miis into miis/ (launchers/Import Miis.command)
 #   build    tools/build_game.py with WindowSmash's Python (launchers\Build WindowSmash.bat)
 #
 # The game is build-mac/WindowSmash.app, started with open (so macOS treats it as the app it is: its
@@ -359,6 +360,16 @@ mode_unlock() {
     exit "$status"
 }
 
+mode_miis() {
+    local py status
+    gui=0
+    tools_python
+    "$py" tools/miis.py import --ask "$@"
+    status=$?
+    pause
+    exit "$status"
+}
+
 mode_build() {
     local py status
     gui=0
@@ -380,9 +391,9 @@ main() {
     shift
     cd "$root" || exit 1
     case "$mode" in
-        play | offline | host | join | unlock | build) "mode_$mode" "$@" ;;
+        play | offline | host | join | unlock | miis | build) "mode_$mode" "$@" ;;
         *)
-            echo "Usage: $0 [--gui] play|offline|host|join|unlock|build [arguments]"
+            echo "Usage: $0 [--gui] play|offline|host|join|unlock|miis|build [arguments]"
             exit 2
             ;;
     esac

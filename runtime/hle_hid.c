@@ -113,6 +113,9 @@ static void seq_player_poll(u64 *buttons, i32 *lx, i32 *ly) {
 
 static int seq_player(u32 id) { return id == NPAD_NO1 && input_seq_on(); }
 static int keyboard_slot(void) { return input_seq_on() && !seq_keyboard ? -1 : pad_keyboard_slot(); }
+int bench_on(void);                         /* (hle_bench.c: a test run drives player 1 alone) */
+int bench_pads(void);                       /* (... unless its play mode hands the match to the pads) */
+u64 bench_buttons(i32 *lx, i32 *ly);
 
 /* A player is connected while a pad drives it, while it is the keyboard's, and (player 1) during
  * a scripted run. */
@@ -120,6 +123,7 @@ static int pad_connected(u32 id) {
     static int scripted = -1;
     if (scripted < 0) scripted = getenv("SSBU_INPUT") != NULL || input_seq_on();
     if (id >= PAD_SLOTS) return 0;
+    if (bench_on() && !bench_pads()) return id == NPAD_NO1;
     PadState p;
     return (!seq_player(id) && pad_get(id, &p)) || (int)id == keyboard_slot() || (id == NPAD_NO1 && scripted);
 }
@@ -127,6 +131,7 @@ static int pad_connected(u32 id) {
 /* The player's style: a GameCube controller while its pad plays as one, else a Pro Controller. */
 static u32 pad_style(u32 id) {
     if (!pad_connected(id)) return 0;
+    if (bench_on() && !bench_pads()) return STYLE_FULLKEY;
     PadState p;
     return !seq_player(id) && pad_get(id, &p) && p.gc ? STYLE_GC : STYLE_FULLKEY;
 }
@@ -211,14 +216,16 @@ static void npad_state(u64 out, u32 id, u32 style) {
     if (style && pad_style(id) == style) {
         attributes = ATTR_CONNECTED | ATTR_WIRED;
         PadState p;
-        if (seq_player(id)) seq_player_poll(&buttons, &lx, &ly);
+        if (bench_on() && !bench_pads()) {
+            if (id == NPAD_NO1) buttons = bench_buttons(&lx, &ly);
+        } else if (seq_player(id)) seq_player_poll(&buttons, &lx, &ly);
         else if (pad_get(id, &p) && (pad_background() || gfx_window_focused())) {
             buttons = p.buttons;
             lx = p.lx; ly = p.ly; rx = p.rx; ry = p.ry;
             lt = p.lt; rt = p.rt;
         }
-        if (id == NPAD_NO1) buttons |= scripted_buttons(&lx, &ly);
-        if ((int)id == keyboard_slot()) buttons |= keyboard_buttons(&lx, &ly, &rx, &ry);
+        if (id == NPAD_NO1 && !bench_on()) buttons |= scripted_buttons(&lx, &ly);
+        if ((int)id == keyboard_slot() && (!bench_on() || bench_pads())) buttons |= keyboard_buttons(&lx, &ly, &rx, &ry);
         if (menu_blocks_input()) { buttons = 0; lx = ly = rx = ry = 0; }   /* the settings menu has them (still connected) */
         {
             /* the stick directions also exist as buttons */
