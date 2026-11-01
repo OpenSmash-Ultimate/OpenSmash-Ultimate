@@ -197,15 +197,45 @@ MANIFEST = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 """
 
 
+def _icon_resources(path):
+    """RT_ICON images plus RT_GROUP_ICON id 1, from an .ico file, so the exe carries the launcher's icon."""
+    import struct
+    try:
+        data = open(path, "rb").read()
+    except OSError:
+        return b""
+    if len(data) < 6:
+        return b""
+    reserved, kind, count = struct.unpack_from("<HHH", data, 0)
+    if reserved or kind != 1 or not count or 6 + count * 16 > len(data):
+        return b""
+
+    def entry(type_id, name_id, blob):
+        head = struct.pack("<IIHHHHIHHII", len(blob), 32, 0xFFFF, type_id, 0xFFFF, name_id, 0, 0x1010, 0, 0, 0)
+        return head + blob + b"\0" * (-len(blob) % 4)
+
+    icons = b""
+    group = bytearray(struct.pack("<HHH", 0, 1, count))
+    for i in range(count):
+        w, h, colors, _reserved, planes, bits, nbytes, offset = struct.unpack_from("<BBBBHHII", data, 6 + i * 16)
+        if offset + nbytes > len(data):
+            return b""
+        icons += entry(3, i + 1, data[offset:offset + nbytes])
+        group += struct.pack("<BBBBHHIH", w, h, colors, 0, planes, bits, nbytes, i + 1)
+    return icons + entry(14, 1, bytes(group))
+
+
 def manifest_res(path):
     """MANIFEST as a compiled resource file (.res: RT_MANIFEST 24, id 1), which the linker takes as an
-    input like an object - no rc.exe or mt.exe needed."""
+    input like an object - no rc.exe or mt.exe needed. The launcher's icon is resource 1 when the
+    file is next to the rest of the media."""
     import struct
     def entry(type_id, name_id, data, flags, lang):
         head = struct.pack("<IIHHHHIHHII", len(data), 32, 0xFFFF, type_id, 0xFFFF, name_id, 0, flags, lang, 0, 0)
         return head + data + b"\0" * (-len(data) % 4)
     with open(path, "wb") as f:
-        f.write(entry(0, 0, b"", 0, 0) + entry(24, 1, MANIFEST, 0x1030, 0x0409))
+        f.write(entry(0, 0, b"", 0, 0) + entry(24, 1, MANIFEST, 0x1030, 0x0409)
+                + _icon_resources(os.path.join(ROOT, "media", "opensmash.ico")))
     return path
 
 

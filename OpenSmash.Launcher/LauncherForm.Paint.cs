@@ -1376,7 +1376,8 @@ namespace OpenSmash.Launcher
                 g.Restore(cs);
             }
             float pad = 32 * s;
-            Theme.Label(g, "UPDATE PLUGINS", FD(32 * s), A(Theme.Text), mx + pad, my + 34 * s, 30 * s, 0.32f * s);
+            bool refresh = _pluginPromptKind == "refresh";
+            Theme.Label(g, refresh ? "REFRESH PLUGIN" : "UPDATE PLUGINS", FD(32 * s), A(Theme.Text), mx + pad, my + 34 * s, 30 * s, 0.32f * s);
             Theme.DrawWrapped(g, _pluginPromptText, FB(15 * s), A(Theme.Muted), mx + pad, my + 84 * s, mw - pad * 2, 130 * s);
 
             float bh = 46 * s, by = my + mh - bh - 28 * s, gap = 12 * s;
@@ -1388,7 +1389,7 @@ namespace OpenSmash.Launcher
             AddHit("plugin_prompt:cancel", xCancel, by, wCancel, bh);
             Theme.ButtonAnimated(g, "PLAY ANYWAY", xPlay, by, wPlay, bh, s, false, Hov("plugin_prompt:play", _hover == "plugin_prompt:play"), true, 13 * s, _alpha);
             AddHit("plugin_prompt:play", xPlay, by, wPlay, bh);
-            Theme.ButtonAnimated(g, "UPDATE PLUGINS", xBuild, by, wBuild, bh, s, true, Hov("plugin_prompt:build", _hover == "plugin_prompt:build"), true, 13 * s, _alpha);
+            Theme.ButtonAnimated(g, refresh ? "REFRESH PLUGIN" : "UPDATE PLUGINS", xBuild, by, wBuild, bh, s, true, Hov("plugin_prompt:build", _hover == "plugin_prompt:build"), true, 13 * s, _alpha);
             AddHit("plugin_prompt:build", xBuild, by, wBuild, bh);
             PopFade(g, st);
         }

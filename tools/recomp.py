@@ -1364,6 +1364,12 @@ def link(dirs, exe, rt_dir=None, steps=None):
     sources = [n for n in os.listdir(cc.RUNTIME) if re.fullmatch(r"(host|kernel|gpu\w*|hle\w*|ipc\w*|debug\w*|net\w*)\.c", n)]
     for n in sources:
         want(os.path.join(cc.RUNTIME, n), os.path.join(rt_dir, n[:-2] + ".obj"), "/O2", rt_flags)
+    # BC7 and the other block formats, decoded on the CPU for UI icons (runtime/gpu_d3d11.c).
+    decode_src = os.path.join(cc.ROOT, "ssbu-recomp", "runtime", "tex_decode.c")
+    decode_obj = os.path.join(rt_dir, "tex_decode.obj")
+    if os.path.isfile(decode_src):
+        decode_flags = [*(rt_flags if rt_flags is not None else cc.CFLAGS), "/I" + os.path.dirname(decode_src)]
+        want(decode_src, decode_obj, "/O2", decode_flags)
     # the processor check, for any x64 processor (it runs before the rest: runtime/cpu_check.c)
     check = os.path.join(rt_dir, "cpu_check.obj")
     want(os.path.join(cc.RUNTIME, "cpu_check.c"), check, "/O2", cc.CHECK_CFLAGS)
@@ -1415,6 +1421,8 @@ def link(dirs, exe, rt_dir=None, steps=None):
     if failures:
         return False
     objs = [os.path.join(rt_dir, n[:-2] + ".obj") for n in sources] + [check, table[:-2] + ".obj", nro_table[:-2] + ".obj"]
+    if os.path.isfile(decode_src):
+        objs.append(decode_obj)
     game = []
     for d in dirs:
         if mod_plugin(d):

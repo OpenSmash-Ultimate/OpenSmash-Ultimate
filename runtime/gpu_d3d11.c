@@ -367,9 +367,21 @@ static LRESULT CALLBACK window_proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
 
 static DWORD WINAPI window_thread(LPVOID done) {
     SetThreadDescription(GetCurrentThread(), L"window");
-    WNDCLASSW wc = {CS_HREDRAW | CS_VREDRAW, window_proc, 0, 0, GetModuleHandleW(NULL), NULL,
-                    LoadCursor(NULL, IDC_ARROW), NULL, NULL, L"ssbu"};
-    RegisterClassW(&wc);
+    /* The launcher's icon, embedded in this exe (tools/cc.py). A missing one leaves the class without an icon. */
+    HICON icon = (HICON)LoadImageW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(1), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
+    HICON small_icon = (HICON)LoadImageW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(1), IMAGE_ICON, 16, 16, 0);
+    WNDCLASSEXW wc;
+    memset(&wc, 0, sizeof wc);
+    wc.cbSize = sizeof wc;
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = window_proc;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.hIcon = icon;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    wc.lpszClassName = L"ssbu";
+    wc.hIconSm = small_icon ? small_icon : icon;
+    RegisterClassExW(&wc);
     window = display_create_window(wc.hInstance, L"ssbu", L"Super Smash Bros. Ultimate (native)");
     SetEvent((HANDLE)done);
     MSG m;
@@ -3078,6 +3090,33 @@ static int unpacked_formats(DXGI_FORMAT f, Unpacked *u) {
     return 1;
 }
 
+/* Software decode (ssbu-recomp/runtime/tex_decode.c). RGBA8 is the stored bytes, alpha included;
+ * an sRGB view is applied later, so the colour space stays what the file asked for. */
+int tex_decode_rgba8(int nvn_format, const void *src, int w, int h, uint8_t *dst);
+/* BC7 often cannot store alpha 0. A clear texel is then (1,1,1,1). The alpha test keeps any
+ * alpha above 0 and the black is drawn (Paper Mario's sticker wheel). A real clear texel, as on
+ * the stickers sheet, is alpha 0 and is thrown away. */
+static int punch_clear_texels(u8 *rgba, u32 n) {
+    int punched = 0;
+    for (u32 i = 0; i < n; i++) {
+        u8 *p = rgba + (size_t)i * 4;
+        if (p[3] && p[0] <= 1 && p[1] <= 1 && p[2] <= 1 && p[3] <= 1) {
+            p[3] = 0;
+            punched++;
+        }
+    }
+    return punched;
+}
+static int srgb_bc_nvn(DXGI_FORMAT f) {
+    switch (f) {
+    case DXGI_FORMAT_BC1_UNORM_SRGB: return 0x46;   /* RGBA_DXT1_SRGB */
+    case DXGI_FORMAT_BC2_UNORM_SRGB: return 0x47;
+    case DXGI_FORMAT_BC3_UNORM_SRGB: return 0x48;
+    case DXGI_FORMAT_BC7_UNORM_SRGB: return 0x4E;   /* BPTC_UNORM_SRGB */
+    default: return 0;
+    }
+}
+
 static ID3D11DeviceContext *unpack_ctx;   /* deferred: the copy runs with the immediate context's state kept (mid-draw) */
 static u32 gfx_debug(void);
 
@@ -3198,6 +3237,17 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
         td.Width = (d.width + 3) & ~3u; td.Height = (d.height + 3) & ~3u;
         if (!(gfx_debug() & 128) && (unpack = unpacked_formats(d.dxgi, &unpacked))) td.Format = unpacked.bc;
     }
+    /* A stock icon is BC7 sRGB with a clear margin (black, alpha 0). Sampling that format on the
+     * GPU returns alpha 1, and copying it with the same sampler keeps the 1, so the margin draws
+     * as a black square. Decode the blocks on the CPU (the stored alpha) and view the bytes as
+     * sRGB. Fighter sheets such as the sticker wheel are 756, so the cap is 1024. Above 512 the
+     * uncompressed copy is kept only when a clear texel had to be repaired: a whole scene of
+     * untouched sRGB blocks would be a lot of texture. */
+    int cpu_bc = 0, punch_only = 0;
+    if (!unpack && d.srgb && d.bw > 1 && d.width <= 1024 && d.height <= 1024 && !(gfx_debug() & 128)) {
+        cpu_bc = srgb_bc_nvn(d.dxgi);
+        punch_only = d.width > 512 || d.height > 512;
+    }
     D3D11_SUBRESOURCE_DATA *init = calloc(levels * layers, sizeof *init);
     u8 **mem = calloc(levels * layers, sizeof *mem);
     for (u32 layer = 0; layer < layers; layer++)
@@ -3219,6 +3269,38 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
             init[layer * levels + l] = (D3D11_SUBRESOURCE_DATA){buf, pbw * d.bytes, pbw * pbh * d.bytes};
             mem[layer * levels + l] = buf;
         }
+    if (cpu_bc) {
+        u8 **rgba = calloc(levels * layers, sizeof *rgba);
+        int decoded = rgba != NULL;
+        for (u32 i = 0; i < levels * layers && decoded; i++) {
+            u32 l = i % levels;
+            u32 tw = (d.width >> l) ? d.width >> l : 1, th = (d.height >> l) ? d.height >> l : 1;
+            rgba[i] = malloc((size_t)tw * th * 4);
+            if (!rgba[i] || tex_decode_rgba8(cpu_bc, mem[i], (int)tw, (int)th, rgba[i])) decoded = 0;
+        }
+        int punched = 0;
+        if (decoded)
+            for (u32 i = 0; i < levels * layers; i++) {
+                u32 l = i % levels;
+                u32 tw = (d.width >> l) ? d.width >> l : 1, th = (d.height >> l) ? d.height >> l : 1;
+                punched += punch_clear_texels(rgba[i], tw * th);
+            }
+        if (decoded && !(punch_only && !punched)) {
+            for (u32 i = 0; i < levels * layers; i++) {
+                u32 l = i % levels;
+                u32 tw = (d.width >> l) ? d.width >> l : 1, th = (d.height >> l) ? d.height >> l : 1;
+                free(mem[i]);
+                mem[i] = rgba[i];
+                rgba[i] = NULL;
+                init[i] = (D3D11_SUBRESOURCE_DATA){mem[i], tw * 4, tw * th * 4};
+            }
+            td.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
+        } else {
+            if (rgba) for (u32 i = 0; i < levels * layers; i++) free(rgba[i]);
+            cpu_bc = 0;
+        }
+        free(rgba);
+    }
     HRESULT hr = ID3D11Device_CreateTexture2D(dev, &td, init, &t->tex);
     for (u32 i = 0; i < levels * layers; i++) free(mem[i]);
     free(mem);
@@ -3235,6 +3317,7 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
                   : unpacked.read != d.dxgi ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
         gfx_stat_unpacked++;
     }
+    if (cpu_bc) sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
     switch (shader_type) {
     case TEX_ARRAY_2D: sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY; sd.Texture2DArray.MipLevels = levels; sd.Texture2DArray.ArraySize = layers; break;
     case TEX_CUBE: sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE; sd.TextureCube.MipLevels = levels; break;
@@ -5220,6 +5303,9 @@ void gfx_present(u64 guest, u32 width, u32 height) {
     LARGE_INTEGER p0, p1;
     QueryPerformanceCounter(&p0);
     hr = IDXGISwapChain1_Present(swapchain, 0, display_present_flags());   /* (blocks while the GPU is frames behind) */
+#ifdef _WIN32
+    if (SUCCEEDED(hr)) display_show_window();
+#endif
     QueryPerformanceCounter(&p1);
     gfx_stat_present_ticks += (u64)(p1.QuadPart - p0.QuadPart);
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) check_device(hr, "showing a frame");

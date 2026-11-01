@@ -8,6 +8,7 @@
     os_mods.py apply
     os_mods.py vanilla
     os_mods.py fetch [--again]
+    os_mods.py refresh                 a replaced plugin.nro: rebuild its DLL, leave the game
     os_mods.py build
 
 status prints one JSON object. The others print "LOG ..." lines and a final "RESULT" line.
@@ -140,7 +141,8 @@ def status(tree):
         if g:
             m["group_title"] = g["title"]
             m["group_thumb"] = g["thumb"]
-    data["needs_build"] = skyline.needs_build(tree.root) or ""
+    data["needs_build"] = skyline.game_link_reason(tree.root) or ""
+    data["needs_refresh"] = skyline.plugin_refresh_reason(tree.root) or ""
     plugins = []
     folder = std_plugins.folder(tree.root)
     for name, (version, _url, _member, _sha, source, run) in std_plugins.PLUGINS.items():
@@ -244,6 +246,10 @@ def main(argv):
             return main([argv[0], "remove", name])
         if cmd == "fetch":
             fetch_plugins(tree, "--again" in argv, log)
+            return result(True)
+        if cmd == "refresh":
+            skyline.sync(tree.root, log, skyline.build_jobs())
+            skyline.cache_mod_plugins(tree.root, skyline.build_jobs(), log)
             return result(True)
         if cmd == "build":
             if recomp_busy():

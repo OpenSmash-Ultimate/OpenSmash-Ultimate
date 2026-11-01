@@ -12,6 +12,8 @@ void display_dpi_aware(void);           /* first thing in main: window sizes in 
 #ifdef _WIN32
 /* The game's window, made by the renderer's window thread with its class and procedure. */
 HWND display_create_window(HINSTANCE inst, const wchar_t *cls, const wchar_t *title);
+/* Shown on the first presented frame. Until then the window stays hidden, so startup is not a white box. */
+void display_show_window(void);
 /* The window procedure offers every message here first: nonzero = handled, the answer in *result. */
 int display_message(HWND h, UINT msg, WPARAM w, LPARAM l, LRESULT *result);
 #else

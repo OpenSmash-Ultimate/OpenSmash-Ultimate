@@ -692,6 +692,26 @@ def cache_mod_plugins(tree, jobs, log=print, quiet=False):
     return ready
 
 
+def unbuilt_standard(tree):
+    """A community plugin in skyline/plugins whose file is not the one compiled into the game, or None.
+    A moveset's plugin.nro is not one of these: that file is refreshed as its own DLL."""
+    p = Paths(tree)
+    record = load_record(p)
+    for _label, source in standard(tree):
+        base = os.path.basename(source)
+        if base.lower() in NATIVE:
+            continue
+        try:
+            entry = record.get(nro_build_id(source))
+        except ValueError:
+            continue
+        name = entry["module"] if entry else None
+        placed = os.path.join(p.nro, name + ".nro") if name else ""
+        if not name or not built_in(tree, name) or not os.path.isfile(placed) or not filecmp.cmp(source, placed, shallow=False):
+            return f"the plugin {base} isn't in the game"
+    return None
+
+
 def game_link_reason(tree):
     """Why the program itself must be linked again, or None. A mod plugin's own file is not a reason:
     the game loads that at start."""
@@ -716,6 +736,9 @@ def game_link_reason(tree):
     for name, plugin in std_plugins.PLUGINS.items():
         if plugin[5] == "runs" and not os.path.exists(os.path.join(std_plugins.folder(tree), name)):
             return f"{name} isn't fetched"
+    missing = unbuilt_standard(tree)
+    if missing:
+        return missing
     listed = os.path.join(p.skyline, "plugins.txt")
     names = [l.split("#")[0].strip() for l in open(listed, encoding="utf-8")] if os.path.exists(listed) else []
     for name in names:
@@ -767,6 +790,23 @@ NOT_BUILT = ("tools/modmanager/", "tools/dev/", "tools/mods.py", "tools/os_mods.
              "tools/shader_aot.py")
 
 
+def plugin_refresh_reason(tree):
+    """Why a turned-on mod's plugin DLL has to be made again, or None. A replaced plugin.nro
+    (new bytes, or a build id that has no DLL yet) is this. The game program is left as it is."""
+    import mods
+    t = mods.Tree(tree)
+    state = t.load()
+    for n in state["order"]:
+        if state["mods"][n].get("enabled"):
+            for s in plugin_state(tree, n, mods.plugins(os.path.join(t.mods, n))):
+                if s["module"]:
+                    if not s["built"]:
+                        return f"{n}'s plugin isn't translated yet"
+                elif s["built"] is None:
+                    return f"{n}'s plugin isn't recompiled yet"
+    return None
+
+
 def needs_build(tree):
     """Why the game's program needs building again, or None: it's missing, a file that goes into it
     (the runtime, the recompiler, the build's tools, the plugins' hook lists) is newer than it, a
@@ -792,18 +832,7 @@ def needs_build(tree):
     for name, plugin in std_plugins.PLUGINS.items():
         if plugin[5] == "runs" and not os.path.exists(os.path.join(std_plugins.folder(tree), name)):
             return f"{name} isn't fetched"
-    import mods
-    t = mods.Tree(tree)
-    state = t.load()
-    for n in state["order"]:   # (a turned-on mod's plugin: translated on its own, loaded when the game starts)
-        if state["mods"][n].get("enabled"):
-            for s in plugin_state(tree, n, mods.plugins(os.path.join(t.mods, n))):
-                if s["module"]:
-                    if not s["built"]:
-                        return f"{n}'s plugin isn't translated yet"
-                elif s["built"] is None:
-                    return f"{n}'s plugin isn't recompiled yet"
-    return game_link_reason(tree)
+    return plugin_refresh_reason(tree) or game_link_reason(tree)
 
 
 def status(tree):

@@ -123,6 +123,9 @@ namespace OpenSmash.Launcher
         }
 
         // Play SSBU.bat's direct start: build\ssbu.exe dump\modules --status 30 --online, log in build\play.log.
+        [DllImport("user32.dll")]
+        static extern bool AllowSetForegroundWindow(int dwProcessId);
+
         public static Process? StartGame(string repo)
         {
             string exe = Path.Combine(BuildDir(repo), "ssbu.exe");
@@ -135,6 +138,7 @@ namespace OpenSmash.Launcher
                 Arguments = "dump\\modules --status 30 --online",
                 WorkingDirectory = repo,
                 UseShellExecute = false,
+                CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             };
@@ -142,6 +146,7 @@ namespace OpenSmash.Launcher
             var logLock = new object();
             var proc = Process.Start(psi);
             if (proc == null) return null;
+            try { AllowSetForegroundWindow(proc.Id); } catch { }
             void Write(string? line)
             {
                 if (line == null) return;

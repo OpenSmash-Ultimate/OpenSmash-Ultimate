@@ -129,7 +129,9 @@ namespace OpenSmash.Launcher
         // No-mods setup prompt, and the same card for a plugin that still needs building.
         bool _showSetupPrompt = false;
         bool _pluginPrompt;
+        string _pluginPromptKind = "update";   // "update": link the game. "refresh": rebuild a plugin DLL.
         string _pluginPromptText = "";
+        string _pluginRefreshReason = "";
         TaskCompletionSource<string> _pluginPromptWait;
 
         // Emulator import state
@@ -426,6 +428,7 @@ namespace OpenSmash.Launcher
             bool parsed = false;
             bool modded = _modsModded;
             string reason = _pluginBuildReason;
+            string refresh = _pluginRefreshReason;
             string json = "";
             try
             {
@@ -436,6 +439,7 @@ namespace OpenSmash.Launcher
                     var root = doc.RootElement;
                     modded = root.TryGetProperty("modded", out var md) && md.ValueKind == JsonValueKind.True;
                     reason = root.TryGetProperty("needs_build", out var nb) ? nb.GetString() ?? "" : "";
+                    refresh = root.TryGetProperty("needs_refresh", out var nr) ? nr.GetString() ?? "" : "";
                     if (root.TryGetProperty("plugins", out var plugins) && plugins.ValueKind == JsonValueKind.Array)
                     {
                         foreach (var p in plugins.EnumerateArray())
@@ -507,6 +511,7 @@ namespace OpenSmash.Launcher
             if (!parsed) return;
             _modsModded = modded;
             _pluginBuildReason = reason;
+            _pluginRefreshReason = refresh;
             _stdPlugins = pluginsSeen;
             foreach (string old in _modThumbs.Keys.Where(k => !keep.Contains(k)).ToList())
             {
@@ -1212,7 +1217,7 @@ namespace OpenSmash.Launcher
             if (_pluginPrompt)
             {
                 if (e.KeyCode == Keys.Escape) _pluginPromptWait?.TrySetResult("cancel");
-                if (e.KeyCode == Keys.Enter) _pluginPromptWait?.TrySetResult("build");
+                if (e.KeyCode == Keys.Enter) _pluginPromptWait?.TrySetResult(_pluginPromptKind == "refresh" ? "refresh" : "build");
                 return;
             }
 
@@ -1362,7 +1367,7 @@ namespace OpenSmash.Launcher
                     _ = ImportFromEmulator(emus[ei]);
                 }
             }
-            else if (id == "plugin_prompt:build") _pluginPromptWait?.TrySetResult("build");
+            else if (id == "plugin_prompt:build") _pluginPromptWait?.TrySetResult(_pluginPromptKind == "refresh" ? "refresh" : "build");
             else if (id == "plugin_prompt:play") _pluginPromptWait?.TrySetResult("play");
             else if (id == "plugin_prompt:cancel") _pluginPromptWait?.TrySetResult("cancel");
             else if (id == "plugin_prompt:block") { }
@@ -1988,7 +1993,7 @@ namespace OpenSmash.Launcher
             string why = "";
             try
             {
-                await Task.Run(() => OsMods(new[] { "apply" }, line =>
+                await Task.Run(() => OsMods(new[] { "enable", name }, line =>
                 {
                     if (!line.StartsWith("LOG ")) return;
                     string text = line.Substring(4).Trim();
@@ -2119,6 +2124,33 @@ namespace OpenSmash.Launcher
             });
         }
 
+        async Task RefreshPlugins()
+        {
+            if (_modsBusy) return;
+            _modsBusy = true;
+            _pluginBuildUi = true;
+            _pluginFrac = -1;
+            _pluginDetail = "Refreshing the plugin";
+            _pluginEta = "";
+            Invalidate();
+            string why = "";
+            try
+            {
+                await Task.Run(() => OsMods(new[] { "refresh" }, line =>
+                {
+                    if (!line.StartsWith("LOG ")) return;
+                    string text = line.Substring(4).Trim();
+                    BeginInvoke(() => NotePluginBuild(text));
+                }));
+            }
+            catch (Exception ex) { why = ex.Message; }
+            _modsBusy = false;
+            _pluginBuildUi = false;
+            UpdateMods();
+            Invalidate();
+            if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
+        }
+
         async Task BuildPlugins()
         {
             if (_modsBusy) return;
@@ -2179,8 +2211,10 @@ namespace OpenSmash.Launcher
                 .Select(m => string.IsNullOrEmpty(m.Title) ? m.Name : m.Title)
                 .Distinct()
                 .ToList();
-            string why = PluginUpdateWhy(waiting, _pluginBuildReason);
+            bool full = !string.IsNullOrEmpty(_pluginBuildReason);
+            string why = full ? PluginUpdateWhy(waiting, _pluginBuildReason) : PluginRefreshWhy(waiting, _pluginRefreshReason);
             if (why.Length == 0) return "play";
+            _pluginPromptKind = full ? "update" : "refresh";
             _pluginPromptText = why;
             _pluginPrompt = true;
             _pluginPromptWait = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2189,6 +2223,18 @@ namespace OpenSmash.Launcher
             _pluginPrompt = false;
             Invalidate();
             return choice;
+        }
+
+        static string PluginRefreshWhy(List<string> waiting, string reason)
+        {
+            if (waiting.Count == 1)
+                return waiting[0] + " has a new plugin file. Refreshing rebuilds its DLL. The game program stays as it is.";
+            if (waiting.Count > 1)
+                return "These mods have new plugin files. Refreshing rebuilds their DLLs. The game program stays as it is.\n\n" +
+                    string.Join("\n", waiting.Take(8));
+            if (!string.IsNullOrEmpty(reason))
+                return "A moveset plugin has to be turned into a DLL again. The game program stays as it is.";
+            return "";
         }
 
         static string PluginUpdateWhy(List<string> waiting, string reason)
@@ -2204,6 +2250,8 @@ namespace OpenSmash.Launcher
             {
                 if (reason.Contains("hooks a function"))
                     parts.Add("A mod hooks the middle of a function. The game has to be updated once so that hook can run.");
+                else if (reason.StartsWith("the plugin "))
+                    parts.Add(reason.Substring("the plugin ".Length).Replace(" isn't in the game", "") + " was added. The game has to be updated once so that plugin can run.");
                 else if (reason.Contains("isn't in the game") || reason.Contains("isn't fetched"))
                     parts.Add("A community plugin the mods rely on isn't in the game yet.");
                 else if (reason.Contains("patches.txt"))
@@ -2346,6 +2394,11 @@ namespace OpenSmash.Launcher
             if (unbuilt == "build")
             {
                 await BuildPlugins();
+                return;
+            }
+            if (unbuilt == "refresh")
+            {
+                await RefreshPlugins();
                 return;
             }
             if (!await PrepareModsForLaunch()) return;
