@@ -20,6 +20,7 @@ import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)   # (port_plugin, imported in fetch: the embeddable Python keeps a script's folder off sys.path)
 
 # name: (version, url, file in the zip (None: the url is the .nro), sha256 of the .nro, source, status here)
 # status: "runs" (tools/skyline.py runs it; the CSK Collection ported to 13.0.5 first, PORTS), "native" (the runtime
