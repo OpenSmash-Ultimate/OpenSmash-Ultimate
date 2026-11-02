@@ -1152,7 +1152,7 @@ namespace OpenSmash.Launcher
                 ActivateHit(id);
             }
             if (_volDragging)
-                WriteSetting("volume", _iniValues.GetValueOrDefault("volume", "50"));
+                WriteSetting("volume", _iniValues.GetValueOrDefault("volume", "100"));
             _volDragging = false;
             _settingsThumbDrag = false;
             _modThumbDrag = false;

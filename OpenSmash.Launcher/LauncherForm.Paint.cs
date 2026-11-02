@@ -56,7 +56,7 @@ namespace OpenSmash.Launcher
             ["gpu"] = "Auto picks the fastest card.",
             ["hide_cursor"] = "Hides the pointer over the game after 2 seconds without moving it.",
             ["overlay"] = "The frame rate in the corner. F1 shows or hides it while playing.",
-            ["volume"] = "How loud the game is. 100 is full. It applies the next time you press Play.",
+            ["volume"] = "The game's whole sound (display.ini volume, the same setting as the in-game menu's Volume row). 100 is full. It applies the next time you press Play.",
             ["name"] = "What other players see. Leave it empty and the game picks one.",
             ["lobby"] = "Public: everyone's rooms. Private: only players with the same code. Offline: no network.",
             ["code"] = "A word your friends type too. Capital letters count.",
