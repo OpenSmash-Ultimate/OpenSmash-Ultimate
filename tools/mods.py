@@ -356,12 +356,20 @@ def install(tree, archive, name=None, meta=None):
             leaf = os.path.basename(root)
             label = base if len(roots) == 1 else f"{base} - {safe_name(leaf)}"
             final, k = label, 2
+            old = None
             while os.path.exists(os.path.join(tree.mods, final)):
+                # (the same download again - the same file, by its checksum: it replaces the copy there,
+                # turned on or off as it was, not a second copy "(2)" turned on beside it, the two
+                # changing the same files: Knuckles' 914)
+                if (meta or {}).get("md5") and state["mods"].get(final, {}).get("md5") == meta["md5"]:
+                    old = state["mods"][final]
+                    shutil.rmtree(os.path.join(tree.mods, final))
+                    break
                 final, k = f"{label} ({k})", k + 1
             inner = {os.path.normcase(r) for r in nested_roots(root, roots)}
             shutil.copytree(root, os.path.join(tree.mods, final),
                             ignore=lambda d, names: [n for n in names if os.path.normcase(os.path.join(d, n)) in inner])
-            entry = {"enabled": True}
+            entry = {"enabled": old.get("enabled", True) if old else True}
             entry.update(meta or {})
             state = tree.load()
             state["mods"][final] = entry
