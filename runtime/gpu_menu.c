@@ -22,6 +22,7 @@
 #include "config_folder.h"
 #include "display.h"
 #include "gpu_menu.h"
+#include "audio.h"
 #include "gpu_overlay.h"
 #include "language.h"
 #include "net.h"
@@ -84,7 +85,7 @@ enum {
     R_RUMBLE, R_KEYBOARD, R_BACKGROUND, R_PADS_FILE,
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
-    R_LANGUAGE, R_RESTART, R_QUIT, R_REMAP_BACK, R_ROOM_FIRST = 60,   /* + the room's place in the list */
+    R_LANGUAGE, R_VOLUME, R_RESTART, R_QUIT, R_REMAP_BACK, R_ROOM_FIRST = 60,   /* + the room's place in the list */
     R_REMAP_FIRST = 100   /* + console button */
 };
 
@@ -606,6 +607,9 @@ static void build(void) {
         if (!settings_ini_get(display_ini_path(), NULL, "language", lang, sizeof lang) || !lang[0]) snprintf(lang, sizeof lang, "auto");
         snprintf(r->value, sizeof r->value, "%s", _stricmp(lang, "auto") ? language_pick(lang) : "auto");
         note_env(r, "SSBU_LANGUAGE");
+        r = add(R_VOLUME, K_CHOICE, W_NOW, "Volume", "The game's whole sound, over the game's own sound settings; 0% is silent.");
+        snprintf(r->value, sizeof r->value, "%d%%", audio_master_volume());
+        note_env(r, "SSBU_VOLUME");
     }
         add(R_RESTART, K_ACTION, W_NONE, "Restart the game", "Starts the game again (for the settings marked 'next start'). A match in progress is lost.");
         add(R_QUIT, K_ACTION, W_NONE, "Quit the game", "Closes the game. A match in progress is lost.");
@@ -672,6 +676,14 @@ static void change(const Row *row, int dir) {
         display_set_latency(atoi(v));
         set_display("latency", v);
         break;
+    case R_VOLUME: {   /* 0 to 100 in steps of 10 */
+        int vol = (audio_master_volume() + 5) / 10;
+        vol = cycle(vol, 11, dir) * 10;
+        audio_set_master_volume(vol);
+        snprintf(v, sizeof v, "%d", vol);
+        set_display("volume", v);
+        break;
+    }
     case R_LANGUAGE: {   /* auto, then the game's codes */
         char lang[32] = "";
         int i = -1;

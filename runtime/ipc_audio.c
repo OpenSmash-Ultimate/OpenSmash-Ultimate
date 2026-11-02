@@ -20,6 +20,9 @@
 #include <string.h>
 
 #include "ipc.h"
+#include "audio.h"
+#include "display.h"    /* (display_ini_path) */
+#include "settings.h"
 #ifdef _WIN32
 #define COBJMACROS
 #include <mmsystem.h>   /* after windows.h */
@@ -54,6 +57,24 @@ static struct {
     f32 volume;
     CRITICAL_SECTION lock;
 } audio = {.volume = 1.0f};
+static volatile LONG master = -1;   /* the master volume, % (-1: not read yet) */
+
+int audio_master_volume(void) {
+    LONG m = master;
+    if (m >= 0) return (int)m;
+    char v[16] = "";
+    const char *env = getenv("SSBU_VOLUME");
+    if (env && *env) snprintf(v, sizeof v, "%s", env);
+    else settings_ini_get(display_ini_path(), NULL, "volume", v, sizeof v);
+    m = v[0] && strspn(v, "0123456789") == strlen(v) ? atoi(v) : 100;
+    m = m > 100 ? 100 : m;
+    InterlockedCompareExchange(&master, m, -1);
+    if (m != 100) fprintf(stderr, "[audio] master volume %ld%%\n", (long)m);
+    return (int)m;
+}
+
+void audio_set_master_volume(int percent) { InterlockedExchange(&master, percent < 0 ? 0 : percent > 100 ? 100 : percent); }
+
 static HANDLE played_event;   /* feed released buffers: the reaper tells the game */
 static int audio_log;
 
@@ -360,9 +381,13 @@ static void append(u64 desc, u64 tag) {
             u32 at = (u32)((audio.wpos + done) % RING), k = (u32)(size - done);
             if (k > RING - at) k = RING - at;
             memcpy(audio.ring + at, src + done, k);
-            if (audio.volume != 1.0f) {
+            f32 gain = audio.volume * (f32)audio_master_volume() / 100.0f;
+            if (gain != 1.0f) {
                 i16 *s = (i16 *)(audio.ring + at);
-                for (u32 i = 0; i < k / 2; i++) s[i] = (i16)(s[i] * audio.volume);
+                for (u32 i = 0; i < k / 2; i++) {
+                    f32 v = s[i] * gain;
+                    s[i] = (i16)(v > 32767.0f ? 32767.0f : v < -32768.0f ? -32768.0f : v);
+                }
             }
             done += k;
         }
