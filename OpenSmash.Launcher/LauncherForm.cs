@@ -1616,20 +1616,11 @@ namespace OpenSmash.Launcher
                 }
                 else
                 {
-                    _setupStep = "Fetching latest Skyline release...";
+                    var skyline = Pinned("skyline");
+                    _setupStep = $"Downloading Skyline {skyline.Version}...";
                     _setupLog += "[2/3] Installing Skyline\n";
-                    var skylineRelease = await GetLatestGitHubRelease("skyline-dev/skyline");
-                    if (skylineRelease != null)
-                    {
-                        _setupStep = $"Downloading Skyline {skylineRelease.version}...";
-                        _setupLog += $"      Skyline {skylineRelease.version}\n";
-                        await DownloadAndExtract(skylineRelease.downloadUrl, _skylineDir);
-                    }
-                    else
-                    {
-                        _setupLog += "      WARNING: release lookup failed, using fallback\n";
-                        await DownloadAndExtract("https://github.com/skyline-dev/skyline/releases/download/beta/skyline.zip", _skylineDir);
-                    }
+                    _setupLog += $"      Skyline {skyline.Version}\n";
+                    await DownloadPinnedAndExtract(skyline, _skylineDir);
 
                     int plugins = ImportPlugins(_skylineDir);
                     if (plugins > 0) _setupLog += $"      imported {plugins} plugin(s)\n";
@@ -1645,20 +1636,11 @@ namespace OpenSmash.Launcher
                 }
                 else
                 {
-                    _setupStep = "Fetching latest ARCropolis release...";
+                    var arcropolis = Pinned("arcropolis");
+                    _setupStep = $"Downloading ARCropolis {arcropolis.Version}...";
                     _setupLog += "[3/3] Installing ARCropolis\n";
-                    var arcropolisRelease = await GetLatestGitHubRelease("Raytwo/ARCropolis");
-                    if (arcropolisRelease != null)
-                    {
-                        _setupStep = $"Downloading ARCropolis {arcropolisRelease.version}...";
-                        _setupLog += $"      ARCropolis {arcropolisRelease.version}\n";
-                        await DownloadAndExtract(arcropolisRelease.downloadUrl, arcDir);
-                    }
-                    else
-                    {
-                        _setupLog += "      WARNING: release lookup failed, using fallback\n";
-                        await DownloadAndExtract("https://github.com/Raytwo/ARCropolis/releases/download/v4.1.1/release.zip", arcDir);
-                    }
+                    _setupLog += $"      ARCropolis {arcropolis.Version}\n";
+                    await DownloadPinnedAndExtract(arcropolis, arcDir);
 
                     // ARCropolis ships as a Skyline plugin; it has to sit in the
                     // plugin folder (the layered-fs patch) to be loaded at boot.
@@ -1865,82 +1847,79 @@ namespace OpenSmash.Launcher
             }
         }
 
-        class GitHubRelease
-        {
-            public string tag;
-            public string version;
-            public string downloadUrl;
-            public string name;
-        }
+        // Every binary the launcher downloads by itself (the loader, the mod manager and
+        // the community plugins mods list as requirements) is pinned here: one release,
+        // one URL, its SHA-256 and a size cap. Nothing is resolved from "latest" or from
+        // a URL the mod page supplies. The hashes are GitHub's recorded asset digests;
+        // for the .nro plugins they match tools/std_plugins.py (NRO Hook's release has
+        // no GitHub digest, so its hash is the one std_plugins.py recorded). To move to
+        // a newer release, check it runs, then update its row.
+        sealed record PinnedDownload(string Key, string Name, string Repo, string Version, string Url, string Sha256, long MaxBytes);
 
-        async Task<GitHubRelease> GetLatestGitHubRelease(string repo)
+        static readonly PinnedDownload[] PinnedDownloads =
         {
-            try
+            // skyline-dev/skyline publishes only the "beta" tag; the hash pins the asset
+            // published 2026-04-12, so a re-published "beta" is refused, not installed.
+            new("skyline", "Skyline", "skyline-dev/skyline", "beta (2026-04-12)",
+                "https://github.com/skyline-dev/skyline/releases/download/beta/skyline.zip",
+                "d677c5bbbfbf55674b047c8d5d11f8a4d71b6a42fbc7ee4bf70f462b077c4ab0", 1L << 20),
+            new("arcropolis", "ARCropolis", "Raytwo/ARCropolis", "4.1.1",
+                "https://github.com/Raytwo/ARCropolis/releases/download/v4.1.1/release.zip",
+                "08b98371f069bc54a326660bc828288c05dd9a4ac0e3c7c00aca557796e032c6", 16L << 20),
+            new("smashline", "Smashline", "HDR-Development/smashline", "1.6.8",
+                "https://github.com/HDR-Development/smashline/releases/download/v1.6.8/libsmashline_plugin.nro",
+                "a83636e565be0729271aa7c21817da9aa3b8b3e9b3abed7499c1eeae4cb57d5c", 8L << 20),
+            new("nro_hook", "NRO Hook", "ultimate-research/nro-hook-plugin", "0.4.0",
+                "https://github.com/ultimate-research/nro-hook-plugin/releases/download/v0.4.0/libnro_hook.nro",
+                "ca7aec03aee49fea539dcb92569fea5bc5389f77377ba2a30e4d0b7ebd0255e6", 8L << 20),
+        };
+
+        // Plugins the runtime provides itself; the release copy is not installed
+        // (tools/std_plugins.py: lib_paramconfig's main hangs here).
+        static readonly string[] RuntimeProvidedPluginRepos = { "CSharpM7/lib_paramconfig" };
+
+        static PinnedDownload Pinned(string key) =>
+            PinnedDownloads.First(p => p.Key == key);
+
+        static PinnedDownload? PinnedForRepo(string repo) =>
+            PinnedDownloads.FirstOrDefault(p => p.Repo.Equals(repo, StringComparison.OrdinalIgnoreCase));
+
+        // Downloads a pinned release (never more than its size cap), checks its SHA-256,
+        // and only then writes the .nro or extracts the zip into destDir.
+        async Task DownloadPinnedAndExtract(PinnedDownload pin, string destDir)
+        {
+            if (string.IsNullOrWhiteSpace(pin.Sha256))
+                throw new InvalidOperationException($"{pin.Name} {pin.Version} has no SHA-256 recorded yet; refusing to install it.");
+
+            byte[] bytes;
+            using (var request = new HttpRequestMessage(HttpMethod.Get, pin.Url))
             {
-                using var http = new HttpClient();
-                http.DefaultRequestHeaders.Add("User-Agent", "OpenSmash-Launcher/1.0");
-                http.DefaultRequestHeaders.Add("Accept", "application/vnd.github.v3+json");
-                string url = $"https://api.github.com/repos/{repo}/releases/latest";
-                var json = await http.GetStringAsync(url);
-                
-                using var doc = System.Text.Json.JsonDocument.Parse(json);
-                var root = doc.RootElement;
-                
-                string tag = root.GetProperty("tag_name").GetString() ?? "";
-                string version = tag.TrimStart('v');
-                
-                // Find the release package: a zip when the project ships one,
-                // otherwise the .nro itself (several Skyline plugins do this).
-                if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == System.Text.Json.JsonValueKind.Array)
+                request.Headers.Add("User-Agent", "OpenSmash-Launcher/1.0");
+                using var response = await _downloadClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+                response.EnsureSuccessStatusCode();
+                if (response.Content.Headers.ContentLength is long declared && declared > pin.MaxBytes)
+                    throw new InvalidDataException($"{pin.Name} download is {declared} bytes, over its {pin.MaxBytes}-byte cap.");
+
+                using var stream = await response.Content.ReadAsStreamAsync();
+                using var buffer = new MemoryStream();
+                var chunk = new byte[81920];
+                int read;
+                while ((read = await stream.ReadAsync(chunk, 0, chunk.Length)) > 0)
                 {
-                    foreach (var asset in assets.EnumerateArray())
-                    {
-                        string name = asset.GetProperty("name").GetString() ?? "";
-                        if (!name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) continue;
-                        string downloadUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
-                        return new GitHubRelease
-                        {
-                            tag = tag,
-                            version = version,
-                            downloadUrl = downloadUrl,
-                            name = name
-                        };
-                    }
-
-                    foreach (var asset in assets.EnumerateArray())
-                    {
-                        string name = asset.GetProperty("name").GetString() ?? "";
-                        if (!name.EndsWith(".nro", StringComparison.OrdinalIgnoreCase)) continue;
-                        string downloadUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
-                        return new GitHubRelease
-                        {
-                            tag = tag,
-                            version = version,
-                            downloadUrl = downloadUrl,
-                            name = name
-                        };
-                    }
+                    if (buffer.Length + read > pin.MaxBytes)
+                        throw new InvalidDataException($"{pin.Name} download is over its {pin.MaxBytes}-byte cap.");
+                    buffer.Write(chunk, 0, read);
                 }
-                return null;
+                bytes = buffer.ToArray();
             }
-            catch (Exception ex)
-            {
-                _setupLog += $"\n[GitHub API Error for {repo}]: {ex.Message}";
-                return null;
-            }
-        }
 
-        async Task DownloadAndExtract(string url, string destDir)
-        {
-            using var http = new HttpClient();
-            http.DefaultRequestHeaders.Add("User-Agent", "OpenSmash-Launcher/1.0");
-            var bytes = await http.GetByteArrayAsync(url);
+            string got = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+            if (!got.Equals(pin.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    $"{pin.Name} {pin.Version} is not the release checked here (SHA-256 {got[..16].ToLowerInvariant()}..., expected {pin.Sha256[..16]}...); not installed.");
 
             Directory.CreateDirectory(destDir);
-
-            string fileName = "";
-            try { fileName = Path.GetFileName(new Uri(url).AbsolutePath); } catch { }
-            string zipPath = Path.Combine(Path.GetTempPath(), $"setup_{Guid.NewGuid():N}.zip");
+            string fileName = Path.GetFileName(new Uri(pin.Url).AbsolutePath);
 
             // Some releases publish the .nro directly instead of an archive.
             if (fileName.EndsWith(".nro", StringComparison.OrdinalIgnoreCase))
@@ -1949,6 +1928,7 @@ namespace OpenSmash.Launcher
                 return;
             }
 
+            string zipPath = Path.Combine(Path.GetTempPath(), $"setup_{Guid.NewGuid():N}.zip");
             await File.WriteAllBytesAsync(zipPath, bytes);
             try
             {
@@ -2980,6 +2960,21 @@ namespace OpenSmash.Launcher
             }
         }
 
+        // Hands a URL to the user's browser, but only a plain http(s) one: the page and
+        // the mods it shows are not trusted to start programs or open local files.
+        static bool OpenExternal(string? url)
+        {
+            if (string.IsNullOrWhiteSpace(url)) return false;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+            if (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) return false;
+            try
+            {
+                Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+                return true;
+            }
+            catch { return false; }
+        }
+
         static string GetString(JsonElement root, string property)
         {
             if (!root.TryGetProperty(property, out var value)) return "";
@@ -3051,24 +3046,16 @@ namespace OpenSmash.Launcher
             if (!_marketplaceInstalling.Add(id)) return;
 
             string name = component == "arcropolis" ? "ARCropolis" : "Skyline";
-            string repo = component == "arcropolis" ? "Raytwo/ARCropolis" : "skyline-dev/skyline";
+            var pin = Pinned(component);
             string target = component == "arcropolis"
                 ? Path.Combine(_repo, "sd", "ultimate", "arcropolis")
                 : _skylineDir;
 
             try
             {
-                await SendStatus(id, "downloading", "Fetching " + name + "…", 0);
-                var release = await GetLatestGitHubRelease(repo);
-                if (release == null || string.IsNullOrEmpty(release.downloadUrl))
-                {
-                    await SendStatus(id, "error", "Could not find a " + name + " release.", 0);
-                    return;
-                }
-
-                await SendStatus(id, "downloading", $"Downloading {name} {release.version}…", 10);
+                await SendStatus(id, "downloading", $"Downloading {name} {pin.Version}…", 10);
                 Directory.CreateDirectory(target);
-                await DownloadAndExtract(release.downloadUrl, target);
+                await DownloadPinnedAndExtract(pin, target);
                 ImportPlugins(target);
 
                 await SendStatus(id, "done", name + " installed.", 100);
@@ -3099,41 +3086,35 @@ namespace OpenSmash.Launcher
             {
                 await SendStatus(id, "downloading", "Fetching " + name + "…", 0);
 
-                string download = url ?? "";
-                var match = Regex.Match(download, @"github\.com/([^/?#]+)/([^/?#]+)", RegexOptions.IgnoreCase);
-                if (match.Success)
-                {
-                    string repo = match.Groups[1].Value + "/" + match.Groups[2].Value.TrimEnd('/');
-                    var release = await GetLatestGitHubRelease(repo);
-                    if (release == null || string.IsNullOrEmpty(release.downloadUrl))
-                    {
-                        // No packaged release: send the user to the page rather than
-                        // downloading the HTML and failing to unzip it.
-                        if (!string.IsNullOrEmpty(url))
-                            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-                        await SendStatus(id, "error", "No packaged download for " + name + "; opened its page.", 0);
-                        return;
-                    }
-                    download = release.downloadUrl;
-                }
+                // Only the plugins pinned in PinnedDownloads are downloaded; the page's
+                // URL only tells which one it means. Anything else opens in the user's
+                // browser for them to judge.
+                var match = Regex.Match(url ?? "", @"^https?://(?:www\.)?github\.com/([^/?#]+)/([^/?#]+)", RegexOptions.IgnoreCase);
+                string repo = match.Success ? match.Groups[1].Value + "/" + match.Groups[2].Value.TrimEnd('/') : "";
+                if (repo.EndsWith(".git", StringComparison.OrdinalIgnoreCase)) repo = repo[..^4];
 
-                if (string.IsNullOrEmpty(download))
+                if (RuntimeProvidedPluginRepos.Any(r => r.Equals(repo, StringComparison.OrdinalIgnoreCase)))
                 {
-                    await SendStatus(id, "error", "No download found for " + name + ".", 0);
+                    await SendStatus(id, "done", name + " is built into OpenSmash; nothing to install.", 100);
                     return;
                 }
 
-                await SendStatus(id, "downloading", "Downloading " + name + "…", 15);
-                Directory.CreateDirectory(temp);
-                await DownloadAndExtract(download, temp);
-
-                int imported = ImportPlugins(temp);
-                if (imported == 0)
+                var pin = repo.Length > 0 ? PinnedForRepo(repo) : null;
+                if (pin == null || pin.Key == "skyline" || pin.Key == "arcropolis")
                 {
-                    // Nothing plugin-shaped in the archive: let the user grab it.
-                    if (!string.IsNullOrEmpty(url))
-                        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-                    await SendStatus(id, "error", name + " has no plugin files; opened its download page.", 0);
+                    OpenExternal(url);
+                    await SendStatus(id, "error", name + " is not one of the plugins OpenSmash installs; opened its page.", 0);
+                    return;
+                }
+
+                await SendStatus(id, "downloading", $"Downloading {pin.Name} {pin.Version}…", 15);
+                Directory.CreateDirectory(temp);
+                await DownloadPinnedAndExtract(pin, temp);
+
+                ImportPlugins(temp);
+                if (!File.Exists(Path.Combine(_pluginsDir, Path.GetFileName(new Uri(pin.Url).AbsolutePath))))
+                {
+                    await SendStatus(id, "error", name + " has no plugin files.", 0);
                     return;
                 }
 
