@@ -15,6 +15,7 @@
 #include "gpu_backend.h"
 #include "gpu_menu.h"
 #include "gpu_overlay.h"
+#include "gpu_renderer.h"
 #include "net.h"
 #include "pad.h"
 #include "gpu_shader.h"
@@ -705,6 +706,7 @@ static BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *c) {
     window = (HWND)rt_window();
 #endif
     if (!window) { fprintf(stderr, "[gfx] cannot create the window\n"); return TRUE; }
+    gfx_renderer_start(window);   /* (display.ini's renderer: this one draws unless another can: gpu_renderer.c) */
 
     D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
