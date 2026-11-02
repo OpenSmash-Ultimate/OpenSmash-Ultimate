@@ -25,6 +25,10 @@ typedef int64_t i64;
 #include "host.h"
 #endif
 
+/* Windows only: the patch is x86-64 code written over code pages, and Linux's and macOS's
+ * VirtualProtect hand back no real old protection (and Apple silicon runs no x86-64 code).
+ * Elsewhere no function is patched: the dispatch-table hook still stands, direct calls do not. */
+#if defined(_WIN32) || defined(DETOUR_TEST)
 #include "hde/hde64.inc"   /* (.inc: compiled only here, not on its own: the builds take sources from runtime/ top) */
 
 #define PATCH_LEN 5
@@ -307,6 +311,12 @@ GuestFn *rt_detour_entry(GuestFn *body, GuestFn *hook, int allow_new, u32 room) 
     detours = d;
     return d->trampoline;
 }
+#else
+GuestFn *rt_detour_entry(GuestFn *body, GuestFn *hook, int allow_new, u32 room) {
+    (void)body; (void)hook; (void)allow_new; (void)room;
+    return NULL;
+}
+#endif
 
 #ifdef DETOUR_TEST
 static int hits;

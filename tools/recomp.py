@@ -1439,14 +1439,8 @@ def link(dirs, exe, rt_dir=None, steps=None):
     else:
         objs += game
         # a wrap no module has (a made-up game's modules, tools/mac/boottest): its original is a stub nothing calls
-        # A wrapped function's body is f_<addr>_orig. This build's objects named it f_<addr>_orig_orig,
-        # so the name the wrapper calls was missing and the game stopped at startup. The first
-        # alias reaches that body; the second is only for a wrap whose module is not in this link.
-        alts = []
-        for a in sorted(hle_wraps()):
-            alts.append(f"/alternatename:f_{a:x}_orig=f_{a:x}_orig_orig")
-            alts.append(f"/alternatename:f_{a:x}_orig_orig=rt_wrap_missing")
-        cc.link(objs, exe, alts)
+        # (one alias, straight to the stub: lld-link does not follow an alias to another alias)
+        cc.link(objs, exe, [f"/alternatename:f_{a:x}_orig=rt_wrap_missing" for a in sorted(hle_wraps())])
     isa.record(os.path.dirname(os.path.abspath(exe)), cc.ISA, cc.ISA_TOLD)   # (what build_game.py's build_is_current compares)
     # the controllers' SDL3.dll, which the runtime loads from the exe's own folder
     if cc.SDL3_DLL:

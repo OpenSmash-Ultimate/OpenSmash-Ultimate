@@ -1355,6 +1355,44 @@ DWORD GetFileAttributesA(LPCSTR path) {
     return S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
 }
 
+BOOL GetFileAttributesExA(LPCSTR path, GET_FILEEX_INFO_LEVELS level, void *out) {
+    char buf[4096];
+    struct stat st;
+    WIN32_FILE_ATTRIBUTE_DATA *d = (WIN32_FILE_ATTRIBUTE_DATA *)out;
+    if (level != GetFileExInfoStandard || !d) { last_error = ERROR_INVALID_PARAMETER; return FALSE; }
+    if (stat(rt_unix_path(path, buf, sizeof buf), &st)) return fail_errno();
+    d->dwFileAttributes = S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    d->ftCreationTime = filetime_of(st.st_ctim);
+    d->ftLastAccessTime = filetime_of(st.st_atim);
+    d->ftLastWriteTime = filetime_of(st.st_mtim);
+    d->nFileSizeHigh = S_ISDIR(st.st_mode) ? 0 : (DWORD)((u64)st.st_size >> 32);
+    d->nFileSizeLow = S_ISDIR(st.st_mode) ? 0 : (DWORD)st.st_size;
+    return TRUE;
+}
+
+/* The path made absolute against the current folder (not resolved: it need not exist). Returns
+ * the length written, or the size needed (with the terminator) when the buffer is too small. */
+DWORD GetFullPathNameA(LPCSTR path, DWORD size, LPSTR buffer, LPSTR *file_part) {
+    char in[4096], out[8192];
+    rt_unix_path(path, in, sizeof in);
+    if (in[0] == '/') snprintf(out, sizeof out, "%s", in);
+    else {
+        char cwd[4096];
+        if (!getcwd(cwd, sizeof cwd)) return (DWORD)fail_errno();
+        snprintf(out, sizeof out, "%s/%s", cwd, in);
+    }
+    size_t n = strlen(out);
+    if (n + 1 > size) return (DWORD)(n + 1);
+    memcpy(buffer, out, n + 1);
+    if (file_part) { char *s = strrchr(buffer, '/'); *file_part = s && s[1] ? s + 1 : NULL; }
+    return (DWORD)n;
+}
+
+LONG CompareFileTime(const FILETIME *a, const FILETIME *b) {
+    u64 x = (u64)a->dwHighDateTime << 32 | a->dwLowDateTime, y = (u64)b->dwHighDateTime << 32 | b->dwLowDateTime;
+    return x < y ? -1 : x > y;
+}
+
 /* Directory searches: "<dir>/<pattern>", with "." and ".." listed as Windows does. */
 static BOOL find_next(Obj *o, WIN32_FIND_DATAA *data) {
     for (struct dirent *e; (e = readdir(o->dir));) {
