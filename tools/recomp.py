@@ -1364,8 +1364,9 @@ def link(dirs, exe, rt_dir=None, steps=None):
     sources = [n for n in os.listdir(cc.RUNTIME) if re.fullmatch(r"(host|kernel|gpu\w*|hle\w*|ipc\w*|debug\w*|net\w*)\.c", n)]
     for n in sources:
         want(os.path.join(cc.RUNTIME, n), os.path.join(rt_dir, n[:-2] + ".obj"), "/O2", rt_flags)
-    # BC7 and the other block formats, decoded on the CPU for UI icons (runtime/gpu_d3d11.c).
-    decode_src = os.path.join(cc.ROOT, "ssbu-recomp", "runtime", "tex_decode.c")
+    # BC7 and the other block formats, decoded on the CPU for UI icons (runtime/gpu_d3d11.c). Found beside
+    # the runtime being built (cc.RUNTIME's tree), not the checkout's, so a runtime elsewhere (a test's) has its own.
+    decode_src = os.path.join(os.path.dirname(os.path.abspath(cc.RUNTIME)), "ssbu-recomp", "runtime", "tex_decode.c")
     decode_obj = os.path.join(rt_dir, "tex_decode.obj")
     if os.path.isfile(decode_src):
         decode_flags = [*(rt_flags if rt_flags is not None else cc.CFLAGS), "/I" + os.path.dirname(decode_src)]
