@@ -287,9 +287,11 @@ static inline errno_t _get_timezone(long *seconds_west) { tzset(); *seconds_west
 #define PAGE_NOACCESS 0x01
 #define PAGE_READONLY 0x02
 #define PAGE_READWRITE 0x04
+#define PAGE_WRITECOPY 0x08
 #define PAGE_EXECUTE 0x10
 #define PAGE_EXECUTE_READ 0x20
 #define PAGE_EXECUTE_READWRITE 0x40
+#define PAGE_EXECUTE_WRITECOPY 0x80
 #define PAGE_GUARD 0x100
 #define WRITE_WATCH_FLAG_RESET 0x01
 typedef struct MEMORY_BASIC_INFORMATION {
@@ -381,6 +383,15 @@ BOOL CreateDirectoryA(LPCSTR path, void *security);
 BOOL RemoveDirectoryA(LPCSTR path);
 BOOL MoveFileExA(LPCSTR from, LPCSTR to, DWORD flags);
 DWORD GetFileAttributesA(LPCSTR path);
+typedef enum GET_FILEEX_INFO_LEVELS { GetFileExInfoStandard } GET_FILEEX_INFO_LEVELS;
+typedef struct WIN32_FILE_ATTRIBUTE_DATA {
+    DWORD dwFileAttributes;
+    FILETIME ftCreationTime, ftLastAccessTime, ftLastWriteTime;
+    DWORD nFileSizeHigh, nFileSizeLow;
+} WIN32_FILE_ATTRIBUTE_DATA;
+BOOL GetFileAttributesExA(LPCSTR path, GET_FILEEX_INFO_LEVELS level, void *out);
+DWORD GetFullPathNameA(LPCSTR path, DWORD size, LPSTR buffer, LPSTR *file_part);
+LONG CompareFileTime(const FILETIME *a, const FILETIME *b);
 HANDLE FindFirstFileA(LPCSTR pattern, WIN32_FIND_DATAA *data);
 BOOL FindNextFileA(HANDLE h, WIN32_FIND_DATAA *data);
 BOOL FindClose(HANDLE h);
