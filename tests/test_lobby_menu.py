@@ -339,7 +339,7 @@ class Pages(MenuTest):
         m.type('3')
         self.assertEqual(m.labels(), ['Now', 'Play online in', 'Your name', 'Direct connections', 'Netplay version'])   # (offline: no code)
         m.type('4')
-        self.assertEqual(m.labels(), ['Restart the game', 'Quit the game', 'Esc / Home button', 'F1', 'F2', 'F3', 'F11, Alt+Enter', 'Version'])
+        self.assertEqual(m.labels(), ['Game language', 'Volume', 'Restart the game', 'Quit the game', 'Esc / Home button', 'F1', 'F2', 'F3', 'F11, Alt+Enter', 'Version'])
 
     def test_offline(self):
         m = self.menu()
