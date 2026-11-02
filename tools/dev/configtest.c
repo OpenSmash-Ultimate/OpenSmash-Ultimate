@@ -16,6 +16,11 @@
  * Exit code 0 when it did what it was asked. */
 #include "../../runtime/hle_pad.c"
 #include "../../runtime/hle_padusb.c"
+#ifdef __APPLE__   /* (the game's: macos/gcadapter.c, which needs libusb; no adapter here) */
+const char *padusb_start(void) { return NULL; }
+void padusb_poll(PadUsbState out[PADUSB_PORTS]) { memset(out, 0, sizeof(PadUsbState) * PADUSB_PORTS); }
+void padusb_rumble(int port, int on) { (void)port; (void)on; }
+#endif
 
 /* (gpu_display.c's, which is not built here: display.ini's defaults, made up) */
 const char *display_default_ini(void) {

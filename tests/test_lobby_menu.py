@@ -339,7 +339,9 @@ class Pages(MenuTest):
         m.type('3')
         self.assertEqual(m.labels(), ['Now', 'Play online in', 'Your name', 'Direct connections', 'Netplay version'])   # (offline: no code)
         m.type('4')
-        self.assertEqual(m.labels(), ['Restart the game', 'Quit the game', 'Esc / Home button', 'F1', 'F2', 'F3', 'F11, Alt+Enter', 'Version'])
+        keys = (['F1, Cmd+1', 'F2, Cmd+2', 'F3, Cmd+3', 'Option+Return'] if sys.platform == 'darwin'
+                else ['F1', 'F2', 'F3', 'F11, Alt+Enter'])
+        self.assertEqual(m.labels(), ['Restart the game', 'Quit the game', 'Esc / Home button', *keys, 'Version'])
 
     def test_offline(self):
         m = self.menu()
