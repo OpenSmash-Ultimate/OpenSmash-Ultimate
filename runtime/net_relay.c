@@ -95,7 +95,7 @@ enum { W_LOBBY = 1, W_INTRODUCES = 2, W_ROOMS = 4, W_MATCH = 8, W_RB = 16 };   /
 #define NETWORK_INFO 0x480
 #define PING_EXT_SIZE (4 + 8 + 8 + 8 + 2 + 4 + 4 + 2 + 1 + 1)
 
-extern const RtModule rt_module_main;   /* (its build id tells game versions apart) */
+/* (rt_module_main, host.h: its build id tells game versions apart) */
 
 static u16 get16(const u8 *p) { return (u16)(p[0] << 8 | p[1]); }
 static u32 get32(const u8 *p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3]; }
