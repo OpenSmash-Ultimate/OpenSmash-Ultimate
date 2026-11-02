@@ -80,6 +80,9 @@ def list_ncas(folder, depth=1):
                     ncas.append((os.path.join(p, "00"), n))
             elif low.endswith((".nsp", ".xci")) and os.path.isfile(p):
                 nsps.append((p, n))
+            elif low.endswith(".nsz") and os.path.isfile(p):   # (read through its plain copy in dump/nsz: tools/nsz.py)
+                import nsz
+                nsps.append((nsz.plain_nsp(p), n))
             elif os.path.isdir(p) and level < depth:
                 visit(p, level + 1)
 
