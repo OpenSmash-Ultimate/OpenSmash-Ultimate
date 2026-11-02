@@ -49,7 +49,7 @@ opening and menus, at 60 fps; full matches haven't been yet.
 
 ## Install and build
 
-1. **Download WindowSmash.** On the [GitHub page](https://github.com/Jaiden56YT/WindowSmash), click
+1. **Download WindowSmash.** On the [GitHub page](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate), click
    **Code**, then **Download ZIP**. Double-click the ZIP in your Downloads folder to unpack it, then move
    the folder to your home folder (the one with your name, in Finder's **Go** menu) and call it
    `WindowSmash`. Keep it out of Desktop, Documents and Downloads: iCloud Drive may try to upload the
@@ -94,7 +94,7 @@ WindowSmash.command` from Finder into the window, and press <kbd>Return</kbd>.
 Or download and start everything with one command. This puts WindowSmash in `~/WindowSmash`:
 
 ```bash
-mkdir -p ~/WindowSmash && curl -fL https://codeload.github.com/Jaiden56YT/WindowSmash/tar.gz/refs/heads/main | tar -xz -C ~/WindowSmash --strip-components 1 && bash ~/WindowSmash/"Install WindowSmash.command"
+mkdir -p ~/WindowSmash && curl -fL https://codeload.github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/tar.gz/refs/heads/main | tar -xz -C ~/WindowSmash --strip-components 1 && bash ~/WindowSmash/"Install WindowSmash.command"
 ```
 
 </details>
