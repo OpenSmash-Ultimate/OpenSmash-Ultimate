@@ -44,7 +44,7 @@ Press <kbd>Esc</kbd> in the game to open the settings (on Windows and Linux; the
 | Page | What you can change |
 | :--- | :--- |
 | **Display** | Window or full screen, frame pacing, how many frames the graphics card works ahead, the mouse pointer, the frame rate in the corner, the window's size, the render scale, the graphics card. |
-| **Controllers** | For each connected controller: which player it is, face buttons by position or by label, stick dead zone, rumble, how far a trigger is pulled for ZL / ZR, and which control is each button (**Buttons...**). For the keyboard: which player it adds to. Also **Rumble** on or off for every controller, and whether controllers work while another window is in front. |
+| **Controllers** | For each connected controller: which player it is, face buttons by position or by label, stick dead zone, rumble, how far a trigger is pulled for ZL / ZR, and which control each button is (**Buttons...**). For the keyboard: which player it adds to. Also **Rumble** on or off for every controller, and whether controllers work while another window is in front. |
 | **Online** | Public lobby, a private lobby code, your own server, or offline; your name; direct connections; the netplay version ([multiplayer guide](MULTIPLAYER.md)). |
 | **Game** | Restart or quit the game, the keys, and the game version. |
 | **Lobby** | The online lobby's rooms, the ones you can't join too (and why), and matchmaking. They need netplay version 3, which is being tried out ([multiplayer guide](MULTIPLAYER.md#room-browser-and-matchmaking-being-tried-out)). |
