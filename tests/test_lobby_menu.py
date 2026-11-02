@@ -314,7 +314,10 @@ class Pages(MenuTest):
         m.type('5')
         self.assertEqual(m.page()[1], LOBBY_PAGE)
         m.key('TAB')
-        self.assertEqual(m.page()[1], 0)   # (after the Lobby: Display again)
+        self.assertEqual(m.page()[1], LOBBY_PAGE + 1)   # (after the Lobby: Mods)
+        m.key('TAB')
+        self.assertEqual(m.page()[1], 0)   # (then Display again)
+        m.key('SHTAB')
         m.key('SHTAB')
         self.assertEqual(m.page()[1], LOBBY_PAGE)
         m.type('4')
@@ -322,9 +325,9 @@ class Pages(MenuTest):
         m.key('TAB')
         self.assertEqual(m.page()[1], LOBBY_PAGE)
         drawn = m.draw()
-        for i, name in enumerate(('Display', 'Controllers', 'Online', 'Game', 'Lobby')):
+        for i, name in enumerate(('Display', 'Controllers', 'Online', 'Game', 'Lobby', 'Mods')):
             self.assertIn(f'{i + 1} {name}', drawn)
-        self.assertIn('Up/Down: choose   Left/Right: change   A/Enter: select   L/R or Tab, 1-5: page   B/Esc: close', drawn)
+        self.assertIn('Up/Down: choose   Left/Right: change   A/Enter: select   L/R or Tab, 1-6: page   B/Esc: close', drawn)
         m.key('ESC')
         self.assertEqual(m.page()[0], 0)
 
@@ -338,6 +341,8 @@ class Pages(MenuTest):
         self.assertEqual(m.labels(), ['Controllers', 'Rumble', 'Keyboard plays as', 'Pads when not focused', 'Open controllers.ini'])
         m.type('3')
         self.assertEqual(m.labels(), ['Now', 'Play online in', 'Your name', 'Direct connections', 'Netplay version'])   # (offline: no code)
+        m.type('6')
+        self.assertEqual(m.labels(), ['Mods', 'ARCropolis code patches', 'No mod installed'])   # (the harness has no mods)
         m.type('4')
         self.assertEqual(m.labels(), ['Game language', 'Volume', 'Restart the game', 'Quit the game', 'Esc / Home button', 'F1', 'F2', 'F3', 'F11, Alt+Enter', 'Version'])
 
@@ -386,10 +391,11 @@ class Version(MenuTest):
         self.assertEqual(m.net(0)[0], 3)
 
     def test_no_file_as_before(self):
+        tail = 2 + 4 + 1   # (version 2's JOIN ends with 'W' 'S', the simulation version and a mod set: net_relay.c send_join)
         join, _ = self.join_of()
-        self.assertEqual((join[2], len(join)), (2, R.JOIN_SIZE))
+        self.assertEqual((join[2], len(join), join[R.JOIN_SIZE:R.JOIN_SIZE + 2]), (2, R.JOIN_SIZE + tail, b'WS'))
         join, _ = self.join_of(files={'online_protocol.txt': '4\n'})   # (not a version: the default)
-        self.assertEqual((join[2], len(join)), (2, R.JOIN_SIZE))
+        self.assertEqual((join[2], len(join)), (2, R.JOIN_SIZE + tail))
 
     def test_variable_wins(self):
         join, m = self.join_of(protocol=2, files={'online_protocol.txt': '3\n'})
@@ -495,13 +501,16 @@ class Rooms(MenuTest):
                          [('Alpha (you)', '1/4 players, open'), ('Bravo', '2/4 players, open'), ('Golf', '4/4 players, full or closed'),
                           ('Charlie', "can't join: update your WindowSmash"), ('Delta', "can't join: their WindowSmash is older"),
                           ('Echo', "can't join: another game version"), ('Foxtrot', "can't join: other mods")])
+        game = f'Game build {BUILD[:8]} (yours too), WindowSmash simulation version {SIM} (yours too), netplay version 3'
         self.assertEqual(rows['Bravo']['help'], "Bravo's room, 2 of 4 players. To join it, close this menu, then Local Wireless > Rooms List and "
-                                                "pick Bravo's room.")
+                                                f"pick Bravo's room. / {game} / Mods: none")   # (the room's game and mods, against yours)
+        self.assertIn(f'Game build {OTHER_BUILD[:8]} (yours {BUILD[:8]})', rows['Echo']['help'])
+        self.assertIn(f'simulation version {SIM + 1} (yours {SIM})', rows['Charlie']['help'])
         self.assertIn(f'simulation version is {SIM + 1}, yours {SIM}', rows['Charlie']['help'])
         self.assertIn('Yours is the older one: update WindowSmash to join.', rows['Charlie']['help'])
         self.assertIn('Theirs is the older one: the host needs to update.', rows['Delta']['help'])
         self.assertIn(f'build {OTHER_BUILD[:8]}, yours {BUILD[:8]}', rows['Echo']['help'])
-        self.assertEqual(rows['Foxtrot']['help'], "Mods you don't have: Alpha")
+        self.assertEqual(rows['Foxtrot']['help'], f"Mods you don't have: Alpha / {game} / Mods: Alpha (you don't have it)")
         for label, said in (('Bravo', "Close this menu, then Local Wireless > Rooms List: Bravo's room"),
                             ('Alpha (you)', 'This is your own room'),
                             ('Golf', "Golf's room is full or closed for now"),
@@ -511,7 +520,7 @@ class Rooms(MenuTest):
             self.assertEqual(m.toast(), said)
         self.assertEqual(m.page()[0], 1)   # (the menu stays open)
         m.go_to('Charlie')   # (its help's second line on a line of its own)
-        self.assertTrue(any(line.endswith('needs updating) / Yours is the older one: update WindowSmash to join.') for line in m.draw()))
+        self.assertTrue(any('needs updating) / Yours is the older one: update WindowSmash to join.' in line for line in m.draw()))
 
     def test_cursor_stays_on_its_room(self):
         m, lobby = self.v3()

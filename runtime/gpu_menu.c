@@ -25,6 +25,7 @@
 #include "audio.h"
 #include "gpu_overlay.h"
 #include "language.h"
+#include "mod_switch.h"
 #include "net.h"
 #include "pad.h"
 #include "settings.h"
@@ -75,8 +76,8 @@ enum {   /* (from keys, pads or the test script) */
 };
 
 /* ---- the rows of a page ------------------------------------------------------------------ */
-enum { P_DISPLAY, P_PADS, P_ONLINE, P_GAME, P_LOBBY, P_REMAP, PAGES = P_REMAP };   /* (the pad's buttons: no key of their own) */
-static const char *const PAGE_NAMES[PAGES] = {"Display", "Controllers", "Online", "Game", "Lobby"};
+enum { P_DISPLAY, P_PADS, P_ONLINE, P_GAME, P_LOBBY, P_MODS, P_REMAP, PAGES = P_REMAP };   /* (the pad's buttons: no key of their own) */
+static const char *const PAGE_NAMES[PAGES] = {"Display", "Controllers", "Online", "Game", "Lobby", "Mods"};
 enum { K_INFO, K_CHOICE, K_ACTION, K_TEXT };
 enum { W_NONE, W_NOW, W_RESTART };
 enum {
@@ -85,16 +86,20 @@ enum {
     R_RUMBLE, R_KEYBOARD, R_BACKGROUND, R_PADS_FILE,
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
-    R_LANGUAGE, R_VOLUME, R_RESTART, R_QUIT, R_REMAP_BACK, R_ROOM_FIRST = 60,   /* + the room's place in the list */
-    R_REMAP_FIRST = 100   /* + console button */
+    R_LANGUAGE, R_VOLUME, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF,
+    R_ROOM_FIRST = 60,    /* + the room's place in the list */
+    R_REMAP_FIRST = 100,  /* + console button */
+    R_MOD_FIRST = 200     /* + the mod's place in mods.json (MENU_MODS at most) */
 };
+#define IS_REMAP(id) ((id) >= R_REMAP_FIRST && (id) < R_REMAP_FIRST + 16)
 
 typedef struct Row { int id, kind, when; char label[48], value[112], note[64]; const char *help; } Row;
-static Row rows[40];
+enum { MENU_ROWS = 180, MENU_MODS = 150 };   /* (the Mods page: a row a mod, MENU_MODS at most) */
+static Row rows[MENU_ROWS];
 static int nrows;
 
 static Row *add(int id, int kind, int when, const char *label, const char *help) {
-    Row *r = &rows[nrows < 39 ? nrows++ : 39];
+    Row *r = &rows[nrows < MENU_ROWS - 1 ? nrows++ : MENU_ROWS - 1];
     memset(r, 0, sizeof *r);
     r->id = id; r->kind = kind; r->when = when; r->help = help;
     snprintf(r->label, sizeof r->label, "%s", label);
@@ -254,7 +259,7 @@ static int nlobby_rooms, rooms_state;
 static NetMatch match;
 static ULONGLONG match_started;          /* when the menu's search started (the time it shows) */
 static int match_followed, match_said, match_said_open;   /* that search, followed while the menu is closed too */
-static char helps[40][420];              /* help made for a row (help_set) */
+static char helps[MENU_ROWS][900];       /* help made for a row (help_set) */
 
 static void help_set(Row *r, const char *fmt, ...) {
     char *h = helps[r - rows];
@@ -344,6 +349,58 @@ static void match_rows(void) {
     }
 }
 
+/* ---- the Mods page: every mod's switch (mods/mods.json, mod_switch.h) -------------------- */
+static ModSwitch menu_mods[MENU_MODS];
+static int nmenu_mods = -1, menu_mods_code = -1;   /* (-1: read again when the page shows) */
+
+static void mods_rows(int fresh) {
+    if (fresh || nmenu_mods < 0) nmenu_mods = mods_switch_list(menu_mods, MENU_MODS, &menu_mods_code);
+    if (nmenu_mods < 0) nmenu_mods = 0;
+    int on = 0, running = mods_running_count();
+    for (int i = 0; i < nmenu_mods; i++) on += menu_mods[i].on;
+    char msg[200];
+    int st = mods_switch_state(msg, sizeof msg);
+    Row *r = add(R_MODS_STATE, K_INFO, W_NONE, "Mods",
+                 "Every mod's switch: the same as the launcher's and the Mods app's (mods/mods.json). A change counts when the game "
+                 "starts again (Restart now), which applies the mods first. Online, players meet when they run the same mods.");
+    if (st == MODS_SWITCH_WORKING || st == MODS_SWITCH_FAILED) snprintf(r->value, sizeof r->value, "%s", msg);
+    else snprintf(r->value, sizeof r->value, "%d installed, %d on; %d running now", nmenu_mods, on, running);
+    int code = mod_switch_code_patches(menu_mods_code, running);
+    r = add(R_MOD_CODE, K_CHOICE, W_RESTART, MOD_SWITCH_CODE_TITLE,
+            "ARCropolis' fixes to the game's code for costume slots a mod adds (c08 and up). Off: the game's own code, as with no "
+            "mod. Auto: on while a mod runs. Players online need the same.");
+    snprintf(r->value, sizeof r->value, "%s%s", code ? "on" : "off", menu_mods_code < 0 ? " (auto)" : "");
+    if (rt_code_patches_on() != code) snprintf(r->note, sizeof r->note, "now %s", rt_code_patches_on() ? "on" : "off");
+    if (on) add(R_MODS_OFF, K_ACTION, W_RESTART, "Turn every mod off", "Every mod off, for the game as it is (online: the vanilla game's players).");
+    if (restart_pending) add(R_RESTART, K_ACTION, W_NONE, "Restart now", "Starts the game again, with the changes. A match in progress is lost.");
+    for (int i = 0; i < nmenu_mods; i++) {
+        const ModSwitch *m = &menu_mods[i];
+        r = add(R_MOD_FIRST + i, K_CHOICE, W_RESTART, "", NULL);
+        snprintf(r->label, sizeof r->label, "%.46s", m->title);
+        snprintf(r->value, sizeof r->value, "%s", m->on ? "on" : "off");
+        help_set(r, "%s\nFolder: mods/%s. A or Left/Right: on or off (counts when the game starts again).%s", m->title, m->name,
+                 mod_switch_name_ok(m->name) ? "" : "\nIts folder's name can't be passed on from here: use the launcher.");
+    }
+    if (nmenu_mods == MENU_MODS) add(R_NONE, K_INFO, W_NONE, "More mods", "The first ones only: the launcher lists them all.");
+    else if (!nmenu_mods) add(R_NONE, K_INFO, W_NONE, "No mod installed", "Mods are installed with the launcher (OpenSmash.exe) or the Mods app.");
+}
+
+/* A mod's (or the code patches') switch turned (dir: either way: it flips). */
+static void mod_flip(const Row *row) {
+    int ok;
+    if (row->id == R_MOD_CODE) {
+        int code = mod_switch_code_patches(menu_mods_code, mods_running_count());
+        ok = mods_switch_set(MOD_SWITCH_CODE, !code);
+        if (ok) menu_mods_code = !code;
+    } else {
+        ModSwitch *m = &menu_mods[row->id - R_MOD_FIRST];
+        ok = mods_switch_set(m->name, !m->on);
+        if (ok) m->on = !m->on;
+    }
+    if (!ok) { menu_toast(mods_switch_state(NULL, 0) == MODS_SWITCH_WORKING ? "Still changing the last one: a moment" : "Can't change it from here: use the launcher"); return; }
+    changed(W_RESTART);
+}
+
 /* Why a room can't be joined, in a few words (the help has the whole of it). */
 static const char *room_short(const NetRoom *x) {
     if (x->why_kind == NET_WHY_BUILD) return "another game version";
@@ -365,18 +422,21 @@ static void room_rows(void) {
         const char *host = x->name[0] ? x->name : "(no name)";
         r = add(R_ROOM_FIRST + i, K_ACTION, W_NONE, "", NULL);
         snprintf(r->label, sizeof r->label, "%.30s%s", host, x->mine ? " (you)" : "");
+        /* (the help, with the cursor on it: why not, then its game and mods against yours: net_relay.c room_details) */
         if (!x->joinable) {
             snprintf(r->value, sizeof r->value, "can't join: %s", room_short(x));
-            help_set(r, "%s%s", x->why, x->why_kind != NET_WHY_SIM ? "" : x->sim > SIM_VERSION ? "\nYours is the older one: update WindowSmash to join."
-                                                                                               : "\nTheirs is the older one: the host needs to update.");
+            help_set(r, "%s%s\n%s", x->why, x->why_kind != NET_WHY_SIM ? "" : x->sim > SIM_VERSION ? "\nYours is the older one: update WindowSmash to join."
+                                                                                                     : "\nTheirs is the older one: the host needs to update.",
+                     x->details);
             continue;
         }
         snprintf(r->value, sizeof r->value, "%d/%d players, %s", x->players, x->most, x->open ? "open" : "full or closed");
-        if (x->mine) help_set(r, "Your own room, %d of %d players: other players of your game find it in their Rooms List.", x->players, x->most);
-        else if (x->open) help_set(r, "%s's room, %d of %d players. To join it, close this menu, then Local Wireless > Rooms List and pick %s's room.%s%s",
-                                   host, x->players, x->most, host, x->nmods ? "\nMods: " : "", x->mods);
-        else help_set(r, "%s's room is full or closed for now (%d of %d players). Once it opens, it is in Local Wireless > Rooms List.",
-                      host, x->players, x->most);
+        if (x->mine) help_set(r, "Your own room, %d of %d players: other players of your game find it in their Rooms List.\n%s", x->players, x->most,
+                              x->details);
+        else if (x->open) help_set(r, "%s's room, %d of %d players. To join it, close this menu, then Local Wireless > Rooms List and pick %s's room.\n%s",
+                                   host, x->players, x->most, host, x->details);
+        else help_set(r, "%s's room is full or closed for now (%d of %d players). Once it opens, it is in Local Wireless > Rooms List.\n%s",
+                      host, x->players, x->most, x->details);
     }
 }
 
@@ -573,7 +633,7 @@ static void build(void) {
         char status[512];
         net_status(status, sizeof status);
         char *nl = strchr(status, '\n');
-        if (nl) *nl = 0;
+        if (nl) { *nl = 0; help_set(r, "What the game is connected to.\n%s", nl + 1); }   /* (a refusal's what-differs, the room's players) */
         snprintf(r->value, sizeof r->value, "%.110s", status[0] ? status : net_configured() ? "connecting..." : "offline");
         r = add(R_NET_MODE, K_CHOICE, W_RESTART, "Play online in",
                 "Public lobby: everyone's rooms in Local Wireless. Private: only players with the same code. Your own server: host:port. Offline: no netplay.");
@@ -599,6 +659,9 @@ static void build(void) {
         if (restart_pending) add(R_RESTART, K_ACTION, W_NONE, "Restart now", "Starts the game again, with the changes. A match in progress is lost.");
         break;
     }
+    case P_MODS:
+        mods_rows(!same);
+        break;
     case P_LOBBY:
         build_lobby(!same);
         if (was == R_NONE) break;
@@ -668,6 +731,7 @@ static void finish_edit(void) {
 }
 
 static void change(const Row *row, int dir) {
+    if (row->id == R_MOD_CODE || (row->id >= R_MOD_FIRST && row->id < R_MOD_FIRST + nmenu_mods)) { (void)dir; mod_flip(row); return; }
     DisplaySettings ds;
     display_settings(&ds);
     PadInfo *pad = pad_slot >= 0 && pads[pad_slot].connected ? &pads[pad_slot] : NULL;
@@ -820,7 +884,7 @@ static void action(const Row *row) {
     case K_CHOICE: change(row, 1); return;
     case K_TEXT: start_edit(row->id); return;
     }
-    if (row->id >= R_REMAP_FIRST && pad) {
+    if (IS_REMAP(row->id) && pad) {
         capture_button = row->id - R_REMAP_FIRST;
         capture_held = ~0u;   /* (whatever is held now must go first) */
         capture_until = GetTickCount64() + 6000;
@@ -901,6 +965,11 @@ static void action(const Row *row) {
     case R_RESTART:
     case R_QUIT:
         confirm = row->id;
+        break;
+    case R_MODS_OFF:
+        if (!mods_switch_set("--all", 0)) { menu_toast("Still changing the last one: a moment"); break; }
+        for (int i = 0; i < nmenu_mods; i++) menu_mods[i].on = 0;
+        changed(W_RESTART);
         break;
     }
 }
@@ -1004,7 +1073,7 @@ static void event(int ev, unsigned ch) {
     case EV_LEFT: case EV_RIGHT: if (row && row->kind == K_CHOICE) change(row, ev == EV_RIGHT ? 1 : -1); break;
     case EV_A: case EV_ENTER: if (row && selectable(row)) action(row); break;
     case EV_DEL:
-        if (page == P_REMAP && row && row->id >= R_REMAP_FIRST && pad_slot >= 0 && pads[pad_slot].connected) {
+        if (page == P_REMAP && row && IS_REMAP(row->id) && pad_slot >= 0 && pads[pad_slot].connected) {
             char section[128];
             pad_section(&pads[pad_slot], section, sizeof section);
             settings_ini_set(pad_ini_path(), section, pad_button_name(row->id - R_REMAP_FIRST), NULL);
@@ -1214,6 +1283,10 @@ void menu_draw(float w, float h) {
     char status[512];
     net_status(status, sizeof status);
     if (strstr(status, "Room:")) snprintf(banner, sizeof banner, "You are in a netplay room: the game keeps running while this menu is open.");
+    else if (!strncmp(status, "Netplay: ", 9) && strchr(status, '\n')) {   /* (refused, with what differs: its first line) */
+        const char *nl = strchr(status, '\n') + 1;
+        snprintf(banner, sizeof banner, "Can't join: %.*s (Online > Now)", (int)strcspn(nl, "\n"), nl);
+    }
     else if (restart_pending) snprintf(banner, sizeof banner, "Some changes take effect when the game starts again: Game > Restart the game.");
     char t[160];
     if (toast_now(t, sizeof t)) ovl_text(px + 300 * s, py + 34 * s, 24 * s, WHITE, t);   /* (a message, in the menu: here) */
@@ -1265,7 +1338,7 @@ void menu_draw(float w, float h) {
     }
     ovl_text(px + 36 * s, py + ph - 44 * s, 22 * s, DIM,
              page == P_REMAP ? "Up/Down: choose   A/Enter: press a new control   Y/Delete: default   B/Backspace: back   Esc: close"
-                             : "Up/Down: choose   Left/Right: change   A/Enter: select   L/R or Tab, 1-5: page   B/Esc: close");
+                             : "Up/Down: choose   Left/Right: change   A/Enter: select   L/R or Tab, 1-6: page   B/Esc: close");
     /* on top: a question, the text being typed, or a control being waited for */
     if (confirm) {
         float bw = 820 * s, bh = 200 * s, bx = (w - bw) / 2, by = (h - bh) / 2;

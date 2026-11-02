@@ -42,6 +42,7 @@ else:
     HAVE_CLANG = shutil.which('clang') is not None and platform.machine() in (('arm64',) if sys.platform == 'darwin' else ('x86_64', 'AMD64'))
 
 SIM = int(re.search(r'#define SIM_VERSION (\d+)u', (ROOT / 'runtime' / 'sim_version.h').read_text()).group(1))
+V2_TAIL = b'WS' + struct.pack('>I', SIM) + b'\0'   # (a JOIN of version 2's end: this game's simulation version, a mod set of none)
 LDN = R.LDN_PORT
 GAME = 12345
 BCAST = R.BROADCASTS[0]
@@ -282,6 +283,8 @@ class Bytes(ClientTest):
         want = head(R.JOIN) + nonce + b'bytes'.ljust(32, b'\0') + b'Alpha'.ljust(32, b'\0') + BUILD.encode().ljust(40, b'\0')
         if version == R.V3:
             want += struct.pack('>I', SIM) + b'\0'   # (the simulation version, a mod set of none)
+        else:   # (version 2's tail: 'W' 'S', the same two, which a private room's relay compares; others ignore it)
+            want += V2_TAIL
         self.assertEqual(join, want)
         flags = 3 if version == R.PROTOCOL else 31
         lobby.s.sendto(head(R.WELCOME) + nonce + struct.pack('>IQB', FAKE_IP, FAKE_COOKIE, flags) + b'\0', at)
@@ -336,7 +339,7 @@ class Bytes(ClientTest):
         g = self.game(lobby.address, protocol=2)
         g.send('join 1')
         join, _ = lobby.next(R.JOIN)
-        self.assertEqual((join[:4], len(join)), (b'SN\x02\x01', R.JOIN_SIZE))
+        self.assertEqual((join[:4], len(join), join[R.JOIN_SIZE:]), (b'SN\x02\x01', R.JOIN_SIZE + len(V2_TAIL), V2_TAIL))
 
     def test_version_3(self):
         """SSBU_NET_PROTOCOL=3: the same in version 3's header, its JOIN with the simulation version and
@@ -378,7 +381,7 @@ class Bytes(ClientTest):
         reject = b'SN\x03' + bytes((R.REJECT,)) + join[4:12] + b'\2' + b'different netplay version (lobby 2, you 3)'.ljust(64, b'\0')
         lobby.s.sendto(reject, at)
         again, _ = lobby.next(R.JOIN, wait=1.0)   # (no 2 s pause, as after any other REJECT)
-        self.assertEqual(again, b'SN\x02\x01' + join[4:R.JOIN_SIZE])
+        self.assertEqual(again, b'SN\x02\x01' + join[4:R.JOIN_SIZE] + V2_TAIL)
         lobby.s.sendto(reject, at)   # (late)
         self.assertTrue(until(lambda: 'connecting' in g.status()))   # (not refused)
         lobby.s.sendto(b'SN\x02' + bytes((R.WELCOME,)) + join[4:12] + struct.pack('>IQB', FAKE_IP, FAKE_COOKIE, 3) + b'\0', at)
@@ -551,6 +554,69 @@ class FallBack(ClientTest):
         guest.datagram(host.ip, b'through the relay')
         self.assertTrue(until(lambda: any(d[4] == b'through the relay' for d in host.received())))
         self.assertEqual(guest.rooms(0)[0], 0)
+
+
+class Mismatch(ClientTest):
+    """A refusal says what differs: a private room's relay (the host's game) refuses a game of another
+    build or mods - here ARCropolis' code patches, an entry of the mod set (SSBU_CODE_PATCHES) - with its
+    host's build, simulation version and mod set after the text (REJECT's detail), and the refused game
+    says which; a lobby's REJECT with a detail (ssbu_relay.reject_detail) the same. A game without the
+    tail (an older one) is let in as before."""
+    def host(self, **kw):
+        port = free_udp_port()
+        host = self.game(None, protocol=2, name='Host', SSBU_NET_HOST=1, SSBU_NET_PORT=port, SSBU_NET_BIND='127.0.0.1',
+                         SSBU_CODE_PATCHES=0, **kw)
+        host.join()
+        return port, host
+
+    def refused(self, g):
+        self.assertEqual(g.ask('join 3', 15), 'notjoined')
+        self.assertTrue(until(lambda: 'Netplay:' in g.status(), 5))
+        return g.status()
+
+    def test_same_game_joins(self):
+        port, host = self.host()
+        guest = self.game(f'127.0.0.1:{port}', protocol=2, name='Guest', SSBU_CODE_PATCHES=0)
+        self.assertEqual(guest.join()[4], 2)
+
+    def test_code_patches_on_one_side(self):
+        port, host = self.host()
+        guest = self.game(f'127.0.0.1:{port}', protocol=2, name='Guest', SSBU_CODE_PATCHES=1)
+        status = self.refused(guest)
+        self.assertIn('the host runs other mods', status)
+        self.assertIn('Code patches (ARCropolis): off in the room, on in yours', status)
+
+    def test_another_build(self):
+        port, host = self.host()
+        guest = self.game(f'127.0.0.1:{port}', protocol=2, name='Guest', SSBU_CODE_PATCHES=0, NETV3TEST_BUILD='0123456789ABCDEF' * 2 + '01234567')
+        status = self.refused(guest)
+        self.assertIn('the host has another game version', status)
+        self.assertIn(f"Game build differs: the room's (or lobby's) is {BUILD[:8]}, yours 01234567", status)
+
+    def test_older_game_without_the_tail(self):
+        """A JOIN of version 2 with no tail (an older game's): in, as before, whatever its mods."""
+        port, host = self.host()
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(s.close)
+        s.settimeout(3)
+        join = b'SN\x02\x01' + secrets.token_bytes(8) + b'v3client'.ljust(32, b'\0') + b'Old'.ljust(32, b'\0') + BUILD.encode().ljust(40, b'\0')
+        s.sendto(join, ('127.0.0.1', port))
+        kinds = []
+        while R.WELCOME not in kinds and R.REJECT not in kinds:   # (MEMBERS may come first)
+            kinds.append(s.recvfrom(2048)[0][3])
+        self.assertIn(R.WELCOME, kinds)
+
+    def test_lobby_detail(self):
+        """A lobby's REJECT with a detail of mods: the game says which mods differ."""
+        lobby = FakeLobby()
+        self.fakes.append(lobby)
+        g = self.game(lobby.address, protocol=2, SSBU_CODE_PATCHES=0)
+        g.status()
+        join, at = lobby.next(R.JOIN)
+        reject = (b'SN\x02' + bytes((R.REJECT,)) + join[4:12] + b'\x06' + b'the host runs other mods'.ljust(64, b'\0')
+                  + R.reject_detail(BUILD.encode(), SIM, mods((b'Alpha', 7))))
+        lobby.s.sendto(reject, at)
+        self.assertTrue(until(lambda: "Mods you don't have: Alpha" in g.status(), 5), g.status())
 
 
 if __name__ == '__main__':

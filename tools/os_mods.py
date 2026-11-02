@@ -2,7 +2,8 @@
 """What the OpenSmash launcher asks the WindowSmash mod manager to do.
 
     os_mods.py status
-    os_mods.py enable|disable|remove <folder>
+    os_mods.py enable|disable|remove <folder>   (":code_patches": ARCropolis' code patches, enable/disable only)
+    os_mods.py switch <folder>|--all on|off   the game's settings menu: mods.json only, applied at the next start
     os_mods.py remove-id <gamebanana id>
     os_mods.py install <gamebanana id> [file id]
     os_mods.py apply
@@ -12,6 +13,12 @@
     os_mods.py build
 
 status prints one JSON object. The others print "LOG ..." lines and a final "RESULT" line.
+
+Every mod's switch is mods/mods.json's "enabled" (tools/mods.py's), which the game's settings menu
+(runtime/hle_mod_switch.c, through "switch") changes too. ARCropolis' code patches (the costume-slot
+fixes tools/recomp.py builds into the game both ways) have theirs there as well, "code_patches";
+absent, they are on while a mod runs (dump/skyline/mods.txt lists one), so the game with no mod runs
+its own code. status lists them as a mod named ":code_patches", for the launcher's switch.
 """
 import json
 import os
@@ -26,6 +33,51 @@ import skyline  # noqa: E402
 import std_plugins  # noqa: E402
 
 ROOT = os.path.dirname(HERE)
+CODE = ":code_patches"                      # (runtime/mod_switch.h MOD_SWITCH_CODE)
+CODE_TITLE = "ARCropolis code patches"
+CODE_ABOUT = ("The game-code fixes ARCropolis makes for costume slots a mod adds (c08 and up). Off: the game's own "
+              "code. Counts when the game starts; players online need the same.")
+
+
+def mods_running(tree):
+    """How many mods the game runs: dump/skyline/mods.txt's (the last apply's) lines."""
+    try:
+        with open(os.path.join(tree.root, "dump", "skyline", "mods.txt"), encoding="utf-8") as f:
+            return sum(1 for line in f if line.strip())
+    except OSError:
+        return 0
+
+
+def code_patches_on(tree, state=None):
+    """The code patches' switch: mods.json's code_patches, else on while a mod runs (mod_switch.h's rule)."""
+    state = tree.load() if state is None else state
+    setting = state.get("code_patches")
+    return setting if isinstance(setting, bool) else mods_running(tree) > 0
+
+
+def apply_pending(tree):
+    """Ask the game for an apply when it next starts (runtime/hle_mod_switch.c mods_start)."""
+    os.makedirs(tree.work, exist_ok=True)
+    with open(os.path.join(tree.work, "apply_pending"), "w", encoding="utf-8") as f:
+        f.write("the settings menu changed the mods\n")
+
+
+def set_switches(tree, names, on):
+    """mods.json's switches for these names (CODE: the code patches'); whether a mod's changed."""
+    state = tree.load()
+    changed = False
+    if list(names) == ["--all"]:   # (the settings menu's "Turn every mod off")
+        names = list(state["mods"])
+    for name in names:
+        if name == CODE:
+            state["code_patches"] = bool(on)
+            continue
+        if name not in state["mods"]:
+            raise mods.Error(f"no mod called {name}")
+        changed |= bool(state["mods"][name].get("enabled")) != bool(on)
+        state["mods"][name]["enabled"] = bool(on)
+    tree.save(state)
+    return changed
 
 
 def log(text):
@@ -154,6 +206,8 @@ def status(tree):
             "source": source,
         })
     data["plugins"] = plugins
+    data["mods"].append({"name": CODE, "title": CODE_TITLE, "enabled": code_patches_on(tree), "files": 0, "about": CODE_ABOUT,
+                         "online": "same", "code": "", "new_slots": False})
     print(json.dumps(data), flush=True)
     return 0
 
@@ -187,13 +241,17 @@ def main(argv):
         if cmd in ("enable", "disable"):
             if len(argv) < 3:
                 raise mods.Error("name the mod's folder")
-            state = tree.load()
-            for name in argv[2:]:
-                if name not in state["mods"]:
-                    raise mods.Error(f"no mod called {name}")
-                state["mods"][name]["enabled"] = cmd == "enable"
-            tree.save(state)
-            mods.apply(tree, log)
+            if set_switches(tree, argv[2:], cmd == "enable") or CODE not in argv[2:]:
+                mods.apply(tree, log)
+            else:
+                log(f"{CODE_TITLE}: {'on' if cmd == 'enable' else 'off'} (counts when the game starts)")
+            return result(True)
+        if cmd == "switch":
+            if len(argv) < 4 or argv[-1] not in ("on", "off"):
+                raise mods.Error("switch <folder>... on|off")
+            if set_switches(tree, argv[2:-1], argv[-1] == "on"):
+                apply_pending(tree)
+            log(f"{', '.join(CODE_TITLE if n == CODE else n for n in argv[2:-1])}: {argv[-1]} (counts when the game starts)")
             return result(True)
         if cmd == "apply":
             mods.apply(tree, log)
@@ -230,6 +288,8 @@ def main(argv):
         if cmd == "remove":
             if len(argv) < 3:
                 raise mods.Error("name the mod's folder")
+            if CODE in argv[2:]:
+                raise mods.Error(f"{CODE_TITLE} are part of the game: turn them off instead")
             for name in argv[2:]:
                 mods.remove_folder(os.path.join(tree.mods, name))
             tree.save(tree.load())

@@ -720,7 +720,7 @@ def code_patches(mod, name):
             print(f"{name}: a plugin's code patch at {off:#x} left out: not {was:08x} there")
     for off, was, words, what in CODE_PATCHES.get(mod.build_id, []):
         if mod.u32(off) == was:
-            out[off] = words
+            out[off] = ("switch", words)   # (lift.py: on or off as the game starts, rt_code_patches_on)
         else:
             print(f"{name}: code patch at {off:#x} ({what}) left out: {mod.u32(off):08x} is there, not {was:08x}")
     return out

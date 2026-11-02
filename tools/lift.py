@@ -218,6 +218,10 @@ class Lifter(SimdMixin):
             name += "_orig"
         self.words = struct.unpack_from(f"<{size // 4}I", self.img, start)
         here = {off: ws for off, ws in self.patches.items() if start <= off < self.fend}
+        # ("switch", words): a code patch the game turns on or off as it starts (rt_code_patches_on, runtime/host.c):
+        # both forms are lifted, the original's words analysed, so with it off the code is the unpatched game's
+        switch = {off: ws[1] for off, ws in here.items() if isinstance(ws, tuple) and ws[:1] == ("switch",)}
+        here = {off: ws for off, ws in here.items() if off not in switch}
         if here:   # (the last word in the instruction's place, so the jump table analysis sees it)
             self.words = tuple(here[start + i * 4][-1] if start + i * 4 in here else w for i, w in enumerate(self.words))
         self.sites = self.pads.get(start, [])
@@ -232,6 +236,10 @@ class Lifter(SimdMixin):
                 stmt, falls = self.insn(w, pc)
                 if pc in here:   # the words before the last run first
                     stmt = " ".join([self.insn(x, pc)[0] for x in here[pc][:-1]] + [stmt])
+                if pc in switch:
+                    alt = [self.insn(x, pc) for x in switch[pc]]
+                    stmt = f"if (rt_code_patches_on()) {{ {' '.join(a for a, _f in alt)} }} else {{ {stmt} }}"
+                    falls = falls or alt[-1][1]
                 if pc in self.inline:   # (every register in the context here: no register cache in this function)
                     stmt = (f"{{ extern void rt_inline_hook(Cpu *, u64); rt_inline_hook(c, {const(self.base + pc)}); }} " + stmt)
             except Unsupported as e:
@@ -244,7 +252,8 @@ class Lifter(SimdMixin):
         elif falls:
             body.append((None, f'rt_trap(c, {const(self.base + self.fend)}, "fell off the end of a function");', False))
         decl = []
-        if REGCACHE and len(self.words) <= REGCACHE_MAX and not any(start <= o < self.fend for o in self.inline):
+        if REGCACHE and len(self.words) <= REGCACHE_MAX and not any(start <= o < self.fend for o in self.inline) and not switch:
+            # (not where a code patch switches: the register cache reads one instruction a statement)
             decl, cached = regcache.apply([(pc, mark_syncs(s, pc in self.exact_sites), f) for pc, s, f in body], self.leaders,
                                           bool(self.sites) or any("rt_setjmp" in s for _pc, s, _f in body),
                                           start in self.exact_callers)

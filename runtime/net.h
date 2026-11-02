@@ -108,6 +108,7 @@ typedef struct NetRoom {
     int nmods;
     char mods[256];                /* its mods' names, ", " between them ("" for none) */
     char why[256];                 /* not joinable: why, in one line or more */
+    char details[640];             /* its game (build, WindowSmash, netplay version) and mods, each against this game's (mod_diff.h) */
     int why_kind;                  /* not joinable: NET_WHY_* (another build, simulation version or mods) */
 } NetRoom;
 void net_rooms_ask(void);

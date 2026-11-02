@@ -76,6 +76,12 @@ void display_set_latency(int frames) { (void)frames; }
 void display_set_render_scale(float scale) { (void)scale; }
 int audio_master_volume(void) { return 100; }                 /* (ipc_audio.c: the master volume) */
 void audio_set_master_volume(int percent) { (void)percent; }
+/* (hle_mod_switch.c: no mods here) */
+int mods_switch_list(ModSwitch *out, int max, int *code) { (void)out; (void)max; *code = -1; return 0; }
+int mods_switch_set(const char *name, int on) { (void)name; (void)on; return 0; }
+int mods_switch_state(char *msg, size_t n) { if (msg && n) msg[0] = 0; return MODS_SWITCH_IDLE; }
+int mods_running_count(void) { return 0; }
+int rt_code_patches_on(void) { return 0; }
 int pad_info(u32 slot, PadInfo *out) { (void)slot; memset(out, 0, sizeof *out); return 0; }   /* (no controllers) */
 int pad_get(u32 slot, PadState *out) { (void)slot; memset(out, 0, sizeof *out); return 0; }
 void pad_rumble(u32 slot, int side, float amplitude) { (void)slot; (void)side; (void)amplitude; }

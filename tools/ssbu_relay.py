@@ -41,6 +41,10 @@ Python 3.8+, standard library only."""
 #  3 REJECT      lobby: nonce u64, reason u8, text[64]                         (in the JOIN's version)
 #                       reasons 1 full or too many from that address, 2 another netplay version, 4 not
 #                       13.0.5 (version 2 only); 3: 5 the mod set is not one (too many, a name too long, cut short)
+#                       then, where the lobby or relay knows the game wanted, its detail: 'W' 'D', build[40],
+#                       sim u32, flags u8 (1: sim and the mod set follow), mod set - the refused game says what
+#                       differs (runtime/net_relay.c refusal_detail; a private room's relay: 3 another build, 6
+#                       another simulation version or other mods); older games read the text only
 #  4 PING        game:  nonce u64, time u64, cookie u64, ping u16              (every second)
 #                       then, from a game that can connect directly: peers version u32, LAN address u32,
 #                       port u16, flags u8 (1 direct connections allowed), direct peers u8
@@ -218,6 +222,13 @@ def mods_block(raw):
             return None
         o += 5 + raw[o + 4]
     return bytes(raw[:o])
+
+
+def reject_detail(build, sim=0, mods=None):
+    """A REJECT's detail: 'W' 'D', build[40], sim u32, flags u8 (1: sim and the mod set known), mod set."""
+    known = mods is not None
+    return (b"WD" + bytes(build)[:BUILD_LEN].ljust(BUILD_LEN, b"\0") + struct.pack(">IB", sim if known else 0, 1 if known else 0)
+            + (bytes(mods) if known else b""))
 
 
 def mods_key(block):
@@ -462,10 +473,12 @@ class Lobby:
         wire = c.wire or self.sn
         return wire.header(wire.data)
 
-    def reject(self, wire, at, nonce, reason, why, version=None):
-        """A REJECT (SU's has no reason byte)."""
+    def reject(self, wire, at, nonce, reason, why, version=None, detail=None):
+        """A REJECT (SU's has no reason byte). detail: (build, sim, mod set or None) of the game wanted,
+        appended for the refused game to say what differs (SN only: SU's games don't read it)."""
         reason = b"" if wire is self.su else bytes((reason,))
-        self.send(wire.header(REJECT, version) + nonce + reason + why.encode()[:63].ljust(64, b"\0"), at, wire)
+        tail = b"" if detail is None or wire is self.su else reject_detail(*detail)
+        self.send(wire.header(REJECT, version) + nonce + reason + why.encode()[:63].ljust(64, b"\0") + tail, at, wire)
 
     def gate(self, at, now):
         """Whether a stranger at this address may get an answer now (rate-limited: a lobby must not
@@ -760,7 +773,7 @@ class Lobby:
                 self.drops["game version"] += 1
                 self.log(f"refused {printable(name)} from {at[0]}:{at[1]}: build {build[:8].decode('ascii', 'replace')}, "
                          "not 13.0.5's")
-                self.reject(wire, at, nonce, 4, NOT_13)
+                self.reject(wire, at, nonce, 4, NOT_13, detail=(REQUIRED_BUILD,))
                 return None
             why = ("the lobby is full" if len(self.by_addr) >= self.o.max_clients or self.pending >= self.o.max_pending
                    else f"too many players from your address ({self.o.per_ip})" if self.per_ip[at[0]] >= self.o.per_ip

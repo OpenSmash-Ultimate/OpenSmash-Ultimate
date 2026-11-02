@@ -39,6 +39,7 @@ CORE = (
     ("rt_svc", "void rt_svc(Cpu *c, u32 number)", "c, number"),
     ("rt_ticks", "u64 rt_ticks(void)", ""),
     ("rt_unwind_jumpto", "void rt_unwind_jumpto(Cpu *c)", "c"),
+    ("rt_code_patches_on", "int rt_code_patches_on(void)", ""),
 )
 MISSING = "wrapped guest function missing from this build's modules"   # (runtime/host.c rt_wrap_missing's words)
 

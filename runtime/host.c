@@ -1535,6 +1535,8 @@ int main(int argc, char **argv) {
 #endif
     if (getenv("SSBU_CRASH_TEST")) CloseHandle(CreateThread(NULL, 0, crash_test, (void *)(uintptr_t)atoi(getenv("SSBU_CRASH_TEST")), 0, NULL));
     rt_data_dir = dir;
+    void mods_start(const char *data_dir);   /* (hle_mod_switch.c: a pending apply of the mods, the code patches' switch) */
+    mods_start(dir);
     kernel_init();
     load(dir);
     movie_test_start();
