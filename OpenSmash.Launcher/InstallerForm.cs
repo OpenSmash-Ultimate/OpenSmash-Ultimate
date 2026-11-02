@@ -20,11 +20,13 @@ namespace OpenSmash.Launcher
 {
     // ============================================================================
     // InstallerForm: the first-run window, shown instead of the launcher while no
-    // build exists. Same chrome as LauncherForm (Theme): it looks for the user's
-    // game files (find_inputs.py --json), checks the PC (precheck.py --json) and
-    // runs install.py --progress-json, whose "##ssbu {json}" lines drive the step
-    // list and the progress bar (event schema: scripts\installer_window.ps1).
-    // Without Python it first runs scripts\bootstrap.ps1 -NoLaunch.
+    // build exists. Same chrome as LauncherForm (Theme): it finds the user's game
+    // files, keys and firmware (DetectFolders, tools\gamefiles.py --json) and runs
+    // the repository's own installer, tools\install_windowsmash.ps1 -NoWizard (the
+    // same flow as Install WindowSmash.bat), which sets up Python, the compiler
+    // and SDL3 and builds the game with tools\build_game.py.
+    // The ssbu-recomp scans (scripts\find_inputs.py, scripts\precheck.py) run
+    // only when those scripts are present at the root; this repo does not have them.
     // ============================================================================
     public sealed class InstallerForm : Form
     {
@@ -36,7 +38,7 @@ namespace OpenSmash.Launcher
         readonly string _locFile;
         readonly string _logFile;
         string _storedBuild;
-        string _py = "windowsmash";
+        string _py = "";
         Image? _logo;
         Bitmap? _bg;
         float _s = 1;
@@ -477,7 +479,7 @@ namespace OpenSmash.Launcher
         // Scans
         void StartScans()
         {
-            if (_py == "") return;
+            if (_py == "" || !File.Exists(Script("find_inputs.py"))) return;
             _foundDone = false;
             _scanFind = new Proc(capture: true);
             _scanFind.Start(_py, new[] { "-u", Script("find_inputs.py"), "--json" }, _repo);
@@ -488,7 +490,7 @@ namespace OpenSmash.Launcher
 
         void StartPrecheck()
         {
-            if (_py == "") return;
+            if (_py == "" || !File.Exists(Script("precheck.py"))) return;
             if (_scanPre != null && !_scanPre.Done) { _preAgain = true; return; }
             _preDone = false;
             var a = new List<string> { "-u", Script("precheck.py"), "--json" };
@@ -894,36 +896,6 @@ namespace OpenSmash.Launcher
 
         // ---------------------------------------------------------------------------
         // Jobs
-        List<string> BuildInstallArgs(bool dry)
-        {
-            var a = new List<string> { "-u", Script("install.py"), "--no-gui", "--progress-json" };
-            string b = Val("base");
-            bool isDump = IsDir(b);
-            if (b != "")
-            {
-                if (isDump) { a.Add("--dump"); a.Add(b.TrimEnd('\\')); }
-                else { a.Add("--base"); a.Add(b); }
-            }
-            if (!isDump)
-            {
-                if (Val("update") != "") { a.Add("--update"); a.Add(Val("update")); }
-                foreach (var d in _dlc) { a.Add("--dlc"); a.Add(d); }
-                if (Val("prodkeys") != "") { a.Add("--keys"); a.Add(Val("prodkeys")); }
-            }
-            if (Val("firmware") != "") { a.Add("--firmware"); a.Add(Val("firmware").TrimEnd('\\')); }
-            // The install location: passed when it is not the default, or to go back to the default
-            // (install.py then forgets the old one).
-            string loc = GetChosenBuild();
-            if (!SamePath(loc, _defaultBuild) || _storedBuild != "") { a.Add("--build-dir"); a.Add(loc); }
-            a.Add("--jobs"); a.Add(_jobs.ToString(CultureInfo.InvariantCulture));
-            if (dry) a.Add("--dry-run");
-            if (!_optRuntime) a.Add("--no-runtime");
-            if (!_optShortcuts) a.Add("--no-shortcuts");
-            if (_optFast) a.Add("--no-inline");
-            if (!_optUpdates) a.Add("--no-self-update");
-            return a;
-        }
-
         // Each stage may ask the user first; "Yes" continues with the next stage.
         void StartInstall(bool dry)
         {
@@ -978,22 +950,12 @@ namespace OpenSmash.Launcher
             StartInstall(_optDry);
         }
 
+        // Python comes with the root installer (tools\install_windowsmash.ps1 step 3 puts
+        // one into deps\python when the PC has none), so "set up Python" runs it.
         void StartBootstrap()
         {
             if (_running) return;
-            string ps = Script("bootstrap.ps1");
-            if (!File.Exists(ps))
-            {
-                _view = "build";
-                _jobKind = "bootstrap";
-                ResetSteps();
-                _errMsg = "scripts\\bootstrap.ps1 was not found.";
-                _errHint = "This copy of OpenSmash is incomplete: download it again.";
-                _dirty = true;
-                return;
-            }
-            RunJob("bootstrap", false, "powershell.exe",
-                new List<string> { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps, "-NoLaunch" });
+            StartInstall(_optDry);
         }
 
         void RunJob(string kind, bool dry, string exe, List<string> args)
