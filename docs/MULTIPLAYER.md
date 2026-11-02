@@ -87,7 +87,7 @@ Netplay version 3 adds two things to the online lobby, on the **Lobby** page of 
 2. Set **Netplay version** to **3**, then choose **Restart now**.
 3. Open the settings again and go to the **Lobby** page (the number key <kbd>5</kbd>).
 
-- **Rooms** lists each room's host, players, and whether it is open. A room you can't join says why: another game version, another WindowSmash version (and whose is older), or other mods. The list is asked for each time the page opens; select **Rooms** to ask again. To join a room, close the settings and pick it in **Local Wireless → Rooms List**, where the rooms you can join are too.
+- **Rooms** lists each room's host, players, and whether it is open. A room you can't join says why: another game version, another WindowSmash version (and whose is older), or other mods. With the cursor on a room, the help under the list shows its game build, WindowSmash (simulation) version and netplay version next to yours, and its mods, each marked **you don't have it** or **yours differs**; for a room you can't join, the mods only you have too (turn them off on the **Mods** page to join). ARCropolis' code patches count as a mod here. The list is asked for each time the page opens; select **Rooms** to ask again. To join a room, close the settings and pick it in **Local Wireless → Rooms List**, where the rooms you can join are too.
 - **Find a match** searches for another player with the same game, WindowSmash, mods and lobby code. You can close the settings while it searches: a message says when a match is found and who hosts. The host creates a room (**Local Wireless → Create a Room**), and the other player finds it first in their **Rooms List**. **Stop searching** or **Leave the match** ends it.
 
 With version 3 set, a lobby or private room of version 2 still works: the game joins it in version 2, and the Lobby page says why it has no rooms to show. Hosting a private room always uses version 2. `SSBU_NET_PROTOCOL=3` ([below](#reference-environment-variables)) or `3` in `online_protocol.txt` does the same as the setting.
@@ -175,6 +175,8 @@ The address above is only an example. Use the one your own launcher shows, or a 
 
 Joining players don't need to change anything on their routers.
 
+The host's game only lets in players whose game matches its own: the same game build, the same WindowSmash, and the same mods (ARCropolis' code patches included). A player who doesn't match is told why, in the overlay (<kbd>F2</kbd>), on the settings' **Online → Now** row and in the log: which build each side has, or which mods only one side has or has in another copy, or that the code patches are on for one and off for the other. A player on an older WindowSmash, which doesn't say its mods, is let in as before.
+
 ### Which address to give
 
 | Where the players are | Address the others type | What the host sets up |
@@ -194,6 +196,7 @@ If your internet provider uses carrier-grade NAT, or your router sits behind ano
 | The overlay stays on `connecting` | The host's address and port, that the host's game is still running, the host's firewall rule for incoming UDP, the router's port mapping, and whether the relay can be reached. |
 | `no answer from … - playing offline` | The lobby in `online_server.txt` hasn't answered for five seconds. Check the address with `python tools/ssbu_relay.py --probe <address>`. |
 | `Netplay: WindowSmash needs game 13.0.5: run the installer again` | Your game was built from another version of the game, by an older WindowSmash. Put the game's 13.0.5 update in your game folder and run `Install WindowSmash.bat` again: it sets the folder up again as 13.0.5, keeping your save and settings ([how](UPDATES.md#a-folder-built-from-another-version)). |
+| `Netplay: the host runs other mods` (or `another game version`, `another WindowSmash version`) | The lines under it say what differs: the mods only the room has, the ones you have in another copy, the ones only you have, or the code patches on one side only. Turn mods on or off on the settings' **Mods** page (or in the launcher) to match, and restart. |
 | Online, a room is missing from the list | Both players need the same lobby code (or none), and both overlays must say `Online`. The list refreshes every few seconds. |
 | Both are connected, but in different groups | Private-room names must match exactly. |
 | The relay count is right, but no Local Wireless room | The host must create a room in the game: being connected doesn't create one. Wait for the list to refresh. |

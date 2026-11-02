@@ -48,12 +48,19 @@ Press <kbd>Esc</kbd> in the game to open the settings. On a controller, press it
 | **Controllers** | For each connected controller: which player it is, face buttons by position or by label, stick dead zone, rumble, how far a trigger is pulled for ZL / ZR, and which control each button is (**Buttons...**). For the keyboard: which player it adds to. Also **Rumble** on or off for every controller, and whether controllers work while another window is in front. |
 | **Online** | Public lobby, a private lobby code, your own server, or offline; your name; direct connections; the netplay version ([multiplayer guide](MULTIPLAYER.md)). |
 | **Game** | Restart or quit the game, the keys, and the game version. |
-| **Lobby** | The online lobby's rooms, the ones you can't join too (and why), and matchmaking. They need netplay version 3, which is being tried out ([multiplayer guide](MULTIPLAYER.md#room-browser-and-matchmaking-being-tried-out)). |
+| **Lobby** | The online lobby's rooms, the ones you can't join too (and why), and matchmaking. With the cursor on a room, its game version and its mods, each marked as you have it. They need netplay version 3, which is being tried out ([multiplayer guide](MULTIPLAYER.md#room-browser-and-matchmaking-being-tried-out)). |
+| **Mods** | Each installed mod on or off, **ARCropolis code patches** on or off, and **Turn every mod off** ([below](#mods-on-and-off)). |
 
-- **Move** with the arrow keys or the D-pad. **Change** a setting with left and right. **Select** with <kbd>Enter</kbd> or **A**. **Switch pages** with <kbd>Tab</kbd>, the number keys <kbd>1</kbd>–<kbd>5</kbd>, or **L** / **R**.
+- **Move** with the arrow keys or the D-pad. **Change** a setting with left and right. **Select** with <kbd>Enter</kbd> or **A**. **Switch pages** with <kbd>Tab</kbd>, the number keys <kbd>1</kbd>–<kbd>6</kbd>, or **L** / **R**.
 - The game **keeps running** behind the settings, but it doesn't see your buttons or keys while they're open. In a match, pause first. In a netplay room, the other players keep playing.
 - Every change is **saved at once**. Settings marked **now** take effect straight away. Settings marked **next start** take effect the next time the game starts: **Game → Restart the game** does that for you. A match in progress is lost when you restart.
 - To type a name or a code, use the keyboard, or pick the letters with a controller: **A** types, **B** deletes, **+** finishes.
+
+### Mods on and off
+
+The **Mods** page lists every installed mod with its own switch: the same switches as the launcher's mod list and the Mods app's (they share `mods\mods.json`). A change counts the next time the game starts: choose **Restart now**, and the game applies the mods before it reads them. Online, players meet only when they run the same mods, so turn off what the others don't have; the **Lobby** page says, room by room, which mods differ.
+
+**ARCropolis code patches** are the fixes ARCropolis makes to the game's code for costume slots that mods add (c08 and up). They have a switch of their own: **auto** (the default) turns them on while a mod runs and off otherwise, so the game with no mod runs its own code, as an unmodded game. They count when the game starts, and players online need the same setting. `SSBU_CODE_PATCHES=1` or `0` sets them for one start (tests).
 
 The settings are kept in the same files as always: `display.ini`, `controllers.ini` and the `online_*.txt` files in the WindowSmash folder. You can still edit those files by hand, and the settings keep your comments in them. Some things are only in the files, such as settings for a whole kind of controller ([below](#controllersini)).
 
