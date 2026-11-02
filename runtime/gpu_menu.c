@@ -23,6 +23,7 @@
 #include "display.h"
 #include "gpu_menu.h"
 #include "gpu_overlay.h"
+#include "language.h"
 #include "net.h"
 #include "pad.h"
 #include "settings.h"
@@ -83,7 +84,7 @@ enum {
     R_RUMBLE, R_KEYBOARD, R_BACKGROUND, R_PADS_FILE,
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
-    R_RESTART, R_QUIT, R_REMAP_BACK, R_ROOM_FIRST = 60,   /* + the room's place in the list */
+    R_LANGUAGE, R_RESTART, R_QUIT, R_REMAP_BACK, R_ROOM_FIRST = 60,   /* + the room's place in the list */
     R_REMAP_FIRST = 100   /* + console button */
 };
 
@@ -598,7 +599,14 @@ static void build(void) {
                 break;
             }
         break;
-    case P_GAME:
+    case P_GAME: {
+        char lang[32] = "";
+        r = add(R_LANGUAGE, K_CHOICE, W_RESTART, "Game language",
+                "Auto: the language Windows shows its menus in. Chinese, Japanese and Korean text needs your console's firmware fonts.");
+        if (!settings_ini_get(display_ini_path(), NULL, "language", lang, sizeof lang) || !lang[0]) snprintf(lang, sizeof lang, "auto");
+        snprintf(r->value, sizeof r->value, "%s", _stricmp(lang, "auto") ? language_pick(lang) : "auto");
+        note_env(r, "SSBU_LANGUAGE");
+    }
         add(R_RESTART, K_ACTION, W_NONE, "Restart the game", "Starts the game again (for the settings marked 'next start'). A match in progress is lost.");
         add(R_QUIT, K_ACTION, W_NONE, "Quit the game", "Closes the game. A match in progress is lost.");
         static const char *const KEYS[][2] = {{"Esc / Home button", "this menu (or hold - and + for a second)"}, {"F1", "frame rate on / off"},
@@ -664,6 +672,15 @@ static void change(const Row *row, int dir) {
         display_set_latency(atoi(v));
         set_display("latency", v);
         break;
+    case R_LANGUAGE: {   /* auto, then the game's codes */
+        char lang[32] = "";
+        int i = -1;
+        if (settings_ini_get(display_ini_path(), NULL, "language", lang, sizeof lang) && lang[0] && _stricmp(lang, "auto"))
+            for (int k = 0; k < LANGUAGE_COUNT; k++) if (!strcmp(language_pick(lang), LANGUAGE_CODES[k])) i = k;
+        i = cycle(i + 1, LANGUAGE_COUNT + 1, dir) - 1;
+        set_display("language", i < 0 ? "auto" : LANGUAGE_CODES[i]);
+        break;
+    }
     case R_CURSOR:
         display_set_hide_cursor(!ds.hide_cursor);
         set_display("hide_cursor", ds.hide_cursor ? "0" : "1");
