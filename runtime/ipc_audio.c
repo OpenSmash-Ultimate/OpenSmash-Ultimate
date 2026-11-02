@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "display.h"
 #include "ipc.h"
 #ifdef _WIN32
 #define COBJMACROS
@@ -339,8 +340,15 @@ static void open_device(void) {
     audio.event = kernel_create_event();
     played_event = CreateEventA(NULL, FALSE, FALSE, NULL);
     CloseHandle(CreateThread(NULL, 0, reaper, NULL, 0, NULL));
-    audio.output = start_output();
-    if (!audio.output) fprintf(stderr, "[audio] no audio device; sound is dropped\n");
+    /* Build plugins starts the game once, with no window, to read the select screen. That start
+     * sets SSBU_SKYLINE_PROBE. Windows plays through WASAPI, so SDL_AUDIO_DRIVER=dummy never
+     * reaches it: leave the device closed and the buffers go straight back. */
+    if (getenv("SSBU_SKYLINE_PROBE"))
+        fprintf(stderr, "[audio] plugin probe: sound is off\n");
+    else {
+        audio.output = start_output();
+        if (!audio.output) fprintf(stderr, "[audio] no audio device; sound is dropped\n");
+    }
 }
 
 /* Append { u64 next; u64 address; u64 capacity; u64 size; u64 offset } with a 64-bit tag. */
@@ -360,9 +368,15 @@ static void append(u64 desc, u64 tag) {
             u32 at = (u32)((audio.wpos + done) % RING), k = (u32)(size - done);
             if (k > RING - at) k = RING - at;
             memcpy(audio.ring + at, src + done, k);
-            if (audio.volume != 1.0f) {
+            float gain = audio.volume * display_volume();
+            if (gain != 1.0f) {
                 i16 *s = (i16 *)(audio.ring + at);
-                for (u32 i = 0; i < k / 2; i++) s[i] = (i16)(s[i] * audio.volume);
+                for (u32 i = 0; i < k / 2; i++) {
+                    int v = (int)(s[i] * gain);
+                    if (v > 32767) v = 32767;
+                    if (v < -32768) v = -32768;
+                    s[i] = (i16)v;
+                }
             }
             done += k;
         }

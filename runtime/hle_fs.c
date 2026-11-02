@@ -252,9 +252,101 @@ static u32 add_mount(const char *name, MountKind kind, const char *root, const c
     return R_MOUNT_EXISTS;
 }
 
+/* ARCropolis' mods: - every turned-on mod's files as one tree, a later mod's file over an earlier's
+ * (<data dir>/../skyline/mods.txt: the mods' folders in order, which tools/skyline.py writes). */
+static char **mods_list;   /* (any number, any length: a big modpack has hundreds of folders) */
+static int mods_count = -1;
+
+static void load_mods_list(void) {
+    if (mods_count < 0) {
+        char path[1024], line[4096];
+        snprintf(path, sizeof path, "%s/../skyline/mods.txt", rt_data_dir);
+        FILE *f = fopen(path, "r");
+        int cap = 0;
+        mods_count = 0;
+        while (f && fgets(line, sizeof line, f)) {
+            line[strcspn(line, "\r\n")] = 0;
+            if (!*line) continue;
+            if (mods_count == cap) {
+                char **more = realloc(mods_list, (cap = cap ? cap * 2 : 64) * sizeof *mods_list);
+                if (!more) break;
+                mods_list = more;
+            }
+            if (!(mods_list[mods_count] = _strdup(line))) break;
+            mods_count++;
+        }
+        if (f) fclose(f);
+    }
+}
+
+/* sd:/ultimate/mods as ARCropolis sees it: the turned-on mods only (dump/skyline/mods.txt), each data
+ * root a folder of its own - a pack's "Pack/(Moveset) X" is "Pack - (Moveset) X" there. */
+static void mod_folder_name(char *out, size_t n, const char *root) {
+    if (*root == '.') { snprintf(out, n, "WindowSmash %s", root + 1); return; }   /* (mods/.characters: tools/mods.py; a dot would hide it) */
+    snprintf(out, n, "%s", root);
+    for (char *p = out; *p; p++) if (*p == '/') { memmove(p + 3, p + 1, strlen(p + 1) + 1); memcpy(p, " - ", 3); p += 2; }
+}
+static const char *mod_root_named(const char *name, size_t len) {
+    char flat[4200];
+    load_mods_list();
+    for (int i = 0; i < mods_count; i++) {
+        mod_folder_name(flat, sizeof flat, mods_list[i]);
+        if (strlen(flat) == len && !_strnicmp(flat, name, len)) return mods_list[i];
+    }
+    return NULL;
+}
+
+/* A mod's own copy of a file mods/.characters has with the plugins' characters added (tools/mods.py
+ * characters_mod writes dump/skyline/hidden.txt): left out of ARCropolis' listing, so that one is used. */
+static int hidden_from_arcropolis(const char *dir, const char *name) {
+    static char hidden[256][600];
+    static int hidden_n = -1;
+    if (hidden_n < 0) {
+        char path[1024], line[600];
+        snprintf(path, sizeof path, "%s/../skyline/hidden.txt", rt_data_dir);
+        FILE *f = fopen(path, "r");
+        hidden_n = 0;
+        while (f && hidden_n < 256 && fgets(line, sizeof line, f)) {
+            line[strcspn(line, "\r\n")] = 0;
+            if (*line) snprintf(hidden[hidden_n++], sizeof hidden[0], "%s", line);
+        }
+        if (f) fclose(f);
+    }
+    if (!hidden_n) return 0;
+    dir += strspn(dir, "/");
+    if (_strnicmp(dir, "ultimate/mods/", 14)) return 0;
+    dir += 14;
+    const char *slash = strchr(dir, '/');
+    size_t len = slash ? (size_t)(slash - dir) : strlen(dir);
+    const char *root = mod_root_named(dir, len);
+    char full[600];
+    snprintf(full, sizeof full, "%s%s/%s", root ? root : "", slash ? slash : "", name);
+    for (int i = 0; i < hidden_n; i++)
+        if (!_stricmp(hidden[i], full)) return 1;
+    return 0;
+}
+
+static void mods_path(char *out, size_t n, const char *rest) {
+    load_mods_list();
+    for (int i = mods_count; i-- > 0;) {
+        snprintf(out, n, "%s/../../mods/%s/%s", rt_data_dir, mods_list[i], rest);
+        if (GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES) return;
+    }
+    snprintf(out, n, "%s/../skyline/sd/ultimate/no-mod/%s", rt_data_dir, rest);
+}
+
 static void host_path(char *out, size_t n, struct Mount *m, const char *rest) {
     while (*rest == '/') rest++;
-    snprintf(out, n, "%s/%s", m->root, rest);
+    if (!strcmp(m->name, "mods")) { mods_path(out, n, rest); return; }
+    /* (Skyline plugins' SD card: its ultimate/mods is the mods folder, tools/mods.py's) */
+    if (!strcmp(m->name, "sd") && !_strnicmp(rest, "ultimate/mods", 13) && (!rest[13] || rest[13] == '/')) {
+        const char *sub = rest + 13 + (rest[13] == '/'), *end = strchr(sub, '/');
+        size_t len = end ? (size_t)(end - sub) : strlen(sub);
+        const char *root = len ? mod_root_named(sub, len) : NULL;
+        if (root) snprintf(out, n, "%s/../../mods/%s%s", rt_data_dir, root, end ? end : "");
+        else snprintf(out, n, "%s/../../mods%s", rt_data_dir, rest + 13);
+    } else
+        snprintf(out, n, "%s/%s", m->root, rest);
     for (char *p = out; *p; p++) if (*p == '/') *p = '\\';
 }
 
@@ -947,7 +1039,24 @@ static u32 save_delete(struct Mount *m, const char *rest, int dir) {
 /* ---- mounting -------------------------------------------------------------------- */
 HLE(_ZN2nn2fs12SetAllocatorEPFPvmEPFvS1_mE) { (void)c; ready(); }
 HLE(_ZN2nn2fs22QueryMountRomCacheSizeEPm) { ready(); st64(c->x[0], 0x1000); c->x[0] = 0; }
-HLE(_ZN2nn2fs8MountRomEPKcPvm) { ready(); c->x[0] = add_mount(P(char, c->x[0]), M_ROM, "", NULL); }
+void skyline_load_plugins(Cpu *c);        /* (hle_skyline.c) */
+
+/* Skyline mounts the SD card as sd: for its plugins: here <data dir>/../skyline/sd, with the mods
+ * folder as its ultimate/mods (host_path). */
+void fs_mount_sd(void) {
+    char root[1024];
+    snprintf(root, sizeof root, "%s/../skyline/sd", rt_data_dir);
+    add_mount("sd", M_HOST, root, NULL);
+    add_mount("mods", M_HOST, root, NULL);   /* (host_path: the mods' files) */
+}
+int skyline_provides(const char *path);
+/* (once the RomFS is there, Skyline's plugins load, as on the console) */
+HLE(_ZN2nn2fs8MountRomEPKcPvm) {
+    ready();
+    u32 r = add_mount(P(char, c->x[0]), M_ROM, "", NULL);
+    if (!r) skyline_load_plugins(c);
+    c->x[0] = r;
+}
 HLE(_ZN2nn2fs17MountCacheStorageEPKc) {
     char root[512];
     ready();
@@ -999,8 +1108,9 @@ HLE(_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc) {
     struct Mount *m = find_mount(P(char, c->x[1]), &rest);
     if (!m) { c->x[0] = R_NOT_MOUNTED; return; }
     if (m->kind == M_ROM) {
-        u32 d, f;
-        if (!rom_lookup(rest, &d, &f)) { c->x[0] = R_PATH_NOT_FOUND; return; }
+        u32 d, f = 0;
+        if (skyline_provides(rest)) { /* a plugin provides this path as an empty file */ }
+        else if (!rom_lookup(rest, &d, &f)) { c->x[0] = R_PATH_NOT_FOUND; return; }
         st32(c->x[0], f == NONE ? DIR_ENTRY : FILE_ENTRY);
     } else if (m->kind == M_SAVE) {
         char rel[512], path[1024];
@@ -1033,10 +1143,16 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     h.mount = m->id;
     if (m->kind == M_ROM) {
         u32 d, f;
-        if (!rom_lookup(rest, &d, &f) || f == NONE) { c->x[0] = R_PATH_NOT_FOUND; return; }
-        if (mode & OPEN_WRITE) { c->x[0] = R_UNSUPPORTED; return; }
-        h.offset = rom.data + rom_file(f)->offset;
-        h.size = rom_file(f)->size;
+        if (mode & OPEN_WRITE && (skyline_provides(rest) || rom_lookup(rest, &d, &f))) { c->x[0] = R_UNSUPPORTED; return; }
+        if (skyline_provides(rest)) {   /* (an empty file: the plugin is native) */
+            h.offset = rom.data;
+            h.size = 0;
+        } else {
+            if (!rom_lookup(rest, &d, &f) || f == NONE) { c->x[0] = R_PATH_NOT_FOUND; return; }
+            if (mode & OPEN_WRITE) { c->x[0] = R_UNSUPPORTED; return; }
+            h.offset = rom.data + rom_file(f)->offset;
+            h.size = rom_file(f)->size;
+        }
     } else if (m->kind == M_SAVE) {
         EnterCriticalSection(&jlock);   /* (held until the handle is in the table: Commit looks for writers there) */
         u32 r = save_open(m, rest, &h);
@@ -1216,6 +1332,40 @@ HLE(_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci) {   /* (handle*, path,
         if (mode & LIST_FILES)
             for (u32 k = rom_dir(d)->child_file; k != NONE; k = rom_file(k)->sibling)
                 listing_add(&h, rom_file(k)->name, rom_file(k)->name_len, FILE_ENTRY, rom_file(k)->size);
+    } else if (!strcmp(m->name, "sd") && !_strnicmp(rest + strspn(rest, "/"), "ultimate/mods", 13) &&
+               (!rest[strspn(rest, "/") + 13] || !strcmp(rest + strspn(rest, "/") + 13, "/"))) {
+        load_mods_list();   /* (the turned-on mods only) */
+        char flat[4200];
+        for (int i = 0; i < mods_count && (mode & LIST_DIRS); i++) {
+            mod_folder_name(flat, sizeof flat, mods_list[i]);
+            listing_add(&h, flat, strlen(flat), DIR_ENTRY, 0);
+        }
+    } else if (!strcmp(m->name, "mods")) {
+        /* every turned-on mod's files as one tree: a later mod's entry over an earlier one's */
+        load_mods_list();
+        int found = 0;
+        for (int i = 0; i < mods_count; i++) {
+            char path[4400];
+            snprintf(path, sizeof path, "%s/../../mods/%s/%s", rt_data_dir, mods_list[i], rest + strspn(rest, "/"));
+            for (char *q = path; *q; q++) if (*q == '/') *q = '\\';
+            strcat(path, "\\*");
+            WIN32_FIND_DATAA fd;
+            HANDLE fh = FindFirstFileA(path, &fd);
+            if (fh == INVALID_HANDLE_VALUE) continue;
+            found = 1;
+            do {
+                int dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+                if (!(mode & (dir ? LIST_DIRS : LIST_FILES))) continue;
+                u64 size = (u64)fd.nFileSizeHigh << 32 | fd.nFileSizeLow;
+                i64 k = 0;
+                while (k < h.count && _stricmp(h.names[k], fd.cFileName)) k++;
+                if (k < h.count) { h.types[k] = dir ? DIR_ENTRY : FILE_ENTRY; h.sizes[k] = size; }
+                else listing_add(&h, fd.cFileName, strlen(fd.cFileName), dir ? DIR_ENTRY : FILE_ENTRY, size);
+            } while (FindNextFileA(fh, &fd));
+            FindClose(fh);
+        }
+        if (!found) { listing_free(&h); c->x[0] = R_PATH_NOT_FOUND; return; }
     } else if (m->kind == M_SAVE) {
         EnterCriticalSection(&jlock);
         u32 r = save_list(m, rest, mode, &h);
@@ -1225,6 +1375,17 @@ HLE(_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci) {   /* (handle*, path,
         char path[1024];
         host_path(path, sizeof path, m, rest);
         if (!listing_host(&h, path, mode, NULL, NULL, 0)) { c->x[0] = R_PATH_NOT_FOUND; return; }
+        if (!strcmp(m->name, "sd")) {   /* a mod's own copy of a file .characters provides is not shown to ARCropolis */
+            for (i64 k = 0; k < h.count; ) {
+                if (h.types[k] == FILE_ENTRY && hidden_from_arcropolis(rest, h.names[k])) {
+                    free(h.names[k]);
+                    memmove(h.names + k, h.names + k + 1, (h.count - k - 1) * sizeof *h.names);
+                    memmove(h.types + k, h.types + k + 1, h.count - k - 1);
+                    memmove(h.sizes + k, h.sizes + k + 1, (h.count - k - 1) * sizeof *h.sizes);
+                    h.count--;
+                } else k++;
+            }
+        }
     }
     u64 v = new_handle(h);
     if (!v) { listing_free(&h); c->x[0] = R_TOO_MANY_HANDLES; return; }
@@ -1258,4 +1419,54 @@ HLE(_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE) {
     EnterCriticalSection(&lock);
     memset(h, 0, sizeof *h);
     LeaveCriticalSection(&lock);
+}
+
+/* ---- what Skyline plugins ask of nn::fs that the game doesn't ----------------------- */
+/* (installed on the SDK's functions' dispatch entries when plugins load: fs_plugin_shims, from
+ * hle_skyline.c - the game's own calls never reach them) */
+static void set_file_size(Cpu *c) {   /* (handle, size) */
+    Handle *h = get_handle(c->x[0]);
+    if (!h || !h->host || !(h->mode & OPEN_WRITE)) { c->x[0] = R_INVALID_HANDLE; return; }
+    LARGE_INTEGER size;
+    size.QuadPart = (i64)c->x[1];
+    c->x[0] = SetFilePointerEx(h->host, size, NULL, FILE_BEGIN) && SetEndOfFile(h->host) ? 0 : R_OUT_OF_RANGE;
+}
+static void flush_file(Cpu *c) {   /* (handle) */
+    Handle *h = get_handle(c->x[0]);
+    if (h && h->host) FlushFileBuffers(h->host);
+    c->x[0] = h ? 0 : R_INVALID_HANDLE;
+}
+static void rename_entry(Cpu *c) {   /* (from, to): a file or a directory */
+    const char *rest_a, *rest_b;
+    ready();
+    struct Mount *a = find_mount(P(char, c->x[0]), &rest_a), *b = find_mount(P(char, c->x[1]), &rest_b);
+    if (!a || !b || a->kind != M_HOST || b->kind != M_HOST) { c->x[0] = a && b ? R_UNSUPPORTED : R_NOT_MOUNTED; return; }
+    char from[1024], to[1024];
+    host_path(from, sizeof from, a, rest_a);
+    host_path(to, sizeof to, b, rest_b);
+    c->x[0] = MoveFileExA(from, to, 0) ? 0 : R_PATH_NOT_FOUND;
+}
+static void file_time_stamp(Cpu *c) {   /* (FileTimeStamp *, path) */
+    memset(G2H(c->x[0]), 0, 32);
+    c->x[0] = 0;
+}
+static void fsa_register(Cpu *c) {   /* (name, unique_ptr<IFileSystem>&&): a plugin's own file system - not served here */
+    fprintf(stderr, "[fs] a plugin registered a file system \"%s\": not served (the runtime's own mounts stay)\n", P(char, c->x[0]));
+    void skyline_mods_mounted(void);   /* (hle_skyline.c: ARCropolis' mods: is up, its callbacks next) */
+    if (!strcmp(P(char, c->x[0]), "mods")) skyline_mods_mounted();
+    c->x[0] = 0;
+}
+void fs_plugin_shims(void) {
+    static const struct { const char *name; GuestFn *fn; } SHIMS[] = {
+        {"_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl", set_file_size},
+        {"_ZN2nn2fs9FlushFileENS0_10FileHandleE", flush_file},
+        {"_ZN2nn2fs10RenameFileEPKcS2_", rename_entry},
+        {"_ZN2nn2fs15RenameDirectoryEPKcS2_", rename_entry},
+        {"_ZN2nn2fs24GetFileTimeStampForDebugEPNS0_13FileTimeStampEPKc", file_time_stamp},
+        {"_ZN2nn2fs3fsa8RegisterEPKcONSt3__110unique_ptrINS1_11IFileSystemENS4_14default_deleteIS6_EEEE", fsa_register},
+    };
+    for (u32 i = 0; i < sizeof SHIMS / sizeof *SHIMS; i++) {
+        u64 at = rt_symbol(SHIMS[i].name);
+        if (at) rt_hook_function(at, rt_native(SHIMS[i].fn, SHIMS[i].name));
+    }
 }

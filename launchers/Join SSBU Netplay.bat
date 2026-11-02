@@ -11,7 +11,7 @@ rem tools\ssbu_relay.py). No port forwarding needed here. See docs\MULTIPLAYER.m
 rem build\play.log. The host needs game version 13.0.5 too.
 cd /d "%~dp0.."
 setlocal
-if not exist build\ssbu.exe (echo The game isn't built here yet: run Install WindowSmash.bat. & pause & exit /b 1)
+if not exist build\ssbu.exe (echo The game isn't built here yet: run OpenSmash.exe. & pause & exit /b 1)
 echo The host needs game version 13.0.5 too.
 set "SSBU_NET_RELAY="
 set /p "SSBU_NET_RELAY=Host's address (IP or IP:port, from the host's netplay_address.txt): "

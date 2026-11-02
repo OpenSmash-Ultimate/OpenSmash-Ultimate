@@ -182,16 +182,81 @@ def link_command(rsp, exe, options=(), libs=()):
     return [CLANG, "/nologo", *LINK_FLAGS, "@" + rsp, "/Fe" + exe, "/link", *LINK_OPTIONS, *options, *SYSTEM_LIBS, *libs]
 
 
+# The program's manifest: file names are UTF-8 (the "A" file calls - fopen, FindFirstFileA - take
+# mods.txt's and the mods' names as they are: an accented or Japanese mod name opens) and paths may
+# pass 260 characters (when Windows' LongPathsEnabled is on). Windows 10 1903 and newer.
+MANIFEST = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>
+"""
+
+
+def _icon_resources(path):
+    """RT_ICON images plus RT_GROUP_ICON id 1, from an .ico file, so the exe carries the launcher's icon."""
+    import struct
+    try:
+        data = open(path, "rb").read()
+    except OSError:
+        return b""
+    if len(data) < 6:
+        return b""
+    reserved, kind, count = struct.unpack_from("<HHH", data, 0)
+    if reserved or kind != 1 or not count or 6 + count * 16 > len(data):
+        return b""
+
+    def entry(type_id, name_id, blob):
+        head = struct.pack("<IIHHHHIHHII", len(blob), 32, 0xFFFF, type_id, 0xFFFF, name_id, 0, 0x1010, 0, 0, 0)
+        return head + blob + b"\0" * (-len(blob) % 4)
+
+    icons = b""
+    group = bytearray(struct.pack("<HHH", 0, 1, count))
+    for i in range(count):
+        w, h, colors, _reserved, planes, bits, nbytes, offset = struct.unpack_from("<BBBBHHII", data, 6 + i * 16)
+        if offset + nbytes > len(data):
+            return b""
+        icons += entry(3, i + 1, data[offset:offset + nbytes])
+        group += struct.pack("<BBBBHHIH", w, h, colors, 0, planes, bits, nbytes, i + 1)
+    return icons + entry(14, 1, bytes(group))
+
+
+def manifest_res(path):
+    """MANIFEST as a compiled resource file (.res: RT_MANIFEST 24, id 1), which the linker takes as an
+    input like an object - no rc.exe or mt.exe needed. The launcher's icon is resource 1 when the
+    file is next to the rest of the media."""
+    import struct
+    def entry(type_id, name_id, data, flags, lang):
+        head = struct.pack("<IIHHHHIHHII", len(data), 32, 0xFFFF, type_id, 0xFFFF, name_id, 0, flags, lang, 0, 0)
+        return head + data + b"\0" * (-len(data) % 4)
+    with open(path, "wb") as f:
+        f.write(entry(0, 0, b"", 0, 0) + entry(24, 1, MANIFEST, 0x1030, 0x0409)
+                + _icon_resources(os.path.join(ROOT, "media", "opensmash.ico")))
+    return path
+
+
 def link(objs, exe, options=()):
     """Link objects into an executable; `options` go to the linker. The codec libraries built
     from third_party/ are made first if they are missing or stale (a few seconds)."""
     if BUILT_CODECS:
         codec_libs.build(BUILT_CODECS, log=lambda m: print(m, flush=True), target=ISA)
     rsp = exe + ".rsp"
-    with open(rsp, "w") as f:
-        f.write("\n".join(f'"{o}"' for o in objs))
-    r = subprocess.run(link_command(rsp, exe, ["/HIGHENTROPYVA:NO", "/MAP:" + exe[:-4] + ".map", *options], EXTRA_LIBS),
-                       capture_output=True, text=True)
+    res = manifest_res(exe[:-4] + ".res")
+    for inputs in ([*objs, res], objs):   # (a linker that takes no .res still links: without the manifest)
+        with open(rsp, "w") as f:
+            f.write("\n".join(f'"{o}"' for o in inputs))
+        r = subprocess.run(link_command(rsp, exe, ["/HIGHENTROPYVA:NO", "/MANIFEST:NO", "/OPT:REF", "/OPT:NOICF",
+                                                   "/MAP:" + exe[:-4] + ".map", *options], EXTRA_LIBS),
+                           capture_output=True, text=True)
+        if not r.returncode:
+            break
+        if inputs is objs or ".res" not in r.stdout + r.stderr:
+            break
+        print("the link didn't take the manifest (" + exe[:-4] + ".res): linking without it", flush=True)
     if r.returncode:
         lines = (r.stdout + r.stderr).splitlines()
         errors = [l for l in lines if "error" in l.lower()] or lines   # (the third-party libraries' CRT warnings drown them)

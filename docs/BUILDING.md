@@ -14,7 +14,7 @@ This guide takes you from a fresh download to playing. No programming knowledge 
 
 **What you need:** a Windows 10 or 11 PC (64-bit, a processor with AVX2 or at the least SSE4.2 ([which](#the-instruction-set)), 16 GB of RAM is comfortable, about 60 GB free) and your own game files: the game as dumped from your Switch, with its **13.0.5 update** (WindowSmash needs version 13.0.5), your console's keys (`prod.keys` and `title.keys`) and its firmware. If you have played the game in **yuzu or Ryujinx on this PC, updated to 13.0.5, you already have all three**, and the installer finds them by itself. Otherwise, put the game (its `.xci`, `.nsp` or `.nca` files), its 13.0.5 update `.nsp` and your DLC `.nsp` files in one folder; [Part 2](#part-2-gather-your-game-files) below says what the files are.
 
-1. On **<https://github.com/OpenSmash-Ultimate/WindowSmash>**, click the green **Code** button, then **Download ZIP**. Extract the ZIP somewhere with room, for example to `C:\WindowSmash`. Keep it out of the Desktop and Documents folders: OneDrive may try to upload them, and the finished build is around 30 GB.
+1. On **<https://github.com/Jaiden56YT/WindowSmash>**, click the green **Code** button, then **Download ZIP**. Extract the ZIP somewhere with room, for example to `C:\WindowSmash`. Keep it out of the Desktop and Documents folders: OneDrive may try to upload them, and the finished build is around 30 GB.
 2. Double-click **`Install WindowSmash.bat`** in that folder. Windows asks whether to run it (**The publisher could not be verified**): click **Run**. On some PCs a blue **Windows protected your PC** box comes instead: click **More info**, then **Run anyway**. Windows asks this about anything downloaded that isn't signed; the installer takes that mark off WindowSmash's other files, so it asks only this once.
 3. A window opens with the folders it found for your game files, keys and firmware, and a line under each saying what is in it. Change a folder with **Browse…** if it is wrong or empty. If the game isn't version 13.0.5, the line under it says so in red: put the 13.0.5 update `.nsp` in the game folder and click **Check files**. Type the online name other players will see, and click **Set up and build**.
 4. Wait. The installer gets what is missing (Python, a compiler, SDL3), prepares your game files, and builds the game: **30 minutes to a few hours**, depending on your PC. You can keep using the PC meanwhile. If it stops, run `Install WindowSmash.bat` again: it carries on where it stopped.
@@ -183,7 +183,7 @@ The compiler turns the game into a Windows program. **You don't need to install 
 
 ### Step 5: Download WindowSmash
 
-1. On **<https://github.com/OpenSmash-Ultimate/WindowSmash>**, click the green **Code** button, then **Download ZIP**.
+1. On **<https://github.com/Jaiden56YT/WindowSmash>**, click the green **Code** button, then **Download ZIP**.
 2. Before extracting, right-click `WindowSmash-main.zip`, choose **Properties**, tick **Unblock** at the bottom if it's there, and click **OK**. This stops Windows from warning about every file inside.
 3. Extract the ZIP to `C:\` (right-click → **Extract All…**), then rename the folder `C:\WindowSmash-main` to **`C:\WindowSmash`**.
 
@@ -198,7 +198,7 @@ The compiler turns the game into a Windows program. **You don't need to install 
 With [Git for Windows](https://git-scm.com/download/win) installed, this does the same and makes updating easier later (`git pull`):
 
 ```powershell
-git clone https://github.com/OpenSmash-Ultimate/WindowSmash.git C:\WindowSmash
+git clone https://github.com/Jaiden56YT/WindowSmash.git C:\WindowSmash
 ```
 
 </details>
@@ -442,7 +442,7 @@ By hand: download the ZIP again, unblock it as in [step 5](#step-5-download-wind
 The example paths are your game files in `D:\MyDump`, your keys in `D:\MyKeys` and your firmware in `D:\MyFirmware`; `python` must be 3.10 or newer. (`launchers\Build WindowSmash.bat` does the same from `python -m pip` on, and takes an emulator's installed-content folder as the game folder.)
 
 ```powershell
-git clone https://github.com/OpenSmash-Ultimate/WindowSmash.git
+git clone https://github.com/Jaiden56YT/WindowSmash.git
 cd WindowSmash
 python -m pip install -r requirements.txt
 python tools/msvc_deps.py install    # the compiler (asks about Microsoft's license terms); not needed with Visual Studio's Clang tools

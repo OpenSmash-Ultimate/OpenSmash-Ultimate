@@ -58,7 +58,14 @@ def containers(arc):
     want = {A.hash40(e): e for e in ("eff", "nushdb", "arc")}
     seen, out = set(), []
     off, size, count = arc.tab["paths"]
+    progress = getattr(containers, "_progress", None)
+    last_pct = -1
     for i in range(count):
+        if progress and count:
+            pct = int(100 * (i + 1) / count)
+            if pct != last_pct:
+                last_pct = pct
+                progress(i + 1, count)
         full, ext = struct.unpack_from("<QQ", arc.t, off + i * size)
         e = want.get(ext & LOW40)
         if not e:
@@ -130,20 +137,41 @@ def module_images(tree):
     return [p for p in paths if os.path.isfile(p)]
 
 
-def find_programs(arc, read_errors=None, pause=0.5, modules=()):
+def find_programs(arc, read_errors=None, pause=0.5, modules=(), progress=None):
     """Distinct programs: list of [stage, bytes, set of paired vertex program ids], and how many
     files could not be read. A file the disk can't read is left out (its shaders compile when the
     game first uses them, as without this tool); read_errors, a list, gets each such error.
     modules: executables' images, scanned too (their programs on 16-byte boundaries; one that
     isn't one - no end within MAX_PROGRAM - shaderaot leaves out)."""
     programs, ids = [], {}
-    unread, failing = 0, 0
-    for path in modules:
+    unread, failing, seen = 0, 0, 0
+    mods = list(modules)
+    containers._progress = (lambda done, total: progress("listing", done, total)) if progress else None
+    try:
+        found = list(containers(arc))
+    finally:
+        containers._progress = None
+    boxes = [item for item in found if item[1][1] and item[1][2]]
+    total = len(mods) + len(boxes)
+    last_pct = -1
+
+    def tick():
+        nonlocal seen, last_pct
+        seen += 1
+        if not progress or total <= 0:
+            return
+        pct = int(100 * seen / total)
+        if seen == 1 or seen == total or pct != last_pct:
+            last_pct = pct
+            progress("reading", seen, total)
+
+    if progress:
+        progress("reading", 0, total)
+    for path in mods:
         with open(path, "rb") as f:
             add_file(programs, ids, f.read(), 16, 0)
-    for ext, (off, stored, size, flags) in containers(arc):
-        if not stored or not size:   # (an empty file - data.arc has a few, marked compressed: nothing in it)
-            continue
+        tick()
+    for ext, (off, stored, size, flags) in boxes:
         try:
             data = read_retried(arc, off, stored, pause)
             failing = 0
@@ -152,6 +180,7 @@ def find_programs(arc, read_errors=None, pause=0.5, modules=()):
             failing += 1
             if read_errors is not None:
                 read_errors.append(e)
+            tick()
             if failing >= READ_GIVE_UP:
                 raise DiskGone(e) from e
             continue
@@ -160,9 +189,11 @@ def find_programs(arc, read_errors=None, pause=0.5, modules=()):
                 data = zstd_decompress(data)
             except Exception:
                 unread += 1
+                tick()
                 continue
         step, start = (8, 0) if ext == "nushdb" else (256, 0x30)
         add_file(programs, ids, data, step, start)
+        tick()
     return programs, unread
 
 
@@ -242,24 +273,58 @@ def default_jobs():
     return jobs
 
 
-def low_priority():
-    """Popen's arguments that run the compile below normal priority."""
+# (Windows priority class, Linux nice). High is above normal, not real-time: the installer stays usable.
+_PRIORITY = {
+    "low": (0x00004000, 10),
+    "medium": (0x00000020, 0),
+    "high": (0x00008000, -5),
+}
+
+
+def apply_priority(name):
+    """This process, and Popen arguments so the compile workers match. Unknown names are low."""
+    cls, nice = _PRIORITY.get(name, _PRIORITY["low"])
     if LINUX:
-        return {"preexec_fn": lambda: os.nice(10)}
-    return {"creationflags": getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)}
+        try:
+            os.nice(nice)
+        except OSError:
+            pass
+        return {"preexec_fn": (lambda n: (lambda: os.nice(n)))(nice)}
+    import ctypes
+    ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), cls)
+    return {"creationflags": cls}
+
+
+def jobs_for(priority, jobs):
+    """How many compile processes. An explicit --jobs wins; otherwise high uses every core."""
+    if jobs:
+        return jobs
+    cpus = os.cpu_count() or 2
+    if priority == "high":
+        return max(1, cpus)
+    if priority == "medium":
+        return max(1, cpus - 1)
+    return default_jobs()
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
-    ap.add_argument("--jobs", type=int, default=default_jobs())
+    ap.add_argument("--jobs", type=int, default=0)
+    ap.add_argument("--priority", choices=("low", "medium", "high"), default="low")
     ap.add_argument("--dry", action="store_true")
     a = ap.parse_args()
     tree = ROOT
+    popen_pri = apply_priority(a.priority)
     t0 = time.time()
     arc = A.Arc(os.path.join(tree, "dump", "modules", "romfs.cfg"))
     read_errors = []
+
+    def report(kind, done, total):
+        print(f"{kind} shader files: {done:,} of {total:,}", flush=True)
+
     try:
-        programs, unread = find_programs(arc, read_errors, modules=module_images(tree))
+        programs, unread = find_programs(
+            arc, read_errors, modules=module_images(tree), progress=report)
     except DiskGone as e:
         raise SystemExit(f"\nThe disk stopped answering: {READ_GIVE_UP} of the game's files running could not be read "
                          f"({e}). Check that it is still there (an SD card that came loose, a drive that went to sleep), "
@@ -277,17 +342,19 @@ def main():
     build_tool(exe)
     cache = os.path.join(tree, "dump", "shadercache")
     os.makedirs(cache, exist_ok=True)
-    jobs = 1 if a.dry else a.jobs
+    marker = os.path.join(cache, "complete.txt")
+    if not a.dry and os.path.exists(marker):
+        os.remove(marker)
+    jobs = 1 if a.dry else jobs_for(a.priority, a.jobs)
     procs = [subprocess.Popen([exe, pack, cache, str(i), str(jobs)] + (["--dry"] if a.dry else []),
                               stdout=subprocess.PIPE if a.dry else subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-                              **low_priority())
+                              **popen_pri)
              for i in range(jobs)]
     if a.dry:
         outs = [p.communicate() for p in procs]
         print("\n".join(line for _out, err in outs for line in err.splitlines() if line.startswith("part ")))
     else:
-        print(f"compiling with {jobs} processes at low priority (the PC stays usable; stop it with " + ("Ctrl+C" if LINUX else "closing this window") + ": "
-              "what is done stays done)", flush=True)
+        print(f"compiling with {jobs} processes at {a.priority} priority (stop it any time: what is done stays done)", flush=True)
         parts = follow(procs, Progress(sys.stdout))
         print(summary(parts) or "\n".join(parts))
     if a.dry:
@@ -298,6 +365,9 @@ def main():
             if len(parts) == 5 and parts[0] == "v" + str(cache_version()) and parts[1] in ("vs", "ps"):
                 have.add(("vs", parts[2]) if parts[1] == "vs" else ("ps", parts[2], parts[3]))
         print(f"the cache has {len(have)} vertex/pixel keys; {len(have & keys)} of them are among the {len(keys)} found here")
+    if not a.dry and all(p.returncode == 0 for p in procs):
+        with open(marker, "w", encoding="utf-8", newline="\n") as f:
+            f.write(f"version {cache_version()}\n")
     print(f"done in {time.time() - t0:.0f} s")
 
 
@@ -357,7 +427,7 @@ class Progress:
             self.width = len(text)
             self.out.flush()
         else:
-            step = int(100 * done / of) // 5 if of else 20
+            step = int(100 * done / of) if of else 100
             if step > self.shown or (final and text != self.last):
                 self.out.write(text + "\n")
                 self.out.flush()

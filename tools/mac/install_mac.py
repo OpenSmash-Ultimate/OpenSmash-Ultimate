@@ -54,7 +54,7 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "tools", "linux"))
 import install_linux as il  # noqa: E402  (the update, download and folder helpers)
 
-# Updates come from this branch (the macOS port is in main).
+# Updates come from this repository's main branch.
 # SSBU_UPDATE_BRANCH names another, for testing one.
 BRANCH = os.environ.get("SSBU_UPDATE_BRANCH") or "main"
 DEPS = il.DEPS
@@ -80,7 +80,8 @@ ICON = os.path.join(ROOT, "docs", "assets", "windowsmash.ico")
 LAUNCHERS = ["Install WindowSmash.command", "Play SSBU.command", "launchers/Play SSBU Offline.command",
              "launchers/Host SSBU Netplay.command", "launchers/Join SSBU Netplay.command",
              "launchers/Unlock All Fighters.command", "launchers/Build WindowSmash.command",
-             "tools/mac/launch.sh"]
+             "Mods.command", "launchers/WindowSmash Mods.command", "launchers/Uninstall WindowSmash Mods.command",
+             "launchers/Import Miis.command", "tools/mac/launch.sh"]
 EMULATORS = ("yuzu", "eden", "sudachi", "citron", "suyu", "torzu")   # yuzu and the forks with its layout
 SSBU_TITLES = "01006a800016"   # (Super Smash Bros. Ultimate's title ids: the game's, its update's and DLC's)
 NAME_MAX = 32   # (as the Windows setup window's box)

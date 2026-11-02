@@ -62,7 +62,7 @@ the build needs, finds your game files, and builds the game. It needs:
   (`prod.keys` and `title.keys`); and your firmware's `.nca` files. An emulator's own folders work
   as they are, with the game updated to 13.0.5 there.
 
-1. **Download WindowSmash.** On the [GitHub page](https://github.com/OpenSmash-Ultimate/WindowSmash), click
+1. **Download WindowSmash.** On the [GitHub page](https://github.com/Jaiden56YT/WindowSmash), click
    **Code > Download ZIP**, then unpack it in your home folder, for example as `~/WindowSmash`.
 2. **Open a terminal in that folder.** Open the folder in your file manager, right-click an empty
    area, and choose **Open in Terminal**.

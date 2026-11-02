@@ -404,8 +404,10 @@ static void buffer_copy(GBuf *src, u64 so, GBuf *dst, u64 doff, u32 n) {
 /* Bytes into a buffer the GPU may be using - writing, even: after what is recorded before, by a
  * copy (which ends a render pass), unless no recorded or running work uses the buffer, when they
  * are simply written. */
+static u64 resident_gen;   /* (writes into resident regions so far: upload_composed's copies hold until the next) */
 static void gpu_write(GBuf *dst, u64 off, const void *data, u32 n) {
     if (!n || off >= dst->size) return;
+    resident_gen++;   /* (every caller writes a resident region's buffer) */
     if (n > dst->size - off) n = (u32)(dst->size - off);
     if (dst->last_use < cmd_serial && dst->last_use <= completed()) { memcpy(dst->cpu + off, data, n); return; }
     Alloc a = arena(n);
@@ -1785,6 +1787,7 @@ static int watch_written(u64 g, u64 size, u64 *seen) {
 }
 
 static void resident_drop(Resident *r) {
+    resident_gen++;
     gbuf_free(r->buf);
     free(r->edge);
     *r = residents[--nresidents];
@@ -1916,6 +1919,7 @@ u64 gfx_stat_residents_given_up;
 u64 gfx_stat_residents_retired;
 
 static Resident *resident_create(u64 va, u32 size) {
+    resident_gen++;   /* (made, or merged from others: what composed ranges copied may be elsewhere now) */
     if (nresidents == 512) {
         /* The table is full: the region used longest ago goes - never one this call uses (bound
          * already, or about to be merged). What the GPU wrote there is lost to guest memory, as
@@ -2005,12 +2009,34 @@ static void resident_patch(View dst, u64 va, u64 size) {
     }
 }
 
+/* The ranges composed lately, used again by the draws after them: a particle effect's instances
+ * are drawn one at a time (instance_counter), each reading the same streams partly held by
+ * resident regions - and each compose copies on the GPU, which ends the render pass. The results
+ * screen composed 9 streams 102 times each a frame: ~300 passes of its 1920x1080 colour and depth
+ * targets, 27 ms of GPU time (22-28 fps on an M4). One holds while it is in the command buffer it
+ * was made for, nothing has written a resident region since (resident_gen), and the guest's
+ * bytes around are as they were (untouched_since: in the submission, by the command stream). */
+#define COMPOSED_KEPT 32
+typedef struct Composed { u64 va; u32 size; View v; u64 cmd, gen, batch, seq; } Composed;
+static Composed composed[COMPOSED_KEPT];
+static u32 composed_next;
+
 /* A range only partly held by resident regions, as the GPU sees it: the guest's data (in data)
  * with the regions' parts copied over it, in a buffer of its own (handed back at once: it is not
  * given out again before the work recorded now is done). Regions are never widened for a read:
  * what lies around them is the CPU's, and it keeps changing in guest memory. */
 static View upload_composed(int stage, u32 slot, u64 va, const void *data, u32 size) {
     u32 need_ = (size + 15) & ~15u;
+    u64 g = gpu_va_to_guest(va);
+    int one = g && size && gpu_va_to_guest(va + size - 1) == g + size - 1;   /* (one mapping: the write log can tell) */
+    for (u32 i = 0; one && i < COMPOSED_KEPT; i++) {
+        Composed *c = &composed[i];
+        if (c->v.b && c->va == va && c->size == size && c->cmd == cmd_serial && c->gen == resident_gen &&
+            untouched_since(c->batch, c->seq, g, size)) {
+            gfx_stat_reused++;
+            return c->v;
+        }
+    }
     gfx_stat_upload_bytes += size;
     gfx_stat_composed++;
     if (!need_) return upload_raw(stage, slot, data, size);
@@ -2020,13 +2046,15 @@ static View upload_composed(int stage, u32 slot, u64 va, const void *data, u32 s
     memset(b->cpu + size, 0, need_ - size);
     View v = {b, 0, need_};
     resident_patch(v, va, size);
-    pool_put(b, 1);
+    pool_put(b, 1);   /* (not handed out again before this command buffer is done: the cache's copy stays valid in it) */
+    if (one) composed[composed_next++ % COMPOSED_KEPT] = (Composed){va, size, v, cmd_serial, resident_gen, gpu_stat_batches, wrote_seq};
     return v;
 }
 
 /* The copy engine and resident data. */
 int gfx_copy_resident(u64 dst_va, u64 src_va, u64 bytes) {
     if (!bytes || bytes > (256u << 20) || !enter()) return 0;
+    resident_gen++;
     Resident *src = resident_overlapping(src_va, (u32)bytes);
     if (!src || src_va < src->va || src_va + bytes > src->va + src->size) {
         leave();
@@ -2496,7 +2524,10 @@ static int depth_like(MTLPixelFormat f) {   /* what a shadow slot (depth2d...) t
 
 /* A texture bound for a draw: the texture, the surface it is (if a render target), and whether its
  * texels are integers (sampled nearest). */
-typedef struct Bound { id<MTLTexture> tex; Surface *surface; int integer; } Bound;
+/* (tex: unretained - every one handed out is held by its cache: textures[], a surface's views, the
+ * dummies - and a draw's StageBinds hold 48 of them: retained, each draw released them all, ~11% of
+ * the GPU thread at the results screen's 5,800 draws a frame) */
+typedef struct Bound { __unsafe_unretained id<MTLTexture> tex; Surface *surface; int integer; } Bound;
 
 /* tex as the type a shader declares (TEX_2D, TEX_ARRAY_2D, TEX_3D, TEX_CUBE or TEX_ARRAY_CUBE):
  * itself, or a view of it, or nil where no view gives that. */
@@ -2970,7 +3001,7 @@ static void set_sampler(int stage, u32 k, id<MTLSamplerState> s) {
 typedef struct StageBinds {
     ShaderBinds bt;
     Bound tex[32];
-    id<MTLSamplerState> smp[16];
+    __unsafe_unretained id<MTLSamplerState> smp[16];   /* (held by samplers[]) */
 } StageBinds;
 
 /* Bind a stage's constant buffers and textures. */
@@ -4189,6 +4220,7 @@ void gfx_guest_unmapped(u64 addr, u64 size) {
 
 void gfx_dispatch(const u32 *regs, const u32 *q) {
     if (!enter()) return;
+    resident_gen++;   /* (compute writes resident regions) */
     kept_flush();
     if (draw_logging) save_sampled();
     u64 region = (u64)regs[M_PROGRAM_REGION] << 32 | regs[M_PROGRAM_REGION + 1];

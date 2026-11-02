@@ -34,6 +34,7 @@
 #define COBJMACROS
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "config_folder.h"
 #include "display.h"
@@ -52,7 +53,8 @@ static struct {
     char gpu[64];
     float render_scale;   /* 0: auto */
     double speed;         /* SSBU_SPEED (test runs): 1 normal */
-} cfg = {MODE_WINDOWED, 1280, 720, 3, 1, 1, PACING_CLOCK, 0, "auto", 1.0f, 1.0};
+    float volume;         /* display.ini volume, 0-100: the output's loudness, 100 full */
+} cfg = {MODE_WINDOWED, 1280, 720, 3, 1, 1, PACING_CLOCK, 0, "auto", 1.0f, 1.0, 1.0f};
 
 static const char DEFAULT_INI[] =
     "; display.ini: the game's window and the pacing of its frames. Read when the game starts; the\n"
@@ -117,6 +119,10 @@ static const char DEFAULT_INI[] =
     "hide_cursor = 1\n"
     "; overlay = 1: show the frame rate in the corner from the start (F1 shows or hides it while playing).\n"
     "overlay = 1\n"
+    "; volume = 0-100: how loud the game is. 100 is full. Read when the game starts.\n"
+    "volume = 100\n"
+    "; overlay_scale = 0.25-2: the overlay's size (0.5: half as big, out of the way of the game).\n"
+    "overlay_scale = 1\n"
     "\n"
     "; render_scale = 1 | auto | a number from 0.5 to 4\n"
     ";   The game draws its pictures at 1920x1080. render_scale draws them this many times as wide and\n"
@@ -162,6 +168,14 @@ static void parse_render_scale(const char *v) {
     else { fprintf(stderr, "[display] render_scale is auto or a number from 0.5 to 4, not '%s': 1 it is\n", v); cfg.render_scale = 1; }
 }
 
+static float overlay_scale = 1;   /* overlay_scale = 0.25-2 */
+static void parse_overlay_scale(const char *v) {
+    char *end;
+    double x = strtod(v, &end);
+    if (end != v && x >= 0.25 && x <= 2) overlay_scale = (float)x;
+    else fprintf(stderr, "[display] overlay_scale is a number from 0.25 to 2, not '%s': 1 it is\n", v);
+}
+
 static char *trim(char *s) {
     while (*s == ' ' || *s == '\t') s++;
     char *e = s + strlen(s);
@@ -199,8 +213,15 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else if (!_stricmp(key, "latency")) cfg.latency = atoi(value);
         else if (!_stricmp(key, "hide_cursor")) cfg.hide_cursor = atoi(value) != 0;
         else if (!_stricmp(key, "overlay")) cfg.overlay = atoi(value) != 0;
+        else if (!_stricmp(key, "overlay_scale")) parse_overlay_scale(value);
         else if (!_stricmp(key, "gpu")) snprintf(cfg.gpu, sizeof cfg.gpu, "%s", value);
         else if (!_stricmp(key, "render_scale")) parse_render_scale(value);
+        else if (!_stricmp(key, "volume")) {
+            int n = atoi(value);
+            if (n < 0) n = 0;
+            if (n > 100) n = 100;
+            cfg.volume = n / 100.f;
+        }
         else fprintf(stderr, "[display] %s: unknown setting '%s'\n", path, key);
     }
     if (f) fclose(f);
@@ -228,6 +249,7 @@ int display_latency(void) { load(); return cfg.latency; }
 Pacing display_pacing(void) { load(); return cfg.pacing; }
 const char *display_gpu(void) { load(); return cfg.gpu; }
 float display_render_scale(void) { load(); return cfg.render_scale; }
+float display_volume(void) { load(); return cfg.volume; }
 
 /* (the settings menu) the render scale it saved: shown from now on, the renderer's own counts
  * only at the next start */
@@ -235,6 +257,7 @@ static float saved_render_scale;
 static int render_scale_saved;
 void display_set_render_scale(float scale) { saved_render_scale = scale; render_scale_saved = 1; }
 int display_overlay(void) { load(); return cfg.overlay; }
+float display_overlay_scale(void) { load(); return overlay_scale; }
 
 /* ---- the settings menu's changes ------------------------------------------------------- */
 static volatile LONG asked_mode = -1, asked_latency;
@@ -278,6 +301,7 @@ static POINT last_mouse;
 static ULONGLONG last_mouse_at;
 
 static const DWORD WINDOWED_STYLE = WS_OVERLAPPEDWINDOW | WS_VISIBLE, FULL_STYLE = WS_POPUP | WS_VISIBLE;
+static HWND game_window;
 
 /* The frame's thickness around a client area at this DPI. */
 static RECT frame_of(DWORD style, UINT dpi) {
@@ -331,6 +355,7 @@ static void set_mode(HWND h, int mode) {
 
 /* (the window thread) the menu's choice: the window's mode now, and F11's full-screen form */
 #define WM_DISPLAY_MODE (WM_APP + 1)
+#define WM_DISPLAY_SHOW (WM_APP + 2)
 
 void display_set_mode(int mode) {
     load();
@@ -341,16 +366,28 @@ void display_set_mode(int mode) {
 
 HWND display_create_window(HINSTANCE inst, const wchar_t *cls, const wchar_t *title) {
     load();
+    /* A plugin probe (tools/skyline.py, SSBU_SKYLINE_PROBE) only needs the plugins to load.
+     * The window stays unshown and off the taskbar, and it is not sent full screen. */
+    int probe = getenv("SSBU_SKYLINE_PROBE") != NULL;
     /* made at the system DPI first, then sized for its own monitor's */
-    HWND h = CreateWindowExW(0, cls, title, WINDOWED_STYLE & ~WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 640, 360, NULL, NULL, inst, NULL);
+    /* WS_EX_APPWINDOW: a top-level game window gets a taskbar button. A probe stays off the taskbar. */
+    HWND h = CreateWindowExW(probe ? WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW : WS_EX_APPWINDOW, cls, title,
+                             WINDOWED_STYLE & ~WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 640, 360, NULL, NULL, inst, NULL);
     if (!h) return NULL;
+    game_window = h;
     current_mode = MODE_WINDOWED;
     RECT r = windowed_rect(h);
     SetWindowPos(h, NULL, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
-    if (cfg.mode != MODE_WINDOWED) set_mode(h, cfg.mode);
-    ShowWindow(h, SW_SHOW);
+    if (!probe && cfg.mode != MODE_WINDOWED) set_mode(h, cfg.mode);
     SetTimer(h, 1, 500, NULL);   /* the idle pointer */
     return h;
+}
+
+void display_show_window(void) {
+    /* The first frame asks from the render thread. Showing it here leaves the window visible but
+     * without a taskbar button until it is clicked. The window thread shows and activates it. */
+    if (!game_window || IsWindowVisible(game_window) || getenv("SSBU_SKYLINE_PROBE")) return;
+    PostMessageW(game_window, WM_DISPLAY_SHOW, 0, 0);
 }
 #endif
 
@@ -389,6 +426,16 @@ int display_message(HWND h, UINT msg, WPARAM w, LPARAM l, LRESULT *result) {
         set_mode(h, (int)w);
         *result = 0;
         return 1;
+    case WM_DISPLAY_SHOW: {
+        ShowWindow(h, SW_SHOWNORMAL);
+        HWND fg = GetForegroundWindow();
+        DWORD fg_thread = GetWindowThreadProcessId(fg, NULL), me = GetCurrentThreadId();
+        int attached = fg_thread && fg_thread != me && AttachThreadInput(me, fg_thread, TRUE);
+        SetForegroundWindow(h);
+        if (attached) AttachThreadInput(me, fg_thread, FALSE);
+        *result = 0;
+        return 1;
+    }
     case WM_MENUCHAR:     /* (no "ding" for Alt+key) */
         *result = MAKELRESULT(0, MNC_CLOSE);
         return 1;

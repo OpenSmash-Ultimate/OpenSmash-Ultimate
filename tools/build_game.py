@@ -303,7 +303,7 @@ def windows_compiler_problem(cc):
     game's C is, linked with cc.link's command (every library the game links), and run."""
     clang = cc.CLANG if os.path.isfile(cc.CLANG) else shutil.which(cc.CLANG)
     if not clang:
-        return ("No compiler (clang-cl.exe) was found. launchers\\Build WindowSmash.bat gets one by itself (or python "
+        return ("No compiler (clang-cl.exe) was found. OpenSmash.exe gets one by itself (or python "
                 "tools\\msvc_deps.py install), or install Visual Studio with Desktop development with C++ and C++ Clang tools "
                 "for Windows (setup guide step 4).")
     if cc.WINSYSROOT:
@@ -813,7 +813,7 @@ def use_open_fonts():
         return
     again = ("run  bash install-windowsmash.sh --firmware <folder>" if LINUX else
              "run Install WindowSmash.command again and choose it" if MACOS else
-             "run Install WindowSmash.bat again and fill it in")
+             "run OpenSmash.exe again and fill it in")
     log(f"  no firmware: the game uses the open fonts of {folder} in place of your console's "
         f"({shown(os.path.join(folder, 'README.md'))})")
     log(f"  {WITH_OPEN_FONTS}")
@@ -1208,13 +1208,13 @@ def build(a):
             run([sys.executable, os.path.join("tools", "recomp.py"), "all", os.path.join("dump", "exefs"),
                  "--out", "build", "--jobs", str(jobs), *(["--game-dll"] if dll else [])],
                 "The build failed (see above). If the PC ran out of memory, build with fewer jobs at a time: open "
-                "PowerShell in this folder and run  & \".\\launchers\\Build WindowSmash.bat\" --jobs 4")
+                "OpenSmash.exe, set Compiler jobs to 4, and press Set up and build again.")
     if LINUX:
         log(f"\nDone: {exe} is ready. Start the game with ./play-ssbu.sh, or WindowSmash in your applications menu.")
     elif MACOS:
         log(f"\nDone: {exe} is ready. Start the game with Play SSBU.command, or Play SSBU in ~/Applications (Spotlight finds it).")
     else:
-        log("\nDone: build\\ssbu.exe is ready. Start the game with Play SSBU.bat.")
+        log("\nDone: build\\ssbu.exe is ready. Start the game with OpenSmash.exe.")
 
 
 def build_linux_program(jobs, dll=False):
@@ -1269,7 +1269,7 @@ def build_mac_program(jobs, dll=False):
 
 
 def main():
-    launcher = "Install WindowSmash.command" if MACOS else "launchers\\Build WindowSmash.bat"
+    launcher = "Install WindowSmash.command" if MACOS else "OpenSmash.exe"
     ap = argparse.ArgumentParser(description=f"Build the game from your own files ({launcher}).")
     ap.add_argument("--game", help=f"the folder with the game's files (asked; default {FOLDERS['game'][1]})")
     ap.add_argument("--keys", help=f"the folder with prod.keys and title.keys (asked; default {FOLDERS['keys'][1]})")

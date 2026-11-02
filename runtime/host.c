@@ -97,6 +97,13 @@ const char *rt_describe(u64 addr, char *buf, size_t n) {
     return buf;
 }
 
+/* The module whose code (text) holds addr, and the offset there: NULL if none. */
+const char *rt_code_offset(u64 addr, u64 *off) {
+    for (u32 m = 0; m < module_count; m++)
+        if (addr - modules[m]->base < modules[m]->text_size) { *off = addr - modules[m]->base; return modules[m]->name; }
+    return NULL;
+}
+
 /* Guest function containing a host code address, or 0 for runtime code. */
 static u64 guest_of(u64 pc) {
     u32 lo = 0, hi = by_host_count;
@@ -661,6 +668,7 @@ void rt_wrap_missing(Cpu *c) { rt_trap(c, 0, "wrapped guest function missing fro
 static struct { volatile u64 key; GuestFn *volatile fn; } lookup_cache[LOOKUP_CACHE];
 #define LOOKUP_MIX(fn) ((u64)(fn) * 0x9E3779B97F4A7C15ull)
 
+u64 rt_moved_in_13_0_5(u64 at);   /* (hle_skyline.c) a 13.0.4 main address that moved in 13.0.5 */
 GuestFn *rt_lookup(u64 addr) {
     char name[96];
     u32 h = (u32)((addr >> 2) * 0xD6E8FEB86659FD93ull >> 51) & (LOOKUP_CACHE - 1);
@@ -673,6 +681,15 @@ GuestFn *rt_lookup(u64 addr) {
         u64 off = addr - modules[m]->base;
         if (off < modules[m]->text_size) {
             GuestFn *fn = off & 3 ? NULL : code[m][off >> 2];
+            /* A moveset built for 13.0.4 calls a main address that moved in 13.0.5. The cache key
+             * stays the address it asked for. */
+            if (!fn && !strcmp(modules[m]->name, "main")) {
+                u64 slid = rt_moved_in_13_0_5(addr);
+                if (slid != addr) {
+                    off = slid - modules[m]->base;
+                    fn = (off & 3) || off >= modules[m]->text_size ? NULL : code[m][off >> 2];
+                }
+            }
             if (fn) {
                 lookup_cache[h].fn = fn;
                 lookup_cache[h].key = addr ^ LOOKUP_MIX(fn);
@@ -808,6 +825,19 @@ static u64 resolve(const char *name, int weak) {
     return addr;
 }
 
+/* Bind an exported name to a native function, for references linked from now on: the address it
+ * had (0 if nothing defines it - then it stays as it was). The wrapper calls that one itself. */
+u64 rt_wrap_symbol(const char *name, GuestFn *fn) {
+    struct Sym *s = sym_slot(name);
+    u64 real = s->name && !s->missing ? s->addr : 0;
+    if (real) s->addr = rt_native(fn, name);
+    return real;
+}
+
+#ifdef __APPLE__
+void discord_init(void);   /* (macos/discord.c) */
+#endif
+
 /* ---- loading --------------------------------------------------------------------- */
 int main(int argc, char **argv);
 static DWORD WINAPI guest_main(LPVOID unused);
@@ -826,8 +856,18 @@ static void map_module(u32 m, const char *dir) {
     if (image != G2H(mod->base)) rt_fatal("cannot map %s at %#llx", mod->name, mod->base);
     if (fread(image, 1, mod->image_size, f) < mod->text_size) rt_fatal("%s is truncated", path);
     fclose(f);
+    /* code, read-only data, data: as the console maps them (plugins find a module's sections with
+     * QueryMemory, hle_rtld.c). An NRO's header says where; the boot modules' are 13.0.5's. */
+    u64 ro = text, data = text;
+    static const struct { const char *name; u64 ro, data; } BOOT[] = {
+        {"main", 0x39c9000, 0x4f17000}, {"subsdk0", 0x36d000, 0x5c7000}, {"sdk", 0x541000, 0xbda000}};
+    if (*(u32 *)(image + 0x10) == 0x304F524E) { ro = *(u32 *)(image + 0x28); data = *(u32 *)(image + 0x30); }
+    else for (u32 b = 0; b < 3; b++)
+        if (!strcmp(mod->name, BOOT[b].name) && BOOT[b].ro == text) { ro = BOOT[b].ro; data = BOOT[b].data; }
+    if (ro != text || data < ro || data > size) ro = data = text;
     kernel_add_region(mod->base, text, 3, 5);                        /* code */
-    kernel_add_region(mod->base + text, size - text, 4, 3);          /* data */
+    kernel_add_region(mod->base + ro, data - ro, 3, 1);              /* read-only data */
+    kernel_add_region(mod->base + data, size - data, 4, 3);          /* data */
 
     for (u64 a = mod->base; a < mod->base + size; a += 1ull << SLOT_SHIFT) {
         u64 slot = (a - SLOT_BASE) >> SLOT_SHIFT;
@@ -889,10 +929,15 @@ static u32 bind_module(u32 m) {
     return mod->reloc_count;
 }
 
+static u32 nro_count_all(void);
+static const RtModule *nro_by_index(u32 k);
+static void load_plugin_dlls(void);
+
 static void load(const char *dir) {
     u32 funcs = 0, exports = 0, relocs = 0, hooked = 0;
+    load_plugin_dlls();
     for (u32 m = 0; m < module_count; m++) { funcs += modules[m]->func_count; exports += modules[m]->export_count; }
-    for (u32 m = 0; m < rt_nro_count; m++) exports += rt_nro_modules[m]->export_count;
+    for (u32 m = 0; m < nro_count_all(); m++) exports += nro_by_index(m)->export_count;
     for (RtHook *h = rt_hook_list(); h; h = h->next) hooked++;
     for (symtab_size = 1024; symtab_size < exports * 3 + 65536; symtab_size *= 2) {}
     symtab = calloc(symtab_size, sizeof *symtab);
@@ -909,8 +954,8 @@ static void load(const char *dir) {
     /* The NROs the game loads later each have a fixed address: keep their ranges free now,
      * before the graphics driver and the heap start taking address space (they did, and a
      * fighter's module then could not be mapped). */
-    for (u32 k = 0; k < rt_nro_count; k++) {
-        const RtModule *nro = rt_nro_modules[k];
+    for (u32 k = 0; k < nro_count_all(); k++) {
+        const RtModule *nro = nro_by_index(k);
         u64 size = (nro->image_size + 0xFFFF) & ~0xFFFFull;
         if (VirtualAlloc(G2H(nro->base), size, MEM_RESERVE, PAGE_NOACCESS) != G2H(nro->base))
             fprintf(stderr, "[ro] warning: cannot reserve %s's range at %#llx (error %lu)\n", nro->name, nro->base, (unsigned long)GetLastError());
@@ -931,26 +976,102 @@ static void load(const char *dir) {
         fprintf(stderr, "cannot map the native-function region\n");
         exit(2);
     }
+#ifdef __APPLE__
+    discord_init();   /* (before the modules are linked: it wraps some of main's exports) */
+#endif
     for (u32 m = 0; m < module_count; m++) relocs += bind_module(m);
     printf("loaded %u modules: %u functions, %u exported symbols, %u symbol relocations; "
            "%u symbols bound to native code, %u left undefined (%u NROs recompiled for loading later)\n",
-           module_count, funcs, exports, relocs, hle_count, unresolved_count, rt_nro_count);
+           module_count, funcs, exports, relocs, hle_count, unresolved_count, nro_count_all());
+}
+
+/* Mod plugins translated on their own (tools/skyline.py): build/plugins/<name>.dll, listed in
+ * dump/skyline/plugin_dlls.txt. Each one hands over its RtModule. A module the program already
+ * has linked in is left to that copy. */
+#define MAX_EXTRA_NROS 64
+static const RtModule *extra_nros[MAX_EXTRA_NROS];
+static u32 extra_nro_count;
+
+static u32 nro_count_all(void) { return rt_nro_count + extra_nro_count; }
+static const RtModule *nro_by_index(u32 k) {
+    return k < rt_nro_count ? rt_nro_modules[k] : extra_nros[k - rt_nro_count];
+}
+
+static int nro_linked(const RtModule *mod) {
+    for (u32 k = 0; k < rt_nro_count; k++)
+        if (!strcmp(rt_nro_modules[k]->name, mod->name) || !strcmp(rt_nro_modules[k]->build_id, mod->build_id))
+            return 1;
+    return 0;
+}
+
+static void load_plugin_dlls(void) {
+#ifdef _WIN32
+    char list[1200], line[1200], root[1024];
+    snprintf(list, sizeof list, "%s/../skyline/plugin_dlls.txt", rt_data_dir);
+    FILE *f = fopen(list, "r");
+    if (!f) return;
+    snprintf(root, sizeof root, "%s/../..", rt_data_dir);
+    while (fgets(line, sizeof line, f) && extra_nro_count < MAX_EXTRA_NROS) {
+        char *s = line, full[1200];
+        while (*s == ' ' || *s == '\t') s++;
+        size_t n = strlen(s);
+        while (n && (s[n - 1] == '\n' || s[n - 1] == '\r' || s[n - 1] == ' ')) s[--n] = 0;
+        if (!*s || *s == '#') continue;
+        if (s[1] == ':') snprintf(full, sizeof full, "%s", s);
+        else snprintf(full, sizeof full, "%s/%s", root, s);
+        for (char *p = full; *p; p++) if (*p == '/') *p = '\\';
+        HMODULE lib = LoadLibraryA(full);
+        if (!lib) {
+            fprintf(stderr, "[plugins] %s did not load (error %lu)\n", full, (unsigned long)GetLastError());
+            continue;
+        }
+        void (*bind)(GuestFn *(*)(u64), GuestFn *(*)(u64, RtCache *), void (*)(Cpu *, u64, const char *)) =
+            (void *)GetProcAddress(lib, "ssbu_plugin_bind");
+        const RtModule *(*modfn)(void) = (void *)GetProcAddress(lib, "ssbu_plugin_module");
+        if (!bind || !modfn) {
+            fprintf(stderr, "[plugins] %s has no plugin entry\n", full);
+            FreeLibrary(lib);
+            continue;
+        }
+        bind(rt_lookup, rt_lookup_cached, rt_trap);
+        const RtModule *mod = modfn();
+        if (!mod || nro_linked(mod)) {
+            FreeLibrary(lib);
+            continue;
+        }
+        extra_nros[extra_nro_count++] = mod;
+        fprintf(stderr, "[plugins] %s will load from %s\n", mod->name, full);
+    }
+    fclose(f);
+#else
+    (void)0;
+#endif
 }
 
 /* nn::ro: load the recompiled module built from the NRO with this image - map it at its
  * fixed address, link it against everything loaded so far and run its initialiser. Returns
  * its load address, or 0 if no recompiled module matches the image. */
+static u64 load_nro(Cpu *c, const char *id, const char *name);
+void skyline_module_loaded(const char *name, u64 base);   /* (hle_skyline.c: the plugins' hooks into it) */
+void rtld_module_loaded(u64 base, u64 size);               /* (hle_rtld.c: nn::ro's lists) */
+
 u64 rt_load_nro(Cpu *c, u64 image) {
-    static SRWLOCK lock = SRWLOCK_INIT;
     char id[65];
     for (int i = 0; i < 32; i++) snprintf(id + 2 * i, 3, "%02X", *P(u8, image + 0x40 + i));
     for (int n = 64; n > 1 && id[n - 1] == '0'; n--) id[n - 1] = 0;
+    return load_nro(c, id, NULL);
+}
+
+/* Load the recompiled NRO module with this build id (or, with id NULL, this name), as
+ * rt_load_nro does. */
+static u64 load_nro(Cpu *c, const char *id, const char *name) {
+    static SRWLOCK lock = SRWLOCK_INIT;
     AcquireSRWLockExclusive(&lock);
     for (u32 m = BOOT_MODULES; m < module_count; m++)
-        if (!strcmp(modules[m]->build_id, id)) { ReleaseSRWLockExclusive(&lock); return modules[m]->base; }
+        if (id ? !strcmp(modules[m]->build_id, id) : !strcmp(modules[m]->name, name)) { ReleaseSRWLockExclusive(&lock); return modules[m]->base; }
     const RtModule *mod = NULL;
-    for (u32 k = 0; k < rt_nro_count && !mod; k++)
-        if (!strcmp(rt_nro_modules[k]->build_id, id)) mod = rt_nro_modules[k];
+    for (u32 k = 0; k < nro_count_all() && !mod; k++)
+        if (id ? !strcmp(nro_by_index(k)->build_id, id) : !strcmp(nro_by_index(k)->name, name)) mod = nro_by_index(k);
     if (!mod || module_count == MAX_MODULES) { ReleaseSRWLockExclusive(&lock); return 0; }
     u32 m = module_count;
     modules[m] = mod;
@@ -968,8 +1089,90 @@ u64 rt_load_nro(Cpu *c, u64 image) {
         snprintf(mark, sizeof mark, "module:%s", mod->name);
         input_seq_mark(mark);
     }
+    rtld_module_loaded(mod->base, mod->image_size);
     if (mod->init != mod->base) rt_call(c, mod->init);
+    skyline_module_loaded(mod->name, mod->base);
     return mod->base;
+}
+
+/* Skyline plugins (hle_skyline.c): a recompiled NRO loaded by its module name, not by an image the
+ * game hands over; 0 if no such module was recompiled in. */
+u64 rt_load_nro_named(Cpu *c, const char *name) { return load_nro(c, NULL, name); }
+
+/* The loaded modules, for nn::ro's lists (hle_rtld.c): boot modules first. */
+u32 rt_module_count(void) { return module_count; }
+u64 rt_module_base(u32 i) { return i < module_count ? modules[i]->base : 0; }
+u64 rt_module_size(u32 i) { return i < module_count ? modules[i]->image_size : 0; }
+
+/* The address a loaded module exports a name at, looked up in that module alone (every plugin
+ * exports its own `main`); 0 if it does not. */
+u64 rt_module_export(u64 base, const char *symbol) {
+    for (u32 m = 0; m < module_count; m++)
+        if (modules[m]->base == base)
+            for (u32 i = 0; i < modules[m]->export_count; i++)
+                if (!strcmp(modules[m]->exports[i].name, symbol)) return modules[m]->exports[i].addr;
+    return 0;
+}
+
+/* What a weak reference to the name binds to: an export, else a native implementation (HLE),
+ * else 0 - as nn::ro::LookupSymbol finds a name. */
+u64 rt_resolve_weak(const char *name) { return resolve(name, 1); }
+
+/* Whether a loaded module has a function entry at addr (hle_skyline.c: plugins built for another game version). */
+int rt_is_function(u64 addr) {
+    u64 slot = (addr - SLOT_BASE) >> SLOT_SHIFT;
+    u16 slot_m = slot < SLOT_COUNT ? slot_module[slot] : 0;
+    u64 off = slot_m ? addr - modules[slot_m - 1]->base : ~0ull;
+    return slot_m && off < modules[slot_m - 1]->text_size && !(off & 3) && code[slot_m - 1][off >> 2] != NULL;
+}
+
+/* Skyline's A64HookFunction. Indirect calls go through the dispatch table. Direct calls the
+ * recompiler baked in land on the function's first bytes, so those bytes are patched to jump
+ * to the hook (runtime/hle_detour.c) and the replaced bytes stay callable as the original.
+ * A function the build already gave a hook slot (tools/hooks.txt `hookable`) is swapped in
+ * that slot instead. Returns the address that still reaches the function as it was, 0 if
+ * `target` is not a function entry. */
+GuestFn **rt_hook_slot(u64 guest_addr);
+int rt_hook_install(GuestFn **slot, GuestFn *hook, GuestFn **next);
+u64 rt_hook_function(u64 target, u64 replace) {
+    static SRWLOCK lock = SRWLOCK_INIT;
+    GuestFn *with = rt_lookup(replace);
+    AcquireSRWLockExclusive(&lock);
+    u64 slot = (target - SLOT_BASE) >> SLOT_SHIFT;
+    u16 slot_m = slot < SLOT_COUNT ? slot_module[slot] : 0;
+    u64 off = slot_m ? target - modules[slot_m - 1]->base : ~0ull;
+    GuestFn **at = slot_m && off < modules[slot_m - 1]->text_size && !(off & 3) ? &code[slot_m - 1][off >> 2] : NULL;
+    if (!at || !*at) { ReleaseSRWLockExclusive(&lock); return 0; }
+    GuestFn *original_fn = *at;
+    GuestFn **hook_slot = rt_hook_slot(target);
+    if (hook_slot) {
+        GuestFn *next = NULL;
+        rt_hook_install(hook_slot, with, &next);
+        if (next) original_fn = next;
+    } else {
+        /* Identical functions share one copy (the linker's folding). Patching that copy would
+         * send every one of them into this hook. A shared copy is left alone: calls that already
+         * go through the dispatch table still reach the hook, and a folded function's other
+         * callers keep the original. */
+        struct HostFn key = {(u64)*at, 0};
+        struct HostFn *hit = by_host && by_host_count ? bsearch(&key, by_host, by_host_count, sizeof key, by_host_cmp) : NULL;
+        int shared = hit && ((hit > by_host && hit[-1].host == key.host) ||
+                             (hit + 1 < by_host + by_host_count && hit[1].host == key.host));
+        if (!shared) {
+            u32 room = 256;
+            if (hit && hit + 1 < by_host + by_host_count && hit[1].host > (u64)*at) {
+                u64 gap = hit[1].host - (u64)*at;
+                room = gap > 256 ? 256 : (u32)gap;
+            }
+            GuestFn *tramp = rt_detour_entry(*at, with, hit != NULL, room);
+            if (tramp) original_fn = tramp;
+        }
+    }
+    u64 original = rt_native(original_fn, "original of a hooked function");
+    __atomic_store_n(at, with, __ATOMIC_RELEASE);
+    memset((void *)lookup_cache, 0, sizeof lookup_cache);
+    ReleaseSRWLockExclusive(&lock);
+    return original;
 }
 
 /* ---- start-up -------------------------------------------------------------------- */
@@ -1116,7 +1319,7 @@ static void mac_start(int argc, char **argv, const char **dir, int *options) {
 static int game_refused(int quiet, const char *path, const char *detail) {
     static const char text[] =
         "This WindowSmash's game library (" RT_GAME_LIBRARY ") is missing, or was built for another version of "
-        "WindowSmash. Run Install WindowSmash again: it builds the game for this version.";
+        "WindowSmash. Run OpenSmash.exe again: it builds the game for this version.";
     fprintf(stderr, "[boot] cannot use the game library %s: %s\n%s\n", path, detail, text);
 #ifdef _WIN32
     if (!quiet) MessageBoxA(NULL, text, "WindowSmash", MB_OK | MB_ICONERROR);
@@ -1244,7 +1447,7 @@ static int game_version_ok(void) {
     static const char text[] =
         "This WindowSmash was built from another version of the game, and WindowSmash needs version "
         REQUIRED_VERSION ". Put the game's " REQUIRED_VERSION " update (an .nsp file) in your game folder, next to the "
-        "game, and run Install WindowSmash again: it sets this folder up again, keeping your save and settings.";
+        "game, and run OpenSmash.exe again: it sets this folder up again, keeping your save and settings.";
     fprintf(stderr, "[boot] the game's main module is %s, not %s's (%s)\n%s\n", id ? id : "unknown",
             REQUIRED_VERSION, REQUIRED_MAIN_BUILD, text);
 #ifdef _WIN32

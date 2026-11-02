@@ -1,0 +1,2455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenSmash — Browse Mods</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  /* The host draws its chrome in "launcher pixels" (window height / 720) and
+   * sizes this view to match. Deriving every size here from the viewport keeps
+   * the page in lock-step with that chrome at any window size or DPI. */
+  html { font-size: calc(100vh / 72); }   /* 1rem = 10 launcher px */
+
+  :root {
+    --panel: rgba(255,255,255,0.035);
+    --panel-hi: rgba(255,255,255,0.06);
+    --line: rgba(255,255,255,0.09);
+    --line-soft: rgba(255,255,255,0.055);
+    --text: #f2f3f5;
+    --muted: #9aa0a6;
+    --dim: #6a7076;
+    --accent: #ff3b3b;
+    --accent2: #a8161a;
+    --ok: #7ee08a;
+    --bad: #ff9696;
+    --display: "Bahnschrift SemiBold Condensed", "Bahnschrift", "Segoe UI", system-ui, sans-serif;
+    --body: "Inter", "Segoe UI", system-ui, sans-serif;
+    --pad: 9.6rem;                          /* launcher's 96px content margin */
+  }
+
+  html, body { height: 100%; }
+
+  /* Transparent: the launcher paints its own background behind this view, and
+   * the marketplace has to sit on it rather than inside its own box. */
+  body {
+    font-family: var(--body);
+    font-size: 1.35rem;
+    background: transparent;
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  [hidden] { display: none !important; }
+
+  /* ---------------- browse pane ---------------- */
+  #browse {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  /* ---------------- toolbar ---------------- */
+  .topbar {
+    display: flex;
+    align-items: flex-end;
+    gap: 2.6rem;
+    padding: 1.5rem var(--pad) 0;
+    flex: 0 0 auto;
+  }
+
+  .search-wrap { position: relative; flex: 1 1 auto; min-width: 20rem; }
+  .search-icon {
+    position: absolute; left: .1rem; top: 50%; transform: translateY(-50%);
+    width: 1.5rem; height: 1.5rem; stroke: var(--dim); fill: none;
+    stroke-width: 1.6; stroke-linecap: round; pointer-events: none;
+    transition: stroke .15s;
+  }
+  .search-wrap:focus-within .search-icon { stroke: var(--accent); }
+
+  .search {
+    width: 100%;
+    padding: .75rem 0 .75rem 2.5rem;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    color: var(--text);
+    font: 1.35rem var(--body);
+    outline: none;
+    transition: border-color .15s;
+  }
+  .search::placeholder { color: var(--dim); }
+  .search:focus { border-bottom-color: var(--accent); }
+  .search::-webkit-search-cancel-button { filter: invert(.62); cursor: pointer; }
+
+  .sort-wrap { position: relative; display: flex; align-items: center; gap: 1rem; padding-bottom: .85rem; }
+  .sort-wrap::after {
+    content: "";
+    position: absolute; right: .15rem; top: 45%;
+    width: .62rem; height: .62rem;
+    border-right: 1px solid var(--muted);
+    border-bottom: 1px solid var(--muted);
+    transform: translateY(-50%) rotate(45deg);
+    pointer-events: none;
+  }
+  .sort-label {
+    font: 1.05rem var(--display);
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+
+  .select {
+    appearance: none;
+    -webkit-appearance: none;
+    background: transparent;
+    border: 0;
+    color: var(--text);
+    font: 1.2rem var(--display);
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    padding: 0 2.2rem 0 0;
+    cursor: pointer;
+    outline: none;
+  }
+  .select option { background: #101216; color: var(--text); letter-spacing: 0; }
+
+  /* ---------------- category tabs ---------------- */
+  .tabs {
+    display: flex;
+    gap: 2.6rem;
+    padding: 1.1rem var(--pad) 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-bottom: 1px solid var(--line-soft);
+    flex: 0 0 auto;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+
+  .tab {
+    position: relative;
+    flex: 0 0 auto;
+    padding: .8rem 0 1.05rem;
+    background: none;
+    border: 0;
+    color: var(--dim);
+    font: 1.45rem var(--display);
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color .15s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); }
+  .tab.active::after {
+    content: "";
+    position: absolute;
+    left: 0; right: 0; bottom: -1px;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), rgba(255,59,59,.04));
+  }
+
+  /* ---------------- scroll area ---------------- */
+  .scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,59,59,.55) transparent;
+  }
+  .scroll::-webkit-scrollbar { width: 9px; }
+  .scroll::-webkit-scrollbar-track { background: transparent; }
+  .scroll::-webkit-scrollbar-thumb {
+    background: rgba(255,59,59,.42);
+    border-radius: 6px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  .scroll::-webkit-scrollbar-thumb:hover { background: rgba(255,59,59,.75); background-clip: content-box; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(23.2rem, 1fr));
+    gap: 1.4rem;
+    padding: 1.9rem var(--pad) .6rem;
+  }
+
+  /* ---------------- card ---------------- */
+  .card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    background: linear-gradient(180deg, rgba(17,18,23,.80), rgba(9,10,13,.72));
+    border: 1px solid var(--line-soft);
+    border-radius: .7rem;
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform .15s, border-color .15s, box-shadow .15s, background .15s;
+  }
+  .card:hover, .card:focus-visible {
+    transform: translateY(-3px);
+    border-color: rgba(255,59,59,.5);
+    box-shadow: 0 12px 28px rgba(0,0,0,.6);
+    outline: none;
+  }
+  .card.installed { border-color: rgba(126,224,138,.3); }
+
+  .thumb {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background:
+      radial-gradient(circle at 50% 40%, rgba(255,59,59,.14), transparent 62%),
+      rgba(255,255,255,.03);
+    overflow: hidden;
+    flex: 0 0 auto;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    opacity: 0;
+    transition: opacity .25s, transform .35s;
+  }
+  .thumb img.loaded { opacity: 1; }
+  .card:hover .thumb img.loaded { transform: scale(1.04); }
+  .thumb .fallback {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: .3;
+  }
+  .thumb .fallback svg { width: 3.4rem; height: 3.4rem; stroke: var(--dim); fill: none; }
+  .thumb img.loaded + .fallback { display: none; }
+
+  .peek {
+    position: absolute;
+    left: 1rem;
+    bottom: 1rem;
+    padding: .5rem 1rem;
+    border-radius: .3rem;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    color: #fff;
+    font: 1.05rem var(--display);
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    opacity: 0;
+    transform: translateY(4px);
+    pointer-events: none;
+    transition: opacity .18s, transform .18s;
+    box-shadow: 0 6px 18px rgba(0,0,0,.55);
+    white-space: nowrap;
+  }
+  .card:hover .peek, .card:focus-visible .peek { opacity: 1; transform: none; }
+
+  .badge {
+    position: absolute;
+    left: .8rem;
+    top: .8rem;
+    padding: .35rem .7rem;
+    border-radius: .25rem;
+    background: rgba(0,0,0,.66);
+    font: 1rem var(--display);
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: #d6d9dd;
+    max-width: calc(100% - 1.6rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .badge.installed { left: auto; right: .8rem; background: rgba(11,32,18,.85); color: var(--ok); }
+
+  .body {
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+    padding: 1.1rem 1.2rem 1.2rem;
+    flex: 1 1 auto;
+  }
+
+  .title {
+    font: 1.55rem/1.24 var(--display);
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    min-height: 2.48em;
+  }
+
+  .author {
+    font: 1.2rem var(--body);
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .stats {
+    display: flex;
+    gap: 1.2rem;
+    font: 1.1rem var(--body);
+    color: var(--dim);
+    margin-top: auto;
+    padding-top: .4rem;
+  }
+  .stat { display: inline-flex; align-items: center; gap: .4rem; }
+  .stat svg { width: 1.25rem; height: 1.25rem; flex: 0 0 auto; opacity: .8; }
+
+  /* ---------------- buttons ---------------- */
+  .btn {
+    border: none;
+    border-radius: .4rem;
+    padding: .8rem 1.3rem;
+    font: 1.15rem var(--display);
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: filter .15s, background .15s, border-color .15s, color .15s, opacity .15s;
+  }
+  .btn:disabled { cursor: not-allowed; opacity: .4; }
+
+  .btn-primary {
+    color: #fff;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+  }
+  .btn-primary:not(:disabled):hover { filter: brightness(1.16); }
+
+  .btn-ghost {
+    display: inline-flex;
+    align-items: center;
+    gap: .7rem;
+    color: var(--text);
+    background: transparent;
+    border: 1px solid var(--line);
+  }
+  .btn-ghost:not(:disabled):hover { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.2); }
+  .btn-ghost svg { width: 1.35rem; height: 1.35rem; stroke: currentColor; fill: none; stroke-width: 2; }
+
+  .btn-remove {
+    color: #fff;
+    background: transparent;
+    border: 1px solid rgba(126,224,138,.4);
+    color: var(--ok);
+  }
+  .btn-remove:not(:disabled):hover { background: rgba(126,224,138,.16); }
+
+  /* ---------------- states ---------------- */
+  .state {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1.2rem;
+    padding: 6.4rem 2.4rem;
+    color: var(--muted);
+    text-align: center;
+    font-size: 1.35rem;
+  }
+  .state .icon { opacity: .45; }
+  .state .icon svg { width: 4.6rem; height: 4.6rem; stroke: var(--dim); fill: none; }
+
+  .spinner {
+    width: 2.6rem; height: 2.6rem;
+    border: 3px solid rgba(255,59,59,.22);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .85s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------------- pagination ---------------- */
+  .pager {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 1.2rem;
+    padding: .9rem var(--pad) 1.6rem;
+    flex: 0 0 auto;
+  }
+  .pager .info { font: 1.15rem var(--body); color: var(--dim); min-width: 16rem; text-align: center; }
+  .pager .btn {
+    background: transparent;
+    border: 1px solid var(--line-soft);
+    color: var(--muted);
+    padding: .7rem 1.5rem;
+  }
+  .pager .btn:not(:disabled):hover { border-color: rgba(255,59,59,.55); color: #fff; background: rgba(255,59,59,.1); }
+
+  /* ---------------- detail view ---------------- */
+  #detail {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .detail-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.2rem;
+    padding: 1rem var(--pad) .2rem;
+    flex: 0 0 auto;
+  }
+
+  .detail-bar .btn-text {
+    display: inline-flex;
+    align-items: center;
+    gap: .8rem;
+    padding: .4rem 0;
+    background: none;
+    border: 0;
+    color: var(--muted);
+    font: 1.25rem var(--display);
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: color .15s;
+  }
+  .detail-bar .btn-text:hover { color: #fff; }
+  .detail-bar .btn-text svg { width: 1.4rem; height: 1.4rem; stroke: currentColor; fill: none; stroke-width: 2; transition: stroke .15s; }
+  .detail-bar .btn-text:hover svg { stroke: var(--accent); }
+
+  .detail-inner {
+    display: grid;
+    grid-template-columns: minmax(0, 0.92fr) minmax(0, 1fr);
+    gap: 3.6rem;
+    padding: 1.4rem var(--pad) 4rem;
+    align-items: start;
+  }
+
+  .gallery {
+    position: sticky;
+    /* Matches .detail-inner's top padding so the gallery has zero travel: it is
+     * already inside the sticky band when the view opens. */
+    top: 1.4rem;
+    align-self: start;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    min-width: 0;
+  }
+
+  .stage {
+    position: relative;
+    border-radius: .7rem;
+    overflow: hidden;
+    border: 1px solid var(--line-soft);
+    background:
+      radial-gradient(circle at 50% 45%, rgba(255,59,59,.12), transparent 65%),
+      rgba(255,255,255,.03);
+  }
+  .stage .frame {
+    aspect-ratio: 16 / 9;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .stage img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    opacity: 0;
+    transition: opacity .2s;
+  }
+  .stage img.loaded { opacity: 1; }
+  .stage .empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--dim);
+  }
+  .stage .empty svg { width: 4.4rem; height: 4.4rem; stroke: var(--dim); fill: none; }
+
+  .nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3.6rem;
+    height: 3.6rem;
+    border-radius: .4rem;
+    border: 1px solid rgba(255,255,255,.16);
+    background: rgba(0,0,0,.66);
+    color: #fff;
+    font-size: 2rem;
+    line-height: 1;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    padding-bottom: .3rem;
+    transition: background .15s, opacity .15s, border-color .15s;
+    z-index: 2;
+  }
+  .nav:hover { background: rgba(255,59,59,.9); border-color: transparent; }
+  .nav:disabled { opacity: 0; pointer-events: none; }
+  .nav.prev { left: 1rem; }
+  .nav.next { right: 1rem; }
+
+  .strip {
+    display: flex;
+    gap: .8rem;
+    overflow-x: auto;
+    padding: .2rem .2rem .6rem;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,.2) transparent;
+  }
+  .strip::-webkit-scrollbar { height: 6px; }
+  .strip::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 3px; }
+
+  .strip button {
+    flex: 0 0 8.8rem;
+    height: 5rem;
+    padding: 0;
+    border-radius: .35rem;
+    overflow: hidden;
+    border: 2px solid transparent;
+    background: rgba(255,255,255,.05);
+    cursor: pointer;
+    opacity: .55;
+    transition: opacity .15s, border-color .15s;
+  }
+  .strip button img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .strip button:hover { opacity: .9; }
+  .strip button.active { border-color: var(--accent); opacity: 1; }
+
+  .info { min-width: 0; }
+
+  .crumb {
+    font: 1.05rem var(--display);
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    color: var(--dim);
+    display: flex;
+    flex-wrap: wrap;
+    gap: .6rem;
+    align-items: center;
+  }
+  .crumb i { font-style: normal; opacity: .45; }
+
+  h1.d-title {
+    font: 3.4rem/1.06 var(--display);
+    letter-spacing: .035em;
+    text-transform: uppercase;
+    margin: .9rem 0 .8rem;
+    word-break: break-word;
+  }
+
+  .byline { font-size: 1.3rem; color: var(--muted); }
+  .byline b { color: var(--text); font-weight: 600; }
+
+  .stats-big {
+    display: flex;
+    gap: 2.8rem;
+    margin: 1.6rem 0 1.8rem;
+    padding: 1.3rem 0;
+    border-top: 1px solid var(--line-soft);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .stats-big .stat {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: .2rem;
+    font: 1rem var(--display);
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  .stats-big .stat b {
+    font: 1.9rem var(--display);
+    color: var(--text);
+    letter-spacing: .02em;
+    text-transform: none;
+  }
+
+  .desc {
+    font-size: 1.35rem;
+    line-height: 1.75;
+    color: #c9ced4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+  .desc-placeholder { font-size: 1.3rem; color: var(--dim); font-style: italic; }
+
+  .tags { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: 1.6rem; }
+  .tag {
+    padding: .35rem .8rem;
+    border-radius: .25rem;
+    background: rgba(255,255,255,.035);
+    border: 1px solid var(--line-soft);
+    font: 1rem var(--display);
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .sec-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.2rem;
+    margin: 2.6rem 0 1.1rem;
+  }
+  .sec-head h2 {
+    font: 1.3rem var(--display);
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .sec-head .count { color: var(--dim); }
+
+  .file {
+    display: flex;
+    align-items: center;
+    gap: 1.2rem;
+    padding: 1.1rem 1.3rem;
+    border: 1px solid var(--line-soft);
+    border-radius: .6rem;
+    background: rgba(255,255,255,.022);
+  }
+  .file + .file { margin-top: .8rem; }
+  .file.archived { opacity: .55; }
+
+  .f-icon {
+    flex: 0 0 3.4rem;
+    width: 3.4rem;
+    height: 3.4rem;
+    border-radius: .45rem;
+    background: rgba(255,59,59,.11);
+    border: 1px solid rgba(255,59,59,.2);
+    display: grid;
+    place-items: center;
+    color: #ff8a8a;
+  }
+  .f-icon svg { width: 1.7rem; height: 1.7rem; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+  .f-main { flex: 1 1 auto; min-width: 0; }
+  .f-name {
+    font: 1.28rem var(--body);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .f-meta { font-size: 1.1rem; color: var(--dim); margin-top: .3rem; }
+
+  .installed-note {
+    display: flex;
+    align-items: center;
+    gap: .8rem;
+    padding: .9rem 1.3rem;
+    border-radius: .5rem;
+    background: rgba(126,224,138,.08);
+    border: 1px solid rgba(126,224,138,.28);
+    color: var(--ok);
+    font: 1.2rem var(--body);
+    margin-bottom: 1rem;
+  }
+  .installed-note svg { width: 1.4rem; height: 1.4rem; stroke: currentColor; fill: none; stroke-width: 2.4; }
+
+  /* ---------------- UMC moveset panel ---------------- */
+  .umc {
+    margin-top: 2.4rem;
+    border: 1px solid var(--line-soft);
+    border-left: 2px solid rgba(255,59,59,.55);
+    border-radius: .5rem;
+    background: rgba(255,255,255,.022);
+    padding: 1.4rem 1.6rem 1.5rem;
+  }
+  .umc-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1.2rem;
+  }
+  .umc-head h2 {
+    font: 1.3rem var(--display);
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--text);
+  }
+  .umc-head h2 em { font-style: normal; color: var(--accent); }
+  .umc-head .umc-link {
+    background: none;
+    border: 0;
+    padding: .2rem 0;
+    color: var(--muted);
+    font: 1.1rem var(--display);
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color .15s;
+  }
+  .umc-head .umc-link:hover { color: #fff; }
+
+  .umc-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+    gap: 1.2rem 2rem;
+    margin-top: 1.4rem;
+  }
+  .umc-cell { display: flex; flex-direction: column; gap: .35rem; min-width: 0; }
+  .umc-k {
+    font: 1rem var(--display);
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  .umc-v { font-size: 1.3rem; color: var(--text); }
+  .umc-v a { color: var(--text); text-decoration: none; border-bottom: 1px solid rgba(255,255,255,.2); }
+  .umc-v a:hover { color: #fff; border-bottom-color: var(--accent); }
+
+  .umc-deps { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-top: 1.3rem; }
+  .umc-deps .umc-k { margin-right: .3rem; }
+  .umc-deps i {
+    font-style: normal;
+    font-size: 1.08rem;
+    color: var(--muted);
+    border: 1px solid var(--line-soft);
+    border-radius: .25rem;
+    padding: .25rem .6rem;
+  }
+
+  /* Requirement chips: green when satisfied, red with a Get button when not. */
+  .req {
+    display: inline-flex;
+    align-items: center;
+    gap: .6rem;
+    padding: .3rem .7rem;
+    border: 1px solid var(--line-soft);
+    border-radius: .25rem;
+    background: rgba(255,255,255,.02);
+    font-size: 1.1rem;
+    color: var(--muted);
+  }
+  .req .dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--dim); flex: 0 0 auto; }
+  .req.ok { color: var(--text); border-color: rgba(126,224,138,.32); }
+  .req.ok .dot { background: var(--ok); }
+  .req.missing { color: #ffd3d3; border-color: rgba(255,59,59,.38); background: rgba(255,59,59,.06); }
+  .req.missing .dot { background: var(--accent); }
+  .req button {
+    background: none;
+    border: 0;
+    padding: 0 .2rem;
+    color: var(--accent);
+    font: 1.05rem var(--display);
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .req button:hover { color: #fff; }
+  .req button:disabled { color: var(--dim); cursor: default; }
+  .req.pending { color: var(--muted); border-style: dashed; border-color: var(--line); }
+  .req.pending .dot { background: var(--muted); }
+
+  /* One press to install every missing requirement. */
+  .req-all {
+    margin-left: auto;
+    padding: .38rem .85rem;
+    border: 1px solid rgba(255,59,59,.5);
+    border-radius: .25rem;
+    background: rgba(255,59,59,.1);
+    color: #fff;
+    font: 1.05rem var(--display);
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .req-all:hover { background: var(--accent); border-color: var(--accent); }
+  .req-all:disabled { opacity: .45; cursor: default; background: rgba(255,59,59,.1); }
+
+  /* ---------------- requirement prompt ---------------- */
+  .modal {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem;
+    background: rgba(4,5,7,.74);
+  }
+  .sheet {
+    width: 62rem;
+    max-width: 100%;
+    max-height: 100%;
+    overflow-y: auto;
+    background: linear-gradient(180deg, rgba(20,21,26,.99), rgba(10,11,14,.99));
+    border: 1px solid var(--line);
+    border-radius: .8rem;
+    box-shadow: 0 30px 80px rgba(0,0,0,.75);
+    padding: 2.2rem 2.4rem 2rem;
+  }
+  .sheet .eyebrow {
+    font: 1.1rem var(--display);
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .sheet .sheet-title {
+    font: 2.5rem/1.05 var(--display);
+    letter-spacing: .03em;
+    text-transform: uppercase;
+    margin: .8rem 0 .6rem;
+  }
+  .sheet p { font-size: 1.3rem; line-height: 1.6; color: var(--muted); }
+  .sheet ul { list-style: none; margin: 1.6rem 0 0; display: flex; flex-direction: column; gap: .7rem; }
+  .sheet li {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: .9rem 1.1rem;
+    border: 1px solid var(--line-soft);
+    border-radius: .45rem;
+    background: rgba(255,255,255,.02);
+    font-size: 1.25rem;
+    color: var(--text);
+  }
+  .sheet li .grow { flex: 1 1 auto; min-width: 0; }
+  .sheet li small { display: block; margin-top: .2rem; color: var(--dim); font-size: 1.05rem; }
+  .sheet-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 1rem; margin-top: 2.2rem; }
+  .umc-note { margin-top: 1.1rem; font-size: 1.2rem; line-height: 1.6; color: var(--dim); }
+  .umc-note b { color: var(--muted); font-weight: 600; }
+  .umc-loading { margin-top: 1.2rem; font-size: 1.2rem; color: var(--dim); }
+
+  /* ---------------- toasts ---------------- */
+  .toasts {
+    position: fixed;
+    right: var(--pad);
+    bottom: 1.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: .8rem;
+    z-index: 50;
+    pointer-events: none;
+    max-width: 34rem;
+  }
+  .toast {
+    padding: 1rem 1.3rem;
+    border-radius: .45rem;
+    background: rgba(16,18,22,.97);
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--accent);
+    box-shadow: 0 10px 26px rgba(0,0,0,.6);
+    font: 1.25rem var(--body);
+    color: var(--text);
+    animation: slide .18s ease-out;
+  }
+  .toast.ok { border-left-color: var(--ok); }
+  .toast.bad { border-left-color: var(--bad); }
+  .toast small { display: block; color: var(--muted); margin-top: .3rem; font-size: 1.12rem; }
+  @keyframes slide { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  .progress {
+    height: 6px;
+    margin-top: .8rem;
+    border-radius: 3px;
+    background: rgba(255,255,255,.12);
+    overflow: hidden;
+  }
+  .progress > i {
+    display: block;
+    height: 100%;
+    width: 0;
+    background: linear-gradient(90deg, var(--accent), #ff8a5c);
+    transition: width .18s linear;
+  }
+
+  @media (max-aspect-ratio: 3/2) {
+    .detail-inner { grid-template-columns: minmax(0, 1fr); gap: 2rem; }
+    .gallery { position: static; }
+    h1.d-title { font-size: 2.8rem; }
+  }
+</style>
+</head>
+<body>
+
+<div id="browse">
+  <div class="topbar">
+    <div class="search-wrap">
+      <svg class="search-icon" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="7"></circle><line x1="16.5" y1="16.5" x2="21" y2="21"></line>
+      </svg>
+      <input id="search" class="search" type="search" placeholder="Search GameBanana mods…" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="sort-wrap">
+      <span class="sort-label">Sort</span>
+      <select id="sort" class="select" title="Sort order">
+        <option value="Generic_Newest">Newest</option>
+        <option value="Generic_MostLiked">Most liked</option>
+        <option value="Generic_MostDownloaded">Most downloaded</option>
+        <option value="Generic_MostViewed">Most viewed</option>
+        <option value="Generic_LastUpdated">Last updated</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="tabs" id="tabs"></div>
+
+  <div class="scroll" id="scroll">
+    <div class="grid" id="grid"></div>
+  </div>
+
+  <div class="pager">
+    <button class="btn" id="prev" disabled>‹ Prev</button>
+    <span class="info" id="pageInfo">Page 1</span>
+    <button class="btn" id="next" disabled>Next ›</button>
+  </div>
+</div>
+
+<div id="detail" hidden>
+  <div class="detail-bar">
+    <button class="btn-text" id="backBtn" title="Back to the mod list">
+      <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"></path><path d="m12 19-7-7 7-7"></path></svg>
+      All mods
+    </button>
+    <button class="btn btn-ghost" id="externalBtn" title="Open this submission on GameBanana">
+      GameBanana
+      <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><path d="M15 3h6v6"></path><path d="M10 14 21 3"></path></svg>
+    </button>
+  </div>
+
+  <div class="scroll" id="detailScroll">
+    <div class="detail-inner">
+      <div class="gallery">
+        <div class="stage">
+          <div class="frame" id="stageFrame"></div>
+          <button class="nav prev" id="prevImg" title="Previous image">‹</button>
+          <button class="nav next" id="nextImg" title="Next image">›</button>
+        </div>
+        <div class="strip" id="strip"></div>
+      </div>
+
+      <div class="info">
+        <div class="crumb" id="dCrumb"></div>
+        <h1 class="d-title" id="dTitle"></h1>
+        <div class="byline" id="dByline"></div>
+        <div class="stats-big" id="dStats"></div>
+        <div id="dUmc"></div>
+        <div id="dDesc"></div>
+        <div class="tags" id="dTags"></div>
+        <div id="dFiles"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<div class="modal" id="reqModal" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="reqTitle">
+    <div class="eyebrow">Requirements missing</div>
+    <div class="sheet-title" id="reqTitle"></div>
+    <p id="reqBody"></p>
+    <ul id="reqList"></ul>
+    <div class="sheet-actions">
+      <button class="btn btn-ghost" id="reqCancel">Cancel</button>
+      <button class="btn btn-ghost" id="reqAnyway">Download mod only</button>
+      <button class="btn btn-primary" id="reqInstallAll">Install requirements + mod</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ *
+ * Bridge to the WinForms host (no-ops when opened in a plain browser)
+ * ------------------------------------------------------------------ */
+const bridge = (() => {
+  const wv = window.chrome && window.chrome.webview;
+  return {
+    available: !!wv,
+    post(type, data) {
+      if (!wv) { console.log("[host]", type, data || {}); return; }
+      wv.postMessage(Object.assign({ type }, data || {}));
+    }
+  };
+})();
+
+/* Host calls these. */
+window.__osm = {
+  setInstalled(ids) {
+    state.installed = new Set((ids || []).map(String));
+    if (state.detail) renderDetail();
+    else render();
+  },
+  setInventory(inventory) {
+    inventory = inventory || {};
+    state.inventory = {
+      moddingReady: !!inventory.moddingReady,
+      plugins: Array.isArray(inventory.plugins) ? inventory.plugins : [],
+      mods: Array.isArray(inventory.mods) ? inventory.mods : [],
+      loaders: inventory.loaders || {}
+    };
+    // Requirement chips and the install prompt both read the inventory.
+    if (state.detail) renderUmc();
+  },
+  status(payload) {
+    payload = payload || {};
+    const id = String(payload.modId || "global");
+    state.jobs.set(id, {
+      state: payload.state || "info",
+      message: payload.message || "",
+      percent: Number(payload.percent) || 0
+    });
+    applyJobStatus();
+    showToast(payload);
+
+    if (payload.state === "done" || payload.state === "error") {
+      // A finished requirement stops being "installing"; a failed one becomes
+      // clickable again.
+      for (let i = pendingRequirements.length - 1; i >= 0; i--) {
+        if (pendingRequirements[i].id === id) pendingRequirements.splice(i, 1);
+      }
+      if (state.detail) renderUmc();
+    }
+
+    // A finished (or failed) job releases the next queued install.
+    if (payload.state === "done" || payload.state === "error") {
+      setTimeout(releaseInstallQueue, 250);
+    }
+  }
+};
+
+/* ------------------------------------------------------------------ *
+ * State
+ * ------------------------------------------------------------------ */
+const GAME_ID = "6498"; // Super Smash Bros. Ultimate
+
+const CATEGORIES = [
+  { key: "all",      label: "All",      model: "Mod",  id: null },
+  { key: "skins",    label: "Skins",    model: "Mod",  id: 3330 },
+  { key: "movesets", label: "Movesets", model: "Mod",  id: 3325 },
+  { key: "stages",   label: "Stages",   model: "Mod",  id: 6089 },
+  { key: "sounds",   label: "Sounds",   model: "Sound", id: null },
+  { key: "effects",  label: "Effects",  model: "Mod",  id: 1177 },
+  { key: "gameplay", label: "Gameplay", model: "Mod",  id: 26521 },
+  { key: "ui",       label: "UI",       model: "Mod",  id: 1760 },
+  { key: "tools",    label: "Tools",    model: "Tool", id: null },
+  { key: "wips",     label: "WiPs",     model: "Wip",  id: null }
+];
+
+const PER_PAGE = 20;
+
+const state = {
+  category: "all",
+  sort: "Generic_Newest",
+  search: "",
+  page: 0,
+  total: 0,
+  perPage: PER_PAGE,
+  installed: new Set(),
+  jobs: new Map(),
+  inventory: { moddingReady: false, plugins: [], mods: [], loaders: {} },
+  records: [],
+  loading: false,
+  error: "",
+  requestSeq: 0,
+  detail: null,
+  browseScroll: 0
+};
+
+/* ------------------------------------------------------------------ *
+ * DOM
+ * ------------------------------------------------------------------ */
+const el = {
+  browse:    document.getElementById("browse"),
+  detail:    document.getElementById("detail"),
+  tabs:      document.getElementById("tabs"),
+  grid:      document.getElementById("grid"),
+  scroll:    document.getElementById("scroll"),
+  search:    document.getElementById("search"),
+  sort:      document.getElementById("sort"),
+  prev:      document.getElementById("prev"),
+  next:      document.getElementById("next"),
+  pageInfo:  document.getElementById("pageInfo"),
+  toasts:    document.getElementById("toasts"),
+
+  reqModal:     document.getElementById("reqModal"),
+  reqTitle:     document.getElementById("reqTitle"),
+  reqBody:      document.getElementById("reqBody"),
+  reqList:      document.getElementById("reqList"),
+  reqCancel:    document.getElementById("reqCancel"),
+  reqAnyway:    document.getElementById("reqAnyway"),
+  reqInstallAll: document.getElementById("reqInstallAll"),
+
+  backBtn:   document.getElementById("backBtn"),
+  externalBtn: document.getElementById("externalBtn"),
+  detailScroll: document.getElementById("detailScroll"),
+  stageFrame: document.getElementById("stageFrame"),
+  prevImg:   document.getElementById("prevImg"),
+  nextImg:   document.getElementById("nextImg"),
+  strip:     document.getElementById("strip"),
+  dCrumb:    document.getElementById("dCrumb"),
+  dTitle:    document.getElementById("dTitle"),
+  dByline:   document.getElementById("dByline"),
+  dStats:    document.getElementById("dStats"),
+  dDesc:     document.getElementById("dDesc"),
+  dTags:     document.getElementById("dTags"),
+  dUmc:      document.getElementById("dUmc"),
+  dFiles:    document.getElementById("dFiles")
+};
+
+/* ------------------------------------------------------------------ *
+ * Helpers
+ * ------------------------------------------------------------------ */
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value);
+}
+
+const compactFmt = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
+const plainFmt = new Intl.NumberFormat();
+
+function formatNumber(n) {
+  const value = Number(n) || 0;
+  return value >= 10000 ? compactFmt.format(value) : plainFmt.format(value);
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value <= 0) return "";
+  const units = ["B", "KB", "MB", "GB"];
+  let index = 0;
+  let size = value;
+  while (size >= 1024 && index < units.length - 1) { size /= 1024; index++; }
+  return (size >= 10 || index === 0 ? Math.round(size) : size.toFixed(1)) + " " + units[index];
+}
+
+function formatDate(unixSeconds) {
+  const value = Number(unixSeconds);
+  if (!value) return "";
+  const date = new Date(value * 1000);
+  if (isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function currentCategory() {
+  return CATEGORIES.find(c => c.key === state.category) || CATEGORIES[0];
+}
+
+/* GameBanana apiv12 nests preview media as an object:
+ *   _aPreviewMedia: { _aImages: [ { _sBaseUrl, _sFile, _sFile220, ... } ] }
+ * Older code indexed it as an array, which is why thumbnails never loaded. */
+function imagesOf(mod) {
+  const media = mod && mod._aPreviewMedia;
+  const images = media && media._aImages;
+  return Array.isArray(images) ? images.filter(Boolean) : [];
+}
+
+function imageUrl(image, size) {
+  if (!image) return "";
+
+  const base = image._sBaseUrl || "";
+  let file;
+  if (size === "thumb") {
+    file = image._sFile220 || image._sFile100 || image._sFile530 || image._sFile;
+  } else {
+    // Not every upload has the 530px rendition; fall back to the original.
+    file = image._sFile530 || image._sFile220 || image._sFile;
+  }
+
+  if (!file) return "";
+  if (/^https?:/i.test(file)) return file;
+  return base ? base + "/" + file : file;
+}
+
+function thumbnailUrl(mod) {
+  const images = imagesOf(mod);
+  if (images.length) {
+    const url = imageUrl(images[0], "thumb");
+    if (url) return url;
+  }
+  return mod._sImageUrl || mod._sThumbnailUrl || mod._sScreenshotUrl || "";
+}
+
+function modId(mod) {
+  return String(mod && mod._idRow != null ? mod._idRow : "");
+}
+
+function modName(mod) {
+  return (mod && mod._sName) || "Unknown mod";
+}
+
+function modModel(mod) {
+  const model = mod && mod._sModelName;
+  return model && /^[A-Za-z]+$/.test(model) ? model : "Mod";
+}
+
+function modAuthor(mod) {
+  const submitter = mod && mod._aSubmitter;
+  return (submitter && (submitter._sName || submitter._sUsername)) || "Unknown author";
+}
+
+function modCategory(mod) {
+  const sub = mod && mod._aSubCategory;
+  const root = mod && mod._aRootCategory;
+  const sup = mod && mod._aSuperCategory;
+  return (sub && sub._sName) || (root && root._sName) || (sup && sup._sName) || "Mod";
+}
+
+function modProfileUrl(mod) {
+  if (mod && mod._sProfileUrl) return mod._sProfileUrl;
+  const id = modId(mod);
+  return id ? "https://gamebanana.com/mods/" + id : "https://gamebanana.com/games/" + GAME_ID;
+}
+
+/* GameBanana descriptions are HTML. Rather than trust third-party markup in our
+ * own document, flatten it to readable plain text and render it with
+ * white-space:pre-wrap. */
+function htmlToText(html) {
+  let text = String(html == null ? "" : html);
+  if (!text) return "";
+
+  text = text
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, "\n")
+    .replace(/<li[^>]*>/gi, "• ")
+    .replace(/<img[^>]*>/gi, "")
+    .replace(/<[^>]+>/g, "");
+
+  text = text
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#0*39;/g, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&#(\d+);/g, (match, code) => String.fromCharCode(Number(code)));
+
+  return text
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/* Inline SVG icons render identically everywhere; emoji glyphs fall back to
+ * boxes/missing glyphs depending on the installed fonts. */
+const ICON = {
+  eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1.8 12S5.8 5 12 5s10.2 7 10.2 7-4 7-10.2 7S1.8 12 1.8 12Z"/><circle cx="12" cy="12" r="3"/></svg>',
+  heart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.8 5.6a5.2 5.2 0 0 0-7.4 0L12 7l-1.4-1.4a5.2 5.2 0 0 0-7.4 7.4L12 21.5l8.8-8.5a5.2 5.2 0 0 0 0-7.4Z"/></svg>',
+  download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M4 21h16"/></svg>',
+  image: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg>',
+  alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 1.5 21h21L12 3Z"/><line x1="12" y1="9" x2="12" y2="14"/><line x1="12" y1="17.5" x2="12.01" y2="17.5"/></svg>',
+  file: '<svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg>',
+  check: '<svg viewBox="0 0 24 24"><path d="m4 12.5 5 5L20 6.5"/></svg>'
+};
+
+/* ------------------------------------------------------------------ *
+ * UMC — Ultimate Moveset Compatibility
+ * ------------------------------------------------------------------ *
+ * UMC tracks every custom SSBU moveset (vanilla fighter, cells, plugin
+ * dependencies) and links each entry back to its GameBanana submission,
+ * so movesets can show data GameBanana itself doesn't expose.
+ */
+const UMC = {
+  api: "https://ultimatemovesetcompatibility.onrender.com/api",
+  site: "https://lilylavender.github.io/UltimateMovesetCompatibility/",
+  index: null,             // [entry] from /movesets
+  pending: null,
+  error: "",
+  details: new Map(),      // movesetId -> Promise<detail|null>
+  matches: new Map()       // modId -> detail entry
+};
+
+function umcSiteUrl(movesetId) {
+  return UMC.site + "#/moveset/" + movesetId;
+}
+
+function ensureUmcIndex() {
+  if (UMC.pending) return UMC.pending;
+
+  UMC.pending = fetch(UMC.api + "/movesets?pageSize=1000", { cache: "no-store" })
+    .then(response => {
+      if (!response.ok) throw new Error("UMC returned HTTP " + response.status);
+      return response.json();
+    })
+    .then(list => {
+      UMC.index = Array.isArray(list) ? list : [];
+      UMC.error = "";
+      return UMC.index;
+    })
+    .catch(error => {
+      UMC.index = UMC.index || [];
+      UMC.error = error && error.message ? error.message : String(error);
+      return UMC.index;
+    });
+
+  return UMC.pending;
+}
+
+function umcDetail(movesetId) {
+  const key = String(movesetId);
+  if (UMC.details.has(key)) return UMC.details.get(key);
+
+  const promise = fetch(UMC.api + "/movesets/" + encodeURIComponent(key), { cache: "no-store" })
+    .then(response => (response.ok ? response.json() : null))
+    .catch(() => null);
+
+  UMC.details.set(key, promise);
+  return promise;
+}
+
+/* A mod's own description usually links its UMC page; that link is exact. */
+function umcIdFromText(text) {
+  const match = /UltimateMovesetCompatibility\/#\/movesets?\/(\d+)/i.exec(String(text || ""));
+  return match ? match[1] : "";
+}
+
+/* UMC stores the GameBanana submission URL, so the id in it is the join key. */
+function umcGameBananaIds(entry) {
+  if (!entry) return [];
+  const match = /gamebanana\.com\/[^/]+\/(\d+)/i.exec(String(entry.modPageUrl || ""));
+  return match ? [match[1]] : [];
+}
+
+function normalizeName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\b(movesets?|mods?|betas?|alphas?|updates?|hotfix|full|partial|echo|wip|open|final|remake|revamped)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/* Character names are unique enough that a title/token match narrows the
+ * 109-entry index down to a handful, which are then confirmed by modPageUrl. */
+function umcCandidates(list, title) {
+  const haystack = " " + normalizeName(title) + " ";
+  if (haystack.trim().length < 3) return [];
+
+  const hits = [];
+  for (const entry of list) {
+    const needle = normalizeName(entry && entry.moddedCharName);
+    if (needle.length < 3) continue;                       // "X", "???"
+    if (haystack.indexOf(" " + needle + " ") < 0) continue;
+    hits.push(entry);
+  }
+
+  hits.sort((a, b) => normalizeName(b.moddedCharName).length - normalizeName(a.moddedCharName).length);
+  return hits.slice(0, 4);
+}
+
+async function resolveUmc(profile, mod) {
+  const id = modId(mod);
+  if (UMC.matches.has(id)) return UMC.matches.get(id);
+
+  const direct = umcIdFromText(profile && profile._sText);
+  if (direct) {
+    const entry = await umcDetail(direct);
+    if (entry) {
+      UMC.matches.set(id, entry);
+      return entry;
+    }
+  }
+
+  const list = await ensureUmcIndex();
+  const candidates = umcCandidates(list, modName(profile || mod));
+  if (!candidates.length) return null;
+
+  const details = await Promise.all(candidates.map(entry => umcDetail(entry.movesetId)));
+  const found = details.find(entry => entry && umcGameBananaIds(entry).indexOf(id) >= 0) || null;
+  if (found) UMC.matches.set(id, found);
+  return found;
+}
+
+function isMovesetMod(profile, mod) {  if (state.category === "movesets") return true;
+
+  const names = [];
+  for (const item of [profile, mod]) {
+    if (!item) continue;
+    for (const key of ["_aSuperCategory", "_aCategory", "_aSubCategory", "_aRootCategory"]) {
+      if (item[key] && item[key]._sName) names.push(item[key]._sName);
+    }
+  }
+  return names.some(name => /moveset/i.test(name));
+}
+
+/* ------------------------------------------------------------------ *
+ * Requirements
+ * ------------------------------------------------------------------ *
+ * UMC lists the plugins a moveset needs. The host sends what is actually
+ * installed, so each requirement reads as satisfied or missing, and the
+ * missing ones get a one-press install.
+ */
+function normComponent(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\.nro$/, "")
+    .replace(/[^a-z0-9]+/g, "")
+    .replace(/^lib/, "")
+    .replace(/plugin$/, "")
+    .replace(/\d+$/, "");
+}
+
+function requirementInstalled(name) {
+  const needle = normComponent(name);
+  if (!needle) return true;
+
+  const inventory = state.inventory || {};
+  const loaders = inventory.loaders || {};
+
+  if (needle.indexOf("arcropolis") >= 0) return !!loaders.arcropolis;
+  if (needle.indexOf("smashline") < 0 && needle.indexOf("skyline") >= 0) return !!loaders.skyline;
+
+  const pool = []
+    .concat(inventory.plugins || [], inventory.mods || [])
+    .map(normComponent)
+    .filter(Boolean);
+
+  return pool.some(token =>
+    token.indexOf(needle) >= 0 || (token.length >= 5 && needle.indexOf(token) >= 0));
+}
+
+function requirementsOf(entry) {
+  const list = entry && Array.isArray(entry.movesetDependencies) ? entry.movesetDependencies : [];
+  const seen = new Set();
+  const out = [];
+
+  for (const item of list) {
+    const dependency = item && item.dependency;
+    const name = dependency && dependency.name;
+    if (!name) continue;
+
+    const key = normComponent(name);
+    if (!key || seen.has(key)) continue;
+
+    seen.add(key);
+    out.push({ name: String(name), link: dependency.downloadLink || "" });
+  }
+
+  return out;
+}
+
+function missingRequirements(entry) {
+  return requirementsOf(entry).filter(req => !requirementInstalled(req.name));
+}
+
+/* Requirements that are queued but not finished yet: keeps "Get all" from
+ * double-queueing and lets the chips read "installing". */
+const pendingRequirements = [];
+
+function requirementPending(name) {
+  const key = normComponent(name);
+  return pendingRequirements.some(item => item.key === key);
+}
+
+function requirementId(payload) {
+  if (payload.type === "install") return String(payload.modId || "");
+  if (payload.type === "install_component") return "component:" + payload.component;
+  if (payload.type === "install_plugin") return "plugin:" + payload.name;
+  return "";
+}
+
+function queueRequirement(req) {
+  const key = normComponent(req.name);
+  if (!key || requirementPending(key)) return;
+
+  const payload = requirementInstallPayload(req);
+  if (payload.type === "open_external") {
+    bridge.post("open_external", { url: payload.url });
+    return;
+  }
+
+  pendingRequirements.push({ key, id: requirementId(payload) });
+  payload.notice = "Installing " + req.name + "…";
+  announceInstall(payload);
+  postInstall(payload);
+
+  // Redraw so the chip reads "installing" and Get all counts the rest.
+  if (state.detail) renderUmc();
+}
+
+function currentUmcEntry() {
+  const detail = state.detail;
+  return detail ? UMC.matches.get(modId(detail.mod)) || null : null;
+}
+
+/* A requirement becomes a normal marketplace install when it has a GameBanana
+ * page, a host-side loader install for Skyline/ARCropolis, or a plain link. */
+function requirementInstallPayload(req) {
+  const link = String(req.link || "");
+  const match = /gamebanana\.com\/(mods|wips|sounds|tools)\/(\d+)/i.exec(link);
+
+  if (match) {
+    const model = match[1] === "wips" ? "Wip"
+      : match[1] === "sounds" ? "Sound"
+      : match[1] === "tools" ? "Tool"
+      : "Mod";
+    return { type: "install", modId: match[2], model, name: req.name, url: "", fileName: "" };
+  }
+
+  if (/arcropolis/i.test(req.name)) return { type: "install_component", component: "arcropolis", name: req.name };
+  if (/skyline/i.test(req.name) && !/smashline/i.test(req.name))
+    return { type: "install_component", component: "skyline", name: req.name };
+
+  // Skyline plugins are published as GitHub releases; the host resolves the
+  // latest one and drops the .nro files into the plugin folder.
+  if (/github\.com\/[^/]+\/[^/?#]+/i.test(link)) {
+    return { type: "install_plugin", name: req.name, url: link };
+  }
+
+  return { type: "open_external", url: link };
+}
+
+function umcShell(inner, url) {
+  return '<section class="umc">' +
+    '<div class="umc-head">' +
+      '<h2>Moveset compatibility <em>UMC</em></h2>' +
+      '<button class="umc-link" data-umc-external="' + escapeAttr(url || UMC.site) + '"' +
+        ' title="Open Ultimate Moveset Compatibility">Open UMC &#8599;</button>' +
+    '</div>' +
+    inner +
+  "</section>";
+}
+
+function umcMarkup(entry) {
+  if (!entry) {
+    const reason = UMC.error
+      ? "UMC could not be reached (" + escapeHtml(UMC.error) + ")."
+      : "This submission isn't listed on <b>Ultimate Moveset Compatibility</b> yet.";
+    return umcShell(
+      '<div class="umc-note">' + reason + " UMC tracks the moveset's fighter, cells and " +
+      "plugin dependencies, which is how you can tell if two movesets can coexist.</div>"
+    );
+  }
+
+  const cells = [];
+  const cell = (label, value) => {
+    if (!value) return;
+    cells.push('<div class="umc-cell"><span class="umc-k">' + label + "</span>" +
+      '<span class="umc-v">' + value + "</span></div>");
+  };
+
+  const vanilla = entry.vanillaChar && entry.vanillaChar.displayName;
+  cell("Fighter", vanilla ? escapeHtml(vanilla) : "");
+  cell("Series", entry.series && entry.series.seriesName ? escapeHtml(entry.series.seriesName) : "");
+  cell("Release", entry.releaseState && entry.releaseState.releaseStateName
+    ? escapeHtml(entry.releaseState.releaseStateName) : "");
+
+  if (entry.slotsStart != null) {
+    const end = entry.slotsEnd != null && entry.slotsEnd !== entry.slotsStart ? "\u2013" + entry.slotsEnd : "";
+    cell("Cells", escapeHtml(entry.slotsStart + end));
+  }
+
+  if (entry.releaseDate) {
+    const stamp = Date.parse(entry.releaseDate);
+    if (!isNaN(stamp)) cell("Added", escapeHtml(formatDate(Math.floor(stamp / 1000))));
+  }
+
+  if (entry.sourceCode) {
+    const label = String(entry.sourceCode).replace(/^https?:\/\/(www\.)?/i, "");
+    cell("Source", '<a href="#" data-umc-external="' + escapeAttr(entry.sourceCode) + '">' +
+      escapeHtml(label) + "</a>");
+  }
+
+  const dependencies = requirementsOf(entry);
+  const missing = dependencies.filter(req => !requirementInstalled(req.name));
+  const actionable = missing.filter(req => !requirementPending(req.name));
+
+  const deps = dependencies.length
+    ? '<div class="umc-deps"><span class="umc-k">' +
+        (missing.length ? "Missing requirements" : "Requirements") + "</span>" +
+      dependencies.map(req => {
+        const ok = requirementInstalled(req.name);
+        const pending = !ok && requirementPending(req.name);
+        const cls = ok ? "ok" : pending ? "missing pending" : "missing";
+        const title = ok ? "Installed" : pending ? "Installing…" : (req.link || "Not installed");
+        return '<span class="req ' + cls + '" title="' + escapeAttr(title) + '">' +
+          '<span class="dot"></span>' + escapeHtml(req.name) +
+          (ok || pending ? "" :
+            '<button data-req="' + escapeAttr(req.name) + '"' +
+            ' data-req-link="' + escapeAttr(req.link) + '">Get</button>') +
+        "</span>";
+      }).join("") +
+      (actionable.length
+        ? '<button class="req-all" data-req-all>Get all ' + actionable.length + "</button>"
+        : "") +
+      "</div>" +
+      (missing.length
+        ? '<div class="umc-note">' + missing.length + " requirement" +
+          (missing.length === 1 ? " is" : "s are") +
+          " missing. Press <b>Get all</b> to install them, or just download the mod and OpenSmash will offer to install them for you.</div>"
+        : "")
+    : "";
+
+  return umcShell(
+    '<div class="umc-grid">' + cells.join("") + "</div>" + deps,
+    umcSiteUrl(entry.movesetId)
+  );
+}
+
+function wireUmc(root) {
+  root.querySelectorAll("[data-umc-external]").forEach(node => {
+    node.addEventListener("click", event => {
+      event.preventDefault();
+      bridge.post("open_external", { url: node.dataset.umcExternal });
+    });
+  });
+
+  root.querySelectorAll("[data-req]").forEach(button => {
+    button.addEventListener("click", event => {
+      event.preventDefault();
+      button.disabled = true;
+      button.textContent = "…";
+      queueRequirement({
+        name: button.dataset.req || "",
+        link: button.dataset.reqLink || ""
+      });
+    });
+  });
+
+  const all = root.querySelector("[data-req-all]");
+  if (all) {
+    all.addEventListener("click", event => {
+      event.preventDefault();
+      all.disabled = true;
+      all.textContent = "Queuing…";
+
+      const entry = currentUmcEntry();
+      const queued = entry ? missingRequirements(entry) : [];
+      queued.forEach(queueRequirement);
+    });
+  }
+}
+
+let umcRequest = 0;
+
+function renderUmc() {
+  const detail = state.detail;
+  if (!detail) return;
+
+  const mod = detail.mod;
+  const profile = detail.profile || mod;
+
+  if (!isMovesetMod(profile, mod)) {
+    el.dUmc.innerHTML = "";
+    return;
+  }
+
+  const id = modId(mod);
+  if (UMC.matches.has(id)) {
+    el.dUmc.innerHTML = umcMarkup(UMC.matches.get(id));
+    wireUmc(el.dUmc);
+    return;
+  }
+
+  const request = ++umcRequest;
+  el.dUmc.innerHTML = umcShell('<div class="umc-loading">Checking Ultimate Moveset Compatibility\u2026</div>');
+  wireUmc(el.dUmc);
+
+  resolveUmc(profile, mod).then(entry => {
+    // The user may have left or opened another mod while this was in flight.
+    if (request !== umcRequest) return;
+    if (!state.detail || modId(state.detail.mod) !== id) return;
+
+    el.dUmc.innerHTML = umcMarkup(entry);
+    wireUmc(el.dUmc);
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * Category tabs
+ * ------------------------------------------------------------------ */
+function renderTabs() {
+  el.tabs.innerHTML = CATEGORIES.map(cat =>
+    '<button class="tab' + (cat.key === state.category ? " active" : "") +
+    '" data-category="' + cat.key + '">' + escapeHtml(cat.label) + "</button>"
+  ).join("");
+
+  el.tabs.querySelectorAll(".tab").forEach(button => {
+    button.addEventListener("click", () => {
+      if (state.category === button.dataset.category) return;
+      state.category = button.dataset.category;
+      state.page = 0;
+      renderTabs();
+      // Warm the UMC index while the grid loads so moveset details open instantly.
+      if (state.category === "movesets") ensureUmcIndex();
+      load();
+    });
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * Loading
+ * ------------------------------------------------------------------ */
+function buildQuery() {
+  const cat = currentCategory();
+  const params = new URLSearchParams();
+  params.set("_nPage", String(state.page + 1));
+  params.set("_nPerpage", String(PER_PAGE));
+  params.set("_sSort", state.sort);
+  params.set("_aFilters[Generic_Game]", GAME_ID);
+
+  // Index omits like/view counts unless they are requested explicitly. Download
+  // counts aren't exposed by this endpoint at all, so the cards show views + likes.
+  params.set("_csvProperties", [
+    "_idRow", "_sName", "_sModelName", "_sProfileUrl", "_aPreviewMedia", "_aSubmitter",
+    "_aSubCategory", "_aRootCategory", "_nViewCount", "_nLikeCount", "_bHasFiles"
+  ].join(","));
+
+  if (cat.id != null) params.set("_aFilters[Generic_Category]", String(cat.id));
+  if (state.search) params.set("_aFilters[Generic_Name]", "contains," + state.search);
+
+  return "https://gamebanana.com/apiv12/" + cat.model + "/Index?" + params.toString();
+}
+
+async function load() {
+  const seq = ++state.requestSeq;
+  state.loading = true;
+  state.error = "";
+  state.records = [];
+  render();
+
+  try {
+    const response = await fetch(buildQuery(), { cache: "no-store" });
+    if (!response.ok) throw new Error("GameBanana returned HTTP " + response.status);
+
+    const data = await response.json();
+    if (seq !== state.requestSeq) return; // a newer request superseded this one
+
+    const meta = data._aMetadata || {};
+    state.total = Number(meta._nRecordCount || 0);
+    state.perPage = Number(meta._nPerpage || PER_PAGE) || PER_PAGE;
+    state.records = Array.isArray(data._aRecords) ? data._aRecords : [];
+  } catch (error) {
+    if (seq !== state.requestSeq) return;
+    state.error = error && error.message ? error.message : String(error);
+    state.total = 0;
+  } finally {
+    if (seq === state.requestSeq) {
+      state.loading = false;
+      render();
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Rendering
+ * ------------------------------------------------------------------ */
+function render() {
+  el.browse.hidden = !!state.detail;
+  el.detail.hidden = !state.detail;
+
+  if (state.detail) {
+    renderDetail();
+  } else {
+    renderGrid();
+    renderPager();
+  }
+}
+
+function renderGrid() {
+  if (state.loading) {
+    el.grid.innerHTML =
+      '<div class="state"><div class="spinner"></div><div>Loading mods from GameBanana…</div></div>';
+    return;
+  }
+
+  if (state.error) {
+    el.grid.innerHTML =
+      '<div class="state"><div class="icon">' + ICON.alert + "</div>" +
+      "<div>Couldn't load mods.<br><span style=\"color:var(--dim)\">" + escapeHtml(state.error) + "</span></div>" +
+      '<button class="btn btn-primary" style="flex:0 0 auto;padding:9px 18px" onclick="window.__osmRetry()">Retry</button></div>';
+    return;
+  }
+
+  if (!state.records.length) {
+    el.grid.innerHTML =
+      '<div class="state"><div class="icon">' + ICON.search + "</div><div>No mods match this filter.</div></div>";
+    return;
+  }
+
+  el.grid.innerHTML = state.records.map(renderCard).join("");
+  wireCards();
+}
+
+function renderCard(mod) {
+  const id = modId(mod);
+  const name = modName(mod);
+  const installed = state.installed.has(id);
+  const thumb = thumbnailUrl(mod);
+  const views = formatNumber(mod._nViewCount);
+  const likes = formatNumber(mod._nLikeCount);
+  const category = modCategory(mod);
+
+  const thumbMarkup = thumb
+    ? '<img src="' + escapeAttr(thumb) + '" alt="" loading="lazy" data-thumb>' +
+      '<div class="fallback">' + ICON.image + "</div>"
+    : '<div class="fallback">' + ICON.image + "</div>";
+
+  return (
+    '<article class="card' + (installed ? " installed" : "") +
+      '" data-mod-id="' + escapeAttr(id) + '" tabindex="0" role="button"' +
+      ' aria-label="View details for ' + escapeAttr(name) + '">' +
+      '<div class="thumb">' + thumbMarkup +
+        '<span class="badge">' + escapeHtml(category) + "</span>" +
+        (installed ? '<span class="badge installed">Installed</span>' : "") +
+        '<span class="peek">View details</span>' +
+      "</div>" +
+      '<div class="body">' +
+        '<h3 class="title" title="' + escapeAttr(name) + '">' + escapeHtml(name) + "</h3>" +
+        '<p class="author">by ' + escapeHtml(modAuthor(mod)) + "</p>" +
+        '<div class="stats">' +
+          '<span class="stat">' + ICON.eye + views + "</span>" +
+          '<span class="stat">' + ICON.heart + likes + "</span>" +
+        "</div>" +
+      "</div>" +
+    "</article>"
+  );
+}
+
+function wireCards() {
+  // Fade thumbnails in as they decode, so the grid doesn't flash empty boxes.
+  el.grid.querySelectorAll("img[data-thumb]").forEach(img => {
+    if (img.complete && img.naturalWidth > 0) {
+      img.classList.add("loaded");
+      return;
+    }
+    img.addEventListener("load", () => img.classList.add("loaded"), { once: true });
+    img.addEventListener("error", () => {
+      img.remove();
+    }, { once: true });
+  });
+
+  el.grid.querySelectorAll(".card").forEach(card => {
+    const mod = state.records.find(record => modId(record) === card.dataset.modId);
+    if (!mod) return;
+
+    card.addEventListener("click", () => openDetail(mod));
+    card.addEventListener("keydown", event => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openDetail(mod);
+      }
+    });
+  });
+}
+
+function renderPager() {
+  const totalPages = Math.max(1, Math.ceil(state.total / Math.max(1, state.perPage)));
+  el.pageInfo.textContent = state.loading
+    ? "Loading…"
+    : "Page " + (state.page + 1) + " / " + totalPages + "  ·  " + formatNumber(state.total) + " mods";
+  el.prev.disabled = state.loading || state.page <= 0;
+  el.next.disabled = state.loading || state.page >= totalPages - 1;
+}
+
+/* ------------------------------------------------------------------ *
+ * Detail view
+ * ------------------------------------------------------------------ */
+function openDetail(mod) {
+  state.browseScroll = el.scroll.scrollTop;
+  state.detail = {
+    mod: mod,
+    profile: null,
+    loading: true,
+    error: "",
+    imageIndex: 0
+  };
+
+  // The host draws its own back link; the detail view has a more specific one
+  // (back to the grid), so ask the host to hide its copy while it's open.
+  bridge.post("detail", { open: true });
+
+  render();
+  el.detailScroll.scrollTop = 0;
+  loadProfile(mod);
+}
+
+function closeDetail() {
+  if (!state.detail) return;
+  state.detail = null;
+  bridge.post("detail", { open: false });
+  render();
+  el.scroll.scrollTop = state.browseScroll || 0;
+}
+
+async function loadProfile(mod) {
+  const id = modId(mod);
+  const model = modModel(mod);
+  const url = "https://gamebanana.com/apiv12/" + model + "/" + id + "/ProfilePage";
+
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) throw new Error("GameBanana returned HTTP " + response.status);
+    const profile = await response.json();
+
+    // The user may have gone back (or opened another mod) while this was in flight.
+    if (!state.detail || modId(state.detail.mod) !== id) return;
+
+    state.detail.profile = profile;
+    state.detail.loading = false;
+    state.detail.error = "";
+    state.detail.imageIndex = 0;
+    renderDetail();
+  } catch (error) {
+    if (!state.detail || modId(state.detail.mod) !== id) return;
+    state.detail.loading = false;
+    state.detail.error = error && error.message ? error.message : String(error);
+    renderDetail();
+  }
+}
+
+function renderDetail() {
+  const detail = state.detail;
+  if (!detail) return;
+
+  const mod = detail.mod;
+  const profile = detail.profile || mod;
+  const id = modId(mod);
+  const installed = state.installed.has(id);
+
+  // ---- header / meta
+  document.getElementById("externalBtn").onclick = () => {
+    bridge.post("open_external", { url: modProfileUrl(profile) });
+  };
+
+  const crumbs = [];
+  const gameName = profile._aGame && profile._aGame._sName;
+  const superCat = profile._aSuperCategory && profile._aSuperCategory._sName;
+  const cat = (profile._aCategory && profile._aCategory._sName) || modCategory(mod);
+
+  crumbs.push(modModel(mod));
+  if (superCat && superCat !== cat) crumbs.push(superCat);
+  if (cat) crumbs.push(cat);
+  if (gameName) crumbs.push(gameName);
+
+  el.dCrumb.innerHTML = crumbs
+    .filter(Boolean)
+    .map(part => "<span>" + escapeHtml(part) + "</span>")
+    .join("<i>/</i>");
+
+  el.dTitle.textContent = modName(profile);
+  el.dByline.innerHTML = "by <b>" + escapeHtml(modAuthor(profile)) + "</b>" +
+    (profile._tsDateAdded ? " · added " + escapeHtml(formatDate(profile._tsDateAdded)) : "");
+
+  el.dStats.innerHTML = [
+    ["Likes", profile._nLikeCount],
+    ["Views", profile._nViewCount],
+    ["Downloads", profile._nDownloadCount]
+  ].filter(item => item[1] != null)
+   .map(item => '<div class="stat"><b>' + escapeHtml(formatNumber(item[1])) + "</b>" + item[0] + "</div>")
+   .join("");
+
+  // ---- gallery
+  renderGallery();
+
+  // ---- description
+  if (detail.loading) {
+    el.dDesc.innerHTML = '<div class="desc-placeholder">Loading details…</div>';
+  } else if (detail.error) {
+    el.dDesc.innerHTML = '<div class="desc-placeholder">Couldn\u2019t load the full details: ' +
+      escapeHtml(detail.error) + "</div>";
+  } else {
+    const text = htmlToText(profile._sText);
+    el.dDesc.innerHTML = text
+      ? '<div class="desc">' + escapeHtml(text) + "</div>"
+      : '<div class="desc-placeholder">No description provided.</div>';
+  }
+
+  // ---- tags
+  const tags = Array.isArray(profile._aTags) ? profile._aTags : [];
+  el.dTags.innerHTML = tags
+    .map(tag => (tag && tag._sName) || "")
+    .filter(Boolean)
+    .map(name => '<span class="tag">' + escapeHtml(name) + "</span>")
+    .join("");
+
+  // ---- moveset data from UMC
+  renderUmc();
+
+  // ---- files
+  renderFiles();
+}
+
+function renderGallery() {
+  const detail = state.detail;
+  const profile = detail.profile || detail.mod;
+  const images = imagesOf(profile).length ? imagesOf(profile) : imagesOf(detail.mod);
+  const index = Math.min(detail.imageIndex || 0, Math.max(0, images.length - 1));
+
+  el.prevImg.disabled = images.length < 2;
+  el.nextImg.disabled = images.length < 2;
+
+  if (!images.length) {
+    el.stageFrame.innerHTML = '<div class="empty">' + ICON.image + "</div>";
+    el.strip.innerHTML = "";
+    return;
+  }
+
+  const mainUrl = imageUrl(images[index], "main");
+  el.stageFrame.innerHTML =
+    '<img id="stageImg" src="' + escapeAttr(mainUrl) + '" alt="">';
+
+  const stageImg = document.getElementById("stageImg");
+  if (stageImg) {
+    if (stageImg.complete) stageImg.classList.add("loaded");
+    else stageImg.addEventListener("load", () => stageImg.classList.add("loaded"), { once: true });
+    stageImg.addEventListener("error", () => {
+      // Some uploads only have the thumbnail rendition.
+      const fallback = imageUrl(images[index], "thumb");
+      if (fallback && stageImg.src !== fallback) stageImg.src = fallback;
+    });
+  }
+
+  el.strip.innerHTML = images.map((image, i) =>
+    '<button data-index="' + i + '"' + (i === index ? ' class="active"' : "") +
+    ' title="Image ' + (i + 1) + '"><img src="' + escapeAttr(imageUrl(image, "thumb")) + '" alt="" loading="lazy"></button>'
+  ).join("");
+
+  el.strip.querySelectorAll("button").forEach(button => {
+    button.addEventListener("click", () => {
+      state.detail.imageIndex = Number(button.dataset.index) || 0;
+      renderGallery();
+    });
+  });
+}
+
+function stepImage(delta) {
+  const detail = state.detail;
+  if (!detail) return;
+  const profile = detail.profile || detail.mod;
+  const images = imagesOf(profile).length ? imagesOf(profile) : imagesOf(detail.mod);
+  if (images.length < 2) return;
+
+  detail.imageIndex = (detail.imageIndex + delta + images.length) % images.length;
+  renderGallery();
+}
+
+function renderFiles() {
+  const detail = state.detail;
+  const id = modId(detail.mod);
+  const installed = state.installed.has(id);
+  const profile = detail.profile;
+
+  if (!profile) {
+    el.dFiles.innerHTML =
+      '<div class="sec-head"><h2>Files</h2></div>' +
+      '<div class="file"><div class="f-main"><div class="f-name" style="color:var(--dim)">Loading files…</div></div></div>';
+    return;
+  }
+
+  const files = (Array.isArray(profile._aFiles) ? profile._aFiles : [])
+    .filter(Boolean)
+    .slice()
+    .sort((a, b) => {
+      const archived = Number(!!a._bIsArchived) - Number(!!b._bIsArchived);
+      if (archived !== 0) return archived; // active files first
+      return (Number(b._tsDateAdded) || 0) - (Number(a._tsDateAdded) || 0);
+    });
+
+  const heading =
+    '<div class="sec-head"><h2>Files <span class="count">(' + files.length + ")</span></h2>" +
+    (installed
+      ? '<button class="btn btn-remove" data-remove="' + escapeAttr(id) + '">Remove mod</button>'
+      : "") +
+    "</div>";
+
+  if (!files.length) {
+    el.dFiles.innerHTML = heading +
+      '<div class="file"><div class="f-main"><div class="f-name" style="color:var(--dim)">' +
+      "This submission has no downloadable files.</div></div></div>";
+    return;
+  }
+
+  const rows = files.map(file => {
+    const archived = !!file._bIsArchived;
+    const url = file._sDownloadUrl || "";
+    const fileName = file._sFile || "download";
+    const meta = [
+      formatBytes(file._nFilesize),
+      file._nDownloadCount != null ? formatNumber(file._nDownloadCount) + " downloads" : "",
+      formatDate(file._tsDateAdded),
+      archived ? "archived" : ""
+    ].filter(Boolean).join("  ·  ");
+
+    const job = state.jobs.get(id);
+    const busy = job && (job.state === "downloading" || job.state === "installing");
+    const label = busy
+      ? (job.percent > 0 ? job.percent + "%" : "…")
+      : installed ? "Reinstall" : "Download";
+
+    return (
+      '<div class="file' + (archived ? " archived" : "") + '">' +
+        '<div class="f-icon">' + ICON.file + "</div>" +
+        '<div class="f-main">' +
+          '<div class="f-name" title="' + escapeAttr(fileName) + '">' + escapeHtml(fileName) + "</div>" +
+          '<div class="f-meta">' + escapeHtml(meta) + "</div>" +
+        "</div>" +
+        '<button class="btn ' + (installed ? "btn-ghost" : "btn-primary") + '"' +
+          ' data-download="' + escapeAttr(id) + '"' +
+          ' data-file-id="' + escapeAttr(String(file._idRow || "")) + '"' +
+          (url ? ' data-url="' + escapeAttr(url) + '"' : " disabled") +
+          ' data-file="' + escapeAttr(fileName) + '"' +
+          (busy ? " disabled" : "") + ">" + escapeHtml(label) + "</button>" +
+      "</div>"
+    );
+  }).join("");
+
+  el.dFiles.innerHTML =
+    heading +
+    (installed
+      ? '<div class="installed-note">' + ICON.check + "Installed — downloading a file again will replace it.</div>"
+      : "") +
+    rows +
+    (detail.loading ? '<div class="f-meta" style="margin-top:10px">Fetching the latest file list…</div>' : "");
+
+  el.dFiles.querySelectorAll("[data-download]").forEach(button => {
+    button.addEventListener("click", () => {
+      const modIdValue = button.dataset.download;
+      const name = modName(state.detail.profile || state.detail.mod);
+      startDownload({
+        type: "install",
+        modId: modIdValue,
+        model: modModel(state.detail.mod),
+        name: name,
+        url: button.dataset.url || "",
+        fileName: button.dataset.file || "",
+        fileId: button.dataset.fileId || "",
+        notice: "Preparing " + name + "…"
+      });
+    });
+  });
+
+  const removeButton = el.dFiles.querySelector("[data-remove]");
+  if (removeButton) {
+    removeButton.addEventListener("click", () => {
+      bridge.post("remove", {
+        modId: removeButton.dataset.remove,
+        name: modName(state.detail.profile || state.detail.mod)
+      });
+    });
+  }
+}
+
+/* Update file-row buttons in place so a download's progress doesn't rebuild the
+ * whole detail view (and lose scroll position or the gallery image). */
+function applyJobStatus() {
+  if (!state.detail) return;
+
+  const id = modId(state.detail.mod);
+  const job = state.jobs.get(id);
+
+  el.dFiles.querySelectorAll("[data-download]").forEach(button => {
+    if (button.dataset.download !== id) return;
+
+    const done = job && job.state === "done";
+    const failed = job && job.state === "error";
+    const busy = job && (job.state === "downloading" || job.state === "installing");
+
+    if (done || failed) {
+      state.jobs.delete(id);
+    }
+
+    if (!busy) {
+      button.disabled = !button.dataset.url;
+      button.textContent = state.installed.has(id) ? "Reinstall" : "Download";
+      return;
+    }
+
+    button.disabled = true;
+    button.textContent = job.state === "installing"
+      ? "Installing…"
+      : (job.percent > 0 ? job.percent + "%" : "Starting…");
+  });
+}
+
+el.prevImg.addEventListener("click", () => stepImage(-1));
+el.nextImg.addEventListener("click", () => stepImage(1));
+el.backBtn.addEventListener("click", closeDetail);
+
+/* ------------------------------------------------------------------ *
+ * Install queue
+ * ------------------------------------------------------------------ *
+ * Requirements have to finish before the mod that needs them, and the host
+ * reports progress asynchronously, so installs are queued and released one
+ * terminal status at a time.
+ */
+const installQueue = [];
+let installBusy = false;
+let installTimer = 0;
+
+function postInstall(payload) {
+  if (!payload) return;
+
+  if (payload.type === "open_external") {
+    bridge.post("open_external", { url: payload.url });
+    return;
+  }
+
+  installQueue.push(payload);
+  pumpInstallQueue();
+}
+
+function pumpInstallQueue() {
+  if (installBusy || !installQueue.length) return;
+
+  installBusy = true;
+  const next = installQueue.shift();
+  bridge.post(next.type || "install", next);
+
+  // Safety net: never wedge the queue if a job goes silent.
+  clearTimeout(installTimer);
+  installTimer = setTimeout(releaseInstallQueue, 600000);
+}
+
+function releaseInstallQueue() {
+  clearTimeout(installTimer);
+  installBusy = false;
+  pumpInstallQueue();
+}
+
+/* ------------------------------------------------------------------ *
+ * Requirement prompt
+ * ------------------------------------------------------------------ */
+let promptPending = null;
+
+function openRequirementPrompt(missing, payload) {
+  promptPending = { missing, payload };
+
+  const detail = state.detail || {};
+  el.reqTitle.textContent = modName(detail.profile || detail.mod || {});
+  el.reqBody.textContent =
+    "This mod needs " + missing.length +
+    (missing.length === 1 ? " more thing" : " more things") +
+    " that aren't installed yet. Install them first?";
+
+  el.reqList.innerHTML = missing.map(req =>
+    "<li>" +
+      '<span class="dot" style="width:.6rem;height:.6rem;border-radius:50%;background:var(--accent);flex:0 0 auto"></span>' +
+      '<span class="grow">' + escapeHtml(req.name) +
+        (req.link ? "<small>" + escapeHtml(req.link) + "</small>" : "") +
+      "</span>" +
+    "</li>").join("");
+
+  el.reqModal.hidden = false;
+  el.reqInstallAll.focus();
+}
+
+function closeRequirementPrompt() {
+  el.reqModal.hidden = true;
+  promptPending = null;
+}
+
+function announceInstall(payload) {
+  if (!payload || !payload.notice) return;
+  showToast({
+    modId: payload.modId || payload.component || "global",
+    state: "downloading",
+    message: payload.notice,
+    percent: 0
+  });
+}
+
+function startDownload(payload) {
+  // Movesets carry their requirements from UMC; everything else installs as-is.
+  const entry = currentUmcEntry();
+  const missing = entry ? missingRequirements(entry) : [];
+
+  if (missing.length) {
+    openRequirementPrompt(missing, payload);
+    return;
+  }
+
+  announceInstall(payload);
+  postInstall(payload);
+}
+
+el.reqCancel.addEventListener("click", closeRequirementPrompt);
+
+el.reqAnyway.addEventListener("click", () => {
+  const pending = promptPending;
+  closeRequirementPrompt();
+  if (!pending) return;
+  announceInstall(pending.payload);
+  postInstall(pending.payload);
+});
+
+el.reqInstallAll.addEventListener("click", () => {
+  const pending = promptPending;
+  closeRequirementPrompt();
+  if (!pending) return;
+
+  pending.missing.forEach(queueRequirement);
+
+  announceInstall(pending.payload);
+  postInstall(pending.payload);
+});
+
+/* ------------------------------------------------------------------ *
+ * Toasts
+ * ------------------------------------------------------------------ */
+const toasts = new Map();
+
+function showToast(payload) {
+  const id = String(payload.modId || "global");
+  const kind = payload.state || "info";
+  const message = payload.message || "";
+
+  let node = toasts.get(id);
+  if (!node) {
+    node = document.createElement("div");
+    node.className = "toast";
+    node.innerHTML = '<div data-msg></div><small data-detail></small><div class="progress"><i data-bar></i></div>';
+    el.toasts.appendChild(node);
+    toasts.set(id, node);
+  }
+
+  const ok = kind === "done";
+  const bad = kind === "error";
+  const busy = kind === "downloading" || kind === "installing";
+
+  node.classList.toggle("ok", ok);
+  node.classList.toggle("bad", bad);
+
+  node.querySelector("[data-msg]").textContent =
+    (ok ? "✓ " : bad ? "✕ " : "") + message;
+
+  const detail = node.querySelector("[data-detail]");
+  detail.textContent = payload.detail || "";
+
+  const bar = node.querySelector("[data-bar]");
+  const progress = Number(payload.percent);
+  if (busy && Number.isFinite(progress)) {
+    bar.parentElement.style.display = "";
+    bar.style.width = Math.max(0, Math.min(100, progress)) + "%";
+    detail.textContent = Math.round(Math.max(0, Math.min(100, progress))) + "%";
+  } else {
+    bar.parentElement.style.display = "none";
+  }
+
+  if (ok || bad) {
+    const delay = bad ? 9000 : 4500;
+    setTimeout(() => {
+      node.style.opacity = "0";
+      node.style.transition = "opacity .25s";
+      setTimeout(() => {
+        node.remove();
+        toasts.delete(id);
+      }, 260);
+    }, delay);
+  }
+}
+
+function clearToast(id) {
+  const node = toasts.get(String(id));
+  if (!node) return;
+  node.remove();
+  toasts.delete(String(id));
+}
+
+window.__osmClearToast = clearToast;
+
+/* ------------------------------------------------------------------ *
+ * Wiring
+ * ------------------------------------------------------------------ */
+let searchTimer = 0;
+
+el.search.addEventListener("input", () => {
+  const value = el.search.value.trim();
+  if (value === state.search) return;
+  state.search = value;
+  state.page = 0;
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(load, 350);
+});
+
+el.sort.addEventListener("change", () => {
+  state.sort = el.sort.value;
+  state.page = 0;
+  load();
+});
+
+el.prev.addEventListener("click", () => {
+  if (state.page <= 0) return;
+  state.page--;
+  el.scroll.scrollTop = 0;
+  load();
+});
+
+el.next.addEventListener("click", () => {
+  state.page++;
+  el.scroll.scrollTop = 0;
+  load();
+});
+
+window.__osmRetry = () => load();
+
+/* Keep the grid usable with the keyboard. */
+el.scroll.addEventListener("keydown", event => {
+  if (event.key === "ArrowDown") el.scroll.scrollTop += 80;
+  if (event.key === "ArrowUp") el.scroll.scrollTop -= 80;
+});
+
+/* Esc closes the detail view, then clears the search box, then asks the host to
+ * go back to the menu. Left/Right step through the gallery while it is open. */
+window.addEventListener("keydown", event => {
+  // The requirement prompt owns the keyboard while it is open.
+  if (!el.reqModal.hidden) {
+    if (event.key === "Escape") { event.preventDefault(); closeRequirementPrompt(); }
+    return;
+  }
+
+  if (state.detail) {
+    if (event.key === "Escape") { event.preventDefault(); closeDetail(); return; }
+    if (event.key === "ArrowLeft") { event.preventDefault(); stepImage(-1); return; }
+    if (event.key === "ArrowRight") { event.preventDefault(); stepImage(1); return; }
+    return;
+  }
+
+  if (event.key !== "Escape") return;
+  if (el.search.value) {
+    el.search.value = "";
+    state.search = "";
+    state.page = 0;
+    load();
+    return;
+  }
+  bridge.post("escape", {});
+});
+
+/* ------------------------------------------------------------------ *
+ * Boot
+ * ------------------------------------------------------------------ */
+renderTabs();
+load();
+
+// Tell the host we're ready so it can push the installed-mod list.
+bridge.post("ready", {});
+</script>
+</body>
+</html>

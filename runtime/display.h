@@ -12,6 +12,8 @@ void display_dpi_aware(void);           /* first thing in main: window sizes in 
 #ifdef _WIN32
 /* The game's window, made by the renderer's window thread with its class and procedure. */
 HWND display_create_window(HINSTANCE inst, const wchar_t *cls, const wchar_t *title);
+/* Shown on the first presented frame. Until then the window stays hidden, so startup is not a white box. */
+void display_show_window(void);
 /* The window procedure offers every message here first: nonzero = handled, the answer in *result. */
 int display_message(HWND h, UINT msg, WPARAM w, LPARAM l, LRESULT *result);
 #else
@@ -34,6 +36,7 @@ const char *display_gpu(void);          /* the graphics card to use: "auto", or 
  * (0.5-4; SSBU_RENDER_SCALE). 0 = auto: as many as the picture has pixels in the window at the
  * start (1440p: 1.33), at least 1. */
 float display_render_scale(void);
+float display_volume(void);            /* display.ini volume, 0 to 1 (100 is full) */
 /* The renderer says whether the swap chain can tear (for VRR); the flags each Present gets. */
 void display_set_tearing(int supported);
 unsigned display_present_flags(void);
@@ -50,6 +53,7 @@ typedef struct DisplaySettings { int mode, width, height, latency, hide_cursor, 
 void display_settings(DisplaySettings *out);
 const char *display_ini_path(void);
 int display_overlay(void);                /* overlay = 1: the frame-rate overlay shows from the start */
+float display_overlay_scale(void);        /* overlay_scale = 0.25-2: the overlay's size */
 void display_set_mode(int mode);          /* DISPLAY_*: the window switches now (and F11 goes back to it) */
 int display_take_mode(void);              /* (Linux, the window's loop) a mode asked for, or -1 */
 void display_set_pacing(Pacing pacing);

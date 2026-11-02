@@ -37,7 +37,7 @@ class ProgressTests(unittest.TestCase):
                          '[##############----------------]  50%  1,540 of 3,081 shaders, about 13 min left')
         self.assertEqual(S.progress_text(3081, 3081, rate=2.0), '[##############################] 100%  3,081 of 3,081 shaders')
 
-    def test_log_lines_every_5_percent(self):
+    def test_log_lines_every_percent(self):
         out = Out(tty=False)
         show = S.Progress(out)
         show([(0, None), (0, None)], now=0)          # (the parts translating)
@@ -48,9 +48,9 @@ class ProgressTests(unittest.TestCase):
         lines = out.getvalue().splitlines()
         self.assertEqual(lines[0], 'getting ready: translating the vertex programs...')
         self.assertEqual(len([l for l in lines if 'getting ready' in l]), 1)
-        self.assertEqual(len(lines), 1 + 21)          # (0 % with the total, then every 5 %; the last not twice)
+        self.assertEqual(len(lines), 1 + 101)         # (0 % with the total, then every 1 %; the last not twice)
         self.assertEqual(lines[1], '[------------------------------]   0%  0 of 1,000 shaders')
-        self.assertIn('  50%  500 of 1,000 shaders, about 1 min left', lines[11])
+        self.assertIn('  50%  500 of 1,000 shaders, about 1 min left', lines[51])
         self.assertTrue(lines[-1].endswith('100%  1,000 of 1,000 shaders'))
 
     def test_console_draws_over_one_line(self):

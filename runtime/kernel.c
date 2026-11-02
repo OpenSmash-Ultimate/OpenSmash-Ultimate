@@ -1039,9 +1039,11 @@ static void system_call(Cpu *c, u32 n) {
     u64 *x = c->x;
     if (rt_trace) fprintf(stderr, "[svc %#04x] thread %llu x0=%#llx x1=%#llx x2=%#llx x3=%#llx\n", n, me->id, x[0], x[1], x[2], x[3]);
 
+    void skyline_note_sleep(void);
     /* calls that never touch shared kernel state */
     switch (n) {
     case 0x0B:   /* SleepThread(ns): non-positive values are yield requests */
+        if ((i64)x[0] > 0) skyline_note_sleep();   /* (hle_skyline.c: ARCropolis' event thread going round) */
         if ((i64)x[0] > 0) sleep_ns(x[0]); else SwitchToThread();
         return;
     case 0x10:                                           /* GetCurrentProcessorNumber (see "priorities and cores") */

@@ -7,6 +7,14 @@ import sys
 import threading
 import time
 
+# Started without a console - by the Mods app's pythonw.exe on Windows - a program has no
+# sys.stdout or sys.stderr (None), and the first progress line stopped the game's build: what it
+# prints goes nowhere instead.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
 
 def time_left(seconds):
     """A time left, as a person says it."""
@@ -303,7 +311,7 @@ class Line:
         self.text = None
         self.drawn = 0             # (console) how much of the bar is on the screen
         self.line_start = True     # (console) the program's own output has ended its line
-        self.logged = None         # (log) (when, percent) of the last line written
+        self.logged = None         # (log) (when, percent, label) of the last line written
         self.old_title = None
         self.shown_title = None
         self.saved = None
@@ -319,11 +327,13 @@ class Line:
                 if text != self.text or not self.drawn:
                     self.text = text
                     self._draw()
-            elif self.logged is None or (final and text != self.text) or \
-                    (percent > self.logged[1] and now - self.logged[0] >= self.every):
+            elif self.logged is None or (final and text != self.text) or (
+                    (percent != self.logged[1] or label != self.logged[2]) and now - self.logged[0] >= 0.4):
+                # A pipe (the Mods window, the launcher) has no redrawing line, so each change of
+                # the step or the percent is its own line, often enough that a bar can follow it.
                 self.out.write(text + "\n")
                 self.out.flush()
-                self.text, self.logged = text, (now, percent)
+                self.text, self.logged = text, (now, percent, label)
             if self.title and self.old_title is not None:
                 title = f"{percent}% - {left_text(frac, left)} - {self.title}"
                 if title != self.shown_title:

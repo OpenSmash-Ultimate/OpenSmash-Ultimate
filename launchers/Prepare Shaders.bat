@@ -7,6 +7,6 @@ rem Needs Python and the build tools, as for building (docs\BUILDING.md).
 cd /d "%~dp0.."
 setlocal
 call tools\find_python.bat || (pause & exit /b 1)
-if not exist build\ssbu.exe (echo The game isn't built here yet: run Install WindowSmash.bat. & pause & exit /b 1)
+if not exist build\ssbu.exe (echo The game isn't built here yet: run OpenSmash.exe. & pause & exit /b 1)
 %PY% tools\shader_aot.py
 pause
