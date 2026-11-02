@@ -14,6 +14,7 @@ Everything about playing once the game is built: how to start it, the controls, 
 - [Shaders and first-time stutter](#shaders-and-first-time-stutter)
 - [Low frame rate](#low-frame-rate)
 - [Your own Miis](#your-own-miis)
+- [Snapshots and the Vault's album](#snapshots-and-the-vaults-album)
 - [Where your files are](#where-your-files-are)
 - [Problem reports](#problem-reports)
 
@@ -233,6 +234,12 @@ The game lists your own Miis wherever it lists Miis, such as **Games & More → 
 
 Each Mii becomes one file in the `miis` folder, `miis\<name>.charinfo`. To give a Mii to a friend, send them that file to put in their own `miis` folder. To remove one, delete its file. The game reads at most 100. A Mii Fighter you make from one of your Miis is kept in your save, so it stays even after you remove the Mii's file. From PowerShell, `python tools/miis.py list` lists them and `python tools/miis.py import --help` shows every option.
 
+## Snapshots and the Vault's album
+
+Pictures you save in the game (pause a battle and take a snapshot) are kept in the **`album`** folder, and the game lists them in its **Vault** album as it does on the console. Each picture is a `.bmp` file named after when it was taken, `<date>_<time>_<number>.bmp`, so you can open or copy it with any picture viewer; a `.userdata.bin` file beside it holds what the game keeps with the picture. To remove a picture, delete both files while the game is closed. An album folder from ssbu-recomp (its `userdata\album`) can be copied over as it is.
+
+Videos made from replays are not kept yet: the game can't make one.
+
 ## Where your files are
 
 All of these are in the WindowSmash folder:
@@ -242,6 +249,7 @@ All of these are in the WindowSmash folder:
 | Your save | `save\` |
 | Your own Miis | `miis\` ([above](#your-own-miis)) |
 | Screenshots (<kbd>F3</kbd>) | `screenshots\` |
+| Pictures saved in the game (the Vault) | `album\` ([above](#snapshots-and-the-vaults-album)) |
 | The game's log | `build\play.log` |
 | Crash and freeze reports | `reports\` |
 | Controller and window settings | `controllers.ini`, `display.ini` |

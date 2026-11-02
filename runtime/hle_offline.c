@@ -1,10 +1,10 @@
-/* Console features with no counterpart here: screenshot album, data delivery, friends,
+/* Console features with no counterpart here: the album's videos, data delivery, friends,
  * amiibo, play reports, the shop, SSL - plus the two small library
  * pieces that unexpectedly consult a service (language codes, secure random bytes).
  *
  * Everything reports "nothing there" or "not available" through the API's normal failure
- * paths, so the game behaves as a console that is offline, with no amiibo reader and an
- * empty album. */
+ * paths, so the game behaves as a console that is offline, with no amiibo reader and no
+ * videos in its album (its screenshots: hle_album.c). */
 #define _CRT_SECURE_NO_WARNINGS
 #define _CRT_RAND_S
 #include <stdio.h>
@@ -42,19 +42,9 @@ HLE(_ZN2nn6crypto36GenerateCryptographicallyRandomBytesEPvm) {
     }
 }
 
-/* ---- nn::album: an empty album; screenshots are accepted and discarded ------------- */
-HLE(_ZN2nn5album10InitializeEv) OK
-HLE(_ZN2nn5album26GetAlbumScreenshotFileListEPiPNS0_14AlbumFileEntryEi) { st32(c->x[0], 0); c->x[0] = 0; }
+/* ---- nn::album: no videos (the screenshots are hle_album.c's) ---------------------- */
 HLE(_ZN2nn5album21GetExtraMovieFileListEPiPNS0_14AlbumFileEntryEi) { st32(c->x[0], 0); c->x[0] = 0; }
-HLE(_ZN2nn5album14SaveScreenshotEPKvmNS0_9ImageSizeENS0_17AlbumReportOptionE) OK
-HLE(_ZN2nn5album26SaveScreenshotWithUserDataEPKvmNS0_9ImageSizeENS0_16ImageOrientationENS0_17AlbumReportOptionES2_m) OK
-HLE(_ZN2nn5album22SaveAndShareScreenshotEPKvmNS0_9ImageSizeENS0_17AlbumReportOptionERKNS_7account3UidEPKc) OK
 HLE(_ZN2nn5album20DeleteExtraMovieFileERKNS0_14AlbumFileEntryE) OK
-HLE(_ZN2nn5album14LoadAlbumImageEPiS1_PmPvmS3_mS3_mRKNS0_14AlbumFileEntryE) FAIL
-HLE(_ZN2nn5album14LoadAlbumImageEPiS1_PvmS2_mRKNS0_14AlbumFileEntryE) FAIL
-HLE(_ZN2nn5album23LoadAlbumThumbnailImageEPiS1_PNS0_18AlbumFileAttributeEPmPvmS5_mS5_mRKNS0_14AlbumFileEntryE) FAIL
-HLE(_ZN2nn5album23LoadAlbumThumbnailImageEPiS1_PNS0_18AlbumFileAttributeEPvmS4_mRKNS0_14AlbumFileEntryE) FAIL
-HLE(_ZN2nn5album23LoadAlbumThumbnailImageEPiS1_PmPvmS3_mS3_mRKNS0_14AlbumFileEntryE) FAIL
 HLE(_ZN2nn5album20InitializeMovieMakerEPvm) FAIL
 HLE(_ZN2nn5album25PrecheckToStartMovieMakerEm) FAIL
 HLE(_ZN2nn5album20OpenAlbumMovieStreamEPNS0_17MovieStreamHandleERKNS0_14AlbumFileEntryE) FAIL
