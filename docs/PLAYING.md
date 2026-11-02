@@ -45,7 +45,7 @@ Press <kbd>Esc</kbd> in the game to open the settings. On a controller, press it
 | Page | What you can change |
 | :--- | :--- |
 | **Display** | Window or full screen, frame pacing, how many frames the graphics card works ahead, the mouse pointer, the frame rate in the corner, the window's size, the render scale, the graphics card. |
-| **Controllers** | For each connected controller: which player it is, face buttons by position or by label, stick dead zone, rumble, how far a trigger is pulled for ZL / ZR, and which control each button is (**Buttons...**). For the keyboard: which player it adds to. Also **Rumble** on or off for every controller, and whether controllers work while another window is in front. |
+| **Controllers** | For each connected controller: which player it is, face buttons by position or by label, stick dead zone, rumble, how far a trigger is pulled for ZL / ZR, and which control each button is (**Buttons...**). For the keyboard: which player it adds to, and which key is each button (**Keyboard keys...**: choose a row, press the new key; <kbd>Delete</kbd> or **Y** puts its default back). Also **Rumble** on or off for every controller, and whether controllers work while another window is in front. |
 | **Online** | Public lobby, a private lobby code, your own server, or offline; your name; direct connections; the netplay version ([multiplayer guide](MULTIPLAYER.md)). |
 | **Game** | Restart or quit the game, the keys, and the game version. |
 | **Lobby** | The online lobby's rooms, the ones you can't join too (and why), and matchmaking. With the cursor on a room, its game version and its mods, each marked as you have it. They need netplay version 3, which is being tried out ([multiplayer guide](MULTIPLAYER.md#room-browser-and-matchmaking-being-tried-out)). |
@@ -66,7 +66,7 @@ The settings are kept in the same files as always: `display.ini`, `controllers.i
 
 ## Controls
 
-The keyboard plays as player 1, together with player 1's pad if there is one:
+The keyboard plays as player 1, together with player 1's pad if there is one. These are its default keys; change any of them in the [settings](#settings) (**Controllers → Keyboard keys...**) or in the `[keyboard]` section of [`controllers.ini`](#controllersini):
 
 | Switch button | Keyboard |
 | :--- | :--- |
@@ -155,6 +155,7 @@ The first time the game starts, it writes **`controllers.ini`** into the WindowS
 The file has these sections:
 
 - **`[general]`** holds `keyboard_player`, `background` and `rumble` (on or off for every controller).
+- **`[keyboard]`** holds the keyboard's keys: `<Switch button> = <key>`, for example `A = Space` or `LSTICK_LEFT = A`. The buttons are `A B X Y L R ZL ZR PLUS MINUS LSTICK RSTICK` (the last two: the sticks' clicks) and the d-pad's `UP DOWN LEFT RIGHT`; the sticks' directions are `LSTICK_LEFT LSTICK_UP LSTICK_RIGHT LSTICK_DOWN` and the same with `RSTICK_`. A key is a letter or digit, `Left Up Right Down Enter Backspace Space Tab Shift Ctrl Alt`, `F1`–`F12`, `Num0`–`Num9` (the number pad), `0x` and a Windows virtual-key code, or `none`; list several with commas (`A = Z, Space`). Removing a line puts that key's default back. An ssbu-recomp `[keyboard]` section carries over as it is (its `STICK_L` / `STICK_R` are `LSTICK` / `RSTICK`); its `movement = ssf2` is kept in the file but has no effect here yet.
 - **`[players]`** reserves a player for one pad, for example `2 = DualSense Wireless Controller` (the settings' **Player** row writes the pad's GUID there). The log names every pad as it connects, with its type and GUID.
 - **`[device default]`** applies to every pad.
 - **`[device ps5]`**, **`[device <name>]`** or **`[device <GUID>]`** applies to one kind of pad, or one pad. Types include `xbox360`, `xboxone`, `ps4`, `ps5`, `switchpro`, `joyconpair` and `gamecube`. The settings write a controller's changes under `[device <its name>]`, or under the section it already takes its settings from.
@@ -170,6 +171,20 @@ rumble = 60
 
 [device xboxone]
 style = gamecube
+```
+
+And to move with <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> and jump with <kbd>Space</kbd>, with L and R (on <kbd>A</kbd> and <kbd>S</kbd> by default) and ZR (on <kbd>W</kbd>) moved out of the way:
+
+```ini
+[keyboard]
+LSTICK_LEFT = A
+LSTICK_UP = W
+LSTICK_RIGHT = D
+LSTICK_DOWN = S
+X = Space
+L = Shift
+R = Ctrl
+ZR = E
 ```
 
 ## Window and display

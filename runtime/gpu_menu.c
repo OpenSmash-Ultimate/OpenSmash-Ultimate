@@ -76,7 +76,8 @@ enum {   /* (from keys, pads or the test script) */
 };
 
 /* ---- the rows of a page ------------------------------------------------------------------ */
-enum { P_DISPLAY, P_PADS, P_ONLINE, P_GAME, P_LOBBY, P_MODS, P_REMAP, PAGES = P_REMAP };   /* (the pad's buttons: no key of their own) */
+enum { P_DISPLAY, P_PADS, P_ONLINE, P_GAME, P_LOBBY, P_MODS, P_REMAP, P_KEYS, PAGES = P_REMAP };   /* (the pad's buttons, the keyboard's keys: no key of their own) */
+#define SUB_PAGE(p) ((p) == P_REMAP || (p) == P_KEYS)   /* (a page of the Controllers page's) */
 static const char *const PAGE_NAMES[PAGES] = {"Display", "Controllers", "Online", "Game", "Lobby", "Mods"};
 enum { K_INFO, K_CHOICE, K_ACTION, K_TEXT };
 enum { W_NONE, W_NOW, W_RESTART };
@@ -87,10 +88,13 @@ enum {
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
     R_LANGUAGE, R_VOLUME, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
+    R_KEYS, R_KEYS_BACK, R_KEYS_RESET,
     R_ROOM_FIRST = 60,    /* + the room's place in the list */
     R_REMAP_FIRST = 100,  /* + console button */
-    R_MOD_FIRST = 200     /* + the mod's place in mods.json (MENU_MODS at most) */
+    R_MOD_FIRST = 200,    /* + the mod's place in mods.json (MENU_MODS at most) */
+    R_KEY_FIRST = 400     /* + the keyboard binding (PAD_KEYS) */
 };
+#define IS_KEY(id) ((id) >= R_KEY_FIRST && (id) < R_KEY_FIRST + PAD_KEYS)
 #define IS_REMAP(id) ((id) >= R_REMAP_FIRST && (id) < R_REMAP_FIRST + 16)
 
 typedef struct Row { int id, kind, when; char label[48], value[112], note[64]; const char *help; } Row;
@@ -107,7 +111,7 @@ static Row *add(int id, int kind, int when, const char *label, const char *help)
 }
 
 /* ---- state ---------------------------------------------------------------------------- */
-static int page, sel[P_REMAP + 1], top[P_REMAP + 1];
+static int page, sel[P_KEYS + 1], top[P_KEYS + 1];
 static int pad_slot = -1;                /* the pad the Controllers page sets up */
 static int confirm;                      /* a row asking yes or no */
 static int editing, grid_r, grid_c;      /* a text row being typed */
@@ -115,6 +119,9 @@ static char edit_buf[64];
 static int capture_button = -1;          /* the console button a new control is wanted for */
 static u32 capture_held;
 static ULONGLONG capture_until;
+static int capture_key = -1;             /* the keyboard binding a new key is wanted for */
+static int capture_key_held = 1;         /* (keys still held from before: they must go first) */
+static ULONGLONG capture_quiet;          /* until then the window's queued keys are passed over (the key just bound) */
 static int restart_pending;
 static int *overlay_on;                  /* the frame-rate overlay's switch (gpu_d3d11.c) */
 static char pins[PAD_SLOTS][128];        /* controllers.ini's [players], read at the menu's opening and changes */
@@ -183,8 +190,8 @@ static void open_menu(void) {
     ngpus = gfx_adapter_names(gpus, 8);
 #endif
     confirm = editing = 0;
-    capture_button = -1;
-    if (page == P_REMAP) page = P_PADS;
+    capture_button = capture_key = -1;
+    if (SUB_PAGE(page)) page = P_PADS;
     open_ = 1;
     fprintf(stderr, "[menu] open\n");
 }
@@ -192,7 +199,7 @@ static void open_menu(void) {
 static void close_menu(void) {
     if (!open_) return;
     confirm = editing = 0;
-    capture_button = -1;
+    capture_button = capture_key = -1;
     releasing = 1;   /* (the game gets input back once nothing is held) */
     open_ = 0;
     built_page = -1;   /* (the Lobby page lists the rooms again when it shows next) */
@@ -651,9 +658,10 @@ static void build(void) {
         r = add(R_RUMBLE, K_CHOICE, W_NOW, "Rumble", "On: controllers rumble, each as strong as its own Rumble setting. Off: no controller rumbles.");
         snprintf(r->value, sizeof r->value, "%s", on_off(pad_rumble_on()));
         r = add(R_KEYBOARD, K_CHOICE, W_NOW, "Keyboard plays as",
-                "The keyboard adds to this player: arrows move, Z X C V are A B X Y, A S are L R, Q W are ZL ZR, Enter is +, I J K L the right stick.");
+                "The keyboard adds to this player. Its keys: Keyboard keys... (by default arrows move, Z X C V are A B X Y, A S are L R, Q W are ZL ZR, Enter is +, I J K L the right stick).");
         if (pad_keyboard_slot() < 0) snprintf(r->value, sizeof r->value, "nobody");
         else snprintf(r->value, sizeof r->value, "player %d", pad_keyboard_slot() + 1);
+        add(R_KEYS, K_ACTION, W_NONE, "Keyboard keys...", "Which key is each of the game's buttons and stick directions ([keyboard] in controllers.ini).");
         r = add(R_BACKGROUND, K_CHOICE, W_NOW, "Pads when not focused", "On: controllers work while another window is in front. Off: only while the game's window is.");
         snprintf(r->value, sizeof r->value, "%s", on_off(pad_background()));
         r = add(R_PADS_FILE, K_ACTION, W_NONE, "Open controllers.ini", "Everything else, by hand: settings per kind of pad, more remaps. Changes there count at the next start.");
@@ -669,6 +677,15 @@ static void build(void) {
             r = add(R_REMAP_FIRST + b, K_ACTION, W_NOW, label, "A or Enter: then press the control for this button. Y or Delete: its default again.");
             snprintf(r->value, sizeof r->value, "%s", pad->map[b]);
         }
+        break;
+    case P_KEYS:
+        r = add(R_KEYS_BACK, K_ACTION, W_NONE, "< Back", "Back to the controllers' settings.");
+        for (int i = 0; i < PAD_KEYS; i++) {
+            int b = i < 16 ? REMAP_ORDER[i] : i;
+            r = add(R_KEY_FIRST + b, K_ACTION, W_NOW, pad_key_label(b), "A or Enter: then press the key for this. Y or Delete: its default again.");
+            pad_key_names(b, r->value, sizeof r->value);
+        }
+        add(R_KEYS_RESET, K_ACTION, W_NOW, "Back to the defaults", "Every key as it was: arrows, Z X C V, A S, Q W, Enter, Backspace, I J K L.");
         break;
     case P_ONLINE: {
         const char *launcher = getenv("SSBU_NET_RELAY") && *getenv("SSBU_NET_RELAY") ? "SSBU_NET_RELAY set" :
@@ -929,6 +946,12 @@ static void action(const Row *row) {
     case K_CHOICE: change(row, 1); return;
     case K_TEXT: start_edit(row->id); return;
     }
+    if (IS_KEY(row->id)) {
+        capture_key = row->id - R_KEY_FIRST;
+        capture_key_held = 1;   /* (Enter, or whatever chose the row, goes first) */
+        capture_until = GetTickCount64() + 6000;
+        return;
+    }
     if (IS_REMAP(row->id) && pad) {
         capture_button = row->id - R_REMAP_FIRST;
         capture_held = ~0u;   /* (whatever is held now must go first) */
@@ -977,7 +1000,13 @@ static void action(const Row *row) {
         break;
     }
     case R_PAD_REMAP: if (pad) { page = P_REMAP; sel[P_REMAP] = 1; top[P_REMAP] = 0; } break;
-    case R_REMAP_BACK: page = P_PADS; break;
+    case R_REMAP_BACK: case R_KEYS_BACK: page = P_PADS; break;
+    case R_KEYS: page = P_KEYS; sel[P_KEYS] = 1; top[P_KEYS] = 0; break;
+    case R_KEYS_RESET:
+        for (int i = 0; i < PAD_KEYS; i++) settings_ini_set(pad_ini_path(), "keyboard", pad_key_label(i), NULL);
+        pad_reload();
+        menu_toast("The keyboard's keys are back to the defaults");
+        break;
     case R_PAD_TEST:
         if (pad && pad->slot >= 0) {
             pad_rumble((u32)pad->slot, 1, 0.8f);
@@ -1070,6 +1099,19 @@ static int keys_held(void) {
     return 0;
 }
 
+/* A key the keyboard page can bind, held now (the lowest code), or 0. Not Esc (it cancels) nor the
+ * F keys (the debug and rollback keys). */
+static int menu_key_pressed(void) {
+    static const int OTHER[] = {VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN, VK_RETURN, VK_BACK, VK_SPACE, VK_TAB, VK_SHIFT, VK_CONTROL, VK_MENU};
+    for (u32 i = 0; i < sizeof OTHER / sizeof *OTHER; i++)
+        if (GetAsyncKeyState(OTHER[i]) & 0x8000) return OTHER[i];
+    for (int vk = '0'; vk <= 'Z'; vk++)
+        if ((vk <= '9' || vk >= 'A') && GetAsyncKeyState(vk) & 0x8000) return vk;
+    for (int vk = 0x60; vk <= 0x69; vk++)   /* (the number pad's digits) */
+        if (GetAsyncKeyState(vk) & 0x8000) return vk;
+    return 0;
+}
+
 /* ---- the text grid (for pads) ------------------------------------------------------------- */
 static const char *const GRID[] = {"ABCDEFGHIJKLM", "NOPQRSTUVWXYZ", "abcdefghijklm", "nopqrstuvwxyz", "0123456789-_.", ": "};
 enum { GRID_ROWS = 6, GRID_COLS = 13 };
@@ -1120,6 +1162,7 @@ static void event(int ev, unsigned ch) {
     }
     if (editing) { edit_event(ev, ch); return; }
     if (capture_button >= 0) { if (ev == EV_ESC) capture_button = -1; return; }
+    if (capture_key >= 0) { if (ev == EV_ESC) capture_key = -1; return; }
     Row *row = sel[page] < nrows ? &rows[sel[page]] : NULL;
     switch (ev) {
     case EV_UP: move_sel(-1); break;
@@ -1133,14 +1176,18 @@ static void event(int ev, unsigned ch) {
             settings_ini_set(pad_ini_path(), section, pad_button_name(row->id - R_REMAP_FIRST), NULL);
             pad_reload();
         }
+        if (page == P_KEYS && row && IS_KEY(row->id)) {
+            settings_ini_set(pad_ini_path(), "keyboard", pad_key_label(row->id - R_KEY_FIRST), NULL);
+            pad_reload();
+        }
         break;
     case EV_B: case EV_BKSP:
-        if (page == P_REMAP) page = P_PADS;
+        if (SUB_PAGE(page)) page = P_PADS;
         else close_menu();
         break;
     case EV_ESC: close_menu(); break;
     case EV_NEXT: case EV_PREV:
-        page = page == P_REMAP ? P_PADS : cycle(page, PAGES, ev == EV_NEXT ? 1 : -1);
+        page = SUB_PAGE(page) ? P_PADS : cycle(page, PAGES, ev == EV_NEXT ? 1 : -1);
         break;
     case EV_CHAR:
         if (ch >= '1' && ch < '1' + PAGES) page = (int)(ch - '1');
@@ -1215,6 +1262,7 @@ int menu_frame(int *overlay, int f3) {
     while (q_tail != q_head) {
         LONG v = q[q_tail & 63];
         InterlockedIncrement(&q_tail);
+        if (now < capture_quiet) continue;   /* (the key just bound: not also a press in the menu) */
         if (v & 0x10000) { if (open_) event(EV_CHAR, (unsigned)(v & 0xFF)); continue; }
         static const int EV_OF[] = {0, EV_ESC, EV_UP, EV_DOWN, EV_LEFT, EV_RIGHT, EV_ENTER, EV_BKSP, EV_NEXT, EV_PREV, EV_DEL};
         if (v == MENU_KEY_ESC && !open_) { open_menu(); continue; }
@@ -1227,7 +1275,22 @@ int menu_frame(int *overlay, int f3) {
         nav_held = nb;   /* (what opened it is not also a press in it) */
         if (open_) build();
     }
-    if (open_ && capture_button >= 0) {   /* a new control for a button: the first one pressed after all are let go */
+    if (open_ && capture_key >= 0) {   /* a new key for a binding: the first one pressed after all are let go */
+        int vk = menu_key_pressed();
+        if (now > capture_until) capture_key = -1;
+        else if (capture_key_held) { if (!vk) capture_key_held = 0; }
+        else if (vk) {
+            char name[16];
+            pad_key_name(vk, name, sizeof name);
+            settings_ini_set(pad_ini_path(), "keyboard", pad_key_label(capture_key), name);
+            pad_reload();
+            fprintf(stderr, "[menu] keyboard: %s = %s\n", pad_key_label(capture_key), name);
+            capture_key = -1;
+            capture_quiet = now + 300;
+            nav_wait_release = 1;
+        }
+        nav_held = nb;
+    } else if (open_ && capture_button >= 0) {   /* a new control for a button: the first one pressed after all are let go */
         PadInfo *pad = pad_slot >= 0 && pads[pad_slot].connected ? &pads[pad_slot] : NULL;
         u32 raw = pad ? pad->raw : 0;
         if (!pad || now > capture_until) capture_button = -1;
@@ -1348,7 +1411,7 @@ void menu_draw(float w, float h) {
     /* the pages */
     float ty = py + 110 * s;
     for (int i = 0; i < PAGES; i++) {
-        int on = page == i || (page == P_REMAP && i == P_PADS);
+        int on = page == i || (SUB_PAGE(page) && i == P_PADS);
         if (on) ovl_rect(px + 20 * s, ty - 6 * s, 250 * s, 50 * s, OVL_RGBA(55, 62, 90, 255));
         char t[32];
         snprintf(t, sizeof t, "%d %s", i + 1, PAGE_NAMES[i]);
@@ -1392,6 +1455,7 @@ void menu_draw(float w, float h) {
     }
     ovl_text(px + 36 * s, py + ph - 44 * s, 22 * s, DIM,
              page == P_REMAP ? "Up/Down: choose   A/Enter: press a new control   Y/Delete: default   B/Backspace: back   Esc: close"
+             : page == P_KEYS ? "Up/Down: choose   A/Enter: press a new key   Y/Delete: default   B/Backspace: back   Esc: close"
                              : "Up/Down: choose   Left/Right: change   A/Enter: select   L/R or Tab, 1-6: page   B/Esc: close");
     /* on top: a question, the text being typed, or a control being waited for */
     if (confirm) {
@@ -1421,6 +1485,16 @@ void menu_draw(float w, float h) {
                 ovl_text(cx + (cw - text_w(cell, 30 * s)) / 2, gy + r * cs + 10 * s, 30 * s, WHITE, cell);
             }
         ovl_text(bx + 36 * s, by + bh - 52 * s, 22 * s, DIM, "Type, then Enter (Esc: cancel). Pad: A types, B deletes, + done, L cancels.");
+    } else if (capture_key >= 0) {
+        float bw = 900 * s, bh = 200 * s, bx = (w - bw) / 2, by = (h - bh) / 2;
+        modal_box(w, h, bx, by, bw, bh, s);
+        char t[160];
+        snprintf(t, sizeof t, "Press the key for %s", pad_key_label(capture_key));
+        ovl_text(bx + 36 * s, by + 34 * s, 34 * s, WHITE, t);
+        ovl_text(bx + 36 * s, by + 84 * s, 26 * s, GREY, "a letter, digit, arrow, Enter, Space, Shift, Ctrl, Alt, Tab or the number pad");
+        ULONGLONG now = GetTickCount64();
+        snprintf(t, sizeof t, "Esc: cancel   (%d s)", capture_until > now ? (int)((capture_until - now + 999) / 1000) : 0);
+        ovl_text(bx + 36 * s, by + 140 * s, 26 * s, AMBER, t);
     } else if (capture_button >= 0) {
         float bw = 900 * s, bh = 200 * s, bx = (w - bw) / 2, by = (h - bh) / 2;
         modal_box(w, h, bx, by, bw, bh, s);

@@ -338,7 +338,17 @@ class Pages(MenuTest):
                    'Render scale'] + (['Graphics card'] if os.name == 'nt' else [])
         self.assertEqual(m.labels(), display)
         m.type('2')
-        self.assertEqual(m.labels(), ['Controllers', 'Rumble', 'Keyboard plays as', 'Pads when not focused', 'Open controllers.ini'])
+        self.assertEqual(m.labels(), ['Controllers', 'Rumble', 'Keyboard plays as', 'Keyboard keys...', 'Pads when not focused',
+                                      'Open controllers.ini'])
+        for _ in range(6):   # (the keyboard's page: Back, a row a binding, the defaults; Backspace back)
+            if m.labels()[m.page()[2]] == 'Keyboard keys...':
+                break
+            m.key('DOWN')
+        m.key('ENTER')
+        labels = m.labels()
+        self.assertEqual((labels[0], len(labels), labels[-1]), ('< Back', 26, 'Back to the defaults'))
+        m.key('BKSP')
+        self.assertEqual(m.labels()[3], 'Keyboard keys...')
         m.type('3')
         self.assertEqual(m.labels(), ['Now', 'Play online in', 'Your name', 'Direct connections', 'Netplay version'])   # (offline: no code)
         m.type('6')

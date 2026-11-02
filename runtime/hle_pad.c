@@ -101,8 +101,11 @@ static struct {
     int nignore;
     DevCfg def, dev[32];
     int ndev;
+    int kb[PAD_KEYS][PAD_KEY_MAX], nkb[PAD_KEYS];   /* [keyboard]: each binding's keys (virtual-key codes) */
     char path[MAX_PATH];
 } cfg = {.keyboard_slot = 0, .background = 1, .rumble = 1, .def = {"", -1, -1, -1, -1, -1, -1, -1}};
+
+static void kb_defaults(void);
 
 static void config_defaults(void) {
     char path[MAX_PATH];
@@ -113,6 +116,7 @@ static void config_defaults(void) {
     cfg.rumble = 1;
     cfg.def.layout = cfg.def.style = cfg.def.deadzone = cfg.def.rumble = cfg.def.trigger = cfg.def.outer = cfg.def.invert = -1;
     memcpy(cfg.path, path, sizeof path);
+    kb_defaults();
 }
 
 static const char DEFAULT_INI[] =
@@ -139,6 +143,39 @@ static const char DEFAULT_INI[] =
     "[players]\n"
     "; Keep a player for one pad: <player> = <GUID, name or type of the pad>. Other pads leave it free.\n"
     "; 2 = DualSense Wireless Controller\n"
+    "\n"
+    "[keyboard]\n"
+    "; The keyboard's keys (it plays as keyboard_player above, while the game's window is focused; the settings\n"
+    "; menu's Controllers > Keyboard keys... changes them too): <console button> = <key>[, <key> ...]\n"
+    ";   console buttons: A B X Y L R ZL ZR PLUS MINUS LSTICK RSTICK (the sticks' clicks) UP DOWN LEFT RIGHT (the d-pad)\n"
+    ";                    LSTICK_LEFT LSTICK_UP LSTICK_RIGHT LSTICK_DOWN RSTICK_LEFT RSTICK_UP RSTICK_RIGHT RSTICK_DOWN\n"
+    ";   keys: a letter or digit, Left Up Right Down Enter Backspace Space Tab Shift Ctrl Alt Esc F1..F12 Num0..Num9,\n"
+    ";         0x<Windows virtual-key code>, or none. (Esc opens the settings menu, F1..F8 are the debug and\n"
+    ";         rollback keys, Alt+Enter switches full screen: better left alone.)\n"
+    "A = Z\n"
+    "B = X\n"
+    "X = C\n"
+    "Y = V\n"
+    "L = A\n"
+    "R = S\n"
+    "ZL = Q\n"
+    "ZR = W\n"
+    "PLUS = Enter\n"
+    "MINUS = Backspace\n"
+    "LSTICK = none\n"
+    "RSTICK = none\n"
+    "UP = none\n"
+    "DOWN = none\n"
+    "LEFT = none\n"
+    "RIGHT = none\n"
+    "LSTICK_LEFT = Left\n"
+    "LSTICK_UP = Up\n"
+    "LSTICK_RIGHT = Right\n"
+    "LSTICK_DOWN = Down\n"
+    "RSTICK_LEFT = J\n"
+    "RSTICK_UP = I\n"
+    "RSTICK_RIGHT = L\n"
+    "RSTICK_DOWN = K\n"
     "\n"
     "[device default]\n"
     "; layout = positional: buttons by position, as on a Switch pad (the bottom face button is B).\n"
@@ -250,7 +287,7 @@ static void config_line(DevCfg *dc, const char *key, char *value, int line) {
  *               (0.10), rumble = on | off, rumble_strength (0-2), gamecube_style = native | pro,
  *               outer_zone, ignore = <GUID>
  *   [players]   player1 ... player8 = auto | none | <GUID>
- *   [keyboard]  player = auto | none | 1-8, and the key of each button
+ *   [keyboard]  player = auto | none | 1-8, and the key of each button (this file's [keyboard] keys too)
  *   [device <GUID>], [type xbox | playstation | switch | gamecube | generic | joystick]: [general]'s
  *               pad keys, name, map.<button> = <controls>, axis.<stick axis>, invert.<stick axis>
  * They read as this file's: [general]'s pad keys are [device default]'s, a [type] is the
@@ -258,7 +295,7 @@ static void config_line(DevCfg *dc, const char *key, char *value, int line) {
  * keyboard's player is keyboard_player, a fraction is a percent, a strength the rumble's percent.
  * A file can have both: this file's own keys win. What has nothing to stand for here is passed over
  * quietly: a joystick's own numbers among a button's controls (button3, axis1+, hat0up) and the
- * sticks' halves, the stick directions, the keyboard's keys, name, axis., invert. (outer_zone is carried over
+ * sticks' halves, the stick directions, the keyboard's movement, name, axis., invert. (outer_zone is carried over
  * as [device default]'s, in percent; ignore is this file's key too.) */
 enum { LINE_OURS, LINE_CARRIED, LINE_PART, LINE_KEPT };   /* this file's; ssbu-recomp's, carried over, in part, not at all */
 enum { SR_MAX = 4 };
@@ -313,7 +350,12 @@ static int sr_line(const char *section, const char *key, const char *value, SrSe
         if (*value && _stricmp(value, "auto")) sr_put(out, n, "players", k, value, 0);   /* (none: a player kept for no pad, as here) */
         return LINE_CARRIED;
     } else if (!_stricmp(section, "keyboard")) {
-        if (_stricmp(key, "player")) return LINE_KEPT;
+        if (!_stricmp(key, "STICK_L") || !_stricmp(key, "STICK_R")) {   /* (a stick's click: this file's LSTICK / RSTICK) */
+            sr_put(out, n, "keyboard", !_stricmp(key, "STICK_L") ? "LSTICK" : "RSTICK", value, 0);
+            return LINE_CARRIED;
+        }
+        if (pad_key_index(key) >= 0) return LINE_OURS;   /* (the same keys, spelled the same way) */
+        if (_stricmp(key, "player")) return LINE_KEPT;   /* (movement = ...: nothing here for it yet) */
         if (!_stricmp(value, "none")) sr_put(out, n, "general", "keyboard_player", "0", 0);
         else if (atoi(value) >= 1 && atoi(value) <= PAD_SLOTS) sr_put(out, n, "general", "keyboard_player", value, 0);
         return LINE_CARRIED;   /* (auto: here the keyboard is player 1's) */
@@ -426,6 +468,132 @@ static DevCfg *dev_cfg(const char *what) {
     return dc;
 }
 
+/* ---- the keyboard ([keyboard]) ------------------------------------------------------------
+ * Each binding is a console button (NpadButton bits 0-15, NPAD_BUTTON_NAMES) or one of the sticks'
+ * eight directions, and has up to PAD_KEY_MAX keys, as Windows' virtual-key codes (the Linux and
+ * macOS windows read the same codes: their GetAsyncKeyState). ssbu-recomp's [keyboard] spells its
+ * keys the same way (STICK_L and STICK_R are LSTICK and RSTICK). */
+#ifndef VK_NUMPAD0
+#define VK_NUMPAD0 0x60
+#endif
+static const char *const KB_NAMES[PAD_KEYS] = {"A", "B", "X", "Y", "LSTICK", "RSTICK", "L", "R", "ZL", "ZR", "PLUS", "MINUS",
+                                              "LEFT", "UP", "RIGHT", "DOWN", "LSTICK_LEFT", "LSTICK_UP", "LSTICK_RIGHT",
+                                              "LSTICK_DOWN", "RSTICK_LEFT", "RSTICK_UP", "RSTICK_RIGHT", "RSTICK_DOWN"};
+static const int KB_DEFAULT[PAD_KEYS] = {'Z', 'X', 'C', 'V', 0, 0, 'A', 'S', 'Q', 'W', VK_RETURN, VK_BACK, 0, 0, 0, 0,
+                                         VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN, 'J', 'I', 'L', 'K'};
+static const struct { int vk; const char *name; } KEY_NAMES[] = {
+    {VK_LEFT, "Left"}, {VK_UP, "Up"}, {VK_RIGHT, "Right"}, {VK_DOWN, "Down"}, {VK_RETURN, "Enter"}, {VK_BACK, "Backspace"},
+    {VK_SPACE, "Space"}, {VK_TAB, "Tab"}, {VK_SHIFT, "Shift"}, {VK_CONTROL, "Ctrl"}, {VK_MENU, "Alt"}, {VK_ESCAPE, "Esc"}};
+
+static void kb_defaults(void) {
+    for (int i = 0; i < PAD_KEYS; i++) {
+        cfg.nkb[i] = KB_DEFAULT[i] != 0;
+        cfg.kb[i][0] = KB_DEFAULT[i];
+    }
+}
+
+int pad_key_index(const char *label) {
+    if (!_stricmp(label, "STICK_L")) return 4;    /* (ssbu-recomp's spelling) */
+    if (!_stricmp(label, "STICK_R")) return 5;
+    for (int i = 0; i < PAD_KEYS; i++) if (!_stricmp(label, KB_NAMES[i])) return i;
+    return -1;
+}
+const char *pad_key_label(int i) { return i >= 0 && i < PAD_KEYS ? KB_NAMES[i] : "?"; }
+
+/* A key's name as written here: its virtual-key code, 0 for none, -1 for no such key. */
+int pad_key_parse(const char *name) {
+    char *end;
+    if (!_stricmp(name, "none")) return 0;
+    if (name[0] && !name[1]) {
+        int c = (unsigned char)name[0];
+        if (c >= 'a' && c <= 'z') c -= 32;
+        return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ? c : -1;
+    }
+    for (u32 k = 0; k < sizeof KEY_NAMES / sizeof *KEY_NAMES; k++) if (!_stricmp(name, KEY_NAMES[k].name)) return KEY_NAMES[k].vk;
+    if (!_stricmp(name, "Return")) return VK_RETURN;
+    if (!_stricmp(name, "Escape")) return VK_ESCAPE;
+    if (!_stricmp(name, "Control")) return VK_CONTROL;
+    if ((name[0] == 'F' || name[0] == 'f') && name[1] >= '1' && name[1] <= '9') {
+        long n = strtol(name + 1, &end, 10);
+        if (!*end && n >= 1 && n <= 12) return VK_F1 + (int)n - 1;
+    }
+    if (!_strnicmp(name, "Num", 3) && name[3] >= '0' && name[3] <= '9' && !name[4]) return VK_NUMPAD0 + name[3] - '0';
+    if (name[0] == '0' && (name[1] == 'x' || name[1] == 'X') && name[2]) {
+        long v = strtol(name + 2, &end, 16);
+        if (!*end && v > 0 && v < 256) return (int)v;
+    }
+    return -1;
+}
+
+void pad_key_name(int vk, char *out, int size) {
+    if (!vk) { snprintf(out, (size_t)size, "none"); return; }
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) { snprintf(out, (size_t)size, "%c", vk); return; }
+    for (u32 k = 0; k < sizeof KEY_NAMES / sizeof *KEY_NAMES; k++)
+        if (KEY_NAMES[k].vk == vk) { snprintf(out, (size_t)size, "%s", KEY_NAMES[k].name); return; }
+    if (vk >= VK_F1 && vk < VK_F1 + 12) { snprintf(out, (size_t)size, "F%d", vk - VK_F1 + 1); return; }
+    if (vk >= VK_NUMPAD0 && vk < VK_NUMPAD0 + 10) { snprintf(out, (size_t)size, "Num%d", vk - VK_NUMPAD0); return; }
+    snprintf(out, (size_t)size, "0x%02X", vk);
+}
+
+int pad_key_vks(int i, int vk[PAD_KEY_MAX]) {
+    if (i < 0 || i >= PAD_KEYS) return 0;
+    int n = cfg.nkb[i];
+    for (int k = 0; k < n; k++) vk[k] = cfg.kb[i][k];
+    return n;
+}
+
+/* The binding's keys as the file writes them ("Z", "Left, Num4", "none"). */
+void pad_key_names(int i, char *out, int size) {
+    int vk[PAD_KEY_MAX], n = pad_key_vks(i, vk), o = 0;
+    out[0] = 0;
+    if (!n) { snprintf(out, (size_t)size, "none"); return; }
+    for (int k = 0; k < n && o < size; k++) {
+        char one[16];
+        pad_key_name(vk[k], one, sizeof one);
+        o += snprintf(out + o, (size_t)(size - o), "%s%s", k ? ", " : "", one);
+    }
+}
+
+static void kb_line(int i, char *value, int line) {
+    cfg.nkb[i] = 0;
+    char list[160], *t, *next;
+    snprintf(list, sizeof list, "%s", value);
+    for (t = list; t; t = next) {   /* (not strtok: a caller of this may be in the middle of one) */
+        if ((next = strchr(t, ',')) != NULL) *next++ = 0;
+        char *k = trim(t);
+        if (!*k) continue;
+        int vk = pad_key_parse(k);
+        if (vk < 0) fprintf(stderr, "[input] controllers.ini line %d: no key '%s' (a letter or digit, Left, Enter, F5, Num4, 0x..)\n", line, k);
+        else if (vk && cfg.nkb[i] < PAD_KEY_MAX) cfg.kb[i][cfg.nkb[i]++] = vk;
+    }
+}
+
+/* The keyboard as the console's buttons and sticks, with down(vk) saying whether a key is held. A
+ * key on a stick direction pushes that stick fully (both of a pair held: right and down win, as
+ * before); Enter does nothing while Alt is held (Alt+Enter is the full-screen switch). */
+u64 pad_keyboard_state(int (*down)(int vk), i32 *lx, i32 *ly, i32 *rx, i32 *ry) {
+    u64 buttons = 0;
+    int alt = down(VK_MENU);
+    int held[PAD_KEYS];
+    for (int i = 0; i < PAD_KEYS; i++) {
+        held[i] = 0;
+        for (int k = 0; k < cfg.nkb[i] && k < PAD_KEY_MAX; k++) {
+            int vk = cfg.kb[i][k];
+            if (vk && down(vk) && !(alt && vk == VK_RETURN)) held[i] = 1;
+        }
+        if (i < 16 && held[i]) buttons |= 1ull << i;
+    }
+    if (held[16]) *lx = -32767;
+    if (held[18]) *lx = 32767;
+    if (held[17]) *ly = 32767;
+    if (held[19]) *ly = -32767;
+    if (held[20]) *rx = -32767;
+    if (held[22]) *rx = 32767;
+    if (held[21]) *ry = 32767;
+    if (held[23]) *ry = -32767;
+    return buttons;
+}
+
 /* key = value of [section] (general, players, device ...), this file's own. */
 static void config_set(const char *section, const char *key, char *value, int line) {
     if (!_stricmp(section, "general") && !_stricmp(key, "keyboard_player")) {
@@ -443,7 +611,8 @@ static void config_set(const char *section, const char *key, char *value, int li
     } else if (!_strnicmp(section, "device", 6) && (section[6] == ' ' || !section[6])) {
         DevCfg *dc = dev_cfg(section[6] ? section + 7 : "");
         if (dc) config_line(dc, key, value, line);
-    } else if (section[0]) fprintf(stderr, "[input] controllers.ini line %d: unknown setting '%s'\n", line, key);
+    } else if (!_stricmp(section, "keyboard") && pad_key_index(key) >= 0) kb_line(pad_key_index(key), value, line);
+    else if (section[0]) fprintf(stderr, "[input] controllers.ini line %d: unknown setting '%s'\n", line, key);
 }
 
 static int known_section(const char *s) {
@@ -500,7 +669,7 @@ int pad_ini_convert(const char *from, const char *to) {
             if (split_line(buf, &key, &value, section, sizeof section) != 1) continue;
             SrSet set[SR_MAX];
             int nset, kind = sr_line(section, key, value, set, &nset);
-            if (kind == LINE_OURS && pass == 0 && known_section(section) && _stricmp(section, "keyboard") && _strnicmp(section, "type ", 5)) {
+            if (kind == LINE_OURS && pass == 0 && known_section(section) && _strnicmp(section, "type ", 5)) {
                 ok = settings_ini_set(tmp, section, key, value);   /* (one of this file's keys there already) */
                 carried++;
                 continue;
@@ -535,6 +704,7 @@ int pad_ini_convert(const char *from, const char *to) {
 }
 
 static void config_load(void) {
+    kb_defaults();
     const char *env = getenv("SSBU_CONTROLLERS");
     snprintf(cfg.path, sizeof cfg.path, "%s", env && *env ? env : config_path(CONFIG_CONTROLLERS));
     FILE *f = fopen(cfg.path, "r");

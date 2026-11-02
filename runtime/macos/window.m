@@ -121,6 +121,8 @@ static SDL_Scancode scancode_of(int vk) {
     if (vk >= '1' && vk <= '9') return (SDL_Scancode)(SDL_SCANCODE_1 + (vk - '1'));
     if (vk == '0') return SDL_SCANCODE_0;
     if (vk >= VK_F1 && vk <= VK_F1 + 11) return (SDL_Scancode)(SDL_SCANCODE_F1 + (vk - VK_F1));
+    if (vk == 0x60) return SDL_SCANCODE_KP_0;   /* (VK_NUMPAD0..9: controllers.ini's Num0..Num9) */
+    if (vk > 0x60 && vk <= 0x69) return (SDL_Scancode)(SDL_SCANCODE_KP_1 + (vk - 0x61));
     switch (vk) {
     case VK_RETURN: return SDL_SCANCODE_RETURN;
     case VK_BACK: return SDL_SCANCODE_BACKSPACE;   /* (the Mac's delete key) */

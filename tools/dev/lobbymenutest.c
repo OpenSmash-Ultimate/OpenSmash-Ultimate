@@ -89,6 +89,9 @@ void pad_reload(void) {}
 const char *pad_ini_path(void) { return FILES[CONFIG_CONTROLLERS]; }
 const char *pad_button_name(int npad) { (void)npad; return "A"; }
 const char *pad_raw_name(int bit) { (void)bit; return "south"; }
+const char *pad_key_label(int i) { (void)i; return "A"; }
+void pad_key_names(int i, char *out, int size) { (void)i; snprintf(out, (size_t)size, "Z"); }
+void pad_key_name(int vk, char *out, int size) { (void)vk; snprintf(out, (size_t)size, "Z"); }
 int pad_rumble_on(void) { return 1; }
 int pad_keyboard_slot(void) { return 0; }
 int pad_background(void) { return 0; }

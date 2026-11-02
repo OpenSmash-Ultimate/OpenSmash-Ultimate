@@ -5,6 +5,7 @@
  *   build\padtest.exe
  *
  * Exit code 0 when every check passes. */
+#include <stdarg.h>
 #include "../../runtime/hle_pad.c"
 #include "../../runtime/hle_padusb.c"
 
@@ -19,6 +20,7 @@ static void load_text(const char *text) {
     memset(&cfg, 0, sizeof cfg);
     cfg.keyboard_slot = 0; cfg.background = 1; cfg.rumble = 1;
     cfg.def.layout = cfg.def.style = cfg.def.deadzone = cfg.def.rumble = cfg.def.trigger = cfg.def.invert = -1;
+    kb_defaults();
     char path[MAX_PATH], dir[MAX_PATH];
     GetTempPathA(sizeof dir, dir);
     GetTempFileNameA(dir, "pad", 0, path);
@@ -335,7 +337,75 @@ static void test_usb(void) {
     CHECK(usb_player(8).buttons == (1ull << N_Y | 1ull << N_X | 1ull << N_B), "Switch 2: Y X B");
 }
 
+/* The keyboard ([keyboard]): the defaults are the keys of before, rebinding, several keys, the
+ * sticks' directions, Alt+Enter, ssbu-recomp's spellings and bad names. */
+static int held_keys[8], nheld;
+static int fake_down(int vk) { for (int i = 0; i < nheld; i++) if (held_keys[i] == vk) return 1; return 0; }
+static u64 keys(i32 *lx, i32 *ly, i32 *rx, i32 *ry, int n, ...) {
+    va_list ap;
+    va_start(ap, n);
+    for (nheld = 0; nheld < n && nheld < 8; nheld++) held_keys[nheld] = va_arg(ap, int);
+    va_end(ap);
+    *lx = *ly = *rx = *ry = 0;
+    return pad_keyboard_state(fake_down, lx, ly, rx, ry);
+}
+
+static void test_keyboard(void) {
+    i32 lx, ly, rx, ry;
+    load_text("[general]\nkeyboard_player = 1\n");
+    CHECK(keys(&lx, &ly, &rx, &ry, 4, 'Z', 'X', 'C', 'V') == (1ull << N_A | 1ull << N_B | 1ull << N_X | 1ull << N_Y), "Z X C V are A B X Y");
+    CHECK(keys(&lx, &ly, &rx, &ry, 4, 'A', 'S', 'Q', 'W') == (1ull << N_L | 1ull << N_R | 1ull << N_ZL | 1ull << N_ZR), "A S Q W are L R ZL ZR");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_RETURN, VK_BACK) == (1ull << N_PLUS | 1ull << N_MINUS), "Enter, Backspace");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_RETURN, VK_MENU) == 0, "Alt+Enter is not +");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_LEFT, VK_UP) == 0 && lx == -32767 && ly == 32767 && !rx && !ry, "arrows: the left stick");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, 'L', 'K') == 0 && rx == 32767 && ry == -32767 && !lx && !ly, "L K: the right stick");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_LEFT, VK_RIGHT) == 0 && lx == 32767, "left and right: right, as before");
+    CHECK(keys(&lx, &ly, &rx, &ry, 1, 'E') == 0, "E: nothing");
+
+    load_text("[keyboard]\nA = Space, j\nB = x ; a comment\nLSTICK_LEFT = a\nLSTICK_RIGHT = D\nLSTICK_UP = w\nLSTICK_DOWN = s\nL = none\n"
+              "UP = Num8\nDOWN = 0x62\nZR = F5\nRSTICK = shift\nnot_a_button = Z\nX = Bogus, C\n");
+    CHECK(keys(&lx, &ly, &rx, &ry, 1, VK_SPACE) == 1ull << N_A && keys(&lx, &ly, &rx, &ry, 1, 'J') == 1ull << N_A, "A = Space, J");
+    CHECK(keys(&lx, &ly, &rx, &ry, 1, 'Z') == 0, "Z no longer A");
+    CHECK(keys(&lx, &ly, &rx, &ry, 1, 'X') == 1ull << N_B, "B = x (any case, comment after)");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, 'A', 'W') == 0 && lx == -32767 && ly == 32767, "WASD movement");
+    CHECK(keys(&lx, &ly, &rx, &ry, 1, VK_LEFT) == 0 && lx == 0, "the arrows no longer move");
+    CHECK(keys(&lx, &ly, &rx, &ry, 1, 'J') == 1ull << N_A && rx == -32767, "a key on two bindings: both (J is A and still the right stick's left)");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, 0x68, 0x62) == (1ull << N_UP | 1ull << N_DOWN), "the d-pad on Num8, 0x62");
+    CHECK(keys(&lx, &ly, &rx, &ry, 1, VK_F1 + 4) == 1ull << N_ZR && keys(&lx, &ly, &rx, &ry, 1, VK_SHIFT) == 1ull << N_RSTICK, "F5, Shift");
+    CHECK(keys(&lx, &ly, &rx, &ry, 1, 'C') == 1ull << N_X, "a bad key name skipped, the rest kept");
+    CHECK(cfg.nkb[N_L] == 0, "L = none");
+    char names[64];
+    pad_key_names(N_A, names, sizeof names);
+    CHECK(!strcmp(names, "Space, J"), "names '%s'", names);
+    pad_key_names(N_L, names, sizeof names);
+    CHECK(!strcmp(names, "none"), "none '%s'", names);
+    pad_key_names(N_UP, names, sizeof names);
+    CHECK(!strcmp(names, "Num8"), "Num8 '%s'", names);
+    pad_key_names(N_ZR, names, sizeof names);
+    CHECK(!strcmp(names, "F5"), "F5 '%s'", names);
+
+    /* every name reads back as itself */
+    for (int vk = 1; vk < 256; vk++) {
+        char n[16];
+        pad_key_name(vk, n, sizeof n);
+        CHECK(pad_key_parse(n) == vk, "0x%02X -> %s -> %d", vk, n, pad_key_parse(n));
+    }
+    CHECK(pad_key_parse("ENTER") == VK_RETURN && pad_key_parse("BACKSPACE") == VK_BACK && pad_key_parse("NUM0") == 0x60 &&
+          pad_key_parse("ESC") == VK_ESCAPE && pad_key_parse("CTRL") == VK_CONTROL && pad_key_parse("F12") == VK_F1 + 11,
+          "ssbu-recomp's spellings");
+    CHECK(pad_key_parse("F13") < 0 && pad_key_parse("?") < 0 && pad_key_parse("0x") < 0 && pad_key_parse("Num10") < 0, "no such keys");
+
+    /* ssbu-recomp's [keyboard] (its own defaults): read as written, STICK_L as LSTICK */
+    load_text("[keyboard]\nplayer = 2\nA = Z\nL = Q\nR = E\nZL = A\nZR = S\nSTICK_L = none\nSTICK_R = T\nLEFT = J\nUP = I\nRIGHT = L\nDOWN = K\n"
+              "RSTICK_LEFT = none\nRSTICK_UP = none\nRSTICK_RIGHT = none\nRSTICK_DOWN = none\nmovement = ssf2\n");
+    CHECK(cfg.keyboard_slot == 1, "player = 2");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, 'Q', 'E') == (1ull << N_L | 1ull << N_R), "L R on Q E");
+    CHECK(keys(&lx, &ly, &rx, &ry, 1, 'T') == 1ull << N_RSTICK && cfg.nkb[N_LSTICK] == 0, "STICK_R = T, STICK_L none");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, 'J', 'I') == (1ull << N_LEFT | 1ull << N_UP) && rx == 0 && ry == 0, "IJKL the d-pad");
+}
+
 int main(void) {
+    test_keyboard();
     test_config();
     test_mapping();
     test_gamecube();

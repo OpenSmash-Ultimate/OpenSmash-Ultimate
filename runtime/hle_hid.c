@@ -194,29 +194,14 @@ static u64 scripted_buttons(i32 *lx, i32 *ly) {
     return buttons;
 }
 
-/* The keyboard, while the game's window has focus: arrows move, Z/X/C/V are A/B/X/Y,
- * A/S are L/R, Q/W are ZL/ZR, Enter is + (not with Alt: Alt+Enter is the full-screen switch),
- * Backspace is -, I/J/K/L are the right stick. */
+/* The keyboard, while the game's window has focus: controllers.ini's [keyboard] keys (hle_pad.c; by
+ * default arrows move, Z/X/C/V are A/B/X/Y, A/S are L/R, Q/W are ZL/ZR, Enter is + (not with Alt:
+ * Alt+Enter is the full-screen switch), Backspace is -, I/J/K/L are the right stick). */
 int gfx_window_focused(void);
+static int key_down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 static u64 keyboard_buttons(i32 *lx, i32 *ly, i32 *rx, i32 *ry) {
     if (!gfx_window_focused()) return 0;
-    static const struct { int vk, n; } keys[] = {
-        {'Z', B_A}, {'X', B_B}, {'C', B_X}, {'V', B_Y}, {'A', B_L}, {'S', B_R}, {'Q', B_ZL}, {'W', B_ZR},
-        {VK_RETURN, B_PLUS}, {VK_BACK, B_MINUS},
-    };
-    u64 buttons = 0;
-    int alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-    for (u32 i = 0; i < sizeof keys / sizeof *keys; i++)
-        if (GetAsyncKeyState(keys[i].vk) & 0x8000 && !(alt && keys[i].vk == VK_RETURN)) buttons |= 1ull << keys[i].n;
-    if (GetAsyncKeyState(VK_LEFT) & 0x8000) *lx = -32767;
-    if (GetAsyncKeyState(VK_RIGHT) & 0x8000) *lx = 32767;
-    if (GetAsyncKeyState(VK_UP) & 0x8000) *ly = 32767;
-    if (GetAsyncKeyState(VK_DOWN) & 0x8000) *ly = -32767;
-    if (GetAsyncKeyState('J') & 0x8000) *rx = -32767;
-    if (GetAsyncKeyState('L') & 0x8000) *rx = 32767;
-    if (GetAsyncKeyState('I') & 0x8000) *ry = 32767;
-    if (GetAsyncKeyState('K') & 0x8000) *ry = -32767;
-    return buttons;
+    return pad_keyboard_state(key_down, lx, ly, rx, ry);
 }
 
 /* State shared by every style: { s64 sampling; u64 buttons; s32 lx, ly; s32 rx, ry; u32 attributes; u32 reserved }.
