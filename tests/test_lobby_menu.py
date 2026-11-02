@@ -354,7 +354,9 @@ class Pages(MenuTest):
         m.type('6')
         self.assertEqual(m.labels(), ['Mods', 'ARCropolis code patches', 'No mod installed'])   # (the harness has no mods)
         m.type('4')
-        self.assertEqual(m.labels(), ['Game language', 'Volume', 'Restart the game', 'Quit the game', 'Esc / Home button', 'F1', 'F2', 'F3', 'F11, Alt+Enter', 'Version'])
+        keys = (['F1, Cmd+1', 'F2, Cmd+2', 'F3, Cmd+3', 'Option+Return'] if sys.platform == 'darwin'
+                else ['F1', 'F2', 'F3', 'F11, Alt+Enter'])
+        self.assertEqual(m.labels(), ['Game language', 'Volume', 'Restart the game', 'Quit the game', 'Esc / Home button', *keys, 'Version'])
 
     def test_offline(self):
         m = self.menu()
