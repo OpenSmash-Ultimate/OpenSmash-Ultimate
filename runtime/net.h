@@ -12,7 +12,8 @@
  *
  * Configured by the launchers (Play SSBU.bat, launchers\Host/Join SSBU Netplay.bat) through the environment:
  *   SSBU_NET_HOST=1         run the relay here and join it (port SSBU_NET_PORT, 39420)
- *   SSBU_NET_RELAY=addr     join the lobby or relay at addr[:port]
+ *   SSBU_NET_RELAY=addr     join the lobby or relay at addr[:port]; "lan": a private room on this network,
+ *                           found by its host's beacon (no address or code to type; online_server.txt "lan")
  *   SSBU_NET_ROOM           the lobby code (a relay's room); smash, the default, is the public lobby
  *   SSBU_NET_NAME           player name
  *   SSBU_NET_DIRECT=0       no direct connections: all of a room's traffic through the lobby, and the
@@ -45,6 +46,16 @@ const char *net_player_name(void);
  * with --online; NULL when it hosts a private room or plays offline. */
 const char *net_relay_address(void);
 int net_unreachable(void);           /* asked for, but the relay has not answered for a while: offline */
+
+/* LAN discovery: a game hosting a private room announces it on the local network (multicast
+ * 239.255.13.13 and broadcast, UDP NET_LAN_PORT, every second; not while direct connections are off
+ * or with SSBU_NET_LAN=0), and a game whose relay is "lan" joins the first one of its own build and
+ * simulation version it hears (net_relay.c "LAN discovery"). net_lan says how this game stands:
+ * rooms, the rooms on this network it can join; others, those of another version (both heard lately,
+ * counted in LAN mode only). */
+#define NET_LAN_PORT 39501
+enum { NET_LAN_OFF, NET_LAN_LOOKING, NET_LAN_NONE, NET_LAN_FOUND, NET_LAN_ANNOUNCING, NET_LAN_QUIET };
+int net_lan(int *rooms, int *others);
 
 /* The online lobby: rooms are listed by the lobby, not found by their broadcasts. */
 int net_lobby(void);                 /* joined to a lobby (not a private room's relay) */

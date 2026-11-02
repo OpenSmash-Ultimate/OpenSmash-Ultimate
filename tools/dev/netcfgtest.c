@@ -47,6 +47,9 @@ static const Case CASES[] = {
     {"SSBU_NET_RELAY wins", "smash.recomps.wtf:39421\n", "SSBU_NET_RELAY=127.0.0.1:39420", "--online", "127.0.0.1:39420", "smash"},
     {"SSBU_NET_RELAY=off wins", "smash.recomps.wtf:39421\n", "SSBU_NET_RELAY=off", "--online", NULL, "smash"},
     {"hosting a private room: no lobby", "smash.recomps.wtf:39421\n", "SSBU_NET_HOST=1", "--online", NULL, "smash"},
+    {"lan in the file: a private room found on this network, no lobby", "lan\n", NULL, "--online", NULL, "smash"},
+    {"lan and a room code in the file", "lan ourroom\n", NULL, "--online", NULL, "ourroom"},
+    {"SSBU_NET_RELAY=lan", "smash.recomps.wtf:39421\n", "SSBU_NET_RELAY=lan", "--online", NULL, "smash"},
 };
 
 /* The child: reads the settings as the game does and writes what it found to result.txt. */

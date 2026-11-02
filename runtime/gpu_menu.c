@@ -86,7 +86,7 @@ enum {
     R_RUMBLE, R_KEYBOARD, R_BACKGROUND, R_PADS_FILE,
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
-    R_LANGUAGE, R_VOLUME, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF,
+    R_LANGUAGE, R_VOLUME, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
     R_ROOM_FIRST = 60,    /* + the room's place in the list */
     R_REMAP_FIRST = 100,  /* + console button */
     R_MOD_FIRST = 200     /* + the mod's place in mods.json (MENU_MODS at most) */
@@ -126,8 +126,9 @@ static int ngpus;
 static int built_page = -1;              /* the page build() made last (-1: none since the menu opened) */
 
 static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol; } net;
-enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE };
-static const char *const NET_MODES[4] = {"public lobby", "private lobby (a code)", "your own server", "offline"};
+enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_MODE_COUNT };
+static const char *const NET_MODES[NET_MODE_COUNT] = {"public lobby", "private lobby (a code)", "your own server", "offline",
+                                                      "this network (LAN)"};
 
 static void net_load(void) {
     char line[256] = "", host[128] = "", code[40] = "";
@@ -136,6 +137,7 @@ static void net_load(void) {
     memset(&net, 0, sizeof net);
     snprintf(net.code, sizeof net.code, "%s", code);
     if (!host[0] || !_stricmp(host, "off")) net.mode = NET_OFFLINE;
+    else if (!_stricmp(host, "lan")) net.mode = NET_LAN;   /* (net_relay.c's LAN discovery) */
     else if (!_stricmp(host, PUBLIC_LOBBY)) net.mode = code[0] ? NET_PRIVATE : NET_PUBLIC;
     else { net.mode = NET_CUSTOM; snprintf(net.custom, sizeof net.custom, "%s", host); }
     settings_line_read(config_path(CONFIG_ONLINE_NAME), net.name, sizeof net.name);
@@ -149,6 +151,7 @@ static void net_load(void) {
 static void net_save_server(void) {
     char line[256];
     if (net.mode == NET_OFFLINE) snprintf(line, sizeof line, "off");
+    else if (net.mode == NET_LAN) snprintf(line, sizeof line, "lan");
     else if (net.mode == NET_PUBLIC) snprintf(line, sizeof line, "%s", PUBLIC_LOBBY);
     else if (net.mode == NET_PRIVATE) {
         if (!net.code[0]) snprintf(net.code, sizeof net.code, "friends");
@@ -272,19 +275,48 @@ static void help_set(Row *r, const char *fmt, ...) {
 
 static const char *who(const char *name) { return name[0] ? name : "the other player"; }
 
+/* This game looks for its private room on the local network (Play online in > this network: net.h's LAN discovery). */
+static int net_on_lan(void) {
+    int st = net_lan(NULL, NULL);
+    return st == NET_LAN_LOOKING || st == NET_LAN_NONE || st == NET_LAN_FOUND;
+}
+
+/* The LAN discovery's row: the rooms heard on this network (LAN mode), or whether this game's own
+ * private room is announced there (hosting). */
+static void lan_row(int looking) {   /* (looking: LAN mode; else hosting) */
+    int ours = 0, others = 0, lan = net_lan(&ours, &others);
+    Row *r = add(R_LAN_ROOMS, K_ACTION, W_NONE, looking ? "Rooms on this network" : "On this network", NULL);
+    if (looking) {
+        snprintf(r->value, sizeof r->value, "%d", ours);
+        if (others) snprintf(r->value + strlen(r->value), sizeof r->value - strlen(r->value), " (and %d of another version)", others);
+        help_set(r, "Private rooms hosted on this network by games of your version, heard now. The game joins the first one by itself "
+                    "(Online > Now says which), and the next one if that host leaves.%s",
+                 others ? "\nThe others are of another game or WindowSmash version, or of another room code: they can't be joined." : "");
+    } else if (lan == NET_LAN_ANNOUNCING) {
+        snprintf(r->value, sizeof r->value, "announced");
+        r->help = "Games on this network set to Play online in > this network find your room by themselves, no address or code needed.";
+    } else {
+        snprintf(r->value, sizeof r->value, "not announced");
+        r->help = "Your room isn't announced on this network, as Direct connections are off (or SSBU_NET_LAN=0): players here join "
+                  "with the room code or your address.";
+    }
+}
+
 static const char *const PROTOCOL_HELP = "3: the online lobby's room browser and matchmaking (the Lobby page), being tried out. A "
                                          "lobby or private room of version 2 still works: the game joins it in 2. 2: as before.";
 
 static void add_protocol_row(void) {
     Row *r = add(R_NET_PROTOCOL, K_CHOICE, W_RESTART, "Netplay version", PROTOCOL_HELP);
     snprintf(r->value, sizeof r->value, "%s", net.protocol == NET_PROTOCOL_V3 ? "3 (being tried out)" : "2");
-    if (net_configured() && !net_relay_address()) snprintf(r->note, sizeof r->note, "hosting: 2");
+    if (net_on_lan()) snprintf(r->note, sizeof r->note, "this network: 2");
+    else if (net_configured() && !net_relay_address()) snprintf(r->note, sizeof r->note, "hosting: 2");
     note_env(r, "SSBU_NET_PROTOCOL");
 }
 
-enum { LB_OFFLINE, LB_HOSTING, LB_NEEDS_V3, LB_CONNECTING, LB_PRIVATE, LB_V2_LOBBY, LB_NONE, LB_ON };
+enum { LB_OFFLINE, LB_HOSTING, LB_NEEDS_V3, LB_CONNECTING, LB_PRIVATE, LB_V2_LOBBY, LB_NONE, LB_ON, LB_LAN };
 static int lobby_state(void) {
     if (!net_configured()) return LB_OFFLINE;
+    if (net_on_lan()) return LB_LAN;
     if (!net_relay_address()) return LB_HOSTING;
     if (net_protocol_wanted() != NET_PROTOCOL_V3) return LB_NEEDS_V3;
     if (!net_local_ip()) return LB_CONNECTING;
@@ -458,6 +490,17 @@ static void build_lobby(int fresh) {
         r->help = "You host a private room: its players find your room in Local Wireless > Rooms List. The room browser and "
                   "matchmaking are the online lobby's.";
         break;
+    case LB_LAN: {
+        int lan = net_lan(NULL, NULL);
+        if (lan == NET_LAN_FOUND && net_local_ip()) snprintf(r->value, sizeof r->value, "in a room on this network");
+        else if (lan == NET_LAN_FOUND) snprintf(r->value, sizeof r->value, "joining a room on this network...");
+        else if (lan == NET_LAN_NONE) snprintf(r->value, sizeof r->value, "no room on this network yet");
+        else snprintf(r->value, sizeof r->value, "looking on this network...");
+        r->help = "Play online in > this network: the game joins a private room hosted on your local network by itself, and keeps "
+                  "looking until one starts. Its players find each other's rooms in Local Wireless > Rooms List. The room browser and "
+                  "matchmaking are the online lobby's.";
+        break;
+    }
     case LB_NEEDS_V3:
         snprintf(r->value, sizeof r->value, "needs netplay version 3");
         r->help = "The lobby's room browser and matchmaking need netplay version 3, which is being tried out. To turn it on, set "
@@ -492,6 +535,7 @@ static void build_lobby(int fresh) {
         if (match.state != NET_MATCH_OFF) match_rows();
         if (rooms_state != NET_ROOMS_OFF) room_rows();
     } else if (st == LB_OFFLINE || st == LB_NEEDS_V3) add_protocol_row();
+    else if (st == LB_LAN || st == LB_HOSTING) lan_row(st == LB_LAN);
     if (restart_pending) add(R_RESTART, K_ACTION, W_NONE, "Restart now", "Starts the game again, with the changes. A match in progress is lost.");
 }
 
@@ -636,7 +680,8 @@ static void build(void) {
         if (nl) { *nl = 0; help_set(r, "What the game is connected to.\n%s", nl + 1); }   /* (a refusal's what-differs, the room's players) */
         snprintf(r->value, sizeof r->value, "%.110s", status[0] ? status : net_configured() ? "connecting..." : "offline");
         r = add(R_NET_MODE, K_CHOICE, W_RESTART, "Play online in",
-                "Public lobby: everyone's rooms in Local Wireless. Private: only players with the same code. Your own server: host:port. Offline: no netplay.");
+                "Public lobby: everyone's rooms in Local Wireless. Private: only players with the same code. Your own server: host:port. "
+                "Offline: no netplay. This network: a private room hosted on your local network, found by itself.");
         snprintf(r->value, sizeof r->value, "%s", NET_MODES[net.mode]);
         if (net.mode == NET_PRIVATE || net.mode == NET_CUSTOM) {
             r = add(R_NET_CODE, K_TEXT, W_RESTART, "Lobby code", "Players with the same code see each other's rooms (letters and digits, no spaces).");
@@ -861,7 +906,7 @@ static void change(const Row *row, int dir) {
         pad_reload();
         break;
     case R_NET_MODE:
-        net.mode = cycle(net.mode, 4, dir);
+        net.mode = cycle(net.mode, NET_MODE_COUNT, dir);
         net_save_server();
         break;
     case R_NET_DIRECT:
@@ -922,6 +967,15 @@ static void action(const Row *row) {
         net_match_cancel();
         break;
     case R_ROOMS: net_rooms_ask(); break;
+    case R_LAN_ROOMS: {
+        int ours = 0, lan = net_lan(&ours, NULL);
+        if (lan == NET_LAN_ANNOUNCING) menu_toast("Your room is announced on this network");
+        else if (lan == NET_LAN_QUIET) menu_toast("Not announced: Direct connections are off (Online page)");
+        else if (lan == NET_LAN_FOUND && net_local_ip()) menu_toast("In a room on this network: Local Wireless > Rooms List");
+        else if (ours) menu_toast("Joining the room on this network...");
+        else menu_toast("Still looking: a room shows here once a game on this network hosts one");
+        break;
+    }
     case R_PAD_REMAP: if (pad) { page = P_REMAP; sel[P_REMAP] = 1; top[P_REMAP] = 0; } break;
     case R_REMAP_BACK: page = P_PADS; break;
     case R_PAD_TEST:

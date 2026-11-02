@@ -25,6 +25,8 @@
  *   peers SECS N          wait until N players of the room are reached directly: "peers DIRECT PEERS", then a
  *                         line "peer ADDRESS STATE IN_DIRECT IN_RELAYED OUT_DIRECT OUT_RELAYED" each
  *   status                "status TEXT" (net_status, its lines on one)
+ *   lan SECS STATE        LAN discovery: net_lan until in that state (-1: at once): "lan STATE ROOMS OTHERS ROOM", ROOM
+ *                         the room this game joins (or hosts)
  *   quit                  ends (net_relay.c's exit handler sends LEAVE)
  * Anything else: "error". */
 #include "../../runtime/net_relay.c"
@@ -230,6 +232,11 @@ int main(void) {
             net_status(s, sizeof s);
             one_line(s);
             say("status %s", s);
+        } else if (!strcmp(what, "lan") && sscanf(line, "lan %lf %d", &secs, &a) == 2) {
+            int n_rooms = 0, others = 0, st;
+            u64 end = deadline(secs);
+            while ((st = net_lan(&n_rooms, &others)) != a && a >= 0 && now_ms() < end) Sleep(20);
+            say("lan %d %d %d %s", st, n_rooms, others, room);
         } else if (!strcmp(what, "quit")) break;
         else say("error");
     }

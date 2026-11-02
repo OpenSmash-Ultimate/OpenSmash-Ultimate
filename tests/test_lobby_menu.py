@@ -655,5 +655,51 @@ class RealLobby(MenuTest):
                                'Older': "can't join: another game version"})
 
 
+class Lan(MenuTest):
+    """LAN discovery (net.h): Online > Play online in > this network (online_server.txt "lan"), and the
+    Lobby page's row of the rooms heard on this network, or of the host's own room announced there.
+    The beacons go to 127.0.0.1 only (the host's relay on loopback; SSBU_NET_LAN_TEST=1 for the finder),
+    on a free port."""
+    def test_rooms_on_this_network(self):
+        lan_port = free_udp_port()
+        host = self.menu(None, room='lanroom', name='Hosty', SSBU_NET_HOST=1, SSBU_NET_PORT=free_udp_port(), SSBU_NET_BIND='127.0.0.1',
+                         SSBU_NET_LAN_PORT=lan_port)
+        self.assertEqual(host.net(), (2, 2, 0))
+        host.open_lobby()
+        self.assertEqual(host.row('On this network')['value'], 'announced')
+        guest = self.menu(room=None, name='Guest', args=['--online'], files={'online_server.txt': 'lan\n', 'online_name.txt': 'Guest\n'},
+                          SSBU_NET_LAN_TEST=1, SSBU_NET_LAN_PORT=lan_port)
+        self.assertEqual(guest.net(8), (2, 2, 0))
+        guest.open_lobby()
+        self.assertEqual(guest.row('Lobby')['value'], 'in a room on this network')
+        self.assertEqual(guest.value_until('Rooms on this network', lambda v: v == '1'), '1')
+        guest.go_to('Rooms on this network')
+        guest.key('ENTER')
+        self.assertEqual(guest.toast(), 'In a room on this network: Local Wireless > Rooms List')
+        guest.type('3')
+        self.assertEqual(guest.row('Play online in')['value'], 'this network (LAN)')
+        self.assertEqual(guest.row('Netplay version')['note'], 'this network: 2')
+        self.assertIn('room lanroom', guest.row('Now')['value'])
+
+    def test_looking(self):
+        guest = self.menu('lan', SSBU_NET_LAN_TEST=1, SSBU_NET_LAN_PORT=free_udp_port())
+        guest.ask('net 0')   # (started)
+        guest.open_lobby()
+        self.assertEqual(guest.value_until('Lobby', lambda v: v == 'no room on this network yet'), 'no room on this network yet')
+        self.assertEqual(guest.row('Rooms on this network')['value'], '0')
+
+    def test_mode_saved(self):
+        m = self.menu()
+        m.key('ESC')
+        m.type('3')
+        m.go_to('Play online in')
+        for _ in range(5):
+            if m.row('Play online in')['value'] == 'this network (LAN)':
+                break
+            m.key('RIGHT')
+        self.assertEqual(m.file('online_server.txt'), 'lan')
+        self.assertNotIn('Lobby code', m.labels())
+
+
 if __name__ == '__main__':
     unittest.main()

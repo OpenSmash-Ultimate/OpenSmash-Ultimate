@@ -172,6 +172,9 @@ static u16 port = NET_DEFAULT_PORT;
 static int direct_ok = 1, test_nat;   /* SSBU_NET_DIRECT; SSBU_NET_TEST_NAT (tests) */
 static int proto_wanted = NET_PROTOCOL;   /* SSBU_NET_PROTOCOL: the version asked for first (proto: spoken now) */
 static u64 test_block_at = ~0ull;     /* SSBU_NET_TEST_BLOCK (tests): no direct packets from then on */
+static int lan_mode, lan_test, lan_announce = 1, room_named;   /* relay "lan"; SSBU_NET_LAN_TEST; SSBU_NET_LAN; a room asked for */
+static u16 lan_port = NET_LAN_PORT;                            /* SSBU_NET_LAN_PORT (tests) */
+static volatile LONG lan_state;                                /* NET_LAN_* (LAN discovery, below) */
 
 #ifdef _WIN32
 static u64 process_age_ms(void) {
@@ -197,7 +200,7 @@ static void configure_from_files(void) {
     if (settings_line_read(config_path(CONFIG_ONLINE_SERVER), line, sizeof line)) sscanf(line, "%255s %32s", host, code);
     if (!host[0] || !_stricmp(host, "off")) return;
     snprintf(relay_text, sizeof relay_text, "%s", host);
-    if (code[0] && !getenv("SSBU_NET_ROOM")) snprintf(room, sizeof room, "%s", code);
+    if (code[0] && !getenv("SSBU_NET_ROOM")) { snprintf(room, sizeof room, "%s", code); room_named = 1; }
     if (!getenv("SSBU_NET_NAME")) {
         if (!settings_line_read(config_path(CONFIG_ONLINE_NAME), line, sizeof line) || !line[0]) {
             snprintf(line, sizeof line, "Player%04u", 1000 + (unsigned)(GetTickCount64() * 2654435761u >> 7) % 9000);
@@ -224,7 +227,7 @@ static void configure(void) {
     const char *h = getenv("SSBU_NET_HOST"), *r = getenv("SSBU_NET_RELAY"), *v;
     hosting = h && *h && strcmp(h, "0");
     if ((v = getenv("SSBU_NET_PORT")) && atoi(v) > 0 && atoi(v) < 65536) port = (u16)atoi(v);
-    if ((v = getenv("SSBU_NET_ROOM")) && *v) snprintf(room, sizeof room, "%s", v);
+    if ((v = getenv("SSBU_NET_ROOM")) && *v) { snprintf(room, sizeof room, "%s", v); room_named = 1; }
     if ((v = getenv("SSBU_NET_NAME")) && *v) snprintf(name, sizeof name, "%s", v);
     if ((v = getenv("SSBU_NET_LOG"))) logging = atoi(v) > 0 ? atoi(v) : 1;
     if ((v = getenv("SSBU_NET_DIRECT")) && !strcmp(v, "0")) direct_ok = 0;
@@ -236,14 +239,20 @@ static void configure(void) {
         u64 age = process_age_ms(), at = (u64)(atof(v) * 1000);
         test_block_at = now_ms() + (at > age ? at - age : 0);
     }
+    /* LAN discovery (below): SSBU_NET_LAN=0, no beacons when hosting; (tests) SSBU_NET_LAN_PORT, the beacons' port, and
+     * SSBU_NET_LAN_TEST=1, beacons to 127.0.0.1 only (unicast, where multicast loopback is not to be counted on) */
+    if ((v = getenv("SSBU_NET_LAN")) && !strcmp(v, "0")) lan_announce = 0;
+    if ((v = getenv("SSBU_NET_LAN_PORT")) && atoi(v) > 0 && atoi(v) < 65536) lan_port = (u16)atoi(v);
+    if ((v = getenv("SSBU_NET_LAN_TEST"))) lan_test = atoi(v) > 0;
     if (hosting) snprintf(relay_text, sizeof relay_text, "127.0.0.1:%u", port);
     else if (r && *r) { if (_stricmp(r, "off")) snprintf(relay_text, sizeof relay_text, "%s", r); }
     else if (settings_online()) configure_from_files();
+    lan_mode = !hosting && !_stricmp(relay_text, "lan");
     configured = hosting || relay_text[0];
     proto_wanted = NET_PROTOCOL_DEFAULT;   /* SSBU_NET_PROTOCOL=2|3, else online_protocol.txt's; hosting: its own relay's, 2 */
     if ((v = getenv("SSBU_NET_PROTOCOL")) && (atoi(v) == NET_PROTOCOL || atoi(v) == NET_PROTOCOL_V3)) proto_wanted = atoi(v);
     else if (configured && !hosting) proto_wanted = protocol_from_file(proto_wanted);
-    if (hosting) proto_wanted = NET_PROTOCOL;
+    if (hosting || lan_mode) proto_wanted = NET_PROTOCOL;   /* (a private room's relay: version 2) */
     proto = proto_wanted;
 }
 
@@ -251,7 +260,7 @@ static void start(void);
 int net_configured(void) { start(); return configured; }
 int net_log(void) { configure(); return logging; }
 const char *net_player_name(void) { configure(); return name; }
-const char *net_relay_address(void) { configure(); return !hosting && relay_text[0] ? relay_text : NULL; }
+const char *net_relay_address(void) { configure(); return !hosting && !lan_mode && relay_text[0] ? relay_text : NULL; }
 
 /* ---- the relay (host mode) ------------------------------------------------------------ */
 typedef struct Member { struct sockaddr_in at; u64 nonce, seen; u32 ip; char name[NAME_LEN + 1]; } Member;
@@ -545,6 +554,9 @@ static void write_share_file(void) {
                     "For friends elsewhere, run tools/ssbu_relay.py on a reachable machine (see docs/MULTIPLAYER.md).\n",
                  upnp_state == 2 ? "not available" : "refused", lan_ip, port);
     if (lan_code[0]) fprintf(f, "Friends on the same network can also use the room code %s.\n", lan_code);
+    if (lan_state == NET_LAN_ANNOUNCING)
+        fprintf(f, "Friends on the same network can also just look for it: the settings menu's Online > Play online in > this network\n"
+                   "(or SSBU_NET_RELAY=lan).\n");
     fprintf(f, "Room: %s\n", room);
     fclose(f);
 }
@@ -1645,14 +1657,278 @@ static void read_members(const u8 *p, int n) {
     InterlockedExchange(&members, count);
 }
 
+/* ---- LAN discovery: a private room found on the local network --------------------------------
+ * A game hosting a private room (SSBU_NET_HOST) says so every second to the multicast group
+ * 239.255.13.13 and to the broadcast address, UDP port NET_LAN_PORT (39501), with a TTL of 1 (no
+ * router passes it on):
+ *   BEACON 'S' 'N' 2 32, 'L' 'B', id u64 (this run's), relay port u16, sim u32, players u8,
+ *          build[40], room[32], host name[32]
+ * Not sent while direct connections are off (online_direct.txt, SSBU_NET_DIRECT=0: the player keeps
+ * its address to itself) or with SSBU_NET_LAN=0. A game whose relay is "lan" (SSBU_NET_RELAY=lan,
+ * online_server.txt "lan [room]", the settings menu's Play online in > this network) listens on that
+ * port: after 1.5 s it joins the first host it heard of its own build and simulation version (and of
+ * its room, when it names one: SSBU_NET_ROOM, or the file's code) at the beacon's source address, in
+ * that host's room; none: it says so and keeps listening, so a host that starts later is found, and
+ * after losing its host it takes the next one. The relay itself refuses other mods (REJECT), as for
+ * any private room. Two games of one PC find each other too (multicast comes back to the PC's own
+ * listeners). (tests) SSBU_NET_LAN_TEST=1: beacons to 127.0.0.1 only, the listener on 127.0.0.1. */
+#define T_LAN_BEACON 32
+#define LAN_GROUP "239.255.13.13"
+#define LAN_BEACON_SIZE (4 + 2 + 8 + 2 + 4 + 1 + BUILD_LEN + 2 * NAME_LEN)
+#define LAN_HOSTS 16
+#define LAN_FRESH_MS 3500    /* a host not heard for this long is gone */
+#define LAN_LISTEN_MS 1500   /* listened for before the first pick */
+typedef struct LanHost {
+    u64 id, first, seen;
+    struct sockaddr_in at;   /* its relay */
+    u32 sim;
+    int players;
+    char build[BUILD_LEN + 1], room[NAME_LEN + 1], name[NAME_LEN + 1];
+} LanHost;
+static SRWLOCK lan_lock = SRWLOCK_INIT;
+static LanHost lan_hosts[LAN_HOSTS];
+static int nlan_hosts;
+static u64 lan_started;            /* (client thread) the listener's start */
+
+static void lan_options(SOCKET s) {
+#ifdef _WIN32
+    int ttl = 1, loop = 1;
+#else
+    unsigned char ttl = 1, loop = 1;   /* (macOS takes a byte for both; Linux either) */
+#endif
+    int yes = 1;
+    setsockopt(s, SOL_SOCKET, SO_BROADCAST, (const char *)&yes, sizeof yes);
+    setsockopt(s, IPPROTO_IP, IP_MULTICAST_TTL, (const char *)&ttl, sizeof ttl);
+    setsockopt(s, IPPROTO_IP, IP_MULTICAST_LOOP, (const char *)&loop, sizeof loop);
+    u32 out = outbound_address();   /* (the network the PC goes out on, not a VPN's or a virtual machine's adapter) */
+    if (out && !lan_test) {
+        struct in_addr a;
+        a.s_addr = htonl(out);
+        setsockopt(s, IPPROTO_IP, IP_MULTICAST_IF, (const char *)&a, sizeof a);
+    }
+}
+
+static void lan_beacon_make(u8 *p, u64 id) {
+    memset(p, 0, LAN_BEACON_SIZE);
+    relay_header(p, T_LAN_BEACON);
+    p[4] = 'L';
+    p[5] = 'B';
+    put64(p + 6, id);
+    put16(p + 14, port);
+    put32(p + 16, SIM_VERSION);
+    int players = 0;
+    for (int i = 0; i < ROOMS; i++)   /* (the relay thread's: a moment old at most) */
+        if (rooms[i].count && !strcmp(rooms[i].name, room)) players = rooms[i].count;
+    p[20] = (u8)players;
+    const char *build = rt_module_main.build_id ? rt_module_main.build_id : "";
+    size_t n = strlen(build);
+    memcpy(p + 21, build, n < BUILD_LEN ? n : BUILD_LEN);
+    memcpy(p + 21 + BUILD_LEN, room, strlen(room));
+    memcpy(p + 21 + BUILD_LEN + NAME_LEN, name, strlen(name));
+}
+
+static DWORD WINAPI lan_beacon_thread(LPVOID unused) {   /* (hosting) */
+    (void)unused;
+    SetThreadDescription(GetCurrentThread(), L"netplay lan beacon");
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) return 0;
+    lan_options(s);
+    struct sockaddr_in to[2];
+    memset(to, 0, sizeof to);
+    int nto = lan_test ? 1 : 2;
+    for (int i = 0; i < 2; i++) { to[i].sin_family = AF_INET; to[i].sin_port = htons(lan_port); }
+    if (lan_test) to[0].sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    else { inet_pton(AF_INET, LAN_GROUP, &to[0].sin_addr); to[1].sin_addr.s_addr = htonl(INADDR_BROADCAST); }
+    u64 id = random64() | 1;
+    u8 p[LAN_BEACON_SIZE];
+    for (;;) {
+        lan_beacon_make(p, id);
+        for (int i = 0; i < nto; i++) send_udp(s, p, sizeof p, &to[i]);
+        Sleep(1000);
+    }
+}
+
+static void lan_announce_start(void) {   /* (hosting, the relay up) */
+    if (!lan_announce || !direct_ok) {
+        InterlockedExchange(&lan_state, NET_LAN_QUIET);
+        fprintf(stderr, "[net] lan: room %s not announced on this network (%s): players here join with the room code or address\n", room,
+                !lan_announce ? "SSBU_NET_LAN=0" : "direct connections off");
+        return;
+    }
+    InterlockedExchange(&lan_state, NET_LAN_ANNOUNCING);
+    CloseHandle(CreateThread(NULL, 0, lan_beacon_thread, NULL, 0, NULL));
+    fprintf(stderr, "[net] lan: announcing room %s on this network (UDP port %u%s)\n", room, lan_port, lan_test ? ", to 127.0.0.1 only" : "");
+}
+
+static int lan_beacon_read(const u8 *p, int n, LanHost *h) {
+    if (n < LAN_BEACON_SIZE || p[0] != MAGIC0 || p[1] != MAGIC1 || p[2] != NET_PROTOCOL || p[3] != T_LAN_BEACON || p[4] != 'L' || p[5] != 'B')
+        return 0;
+    memset(h, 0, sizeof *h);
+    h->id = get64(p + 6);
+    h->at.sin_family = AF_INET;
+    h->at.sin_port = htons(get16(p + 14));
+    h->sim = get32(p + 16);
+    h->players = p[20];
+    printable(h->build, p + 21, BUILD_LEN);
+    printable(h->room, p + 21 + BUILD_LEN, NAME_LEN);
+    printable(h->name, p + 21 + BUILD_LEN + NAME_LEN, NAME_LEN);
+    return h->id && get16(p + 14) && h->room[0];
+}
+
+static int lan_ours(const LanHost *h) {   /* of this game's build and simulation version, and of its room when it names one */
+    char mine[BUILD_LEN + 1];
+    snprintf(mine, sizeof mine, "%.40s", rt_module_main.build_id ? rt_module_main.build_id : "");
+    return !strcmp(h->build, mine) && h->sim == SIM_VERSION && (!room_named || !strcmp(h->room, room));
+}
+
+static DWORD WINAPI lan_listen_thread(LPVOID sock) {   /* (LAN mode) every beacon heard, kept in lan_hosts */
+    SOCKET s = (SOCKET)(uintptr_t)sock;
+    SetThreadDescription(GetCurrentThread(), L"netplay lan listener");
+    static u8 buf[2048];
+    for (;;) {
+        struct sockaddr_in from;
+        socklen_t flen = sizeof from;
+        int n = recvfrom(s, (char *)buf, sizeof buf, 0, (struct sockaddr *)&from, &flen);
+        LanHost h;
+        if (n <= 0 || !lan_beacon_read(buf, n, &h)) continue;
+        h.at.sin_addr = from.sin_addr;
+        u64 t = now_ms();
+        AcquireSRWLockExclusive(&lan_lock);
+        int k = 0;
+        while (k < nlan_hosts && lan_hosts[k].id != h.id) k++;
+        if (k == nlan_hosts) {   /* a new one: in a free place, else in the stalest one's */
+            if (nlan_hosts < LAN_HOSTS) nlan_hosts++;
+            else {
+                k = 0;
+                for (int i = 1; i < LAN_HOSTS; i++) if (lan_hosts[i].seen < lan_hosts[k].seen) k = i;
+            }
+            h.first = t;
+            if (logging) {
+                char ip[16];
+                inet_ntop(AF_INET, &h.at.sin_addr, ip, sizeof ip);
+                fprintf(stderr, "[net] lan: heard %s's room %s (%d players) at %s:%u\n", h.name, h.room, h.players, ip, ntohs(h.at.sin_port));
+            }
+        } else h.first = lan_hosts[k].first;
+        h.seen = t;
+        lan_hosts[k] = h;
+        ReleaseSRWLockExclusive(&lan_lock);
+    }
+}
+
+static void lan_count(int *rooms_out, int *others) {   /* the hosts heard lately: of this game's, and the others */
+    int ours = 0, other = 0;
+    u64 t = now_ms();
+    AcquireSRWLockShared(&lan_lock);
+    for (int i = 0; i < nlan_hosts; i++)
+        if (t - lan_hosts[i].seen < LAN_FRESH_MS) { if (lan_ours(&lan_hosts[i])) ours++; else other++; }
+    ReleaseSRWLockShared(&lan_lock);
+    if (rooms_out) *rooms_out = ours;
+    if (others) *others = other;
+}
+
+int net_lan(int *rooms_out, int *others) {
+    start();
+    lan_count(rooms_out, others);
+    return lan_state;
+}
+
+static void lan_listen(void) {   /* (client thread, LAN mode) */
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    lan_started = now_ms();
+    if (s == INVALID_SOCKET) return;
+    int yes = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof yes);   /* (other games of this PC listen too) */
+#ifdef SO_REUSEPORT
+    setsockopt(s, SOL_SOCKET, SO_REUSEPORT, (const char *)&yes, sizeof yes);
+#endif
+#ifdef _WIN32
+    DWORD timeout = 200;
+#else
+    struct timeval timeout = {0, 200000};
+#endif
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof timeout);
+    no_connreset(s);
+    struct sockaddr_in a = {0};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(lan_port);
+    a.sin_addr.s_addr = lan_test ? htonl(INADDR_LOOPBACK) : htonl(INADDR_ANY);
+    if (bind(s, (struct sockaddr *)&a, sizeof a)) {
+        fprintf(stderr, "[net] lan: cannot listen on UDP port %u: no room on this network can be found\n", lan_port);
+        closesocket(s);
+        return;
+    }
+    if (!lan_test) {   /* (the group, on the network the PC goes out on and on the default one) */
+        struct ip_mreq m;
+        memset(&m, 0, sizeof m);
+        inet_pton(AF_INET, LAN_GROUP, &m.imr_multiaddr);
+        u32 out = outbound_address();
+        if (out) { m.imr_interface.s_addr = htonl(out); setsockopt(s, IPPROTO_IP, IP_ADD_MEMBERSHIP, (const char *)&m, sizeof m); }
+        m.imr_interface.s_addr = htonl(INADDR_ANY);
+        setsockopt(s, IPPROTO_IP, IP_ADD_MEMBERSHIP, (const char *)&m, sizeof m);
+    }
+    CloseHandle(CreateThread(NULL, 0, lan_listen_thread, (LPVOID)(uintptr_t)s, 0, NULL));
+}
+
+/* (client thread, LAN mode) Waits until a host of this game's is heard (listened for 1.5 s first),
+ * then makes it the relay: its address, and its room. */
+static void lan_wait(void) {
+    int said = 0;
+    InterlockedExchange(&lan_state, NET_LAN_LOOKING);
+    for (;;) {
+        u64 t = now_ms();
+        LanHost best;
+        int found = 0;
+        if (t - lan_started >= LAN_LISTEN_MS) {
+            AcquireSRWLockShared(&lan_lock);
+            for (int i = 0; i < nlan_hosts; i++) {
+                const LanHost *h = &lan_hosts[i];
+                if (t - h->seen < LAN_FRESH_MS && lan_ours(h) && (!found || h->first < best.first)) { best = *h; found = 1; }
+            }
+            ReleaseSRWLockShared(&lan_lock);
+        }
+        if (found) {
+            char ip[16];
+            inet_ntop(AF_INET, &best.at.sin_addr, ip, sizeof ip);
+            snprintf(room, sizeof room, "%s", best.room);
+            relay_at = best.at;
+            snprintf(relay_text, sizeof relay_text, "%s:%u", ip, ntohs(best.at.sin_port));
+            if (relay_at.sin_addr.s_addr == htonl(INADDR_LOOPBACK) && !bound_loopback) {   /* (as resolve_relay: the relay is here) */
+                struct sockaddr_in a = {0};
+                a.sin_family = AF_INET;
+                a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                bind(client_sock, (struct sockaddr *)&a, sizeof a);
+                bound_loopback = 1;
+            }
+            reject_text[0] = 0;
+            InterlockedExchange(&lan_state, NET_LAN_FOUND);
+            fprintf(stderr, "[net] lan: found %s's room %s on this network at %s; joining\n", best.name[0] ? best.name : "a host", best.room,
+                    relay_text);
+            return;
+        }
+        if (!said && t - lan_started >= LAN_LISTEN_MS) {
+            said = 1;
+            int others = 0;
+            lan_count(NULL, &others);   /* (not net_lan: start() may not be done yet) */
+            InterlockedExchange(&lan_state, NET_LAN_NONE);
+            snprintf(reject_text, sizeof reject_text, "no room on this network yet (still looking)");
+            if (others) fprintf(stderr, "[net] lan: %d room%s on this network, of another game version or room only; still looking\n", others,
+                                others == 1 ? "" : "s");
+            else fprintf(stderr, "[net] lan: no room on this network yet; still looking\n");
+        }
+        Sleep(100);
+    }
+}
+
 static DWORD WINAPI client_thread(LPVOID unused) {
     (void)unused;
     SetThreadDescription(GetCurrentThread(), L"netplay client");
     static u8 buf[65536];
-    while (!resolve_relay()) {
-        snprintf(reject_text, sizeof reject_text, "cannot find the relay %s", relay_text);
-        Sleep(3000);
-    }
+    if (lan_mode) { lan_listen(); lan_wait(); }   /* (LAN discovery: the relay is the host heard) */
+    else
+        while (!resolve_relay()) {
+            snprintf(reject_text, sizeof reject_text, "cannot find the relay %s", relay_text);
+            Sleep(3000);
+        }
     reject_text[0] = 0;
     u64 last_join = 0, last_ping = 0, last_tick = 0;
     if (!direct_ok) fprintf(stderr, "[net] direct connections off (SSBU_NET_DIRECT=0): all through the relay\n");
@@ -1688,6 +1964,7 @@ static DWORD WINAPI client_thread(LPVOID unused) {
             InterlockedExchange(&proto, proto_wanted);   /* (asked in its version again: it may be another lobby now) */
             fell_back = 0;
             fprintf(stderr, "[net] lost the relay %s; reconnecting\n", relay_text);
+            if (lan_mode) { lan_wait(); last_join = 0; }   /* (the next host heard on this network: the lost one is heard no more) */
         }
         if (joined && t - last_tick >= 50) { peers_tick(t); last_tick = t; }
         if (joined) v3_tick(t);
@@ -1815,6 +2092,7 @@ static void start(void) {
             a.sin_port = htons(port);
             const char *only = getenv("SSBU_NET_BIND");   /* (an address to listen on alone, e.g. 127.0.0.1 for tests) */
             if (only && *only) inet_pton(AF_INET, only, &a.sin_addr);
+            if (ntohl(a.sin_addr.s_addr) >> 24 == 127) lan_test = 1;   /* (a relay on loopback: announced to this PC's loopback only) */
             if (relay_sock == INVALID_SOCKET || bind(relay_sock, (struct sockaddr *)&a, sizeof a)) {
                 snprintf(reject_text, sizeof reject_text, "cannot use port %u for the relay (in use?)", port);
                 fprintf(stderr, "[net] %s\n", reject_text);
@@ -1823,10 +2101,11 @@ static void start(void) {
                 no_connreset(relay_sock);
                 big_sends(relay_sock);
                 CloseHandle(CreateThread(NULL, 0, relay_thread, NULL, 0, NULL));
+                fprintf(stderr, "[net] hosting the relay on UDP port %u, room %s\n", port, room);
+                lan_announce_start();   /* (before UPnP's share file, which says whether the room is announced) */
                 const char *upnp = getenv("SSBU_NET_UPNP");   /* 0: leave the router alone */
                 if (upnp && !strcmp(upnp, "0")) { lan_address(); upnp_state = 3; }
                 else CloseHandle(CreateThread(NULL, 0, upnp_thread, NULL, 0, NULL));
-                fprintf(stderr, "[net] hosting the relay on UDP port %u, room %s\n", port, room);
             }
         }
         client_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -1847,6 +2126,7 @@ void net_status(char *out, size_t n) {
     start();
     if (!configured) { if (n) out[0] = 0; return; }
     if (reject_text[0] && !joined) { snprintf(out, n, "Netplay: %s%s%s", reject_text, reject_detail[0] ? "\n" : "", reject_detail); return; }
+    if (lan_mode && !joined && lan_state != NET_LAN_FOUND) { snprintf(out, n, "Netplay: looking for a room on this network..."); return; }
     if (!joined && net_unreachable()) { snprintf(out, n, "Netplay: no answer from %s - playing offline (still trying)", relay_text); return; }
     if (!joined) { snprintf(out, n, "Netplay: connecting to %s...", relay_text); return; }
     if (lobby) {   /* (smash, the default code, is the public lobby) */
@@ -1865,13 +2145,14 @@ void net_status(char *out, size_t n) {
         ReleaseSRWLockShared(&peers_lock);
         return;
     }
-    char share[128] = "";
+    char share[192] = "";
     if (hosting) {
         LONG u = upnp_state;
         if (u == 0) snprintf(share, sizeof share, "  | opening port %u on the router...", port);
         else if (u == 1) snprintf(share, sizeof share, "  | friends join %s:%u", public_ip[0] ? public_ip : "(your public IP)", port);
         else if (u == 4) snprintf(share, sizeof share, "  | router behind another NAT: only same-network friends can join (%s:%u)", lan_ip, port);
         else snprintf(share, sizeof share, "  | UPnP %s: only same-network friends can join (%s:%u)", u == 2 ? "unavailable" : "refused", lan_ip, port);
+        if (lan_state == NET_LAN_ANNOUNCING) snprintf(share + strlen(share), sizeof share - strlen(share), "  | announced on this network");
     }
     snprintf(out, n, "Netplay: room %s, %ld player%s, %s 10.13.%u.%u, ping %ld ms%s", room, (long)members, members == 1 ? "" : "s",
              name, my_ip >> 8 & 255, my_ip & 255, (long)ping_ms, share);
