@@ -281,7 +281,10 @@ class WindowsLink(made_up.Folder):
         [(objs, options)] = self.linked
         self.assertEqual(objs[-3:], [self.obj('nro_table.obj'), str(self.module / 'g0000.obj'), str(self.module / 'g_module.obj')])
         self.assertNotIn(self.obj('game_funcs.obj'), objs)
-        self.assertEqual(options, [f'/alternatename:f_{a:x}_orig=rt_wrap_missing' for a in sorted(recomp.hle_wraps())])
+        # (PR #54: a wrapped function's body may be named f_<addr>_orig_orig: its original reaches that, and only a wrap
+        # no module has falls through to rt_wrap_missing - recomp.link)
+        self.assertEqual(options, [o for a in sorted(recomp.hle_wraps()) for o in
+                                   (f'/alternatename:f_{a:x}_orig=f_{a:x}_orig_orig', f'/alternatename:f_{a:x}_orig_orig=rt_wrap_missing')])
         self.assertEqual(self.libraries, [])
         self.assertFalse(self.dll.exists())
         self.assertNotIn('/DSSBU_GAME_DLL', (self.rt / 'host.obj').read_text())
