@@ -202,6 +202,8 @@ namespace OpenSmash.Launcher
             catch { }
 
             ClientSize = Theme.WindowSize();
+            // Moved to a monitor with other scaling: take the size Windows suggests; the drawing follows the height.
+            DpiChanged += (s, e) => { Bounds = e.SuggestedRectangle; Invalidate(); };
 
             // Load logo
             try

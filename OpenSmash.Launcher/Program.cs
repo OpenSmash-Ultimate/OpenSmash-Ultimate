@@ -20,10 +20,9 @@ namespace OpenSmash.Launcher
             ApplicationConfiguration.Initialize();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            // The windows are laid out in pixels for a 96-DPI screen (fonts in pixels, 810 px tall at most): Windows
-            // scales them up on high-DPI screens, GDI text drawn sharp. Per-monitor awareness left them a third of
-            // their size at 250 % scaling.
-            Application.SetHighDpiMode(HighDpiMode.DpiUnawareGdiScaled);
+            // Per-monitor aware: the windows are drawn at the screen's own resolution. Both forms scale everything
+            // they paint from their client height, and Theme.WindowSize sizes them for the monitor's scaling.
+            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
 
             // Ensure single instance
             using var mutex = new Mutex(true, "Global\\OpenSmashLauncher", out bool createdNew);

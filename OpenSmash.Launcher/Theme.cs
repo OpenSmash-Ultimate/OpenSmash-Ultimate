@@ -399,14 +399,35 @@ namespace OpenSmash.Launcher
             hit = new RectangleF(x - 4 * s, y - 4 * s, size + 8 * s, size + 8 * s);
         }
 
-        // The window size both forms use: 16:9, up to 810 px tall.
-        public static Size WindowSize()
+        // The window size both forms use, in physical pixels: 16:9, up to 810 px tall at 100 % scaling (810 times
+        // the monitor's scale above it). The forms draw everything from their client height, so it stays sharp.
+        public static Size WindowSize() => WindowSize(Screen.PrimaryScreen!);
+
+        public static Size WindowSize(Screen screen)
         {
-            var wa = Screen.PrimaryScreen!.WorkingArea;
-            int H = Math.Min((int)(wa.Height * 0.88), 810);
+            var wa = screen.WorkingArea;
+            float scale = MonitorScale(screen);
+            int H = Math.Min((int)(wa.Height * 0.88), (int)(810 * scale));
             int W = (int)(H * 16.0 / 9.0);
             if (W > wa.Width * 0.94) { W = (int)(wa.Width * 0.94); H = (int)(W * 9.0 / 16.0); }
             return new Size(W, H);
         }
+
+        // The monitor's scaling (1 at 96 DPI, 2.5 at 250 %).
+        public static float MonitorScale(Screen screen)
+        {
+            try
+            {
+                var c = screen.Bounds;
+                IntPtr mon = MonitorFromPoint(new POINT { X = c.X + c.Width / 2, Y = c.Y + c.Height / 2 }, 2);
+                if (mon != IntPtr.Zero && GetDpiForMonitor(mon, 0, out uint dx, out _) == 0 && dx > 0) return dx / 96f;
+            }
+            catch { }
+            return 1;
+        }
+
+        [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
+        [DllImport("user32.dll")] static extern IntPtr MonitorFromPoint(POINT pt, uint flags);
+        [DllImport("shcore.dll")] static extern int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
     }
 }

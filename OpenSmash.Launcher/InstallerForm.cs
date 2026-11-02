@@ -154,6 +154,8 @@ namespace OpenSmash.Launcher
             ShowInTaskbar = true;
             KeyPreview = true;
             ClientSize = Theme.WindowSize();
+            // Moved to a monitor with other scaling: take the size Windows suggests; the drawing follows the height.
+            DpiChanged += (s, e) => { Bounds = e.SuggestedRectangle; Invalidate(); };
             _nameBox = new TextBox
             {
                 BorderStyle = BorderStyle.FixedSingle,
@@ -1470,6 +1472,13 @@ namespace OpenSmash.Launcher
             if (_nameBox != null)
             {
                 _nameBox.Visible = _modal == null;
+                float namePx = 15 * s;
+                if (Math.Abs(_nameBox.Font.Size - namePx) > 0.01f || _nameBox.Font.Unit != GraphicsUnit.Pixel)
+                {
+                    var oldFont = _nameBox.Font;
+                    _nameBox.Font = new Font("Segoe UI", namePx, FontStyle.Regular, GraphicsUnit.Pixel);
+                    oldFont.Dispose();
+                }
                 _nameBox.SetBounds((int)(left + 118 * s), (int)nameY, (int)(leftW - 122 * s), (int)(36 * s));
             }
 
