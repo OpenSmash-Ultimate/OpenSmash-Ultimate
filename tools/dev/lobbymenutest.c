@@ -74,6 +74,8 @@ void display_set_pacing(Pacing pacing) { (void)pacing; }
 void display_set_hide_cursor(int on) { (void)on; }
 void display_set_latency(int frames) { (void)frames; }
 void display_set_render_scale(float scale) { (void)scale; }
+int audio_master_volume(void) { return 100; }
+void audio_set_master_volume(int percent) { (void)percent; }
 int pad_info(u32 slot, PadInfo *out) { (void)slot; memset(out, 0, sizeof *out); return 0; }   /* (no controllers) */
 int pad_get(u32 slot, PadState *out) { (void)slot; memset(out, 0, sizeof *out); return 0; }
 void pad_rumble(u32 slot, int side, float amplitude) { (void)slot; (void)side; (void)amplitude; }
