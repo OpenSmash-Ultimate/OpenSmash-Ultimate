@@ -1424,14 +1424,31 @@ typedef struct KSnap {
     u64 heap_size, tlr_next, next_thread_id;
     int clock_fixed; u64 vtick; i64 clock_off;   /* the fixed clock (the end of this file) */
     u64 gpu_base, vtick_base; i64 gpu_off;
+    u64 waitkey[1024];   /* (SSBU_RB_STRICT) what each thread waited on at the save: rb_wait_key */
 } KSnap;
+
+/* (SSBU_RB_STRICT=1, after FrankyFromEarthBound's OpenSmash-Ultimate PR #53: no load while a thread is at another
+ * wait than at the save) A thread's wait as one number: the first object of a WaitSynchronization, or the key of
+ * the mutex, condition variable or address it is queued at; 0 for none (SleepThread, running). Read under the
+ * kernel's lock while the thread is held (its wait nodes are on its stack, which stays as it is). By default a load
+ * puts every thread back at its saved wait whatever wait it is at now (hle_rb_state.c restores its host stack); the
+ * switch is the stricter rule, for host state a thread may have changed outside guest memory between the two. */
+static int rb_strict = -1;
+static u64 rb_wait_key(const KThread *t) {
+    if (t->wait == WAIT_OBJECTS) return t->nodes && t->wait_count ? (u64)(t->nodes[0].object - objects) + 1 : 0;
+    return t->queue ? t->queue->key : 0;
+}
+int kernel_rb_strict(void) {
+    if (rb_strict < 0) { const char *e = getenv("SSBU_RB_STRICT"); rb_strict = e && *e == '1'; }
+    return rb_strict;
+}
 
 void *kernel_rb_save(void) {
     KSnap *s = malloc(sizeof *s);
     if (!s) return NULL;
     EnterCriticalSection(&klock);
     s->nthreads = nthreads; s->region_count = region_count;
-    for (u32 i = 0; i < nthreads; i++) { s->ptr[i] = threads[i]; s->th[i] = *threads[i]; s->cpu[i] = *threads[i]->cpu; }
+    for (u32 i = 0; i < nthreads; i++) { s->ptr[i] = threads[i]; s->th[i] = *threads[i]; s->cpu[i] = *threads[i]->cpu; s->waitkey[i] = rb_wait_key(threads[i]); }
     memcpy(s->objects, objects, sizeof objects);
     memcpy(s->regions, regions, sizeof regions);
     memcpy(s->maps, maps, sizeof maps);
@@ -1452,6 +1469,17 @@ const char *kernel_rb_check(const void *p) {
     const KSnap *s = p;
     if (s->nthreads != nthreads) return "a guest thread was made since the save";
     for (u32 i = 0; i < nthreads; i++) if (s->ptr[i] != threads[i]) return "the guest threads differ from the save";
+    if (kernel_rb_strict()) {
+        const char *why = NULL;
+        EnterCriticalSection(&klock);
+        for (u32 i = 0; i < nthreads && !why; i++) {
+            const KThread *t = threads[i];
+            if (t->started && !t->exited && (t->wait != s->th[i].wait || rb_wait_key(t) != s->waitkey[i]))
+                why = "a guest thread is at another wait than at the save (SSBU_RB_STRICT)";
+        }
+        LeaveCriticalSection(&klock);
+        if (why) return why;
+    }
     return NULL;
 }
 

@@ -752,6 +752,43 @@ static void states(Cpu *c, u32 main_handle) {
     after("the freeze report");
 }
 
+/* ---- rollback: SSBU_RB_STRICT's same-wait rule (kernel_rb_check) ------------------------------------------------- */
+static void g_two_waits(Cpu *c) {   /* waits on WORD, then on the event in its record */
+    u64 rec = c->x[0];
+    if (wait_address(c, WORD, 2, 0, 10 * SECOND) != R_OK) bad();
+    done(rec, wait_on(c, rec + 0x80, ld32(rec + F_HANDLES), 10 * SECOND));
+}
+static void rollback_waits(Cpu *c) {
+    KThread *t;
+    st32(WORD, 0);
+    u32 ev = new_event(c);
+    st32(REC(0) + F_HANDLES, ev);
+    u32 h = spawn(c, g_two_waits, 0, &t);
+    CHECK(until_waits(t, WAIT_ADDRESS), "the thread never waited on the address");
+    void *s = kernel_rb_save();
+    rb_strict = 1;
+    const char *why = kernel_rb_check(s);
+    CHECK(!why, "strict: the same wait as at the save refused: %s", why);
+    signal_address(c, WORD, 0, 0, 1);
+    CHECK(until_waits(t, WAIT_OBJECTS), "the thread never waited on the event");
+    why = kernel_rb_check(s);
+    CHECK(why && strstr(why, "another wait"), "strict: another wait than at the save let through");
+    rb_strict = 0;
+    why = kernel_rb_check(s);
+    CHECK(!why, "not strict: another wait refused: %s", why);
+    void *s2 = kernel_rb_save();
+    rb_strict = 1;
+    why = kernel_rb_check(s2);
+    CHECK(!why, "strict: the event wait saved, then refused: %s", why);
+    rb_strict = -1;
+    signal_event(c, ev);
+    CHECK(until_done(0) && join(c, h), "the thread did not end");
+    CHECK(result_of(0) == R_OK, "its event wait: %#x", result_of(0));
+    close_event(c, ev);
+    free(s); free(s2);
+    after("rollback waits");
+}
+
 /* ---- priorities and cores ---------------------------------------------------------------- */
 /* the calling thread's host priority is what `band` makes it here (linux/win32.c's mapping) */
 static int host_has(int band) {
@@ -1381,6 +1418,7 @@ int main(void) {
     conditions(c, main_handle);
     addresses(c);
     states(c, main_handle);
+    rollback_waits(c);
     priorities(c, main_handle);
     stress(c);
     printf("%u queues made\n%.1f s\n%d checks, %d failed\n", queues_made, (double)(rt_clock_ns() - t0) / 1e9, checks, failures);

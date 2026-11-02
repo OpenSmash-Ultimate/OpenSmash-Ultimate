@@ -258,12 +258,47 @@ static void host_path(char *out, size_t n, struct Mount *m, const char *rest) {
     for (char *p = out; *p; p++) if (*p == '/') *p = '\\';
 }
 
+/* (rollback netplay, SSBU_RB: hle_rb_state.c) A handle is host state the game names from guest memory: one opened
+ * before a savestate and closed after it is gone (or its slot reused) once that state is loaded, and the game's next
+ * use of it fails - the case of FrankyFromEarthBound's OpenSmash-Ultimate PR #53 (a0b0616: the resource loader
+ * mid-load across a rollback). fs_rb_mark() is a count of opens and closes; fs_rb_closed_since(mark) says whether a
+ * handle that existed at that mark has been closed since (the last 256 such closes are kept; older ones count as
+ * yes). Off, nothing is counted. */
+static u64 rb_seq;
+static u64 rb_closes[256][2];   /* (when closed, when opened) */
+static u32 rb_nclose;
+static int rb_fs = -1;
+static u64 rb_born[512];        /* (by slot) when its handle was opened */
+static int rb_fs_on(void) { if (rb_fs < 0) { const char *e = getenv("SSBU_RB"); rb_fs = e && *e && *e != '0'; } return rb_fs; }
+static void rb_closing(const Handle *h) {   /* (the lock held) */
+    if (!rb_fs_on()) return;
+    u32 i = (u32)(h - handles);
+    u32 k = rb_nclose++ % 256;
+    rb_closes[k][0] = ++rb_seq; rb_closes[k][1] = i < 512 ? rb_born[i] : 0;
+}
+u64 fs_rb_mark(void) { ready(); EnterCriticalSection(&lock); u64 m = rb_seq; LeaveCriticalSection(&lock); return m; }
+int fs_rb_closed_since(u64 mark) {
+    int yes = 0;
+    ready();
+    EnterCriticalSection(&lock);
+    u32 n = rb_nclose < 256 ? rb_nclose : 256;
+    for (u32 j = 0; j < n && !yes; j++) {
+        const u64 *c = rb_closes[(rb_nclose - 1 - j) % 256];
+        if (c[0] <= mark) break;   /* (newest first: the rest are older than the mark) */
+        if (c[1] <= mark) yes = 1;
+        if (j == 255) yes = 1;     /* (more closes since than kept) */
+    }
+    LeaveCriticalSection(&lock);
+    return yes;
+}
+
 static u64 new_handle(Handle h) {
     EnterCriticalSection(&lock);
     for (u32 i = 1; i < 512; i++)
         if (!handles[i].used) {
             handles[i] = h;
             handles[i].used = 1;
+            if (rb_fs_on()) rb_born[i] = ++rb_seq;
             LeaveCriticalSection(&lock);
             return 0x46530000ull | i;
         }
@@ -1111,6 +1146,7 @@ HLE(_ZN2nn2fs9CloseFileENS0_10FileHandleE) {
     if (!h) return;
     if (h->host) CloseHandle(h->host);
     EnterCriticalSection(&lock);
+    rb_closing(h);
     memset(h, 0, sizeof *h);
     LeaveCriticalSection(&lock);
 }
@@ -1256,6 +1292,7 @@ HLE(_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE) {
     if (!h) return;
     listing_free(h);
     EnterCriticalSection(&lock);
+    rb_closing(h);
     memset(h, 0, sizeof *h);
     LeaveCriticalSection(&lock);
 }

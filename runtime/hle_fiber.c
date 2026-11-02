@@ -101,7 +101,7 @@ void fiber_rb_census(u32 *live, u32 *running) {
  * ssbu-recomp's rollback relies on too) and its host stack from that Rsp to StackBase. A running
  * fiber is a thread's: its stack is saved with that thread (hle_rb_state.c). */
 #define RB_FIBER_BLOCK 0x500
-typedef struct FSave { Fib f; Cpu cpu; u8 blk[RB_FIBER_BLOCK]; u8 *stack; u64 rsp, n; } FSave;
+typedef struct FSave { Fib f; Cpu cpu; u8 blk[RB_FIBER_BLOCK]; u8 *stack; u64 rsp, n; int lost; } FSave;   /* lost: switched away, its stack not saved */
 typedef struct FSnap { u32 fib_count, nspare; Fib **spare; u64 started, reclaim_at, reclaimed; FSave *v; u64 bytes; } FSnap;
 
 /* A fiber block whose host stack (DeallocationStack +0x20 .. StackBase +0x10) holds one of the stack
@@ -136,7 +136,7 @@ void *fiber_rb_save(u64 *bytes, u32 *suspended, const u64 *live, u32 nlive, u32 
             continue;
         }
         u64 base = *(u64 *)(v->blk + 0x10), rsp = *(u64 *)(v->blk + 0x30 + 0x98);
-        if (rsp >= base || base - rsp > (64ull << 20)) { fprintf(stderr, "[rb] fiber %u: odd host stack (rsp %#llx, base %#llx): not saved\n", i, rsp, base); continue; }
+        if (rsp >= base || base - rsp > (64ull << 20)) { fprintf(stderr, "[rb] fiber %u: odd host stack (rsp %#llx, base %#llx): not saved\n", i, rsp, base); v->lost = 1; continue; }
         v->rsp = rsp; v->n = base - rsp;
         v->stack = malloc(v->n);
         memcpy(v->stack, (void *)(uintptr_t)rsp, v->n);
@@ -148,12 +148,24 @@ void *fiber_rb_save(u64 *bytes, u32 *suspended, const u64 *live, u32 nlive, u32 
     return s;
 }
 
-const char *fiber_rb_check(const void *p) {
+/* Before a load changes anything: refused when a fiber the state needs cannot be put back whole. The guest memory
+ * (its guest stack among it) always goes back to the save, so a fiber whose host stack stayed as it is now would
+ * resume on frames from after the save (FrankyFromEarthBound's OpenSmash-Ultimate PR #53, 0c9f96e: the task-worker
+ * crashes after "fibers not restored"; Rsoto95's ssbu-recomp PR #116 writes a fiber's guest stack back only for a
+ * fiber put back whole). Such a load used to go on and log it; refused, the caller tries an older state. A fiber
+ * finalized at the save is left out: its slot gets a new host fiber when it is used again. */
+const char *fiber_rb_check(const void *p, const u64 *live, u32 nlive) {
     const FSnap *s = p;
     if (fib_count < s->fib_count) return "fewer fiber slots than at the save";
     for (u32 i = 0; i < fib_count; i++) {
         if (i < s->fib_count && fibs[i]->running && !s->v[i].f.running) return "a fiber runs now that was switched away at the save";
         if (i >= s->fib_count && fibs[i]->running) return "a fiber made since the save runs now";
+    }
+    for (u32 i = 0; i < s->fib_count; i++) {
+        const FSave *v = &s->v[i];
+        if (v->f.finalized) continue;
+        if (v->lost) return "a fiber's host stack could not be saved (odd stack pointer)";
+        if (v->stack && stack_in_use(v->blk, live, nlive)) return "a fiber's saved host stack is in use now";
     }
     return NULL;
 }
