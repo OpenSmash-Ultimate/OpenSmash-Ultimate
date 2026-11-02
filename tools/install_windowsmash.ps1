@@ -884,10 +884,10 @@ function Step-Python {
         if (-not (Test-PythonPackages)) { throw 'The packages are still missing after pip install.' }
     }
     # py7zr: the Mods app opens .7z mods with it when 7-Zip isn't installed (Windows' tar can't).
-    # Optional: without it, only .7z mods need 7-Zip
+    # Optional (not in requirements.txt): without it, only .7z mods need 7-Zip. Pinned: update after checking a newer one.
     if (-not $DryRun -and (Get-PythonOutput @('-c', 'import py7zr')).Code -ne 0) {
         Write-Info 'adding py7zr (opens .7z mods)'
-        if ((Invoke-Python @('-m', 'pip', 'install', '--quiet', 'py7zr')) -ne 0) { Write-Info 'py7zr could not be added: .7z mods need 7-Zip (7-zip.org)' }
+        if ((Invoke-Python @('-m', 'pip', 'install', '--quiet', 'py7zr==1.1.4')) -ne 0) { Write-Info 'py7zr could not be added: .7z mods need 7-Zip (7-zip.org)' }
     }
 }
 
