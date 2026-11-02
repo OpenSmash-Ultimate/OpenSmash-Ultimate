@@ -843,6 +843,9 @@ int main(int argc, char **argv);
 static DWORD WINAPI guest_main(LPVOID unused);
 static u32 by_host_cap;
 
+int kernel_rb_switch(void);                 /* (kernel.c: SSBU_RB, rollback netplay, on) */
+void rb_mem_note(u64 at, u64 size);         /* (kernel.c: memory a rollback savestate copies whole) */
+
 /* Map module m's image at its guest address and make its code reachable. */
 static void map_module(u32 m, const char *dir) {
     const RtModule *mod = modules[m];
@@ -852,7 +855,9 @@ static void map_module(u32 m, const char *dir) {
     if (!f) rt_fatal("cannot open %s", path);
     u64 size = (mod->image_size + 0xFFFF) & ~0xFFFFull, text = (mod->text_size + 0xFFF) & ~0xFFFull;
     u8 *image = VirtualAlloc(G2H(mod->base), size, MEM_COMMIT, PAGE_READWRITE);   /* inside its reservation (NROs) */
-    if (image != G2H(mod->base)) image = VirtualAlloc(G2H(mod->base), size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    /* (rollback netplay, SSBU_RB: modules' writes are watched, so a savestate copies only the pages written) */
+    if (image != G2H(mod->base))
+        image = VirtualAlloc(G2H(mod->base), size, MEM_RESERVE | MEM_COMMIT | (kernel_rb_switch() ? MEM_WRITE_WATCH : 0), PAGE_READWRITE);
     if (image != G2H(mod->base)) rt_fatal("cannot map %s at %#llx", mod->name, mod->base);
     if (fread(image, 1, mod->image_size, f) < mod->text_size) rt_fatal("%s is truncated", path);
     fclose(f);
@@ -865,6 +870,7 @@ static void map_module(u32 m, const char *dir) {
     else for (u32 b = 0; b < 3; b++)
         if (!strcmp(mod->name, BOOT[b].name) && BOOT[b].ro == text) { ro = BOOT[b].ro; data = BOOT[b].data; }
     if (ro != text || data < ro || data > size) ro = data = text;
+    rb_mem_note(mod->base, size);   /* (SSBU_RB: the savestate sees the new pages; nothing otherwise) */
     kernel_add_region(mod->base, text, 3, 5);                        /* code */
     kernel_add_region(mod->base + ro, data - ro, 3, 1);              /* read-only data */
     kernel_add_region(mod->base + data, size - data, 4, 3);          /* data */
@@ -957,7 +963,7 @@ static void load(const char *dir) {
     for (u32 k = 0; k < nro_count_all(); k++) {
         const RtModule *nro = nro_by_index(k);
         u64 size = (nro->image_size + 0xFFFF) & ~0xFFFFull;
-        if (VirtualAlloc(G2H(nro->base), size, MEM_RESERVE, PAGE_NOACCESS) != G2H(nro->base))
+        if (VirtualAlloc(G2H(nro->base), size, MEM_RESERVE | (kernel_rb_switch() ? MEM_WRITE_WATCH : 0), PAGE_NOACCESS) != G2H(nro->base))   /* (SSBU_RB: watched, as above) */
             fprintf(stderr, "[ro] warning: cannot reserve %s's range at %#llx (error %lu)\n", nro->name, nro->base, (unsigned long)GetLastError());
     }
     GuestFn *own[] = {(GuestFn *)rt_call, (GuestFn *)rt_lookup, (GuestFn *)rt_backtrace, (GuestFn *)rt_fatal,

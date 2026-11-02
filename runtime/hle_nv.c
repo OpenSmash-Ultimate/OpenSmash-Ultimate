@@ -23,6 +23,7 @@
 #include <stdio.h>
 
 #include "host.h"
+u64 rb_gpu_ns(void);   /* (gpu.c: rt_now_ns, or the fixed clock in a rollback fight, SSBU_RB) */
 #include "gpu.h"
 #include "gpu_backend.h"   /* (gfx_gpu_unmapped, gfx_guest_unmapped) */
 
@@ -251,7 +252,7 @@ static u32 ctrl_gpu(u32 nr, u64 a, u32 request, u64 out, u64 out_size) {
         if (((request >> 16) & 0x3FFF) >= 0x1C) st32(a + 0x18, 3);
         return NV_OK;
     case 0x14: st32(a, 7); st32(a + 4, 1); return NV_OK;                 /* GetActiveSlotMask */
-    case 0x1C: st64(a, rt_now_ns()); return NV_OK;                       /* GetGpuTime */
+    case 0x1C: st64(a, rb_gpu_ns()); return NV_OK;                       /* GetGpuTime (in a rollback fight, the fixed clock: gpu.c) */
     }
     warn_once("nvhost-ctrl-gpu", request);
     return NV_OK;

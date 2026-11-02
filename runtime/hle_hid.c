@@ -117,6 +117,16 @@ int bench_on(void);                         /* (hle_bench.c: a test run drives p
 int bench_pads(void);                       /* (... unless its play mode hands the match to the pads) */
 u64 bench_buttons(i32 *lx, i32 *ly);
 
+/* (rollback build, M6: 1 for the other PC's player in net mode, hle_rb_core.c. That slot is a Pro
+ * Controller here whatever is plugged in: its moves come from the other PC (rb_pad), and a slot with
+ * nothing connected is never read, so its moves never reached the game. The keyboard sat there for
+ * that alone, and could not play this PC's own player.) */
+int rb_slot_remote(u32 id);
+int rb_slot_remote_gc(u32 id);   /* (version 12: a remote player's GameCube controller, from its choice) */
+/* (Host/Join: which of this PC's own controller slots the game's slot `id` reads. A joining PC's controller and keyboard
+ * are its player 1, as on any PC; once the host gives the game player N, the game's slot N reads them: hle_rb_core.c) */
+u32 rb_slot_phys(u32 id);
+
 /* A player is connected while a pad drives it, while it is the keyboard's, and (player 1) during
  * a scripted run. */
 static int pad_connected(u32 id) {
@@ -125,16 +135,20 @@ static int pad_connected(u32 id) {
     if (id >= PAD_SLOTS) return 0;
     if (bench_on() && !bench_pads()) return id == NPAD_NO1;
     PadState p;
-    return (!seq_player(id) && pad_get(id, &p)) || (int)id == keyboard_slot() || (id == NPAD_NO1 && scripted);
+    u32 ph = rb_slot_phys(id);   /* (rollback: the game's slot reads this PC's slot ph; id itself with SSBU_RB unset) */
+    return (!seq_player(ph) && pad_get(ph, &p)) || (int)ph == keyboard_slot() || (ph == NPAD_NO1 && scripted) || rb_slot_remote(id);
 }
 
 /* The player's style: a GameCube controller while its pad plays as one, else a Pro Controller. */
 static u32 pad_style(u32 id) {
+    if (rb_slot_remote(id)) return rb_slot_remote_gc(id) ? STYLE_GC : STYLE_FULLKEY;   /* (as on the other PC) */
     if (!pad_connected(id)) return 0;
     if (bench_on() && !bench_pads()) return STYLE_FULLKEY;
     PadState p;
-    return !seq_player(id) && pad_get(id, &p) && p.gc ? STYLE_GC : STYLE_FULLKEY;
+    u32 ph = rb_slot_phys(id);
+    return !seq_player(ph) && pad_get(ph, &p) && p.gc ? STYLE_GC : STYLE_FULLKEY;
 }
+int hid_slot_is_gc(u32 id) { return pad_style(id) == STYLE_GC; }   /* (hle_rb_core.c: this player's choice says so) */
 
 static const char *const BUTTON_NAMES[] = {"A", "B", "X", "Y", "LSTICK", "RSTICK", "L", "R", "ZL", "ZR", "PLUS", "MINUS",
                                            "LEFT", "UP", "RIGHT", "DOWN"};
@@ -209,6 +223,10 @@ static u64 keyboard_buttons(i32 *lx, i32 *ly, i32 *rx, i32 *ry) {
  * The attributes say connected only in the player's own style. A GameCube state goes on with
  * { u32 trigger l, trigger r (0..32767); u32 reserved }: the game presses L and R itself when a
  * trigger is past 0x27FF, whatever the buttons say, so the keyboard's L and R pull them fully. */
+/* (rollback build: hle_rb_core.c) In a fight a player's input comes from the input tape, by
+ * logic frame, and the sampling number follows the logic frame. */
+void rb_pad(u32 id, u64 *buttons, i32 *lx, i32 *ly, i32 *rx, i32 *ry, i32 *lt, i32 *rt);
+int rb_pad_sampling(u64 *sampling);
 static void npad_state(u64 out, u32 id, u32 style) {
     u64 buttons = 0;
     i32 lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0;
@@ -216,17 +234,19 @@ static void npad_state(u64 out, u32 id, u32 style) {
     if (style && pad_style(id) == style) {
         attributes = ATTR_CONNECTED | ATTR_WIRED;
         PadState p;
+        u32 ph = rb_slot_phys(id);
         if (bench_on() && !bench_pads()) {
             if (id == NPAD_NO1) buttons = bench_buttons(&lx, &ly);
-        } else if (seq_player(id)) seq_player_poll(&buttons, &lx, &ly);
-        else if (pad_get(id, &p) && (pad_background() || gfx_window_focused())) {
+        } else if (seq_player(ph)) seq_player_poll(&buttons, &lx, &ly);
+        else if (pad_get(ph, &p) && (pad_background() || gfx_window_focused())) {
             buttons = p.buttons;
             lx = p.lx; ly = p.ly; rx = p.rx; ry = p.ry;
             lt = p.lt; rt = p.rt;
         }
-        if (id == NPAD_NO1 && !bench_on()) buttons |= scripted_buttons(&lx, &ly);
-        if ((int)id == keyboard_slot() && (!bench_on() || bench_pads())) buttons |= keyboard_buttons(&lx, &ly, &rx, &ry);
+        if (ph == NPAD_NO1 && !bench_on()) buttons |= scripted_buttons(&lx, &ly);
+        if ((int)ph == keyboard_slot() && (!bench_on() || bench_pads())) buttons |= keyboard_buttons(&lx, &ly, &rx, &ry);
         if (menu_blocks_input()) { buttons = 0; lx = ly = rx = ry = 0; }   /* the settings menu has them (still connected) */
+        rb_pad(id, &buttons, &lx, &ly, &rx, &ry, &lt, &rt);
         {
             /* the stick directions also exist as buttons */
             if (lx < -16384) buttons |= 1ull << B_SL_LEFT;
@@ -239,7 +259,9 @@ static void npad_state(u64 out, u32 id, u32 style) {
             if (ry < -16384) buttons |= 1ull << B_SR_DOWN;
         }
     }
-    st64(out, (u64)InterlockedIncrement64(&sampling));
+    u64 smp;
+    if (!rb_pad_sampling(&smp)) smp = (u64)InterlockedIncrement64(&sampling);
+    st64(out, smp);
     st64(out + 8, buttons);
     st32(out + 16, (u32)lx); st32(out + 20, (u32)ly);
     st32(out + 24, (u32)rx); st32(out + 28, (u32)ry);
@@ -363,7 +385,7 @@ HLE(_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14Vibrati
     f32 low, high;
     memcpy(&low, P(void, c->x[1]), 4);
     memcpy(&high, P(void, c->x[1] + 8), 4);
-    pad_rumble(id, (int)side + 1, low > high ? low : high);
+    pad_rumble(rb_slot_phys(id), (int)side + 1, low > high ? low : high);
 }
 HLE(_ZN2nn3hid23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21VibrationDeviceHandleE) {
     u32 handle = ld32(c->x[1]), id = handle >> 8 & 0xFF;
@@ -376,8 +398,8 @@ HLE(_ZN2nn3hid25SendVibrationGcErmCommandERKNS0_21VibrationDeviceHandleERKNS0_21
     u32 id = ld32(c->x[0]) >> 8 & 0xFF, command = ld32(c->x[1]);
     if (id >= PAD_SLOTS) return;
     gc_erm_sent[id] = command;
-    pad_rumble(id, 1, command == 1 ? 1.0f : 0.0f);
-    pad_rumble(id, 2, command == 1 ? 1.0f : 0.0f);
+    pad_rumble(rb_slot_phys(id), 1, command == 1 ? 1.0f : 0.0f);
+    pad_rumble(rb_slot_phys(id), 2, command == 1 ? 1.0f : 0.0f);
 }
 HLE(_ZN2nn3hid30GetActualVibrationGcErmCommandEPNS0_21VibrationGcErmCommandERKNS0_21VibrationDeviceHandleE) {
     u32 id = ld32(c->x[1]) >> 8 & 0xFF;

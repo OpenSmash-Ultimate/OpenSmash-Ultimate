@@ -29,9 +29,11 @@ static void forget(void) {
 /* The game's functions behind the wraps: each sets a result of its own and clobbers a register. */
 static u64 game_saw[8];
 void f_71038701e0_orig(Cpu *c) { memcpy(game_saw, c->x, sizeof game_saw); say("F"); c->x[0] = 0xF0044007u; c->x[9] = 0x99; }
+void f_71017880c0_orig(Cpu *c) { memcpy(game_saw, c->x, sizeof game_saw); say("R"); c->x[0] = 0x2222; c->x[9] = 0x97; }
 static void line_orig(Cpu *c) { memcpy(game_saw, c->x, sizeof game_saw); say("L"); c->x[0] = 0x1111; c->x[9] = 0x98; }
 void hle_wrap__ZN7lua2cpp16L2CFighterCommon31sys_line_system_control_fighterEv(Cpu *c, GuestFn *orig);
 void hle_wrap_71038701e0(Cpu *c);
+void hle_wrap_71017880c0(Cpu *c);
 
 static Cpu cpu;
 static void called_with(u64 base) {
@@ -40,6 +42,7 @@ static void called_with(u64 base) {
     cpu.sp = 0x7700100000ull;
 }
 static void frame_end(void) { called_with(0x100); hle_wrap_71038701e0(&cpu); }
+static void record(void) { called_with(0x300); hle_wrap_71017880c0(&cpu); }
 static void frame_line(void) { called_with(0x200); hle_wrap__ZN7lua2cpp16L2CFighterCommon31sys_line_system_control_fighterEv(&cpu, line_orig); }
 
 /* A made-up handler: its name (the context) in the trace. */
@@ -178,6 +181,26 @@ static void threads(void) {
     CHECK(frame_hook_count(FRAME_HOOK_LINE) == 8, "all eight registered (%d)", frame_hook_count(FRAME_HOOK_LINE));
 }
 
+/* The record builder's point (FRAME_HOOK_RECORD): only the game's with nothing registered, its
+ * own handlers apart from the frame points', given the arguments as called. */
+static void records(void) {
+    forget();
+    record();
+    CHECK(!strcmp(trace, "R") && game_saw[0] == 0x300 && game_saw[3] == 0x303 && cpu.x[0] == 0x2222 && cpu.x[9] == 0x97,
+          "the record builder: only the game's (%s), its results left", trace);
+    trace[0] = 0;
+    CHECK(frame_hook_add(FRAME_HOOK_RECORD, 200, before, after, "T") && frame_hook_add(FRAME_HOOK_RECORD, 150, look_before, look_after, NULL),
+          "two at the record builder");
+    record();
+    CHECK(!strcmp(trace, "T< R T>"), "the record builder's own: %s", trace);
+    CHECK(seen_before[0] == 0x300 && seen_before[1] == 0x301 && seen_before[3] == 0x303 && seen_after[3] == 0x303 && seen_after_x0 == 0x2222,
+          "each given the arguments as called, and the results after");
+    trace[0] = 0;
+    frame_end();
+    frame_line();
+    CHECK(!strcmp(trace, "F L"), "the frame points have none of them: %s", trace);
+}
+
 int main(void) {
     nothing();
     order();
@@ -185,6 +208,7 @@ int main(void) {
     limits();
     during();
     threads();
+    records();
     printf("%d checks, %d failed\n", checks, failures);
     return failures != 0;
 }

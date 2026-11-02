@@ -73,6 +73,7 @@ typedef struct KThread {
     u64 wakes;          /* how often it was woken (kwake): the tests check a signal wakes only its own waiters */
     CONDITION_VARIABLE woken;   /* what this thread sleeps on (kwait): wakes go to the threads concerned */
     struct KThread *next_dead;   /* (recycling) the next thread waiting for its host thread to end */
+    volatile int rb_state;   /* (rollback, SSBU_RB) 1 while asleep in kwait: kernel_rb_census */
 } KThread;
 
 /* refs: handles open on it; waits: WaitSynchronization calls holding it; gen: how often its slot
@@ -107,7 +108,13 @@ static int core_masks;                       /* SSBU_CORE_MASKS=1 (likewise) */
 /* ---- time ------------------------------------------------------------------------ */
 static u64 now_ns(void) { return rt_clock_ns(); }
 
-u64 rt_ticks(void) { return rt_clock_ns() * 12 / 625; }   /* (19.2 MHz) */
+u64 rt_ticks(void);   /* (at the end: the rollback build's fixed clock) */
+extern volatile int rb_clock_fixed;
+extern volatile u64 rb_vtick;
+static volatile u64 rb_clock_gen = 1;
+static i64 rb_clock_off;
+static u64 rb_gpu_base, rb_vtick_base;   /* the GPU timer's fixed clock (rb_gpu_ns, at the end) */
+static i64 rb_gpu_off;
 
 static u64 deadline_of(i64 timeout_ns) { return timeout_ns < 0 ? ~0ull : now_ns() + (u64)timeout_ns; }
 
@@ -116,14 +123,38 @@ static u64 deadline_of(i64 timeout_ns) { return timeout_ns < 0 ? ~0ull : now_ns(
  * condition variable signalled, an event set wakes just the threads waiting for it (one shared
  * one, woken in full, sent every sleeping thread round the kernel lock at every change). The
  * callers look at their wait again either way (the host can wake a thread for nothing). */
+/* (rollback, SSBU_RB: hle_rb_state.c) A hold parks every guest thread here, at its next wait:
+ * kwait's callers all loop on their own condition, so a wait that returns early is only a spurious
+ * wake. The thread leaves the kernel's lock while parked. rb_hold is only ever set with SSBU_RB on,
+ * after hle_rb_state.c has set kernel_rb_park. */
+volatile int rb_hold;
+void (*kernel_rb_park)(void *kthread);
+static void rb_park(KThread *me) {
+    LeaveCriticalSection(&klock);
+    if (kernel_rb_park) kernel_rb_park(me);
+    EnterCriticalSection(&klock);
+}
+
+/* (rollback) Frames still to run again after a load (hle_rb_core.c sets it; the vsync thread,
+ * the profiler and the profile below read it), and the guest main thread's time asleep here
+ * while they run: hle_rb_core.c sets rb_main_kthread and reads the sums. */
+volatile LONG rb_fast;
+void *rb_main_kthread;
+volatile u64 rb_main_wait_ns, rb_main_waits;
 static int kwait(KThread *me, u64 deadline) {
+    if (rb_hold) { rb_park(me); return 1; }
     DWORD ms = INFINITE;
     if (deadline != ~0ull) {
         u64 now = now_ns();
         if (now >= deadline) return 0;
         ms = (DWORD)((deadline - now + 999999) / 1000000);
     }
+    me->rb_state = 1;
+    u64 w0 = rb_fast > 0 && (void *)me == rb_main_kthread ? now_ns() : 0;
     SleepConditionVariableCS(&me->woken, &klock, ms);
+    if (w0) { rb_main_wait_ns += now_ns() - w0; rb_main_waits++; }   /* (the profile of re-run frames: the main thread's waits) */
+    me->rb_state = 0;
+    if (rb_hold) rb_park(me);
     return 1;
 }
 
@@ -532,9 +563,14 @@ static void watch_decommitting(u64 base, u64 size) {
     ReleaseSRWLockExclusive(&watch_lock);
 }
 
+int kernel_rb_switch(void) {
+    const char *v = getenv("SSBU_RB");
+    return v && *v && *v != '0';
+}
+
 int kernel_ring_frames(void) {
     const char *v = getenv("SSBU_ROLLBACK_RING");
-    if (!v || !*v) return 0;
+    if (!v || !*v || kernel_rb_switch()) return 0;   /* (SSBU_RB has the write watch to itself: kernel_watch.h) */
     if (!strcmp(v, "1")) return 8;
     for (const char *d = v; *d; d++)
         if (*d < '0' || *d > '9') return 0;
@@ -648,7 +684,22 @@ void kernel_map_status(void) {
     LeaveCriticalSection(&klock);
 }
 
+/* (rollback build, M3) The guest ranges committed or decommitted since hle_rb_state.c last
+ * cleared the list (rb_mem_nchanged = 0, while every guest thread is held): a savestate copies
+ * those whole, as their pages may have changed without a write (a decommitted page comes back
+ * as zeros). More than RB_CHANGES of them: rb_mem_nchanged says so, and everything is copied. */
+#define RB_CHANGES 256
+u64 rb_mem_changed[RB_CHANGES][2];
+volatile LONG rb_mem_nchanged;
+static int rb_switch = -1;   /* kernel_rb_switch(), once */
+void rb_mem_note(u64 at, u64 size) {   /* (host.c too: modules loaded) */
+    if (rb_switch < 0) rb_switch = kernel_rb_switch();
+    if (!rb_switch) return;
+    LONG i = InterlockedIncrement(&rb_mem_nchanged) - 1;
+    if (i < RB_CHANGES) { rb_mem_changed[i][0] = at; rb_mem_changed[i][1] = size; }
+}
 static void *commit(u64 at, u64 size, const char *what) {
+    rb_mem_note(at, size);
     void *p = VirtualAlloc(G2H(at), size, MEM_COMMIT, PAGE_READWRITE);
     if (!p) rt_fatal("kernel: cannot commit %llu KiB at %#llx for %s (error %lu)", size >> 10, at, what, (unsigned long)GetLastError());
     return p;
@@ -1044,7 +1095,14 @@ static void system_call(Cpu *c, u32 n) {
     switch (n) {
     case 0x0B:   /* SleepThread(ns): non-positive values are yield requests */
         if ((i64)x[0] > 0) skyline_note_sleep();   /* (hle_skyline.c: ARCropolis' event thread going round) */
-        if ((i64)x[0] > 0) sleep_ns(x[0]); else SwitchToThread();
+        if ((i64)x[0] > 0) {
+            if (rb_switch > 0) {   /* (rollback: a kwait nothing wakes but a hold, so a hold can park it) */
+                u64 deadline = now_ns() + x[0];
+                EnterCriticalSection(&klock);
+                while (kwait(me, deadline)) {}
+                LeaveCriticalSection(&klock);
+            } else sleep_ns(x[0]);
+        } else SwitchToThread();
         return;
     case 0x10:                                           /* GetCurrentProcessorNumber (see "priorities and cores") */
         x[0] = core_masks ? (u32)__atomic_load_n(&me->processor, __ATOMIC_RELAXED) : 0;
@@ -1118,6 +1176,7 @@ static void system_call(Cpu *c, u32 n) {
                 map_copy_ns += now_ns() - t0;
                 gpu_memory_unmapping(maps[i].dst, maps[i].size);   /* (queued GPU work and the renderer may read it) */
                 watch_decommitting(maps[i].dst, maps[i].size);
+                rb_mem_note(maps[i].dst, maps[i].size);
                 VirtualFree(G2H(maps[i].dst), maps[i].size, MEM_DECOMMIT);
                 unmap_range(maps[i].dst, maps[i].size);
                 maps[i].size = 0;
@@ -1249,6 +1308,7 @@ static void system_call(Cpu *c, u32 n) {
     case 0x2D:     /* UnmapPhysicalMemory(address, size) */
         gpu_memory_unmapping(x[0], x[1]);   /* (queued GPU work and the renderer may read it) */
         watch_decommitting(x[0], x[1]);
+        rb_mem_note(x[0], x[1]);
         VirtualFree(G2H(x[0]), x[1], MEM_DECOMMIT);
         unmap_range(x[0], x[1]);
         x[0] = R_OK;
@@ -1302,6 +1362,128 @@ void kernel_thread_states(void (*line)(const char *text)) {
         snprintf(text, sizeof text, "  guest thread %llu (host thread %lu, priority %d): %s\n", t->id, (unsigned long)GetThreadId(t->host), t->priority, wait_state(t));
         line(text);
     }
+    LeaveCriticalSection(&klock);
+}
+
+/* (rollback build, M2) The guest memory a savestate holds: every region of the guest's memory map
+ * that can change - module data, heap, stacks, thread-local regions, mapped memory - but not
+ * module code or the shared fonts. On Windows the guest lives at its own addresses, among the
+ * host's own allocations, so this map, not the address range, says what is the guest's. Writes
+ * up to max ranges to out[] (base, size); returns how many there are. */
+u32 kernel_rb_regions(u64 (*out)[2], u32 max) {
+    u32 n = 0;
+    EnterCriticalSection(&klock);
+    for (u32 i = 0; i < region_count; i++) {
+        u32 s = regions[i].state;
+        if (s == GM_FREE || s == GM_CODE || s == 6 /* shared */ || s == GM_INACCESSIBLE) continue;
+        if (n < max) { out[n][0] = regions[i].base; out[n][1] = regions[i].size; }
+        n++;
+    }
+    LeaveCriticalSection(&klock);
+    return n;
+}
+
+/* (rollback build, M1) The guest threads other than `self`: how many are alive, asleep in kwait,
+ * in svcSleepThread, or neither (running, or in a call that doesn't wait). The ids of up to
+ * `max` of the last kind go to busy[]. Read without the lock: a census, not a hold. */
+void kernel_rb_census(const void *self, u32 *alive, u32 *waiting, u32 *sleeping, u64 *busy, u32 max, u32 *nbusy) {
+    *alive = *waiting = *sleeping = *nbusy = 0;
+    for (u32 i = 0; i < nthreads; i++) {
+        KThread *t = threads[i];
+        if (!t || t == self || !t->started || t->exited || !t->host) continue;
+        ++*alive;
+        int s = t->rb_state;
+        if (s == 1) ++*waiting;
+        else if (s == 2) ++*sleeping;
+        else if (*nbusy < max) busy[(*nbusy)++] = t->id;
+        else ++*nbusy;
+    }
+}
+
+/* (rollback build, M2) Wakes every guest thread from kwait, for a hold (rb_hold already set). */
+void kernel_rb_wake_all(void) {
+    EnterCriticalSection(&klock);
+    for (u32 i = 0; i < nthreads; i++) if (threads[i]) WakeConditionVariable(&threads[i]->woken);
+    LeaveCriticalSection(&klock);
+}
+
+/* (rollback build, M2) The kernel's state for a savestate: objects, memory regions and maps, the
+ * counters, every thread's record and guest registers. A thread's host handle and the condition
+ * variable it sleeps on are host objects and stay as they are. A load needs the same threads. */
+typedef struct KSnap {
+    u32 nthreads, region_count;
+    KThread *ptr[1024];
+    KThread th[1024];
+    Cpu cpu[1024];
+    KObject objects[4096];
+    Region regions[REGIONS];
+    struct { u64 dst, src, size; } maps[1024];
+    u32 maps_live;
+    WaitQueue queue_pool[QUEUES], *spare_queues, *queues[QUEUES];   /* (the threads' queue pointers are into the pool) */
+    u32 queues_made;
+    u64 spare_tlrs[TLR_AREA / 0x1000];
+    u32 nspare_tlrs;
+    u64 heap_size, tlr_next, next_thread_id;
+    int clock_fixed; u64 vtick; i64 clock_off;   /* the fixed clock (the end of this file) */
+    u64 gpu_base, vtick_base; i64 gpu_off;
+} KSnap;
+
+void *kernel_rb_save(void) {
+    KSnap *s = malloc(sizeof *s);
+    if (!s) return NULL;
+    EnterCriticalSection(&klock);
+    s->nthreads = nthreads; s->region_count = region_count;
+    for (u32 i = 0; i < nthreads; i++) { s->ptr[i] = threads[i]; s->th[i] = *threads[i]; s->cpu[i] = *threads[i]->cpu; }
+    memcpy(s->objects, objects, sizeof objects);
+    memcpy(s->regions, regions, sizeof regions);
+    memcpy(s->maps, maps, sizeof maps);
+    s->maps_live = maps_live;
+    memcpy(s->queue_pool, queue_pool, sizeof queue_pool);
+    memcpy(s->queues, queues, sizeof queues);
+    s->spare_queues = spare_queues; s->queues_made = queues_made;
+    memcpy(s->spare_tlrs, spare_tlrs, sizeof spare_tlrs);
+    s->nspare_tlrs = nspare_tlrs;
+    s->heap_size = heap_size; s->tlr_next = tlr_next; s->next_thread_id = next_thread_id;
+    s->clock_fixed = rb_clock_fixed; s->vtick = rb_vtick; s->clock_off = rb_clock_off;
+    s->gpu_base = rb_gpu_base; s->vtick_base = rb_vtick_base; s->gpu_off = rb_gpu_off;
+    LeaveCriticalSection(&klock);
+    return s;
+}
+
+const char *kernel_rb_check(const void *p) {
+    const KSnap *s = p;
+    if (s->nthreads != nthreads) return "a guest thread was made since the save";
+    for (u32 i = 0; i < nthreads; i++) if (s->ptr[i] != threads[i]) return "the guest threads differ from the save";
+    return NULL;
+}
+
+void kernel_rb_load(const void *p) {
+    const KSnap *s = p;
+    EnterCriticalSection(&klock);
+    for (u32 i = 0; i < nthreads; i++) {
+        KThread *t = threads[i];
+        HANDLE host = t->host;
+        CONDITION_VARIABLE woken = t->woken;
+        int state = t->rb_state, band = t->band;   /* (host things: its thread, what it sleeps on, its host priority) */
+        KThread *next_dead = t->next_dead;
+        *t = s->th[i];
+        t->host = host; t->woken = woken; t->rb_state = state; t->band = band; t->next_dead = next_dead;
+        *t->cpu = s->cpu[i];
+    }
+    memcpy(objects, s->objects, sizeof objects);
+    memcpy(regions, s->regions, sizeof regions);
+    memcpy(maps, s->maps, sizeof maps);
+    maps_live = s->maps_live;
+    memcpy(queue_pool, s->queue_pool, sizeof queue_pool);
+    memcpy(queues, s->queues, sizeof queues);
+    spare_queues = s->spare_queues; queues_made = s->queues_made;
+    memcpy(spare_tlrs, s->spare_tlrs, sizeof spare_tlrs);
+    nspare_tlrs = s->nspare_tlrs;
+    region_count = s->region_count;
+    heap_size = s->heap_size; tlr_next = s->tlr_next; next_thread_id = s->next_thread_id;
+    rb_clock_fixed = s->clock_fixed; rb_vtick = s->vtick; rb_clock_off = s->clock_off;
+    rb_gpu_base = s->gpu_base; rb_vtick_base = s->vtick_base; rb_gpu_off = s->gpu_off;
+    rb_clock_gen++;   /* (every thread's per-read count starts again, as after the save's safe point) */
     LeaveCriticalSection(&klock);
 }
 
@@ -1377,8 +1559,11 @@ void kernel_init(void) {
     };
     int ring = kernel_ring_frames();
     kernel_watch_shared = ring > 0;
+    rb_switch = kernel_rb_switch();   /* (SSBU_RB, rollback netplay: its savestates ask the system's write watch for every area) */
+    if (rb_switch && getenv("SSBU_ROLLBACK_RING") && *getenv("SSBU_ROLLBACK_RING"))
+        fprintf(stderr, "[kernel] SSBU_ROLLBACK_RING left off: SSBU_RB's savestates use the write watch\n");
     for (u32 i = 0; i < sizeof areas / sizeof *areas; i++) {
-        DWORD watch = areas[i].renderer || ring ? MEM_WRITE_WATCH : 0;
+        DWORD watch = areas[i].renderer || ring || rb_switch ? MEM_WRITE_WATCH : 0;
         if (VirtualAlloc(G2H(areas[i].base), areas[i].size, MEM_RESERVE | watch, PAGE_READWRITE) != G2H(areas[i].base))
             rt_fatal("kernel: cannot reserve the %s area at %#llx", areas[i].what, areas[i].base);
         if (ring) watch_add(areas[i].base, areas[i].size, (areas[i].renderer ? 1u << WATCH_RENDERER : 0) | 1u << WATCH_RING);
@@ -1386,6 +1571,10 @@ void kernel_init(void) {
     if (ring)
         fprintf(stderr, "[kernel] the heap, stack and thread-local areas' writes watched too, and the write watch shared by the renderer and the rollback ring (SSBU_ROLLBACK_RING)\n");
     map_guard = getenv("SSBU_MAP_GUARD") && !strcmp(getenv("SSBU_MAP_GUARD"), "1");
+    if (map_guard && rb_switch) {   /* (a savestate copies every mapped page, and puts the memory map back as it was) */
+        map_guard = 0;
+        fprintf(stderr, "[kernel] SSBU_MAP_GUARD=1 left off: rollback's savestates read every mapped page (SSBU_RB)\n");
+    }
     if (map_guard && ring) {   /* (the ring reads every page the memory map has; and the watch protects the heap's pages itself, on macOS and older Linux) */
         map_guard = 0;
         fprintf(stderr, "[kernel] SSBU_MAP_GUARD=1 left off: the rollback ring reads every mapped page (SSBU_ROLLBACK_RING)\n");
@@ -1401,4 +1590,47 @@ void kernel_init(void) {
         fprintf(stderr, "[kernel] SSBU_HOST_PRIORITIES=1 left off: a thread lowered could not be raised again (RLIMIT_NICE below 20)\n");
     }
     if (host_priorities) fprintf(stderr, "[kernel] host thread priorities follow the guest's, in four bands (SSBU_HOST_PRIORITIES=1)\n");
+}
+
+/* ---- rollback: the fixed clock ------------------------------------------------------
+ * The game's system tick (svc 0x1E and the lifted CNTVCT reads both come here). Off a fight it
+ * is the real 19.2 MHz counter (plus an offset, so it never steps back). In a fight
+ * (rb_clock_fixed, set by hle_rb_core.c's safe point) it is rb_vtick, which the safe point
+ * moves by exactly one 60 Hz frame (320,000 ticks), plus one tick per read the reading thread
+ * made since that safe point, so a loop that waits for the tick to move still sees it move,
+ * the same way in every replay. rb_vtick and the offset go in the savestate (KSnap). */
+volatile int rb_clock_fixed;
+volatile u64 rb_vtick;
+static __declspec(thread) u64 tick_gen, tick_reads;
+static u64 real_ticks(void) { return rt_clock_ns() * 12 / 625; }   /* (19.2 MHz) */
+u64 rt_ticks(void) {
+    if (!rb_clock_fixed) return real_ticks() + (u64)rb_clock_off;
+    u64 g = rb_clock_gen;
+    if (tick_gen != g) { tick_gen = g; tick_reads = 0; }
+    return rb_vtick + tick_reads++;
+}
+/* The GPU's timer (gpu.c's semaphore timestamps), in rt_now_ns's nanoseconds, which the nv
+ * service's GetGpuTime also gives: in a fight it follows rb_vtick from where it stood. (Moving it
+ * to the system tick's origin instead hung the game at a black screen.) gpu.c's rb_gpu_ns asks
+ * here: 1 with the fixed clock's time in a fight, else 0 with the offset to add to rt_now_ns
+ * (0 unless a rollback fight has ended). (rt_now_ns is host.c's: the kernel's tests have none.) */
+int kernel_rb_gpu_clock(u64 *fixed_ns, i64 *off) {
+    if (rb_clock_fixed) { *fixed_ns = rb_gpu_base + (rb_vtick - rb_vtick_base) * 625 / 12; return 1; }
+    *off = rb_gpu_off;
+    return 0;
+}
+/* At the safe point, on the main thread, with every other thread at a wait; gpu_now is rt_now_ns(). */
+void rb_clock_frame(int fight, u64 gpu_now) {
+    if (fight && !rb_clock_fixed) {
+        rb_vtick = real_ticks() + (u64)rb_clock_off;
+        rb_gpu_base = gpu_now + (u64)rb_gpu_off; rb_vtick_base = rb_vtick;
+        rb_clock_fixed = 1;
+    } else if (fight) rb_vtick += 320000;
+    else if (rb_clock_fixed) {
+        rb_clock_fixed = 0;
+        rb_clock_off = (i64)(rb_vtick + 320000 - real_ticks());
+        rb_gpu_off = (i64)(rb_gpu_base + (rb_vtick + 320000 - rb_vtick_base) * 625 / 12 - gpu_now);
+        if (rb_gpu_off < 0) rb_gpu_off = 0;   /* (back to GetGpuTime's real time, which is ahead: a step forward) */
+    }
+    rb_clock_gen++;
 }

@@ -57,5 +57,34 @@ static void guest_longjmp(Cpu *c) {
     RT_LONGJMP(r->host, value);   /* (the host setjmp's own pair: recomp.h) */
 }
 
+/* (rollback build, M2) Every record's contents for a savestate (the host jmp_buf names a frame of
+ * a host stack the savestate puts back too). Records made since a save stay: a guest buffer is
+ * set again before it is jumped to. */
+typedef struct RSave { Record *r; Record v; } RSave;
+void *setjmp_rb_save(u32 *count) {
+    u32 n = 0;
+    AcquireSRWLockShared(&lock);
+    for (u32 b = 0; b < BUCKETS; b++) for (Record *r = table[b]; r; r = r->next) n++;
+    RSave *s = _aligned_malloc(sizeof *s * (n + 1), 16);
+    u32 i = 0;
+    for (u32 b = 0; b < BUCKETS; b++) for (Record *r = table[b]; r; r = r->next) { s[i].r = r; s[i].v = *r; i++; }
+    ReleaseSRWLockShared(&lock);
+    s[n].r = NULL;
+    *count = n;
+    return s;
+}
+
+void setjmp_rb_load(const void *p) {
+    AcquireSRWLockExclusive(&lock);
+    for (const RSave *s = p; s->r; s++) {
+        Record *next = s->r->next;
+        *s->r = s->v;
+        s->r->next = next;
+    }
+    ReleaseSRWLockExclusive(&lock);
+}
+
+void setjmp_rb_free(void *p) { _aligned_free(p); }
+
 HLE(longjmp) { guest_longjmp(c); }
 HLE(_longjmp) { guest_longjmp(c); }

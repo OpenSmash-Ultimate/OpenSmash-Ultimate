@@ -356,10 +356,24 @@ static int menu_keys(UINT msg, WPARAM w, LPARAM l) {
     return 1;
 }
 
+#ifdef _WIN32
+/* (rollback netplay, hle_rb_core.c: what a match's set-up waits for, after the window's own title;
+ * "" puts the title back. With a timeout: the window's thread never blocks the caller) */
+void gfx_set_status(const char *text) {
+    static char base[128];
+    if (!window) return;
+    if (!base[0]) GetWindowTextA(window, base, sizeof base);
+    char t[320];
+    if (text && *text) snprintf(t, sizeof t, "%s  -  %s", base, text); else snprintf(t, sizeof t, "%s", base);
+    SendMessageTimeoutA(window, WM_SETTEXT, 0, (LPARAM)t, SMTO_ABORTIFHUNG, 200, NULL);
+}
+#endif
+
+void rbl_upnp_close(void);   /* (rollback netplay, hle_rb_link.c: the router's port mapping, if SSBU_RB_UPNP=1 made one; ExitProcess runs no atexit) */
 static LRESULT CALLBACK window_proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
     LRESULT result;
     if (display_message(h, msg, w, l, &result)) return result;   /* size, full screen, pointer (gpu_display.c) */
-    if (msg == WM_CLOSE) { fprintf(stderr, "[gfx] window closed\n"); gfx_closing(); fflush(stderr); ExitProcess(0); }
+    if (msg == WM_CLOSE) { fprintf(stderr, "[gfx] window closed\n"); gfx_closing(); rbl_upnp_close(); fflush(stderr); ExitProcess(0); }
     if (msg == WM_KEYDOWN && w >= VK_F1 && w <= VK_F6 && !(l & (1 << 30))) InterlockedOr(&hotkeys, 1 << (w - VK_F1));
     if (menu_keys(msg, w, l)) return 0;
     return DefWindowProcW(h, msg, w, l);
@@ -2463,7 +2477,16 @@ static u64 watch_clock;   /* stamps given so far */
 /* Take the write watch's news for guest pages [lo, hi) (page aligned, watched): resetting the
  * bits as they are read, so a write after this is news next time. (Through the kernel, which
  * shares the system's bits with the rollback ring when that is on: kernel_watch.h.) */
+static void watch_take_locked(u64 lo, u64 hi);
+/* (rollback netplay, SSBU_RB: hle_rb_state.c's savestates ask too, from the game's main thread, so
+ * one at a time: watch_rb_take and the others below) */
+static SRWLOCK watch_lock = SRWLOCK_INIT;
 static void watch_take(u64 lo, u64 hi) {
+    AcquireSRWLockExclusive(&watch_lock);
+    watch_take_locked(lo, hi);
+    ReleaseSRWLockExclusive(&watch_lock);
+}
+static void watch_take_locked(u64 lo, u64 hi) {
     static void *pages[65536];   /* (256 MB: the largest range asked about, in one call) */
     void *first;
     ULONG_PTR count = 1;
@@ -2496,6 +2519,41 @@ static u64 watch_next(u64 p, u64 hi, u64 seen) {
         p = ALIAS_BASE + (end << 12);
     }
     return hi;
+}
+
+/* (rollback netplay, SSBU_RB) The savestate's own questions about the alias area, through the same
+ * stamps, so the textures' news stays theirs: take the news for [lo, hi) and say the clock; the
+ * first page in [p, hi) stamped after `seen`. */
+u64 watch_rb_take(u64 lo, u64 hi) {
+    AcquireSRWLockExclusive(&watch_lock);
+    watch_take_locked(lo, hi);
+    u64 now = watch_clock;
+    ReleaseSRWLockExclusive(&watch_lock);
+    return now;
+}
+u64 watch_rb_next(u64 p, u64 hi, u64 seen) { return watch_next(p, hi, seen); }
+/* (SSBU_RB_STAMPS=3) The same, its ranges asked on several threads at once: watch_rb_begin takes
+ * the lock and the stamp, then watch_rb_scan from any thread (ranges whole watch chunks apart,
+ * pages: room for 65536), then watch_rb_end. */
+u64 watch_rb_begin(void) { AcquireSRWLockExclusive(&watch_lock); return ++watch_clock; }
+void watch_rb_end(void) { ReleaseSRWLockExclusive(&watch_lock); }
+void watch_rb_scan(u64 lo, u64 hi, u64 stamp, void **pages) {
+    void *first;
+    ULONG_PTR count = 1;
+    ULONG granularity;
+    if (kernel_write_watch(WATCH_RENDERER, 0, (void *)lo, hi - lo, &first, &count, &granularity) != 0 || !count) return;
+    for (u64 at = (u64)first; at < hi;) {
+        count = 65536;
+        if (kernel_write_watch(WATCH_RENDERER, WRITE_WATCH_FLAG_RESET, (void *)at, hi - at, pages, &count, &granularity) != 0 || !count) return;
+        for (ULONG_PTR k = 0; k < count; k++) {
+            u64 p = ((u64)pages[k] - ALIAS_BASE) >> 12;
+            WatchChunk **c = &watch_chunks[p / WATCH_CHUNK];
+            if (!*c && !(*c = calloc(1, sizeof **c))) continue;
+            (*c)->page[p % WATCH_CHUNK] = (*c)->newest = stamp;
+        }
+        if (count < 65536) return;
+        at = (u64)pages[count - 1] + 0x1000;
+    }
 }
 
 /* Has guest memory [g, g + size) been written since *seen? (*seen moves on to now.) Ask before
