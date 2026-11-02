@@ -2854,7 +2854,11 @@ namespace OpenSmash.Launcher
 
                 var core = view.CoreWebView2;
                 core.Settings.AreDefaultContextMenusEnabled = false;
+#if DEBUG
                 core.Settings.AreDevToolsEnabled = true;
+#else
+                core.Settings.AreDevToolsEnabled = false;
+#endif
                 core.Settings.IsStatusBarEnabled = false;
                 core.Settings.AreHostObjectsAllowed = false;
                 core.Settings.IsZoomControlEnabled = false;
@@ -2866,7 +2870,7 @@ namespace OpenSmash.Launcher
                     if (args.Uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase)) return;
                     if (args.Uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase)) return;
                     args.Cancel = true;
-                    try { Process.Start(new ProcessStartInfo(args.Uri) { UseShellExecute = true }); } catch { }
+                    OpenExternal(args.Uri);
                 };
 
                 core.WebMessageReceived += OnMarketplaceMessage;
@@ -2933,8 +2937,7 @@ namespace OpenSmash.Launcher
                         _ = InstallPluginAsync(GetString(root, "name"), GetString(root, "url"));
                         break;
                     case "open_external":
-                        if (!string.IsNullOrEmpty(url))
-                            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                        OpenExternal(url);
                         break;
                     case "detail":
                         // The page shows a mod's details; it has its own back link to
