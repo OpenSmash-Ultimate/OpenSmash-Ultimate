@@ -203,7 +203,9 @@ class LineTests(unittest.TestCase):
                 pass
         self.assertEqual(screen(out.getvalue()), [P.line_text(0.25, 3600, 'compiling lua2cpp_item: 1 of 63 files')[:39].rstrip()])
 
-    def test_log_a_line_a_percent_at_most_every_15_seconds(self):
+    def test_log_a_line_a_percent(self):
+        # (PR #54: a pipe gets every new percent, so the launcher's and the Mods window's bars move;
+        # a change of the step alone waits 15 seconds: test_log_a_step_change_waits)
         out, clock = Out(tty=False), Clock()
         line = P.Line(None, out=out, clock=clock)
         for t in range(0, 600):                                 # 1 % every 6 seconds
@@ -212,7 +214,7 @@ class LineTests(unittest.TestCase):
         line.show(1.0, 0, 'linking', final=True)
         lines = out.getvalue().splitlines()
         self.assertEqual(lines[0], P.line_text(0.0, 600, 'compiling'))
-        self.assertEqual(len(lines), 1 + 39 + 1)               # (at 0 s, every 15 s to 585 s, then the last)
+        self.assertEqual(len(lines), 1 + 99 + 1)               # (at 0 s, each percent from 6 s to 594 s, then the last)
         self.assertEqual(lines[-1], P.line_text(1.0, 0, 'linking'))
         out2 = Out(tty=False)
         line = P.Line(None, out=out2, clock=clock)
@@ -220,6 +222,14 @@ class LineTests(unittest.TestCase):
             clock.now = 1000 + t
             line.show(0.3, None, 'compiling lua2cpp_item: 62 of 63 files')
         self.assertEqual(len(out2.getvalue().splitlines()), 1)
+
+    def test_log_a_step_change_waits(self):
+        out, clock = Out(tty=False), Clock()
+        line = P.Line(None, out=out, clock=clock)
+        for t in range(0, 60):                                  # a new file count every second, the same percent
+            clock.now = t
+            line.show(0.3, None, f'compiling lua2cpp_item: {t} of 63 files')
+        self.assertEqual(len(out.getvalue().splitlines()), 4)  # (at 0, 15, 30 and 45 s)
 
     def test_terminal_title_on_linux(self):
         class Tty(io.StringIO):

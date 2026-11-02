@@ -327,10 +327,11 @@ class Line:
                 if text != self.text or not self.drawn:
                     self.text = text
                     self._draw()
-            elif self.logged is None or (final and text != self.text) or (
-                    (percent != self.logged[1] or label != self.logged[2]) and now - self.logged[0] >= 0.4):
-                # A pipe (the Mods window, the launcher) has no redrawing line, so each change of
-                # the step or the percent is its own line, often enough that a bar can follow it.
+            elif self.logged is None or (final and text != self.text) or                     (percent != self.logged[1] and now - self.logged[0] >= 0.4) or                     (label != self.logged[2] and now - self.logged[0] >= self.every):
+                # A pipe (the Mods window, the launcher) has no redrawing line, so each new percent
+                # is its own line, often enough that a bar can follow it (at most about 100 lines a
+                # build); a step that changes within a percent (a file count) waits `every` seconds,
+                # so a long build's log stays short.
                 self.out.write(text + "\n")
                 self.out.flush()
                 self.text, self.logged = text, (now, percent, label)
