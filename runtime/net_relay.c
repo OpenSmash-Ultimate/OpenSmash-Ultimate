@@ -74,6 +74,7 @@ typedef int SOCKET;
 #include "config_folder.h"
 #include "host.h"
 #include "net.h"
+#include "room_code.h"
 #include "settings.h"
 #include "sim_version.h"
 
@@ -438,7 +439,14 @@ static void write_share_file(void) {
     snprintf(path, sizeof path, "%s/../../netplay_address.txt", rt_data_dir);
     FILE *f = fopen(path, "w");
     if (!f) return;
-    if (upnp_state == 1) fprintf(f, "Give your friends this address to join: %s:%u\n", public_ip[0] ? public_ip : "(your public IP)", port);
+    unsigned a, b, cc, d;
+    char code[12] = "", lan_code[12] = "";
+    if (public_ip[0] && sscanf(public_ip, "%u.%u.%u.%u", &a, &b, &cc, &d) == 4) room_code_of(a << 24 | b << 16 | cc << 8 | d, port, code);
+    if (sscanf(lan_ip, "%u.%u.%u.%u", &a, &b, &cc, &d) == 4) room_code_of(a << 24 | b << 16 | cc << 8 | d, port, lan_code);
+    if (upnp_state == 1 && code[0]) {
+        fprintf(f, "Give your friends this room code to join: %s (or the address %s:%u)\n", code, public_ip, port);
+        fprintf(stderr, "[net] room code for friends: %s (on this network: %s)\n", code, lan_code);
+    } else if (upnp_state == 1) fprintf(f, "Give your friends this address to join: %s:%u\n", public_ip[0] ? public_ip : "(your public IP)", port);
     else if (upnp_state == 4) fprintf(f, "Your router opened the port, but its own internet address (%s) is not reachable from outside:\n"
                                          "it is behind another router or your provider's NAT. Friends on the same network can join %s:%u.\n"
                                          "For friends elsewhere, use a VPN or tools/ssbu_relay.py on a reachable machine (see docs/MULTIPLAYER.md).\n",
@@ -446,6 +454,7 @@ static void write_share_file(void) {
     else fprintf(f, "Your router did not open the port (UPnP %s).\nFriends on the same network can join %s:%u.\n"
                     "For friends elsewhere, run tools/ssbu_relay.py on a reachable machine (see docs/MULTIPLAYER.md).\n",
                  upnp_state == 2 ? "not available" : "refused", lan_ip, port);
+    if (lan_code[0]) fprintf(f, "Friends on the same network can also use the room code %s.\n", lan_code);
     fprintf(f, "Room: %s\n", room);
     fclose(f);
 }
@@ -869,13 +878,22 @@ static int resolve_relay(void) {
     u16 rport = port;
     char *colon = strrchr(hostpart, ':');
     if (colon) { *colon = 0; if (atoi(colon + 1) > 0) rport = (u16)atoi(colon + 1); }
-    struct addrinfo hints = {0}, *res = NULL;
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
-    if (getaddrinfo(hostpart, NULL, &hints, &res) || !res) return 0;
-    relay_at = *(struct sockaddr_in *)res->ai_addr;
-    relay_at.sin_port = htons(rport);
-    freeaddrinfo(res);
+    u32 code_ip;
+    u16 code_port;
+    if (room_code_read(relay_text, &code_ip, &code_port)) {   /* a room code (room_code.h): the host's address in it */
+        memset(&relay_at, 0, sizeof relay_at);
+        relay_at.sin_family = AF_INET;
+        relay_at.sin_addr.s_addr = htonl(code_ip);
+        relay_at.sin_port = htons(code_port);
+    } else {
+        struct addrinfo hints = {0}, *res = NULL;
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        if (getaddrinfo(hostpart, NULL, &hints, &res) || !res) return 0;
+        relay_at = *(struct sockaddr_in *)res->ai_addr;
+        relay_at.sin_port = htons(rport);
+        freeaddrinfo(res);
+    }
     if (relay_at.sin_addr.s_addr == htonl(INADDR_LOOPBACK)) {   /* (the relay is here: listen on loopback only) */
         struct sockaddr_in a = {0};
         a.sin_family = AF_INET;
