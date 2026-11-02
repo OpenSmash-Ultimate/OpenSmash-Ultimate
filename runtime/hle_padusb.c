@@ -26,11 +26,11 @@
 
 #include "padusb.h"
 
-#ifndef _WIN32
+#if !defined _WIN32 && !defined __APPLE__   /* (macOS: macos/gcadapter.c) */
 const char *padusb_start(void) { return NULL; }
 void padusb_poll(PadUsbState out[PADUSB_PORTS]) { memset(out, 0, sizeof(PadUsbState) * PADUSB_PORTS); }
 void padusb_rumble(int port, int on) { (void)port; (void)on; }
-#else
+#elif defined _WIN32
 #include <setupapi.h>
 
 /* ---- Windows' libraries, loaded at run time (declared here: no DDK headers needed) ----------- */

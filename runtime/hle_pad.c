@@ -153,7 +153,8 @@ static const char DEFAULT_INI[] =
     "; outer_zone = 50-100, percent of the stick's travel that already counts as fully pushed (worn or small\n"
     ";              sticks that never reach the edge). 100: only the very edge.\n"
     "outer_zone = 100\n"
-    "; invert = the stick axes turned round, any of lx ly rx ry (e.g. invert = ry). none: as the pad reports them.\n"
+    "; invert = the stick axes turned round, any of lx ly rx ry (or leftx lefty rightx righty; e.g. invert = ry).\n"
+    ";          none: as the pad reports them.\n"
     "invert = none\n"
     "; rumble = 0-100, percent strength. 0: off.\n"
     "rumble = 100\n"
@@ -172,7 +173,18 @@ static const char DEFAULT_INI[] =
     "; Settings for one kind of pad, or one pad: [device <type, name or GUID>], with the keys above.\n"
     "; Types: xbox360 xboxone ps3 ps4 ps5 switchpro joyconpair gamecube ...\n"
     "; [device ps5]\n"
-    "; rumble = 60\n";
+    "; rumble = 60\n"
+    "\n"
+    "; GameCube adapters in PC mode (Mayflash USB 0079:1844, DragonRise-chip clones such\n"
+    "; as 0079:1846) need nothing here as of SDL 3.4: SDL reads them with its own GameCube\n"
+    "; driver and already hands the C-stick over the right way up. With an older SDL (or a\n"
+    "; Linux build without its HIDAPI GameCube driver) the C-stick comes up inverted; then\n"
+    "; match the pad and flip it back, e.g.:\n"
+    "; [device 03004271790000004418000000016800]\n"
+    "; invert = rightx, righty\n"
+    "; (the game's log line for each player names the pad with its GUID, as does padtest)\n"
+    "; Nintendo's own adapter (USB 057e:0337) never needs a section: SDL reads it with its\n"
+    "; GameCube driver and the C-stick is already the right way up.\n";
 
 static char *trim(char *s) {
     while (*s == ' ' || *s == '\t') s++;
@@ -211,9 +223,10 @@ static void config_line(DevCfg *dc, const char *key, char *value, int line) {
     else if (!_stricmp(key, "invert")) {
         dc->invert = 0;
         static const char *const AXES[4] = {"lx", "ly", "rx", "ry"};
+        static const char *const LONG[4] = {"leftx", "lefty", "rightx", "righty"};   /* (the same, spelled out) */
         for (char *t = strtok(value, ", \t"); t; t = strtok(NULL, ", \t")) {
             int known = !_stricmp(t, "none");
-            for (int a = 0; a < 4; a++) if (!_stricmp(t, AXES[a])) { dc->invert |= 1 << a; known = 1; }
+            for (int a = 0; a < 4; a++) if (!_stricmp(t, AXES[a]) || !_stricmp(t, LONG[a])) { dc->invert |= 1 << a; known = 1; }
             if (!known) fprintf(stderr, "[input] controllers.ini line %d: invert takes lx, ly, rx, ry or none, not '%s'\n", line, t);
         }
     }

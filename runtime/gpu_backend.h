@@ -41,3 +41,9 @@ int gfx_draw_logging(void);   /* a frame's draws are being logged (debugging) */
 void *gfx_window_handle(void);   /* the game's window (an HWND), to own dialogs */
 void gfx_status_lines(void);   /* (host.c's [status]) the back end's own lines, if any */
 void gfx_closing(void);        /* the game is about to end (Direct3D: see gpu_d3d11.c's "first draws") */
+#ifdef __APPLE__
+/* (macOS, gpu.c's copy engine) the picture the GPU drew at guest address `guest`, which only the
+ * host has: its pixels at the game's size (4 bytes each, as the format keeps them in memory; rows
+ * top down, malloc'd into *pixels), when a 4-byte colour surface starts there. */
+int gfx_surface_pixels(u64 guest, u32 *width, u32 *height, u8 **pixels);
+#endif

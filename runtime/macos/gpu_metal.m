@@ -25,6 +25,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "gpu_metal.h"
 #include "kernel_watch.h"   /* (kernel_write_watch) */
+#include "gpu_menu.h"
 #include <dirent.h>
 #include <math.h>
 #include <mach/mach.h>
@@ -404,10 +405,8 @@ static void buffer_copy(GBuf *src, u64 so, GBuf *dst, u64 doff, u32 n) {
 /* Bytes into a buffer the GPU may be using - writing, even: after what is recorded before, by a
  * copy (which ends a render pass), unless no recorded or running work uses the buffer, when they
  * are simply written. */
-static u64 resident_gen;   /* (writes into resident regions so far: upload_composed's copies hold until the next) */
 static void gpu_write(GBuf *dst, u64 off, const void *data, u32 n) {
     if (!n || off >= dst->size) return;
-    resident_gen++;   /* (every caller writes a resident region's buffer) */
     if (n > dst->size - off) n = (u32)(dst->size - off);
     if (dst->last_use < cmd_serial && dst->last_use <= completed()) { memcpy(dst->cpu + off, data, n); return; }
     Alloc a = arena(n);
@@ -783,7 +782,11 @@ void gfx_hotkey(int n) { if (n >= 0 && n < 6) InterlockedOr(&hotkeys, 1 << n); }
 static u32 enter_depth;
 static u64 enter_t0;
 static void *enter_pool;
-u64 gfx_stat_busy_ns, gfx_stat_composed, gfx_stat_upload_kind[4];
+u64 gfx_stat_busy_ns, gfx_stat_composed, gfx_stat_composed_reused, gfx_stat_upload_kind[4];
+/* Bumped by everything that may change what resident regions hold on the GPU (compute, the CPU's
+ * writes taken into them, the copy engine, regions made, merged or dropped): a composed view made
+ * before is only the same as a new one while it has not moved (upload_composed). */
+static u64 resident_gen;
 static struct { u32 size, bank, extent; char shader[24]; } gfx_stat_biggest_cb;
 
 static volatile DWORD last_enter_thread;
@@ -1324,6 +1327,35 @@ static void enqueue_shader(Shader *s) { enqueue(&s->job, s->cached ? 0 : 1, s->c
 
 void gfx_status_lines(void) {}   /* (no lines of its own yet) */
 
+/* (gpu.c's copy engine) a 4-byte colour surface starting at `guest`, read back: the work recorded
+ * before is done first (a wait for the GPU), and render scale's larger texture sampled back to the
+ * game's size. Rare - a picture copied out of what was drawn (Mii fighters' icons). */
+int gfx_surface_pixels(u64 guest, u32 *width, u32 *height, u8 **pixels) {
+    if (!enter()) return 0;
+    Surface *s = NULL;
+    for (u32 i = 0; i < nsurfaces && !s; i++)
+        if (surfaces[i].tex && !surfaces[i].depth && surfaces[i].guest == guest) s = &surfaces[i];
+    if (!s || (s->storage != MTLPixelFormatRGBA8Unorm && s->storage != MTLPixelFormatBGRA8Unorm)) { leave(); return 0; }
+    if (s->clear) settle(s);
+    u32 hw = s->hw, hh = s->hh, w = s->width, h = s->height;
+    id<MTLBuffer> buf = [dev newBufferWithLength:(NSUInteger)hw * hh * 4 options:MTLResourceStorageModeShared];
+    u8 *out = buf ? malloc((size_t)w * h * 4) : NULL;
+    if (!out) { leave(); return 0; }
+    [blits() copyFromTexture:s->tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(hw, hh, 1)
+                    toBuffer:buf destinationOffset:0 destinationBytesPerRow:(NSUInteger)hw * 4 destinationBytesPerImage:(NSUInteger)hw * hh * 4];
+    gfx_stat_gpu_waits++;
+    submit(1);
+    const u8 *in = buf.contents;
+    for (u32 y = 0; y < h; y++)
+        for (u32 x = 0; x < w; x++) {   /* (the texel nearest each of the game's pixels) */
+            u32 sx = (u32)(((u64)x * 2 + 1) * hw / (2ull * w)), sy = (u32)(((u64)y * 2 + 1) * hh / (2ull * h));
+            memcpy(out + ((u64)y * w + x) * 4, in + ((u64)sy * hw + sx) * 4, 4);
+        }
+    *width = w; *height = h; *pixels = out;
+    leave();
+    return 1;
+}        /* (the settings menu's Quit: nothing to do before the game ends, unlike Direct3D's) */
+
 /* For a crash or freeze report: what each compiler thread is doing (to line, a line at a time),
  * its program kept next to the disk cache (shadercrash/) so it can be compiled again outside the
  * game. */
@@ -1836,6 +1868,7 @@ static int resident_take_edge(Resident *r, u64 g, u8 *was, u32 n) {
         if (!memcmp(was + at, now + at, piece)) continue;
         memcpy(was + at, now + at, piece);
         gpu_write(r->buf, g + at - r->guest, was + at, piece);
+        resident_gen++;
         gfx_stat_resident_pages++;
     }
     return 1;
@@ -1882,6 +1915,7 @@ static void resident_sync(Resident *r, int every_frame) {
         while (n < sizeof now && pg + n < hi && watch_next(pg + n, pg + n + 0x1000, seen) == pg + n) n += 0x1000;
         if (read_guarded(now, pg, n)) {   /* (gone: left as it is) */
             gpu_write(r->buf, pg - r->guest, now, n);
+            resident_gen++;
             gfx_stat_resident_pages += n >> 12;
         }
         pg = watch_next(pg + n, hi, seen);
@@ -1919,7 +1953,7 @@ u64 gfx_stat_residents_given_up;
 u64 gfx_stat_residents_retired;
 
 static Resident *resident_create(u64 va, u32 size) {
-    resident_gen++;   /* (made, or merged from others: what composed ranges copied may be elsewhere now) */
+    resident_gen++;
     if (nresidents == 512) {
         /* The table is full: the region used longest ago goes - never one this call uses (bound
          * already, or about to be merged). What the GPU wrote there is lost to guest memory, as
@@ -1954,6 +1988,7 @@ static Resident *resident_create(u64 va, u32 size) {
  * overlap: a range that overlaps some becomes one region over all of them, with the CPU's
  * data underneath and each old region's GPU data copied over it. */
 static Resident *resident_acquire(u64 va, u32 size) {
+    resident_gen++;   /* (it may merge regions, or widen one: what they hold moves) */
     u64 lo = va, hi = va + size;
     int overlaps = 0;
     for (u32 i = 0; i < nresidents; i++) {
@@ -2009,45 +2044,78 @@ static void resident_patch(View dst, u64 va, u64 size) {
     }
 }
 
-/* The ranges composed lately, used again by the draws after them: a particle effect's instances
- * are drawn one at a time (instance_counter), each reading the same streams partly held by
- * resident regions - and each compose copies on the GPU, which ends the render pass. The results
- * screen composed 9 streams 102 times each a frame: ~300 passes of its 1920x1080 colour and depth
- * targets, 27 ms of GPU time (22-28 fps on an M4). One holds while it is in the command buffer it
- * was made for, nothing has written a resident region since (resident_gen), and the guest's
- * bytes around are as they were (untouched_since: in the submission, by the command stream). */
-#define COMPOSED_KEPT 32
-typedef struct Composed { u64 va; u32 size; View v; u64 cmd, gen, batch, seq; } Composed;
-static Composed composed[COMPOSED_KEPT];
-static u32 composed_next;
-
 /* A range only partly held by resident regions, as the GPU sees it: the guest's data (in data)
  * with the regions' parts copied over it, in a buffer of its own (handed back at once: it is not
  * given out again before the work recorded now is done). Regions are never widened for a read:
- * what lies around them is the CPU's, and it keeps changing in guest memory. */
-static View upload_composed(int stage, u32 slot, u64 va, const void *data, u32 size) {
-    u32 need_ = (size + 15) & ~15u;
-    u64 g = gpu_va_to_guest(va);
-    int one = g && size && gpu_va_to_guest(va + size - 1) == g + size - 1;   /* (one mapping: the write log can tell) */
-    for (u32 i = 0; one && i < COMPOSED_KEPT; i++) {
-        Composed *c = &composed[i];
-        if (c->v.b && c->va == va && c->size == size && c->cmd == cmd_serial && c->gen == resident_gen &&
-            untouched_since(c->batch, c->seq, g, size)) {
-            gfx_stat_reused++;
-            return c->v;
+ * what lies around them is the CPU's, and it keeps changing in guest memory.
+ *
+ * The copies are blits, and a blit ends the render pass: an effect's draws, each binding the same
+ * range around compute results (particles), began a pass again for each one, storing and loading
+ * the targets every draw (hundreds a frame: the GPU and this thread were the frame's limit). So a
+ * view composed since the last commit is used again for the same range while no resident region
+ * has changed since (resident_gen) and the guest's bytes are the same: untouched by the GPU's own
+ * writes in this submission (untouched_since, as upload_gpu: nothing else changes them), else
+ * compared (its CPU side holds them: the copies run after the commit). Thousands of such reads a
+ * frame (four players, the Ice Climbers) made even reading and comparing them the frame's limit,
+ * so composed_find runs before the guest's data is read. */
+enum { COMPOSED_KEPT = 32 };
+static struct { u64 va, serial, gen, batch, seq, g; u32 size; View v; } composed_kept[COMPOSED_KEPT];
+static u32 composed_next;
+
+/* A view composed before that is still right for [va, va + size); data, when given, is the
+ * guest's bytes there now (else only the write log can say they are unchanged). */
+static int composed_find(u64 va, u32 size, const void *data, View *out) {
+    for (u32 i = 0; i < nresidents; i++)   /* (the CPU's writes into the regions first: resident_patch's own sync) */
+        if (residents[i].va < va + size && va < residents[i].va + residents[i].size) {
+            residents[i].used = op_seq;
+            resident_sync(&residents[i], 0);
+        }
+    for (u32 i = 0; i < COMPOSED_KEPT; i++) {
+        __typeof__(composed_kept[0]) *k = &composed_kept[i];
+        if (!k->v.b || k->va != va || k->size != size || k->serial != cmd_serial || k->gen != resident_gen) continue;
+        if (k->g && untouched_since(k->batch, k->seq, k->g, size)) { *out = k->v; return 1; }
+        if (data && !memcmp(k->v.b->cpu, data, size)) {
+            k->batch = gpu_stat_batches;
+            k->seq = wrote_seq;
+            *out = k->v;
+            return 1;
         }
     }
+    return 0;
+}
+
+/* (callers: before reading the guest's data) the view composed before, if it is still right */
+static int composed_again(u64 va, u32 size, View *out) {
+    if (!size || !composed_find(va, size, NULL, out)) return 0;
+    gfx_stat_composed++;
+    gfx_stat_composed_reused++;
+    return 1;
+}
+
+static View upload_composed(int stage, u32 slot, u64 va, const void *data, u32 size) {
+    u32 need_ = (size + 15) & ~15u;
     gfx_stat_upload_bytes += size;
     gfx_stat_composed++;
     if (!need_) return upload_raw(stage, slot, data, size);
+    View kept;
+    if (composed_find(va, size, data, &kept)) { gfx_stat_composed_reused++; return kept; }
     GBuf *b = pool_get(need_, 1);
     if (!b) return (View){0};
     memcpy(b->cpu, data, size);   /* (a buffer no work uses: written as it is) */
     memset(b->cpu + size, 0, need_ - size);
     View v = {b, 0, need_};
     resident_patch(v, va, size);
-    pool_put(b, 1);   /* (not handed out again before this command buffer is done: the cache's copy stays valid in it) */
-    if (one) composed[composed_next++ % COMPOSED_KEPT] = (Composed){va, size, v, cmd_serial, resident_gen, gpu_stat_batches, wrote_seq};
+    pool_put(b, 1);
+    composed_kept[composed_next].va = va;
+    composed_kept[composed_next].size = size;
+    composed_kept[composed_next].serial = cmd_serial;
+    composed_kept[composed_next].gen = resident_gen;
+    composed_kept[composed_next].batch = gpu_stat_batches;
+    composed_kept[composed_next].seq = wrote_seq;
+    u64 g = gpu_va_to_guest(va);
+    composed_kept[composed_next].g = g && gpu_va_to_guest(va + size - 1) == g + size - 1 ? g : 0;   /* (one mapping: the log can tell) */
+    composed_kept[composed_next].v = v;
+    composed_next = (composed_next + 1) % COMPOSED_KEPT;
     return v;
 }
 
@@ -2131,6 +2199,7 @@ void gfx_resident_written(u64 va, u64 bytes) {
         u8 *data = malloc((size_t)(hi - lo));
         read_gpu(lo, (u32)(hi - lo), data);
         gpu_write(r->buf, lo - r->va, data, (u32)(hi - lo));
+        resident_gen++;
         free(data);
         if (r->guest >= ALIAS_BASE && r->guest + r->size <= ALIAS_BASE + ALIAS_SIZE) { resident_watch_reset(r); resident_snapshot(r); }
     }
@@ -2412,7 +2481,25 @@ static void texture_index_add(Texture *t) {
  * float format is one a comparing (shadow) sampler takes. */
 enum { CONV_NONE, CONV_R24, CONV_R16_UNORM, CONV_RGBA4, CONV_U8, CONV_S8, CONV_U16, CONV_S16 };
 typedef struct Kept { MTLPixelFormat format; u8 conv, channels, integer; } Kept;
+/* ASTC (gpu_texture.h's DXGI_ASTC), as Metal's: Apple's GPUs read every LDR block size. */
+static MTLPixelFormat astc_format(DXGI_FORMAT f) {
+    static const struct { u8 w, h; MTLPixelFormat linear, srgb; } ASTC[] = {
+        {4, 4, MTLPixelFormatASTC_4x4_LDR, MTLPixelFormatASTC_4x4_sRGB}, {5, 4, MTLPixelFormatASTC_5x4_LDR, MTLPixelFormatASTC_5x4_sRGB},
+        {5, 5, MTLPixelFormatASTC_5x5_LDR, MTLPixelFormatASTC_5x5_sRGB}, {6, 5, MTLPixelFormatASTC_6x5_LDR, MTLPixelFormatASTC_6x5_sRGB},
+        {6, 6, MTLPixelFormatASTC_6x6_LDR, MTLPixelFormatASTC_6x6_sRGB}, {8, 5, MTLPixelFormatASTC_8x5_LDR, MTLPixelFormatASTC_8x5_sRGB},
+        {8, 6, MTLPixelFormatASTC_8x6_LDR, MTLPixelFormatASTC_8x6_sRGB}, {8, 8, MTLPixelFormatASTC_8x8_LDR, MTLPixelFormatASTC_8x8_sRGB},
+        {10, 5, MTLPixelFormatASTC_10x5_LDR, MTLPixelFormatASTC_10x5_sRGB}, {10, 6, MTLPixelFormatASTC_10x6_LDR, MTLPixelFormatASTC_10x6_sRGB},
+        {10, 8, MTLPixelFormatASTC_10x8_LDR, MTLPixelFormatASTC_10x8_sRGB}, {10, 10, MTLPixelFormatASTC_10x10_LDR, MTLPixelFormatASTC_10x10_sRGB},
+        {12, 10, MTLPixelFormatASTC_12x10_LDR, MTLPixelFormatASTC_12x10_sRGB}, {12, 12, MTLPixelFormatASTC_12x12_LDR, MTLPixelFormatASTC_12x12_sRGB},
+    };
+    u32 w = (u32)f >> 8 & 15, h = (u32)f >> 4 & 15, srgb = (u32)f & 1;
+    for (u32 i = 0; i < sizeof ASTC / sizeof *ASTC; i++)
+        if (ASTC[i].w == w && ASTC[i].h == h) return srgb ? ASTC[i].srgb : ASTC[i].linear;
+    return MTLPixelFormatInvalid;
+}
+
 static Kept texture_format(DXGI_FORMAT f) {
+    if (DXGI_IS_ASTC(f)) return (Kept){astc_format(f), 0, 0, 0};
     switch (f) {
     case DXGI_FORMAT_R32G32B32A32_FLOAT: return (Kept){MTLPixelFormatRGBA32Float, 0, 0, 0};
     case DXGI_FORMAT_R32G32B32A32_UINT: case DXGI_FORMAT_R32G32B32A32_SINT: return (Kept){MTLPixelFormatRGBA32Float, 0, 0, 1};
@@ -2524,10 +2611,7 @@ static int depth_like(MTLPixelFormat f) {   /* what a shadow slot (depth2d...) t
 
 /* A texture bound for a draw: the texture, the surface it is (if a render target), and whether its
  * texels are integers (sampled nearest). */
-/* (tex: unretained - every one handed out is held by its cache: textures[], a surface's views, the
- * dummies - and a draw's StageBinds hold 48 of them: retained, each draw released them all, ~11% of
- * the GPU thread at the results screen's 5,800 draws a frame) */
-typedef struct Bound { __unsafe_unretained id<MTLTexture> tex; Surface *surface; int integer; } Bound;
+typedef struct Bound { id<MTLTexture> tex; Surface *surface; int integer; } Bound;
 
 /* tex as the type a shader declares (TEX_2D, TEX_ARRAY_2D, TEX_3D, TEX_CUBE or TEX_ARRAY_CUBE):
  * itself, or a view of it, or nil where no view gives that. */
@@ -3001,7 +3085,7 @@ static void set_sampler(int stage, u32 k, id<MTLSamplerState> s) {
 typedef struct StageBinds {
     ShaderBinds bt;
     Bound tex[32];
-    __unsafe_unretained id<MTLSamplerState> smp[16];   /* (held by samplers[]) */
+    id<MTLSamplerState> smp[16];
 } StageBinds;
 
 /* Bind a stage's constant buffers and textures. */
@@ -3081,6 +3165,11 @@ static void bind_resources(const u32 *regs, const CbBinding cb[STAGES][18], int 
             int partly = resident_overlapping(va, size) != NULL;
             if (!partly && !draw_logging) {
                 v = upload_gpu(stage, 96 + k, va, size);
+                out->bt.gm[k] = bind_of(v);
+                need(v.b, 0);
+                continue;
+            }
+            if (partly && !draw_logging && composed_again(va, size, &v)) {
                 out->bt.gm[k] = bind_of(v);
                 need(v.b, 0);
                 continue;
@@ -3475,16 +3564,18 @@ void gfx_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
         if (!ps_used || !(ps_used->info.color_mask >> i & 1)) rgba = 0;   /* (a target the program does not write is left as it is) */
         pk.mask[i] = (u8)write_mask(rgba);
         if (!(regs[M_BLEND_ENABLE(i)] & 1) || (gfx_debug() & 8) || s->kind) continue;   /* (integer targets do not blend) */
+        /* The alpha op and factors apply as written, whatever the "separate for alpha" flag says (as in yuzu/Eden,
+         * and gpu_d3d11.c since 9326fd2): the game never sets that flag. Copying the colour ones into alpha wrote the
+         * shader's alpha where the game keeps the target's, in pictures drawn to be put together later (the results
+         * cards, the menus' parts). */
         u32 base = regs[M_BLEND_STATE_PER_TARGET] & 1 ? M_BLEND_PER_TARGET(i) + 1 : 0;
         u32 cop, csrc, cdst, aop, asrc, adst;
         if (base) {
             cop = regs[base]; csrc = regs[base + 1]; cdst = regs[base + 2]; aop = regs[base + 3]; asrc = regs[base + 4]; adst = regs[base + 5];
-            if (!(regs[base - 1] & 1)) { aop = cop; asrc = csrc; adst = cdst; }   /* the target's own "separate alpha" */
         }
         else {
             cop = regs[M_BLEND_COLOR_OP]; csrc = regs[M_BLEND_COLOR_SRC]; cdst = regs[M_BLEND_COLOR_DST];
             aop = regs[M_BLEND_ALPHA_OP]; asrc = regs[M_BLEND_ALPHA_SRC]; adst = regs[M_BLEND_ALPHA_DST];
-            if (!(regs[M_BLEND_SEPARATE_ALPHA] & 1)) { aop = cop; asrc = csrc; adst = cdst; }
         }
         u8 *bl = pk.blend[i];
         bl[0] = 1;
@@ -3564,6 +3655,7 @@ void gfx_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
         if (!v.b) {
             Resident *part = resident_overlapping(start, (u32)size);
             if (!part && !draw_logging) v = upload_gpu(SHADER_VERTEX, 18 + n, start, (u32)size);
+            else if (part && !draw_logging && composed_again(start, (u32)size, &v)) {}
             else {
                 if (size > stream_cap) { stream_data = realloc(stream_data, size + 16); stream_cap = (u32)size; }
                 read_gpu(start, (u32)size, stream_data);
@@ -4380,6 +4472,7 @@ void gfx_dispatch(const u32 *regs, const u32 *q) {
  * present waits for the oldest beyond that, as Direct3D's maximum frame latency makes it wait. */
 static volatile u64 frames_committed, frames_done;
 static dispatch_semaphore_t frames_free;
+static int frames_allowed;   /* (frames_free's count: display_latency(), or the settings menu's since) */
 static u64 gfx_stat_inflight, gfx_stat_inflight_frames, gfx_stat_present_ticks;
 
 static void gpu_timer_frame(void) {
@@ -4481,9 +4574,11 @@ void gfx_present(u64 guest, u32 width, u32 height) {
     if (f4_at == -1) f4_at = getenv("SSBU_F4_AT") ? atof(getenv("SSBU_F4_AT")) : -2;
     if (f4_at >= 0 && rt_now_ns() > (u64)(f4_at * 1e9)) { f4_at = -2; keys |= 8; }
     static int overlay = -1, details;
-    if (overlay < 0) overlay = !getenv("SSBU_OVERLAY") || atoi(getenv("SSBU_OVERLAY")) != 0;
+    if (overlay < 0) overlay = getenv("SSBU_OVERLAY") ? atoi(getenv("SSBU_OVERLAY")) != 0 : display_overlay();
     if (keys & 1) overlay = !overlay;
     if (keys & 2) { details = !details; overlay = 1; }
+    int menu_shot = menu_frame(&overlay, (keys & 4) != 0) & MENU_SHOT;   /* the settings menu (gpu_menu.c) */
+    if (menu_shot) keys &= ~4;
     if (keys & 4) {   /* F3: the frame as the game drew it (without the overlay) */
         mkdir("screenshots", 0755);
         SYSTEMTIME st;
@@ -4530,7 +4625,7 @@ void gfx_present(u64 guest, u32 width, u32 height) {
     if (profile_at >= 0 && rt_now_ns() > (u64)(profile_at * 1e9)) { profile_at = -2; keys |= 32; }
     if (keys & 32) profile_start(10.0);   /* F6 */
     static char detail[1800], hint[640];
-    static u64 last_ns, last_presented, last_drawn, last_dispatched, last_skipped, last_watch, last_busy, last_upload, last_waits, last_composed, last_reused, last_kind[4];
+    static u64 last_ns, last_presented, last_drawn, last_dispatched, last_skipped, last_watch, last_busy, last_upload, last_waits, last_composed, last_composed_reused, last_reused, last_kind[4];
     u64 now = rt_now_ns();
     if (now - last_ns >= 500000000ull) {   /* the details, twice a second */
         double secs = (now - last_ns) / 1e9;
@@ -4542,18 +4637,18 @@ void gfx_present(u64 guest, u32 width, u32 height) {
         u64 gpu_frames = gfx_stat_inflight_frames - last_inflight_frames;
         snprintf(detail, sizeof detail,
                  "GPU behind by %.1f frames  Present blocked %.1f ms/frame\n"
-                 "renderer %.1f ms/frame  uploads %.1f MB/frame (%llu composed, %llu reused)\n"
+                 "renderer %.1f ms/frame  uploads %.1f MB/frame (%llu composed, %llu of them kept, %llu reused)\n"
                  "  constants %.1f  vertices %.1f  storage %.1f  textures %.1f MB/frame\n"
                  "draws %llu/frame  compute %llu/frame  GPU waits %llu  skipped %.0f/s\n"
                  "shaders %llu (%ld compiling, prewarm %ld/%ld)  textures %u  surfaces %u\n"
                  "GPU-resident buffers %u  write watch %.1f ms/s  depth sampling %s\n"
-                 "F1 overlay  F2 details  F3 screenshot  F4 log a frame\n"
+                 "Esc settings  F1 overlay  F2 details  F3 screenshot  F4 log a frame\n"
                  "F5 depth sampling on/off  F6 profile 10 s%s",
                  gpu_frames ? (double)(gfx_stat_inflight - last_inflight) / gpu_frames : 0.0,
                  (gfx_stat_present_ticks - last_present_ticks) * 1000.0 / (double)freq.QuadPart / frames,
                  (gfx_stat_busy_ns - last_busy) / 1e6 / frames,
                  (gfx_stat_upload_bytes - last_upload) / 1048576.0 / frames, (gfx_stat_composed - last_composed) / frames,
-                 (gfx_stat_reused - last_reused) / frames,
+                 (gfx_stat_composed_reused - last_composed_reused) / frames, (gfx_stat_reused - last_reused) / frames,
                  (gfx_stat_upload_kind[0] - last_kind[0]) / 1048576.0 / frames, (gfx_stat_upload_kind[1] - last_kind[1]) / 1048576.0 / frames,
                  (gfx_stat_upload_kind[2] - last_kind[2]) / 1048576.0 / frames, (gfx_stat_upload_kind[3] - last_kind[3]) / 1048576.0 / frames,
                  (gfx_stat_drawn - last_drawn) / frames, (gfx_stat_dispatched - last_dispatched) / frames, gfx_stat_gpu_waits - last_waits,
@@ -4562,7 +4657,7 @@ void gfx_present(u64 guest, u32 width, u32 height) {
                  profile_running() ? "  (profiling...)" : "");
         char net[512];
         net_status(net, sizeof net);
-        snprintf(hint, sizeof hint, "F2 details%s%s%s%s", depth_sampling == 0 ? "  depth sampling OFF" : "",
+        snprintf(hint, sizeof hint, "F2 details  Esc settings%s%s%s%s", depth_sampling == 0 ? "  depth sampling OFF" : "",
                  profile_running() ? "  profiling..." : "", net[0] ? "\n" : "", net);
         if (net[0]) { size_t l = strlen(detail); snprintf(detail + l, sizeof detail - l, "\n%s", net); }
         if (render_scale != 1.0f) {
@@ -4599,7 +4694,7 @@ void gfx_present(u64 guest, u32 width, u32 height) {
         last_ns = now; last_presented = gfx_stat_presented; last_drawn = gfx_stat_drawn;
         last_dispatched = gfx_stat_dispatched; last_skipped = gfx_stat_skipped; last_watch = gfx_stat_watch_us;
         memcpy(last_kind, gfx_stat_upload_kind, sizeof last_kind);
-        last_busy = gfx_stat_busy_ns; last_upload = gfx_stat_upload_bytes; last_waits = gfx_stat_gpu_waits; last_composed = gfx_stat_composed; last_reused = gfx_stat_reused;
+        last_busy = gfx_stat_busy_ns; last_upload = gfx_stat_upload_bytes; last_waits = gfx_stat_gpu_waits; last_composed = gfx_stat_composed; last_composed_reused = gfx_stat_composed_reused; last_reused = gfx_stat_reused;
         last_inflight = gfx_stat_inflight; last_inflight_frames = gfx_stat_inflight_frames; last_present_ticks = gfx_stat_present_ticks;
     }
 
@@ -4608,6 +4703,18 @@ void gfx_present(u64 guest, u32 width, u32 height) {
      * what "Present blocked" counts. */
     LARGE_INTEGER p0, p1;
     QueryPerformanceCounter(&p0);
+    int latency = display_take_latency();   /* (changed in the settings menu) */
+    if (latency) {
+        for (; frames_allowed < latency; frames_allowed++) dispatch_semaphore_signal(frames_free);
+        for (; frames_allowed > latency; frames_allowed--) dispatch_semaphore_wait(frames_free, DISPATCH_TIME_FOREVER);   /* (a frame done) */
+        if (layer) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            layer.maximumDrawableCount = latency >= 2 ? 3 : 2;
+            [CATransaction commit];
+        }
+        fprintf(stderr, "[gfx] %d-frame latency\n", latency);
+    }
     dispatch_semaphore_wait(frames_free, DISPATCH_TIME_FOREVER);
     if (layer) {
         int sync = !(display_present_flags() & 0x200);   /* (VRR pacing: shown at once, as Direct3D's ALLOW_TEARING) */
@@ -4660,6 +4767,16 @@ void gfx_present(u64 guest, u32 width, u32 height) {
         }
         overlay_present_metal(dev, renc, back.pixelFormat, fit_x, fit_y, fit_w, fit_h, overlay, details ? detail : hint);
         end_encoding();
+        if (menu_shot) {   /* F3 with the settings menu open: the window as it is, menu and all (waits for the GPU) */
+            mkdir("screenshots", 0755);
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            char path[128];
+            snprintf(path, sizeof path, "screenshots/ssbu_%04u%02u%02u_%02u%02u%02u_%03u_menu.bmp", st.wYear, st.wMonth, st.wDay, st.wHour,
+                     st.wMinute, st.wSecond, st.wMilliseconds);
+            save_bmp(back, "ps", path);   /* (through a draw: the drawable is BGRA) */
+            fprintf(stderr, "[gfx] screenshot: %s\n", path);
+        }
         [command() presentDrawable:drawable];
     }
     capture_window[0] = 0;
@@ -4750,6 +4867,7 @@ static WINDOWS_BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *c) {
         }
         int latency = display_latency();
         frames_free = dispatch_semaphore_create(latency);
+        frames_allowed = latency;
         if (layer) {   /* (macos/window.m made it: BGRA8 in sRGB, at the window's size in pixels) */
             [CATransaction begin];
             [CATransaction setDisableActions:YES];

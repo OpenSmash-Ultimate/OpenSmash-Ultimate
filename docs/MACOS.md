@@ -160,6 +160,9 @@ Terminal window that shows the game's log as it goes; closing that window leaves
   `fullscreen` are both macOS's full screen, in a space of its own. `render_scale` draws the
   picture bigger than 1920 × 1080, as on Windows; `auto` counts the window's pixels, so a 1280 × 720
   window on a Retina display (2560 × 1440 pixels) draws at 1.33, and full screen at the screen's size.
+- **Settings:** press <kbd>Esc</kbd> in the game, or a controller's **Home** button, as on Windows
+  ([Settings](PLAYING.md#settings)). The Mac has no **Graphics card** row, and **Open
+  controllers.ini** opens the file in your text editor.
 - When the game asks for text, such as a name, a small window opens over the game for you to type
   it in.
 
@@ -167,6 +170,11 @@ Terminal window that shows the game's log as it goes; closing that window leaves
 
 The same as on Windows ([Playing](PLAYING.md#controls)): plug in a controller and press a button, and
 each pad becomes the next free player, up to eight. The keyboard plays as player 1.
+
+A Wii U GameCube adapter (in Wii U mode) works too ([GameCube controllers](PLAYING.md#gamecube-controllers)),
+with [GCAdapterDriver](https://github.com/secretkeysio/GCAdapterDriver) on and libusb installed
+(`brew install libusb`): the game reads it through libusb, as Dolphin does. Its controllers play as
+GameCube controllers, with the game's own GameCube controls. `SSBU_GC_USB=0` leaves the adapter alone.
 
 | Switch button | Keyboard |
 | :--- | :--- |
@@ -182,6 +190,7 @@ On a Mac keyboard the top row controls the brightness, volume and so on, and the
 
 | Key | Or | What it does |
 | :--- | :--- | :--- |
+| <kbd>Esc</kbd> | | Opens or closes the [settings](PLAYING.md#settings). |
 | <kbd>F1</kbd> | <kbd>⌘</kbd>+<kbd>1</kbd> | Shows or hides the overlay: frame rate and, online, the connection. |
 | <kbd>F2</kbd> | <kbd>⌘</kbd>+<kbd>2</kbd> | Shows more details, including the connected pads and the host's address. |
 | <kbd>F3</kbd> | <kbd>⌘</kbd>+<kbd>3</kbd> | Takes a screenshot (into `screenshots/`). |
