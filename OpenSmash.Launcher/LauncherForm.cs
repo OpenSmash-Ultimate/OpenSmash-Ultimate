@@ -72,6 +72,7 @@ namespace OpenSmash.Launcher
         readonly Stack<string> _navBack = new();
         int _sel = 0;
         string _hover = "";
+        string _pressed = "";
         bool _keys = false;
         int _modScroll = 0;
         Dictionary<string, string> _iniValues = new();
@@ -202,6 +203,8 @@ namespace OpenSmash.Launcher
             catch { }
 
             ClientSize = Theme.WindowSize();
+            // Borderless forms sometimes skip the taskbar until clicked; APPWINDOW forces the button.
+            // (CreateParams override below.)
 
             // Load logo
             try
@@ -483,6 +486,8 @@ namespace OpenSmash.Launcher
                                 Online = GetString(m, "online"),
                                 NewSlots = m.TryGetProperty("new_slots", out var ns) && ns.ValueKind == JsonValueKind.True,
                                 Code = GetString(m, "code"),
+                                Pick = m.TryGetProperty("pick", out var pk) && pk.ValueKind == JsonValueKind.True,
+                                Variant = GetString(m, "variant"),
                                 Added = JsonInt(m, "added"),
                                 Merged = JsonInt(m, "merged"),
                                 Skipped = JsonInt(m, "skipped"),
@@ -546,15 +551,50 @@ namespace OpenSmash.Launcher
                     continue;
                 }
                 if (!seen.Add(m.Group)) continue;
-                if (_knownGroups.Add(m.Group)) _openGroups.Add(m.Group);
                 var parts = _mods.Where(x => x.Group == m.Group).ToArray();
                 int on = parts.Count(p => p.Enabled);
-                bool open = _openGroups.Contains(m.Group);
                 string worst = parts.Select(p => p.Online).FirstOrDefault(o => o == "unsafe")
                     ?? parts.Select(p => p.Online).FirstOrDefault(o => o == "caution")
                     ?? parts.Select(p => p.Online).FirstOrDefault(o => o == "same")
                     ?? parts.Select(p => p.Online).FirstOrDefault(o => o == "safe")
                     ?? "";
+                // UI color packs: one row + dropdown to pick the active variant (only one on).
+                if (parts.Any(p => p.Pick))
+                {
+                    int active = Array.FindIndex(parts, p => p.Enabled);
+                    if (active < 0) active = 0;
+                    var activePart = parts[active];
+                    var meta = new List<string>();
+                    if (!string.IsNullOrEmpty(activePart.Category)) meta.Add(activePart.Category.ToUpperInvariant());
+                    if (!string.IsNullOrEmpty(activePart.Author)) meta.Add("BY " + activePart.Author.ToUpperInvariant());
+                    lines.Add(new ModLine
+                    {
+                        Pick = true,
+                        GroupKey = m.Group,
+                        Title = string.IsNullOrEmpty(m.GroupTitle) ? m.Group : m.GroupTitle,
+                        Sub = parts.Length + " COLORS",
+                        Files = activePart.Files,
+                        Enabled = on > 0,
+                        Thumb = "g:" + m.Group,
+                        Names = parts.Select(p => p.Name).ToArray(),
+                        Variants = parts.Select(p => string.IsNullOrEmpty(p.Variant)
+                            ? (string.IsNullOrEmpty(p.Part) ? p.Name : p.Part)
+                            : p.Variant).ToArray(),
+                        Active = active,
+                        Meta = string.Join("   ·   ", meta),
+                        About = activePart.About ?? "",
+                        Online = worst,
+                        NewSlots = parts.Any(p => p.NewSlots),
+                        Code = parts.Any(p => p.Code == "waiting") ? "waiting" : parts.Any(p => p.Code == "built") ? "built" : "",
+                        Added = parts.Sum(p => p.Added),
+                        Merged = parts.Sum(p => p.Merged),
+                        Skipped = parts.Sum(p => p.Skipped),
+                        KeptShared = parts.Sum(p => p.KeptShared),
+                    });
+                    continue;
+                }
+                if (_knownGroups.Add(m.Group)) _openGroups.Add(m.Group);
+                bool open = _openGroups.Contains(m.Group);
                 lines.Add(new ModLine
                 {
                     Header = true,
@@ -576,6 +616,9 @@ namespace OpenSmash.Launcher
             }
             foreach (var line in lines) line.RowH = ModLineHeight(line);
             _modLines = lines;
+            if (_openDropdownKey != null && _openDropdownKey.StartsWith("modpick:")
+                && !_modLines.Any(l => l.Pick && "modpick:" + l.GroupKey == _openDropdownKey))
+                _openDropdownKey = null;
         }
 
         static int JsonInt(JsonElement m, string key) =>
@@ -1065,10 +1108,10 @@ namespace OpenSmash.Launcher
                     var parts = id.Split(':');
                     _dropdownHoverIndex = int.Parse(parts[3]);
                 }
-                else
-                {
+                else if (id != null && id.StartsWith("modpick:opt:"))
+                    _dropdownHoverIndex = int.Parse(id.Substring("modpick:opt:".Length));
+                else if (id == null || (!id.StartsWith("modpick:") && !(id.StartsWith("set:") && id.Contains(":opt:"))))
                     _dropdownHoverIndex = -1;
-                }
                 Invalidate();
             }
             else if (!string.IsNullOrEmpty(id))
@@ -1077,7 +1120,14 @@ namespace OpenSmash.Launcher
 
         void OnMouseLeave(object sender, EventArgs e)
         {
-            if (!string.IsNullOrEmpty(_hover)) { _hover = ""; _keys = false; Cursor = Cursors.Default; Invalidate(); }
+            if (!string.IsNullOrEmpty(_hover) || _pressed != "")
+            {
+                _hover = "";
+                _pressed = "";
+                _keys = false;
+                Cursor = Cursors.Default;
+                Invalidate();
+            }
         }
 
         void OnMouseDown(object sender, MouseEventArgs e)
@@ -1085,6 +1135,10 @@ namespace OpenSmash.Launcher
             if (e.Button == MouseButtons.Left)
             {
                 string id = HitAt(e.X, e.Y);
+                if (!string.IsNullOrEmpty(id) && id != "setscroll" && id != "modscroll" && !id.StartsWith("vol:"))
+                {
+                    if (_pressed != id) { _pressed = id; Invalidate(); }
+                }
                 if (id == "setscroll")
                 {
                     Tag = id;
@@ -1157,17 +1211,38 @@ namespace OpenSmash.Launcher
             _settingsThumbDrag = false;
             _modThumbDrag = false;
             Tag = null;
+            if (_pressed != "") { _pressed = ""; Invalidate(); }
         }
 
         void OnMouseWheel(object sender, MouseEventArgs e)
         {
             if (_view == "mods")
             {
+                if (_openDropdownKey != null && _openDropdownKey.StartsWith("modpick:"))
+                {
+                    _ddFirst -= Math.Sign(e.Delta);
+                    Invalidate();
+                    return;
+                }
                 float step = _modLines.Count > 0 ? _modLines[0].RowH : 68f;
                 _modScroll = (int)Math.Clamp(_modScroll - Math.Sign(e.Delta) * step, 0, Math.Max(0, _modMaxScroll));
                 Invalidate();
             }
         }
+
+        // Borderless + ShowInTaskbar still needs APPWINDOW or the button can stay missing until click.
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                const int WsExAppWindow = 0x00040000;
+                var cp = base.CreateParams;
+                cp.ExStyle |= WsExAppWindow;
+                return cp;
+            }
+        }
+
+        float Press(string id) => _pressed == id ? 1f : 0f;
 
         [DllImport("user32.dll")] static extern bool ReleaseCapture();
         [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
@@ -1238,6 +1313,16 @@ namespace OpenSmash.Launcher
                         GoBack();
                         return;
                     }
+                }
+                else if (_openDropdownKey != null && _openDropdownKey.StartsWith("modpick:"))
+                {
+                    var line = _modLines.FirstOrDefault(l => l.Pick && "modpick:" + l.GroupKey == _openDropdownKey);
+                    int n = line?.Variants?.Length ?? 0;
+                    if (e.KeyCode == Keys.Up) { _dropdownHoverIndex = Math.Max(0, _dropdownHoverIndex - 1); Invalidate(); }
+                    if (e.KeyCode == Keys.Down) { _dropdownHoverIndex = Math.Min(n - 1, Math.Max(0, _dropdownHoverIndex) + 1); Invalidate(); }
+                    if (e.KeyCode == Keys.Enter && line != null && _dropdownHoverIndex >= 0)
+                        SelectPickVariant(line, _dropdownHoverIndex);
+                    if (e.KeyCode == Keys.Escape) { _openDropdownKey = null; Invalidate(); }
                 }
                 else
                 {
@@ -1311,6 +1396,8 @@ namespace OpenSmash.Launcher
         // Actions
         void ActivateHit(string id)
         {
+            if (_openDropdownKey != null && _openDropdownKey.StartsWith("modpick:") && !id.StartsWith("modpick:"))
+                _openDropdownKey = null;
             if (ActivateNavHit(id)) return;
             if (id.StartsWith("menu:"))
             {
@@ -1397,10 +1484,37 @@ namespace OpenSmash.Launcher
                     Invalidate();
                 }
             }
+            else if (id.StartsWith("modpick:opt:"))
+            {
+                int vi = int.Parse(id.Substring("modpick:opt:".Length));
+                var line = _modLines.FirstOrDefault(l => l.Pick && "modpick:" + l.GroupKey == _openDropdownKey);
+                if (line != null) SelectPickVariant(line, vi);
+            }
+            else if (id.StartsWith("modpick:dd:"))
+            {
+                int index = int.Parse(id.Substring("modpick:dd:".Length));
+                if (index >= 0 && index < _modLines.Count && _modLines[index].Pick)
+                {
+                    string key = "modpick:" + _modLines[index].GroupKey;
+                    if (_openDropdownKey == key) { _openDropdownKey = null; }
+                    else
+                    {
+                        _openDropdownKey = key;
+                        _dropdownHoverIndex = _modLines[index].Active;
+                        _ddFirst = -1;
+                    }
+                    Invalidate();
+                }
+            }
             else if (id.StartsWith("modtoggle:"))
             {
                 int index = int.Parse(id.Substring("modtoggle:".Length));
-                if (index >= 0 && index < _modLines.Count) ToggleMod(_modLines[index].Names);
+                if (index >= 0 && index < _modLines.Count)
+                {
+                    var line = _modLines[index];
+                    if (line.Pick) TogglePickMod(line);
+                    else ToggleMod(line.Names);
+                }
             }
             else if (id.StartsWith("modrow:"))
             {
@@ -1415,6 +1529,12 @@ namespace OpenSmash.Launcher
                         if (_openGroups.Contains(key)) _openGroups.Remove(key);
                         else _openGroups.Add(key);
                         BuildModLines();
+                    }
+                    else if (line.Pick)
+                    {
+                        string key = "modpick:" + line.GroupKey;
+                        if (_openDropdownKey == key) _openDropdownKey = null;
+                        else { _openDropdownKey = key; _dropdownHoverIndex = line.Active; _ddFirst = -1; }
                     }
                     else if (line.Names.Length > 0)
                         Process.Start("explorer.exe", $"\"{Path.Combine(_modsDir, line.Names[0])}\"");
@@ -1993,24 +2113,31 @@ namespace OpenSmash.Launcher
         {
             // _sel indexes the whole mods view (action tiles first), so map it back.
             int index = _sel - ModActionCount;
-            if (index < 0 || index >= _modLines.Count) return;
+            if (index < 0 || index >= _modLines.Count || _modsBusy) return;
             var line = _modLines[index];
-            string label = line.Header ? line.Title + " and its parts" : line.Title;
+            string label = line.Header || line.Pick ? line.Title + (line.Pick ? " and its colors" : " and its parts") : line.Title;
             var r = MessageBox.Show($"Delete \"{label}\"?", "OpenSmash", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
             if (r != DialogResult.Yes) return;
-            try
+            var args = new List<string> { "remove" };
+            args.AddRange(line.Names);
+            _modsBusy = true;
+            SetLoad("REMOVING MOD", -1);
+            Invalidate();
+            _ = Task.Run(() =>
             {
-                var args = new List<string> { "remove" };
-                args.AddRange(line.Names);
-                OsMods(args.ToArray());
-                UpdateMods();
-                _ = PushInstalledState();
-                Invalidate();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Could not remove: {ex.Message}", "OpenSmash-Ultimate");
-            }
+                string why = "";
+                try { OsMods(args.ToArray()); }
+                catch (Exception ex) { why = ex.Message; }
+                BeginInvoke(() =>
+                {
+                    _modsBusy = false;
+                    ClearLoad();
+                    UpdateMods();
+                    _ = PushInstalledState();
+                    Invalidate();
+                    if (why.Length > 0) MessageBox.Show($"Could not remove: {why}", "OpenSmash");
+                });
+            });
         }
 
         void CopyDirectory(string src, string dst)
@@ -2083,15 +2210,47 @@ namespace OpenSmash.Launcher
         {
             if (_modsBusy || names == null || names.Length == 0) return;
             bool allOn = names.All(n => _mods.FirstOrDefault(x => x.Name == n)?.Enabled == true);
-            _modsBusy = true;
             string cmd = allOn ? "disable" : "enable";
             SetLoad(allOn ? "TURNING THE MOD OFF" : "TURNING THE MOD ON", -1);
             var args = new List<string> { cmd };
             args.AddRange(names);
+            RunModEnable(args.ToArray(), allOn);
+        }
+
+        void TogglePickMod(ModLine line)
+        {
+            if (_modsBusy || line.Names == null || line.Names.Length == 0) return;
+            if (line.Enabled)
+            {
+                SetLoad("TURNING THE MOD OFF", -1);
+                var args = new List<string> { "disable" };
+                args.AddRange(line.Names);
+                RunModEnable(args.ToArray(), true);
+            }
+            else
+            {
+                int i = Math.Clamp(line.Active, 0, line.Names.Length - 1);
+                SetLoad("TURNING THE MOD ON", -1);
+                RunModEnable(new[] { "enable", line.Names[i] }, false);
+            }
+        }
+
+        void SelectPickVariant(ModLine line, int index)
+        {
+            if (_modsBusy || line.Names == null || index < 0 || index >= line.Names.Length) return;
+            _openDropdownKey = null;
+            if (line.Enabled && line.Active == index) return;
+            SetLoad("SWITCHING COLOR", -1);
+            RunModEnable(new[] { "enable", line.Names[index] }, false);
+        }
+
+        void RunModEnable(string[] args, bool turningOff)
+        {
+            _modsBusy = true;
             _ = Task.Run(() =>
             {
                 string why = "";
-                try { OsMods(args.ToArray()); }
+                try { OsMods(args); }
                 catch (Exception ex) { why = ex.Message; }
                 BeginInvoke(() =>
                 {
@@ -2743,10 +2902,10 @@ namespace OpenSmash.Launcher
                 IntPtr hwnd = FindGameWindow();
                 if (hwnd != IntPtr.Zero)
                 {
-                    // Show and bring to front
+                    // Restore and raise once — never leave HWND_TOPMOST pinned.
                     ShowWindow(hwnd, 9); // SW_RESTORE
+                    SetWindowPos(hwnd, new IntPtr(0), 0, 0, 0, 0, 0x0001 | 0x0002); // HWND_TOP, SWP_NOMOVE | SWP_NOSIZE
                     SetForegroundWindow(hwnd);
-                    SetWindowPos(hwnd, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002); // HWND_TOPMOST, SWP_NOMOVE | SWP_NOSIZE
                     _gameReady = true;
                 }
             }
@@ -3613,6 +3772,8 @@ namespace OpenSmash.Launcher
         public string Online = "";
         public bool NewSlots;
         public string Code = "";
+        public bool Pick;
+        public string Variant = "";
         public int Added, Merged, Skipped, KeptShared;
     }
 
@@ -3621,13 +3782,17 @@ namespace OpenSmash.Launcher
         public bool Header;
         public bool Child;
         public bool Open;
+        public bool Pick;
         public bool Enabled;
         public bool Mixed;
         public string Title;
         public string Sub;
         public int Files;
         public string Thumb;
+        public string GroupKey = "";
         public string[] Names = Array.Empty<string>();
+        public string[] Variants = Array.Empty<string>();
+        public int Active;
         public string Meta = "";
         public string About = "";
         public string Online = "";

@@ -41,7 +41,9 @@ ROOT = os.path.dirname(HERE)
 
 # Game functions runtime/hle_skyline.c hooks itself that the game also calls directly (the CSK
 # Collection's select-screen redirect: the fighter set-up and the portrait paths)
-NATIVE_HOOKS = ("main 66dcf0", "main 3238a70", "main 64b730", "main 6079d0") + tuple(   # (+ Smashline's cloned-weapon swaps, inline)
+NATIVE_HOOKS = ("main 66dcf0", "main 3238a70", "main 64b730", "main 6079d0",
+                # get_param_int / int64 / float (lib_paramconfig; native toml path in hle_paramconfig.c)
+                "main 4e53a0", "main 4e53b0", "main 4e53e0") + tuple(   # (+ Smashline's cloned-weapon swaps, inline)
     f"main {o:x} inline" for o in (0x33b6bd8, 0x33ad528, 0x33af3e8, 0x33ae488, 0x33ac5f0, 0x17e0a0c, 0x33ad42c, 0x33af2ec,
                                    0x33ae38c, 0x33ac504, 0x17e094c, 0x33b6de0, 0x33b6fa0, 0x33b72c4, 0x33ad43c, 0x33af2fc,
                                    0x33ae39c, 0x33ac514))
@@ -325,6 +327,11 @@ def sync(tree, log=print, jobs=1):
                         f.write(rel + "\n")
         if os.path.isdir(os.path.join(t.mods, mods.CHARACTERS)):   # (the plugins' new characters: last, mods.characters_mod)
             f.write(mods.CHARACTERS + "\n")
+    try:
+        import paramconfig
+        paramconfig.write(t, log)
+    except Exception as e:
+        log(f"paramconfig: not updated: {e}")
     # With the real ARCropolis among the standard plugins, it loads the mods' plugins itself (its
     # chainloader, from each mod's folder, as on the console): only the standard ones are listed
     if any(m == "(standard) libarcropolis.nro" for m, _s in turned_on(tree)):
