@@ -45,7 +45,11 @@
  * version 3 talk in version 3: a lobby of version 3 puts players of version 2 and 3 in rooms of
  * their own). A lobby or relay of version 2 answers a JOIN of version 3 with REJECT reason 2: the
  * client then joins it in version 2, as a game of version 2 does. A private room's relay (below)
- * speaks version 2 only, so the host's own game joins it in version 2. */
+ * speaks version 2 only, so the host's own game joins it in version 2.
+ *
+ * Rollback netplay's messages (SSBU_RB_NET=relay, hle_rb_relay.c; net.h's NET_RB_PORT) are DATA (or
+ * DIRECT) between the virtual port 7701 of two players, and, to a player of the lobby code outside this
+ * player's room, a lobby of version 3's RB messages: "rollback messages" below. */
 #define _CRT_SECURE_NO_WARNINGS
 #define _CRT_RAND_S
 #define COBJMACROS
@@ -510,12 +514,40 @@ static volatile LONG lobby_flags;                         /* the last WELCOME's 
 static volatile LONG key_searching = -1, code_players = -1;   /* version 3's PONG: players of this key searching; of the code */
 static int fell_back;                                     /* a relay of version 2 said no to version 3: version 2 since */
 static char reject_text[80], member_names[ROOM_MEMBERS][NAME_LEN + 1];
+static u32 member_ips[ROOM_MEMBERS];      /* (a private room's: its MEMBERS, this player included; members_lock) */
+static int member_count;
+static SRWLOCK members_lock = SRWLOCK_INIT;
 
 u32 net_local_ip(void) { start(); return joined ? my_ip : 0; }
 int net_protocol_wanted(void) { configure(); return proto_wanted; }
 int net_protocol_spoken(void) { start(); return joined ? (int)proto : 0; }
 int net_unreachable(void) { start(); return configured && !joined && now_ms() - unjoined_since > UNREACHABLE_MS; }
 int net_lobby(void) { start(); return joined && lobby; }
+
+/* ---- rollback messages (net.h's NET_RB_PORT; SSBU_RB_NET=relay, hle_rb_relay.c) --------------
+ * DATA between the virtual port 7701 of two players, as any game datagram: straight to a player of
+ * this player's Local Wireless room while a direct path works (net_send), through the relay
+ * otherwise. A private room's relay carries DATA between its members whatever they play; the lobby
+ * only within a Local Wireless room, so to a player of the lobby code outside it (no room shared:
+ * the lobby introduces nobody) the message goes as an RB of version 3 (cookie u64, destination u32,
+ * message: the lobby carries it to a player of the same key and lobby code, or, destination 0 on a
+ * private code, to all of them). What arrives goes to the sink, never to the game's sockets; with no
+ * sink the port's datagrams are the game's as before, and RBs are dropped. (net_rb_send and
+ * net_room_members are below net_send, which they use.) */
+static volatile NetRbSink rb_sink;
+static volatile LONG64 rb_out_data, rb_out_lobby, rb_in_direct, rb_in_relayed, rb_in_lobby;
+void net_rb_sink(NetRbSink sink) { rb_sink = sink; }
+static int rb_take(u32 src, u16 dport, const u8 *data, u32 len, volatile LONG64 *count) {   /* 1: the sink's */
+    NetRbSink s = rb_sink;
+    if (!s || dport != NET_RB_PORT) return 0;
+    InterlockedIncrement64(count);
+    if (len) s(src, data, len);
+    return 1;
+}
+void net_rb_counts(NetRbCounts *out) {
+    out->out_data = rb_out_data; out->out_lobby = rb_out_lobby;
+    out->in_direct = rb_in_direct; out->in_relayed = rb_in_relayed; out->in_lobby = rb_in_lobby;
+}
 
 /* ---- direct connections (the online lobby's rooms) -------------------------------------
  * The lobby introduces the players of a room to each other (PEERS): each one's internet address
@@ -741,6 +773,7 @@ static void direct_packet(const u8 *p, int n, const struct sockaddr_in *from) {
             InterlockedIncrement(ok ? &q->in_direct : &q->dropped);
         }
         ReleaseSRWLockShared(&peers_lock);
+        if (ok && rb_take(src, dport, b + 12, (u32)(n - DIRECT_HEAD - 12), &rb_in_direct)) return;   /* (rollback's: the pair's secret is the proof) */
         if (ok && ldn_in_network(src)) vsock_deliver(src, sport, dst, dport, b + 12, (u32)(n - DIRECT_HEAD - 12));
         else if (ok) InterlockedIncrement(&direct_not_in_room);
         return;
@@ -848,6 +881,53 @@ void net_send(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const void *da
     if (buf != stack) free(buf);
 }
 
+/* Rollback's messages (above, "rollback messages"). */
+static int is_room_peer(u32 ip) {   /* (the lobby: a player of this player's Local Wireless room) */
+    int yes = 0;
+    AcquireSRWLockShared(&peers_lock);
+    for (int i = 0; i < npeers && !yes; i++) yes = peers[i].ip == ip;
+    ReleaseSRWLockShared(&peers_lock);
+    return yes;
+}
+static void rb_lobby_send(u32 dst, const void *data, u32 len);
+static int lobby_has_rb(void);
+void net_rb_send(u32 dst, const void *data, u32 len) {
+    if (!joined || client_sock == INVALID_SOCKET || !len) return;
+    u32 to = dst ? dst : NET_BROADCAST;
+    if (!lobby) {   /* (a private room's relay: DATA to its members) */
+        net_send(my_ip, NET_RB_PORT, to, NET_RB_PORT, data, len);
+        InterlockedIncrement64(&rb_out_data);
+        return;
+    }
+    int rb = lobby_has_rb(), in_room = dst ? is_room_peer(dst) : 1;
+    if (in_room || !rb) {   /* (straight there, or the lobby's DATA within the room) */
+        net_send(my_ip, NET_RB_PORT, to, NET_RB_PORT, data, len);
+        InterlockedIncrement64(&rb_out_data);
+    }
+    if (rb && !(dst && in_room)) rb_lobby_send(dst, data, len);   /* (to every player of the code: the room's get it twice) */
+}
+static int u32_order(const void *a, const void *b) { u32 x = *(const u32 *)a, y = *(const u32 *)b; return x < y ? -1 : x > y; }
+int net_room_members(u32 *out, int max) {
+    start();
+    if (!joined || max <= 0) return 0;
+    u32 all[ROOM_MEMBERS + PEERS_MAX];
+    int n = 0;
+    if (lobby) {
+        all[n++] = my_ip;
+        AcquireSRWLockShared(&peers_lock);
+        for (int i = 0; i < npeers; i++) all[n++] = peers[i].ip;
+        ReleaseSRWLockShared(&peers_lock);
+    } else {
+        AcquireSRWLockShared(&members_lock);
+        for (int i = 0; i < member_count; i++) all[n++] = member_ips[i];
+        ReleaseSRWLockShared(&members_lock);
+    }
+    qsort(all, (size_t)n, sizeof all[0], u32_order);
+    if (n > max) n = max;
+    memcpy(out, all, sizeof all[0] * (size_t)n);
+    return n;
+}
+
 /* (ICMP "port unreachable" would otherwise make a UDP socket's next receive fail; Linux reports
  * that only for connected sockets) */
 #ifdef _WIN32
@@ -927,7 +1007,7 @@ void net_lobby_list(u32 seq) {
  * header and layouts (a room's simulation version after its build), with WELCOME's flags in place
  * of its guesses, and no popups: a menu page will show what they say. The lobby says which rooms
  * this game can join (ROOM_INFO's flag 8: the room's key is this game's); room_why says why not,
- * from what the room's game is. Rollback messages (RB) are not read here yet. */
+ * from what the room's game is. Rollback messages (RB): "rollback messages" above. */
 enum { T_RB = 16, T_ROOMS, T_ROOM_INFO, T_ROOMS_END, T_MATCH, T_MATCH_STATE };
 #define ROOMS_MAX 32
 #define MODS_MAX 32
@@ -938,6 +1018,17 @@ enum { T_RB = 16, T_ROOMS, T_ROOM_INFO, T_ROOMS_END, T_MATCH, T_MATCH_STATE };
 typedef struct Mod { char name[MOD_NAME + 1]; u32 hash; } Mod;
 
 static int lobby_has(int flag) { return joined && lobby && proto == NET_PROTOCOL_V3 && (lobby_flags & flag); }
+static int lobby_has_rb(void) { return lobby_has(W_RB); }
+static void rb_lobby_send(u32 dst, const void *data, u32 len) {   /* (an RB: the lobby's bounds, 16 < length <= 1500) */
+    u8 p[1500];
+    if (16 + len > sizeof p) return;
+    header(p, T_RB);
+    put64(p + 4, cookie);
+    put32(p + 12, dst);
+    memcpy(p + 16, data, len);
+    send_udp(client_sock, p, 16 + (int)len, &relay_at);
+    InterlockedIncrement64(&rb_out_lobby);
+}
 static void printable(char *out, const u8 *p, int n) {   /* (out: n + 1 bytes) */
     for (int k = 0; k < n; k++) out[k] = p[k] && p[k] < 0x20 ? '?' : (char)p[k];
     out[n] = 0;
@@ -1205,12 +1296,16 @@ static void v3_tick(u64 t) {   /* (client thread, joined) what the room browser 
 }
 
 static void read_members(const u8 *p, int n) {
-    int count = n >= 1 ? p[0] : 0;
+    int count = n >= 1 ? p[0] : 0, got = 0;
     if (count > ROOM_MEMBERS) count = ROOM_MEMBERS;
-    for (int i = 0; i < count && 1 + (i + 1) * (4 + NAME_LEN) <= n; i++) {
+    AcquireSRWLockExclusive(&members_lock);
+    for (int i = 0; i < count && 1 + (i + 1) * (4 + NAME_LEN) <= n; i++, got++) {
+        member_ips[i] = get32(p + 1 + i * (4 + NAME_LEN));
         memcpy(member_names[i], p + 5 + i * (4 + NAME_LEN), NAME_LEN);
         member_names[i][NAME_LEN] = 0;
     }
+    member_count = got;
+    ReleaseSRWLockExclusive(&members_lock);
     InterlockedExchange(&members, count);
 }
 
@@ -1273,7 +1368,8 @@ static DWORD WINAPI client_thread(LPVOID unused) {
         case T_DATA:
             if (n >= 16 && joined) {
                 if (get16(buf + 12) != NET_LDN_PORT) count_relayed_in(get32(buf + 4));
-                vsock_deliver(get32(buf + 4), get16(buf + 12), get32(buf + 8), get16(buf + 14), buf + 16, (u32)(n - 16));
+                if (!rb_take(get32(buf + 4), get16(buf + 14), buf + 16, (u32)(n - 16), &rb_in_relayed))
+                    vsock_deliver(get32(buf + 4), get16(buf + 12), get32(buf + 8), get16(buf + 14), buf + 16, (u32)(n - 16));
             }
             break;
         case T_WELCOME:
@@ -1338,6 +1434,9 @@ static DWORD WINAPI client_thread(LPVOID unused) {
             break;
         case T_MATCH_STATE:
             if (n >= 4 + MATCH_STATE_SIZE && lobby_has(W_MATCH)) match_state(buf + 4);
+            break;
+        case T_RB:   /* (source u32, message: from a player of this lobby code, through the lobby) */
+            if (n > 8 && lobby_has(W_RB)) rb_take(get32(buf + 4), NET_RB_PORT, buf + 8, (u32)(n - 8), &rb_in_lobby);
             break;
         }
     }

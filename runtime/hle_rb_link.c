@@ -9,7 +9,9 @@
  * may give the other game's messages another port than the one it was told; a waiting game knows no
  * address at all). Once there is a peer, messages from any other address are dropped unread; one from
  * the peer's address on another port is read, and taken only if it is valid.
- * M7, 3+ players: the host keeps one address per player (below). */
+ * M7, 3+ players: the host keeps one address per player (below).
+ * R7: SSBU_RB_NET=relay opens the other link instead, through the netplay relay (hle_rb_relay.c, which
+ * sets rbl_relay): every rbl_* call below then goes there, and this file's socket is not opened. */
 #ifndef _WIN32
 void rbl_upnp_close(void) {}   /* (gpu_d3d11.c on Linux: rollback netplay is written for Windows, hle_rb_core.c) */
 #else
@@ -26,8 +28,10 @@ void rbl_upnp_close(void) {}   /* (gpu_d3d11.c on Linux: rollback netplay is wri
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "hle_rb_link.h"
 
 static SOCKET sock = INVALID_SOCKET;
+const RblOps *rbl_relay;   /* (R7) the link through the netplay relay while it is the open one (hle_rb_link.h) */
 static struct sockaddr_in last_from;
 static long long sent, received, send_errors, dropped, overflowed;
 
@@ -196,7 +200,7 @@ int rbl_upnp_state(void) { return (int)upnp_state; }
 static struct sockaddr_in peers[LP];
 static int have[LP];
 static int is_host, link_players = 2;
-void rbl_players(int n) { link_players = n < 2 ? 2 : n > LP ? LP : n; }   /* (the host: how many to take in) */
+void rbl_players(int n) { if (rbl_relay) rbl_relay->players(n); link_players = n < 2 ? 2 : n > LP ? LP : n; }   /* (the host: how many to take in) */
 
 /* 1: ready. local: this game's player (0: the host). host: the other game's address - the host's, or (the host, two
  * players at home) player 2's: "127.0.0.1" for two games on one PC, a name, "1.2.3.4:7702", or "*" (the host: wait). */
@@ -257,6 +261,7 @@ int rbl_open(int local, int my_port, const char *host, int peer_port) {
     return 1;
 }
 void rbl_close(void) {   /* (the link test: one link after another in one process) */
+    if (rbl_relay) { rbl_relay->close(); rbl_relay = NULL; return; }
     if (rx_thread) { rx_stop = 1; WaitForSingleObject(rx_thread, INFINITE); CloseHandle(rx_thread); rx_thread = NULL; }
     if (sock != INVALID_SOCKET) closesocket(sock);
     sock = INVALID_SOCKET; memset(have, 0, sizeof have);
@@ -264,10 +269,12 @@ void rbl_close(void) {   /* (the link test: one link after another in one proces
     q_head = q_tail = 0;
 }
 void rbl_send_to(int p, const void *buf, int len) {
+    if (rbl_relay) { rbl_relay->send_to(p, buf, len); return; }
     if (sock == INVALID_SOCKET || p < 0 || p >= LP || !have[p]) return;   /* (not found yet: nowhere to send) */
     if (sendto(sock, buf, len, 0, (struct sockaddr *)&peers[p], sizeof peers[p]) == len) sent++; else send_errors++;
 }
 void rbl_send(const void *buf, int len) {
+    if (rbl_relay) { rbl_relay->send(buf, len); return; }
     if (!is_host) { rbl_send_to(0, buf, len); return; }
     for (int p = 1; p < LP; p++) rbl_send_to(p, buf, len);
 }
@@ -283,6 +290,7 @@ static int welcome(const struct sockaddr_in *from) {
  * as games over the internet do; off unless set) */
 static double link_delay_ms = -1;
 int rbl_recv(void *buf, int cap) {
+    if (rbl_relay) return rbl_relay->recv(buf, cap);
     if (sock == INVALID_SOCKET) return 0;
     if (link_delay_ms < 0) { const char *e = getenv("SSBU_RB_LINK_DELAY_MS"); link_delay_ms = e && atof(e) > 0 ? atof(e) : 0; }
     for (;;) {
@@ -302,12 +310,13 @@ int rbl_recv(void *buf, int cap) {
     }
 }
 /* when the last message rbl_recv gave arrived (ms, the performance counter's clock) */
-double rbl_last_arrival_ms(void) { return last_at; }
+double rbl_last_arrival_ms(void) { return rbl_relay ? rbl_relay->last_arrival_ms() : last_at; }
 /* The last message read was valid and player p's (as it says). The host: its sender is player p's address from now on
  * (a new player found, or one its router moved to another port); the others: every message comes through the host,
  * whose port is followed the same way. 1: new or moved; 0: as known; -1: refused (player p is known at another address,
  * or the address is another player's). */
 int rbl_accept(int p) {
+    if (rbl_relay) return rbl_relay->accept(p);
     int k = is_host ? p : 0;
     if (k < 0 || k >= LP || (is_host && (k == 0 || k >= link_players))) return -1;
     if (have[k] && last_from.sin_addr.s_addr == peers[k].sin_addr.s_addr && last_from.sin_port == peers[k].sin_port) return 0;
@@ -325,21 +334,23 @@ int rbl_accept(int p) {
     peers[k] = last_from; have[k] = 1;
     return 1;
 }
-int rbl_has_peer(int p) { return p >= 0 && p < LP && have[p]; }
+int rbl_has_peer(int p) { return rbl_relay ? rbl_relay->has_peer(p) : p >= 0 && p < LP && have[p]; }
 /* (Host/Join, the host) the player whose address (and port) the last message came from, or -1: a joiner not given a number yet */
 int rbl_who(void) {
+    if (rbl_relay) return rbl_relay->who();
     for (int p = 1; p < LP; p++)
         if (have[p] && peers[p].sin_addr.s_addr == last_from.sin_addr.s_addr && peers[p].sin_port == last_from.sin_port) return p;
     return -1;
 }
 /* (the host) player p is the last message's sender from now on, whatever was known: a joiner given that number (again) */
 void rbl_assign(int p) {
+    if (rbl_relay) { rbl_relay->assign(p); return; }
     if (!is_host || p < 1 || p >= LP) return;
     char now[64]; show(&last_from, now, sizeof now);
     fprintf(stderr, "[rb] link: a joining game at %s is player %d\n", now, p + 1);
     peers[p] = last_from; have[p] = 1;
 }
-void rbl_stats(long long *s, long long *r, long long *e) { *s = sent; *r = received; *e = send_errors; }
-long long rbl_dropped(void) { return dropped; }
+void rbl_stats(long long *s, long long *r, long long *e) { if (rbl_relay) { rbl_relay->stats(s, r, e); return; } *s = sent; *r = received; *e = send_errors; }
+long long rbl_dropped(void) { return rbl_relay ? rbl_relay->dropped() : dropped; }
 
 #endif   /* _WIN32 */

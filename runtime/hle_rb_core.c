@@ -849,6 +849,10 @@ static long long net_bytes_s, net_msgs_s, net_bytes_max_s;   /* (the PADS messag
 static double net_w_ms[3], net_w_max[3]; static long long net_w_n[3];
 static void net_work(int k, double t0) { double ms = now_ms() - t0; net_w_ms[k] += ms; if (ms > net_w_max[k]) net_w_max[k] = ms; net_w_n[k]++; }
 int rbl_open(int local, int my_port, const char *host, int peer_port);
+#include "hle_rb_link.h"   /* (R7: the link through the netplay relay, SSBU_RB_NET=relay) */
+/* (R7) SSBU_RB_NET=relay,auto: this game's number comes from the room's order (rbl_relay_number), once every player is
+ * in it; until then net_local is -1 and the handshake waits (net_hello) */
+static int net_pending;
 void rbl_players(int n);
 void rbl_send(const void *buf, int len);
 void rbl_send_to(int p, const void *buf, int len);
@@ -1064,6 +1068,7 @@ static void net_report(void) {
                 "%lld frames waited for the peer's pads (%.1f ms), %lld frames held back for the frame advantage (%s); ack round trip %.1f ms mean\n",
                 net_local + 1, net_checks, net_desyncs, net_desyncs ? "" : " (in sync)", s, e, r, net_waits, net_wait_ms, net_sync_waits,
                 net_hold_sleep > 0 ? "slept" : "refreshes left out", net_rtt_n ? net_rtt_sum / net_rtt_n : -1.0);
+        rbl_relay_report();   /* (R7, SSBU_RB_NET=relay: which way the messages went) */
     }
 }
 /* this game's newest frame whose hash is final (its pads all known), with that hash; 0: none yet.
@@ -1520,6 +1525,12 @@ static void net_hello_send(void) {
 static void net_hello(int now) {
     static long long n;
     static int bad_version;
+    if (net_pending) {   /* (R7, relay,auto: no hello before this game knows its number) */
+        int p = rbl_relay_number();
+        if (p < 0) return;
+        net_pending = 0; net_local = p;
+        if (p == 0) { rbl_players(net_n); fprintf(stderr, "[rb] net mode: %d players (SSBU_RB_NET_PLAYERS)\n", net_n); }
+    }
     if (!hs_seed && net_local == 0) {
         const char *sd = getenv("SSBU_RB_SEED");
         if (sd && *sd) hs_seed = strtoull(sd, NULL, 0);
@@ -2306,7 +2317,11 @@ static void net_hello_wait(void) {
     if (hs_agreed) return;
     fprintf(stderr, "[rb] handshake: the match is being set up but the seed is not agreed: waiting for the other games (up to 10 min)\n");
     double t0 = now_ms();
-    while (!hs_agreed && now_ms() - t0 < 600000) { net_hello(1); net_wait_say(net_local == 0 ? "Waiting for players to join..." : "Waiting for the host..."); Sleep(16); }
+    while (!hs_agreed && now_ms() - t0 < 600000) {
+        net_hello(1);
+        net_wait_say(net_pending ? "Waiting for the room's players..." : net_local == 0 ? "Waiting for players to join..." : "Waiting for the host...");
+        Sleep(16);
+    }
     net_wait_say(NULL);
     if (hs_agreed) {
         fprintf(stderr, "[rb] handshake: agreed after %.1f s of waiting\n", (now_ms() - t0) / 1000);
@@ -2340,17 +2355,33 @@ static void savestates(Cpu *c, u64 frame) {
                     "each frame's fight hash checked against its first pass\n", ring_from, size, ring_every, ring_depth, ring_left);
         } else ring_from = -1;
         e = getenv("SSBU_RB_NET");
-        net_mode = e && !strncmp(e, "loop", 4) ? 1 : e && !strncmp(e, "net,", 4) ? 2 : 0;
+        /* (R7: relay[,<player>[,<delay>[,<frames>]]], the link through the netplay relay: hle_rb_relay.c) */
+        int via_relay = e && !strncmp(e, "relay", 5) && (e[5] == 0 || e[5] == ',');
+        net_mode = e && !strncmp(e, "loop", 4) ? 1 : e && (!strncmp(e, "net,", 4) || via_relay) ? 2 : 0;
         if (net_mode == 2) {
             net_lag_hi = -2;
-            /* (M7: SSBU_RB_NET_PLAYERS=<n>, the host's: how many play, 2-4; the others take it from the host's hello) */
+            /* (M7: SSBU_RB_NET_PLAYERS=<n>, the host's: how many play, 2-4; the others take it from the host's hello.
+             * R7, relay,auto: every game's, the room's order waiting for that many) */
             const char *np = getenv("SSBU_RB_NET_PLAYERS");
             if (np && atoi(np) >= 2 && atoi(np) <= 4) net_n = atoi(np);
+            int ok;
+            if (via_relay) {
+                /* <player>: auto (the default: by virtual address in the room, hle_rb_relay.c), 0-3, or -1 (the host gives one) */
+                char who[16] = "auto", *end = NULL;
+                if (e[5] == ',') sscanf(e + 6, "%15[^,],%d,%d", who, &net_delay, &net_frames);
+                long v = strtol(who, &end, 10);
+                net_pending = !strcmp(who, "auto");
+                ok = net_pending || (end != who && !*end && v >= -1 && v <= 3);
+                net_local = net_pending ? -1 : (int)v;
+                ok = ok && rbl_open_relay(net_pending ? RBL_AUTO : net_local, net_n);
+            } else
             /* (Host/Join: player -1, a joining game: its number comes from the host; it needs the host's address) */
-            if (sscanf(e + 4, "%d,%d,%d,%d,%d,%63s", &net_local, &net_port, &net_peer_port, &net_delay, &net_frames, net_host) < 3 || net_local < -1 ||
-                net_local > 3 || (net_local < 0 && !strcmp(net_host, "*")) || !rbl_open(net_local, net_port, net_host, net_peer_port)) {
-                fprintf(stderr, "[rb] net mode: SSBU_RB_NET=net,<player 0-3, -1 to join>,<my port>,<peer port>[,<delay>,<frames>,<host>] not usable (%s): off\n", e);
-                net_mode = 0;
+            ok = sscanf(e + 4, "%d,%d,%d,%d,%d,%63s", &net_local, &net_port, &net_peer_port, &net_delay, &net_frames, net_host) >= 3 && net_local >= -1 &&
+                 net_local <= 3 && !(net_local < 0 && !strcmp(net_host, "*")) && rbl_open(net_local, net_port, net_host, net_peer_port);
+            if (!ok) {
+                if (via_relay) fprintf(stderr, "[rb] net mode: SSBU_RB_NET=relay[,<player auto|0-3|-1>[,<delay>,<frames>]] not usable (%s): off\n", e);
+                else fprintf(stderr, "[rb] net mode: SSBU_RB_NET=net,<player 0-3, -1 to join>,<my port>,<peer port>[,<delay>,<frames>,<host>] not usable (%s): off\n", e);
+                net_mode = 0; net_pending = 0;
             } else {
                 if (rerun_save < 0) { const char *r = getenv("SSBU_RB_RERUN_SAVE"); rerun_save = r && *r ? atoi(r) : 3; }
                 rb_ring_size(RBN_MAX_BACK + 3);
@@ -2362,7 +2393,8 @@ static void savestates(Cpu *c, u64 frame) {
                 if (net_delay < 0) snprintf(dl, sizeof dl, "%s", net_local == 0 ? "from the round trip" : "the host's");
                 else snprintf(dl, sizeof dl, "%d%s", net_delay, net_local != 0 ? " (the host's counts)" : "");
                 if (net_local == 0) rbl_players(net_n);
-                if (net_local < 0) fprintf(stderr, "[rb] net mode: this game joins: its player number comes from the host; input delay %s\n", dl);
+                if (net_pending) fprintf(stderr, "[rb] net mode: this game's player number comes from the room (%d players); input delay %s\n", net_n, dl);
+                else if (net_local < 0) fprintf(stderr, "[rb] net mode: this game joins: its player number comes from the host; input delay %s\n", dl);
                 else fprintf(stderr, "[rb] net mode: this game plays player %d%s; input delay %s; fight hashes of the first %d frames compared\n",
                              net_local + 1, net_local == 0 ? " (the host)" : "", dl, net_frames);
                 if (net_local == 0) fprintf(stderr, "[rb] net mode: %d players (SSBU_RB_NET_PLAYERS)\n", net_n);

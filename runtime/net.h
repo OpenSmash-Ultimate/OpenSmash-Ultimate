@@ -61,6 +61,23 @@ void vsock_deliver(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const voi
  * nodes: only then do that player's direct packets reach the game. */
 int ldn_in_network(u32 ip);
 
+/* ---- rollback netplay's messages (SSBU_RB_NET=relay, runtime/hle_rb_relay.c) -----------------
+ * The rollback link's messages travel as datagrams between the virtual port NET_RB_PORT of two
+ * players: straight to a player of this player's Local Wireless room while a direct path works,
+ * else through the relay that has them both (a private room's relay, or the lobby, which carries
+ * game datagrams within a Local Wireless room only). To a player of the same lobby code who is not
+ * in this player's room, a lobby of version 3 with rollback (WELCOME flag 16) carries them as RB
+ * messages. With no sink set, datagrams to NET_RB_PORT reach the game's sockets as before. */
+#define NET_RB_PORT 7701
+typedef void (*NetRbSink)(u32 src_ip, const void *data, u32 len);   /* (the client's thread) */
+void net_rb_sink(NetRbSink sink);
+void net_rb_send(u32 dst_ip, const void *data, u32 len);   /* dst 0: every player of the room (or the lobby code) */
+/* This player's room, itself included, lowest address first: a private room's members, or this
+ * player and the players of its Local Wireless room in the lobby. 0 until joined. */
+int net_room_members(u32 *out, int max);
+typedef struct NetRbCounts { long long out_data, out_lobby, in_direct, in_relayed, in_lobby; } NetRbCounts;
+void net_rb_counts(NetRbCounts *out);
+
 /* One line about the connection for the overlay (empty when netplay is off). */
 void net_status(char *out, size_t n);
 

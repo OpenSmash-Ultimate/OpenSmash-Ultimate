@@ -17,6 +17,7 @@ WindowSmash plays the game's **Local Wireless** mode over the internet. To the g
 - [Private room](#private-room)
 - [If a room doesn't appear](#if-a-room-doesnt-appear)
 - [Run your own lobby](#run-your-own-lobby)
+- [Rollback netplay through the lobby or a private room](#rollback-netplay-through-the-lobby-or-a-private-room)
 - [Logs and privacy](#logs-and-privacy)
 - [Reference: environment variables](#reference-environment-variables)
 
@@ -235,6 +236,21 @@ python tools/ssbu_online_lobby.py --port 39421 --state online-state --verbose
 
 The lobby checks where messages come from, limits how fast each player can send, and carries each room's traffic only between that room's players. A game accepts direct packets only from addresses the lobby gave it, carrying that pair's secret, and only from players in its own room. Even so, it's a transport for players you trust: lobby codes and room names aren't passwords, and the traffic isn't encrypted or authenticated.
 
+## Rollback netplay through the lobby or a private room
+
+Rollback netplay (`SSBU_RB=1`, being tried out: [technical guide](TECHNICAL.md#rollback-netplay-ssbu_rb)) can carry its messages through the same connection as Local Wireless instead of its own UDP port: set netplay up as usual (the lobby, or a private room) and add `SSBU_RB_NET=relay`. Nobody opens a port for it; a private room's host needs only the relay port it already has. Games in one Local Wireless room of the lobby send straight to each other when their routers allow it, and through the lobby otherwise.
+
+- **Who is player 1:** with `SSBU_RB_NET=relay` (or `relay,auto`), the players are numbered by their address in the room, lowest first, once the room has `SSBU_RB_NET_PLAYERS` players (2 by default; set the same on every PC). In a private room the host's game is player 1.
+- **A lobby code without a room:** players of one lobby code (not `smash`) who aren't in a Local Wireless room together give their numbers instead: `relay,0` for the host, `relay,1` (or `relay,-1`: the host gives one) for the others, with `SSBU_NET_PROTOCOL=3`.
+
+Two games on one PC through your own lobby, for a test:
+
+```powershell
+python tools/ssbu_relay.py --bind 127.0.0.1
+# host:   SSBU_RB=1 SSBU_NET_RELAY=127.0.0.1:39420 SSBU_NET_PROTOCOL=3 SSBU_NET_ROOM=rbtest SSBU_RB_NET=relay,0
+# joiner: SSBU_RB=1 SSBU_NET_RELAY=127.0.0.1:39420 SSBU_NET_PROTOCOL=3 SSBU_NET_ROOM=rbtest SSBU_RB_NET=relay,1
+```
+
 ## Logs and privacy
 
 The launchers write `build\play.log`. For more network detail, set `SSBU_NET_LOG=1` before starting the game (`2` logs every call). Logs and the overlay can show player names, folder names and internet addresses, so read any excerpt before you share it. With Online mode, the lobby's game server also keeps your player name and ratings.
@@ -256,6 +272,7 @@ The game server's log (`--nex-log`: `0` quiet, `1` each call, `2` every packet, 
 | `SSBU_NET_PROTOCOL=3` | Being tried out: join the lobby in netplay version 3, which has the [room browser and matchmaking](#room-browser-and-matchmaking-being-tried-out). A lobby of version 2 says no, and the game joins it in version 2. `2`, the default, is version 2 only. Without it, `online_protocol.txt` decides (`3` or `2`; the settings' **Online → Netplay version** writes it). Hosting a private room is always version 2. |
 | `SSBU_NET_TEST_NAT=1`, `SSBU_NET_TEST_BLOCK=<seconds>` | Local tests: filter incoming packets as a router would, or cut direct paths that many seconds after the start. |
 | `SSBU_NET_LOG=1` / `2` | Network logging: a summary, or more detail. |
+| `SSBU_RB_NET=relay[,<player>[,<delay>,<frames>]]` | With `SSBU_RB=1`: rollback netplay's messages through this netplay connection. `<player>`: `auto` (by address in the room), `0`-`3`, or `-1` (the host gives one). See [above](#rollback-netplay-through-the-lobby-or-a-private-room). |
 | `SSBU_ONLINE_COUNTRY` | The country Online mode reports, as two letters such as `GB`. Default `US`. |
 | `SSBU_ONLINE_SERVER` | `off` turns Online mode off. Otherwise the game server's address inside the lobby, `10.13.0.1:60000` by default; only for tests. |
 
