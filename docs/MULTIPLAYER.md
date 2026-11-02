@@ -157,7 +157,7 @@ One player hosts a room on their own PC; the others join it with the host's addr
    - **Room name:** type the name you agreed on and press <kbd>Enter</kbd>.
    - **UDP port:** press <kbd>Enter</kbd> to keep **39420**.
 3. If Windows Security asks about `ssbu.exe`, click **Allow**. If you set up your firewall by hand, it must let in **UDP** on that port.
-4. The launcher asks your router to open the port (UPnP). The address to give your friends, for example `203.0.113.7:39420`, appears in the launcher's window or in `netplay_address.txt`, and in the game's overlay (<kbd>F2</kbd>). Send it to the others.
+4. The launcher asks your router to open the port (UPnP). The address to give your friends, for example `203.0.113.7:39420`, appears in the launcher's window or in `netplay_address.txt`, and in the game's overlay (<kbd>F2</kbd>). Send it to the others. `netplay_address.txt` also has the same address as a **room code**, ten letters and digits such as `5ZQ9P-RK1Y8`, and one for friends on your own network: a friend can type the code wherever an address goes (case, dashes and spaces don't matter).
 5. In the game's main menu, choose **Local Wireless** (the icon of a console with waves, in the right-hand column), then **Create a Room**. When a friend's challenge appears, accept it.
 
 The address above is only an example. Use the one your own launcher shows, or a VPN or home-network address ([which address](#which-address-to-give)).
