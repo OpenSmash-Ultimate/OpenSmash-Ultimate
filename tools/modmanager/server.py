@@ -277,7 +277,7 @@ def install_url(tree, url, log, progress, meta=None):
 def game_running():
     try:
         if sys.platform == "darwin":
-            return subprocess.run(["pgrep", "-f", "MacOS/ssbu"], capture_output=True).returncode == 0
+            return subprocess.run(["pgrep", "-x", "ssbu"], capture_output=True).returncode == 0
         if os.name == "nt":
             r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq ssbu.exe", "/NH"], capture_output=True, text=True)
             return "ssbu.exe" in r.stdout.lower()
