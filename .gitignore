@@ -12,6 +12,8 @@
 /save_backups/
 /cache/
 /screenshots/
+# Pictures the game saves (runtime/hle_album.c: the Vault's album)
+/album/
 /captures/
 /netplay_address.txt
 /netplay_id.txt
