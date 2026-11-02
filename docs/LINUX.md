@@ -158,7 +158,7 @@ The game's graphics programs (*shaders*) are made the first time each one is nee
 a new effect can show a moment late once. To make them all in advance, run
 `bash launchers/prepare-shaders.sh` from a terminal (on a Steam Deck: in Desktop Mode). It shows a
 progress bar with the time left, runs at low priority, and keeps the PC awake meanwhile. A first run
-makes about 40,000 shaders: half an hour on a fast desktop, and probably an hour or two on
+makes about 65,000 shaders: half an hour on a 16-thread desktop, and probably an hour or two on
 a Steam Deck. You can stop it with Ctrl+C and start it again later; what is done stays done. It
 needs the game built first, and the game files where they were. It prepares the first step, the
 shader programs themselves; DXVK and the graphics driver still make their own GPU code from them

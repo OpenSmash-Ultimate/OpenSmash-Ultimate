@@ -37,6 +37,23 @@ class ProgressTests(unittest.TestCase):
                          '[##############----------------]  50%  1,540 of 3,081 shaders, about 13 min left')
         self.assertEqual(S.progress_text(3081, 3081, rate=2.0), '[##############################] 100%  3,081 of 3,081 shaders')
 
+    def test_bar_by_work(self):
+        # 1 % of the shaders but a quarter of the work (the queue's longest compiles first): the
+        # share and the time left go by the work, the count is still said.
+        self.assertEqual(S.progress_text(650, 65000, rate=12.0, work=(118_000.0, 472_000.0)),
+                         '[#######-----------------------]  25%  650 of 65,000 shaders, about 8 h 12 min left')
+        self.assertEqual(S.progress_text(650, 65000, rate=12.0, work=(0.0, 0.0)),   # (no weights: by count)
+                         '[------------------------------]   1%  650 of 65,000 shaders, about 1 h 29 min left')
+
+    def test_time_left_from_a_front_loaded_queue(self):
+        # The queue's 14 workers spend the first 5 minutes on 1 % of the shaders that are a quarter
+        # of the work (in units of one worker's milliseconds): the time left is the other three
+        # quarters at the pace so far, not the count at the count's pace (which said 8 hours).
+        show = S.Progress(Out(tty=False), window=None)
+        show([(0, 65000)], now=0, work=(0.0, 480 * 60_000.0))
+        show([(650, 65000)], now=300, work=(120 * 60_000.0, 480 * 60_000.0))
+        self.assertTrue(show.out.getvalue().splitlines()[-1].endswith('25%  650 of 65,000 shaders, about 15 min left'))
+
     def test_log_lines_every_5_percent(self):
         out = Out(tty=False)
         show = S.Progress(out)
@@ -70,13 +87,23 @@ class ProgressTests(unittest.TestCase):
         for t in range(301, 401):
             rate = show.rate(t, 300 + 10 * (t - 300))
         self.assertGreater(rate, 8)                   # (the last 2 minutes', not the average since the start)
+        since_start = S.Progress(Out(tty=False), window=None)
+        for t in range(0, 301):
+            since_start.rate(t, t)
+        for t in range(301, 401):
+            rate = since_start.rate(t, 300 + 10 * (t - 300))
+        self.assertAlmostEqual(rate, 1300 / 400)      # (the queue's: the average since the start)
 
     def test_summary(self):
         lines = ['part 0/2: 100 keys; 90 compiled, 8 already cached, 1 with jump tables (left out), 1 fxc failures, 0 not translated',
                  'part 1/2: 200 keys; 150 compiled, 50 already cached, 0 with jump tables (left out), 0 fxc failures, 2 not translated']
-        self.assertEqual(S.summary(lines), '300 shaders: 240 compiled, 58 already there, 1 left out (jump tables), '
-                                           '1 that fxc could not compile, 2 not translated')
-        self.assertIsNone(S.summary(['something else']))
+        totals = S.totals_from_parts(lines)
+        self.assertEqual(S.summary(totals), '300 shaders: 240 compiled, 58 already there, 1 left out (jump tables), '
+                                            '1 that fxc could not compile, 2 not translated')
+        self.assertIsNone(S.totals_from_parts(['something else']))
+        self.assertEqual(S.summary({'keys': 3, 'compiled': 1, 'missing': 1, 'died': 1}),
+                         '3 shaders: 1 compiled, 0 already there, 0 left out (jump tables), 0 that fxc could not compile, '
+                         '0 not translated (1 not in the pack, 1 lost when a worker stopped)')
 
     def test_follow(self):
         def proc(lines):
