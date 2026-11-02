@@ -370,7 +370,8 @@ HWND display_create_window(HINSTANCE inst, const wchar_t *cls, const wchar_t *ti
     game_window = h;
     current_mode = MODE_WINDOWED;
     if (getenv("SSBU_HEADLESS") && !strcmp(getenv("SSBU_HEADLESS"), "1")) {   /* (test runs: shown off every screen, never focused, so it still draws) */
-        SetWindowPos(h, NULL, -32000, -32000, 640, 360, SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowLongPtrW(h, GWL_EXSTYLE, GetWindowLongPtrW(h, GWL_EXSTYLE) | WS_EX_TOOLWINDOW);   /* (no taskbar button either) */
+        SetWindowPos(h, NULL, -32000, -32000, 640, 360, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         ShowWindow(h, SW_SHOWNOACTIVATE);
         SetTimer(h, 1, 500, NULL);
         return h;
