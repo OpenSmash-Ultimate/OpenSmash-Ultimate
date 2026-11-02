@@ -171,21 +171,27 @@ static void test_gamecube(void) {
 
 static void test_sticks(void) {
     i32 x, y;
-    stick(0, 0, -32768, &x, &y);
+    stick(0, 100, 0, -32768, &x, &y);
     CHECK(x == 0 && y == 32767, "up is +y, clamped: %d %d", x, y);
-    stick(0, 0, 32767, &x, &y);
+    stick(0, 100, 0, 32767, &x, &y);
     CHECK(y == -32767, "down: %d", y);
-    stick(0, 32767, -32768, &x, &y);
+    stick(0, 100, 32767, -32768, &x, &y);
     CHECK(x > 23000 && x < 23300 && y > 23000 && y < 23300 && (double)x * x + (double)y * y <= 32767.0 * 32767.0 + 70000,
           "corner inside the circle: %d %d", x, y);
-    stick(0, 1000, 0, &x, &y);
+    stick(0, 100, 1000, 0, &x, &y);
     CHECK(x == 1000 && y == 0, "no deadzone passes small values: %d", x);
-    stick(10, 3000, 0, &x, &y);
+    stick(10, 100, 3000, 0, &x, &y);
     CHECK(x == 0, "inside a 10%% deadzone: %d", x);
-    stick(10, 32767, 0, &x, &y);
+    stick(10, 100, 32767, 0, &x, &y);
     CHECK(x == 32767, "full travel with a deadzone: %d", x);
-    stick(10, 6554, 0, &x, &y);
+    stick(10, 100, 6554, 0, &x, &y);
     CHECK(x > 3600 && x < 3700, "rescaled past the deadzone: %d", x);
+    stick(0, 90, 29490, 0, &x, &y);
+    CHECK(x == 32767, "a 90%% outer zone: 90%% of the travel is full: %d", x);
+    stick(0, 90, 14745, 0, &x, &y);
+    CHECK(x > 16300 && x < 16500, "and half of it a bit more than half: %d", x);
+    stick(10, 90, 3000, 0, &x, &y);
+    CHECK(x == 0, "the deadzone still holds with an outer zone: %d", x);
     XPad xp = {0x1000 | 0x0008, 255, 0, -32768, -32768, 0, 32767};
     Raw raw;
     xinput_raw(&xp, &raw);

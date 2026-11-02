@@ -262,7 +262,7 @@ class FolderTests(ConfigTestCase):
         self.assertEqual(self.dump(self.top / 'config' / 'controllers.ini'), SR_PADS_READ)
         pads = after['config/controllers.ini'].decode()
         self.assertTrue(pads.startswith('; controllers.ini: how pads become players.'), pads[:80])
-        for kept in ('outer_zone = 0.95', 'ignore = 0300000000000000aaaa000000000000', 'ignore = 0300000000000000bbbb000000000000',
+        for kept in ('outer_zone = 95', 'ignore = 0300000000000000aaaa000000000000', 'ignore = 0300000000000000bbbb000000000000',
                      'A = Z', 'name = Made-up pad', '; map.A = south, button7', 'map.LSTICK_LEFT = dpleft', 'axis.LX = leftx',
                      '[type joystick]'):
             self.assertIn(kept, pads)
@@ -411,7 +411,7 @@ class ControllersTests(ConfigTestCase):
         self.assertNotIn('player 2 =', got)
         self.assertTrue(got.startswith('keyboard_player=1 '), got)
         text = (self.top / 'c.ini').read_text()
-        for kept in ('outer_zone = 0.95', 'A = Z', 'axis.LX = leftx', '; map.A = south, button7'):   # (kept through the changes)
+        for kept in ('outer_zone = 95', 'A = Z', 'axis.LX = leftx', '; map.A = south, button7'):   # (kept through the changes)
             self.assertIn(kept, text)
         self.run_test('convert', str(self.top / 'c.ini'), str(self.top / 'again.ini'))   # (this port's file: as it reads)
         self.assertEqual(self.dump(self.top / 'again.ini'), got)
