@@ -25,7 +25,7 @@ typedef int64_t i64;
 #include "host.h"
 #endif
 
-#include "hde/hde64.c"
+#include "hde/hde64.inc"   /* (.inc: compiled only here, not on its own: the builds take sources from runtime/ top) */
 
 #define PATCH_LEN 5
 

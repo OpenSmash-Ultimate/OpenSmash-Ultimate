@@ -28,7 +28,7 @@ libopus 1.5.2 (Xiph.Org Foundation and contributors) is included as source in [`
 
 ### HDE64
 
-The Hacker Disassembler Engine 64 (HDE64), copyright 2008-2009 Vyacheslav Patkov, is included as source in [`runtime/hde/`](runtime/hde/) and compiled into the game; [`runtime/hle_detour.c`](runtime/hle_detour.c) uses it to measure x86-64 instructions when it hooks a recompiled function. It is under the [BSD license](runtime/hde/LICENSE) kept beside it. `hde64.c` is changed so a decode stops at the 15-byte instruction limit instead of reading past it.
+The Hacker Disassembler Engine 64 (HDE64), copyright 2008-2009 Vyacheslav Patkov, is included as source in [`runtime/hde/`](runtime/hde/) and compiled into the game; [`runtime/hle_detour.c`](runtime/hle_detour.c) uses it to measure x86-64 instructions when it hooks a recompiled function. It is under the [BSD license](runtime/hde/LICENSE) kept beside it. `hde64.inc` (upstream `hde64.c`, renamed because it is compiled only through hle_detour.c) is changed so a decode stops at the 15-byte instruction limit instead of reading past it.
 
 ### Open fonts
 
