@@ -127,6 +127,14 @@ if os.path.exists(os.path.join(SDL3_DIR, "include", "SDL3", "SDL_gamepad.h")) an
 else:
     SDL3_DLL = None
 EXTRA_LIBS = OPUS_LIBS + VPX_LIBS + (["/NODEFAULTLIB:msvcrt.lib"] if EXTERNAL_LIBS else [])
+# The Vulkan headers (Khronos', third_party/vulkan-headers) for the Vulkan back end in development
+# (runtime/gpu_vulkan.c; docs/TECHNICAL.md, "A second back end: Vulkan"). Headers only: the program
+# links no Vulkan library and loads the system's loader (vulkan-1.dll) at run time, so no Vulkan SDK
+# is needed to build and none to play. Without the folder, gpu_vulkan.c says it has no Vulkan.
+VULKAN_INCLUDE = os.path.join(ROOT, "third_party", "vulkan-headers", "include")
+HAVE_VULKAN = os.path.exists(os.path.join(VULKAN_INCLUDE, "vulkan", "vulkan.h"))
+if HAVE_VULKAN:
+    CFLAGS += ["/DSSBU_HAVE_VULKAN", "/I", VULKAN_INCLUDE]
 
 # Compiler crashes, and compiles that run too long (tools/ladder.py). A player's build stopped on two files
 # that clang-cl crashed on (access violations, one in the parser, one in the optimiser) where the very same

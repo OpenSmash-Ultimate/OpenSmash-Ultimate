@@ -26,6 +26,10 @@ The VP9 decoder of the WebM Project's libvpx, release v1.15.2, is included as so
 
 libopus 1.5.2 (Xiph.Org Foundation and contributors) is included as source in [`third_party/opus/`](third_party/opus/) and compiled into the game when it is built (the game's music is Opus), under its [BSD license](third_party/opus/COPYING). [`third_party/README.md`](third_party/README.md) says which files. One line is changed: in `silk/x86/NSQ_del_dec_avx2.c`, a test for Microsoft's compiler now leaves clang out, so older clang-cl versions can build the file ([Local changes](third_party/README.md#local-changes)).
 
+### Vulkan headers
+
+The Khronos Group's Vulkan headers, Vulkan-Headers v1.4.365, are included in [`third_party/vulkan-headers/`](third_party/vulkan-headers/) for the Vulkan back end in development ([`runtime/gpu_vulkan.c`](runtime/gpu_vulkan.c)): headers only, no library is linked, and the program loads the system's Vulkan loader at run time. They are unmodified; [`third_party/README.md`](third_party/README.md) says which files and from which commit. Their license is Apache-2.0 OR MIT, with the texts kept there: [LICENSE.md](third_party/vulkan-headers/LICENSE.md), [Apache-2.0](third_party/vulkan-headers/LICENSES/Apache-2.0.txt), [MIT](third_party/vulkan-headers/LICENSES/MIT.txt).
+
 ### HDE64
 
 The Hacker Disassembler Engine 64 (HDE64), copyright 2008-2009 Vyacheslav Patkov, is included as source in [`runtime/hde/`](runtime/hde/) and compiled into the game; [`runtime/hle_detour.c`](runtime/hle_detour.c) uses it to measure x86-64 instructions when it hooks a recompiled function. It is under the [BSD license](runtime/hde/LICENSE) kept beside it. `hde64.inc` (upstream `hde64.c`, renamed because it is compiled only through hle_detour.c) is changed so a decode stops at the 15-byte instruction limit instead of reading past it.

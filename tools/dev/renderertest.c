@@ -1,7 +1,7 @@
 /* display.ini's renderer (runtime/renderer.h, read by runtime/gpu_display.c, acted on by
  * runtime/gpu_renderer.c) with no game around it, for tests/test_renderer_option.py.
  *
- *   Windows: clang-cl /O1 <cc.CFLAGS> tools/dev/renderertest.c (and cc.py's Vulkan flags, when it has them)
+ *   Windows: clang-cl /O1 <cc.CFLAGS> tools/dev/renderertest.c (cc.CFLAGS has the Vulkan headers when cc.py found them)
  *
  * The display.ini read is SSBU_DISPLAY's (the test's own file); SSBU_RENDERER is read as the game
  * reads it. Arguments, each answered on a line of its own:
@@ -11,6 +11,7 @@
  *   default       the default display.ini's text, as the game writes it */
 #include "../../runtime/gpu_display.c"
 #include "../../runtime/gpu_renderer.c"
+#include "../../runtime/gpu_vulkan.c"
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
