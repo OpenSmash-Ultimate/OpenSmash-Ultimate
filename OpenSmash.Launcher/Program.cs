@@ -20,14 +20,14 @@ namespace OpenSmash.Launcher
             ApplicationConfiguration.Initialize();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+            // The windows are laid out in pixels for a 96-DPI screen (fonts in pixels, 810 px tall at most): Windows
+            // scales them up on high-DPI screens, GDI text drawn sharp. Per-monitor awareness left them a third of
+            // their size at 250 % scaling.
+            Application.SetHighDpiMode(HighDpiMode.DpiUnawareGdiScaled);
 
             // Ensure single instance
             using var mutex = new Mutex(true, "Global\\OpenSmashLauncher", out bool createdNew);
             if (!createdNew) return;
-
-            // DPI awareness for sharp text
-            try { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); } catch { }
 
             // Resolve repo root (where the .exe lives or where it was launched from)
             string repo = AppContext.BaseDirectory;
