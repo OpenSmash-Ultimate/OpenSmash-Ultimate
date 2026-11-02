@@ -435,6 +435,10 @@ static void report(U64 total, U64 busy) {
 }
 
 /* ---- sampling ------------------------------------------------------------------------ */
+/* (rollback netplay, SSBU_RB) profile_start_gated: samples only while rb_fast is set (the
+ * frames a load runs again), five times a millisecond. */
+extern volatile LONG rb_fast;
+static int gated;
 static DWORD WINAPI sampler(void *arg) {
     (void)arg;
     DWORD self = GetCurrentThreadId(), pid = GetCurrentProcessId();
@@ -455,6 +459,12 @@ static DWORD WINAPI sampler(void *arg) {
         QueryPerformanceCounter(&now);
         double t = (double)(now.QuadPart - t0.QuadPart) / (double)freq.QuadPart;
         if (t >= duration) break;
+        if (gated) {   /* (rollback build: only while frames are run again after a load, every 0.2 ms) */
+            static LARGE_INTEGER next;
+            if (rb_fast <= 0) { next.QuadPart = 0; SwitchToThread(); continue; }
+            if (now.QuadPart < next.QuadPart) { YieldProcessor(); continue; }
+            next.QuadPart = now.QuadPart + freq.QuadPart / 5000;
+        }
         if (!nh || (double)(now.QuadPart - refreshed.QuadPart) / (double)freq.QuadPart > 0.25) {   /* threads come and go */
             for (U32 i = 0; i < nh; i++) CloseHandle(handles[i]);
             nh = 0;
@@ -496,7 +506,7 @@ static DWORD WINAPI sampler(void *arg) {
                 }
             }
         }
-        Sleep(1);
+        if (!gated) Sleep(1);
     }
     timeEndPeriod(1);
     for (U32 i = 0; i < nh; i++) CloseHandle(handles[i]);
@@ -510,9 +520,10 @@ void profile_start(double seconds) {
     if (!table) table = malloc(sizeof *table * SLOTS);
     if (!stacks) stacks = malloc(sizeof *stacks * MAX_STACKS);
     duration = seconds;
-    fprintf(stderr, "[profile] sampling for %.0f s\n", seconds);
+    fprintf(stderr, "[profile] sampling for %.0f s%s\n", seconds, gated ? ", only the frames run again" : "");
     CloseHandle(CreateThread(NULL, 0, sampler, NULL, 0, NULL));
 }
+void profile_start_gated(double seconds) { gated = 1; profile_start(seconds); }
 
 /* ---- thread dumps, for freeze reports --------------------------------------------------- */
 const char *rt_describe_host(unsigned long long pc, char *buf, size_t n);   /* host.c: a recompiled function's guest place */

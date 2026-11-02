@@ -42,7 +42,16 @@ static u64 guest(u64 va) {
 static void write32(u64 va, u32 value) { u64 g = guest(va); if (g) st32(g, value); }
 static void write64(u64 va, u64 value) { u64 g = guest(va); if (g) st64(g, value); }
 
-static u64 timestamp(void) { return rt_now_ns() * 384 / 625; }   /* GPU timer ticks at 19.2 MHz * 32 / 1.6 */
+/* The GPU's clock: rt_now_ns, but in a rollback fight (SSBU_RB) the kernel's fixed clock, so that
+ * a frame run again reads the same times (kernel.c, "rollback: the fixed clock"). hle_nv.c's
+ * GetGpuTime asks it too. */
+int kernel_rb_gpu_clock(u64 *fixed_ns, i64 *off);
+u64 rb_gpu_ns(void) {
+    u64 fixed;
+    i64 off;
+    return kernel_rb_gpu_clock(&fixed, &off) ? fixed : rt_now_ns() + (u64)off;
+}
+static u64 timestamp(void) { return rb_gpu_ns() * 384 / 625; }   /* GPU timer ticks at 19.2 MHz * 32 / 1.6 */
 
 /* A semaphore release: one word, or four words (payload, padding, 64-bit timestamp). The
  * payload goes last, after a release fence: a guest thread that sees it reads what the work

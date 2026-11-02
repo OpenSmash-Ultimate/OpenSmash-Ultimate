@@ -1,6 +1,7 @@
 /* The game's two once-a-frame points, each wrapped once, and the frame hooks registered on them
- * (frame_hooks.h says how they run). The wraps were the fight test's (hle_fight_test.c) until
- * rollback needed the same two functions: the build allows one wrap per guest function.
+ * (frame_hooks.h says how they run); and the player record builder, held the same way. The wraps
+ * were the fight test's (hle_fight_test.c) until rollback needed the same functions: the build
+ * allows one wrap per guest function.
  *
  * This file's name sorts before hle_fight_test.c on purpose. tools/recomp.py puts the exported
  * names the runtime wraps into its tools fingerprint in the order of the runtime's sources, and
@@ -74,4 +75,14 @@ HLE_WRAP(71038701e0) {
     const FrameHooks *l = __atomic_load_n(&in_use[FRAME_HOOK_END], __ATOMIC_ACQUIRE);
     if (!l) { f_71038701e0_orig(c); return; }
     run(l, c, f_71038701e0_orig);
+}
+
+/* The player record builder (PLAYER_RECORD_BUILDER in game_addr.h): one player's choice on the
+ * select screens (a panel state, x0) into that player's record of the match block (x3); x1 the
+ * player. Once per player as a match is set up (and by other screens that build records: the
+ * controls screen's test fight). */
+HLE_WRAP(71017880c0) {
+    const FrameHooks *l = __atomic_load_n(&in_use[FRAME_HOOK_RECORD], __ATOMIC_ACQUIRE);
+    if (!l) { f_71017880c0_orig(c); return; }
+    run(l, c, f_71017880c0_orig);
 }

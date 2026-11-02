@@ -250,11 +250,16 @@ static u64 stage_choice(void) {
 }
 
 /* The record builder (PLAYER_RECORD_BUILDER): one player's choice on the select screens (a
- * panel state, x0) into that player's record of the match block (x3); x1 the player. */
-HLE_WRAP(71017880c0) {
-    if (!match_on) { f_71017880c0_orig(c); return; }
-    u64 st = c->x[0], rec = c->x[3];
-    int idx = (int)c->x[1];
+ * panel state, x0) into that player's record of the match block (x3); x1 the player. Through its
+ * frame hook (hle_each_frame.c holds the wrap: rollback netplay needs the function too),
+ * registered while a debug match is on. Called on the game's main thread, one player at a time:
+ * what the panel was is kept here between the two halves. */
+static u64 record_was;
+static u32 record_type_was;
+static void record_before(Cpu *c, const u64 args[8], void *ctx) {
+    (void)c; (void)ctx;
+    u64 st = args[0];
+    int idx = (int)args[1];
     u64 was = ld64(st + 0x88);
     u32 type_was = ld32(st + 0x78);
     if (idx == 0 && dm_next(&match, match_list)) {
@@ -269,9 +274,15 @@ HLE_WRAP(71017880c0) {
         dm_stage(&match, P(u8, sel), P(u8, GAME_ADDR(STAGE_HAZARDS)), P(u8, block + 0x54));
     }
     if (idx == 1) { memcpy(match_p2, P(u8, st), DM_STATE); match_p2_ok = 1; }
-    f_71017880c0_orig(c);
+    record_was = was;
+    record_type_was = type_was;
+}
+static void record_after(Cpu *c, const u64 args[8], void *ctx) {
+    (void)c; (void)ctx;
+    u64 rec = args[3];
+    int idx = (int)args[1];
     fprintf(stderr, "[fight] debug match: player %d: screen choice %llx type %u -> record: ui_chara %llx, fighter kind %d, type %u, "
-            "colour %u, cpu level %u\n", idx, (unsigned long long)was, type_was, (unsigned long long)ld64(rec), (int)(i8)ld8(rec + 8),
+            "colour %u, cpu level %u\n", idx, (unsigned long long)record_was, record_type_was, (unsigned long long)ld64(rec), (int)(i8)ld8(rec + 8),
             ld8(rec + 0xa), ld8(rec + 0x19), ld8(rec + 0x79));
 }
 
@@ -352,6 +363,7 @@ void test_fight_start(void) {
     if (m) dm_parse(&match, m);
     match_on = m || match_list;
     if (match_on) fprintf(stderr, "[fight] debug match: %s%s%s\n", m ? m : "", m && match_list ? ", then " : "", match_list ? list : "");
+    if (match_on) frame_hook_add(FRAME_HOOK_RECORD, FRAME_ORDER_FIGHT_TEST, record_before, record_after, NULL);
     if ((end_limit = dm_end_parse(getenv("SSBU_DEBUG_END")))) {
         fprintf(stderr, "[fight] SSBU_DEBUG_END: the run ends after %lld fight frames\n", end_limit);
         CloseHandle(CreateThread(NULL, 0, end_watch, NULL, 0, NULL));

@@ -37,7 +37,7 @@ typedef struct Slot { int state, has_buffer; u8 buffer[0x400]; u32 buffer_size; 
 static struct {
     Slot slots[SLOTS];
     u32 buffer_event, vsync_event;
-    CONDITION_VARIABLE freed, queued;   /* (queued: SSBU_SPEED's consumer waits on it) */
+    CONDITION_VARIABLE freed, queued;   /* (queued: SSBU_SPEED's consumer waits on it, and rollback's catch-up frames) */
     SRWLOCK lock;
     int started;
     u64 frames;
@@ -60,6 +60,15 @@ static void queue_unlock(void) {
 DWORD present_queue_holder(u64 *since_ms) { DWORD t = queue_holder; *since_ms = queue_held_since; return t; }
 
 /* ---- the consumer: vsync -------------------------------------------------------- */
+extern volatile LONG rb_fast;   /* (kernel.c; hle_rb_core.c sets it) frames still to run again after a load */
+volatile u64 rb_vsync_gpu_wait_qpc, rb_vsync_gpu_waits;   /* (the profile: this thread's GPU waits in fast mode) */
+/* (M6: refreshes to leave out, the net mode's holds for the frame advantage: the refresh comes and goes with
+ * nothing signalled or shown, so the game's frame end waits one more and the game really is a frame later. A
+ * Sleep(16) at the safe point did nothing of the kind: the vsync event stays signalled until the game takes it,
+ * so a frame of ~6 ms work plus 16 ms asleep still made the next refresh, and the game ahead stayed ahead:
+ * twopc15, 276 holds and PC 1 still 4-6 frames ahead the whole match.) */
+volatile LONG rb_vsync_skip;
+volatile LONG64 rb_vsync_skipped;
 static u8 shown[sizeof queue.slots[0].buffer];
 static u32 shown_size;
 static u64 shown_mark;
@@ -136,17 +145,44 @@ static void speed_loop(void) {
     }
 }
 
+/* (rollback: hle_rb_core.c) A frame of a catch-up after a load is drawn and not shown: the GPU
+ * waited for (timed, for the rollback profile), the buffer given back. */
+static void show_fast(void) {
+    LARGE_INTEGER g0, g1;
+    QueryPerformanceCounter(&g0);
+    gpu_queue_wait(shown_mark);
+    QueryPerformanceCounter(&g1);
+    rb_vsync_gpu_wait_qpc += (u64)(g1.QuadPart - g0.QuadPart);
+    rb_vsync_gpu_waits++;
+    kernel_signal_event(queue.buffer_event);
+    WakeAllConditionVariable(&queue.freed);
+}
+
 static DWORD WINAPI vsync_thread(LPVOID unused) {
     (void)unused;
     SetThreadDescription(GetCurrentThread(), L"vsync");
     timeBeginPeriod(1);
     if (speed_mode) speed_loop();
     for (;;) {
-        display_wait_tick();   /* the next refresh (display.ini's pacing) */
+        /* (rollback build, M4: while rb_fast, the frames a load runs again are neither paced nor
+         * shown: each is taken off the queue as soon as it is drawn, and the next refresh is now) */
+        int fast = rb_fast > 0;
+        if (!fast) display_wait_tick();   /* the next refresh (display.ini's pacing) */
+        if (!fast && rb_vsync_skip > 0) { InterlockedDecrement(&rb_vsync_skip); InterlockedIncrement64(&rb_vsync_skipped); continue; }
         queue_lock();
         int oldest = take_oldest();
+        /* (rollback, fast and nothing queued: wait for the game's next frame - up to 2 ms, then a refresh
+         * all the same - rather than signal refreshes in a spin: thousands of them, each through the
+         * kernel's lock, and the game counted them as dropped refreshes) */
+        if (fast && oldest < 0) {
+            queue_holder = 0;   /* (asleep, not holding it) */
+            BOOL woken = SleepConditionVariableSRW(&queue.queued, &queue.lock, 2, 0);
+            queue_held_since = GetTickCount64();
+            queue_holder = GetCurrentThreadId();
+            if (woken) { queue_unlock(); continue; }
+        }
         queue_unlock();
-        if (oldest >= 0) show();
+        if (oldest >= 0) { if (fast) show_fast(); else show(); }
         kernel_signal_event(queue.vsync_event);
     }
 }
@@ -163,6 +199,27 @@ static void start(void) {
     report_draws = input_seq_on();
     if (speed_mode) fprintf(stderr, "[display] SSBU_SPEED=%g: one refresh per frame shown and none without one, %s\n", speed, speed > 0 ? "paced at n x 60 a second" : "uncapped");
     CreateThread(NULL, 0, vsync_thread, NULL, 0, NULL);
+}
+
+/* (rollback build, M2) The buffer queue's slot states for a savestate. The game's memory says which
+ * buffers it has dequeued and queued; after a load the queue must say the same, or the buffers it
+ * forgot stay dequeued (two loads left none free: DEQUEUE_BUFFER said "would block" for good) and
+ * stale queued ones are shown between new frames. The registered buffers themselves don't change. */
+typedef struct ViSlot { int state; u64 queued_at, gpu_mark; } ViSlot;
+void *vi_rb_save(void) {
+    ViSlot *s = malloc(sizeof *s * SLOTS);
+    queue_lock();
+    for (int i = 0; i < SLOTS; i++) { s[i].state = queue.slots[i].state; s[i].queued_at = queue.slots[i].queued_at; s[i].gpu_mark = queue.slots[i].gpu_mark; }
+    queue_unlock();
+    return s;
+}
+
+void vi_rb_load(const void *p) {
+    const ViSlot *s = p;
+    queue_lock();
+    for (int i = 0; i < SLOTS; i++) { queue.slots[i].state = s[i].state; queue.slots[i].queued_at = s[i].queued_at; queue.slots[i].gpu_mark = s[i].gpu_mark; }
+    queue_unlock();
+    if (queue.started) { kernel_signal_event(queue.buffer_event); WakeAllConditionVariable(&queue.freed); }
 }
 
 /* ---- parcels --------------------------------------------------------------------- */
@@ -195,6 +252,7 @@ static void queue_output(Out *o) {   /* QueueBufferOutput: width, height, transf
 }
 
 static void transact(u32 code, In *in, Out *out, Cpu *c) {
+    int fast_freed = 0;   /* (rollback build: a frame of a catch-up queued, freed at once) */
     (void)c;
     skip_token(in);
     queue_lock();
@@ -252,7 +310,17 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
             queue.slots[slot].state = QUEUED;
             queue.slots[slot].queued_at = rt_now_ns();
             queue.slots[slot].gpu_mark = gpu_queue_mark();
-            if (speed_mode) WakeConditionVariable(&queue.queued);
+            /* (rollback build, M4: a frame of a catch-up is not shown. Freed here and the game told at
+             * once - buffer free, a refresh - rather than through the vsync thread: the game's frame end
+             * waited 0.9 ms a re-run frame for that round trip. SSBU_RB_QFREE=0: through the thread.) */
+            static int qfree = -1;
+            if (qfree < 0) { const char *e = getenv("SSBU_RB_QFREE"); qfree = !(e && *e == '0'); }
+            if (qfree && rb_fast > 0) {
+                for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == ACQUIRED) queue.slots[i].state = FREE;
+                queue.slots[slot].state = FREE;
+                queue.frames++;
+                fast_freed = 1;
+            } else if (speed_mode || rb_fast > 0) WakeConditionVariable(&queue.queued);
         }
         queue_output(out);
         w32(out, 0);
@@ -287,6 +355,11 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
         w32(out, 0);
     }
     queue_unlock();
+    if (fast_freed) {
+        kernel_signal_event(queue.buffer_event);
+        WakeAllConditionVariable(&queue.freed);
+        kernel_signal_event(queue.vsync_event);
+    }
 }
 
 /* ---- IHOSBinderDriver ------------------------------------------------------------ */

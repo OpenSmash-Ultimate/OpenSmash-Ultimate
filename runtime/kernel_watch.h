@@ -27,8 +27,14 @@ static inline UINT kernel_write_watch(int who, DWORD flags, PVOID base, SIZE_T s
 }
 
 /* SSBU_ROLLBACK_RING: the frames the ring keeps (1: 8; 2 to 64: that many), 0 when off (unset or
- * any other value). Read from the environment each time, so it can be asked before kernel_init. */
+ * any other value, or SSBU_RB on). Read from the environment each time, so it can be asked before
+ * kernel_init. */
 int kernel_ring_frames(void);
+
+/* SSBU_RB (rollback netplay, hle_rb_core.c) on: set, and not "0". Its savestates ask the system's
+ * write watch themselves (the heap, stack and thread-local areas reserved with it, and the
+ * modules), so the ring and its shared watch stay off then. Read from the environment each time. */
+int kernel_rb_switch(void);
 
 /* The memory map's writable regions (read-write in svcQueryMemory's terms), sorted and merged
  * where they touch: guest addresses [lo, hi), and whether the write watch sees them. Between

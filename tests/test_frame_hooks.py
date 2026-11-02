@@ -59,10 +59,11 @@ class FrameHookTests(unittest.TestCase):
 class PlacementTests(unittest.TestCase):
     def test_one_wrap_each_here(self):
         text = (ROOT / 'runtime' / 'hle_each_frame.c').read_text(encoding='utf-8')
-        self.assertEqual(re.findall(r'^HLE_WRAP\((\w+)\)', text, re.M), ['71038701e0'])
+        self.assertEqual(re.findall(r'^HLE_WRAP\((\w+)\)', text, re.M), ['71038701e0', '71017880c0'])
         self.assertEqual(re.findall(r'^HLE_WRAP_EXPORT\((\w+)\)', text, re.M), [FRAME_LINE])
         by_address, by_name = recomp.runtime_wraps()   # (which stops at a function wrapped twice)
         self.assertIn(0x71038701e0, by_address)
+        self.assertIn(0x71017880c0, by_address)   # (the record builder: the fight test's debug match and rollback netplay)
         self.assertIn(FRAME_LINE, by_name)
 
     def test_the_frame_line_before_the_fight_tests_names(self):

@@ -52,6 +52,7 @@ static struct {
     u32 lead;        /* bytes */
     u64 dry_count;
     f32 volume;
+    u64 skip;        /* (rollback build, M6: bytes of the next appends already heard: dropped, audio_rb_load) */
     CRITICAL_SECTION lock;
 } audio = {.volume = 1.0f};
 static HANDLE played_event;   /* feed released buffers: the reaper tells the game */
@@ -356,6 +357,10 @@ static void append(u64 desc, u64 tag) {
         any = 1;
     } else {
         const u8 *src = P(u8, addr + offset);
+        /* (rollback build, M6: after a load, the game mixes again what the device already played since the
+         * save: that much is left out, so the sound neither repeats nor misses a beat) */
+        u64 drop = audio.skip < size ? audio.skip : size;
+        audio.skip -= drop; src += drop; size -= drop;
         for (u64 done = 0; done < size;) {
             u32 at = (u32)((audio.wpos + done) % RING), k = (u32)(size - done);
             if (k > RING - at) k = RING - at;
@@ -493,4 +498,58 @@ IpcObject *service_audio(const char *name) {
     if (!strcmp(name, "audout:u")) return ipc_new_object("audout:u", manager, NULL);
     if (!strcmp(name, "audren:u")) return ipc_new_object("audren:u", renderer_manager, NULL);
     return NULL;
+}
+
+/* (rollback build, M2) The audio output's bookkeeping for a savestate: the buffers the game has
+ * appended and not had back, and those released and not yet collected. After a load the game
+ * waits for the buffers its memory says are out; without this the ones it collected since the
+ * save never came back, and each load left it fewer to mix into. The device's position runs on:
+ * a held buffer whose end the device has passed is released at once.
+ * M6, the sound itself: a load puts the game's mixer back to the save, and it mixes that stretch
+ * again, while what it mixed the first time was still queued and partly played: every rollback
+ * repeated a slice of sound (33-117 ms; 150-200 rollbacks a match on the PC ahead). Now the save
+ * keeps how far the queue was written (wpos); a load drops what was queued since and not yet played
+ * (the run again mixes it right), and what was played since is left out of the next appends (skip),
+ * so the sound goes on from where the device is, without a repeat or a gap. SSBU_RB_AUDIO_SPLICE=0:
+ * as before. */
+typedef struct AudioSave { struct { u64 tag, end; } held[MAX_BUFFERS]; u32 head, count; u64 released[MAX_BUFFERS * 2]; u32 nreleased; u64 wpos; } AudioSave;
+static long long splice_loads;
+static u64 splice_dropped, splice_skipped;
+void *audio_rb_save(void) {
+    AudioSave *s = calloc(1, sizeof *s);
+    if (!audio.event) return s;   /* (no audio output opened yet: its lock isn't set up) */
+    EnterCriticalSection(&audio.lock);
+    memcpy(s->held, audio.held, sizeof s->held);
+    s->head = audio.head; s->count = audio.count;
+    memcpy(s->released, audio.released, sizeof s->released);
+    s->nreleased = audio.nreleased;
+    s->wpos = audio.wpos - audio.skip;   /* (where the mixer is on the queue's timeline: a skip still owed, it is that far behind the queue) */
+    LeaveCriticalSection(&audio.lock);
+    return s;
+}
+
+void audio_rb_load(const void *p) {
+    const AudioSave *s = p;
+    if (!audio.event) return;
+    static int splice = -1;
+    if (splice < 0) { const char *e = getenv("SSBU_RB_AUDIO_SPLICE"); splice = !(e && *e == '0'); }
+    EnterCriticalSection(&audio.lock);
+    memcpy(audio.held, s->held, sizeof s->held);
+    audio.head = s->head; audio.count = s->count;
+    memcpy(audio.released, s->released, sizeof s->released);
+    audio.nreleased = s->nreleased;
+    u64 dropped = 0, skip = 0;
+    if (splice && s->wpos && audio.wpos - audio.skip >= s->wpos) {   /* (the mixer now at or past where it was at the save) */
+        u64 cut = s->wpos > audio.rpos ? s->wpos : audio.rpos;   /* (written since the save and not played: goes) */
+        if (audio.wpos > cut) { dropped = audio.wpos - cut; audio.wpos = cut; }
+        skip = audio.rpos > s->wpos ? audio.rpos - s->wpos : 0;  /* (played since the save: the run again's first bytes) */
+        audio.skip = skip;
+        splice_loads++; splice_dropped += dropped; splice_skipped += skip;
+    }
+    LeaveCriticalSection(&audio.lock);
+    if (splice_loads && (splice_loads <= 3 || splice_loads % 200 == 0))
+        fprintf(stderr, "[audio] rollback %lld: %.1f ms of sound queued since the save dropped, %.1f ms already heard left out of the run again "
+                "(so far: %.1f s dropped, %.1f s left out)\n", splice_loads, dropped / (double)(RATE / 1000 * FRAME), skip / (double)(RATE / 1000 * FRAME),
+                splice_dropped / (double)(RATE * FRAME), splice_skipped / (double)(RATE * FRAME));
+    if (audio.event) kernel_signal_event(audio.event);
 }
