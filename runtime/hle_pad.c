@@ -87,6 +87,8 @@ typedef struct DevCfg {
     int layout;                   /* -1 unset, 0 positional, 1 labels */
     int style;                    /* -1 unset, 0 auto, 1 pro, 2 gamecube */
     int deadzone, rumble, trigger;   /* percent; -1 unset */
+    int outer;                    /* percent of the stick's travel that already counts as fully pushed; -1 unset */
+    int invert;                   /* the stick axes turned round: 1 LX, 2 LY, 4 RX, 8 RY; -1 unset */
     Source map[16][MAXSRC]; u8 nmap[16], has_map[16];
 } DevCfg;
 
@@ -95,10 +97,12 @@ static struct {
     int background;
     int rumble;                   /* 0: no pad rumbles ([general] rumble) */
     char pin[PAD_SLOTS][96];
+    char ignore[16][96];          /* [general] ignore = <GUID, name or type>: pads never used */
+    int nignore;
     DevCfg def, dev[32];
     int ndev;
     char path[MAX_PATH];
-} cfg = {.keyboard_slot = 0, .background = 1, .rumble = 1, .def = {"", -1, -1, -1, -1, -1}};
+} cfg = {.keyboard_slot = 0, .background = 1, .rumble = 1, .def = {"", -1, -1, -1, -1, -1, -1, -1}};
 
 static void config_defaults(void) {
     char path[MAX_PATH];
@@ -107,7 +111,7 @@ static void config_defaults(void) {
     cfg.keyboard_slot = 0;
     cfg.background = 1;
     cfg.rumble = 1;
-    cfg.def.layout = cfg.def.style = cfg.def.deadzone = cfg.def.rumble = cfg.def.trigger = -1;
+    cfg.def.layout = cfg.def.style = cfg.def.deadzone = cfg.def.rumble = cfg.def.trigger = cfg.def.outer = cfg.def.invert = -1;
     memcpy(cfg.path, path, sizeof path);
 }
 
@@ -128,6 +132,9 @@ static const char DEFAULT_INI[] =
     "background = 1\n"
     "; rumble = 1: controllers rumble (each as strong as its own rumble below). 0: no controller rumbles.\n"
     "rumble = 1\n"
+    "; ignore = <GUID, name or type>: a pad that is never used (one line each), e.g. a wheel or a second driver\n"
+    ";          of the same controller.\n"
+    "; ignore = 03000000efbe00006d04000000000000\n"
     "\n"
     "[players]\n"
     "; Keep a player for one pad: <player> = <GUID, name or type of the pad>. Other pads leave it free.\n"
@@ -143,6 +150,11 @@ static const char DEFAULT_INI[] =
     "style = auto\n"
     "; deadzone = 0-50, percent of the stick's travel ignored around the centre. 0: only the game's own.\n"
     "deadzone = 0\n"
+    "; outer_zone = 50-100, percent of the stick's travel that already counts as fully pushed (worn or small\n"
+    ";              sticks that never reach the edge). 100: only the very edge.\n"
+    "outer_zone = 100\n"
+    "; invert = the stick axes turned round, any of lx ly rx ry (e.g. invert = ry). none: as the pad reports them.\n"
+    "invert = none\n"
     "; rumble = 0-100, percent strength. 0: off.\n"
     "rumble = 100\n"
     "; trigger_threshold = 1-99, percent: how far a trigger is pulled to press ZL / ZR. (As a GameCube controller,\n"
@@ -195,6 +207,16 @@ static void config_line(DevCfg *dc, const char *key, char *value, int line) {
         else if (!_stricmp(value, "gamecube")) dc->style = 2;
         else fprintf(stderr, "[input] controllers.ini line %d: style is auto, pro or gamecube, not '%s'\n", line, value);
     } else if (!_stricmp(key, "deadzone")) dc->deadzone = atoi(value) < 0 ? 0 : atoi(value) > 50 ? 50 : atoi(value);
+    else if (!_stricmp(key, "outer_zone")) dc->outer = atoi(value) < 50 ? 50 : atoi(value) > 100 ? 100 : atoi(value);
+    else if (!_stricmp(key, "invert")) {
+        dc->invert = 0;
+        static const char *const AXES[4] = {"lx", "ly", "rx", "ry"};
+        for (char *t = strtok(value, ", \t"); t; t = strtok(NULL, ", \t")) {
+            int known = !_stricmp(t, "none");
+            for (int a = 0; a < 4; a++) if (!_stricmp(t, AXES[a])) { dc->invert |= 1 << a; known = 1; }
+            if (!known) fprintf(stderr, "[input] controllers.ini line %d: invert takes lx, ly, rx, ry or none, not '%s'\n", line, t);
+        }
+    }
     else if (!_stricmp(key, "rumble")) dc->rumble = atoi(value) < 0 ? 0 : atoi(value) > 100 ? 100 : atoi(value);
     else if (!_stricmp(key, "trigger_threshold")) dc->trigger = atoi(value) < 1 ? 1 : atoi(value) > 99 ? 99 : atoi(value);
     else if ((b = npad_button(key)) >= 0) {
@@ -223,7 +245,8 @@ static void config_line(DevCfg *dc, const char *key, char *value, int line) {
  * keyboard's player is keyboard_player, a fraction is a percent, a strength the rumble's percent.
  * A file can have both: this file's own keys win. What has nothing to stand for here is passed over
  * quietly: a joystick's own numbers among a button's controls (button3, axis1+, hat0up) and the
- * sticks' halves, the stick directions, the keyboard's keys, outer_zone, ignore, name, axis., invert. */
+ * sticks' halves, the stick directions, the keyboard's keys, name, axis., invert. (outer_zone is carried over
+ * as [device default]'s, in percent; ignore is this file's key too.) */
 enum { LINE_OURS, LINE_CARRIED, LINE_PART, LINE_KEPT };   /* this file's; ssbu-recomp's, carried over, in part, not at all */
 enum { SR_MAX = 4 };
 typedef struct SrSet { char section[104], key[24], value[160]; int late; } SrSet;   /* late: after the others (rumble = off) */
@@ -260,7 +283,13 @@ static int sr_line(const char *section, const char *key, const char *value, SrSe
     if (!_stricmp(section, "general")) {
         if (!_stricmp(key, "rumble") && !is_number(value)) { sr_put(out, n, "general", "rumble", sr_on(value) ? "1" : "0", 0); return LINE_CARRIED; }
         if (!_stricmp(key, "gamecube_style")) { sr_put(out, n, "device default", "style", !_stricmp(value, "pro") ? "pro" : "auto", 0); return LINE_CARRIED; }
-        if (!_stricmp(key, "outer_zone") || !_stricmp(key, "ignore")) return LINE_KEPT;
+        if (!_stricmp(key, "ignore")) return LINE_KEPT;   /* (kept as it is: the same key here, every line of it read) */
+        if (!_stricmp(key, "outer_zone")) {
+            char pct[16];
+            snprintf(pct, sizeof pct, "%d", (int)lround(atof(value) * 100));
+            sr_put(out, n, "device default", "outer_zone", pct, 0);
+            return LINE_CARRIED;
+        }
         if (_stricmp(key, "layout") && _stricmp(key, "deadzone") && _stricmp(key, "trigger_threshold") && _stricmp(key, "rumble_strength"))
             return LINE_OURS;
         snprintf(dev[ndev++], sizeof dev[0], "device default");
@@ -379,7 +408,7 @@ static DevCfg *dev_cfg(const char *what) {
     if (cfg.ndev == (int)(sizeof cfg.dev / sizeof *cfg.dev)) return NULL;
     DevCfg *dc = &cfg.dev[cfg.ndev++];
     memset(dc, 0, sizeof *dc);
-    dc->layout = dc->style = dc->deadzone = dc->rumble = dc->trigger = -1;
+    dc->layout = dc->style = dc->deadzone = dc->rumble = dc->trigger = dc->outer = dc->invert = -1;
     snprintf(dc->match, sizeof dc->match, "%s", what);
     return dc;
 }
@@ -391,6 +420,9 @@ static void config_set(const char *section, const char *key, char *value, int li
         cfg.keyboard_slot = n >= 1 && n <= PAD_SLOTS ? n - 1 : -1;
     } else if (!_stricmp(section, "general") && !_stricmp(key, "background")) cfg.background = atoi(value) != 0;
     else if (!_stricmp(section, "general") && !_stricmp(key, "rumble")) cfg.rumble = atoi(value) != 0;
+    else if (!_stricmp(section, "general") && !_stricmp(key, "ignore")) {
+        if (cfg.nignore < (int)(sizeof cfg.ignore / sizeof *cfg.ignore)) snprintf(cfg.ignore[cfg.nignore++], sizeof cfg.ignore[0], "%s", value);
+    }
     else if (!_stricmp(section, "players")) {
         int n = atoi(key);
         if (n >= 1 && n <= PAD_SLOTS) snprintf(cfg.pin[n - 1], sizeof cfg.pin[n - 1], "%s", value);
@@ -515,6 +547,7 @@ typedef struct Dev {
 #endif
     char guid[40], name[96], type[24], serial[64], path[192];
     int deadzone, rumble, trigger, layout;
+    int outer, invert;            /* (DevCfg's) */
     int gc;                       /* plays as a GameCube controller */
     int labels[4], has_labels;    /* the letters on its face buttons (dev_configure) */
     char section[96];             /* the [device ...] it takes settings from ("" = only default) */
@@ -529,6 +562,18 @@ static int nknown;
 
 static int dev_matches(const Dev *d, const char *what) {
     return *what && (!_stricmp(what, d->guid) || !_stricmp(what, d->name) || !_stricmp(what, d->type));
+}
+
+/* controllers.ini's [general] ignore names this pad: it stays open as no player (so it is not opened
+ * again at every scan), and the log says so once. */
+static int dev_ignored(Dev *d) {
+    for (int i = 0; i < cfg.nignore; i++)
+        if (dev_matches(d, cfg.ignore[i])) {
+            d->slot = -1;
+            fprintf(stderr, "[input] \"%s\" (%s, GUID %s) ignored (controllers.ini: ignore = %s)\n", d->name, d->type, d->guid, cfg.ignore[i]);
+            return 1;
+        }
+    return 0;
 }
 
 /* A GameCube controller: SDL's type for one, or (SDL2, adapters in PC mode) a name that says so. */
@@ -555,9 +600,11 @@ static void dev_configure(Dev *d, const int labels[4]) {
     const DevCfg *layers[2] = {&cfg.def, best};
     snprintf(d->section, sizeof d->section, "%s", best ? best->match : "");
     int layout = 0, style = 0, gamecube = dev_is_gamecube(d);
-    d->deadzone = 0; d->rumble = 100; d->trigger = 25;
+    d->deadzone = 0; d->rumble = 100; d->trigger = 25; d->outer = 100; d->invert = 0;
     for (int l = 0; l < 2; l++) {
         if (!layers[l]) continue;
+        if (layers[l]->outer >= 0) d->outer = layers[l]->outer;
+        if (layers[l]->invert >= 0) d->invert = layers[l]->invert;
         if (layers[l]->layout >= 0) layout = layers[l]->layout;
         if (layers[l]->style >= 0) style = layers[l]->style;
         if (layers[l]->deadzone >= 0) d->deadzone = layers[l]->deadzone;
@@ -640,10 +687,12 @@ static void dev_remember(const Dev *d) {
 }
 
 /* A pad's raw report in the console's terms. */
-static void stick(int deadzone, i32 x, i32 y_down, i32 *ox, i32 *oy) {
+static void stick(int deadzone, int outer, i32 x, i32 y_down, i32 *ox, i32 *oy) {
     double fx = x, fy = -(double)y_down, r = sqrt(fx * fx + fy * fy), max = 32767.0, dz = deadzone / 100.0 * max;
+    double edge = (outer > 0 && outer < 100 ? outer : 100) / 100.0 * max;   /* (from here on: fully pushed) */
+    if (edge <= dz) edge = max;
     if (r <= dz || r == 0) { *ox = *oy = 0; return; }
-    double scale = dz > 0 ? (r - dz) / (max - dz) * max / r : 1.0;
+    double scale = dz > 0 || edge < max ? (r - dz) / (edge - dz) * max / r : 1.0;
     if (r * scale > max) scale = max / r;   /* inside the circle, as the console reports */
     *ox = (i32)lround(fx * scale);
     *oy = (i32)lround(fy * scale);
@@ -676,8 +725,11 @@ static void dev_state(const Dev *d, const Raw *raw, PadState *o) {
                 break;
             }
         }
-    stick(d->deadzone, raw->axis[RA_LEFTX], raw->axis[RA_LEFTY], &o->lx, &o->ly);
-    stick(d->deadzone, raw->axis[RA_RIGHTX], raw->axis[RA_RIGHTY], &o->rx, &o->ry);
+    i32 ax[4] = {raw->axis[RA_LEFTX], raw->axis[RA_LEFTY], raw->axis[RA_RIGHTX], raw->axis[RA_RIGHTY]};
+    for (int a = 0; a < 4; a++)
+        if (d->invert >> a & 1) ax[a] = ax[a] <= -32768 ? 32767 : -ax[a];
+    stick(d->deadzone, d->outer, ax[0], ax[1], &o->lx, &o->ly);
+    stick(d->deadzone, d->outer, ax[2], ax[3], &o->rx, &o->ry);
 }
 
 /* ---- the slot table, shared with guest threads ------------------------------------- */
@@ -956,6 +1008,7 @@ static void sdl_open(SDL_JoystickID id) {
         }
     }
     dev_configure(d, labels);
+    if (dev_ignored(d)) return;
     d->slot = dev_assign(d);
     if (d->slot >= 0) { dev_remember(d); p_SDL_SetGamepadPlayerIndex(gp, d->slot); }
     log_connect(d);
@@ -1071,6 +1124,7 @@ static void sdl_open(int index) {
                         type == SDL_CONTROLLER_TYPE_PS3 || type == SDL_CONTROLLER_TYPE_PS4 || type == SDL_CONTROLLER_TYPE_PS5 ? NONE :
                         type == SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_PRO || (type >= 11 && type <= 13) ? NINTENDO : XBOX;
     dev_configure(d, labels);
+    if (dev_ignored(d)) return;
     d->slot = dev_assign(d);
     if (d->slot >= 0) { dev_remember(d); SDL_GameControllerSetPlayerIndex(gp, d->slot); }
     log_connect(d);
