@@ -36,7 +36,6 @@ const char *display_gpu(void);          /* the graphics card to use: "auto", or 
  * (0.5-4; SSBU_RENDER_SCALE). 0 = auto: as many as the picture has pixels in the window at the
  * start (1440p: 1.33), at least 1. */
 float display_render_scale(void);
-float display_volume(void);            /* display.ini volume, 0 to 1 (100 is full) */
 /* The renderer says whether the swap chain can tear (for VRR); the flags each Present gets. */
 void display_set_tearing(int supported);
 unsigned display_present_flags(void);
