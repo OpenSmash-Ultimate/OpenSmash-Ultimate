@@ -73,7 +73,6 @@ LEFT_OUT = {
               "debug_profile.c": "Windows' profiler: macos/profile.c is macOS's",
               "gpu_d3d11.c": "the Direct3D 11 renderer: macos/gpu_metal.m is macOS's",
               "gpu_overlay.c": "the overlay, drawn with Direct3D 11: macos/gpu_metal_overlay.m is macOS's",
-              "gpu_menu.c": "the settings menu, drawn with that overlay: not on macOS yet (macos/platform.c)",
               "linux/d3dcompile_vkd3d.c": "D3DCompile through vkd3d-shader, for DXVK: the Metal renderer takes no DXBC",
               "linux/profile.c": "Linux's profiler: macos/profile.c is macOS's",
               "linux/window.c": "Linux's SDL2 window: macos/window.m is macOS's"},
