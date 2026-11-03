@@ -796,9 +796,9 @@ function Step-CheckPc {
             if (Test-Path -LiteralPath $p) { $already += [double](Get-ChildItem -LiteralPath $p -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1GB }
         }
         $need = Get-DiskNeedGb $NeedDiskGb $already
-        Write-Info ("{0:N0} GB free on {1}, {2:N0} GB still needed for the build" -f $free, $drive, $need)
+        Write-Info ("{0:N1} GB free on {1}, {2:N1} GB still needed for the build" -f $free, $drive, $need)
         if ($free -lt $need) {
-            throw ("Only {0:N0} GB are free on {1}; the build needs about {2:N0} GB more. Free some space, or move WindowSmash to a drive with room." -f $free, $drive, $need)
+            throw ("Only {0:N1} GB are free on {1}, and the build still needs {2:N1} GB there: free at least {3:N1} GB more, or move WindowSmash to a drive with room." -f $free, $drive, $need, [Math]::Max(0.1, $need - $free))
         }
     } else {
         Write-Warn "the free space on $drive could not be read; the build needs about $NeedDiskGb GB"

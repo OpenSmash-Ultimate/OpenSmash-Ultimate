@@ -535,10 +535,11 @@ def step_check_mac():
                   if os.path.isdir(os.path.join(ROOT, d)))
     free = shutil.disk_usage(ROOT).free / 2**30
     need = il.disk_need_gb(NEED_DISK_GB, already)
-    info(f"{free:,.0f} GB free here, {need:,.0f} GB still needed for the build")
+    info(f"{free:,.1f} GB free here, {need:,.1f} GB still needed for the build")
     if free < need:
-        raise Stop(f"Only {free:,.0f} GB are free on the disk with {ROOT}; the build needs about {need:,.0f} GB more. Free "
-                   "some space (System Settings > General > Storage), or move WindowSmash to a disk with room.")
+        raise Stop(f"Only {free:,.1f} GB are free on the disk with {ROOT}, and the build still needs {need:,.1f} GB there: "
+                   f"free at least {max(0.1, need - free):,.1f} GB more (System Settings > General > Storage), or move "
+                   "WindowSmash to a disk with room.")
     for text in location_warnings(os.path.realpath(ROOT), os.path.realpath(os.path.expanduser("~")),
                                   filesystem=filesystem_of(ROOT)):
         info("note: " + text)
