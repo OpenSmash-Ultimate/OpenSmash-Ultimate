@@ -7,6 +7,7 @@
 #include "gpu_backend.h"
 
 void watchdog_pause(int on);   /* debug_watchdog.c */
+int menu_osk_run(const char *title, const char *initial, int max_len, char *out, size_t cap);   /* gpu_menu.c */
 
 #define R_CANCELED RESULT(162, 1)         /* "the user closed the applet" */
 #define R_SWKBD_CANCELED RESULT(159, 1)   /* nn::swkbd's own: what ShowKeyboard returns for "back" */
@@ -130,7 +131,20 @@ HLE(_ZN2nn5swkbd12ShowKeyboardEPNS0_6StringERKNS0_15ShowKeyboardArgE) {
     u64 work = ld64(arg + 0x4D0);
     u32 offset = ld32(arg + 0x3C0), length = ld32(arg + 0x3C4);
     if (work && length) guest_text(k.text, 1024, work + offset, length < 1000 ? length : 1000);
-    int ok = ask_text(&k);
+    /* the menu's text grid over the game (pad or keyboard, as the console's own keyboard), unless
+     * SSBU_SWKBD=dialog or the renderer can't show a frame again; letters, digits and - _ . : only */
+    int ok = -1;
+    const char *how = getenv("SSBU_SWKBD");
+    if (!(how && !_stricmp(how, "dialog")) && !k.multiline) {
+        char title[200], initial[64], typed[64];
+        WideCharToMultiByte(CP_UTF8, 0, k.header[0] ? k.header : k.guide, -1, title, sizeof title, NULL, NULL);
+        WideCharToMultiByte(CP_UTF8, 0, k.text, -1, initial, sizeof initial, NULL, NULL);
+        watchdog_pause(1);
+        ok = menu_osk_run(title, initial, k.max_len, typed, sizeof typed);
+        watchdog_pause(0);
+        if (ok == 1) MultiByteToWideChar(CP_UTF8, 0, typed, -1, k.text, 1024);
+    }
+    if (ok < 0) ok = ask_text(&k);
     /* the text (also on Cancel: what the box held, as the console's keyboard reports it) */
     u64 ptr = out ? ld64(out) : 0, size = out ? ld64(out + 8) : 0;
     if (ptr && size >= (utf8 ? 1u : 2u)) {

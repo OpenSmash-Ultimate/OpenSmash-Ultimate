@@ -63,6 +63,7 @@ SHORT GetAsyncKeyState(int vk) { (void)vk; return 0; }   /* (no keys held: the w
 #endif
 int gfx_window_focused(void) { return 1; }
 void gfx_closing(void) {}
+int gfx_present_again(void) { return 0; }   /* (no renderer: the game's text box keeps its dialog) */
 static int renderer_saved;   /* (the Display page's Renderer row: what it saved, shown again) */
 void display_settings(DisplaySettings *out) {
     memset(out, 0, sizeof *out);

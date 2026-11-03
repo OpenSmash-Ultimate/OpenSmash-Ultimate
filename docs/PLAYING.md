@@ -200,6 +200,7 @@ The first start also writes **`display.ini`**, which sets how the game starts. T
 | `width`, `height` | The window's inside size at 100% display scaling. | `1280`, `720` |
 | `pacing` | `clock`: a steady 60 frames a second. `vrr`: for G-Sync or FreeSync monitors, each frame shown as soon as it's ready; best with `borderless`. `display`: follows a 60, 120 or 240 Hz monitor's own refresh. | `clock` |
 | `latency` | How many frames the graphics card may work ahead, 1–3. Lower is more responsive. | `3` |
+| `low_latency` | `1`: the game starts each frame as late as it can and still make the next refresh, so it reads your controller later: up to most of a frame less input delay. If a frame misses its refresh it turns itself off for a second. | `0` |
 | `hide_cursor` | `1` hides the mouse pointer after two seconds without movement. | `1` |
 | `language` | The game's language: `auto` (the language Windows shows its menus in), or one of `ja`, `en-US`, `en-GB`, `fr`, `fr-CA`, `de`, `it`, `es`, `es-419`, `zh-Hans`, `zh-Hant`, `ko`, `nl`, `ru`. A language the game doesn't have plays in English. Chinese, Japanese and Korean text needs your console's firmware fonts. Read when the game starts; the settings menu's Game page changes it. `SSBU_LANGUAGE` overrides it. | `auto` |
 | `volume` | The game's whole sound, from `0` (silent) to `100`, over the game's own sound settings. The settings menu's Game page changes it while you play. `SSBU_VOLUME` overrides it. | `100` |
@@ -260,6 +261,8 @@ All of these are in the WindowSmash folder:
 Your save is written as the console writes it: what the game saves reaches the `save` folder all at once, when the game finishes saving. A crash or a power cut while it saves leaves your last complete save, never half of one. While the game runs, the `save` folder also holds the changes not saved yet, in a folder ending in `.work.` and a number, beside your save's own folder, and for a moment while it saves, a `.journal.` file and a `.commit` file. On Linux and macOS a `.lock` file stays there too. Leave them be: the next start finishes a save that was cut short and clears the rest.
 
 If `build\play.log` says *could not finish applying a save*, your PC would not let the game change a file in the `save` folder: another program holds it open, or the folder belongs to another user (after running the game with `sudo`, say), or your save's own folder is a link to another drive. Nothing is lost, but the game can't save, or load its save, until that is fixed. Close the game, fix it (make the `save` folder and everything in it yours; to keep your save on another drive, link the whole `save` folder, not the folder inside it), then start the game: it finishes the save first.
+
+The game's own files (`dump\`, with the shader cache) and the compiled game (`build\`) take tens of GB. To put them on another drive, close the game and the launcher, then run `python tools\data_location.py --move D:\OpenSmash` (any empty folder). They move there, and a link stays in their place, so nothing else changes. `python tools\data_location.py` says where they are; the same `--move` with the WindowSmash folder brings them back.
 
 > [!TIP]
 > **Back up your save** now and then: copy the `save` folder somewhere safe while the game is closed. To restore it, close the game and put the copy in place of the `save` folder.

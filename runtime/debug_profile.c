@@ -424,7 +424,7 @@ static void report(U64 total, U64 busy) {
         threads[best].reported = 1;
         fprintf(f, "\nThread %lu %ls (%.1f%% busy) - its busiest code (%% of its busy samples):\n", threads[best].tid,
                 threads[best].desc, 100.0 * best_busy / threads[best].samples);
-        busiest(f, s, n, pool, e, (int)best, best_busy, 25);
+        busiest(f, s, n, pool, e, (int)best, best_busy, getenv("SSBU_PROFILE_TOP") ? atoi(getenv("SSBU_PROFILE_TOP")) : 25);   /* (SSBU_PROFILE_TOP: more lines, WindowSmash uncapped-fps) */
     }
     call_paths(f);
     if (f != stderr) {

@@ -55,6 +55,13 @@ static GuestFn **code[MAX_MODULES];               /* per module, indexed by (add
 #define SLOT_SHIFT 24
 #define SLOT_COUNT 1024
 static u16 slot_module[SLOT_COUNT];
+/* Script modules without an NRO (hle_fighter_registry.c: a new fighter's lua2cpp_<name>): an address
+ * range of their own whose functions are a donor module's, or a fighter library's, by offset. Their
+ * dispatch slots hold CLONE_FLAG | (index + 1); they are not loaded modules (nn::ro's lists, symbols). */
+#define CLONE_FLAG 0x8000u
+#define MAX_CLONES 32
+static struct Clone { char name[64]; u64 base, image_size, text_size; GuestFn **code, **odd; } clones[MAX_CLONES];
+static u32 clone_count;
 static struct Native { GuestFn *fn; const char *name; } natives[8192];
 static u32 native_count;
 static __declspec(thread) u32 last_native;        /* which native slot the current thread just looked up */
@@ -90,6 +97,11 @@ const char *rt_describe(u64 addr, char *buf, size_t n) {
     for (u32 m = 0; m < module_count; m++)
         if (addr - modules[m]->base < modules[m]->image_size) {
             snprintf(buf, n, "%s+%#llx", modules[m]->name, addr - modules[m]->base);
+            return buf;
+        }
+    for (u32 i = 0; i < clone_count; i++)
+        if (addr - clones[i].base < clones[i].image_size) {
+            snprintf(buf, n, "%s+%#llx", clones[i].name, addr - clones[i].base);
             return buf;
         }
     if (addr - NATIVE_BASE < (u64)__atomic_load_n(&native_count, __ATOMIC_ACQUIRE) * 16) snprintf(buf, n, "native:%s", natives[(addr - NATIVE_BASE) >> 4].name);
@@ -676,6 +688,18 @@ GuestFn *rt_lookup(u64 addr) {
     if ((lookup_cache[h].key ^ LOOKUP_MIX(hit)) == addr && hit) return hit;
     u64 slot = (addr - SLOT_BASE) >> SLOT_SHIFT;
     u16 slot_m = slot < SLOT_COUNT ? __atomic_load_n(&slot_module[slot], __ATOMIC_ACQUIRE) : 0;   /* (map_module publishes it last) */
+    if (slot_m & CLONE_FLAG) {
+        const struct Clone *k = &clones[(slot_m & ~CLONE_FLAG) - 1u];
+        u64 off = addr - k->base;
+        /* (an odd offset is a function that exists only in a fighter library's source: build_fighter.py) */
+        GuestFn *fn = off >= k->text_size ? NULL : off & 3 ? ((off & 3) == 1 ? k->odd[off >> 2] : NULL) : k->code[off >> 2];
+        if (fn) {
+            lookup_cache[h].fn = fn;
+            lookup_cache[h].key = addr ^ LOOKUP_MIX(fn);
+            return fn;
+        }
+        rt_fatal("indirect call to %s+%#llx, which is not a function entry", k->name, off);
+    }
     if (slot_m) {
         u32 m = slot_m - 1u;
         u64 off = addr - modules[m]->base;
@@ -1060,6 +1084,8 @@ static void load_plugin_dlls(void) {
 static u64 load_nro(Cpu *c, const char *id, const char *name);
 void skyline_module_loaded(const char *name, u64 base);   /* (hle_skyline.c: the plugins' hooks into it) */
 void rtld_module_loaded(u64 base, u64 size);               /* (hle_rtld.c: nn::ro's lists) */
+void native_mods_module_loaded(void);                      /* (hle_native_mods.c) */
+void fighter_src_module_loaded(const char *module, u64 base); /* (hle_fighter_src.c) */
 
 u64 rt_load_nro(Cpu *c, u64 image) {
     char id[65];
@@ -1098,12 +1124,81 @@ static u64 load_nro(Cpu *c, const char *id, const char *name) {
     rtld_module_loaded(mod->base, mod->image_size);
     if (mod->init != mod->base) rt_call(c, mod->init);
     skyline_module_loaded(mod->name, mod->base);
+    native_mods_module_loaded();   /* (hle_native_mods.c: hooks by name waiting for this module) */
+    fighter_src_module_loaded(mod->name, mod->base);   /* (hle_fighter_src.c: its fighter library's C++ scripts) */
     return mod->base;
 }
 
 /* Skyline plugins (hle_skyline.c): a recompiled NRO loaded by its module name, not by an image the
  * game hands over; 0 if no such module was recompiled in. */
 u64 rt_load_nro_named(Cpu *c, const char *name) { return load_nro(c, NULL, name); }
+
+/* A loaded module by name: its base, image and code sizes; 0 if it is not loaded. */
+u64 rt_module_named(const char *name, u64 *image_size, u64 *text_size) {
+    for (u32 m = BOOT_MODULES; m < module_count; m++)
+        if (!strcmp(modules[m]->name, name)) {
+            if (image_size) *image_size = modules[m]->image_size;
+            if (text_size) *text_size = modules[m]->text_size;
+            return modules[m]->base;
+        }
+    return 0;
+}
+
+/* A loaded module's exports (the module at that base), NULL if none is loaded there. */
+const RtSym *rt_module_exports(u64 base, u32 *count) {
+    for (u32 m = 0; m < module_count; m++)
+        if (modules[m]->base == base) { *count = modules[m]->export_count; return modules[m]->exports; }
+    *count = 0;
+    return NULL;
+}
+
+/* (hle_fighter_registry.c) A script module without an NRO: `name` at its own range behind every
+ * module the build has, whose functions are, by offset, the loaded module `donor`'s as they are now
+ * (its dispatch table: hooks included). The range is reserved and never committed: its addresses are
+ * names of functions, not memory. The tables come back for the caller to put a fighter library's
+ * functions into (code: by offset / 4; odd: offset 4k + 1, a function only in the source). Returns
+ * the base, 0 if the donor is not loaded or there is no room. */
+u64 rt_module_clone(const char *donor, const char *name, GuestFn ***code_out, GuestFn ***odd_out) {
+    static SRWLOCK lock = SRWLOCK_INIT;
+    AcquireSRWLockExclusive(&lock);
+    for (u32 i = 0; i < clone_count; i++)
+        if (!strcmp(clones[i].name, name)) {
+            *code_out = clones[i].code; *odd_out = clones[i].odd;
+            ReleaseSRWLockExclusive(&lock);
+            return clones[i].base;
+        }
+    u32 dm = 0;
+    for (u32 m = BOOT_MODULES; m < module_count && !dm; m++) if (!strcmp(modules[m]->name, donor)) dm = m;
+    if (!dm || clone_count == MAX_CLONES) { ReleaseSRWLockExclusive(&lock); return 0; }
+    const RtModule *d = modules[dm];
+    u64 end = SLOT_BASE;
+    for (u32 k = 0; k < nro_count_all(); k++) {
+        const RtModule *nro = nro_by_index(k);
+        u64 e = nro->base + ((nro->image_size + 0xFFFF) & ~0xFFFFull);
+        if (e > end) end = e;
+    }
+    for (u32 i = 0; i < clone_count; i++) if (clones[i].base + clones[i].image_size > end) end = clones[i].base + clones[i].image_size;
+    u64 slot_size = 1ull << SLOT_SHIFT, base = ((end + slot_size - 1) & ~(slot_size - 1)) + slot_size;
+    u64 size = (d->image_size + slot_size - 1) & ~(slot_size - 1);
+    if ((base + size - SLOT_BASE) >> SLOT_SHIFT > SLOT_COUNT) { ReleaseSRWLockExclusive(&lock); return 0; }
+    for (u64 a = base; a < base + size; a += slot_size)
+        if (slot_module[(a - SLOT_BASE) >> SLOT_SHIFT]) { ReleaseSRWLockExclusive(&lock); return 0; }
+    VirtualAlloc(G2H(base), size, MEM_RESERVE, PAGE_NOACCESS);
+    struct Clone *k = &clones[clone_count];
+    snprintf(k->name, sizeof k->name, "%s", name);
+    k->base = base; k->image_size = d->image_size; k->text_size = d->text_size;
+    u64 words = (d->text_size + 3) / 4;
+    k->code = calloc(words, sizeof *k->code);
+    k->odd = calloc(words, sizeof *k->odd);
+    memcpy(k->code, code[dm], words * sizeof *k->code);
+    clone_count++;
+    for (u64 a = base; a < base + size; a += slot_size)
+        __atomic_store_n(&slot_module[(a - SLOT_BASE) >> SLOT_SHIFT], (u16)(CLONE_FLAG | clone_count), __ATOMIC_RELEASE);
+    memset((void *)lookup_cache, 0, sizeof lookup_cache);
+    ReleaseSRWLockExclusive(&lock);
+    *code_out = k->code; *odd_out = k->odd;
+    return base;
+}
 
 /* The loaded modules, for nn::ro's lists (hle_rtld.c): boot modules first. */
 u32 rt_module_count(void) { return module_count; }
@@ -1128,6 +1223,7 @@ u64 rt_resolve_weak(const char *name) { return resolve(name, 1); }
 int rt_is_function(u64 addr) {
     u64 slot = (addr - SLOT_BASE) >> SLOT_SHIFT;
     u16 slot_m = slot < SLOT_COUNT ? slot_module[slot] : 0;
+    if (slot_m & CLONE_FLAG) return 0;
     u64 off = slot_m ? addr - modules[slot_m - 1]->base : ~0ull;
     return slot_m && off < modules[slot_m - 1]->text_size && !(off & 3) && code[slot_m - 1][off >> 2] != NULL;
 }
@@ -1146,6 +1242,7 @@ u64 rt_hook_function(u64 target, u64 replace) {
     AcquireSRWLockExclusive(&lock);
     u64 slot = (target - SLOT_BASE) >> SLOT_SHIFT;
     u16 slot_m = slot < SLOT_COUNT ? slot_module[slot] : 0;
+    if (slot_m & CLONE_FLAG) slot_m = 0;   /* (a script module without an NRO: not hooked this way) */
     u64 off = slot_m ? target - modules[slot_m - 1]->base : ~0ull;
     GuestFn **at = slot_m && off < modules[slot_m - 1]->text_size && !(off & 3) ? &code[slot_m - 1][off >> 2] : NULL;
     if (!at || !*at) { ReleaseSRWLockExclusive(&lock); return 0; }

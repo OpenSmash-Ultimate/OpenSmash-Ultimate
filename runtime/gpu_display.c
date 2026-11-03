@@ -47,14 +47,14 @@
 enum { MODE_WINDOWED = DISPLAY_WINDOWED, MODE_BORDERLESS = DISPLAY_BORDERLESS, MODE_FULLSCREEN = DISPLAY_FULLSCREEN };
 
 static struct {
-    int mode, width, height, latency, hide_cursor, overlay;
+    int mode, width, height, latency, hide_cursor, overlay, low_latency;
     Pacing pacing;
     int loaded;
     char gpu[64];
     float render_scale;   /* 0: auto */
     double speed;         /* SSBU_SPEED (test runs): 1 normal */
     int renderer;         /* RENDERER_* (renderer.h) */
-} cfg = {MODE_WINDOWED, 1280, 720, 3, 1, 1, PACING_CLOCK, 0, "auto", 1.0f, 1.0, RENDERER_DEFAULT};
+} cfg = {MODE_WINDOWED, 1280, 720, 3, 1, 1, 0, PACING_CLOCK, 0, "auto", 1.0f, 1.0, RENDERER_DEFAULT};
 
 static const char DEFAULT_INI[] =
     "; display.ini: the game's window and the pacing of its frames. Read when the game starts; the\n"
@@ -115,6 +115,9 @@ static const char DEFAULT_INI[] =
     "pacing = clock\n"
     "; latency = 1-3: how many frames the graphics card may work ahead. Lower is more responsive.\n"
     "latency = 3\n"
+    "; low_latency = 1: the game starts each frame later, as late as it can and still be ready for the next\n"
+    ";   refresh, so it reads the controller later: up to most of a frame less input delay. 0: at the refresh.\n"
+    "low_latency = 0\n"
     "; hide_cursor = 1: hide the mouse pointer over the game after 2 seconds without moving it.\n"
     "hide_cursor = 1\n"
     "; overlay = 1: show the frame rate in the corner from the start (F1 shows or hides it while playing).\n"
@@ -231,6 +234,7 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else if (!_stricmp(key, "height")) cfg.height = atoi(value);
         else if (!_stricmp(key, "pacing")) parse_pacing(value);
         else if (!_stricmp(key, "latency")) cfg.latency = atoi(value);
+        else if (!_stricmp(key, "low_latency")) cfg.low_latency = atoi(value) != 0;
         else if (!_stricmp(key, "hide_cursor")) cfg.hide_cursor = atoi(value) != 0;
         else if (!_stricmp(key, "overlay")) cfg.overlay = atoi(value) != 0;
         else if (!_stricmp(key, "overlay_scale")) parse_overlay_scale(value);
@@ -244,6 +248,7 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     if ((env = getenv("SSBU_GPU")) && *env) snprintf(cfg.gpu, sizeof cfg.gpu, "%s", env);
     if ((env = getenv("SSBU_WINDOW")) && *env) parse_window(env);
     if ((env = getenv("SSBU_PACING")) && *env) parse_pacing(env);
+    if ((env = getenv("SSBU_LOW_LATENCY")) && *env) cfg.low_latency = atoi(env) != 0;
     if ((env = getenv("SSBU_WINDOW_SIZE")) && *env) sscanf(env, "%dx%d", &cfg.width, &cfg.height);
     if ((env = getenv("SSBU_RENDER_SCALE")) && *env) parse_render_scale(env);
     if ((env = getenv("SSBU_RENDERER")) && *env) parse_renderer(env, "SSBU_RENDERER");
@@ -263,6 +268,7 @@ static void load(void) {
 }
 
 int display_latency(void) { load(); return cfg.latency; }
+int display_low_latency(void) { load(); return cfg.low_latency; }
 Pacing display_pacing(void) { load(); return cfg.pacing; }
 const char *display_gpu(void) { load(); return cfg.gpu; }
 float display_render_scale(void) { load(); return cfg.render_scale; }
