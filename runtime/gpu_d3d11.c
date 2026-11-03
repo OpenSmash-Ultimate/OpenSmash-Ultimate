@@ -5076,9 +5076,13 @@ static void check_device(HRESULT hr, const char *doing) {
 void watchdog_present(void);   /* debug_watchdog.c */
 void hitch_present(void);      /* debug_profile.c */
 
+static u64 last_present_guest;   /* (gfx_present_again) */
+static volatile LONG presented_once;
 void gfx_present(u64 guest, u32 width, u32 height) {
     (void)width; (void)height;
     if (!enter()) return;
+    last_present_guest = guest;
+    presented_once = 1;
     watchdog_present();
     hitch_present();
     if (draw_logging) save_sampled();
@@ -5368,6 +5372,14 @@ void gfx_present(u64 guest, u32 width, u32 height) {
     gfx_stat_present_ticks += (u64)(p1.QuadPart - p0.QuadPart);
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) check_device(hr, "showing a frame");
     leave();
+}
+
+/* (gpu_menu.c, while the game waits for its software keyboard) the last frame shown once more, overlay and
+ * menu on top: 1, or 0 before any frame */
+int gfx_present_again(void) {
+    if (!ready || !presented_once) return 0;
+    gfx_present(last_present_guest, 0, 0);
+    return 1;
 }
 
 int gfx_window_focused(void) { return window && GetForegroundWindow() == window; }

@@ -92,7 +92,8 @@ enum {
     R_ROOM_FIRST = 60,    /* + the room's place in the list */
     R_REMAP_FIRST = 100,  /* + console button */
     R_MOD_FIRST = 200,    /* + the mod's place in mods.json (MENU_MODS at most) */
-    R_KEY_FIRST = 400     /* + the keyboard binding (PAD_KEYS) */
+    R_KEY_FIRST = 400,    /* + the keyboard binding (PAD_KEYS) */
+    R_OSK = 500           /* the game's own text box (menu_osk_run) */
 };
 #define IS_KEY(id) ((id) >= R_KEY_FIRST && (id) < R_KEY_FIRST + PAD_KEYS)
 #define IS_REMAP(id) ((id) >= R_REMAP_FIRST && (id) < R_REMAP_FIRST + 16)
@@ -131,6 +132,11 @@ static char version[64];
 static char gpus[8][64];
 static int ngpus;
 static int built_page = -1;              /* the page build() made last (-1: none since the menu opened) */
+/* The game's software keyboard (nn::swkbd, hle_applet.c) typed on the text grid: asked from the game's
+ * thread (menu_osk_run), opened and answered here. 0 none, 1 asked, 2 open, 3 done, 4 cancelled. */
+static volatile LONG osk_state;
+static char osk_title[96], osk_text[64];
+static int osk_max = 32;
 
 static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol; } net;
 enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_MODE_COUNT };
@@ -198,6 +204,7 @@ static void open_menu(void) {
 
 static void close_menu(void) {
     if (!open_) return;
+    if (osk_state == 2) InterlockedExchange(&osk_state, 4);   /* (the game's text box closed with the menu: cancelled) */
     confirm = editing = 0;
     capture_button = capture_key = -1;
     releasing = 1;   /* (the game gets input back once nothing is held) */
@@ -777,6 +784,13 @@ static void start_edit(int id) {
 }
 
 static void finish_edit(void) {
+    if (editing == R_OSK) {   /* the game's text box: as typed */
+        snprintf(osk_text, sizeof osk_text, "%s", edit_buf);
+        editing = 0;
+        InterlockedExchange(&osk_state, 3);
+        close_menu();
+        return;
+    }
     char *s = edit_buf;
     while (*s == ' ') s++;
     size_t n = strlen(s);
@@ -1121,7 +1135,7 @@ static int grid_cols(int r) { return r == GRID_ROWS - 1 ? 1 + 4 : GRID_COLS; }
 
 static void edit_event(int ev, unsigned ch) {
     size_t n = strlen(edit_buf);
-    size_t max = editing == R_NET_NAME ? 32 : editing == R_NET_SERVER ? 60 : 32;
+    size_t max = editing == R_NET_NAME ? 32 : editing == R_NET_SERVER ? 60 : editing == R_OSK ? (size_t)osk_max : 32;
     switch (ev) {
     case EV_CHAR: if (n < max) { edit_buf[n] = (char)ch; edit_buf[n + 1] = 0; } break;
     case EV_BKSP: case EV_B: case EV_DEL: if (n) edit_buf[n - 1] = 0; break;
@@ -1160,7 +1174,12 @@ static void event(int ev, unsigned ch) {
         } else if (ev == EV_B || ev == EV_BKSP || ev == EV_ESC) confirm = 0;
         return;
     }
-    if (editing) { edit_event(ev, ch); return; }
+    if (editing) {
+        int was = editing;
+        edit_event(ev, ch);
+        if (was == R_OSK && !editing && osk_state == 2) close_menu();   /* (cancelled: close_menu says so) */
+        return;
+    }
     if (capture_button >= 0) { if (ev == EV_ESC) capture_button = -1; return; }
     if (capture_key >= 0) { if (ev == EV_ESC) capture_key = -1; return; }
     Row *row = sel[page] < nrows ? &rows[sel[page]] : NULL;
@@ -1258,6 +1277,14 @@ int menu_frame(int *overlay, int f3) {
         if (now - combo_since >= 1000) { toggle = 1; combo_armed = 0; }
     } else if (!combo) { combo_since = 0; combo_armed = 1; }
     int shot = script_events() || (f3 && open_);
+    if (osk_state == 1) {   /* the game asked for text: the menu opens on the grid */
+        if (!open_) open_menu();
+        editing = R_OSK;
+        grid_r = grid_c = 0;
+        snprintf(edit_buf, sizeof edit_buf, "%s", osk_text);
+        nav_held = nb;
+        InterlockedExchange(&osk_state, 2);
+    }
     if (open_) build();
     while (q_tail != q_head) {
         LONG v = q[q_tail & 63];
@@ -1467,7 +1494,7 @@ void menu_draw(float w, float h) {
     } else if (editing) {
         float bw = 900 * s, bh = 600 * s, bx = (w - bw) / 2, by = (h - bh) / 2, cs = 56 * s;
         modal_box(w, h, bx, by, bw, bh, s);
-        ovl_text(bx + 36 * s, by + 28 * s, 30 * s, GREY, editing == R_NET_NAME ? "Your name" : editing == R_NET_CODE ? "Lobby code" : "Server (host:port)");
+        ovl_text(bx + 36 * s, by + 28 * s, 30 * s, GREY, editing == R_OSK ? osk_title : editing == R_NET_NAME ? "Your name" : editing == R_NET_CODE ? "Lobby code" : "Server (host:port)");
         char t[80];
         snprintf(t, sizeof t, "%s_", edit_buf);
         ovl_rect(bx + 30 * s, by + 72 * s, bw - 60 * s, 56 * s, OVL_RGBA(16, 18, 26, 255));
@@ -1508,4 +1535,24 @@ void menu_draw(float w, float h) {
         snprintf(t, sizeof t, "Esc: cancel   (%d s)", capture_until > now ? (int)((capture_until - now + 999) / 1000) : 0);
         ovl_text(bx + 36 * s, by + 140 * s, 26 * s, AMBER, t);
     }
+}
+
+/* (hle_applet.c, on the game's thread) the game's software keyboard on the menu's text grid, the last frame
+ * shown again under it while the game waits. 1 typed (out, ASCII), 0 cancelled, -1 not here (the renderer
+ * can't show a frame again: the caller uses its dialog). */
+int gfx_present_again(void);   /* (the renderer) the last frame once more, with the overlay and the menu */
+int menu_osk_run(const char *title, const char *initial, int max_len, char *out, size_t cap) {
+    if (!gfx_present_again()) return -1;
+    snprintf(osk_title, sizeof osk_title, "%s", title && *title ? title : "Enter text");
+    snprintf(osk_text, sizeof osk_text, "%s", initial ? initial : "");
+    osk_max = max_len > 0 && max_len < (int)sizeof osk_text ? max_len : (int)sizeof osk_text - 1;
+    InterlockedExchange(&osk_state, 1);
+    while (osk_state == 1 || osk_state == 2) {
+        gfx_present_again();
+        Sleep(16);
+    }
+    int ok = osk_state == 3;
+    if (ok) snprintf(out, cap, "%s", osk_text);
+    InterlockedExchange(&osk_state, 0);
+    return ok;
 }
