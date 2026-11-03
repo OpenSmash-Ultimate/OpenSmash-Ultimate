@@ -2,7 +2,7 @@
 """A new fighter's folder as a mod: its files at their own paths, under its own name.
 
 Usage:
-  fighter_mod.py <fighter folder> [--tree <dir>] [--apply]
+  fighter_mod.py <fighter folder> [--tree <dir>] [--apply] [--shaders]
 
 A fighter folder (SSBU_CHARACTERS\\<name>: fighter.json with "name" and "donor", the script library,
 the data files at their data.arc paths - fighter/<name>/..., sound/..., effect/fighter/<name>/...,
@@ -15,7 +15,10 @@ the donor's. A file named by its name's hash (0x17a1e0db16.nuanmb, as the game s
 that name: mods.py takes it as the hash.
 
 The tree is the one mods.py applies to (its dump/modules/romfs.cfg is rewritten): --tree, default this
-checkout. --apply runs mods.py apply after.
+checkout. --apply runs mods.py apply after. --shaders compiles the GPU programs of the folder's effect files
+(tools/shader_aot.py --files <folder> --tree <tree> --warm) into the tree's shader cache and dates them, so the
+start's prewarm makes them: without it a new fighter's effects compile while its first match loads (a freeze,
+and its effects not drawn until they are ready).
 """
 import argparse
 import json
@@ -93,6 +96,7 @@ def main(argv=None):
     ap.add_argument("folder")
     ap.add_argument("--tree", default=os.path.dirname(HERE))
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--shaders", action="store_true")
     a = ap.parse_args(argv)
     tree = mods.Tree(a.tree)
     try:
@@ -100,6 +104,12 @@ def main(argv=None):
         print(f"{name}: {n} data files in {os.path.join(tree.mods, name)} (new fighter made of {donor}), turned on")
         if a.apply:
             mods.apply(tree, print)
+        if a.shaders:
+            import subprocess
+            rc = subprocess.call([sys.executable, os.path.join(HERE, "shader_aot.py"), "--files", a.folder, "--tree", a.tree, "--warm"])
+            if rc:
+                print(f"shader_aot.py ended with code {rc}", file=sys.stderr)
+                return rc
     except mods.Error as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
