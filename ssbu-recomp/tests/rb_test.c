@@ -166,14 +166,15 @@ static void fuzz_tests(void) {
 static void input_tests(void) {
     RbPad got, out;
     int pr;
-    /* the local delay: the pad read at frame f applies at f + delay; nothing is pressed in the first frames */
+    /* the local delay: the pad read at frame f applies at f + delay (frame 5 plays frame 2's pad, below); nothing is pressed in
+     * the first frames, and frames 1..RB_LEADIN carry no buttons whatever the delay */
     rb_input_reset(2, 0, 3);
     CHECK(rb_input_delay() == 3, "delay %d", rb_input_delay());
     got = rb_input_local(1, padb(1));
     CHECK(got.buttons == 0 && rb_input_local_latest() == 4, "frame 1: %llu, newest local %d", (unsigned long long)got.buttons, rb_input_local_latest());
     rb_input_local(2, padb(2)); rb_input_local(3, padb(3));
     got = rb_input_local(4, padb(4));
-    CHECK(got.buttons == 1, "frame 4 plays frame 1's pad: %llu", (unsigned long long)got.buttons);
+    CHECK(got.buttons == 0, "frame 4 is in the lead-in (RB_LEADIN: no buttons whatever the delay), not frame 1's pad: %llu", (unsigned long long)got.buttons);
     CHECK(rb_input_local_get(6, &out) && out.buttons == 3, "frame 6's pad, to send again");
     CHECK(!rb_input_local_get(8, &out) && !rb_input_local_get(0, &out), "no local pad after the newest or before frame 1");
     got = rb_input_get(0, 5, &pr);
