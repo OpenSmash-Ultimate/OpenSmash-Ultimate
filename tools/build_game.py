@@ -915,7 +915,10 @@ def write_romfs_cfg(game, keys, the_program):
         log("  applying the update over the game's data (a few minutes; every block of the result is checked)")
         inner = ["--inner", program["name"]] if program["container"] else []   # (the package may hold the game too)
         run([sys.executable, os.path.join("tools", "update.py"), "apply", path, *inner, "--base", base_cfg, "--keys", keys],
-            "The update could not be applied over the game's data (see above).")
+            "The update could not be applied over the game's data (see above). Most often a file of the game or of "
+            "the update is incomplete: a copy cut short, a download in parts not joined into one file, or an archive "
+            "not unpacked to the end. Compare each file's size with the original's, copy or dump it again, and run "
+            "this again.")
     else:
         raise Failed(f"There is no romfs.bin in {game}, and {gamefiles.where(program)} holds no game data. Put the game's "
                      "data there as romfs.bin: unencrypted, with the 13.0.5 update applied (setup guide part 2).")
