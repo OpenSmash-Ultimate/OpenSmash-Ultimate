@@ -121,6 +121,9 @@ static const char *api_error(void) { return last_error; }
 static const HookApi api = {sizeof(HookApi), 1, api_install, api_install_name, api_remove, api_enable, api_calls,
                             api_address, api_call, api_log, api_error};
 
+/* (hle_fighter_registry.c) the same hooks for the runtime's own fighter registry */
+const void *native_mods_api(void) { return &api; }
+
 /* (host.c, after a module's init) the hooks by name its exports were waiting for */
 void native_mods_module_loaded(void) {
     if (!nhooks) return;
@@ -163,12 +166,14 @@ static int load_folder(const char *dir) {
     return n;
 }
 
+void fighter_registry_scan(void);   /* (hle_fighter_registry.c) */
 /* (hle_fs.c, when the game mounts its data, after the Skyline plugins) */
 int mods_enabled_names(char names[][128], int max);   /* (hle_mod_switch.c) the mods switched on in mods.json */
 void native_mods_load(void) {
     static LONG done;
     if (InterlockedExchange(&done, 1)) return;
     int n = 0;
+    fighter_registry_scan();   /* (hle_fighter_registry.c: SSBU_CHARACTERS; it may set SSBU_MODS) */
     const char *dir = getenv("SSBU_MODS");
     if (dir && *dir) n += load_folder(dir);
     static char names[256][128];
