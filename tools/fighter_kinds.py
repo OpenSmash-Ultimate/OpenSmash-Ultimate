@@ -10,7 +10,7 @@ Usage:
   --remove  delete the file: main is lifted as the game has it
 
 The game keeps the fighters' parameters in one object with 0x5E rows a kind (array A, rows of 0x38 bytes, then
-array B, rows of 0xC, then 0x50 bytes of members). With these patches it has 0x72 (20 new kinds, 0x5E-0x71):
+array B, rows of 0xC, then 0x50 bytes of members). With these patches it has 0x72 rows (0x5E-0x71); the engine's name and hash tables have 16 spare rows (0x5E-0x6D: 0x6E.. are special kinds), so at most 16 new fighters:
 array A grows in place, array B moves behind the members (+0x14F0 -> +0x19A8), the object is made bigger, the
 bound checks `kind < 0x5E` become `< 0x72`, and a second per-kind container grows likewise. Every patch changes
 only an instruction's immediate (an offset, a bound, a size): nothing else of the game changes, and with no new

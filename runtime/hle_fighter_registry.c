@@ -90,7 +90,7 @@ typedef struct SsbuRegistry {
  * the worker f_71022b6620 sets x4 = request + 0x30, calls f_7101ea04d0 with x30 = 0x71022b67d4, then writes
  * request + 0x132; it reads the archive's tables at 0x7105332000 + 0xf20. */
 #define MAIN 0x7100000000ull
-#define NM_MAX 8
+#define NM_MAX 16   /* = the spare rows of the engine's kind tables (0x5E-0x6D; 0x6E.. are special kinds) */
 #define NM_VT_SLOTS 96
 #define NM_WORKER_RET (MAIN + 0x22b67d4)        /* 13.0.5 = 13.0.4 (lifted: f_71022b6620) */
 #define NM_FORMATTER (MAIN + 0x1ea04d0)

@@ -59,7 +59,7 @@ static u16 slot_module[SLOT_COUNT];
  * range of their own whose functions are a donor module's, or a fighter library's, by offset. Their
  * dispatch slots hold CLONE_FLAG | (index + 1); they are not loaded modules (nn::ro's lists, symbols). */
 #define CLONE_FLAG 0x8000u
-#define MAX_CLONES 16
+#define MAX_CLONES 32
 static struct Clone { char name[64]; u64 base, image_size, text_size; GuestFn **code, **odd; } clones[MAX_CLONES];
 static u32 clone_count;
 static struct Native { GuestFn *fn; const char *name; } natives[8192];

@@ -697,7 +697,7 @@ class Table:
         return index
 
     def path_index(self, path):
-        return self.path_index_of(hash40(path))
+        return self.path_index_of(path_hash(path))   # (a name written as its hash: path_parts)
 
     def path_index_of(self, h):
         start, count = struct.unpack_from("<2I", self.head, self.arc.bucket_table + (h % self.arc.buckets) * 8)
