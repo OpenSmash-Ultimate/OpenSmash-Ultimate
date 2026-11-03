@@ -125,7 +125,8 @@ def main():
         state = json.load(f)
     work = os.path.join(a.build, 'work')
     rollback = False
-    if a.play and a.exe == main_exe and not (a.linux or a.mac) and ini_on(os.path.join(a.build, 'config', 'graphics.ini'), 'rollback'):
+    plays = a.play or (a.linux and not a.seq)          # Linux: play.sh runs run.py --linux (no --play); scripted runs (--seq) stay as asked
+    if plays and a.exe == main_exe and not a.mac and ini_on(os.path.join(a.build, 'config', 'graphics.ini'), 'rollback'):
         # F1 > Experimental > Rollback netcode: the normal exe and game DLL with SSBU_RB_NET (since R4 the ring saves the fight on
         # the normal build: runtime/rb_learned.c); the old pair ssbu_native_rb.exe + ssbu_game_r1.dll of an older install is not used
         rollback = True

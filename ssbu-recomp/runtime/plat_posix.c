@@ -123,6 +123,7 @@ static DWORD err_from_errno(int e) {
     case ENOTEMPTY: return ERROR_DIR_NOT_EMPTY;
     case ENOSPC: return ERROR_DISK_FULL;
     case EINVAL: return ERROR_INVALID_PARAMETER;
+    case EFAULT: return ERROR_NOACCESS;
     default: return 0x1F;    /* ERROR_GEN_FAILURE */
     }
 }
@@ -194,10 +195,21 @@ static long futex(volatile uint32_t *a, int op, uint32_t v, const struct timespe
 static BOOL cv_wait(CONDITION_VARIABLE *cv, DWORD ms, void (*unlock)(void *), void (*lock)(void *), void *l) {
     uint32_t seq = __atomic_load_n(&cv->seq, __ATOMIC_SEQ_CST);
     unlock(l);
-    long r;
-    if (ms == INFINITE) r = futex(&cv->seq, FUTEX_WAIT_PRIVATE, seq, NULL);
-    else { struct timespec ts = {ms / 1000, (long)(ms % 1000) * 1000000L}; r = futex(&cv->seq, FUTEX_WAIT_PRIVATE, seq, &ts); }
-    int e = errno;
+    long r; int e = 0;
+    int64_t end = ms == INFINITE ? 0 : mono_ns() + (int64_t)ms * 1000000LL;
+    for (;;) {
+        if (ms == INFINITE) r = futex(&cv->seq, FUTEX_WAIT_PRIVATE, seq, NULL);
+        else {
+            int64_t left = end - mono_ns();
+            if (left <= 0) { r = -1; e = ETIMEDOUT; break; }
+            struct timespec ts = {left / 1000000000LL, left % 1000000000LL}; r = futex(&cv->seq, FUTEX_WAIT_PRIVATE, seq, &ts);
+        }
+        e = r == -1 ? errno : 0;
+        /* a signal is not a wake-up (SuspendThread holds a thread with one; on Windows a suspended thread's wait goes on):
+         * the wait goes on for the time left. A timed futex wait comes back with EINTR, an untimed one is made again. */
+        if (r == -1 && e == EINTR && __atomic_load_n(&cv->seq, __ATOMIC_SEQ_CST) == seq) continue;
+        break;
+    }
     lock(l);
     if (r == -1 && e == ETIMEDOUT) { t_lasterr = 1460; return FALSE; }      /* ERROR_TIMEOUT */
     return TRUE;
@@ -233,6 +245,22 @@ BOOL InitOnceExecuteOnce(INIT_ONCE *once, PINIT_ONCE_FN fn, PVOID param, PVOID *
         sched_yield();
     }
 }
+BOOL InitOnceBeginInitialize(INIT_ONCE *once, DWORD flags, BOOL *pending, PVOID *ctx) {
+    /* the same states: the caller that moves 0 -> 1 gets pending = TRUE and must call InitOnceComplete; the others wait */
+    (void)flags;
+    if (ctx) *ctx = NULL;
+    for (;;) {
+        int st = __atomic_load_n(&once->state, __ATOMIC_ACQUIRE);
+        if (st == 2) { *pending = FALSE; return TRUE; }
+        if (st == 0 && __atomic_compare_exchange_n(&once->state, &st, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) { *pending = TRUE; return TRUE; }
+        sched_yield();
+    }
+}
+BOOL InitOnceComplete(INIT_ONCE *once, DWORD flags, PVOID ctx) {
+    (void)ctx;
+    __atomic_store_n(&once->state, (flags & INIT_ONCE_INIT_FAILED) ? 0 : 2, __ATOMIC_RELEASE);
+    return TRUE;
+}
 
 /* ================================================================ handle objects */
 enum { PO_THREAD = 1, PO_EVENT, PO_SEM, PO_MUTEX, PO_TIMER, PO_FILE, PO_FIND, PO_MAPPING, PO_MODULE };
@@ -248,6 +276,11 @@ typedef struct PlatObj {
     /* threads */
     pthread_t th; pid_t tid; DWORD exit_code; int started;
     LPTHREAD_START_ROUTINE fn; LPVOID arg;
+    uintptr_t stk_lo, stk_hi;        /* its host stack (plat_thread_stacks) */
+    void *volatile fiber;            /* the fiber it runs now (SwitchToFiber; plat_thread_fiber) */
+#if defined(__linux__) && defined(__x86_64__)
+    volatile uint32_t sus_ack, sus_gen; LONG sus_count; CONTEXT sus_ctx;    /* SuspendThread */
+#endif
     /* files, finds, mappings */
     int fd;
     DIR *dir; char dir_path[MAX_PATH]; char pattern[MAX_PATH];
@@ -286,14 +319,18 @@ static int is_obj(HANDLE h) { return h && h != INVALID_HANDLE_VALUE && h != PSEU
 
 /* threads */
 static __thread PlatObj *t_self;
+static PlatObj *g_thr[1024]; static int g_nthr; static pthread_mutex_t g_thr_lock = PTHREAD_MUTEX_INITIALIZER;   /* live threads of CreateThread */
 static void *thread_tramp(void *p) {
     PlatObj *o = p;
     t_self = o;
+    plat_current_stack(&o->stk_lo, &o->stk_hi);
+    pthread_mutex_lock(&g_thr_lock); if (g_nthr < 1024) g_thr[g_nthr++] = o; pthread_mutex_unlock(&g_thr_lock);
     o->tid = os_tid();
     pthread_mutex_lock(&o->m);
     while (!o->started) pthread_cond_wait(&o->cv, &o->m);     /* CREATE_SUSPENDED: held until ResumeThread */
     pthread_mutex_unlock(&o->m);
     DWORD r = o->fn(o->arg);
+    pthread_mutex_lock(&g_thr_lock); for (int i = 0; i < g_nthr; i++) if (g_thr[i] == o) { g_thr[i] = g_thr[--g_nthr]; break; } pthread_mutex_unlock(&g_thr_lock);
     pthread_mutex_lock(&o->m);
     o->exit_code = r; o->signaled = 1;
     pthread_cond_broadcast(&o->cv);
@@ -315,17 +352,150 @@ HANDLE CreateThread(SECURITY_ATTRIBUTES *sa, SIZE_T stack, LPTHREAD_START_ROUTIN
     if (tid) { while (!__atomic_load_n(&o->tid, __ATOMIC_ACQUIRE)) sched_yield(); *tid = (DWORD)o->tid; }
     return o;
 }
+#if defined(__linux__) && defined(__x86_64__)
+/* SuspendThread (r1_state.c rollback: the guest threads are held while the game's memory is saved or loaded). pthreads cannot
+ * stop another thread: SIG_SUSPEND is sent, and the thread's handler stores the registers it was stopped with (GetThreadContext),
+ * says so and waits (futex) until ResumeThread brings the count back to 0. A thread blocked in a system call is stopped there
+ * (SA_RESTART: the call is made again after the handler; the kernel then reports RIP at the `syscall` instruction, not after it).
+ * Only threads made by CreateThread (their PlatObj) can be held. */
+#define SIG_SUSPEND (SIGRTMIN + 6)
+static void ctx_from_uc(CONTEXT *c, const ucontext_t *u) {
+    const greg_t *g = u->uc_mcontext.gregs;
+    c->Rax = g[REG_RAX]; c->Rcx = g[REG_RCX]; c->Rdx = g[REG_RDX]; c->Rbx = g[REG_RBX]; c->Rsp = g[REG_RSP]; c->Rbp = g[REG_RBP];
+    c->Rsi = g[REG_RSI]; c->Rdi = g[REG_RDI]; c->R8 = g[REG_R8]; c->R9 = g[REG_R9]; c->R10 = g[REG_R10]; c->R11 = g[REG_R11];
+    c->R12 = g[REG_R12]; c->R13 = g[REG_R13]; c->R14 = g[REG_R14]; c->R15 = g[REG_R15]; c->Rip = g[REG_RIP]; c->EFlags = (DWORD)g[REG_EFL];
+}
+static void ctx_to_uc(ucontext_t *u, const CONTEXT *c) {
+    greg_t *g = u->uc_mcontext.gregs;
+    g[REG_RAX] = c->Rax; g[REG_RCX] = c->Rcx; g[REG_RDX] = c->Rdx; g[REG_RBX] = c->Rbx; g[REG_RSP] = c->Rsp; g[REG_RBP] = c->Rbp;
+    g[REG_RSI] = c->Rsi; g[REG_RDI] = c->Rdi; g[REG_R8] = c->R8; g[REG_R9] = c->R9; g[REG_R10] = c->R10; g[REG_R11] = c->R11;
+    g[REG_R12] = c->R12; g[REG_R13] = c->R13; g[REG_R14] = c->R14; g[REG_R15] = c->R15; g[REG_RIP] = c->Rip; g[REG_EFL] = c->EFlags;
+}
+/* A thread is never held while it holds g_vm_lock (VirtualAlloc / VirtualProtect / VirtualQuery): the holder's next
+ * VirtualQuery waited for it for good (a TaskWorker held inside VirtualAlloc's mprotect, which looks like a blocked call,
+ * and th_blocked's VirtualQuery for the next thread: a human Local Wireless room, 2026-10-23). A suspend that comes while
+ * the lock is held is kept and taken by vm_unlock, a few microseconds later. */
+static __thread volatile sig_atomic_t t_vm_locked, t_sus_pending;
+static void sus_signal(int sig, siginfo_t *si, void *uc) {
+    (void)sig; (void)si;
+    PlatObj *o = t_self;
+    if (!o) return;
+    if (t_vm_locked) { t_sus_pending = 1; return; }
+    int e = errno;
+    uint32_t g = __atomic_load_n(&o->sus_gen, __ATOMIC_ACQUIRE);
+    ctx_from_uc(&o->sus_ctx, uc);
+    __atomic_store_n(&o->sus_ack, 1, __ATOMIC_RELEASE);
+    futex(&o->sus_ack, FUTEX_WAKE_PRIVATE, INT_MAX, NULL);
+    while (__atomic_load_n(&o->sus_gen, __ATOMIC_ACQUIRE) == g) futex(&o->sus_gen, FUTEX_WAIT_PRIVATE, g, NULL);
+    errno = e;
+}
+static pthread_once_t g_sus_once = PTHREAD_ONCE_INIT;
+static void sus_init(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = sus_signal;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIG_SUSPEND, &sa, NULL);
+}
+DWORD SuspendThread(HANDLE h) {
+    if (!is_obj(h) || ((PlatObj *)h)->kind != PO_THREAD || h == t_self) return (DWORD)-1;
+    PlatObj *o = h;
+    pthread_once(&g_sus_once, sus_init);
+    pthread_mutex_lock(&o->m);
+    LONG was = o->sus_count;
+    if (o->signaled) { pthread_mutex_unlock(&o->m); return (DWORD)-1; }                  /* finished */
+    if (was == 0 && o->started) {
+        __atomic_store_n(&o->sus_ack, 0, __ATOMIC_RELEASE);
+        if (pthread_kill(o->th, SIG_SUSPEND)) { pthread_mutex_unlock(&o->m); return (DWORD)-1; }
+        struct timespec ts = {0, 2000000};
+        for (int i = 0; !__atomic_load_n(&o->sus_ack, __ATOMIC_ACQUIRE); i++) {
+            if (i == 500) { pthread_mutex_unlock(&o->m); fprintf(stderr, "plat: SuspendThread: thread %d did not stop within 1 s\n", (int)o->tid); return (DWORD)-1; }
+            futex(&o->sus_ack, FUTEX_WAIT_PRIVATE, 0, &ts);
+        }
+    }
+    o->sus_count = was + 1;
+    pthread_mutex_unlock(&o->m);
+    return (DWORD)was;
+}
+/* AddVectoredExceptionHandler (r1_state.c rollback: the first write of a page it made read-only). A persistent SIGSEGV / SIGBUS
+ * handler gives each access violation to the handlers in order, as Windows does; one that answers EXCEPTION_CONTINUE_EXECUTION
+ * resumes the thread (with the registers it may have changed); otherwise the handler that was there before (hostrt.c's crash
+ * report) gets the signal. SIG_SUSPEND is blocked while a handler runs: a thread is never held inside one. */
+static PVECTORED_EXCEPTION_HANDLER g_veh[16]; static volatile int g_nveh; static struct sigaction g_veh_old_segv, g_veh_old_bus;
+static pthread_mutex_t g_veh_lock = PTHREAD_MUTEX_INITIALIZER;
+static __thread int t_veh_passed;                                /* this fault went through the handlers already (hostrt.c asks again) */
+int plat_veh_fault(int sig, siginfo_t *si, void *ucv) {
+    int n = __atomic_load_n(&g_nveh, __ATOMIC_ACQUIRE);
+    if ((sig != SIGSEGV && sig != SIGBUS) || !n || t_veh_passed) { t_veh_passed = 0; return 0; }
+    ucontext_t *u = ucv;
+    CONTEXT cx; memset(&cx, 0, sizeof cx); cx.ContextFlags = CONTEXT_FULL; ctx_from_uc(&cx, u);
+    EXCEPTION_RECORD er; memset(&er, 0, sizeof er);
+    greg_t err = u->uc_mcontext.gregs[REG_ERR];
+    er.ExceptionCode = EXCEPTION_ACCESS_VIOLATION; er.ExceptionAddress = (PVOID)(uintptr_t)cx.Rip; er.NumberParameters = 2;
+    er.ExceptionInformation[0] = (err & 0x10) ? 8 : (err & 2) ? 1 : 0;          /* execute / write / read, as Windows */
+    er.ExceptionInformation[1] = (ULONG_PTR)si->si_addr;
+    EXCEPTION_POINTERS ep = {&er, &cx};
+    for (int i = 0; i < n; i++) if (g_veh[i](&ep) == EXCEPTION_CONTINUE_EXECUTION) { ctx_to_uc(u, &cx); return 1; }
+    return 0;
+}
+static void veh_signal(int sig, siginfo_t *si, void *uc) {
+    if (plat_veh_fault(sig, si, uc)) return;
+    struct sigaction *o = sig == SIGBUS ? &g_veh_old_bus : &g_veh_old_segv;
+    t_veh_passed = 1;
+    if ((o->sa_flags & SA_SIGINFO) && o->sa_sigaction) { o->sa_sigaction(sig, si, uc); t_veh_passed = 0; return; }
+    t_veh_passed = 0;
+    if (o->sa_handler != SIG_DFL && o->sa_handler != SIG_IGN) { o->sa_handler(sig); return; }
+    signal(sig, SIG_DFL);                                         /* the default action: the fault happens again and ends the process */
+}
+void plat_veh_install(void) {                                     /* (hostrt.c) after its crash handler was set again */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = veh_signal;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask); sigaddset(&sa.sa_mask, SIG_SUSPEND);
+    sigaction(SIGSEGV, &sa, &g_veh_old_segv); sigaction(SIGBUS, &sa, &g_veh_old_bus);
+}
+PVOID AddVectoredExceptionHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER fn) {
+    pthread_once(&g_sus_once, sus_init);
+    pthread_mutex_lock(&g_veh_lock);
+    int n = g_nveh;
+    if (n == 16) { pthread_mutex_unlock(&g_veh_lock); return NULL; }
+    if (first) { memmove(g_veh + 1, g_veh, (size_t)n * sizeof *g_veh); g_veh[0] = fn; } else g_veh[n] = fn;
+    __atomic_store_n(&g_nveh, n + 1, __ATOMIC_RELEASE);
+    if (!n) plat_veh_install();
+    pthread_mutex_unlock(&g_veh_lock);
+    return (PVOID)fn;
+}
+BOOL GetThreadContext(HANDLE h, CONTEXT *c) {
+    if (!is_obj(h) || ((PlatObj *)h)->kind != PO_THREAD) return FALSE;
+    PlatObj *o = h;
+    if (!o->sus_count || !__atomic_load_n(&o->sus_ack, __ATOMIC_ACQUIRE)) return FALSE;
+    DWORD f = c->ContextFlags; *c = o->sus_ctx; c->ContextFlags = f;
+    return TRUE;
+}
+#endif
 DWORD ResumeThread(HANDLE h) {
     if (!is_obj(h)) return (DWORD)-1;
     PlatObj *o = h;
     pthread_mutex_lock(&o->m);
+#if defined(__linux__) && defined(__x86_64__)
+    if (o->sus_count > 0) {                                  /* held by SuspendThread */
+        LONG was = o->sus_count--;
+        if (!o->sus_count) { __atomic_add_fetch(&o->sus_gen, 1, __ATOMIC_ACQ_REL); futex(&o->sus_gen, FUTEX_WAKE_PRIVATE, INT_MAX, NULL); }
+        pthread_mutex_unlock(&o->m);
+        return (DWORD)was;
+    }
+#endif
     DWORD was = o->started ? 0 : 1;
     o->started = 1;
     pthread_cond_broadcast(&o->cv);
     pthread_mutex_unlock(&o->m);
     return was;
 }
+#if !(defined(__linux__) && defined(__x86_64__))
 DWORD SuspendThread(HANDLE h) { (void)h; return (DWORD)-1; }      /* pthreads cannot stop another thread: failure, which every caller (diagnostics) handles */
+#endif
 HANDLE GetCurrentThread(void) { return PSEUDO_THREAD; }
 HANDLE GetCurrentProcess(void) { return PSEUDO_PROCESS; }
 DWORD GetCurrentThreadId(void) { static __thread DWORD id; if (!id) id = (DWORD)os_tid(); return id; }
@@ -530,9 +700,10 @@ PVOID FlsGetValue(DWORD i) { return pthread_getspecific((pthread_key_t)i); }
 BOOL FlsSetValue(DWORD i, PVOID v) { return pthread_setspecific((pthread_key_t)i, v) == 0; }
 
 /* ================================================================ fibers
- * On ucontext. As on Windows a fiber can be resumed on another thread than the one it last ran on (the running fiber is
- * per thread: t_fiber); swapcontext also saves and restores the signal mask, one system call per switch. The stack is
- * reserved whole at creation (MAP_NORESERVE: pages are used as touched), not grown from a commit size. */
+ * As on Windows a fiber can be resumed on another thread than the one it last ran on (the running fiber is per thread:
+ * t_fiber). A switch saves and loads the callee-saved registers by hand (Linux x86-64, macOS on Apple Silicon), elsewhere
+ * on ucontext (swapcontext also saves and restores the signal mask, one system call per switch). The stack is reserved
+ * whole at creation (MAP_NORESERVE: pages are used as touched), not grown from a commit size. */
 #if defined(__APPLE__) && defined(__aarch64__)
 /* macOS on Apple Silicon has no working ucontext: a switch of the callee-saved registers instead (x19-x28, fp, lr, sp,
  * d8-d15; everything else is the caller's to keep across a call). A new fiber's first switch "returns" into fiber_entry
@@ -549,6 +720,21 @@ __asm__(".text\n.globl _plat_fiber_switch\n.p2align 2\n_plat_fiber_switch:\n"
         "  ldp d8, d9, [x1, #104]\n  ldp d10, d11, [x1, #120]\n  ldp d12, d13, [x1, #136]\n  ldp d14, d15, [x1, #152]\n"
         "  ret\n");
 typedef struct { FiberRegs uc; LPFIBER_START_ROUTINE fn; LPVOID param; void *stack; size_t stack_size; int is_thread; } Fiber;
+#elif defined(__linux__) && defined(__x86_64__)
+/* Linux x86-64: rbx, rbp, r12-r15, rsp and the SSE / x87 control words (System V: everything else is the caller's to keep),
+ * not swapcontext: no system call in a switch, so it is user code only, as SwitchToFiber is on Windows. The rollback
+ * (r1_state.c) holds a thread only when it is blocked in a system call; swapcontext's signal-mask call made a thread
+ * half-way through a switch look like one. A new fiber's first switch "returns" into fiber_entry on its own stack. */
+typedef struct { uint64_t rsp, rbx, rbp, r12, r13, r14, r15; uint32_t mxcsr; uint16_t fpucw; } FiberRegs;
+void plat_fiber_switch(FiberRegs *from, FiberRegs *to);
+__asm__(".text\n.globl plat_fiber_switch\n.hidden plat_fiber_switch\n.type plat_fiber_switch, @function\n.p2align 4\nplat_fiber_switch:\n"
+        "  movq %rbx, 8(%rdi)\n  movq %rbp, 16(%rdi)\n  movq %r12, 24(%rdi)\n  movq %r13, 32(%rdi)\n  movq %r14, 40(%rdi)\n  movq %r15, 48(%rdi)\n"
+        "  stmxcsr 56(%rdi)\n  fnstcw 60(%rdi)\n  movq %rsp, 0(%rdi)\n"
+        "  movq 0(%rsi), %rsp\n"
+        "  movq 8(%rsi), %rbx\n  movq 16(%rsi), %rbp\n  movq 24(%rsi), %r12\n  movq 32(%rsi), %r13\n  movq 40(%rsi), %r14\n  movq 48(%rsi), %r15\n"
+        "  ldmxcsr 56(%rsi)\n  fldcw 60(%rsi)\n"
+        "  ret\n.size plat_fiber_switch, .-plat_fiber_switch\n");
+typedef struct { FiberRegs uc; LPFIBER_START_ROUTINE fn; LPVOID param; void *stack; size_t stack_size; int is_thread; } Fiber;
 #else
 typedef struct { ucontext_t uc; LPFIBER_START_ROUTINE fn; LPVOID param; void *stack; size_t stack_size; int is_thread; } Fiber;
 #endif
@@ -558,6 +744,7 @@ LPVOID ConvertThreadToFiber(LPVOID param) {
     Fiber *f = calloc(1, sizeof *f);
     f->param = param; f->is_thread = 1;
     t_fiber = f;
+    if (t_self) t_self->fiber = f;
     return f;
 }
 BOOL ConvertFiberToThread(void) { if (t_fiber && t_fiber->is_thread) free(t_fiber); t_fiber = NULL; return TRUE; }
@@ -573,6 +760,13 @@ LPVOID CreateFiberEx(SIZE_T commit, SIZE_T reserve, DWORD flags, LPFIBER_START_R
     memset(&f->uc, 0, sizeof f->uc);
     f->uc.r[11] = (uint64_t)(uintptr_t)fiber_entry;                                     /* lr */
     f->uc.r[12] = ((uint64_t)(uintptr_t)f->stack + f->stack_size) & ~(uint64_t)15;      /* sp */
+#elif defined(__linux__) && defined(__x86_64__)
+    uint64_t *top = (uint64_t *)(uintptr_t)(((uint64_t)(uintptr_t)f->stack + f->stack_size) & ~(uint64_t)15);
+    top[-1] = 0;                                         /* fiber_entry's return address: none (an unwinder stops there) */
+    top[-2] = (uint64_t)(uintptr_t)fiber_entry;          /* taken by the first switch's ret: rsp then = 8 mod 16, as after a call */
+    memset(&f->uc, 0, sizeof f->uc);
+    f->uc.rsp = (uint64_t)(uintptr_t)(top - 2);
+    __asm__ volatile("stmxcsr %0\n\tfnstcw %1" : "=m"(f->uc.mxcsr), "=m"(f->uc.fpucw));
 #else
     getcontext(&f->uc);
     f->uc.uc_stack.ss_sp = f->stack; f->uc.uc_stack.ss_size = f->stack_size; f->uc.uc_link = NULL;
@@ -584,7 +778,8 @@ void SwitchToFiber(LPVOID fiber) {
     Fiber *from = t_fiber, *to = fiber;
     if (from == to) return;
     t_fiber = to;
-#if defined(__APPLE__) && defined(__aarch64__)
+    if (t_self) t_self->fiber = to;
+#if (defined(__APPLE__) && defined(__aarch64__)) || (defined(__linux__) && defined(__x86_64__))
     plat_fiber_switch(&from->uc, &to->uc);
 #else
     swapcontext(&from->uc, &to->uc);
@@ -611,6 +806,33 @@ int plat_current_fiber_stack(uintptr_t *lo, uintptr_t *hi) {      /* crash repor
     return 1;
 }
 LPVOID GetFiberData(void) { return t_fiber ? t_fiber->param : NULL; }
+/* (r1_state.c) Windows' fiber block: StackBase +0x10, DeallocationStack +0x20, the saved Rsp in its CONTEXT; here the Fiber */
+size_t plat_fiber_block_size(void) { return sizeof(Fiber); }
+int plat_fiber_stack_of(const void *fiber, uint64_t *lo, uint64_t *hi, uint64_t *sp) {
+    const Fiber *f = fiber;
+    if (!f || f->is_thread || !f->stack) return 0;
+    *lo = (uint64_t)(uintptr_t)f->stack; *hi = *lo + f->stack_size;
+#if defined(__APPLE__) && defined(__aarch64__)
+    *sp = f->uc.r[12];
+#elif defined(__linux__) && defined(__x86_64__)
+    *sp = f->uc.rsp;
+#else
+    *sp = (uint64_t)f->uc.uc_mcontext.gregs[REG_RSP];
+#endif
+    return 1;
+}
+void *plat_thread_fiber(HANDLE h) { return is_obj(h) && ((PlatObj *)h)->kind == PO_THREAD ? ((PlatObj *)h)->fiber : h == PSEUDO_THREAD ? t_fiber : NULL; }
+int plat_thread_stacks(uint64_t (*out)[2], int max) {
+    int n = 0;
+    pthread_mutex_lock(&g_thr_lock);
+    for (int i = 0; i < g_nthr && n < max; i++) if (g_thr[i]->stk_hi) { out[n][0] = g_thr[i]->stk_lo; out[n][1] = g_thr[i]->stk_hi; n++; }
+    pthread_mutex_unlock(&g_thr_lock);
+    FILE *m = fopen("/proc/self/maps", "r");                /* the main thread's */
+    char line[512];
+    while (m && n < max && fgets(line, sizeof line, m)) { unsigned long a, b; if (strstr(line, "[stack]") && sscanf(line, "%lx-%lx", &a, &b) == 2) { out[n][0] = a; out[n][1] = b; n++; } }
+    if (m) fclose(m);
+    return n;
+}
 /* nnunwind.c: the bounds of the stack this thread runs on now: the running fiber's, else the thread's own */
 int plat_current_stack(uintptr_t *lo, uintptr_t *hi) {
     if (plat_current_fiber_stack(lo, hi)) return 1;
@@ -637,6 +859,17 @@ typedef struct { uintptr_t lo, hi, alloc_base; DWORD state, prot, alloc_prot; } 
 static Seg *g_seg;
 static int g_nseg, g_capseg;
 static pthread_mutex_t g_vm_lock = PTHREAD_MUTEX_INITIALIZER;
+#if defined(__linux__) && defined(__x86_64__)
+static void vm_lock(void) { t_vm_locked = 1; __atomic_signal_fence(__ATOMIC_SEQ_CST); pthread_mutex_lock(&g_vm_lock); }
+static void vm_unlock(void) {
+    pthread_mutex_unlock(&g_vm_lock);
+    __atomic_signal_fence(__ATOMIC_SEQ_CST); t_vm_locked = 0; __atomic_signal_fence(__ATOMIC_SEQ_CST);
+    if (t_sus_pending) { t_sus_pending = 0; pthread_kill(pthread_self(), SIG_SUSPEND); }      /* the suspend kept while locked */
+}
+#else
+static void vm_lock(void) { pthread_mutex_lock(&g_vm_lock); }
+static void vm_unlock(void) { pthread_mutex_unlock(&g_vm_lock); }
+#endif
 #define PAGE 4096u
 static int prot_posix(DWORD p) {
     switch (p & 0xff) {
@@ -734,10 +967,10 @@ static int ww_find(uintptr_t a) { for (int i = 0; i < g_nww; i++) if (a >= g_ww[
 static void ww_drop(uintptr_t lo) { int i = ww_find(lo); if (i >= 0) g_ww[i] = g_ww[--g_nww]; }      /* munmap unregisters by itself */
 UINT GetWriteWatch(DWORD flags, PVOID base, SIZE_T size, PVOID *addrs, ULONG_PTR *count, ULONG *gran) {
     uintptr_t lo = (uintptr_t)base & ~(uintptr_t)(PAGE - 1), hi = ((uintptr_t)base + size + PAGE - 1) & ~(uintptr_t)(PAGE - 1);
-    pthread_mutex_lock(&g_vm_lock);
+    vm_lock();
     int i = ww_find(lo);
     int ok = i >= 0 && hi <= g_ww[i].hi;
-    pthread_mutex_unlock(&g_vm_lock);
+    vm_unlock();
     if (!ok || !size) { t_lasterr = ERROR_INVALID_PARAMETER; return 1; }
     struct page_region v[256];
     ULONG_PTR max = *count, got = 0;
@@ -761,9 +994,9 @@ UINT GetWriteWatch(DWORD flags, PVOID base, SIZE_T size, PVOID *addrs, ULONG_PTR
 }
 UINT ResetWriteWatch(LPVOID base, SIZE_T size) {
     uintptr_t lo = (uintptr_t)base & ~(uintptr_t)(PAGE - 1), hi = ((uintptr_t)base + size + PAGE - 1) & ~(uintptr_t)(PAGE - 1);
-    pthread_mutex_lock(&g_vm_lock);
+    vm_lock();
     int i = ww_find(lo);
-    pthread_mutex_unlock(&g_vm_lock);
+    vm_unlock();
     if (i < 0) return 1;
     ww_protect(lo, hi - lo);
     return 0;
@@ -881,25 +1114,25 @@ static void ww_protect(uintptr_t lo, size_t n) {          /* decommitted pieces:
 }
 UINT GetWriteWatch(DWORD flags, PVOID base, SIZE_T size, PVOID *addrs, ULONG_PTR *count, ULONG *gran) {
     uintptr_t lo = (uintptr_t)base & ~(uintptr_t)(PAGE - 1), hi = ((uintptr_t)base + size + PAGE - 1) & ~(uintptr_t)(PAGE - 1);
-    pthread_mutex_lock(&g_vm_lock);
+    vm_lock();
     int i = ww_find(lo);
-    if (i < 0 || hi > g_ww[i].hi || !size) { pthread_mutex_unlock(&g_vm_lock); t_lasterr = ERROR_INVALID_PARAMETER; return 1; }
+    if (i < 0 || hi > g_ww[i].hi || !size) { vm_unlock(); t_lasterr = ERROR_INVALID_PARAMETER; return 1; }
     ULONG_PTR max = *count, got = 0;
     uintptr_t H = g_hpage, p = lo;
     for (; p < hi && got < max; p += PAGE)
         if (__atomic_load_n(&g_ww[i].dirty[(p - g_ww[i].lo) / H], __ATOMIC_ACQUIRE) & (1u << ((p & (H - 1)) / PAGE))) addrs[got++] = (PVOID)p;
     if (flags & WRITE_WATCH_FLAG_RESET) ww_reset(i, lo, p, 1);           /* the pieces looked at */
-    pthread_mutex_unlock(&g_vm_lock);
+    vm_unlock();
     if (gran) *gran = PAGE;
     *count = got;
     return 0;
 }
 UINT ResetWriteWatch(LPVOID base, SIZE_T size) {
     uintptr_t lo = (uintptr_t)base & ~(uintptr_t)(PAGE - 1), hi = ((uintptr_t)base + size + PAGE - 1) & ~(uintptr_t)(PAGE - 1);
-    pthread_mutex_lock(&g_vm_lock);
+    vm_lock();
     int i = ww_find(lo);
     if (i >= 0) ww_reset(i, lo, hi < g_ww[i].hi ? hi : g_ww[i].hi, 1);
-    pthread_mutex_unlock(&g_vm_lock);
+    vm_unlock();
     return i < 0;
 }
 #endif
@@ -908,7 +1141,7 @@ UINT ResetWriteWatch(LPVOID base, SIZE_T size) {
 LPVOID VirtualAlloc(LPVOID addr, SIZE_T size, DWORD type, DWORD prot) {
     if (!size) { t_lasterr = ERROR_INVALID_PARAMETER; return NULL; }
     uintptr_t a = (uintptr_t)addr;
-    pthread_mutex_lock(&g_vm_lock);
+    vm_lock();
     if (type & MEM_RESERVE || !addr) {
         uintptr_t lo = a & ~(uintptr_t)0xffff;          /* reservations start on 64 KB, as on Windows */
         size_t n = (size + (a - lo) + PAGE - 1) & ~(size_t)(PAGE - 1);
@@ -935,7 +1168,7 @@ LPVOID VirtualAlloc(LPVOID addr, SIZE_T size, DWORD type, DWORD prot) {
         }
         if (p == MAP_FAILED || (addr && (uintptr_t)p != lo)) {
             if (p != MAP_FAILED) munmap(p, nm);
-            pthread_mutex_unlock(&g_vm_lock);
+            vm_unlock();
             t_lasterr = ERROR_INVALID_ADDRESS;
             return NULL;
         }
@@ -943,30 +1176,30 @@ LPVOID VirtualAlloc(LPVOID addr, SIZE_T size, DWORD type, DWORD prot) {
         seg_set(lo, lo + n, lo, commit ? MEM_COMMIT : MEM_RESERVE, commit ? prot : 0, prot);
         if (type & MEM_WRITE_WATCH) ww_add(lo, n);
         if (commit) vm_sync(lo, lo + n);
-        pthread_mutex_unlock(&g_vm_lock);
+        vm_unlock();
         return addr ? (void *)a : p;
     }
     /* commit inside a reservation */
     uintptr_t lo = a & ~(uintptr_t)(PAGE - 1), hi = (a + size + PAGE - 1) & ~(uintptr_t)(PAGE - 1);
     int i = seg_find(lo);
-    if (i >= g_nseg || g_seg[i].lo > lo) { pthread_mutex_unlock(&g_vm_lock); t_lasterr = ERROR_INVALID_ADDRESS; return NULL; }
+    if (i >= g_nseg || g_seg[i].lo > lo) { vm_unlock(); t_lasterr = ERROR_INVALID_ADDRESS; return NULL; }
     uintptr_t base = g_seg[i].alloc_base; DWORD aprot = g_seg[i].alloc_prot;
     for (uintptr_t p = lo; p < hi;) {                  /* the whole range must be reserved */
         int k = seg_find(p);
-        if (k >= g_nseg || g_seg[k].lo > p) { pthread_mutex_unlock(&g_vm_lock); t_lasterr = ERROR_INVALID_ADDRESS; return NULL; }
+        if (k >= g_nseg || g_seg[k].lo > p) { vm_unlock(); t_lasterr = ERROR_INVALID_ADDRESS; return NULL; }
         p = g_seg[k].hi;
     }
-    if (vm_mprotect(lo, hi, prot)) { pthread_mutex_unlock(&g_vm_lock); fail_errno(); return NULL; }
+    if (vm_mprotect(lo, hi, prot)) { vm_unlock(); fail_errno(); return NULL; }
     seg_set(lo, hi, base, MEM_COMMIT, prot, aprot);
     vm_sync(lo, hi);
-    pthread_mutex_unlock(&g_vm_lock);
+    vm_unlock();
     return addr;
 }
 BOOL VirtualFree(LPVOID addr, SIZE_T size, DWORD type) {
     uintptr_t a = (uintptr_t)addr;
-    pthread_mutex_lock(&g_vm_lock);
+    vm_lock();
     int i = seg_find(a);
-    if (i >= g_nseg || g_seg[i].lo > a) { pthread_mutex_unlock(&g_vm_lock); t_lasterr = ERROR_INVALID_ADDRESS; return FALSE; }
+    if (i >= g_nseg || g_seg[i].lo > a) { vm_unlock(); t_lasterr = ERROR_INVALID_ADDRESS; return FALSE; }
     if (type & MEM_RELEASE) {
         uintptr_t base = g_seg[i].alloc_base, hi = base;
         int k = seg_find(base);
@@ -1000,7 +1233,7 @@ BOOL VirtualFree(LPVOID addr, SIZE_T size, DWORD type) {
         seg_set(lo, hi, base, MEM_RESERVE, 0, aprot);
         vm_sync(lo, hi);
     }
-    pthread_mutex_unlock(&g_vm_lock);
+    vm_unlock();
     return TRUE;
 }
 BOOL VirtualProtect(LPVOID addr, SIZE_T size, DWORD prot, DWORD *old) {
@@ -1010,15 +1243,15 @@ BOOL VirtualProtect(LPVOID addr, SIZE_T size, DWORD prot, DWORD *old) {
      * entry) take the execute right away from a code page. */
     MEMORY_BASIC_INFORMATION mi;
     DWORD untracked_old = VirtualQuery((void *)lo, &mi, sizeof mi) && mi.State == MEM_COMMIT ? mi.Protect : PAGE_READWRITE;
-    pthread_mutex_lock(&g_vm_lock);
+    vm_lock();
     int i = seg_find(lo);
     int tracked = i < g_nseg && g_seg[i].lo <= lo;
     if (old) *old = tracked ? g_seg[i].prot : untracked_old;
 #ifdef __APPLE__                                  /* memory we did not map: whole host pages (vm_sync does ours) */
     uintptr_t hlo = lo & ~(hpage() - 1), hhi = (hi + hpage() - 1) & ~(hpage() - 1);
-    if (!tracked && mprotect((void *)hlo, hhi - hlo, prot_posix(prot))) { pthread_mutex_unlock(&g_vm_lock); return fail_errno(); }
+    if (!tracked && mprotect((void *)hlo, hhi - hlo, prot_posix(prot))) { vm_unlock(); return fail_errno(); }
 #endif
-    if (vm_mprotect(lo, hi, prot)) { pthread_mutex_unlock(&g_vm_lock); return fail_errno(); }
+    if (vm_mprotect(lo, hi, prot)) { vm_unlock(); return fail_errno(); }
     if (tracked) {                                   /* per segment: keeps each one's allocation base */
         for (uintptr_t p = lo; p < hi;) {
             int k = seg_find(p);
@@ -1029,7 +1262,7 @@ BOOL VirtualProtect(LPVOID addr, SIZE_T size, DWORD prot, DWORD *old) {
         }
         vm_sync(lo, hi);
     }
-    pthread_mutex_unlock(&g_vm_lock);
+    vm_unlock();
     return TRUE;
 }
 static DWORD prot_from_maps(const char *perm) {
@@ -1044,19 +1277,19 @@ SIZE_T VirtualQuery(LPCVOID addr, MEMORY_BASIC_INFORMATION *mi, SIZE_T len) {
     uintptr_t a = (uintptr_t)addr & ~(uintptr_t)(PAGE - 1);
     memset(mi, 0, sizeof *mi);
     mi->BaseAddress = (void *)a;
-    pthread_mutex_lock(&g_vm_lock);
+    vm_lock();
     int i = seg_find(a);
     if (i < g_nseg && g_seg[i].lo <= a) {
         Seg s = g_seg[i];
         uintptr_t hi = s.hi;
         for (int k = i + 1; k < g_nseg && g_seg[k].lo == hi && g_seg[k].alloc_base == s.alloc_base && g_seg[k].state == s.state && g_seg[k].prot == s.prot; k++) hi = g_seg[k].hi;
-        pthread_mutex_unlock(&g_vm_lock);
+        vm_unlock();
         mi->AllocationBase = (void *)s.alloc_base; mi->AllocationProtect = s.alloc_prot;
         mi->RegionSize = hi - a; mi->State = s.state; mi->Protect = s.state == MEM_COMMIT ? s.prot : 0; mi->Type = MEM_PRIVATE;
         return sizeof *mi;
     }
     uintptr_t next_tracked = i < g_nseg ? g_seg[i].lo : UINTPTR_MAX;
-    pthread_mutex_unlock(&g_vm_lock);
+    vm_unlock();
     if (a >= 0x800000000000ULL) return 0;
 #ifdef PROCMAP_QUERY
     /* Linux 6.11+: the mapping that holds a (or the next one) asked of the kernel directly. Reading and parsing the text
@@ -1741,8 +1974,15 @@ int MessageBoxW(HWND w, LPCWSTR text, LPCWSTR title, UINT type) {
 
 /* ================================================================ odds and ends */
 DWORD GetCurrentProcessorNumber(void) { int c = sched_getcpu(); return c < 0 ? 0 : (DWORD)c; }
+/* through a buffer of its own: the kernel does not fault for its writes, it fails (EFAULT) on a page the rollback made
+ * read-only (r1_state.c), where Windows' RtlGenRandom (user mode) faults and is let through */
 BOOLEAN SystemFunction036(PVOID buf, ULONG n) {
-    for (ULONG done = 0; done < n;) { ssize_t k = getrandom((char *)buf + done, n - done, 0); if (k < 0) { if (errno == EINTR) continue; return FALSE; } done += (ULONG)k; }
+    for (ULONG done = 0; done < n;) {
+        uint8_t b[256]; size_t want = n - done < sizeof b ? n - done : sizeof b;
+        ssize_t k = getrandom(b, want, 0);
+        if (k < 0) { if (errno == EINTR) continue; return FALSE; }
+        memcpy((char *)buf + done, b, (size_t)k); done += (ULONG)k;
+    }
     return TRUE;
 }
 BOOL QueryThreadCycleTime(HANDLE h, ULONG64 *cycles) {
