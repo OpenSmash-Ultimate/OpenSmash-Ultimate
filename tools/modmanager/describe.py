@@ -138,3 +138,49 @@ def part_label(name, title):
     Trophy: Shadow Android" (a ":" in a folder name was made "_")."""
     part = name.split(" - ", 1)[1] if " - " in name else (title or name)
     return part.replace("_ ", ": ").replace("_", " ")
+
+
+# Color / style tokens in UI pack folder names (Reimagined CSS BLUE/GREEN/…).
+VARIANT_COLOR = re.compile(
+    r"(?<![A-Za-z])(SKYBLUE|BLUE|GREEN|GREY|GRAY|ORANGE|PINK|PURPLE|RED|YELLOW|WHITE|BLACK|"
+    r"CYAN|MAGENTA|TEAL|GOLD|SILVER)(?![A-Za-z])",
+    re.I)
+UI_CAT = ("character select", "menu", "interface", "css", "background", "stage select")
+
+
+def variant_label(name, title=None, part=None):
+    """Short label for a pick-one option: BLUE, YELLOW, …, else the part name."""
+    for s in (part or "", name or "", title or ""):
+        m = VARIANT_COLOR.search(s.replace("_", " "))
+        if m:
+            c = m.group(1).upper()
+            return "GREY" if c == "GRAY" else c
+    return (part or title or name or "").strip()
+
+
+def pick_groups(entries, keys):
+    """Group keys whose parts are alternatives (one active color of a CSS pack), not complementary
+    pieces of one download (a moveset + its Assist Trophy). Only one of a pick group should be on."""
+    by = {}
+    for m in entries:
+        k = keys.get(m["name"])
+        if k:
+            by.setdefault(k, []).append(m)
+    out = set()
+    for k, parts in by.items():
+        if len(parts) < 2:
+            continue
+        color_hits = sum(
+            1 for p in parts
+            if VARIANT_COLOR.search((p.get("part") or p.get("name") or "").replace("_", " ")))
+        if color_hits >= 2 and color_hits >= len(parts) - 1:
+            out.add(k)
+            continue
+        cats = [(p.get("category") or "").lower() for p in parts]
+        if cats and all(any(w in c for w in UI_CAT) for c in cats):
+            out.add(k)
+            continue
+        abouts = [p.get("about") or "" for p in parts]
+        if abouts and all(a.startswith("Changes menus") for a in abouts):
+            out.add(k)
+    return out

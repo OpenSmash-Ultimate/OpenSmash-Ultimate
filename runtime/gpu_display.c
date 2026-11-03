@@ -362,14 +362,18 @@ HWND display_create_window(HINSTANCE inst, const wchar_t *cls, const wchar_t *ti
     /* A plugin probe (tools/skyline.py, SSBU_SKYLINE_PROBE) only needs the plugins to load.
      * The window stays unshown and off the taskbar, and it is not sent full screen. */
     int probe = getenv("SSBU_SKYLINE_PROBE") != NULL;
+    int headless = getenv("SSBU_HEADLESS") && !strcmp(getenv("SSBU_HEADLESS"), "1");
     /* made at the system DPI first, then sized for its own monitor's */
     /* WS_EX_APPWINDOW: a top-level game window gets a taskbar button. A probe stays off the taskbar. */
+    /* Shown at create (black class brush) so the taskbar button exists from boot; first Present then
+     * activates/focuses it. Hidden windows do not get a taskbar button on Windows. */
     HWND h = CreateWindowExW(probe ? WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW : WS_EX_APPWINDOW, cls, title,
-                             WINDOWED_STYLE & ~WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 640, 360, NULL, NULL, inst, NULL);
+                             probe || headless ? (WINDOWED_STYLE & ~WS_VISIBLE) : WINDOWED_STYLE,   /* (headless: shown below, off screen) */
+                             CW_USEDEFAULT, CW_USEDEFAULT, 640, 360, NULL, NULL, inst, NULL);
     if (!h) return NULL;
     game_window = h;
     current_mode = MODE_WINDOWED;
-    if (getenv("SSBU_HEADLESS") && !strcmp(getenv("SSBU_HEADLESS"), "1")) {   /* (test runs: shown off every screen, never focused, so it still draws) */
+    if (headless) {   /* (test runs: shown off every screen, never focused, so it still draws) */
         SetWindowLongPtrW(h, GWL_EXSTYLE, GetWindowLongPtrW(h, GWL_EXSTYLE) | WS_EX_TOOLWINDOW);   /* (no taskbar button either) */
         SetWindowPos(h, NULL, -32000, -32000, 640, 360, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         ShowWindow(h, SW_SHOWNOACTIVATE);
@@ -377,16 +381,20 @@ HWND display_create_window(HINSTANCE inst, const wchar_t *cls, const wchar_t *ti
         return h;
     }
     RECT r = windowed_rect(h);
-    SetWindowPos(h, NULL, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(h, NULL, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE | (probe ? 0 : SWP_SHOWWINDOW));
     if (!probe && cfg.mode != MODE_WINDOWED) set_mode(h, cfg.mode);
+    if (!probe) ShowWindow(h, SW_SHOW);
     SetTimer(h, 1, 500, NULL);   /* the idle pointer */
     return h;
 }
 
 void display_show_window(void) {
-    /* The first frame asks from the render thread. Showing it here leaves the window visible but
-     * without a taskbar button until it is clicked. The window thread shows and activates it. */
-    if (!game_window || IsWindowVisible(game_window) || getenv("SSBU_SKYLINE_PROBE")) return;
+    /* First Present only: raise once. Posting every frame steals focus so nothing can sit above the game. */
+    static LONG shown;
+    if (!game_window || getenv("SSBU_SKYLINE_PROBE")) return;
+    if (getenv("SSBU_HEADLESS") && !strcmp(getenv("SSBU_HEADLESS"), "1")) return;   /* (off screen, no taskbar button, never focused) */
+    if (InterlockedCompareExchange(&shown, 1, 0) != 0) return;
     PostMessageW(game_window, WM_DISPLAY_SHOW, 0, 0);
 }
 #endif
@@ -427,12 +435,12 @@ int display_message(HWND h, UINT msg, WPARAM w, LPARAM l, LRESULT *result) {
         *result = 0;
         return 1;
     case WM_DISPLAY_SHOW: {
-        ShowWindow(h, SW_SHOWNORMAL);
-        HWND fg = GetForegroundWindow();
-        DWORD fg_thread = GetWindowThreadProcessId(fg, NULL), me = GetCurrentThreadId();
-        int attached = fg_thread && fg_thread != me && AttachThreadInput(me, fg_thread, TRUE);
+        /* Once: ensure taskbar style and a single raise. Do not keep forcing foreground. */
+        LONG_PTR ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+        SetWindowLongPtrW(h, GWL_EXSTYLE, (ex | WS_EX_APPWINDOW) & ~(LONG_PTR)WS_EX_TOOLWINDOW);
+        if (!IsWindowVisible(h)) ShowWindow(h, SW_SHOWNORMAL);
+        else SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
         SetForegroundWindow(h);
-        if (attached) AttachThreadInput(me, fg_thread, FALSE);
         *result = 0;
         return 1;
     }

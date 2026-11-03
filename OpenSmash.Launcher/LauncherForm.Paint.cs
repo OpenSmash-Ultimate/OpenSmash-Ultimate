@@ -197,7 +197,14 @@ namespace OpenSmash.Launcher
         float Hov(string id, bool on)
         {
             if (on) _hovOn.Add(id);
-            return _hov.TryGetValue(id, out float v) ? v : 0;
+            if (!_hov.TryGetValue(id, out float v))
+            {
+                if (!on) return 0;
+                // Seed so the anim tick can ramp hover; without this, Hov stayed 0 forever.
+                _hov[id] = 0;
+                return 0;
+            }
+            return v;
         }
 
         static float Clamp01(float v) => Math.Clamp(v, 0f, 1f);
@@ -572,9 +579,9 @@ namespace OpenSmash.Launcher
             float ctaX = nx - 30 * s - cw;
             float prevX = ctaX - gap - aw, nextX = ctaX + cw + gap;
             string playLabel = _launchMode == "vanilla" ? "VANILLA" : "PLAY";
-            Theme.ButtonAnimated(g, "<", prevX, cy - chh / 2, aw, chh, s, primary: false, Hov("nav:mode-prev", _hover == "nav:mode-prev"), _built, 16 * s, _alpha);
-            Theme.ButtonAnimated(g, playLabel, ctaX, cy - chh / 2, cw, chh, s, primary: true, Hov("nav:play", _hover == "nav:play"), _built, 13 * s, _alpha);
-            Theme.ButtonAnimated(g, ">", nextX, cy - chh / 2, aw, chh, s, primary: false, Hov("nav:mode-next", _hover == "nav:mode-next"), _built, 16 * s, _alpha);
+            Theme.ButtonAnimated(g, "<", prevX, cy - chh / 2, aw, chh, s, primary: false, Hov("nav:mode-prev", _hover == "nav:mode-prev"), _built, 16 * s, _alpha, press: Press("nav:mode-prev"));
+            Theme.ButtonAnimated(g, playLabel, ctaX, cy - chh / 2, cw, chh, s, primary: true, Hov("nav:play", _hover == "nav:play"), _built, 13 * s, _alpha, press: Press("nav:play"));
+            Theme.ButtonAnimated(g, ">", nextX, cy - chh / 2, aw, chh, s, primary: false, Hov("nav:mode-next", _hover == "nav:mode-next"), _built, 16 * s, _alpha, press: Press("nav:mode-next"));
             AddHit("nav:mode-prev", prevX, cy - chh / 2, aw, chh);
             AddHit("nav:play", ctaX, cy - chh / 2, cw, chh);
             AddHit("nav:mode-next", nextX, cy - chh / 2, aw, chh);
@@ -826,7 +833,7 @@ namespace OpenSmash.Launcher
                 float bx = left, by = 494 * s, bh = 52 * s, aw = bh, ag = 8 * s;
                 float[] widths = { 220, 150, 184, 128 };
                 string playLabel = _launchMode == "vanilla" ? "VANILLA" : "PLAY";
-                Theme.ButtonAnimated(g, "<", bx, by, aw, bh, s, primary: false, Hov("nav:mode-prev", _hover == "nav:mode-prev"), _built, 18 * s, _alpha);
+                Theme.ButtonAnimated(g, "<", bx, by, aw, bh, s, primary: false, Hov("nav:mode-prev", _hover == "nav:mode-prev"), _built, 18 * s, _alpha, press: Press("nav:mode-prev"));
                 AddHit("nav:mode-prev", bx, by, aw, bh);
                 bx += aw + ag;
                 for (int i = 0; i < _menuItems.Length; i++)
@@ -835,13 +842,13 @@ namespace OpenSmash.Launcher
                     float bw = widths[i] * s;
                     float hv = Hov(id, _hover == id || (_keys && _sel == i));
                     Theme.ButtonAnimated(g, i == 0 ? playLabel : _menuItems[i], bx, by, bw, bh, s, primary: i == 0, hv, i != 0 || _built, 15 * s, _alpha,
-                        i == 0 ? DrawArrow : null);
+                        i == 0 ? DrawArrow : null, press: Press(id));
                     AddHit(id, bx, by, bw, bh);
                     bx += bw;
                     if (i == 0)
                     {
                         bx += ag;
-                        Theme.ButtonAnimated(g, ">", bx, by, aw, bh, s, primary: false, Hov("nav:mode-next", _hover == "nav:mode-next"), _built, 18 * s, _alpha);
+                        Theme.ButtonAnimated(g, ">", bx, by, aw, bh, s, primary: false, Hov("nav:mode-next", _hover == "nav:mode-next"), _built, 18 * s, _alpha, press: Press("nav:mode-next"));
                         AddHit("nav:mode-next", bx, by, aw, bh);
                         bx += aw;
                     }
@@ -938,7 +945,7 @@ namespace OpenSmash.Launcher
                 var st = PushFade(g, Up(t, 0), 24 * s);
                 float ey = 86 * s, eh = 16 * s, k = 2 * s * 0.577f;
                 float bw = 96 * s, bh = 32 * s, by = (HeaderH + 6) * s;
-                Theme.ButtonAnimated(g, "BACK", x, by, bw, bh, s, primary: false, Hov("nav:back", _hover == "nav:back"), true, 12 * s, _alpha);
+                Theme.ButtonAnimated(g, "BACK", x, by, bw, bh, s, primary: false, Hov("nav:back", _hover == "nav:back"), true, 12 * s, _alpha, press: Press("nav:back"));
                 AddHit("nav:back", x, by, bw, bh);
                 float ex = x + bw + 18 * s;
                 using (var b = new SolidBrush(A(Theme.Accent)))
@@ -1133,6 +1140,8 @@ namespace OpenSmash.Launcher
             float yAcc = 0;
             int drawn = 0;
             float listBottom = top + view * s;
+            int openPick = -1;
+            float openPickX = 0, openPickY = 0, openPickW = 0, openPickH = 0;
             var listClip = g.Save();
             g.SetClip(new RectangleF(0, top, W, Math.Max(1, listBottom - top)), CombineMode.Intersect);
             for (int i = 0; i < _modLines.Count; i++)
@@ -1185,8 +1194,12 @@ namespace OpenSmash.Launcher
                     }
                     tx += dw + 14 * s;
                 }
+                // Pick rows: … FILES | COLOR ▾ | ON — dropdown sits just left of the toggle.
+                float pickW = m.Pick ? 120 * s : 0;
+                float pickGap = m.Pick ? 14 * s : 0;
+                float filesRight = m.Pick ? typeX - pickW - pickGap - 8 * s : sizeR;
                 bool detailed = m.HasChips || !string.IsNullOrEmpty(m.About) || !string.IsNullOrEmpty(m.Meta) || !string.IsNullOrEmpty(m.Sub);
-                float textW = Math.Max(40 * s, sizeR - tx - 108 * s);
+                float textW = Math.Max(40 * s, filesRight - tx - 108 * s);
                 if (!detailed)
                     Theme.DrawText(g, m.Title, FB(15 * s, sel), A(m.Enabled || m.Mixed ? Theme.Text : Theme.Dim), tx, ry, textW, rowH);
                 else
@@ -1231,9 +1244,35 @@ namespace OpenSmash.Launcher
                         Theme.DrawWrapped(g, m.About, FB(12 * s), A(Theme.Muted), tx, ty, textW, 42 * s);
                 }
                 if (!m.Header)
-                    Theme.Label(g, (m.Files + " FILES").ToUpperInvariant(), FM(12 * s), A(Theme.Dim), 0, ry, rowH, 0, StringAlignment.Far, sizeR);
+                    Theme.Label(g, (m.Files + " FILES").ToUpperInvariant(), FM(12 * s), A(Theme.Dim), 0, ry, rowH, 0, StringAlignment.Far, filesRight);
                 string toggle = m.Mixed ? "MIX" : m.Enabled ? "ON" : "OFF";
                 float tw = 64 * s, txx = typeX, tyy = ry + (rowH - 24 * s) / 2;
+                if (m.Pick && m.Variants.Length > 0)
+                {
+                    float ddH = 28 * s, ddX = typeX - pickW - 8 * s, ddY = ry + (rowH - ddH) / 2;
+                    string pickKey = "modpick:" + m.GroupKey;
+                    bool isOpen = _openDropdownKey == pickKey;
+                    string ddId = "modpick:dd:" + i;
+                    float fh = Theme.Ease(Hov(ddId, _hover == ddId || isOpen));
+                    using (var p = Theme.Para(ddX, ddY, pickW, ddH, 6 * s))
+                    {
+                        using (var b = new SolidBrush(A(White(14 + (int)(10 * fh))))) g.FillPath(b, p);
+                        using (var pen = new Pen(A(isOpen ? Theme.Accent : Theme.Mix(Theme.Line, White(150), fh)), Math.Max(1, s)))
+                            g.DrawPath(pen, p);
+                    }
+                    int ai = Math.Clamp(m.Active, 0, m.Variants.Length - 1);
+                    string label = (m.Variants[ai] ?? "").ToUpperInvariant();
+                    var ddClip = g.Save();
+                    g.SetClip(new RectangleF(ddX + 10 * s, ddY, Math.Max(1, pickW - 36 * s), ddH), CombineMode.Intersect);
+                    Theme.Label(g, label, FM(11 * s, true), A(m.Enabled ? Theme.Text : Theme.Muted), ddX + 12 * s, ddY, ddH, 0);
+                    g.Restore(ddClip);
+                    float chx = ddX + pickW - 18 * s, chy = ddY + ddH / 2, ca = 4 * s, dir = isOpen ? -1 : 1;
+                    using (var pen = new Pen(A(isOpen ? Theme.Accent : Theme.Mix(Theme.Muted, Theme.Text, fh)), Math.Max(1.2f, 1.6f * s)))
+                        g.DrawLines(pen, new[] { new PointF(chx - ca, chy - ca * 0.5f * dir), new PointF(chx, chy + ca * 0.5f * dir), new PointF(chx + ca, chy - ca * 0.5f * dir) });
+                    float ddHitTop = Math.Max(ddY, top), ddHitH = Math.Min(ddY + ddH, listBottom) - ddHitTop;
+                    if (ddHitH > 0) AddHit(ddId, ddX, ddHitTop, pickW, ddHitH);
+                    if (isOpen) { openPick = i; openPickX = ddX; openPickY = ddY; openPickW = pickW; openPickH = ddH; }
+                }
                 using (var pth = Theme.Para(txx, tyy, tw, 24 * s, 6 * s))
                 {
                     if (m.Enabled) using (var b = new SolidBrush(A(Theme.Text))) g.FillPath(b, pth);
@@ -1244,7 +1283,8 @@ namespace OpenSmash.Launcher
                 float hitTop = Math.Max(ry, top), hitH = Math.Min(ry + rowH, listBottom) - hitTop;
                 if (hitH > 0)
                 {
-                    AddHit(id, x, hitTop, typeX - x - 8 * s, hitH);
+                    float hitRight = m.Pick ? filesRight - 8 * s : typeX - 8 * s;
+                    AddHit(id, x, hitTop, Math.Max(8 * s, hitRight - x), hitH);
                     if (m.Header) AddHit("modopen:" + i, x, hitTop, typeX - x - 8 * s, hitH);
                     float toggleTop = Math.Max(tyy, top), toggleH = Math.Min(tyy + 24 * s, listBottom) - toggleTop;
                     if (toggleH > 0) AddHit("modtoggle:" + i, txx, toggleTop, tw + 8 * s, toggleH);
@@ -1252,6 +1292,9 @@ namespace OpenSmash.Launcher
                 PopFade(g, st);
             }
             g.Restore(listClip);
+
+            if (openPick >= 0 && openPick < _modLines.Count)
+                PaintModPickDropdown(g, H, _modLines[openPick], openPickX, openPickY, openPickW, openPickH);
 
             if (maxScroll > 0)
             {
@@ -1280,7 +1323,7 @@ namespace OpenSmash.Launcher
                     string id = $"act:{key}";
                     bool enabled = key != "remove" || _sel >= ModActionCount;
                     float bw = Theme.TextWidth(g, label, f, 1.2f * s) + 48 * s;
-                    Theme.ButtonAnimated(g, label, bx, by, bw, bh, s, primary: false, Hov(id, _hover == id), enabled, 12 * s, _alpha);
+                    Theme.ButtonAnimated(g, label, bx, by, bw, bh, s, primary: false, Hov(id, _hover == id), enabled, 12 * s, _alpha, press: Press(id));
                     AddHit(id, bx, by, bw, bh);
                     bx += bw + 10 * s;
                 }
@@ -1312,9 +1355,9 @@ namespace OpenSmash.Launcher
             float bh = 46 * s, by = my + mh - bh - 30 * s;
             float w1 = 210 * s, w2 = 150 * s;
             float x1 = mx + mw - pad - w1, x2 = x1 - 12 * s - w2;
-            Theme.ButtonAnimated(g, "CANCEL", x2, by, w2, bh, s, false, Hov("setup_prompt:cancel", _hover == "setup_prompt:cancel"), true, 13 * s, _alpha);
+            Theme.ButtonAnimated(g, "CANCEL", x2, by, w2, bh, s, false, Hov("setup_prompt:cancel", _hover == "setup_prompt:cancel"), true, 13 * s, _alpha, press: Press("setup_prompt:cancel"));
             AddHit("setup_prompt:cancel", x2, by, w2, bh);
-            Theme.ButtonAnimated(g, "SETUP MODDING", x1, by, w1, bh, s, true, Hov("setup_prompt:setup", _hover == "setup_prompt:setup"), true, 13 * s, _alpha);
+            Theme.ButtonAnimated(g, "SETUP MODDING", x1, by, w1, bh, s, true, Hov("setup_prompt:setup", _hover == "setup_prompt:setup"), true, 13 * s, _alpha, press: Press("setup_prompt:setup"));
             AddHit("setup_prompt:setup", x1, by, w1, bh);
             PopFade(g, st);
         }
@@ -1347,13 +1390,13 @@ namespace OpenSmash.Launcher
             float xMed = xHigh - gap - wPri;
             float xLow = xMed - gap - wPri;
             float xLater = xLow - gap - wLater;
-            Theme.ButtonAnimated(g, "LATER", xLater, by, wLater, bh, s, false, Hov("shader_prompt:later", _hover == "shader_prompt:later"), true, 13 * s, _alpha);
+            Theme.ButtonAnimated(g, "LATER", xLater, by, wLater, bh, s, false, Hov("shader_prompt:later", _hover == "shader_prompt:later"), true, 13 * s, _alpha, press: Press("shader_prompt:later"));
             AddHit("shader_prompt:later", xLater, by, wLater, bh);
-            Theme.ButtonAnimated(g, "LOW", xLow, by, wPri, bh, s, false, Hov("shader_prompt:low", _hover == "shader_prompt:low"), true, 13 * s, _alpha);
+            Theme.ButtonAnimated(g, "LOW", xLow, by, wPri, bh, s, false, Hov("shader_prompt:low", _hover == "shader_prompt:low"), true, 13 * s, _alpha, press: Press("shader_prompt:low"));
             AddHit("shader_prompt:low", xLow, by, wPri, bh);
-            Theme.ButtonAnimated(g, "MEDIUM", xMed, by, wPri, bh, s, false, Hov("shader_prompt:medium", _hover == "shader_prompt:medium"), true, 13 * s, _alpha);
+            Theme.ButtonAnimated(g, "MEDIUM", xMed, by, wPri, bh, s, false, Hov("shader_prompt:medium", _hover == "shader_prompt:medium"), true, 13 * s, _alpha, press: Press("shader_prompt:medium"));
             AddHit("shader_prompt:medium", xMed, by, wPri, bh);
-            Theme.ButtonAnimated(g, "HIGH", xHigh, by, wPri, bh, s, true, Hov("shader_prompt:high", _hover == "shader_prompt:high"), true, 13 * s, _alpha);
+            Theme.ButtonAnimated(g, "HIGH", xHigh, by, wPri, bh, s, true, Hov("shader_prompt:high", _hover == "shader_prompt:high"), true, 13 * s, _alpha, press: Press("shader_prompt:high"));
             AddHit("shader_prompt:high", xHigh, by, wPri, bh);
             PopFade(g, st);
         }
@@ -1385,11 +1428,11 @@ namespace OpenSmash.Launcher
             float xBuild = mx + mw - pad - wBuild;
             float xPlay = xBuild - gap - wPlay;
             float xCancel = xPlay - gap - wCancel;
-            Theme.ButtonAnimated(g, "CANCEL", xCancel, by, wCancel, bh, s, false, Hov("plugin_prompt:cancel", _hover == "plugin_prompt:cancel"), true, 13 * s, _alpha);
+            Theme.ButtonAnimated(g, "CANCEL", xCancel, by, wCancel, bh, s, false, Hov("plugin_prompt:cancel", _hover == "plugin_prompt:cancel"), true, 13 * s, _alpha, press: Press("plugin_prompt:cancel"));
             AddHit("plugin_prompt:cancel", xCancel, by, wCancel, bh);
-            Theme.ButtonAnimated(g, "PLAY ANYWAY", xPlay, by, wPlay, bh, s, false, Hov("plugin_prompt:play", _hover == "plugin_prompt:play"), true, 13 * s, _alpha);
+            Theme.ButtonAnimated(g, "PLAY ANYWAY", xPlay, by, wPlay, bh, s, false, Hov("plugin_prompt:play", _hover == "plugin_prompt:play"), true, 13 * s, _alpha, press: Press("plugin_prompt:play"));
             AddHit("plugin_prompt:play", xPlay, by, wPlay, bh);
-            Theme.ButtonAnimated(g, refresh ? "REFRESH PLUGIN" : "UPDATE PLUGINS", xBuild, by, wBuild, bh, s, true, Hov("plugin_prompt:build", _hover == "plugin_prompt:build"), true, 13 * s, _alpha);
+            Theme.ButtonAnimated(g, refresh ? "REFRESH PLUGIN" : "UPDATE PLUGINS", xBuild, by, wBuild, bh, s, true, Hov("plugin_prompt:build", _hover == "plugin_prompt:build"), true, 13 * s, _alpha, press: Press("plugin_prompt:build"));
             AddHit("plugin_prompt:build", xBuild, by, wBuild, bh);
             PopFade(g, st);
         }
@@ -1491,9 +1534,9 @@ namespace OpenSmash.Launcher
                 float wa = Theme.TextWidth(g, a, f, 1.3f * s) + 52 * s;
                 float wb = Theme.TextWidth(g, b, f, 1.3f * s) + 52 * s;
                 bool busy = _setupModding;
-                Theme.ButtonAnimated(g, a, bx, by, wa, bh, s, true, Hov("setup_start", _hover == "setup_start"), !busy, 13 * s, _alpha);
+                Theme.ButtonAnimated(g, a, bx, by, wa, bh, s, true, Hov("setup_start", _hover == "setup_start"), !busy, 13 * s, _alpha, press: Press("setup_start"));
                 if (!busy) AddHit("setup_start", bx, by, wa, bh);
-                Theme.ButtonAnimated(g, b, bx + wa + 12 * s, by, wb, bh, s, false, Hov("setup_again", _hover == "setup_again"), !busy, 13 * s, _alpha);
+                Theme.ButtonAnimated(g, b, bx + wa + 12 * s, by, wb, bh, s, false, Hov("setup_again", _hover == "setup_again"), !busy, 13 * s, _alpha, press: Press("setup_again"));
                 if (!busy) AddHit("setup_again", bx + wa + 12 * s, by, wb, bh);
                 PopFade(g, st);
             }
@@ -1796,6 +1839,63 @@ namespace OpenSmash.Launcher
                     using (var b = new SolidBrush(Theme.Accent))
                         g.FillPolygon(b, new[] { new PointF(fx + fw - 28 * s, iy + itemH / 2 - 4 * s), new PointF(fx + fw - 18 * s, iy + itemH / 2 - 4 * s), new PointF(fx + fw - 21 * s, iy + itemH / 2 + 4 * s), new PointF(fx + fw - 31 * s, iy + itemH / 2 + 4 * s) });
                 AddHit($"set:{idx}:opt:{vi}", fx, iy, fw, itemH);
+            }
+            if (vals.Length > MaxRows)
+            {
+                float trackH = count * itemH, thumbH = trackH * MaxRows / vals.Length;
+                float thumbY = ly + 4 * s + (trackH - thumbH) * _ddFirst / (vals.Length - MaxRows);
+                using var b = new SolidBrush(Theme.Accent);
+                g.FillRectangle(b, fx + fw - 5 * s, thumbY, 2 * s, thumbH);
+            }
+            g.Restore(st);
+        }
+
+        void PaintModPickDropdown(Graphics g, int H, ModLine line, float fx, float fy, float fw, float fh)
+        {
+            float s = _s;
+            var vals = line.Variants;
+            if (vals == null || vals.Length == 0) return;
+            const int MaxRows = 8;
+            int count = Math.Min(vals.Length, MaxRows);
+            int current = Math.Clamp(line.Active, 0, vals.Length - 1);
+            if (_ddFirst < 0) _ddFirst = Math.Max(0, current - MaxRows / 2);
+            if (_dropdownHoverIndex >= 0 && _dropdownHoverIndex < _ddFirst) _ddFirst = _dropdownHoverIndex;
+            if (_dropdownHoverIndex >= _ddFirst + MaxRows) _ddFirst = _dropdownHoverIndex - MaxRows + 1;
+            _ddFirst = Math.Clamp(_ddFirst, 0, Math.Max(0, vals.Length - MaxRows));
+
+            float itemH = 34 * s, listH = count * itemH + 8 * s;
+            float ly = fy + fh + 6 * s;
+            bool up = ly + listH > H - StatusH * s - 8 * s;
+            if (up) ly = fy - 6 * s - listH;
+            float e = Theme.Ease(Clamp01((float)(Now - _ddAt) / 0.25f));
+
+            var st = g.Save();
+            float shown = listH * e;
+            g.SetClip(new RectangleF(fx - 2 * s, up ? ly + listH - shown : ly, fw + 4 * s, shown + 2 * s), CombineMode.Intersect);
+            using (var p = Theme.CutCorner(fx, ly, fw, listH, 14 * s))
+            {
+                using (var b = new SolidBrush(Theme.Bg2)) g.FillPath(b, p);
+                using (var pen = new Pen(White(60), Math.Max(1, s))) g.DrawPath(pen, p);
+            }
+            for (int r = 0; r < count; r++)
+            {
+                int vi = _ddFirst + r;
+                float iy = ly + 4 * s + r * itemH;
+                bool hot = _dropdownHoverIndex == vi, sel = vi == current;
+                if (hot)
+                {
+                    using (var b = new SolidBrush(Color.FromArgb(46, Theme.Accent))) g.FillRectangle(b, fx + 1, iy, fw - 2, itemH);
+                    using (var b = new SolidBrush(Theme.Accent)) g.FillRectangle(b, fx + 1, iy, 3 * s, itemH);
+                }
+                string opt = (vals[vi] ?? "").ToUpperInvariant();
+                var optClip = g.Save();
+                g.SetClip(new RectangleF(fx + 14 * s, iy, Math.Max(1, fw - 48 * s), itemH), CombineMode.Intersect);
+                Theme.Label(g, opt, FM(13 * s), hot || sel ? Theme.Text : Theme.Muted, fx + 20 * s, iy, itemH, 13 * s * 0.06f);
+                g.Restore(optClip);
+                if (sel)
+                    using (var b = new SolidBrush(Theme.Accent))
+                        g.FillPolygon(b, new[] { new PointF(fx + fw - 28 * s, iy + itemH / 2 - 4 * s), new PointF(fx + fw - 18 * s, iy + itemH / 2 - 4 * s), new PointF(fx + fw - 21 * s, iy + itemH / 2 + 4 * s), new PointF(fx + fw - 31 * s, iy + itemH / 2 + 4 * s) });
+                AddHit($"modpick:opt:{vi}", fx, iy, fw, itemH);
             }
             if (vals.Length > MaxRows)
             {
