@@ -13,7 +13,8 @@
  * register context of the script running on this fiber; call_addr(c, address) calls through a pointer. The script
  * running on a fiber (which module, the return address it was called with) is per fiber (FLS): a script waits in
  * the game's frame()/wait() by switching fibers. A call the source makes sees the return address the source
- * function was called with, as after a tail call, so the game's unwinder walks the frames it knows.
+ * function was called with, as after a tail call, so the game's unwinder walks the frames it knows: an exception
+ * that ends a script (L2CExceptionShutdown, when the motion changes) passes the source frame by.
  * The Ctx the library sees is this runtime's Cpu (x[0..30], sp as x[31], v[0..31]). Windows only, as ssbu-recomp's. */
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
@@ -47,12 +48,12 @@ static void fs_call(Cpu *c, int slot) {
         fprintf(stderr, "[fighter] a source script called symbol slot %d, which is not bound\n", slot);
         return;
     }
-    if (r->lr) c->x[30] = r->lr;
-    rt_call(c, r->mod->t.addr[slot]);
+    c->x[30] = r->lr;   /* (not rt_call, which sets it to 0: the game's unwinder walks frames by it) */
+    rt_lookup(r->mod->t.addr[slot])(c);
 }
 static void fs_log(const char *s) { fprintf(stderr, "[fighter] %s\n", s ? s : ""); }
 static Cpu *fs_ctx(void) { FsRun *r = running(); return r ? r->ctx : NULL; }
-static void fs_call_addr(Cpu *c, u64 addr) { FsRun *r = running(); if (r && r->lr) c->x[30] = r->lr; rt_call(c, addr); }
+static void fs_call_addr(Cpu *c, u64 addr) { FsRun *r = running(); c->x[30] = r ? r->lr : 0; rt_lookup(addr)(c); }
 static const FsHost host = {fs_call, fs_log, fs_ctx, fs_call_addr};
 
 /* (from a stub: rcx = the context, rdx = library << 16 | script) a script of a library runs */
