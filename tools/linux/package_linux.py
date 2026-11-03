@@ -18,6 +18,7 @@ in the files it is read from on Windows (romfs.cfg: an NCA, or for an update the
 the update's romfs_patch.bin, pieced together by the layer map the package carries); the
 launchers find them, by name and size, on the Linux side.
 --tar also writes ssbu-linux.tar beside it, which keeps the programs' executable bits."""
+import ntpath
 import os
 import re
 import shutil
@@ -110,7 +111,9 @@ def romfs_files(cfg_path):
     for path in paths:
         if not os.path.isfile(path):
             raise SystemExit(f"{cfg_path}: {path} is not there")
-        folder, name = os.path.split(path.replace("/", "\\"))
+        # ntpath splits on both separators on every OS: on a Linux build host os.path would
+        # keep the whole path as the name (#72)
+        folder, name = ntpath.split(path.replace("/", "\\"))
         if name.lower() in (f[1].lower() for f in files):
             raise SystemExit(f"{cfg_path}: two sources named {name} (the launchers find them by name)")
         var = ROMFS_FILE_VARS.get(name) or ("SSBU_NCA" if name.lower().endswith(".nca") else None)
