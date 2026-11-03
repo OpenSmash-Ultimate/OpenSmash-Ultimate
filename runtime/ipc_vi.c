@@ -93,8 +93,13 @@ static int take_oldest(void) {
 
 /* Shown outside the queue's lock: a present can wait for the graphics card (frames behind), and
  * meanwhile the game queues its next frame and goes on with the one after. */
+static LONG64 show_waited;   /* (low_latency: the last show's wait for the card, in performance-counter ticks) */
 static void show(void) {
+    LARGE_INTEGER w0, w1;
+    QueryPerformanceCounter(&w0);
     gpu_queue_wait(shown_mark);   /* the frame drawn: what was submitted before it was queued has run */
+    QueryPerformanceCounter(&w1);
+    show_waited = w1.QuadPart - w0.QuadPart;
     if (report_draws) input_seq_presented(gpu_queue_draws(shown_mark));
     present_frame(shown, shown_size);
     test_fight_presented();
@@ -158,6 +163,54 @@ static void show_fast(void) {
     WakeAllConditionVariable(&queue.freed);
 }
 
+/* ---- low_latency (display.ini; ssbu-recomp's latency = low) -----------------------------
+ * The game starts a frame when the refresh is signalled, reads the controller, and queues the frame.
+ * With low_latency the signal comes later than the refresh, by what the frame doesn't need: a frame
+ * period less the longest release-to-queue time of the last 64 frames and a margin for the graphics
+ * card (SSBU_LOW_LATENCY_MARGIN ms, default 4). The controller is read that much closer to the
+ * refresh that shows the frame. The refresh count the game reads is the same, so its logic does not
+ * change. A frame that was released late and then missed its refresh (nothing queued, or the card
+ * still drawing it) turns the delay off for a second. Not with SSBU_SPEED or in a rollback's catch-up. */
+static LONG64 ll_freq, ll_spans[64], ll_release, ll_margin;
+static int ll_next, ll_count, ll_backoff, ll_delayed;
+static volatile LONG64 ll_late_frames, ll_delayed_frames;
+
+static LONG64 qpc_now(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
+
+static void ll_queued(void) {   /* (QUEUE_BUFFER, under the queue's lock) */
+    if (!ll_release) return;
+    ll_spans[ll_next] = qpc_now() - ll_release;
+    ll_next = (ll_next + 1) % 64;
+    if (ll_count < 64) ll_count++;
+    ll_release = 0;
+}
+
+static LONG64 ll_delay(void) {   /* ticks to hold the signal past the refresh */
+    if (!ll_freq) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        ll_freq = f.QuadPart;
+        const char *m = getenv("SSBU_LOW_LATENCY_MARGIN");
+        ll_margin = (LONG64)((m && atof(m) >= 0 ? atof(m) : 4.0) * ll_freq / 1000);
+        if (display_low_latency()) fprintf(stderr, "[display] low_latency: the game starts each frame as late as it can (margin %.1f ms)\n", (double)ll_margin * 1000 / ll_freq);
+    }
+    if (!display_low_latency() || speed_mode || ll_count < 16) return 0;
+    if (ll_backoff > 0) { ll_backoff--; return 0; }
+    LONG64 most = 0;
+    for (int i = 0; i < ll_count; i++) if (ll_spans[i] > most) most = ll_spans[i];
+    LONG64 d = ll_freq / 60 - most - ll_margin;
+    return d > ll_freq / 2000 ? d : 0;   /* (under half a millisecond: not worth it) */
+}
+
+static void ll_wait_until(LONG64 at) {
+    for (;;) {
+        LONG64 left = at - qpc_now();
+        if (left <= 0) return;
+        LONG64 ms = left * 1000 / ll_freq;
+        if (ms >= 2) Sleep((DWORD)(ms - 1)); else SwitchToThread();
+    }
+}
+
 static DWORD WINAPI vsync_thread(LPVOID unused) {
     (void)unused;
     SetThreadDescription(GetCurrentThread(), L"vsync");
@@ -182,7 +235,26 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
             if (woken) { queue_unlock(); continue; }
         }
         queue_unlock();
-        if (oldest >= 0) { if (fast) show_fast(); else show(); }
+        LONG64 tick = qpc_now();
+        if (oldest >= 0) {
+            if (fast) show_fast();
+            else {
+                show();
+                if (ll_delayed && show_waited > ll_freq / 1000) { ll_backoff = 60; ll_late_frames++; }   /* (the card was still drawing it) */
+            }
+        } else if (!fast && ll_delayed) { ll_backoff = 60; ll_late_frames++; }   /* (released late, and not queued in time) */
+        LONG64 d = fast ? 0 : ll_delay();
+        ll_delayed = d > 0;
+        if (d) { ll_wait_until(tick + d); ll_delayed_frames++; }
+        static u64 ll_said;
+        if (display_low_latency() && !fast && GetTickCount64() - ll_said >= 60000) {
+            if (ll_said) fprintf(stderr, "[display] low_latency: %lld frames started %.1f ms after the refresh (now), %lld missed it and turned it off for a second\n",
+                                 (long long)ll_delayed_frames, (double)d * 1000 / ll_freq, (long long)ll_late_frames);
+            ll_said = GetTickCount64();
+        }
+        queue_lock();
+        ll_release = fast ? 0 : qpc_now();
+        queue_unlock();
         kernel_signal_event(queue.vsync_event);
     }
 }
@@ -309,6 +381,7 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
         if (slot < SLOTS) {
             queue.slots[slot].state = QUEUED;
             queue.slots[slot].queued_at = rt_now_ns();
+            ll_queued();
             queue.slots[slot].gpu_mark = gpu_queue_mark();
             /* (rollback build, M4: a frame of a catch-up is not shown. Freed here and the game told at
              * once - buffer free, a refresh - rather than through the vsync thread: the game's frame end
