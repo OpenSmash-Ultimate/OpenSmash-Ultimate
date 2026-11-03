@@ -1,11 +1,65 @@
 /* The rendering back end, as seen from the GPU command processor (gpu.c): the 3D engine's
- * register file at the moments that produce pixels, and the frames the display shows. */
+ * register file at the moments that produce pixels, and the frames the display shows.
+ *
+ * Windows and Linux hold more than one back end in one program: Direct3D 11 (gpu_d3d11.c, the
+ * default) and Vulkan (gpu_vulkan.c, in development). The entry points below go through a table,
+ * gfx_backend (gpu_backend.c), filled with Direct3D 11's functions from the start and chosen once
+ * before the game's first GPU work (gfx_backend_choose): each costs one indirect
+ * call. macOS has one back end, macos/gpu_metal.m, which defines these names itself. */
 #pragma once
 #include "gpu.h"
 #include "maxwell3d.h"
 
 typedef struct CbBinding { u64 address; u32 size; } CbBinding;   /* a bound constant buffer (GPU VA) */
 
+#ifndef __APPLE__
+/* The back end's entry points (the names below without gfx_), and its state the rest of the
+ * runtime asks about: the watchdog's lock owner and last thread in, the compiler threads' work for
+ * a crash report, and the swap chain's output for display pacing (gpu_display.c). */
+typedef struct GfxBackend {
+    void (*clear)(const u32 *regs, u32 arg);
+    void (*draw)(const u32 *regs, const CbBinding cb[STAGES][18], int indexed);
+    void (*present)(u64 guest, u32 width, u32 height);
+    void (*blit2d)(const u32 *regs);
+    void (*dispatch)(const u32 *regs, const u32 *qmd);
+    int (*copy_resident)(u64 dst_va, u64 src_va, u64 bytes);
+    void (*resident_flush)(u64 va, u64 bytes);
+    void (*resident_written)(u64 va, u64 bytes);
+    void (*stream_wrote)(u64 va, u64 bytes);
+    void (*guest_wrote)(u64 va, u64 bytes);
+    void (*stream_end)(void);
+    void (*gpu_unmapped)(u64 va, u64 size);
+    void (*guest_unmapped)(u64 addr, u64 size);
+    int (*draw_logging)(void);
+    void (*status_lines)(void);
+    void (*closing)(void);
+    DWORD (*lock_owner)(void);
+    DWORD (*last_enter_thread)(void);
+    void (*report_compiles)(void (*line)(const char *text));
+    void *(*display_output)(void);
+} GfxBackend;
+extern GfxBackend gfx_backend;   /* (gpu_backend.c) the back end drawing */
+/* (once, at start, before the GPU's first work: host.c) Act on display.ini's renderer: the table
+ * stays Direct3D 11's unless another back end starts. */
+void gfx_backend_choose(void);
+
+static inline void gfx_clear(const u32 *regs, u32 arg) { gfx_backend.clear(regs, arg); }
+static inline void gfx_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) { gfx_backend.draw(regs, cb, indexed); }
+static inline void gfx_present(u64 guest, u32 width, u32 height) { gfx_backend.present(guest, width, height); }
+static inline void gfx_blit2d(const u32 *regs) { gfx_backend.blit2d(regs); }
+static inline void gfx_dispatch(const u32 *regs, const u32 *qmd) { gfx_backend.dispatch(regs, qmd); }
+static inline int gfx_copy_resident(u64 dst_va, u64 src_va, u64 bytes) { return gfx_backend.copy_resident(dst_va, src_va, bytes); }
+static inline void gfx_resident_flush(u64 va, u64 bytes) { gfx_backend.resident_flush(va, bytes); }
+static inline void gfx_resident_written(u64 va, u64 bytes) { gfx_backend.resident_written(va, bytes); }
+static inline void gfx_stream_wrote(u64 va, u64 bytes) { gfx_backend.stream_wrote(va, bytes); }
+static inline void gfx_guest_wrote(u64 va, u64 bytes) { gfx_backend.guest_wrote(va, bytes); }
+static inline void gfx_stream_end(void) { gfx_backend.stream_end(); }
+static inline void gfx_gpu_unmapped(u64 va, u64 size) { gfx_backend.gpu_unmapped(va, size); }
+static inline void gfx_guest_unmapped(u64 addr, u64 size) { gfx_backend.guest_unmapped(addr, size); }
+static inline int gfx_draw_logging(void) { return gfx_backend.draw_logging(); }
+#else
+/* The entry points, as every back end implements them (macOS' by these names; Direct3D 11's as
+ * d3d11_*, gpu_d3d11.h). */
 /* CLEAR_SURFACE with the 3D engine's registers (clear values, render target bindings). */
 void gfx_clear(const u32 *regs, u32 arg);
 
@@ -38,6 +92,7 @@ void gfx_stream_end(void);   /* (after each submission) */
 void gfx_gpu_unmapped(u64 va, u64 size);
 void gfx_guest_unmapped(u64 addr, u64 size);
 int gfx_draw_logging(void);   /* a frame's draws are being logged (debugging) */
+#endif
 void *gfx_window_handle(void);   /* the game's window (an HWND), to own dialogs */
 void gfx_status_lines(void);   /* (host.c's [status]) the back end's own lines, if any */
 void gfx_closing(void);        /* the game is about to end (Direct3D: see gpu_d3d11.c's "first draws") */
