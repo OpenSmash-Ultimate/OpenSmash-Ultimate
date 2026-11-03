@@ -47,11 +47,13 @@ static int failures, checks;
 enum { B_STATUS = 0x100, B_MOTION = 0x108, B_FRAME = 0x110, B_X = 0x114, B_Y = 0x118, B_DAMAGE = 0x11c, B_ENTRY = 0x120 };
 
 static void map_guest(void) {
-    void *want = RT_HOST(GUEST);
-    void *got = mmap(want, GUEST_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    /* (from the game's global generator's page, 13.0.5 0x71052391c0, which SSBU_DETERMINISTIC sets: one mapping, as
+     * macOS gives a second one near the first elsewhere) */
+    const u64 lo = 0x7105230000ull;
+    void *want = RT_HOST(lo);
+    void *got = mmap(want, GUEST + GUEST_SIZE - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (got != want) { printf("cannot map the made-up guest memory at %p (got %p)\n", want, got); exit(3); }
-    void *gen = RT_HOST(0x7105239000ull);   /* (the game's global generator's page: SSBU_DETERMINISTIC sets it) */
-    if (mmap(gen, 0x1000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0) != gen) { printf("cannot map %p\n", gen); exit(3); }
+}
 }
 static void stf(u64 a, float f) { memcpy(RT_HOST(a), &f, 4); }
 
