@@ -1056,16 +1056,19 @@ static void cache_path(const Shader *s, char *path, size_t n) {
 }
 
 /* A file the ahead-of-time compiler wrote (dated 2001), now used by the game: dated now, so the
- * next start's prewarm makes it. */
+ * next start's prewarm makes it. A file used again is dated now too (once an hour at most): the
+ * prewarm goes newest first and stops at its budget, so the programs played last are the ones
+ * made - without it, newest meant the last ones first compiled, and few of those were asked for
+ * (a run: 177 of 1,144 made taken by the game). */
 static void cache_touch(const char *path) {
     HANDLE h = CreateFileA(path, FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            NULL, OPEN_EXISTING, 0, NULL);
     if (h == INVALID_HANDLE_VALUE) return;
     FILETIME written, now;
-    if (GetFileTime(h, NULL, NULL, &written) && ((u64)written.dwHighDateTime << 32 | written.dwLowDateTime) < SHADER_CACHE_PLAYED) {
-        GetSystemTimeAsFileTime(&now);
+    GetSystemTimeAsFileTime(&now);
+    u64 at = GetFileTime(h, NULL, NULL, &written) ? (u64)written.dwHighDateTime << 32 | written.dwLowDateTime : ~0ull;
+    if (at < SHADER_CACHE_PLAYED || at + 36000000000ull < ((u64)now.dwHighDateTime << 32 | now.dwLowDateTime))   /* (an hour, in 100 ns) */
         SetFileTime(h, NULL, NULL, &now);
-    }
     CloseHandle(h);
 }
 
@@ -2238,6 +2241,9 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
     }
     void *made = prewarm_take(s);
     if (made) {   /* the prewarm made it: ready now */
+        char used[1200];
+        cache_path(s, used, sizeof used);
+        cache_touch(used);   /* (played again: the next start's prewarm keeps it) */
         s->obj = made;
         free(s->hlsl);
         s->hlsl = NULL;
