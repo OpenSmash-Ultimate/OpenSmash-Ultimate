@@ -57,9 +57,19 @@ The dependency plugins themselves (latest releases):
 
 | Plugin | Imports | How it works on the console |
 | --- | --- | --- |
-| Smashline 2 v1.6.8 | Skyline 5 (incl. `A64InlineHook`), main 11, lua2cpp_common 12, SDK 59 | hooks the game's agent factories (main+0x64c310 ...), lua2cpp_common's coroutine call and status lines with **inline** hooks at single instructions |
+| Smashline 2 v2.0.0 (was 1.6.8) | Skyline 5 (incl. `A64InlineHook`), main 11, lua2cpp_common 12, SDK 59 | hooks the game's agent factories (main+0x64c310 ...), lua2cpp_common's coroutine call and status lines with **inline** hooks at single instructions |
 | lib_paramconfig 6.5 | Skyline 3, ARCropolis 2, main 20 | on console: hooks param getters; reads `config_param.toml`. Here: the `.nro` is not run (its main hangs); `tools/paramconfig.py` + `runtime/hle_paramconfig.c` apply each enabled mod's toml natively. Movesets that link paramconfig into their own `plugin.nro` still work. |
 | CSK Collection 5.0.6 | Skyline 5 (incl. `A64InlineHook`), ARCropolis 6 (`arcrop_register_callback`: rewrites files as the game loads them) | patches `ui_chara_db` and friends at load time |
+
+Smashline 2.0 changed `smashline_clone_weapon`, `smashline_update_weapon_count` and
+`smashline_whitelist_kirby_copy_article` (a clone is a new weapon kind; counts and the Kirby
+whitelist go by fighter and generate-article id, not weapon kind), and plugins built for 1.6
+crash calling them. `hle_skyline.c` answers `LookupSymbol` for those three with adapters: a
+plugin with 2.0's new function names in it (or whose `clone_weapon` call has 2.0's arguments) gets
+2.0's calls as they are, any other gets 1.6's turned into 2.0's. Not the same as 1.6: a 1.6 plugin
+that compares its clone's weapon kind with the original's (the clone has a new kind now); the
+original owner a 1.6 `clone_weapon` names, when it isn't the article's own (2.0 takes the
+article's); a 1.6 `update_weapon_count` reaches clones the 1.6 plugins made, not 2.0 plugins'.
 
 ## How plugins run in WindowSmash (prototype)
 
