@@ -15,7 +15,7 @@ These switches make a scripted run of the game quicker and less dependent on the
 | `SSBU_SKIP_MOVIES=<n>` | Every movie's stream ends after n samples (`1` means 12), and the game ends the movie as it ends any movie. |
 | `SSBU_HEADLESS=1` | The window is placed off every screen and never takes the focus, so a test run draws as usual without covering the desktop (Windows). |
 | `SSBU_FIGHT_HASH=<file>` | One line per fighter per fight frame, with a running hash, to `<file>` (`1`: to the standard output). |
-| `SSBU_DETERMINISTIC=1` | Meant to make the same input give the same fight: fixed random generators, no extra logic frames, `SSBU_SEQ` counted in fight frames. `SSBU_DET_OFF=<mask>` turns parts off. |
+| `SSBU_DETERMINISTIC=1` | Meant to make the same input give the same fight: fixed random generators (the 9 script ones and, from 2026-11-03, the game's global one, whose state at the fight depended on how long the menus took), no extra logic frames, `SSBU_SEQ` counted in fight frames. `SSBU_DET_OFF=<mask>` turns parts off. |
 | `SSBU_FIXED_SEED=<n>` | The clock reads and random bytes the game seeds its generators from come from n. |
 | `SSBU_DEBUG_MATCH=<settings>` | The fighters, stage and rules of the match, whatever the menus chose. `SSBU_DEBUG_MATCH_LIST=<file>` takes one line per match. |
 | `SSBU_DEBUG_END=<n>s` | The run ends after n seconds of fight (`<n>` without `s`: n fight frames). |

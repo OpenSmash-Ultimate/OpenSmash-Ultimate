@@ -117,6 +117,14 @@ static void first_battle_frame(int entry) {
         for (int i = 0; i < FIGHT_RNG_WORDS; i++) st32(rb + 4ull * i, w[i]);
         fprintf(stderr, "[fight] SSBU_DETERMINISTIC: the 9 script random generators set to a fixed state, counters 0\n");
     }
+    if (det && !(det_off & DET_OFF_RNG)) {
+        /* The game's global xorshift128 (13.0.5 0x71052391c0, the one rollback's handshake seeds: hle_rb_core.c
+         * net_seed_global) as well: how often the menus drew from it depends on timing, so the CPU fighters of two
+         * runs set up alike still started the fight from different states. */
+        static const u32 fixed[4] = {0x5eed0001u, 0x9e3779b9u, 0x7f4a7c15u, 0x94d049bbu};
+        for (int k = 0; k < 4; k++) st32(0x71052391c0ull + 4ull * k, fixed[k]);
+        fprintf(stderr, "[fight] SSBU_DETERMINISTIC: the game's global generator set to a fixed state too\n");
+    }
     input_seq_mark("fight");
 }
 
