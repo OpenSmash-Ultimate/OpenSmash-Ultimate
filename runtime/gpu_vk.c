@@ -638,6 +638,7 @@ static float to_srgb(float x) {
 #define RT(i, field) regs[0x200 + (i) * 0x10 + (field)]
 
 /* ---- the 3D engine's clears ------------------------------------------------------------------- */
+static int clear_channels(Surface *s, const float color[4], u32 mask);   /* (below: it draws) */
 static void vk_clear(const u32 *regs, u32 arg) {
     enter();
     gfx_stat_clears++;
@@ -645,7 +646,9 @@ static void vk_clear(const u32 *regs, u32 arg) {
     if (arg & 0x3C && rt < 8) {   /* any of R, G, B, A */
         u64 va = (u64)RT(rt, 0) << 32 | RT(rt, 1);
         Surface *s = surface(gpu_va_to_guest(va), RT(rt, 2), RT(rt, 3), RT(rt, 4), 0);
-        if (s && ((arg >> 2) & 0xF) == 0xF) {
+        static int drawn_clears = -1;   /* SSBU_VK_DRAWN_CLEARS=1 (testing): every colour clear drawn as the masked ones are */
+        if (drawn_clears < 0) drawn_clears = getenv("SSBU_VK_DRAWN_CLEARS") && atoi(getenv("SSBU_VK_DRAWN_CLEARS")) != 0;
+        if (s && ((arg >> 2) & 0xF) == 0xF && !(drawn_clears && s->klass == CLASS_FLOAT)) {
             float c[4] = {f32_of(regs[0x360]), f32_of(regs[0x361]), f32_of(regs[0x362]), f32_of(regs[0x363])};
             VkClearColorValue v;
             if (s->klass == CLASS_SINT) for (int i = 0; i < 4; i++) v.int32[i] = (int32_t)c[i];
@@ -655,7 +658,10 @@ static void vk_clear(const u32 *regs, u32 arg) {
             VkCommandBuffer cb = outside();
             vkCmdClearColorImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, &v, 1, &range);
             sync_all(cb);
-        } else if (s) vk_stat_clears_skipped++;   /* only some channels: a masked draw (step 5) */
+        } else if (s) {   /* only some channels: a masked draw */
+            float c[4] = {f32_of(regs[0x360]), f32_of(regs[0x361]), f32_of(regs[0x362]), f32_of(regs[0x363])};
+            if (!clear_channels(s, c, (arg >> 2) & 0xF)) vk_stat_clears_skipped++;
+        }
     }
     if (arg & 3) {   /* depth, stencil */
         u64 va = (u64)regs[0x3F8] << 32 | regs[0x3F9];
@@ -1780,6 +1786,17 @@ static u16 texture_index[TEXTURE_INDEX];
 static u32 texture_index_adds;
 static int depth_sampling = -1;
 
+int tex_decode_rgba8(int nvn_format, const void *src, int w, int h, uint8_t *dst);   /* (ssbu-recomp/runtime/tex_decode.c) */
+static u64 vk_stat_cpu_decoded;
+/* BC7 often cannot store alpha 0: a clear texel is then (1,1,1,1), which the alpha test keeps (gpu_d3d11.c) */
+static int punch_clear_texels(u8 *rgba, u32 n) {
+    int punched = 0;
+    for (u32 i = 0; i < n; i++) {
+        u8 *p = rgba + (size_t)i * 4;
+        if (p[3] && p[0] <= 1 && p[1] <= 1 && p[2] <= 1 && p[3] <= 1) { p[3] = 0; punched++; }
+    }
+    return punched;
+}
 static int watched(u64 g, u64 size) { return g >= ALIAS_BASE && g + size <= ALIAS_BASE + ALIAS_SIZE; }
 static u64 sample_hash(u64 g, u64 size) {
     u64 h = 1469598103934665603ull;
@@ -1930,6 +1947,36 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
     if (levels > max_levels) levels = max_levels;
     if (!levels) levels = 1;
     int cube = (d.type == TIC_CUBE || d.type == TIC_CUBE_ARRAY) && layers % 6 == 0 && d.width == d.height;
+    /* A stock icon is BC7 sRGB with a clear margin (black, alpha 0), which the GPU samples with alpha 1 (a
+     * black square): small sRGB block textures are decoded on the CPU (tex_decode.c) and the clear texels
+     * mended, as gpu_d3d11.c does - kept above 512 only when a texel needed mending. */
+    u8 **rgba = NULL;
+    int nvn = d.dxgi == DXGI_FORMAT_BC1_UNORM_SRGB ? 0x46 : d.dxgi == DXGI_FORMAT_BC2_UNORM_SRGB ? 0x47
+            : d.dxgi == DXGI_FORMAT_BC3_UNORM_SRGB ? 0x48 : d.dxgi == DXGI_FORMAT_BC7_UNORM_SRGB ? 0x4E : 0;
+    if (nvn && !is3d && d.width <= 1024 && d.height <= 1024 && (rgba = calloc(levels * layers, sizeof *rgba)) != NULL) {
+        int ok = 1, punched = 0;
+        for (u32 i = 0; i < levels * layers && ok; i++) {
+            u32 l = i % levels, w = (d.width >> l) ? d.width >> l : 1, h = (d.height >> l) ? d.height >> l : 1;
+            u8 *blk = malloc((size_t)((w + d.bw - 1) / d.bw) * ((h + d.bh - 1) / d.bh) * d.bytes + 64);
+            rgba[i] = malloc((size_t)w * h * 4);
+            if (!blk || !rgba[i]) ok = 0;
+            else {
+                texture_read(&d, g, i / levels, l, blk);
+                if (tex_decode_rgba8(nvn, blk, (int)w, (int)h, rgba[i])) ok = 0;
+                else punched += punch_clear_texels(rgba[i], w * h);
+            }
+            free(blk);
+        }
+        if (!ok || ((d.width > 512 || d.height > 512) && !punched)) {
+            for (u32 i = 0; i < levels * layers; i++) free(rgba[i]);
+            free(rgba);
+            rgba = NULL;
+        } else {
+            format = VK_FORMAT_R8G8B8A8_SRGB;
+            map = (VkComponentMapping){VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
+            vk_stat_cpu_decoded++;
+        }
+    }
     VkImageCreateInfo ici = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
                              is3d ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D, format, {d.width, d.height, is3d ? d.depth : 1}, levels, layers,
                              VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -1941,7 +1988,7 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
     for (u32 i = 0; i < nregions; i++) {
         u32 l = i % levels;
         u32 w = (d.width >> l) ? d.width >> l : 1, h = (d.height >> l) ? d.height >> l : 1;
-        u64 bytes = is3d ? texture_3d_size(&d) : (u64)((w + d.bw - 1) / d.bw) * ((h + d.bh - 1) / d.bh) * d.bytes;
+        u64 bytes = is3d ? texture_3d_size(&d) : rgba ? (u64)w * h * 4 : (u64)((w + d.bw - 1) / d.bw) * ((h + d.bh - 1) / d.bh) * d.bytes;
         regions[i].bufferOffset = total;
         regions[i].imageSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, l, is3d ? 0 : i / levels, 1};
         regions[i].imageExtent = (VkExtent3D){w, h, is3d ? d.depth : 1};
@@ -1952,6 +1999,8 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
     u8 *data = regions && total < (1ull << 31) ? arena(total, 16, &buf, &off) : NULL;
     if (data) t->image = make_image(&ici, &t->alloc);
     if (!data || !t->image) {
+        for (u32 i = 0; rgba && i < nregions; i++) free(rgba[i]);
+        free(rgba);
         free(regions);
         t->image = VK_NULL_HANDLE;
         t->guest = 0;
@@ -1960,9 +2009,11 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
     }
     for (u32 i = 0; i < nregions; i++) {
         if (is3d) texture_read_3d(&d, g, data + regions[i].bufferOffset);
+        else if (rgba) { memcpy(data + regions[i].bufferOffset, rgba[i], (size_t)regions[i].imageExtent.width * regions[i].imageExtent.height * 4); free(rgba[i]); }
         else texture_read(&d, g, i / levels, i % levels, data + regions[i].bufferOffset);
         regions[i].bufferOffset += off;
     }
+    free(rgba);
     vk_stat_upload_bytes += total;
     VkCommandBuffer c = outside();
     image_layout(c, t->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
@@ -2796,6 +2847,100 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
     leave();
 }
 
+/* ---- masked clears: a full-target triangle of the clear colour through the channel mask (gpu_d3d11.c's
+ * clear_channels), its two small programs compiled at the first one (fxc, then vkd3d-shader) ---------- */
+static VkShaderModule clear_vs, clear_ps;
+static int clear_ready;   /* 0 not tried, 1 ready, -1 failed */
+static struct { VkFormat format; u32 mask; VkPipeline pipe; } clear_pipes[64];
+static u32 nclear_pipes;
+static u64 vk_stat_masked_clears;
+
+static VkShaderModule small_module(const char *hlsl, const char *target, int stage) {
+    ID3DBlob *code = NULL, *errors = NULL;
+    VkShaderModule m = VK_NULL_HANDLE;
+    if (SUCCEEDED(D3DCompile(hlsl, strlen(hlsl), "clear", NULL, NULL, "main", target, 0, 0, &code, &errors)) && code) {
+        SpirvCode spv;
+        char err[300];
+        if (spirv_from_dxbc(ID3D10Blob_GetBufferPointer(code), ID3D10Blob_GetBufferSize(code), stage, &spv, err, sizeof err)) {
+            VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, spv.size, spv.code};
+            if (vkCreateShaderModule(device, &ci, NULL, &m) != VK_SUCCESS) m = VK_NULL_HANDLE;
+            spirv_free(&spv);
+        }
+    }
+    if (code) ID3D10Blob_Release(code);
+    if (errors) ID3D10Blob_Release(errors);
+    return m;
+}
+
+static VkPipeline clear_pipeline(VkFormat format, u32 mask) {
+    for (u32 i = 0; i < nclear_pipes; i++)
+        if (clear_pipes[i].format == format && clear_pipes[i].mask == mask) return clear_pipes[i].pipe;
+    if (!clear_ready) {
+        clear_vs = small_module("float4 main(uint id : SV_VertexID) : SV_Position {\n"
+                                "  return float4(id == 1 ? 3.0f : -1.0f, id == 2 ? 3.0f : -1.0f, 0.0f, 1.0f); }\n", "vs_5_0", SHADER_VERTEX);
+        clear_ps = small_module("cbuffer Clear : register(b0) { float4 color; };\n"
+                                "float4 main(float4 p : SV_Position) : SV_Target { return color; }\n", "ps_5_0", SHADER_PIXEL);
+        clear_ready = clear_vs && clear_ps ? 1 : -1;
+        if (clear_ready < 0) fprintf(stderr, "[vulkan] masked clears: their programs could not be made\n");
+    }
+    if (clear_ready < 0 || nclear_pipes == 64) return VK_NULL_HANDLE;
+    VkPipelineShaderStageCreateInfo st[2] = {
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, clear_vs, "main", NULL},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, clear_ps, "main", NULL}};
+    VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, NULL, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE};
+    VkPipelineViewportStateCreateInfo vp = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, NULL, 0, 1, NULL, 1, NULL};
+    VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rs.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, NULL, 0, VK_SAMPLE_COUNT_1_BIT};
+    VkPipelineDepthStencilStateCreateInfo ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    VkPipelineColorBlendAttachmentState at = {VK_FALSE, 0, 0, 0, 0, 0, 0, mask};
+    VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, NULL, 0, VK_FALSE, VK_LOGIC_OP_COPY, 1, &at};
+    VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dy = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, NULL, 0, 2, dyn};
+    VkPipelineRenderingCreateInfoKHR ri = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR, NULL, 0, 1, &format, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED};
+    VkGraphicsPipelineCreateInfo pci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, &ri, 0, 2, st, &vi, &ia, NULL, &vp, &rs, &ms,
+                                        &ds, &cb, &dy, gfx_layout, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, -1};
+    VkPipeline p;
+    if (vkCreateGraphicsPipelines(device, pipeline_cache, 1, &pci, NULL, &p) != VK_SUCCESS) return VK_NULL_HANDLE;
+    clear_pipes[nclear_pipes].format = format;
+    clear_pipes[nclear_pipes].mask = mask;
+    clear_pipes[nclear_pipes++].pipe = p;
+    return p;
+}
+
+/* Only some of a colour target's channels cleared (mask: R 1, G 2, B 4, A 8, as Vulkan's write mask). */
+static int clear_channels(Surface *s, const float color[4], u32 mask) {
+    if (s->klass != CLASS_FLOAT || !(features_of(s->view) & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) return 0;
+    VkPipeline pipe = clear_pipeline(s->view, mask);
+    VkBuffer buf;
+    VkDeviceSize off;
+    float *c4 = pipe ? (float *)arena(256, ubo_align, &buf, &off) : NULL;
+    VkDescriptorSet set = c4 ? new_set(gfx_set_layout) : VK_NULL_HANDLE;
+    if (!set) return 0;
+    memcpy(c4, color, 16);   /* (an sRGB target's view encodes it, as Direct3D's clear does) */
+    VkDescriptorBufferInfo bi = {buf, off, 256};
+    VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_CBV(0), 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, NULL, &bi, NULL};
+    vkUpdateDescriptorSets(device, 1, &w, 0, NULL);
+    VkImageView view = surface_attachment(s);
+    VkCommandBuffer c = outside();
+    VkRenderingAttachmentInfoKHR ca = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR, NULL, view, VK_IMAGE_LAYOUT_GENERAL, VK_RESOLVE_MODE_NONE,
+                                       VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE};
+    VkRenderingInfoKHR ri = {VK_STRUCTURE_TYPE_RENDERING_INFO_KHR, NULL, 0, {{0, 0}, {s->hw, s->hh}}, 1, 0, 1, &ca, NULL, NULL};
+    vkCmdBeginRenderingKHR(c, &ri);
+    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, gfx_layout, SPIRV_SET_PIXEL, 1, &set, 0, NULL);
+    VkViewport v = {0, 0, (float)s->hw, (float)s->hh, 0, 1};
+    VkRect2D r = {{0, 0}, {s->hw, s->hh}};
+    vkCmdSetViewport(c, 0, 1, &v);
+    vkCmdSetScissor(c, 0, 1, &r);
+    vkCmdDraw(c, 3, 1, 0, 0);
+    vkCmdEndRenderingKHR(c);
+    sync_all(c);
+    vk_stat_masked_clears++;
+    return 1;
+}
+
 /* ---- the rest of the runtime's questions ------------------------ */
 /* The copy engine: [src, src + bytes) to dst on the GPU when the source is a region's (1: done). */
 static int vk_copy_resident(u64 dst, u64 src, u64 bytes) {
@@ -2854,13 +2999,13 @@ static DWORD vk_last_enter_thread(void) { return last_enter_thread; }
 static void vk_report_compiles(void (*line)(const char *text)) { (void)line; }
 
 static void vk_status_lines(void) {
-    fprintf(stderr, "[status] vulkan (%s): %llu frames shown (%llu with no window to show them in), %llu clears (%llu masked, not drawn), "
-                    "%llu 2D blits (%llu between formats it cannot blit), %u surfaces, %u textures (%llu made), %llu MB device memory; "
+    fprintf(stderr, "[status] vulkan (%s): %llu frames shown (%llu with no window to show them in), %llu clears (%llu masked drawn, %llu masked not drawn), "
+                    "%llu 2D blits (%llu between formats it cannot blit), %u surfaces, %u textures (%llu made, %llu decoded on the CPU), %llu MB device memory; "
                     "%llu draws: %llu drawn in %llu renderings, skipped %llu shader / %llu pipeline / %llu target / %llu topology / %llu other; "
                     "%llu shaders (%llu failed), %llu pipelines (%llu failed; %.1f s making them), %llu MB uploaded (%llu reused); %llu compute launches (%llu run, %llu skipped), %u resident regions (%llu made, %llu taken again, %llu given up, %llu copies, %llu flushed), %llu programs learned, %llu waits for results; "
                     "time in draws %.1f s, launches %.1f s, presents %.1f s (of it waiting for the GPU %.1f s), %llu upload blocks in the card's memory\n",
-            card, gfx_stat_presented, vk_stat_presents_skipped, gfx_stat_clears, vk_stat_clears_skipped, gfx_stat_blits, vk_stat_blits_skipped,
-            nsurfaces, ntextures, vk_stat_textures, vk_stat_device_bytes >> 20, vk_stat_draws, vk_stat_drawn, vk_stat_passes, vk_stat_skip_shader, vk_stat_skip_pipeline,
+            card, gfx_stat_presented, vk_stat_presents_skipped, gfx_stat_clears, vk_stat_masked_clears, vk_stat_clears_skipped, gfx_stat_blits, vk_stat_blits_skipped,
+            nsurfaces, ntextures, vk_stat_textures, vk_stat_cpu_decoded, vk_stat_device_bytes >> 20, vk_stat_draws, vk_stat_drawn, vk_stat_passes, vk_stat_skip_shader, vk_stat_skip_pipeline,
             vk_stat_skip_target, vk_stat_skip_topology, vk_stat_skip_other, vk_stat_shaders, vk_stat_shader_failures, vk_stat_pipelines, vk_stat_pipeline_failures, pipeline_ns / 1e9,
             vk_stat_upload_bytes >> 20, vk_stat_reused, vk_stat_dispatches, vk_stat_dispatched, vk_stat_skip_compute, nresidents,
             vk_stat_residents_made, vk_stat_resident_refills, vk_stat_residents_retired, vk_stat_resident_copies, vk_stat_resident_flushed,
