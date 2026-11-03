@@ -21,6 +21,7 @@
  * are logged once and succeed. */
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "host.h"
 u64 rb_gpu_ns(void);   /* (gpu.c: rt_now_ns, or the fixed clock in a rollback fight, SSBU_RB) */
@@ -303,16 +304,52 @@ static u32 address_space(u32 nr, u64 a, u32 request) {
     return NV_OK;
 }
 
+/* Handles are numbered on from 1 and, while there are numbers left, never reused, as before. A long
+ * session used all NVMAP_MAX ("nvdrv: out of nvmap handles", a Discord report after many loads): from
+ * then on the handles the game has freed are reused. Each is counted (Create 1, FromId one more, Free
+ * one less) and only one no longer held is reused; queued GPU work may still read what freed handles
+ * held, so it runs first, once per batch of them. Nothing changes before the numbers run out. */
+static u32 nvmap_refs[NVMAP_MAX];
+static u32 nvmap_freed[NVMAP_MAX], nvmap_nfreed;   /* freed since the last batch was made reusable */
+static u32 nvmap_spare[NVMAP_MAX], nvmap_nspare;   /* reusable now */
+
+static u32 nvmap_new_handle(void) {
+    static u32 limit;   /* (NVMAP_MAX; SSBU_NVMAP_LIMIT=<n> runs out sooner, for tests) */
+    if (!limit) {
+        const char *e = getenv("SSBU_NVMAP_LIMIT");
+        limit = e && atoi(e) >= 64 && atoi(e) < NVMAP_MAX ? (u32)atoi(e) : NVMAP_MAX;
+    }
+    if (next_handle < limit) return next_handle++;
+    if (!nvmap_nspare && nvmap_nfreed) {
+        if (gpu_threaded()) { gpu_queue_drain(); gpu_stat_drains++; }
+        static int told;
+        if (!told++) fprintf(stderr, "nvdrv: all %u nvmap handles used once: reusing the %u the game has freed\n",
+                             limit - 1, nvmap_nfreed);
+        for (u32 i = 0; i < nvmap_nfreed; i++) {
+            gpu_maps[nvmap_freed[i]] = (NvMap){0};
+            nvmap_spare[nvmap_nspare++] = nvmap_freed[i];
+        }
+        nvmap_nfreed = 0;
+    }
+    if (!nvmap_nspare) rt_fatal("nvdrv: out of nvmap handles (all of them held by the game)");
+    return nvmap_spare[--nvmap_nspare];
+}
+
 static u32 nvmap(u32 nr, u64 a, u32 request) {
     switch (nr) {
     case 0x01: {                                                          /* Create */
-        u32 h = next_handle++;
-        if (h >= NVMAP_MAX) rt_fatal("nvdrv: out of nvmap handles");
+        u32 h = nvmap_new_handle();
+        nvmap_refs[h] = 1;
         gpu_maps[h] = (NvMap){ld32(a), 0, 0x1000, 0};
         st32(a + 4, h);
         return NV_OK;
     }
-    case 0x03: st32(a + 4, ld32(a)); return NV_OK;                        /* FromId: ids are handles */
+    case 0x03: {                                                          /* FromId: ids are handles */
+        u32 h = ld32(a);
+        if (h && h < NVMAP_MAX && nvmap_refs[h]) nvmap_refs[h]++;
+        st32(a + 4, h);
+        return NV_OK;
+    }
     case 0x04: {                                                          /* Alloc */
         u32 h = ld32(a);
         if (!h || h >= NVMAP_MAX) return NV_BAD_PARAMETER;
@@ -327,6 +364,7 @@ static u32 nvmap(u32 nr, u64 a, u32 request) {
         st64(a + 8, gpu_maps[h].addr);
         st32(a + 16, (u32)gpu_maps[h].size);
         st32(a + 20, 0);
+        if (nvmap_refs[h] && !--nvmap_refs[h]) nvmap_freed[nvmap_nfreed++] = h;   /* (reused once the numbers run out) */
         return NV_OK;
     }
     case 0x09: {                                                          /* Param */
