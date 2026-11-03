@@ -173,7 +173,7 @@ static void show_fast(void) {
  * still drawing it) turns the delay off for a second. Not with SSBU_SPEED or in a rollback's catch-up. */
 static LONG64 ll_freq, ll_spans[64], ll_release, ll_margin;
 static int ll_next, ll_count, ll_backoff, ll_delayed;
-static volatile LONG64 ll_late_frames, ll_delayed_frames;
+static volatile LONG64 ll_late_frames, ll_delayed_frames, ll_delay_sum;
 
 static LONG64 qpc_now(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
 
@@ -245,11 +245,12 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
         } else if (!fast && ll_delayed) { ll_backoff = 60; ll_late_frames++; }   /* (released late, and not queued in time) */
         LONG64 d = fast ? 0 : ll_delay();
         ll_delayed = d > 0;
-        if (d) { ll_wait_until(tick + d); ll_delayed_frames++; }
+        if (d) { ll_wait_until(tick + d); ll_delayed_frames++; ll_delay_sum += d; }
         static u64 ll_said;
         if (display_low_latency() && !fast && GetTickCount64() - ll_said >= 60000) {
-            if (ll_said) fprintf(stderr, "[display] low_latency: %lld frames started %.1f ms after the refresh (now), %lld missed it and turned it off for a second\n",
-                                 (long long)ll_delayed_frames, (double)d * 1000 / ll_freq, (long long)ll_late_frames);
+            if (ll_said) fprintf(stderr, "[display] low_latency: %lld frames started later than the refresh (%.1f ms on average), %lld missed it and turned it off for a second\n",
+                                 (long long)ll_delayed_frames, ll_delayed_frames ? (double)ll_delay_sum * 1000 / ll_freq / (double)ll_delayed_frames : 0.0,
+                                 (long long)ll_late_frames);
             ll_said = GetTickCount64();
         }
         queue_lock();
