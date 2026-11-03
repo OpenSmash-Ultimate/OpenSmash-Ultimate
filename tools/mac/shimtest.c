@@ -1268,7 +1268,7 @@ int rt_window_init(void) { return 0; }
 _Noreturn void rt_window_loop(int every, void (*status)(void)) { (void)every; (void)status; for (;;) Sleep(1000); }
 /* (PR #54's: Skyline plugins, nn::ro's lists, Discord, the mods' switch - none here) */
 GuestFn *rt_detour_entry(GuestFn *body, GuestFn *hook, int allow_new, u32 room) { (void)body; (void)hook; (void)allow_new; (void)room; return NULL; }
-u64 rt_moved_in_13_0_5(u64 at) { (void)at; return 0; }
+u64 rt_moved_in_13_0_5(u64 at) { return at; }
 void skyline_module_loaded(const char *name, u64 base) { (void)name; (void)base; }
 void skyline_note_sleep(void) {}
 void rtld_module_loaded(u64 base, u64 size) { (void)base; (void)size; }
