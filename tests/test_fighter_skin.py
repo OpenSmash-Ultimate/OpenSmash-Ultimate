@@ -27,6 +27,7 @@ class SkinTests(unittest.TestCase):
         put(self.mod / 'info.toml', b'display_name = "Some MODEL"\nauthors = "Someone"\n')
         put(self.mod / 'config.json', b'{}')
         put(self.mod / 'fighter' / 'ganon' / 'model' / 'body' / 'c03' / 'model.numdlb', b'model3')
+        put(self.mod / 'fighter' / 'ganon' / 'model' / 'body' / 'c06' / 'alp_ganon_002_emi.nutexb', b'emi')
         put(self.mod / 'fighter' / 'ganon' / 'motion' / 'body' / 'c00' / 'j02win1.nuanmb', b'win')
         put(self.mod / 'sound' / 'bank' / 'fighter_voice' / 'vc_ganon_c05.nus3audio', b'voice5')
         put(self.mod / 'ui' / 'replace' / 'chara' / 'chara_0' / 'chara_0_ganon_07.bntx', b'pic7')
@@ -54,6 +55,8 @@ class SkinTests(unittest.TestCase):
         self.assertEqual((f / 'sound' / 'bank' / 'fighter_voice' / 'vc_phantomg_c05.nus3audio').read_bytes(), b'voice5')
         self.assertEqual((f / 'ui' / 'replace' / 'chara' / 'chara_0' / 'chara_0_phantomg_07.bntx').read_bytes(), b'pic7')
         self.assertFalse((f / 'config.json').exists())
+        # a texture keeps its name: the material finds it by that name
+        self.assertEqual((f / 'fighter' / 'phantomg' / 'model' / 'body' / 'c06' / 'alp_ganon_002_emi.nutexb').read_bytes(), b'emi')
 
     def test_one_effect_file_and_the_hashed_twin_goes(self):
         self.run_skin()

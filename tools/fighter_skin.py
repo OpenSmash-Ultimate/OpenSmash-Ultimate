@@ -9,7 +9,8 @@ effect/fighter/ganon/ef_ganon_c00.eff, sound/bank/fighter_voice/vc_ganon_c00.nus
 ui/replace/chara/chara_0/chara_0_ganon_00.bntx). A new fighter made from Ganondorf (SSBU_CHARACTERS\\<name>,
 fighter.json "donor": "ganon") plays from its own folder under its own name (runtime/hle_fighter_registry.c,
 tools/fighter_mod.py). This copies the skin's files into the fighter's folder with the donor's name
-replaced by the fighter's, in every path and file name:
+replaced by the fighter's in the folders and in the file names the game builds from it (a model's own files,
+its textures, keep their names: the materials name them):
 
   fighter/<donor>/...                         -> fighter/<name>/...           (all colours c00-c07)
   sound/bank/*/<xx>_<donor>_cNN.*             -> sound/bank/*/<xx>_<name>_cNN.*
@@ -96,7 +97,14 @@ def plan(mod, folder, name, donor, say):
                 if re.fullmatch(r"effect/fighter/%s/ef_%s(_c\d+)?\.eff" % (re.escape(donor), re.escape(donor)), rel):
                     effects.append(src)
                     continue
-                pairs.append((src, os.path.join(folder, tok.sub(name, rel))))
+                # the donor's name changes in the folders and in the names the game builds from the fighter's name
+                # (sound banks vc_<name>_c00, pictures chara_0_<name>_00); NOT in a model's own files: a material
+                # names its textures (alp_ganon_002_emi) and finds them by that name - renamed, the material got the
+                # default texture instead (all white on the colours whose textures the donor does not have)
+                parts = rel.split("/")
+                dirs = [tok.sub(name, p) for p in parts[:-1]]
+                own_name = parts[0] in ("sound", "ui") or (parts[0] == "effect" and parts[-1].lower().endswith(".eff"))
+                pairs.append((src, os.path.join(folder, *dirs, tok.sub(name, parts[-1]) if own_name else parts[-1])))
     if effects:
         own = effect_file(folder, name)
         if not own:
