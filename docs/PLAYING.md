@@ -59,6 +59,8 @@ Press <kbd>Esc</kbd> in the game to open the settings. On a controller, press it
 
 ### Mods on and off
 
+**To install mods** (skins, stages, music, movesets and new characters from GameBanana, or a mod's `.zip` you have), close the game and double-click **`launchers\WindowSmash Mods.bat`**: the mod manager finds GameBanana's Smash Ultimate mods, installs them, turns them on and off and applies them to the game. Mods made for ARCropolis and Skyline plugins work; the runtime provides ARCropolis, Smashline 2, lib_paramconfig and the CSK Collection itself, so don't install those. How plugins run: [Mods and Skyline plugins](SKYLINE.md).
+
 The **Mods** page lists every installed mod with its own switch: the same switches as the launcher's mod list and the Mods app's (they share `mods\mods.json`). A change counts the next time the game starts: choose **Restart now**, and the game applies the mods before it reads them. Online, players meet only when they run the same mods, so turn off what the others don't have; the **Lobby** page says, room by room, which mods differ.
 
 **ARCropolis code patches** are the fixes ARCropolis makes to the game's code for costume slots that mods add (c08 and up). They have a switch of their own: **auto** (the default) turns them on while a mod runs and off otherwise, so the game with no mod runs its own code, as an unmodded game. They count when the game starts, and players online need the same setting. `SSBU_CODE_PATCHES=1` or `0` sets them for one start (tests).
@@ -77,6 +79,9 @@ The keyboard plays as player 1, together with player 1's pad if there is one. Th
 | ZL / ZR | <kbd>Q</kbd> / <kbd>W</kbd> |
 | + / − | <kbd>Enter</kbd> / <kbd>Backspace</kbd> |
 | Right stick | <kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd> |
+| Walk (left stick part way) | Hold <kbd>Shift</kbd> with the arrow keys |
+
+An arrow key pushes the stick all the way at once, which the game takes as a flick: your fighter dashes, and down drops through a platform. Hold <kbd>Shift</kbd> (the `WALK` key) to push it part way instead: sideways walks and gives tilt attacks with A, down crouches on a platform without dropping through.
 
 | Key | What it does |
 | :--- | :--- |
@@ -156,7 +161,7 @@ The first time the game starts, it writes **`controllers.ini`** into the WindowS
 The file has these sections:
 
 - **`[general]`** holds `keyboard_player`, `background` and `rumble` (on or off for every controller).
-- **`[keyboard]`** holds the keyboard's keys: `<Switch button> = <key>`, for example `A = Space` or `LSTICK_LEFT = A`. The buttons are `A B X Y L R ZL ZR PLUS MINUS LSTICK RSTICK` (the last two: the sticks' clicks) and the d-pad's `UP DOWN LEFT RIGHT`; the sticks' directions are `LSTICK_LEFT LSTICK_UP LSTICK_RIGHT LSTICK_DOWN` and the same with `RSTICK_`. A key is a letter or digit, `Left Up Right Down Enter Backspace Space Tab Shift Ctrl Alt`, `F1`–`F12`, `Num0`–`Num9` (the number pad), `0x` and a Windows virtual-key code, or `none`; list several with commas (`A = Z, Space`). Removing a line puts that key's default back. An ssbu-recomp `[keyboard]` section carries over as it is (its `STICK_L` / `STICK_R` are `LSTICK` / `RSTICK`); its `movement = ssf2` is kept in the file but has no effect here yet.
+- **`[keyboard]`** holds the keyboard's keys: `<Switch button> = <key>`, for example `A = Space` or `LSTICK_LEFT = A`. The buttons are `A B X Y L R ZL ZR PLUS MINUS LSTICK RSTICK` (the last two: the sticks' clicks) and the d-pad's `UP DOWN LEFT RIGHT`; the sticks' directions are `LSTICK_LEFT LSTICK_UP LSTICK_RIGHT LSTICK_DOWN` and the same with `RSTICK_`; `WALK` (default `Shift`) is held to push the left stick part way. A key is a letter or digit, `Left Up Right Down Enter Backspace Space Tab Shift Ctrl Alt`, `F1`–`F12`, `Num0`–`Num9` (the number pad), `0x` and a Windows virtual-key code, or `none`; list several with commas (`A = Z, Space`). Removing a line puts that key's default back. An ssbu-recomp `[keyboard]` section carries over as it is (its `STICK_L` / `STICK_R` are `LSTICK` / `RSTICK`); its `movement = ssf2` is kept in the file but has no effect here yet.
 - **`[players]`** reserves a player for one pad, for example `2 = DualSense Wireless Controller` (the settings' **Player** row writes the pad's GUID there). The log names every pad as it connects, with its type and GUID.
 - **`[device default]`** applies to every pad.
 - **`[device ps5]`**, **`[device <name>]`** or **`[device <GUID>]`** applies to one kind of pad, or one pad. Types include `xbox360`, `xboxone`, `ps4`, `ps5`, `switchpro`, `joyconpair` and `gamecube`. The settings write a controller's changes under `[device <its name>]`, or under the section it already takes its settings from.
@@ -187,6 +192,21 @@ L = Shift
 R = Ctrl
 ZR = E
 ```
+
+### Steam and Steam Input
+
+To start the game from Steam (Big Picture, or Steam Input for a controller the game doesn't know):
+
+1. In Steam, choose **Games → Add a Non-Steam Game to My Library**, tick any program and click **Add Selected Programs**.
+2. Right-click it in your library and choose **Properties**. Set:
+   - **Target:** the game itself, with quotes: `"C:\WindowSmash\build\ssbu.exe"`
+   - **Start In:** the WindowSmash folder: `"C:\WindowSmash"`
+   - **Launch options:** `dump\modules --status 30 --online` (leave out `--online` to play offline)
+3. Rename it to *Super Smash Bros. Ultimate* if you like.
+
+Use your own folder in place of `C:\WindowSmash`. Started this way the game skips the small WindowSmash window, and its log is not written to `build\play.log`. Steam's keyboard settings can't change the keyboard's keys: change them in the game ([Controls](#controls)).
+
+On a Steam Deck or another Linux PC, add `run.sh` the same way, with **Start In** set to the WindowSmash folder ([Linux](LINUX.md)).
 
 ## Window and display
 
@@ -221,6 +241,7 @@ To prepare them all before playing, double-click **`launchers\Prepare Shaders.ba
 
 If matches run slowly on a PC that should manage them (press <kbd>F1</kbd> for the frame rate), check these first:
 
+- **The PC is below what the game needs.** It needs about what an emulator needs to run Smash well: if Smash struggles in an emulator on your PC, it struggles here too. A dual-core laptop chip, or an old entry-level graphics card, is not enough; processor graphics (Intel UHD / Iris Xe, AMD Vega) play, but slower, and stutter more the first time each effect shows ([above](#shaders-and-first-time-stutter)); keep `render_scale` at its default there.
 - **A laptop is drawing with its processor's graphics.** With two graphics chips, the game takes the NVIDIA or AMD one by itself. Check the `[gfx] drawing with` line near the top of `build\play.log`, and see `gpu` in [`display.ini`](#window-and-display).
 - **Prepare Shaders is still running.** It uses most of the processor; let it finish, or close it while you play.
 - **NVIDIA's shader cache is off.** In NVIDIA Control Panel → *Manage 3D settings*, set **Shader Cache Size** to *Driver default* (not *Disabled*). Without it, the graphics driver redoes its part of every shader each time the game starts.
