@@ -260,6 +260,8 @@ Your save is written as the console writes it: what the game saves reaches the `
 
 If `build\play.log` says *could not finish applying a save*, your PC would not let the game change a file in the `save` folder: another program holds it open, or the folder belongs to another user (after running the game with `sudo`, say), or your save's own folder is a link to another drive. Nothing is lost, but the game can't save, or load its save, until that is fixed. Close the game, fix it (make the `save` folder and everything in it yours; to keep your save on another drive, link the whole `save` folder, not the folder inside it), then start the game: it finishes the save first.
 
+The game's own files (`dump\`, with the shader cache) and the compiled game (`build\`) take tens of GB. To put them on another drive, close the game and the launcher, then run `python tools\data_location.py --move D:\OpenSmash` (any empty folder). They move there, and a link stays in their place, so nothing else changes. `python tools\data_location.py` says where they are; the same `--move` with the WindowSmash folder brings them back.
+
 > [!TIP]
 > **Back up your save** now and then: copy the `save` folder somewhere safe while the game is closed. To restore it, close the game and put the copy in place of the `save` folder.
 
