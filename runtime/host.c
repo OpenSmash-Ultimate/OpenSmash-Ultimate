@@ -1060,6 +1060,7 @@ static void load_plugin_dlls(void) {
 static u64 load_nro(Cpu *c, const char *id, const char *name);
 void skyline_module_loaded(const char *name, u64 base);   /* (hle_skyline.c: the plugins' hooks into it) */
 void rtld_module_loaded(u64 base, u64 size);               /* (hle_rtld.c: nn::ro's lists) */
+void native_mods_module_loaded(void);                      /* (hle_native_mods.c) */
 
 u64 rt_load_nro(Cpu *c, u64 image) {
     char id[65];
@@ -1098,6 +1099,7 @@ static u64 load_nro(Cpu *c, const char *id, const char *name) {
     rtld_module_loaded(mod->base, mod->image_size);
     if (mod->init != mod->base) rt_call(c, mod->init);
     skyline_module_loaded(mod->name, mod->base);
+    native_mods_module_loaded();   /* (hle_native_mods.c: hooks by name waiting for this module) */
     return mod->base;
 }
 

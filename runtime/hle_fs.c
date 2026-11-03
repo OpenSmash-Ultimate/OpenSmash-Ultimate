@@ -1040,6 +1040,7 @@ static u32 save_delete(struct Mount *m, const char *rest, int dir) {
 HLE(_ZN2nn2fs12SetAllocatorEPFPvmEPFvS1_mE) { (void)c; ready(); }
 HLE(_ZN2nn2fs22QueryMountRomCacheSizeEPm) { ready(); st64(c->x[0], 0x1000); c->x[0] = 0; }
 void skyline_load_plugins(Cpu *c);        /* (hle_skyline.c) */
+void native_mods_load(void);             /* (hle_native_mods.c) */
 
 /* Skyline mounts the SD card as sd: for its plugins: here <data dir>/../skyline/sd, with the mods
  * folder as its ultimate/mods (host_path). */
@@ -1054,7 +1055,7 @@ int skyline_provides(const char *path);
 HLE(_ZN2nn2fs8MountRomEPKcPvm) {
     ready();
     u32 r = add_mount(P(char, c->x[0]), M_ROM, "", NULL);
-    if (!r) skyline_load_plugins(c);
+    if (!r) { skyline_load_plugins(c); native_mods_load(); }   /* (the fighter SDK's hook.h mods: hle_native_mods.c) */
     c->x[0] = r;
 }
 HLE(_ZN2nn2fs17MountCacheStorageEPKc) {
