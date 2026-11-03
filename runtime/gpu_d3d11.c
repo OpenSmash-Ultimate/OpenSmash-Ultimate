@@ -3872,7 +3872,12 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
     /* The fixed-function alpha test (ui2d's alpha compare: the main menu's stencil masks are cut
      * from a texture's alpha this way) needs the pixel shader's variant that discards; while that
      * compiles, the plain one draws as before. */
-    D3D11_COMPARISON_FUNC alpha_func = regs[M_ALPHA_TEST] & 1 && !(gfx_debug() & 64) ? compare_func(regs[M_ALPHA_FUNC]) : D3D11_COMPARISON_ALWAYS;
+    /* Alpha to coverage (a material's "alpha sample to coverage": Waluigi's down-special
+     * icons) on targets of one sample keeps a pixel whose alpha is at least one half; without
+     * it the clear texels were drawn black. Done as that alpha test when the game's own test is off. */
+    int a2c = (regs[M_ANTI_ALIAS_ALPHA_CONTROL] & 1) && !(regs[M_ALPHA_TEST] & 1) && !(gfx_debug() & 64);
+    D3D11_COMPARISON_FUNC alpha_func = regs[M_ALPHA_TEST] & 1 && !(gfx_debug() & 64) ? compare_func(regs[M_ALPHA_FUNC])
+                                     : a2c ? D3D11_COMPARISON_GREATER_EQUAL : D3D11_COMPARISON_ALWAYS;
     Shader *pa_e = alpha_func != D3D11_COMPARISON_ALWAYS && ps_e && ps_e->state != 2 && (ps_e->info.color_mask & 1)
                  ? find_shader_ex(ps_g, SHADER_PIXEL, vs_e->info.outputs, cb[STAGE_FRAGMENT], NULL, 0, 1) : NULL;
     Shader *vs = vs_e && vs_e->state == 1 ? vs_e : NULL;
@@ -3943,7 +3948,7 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
     /* the fragment position in the game's pixels: SV_Position times these (gpu_shader.c ps_input) */
     params.base[2] = f32_bits(1.0f / rt_sx);
     params.base[3] = f32_bits(1.0f / rt_sy);
-    if (pa_e && ps == pa_e) { params.frag[2] = f32_of(alpha_test_mask(alpha_func)); params.frag[3] = f32_of(regs[M_ALPHA_REF]); }
+    if (pa_e && ps == pa_e) { params.frag[2] = f32_of(alpha_test_mask(alpha_func)); params.frag[3] = a2c ? 0.5f : f32_of(regs[M_ALPHA_REF]); }
     /* Facing: the hardware takes the signed area in window coordinates (x, y_w = scale * ndc + offset)
      * as GL does, counter-clockwise positive, and WINDOW_ORIGIN.FLIP_Y (bit 4) swaps the front face.
      * D3D judges the winding as seen on the target, which after the fix-up above is the window
