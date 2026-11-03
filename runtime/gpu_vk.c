@@ -371,6 +371,37 @@ static VkBufferView texel_view(VkBuffer buf, VkDeviceSize off, VkDeviceSize size
     return v;
 }
 
+/* A view of upload memory, kept: the frames' upload blocks live as long as the device, and the same
+ * (block, offset, size) comes back frame after frame (the arena hands out the same places in the same
+ * order), so a view made once is used again instead of made per draw. A view pushed out of its slot is
+ * destroyed with this frame (frames before it that used it are done by then: the queue runs in order). */
+#define ARENA_VIEWS (1u << 16)
+static struct { VkBuffer buf; VkDeviceSize off, size; VkBufferView view; } arena_views[ARENA_VIEWS];
+static u64 vk_stat_views_made, vk_stat_views_kept;
+static VkBufferView arena_view(VkBuffer buf, VkDeviceSize off, VkDeviceSize size) {
+    u64 h = ((u64)(uintptr_t)buf * 0x9E3779B97F4A7C15ull) ^ (off * 0xC2B2AE3D27D4EB4Full) ^ (size * 0x165667B19E3779F9ull);
+    u32 k = (u32)(h >> 48) & (ARENA_VIEWS - 1);
+    if (arena_views[k].view && arena_views[k].buf == buf && arena_views[k].off == off && arena_views[k].size == size) {
+        vk_stat_views_kept++;
+        return arena_views[k].view;
+    }
+    VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, buf, VK_FORMAT_R32_UINT, off, size};
+    VkBufferView v;
+    if (vkCreateBufferView(device, &ci, NULL, &v) != VK_SUCCESS) return VK_NULL_HANDLE;
+    vk_stat_views_made++;
+    if (arena_views[k].view) {   /* (the old one: destroyed with this frame, as texel_view's are) */
+        Frame *f = &frames[frame_at];
+        if (f->nviews == f->views_cap) {
+            u32 cap = f->views_cap * 2 + 1024;
+            VkBufferView *n = realloc(f->views, sizeof *n * cap);
+            if (n) { f->views = n; f->views_cap = cap; }
+        }
+        if (f->nviews < f->views_cap) f->views[f->nviews++] = arena_views[k].view;   /* (else leaked, never freed in use) */
+    }
+    arena_views[k].buf = buf; arena_views[k].off = off; arena_views[k].size = size; arena_views[k].view = v;
+    return v;
+}
+
 /* A descriptor set of the frame's pools (more pools as it needs them). */
 static VkDescriptorSet new_set(VkDescriptorSetLayout layout) {
     cmd();
@@ -385,7 +416,7 @@ static VkDescriptorSet new_set(VkDescriptorSetLayout layout) {
         }
         if (f->npools == MAX_POOLS) return VK_NULL_HANDLE;
         enum { SETS = 2048 };
-        VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, SETS}, {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, SETS * 24},
+        VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, SETS}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, SETS}, {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, SETS * 24},
                                         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, SETS * 8}, {VK_DESCRIPTOR_TYPE_SAMPLER, SETS * 8},
                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, SETS * 8}};
         VkDescriptorPoolCreateInfo pci = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, NULL, 0, SETS, sizeof sizes / sizeof *sizes, sizes};
@@ -1159,7 +1190,7 @@ static VkBufferView upload(u64 va, u32 size) {
     else read_gpu(va, size, dst);
     if (padded > size) memset(dst + size, 0, padded - size);
     vk_stat_upload_bytes += padded;
-    VkBufferView v = texel_view(buf, off, padded);
+    VkBufferView v = arena_view(buf, off, padded);
     if (!v) return dummy_texels;
     *u = (Upload){va, frames[frame_at].serial, gpu_stat_batches, src ? writes_over(g, size) : 0, size, src ? v : VK_NULL_HANDLE};
     return v;
@@ -1458,7 +1489,7 @@ static VkBufferView upload_window(u64 va, u32 size) {
         vk_stat_window_copies++;
         vk_stat_upload_bytes += WINDOW;
     } else vk_stat_window_hits++;
-    return texel_view(w->buf, w->off + (va - base), (size + 15) & ~15u);
+    return arena_view(w->buf, w->off + (va - base), (size + 15) & ~15u);
 }
 
 /* Big ones (4 KB or more) by their place, for the frame: a slot takes turns between several. */
@@ -2332,14 +2363,58 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
 }
 
 /* The stage's descriptor set (binding map: gpu_spirv.h), with what its program declares. */
-static VkDescriptorSet stage_set(const VShader *s, const StageBinds *b, VkBuffer pbuf, VkDeviceSize poff) {
+/* What the frame's command buffer has bound and set (graphics), so a draw sets only what changed; other
+ * graphics recording (masked clears, the overlay) forgets it: bound.serial = 0. */
+static struct {
+    u64 serial;
+    int have;
+    VkPipeline pipe;
+    VkViewport vp;
+    VkRect2D scissor;
+    u32 blend[4], stencil[6];
+    VkBuffer ibuf;
+    VkDeviceSize ioff;
+    VkIndexType itype;
+} bound;
+
+/* Sets already written this frame, by what they hold (the program, the parameters' buffer - its offset is
+ * the bind's - and every view, image and sampler): a draw binding the same as an earlier one (a material's
+ * draws, the same constants compared equal) takes that set instead of a new one written. */
+#define SET_SLOTS 2048
+#define SET_KEY (2 + 18 + 32 + 16 + 64)
+typedef struct SetSlot { u64 serial; u32 n; VkDescriptorSet set; u64 key[SET_KEY]; } SetSlot;
+static SetSlot *set_slots;
+static u64 vk_stat_sets_made, vk_stat_sets_kept, vk_stat_index_reused;
+static VkDescriptorSet stage_set(const VShader *s, const StageBinds *b, VkBuffer pbuf) {
+    u64 key[SET_KEY];
+    u32 nk = 0;
+    key[nk++] = (u64)(uintptr_t)s;
+    key[nk++] = (u64)(uintptr_t)pbuf;
+    for (u32 k = 0; k < 18; k++)
+        if (s->info.cbuf_mask >> k & 1) key[nk++] = (u64)(uintptr_t)b->cb[k];
+    if (s->stage == SHADER_VERTEX)
+        for (u32 k = 0; k < 32; k++)
+            if (s->info.inputs >> k & 1) key[nk++] = (u64)(uintptr_t)b->vb[k];
+    for (u32 k = 0; k < s->info.sb_count && k < 16; k++) key[nk++] = (u64)(uintptr_t)b->gm[k];
+    for (u32 k = 0; k < s->info.ntex && k < 32; k++) { key[nk++] = (u64)(uintptr_t)b->tex[k]; key[nk++] = (u64)(uintptr_t)b->smp[k]; }
+    u64 h = 1469598103934665603ull;
+    for (u32 i = 0; i < nk; i++) h = (h ^ key[i]) * 0x100000001B3ull;
+    if (!set_slots) set_slots = calloc(SET_SLOTS, sizeof *set_slots);
+    u64 serial = frames[frame_at].serial;
+    SetSlot *slot = set_slots ? &set_slots[(h >> 40) & (SET_SLOTS - 1)] : NULL;
+    if (slot && slot->serial == serial && slot->n == nk && !memcmp(slot->key, key, nk * sizeof *key)) {
+        vk_stat_sets_kept++;
+        return slot->set;
+    }
     VkDescriptorSet set = new_set(gfx_set_layout);
     if (!set) return VK_NULL_HANDLE;
+    vk_stat_sets_made++;
+    if (slot) { slot->serial = serial; slot->n = nk; slot->set = set; memcpy(slot->key, key, nk * sizeof *key); }
     VkWriteDescriptorSet w[1 + 18 + 32 + 16 + 64];
     VkDescriptorImageInfo ii[64];
     u32 n = 0, ni = 0;
-    VkDescriptorBufferInfo params = {pbuf, poff, sizeof(DrawParams)};
-    w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_CBV(0), 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, NULL, &params, NULL};
+    VkDescriptorBufferInfo params = {pbuf, 0, sizeof(DrawParams)};
+    w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_CBV(0), 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, NULL, &params, NULL};
     for (u32 k = 0; k < 18; k++)
         if (s->info.cbuf_mask >> k & 1)
             w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_SRV(k), 0, 1,
@@ -2601,8 +2676,27 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         u64 va = ((u64)regs[M_INDEX_BUFFER] << 32 | regs[M_INDEX_BUFFER + 1]) + (u64)first * isz;
         if (!n || n > (16u << 20)) { vk_stat_skip_other++; leave(); return; }
         u32 bytes = n * (isz == 1 ? 2 : isz);
+        /* the same indices from the same place in one submission (nothing but the GPU's own commands writes
+         * memory meanwhile, and writes_over counts those): the copy made for an earlier draw */
+        static struct { u64 va, serial, batch, gen; u32 bytes, isz; VkBuffer buf; VkDeviceSize off; } ix[4096];
+        u64 ig = gpu_va_to_guest(va), raw = (u64)n * isz;
+        int whole = ig && gpu_va_to_guest(va + raw - 1) == ig + raw - 1;
+        u64 gen = whole ? writes_over(ig, raw) : 0;
+        cmd();
+        u32 slot_i = (u32)(((va >> 1) * 0x9E3779B97F4A7C15ull ^ bytes) >> 52) & 4095;
+        if (whole && ix[slot_i].va == va && ix[slot_i].bytes == bytes && ix[slot_i].isz == isz && ix[slot_i].serial == frames[frame_at].serial &&
+            ix[slot_i].batch == gpu_stat_batches && ix[slot_i].gen == gen) {
+            ibuf = ix[slot_i].buf;
+            ioff = ix[slot_i].off;
+            vk_stat_index_reused++;
+            goto indices_done;
+        }
         u8 *dst = arena(bytes, 4, &ibuf, &ioff);
         if (!dst) { vk_stat_skip_other++; leave(); return; }
+        if (whole) {
+            ix[slot_i].va = va; ix[slot_i].bytes = bytes; ix[slot_i].isz = isz; ix[slot_i].serial = frames[frame_at].serial;
+            ix[slot_i].batch = gpu_stat_batches; ix[slot_i].gen = gen; ix[slot_i].buf = ibuf; ix[slot_i].off = ioff;
+        }
         if (isz == 1) {
             static u8 tmp8[1 << 16];
             for (u32 done = 0; done < n;) {
@@ -2613,6 +2707,7 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
             }
         } else read_gpu(va, n * isz, dst);
         vk_stat_upload_bytes += bytes;
+    indices_done:;
     }
     VkBuffer pbuf;
     VkDeviceSize poff;
@@ -2620,7 +2715,7 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     if (!pdst) { vk_stat_skip_other++; leave(); return; }
     memcpy(pdst, &params, sizeof params);
     PHASE(5);
-    VkDescriptorSet sets[2] = {stage_set(vs, &vb, pbuf, poff), ps ? stage_set(ps, &pb, pbuf, poff) : VK_NULL_HANDLE};
+    VkDescriptorSet sets[2] = {stage_set(vs, &vb, pbuf), ps ? stage_set(ps, &pb, pbuf) : VK_NULL_HANDLE};
     if (!sets[0] || (ps && !sets[1])) { vk_stat_skip_other++; leave(); return; }
 
     PHASE(6);
@@ -2651,13 +2746,20 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         rp.images[8] = zs ? zs->image : VK_NULL_HANDLE;
         vk_stat_passes++;
     }
-    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, gfx_layout, 0, ps ? 2 : 1, sets, 0, NULL);
+    /* (state the command buffer already has is not set again: bound) */
+    if (bound.serial != frames[frame_at].serial) { memset(&bound, 0, sizeof bound); bound.serial = frames[frame_at].serial; }
+    if (bound.pipe != pipe) { vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe); bound.pipe = pipe; }
+    uint32_t dyn_off[2] = {(uint32_t)poff, (uint32_t)poff};
+    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, gfx_layout, 0, ps ? 2 : 1, sets, ps ? 2 : 1, dyn_off);
     VkViewport vp = {vx, vy + vh, vw, -vh, zmin, zmax};
-    vkCmdSetViewport(c, 0, 1, &vp);
-    vkCmdSetScissor(c, 0, 1, &scissor);
-    float blend_const[4] = {f32_of(regs[M_BLEND_CONST(0)]), f32_of(regs[M_BLEND_CONST(1)]), f32_of(regs[M_BLEND_CONST(2)]), f32_of(regs[M_BLEND_CONST(3)])};
-    vkCmdSetBlendConstants(c, blend_const);
+    if (!bound.have || memcmp(&bound.vp, &vp, sizeof vp)) { vkCmdSetViewport(c, 0, 1, &vp); bound.vp = vp; }
+    if (!bound.have || memcmp(&bound.scissor, &scissor, sizeof scissor)) { vkCmdSetScissor(c, 0, 1, &scissor); bound.scissor = scissor; }
+    u32 blend_bits[4] = {regs[M_BLEND_CONST(0)], regs[M_BLEND_CONST(1)], regs[M_BLEND_CONST(2)], regs[M_BLEND_CONST(3)]};
+    if (!bound.have || memcmp(bound.blend, blend_bits, sizeof blend_bits)) {
+        float blend_const[4] = {f32_of(blend_bits[0]), f32_of(blend_bits[1]), f32_of(blend_bits[2]), f32_of(blend_bits[3])};
+        vkCmdSetBlendConstants(c, blend_const);
+        memcpy(bound.blend, blend_bits, sizeof blend_bits);
+    }
     /* Stencil references and masks: Vulkan has a set for each face. Which is which as gpu_d3d11.c draws
      * its two passes: WINDOW_ORIGIN.FLIP_Y gives the faces Direct3D (and here Vulkan) calls front the
      * hardware's back state - when the back state differs; else the front's for both. */
@@ -2668,14 +2770,24 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     static int force_swap = -2;
     if (force_swap == -2) force_swap = getenv("SSBU_STENCIL_SWAP") ? atoi(getenv("SSBU_STENCIL_SWAP")) != 0 : -1;
     int swap_faces = split && (force_swap >= 0 ? force_swap : (int)((regs[M_WINDOW_ORIGIN] >> 4) & 1));
-    vkCmdSetStencilReference(c, VK_STENCIL_FACE_FRONT_BIT, swap_faces ? bref : fref);
-    vkCmdSetStencilReference(c, VK_STENCIL_FACE_BACK_BIT, swap_faces ? fref : bref);
-    vkCmdSetStencilWriteMask(c, VK_STENCIL_FACE_FRONT_BIT, swap_faces ? bwrite : fwrite);
-    vkCmdSetStencilWriteMask(c, VK_STENCIL_FACE_BACK_BIT, swap_faces ? fwrite : bwrite);
-    vkCmdSetStencilCompareMask(c, VK_STENCIL_FACE_FRONT_BIT, swap_faces ? bread : fread);
-    vkCmdSetStencilCompareMask(c, VK_STENCIL_FACE_BACK_BIT, swap_faces ? fread : bread);
+    u32 stencil[6] = {swap_faces ? bref : fref, swap_faces ? fref : bref, swap_faces ? bwrite : fwrite, swap_faces ? fwrite : bwrite,
+                      swap_faces ? bread : fread, swap_faces ? fread : bread};
+    if (!bound.have || memcmp(bound.stencil, stencil, sizeof stencil)) {
+        vkCmdSetStencilReference(c, VK_STENCIL_FACE_FRONT_BIT, stencil[0]);
+        vkCmdSetStencilReference(c, VK_STENCIL_FACE_BACK_BIT, stencil[1]);
+        vkCmdSetStencilWriteMask(c, VK_STENCIL_FACE_FRONT_BIT, stencil[2]);
+        vkCmdSetStencilWriteMask(c, VK_STENCIL_FACE_BACK_BIT, stencil[3]);
+        vkCmdSetStencilCompareMask(c, VK_STENCIL_FACE_FRONT_BIT, stencil[4]);
+        vkCmdSetStencilCompareMask(c, VK_STENCIL_FACE_BACK_BIT, stencil[5]);
+        memcpy(bound.stencil, stencil, sizeof stencil);
+    }
+    bound.have = 1;
     if (indexed) {
-        vkCmdBindIndexBuffer(c, ibuf, ioff, isz == 4 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
+        VkIndexType itype = isz == 4 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+        if (bound.ibuf != ibuf || bound.ioff != ioff || bound.itype != itype) {
+            vkCmdBindIndexBuffer(c, ibuf, ioff, itype);
+            bound.ibuf = ibuf; bound.ioff = ioff; bound.itype = itype;
+        }
         vkCmdDrawIndexed(c, regs[M_DRAW_INDEX_COUNT], 1, 0, (int32_t)regs[M_GLOBAL_BASE_VERTEX], 0);
     } else vkCmdDraw(c, regs[M_VERTEX_ARRAY_COUNT], 1, regs[M_VERTEX_ARRAY_START], 0);
     PHASE(7);
@@ -2919,8 +3031,10 @@ static int clear_channels(Surface *s, const float color[4], u32 mask) {
     VkDescriptorSet set = c4 ? new_set(gfx_set_layout) : VK_NULL_HANDLE;
     if (!set) return 0;
     memcpy(c4, color, 16);   /* (an sRGB target's view encodes it, as Direct3D's clear does) */
-    VkDescriptorBufferInfo bi = {buf, off, 256};
-    VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_CBV(0), 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, NULL, &bi, NULL};
+    VkDescriptorBufferInfo bi = {buf, 0, 256};
+    VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_CBV(0), 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, NULL, &bi, NULL};
+    uint32_t dyn_off = (uint32_t)off;
+    bound.serial = 0;
     vkUpdateDescriptorSets(device, 1, &w, 0, NULL);
     VkImageView view = surface_attachment(s);
     VkCommandBuffer c = outside();
@@ -2929,7 +3043,7 @@ static int clear_channels(Surface *s, const float color[4], u32 mask) {
     VkRenderingInfoKHR ri = {VK_STRUCTURE_TYPE_RENDERING_INFO_KHR, NULL, 0, {{0, 0}, {s->hw, s->hh}}, 1, 0, 1, &ca, NULL, NULL};
     vkCmdBeginRenderingKHR(c, &ri);
     vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, gfx_layout, SPIRV_SET_PIXEL, 1, &set, 0, NULL);
+    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, gfx_layout, SPIRV_SET_PIXEL, 1, &set, 1, &dyn_off);
     VkViewport v = {0, 0, (float)s->hw, (float)s->hh, 0, 1};
     VkRect2D r = {{0, 0}, {s->hw, s->hh}};
     vkCmdSetViewport(c, 0, 1, &v);
@@ -3013,8 +3127,9 @@ static void vk_status_lines(void) {
             vk_stat_local_blocks);
     fprintf(stderr, "[status] vulkan draws' parts (s): shaders %.1f, targets %.1f, state %.1f, streams %.1f, resources %.1f, indices %.1f, sets %.1f, "
                     "recording %.1f (resources: constant buffers %.1f, storage buffers %.1f, textures %.1f); "
-                    "kept constant buffers: %llu made, %llu used, %llu found changed; constant buffers copied: %llu small (%llu MB), %llu big (%llu MB), %llu the same as the slot's last (of %llu compared); windows: %llu copied, %llu used again\n", vk_ns_phase[0] / 1e9, vk_ns_phase[1] / 1e9, vk_ns_phase[2] / 1e9, vk_ns_phase[3] / 1e9, vk_ns_phase[4] / 1e9,
-            vk_ns_phase[5] / 1e9, vk_ns_phase[6] / 1e9, vk_ns_phase[7] / 1e9, vk_ns_res[0] / 1e9, vk_ns_res[1] / 1e9, vk_ns_res[2] / 1e9, vk_stat_kept_made, vk_stat_kept_hits, vk_stat_kept_stale, vk_stat_cb_copies[0], vk_stat_cb_bytes[0] >> 20, vk_stat_cb_copies[1], vk_stat_cb_bytes[1] >> 20, vk_stat_cb_same, vk_stat_cb_compared, vk_stat_window_copies, vk_stat_window_hits);
+                    "kept constant buffers: %llu made, %llu used, %llu found changed; constant buffers copied: %llu small (%llu MB), %llu big (%llu MB), %llu the same as the slot's last (of %llu compared); windows: %llu copied, %llu used again; buffer views: %llu made, %llu used again; descriptor sets: %llu written, %llu used again; indices used again %llu\n", vk_ns_phase[0] / 1e9, vk_ns_phase[1] / 1e9, vk_ns_phase[2] / 1e9, vk_ns_phase[3] / 1e9, vk_ns_phase[4] / 1e9,
+            vk_ns_phase[5] / 1e9, vk_ns_phase[6] / 1e9, vk_ns_phase[7] / 1e9, vk_ns_res[0] / 1e9, vk_ns_res[1] / 1e9, vk_ns_res[2] / 1e9, vk_stat_kept_made, vk_stat_kept_hits, vk_stat_kept_stale, vk_stat_cb_copies[0], vk_stat_cb_bytes[0] >> 20, vk_stat_cb_copies[1], vk_stat_cb_bytes[1] >> 20, vk_stat_cb_same, vk_stat_cb_compared, vk_stat_window_copies, vk_stat_window_hits,
+            vk_stat_views_made, vk_stat_views_kept, vk_stat_sets_made, vk_stat_sets_kept, vk_stat_index_reused);
 }
 
 /* The output (monitor) the window is on, referenced, for display pacing (gpu_display.c waits for its
@@ -3105,7 +3220,7 @@ static const GfxBackend VULKAN = {
 static int draw_objects(void) {
     VkDescriptorSetLayoutBinding b[1 + 18 + 32 + 32 + 16 + 32];
     u32 n = 0;
-    b[n++] = (VkDescriptorSetLayoutBinding){SPIRV_BINDING_CBV(0), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL_GRAPHICS, NULL};
+    b[n++] = (VkDescriptorSetLayoutBinding){SPIRV_BINDING_CBV(0), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_ALL_GRAPHICS, NULL};
     for (u32 k = 0; k < 18 + 32; k++)   /* constant buffers t0-17, vertex streams t18-49 */
         b[n++] = (VkDescriptorSetLayoutBinding){SPIRV_BINDING_SRV(k), VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1, VK_SHADER_STAGE_ALL_GRAPHICS, NULL};
     for (u32 k = 0; k < 32; k++)        /* textures t64-95 */
