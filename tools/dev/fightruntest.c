@@ -54,7 +54,6 @@ static void map_guest(void) {
     void *got = mmap(want, GUEST + GUEST_SIZE - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (got != want) { printf("cannot map the made-up guest memory at %p (got %p)\n", want, got); exit(3); }
 }
-}
 static void stf(u64 a, float f) { memcpy(RT_HOST(a), &f, 4); }
 
 static void set_ready_go(int on) { st8(MANAGER_IMPL + 0xd2, (u8)on); }
