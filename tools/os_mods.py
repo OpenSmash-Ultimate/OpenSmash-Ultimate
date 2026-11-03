@@ -114,15 +114,17 @@ def annotate(tree, m):
             m["code"] = "waiting"
 
 
-def status(tree):
+def _describe():
     sys.path.insert(0, os.path.join(HERE, "modmanager"))
     import describe
-    data = mods.listing(tree)
-    cache = os.path.join(tree.root, "build", "work", "modthumbs")
-    for m in data["mods"]:
-        m["thumb"] = thumb_for(os.path.join(tree.mods, m["name"]), m["name"], cache)
-        annotate(tree, m)
+    return describe
+
+
+def annotate_groups(data):
+    """Fill group / part / pick / variant on listing mods (and return pick group keys)."""
+    describe = _describe()
     keys = describe.groups(data["mods"])
+    picks = describe.pick_groups(data["mods"], keys)
     titles = {}
     for m in data["mods"]:
         key = keys.get(m["name"])
@@ -130,9 +132,52 @@ def status(tree):
             continue
         m["group"] = key
         m["part"] = describe.part_label(m["name"], m.get("title"))
+        if key in picks:
+            m["pick"] = True
+            m["variant"] = describe.variant_label(m["name"], m.get("title"), m["part"])
         title = (m.get("title") if key.startswith("gb:") else None) or m["name"].split(" - ", 1)[0]
         titles.setdefault(key, {"title": title, "image": ""})
         titles[key]["image"] = titles[key]["image"] or m.get("image") or ""
+    return keys, picks, titles
+
+
+def normalize_picks(tree, prefer=None):
+    """Only one part of a pick group (UI color pack) stays on. prefer: names just turned on."""
+    describe = _describe()
+    state = tree.load()
+    listing = mods.listing(tree)
+    keys = describe.groups(listing["mods"])
+    picks = describe.pick_groups(listing["mods"], keys)
+    if not picks:
+        return False
+    prefer = set(prefer or ())
+    changed = False
+    by = {}
+    for m in listing["mods"]:
+        k = keys.get(m["name"])
+        if k in picks:
+            by.setdefault(k, []).append(m["name"])
+    for names in by.values():
+        on = [n for n in names if state["mods"].get(n, {}).get("enabled")]
+        if len(on) <= 1:
+            continue
+        keep = next((n for n in on if n in prefer), None) or on[-1]
+        for n in on:
+            if n != keep:
+                state["mods"][n]["enabled"] = False
+                changed = True
+    if changed:
+        tree.save(state)
+    return changed
+
+
+def status(tree):
+    data = mods.listing(tree)
+    cache = os.path.join(tree.root, "build", "work", "modthumbs")
+    for m in data["mods"]:
+        m["thumb"] = thumb_for(os.path.join(tree.mods, m["name"]), m["name"], cache)
+        annotate(tree, m)
+    keys, picks, titles = annotate_groups(data)
     for key, g in titles.items():
         g["thumb"] = url_thumb(g["image"], cache, key) or next(
             (m["thumb"] for m in data["mods"] if m.get("group") == key and m.get("thumb")), "")
@@ -193,9 +238,12 @@ def main(argv):
                     raise mods.Error(f"no mod called {name}")
                 state["mods"][name]["enabled"] = cmd == "enable"
             tree.save(state)
+            if cmd == "enable":
+                normalize_picks(tree, prefer=argv[2:])
             mods.apply(tree, log)
             return result(True)
         if cmd == "apply":
+            normalize_picks(tree)
             mods.apply(tree, log)
             return result(True)
         if cmd == "vanilla":
@@ -222,6 +270,8 @@ def main(argv):
                 log(f"percent {pct}")
 
             names = mods.gamebanana_install(tree, argv[2], file_id, progress)
+            # Color packs unpack to many folders: keep one on so they don't all fight over ui/.
+            normalize_picks(tree, prefer=names[:1] if names else None)
             log("percent 92")
             mods.apply(tree, log)
             log("percent 100")

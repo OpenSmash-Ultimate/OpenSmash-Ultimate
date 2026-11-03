@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "hle_paramconfig.h"
 #include "host.h"
 
 u64 rt_wrap_symbol(const char *name, GuestFn *fn);   /* (host.c) */
@@ -1475,6 +1476,9 @@ void skyline_load_plugins(Cpu *c) {
     void rtld_init(void);   /* (hle_rtld.c: nn::ro's module lists, LoadModuleInternal) */
     rtld_init();
     plugin_shims();
+    /* Toml param overrides (config_param.toml) before plugins, so a moveset that links
+     * lib_paramconfig can wrap these hooks and still fall through to the toml table. */
+    paramconfig_install(c);
     /* The real Smashline among the plugins (a standard plugin, tools/skyline.py): it hooks what the
      * native one would, so the native one stays out */
     int real_smashline = 0;

@@ -266,38 +266,58 @@ namespace OpenSmash.Launcher
                 g.DrawLine(pen, x + w - cut, y, x + w, y + cut);
         }
 
-        // Primary (white, red sweeps in on hover) or ghost (outlined, white sweeps in) button.
+        // Primary (white; dims on hover; Accent red while pressed) or ghost (outlined; dims on hover).
         public static void Button(Graphics g, string label, float x, float y, float w, float h, float s, bool primary, bool hot, bool enabled = true, float textPx = 0)
             => ButtonAnimated(g, label, x, y, w, h, s, primary, hot ? 1 : 0, enabled, textPx);
 
         public static void ButtonAnimated(Graphics g, string label, float x, float y, float w, float h, float s, bool primary, float hover,
-            bool enabled = true, float textPx = 0, float alpha = 1, Action<Graphics, Color, float, float>? icon = null)
+            bool enabled = true, float textPx = 0, float alpha = 1, Action<Graphics, Color, float, float>? icon = null, float press = 0)
         {
-            if (!enabled) { hover = 0; alpha *= 0.45f; }
+            if (!enabled) { hover = 0; press = 0; alpha *= 0.45f; }
             float e = Ease(hover);
-            y -= 2 * s * e;
+            float p = Ease(press);
+            y -= 2 * s * Math.Max(e, p);
             float cut = Math.Min(12 * s, h * 0.24f);
             using var path = Para(x, y, w, h, cut);
             var state = g.Save();
             g.SetClip(path, CombineMode.Intersect);
 
-            Color baseFill = primary ? Text : Color.FromArgb(16, 255, 255, 255);
+            Color baseFill;
+            Color fg;
+            if (primary)
+            {
+                // Idle white → clearly dimmer grey on hover → SMASH Accent while held.
+                Color idle = Text;
+                Color dimmed = Color.FromArgb(255, 150, 150, 148);
+                baseFill = Mix(idle, dimmed, e * (1 - p));
+                baseFill = Mix(baseFill, Accent, p);
+                fg = Mix(Bg, Color.White, Math.Max(e * 0.35f, p));
+            }
+            else
+            {
+                // Outlined: darken on hover / press (visible dim, not a brighten).
+                baseFill = Color.FromArgb(16, 255, 255, 255);
+                fg = Mix(Text, Color.FromArgb(255, 120, 120, 118), Math.Max(e * 0.7f, p * 0.45f));
+            }
             using (var b = new SolidBrush(Fade(baseFill, alpha))) g.FillPath(b, path);
             if (!primary)
-                using (var pen = new Pen(Fade(Color.FromArgb(140, 255, 255, 255), alpha), 4 * s)) g.DrawPath(pen, path);
-
-            if (e > 0)
             {
-                // ::before: translateX(-110%) skewX(-20deg) -> none
-                float off = -1.1f * w * (1 - e);
-                float skew = h * 0.364f * (1 - e);
-                var sweep = new[] { new PointF(x + off + skew, y), new PointF(x + off + w + skew + cut, y), new PointF(x + off + w + cut, y + h), new PointF(x + off, y + h) };
-                using var b = new SolidBrush(Fade(primary ? Accent : Text, alpha));
-                g.FillPolygon(b, sweep);
+                int edge = 140 - (int)(70 * e) - (int)(30 * p);
+                using (var pen = new Pen(Fade(Color.FromArgb(Math.Clamp(edge, 50, 140), 255, 255, 255), alpha), 4 * s))
+                    g.DrawPath(pen, path);
+            }
+            if (e > 0 || p > 0)
+            {
+                // Shared dark wash so both primary and ghost clearly dim under the pointer.
+                int a = primary ? (int)((55 * e + 0 * p) * alpha * (1 - p)) : (int)((70 * e + 50 * p) * alpha);
+                if (a > 0)
+                {
+                    using var wash = new SolidBrush(Color.FromArgb(Math.Clamp(a, 0, 255), 0, 0, 0));
+                    g.FillPath(wash, path);
+                }
             }
             g.Restore(state);
 
-            Color fg = primary ? Mix(Bg, Color.White, e) : Mix(Text, Bg, e);
             using var f = Body(textPx > 0 ? textPx : 14 * s, true);
             float sp = f.Size * 0.1f;
             string text = label.ToUpperInvariant();
