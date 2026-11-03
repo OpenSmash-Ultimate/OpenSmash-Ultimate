@@ -1061,6 +1061,7 @@ static u64 load_nro(Cpu *c, const char *id, const char *name);
 void skyline_module_loaded(const char *name, u64 base);   /* (hle_skyline.c: the plugins' hooks into it) */
 void rtld_module_loaded(u64 base, u64 size);               /* (hle_rtld.c: nn::ro's lists) */
 void native_mods_module_loaded(void);                      /* (hle_native_mods.c) */
+void fighter_src_module_loaded(const char *module, u64 base); /* (hle_fighter_src.c) */
 
 u64 rt_load_nro(Cpu *c, u64 image) {
     char id[65];
@@ -1100,6 +1101,7 @@ static u64 load_nro(Cpu *c, const char *id, const char *name) {
     if (mod->init != mod->base) rt_call(c, mod->init);
     skyline_module_loaded(mod->name, mod->base);
     native_mods_module_loaded();   /* (hle_native_mods.c: hooks by name waiting for this module) */
+    fighter_src_module_loaded(mod->name, mod->base);   /* (hle_fighter_src.c: its fighter library's C++ scripts) */
     return mod->base;
 }
 
