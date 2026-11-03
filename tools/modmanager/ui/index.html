@@ -16,6 +16,7 @@
     </div>
     <button class="tab active" data-view="library"><i>&#9670;</i>My mods <em id="count-on"></em></button>
     <button class="tab" data-view="browse"><i>&#9733;</i>GameBanana</button>
+    <button class="tab" data-view="hdr"><i>&#10022;</i>HewDraw Remix</button>
     <button class="tab" data-view="packs"><i>&#9632;</i>Modpacks</button>
     <button class="tab" data-view="add"><i>&#43;</i>Add a mod</button>
     <button class="tab" data-view="settings"><i>&#9881;</i>Settings</button>
@@ -23,6 +24,10 @@
       <div id="game-state" class="pill"></div>
       <div id="online-state"></div>
       <div id="applied-state"></div>
+      <label id="hdr-toggle" class="rail-switch" hidden title="On: Apply puts HewDraw Remix in the game with your mods (yours win where both change a file)">
+        <span class="rail-switch-text"><b>HewDraw Remix</b><small id="hdr-toggle-state"></small></span>
+        <span class="switch"><input type="checkbox" id="hdr-on"><span></span></span>
+      </label>
       <button id="apply" class="big">Apply to game</button>
       <button id="build-plugins" class="ghost small" hidden title="Compiles the turned-on mods' code plugins (movesets, new characters) into the game: a few minutes">Build plugins into the game</button>
       <button id="vanilla" class="ghost small">Play without mods</button>
@@ -68,6 +73,48 @@
       <div id="gb-fighters" class="chips fighters hidden"></div>
       <div id="gb-grid" class="grid"></div>
       <div class="more-row"><button id="gb-more" class="ghost hidden">More</button></div>
+    </section>
+
+    <!-- HewDraw Remix -->
+    <section id="view-hdr" class="view">
+      <div class="hdr-hero">
+        <div>
+          <h1>HewDraw Remix</h1>
+          <p class="hdr-lede">A fan-made gameplay overhaul of Smash Ultimate: movement and techniques from the older games come back, the whole cast gets new and reworked moves, and it brings its own competitive stage list.</p>
+          <div class="hdr-links">
+            <a href="https://github.com/HDR-Development/HewDraw-Remix" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://github.com/HDR-Development/HDR-PreReleases/releases" target="_blank" rel="noopener">Releases &amp; changelog</a>
+            <a href="https://discord.gg/hdr" target="_blank" rel="noopener">Discord</a>
+          </div>
+        </div>
+        <div class="card hdr-get" id="hdr-get"></div>
+      </div>
+
+      <div class="hdr-cols">
+        <div class="card">
+          <h3>What it changes</h3>
+          <ul>
+            <li>Movement and advanced techniques inspired by Melee, Brawl, Project M and Smash 4</li>
+            <li>New moves and reworked attacks for every fighter, with its own balance</li>
+            <li>Changes to physics, shields, ledges and landing</li>
+            <li>A stage list of its own, with remade stages and alternate versions (stage_alts, stage_config)</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>With your mods</h3>
+          <ul>
+            <li>Turn it on with the switch above <b>Apply to game</b>, then apply. It goes in first and your mods on top, so your skins, stages and music still show.</li>
+            <li>A moveset mod for a fighter HDR changes can clash with HDR's version of that fighter. Turn one of them off if a fighter acts strangely.</li>
+            <li>Online, everyone in the room needs HDR on, the same version.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="card subtle hdr-credits">
+        <h3>Credits</h3>
+        <p>HewDraw Remix is made by the <b>HewDraw Remix Dev Team</b> (<a href="https://github.com/HDR-Development" target="_blank" rel="noopener">HDR-Development</a>) and its contributors. HDR includes stages, UI and animations by many independent mod creators, used with their permission, and its own code is open source (AGPL-3.0).</p>
+        <p>WindowSmash doesn't ship HDR: the download comes straight from HDR's official releases on GitHub. Thanks to <a href="https://github.com/jugarrit" target="_blank" rel="noopener">jugarrit</a> for the fixes that let HDR run here. HDR isn't made by or connected with Nintendo.</p>
+      </div>
     </section>
 
     <!-- modpacks -->

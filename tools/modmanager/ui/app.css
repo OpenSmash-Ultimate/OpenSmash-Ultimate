@@ -306,3 +306,25 @@ input[type=checkbox].pick { width: 16px; height: 16px; accent-color: var(--gold)
 .seg-pair { display: inline-flex; }
 .seg-pair button:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .seg-pair button:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 0; }
+/* HewDraw Remix: its switch above Apply, and its tab */
+.rail-switch { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); cursor: pointer; }
+.rail-switch[hidden] { display: none; }
+.rail-switch-text { display: flex; flex-direction: column; min-width: 0; margin-right: auto; }
+.rail-switch-text b { font: italic 800 15px/1.1 var(--head); letter-spacing: .3px; }
+.rail-switch-text small { font-size: 11px; color: var(--dim); }
+.rail-switch:has(input:checked) { border-color: var(--gold); }
+.rail-switch:has(input:checked) small { color: var(--gold); }
+.hdr-hero { display: grid; grid-template-columns: 1fr 320px; gap: 22px; align-items: start; margin-bottom: 18px; }
+.hdr-hero h1 {
+  margin: 0 0 12px; display: inline-block; font: italic 800 44px/1 var(--head); letter-spacing: .5px; text-transform: uppercase;
+  padding: 10px 30px 10px 18px; background: var(--panel); clip-path: polygon(0 0, 100% 0, 95% 100%, 0 100%); border-left: 6px solid var(--pink);
+}
+.hdr-lede { font-size: 16px; line-height: 1.55; max-width: 62ch; margin: 0 0 14px; }
+.hdr-links { display: flex; gap: 16px; flex-wrap: wrap; font-weight: 600; }
+.hdr-get { margin: 0; }
+.hdr-get .big { width: 100%; margin: 4px 0 10px; }
+.hdr-get .fine { font-size: 12px; margin: 0; }
+.hdr-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.hdr-cols ul li { margin-bottom: 6px; }
+.hdr-credits p { max-width: 90ch; }
+@media (max-width: 900px) { .hdr-hero, .hdr-cols { grid-template-columns: 1fr; } }
