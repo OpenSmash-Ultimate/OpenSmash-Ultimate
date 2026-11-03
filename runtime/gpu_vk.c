@@ -883,6 +883,7 @@ static void submit(VkSemaphore wait, VkSemaphore signal) {
 }
 
 static void pipeline_cache_tick(void);
+static void residents_retire(void);
 static void vk_present_(u64 guest, u32 width, u32 height);
 static void vk_present(u64 guest, u32 width, u32 height) {
     u64 t0 = rt_clock_ns();
@@ -958,6 +959,7 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
         for (int i = 0; i < nshots; i++) readback_save(&shot[i]);
     }
     frame_at = (frame_at + 1) % nframes;
+    residents_retire();
     pipeline_cache_tick();
     leave();
 }
@@ -1165,11 +1167,12 @@ static VkBufferView upload(u64 va, u32 size) {
  * fighters' skinned vertices). gpu_d3d11.c learns which buffers a program writes (reading results back
  * for its first runs) and brings results back to guest memory when the copy engine reads them; not here
  * yet: results stay on the GPU, guest memory keeps what it had. Regions that overlap are merged. */
-typedef struct Resident { u64 va, size, guest, seen, asked, used; VkDeviceSize bytes; VkBuffer buf; Alloc mem; } Resident;
+typedef struct Resident { u64 va, size, guest, seen, asked, used; VkDeviceSize bytes; VkBuffer buf; Alloc mem; u64 written; } Resident;   /* (written: the frame a launch last wrote it) */
 #define MAX_RESIDENTS 512
 static Resident residents[MAX_RESIDENTS];
 static u32 nresidents;   /* (slots in use up to here; a free one has no buffer) */
-static u64 vk_stat_residents_made, vk_stat_resident_refills, vk_stat_skip_compute;
+static u64 vk_stat_residents_made, vk_stat_resident_refills, vk_stat_skip_compute, vk_stat_flushes, vk_stat_residents_retired,
+    vk_stat_learned, vk_stat_resident_copies, vk_stat_resident_flushed;
 static VkDeviceSize ssbo_align = 256;
 
 static VkBuffer make_buffer(VkDeviceSize size, VkBufferUsageFlags usage, Alloc *a) {
@@ -1206,12 +1209,20 @@ static void resident_fill(Resident *r, VkDeviceSize off, u64 n) {
     vk_stat_upload_bytes += n;
 }
 
-/* Has the CPU written the region's memory since it was taken (asked once a submission)? Then take it again. */
+/* Has the CPU written the region's memory since it was taken (asked once a submission)? A region the
+ * launches keep writing is the GPU's (its pages are shared with data the CPU rewrites: taking them again
+ * put the guest's stale vertices over the skinned ones - Donkey Kong drawn pale); one no launch wrote for
+ * a few frames is the CPU's again, taken from guest memory. */
+#define RESIDENT_OWNED 3
+#define RESIDENT_IDLE 60
 static void resident_check(Resident *r) {
     r->used = ++tick;
     if (r->asked == gpu_stat_batches) return;
     r->asked = gpu_stat_batches;
-    if (watch_written(r->guest, r->size, &r->seen)) { resident_fill(r, 0, r->size); vk_stat_resident_refills++; }
+    if (watch_written(r->guest, r->size, &r->seen) && gfx_stat_presented - r->written > RESIDENT_OWNED) {
+        resident_fill(r, 0, r->size);
+        vk_stat_resident_refills++;
+    }
 }
 
 static Resident *resident_covering(u64 va, u64 size) {
@@ -1244,7 +1255,7 @@ static Resident *resident_acquire(u64 va, u64 size) {
         else if (!lru || residents[i].used < lru->used) lru = &residents[i];
     }
     if (!n) { resident_drop(lru); n = lru; }
-    Resident made = {lo, hi - lo, g, 0, gpu_stat_batches, ++tick, ((hi - lo + 15) & ~15ull) + 256, VK_NULL_HANDLE, {0}};
+    Resident made = {lo, hi - lo, g, 0, gpu_stat_batches, ++tick, ((hi - lo + 15) & ~15ull) + 256, VK_NULL_HANDLE, {0}, gfx_stat_presented};
     made.buf = make_buffer(made.bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &made.mem);
     if (!made.buf) return NULL;
@@ -1274,9 +1285,73 @@ static VkBufferView resident_texels(Resident *r, u64 va, u64 size, u32 *skip) {
     return texel_view(r->buf, at, range);
 }
 
+/* Compute inputs (what a launch only reads: bind poses, skin weights): device buffers of guest memory, taken
+ * again when the write watch says the CPU wrote them (gpu_d3d11.c's input buffers). */
+#define MAX_INPUTS 128
+static Resident inputs[MAX_INPUTS];
+static Resident *input_buffer(u64 va, u64 size) {
+    u64 g = gpu_va_to_guest(va);
+    if (!g || !size || !watched(g, size) || gpu_va_to_guest(va + size - 1) != g + size - 1) return NULL;
+    Resident *b = NULL, *lru = &inputs[0];
+    for (u32 i = 0; i < MAX_INPUTS && !b; i++) {
+        if (inputs[i].buf && inputs[i].va == va && inputs[i].size == size && inputs[i].guest == g) b = &inputs[i];
+        else if (inputs[i].used < lru->used) lru = &inputs[i];
+    }
+    if (b) {
+        b->used = ++tick;
+        if (watch_written(g, size, &b->seen)) resident_fill(b, 0, size);
+        return b;
+    }
+    b = lru;
+    resident_drop(b);
+    Resident made = {va, size, g, 0, 0, ++tick, ((size + 15) & ~15ull) + 256, VK_NULL_HANDLE, {0}, 0};
+    made.buf = make_buffer(made.bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, &made.mem);
+    if (!made.buf) return NULL;
+    *b = made;
+    watch_written(g, size, &b->seen);
+    resident_fill(b, 0, size);
+    return b;
+}
+
+/* The frame's work so far submitted and waited for (results to read back: learning, flushes). The
+ * frame's upload memory may be read until cmd() begins again. */
+static void submit(VkSemaphore wait, VkSemaphore signal);
+static void flush_wait(void) {
+    Frame *f = &frames[frame_at];
+    if (!f->recording) return;
+    submit(VK_NULL_HANDLE, VK_NULL_HANDLE);
+    u64 t0 = rt_clock_ns();
+    check(vkWaitForFences(device, 1, &f->done, VK_TRUE, UINT64_MAX), "waiting for results");
+    vk_ns_wait += rt_clock_ns() - t0;
+    vk_stat_flushes++;
+}
+
+/* Words to guest memory, through GPU addresses (as gpu_d3d11.c writes results back while learning). */
+static void write_gpu(u64 va, const u8 *src, u64 n) {
+    for (u64 done = 0; done < n;) {
+        u64 k = 0x1000 - ((va + done) & 0xFFF);
+        if (k > n - done) k = n - done;
+        u64 g = gpu_va_to_guest(va + done);
+        if (g) memcpy(P(void, g), src + done, k);
+        done += k;
+    }
+}
+
+/* Once a frame: regions no launch wrote for a while are given up (memory a scene leaves is handed out
+ * again; the guest's copy is the data then). */
+static void residents_retire(void) {
+    for (u32 i = 0; i < nresidents; i++)
+        if (residents[i].buf && gfx_stat_presented - residents[i].written > RESIDENT_IDLE) { resident_drop(&residents[i]); vk_stat_residents_retired++; }
+}
+
 static void residents_unmapped(u64 lo, u64 hi, int guest) {
     for (u32 i = 0; i < nresidents; i++) {
         Resident *r = &residents[i];
+        u64 a = guest ? r->guest : r->va;
+        if (r->buf && a < hi && lo < a + r->size) resident_drop(r);
+    }
+    for (u32 i = 0; i < MAX_INPUTS; i++) {
+        Resident *r = &inputs[i];
         u64 a = guest ? r->guest : r->va;
         if (r->buf && a < hi && lo < a + r->size) resident_drop(r);
     }
@@ -1429,6 +1504,7 @@ typedef struct VShader {
     int stage;
     volatile LONG state;   /* 0 being made, 1 ready, 2 failed */
     VkPipeline compute;    /* (a compute program's pipeline, made with it) */
+    u32 written_mask, learn_runs;   /* compute: storage buffers it was seen to write, over its first runs */
     VkShaderModule module;
     char name[64];
     ShaderInfo info;
@@ -2616,6 +2692,15 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
     memset(&params, 0, sizeof params);
     VkDescriptorBufferInfo sb[16];
     for (u32 k = 0; k < 16; k++) sb[k] = (VkDescriptorBufferInfo){dummy_buffer, 0, 256};
+    /* As gpu_d3d11.c: a program that stores is learned over its first 8 launches - every buffer from guest
+     * memory, the results read back, written to guest memory, and the buffers that changed noted; from then
+     * on what it writes is a resident region, what it only reads an input buffer (or the region's data) */
+    static int no_resident = -1;
+    if (no_resident < 0) no_resident = getenv("SSBU_NO_RESIDENT") != NULL;
+    int learned = (cs->learn_runs >= 8 || !cs->info.stores) && !no_resident;
+    u8 *learn_at[16] = {0}, *before[16] = {0};
+    u64 learn_va[16] = {0};
+    u32 learn_size[16] = {0};
     for (u32 k = 0; k < cs->info.sb_count && k < 16; k++) {
         u32 desc[4] = {0};
         if (cb[0].address) read_gpu(cb[0].address + cs->info.sb_offset[k], 16, desc);
@@ -2625,7 +2710,14 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
         params.sb[0][k][1] = desc[1];
         params.sb[0][k][2] = size;
         if (!va || !size) continue;
-        Resident *r = resident_acquire(va, size);
+        int writes = learned && (cs->written_mask >> k & 1);
+        Resident *r = !learned ? NULL : writes ? resident_acquire(va, size) : resident_covering(va, size);
+        if (r && writes) r->written = gfx_stat_presented;
+        if (r) resident_check(r);
+        if (!r && learned && !writes && (r = input_buffer(va, size)) != NULL) {   /* only read: cached */
+            sb[k] = (VkDescriptorBufferInfo){r->buf, 0, (size + 3) & ~3ull};
+            continue;
+        }
         if (r) {   /* (the view may start a little before va) */
             VkDeviceSize off = va - r->va, at = off / ssbo_align * ssbo_align;
             u32 skip = (u32)(off - at);
@@ -2646,6 +2738,10 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
         read_gpu(va, size, p);
         if (bytes > size) memset(p + size, 0, bytes - size);
         sb[k] = (VkDescriptorBufferInfo){buf, boff, bytes};
+        if (!learned && cs->info.stores && (before[k] = malloc(size)) != NULL) {
+            memcpy(before[k], p, size);
+            learn_at[k] = p; learn_va[k] = va; learn_size[k] = size;
+        }
     }
     VkBuffer pbuf;
     VkDeviceSize poff;
@@ -2681,12 +2777,76 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
     vkCmdDispatch(c, grid[0], grid[1], grid[2]);
     sync_all(c);
     vk_stat_dispatched++;
+    if (!learned && cs->info.stores) {   /* learning: the results, read back */
+        flush_wait();
+        for (u32 k = 0; k < 16; k++) {
+            if (!before[k]) continue;
+            const u32 *now = (const u32 *)learn_at[k], *was = (const u32 *)before[k];
+            int changed = 0;
+            for (u32 i = 0; i < learn_size[k] / 4; i++) {
+                if (now[i] == was[i]) continue;
+                changed = 1;
+                write_gpu(learn_va[k] + 4ull * i, (const u8 *)&now[i], 4);
+            }
+            if (changed) cs->written_mask |= 1u << k;
+            free(before[k]);
+        }
+        if (++cs->learn_runs == 8) vk_stat_learned++;
+    }
     leave();
 }
 
 /* ---- the rest of the runtime's questions ------------------------ */
-static int vk_copy_resident(u64 dst, u64 src, u64 bytes) { (void)dst; (void)src; (void)bytes; return 0; }
-static void vk_range(u64 va, u64 bytes) { (void)va; (void)bytes; }
+/* The copy engine: [src, src + bytes) to dst on the GPU when the source is a region's (1: done). */
+static int vk_copy_resident(u64 dst, u64 src, u64 bytes) {
+    enter();
+    Resident *s = nresidents && bytes ? resident_covering(src, bytes) : NULL;
+    Resident *d = s ? resident_acquire(dst, bytes) : NULL;
+    s = d ? resident_covering(src, bytes) : NULL;   /* (acquiring may have merged it) */
+    if (!s || !d || d == s) { leave(); return 0; }
+    VkCommandBuffer c = outside();
+    VkBufferCopy bc = {src - s->va, dst - d->va, bytes};
+    vkCmdCopyBuffer(c, s->buf, d->buf, 1, &bc);
+    sync_all(c);
+    d->written = gfx_stat_presented;
+    vk_stat_resident_copies++;
+    leave();
+    return 1;
+}
+/* Before the copy engine reads [va, va + bytes): regions' data there back to guest memory. */
+static void vk_resident_flush(u64 va, u64 bytes) {
+    enter();
+    for (u32 i = 0; i < nresidents && bytes; i++) {
+        Resident *r = &residents[i];
+        if (!r->buf || r->va >= va + bytes || va >= r->va + r->size) continue;
+        u64 lo = va > r->va ? va : r->va, hi = va + bytes < r->va + r->size ? va + bytes : r->va + r->size;
+        VkBuffer buf;
+        VkDeviceSize off;
+        u8 *p = arena(hi - lo, 16, &buf, &off);
+        if (!p) continue;
+        VkCommandBuffer c = outside();
+        VkBufferCopy bc = {lo - r->va, off, hi - lo};
+        vkCmdCopyBuffer(c, r->buf, buf, 1, &bc);
+        sync_all(c);
+        flush_wait();
+        write_gpu(lo, p, hi - lo);
+        watch_written(r->guest, r->size, &r->seen);   /* (its own writes are no news) */
+        vk_stat_resident_flushed++;
+    }
+    leave();
+}
+/* The copy engine wrote guest memory [va, va + bytes): regions there take it. */
+static void vk_resident_written(u64 va, u64 bytes) {
+    enter();
+    note_wrote(va, bytes);
+    for (u32 i = 0; i < nresidents && bytes; i++) {
+        Resident *r = &residents[i];
+        if (!r->buf || r->va >= va + bytes || va >= r->va + r->size) continue;
+        u64 lo = va > r->va ? va : r->va, hi = va + bytes < r->va + r->size ? va + bytes : r->va + r->size;
+        resident_fill(r, lo - r->va, hi - lo);
+    }
+    leave();
+}
 static void vk_nothing(void) {}
 static int vk_draw_logging(void) { return 0; }
 static DWORD vk_lock_owner(void) { return (DWORD)(uintptr_t)lock.OwningThread; }
@@ -2697,13 +2857,14 @@ static void vk_status_lines(void) {
     fprintf(stderr, "[status] vulkan (%s): %llu frames shown (%llu with no window to show them in), %llu clears (%llu masked, not drawn), "
                     "%llu 2D blits (%llu between formats it cannot blit), %u surfaces, %u textures (%llu made), %llu MB device memory; "
                     "%llu draws: %llu drawn in %llu renderings, skipped %llu shader / %llu pipeline / %llu target / %llu topology / %llu other; "
-                    "%llu shaders (%llu failed), %llu pipelines (%llu failed; %.1f s making them), %llu MB uploaded (%llu reused); %llu compute launches (%llu run, %llu skipped), %u resident regions (%llu made, %llu taken again); "
+                    "%llu shaders (%llu failed), %llu pipelines (%llu failed; %.1f s making them), %llu MB uploaded (%llu reused); %llu compute launches (%llu run, %llu skipped), %u resident regions (%llu made, %llu taken again, %llu given up, %llu copies, %llu flushed), %llu programs learned, %llu waits for results; "
                     "time in draws %.1f s, launches %.1f s, presents %.1f s (of it waiting for the GPU %.1f s), %llu upload blocks in the card's memory\n",
             card, gfx_stat_presented, vk_stat_presents_skipped, gfx_stat_clears, vk_stat_clears_skipped, gfx_stat_blits, vk_stat_blits_skipped,
             nsurfaces, ntextures, vk_stat_textures, vk_stat_device_bytes >> 20, vk_stat_draws, vk_stat_drawn, vk_stat_passes, vk_stat_skip_shader, vk_stat_skip_pipeline,
             vk_stat_skip_target, vk_stat_skip_topology, vk_stat_skip_other, vk_stat_shaders, vk_stat_shader_failures, vk_stat_pipelines, vk_stat_pipeline_failures, pipeline_ns / 1e9,
             vk_stat_upload_bytes >> 20, vk_stat_reused, vk_stat_dispatches, vk_stat_dispatched, vk_stat_skip_compute, nresidents,
-            vk_stat_residents_made, vk_stat_resident_refills, vk_ns_draw / 1e9, vk_ns_dispatch / 1e9, vk_ns_present / 1e9, vk_ns_wait / 1e9,
+            vk_stat_residents_made, vk_stat_resident_refills, vk_stat_residents_retired, vk_stat_resident_copies, vk_stat_resident_flushed,
+            vk_stat_learned, vk_stat_flushes, vk_ns_draw / 1e9, vk_ns_dispatch / 1e9, vk_ns_present / 1e9, vk_ns_wait / 1e9,
             vk_stat_local_blocks);
     fprintf(stderr, "[status] vulkan draws' parts (s): shaders %.1f, targets %.1f, state %.1f, streams %.1f, resources %.1f, indices %.1f, sets %.1f, "
                     "recording %.1f (resources: constant buffers %.1f, storage buffers %.1f, textures %.1f); "
@@ -2775,8 +2936,8 @@ static const GfxBackend VULKAN = {
     .blit2d = vk_blit2d,
     .dispatch = vk_dispatch,
     .copy_resident = vk_copy_resident,
-    .resident_flush = vk_range,
-    .resident_written = vk_wrote,
+    .resident_flush = vk_resident_flush,
+    .resident_written = vk_resident_written,
     .stream_wrote = vk_wrote,
     .guest_wrote = vk_wrote,
     .stream_end = vk_nothing,
