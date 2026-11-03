@@ -50,6 +50,13 @@ static int menu_blocks_input(void) { return 0; }
 static int64_t InterlockedIncrement64(int64_t*p) { return ++*p; }
 static void st64(u64 p,u64 v) { memcpy((void*)(uintptr_t)p,&v,8); }
 static void st32(u64 p,u32 v) { memcpy((void*)(uintptr_t)p,&v,4); }
+/* (rollback and the benchmark: off) */
+static u32 rb_slot_phys(u32 id) { return id; }
+static void rb_pad(u32 id,u64*b,i32*lx,i32*ly,i32*rx,i32*ry,i32*lt,i32*rt) { (void)id;(void)b;(void)lx;(void)ly;(void)rx;(void)ry;(void)lt;(void)rt; }
+static int rb_pad_sampling(u64*s) { (void)s; return 0; }
+static int bench_on(void) { return 0; }
+static int bench_pads(void) { return 0; }
+static u64 bench_buttons(i32*x,i32*y) { (void)x;(void)y;return 0; }
 '''
         harness += source[begin:end]
         harness += r'''
