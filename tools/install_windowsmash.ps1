@@ -1484,6 +1484,32 @@ function Step-Build {
 }
 
 # ---- step 10: shaders --------------------------------------------------------------------------------------------
+function Step-Launcher {
+    # The OpenSmash launcher (OpenSmash.exe): the one window for playing, settings and mods. Built here when the
+    # .NET 8 SDK is on this PC (tools\build_launcher.ps1); otherwise taken from the organisation's latest release,
+    # checked against the SHA-256 published beside it. Without either, Play SSBU.bat keeps its own window.
+    $exe = Join-Path $Root 'OpenSmash.exe'
+    if (Test-Path -LiteralPath $exe) { Write-Info 'launcher: OpenSmash.exe is here'; return }
+    if ($DryRun) { Write-Would 'build or download OpenSmash.exe (the launcher)'; return }
+    if (Get-Command dotnet -ErrorAction SilentlyContinue) {
+        try { & (Join-Path $Root 'tools\build_launcher.ps1'); if (Test-Path -LiteralPath $exe) { Write-Info 'launcher: OpenSmash.exe built'; return } }
+        catch { Write-Warn "launcher: the build stopped ($($_.Exception.Message)); trying the release" }
+    }
+    $base = 'https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/latest/download'
+    try {
+        $sum = ((Get-Text "$base/OpenSmash.exe.sha256") -split '\s+')[0].Trim().ToLower()
+        if ($sum -notmatch '^[0-9a-f]{64}$') { throw 'no checksum published' }
+        $tmp = "$exe.download"
+        Invoke-Download "$base/OpenSmash.exe" $tmp 'the OpenSmash launcher'
+        $got = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash.ToLower()
+        if ($got -ne $sum) { Remove-Item -LiteralPath $tmp -Force; throw "its SHA-256 differs from the published one" }
+        Move-Item -LiteralPath $tmp -Destination $exe -Force
+        Write-Info 'launcher: OpenSmash.exe downloaded and checked'
+    } catch {
+        Write-Warn "launcher: not available ($($_.Exception.Message)); Play SSBU.bat opens its own window instead (Build Launcher.bat builds OpenSmash.exe with the .NET 8 SDK)"
+    }
+}
+
 function Step-Shaders {
     param([hashtable]$Answers, [bool]$Built)
     Write-Step '[10/10] Shaders'
@@ -1531,6 +1557,7 @@ function Main {
         Step-Extras $answers
         $built = Step-Build $answers
         Step-Shaders $answers $built
+        Step-Launcher
         Write-Host ''
         if ($built) {
             Write-Host 'Done. Start the game with OpenSmash.exe, or the shortcut on the desktop.' -ForegroundColor Green

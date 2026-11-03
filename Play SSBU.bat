@@ -20,7 +20,10 @@ rem First a window (tools\launcher.ps1) shows the game version and the settings,
 rem starts the game. With "start the game directly" ticked there (launcher.ini: show_launcher = 0),
 rem the game starts at once; hold Shift while starting to see the window again. If the window cannot
 rem open (exit code 2), the game starts as before, from here.
+rem The OpenSmash launcher (OpenSmash.exe, made by the installer or Build Launcher.bat) comes first when it
+rem is there: one launcher for everything. The window above is what runs without it.
 cd /d "%~dp0"
+if exist OpenSmash.exe (start "" OpenSmash.exe & exit /b 0)
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\launcher.ps1 -Auto
 if %errorlevel%==2 goto direct
 if errorlevel 1 (pause & exit /b 1)
