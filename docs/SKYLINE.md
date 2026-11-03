@@ -58,7 +58,7 @@ The dependency plugins themselves (latest releases):
 | Plugin | Imports | How it works on the console |
 | --- | --- | --- |
 | Smashline 2 v1.6.8 | Skyline 5 (incl. `A64InlineHook`), main 11, lua2cpp_common 12, SDK 59 | hooks the game's agent factories (main+0x64c310 ...), lua2cpp_common's coroutine call and status lines with **inline** hooks at single instructions |
-| lib_paramconfig 6.5 | Skyline 3, ARCropolis 2, main 20 | hooks param getters; reads `config_param.toml` from each mod folder |
+| lib_paramconfig 6.5 | Skyline 3, ARCropolis 2, main 20 | on console: hooks param getters; reads `config_param.toml`. Here: the `.nro` is not run (its main hangs); `tools/paramconfig.py` + `runtime/hle_paramconfig.c` apply each enabled mod's toml natively. Movesets that link paramconfig into their own `plugin.nro` still work. |
 | CSK Collection 5.0.6 | Skyline 5 (incl. `A64InlineHook`), ARCropolis 6 (`arcrop_register_callback`: rewrites files as the game loads them) | patches `ui_chara_db` and friends at load time |
 
 ## How plugins run in WindowSmash (prototype)
@@ -233,9 +233,11 @@ files, a later mod winning; the runtime reads the order from `dump/skyline/mods.
    while plugins load, and `mods.py` (which already merges `.prcxml` into `ui_chara_db.prc`) or
    the file layer applies them. ARCropolis' `arcrop_register_event_callback` /
    `arcrop_register_callback` need a hook in the runtime's file reads.
-5. **lib_paramconfig**: works as part of each plugin once its hooks reach their targets (it
-   hooks `FighterParamModule` getters - check whether those are called directly) and it can read
-   `sd:/ultimate/mods/<mod>/config_param.toml` (an `sd:` mount pointing at the mods folder).
+5. **lib_paramconfig**: done for the toml path. `mods.py` apply / `skyline.sync` writes
+   `dump/skyline/paramconfig.json` from each enabled mod's `config_param.toml`; the runtime hooks
+   `get_param_int` / `float` / `int64` and applies those overrides. The standalone `.nro` stays
+   faked as present. Article / Kirby / Villager / Rosetta vtable hooks from the real plugin are
+   not ported yet. Movesets that link paramconfig still install their own hooks on top.
 6. **Windows**: the same C and runtime build with clang-cl; `rt_hook_function` and the loader
    are platform-independent.
 7. **Online**: plugins change gameplay; everyone in a room needs the same plugins (the mod
