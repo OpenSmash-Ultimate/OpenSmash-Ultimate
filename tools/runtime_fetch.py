@@ -33,8 +33,17 @@ class Error(Exception):
 def download(url):
     if not url.startswith("https://github.com/"):
         raise Error(f"not a GitHub address: {url}")
-    with urllib.request.urlopen(url, timeout=60) as r:
-        return r.read()
+    try:
+        with urllib.request.urlopen(url, timeout=60) as r:
+            return r.read()
+    except OSError as e:   # (Python refused the certificate: through curl.exe, Windows' own HTTPS - msvc_deps.cert_refused)
+        import msvc_deps
+        if not msvc_deps.cert_refused(e):
+            raise
+        try:
+            return msvc_deps.curl_get(url)
+        except msvc_deps.Failed as f:
+            raise Error(str(f))
 
 
 def isa_of(build):

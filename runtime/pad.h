@@ -20,9 +20,9 @@ void pad_start(void);                                     /* once; the first hid
 int pad_get(u32 slot, PadState *out);                     /* returns out->connected */
 int pad_keyboard_slot(void);                              /* the keyboard's slot, or -1 */
 /* The keyboard's keys (controllers.ini [keyboard]): binding i is console button i (0-15, NpadButton
- * bits) or a stick direction (16-23: LSTICK_LEFT, _UP, _RIGHT, _DOWN, then RSTICK's), each with up to
+ * bits), a stick direction (16-23: LSTICK_LEFT, _UP, _RIGHT, _DOWN, then RSTICK's) or WALK (24), each with up to
  * PAD_KEY_MAX keys as Windows virtual-key codes. pad_keyboard_state reads them with down(vk). */
-enum { PAD_KEYS = 24, PAD_KEY_MAX = 4 };
+enum { PAD_KEYS = 25, PAD_KEY_MAX = 4 };   /* (24: WALK, held to push the left stick part way) */
 u64 pad_keyboard_state(int (*down)(int vk), i32 *lx, i32 *ly, i32 *rx, i32 *ry);
 const char *pad_key_label(int i);                         /* "A", ..., "RSTICK_DOWN": the key in [keyboard] */
 int pad_key_index(const char *label);                     /* the other way round, -1 none */

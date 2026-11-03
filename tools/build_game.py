@@ -915,7 +915,10 @@ def write_romfs_cfg(game, keys, the_program):
         log("  applying the update over the game's data (a few minutes; every block of the result is checked)")
         inner = ["--inner", program["name"]] if program["container"] else []   # (the package may hold the game too)
         run([sys.executable, os.path.join("tools", "update.py"), "apply", path, *inner, "--base", base_cfg, "--keys", keys],
-            "The update could not be applied over the game's data (see above).")
+            "The update could not be applied over the game's data (see above). Most often a file of the game or of "
+            "the update is incomplete: a copy cut short, a download in parts not joined into one file, or an archive "
+            "not unpacked to the end. Compare each file's size with the original's, copy or dump it again, and run "
+            "this again.")
     else:
         raise Failed(f"There is no romfs.bin in {game}, and {gamefiles.where(program)} holds no game data. Put the game's "
                      "data there as romfs.bin: unencrypted, with the 13.0.5 update applied (setup guide part 2).")
@@ -1136,10 +1139,16 @@ def build(a):
         extract_fonts(firmware, keys)
         missing = missing_fonts(FONTS)
         if missing:
-            raise Failed(f"These fonts were not in {firmware}: {', '.join(missing)}. Check that it holds all of "
-                         "your firmware's .nca files, and that your keys are from after your Switch's latest "
-                         "system update. Or leave the firmware out (in the installer, or --no-firmware here): the game "
-                         "then uses the open fonts of third_party/fonts_open, without Chinese, Japanese or Korean text.")
+            # (the most common setup stop on the Discord: a firmware newer than the keys, whose .nca files the
+            # keys cannot open. The build goes on with the open fonts; the runtime takes the firmware's font of
+            # each type that was found and the open one for the rest - runtime/hle_pl.c.)
+            log(f"  WARNING: these fonts were not in {firmware}: {', '.join(missing)}. Most often the firmware is "
+                "newer than your keys (keys dumped before your Switch's latest system update cannot open it), or "
+                "the folder lacks some of the firmware's .nca files.")
+            log("  The build goes on with the open fonts in their place. For your console's own fonts, fix the keys "
+                "or the firmware folder and run the installer again with the firmware (--firmware here).")
+            use_open_fonts()
+            fonts_from = "open"
     if fonts_from in ("game", "firmware") and os.path.exists(FONTS + ".none"):   # (the firmware's now, not the open ones)
         os.remove(FONTS + ".none")
 
@@ -1153,12 +1162,18 @@ def build(a):
     check_game_data(cfg, game or saved.get("game"))
 
     log(shown("\n[7/9] Turn on your DLC (dump\\modules\\aoc.cfg)"))
-    if aoc_done():
+    # (DLC added to the game folder after the first build was never seen: with a game folder named, its DLC is
+    # read again - only the packages' headers and metadata, quick - unless it has none: then an aoc.cfg made
+    # by hand from another folder stays)
+    again = bool(a.game) and os.path.exists(aoc)
+    if aoc_done() and not again:
         log("  already done")
     else:
         _path, title, rec, result = the_program()
         dlc = dlc_folder(game, rec, result["contents"])
-        if not dlc:
+        if not dlc and again:
+            log(f"  no DLC in {game}: dump\\modules\\aoc.cfg stays as it is")
+        elif not dlc:
             log(f"  no dlc folder in {game}, and no DLC among its files: no DLC")
             with open(no_aoc, "w", newline="\n") as f:   # (so that the game files are not asked for again for this)
                 f.write("no DLC was found in the game files; give --game to look again\n")

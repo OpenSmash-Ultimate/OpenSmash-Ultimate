@@ -40,6 +40,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -277,10 +278,55 @@ def msi_cabs(msi, sdk):
 
 
 # ---- downloads --------------------------------------------------------------------------------
+def cert_refused(e):
+    """e is Python refusing a server's certificate (CERTIFICATE_VERIFY_FAILED). Python reads Windows'
+    root certificates as they are, while Windows fetches a root it lacks only when its own programs
+    ask; an antivirus that looks inside HTTPS adds a root Python may not take either."""
+    return isinstance(getattr(e, "reason", e), ssl.SSLCertVerificationError) or "CERTIFICATE_VERIFY_FAILED" in str(e)
+
+
+def curl():
+    """curl.exe (in Windows 10 1803 and later; its HTTPS is Windows' own, which fetches missing roots)."""
+    system = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "curl.exe")   # (first: another curl may
+    return system if os.path.isfile(system) else shutil.which("curl.exe") or shutil.which("curl")     # carry its own roots)
+
+
+_through_curl = []   # (set once Python's HTTPS was refused: every later download goes through curl)
+
+
+def curl_get(url, dest=None):
+    """url through curl: into dest, or its bytes when dest is None."""
+    exe = curl()
+    if not exe:
+        raise Failed(f"Python could not check the certificate of {url}, and there is no curl.exe to try instead. "
+                     "Update Windows (Windows Update also brings its root certificates), or turn off the HTTPS "
+                     "scanning of an antivirus, then run this again.")
+    cmd = [exe, "--fail", "--silent", "--show-error", "--location", "--retry", "2", "--user-agent", USER_AGENT, url]
+    r = subprocess.run(cmd + (["--output", dest] if dest else []), capture_output=True)
+    if r.returncode:
+        raise Failed(f"curl could not download {url}: {r.stderr.decode('utf-8', 'replace').strip()}")
+    return None if dest else r.stdout
+
+
+def refused_once(e, url):
+    """After Python's HTTPS was refused: say so once, and download through curl from now on."""
+    if not _through_curl:
+        _through_curl.append(True)
+        log(f"    Python could not check the certificate of {url.split('/')[2]} ({getattr(e, 'reason', e)}): "
+            "downloading through curl.exe (Windows' own HTTPS) instead")
+
+
 def fetch_json(url):
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=120) as r:
-        return json.loads(r.read().decode("utf-8-sig"))
+    if not _through_curl:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return json.loads(r.read().decode("utf-8-sig"))
+        except OSError as e:
+            if not cert_refused(e):
+                raise
+            refused_once(e, url)
+    return json.loads(curl_get(url).decode("utf-8-sig"))
 
 
 def sha256_of(path):
@@ -322,18 +368,27 @@ def download(url, dest, sha256=None, size=None, what=None, progress=None):
     for attempt in range(1, 4):
         got = 0
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
             h = hashlib.sha256()
-            with urllib.request.urlopen(req, timeout=120) as r, open(partial, "wb") as f:
-                while True:
-                    block = r.read(1 << 20)
-                    if not block:
-                        break
-                    f.write(block)
-                    h.update(block)
-                    got += len(block)
-                    if progress:
-                        progress(len(block))
+            if _through_curl:
+                curl_get(url, partial)
+                with open(partial, "rb") as f:
+                    for block in iter(lambda: f.read(1 << 20), b""):
+                        h.update(block)
+                        got += len(block)
+                if progress:
+                    progress(got)
+            else:
+                req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+                with urllib.request.urlopen(req, timeout=120) as r, open(partial, "wb") as f:
+                    while True:
+                        block = r.read(1 << 20)
+                        if not block:
+                            break
+                        f.write(block)
+                        h.update(block)
+                        got += len(block)
+                        if progress:
+                            progress(len(block))
             # (the SHA-256 decides: Microsoft's manifest gives some .vsix files a size they don't
             # have, its SHA-256 for them being right; the size is for the progress then)
             if sha256 and h.hexdigest() != sha256.lower():
@@ -345,6 +400,9 @@ def download(url, dest, sha256=None, size=None, what=None, progress=None):
         except (OSError, Failed) as e:
             if progress:
                 progress(-got)
+            if not _through_curl and cert_refused(e) and attempt < 3:   # (no passing failure: Python is not asked again)
+                refused_once(e, url)
+                continue
             if attempt == 3:
                 raise Failed(f"could not download {url}: {e}")
             log(f"    {e}; trying again")

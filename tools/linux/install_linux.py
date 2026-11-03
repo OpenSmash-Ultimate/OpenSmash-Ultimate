@@ -617,10 +617,10 @@ def step_check_pc():
     already = sum(folder_gb(os.path.join(ROOT, d)) for d in ("dump", "build", "build-linux") if os.path.isdir(os.path.join(ROOT, d)))
     free = shutil.disk_usage(ROOT).free / 2**30
     need = disk_need_gb(NEED_DISK_GB, already)
-    info(f"{free:,.0f} GB free here, {need:,.0f} GB still needed for the build")
+    info(f"{free:,.1f} GB free here, {need:,.1f} GB still needed for the build")
     if free < need:
-        raise Stop(f"Only {free:,.0f} GB are free in {ROOT}; the build needs about {need:,.0f} GB more. Free some space, "
-                   "or move WindowSmash to a disk with room.")
+        raise Stop(f"Only {free:,.1f} GB are free in {ROOT}, and the build still needs {need:,.1f} GB there: free at least "
+                   f"{max(0.1, need - free):,.1f} GB more, or move WindowSmash to a disk with room.")
     libc = platform.libc_ver()
     if libc[0]:
         info(f"{libc[0]} {libc[1]}")

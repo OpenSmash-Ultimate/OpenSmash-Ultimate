@@ -478,9 +478,9 @@ static DevCfg *dev_cfg(const char *what) {
 #endif
 static const char *const KB_NAMES[PAD_KEYS] = {"A", "B", "X", "Y", "LSTICK", "RSTICK", "L", "R", "ZL", "ZR", "PLUS", "MINUS",
                                               "LEFT", "UP", "RIGHT", "DOWN", "LSTICK_LEFT", "LSTICK_UP", "LSTICK_RIGHT",
-                                              "LSTICK_DOWN", "RSTICK_LEFT", "RSTICK_UP", "RSTICK_RIGHT", "RSTICK_DOWN"};
+                                              "LSTICK_DOWN", "RSTICK_LEFT", "RSTICK_UP", "RSTICK_RIGHT", "RSTICK_DOWN", "WALK"};
 static const int KB_DEFAULT[PAD_KEYS] = {'Z', 'X', 'C', 'V', 0, 0, 'A', 'S', 'Q', 'W', VK_RETURN, VK_BACK, 0, 0, 0, 0,
-                                         VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN, 'J', 'I', 'L', 'K'};
+                                         VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN, 'J', 'I', 'L', 'K', VK_SHIFT};
 static const struct { int vk; const char *name; } KEY_NAMES[] = {
     {VK_LEFT, "Left"}, {VK_UP, "Up"}, {VK_RIGHT, "Right"}, {VK_DOWN, "Down"}, {VK_RETURN, "Enter"}, {VK_BACK, "Backspace"},
     {VK_SPACE, "Space"}, {VK_TAB, "Tab"}, {VK_SHIFT, "Shift"}, {VK_CONTROL, "Ctrl"}, {VK_MENU, "Alt"}, {VK_ESCAPE, "Esc"}};
@@ -570,7 +570,10 @@ static void kb_line(int i, char *value, int line) {
 
 /* The keyboard as the console's buttons and sticks, with down(vk) saying whether a key is held. A
  * key on a stick direction pushes that stick fully (both of a pair held: right and down win, as
- * before); Enter does nothing while Alt is held (Alt+Enter is the full-screen switch). */
+ * before), which the game takes as a flick: a dash, a drop through a platform. While WALK (Shift)
+ * is held, the left stick goes part way instead: 0.60 sideways walks without dashing and makes tilts,
+ * 0.655 down crouches on a platform without dropping through (measured in fights: ssbu-recomp's
+ * keyboard ssf2, commit cd366ea). Enter does nothing while Alt is held (Alt+Enter is full screen). */
 u64 pad_keyboard_state(int (*down)(int vk), i32 *lx, i32 *ly, i32 *rx, i32 *ry) {
     u64 buttons = 0;
     int alt = down(VK_MENU);
@@ -583,10 +586,11 @@ u64 pad_keyboard_state(int (*down)(int vk), i32 *lx, i32 *ly, i32 *rx, i32 *ry) 
         }
         if (i < 16 && held[i]) buttons |= 1ull << i;
     }
-    if (held[16]) *lx = -32767;
-    if (held[18]) *lx = 32767;
-    if (held[17]) *ly = 32767;
-    if (held[19]) *ly = -32767;
+    i32 x = held[24] ? 19660 : 32767, y = held[24] ? 21463 : 32767;   /* (WALK: 0.60 and 0.655 of 32767) */
+    if (held[16]) *lx = -x;
+    if (held[18]) *lx = x;
+    if (held[17]) *ly = y;
+    if (held[19]) *ly = -y;
     if (held[20]) *rx = -32767;
     if (held[22]) *rx = 32767;
     if (held[21]) *ry = 32767;
