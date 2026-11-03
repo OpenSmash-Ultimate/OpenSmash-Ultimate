@@ -412,16 +412,26 @@ class BuildStepsTests(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(self.fonts)), sorted(FONT_FILES))
         self.assertFalse(self.marker.exists())
 
-    def test_firmware_without_the_fonts_stops(self):
-        # a firmware folder given that lacks fonts is a mistake: it stops, as it always did, and does not fall back
+    def test_firmware_without_the_fonts_falls_back(self):
+        # a firmware folder whose fonts can't be read (most often newer than the keys) no longer stops the
+        # build: a warning says why, the open fonts stand in, and a later run with the firmware tries again
         folders = self.fonts_for_real()
         self.ns['extract_fonts'] = lambda firmware, keys: self.extracted_from.append(firmware)
-        with self.assertRaises(self.ns['Failed']) as e:
-            self.ns['build'](self.args)
-        self.assertIn(f"These fonts were not in {folders['firmware']}: nintendo_udsg-r_std_003.bfttf", str(e.exception))
-        self.assertIn('Or leave the firmware out (in the installer, or --no-firmware here)', str(e.exception))
+        self.ns['build'](self.args)
+        shown = '\n'.join(self.logged)
+        self.assertIn(f"WARNING: these fonts were not in {folders['firmware']}: nintendo_udsg-r_std_003.bfttf", shown)
+        self.assertIn('Most often the firmware is newer than your keys', shown)
+        self.assertIn("no firmware: the game uses the open fonts of third_party", shown)
+        self.assertTrue(self.marker.is_file())
+        self.assertTrue(self.ns['fonts_done']())
+        self.assertTrue(any('arc.py' in ' '.join(c) for c in self.calls))   # (and on to the fighters)
+        # the keys fixed, the firmware given again: its fonts, and the open ones no longer
+        self.ns['extract_fonts'] = lambda firmware, keys, fonts=FONT_FILES: (
+            self.fonts.mkdir(parents=True, exist_ok=True), [(self.fonts / n).write_bytes(b'f') for n in fonts])
+        self.args.firmware = folders['firmware']
+        self.ns['build'](self.args)
+        self.assertEqual(sorted(os.listdir(self.fonts)), sorted(FONT_FILES))
         self.assertFalse(self.marker.exists())
-        self.assertFalse(self.ns['fonts_done']())
 
     def test_game_folder_fonts_as_before(self):
         self.fonts_for_real()

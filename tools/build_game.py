@@ -1136,10 +1136,16 @@ def build(a):
         extract_fonts(firmware, keys)
         missing = missing_fonts(FONTS)
         if missing:
-            raise Failed(f"These fonts were not in {firmware}: {', '.join(missing)}. Check that it holds all of "
-                         "your firmware's .nca files, and that your keys are from after your Switch's latest "
-                         "system update. Or leave the firmware out (in the installer, or --no-firmware here): the game "
-                         "then uses the open fonts of third_party/fonts_open, without Chinese, Japanese or Korean text.")
+            # (the most common setup stop on the Discord: a firmware newer than the keys, whose .nca files the
+            # keys cannot open. The build goes on with the open fonts; the runtime takes the firmware's font of
+            # each type that was found and the open one for the rest - runtime/hle_pl.c.)
+            log(f"  WARNING: these fonts were not in {firmware}: {', '.join(missing)}. Most often the firmware is "
+                "newer than your keys (keys dumped before your Switch's latest system update cannot open it), or "
+                "the folder lacks some of the firmware's .nca files.")
+            log("  The build goes on with the open fonts in their place. For your console's own fonts, fix the keys "
+                "or the firmware folder and run the installer again with the firmware (--firmware here).")
+            use_open_fonts()
+            fonts_from = "open"
     if fonts_from in ("game", "firmware") and os.path.exists(FONTS + ".none"):   # (the firmware's now, not the open ones)
         os.remove(FONTS + ".none")
 
