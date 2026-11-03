@@ -39,6 +39,10 @@
 #include "gpu_vulkan.h"
 #include "gpu_watch.h"
 #include "gpu_window.h"
+#include "gpu_menu.h"
+#include "gpu_overlay.h"
+#include "net.h"
+#include "pad.h"
 
 #define VK_NO_PROTOTYPES
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -59,7 +63,7 @@ extern u64 gfx_stat_clears, gfx_stat_presented, gfx_stat_blits;   /* (gpu_d3d11.
     X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(BindImageMemory) \
     X(CreateBuffer) X(DestroyBuffer) X(GetBufferMemoryRequirements) X(BindBufferMemory) \
     X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory) \
-    X(CmdPipelineBarrier) X(CmdClearColorImage) X(CmdClearDepthStencilImage) X(CmdBlitImage) X(CmdCopyImageToBuffer) \
+    X(CmdPipelineBarrier) X(CmdClearColorImage) X(CmdClearDepthStencilImage) X(CmdBlitImage) X(CmdCopyImage) X(CmdCopyImageToBuffer) \
     X(CreateSwapchainKHR) X(DestroySwapchainKHR) X(GetSwapchainImagesKHR) X(AcquireNextImageKHR) X(QueuePresentKHR) \
     X(CreateImageView) X(DestroyImageView) X(CreateBufferView) X(DestroyBufferView) X(CreateSampler) X(CreateShaderModule) \
     X(DestroyShaderModule) X(CreateGraphicsPipelines) X(CreatePipelineCache) X(CreateDescriptorSetLayout) X(CreatePipelineLayout) \
@@ -832,10 +836,10 @@ static int make_swapchain(void) {
 /* ---- pictures to files: SSBU_CAPTURE, F3 --------------------------------------------------------- */
 typedef struct Readback { VkBuffer buffer; VkDeviceMemory memory; u32 w, h; VkFormat format; char path[1024]; } Readback;
 
-/* A copy of the surface's whole image into a buffer the CPU can read, recorded now. */
-static int readback(Surface *s, Readback *rb, const char *path) {
-    if (s->storage != VK_FORMAT_R8G8B8A8_UNORM && s->storage != VK_FORMAT_B8G8R8A8_UNORM) return 0;
-    VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, (VkDeviceSize)s->hw * s->hh * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+/* A copy of an image (8-bit RGBA or BGRA, in the general layout) into a buffer the CPU can read, recorded now. */
+static int readback_image(VkImage image, VkFormat format, u32 w, u32 h, Readback *rb, const char *path) {
+    if (format != VK_FORMAT_R8G8B8A8_UNORM && format != VK_FORMAT_B8G8R8A8_UNORM) return 0;
+    VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, (VkDeviceSize)w * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                               VK_SHARING_MODE_EXCLUSIVE, 0, NULL};
     if (vkCreateBuffer(device, &bci, NULL, &rb->buffer) != VK_SUCCESS) return 0;
     VkMemoryRequirements mr;
@@ -844,14 +848,15 @@ static int readback(Surface *s, Readback *rb, const char *path) {
     VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, (uint32_t)type};
     if (type < 0 || vkAllocateMemory(device, &mai, NULL, &rb->memory) != VK_SUCCESS) { vkDestroyBuffer(device, rb->buffer, NULL); return 0; }
     vkBindBufferMemory(device, rb->buffer, rb->memory, 0);
-    VkBufferImageCopy region = {0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {s->hw, s->hh, 1}};
+    VkBufferImageCopy region = {0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {w, h, 1}};
     VkCommandBuffer c = outside();
-    vkCmdCopyImageToBuffer(c, s->image, VK_IMAGE_LAYOUT_GENERAL, rb->buffer, 1, &region);
+    vkCmdCopyImageToBuffer(c, image, VK_IMAGE_LAYOUT_GENERAL, rb->buffer, 1, &region);
     sync_all(c);
-    rb->w = s->hw; rb->h = s->hh; rb->format = s->storage;
+    rb->w = w; rb->h = h; rb->format = format;
     snprintf(rb->path, sizeof rb->path, "%s", path);
     return 1;
 }
+static int readback(Surface *s, Readback *rb, const char *path) { return readback_image(s->image, s->storage, s->hw, s->hh, rb, path); }
 
 /* (once the frame's work is done) the buffer as a 24-bit BMP, then let go. */
 static void readback_save(Readback *rb) {
@@ -922,6 +927,11 @@ static void submit(VkSemaphore wait, VkSemaphore signal) {
 static void pipeline_cache_tick(void);
 static void residents_retire(void);
 static void vk_present_(u64 guest, u32 width, u32 height);
+static int compose(VkCommandBuffer c, Surface *src, int show_overlay, const char *detail);
+static const char *vk_detail(int details);
+static VkImage win_image;
+static u32 win_w, win_h;
+static int depth_sampling;
 static void vk_present(u64 guest, u32 width, u32 height) {
     u64 t0 = rt_clock_ns();
     vk_present_(guest, width, height);
@@ -946,11 +956,30 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
     int showing = ar == VK_SUCCESS || ar == VK_SUBOPTIMAL_KHR;
     if (ar == VK_SUBOPTIMAL_KHR || ar == VK_ERROR_OUT_OF_DATE_KHR) recreate = 1;
     Surface *src = find_color(guest);
-    Readback shot[2];
+    Readback shot[4];
     int nshots = 0;
-    char path[1024];
+    char path[1024], window_path[1024] = "";
     LONG keys = (LONG)gfx_take_hotkeys();
-    if (src && capture_path(path, sizeof path) && readback(src, &shot[nshots], path)) nshots++;
+    /* the overlay (F1, F2 its details) and the settings menu (Esc), as gpu_d3d11.c has them */
+    static int overlay = -1, details;
+    if (overlay < 0) overlay = getenv("SSBU_OVERLAY") ? atoi(getenv("SSBU_OVERLAY")) != 0 : display_overlay();
+    if (keys & 1) overlay = !overlay;
+    if (keys & 2) { details = !details; overlay = 1; }
+    int menu_shot = menu_frame(&overlay, (keys & 4) != 0) & MENU_SHOT;
+    if (menu_shot) keys &= ~4;
+    if (keys & 16) {   /* F5: depth buffers sampled as textures, or not */
+        if (depth_sampling < 0) depth_sampling = !getenv("SSBU_NO_DEPTH_SAMPLING");
+        depth_sampling = !depth_sampling;
+        fprintf(stderr, "[gfx] depth sampling %s (F5)\n", depth_sampling ? "on" : "off");
+    }
+    if (src && capture_path(path, sizeof path) && readback(src, &shot[nshots], path)) {
+        nshots++;
+        if (getenv("SSBU_CAPTURE_WINDOW")) {   /* (the window's picture too, overlay and menu included) */
+            snprintf(window_path, sizeof window_path, "%s", path);
+            char *f = strstr(window_path, "vk_frame_");
+            if (f) memcpy(f, "vk_windw_", 9);
+        }
+    }
     if (src && (keys & 4)) {   /* F3: the picture as the game drew it */
         CreateDirectoryA("screenshots", NULL);
         SYSTEMTIME st;
@@ -962,10 +991,24 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
     if (showing) {
         VkImage img = swap_images[index];
         VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        int composed = compose(c, src, overlay, vk_detail(details));
+        if (composed && window_path[0] && readback_image(win_image, swap_format, win_w, win_h, &shot[nshots], window_path)) nshots++;
+        if (composed && menu_shot) {   /* F3 with the settings menu open: the window as it is, menu and all */
+            CreateDirectoryA("screenshots", NULL);
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            snprintf(path, sizeof path, "screenshots/ssbu_%04u%02u%02u_%02u%02u%02u_%03u_menu.bmp", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+                     st.wSecond, st.wMilliseconds);
+            if (readback_image(win_image, swap_format, win_w, win_h, &shot[nshots], path)) nshots++;
+        }
+        c = cmd();
         image_layout(c, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         VkClearColorValue black = {{0, 0, 0, 1}}, grey = {{0.1f, 0.1f, 0.12f, 1}};
-        vkCmdClearColorImage(c, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, src ? &black : &grey, 1, &range);
-        if (src && (features_of(src->storage) & VK_FORMAT_FEATURE_BLIT_SRC_BIT) && src->klass == CLASS_FLOAT) {
+        if (composed) {   /* the window's picture into the swap chain image */
+            VkImageCopy ic = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {win_w, win_h, 1}};
+            vkCmdCopyImage(c, win_image, VK_IMAGE_LAYOUT_GENERAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+        } else vkCmdClearColorImage(c, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, src ? &black : &grey, 1, &range);
+        if (!composed && src && (features_of(src->storage) & VK_FORMAT_FEATURE_BLIT_SRC_BIT) && src->klass == CLASS_FLOAT) {
             /* the picture into the window: 16:9, centred, black around it (bilinear) */
             unsigned fx, fy, fw, fh;
             display_fit(swap_w, swap_h, &fx, &fy, &fw, &fh);
@@ -1012,8 +1055,8 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
  * (note_wrote's counts say whether the GPU's own commands wrote it since), a constant buffer slot's bytes
  * compared with what it had last, 64 KB constant buffers read in shared 128 KB windows, constant buffers
  * of the write-watched area kept in buffers of their own (gpu_d3d11.c's kept ones). Shaders and
- * pipelines are made by the makers, the draw skipped meanwhile as gpu_d3d11.c's are. Not done yet: 1D
- * textures, depth textures in guest memory, sRGB block textures' clear texels (tex_decode). */
+ * pipelines are made by the makers, the draw skipped meanwhile as gpu_d3d11.c's are. 1D textures
+ * get 1D images of their own, depth textures in guest memory 32-bit float depth images. */
 extern u64 gpu_stat_batches;   /* (gpu.c: submissions so far) */
 
 static VkPhysicalDeviceLimits limits;
@@ -1801,8 +1844,9 @@ static VkImageView make_view(VkImage image, VkImageViewType type, VkFormat forma
 typedef struct Texture {
     u64 guest, size, sample_hash, seen, used, asked;
     u32 tic[8];
-    int watched, stale, is3d, cube;
+    int watched, stale, is3d, cube, is1d;
     u32 levels, layers;
+    VkImageAspectFlags aspect;   /* (colour; depth for a depth texture read from guest memory) */
     VkImage image;
     Alloc alloc;
     VkFormat format;
@@ -1818,7 +1862,7 @@ static u32 texture_index_adds;
 static int depth_sampling = -1;
 
 int tex_decode_rgba8(int nvn_format, const void *src, int w, int h, uint8_t *dst);   /* (ssbu-recomp/runtime/tex_decode.c) */
-static u64 vk_stat_cpu_decoded;
+static u64 vk_stat_cpu_decoded, vk_stat_textures_1d, vk_stat_depth_textures;
 /* BC7 often cannot store alpha 0: a clear texel is then (1,1,1,1), which the alpha test keeps (gpu_d3d11.c) */
 static int punch_clear_texels(u8 *rgba, u32 n) {
     int punched = 0;
@@ -1883,15 +1927,18 @@ static VkImageView texture_view(Texture *t, u32 type) {
     if (t->views[type]) return t->views[type];
     VkImageViewType vt;
     u32 layers = t->layers;
+    if (t->is1d != (type == TEX_1D || type == TEX_ARRAY_1D)) return VK_NULL_HANDLE;
     switch (type) {
+    case TEX_1D: vt = VK_IMAGE_VIEW_TYPE_1D; layers = 1; break;
+    case TEX_ARRAY_1D: vt = VK_IMAGE_VIEW_TYPE_1D_ARRAY; break;
     case TEX_2D: if (t->is3d) return VK_NULL_HANDLE; vt = VK_IMAGE_VIEW_TYPE_2D; layers = 1; break;
     case TEX_ARRAY_2D: if (t->is3d) return VK_NULL_HANDLE; vt = VK_IMAGE_VIEW_TYPE_2D_ARRAY; break;
     case TEX_3D: if (!t->is3d) return VK_NULL_HANDLE; vt = VK_IMAGE_VIEW_TYPE_3D; break;
     case TEX_CUBE: if (!t->cube) return VK_NULL_HANDLE; vt = VK_IMAGE_VIEW_TYPE_CUBE; layers = 6; break;
     case TEX_ARRAY_CUBE: if (!t->cube || !enabled.imageCubeArray) return VK_NULL_HANDLE; vt = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY; layers = t->layers / 6 * 6; break;
-    default: return VK_NULL_HANDLE;   /* (1D: not yet) */
+    default: return VK_NULL_HANDLE;
     }
-    return t->views[type] = make_view(t->image, vt, t->format, VK_IMAGE_ASPECT_COLOR_BIT, t->levels, layers, &t->map);
+    return t->views[type] = make_view(t->image, vt, t->format, t->aspect, t->levels, layers, &t->map);
 }
 
 /* A render target's view for sampling: plain or sRGB (the texture header says), as a 2D image or an
@@ -1946,7 +1993,27 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
     if (!ok || d.type == TIC_1D_BUFFER || d.bytes == 0) { warn_texture(&d); return VK_NULL_HANDLE; }
     VkComponentMapping map;
     VkFormat format = texture_format(d.dxgi, &map);
+    /* Depth in guest memory (24-bit depth, 8 stencil): a 32-bit float depth image, the words converted on the
+     * CPU - read as Direct3D 11 reads it through R24_UNORM_X8 (depth, 0, 0, 1), compares included */
+    int depth24 = d.dxgi == DXGI_FORMAT_R24G8_TYPELESS;
+    VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    if (depth24) {
+        format = VK_FORMAT_D32_SFLOAT;
+        aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+        map = (VkComponentMapping){VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE};
+    }
     if (!format || !(features_of(format) & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) { warn_texture(&d); return VK_NULL_HANDLE; }
+    /* A program declaring a 1D texture reads a 1D image (Vulkan's views of a 2D one cannot be 1D): one of its
+     * own, the texels' first row, kept beside any 2D one of the same header (its key marked). */
+    u32 type7 = shader_type & 7;
+    int want1d = type7 == TEX_1D || type7 == TEX_ARRAY_1D;
+    u32 tk[8];
+    memcpy(tk, tic, 32);
+    if (want1d) {
+        if (d.type == TIC_3D || d.bw > 1 || depth24) { warn_texture(&d); return VK_NULL_HANDLE; }
+        tk[7] ^= 0x31443144u;
+        tic = tk;
+    }
     u32 layers = d.type == TIC_CUBE ? 6 : d.type == TIC_CUBE_ARRAY ? 6 * d.depth : d.type == TIC_2D_ARRAY || d.type == TIC_1D_ARRAY ? d.depth : 1;
     int is3d = d.type == TIC_3D;
     if (is3d) layers = 1;
@@ -1974,7 +2041,7 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
     if (t != hit) { t->guest = g; memcpy(t->tic, tic, 32); texture_index_add(t); }
     if (watch) watch_written(g, size, &t->seen);   /* (before reading: a write meanwhile is news next frame) */
     u32 levels = is3d ? 1 : d.levels, max_levels = 1;
-    while ((d.width >> max_levels) || (d.height >> max_levels)) max_levels++;
+    while ((d.width >> max_levels) || (!want1d && (d.height >> max_levels))) max_levels++;
     if (levels > max_levels) levels = max_levels;
     if (!levels) levels = 1;
     int cube = (d.type == TIC_CUBE || d.type == TIC_CUBE_ARRAY) && layers % 6 == 0 && d.width == d.height;
@@ -1982,7 +2049,7 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
      * black square): small sRGB block textures are decoded on the CPU (tex_decode.c) and the clear texels
      * mended, as gpu_d3d11.c does - kept above 512 only when a texel needed mending. */
     u8 **rgba = NULL;
-    int nvn = d.dxgi == DXGI_FORMAT_BC1_UNORM_SRGB ? 0x46 : d.dxgi == DXGI_FORMAT_BC2_UNORM_SRGB ? 0x47
+    int nvn = want1d ? 0 : d.dxgi == DXGI_FORMAT_BC1_UNORM_SRGB ? 0x46 : d.dxgi == DXGI_FORMAT_BC2_UNORM_SRGB ? 0x47
             : d.dxgi == DXGI_FORMAT_BC3_UNORM_SRGB ? 0x48 : d.dxgi == DXGI_FORMAT_BC7_UNORM_SRGB ? 0x4E : 0;
     if (nvn && !is3d && d.width <= 1024 && d.height <= 1024 && (rgba = calloc(levels * layers, sizeof *rgba)) != NULL) {
         int ok = 1, punched = 0;
@@ -2008,8 +2075,10 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
             vk_stat_cpu_decoded++;
         }
     }
+    if (want1d) cube = 0;
     VkImageCreateInfo ici = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
-                             is3d ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D, format, {d.width, d.height, is3d ? d.depth : 1}, levels, layers,
+                             is3d ? VK_IMAGE_TYPE_3D : want1d ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D, format,
+                             {d.width, want1d ? 1 : d.height, is3d ? d.depth : 1}, levels, layers,
                              VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                              VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
     /* the texels, in the frame's upload memory: level after level of each layer (whole blocks a row) */
@@ -2021,8 +2090,8 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
         u32 w = (d.width >> l) ? d.width >> l : 1, h = (d.height >> l) ? d.height >> l : 1;
         u64 bytes = is3d ? texture_3d_size(&d) : rgba ? (u64)w * h * 4 : (u64)((w + d.bw - 1) / d.bw) * ((h + d.bh - 1) / d.bh) * d.bytes;
         regions[i].bufferOffset = total;
-        regions[i].imageSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, l, is3d ? 0 : i / levels, 1};
-        regions[i].imageExtent = (VkExtent3D){w, h, is3d ? d.depth : 1};
+        regions[i].imageSubresource = (VkImageSubresourceLayers){aspect, l, is3d ? 0 : i / levels, 1};
+        regions[i].imageExtent = (VkExtent3D){w, want1d ? 1 : h, is3d ? d.depth : 1};   /* (1D: the first row) */
         total += (bytes + 64 + 15) & ~15ull;   /* (texture_read may write a little past the end) */
     }
     VkBuffer buf;
@@ -2042,17 +2111,27 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
         if (is3d) texture_read_3d(&d, g, data + regions[i].bufferOffset);
         else if (rgba) { memcpy(data + regions[i].bufferOffset, rgba[i], (size_t)regions[i].imageExtent.width * regions[i].imageExtent.height * 4); free(rgba[i]); }
         else texture_read(&d, g, i / levels, i % levels, data + regions[i].bufferOffset);
+        if (depth24) {   /* 24-bit depth words (stencil above) to floats */
+            u32 *wd = (u32 *)(data + regions[i].bufferOffset);
+            for (u64 j = 0, nw = (u64)regions[i].imageExtent.width * regions[i].imageExtent.height; j < nw; j++) {
+                float f = (float)(wd[j] & 0xFFFFFF) / 16777215.0f;
+                memcpy(&wd[j], &f, 4);
+            }
+        }
         regions[i].bufferOffset += off;
     }
     free(rgba);
     vk_stat_upload_bytes += total;
     VkCommandBuffer c = outside();
-    image_layout(c, t->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+    image_layout(c, t->image, aspect, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
     vkCmdCopyBufferToImage(c, buf, t->image, VK_IMAGE_LAYOUT_GENERAL, nregions, regions);
     sync_all(c);
     free(regions);
     t->guest = g; t->size = size; t->watched = watch; t->stale = 0; t->asked = gfx_stat_presented;
     memcpy(t->tic, tic, 32); t->sample_hash = sh; t->used = ++tick;
+    t->is1d = want1d; t->aspect = aspect;
+    if (depth24) vk_stat_depth_textures++;
+    if (want1d) vk_stat_textures_1d++;
     t->is3d = is3d; t->cube = cube; t->levels = levels; t->layers = layers; t->format = format; t->map = map;
     vk_stat_textures++;
     return texture_view(t, shader_type);
@@ -3055,6 +3134,255 @@ static int clear_channels(Surface *s, const float color[4], u32 mask) {
     return 1;
 }
 
+
+/* ---- the window's picture (the plan's step 7): the game's picture fitted into it - shrunk through the
+ * same filter as gpu_d3d11.c's psdown when it is bigger than its place (render scale), else bilinear -
+ * then the overlay and the settings menu (gpu_overlay.c's quads, gpu_menu.c's drawing) over it, in an
+ * image of the swap chain's format and size, copied into the swap chain image shown. ------------------ */
+static Alloc win_alloc;
+static VkImageView win_unorm, win_srgb;
+static VkImage atlas_image;
+static Alloc atlas_alloc;
+static VkImageView atlas_view;
+static int compose_state;   /* 0 not tried, 1 ready, -1 failed (then the plain blit, as before) */
+static VkShaderModule full_vs, down_ps, ovl_vs, ovl_ps;
+static VkPipeline down_pipe, ovl_pipe;
+static VkFormat win_srgb_format;
+
+static const char FULL_VS[] =
+    "struct V { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
+    "V main(uint id : SV_VertexID) { V o; o.uv = float2((id << 1) & 2, id & 2);\n"
+    "  o.pos = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1); return o; }\n";
+static const char DOWN_PS[] =   /* (gpu_d3d11.c's psdown; the texture at t64, the binding map's first) */
+    "Texture2D t : register(t64); SamplerState s : register(s0);\n"
+    "struct V { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
+    "cbuffer D : register(b0) { float4 dsize; float4 dtaps; };\n"
+    "float4 main(V i) : SV_Target { float2 c = i.uv * dsize.xy - dtaps.zw * 0.5f; float3 sum = 0;\n"
+    "  [loop] for (int y = 0; y < (int)dtaps.y; y++) [loop] for (int x = 0; x < (int)dtaps.x; x++)\n"
+    "    sum += t.SampleLevel(s, (c + dtaps.zw * (float2(x, y) + 0.5f) / dtaps.xy) * dsize.zw, 0).rgb;\n"
+    "  return float4(sum / (dtaps.x * dtaps.y), 1); }\n";
+static const char OVL_VS[] =   /* (gpu_overlay.c's, its vertices read from a raw buffer: 20 bytes each) */
+    "cbuffer C : register(b0) { float4 inv_size; };\n"
+    "ByteAddressBuffer vtx : register(t18);\n"
+    "struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; float4 c : COLOR0; };\n"
+    "O main(uint id : SV_VertexID) { uint4 w = vtx.Load4(id * 20); uint col = vtx.Load(id * 20 + 16); O o;\n"
+    "  o.p = float4(asfloat(w.xy) * inv_size.xy * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = asfloat(w.zw);\n"
+    "  o.c = float4(col & 255, (col >> 8) & 255, (col >> 16) & 255, col >> 24) / 255.0f; return o; }\n";
+static const char OVL_PS[] =
+    "Texture2D t : register(t64); SamplerState s : register(s0);\n"
+    "struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; float4 c : COLOR0; };\n"
+    "float4 main(O i) : SV_Target { return float4(i.c.rgb, i.c.a * t.Sample(s, i.uv).r); }\n";
+
+static VkPipeline small_pipeline(VkShaderModule vs, VkShaderModule ps, VkFormat format, int blend) {
+    VkPipelineShaderStageCreateInfo st[2] = {
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, vs, "main", NULL},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, ps, "main", NULL}};
+    VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, NULL, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE};
+    VkPipelineViewportStateCreateInfo vp = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, NULL, 0, 1, NULL, 1, NULL};
+    VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rs.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, NULL, 0, VK_SAMPLE_COUNT_1_BIT};
+    VkPipelineDepthStencilStateCreateInfo ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    VkPipelineColorBlendAttachmentState at = {VK_FALSE, 0, 0, 0, 0, 0, 0, 15};
+    if (blend)   /* (gpu_overlay.c's blend state) */
+        at = (VkPipelineColorBlendAttachmentState){VK_TRUE, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD,
+                                                   VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD, 15};
+    VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, NULL, 0, VK_FALSE, VK_LOGIC_OP_COPY, 1, &at};
+    VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dy = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, NULL, 0, 2, dyn};
+    VkPipelineRenderingCreateInfoKHR ri = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR, NULL, 0, 1, &format, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED};
+    VkGraphicsPipelineCreateInfo pci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, &ri, 0, 2, st, &vi, &ia, NULL, &vp, &rs, &ms,
+                                        &ds, &cb, &dy, gfx_layout, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, -1};
+    VkPipeline p;
+    return vkCreateGraphicsPipelines(device, pipeline_cache, 1, &pci, NULL, &p) == VK_SUCCESS ? p : VK_NULL_HANDLE;
+}
+
+/* The programs, pipelines and glyph atlas, once (recorded into the frame's commands: the atlas upload). */
+static int compose_ready(VkCommandBuffer c) {
+    if (compose_state) return compose_state > 0;
+    compose_state = -1;
+    win_srgb_format = other_gamma(swap_format, 1);
+    full_vs = small_module(FULL_VS, "vs_5_0", SHADER_VERTEX);
+    down_ps = small_module(DOWN_PS, "ps_5_0", SHADER_PIXEL);
+    ovl_vs = small_module(OVL_VS, "vs_5_0", SHADER_VERTEX);
+    ovl_ps = small_module(OVL_PS, "ps_5_0", SHADER_PIXEL);
+    if (!full_vs || !down_ps || !ovl_vs || !ovl_ps) { fprintf(stderr, "[vulkan] the window's programs could not be made: no overlay or menu\n"); return 0; }
+    if (win_srgb_format != swap_format) down_pipe = small_pipeline(full_vs, down_ps, win_srgb_format, 0);
+    ovl_pipe = small_pipeline(ovl_vs, ovl_ps, swap_format, 1);
+    unsigned aw, ah;
+    const unsigned char *cov = overlay_coverage(&aw, &ah);
+    if (!ovl_pipe || !cov) { fprintf(stderr, "[vulkan] the overlay's pipeline or glyphs could not be made\n"); return 0; }
+    VkImageCreateInfo ici = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, 0, VK_IMAGE_TYPE_2D, VK_FORMAT_R8_UNORM, {aw, ah, 1}, 1, 1,
+                             VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                             VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
+    VkBuffer buf;
+    VkDeviceSize off;
+    u8 *p = arena((VkDeviceSize)aw * ah, 16, &buf, &off);
+    if (!p || !(atlas_image = make_image(&ici, &atlas_alloc))) return 0;
+    memcpy(p, cov, (size_t)aw * ah);
+    image_layout(c, atlas_image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+    VkBufferImageCopy r = {off, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {aw, ah, 1}};
+    vkCmdCopyBufferToImage(c, buf, atlas_image, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+    sync_all(c);
+    if (!(atlas_view = make_view(atlas_image, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, 1, 1, NULL))) return 0;
+    compose_state = 1;
+    return 1;
+}
+
+/* The window's image at the swap chain's size (made again when that changes). */
+static int win_picture(VkCommandBuffer c) {
+    if (win_image && win_w == swap_w && win_h == swap_h) return 1;
+    if (win_image) {
+        bury_view(win_unorm);
+        bury_view(win_srgb);
+        bury_grave((Grave){win_image, VK_NULL_HANDLE, VK_NULL_HANDLE, win_alloc});
+        win_image = VK_NULL_HANDLE; win_unorm = win_srgb = VK_NULL_HANDLE;
+    }
+    VkImageCreateInfo ici = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, VK_IMAGE_TYPE_2D, swap_format,
+                             {swap_w, swap_h, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL,
+                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                             VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
+    if (!(win_image = make_image(&ici, &win_alloc))) return 0;
+    win_unorm = make_view(win_image, VK_IMAGE_VIEW_TYPE_2D, swap_format, VK_IMAGE_ASPECT_COLOR_BIT, 1, 1, NULL);
+    if (win_srgb_format != swap_format) win_srgb = make_view(win_image, VK_IMAGE_VIEW_TYPE_2D, win_srgb_format, VK_IMAGE_ASPECT_COLOR_BIT, 1, 1, NULL);
+    image_layout(c, win_image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+    win_w = swap_w; win_h = swap_h;
+    return win_unorm != VK_NULL_HANDLE;
+}
+
+/* One pass into the window's image through `view`, drawing `count` vertices with `pipe`, the vertex
+ * program's set (or none) and the pixel program's; viewport (x, y, w, h). */
+static void win_pass(VkCommandBuffer c, VkImageView view, VkPipeline pipe, VkDescriptorSet vset, VkDescriptorSet pset, const uint32_t *offs,
+                     float x, float y, float w, float h, u32 count) {
+    VkRenderingAttachmentInfoKHR ca = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR, NULL, view, VK_IMAGE_LAYOUT_GENERAL, VK_RESOLVE_MODE_NONE,
+                                       VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE};
+    VkRenderingInfoKHR ri = {VK_STRUCTURE_TYPE_RENDERING_INFO_KHR, NULL, 0, {{0, 0}, {win_w, win_h}}, 1, 0, 1, &ca, NULL, NULL};
+    vkCmdBeginRenderingKHR(c, &ri);
+    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    if (vset) vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, gfx_layout, SPIRV_SET_VERTEX, 1, &vset, 1, &offs[0]);
+    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, gfx_layout, SPIRV_SET_PIXEL, 1, &pset, 1, &offs[1]);
+    VkViewport v = {x, y + h, w, -h, 0, 1};   /* (upside down: Direct3D's y, as the draws') */
+    VkRect2D r = {{0, 0}, {win_w, win_h}};
+    vkCmdSetViewport(c, 0, 1, &v);
+    vkCmdSetScissor(c, 0, 1, &r);
+    vkCmdDraw(c, count, 1, 0, 0);
+    vkCmdEndRenderingKHR(c);
+    sync_all(c);
+    bound.serial = 0;   /* (the draws' state is no longer bound) */
+}
+
+/* A set with the parameters' buffer (bytes at its dynamic offset), and optionally a raw buffer at t18 and
+ * a texture at t64 with the default (linear, clamped) sampler. */
+static VkDescriptorSet win_set(VkBuffer pbuf, VkBufferView raw, VkImageView tex) {
+    VkDescriptorSet set = new_set(gfx_set_layout);
+    if (!set) return VK_NULL_HANDLE;
+    VkWriteDescriptorSet w[4];
+    u32 n = 0;
+    VkDescriptorBufferInfo bi = {pbuf, 0, 256};
+    w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_CBV(0), 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, NULL, &bi, NULL};
+    if (raw) w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_SRV(18), 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, NULL, NULL, &raw};
+    VkDescriptorImageInfo ti = {VK_NULL_HANDLE, tex, VK_IMAGE_LAYOUT_GENERAL}, si = {default_sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+    if (tex) {
+        w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_SRV(64), 0, 1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &ti, NULL, NULL};
+        w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_SAMPLER(0), 0, 1, VK_DESCRIPTOR_TYPE_SAMPLER, &si, NULL, NULL};
+    }
+    vkUpdateDescriptorSets(device, n, w, 0, NULL);
+    return set;
+}
+
+static u64 vk_stat_downscaled;
+/* The window's picture, recorded into c: 1 when the window's image holds it (to be copied into the swap
+ * chain image), 0 when it cannot be made (then the plain blit). */
+static int compose(VkCommandBuffer c, Surface *src, int show_overlay, const char *detail) {
+    if (!compose_ready(c) || !win_picture(c)) return 0;
+    VkClearColorValue black = {{0, 0, 0, 1}}, grey = {{0.1f, 0.1f, 0.12f, 1}};
+    VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(c, win_image, VK_IMAGE_LAYOUT_GENERAL, src ? &black : &grey, 1, &range);
+    sync_all(c);
+    unsigned fx, fy, fw, fh;
+    display_fit(win_w, win_h, &fx, &fy, &fw, &fh);
+    if (src && src->klass == CLASS_FLOAT) {
+        VkImageView srgb_src = (src->hw > fw || src->hh > fh) && down_pipe && win_srgb ? surface_sampled(src, 1, TEX_2D) : VK_NULL_HANDLE;
+        VkBuffer pbuf;
+        VkDeviceSize poff;
+        float *k = srgb_src ? (float *)arena(256, ubo_align, &pbuf, &poff) : NULL;
+        VkDescriptorSet set = k ? win_set(pbuf, VK_NULL_HANDLE, srgb_src) : VK_NULL_HANDLE;
+        if (set) {   /* a picture bigger than its place: each window pixel the average of the picture's under it, in linear light */
+            float rx = (float)src->hw / (float)fw, ry = (float)src->hh / (float)fh;
+            float kk[8] = {(float)src->hw, (float)src->hh, 1.0f / (float)src->hw, 1.0f / (float)src->hh, ceilf(rx), ceilf(ry), rx, ry};
+            memcpy(k, kk, sizeof kk);
+            uint32_t offs[2] = {0, (uint32_t)poff};
+            win_pass(c, win_srgb, down_pipe, VK_NULL_HANDLE, set, offs, (float)fx, (float)fy, (float)fw, (float)fh, 3);
+            vk_stat_downscaled++;
+        } else if (features_of(src->storage) & VK_FORMAT_FEATURE_BLIT_SRC_BIT) {   /* as big as its place or smaller: bilinear */
+            VkImageBlit b;
+            memset(&b, 0, sizeof b);
+            b.srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            b.dstSubresource = b.srcSubresource;
+            b.srcOffsets[1] = (VkOffset3D){(int32_t)src->hw, (int32_t)src->hh, 1};
+            b.dstOffsets[0] = (VkOffset3D){(int32_t)fx, (int32_t)fy, 0};
+            b.dstOffsets[1] = (VkOffset3D){(int32_t)(fx + fw), (int32_t)(fy + fh), 1};
+            vkCmdBlitImage(c, src->image, VK_IMAGE_LAYOUT_GENERAL, win_image, VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_LINEAR);
+            sync_all(c);
+        }
+    }
+    /* the overlay and the menu (gpu_overlay.c's quads), over the picture's place */
+    const OverlayVertex *v;
+    u32 nv = overlay_quads(fw, fh, show_overlay, detail, &v);
+    if (nv) {
+        VkBuffer vbuf, pbuf;
+        VkDeviceSize voff, poff;
+        VkDeviceSize vbytes = ((VkDeviceSize)nv * sizeof *v + 15) & ~15ull;
+        u8 *vp = arena(vbytes, texel_align, &vbuf, &voff);
+        float *k = vp ? (float *)arena(256, ubo_align, &pbuf, &poff) : NULL;
+        VkBufferView raw = k ? texel_view(vbuf, voff, vbytes) : VK_NULL_HANDLE;
+        VkDescriptorSet vset = raw ? win_set(pbuf, raw, VK_NULL_HANDLE) : VK_NULL_HANDLE;
+        VkDescriptorSet pset = vset ? win_set(pbuf, VK_NULL_HANDLE, atlas_view) : VK_NULL_HANDLE;
+        if (pset) {
+            memcpy(vp, v, (size_t)nv * sizeof *v);
+            float inv[4] = {1.0f / (float)fw, 1.0f / (float)fh, 0, 0};
+            memcpy(k, inv, sizeof inv);
+            uint32_t offs[2] = {(uint32_t)poff, (uint32_t)poff};
+            win_pass(c, win_unorm, ovl_pipe, vset, pset, offs, (float)fx, (float)fy, (float)fw, (float)fh, nv);
+        }
+    }
+    return 1;
+}
+
+/* The overlay's details (F2), twice a second: this renderer's counters. */
+static const char *vk_detail(int details) {
+    static char detail[1400], hint[640];
+    static u64 last_ns, last_presented, last_drawn, last_dispatched, last_upload, last_skipped, last_draw_ns, last_waits;
+    u64 now = rt_now_ns();
+    if (now - last_ns >= 500000000ull) {
+        double secs = (now - last_ns) / 1e9;
+        u64 frames = gfx_stat_presented - last_presented ? gfx_stat_presented - last_presented : 1;
+        u64 skipped = vk_stat_skip_shader + vk_stat_skip_pipeline + vk_stat_skip_target + vk_stat_skip_topology + vk_stat_skip_other;
+        snprintf(detail, sizeof detail,
+                 "Vulkan: %s\n"
+                 "renderer %.1f ms/frame  uploads %.1f MB/frame\n"
+                 "draws %llu/frame  compute %llu/frame  GPU waits %llu  skipped %.0f/s\n"
+                 "shaders %llu  pipelines %llu  textures %u  surfaces %u\n"
+                 "GPU-resident buffers %u  depth sampling %s\n"
+                 "Esc settings  F1 overlay  F2 details  F3 screenshot",
+                 card, (vk_ns_draw + vk_ns_dispatch + vk_ns_present - last_draw_ns) / 1e6 / frames,
+                 (vk_stat_upload_bytes - last_upload) / 1048576.0 / frames, (vk_stat_drawn - last_drawn) / frames,
+                 (vk_stat_dispatched - last_dispatched) / frames, vk_stat_flushes - last_waits, (skipped - last_skipped) / secs,
+                 vk_stat_shaders, vk_stat_pipelines, ntextures, nsurfaces, nresidents, depth_sampling != 0 ? "on" : "off");
+        char net[512];
+        net_status(net, sizeof net);
+        snprintf(hint, sizeof hint, "F2 details  Esc settings%s%s%s", depth_sampling == 0 ? "  depth sampling OFF" : "", net[0] ? "\n" : "", net);
+        if (net[0]) { size_t l = strlen(detail); snprintf(detail + l, sizeof detail - l, "\n%s", net); }
+        char pads[256];
+        pad_describe(pads, sizeof pads);
+        { size_t l = strlen(detail); snprintf(detail + l, sizeof detail - l, "\npads: %s", pads[0] ? pads : "none (keyboard only)"); }
+        last_ns = now; last_presented = gfx_stat_presented; last_drawn = vk_stat_drawn; last_dispatched = vk_stat_dispatched;
+        last_upload = vk_stat_upload_bytes; last_skipped = skipped; last_draw_ns = vk_ns_draw + vk_ns_dispatch + vk_ns_present; last_waits = vk_stat_flushes;
+    }
+    return details ? detail : hint;
+}
+
 /* ---- the rest of the runtime's questions ------------------------ */
 /* The copy engine: [src, src + bytes) to dst on the GPU when the source is a region's (1: done). */
 static int vk_copy_resident(u64 dst, u64 src, u64 bytes) {
@@ -3127,9 +3455,10 @@ static void vk_status_lines(void) {
             vk_stat_local_blocks);
     fprintf(stderr, "[status] vulkan draws' parts (s): shaders %.1f, targets %.1f, state %.1f, streams %.1f, resources %.1f, indices %.1f, sets %.1f, "
                     "recording %.1f (resources: constant buffers %.1f, storage buffers %.1f, textures %.1f); "
-                    "kept constant buffers: %llu made, %llu used, %llu found changed; constant buffers copied: %llu small (%llu MB), %llu big (%llu MB), %llu the same as the slot's last (of %llu compared); windows: %llu copied, %llu used again; buffer views: %llu made, %llu used again; descriptor sets: %llu written, %llu used again; indices used again %llu\n", vk_ns_phase[0] / 1e9, vk_ns_phase[1] / 1e9, vk_ns_phase[2] / 1e9, vk_ns_phase[3] / 1e9, vk_ns_phase[4] / 1e9,
+                    "kept constant buffers: %llu made, %llu used, %llu found changed; constant buffers copied: %llu small (%llu MB), %llu big (%llu MB), %llu the same as the slot's last (of %llu compared); windows: %llu copied, %llu used again; buffer views: %llu made, %llu used again; descriptor sets: %llu written, %llu used again; indices used again %llu; textures: %llu 1D, %llu depth from guest memory; %llu frames shrunk into the window\n", vk_ns_phase[0] / 1e9, vk_ns_phase[1] / 1e9, vk_ns_phase[2] / 1e9, vk_ns_phase[3] / 1e9, vk_ns_phase[4] / 1e9,
             vk_ns_phase[5] / 1e9, vk_ns_phase[6] / 1e9, vk_ns_phase[7] / 1e9, vk_ns_res[0] / 1e9, vk_ns_res[1] / 1e9, vk_ns_res[2] / 1e9, vk_stat_kept_made, vk_stat_kept_hits, vk_stat_kept_stale, vk_stat_cb_copies[0], vk_stat_cb_bytes[0] >> 20, vk_stat_cb_copies[1], vk_stat_cb_bytes[1] >> 20, vk_stat_cb_same, vk_stat_cb_compared, vk_stat_window_copies, vk_stat_window_hits,
-            vk_stat_views_made, vk_stat_views_kept, vk_stat_sets_made, vk_stat_sets_kept, vk_stat_index_reused);
+            vk_stat_views_made, vk_stat_views_kept, vk_stat_sets_made, vk_stat_sets_kept, vk_stat_index_reused,
+            vk_stat_textures_1d, vk_stat_depth_textures, vk_stat_downscaled);
 }
 
 /* The output (monitor) the window is on, referenced, for display pacing (gpu_display.c waits for its
@@ -3512,8 +3841,7 @@ const GfxBackend *vk_backend_start(char *why, size_t size) {
     }
     if (scale < 0.5f || scale > 4) scale = 1;
     render_scale = scale;
-    fprintf(stderr, "[vulkan] drawing with %s (Vulkan %u.%u.%u)%s: %u frames in flight, render scale %.3g, present modes%s%s (in development: "
-                    "no overlay or menu yet)\n",
+    fprintf(stderr, "[vulkan] drawing with %s (Vulkan %u.%u.%u)%s: %u frames in flight, render scale %.3g, present modes%s%s\n",
             card, VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion), VK_API_VERSION_PATCH(props.apiVersion),
             float_controls ? ", float controls" : "", nframes, render_scale, have_immediate ? " immediate" : "", have_mailbox ? " mailbox" : "");
     return &VULKAN;

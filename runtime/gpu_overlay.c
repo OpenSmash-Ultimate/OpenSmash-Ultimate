@@ -41,6 +41,7 @@ static int state;   /* 0 not yet, 1 ready, -1 failed */
 
 static Vertex verts[MAX_QUADS * 6];
 static unsigned nverts;
+static const void *verts_out(void) { return verts; }
 
 static const char HLSL[] =
     "cbuffer C : register(b0) { float2 inv_size; };\n"
@@ -64,8 +65,11 @@ static ID3DBlob *compile(const char *entry, const char *target) {
 #ifndef _WIN32
 #include "overlay_font.h"
 #endif
-static int make_atlas(ID3D11Device *dev) {
-    static unsigned char coverage[ATLAS_W * ATLAS_H];
+static unsigned char coverage[ATLAS_W * ATLAS_H];
+static int make_coverage(void) {
+    static int made;   /* 0 not yet, 1 made, -1 failed */
+    if (made) return made > 0;
+    made = -1;
 #ifdef _WIN32
     HDC dc = CreateCompatibleDC(NULL);
     BITMAPINFO bi;
@@ -100,6 +104,11 @@ static int make_atlas(ID3D11Device *dev) {
     DeleteObject(bmp);
     DeleteDC(dc);
 #endif
+    made = 1;
+    return 1;
+}
+static int make_atlas(ID3D11Device *dev) {
+    if (!make_coverage()) return 0;
     D3D11_TEXTURE2D_DESC td = {ATLAS_W, ATLAS_H, 1, 1, DXGI_FORMAT_R8_UNORM, {1, 0}, D3D11_USAGE_IMMUTABLE, D3D11_BIND_SHADER_RESOURCE, 0, 0};
     D3D11_SUBRESOURCE_DATA sd = {coverage, ATLAS_W, 0};
     ID3D11Texture2D *tex;
@@ -207,6 +216,36 @@ void overlay_present(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11RenderTa
     if (show && !menu_blocks_input()) hud(detail);   /* (an open menu instead of the overlay) */
     if (menu) menu_draw((float)w, (float)h);
     draw(ctx, rtv, x0, y0, w, h);
+}
+
+/* For another renderer (the Vulkan one, runtime/gpu_vk.c): the same frame-time bookkeeping and the same
+ * quads as overlay_present, handed over instead of drawn. Returns the number of vertices (triangle list,
+ * in the picture's pixels: x, y, atlas u, v, colour 0xAABBGGRR), 0 when nothing is to be drawn. */
+unsigned overlay_quads(unsigned w, unsigned h, int show, const char *detail, const OverlayVertex **verts) {
+    static LARGE_INTEGER freq, last;
+    LARGE_INTEGER now;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    if (last.QuadPart) {
+        history[head] = (double)(now.QuadPart - last.QuadPart) * 1000.0 / (double)freq.QuadPart;
+        head = (head + 1) % HISTORY;
+        if (filled < HISTORY) filled++;
+    }
+    last = now;
+    int menu = menu_visible();
+    *verts = (const OverlayVertex *)verts_out();
+    if (!show && !menu) return 0;
+    nverts = 0;
+    if (show && !menu_blocks_input()) hud(detail);
+    if (menu) menu_draw((float)w, (float)h);
+    return nverts;
+}
+
+/* The glyph atlas's coverage (one byte a texel, w x h), or NULL if it cannot be made. */
+const unsigned char *overlay_coverage(unsigned *w, unsigned *h) {
+    *w = ATLAS_W;
+    *h = ATLAS_H;
+    return make_coverage() ? coverage : NULL;
 }
 
 /* The overlay: the last second's frame rate and a graph of the last 240 frames' times. */
