@@ -54,7 +54,7 @@ This is what `Play SSBU.bat` does by default. Every Local Wireless room that any
 2. If Windows Security asks about `ssbu.exe`, click **Allow**. No port forwarding is needed: your game only sends to the lobby.
 3. In the game's main menu, choose **Local Wireless**.
    - **To host:** choose **Create a Room**. When a challenger appears, accept them.
-   - **To join:** open **Rooms List** and pick a room. Open rooms come first, fuller ones before emptier ones.
+   - **To join:** open **Rooms List** and pick a room. Open rooms come first, fuller ones before emptier ones. The list shows up to 24 rooms (the game on its own stops at 10); scroll down for the rest.
 4. Press <kbd>F1</kbd> to see the connection, for example `Online: 37 players, 4 rooms - you are Alpha, ping 48 ms`. A second line lists the other players in your room and how each one is reached ([see below](#direct-connections-and-your-internet-address)).
 
 `online_server.txt`, in the WindowSmash folder, names the lobby. Its first line that doesn't start with `#` is the lobby's address, `smash.recomps.wtf:39421` (the public lobby) unless you change it. Port 39421 is the lobby with the game server for [Online mode](#online-mode-quickplay); port 39420 is the older lobby without it, which older WindowSmash versions use. Rooms on one don't show up on the other, so everyone in a group should use the same one.
@@ -292,6 +292,7 @@ The game server's log (`--nex-log`: `0` quiet, `1` each call, `2` every packet, 
 | `SSBU_NET_DIRECT=0` | Online, send all traffic through the lobby. `Play SSBU.bat` sets it when `online_direct.txt` says `off`. |
 | `SSBU_NET_PROTOCOL=3` | Being tried out: join the lobby in netplay version 3, which has the [room browser and matchmaking](#room-browser-and-matchmaking-being-tried-out). A lobby of version 2 says no, and the game joins it in version 2. `2`, the default, is version 2 only. Without it, `online_protocol.txt` decides (`3` or `2`; the settings' **Online → Netplay version** writes it). Hosting a private room is always version 2. |
 | `SSBU_NET_TEST_NAT=1`, `SSBU_NET_TEST_BLOCK=<seconds>` | Local tests: filter incoming packets as a router would, or cut direct paths that many seconds after the start. |
+| `SSBU_NET_TEST_SAVE_ROOM=<file>`, `SSBU_NET_TEST_ROOMS=<file>[,<n>]` | Local tests of the Rooms List: a host writes its room's network to the file once a second; a game given that file also finds n rooms made from it at every scan (default 15, up to 24; `clone[,<n>]` copies the first room really found). They can't be joined. |
 | `SSBU_NET_LOG=1` / `2` | Network logging: a summary, or more detail. |
 | `SSBU_RB_NET=relay[,<player>[,<delay>,<frames>]]` | With `SSBU_RB=1`: rollback netplay's messages through this netplay connection. `<player>`: `auto` (by address in the room), `0`-`3`, or `-1` (the host gives one). See [above](#rollback-netplay-through-the-lobby-or-a-private-room). |
 | `SSBU_ONLINE_COUNTRY` | The country Online mode reports, as two letters such as `GB`. Default `US`. |
