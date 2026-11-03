@@ -1,57 +1,61 @@
 # OpenSmash-Ultimate
 
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/pkgyYGf3YB)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
+
+**[Website](https://denkishi.github.io/opensmash-site/) · [Discord](https://discord.gg/pkgyYGf3YB) · [Releases](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) · [Setup guide](docs/BUILDING.md) · [Issues](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/issues)**
+
 OpenSmash-Ultimate turns *Super Smash Bros. Ultimate* into a native PC program by static recompilation. It translates the game's ARM64 code into C once, ahead of time, compiles it, and links it with a runtime that stands in for the Nintendo Switch. The game's code and data come from a copy you dumped from your own console.
 
-It brings two projects together: [WindowSmash](https://github.com/OpenSmash-Ultimate/WindowSmash) and [ssbu-recomp](https://github.com/OpenSmash-Ultimate/ssbu-recomp).
+It is the merge of two projects, [WindowSmash](https://github.com/OpenSmash-Ultimate/WindowSmash) and [ssbu-recomp](https://github.com/OpenSmash-Ultimate/ssbu-recomp): one repository, one runtime (WindowSmash's, at game version 13.0.5) and one community. New work, issues and pull requests go here; the two old repositories are kept for their history.
 
 > [!IMPORTANT]
 > **This repository does not contain the game.** It holds no game files, keys, firmware or saves, and never will. You need your own copy of the game, dumped from your own Switch.
 
-## The merge is in progress
+## Play
 
-Both projects' full histories are in this repository. WindowSmash's recompiler and runtime are the base; ssbu-recomp's features will be ported into it one area at a time.
+1. On this page, click the green **Code** button, then **Download ZIP**, and extract it somewhere with room (not the Desktop or Documents: the build is around 30 GB).
+2. Double-click **`Install WindowSmash.bat`**. It finds your game files, keys and firmware (yuzu's and Ryujinx's folders are found by themselves), installs what is missing and builds the game: 30 minutes to a few hours.
+3. Double-click **`Play SSBU.bat`**.
 
-| Where | What it is | State |
+You need game version 13.0.5 and a 64-bit Windows 10 or 11 PC; a processor with AVX2 is recommended, SSE4.2 works too. Linux and macOS (Apple silicon) are experimental. The [setup guide](docs/BUILDING.md) explains every step and what to do if something goes wrong.
+
+## What's in it
+
+| Area | What you get | Where |
 | :--- | :--- | :--- |
-| Repository root | WindowSmash: recompiler, runtime, installer, tests and guides, at their original paths | Builds and plays today. Its unit tests run in CI on Windows, Linux and macOS. |
-| [`ssbu-recomp/`](ssbu-recomp/) | ssbu-recomp's tree, with its history | Staged, waiting to be ported. The root build and installer don't use it. Its runtime still compiles in CI on Linux and macOS. |
+| The game | The whole game recompiled for x86-64: menus, every mode, DLC fighters and stages, movies (VP9), music. | here |
+| Online | Rooms with a code (`XXXXX-XXXXX`), LAN rooms, a lobby, relay and direct paths; rollback netplay for fights (`SSBU_RB`, from WindowSmash #103 and ssbu-recomp #116). | [#55](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/55), [#59](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/59), [#63](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/63) |
+| Mods | The OpenSmash launcher and mod manager, Skyline plugins, ARCropolis mods, a switch for every mod in the game's settings and in the launcher; native mods written against `hook.h`. | [#62](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/62), [#63](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/63), [#67](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/67) |
+| New fighters | Fighters with a kind and files of their own (up to 16), all eight colours; fighters written as C++ source. | [#67](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/67), [#68](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/68) |
+| Graphics | Direct3D 11 by default; Vulkan as a choice in `display.ini` and the settings menu; Metal on macOS; shader prewarm and Prepare Shaders. | [#64](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/64), [#26](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/26) |
+| Settings | Game language, master volume, controllers (dead zones, invert, ignore), GameCube adapters, keyboard keys, low-latency display mode, the album. | [#56](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/56), [#57](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/57), [#60](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/60), [#3](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/3) |
+| Memory | Caps on the shader prewarm and on the copy kept for mod reloads; a memory line in the log. | [#66](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/66) |
 
-This first step changes nothing about how either project builds or runs. Later steps bring in ssbu-recomp's Vulkan renderer, installer and prebuilt runtime, settings menu, modding and rollback netcode, and move files into their final places as each area is ported.
+Rows that link to pull requests are being reviewed and land in `main` as they are merged.
 
-## Play today
-
-WindowSmash's install steps are the path that works today. Until OpenSmash-Ultimate's first release, download WindowSmash from **[github.com/OpenSmash-Ultimate/WindowSmash](https://github.com/OpenSmash-Ultimate/WindowSmash)** and follow its guides. The same guides are here in [`docs/`](docs/):
+## Guides
 
 | Guide | Read it to |
 | :--- | :--- |
-| [Setup guide](docs/BUILDING.md) | install WindowSmash and build the game, step by step. |
+| [Setup guide](docs/BUILDING.md) | install and build the game, step by step. |
 | [Playing](docs/PLAYING.md) | change the controls or the window, and find saves, screenshots and problem reports. |
 | [Multiplayer](docs/MULTIPLAYER.md) | play with other people online or in a private room. |
+| [Mods and Skyline plugins](docs/SKYLINE.md) | install mods and plugins and turn them on or off. |
 | [DLC and unlocks](docs/DLC-AND-UNLOCKS.md) | use your DLC, or unlock every base-game fighter on your save. |
 | [The 13.0.5 update](docs/UPDATES.md) | see which copies of the game count as 13.0.5 and how the update is applied. |
-| [Linux](docs/LINUX.md) | install, build and run the experimental Linux version. |
-| [macOS](docs/MACOS.md) | install, build and run the experimental version for Macs with Apple silicon. |
+| [Linux](docs/LINUX.md) · [macOS](docs/MACOS.md) | install, build and run the experimental versions. |
 | [How it works](docs/TECHNICAL.md) | understand the recompiler, the runtime and every tool. |
 
-You need game version 13.0.5 and a 64-bit Windows 10 or 11 PC. A processor with AVX2 is recommended; one with only SSE4.2 (x86-64-v2: Intel since 2008, AMD since 2011) works too, with a build for it that is expected to run slower. Linux and macOS (Apple silicon) are experimental. The [setup guide](docs/BUILDING.md) lists everything.
+## `ssbu-recomp/`
 
-## `ssbu-recomp/`: staged code
-
-[`ssbu-recomp/`](ssbu-recomp/) holds ssbu-recomp as it was when it was imported, with its history, so `git log` and `git blame` still show who wrote what. Since then, its two CI workflows have moved to [`.github/workflows/`](.github/workflows/), where GitHub runs them, and its README has lost the image line for the removed `media/menus.webp`. Each part moves out of the folder when it is ported, and the folder goes when it is empty.
-
-If you play ssbu-recomp, keep using [its own repository](https://github.com/OpenSmash-Ultimate/ssbu-recomp) for now: its installer, updates and prebuilt runtime still come from there. Its scripts still name the repository's old address, `Denkishi/ssbu-recomp`, which GitHub forwards to the same place.
-
-Material taken from the game was removed from every commit of ssbu-recomp's history on import:
-
-- the file `ssbu-recomp/media/menus.webp`, a capture of the running game;
-- the files `ssbu-recomp/tools/lifter/patches/kinds.txt` and `kinds_1305.txt`: instruction words from the game's code, in patches for new fighter kinds that are off by default. [`kinds_scan.py`](ssbu-recomp/tools/lifter/patches/kinds_scan.py), in the same folder, makes `kinds.txt` again from your own 13.0.4 dump. Nothing makes `kinds_1305.txt` again yet;
-- in `ssbu-recomp/README.md`, the game's values in its example of a decompiled fighter script (Mario's `game_attack11`): its frame, wait and attack numbers are placeholders in every version.
+[`ssbu-recomp/`](ssbu-recomp/) holds ssbu-recomp as it was imported, with its history, so `git log` and `git blame` still show who wrote what. Its parts move out of the folder as they are ported to the root runtime, and the folder goes when it is empty. Material taken from the game was removed from every commit of its history on import.
 
 ## Getting help
 
+- **Questions and finding players:** the OpenSmash-Ultimate Discord, **[discord.gg/pkgyYGf3YB](https://discord.gg/pkgyYGf3YB)** (WindowSmash's and ssbu-recomp's communities in one server).
 - **Setup problems:** see [If something goes wrong](docs/BUILDING.md#if-something-goes-wrong) in the setup guide.
-- **Questions:** ask on Discord, on [recomps.wtf](https://discord.gg/pkgyYGf3YB) (WindowSmash) or the [OpenSmash-Ultimate server](https://discord.gg/RyZpx3u2t4) (ssbu-recomp).
-- **Bugs:** open an issue with your operating system, graphics card and driver version, what you did, what happened instead, and the end of the log (`build/play.log`, plus the `.txt` report from `reports/` after a crash).
+- **Bugs:** open an [issue](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/issues) with your operating system, graphics card and driver version, what you did, what happened instead, and the end of the log (`build/play.log`, plus the `.txt` report from `reports/` after a crash).
 - **Security problems:** report them privately, as [SECURITY.md](SECURITY.md) explains. Don't open a public issue.
 
 > [!WARNING]

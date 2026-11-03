@@ -45,7 +45,13 @@ const char *kernel_rb_check(const void *p);
 void kernel_rb_load(const void *p);
 u32 kernel_rb_regions(u64 (*out)[2], u32 max);
 void *fiber_rb_save(u64 *bytes, u32 *suspended, const u64 *live, u32 nlive, u32 *in_use);
-const char *fiber_rb_check(const void *p);
+const char *fiber_rb_check(const void *p, const u64 *live, u32 nlive);
+void *ipc_rb_save(void);
+void ipc_rb_load(const void *p);
+void ipc_rb_free(void *p);
+u64 fs_rb_mark(void);
+int fs_rb_closed_since(u64 mark);
+int kernel_rb_strict(void);
 void fiber_rb_load(const void *p, const u64 *live, u32 nlive, u32 *skipped);
 void fiber_rb_free(void *p);
 void *setjmp_rb_save(u32 *count);
@@ -731,7 +737,8 @@ typedef struct Slot {
     int have;
     long long seq;                   /* the save's number */
     u32 tag;                         /* the caller's name for it (hle_rb_core.c: the logic frame) */
-    void *kernel, *fibers, *setjmps, *vi, *audio;
+    void *kernel, *fibers, *setjmps, *vi, *audio, *ipc;
+    u64 fs_mark;                     /* (hle_fs.c) its count of file opens and closes at the save */
     u32 threads;                     /* other threads in the save */
     CONTEXT main;                    /* the main thread's registers in rb_save */
     u64 main_base, main_frame;
@@ -757,8 +764,8 @@ static Slot *slot_at(int age) { return &ring[(ring_head - age + ring_size * 2) %
 static void slot_free(Slot *s) {
     for (u32 i = 0; i < s->nthr; i++) free(s->thr[i].stack);
     free(s->thr); s->thr = NULL; s->nthr = 0;
-    free(s->kernel); fiber_rb_free(s->fibers); setjmp_rb_free(s->setjmps); free(s->vi); free(s->audio); free(s->main_stack);
-    s->kernel = s->fibers = s->setjmps = s->vi = s->audio = NULL; s->main_stack = NULL;
+    free(s->kernel); fiber_rb_free(s->fibers); setjmp_rb_free(s->setjmps); free(s->vi); free(s->audio); ipc_rb_free(s->ipc); free(s->main_stack);
+    s->kernel = s->fibers = s->setjmps = s->vi = s->audio = s->ipc = NULL; s->main_stack = NULL;
     s->undo.n = 0;   /* (its buffers stay, for the next state in this slot) */
     s->have = 0;
 }
@@ -848,6 +855,8 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     s->setjmps = setjmp_rb_save(&jmps);
     s->vi = vi_rb_save();
     s->audio = audio_rb_save();
+    s->ipc = ipc_rb_save();
+    s->fs_mark = fs_rb_mark();
     u64 thread_bytes = 0;
     s->threads = 0;
     s->nthr = (u32)nrecs;
@@ -908,6 +917,7 @@ static void main_on_scratch(void *unused) {
 static const char FIBER_MISMATCH[] = "a guest thread is on another fiber than at the save";
 static char fiber_why[200];   /* (M7: which thread, and where it was and is: its own fiber or a job's) */
 static int fiber_now_in_job;  /* (that thread is in a job now: waiting may see it out; one in a job at the save is past) */
+static long long rb_fs_closed_loads;   /* (loads made with a game file closed since their save) */
 static const char *check(Cpu *c, u64 frame, u32 n, const Slot *s) {
     if (frame != s->main_frame) return "the safe point's stack pointer differs from the save";
     if (current_fiber() != s->main_fiber || stack_base() != s->main_base) return "the main thread is on another fiber than at the save";
@@ -925,7 +935,17 @@ static const char *check(Cpu *c, u64 frame, u32 n, const Slot *s) {
             return FIBER_MISMATCH;
         }
     }
-    return fiber_rb_check(s->fibers);
+    u64 live[1025];
+    u32 nlive = live_stacks(c->thread, live);
+    why = fiber_rb_check(s->fibers, live, nlive);
+    if (why) return why;
+    /* a game file open at the save and closed since (hle_fs.c): its handle is gone after the load. SSBU_RB_STRICT=1
+     * refuses such a load (an older state is tried, as for a fiber); by default it goes on as before, counted and logged */
+    if (fs_rb_closed_since(s->fs_mark)) {
+        if (kernel_rb_strict()) return "a game file open at the save was closed since (SSBU_RB_STRICT)";
+        if (++rb_fs_closed_loads <= 10) fprintf(stderr, "[rb] load: a game file open at the save was closed since; loading anyway (SSBU_RB_STRICT=1 refuses)\n");
+    }
+    return NULL;
 }
 /* (M7) loads refused because a thread was on another fiber, and how many a retry saved; hle_rb_core.c reports them */
 long long rb_fiber_refused, rb_fiber_retried_ok;
@@ -1010,6 +1030,7 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     step("display buffer queue");
     vi_rb_load(s->vi);
     audio_rb_load(s->audio);
+    ipc_rb_load(s->ipc);
     step("threads' stacks, then this thread's");
     copied = 0;
     loading = s;

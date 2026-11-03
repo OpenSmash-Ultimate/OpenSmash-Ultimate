@@ -117,7 +117,7 @@ The game's own **Online** menu works with WindowSmash's game server, which runs 
 | :--- | :--- |
 | An error as soon as you choose **Online** | Start the game with `Play SSBU.bat`, not `launchers\Play SSBU Offline.bat`, and check that the overlay (<kbd>F1</kbd>) says `Online`. |
 | An error code starting with **2306** | The game can't reach the game server. The lobby in `online_server.txt` has none (port 39420, or a lobby of your own run with `ssbu_relay.py`), or something blocks TCP to it. |
-| Quickplay keeps waiting | Nobody with your lobby code is searching right now. Find players on the [Discord server](https://discord.gg/pkgyYGf3YB). |
+| Quickplay keeps waiting | Nobody with your lobby code is searching right now. Find players on the [OpenSmash-Ultimate Discord](https://discord.gg/pkgyYGf3YB). |
 
 ## Direct connections and your internet address
 

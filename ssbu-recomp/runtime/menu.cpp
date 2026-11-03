@@ -58,6 +58,7 @@ uint64_t nnhid_preview(int id, int st[4]); void nnhid_kb_player_refresh(void); i
 void nnhid_test_key(int vk); long nnhid_test_result(uint64_t *buttons); int nnpad_kb_default(int idx);
 uint64_t nnhid_menu_buttons(void);                                   /* nnhid.c: every pad, Npad bit order, no effect on the game */
 void display_set_window_mode(int mode); void display_set_client_size(int w, int h); int display_window_mode(void);      /* display.c */
+int display_monitors(char (*names)[96], int max, int *primary, int *current); void display_monitor_name(int i, char *out, int n); void display_set_monitor(int i);
 int nnaudio_volume(void); void nnaudio_set_volume(int percent);     /* nnaudio.c */
 int nnpad_kb_vk(int idx); void nnpad_kb_bind(int idx, int vk); void nnpad_kb_player_set(int p); int nnpad_kb_player_cfg(void);      /* nnpad_sdl.c */
 const char *nnpad_kb_label(int idx); void nnpad_vk_name(int vk, char *o, int n); int nnpad_describe(char *out, int n); const char *nnpad_config_path(void);
@@ -363,7 +364,7 @@ static const char *const k_size_name[] = {"1280 x 720", "1600 x 900", "1920 x 10
 #define N(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 struct Settings {
-    int window, size, vsync, latency, renderer, aniso, profile, wait, prepare, load, console, overlay, volume, runahead, lang, kb_player, stats;
+    int window, monitor_auto, size, vsync, latency, renderer, aniso, profile, wait, prepare, load, console, overlay, volume, runahead, lang, kb_player, stats;
     float scale;
     char gpu[64];
 };
@@ -375,7 +376,7 @@ static int idx_of(const char *const *names, int n, const char *v) { for (int i =
 static void settings_init(int cw, int ch) {
     const GfxOptions *o = gfx_options();
     memset(&S, 0, sizeof S);
-    S.window = o->window_mode; S.vsync = o->present >= 0 && o->present < N(k_vsync) ? o->present : 5; S.latency = gfx_latency(); S.renderer = o->renderer;
+    S.window = o->window_mode; S.monitor_auto = !gfx_monitor()[0]; S.vsync = o->present >= 0 && o->present < N(k_vsync) ? o->present : 5; S.latency = gfx_latency(); S.renderer = o->renderer;
     S.aniso = 0; for (int i = 0; i < N(k_aniso_v); i++) if (k_aniso_v[i] == o->aniso) S.aniso = i;
     S.profile = o->profile; S.wait = o->shader_skip; S.prepare = o->shader_prepare; S.load = o->shader_load; S.console = o->handheld; S.overlay = o->overlay;
     S.volume = gfx_volume(); S.runahead = gfx_runahead(); S.scale = o->scale;
@@ -564,6 +565,27 @@ static void sec_display(int cw, int ch) {
     S.window = wm;
     if (combo("Window", &S.window, k_window, N(k_window))) { display_set_window_mode(S.window); ini("window", k_window[S.window]); }
     tag(0, 0);
+    {   /* graphics.ini monitor (display.c): the SDL window; the Windows build lists none */
+        static char names[9][96], auto_name[128];
+        const char *items[9];
+        int prim, cur, n = display_monitors(names + 1, 8, &prim, &cur);
+        if (n > 0) {
+            snprintf(auto_name, sizeof auto_name, "auto (primary: %s)", names[1 + prim]);
+            items[0] = auto_name;
+            for (int i = 0; i < n; i++) items[i + 1] = names[i + 1];
+            int sel = S.monitor_auto || cur < 0 ? 0 : cur + 1;
+            if (combo("Monitor", &sel, items, n + 1)) {
+                char nm[96] = "auto";
+                S.monitor_auto = sel == 0;
+                display_set_monitor(sel - 1);
+                if (sel) display_monitor_name(sel - 1, nm, sizeof nm);
+                ini("monitor", nm);
+            }
+            tag(0, 0);
+            help("The game opens on this monitor (auto: the system's primary one). On Wayland the desktop places a window "
+                 "itself: the choice moves the game in fullscreen; a window moves with the desktop's shortcut (GNOME: Super + Shift + arrow key).");
+        }
+    }
     {   /* a screen that is not k x 60 Hz (75, 144, 165 Hz ...): the game is 60 frames per second, so frames cannot all stay
          * on screen equally long and motion stutters (testers, 2026-10-20: "frame pacing is terrible, 144 Hz screen") */
         double hz; int k; display_refresh_info(&hz, &k);
@@ -749,6 +771,26 @@ static void sec_controls(void) {
         if (combo("Keyboard plays as player", &p, kp, N(kp))) { S.kb_player = p - 2; S0.kb_player = S.kb_player; nnpad_kb_player_set(S.kb_player); nnhid_kb_player_refresh(); }
         tag(0, 0);
         ImGui::SameLine(); ImGui::TextDisabled("now: %s", nnhid_kb_player() >= 0 ? kp[nnhid_kb_player() + 2] : "nobody");
+        bool ssf2 = nnpad_kb_movement() != 0;                  /* [keyboard] movement = ssf2 (nnhid.c kb_ssf2) */
+        if (ImGui::Checkbox("SSF2 Style", &ssf2)) nnpad_kb_movement_set(ssf2);
+        bool explain = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+        tag(0, 0);
+        ImGui::SameLine(); ImGui::TextDisabled("(?)");
+        if (explain || ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 34.0f);
+            ImGui::TextUnformatted("The keyboard's left stick keys as in Super Smash Flash 2 (a keyboard game):\n"
+                                   "- a direction walks; the same key again within 200 ms dashes; the other key while running dash-dances\n"
+                                   "- down crouches, and fast-falls in the air; down twice drops through a platform\n"
+                                   "- a direction and A together (within about 130 ms) is a smash attack, later a tilt\n"
+                                   "- shield and a direction: roll; shield and down: spot dodge\n"
+                                   "- up waits 4 frames: with A an up smash, with B an up special, otherwise a jump (a tap is a short hop)\n"
+                                   "- the key of the d-pad's up is the taunt key: with a direction held, the taunt of that side\n"
+                                   "Off: a stick key pushes the stick fully, as a button does (a direction always dashes).\n"
+                                   "Saved in controllers.ini as [keyboard] movement = ssf2.");
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
     } else {
         int p = nnpad_player_cfg(dv->index) + 1;
         if (combo("Player", &p, pp, N(pp))) nnpad_player_assign(dv->index, p - 1);
@@ -863,6 +905,37 @@ static int ini_read(const char *key, char *out, int n) {       /* "key = value" 
     return found;
 }
 static int off_word(const char *v) { return !*v || !strcmp(v, "0") || !_stricmp(v, "off") || !_stricmp(v, "no") || !_stricmp(v, "false"); }
+/* rollback = on in graphics.ini, read as scripts/run.py ini_on reads it (on / 1 / yes / true): the launcher starts the game with
+ * SSBU_RB_NET=net then */
+static int rollback_ini_on(void) {
+    char v[16];
+    return ini_read("rollback", v, sizeof v) && (!_stricmp(v, "on") || !strcmp(v, "1") || !_stricmp(v, "yes") || !_stricmp(v, "true"));
+}
+/* (2026-11-02, Linux vs Windows test: "rollback on in both games", yet the room match said "the other player's game has rollback
+ * off") "Restart the game now" starts this exe again with the SAME environment: SSBU_RB_NET comes from the launcher (run.py), so
+ * turning rollback on in F1 and restarting from here left it off (and turning it off left it on). The restart now sets it as the
+ * launcher would; a value other than the launcher's "net" (tests: loop, a forced player) is kept. */
+static void restart_rollback_env(void) {
+#ifndef __APPLE__
+    const char *e = getenv("SSBU_RB_NET");
+    int on = rollback_ini_on();
+    if (on && !(e && *e)) {
+        printf("menu: restart: rollback = on in graphics.ini: SSBU_RB_NET=net\n");
+#ifdef _WIN32
+        _putenv("SSBU_RB_NET=net"); SetEnvironmentVariableA("SSBU_RB_NET", "net");
+#else
+        setenv("SSBU_RB_NET", "net", 1);
+#endif
+    } else if (!on && e && !strcmp(e, "net")) {
+        printf("menu: restart: rollback = off in graphics.ini: SSBU_RB_NET removed\n");
+#ifdef _WIN32
+        _putenv("SSBU_RB_NET="); SetEnvironmentVariableA("SSBU_RB_NET", NULL);
+#else
+        unsetenv("SSBU_RB_NET");
+#endif
+    }
+#endif
+}
 static void online_init(void) {
     char v[128];
     memset(&O, 0, sizeof O);
@@ -922,6 +995,7 @@ static void restart_game(void) {
     GetCurrentDirectoryW(MAX_PATH, dir);
     swprintf(pid, 16, L"%lu", GetCurrentProcessId());
     SetEnvironmentVariableW(L"SSBU_RESTART_WAIT_PID", pid);
+    restart_rollback_env();
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     memset(&si, 0, sizeof si); si.cb = sizeof si;
@@ -977,6 +1051,7 @@ static void restart_game(void) {                           /* this exe again, sa
     char pid[16], exe[MAX_PATH], path[MAX_PATH];
     snprintf(pid, sizeof pid, "%d", (int)getpid());
     setenv("SSBU_RESTART_WAIT_PID", pid, 1);
+    restart_rollback_env();
     GetModuleFileNameA(NULL, exe, MAX_PATH);
     plat_path(exe, path, sizeof path);
     printf("menu: restarting the game: %s\n", path);
@@ -1023,6 +1098,7 @@ static bool onoff(const char *id, bool on, bool enabled) {     /* a big ON / OFF
     return c && enabled;
 }
 static int online_differs(void);
+static int rb_restart;                     /* the rollback switch differs from this run (the restart applies it) */
 static void sec_experimental(void) {
     if (!g_online_inited) online_init();
     help("Features still being tested. Each is saved to config\\graphics.ini and used from the next start.");
@@ -1065,8 +1141,8 @@ static void sec_experimental(void) {
     ImGui::SameLine(); ImGui::Text("Online play");
     tag(1, (O.mode != 0) != (O0.mode != 0));
     ImGui::SameLine(); ImGui::TextDisabled("play with others through the game's Local Wireless menu");
-#ifndef _WIN32
-    if (O.mode) ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "Online play is not in the Linux / macOS build yet: these settings are kept for when it is.");
+#ifdef __APPLE__
+    if (O.mode) ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "Online play is not in the macOS build yet: these settings are kept for when it is.");
 #endif
     if (O.mode) {
         /* (4) rollback netcode over the online connection: Play SSBU.bat (scripts/run.py) starts the normal exe with
@@ -1074,7 +1150,7 @@ static void sec_experimental(void) {
         static int rb_have = -1, rb_on = -1, rb_on0;
         if (rb_have < 0) {
             char v[16];
-#ifdef _WIN32
+#if defined(_WIN32) || (defined(__linux__) && defined(__x86_64__))
             rb_have = 1;
 #else
             rb_have = 0;
@@ -1086,11 +1162,14 @@ static void sec_experimental(void) {
         tag(1, rb_on != rb_on0);
         ImGui::SameLine();
         if (rb_have) ImGui::TextDisabled("smooth online fights at high ping (experimental); both players need it on");
-        else ImGui::TextDisabled("not in the Linux / macOS build yet");
+        else ImGui::TextDisabled("not in the macOS build yet");
         if (getenv("SSBU_RB_NET")) ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.45f, 1), "Rollback is active in this run (SSBU_RB_NET=%s).", getenv("SSBU_RB_NET"));
+        else if (rb_have && rb_on && rb_on == rb_on0)       /* (on in the file, yet this run was started without it: not by the launcher) */
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "Rollback is on in the settings but NOT active in this run: start the game with its launcher, or Restart below.");
+        rb_restart = rb_on != rb_on0 || (rb_have && rb_on && !getenv("SSBU_RB_NET"));
         sec_online();
     }
-    if (online_differs() || S.runahead != S0.runahead || strcmp(pname, pname0)) {
+    if (online_differs() || rb_restart || S.runahead != S0.runahead || strcmp(pname, pname0)) {
         ImGui::Separator();
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "Saved. These changes are used when the game starts again.");
         if (ImGui::Button("Restart the game now")) restart_game();
@@ -1106,7 +1185,10 @@ static void sec_online(void) {
     ImGui::Text("Now:"); ImGui::SameLine();
     if (ns.state == NET_CONNECTED) ImGui::TextColored(col, "%s - %s, %d player%s%s", st[2], k_online_name[O0.mode], ns.players, ns.players == 1 ? "" : "s", "");
     else ImGui::TextColored(col, "%s%s%s", ns.state >= 0 && ns.state <= 3 ? st[ns.state] : "?", O0.mode ? " - " : "", O0.mode ? k_online_name[O0.mode] : "");
-    if (ns.state == NET_CONNECTED && ns.ping_ms >= 0) { ImGui::SameLine(); ImGui::Text("  ping %d ms", ns.ping_ms); }
+    if (ns.state == NET_CONNECTED && ns.ping_ms >= 0) {
+        ImGui::SameLine();
+        ImGui::Text("  ping %d ms %s", ns.ping_ms, ns.ping_to == NET_PING_DIRECT ? "(to a player, direct)" : ns.ping_to == NET_PING_ROLLBACK ? "(rollback)" : "(to the lobby)");
+    }
     ImGui::Indent();
     ImGui::SetWindowFontScale(1.2f);
     int changed = 0;
@@ -1369,8 +1451,17 @@ static void draw_stats(void) {
     if (ns.state == NET_CONNECTED) ImGui::TextColored(col, "%s (%d players)", st[2], ns.players);
     else ImGui::TextColored(col, "%s", ns.state >= 0 && ns.state <= 3 ? st[ns.state] : "?");
     if (ns.state == NET_CONNECTED || ns.state == NET_CONNECTING) {
-        if (ns.ping_ms >= 0) ImGui::Text("ping %d ms  delay %d f", ns.ping_ms, ns.delay); else ImGui::Text("ping -  delay %d f", ns.delay);
-        ImGui::Text("rollback %d / %d f", ns.rollback_last, ns.rollback_max);
+        char ping[16] = "-";
+        if (ns.ping_ms >= 0) snprintf(ping, sizeof ping, "%d ms", ns.ping_ms);
+        if (ns.ping_to == NET_PING_ROLLBACK) {          /* delay and rollbacks are the rollback code's: only its matches have them */
+            ImGui::Text("ping %s  delay %d f", ping, ns.delay);
+            ImGui::Text("rollback %d / %d f", ns.rollback_last, ns.rollback_max);
+        } else if (ns.ping_to == NET_PING_DIRECT) {
+            ImGui::Text("ping %s to a player (direct)", ping);
+        } else ImGui::Text("ping %s to the lobby server", ping);
+        if (ns.peers > 0)                                /* the room's other players: direct, or each packet through the lobby */
+            ImGui::TextColored(ns.direct == ns.peers ? ImVec4(0.45f, 0.9f, 0.45f, 1) : ImVec4(1, 0.8f, 0.2f, 1), "direct to %d of %d player%s%s",
+                               ns.direct, ns.peers, ns.peers == 1 ? "" : "s", ns.direct < ns.peers ? " (rest via the lobby)" : "");
     }
     ImGui::Text("run-ahead %s", !ra_cfg ? "off" : r1_ra_phase() ? "on (running)" : "on");
     ImGui::End();
@@ -1537,7 +1628,7 @@ static void exit_game(void) {                              /* F1 -> Exit game: t
     printf("menu: exit game\n");
     fflush(stdout);
     CreateThread(NULL, 0, restart_thread, NULL, 0, NULL);
-    CreateThread(NULL, 0, [](LPVOID) -> DWORD { Sleep(4000); fflush(stdout); _Exit(0); return 0; }, NULL, 0, NULL);
+    CreateThread(NULL, 0, [](LPVOID) -> DWORD { Sleep(70000); fflush(stdout); _Exit(0); return 0; }, NULL, 0, NULL);
 }
 static void draw_menu(int cw, int ch) {
     if (ImGui::BeginMainMenuBar()) {

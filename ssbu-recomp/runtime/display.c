@@ -352,13 +352,16 @@ static HWND g_hwnd_menu;                               /* g_hwnd, for the functi
 void display_set_window_mode(int mode) { if (g_hwnd_menu) PostMessageA(g_hwnd_menu, WM_APP + 0x51, (WPARAM)mode, 0); }
 void display_set_client_size(int w, int h) { if (g_hwnd_menu) PostMessageA(g_hwnd_menu, WM_APP + 0x52, (WPARAM)w, (LPARAM)h); }
 int display_window_mode(void) { return g_full ? (g_topmost ? 2 : 1) : 0; }
+int display_monitors(char (*names)[96], int max, int *primary, int *current) { (void)names; (void)max; *primary = 0; *current = -1; return 0; }      /* F1 > Display > Monitor: the SDL window only (Linux) */
+void display_monitor_name(int i, char *out, int n) { (void)i; if (n > 0) out[0] = 0; }
+void display_set_monitor(int i) { (void)i; }
 #include "loading_anim.c"                            /* U3: the loading animation until the game's first present */
 /* closing the window: a game that does not end within 4 s (an exit handler or a thread that never returns: testers saw the
  * window freeze after the X while closing the console window worked) is ended here, its log flushed first */
 static DWORD WINAPI close_watchdog(LPVOID arg) {
     (void)arg;
-    Sleep(4000);
-    printf("\nwindow closed but the game did not end within 4 s: ended now\n");
+    Sleep(70000);   /* (the Vulkan shutdown may take up to 63 s saving the pipeline cache: nvn_gl.c vk_shutdown_at_exit) */
+    printf("\nwindow closed but the game did not end within 70 s: ended now\n");
     fflush(stdout);
     TerminateProcess(GetCurrentProcess(), 0);
     return 0;
@@ -459,12 +462,17 @@ static DWORD WINAPI window_thread(LPVOID arg) {
     while (GetMessageA(&msg, NULL, 0, 0) > 0) { TranslateMessage(&msg); DispatchMessageA(&msg); }
     return 0;
 }
+void display_pump(int ms) { (void)ms; }      /* Windows: the window thread above pumps its own messages; main only waits */
 
 #else
-/* Linux build: an SDL3 window (X11 or Wayland) made and serviced by its own thread, as the Win32 one is. Vulkan draws
+/* Linux and macOS build: an SDL3 window (X11, Wayland or Cocoa) made and serviced by the process's MAIN thread. Vulkan draws
  * into it (nvn_vk.c makes the surface with SDL). The keyboard state that nnhid.c reads (GetAsyncKeyState, plat_posix.c)
- * is SDL's, which this thread's event pumping keeps current; nnpad_sdl.c flushes the queue on its own thread, so the
- * close request is caught by an event watch rather than read from the queue. */
+ * is SDL's, which the event pumping keeps current; nnpad_sdl.c flushes the queue on its own thread, so the close request is
+ * caught by an event watch rather than read from the queue.
+ * It has to be the main thread on macOS: SDL's Cocoa driver refuses every other one (Cocoa_CreateDevice returns NULL when
+ * ![NSThread isMainThread], and SDL_VideoInit then reports "No available video device"), and AppKit wants the event pump
+ * there as well. So display_init() opens the window on the thread that calls it (main, boot.c) and main pumps it with
+ * display_pump() while it waits for the guest, instead of blocking in WaitForSingleObject. */
 #include <SDL3/SDL.h>
 /* U3: no loading animation in the SDL window yet (the Windows one is loading_anim.c) */
 static volatile LONG g_la_first = 1;
@@ -472,8 +480,12 @@ static void la_stop(void) {}
 static void la_note(const char *note) { (void)note; }
 int oe_exit_request(void);                            /* nnmisc.c */
 static char g_title[96];
+static volatile LONG g_mon_dirty = 1;                 /* a monitor was connected or removed: the window thread reads the list again */
+static volatile LONG g_mon_moved;                     /* the monitor the window went to (an SDL_DisplayID; 0 = none since the last look) */
 static bool SDLCALL close_watch(void *user, SDL_Event *e) {
     (void)user;
+    if (e->type == SDL_EVENT_DISPLAY_ADDED || e->type == SDL_EVENT_DISPLAY_REMOVED) InterlockedExchange(&g_mon_dirty, 1);
+    if (e->type == SDL_EVENT_WINDOW_DISPLAY_CHANGED) InterlockedExchange(&g_mon_moved, (LONG)e->window.data1);
     if (e->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED || e->type == SDL_EVENT_QUIT) {
         static volatile LONG once;
         if (InterlockedExchange(&once, 1)) return true;
@@ -482,6 +494,75 @@ static bool SDLCALL close_watch(void *user, SDL_Event *e) {
     }
     return true;
 }
+/* F1 > Display > Monitor (graphics.ini monitor = auto | <number> | <name>). The window is always put on a monitor by
+ * its id: made with SDL_WINDOWPOS_UNDEFINED, SDL on Wayland asks for fullscreen without an output and GNOME picks one
+ * (the one with the pointer or the focus): the game opened on the laptop's panel or on the external monitor at random.
+ * The list is read on this thread (SDL's display calls belong to the video thread) and copied for the menu. */
+#define MON_MAX 8
+static struct { SDL_DisplayID id; char name[80]; int w, h; } g_mon[MON_MAX];
+static int g_mon_n, g_mon_primary, g_mon_cur = -1;     /* g_mon_cur: the monitor the window was put on */
+static int g_mon_seen, g_mon_fix;                     /* the window was on g_mon_cur once; moves back made so far */
+static SRWLOCK g_mon_lock = SRWLOCK_INIT;
+static volatile LONG g_mon_req = -2;                  /* the menu's choice: -2 none, -1 auto, n = g_mon[n] */
+static char g_mon_want[96];                           /* "" = auto (the primary monitor), else as graphics.ini monitor */
+static void monitors_read(void) {
+    int n = 0;
+    SDL_DisplayID *d = SDL_GetDisplays(&n), prim = SDL_GetPrimaryDisplay();
+    AcquireSRWLockExclusive(&g_mon_lock);
+    g_mon_n = 0; g_mon_primary = 0;
+    for (int i = 0; d && i < n && g_mon_n < MON_MAX; i++) {
+        const SDL_DisplayMode *dm = SDL_GetDesktopDisplayMode(d[i]);
+        const char *nm = SDL_GetDisplayName(d[i]);
+        g_mon[g_mon_n].id = d[i];
+        snprintf(g_mon[g_mon_n].name, sizeof g_mon[0].name, "%s", nm && nm[0] ? nm : "monitor");
+        g_mon[g_mon_n].w = dm ? dm->w : 0; g_mon[g_mon_n].h = dm ? dm->h : 0;
+        if (d[i] == prim) g_mon_primary = g_mon_n;
+        g_mon_n++;
+    }
+    ReleaseSRWLockExclusive(&g_mon_lock);
+    SDL_free(d);
+    for (int i = 0; i < g_mon_n; i++) printf("display: monitor %d: %s, %dx%d%s\n", i + 1, g_mon[i].name, g_mon[i].w, g_mon[i].h, i == g_mon_primary ? " (primary)" : "");
+    fflush(stdout);
+}
+static int monitor_pick(const char *want) {           /* the index of g_mon for graphics.ini monitor; the primary one when none fits */
+    if (!want[0] || !g_mon_n) return g_mon_primary;
+    if (strspn(want, "0123456789") == strlen(want)) { int k = atoi(want); if (k >= 1 && k <= g_mon_n) return k - 1; }
+    else {
+        size_t wl = strlen(want);
+        for (int i = 0; i < g_mon_n; i++) if (!_stricmp(g_mon[i].name, want)) return i;
+        for (int i = 0; i < g_mon_n; i++) for (const char *p = g_mon[i].name; *p; p++) if (!_strnicmp(p, want, wl)) return i;
+    }
+    printf("display: monitor = %s: not connected, the primary monitor (%s)\n", want, g_mon[g_mon_primary].name); fflush(stdout);
+    return g_mon_primary;
+}
+static void monitor_place(SDL_Window *w, int i, int mode) {   /* the window onto g_mon[i] in its mode (0 windowed, 1 borderless, 2 fullscreen) */
+    SDL_DisplayID id = g_mon[i].id;
+    SDL_Rect r;
+    g_mon_cur = i;
+    if (mode == 2) {      /* fullscreen: out, onto the monitor, in again (a position asked for while fullscreen does not move the window on GNOME Wayland) */
+        SDL_SetWindowFullscreen(w, false); SDL_SyncWindow(w);
+        SDL_SetWindowPosition(w, SDL_WINDOWPOS_CENTERED_DISPLAY(id), SDL_WINDOWPOS_CENTERED_DISPLAY(id));
+        SDL_SetWindowFullscreenMode(w, NULL); SDL_SetWindowFullscreen(w, true); SDL_SyncWindow(w);
+    }
+    else if (mode == 1 && SDL_GetDisplayBounds(id, &r)) { SDL_SetWindowPosition(w, r.x, r.y); SDL_SetWindowSize(w, r.w, r.h); }
+    else SDL_SetWindowPosition(w, SDL_WINDOWPOS_CENTERED_DISPLAY(id), SDL_WINDOWPOS_CENTERED_DISPLAY(id));
+    printf("display: monitor %d: %s\n", i + 1, g_mon[i].name); fflush(stdout);
+}
+/* menu.cpp: the list (names "<name>  (<w> x <h>)"), the primary monitor and the one in use; the menu's choice (-1 = auto) */
+int display_monitors(char (*names)[96], int max, int *primary, int *current) {
+    AcquireSRWLockShared(&g_mon_lock);
+    int n = g_mon_n < max ? g_mon_n : max;
+    for (int i = 0; i < n; i++) snprintf(names[i], 96, "%s  (%d x %d)", g_mon[i].name, g_mon[i].w, g_mon[i].h);
+    *primary = g_mon_primary; *current = g_mon_cur;
+    ReleaseSRWLockShared(&g_mon_lock);
+    return n;
+}
+void display_monitor_name(int i, char *out, int n) {
+    AcquireSRWLockShared(&g_mon_lock);
+    snprintf(out, (size_t)n, "%s", i >= 0 && i < g_mon_n ? g_mon[i].name : "");
+    ReleaseSRWLockShared(&g_mon_lock);
+}
+void display_set_monitor(int i) { InterlockedExchange(&g_mon_req, i < -1 ? -1 : i); }
 /* U2, the settings menu (menu.cpp, render thread) asks; the window thread does it (window_mode_service), as WM_APP + 0x51 /
  * 0x52 on Windows. mode: 0 windowed, 1 borderless over the screen, 2 the desktop's fullscreen (graphics.ini window). */
 static volatile LONG g_mode_req = -1, g_size_req, g_size_w, g_size_h, g_mode_now;
@@ -492,16 +573,43 @@ int display_window_mode(void) { return g_mode_now; }
 static void window_mode_service(SDL_Window *w) {
     LONG m = InterlockedExchange(&g_mode_req, -1);
     if (m >= 0) {
-        if (m == 2) { SDL_SetWindowFullscreenMode(w, NULL); SDL_SetWindowFullscreen(w, true); }      /* NULL: the desktop's mode, no mode change */
+        if (m == 2) {
+            if (g_mon_cur >= 0 && g_mon_cur < g_mon_n) SDL_SetWindowPosition(w, SDL_WINDOWPOS_CENTERED_DISPLAY(g_mon[g_mon_cur].id), SDL_WINDOWPOS_CENTERED_DISPLAY(g_mon[g_mon_cur].id));      /* the chosen monitor's output */
+            SDL_SetWindowFullscreenMode(w, NULL); SDL_SetWindowFullscreen(w, true);      /* NULL: the desktop's mode, no mode change */
+        }
         else {
             SDL_SetWindowFullscreen(w, false);
             SDL_SetWindowBordered(w, m == 0);
             SDL_Rect r;
-            if (m == 1 && SDL_GetDisplayBounds(SDL_GetDisplayForWindow(w), &r)) { SDL_SetWindowPosition(w, r.x, r.y); SDL_SetWindowSize(w, r.w, r.h); }
-            else if (m == 0) { SDL_SetWindowSize(w, g_win_w, g_win_h); SDL_SetWindowPosition(w, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED); }
+            SDL_DisplayID id = g_mon_cur >= 0 && g_mon_cur < g_mon_n ? g_mon[g_mon_cur].id : SDL_GetDisplayForWindow(w);
+            if (m == 1 && SDL_GetDisplayBounds(id, &r)) { SDL_SetWindowPosition(w, r.x, r.y); SDL_SetWindowSize(w, r.w, r.h); }
+            else if (m == 0) { SDL_SetWindowSize(w, g_win_w, g_win_h); SDL_SetWindowPosition(w, SDL_WINDOWPOS_CENTERED_DISPLAY(id), SDL_WINDOWPOS_CENTERED_DISPLAY(id)); }
         }
         InterlockedExchange(&g_mode_now, m);
         printf("display: window mode %s (settings menu)\n", m == 2 ? "fullscreen" : m ? "borderless" : "windowed"); fflush(stdout);
+    }
+    if (InterlockedExchange(&g_mon_dirty, 0)) monitors_read();
+    {   /* GNOME places the window when its first frame arrives (after the shader loading: up to a minute on the first
+         * start), on the monitor with the pointer or the focus, whatever output SDL asked for: until the window has been on
+         * the chosen monitor once, it is moved back there (at most 3 times; a later move by the person stays) */
+        SDL_DisplayID on = (SDL_DisplayID)InterlockedExchange(&g_mon_moved, 0);
+        const char *nm = on ? SDL_GetDisplayName(on) : NULL;
+        if (nm) { printf("display: the window is on %s\n", nm); fflush(stdout); }
+        if (on && g_mon_cur >= 0 && g_mon_cur < g_mon_n) {
+            if (on == g_mon[g_mon_cur].id) g_mon_seen = 1;
+            else if (!g_mon_seen && g_mon_fix < 3) {
+                g_mon_fix++;
+                printf("display: the desktop put the window on %s, not on the chosen monitor: moved back\n", nm ? nm : "another monitor"); fflush(stdout);
+                monitor_place(w, g_mon_cur, (int)g_mode_now);
+            }
+        }
+    }
+    LONG mi = InterlockedExchange(&g_mon_req, -2);
+    if (mi >= -1) {
+        g_mon_want[0] = 0;
+        if (mi >= 0 && mi < g_mon_n) snprintf(g_mon_want, sizeof g_mon_want, "%s", g_mon[mi].name);
+        g_mon_seen = 0; g_mon_fix = 0;
+        monitor_place(w, monitor_pick(g_mon_want), (int)g_mode_now);
     }
     if (InterlockedExchange(&g_size_req, 0)) {
         g_win_w = g_size_w; g_win_h = g_size_h;
@@ -511,22 +619,38 @@ static void window_mode_service(SDL_Window *w) {
     }
 }
 void menu_sdl_attach(void *window); void menu_sdl_service(void);      /* menu.cpp (or menu_stub.c): the settings menu's input */
-static DWORD WINAPI window_thread(LPVOID arg) {
-    (void)arg;
+/* Opens the window. Called by display_init() on the thread that called it, which must be the main thread on macOS. */
+static void window_open(void) {
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "1");
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) { printf("display: SDL video cannot start: %s\n", SDL_GetError()); fflush(stdout); ExitProcess(5); }
     const GfxOptions *go = gfx_options();
     int cw = go->width, ch = go->height;
     SDL_WindowFlags flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE;
+    snprintf(g_mon_want, sizeof g_mon_want, "%s", gfx_monitor());
+    monitors_read();
+    InterlockedExchange(&g_mon_dirty, 0);
+    g_mon_cur = g_mon_n ? monitor_pick(g_mon_want) : -1;
+    SDL_DisplayID mon = g_mon_cur >= 0 ? g_mon[g_mon_cur].id : SDL_GetPrimaryDisplay();
     if (go->window_mode) {
-        const SDL_DisplayMode *dm = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay());
+        const SDL_DisplayMode *dm = SDL_GetDesktopDisplayMode(mon);
         if (dm) { cw = dm->w; ch = dm->h; }
         flags |= go->window_mode == 2 ? SDL_WINDOW_FULLSCREEN : SDL_WINDOW_BORDERLESS;
     }
-    printf("display: window %s, client %dx%d (graphics.ini), SDL video driver %s\n", go->window_mode == 2 ? "fullscreen" : go->window_mode ? "borderless" : "windowed", cw, ch, SDL_GetCurrentVideoDriver());
+    printf("display: window %s, client %dx%d on monitor %d%s (graphics.ini), SDL video driver %s\n", go->window_mode == 2 ? "fullscreen" : go->window_mode ? "borderless" : "windowed", cw, ch,
+           g_mon_cur + 1, g_mon_want[0] ? "" : " (auto: the primary one)", SDL_GetCurrentVideoDriver());
     snprintf(g_title, sizeof g_title, "%s", getenv("SSBU_TITLE") ? getenv("SSBU_TITLE") : "SSBU native (study build)");
-    SDL_Window *w = SDL_CreateWindow(g_title, cw, ch, flags);
+    SDL_Window *w;
+    {   SDL_PropertiesID pr = SDL_CreateProperties();      /* centred on the monitor by its id: SDL then names that output (fullscreen on Wayland too) */
+        SDL_SetStringProperty(pr, SDL_PROP_WINDOW_CREATE_TITLE_STRING, g_title);
+        SDL_SetNumberProperty(pr, SDL_PROP_WINDOW_CREATE_X_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(mon));
+        SDL_SetNumberProperty(pr, SDL_PROP_WINDOW_CREATE_Y_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(mon));
+        SDL_SetNumberProperty(pr, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, cw);
+        SDL_SetNumberProperty(pr, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, ch);
+        SDL_SetNumberProperty(pr, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, (Sint64)flags);
+        w = SDL_CreateWindowWithProperties(pr);
+        SDL_DestroyProperties(pr);
+    }
     if (!w) { printf("display: SDL_CreateWindow failed: %s\n", SDL_GetError()); fflush(stdout); ExitProcess(5); }
     SDL_AddEventWatch(close_watch, NULL);
     g_win_w = go->width; g_win_h = go->height; g_mode_now = go->window_mode;
@@ -534,14 +658,17 @@ static DWORD WINAPI window_thread(LPVOID arg) {
     g_hwnd = (HWND)w;
     plat_game_window = (HWND)w;
     InterlockedExchange(&g_ready, 1);
-    for (;;) {
-        SDL_Event e;
-        if (SDL_WaitEventTimeout(&e, 8)) { while (SDL_PollEvent(&e)) {} }       /* the watch saw them; the keyboard state is current */
-        plat_window_service();
-        window_mode_service(w);
-        menu_sdl_service();
-    }
-    return 0;
+}
+/* One turn of the window: the events, the changes other threads asked for (plat_posix.c queues the title and the show
+ * state), the settings menu's. Called from main (boot.c) while it waits for the guest thread; ms is how long to wait for
+ * an event when there is nothing to do. */
+void display_pump(int ms) {
+    SDL_Window *w = (SDL_Window *)g_hwnd;
+    SDL_Event e;
+    if (SDL_WaitEventTimeout(&e, ms)) { while (SDL_PollEvent(&e)) {} }       /* the watch saw them; the keyboard state is current */
+    plat_window_service();
+    if (w) window_mode_service(w);
+    menu_sdl_service();
 }
 #endif
 /* Signals the guest's vsync event 60 times per second. */
@@ -647,8 +774,12 @@ void display_init(void) {
      * SSBU_TIMER_PERIOD=<ms> (default 1; 0 = leave the system default). */
     { const char *e = getenv("SSBU_TIMER_PERIOD"); int ms = e ? atoi(e) : 1; if (ms > 0) { MMRESULT r = timeBeginPeriod((UINT)ms); printf("display: system timer period %d ms requested (%s)%c", ms, r == TIMERR_NOERROR ? "ok" : "refused", 10); } }
     hitch_init();
+#ifdef _WIN32
     CreateThread(NULL, 0, window_thread, NULL, 0, NULL);
     while (!g_ready) Sleep(1);
+#else
+    window_open();                     /* the main thread: macOS's SDL video refuses any other (see the note above) */
+#endif
     nvn_gl_start(g_hwnd);
     speed_init();
     if (!g_lockstep && !old_pacing()) CreateThread(NULL, 0, vblank_thread, NULL, 0, NULL);      /* session 14: the display's vblanks, timed */

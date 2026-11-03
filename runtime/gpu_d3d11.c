@@ -1055,16 +1055,19 @@ static void cache_path(const Shader *s, char *path, size_t n) {
 }
 
 /* A file the ahead-of-time compiler wrote (dated 2001), now used by the game: dated now, so the
- * next start's prewarm makes it. */
+ * next start's prewarm makes it. A file used again is dated now too (once an hour at most): the
+ * prewarm goes newest first and stops at its budget, so the programs played last are the ones
+ * made - without it, newest meant the last ones first compiled, and few of those were asked for
+ * (a run: 177 of 1,144 made taken by the game). */
 static void cache_touch(const char *path) {
     HANDLE h = CreateFileA(path, FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            NULL, OPEN_EXISTING, 0, NULL);
     if (h == INVALID_HANDLE_VALUE) return;
     FILETIME written, now;
-    if (GetFileTime(h, NULL, NULL, &written) && ((u64)written.dwHighDateTime << 32 | written.dwLowDateTime) < SHADER_CACHE_PLAYED) {
-        GetSystemTimeAsFileTime(&now);
+    GetSystemTimeAsFileTime(&now);
+    u64 at = GetFileTime(h, NULL, NULL, &written) ? (u64)written.dwHighDateTime << 32 | written.dwLowDateTime : ~0ull;
+    if (at < SHADER_CACHE_PLAYED || at + 36000000000ull < ((u64)now.dwHighDateTime << 32 | now.dwLowDateTime))   /* (an hour, in 100 ns) */
         SetFileTime(h, NULL, NULL, &now);
-    }
     CloseHandle(h);
 }
 
@@ -1103,8 +1106,13 @@ enum { PW_EMPTY, PW_QUEUED, PW_LOADING, PW_READY, PW_TAKEN, PW_FAILED };
 #define PREWARM_SLOTS 32768
 static Prewarm *volatile prewarm_table;
 static SRWLOCK prewarm_lock = SRWLOCK_INIT;
-static volatile LONG prewarm_total, prewarm_done, prewarm_ready;
+static volatile LONG prewarm_total, prewarm_done, prewarm_ready, prewarm_taken, prewarm_over;
 static u64 prewarm_t0, prewarm_bytes0;
+/* Each program the driver makes holds its GPU code in this process (NVIDIA: some 0.4-0.8 MB), and a
+ * player's cache keeps every program played before: thousands, gigabytes. The prewarm stops making
+ * them once the process has grown this much since it began (newest first: the ones played last are
+ * made); the rest load at first use as without a prewarm. SSBU_SHADER_PREWARM_MB, 0: no limit. */
+static u64 prewarm_budget = 1024ull << 20;
 
 static u64 private_bytes(void) {
 #ifdef _WIN32
@@ -1146,7 +1154,7 @@ static void *prewarm_take(const Shader *s) {
     void *obj = NULL;
     AcquireSRWLockExclusive(&prewarm_lock);
     Prewarm *p = prewarm_slot(s->stage, s->hash, s->vs_outputs, s->table_hash, 0);
-    if (p && p->state == PW_READY) { obj = p->obj; p->obj = NULL; }
+    if (p && p->state == PW_READY) { obj = p->obj; p->obj = NULL; prewarm_taken++; }
     if (p && p->state != PW_FAILED) p->state = PW_TAKEN;
     ReleaseSRWLockExclusive(&prewarm_lock);
     return obj;
@@ -1159,6 +1167,11 @@ static void prewarm_job(struct Compiler *me, Shader *s) {
     Prewarm *p = s->prewarm;
     AcquireSRWLockExclusive(&prewarm_lock);
     int go = p->state == PW_QUEUED;
+    if (go && prewarm_budget && private_bytes() > prewarm_bytes0 + prewarm_budget) {   /* (over the budget: left to the game's own load) */
+        go = 0;
+        p->state = PW_FAILED;
+        prewarm_over++;
+    }
     if (go) p->state = PW_LOADING;
     ReleaseSRWLockExclusive(&prewarm_lock);
     void *obj = NULL;
@@ -1190,8 +1203,9 @@ static void prewarm_job(struct Compiler *me, Shader *s) {
     ReleaseSRWLockExclusive(&prewarm_lock);
     if (obj) IUnknown_Release((IUnknown *)obj);   /* the game loaded its own meanwhile */
     if (InterlockedIncrement(&prewarm_done) == prewarm_total)
-        fprintf(stderr, "[gfx] prewarm: %ld of %ld shaders ready in %.1f s; private memory %.0f -> %.0f MB\n", (long)prewarm_ready, (long)prewarm_total,
-                (GetTickCount64() - prewarm_t0) / 1000.0, prewarm_bytes0 / 1048576.0, private_bytes() / 1048576.0);
+        fprintf(stderr, "[gfx] prewarm: %ld of %ld shaders ready in %.1f s (%ld left to first use: over SSBU_SHADER_PREWARM_MB %llu); private memory %.0f -> %.0f MB\n",
+                (long)prewarm_ready, (long)prewarm_total, (GetTickCount64() - prewarm_t0) / 1000.0, (long)prewarm_over,
+                (unsigned long long)(prewarm_budget >> 20), prewarm_bytes0 / 1048576.0, private_bytes() / 1048576.0);
 }
 
 /* (on a compiler thread) the shader's GPU code: 1 ready, 2 failed */
@@ -1329,6 +1343,8 @@ static DWORD WINAPI prewarm_main(void *unused) {
     u32 n = cache_files(cache_dir(), &found, 0);
     prewarm_t0 = GetTickCount64();
     prewarm_bytes0 = private_bytes();
+    const char *mb = getenv("SSBU_SHADER_PREWARM_MB");
+    if (mb) prewarm_budget = strtoull(mb, NULL, 10) << 20;
     Prewarm *table = calloc(PREWARM_SLOTS, sizeof *table);
     prewarm_table = table;
     Prewarm **order = n ? malloc(sizeof *order * n) : NULL;   /* (the entries in queue order) */
@@ -1940,11 +1956,35 @@ static void driver_threads_line(void) {
 }
 #endif
 
+static u32 ntextures, nresidents;   /* (below: the texture cache, the GPU-resident buffers) */
+
+/* What the driver says this process's resources take: in the card's own memory, and in the
+ * computer's (shared: what does not fit, and what the driver keeps there). 0 when it can't say. */
+static void video_memory(u64 *local, u64 *shared) {
+    *local = *shared = 0;
+    IDXGIDevice *dd = NULL;
+    IDXGIAdapter *a = NULL;
+    IDXGIAdapter3 *a3 = NULL;
+    if (dev && SUCCEEDED(ID3D11Device_QueryInterface(dev, &IID_IDXGIDevice, (void **)&dd)) && SUCCEEDED(IDXGIDevice_GetAdapter(dd, &a)) &&
+        SUCCEEDED(IDXGIAdapter_QueryInterface(a, &IID_IDXGIAdapter3, (void **)&a3))) {
+        DXGI_QUERY_VIDEO_MEMORY_INFO info;
+        if (SUCCEEDED(IDXGIAdapter3_QueryVideoMemoryInfo(a3, 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) *local = info.CurrentUsage;
+        if (SUCCEEDED(IDXGIAdapter3_QueryVideoMemoryInfo(a3, 0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &info))) *shared = info.CurrentUsage;
+    }
+    if (a3) IDXGIAdapter3_Release(a3);
+    if (a) IDXGIAdapter_Release(a);
+    if (dd) IDXGIDevice_Release(dd);
+}
 void gfx_status_lines(void) {
     if (!ready) return;
 #ifdef _WIN32
     driver_threads_line();
 #endif
+    u64 vram, shared;
+    video_memory(&vram, &shared);
+    fprintf(stderr, "[status] memory: %.0f MB private, graphics %.0f MB on the card + %.0f MB in RAM; %llu shaders made, prewarm %ld made / %ld taken by the game / %ld over its budget; %u textures, %u surfaces, %u GPU-resident buffers\n",
+            private_bytes() / 1048576.0, vram / 1048576.0, shared / 1048576.0, gfx_stat_shaders, (long)prewarm_ready, (long)prewarm_taken,
+            (long)prewarm_over, ntextures, nsurfaces, nresidents);
     if (!gfx_stat_first_draws) return;
     EnterCriticalSection(&lock);
     fprintf(stderr, "[status] first draws with a shader: %llu, %llu of them over 4 ms (%.0f ms in all); longest %.1f ms (%s)\n",
@@ -2136,6 +2176,9 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
     }
     void *made = prewarm_take(s);
     if (made) {   /* the prewarm made it: ready now */
+        char used[1200];
+        cache_path(s, used, sizeof used);
+        cache_touch(used);   /* (played again: the next start's prewarm keeps it) */
         s->obj = made;
         free(s->hlsl);
         s->hlsl = NULL;
@@ -3255,7 +3298,9 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
             if (!lru || t->used < lru->used) lru = t;
         }
     Texture *t = free_slot;
-    if (!t) t = ntextures < 4096 ? &textures[ntextures++] : lru;
+    static u32 most;   /* SSBU_TEXTURES: fewer textures kept (1 to 4096; a test of what they cost) */
+    if (!most) { const char *e = getenv("SSBU_TEXTURES"); most = e && atoi(e) > 0 && atoi(e) < 4096 ? (u32)atoi(e) : 4096; }
+    if (!t) t = ntextures < most ? &textures[ntextures++] : lru;
     if (t->srv) { ID3D11ShaderResourceView_Release(t->srv); ID3D11Texture2D_Release(t->tex); t->srv = NULL; }
     if (t != hit) { t->guest = g; memcpy(t->tic, tic, 32); texture_index_add(t); }
     if (watch) watch_written(g, size, &t->seen);   /* (before reading: a write meanwhile is news next frame) */

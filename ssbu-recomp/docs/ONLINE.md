@@ -20,6 +20,10 @@ Online play is experimental and ON by default: the game joins the project's publ
 game and the other players see (`player_name` in `config\graphics.ini`); empty = your Windows user name.
 Used from the next start.
 
+**Linux:** the same, with `./play.sh`; the file is `build-linux/config/graphics.ini` and the name defaults to your
+user name. The lobby needs nothing open. LAN and host modes need UDP 39500 (and 39501 for LAN) let in by the firewall,
+if one runs (`sudo firewall-cmd --add-port=39500-39501/udp`, `sudo ufw allow 39500:39501/udp`). Rollback is Windows only.
+
 ## The easy way: the F1 menu
 
 Press **F1** (or the controller's Home button) -> **Experimental**. Online play is already ON; you can pick another mode:
@@ -98,7 +102,9 @@ python tools/net/ssbu_lobby.py --bind 0.0.0.0 --port 39500 [--verbose]
 - `online_code` / `SSBU_ONLINE_CODE`: lobby code. Default: `public`.
 - `online_direct = off` / `SSBU_ONLINE_DIRECT=0`: no direct connections (see way 3).
 - `online_stun`: STUN server used to find your public address. Default `stun.l.google.com:19302`. Set `off` to disable.
-- `SSBU_ONLINE_PORT`: local UDP port.
+- `SSBU_ONLINE_PORT` / `online_local_port`: local UDP port (default: any). A fixed one lets a firewall that drops UDP
+  nobody asked for be opened for direct paths, e.g. on Linux with ufw: `online_local_port = 39510` and
+  `sudo ufw allow 39510/udp`. If the port is taken (a second copy of the game), any free port is used instead.
 - `SSBU_ONLINE_LOG=0..3`: log level. Default 1.
 
 ## Requirements
@@ -154,8 +160,13 @@ the room's. Each player plays with his own name-tag controls (button layout and 
 off use the game's own online netcode as before (a short message says so once), so players with different settings can
 still play together in a room.
 
-Input delay is chosen from the best measured round trip: 1 frame below about 117 ms, 2 frames from about 117 ms, 3 from 150 ms,
-4 from about 184 ms (the rest of the trip is covered by rollback).
+There is no input delay by default while rollback covers the trip: at most 5 frames are rolled back, which with a margin
+for jitter covers a round trip up to about 117 ms. Above that the delay goes up 1 frame at a time (1 up to about 150 ms, 2 up
+to about 183 ms, at most 4), so the games do not keep waiting for each other. The first 4 frames of a match carry no buttons
+on both games. `SSBU_RB_NET_DELAY=<n>` sets a fixed delay, `SSBU_RB_NET_DELAY=auto` chooses it from the
+round trip as before (1 frame below about 117 ms, 2 from about 117 ms, 3 from 150 ms, 4 from about 184 ms), and
+`SSBU_RB_NET_AHEAD=<n>` changes the 5 frames (at most 7). When either game has no snapshot ring the match is delay-based and
+uses at least 1 frame.
 
 Limits today: rollbacks of 3 or more frames take a little longer than one frame (a short hitch at very high ping);
 Windows only; tested between two games on one PC with simulated 150 ms ping and loss (0 desyncs), not yet much between

@@ -705,7 +705,15 @@ void nvn_gl_start(void *hwnd) {
     g_ready_event = CreateEventA(NULL, TRUE, FALSE, NULL);
     { const char *e = getenv("SSBU_STACKS_AT"); void nvn_vk_stacks_at(int seconds); if (e && atoi(e) > 0) nvn_vk_stacks_at(atoi(e)); }      /* session 13, TEST: every thread's call stack once, that many seconds from here, with either renderer (nvn_vk_wd.c) */
     CreateThread(NULL, 16 << 20, render_thread, NULL, 0, NULL);
+    /* Off Windows the window lives on this thread, and the render thread makes the Vulkan surface through it
+     * (plat_window_call: macOS's surface creation touches the window with AppKit). An unbounded wait here would wait for
+     * ourselves, so pump the window until the renderer is ready. */
+#ifndef _WIN32
+    { void display_pump(int ms);
+      while (WaitForSingleObject(g_ready_event, 8) != WAIT_OBJECT_0) display_pump(8); }
+#else
     WaitForSingleObject(g_ready_event, INFINITE);
+#endif
 }
 
 void nvn_gl_report(FILE *out) {

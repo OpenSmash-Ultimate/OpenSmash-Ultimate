@@ -20,6 +20,7 @@ int  nnpad_init(void);                           /* SDL up (no video, no window)
 int  nnpad_is_gc(int player);                    /* the device of this player slot is a GameCube controller (from the adapter) */
 int  nnpad_gc_native(void);                      /* controllers.ini gamecube_style: 1 = native GameCube style (default), 0 = as a Pro Controller */
 void nnpad_poll(int force);                      /* hot-plug, config reload; cheap when called often (at most once per ms) */
+void nnpad_background(void);                     /* the game: the pad thread reads the pads from now on (nnpad_sdl.c) */
 int  nnpad_present(int player);                  /* a device is assigned to this player slot */
 int  nnpad_get(int player, NnPadState *out);     /* 0 = none */
 void nnpad_rumble(int player, float low, float high);   /* amplitudes 0..1 of the low and high band */
@@ -27,6 +28,8 @@ void nnpad_disconnect(int player);               /* DisconnectNpad: hidden until
 void nnpad_swap(int a, int b);                   /* SwapNpadAssignment */
 int  nnpad_keyboard_player(void);                /* 0..7, -1 = nobody; fixed once resolved (see controllers.ini) */
 int  nnpad_kb_vk(int idx);                       /* configured virtual key: 0..15 = Pro buttons, 16..19 = left stick left/up/right/down, 20..23 = right stick; 0 = unbound */
+int  nnpad_kb_movement(void);                   /* [keyboard] movement: 1 = ssf2 (nnhid.c kb_ssf2), 0 = full (a stick key pushes the stick fully) */
+void nnpad_kb_movement_set(int on);             /* the settings menu: [keyboard] movement written (1 = ssf2), used at the next poll */
 int  nnpad_tool(int argc, char **argv);          /* --pad-test / --pad-map <n> / SSBU_PAD_TEST: returns the exit code, or -1 if this is no tool request */
 
 /* U1, the Controls page of the settings menu (menu.cpp). Targets 0..15 = the Pro buttons above, 16..23 = left stick

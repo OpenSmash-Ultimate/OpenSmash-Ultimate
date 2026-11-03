@@ -9,6 +9,10 @@ Usage:
   mods.py order <name>...               the mods' order: a later one wins where two change a file
   mods.py apply                         make the game read the turned-on mods (none: the game as it is)
   mods.py vanilla                       the game as it is, without taking the mods off the list
+  mods.py conflicts                     files two or more turned-on mods both change (the later one in the order wins)
+  mods.py export-list <file.json>       a light list of the mods (names, order, on/off, GameBanana sources) to share
+  mods.py import-list <file.json>       install what a shared list has and this folder doesn't (from GameBanana), set its order
+  mods.py updates                       the GameBanana mods that have a newer file than the one installed
   (every command takes --tree <dir>: the port's folder, the default)
 
 A mod is a folder in <tree>/mods: files at the paths the game's data.arc has them at -
@@ -409,6 +413,94 @@ def gamebanana_install(tree, mod_id, file_id=None, progress=None):
                 "category": (data.get("_aCategory") or {}).get("_sName", ""), "file": f["_sFile"], "file_id": f["_idRow"],
                 "md5": f.get("_sMd5Checksum", "")}
         return install(tree, target, data.get("_sName") or f["_sFile"], meta)
+
+
+# ---- sharing and checking a mod library (ideas from TRLLZR's OpenSmash Mod Manager, MIT:
+# https://github.com/TRLLZR/OpenSmash-Mod-Manager - conflict review, shareable mod lists, update check) ------------
+LIST_FORMAT = "opensmash-mod-list"
+
+
+def conflicts(tree):
+    """The data.arc paths that more than one turned-on mod has: [{"path", "mods" (in order), "wins"}], the
+    mod later in the order being the one the game reads (as apply lays them)."""
+    state = tree.load()
+    owners = {}
+    for n in state["order"]:
+        if not state["mods"].get(n, {}).get("enabled"):
+            continue
+        for path, _src in mod_files(os.path.join(tree.mods, n)):
+            owners.setdefault(path.lower(), []).append(n)
+    return [{"path": p, "mods": ms, "wins": ms[-1]} for p, ms in sorted(owners.items()) if len(ms) > 1]
+
+
+def export_list(tree, path):
+    """Write a shareable list of the mods: what it takes to rebuild the same set elsewhere, no files."""
+    state = tree.load()
+    keep = ("title", "gamebanana", "file_id", "file", "md5", "author")
+    mods = [dict({"name": n, "enabled": bool(state["mods"][n].get("enabled"))},
+                 **{k: state["mods"][n][k] for k in keep if state["mods"][n].get(k) not in (None, "")})
+            for n in state["order"]]
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"format": LIST_FORMAT, "version": 1, "mods": mods}, f, indent=1)
+    return mods
+
+
+def import_list(tree, path, log=print, progress=None):
+    """Install the mods of a shared list this folder doesn't have (those with a GameBanana source), then turn
+    them on or off and order them as the list says. Returns {"installed", "already", "missing"}."""
+    with open(path, encoding="utf-8-sig") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or data.get("format") != LIST_FORMAT or not isinstance(data.get("mods"), list):
+        raise Error(f"{os.path.basename(path)} is not a mod list (made with: mods.py export-list)")
+    out = {"installed": [], "already": [], "missing": []}
+    names = []
+    for m in data["mods"]:
+        if not isinstance(m, dict) or not m.get("name"):
+            continue
+        state = tree.load()
+        have = next((n for n, e in state["mods"].items() if n == m["name"] or
+                     (m.get("gamebanana") and str(e.get("gamebanana")) == str(m["gamebanana"]) and
+                      str(e.get("file_id", "")) == str(m.get("file_id", "")))), None)
+        if have:
+            out["already"].append(have)
+        elif m.get("gamebanana"):
+            log(f"downloading {m.get('title') or m['name']} from GameBanana")
+            got = gamebanana_install(tree, m["gamebanana"], m.get("file_id"), progress)
+            out["installed"] += got
+            have = got[0] if got else None
+        else:
+            out["missing"].append(m["name"])
+        if have:
+            state = tree.load()
+            state["mods"][have]["enabled"] = bool(m.get("enabled", True))
+            tree.save(state)
+            names.append(have)
+    state = tree.load()
+    state["order"] = names + [n for n in state["order"] if n not in names]
+    tree.save(state)
+    return out
+
+
+def updates(tree):
+    """[{"name", "title", "installed", "newest", "file_id"}] for each GameBanana mod whose page has a file newer
+    than the one installed (by GameBanana's upload date; a mod installed from a file the page no longer lists
+    counts as out of date)."""
+    state = tree.load()
+    out = []
+    for n in state["order"]:
+        m = state["mods"][n]
+        if not m.get("gamebanana") or not m.get("file_id"):
+            continue
+        data, _ctx = gamebanana_get(f"/Mod/{int(m['gamebanana'])}?_csvProperties=_aFiles")
+        files = data.get("_aFiles") or []
+        if not files:
+            continue
+        mine = next((f for f in files if str(f.get("_idRow")) == str(m["file_id"])), None)
+        newest = max(files, key=lambda f: f.get("_tsDateAdded") or 0)
+        if mine is None or (newest.get("_tsDateAdded") or 0) > (mine.get("_tsDateAdded") or 0):
+            out.append({"name": n, "title": m.get("title", n), "installed": m.get("file", ""), "newest": newest.get("_sFile", ""),
+                        "file_id": newest.get("_idRow")})
+    return out
 
 
 # ---- applying --------------------------------------------------------------------------------
@@ -2570,6 +2662,34 @@ def main():
             result = apply(tree, say)
             if a.json:
                 print(json.dumps({"result": result}), flush=True)
+        elif a.command == "conflicts":
+            found = conflicts(tree)
+            if a.json:
+                print(json.dumps({"conflicts": found}), flush=True)
+            else:
+                for c in found:
+                    print(f"{c['path']}: {', '.join(c['mods'])} (the game reads {c['wins']}'s)")
+                print(f"{len(found)} file{'s' if len(found) != 1 else ''} changed by more than one turned-on mod")
+        elif a.command == "export-list":
+            if not a.args:
+                raise Error("export-list needs the file to write")
+            say(f"{len(export_list(tree, a.args[0]))} mods written to {a.args[0]}")
+        elif a.command == "import-list":
+            if not a.args:
+                raise Error("import-list needs a list file")
+            got = import_list(tree, a.args[0], say)
+            if a.json:
+                print(json.dumps({"result": got}), flush=True)
+            say(f"{len(got['installed'])} installed, {len(got['already'])} already here, {len(got['missing'])} with no source to download"
+                + (f": {', '.join(got['missing'])}" if got["missing"] else ""))
+        elif a.command == "updates":
+            found = updates(tree)
+            if a.json:
+                print(json.dumps({"updates": found}), flush=True)
+            else:
+                for u in found:
+                    print(f"{u['title']}: {u['installed']} -> {u['newest']} (mods.py gamebanana <id> --file {u['file_id']})")
+                print(f"{len(found)} mod{'s' if len(found) != 1 else ''} with a newer file on GameBanana")
         elif a.command == "vanilla":
             vanilla_cfg(tree)
             shutil.copyfile(tree.vanilla_cfg, tree.cfg)
