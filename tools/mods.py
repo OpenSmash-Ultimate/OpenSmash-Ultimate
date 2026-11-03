@@ -1159,6 +1159,26 @@ class Table:
             if d is not None:
                 self.listed.setdefault(d, []).append((h, path))
                 self.listed_in[h] = d
+        # a c00 file of the mod's that no colour copy lists at its own colour's path (an article the donor doesn't
+        # have, such as Waluigi's diceblock): the same file at c01-c07 too, in that colour's copy, so a fighter in
+        # another colour finds it among its loaded files
+        for path in paths:
+            if "/c00/" not in path.lower() or not any(path.lower().startswith(n.lower() + "/") for _o, n in prefixes):
+                continue
+            at = path.lower().index("/c00/")
+            for k in range(1, 8):
+                ck = self.dir_index(hash40(f"{old_top}/c{k:02d}"))
+                if ck not in clones:
+                    continue
+                alt = f"{path[:at]}/c{k:02d}/{path[at + 5:]}"
+                h, ext, parent, leaf = path_parts(alt)
+                if h in self.listed_in or h in own_paths:
+                    continue
+                self.listed.setdefault(clones[ck], []).append((h, None))
+                self.listed_in[h] = clones[ck]
+                self.shares[h] = ((ext, parent, leaf), path_hash(path))
+                recoloured += 1
+                self.path_names.append(alt)   # (the search section lists it too: the game finds its folder by it)
         self.notes.append(f"new fighter {name}: {len(clones)} directories of {donor}'s copied under the new name "
                           f"({sum(1 for d in clones.values() for _x in self.listed.get(d, ()))} files"
                           + (f"; {recoloured} files of colours 1-7 are the mod's c00 ones" if recoloured else "") + ")")
