@@ -335,7 +335,7 @@ class Pages(MenuTest):
         m = self.menu()
         m.key('ESC')
         display = ['Window', 'Frame pacing', 'Frames queued ahead', 'Hide the mouse pointer', 'Frame rate in the corner', 'Window size',
-                   'Render scale'] + (['Graphics card'] if os.name == 'nt' else [])
+                   'Render scale'] + (['Graphics card'] if os.name == 'nt' else []) + (['Renderer'] if sys.platform != 'darwin' else [])
         self.assertEqual(m.labels(), display)
         m.type('2')
         self.assertEqual(m.labels(), ['Controllers', 'Rumble', 'Keyboard plays as', 'Keyboard keys...', 'Pads when not focused',
@@ -357,6 +357,28 @@ class Pages(MenuTest):
         keys = (['F1, Cmd+1', 'F2, Cmd+2', 'F3, Cmd+3', 'Option+Return'] if sys.platform == 'darwin'
                 else ['F1', 'F2', 'F3', 'F11, Alt+Enter'])
         self.assertEqual(m.labels(), ['Game language', 'Volume', 'Restart the game', 'Quit the game', 'Esc / Home button', *keys, 'Version'])
+
+    @unittest.skipIf(sys.platform == 'darwin', 'the Mac program has no Renderer row (Metal only)')
+    def test_renderer_row(self):
+        """Display > Renderer: the system's own renderer, then Vulkan, saved in display.ini for the
+        next start (runtime/renderer.h's names)."""
+        own = 'd3d11' if os.name == 'nt' else 'dxvk'
+        m = self.menu()
+        m.key('ESC')
+        labels = m.labels()
+        at = labels.index('Renderer')
+        self.assertEqual(m.row('Renderer')['value'], own)
+        self.assertIn('Vulkan: in development', m.row('Renderer')['help'])
+        m.key('DOWN', at)
+        self.assertEqual(m.at()['label'], 'Renderer')
+        m.key('RIGHT')
+        self.assertEqual(m.row('Renderer')['value'], 'vulkan')
+        self.assertIn('renderer = vulkan', (m.dir / 'display.ini').read_text())
+        m.key('RIGHT')
+        self.assertEqual(m.row('Renderer')['value'], own)
+        self.assertIn(f'renderer = {own}', (m.dir / 'display.ini').read_text())
+        m.key('LEFT')
+        self.assertEqual(m.row('Renderer')['value'], 'vulkan')
 
     def test_offline(self):
         m = self.menu()

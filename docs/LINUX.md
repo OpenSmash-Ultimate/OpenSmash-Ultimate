@@ -323,6 +323,7 @@ log names each pad as it connects, with its type and GUID.
 | `pacing = display` | Follows the monitor's refreshes on Windows; on Linux, it's the clock. |
 | `latency`, `hide_cursor` | As on Windows: 1–3 frames the GPU may work ahead, and hiding the idle mouse pointer. |
 | `render_scale` | As on Windows: draws the picture this many times bigger than 1920 × 1080 (`0.5`–`4`, or `auto` to match the screen at start). On a software Vulkan driver such as llvmpipe, keep `1`. |
+| `renderer` | `dxvk` (default): Direct3D 11 through DXVK, as above. `vulkan` asks for the Vulkan renderer that is in development; the Linux build has no Vulkan renderer of its own yet, so the log says so and DXVK draws. |
 
 **Shaders:** this folder carries the Windows build's compiled shaders that the game has used. Any
 other shader is compiled the first time it's needed, so a new effect can show a moment late once.

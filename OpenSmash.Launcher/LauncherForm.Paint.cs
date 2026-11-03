@@ -54,6 +54,7 @@ namespace OpenSmash.Launcher
             ["pacing"] = "Steady 60 on any monitor. G-Sync / FreeSync shows each frame as soon as it is ready.",
             ["render_scale"] = "How big the game draws. 2 is four times the pixels of 1.",
             ["gpu"] = "Auto picks the fastest card.",
+            ["renderer"] = "Direct3D 11 is the one the game is played with. Vulkan is in development: until it can draw the game, the game checks Vulkan at its start and draws with Direct3D 11.",
             ["hide_cursor"] = "Hides the pointer over the game after 2 seconds without moving it.",
             ["overlay"] = "The frame rate in the corner. F1 shows or hides it while playing.",
             ["volume"] = "The game's whole sound (display.ini volume, the same setting as the in-game menu's Volume row). 100 is full. It applies the next time you press Play.",
@@ -863,7 +864,7 @@ namespace OpenSmash.Launcher
                 float cx = left, cy = 576 * s, chh = 28 * s;
                 var f = FM(12 * s);
                 float sp = 12 * s * 0.06f;
-                foreach (string chip in new[] { "VULKAN RENDERER", $"{_mods.Count} MOD{(_mods.Count == 1 ? "" : "S")}", $"{_plugins} PLUGIN{(_plugins == 1 ? "" : "S")}", "F1  IN-GAME MENU" })
+                foreach (string chip in new[] { RendererChip(), $"{_mods.Count} MOD{(_mods.Count == 1 ? "" : "S")}", $"{_plugins} PLUGIN{(_plugins == 1 ? "" : "S")}", "F1  IN-GAME MENU" })
                 {
                     float cw = Theme.TextWidth(g, chip, f, sp) + 26 * s;
                     using (var p = Theme.Para(cx, cy, cw, chh, 6 * s))

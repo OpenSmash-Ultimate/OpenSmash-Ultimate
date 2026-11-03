@@ -207,8 +207,9 @@ The first start also writes **`display.ini`**, which sets how the game starts. T
 | `overlay` | `1` shows the frame rate in the corner from the start (<kbd>F1</kbd> shows or hides it while playing). | `1` |
 | `gpu` | Which graphics card draws the game. `auto`: the fastest; on a laptop with two, the NVIDIA or AMD one rather than the processor's own. Or part of a card's name, such as `nvidia`, `radeon` or `intel`. `build\play.log` lists the cards found (a `[gfx] graphics cards` line). | `auto` |
 | `render_scale` | How many times bigger than 1920 × 1080 the game draws its picture, in each direction: a number from `0.5` to `4`, or `auto`. `auto` matches the picture to the screen when the game starts, for example 1.33 (2560 × 1440) on a 1440p monitor with `window = borderless`; it never goes below 1. A picture bigger than the window is shrunk to fit, which smooths edges (`2` on a 1440p monitor). Each step up costs the graphics card more: `2` draws four times the pixels and needs about 200 MB more graphics memory. | `1` |
+| `renderer` | `d3d11`: Direct3D 11, the renderer the game is played and tested with. `vulkan`: the Vulkan renderer, in development: until it can draw the game, the game checks Vulkan on your PC at its start, writes what it found in `build\play.log` (a `[gfx] renderer = vulkan` line), and draws with Direct3D 11 as before. The settings' Display page has it as **Renderer**; `SSBU_RENDERER` overrides it. Read when the game starts. | `d3d11` |
 
-A `display.ini` written by an older WindowSmash has no `gpu` or `render_scale` line; the game then uses `auto` and `1`. Add the line yourself to use it, or delete `display.ini` to get a new one with every setting. `render_scale` is read when the game starts: change it, then start the game again.
+A `display.ini` written by an older WindowSmash has no `gpu`, `render_scale` or `renderer` line; the game then uses `auto`, `1` and `d3d11`. Add the line yourself to use it, or delete `display.ini` to get a new one with every setting. `render_scale` is read when the game starts: change it, then start the game again.
 
 ## Shaders and first-time stutter
 
