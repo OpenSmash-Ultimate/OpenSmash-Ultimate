@@ -9,6 +9,7 @@
  * chain's HWND. */
 #ifndef __APPLE__
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "display.h"
 #include "gpu_backend.h"   /* (gfx_closing, gfx_window_handle) */
@@ -89,6 +90,10 @@ static DWORD WINAPI window_thread(LPVOID done) {
     wc.hIconSm = small_icon ? small_icon : icon;
     RegisterClassExW(&wc);
     window = display_create_window(wc.hInstance, L"ssbu", L"Super Smash Bros. Ultimate (native)");
+    /* Keep the screen saver and display sleep away while the game runs, as a game or a video player
+     * does (#101). ES_CONTINUOUS holds for this thread's life, which is the window's: set once, no
+     * per-frame cost. (Linux/macOS: SDL turns the screen saver off when it makes the window.) */
+    if (window && !getenv("SSBU_SKYLINE_PROBE")) SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED);
     SetEvent((HANDLE)done);
     MSG m;
     while (GetMessageW(&m, NULL, 0, 0) > 0) { TranslateMessage(&m); DispatchMessageW(&m); }

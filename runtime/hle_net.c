@@ -18,6 +18,7 @@
 #include "host.h"
 #include "net.h"
 #include "online.h"
+#include "input_seq.h"
 
 #define R_UNAVAILABLE RESULT(124, 300)
 #define R_LDN_STATE   RESULT(203, 32)
@@ -156,6 +157,17 @@ static u16 get_u16(const u8 *p) { u16 v; memcpy(&v, p, 2); return v; }
 static void put_u16(u8 *p, u16 v) { memcpy(p, &v, 2); }
 static void make_mac(u8 *mac, u32 ip) { mac[0] = 0x02; mac[1] = 0x00; put_u32(mac + 2, _byteswap_ulong(ip)); }
 
+/* (tests) SSBU_NET_TEST_SAVE_ROOM=<file>: a host writes its network there once a second, for
+ * SSBU_NET_TEST_ROOMS (below) to make rooms from. */
+static void test_room_save(void) {
+    static const char *path;
+    static int read;
+    if (!read) { read = 1; path = getenv("SSBU_NET_TEST_SAVE_ROOM"); }
+    if (!path || !*path) return;
+    FILE *f = fopen(path, "wb");
+    if (f) { fwrite(L.net, 1, NI_SIZE, f); fclose(f); }
+}
+
 static void ldn_signal(void) { if (L.event) kernel_signal_event(L.event); }
 static void ldn_state_to(int state) {   /* (lock held) */
     if (net_log() && L.state != state) fprintf(stderr, "[net] ldn: state %d -> %d\n", L.state, state);
@@ -203,6 +215,7 @@ static DWORD WINAPI ldn_agent(LPVOID unused) {   /* advertising, keeping in touc
         if (tick) last = t;
         if (L.state == LS_AP_CREATED) {
             if (tick) ldn_send(NET_BROADCAST, LM_ADVERTISE, L.net, NI_SIZE);
+            if (tick) test_room_save();
             for (int i = 1; i < 8; i++)
                 if (L.net[NODE(i) + 0xB] && t - L.node_heard[i] > 6000) drop_node(i);
         } else if (L.state == LS_CONNECTED) {
@@ -325,7 +338,9 @@ void ldn_list_end(u32 seq) {
     ReleaseSRWLockExclusive(&L.lock);
 }
 
+static void rooms_install(void);   /* (below: the Rooms List's 10-room cap) */
 HLE(_ZN2nn3ldn10InitializeEv) { LDN_TRACE;
+    rooms_install();
     if (!net_configured() || net_unreachable()) { c->x[0] = R_UNAVAILABLE; return; }   /* (offline, as without netplay) */
     AcquireSRWLockExclusive(&L.lock);
     if (!L.agent) { L.agent = 1; CloseHandle(CreateThread(NULL, 0, ldn_agent, NULL, 0, NULL)); }
@@ -422,6 +437,79 @@ HLE(_ZN2nn3ldn14DestroyNetworkEv) { LDN_TRACE;
     c->x[0] = 0;
 }
 
+/* (tests) SSBU_NET_TEST_ROOMS=<file>[,<n>]: every scan also finds n rooms (default 15) made from
+ * one NetworkInfo saved by SSBU_NET_TEST_SAVE_ROOM (0x480 bytes, as a game advertised it);
+ * SSBU_NET_TEST_ROOMS=clone[,<n>]: made from the first network really found. Each room gets its
+ * own session id (and the SSID's text of it stays as it was), host address, MAC, BSSID and name,
+ * and its own ids in the advertise data: the game shows rooms with the same ids there once. They
+ * fill the game's Rooms List without n other games; they cannot be joined. */
+static const u8 *test_room;
+static int test_rooms, test_clone;
+static u8 test_room_info[NI_SIZE];
+static void test_rooms_load(void) {
+    static int loaded;
+    if (loaded) return;
+    loaded = 1;
+    const char *v = getenv("SSBU_NET_TEST_ROOMS");
+    if (!v || !*v) return;
+    char path[512];
+    snprintf(path, sizeof path, "%s", v);
+    char *comma = strrchr(path, ',');
+    int n = 15;
+    if (comma && comma > path + 2) { n = atoi(comma + 1); *comma = 0; }
+    test_rooms = n < 0 ? 0 : n > SEEN_NETWORKS ? SEEN_NETWORKS : n;
+    if (!strcmp(path, "clone")) { test_clone = 1; return; }
+    FILE *f = fopen(path, "rb");
+    size_t got = f ? fread(test_room_info, 1, NI_SIZE, f) : 0;
+    if (f) fclose(f);
+    if (got != NI_SIZE) { fprintf(stderr, "[net] ldn: test rooms: cannot read %s\n", path); return; }
+    test_room = test_room_info;
+    fprintf(stderr, "[net] ldn: test rooms: %d made from %s\n", test_rooms, path);
+}
+static void test_room_make(u8 *n, int i) {
+    memcpy(n, test_room, NI_SIZE);
+    u8 k = (u8)(0x40 + i);
+    n[NI_SESSION + 15] ^= k;
+    u32 ip = 0x0A0D7F01u + (u32)i;   /* (10.13.127.x: no player has it) */
+    put_u32(n + NODE(0), ip);
+    make_mac(n + NODE(0) + 4, ip);
+    make_mac(n + NI_BSSID, ip);
+    snprintf((char *)n + NODE(0) + 0xC, 33, "Room%02d", i + 1);
+    n[NI_ADV + 3] ^= k;      /* (the game's ids for the room in its advertise data) */
+    n[NI_ADV + 15] ^= k;
+    n[NI_ADV + 0x35] ^= k;
+}
+
+/* Local Wireless's Rooms List shows 10 rooms at most: the game's browse (main 13.0.5
+ * 0x71037081c0, (network, request)) passes its request's result size, 10 (u16 at + 0xe; + 0xc
+ * the offset), to Pia's SessionSearchCriteria::SetResultRange (0x710014f0c0), and Pia's LDN
+ * browse (0x7100178020) keeps the first 10 rooms that match. Everything around it holds more:
+ * the scan asks nn::ldn for 24 networks, and Pia's session list (0x7100168450) and the game's own
+ * room records (+ 0x150 of 0x7103706340's object) both have room for 24, the list on screen
+ * scrolls. So for Local Wireless (the network's mode, + 0x14, is 1) the request asks for 24, as
+ * many as the scan gives (SEEN_NETWORKS). Once per browse, about once a second while the Rooms
+ * List is open: nothing per frame. */
+#define ROOMS_BROWSE 0x71037081c0ull
+static u64 rooms_browse_original;
+static void rooms_browse(Cpu *c) {
+    u64 net = c->x[0], request = c->x[1];
+    if (net && request && ld8(net + 0x14) == 1) {
+        u32 size = ld16(request + 0xE);
+        if (size && size < SEEN_NETWORKS) {
+            st16(request + 0xE, SEEN_NETWORKS);
+            static int said;
+            if (!said && net_log()) { said = 1; fprintf(stderr, "[net] ldn: rooms list: up to %d rooms (the game asked for %u)\n", SEEN_NETWORKS, size); }
+        }
+    }
+    rt_call(c, rooms_browse_original);
+}
+static void rooms_install(void) {
+    static volatile long done;
+    if (InterlockedExchange(&done, 1)) return;
+    rooms_browse_original = rt_hook_function(ROOMS_BROWSE, rt_native(rooms_browse, "local wireless rooms list"));
+    if (!rooms_browse_original) fprintf(stderr, "[net] ldn: rooms list hook missed: 10 rooms at most\n");
+}
+
 /* The networks seen lately that match a scan filter (flags: 1 local communication id,
  * 2 session id, 4 network type, 0x10 SSID, 0x20 scene id). */
 static void scan(Cpu *c, u64 out, u64 count_p, i32 room, u64 filter) {
@@ -452,7 +540,11 @@ static void scan(Cpu *c, u64 out, u64 count_p, i32 room, u64 filter) {
         found++;
     }
     ReleaseSRWLockShared(&L.lock);
+    test_rooms_load();
+    if (test_clone && found > 0 && !test_room) { memcpy(test_room_info, P(u8, out), NI_SIZE); test_room = test_room_info; }
+    for (int i = 0; test_room && i < test_rooms && found < room; i++) test_room_make(P(u8, out + (u64)NI_SIZE * found++), i);
     st32(count_p, (u32)found);
+    if (found) input_seq_mark("ldn:scan-found");
     if (net_log() > 1 || (net_log() && found)) fprintf(stderr, "[net] ldn: scan found %d network%s\n", found, found == 1 ? "" : "s");
     c->x[0] = 0;
 }
