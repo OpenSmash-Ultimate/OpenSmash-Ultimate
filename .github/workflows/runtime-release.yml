@@ -1,0 +1,98 @@
+# The runtime, prebuilt: the program a --game-dll build runs (tools/game_dll.py: the game's modules are a library of
+# their own, ssbu_game.dll, and the program is the runtime alone), compiled here for both instruction sets players'
+# builds use. Built on tools/mac/boottest's made-up game, as runtime-compile.yml does: nothing in it comes from the
+# game. Each zip holds ssbu.exe, SDL3.dll, isa.txt and commit.txt, with its SHA-256 beside it. A tag runtime-v<n>
+# publishes them as a release; tools/runtime_fetch.py puts one into a player's build folder, so a runtime fix reaches
+# players without a rebuild of the game.
+name: Runtime release
+
+on:
+  push:
+    tags: ['runtime-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  runtime:
+    name: runtime (windows, ${{ matrix.isa }})
+    strategy:
+      fail-fast: false
+      matrix:
+        isa: [avx2, x86-64-v2]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      SSBU_ISA: ${{ matrix.isa }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      # SDL3 3.4.18's VC package (the SHA-256 tools/install_windowsmash.ps1 pins), as runtime-compile.yml
+      - name: Windows packages
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force deps | Out-Null
+          $zip = 'deps\SDL3-devel-3.4.18-VC.zip'
+          Invoke-WebRequest -Uri 'https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-devel-3.4.18-VC.zip' `
+            -OutFile $zip -MaximumRetryCount 3
+          if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne '78d84602ae616cfe26b33a73b7d3b9b6b56e8a6650e53d92c9c6ca938f747acd') {
+            throw "$zip does not match its SHA-256"
+          }
+          Expand-Archive -LiteralPath $zip -DestinationPath deps\SDL3-extract
+          $inner = Get-ChildItem -LiteralPath deps\SDL3-extract -Directory |
+            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'include\SDL3\SDL_gamepad.h') } | Select-Object -First 1
+          if (-not $inner) { throw "$zip does not hold include\SDL3" }
+          Move-Item -LiteralPath $inner.FullName -Destination deps\SDL3
+
+      # the build's own check: the runtime compiled and linked as a --game-dll program, and that program started
+      # only to load the made-up game's library (ssbu --game-library)
+      - name: Compile, link and check
+        run: python tools/dev/runtime_compile_check.py --tree "${{ runner.temp }}/made-up game" --game-dll
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $build = Join-Path '${{ runner.temp }}' 'made-up game\build'
+          $name = "opensmash-runtime-windows-${{ matrix.isa }}"
+          $out = Join-Path '${{ runner.temp }}' $name
+          New-Item -ItemType Directory -Force $out | Out-Null
+          foreach ($f in 'ssbu.exe', 'SDL3.dll', 'isa.txt') {
+            $p = Join-Path $build $f
+            if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination $out }
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $out 'ssbu.exe'))) { throw 'no ssbu.exe was built' }
+          Set-Content -LiteralPath (Join-Path $out 'commit.txt') -Value '${{ github.sha }}' -NoNewline
+          Compress-Archive -Path (Join-Path $out '*') -DestinationPath "$out.zip"
+          $hash = (Get-FileHash -LiteralPath "$out.zip" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -LiteralPath "$out.zip.sha256" -Value "$hash  $name.zip" -NoNewline
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opensmash-runtime-windows-${{ matrix.isa }}
+          path: |
+            ${{ runner.temp }}/opensmash-runtime-windows-${{ matrix.isa }}.zip
+            ${{ runner.temp }}/opensmash-runtime-windows-${{ matrix.isa }}.zip.sha256
+
+  release:
+    needs: runtime
+    if: startsWith(github.ref, 'refs/tags/runtime-v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          for f in *.sha256; do cat "$f"; echo; done > SHA256SUMS
+          gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "Runtime ${GITHUB_REF_NAME#runtime-v}" \
+            --notes "The runtime prebuilt for a --game-dll build (commit ${GITHUB_SHA}). Put it in place with: python tools/runtime_fetch.py ${GITHUB_REF_NAME}" \
+            *.zip SHA256SUMS
