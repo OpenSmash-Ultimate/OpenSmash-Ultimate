@@ -659,9 +659,32 @@ CODE_PATCHES = {
 }
 
 
+def local_patches(name):
+    """[(offset, old word, new word)] of dump/patches/<module>.txt, this PC's own patches of a module's code:
+    one `<offset or main address> <old word> <new word>` a line, `#` a comment (ssbu-recomp's
+    RECOMP_PATCHES form, e.g. the new fighter kinds' tables: plan/phases/R9_fighter_registry.md). They hold
+    the game's instruction words, so they are made from the player's own dump and never committed."""
+    path = os.path.join(TREE, "dump", "patches", name + ".txt")
+    out = []
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                p = line.split("#", 1)[0].split()
+                try:
+                    at, old, new = (int(x, 16) for x in p) if len(p) == 3 else (None, 0, 0)
+                except ValueError:
+                    at = None
+                if at is None:
+                    continue
+                if at >= 0x7100000000 and name == "main":   # (a main address, as ssbu-recomp's lists give them)
+                    at -= 0x7100000000
+                out.append((at, old, new))
+    return out
+
+
 def plugin_patches(name):
     """[(offset, old word, new word)] the Skyline plugins write into module `name`'s code
-    (dump/skyline/patches.txt, which the runtime writes: sky_memcpy)."""
+    (dump/skyline/patches.txt, which the runtime writes: sky_memcpy), and this PC's own (local_patches)."""
     path = os.path.join(TREE, "dump", "skyline", "patches.txt")
     out = []
     if os.path.exists(path):
@@ -670,7 +693,7 @@ def plugin_patches(name):
                 p = line.split()
                 if len(p) == 4 and p[0] == name:
                     out.append((int(p[1], 16), int(p[2], 16), int(p[3], 16)))
-    return out
+    return out + local_patches(name)
 
 
 ANY_SP = 1 << 62   # (a landing pad that sets its own sp: whatever sp the unwinder resumes it with - lift.py landing)

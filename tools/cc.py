@@ -6,6 +6,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
 import codec_libs   # (this folder, which every importer of cc puts on sys.path)
+import vkd3d_lib
 import isa
 import ladder
 import progress
@@ -127,6 +128,22 @@ if os.path.exists(os.path.join(SDL3_DIR, "include", "SDL3", "SDL_gamepad.h")) an
 else:
     SDL3_DLL = None
 EXTRA_LIBS = OPUS_LIBS + VPX_LIBS + (["/NODEFAULTLIB:msvcrt.lib"] if EXTERNAL_LIBS else [])
+# The Vulkan headers (Khronos', third_party/vulkan-headers) for the Vulkan back end in development
+# (runtime/gpu_vulkan.c; docs/TECHNICAL.md, "A second back end: Vulkan"). Headers only: the program
+# links no Vulkan library and loads the system's loader (vulkan-1.dll) at run time, so no Vulkan SDK
+# is needed to build and none to play. Without the folder, gpu_vulkan.c says it has no Vulkan.
+VULKAN_INCLUDE = os.path.join(ROOT, "third_party", "vulkan-headers", "include")
+HAVE_VULKAN = os.path.exists(os.path.join(VULKAN_INCLUDE, "vulkan", "vulkan.h"))
+if HAVE_VULKAN:
+    CFLAGS += ["/DSSBU_HAVE_VULKAN", "/I", VULKAN_INCLUDE]
+# vkd3d-shader (Wine's, LGPL-2.1), which turns the shaders' DXBC into SPIR-V for that back end
+# (runtime/gpu_spirv.c): linked when tools/vkd3d_lib.py has built it into deps/vkd3d (from the
+# Linux build's pinned source). Without it the program is the same as before, its Vulkan back end
+# without a shader translator. (Runtime flags only: the game's C is not compiled again.)
+HAVE_VKD3D = vkd3d_lib.have()
+if HAVE_VKD3D:
+    CFLAGS += ["/DSSBU_HAVE_VKD3D", "/I", vkd3d_lib.INCLUDE]
+    EXTRA_LIBS += [vkd3d_lib.LIB]
 
 # Compiler crashes, and compiles that run too long (tools/ladder.py). A player's build stopped on two files
 # that clang-cl crashed on (access violations, one in the parser, one in the optimiser) where the very same

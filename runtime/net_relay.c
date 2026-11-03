@@ -464,6 +464,61 @@ static void relay_packet(const u8 *p, int n, const struct sockaddr_in *from) {
     }
 }
 
+/* ---- STUN: the relay's address outside the router, when UPnP opened nothing --------------
+ * One Binding request (RFC 5389) from the relay's own socket to a public STUN server
+ * (stun.l.google.com:19302; SSBU_ONLINE_STUN=<host:port>, or off) gives the address and port the
+ * router shows for that socket (ssbu-recomp's net_relay.c). A router that keeps that mapping for
+ * everyone (most home routers) then lets friends reach the room through its code; one that does
+ * not (a "symmetric" NAT) does not, and the share file says it may not work. */
+static volatile LONG stun_got;
+static char stun_ip[64];
+static u16 stun_port;
+static u8 stun_id[12];
+
+static int stun_answer(const u8 *p, int n) {   /* (relay thread) a Binding success for our request: 1 */
+    if (n < 20 || p[0] != 0x01 || p[1] != 0x01 || p[4] != 0x21 || p[5] != 0x12 || p[6] != 0xA4 || p[7] != 0x42 || memcmp(p + 8, stun_id, 12)) return 0;
+    int len = p[2] << 8 | p[3];
+    for (int at = 20; at + 4 <= 20 + len && at + 4 <= n;) {
+        int type = p[at] << 8 | p[at + 1], alen = p[at + 2] << 8 | p[at + 3];
+        if ((type == 0x0020 || type == 0x0001) && alen >= 8 && at + 12 <= n && p[at + 5] == 1) {   /* (XOR-)MAPPED-ADDRESS, IPv4 */
+            u16 port_ = (u16)(p[at + 6] << 8 | p[at + 7]);
+            u32 ip = (u32)p[at + 8] << 24 | (u32)p[at + 9] << 16 | (u32)p[at + 10] << 8 | p[at + 11];
+            if (type == 0x0020) { port_ ^= 0x2112; ip ^= 0x2112A442u; }
+            snprintf(stun_ip, sizeof stun_ip, "%u.%u.%u.%u", ip >> 24, ip >> 16 & 255, ip >> 8 & 255, ip & 255);
+            stun_port = port_;
+            InterlockedExchange(&stun_got, 1);
+            return 1;
+        }
+        at += 4 + ((alen + 3) & ~3);
+    }
+    return 1;   /* (ours, without an address we read: dropped all the same) */
+}
+
+static int stun_query(void) {   /* (upnp_thread) 1: stun_ip / stun_port are the relay's outside address */
+    const char *e = getenv("SSBU_ONLINE_STUN");
+    char server[128];
+    snprintf(server, sizeof server, "%s", e && *e ? e : "stun.l.google.com:19302");
+    if (!_stricmp(server, "off") || !strcmp(server, "0") || relay_sock == INVALID_SOCKET) return 0;
+    u16 sport = 3478;
+    char *colon = strrchr(server, ':');
+    if (colon) { *colon = 0; if (atoi(colon + 1) > 0) sport = (u16)atoi(colon + 1); }
+    struct addrinfo hints = {0}, *res = NULL;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    if (getaddrinfo(server, NULL, &hints, &res) || !res) return 0;
+    struct sockaddr_in to = *(struct sockaddr_in *)res->ai_addr;
+    freeaddrinfo(res);
+    to.sin_port = htons(sport);
+    u8 req[20] = {0x00, 0x01, 0x00, 0x00, 0x21, 0x12, 0xA4, 0x42};
+    for (int i = 0; i < 12; i++) { unsigned r; rand_s(&r); stun_id[i] = (u8)r; }
+    memcpy(req + 8, stun_id, 12);
+    for (int tries = 0; tries < 3 && !stun_got; tries++) {
+        send_udp(relay_sock, req, sizeof req, &to);
+        for (int w = 0; w < 50 && !stun_got; w++) Sleep(20);
+    }
+    return stun_got != 0;
+}
+
 static DWORD WINAPI relay_thread(LPVOID unused) {
     (void)unused;
     SetThreadDescription(GetCurrentThread(), L"netplay relay");
@@ -473,6 +528,7 @@ static DWORD WINAPI relay_thread(LPVOID unused) {
         struct sockaddr_in from;
         socklen_t flen = sizeof from;
         int n = recvfrom(relay_sock, (char *)buf, sizeof buf, 0, (struct sockaddr *)&from, &flen);
+        if (n >= 20 && stun_answer(buf, n)) continue;   /* (the STUN server's answer: upnp_thread asked) */
         if (n > 0) relay_packet(buf, n, &from);
         if (now_ms() - last_sweep >= 1000) {   /* members gone silent */
             last_sweep = now_ms();
@@ -489,7 +545,7 @@ static const CLSID CLSID_UPnPNAT_ = {0xAE1E00AA, 0x3FD5, 0x403C, {0x8A, 0x27, 0x
 static const IID IID_IUPnPNAT_ = {0xB171C812, 0xCC76, 0x485A, {0x94, 0xD8, 0xB6, 0xB3, 0xA2, 0x79, 0x4E, 0x99}};
 static IStaticPortMappingCollection *upnp_mappings;
 #endif
-static volatile LONG upnp_state;   /* 0 trying, 1 port open, 2 no UPnP router, 3 refused, 4 open but the router is behind another NAT */
+static volatile LONG upnp_state;   /* 0 trying, 1 port open, 2 no UPnP router, 3 refused, 4 open but the router is behind another NAT, 5 not open but known through STUN */
 static char lan_ip[64], public_ip[64];
 
 static u32 outbound_address(void) {   /* the address this PC goes out on, host order (no packet is sent) */
@@ -542,7 +598,15 @@ static void write_share_file(void) {
     char code[12] = "", lan_code[12] = "";
     if (public_ip[0] && sscanf(public_ip, "%u.%u.%u.%u", &a, &b, &cc, &d) == 4) room_code_of(a << 24 | b << 16 | cc << 8 | d, port, code);
     if (sscanf(lan_ip, "%u.%u.%u.%u", &a, &b, &cc, &d) == 4) room_code_of(a << 24 | b << 16 | cc << 8 | d, port, lan_code);
-    if (upnp_state == 1 && code[0]) {
+    char stun_code[12] = "";
+    if (upnp_state == 5 && sscanf(stun_ip, "%u.%u.%u.%u", &a, &b, &cc, &d) == 4) room_code_of(a << 24 | b << 16 | cc << 8 | d, stun_port, stun_code);
+    if (upnp_state == 5 && stun_code[0]) {
+        fprintf(f, "Your router did not open the port, but it shows the relay outside as %s:%u (STUN).\n"
+                   "Give your friends this room code: %s. It works if your router keeps that mapping for everyone\n"
+                   "(most home routers do); if friends can't join, open UDP port %u on the router or see docs/MULTIPLAYER.md.\n",
+                stun_ip, stun_port, stun_code, port);
+        fprintf(stderr, "[net] room code for friends (through STUN): %s\n", stun_code);
+    } else if (upnp_state == 1 && code[0]) {
         fprintf(f, "Give your friends this room code to join: %s (or the address %s:%u)\n", code, public_ip, port);
         fprintf(stderr, "[net] room code for friends: %s (on this network: %s)\n", code, lan_code);
     } else if (upnp_state == 1) fprintf(f, "Give your friends this address to join: %s:%u\n", public_ip[0] ? public_ip : "(your public IP)", port);
@@ -601,10 +665,14 @@ static DWORD WINAPI upnp_thread(LPVOID unused) {
         IUPnPNAT_Release(nat);
     }
 #endif
+    if (state != 1 && stun_query() && !unreachable_address(stun_ip)) {
+        fprintf(stderr, "[net] STUN: the relay is %s:%u outside the router (port %u here)\n", stun_ip, stun_port, port);
+        state = 5;
+    }
     InterlockedExchange(&upnp_state, state);
     if (state == 1) fprintf(stderr, "[net] UPnP: port %u opened; friends join %s:%u (LAN address %s)\n", port, public_ip, port, lan_ip);
     else if (state == 4) fprintf(stderr, "[net] UPnP: port %u opened, but the router's outside address %s is behind another NAT; LAN address %s\n", port, public_ip, lan_ip);
-    else fprintf(stderr, "[net] UPnP: %s; LAN address %s, port %u\n", state == 2 ? "no UPnP router found" : "the router refused the port", lan_ip, port);
+    else if (state != 5) fprintf(stderr, "[net] UPnP: %s; LAN address %s, port %u\n", state == 2 ? "no UPnP router found" : "the router refused the port", lan_ip, port);
     write_share_file();
     return 0;
 }
@@ -2151,6 +2219,7 @@ void net_status(char *out, size_t n) {
         if (u == 0) snprintf(share, sizeof share, "  | opening port %u on the router...", port);
         else if (u == 1) snprintf(share, sizeof share, "  | friends join %s:%u", public_ip[0] ? public_ip : "(your public IP)", port);
         else if (u == 4) snprintf(share, sizeof share, "  | router behind another NAT: only same-network friends can join (%s:%u)", lan_ip, port);
+        else if (u == 5) snprintf(share, sizeof share, "  | friends join %s:%u (STUN: if the router keeps the mapping)", stun_ip, stun_port);
         else snprintf(share, sizeof share, "  | UPnP %s: only same-network friends can join (%s:%u)", u == 2 ? "unavailable" : "refused", lan_ip, port);
         if (lan_state == NET_LAN_ANNOUNCING) snprintf(share + strlen(share), sizeof share - strlen(share), "  | announced on this network");
     }

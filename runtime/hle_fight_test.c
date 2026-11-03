@@ -102,6 +102,16 @@ static volatile int fighter_count;
 static FightDrops drops;
 static FightSteps steps;
 
+/* The game's global xorshift128 (13.0.5 0x71052391c0, the one rollback's handshake seeds: hle_rb_core.c
+ * net_seed_global): how often the menus draw from it depends on timing, so two runs set up alike started
+ * their fights from different states (the starting sides, the CPU players). SSBU_DETERMINISTIC sets it when
+ * the match is set up (the record builder, with SSBU_DEBUG_MATCH) and again at the fight's first frame. */
+static void global_rng_fixed(const char *when) {
+    static const u32 fixed[4] = {0x5eed0001u, 0x9e3779b9u, 0x7f4a7c15u, 0x94d049bbu};
+    for (int k = 0; k < 4; k++) st32(0x71052391c0ull + 4ull * k, fixed[k]);
+    fprintf(stderr, "[fight] SSBU_DETERMINISTIC: the game's global generator set to a fixed state (%s)\n", when);
+}
+
 static void first_battle_frame(int entry) {
     u64 rb = rng_base();
     fprintf(stderr, "[fight] first battle frame (fighter entry %d); input mark \"fight\" raised; script random generators at %llx\n",
@@ -117,8 +127,10 @@ static void first_battle_frame(int entry) {
         for (int i = 0; i < FIGHT_RNG_WORDS; i++) st32(rb + 4ull * i, w[i]);
         fprintf(stderr, "[fight] SSBU_DETERMINISTIC: the 9 script random generators set to a fixed state, counters 0\n");
     }
+    if (det && !(det_off & DET_OFF_RNG)) global_rng_fixed("at the fight");
     input_seq_mark("fight");
 }
+
 
 /* At the entry of a fighter's frame line (x0 = the agent; agent + 0x40 = its module accessor,
  * whose word + 8 has the category in its top 4 bits, 0 for a fighter). */
@@ -266,6 +278,7 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx) {
         match_fight++;
         fprintf(stderr, "[fight] SSBU_DEBUG_MATCH_LIST: match %d\n", match_fight);
     }
+    if (idx == 0 && det && !(det_off & DET_OFF_RNG)) global_rng_fixed("the match set-up");
     type_was = dm_player(&match, idx, P(u8, st), type_was, match_p2_ok ? match_p2 : NULL);
     if (idx == 0) {
         u64 sel = stage_choice(), block = GAME_ADDR(MATCH_BLOCK);

@@ -178,6 +178,15 @@ int mods_switch_list(ModSwitch *out, int max, int *setting) {
     return n;
 }
 
+/* (hle_native_mods.c) the folders of the mods switched on in mods.json */
+int mods_enabled_names(char names[][128], int max) {
+    static ModSwitch list[256];
+    int setting, n = mods_switch_list(list, 256, &setting), k = 0;
+    for (int i = 0; i < n && k < max; i++)
+        if (list[i].on && strlen(list[i].name) < 128) snprintf(names[k++], 128, "%s", list[i].name);
+    return k;
+}
+
 static SRWLOCK change_lock = SRWLOCK_INIT;
 static volatile LONG change_state = MODS_SWITCH_IDLE;
 static char change_msg[200], change_args[400];

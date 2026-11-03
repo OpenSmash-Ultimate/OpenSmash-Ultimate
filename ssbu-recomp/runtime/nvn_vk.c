@@ -210,6 +210,20 @@ static void vk_unavailable(void) {
     ExitProcess(5);
 }
 /* Render thread, once. Returns 1; any failure prints its cause and ends the process with code 5 (as the OpenGL path does). */
+#ifndef _WIN32
+/* SDL makes the surface on the window's own thread: on macOS its Vulkan surface creation adds an NSView and a CAMetalLayer
+ * to the window (AppKit), which has to happen on the thread that made the window (display.c opens it on the main thread,
+ * plat_posix.c plat_window_call hands this call there). Made here on the guest thread the layer is never composited: the
+ * presents succeed and the window stays black. The error text is copied because SDL's error state is per thread. */
+struct vk_surface_req { VkInstance inst; HWND wnd; VkSurfaceKHR *out; int ok, w, h; char err[256]; };
+static int vk_surface_job(void *p) {
+    struct vk_surface_req *q = (struct vk_surface_req *)p;
+    q->ok = SDL_Vulkan_CreateSurface((SDL_Window *)q->wnd, q->inst, NULL, q->out) ? 1 : 0;
+    if (!q->ok) snprintf(q->err, sizeof q->err, "%s", SDL_GetError());
+    SDL_GetWindowSizeInPixels((SDL_Window *)q->wnd, &q->w, &q->h);
+    return q->ok ? 0 : -1;
+}
+#endif
 int nvn_vk_init(void *hwnd) {
     static const char *const k_wanted[] = {"VK_KHR_swapchain", "VK_EXT_extended_dynamic_state3", "VK_EXT_vertex_input_dynamic_state", "VK_KHR_push_descriptor", "VK_EXT_custom_border_color",
                                            "VK_EXT_conservative_rasterization", "VK_EXT_external_memory_host", "VK_EXT_depth_clip_control", "VK_EXT_provoking_vertex", "VK_EXT_4444_formats",
@@ -296,7 +310,18 @@ int nvn_vk_init(void *hwnd) {
     r = vkCreateWin32SurfaceKHR(V.instance, &si, NULL, &V.surface);
     if (r != VK_SUCCESS) vk_fatal("vkCreateWin32SurfaceKHR", r);
 #else
-    if (!SDL_Vulkan_CreateSurface((SDL_Window *)hwnd, V.instance, NULL, &V.surface)) { printf("nvn_vk: SDL_Vulkan_CreateSurface failed: %s\n", SDL_GetError()); fflush(stdout); ExitProcess(5); }
+    {   /* the surface is made on the window thread (see vk_surface_job above); this call is the guest thread's */
+        struct vk_surface_req q;
+        memset(&q, 0, sizeof q);
+        q.inst = V.instance; q.wnd = hwnd; q.out = &V.surface;
+        if (plat_window_call(vk_surface_job, &q) < 0 || !q.ok) {
+            printf("nvn_vk: SDL_Vulkan_CreateSurface on the window thread failed: %s\n", q.err[0] ? q.err : "the window thread did not run it");
+            fflush(stdout);
+            ExitProcess(5);
+        }
+        printf("nvn_vk: surface made on the window thread (window %dx%d pixels)\n", q.w, q.h);
+        fflush(stdout);
+    }
 #endif
 
     /* device: discrete > integrated > virtual > other; needs one queue family with graphics + compute that can present to the window */

@@ -4,6 +4,7 @@
 #ifndef __OBJC__   /* (macOS's window and renderer are Objective-C, whose BOOL is not the shim's: they need none of it) */
 #include <windows.h>
 #endif
+#include "renderer.h"
 
 typedef enum { PACING_CLOCK, PACING_VRR, PACING_DISPLAY } Pacing;
 enum { DISPLAY_WINDOWED, DISPLAY_BORDERLESS, DISPLAY_FULLSCREEN };
@@ -30,12 +31,15 @@ int display_take_size(unsigned *w, unsigned *h);
 /* The 16:9 picture centred in a w x h back buffer. */
 void display_fit(unsigned w, unsigned h, unsigned *x, unsigned *y, unsigned *fw, unsigned *fh);
 int display_latency(void);              /* frames the GPU may queue ahead: 1-3 */
+int display_low_latency(void);          /* low_latency: the game released late in the frame (ipc_vi.c) */
 Pacing display_pacing(void);
 const char *display_gpu(void);          /* the graphics card to use: "auto", or part of its name (SSBU_GPU) */
 /* render_scale: the game's pictures are drawn this many times its 1920x1080 in each direction
  * (0.5-4; SSBU_RENDER_SCALE). 0 = auto: as many as the picture has pixels in the window at the
  * start (1440p: 1.33), at least 1. */
 float display_render_scale(void);
+/* renderer: which back end draws (renderer.h: RENDERER_DEFAULT or RENDERER_VULKAN; SSBU_RENDERER). */
+int display_renderer(void);
 /* The renderer says whether the swap chain can tear (for VRR); the flags each Present gets. */
 void display_set_tearing(int supported);
 unsigned display_present_flags(void);
@@ -48,7 +52,7 @@ void display_speed_tick(void);
 
 /* The settings menu (gpu_menu.c), which saves display.ini itself: the settings in effect, and
  * changes that take effect now. The window's size and the graphics card count at the next start. */
-typedef struct DisplaySettings { int mode, width, height, latency, hide_cursor, overlay; Pacing pacing; char gpu[64]; float render_scale; } DisplaySettings;
+typedef struct DisplaySettings { int mode, width, height, latency, hide_cursor, overlay; Pacing pacing; char gpu[64]; float render_scale; int renderer; } DisplaySettings;
 void display_settings(DisplaySettings *out);
 const char *display_ini_path(void);
 int display_overlay(void);                /* overlay = 1: the frame-rate overlay shows from the start */
@@ -60,3 +64,4 @@ void display_set_hide_cursor(int on);
 void display_set_latency(int frames);
 int display_take_latency(void);           /* the renderer, at a present: a new latency, or 0 */
 void display_set_render_scale(float scale);   /* (shown by the menu; the renderer takes it at the next start) */
+void display_set_renderer(int renderer);      /* (the same: RENDERER_*, which back end draws from the next start) */

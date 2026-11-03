@@ -26,6 +26,51 @@ typedef struct Session { int domain; IpcObject *object; IpcObject *ids[256]; } S
 
 static SRWLOCK lock = SRWLOCK_INIT;
 
+/* (rollback netplay, SSBU_RB: hle_rb_state.c) A session's domain table is host state that guest memory names by
+ * object id: an object closed after a save, then the save loaded, left the game asking for an id the table no longer
+ * had. Sessions are never freed (ipc_close), so with the switch on every session is listed, and a savestate keeps
+ * each domain's table (shared between states while no table changed: ipc_gen). Off, nothing is listed. */
+int kernel_rb_switch(void);
+static Session **rb_all;
+static u32 rb_nall, rb_cap;
+static int rb_on = -1;
+static volatile LONG ipc_gen;   /* bumped at every change of a domain table */
+static Session *listed(Session *s) {
+    if (rb_on < 0) rb_on = kernel_rb_switch();
+    if (!rb_on || !s) return s;
+    AcquireSRWLockExclusive(&lock);
+    if (rb_nall == rb_cap) { Session **n = realloc(rb_all, sizeof *n * (rb_cap ? rb_cap * 2 : 256)); if (n) { rb_all = n; rb_cap = rb_cap ? rb_cap * 2 : 256; } }
+    if (rb_nall < rb_cap) rb_all[rb_nall++] = s;
+    ReleaseSRWLockExclusive(&lock);
+    return s;
+}
+typedef struct IpcSnap { LONG refs, gen; u32 n; struct { Session *s; Session v; } *v; } IpcSnap;
+static IpcSnap *rb_last;
+/* (every guest thread held: no request runs) */
+void *ipc_rb_save(void) {
+    if (rb_last && rb_last->gen == ipc_gen) { rb_last->refs++; return rb_last; }
+    IpcSnap *p = calloc(1, sizeof *p);
+    if (!p) return NULL;
+    p->v = malloc(sizeof *p->v * (rb_nall + 1));
+    for (u32 i = 0; i < rb_nall; i++) if (rb_all[i]->domain) { p->v[p->n].s = rb_all[i]; p->v[p->n].v = *rb_all[i]; p->n++; }
+    p->gen = ipc_gen; p->refs = 2;   /* (the state's, and rb_last's) */
+    if (rb_last && --rb_last->refs == 0) { free(rb_last->v); free(rb_last); }
+    rb_last = p;
+    return p;
+}
+void ipc_rb_load(const void *q) {
+    const IpcSnap *p = q;
+    if (!p || p->gen == ipc_gen) return;
+    for (u32 i = 0; i < rb_nall; i++) if (rb_all[i]->domain) { rb_all[i]->domain = 0; memset(rb_all[i]->ids, 0, sizeof rb_all[i]->ids); }
+    for (u32 i = 0; i < p->n; i++) *p->v[i].s = p->v[i].v;
+    ipc_gen++;   /* (the tables are the state's now, not rb_last's unless it is this one) */
+    if (rb_last == p) rb_last->gen = ipc_gen;
+}
+void ipc_rb_free(void *q) {
+    IpcSnap *p = q;
+    if (p && --p->refs == 0) { if (rb_last == p) rb_last = NULL; free(p->v); free(p); }
+}
+
 IpcObject *ipc_new_object(const char *name, void (*handle)(IpcObject *, Ipc *), void *state) {
     IpcObject *o = calloc(1, sizeof *o);
     o->name = name;
@@ -108,7 +153,7 @@ void *ipc_connect(const char *port) {
     if (strcmp(port, "sm:")) return NULL;
     Session *s = calloc(1, sizeof *s);
     s->object = ipc_new_object("sm:", sm, NULL);
-    return s;
+    return listed(s);
 }
 
 void ipc_close(void *session) { (void)session; }   /* objects may still be shared through domains */
@@ -125,7 +170,7 @@ static IpcBuffer buffer_desc(const u32 *d) {
 
 static u32 domain_add(Session *s, IpcObject *o) {
     for (u32 id = 1; id < 256; id++)
-        if (!s->ids[id]) { s->ids[id] = o; return id; }
+        if (!s->ids[id]) { s->ids[id] = o; InterlockedIncrement(&ipc_gen); return id; }
     rt_fatal("ipc: domain full");
 }
 
@@ -176,7 +221,7 @@ u32 ipc_request(Cpu *c, void *session, u64 message, u64 size) {
         u16 dsize = *(u16 *)(raw + 2);
         u32 oid = *(u32 *)(raw + 4);
         if (dtype == 2) {   /* close a domain object */
-            if (oid < 256) s->ids[oid] = NULL;
+            if (oid < 256) { s->ids[oid] = NULL; InterlockedIncrement(&ipc_gen); }
             raw = NULL;
         } else {
             target = oid < 256 ? s->ids[oid] : NULL;
@@ -196,7 +241,7 @@ u32 ipc_request(Cpu *c, void *session, u64 message, u64 size) {
         if (control) {
             switch (ipc->command) {
             case 0:   /* ConvertCurrentObjectToDomain */
-                if (!s->domain) { s->domain = 1; s->ids[1] = s->object; }
+                if (!s->domain) { s->domain = 1; s->ids[1] = s->object; InterlockedIncrement(&ipc_gen); }
                 IPC_PUSH(ipc, (u32)1);
                 break;
             case 2: case 4:   /* CloneCurrentObject(Ex) */
@@ -218,7 +263,7 @@ u32 ipc_request(Cpu *c, void *session, u64 message, u64 size) {
     if (control && (ipc->command == 2 || ipc->command == 4)) {
         Session *clone = calloc(1, sizeof *clone);
         *clone = *s;
-        ipc->move_out[0] = kernel_new_session(clone);
+        ipc->move_out[0] = kernel_new_session(listed(clone));
     }
     u32 objects_as_ids[8], nids = 0;
     for (u32 i = 0; i < ipc->nobjects_out; i++) {
@@ -226,7 +271,7 @@ u32 ipc_request(Cpu *c, void *session, u64 message, u64 size) {
         else {
             Session *n = calloc(1, sizeof *n);
             n->object = ipc->objects_out[i];
-            ipc->move_out[ipc->nmove_out++] = kernel_new_session(n);
+            ipc->move_out[ipc->nmove_out++] = kernel_new_session(listed(n));
         }
     }
     u32 w = 0, *r = m;

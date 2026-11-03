@@ -407,6 +407,10 @@ Double-click **`Install WindowSmash.bat`** again. It downloads the newest Window
 
 By hand: download the ZIP again, unblock it as in [step 5](#step-5-download-windowsmash), and copy the contents of its `OpenSmash-Ultimate-main` folder over `C:\WindowSmash`, replacing the files. Then build again ([step 14](#step-14-build-the-game), or double-click `launchers\Build WindowSmash.bat`). With Git, run `git pull` instead of downloading.
 
+### A runtime update without a rebuild
+
+A build made with `python tools/build_game.py --game-dll` keeps the game in `build\ssbu_game.dll` and the runtime alone in `build\ssbu.exe`. A runtime release (`runtime-v<n>` on the project's GitHub releases, built by `.github/workflows/runtime-release.yml` from no game data) then replaces only the runtime: close the game and run `python tools\runtime_fetch.py runtime-v<n>`. It takes the release's file for your build's instruction set, checks it against the release's SHA256SUMS, keeps the old one as `ssbu.exe.old`, and puts it back if the new one does not accept your game library.
+
 ### If something goes wrong
 
 | What you see | What to do |

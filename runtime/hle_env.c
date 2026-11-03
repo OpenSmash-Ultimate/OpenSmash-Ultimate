@@ -349,13 +349,36 @@ HLE(_ZN2nn3pdm30QueryApplicationPlayStatisticsEPNS0_25ApplicationPlayStatisticsE
 HLE(_ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_) { memcpy(P(void, c->x[0]), P(void, c->x[1]), 256); c->x[0] = 0; }
 
 /* ---- errors ---------------------------------------------------------------------- */
+/* The console's error viewer shows "Error Code: 2MMM-DDDD" in a dialog, and the game waits until the
+ * player closes it. Here: a message box over the game's window (Windows; elsewhere the log only),
+ * the game waiting the same way. Not in test runs (SSBU_SEQ, SSBU_HEADLESS) or with SSBU_ERROR_DIALOG=0,
+ * and at most 3 a run: a game that keeps failing (a network gone) is not a wall of boxes. */
+void watchdog_pause(int on);   /* debug_watchdog.c */
+void *gfx_window_handle(void);
+static void error_dialog(u32 category, u32 number) {
+#ifdef _WIN32
+    static LONG shown;
+    const char *off = getenv("SSBU_ERROR_DIALOG"), *headless = getenv("SSBU_HEADLESS");
+    if ((off && off[0] == '0') || getenv("SSBU_SEQ") || (headless && headless[0] == '1')) return;
+    if (InterlockedIncrement(&shown) > 3) return;
+    wchar_t text[200];
+    _snwprintf(text, 200, L"Error Code: %04u-%04u\n\nAn error has occurred.", category, number);
+    watchdog_pause(1);   /* (the game waits for the dialog: no frames meanwhile) */
+    MessageBoxW((HWND)gfx_window_handle(), text, L"Error", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    watchdog_pause(0);
+#else
+    (void)category; (void)number;
+#endif
+}
 HLE(_ZN2nn3err9ShowErrorENS0_9ErrorCodeE) {   /* ErrorCode { u32 category; u32 number } in x0 */
     fprintf(stderr, "[game] error shown: %04u-%04u\n", (u32)(c->x[0] & 0xFFFFFFFF), (u32)(c->x[0] >> 32));
     if (net_log() > 1) rt_backtrace();
+    error_dialog((u32)(c->x[0] & 0xFFFFFFFF), (u32)(c->x[0] >> 32));
 }
 HLE(_ZN2nn3err9ShowErrorENS_6ResultE) {
     fprintf(stderr, "[game] error shown: result %#x (module %u, description %u)\n", (u32)c->x[0],
             (u32)c->x[0] & 0x1FF, ((u32)c->x[0] >> 9) & 0x1FFF);
+    error_dialog(2000 + ((u32)c->x[0] & 0x1FF), ((u32)c->x[0] >> 9) & 0x1FFF);
 }
 HLE(_ZN2nn4diag6detail9AbortImplEPKcS3_S3_i) {
     rt_fatal("the game aborted: %s in %s (%s:%d)", c->x[0] ? P(char, c->x[0]) : "?", c->x[1] ? P(char, c->x[1]) : "?",

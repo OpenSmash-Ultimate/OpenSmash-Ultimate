@@ -63,6 +63,21 @@ configure run is needed:
 `tools/codec_libs.py` (`build_static`) compiles opus without the `x86` folders and the
 `OPUS_X86_*` defines, and libvpx with `config-arm64/` in place of `config/`.
 
+## vulkan-headers/
+
+Not a library: the Khronos Group's C headers for Vulkan, for the Vulkan back end in development
+(`runtime/gpu_vulkan.c`; docs/TECHNICAL.md, "A second back end: Vulkan"). `tools/cc.py` adds
+`SSBU_HAVE_VULKAN` and this `include/` folder to the runtime's flags when they are here. Nothing is
+linked: the program loads the system's Vulkan loader (`vulkan-1.dll`) at run time.
+
+Taken from https://github.com/KhronosGroup/Vulkan-Headers, tag `v1.4.365` (commit
+`c46850864f4661461b0f6cb9922c058ffea4915e`), byte for byte as git has them: `include/vulkan/`'s
+`vulkan.h`, `vulkan_core.h`, `vk_platform.h` and `vulkan_win32.h` (the C API and Windows' window
+surfaces; not the C++ headers or the other systems' surfaces), `include/vk_video/` (which
+`vulkan_core.h` includes), `LICENSE.md` and `LICENSES/` (Apache-2.0 OR MIT). `SHA256SUMS` lists every
+file's SHA-256; `tests/test_renderer_option.py` checks them. To update: take the same files from a
+newer tag and write `SHA256SUMS` again (`sha256sum` of each file, in that format).
+
 ## fonts_open/
 
 Not a library: open fonts used in place of a firmware font that isn't there, taken unmodified

@@ -180,7 +180,9 @@ static int word_is(const char *v, const char *const *words) {
 
 static const char *const ON[] = {"on", "1", "yes", "true", NULL}, *const OFF[] = {"off", "0", "no", "false", NULL};
 
-/* graphics.ini's keys that display.ini has, into display.ini (made with its defaults first). */
+/* graphics.ini's keys that display.ini has, into display.ini (made with its defaults first).
+ * Not its renderer: ssbu-recomp's vulkan / opengl are its NVN-level renderers, and display.ini's
+ * vulkan is a back end in development here (renderer.h), so the default is kept. */
 static int display_from_sr(const char *graphics, const char *display) {
     char v[160], tmp[300], scale[32] = "";
     snprintf(tmp, sizeof tmp, "%s.new", display);

@@ -117,7 +117,7 @@ The game's own **Online** menu works with WindowSmash's game server, which runs 
 | :--- | :--- |
 | An error as soon as you choose **Online** | Start the game with `Play SSBU.bat`, not `launchers\Play SSBU Offline.bat`, and check that the overlay (<kbd>F1</kbd>) says `Online`. |
 | An error code starting with **2306** | The game can't reach the game server. The lobby in `online_server.txt` has none (port 39420, or a lobby of your own run with `ssbu_relay.py`), or something blocks TCP to it. |
-| Quickplay keeps waiting | Nobody with your lobby code is searching right now. Find players on the [Discord server](https://discord.gg/pkgyYGf3YB). |
+| Quickplay keeps waiting | Nobody with your lobby code is searching right now. Find players on the [OpenSmash-Ultimate Discord](https://discord.gg/pkgyYGf3YB). |
 
 ## Direct connections and your internet address
 
@@ -285,6 +285,7 @@ The game server's log (`--nex-log`: `0` quiet, `1` each call, `2` every packet, 
 | `SSBU_NET_NAME` | The player name others see. |
 | `SSBU_NET_PORT` | The relay's port. Default `39420`. |
 | `SSBU_NET_UPNP=0` | Don't ask the router to open the port. |
+| `SSBU_ONLINE_STUN=<host:port>` or `off` | When the router opens no port, the hosting game asks this STUN server (default `stun.l.google.com:19302`) how its relay looks from outside, and gives a room code for that address: it works with routers that keep the mapping for everyone. `off`: no STUN. |
 | `SSBU_NET_BIND` | Limit which address the built-in relay listens on; used by local tests. A relay on `127.0.0.1` announces its room to this PC's loopback only. |
 | `SSBU_NET_LAN=0` | Hosting, don't announce the room on the local network. |
 | `SSBU_NET_LAN_PORT`, `SSBU_NET_LAN_TEST=1` | Local tests: the announcements' port (default `39501`), and announcements to `127.0.0.1` only, the looking game listening there. |
