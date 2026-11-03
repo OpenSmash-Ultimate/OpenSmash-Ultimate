@@ -1421,9 +1421,10 @@ def link(dirs, exe, rt_dir=None, steps=None):
         print(f"FAILED {os.path.basename(src)}:\n{err[:4000]}")
     if failures:
         return False
-    objs = [os.path.join(rt_dir, n[:-2] + ".obj") for n in sources] + [check, table[:-2] + ".obj", nro_table[:-2] + ".obj"]
+    objs = [os.path.join(rt_dir, n[:-2] + ".obj") for n in sources] + [check, table[:-2] + ".obj"]
     if os.path.isfile(decode_src):
         objs.append(decode_obj)
+    objs.append(nro_table[:-2] + ".obj")   # (last: a --game-dll build moves it into the library)
     game = []
     for d in dirs:
         if mod_plugin(d):
