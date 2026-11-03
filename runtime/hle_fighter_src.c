@@ -23,6 +23,8 @@
 
 #include "host.h"
 
+int rt_is_function(u64 addr);   /* (host.c) */
+
 #ifdef _WIN32
 typedef struct FsHost { void (*call)(Cpu *, int); void (*log)(const char *); Cpu *(*ctx)(void); void (*call_addr)(Cpu *, u64); } FsHost;
 typedef struct FsOverride { u32 off; const char *name; void (*fn)(Cpu *); } FsOverride;
@@ -30,7 +32,7 @@ typedef struct FsSym { const char *name; const char *spec; } FsSym;
 typedef struct FsTable { const FsSym *syms; int sym_count; u64 *addr; const FsOverride *ovr; int ovr_count; } FsTable;
 typedef void (*FsBindFn)(const FsHost *, FsTable *);
 
-typedef struct FsMod { char name[64]; u64 base; HMODULE dll; FsTable t; u8 *stubs; } FsMod;
+typedef struct FsMod { char name[64]; u64 base; HMODULE dll; FsTable t; u8 *stubs; volatile LONG calls; } FsMod;
 typedef struct FsRun { FsMod *mod; Cpu *ctx; u64 lr; } FsRun;   /* the script running on this fiber */
 
 #define MODS 64
@@ -61,6 +63,8 @@ static void dispatch(Cpu *c, u64 which) {
     FsMod *m = mods[which >> 16];
     const FsOverride *o = &m->t.ovr[which & 0xFFFF];
     FsRun *outer = running(), here = {m, c, c->x[30]};
+    LONG n = InterlockedIncrement(&m->calls);   /* (the first, and every 100,000th: the source is reached) */
+    if (n == 1 || n % 100000 == 0) fprintf(stderr, "[fighter] %s: source script call %ld (%s)\n", m->name, (long)n, o->name);
     FlsSetValue(fls, &here);
     o->fn(c);
     FlsSetValue(fls, outer);
@@ -134,6 +138,62 @@ void fighter_src_module_loaded(const char *module, u64 base) {
     fprintf(stderr, "[fighter] %s: %d scripts run as C++ source (%d not functions of the module), %d game symbols bound (%d missing)\n", name,
             hooked, refused, m->t.sym_count - missing, missing);
 }
+
+/* (hle_fighter_registry.c) The library of a script module that has no NRO (a new fighter's lua2cpp_<name>,
+ * at its own range `base`, whose other functions are the donor module's at `donor_base`): its scripts go
+ * into that module's own dispatch tables (code: by offset / 4; odd: offset 4k + 1, functions only in the
+ * source) - no hook on the donor's code, so a real donor in the same match keeps its own scripts. A
+ * symbol the library binds to a function of the donor's range is bound to the same offset of the new
+ * range (its module address, fs_module_function, is then the new module's). Returns the library's
+ * index, or -1. */
+int fighter_src_attach_clone(const char *name, const char *path, u64 base, u64 donor_base, u64 donor_size, GuestFn **code, GuestFn **odd,
+                             u64 text_size) {
+    const char *off = getenv("SSBU_FIGHTER_SRC");
+    if (off && off[0] == '0') return -1;
+    for (int i = 0; i < nmods; i++) if (!strcmp(mods[i]->name, name) && mods[i]->base == base) return i;
+    if (nmods == MODS) { fprintf(stderr, "[fighter] more than %d fighter libraries: %s left out\n", MODS, path); return -1; }
+    if (fls == FLS_OUT_OF_INDEXES) fls = FlsAlloc(NULL);
+    HMODULE dll = LoadLibraryA(path);
+    FsBindFn bind = dll ? (FsBindFn)(void *)GetProcAddress(dll, "fighter_bind") : NULL;
+    if (!bind) { fprintf(stderr, "[fighter] %s is not a fighter library (no fighter_bind, error %lu)\n", path, (unsigned long)GetLastError()); return -1; }
+    FsMod *m = calloc(1, sizeof *m);
+    snprintf(m->name, sizeof m->name, "%s", name);
+    m->base = base;
+    m->dll = dll;
+    bind(&host, &m->t);
+    int missing = 0, moved = 0;
+    for (int s = 0; s < m->t.sym_count; s++) {
+        u64 a = rt_symbol(m->t.syms[s].name);
+        if (a - donor_base < donor_size && rt_is_function(a)) { a = a - donor_base + base; moved++; }
+        m->t.addr[s] = a;
+        if (!a) missing++;
+    }
+    int idx = nmods;
+    mods[nmods++] = m;
+    m->stubs = VirtualAlloc(NULL, (size_t)m->t.ovr_count * 32 + 32, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+    int placed = 0, own = 0, refused = 0;
+    for (int i = 0; m->stubs && i < m->t.ovr_count && i < 0x10000; i++) {
+        u64 o = m->t.ovr[i].off;
+        GuestFn *stub = make_stub(m->stubs + 32 * i, (u64)idx << 16 | (u64)i);
+        if (o >= text_size || (o & 3) > 1) { refused++; continue; }
+        if (o & 3) { __atomic_store_n(&odd[o >> 2], stub, __ATOMIC_RELEASE); own++; }
+        else { __atomic_store_n(&code[o >> 2], stub, __ATOMIC_RELEASE); placed++; }
+    }
+    FlushInstructionCache(GetCurrentProcess(), m->stubs, (size_t)m->t.ovr_count * 32);
+    fprintf(stderr, "[fighter] %s (module of its own at %#llx): %d scripts as C++ source in place of the donor's, %d functions only in the source, "
+            "%d not places of the module; %d game symbols bound (%d moved to the module's own range, %d missing)\n", name, (unsigned long long)base,
+            placed, own, refused, m->t.sym_count - missing, moved, missing);
+    return idx;
+}
+/* A library's functions: name and offset of number i, NULL past the last. */
+const char *fighter_src_function(int lib, int i, u32 *off) {
+    if (lib < 0 || lib >= nmods || i < 0 || i >= mods[lib]->t.ovr_count) return NULL;
+    if (off) *off = mods[lib]->t.ovr[i].off;
+    return mods[lib]->t.ovr[i].name;
+}
 #else
 void fighter_src_module_loaded(const char *module, u64 base) { (void)module; (void)base; }
+int fighter_src_attach_clone(const char *name, const char *path, u64 base, u64 donor_base, u64 donor_size, GuestFn **code, GuestFn **odd,
+                             u64 text_size) { return -1; }
+const char *fighter_src_function(int lib, int i, u32 *off) { return NULL; }
 #endif
