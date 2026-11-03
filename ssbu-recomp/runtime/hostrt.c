@@ -11,6 +11,9 @@
 
 #define FILE_OFF 0x1000ULL
 #define IMAGE_SIZE 0x7500000ULL          /* the whole image with bss: 13.0.4 and 13.0.5 both end below it */
+#ifndef _WIN32
+void plat_map_retry(const char *what, unsigned long long want);   /* plat_posix.c: macOS starts a fresh image when a fixed address is taken */
+#endif
 
 /* ---------------------------------------------------------------- game builds (docs/VERSIONS.md)
  * The layout of main is read from main.elf (load_layout): its PT_LOAD segments (nso2elf.py writes text, read-only data,
@@ -34,6 +37,7 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x2c55e0, 0x2c55e0},       /* nninitStartup */
     {0x2c5620, 0x2c5620},       /* nnMain */
     {0x653240, 0x653240},       /* entry set-up (debug_mode.c) */
+    {0x135dc30, 0x135dc30},     /* transient scene: update (matchup_hold.c), 39 / 39 words */
     {0x147f330, 0x147f330},     /* path formatter (newmodule_host.c) */
     {0x1519430, 0x1519430},     /* hook self-test function (hook_host.c) */
     {0x1780440, 0x17802a0},     /* match controls set-up (debug_mode.c, room rollback: each player's own controls; 63 / 63 words) */
@@ -463,6 +467,11 @@ void register_imports(const ImportDef *defs, int count) {
         }
         if (!found) extra_add(defs[d].name, defs[d].fn);
     }
+}
+/* Handlers for the plugins only (skyline.c, sky_compat.c): the plugin-only table, never main's handlers, whatever the
+ * order of registration; nnro.c resolve prefers main's own handler for a name main imports and falls back to this table. */
+void register_plugin_imports(const ImportDef *defs, int count) {
+    for (int d = 0; d < count; d++) extra_add(defs[d].name, defs[d].fn);
 }
 
 /* Function hooks on host entries (skyline.c A64HookFunction on an address that is not lifted code): an import placeholder of
@@ -1104,6 +1113,12 @@ static void crash_signal(int sig, siginfo_t *si, void *uc) {
         install_crash_handler();                    /* SA_RESETHAND took the handler away on entry */
         return;
     }
+#if defined(__linux__) && defined(__x86_64__)
+    {   /* the vectored exception handlers (plat_posix.c; r1_state.c rollback), when this handler was set after theirs */
+        int plat_veh_fault(int sig, siginfo_t *si, void *uc); void plat_veh_install(void);
+        if (plat_veh_fault(sig, si, uc)) { install_crash_handler(); plat_veh_install(); return; }
+    }
+#endif
     ucontext_t *u = uc;
     uintptr_t rip = UC_PC(u), rsp = UC_SP(u), bad = (uintptr_t)si->si_addr;
     printf("\nHOST SIGNAL %d (%s) at address %p\n", sig, sig == SIGSEGV ? "segmentation fault" : sig == SIGBUS ? "bus error" : sig == SIGILL ? "illegal instruction" : sig == SIGFPE ? "arithmetic" : "?", si->si_addr);
@@ -1173,10 +1188,10 @@ void runtime_init(const char *elf, const char *trace_path) {
 #endif
 
     void *mem = VirtualAlloc((void *)GUEST_BASE, IMAGE_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (mem != (void *)GUEST_BASE) { fprintf(stderr, "cannot map guest image at 0x%llx\n", GUEST_BASE); exit(1); }
+    if (mem != (void *)GUEST_BASE) { fprintf(stderr, "cannot map guest image at 0x%llx\n", GUEST_BASE); plat_map_retry("the guest image", GUEST_BASE); exit(1); }
     /* data symbols provided by other modules: zero-filled placeholders, IMPORT_SLOT bytes each */
     void *imp = VirtualAlloc((void *)IMPORT_BASE, (SIZE_T)dyn_sym_count * IMPORT_SLOT, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (imp != (void *)IMPORT_BASE) { fprintf(stderr, "cannot map import area\n"); exit(1); }
+    if (imp != (void *)IMPORT_BASE) { fprintf(stderr, "cannot map import area\n"); plat_map_retry("the import area", IMPORT_BASE); exit(1); }
     FILE *f = fopen(elf, "rb");
     if (!f) { fprintf(stderr, "cannot open %s\n", elf); exit(1); }
     load_layout(f, elf);
@@ -1243,6 +1258,15 @@ void runtime_init(const char *elf, const char *trace_path) {
 
 /* 0 = real code; 1 = empty body; 2 = only stores constants (x0 := *x0 when *sets_x0) */
 int audit_trivial(ImportFn fn, long long *x0, int *sets_x0) {
+#if !defined(__x86_64__) && !defined(_M_X64)
+    /* the loop below reads x86-64 machine code (0xE9 jmp rel32, 0xC3 ret, ...). The host is ARM64 here (macOS on Apple
+     * Silicon), where the same bytes are another instruction set: an 0xE9 follows a "jump" into an unmapped address and
+     * audit_startup stops the SDK self-test with SIGSEGV (2026-10-28; whether it happens depends on the code the linker
+     * placed there). Nothing is classified: 0 = real code, which no caller acts on. */
+    (void)fn;
+    *x0 = 0; *sets_x0 = 0;
+    return 0;
+#else
     const unsigned char *p = (const unsigned char *)fn;
     int stores = 0;
     long long rax = 0;
@@ -1274,6 +1298,7 @@ int audit_trivial(ImportFn fn, long long *x0, int *sets_x0) {
         return 0;
     }
     return 0;
+#endif
 }
 
 static int audit_listed(const char *name) {

@@ -35,7 +35,7 @@ PLAT_FLAGS += MACOS_MIN
 PLAT_FLAGS += ['-mcx16'] if TARGET_LINUX else []
 CFLAGS = ['-c', '-O1', '-w', '-fno-strict-aliasing', '-I', HERE, '-I', GEN] + PLAT_FLAGS
 HOST_SOURCES = ['hostrt.c', 'boot.c', 'nnsdk.c', 'libcxx.c', 'os_threads.c', 'nvn_stub.c', 'nvn_front.c', 'nvn_gl.c', 'nvn_vk.c', 'nvn_vk_store.c', 'nvn_vk_draw.c', 'nvn_vk_m4.c', 'nvn_vk_menu.c', 'nvn_vk_flash.c', 'nvn_vk_wd.c', 'mx_translate.c', 'tex_decode.c', 'nnfs.c', 'clib.c', 'nntime.c', 'nnhid.c', 'nnpad_sdl.c', 'nnpad_gca.c', 'display.c', 'nnpl.c', 'nnfontll.c', 'nnmovie.c', 'nnmisc.c', 'nnaudio.c', 'nnro.c', 'nnmovie_mf.c', 'nniostream.c', 'nncxxrt.c', 'nncxxlib.c', 'nnlibc2.c',
-                'sdklift_rt.c', 'nnsdk2.c', 'nnmii.c', 'nnapplet.c', 'nnalbum.c', 'nnnet.c', 'nnfsdir.c', 'nnunwind.c', 'nvn_sdk.c', 'nvn_c4.c', 'nvn_c5.c', 'hitch.c', 'gfx_options.c', 'debug_mode.c', 'r1_state.c',
+                'sdklift_rt.c', 'nnsdk2.c', 'nnmii.c', 'nnapplet.c', 'nnalbum.c', 'nnnet.c', 'nnfsdir.c', 'nnunwind.c', 'nvn_sdk.c', 'nvn_c4.c', 'nvn_c5.c', 'hitch.c', 'gfx_options.c', 'debug_mode.c', 'r1_state.c', 'matchup_hold.c',
                 'loose_host.c', 'osk.c', 'nnldn.c', 'net_relay.c', 'rb_net.c']    # the new fighters' file layer (loose_files.c): off unless SSBU_CHARACTERS / SSBU_LOOSE_FILES is set
 # nnldn.c / net_relay.c: online play over the game's Local Wireless (plan/phases/N3_local_wireless_online.md), off unless SSBU_ONLINE
 # (taken only when present: a tree without the online files, e.g. a public one before they are published, still links)
@@ -164,6 +164,7 @@ def cmd_compile(jobs, force):
 GAME_DLL = os.environ.get('RECOMP_DLL', 'ssbu_game_eh_o1' + ('.dylib' if TARGET_MACOS else '.so' if TARGET_LINUX else '.dll'))
 HOST_FLAGS = ['-O1', '-g', '-w', '-fno-strict-aliasing', '-I', HERE, '-I', GEN, '-Dfn_table=(*game_fn_table_p)', '-Dfn_table_count=(*game_fn_table_count_p)',
               '-Ddyn_syms=(*game_dyn_syms_p)', '-Ddyn_sym_count=(*game_dyn_sym_count_p)',
+              '-DGAME_DLL_NAME="%s"' % GAME_DLL,        # gamedll.c (Windows): the game DLL the exe loads by name (or ssbu_game_sky.dll with plugins)
               '-I', os.path.join(os.environ.get('SDL3_ROOT', os.path.join(HERE, '..', 'reference', 'upstream', 'SDL3-3.4.18-VC', 'SDL3-3.4.18')), 'include'),
               '-I', os.path.join(os.environ.get('VULKAN_HEADERS', os.path.join(HERE, '..', 'reference', 'upstream', 'Vulkan-Headers')), 'include')]      # Khronos headers for nvn_vk.c (track V)
 SDL_DIR = os.path.join(os.environ.get('SDL3_ROOT', os.path.join(HERE, '..', 'reference', 'upstream', 'SDL3-3.4.18-VC', 'SDL3-3.4.18')), 'lib', 'x64')      # SDL3 for nnpad_sdl.c; SDL3.dll is copied beside the exe at link (SDL3_ROOT / VULKAN_HEADERS: scripts\setup.py)
@@ -194,9 +195,12 @@ if TARGET_POSIX:
         return subprocess.run(['pkg-config'] + list(args) + ['sdl3', 'freetype2', 'openssl', 'libavformat', 'libavcodec', 'libswscale', 'libswresample', 'libavutil'], capture_output=True, text=True, check=True).stdout.split()
     _sdl_inc = HOST_FLAGS.index('-I', HOST_FLAGS.index('-Ddyn_sym_count=(*game_dyn_sym_count_p)'))      # the SDL3 VC package: the system's SDL3 instead
     HOST_FLAGS = HOST_FLAGS[:_sdl_inc] + HOST_FLAGS[_sdl_inc + 2:] + PLAT_FLAGS + ['-I', os.path.join(HERE, 'plat')] + pkg('--cflags')
-    # plat_mf.c: the Media Foundation subset nnmovie_mf.c uses, on FFmpeg. Not in the Linux build yet: online play
-    # (net_relay.c: Winsock extensions, COM UPnP; net_off.c answers "off", as with SSBU_ONLINE unset)
-    HOST_SOURCES = [n for n in HOST_SOURCES if n != 'net_relay.c'] + ['plat_posix.c', 'plat_mf.c', 'net_off.c']
+    # plat_mf.c: the Media Foundation subset nnmovie_mf.c uses, on FFmpeg. Online play (net_relay.c) on Linux: Winsock from
+    # plat/winsock2.h, UPnP on plain sockets (net_upnp.c); not tried on macOS yet: net_off.c answers "off" there, as with
+    # SSBU_ONLINE unset
+    HOST_SOURCES = HOST_SOURCES + ['plat_posix.c', 'plat_mf.c']
+    if TARGET_MACOS or 'net_relay.c' not in HOST_SOURCES:
+        HOST_SOURCES = [n for n in HOST_SOURCES if n != 'net_relay.c'] + ['net_off.c']
     LIBS = pkg('--libs') + ['-lGL', '-lm', '-ldl', '-lpthread']      # libGL: the OpenGL front end is linked (not used)
     if TARGET_MACOS:                                     # OpenGL is a system framework; dl / pthread are in libSystem
         LIBS = pkg('--libs') + ['-framework', 'OpenGL', '-lm']
@@ -237,10 +241,11 @@ def nocrt_fltused(libdir):
     return obj
 
 
-def link_dll(objs, dll, rsp, implib=True, fltused=False):
+def link_dll(objs, dll, rsp, implib=True, fltused=False, mapfile=None):
     """Objects -> DLL: with clang's default linker (MSVC link.exe and the static C runtime) or, under RECOMP_NOCRT, with
     lld-link alone against the import libraries of nocrt\\ (ucrtbase.dll, ntdll.dll). fltused: add the _fltused object
-    (DLLs whose objects do not define it). Returns the CompletedProcess."""
+    (DLLs whose objects do not define it). mapfile: write the link map there (link.exe's format, or lld-link's /lldmap
+    under RECOMP_NOCRT; relift_sites.py reads both). Returns the CompletedProcess."""
     libdir = os.path.join(HERE, 'obj_nocrt')
     if NOCRT and fltused:
         os.makedirs(libdir, exist_ok=True)
@@ -252,10 +257,10 @@ def link_dll(objs, dll, rsp, implib=True, fltused=False):
     if TARGET_LINUX:          # a .so: -z now resolves everything at load, as a DLL is
         return subprocess.run([CLANG, '-shared', '@' + rsp, '-o', dll] + PLAT_FLAGS + ['-lm', '-Wl,-soname,' + os.path.basename(dll), '-Wl,-z,now'], capture_output=True, text=True, errors='replace')
     if not NOCRT:
-        return subprocess.run([CLANG, '-shared', '@' + rsp, '-o', dll], capture_output=True, text=True, errors='replace')
+        return subprocess.run([CLANG, '-shared', '@' + rsp, '-o', dll] + (['-Wl,/MAP:' + mapfile] if mapfile else []), capture_output=True, text=True, errors='replace')
     os.makedirs(libdir, exist_ok=True)
     libs = [lld_def_lib(os.path.join(NOCRT_DIR, n + '.def'), os.path.join(libdir, n + '.lib')) for n in ('ucrtbase_min', 'ntdll_min')]
-    argv = [LLD_LINK, '/dll', '/noentry', '/nodefaultlib', '/machine:x64', '/out:' + dll, '@' + rsp] + libs
+    argv = [LLD_LINK, '/dll', '/noentry', '/nodefaultlib', '/machine:x64', '/out:' + dll, '@' + rsp] + libs + (['/lldmap:' + mapfile] if mapfile else [])
     return subprocess.run(argv + (['/implib:' + dll[:-4] + '.lib'] if implib else []), capture_output=True, text=True, errors='replace')
 
 
@@ -307,6 +312,12 @@ def build_game_dll():
     return r.returncode
 
 
+def game_exports():
+    """The names the exe takes from the game DLL / library: the EXPORTS of nocrt/ssbu_game.def."""
+    with open(os.path.join(NOCRT_DIR, 'ssbu_game.def')) as f:
+        return [l.split()[0] for l in f.read().split('EXPORTS', 1)[1].splitlines() if l.strip() and not l.strip().startswith(';')]
+
+
 def game_import_lib(objdir):
     """The exe's import library of the game DLL, made from nocrt\\ssbu_game.def (the DLL's exports), not by linking the
     DLL: the exe links without the game DLL, on a PC without any dump (scripts/make_release.py)."""
@@ -345,9 +356,9 @@ def cmd_link(host_only=False):
     for n in HOST_SOURCES + ['gamedll.c'] + ([] if HAVE_IMGUI else ['menu_stub.c']):
         src, obj = os.path.join(HERE, 'r1src' if r1 and n == 'nncxxrt.c' else '', n), os.path.join(objdir, n[:-2] + '.obj')
         objs.append(obj)
-        if not os.path.exists(obj) or os.path.getmtime(obj) < max(os.path.getmtime(src), newest_dep,
+        if n == 'gamedll.c' or not os.path.exists(obj) or os.path.getmtime(obj) < max(os.path.getmtime(src), newest_dep,     # gamedll.c: always (GAME_DLL_NAME is a flag, not a dependency)
                                                                        os.path.getmtime(os.path.join(HERE, 'plat_mf.c')) if n == 'mf_ffmpeg.c' else 0,   # mf_ffmpeg.c includes plat_mf.c
-                                                                       os.path.getmtime(os.path.join(HERE, 'skyline.c')) if n == 'nnro.c' else 0):   # nnro.c includes skyline.c
+                                                                       max(os.path.getmtime(os.path.join(HERE, 'skyline.c')), os.path.getmtime(os.path.join(HERE, 'sky_compat.c'))) if n == 'nnro.c' else 0):   # nnro.c includes skyline.c, which includes sky_compat.c
             jobs.append((src, obj))
     for src in CXX_SOURCES:                          # U1: the settings menu (C++); imgui's own files depend on their source and menu_imconfig.h only
         obj = os.path.join(objdir, os.path.splitext(os.path.basename(src))[0] + '_cxx.obj')
@@ -367,10 +378,13 @@ def cmd_link(host_only=False):
         game = ['-Wl,-undefined,dynamic_lookup'] if host_only else [os.path.join(HERE, GAME_DLL)]
         r = subprocess.run([CLANG] + MACOS_MIN + objs + game + ['-Wl,-rpath,@executable_path'] + LIBS + ['-o', out], capture_output=True, text=True, errors='replace')
     elif TARGET_LINUX:
-        game = ['-Wl,--unresolved-symbols=ignore-in-object-files'] if host_only else ['-L', HERE, '-l:' + GAME_DLL]      # host alone: a compile + link check, not runnable
+        # host alone: a compile + link check, not runnable. Only the game library's exports (nocrt/ssbu_game.def) are left
+        # without a definition (set to 0), so a name nothing defines (a Windows-only function without its Linux stub) fails it
+        game = ['-Wl,--defsym=%s=0' % n for n in game_exports()] if host_only else ['-L', HERE, '-l:' + GAME_DLL]
         r = subprocess.run([CLANG] + objs + game + ['-Wl,-rpath,$ORIGIN'] + LIBS + ['-o', out], capture_output=True, text=True, errors='replace')
     else:
-        r = subprocess.run([CLANG] + objs + [game_import_lib(objdir), os.path.join(SDL_DIR, 'SDL3.lib')] + LIBS + debug_link_flags(out) + ['-o', out], capture_output=True, text=True, errors='replace')
+        # no import library of the game DLL: gamedll.c loads it by name (GAME_DLL_NAME, or ssbu_game_sky.dll with plugins)
+        r = subprocess.run([CLANG] + objs + [os.path.join(SDL_DIR, 'SDL3.lib')] + LIBS + debug_link_flags(out) + ['-o', out], capture_output=True, text=True, errors='replace')
     if r.returncode == 0 and not TARGET_POSIX:
         import shutil
         try:

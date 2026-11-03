@@ -1,11 +1,18 @@
 """Test of tools/lifter/build_opt.py's Linux / macOS compile scheduling, with a fake compiler (no clang, no game files):
 
-    python tests/build_opt_sched_test.py [linux | macos | windows]      (default: all three)
+    python tests/build_opt_sched_test.py [linux | macos | windows | linux-inline | macos-inline]
+                                                             (default: all five)
 
 Checks: the compilers' reservations never exceed the shared RAM (MEM_BUDGET) and are all given back; on Linux a file over
 its reservation is compiled again with twice as much (up to the budget); on Linux / macOS a ladder retry that would leave
 the same functions unoptimised as the attempt that just failed is skipped; on Windows (no RECOMP_TARGET) nothing of that
 happens: no reservations, every ladder step as before.
+
+`linux-inline` / `macos-inline` run the same files through compile_file_inline (RECOMP_INLINE=1, the game's default on
+those targets): the inlined compile reserves twice the estimate, and for a file as large as c_00a3.c (215,493 statements)
+that is more than the whole budget - which used to wait in mem_acquire for room no compile could free and stopped the
+step with no compiler running (2026-10-22, issue 75). The reservations must stay within the budget there too, and a
+watchdog fails the run instead of hanging if a wait ever stops the test.
 """
 import concurrent.futures
 import os
@@ -19,6 +26,7 @@ import types
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIFTER = os.path.join(HERE, '..', 'tools', 'lifter')
 GB = 1 << 30
+WATCHDOG = 20                                    # seconds without a compile starting or finishing before the test gives up
 # file -> (statements of each function, GB it really needs, seconds at -O1; None: always over the time limit unless at least
 # `ok_from` functions are unoptimised)
 SPEC = dict({'small%02d' % i: ([500, 300], 0.4, 0.02, 0) for i in range(24)},
@@ -29,6 +37,10 @@ SPEC = dict({'small%02d' % i: ([500, 300], 0.4, 0.02, 0) for i in range(24)},
 
 
 def child(target):
+    inline = target.endswith('-inline')                  # the inlined compile (RECOMP_INLINE): build_opt reads it at import
+    if inline:
+        target = target[:-len('-inline')]
+        os.environ['RECOMP_INLINE'] = '1'
     if target != 'windows':
         os.environ['RECOMP_TARGET'] = target
     sys.modules['build'] = types.ModuleType('build')         # build.py / build_nro.py are not needed by compile_file
@@ -74,8 +86,28 @@ def child(target):
             for i, k in enumerate(funcs):
                 f.write('void f%d(Ctx *c) {\n' % i + 'x;\n' * k + '}\n')
     order = sorted(SPEC, key=lambda n: -os.path.getsize(os.path.join(d, n + '.c')))
+    progress = [time.time()]
+
+    def watchdog():                      # a wait that never ends would hang CI: say which wait and fail
+        while True:
+            time.sleep(1)
+            if time.time() - progress[0] > WATCHDOG:
+                print('%-13s FAILED: nothing started or finished for %d s (a reservation mem_acquire can never grant?)'
+                      % (target + ('-inline' if inline else ''), WATCHDOG), flush=True)
+                os._exit(1)
+
+    if target != 'windows':
+        threading.Thread(target=watchdog, daemon=True).start()
+    compile_one = B.compile_file_inline if inline else B.compile_file
+
+    def one(n):
+        progress[0] = time.time()                # the watchdog times starts as well as ends: a compile may be long
+        r = compile_one(os.path.join(d, n + '.c'), os.path.join(d, n + '.obj'), [])
+        progress[0] = time.time()
+        return n, r
+
     with concurrent.futures.ThreadPoolExecutor(8) as pool:
-        res = dict(pool.map(lambda n: (n, B.compile_file(os.path.join(d, n + '.c'), os.path.join(d, n + '.obj'), [])), order))
+        res = dict(pool.map(one, order))
     import shutil
     shutil.rmtree(d, ignore_errors=True)
     steps = {n: [c[1] for c in calls if c[0] == n] for n in ('huge', 'same', 'mid', 'lad')}
@@ -85,7 +117,22 @@ def child(target):
         bad.append('a compile failed: %r' % {n: r for n, r in res.items() if r[0]})
     if B._mem_used:
         bad.append('reservations not given back: %d' % B._mem_used)
-    if target == 'windows':
+    if inline:
+        # the inlined compile reserves twice the estimate; over the budget it is cut to it (the file runs alone), which is
+        # what keeps the step moving. c_00a3.c-like: 8.2 GB of estimate -> 16.4 GB asked of a 10 GB budget
+        budget = 10 * GB
+        if not B.INLINE:
+            bad.append('RECOMP_INLINE is off: the inlined path was not tested')
+        if B.MEM_BUDGET != budget:
+            bad.append('budget %r, expected 10 GB' % B.MEM_BUDGET)
+        over = [c for c in calls if c[2] and c[2] > budget]
+        if over:
+            bad.append('a reservation over the budget: %r' % over[:3])
+        if max([c[2] or 0 for c in calls if c[0] == 'huge'] or [0]) != budget:
+            bad.append('huge did not reserve the whole budget: %r' % mems['huge'])
+        if peak[0] > budget:
+            bad.append('peak %d over the budget' % peak[0])
+    elif target == 'windows':
         if B.MEM_BUDGET or any(c[2] for c in calls):
             bad.append('reservations on Windows')
         if steps['same'] != [1, 1, 1, 'O0']:
@@ -111,15 +158,16 @@ def child(target):
             bad.append('lad: %r' % steps['lad'])
         if peak[0] > budget:
             bad.append('peak %d over the budget' % peak[0])
-    print('%-7s %s   ladder %s   peak reserved %.1f GB' % (target, 'ok' if not bad else 'FAILED: ' + '; '.join(bad), steps, peak[0] / GB))
+    label = target + ('-inline' if inline else '')
+    print('%-13s %s   ladder %s   peak reserved %.1f GB' % (label, 'ok' if not bad else 'FAILED: ' + '; '.join(bad), steps, peak[0] / GB))
     return 1 if bad else 0
 
 
 if __name__ == '__main__':
     if len(sys.argv) > 2 and sys.argv[1] == '--child':
         sys.exit(child(sys.argv[2]))
-    targets = sys.argv[1:] or ['linux', 'macos', 'windows']
+    targets = sys.argv[1:] or ['linux', 'macos', 'windows', 'linux-inline', 'macos-inline']
     rc = 0
-    for t in targets:                       # one process each: build_opt reads RECOMP_TARGET at import
+    for t in targets:                       # one process each: build_opt reads RECOMP_TARGET / RECOMP_INLINE at import
         rc |= subprocess.call([sys.executable, os.path.abspath(__file__), '--child', t])
     sys.exit(rc)

@@ -494,6 +494,7 @@ uint32_t nnldn_other_ip(void) {
     return n == 1 ? r : 0;
 }
 int nnldn_role(void) { int s = L.state; return s == LS_AP_CREATED ? 1 : s == LS_STA_CONNECTED ? 2 : 0; }      /* (R3 pub1) 1 = this game made the room, 2 = it joined one, 0 = no room */
+int nnldn_on(void) { return L.state != LS_NONE; }      /* the game is in Local Wireless (Initialize called, no Finalize yet), in a room or not */
 int nnldn_has_node(uint32_t ip) {
     AcquireSRWLockShared(&L.lock);
     int in = in_network() && node_index(ip) >= 0;

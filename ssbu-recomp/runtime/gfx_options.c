@@ -25,6 +25,10 @@ static int g_gfx_stats;                              /* U1: stats_overlay = off 
 int gfx_stats_overlay(void) { gfx_options(); return g_gfx_stats; }
 int gfx_volume(void) { gfx_options(); return g_gfx_volume; }
 const char *gfx_language(void) { gfx_options(); return g_gfx_language; }
+static char g_gfx_monitor[96];                       /* monitor = auto ("") | a number of the list | a part of the monitor's name (display.c) */
+const char *gfx_monitor(void) { gfx_options(); return g_gfx_monitor; }
+static int g_gfx_matchup_ms;                         /* matchup_screen_min = 0 (default) | seconds (matchup_hold.c) */
+int gfx_matchup_screen_min_ms(void) { gfx_options(); return g_gfx_matchup_ms; }
 
 static const char *const k_default_ini =
 "; graphics.ini: display and rendering options of the native build (read once at start by gfx_options.c).\r\n"
@@ -44,6 +48,13 @@ static const char *const k_default_ini =
 "window = windowed\r\n"
 "width = 1280\r\n"
 "height = 720\r\n"
+"\r\n"
+"; monitor = auto | <number> | <name>      (Linux)\r\n"
+";   The monitor the game opens on. auto: the system's primary monitor. A number: that monitor of the list in the log\r\n"
+";   ('display: monitor' lines, from 1); a name: the monitor whose name contains it (F1 > Display writes the name).\r\n"
+";   A monitor that is not connected: the primary one. On Wayland the desktop places a window itself: the choice\r\n"
+";   applies to fullscreen (and to borderless on X11).\r\n"
+"monitor = auto\r\n"
 "\r\n"
 "; vsync = auto | display | clock | off | on | mailbox      (Vulkan)\r\n"
 ";   auto:    the refresh rate of the monitor is measured at start. 60, 120, 240 Hz (within 1.1 %: 59.94, 119.88 too):\r\n"
@@ -147,7 +158,13 @@ static const char *const k_default_ini =
 "\r\n"
 "; language = auto | ja | en-US | en-GB | fr | fr-CA | de | it | es | es-419 | zh-Hans | zh-Hant | ko | nl | ru\r\n"
 ";   auto: the Windows display language. SSBU_LANGUAGE=<code> wins. Read at start.\r\n"
-"language = auto\r\n";
+"language = auto\r\n"
+"\r\n"
+"; matchup_screen_min = 0 | <seconds>\r\n"
+";   The loading screen that names the next fight (\"ROUND 1 / Vs.\" in Classic Mode) stays up at least this long, counted\r\n"
+";   from its start. 0: as the game does it: it goes as soon as the fight is loaded, which here is a fraction of a second.\r\n"
+";   3.5 kept the names up for about 2.3 s (Classic Mode). Never in a Local Wireless room (online). Read at start.\r\n"
+"matchup_screen_min = 0\r\n";
 
 #define GFX_LOW_SCALE 0.5f
 #define GFX_LOW_SCALE_TEXT "0.50"
@@ -161,22 +178,26 @@ static void trim(char *s) {
     while (*b == ' ' || *b == '\t') b++;
     if (b != s) memmove(s, b, strlen(b) + 1);
 }
-static void opt_path(char *out) {
+/* out is GfxOptions.path, 260 bytes on every platform (the Windows MAX_PATH); MAX_PATH is 1024 in the Linux / macOS
+ * shim, so its size is passed rather than MAX_PATH: snprintf of _FORTIFY_SOURCE stops the process ("detected buffer
+ * overflow") when the size given is larger than the buffer, and a path over 260 would overrun it for real. The pad
+ * self-test sets SSBU_CONFIG (nnpad_sdl.c), so the first run of it stopped there with SIGTRAP on macOS (2026-10-28). */
+static void opt_path(char *out, size_t n) {
     const char *e = getenv("SSBU_GRAPHICS_CONFIG"), *c = getenv("SSBU_CONFIG");
     char tmp[MAX_PATH], exe[MAX_PATH];
-    if (e && e[0]) { snprintf(out, MAX_PATH, "%s", e); return; }
+    if (e && e[0]) { snprintf(out, n, "%s", e); return; }
     if (c && c[0]) {
         snprintf(tmp, sizeof tmp, "%s", c);
         char *s = strrchr(tmp, '\\'), *s2 = strrchr(tmp, '/');
         if (s2 > s) s = s2;
-        if (s) { *s = 0; snprintf(out, MAX_PATH, "%s\\graphics.ini", tmp); } else snprintf(out, MAX_PATH, "graphics.ini");
+        if (s) { *s = 0; snprintf(out, n, "%s\\graphics.ini", tmp); } else snprintf(out, n, "graphics.ini");
         return;
     }
     GetModuleFileNameA(NULL, exe, MAX_PATH);
     char *s = strrchr(exe, '\\');
     if (s) *s = 0;
     snprintf(tmp, sizeof tmp, "%s\\..\\config\\graphics.ini", exe);
-    if (!_fullpath(out, tmp, MAX_PATH)) snprintf(out, MAX_PATH, "%s", tmp);
+    if (!_fullpath(out, tmp, n)) snprintf(out, n, "%s", tmp);
 }
 static BOOL CALLBACK opt_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
     (void)once; (void)arg; (void)ctx;
@@ -184,7 +205,7 @@ static BOOL CALLBACK opt_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
     int written = 0, unknown = 0;
     memset(o, 0, sizeof *o);
     o->width = 1280; o->height = 720; o->scale = 1.0f; o->present = 5;      /* vsync = auto when the key is missing (track V session 14) */
-    opt_path(o->path);
+    opt_path(o->path, sizeof o->path);
     FILE *f = fopen(o->path, "rb");
     if (!f) {
         char b[MAX_PATH];
@@ -220,6 +241,8 @@ static BOOL CALLBACK opt_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
         else if (!_stricmp(key, "menu")) g_gfx_menu = !_stricmp(val, "on") || !strcmp(val, "1");      /* U1 (menu.cpp) */
         else if (!_stricmp(key, "volume")) { g_gfx_volume = -1; if (_stricmp(val, "auto")) { int v = atoi(val); g_gfx_volume = v < 0 ? 0 : v > 100 ? 100 : v; } }
         else if (!_stricmp(key, "language")) { g_gfx_language[0] = 0; if (_stricmp(val, "auto")) snprintf(g_gfx_language, sizeof g_gfx_language, "%s", val); }
+        else if (!_stricmp(key, "monitor")) { g_gfx_monitor[0] = 0; if (_stricmp(val, "auto")) snprintf(g_gfx_monitor, sizeof g_gfx_monitor, "%s", val); }
+        else if (!_stricmp(key, "matchup_screen_min")) { double v = atof(val); g_gfx_matchup_ms = v > 0 ? (int)(v * 1000.0 + 0.5) : 0; if (g_gfx_matchup_ms > 30000) g_gfx_matchup_ms = 30000; }
         else unknown++;
     }
     if (f) fclose(f);

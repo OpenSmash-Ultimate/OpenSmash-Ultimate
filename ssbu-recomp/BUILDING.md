@@ -82,8 +82,8 @@ functions they call (`memcpy`, `memset`, `sqrt`, `fma`, `floor`, ... and `__chks
 the game libraries this way while still building the exe with MSVC.
 
 Making the package (maintainers; needs the MSVC Build Tools and the tools of the table below, no dump):
-`python scripts/make_release.py [--opus <opus.dll>]`. It builds the exe with `tools/lifter/build.py host` (linked against
-`runtime/nocrt/ssbu_game.def`, not against a game DLL), audits the package (only the listed files; the exe's linker map
+`python scripts/make_release.py [--opus <opus.dll>]`. It builds the exe with `tools/lifter/build.py host` (the exe imports
+no game DLL: `runtime/gamedll.c` loads it by name at start), audits the package (only the listed files; the exe's linker map
 names only the runtime's own objects; no path or name of the PC; with `--against <build\work>` none of a dump build's
 tables is in any file), writes `dist/ssbu-runtime-<commit>.zip` and prints its SHA-256 for `RUNTIME_RELEASE`.
 
@@ -245,7 +245,9 @@ Options are environment variables, set with `--env NAME=VALUE` (full list: comme
 `SSBU_RENDERER=vk|gl`, `SSBU_SHOW=1` (show the window of a test exe), `SSBU_STRICT=1|report|path` (list the host
 functions that are not the real behaviour), `SSBU_TRACE`, `SSBU_PAD_BACKEND=xinput`, `SSBU_FIXED_SEED=<n>`.
 Pad mapping file and tools: `ssbu_native.exe --pad-test`, `--pad-map <n>`.
-Skyline plugins (ARCropolis, smashline and the mods built on them) that you install yourself: [docs/SKYLINE.md](docs/SKYLINE.md).
+Skyline plugins (ARCropolis, smashline, the Training Modpack and the mods built on them) that you install yourself in
+`sd\` beside `build\`: [docs/SKYLINE.md](docs/SKYLINE.md). `run.py --play` prepares them before the start (scripts/mods.py);
+the exe loads the re-lifted game DLL by itself (`SSBU_GAME_DLL=<name>` names one, `SSBU_SKY_RELIFT=0` keeps the normal one).
 
 ## GameCube controller adapter
 
@@ -288,6 +290,23 @@ A settings menu drawn over the game's picture (Dear ImGui, Vulkan renderer only)
 It is built only when Dear ImGui v1.91.9b is found: `scripts/install.py` downloads it into `deps\imgui` and checks its
 SHA-256, or give a folder with `python scripts/setup.py ... --imgui <folder with imgui.h>`, or set `IMGUI_ROOT`. Without it
 the build still works, and F1 only writes a log line saying why there is no menu.
+
+## Keyboard movement
+
+A key of the left stick pushes the stick fully at once, which the game reads as a flick: on the keyboard a direction always
+dashes and down always drops through a platform. `movement = ssf2` in the `[keyboard]` section of `config\controllers.ini`
+(or `SSBU_KEYBOARD_MOVEMENT=ssf2`, or **SSF2 Style** on the Controls page of the settings menu; default `full`, the old
+behaviour) reads the keys the way Super Smash Flash 2 does (`runtime/nnhid.c` `kb_ssf2`, which lists the rules and the
+measurements):
+
+- a direction walks; the same key again within 200 ms of letting it go dashes; the other key while running dash-dances;
+- down crouches (and fast-falls in the air); down twice within 200 ms drops through a platform;
+- a direction and A within about 130 ms (down and A: 100 ms) is a smash attack, later a tilt; with the shield held a direction rolls;
+- up waits 4 frames: A or B in them is an up smash or an up special on the ground, otherwise it jumps (a tap is a short hop);
+- the key of the d-pad's up is the taunt key: with a direction held it gives the taunt of that side, as in SSF2.
+
+Measured on Mario only (the stick thresholds are expected to be the same for every fighter). The game's own stick jump
+must be on (its default) for up to jump.
 
 ## On-screen keyboard
 
