@@ -39,6 +39,7 @@
 #include "gpu_vulkan.h"
 #include "gpu_watch.h"
 #include "gpu_window.h"
+#include "debug_profile.h"
 #include "gpu_menu.h"
 #include "gpu_overlay.h"
 #include "net.h"
@@ -972,6 +973,10 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
         depth_sampling = !depth_sampling;
         fprintf(stderr, "[gfx] depth sampling %s (F5)\n", depth_sampling ? "on" : "off");
     }
+    static double profile_at = -1;   /* SSBU_PROFILE_AT: the second to start one at (debug runs), as gpu_d3d11.c */
+    if (profile_at == -1) profile_at = getenv("SSBU_PROFILE_AT") ? atof(getenv("SSBU_PROFILE_AT")) : -2;
+    if (profile_at >= 0 && rt_now_ns() > (u64)(profile_at * 1e9)) { profile_at = -2; keys |= 32; }
+    if (keys & 32) profile_start(10.0);   /* F6: the sampling profiler */
     if (src && capture_path(path, sizeof path) && readback(src, &shot[nshots], path)) {
         nshots++;
         if (getenv("SSBU_CAPTURE_WINDOW")) {   /* (the window's picture too, overlay and menu included) */
@@ -1120,7 +1125,7 @@ static void note_wrote(u64 va, u64 bytes) {   /* bytes == 0: anywhere */
  * (note_wrote's writes, which mark the kept buffers they touch). A changed one is made again (the old
  * one buried: the GPU may be reading it); one that keeps changing (twice within KEPT_SETTLE frames) is
  * uploaded with the rest for a while instead. Only memory in the write-watched alias area is kept. */
-#define KEPT_SETS 256
+#define KEPT_SETS 1024
 #define KEPT_WAYS 4
 #define KEPT_SETTLE 8
 #define KEPT_PAUSE 60
@@ -1159,7 +1164,7 @@ static VkBufferView kept_cb(u64 va, u32 size) {
     if (size < 0x1000) return VK_NULL_HANDLE;
     u64 g = gpu_va_to_guest(va);
     if (!g || gpu_va_to_guest(va + size - 1) != g + size - 1 || !watched(g, size)) return VK_NULL_HANDLE;
-    Kept *set = &kept[((va >> 4) * 0x9E3779B97F4A7C15ull >> 56) * KEPT_WAYS], *e = NULL, *lru = &set[0];
+    Kept *set = &kept[((va >> 4) * 0x9E3779B97F4A7C15ull >> 54) * KEPT_WAYS], *e = NULL, *lru = &set[0];
     for (u32 w = 0; w < KEPT_WAYS && !e; w++) {
         if (set[w].va == va && set[w].size == size && set[w].guest == g) e = &set[w];
         else if (set[w].used < lru->used) lru = &set[w];
@@ -1379,6 +1384,8 @@ static Resident *input_buffer(u64 va, u64 size) {
     }
     if (b) {
         b->used = ++tick;
+        /* (asked every launch: asking once a submission, as resident_check does, drew the fighters pale again -
+         * the CPU rewrites these inputs between launches of one submission) */
         if (watch_written(g, size, &b->seen)) resident_fill(b, 0, size);
         return b;
     }
@@ -2390,9 +2397,13 @@ typedef struct StageBinds {
 
 /* A stage's constant buffers, storage buffers and textures (gpu_d3d11.c's bind_resources). */
 static u64 vk_ns_res[3];   /* (constant buffers, storage buffers, textures) */
+/* The parts of a draw are timed in one draw of every TIMING_EVERY (a clock read is some 25 ns, a draw's parts
+ * take a dozen: timing every draw cost more than some of the parts), the times scaled up. */
+#define TIMING_EVERY 32
+static int vk_timing;
 static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int stage, const VShader *s, DrawParams *params, StageBinds *b) {
     int mstage = stage == SHADER_VERTEX ? STAGE_VERTEX : STAGE_FRAGMENT;
-    u64 t0 = rt_clock_ns(), t1;
+    u64 t0 = vk_timing ? rt_clock_ns() : 0, t1;
     for (u32 k = 0; k < 18; k++) {
         if (!(s->info.cbuf_mask >> k & 1)) continue;
         u32 size = cb[mstage][k].size;
@@ -2400,7 +2411,7 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
         if (size > s->info.cbuf_extent[k]) size = s->info.cbuf_extent[k];   /* only what the program can read */
         if (!(b->cb[k] = kept_cb(cb[mstage][k].address, size))) b->cb[k] = upload_slot(stage, k, cb[mstage][k].address, size);
     }
-    t1 = rt_clock_ns(); vk_ns_res[0] += t1 - t0; t0 = t1;
+    if (vk_timing) { t1 = rt_clock_ns(); vk_ns_res[0] += (t1 - t0) * TIMING_EVERY; t0 = t1; }
     for (u32 k = 0; k < s->info.sb_count && k < 16; k++) {   /* storage buffers: their descriptors are in constant buffer 0 */
         u32 desc[4] = {0};
         if (cb[mstage][0].address) read_gpu(cb[mstage][0].address + s->info.sb_offset[k], 16, desc);
@@ -2421,7 +2432,7 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
         }
         b->gm[k] = upload(va, size);
     }
-    t1 = rt_clock_ns(); vk_ns_res[1] += t1 - t0; t0 = t1;
+    if (vk_timing) { t1 = rt_clock_ns(); vk_ns_res[1] += (t1 - t0) * TIMING_EVERY; t0 = t1; }
     u32 tex_cb = regs[M_BINDLESS_TEXTURE] & 0x1F;
     u64 tic_pool = (u64)regs[M_TEX_HEADER_POOL] << 32 | regs[M_TEX_HEADER_POOL + 1];
     u64 tsc_pool = (u64)regs[M_TEX_SAMPLER_POOL] << 32 | regs[M_TEX_SAMPLER_POOL + 1];
@@ -2438,7 +2449,7 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
         params->swz[stage][k] = (tic[0] >> 19) & 0xFFF;
         if (scale != 1.0f) params->swz[stage][k] |= (u32)(scale * 4096.0f + 0.5f) << 16;
     }
-    vk_ns_res[2] += rt_clock_ns() - t0;
+    if (vk_timing) vk_ns_res[2] += (rt_clock_ns() - t0) * TIMING_EVERY;
 }
 
 /* The stage's descriptor set (binding map: gpu_spirv.h), with what its program declares. */
@@ -2521,7 +2532,7 @@ static VkDescriptorSet stage_set(const VShader *s, const StageBinds *b, VkBuffer
 }
 
 static u64 vk_ns_phase[8];   /* (time in a draw's parts: shaders, targets, state and pipeline, streams, resources, indices, sets, recording) */
-#define PHASE(k) do { u64 tn_ = rt_clock_ns(); vk_ns_phase[k] += tn_ - tp; tp = tn_; } while (0)
+#define PHASE(k) do { if (vk_timing) { u64 tn_ = rt_clock_ns(); vk_ns_phase[k] += (tn_ - tp) * TIMING_EVERY; tp = tn_; } } while (0)
 static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexed);
 static void vk_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
     u64 t0 = rt_clock_ns();
@@ -2530,7 +2541,8 @@ static void vk_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed
 }
 static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
     enter();
-    u64 tp = rt_clock_ns();
+    vk_timing = (vk_stat_draws & (TIMING_EVERY - 1)) == 0;
+    u64 tp = vk_timing ? rt_clock_ns() : 0;
     vk_stat_draws++;
     u32 begin = regs[M_BEGIN];
     if (begin & (1u << 26)) instance_counter++;
@@ -2720,6 +2732,8 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
             }
         }
         stream_skip[j] = 0;
+        /* (NOT a kept buffer, as the big constant buffers are: tried, 174 -> 41 GB uploaded in a run, and Donkey Kong
+         * was drawn pale again at the fight's start - stale vertices; copied once a submission instead) */
         vb.vb[n] = stream_view[j] = upload(start, (u32)size);
     }
     params.base[0] = regs[M_GLOBAL_BASE_VERTEX];
