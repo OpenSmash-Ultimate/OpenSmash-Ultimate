@@ -52,6 +52,7 @@ static u64 started, reclaim_at, reclaimed;
 static u32 reclaim_from;   /* slots before reclaim looks: 1024 (SSBU_FIBER_RECLAIM_FROM for tests) */
 static SRWLOCK lock = SRWLOCK_INIT;
 static __declspec(thread) Fib *left;   /* what this thread last switched away from: not running once the switch is done */
+volatile int rb_keep_fibers;   /* (rollback netplay, SSBU_RB: hle_rb_state.c sets it once a savestate exists) host fibers are never deleted */
 
 static Fib *by_token(u64 token) {
     if ((token & 0xFFFF000000000000ull) != TOKEN_TAG) return NULL;
@@ -83,6 +84,120 @@ void fiber_counts(u32 *slots, u32 *finalized, u64 *made) {
     *finalized = nspare;
     *made = started;
     ReleaseSRWLockShared(&lock);
+}
+
+/* (rollback build, M1) Live fibers (not finalized) and how many of them run now. */
+void fiber_rb_census(u32 *live, u32 *running) {
+    *live = *running = 0;
+    AcquireSRWLockShared(&lock);
+    for (u32 i = 0; i < fib_count; i++)
+        if (fibs[i] && !fibs[i]->finalized) { ++*live; if (fibs[i]->running) ++*running; }
+    ReleaseSRWLockShared(&lock);
+}
+
+/* (rollback build, M2) The fibers for a savestate. Every slot's record and guest registers; for
+ * a fiber that is switched away (not running on a thread), its Windows fiber block (saved
+ * registers: CONTEXT at +0x30, its Rsp at +0x30+0x98, StackBase at +0x10 - the layout
+ * ssbu-recomp's rollback relies on too) and its host stack from that Rsp to StackBase. A running
+ * fiber is a thread's: its stack is saved with that thread (hle_rb_state.c). */
+#define RB_FIBER_BLOCK 0x500
+typedef struct FSave { Fib f; Cpu cpu; u8 blk[RB_FIBER_BLOCK]; u8 *stack; u64 rsp, n; int lost; } FSave;   /* lost: switched away, its stack not saved */
+typedef struct FSnap { u32 fib_count, nspare; Fib **spare; u64 started, reclaim_at, reclaimed; FSave *v; u64 bytes; } FSnap;
+
+/* A fiber block whose host stack (DeallocationStack +0x20 .. StackBase +0x10) holds one of the stack
+ * pointers in live[]: some thread runs on that stack now, whatever the fiber's record says (seen:
+ * a thread's own fiber, marked switched away, whose stack was the thread's running one). Its
+ * state is that thread's, saved with the thread; copying the block's stale view back would write
+ * over frames in use. ssbu-recomp's rollback keeps the same rule (threads.c live_on_stack). */
+static int stack_in_use(const u8 *blk, const u64 *live, u32 nlive) {
+    u64 lo = *(const u64 *)(blk + 0x20), hi = *(const u64 *)(blk + 0x10);
+    for (u32 i = 0; i < nlive; i++) if (live[i] >= lo && live[i] < hi) return 1;
+    return 0;
+}
+
+void *fiber_rb_save(u64 *bytes, u32 *suspended, const u64 *live, u32 nlive, u32 *in_use) {
+    FSnap *s = calloc(1, sizeof *s);
+    AcquireSRWLockShared(&lock);
+    s->fib_count = fib_count; s->nspare = nspare; s->started = started; s->reclaim_at = reclaim_at; s->reclaimed = reclaimed;
+    s->spare = malloc(sizeof *s->spare * (nspare + 1));
+    memcpy(s->spare, spare, sizeof *spare * nspare);
+    s->v = calloc(fib_count + 1, sizeof *s->v);
+    *suspended = *in_use = 0;
+    for (u32 i = 0; i < fib_count; i++) {
+        FSave *v = &s->v[i];
+        Fib *f = fibs[i];
+        v->f = *f; v->cpu = *f->cpu;
+        if (!f->host || f->running) continue;
+        memcpy(v->blk, f->host, RB_FIBER_BLOCK);
+        if (stack_in_use(v->blk, live, nlive)) {
+            ++*in_use;
+            fprintf(stderr, "[rb] save: fiber %u is marked switched away, but its host stack %#llx..%#llx is in use: saved with its thread\n",
+                    i, *(u64 *)(v->blk + 0x20), *(u64 *)(v->blk + 0x10));
+            continue;
+        }
+        u64 base = *(u64 *)(v->blk + 0x10), rsp = *(u64 *)(v->blk + 0x30 + 0x98);
+        if (rsp >= base || base - rsp > (64ull << 20)) { fprintf(stderr, "[rb] fiber %u: odd host stack (rsp %#llx, base %#llx): not saved\n", i, rsp, base); v->lost = 1; continue; }
+        v->rsp = rsp; v->n = base - rsp;
+        v->stack = malloc(v->n);
+        memcpy(v->stack, (void *)(uintptr_t)rsp, v->n);
+        s->bytes += v->n + RB_FIBER_BLOCK;
+        ++*suspended;
+    }
+    ReleaseSRWLockShared(&lock);
+    *bytes = s->bytes;
+    return s;
+}
+
+/* Before a load changes anything: refused when a fiber the state needs cannot be put back whole. The guest memory
+ * (its guest stack among it) always goes back to the save, so a fiber whose host stack stayed as it is now would
+ * resume on frames from after the save (FrankyFromEarthBound's OpenSmash-Ultimate PR #53, 0c9f96e: the task-worker
+ * crashes after "fibers not restored"; Rsoto95's ssbu-recomp PR #116 writes a fiber's guest stack back only for a
+ * fiber put back whole). Such a load used to go on and log it; refused, the caller tries an older state. A fiber
+ * finalized at the save is left out: its slot gets a new host fiber when it is used again. */
+const char *fiber_rb_check(const void *p, const u64 *live, u32 nlive) {
+    const FSnap *s = p;
+    if (fib_count < s->fib_count) return "fewer fiber slots than at the save";
+    for (u32 i = 0; i < fib_count; i++) {
+        if (i < s->fib_count && fibs[i]->running && !s->v[i].f.running) return "a fiber runs now that was switched away at the save";
+        if (i >= s->fib_count && fibs[i]->running) return "a fiber made since the save runs now";
+    }
+    for (u32 i = 0; i < s->fib_count; i++) {
+        const FSave *v = &s->v[i];
+        if (v->f.finalized) continue;
+        if (v->lost) return "a fiber's host stack could not be saved (odd stack pointer)";
+        if (v->stack && stack_in_use(v->blk, live, nlive)) return "a fiber's saved host stack is in use now";
+    }
+    return NULL;
+}
+
+void fiber_rb_load(const void *p, const u64 *live, u32 nlive, u32 *skipped) {
+    const FSnap *s = p;
+    *skipped = 0;
+    AcquireSRWLockExclusive(&lock);
+    for (u32 i = 0; i < s->fib_count; i++) {
+        const FSave *v = &s->v[i];
+        Fib *f = fibs[i];
+        *f = v->f;
+        *f->cpu = v->cpu;
+        if (v->stack && stack_in_use(v->blk, live, nlive)) {
+            ++*skipped;
+            fprintf(stderr, "[rb] load: fiber %u's saved host stack %#llx..%#llx is in use now: not copied back\n",
+                    i, *(u64 *)(v->blk + 0x20), *(u64 *)(v->blk + 0x10));
+        } else if (v->stack) {
+            memcpy(f->host, v->blk, RB_FIBER_BLOCK);
+            memcpy((void *)(uintptr_t)v->rsp, v->stack, v->n);
+        }
+    }
+    fib_count = s->fib_count; nspare = s->nspare; started = s->started; reclaim_at = s->reclaim_at; reclaimed = s->reclaimed;
+    memcpy(spare, s->spare, sizeof *spare * nspare);
+    ReleaseSRWLockExclusive(&lock);
+}
+
+void fiber_rb_free(void *p) {
+    FSnap *s = p;
+    if (!s) return;
+    for (u32 i = 0; i < s->fib_count; i++) free(s->v[i].stack);
+    free(s->v); free(s->spare); free(s);
 }
 
 /* Fibers the game dropped without FinalizeFiber, made spare. Called with the lock held, when no
@@ -180,7 +295,7 @@ HLE(_ZN2nn2os6detail20DispatchFiberContextEPPNS1_22FiberContextForHorizonES4_) {
     if (fresh) {
         Cpu *n;
         if (next) {
-            DeleteFiber(next->host);
+            if (!rb_keep_fibers) DeleteFiber(next->host);   /* (SSBU_RB: a savestate may need it again; kept, leaked) */
             n = next->cpu;
         } else {
             n = _aligned_malloc(sizeof *n, 64);

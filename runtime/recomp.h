@@ -106,6 +106,10 @@ int rt_eh_filter(const RtEhSignal *e, u64 sp, u64 lp);
 _Noreturn void rt_trap(Cpu *c, u64 pc, const char *why);
 void rt_svc(Cpu *c, u32 number);   /* a guest system call */
 u64 rt_ticks(void);                /* the 19.2 MHz system counter */
+/* Whether the code patches the build lifted both ways are on (recomp.py CODE_PATCHES: ARCropolis'
+ * costume-slot fixes, tools/lift.py "switch"): mods/mods.json's code_patches, read once at start
+ * (runtime/mod_switch.c). Off: the game's own code, as a build without them. */
+int rt_code_patches_on(void);
 
 #define X(n) (c->x[n])
 #define SP (c->sp)

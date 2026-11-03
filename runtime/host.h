@@ -68,6 +68,11 @@ extern RtModule rt_module_main, rt_module_subsdk0, rt_module_sdk;
 extern const RtModule rt_module_main, rt_module_subsdk0, rt_module_sdk;
 #endif
 u64 rt_load_nro(Cpu *c, u64 image);                     /* load the recompiled NRO; 0 if none matches */
+u64 rt_load_nro_named(Cpu *c, const char *name);        /* the same by module name (Skyline plugins) */
+u64 rt_module_export(u64 base, const char *symbol);     /* a loaded module's own export, or 0 */
+u64 rt_resolve_weak(const char *name);                  /* export or native implementation, or 0 */
+u64 rt_hook_function(u64 target, u64 replace);          /* redirect calls; returns the original */
+GuestFn *rt_detour_entry(GuestFn *body, GuestFn *hook, int allow_new, u32 room); /* patch one function's direct calls */
 void account_save_id(u64 uid[2]);                       /* (hle_env.c) the id naming a user's save folder */
 
 /* ---- kernel ---------------------------------------------------------------------- */

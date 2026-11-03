@@ -49,7 +49,7 @@ opening and menus, at 60 fps; full matches haven't been yet.
 
 ## Install and build
 
-1. **Download WindowSmash.** On the [GitHub page](https://github.com/OpenSmash-Ultimate/WindowSmash/tree/macos-port), click
+1. **Download WindowSmash.** On the [GitHub page](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate), click
    **Code**, then **Download ZIP**. Double-click the ZIP in your Downloads folder to unpack it, then move
    the folder to your home folder (the one with your name, in Finder's **Go** menu) and call it
    `WindowSmash`. Keep it out of Desktop, Documents and Downloads: iCloud Drive may try to upload the
@@ -94,7 +94,7 @@ WindowSmash.command` from Finder into the window, and press <kbd>Return</kbd>.
 Or download and start everything with one command. This puts WindowSmash in `~/WindowSmash`:
 
 ```bash
-mkdir -p ~/WindowSmash && curl -fL https://codeload.github.com/OpenSmash-Ultimate/WindowSmash/tar.gz/refs/heads/macos-port | tar -xz -C ~/WindowSmash --strip-components 1 && bash ~/WindowSmash/"Install WindowSmash.command"
+mkdir -p ~/WindowSmash && curl -fL https://codeload.github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/tar.gz/refs/heads/main | tar -xz -C ~/WindowSmash --strip-components 1 && bash ~/WindowSmash/"Install WindowSmash.command"
 ```
 
 </details>
@@ -125,7 +125,7 @@ Each step is skipped when it is already done, so running it again never repeats 
 
 | Step | What it does |
 | :--- | :--- |
-| 1. Update | Asks GitHub whether a newer WindowSmash is out than the one in your folder, and if so replaces the files that changed, then carries on as the new version. A folder made with Git is updated with `git pull` instead, when it is on the `macos-port` branch with no changes of its own. |
+| 1. Update | Asks GitHub whether a newer WindowSmash is out than the one in your folder, and if so replaces the files that changed, then carries on as the new version. A folder made with Git is updated with `git pull` instead, when it is on the `main` branch with no changes of its own. |
 | 2. This Mac | Checks for Apple silicon (and that Terminal isn't running under Rosetta), macOS 14 or newer, the memory and the free space, and warns when the folder is in iCloud Drive, Downloads, or on a disk that isn't APFS. |
 | 3. Command Line Tools | Has macOS install Apple's Command Line Tools (the compiler, the macOS SDK and Git) when they are missing, then builds and runs a test program with them, and checks that their macOS SDK is 15 or newer. |
 | 4. Python | Makes a Python of WindowSmash's own in `deps/venv`, with the packages the tools use. When the Mac has no Python 3.10 or newer, `Install WindowSmash.command` first puts one into `deps/python` (a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) Python 3.14, checked against its SHA-256). Nothing else on the Mac changes. |
@@ -160,6 +160,9 @@ Terminal window that shows the game's log as it goes; closing that window leaves
   `fullscreen` are both macOS's full screen, in a space of its own. `render_scale` draws the
   picture bigger than 1920 × 1080, as on Windows; `auto` counts the window's pixels, so a 1280 × 720
   window on a Retina display (2560 × 1440 pixels) draws at 1.33, and full screen at the screen's size.
+- **Settings:** press <kbd>Esc</kbd> in the game, or a controller's **Home** button, as on Windows
+  ([Settings](PLAYING.md#settings)). The Mac has no **Graphics card** row, and **Open
+  controllers.ini** opens the file in your text editor.
 - When the game asks for text, such as a name, a small window opens over the game for you to type
   it in.
 
@@ -167,6 +170,11 @@ Terminal window that shows the game's log as it goes; closing that window leaves
 
 The same as on Windows ([Playing](PLAYING.md#controls)): plug in a controller and press a button, and
 each pad becomes the next free player, up to eight. The keyboard plays as player 1.
+
+A Wii U GameCube adapter (in Wii U mode) works too ([GameCube controllers](PLAYING.md#gamecube-controllers)),
+with [GCAdapterDriver](https://github.com/secretkeysio/GCAdapterDriver) on and libusb installed
+(`brew install libusb`): the game reads it through libusb, as Dolphin does. Its controllers play as
+GameCube controllers, with the game's own GameCube controls. `SSBU_GC_USB=0` leaves the adapter alone.
 
 | Switch button | Keyboard |
 | :--- | :--- |
@@ -182,6 +190,7 @@ On a Mac keyboard the top row controls the brightness, volume and so on, and the
 
 | Key | Or | What it does |
 | :--- | :--- | :--- |
+| <kbd>Esc</kbd> | | Opens or closes the [settings](PLAYING.md#settings). |
 | <kbd>F1</kbd> | <kbd>⌘</kbd>+<kbd>1</kbd> | Shows or hides the overlay: frame rate and, online, the connection. |
 | <kbd>F2</kbd> | <kbd>⌘</kbd>+<kbd>2</kbd> | Shows more details, including the connected pads and the host's address. |
 | <kbd>F3</kbd> | <kbd>⌘</kbd>+<kbd>3</kbd> | Takes a screenshot (into `screenshots/`). |

@@ -63,10 +63,13 @@ SHORT GetAsyncKeyState(int vk) { (void)vk; return 0; }   /* (no keys held: the w
 #endif
 int gfx_window_focused(void) { return 1; }
 void gfx_closing(void) {}
+int gfx_present_again(void) { return 0; }   /* (no renderer: the game's text box keeps its dialog) */
+static int renderer_saved;   /* (the Display page's Renderer row: what it saved, shown again) */
 void display_settings(DisplaySettings *out) {
     memset(out, 0, sizeof *out);
     out->width = 1920; out->height = 1080; out->latency = 1; out->render_scale = 1;
     snprintf(out->gpu, sizeof out->gpu, "auto");
+    out->renderer = renderer_saved;
 }
 const char *display_ini_path(void) { return FILES[CONFIG_DISPLAY]; }
 void display_set_mode(int mode) { (void)mode; }
@@ -74,6 +77,15 @@ void display_set_pacing(Pacing pacing) { (void)pacing; }
 void display_set_hide_cursor(int on) { (void)on; }
 void display_set_latency(int frames) { (void)frames; }
 void display_set_render_scale(float scale) { (void)scale; }
+void display_set_renderer(int renderer) { renderer_saved = renderer; }
+int audio_master_volume(void) { return 100; }                 /* (ipc_audio.c: the master volume) */
+void audio_set_master_volume(int percent) { (void)percent; }
+/* (hle_mod_switch.c: no mods here) */
+int mods_switch_list(ModSwitch *out, int max, int *code) { (void)out; (void)max; *code = -1; return 0; }
+int mods_switch_set(const char *name, int on) { (void)name; (void)on; return 0; }
+int mods_switch_state(char *msg, size_t n) { if (msg && n) msg[0] = 0; return MODS_SWITCH_IDLE; }
+int mods_running_count(void) { return 0; }
+int rt_code_patches_on(void) { return 0; }
 int pad_info(u32 slot, PadInfo *out) { (void)slot; memset(out, 0, sizeof *out); return 0; }   /* (no controllers) */
 int pad_get(u32 slot, PadState *out) { (void)slot; memset(out, 0, sizeof *out); return 0; }
 void pad_rumble(u32 slot, int side, float amplitude) { (void)slot; (void)side; (void)amplitude; }
@@ -81,6 +93,9 @@ void pad_reload(void) {}
 const char *pad_ini_path(void) { return FILES[CONFIG_CONTROLLERS]; }
 const char *pad_button_name(int npad) { (void)npad; return "A"; }
 const char *pad_raw_name(int bit) { (void)bit; return "south"; }
+const char *pad_key_label(int i) { (void)i; return "A"; }
+void pad_key_names(int i, char *out, int size) { (void)i; snprintf(out, (size_t)size, "Z"); }
+void pad_key_name(int vk, char *out, int size) { (void)vk; snprintf(out, (size_t)size, "Z"); }
 int pad_rumble_on(void) { return 1; }
 int pad_keyboard_slot(void) { return 0; }
 int pad_background(void) { return 0; }

@@ -26,6 +26,14 @@ The VP9 decoder of the WebM Project's libvpx, release v1.15.2, is included as so
 
 libopus 1.5.2 (Xiph.Org Foundation and contributors) is included as source in [`third_party/opus/`](third_party/opus/) and compiled into the game when it is built (the game's music is Opus), under its [BSD license](third_party/opus/COPYING). [`third_party/README.md`](third_party/README.md) says which files. One line is changed: in `silk/x86/NSQ_del_dec_avx2.c`, a test for Microsoft's compiler now leaves clang out, so older clang-cl versions can build the file ([Local changes](third_party/README.md#local-changes)).
 
+### Vulkan headers
+
+The Khronos Group's Vulkan headers, Vulkan-Headers v1.4.365, are included in [`third_party/vulkan-headers/`](third_party/vulkan-headers/) for the Vulkan back end in development ([`runtime/gpu_vulkan.c`](runtime/gpu_vulkan.c)): headers only, no library is linked, and the program loads the system's Vulkan loader at run time. They are unmodified; [`third_party/README.md`](third_party/README.md) says which files and from which commit. Their license is Apache-2.0 OR MIT, with the texts kept there: [LICENSE.md](third_party/vulkan-headers/LICENSE.md), [Apache-2.0](third_party/vulkan-headers/LICENSES/Apache-2.0.txt), [MIT](third_party/vulkan-headers/LICENSES/MIT.txt).
+
+### HDE64
+
+The Hacker Disassembler Engine 64 (HDE64), copyright 2008-2009 Vyacheslav Patkov, is included as source in [`runtime/hde/`](runtime/hde/) and compiled into the game; [`runtime/hle_detour.c`](runtime/hle_detour.c) uses it to measure x86-64 instructions when it hooks a recompiled function. It is under the [BSD license](runtime/hde/LICENSE) kept beside it. `hde64.inc` (upstream `hde64.c`, renamed because it is compiled only through hle_detour.c) is changed so a decode stops at the 15-byte instruction limit instead of reading past it.
+
 ### Open fonts
 
 [`third_party/fonts_open/`](third_party/fonts_open/) holds seven TrueType fonts that both runtimes use in place of a firmware font that isn't there ([`runtime/hle_pl.c`](runtime/hle_pl.c), font by font; [`ssbu-recomp/runtime/nnpl.c`](ssbu-recomp/runtime/nnpl.c)). They are open-source fonts the yuzu project put together for the same purpose, taken unmodified (only renamed) from the suyu repository at commit `c0dd2ff554327657f0c6318f29b740ac7e329ea0`. [Their README](third_party/fonts_open/README.md) lists each file with the SHA-256 of its source, and the license texts are beside them. They are separate files the game reads when it runs, not compiled into it; the Linux package (`tools/linux/package_linux.py`) carries the folder as it is, with its README and license texts. The files stay as they are: WindowSmash's runtime adds U+25A1 to the character map of the copy it loads, in memory.
@@ -67,8 +75,13 @@ These are external dependencies, not bundled implementations. Their own licenses
 | PyCryptodome (`pycryptodomex`) | Reading game packages | `requirements.txt`. |
 | zstandard | Reading `data.arc` on Pythons older than 3.14 | `requirements.txt` (Python 3.14 has `compression.zstd` built in). |
 | Capstone, Unicorn | Disassembly and differential tests | `tests/requirements-dev.txt`, optional. |
+| vkd3d-shader (vkd3d 2.1, Wine project, LGPL-2.1-or-later) and SPIRV-Headers (Khronos, MIT) | The Linux build's HLSL to DXBC; on Windows, DXBC to SPIR-V for the Vulkan back end in development, linked statically when built | Downloaded and checked against their SHA-256 ([`tools/linux/install_linux.py`](tools/linux/install_linux.py); on Windows [`tools/vkd3d_lib.py`](tools/vkd3d_lib.py), optional), never checked in. A program linked with it carries LGPL-2.1 obligations when distributed. |
 
 A developer can link their own libopus or libvpx builds instead of the included sources (`SSBU_OPUS_LIBS`, `SSBU_VPX_DIR`: [`tools/cc.py`](tools/cc.py)). No binaries of any library are checked into this repository.
+
+### Ideas from OpenSmash Mod Manager
+
+`tools/mods.py`'s conflict review (`conflicts`), shareable mod lists (`export-list`, `import-list`) and GameBanana update check (`updates`) follow features of [OpenSmash Mod Manager](https://github.com/TRLLZR/OpenSmash-Mod-Manager) by TRLLZR (MIT License, Copyright (c) 2026 OpenSmash-Mod-Manager Installer contributors). The code here is written anew in Python; no file of that project is copied. Thanks to TRLLZR for the design.
 
 ## ssbu-recomp (`ssbu-recomp/`)
 

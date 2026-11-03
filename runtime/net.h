@@ -12,7 +12,8 @@
  *
  * Configured by the launchers (Play SSBU.bat, launchers\Host/Join SSBU Netplay.bat) through the environment:
  *   SSBU_NET_HOST=1         run the relay here and join it (port SSBU_NET_PORT, 39420)
- *   SSBU_NET_RELAY=addr     join the lobby or relay at addr[:port]
+ *   SSBU_NET_RELAY=addr     join the lobby or relay at addr[:port]; "lan": a private room on this network,
+ *                           found by its host's beacon (no address or code to type; online_server.txt "lan")
  *   SSBU_NET_ROOM           the lobby code (a relay's room); smash, the default, is the public lobby
  *   SSBU_NET_NAME           player name
  *   SSBU_NET_DIRECT=0       no direct connections: all of a room's traffic through the lobby, and the
@@ -46,6 +47,16 @@ const char *net_player_name(void);
 const char *net_relay_address(void);
 int net_unreachable(void);           /* asked for, but the relay has not answered for a while: offline */
 
+/* LAN discovery: a game hosting a private room announces it on the local network (multicast
+ * 239.255.13.13 and broadcast, UDP NET_LAN_PORT, every second; not while direct connections are off
+ * or with SSBU_NET_LAN=0), and a game whose relay is "lan" joins the first one of its own build and
+ * simulation version it hears (net_relay.c "LAN discovery"). net_lan says how this game stands:
+ * rooms, the rooms on this network it can join; others, those of another version (both heard lately,
+ * counted in LAN mode only). */
+#define NET_LAN_PORT 39501
+enum { NET_LAN_OFF, NET_LAN_LOOKING, NET_LAN_NONE, NET_LAN_FOUND, NET_LAN_ANNOUNCING, NET_LAN_QUIET };
+int net_lan(int *rooms, int *others);
+
 /* The online lobby: rooms are listed by the lobby, not found by their broadcasts. */
 int net_lobby(void);                 /* joined to a lobby (not a private room's relay) */
 void net_lobby_list(u32 seq);        /* ask for the rooms; they come back through ldn_listing, then ldn_list_end */
@@ -60,6 +71,23 @@ void vsock_deliver(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const voi
 /* (hle_net.c) Whether this player is in a local wireless network now, the player at ip one of its
  * nodes: only then do that player's direct packets reach the game. */
 int ldn_in_network(u32 ip);
+
+/* ---- rollback netplay's messages (SSBU_RB_NET=relay, runtime/hle_rb_relay.c) -----------------
+ * The rollback link's messages travel as datagrams between the virtual port NET_RB_PORT of two
+ * players: straight to a player of this player's Local Wireless room while a direct path works,
+ * else through the relay that has them both (a private room's relay, or the lobby, which carries
+ * game datagrams within a Local Wireless room only). To a player of the same lobby code who is not
+ * in this player's room, a lobby of version 3 with rollback (WELCOME flag 16) carries them as RB
+ * messages. With no sink set, datagrams to NET_RB_PORT reach the game's sockets as before. */
+#define NET_RB_PORT 7701
+typedef void (*NetRbSink)(u32 src_ip, const void *data, u32 len);   /* (the client's thread) */
+void net_rb_sink(NetRbSink sink);
+void net_rb_send(u32 dst_ip, const void *data, u32 len);   /* dst 0: every player of the room (or the lobby code) */
+/* This player's room, itself included, lowest address first: a private room's members, or this
+ * player and the players of its Local Wireless room in the lobby. 0 until joined. */
+int net_room_members(u32 *out, int max);
+typedef struct NetRbCounts { long long out_data, out_lobby, in_direct, in_relayed, in_lobby; } NetRbCounts;
+void net_rb_counts(NetRbCounts *out);
 
 /* One line about the connection for the overlay (empty when netplay is off). */
 void net_status(char *out, size_t n);
@@ -91,6 +119,7 @@ typedef struct NetRoom {
     int nmods;
     char mods[256];                /* its mods' names, ", " between them ("" for none) */
     char why[256];                 /* not joinable: why, in one line or more */
+    char details[640];             /* its game (build, WindowSmash, netplay version) and mods, each against this game's (mod_diff.h) */
     int why_kind;                  /* not joinable: NET_WHY_* (another build, simulation version or mods) */
 } NetRoom;
 void net_rooms_ask(void);

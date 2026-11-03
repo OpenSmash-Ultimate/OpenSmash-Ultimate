@@ -16,6 +16,11 @@
  * Exit code 0 when it did what it was asked. */
 #include "../../runtime/hle_pad.c"
 #include "../../runtime/hle_padusb.c"
+#ifdef __APPLE__   /* (the game's: macos/gcadapter.c, which needs libusb; no adapter here) */
+const char *padusb_start(void) { return NULL; }
+void padusb_poll(PadUsbState out[PADUSB_PORTS]) { memset(out, 0, sizeof(PadUsbState) * PADUSB_PORTS); }
+void padusb_rumble(int port, int on) { (void)port; (void)on; }
+#endif
 
 /* (gpu_display.c's, which is not built here: display.ini's defaults, made up) */
 const char *display_default_ini(void) {
@@ -50,6 +55,12 @@ static void dump(void) {
     printf("keyboard_player=%d background=%d rumble=%d\n", cfg.keyboard_slot + 1, cfg.background, cfg.rumble);
     for (int p = 0; p < PAD_SLOTS; p++)
         if (cfg.pin[p][0]) printf("player %d = %s\n", p + 1, cfg.pin[p]);
+    for (int i = 0; i < PAD_KEYS; i++) {   /* (the keyboard's keys: those that are not the default) */
+        int same = cfg.nkb[i] == (KB_DEFAULT[i] != 0) && (!cfg.nkb[i] || cfg.kb[i][0] == KB_DEFAULT[i]);
+        char names[64];
+        pad_key_names(i, names, sizeof names);
+        if (!same) printf("key %s = %s\n", pad_key_label(i), names);
+    }
     dump_dev(&cfg.def);
     for (int i = 0; i < cfg.ndev; i++) dump_dev(&cfg.dev[i]);
 }

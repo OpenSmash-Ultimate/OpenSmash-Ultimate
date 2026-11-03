@@ -13,6 +13,8 @@ Everything about playing once the game is built: how to start it, the controls, 
 - [Window and display](#window-and-display)
 - [Shaders and first-time stutter](#shaders-and-first-time-stutter)
 - [Low frame rate](#low-frame-rate)
+- [Your own Miis](#your-own-miis)
+- [Snapshots and the Vault's album](#snapshots-and-the-vaults-album)
 - [Where your files are](#where-your-files-are)
 - [Problem reports](#problem-reports)
 
@@ -39,26 +41,33 @@ The first time you play online, the game picks a name for you, such as `Player12
 
 ## Settings
 
-Press <kbd>Esc</kbd> in the game to open the settings (on Windows and Linux; the macOS version doesn't have them yet, so there you edit the files below). On a controller, press its **Home** button (the PS or Xbox button), or hold **−** and **+** together for a second. Close the settings the same way, or with **B**.
+Press <kbd>Esc</kbd> in the game to open the settings. On a controller, press its **Home** button (the PS or Xbox button), or hold **−** and **+** together for a second. Close the settings the same way, or with **B**.
 
 | Page | What you can change |
 | :--- | :--- |
 | **Display** | Window or full screen, frame pacing, how many frames the graphics card works ahead, the mouse pointer, the frame rate in the corner, the window's size, the render scale, the graphics card. |
-| **Controllers** | For each connected controller: which player it is, face buttons by position or by label, stick dead zone, rumble, how far a trigger is pulled for ZL / ZR, and which control is each button (**Buttons...**). For the keyboard: which player it adds to. Also **Rumble** on or off for every controller, and whether controllers work while another window is in front. |
+| **Controllers** | For each connected controller: which player it is, face buttons by position or by label, stick dead zone, rumble, how far a trigger is pulled for ZL / ZR, and which control each button is (**Buttons...**). For the keyboard: which player it adds to, and which key is each button (**Keyboard keys...**: choose a row, press the new key; <kbd>Delete</kbd> or **Y** puts its default back). Also **Rumble** on or off for every controller, and whether controllers work while another window is in front. |
 | **Online** | Public lobby, a private lobby code, your own server, or offline; your name; direct connections; the netplay version ([multiplayer guide](MULTIPLAYER.md)). |
 | **Game** | Restart or quit the game, the keys, and the game version. |
-| **Lobby** | The online lobby's rooms, the ones you can't join too (and why), and matchmaking. They need netplay version 3, which is being tried out ([multiplayer guide](MULTIPLAYER.md#room-browser-and-matchmaking-being-tried-out)). |
+| **Lobby** | The online lobby's rooms, the ones you can't join too (and why), and matchmaking. With the cursor on a room, its game version and its mods, each marked as you have it. They need netplay version 3, which is being tried out ([multiplayer guide](MULTIPLAYER.md#room-browser-and-matchmaking-being-tried-out)). |
+| **Mods** | Each installed mod on or off, **ARCropolis code patches** on or off, and **Turn every mod off** ([below](#mods-on-and-off)). |
 
-- **Move** with the arrow keys or the D-pad. **Change** a setting with left and right. **Select** with <kbd>Enter</kbd> or **A**. **Switch pages** with <kbd>Tab</kbd>, the number keys <kbd>1</kbd>–<kbd>5</kbd>, or **L** / **R**.
+- **Move** with the arrow keys or the D-pad. **Change** a setting with left and right. **Select** with <kbd>Enter</kbd> or **A**. **Switch pages** with <kbd>Tab</kbd>, the number keys <kbd>1</kbd>–<kbd>6</kbd>, or **L** / **R**.
 - The game **keeps running** behind the settings, but it doesn't see your buttons or keys while they're open. In a match, pause first. In a netplay room, the other players keep playing.
 - Every change is **saved at once**. Settings marked **now** take effect straight away. Settings marked **next start** take effect the next time the game starts: **Game → Restart the game** does that for you. A match in progress is lost when you restart.
 - To type a name or a code, use the keyboard, or pick the letters with a controller: **A** types, **B** deletes, **+** finishes.
+
+### Mods on and off
+
+The **Mods** page lists every installed mod with its own switch: the same switches as the launcher's mod list and the Mods app's (they share `mods\mods.json`). A change counts the next time the game starts: choose **Restart now**, and the game applies the mods before it reads them. Online, players meet only when they run the same mods, so turn off what the others don't have; the **Lobby** page says, room by room, which mods differ.
+
+**ARCropolis code patches** are the fixes ARCropolis makes to the game's code for costume slots that mods add (c08 and up). They have a switch of their own: **auto** (the default) turns them on while a mod runs and off otherwise, so the game with no mod runs its own code, as an unmodded game. They count when the game starts, and players online need the same setting. `SSBU_CODE_PATCHES=1` or `0` sets them for one start (tests).
 
 The settings are kept in the same files as always: `display.ini`, `controllers.ini` and the `online_*.txt` files in the WindowSmash folder. You can still edit those files by hand, and the settings keep your comments in them. Some things are only in the files, such as settings for a whole kind of controller ([below](#controllersini)).
 
 ## Controls
 
-The keyboard plays as player 1, together with player 1's pad if there is one:
+The keyboard plays as player 1, together with player 1's pad if there is one. These are its default keys; change any of them in the [settings](#settings) (**Controllers → Keyboard keys...**) or in the `[keyboard]` section of [`controllers.ini`](#controllersini):
 
 | Switch button | Keyboard |
 | :--- | :--- |
@@ -147,6 +156,7 @@ The first time the game starts, it writes **`controllers.ini`** into the WindowS
 The file has these sections:
 
 - **`[general]`** holds `keyboard_player`, `background` and `rumble` (on or off for every controller).
+- **`[keyboard]`** holds the keyboard's keys: `<Switch button> = <key>`, for example `A = Space` or `LSTICK_LEFT = A`. The buttons are `A B X Y L R ZL ZR PLUS MINUS LSTICK RSTICK` (the last two: the sticks' clicks) and the d-pad's `UP DOWN LEFT RIGHT`; the sticks' directions are `LSTICK_LEFT LSTICK_UP LSTICK_RIGHT LSTICK_DOWN` and the same with `RSTICK_`. A key is a letter or digit, `Left Up Right Down Enter Backspace Space Tab Shift Ctrl Alt`, `F1`–`F12`, `Num0`–`Num9` (the number pad), `0x` and a Windows virtual-key code, or `none`; list several with commas (`A = Z, Space`). Removing a line puts that key's default back. An ssbu-recomp `[keyboard]` section carries over as it is (its `STICK_L` / `STICK_R` are `LSTICK` / `RSTICK`); its `movement = ssf2` is kept in the file but has no effect here yet.
 - **`[players]`** reserves a player for one pad, for example `2 = DualSense Wireless Controller` (the settings' **Player** row writes the pad's GUID there). The log names every pad as it connects, with its type and GUID.
 - **`[device default]`** applies to every pad.
 - **`[device ps5]`**, **`[device <name>]`** or **`[device <GUID>]`** applies to one kind of pad, or one pad. Types include `xbox360`, `xboxone`, `ps4`, `ps5`, `switchpro`, `joyconpair` and `gamecube`. The settings write a controller's changes under `[device <its name>]`, or under the section it already takes its settings from.
@@ -164,6 +174,20 @@ rumble = 60
 style = gamecube
 ```
 
+And to move with <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> and jump with <kbd>Space</kbd>, with L and R (on <kbd>A</kbd> and <kbd>S</kbd> by default) and ZR (on <kbd>W</kbd>) moved out of the way:
+
+```ini
+[keyboard]
+LSTICK_LEFT = A
+LSTICK_UP = W
+LSTICK_RIGHT = D
+LSTICK_DOWN = S
+X = Space
+L = Shift
+R = Ctrl
+ZR = E
+```
+
 ## Window and display
 
 <kbd>F11</kbd> or <kbd>Alt</kbd>+<kbd>Enter</kbd> switches between a window and full screen at any time. The game draws its picture at 1920 × 1080 and fits it into the window, always at 16:9, with black bars when the window has another shape. `render_scale` (below) draws it bigger for a sharper picture on a bigger screen. Screenshots keep the whole picture at the size it was drawn.
@@ -176,12 +200,16 @@ The first start also writes **`display.ini`**, which sets how the game starts. T
 | `width`, `height` | The window's inside size at 100% display scaling. | `1280`, `720` |
 | `pacing` | `clock`: a steady 60 frames a second. `vrr`: for G-Sync or FreeSync monitors, each frame shown as soon as it's ready; best with `borderless`. `display`: follows a 60, 120 or 240 Hz monitor's own refresh. | `clock` |
 | `latency` | How many frames the graphics card may work ahead, 1–3. Lower is more responsive. | `3` |
+| `low_latency` | `1`: the game starts each frame as late as it can and still make the next refresh, so it reads your controller later: up to most of a frame less input delay. If a frame misses its refresh it turns itself off for a second. | `0` |
 | `hide_cursor` | `1` hides the mouse pointer after two seconds without movement. | `1` |
+| `language` | The game's language: `auto` (the language Windows shows its menus in), or one of `ja`, `en-US`, `en-GB`, `fr`, `fr-CA`, `de`, `it`, `es`, `es-419`, `zh-Hans`, `zh-Hant`, `ko`, `nl`, `ru`. A language the game doesn't have plays in English. Chinese, Japanese and Korean text needs your console's firmware fonts. Read when the game starts; the settings menu's Game page changes it. `SSBU_LANGUAGE` overrides it. | `auto` |
+| `volume` | The game's whole sound, from `0` (silent) to `100`, over the game's own sound settings. The settings menu's Game page changes it while you play. `SSBU_VOLUME` overrides it. | `100` |
 | `overlay` | `1` shows the frame rate in the corner from the start (<kbd>F1</kbd> shows or hides it while playing). | `1` |
 | `gpu` | Which graphics card draws the game. `auto`: the fastest; on a laptop with two, the NVIDIA or AMD one rather than the processor's own. Or part of a card's name, such as `nvidia`, `radeon` or `intel`. `build\play.log` lists the cards found (a `[gfx] graphics cards` line). | `auto` |
 | `render_scale` | How many times bigger than 1920 × 1080 the game draws its picture, in each direction: a number from `0.5` to `4`, or `auto`. `auto` matches the picture to the screen when the game starts, for example 1.33 (2560 × 1440) on a 1440p monitor with `window = borderless`; it never goes below 1. A picture bigger than the window is shrunk to fit, which smooths edges (`2` on a 1440p monitor). Each step up costs the graphics card more: `2` draws four times the pixels and needs about 200 MB more graphics memory. | `1` |
+| `renderer` | `d3d11`: Direct3D 11, the renderer the game is played and tested with. `vulkan`: the Vulkan renderer, in development: until it can draw the game, the game checks Vulkan on your PC at its start, writes what it found in `build\play.log` (a `[gfx] renderer = vulkan` line), and draws with Direct3D 11 as before. The settings' Display page has it as **Renderer**; `SSBU_RENDERER` overrides it. Read when the game starts. | `d3d11` |
 
-A `display.ini` written by an older WindowSmash has no `gpu` or `render_scale` line; the game then uses `auto` and `1`. Add the line yourself to use it, or delete `display.ini` to get a new one with every setting. `render_scale` is read when the game starts: change it, then start the game again.
+A `display.ini` written by an older WindowSmash has no `gpu`, `render_scale` or `renderer` line; the game then uses `auto`, `1` and `d3d11`. Add the line yourself to use it, or delete `display.ini` to get a new one with every setting. `render_scale` is read when the game starts: change it, then start the game again.
 
 ## Shaders and first-time stutter
 
@@ -198,6 +226,22 @@ If matches run slowly on a PC that should manage them (press <kbd>F1</kbd> for t
 - **NVIDIA's shader cache is off.** In NVIDIA Control Panel → *Manage 3D settings*, set **Shader Cache Size** to *Driver default* (not *Disabled*). Without it, the graphics driver redoes its part of every shader each time the game starts.
 - **Windows uses a slow system timer.** Some "gaming tweaks" set Windows to time everything with an old, slow timer (the HPET). WindowSmash notices and works around it, and says so near the top of `build\play.log`: a `[clock]` line ending in *slow*. Other programs stay slower, though; to undo the tweak, run `bcdedit /deletevalue useplatformclock` in a Command Prompt opened as administrator, then restart the PC.
 
+## Your own Miis
+
+The game lists your own Miis wherever it lists Miis, such as **Games & More → Mii Fighters**, after its six default ones. WindowSmash has no Mii editor of its own, so you make them somewhere else and import them:
+
+1. Make your Miis in an emulator's Mii editor (Ryujinx's **Mii Edit Applet**, yuzu's or its forks' **Open Mii Editor**, in their menus), or on Mii Studio, or bring a Mii file.
+2. Double-click **`launchers\Import Miis.bat`** (on a Mac, `launchers/Import Miis.command`). It imports the Miis of every emulator it finds on this PC, then lets you paste Mii Studio links: on Mii Studio, right-click your Mii's picture, choose **Copy image address**, and paste it. To import Mii files instead, drop them on `Import Miis.bat`: `.charinfo`, `.nfsd` and `.nfcd` from a Switch, `.ffsd` and `.cfsd` from a 3DS or Wii U (not QR codes), or an emulator's `MiiDatabase.dat`.
+3. Restart the game.
+
+Each Mii becomes one file in the `miis` folder, `miis\<name>.charinfo`. To give a Mii to a friend, send them that file to put in their own `miis` folder. To remove one, delete its file. The game reads at most 100. A Mii Fighter you make from one of your Miis is kept in your save, so it stays even after you remove the Mii's file. From PowerShell, `python tools/miis.py list` lists them and `python tools/miis.py import --help` shows every option.
+
+## Snapshots and the Vault's album
+
+Pictures you save in the game (pause a battle and take a snapshot) are kept in the **`album`** folder, and the game lists them in its **Vault** album as it does on the console. Each picture is a `.bmp` file named after when it was taken, `<date>_<time>_<number>.bmp`, so you can open or copy it with any picture viewer; a `.userdata.bin` file beside it holds what the game keeps with the picture. To remove a picture, delete both files while the game is closed. An album folder from ssbu-recomp (its `userdata\album`) can be copied over as it is.
+
+Videos made from replays are not kept yet: the game can't make one.
+
 ## Where your files are
 
 All of these are in the WindowSmash folder:
@@ -205,7 +249,9 @@ All of these are in the WindowSmash folder:
 | What | Where |
 | :--- | :--- |
 | Your save | `save\` |
+| Your own Miis | `miis\` ([above](#your-own-miis)) |
 | Screenshots (<kbd>F3</kbd>) | `screenshots\` |
+| Pictures saved in the game (the Vault) | `album\` ([above](#snapshots-and-the-vaults-album)) |
 | The game's log | `build\play.log` |
 | Crash and freeze reports | `reports\` |
 | Controller and window settings | `controllers.ini`, `display.ini` |
@@ -215,6 +261,8 @@ All of these are in the WindowSmash folder:
 Your save is written as the console writes it: what the game saves reaches the `save` folder all at once, when the game finishes saving. A crash or a power cut while it saves leaves your last complete save, never half of one. While the game runs, the `save` folder also holds the changes not saved yet, in a folder ending in `.work.` and a number, beside your save's own folder, and for a moment while it saves, a `.journal.` file and a `.commit` file. On Linux and macOS a `.lock` file stays there too. Leave them be: the next start finishes a save that was cut short and clears the rest.
 
 If `build\play.log` says *could not finish applying a save*, your PC would not let the game change a file in the `save` folder: another program holds it open, or the folder belongs to another user (after running the game with `sudo`, say), or your save's own folder is a link to another drive. Nothing is lost, but the game can't save, or load its save, until that is fixed. Close the game, fix it (make the `save` folder and everything in it yours; to keep your save on another drive, link the whole `save` folder, not the folder inside it), then start the game: it finishes the save first.
+
+The game's own files (`dump\`, with the shader cache) and the compiled game (`build\`) take tens of GB. To put them on another drive, close the game and the launcher, then run `python tools\data_location.py --move D:\OpenSmash` (any empty folder). They move there, and a link stays in their place, so nothing else changes. `python tools\data_location.py` says where they are; the same `--move` with the WindowSmash folder brings them back.
 
 > [!TIP]
 > **Back up your save** now and then: copy the `save` folder somewhere safe while the game is closed. To restore it, close the game and put the copy in place of the `save` folder.

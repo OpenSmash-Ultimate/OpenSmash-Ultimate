@@ -19,12 +19,12 @@
 int rt_eh_filter(struct _EXCEPTION_POINTERS *e, u64 sp, u64 lp) {
     EXCEPTION_RECORD *r = e->ExceptionRecord;
     if (r->ExceptionCode != RT_EH_CODE || r->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
-    return r->ExceptionInformation[0] == lp && r->ExceptionInformation[1] == sp ? EXCEPTION_EXECUTE_HANDLER
+    return r->ExceptionInformation[0] == lp && (r->ExceptionInformation[1] == sp || sp == ~0ull) ? EXCEPTION_EXECUTE_HANDLER
                                                                                : EXCEPTION_CONTINUE_SEARCH;
 }
 #else
 /* Linux: the host exception is a C++ one (linux/eh.cpp throws it; recomp.h's catch asks this) */
-int rt_eh_filter(const RtEhSignal *e, u64 sp, u64 lp) { return e->lp == lp && e->sp == sp; }
+int rt_eh_filter(const RtEhSignal *e, u64 sp, u64 lp) { return e->lp == lp && (e->sp == sp || sp == ~0ull); }   /* (~0: a pad that sets its own sp) */
 _Noreturn void rt_eh_raise(u64 lp, u64 sp);
 #endif
 

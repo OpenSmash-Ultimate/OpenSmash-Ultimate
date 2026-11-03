@@ -22,7 +22,10 @@
 #include "config_folder.h"
 #include "display.h"
 #include "gpu_menu.h"
+#include "audio.h"
 #include "gpu_overlay.h"
+#include "language.h"
+#include "mod_switch.h"
 #include "net.h"
 #include "pad.h"
 #include "settings.h"
@@ -73,8 +76,9 @@ enum {   /* (from keys, pads or the test script) */
 };
 
 /* ---- the rows of a page ------------------------------------------------------------------ */
-enum { P_DISPLAY, P_PADS, P_ONLINE, P_GAME, P_LOBBY, P_REMAP, PAGES = P_REMAP };   /* (the pad's buttons: no key of their own) */
-static const char *const PAGE_NAMES[PAGES] = {"Display", "Controllers", "Online", "Game", "Lobby"};
+enum { P_DISPLAY, P_PADS, P_ONLINE, P_GAME, P_LOBBY, P_MODS, P_REMAP, P_KEYS, PAGES = P_REMAP };   /* (the pad's buttons, the keyboard's keys: no key of their own) */
+#define SUB_PAGE(p) ((p) == P_REMAP || (p) == P_KEYS)   /* (a page of the Controllers page's) */
+static const char *const PAGE_NAMES[PAGES] = {"Display", "Controllers", "Online", "Game", "Lobby", "Mods"};
 enum { K_INFO, K_CHOICE, K_ACTION, K_TEXT };
 enum { W_NONE, W_NOW, W_RESTART };
 enum {
@@ -83,16 +87,24 @@ enum {
     R_RUMBLE, R_KEYBOARD, R_BACKGROUND, R_PADS_FILE,
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
-    R_RESTART, R_QUIT, R_REMAP_BACK, R_ROOM_FIRST = 60,   /* + the room's place in the list */
-    R_REMAP_FIRST = 100   /* + console button */
+    R_LANGUAGE, R_VOLUME, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
+    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER,
+    R_ROOM_FIRST = 60,    /* + the room's place in the list */
+    R_REMAP_FIRST = 100,  /* + console button */
+    R_MOD_FIRST = 200,    /* + the mod's place in mods.json (MENU_MODS at most) */
+    R_KEY_FIRST = 400,    /* + the keyboard binding (PAD_KEYS) */
+    R_OSK = 500           /* the game's own text box (menu_osk_run) */
 };
+#define IS_KEY(id) ((id) >= R_KEY_FIRST && (id) < R_KEY_FIRST + PAD_KEYS)
+#define IS_REMAP(id) ((id) >= R_REMAP_FIRST && (id) < R_REMAP_FIRST + 16)
 
 typedef struct Row { int id, kind, when; char label[48], value[112], note[64]; const char *help; } Row;
-static Row rows[40];
+enum { MENU_ROWS = 180, MENU_MODS = 150 };   /* (the Mods page: a row a mod, MENU_MODS at most) */
+static Row rows[MENU_ROWS];
 static int nrows;
 
 static Row *add(int id, int kind, int when, const char *label, const char *help) {
-    Row *r = &rows[nrows < 39 ? nrows++ : 39];
+    Row *r = &rows[nrows < MENU_ROWS - 1 ? nrows++ : MENU_ROWS - 1];
     memset(r, 0, sizeof *r);
     r->id = id; r->kind = kind; r->when = when; r->help = help;
     snprintf(r->label, sizeof r->label, "%s", label);
@@ -100,7 +112,7 @@ static Row *add(int id, int kind, int when, const char *label, const char *help)
 }
 
 /* ---- state ---------------------------------------------------------------------------- */
-static int page, sel[P_REMAP + 1], top[P_REMAP + 1];
+static int page, sel[P_KEYS + 1], top[P_KEYS + 1];
 static int pad_slot = -1;                /* the pad the Controllers page sets up */
 static int confirm;                      /* a row asking yes or no */
 static int editing, grid_r, grid_c;      /* a text row being typed */
@@ -108,6 +120,9 @@ static char edit_buf[64];
 static int capture_button = -1;          /* the console button a new control is wanted for */
 static u32 capture_held;
 static ULONGLONG capture_until;
+static int capture_key = -1;             /* the keyboard binding a new key is wanted for */
+static int capture_key_held = 1;         /* (keys still held from before: they must go first) */
+static ULONGLONG capture_quiet;          /* until then the window's queued keys are passed over (the key just bound) */
 static int restart_pending;
 static int *overlay_on;                  /* the frame-rate overlay's switch (gpu_d3d11.c) */
 static char pins[PAD_SLOTS][128];        /* controllers.ini's [players], read at the menu's opening and changes */
@@ -117,10 +132,16 @@ static char version[64];
 static char gpus[8][64];
 static int ngpus;
 static int built_page = -1;              /* the page build() made last (-1: none since the menu opened) */
+/* The game's software keyboard (nn::swkbd, hle_applet.c) typed on the text grid: asked from the game's
+ * thread (menu_osk_run), opened and answered here. 0 none, 1 asked, 2 open, 3 done, 4 cancelled. */
+static volatile LONG osk_state;
+static char osk_title[96], osk_text[64];
+static int osk_max = 32;
 
 static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol; } net;
-enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE };
-static const char *const NET_MODES[4] = {"public lobby", "private lobby (a code)", "your own server", "offline"};
+enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_MODE_COUNT };
+static const char *const NET_MODES[NET_MODE_COUNT] = {"public lobby", "private lobby (a code)", "your own server", "offline",
+                                                      "this network (LAN)"};
 
 static void net_load(void) {
     char line[256] = "", host[128] = "", code[40] = "";
@@ -129,6 +150,7 @@ static void net_load(void) {
     memset(&net, 0, sizeof net);
     snprintf(net.code, sizeof net.code, "%s", code);
     if (!host[0] || !_stricmp(host, "off")) net.mode = NET_OFFLINE;
+    else if (!_stricmp(host, "lan")) net.mode = NET_LAN;   /* (net_relay.c's LAN discovery) */
     else if (!_stricmp(host, PUBLIC_LOBBY)) net.mode = code[0] ? NET_PRIVATE : NET_PUBLIC;
     else { net.mode = NET_CUSTOM; snprintf(net.custom, sizeof net.custom, "%s", host); }
     settings_line_read(config_path(CONFIG_ONLINE_NAME), net.name, sizeof net.name);
@@ -142,6 +164,7 @@ static void net_load(void) {
 static void net_save_server(void) {
     char line[256];
     if (net.mode == NET_OFFLINE) snprintf(line, sizeof line, "off");
+    else if (net.mode == NET_LAN) snprintf(line, sizeof line, "lan");
     else if (net.mode == NET_PUBLIC) snprintf(line, sizeof line, "%s", PUBLIC_LOBBY);
     else if (net.mode == NET_PRIVATE) {
         if (!net.code[0]) snprintf(net.code, sizeof net.code, "friends");
@@ -173,16 +196,17 @@ static void open_menu(void) {
     ngpus = gfx_adapter_names(gpus, 8);
 #endif
     confirm = editing = 0;
-    capture_button = -1;
-    if (page == P_REMAP) page = P_PADS;
+    capture_button = capture_key = -1;
+    if (SUB_PAGE(page)) page = P_PADS;
     open_ = 1;
     fprintf(stderr, "[menu] open\n");
 }
 
 static void close_menu(void) {
     if (!open_) return;
+    if (osk_state == 2) InterlockedExchange(&osk_state, 4);   /* (the game's text box closed with the menu: cancelled) */
     confirm = editing = 0;
-    capture_button = -1;
+    capture_button = capture_key = -1;
     releasing = 1;   /* (the game gets input back once nothing is held) */
     open_ = 0;
     built_page = -1;   /* (the Lobby page lists the rooms again when it shows next) */
@@ -252,7 +276,7 @@ static int nlobby_rooms, rooms_state;
 static NetMatch match;
 static ULONGLONG match_started;          /* when the menu's search started (the time it shows) */
 static int match_followed, match_said, match_said_open;   /* that search, followed while the menu is closed too */
-static char helps[40][420];              /* help made for a row (help_set) */
+static char helps[MENU_ROWS][900];       /* help made for a row (help_set) */
 
 static void help_set(Row *r, const char *fmt, ...) {
     char *h = helps[r - rows];
@@ -265,19 +289,48 @@ static void help_set(Row *r, const char *fmt, ...) {
 
 static const char *who(const char *name) { return name[0] ? name : "the other player"; }
 
+/* This game looks for its private room on the local network (Play online in > this network: net.h's LAN discovery). */
+static int net_on_lan(void) {
+    int st = net_lan(NULL, NULL);
+    return st == NET_LAN_LOOKING || st == NET_LAN_NONE || st == NET_LAN_FOUND;
+}
+
+/* The LAN discovery's row: the rooms heard on this network (LAN mode), or whether this game's own
+ * private room is announced there (hosting). */
+static void lan_row(int looking) {   /* (looking: LAN mode; else hosting) */
+    int ours = 0, others = 0, lan = net_lan(&ours, &others);
+    Row *r = add(R_LAN_ROOMS, K_ACTION, W_NONE, looking ? "Rooms on this network" : "On this network", NULL);
+    if (looking) {
+        snprintf(r->value, sizeof r->value, "%d", ours);
+        if (others) snprintf(r->value + strlen(r->value), sizeof r->value - strlen(r->value), " (and %d of another version)", others);
+        help_set(r, "Private rooms hosted on this network by games of your version, heard now. The game joins the first one by itself "
+                    "(Online > Now says which), and the next one if that host leaves.%s",
+                 others ? "\nThe others are of another game or WindowSmash version, or of another room code: they can't be joined." : "");
+    } else if (lan == NET_LAN_ANNOUNCING) {
+        snprintf(r->value, sizeof r->value, "announced");
+        r->help = "Games on this network set to Play online in > this network find your room by themselves, no address or code needed.";
+    } else {
+        snprintf(r->value, sizeof r->value, "not announced");
+        r->help = "Your room isn't announced on this network, as Direct connections are off (or SSBU_NET_LAN=0): players here join "
+                  "with the room code or your address.";
+    }
+}
+
 static const char *const PROTOCOL_HELP = "3: the online lobby's room browser and matchmaking (the Lobby page), being tried out. A "
                                          "lobby or private room of version 2 still works: the game joins it in 2. 2: as before.";
 
 static void add_protocol_row(void) {
     Row *r = add(R_NET_PROTOCOL, K_CHOICE, W_RESTART, "Netplay version", PROTOCOL_HELP);
     snprintf(r->value, sizeof r->value, "%s", net.protocol == NET_PROTOCOL_V3 ? "3 (being tried out)" : "2");
-    if (net_configured() && !net_relay_address()) snprintf(r->note, sizeof r->note, "hosting: 2");
+    if (net_on_lan()) snprintf(r->note, sizeof r->note, "this network: 2");
+    else if (net_configured() && !net_relay_address()) snprintf(r->note, sizeof r->note, "hosting: 2");
     note_env(r, "SSBU_NET_PROTOCOL");
 }
 
-enum { LB_OFFLINE, LB_HOSTING, LB_NEEDS_V3, LB_CONNECTING, LB_PRIVATE, LB_V2_LOBBY, LB_NONE, LB_ON };
+enum { LB_OFFLINE, LB_HOSTING, LB_NEEDS_V3, LB_CONNECTING, LB_PRIVATE, LB_V2_LOBBY, LB_NONE, LB_ON, LB_LAN };
 static int lobby_state(void) {
     if (!net_configured()) return LB_OFFLINE;
+    if (net_on_lan()) return LB_LAN;
     if (!net_relay_address()) return LB_HOSTING;
     if (net_protocol_wanted() != NET_PROTOCOL_V3) return LB_NEEDS_V3;
     if (!net_local_ip()) return LB_CONNECTING;
@@ -342,6 +395,58 @@ static void match_rows(void) {
     }
 }
 
+/* ---- the Mods page: every mod's switch (mods/mods.json, mod_switch.h) -------------------- */
+static ModSwitch menu_mods[MENU_MODS];
+static int nmenu_mods = -1, menu_mods_code = -1;   /* (-1: read again when the page shows) */
+
+static void mods_rows(int fresh) {
+    if (fresh || nmenu_mods < 0) nmenu_mods = mods_switch_list(menu_mods, MENU_MODS, &menu_mods_code);
+    if (nmenu_mods < 0) nmenu_mods = 0;
+    int on = 0, running = mods_running_count();
+    for (int i = 0; i < nmenu_mods; i++) on += menu_mods[i].on;
+    char msg[200];
+    int st = mods_switch_state(msg, sizeof msg);
+    Row *r = add(R_MODS_STATE, K_INFO, W_NONE, "Mods",
+                 "Every mod's switch: the same as the launcher's and the Mods app's (mods/mods.json). A change counts when the game "
+                 "starts again (Restart now), which applies the mods first. Online, players meet when they run the same mods.");
+    if (st == MODS_SWITCH_WORKING || st == MODS_SWITCH_FAILED) snprintf(r->value, sizeof r->value, "%s", msg);
+    else snprintf(r->value, sizeof r->value, "%d installed, %d on; %d running now", nmenu_mods, on, running);
+    int code = mod_switch_code_patches(menu_mods_code, running);
+    r = add(R_MOD_CODE, K_CHOICE, W_RESTART, MOD_SWITCH_CODE_TITLE,
+            "ARCropolis' fixes to the game's code for costume slots a mod adds (c08 and up). Off: the game's own code, as with no "
+            "mod. Auto: on while a mod runs. Players online need the same.");
+    snprintf(r->value, sizeof r->value, "%s%s", code ? "on" : "off", menu_mods_code < 0 ? " (auto)" : "");
+    if (rt_code_patches_on() != code) snprintf(r->note, sizeof r->note, "now %s", rt_code_patches_on() ? "on" : "off");
+    if (on) add(R_MODS_OFF, K_ACTION, W_RESTART, "Turn every mod off", "Every mod off, for the game as it is (online: the vanilla game's players).");
+    if (restart_pending) add(R_RESTART, K_ACTION, W_NONE, "Restart now", "Starts the game again, with the changes. A match in progress is lost.");
+    for (int i = 0; i < nmenu_mods; i++) {
+        const ModSwitch *m = &menu_mods[i];
+        r = add(R_MOD_FIRST + i, K_CHOICE, W_RESTART, "", NULL);
+        snprintf(r->label, sizeof r->label, "%.46s", m->title);
+        snprintf(r->value, sizeof r->value, "%s", m->on ? "on" : "off");
+        help_set(r, "%s\nFolder: mods/%s. A or Left/Right: on or off (counts when the game starts again).%s", m->title, m->name,
+                 mod_switch_name_ok(m->name) ? "" : "\nIts folder's name can't be passed on from here: use the launcher.");
+    }
+    if (nmenu_mods == MENU_MODS) add(R_NONE, K_INFO, W_NONE, "More mods", "The first ones only: the launcher lists them all.");
+    else if (!nmenu_mods) add(R_NONE, K_INFO, W_NONE, "No mod installed", "Mods are installed with the launcher (OpenSmash.exe) or the Mods app.");
+}
+
+/* A mod's (or the code patches') switch turned (dir: either way: it flips). */
+static void mod_flip(const Row *row) {
+    int ok;
+    if (row->id == R_MOD_CODE) {
+        int code = mod_switch_code_patches(menu_mods_code, mods_running_count());
+        ok = mods_switch_set(MOD_SWITCH_CODE, !code);
+        if (ok) menu_mods_code = !code;
+    } else {
+        ModSwitch *m = &menu_mods[row->id - R_MOD_FIRST];
+        ok = mods_switch_set(m->name, !m->on);
+        if (ok) m->on = !m->on;
+    }
+    if (!ok) { menu_toast(mods_switch_state(NULL, 0) == MODS_SWITCH_WORKING ? "Still changing the last one: a moment" : "Can't change it from here: use the launcher"); return; }
+    changed(W_RESTART);
+}
+
 /* Why a room can't be joined, in a few words (the help has the whole of it). */
 static const char *room_short(const NetRoom *x) {
     if (x->why_kind == NET_WHY_BUILD) return "another game version";
@@ -363,18 +468,21 @@ static void room_rows(void) {
         const char *host = x->name[0] ? x->name : "(no name)";
         r = add(R_ROOM_FIRST + i, K_ACTION, W_NONE, "", NULL);
         snprintf(r->label, sizeof r->label, "%.30s%s", host, x->mine ? " (you)" : "");
+        /* (the help, with the cursor on it: why not, then its game and mods against yours: net_relay.c room_details) */
         if (!x->joinable) {
             snprintf(r->value, sizeof r->value, "can't join: %s", room_short(x));
-            help_set(r, "%s%s", x->why, x->why_kind != NET_WHY_SIM ? "" : x->sim > SIM_VERSION ? "\nYours is the older one: update WindowSmash to join."
-                                                                                               : "\nTheirs is the older one: the host needs to update.");
+            help_set(r, "%s%s\n%s", x->why, x->why_kind != NET_WHY_SIM ? "" : x->sim > SIM_VERSION ? "\nYours is the older one: update WindowSmash to join."
+                                                                                                     : "\nTheirs is the older one: the host needs to update.",
+                     x->details);
             continue;
         }
         snprintf(r->value, sizeof r->value, "%d/%d players, %s", x->players, x->most, x->open ? "open" : "full or closed");
-        if (x->mine) help_set(r, "Your own room, %d of %d players: other players of your game find it in their Rooms List.", x->players, x->most);
-        else if (x->open) help_set(r, "%s's room, %d of %d players. To join it, close this menu, then Local Wireless > Rooms List and pick %s's room.%s%s",
-                                   host, x->players, x->most, host, x->nmods ? "\nMods: " : "", x->mods);
-        else help_set(r, "%s's room is full or closed for now (%d of %d players). Once it opens, it is in Local Wireless > Rooms List.",
-                      host, x->players, x->most);
+        if (x->mine) help_set(r, "Your own room, %d of %d players: other players of your game find it in their Rooms List.\n%s", x->players, x->most,
+                              x->details);
+        else if (x->open) help_set(r, "%s's room, %d of %d players. To join it, close this menu, then Local Wireless > Rooms List and pick %s's room.\n%s",
+                                   host, x->players, x->most, host, x->details);
+        else help_set(r, "%s's room is full or closed for now (%d of %d players). Once it opens, it is in Local Wireless > Rooms List.\n%s",
+                      host, x->players, x->most, x->details);
     }
 }
 
@@ -396,6 +504,17 @@ static void build_lobby(int fresh) {
         r->help = "You host a private room: its players find your room in Local Wireless > Rooms List. The room browser and "
                   "matchmaking are the online lobby's.";
         break;
+    case LB_LAN: {
+        int lan = net_lan(NULL, NULL);
+        if (lan == NET_LAN_FOUND && net_local_ip()) snprintf(r->value, sizeof r->value, "in a room on this network");
+        else if (lan == NET_LAN_FOUND) snprintf(r->value, sizeof r->value, "joining a room on this network...");
+        else if (lan == NET_LAN_NONE) snprintf(r->value, sizeof r->value, "no room on this network yet");
+        else snprintf(r->value, sizeof r->value, "looking on this network...");
+        r->help = "Play online in > this network: the game joins a private room hosted on your local network by itself, and keeps "
+                  "looking until one starts. Its players find each other's rooms in Local Wireless > Rooms List. The room browser and "
+                  "matchmaking are the online lobby's.";
+        break;
+    }
     case LB_NEEDS_V3:
         snprintf(r->value, sizeof r->value, "needs netplay version 3");
         r->help = "The lobby's room browser and matchmaking need netplay version 3, which is being tried out. To turn it on, set "
@@ -430,6 +549,7 @@ static void build_lobby(int fresh) {
         if (match.state != NET_MATCH_OFF) match_rows();
         if (rooms_state != NET_ROOMS_OFF) room_rows();
     } else if (st == LB_OFFLINE || st == LB_NEEDS_V3) add_protocol_row();
+    else if (st == LB_LAN || st == LB_HOSTING) lan_row(st == LB_LAN);
     if (restart_pending) add(R_RESTART, K_ACTION, W_NONE, "Restart now", "Starts the game again, with the changes. A match in progress is lost.");
 }
 
@@ -474,7 +594,11 @@ static void build(void) {
     PadInfo *pad = pad_slot >= 0 && pads[pad_slot].connected ? &pads[pad_slot] : NULL;
     switch (page) {
     case P_DISPLAY:
+#ifdef __APPLE__
+        r = add(R_WINDOW, K_CHOICE, W_NOW, "Window", "Windowed: a normal window. Borderless and full screen: macOS's full screen, in a space of its own. Option+Return switches too.");
+#else
         r = add(R_WINDOW, K_CHOICE, W_NOW, "Window", "Windowed: a normal window. Borderless: covering the monitor. Full screen: borderless and always on top. F11 switches too.");
+#endif
         snprintf(r->value, sizeof r->value, "%s", ds.mode == DISPLAY_BORDERLESS ? "borderless" : ds.mode == DISPLAY_FULLSCREEN ? "full screen" : "windowed");
         note_env(r, "SSBU_WINDOW");
         r = add(R_PACING, K_CHOICE, W_NOW, "Frame pacing",
@@ -488,7 +612,11 @@ static void build(void) {
         r = add(R_OVERLAY, K_CHOICE, W_NOW, "Frame rate in the corner", "The frame rate and a graph of frame times (F1 shows or hides it while playing; F2 adds details).");
         snprintf(r->value, sizeof r->value, "%s", on_off(overlay_on ? *overlay_on : ds.overlay));
         note_env(r, "SSBU_OVERLAY");
+#ifdef __APPLE__
+        r = add(R_SIZE, K_CHOICE, W_RESTART, "Window size", "The size of the game's window when it is not full screen, in points (on a Retina display, a point is 2 x 2 pixels).");
+#else
         r = add(R_SIZE, K_CHOICE, W_RESTART, "Window size", "The size of the game's window when it is not full screen (at 100% Windows scaling).");
+#endif
         snprintf(r->value, sizeof r->value, "%d x %d", ds.width, ds.height);
         note_env(r, "SSBU_WINDOW_SIZE");
         r = add(R_SCALE, K_CHOICE, W_RESTART, "Render scale",
@@ -500,6 +628,17 @@ static void build(void) {
         r = add(R_GPU, K_CHOICE, W_RESTART, "Graphics card", "Auto picks the fastest card (on a laptop, the NVIDIA or AMD one). Pick another to use it instead.");
         snprintf(r->value, sizeof r->value, "%s", ds.gpu);
         note_env(r, "SSBU_GPU");
+#endif
+#ifndef __APPLE__
+        r = add(R_RENDERER, K_CHOICE, W_RESTART, "Renderer",
+#ifdef _WIN32
+                "Direct3D 11: the renderer the game is played and tested with. Vulkan: in development; until it can draw the game, "
+#else
+                "DXVK: Direct3D 11 on Vulkan, the renderer the game is played and tested with. Vulkan: in development; until it can draw the game, "
+#endif
+                "the game checks Vulkan at its start, says what it found in its log, and draws as before.");
+        snprintf(r->value, sizeof r->value, "%s", renderer_name(ds.renderer));
+        note_env(r, "SSBU_RENDERER");
 #endif
         break;
     case P_PADS:
@@ -537,9 +676,10 @@ static void build(void) {
         r = add(R_RUMBLE, K_CHOICE, W_NOW, "Rumble", "On: controllers rumble, each as strong as its own Rumble setting. Off: no controller rumbles.");
         snprintf(r->value, sizeof r->value, "%s", on_off(pad_rumble_on()));
         r = add(R_KEYBOARD, K_CHOICE, W_NOW, "Keyboard plays as",
-                "The keyboard adds to this player: arrows move, Z X C V are A B X Y, A S are L R, Q W are ZL ZR, Enter is +, I J K L the right stick.");
+                "The keyboard adds to this player. Its keys: Keyboard keys... (by default arrows move, Z X C V are A B X Y, A S are L R, Q W are ZL ZR, Enter is +, I J K L the right stick).");
         if (pad_keyboard_slot() < 0) snprintf(r->value, sizeof r->value, "nobody");
         else snprintf(r->value, sizeof r->value, "player %d", pad_keyboard_slot() + 1);
+        add(R_KEYS, K_ACTION, W_NONE, "Keyboard keys...", "Which key is each of the game's buttons and stick directions ([keyboard] in controllers.ini).");
         r = add(R_BACKGROUND, K_CHOICE, W_NOW, "Pads when not focused", "On: controllers work while another window is in front. Off: only while the game's window is.");
         snprintf(r->value, sizeof r->value, "%s", on_off(pad_background()));
         r = add(R_PADS_FILE, K_ACTION, W_NONE, "Open controllers.ini", "Everything else, by hand: settings per kind of pad, more remaps. Changes there count at the next start.");
@@ -556,6 +696,15 @@ static void build(void) {
             snprintf(r->value, sizeof r->value, "%s", pad->map[b]);
         }
         break;
+    case P_KEYS:
+        r = add(R_KEYS_BACK, K_ACTION, W_NONE, "< Back", "Back to the controllers' settings.");
+        for (int i = 0; i < PAD_KEYS; i++) {
+            int b = i < 16 ? REMAP_ORDER[i] : i;
+            r = add(R_KEY_FIRST + b, K_ACTION, W_NOW, pad_key_label(b), "A or Enter: then press the key for this. Y or Delete: its default again.");
+            pad_key_names(b, r->value, sizeof r->value);
+        }
+        add(R_KEYS_RESET, K_ACTION, W_NOW, "Back to the defaults", "Every key as it was: arrows, Z X C V, A S, Q W, Enter, Backspace, I J K L.");
+        break;
     case P_ONLINE: {
         const char *launcher = getenv("SSBU_NET_RELAY") && *getenv("SSBU_NET_RELAY") ? "SSBU_NET_RELAY set" :
                                getenv("SSBU_NET_HOST") && *getenv("SSBU_NET_HOST") ? "hosting (launcher)" : NULL;
@@ -563,10 +712,11 @@ static void build(void) {
         char status[512];
         net_status(status, sizeof status);
         char *nl = strchr(status, '\n');
-        if (nl) *nl = 0;
+        if (nl) { *nl = 0; help_set(r, "What the game is connected to.\n%s", nl + 1); }   /* (a refusal's what-differs, the room's players) */
         snprintf(r->value, sizeof r->value, "%.110s", status[0] ? status : net_configured() ? "connecting..." : "offline");
         r = add(R_NET_MODE, K_CHOICE, W_RESTART, "Play online in",
-                "Public lobby: everyone's rooms in Local Wireless. Private: only players with the same code. Your own server: host:port. Offline: no netplay.");
+                "Public lobby: everyone's rooms in Local Wireless. Private: only players with the same code. Your own server: host:port. "
+                "Offline: no netplay. This network: a private room hosted on your local network, found by itself.");
         snprintf(r->value, sizeof r->value, "%s", NET_MODES[net.mode]);
         if (net.mode == NET_PRIVATE || net.mode == NET_CUSTOM) {
             r = add(R_NET_CODE, K_TEXT, W_RESTART, "Lobby code", "Players with the same code see each other's rooms (letters and digits, no spaces).");
@@ -589,6 +739,9 @@ static void build(void) {
         if (restart_pending) add(R_RESTART, K_ACTION, W_NONE, "Restart now", "Starts the game again, with the changes. A match in progress is lost.");
         break;
     }
+    case P_MODS:
+        mods_rows(!same);
+        break;
     case P_LOBBY:
         build_lobby(!same);
         if (was == R_NONE) break;
@@ -598,11 +751,27 @@ static void build(void) {
                 break;
             }
         break;
-    case P_GAME:
+    case P_GAME: {
+        char lang[32] = "";
+        r = add(R_LANGUAGE, K_CHOICE, W_RESTART, "Game language",
+                "Auto: the language Windows shows its menus in. Chinese, Japanese and Korean text needs your console's firmware fonts.");
+        if (!settings_ini_get(display_ini_path(), NULL, "language", lang, sizeof lang) || !lang[0]) snprintf(lang, sizeof lang, "auto");
+        snprintf(r->value, sizeof r->value, "%s", _stricmp(lang, "auto") ? language_pick(lang) : "auto");
+        note_env(r, "SSBU_LANGUAGE");
+        r = add(R_VOLUME, K_CHOICE, W_NOW, "Volume", "The game's whole sound, over the game's own sound settings; 0% is silent.");
+        snprintf(r->value, sizeof r->value, "%d%%", audio_master_volume());
+        note_env(r, "SSBU_VOLUME");
+    }
         add(R_RESTART, K_ACTION, W_NONE, "Restart the game", "Starts the game again (for the settings marked 'next start'). A match in progress is lost.");
         add(R_QUIT, K_ACTION, W_NONE, "Quit the game", "Closes the game. A match in progress is lost.");
+#ifdef __APPLE__
+        static const char *const KEYS[][2] = {{"Esc / Home button", "this menu (or hold - and + for a second)"}, {"F1, Cmd+1", "frame rate on / off"},
+                                               {"F2, Cmd+2", "details"}, {"F3, Cmd+3", "screenshot (screenshots folder)"},
+                                               {"Option+Return", "full screen (or Ctrl+Cmd+F)"}};
+#else
         static const char *const KEYS[][2] = {{"Esc / Home button", "this menu (or hold - and + for a second)"}, {"F1", "frame rate on / off"},
                                                {"F2", "details"}, {"F3", "screenshot (screenshots folder)"}, {"F11, Alt+Enter", "full screen"}};
+#endif
         for (u32 i = 0; i < sizeof KEYS / sizeof *KEYS; i++) {
             r = add(R_NONE, K_INFO, W_NONE, KEYS[i][0], "Keys that work while playing.");
             snprintf(r->value, sizeof r->value, "%s", KEYS[i][1]);
@@ -626,6 +795,13 @@ static void start_edit(int id) {
 }
 
 static void finish_edit(void) {
+    if (editing == R_OSK) {   /* the game's text box: as typed */
+        snprintf(osk_text, sizeof osk_text, "%s", edit_buf);
+        editing = 0;
+        InterlockedExchange(&osk_state, 3);
+        close_menu();
+        return;
+    }
     char *s = edit_buf;
     while (*s == ' ') s++;
     size_t n = strlen(s);
@@ -642,6 +818,7 @@ static void finish_edit(void) {
 }
 
 static void change(const Row *row, int dir) {
+    if (row->id == R_MOD_CODE || (row->id >= R_MOD_FIRST && row->id < R_MOD_FIRST + nmenu_mods)) { (void)dir; mod_flip(row); return; }
     DisplaySettings ds;
     display_settings(&ds);
     PadInfo *pad = pad_slot >= 0 && pads[pad_slot].connected ? &pads[pad_slot] : NULL;
@@ -664,6 +841,23 @@ static void change(const Row *row, int dir) {
         display_set_latency(atoi(v));
         set_display("latency", v);
         break;
+    case R_VOLUME: {   /* 0 to 100 in steps of 10 */
+        int vol = (audio_master_volume() + 5) / 10;
+        vol = cycle(vol, 11, dir) * 10;
+        audio_set_master_volume(vol);
+        snprintf(v, sizeof v, "%d", vol);
+        set_display("volume", v);
+        break;
+    }
+    case R_LANGUAGE: {   /* auto, then the game's codes */
+        char lang[32] = "";
+        int i = -1;
+        if (settings_ini_get(display_ini_path(), NULL, "language", lang, sizeof lang) && lang[0] && _stricmp(lang, "auto"))
+            for (int k = 0; k < LANGUAGE_COUNT; k++) if (!strcmp(language_pick(lang), LANGUAGE_CODES[k])) i = k;
+        i = cycle(i + 1, LANGUAGE_COUNT + 1, dir) - 1;
+        set_display("language", i < 0 ? "auto" : LANGUAGE_CODES[i]);
+        break;
+    }
     case R_CURSOR:
         display_set_hide_cursor(!ds.hide_cursor);
         set_display("hide_cursor", ds.hide_cursor ? "0" : "1");
@@ -695,6 +889,12 @@ static void change(const Row *row, int dir) {
         i = i < 0 ? (dir > 0 ? 0 : n - 1) : cycle(i, n, dir);
         set_display("render_scale", SCALES[i]);
         display_set_render_scale(VALUES[i]);   /* (shown now; the renderer takes it at the next start) */
+        break;
+    }
+    case R_RENDERER: {   /* the system's own, then vulkan */
+        int next = cycle(ds.renderer == RENDERER_VULKAN, 2, dir) ? RENDERER_VULKAN : RENDERER_DEFAULT;
+        set_display("renderer", renderer_name(next));
+        display_set_renderer(next);   /* (shown now; the renderer is chosen at the next start) */
         break;
     }
 #ifdef _WIN32
@@ -754,7 +954,7 @@ static void change(const Row *row, int dir) {
         pad_reload();
         break;
     case R_NET_MODE:
-        net.mode = cycle(net.mode, 4, dir);
+        net.mode = cycle(net.mode, NET_MODE_COUNT, dir);
         net_save_server();
         break;
     case R_NET_DIRECT:
@@ -777,7 +977,13 @@ static void action(const Row *row) {
     case K_CHOICE: change(row, 1); return;
     case K_TEXT: start_edit(row->id); return;
     }
-    if (row->id >= R_REMAP_FIRST && pad) {
+    if (IS_KEY(row->id)) {
+        capture_key = row->id - R_KEY_FIRST;
+        capture_key_held = 1;   /* (Enter, or whatever chose the row, goes first) */
+        capture_until = GetTickCount64() + 6000;
+        return;
+    }
+    if (IS_REMAP(row->id) && pad) {
         capture_button = row->id - R_REMAP_FIRST;
         capture_held = ~0u;   /* (whatever is held now must go first) */
         capture_until = GetTickCount64() + 6000;
@@ -815,8 +1021,23 @@ static void action(const Row *row) {
         net_match_cancel();
         break;
     case R_ROOMS: net_rooms_ask(); break;
+    case R_LAN_ROOMS: {
+        int ours = 0, lan = net_lan(&ours, NULL);
+        if (lan == NET_LAN_ANNOUNCING) menu_toast("Your room is announced on this network");
+        else if (lan == NET_LAN_QUIET) menu_toast("Not announced: Direct connections are off (Online page)");
+        else if (lan == NET_LAN_FOUND && net_local_ip()) menu_toast("In a room on this network: Local Wireless > Rooms List");
+        else if (ours) menu_toast("Joining the room on this network...");
+        else menu_toast("Still looking: a room shows here once a game on this network hosts one");
+        break;
+    }
     case R_PAD_REMAP: if (pad) { page = P_REMAP; sel[P_REMAP] = 1; top[P_REMAP] = 0; } break;
-    case R_REMAP_BACK: page = P_PADS; break;
+    case R_REMAP_BACK: case R_KEYS_BACK: page = P_PADS; break;
+    case R_KEYS: page = P_KEYS; sel[P_KEYS] = 1; top[P_KEYS] = 0; break;
+    case R_KEYS_RESET:
+        for (int i = 0; i < PAD_KEYS; i++) settings_ini_set(pad_ini_path(), "keyboard", pad_key_label(i), NULL);
+        pad_reload();
+        menu_toast("The keyboard's keys are back to the defaults");
+        break;
     case R_PAD_TEST:
         if (pad && pad->slot >= 0) {
             pad_rumble((u32)pad->slot, 1, 0.8f);
@@ -845,7 +1066,11 @@ static void action(const Row *row) {
         if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); }
 #else
         char cmd[MAX_PATH + 64];
+#ifdef __APPLE__
+        snprintf(cmd, sizeof cmd, "open -t '%s' >/dev/null 2>&1 &", pad_ini_path());   /* (the default text editor) */
+#else
         snprintf(cmd, sizeof cmd, "xdg-open '%s' >/dev/null 2>&1 &", pad_ini_path());
+#endif
         if (system(cmd)) {}
 #endif
         menu_toast("controllers.ini opened in another window (changes there count at the next start)");
@@ -854,6 +1079,11 @@ static void action(const Row *row) {
     case R_RESTART:
     case R_QUIT:
         confirm = row->id;
+        break;
+    case R_MODS_OFF:
+        if (!mods_switch_set("--all", 0)) { menu_toast("Still changing the last one: a moment"); break; }
+        for (int i = 0; i < nmenu_mods; i++) menu_mods[i].on = 0;
+        changed(W_RESTART);
         break;
     }
 }
@@ -900,6 +1130,19 @@ static int keys_held(void) {
     return 0;
 }
 
+/* A key the keyboard page can bind, held now (the lowest code), or 0. Not Esc (it cancels) nor the
+ * F keys (the debug and rollback keys). */
+static int menu_key_pressed(void) {
+    static const int OTHER[] = {VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN, VK_RETURN, VK_BACK, VK_SPACE, VK_TAB, VK_SHIFT, VK_CONTROL, VK_MENU};
+    for (u32 i = 0; i < sizeof OTHER / sizeof *OTHER; i++)
+        if (GetAsyncKeyState(OTHER[i]) & 0x8000) return OTHER[i];
+    for (int vk = '0'; vk <= 'Z'; vk++)
+        if ((vk <= '9' || vk >= 'A') && GetAsyncKeyState(vk) & 0x8000) return vk;
+    for (int vk = 0x60; vk <= 0x69; vk++)   /* (the number pad's digits) */
+        if (GetAsyncKeyState(vk) & 0x8000) return vk;
+    return 0;
+}
+
 /* ---- the text grid (for pads) ------------------------------------------------------------- */
 static const char *const GRID[] = {"ABCDEFGHIJKLM", "NOPQRSTUVWXYZ", "abcdefghijklm", "nopqrstuvwxyz", "0123456789-_.", ": "};
 enum { GRID_ROWS = 6, GRID_COLS = 13 };
@@ -909,7 +1152,7 @@ static int grid_cols(int r) { return r == GRID_ROWS - 1 ? 1 + 4 : GRID_COLS; }
 
 static void edit_event(int ev, unsigned ch) {
     size_t n = strlen(edit_buf);
-    size_t max = editing == R_NET_NAME ? 32 : editing == R_NET_SERVER ? 60 : 32;
+    size_t max = editing == R_NET_NAME ? 32 : editing == R_NET_SERVER ? 60 : editing == R_OSK ? (size_t)osk_max : 32;
     switch (ev) {
     case EV_CHAR: if (n < max) { edit_buf[n] = (char)ch; edit_buf[n + 1] = 0; } break;
     case EV_BKSP: case EV_B: case EV_DEL: if (n) edit_buf[n - 1] = 0; break;
@@ -948,8 +1191,14 @@ static void event(int ev, unsigned ch) {
         } else if (ev == EV_B || ev == EV_BKSP || ev == EV_ESC) confirm = 0;
         return;
     }
-    if (editing) { edit_event(ev, ch); return; }
+    if (editing) {
+        int was = editing;
+        edit_event(ev, ch);
+        if (was == R_OSK && !editing && osk_state == 2) close_menu();   /* (cancelled: close_menu says so) */
+        return;
+    }
     if (capture_button >= 0) { if (ev == EV_ESC) capture_button = -1; return; }
+    if (capture_key >= 0) { if (ev == EV_ESC) capture_key = -1; return; }
     Row *row = sel[page] < nrows ? &rows[sel[page]] : NULL;
     switch (ev) {
     case EV_UP: move_sel(-1); break;
@@ -957,20 +1206,24 @@ static void event(int ev, unsigned ch) {
     case EV_LEFT: case EV_RIGHT: if (row && row->kind == K_CHOICE) change(row, ev == EV_RIGHT ? 1 : -1); break;
     case EV_A: case EV_ENTER: if (row && selectable(row)) action(row); break;
     case EV_DEL:
-        if (page == P_REMAP && row && row->id >= R_REMAP_FIRST && pad_slot >= 0 && pads[pad_slot].connected) {
+        if (page == P_REMAP && row && IS_REMAP(row->id) && pad_slot >= 0 && pads[pad_slot].connected) {
             char section[128];
             pad_section(&pads[pad_slot], section, sizeof section);
             settings_ini_set(pad_ini_path(), section, pad_button_name(row->id - R_REMAP_FIRST), NULL);
             pad_reload();
         }
+        if (page == P_KEYS && row && IS_KEY(row->id)) {
+            settings_ini_set(pad_ini_path(), "keyboard", pad_key_label(row->id - R_KEY_FIRST), NULL);
+            pad_reload();
+        }
         break;
     case EV_B: case EV_BKSP:
-        if (page == P_REMAP) page = P_PADS;
+        if (SUB_PAGE(page)) page = P_PADS;
         else close_menu();
         break;
     case EV_ESC: close_menu(); break;
     case EV_NEXT: case EV_PREV:
-        page = page == P_REMAP ? P_PADS : cycle(page, PAGES, ev == EV_NEXT ? 1 : -1);
+        page = SUB_PAGE(page) ? P_PADS : cycle(page, PAGES, ev == EV_NEXT ? 1 : -1);
         break;
     case EV_CHAR:
         if (ch >= '1' && ch < '1' + PAGES) page = (int)(ch - '1');
@@ -1041,10 +1294,19 @@ int menu_frame(int *overlay, int f3) {
         if (now - combo_since >= 1000) { toggle = 1; combo_armed = 0; }
     } else if (!combo) { combo_since = 0; combo_armed = 1; }
     int shot = script_events() || (f3 && open_);
+    if (osk_state == 1) {   /* the game asked for text: the menu opens on the grid */
+        if (!open_) open_menu();
+        editing = R_OSK;
+        grid_r = grid_c = 0;
+        snprintf(edit_buf, sizeof edit_buf, "%s", osk_text);
+        nav_held = nb;
+        InterlockedExchange(&osk_state, 2);
+    }
     if (open_) build();
     while (q_tail != q_head) {
         LONG v = q[q_tail & 63];
         InterlockedIncrement(&q_tail);
+        if (now < capture_quiet) continue;   /* (the key just bound: not also a press in the menu) */
         if (v & 0x10000) { if (open_) event(EV_CHAR, (unsigned)(v & 0xFF)); continue; }
         static const int EV_OF[] = {0, EV_ESC, EV_UP, EV_DOWN, EV_LEFT, EV_RIGHT, EV_ENTER, EV_BKSP, EV_NEXT, EV_PREV, EV_DEL};
         if (v == MENU_KEY_ESC && !open_) { open_menu(); continue; }
@@ -1057,7 +1319,22 @@ int menu_frame(int *overlay, int f3) {
         nav_held = nb;   /* (what opened it is not also a press in it) */
         if (open_) build();
     }
-    if (open_ && capture_button >= 0) {   /* a new control for a button: the first one pressed after all are let go */
+    if (open_ && capture_key >= 0) {   /* a new key for a binding: the first one pressed after all are let go */
+        int vk = menu_key_pressed();
+        if (now > capture_until) capture_key = -1;
+        else if (capture_key_held) { if (!vk) capture_key_held = 0; }
+        else if (vk) {
+            char name[16];
+            pad_key_name(vk, name, sizeof name);
+            settings_ini_set(pad_ini_path(), "keyboard", pad_key_label(capture_key), name);
+            pad_reload();
+            fprintf(stderr, "[menu] keyboard: %s = %s\n", pad_key_label(capture_key), name);
+            capture_key = -1;
+            capture_quiet = now + 300;
+            nav_wait_release = 1;
+        }
+        nav_held = nb;
+    } else if (open_ && capture_button >= 0) {   /* a new control for a button: the first one pressed after all are let go */
         PadInfo *pad = pad_slot >= 0 && pads[pad_slot].connected ? &pads[pad_slot] : NULL;
         u32 raw = pad ? pad->raw : 0;
         if (!pad || now > capture_until) capture_button = -1;
@@ -1167,6 +1444,10 @@ void menu_draw(float w, float h) {
     char status[512];
     net_status(status, sizeof status);
     if (strstr(status, "Room:")) snprintf(banner, sizeof banner, "You are in a netplay room: the game keeps running while this menu is open.");
+    else if (!strncmp(status, "Netplay: ", 9) && strchr(status, '\n')) {   /* (refused, with what differs: its first line) */
+        const char *nl = strchr(status, '\n') + 1;
+        snprintf(banner, sizeof banner, "Can't join: %.*s (Online > Now)", (int)strcspn(nl, "\n"), nl);
+    }
     else if (restart_pending) snprintf(banner, sizeof banner, "Some changes take effect when the game starts again: Game > Restart the game.");
     char t[160];
     if (toast_now(t, sizeof t)) ovl_text(px + 300 * s, py + 34 * s, 24 * s, WHITE, t);   /* (a message, in the menu: here) */
@@ -1174,7 +1455,7 @@ void menu_draw(float w, float h) {
     /* the pages */
     float ty = py + 110 * s;
     for (int i = 0; i < PAGES; i++) {
-        int on = page == i || (page == P_REMAP && i == P_PADS);
+        int on = page == i || (SUB_PAGE(page) && i == P_PADS);
         if (on) ovl_rect(px + 20 * s, ty - 6 * s, 250 * s, 50 * s, OVL_RGBA(55, 62, 90, 255));
         char t[32];
         snprintf(t, sizeof t, "%d %s", i + 1, PAGE_NAMES[i]);
@@ -1218,7 +1499,8 @@ void menu_draw(float w, float h) {
     }
     ovl_text(px + 36 * s, py + ph - 44 * s, 22 * s, DIM,
              page == P_REMAP ? "Up/Down: choose   A/Enter: press a new control   Y/Delete: default   B/Backspace: back   Esc: close"
-                             : "Up/Down: choose   Left/Right: change   A/Enter: select   L/R or Tab, 1-5: page   B/Esc: close");
+             : page == P_KEYS ? "Up/Down: choose   A/Enter: press a new key   Y/Delete: default   B/Backspace: back   Esc: close"
+                             : "Up/Down: choose   Left/Right: change   A/Enter: select   L/R or Tab, 1-6: page   B/Esc: close");
     /* on top: a question, the text being typed, or a control being waited for */
     if (confirm) {
         float bw = 820 * s, bh = 200 * s, bx = (w - bw) / 2, by = (h - bh) / 2;
@@ -1229,7 +1511,7 @@ void menu_draw(float w, float h) {
     } else if (editing) {
         float bw = 900 * s, bh = 600 * s, bx = (w - bw) / 2, by = (h - bh) / 2, cs = 56 * s;
         modal_box(w, h, bx, by, bw, bh, s);
-        ovl_text(bx + 36 * s, by + 28 * s, 30 * s, GREY, editing == R_NET_NAME ? "Your name" : editing == R_NET_CODE ? "Lobby code" : "Server (host:port)");
+        ovl_text(bx + 36 * s, by + 28 * s, 30 * s, GREY, editing == R_OSK ? osk_title : editing == R_NET_NAME ? "Your name" : editing == R_NET_CODE ? "Lobby code" : "Server (host:port)");
         char t[80];
         snprintf(t, sizeof t, "%s_", edit_buf);
         ovl_rect(bx + 30 * s, by + 72 * s, bw - 60 * s, 56 * s, OVL_RGBA(16, 18, 26, 255));
@@ -1247,6 +1529,16 @@ void menu_draw(float w, float h) {
                 ovl_text(cx + (cw - text_w(cell, 30 * s)) / 2, gy + r * cs + 10 * s, 30 * s, WHITE, cell);
             }
         ovl_text(bx + 36 * s, by + bh - 52 * s, 22 * s, DIM, "Type, then Enter (Esc: cancel). Pad: A types, B deletes, + done, L cancels.");
+    } else if (capture_key >= 0) {
+        float bw = 900 * s, bh = 200 * s, bx = (w - bw) / 2, by = (h - bh) / 2;
+        modal_box(w, h, bx, by, bw, bh, s);
+        char t[160];
+        snprintf(t, sizeof t, "Press the key for %s", pad_key_label(capture_key));
+        ovl_text(bx + 36 * s, by + 34 * s, 34 * s, WHITE, t);
+        ovl_text(bx + 36 * s, by + 84 * s, 26 * s, GREY, "a letter, digit, arrow, Enter, Space, Shift, Ctrl, Alt, Tab or the number pad");
+        ULONGLONG now = GetTickCount64();
+        snprintf(t, sizeof t, "Esc: cancel   (%d s)", capture_until > now ? (int)((capture_until - now + 999) / 1000) : 0);
+        ovl_text(bx + 36 * s, by + 140 * s, 26 * s, AMBER, t);
     } else if (capture_button >= 0) {
         float bw = 900 * s, bh = 200 * s, bx = (w - bw) / 2, by = (h - bh) / 2;
         modal_box(w, h, bx, by, bw, bh, s);
@@ -1260,4 +1552,24 @@ void menu_draw(float w, float h) {
         snprintf(t, sizeof t, "Esc: cancel   (%d s)", capture_until > now ? (int)((capture_until - now + 999) / 1000) : 0);
         ovl_text(bx + 36 * s, by + 140 * s, 26 * s, AMBER, t);
     }
+}
+
+/* (hle_applet.c, on the game's thread) the game's software keyboard on the menu's text grid, the last frame
+ * shown again under it while the game waits. 1 typed (out, ASCII), 0 cancelled, -1 not here (the renderer
+ * can't show a frame again: the caller uses its dialog). */
+int gfx_present_again(void);   /* (the renderer) the last frame once more, with the overlay and the menu */
+int menu_osk_run(const char *title, const char *initial, int max_len, char *out, size_t cap) {
+    if (!gfx_present_again()) return -1;
+    snprintf(osk_title, sizeof osk_title, "%s", title && *title ? title : "Enter text");
+    snprintf(osk_text, sizeof osk_text, "%s", initial ? initial : "");
+    osk_max = max_len > 0 && max_len < (int)sizeof osk_text ? max_len : (int)sizeof osk_text - 1;
+    InterlockedExchange(&osk_state, 1);
+    while (osk_state == 1 || osk_state == 2) {
+        gfx_present_again();
+        Sleep(16);
+    }
+    int ok = osk_state == 3;
+    if (ok) snprintf(out, cap, "%s", osk_text);
+    InterlockedExchange(&osk_state, 0);
+    return ok;
 }

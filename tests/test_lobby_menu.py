@@ -314,7 +314,10 @@ class Pages(MenuTest):
         m.type('5')
         self.assertEqual(m.page()[1], LOBBY_PAGE)
         m.key('TAB')
-        self.assertEqual(m.page()[1], 0)   # (after the Lobby: Display again)
+        self.assertEqual(m.page()[1], LOBBY_PAGE + 1)   # (after the Lobby: Mods)
+        m.key('TAB')
+        self.assertEqual(m.page()[1], 0)   # (then Display again)
+        m.key('SHTAB')
         m.key('SHTAB')
         self.assertEqual(m.page()[1], LOBBY_PAGE)
         m.type('4')
@@ -322,9 +325,9 @@ class Pages(MenuTest):
         m.key('TAB')
         self.assertEqual(m.page()[1], LOBBY_PAGE)
         drawn = m.draw()
-        for i, name in enumerate(('Display', 'Controllers', 'Online', 'Game', 'Lobby')):
+        for i, name in enumerate(('Display', 'Controllers', 'Online', 'Game', 'Lobby', 'Mods')):
             self.assertIn(f'{i + 1} {name}', drawn)
-        self.assertIn('Up/Down: choose   Left/Right: change   A/Enter: select   L/R or Tab, 1-5: page   B/Esc: close', drawn)
+        self.assertIn('Up/Down: choose   Left/Right: change   A/Enter: select   L/R or Tab, 1-6: page   B/Esc: close', drawn)
         m.key('ESC')
         self.assertEqual(m.page()[0], 0)
 
@@ -332,14 +335,50 @@ class Pages(MenuTest):
         m = self.menu()
         m.key('ESC')
         display = ['Window', 'Frame pacing', 'Frames queued ahead', 'Hide the mouse pointer', 'Frame rate in the corner', 'Window size',
-                   'Render scale'] + (['Graphics card'] if os.name == 'nt' else [])
+                   'Render scale'] + (['Graphics card'] if os.name == 'nt' else []) + (['Renderer'] if sys.platform != 'darwin' else [])
         self.assertEqual(m.labels(), display)
         m.type('2')
-        self.assertEqual(m.labels(), ['Controllers', 'Rumble', 'Keyboard plays as', 'Pads when not focused', 'Open controllers.ini'])
+        self.assertEqual(m.labels(), ['Controllers', 'Rumble', 'Keyboard plays as', 'Keyboard keys...', 'Pads when not focused',
+                                      'Open controllers.ini'])
+        for _ in range(6):   # (the keyboard's page: Back, a row a binding, the defaults; Backspace back)
+            if m.labels()[m.page()[2]] == 'Keyboard keys...':
+                break
+            m.key('DOWN')
+        m.key('ENTER')
+        labels = m.labels()
+        self.assertEqual((labels[0], len(labels), labels[-1]), ('< Back', 26, 'Back to the defaults'))
+        m.key('BKSP')
+        self.assertEqual(m.labels()[3], 'Keyboard keys...')
         m.type('3')
         self.assertEqual(m.labels(), ['Now', 'Play online in', 'Your name', 'Direct connections', 'Netplay version'])   # (offline: no code)
+        m.type('6')
+        self.assertEqual(m.labels(), ['Mods', 'ARCropolis code patches', 'No mod installed'])   # (the harness has no mods)
         m.type('4')
-        self.assertEqual(m.labels(), ['Restart the game', 'Quit the game', 'Esc / Home button', 'F1', 'F2', 'F3', 'F11, Alt+Enter', 'Version'])
+        keys = (['F1, Cmd+1', 'F2, Cmd+2', 'F3, Cmd+3', 'Option+Return'] if sys.platform == 'darwin'
+                else ['F1', 'F2', 'F3', 'F11, Alt+Enter'])
+        self.assertEqual(m.labels(), ['Game language', 'Volume', 'Restart the game', 'Quit the game', 'Esc / Home button', *keys, 'Version'])
+
+    @unittest.skipIf(sys.platform == 'darwin', 'the Mac program has no Renderer row (Metal only)')
+    def test_renderer_row(self):
+        """Display > Renderer: the system's own renderer, then Vulkan, saved in display.ini for the
+        next start (runtime/renderer.h's names)."""
+        own = 'd3d11' if os.name == 'nt' else 'dxvk'
+        m = self.menu()
+        m.key('ESC')
+        labels = m.labels()
+        at = labels.index('Renderer')
+        self.assertEqual(m.row('Renderer')['value'], own)
+        self.assertIn('Vulkan: in development', m.row('Renderer')['help'])
+        m.key('DOWN', at)
+        self.assertEqual(m.at()['label'], 'Renderer')
+        m.key('RIGHT')
+        self.assertEqual(m.row('Renderer')['value'], 'vulkan')
+        self.assertIn('renderer = vulkan', (m.dir / 'display.ini').read_text())
+        m.key('RIGHT')
+        self.assertEqual(m.row('Renderer')['value'], own)
+        self.assertIn(f'renderer = {own}', (m.dir / 'display.ini').read_text())
+        m.key('LEFT')
+        self.assertEqual(m.row('Renderer')['value'], 'vulkan')
 
     def test_offline(self):
         m = self.menu()
@@ -386,10 +425,11 @@ class Version(MenuTest):
         self.assertEqual(m.net(0)[0], 3)
 
     def test_no_file_as_before(self):
+        tail = 2 + 4 + 1   # (version 2's JOIN ends with 'W' 'S', the simulation version and a mod set: net_relay.c send_join)
         join, _ = self.join_of()
-        self.assertEqual((join[2], len(join)), (2, R.JOIN_SIZE))
+        self.assertEqual((join[2], len(join), join[R.JOIN_SIZE:R.JOIN_SIZE + 2]), (2, R.JOIN_SIZE + tail, b'WS'))
         join, _ = self.join_of(files={'online_protocol.txt': '4\n'})   # (not a version: the default)
-        self.assertEqual((join[2], len(join)), (2, R.JOIN_SIZE))
+        self.assertEqual((join[2], len(join)), (2, R.JOIN_SIZE + tail))
 
     def test_variable_wins(self):
         join, m = self.join_of(protocol=2, files={'online_protocol.txt': '3\n'})
@@ -495,13 +535,16 @@ class Rooms(MenuTest):
                          [('Alpha (you)', '1/4 players, open'), ('Bravo', '2/4 players, open'), ('Golf', '4/4 players, full or closed'),
                           ('Charlie', "can't join: update your WindowSmash"), ('Delta', "can't join: their WindowSmash is older"),
                           ('Echo', "can't join: another game version"), ('Foxtrot', "can't join: other mods")])
+        game = f'Game build {BUILD[:8]} (yours too), WindowSmash simulation version {SIM} (yours too), netplay version 3'
         self.assertEqual(rows['Bravo']['help'], "Bravo's room, 2 of 4 players. To join it, close this menu, then Local Wireless > Rooms List and "
-                                                "pick Bravo's room.")
+                                                f"pick Bravo's room. / {game} / Mods: none")   # (the room's game and mods, against yours)
+        self.assertIn(f'Game build {OTHER_BUILD[:8]} (yours {BUILD[:8]})', rows['Echo']['help'])
+        self.assertIn(f'simulation version {SIM + 1} (yours {SIM})', rows['Charlie']['help'])
         self.assertIn(f'simulation version is {SIM + 1}, yours {SIM}', rows['Charlie']['help'])
         self.assertIn('Yours is the older one: update WindowSmash to join.', rows['Charlie']['help'])
         self.assertIn('Theirs is the older one: the host needs to update.', rows['Delta']['help'])
         self.assertIn(f'build {OTHER_BUILD[:8]}, yours {BUILD[:8]}', rows['Echo']['help'])
-        self.assertEqual(rows['Foxtrot']['help'], "Mods you don't have: Alpha")
+        self.assertEqual(rows['Foxtrot']['help'], f"Mods you don't have: Alpha / {game} / Mods: Alpha (you don't have it)")
         for label, said in (('Bravo', "Close this menu, then Local Wireless > Rooms List: Bravo's room"),
                             ('Alpha (you)', 'This is your own room'),
                             ('Golf', "Golf's room is full or closed for now"),
@@ -511,7 +554,7 @@ class Rooms(MenuTest):
             self.assertEqual(m.toast(), said)
         self.assertEqual(m.page()[0], 1)   # (the menu stays open)
         m.go_to('Charlie')   # (its help's second line on a line of its own)
-        self.assertTrue(any(line.endswith('needs updating) / Yours is the older one: update WindowSmash to join.') for line in m.draw()))
+        self.assertTrue(any('needs updating) / Yours is the older one: update WindowSmash to join.' in line for line in m.draw()))
 
     def test_cursor_stays_on_its_room(self):
         m, lobby = self.v3()
@@ -644,6 +687,52 @@ class RealLobby(MenuTest):
         self.assertEqual([r['label'] for r in rows if r['id'] >= 60][0], 'Same')   # (the rooms of this game's key first)
         self.assertEqual(got, {'Same': '1/8 players, open', 'Newer': "can't join: update your WindowSmash", 'Modded': "can't join: other mods",
                                'Older': "can't join: another game version"})
+
+
+class Lan(MenuTest):
+    """LAN discovery (net.h): Online > Play online in > this network (online_server.txt "lan"), and the
+    Lobby page's row of the rooms heard on this network, or of the host's own room announced there.
+    The beacons go to 127.0.0.1 only (the host's relay on loopback; SSBU_NET_LAN_TEST=1 for the finder),
+    on a free port."""
+    def test_rooms_on_this_network(self):
+        lan_port = free_udp_port()
+        host = self.menu(None, room='lanroom', name='Hosty', SSBU_NET_HOST=1, SSBU_NET_PORT=free_udp_port(), SSBU_NET_BIND='127.0.0.1',
+                         SSBU_NET_LAN_PORT=lan_port)
+        self.assertEqual(host.net(), (2, 2, 0))
+        host.open_lobby()
+        self.assertEqual(host.row('On this network')['value'], 'announced')
+        guest = self.menu(room=None, name='Guest', args=['--online'], files={'online_server.txt': 'lan\n', 'online_name.txt': 'Guest\n'},
+                          SSBU_NET_LAN_TEST=1, SSBU_NET_LAN_PORT=lan_port)
+        self.assertEqual(guest.net(8), (2, 2, 0))
+        guest.open_lobby()
+        self.assertEqual(guest.row('Lobby')['value'], 'in a room on this network')
+        self.assertEqual(guest.value_until('Rooms on this network', lambda v: v == '1'), '1')
+        guest.go_to('Rooms on this network')
+        guest.key('ENTER')
+        self.assertEqual(guest.toast(), 'In a room on this network: Local Wireless > Rooms List')
+        guest.type('3')
+        self.assertEqual(guest.row('Play online in')['value'], 'this network (LAN)')
+        self.assertEqual(guest.row('Netplay version')['note'], 'this network: 2')
+        self.assertIn('room lanroom', guest.row('Now')['value'])
+
+    def test_looking(self):
+        guest = self.menu('lan', SSBU_NET_LAN_TEST=1, SSBU_NET_LAN_PORT=free_udp_port())
+        guest.ask('net 0')   # (started)
+        guest.open_lobby()
+        self.assertEqual(guest.value_until('Lobby', lambda v: v == 'no room on this network yet'), 'no room on this network yet')
+        self.assertEqual(guest.row('Rooms on this network')['value'], '0')
+
+    def test_mode_saved(self):
+        m = self.menu()
+        m.key('ESC')
+        m.type('3')
+        m.go_to('Play online in')
+        for _ in range(5):
+            if m.row('Play online in')['value'] == 'this network (LAN)':
+                break
+            m.key('RIGHT')
+        self.assertEqual(m.file('online_server.txt'), 'lan')
+        self.assertNotIn('Lobby code', m.labels())
 
 
 if __name__ == '__main__':

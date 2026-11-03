@@ -231,7 +231,7 @@ function Set-LineValue([string]$Path, [string]$Line) {
 }
 
 # ---- the game ------------------------------------------------------------------------------
-$NotBuilt = "The game isn't built here yet: run Install WindowSmash.bat."
+$NotBuilt = "The game isn't built here yet: run OpenSmash.exe."
 
 function Test-GameBuilt([string]$Dir) {
     return Test-Path -LiteralPath (Join-Path $Dir 'build\ssbu.exe') -PathType Leaf

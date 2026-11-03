@@ -61,7 +61,7 @@ def fake_module(funcs, exports):
     # (one import, as every real module has: the table's lists are never empty)
     return types.SimpleNamespace(image=bytes(img), exports=exports, relocs=[(0x1F8, 257, 0, 0)],
                                  symbols=[('nn_some_import', 0, 0, 0x12, 0)], mem_end=len(img),
-                                 text=types.SimpleNamespace(mem=0, end=len(img)), dyn={}, build_id='0',
+                                 text=types.SimpleNamespace(mem=0, end=len(img)), dyn={}, build_id='0', path='m.nso',   # (not an .nro: no unwind tables read)
                                  u32=lambda a: struct.unpack_from('<I', img, a)[0])
 
 

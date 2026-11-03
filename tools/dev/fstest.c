@@ -35,6 +35,14 @@
 #endif
 
 /* ---- what hle_fs.c needs from the rest of the runtime --------------------------------- */
+/* (hle_skyline.c and host.c: no Skyline plugins here, no exported symbols to hook) */
+void skyline_load_plugins(Cpu *c) { (void)c; }
+void native_mods_load(void) {}   /* (hle_native_mods.c: no mods here) */
+int skyline_provides(const char *path) { (void)path; return 0; }
+void skyline_mods_mounted(void) {}
+u64 rt_symbol(const char *name) { (void)name; return 0; }
+u64 rt_native(GuestFn *fn, const char *name) { (void)fn; (void)name; return 0; }
+u64 rt_hook_function(u64 target, u64 replace) { (void)target; (void)replace; return 0; }
 const char *rt_data_dir;
 void rt_fatal(const char *fmt, ...) {
     va_list a;
@@ -234,6 +242,20 @@ static void checks_all(DWORD live_pid) {
     CHECK(t_type("rom:/hello.txt") == 1 && t_read("rom:/hello.txt") && is(t_read("rom:/hello.txt"), "hello"), "a RomFS file");
     CHECK(t_open("rom:/hello.txt", OPEN_WRITE, &h) == R_UNSUPPORTED, "the RomFS opened for writing");
     CHECK(commit("rom") == 0, "Commit of the RomFS");
+    {   /* rollback (SSBU_RB): a handle open at a savestate's mark and closed since is seen; one opened and closed after it is not */
+        u64 h1 = 0, h2 = 0;
+        rb_fs = 1;
+        CHECK(t_open("rom:/hello.txt", OPEN_READ, &h1) == 0, "a RomFS file opened");
+        u64 mark = fs_rb_mark();
+        CHECK(!fs_rb_closed_since(mark), "rollback: nothing closed since the mark");
+        CHECK(t_open("rom:/hello.txt", OPEN_READ, &h2) == 0, "a RomFS file opened again");
+        t_close(h2);
+        CHECK(!fs_rb_closed_since(mark), "rollback: a handle opened and closed after the mark counted");
+        t_close(h1);
+        CHECK(fs_rb_closed_since(mark), "rollback: a handle open at the mark and closed since not seen");
+        CHECK(!fs_rb_closed_since(fs_rb_mark()), "rollback: a close before the mark counted");
+        rb_fs = -1;
+    }
     CHECK(call(hle__ZN2nn2fs17MountCacheStorageEPKc, G("cache"), 0, 0, 0, 0) == 0, "MountCacheStorage");
     CHECK(t_write("cache:/c.bin", 0, "cached", 1, NULL) == 0, "a cache file");
     snprintf(path, sizeof path, "%s/cache/c.bin", folder);

@@ -71,9 +71,11 @@ LEFT_OUT = {
     "macos": {**TESTS,
               "cpu_check.c": "the x86-64 processor check (CPUID): the Mac program is arm64",
               "debug_profile.c": "Windows' profiler: macos/profile.c is macOS's",
+              "gpu_backend.c": "the back ends' table (Direct3D 11, Vulkan): macos/gpu_metal.m is macOS's only one",
               "gpu_d3d11.c": "the Direct3D 11 renderer: macos/gpu_metal.m is macOS's",
+              "gpu_watch.c": "the write watch's stamps: macos/gpu_metal.m keeps its own",
+              "gpu_window.c": "the Win32 / SDL2 window: macos/window.m is macOS's",
               "gpu_overlay.c": "the overlay, drawn with Direct3D 11: macos/gpu_metal_overlay.m is macOS's",
-              "gpu_menu.c": "the settings menu, drawn with that overlay: not on macOS yet (macos/platform.c)",
               "linux/d3dcompile_vkd3d.c": "D3DCompile through vkd3d-shader, for DXVK: the Metal renderer takes no DXBC",
               "linux/profile.c": "Linux's profiler: macos/profile.c is macOS's",
               "linux/window.c": "Linux's SDL2 window: macos/window.m is macOS's"},
@@ -213,7 +215,8 @@ def library_problems(runtime, tree, host, program_objects, library_objects):
     runtime source's (the tables tools/game_dll.py writes for it are its own)."""
     rt = runtime_folder(tree, host)
     problems = [f"the program has {os.path.basename(o)}, which is not the runtime's (not in {rt}): the game's objects "
-                "are the library's" for o in program_objects if not inside(o, rt)]
+                "are the library's" for o in program_objects
+                if not inside(o, rt) and not o.lower().endswith(".res")]   # (.res: the program's manifest, tools/cc.py)
     have = linked(library_objects, rt)
     problems += [f"the game's library has runtime/{rel}'s object: it is linked without the runtime's (tools/game_dll.py)"
                  for rel in runtime_sources(runtime) if runtime_keys(rel, host) & have]

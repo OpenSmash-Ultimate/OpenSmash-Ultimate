@@ -831,14 +831,12 @@ static uint64_t read_at(HANDLE h, int64_t offset, void *buf, uint64_t size) {
             /* (R4) the learned-set save (r1_state.c, rb_learned.c) keeps the fight's guest pages read-only until their first
              * write; r1_wrote above opened them, but a kernel write into a page protected after that fails with
              * ERROR_NOACCESS instead of faulting: open the pages again and read once more (counted in the r1 log) */
-#ifdef _WIN32
             if (GetLastError() == ERROR_NOACCESS) {
                 void r1_wrote(uint64_t, uint64_t); void r1_read_retry_note(void);
                 r1_wrote((uint64_t)(uintptr_t)buf + total, chunk); r1_read_retry_note();
                 memset(&ov, 0, sizeof ov); ov.Offset = (DWORD)pos; ov.OffsetHigh = (DWORD)(pos >> 32);
                 if (ReadFile(h, (char *)buf + total, chunk, &got, &ov) && got) { total += got; continue; }
             }
-#endif
             break;
         }
         total += got;

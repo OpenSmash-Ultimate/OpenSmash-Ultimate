@@ -2,9 +2,12 @@
  * needs them, through one wrap of each. tools/recomp.py allows one wrap per guest function, and
  * both the fight test switches (hle_fight_test.c) and rollback need these two, so
  * hle_each_frame.c holds the wraps and runs the handlers registered here:
- *   FRAME_HOOK_END   the graphics module's frame end (FRAME_END in game_addr.h), once a frame;
- *   FRAME_HOOK_LINE  the fighters' frame line (lua2cpp::L2CFighterCommon::sys_line_system_control_fighter),
- *                    which the game runs for every fighter once a frame, before its status scripts.
+ *   FRAME_HOOK_END    the graphics module's frame end (FRAME_END in game_addr.h), once a frame;
+ *   FRAME_HOOK_LINE   the fighters' frame line (lua2cpp::L2CFighterCommon::sys_line_system_control_fighter),
+ *                     which the game runs for every fighter once a frame, before its status scripts;
+ *   FRAME_HOOK_RECORD not a frame point but held the same way, as the fight test's debug match and
+ *                     rollback netplay's handshake both need it: the player record builder
+ *                     (PLAYER_RECORD_BUILDER in game_addr.h), once per player as a match is set up.
  *
  * A registration is a pair of handlers, either of them NULL: `before` runs before the game's
  * function, `after` after it. The pairs nest as wraps would, one inside the other: the lowest
@@ -20,12 +23,14 @@
 #pragma once
 #include "recomp.h"
 
-enum { FRAME_HOOK_END, FRAME_HOOK_LINE, FRAME_HOOK_POINTS };
+enum { FRAME_HOOK_END, FRAME_HOOK_LINE, FRAME_HOOK_RECORD, FRAME_HOOK_POINTS };
 enum { FRAME_HOOKS_MAX = 8 };   /* registrations a point holds */
 
 /* The orders in use, lowest outermost. The rollback ring is outside the fight test, so that it
- * saves the frame end's report as SSBU_DETERMINISTIC leaves it. */
+ * saves the frame end's report as SSBU_DETERMINISTIC leaves it; rollback netplay (never on with
+ * the ring: kernel_watch.h) likewise. */
 enum { FRAME_ORDER_ROLLBACK = 100,     /* (hle_rollback_ring.c) */
+       FRAME_ORDER_NETPLAY = 150,      /* (hle_rb_core.c, SSBU_RB) */
        FRAME_ORDER_FIGHT_TEST = 200 };   /* (hle_fight_test.c) */
 
 typedef void FrameHookFn(Cpu *c, const u64 args[8], void *ctx);

@@ -42,6 +42,24 @@ static const struct { u8 format, bytes, bw, bh; DXGI_FORMAT dxgi, srgb; } FORMAT
     {0x2b, 4, 1, 1, DXGI_FORMAT_R24G8_TYPELESS, 0},
     {0x2f, 4, 1, 1, DXGI_FORMAT_R32_FLOAT, 0},
     {0x3a, 2, 1, 1, DXGI_FORMAT_R16_UNORM, 0},
+#ifdef __APPLE__
+    /* ASTC, 16-byte blocks of w x h texels (the codes as yuzu's TextureFormat has them): Mii parts
+     * (eyes, eyebrows, mouths) are 4x4. Direct3D has no format for them; Apple's GPUs read them. */
+    {0x40, 16, 4, 4, DXGI_ASTC(4, 4, 0), DXGI_ASTC(4, 4, 1)},
+    {0x41, 16, 5, 5, DXGI_ASTC(5, 5, 0), DXGI_ASTC(5, 5, 1)},
+    {0x42, 16, 6, 6, DXGI_ASTC(6, 6, 0), DXGI_ASTC(6, 6, 1)},
+    {0x44, 16, 8, 8, DXGI_ASTC(8, 8, 0), DXGI_ASTC(8, 8, 1)},
+    {0x45, 16, 10, 10, DXGI_ASTC(10, 10, 0), DXGI_ASTC(10, 10, 1)},
+    {0x46, 16, 12, 12, DXGI_ASTC(12, 12, 0), DXGI_ASTC(12, 12, 1)},
+    {0x50, 16, 5, 4, DXGI_ASTC(5, 4, 0), DXGI_ASTC(5, 4, 1)},
+    {0x51, 16, 6, 5, DXGI_ASTC(6, 5, 0), DXGI_ASTC(6, 5, 1)},
+    {0x52, 16, 8, 6, DXGI_ASTC(8, 6, 0), DXGI_ASTC(8, 6, 1)},
+    {0x53, 16, 10, 8, DXGI_ASTC(10, 8, 0), DXGI_ASTC(10, 8, 1)},
+    {0x54, 16, 12, 10, DXGI_ASTC(12, 10, 0), DXGI_ASTC(12, 10, 1)},
+    {0x55, 16, 8, 5, DXGI_ASTC(8, 5, 0), DXGI_ASTC(8, 5, 1)},
+    {0x56, 16, 10, 5, DXGI_ASTC(10, 5, 0), DXGI_ASTC(10, 5, 1)},
+    {0x57, 16, 10, 6, DXGI_ASTC(10, 6, 0), DXGI_ASTC(10, 6, 1)},
+#endif
 };
 
 /* The component type adjusts the DXGI format for signed/integer/float variants. */

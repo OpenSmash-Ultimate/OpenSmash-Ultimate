@@ -39,6 +39,7 @@
 
 /* ---- what kernel.c and the ring need from the rest of the runtime --------------------------- */
 int rt_trace;
+void skyline_note_sleep(void) {}   /* (hle_skyline.c: no Skyline plugins here) */
 u64 rt_clock_ns(void) { return clock_now_ns(); }
 void rt_call(Cpu *c, u64 guest_addr) { ((GuestFn *)(uintptr_t)guest_addr)(c); }
 const char *rt_describe(u64 guest_addr, char *buf, size_t n) { snprintf(buf, n, "test function %#llx", (unsigned long long)guest_addr); return buf; }

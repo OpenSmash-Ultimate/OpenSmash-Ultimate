@@ -14,8 +14,8 @@ This guide takes you from a fresh download to playing. No programming knowledge 
 
 **What you need:** a Windows 10 or 11 PC (64-bit, a processor with AVX2 or at the least SSE4.2 ([which](#the-instruction-set)), 16 GB of RAM is comfortable, about 60 GB free) and your own game files: the game as dumped from your Switch, with its **13.0.5 update** (WindowSmash needs version 13.0.5), your console's keys (`prod.keys` and `title.keys`) and its firmware. If you have played the game in **yuzu or Ryujinx on this PC, updated to 13.0.5, you already have all three**, and the installer finds them by itself. Otherwise, put the game (its `.xci`, `.nsp` or `.nca` files), its 13.0.5 update `.nsp` and your DLC `.nsp` files in one folder; [Part 2](#part-2-gather-your-game-files) below says what the files are.
 
-1. On **<https://github.com/OpenSmash-Ultimate/WindowSmash>**, click the green **Code** button, then **Download ZIP**. Extract the ZIP somewhere with room, for example to `C:\WindowSmash`. Keep it out of the Desktop and Documents folders: OneDrive may try to upload them, and the finished build is around 30 GB.
-2. Double-click **`Install WindowSmash.bat`** in that folder. Windows asks whether to run it (**The publisher could not be verified**): click **Run**. On some PCs a blue **Windows protected your PC** box comes instead: click **More info**, then **Run anyway**. Windows asks this about anything downloaded that isn't signed; the installer takes that mark off WindowSmash's other files, so it asks only this once.
+1. On **<https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate>**, click the green **Code** button, then **Download ZIP**. Extract the ZIP somewhere with room, for example to `C:\WindowSmash`. Keep it out of the Desktop and Documents folders: OneDrive may try to upload them, and the finished build is around 30 GB.
+2. Double-click **`Install WindowSmash.bat`** in that folder. Windows asks whether to run it (**The publisher could not be verified**): click **Run**. On some PCs a blue **Windows protected your PC** box comes up instead: click **More info**, then **Run anyway**. Windows asks this about anything downloaded that isn't signed; the installer takes that mark off WindowSmash's other files, so it asks only this once.
 3. A window opens with the folders it found for your game files, keys and firmware, and a line under each saying what is in it. Change a folder with **Browse…** if it is wrong or empty. If the game isn't version 13.0.5, the line under it says so in red: put the 13.0.5 update `.nsp` in the game folder and click **Check files**. Type the online name other players will see, and click **Set up and build**.
 4. Wait. The installer gets what is missing (Python, a compiler, SDL3), prepares your game files, and builds the game: **30 minutes to a few hours**, depending on your PC. You can keep using the PC meanwhile. If it stops, run `Install WindowSmash.bat` again: it carries on where it stopped.
 5. Play: double-click **`Play SSBU.bat`**, or the **Play SSBU** shortcut it put on the desktop.
@@ -98,7 +98,7 @@ You need these files from your own Switch:
 > **WindowSmash needs version 13.0.5 of the game**, its last update, and no other. The program and the data must both be 13.0.5's: the build checks both and stops with any other version. One version for everyone means anyone can play with anyone, and every bug is fixed in the same game. [Which copies count](UPDATES.md#what-counts-as-1305).
 
 > [!TIP]
-> **With `Install WindowSmash.bat` or `launchers\Build WindowSmash.bat` you don't need `romfs.bin`.** Put the game (a game card dump `.xci`, an `.nsp`, or its `.nca` files; or point at the folder yuzu or Ryujinx installed it in), its 13.0.5 update's `.nsp`, and your DLC `.nsp` files (loose, or in a `dlc` folder) into one folder. They find the program, decrypt what needs it, and apply the update over the game themselves. Decrypting the game needs about 15 GB more space and the update about 4 GB; both take a few minutes. The game as first released (version 1.0.0) is the best base for the update: it applies exactly. Over a game with an earlier update merged in, the update is rebuilt and checked ([how](UPDATES.md#how-the-installer-applies-it)).
+> **With `Install WindowSmash.bat` or `launchers\Build WindowSmash.bat` you don't need `romfs.bin`.** Put the game (a game card dump `.xci`, an `.nsp`, or its `.nca` files; or point at the folder yuzu or Ryujinx installed it in), its 13.0.5 update's `.nsp`, and your DLC `.nsp` files (loose, or in a `dlc` folder) into one folder. They find the program, decrypt what needs it, and apply the update over the game themselves. Compressed packages (`.nsz`) work too: each is first made plain once, in `dump\nsz` (as big as the package unpacked; seconds to minutes). Decrypting the game needs about 15 GB more space and the update about 4 GB; both take a few minutes. The game as first released (version 1.0.0) is the best base for the update: it applies exactly. Over a game with an earlier update merged in, the update is rebuilt and checked ([how](UPDATES.md#how-the-installer-applies-it)).
 
 <details>
 <summary><strong>What do "update applied" and "unencrypted" mean?</strong></summary>
@@ -183,9 +183,9 @@ The compiler turns the game into a Windows program. **You don't need to install 
 
 ### Step 5: Download WindowSmash
 
-1. On **<https://github.com/OpenSmash-Ultimate/WindowSmash>**, click the green **Code** button, then **Download ZIP**.
-2. Before extracting, right-click `WindowSmash-main.zip`, choose **Properties**, tick **Unblock** at the bottom if it's there, and click **OK**. This stops Windows from warning about every file inside.
-3. Extract the ZIP to `C:\` (right-click → **Extract All…**), then rename the folder `C:\WindowSmash-main` to **`C:\WindowSmash`**.
+1. On **<https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate>**, click the green **Code** button, then **Download ZIP**.
+2. Before extracting, right-click `OpenSmash-Ultimate-main.zip`, choose **Properties**, tick **Unblock** at the bottom if it's there, and click **OK**. This stops Windows from warning about every file inside.
+3. Extract the ZIP to `C:\` (right-click → **Extract All…**), then rename the folder `C:\OpenSmash-Ultimate-main` to **`C:\WindowSmash`**.
 
 > [!TIP]
 > Keep WindowSmash out of the Desktop and Documents folders: OneDrive may try to upload them, and the finished build is around 30 GB.
@@ -198,7 +198,7 @@ The compiler turns the game into a Windows program. **You don't need to install 
 With [Git for Windows](https://git-scm.com/download/win) installed, this does the same and makes updating easier later (`git pull`):
 
 ```powershell
-git clone https://github.com/OpenSmash-Ultimate/WindowSmash.git C:\WindowSmash
+git clone https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate.git C:\WindowSmash
 ```
 
 </details>
@@ -405,7 +405,11 @@ Double-click **`Install WindowSmash.bat`** again. It downloads the newest Window
 
 **Built from another game version before?** WindowSmash used to build other game versions too, most often 11.0.0. Such a folder is set up again as 13.0.5 the next time `Install WindowSmash.bat` runs, once your game folder has the 13.0.5 update: the game's files are prepared again and the game is built again, while your save, settings and prepared shaders stay. [A folder built from another version](UPDATES.md#a-folder-built-from-another-version) has the details, including what to do with an old `v13.0.5` folder.
 
-By hand: download the ZIP again, unblock it as in [step 5](#step-5-download-windowsmash), and copy the contents of its `WindowSmash-main` folder over `C:\WindowSmash`, replacing the files. Then build again ([step 14](#step-14-build-the-game), or double-click `launchers\Build WindowSmash.bat`). With Git, run `git pull` instead of downloading.
+By hand: download the ZIP again, unblock it as in [step 5](#step-5-download-windowsmash), and copy the contents of its `OpenSmash-Ultimate-main` folder over `C:\WindowSmash`, replacing the files. Then build again ([step 14](#step-14-build-the-game), or double-click `launchers\Build WindowSmash.bat`). With Git, run `git pull` instead of downloading.
+
+### A runtime update without a rebuild
+
+A build made with `python tools/build_game.py --game-dll` keeps the game in `build\ssbu_game.dll` and the runtime alone in `build\ssbu.exe`. A runtime release (`runtime-v<n>` on the project's GitHub releases, built by `.github/workflows/runtime-release.yml` from no game data) then replaces only the runtime: close the game and run `python tools\runtime_fetch.py runtime-v<n>`. It takes the release's file for your build's instruction set, checks it against the release's SHA256SUMS, keeps the old one as `ssbu.exe.old`, and puts it back if the new one does not accept your game library.
 
 ### If something goes wrong
 
@@ -442,7 +446,7 @@ By hand: download the ZIP again, unblock it as in [step 5](#step-5-download-wind
 The example paths are your game files in `D:\MyDump`, your keys in `D:\MyKeys` and your firmware in `D:\MyFirmware`; `python` must be 3.10 or newer. (`launchers\Build WindowSmash.bat` does the same from `python -m pip` on, and takes an emulator's installed-content folder as the game folder.)
 
 ```powershell
-git clone https://github.com/OpenSmash-Ultimate/WindowSmash.git
+git clone https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate.git WindowSmash
 cd WindowSmash
 python -m pip install -r requirements.txt
 python tools/msvc_deps.py install    # the compiler (asks about Microsoft's license terms); not needed with Visual Studio's Clang tools

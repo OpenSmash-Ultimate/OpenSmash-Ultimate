@@ -67,7 +67,7 @@ class Generated(unittest.TestCase):
     def test_the_librarys_side(self):
         text = game_dll.tables_text(self.runtime)
         self.assertIn('#include "game_dll.h"\n', text)
-        self.assertIn('static RtGameFn *rt_game_slots[12];\n', text)
+        self.assertIn(f'static RtGameFn *rt_game_slots[{len(CORE) + 4}];\n', text)   # (CORE, two HLE, two wraps)
         # each runtime function is one of its name, which calls through its slot as typed as its declaration
         self.assertIn('GuestFn *rt_lookup(u64 guest_addr) { return ((__typeof__(&rt_lookup))rt_game_slots[0])(guest_addr); }\n',
                       text)
@@ -79,10 +79,11 @@ class Generated(unittest.TestCase):
                       '{ ((__typeof__(&rt_trap))rt_game_slots[4])(c, pc, why); __builtin_unreachable(); }\n', text)
         self.assertIn('void rt_svc(Cpu *c, u32 number) { ((__typeof__(&rt_svc))rt_game_slots[5])(c, number); }\n', text)
         self.assertIn('u64 rt_ticks(void) { return ((__typeof__(&rt_ticks))rt_game_slots[6])(); }\n', text)
-        self.assertIn('void hle_nnBar(Cpu *c) { ((GuestFn *)rt_game_slots[8])(c); }\n', text)
-        self.assertIn('void hle_wrap_7100001234(Cpu *c) { ((GuestFn *)rt_game_slots[10])(c); }\n', text)
+        n = len(CORE)   # (the HLE functions' slots after CORE's)
+        self.assertIn(f'void hle_nnBar(Cpu *c) {{ ((GuestFn *)rt_game_slots[{n}])(c); }}\n', text)
+        self.assertIn(f'void hle_wrap_7100001234(Cpu *c) {{ ((GuestFn *)rt_game_slots[{n + 2}])(c); }}\n', text)
         self.assertIn('void hle_wrap_nnWrapped(Cpu *c, GuestFn *orig) '
-                      '{ ((void (*)(Cpu *, GuestFn *))rt_game_slots[11])(c, orig); }\n', text)
+                      f'{{ ((void (*)(Cpu *, GuestFn *))rt_game_slots[{n + 3}])(c, orig); }}\n', text)
         imports = re.search(r'static const RtGameImport imports\[\] = \{\n(.*?)\};', text, re.S).group(1)
         self.assertEqual(re.findall(r'\{"(\w+)", &rt_game_slots\[(\d+)\]\}', imports),
                          [(name, str(slot)) for slot, (name, _k) in enumerate(game_dll.imports(self.runtime))])
@@ -99,7 +100,7 @@ class Generated(unittest.TestCase):
         self.assertEqual(text.count('RT_GAME_EXPORT'), 1)
         self.assertIn('RT_GAME_EXPORT const RtGameTables *rt_game_tables(void) {\n', text)
         self.assertIn('(RtGameTables){RT_GAME_ABI, RT_GAME_SIZES, RT_GAME_ISA, boot, rt_nro_modules, rt_nro_count,\n'
-                      '                       12, imports, origs, 1, &hooks};\n', text)
+                      f'                       {n + 4}, imports, origs, 1, &hooks}};\n', text)
         self.assertNotIn('appledouble', text)
         self.assertNotIn('notAtTheStart', text)
         self.assertNotIn('header', text)
@@ -111,7 +112,7 @@ class Generated(unittest.TestCase):
         self.assertEqual(rows, [f'    {{"{n}", (RtGameFn *){n}, 0, 0}},' for n in CORE]
                          + ['    {"hle_wrap_7100001234", (RtGameFn *)hle_wrap_7100001234, 0x7100001234ull, &orig_7100001234},',
                             '    {"hle_wrap_nnWrapped", (RtGameFn *)hle_wrap_nnWrapped, 0, 0},', '    {0, 0, 0, 0}'])
-        self.assertIn('const u32 rt_game_func_count = 10;\n', text)
+        self.assertIn(f'const u32 rt_game_func_count = {len(CORE) + 2};\n', text)   # (CORE and the two wraps)
         # the original the runtime's wrapper calls, which the library has: until it is bound, the runtime's stub
         self.assertIn('static GuestFn *orig_7100001234 = rt_wrap_missing;\nvoid f_7100001234_orig(Cpu *c) { orig_7100001234(c); }\n',
                       text)
@@ -281,6 +282,7 @@ class WindowsLink(made_up.Folder):
         [(objs, options)] = self.linked
         self.assertEqual(objs[-3:], [self.obj('nro_table.obj'), str(self.module / 'g0000.obj'), str(self.module / 'g_module.obj')])
         self.assertNotIn(self.obj('game_funcs.obj'), objs)
+        # (one alias per wrap, straight to the stub: lld-link does not follow an alias to another alias - recomp.link)
         self.assertEqual(options, [f'/alternatename:f_{a:x}_orig=rt_wrap_missing' for a in sorted(recomp.hle_wraps())])
         self.assertEqual(self.libraries, [])
         self.assertFalse(self.dll.exists())

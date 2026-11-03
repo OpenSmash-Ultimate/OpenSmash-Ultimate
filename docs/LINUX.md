@@ -62,7 +62,7 @@ the build needs, finds your game files, and builds the game. It needs:
   (`prod.keys` and `title.keys`); and your firmware's `.nca` files. An emulator's own folders work
   as they are, with the game updated to 13.0.5 there.
 
-1. **Download WindowSmash.** On the [GitHub page](https://github.com/OpenSmash-Ultimate/WindowSmash), click
+1. **Download WindowSmash.** On the [GitHub page](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate), click
    **Code > Download ZIP**, then unpack it in your home folder, for example as `~/WindowSmash`.
 2. **Open a terminal in that folder.** Open the folder in your file manager, right-click an empty
    area, and choose **Open in Terminal**.
@@ -158,7 +158,7 @@ The game's graphics programs (*shaders*) are made the first time each one is nee
 a new effect can show a moment late once. To make them all in advance, run
 `bash launchers/prepare-shaders.sh` from a terminal (on a Steam Deck: in Desktop Mode). It shows a
 progress bar with the time left, runs at low priority, and keeps the PC awake meanwhile. A first run
-makes about 40,000 shaders: half an hour on a fast desktop, and probably an hour or two on
+makes about 65,000 shaders: half an hour on a 16-thread desktop, and probably an hour or two on
 a Steam Deck. You can stop it with Ctrl+C and start it again later; what is done stays done. It
 needs the game built first, and the game files where they were. It prepares the first step, the
 shader programs themselves; DXVK and the graphics driver still make their own GPU code from them
@@ -323,6 +323,7 @@ log names each pad as it connects, with its type and GUID.
 | `pacing = display` | Follows the monitor's refreshes on Windows; on Linux, it's the clock. |
 | `latency`, `hide_cursor` | As on Windows: 1–3 frames the GPU may work ahead, and hiding the idle mouse pointer. |
 | `render_scale` | As on Windows: draws the picture this many times bigger than 1920 × 1080 (`0.5`–`4`, or `auto` to match the screen at start). On a software Vulkan driver such as llvmpipe, keep `1`. |
+| `renderer` | `dxvk` (default): Direct3D 11 through DXVK, as above. `vulkan` asks for the Vulkan renderer that is in development; the Linux build has no Vulkan renderer of its own yet, so the log says so and DXVK draws. |
 
 **Shaders:** this folder carries the Windows build's compiled shaders that the game has used. Any
 other shader is compiled the first time it's needed, so a new effect can show a moment late once.

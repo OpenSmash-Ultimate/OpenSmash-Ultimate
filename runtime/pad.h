@@ -19,6 +19,17 @@ typedef struct PadState {
 void pad_start(void);                                     /* once; the first hid call does it */
 int pad_get(u32 slot, PadState *out);                     /* returns out->connected */
 int pad_keyboard_slot(void);                              /* the keyboard's slot, or -1 */
+/* The keyboard's keys (controllers.ini [keyboard]): binding i is console button i (0-15, NpadButton
+ * bits) or a stick direction (16-23: LSTICK_LEFT, _UP, _RIGHT, _DOWN, then RSTICK's), each with up to
+ * PAD_KEY_MAX keys as Windows virtual-key codes. pad_keyboard_state reads them with down(vk). */
+enum { PAD_KEYS = 24, PAD_KEY_MAX = 4 };
+u64 pad_keyboard_state(int (*down)(int vk), i32 *lx, i32 *ly, i32 *rx, i32 *ry);
+const char *pad_key_label(int i);                         /* "A", ..., "RSTICK_DOWN": the key in [keyboard] */
+int pad_key_index(const char *label);                     /* the other way round, -1 none */
+int pad_key_vks(int i, int vk[PAD_KEY_MAX]);              /* binding i's keys, how many */
+void pad_key_names(int i, char *out, int size);           /* "Z", "Left, Num4", "none" */
+int pad_key_parse(const char *name);                      /* a key's name: its code, 0 none, -1 no such key */
+void pad_key_name(int vk, char *out, int size);
 int pad_background(void);                                 /* pads work while the window is not focused */
 int pad_rumble_on(void);                                  /* 0: controllers.ini turns every pad's rumble off */
 /* Rumble on one side (1 left, 2 right) of a slot's pad, amplitude 0..1. */

@@ -17,6 +17,7 @@ WindowSmash plays the game's **Local Wireless** mode over the internet. To the g
 - [Private room](#private-room)
 - [If a room doesn't appear](#if-a-room-doesnt-appear)
 - [Run your own lobby](#run-your-own-lobby)
+- [Rollback netplay through the lobby or a private room](#rollback-netplay-through-the-lobby-or-a-private-room)
 - [Logs and privacy](#logs-and-privacy)
 - [Reference: environment variables](#reference-environment-variables)
 
@@ -86,7 +87,7 @@ Netplay version 3 adds two things to the online lobby, on the **Lobby** page of 
 2. Set **Netplay version** to **3**, then choose **Restart now**.
 3. Open the settings again and go to the **Lobby** page (the number key <kbd>5</kbd>).
 
-- **Rooms** lists each room's host, players, and whether it is open. A room you can't join says why: another game version, another WindowSmash version (and whose is older), or other mods. The list is asked for each time the page opens; select **Rooms** to ask again. To join a room, close the settings and pick it in **Local Wireless → Rooms List**, where the rooms you can join are too.
+- **Rooms** lists each room's host, players, and whether it is open. A room you can't join says why: another game version, another WindowSmash version (and whose is older), or other mods. With the cursor on a room, the help under the list shows its game build, WindowSmash (simulation) version and netplay version next to yours, and its mods, each marked **you don't have it** or **yours differs**; for a room you can't join, the mods only you have too (turn them off on the **Mods** page to join). ARCropolis' code patches count as a mod here. The list is asked for each time the page opens; select **Rooms** to ask again. To join a room, close the settings and pick it in **Local Wireless → Rooms List**, where the rooms you can join are too.
 - **Find a match** searches for another player with the same game, WindowSmash, mods and lobby code. You can close the settings while it searches: a message says when a match is found and who hosts. The host creates a room (**Local Wireless → Create a Room**), and the other player finds it first in their **Rooms List**. **Stop searching** or **Leave the match** ends it.
 
 With version 3 set, a lobby or private room of version 2 still works: the game joins it in version 2, and the Lobby page says why it has no rooms to show. Hosting a private room always uses version 2. `SSBU_NET_PROTOCOL=3` ([below](#reference-environment-variables)) or `3` in `online_protocol.txt` does the same as the setting.
@@ -116,7 +117,7 @@ The game's own **Online** menu works with WindowSmash's game server, which runs 
 | :--- | :--- |
 | An error as soon as you choose **Online** | Start the game with `Play SSBU.bat`, not `launchers\Play SSBU Offline.bat`, and check that the overlay (<kbd>F1</kbd>) says `Online`. |
 | An error code starting with **2306** | The game can't reach the game server. The lobby in `online_server.txt` has none (port 39420, or a lobby of your own run with `ssbu_relay.py`), or something blocks TCP to it. |
-| Quickplay keeps waiting | Nobody with your lobby code is searching right now. Find players on the [Discord server](https://discord.gg/pkgyYGf3YB). |
+| Quickplay keeps waiting | Nobody with your lobby code is searching right now. Find players on the [OpenSmash-Ultimate Discord](https://discord.gg/pkgyYGf3YB). |
 
 ## Direct connections and your internet address
 
@@ -138,7 +139,7 @@ The overlay's second line shows each player in your room, for example `Room: Bra
 Direct connections need a lobby running this version of `tools/ssbu_relay.py`. With an older lobby, or a player with an older WindowSmash, play goes through the lobby as before.
 
 > [!NOTE]
-> **Your internet address.** The players in a room with you learn your internet (IP) address, as they would playing online on a console. The lobby introduces only players whose games are already playing together in a room, and introduces each player in at most 20 rooms an hour.
+> **Your internet address.** The players in a room with you learn your internet (IP) address, as they would when playing online on a console. The lobby introduces only players whose games are already playing together in a room, and introduces each player in at most 20 rooms an hour.
 >
 > To keep your address to yourself, turn **Direct connections** off in the settings (**Online** page), then restart the game. Or create a file named `online_direct.txt` next to `Play SSBU.bat` (on Linux, next to `run.sh`) containing the word `off`. All your traffic then goes through the lobby, which gives your address to nobody.
 
@@ -156,7 +157,7 @@ One player hosts a room on their own PC; the others join it with the host's addr
    - **Room name:** type the name you agreed on and press <kbd>Enter</kbd>.
    - **UDP port:** press <kbd>Enter</kbd> to keep **39420**.
 3. If Windows Security asks about `ssbu.exe`, click **Allow**. If you set up your firewall by hand, it must let in **UDP** on that port.
-4. The launcher asks your router to open the port (UPnP). The address to give your friends, for example `203.0.113.7:39420`, appears in the launcher's window or in `netplay_address.txt`, and in the game's overlay (<kbd>F2</kbd>). Send it to the others.
+4. The launcher asks your router to open the port (UPnP). The address to give your friends, for example `203.0.113.7:39420`, appears in the launcher's window or in `netplay_address.txt`, and in the game's overlay (<kbd>F2</kbd>). Send it to the others. `netplay_address.txt` also has the same address as a **room code**, ten letters and digits such as `5ZQ9P-RK1Y8`, and one for friends on your own network: a friend can type the code wherever an address goes (case, dashes and spaces don't matter).
 5. In the game's main menu, choose **Local Wireless** (the icon of a console with waves, in the right-hand column), then **Create a Room**. When a friend's challenge appears, accept it.
 
 The address above is only an example. Use the one your own launcher shows, or a VPN or home-network address ([which address](#which-address-to-give)).
@@ -174,11 +175,27 @@ The address above is only an example. Use the one your own launcher shows, or a 
 
 Joining players don't need to change anything on their routers.
 
+The host's game only lets in players whose game matches its own: the same game build, the same WindowSmash, and the same mods (ARCropolis' code patches included). A player who doesn't match is told why, in the overlay (<kbd>F2</kbd>), on the settings' **Online → Now** row and in the log: which build each side has, or which mods only one side has or has in another copy, or that the code patches are on for one and off for the other. A player on an older WindowSmash, which doesn't say its mods, is let in as before.
+
+### On the same network: no address needed
+
+Players on the host's own network (the same home router, or one PC running two games) can skip the address and the room code. The host's game announces its room on the local network every second while it hosts, and a game set to look for it joins it by itself.
+
+1. The host starts hosting as above.
+2. Each other player sets the settings' **Online → Play online in** to **this network (LAN)** and restarts the game (or writes `lan` in `online_server.txt`, or starts the game with `SSBU_NET_RELAY=lan`).
+3. The game listens for about a second and a half, then joins the first room it heard from a game of the same version, in that host's room. The overlay (<kbd>F2</kbd>) and **Online → Now** say which, and the **Lobby** page shows **Rooms on this network** with the count. If no host has started yet, it says `no room on this network yet (still looking)` and keeps listening: it joins as soon as a host starts, and moves to the next host if its host leaves.
+
+To join only one room among several hosts, give the room name too: `lan ourroom` in `online_server.txt`, or `SSBU_NET_ROOM=ourroom`. A room of another game build or WindowSmash version is heard but not joined (the Lobby page counts it apart). The host's game still checks the mods as for any joining player.
+
+The announcement is a small UDP packet to the multicast group `239.255.13.13` and to the broadcast address, port **39501**, that routers don't pass on. The host's firewall must let in UDP on its relay port (39420), as for any player on its network; the looking game listens on port 39501, so Windows Security may ask about `ssbu.exe` the first time. The host doesn't announce its room while **Direct connections** is off (the player keeps their address to themselves) or with `SSBU_NET_LAN=0`: players on its network then use the room code for this network in `netplay_address.txt`, or its address.
+
+**Two games on one PC**, to try it: start the host with `SSBU_NET_HOST=1`, and the second game with `SSBU_NET_RELAY=lan` (each in a folder and with a `netplay_id.txt` of its own). The second game finds the first one's room through the PC's own copy of the multicast packet.
+
 ### Which address to give
 
 | Where the players are | Address the others type | What the host sets up |
 | :--- | :--- | :--- |
-| Same home network | The host PC's local address and port | Let incoming UDP through the host's firewall. |
+| Same home network | Nothing: Play online in > this network ([above](#on-the-same-network-no-address-needed)), or the host PC's local address and port | Let incoming UDP through the host's firewall. |
 | Different homes, UPnP works | The public address the launcher shows | Nothing more: the launcher opened the port. |
 | Different homes, port forwarded by hand | The host's public address and port | Forward **UDP 39420** on the router to the host PC; allow it in the firewall. |
 | Everyone on one VPN or virtual LAN | The host's VPN address and port | Everyone joins the same virtual network and allows traffic between its members. |
@@ -191,8 +208,10 @@ If your internet provider uses carrier-grade NAT, or your router sits behind ano
 | What you see | What to check |
 | :--- | :--- |
 | The overlay stays on `connecting` | The host's address and port, that the host's game is still running, the host's firewall rule for incoming UDP, the router's port mapping, and whether the relay can be reached. |
+| `Netplay: no room on this network yet (still looking)` | Set to this network, the game hasn't heard a host of its version yet. Check that the host's game is hosting, that both PCs are on the same network (not a guest Wi-Fi that keeps devices apart), and that the host's **Direct connections** is on. With `SSBU_NET_LOG=1` the log names every room heard. |
 | `no answer from … - playing offline` | The lobby in `online_server.txt` hasn't answered for five seconds. Check the address with `python tools/ssbu_relay.py --probe <address>`. |
 | `Netplay: WindowSmash needs game 13.0.5: run the installer again` | Your game was built from another version of the game, by an older WindowSmash. Put the game's 13.0.5 update in your game folder and run `Install WindowSmash.bat` again: it sets the folder up again as 13.0.5, keeping your save and settings ([how](UPDATES.md#a-folder-built-from-another-version)). |
+| `Netplay: the host runs other mods` (or `another game version`, `another WindowSmash version`) | The lines under it say what differs: the mods only the room has, the ones you have in another copy, the ones only you have, or the code patches on one side only. Turn mods on or off on the settings' **Mods** page (or in the launcher) to match, and restart. |
 | Online, a room is missing from the list | Both players need the same lobby code (or none), and both overlays must say `Online`. The list refreshes every few seconds. |
 | Both are connected, but in different groups | Private-room names must match exactly. |
 | The relay count is right, but no Local Wireless room | The host must create a room in the game: being connected doesn't create one. Wait for the list to refresh. |
@@ -235,6 +254,21 @@ python tools/ssbu_online_lobby.py --port 39421 --state online-state --verbose
 
 The lobby checks where messages come from, limits how fast each player can send, and carries each room's traffic only between that room's players. A game accepts direct packets only from addresses the lobby gave it, carrying that pair's secret, and only from players in its own room. Even so, it's a transport for players you trust: lobby codes and room names aren't passwords, and the traffic isn't encrypted or authenticated.
 
+## Rollback netplay through the lobby or a private room
+
+Rollback netplay (`SSBU_RB=1`, being tried out: [technical guide](TECHNICAL.md#rollback-netplay-ssbu_rb)) can carry its messages through the same connection as Local Wireless instead of its own UDP port: set netplay up as usual (the lobby, or a private room) and add `SSBU_RB_NET=relay`. Nobody opens a port for it; a private room's host needs only the relay port it already has. Games in one Local Wireless room of the lobby send straight to each other when their routers allow it, and through the lobby otherwise.
+
+- **Who is player 1:** with `SSBU_RB_NET=relay` (or `relay,auto`), the players are numbered by their address in the room, lowest first, once the room has `SSBU_RB_NET_PLAYERS` players (2 by default; set the same on every PC). In a private room the host's game is player 1.
+- **A lobby code without a room:** players of one lobby code (not `smash`) who aren't in a Local Wireless room together give their numbers instead: `relay,0` for the host, `relay,1` (or `relay,-1`: the host gives one) for the others, with `SSBU_NET_PROTOCOL=3`.
+
+Two games on one PC through your own lobby, for a test:
+
+```powershell
+python tools/ssbu_relay.py --bind 127.0.0.1
+# host:   SSBU_RB=1 SSBU_NET_RELAY=127.0.0.1:39420 SSBU_NET_PROTOCOL=3 SSBU_NET_ROOM=rbtest SSBU_RB_NET=relay,0
+# joiner: SSBU_RB=1 SSBU_NET_RELAY=127.0.0.1:39420 SSBU_NET_PROTOCOL=3 SSBU_NET_ROOM=rbtest SSBU_RB_NET=relay,1
+```
+
 ## Logs and privacy
 
 The launchers write `build\play.log`. For more network detail, set `SSBU_NET_LOG=1` before starting the game (`2` logs every call). Logs and the overlay can show player names, folder names and internet addresses, so read any excerpt before you share it. With Online mode, the lobby's game server also keeps your player name and ratings.
@@ -246,16 +280,20 @@ The game server's log (`--nex-log`: `0` quiet, `1` each call, `2` every packet, 
 | Variable | Meaning |
 | :--- | :--- |
 | `SSBU_NET_HOST=1` | Start a relay inside the game and join it (hosting a private room). |
-| `SSBU_NET_RELAY=address[:port]` | Join the online lobby or the relay at this address. |
+| `SSBU_NET_RELAY=address[:port]` | Join the online lobby or the relay at this address. `lan`: join a private room hosted on this network, found by itself ([how](#on-the-same-network-no-address-needed)); `online_server.txt` takes `lan` too. |
 | `SSBU_NET_ROOM` | The lobby code online, or the room name in a private room. Default `smash`, the public lobby. |
 | `SSBU_NET_NAME` | The player name others see. |
 | `SSBU_NET_PORT` | The relay's port. Default `39420`. |
 | `SSBU_NET_UPNP=0` | Don't ask the router to open the port. |
-| `SSBU_NET_BIND` | Limit which address the built-in relay listens on; used by local tests. |
+| `SSBU_ONLINE_STUN=<host:port>` or `off` | When the router opens no port, the hosting game asks this STUN server (default `stun.l.google.com:19302`) how its relay looks from outside, and gives a room code for that address: it works with routers that keep the mapping for everyone. `off`: no STUN. |
+| `SSBU_NET_BIND` | Limit which address the built-in relay listens on; used by local tests. A relay on `127.0.0.1` announces its room to this PC's loopback only. |
+| `SSBU_NET_LAN=0` | Hosting, don't announce the room on the local network. |
+| `SSBU_NET_LAN_PORT`, `SSBU_NET_LAN_TEST=1` | Local tests: the announcements' port (default `39501`), and announcements to `127.0.0.1` only, the looking game listening there. |
 | `SSBU_NET_DIRECT=0` | Online, send all traffic through the lobby. `Play SSBU.bat` sets it when `online_direct.txt` says `off`. |
 | `SSBU_NET_PROTOCOL=3` | Being tried out: join the lobby in netplay version 3, which has the [room browser and matchmaking](#room-browser-and-matchmaking-being-tried-out). A lobby of version 2 says no, and the game joins it in version 2. `2`, the default, is version 2 only. Without it, `online_protocol.txt` decides (`3` or `2`; the settings' **Online → Netplay version** writes it). Hosting a private room is always version 2. |
 | `SSBU_NET_TEST_NAT=1`, `SSBU_NET_TEST_BLOCK=<seconds>` | Local tests: filter incoming packets as a router would, or cut direct paths that many seconds after the start. |
 | `SSBU_NET_LOG=1` / `2` | Network logging: a summary, or more detail. |
+| `SSBU_RB_NET=relay[,<player>[,<delay>,<frames>]]` | With `SSBU_RB=1`: rollback netplay's messages through this netplay connection. `<player>`: `auto` (by address in the room), `0`-`3`, or `-1` (the host gives one). See [above](#rollback-netplay-through-the-lobby-or-a-private-room). |
 | `SSBU_ONLINE_COUNTRY` | The country Online mode reports, as two letters such as `GB`. Default `US`. |
 | `SSBU_ONLINE_SERVER` | `off` turns Online mode off. Otherwise the game server's address inside the lobby, `10.13.0.1:60000` by default; only for tests. |
 

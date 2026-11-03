@@ -12,7 +12,10 @@
 
 #include "host.h"
 #include "net.h"
+#include "display.h"      /* (display_ini_path) */
 #include "fight_test.h"   /* (FIXED_TIME) */
+#include "language.h"
+#include "settings.h"
 
 #define CREATE_SYSTEM_EVENT "_ZN2nn2os17CreateSystemEventEPNS0_15SystemEventTypeENS0_14EventClearModeEb"
 #define SIGNAL_SYSTEM_EVENT "_ZN2nn2os17SignalSystemEventEPNS0_15SystemEventTypeE"
@@ -28,11 +31,39 @@ HLE(_ZN2nn2oe10InitializeEv) {
 HLE(_ZN2nn2oe16GetOperationModeEv) { c->x[0] = 1; }                 /* docked: TV output */
 HLE(_ZN2nn2oe20GetCurrentFocusStateEv) { c->x[0] = 1; }             /* in focus */
 HLE(_ZN2nn2oe25TryPopNotificationMessageEPj) { c->x[0] = 0; }       /* no messages */
-HLE(_ZN2nn2oe18GetDesiredLanguageEv) {                             /* a LanguageCode, by value */
-    u64 code = 0;
-    memcpy(&code, "en-US", 5);
-    c->x[0] = code;
+/* The game's language: SSBU_LANGUAGE, else display.ini's language (the settings menu writes it;
+ * auto or missing: the system's), else the system's display language - Windows' user interface
+ * language (not its regional format), or LANG / LC_ALL elsewhere. Asked once; logged once. */
+static u64 desired_language(void) {
+    static u64 code;
+    if (code) return code;
+    char name[96] = "", from[32] = "SSBU_LANGUAGE";
+    const char *env = getenv("SSBU_LANGUAGE");
+    if (env && *env) snprintf(name, sizeof name, "%s", env);
+    else if (settings_ini_get(display_ini_path(), NULL, "language", name, sizeof name) && name[0] && _stricmp(name, "auto"))
+        snprintf(from, sizeof from, "display.ini");
+    else {
+        name[0] = 0;
+        snprintf(from, sizeof from, "the system");
+#ifdef _WIN32
+        wchar_t list[256];
+        ULONG count = 0, size = sizeof list / sizeof *list;
+        if (GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &count, list, &size) && count > 0)
+            WideCharToMultiByte(CP_UTF8, 0, list, -1, name, sizeof name, NULL, NULL);
+#else
+        const char *l = getenv("LC_ALL");
+        if (!l || !*l) l = getenv("LANG");
+        if (l) snprintf(name, sizeof name, "%s", l);
+#endif
+    }
+    const char *pick = language_pick(name);
+    u64 v = 0;
+    memcpy(&v, pick, strlen(pick));
+    fprintf(stderr, "[env] the game's language: %s (from %s, \"%s\")\n", pick, from, name);
+    code = v;
+    return v;
 }
+HLE(_ZN2nn2oe18GetDesiredLanguageEv) { c->x[0] = desired_language(); }   /* a LanguageCode, by value */
 HLE(_ZN2nn2oe25GetProgramTotalActiveTimeEv) { c->x[0] = rt_now_ns(); }
 HLE(_ZN2nn2oe24GetExpectedVolumeBalanceEPfS1_) { *P(f32, c->x[0]) = 1.0f; *P(f32, c->x[1]) = 1.0f; }
 HLE(_ZN2nn2oe28RequestToRelaunchApplicationEv) { rt_fatal("the game asked to be relaunched"); }
@@ -318,13 +349,36 @@ HLE(_ZN2nn3pdm30QueryApplicationPlayStatisticsEPNS0_25ApplicationPlayStatisticsE
 HLE(_ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_) { memcpy(P(void, c->x[0]), P(void, c->x[1]), 256); c->x[0] = 0; }
 
 /* ---- errors ---------------------------------------------------------------------- */
+/* The console's error viewer shows "Error Code: 2MMM-DDDD" in a dialog, and the game waits until the
+ * player closes it. Here: a message box over the game's window (Windows; elsewhere the log only),
+ * the game waiting the same way. Not in test runs (SSBU_SEQ, SSBU_HEADLESS) or with SSBU_ERROR_DIALOG=0,
+ * and at most 3 a run: a game that keeps failing (a network gone) is not a wall of boxes. */
+void watchdog_pause(int on);   /* debug_watchdog.c */
+void *gfx_window_handle(void);
+static void error_dialog(u32 category, u32 number) {
+#ifdef _WIN32
+    static LONG shown;
+    const char *off = getenv("SSBU_ERROR_DIALOG"), *headless = getenv("SSBU_HEADLESS");
+    if ((off && off[0] == '0') || getenv("SSBU_SEQ") || (headless && headless[0] == '1')) return;
+    if (InterlockedIncrement(&shown) > 3) return;
+    wchar_t text[200];
+    _snwprintf(text, 200, L"Error Code: %04u-%04u\n\nAn error has occurred.", category, number);
+    watchdog_pause(1);   /* (the game waits for the dialog: no frames meanwhile) */
+    MessageBoxW((HWND)gfx_window_handle(), text, L"Error", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    watchdog_pause(0);
+#else
+    (void)category; (void)number;
+#endif
+}
 HLE(_ZN2nn3err9ShowErrorENS0_9ErrorCodeE) {   /* ErrorCode { u32 category; u32 number } in x0 */
     fprintf(stderr, "[game] error shown: %04u-%04u\n", (u32)(c->x[0] & 0xFFFFFFFF), (u32)(c->x[0] >> 32));
     if (net_log() > 1) rt_backtrace();
+    error_dialog((u32)(c->x[0] & 0xFFFFFFFF), (u32)(c->x[0] >> 32));
 }
 HLE(_ZN2nn3err9ShowErrorENS_6ResultE) {
     fprintf(stderr, "[game] error shown: result %#x (module %u, description %u)\n", (u32)c->x[0],
             (u32)c->x[0] & 0x1FF, ((u32)c->x[0] >> 9) & 0x1FFF);
+    error_dialog(2000 + ((u32)c->x[0] & 0x1FF), ((u32)c->x[0] >> 9) & 0x1FFF);
 }
 HLE(_ZN2nn4diag6detail9AbortImplEPKcS3_S3_i) {
     rt_fatal("the game aborted: %s in %s (%s:%d)", c->x[0] ? P(char, c->x[0]) : "?", c->x[1] ? P(char, c->x[1]) : "?",

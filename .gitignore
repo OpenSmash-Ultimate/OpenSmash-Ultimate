@@ -7,9 +7,13 @@
 /firmware/
 /dist/
 /save/
+# Your own Miis (tools/miis.py)
+/miis/
 /save_backups/
 /cache/
 /screenshots/
+# Pictures the game saves (runtime/hle_album.c: the Vault's album)
+/album/
 /captures/
 /netplay_address.txt
 /netplay_id.txt
@@ -82,3 +86,4 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+tools/modmanager/installed.json

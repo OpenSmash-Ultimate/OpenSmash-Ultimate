@@ -13,11 +13,13 @@ These switches make a scripted run of the game quicker and less dependent on the
 | `SSBU_SEQ_LOG=<n>` | With `SSBU_SEQ`: logs the draw calls of the last frame shown every n polls, to find the ranges for `@draws`. |
 | `SSBU_SEQ_KEYBOARD=1` | With `SSBU_SEQ`: the keyboard still plays. It is ignored otherwise. |
 | `SSBU_SKIP_MOVIES=<n>` | Every movie's stream ends after n samples (`1` means 12), and the game ends the movie as it ends any movie. |
+| `SSBU_HEADLESS=1` | The window is placed off every screen and never takes the focus, so a test run draws as usual without covering the desktop (Windows). |
 | `SSBU_FIGHT_HASH=<file>` | One line per fighter per fight frame, with a running hash, to `<file>` (`1`: to the standard output). |
-| `SSBU_DETERMINISTIC=1` | Meant to make the same input give the same fight: fixed random generators, no extra logic frames, `SSBU_SEQ` counted in fight frames. `SSBU_DET_OFF=<mask>` turns parts off. |
+| `SSBU_DETERMINISTIC=1` | Meant to make the same input give the same fight: fixed random generators (the 9 script ones and, from 2026-11-03, the game's global one, whose state at the fight depended on how long the menus took), no extra logic frames, `SSBU_SEQ` counted in fight frames. `SSBU_DET_OFF=<mask>` turns parts off. |
 | `SSBU_FIXED_SEED=<n>` | The clock reads and random bytes the game seeds its generators from come from n. |
 | `SSBU_DEBUG_MATCH=<settings>` | The fighters, stage and rules of the match, whatever the menus chose. `SSBU_DEBUG_MATCH_LIST=<file>` takes one line per match. |
 | `SSBU_DEBUG_END=<n>s` | The run ends after n seconds of fight (`<n>` without `s`: n fight frames). |
+| `SSBU_CHARACTERS=<folder>` | New fighters: each `<folder>\<name>\fighter.json` is a fighter of its own (kind 0x5E on), playable with `SSBU_DEBUG_MATCH=p1=<name>`. With `SSBU_FIGHTER_BIN` (its script libraries) and `SSBU_MODS` (the registry's components). Unset, nothing changes. |
 
 `SSBU_INPUT` (buttons on a timetable in seconds) is unchanged, and it still adds to player 1 when `SSBU_SEQ` is set.
 
@@ -169,6 +171,7 @@ Settings are separated by commas. A setting left out keeps what the menus chose.
 | :--- | :--- |
 | `p1=<fighter>`, `p2=<fighter>` | Player 1's or player 2's fighter, by the name in its `ui_chara_` id: `mario`, `donkey`, `kirby`, ... |
 | `p3=<fighter>`, `p4=<fighter>` | Two more CPU players. A player 3 or 4 that the menus didn't make a CPU becomes one, with player 2's choice and its own colour. |
+| `c1=<0-7>` ... `c4=<0-7>` | A player's costume (its colour on the select screen, `c00` to `c07`), as ssbu-recomp's `c1`..`c8`. |
 | `p2=cpu`, `p2=human` | Player 2's type. |
 | `cpu=<1-9>` | The CPU players' level. |
 | `stage=<name>` | The stage, by the name in its `ui_stage_` id: `end`, `battle_field`, `mario_castle64`, ... `fd` and `final_destination` mean `end`; `battlefield` means `battle_field`. |
@@ -202,6 +205,14 @@ Not yet checked in a run:
 
 - that the run ends at the count asked, with that line and exit code 0, on each OS;
 - that the ready-go flag is down in the menus and up in a fight (the log's `fight 1 on` and `fight off` lines).
+
+## `SSBU_CHARACTERS`
+
+New fighters, each a folder `<folder>\<name>` with a `fighter.json` (`name`, `donor`: the game's fighter it is built on, `dll`: its scripts) ([`hle_fighter_registry.c`](../runtime/hle_fighter_registry.c)). Read at start: kinds from 0x5E on in name order, one script module each (`lua2cpp_<name>`, a module with no NRO: the donor's code with the library's scripts in its dispatch table), and the game builds every path of the fighter with its own name (`fighter/<name>/c00`, `fighter/<name>/param/vl.prc`, `sound/bank/fighter/se_<name>_c00.nus3bank` ...). `SSBU_FIGHTER_BIN=<folder>` takes `<folder>\<name>.dll` before the folder's own library; `SSBU_MODS` defaults to `registry_bin\` beside the program (the registry's components: the kind and roster DLLs). With the variable unset the game runs as before.
+
+A path the game's data has under the new name - a file, a directory (a load group: `fighter/<name>/c00`, `cmn/ai`, `c00/camera`) or a folder of the search tables (`fighter/<name>/motion/body/c00`, `effect/fighter/<name>`) - is the fighter's own; any other falls back to the donor's path. The log has one line per path: `[registry] path asked: fighter/waluigi/c00 (...) -> OWN directory of waluigi in the data`, or `... -> DONOR FALLBACK: fighter/dolly/c00`. The paths get into the data as a mod: `python tools/fighter_mod.py <folder>\<name> --tree <tree> --apply` puts the folder's data files into `<tree>/mods/<name>` with a `config.json` of `{"new-fighters": {"<name>": "<donor>"}}`, and `tools/mods.py apply` copies the donor's directories under the new name with the folder's files in the donor's place (`Table.clone_fighter`; a file named `0x<hash40 of its name>.<ext>` is taken by that hash). Give `--tree` a tree of your own: `apply` rewrites its `dump/modules/romfs.cfg`. mods.py needs a RomFS whose tables come after data.arc (the installer's); one made from an extracted romfs folder with its tables first has to be laid out again first.
+
+What was run (2026-11-03, 13.0.5, gate2 sequence, `SSBU_DETERMINISTIC=1 SSBU_FIXED_SEED=1`, `p2=donkey,p2=cpu,cpu=3,stage=end`): Waluigi (donor `dolly`) with his folder as a mod - all 21 paths asked are his own, 0 fallbacks; his model, portrait and stock icon in the fight; two runs with the same fight hash over 42,034 lines. A Mario copy (`n3test`) on the unmodded data and Mario on the modded data without the variable both give Mario's fight hash.
 
 ## An example run
 
@@ -244,7 +255,7 @@ Only whole hash lines are read, so a cut last line and the game's other output (
 
 ## The Phase 2 gate: the fight hash across two runs
 
-The gate is passed when two runs of the same scripted match give the same hash log. Nobody has run it yet. The recipe:
+The gate is passed when two runs of the same scripted match give the same hash log. First run on 2026-10-26 (Windows, Direct3D 11, `SSBU_SPEED=4`, `SSBU_FIXED_SEED=1`, Mario against a level 9 CPU Donkey Kong on Final Destination): two runs with player 1's input below were the same over 5,203 lines (2,602 fight frames), and two runs without player 1's input over 5,234. Wait for the fight with a plain `@fight`: an `@untilmark:fight:A` ends only once its press under way is over, so the fight's steps then start up to 8 ticks late, a different number in each run (two such runs went apart at the first input). Without `SSBU_FIXED_SEED` the fighters' starting sides changed from run to run, and once with it too, in a run with `SSBU_ROLLBACK_RING` on: something chosen before the fight still depends on timing. The recipe:
 
 1. Build as usual. Player 1 is the sequence's; unplug the other pads, so that players 2 to 8 get no input.
 2. Write the sequence, `gate.seq`. Your steps to *Ready to fight* go first: their draw counts are your build's, so find them with `SSBU_SEQ_LOG` ([an example run](#an-example-run) shows how). The fighters and stage you pick don't matter, as `SSBU_DEBUG_MATCH` replaces them. Then the fight, as below. From `@fight` on, a step is a fight frame, so the input lands on the same frame in both runs. The wait of 520 fight frames is for the countdown, as in ssbu-recomp's own sequence for this test (`ssbu-recomp/tests/seq_det_play.txt`). The input itself is made up.

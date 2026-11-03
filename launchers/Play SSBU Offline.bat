@@ -11,5 +11,5 @@ set "SSBU_NET_NAME="
 rem Starts the native Super Smash Bros. Ultimate offline (Play SSBU.bat plays online). Its log goes
 rem to build\play.log.
 cd /d "%~dp0.."
-if not exist build\ssbu.exe (echo The game isn't built here yet: run Install WindowSmash.bat. & pause & exit /b 1)
+if not exist build\ssbu.exe (echo The game isn't built here yet: run OpenSmash.exe. & pause & exit /b 1)
 start "SSBU log" /min cmd /c "build\ssbu.exe dump\modules --status 30 > build\play.log 2>&1"

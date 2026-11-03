@@ -3,7 +3,8 @@
  * on a cable. The input thread (hle_pad.c) makes players of their ports like any other pad.
  *
  * A port's state is in SDL's terms, as hle_pad.c's other pads: sticks -32767..32767 with +y down,
- * triggers 0..32767. Elsewhere than on Windows there is nothing here: SDL reads them. */
+ * triggers 0..32767. On macOS macos/gcadapter.c reads the Wii U adapter (through libusb: with
+ * GCAdapterDriver holding it, SDL can't); on Linux there is nothing here: SDL reads them. */
 #pragma once
 #include "host.h"
 

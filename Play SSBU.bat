@@ -26,6 +26,6 @@ if %errorlevel%==2 goto direct
 if errorlevel 1 (pause & exit /b 1)
 exit /b 0
 :direct
-if not exist build\ssbu.exe (echo The game isn't built here yet: run Install WindowSmash.bat. & pause & exit /b 1)
+if not exist build\ssbu.exe (echo The game isn't built here yet: run OpenSmash.exe. & pause & exit /b 1)
 start "SSBU log" /min cmd /c "build\ssbu.exe dump\modules --status 30 --online > build\play.log 2>&1"
 exit /b 0

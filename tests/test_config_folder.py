@@ -262,7 +262,7 @@ class FolderTests(ConfigTestCase):
         self.assertEqual(self.dump(self.top / 'config' / 'controllers.ini'), SR_PADS_READ)
         pads = after['config/controllers.ini'].decode()
         self.assertTrue(pads.startswith('; controllers.ini: how pads become players.'), pads[:80])
-        for kept in ('outer_zone = 0.95', 'ignore = 0300000000000000aaaa000000000000', 'ignore = 0300000000000000bbbb000000000000',
+        for kept in ('outer_zone = 95', 'ignore = 0300000000000000aaaa000000000000', 'ignore = 0300000000000000bbbb000000000000',
                      'A = Z', 'name = Made-up pad', '; map.A = south, button7', 'map.LSTICK_LEFT = dpleft', 'axis.LX = leftx',
                      '[type joystick]'):
             self.assertIn(kept, pads)
@@ -411,10 +411,42 @@ class ControllersTests(ConfigTestCase):
         self.assertNotIn('player 2 =', got)
         self.assertTrue(got.startswith('keyboard_player=1 '), got)
         text = (self.top / 'c.ini').read_text()
-        for kept in ('outer_zone = 0.95', 'A = Z', 'axis.LX = leftx', '; map.A = south, button7'):   # (kept through the changes)
+        for kept in ('outer_zone = 95', 'A = Z', 'axis.LX = leftx', '; map.A = south, button7'):   # (kept through the changes)
             self.assertIn(kept, text)
         self.run_test('convert', str(self.top / 'c.ini'), str(self.top / 'again.ini'))   # (this port's file: as it reads)
         self.assertEqual(self.dump(self.top / 'again.ini'), got)
+
+    def test_keyboard_keys(self):
+        """[keyboard]: this file's keys, the default file's (today's keys: nothing differs), and ssbu-recomp's
+        [keyboard] carried over by the conversion (STICK_L as LSTICK; its movement kept as written)."""
+        write(self.top / 'c.ini', b'[keyboard]\nA = Space, J\nLSTICK_LEFT = A\nLSTICK_RIGHT = d\nL = none\nUP = Num8\n')
+        self.assertEqual(self.dump(self.top / 'c.ini'), 'keyboard_player=1 background=1 rumble=1\nkey A = Space, J\nkey L = none\n'
+                         'key UP = Num8\nkey LSTICK_LEFT = A\nkey LSTICK_RIGHT = D\n'
+                         '[device default] layout=-1 style=-1 deadzone=-1 rumble=-1 trigger_threshold=-1\n')
+        r = self.run_test('load')   # (the default file written: its [keyboard] is today's keys)
+        self.assertNotIn('key ', r.stdout)
+        self.assertIn('[keyboard]\n', (self.top / 'config' / 'controllers.ini').read_text())
+        self.assertIn('\nA = Z\n', (self.top / 'config' / 'controllers.ini').read_text())
+        sr = '\r\n'.join(['[keyboard]', 'player = 3', 'A = Z', 'B = X', 'L = Q', 'R = E', 'ZL = A', 'ZR = S', 'STICK_L = none',
+                          'STICK_R = T', 'LEFT = J', 'UP = I', 'LSTICK_LEFT = LEFT', 'RSTICK_LEFT = none', 'movement = ssf2', '']).encode()
+        write(self.top / 'sr.ini', sr)
+        want = ('keyboard_player=3 background=1 rumble=1\nkey RSTICK = T\nkey L = Q\nkey R = E\nkey ZL = A\nkey ZR = S\n'
+                'key LEFT = J\nkey UP = I\nkey RSTICK_LEFT = none\n'
+                '[device default] layout=-1 style=-1 deadzone=-1 rumble=-1 trigger_threshold=-1\n')
+        r = self.run_test('dump', str(self.top / 'sr.ini'))
+        self.assertEqual(r.stdout, want)
+        self.assertNotIn('unknown', r.stderr)
+        self.run_test('convert', str(self.top / 'sr.ini'), str(self.top / 'c2.ini'))
+        keys_part = want.split('[device default]')[0]   # (the written file has the defaults' [device default] too)
+        self.assertEqual(self.dump(self.top / 'c2.ini').split('[device default]')[0], keys_part)
+        text = (self.top / 'c2.ini').read_text()
+        self.assertIn('\nL = Q\n', text)          # (in place of the default's line, in [keyboard])
+        self.assertNotIn('\nL = A\n', text)
+        self.assertIn('movement = ssf2', text)    # (nothing here for it yet: kept as written)
+        self.run_test('set', str(self.top / 'c2.ini'), 'keyboard', 'L', '-')   # (the menu's Delete: the default again)
+        self.assertNotIn('key L =', self.dump(self.top / 'c2.ini'))
+        self.run_test('set', str(self.top / 'c2.ini'), 'keyboard', 'A', 'Space')   # (the menu's new key)
+        self.assertIn('key A = Space\n', self.dump(self.top / 'c2.ini'))
 
     def test_unknown_keys_kept_on_rewrite(self):
         write(self.top / 'c.ini', b'[general]\r\nkeyboard_player = 1\r\nmade_up = 7   ; a key of a later version\r\n'
