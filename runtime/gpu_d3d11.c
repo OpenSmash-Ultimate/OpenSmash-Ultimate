@@ -12,14 +12,17 @@
 
 #include "debug_profile.h"
 #include "display.h"
-#include "gpu_backend.h"
+#include "gpu_d3d11.h"
 #include "gpu_menu.h"
 #include "gpu_overlay.h"
+#include "gpu_renderer.h"
 #include "net.h"
 #include "pad.h"
 #include "gpu_shader.h"
 #include "gpu_shader_cache.h"
 #include "gpu_texture.h"
+#include "gpu_watch.h"
+#include "gpu_window.h"
 #include "kernel_watch.h"   /* (kernel_write_watch) */
 #include <math.h>
 #include <d3d11.h>
@@ -325,89 +328,7 @@ static Surface *surface(u64 guest, u32 width, u32 height, u32 format, int depth)
 }
 
 /* ---- window and device ------------------------------------------------------------ */
-/* Debug keys, taken at the next present: F1 the overlay, F2 its details, F3 a screenshot,
- * F4 a log of the next frame's draws and its render targets, F5 depth sampling on/off, F6 a
- * 10-second sampling profile. */
-static volatile LONG hotkeys;
-
-#ifdef _WIN32
-/* The settings menu's keys (gpu_menu.c): Esc always, the others while it is open. */
-static int menu_keys(UINT msg, WPARAM w, LPARAM l) {
-    if (msg == WM_CHAR) {
-        if (!menu_is_open()) return 0;
-        menu_char((unsigned)w);
-        return 1;
-    }
-    if (msg != WM_KEYDOWN) return 0;
-    int repeat = (l & (1 << 30)) != 0, key = 0;
-    switch (w) {
-    case VK_ESCAPE: if (!repeat) key = MENU_KEY_ESC; break;
-    case VK_UP: key = MENU_KEY_UP; break;
-    case VK_DOWN: key = MENU_KEY_DOWN; break;
-    case VK_LEFT: key = MENU_KEY_LEFT; break;
-    case VK_RIGHT: key = MENU_KEY_RIGHT; break;
-    case VK_RETURN: if (!repeat) key = MENU_KEY_ENTER; break;
-    case VK_BACK: key = MENU_KEY_BACKSPACE; break;
-    case VK_DELETE: key = MENU_KEY_DELETE; break;
-    case VK_TAB: if (!repeat) key = GetKeyState(VK_SHIFT) & 0x8000 ? MENU_KEY_SHIFT_TAB : MENU_KEY_TAB; break;
-    }
-    if (!key || (key != MENU_KEY_ESC && !menu_is_open())) return 0;
-    menu_key(key);
-    return 1;
-}
-
-#ifdef _WIN32
-/* (rollback netplay, hle_rb_core.c: what a match's set-up waits for, after the window's own title;
- * "" puts the title back. With a timeout: the window's thread never blocks the caller) */
-void gfx_set_status(const char *text) {
-    static char base[128];
-    if (!window) return;
-    if (!base[0]) GetWindowTextA(window, base, sizeof base);
-    char t[320];
-    if (text && *text) snprintf(t, sizeof t, "%s  -  %s", base, text); else snprintf(t, sizeof t, "%s", base);
-    SendMessageTimeoutA(window, WM_SETTEXT, 0, (LPARAM)t, SMTO_ABORTIFHUNG, 200, NULL);
-}
-#endif
-
-void rbl_upnp_close(void);   /* (rollback netplay, hle_rb_link.c: the router's port mapping, if SSBU_RB_UPNP=1 made one; ExitProcess runs no atexit) */
-static LRESULT CALLBACK window_proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
-    LRESULT result;
-    if (display_message(h, msg, w, l, &result)) return result;   /* size, full screen, pointer (gpu_display.c) */
-    if (msg == WM_CLOSE) { fprintf(stderr, "[gfx] window closed\n"); gfx_closing(); rbl_upnp_close(); fflush(stderr); ExitProcess(0); }
-    if (msg == WM_KEYDOWN && w >= VK_F1 && w <= VK_F6 && !(l & (1 << 30))) InterlockedOr(&hotkeys, 1 << (w - VK_F1));
-    if (menu_keys(msg, w, l)) return 0;
-    return DefWindowProcW(h, msg, w, l);
-}
-
-static DWORD WINAPI window_thread(LPVOID done) {
-    SetThreadDescription(GetCurrentThread(), L"window");
-    /* The launcher's icon, embedded in this exe (tools/cc.py). A missing one leaves the class without an icon. */
-    HICON icon = (HICON)LoadImageW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(1), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
-    HICON small_icon = (HICON)LoadImageW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(1), IMAGE_ICON, 16, 16, 0);
-    WNDCLASSEXW wc;
-    memset(&wc, 0, sizeof wc);
-    wc.cbSize = sizeof wc;
-    wc.style = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = window_proc;
-    wc.hInstance = GetModuleHandleW(NULL);
-    wc.hIcon = icon;
-    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-    wc.lpszClassName = L"ssbu";
-    wc.hIconSm = small_icon ? small_icon : icon;
-    RegisterClassExW(&wc);
-    window = display_create_window(wc.hInstance, L"ssbu", L"Super Smash Bros. Ultimate (native)");
-    SetEvent((HANDLE)done);
-    MSG m;
-    while (GetMessageW(&m, NULL, 0, 0) > 0) { TranslateMessage(&m); DispatchMessageW(&m); }
-    return 0;
-}
-#else
-/* Linux: the window is SDL's, made and run by the main thread (linux/window.c), which passes
- * the debug keys on here; DXVK takes the SDL_Window as the swap chain's HWND. */
-void *rt_window(void);
-void gfx_hotkey(int n) { InterlockedOr(&hotkeys, 1 << n); }
-#endif
+/* The window is gpu_window.c's (made at init: gfx_window_open), with the debug keys. */
 
 /* The picture's texture at w x h (the presented surface's host size), made again when that
  * changes. Typeless: written and saved as the plain bytes, shrunk through an sRGB view. */
@@ -698,13 +619,10 @@ static BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *c) {
     InitializeCriticalSection(&lock);
 #ifdef _WIN32
     driver_stacks();   /* (before Direct3D loads the driver) */
-    HANDLE done = CreateEventW(NULL, TRUE, FALSE, NULL);
-    CreateThread(NULL, 0, window_thread, done, 0, NULL);
-    WaitForSingleObject(done, INFINITE);
-#else
-    window = (HWND)rt_window();
 #endif
+    window = (HWND)gfx_window_open();
     if (!window) { fprintf(stderr, "[gfx] cannot create the window\n"); return TRUE; }
+    gfx_renderer_start(window);   /* (display.ini's renderer: this one draws unless another can: gpu_renderer.c) */
 
     D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
@@ -887,8 +805,8 @@ u64 gfx_stat_busy_ns, gfx_stat_upload_bytes, gfx_stat_gpu_waits, gfx_stat_compos
 static struct { u32 size, bank, extent; char shader[24]; } gfx_stat_biggest_cb;
 
 static volatile DWORD last_enter_thread;
-DWORD gfx_lock_owner(void) { return ready ? (DWORD)(uintptr_t)lock.OwningThread : 0; }
-DWORD gfx_last_enter_thread(void) { return last_enter_thread; }
+DWORD d3d11_lock_owner(void) { return ready ? (DWORD)(uintptr_t)lock.OwningThread : 0; }
+DWORD d3d11_last_enter_thread(void) { return last_enter_thread; }
 
 static int enter(void) {
     InitOnceExecuteOnce(&once, init, NULL, NULL);
@@ -923,7 +841,7 @@ static int draw_logging;   /* (below) */
 static void note_sampled(Surface *s);   /* (F4, below) */
 static void save_sampled(void);
 
-void gfx_clear(const u32 *regs, u32 arg) {
+void d3d11_clear(const u32 *regs, u32 arg) {
     if (!enter()) return;
     if (draw_logging) save_sampled();
     gfx_stat_clears++;
@@ -1842,7 +1760,7 @@ int gfx_warm_shaders_main(const char *dir, const char *luid) {
 /* The game is closing (its window, or the settings menu's Quit): with a driver that makes GPU
  * code on its own threads, the shader cache is drawn once for that driver's own cache, by a
  * process of its own that goes on after this one ends (see "first draws"). */
-void gfx_closing(void) {
+void d3d11_closing(void) {
 #ifdef _WIN32
     static LONG once;
     if (!ready || !warm_mode || InterlockedExchange(&once, 1)) return;
@@ -1975,7 +1893,7 @@ static void video_memory(u64 *local, u64 *shared) {
     if (a) IDXGIAdapter_Release(a);
     if (dd) IDXGIDevice_Release(dd);
 }
-void gfx_status_lines(void) {
+void d3d11_status_lines(void) {
     if (!ready) return;
 #ifdef _WIN32
     driver_threads_line();
@@ -2014,7 +1932,7 @@ static void enqueue_shader(Shader *s) {
 /* For a crash or freeze report: what each compiler thread is doing (to line, a line at a time),
  * its program kept next to the disk cache (shadercrash/) so it can be compiled again outside the
  * game. */
-void gfx_report_compiles(void (*line)(const char *text)) {
+void d3d11_report_compiles(void (*line)(const char *text)) {
     char text[600];
     static const char *const what[] = {"idle", "reading its DXBC from the disk cache", "fxc compiling its HLSL", "the driver compiling its DXBC"};
     DWORD self = GetCurrentThreadId();
@@ -2330,7 +2248,7 @@ static void guest_wrote(u64 va, u64 bytes) {   /* bytes == 0: anywhere */
     wrote_log[wrote_seq % WROTE_LOG] = (Wrote){lo, hi};
     wrote_seq++;
 }
-void gfx_guest_wrote(u64 va, u64 bytes) {
+void d3d11_guest_wrote(u64 va, u64 bytes) {
     if (!enter()) return;
     guest_wrote(va, bytes);
     leave();
@@ -2468,7 +2386,7 @@ static void read_gpu(u64 va, u32 size, void *dst) {
 #define DIV_UP_(a, b) (((a) + (b) - 1) / (b))
 
 static int draw_logging;   /* (defined below) */
-int gfx_draw_logging(void) { return draw_logging; }
+int d3d11_draw_logging(void) { return draw_logging; }
 
 /* ---- GPU-resident buffers ---------------------------------------------------------- */
 /* What compute programs write stays on the GPU: a buffer per guest range they write (and per
@@ -2504,110 +2422,7 @@ u64 gfx_stat_residents, gfx_stat_resident_pages;
 extern u64 gpu_stat_batches;
 static int watched(u64 g, u64 size);
 
-/* The write watch keeps one bit a page of the alias area, and a query that resets it takes the
- * news from everyone else watching that page. Textures, kept constant buffers, compute inputs
- * and resident regions share pages - memory a scene gives up is handed out again for something
- * else - and whoever asked first kept the news for good: the No Contest screen skinned the
- * fighters' arms from inputs never taken again (stretched over the screen). So every question
- * goes through here: pages found written get the next stamp, kept per page, and each user keeps
- * the clock as it was when it last asked ("seen"): its data is current unless one of its pages
- * has a newer stamp. */
-#define WATCH_CHUNK 512   /* pages a chunk: 2 MB */
-typedef struct WatchChunk { u64 newest, page[WATCH_CHUNK]; } WatchChunk;
-static WatchChunk *watch_chunks[ALIAS_SIZE / (WATCH_CHUNK * 0x1000ull)];
-static u64 watch_clock;   /* stamps given so far */
-
-/* Take the write watch's news for guest pages [lo, hi) (page aligned, watched): resetting the
- * bits as they are read, so a write after this is news next time. (Through the kernel, which
- * shares the system's bits with the rollback ring when that is on: kernel_watch.h.) */
-static void watch_take_locked(u64 lo, u64 hi);
-/* (rollback netplay, SSBU_RB: hle_rb_state.c's savestates ask too, from the game's main thread, so
- * one at a time: watch_rb_take and the others below) */
-static SRWLOCK watch_lock = SRWLOCK_INIT;
-static void watch_take(u64 lo, u64 hi) {
-    AcquireSRWLockExclusive(&watch_lock);
-    watch_take_locked(lo, hi);
-    ReleaseSRWLockExclusive(&watch_lock);
-}
-static void watch_take_locked(u64 lo, u64 hi) {
-    static void *pages[65536];   /* (256 MB: the largest range asked about, in one call) */
-    void *first;
-    ULONG_PTR count = 1;
-    ULONG granularity;
-    /* (asking is cheap, resetting is not - even where nothing was written: so ask first) */
-    if (kernel_write_watch(WATCH_RENDERER, 0, (void *)lo, hi - lo, &first, &count, &granularity) != 0 || !count) return;
-    for (u64 at = (u64)first; at < hi;) {
-        count = 65536;
-        if (kernel_write_watch(WATCH_RENDERER, WRITE_WATCH_FLAG_RESET, (void *)at, hi - at, pages, &count, &granularity) != 0 || !count) return;
-        u64 stamp = ++watch_clock;
-        for (ULONG_PTR k = 0; k < count; k++) {
-            u64 p = ((u64)pages[k] - ALIAS_BASE) >> 12;
-            WatchChunk **c = &watch_chunks[p / WATCH_CHUNK];
-            if (!*c && !(*c = calloc(1, sizeof **c))) continue;
-            (*c)->page[p % WATCH_CHUNK] = (*c)->newest = stamp;
-        }
-        if (count < 65536) return;
-        at = (u64)pages[count - 1] + 0x1000;
-    }
-}
-
-/* The first page in [p, hi) stamped after `seen` (hi if none). */
-static u64 watch_next(u64 p, u64 hi, u64 seen) {
-    while (p < hi) {
-        u64 i = (p - ALIAS_BASE) >> 12, end = (i / WATCH_CHUNK + 1) * WATCH_CHUNK;
-        const WatchChunk *c = watch_chunks[i / WATCH_CHUNK];
-        if (c && c->newest > seen)
-            for (; i < end && ALIAS_BASE + (i << 12) < hi; i++)
-                if (c->page[i % WATCH_CHUNK] > seen) return ALIAS_BASE + (i << 12);
-        p = ALIAS_BASE + (end << 12);
-    }
-    return hi;
-}
-
-/* (rollback netplay, SSBU_RB) The savestate's own questions about the alias area, through the same
- * stamps, so the textures' news stays theirs: take the news for [lo, hi) and say the clock; the
- * first page in [p, hi) stamped after `seen`. */
-u64 watch_rb_take(u64 lo, u64 hi) {
-    AcquireSRWLockExclusive(&watch_lock);
-    watch_take_locked(lo, hi);
-    u64 now = watch_clock;
-    ReleaseSRWLockExclusive(&watch_lock);
-    return now;
-}
-u64 watch_rb_next(u64 p, u64 hi, u64 seen) { return watch_next(p, hi, seen); }
-/* (SSBU_RB_STAMPS=3) The same, its ranges asked on several threads at once: watch_rb_begin takes
- * the lock and the stamp, then watch_rb_scan from any thread (ranges whole watch chunks apart,
- * pages: room for 65536), then watch_rb_end. */
-u64 watch_rb_begin(void) { AcquireSRWLockExclusive(&watch_lock); return ++watch_clock; }
-void watch_rb_end(void) { ReleaseSRWLockExclusive(&watch_lock); }
-void watch_rb_scan(u64 lo, u64 hi, u64 stamp, void **pages) {
-    void *first;
-    ULONG_PTR count = 1;
-    ULONG granularity;
-    if (kernel_write_watch(WATCH_RENDERER, 0, (void *)lo, hi - lo, &first, &count, &granularity) != 0 || !count) return;
-    for (u64 at = (u64)first; at < hi;) {
-        count = 65536;
-        if (kernel_write_watch(WATCH_RENDERER, WRITE_WATCH_FLAG_RESET, (void *)at, hi - at, pages, &count, &granularity) != 0 || !count) return;
-        for (ULONG_PTR k = 0; k < count; k++) {
-            u64 p = ((u64)pages[k] - ALIAS_BASE) >> 12;
-            WatchChunk **c = &watch_chunks[p / WATCH_CHUNK];
-            if (!*c && !(*c = calloc(1, sizeof **c))) continue;
-            (*c)->page[p % WATCH_CHUNK] = (*c)->newest = stamp;
-        }
-        if (count < 65536) return;
-        at = (u64)pages[count - 1] + 0x1000;
-    }
-}
-
-/* Has guest memory [g, g + size) been written since *seen? (*seen moves on to now.) Ask before
- * reading the memory, so that a write meanwhile is news next time. */
-static int watch_written(u64 g, u64 size, u64 *seen) {
-    u64 lo = g & ~0xFFFull, hi = (g + size + 0xFFF) & ~0xFFFull;
-    watch_take(lo, hi);
-    int written = watch_next(lo, hi, *seen) < hi;
-    *seen = watch_clock;
-    return written;
-}
+/* (the write watch's stamps: gpu_watch.h) */
 
 /* Views and buffers given up during a frame may still be in this frame's bindings (or the
  * arrays they are being collected in): they are released after the present. */
@@ -2953,12 +2768,12 @@ static ID3D11ShaderResourceView *upload_composed(int stage, u32 slot, u64 va, co
 }
 
 /* The copy engine and resident data. */
-int gfx_copy_resident(u64 dst_va, u64 src_va, u64 bytes) {
+int d3d11_copy_resident(u64 dst_va, u64 src_va, u64 bytes) {
     if (!bytes || bytes > (256u << 20) || !enter()) return 0;
     Resident *src = resident_overlapping_gpu(src_va, (u32)bytes);
     if (!src || src_va < src->va || src_va + bytes > src->va + src->size) {
         leave();
-        if (src) gfx_resident_flush(src_va, bytes);   /* partly resident: through guest memory */
+        if (src) d3d11_resident_flush(src_va, bytes);   /* partly resident: through guest memory */
         return 0;
     }
     Resident *dst = resident_acquire(dst_va, (u32)bytes);   /* may merge regions: look the source up again */
@@ -2987,7 +2802,7 @@ int gfx_copy_resident(u64 dst_va, u64 src_va, u64 bytes) {
 }
 
 /* Bring the GPU's data for [va, va + bytes) back to guest memory (waits for the GPU). */
-void gfx_resident_flush(u64 va, u64 bytes) {
+void d3d11_resident_flush(u64 va, u64 bytes) {
     if (!enter()) return;
     guest_wrote(va, bytes);
     for (u32 i = 0; i < nresidents; i++) {
@@ -3021,7 +2836,7 @@ static void kept_apply(u64 lo, u64 hi);
 static void kept_flush(void);
 
 /* Guest memory in [va, va + bytes) changed under a resident region: update the GPU's copy. */
-void gfx_resident_written(u64 va, u64 bytes) {
+void d3d11_resident_written(u64 va, u64 bytes) {
     if (!bytes || !enter()) return;
     guest_wrote(va, bytes > (256u << 20) ? 0 : bytes);
     if (bytes > (256u << 20)) { leave(); return; }
@@ -3674,7 +3489,7 @@ static void kept_flush(void) {
 
 /* The command stream wrote guest memory at [va, va + bytes): runs of it are applied to the
  * kept buffers together, before anything is drawn. */
-void gfx_stream_wrote(u64 va, u64 bytes) {
+void d3d11_stream_wrote(u64 va, u64 bytes) {
     if (pending_hi && pending_hi == va) { pending_hi += bytes; return; }
     if (pending_hi && enter()) { kept_flush(); leave(); }
     pending_lo = va;
@@ -3683,7 +3498,7 @@ void gfx_stream_wrote(u64 va, u64 bytes) {
 
 /* A command list has been run: what it wrote reaches the kept buffers before another
  * thread's draws can use them. */
-void gfx_stream_end(void) {
+void d3d11_stream_end(void) {
     if (pending_hi && enter()) { kept_flush(); leave(); }
 }
 
@@ -4034,7 +3849,7 @@ static void gpu_times_frame(void) {
     free(t);
 }
 
-void gfx_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
+void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
     if (!enter()) return;
     kept_flush();
     if (draw_logging) save_sampled();
@@ -4785,19 +4600,19 @@ static void note_unmapped(Span *s, u64 lo, u64 size) {   /* (one waiting already
     gfx_stat_unmapped++;
 }
 
-void gfx_gpu_unmapped(u64 va, u64 size) {
+void d3d11_gpu_unmapped(u64 va, u64 size) {
     if (!ready || !enter()) return;   /* (nothing is kept before the renderer is up) */
     note_unmapped(&unmapped_va, va, size);
     leave();
 }
 
-void gfx_guest_unmapped(u64 addr, u64 size) {
+void d3d11_guest_unmapped(u64 addr, u64 size) {
     if (!ready || !enter()) return;
     note_unmapped(&unmapped_guest, addr, size);
     leave();
 }
 
-void gfx_dispatch(const u32 *regs, const u32 *q) {
+void d3d11_dispatch(const u32 *regs, const u32 *q) {
     if (!enter()) return;
     kept_flush();
     if (draw_logging) save_sampled();
@@ -4876,7 +4691,7 @@ void gfx_dispatch(const u32 *regs, const u32 *q) {
             }
             if (!(cs->written_mask >> k & 1) && !over && (uav[k] = input_uav(va, size))) continue;   /* only read: cached */
         } else if (over)
-            gfx_resident_flush(va, size);   /* learning diffs it all against guest memory, which needs the GPU's data first */
+            d3d11_resident_flush(va, size);   /* learning diffs it all against guest memory, which needs the GPU's data first */
         if (size > gcap) { gdata = realloc(gdata, size); gcap = size; }
         read_gpu(va, size, gdata);
         bound[k] = rw_upload(k, gdata, size);
@@ -4926,7 +4741,7 @@ void gfx_dispatch(const u32 *regs, const u32 *q) {
             ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)b->staging, 0);
             if (changed) {
                 cs->written_mask |= 1u << k;
-                gfx_resident_written(va_of[k], size_of[k]);   /* a region over it takes the new data too */
+                d3d11_resident_written(va_of[k], size_of[k]);   /* a region over it takes the new data too */
             }
         }
     leave();
@@ -4974,7 +4789,7 @@ static void clear_channels(Surface *s, const float color[4], u32 mask) {
 u64 gfx_stat_blits;
 static ID3D11SamplerState *point_sampler;
 
-void gfx_blit2d(const u32 *regs) {
+void d3d11_blit2d(const u32 *regs) {
     if (!enter()) return;
     if (draw_logging) save_sampled();
     forget_draw_state();
@@ -5121,7 +4936,7 @@ static void check_device(HRESULT hr, const char *doing) {
 void watchdog_present(void);   /* debug_watchdog.c */
 void hitch_present(void);      /* debug_profile.c */
 
-void gfx_present(u64 guest, u32 width, u32 height) {
+void d3d11_present(u64 guest, u32 width, u32 height) {
     (void)width; (void)height;
     if (!enter()) return;
     watchdog_present();
@@ -5253,7 +5068,7 @@ void gfx_present(u64 guest, u32 width, u32 height) {
     capture(final_tex, back);   /* (before the overlay) */
 
     /* debug keys and the overlay */
-    LONG keys = InterlockedExchange(&hotkeys, 0);
+    LONG keys = (LONG)gfx_take_hotkeys();
     static double f4_at = -1;   /* SSBU_F4_AT: the second to press F4 at (debug runs) */
     if (f4_at == -1) f4_at = getenv("SSBU_F4_AT") ? atof(getenv("SSBU_F4_AT")) : -2;
     if (f4_at >= 0 && rt_now_ns() > (u64)(f4_at * 1e9)) { f4_at = -2; keys |= 8; }
@@ -5415,11 +5230,9 @@ void gfx_present(u64 guest, u32 width, u32 height) {
     leave();
 }
 
-int gfx_window_focused(void) { return window && GetForegroundWindow() == window; }
-void *gfx_window_handle(void) { return window; }
 
 /* The output (monitor) the swap chain is on, referenced; NULL before there is one (display pacing). */
-void *gfx_display_output(void) {
+void *d3d11_display_output(void) {
     if (!ready || !enter()) return NULL;
     IDXGIOutput *output = NULL;
     if (FAILED(IDXGISwapChain1_GetContainingOutput(swapchain, &output))) output = NULL;

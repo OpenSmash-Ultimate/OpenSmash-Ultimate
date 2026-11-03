@@ -53,7 +53,8 @@ static struct {
     char gpu[64];
     float render_scale;   /* 0: auto */
     double speed;         /* SSBU_SPEED (test runs): 1 normal */
-} cfg = {MODE_WINDOWED, 1280, 720, 3, 1, 1, PACING_CLOCK, 0, "auto", 1.0f, 1.0};
+    int renderer;         /* RENDERER_* (renderer.h) */
+} cfg = {MODE_WINDOWED, 1280, 720, 3, 1, 1, PACING_CLOCK, 0, "auto", 1.0f, 1.0, RENDERER_DEFAULT};
 
 static const char DEFAULT_INI[] =
     "; display.ini: the game's window and the pacing of its frames. Read when the game starts; the\n"
@@ -142,6 +143,19 @@ static const char DEFAULT_INI[] =
     ";   The game's log (build\\play.log) lists the cards it found at its start.\n"
     "gpu = auto\n"
 #endif
+#ifndef __APPLE__
+    "\n"
+#ifdef _WIN32
+    "; renderer = d3d11 | vulkan\n"
+    ";   d3d11:  Direct3D 11, the renderer the game is played and tested with.\n"
+#else
+    "; renderer = dxvk | vulkan\n"
+    ";   dxvk:   Direct3D 11 through DXVK, the renderer the game is played and tested with.\n"
+#endif
+    ";   vulkan: the Vulkan renderer, in development. Until it can draw the game, the game checks Vulkan\n"
+    ";           on this PC at its start, says what it found in its log, and draws as before.\n"
+    "renderer = " RENDERER_DEFAULT_NAME "\n"
+#endif
     ;
 
 static void parse_window(const char *v) {
@@ -165,6 +179,13 @@ static void parse_render_scale(const char *v) {
     if (!_stricmp(v, "auto")) cfg.render_scale = 0;
     else if (end != v && x >= 0.5 && x <= 4) cfg.render_scale = (float)x;
     else { fprintf(stderr, "[display] render_scale is auto or a number from 0.5 to 4, not '%s': 1 it is\n", v); cfg.render_scale = 1; }
+}
+
+/* renderer = d3d11 | dxvk | metal (the system's own: renderer.h) | vulkan */
+static void parse_renderer(const char *v, const char *where) {
+    int r = renderer_parse(v);
+    if (r < 0) fprintf(stderr, "[display] %s: renderer is %s or vulkan, not '%s': %s it is\n", where, RENDERER_DEFAULT_NAME, v, RENDERER_DEFAULT_NAME);
+    cfg.renderer = r < 0 ? RENDERER_DEFAULT : r;
 }
 
 static float overlay_scale = 1;   /* overlay_scale = 0.25-2 */
@@ -215,6 +236,7 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else if (!_stricmp(key, "overlay_scale")) parse_overlay_scale(value);
         else if (!_stricmp(key, "gpu")) snprintf(cfg.gpu, sizeof cfg.gpu, "%s", value);
         else if (!_stricmp(key, "render_scale")) parse_render_scale(value);
+        else if (!_stricmp(key, "renderer")) parse_renderer(value, path);
         else if (!_stricmp(key, "volume")) {}   /* (the master volume: ipc_audio.c's audio_master_volume reads it) */
         else fprintf(stderr, "[display] %s: unknown setting '%s'\n", path, key);
     }
@@ -224,6 +246,7 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     if ((env = getenv("SSBU_PACING")) && *env) parse_pacing(env);
     if ((env = getenv("SSBU_WINDOW_SIZE")) && *env) sscanf(env, "%dx%d", &cfg.width, &cfg.height);
     if ((env = getenv("SSBU_RENDER_SCALE")) && *env) parse_render_scale(env);
+    if ((env = getenv("SSBU_RENDERER")) && *env) parse_renderer(env, "SSBU_RENDERER");
     if (!speed_parse(env = getenv("SSBU_SPEED"), &cfg.speed))
         fprintf(stderr, "[display] SSBU_SPEED is a number of times 60 frames a second, up to %g (0: uncapped), not '%s': normal speed\n", SPEED_MAX, env);
     if (cfg.width < 320) cfg.width = 320;
@@ -243,12 +266,15 @@ int display_latency(void) { load(); return cfg.latency; }
 Pacing display_pacing(void) { load(); return cfg.pacing; }
 const char *display_gpu(void) { load(); return cfg.gpu; }
 float display_render_scale(void) { load(); return cfg.render_scale; }
+int display_renderer(void) { load(); return cfg.renderer; }
 
 /* (the settings menu) the render scale it saved: shown from now on, the renderer's own counts
  * only at the next start */
 static float saved_render_scale;
 static int render_scale_saved;
 void display_set_render_scale(float scale) { saved_render_scale = scale; render_scale_saved = 1; }
+static int saved_renderer = -1;   /* (the same for the renderer: -1 none saved) */
+void display_set_renderer(int renderer) { saved_renderer = renderer == RENDERER_VULKAN ? RENDERER_VULKAN : RENDERER_DEFAULT; }
 int display_overlay(void) { load(); return cfg.overlay; }
 float display_overlay_scale(void) { load(); return overlay_scale; }
 
@@ -259,6 +285,7 @@ void display_settings(DisplaySettings *out) {
     load();
     *out = (DisplaySettings){cfg.mode, cfg.width, cfg.height, cfg.latency, cfg.hide_cursor, cfg.overlay, cfg.pacing, "", render_scale_saved ? saved_render_scale : cfg.render_scale};
     snprintf(out->gpu, sizeof out->gpu, "%s", cfg.gpu);
+    out->renderer = saved_renderer >= 0 ? saved_renderer : cfg.renderer;
 }
 
 void display_set_pacing(Pacing pacing) { load(); cfg.pacing = pacing; }

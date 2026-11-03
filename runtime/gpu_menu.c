@@ -88,7 +88,7 @@ enum {
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
     R_LANGUAGE, R_VOLUME, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
-    R_KEYS, R_KEYS_BACK, R_KEYS_RESET,
+    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER,
     R_ROOM_FIRST = 60,    /* + the room's place in the list */
     R_REMAP_FIRST = 100,  /* + console button */
     R_MOD_FIRST = 200,    /* + the mod's place in mods.json (MENU_MODS at most) */
@@ -622,6 +622,17 @@ static void build(void) {
         snprintf(r->value, sizeof r->value, "%s", ds.gpu);
         note_env(r, "SSBU_GPU");
 #endif
+#ifndef __APPLE__
+        r = add(R_RENDERER, K_CHOICE, W_RESTART, "Renderer",
+#ifdef _WIN32
+                "Direct3D 11: the renderer the game is played and tested with. Vulkan: in development; until it can draw the game, "
+#else
+                "DXVK: Direct3D 11 on Vulkan, the renderer the game is played and tested with. Vulkan: in development; until it can draw the game, "
+#endif
+                "the game checks Vulkan at its start, says what it found in its log, and draws as before.");
+        snprintf(r->value, sizeof r->value, "%s", renderer_name(ds.renderer));
+        note_env(r, "SSBU_RENDERER");
+#endif
         break;
     case P_PADS:
         if (!npads_connected) {
@@ -864,6 +875,12 @@ static void change(const Row *row, int dir) {
         i = i < 0 ? (dir > 0 ? 0 : n - 1) : cycle(i, n, dir);
         set_display("render_scale", SCALES[i]);
         display_set_render_scale(VALUES[i]);   /* (shown now; the renderer takes it at the next start) */
+        break;
+    }
+    case R_RENDERER: {   /* the system's own, then vulkan */
+        int next = cycle(ds.renderer == RENDERER_VULKAN, 2, dir) ? RENDERER_VULKAN : RENDERER_DEFAULT;
+        set_display("renderer", renderer_name(next));
+        display_set_renderer(next);   /* (shown now; the renderer is chosen at the next start) */
         break;
     }
 #ifdef _WIN32
