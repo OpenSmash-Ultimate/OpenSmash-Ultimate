@@ -5,9 +5,10 @@
  *
  * The binding map: the HLSL's registers as Vulkan descriptor bindings, one binding a register, in
  * one descriptor set a stage (the vertex program's set 0, the pixel program's set 1, a compute
- * program's set 0). Constant buffers (b#) are uniform buffers; buffers read or written (t# and u#
- * as ByteAddressBuffer / RWByteAddressBuffer / RWStructuredBuffer) storage buffers; textures (t#)
- * sampled images; samplers (s#) samplers. The SPIR-V is 1.3 (Vulkan 1.1) and may use
+ * program's set 0). Constant buffers (b#) are uniform buffers; buffers only read (t# as
+ * ByteAddressBuffer) uniform texel buffers, read through an R32_UINT view (vkd3d-shader's SPIR-V for
+ * a raw SRV); buffers written (u# as RWByteAddressBuffer / RWStructuredBuffer) storage buffers;
+ * textures (t#) sampled images; samplers (s#) samplers. The SPIR-V is 1.3 (Vulkan 1.1) and may use
  * SPV_KHR_float_controls (Shader Model 5 flushes 32-bit denormals): the device needs
  * VK_KHR_shader_float_controls. Plain C, no system headers: tools/dev/spirvtest.c
  * checks it on the shader cache. */
