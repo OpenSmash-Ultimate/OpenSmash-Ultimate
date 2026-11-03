@@ -52,6 +52,9 @@ and romfs.cfg is switched to it (the game as it is: romfs_vanilla.cfg, kept).
     the fighter's other slot directories (camera, result, kirbycopy, movie), a linked fighter's
     (Pyra's slot makes Mythra's and both's, fighter/element), and the like slot's files it
     doesn't list, shared to the game's (a path with no name known made from the like one's hash);
+  - a new fighter of OpenSmash's own (config.json's "new-fighters": {name: donor}, which
+    tools/fighter_mod.py writes; not ARCropolis'): the donor's directories copied under the new
+    name, the mod's files in the donor's place (Table.clone_fighter);
 Limits, as against ARCropolis on a Switch: a file in a folder the game doesn't have, with no
 config.json telling of its directory, is skipped and listed.
 """
@@ -547,6 +550,63 @@ def reslot2(h, at, old, new):
     return reslot(reslot(h, at, old[1], new[1]), at - 1, old[0], new[0])
 
 
+# ---- hashes of paths whose text is only partly known (a new fighter's: see Table.clone_fighter) ----
+# A file named by its name's hash40, as the game's data stores most names (motions: 0x17a1e0db16.nuanmb):
+# ten hex digits, the hash40 of the whole name (extension included), an extension after them.
+HASHED_LEAF = re.compile(r"^0x([0-9a-f]{10})(?:\.([^./]+))?$", re.I)
+
+
+def crc_shift(value, n):
+    """What a CRC-32 `value` adds to the CRC of a text that has `n` more bytes after it: crc32(a + b)
+    = crc32(b) ^ crc_shift(crc32(a), len(b)) (CRC-32 is linear: zlib.crc32 continued over zero bytes)."""
+    zeros = b"\0" * n
+    return zlib.crc32(zeros, value) ^ zlib.crc32(zeros, 0)
+
+
+def join_hash(head, leaf):
+    """The hash40 of a text from the hash40s of its two parts (a folder with its "/", a name)."""
+    n = leaf >> 32
+    return ((leaf & 0xFFFFFFFF) ^ crc_shift(head & 0xFFFFFFFF, n)) | ((head >> 32) + n) << 32
+
+
+def rename_hash(h, old, new):
+    """The hash40 of a path that begins with the text `old`, with `new` in its place (the rest of the path
+    known only by the hash: fighter/dolly/motion/body/c00/<a name> -> fighter/waluigi/...)."""
+    n = (h >> 32) - len(old)
+    if n < 0:
+        raise ValueError("a path shorter than the text it begins with")
+    crc = (h & 0xFFFFFFFF) ^ crc_shift(zlib.crc32(old.lower().encode()) ^ zlib.crc32(new.lower().encode()), n)
+    return crc | (len(new) + n) << 32
+
+
+def path_parts(path):
+    """(hash40, its extension's, its folder's - with the "/" after it, as the file table keeps it -, its
+    name's) of a data.arc path; a name written as its hash40 (HASHED_LEAF) is taken as that hash."""
+    folder, leaf = path.rsplit("/", 1) if "/" in path else ("", path)
+    m = HASHED_LEAF.match(leaf)
+    ext = (m.group(2) or "") if m else (leaf.rsplit(".", 1)[1] if "." in leaf else "")
+    parent = hash40(folder + "/")
+    if m:
+        name = int(m.group(1), 16)
+        return join_hash(parent, name), hash40(ext), parent, name
+    return hash40(path), hash40(ext), parent, hash40(leaf)
+
+
+def path_hash(path):
+    """A data.arc path's hash40 (its name may be written as a hash: path_parts)."""
+    return path_parts(path)[0]
+
+
+def swap_token(text, old, new):
+    """`text` with the word `old` (not part of a longer name: se_dolly_c00, fighter/dolly/) as `new`, any case."""
+    return re.sub(r"(?<![a-z0-9])" + re.escape(old) + r"(?![a-z0-9])", new, text, flags=re.I)
+
+
+# a new fighter's directories and files are the donor's under these folders, with the new name in place
+FIGHTER_PREFIXES = ("fighter/{}", "effect/fighter/{}", "camera/fighter/{}")
+LINK_DIR = 0x10000000   # a directory's flags for one that is another's (its folder entry names that directory)
+
+
 class Table:
     """data.arc's file table, to change: each of its tables a list of entries of its own, so files
     can be added (add_file); bytes() puts the table together again.
@@ -611,6 +671,9 @@ class Table:
         self.dir_names_new = {}  # a new directory -> its path, from config.json
         self.slots = {}         # a new costume slot's directory (made like the game's c00..c07 one) -> its slot ("08")
         self.like_paths = []    # (new path hash40, the game's path hash40 it is made from, at, old, new): for the search section
+        self.clone_paths = []   # (new path hash40, the donor's path hash40, old text, new text): a new fighter's, for the search section
+        self.clone_dirs = []    # (new directory hash40, the donor's, old text, new text): the same, for its directories
+        self.search = None      # the search section, when a new fighter needs it read early (clone_fighter)
 
     def count(self, table):
         return len(self.tabs[table]) // self.size[table]
@@ -949,6 +1012,142 @@ class Table:
                 self.listed.setdefault(d, []).append((fh, fp))
                 self.listed_in.setdefault(fh, d)
 
+    def clone_fighter(self, name, donor, paths, read_search, dependency=True):
+        """A new fighter (OpenSmash's own fighters, runtime/hle_fighter_registry.c: the game builds its paths
+        with the new name - fighter/waluigi/c00, fighter/waluigi/param/vl.prc, sound/bank/fighter/se_waluigi_c00.*)
+        made of the donor fighter's directories: config.json's "new-fighters" {name: donor}.
+
+        Each of the donor's directories under fighter/<donor> (not its other costume slots, c01 and up) gets
+        a copy under the new name: its own folder (as a new costume slot has), its parent's copy for parent,
+        a copy of a directory that is another's (a link: c00/cmn, c00/camera) naming that one's copy. Its
+        files are the donor's under the new name: a file in a folder under fighter/<donor>, effect/fighter/<donor>
+        or camera/fighter/<donor> gets the same path with the new name in it (its hash made from the donor's,
+        as most names are only hashes: rename_hash), a file of the mod's own at that path, else a copy of the
+        donor's (shared, as a costume shares c00's); a file elsewhere (sound/bank/fighter/se_<donor>_c00.*) is
+        the mod's when the mod has it under the new name, else the donor's own path, kept. A file of the mod's
+        no directory has goes to the copy of the directory with files in the folder the donor's name gives,
+        else to c00's copy. With `dependency`, the donor's c00 is one more child of c00's copy: the game loads
+        it too, so a path the engine still builds with the donor's name finds its file loaded.
+        `paths`: the mod's files' data.arc paths. Returns the number of directories made, or None."""
+        prefixes = [(p.format(donor), p.format(name)) for p in FIGHTER_PREFIXES]
+        top = self.dir_index(hash40(prefixes[0][0]))
+        if top is None:
+            self.notes.append(f"new fighter {name}: {prefixes[0][0]} isn't a directory of the game's")
+            return None
+        if self.dir_index(hash40(prefixes[0][1])) is not None:
+            self.notes.append(f"new fighter {name}: the game already has {prefixes[0][1]}")
+            return None
+        if self.search is None:
+            self.search = Search(*read_search)
+        search = self.search
+        parent_of = {}
+        for i in range(len(search.folders) // 32):
+            fh, fp = struct.unpack_from("<QQ", search.folders, i * 32)
+            parent_of[fh & LOW40] = fp & LOW40
+        by_prefix = {hash40(o): (o, n) for o, n in prefixes}
+        memo = {}
+
+        def prefix_of(folder):
+            """The (donor's, new) prefix a search folder is under, or None."""
+            chain = []
+            found = None
+            while folder and folder not in memo:
+                if folder in by_prefix:
+                    found = by_prefix[folder]
+                    break
+                chain.append(folder)
+                folder = parent_of.get(folder, 0)
+            else:
+                found = memo.get(folder)
+            for f in chain:
+                memo[f] = found
+            return found
+
+        def search_folder(h):
+            at = search.path_at.get(h)
+            if at is None:
+                return None
+            p = struct.unpack_from("<I", search.indices, at * 4)[0]
+            return struct.unpack_from("<4Q", search.paths, p * 32)[1] & LOW40
+
+        # the mod's files by the donor's path their name gives (the word <name> as <donor>)
+        theirs = {}
+        for path in paths:
+            dp = swap_token(path, name, donor)
+            if dp.lower() != path.lower():
+                theirs[path_hash(dp)] = path
+        slots = {hash40(f"c{k:02d}") for k in range(1, 256)}
+        old_top, new_top = prefixes[0]
+        clones = {}   # donor directory -> its copy
+        links = []
+        todo = [(top, None)]
+        while todo:
+            d, np = todo.pop(0)
+            dpath, dname, dparent, re1, re2, start, n, cstart, ccount, flags = self.entry("dirs", d, "<QQQ7I")
+            dh = dpath & LOW40
+            if d == top:
+                nh, nname, nparent = hash40(new_top), hash40(new_top.rsplit("/", 1)[1]), dparent & LOW40
+                np = self.dir_index(nparent)
+            else:
+                nh, nname, nparent = rename_hash(dh, old_top, new_top), dname & LOW40, rename_hash(dparent & LOW40, old_top, new_top)
+            lfo = self.entry("folder_offsets", dpath >> 40, "<QIIIII")
+            folder = self.append("folder_offsets", "<QIIIII", 0, 0, 0, 0, 0, lfo[5] if n or flags & LINK_DIR else NO_CHILD)
+            nd = self.append("dirs", "<QQQ7I", nh | folder << 40, nname, nparent, re1, re2, 0, 0, 0, 0, flags)
+            self.append("dir_hash_to_info", "<Q", nh | nd << 40)
+            self.dirs_by_hash[nh] = nd
+            self.new_dirs[nd] = d
+            clones[d] = nd
+            self.clone_dirs.append((nh, dh, old_top, new_top))
+            if np is not None:
+                self.new_children.setdefault(np, []).append(nh | nd << 40)
+            if d == top:
+                self.dir_names_new[nd] = new_top
+            if flags & LINK_DIR:
+                links.append((nd, folder, lfo[5]))
+                continue
+            for i in range(start, start + n):
+                p = self.entry("infos", i, "<4I")[0]
+                h = self.entry("paths", p, "<Q")[0] & LOW40
+                pre = prefix_of(search_folder(h))
+                if pre:
+                    _v, ext, fparent, fname = self.entry("paths", p, "<4Q")
+                    new = rename_hash(h, *pre)
+                    self.listed.setdefault(nd, []).append((new, None))
+                    self.listed_in.setdefault(new, nd)
+                    self.shares.setdefault(new, ((ext & LOW40, rename_hash(fparent & LOW40, *pre), fname & LOW40), h))
+                    self.clone_paths.append((new, h) + pre)
+                elif h in theirs:
+                    new = path_hash(theirs[h])
+                    self.listed.setdefault(nd, []).append((new, theirs[h]))
+                    self.listed_in.setdefault(new, nd)
+                else:   # (the donor's own path, in the copy as it is)
+                    self.listed.setdefault(nd, []).append((h, "="))
+            for k in range(cstart, cstart + ccount):
+                c = self.entry("child_hashes", k, "<Q")[0] >> 40
+                if self.entry("dirs", c, "<QQ")[1] & LOW40 not in slots:
+                    todo.append((c, nd))
+        for nd, folder, target in links:   # (a link to a directory that has a copy: to the copy)
+            self.put("folder_offsets", folder, "<QIIIII", 0, 0, 0, 0, 0, clones.get(target, target))
+        c00 = self.dir_index(hash40(old_top + "/c00"))
+        if c00 in clones:
+            self.dir_names_new[clones[c00]] = new_top + "/c00"
+            if dependency:
+                self.new_children.setdefault(clones[c00], []).append(hash40(old_top + "/c00") | c00 << 40)
+        # the mod's files no copy lists: to the copy with files of their folder's (by the donor's name), else c00's
+        for path in paths:
+            h = path_hash(path)
+            if h in self.listed_in or not any(path.lower().startswith(n.lower() + "/") for _o, n in prefixes):
+                continue
+            folder = swap_token(path.rsplit("/", 1)[0], name, donor)
+            found = [clones[d] for d in sorted(self.directories_of(hash40(folder + "/"))) if d in clones]
+            d = found[0] if found else clones.get(c00)
+            if d is not None:
+                self.listed.setdefault(d, []).append((h, path))
+                self.listed_in[h] = d
+        self.notes.append(f"new fighter {name}: {len(clones)} directories of {donor}'s copied under the new name "
+                          f"({sum(1 for d in clones.values() for _x in self.listed.get(d, ()))} files)")
+        return len(clones)
+
     def directories_of(self, parent):
         """The directories whose files are in folder `parent` (a hash40 of "a/b/c/"): (directory,
         whether it has a file there of its own, not another directory's)."""
@@ -974,7 +1173,7 @@ class Table:
         the one whose files are in its folder); returns None, or why it can't be added."""
         if "/" not in path or ":" in path:
             return "not in a folder of data.arc's"
-        d = self.listed_in.get(hash40(path))
+        d = self.listed_in.get(path_hash(path))
         if d is None:
             folder_path = path.rsplit("/", 1)[0] + "/"
             found = self.directories_of(hash40(folder_path))
@@ -987,11 +1186,8 @@ class Table:
 
     def new_path(self, path, ii):
         """A path entry for a new file, naming file info index `ii`."""
-        leaf = path.rsplit("/", 1)[1]
-        ext = leaf.rsplit(".", 1)[1] if "." in leaf else ""
-        h = hash40(path)
-        p = self.append("paths", "<4Q", h | ii << 40, hash40(ext) | 0xFFFFFF << 40, hash40(path.rsplit("/", 1)[0] + "/"),
-                        hash40(leaf))
+        h, ext, parent, name = path_parts(path)
+        p = self.append("paths", "<4Q", h | ii << 40, ext | 0xFFFFFF << 40, parent, name)
         self.new_paths.append((h, p))
         self.path_names.append(path)
         return p
@@ -1132,7 +1328,7 @@ class Table:
         for d in sorted(self.new_files):
             for path, raw in sorted(self.new_files[d]):
                 ii = self.append("info_indices", "<2I", d, 0)
-                own[hash40(path)] = (d, path, raw, self.new_path(path, ii), ii)
+                own[path_hash(path)] = (d, path, raw, self.new_path(path, ii), ii)
         shared = {}   # hash40 -> (path index, info index index) of a new path that is another file
         for nh, (np, th) in sorted(self.shares.items()):
             if nh in own or self.path_index_of(nh) is not None:
@@ -1170,7 +1366,7 @@ class Table:
                     self.notes.append(f"{path or hex(h)}: listed in a new directory, but the mod doesn't have it")
                     continue
                 have.add(h)
-            plan += [("own", hash40(path)) for path, _raw in sorted(self.new_files.get(d, ())) if hash40(path) not in have]
+            plan += [("own", path_hash(path)) for path, _raw in sorted(self.new_files.get(d, ())) if path_hash(path) not in have]
             plan += [("unshared", u) for u in self.unshared.get(d, ())]
             if plan:
                 plans[d] = plan
@@ -1447,7 +1643,7 @@ def mod_config(tree, names):
     new-dir-infos-base, share-to-vanilla, share-to-added, new-dir-files (what a mod adding a costume
     slot has, as the reslotter writes it), unshare-blacklist (paths whose file stays shared)."""
     out = {"new-dir-infos": [], "new-dir-infos-base": {}, "share-to-vanilla": {}, "share-to-added": {}, "new-dir-files": {},
-           "unshare-blacklist": []}
+           "unshare-blacklist": [], "new-fighters": {}}
     for name in names:
         path = os.path.join(tree.mods, name, "config.json")
         if not os.path.exists(path):
@@ -1460,6 +1656,7 @@ def mod_config(tree, names):
         out["new-dir-infos"] += [d for d in cfg.get("new-dir-infos", []) if d not in out["new-dir-infos"]]
         out["unshare-blacklist"] += [p for p in cfg.get("unshare-blacklist", []) if p not in out["unshare-blacklist"]]
         out["new-dir-infos-base"].update(cfg.get("new-dir-infos-base", {}))
+        out["new-fighters"].update(cfg.get("new-fighters", {}))   # (OpenSmash's own: {name: donor}, Table.clone_fighter)
         for key in ("share-to-vanilla", "share-to-added", "new-dir-files"):
             for k, v in (cfg.get(key) or {}).items():
                 have = out[key].setdefault(k, [])
@@ -1534,12 +1731,50 @@ class Search:
 
     def add_file(self, path):
         """A file's path, in its folder (a new path: one the section doesn't have)."""
-        h = hash40(path)
+        h, ext, _parent, name = path_parts(path)
         if h in self.path_at or "/" not in path:
             return
-        folder, leaf = path.rsplit("/", 1)
-        ext = leaf.rsplit(".", 1)[1] if "." in leaf else ""
-        self.link(self.folder(folder), (h, hash40(folder), hash40(leaf), hash40(ext)), h, False)
+        folder = path.rsplit("/", 1)[0]
+        self.link(self.folder(folder), (h, hash40(folder), name, ext), h, False)
+        self.added += 1
+
+    def clone_folder(self, h, old, new):
+        """The copy of folder `h` (under the text `old`) under `new`, made (and its parents) if new; its
+        index, or None (no such folder). Table.clone_fighter: the rest of the path known by hash only."""
+        top = h == hash40(old)
+        nh = hash40(new) if top else rename_hash(h, old, new)
+        if nh in self.folder_at:
+            return self.folder_at[nh]
+        if top:
+            return self.folder(new)
+        f = self.folder_at.get(h)
+        if f is None:
+            return None
+        _path, parent, name, _ext = struct.unpack_from("<4Q", self.folders, f * 32)
+        parent &= LOW40
+        pf = self.clone_folder(parent, old, new)
+        if pf is None:
+            return None
+        np = hash40(new) if parent == hash40(old) else rename_hash(parent, old, new)
+        nf = len(self.folders) // 32
+        self.folders += struct.pack("<4Q", nh, np, name & LOW40, NO_CHILD)
+        self.folder_lookup += struct.pack("<Q", nh | nf << 40)
+        self.folder_at[nh] = nf
+        self.link(pf, (nh, np | SEARCH_FOLDER << 40, name & LOW40, 0), nh, True)
+        return nf
+
+    def add_clone(self, nh, h, old, new):
+        """A new fighter's path known by its hash40 only, the copy of the donor's path `h` (clone_folder)."""
+        if nh in self.path_at or h not in self.path_at:
+            return
+        p = struct.unpack_from("<I", self.indices, self.path_at[h] * 4)[0]
+        _path, folder, name, ext = struct.unpack_from("<4Q", self.paths, p * 32)
+        folder &= LOW40
+        f = self.clone_folder(folder, old, new)
+        if f is None:
+            return
+        nfolder = hash40(new) if folder == hash40(old) else rename_hash(folder, old, new)
+        self.link(f, (nh, nfolder, name & LOW40, ext & LOW40), nh, False)
         self.added += 1
 
     def folder_like(self, h, like, at, old, new):
@@ -1891,7 +2126,13 @@ def _apply(tree, image, lines, state, on, log):
     arc = Arc(lambda off, n: image.read(arc_at + off, n))
     log("reading the game's file table")
     table = Table(arc)
-    table.use_config(mod_config(tree, on))
+    config = mod_config(tree, on)
+    table.use_config(config)
+    if config["new-fighters"]:   # (OpenSmash's own fighters under their own names: Table.clone_fighter)
+        all_paths = sorted({p for n in on for p, _src in mod_files(os.path.join(tree.mods, n))})
+        for fighter, donor in sorted(config["new-fighters"].items()):
+            log(f"new fighter {fighter}: made of {donor}'s directories")
+            table.clone_fighter(fighter.lower(), donor.lower(), all_paths, (arc.read, arc.header[5]))
 
     # every file the turned-on mods hold (a later mod wins), sorted into kinds; patches, every mod's
     # in order, by the file they patch
@@ -2116,8 +2357,13 @@ def _apply(tree, image, lines, state, on, log):
 
         # the table (and the search section, with the new paths), then data.arc's new end
         hdr = list(arc.header)
-        if table.path_names or table.like_paths:
-            search = Search(arc.read, arc.header[5])
+        if table.path_names or table.like_paths or table.clone_paths:
+            search = table.search or Search(arc.read, arc.header[5])
+            for nh, h, old, new in table.clone_dirs:   # (a new fighter's directories that are folders here too)
+                if h in search.folder_at:
+                    search.clone_folder(h, old, new)
+            for clone in table.clone_paths:
+                search.add_clone(*clone)
             for path in table.path_names:
                 search.add_file(path)
             for like in table.like_paths:
@@ -2210,7 +2456,7 @@ def check(cfg_text, chosen, skipped, added, tree):
         sample += [v for v in chosen.values() if v[0] in new]
         for path, src, _name in sample:
             with open(src, "rb") as f:
-                if arc.get(path) != f.read():
+                if arc.get(path_hash(path)) != f.read():
                     raise Error(f"check failed: {path} doesn't read back as the mod has it (nothing was changed)")
     finally:
         close_image(image)

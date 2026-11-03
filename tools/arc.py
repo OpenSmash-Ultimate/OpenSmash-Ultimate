@@ -258,8 +258,9 @@ class Arc:
         return out
 
     def locate(self, path):
-        """(offset in data.arc, stored size, size, compressed) of a file, or None if absent."""
-        h = hash40(path)
+        """(offset in data.arc, stored size, size, compressed) of a file (its path, or its path's hash40),
+        or None if absent."""
+        h = path if isinstance(path, int) else hash40(path)
         start, count = struct.unpack_from("<2I", self.t, self.bucket_table + (h % self.buckets) * 8)
         lo, hi = start, start + count
         while lo < hi:
@@ -286,7 +287,7 @@ class Arc:
         off, stored, size, compressed = where
         data = self.read(off, stored)
         if compressed:
-            data = unzstd(data, path)
+            data = unzstd(data, path if isinstance(path, str) else hex(path))
         if len(data) != size:
             raise SystemExit(f"{path}: {len(data)} bytes, the table says {size}")
         return data

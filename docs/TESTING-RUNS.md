@@ -19,6 +19,7 @@ These switches make a scripted run of the game quicker and less dependent on the
 | `SSBU_FIXED_SEED=<n>` | The clock reads and random bytes the game seeds its generators from come from n. |
 | `SSBU_DEBUG_MATCH=<settings>` | The fighters, stage and rules of the match, whatever the menus chose. `SSBU_DEBUG_MATCH_LIST=<file>` takes one line per match. |
 | `SSBU_DEBUG_END=<n>s` | The run ends after n seconds of fight (`<n>` without `s`: n fight frames). |
+| `SSBU_CHARACTERS=<folder>` | New fighters: each `<folder>\<name>\fighter.json` is a fighter of its own (kind 0x5E on), playable with `SSBU_DEBUG_MATCH=p1=<name>`. With `SSBU_FIGHTER_BIN` (its script libraries) and `SSBU_MODS` (the registry's components). Unset, nothing changes. |
 
 `SSBU_INPUT` (buttons on a timetable in seconds) is unchanged, and it still adds to player 1 when `SSBU_SEQ` is set.
 
@@ -204,6 +205,14 @@ Not yet checked in a run:
 
 - that the run ends at the count asked, with that line and exit code 0, on each OS;
 - that the ready-go flag is down in the menus and up in a fight (the log's `fight 1 on` and `fight off` lines).
+
+## `SSBU_CHARACTERS`
+
+New fighters, each a folder `<folder>\<name>` with a `fighter.json` (`name`, `donor`: the game's fighter it is built on, `dll`: its scripts) ([`hle_fighter_registry.c`](../runtime/hle_fighter_registry.c)). Read at start: kinds from 0x5E on in name order, one script module each (`lua2cpp_<name>`, a module with no NRO: the donor's code with the library's scripts in its dispatch table), and the game builds every path of the fighter with its own name (`fighter/<name>/c00`, `fighter/<name>/param/vl.prc`, `sound/bank/fighter/se_<name>_c00.nus3bank` ...). `SSBU_FIGHTER_BIN=<folder>` takes `<folder>\<name>.dll` before the folder's own library; `SSBU_MODS` defaults to `registry_bin\` beside the program (the registry's components: the kind and roster DLLs). With the variable unset the game runs as before.
+
+A path the game's data has under the new name - a file, a directory (a load group: `fighter/<name>/c00`, `cmn/ai`, `c00/camera`) or a folder of the search tables (`fighter/<name>/motion/body/c00`, `effect/fighter/<name>`) - is the fighter's own; any other falls back to the donor's path. The log has one line per path: `[registry] path asked: fighter/waluigi/c00 (...) -> OWN directory of waluigi in the data`, or `... -> DONOR FALLBACK: fighter/dolly/c00`. The paths get into the data as a mod: `python tools/fighter_mod.py <folder>\<name> --tree <tree> --apply` puts the folder's data files into `<tree>/mods/<name>` with a `config.json` of `{"new-fighters": {"<name>": "<donor>"}}`, and `tools/mods.py apply` copies the donor's directories under the new name with the folder's files in the donor's place (`Table.clone_fighter`; a file named `0x<hash40 of its name>.<ext>` is taken by that hash). Give `--tree` a tree of your own: `apply` rewrites its `dump/modules/romfs.cfg`. mods.py needs a RomFS whose tables come after data.arc (the installer's); one made from an extracted romfs folder with its tables first has to be laid out again first.
+
+What was run (2026-11-03, 13.0.5, gate2 sequence, `SSBU_DETERMINISTIC=1 SSBU_FIXED_SEED=1`, `p2=donkey,p2=cpu,cpu=3,stage=end`): Waluigi (donor `dolly`) with his folder as a mod - all 21 paths asked are his own, 0 fallbacks; his model, portrait and stock icon in the fight; two runs with the same fight hash over 42,034 lines. A Mario copy (`n3test`) on the unmodded data and Mario on the modded data without the variable both give Mario's fight hash.
 
 ## An example run
 

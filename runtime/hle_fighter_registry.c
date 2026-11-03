@@ -525,6 +525,37 @@ static i64 nm_arc_file_index(u64 hash) {   /* the archive's own lookup, as the w
     return -1;
 }
 static int nm_has_file(u64 hash) { return nm_arc_file_index(hash) >= 0; }
+static int nm_sorted_has(u64 table, u32 count, u64 hash) {   /* a lookup sorted by the low 40 bits (hash | index << 40) */
+    u32 lo = 0, hi = count;
+    while (lo < hi) {
+        u32 mid = lo + (hi - lo) / 2;
+        u64 v = rd64(table + 8ull * mid) & 0xffffffffffull;
+        if (v == hash) return 1;
+        if (v < hash) lo = mid + 1; else hi = mid;
+    }
+    return 0;
+}
+/* Step 3 (tools/mods.py's new fighters): whether the data has a path: 1 a file, 2 a directory (a load group:
+ * fighter/<name>/c00, cmn/ai, c00/camera; the archive's directory index, archive + 0x70, count header + 0xc),
+ * 3 a folder or file of the search tables (fighter/<name>/motion/body/c00, effect/fighter/<name>: path index
+ * search + 0x20, count [search + 8] + 8, lifted 0x710353e330), 0 none. A directory or folder of a new fighter
+ * the data does not have still falls back to the donor's. */
+static int nm_has_path(u64 hash) {
+    if (nm_arc_file_index(hash) >= 0) return 1;
+    u64 fsinfo = rd64(NM_FSINFO), holder = fsinfo ? rd64(fsinfo + 0x78) : 0;
+    if (!holder) return 0;
+    u64 tab = rd64(holder), search = rd64(holder + 8);
+    if (tab) {
+        u64 hdr = rd64(tab + 0x40), dirs = rd64(tab + 0x70);
+        if (hdr && dirs && nm_sorted_has(dirs, rd32(hdr + 0xc), hash)) return 2;
+    }
+    if (search) {
+        u64 body = rd64(search + 8), index = rd64(search + 0x20);
+        if (body && index && nm_sorted_has(index, rd32(body + 8), hash)) return 3;
+    }
+    return 0;
+}
+static const char *const nm_kind_text[] = {"none", "file", "directory", "folder"};
 static int nm_token_char(char ch) { return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'); }
 static u64 g_nm_seen[4096];
 static int g_nm_seen_count;
@@ -567,7 +598,7 @@ static int nm_owner_path(char *buf, u64 lr) {
     out[k] = 0;
     if (!swapped) return 0;
     u64 h = nm_hash40(out);
-    if (!nm_has_file(h)) return 0;
+    if (!nm_has_path(h)) return 0;
     u16 *len = (u16 *)(buf + 256);
     int fixed = nm_writable(len) && *len == (u16)n, known = nm_seen(h);
     if (k > n && !fixed) {
@@ -592,11 +623,12 @@ static void nm_path(char *buf, u64 lr) {
         char was[512];
         snprintf(was, sizeof was, "%s", buf);
         u64 h_new = nm_hash40(buf);
-        if (nm_has_file(h_new)) {   /* the data has the path under the new name */
+        int kind = nm_has_path(h_new);
+        if (kind) {   /* the data has the path under the new name (a file, a directory, a folder) */
             if (!nm_seen(h_new)) {
                 nm->paths++; nm->paths_own++;
-                nm_log("[registry] path asked: %s (hash %llx, by %llx) -> OWN file of %s in the data; so far %ld own, %ld donor fallbacks", buf, (unsigned long long)h_new,
-                       (unsigned long long)lr, nm->f.name, nm->paths_own, nm->paths - nm->paths_own);
+                nm_log("[registry] path asked: %s (hash %llx, by %llx) -> OWN %s of %s in the data; so far %ld own, %ld donor fallbacks", buf, (unsigned long long)h_new,
+                       (unsigned long long)lr, nm_kind_text[kind], nm->f.name, nm->paths_own, nm->paths - nm->paths_own);
             }
             return;
         }
