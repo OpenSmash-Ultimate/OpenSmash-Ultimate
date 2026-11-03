@@ -573,6 +573,28 @@ static int nm_writable(void *p) {
     MEMORY_BASIC_INFORMATION mi;
     return VirtualQuery(p, &mi, sizeof mi) && mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD | PAGE_READONLY | PAGE_EXECUTE_READ));
 }
+/* A colour of a new fighter its data does not have: the path of another costume slot (a whole token c01..c07,
+ * as in fighter/<name>/model/body/c03 or se_<name>_c03; not c03attack.. names) as c00's, when the data has that.
+ * A mod with one costume then dresses every colour as itself, not as the donor's colours. Same length: in place.
+ * SSBU_REG_SLOT0=0: off. */
+static long g_nm_slot0;
+static int nm_slot0(char *buf) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_REG_SLOT0"); on = !(e && e[0] == '0'); }
+    if (!on) return 0;
+    char out[512];
+    snprintf(out, sizeof out, "%s", buf);
+    int swapped = 0;
+    for (char *p = out; *p; p++)
+        if ((p[0] == 'c' || p[0] == 'C') && p[1] == '0' && p[2] >= '1' && p[2] <= '7' && (p == out || !nm_token_char(p[-1])) && !nm_token_char(p[3])) {
+            p[2] = '0';
+            swapped++;
+        }
+    if (!swapped || !nm_has_path(nm_hash40(out))) return 0;
+    memcpy(buf, out, strlen(out) + 1);
+    g_nm_slot0++;
+    return 1;
+}
 /* N8: the donor's name in a path while a new fighter is set up: the fighter's own path when the data has it
  * and the text can take it (as long, or the engine's fixed string: 256 bytes + a 16-bit length). SSBU_REG_OWNPATH=0: off. */
 static long g_nm_ownpath, g_nm_ownpath_no;
@@ -598,7 +620,10 @@ static int nm_owner_path(char *buf, u64 lr) {
     out[k] = 0;
     if (!swapped) return 0;
     u64 h = nm_hash40(out);
-    if (!nm_has_path(h)) return 0;
+    if (!nm_has_path(h)) {
+        if (!nm_slot0(out)) return 0;   /* (another colour: the fighter's own c00) */
+        h = nm_hash40(out);
+    }
     u16 *len = (u16 *)(buf + 256);
     int fixed = nm_writable(len) && *len == (u16)n, known = nm_seen(h);
     if (k > n && !fixed) {
@@ -629,6 +654,13 @@ static void nm_path(char *buf, u64 lr) {
                 nm->paths++; nm->paths_own++;
                 nm_log("[registry] path asked: %s (hash %llx, by %llx) -> OWN %s of %s in the data; so far %ld own, %ld donor fallbacks", buf, (unsigned long long)h_new,
                        (unsigned long long)lr, nm_kind_text[kind], nm->f.name, nm->paths_own, nm->paths - nm->paths_own);
+            }
+            return;
+        }
+        if (nm_slot0(buf)) {   /* another colour the data does not have: the fighter's own c00 */
+            if (!nm_seen(h_new)) {
+                nm->paths++; nm->paths_own++;
+                nm_log("[registry] path asked: %s (hash %llx, by %llx) -> not in the data -> the fighter's OWN c00: %s", was, (unsigned long long)h_new, (unsigned long long)lr, buf);
             }
             return;
         }
@@ -730,6 +762,11 @@ static void nm_h_portrait(Ctx *c, void *user) {
         if (found >= 0) {
             h = nm_hash40(own);
             has = nm_has_file(h);
+            if (!has && cc > 0) {   /* no picture of this colour: the fighter's own colour 00, when it has one */
+                char own0[320];
+                snprintf(own0, sizeof own0, "ui/replace/chara/chara_%d/chara_%d_%s_00.bntx", found, found, nm->f.name);
+                if (nm_has_file(nm_hash40(own0))) { h = nm_hash40(own0); has = 1; }
+            }
             if (asked_own && !has) { c->x[0] = (got & ~0xffffffffffull) | hd; got = c->x[0]; }   /* no own file: the donor's picture */
         }
         g_nm_portrait_calls++;

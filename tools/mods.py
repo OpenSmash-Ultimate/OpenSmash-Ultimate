@@ -1017,7 +1017,8 @@ class Table:
         with the new name - fighter/waluigi/c00, fighter/waluigi/param/vl.prc, sound/bank/fighter/se_waluigi_c00.*)
         made of the donor fighter's directories: config.json's "new-fighters" {name: donor}.
 
-        Each of the donor's directories under fighter/<donor> (not its other costume slots, c01 and up) gets
+        Each of the donor's directories under fighter/<donor> (its colours c01-c07 too, not the extra costume
+        slots, c08 and up) gets
         a copy under the new name: its own folder (as a new costume slot has), its parent's copy for parent,
         a copy of a directory that is another's (a link: c00/cmn, c00/camera) naming that one's copy. Its
         files are the donor's under the new name: a file in a folder under fighter/<donor>, effect/fighter/<donor>
@@ -1026,7 +1027,8 @@ class Table:
         donor's (shared, as a costume shares c00's); a file elsewhere (sound/bank/fighter/se_<donor>_c00.*) is
         the mod's when the mod has it under the new name, else the donor's own path, kept. A file of the mod's
         no directory has goes to the copy of the directory with files in the folder the donor's name gives,
-        else to c00's copy. With `dependency`, the donor's c00 is one more child of c00's copy: the game loads
+        else to c00's copy. A file of a colour c01-c07 the mod has no file for is the mod's c00 file when it has
+        that one (a mod with one costume dresses every colour as itself), else the donor's. With `dependency`, the donor's c00 (each colour's directory) is one more child of c00's (that colour's) copy: the game loads
         it too, so a path the engine still builds with the donor's name finds its file loaded.
         `paths`: the mod's files' data.arc paths. Returns the number of directories made, or None."""
         prefixes = [(p.format(donor), p.format(name)) for p in FIGHTER_PREFIXES]
@@ -1076,13 +1078,16 @@ class Table:
             dp = swap_token(path, name, donor)
             if dp.lower() != path.lower():
                 theirs[path_hash(dp)] = path
-        slots = {hash40(f"c{k:02d}") for k in range(1, 256)}
+        slots = {hash40(f"c{k:02d}") for k in range(8, 256)}   # (the colours c01-c07 are copied too)
+        colours = {hash40(f"c{k:02d}"): f"{k:02d}" for k in range(1, 8)}
+        own_paths = {path_hash(p) for p in paths}
         old_top, new_top = prefixes[0]
         clones = {}   # donor directory -> its copy
+        recoloured = 0
         links = []
-        todo = [(top, None)]
+        todo = [(top, None, None)]
         while todo:
-            d, np = todo.pop(0)
+            d, np, colour = todo.pop(0)
             dpath, dname, dparent, re1, re2, start, n, cstart, ccount, flags = self.entry("dirs", d, "<QQQ7I")
             dh = dpath & LOW40
             if d == top:
@@ -1116,6 +1121,13 @@ class Table:
                     self.listed_in.setdefault(new, nd)
                     self.shares.setdefault(new, ((ext & LOW40, rename_hash(fparent & LOW40, *pre), fname & LOW40), h))
                     self.clone_paths.append((new, h) + pre)
+                    if colour and new not in own_paths:   # (another colour: the mod's own c00 file when it has one)
+                        for a in range(2, new >> 32):
+                            c = reslot2(new, a, colour, "00")
+                            if c in own_paths:
+                                self.shares[new] = (self.shares[new][0], c)
+                                recoloured += 1
+                                break
                 elif h in theirs:
                     new = path_hash(theirs[h])
                     self.listed.setdefault(nd, []).append((new, theirs[h]))
@@ -1124,15 +1136,18 @@ class Table:
                     self.listed.setdefault(nd, []).append((h, "="))
             for k in range(cstart, cstart + ccount):
                 c = self.entry("child_hashes", k, "<Q")[0] >> 40
-                if self.entry("dirs", c, "<QQ")[1] & LOW40 not in slots:
-                    todo.append((c, nd))
+                cname = self.entry("dirs", c, "<QQ")[1] & LOW40
+                if cname not in slots:
+                    todo.append((c, nd, colours.get(cname, colour)))
         for nd, folder, target in links:   # (a link to a directory that has a copy: to the copy)
             self.put("folder_offsets", folder, "<QIIIII", 0, 0, 0, 0, 0, clones.get(target, target))
         c00 = self.dir_index(hash40(old_top + "/c00"))
-        if c00 in clones:
-            self.dir_names_new[clones[c00]] = new_top + "/c00"
-            if dependency:
-                self.new_children.setdefault(clones[c00], []).append(hash40(old_top + "/c00") | c00 << 40)
+        for k in range(8):   # (each colour's copy depends on the donor's directory of that colour, as c00's)
+            ck = self.dir_index(hash40(f"{old_top}/c{k:02d}"))
+            if ck in clones:
+                self.dir_names_new[clones[ck]] = f"{new_top}/c{k:02d}"
+                if dependency:
+                    self.new_children.setdefault(clones[ck], []).append(hash40(f"{old_top}/c{k:02d}") | ck << 40)
         # the mod's files no copy lists: to the copy with files of their folder's (by the donor's name), else c00's
         for path in paths:
             h = path_hash(path)
@@ -1145,7 +1160,8 @@ class Table:
                 self.listed.setdefault(d, []).append((h, path))
                 self.listed_in[h] = d
         self.notes.append(f"new fighter {name}: {len(clones)} directories of {donor}'s copied under the new name "
-                          f"({sum(1 for d in clones.values() for _x in self.listed.get(d, ()))} files)")
+                          f"({sum(1 for d in clones.values() for _x in self.listed.get(d, ()))} files"
+                          + (f"; {recoloured} files of colours 1-7 are the mod's c00 ones" if recoloured else "") + ")")
         return len(clones)
 
     def directories_of(self, parent):
