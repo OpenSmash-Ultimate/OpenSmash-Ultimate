@@ -346,7 +346,7 @@ class Pages(MenuTest):
             m.key('DOWN')
         m.key('ENTER')
         labels = m.labels()
-        self.assertEqual((labels[0], len(labels), labels[-1]), ('< Back', 27, 'Back to the defaults')   # (26 bindings + WALK))
+        self.assertEqual((labels[0], len(labels), labels[-1]), ('< Back', 27, 'Back to the defaults'))   # (26 bindings + WALK)
         m.key('BKSP')
         self.assertEqual(m.labels()[3], 'Keyboard keys...')
         m.type('3')
