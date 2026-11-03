@@ -318,6 +318,7 @@ static void load_dump(void) {
 void paramconfig_install(Cpu *c) {
     (void)c;
     load_dump();
+    if (!entry_n) return;   /* (no overrides: every get_param stays the game's own call) */
     orig_int = rt_hook_function(MAIN_BASE + GET_PARAM_INT, rt_native(hook_int, "paramconfig get_param_int"));
     orig_int64 = rt_hook_function(MAIN_BASE + GET_PARAM_INT64, rt_native(hook_int64, "paramconfig get_param_int64"));
     orig_float = rt_hook_function(MAIN_BASE + GET_PARAM_FLOAT, rt_native(hook_float, "paramconfig get_param_float"));
