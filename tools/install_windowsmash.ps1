@@ -130,7 +130,8 @@ $VsBuildToolsId = 'Microsoft.VisualStudio.BuildTools'   # Visual Studio 2026's; 
 $VsBuildToolsUrl = 'https://visualstudio.microsoft.com/visual-cpp-build-tools/'
 $VsInstallerDir = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
 $NeedDiskGb = 60
-$MinRamGb = 8
+$MinRamGb = 4        # (below 8 GB the build runs one compile at a time and the game is told to use less memory)
+$LowRamGb = 8
 $FirewallRuleName = 'WindowSmash (ssbu.exe)'
 $UserAgent = 'WindowSmash-installer'
 # Python code that exits 0 when tools\arc.py has a zstd: the zstandard package (any Python), or
@@ -782,8 +783,12 @@ function Step-CheckPc {
     else { Write-Warn "$name - whether it has AVX2 is unknown: the game is built for older processors (x86-64-v2), expected to be slower (with AVX2: docs\BUILDING.md, SSBU_ISA)" }
 
     $ramGb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
-    if ($ramGb -lt $MinRamGb) { throw "This PC has $ramGb GB of RAM; WindowSmash needs at least $MinRamGb GB (16 GB is comfortable)." }
-    if ($ramGb -lt 16) { Write-Warn "$ramGb GB of RAM: enough, but the build will be slow (16 GB is comfortable)" } else { Write-Info "$ramGb GB of RAM" }
+    if ($ramGb -lt $MinRamGb) { throw "This PC has $ramGb GB of RAM; WindowSmash needs at least $MinRamGb GB (8 GB is the least that is comfortable to build with, 16 GB is comfortable)." }
+    if ($ramGb -lt $LowRamGb) {
+        # Low memory: one compile at a time (each can take 1-2 GB), so the build fits; slower, but it finishes.
+        if (-not $Jobs) { $script:Jobs = 1 }
+        Write-Warn "$ramGb GB of RAM: less than $LowRamGb GB. The game is built one file at a time (several hours) - close other programs while it builds, and keep Windows' page file on (the default). The game itself uses about 4 GB in a match."
+    } elseif ($ramGb -lt 16) { Write-Warn "$ramGb GB of RAM: enough, but the build will be slow (16 GB is comfortable)" } else { Write-Info "$ramGb GB of RAM" }
 
     $drive = [IO.Path]::GetPathRoot($Root)
     $psDrive = $null
