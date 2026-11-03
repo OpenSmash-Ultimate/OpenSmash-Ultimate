@@ -75,6 +75,7 @@ These are external dependencies, not bundled implementations. Their own licenses
 | PyCryptodome (`pycryptodomex`) | Reading game packages | `requirements.txt`. |
 | zstandard | Reading `data.arc` on Pythons older than 3.14 | `requirements.txt` (Python 3.14 has `compression.zstd` built in). |
 | Capstone, Unicorn | Disassembly and differential tests | `tests/requirements-dev.txt`, optional. |
+| vkd3d-shader (vkd3d 2.1, Wine project, LGPL-2.1-or-later) and SPIRV-Headers (Khronos, MIT) | The Linux build's HLSL to DXBC; on Windows, DXBC to SPIR-V for the Vulkan back end in development, linked statically when built | Downloaded and checked against their SHA-256 ([`tools/linux/install_linux.py`](tools/linux/install_linux.py); on Windows [`tools/vkd3d_lib.py`](tools/vkd3d_lib.py), optional), never checked in. A program linked with it carries LGPL-2.1 obligations when distributed. |
 
 A developer can link their own libopus or libvpx builds instead of the included sources (`SSBU_OPUS_LIBS`, `SSBU_VPX_DIR`: [`tools/cc.py`](tools/cc.py)). No binaries of any library are checked into this repository.
 
