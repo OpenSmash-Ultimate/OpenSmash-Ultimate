@@ -213,7 +213,8 @@ def library_problems(runtime, tree, host, program_objects, library_objects):
     runtime source's (the tables tools/game_dll.py writes for it are its own)."""
     rt = runtime_folder(tree, host)
     problems = [f"the program has {os.path.basename(o)}, which is not the runtime's (not in {rt}): the game's objects "
-                "are the library's" for o in program_objects if not inside(o, rt)]
+                "are the library's" for o in program_objects
+                if not inside(o, rt) and not o.lower().endswith(".res")]   # (.res: the program's manifest, tools/cc.py)
     have = linked(library_objects, rt)
     problems += [f"the game's library has runtime/{rel}'s object: it is linked without the runtime's (tools/game_dll.py)"
                  for rel in runtime_sources(runtime) if runtime_keys(rel, host) & have]
