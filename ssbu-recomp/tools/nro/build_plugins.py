@@ -15,7 +15,7 @@ Run in build/work/ro_study (scripts/setup.py --only stage puts it there). For ev
   4 compile: build_opt.py's compiler, level and flags (RECOMP_CLANG / RECOMP_OPT / RECOMP_CFLAGS, the same switches as
     the game's modules) and its fallback ladder (long functions unoptimised, time limit)
     -> build/work/obj_plugin[_fl]/<name>; nro_shim.c with -DNRO_MODULE=<name>
-  5 link: build/work/plugin_bin/<name>.dll
+  5 link: build/work/plugin_bin/<name>.dll (.so / .dylib with RECOMP_TARGET=linux / macos, by build.link_dll)
 Then plugin_bin/plugins.txt (one line per plugin: name base image_size file_size build_id source) and
 plugin_bin/<name>.exports.txt.
 
@@ -37,6 +37,10 @@ sys.path.insert(0, WORK)
 import plugin_map  # noqa: E402
 
 LOCK = os.environ.get('RECOMP_HEAVY_LOCK')      # optional: a lock file shared with other heavy builds of the machine
+# RECOMP_TARGET=linux / macos (scripts/setup.py sets it for those builds): the plugins become .so / .dylib files, compiled
+# with build.py's PLAT_FLAGS and linked by build.link_dll like the game's modules (build_nro.py). The runtime still asks for
+# plugin_bin\<name>.dll; plat_posix.c's LoadLibraryA maps the name, as for nro_bin.
+LIB_EXT = {'linux': '.so', 'macos': '.dylib'}.get(os.environ.get('RECOMP_TARGET'), '.dll')
 
 
 def take_lock(what):
@@ -141,7 +145,8 @@ def build_one(name, nro, base, jobs, relift, flags_local):
     # 4. compile what changed
     t0 = time.time()
     sources = sorted(n for n in os.listdir(genfl) if n.endswith('.c'))
-    flags = ['-w', '-fno-strict-aliasing', '-I', WORK, '-I', genfl]
+    import build                                             # build.py (build/work): NOCRT_FLAGS / PLAT_FLAGS and link_dll, as the
+    flags = ['-w', '-fno-strict-aliasing', '-I', WORK, '-I', genfl] + build.NOCRT_FLAGS + build.PLAT_FLAGS     # game's modules (build_nro.py)
     headers = [os.path.join(WORK, h) for h in ('runtime.h', 'neon.h', 'flags_local.h', 'fpexact.h') if os.path.exists(os.path.join(WORK, h))]
     newest_header = max(os.path.getmtime(h) for h in headers)
     todo = []
@@ -174,18 +179,15 @@ def build_one(name, nro, base, jobs, relift, flags_local):
     t['compile'] = time.time() - t0
     # 5. link
     t0 = time.time()
-    dll = os.path.join(bindir, name + '.dll')
+    dll = os.path.join(bindir, name + LIB_EXT)
     objs = sorted(os.path.join(obj, n) for n in os.listdir(obj) if n.endswith('.obj'))
     if not os.path.exists(dll) or os.path.getmtime(dll) < max(os.path.getmtime(o) for o in objs):
-        rsp = os.path.join(obj, 'link.rsp')
-        with open(rsp, 'w') as f:
-            f.write('\n'.join('"%s"' % o.replace('\\', '/') for o in objs))
-        r = subprocess.run([build_opt.CLANG, '-shared', '@' + rsp, '-o', dll], capture_output=True, text=True)
+        r = build.link_dll(objs, dll, os.path.join(obj, 'link.rsp'), implib=False, fltused=True)      # lld-link alone under RECOMP_NOCRT (no MSVC)
         if r.returncode:
             print((r.stdout + r.stderr)[-4000:])
             print('could not link %s (is a game exe still running and holding it open?)' % dll)
             return None
-        for ext in ('.lib', '.exp'):
+        for ext in ('.lib', '.exp') if LIB_EXT == '.dll' else ():
             p = dll[:-4] + ext
             if os.path.exists(p):
                 os.remove(p)
@@ -234,7 +236,7 @@ def main():
     with open(os.path.join(bindir, 'plugins.txt'), 'w') as f:
         f.write('# name base image_size file_size build_id source   (build_plugins.py; read by runtime/skyline.c)\n')
         for name, path in ok:
-            if os.path.exists(os.path.join(bindir, name + '.dll')):
+            if os.path.exists(os.path.join(bindir, name + LIB_EXT)):
                 f.write(plugin_map.registry_line(name, int(m[name]['base'], 16), path) + '\n')
     print('plugins.txt: %d plugins' % len(ok))
     return 0 if len(ok) == len(plugins) else 1

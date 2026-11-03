@@ -84,6 +84,11 @@ void cxxrt_guest_region(uint64_t base, uint64_t size) {
     LONG i = InterlockedIncrement(&g_guest_regions) - 1;
     if (i < 64) { g_guest_region[i].size = size; g_guest_region[i].base = base; } else InterlockedDecrement(&g_guest_regions);
 }
+int cxxrt_guest_region_at(int i, uint64_t *base, uint64_t *size) {      /* r1_state.c: region i the game reserved (0 = no more) */
+    if (i < 0 || i >= g_guest_regions || i >= 64) return 0;
+    *base = g_guest_region[i].base; *size = g_guest_region[i].size;
+    return 1;
+}
 /* Guest memory [base, base + size) is about to change or has just changed. size 0 = the whole region that starts at
  * base (a release), or everything when no such region is registered. */
 void cxxrt_mem_changed(uint64_t base, uint64_t size) {      // PR #2 (jfb112697): was (void); the event now carries its range

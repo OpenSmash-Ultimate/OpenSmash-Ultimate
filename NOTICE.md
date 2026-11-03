@@ -79,6 +79,10 @@ These are external dependencies, not bundled implementations. Their own licenses
 
 A developer can link their own libopus or libvpx builds instead of the included sources (`SSBU_OPUS_LIBS`, `SSBU_VPX_DIR`: [`tools/cc.py`](tools/cc.py)). No binaries of any library are checked into this repository.
 
+### Ideas from OpenSmash Mod Manager
+
+`tools/mods.py`'s conflict review (`conflicts`), shareable mod lists (`export-list`, `import-list`) and GameBanana update check (`updates`) follow features of [OpenSmash Mod Manager](https://github.com/TRLLZR/OpenSmash-Mod-Manager) by TRLLZR (MIT License, Copyright (c) 2026 OpenSmash-Mod-Manager Installer contributors). The code here is written anew in Python; no file of that project is copied. Thanks to TRLLZR for the design.
+
 ## ssbu-recomp (`ssbu-recomp/`)
 
 ### Code and data derived from yuzu and suyu

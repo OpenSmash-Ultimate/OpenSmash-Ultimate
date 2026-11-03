@@ -91,7 +91,7 @@ by default; **In progress**; **Planned**.
 | Freeze watchdog: a report with the stack of every thread | Done |
 | Fixed 60 fps in every mode | In progress |
 | Items and stages as source | Planned |
-| Native Linux build ([BUILDING_LINUX.md](BUILDING_LINUX.md)): movies, menus, a whole match at 60 fps with sound on one PC (CachyOS, NVIDIA, Wayland); F1 menu built (not yet tried on Linux), no online play there yet; Steam Deck not tested | In progress |
+| Native Linux build ([BUILDING_LINUX.md](BUILDING_LINUX.md)): movies, menus, a whole match at 60 fps with sound on one PC (CachyOS, NVIDIA, Wayland); F1 menu built (not yet tried on Linux), online play (Local Wireless rooms: two games on one PC identical frame by frame, matches over the internet played), no rollback; Steam Deck not tested | In progress |
 
 ### Game modes (measured on the development PC)
 
@@ -213,8 +213,11 @@ session files: leave them or delete them while the game is closed.
 
 **"ssbu_game_eh_o1.dll is missing" when I start the game?** The game DLL (about 500 MB, built on your PC and not signed) was removed after the installation, usually by an antivirus, or the installation stopped before the end. Open Windows Security > Virus & threat protection > Protection history and restore/allow the file if it is there (adding your install folder to the exclusions stops it happening again), then double-click `Install SSBU.bat` and press **Resume**: it links the missing files again in a few minutes, without compiling everything again.
 
-**Mods and new fighters?** Mods through the function hook table and C++ fighter source work today; new fighters are in
-progress ([docs/NEW_FIGHTER.md](docs/NEW_FIGHTER.md)).
+**Mods and new fighters?** Skyline plugins (the NRO mods of a modded console, such as the Ultimate Training Modpack) are
+installed as on a console: unpack the mod's release into `sd\` beside `build\` (the install folder) and double-click
+`Play SSBU.bat`; the first
+start prepares the mod for a few minutes ([docs/SKYLINE.md](docs/SKYLINE.md)). Mods through the function hook table and
+C++ fighter source work too; new fighters are in progress ([docs/NEW_FIGHTER.md](docs/NEW_FIGHTER.md)).
 
 **Was this built with AI?** Yes, see below.
 

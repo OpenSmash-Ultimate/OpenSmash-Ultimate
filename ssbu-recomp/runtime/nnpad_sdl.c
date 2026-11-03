@@ -38,6 +38,7 @@ typedef struct {
     char ignore[16][40]; int nignore;   /* [general] ignore = <GUID>: devices that are never used */
     int kb_player;                      /* -2 auto, -1 none, 0..7 */
     int kb_vk[24];
+    int kb_move;                        /* [keyboard] movement = ssf2: 1 (nnhid.c kb_ssf2); default full: 0 */
     int gc_pro;                         /* [general] gamecube_style = pro: GameCube controllers reach the game as Pro Controllers (default: native) */
 } Cfg;
 typedef struct {
@@ -72,6 +73,10 @@ static ULONGLONG g_last_cfg_check;
 
 static void lock(void) { if (!g_cs_ready) { if (InterlockedCompareExchange(&g_cs_ready, 2, 0) == 0) { InitializeCriticalSection(&g_cs); g_cs_ready = 1; } while (g_cs_ready != 1) Sleep(0); } EnterCriticalSection(&g_cs); }
 static void unlock(void) { LeaveCriticalSection(&g_cs); }
+static volatile LONG g_bg;                       /* 1: the pad thread runs (see nnpad_background) */
+static __declspec(thread) int t_pad;              /* this is the pad thread */
+static SRWLOCK g_snap_lock = SRWLOCK_INIT;        /* the snapshot and the rumble asked for; no SDL call under it */
+static unsigned g_snap_menu;
 #define say(...) do { if (!g_quiet) printf(__VA_ARGS__); } while (0)
 
 /* ================================================================ sources
@@ -167,6 +172,11 @@ static const char *const g_default_ini =
 "; Keys: a letter or digit, LEFT UP RIGHT DOWN ENTER BACKSPACE SPACE TAB ESC SHIFT CTRL ALT F1..F12, NUM0..NUM9, or 0x<virtual key code>; none = unbound.\r\n"
 "A = Z\r\nB = X\r\nX = C\r\nY = V\r\nL = Q\r\nR = E\r\nZL = A\r\nZR = S\r\nPLUS = ENTER\r\nMINUS = BACKSPACE\r\n"
 "STICK_L = none\r\nSTICK_R = none\r\nLEFT = J\r\nUP = I\r\nRIGHT = L\r\nDOWN = K\r\n"
+"; movement = full: a stick key pushes the stick fully, as a button does. movement = ssf2: the left stick keys as in Super\r\n"
+";   Smash Flash 2: a key walks, the same key again within 200 ms runs, down crouches, down twice drops through a platform,\r\n"
+";   a key and A within about 130 ms is a smash attack, up and A or B within 4 frames is an up smash / up special (BUILDING.md).\r\n"
+"; The environment variable SSBU_KEYBOARD_MOVEMENT (full | ssf2) overrides this line.\r\n"
+"movement = full\r\n"
 "LSTICK_LEFT = LEFT\r\nLSTICK_UP = UP\r\nLSTICK_RIGHT = RIGHT\r\nLSTICK_DOWN = DOWN\r\n"
 "RSTICK_LEFT = none\r\nRSTICK_UP = none\r\nRSTICK_RIGHT = none\r\nRSTICK_DOWN = none\r\n"
 "\r\n"
@@ -293,6 +303,7 @@ static void cfg_parse(Cfg *c, char *text) {
             if (!_stricmp(val, "none")) c->pnone[p] = 1; else if (_stricmp(val, "auto")) snprintf(c->pguid[p], sizeof c->pguid[0], "%s", val);
         } else if (sect == 3) {
             if (!_stricmp(key, "player")) c->kb_player = !_stricmp(val, "auto") ? -2 : !_stricmp(val, "none") ? -1 : atoi(val) >= 1 && atoi(val) <= 8 ? atoi(val) - 1 : -2;
+            else if (!_stricmp(key, "movement")) c->kb_move = !_stricmp(val, "ssf2");
             else for (int i = 0; i < 24; i++) if (!_stricmp(key, g_kbn[i])) c->kb_vk[i] = parse_vk(val);
         }
     }
@@ -525,7 +536,8 @@ int nnpad_init(void) {
 void nnpad_poll(int force) {
     LARGE_INTEGER t;
     static unsigned s_gca_seen;
-    if (!g_sdl_ok) return;
+    if (!g_sdl_ok || (force == 0 && g_bg == 1)) return;      /* the pad thread polls (force 2 is its own call) */
+    if (force == 2) force = 0;
     QueryPerformanceCounter(&t);
     unsigned gs = gca_seq();                           /* an adapter report applied since the last refresh must not wait for the 1 ms gate */
     if (!force && (t.QuadPart - g_last_poll.QuadPart) * 1000 < g_qpf.QuadPart && gs == s_gca_seen) return;
@@ -630,6 +642,7 @@ static int menu_owns(const Dev *d, Src s) {
 unsigned nnpad_menu_keys(void) {                      /* bit 0: a Home / Guide button is down, bit 1: a Capture / Share button (any controller) */
     unsigned r = 0;
     if (!g_sdl_ok) return 0;
+    if (g_bg == 1 && !t_pad) { AcquireSRWLockShared(&g_snap_lock); r = g_snap_menu; ReleaseSRWLockShared(&g_snap_lock); return r; }
     nnpad_poll(0);
     lock();
     for (int i = 0; i < MAXDEV; i++) {
@@ -698,9 +711,69 @@ static void dev_state(const Dev *d, NnPadState *o) {      /* lock held */
     }
 }
 static Dev *dev_of(int player) { for (int i = 0; i < MAXDEV; i++) if (g_dev[i].used && !g_dev[i].ignored && g_dev[i].slot == player) return &g_dev[i]; return NULL; }
+/* The pad thread (SSBU_PAD_THREAD; on by default on Linux / macOS, =1 on Windows too, =0 off). The game read every pad on
+ * its own thread: nnpad_poll's SDL_UpdateJoysticks, then the state through SDL. While a device comes or goes, SDL's update
+ * takes 8-24 ms with SDL's joystick lock held (measured on Linux: a wireless Xbox 360 pad switching off), and each read
+ * waits for that lock: frames of about 100 ms. With the thread, it alone calls SDL for the game: about once per ms it
+ * does nnpad_poll's work and makes a snapshot of every player (nnpad_present's drop rule, nnpad_is_gc, dev_state, the
+ * menu buttons) and sends the rumble asked since; the game's calls read the snapshot and note rumble, under a lock no SDL
+ * call is made in. It is started by nnhid.c for the game only: the tools and the self-test read SDL at once, as before. */
+typedef struct { int present, gc; SDL_JoystickID id; NnPadState st; } Snap;
+static Snap g_snap[8];
+static struct { int set; float low, high; } g_rq[8];
+static void rumble_locked(int player, float low, float high);
+static void bg_pass(void) {
+    Snap s[8];
+    struct { int set; float low, high; } rq[8];
+    unsigned menu;
+    AcquireSRWLockExclusive(&g_snap_lock);
+    memcpy(rq, g_rq, sizeof rq);
+    for (int p = 0; p < 8; p++) g_rq[p].set = 0;
+    ReleaseSRWLockExclusive(&g_snap_lock);
+    nnpad_poll(2);
+    lock();
+    for (int p = 0; p < 8; p++) if (rq[p].set) rumble_locked(p, rq[p].low, rq[p].high);
+    memset(s, 0, sizeof s);
+    for (int p = 0; p < 8; p++) {
+        Dev *d = dev_of(p);
+        if (d && d->dropped) { NnPadState t; dev_state(d, &t); if (t.buttons) d->dropped = 0; }
+        s[p].gc = d && d->gca;
+        s[p].present = d && !d->dropped;
+        if (s[p].present) { s[p].id = d->id; dev_state(d, &s[p].st); }
+    }
+    unlock();
+    menu = nnpad_menu_keys();
+    AcquireSRWLockExclusive(&g_snap_lock);
+    memcpy(g_snap, s, sizeof s);
+    g_snap_menu = menu;
+    ReleaseSRWLockExclusive(&g_snap_lock);
+}
+static DWORD WINAPI pad_thread(void *arg) {
+    (void)arg;
+    t_pad = 1;
+    for (;;) { bg_pass(); Sleep(1); }
+    return 0;
+}
+#ifdef _WIN32
+#define PAD_THREAD_DEFAULT 0
+#else
+#define PAD_THREAD_DEFAULT 1
+#endif
+void nnpad_background(void) {
+    const char *e = getenv("SSBU_PAD_THREAD");
+    if (!g_sdl_ok || !(e && e[0] ? atoi(e) != 0 : PAD_THREAD_DEFAULT) || InterlockedExchange(&g_bg, 2)) return;
+    bg_pass();                                     /* the first snapshot before the game reads one */
+    HANDLE h = CreateThread(NULL, 0, pad_thread, NULL, 0, NULL);
+    if (!h) { InterlockedExchange(&g_bg, 0); return; }
+    CloseHandle(h);
+    InterlockedExchange(&g_bg, 1);
+    say("nn::pad: pads read on their own thread (SSBU_PAD_THREAD=0: on the game's)\n");
+}
+
 int nnpad_is_gc(int player) {
     int r;
     if (!g_sdl_ok || player < 0 || player > 7) return 0;
+    if (g_bg == 1) { AcquireSRWLockShared(&g_snap_lock); r = g_snap[player].gc; ReleaseSRWLockShared(&g_snap_lock); return r; }
     lock();
     Dev *d = dev_of(player);
     r = d && d->gca;
@@ -712,6 +785,7 @@ int nnpad_gc_native(void) { return !g_cfg.gc_pro; }
 int nnpad_present(int player) {
     int r = 0;
     if (!g_sdl_ok || player < 0 || player > 7) return 0;
+    if (g_bg == 1) { AcquireSRWLockShared(&g_snap_lock); r = g_snap[player].present; ReleaseSRWLockShared(&g_snap_lock); return r; }
     nnpad_poll(0);
     lock();
     Dev *d = dev_of(player);
@@ -723,6 +797,14 @@ int nnpad_present(int player) {
 int nnpad_get(int player, NnPadState *out) {
     int r = 0;
     if (!g_sdl_ok || player < 0 || player > 7) return 0;
+    if (g_bg == 1) {
+        SDL_JoystickID id = 0; int gc = 0;
+        AcquireSRWLockShared(&g_snap_lock);
+        if ((r = g_snap[player].present) != 0) { *out = g_snap[player].st; id = g_snap[player].id; gc = g_snap[player].gc; }
+        ReleaseSRWLockShared(&g_snap_lock);
+        if (gc) gca_sample(id);
+        return r;
+    }
     nnpad_poll(0);
     lock();
     Dev *d = dev_of(player);
@@ -732,6 +814,9 @@ int nnpad_get(int player, NnPadState *out) {
 }
 void nnpad_disconnect(int player) {
     Dev *d;
+    if (g_bg == 1 && player >= 0 && player < 8) {      /* hidden at once; the pad thread may still hold the old snapshot's device */
+        AcquireSRWLockExclusive(&g_snap_lock); g_snap[player].present = 0; ReleaseSRWLockExclusive(&g_snap_lock);
+    }
     lock();
     if ((d = dev_of(player)) != NULL) { d->dropped = 1; if (d->gp) SDL_RumbleGamepad(d->gp, 0, 0, 0); d->rl = d->rh = 0; }
     unlock();
@@ -744,12 +829,12 @@ void nnpad_swap(int a, int b) {
     if (x) apply_player_index(x);
     if (y) apply_player_index(y);
     unlock();
+    if (g_bg == 1 && a >= 0 && a < 8 && b >= 0 && b < 8) {
+        AcquireSRWLockExclusive(&g_snap_lock); Snap t = g_snap[a]; g_snap[a] = g_snap[b]; g_snap[b] = t; ReleaseSRWLockExclusive(&g_snap_lock);
+    }
 }
-void nnpad_rumble(int player, float low, float high) {
-    Dev *d;
-    if (!g_sdl_ok || player < 0 || player > 7) return;
-    lock();
-    d = dev_of(player);
+static void rumble_locked(int player, float low, float high) {     /* lock held */
+    Dev *d = dev_of(player);
     if (d && (d->gp || d->js)) {
         float s = eff_rumble(d) ? EFF(d, rstr) : 0.0f;
         float l = low * s, h = high * s;
@@ -760,6 +845,12 @@ void nnpad_rumble(int player, float low, float high) {
             if (d->gp) SDL_RumbleGamepad(d->gp, rl, rh, rl || rh ? 30000 : 0); else SDL_RumbleJoystick(d->js, rl, rh, rl || rh ? 30000 : 0);
         }
     }
+}
+void nnpad_rumble(int player, float low, float high) {
+    if (!g_sdl_ok || player < 0 || player > 7) return;
+    if (g_bg == 1) { AcquireSRWLockExclusive(&g_snap_lock); g_rq[player].set = 1; g_rq[player].low = low; g_rq[player].high = high; ReleaseSRWLockExclusive(&g_snap_lock); return; }
+    lock();
+    rumble_locked(player, low, high);
     unlock();
 }
 
@@ -788,6 +879,14 @@ int nnpad_keyboard_player(void) {
     r = g_kb_slot;
     unlock();
     return r;
+}
+/* [keyboard] movement: 1 = ssf2 (nnhid.c kb_ssf2), 0 = full; SSBU_KEYBOARD_MOVEMENT=ssf2|full overrides the file (tests) */
+int nnpad_kb_movement(void) {          /* once per poll of the keyboard's player: the variable is read once */
+    static int env = -2;
+    if (env == -2) { const char *e = getenv("SSBU_KEYBOARD_MOVEMENT"); env = e && e[0] ? !_stricmp(e, "ssf2") : -1; }
+    if (env >= 0) return env;
+    nnpad_kb_vk(0);
+    return g_cfg.kb_move;
 }
 int nnpad_kb_vk(int idx) {
     if (!g_inited) { lock(); if (!g_cfg.path[0]) { cfg_load(1); } unlock(); }
@@ -1352,6 +1451,18 @@ int nnpad_selftest(const NnHidHooks *h) {
         SDL_CloseJoystick(rj); SDL_DetachVirtualJoystick(rid);
     }
 
+    /* ---- [keyboard] movement = ssf2 (nnhid.c kb_ssf2): read from the file, and kept when the settings menu writes the section */
+    {
+        Sleep(1100); write_text(path, "[keyboard]\r\nplayer = none\r\nmovement = ssf2\r\n"); Sleep(1100); nnpad_poll(1);
+        int on = nnpad_kb_movement();
+        nnpad_kb_bind(0, nnpad_kb_vk(0));                    /* what the Controls page does: the whole [keyboard] section written again */
+        size_t n = 0; char *t = read_file(path, &n);
+        check(on == 1 && t && strstr(t, "movement = ssf2"), "[keyboard] movement = ssf2 is read, and kept when the settings menu writes the section");
+        free(t);
+        Sleep(1100); write_text(path, "[keyboard]\r\nplayer = none\r\n"); Sleep(1100); nnpad_poll(1);
+        check(nnpad_kb_movement() == 0, "[keyboard] without a movement line: full (a stick key pushes fully)");
+    }
+
     /* ---- clean up */
     for (int i = 0; i < 8; i++) { if (id[i] && js[i]) { SDL_CloseJoystick(js[i]); SDL_DetachVirtualJoystick(id[i]); } }
     settle();
@@ -1387,6 +1498,7 @@ static void kb_write(void) {                          /* lock held */
     int o = snprintf(body, sizeof body, "; written by the settings menu (F1); key names: a letter or digit, LEFT UP RIGHT DOWN ENTER BACKSPACE SPACE TAB ESC SHIFT CTRL ALT F1..F12 NUM0..NUM9, 0x.. or none\r\n");
     o += snprintf(body + o, sizeof body - (size_t)o, "player = %s\r\n", g_cfg.kb_player == -2 ? "auto" : g_cfg.kb_player == -1 ? "none" : (snprintf(nm, sizeof nm, "%d", g_cfg.kb_player + 1), nm));
     for (int i = 0; i < 24 && o < (int)sizeof body - 64; i++) { nnpad_vk_name(g_cfg.kb_vk[i], nm, sizeof nm); o += snprintf(body + o, sizeof body - (size_t)o, "%s = %s\r\n", g_kbn[i], nm); }
+    o += snprintf(body + o, sizeof body - (size_t)o, "movement = %s\r\n", g_cfg.kb_move ? "ssf2" : "full");      /* kept: the menu does not show it */
     ini_replace_section(g_cfg.path, "[keyboard]", body);
     g_cfg.mtime = file_mtime(g_cfg.path);             /* what is in memory is what was written: no reload needed */
     say("nn::pad: [keyboard] of %s written (settings menu)\n", g_cfg.path);
@@ -1409,6 +1521,13 @@ void nnpad_kb_player_set(int p) {                     /* -2 auto, -1 none, 0..7:
         else { g_kb_slot = -1; for (int q = 0; q < 8 && g_kb_slot < 0; q++) if (!slot_taken(q) && slot_usable(q, "") && !g_cfg.pguid[q][0]) g_kb_slot = q; }
         say("nn::pad: keyboard = player %d (settings menu)\n", g_kb_slot + 1);
     }
+    unlock();
+}
+void nnpad_kb_movement_set(int on) {                  /* the Controls page's "SSF2 style": written, and used at the next poll */
+    nnpad_kb_vk(0);
+    lock();
+    g_cfg.kb_move = on != 0;
+    kb_write();
     unlock();
 }
 int nnpad_describe(char *out, int n) {               /* one line per device: "player N: name (type)"; returns the number of devices */
