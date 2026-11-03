@@ -1159,12 +1159,18 @@ def build(a):
     check_game_data(cfg, game or saved.get("game"))
 
     log(shown("\n[7/9] Turn on your DLC (dump\\modules\\aoc.cfg)"))
-    if aoc_done():
+    # (DLC added to the game folder after the first build was never seen: with a game folder named, its DLC is
+    # read again - only the packages' headers and metadata, quick - unless it has none: then an aoc.cfg made
+    # by hand from another folder stays)
+    again = bool(a.game) and os.path.exists(aoc)
+    if aoc_done() and not again:
         log("  already done")
     else:
         _path, title, rec, result = the_program()
         dlc = dlc_folder(game, rec, result["contents"])
-        if not dlc:
+        if not dlc and again:
+            log(f"  no DLC in {game}: dump\\modules\\aoc.cfg stays as it is")
+        elif not dlc:
             log(f"  no dlc folder in {game}, and no DLC among its files: no DLC")
             with open(no_aoc, "w", newline="\n") as f:   # (so that the game files are not asked for again for this)
                 f.write("no DLC was found in the game files; give --game to look again\n")

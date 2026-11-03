@@ -143,6 +143,29 @@ class BuildStepsTests(unittest.TestCase):
         call = self.aoc_call()
         self.assertEqual(call[call.index('aoc-cfg') + 1], str(self.game / 'dlc'))
 
+    def test_dlc_added_after_the_first_build(self):
+        # aoc.cfg made before; DLC added to the game folder since: with the game folder named, it is read again
+        aoc = self.top / 'port' / 'dump' / 'modules' / 'aoc.cfg'
+        aoc.write_text('# earlier DLC\n')
+        (self.game / 'dlc').mkdir()
+        self.ns['build'](self.args)
+        call = self.aoc_call()
+        self.assertEqual(call[call.index('aoc-cfg') + 1], str(self.game / 'dlc'))
+        # no game folder named: as before, already done
+        self.calls.clear()
+        self.args.game = None
+        self.ns['build'](self.args)
+        self.assertIsNone(self.aoc_call())
+
+    def test_hand_made_aoc_cfg_stays(self):
+        # an aoc.cfg made by hand from another folder, and a game folder without DLC: it is kept
+        aoc = self.top / 'port' / 'dump' / 'modules' / 'aoc.cfg'
+        aoc.write_text('# by hand\n')
+        self.ns['build'](self.args)
+        self.assertIsNone(self.aoc_call())
+        self.assertEqual(aoc.read_text(), '# by hand\n')
+        self.assertFalse((self.top / 'port' / 'dump' / 'modules' / 'aoc.none').exists())
+
     def test_no_dlc(self):
         self.contents.append({'kind': 'dlc', 'app': '0100000000010000'})   # another game's
         self.ns['build'](self.args)
