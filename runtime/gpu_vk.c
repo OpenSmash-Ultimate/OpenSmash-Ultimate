@@ -95,10 +95,10 @@ static int memory_type(uint32_t bits, VkMemoryPropertyFlags want) {
 
 #define CHUNK_SIZE (64ull << 20)
 typedef struct Range { VkDeviceSize off, size; } Range;
-typedef struct Chunk { VkDeviceMemory mem; uint32_t type; Range *free; u32 nfree, cap; } Chunk;   /* (free: sorted by offset) */
+typedef struct Chunk { VkDeviceMemory mem; uint32_t type; Range *free; u32 nfree, cap; u8 *map; } Chunk;   /* (free: sorted by offset) */
 static Chunk chunks[512];
 static u32 nchunks;
-typedef struct Alloc { VkDeviceMemory mem; VkDeviceSize off, size; int chunk; } Alloc;   /* (chunk -1: memory of its own) */
+typedef struct Alloc { VkDeviceMemory mem; VkDeviceSize off, size; int chunk; u8 *ptr; } Alloc;   /* (chunk -1: memory of its own; ptr: where the CPU sees it, if it can) */
 static u64 vk_stat_device_bytes;
 static VkDeviceSize granularity = 1024;   /* (buffers and images share chunks: bufferImageGranularity) */
 
@@ -149,24 +149,30 @@ static void chunk_give(Chunk *c, VkDeviceSize off, VkDeviceSize size) {
     range_insert(c, i, (Range){off, size});
 }
 
-/* Device memory for an image (device local where there is some). */
-static int dev_alloc(const VkMemoryRequirements *mr, Alloc *a) {
-    int type = memory_type(mr->memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (type < 0) type = memory_type(mr->memoryTypeBits, 0);
+/* Memory for an image or buffer: device local where there is some; host: memory the CPU writes (a->ptr). */
+static int dev_alloc_in(const VkMemoryRequirements *mr, Alloc *a, int host) {
+    VkMemoryPropertyFlags want = host ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    int type = memory_type(mr->memoryTypeBits, want);
+    if (type < 0 && !host) type = memory_type(mr->memoryTypeBits, 0);
     memset(a, 0, sizeof *a);
     if (type < 0) return 0;
+    int mappable = (memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+    VkDeviceSize align = mr->alignment > granularity ? mr->alignment : granularity;
     a->size = mr->size;
     if (mr->size > CHUNK_SIZE / 4) {   /* big ones: their own */
         VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr->size, (uint32_t)type};
         if (vkAllocateMemory(device, &mai, NULL, &a->mem) != VK_SUCCESS) { a->mem = VK_NULL_HANDLE; return 0; }
+        if (mappable && vkMapMemory(device, a->mem, 0, VK_WHOLE_SIZE, 0, (void **)&a->ptr) != VK_SUCCESS) a->ptr = NULL;
+        if (host && !a->ptr) { vkFreeMemory(device, a->mem, NULL); a->mem = VK_NULL_HANDLE; return 0; }
         a->chunk = -1;
         vk_stat_device_bytes += mr->size;
         return 1;
     }
     for (u32 i = 0; i < nchunks; i++)
-        if (chunks[i].type == (uint32_t)type && chunk_take(&chunks[i], mr->size, mr->alignment > granularity ? mr->alignment : granularity, &a->off)) {
+        if (chunks[i].type == (uint32_t)type && chunk_take(&chunks[i], mr->size, align, &a->off)) {
             a->mem = chunks[i].mem;
             a->chunk = (int)i;
+            a->ptr = chunks[i].map ? chunks[i].map + a->off : NULL;
             return 1;
         }
     if (nchunks == sizeof chunks / sizeof *chunks) return 0;
@@ -175,12 +181,19 @@ static int dev_alloc(const VkMemoryRequirements *mr, Alloc *a) {
     if (vkAllocateMemory(device, &mai, NULL, &c->mem) != VK_SUCCESS) return 0;
     c->type = (uint32_t)type;
     c->nfree = 0;
-    if (!range_insert(c, 0, (Range){0, CHUNK_SIZE}) || !chunk_take(c, mr->size, mr->alignment > granularity ? mr->alignment : granularity, &a->off)) { vkFreeMemory(device, c->mem, NULL); return 0; }
+    c->map = NULL;
+    if (mappable && vkMapMemory(device, c->mem, 0, VK_WHOLE_SIZE, 0, (void **)&c->map) != VK_SUCCESS) c->map = NULL;
+    if ((host && !c->map) || !range_insert(c, 0, (Range){0, CHUNK_SIZE}) || !chunk_take(c, mr->size, align, &a->off)) {
+        vkFreeMemory(device, c->mem, NULL);
+        return 0;
+    }
     vk_stat_device_bytes += CHUNK_SIZE;
     a->mem = c->mem;
     a->chunk = (int)nchunks++;
+    a->ptr = c->map ? c->map + a->off : NULL;
     return 1;
 }
+static int dev_alloc(const VkMemoryRequirements *mr, Alloc *a) { return dev_alloc_in(mr, a, 0); }
 
 static void dev_free(Alloc *a) {
     if (!a->mem) return;
@@ -211,7 +224,7 @@ static VkImage make_image(const VkImageCreateInfo *ici, Alloc *a) {
 #define BLOCK_SIZE (32ull << 20)
 #define MAX_BLOCKS 64
 #define MAX_POOLS 64
-typedef struct Grave { VkImage image; VkBuffer buffer; VkImageView view; Alloc alloc; } Grave;
+typedef struct Grave { VkImage image; VkBuffer buffer; VkImageView view; Alloc alloc; VkBufferView bview; } Grave;
 typedef struct Block { VkBuffer buf; VkDeviceMemory mem; u8 *map; VkDeviceSize size, used; } Block;
 typedef struct Frame {
     VkCommandBuffer cmd;
@@ -235,6 +248,7 @@ static VkCommandPool pool;
 
 static u64 vk_stat_draws, vk_stat_drawn, vk_stat_skip_shader, vk_stat_skip_target, vk_stat_skip_topology, vk_stat_skip_other;
 static u64 vk_stat_dispatches, vk_stat_dispatched, vk_stat_clears_skipped, vk_stat_blits_skipped, vk_stat_presents_skipped;
+static u64 vk_stat_local_blocks, vk_ns_draw, vk_ns_dispatch, vk_ns_wait, vk_ns_present;
 static u64 vk_stat_pipelines, vk_stat_shaders, vk_stat_shader_failures, vk_stat_textures, vk_stat_upload_bytes, vk_stat_reused, vk_stat_passes;
 
 static void bury_grave(Grave g) {
@@ -263,7 +277,9 @@ static VkCommandBuffer cmd(void) {
     Frame *f = &frames[frame_at];
     if (f->recording) return f->cmd;
     if (f->submitted) {
+        u64 t0 = rt_clock_ns();
         check(vkWaitForFences(device, 1, &f->done, VK_TRUE, UINT64_MAX), "waiting for a frame");
+        vk_ns_wait += rt_clock_ns() - t0;
         f->submitted = 0;
     }
     for (u32 i = 0; i < f->nviews; i++) vkDestroyBufferView(device, f->views[i], NULL);
@@ -271,6 +287,7 @@ static VkCommandBuffer cmd(void) {
     for (u32 i = 0; i < f->ngraves; i++) {
         Grave *g = &f->graves[i];
         if (g->view) vkDestroyImageView(device, g->view, NULL);
+        if (g->bview) vkDestroyBufferView(device, g->bview, NULL);
         if (g->image) vkDestroyImage(device, g->image, NULL);
         if (g->buffer) vkDestroyBuffer(device, g->buffer, NULL);
         dev_free(&g->alloc);
@@ -310,9 +327,18 @@ static u8 *arena(VkDeviceSize size, VkDeviceSize align, VkBuffer *buf, VkDeviceS
     if (vkCreateBuffer(device, &bci, NULL, &b->buf) != VK_SUCCESS) return NULL;
     VkMemoryRequirements mr;
     vkGetBufferMemoryRequirements(device, b->buf, &mr);
-    int type = memory_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, (uint32_t)type};
-    if (type < 0 || vkAllocateMemory(device, &mai, NULL, &b->mem) != VK_SUCCESS) { vkDestroyBuffer(device, b->buf, NULL); return NULL; }
+    /* (the card's own memory the CPU can write, where it has some: the draws read it there rather than
+     * across the bus; else the system's. SSBU_VK_SYSMEM=1: the system's) */
+    static int sysmem = -1;
+    if (sysmem < 0) sysmem = getenv("SSBU_VK_SYSMEM") && atoi(getenv("SSBU_VK_SYSMEM")) != 0;
+    VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    int local = sysmem ? -1 : memory_type(mr.memoryTypeBits, host | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    int type = memory_type(mr.memoryTypeBits, host);
+    VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, (uint32_t)local};
+    if (local < 0 || vkAllocateMemory(device, &mai, NULL, &b->mem) != VK_SUCCESS) {
+        mai.memoryTypeIndex = (uint32_t)type;
+        if (type < 0 || vkAllocateMemory(device, &mai, NULL, &b->mem) != VK_SUCCESS) { vkDestroyBuffer(device, b->buf, NULL); return NULL; }
+    } else vk_stat_local_blocks++;
     vkBindBufferMemory(device, b->buf, b->mem, 0);
     if (vkMapMemory(device, b->mem, 0, VK_WHOLE_SIZE, 0, (void **)&b->map) != VK_SUCCESS) {
         vkDestroyBuffer(device, b->buf, NULL);
@@ -857,7 +883,13 @@ static void submit(VkSemaphore wait, VkSemaphore signal) {
 }
 
 static void pipeline_cache_tick(void);
+static void vk_present_(u64 guest, u32 width, u32 height);
 static void vk_present(u64 guest, u32 width, u32 height) {
+    u64 t0 = rt_clock_ns();
+    vk_present_(guest, width, height);
+    InterlockedAdd64((volatile LONG64 *)&vk_ns_present, (LONG64)(rt_clock_ns() - t0));
+}
+static void vk_present_(u64 guest, u32 width, u32 height) {
     (void)width; (void)height;
     enter();
     gfx_stat_presented++;
@@ -937,11 +969,12 @@ static void vk_present(u64 guest, u32 width, u32 height) {
  * vertex stream and storage buffer contents, the same textures and samplers and the same fixed-function
  * state. Where Direct3D 11 needs a trick Vulkan has the thing itself: two-sided stencil with references
  * and masks of its own (the dynamic state has front and back), block-compressed textures of any size.
- * Differences, for now: what gpu_d3d11.c keeps on the GPU between draws (big constant buffers, compute
- * results: "resident regions") is uploaded again each draw - within a submission, the same bytes from
- * the same place are uploaded once (the write log below); shaders are made when a draw first needs them,
- * on the thread drawing (gpu_d3d11.c: on compiler threads, the draw skipped meanwhile); 1D textures,
- * depth textures in guest memory and sRGB block textures' clear texels (tex_decode) are not done. */
+ * Buffers go into each frame's upload memory, as few times as it can: the same range once a submission
+ * (note_wrote's counts say whether the GPU's own commands wrote it since), a constant buffer slot's bytes
+ * compared with what it had last, 64 KB constant buffers read in shared 128 KB windows, constant buffers
+ * of the write-watched area kept in buffers of their own (gpu_d3d11.c's kept ones). Shaders and
+ * pipelines are made by the makers, the draw skipped meanwhile as gpu_d3d11.c's are. Not done yet: 1D
+ * textures, depth textures in guest memory, sRGB block textures' clear texels (tex_decode). */
 extern u64 gpu_stat_batches;   /* (gpu.c: submissions so far) */
 
 static VkPhysicalDeviceLimits limits;
@@ -973,30 +1006,129 @@ static void read_gpu(u64 va, u32 size, void *dst) {
     }
 }
 
+static void kept_written(u64 lo, u64 hi);
+/* Writes of the GPU's own commands counted by (hashed) 64 KB block of guest memory, and those of no known
+ * place: an upload is the same while the counts over its blocks are (a log of the last writes, as
+ * gpu_d3d11.c's, overflows: a frame's constant buffer loads are many thousands). */
+static u32 block_gen[1 << 16];
+static u64 any_gen;
+#define KEPT_BLOCK(block) ((u32)((u64)(block) * 0x9E3779B97F4A7C15ull >> 48))
+static u64 writes_over(u64 g, u64 size) {
+    u64 h = any_gen;
+    for (u64 b = g >> 16; b <= (g + size - 1) >> 16; b++) h = h * 0x100000001B3ull + block_gen[KEPT_BLOCK(b)];
+    return h;
+}
+static int watched(u64 g, u64 size);
 /* What the GPU's own commands wrote to guest memory (constant buffer loads, inline writes, copies,
- * semaphores), by guest address, as gpu_d3d11.c's write log: within one submission nothing else changes
- * what its draws read, so the same bytes from the same place are uploaded once unless one of these
- * writes touched them since. */
-#define WROTE_LOG 1024
-typedef struct Wrote { u64 lo, hi; } Wrote;
-static Wrote wrote_log[WROTE_LOG];
-static u64 wrote_seq;
+ * semaphores), by guest address (gpu_d3d11.c keeps a log of them): within one submission nothing else
+ * changes what its draws read, so the same bytes from the same place are uploaded once unless one of
+ * these writes touched them since. */
 static void note_wrote(u64 va, u64 bytes) {   /* bytes == 0: anywhere */
     u64 lo = 0, hi = ~0ull, g = bytes ? gpu_va_to_guest(va) : 0;
     if (g && gpu_va_to_guest(va + bytes - 1) == g + bytes - 1) { lo = g; hi = g + bytes; }
-    wrote_log[wrote_seq % WROTE_LOG] = (Wrote){lo, hi};
-    wrote_seq++;
+    kept_written(lo, hi);
+    if (hi - lo > (16ull << 20)) any_gen++;   /* (somewhere unknown, or much: everything) */
+    else for (u64 b = lo >> 16; b <= (hi - 1) >> 16; b++) block_gen[KEPT_BLOCK(b)]++;
 }
-static int untouched_since(u64 batch, u64 since, u64 g, u64 size) {
-    if (batch != gpu_stat_batches || wrote_seq - since > WROTE_LOG) return 0;
-    for (u64 i = since; i < wrote_seq; i++)
-        if (wrote_log[i % WROTE_LOG].lo < g + size && g < wrote_log[i % WROTE_LOG].hi) return 0;
-    return 1;
+
+/* Constant buffers of 4 KB or more stay on the GPU between draws (gpu_d3d11.c's "kept" buffers: NVN binds
+ * 64 KB for each program's own constants, and copying them again for every submission was most of a
+ * draw's time): a buffer of their own, holding guest memory as it was when made, for as long as nothing
+ * writes it - the CPU (the write watch, asked at its first use in a submission) or the GPU's own commands
+ * (note_wrote's writes, which mark the kept buffers they touch). A changed one is made again (the old
+ * one buried: the GPU may be reading it); one that keeps changing (twice within KEPT_SETTLE frames) is
+ * uploaded with the rest for a while instead. Only memory in the write-watched alias area is kept. */
+#define KEPT_SETS 256
+#define KEPT_WAYS 4
+#define KEPT_SETTLE 8
+#define KEPT_PAUSE 60
+typedef struct Kept { u64 va, guest, seen, used, checked, made, paused_to; u32 size; int stale; VkBuffer buf; Alloc mem; VkBufferView view; u8 *shadow; } Kept;
+/* (shadow: a copy of what it holds, compared with guest memory when a write may have changed it - the write
+ * watch's pages are shared with other data the CPU rewrites each frame) */
+static Kept kept[KEPT_SETS * KEPT_WAYS];
+static u16 kept_blocks[1 << 16];   /* kept buffers touching each (hashed) 64 KB block of guest memory */
+static u64 vk_stat_kept_made, vk_stat_kept_hits, vk_stat_kept_stale;
+
+static void kept_blocks_add(const Kept *e, int d) {
+    for (u64 b = e->guest >> 16; b <= (e->guest + e->size - 1) >> 16; b++) kept_blocks[KEPT_BLOCK(b)] += (u16)d;
+}
+static void kept_drop(Kept *e) {
+    if (!e->buf) return;
+    kept_blocks_add(e, -1);
+    bury_grave((Grave){VK_NULL_HANDLE, e->buf, VK_NULL_HANDLE, e->mem, e->view});
+    free(e->shadow);
+    e->shadow = NULL;
+    e->buf = VK_NULL_HANDLE;
+    e->view = VK_NULL_HANDLE;
+    memset(&e->mem, 0, sizeof e->mem);
+}
+/* (note_wrote) guest memory [lo, hi) written by the GPU's commands: kept buffers over it are stale */
+static void kept_written(u64 lo, u64 hi) {
+    if (hi - lo > (1ull << 32)) return;   /* (somewhere unknown) */
+    int any = 0;
+    for (u64 b = lo >> 16; b <= (hi - 1) >> 16 && !any; b++) any = kept_blocks[KEPT_BLOCK(b)] != 0;
+    if (!any) return;
+    for (u32 i = 0; i < KEPT_SETS * KEPT_WAYS; i++)
+        if (kept[i].buf && kept[i].guest < hi && lo < kept[i].guest + kept[i].size) kept[i].stale = 1;
+}
+
+/* The kept buffer for [va, va + size), or NULL (then uploaded with the rest). */
+static VkBufferView kept_cb(u64 va, u32 size) {
+    if (size < 0x1000) return VK_NULL_HANDLE;
+    u64 g = gpu_va_to_guest(va);
+    if (!g || gpu_va_to_guest(va + size - 1) != g + size - 1 || !watched(g, size)) return VK_NULL_HANDLE;
+    Kept *set = &kept[((va >> 4) * 0x9E3779B97F4A7C15ull >> 56) * KEPT_WAYS], *e = NULL, *lru = &set[0];
+    for (u32 w = 0; w < KEPT_WAYS && !e; w++) {
+        if (set[w].va == va && set[w].size == size && set[w].guest == g) e = &set[w];
+        else if (set[w].used < lru->used) lru = &set[w];
+    }
+    if (e && e->buf && !e->stale && e->checked != gpu_stat_batches) {   /* first use in this submission: has the CPU written it? */
+        e->checked = gpu_stat_batches;
+        if (watch_written(g, size, &e->seen)) e->stale = 1;
+    }
+    if (e && e->buf && e->stale && e->shadow && !memcmp(e->shadow, P(void, g), size)) e->stale = 0;   /* written, but the same bytes */
+    if (e && e->buf && !e->stale) { e->used = ++tick; vk_stat_kept_hits++; return e->view; }
+    if (e && e->buf) {   /* changed */
+        vk_stat_kept_stale++;
+        kept_drop(e);
+        if (gfx_stat_presented - e->made < KEPT_SETTLE) e->paused_to = gfx_stat_presented + KEPT_PAUSE;
+    }
+    if (e && gfx_stat_presented < e->paused_to) { e->used = ++tick; return VK_NULL_HANDLE; }
+    if (!e) { e = lru; kept_drop(e); memset(e, 0, sizeof *e); }
+    u32 bytes = (size + 15) & ~15u;
+    VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, bytes, VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL};
+    VkBuffer buf;
+    if (vkCreateBuffer(device, &bci, NULL, &buf) != VK_SUCCESS) return VK_NULL_HANDLE;
+    VkMemoryRequirements mr;
+    vkGetBufferMemoryRequirements(device, buf, &mr);
+    Alloc mem;
+    if (!dev_alloc_in(&mr, &mem, 1) || vkBindBufferMemory(device, buf, mem.mem, mem.off) != VK_SUCCESS) {
+        dev_free(&mem);
+        vkDestroyBuffer(device, buf, NULL);
+        return VK_NULL_HANDLE;
+    }
+    e->va = va; e->guest = g; e->size = size; e->stale = 0; e->checked = gpu_stat_batches; e->made = gfx_stat_presented; e->used = ++tick;
+    watch_written(g, size, &e->seen);   /* (before reading: a write meanwhile is news next time) */
+    if ((e->shadow = malloc(size)) != NULL) memcpy(e->shadow, P(void, g), size);   /* (then the buffer from the copy: the same bytes) */
+    memcpy(mem.ptr, e->shadow ? e->shadow : P(u8, g), size);
+    if (bytes > size) memset(mem.ptr + size, 0, bytes - size);
+    VkBufferViewCreateInfo vci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, buf, VK_FORMAT_R32_UINT, 0, bytes};
+    VkBufferView view;
+    if (vkCreateBufferView(device, &vci, NULL, &view) != VK_SUCCESS) {
+        bury_grave((Grave){VK_NULL_HANDLE, buf, VK_NULL_HANDLE, mem, VK_NULL_HANDLE});
+        return VK_NULL_HANDLE;
+    }
+    e->buf = buf; e->mem = mem; e->view = view;
+    kept_blocks_add(e, 1);
+    vk_stat_kept_made++;
+    vk_stat_upload_bytes += bytes;
+    return view;
 }
 
 /* Guest GPU memory [va, va + size) as a raw buffer for a shader: copied into the frame's upload memory
  * (the same range again in the same submission, unwritten since: the view made for it). */
-typedef struct Upload { u64 va, serial, batch, seq; u32 size; VkBufferView view; } Upload;
+static u64 vk_stat_cb_copies[2], vk_stat_cb_bytes[2];
+typedef struct Upload { u64 va, serial, batch, gen; u32 size; VkBufferView view; } Upload;   /* (gen: writes_over when made) */
 static Upload uploads[8192];
 static VkBufferView upload(u64 va, u32 size) {
     if (!va || !size) return dummy_texels;
@@ -1006,7 +1138,8 @@ static VkBufferView upload(u64 va, u32 size) {
     const u8 *src = g && gpu_va_to_guest(va + size - 1) == g + size - 1 ? P(const u8, g) : NULL;
     Upload *u = &uploads[((va >> 4) * 0x9E3779B97F4A7C15ull ^ size) >> 51 & 8191];
     cmd();
-    if (src && u->view && u->va == va && u->size == size && u->serial == frames[frame_at].serial && untouched_since(u->batch, u->seq, g, size)) {
+    if (src && u->view && u->va == va && u->size == size && u->serial == frames[frame_at].serial && u->batch == gpu_stat_batches &&
+        u->gen == writes_over(g, size)) {
         vk_stat_reused++;
         return u->view;
     }
@@ -1020,7 +1153,7 @@ static VkBufferView upload(u64 va, u32 size) {
     vk_stat_upload_bytes += padded;
     VkBufferView v = texel_view(buf, off, padded);
     if (!v) return dummy_texels;
-    *u = (Upload){va, frames[frame_at].serial, gpu_stat_batches, wrote_seq, size, src ? v : VK_NULL_HANDLE};
+    *u = (Upload){va, frames[frame_at].serial, gpu_stat_batches, src ? writes_over(g, size) : 0, size, src ? v : VK_NULL_HANDLE};
     return v;
 }
 
@@ -1032,7 +1165,6 @@ static VkBufferView upload(u64 va, u32 size) {
  * fighters' skinned vertices). gpu_d3d11.c learns which buffers a program writes (reading results back
  * for its first runs) and brings results back to guest memory when the copy engine reads them; not here
  * yet: results stay on the GPU, guest memory keeps what it had. Regions that overlap are merged. */
-static int watched(u64 g, u64 size);
 typedef struct Resident { u64 va, size, guest, seen, asked, used; VkDeviceSize bytes; VkBuffer buf; Alloc mem; } Resident;
 #define MAX_RESIDENTS 512
 static Resident residents[MAX_RESIDENTS];
@@ -1209,6 +1341,83 @@ static int wait_makes(void) {
 }
 static void wait_for(volatile LONG *state) {
     while (!*state) SwitchToThread();
+}
+
+/* What each stage's constant buffer slot was given last in this frame, with a copy of the bytes (gpu_d3d11.c's
+ * last_upload): the same bytes from the same place again - most of a frame's 64 KB program constants, outside
+ * the write-watched area, so not kept - get the same view, compared rather than copied again. */
+typedef struct LastCb { u64 va, serial; u32 size, cap, run; VkBufferView view; u8 *copy; } LastCb;   /* (run: the bytes mapped, the rest zeros) */
+static LastCb last_cb[2][18];
+static u64 vk_stat_cb_compared, vk_stat_cb_same;
+/* Big ones whose place changes from draw to draw (a ring of per-draw constants, each draw binding 64 KB
+ * from its own start): GPU memory in 128 KB windows from 64 KB boundaries, read page by page as read_gpu
+ * does (zeros where unmapped), copied once a submission - unless a page's mapping changed or the GPU's own
+ * commands wrote it since (the window's signature: each page's guest address and write count) - and each
+ * draw a view into the window holding its binding. */
+#define WINDOWS 2048
+#define WINDOW (128u << 10)
+typedef struct Window { u64 base, serial, batch, sig; VkBuffer buf; VkDeviceSize off; } Window;
+static Window windows[WINDOWS];
+static u64 vk_stat_window_hits, vk_stat_window_copies;
+static VkBufferView upload_window(u64 va, u32 size) {
+    u64 base = va & ~0xFFFFull;
+    if (size > 0x10000 || (va - base) % texel_align) return VK_NULL_HANDLE;
+    u64 sig = any_gen;
+    for (u64 o = 0; o < WINDOW; o += 0x1000) {
+        u64 g = gpu_va_to_guest(base + o);
+        sig = (sig ^ g) * 0x100000001B3ull + (g ? block_gen[KEPT_BLOCK(g >> 16)] : 0);
+    }
+    Window *w = &windows[(base >> 16) * 0x9E3779B97F4A7C15ull >> 53 & (WINDOWS - 1)];
+    cmd();
+    if (!(w->buf && w->base == base && w->serial == frames[frame_at].serial && w->batch == gpu_stat_batches && w->sig == sig)) {
+        u8 *dst = arena(WINDOW, texel_align, &w->buf, &w->off);
+        if (!dst) { w->buf = VK_NULL_HANDLE; return VK_NULL_HANDLE; }
+        read_gpu(base, WINDOW, dst);
+        w->base = base; w->serial = frames[frame_at].serial; w->batch = gpu_stat_batches; w->sig = sig;
+        vk_stat_window_copies++;
+        vk_stat_upload_bytes += WINDOW;
+    } else vk_stat_window_hits++;
+    return texel_view(w->buf, w->off + (va - base), (size + 15) & ~15u);
+}
+
+/* Big ones (4 KB or more) by their place, for the frame: a slot takes turns between several. */
+#define BIG_CBS 1024
+static LastCb big_cb[BIG_CBS];
+static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
+    LastCb *l = size >= 0x1000 ? &big_cb[((va >> 4) * 0x9E3779B97F4A7C15ull ^ size) >> 54 & (BIG_CBS - 1)]
+                               : &last_cb[stage == SHADER_VERTEX ? 0 : 1][slot];
+    u64 g = size ? gpu_va_to_guest(va) : 0;
+    /* the bytes mapped in one piece from va; a 64 KB binding often runs past what is mapped, which reads as
+     * zeros: then the mapped part is compared */
+    u32 run = 0;
+    if (g) {
+        run = 0x1000 - (u32)(va & 0xFFF);
+        while (run < size && gpu_va_to_guest(va + run) == g + run) run += 0x1000;
+        if (run > size) run = size;
+        for (u32 o = run; o < size && run; o += 0x1000)
+            if (gpu_va_to_guest(va + o)) run = 0;   /* (mapped elsewhere: not compared) */
+    }
+    const u8 *src = run ? P(const u8, g) : NULL;
+    cmd();
+    if (src && l->view && l->va == va && l->size == size && l->run == run && l->serial == frames[frame_at].serial) {
+        vk_stat_cb_compared++;
+        if (!memcmp(l->copy, src, run)) { vk_stat_cb_same++; return l->view; }
+    }
+    VkBufferView v = size >= 0x1000 ? upload_window(va, size) : VK_NULL_HANDLE;
+    if (!v) {
+        u64 r0 = vk_stat_reused;
+        v = upload(va, size);
+        if (vk_stat_reused == r0) { vk_stat_cb_copies[size >= 0x1000]++; vk_stat_cb_bytes[size >= 0x1000] += size; }
+    }
+    if (!src || v == dummy_texels) { l->view = VK_NULL_HANDLE; return v; }
+    if (l->cap < size) {
+        free(l->copy);
+        l->cap = size;
+        if (!(l->copy = malloc(size))) { l->cap = 0; l->view = VK_NULL_HANDLE; return v; }
+    }
+    memcpy(l->copy, src, run);
+    l->va = va; l->size = size; l->run = run; l->serial = frames[frame_at].serial; l->view = v;
+    return v;
 }
 
 /* ---- shaders ---------------------------------------------------------------------------------------- */
@@ -1943,15 +2152,18 @@ typedef struct StageBinds {
 } StageBinds;
 
 /* A stage's constant buffers, storage buffers and textures (gpu_d3d11.c's bind_resources). */
+static u64 vk_ns_res[3];   /* (constant buffers, storage buffers, textures) */
 static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int stage, const VShader *s, DrawParams *params, StageBinds *b) {
     int mstage = stage == SHADER_VERTEX ? STAGE_VERTEX : STAGE_FRAGMENT;
+    u64 t0 = rt_clock_ns(), t1;
     for (u32 k = 0; k < 18; k++) {
         if (!(s->info.cbuf_mask >> k & 1)) continue;
         u32 size = cb[mstage][k].size;
         if (size > 0x10000) size = 0x10000;
         if (size > s->info.cbuf_extent[k]) size = s->info.cbuf_extent[k];   /* only what the program can read */
-        b->cb[k] = upload(cb[mstage][k].address, size);
+        if (!(b->cb[k] = kept_cb(cb[mstage][k].address, size))) b->cb[k] = upload_slot(stage, k, cb[mstage][k].address, size);
     }
+    t1 = rt_clock_ns(); vk_ns_res[0] += t1 - t0; t0 = t1;
     for (u32 k = 0; k < s->info.sb_count && k < 16; k++) {   /* storage buffers: their descriptors are in constant buffer 0 */
         u32 desc[4] = {0};
         if (cb[mstage][0].address) read_gpu(cb[mstage][0].address + s->info.sb_offset[k], 16, desc);
@@ -1972,6 +2184,7 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
         }
         b->gm[k] = upload(va, size);
     }
+    t1 = rt_clock_ns(); vk_ns_res[1] += t1 - t0; t0 = t1;
     u32 tex_cb = regs[M_BINDLESS_TEXTURE] & 0x1F;
     u64 tic_pool = (u64)regs[M_TEX_HEADER_POOL] << 32 | regs[M_TEX_HEADER_POOL + 1];
     u64 tsc_pool = (u64)regs[M_TEX_SAMPLER_POOL] << 32 | regs[M_TEX_SAMPLER_POOL + 1];
@@ -1988,6 +2201,7 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
         params->swz[stage][k] = (tic[0] >> 19) & 0xFFF;
         if (scale != 1.0f) params->swz[stage][k] |= (u32)(scale * 4096.0f + 0.5f) << 16;
     }
+    vk_ns_res[2] += rt_clock_ns() - t0;
 }
 
 /* The stage's descriptor set (binding map: gpu_spirv.h), with what its program declares. */
@@ -2025,8 +2239,17 @@ static VkDescriptorSet stage_set(const VShader *s, const StageBinds *b, VkBuffer
     return set;
 }
 
+static u64 vk_ns_phase[8];   /* (time in a draw's parts: shaders, targets, state and pipeline, streams, resources, indices, sets, recording) */
+#define PHASE(k) do { u64 tn_ = rt_clock_ns(); vk_ns_phase[k] += tn_ - tp; tp = tn_; } while (0)
+static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexed);
 static void vk_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
+    u64 t0 = rt_clock_ns();
+    vk_draw_(regs, cb, indexed);
+    InterlockedAdd64((volatile LONG64 *)&vk_ns_draw, (LONG64)(rt_clock_ns() - t0));
+}
+static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
     enter();
+    u64 tp = rt_clock_ns();
     vk_stat_draws++;
     u32 begin = regs[M_BEGIN];
     if (begin & (1u << 26)) instance_counter++;
@@ -2048,6 +2271,7 @@ static void vk_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed
         return;
     }
 
+    PHASE(0);
     /* render targets */
     Surface *rts[8] = {0}, *zs = NULL;
     u32 sel = regs[M_CT_SELECT], count = sel & 15, rt_w = 0, rt_h = 0, area_w = 16384, area_h = 16384;
@@ -2117,6 +2341,7 @@ static void vk_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed
         scissor = (VkRect2D){{l, t}, {r > l ? (u32)(r - l) : 0, bm > t ? (u32)(bm - t) : 0}};
     }
 
+    PHASE(1);
     /* the pipeline's state */
     PipeKey key;
     memset(&key, 0, sizeof key);
@@ -2174,6 +2399,7 @@ static void vk_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed
     VkPipeline pipe = get_pipeline(&key);
     if (!pipe) { vk_stat_skip_pipeline++; leave(); return; }
 
+    PHASE(2);
     /* vertex streams: each attribute the shader reads gets its stream's data (t18 + n) */
     StageBinds vb, pb;
     memset(&vb, 0, sizeof vb);
@@ -2217,6 +2443,7 @@ static void vk_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed
     }
     params.base[0] = regs[M_GLOBAL_BASE_VERTEX];
     params.base[1] = regs[M_GLOBAL_BASE_INSTANCE] + instance_counter;
+    PHASE(3);
     stage_resources(regs, cb, SHADER_VERTEX, vs, &params, &vb);
     if (ps) stage_resources(regs, cb, SHADER_PIXEL, ps, &params, &pb);
 
@@ -2236,6 +2463,7 @@ static void vk_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed
     }
 
 
+    PHASE(4);
     /* the indices: copied after one another into the frame's upload memory (8-bit ones widened to 16) */
     VkBuffer ibuf = VK_NULL_HANDLE;
     VkDeviceSize ioff = 0;
@@ -2264,9 +2492,11 @@ static void vk_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed
     u8 *pdst = arena(sizeof params, ubo_align, &pbuf, &poff);
     if (!pdst) { vk_stat_skip_other++; leave(); return; }
     memcpy(pdst, &params, sizeof params);
+    PHASE(5);
     VkDescriptorSet sets[2] = {stage_set(vs, &vb, pbuf, poff), ps ? stage_set(ps, &pb, pbuf, poff) : VK_NULL_HANDLE};
     if (!sets[0] || (ps && !sets[1])) { vk_stat_skip_other++; leave(); return; }
 
+    PHASE(6);
     /* the rendering: the open one if it has these attachments, else a new one */
     VkImageView colors[8] = {0}, depth = zs ? surface_attachment(zs) : VK_NULL_HANDLE;
     for (u32 i = 0; i < ncolor; i++) colors[i] = rts[i] ? surface_attachment(rts[i]) : VK_NULL_HANDLE;
@@ -2321,11 +2551,12 @@ static void vk_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed
         vkCmdBindIndexBuffer(c, ibuf, ioff, isz == 4 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
         vkCmdDrawIndexed(c, regs[M_DRAW_INDEX_COUNT], 1, 0, (int32_t)regs[M_GLOBAL_BASE_VERTEX], 0);
     } else vkCmdDraw(c, regs[M_VERTEX_ARRAY_COUNT], 1, regs[M_VERTEX_ARRAY_START], 0);
+    PHASE(7);
     vk_stat_drawn++;
     leave();
 }
 
-/* The rest of the runtime's notices: writes of the GPU's own commands (the write log above). */
+/* The rest of the runtime's notices: writes of the GPU's own commands (note_wrote, above). */
 static void vk_wrote(u64 va, u64 bytes) {
     enter();
     note_wrote(va, bytes);
@@ -2335,6 +2566,8 @@ static void vk_wrote(u64 va, u64 bytes) {
 static void vk_guest_unmapped(u64 addr, u64 size) {
     enter();
     residents_unmapped(addr, addr + size, 1);
+    for (u32 i = 0; i < KEPT_SETS * KEPT_WAYS; i++)
+        if (kept[i].buf && kept[i].guest < addr + size && addr < kept[i].guest + kept[i].size) kept_drop(&kept[i]);
     for (u32 i = 0; i < ntextures; i++)
         if (textures[i].image && textures[i].guest < addr + size && addr < textures[i].guest + textures[i].size) textures[i].stale = 1, textures[i].sample_hash = ~0ull;
     note_wrote(0, 0);
@@ -2343,12 +2576,20 @@ static void vk_guest_unmapped(u64 addr, u64 size) {
 static void vk_gpu_unmapped(u64 va, u64 size) {
     enter();
     residents_unmapped(va, va + size, 0);
+    for (u32 i = 0; i < KEPT_SETS * KEPT_WAYS; i++)
+        if (kept[i].buf && kept[i].va < va + size && va < kept[i].va + kept[i].size) kept_drop(&kept[i]);
     note_wrote(0, 0);
     leave();
 }
 
 /* ---- compute launches (the plan's step 6), as gpu_d3d11.c's d3d11_dispatch -------------------------- */
+static void vk_dispatch_(const u32 *regs, const u32 *q);
 static void vk_dispatch(const u32 *regs, const u32 *q) {
+    u64 t0 = rt_clock_ns();
+    vk_dispatch_(regs, q);
+    InterlockedAdd64((volatile LONG64 *)&vk_ns_dispatch, (LONG64)(rt_clock_ns() - t0));
+}
+static void vk_dispatch_(const u32 *regs, const u32 *q) {
     enter();
     vk_stat_dispatches++;
     u64 region = (u64)regs[M_PROGRAM_REGION] << 32 | regs[M_PROGRAM_REGION + 1];
@@ -2456,12 +2697,18 @@ static void vk_status_lines(void) {
     fprintf(stderr, "[status] vulkan (%s): %llu frames shown (%llu with no window to show them in), %llu clears (%llu masked, not drawn), "
                     "%llu 2D blits (%llu between formats it cannot blit), %u surfaces, %u textures (%llu made), %llu MB device memory; "
                     "%llu draws: %llu drawn in %llu renderings, skipped %llu shader / %llu pipeline / %llu target / %llu topology / %llu other; "
-                    "%llu shaders (%llu failed), %llu pipelines (%llu failed; %.1f s making them), %llu MB uploaded (%llu reused); %llu compute launches (%llu run, %llu skipped), %u resident regions (%llu made, %llu taken again)\n",
+                    "%llu shaders (%llu failed), %llu pipelines (%llu failed; %.1f s making them), %llu MB uploaded (%llu reused); %llu compute launches (%llu run, %llu skipped), %u resident regions (%llu made, %llu taken again); "
+                    "time in draws %.1f s, launches %.1f s, presents %.1f s (of it waiting for the GPU %.1f s), %llu upload blocks in the card's memory\n",
             card, gfx_stat_presented, vk_stat_presents_skipped, gfx_stat_clears, vk_stat_clears_skipped, gfx_stat_blits, vk_stat_blits_skipped,
             nsurfaces, ntextures, vk_stat_textures, vk_stat_device_bytes >> 20, vk_stat_draws, vk_stat_drawn, vk_stat_passes, vk_stat_skip_shader, vk_stat_skip_pipeline,
             vk_stat_skip_target, vk_stat_skip_topology, vk_stat_skip_other, vk_stat_shaders, vk_stat_shader_failures, vk_stat_pipelines, vk_stat_pipeline_failures, pipeline_ns / 1e9,
             vk_stat_upload_bytes >> 20, vk_stat_reused, vk_stat_dispatches, vk_stat_dispatched, vk_stat_skip_compute, nresidents,
-            vk_stat_residents_made, vk_stat_resident_refills);
+            vk_stat_residents_made, vk_stat_resident_refills, vk_ns_draw / 1e9, vk_ns_dispatch / 1e9, vk_ns_present / 1e9, vk_ns_wait / 1e9,
+            vk_stat_local_blocks);
+    fprintf(stderr, "[status] vulkan draws' parts (s): shaders %.1f, targets %.1f, state %.1f, streams %.1f, resources %.1f, indices %.1f, sets %.1f, "
+                    "recording %.1f (resources: constant buffers %.1f, storage buffers %.1f, textures %.1f); "
+                    "kept constant buffers: %llu made, %llu used, %llu found changed; constant buffers copied: %llu small (%llu MB), %llu big (%llu MB), %llu the same as the slot's last (of %llu compared); windows: %llu copied, %llu used again\n", vk_ns_phase[0] / 1e9, vk_ns_phase[1] / 1e9, vk_ns_phase[2] / 1e9, vk_ns_phase[3] / 1e9, vk_ns_phase[4] / 1e9,
+            vk_ns_phase[5] / 1e9, vk_ns_phase[6] / 1e9, vk_ns_phase[7] / 1e9, vk_ns_res[0] / 1e9, vk_ns_res[1] / 1e9, vk_ns_res[2] / 1e9, vk_stat_kept_made, vk_stat_kept_hits, vk_stat_kept_stale, vk_stat_cb_copies[0], vk_stat_cb_bytes[0] >> 20, vk_stat_cb_copies[1], vk_stat_cb_bytes[1] >> 20, vk_stat_cb_same, vk_stat_cb_compared, vk_stat_window_copies, vk_stat_window_hits);
 }
 
 /* The output (monitor) the window is on, referenced, for display pacing (gpu_display.c waits for its
