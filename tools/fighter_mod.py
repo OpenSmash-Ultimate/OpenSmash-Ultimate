@@ -72,6 +72,67 @@ def link_or_copy(src, dst):
         shutil.copyfile(src, dst)
 
 
+LAYOUT_MOD = "new-fighters-layout"
+LAYOUT_DB = "ui/param/database/ui_layout_db.prc"
+
+
+def write_layout_mod(tree, log=print):
+    """The select screen's, VS screen's and results' picture layout for every new fighter in the tree: the game finds a
+    fighter's row in ui_layout_db by "ui_chara_<name>_00"; a new fighter had none and its pictures were drawn at
+    scale 1 from the corner (huge, over the face). Each gets a copy of its donor's row under its own ids, in one mod
+    (two fighters' patches would both append at the same index), turned on. Returns how many rows."""
+    import arc as A
+    import prc
+    H = prc.hash40
+    fighters = {}
+    for n in sorted(os.listdir(tree.mods)):
+        cfg = os.path.join(tree.mods, n, "config.json")
+        try:
+            with open(cfg, encoding="utf-8") as f:
+                fighters.update(json.load(f).get("new-fighters", {}))
+        except (OSError, ValueError):
+            pass
+    out = os.path.join(tree.mods, LAYOUT_MOD)
+    if not fighters:
+        return 0
+    data = A.Arc(os.path.join(tree.root, "dump", "modules", "romfs.cfg")).get(LAYOUT_DB)
+    rows = dict(prc.read(data)[1])[H("db_root")][1]
+    new_ids = {H(f"ui_chara_{n}") for n in fighters}
+    base = [r for r in rows if dict(r[1]).get(H("ui_chara_id"), (0, 0))[1] not in new_ids]
+    names = {}
+    for k, (t, _v) in base[0][1]:
+        names[k] = t
+    xml = ['<?xml version="1.0" encoding="utf-8"?>', '<struct>', '  <list hash="db_root">']
+    index, made = len(base), 0
+    for name, donor in sorted(fighters.items()):
+        src = next((r for r in base if dict(r[1]).get(H("ui_chara_id"), (0, 0))[1] == H(f"ui_chara_{donor}")), None)
+        if src is None:
+            log(f"layout: no row of ui_chara_{donor} to copy for {name}")
+            continue
+        xml.append(f'    <struct index="{index}">')
+        for k, (t, v) in src[1]:
+            if k == H("ui_chara_id"):
+                v = H(f"ui_chara_{name}")
+            elif k == H("ui_layout_id"):
+                v = H(f"ui_chara_{name}_00")
+            tag = prc.NAMES[t]
+            text = f"{v:#x}" if t == prc.HASH else ("true" if v is True else "false" if v is False else repr(v) if t == prc.FLOAT else str(v))
+            xml.append(f'      <{tag} hash="{k:#x}">{text}</{tag}>')
+        xml.append('    </struct>')
+        index += 1
+        made += 1
+    xml += ['  </list>', '</struct>', '']
+    path = os.path.join(out, *LAYOUT_DB.split("/"))[:-4] + ".prcxml"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(xml))
+    state = tree.load()
+    state["mods"][LAYOUT_MOD] = dict(state["mods"].get(LAYOUT_MOD, {}), enabled=True, title="new fighters: picture layout rows (made by fighter_mod.py)")
+    tree.save(state)
+    log(f"layout: {made} row(s) for {', '.join(sorted(fighters))} in {path}")
+    return made
+
+
 def make_mod(folder, tree):
     """The fighter folder as the mod <tree>/mods/<name>, turned on; returns (name, donor, files)."""
     _manifest, name, donor = load_manifest(folder)
@@ -102,6 +163,7 @@ def main(argv=None):
     try:
         name, donor, n = make_mod(a.folder, tree)
         print(f"{name}: {n} data files in {os.path.join(tree.mods, name)} (new fighter made of {donor}), turned on")
+        write_layout_mod(tree)
         if a.apply:
             mods.apply(tree, print)
         if a.shaders:
