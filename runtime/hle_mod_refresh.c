@@ -70,12 +70,22 @@ static u8 *read_all(const char *path, u32 *size, FILETIME *mtime) {
     return b;
 }
 
+/* The snapshot is the old bytes of every file, held in memory for the whole run: a big mods folder
+ * is gigabytes. It stops at this many MB (SSBU_MOD_REFRESH_MB; 0: no snapshot, no refresh); the
+ * files past it are not refreshed. */
+static u64 snap_budget = 512ull << 20, snap_bytes;
+static int snap_over;
+
 static void remember(const char *path, int kind) {
     if (snap_count >= SNAP_MAX) return;
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &a)) return;
+    if (snap_bytes + a.nFileSizeLow > snap_budget) { snap_over++; return; }
     u32 size = 0;
     FILETIME mtime;
     u8 *b = read_all(path, &size, &mtime);
     if (!b) return;
+    snap_bytes += size;
     snaps[snap_count++] = (Snap){ _strdup(path), b, size, size, mtime, kind };
 }
 
@@ -104,6 +114,12 @@ static void walk(const char *dir, int depth) {
 static DWORD WINAPI snap_main(void *unused) {
     (void)unused;
     char mods[PATH_MAX_], full[PATH_MAX_];
+    const char *mb = getenv("SSBU_MOD_REFRESH_MB");
+    if (mb) snap_budget = strtoull(mb, NULL, 10) << 20;
+    if (!snap_budget) {
+        fprintf(stderr, "[mods] mid-match refresh off (SSBU_MOD_REFRESH_MB=0)\n");
+        return 0;   /* (snap_ready stays 0: a training reset says the folder is not read) */
+    }
     snprintf(mods, sizeof mods, "%s\\..\\..\\mods", rt_data_dir ? rt_data_dir : ".");
     if (!GetFullPathNameA(mods, PATH_MAX_, full, NULL)) full[0] = 0;
     DWORD attr = full[0] ? GetFileAttributesA(full) : INVALID_FILE_ATTRIBUTES;
@@ -115,6 +131,9 @@ static DWORD WINAPI snap_main(void *unused) {
     }
     fprintf(stderr, "[mods] watching %d animation file%s and %d model file%s for a mid-match refresh on the training reset (L+R+A)\n",
             anims, anims == 1 ? "" : "s", models, models == 1 ? "" : "s");
+    if (snap_over)
+        fprintf(stderr, "[mods] %d more not watched: their old bytes would pass SSBU_MOD_REFRESH_MB (%llu MB held)\n", snap_over,
+                (unsigned long long)(snap_budget >> 20));
     InterlockedExchange(&snap_ready, 1);
     return 0;
 }
@@ -198,6 +217,7 @@ static const char *short_name(const char *path) {
 
 static void refresh(void) {
     if (!snap_ready) {
+        if (!snap_budget) return;   /* (off: the press is only the training reset) */
         fprintf(stderr, "[mods] still reading the mods folder; press the training reset again in a moment\n");
         return;
     }

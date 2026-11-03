@@ -1103,8 +1103,13 @@ enum { PW_EMPTY, PW_QUEUED, PW_LOADING, PW_READY, PW_TAKEN, PW_FAILED };
 #define PREWARM_SLOTS 32768
 static Prewarm *volatile prewarm_table;
 static SRWLOCK prewarm_lock = SRWLOCK_INIT;
-static volatile LONG prewarm_total, prewarm_done, prewarm_ready;
+static volatile LONG prewarm_total, prewarm_done, prewarm_ready, prewarm_taken, prewarm_over;
 static u64 prewarm_t0, prewarm_bytes0;
+/* Each program the driver makes holds its GPU code in this process (NVIDIA: some 0.4-0.8 MB), and a
+ * player's cache keeps every program played before: thousands, gigabytes. The prewarm stops making
+ * them once the process has grown this much since it began (newest first: the ones played last are
+ * made); the rest load at first use as without a prewarm. SSBU_SHADER_PREWARM_MB, 0: no limit. */
+static u64 prewarm_budget = 1024ull << 20;
 
 static u64 private_bytes(void) {
 #ifdef _WIN32
@@ -1146,7 +1151,7 @@ static void *prewarm_take(const Shader *s) {
     void *obj = NULL;
     AcquireSRWLockExclusive(&prewarm_lock);
     Prewarm *p = prewarm_slot(s->stage, s->hash, s->vs_outputs, s->table_hash, 0);
-    if (p && p->state == PW_READY) { obj = p->obj; p->obj = NULL; }
+    if (p && p->state == PW_READY) { obj = p->obj; p->obj = NULL; prewarm_taken++; }
     if (p && p->state != PW_FAILED) p->state = PW_TAKEN;
     ReleaseSRWLockExclusive(&prewarm_lock);
     return obj;
@@ -1159,6 +1164,11 @@ static void prewarm_job(struct Compiler *me, Shader *s) {
     Prewarm *p = s->prewarm;
     AcquireSRWLockExclusive(&prewarm_lock);
     int go = p->state == PW_QUEUED;
+    if (go && prewarm_budget && private_bytes() > prewarm_bytes0 + prewarm_budget) {   /* (over the budget: left to the game's own load) */
+        go = 0;
+        p->state = PW_FAILED;
+        prewarm_over++;
+    }
     if (go) p->state = PW_LOADING;
     ReleaseSRWLockExclusive(&prewarm_lock);
     void *obj = NULL;
@@ -1190,8 +1200,9 @@ static void prewarm_job(struct Compiler *me, Shader *s) {
     ReleaseSRWLockExclusive(&prewarm_lock);
     if (obj) IUnknown_Release((IUnknown *)obj);   /* the game loaded its own meanwhile */
     if (InterlockedIncrement(&prewarm_done) == prewarm_total)
-        fprintf(stderr, "[gfx] prewarm: %ld of %ld shaders ready in %.1f s; private memory %.0f -> %.0f MB\n", (long)prewarm_ready, (long)prewarm_total,
-                (GetTickCount64() - prewarm_t0) / 1000.0, prewarm_bytes0 / 1048576.0, private_bytes() / 1048576.0);
+        fprintf(stderr, "[gfx] prewarm: %ld of %ld shaders ready in %.1f s (%ld left to first use: over SSBU_SHADER_PREWARM_MB %llu); private memory %.0f -> %.0f MB\n",
+                (long)prewarm_ready, (long)prewarm_total, (GetTickCount64() - prewarm_t0) / 1000.0, (long)prewarm_over,
+                (unsigned long long)(prewarm_budget >> 20), prewarm_bytes0 / 1048576.0, private_bytes() / 1048576.0);
 }
 
 /* (on a compiler thread) the shader's GPU code: 1 ready, 2 failed */
@@ -1329,6 +1340,8 @@ static DWORD WINAPI prewarm_main(void *unused) {
     u32 n = cache_files(cache_dir(), &found, 0);
     prewarm_t0 = GetTickCount64();
     prewarm_bytes0 = private_bytes();
+    const char *mb = getenv("SSBU_SHADER_PREWARM_MB");
+    if (mb) prewarm_budget = strtoull(mb, NULL, 10) << 20;
     Prewarm *table = calloc(PREWARM_SLOTS, sizeof *table);
     prewarm_table = table;
     Prewarm **order = n ? malloc(sizeof *order * n) : NULL;   /* (the entries in queue order) */
@@ -1940,11 +1953,14 @@ static void driver_threads_line(void) {
 }
 #endif
 
+static u32 ntextures, nresidents;   /* (below: the texture cache, the GPU-resident buffers) */
 void gfx_status_lines(void) {
     if (!ready) return;
 #ifdef _WIN32
     driver_threads_line();
 #endif
+    fprintf(stderr, "[status] memory: %.0f MB private; %llu shaders made, prewarm %ld made / %ld taken by the game / %ld over its budget; %u textures, %u surfaces, %u GPU-resident buffers\n",
+            private_bytes() / 1048576.0, gfx_stat_shaders, (long)prewarm_ready, (long)prewarm_taken, (long)prewarm_over, ntextures, nsurfaces, nresidents);
     if (!gfx_stat_first_draws) return;
     EnterCriticalSection(&lock);
     fprintf(stderr, "[status] first draws with a shader: %llu, %llu of them over 4 ms (%.0f ms in all); longest %.1f ms (%s)\n",
