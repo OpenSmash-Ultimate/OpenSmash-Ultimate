@@ -1,13 +1,25 @@
-/* The back end drawing (gpu_backend.h): a table of its entry points, Direct3D 11's from the start
- * (gpu_d3d11.c), chosen once before the game's first GPU work. The entry points gpu.c and hle_nv.c
- * call are gpu_backend.h's inline functions over this table; the ones below are the rest of the
- * runtime's questions to the back end (the watchdog, crash reports, [status], display pacing, the
- * window's close), plain functions as their callers declare them. (macOS: macos/gpu_metal.m defines
- * all of them itself; this file is left out of the Mac program.) */
+/* The back end drawing (gpu_backend.h): a table of its entry points, chosen once, at the game's
+ * first GPU work. The entry points gpu.c and hle_nv.c call are gpu_backend.h's inline functions over
+ * this table; the ones at the end are the rest of the runtime's questions to the back end (the
+ * watchdog, crash reports, [status], display pacing, the window's close), plain functions as their
+ * callers declare them. (macOS: macos/gpu_metal.m defines all of them itself; this file is left out
+ * of the Mac program.)
+ *
+ * Until the choice the table holds starters: the entry points that draw (or can start the back
+ * end) make the choice, then call the chosen back end's; the questions answer as a back end that has
+ * not started does (nothing kept, nothing drawn) without making it. The choice: display.ini's
+ * renderer (gpu_display.c) - Direct3D 11 (gpu_d3d11.c) by default, as before; vulkan starts the
+ * Vulkan back end (gpu_vk.c), and Direct3D 11 draws if it cannot start, saying why. After the choice
+ * each entry point is one indirect call into the chosen back end. */
 #ifndef __APPLE__
-#include "gpu_d3d11.h"
+#include <stdio.h>
 
-GfxBackend gfx_backend = {
+#include "display.h"
+#include "gpu_d3d11.h"
+#include "gpu_renderer.h"
+#include "gpu_vk.h"
+
+static const GfxBackend D3D11 = {
     .clear = d3d11_clear,
     .draw = d3d11_draw,
     .present = d3d11_present,
@@ -30,12 +42,69 @@ GfxBackend gfx_backend = {
     .display_output = d3d11_display_output,
 };
 
-/* The Vulkan back end cannot draw the game yet (docs/TECHNICAL.md, "A second back end: Vulkan"):
- * Direct3D 11's table stays, and renderer = vulkan is answered at Direct3D 11's start
- * (gfx_renderer_start: Vulkan checked on this PC, the result logged). Once it draws, this is where
- * display.ini's renderer = vulkan puts its table in place, and Direct3D 11's stays if it cannot
- * start. */
-void gfx_backend_choose(void) {}
+/* ---- the choice ------------------------------------------------------------------------------ */
+static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK choose(PINIT_ONCE o, PVOID p, PVOID *c) {
+    (void)o; (void)p; (void)c;
+    const GfxBackend *b = &D3D11;
+    if (display_renderer() == RENDERER_VULKAN) {
+        char why[600];
+        const GfxBackend *v = vk_backend_start(why, sizeof why);
+        if (v) { b = v; gfx_renderer_chosen(RENDERER_VULKAN, NULL); }
+        else gfx_renderer_chosen(RENDERER_DEFAULT, why);
+    }
+    /* (pointer by pointer: each is one aligned store, so a thread reading the table meanwhile sees
+     * a starter, which waits for the choice, or the chosen back end's function) */
+    void *const *from = (void *const *)b;
+    void *volatile *to = (void *volatile *)&gfx_backend;
+    for (size_t i = 0; i < sizeof gfx_backend / sizeof(void *); i++) to[i] = from[i];
+    return TRUE;
+}
+static void start(void) { InitOnceExecuteOnce(&once, choose, NULL, NULL); }
+
+/* the entry points that draw: the choice, then the chosen back end's */
+static void start_clear(const u32 *regs, u32 arg) { start(); gfx_backend.clear(regs, arg); }
+static void start_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) { start(); gfx_backend.draw(regs, cb, indexed); }
+static void start_present(u64 guest, u32 width, u32 height) { start(); gfx_backend.present(guest, width, height); }
+static void start_blit2d(const u32 *regs) { start(); gfx_backend.blit2d(regs); }
+static void start_dispatch(const u32 *regs, const u32 *qmd) { start(); gfx_backend.dispatch(regs, qmd); }
+static int start_copy_resident(u64 dst_va, u64 src_va, u64 bytes) { start(); return gfx_backend.copy_resident(dst_va, src_va, bytes); }
+static void start_resident_flush(u64 va, u64 bytes) { start(); gfx_backend.resident_flush(va, bytes); }
+static void start_resident_written(u64 va, u64 bytes) { start(); gfx_backend.resident_written(va, bytes); }
+static void start_stream_wrote(u64 va, u64 bytes) { start(); gfx_backend.stream_wrote(va, bytes); }
+static void start_guest_wrote(u64 va, u64 bytes) { start(); gfx_backend.guest_wrote(va, bytes); }
+static void start_stream_end(void) { start(); gfx_backend.stream_end(); }
+/* the questions: as a back end not started yet (Direct3D 11's answers before its start) */
+static void unstarted_unmapped(u64 va, u64 size) { (void)va; (void)size; }   /* (nothing kept yet) */
+static int unstarted_draw_logging(void) { return 0; }
+static void unstarted_nothing(void) {}
+static DWORD unstarted_thread(void) { return 0; }
+static void unstarted_report_compiles(void (*line)(const char *text)) { (void)line; }
+static void *unstarted_display_output(void) { return NULL; }
+
+GfxBackend gfx_backend = {
+    .clear = start_clear,
+    .draw = start_draw,
+    .present = start_present,
+    .blit2d = start_blit2d,
+    .dispatch = start_dispatch,
+    .copy_resident = start_copy_resident,
+    .resident_flush = start_resident_flush,
+    .resident_written = start_resident_written,
+    .stream_wrote = start_stream_wrote,
+    .guest_wrote = start_guest_wrote,
+    .stream_end = start_stream_end,
+    .gpu_unmapped = unstarted_unmapped,
+    .guest_unmapped = unstarted_unmapped,
+    .draw_logging = unstarted_draw_logging,
+    .status_lines = unstarted_nothing,
+    .closing = unstarted_nothing,
+    .lock_owner = unstarted_thread,
+    .last_enter_thread = unstarted_thread,
+    .report_compiles = unstarted_report_compiles,
+    .display_output = unstarted_display_output,
+};
 
 void gfx_status_lines(void) { gfx_backend.status_lines(); }
 void gfx_closing(void) { gfx_backend.closing(); }

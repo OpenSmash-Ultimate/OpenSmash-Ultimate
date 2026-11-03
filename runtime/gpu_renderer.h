@@ -9,3 +9,7 @@
 int gfx_renderer_start(void *window);
 /* The renderer drawing, once started (RENDERER_DEFAULT until then). */
 int gfx_renderer(void);
+/* (gpu_backend.c's choice, made when display.ini asks for vulkan) Which renderer draws, and why the
+ * Vulkan back end could not start (NULL when it did): gfx_renderer_start says so when Direct3D 11
+ * starts instead. */
+void gfx_renderer_chosen(int renderer, const char *why);

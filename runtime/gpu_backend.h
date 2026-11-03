@@ -3,8 +3,8 @@
  *
  * Windows and Linux hold more than one back end in one program: Direct3D 11 (gpu_d3d11.c, the
  * default) and Vulkan (gpu_vulkan.c, in development). The entry points below go through a table,
- * gfx_backend (gpu_backend.c), filled with Direct3D 11's functions from the start and chosen once
- * before the game's first GPU work (gfx_backend_choose): each costs one indirect
+ * gfx_backend (gpu_backend.c), chosen once at the game's first GPU work (display.ini's renderer:
+ * Direct3D 11, or Vulkan when it starts): each costs one indirect
  * call. macOS has one back end, macos/gpu_metal.m, which defines these names itself. */
 #pragma once
 #include "gpu.h"
@@ -39,9 +39,6 @@ typedef struct GfxBackend {
     void *(*display_output)(void);
 } GfxBackend;
 extern GfxBackend gfx_backend;   /* (gpu_backend.c) the back end drawing */
-/* (once, at start, before the GPU's first work: host.c) Act on display.ini's renderer: the table
- * stays Direct3D 11's unless another back end starts. */
-void gfx_backend_choose(void);
 
 static inline void gfx_clear(const u32 *regs, u32 arg) { gfx_backend.clear(regs, arg); }
 static inline void gfx_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) { gfx_backend.draw(regs, cb, indexed); }

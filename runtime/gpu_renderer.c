@@ -19,11 +19,24 @@
 #endif
 
 static int drawing = RENDERER_DEFAULT;
+static int tried;              /* (gpu_backend.c's choice tried the Vulkan back end) */
+static char failed[600];       /* why it could not start */
 
 int gfx_renderer(void) { return drawing; }
 
+void gfx_renderer_chosen(int renderer, const char *why) {
+    drawing = renderer;
+    tried = 1;
+    snprintf(failed, sizeof failed, "%s", why ? why : "");
+    if (renderer == RENDERER_VULKAN) fprintf(stderr, "[gfx] renderer = vulkan: the Vulkan back end draws (in development: docs/TECHNICAL.md, \"A second back end: Vulkan\")\n");
+}
+
 int gfx_renderer_start(void *window) {
     if (display_renderer() != RENDERER_VULKAN) return drawing = RENDERER_DEFAULT;
+    if (tried) {   /* (the Vulkan back end could not start: Direct3D 11 is starting instead) */
+        fprintf(stderr, "[gfx] renderer = vulkan: the Vulkan back end cannot start here: %s. " DEFAULT_WORDS " draws\n", failed);
+        return drawing = RENDERER_DEFAULT;
+    }
     char what[600];
     ULONGLONG t0 = GetTickCount64();
     int works = vk_probe(window, what, sizeof what);

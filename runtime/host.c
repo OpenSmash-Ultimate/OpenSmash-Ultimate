@@ -69,9 +69,6 @@ void movie_test_start(void);   /* (hle_movie_skip.c) SSBU_SKIP_MOVIES, SSBU_SEQ'
 void test_fight_start(void);   /* (hle_fight_test.c) SSBU_FIGHT_HASH, SSBU_DETERMINISTIC, SSBU_DEBUG_MATCH... */
 void gfx_report_compiles(void (*line)(const char *text));
 void gfx_status_lines(void);
-#ifndef __APPLE__
-void gfx_backend_choose(void);   /* (gpu_backend.c: which back end draws, once, before the GPU's first work) */
-#endif
 #ifdef _WIN32
 int gfx_warm_shaders_main(const char *dir, const char *luid);   /* (gpu_d3d11.c: ssbu --warm-shaders) */
 #endif
@@ -1527,9 +1524,6 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[i], "--status") && i + 1 < argc) status_every = atoi(argv[++i]);
     }
     settings_args(argc, argv);   /* --online: the netplay settings from online_*.txt (hle_settings.c) */
-#ifndef __APPLE__
-    gfx_backend_choose();
-#endif
 #ifdef _WIN32
     crash_reporter_start();
     AddVectoredExceptionHandler(1, on_fault);

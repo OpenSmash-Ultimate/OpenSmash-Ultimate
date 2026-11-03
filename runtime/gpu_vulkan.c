@@ -27,6 +27,11 @@ int vk_probe(void *window, char *what, size_t size) {
     return 0;
 }
 
+void *vk_loader(char *why, size_t size) {
+    snprintf(why, size, "this program was built without Vulkan");
+    return NULL;
+}
+
 #else
 
 #define VK_NO_PROTOTYPES
@@ -69,6 +74,8 @@ static PFN_vkGetInstanceProcAddr load_loader(char *why, size_t size) {
     if (!get_instance_proc) snprintf(why, size, "%s", failed);
     return get_instance_proc;
 }
+
+void *vk_loader(char *why, size_t size) { return (void *)load_loader(why, size); }
 
 /* ---- the functions the check uses ---------------------------------------------------------- */
 typedef struct Vk {

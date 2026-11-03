@@ -10,3 +10,6 @@
  * the cards found are logged ("[vulkan] ..." lines). SSBU_VULKAN_LOADER names another loader
  * (a path) to load. */
 int vk_probe(void *window, char *what, size_t size);
+/* The system's Vulkan loader, loaded once and kept: its vkGetInstanceProcAddr (a
+ * PFN_vkGetInstanceProcAddr), or NULL with `why` saying why (gpu_vk.c's back end starts from it). */
+void *vk_loader(char *why, size_t size);
