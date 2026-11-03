@@ -703,7 +703,7 @@ static void build(void) {
             r = add(R_KEY_FIRST + b, K_ACTION, W_NOW, pad_key_label(b), "A or Enter: then press the key for this. Y or Delete: its default again.");
             pad_key_names(b, r->value, sizeof r->value);
         }
-        add(R_KEYS_RESET, K_ACTION, W_NOW, "Back to the defaults", "Every key as it was: arrows, Z X C V, A S, Q W, Enter, Backspace, I J K L.");
+        add(R_KEYS_RESET, K_ACTION, W_NOW, "Back to the defaults", "Every key as it was: arrows, Z X C V, A S, Q W, Enter, Backspace, I J K L, Shift to walk.");
         break;
     case P_ONLINE: {
         const char *launcher = getenv("SSBU_NET_RELAY") && *getenv("SSBU_NET_RELAY") ? "SSBU_NET_RELAY set" :
