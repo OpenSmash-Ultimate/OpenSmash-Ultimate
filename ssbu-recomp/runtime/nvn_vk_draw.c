@@ -58,8 +58,7 @@ int vk_gpl_mode(void) {
         m = e && e[0] ? atoi(e) : VK_GPL_DEFAULT;
         if (!(e && e[0]) && m && V.props.vendorID == 0x1002) {   /* AMD: library pipelines drew black or corrupted shading (RX 6600 XT report, 2026-11): whole pipelines */
             m = 0;
-            printf("nvn_vk: AMD GPU: whole pipelines (SSBU_VK_GPL=%d to try libraries)
-", VK_GPL_DEFAULT);
+            printf("nvn_vk: AMD GPU: whole pipelines (SSBU_VK_GPL=%d to try libraries)\n", VK_GPL_DEFAULT);
         }
         if (!(e && e[0]) && GetFileAttributesA("../cache/vk/no_stage_libraries.txt") != INVALID_FILE_ATTRIBUTES) {     /* nvn_vk_m4.c stagelib_ensure: the driver refused one */
             m = 0;
