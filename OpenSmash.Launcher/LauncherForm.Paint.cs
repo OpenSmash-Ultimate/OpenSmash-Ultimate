@@ -1074,8 +1074,9 @@ namespace OpenSmash.Launcher
 
         // ---------------------------------------------------------------------------
         // Mods
-        int ModActionCount => 2;
-        string ModActionId(int index) => index == 0 ? "act:browse" : "act:setup";
+        int ModActionCount => 4;
+        static readonly string[] ModActionIds = { "act:browse", "act:setup", "act:check", "act:share" };
+        string ModActionId(int index) => ModActionIds[Math.Clamp(index, 0, ModActionIds.Length - 1)];
         float ModListTop => 368 * _s;
         float ModListView => Math.Max(68f, (ClientSize.Height - 118 * _s - ModListTop) / _s);
 
@@ -1104,6 +1105,11 @@ namespace OpenSmash.Launcher
                 "GAMEBANANA", Theme.Text, Theme.Bg, "BROWSE MODS", "Find and install mods from GameBanana.");
             PaintCard(g, "act:setup", x + (cardW + gap), cardY, cardW, cardH, 1, _keys && _sel == 1,
                 "PLUGINS", Theme.Text, Theme.Bg, "SETUP MODDING", "Community plugins movesets and new characters are built on.");
+            // (TRLLZR's mod manager ideas, NOTICE.md: conflicts, updates, shared lists - tools/os_mods.py)
+            PaintCard(g, "act:check", x + 2 * (cardW + gap), cardY, cardW, cardH, 2, _keys && _sel == 2,
+                "CHECK", Theme.Text, Theme.Bg, "CONFLICTS & UPDATES", "Files two mods both change, and newer versions on GameBanana.");
+            PaintCard(g, "act:share", x + 3 * (cardW + gap), cardY, cardW, cardH, 3, _keys && _sel == 3,
+                "SHARE", Theme.Text, Theme.Bg, "MOD LIST", "Save your mods as a list, or install a friend's list.");
 
             // List. _modScroll is a pixel offset in unscaled units; rows grow when they carry a description.
             float top = ModListTop;

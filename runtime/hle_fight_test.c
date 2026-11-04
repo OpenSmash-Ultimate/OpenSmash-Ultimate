@@ -134,7 +134,11 @@ static void first_battle_frame(int entry) {
 
 /* At the entry of a fighter's frame line (x0 = the agent; agent + 0x40 = its module accessor,
  * whose word + 8 has the category in its top 4 bits, 0 for a fighter). */
+/* (run-ahead, hle_rb_core.c: a predicted frame, thrown away at the load, is no fight frame: neither counted for
+ * SSBU_SEQ's steps nor in the hash log, which then reads as a run without run-ahead) */
+int rb_ra_predicting(void);
 static void frame_line(Cpu *c) {
+    if (rb_ra_predicting()) return;
     u64 agent = c->x[0], boma = agent ? ld64(agent + 0x40) : 0;
     if (!boma || ld32(boma + 8) >> 28 != 0) return;
     int k = 0;

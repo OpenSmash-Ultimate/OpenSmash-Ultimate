@@ -316,6 +316,9 @@ void settings_restart(void) {
         if (std[i] && std[i] != INVALID_HANDLE_VALUE) SetHandleInformation(std[i], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
     wchar_t *cmd = _wcsdup(GetCommandLineW());
     PROCESS_INFORMATION pi;
+    char me[16];
+    snprintf(me, sizeof me, "%lu", GetCurrentProcessId());
+    SetEnvironmentVariableA("SSBU_RESTART_FROM", me);   /* (the new game waits for this one to end: host.c) */
     fprintf(stderr, "[settings] starting the game again\n");
     fflush(stderr);
     fflush(stdout);

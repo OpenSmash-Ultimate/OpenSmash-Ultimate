@@ -563,9 +563,17 @@ static void watch_decommitting(u64 base, u64 size) {
     ReleaseSRWLockExclusive(&watch_lock);
 }
 
+int kernel_rb_wanted;   /* (hle_rb_core.c, before its first kernel_rb_switch: display.ini's runahead) */
 int kernel_rb_switch(void) {
     const char *v = getenv("SSBU_RB");
-    return v && *v && *v != '0';
+    if (v && *v && *v != '0') return 1;
+#ifdef _WIN32
+    if (kernel_rb_wanted) return 1;
+    v = getenv("SSBU_RUNAHEAD");   /* (run-ahead needs the savestates) */
+    return v && atoi(v) > 0;
+#else
+    return 0;
+#endif
 }
 
 int kernel_ring_frames(void) {

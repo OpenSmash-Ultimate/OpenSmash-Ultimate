@@ -19,16 +19,24 @@ void watch_take(u64 lo, u64 hi) {
     watch_take_locked(lo, hi);
     ReleaseSRWLockExclusive(&watch_lock);
 }
+double watch_prof_ms[2][2]; long long watch_prof_n[2][3]; static int watch_who;   /* [0] the renderer's questions, [1] the savestates' */   /* (a test's profile: asking, resetting; calls, resets, pages reset) */
 static void watch_take_locked(u64 lo, u64 hi) {
     static void *pages[65536];   /* (256 MB: the largest range asked about, in one call) */
     void *first;
     ULONG_PTR count = 1;
     ULONG granularity;
+    u64 t0 = rt_now_ns();
+    watch_prof_n[watch_who][0]++;
     /* (asking is cheap, resetting is not - even where nothing was written: so ask first) */
-    if (kernel_write_watch(WATCH_RENDERER, 0, (void *)lo, hi - lo, &first, &count, &granularity) != 0 || !count) return;
+    UINT q = kernel_write_watch(WATCH_RENDERER, 0, (void *)lo, hi - lo, &first, &count, &granularity);
+    watch_prof_ms[watch_who][0] += (double)(rt_now_ns() - t0) / 1e6;
+    if (q != 0 || !count) return;
     for (u64 at = (u64)first; at < hi;) {
         count = 65536;
-        if (kernel_write_watch(WATCH_RENDERER, WRITE_WATCH_FLAG_RESET, (void *)at, hi - at, pages, &count, &granularity) != 0 || !count) return;
+        u64 t1 = rt_now_ns();
+        UINT r = kernel_write_watch(WATCH_RENDERER, WRITE_WATCH_FLAG_RESET, (void *)at, hi - at, pages, &count, &granularity);
+        watch_prof_ms[watch_who][1] += (double)(rt_now_ns() - t1) / 1e6; watch_prof_n[watch_who][1]++; watch_prof_n[watch_who][2] += count;
+        if (r != 0 || !count) return;
         u64 stamp = ++watch_clock;
         for (ULONG_PTR k = 0; k < count; k++) {
             u64 p = ((u64)pages[k] - ALIAS_BASE) >> 12;
@@ -46,7 +54,9 @@ static void watch_take_locked(u64 lo, u64 hi) {
  * first page in [p, hi) stamped after `seen`. */
 u64 watch_rb_take(u64 lo, u64 hi) {
     AcquireSRWLockExclusive(&watch_lock);
+    watch_who = 1;
     watch_take_locked(lo, hi);
+    watch_who = 0;
     u64 now = watch_clock;
     ReleaseSRWLockExclusive(&watch_lock);
     return now;
@@ -57,6 +67,28 @@ u64 watch_rb_next(u64 p, u64 hi, u64 seen) { return watch_next(p, hi, seen); }
  * pages: room for 65536), then watch_rb_end. */
 u64 watch_rb_begin(void) { AcquireSRWLockExclusive(&watch_lock); return ++watch_clock; }
 void watch_rb_end(void) { ReleaseSRWLockExclusive(&watch_lock); }
+/* (the savestates' state map, a load) The pages of [lo, hi) written since their bits were last reset,
+ * asked without resetting them (their news stays for whoever takes it): a bit each set in `bits`, a
+ * bit per page of the alias area. */
+void watch_rb_dirty(u64 lo, u64 hi, u64 *bits) {
+    static void *pages[65536];
+    AcquireSRWLockExclusive(&watch_lock);
+    for (u64 at = lo; at < hi;) {
+        ULONG_PTR count = 65536;
+        ULONG granularity;
+        u64 t0 = rt_now_ns();
+        UINT r = kernel_write_watch(WATCH_RENDERER, 0, (void *)at, hi - at, pages, &count, &granularity);
+        watch_prof_ms[1][0] += (double)(rt_now_ns() - t0) / 1e6; watch_prof_n[1][0]++;
+        if (r != 0 || !count) break;
+        for (ULONG_PTR k = 0; k < count; k++) {
+            u64 p = ((u64)pages[k] - ALIAS_BASE) >> 12;
+            bits[p >> 6] |= 1ull << (p & 63);
+        }
+        if (count < 65536) break;
+        at = (u64)pages[count - 1] + 0x1000;
+    }
+    ReleaseSRWLockExclusive(&watch_lock);
+}
 void watch_rb_scan(u64 lo, u64 hi, u64 stamp, void **pages) {
     void *first;
     ULONG_PTR count = 1;

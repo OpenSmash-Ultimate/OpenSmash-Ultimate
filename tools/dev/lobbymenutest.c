@@ -76,6 +76,9 @@ void display_set_mode(int mode) { (void)mode; }
 void display_set_pacing(Pacing pacing) { (void)pacing; }
 void display_set_hide_cursor(int on) { (void)on; }
 void display_set_latency(int frames) { (void)frames; }
+int display_runahead(void) { return 0; }                     /* (run-ahead: gpu_display.c, hle_rb_core.c) */
+void display_set_runahead(int frames) { (void)frames; }
+int kernel_rb_switch(void) { return 0; }
 void display_set_render_scale(float scale) { (void)scale; }
 void display_set_renderer(int renderer) { renderer_saved = renderer; }
 int audio_master_volume(void) { return 100; }                 /* (ipc_audio.c: the master volume) */

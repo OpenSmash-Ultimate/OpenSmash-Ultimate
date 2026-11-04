@@ -54,7 +54,9 @@ static struct {
     float render_scale;   /* 0: auto */
     double speed;         /* SSBU_SPEED (test runs): 1 normal */
     int renderer;         /* RENDERER_* (renderer.h) */
-} cfg = {MODE_WINDOWED, 1280, 720, 3, 1, 1, 0, PACING_CLOCK, 0, "auto", 1.0f, 1.0, RENDERER_DEFAULT};
+} cfg = {MODE_WINDOWED, 1280, 720, 3, 1, 1, 1, PACING_CLOCK, 0, "auto", 1.0f, 1.0, RENDERER_DEFAULT};
+
+static int cfg_runahead;   /* display.ini's runahead (display_runahead) */
 
 static const char DEFAULT_INI[] =
     "; display.ini: the game's window and the pacing of its frames. Read when the game starts; the\n"
@@ -117,9 +119,15 @@ static const char DEFAULT_INI[] =
     "latency = 3\n"
     "; low_latency = 1: the game starts each frame later, as late as it can and still be ready for the next\n"
     ";   refresh, so it reads the controller later: up to most of a frame less input delay. 0: at the refresh.\n"
-    "low_latency = 0\n"
+    "low_latency = 1\n"
     "; hide_cursor = 1: hide the mouse pointer over the game after 2 seconds without moving it.\n"
     "hide_cursor = 1\n"
+#ifdef _WIN32
+    "; runahead = 0-3: in fights, show each frame this many frames ahead (less input delay; the settings menu's\n"
+    ";   Display page: off, 1, 2). 1 shows the real frame one frame sooner, 2 also predicts one frame on the\n"
+    ";   controls held now. Each frame ahead costs a frame of the game's work more per frame shown, and a savestate.\n"
+    "runahead = 0\n"
+#endif
     "; overlay = 1: show the frame rate in the corner from the start (F1 shows or hides it while playing).\n"
     "overlay = 1\n"
     "; volume = 0-100: the game's whole sound, over its own sound settings (0 is silent). The settings menu changes it while playing.\n"
@@ -235,6 +243,7 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else if (!_stricmp(key, "pacing")) parse_pacing(value);
         else if (!_stricmp(key, "latency")) cfg.latency = atoi(value);
         else if (!_stricmp(key, "low_latency")) cfg.low_latency = atoi(value) != 0;
+        else if (!_stricmp(key, "runahead")) cfg_runahead = atoi(value);
         else if (!_stricmp(key, "hide_cursor")) cfg.hide_cursor = atoi(value) != 0;
         else if (!_stricmp(key, "overlay")) cfg.overlay = atoi(value) != 0;
         else if (!_stricmp(key, "overlay_scale")) parse_overlay_scale(value);
@@ -269,6 +278,14 @@ static void load(void) {
 
 int display_latency(void) { load(); return cfg.latency; }
 int display_low_latency(void) { load(); return cfg.low_latency; }
+/* run-ahead's frames (display.ini; hle_rb_core.c reads it at each fight frame, SSBU_RUNAHEAD over it) */
+static volatile LONG saved_runahead = -1;
+int display_runahead(void) {
+    load();
+    int n = saved_runahead >= 0 ? (int)saved_runahead : cfg_runahead;
+    return n < 0 ? 0 : n > 3 ? 3 : n;
+}
+void display_set_runahead(int frames) { InterlockedExchange(&saved_runahead, frames < 0 ? 0 : frames > 3 ? 3 : frames); }
 Pacing display_pacing(void) { load(); return cfg.pacing; }
 const char *display_gpu(void) { load(); return cfg.gpu; }
 float display_render_scale(void) { load(); return cfg.render_scale; }

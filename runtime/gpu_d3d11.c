@@ -1029,8 +1029,16 @@ static u64 prewarm_t0, prewarm_bytes0;
 /* Each program the driver makes holds its GPU code in this process (NVIDIA: some 0.4-0.8 MB), and a
  * player's cache keeps every program played before: thousands, gigabytes. The prewarm stops making
  * them once the process has grown this much since it began (newest first: the ones played last are
- * made); the rest load at first use as without a prewarm. SSBU_SHADER_PREWARM_MB, 0: no limit. */
+ * made); the rest load at first use as without a prewarm. The budget is a third of the PC's memory
+ * (16 GB: about 5 GB, every program of a full cache; 8 GB: some 2.7 GB), so a load does not stop
+ * on programs made at first use; SSBU_SHADER_PREWARM_MB sets it, 0: no limit. */
 static u64 prewarm_budget = 1024ull << 20;
+static void prewarm_budget_default(void) {
+#ifdef _WIN32
+    MEMORYSTATUSEX m = {sizeof m};
+    if (GlobalMemoryStatusEx(&m) && m.ullTotalPhys / 3 > prewarm_budget) prewarm_budget = m.ullTotalPhys / 3;
+#endif
+}
 
 static u64 private_bytes(void) {
 #ifdef _WIN32
@@ -1263,6 +1271,7 @@ static DWORD WINAPI prewarm_main(void *unused) {
     prewarm_bytes0 = private_bytes();
     const char *mb = getenv("SSBU_SHADER_PREWARM_MB");
     if (mb) prewarm_budget = strtoull(mb, NULL, 10) << 20;
+    else prewarm_budget_default();
     Prewarm *table = calloc(PREWARM_SLOTS, sizeof *table);
     prewarm_table = table;
     Prewarm **order = n ? malloc(sizeof *order * n) : NULL;   /* (the entries in queue order) */

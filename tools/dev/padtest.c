@@ -401,7 +401,31 @@ static void test_keyboard(void) {
     CHECK(cfg.keyboard_slot == 1, "player = 2");
     CHECK(keys(&lx, &ly, &rx, &ry, 2, 'Q', 'E') == (1ull << N_L | 1ull << N_R), "L R on Q E");
     CHECK(keys(&lx, &ly, &rx, &ry, 1, 'T') == 1ull << N_RSTICK && cfg.nkb[N_LSTICK] == 0, "STICK_R = T, STICK_L none");
-    CHECK(keys(&lx, &ly, &rx, &ry, 2, 'J', 'I') == (1ull << N_LEFT | 1ull << N_UP) && rx == 0 && ry == 0, "IJKL the d-pad");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, 'J', 'K') == (1ull << N_LEFT | 1ull << N_DOWN) && rx == 0 && ry == 0, "IJKL the d-pad");
+    CHECK(cfg.kb_ssf2 == 1, "movement = ssf2 read");
+
+    /* movement = ssf2 (kb_ssf2): one call a poll */
+    load_text("[keyboard]\nmovement = ssf2\n");
+    for (int i = 0; i < 20; i++) keys(&lx, &ly, &rx, &ry, 0);   /* (time passes, nothing held) */
+    keys(&lx, &ly, &rx, &ry, 1, VK_RIGHT);
+    CHECK(lx == (i32)(0.60f * 32767), "ssf2: a key walks (%d)", lx);
+    for (int i = 0; i < 4; i++) keys(&lx, &ly, &rx, &ry, 1, VK_RIGHT);
+    CHECK(lx == 32767, "ssf2: then fully (walking speed, no dash: %d)", lx);
+    keys(&lx, &ly, &rx, &ry, 0);
+    keys(&lx, &ly, &rx, &ry, 1, VK_RIGHT);
+    CHECK(lx == 32767, "ssf2: the key again soon: a dash (%d)", lx);
+    for (int i = 0; i < 20; i++) keys(&lx, &ly, &rx, &ry, 0);
+    keys(&lx, &ly, &rx, &ry, 1, VK_DOWN);
+    CHECK(ly == -(i32)(0.655f * 32767), "ssf2: down crouches (%d)", ly);
+    for (int i = 0; i < 20; i++) keys(&lx, &ly, &rx, &ry, 0);
+    u64 b = keys(&lx, &ly, &rx, &ry, 1, VK_UP);
+    CHECK(ly == 0, "ssf2: up held back (a short hop or an up smash first: %d)", ly);
+    b = keys(&lx, &ly, &rx, &ry, 2, VK_UP, 'Z');
+    CHECK(ly == 32767 && (b & 1ull << N_A), "ssf2: up then A: up and A together (up smash)");
+    for (int i = 0; i < 20; i++) keys(&lx, &ly, &rx, &ry, 0);
+    load_text("[keyboard]\nmovement = full\n");
+    keys(&lx, &ly, &rx, &ry, 1, VK_RIGHT);
+    CHECK(lx == 32767 && cfg.kb_ssf2 == 0, "movement = full: fully at once");
 }
 
 int main(void) {

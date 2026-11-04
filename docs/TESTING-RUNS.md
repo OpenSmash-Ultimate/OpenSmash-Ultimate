@@ -220,6 +220,19 @@ Two more steps for a fighter's folder:
 
 What was run (2026-11-03, 13.0.5, gate2 sequence, `SSBU_DETERMINISTIC=1 SSBU_FIXED_SEED=1`, `p2=donkey,p2=cpu,cpu=3,stage=end`): Waluigi (donor `dolly`) with his folder as a mod - all 21 paths asked are his own, 0 fallbacks; his model, portrait and stock icon in the fight; two runs with the same fight hash over 42,034 lines. A Mario copy (`n3test`) on the unmodded data and Mario on the modded data without the variable both give Mario's fight hash.
 
+## More fighters than the select screen holds
+
+The game's select screen has 91 tiles (13 x 7) and its own fighters fill 87. When the turned-on mods add more
+(OpenSmash's new fighters, `config.json`'s `new-fighters`; Skyline plugins' select-screen entries, `dump/skyline/csk.json`),
+`tools/mods.py apply` makes the screen's layout and table for 91 + that many tiles ([`tools/css_layout.py`](../tools/css_layout.py),
+kept in `dump/mods/select_screen`; `python tools/css_layout.py plan <n>` shows the rows and tile size for n tiles) and
+[`runtime/hle_select_screen.c`](../runtime/hle_select_screen.c) sizes and hides the tiles past 91. A mod with its own
+`chara_icon_arrangement.prc` is used as it is. `SSBU_CSS_LOG=1` logs the layout's tiles and each grid (`[css] grid: 143 tiles
+of 147, rows 16 16 16 .., size 17`); more fighters than the layout holds are left off with a `[css] WARNING` instead of the
+game's abort. `SSBU_CSS_FIT=0` leaves the hook out. For a test with many tiles without as many fighters: the roster
+component's `N3_ROWS=<n>` (copies of a donor's row, `ssbu-recomp/mods/mods_n6_src/n6_roster.cpp`) with a screen made by
+`python tools/css_layout.py make --tiles <t> --out <tree>/mods/<name>`.
+
 ## An example run
 
 A made-up sequence for a run (its draw counts are made up too, so find yours with `SSBU_SEQ_LOG`):

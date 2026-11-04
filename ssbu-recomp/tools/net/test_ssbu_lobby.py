@@ -145,6 +145,45 @@ def none_of(f, kind, secs=0.6):
     return False
 
 
+def many_rooms(lob):
+    """More rooms than the game's list holds (LIST_MAX): the browser gets them all, the game's list a page, or the picked one first."""
+    B = b"ssbu-recomp-ldn1-13.0.5"
+    hosts = [Fake(lob, "H%02d" % i, B, mods(), b"many") for i in range(30)]
+    ips = [h.join() for h in hosts]
+    for h, ip in zip(hosts, ips):
+        h.ldn(L.BROADCASTS[0], L.M_ADVERTISE, network_info(ip, os.urandom(16)))
+    me = Fake(lob, "Me", B, mods(), b"many")
+    me.join()
+    time.sleep(0.3)
+
+    def listing(body):
+        me.tx(L.LIST, struct.pack(">QI", me.cookie, 7) + body)
+        got = []
+        while True:
+            k = me.rx(L.LIST_END, 0.05) if any(k == L.LIST_END for k, _ in me.got) else None
+            if k is not None:
+                return got, k[4]
+            try:
+                got.append(struct.unpack_from(">I", me.rx(L.LISTING, 0.5), 4)[0])
+            except AssertionError:
+                pass
+
+    first, n = listing(b"")
+    assert n == L.LIST_MAX == len(first), (n, len(first))
+    second, n = listing(struct.pack(">BIH", 1 | 4, 0, 1))
+    assert n == 30 - L.LIST_MAX and not set(first) & set(second) and set(first) | set(second) == set(ips), (n, len(second))
+    picked = [ip for ip in ips if ip not in first][0]
+    top, n = listing(struct.pack(">BI", 1 | 2, picked))
+    assert top[0] == picked and n == L.LIST_MAX and top.count(picked) == 1, (top[:3], n)
+    me.tx(L.ROOMS, struct.pack(">QI", me.cookie, 8))
+    infos = [me.rx(L.ROOM_INFO) for _ in range(30)]
+    end = me.rx(L.ROOMS_END)
+    assert len({struct.unpack_from(">I", b, 4)[0] for b in infos}) == 30 and end[4] == 30 and struct.unpack_from(">H", end, 5)[0] == 30, end
+    for x in hosts + [me]:
+        x.tx(L.LEAVE, struct.pack(">Q", x.cookie))
+    time.sleep(0.3)
+
+
 def room_browser(lob):
     """O1: three builds in the lobby code "test"; an older game, two newer ones (another version, another mod set)."""
     v4 = Fake(lob, "V4", b"ssbu-recomp-ldn1-13.0.4", mods())
@@ -372,6 +411,7 @@ def main():
         time.sleep(0.2)
         lob = ("127.0.0.1", port)
         room_browser(lob)
+        many_rooms(lob)
         matchmaking(lob)
         rollback_matchmaking(lob)
         if exe:
@@ -433,7 +473,7 @@ def main():
         assert b.rx(L.DATA)[13] == L.M_GONE
         time.sleep(0.2)
         assert json.loads(get_status(sport)[2])["rooms"] == 0
-        print("lobby self-test: ok (room browser: builds parted, LIST flag, ROOMS, older game, cross-build join dropped; "
+        print("lobby self-test: ok (room browser: builds parted, LIST flag, ROOMS, older game, cross-build join dropped; 30 rooms: pages, picked first; "
               "matchmaking: same build and code only, host choice, room open, list order, together, cancel, leave, timeout, expiry, older game; "
               "rollback matchmaking: op 2 only with op 2, roles, RB relay, together, stranger dropped; join, list, room join, PEERS, "
               "broadcast + unicast relay, outsider refused, room closed, status endpoint)")

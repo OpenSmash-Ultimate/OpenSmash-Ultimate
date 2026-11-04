@@ -1595,6 +1595,20 @@ int main(int argc, char **argv) {
         }
         fprintf(stderr, "[boot] %ls, built %04u-%02u-%02u %02u:%02u\n", exe, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
     }
+    {   /* started again from the settings (hle_settings.c settings_restart): the game before is
+         * still letting go of its memory (with the shader prewarm, gigabytes) - wait for it, so the
+         * two never hold theirs at once (a PC with little memory ran out on a restart) */
+        const char *from = getenv("SSBU_RESTART_FROM");
+        if (from && *from) {
+            HANDLE before = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)strtoul(from, NULL, 10));
+            if (before) {
+                DWORD w = WaitForSingleObject(before, 15000);
+                CloseHandle(before);
+                fprintf(stderr, "[boot] started again: the game before %s\n", w == WAIT_OBJECT_0 ? "has ended" : "is still ending (15 s waited)");
+            }
+            SetEnvironmentVariableA("SSBU_RESTART_FROM", NULL);
+        }
+    }
 #else
     {   /* which build this is, for reports (and the time zone read now, not first in a crash report) */
         char exe[4096];

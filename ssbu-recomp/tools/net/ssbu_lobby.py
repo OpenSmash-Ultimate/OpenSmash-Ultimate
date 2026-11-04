@@ -60,7 +60,7 @@ MATCH, MATCH_STATE = 20, 21                  # O2 matchmaking (net_relay.c): fin
 ROLE_HOST, ROLE_JOIN = 1, 2
 KIND_ROOM, KIND_ROLLBACK = 1, 2              # MATCH op 1 / op 2: a Local Wireless search, a rollback-match search (1.4)
 SEARCH_FOR, MATCH_FOR = 120.0, 180.0         # seconds (--search-secs, --match-secs)
-MODS_MAX, MOD_NAME, ROOMS_MAX = 32, 31, 32
+MODS_MAX, MOD_NAME, ROOMS_MAX = 32, 31, 1000   # (ROOMS: the browser pages them; ROOMS_END says how many in all)
 NAME_LEN, BUILD_LEN = 32, 40
 JOIN_LEN = 4 + 8 + 2 * NAME_LEN + BUILD_LEN + 4 + 2 + 1
 SUBNET, BROADCASTS = 0x0A0D0000, (0x0A0DFFFF, 0xFFFFFFFF)
@@ -277,7 +277,11 @@ class Lobby:
         elif kind == LEAVE and len(p) >= 12 and struct.unpack_from(">Q", p, 4)[0] == c.cookie:
             self.drop(c, "left")
         elif kind == LIST and len(p) >= 16 and struct.unpack_from(">Q", p, 4)[0] == c.cookie:
-            self.on_list(c, p[12:16], now, len(p) >= 17 and p[16] & 1)
+            # (flags 2: a host this game picked in its browser, first, u32 at 17; 4: a page of LIST_MAX, u16 at 21)
+            flags = p[16] if len(p) >= 17 else 0
+            first = struct.unpack_from(">I", p, 17)[0] if flags & 2 and len(p) >= 21 else 0
+            page = struct.unpack_from(">H", p, 21)[0] if flags & 4 and len(p) >= 23 else 0
+            self.on_list(c, p[12:16], now, flags & 1, first, page)
         elif kind == ROOMS and len(p) >= 16 and struct.unpack_from(">Q", p, 4)[0] == c.cookie:
             self.on_rooms(c, p[12:16], now)
         elif kind == MATCH and len(p) >= 17 and struct.unpack_from(">Q", p, 4)[0] == c.cookie:
@@ -347,14 +351,20 @@ class Lobby:
             c.mods = mods_block(p[JOIN_LEN + 2:])
         self.send(hdr(WELCOME) + nonce + struct.pack(">IQ", c.ip, c.cookie), at)
 
-    def on_list(self, c, seq, now, other=False):
+    def on_list(self, c, seq, now, other=False, first=0, page=0):
         """The game's Rooms List. other (flag 1, a newer game): the rooms of every build of this code, each LISTING ending
-        with its host's build[40] (that game refuses to join a room of another build and says why)."""
+        with its host's build[40] (that game refuses to join a room of another build and says why). The game shows
+        LIST_MAX rooms: first (flag 2) is the room of the host this player picked in its browser, put first; page (flag 4)
+        the LIST_MAX rooms after page x LIST_MAX of the others, so that every room can be reached however many there are."""
         def mine(r):
             return r.owner.part == c.part if not other else r.owner.part[1] == c.part[1]
         mhost = c.match.host if c.match is not None and c.match.guest is c else None     # O2: the matched host's room first
         rooms = sorted((r for r in self.rooms.values() if mine(r) and r.owner is not c and now - r.updated <= LISTED_FOR),
-                       key=lambda r: (r.owner is not mhost, r.owner.part != c.part, not r.is_open(), -r.info[NI_NODE_COUNT], r.created))[:LIST_MAX]
+                       key=lambda r: (r.owner is not mhost, r.owner.part != c.part, not r.is_open(), -r.info[NI_NODE_COUNT], r.created))
+        picked = [r for r in rooms if r.owner is mhost or (first and r.owner.ip == first)]   # (the matched host, then the pick)
+        rest = [r for r in rooms if r not in picked]
+        start = page * LIST_MAX if page * LIST_MAX < len(rest) else 0
+        rooms = (picked + rest[start:])[:LIST_MAX]
         for r in rooms:
             self.send(hdr(LISTING) + seq + struct.pack(">I", r.owner.ip) + r.info + (r.owner.part[0][:BUILD_LEN].ljust(BUILD_LEN, b"\0") if other else b""), c.at)
         self.send(hdr(LIST_END) + seq + bytes((len(rooms),)), c.at)
@@ -371,7 +381,7 @@ class Lobby:
             self.send(hdr(ROOM_INFO) + seq + struct.pack(">IBBB", o.ip, r.info[NI_NODE_COUNT], r.info[NI_NODE_MAX], flags)
                       + o.name.encode("utf-8", "replace")[:NAME_LEN].ljust(NAME_LEN, b"\0") + o.part[0][:BUILD_LEN].ljust(BUILD_LEN, b"\0")
                       + (o.mods or b"\0"), c.at)
-        self.send(hdr(ROOMS_END) + seq + bytes((len(rooms),)), c.at)
+        self.send(hdr(ROOMS_END) + seq + bytes((min(len(rooms), 255),)) + struct.pack(">H", len(rooms)), c.at)
 
     def on_data(self, c, p, off, now, skip):
         if len(p) - off - 12 > MAX_DATA + NI_SIZE:

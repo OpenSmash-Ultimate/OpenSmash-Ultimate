@@ -910,7 +910,9 @@ static int wait_activity(u64 deadline) {
     return 1;
 }
 
+void rb_guest_writing(void *p, u64 n);   /* (hle_rb_state.c) */
 static void do_recvfrom(Cpu *c, i32 fd, u64 buf, u64 len, i32 flags, u64 addr, u64 alen_p) {
+    rb_guest_writing(P(void, buf), len);
     if (is_stream(fd)) {
         AcquireSRWLockShared(&lock);
         VSock *ss = sock_of(fd);

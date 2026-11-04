@@ -224,7 +224,7 @@ static u32 *chunk_ids, nchunks, chunks_cap;   /* the chunks made, in address ord
 static int shadow_ok, check_after = -1;
 static u64 shadow_seen;              /* the renderer's stamp clock when memory last matched the shadow */
 static u64 kmap_sig;                 /* the kernel's memory map then */
-static struct { u64 pages, whole_pages, undo_pages; u32 whole; int age; double ms, undo_ms, t[6]; } mstat;
+static struct { u64 pages, whole_pages, undo_pages, hot, calls, steady, span; u32 whole; int age; double ms, undo_ms, t[6]; } mstat;
 /* t: layout, alias stamps, alias pages, watched, committed/decommitted, compared (ms) */
 extern u64 rb_mem_changed[][2];
 extern volatile LONG rb_mem_nchanged;
@@ -233,6 +233,7 @@ u64 watch_rb_take(u64 lo, u64 hi);
 u64 watch_rb_next(u64 p, u64 hi, u64 seen);
 u64 watch_rb_begin(void);
 void watch_rb_end(void);
+void watch_rb_dirty(u64 lo, u64 hi, u64 *bits);
 
 /* (for the replay check and the logs: the present pages as runs) */
 typedef struct Region { u8 *at; u64 size; } Region;
@@ -271,6 +272,114 @@ static int is_present(const Chunk *c, u32 i) { return c && (c->present[i >> 6] >
 static void set_present(Chunk *c, u32 i, int on) { if (on) c->present[i >> 6] |= 1ull << (i & 63); else c->present[i >> 6] &= ~(1ull << (i & 63)); }
 static u8 *shadow_page(Chunk *c, const u8 *p) { return c->copy + (p - c->base); }
 
+/* ---- the fight's state map (the alias area) ----
+ * Asking the write watch costs by the range asked, written or not: over the alias area's ~1.9 GB
+ * (game heap, GPU memory) some 7 ms a save and as much a load, though a fight frame writes ~12 MB
+ * of it and a whole fight some tens of MB. So in a fight (rb_state_map_fight, from hle_rb_core.c)
+ * the save that starts it makes every present page of the alias area read-only except the pages
+ * that save found written (HOT); a write to a read-only one (COLD) faults into sm_fault, which
+ * makes its group of pages (SSBU_RB_SM_GROUP, default 16: 64 KB) writable again and hot for the
+ * rest of the fight. A cold page has not been written since that save, so it is the shadow's
+ * already: each save and load asks the write watch about the hot pages only (their runs, gaps
+ * under 1 MB merged). Pages committed since (a commit is read-write) become hot when a save or a
+ * load settles them. Writers that don't fault (the system writing for us: file reads) open their
+ * pages first (rb_guest_writing). At the fight's end every cold page is made writable again.
+ * SSBU_RB_SM=0: off (the whole alias area asked at each save and load, as before). */
+#define SM_PAGES (ALIAS_SIZE >> 12)
+static u64 *sm_cold, *sm_hot;          /* a bit per alias page */
+/* STEADY: hot pages written at each of the last SM_STEADY saves. Resetting a page's write watch bit
+ * costs some 2 us (measured in a fight: 6,146 pages reset a frame shown, 14.4 ms), and a fight frame
+ * writes ~3,000 pages, nearly all of them every frame. So a steady page is never asked about: each
+ * save and load compares it with the shadow and copies it if it differs. One the comparison finds
+ * unchanged at SM_IDLE saves in a row (10 s) goes back to being asked about (not sooner: much of
+ * what a frame writes it writes the same as before, and such a page is written all the same). */
+static int SM_STEADY = 2, SM_IDLE = 600;   /* (SSBU_RB_SM_STEADY, SSBU_RB_SM_IDLE) */
+static u64 *sm_steady, *sm_wr;         /* (sm_wr: a non-steady page found written by this save) */
+static u16 *sm_streak; static u8 *sm_same;        /* a byte per alias page: saves in a row written (or, steady, unchanged); the last comparison */
+static long long sm_promoted, sm_demoted;
+static int sm_steady_between(u64 a, u64 b) {   /* a steady page in [a, b) */
+    for (u64 i = a; i < b;) {
+        if (!(i & 63) && i + 64 <= b) { if (sm_steady[i >> 6]) return 1; i += 64; continue; }
+        if (sm_steady[i >> 6] >> (i & 63) & 1) return 1;
+        i++;
+    }
+    return 0;
+}
+static volatile int sm_on;             /* the protection is on: in a fight */
+static int sm_want = -1, sm_group = 16;
+static SRWLOCK sm_lock = SRWLOCK_INIT;
+static PVOID sm_veh;
+static volatile LONG64 sm_faults, sm_opened, sm_sys_opened;
+static long long sm_fights, sm_cold_pages;
+static double sm_on_ms, sm_off_ms;
+static u64 sm_ap(const void *p) { return ((u64)(uintptr_t)p - ALIAS_BASE) >> 12; }
+static int sm_alias(const void *p) { u64 a = (u64)(uintptr_t)p; return a >= ALIAS_BASE && a < ALIAS_BASE + ALIAS_SIZE; }
+static int sm_bit(const u64 *m, u64 i) { return (int)(m[i >> 6] >> (i & 63) & 1); }
+static int sm_is_cold(const void *p) { return sm_cold && sm_alias(p) && sm_bit(sm_cold, sm_ap(p)); }
+/* Pages [i, e) of the alias area: cold to read-write and hot (sm_lock held). Returns the pages opened. */
+static u64 sm_open_locked(u64 i, u64 e) {
+    u64 n = 0;
+    while (i < e) {
+        if (!sm_bit(sm_cold, i)) { i++; continue; }
+        u64 j = i;
+        while (j < e && sm_bit(sm_cold, j)) { sm_cold[j >> 6] &= ~(1ull << (j & 63)); sm_hot[j >> 6] |= 1ull << (j & 63); j++; }
+        DWORD old;
+        VirtualProtect((void *)(uintptr_t)(ALIAS_BASE + (i << 12)), (j - i) << 12, PAGE_READWRITE, &old);
+        n += j - i;
+        i = j;
+    }
+    return n;
+}
+static LONG WINAPI sm_fault(EXCEPTION_POINTERS *e) {
+    EXCEPTION_RECORD *r = e->ExceptionRecord;
+    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2 || r->ExceptionInformation[0] != 1 || !sm_cold) return EXCEPTION_CONTINUE_SEARCH;
+    void *a = (void *)(uintptr_t)r->ExceptionInformation[1];
+    if (!sm_alias(a)) return EXCEPTION_CONTINUE_SEARCH;
+    u64 i = sm_ap(a), g = i & ~(u64)(sm_group - 1);
+    AcquireSRWLockExclusive(&sm_lock);
+    int ours = sm_bit(sm_cold, i);
+    if (ours) { sm_opened += sm_open_locked(g, g + sm_group); sm_faults++; }
+    ReleaseSRWLockExclusive(&sm_lock);
+    if (ours) return EXCEPTION_CONTINUE_EXECUTION;
+    /* (another thread opened it meanwhile: writable now, the write goes again) */
+    MEMORY_BASIC_INFORMATION m;
+    if (VirtualQuery(a, &m, sizeof m) && m.State == MEM_COMMIT && (m.Protect & PAGE_READWRITE)) return EXCEPTION_CONTINUE_EXECUTION;
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+/* The system is about to write guest memory [p, p + n) for us (a file read, a socket): it cannot
+ * fault into sm_fault, so its pages are opened first. */
+void rb_guest_writing(void *p, u64 n) {
+    if (!sm_on || !n) return;
+    u64 lo = (u64)(uintptr_t)p, hi = lo + n;
+    if (hi <= ALIAS_BASE || lo >= ALIAS_BASE + ALIAS_SIZE) return;
+    if (lo < ALIAS_BASE) lo = ALIAS_BASE;
+    if (hi > ALIAS_BASE + ALIAS_SIZE) hi = ALIAS_BASE + ALIAS_SIZE;
+    AcquireSRWLockExclusive(&sm_lock);
+    if (sm_cold) sm_sys_opened += sm_open_locked((lo - ALIAS_BASE) >> 12, (hi - ALIAS_BASE + 0xFFF) >> 12);
+    ReleaseSRWLockExclusive(&sm_lock);
+}
+/* (fighter registry and the like: writing the page would not fault for good) */
+int rb_page_cold(const void *p) { return sm_on && sm_is_cold(p); }
+/* A page read-write now (committed since, by the game or by a load): hot, whatever its bit said. */
+static void sm_present(const u8 *p) {
+    if (!sm_on || !sm_alias(p)) return;
+    u64 i = sm_ap(p);
+    AcquireSRWLockExclusive(&sm_lock);
+    sm_cold[i >> 6] &= ~(1ull << (i & 63));
+    sm_hot[i >> 6] |= 1ull << (i & 63);
+    ReleaseSRWLockExclusive(&sm_lock);
+}
+static void sm_gone(const u8 *p) {   /* a page decommitted: its protection went with it */
+    if (!sm_on || !sm_alias(p)) return;
+    u64 i = sm_ap(p);
+    AcquireSRWLockExclusive(&sm_lock);
+    sm_cold[i >> 6] &= ~(1ull << (i & 63));
+    sm_hot[i >> 6] &= ~(1ull << (i & 63));
+    sm_steady[i >> 6] &= ~(1ull << (i & 63));
+    sm_streak[i] = 0;
+    ReleaseSRWLockExclusive(&sm_lock);
+}
+
 /* An undo record (the ring, below): pages with what they were in an older state: their content,
  * committed or not, and the shadow page. A save fills undo_to with what it overwrites in the shadow. */
 enum { U_CONTENT, U_COMMIT, U_ABSENT };   /* U_COMMIT: content, and the page was decommitted since */
@@ -306,7 +415,7 @@ static void undo_push(Chunk *ch, u32 k, u8 *cur, int how) {
  * jobs: s1 -> d1, then s2 -> d2; slot: d1 is that slot of undo_to, resolved when they run, as the
  * record may grow meanwhile), then copied by SSBU_RB_COPY_THREADS host threads (default 4) and this
  * one. Under 256 pages: here alone. A page is in one job at most within a batch. */
-typedef struct CopyJob { u8 *d1; const u8 *s1; u8 *d2; const u8 *s2; u32 slot; } CopyJob;
+typedef struct CopyJob { u8 *d1; const u8 *s1; u8 *d2; const u8 *s2; u32 slot; u8 *same; int cmp_only; } CopyJob;   /* same: compared first (the state map's steady pages): 1 written there if d2 already was s2 */
 static CopyJob *jobs;
 static u32 njobs, jobs_cap;
 static volatile LONG jobs_next, jobs_done;
@@ -316,7 +425,7 @@ static int nworkers = -1;
 static double jobs_ms;
 static void job_add(u8 *d1, const u8 *s1, u8 *d2, const u8 *s2, u32 slot) {
     if (njobs == jobs_cap) jobs = realloc(jobs, sizeof *jobs * (jobs_cap = jobs_cap ? jobs_cap * 2 : 8192));
-    jobs[njobs++] = (CopyJob){d1, s1, d2, s2, slot};
+    jobs[njobs++] = (CopyJob){d1, s1, d2, s2, slot, NULL, 0};
 }
 /* (SSBU_RB_STAMPS=3: the alias stamps' ranges, asked on the copy threads too; see sync) */
 void watch_rb_scan(u64 lo, u64 hi, u64 stamp, void **pages);
@@ -339,6 +448,7 @@ static void jobs_work(void) {
             CopyJob *q = &jobs[j];
             u8 *d1 = q->slot != NO_SLOT ? jobs_undo->data + ((size_t)q->slot << 12) : q->d1;
             if (d1) memcpy(d1, q->s1, 0x1000);
+            if (q->same) { *q->same = !memcmp(q->d2, q->s2, 0x1000); if (*q->same || q->cmp_only) continue; }
             if (q->d2) memcpy(q->d2, q->s2, 0x1000);
         }
     }
@@ -386,10 +496,11 @@ static void undo_apply(const Undo *u) {
         if (u->how[i] == U_ABSENT) {
             gpu_memory_unmapping((u64)(uintptr_t)p, 0x1000);
             VirtualFree(p, 0x1000, MEM_DECOMMIT);
+            sm_gone(p);
             set_present(c, k, 0);
             continue;
         }
-        if (u->how[i] == U_COMMIT) VirtualAlloc(p, 0x1000, MEM_COMMIT, PAGE_READWRITE);
+        if (u->how[i] == U_COMMIT) { VirtualAlloc(p, 0x1000, MEM_COMMIT, PAGE_READWRITE); sm_present(p); }
         job_add(p, u->data + ((size_t)i << 12), shadow_page(c, p), u->data + ((size_t)i << 12), NO_SLOT);
         set_present(c, k, 1);
     }
@@ -433,11 +544,12 @@ static void settle_page(u8 *p, int now, int to_shadow) {
         } else return;
     } else {
         if (was) {
-            if (!now) VirtualAlloc(p, 0x1000, MEM_COMMIT, PAGE_READWRITE);
+            if (!now) { VirtualAlloc(p, 0x1000, MEM_COMMIT, PAGE_READWRITE); sm_present(p); }
             memcpy(p, shadow_page(c, p), 0x1000);
         } else if (now) {
             gpu_memory_unmapping((u64)(uintptr_t)p, 0x1000);
             VirtualFree(p, 0x1000, MEM_DECOMMIT);
+            sm_gone(p);
         } else return;
     }
     mstat.whole_pages++;
@@ -451,7 +563,16 @@ static void settle_range(u8 *lo, u8 *hi, int to_shadow) {
         u8 *end = (u8 *)m.BaseAddress + m.RegionSize;
         if (end > hi) end = hi;
         int now = rw_committed(&m);
-        if (now) { for (; p < end; p += 0x1000) settle_page(p, 1, to_shadow); continue; }
+        if (now) { for (; p < end; p += 0x1000) { sm_present(p); settle_page(p, 1, to_shadow); } continue; }
+        if (sm_on && m.State == MEM_COMMIT && m.Protect == PAGE_READONLY && sm_alias(p)) {
+            /* (the state map's cold pages: present, and the shadow's own since it made them read-only) */
+            for (; p < end; p += 0x1000) {
+                if (sm_is_cold(p)) continue;
+                Chunk *c = chunk_of(p, 0);
+                if (c && is_present(c, (u32)((p - c->base) >> 12))) settle_page(p, 0, to_shadow);
+            }
+            continue;
+        }
         /* not there now: only the pages the shadow has matter (a large range the game gave up or
          * never used is mostly chunks the shadow doesn't have: skipped whole) */
         while (p < end) {
@@ -522,13 +643,96 @@ static void kmap_refresh(void) {
 }
 
 /* (the stamp strategies, timed: see sync) */
-static double stamp_ms[3];
-static long long stamp_n[3], stamp_calls[3];
+static double stamp_ms[4];
+static long long stamp_n[4], stamp_calls[4];
+static u64 sm_seen_before;
+static u64 SM_GAP = 1u << 20;
+/* (The write watch's costs, measured on Windows 11 with the alias area's 64 GB reservation and some
+ * 1.9 GB of it in use: a call ~15 us whatever its size, a page of its range ~4.5 ns, a written page
+ * reset ~0.6 us (a question that resets nothing: nothing more). In units of a page of the range:
+ * SSBU_RB_SM_CALL, SSBU_RB_SM_SCOST.) */
+static u64 SM_CALL_COST = 3300, SM_STEADY_COST = 130;   /* (hot runs closer than this many pages are asked in one call: SSBU_RB_SM_GAP) */
+static int sm_split = 1;
+static u64 SM_QGAP = 1u << 20;   /* (a load's questions, which reset nothing: a call ~2 us, a page of the range ~15 ns; SSBU_RB_SM_QGAP) */    /* (SSBU_RB_SM_SPLIT=0: steady pages inside a run asked about too) */
 void rb_stamp_report(void) {
-    for (int m = 0; m < 3; m++)
+    for (int m = 0; m < 4; m++)
         if (stamp_n[m])
-            fprintf(stderr, "[rb] alias stamps, %s: %.3f ms a save over %lld saves, %.1f calls a save\n", m == 2 ? "runs on the copy threads too" : m ? "one call over all of it" : "a call per run of chunks",
+            fprintf(stderr, "[rb] alias stamps, %s: %.3f ms a save over %lld saves, %.1f calls a save\n", m == 3 ? "the state map's hot pages" : m == 2 ? "runs on the copy threads too" : m ? "one call over all of it" : "a call per run of chunks",
                     stamp_ms[m] / stamp_n[m], stamp_n[m], (double)stamp_calls[m] / stamp_n[m]);
+}
+
+/* (a save's sync, after its copies) Steady pages in and out (see SM_STEADY). */
+static void sm_streaks(void) {
+    for (u32 i = 0; i < nchunks; i++) {
+        Chunk *c = chunk_map[chunk_ids[i]];
+        if (c->kind != K_ALIAS) continue;
+        u64 b = sm_ap(c->base);
+        for (u32 w = 0; w < CH_PAGES / 64; w++) {
+            u64 wi = (b >> 6) + w;
+            for (u64 bits = sm_hot[wi]; bits; bits &= bits - 1) {
+                unsigned long z;
+                _BitScanForward64(&z, bits);
+                u64 a = (wi << 6) + z, m = 1ull << z;
+                if (sm_steady[wi] & m) {
+                    if (!sm_same[a]) sm_streak[a] = 0;
+                    else if (++sm_streak[a] >= SM_IDLE) { sm_steady[wi] &= ~m; sm_streak[a] = 0; sm_demoted++; }
+                } else if (sm_wr[wi] & m) {
+                    if (++sm_streak[a] >= SM_STEADY) { sm_steady[wi] |= m; sm_streak[a] = 0; sm_promoted++; }
+                } else sm_streak[a] = 0;
+            }
+            sm_wr[wi] = 0;
+        }
+    }
+}
+
+/* (the sync, the state map on) The write watch over the hot pages that are not steady. A save takes
+ * the news (resets the bits: measured in a fight ~19 us a call, ~1 us a page found written, ~11 ns
+ * a page of the range), in runs merged where a merge costs less than a call; a load only asks
+ * (no reset: the next save's reset takes those pages' news, which are written again by the load
+ * anyway) and lists the pages in sm_dirty. */
+static u64 *sm_dirty;
+static u64 sm_steady_count(u64 a, u64 b) {
+    u64 n = 0;
+    for (u64 i = a; i < b;) {
+        if (!(i & 63) && i + 64 <= b) { n += (u64)__popcnt64(sm_steady[i >> 6]); i += 64; continue; }
+        n += sm_steady[i >> 6] >> (i & 63) & 1;
+        i++;
+    }
+    return n;
+}
+static void sm_run(int reset, u64 lo, u64 hi, u64 *clock, u32 *calls) {
+    if (reset) *clock = watch_rb_take(ALIAS_BASE + (lo << 12), ALIAS_BASE + (hi << 12));
+    else watch_rb_dirty(ALIAS_BASE + (lo << 12), ALIAS_BASE + (hi << 12), sm_dirty);
+    (*calls)++; mstat.span += hi - lo;
+}
+static void sm_ask(int reset, u64 *clock, u32 *calls) {
+    u64 lo = 0, hi = 0;
+    for (u32 i = 0; i < nchunks; i++) {
+        Chunk *c = chunk_map[chunk_ids[i]];
+        if (c->kind != K_ALIAS) continue;
+        u64 b = sm_ap(c->base);
+        for (u32 w = 0; w < CH_PAGES / 64; w++) {
+            u64 bits = sm_hot[(b >> 6) + w] & ~sm_steady[(b >> 6) + w];
+            while (bits) {
+                unsigned long z;
+                _BitScanForward64(&z, bits);
+                u64 pg = b + w * 64 + z;
+                bits &= bits - 1;
+                mstat.hot++;
+                if (hi) {
+                    /* (merged when cheaper than another call; in units of a page of the range) */
+                    u64 gap = pg - hi;
+                    int merge = gap < (reset ? SM_GAP : SM_QGAP) && gap + (reset && sm_split ? SM_STEADY_COST * sm_steady_count(hi, pg) : 0) < SM_CALL_COST;
+                    if (merge) { hi = pg + 1; continue; }
+                    sm_run(reset, lo, hi, clock, calls);
+                }
+                lo = pg; hi = pg + 1;
+            }
+        }
+    }
+    if (hi) sm_run(reset, lo, hi, clock, calls);
+    if (reset && !*calls) { *clock = watch_rb_begin(); watch_rb_end(); }
+    mstat.calls = *calls;
 }
 
 /* ---- the sync ---- */
@@ -539,7 +743,7 @@ static void sync(int to_shadow) {
     static u64 guest[16384][2];
     u64 n = 0, clock = 0;
     double t = now_ms();
-    mstat.whole = 0; mstat.whole_pages = 0;
+    mstat.whole = 0; mstat.whole_pages = 0; mstat.hot = mstat.calls = mstat.steady = mstat.span = 0;
     if (to_shadow) for (u32 i = 0; i < nchunks; i++) memset(chunk_map[chunk_ids[i]]->pushed, 0, sizeof chunk_map[chunk_ids[i]]->pushed);
     /* the renderer's stamps first, for the alias area. SSBU_RB_STAMPS (measuring which is cheaper):
      * 1 a call per run of consecutive chunks, 2 one call from the first chunk to the last (the
@@ -549,7 +753,10 @@ static void sync(int to_shadow) {
     if (stamp_mode < 0) { const char *e = getenv("SSBU_RB_STAMPS"); stamp_mode = e && *e ? atoi(e) : 1; }   /* (measured: 2 costs ten times 1) */
     int mode = stamp_mode ? stamp_mode : (turn++ & 1) ? 3 : 1;   /* (0: 1 and 3 in turn) */
     u32 calls = 0;
-    if (mode == 2) {
+    if (sm_on) {   /* the state map: the hot pages' runs only (see "the fight's state map") */
+        sm_ask(to_shadow, &clock, &calls);
+        mode = 4;
+    } else if (mode == 2) {
         u64 lo = 0, hi = 0;
         for (u32 i = 0; i < nchunks; i++)
             if (chunk_map[chunk_ids[i]]->kind == K_ALIAS) { if (!lo) lo = (u64)chunk_ids[i] << CH_SHIFT; hi = ((u64)chunk_ids[i] + 1) << CH_SHIFT; }
@@ -579,6 +786,7 @@ static void sync(int to_shadow) {
         }
     mstat.t[1] = now_ms() - t;
     if (to_shadow) { stamp_ms[mode - 1] += mstat.t[1]; stamp_n[mode - 1]++; stamp_calls[mode - 1] += calls; }
+    sm_seen_before = shadow_seen;   /* (the state map's start: the pages written since the last sync stay hot) */
     /* first the pages committed or decommitted since: their presence and content, whole (before the
      * written pages: a page written, then decommitted, is no longer there to copy) */
     t = now_ms();
@@ -594,6 +802,27 @@ static void sync(int to_shadow) {
         kmap_sig = to_shadow ? sig : kmap_sig;
     }
     mstat.t[4] = now_ms() - t;
+    /* (the state map, a save with older states kept: the steady pages compared first, so that only those that
+     * changed get an undo entry: a steady page unchanged keeps the older states' content as it is) */
+    int undo_cmp = sm_on && to_shadow && undo_to;
+    if (undo_cmp) {
+        for (u32 i = 0; i < nchunks; i++) {
+            Chunk *c = chunk_map[chunk_ids[i]];
+            if (c->kind != K_ALIAS) continue;
+            u64 b = sm_ap(c->base);
+            for (u32 w = 0; w < CH_PAGES / 64; w++)
+                for (u64 bits = sm_steady[(b >> 6) + w]; bits; bits &= bits - 1) {
+                    unsigned long z;
+                    _BitScanForward64(&z, bits);
+                    u32 k = w * 64 + z;
+                    if (!is_present(c, k)) continue;
+                    job_add(NULL, NULL, c->copy + ((u64)k << 12), c->base + ((u64)k << 12), NO_SLOT);
+                    jobs[njobs - 1].same = &sm_same[b + k];
+                    jobs[njobs - 1].cmp_only = 1;
+                }
+        }
+        jobs_run();
+    }
     /* the pages written since, where present then and now */
     for (u32 i = 0; i < nchunks; i++) {
         Chunk *c = chunk_map[chunk_ids[i]];
@@ -602,7 +831,40 @@ static void sync(int to_shadow) {
             if (!is_present(c, k_)) break; u8 *sh_ = c->copy + (cur_ - c->base); \
             if (to_shadow) job_add(NULL, sh_, sh_, cur_, undo_reserve(c, k_, cur_, U_CONTENT)); else job_add(NULL, NULL, cur_, sh_, NO_SLOT); n++; } while (0)
         t = now_ms();
-        if (c->kind == K_ALIAS) {
+        if (c->kind == K_ALIAS && sm_on) {
+            u64 b = sm_ap(c->base);
+            /* the steady pages: compared and copied every time, never asked about (see sm_steady) */
+            for (u32 w = 0; w < CH_PAGES / 64; w++)
+                for (u64 bits = sm_steady[(b >> 6) + w]; bits; bits &= bits - 1) {
+                    unsigned long z;
+                    _BitScanForward64(&z, bits);
+                    u32 k = w * 64 + z;
+                    if (!is_present(c, k)) continue;
+                    u8 *cur = c->base + ((u64)k << 12), *sh = c->copy + ((u64)k << 12);
+                    mstat.steady++;
+                    if (undo_cmp) { if (!sm_same[b + k]) { job_add(NULL, sh, sh, cur, undo_reserve(c, k, cur, U_CONTENT)); n++; } continue; }
+                    if (to_shadow) job_add(NULL, sh, sh, cur, NO_SLOT); else job_add(NULL, NULL, cur, sh, NO_SLOT);
+                    jobs[njobs - 1].same = &sm_same[b + k];
+                    n++;
+                }
+            for (u64 p = watch_rb_next((u64)c->base, (u64)end, shadow_seen); p < (u64)end; p = watch_rb_next(p + 0x1000, (u64)end, shadow_seen)) {
+                u64 a = sm_ap((void *)(uintptr_t)p);
+                if (sm_bit(sm_steady, a)) continue;
+                if (to_shadow) { sm_wr[a >> 6] |= 1ull << (a & 63); COPY_PAGE((u8 *)p); }
+                else sm_dirty[a >> 6] |= 1ull << (a & 63);   /* (stamped by the renderer's questions: their bits reset) */
+            }
+            if (!to_shadow)   /* (a load: the pages its questions found, and those stamped) */
+                for (u32 w = 0; w < CH_PAGES / 64; w++) {
+                    u64 *d = &sm_dirty[(b >> 6) + w];
+                    for (u64 bits = *d & ~sm_steady[(b >> 6) + w]; bits; bits &= bits - 1) {
+                        unsigned long z;
+                        _BitScanForward64(&z, bits);
+                        COPY_PAGE(c->base + ((u64)(w * 64 + z) << 12));
+                    }
+                    *d = 0;
+                }
+            mstat.t[2] += now_ms() - t;
+        } else if (c->kind == K_ALIAS) {
             for (u64 p = watch_rb_next((u64)c->base, (u64)end, shadow_seen); p < (u64)end; p = watch_rb_next(p + 0x1000, (u64)end, shadow_seen))
                 COPY_PAGE((u8 *)p);
             mstat.t[2] += now_ms() - t;
@@ -616,13 +878,14 @@ static void sync(int to_shadow) {
                 while (lo < hi) {
                     u8 *part = hi;
                     ULONG_PTR count = CH_PAGES; ULONG gran;
-                    if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, lo, (SIZE_T)(hi - lo), pages, &count, &gran) != 0) {
+                    DWORD wf = to_shadow || !sm_on ? WRITE_WATCH_FLAG_RESET : 0;   /* (the state map on: a load only asks, as for the alias area) */
+                    if (GetWriteWatch(wf, lo, (SIZE_T)(hi - lo), pages, &count, &gran) != 0) {
                         MEMORY_BASIC_INFORMATION m;
                         if (!VirtualQuery(lo, &m, sizeof m)) break;
                         part = (u8 *)m.BaseAddress + m.RegionSize;
                         if (part > hi) part = hi;
                         count = CH_PAGES;
-                        if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, lo, (SIZE_T)(part - lo), pages, &count, &gran) != 0) count = 0;
+                        if (GetWriteWatch(wf, lo, (SIZE_T)(part - lo), pages, &count, &gran) != 0) count = 0;
                     }
                     for (ULONG_PTR q = 0; q < count; q++) COPY_PAGE((u8 *)pages[q]);
                     lo = part;
@@ -640,6 +903,7 @@ static void sync(int to_shadow) {
     t = now_ms();
     jobs_run();   /* (the copies of the pages listed above) */
     mstat.t[2] += now_ms() - t;
+    if (sm_on && to_shadow) sm_streaks();
     if (clock) shadow_seen = clock;   /* (a page a load writes back is stamped later: copied again next time, the same bytes) */
     rb_mem_nchanged = 0;
     mstat.pages = n + mstat.whole_pages;
@@ -661,7 +925,8 @@ static u64 shadow_mismatches(u64 *first, u64 *layout_bad) {
             u8 *p = c->base + ((u64)k << 12);
             if (p >= m_end) { if (!VirtualQuery(p, &m, sizeof m)) break; m_end = (u8 *)m.BaseAddress + m.RegionSize; now = rw_committed(&m); }
             int was = is_present(c, k);
-            if (was != (now && in_guest((u64)(uintptr_t)p, guest, ng))) { (*layout_bad)++; continue; }
+            int there = now || (sm_on && m.State == MEM_COMMIT && m.Protect == PAGE_READONLY && sm_is_cold(p));   /* (a cold page of the state map: there) */
+            if (was != (there && in_guest((u64)(uintptr_t)p, guest, ng))) { (*layout_bad)++; continue; }
             if (was && memcmp(p, c->copy + ((u64)k << 12), 0x1000)) { if (!n) *first = (u64)(uintptr_t)p; n++; }
         }
     }
@@ -670,6 +935,119 @@ static u64 shadow_mismatches(u64 *first, u64 *layout_bad) {
 
 static void flags_once(void) {
     if (check_after < 0) { const char *e = getenv("SSBU_RB_CHECKLOAD"); check_after = e ? atoi(e) : 0;   /* 1: after saves and loads, 2: after loads only */ }
+}
+
+/* ---- the state map: on and off (see "the fight's state map" above) ---- */
+static int sm_wanted_fight;   /* (rb_state_map_fight) */
+/* Right after a save's sync, every guest thread held: the pages written since the save before
+ * (stamped after `before`) hot, every other present alias page cold (read-only). Then the alias
+ * area asked whole once more: a page a thread not held wrote between the sync and its protection
+ * is hot too. */
+static void sm_begin(u64 before) {
+    double t0 = now_ms();
+    if (!sm_cold) {
+        sm_cold = VirtualAlloc(NULL, SM_PAGES / 8, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        sm_hot = VirtualAlloc(NULL, SM_PAGES / 8, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        sm_steady = VirtualAlloc(NULL, SM_PAGES / 8, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        sm_wr = VirtualAlloc(NULL, SM_PAGES / 8, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        sm_dirty = VirtualAlloc(NULL, SM_PAGES / 8, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        sm_streak = VirtualAlloc(NULL, SM_PAGES * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        sm_same = VirtualAlloc(NULL, SM_PAGES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (!sm_cold || !sm_hot || !sm_steady || !sm_wr || !sm_dirty || !sm_streak || !sm_same) { sm_want = 0; return; }
+        const char *gp = getenv("SSBU_RB_SM_GAP"), *sp = getenv("SSBU_RB_SM_SPLIT");
+        if (gp && *gp) SM_GAP = strtoull(gp, NULL, 0);
+        if (sp && *sp) sm_split = atoi(sp);
+        const char *qg = getenv("SSBU_RB_SM_QGAP"), *st = getenv("SSBU_RB_SM_STEADY"), *id = getenv("SSBU_RB_SM_IDLE");
+        if (qg && *qg) SM_QGAP = strtoull(qg, NULL, 0);
+        const char *cc = getenv("SSBU_RB_SM_CALL"), *sc = getenv("SSBU_RB_SM_SCOST");
+        if (cc && *cc) SM_CALL_COST = strtoull(cc, NULL, 0);
+        if (sc && *sc) SM_STEADY_COST = strtoull(sc, NULL, 0);
+        if (st && *st) SM_STEADY = atoi(st);
+        if (id && *id) SM_IDLE = atoi(id);
+        const char *g = getenv("SSBU_RB_SM_GROUP");
+        if (g && *g) { int v = atoi(g); sm_group = v >= 1 && v <= 512 && !(v & (v - 1)) ? v : 16; }
+    }
+    if (!sm_veh) sm_veh = AddVectoredExceptionHandler(1, sm_fault);
+    u64 cold = 0, hot = 0;
+    AcquireSRWLockExclusive(&sm_lock);
+    for (u32 i = 0; i < nchunks; i++) {
+        Chunk *c = chunk_map[chunk_ids[i]];
+        if (c->kind != K_ALIAS) continue;
+        u64 b = sm_ap(c->base), end = (u64)(uintptr_t)c->base + (1ull << CH_SHIFT);
+        for (u64 p = watch_rb_next((u64)(uintptr_t)c->base, end, before); p < end; p = watch_rb_next(p + 0x1000, end, before)) {
+            u64 k = sm_ap((void *)(uintptr_t)p);
+            sm_hot[k >> 6] |= 1ull << (k & 63);
+        }
+        for (u32 k = 0; k < CH_PAGES;) {
+            if (!is_present(c, k) || sm_bit(sm_hot, b + k)) { hot += is_present(c, k); k++; continue; }
+            u32 e = k;
+            while (e < CH_PAGES && is_present(c, e) && !sm_bit(sm_hot, b + e)) e++;
+            DWORD old;
+            if (VirtualProtect(c->base + ((u64)k << 12), (u64)(e - k) << 12, PAGE_READONLY, &old)) {
+                for (u32 j = k; j < e; j++) sm_cold[(b + j) >> 6] |= 1ull << ((b + j) & 63);
+                cold += e - k;
+            }
+            k = e;
+        }
+    }
+    sm_on = 1;
+    ReleaseSRWLockExclusive(&sm_lock);
+    /* (the whole area once more, for writers not held: their pages become hot) */
+    u64 lo = 0, hi = 0, late = 0;
+    for (u32 i = 0; i < nchunks; i++)
+        if (chunk_map[chunk_ids[i]]->kind == K_ALIAS) { if (!lo) lo = (u64)chunk_ids[i] << CH_SHIFT; hi = ((u64)chunk_ids[i] + 1) << CH_SHIFT; }
+    if (lo) {
+        u64 seen = shadow_seen;
+        watch_rb_take(lo, hi);
+        for (u64 p = watch_rb_next(lo, hi, seen); p < hi; p = watch_rb_next(p + 0x1000, hi, seen)) {
+            u64 k = sm_ap((void *)(uintptr_t)p);
+            AcquireSRWLockExclusive(&sm_lock);
+            if (sm_bit(sm_cold, k)) { sm_open_locked(k, k + 1); late++; }
+            ReleaseSRWLockExclusive(&sm_lock);
+        }
+    }
+    sm_cold_pages = (long long)cold;
+    sm_fights++;
+    sm_on_ms = now_ms() - t0;
+    fprintf(stderr, "[rb] state map: on for this fight: %llu alias pages cold (read-only, %llu MB), %llu hot, %llu written meanwhile, in %.1f ms\n",
+            cold, cold >> 8, hot, late, sm_on_ms);
+}
+/* Every cold page writable again (any time: nothing is written while it is cold). */
+static void sm_end(void) {
+    if (!sm_on) return;
+    double t0 = now_ms();
+    AcquireSRWLockExclusive(&sm_lock);
+    sm_on = 0;
+    u64 hot = 0;
+    for (u32 i = 0; i < nchunks; i++) {
+        Chunk *c = chunk_map[chunk_ids[i]];
+        if (c->kind != K_ALIAS) continue;
+        u64 b = sm_ap(c->base);
+        for (u32 k = 0; k < CH_PAGES;) {
+            if (!sm_bit(sm_cold, b + k)) { k++; continue; }
+            u32 e = k;
+            while (e < CH_PAGES && sm_bit(sm_cold, b + e)) e++;
+            DWORD old;
+            VirtualProtect(c->base + ((u64)k << 12), (u64)(e - k) << 12, PAGE_READWRITE, &old);
+            k = e;
+        }
+        for (u32 w = 0; w < CH_PAGES / 64; w++) {
+            hot += (u64)__popcnt64(sm_hot[(b >> 6) + w]);
+            sm_cold[(b >> 6) + w] = sm_hot[(b >> 6) + w] = sm_steady[(b >> 6) + w] = sm_wr[(b >> 6) + w] = 0;
+        }
+        memset(sm_streak + b, 0, CH_PAGES * 2); memset(sm_same + b, 0, CH_PAGES);
+    }
+    ReleaseSRWLockExclusive(&sm_lock);
+    sm_off_ms = now_ms() - t0;
+    fprintf(stderr, "[rb] state map: off (the fight is over): %llu pages were hot at the end (%llu MB), %lld faults opened %lld pages, %lld opened for the system; "
+            "%lld pages became steady, %lld steady again asked about; on in %.1f ms, off in %.1f ms\n", hot, hot >> 8, (long long)sm_faults, (long long)sm_opened, (long long)sm_sys_opened, sm_promoted, sm_demoted, sm_on_ms, sm_off_ms);
+    sm_faults = sm_opened = sm_sys_opened = 0; sm_promoted = sm_demoted = 0;
+}
+/* (hle_rb_core.c) A fight's savestates begin (1: the next save turns the state map on) or end (0: off now). */
+void rb_state_map_fight(int on) {
+    if (sm_want < 0) { const char *e = getenv("SSBU_RB_SM"); sm_want = !(e && *e == '0'); }
+    sm_wanted_fight = on && sm_want;
+    if (!on) sm_end();
 }
 
 /* *lost: the older states can't be rebuilt from this save on (memory ran out for the undo record). */
@@ -690,7 +1068,10 @@ static int memory_save(int *lost) {
         mstat.whole = 1; mstat.pages = mstat.whole_pages;
         undo_lost = 1;
         shadow_ok = 1;
-    } else sync(1);
+    } else {
+        sync(1);
+        if (sm_wanted_fight && !sm_on && sm_want > 0) sm_begin(sm_seen_before);
+    }
     mstat.ms = now_ms() - t0;
     *lost = undo_lost;
     if (check_after == 1) {
@@ -757,7 +1138,8 @@ static volatile int rb_resumed;
 static double load_t0;
 static int quiet;
 double rb_save_ms[3];   /* the last save: hold and GPU drain, memory, in all (ms) */
-double rb_save_parts[4]; long long rb_save_count;   /* (M6: every save's parking, GPU drain, memory, in all (ms), summed; hle_rb_core.c reads and clears them) */
+double rb_save_parts[4]; long long rb_save_count;
+double rb_load_parts[6]; long long rb_load_count;   /* (run-ahead's profile: every load's hold, check and scratch stacks, GPU drain, memory, host state, in all (ms), summed) */   /* (M6: every save's parking, GPU drain, memory, in all (ms), summed; hle_rb_core.c reads and clears them) */
 
 static Slot *slot_at(int age) { return &ring[(ring_head - age + ring_size * 2) % ring_size]; }
 
@@ -829,10 +1211,38 @@ static void step(const char *what) {   /* (a load's progress, for a crash in the
 
 /* A save at the safe point: 1 saved, 0 not (no hold), 2 a load came back here (to the state this
  * call saved). (noinline: its frame is the one a load returns into) */
+/* (run-ahead: rb_save_home_only) A parked thread on a job's fiber, not its own. */
+static int away_from_home(void *self) {
+    for (LONG i = 0; i < nrecs; i++)
+        if (recs[i]->kthread != self && recs[i]->in_park && recs[i]->fiber != recs[i]->home) return 1;
+    return 0;
+}
+/* Run-ahead sets it: a save only with every guest thread on its own fiber. A state saved with a thread
+ * in the middle of a job could not be loaded once the job was over ("on another fiber than at the
+ * save"), and run-ahead then kept its predicted frames as real ones: the game a logic frame off (2 in
+ * 1,700 frames with run-ahead 2, and with 1 too once the savestates got faster). The threads are let go
+ * and held again until the job is done, up to SSBU_RB_SAVE_RETRY_MS (default 4); else no save (run-ahead
+ * makes that frame a normal one, which changes nothing). */
+int rb_save_home_only;
+long long rb_save_away_waits, rb_save_away_refused;
 __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     u32 n;
     double t0 = now_ms();
     if (!hold(c->thread, &n)) { refused++; return 0; }
+    if (rb_save_home_only && away_from_home(c->thread)) {
+        static double retry_ms = -1;
+        if (retry_ms < 0) { const char *e = getenv("SSBU_RB_SAVE_RETRY_MS"); retry_ms = e && *e ? atof(e) : 4; }
+        rb_save_away_waits++;
+        double tr = now_ms();
+        int away = 1;
+        while (away && now_ms() - tr < retry_ms) {
+            release();
+            SwitchToThread();
+            if (!hold(c->thread, &n)) { refused++; rb_save_away_refused++; return 0; }
+            away = away_from_home(c->thread);
+        }
+        if (away) { refused++; rb_save_away_refused++; release(); return 0; }
+    }
     double tp = now_ms();
     gpu_queue_drain();
     double t1 = now_ms();
@@ -895,9 +1305,9 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     if (!quiet || slow || barrier || !(saves % 600)) {
         present_runs();
         fprintf(stderr, "[rb] SAVE %lld: memory: %llu pages copied (%llu MB; layout walk %u, %llu pages committed or decommitted; undo %u pages) in %.1f ms "
-                "[layout %.1f, alias stamps %.1f, alias pages %.1f, watched %.1f, (de)commits %.1f, compared %.1f]%s\n", saves,
+                "[layout %.1f, alias stamps %.1f, alias pages %.1f, watched %.1f, (de)commits %.1f, compared %.1f]%s; state map %llu hot pages (%llu steady; %lld became steady, %lld no longer), %llu calls\n", saves,
                 mstat.pages, mstat.pages >> 8, mstat.whole, mstat.whole_pages, prev && !barrier ? prev->undo.n : 0, mstat.ms,
-                mstat.t[0], mstat.t[1], mstat.t[2], mstat.t[3], mstat.t[4], mstat.t[5], barrier ? " (new memory runs: older states dropped)" : "");
+                mstat.t[0], mstat.t[1], mstat.t[2], mstat.t[3], mstat.t[4], mstat.t[5], barrier ? " (new memory runs: older states dropped)" : "", mstat.hot, mstat.steady, sm_promoted, sm_demoted, mstat.calls);
         fprintf(stderr, "[rb] SAVE %lld: %.1f ms (hold %.1f ms): guest memory %llu MB in %u regions; %u other threads (%llu KB of host stack), "
                 "main stack %llu KB (%#llx..%#llx, host thread %lu); %u switched-away fibers (%llu KB), %u more on stacks in use; %u setjmp records; "
                 "%d of %d states kept\n",
@@ -959,6 +1369,7 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     load_t0 = now_ms();
     if (held) { held = 0; n = held_n; }   /* (straight after a save that kept them held) */
     else if (!hold(c->thread, &n)) { refused++; return; }
+    double lt_hold = now_ms();
     const char *why = check(c, frame, n, s);
     /* M7, 4 players (4P1: 29 loads refused on PC 2, every retry the next frame too, until the guess was past the
      * states kept: a desync): a thread on another fiber than at the save may be in the middle of a job that ends in a
@@ -1006,9 +1417,12 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     ResetEvent(load_ev);
     u64 live[1025]; u32 skipped;
     u32 nlive = live_stacks(c->thread, live);
+    double lt_scratch = now_ms();
     gpu_queue_drain();
+    double lt_drain = now_ms();
     step("memory");
     memory_load();
+    double lt_mem = now_ms();
     double tm = now_ms();
     u64 undone = 0;
     for (int a = 1; a <= age; a++) { undo_apply(&slot_at(a)->undo); undone += slot_at(a)->undo.n; }
@@ -1032,6 +1446,9 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     audio_rb_load(s->audio);
     ipc_rb_load(s->ipc);
     step("threads' stacks, then this thread's");
+    double lt_host = now_ms();
+    rb_load_parts[0] += lt_hold - load_t0; rb_load_parts[1] += lt_scratch - lt_hold; rb_load_parts[2] += lt_drain - lt_scratch;
+    rb_load_parts[3] += lt_mem - lt_drain; rb_load_parts[4] += lt_host - lt_mem;
     copied = 0;
     loading = s;
     mstat.age = age;
@@ -1052,11 +1469,12 @@ static void finish_load(void) {
     loads++;
     release();
     double total = now_ms() - load_t0;
+    rb_load_parts[5] += total; rb_load_count++;
     if (!quiet || total > 12 || !(loads % 100))
         fprintf(stderr, "[rb] LOAD %lld: %.1f ms (save %lld, %d back); memory: %llu pages copied back (%llu MB; layout walk %u, %llu pages committed or decommitted) in %.1f ms "
-                "[layout %.1f, alias stamps %.1f, alias pages %.1f, watched %.1f, (de)commits %.1f, compared %.1f], undo %llu pages in %.1f ms\n",
+                "[layout %.1f, alias stamps %.1f, alias pages %.1f, watched %.1f, (de)commits %.1f, compared %.1f], undo %llu pages in %.1f ms; state map %llu hot pages (%llu steady), %llu calls over %llu pages\n",
                 loads, total, loading->seq, mstat.age, mstat.pages, mstat.pages >> 8, mstat.whole, mstat.whole_pages, mstat.ms,
-                mstat.t[0], mstat.t[1], mstat.t[2], mstat.t[3], mstat.t[4], mstat.t[5], mstat.undo_pages, mstat.undo_ms);
+                mstat.t[0], mstat.t[1], mstat.t[2], mstat.t[3], mstat.t[4], mstat.t[5], mstat.undo_pages, mstat.undo_ms, mstat.hot, mstat.steady, mstat.calls, mstat.span);
 }
 
 /* ---------------------------------------------------------------- the replay check (M2: determinism)

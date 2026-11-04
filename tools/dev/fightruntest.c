@@ -138,6 +138,7 @@ void input_seq_mark(const char *what) { if (mark_count < 8) snprintf(marks[mark_
 static SeqStepsFn *steps_fn;
 static int steps_set;
 void input_seq_set_steps(SeqStepsFn *fn) { steps_fn = fn; steps_set++; }
+int rb_ra_predicting(void) { return 0; }   /* (hle_rb_core.c: run-ahead, off here) */
 static LPTHREAD_START_ROUTINE thread_fn;
 static int threads;
 HANDLE CreateThread(void *security, SIZE_T stack, LPTHREAD_START_ROUTINE fn, LPVOID param, DWORD flags, DWORD *id) {

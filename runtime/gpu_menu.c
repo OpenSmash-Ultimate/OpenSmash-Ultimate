@@ -88,8 +88,8 @@ enum {
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
     R_LANGUAGE, R_VOLUME, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
-    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER,
-    R_ROOM_FIRST = 60,    /* + the room's place in the list */
+    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE, R_RUNAHEAD,
+    R_ROOM_FIRST = 60,    /* + the room's place on the page of rooms shown (ROOM_PAGE at most) */
     R_REMAP_FIRST = 100,  /* + console button */
     R_MOD_FIRST = 200,    /* + the mod's place in mods.json (MENU_MODS at most) */
     R_KEY_FIRST = 400,    /* + the keyboard binding (PAD_KEYS) */
@@ -270,9 +270,11 @@ static const int REMAP_ORDER[16] = {0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 4, 5, 13, 15
  * Joining stays the game's own: a room this game can join is in Local Wireless > Rooms List, and
  * matchmaking's host creates a room there, which comes first in the other player's list. The page
  * says what to do, and asks the lobby for the rooms again each time it shows (and on A). */
-enum { LOBBY_ROOMS = 32 };
+enum { LOBBY_ROOMS = 512, ROOM_PAGE = 30, GAME_LIST = 24 };   /* (GAME_LIST: the game's Rooms List, hle_net.c) */
 static NetRoom lobby_rooms[LOBBY_ROOMS];
-static int nlobby_rooms, rooms_state;
+static int nlobby_rooms, rooms_state, room_view, game_pages = 1;   /* room_view: the first room of the page shown; game_pages: of the game's list */
+#define ROOM_AT(id) (&lobby_rooms[room_view + (id) - R_ROOM_FIRST])
+#define IS_ROOM(id) ((id) >= R_ROOM_FIRST && (id) < R_ROOM_FIRST + ROOM_PAGE && room_view + (id) - R_ROOM_FIRST < nlobby_rooms)
 static NetMatch match;
 static ULONGLONG match_started;          /* when the menu's search started (the time it shows) */
 static int match_followed, match_said, match_said_open;   /* that search, followed while the menu is closed too */
@@ -463,10 +465,17 @@ static void room_rows(void) {
     else if (rooms_state == NET_ROOMS_NO_ANSWER) snprintf(r->value, sizeof r->value, "no answer from the lobby (A: ask again)");
     else if (!nlobby_rooms) snprintf(r->value, sizeof r->value, "none");
     else snprintf(r->value, sizeof r->value, "%d, %d you can join", nlobby_rooms, can);
-    for (int i = 0; i < nlobby_rooms; i++) {
+    if (room_view >= nlobby_rooms) room_view = 0;
+    int end = room_view + ROOM_PAGE < nlobby_rooms ? room_view + ROOM_PAGE : nlobby_rooms;
+    if (room_view > 0) {
+        r = add(R_ROOMS_PREV, K_ACTION, W_NONE, "Earlier rooms", "A: the rooms before these.");
+        snprintf(r->value, sizeof r->value, "%d-%d", room_view - ROOM_PAGE + 1 > 1 ? room_view - ROOM_PAGE + 1 : 1, room_view);
+    }
+    u32 picked = net_rooms_picked();
+    for (int i = room_view; i < end; i++) {
         const NetRoom *x = &lobby_rooms[i];
         const char *host = x->name[0] ? x->name : "(no name)";
-        r = add(R_ROOM_FIRST + i, K_ACTION, W_NONE, "", NULL);
+        r = add(R_ROOM_FIRST + i - room_view, K_ACTION, W_NONE, "", NULL);
         snprintf(r->label, sizeof r->label, "%.30s%s", host, x->mine ? " (you)" : "");
         /* (the help, with the cursor on it: why not, then its game and mods against yours: net_relay.c room_details) */
         if (!x->joinable) {
@@ -476,13 +485,26 @@ static void room_rows(void) {
                      x->details);
             continue;
         }
-        snprintf(r->value, sizeof r->value, "%d/%d players, %s", x->players, x->most, x->open ? "open" : "full or closed");
+        snprintf(r->value, sizeof r->value, "%d/%d players, %s%s", x->players, x->most, x->open ? "open" : "full or closed",
+                 picked && x->host == picked && !x->mine ? " - picked: first in your Rooms List" : x->open && !x->mine ? " - A: join" : "");
         if (x->mine) help_set(r, "Your own room, %d of %d players: other players of your game find it in their Rooms List.\n%s", x->players, x->most,
                               x->details);
-        else if (x->open) help_set(r, "%s's room, %d of %d players. To join it, close this menu, then Local Wireless > Rooms List and pick %s's room.\n%s",
-                                   host, x->players, x->most, host, x->details);
+        else if (x->open) help_set(r, "%s's room, %d of %d players. A: put it first in Local Wireless > Rooms List, then close this menu "
+                                      "and pick it there.\n%s", host, x->players, x->most, x->details);
         else help_set(r, "%s's room is full or closed for now (%d of %d players). Once it opens, it is in Local Wireless > Rooms List.\n%s",
                       host, x->players, x->most, x->details);
+    }
+    if (end < nlobby_rooms) {
+        r = add(R_ROOMS_NEXT, K_ACTION, W_NONE, "More rooms", "A: the rooms after these.");
+        snprintf(r->value, sizeof r->value, "%d-%d of %d", end + 1, end + ROOM_PAGE < nlobby_rooms ? end + ROOM_PAGE : nlobby_rooms, nlobby_rooms);
+    }
+    int others = can - (picked != 0);   /* (the game's Rooms List: the picked room, then a page of GAME_LIST of the others) */
+    if (others > GAME_LIST || net_rooms_page_get() > 0) {
+        int pages = others > 0 ? (others + GAME_LIST - 1) / GAME_LIST : 1, pg = net_rooms_page_get() < pages ? net_rooms_page_get() : 0;
+        game_pages = pages;
+        r = add(R_ROOMS_GAME_PAGE, K_ACTION, W_NONE, "Game's Rooms List shows", "The game's own Rooms List (Local Wireless) holds 24 rooms: "
+                "A shows the next 24 of the ones you can join there (the room you picked always comes first).");
+        snprintf(r->value, sizeof r->value, "rooms %d-%d of %d (A: next)", pg * GAME_LIST + 1, pg * GAME_LIST + GAME_LIST < others ? pg * GAME_LIST + GAME_LIST : others, others);
     }
 }
 
@@ -585,7 +607,7 @@ static void build(void) {
     /* (the Lobby page: the row under the cursor, by what it is, so the cursor stays on it when the
      * rooms or the search change around it) */
     int same = built_page == page, was = same && sel[page] < nrows ? rows[sel[page]].id : R_NONE;
-    u32 was_host = was >= R_ROOM_FIRST && was < R_ROOM_FIRST + nlobby_rooms ? lobby_rooms[was - R_ROOM_FIRST].host : 0;
+    u32 was_host = IS_ROOM(was) ? ROOM_AT(was)->host : 0;
     built_page = page;
     nrows = 0;
     Row *r;
@@ -607,6 +629,18 @@ static void build(void) {
         note_env(r, "SSBU_PACING");
         r = add(R_LATENCY, K_CHOICE, W_NOW, "Frames queued ahead", "How many frames the graphics card may work ahead: 1 is the most responsive, 3 the smoothest on a busy PC.");
         snprintf(r->value, sizeof r->value, "%d", ds.latency);
+#ifdef _WIN32
+        {   /* (run-ahead: hle_rb_core.c. Its savestates are set up when the game starts: a change from off takes a restart) */
+            int kernel_rb_switch(void);
+            int n = display_runahead();
+            r = add(R_RUNAHEAD, K_CHOICE, kernel_rb_switch() ? W_NOW : W_RESTART, "Run-ahead (experimental)",
+                    "Less input delay in fights: each frame is shown 1 or 2 frames ahead. 1 shows the real frame a frame sooner; "
+                    "2 also guesses one frame on the controls held now. Each frame ahead costs a frame of the game's work more: off on a slow PC.");
+            if (n) snprintf(r->value, sizeof r->value, "%d frame%s", n, n > 1 ? "s" : "");
+            else snprintf(r->value, sizeof r->value, "off");
+            note_env(r, "SSBU_RUNAHEAD");
+        }
+#endif
         r = add(R_CURSOR, K_CHOICE, W_NOW, "Hide the mouse pointer", "Hides the pointer over the game after 2 seconds without moving it.");
         snprintf(r->value, sizeof r->value, "%s", on_off(ds.hide_cursor));
         r = add(R_OVERLAY, K_CHOICE, W_NOW, "Frame rate in the corner", "The frame rate and a graph of frame times (F1 shows or hides it while playing; F2 adds details).");
@@ -746,7 +780,7 @@ static void build(void) {
         build_lobby(!same);
         if (was == R_NONE) break;
         for (int i = 0; i < nrows; i++)
-            if (was_host ? rows[i].id >= R_ROOM_FIRST && lobby_rooms[rows[i].id - R_ROOM_FIRST].host == was_host : rows[i].id == was) {
+            if (was_host ? IS_ROOM(rows[i].id) && ROOM_AT(rows[i].id)->host == was_host : rows[i].id == was) {
                 sel[page] = i;
                 break;
             }
@@ -840,6 +874,11 @@ static void change(const Row *row, int dir) {
         snprintf(v, sizeof v, "%d", cycle(ds.latency - 1, 3, dir) + 1);
         display_set_latency(atoi(v));
         set_display("latency", v);
+        break;
+    case R_RUNAHEAD:   /* off, 1, 2 (3 only by hand: display.ini or SSBU_RUNAHEAD) */
+        snprintf(v, sizeof v, "%d", cycle(display_runahead() > 2 ? 2 : display_runahead(), 3, dir));
+        display_set_runahead(atoi(v));
+        set_display("runahead", v);
         break;
     case R_VOLUME: {   /* 0 to 100 in steps of 10 */
         int vol = (audio_master_volume() + 5) / 10;
@@ -989,14 +1028,18 @@ static void action(const Row *row) {
         capture_until = GetTickCount64() + 6000;
         return;
     }
-    if (row->id >= R_ROOM_FIRST && row->id < R_ROOM_FIRST + nlobby_rooms) {   /* a room: what to do, in the game's own menus */
-        const NetRoom *x = &lobby_rooms[row->id - R_ROOM_FIRST];
+    if (IS_ROOM(row->id)) {   /* a room: put it first in the game's own Rooms List, where it is joined */
+        const NetRoom *x = ROOM_AT(row->id);
         const char *host = x->name[0] ? x->name : "(no name)";
         char t[160];
         if (x->mine) snprintf(t, sizeof t, "This is your own room");
         else if (!x->joinable) snprintf(t, sizeof t, "Can't join %.32s's room: %s", host, room_short(x));
         else if (!x->open) snprintf(t, sizeof t, "%.32s's room is full or closed for now", host);
-        else snprintf(t, sizeof t, "Close this menu, then Local Wireless > Rooms List: %.32s's room", host);
+        else {
+            net_rooms_pick(x->host);
+            snprintf(t, sizeof t, "%.32s's room comes first now: close this menu, then Local Wireless > Rooms List", host);
+            changed(W_NONE);
+        }
         menu_toast(t);
         return;
     }
@@ -1021,6 +1064,9 @@ static void action(const Row *row) {
         net_match_cancel();
         break;
     case R_ROOMS: net_rooms_ask(); break;
+    case R_ROOMS_PREV: room_view = room_view > ROOM_PAGE ? room_view - ROOM_PAGE : 0; changed(W_NONE); break;
+    case R_ROOMS_NEXT: if (room_view + ROOM_PAGE < nlobby_rooms) room_view += ROOM_PAGE; changed(W_NONE); break;
+    case R_ROOMS_GAME_PAGE: net_rooms_page((net_rooms_page_get() + 1) % game_pages); changed(W_NONE); break;
     case R_LAN_ROOMS: {
         int ours = 0, lan = net_lan(&ours, NULL);
         if (lan == NET_LAN_ANNOUNCING) menu_toast("Your room is announced on this network");

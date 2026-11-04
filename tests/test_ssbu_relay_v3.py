@@ -129,9 +129,10 @@ class V3Player:
     def leave(self):
         self.send(R.LEAVE, self.nonce)
 
-    def list(self, seq=7, every=None):
-        """The rooms of a LIST (every: with that flags byte): [(host, NetworkInfo, what follows it)]."""
-        self.send(R.LIST, struct.pack(">QI", self.cookie, seq) + (b"" if every is None else bytes((every,))))
+    def list(self, seq=7, every=None, first=0, page=0):
+        """The rooms of a LIST (every: with that flags byte; first, page: flags 2 and 4 with them): [(host, NetworkInfo, what follows it)]."""
+        more = b"" if every is None and not first and not page else             struct.pack(">BIH", (every or 0) | (2 if first else 0) | (4 if page else 0), first, page)
+        self.send(R.LIST, struct.pack(">QI", self.cookie, seq) + more)
         end = self.first(R.LIST_END)
         assert end is not None, "no LIST_END"
         assert struct.unpack_from(">I", end, 4)[0] == seq and len(end) == 9
@@ -147,7 +148,7 @@ class V3Player:
         self.send(R.ROOMS, struct.pack(">QI", self.cookie if cookie is None else cookie, seq))
         end = self.first(R.ROOMS_END)
         assert end is not None, "no ROOMS_END"
-        assert struct.unpack_from(">I", end, 4)[0] == seq and len(end) == 9
+        assert struct.unpack_from(">I", end, 4)[0] == seq and len(end) == 11   # (3: the count again, u16)
         out = []
         for p in self.all(R.ROOM_INFO, 0):
             b = p[4:]
@@ -417,6 +418,27 @@ class RoomBrowser(V3Test):
         self.assertEqual(tails[self.b.ip], BUILD.encode().ljust(40, b"\0") + struct.pack(">I", SIM + 1) + self.mine)
         self.assertEqual(tails[self.c.ip], BUILD.encode().ljust(40, b"\0") + struct.pack(">I", SIM) + mods((b"Alpha", 2)))
         self.assertEqual(self.old.list(), [])   # (and version 2's see none of them)
+
+    def test_more_than_a_list(self):
+        """More rooms than the game's Rooms List holds (24): a page at a time, the picked one first, every one in ROOMS."""
+        self.server.lobby.o.listed_for = 60.0   # (29 rooms take a while to open: none goes stale meanwhile)
+        hosts = []
+        for i in range(29):
+            h, _, _ = self.room(mod_set=self.mine)
+            hosts.append(h.ip)
+        p = self.player(name="Asker", mod_set=self.mine)
+        mine = {self.a.ip, *hosts}
+        first = [h for h, *_ in p.list(seq=8)]
+        self.assertEqual(len(first), R.LIST_MAX)
+        second = [h for h, *_ in p.list(seq=9, page=1)]
+        self.assertEqual(len(second), 30 - R.LIST_MAX)
+        self.assertEqual(set(first) | set(second), mine)
+        self.assertFalse(set(first) & set(second))
+        picked = second[-1]
+        top = [h for h, *_ in p.list(seq=10, first=picked)]
+        self.assertEqual((top[0], len(top), top.count(picked)), (picked, R.LIST_MAX, 1))
+        self.assertEqual([h for h, *_ in p.list(seq=11, page=5)], first)   # (past the last page: the first)
+        self.assertEqual({r[0] for r in p.rooms(seq=12)} >= mine, True)
 
     def test_wrong_cookie_unanswered(self):
         p = self.player(mod_set=self.mine)

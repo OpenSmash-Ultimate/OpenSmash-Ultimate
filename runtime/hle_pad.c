@@ -102,6 +102,7 @@ static struct {
     DevCfg def, dev[32];
     int ndev;
     int kb[PAD_KEYS][PAD_KEY_MAX], nkb[PAD_KEYS];   /* [keyboard]: each binding's keys (virtual-key codes) */
+    int kb_ssf2;                  /* [keyboard] movement = ssf2 (pad_keyboard_state) */
     char path[MAX_PATH];
 } cfg = {.keyboard_slot = 0, .background = 1, .rumble = 1, .def = {"", -1, -1, -1, -1, -1, -1, -1}};
 
@@ -176,6 +177,10 @@ static const char DEFAULT_INI[] =
     "RSTICK_UP = I\n"
     "RSTICK_RIGHT = L\n"
     "RSTICK_DOWN = K\n"
+    "; movement = full: a key on the left stick pushes it fully (a dash, a drop through a platform; WALK for\n"
+    ";   part way). ssf2: the keys move as in Super Smash Flash 2 - a key walks, again quickly dashes, down\n"
+    ";   crouches, again quickly drops, A soon after a key is a smash attack, up is a full or short hop.\n"
+    "movement = full\n"
     "\n"
     "[device default]\n"
     "; layout = positional: buttons by position, as on a Switch pad (the bottom face button is B).\n"
@@ -355,7 +360,8 @@ static int sr_line(const char *section, const char *key, const char *value, SrSe
             return LINE_CARRIED;
         }
         if (pad_key_index(key) >= 0) return LINE_OURS;   /* (the same keys, spelled the same way) */
-        if (_stricmp(key, "player")) return LINE_KEPT;   /* (movement = ...: nothing here for it yet) */
+        if (!_stricmp(key, "movement")) return LINE_OURS;   /* (the same setting here: ssf2 or full) */
+        if (_stricmp(key, "player")) return LINE_KEPT;
         if (!_stricmp(value, "none")) sr_put(out, n, "general", "keyboard_player", "0", 0);
         else if (atoi(value) >= 1 && atoi(value) <= PAD_SLOTS) sr_put(out, n, "general", "keyboard_player", value, 0);
         return LINE_CARRIED;   /* (auto: here the keyboard is player 1's) */
@@ -568,6 +574,84 @@ static void kb_line(int i, char *value, int line) {
     }
 }
 
+/* [keyboard] movement = ssf2 (SSBU_KEYBOARD_MOVEMENT=ssf2 or full overrides it): the left stick's keys
+ * read the way Super Smash Flash 2 (McLeodGaming, a keyboard game) reads its direction keys, ported
+ * from ssbu-recomp's nnhid.c kb_ssf2 (commit cd366ea), whose thresholds were measured in fights there
+ * (Mario on Battlefield): a horizontal key walks (0.60 for 4 polls, then fully: walking speed, no
+ * dash); the same key again within 12 polls of letting it go pushes fully (a dash), and while one
+ * pushes fully or within 12 polls after, the other does too (dash dance); down crouches (0.655: no
+ * drop through a platform), again quickly drops; a key while ZL / ZR is held pushes fully (roll,
+ * spot dodge); A within 9 polls of a horizontal key (7 of down) is a smash attack, the key pushed
+ * fully in its first 3 polls, later the stick back to the middle for a poll and A in the next; up is
+ * held back 4 polls (A / B in them: up smash / up special; let go in them: a short hop; held: the
+ * jump, kept 3 polls for a full hop); the d-pad's up key is a taunt in the direction held. One
+ * call per poll of the keyboard's player (hle_hid.c npad_state). */
+enum { KB_N_A = 0, KB_N_B = 1, KB_N_ZL = 8, KB_N_ZR = 9, KB_N_LEFT = 12, KB_N_UP = 13, KB_N_RIGHT = 14, KB_N_DOWN = 15 };
+static const struct { float walk, crouch; int walk_full, dtap, dance, smash_x, smash_y, flick, up_wait, up_keep; } KBT =
+    {0.60f, 0.655f, 4, 12, 12, 9, 7, 3, 4, 3};
+static struct {
+    long long t, x_at, y_at, x_up[2], y_up[2], run_up, up_keep;
+    int kx, ky, x_full, y_full, smash_a, up_pend;
+    u64 prev;
+} kbm;
+
+static int kb_ssf2_on(void) {
+    const char *e = getenv("SSBU_KEYBOARD_MOVEMENT");
+    if (e && *e) return !_stricmp(e, "ssf2");
+    return cfg.kb_ssf2;
+}
+
+static void kb_ssf2(u64 *buttons, i32 *lx, i32 *ly) {
+    long long t = ++kbm.t;
+    if (t == 1) kbm.x_up[0] = kbm.x_up[1] = kbm.y_up[0] = kbm.y_up[1] = kbm.run_up = -1000;
+    int kx = (*lx > 0) - (*lx < 0), ky = (*ly > 0) - (*ly < 0);
+    u64 pressed = *buttons & ~kbm.prev;
+    int shield = (*buttons & (1ull << KB_N_ZL | 1ull << KB_N_ZR)) != 0, attack = pressed >> KB_N_A & 1, special = pressed >> KB_N_B & 1;
+    kbm.prev = *buttons;
+    if (kbm.smash_a) { *buttons |= 1ull << KB_N_A; kbm.smash_a = 0; }
+    if (kx != kbm.kx) {
+        if (kbm.kx) { kbm.x_up[kbm.kx > 0] = t; if (kbm.x_full) kbm.run_up = t; }
+        kbm.x_full = kx && (t - kbm.x_up[kx > 0] <= KBT.dtap || t - kbm.run_up <= KBT.dance || shield);
+        kbm.x_at = t;
+        kbm.kx = kx;
+    }
+    if (ky != kbm.ky) {
+        if (kbm.ky) kbm.y_up[kbm.ky > 0] = t;
+        kbm.y_full = ky < 0 && (t - kbm.y_up[0] <= KBT.dtap || shield);
+        if (ky > 0) kbm.up_pend = KBT.up_wait > 0;
+        kbm.y_at = t;
+        kbm.ky = ky;
+    }
+    int ramped = KBT.walk_full && t - kbm.x_at >= KBT.walk_full, back = 0;   /* back: 1 x, 2 y to the middle this poll */
+    if (attack && kx && t - kbm.x_at < KBT.smash_x) {
+        if (!kbm.x_full && (ramped || t - kbm.x_at > KBT.flick)) back |= 1;
+        kbm.x_full = 1;
+    }
+    if (attack && ky < 0 && t - kbm.y_at < KBT.smash_y) {
+        if (!kbm.y_full && t - kbm.y_at > KBT.flick) back |= 2;
+        kbm.y_full = 1;
+    }
+    if (back) { *buttons &= ~(1ull << KB_N_A); kbm.smash_a = 1; }
+    if (back & 1) *lx = 0;
+    else if (kx && !kbm.x_full && !ramped) *lx = (i32)(kx * KBT.walk * 32767);
+    if (back & 2) *ly = 0;
+    else if (ky < 0 && !kbm.y_full) *ly = -(i32)(KBT.crouch * 32767);
+    int up = ky > 0;
+    if (kbm.up_pend) {
+        if (attack || special || ky <= 0) up = 1, kbm.up_pend = 0;
+        else if (t - kbm.y_at >= KBT.up_wait) up = 1, kbm.up_pend = 0, kbm.up_keep = t + KBT.up_keep;
+        else up = 0;
+    } else if (t < kbm.up_keep) up = 1;
+    if (up) *ly = 32767; else if (ky > 0) *ly = 0;
+    if (*buttons & 1ull << KB_N_UP) {   /* the taunt key: the d-pad direction of the key held with it */
+        *buttons &= ~(1ull << KB_N_UP);
+        *buttons |= 1ull << (ky < 0 ? KB_N_DOWN : kx < 0 ? KB_N_LEFT : kx > 0 ? KB_N_RIGHT : KB_N_UP);
+        *lx = *ly = 0;
+        kbm.up_pend = 0;
+        kbm.up_keep = 0;
+    }
+}
+
 /* The keyboard as the console's buttons and sticks, with down(vk) saying whether a key is held. A
  * key on a stick direction pushes that stick fully (both of a pair held: right and down win, as
  * before), which the game takes as a flick: a dash, a drop through a platform. While WALK (Shift)
@@ -595,6 +679,7 @@ u64 pad_keyboard_state(int (*down)(int vk), i32 *lx, i32 *ly, i32 *rx, i32 *ry) 
     if (held[22]) *rx = 32767;
     if (held[21]) *ry = 32767;
     if (held[23]) *ry = -32767;
+    if (kb_ssf2_on() && !held[24]) kb_ssf2(&buttons, lx, ly);   /* (WALK held: its own part-way push) */
     return buttons;
 }
 
@@ -615,7 +700,8 @@ static void config_set(const char *section, const char *key, char *value, int li
     } else if (!_strnicmp(section, "device", 6) && (section[6] == ' ' || !section[6])) {
         DevCfg *dc = dev_cfg(section[6] ? section + 7 : "");
         if (dc) config_line(dc, key, value, line);
-    } else if (!_stricmp(section, "keyboard") && pad_key_index(key) >= 0) kb_line(pad_key_index(key), value, line);
+    } else if (!_stricmp(section, "keyboard") && !_stricmp(key, "movement")) cfg.kb_ssf2 = !_stricmp(value, "ssf2");
+    else if (!_stricmp(section, "keyboard") && pad_key_index(key) >= 0) kb_line(pad_key_index(key), value, line);
     else if (section[0]) fprintf(stderr, "[input] controllers.ini line %d: unknown setting '%s'\n", line, key);
 }
 

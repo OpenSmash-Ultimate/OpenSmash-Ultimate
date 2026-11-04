@@ -124,6 +124,12 @@ typedef struct NetRoom {
 } NetRoom;
 void net_rooms_ask(void);
 int net_rooms_get(NetRoom *out, int max, int *state);   /* the rooms copied; state: NET_ROOMS_* */
+/* The game's Rooms List (24 rooms): net_rooms_pick puts that host's room first (0: none),
+ * net_rooms_page shows the page-th 24 of the others. */
+void net_rooms_pick(u32 host);
+u32 net_rooms_picked(void);
+void net_rooms_page(int page);
+int net_rooms_page_get(void);
 
 /* Matchmaking: the lobby pairs two players of the same build, simulation version, mods and lobby
  * code who search, and says which one hosts. The host makes the room (Local Wireless > Create
