@@ -113,6 +113,46 @@ class OsMods(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertTrue(any('turn them off instead' in line for line in lines))
 
+    def result(self, lines):
+        line = [x for x in lines if x.startswith('RESULT ')][-1]
+        return json.loads(line[len('RESULT '):])
+
+    def test_conflicts(self):
+        """The launcher's Check card: files two turned-on mods both change, the later one's kept."""
+        for name in ('Alpha', 'Beta'):
+            path = os.path.join(self.dir, 'mods', name, 'fighter', 'mario', 'model', 'body', 'c00')
+            os.makedirs(path)
+            with open(os.path.join(path, 'def_mario_001_col.nutexb'), 'wb') as f:
+                f.write(name.encode())
+        self.run_cmd('switch', 'Beta', 'on')
+        code, lines = self.run_cmd('conflicts')
+        self.assertEqual(code, 0)
+        got = self.result(lines)
+        self.assertTrue(got['ok'])
+        self.assertEqual([c['path'] for c in got['conflicts']], ['fighter/mario/model/body/c00/def_mario_001_col.nutexb'])
+        self.assertEqual(got['conflicts'][0]['mods'][-1], got['conflicts'][0]['wins'])
+
+    def test_updates_name_their_page(self):
+        found = [{'name': 'Alpha', 'title': 'The Alpha', 'installed': 'a.zip', 'newest': 'b.zip', 'file_id': '9'}]
+        state = self.tree.load()
+        state['mods']['Alpha']['gamebanana'] = 1234
+        self.tree.save(state)
+        with unittest.mock.patch.object(os_mods.mods, 'updates', lambda tree: [dict(u) for u in found]):
+            code, lines = self.run_cmd('updates')
+        self.assertEqual(code, 0)
+        self.assertEqual(self.result(lines)['updates'][0]['gamebanana'], '1234')   # (install 1234 9 updates it)
+
+    def test_export_then_import_a_list(self):
+        listed = os.path.join(self.dir, 'mine.json')
+        code, lines = self.run_cmd('export-list', listed)
+        self.assertEqual((code, self.result(lines)['count']), (0, 2))
+        code, lines = self.run_cmd('import-list', listed)   # (both here already: nothing to download)
+        got = self.result(lines)
+        self.assertEqual((code, sorted(got['already']), got['installed'], got['missing']), (0, ['Alpha', 'Beta'], [], []))
+        self.assertIn('applied', lines)
+        code, lines = self.run_cmd('import-list')
+        self.assertEqual(code, 1)
+
     def test_no_such_mod(self):
         code, _ = self.run_cmd('switch', 'Gamma', 'on')
         self.assertEqual(code, 1)
