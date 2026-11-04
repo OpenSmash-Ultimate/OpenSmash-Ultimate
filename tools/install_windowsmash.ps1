@@ -704,11 +704,7 @@ function Step-Update {
     <# Brings this folder to the newest commit of GitHub's branch. $true when files changed. #>
     Write-Step '[1/10] Get the newest WindowSmash'
     if ($NoUpdate) { Write-Info 'not checking (-NoUpdate)'; return $false }
-    if (Test-Path -LiteralPath (Join-Path $Root '.git')) {
-        $gitDirty = (& git -C $Root status --porcelain --untracked-files=no 2>$null | Out-String).Trim()
-        if (-not $gitDirty) { return (Update-GitCheckout) }
-        Write-Info 'this git checkout has local changes: using the download route instead'
-    }
+    if (Test-Path -LiteralPath (Join-Path $Root '.git')) { return (Update-GitCheckout) }
     $local = Get-LocalCommit
     if (-not $local) {
         Write-Warn "this folder does not say which version it is ($SourceVersionFile names no commit): not updating."

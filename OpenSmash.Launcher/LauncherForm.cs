@@ -738,15 +738,9 @@ namespace OpenSmash.Launcher
                 string dotGit = Path.Combine(_repo, ".git");
                 if (Directory.Exists(dotGit) || File.Exists(dotGit))
                 {
+                    // A git checkout is the commit it is on, changed or not: ApplyUpdate's script refuses a changed
+                    // checkout itself ("changes of its own") instead of laying a download over it.
                     bool dirty = false;
-                    try
-                    {
-                        var spsi = new ProcessStartInfo { FileName = "git", WorkingDirectory = _repo, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-                        spsi.ArgumentList.Add("status"); spsi.ArgumentList.Add("--porcelain"); spsi.ArgumentList.Add("--untracked-files=no");
-                        using var sp = Process.Start(spsi);
-                        if (sp != null) { var o = sp.StandardOutput.ReadToEndAsync(); _ = sp.StandardError.ReadToEndAsync(); if (sp.WaitForExit(5000)) dirty = !string.IsNullOrWhiteSpace(o.GetAwaiter().GetResult()); }
-                    }
-                    catch { }
                     if (!dirty)
                     {
                         var psi = new ProcessStartInfo { FileName = "git", WorkingDirectory = _repo, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
@@ -2762,7 +2756,6 @@ namespace OpenSmash.Launcher
                 foreach (var x in updates) text.AppendLine($"  {x.title}");
             }
             else text.AppendLine("Updates: GameBanana could not be reached.");
-            if (updates.Count == 0 && false) { }
             _checkModsText = text.ToString().Trim();
             _checkModsUpdates = updates;
             _checkModsPrompt = true;
