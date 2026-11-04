@@ -20,6 +20,8 @@ on the Custom Brawl Modding wiki); nothing here is copied from those programs. C
                      archive (0xFFFF none), u16 model, u32 offset of the emitter set's name, 8 bytes; then names
 
     python -I reff.py list <archive.pac>
+    python -I reff.py colours <archive.pac>
+        each emitter-drawn effect's colour (r, g, b in 0-1, set_colour), for vfxb.py plans ("color")
     python -I reff.py export <archive.pac> <out folder> [--effects 0x0e,0x12]
         archive.pac: a fighter's main archive (its effect archive "ef_*" inside) or an effect archive itself.
         --effects: only the emitter sets of these effect-list indices (the low 16 bits of an effect id such as
@@ -160,6 +162,53 @@ def report(path, only=None):
             'textures': [{k: t[k] for k in ('name', 'width', 'height', 'format', 'levels')} for t in texs]}, texs
 
 
+# An emitter's data: u32 0, u32 size of its emitter description (0x140 here), the description, then the particle
+# parameters: u32 their size, four RGBA8 colours (colour 1 primary / secondary, colour 2 primary / secondary), f32
+# size x, y, scale x, y ... (the particle part as the community documents it; checked on Phantom's file: its dark
+# portal aura is black / 40 00 88, the red aura ff 00 00, the yellow sparks e0 d7 11).
+def emitter_colours(d):
+    """-> (colour 1 primary, colour 1 secondary, size x, size y) of one emitter's data (colours as RGBA tuples)."""
+    esize, = struct.unpack_from('>I', d, 4)
+    p = 8 + esize
+    c = [tuple(d[p + 4 + 4 * i:p + 8 + 4 * i]) for i in range(2)]
+    sx, sy = struct.unpack_from('>2f', d, p + 20)
+    return c[0], c[1], sx, sy
+
+
+def set_colour(datas):
+    """The colour an emitter set draws in, from its emitters' data: per emitter the mean of its colour 1 primary and
+    secondary (the texture's light and dark parts), emitters drawn only in greys (containers, white flashes) left
+    out; -> (r, g, b) in 0-1, or None when every emitter is grey."""
+    acc, n = [0.0, 0.0, 0.0], 0
+    for d in datas:
+        pri, sec, _sx, _sy = emitter_colours(d)
+        if pri[0] == pri[1] == pri[2] and sec[0] == sec[1] == sec[2]:
+            continue
+        for k in range(3):
+            acc[k] += (pri[k] + sec[k]) / 2.0 / 255.0
+        n += 1
+    return [round(a / n, 3) for a in acc] if n else None
+
+
+def colours(path):
+    """-> {effect-list index: (r, g, b)} for the effects drawn by emitters (not the model ones)."""
+    _name, efls, reff, _reft, _models = effect_archive(path)
+    lst, _n = effect_list(efls)
+    _a, entries = nw4r_table(reff, b'REFF')
+    data = dict(entries)
+    ems = emitters(reff, [])
+    by = {e['name']: e for e in ems}
+    out = {}
+    for x in lst:
+        s = by.get(x['emitter_set'])
+        if not s:
+            continue
+        c = set_colour([data[n] for n in [s['name']] + s['children'] if n in data])
+        if c:
+            out[x['index']] = c
+    return out
+
+
 def _pow2(n):
     p = 16
     while p < n:
@@ -197,6 +246,9 @@ def main(argv):
                 ('  (base game: %s)' % ','.join(x['external_textures'])) if x['external_textures'] else ''))
         for t in rep['textures']:
             print('  texture %-24s %4dx%-4d %s' % (t['name'], t['width'], t['height'], t['format']))
+        return 0
+    if len(argv) >= 2 and argv[0] == 'colours':
+        print(json.dumps({'%#06x' % k: v for k, v in sorted(colours(argv[1]).items())}, indent=1))
         return 0
     if len(argv) >= 3 and argv[0] == 'export':
         only = None

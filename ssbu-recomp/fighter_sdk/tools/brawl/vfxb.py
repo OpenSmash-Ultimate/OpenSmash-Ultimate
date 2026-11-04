@@ -3,8 +3,9 @@
 Second stage of the effect converter (reff.py reads the Wii predecessor's effects): a new fighter's effects are
 made from the emitter sets of an effect file it already has (its donor's, or a skin's), each cloned under a new
 effect name and, where wanted, pointed at other textures - the file's own or new ones added from PNG files (for
-example the old game's textures that reff.py exported). Emitter bodies are copied as they are (their life, rate,
-scale and colour stay the template's; the effect scripts scale and tint them: EFFECT size, LAST_EFFECT_SET_COLOR).
+example the old game's textures that reff.py exported). Emitter bodies are copied as they are (their life, rate and
+scale stay the template's; the effect scripts scale them: EFFECT size), except the colour keys when the plan gives
+the old emitter's colour (reff.py colours).
 
 Layout, as read from the files on this PC (no other program's code used):
 
@@ -28,7 +29,9 @@ Layout, as read from the files on this PC (no other program's code used):
     python -I vfxb.py build <file.eff> <plan.json> <out.eff>
         plan.json: {"textures": [{"name": "pg_fire", "png": "ptc_ganon_fire.png"}],
                     "sets": [{"from": "GANON_ENTRY_AURA", "name": "GANON_PG_ENTRY_AURA",
-                              "textures": {"ef_ganon_fire00": "pg_fire"}}]}
+                              "textures": {"ef_ganon_fire00": "pg_fire"}, "color": [0.25, 0.0, 0.53]}]}
+        "color" (optional): the clone's colour keys take this hue (reff.py colours: the old emitter's own colour),
+        keeping each key's brightness and whiteness (recolor_keys)
         (paths relative to the plan; "from" is an effect name or an emitter set name)
     python -I vfxb.py check <file.eff>
         parses everything the writer touches (sections, sets, GTNT, BNTX pointers) and reports.
@@ -277,6 +280,56 @@ def rgba8_texture(name, png, like):
 
 
 # ------------------------------------------------------------------ the .eff
+# ------------------------------------------------------------------ emitter colours
+# An emitter's binary (EMTR, from its start): + 0x60 eight u32, the first four = how many keys the colour 0, alpha 0,
+# colour 1 and alpha 1 animations have; their keys (up to 8 each, 16 bytes: r, g, b, time - an alpha key repeats its
+# value in r, g, b) at + 0x3C0 (colour 0), + 0x440 (alpha 0), + 0x4C0 (colour 1), + 0x540 (alpha 1). Read on this PC's
+# files: every emitter's counts match its non-empty keys there (ToTK skin's sets, Ganondorf's).
+# The constant colours 0 and 1 (r, g, b, a: used when that colour has no keys) at + 0x9A0 and + 0x9B0 (same files:
+# e.g. Ganondorf's entry aura's fire1, no keys, constant 1.0 0.07 0.07 / 0.53 0 0 - its red flames).
+EMTR_COLOR_KEYS = ((0, 0x3C0), (2, 0x4C0))
+EMTR_COLOR_CONST = (0x9A0, 0x9B0)
+
+
+def recolor_keys(body, at, color):
+    """The colour keys of the emitter whose binary starts at body[at]: each key's hue becomes `color` (r, g, b in
+    0-1, the old game's emitter colour), its brightness stays the key's (max channel) and its whiteness (min / max)
+    stays as a mix toward white; the result is scaled by the colour's own brightness (a dark colour stays dark).
+    -> number of keys changed."""
+    peak = max(color) or 1.0
+    hue = [c / peak for c in color]
+    counts = struct.unpack_from('<4I', body, at + 0x60)
+    places = [at + table + 16 * k for which, table in EMTR_COLOR_KEYS for k in range(min(counts[which], 8))]
+    places += [at + c for c in EMTR_COLOR_CONST]
+    n = 0
+    for o in places:
+        r, g, b = struct.unpack_from('<3f', body, o)
+        hi = max(r, g, b)
+        if hi <= 0:
+            continue
+        w = min(r, g, b) / hi
+        struct.pack_into('<3f', body, o, *[hi * (w + (1 - w) * h) * peak for h in hue])
+        n += 1
+    return n
+
+
+def recolor_set(body, child, color):
+    """Every emitter of an emitter set's bytes (body = the ESET section, child = its first emitter, from body[0]),
+    their child emitters included. -> keys changed."""
+    n = 0
+    if child is None:
+        return 0
+    stack = [child]
+    while stack:
+        for e in chain(body, stack.pop()):
+            if e['magic'] != b'EMTR':
+                continue
+            n += recolor_keys(body, e['at'] + e['binary'], color)
+            if e['count'] and e['child'] not in (0, NONE):
+                stack.append(e['at'] + e['child'])
+    return n
+
+
 class Eff:
     def __init__(self, path):
         d = open(path, 'rb').read()
@@ -356,10 +409,12 @@ class Eff:
         self.new_textures.append(name)
         return tid
 
-    def clone_set(self, src, effect_name, set_name=None, textures=None):
+    def clone_set(self, src, effect_name, set_name=None, textures=None, color=None):
         i = self.set_index(src)
         s = self.sets[i]
         body = bytearray(self.v[s['at']:s['at'] + s['size']])
+        if color:
+            recolor_set(body, s['child'] if s['count'] else None, color)
         nm = (set_name or 'P_' + effect_name.title().replace('_', '')).encode()[:63]
         body[s['binary'] + 0x10:s['binary'] + 0x50] = nm + b'\0' * (64 - len(nm))
         struct.pack_into('<I', body, 0x0C, NONE)
@@ -479,8 +534,9 @@ def main(argv):
             e.add_texture(t['name'], os.path.join(here, t['png']))
             print('texture %s added from %s' % (t['name'], t['png']))
         for s in plan.get('sets', []):
-            n = e.clone_set(s['from'], s['name'], s.get('set_name'), s.get('textures'))
-            print('effect %s: emitter set of %s cloned, %d texture references changed' % (s['name'], s['from'], n))
+            n = e.clone_set(s['from'], s['name'], s.get('set_name'), s.get('textures'), s.get('color'))
+            print('effect %s: emitter set of %s cloned, %d texture references changed%s' % (
+                s['name'], s['from'], n, (', colour %s' % s['color']) if s.get('color') else ''))
         e.save(argv[3])
         check(argv[3])
         return 0
