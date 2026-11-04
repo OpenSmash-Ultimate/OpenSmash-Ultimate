@@ -220,6 +220,7 @@ int main(void) {
             if (joined) say("joined %ld %u %ld %d %ld", (long)proto, my_ip, (long)lobby_flags, fell_back, (long)members);
             else say("notjoined");
         } else if (!strcmp(what, "rooms") && sscanf(line, "rooms %lf", &secs) == 1) cmd_rooms(secs);
+        else if (!strcmp(what, "pick") && sscanf(line, "pick %u %d", &u1, &a) == 2) { net_rooms_pick(u1); net_rooms_page(a); say("ok"); }
         else if (!strcmp(what, "find")) { net_match_find(); say("ok"); }
         else if (!strcmp(what, "cancel")) { net_match_cancel(); say("ok"); }
         else if (!strcmp(what, "match") && sscanf(line, "match %d %lf", &a, &secs) == 2) cmd_match(a, secs);

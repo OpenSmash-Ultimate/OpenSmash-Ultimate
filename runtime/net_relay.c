@@ -1385,13 +1385,31 @@ static void send_join(void) {
     send_udp(client_sock, p, len, &relay_at);
 }
 
+/* The game's Rooms List shows 24 rooms (hle_net.c): the room picked in F1's room browser comes
+ * first (LIST flag 2), and the rest a page of 24 at a time (flag 4), so that any room can be
+ * reached however many the lobby has. A lobby without them reads the first 16 bytes. */
+static volatile LONG list_first, list_page;
+void net_rooms_pick(u32 host) { InterlockedExchange(&list_first, (LONG)host); }
+u32 net_rooms_picked(void) { return (u32)list_first; }
+void net_rooms_page(int page) { InterlockedExchange(&list_page, page < 0 ? 0 : page); }
+int net_rooms_page_get(void) { return (int)list_page; }
+
 void net_lobby_list(u32 seq) {
     if (!net_lobby()) return;
-    u8 p[4 + 8 + 4];
+    u8 p[4 + 8 + 4 + 1 + 4 + 2];
     header(p, T_LIST);
     put64(p + 4, cookie);
     put32(p + 12, seq);
-    send_udp(client_sock, p, sizeof p, &relay_at);
+    u32 first = (u32)list_first;
+    int page = (int)list_page, n = 16;
+    if (first || page) {
+        p[16] = (u8)((first ? 2 : 0) | (page ? 4 : 0));
+        put32(p + 17, first);
+        p[21] = (u8)(page >> 8);
+        p[22] = (u8)page;
+        n = sizeof p;
+    }
+    send_udp(client_sock, p, n, &relay_at);
 }
 
 /* ---- version 3: the room browser and matchmaking (net.h) --------------------------------
@@ -1402,7 +1420,7 @@ void net_lobby_list(u32 seq) {
  * this game can join (ROOM_INFO's flag 8: the room's key is this game's); room_why says why not,
  * from what the room's game is. Rollback messages (RB): "rollback messages" above. */
 enum { T_RB = 16, T_ROOMS, T_ROOM_INFO, T_ROOMS_END, T_MATCH, T_MATCH_STATE };
-#define ROOMS_MAX 32
+#define ROOMS_MAX 512   /* (the browser's list: the lobby sends up to 1000) */
 #define ROOM_INFO_MIN (4 + 4 + 3 + NAME_LEN + BUILD_LEN + 4 + 1)   /* (its body, with a mod set of none) */
 #define MATCH_STATE_SIZE (4 + 3 + 4 + NAME_LEN + 2 + 2 + 2)
 #define ROOMS_WAIT_MS 3000   /* a ROOMS unanswered this long: NET_ROOMS_NO_ANSWER */
