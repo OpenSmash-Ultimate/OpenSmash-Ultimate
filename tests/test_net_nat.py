@@ -11,15 +11,17 @@ the lobby cleanly, saying why. Made-up data only, loopback only; waits are for c
 import os
 import re
 import secrets
+import shutil
 import socket
 import struct
 import sys
+import tempfile
 import threading
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_net_client_v3 import BCAST, ClientTest, Game, HAVE_CLANG, R, Server, info_of, until  # noqa: E402
+from test_net_client_v3 import BCAST, ClientTest, HAVE_CLANG, R, Server, build, info_of, until  # noqa: E402
 
 
 class FakeGateway:
@@ -54,6 +56,15 @@ class FakeGateway:
 
 @unittest.skipUnless(HAVE_CLANG, "needs clang on x86-64 Linux or an Apple silicon Mac, or clang-cl on Windows (deps\\llvm)")
 class Routers(ClientTest):
+    @classmethod
+    def setUpClass(cls):   # (a netv3test of its own: test_net_client_v3's goes when that module ends)
+        cls.folder = tempfile.mkdtemp(prefix='netnattest ')
+        cls.exe = build(cls.folder)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.folder, ignore_errors=True)
+
     def setUp(self):
         super().setUp()
         self.servers = []
