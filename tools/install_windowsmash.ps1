@@ -77,6 +77,9 @@ Prepare the game files (program, fonts, data, DLC, fighters) but stop before the
 Passed to the build: how many files to compile at a time (default: by the installed RAM).
 .PARAMETER NoUpdate
 Do not look for a newer WindowSmash (the updated installer is started with it).
+.PARAMETER UpdateOnly
+Only bring this folder to the newest commit, then stop. The launcher's Update button uses this so
+setup steps (compiler, game files, build) are not run again.
 .PARAMETER BuildTools
 For the compiler, install the Visual Studio Build Tools rather than download it into deps\.
 .PARAMETER Rebuild
@@ -101,6 +104,7 @@ param(
     [switch]$SkipBuild,
     [int]$Jobs,
     [switch]$NoUpdate,
+    [switch]$UpdateOnly,
     [switch]$BuildTools,
     [switch]$Rebuild,
     [switch]$AcceptLicense
@@ -1538,7 +1542,14 @@ function Main {
         Write-Host "  $Root"
         if ($DryRun) { Write-Host '  dry run: saying what each step would do, doing nothing' -ForegroundColor DarkGray }
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-        if (Step-Update) {
+        $updated = Step-Update
+        if ($UpdateOnly) {
+            # the launcher only asked for the files: do not run the rest of setup.
+            if ($updated) { Write-Host 'Updated.' -ForegroundColor Green }
+            else { Write-Host 'Nothing to update.' }
+            return 0
+        }
+        if ($updated) {
             # the rest is the new version's to do: start its installer in this window, as this one was
             Write-Host ''
             Write-Host 'Starting the updated installer' -ForegroundColor Cyan

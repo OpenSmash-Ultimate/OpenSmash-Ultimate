@@ -685,6 +685,8 @@ typedef struct VSock {
     u32 rcvtimeo_ms, rcvbuf, sndbuf;
     Datagram *head, *tail;
     u32 queued, queued_bytes;
+    u64 closed_n, closed_ms;   /* (rollback: open == 2, closed by the game but kept for a load: reap_closed) */
+    u64 opened_n;              /* (rollback: made after a save, a load to it closes it: the game has it no more) */
 } VSock;
 #define VSOCKS 128
 #define FD_BASE 3   /* (fds start above the standard streams' numbers) */
@@ -695,7 +697,7 @@ static CONDITION_VARIABLE activity = CONDITION_VARIABLE_INIT;   /* a datagram ar
 static u16 next_ephemeral = 49152;
 
 static VSock *sock_of(i32 fd) {
-    if (fd < FD_BASE || fd >= FD_BASE + VSOCKS || !socks[fd - FD_BASE].open) return NULL;
+    if (fd < FD_BASE || fd >= FD_BASE + VSOCKS || socks[fd - FD_BASE].open != 1) return NULL;
     return &socks[fd - FD_BASE];
 }
 
@@ -752,7 +754,7 @@ static void write_addr(u64 a, u64 alen_p, u32 ip, u16 port) {
 static int port_taken(const VSock *self, u16 port) {
     for (u32 i = 0; i < VSOCKS; i++) {
         const VSock *s = &socks[i];
-        if (s != self && s->open && s->type == self->type && s->port == port && !(s->reuse && self->reuse)) return 1;
+        if (s != self && s->open == 1 && s->type == self->type && s->port == port && !(s->reuse && self->reuse)) return 1;
     }
     return 0;
 }
@@ -763,6 +765,84 @@ static u16 ephemeral(const VSock *self) {
         if (!port_taken(self, p)) return p;
     }
     return 0;
+}
+
+/* ---- rollback (SSBU_RB): datagrams through a savestate's load ----------------------------------------
+ * A load puts the game's memory back as it was at a save: the datagrams its sockets took since (Pia's, in
+ * the Online mode, which keeps a session with the other players through the fight) are forgotten by it, and
+ * the senders don't send them again. So each one taken is kept (TAKEN of them, once savestates are taken:
+ * net_rb_save), and a load puts those taken after its save back in front of their sockets' queues, to be
+ * taken again. What the game sends again after a load goes again (a repeat, which Pia drops). */
+#define TAKEN 4096
+static struct { u64 seq; int slot; u16 port; Datagram *d; } taken[TAKEN];
+static u64 taken_n;    /* (datagrams taken so far, while kept) */
+static int rb_keep;
+static long long rb_put_back;
+static void keep_taken(int slot, u16 port, Datagram *d) {
+    unsigned k = (unsigned)(taken_n % TAKEN);
+    free(taken[k].d);
+    taken[k].seq = taken_n++; taken[k].slot = slot; taken[k].port = port; taken[k].d = d;
+}
+/* A datagram socket the game closes while savestates are taken is kept a while, closed for the game (open 2): a load
+ * to before the close gives it back as it was, its port and what came for it meanwhile (Pia closed its socket in a
+ * rematch with rollback, a load went back before that, and Pia's next send found no socket: the session, and the
+ * match, ended on both games). Gone for good RB_CLOSE_MS after (no load goes back that far). */
+#define RB_CLOSE_MS 3000
+static void drop_queue(VSock *s);
+static u64 closed_n, opened_n;
+static void reap_closed(int all) {   /* (the lock held) */
+    u64 now = now_ms_();
+    for (u32 i = 0; i < VSOCKS; i++)
+        if (socks[i].open == 2 && (all || now - socks[i].closed_ms > RB_CLOSE_MS)) { drop_queue(&socks[i]); memset(&socks[i], 0, sizeof socks[i]); }
+}
+typedef struct NetRb { u64 taken, closed, opened; OnlineRb online; } NetRb;
+void *net_rb_save(void) {
+    NetRb *r = calloc(1, sizeof *r);
+    if (!r) return NULL;
+    AcquireSRWLockExclusive(&lock);
+    rb_keep = 1; r->taken = taken_n; r->closed = closed_n; r->opened = opened_n;
+    reap_closed(0);
+    ReleaseSRWLockExclusive(&lock);
+    online_rb_save(&r->online);
+    return r;
+}
+void net_rb_load(const void *p) {
+    const NetRb *r = p;
+    if (!r) return;
+    int any = 0;
+    AcquireSRWLockExclusive(&lock);
+    if (taken_n - r->taken > TAKEN) fprintf(stderr, "[net] a load %llu datagrams back: more than kept, the older not taken again\n", (unsigned long long)(taken_n - r->taken));
+    while (taken_n > r->taken && taken_n - r->taken <= TAKEN) {   /* (newest first, each in front: the oldest ends first) */
+        unsigned k = (unsigned)(--taken_n % TAKEN);
+        Datagram *d = taken[k].d;
+        taken[k].d = NULL;
+        VSock *s = &socks[taken[k].slot];
+        if (!d) continue;
+        if (!s->open || s->port != taken[k].port) { free(d); continue; }
+        d->next = s->head; s->head = d;
+        if (!s->tail) s->tail = d;
+        s->queued++; s->queued_bytes += d->len;
+        rb_put_back++; any = 1;
+    }
+    for (u32 i = 0; i < VSOCKS; i++)   /* (made since the save: gone, as for the game then) */
+        if (socks[i].open && socks[i].opened_n > r->opened && socks[i].type == SOCK_DGRAM_) {
+            fprintf(stderr, "[net] a load: socket %u, made by the game since the save, closed\n", i + FD_BASE);
+            drop_queue(&socks[i]); memset(&socks[i], 0, sizeof socks[i]); any = 1;
+        }
+    for (u32 i = 0; i < VSOCKS; i++)   /* (closed since the save: open again, as the game had it then) */
+        if (socks[i].open == 2 && socks[i].closed_n > r->closed) {
+            socks[i].open = 1; any = 1;
+            fprintf(stderr, "[net] a load: socket %u, closed by the game since the save, open again\n", i + FD_BASE);
+        }
+    ReleaseSRWLockExclusive(&lock);
+    online_rb_load(&r->online);
+    if (any) WakeAllConditionVariable(&activity);
+}
+void net_rb_counts_report(void) {
+    long long back, left_out, differ;
+    online_rb_counts(&back, &left_out, &differ);
+    fprintf(stderr, "[net] rollback: %lld datagrams taken again after loads; NEX streams: %lld bytes read again, %lld sent again left out, %lld times the game sent other bytes\n",
+            rb_put_back, back, left_out, differ);
 }
 
 static void drop_queue(VSock *s) {
@@ -780,7 +860,7 @@ void vsock_deliver(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const voi
     AcquireSRWLockExclusive(&lock);
     for (u32 i = 0; i < VSOCKS; i++) {
         VSock *s = &socks[i];
-        if (!s->open || s->type != SOCK_DGRAM_ || s->port != dst_port || s->shut_rd) continue;
+        if (!s->open || s->type != SOCK_DGRAM_ || s->port != dst_port || s->shut_rd) continue;   /* (one closed by the game but kept for a load, open 2, gets a copy: for the game as it was before its close) */
         if (!broadcast && s->ip && s->ip != dst_ip && s->ip != LOOPBACK) continue;   /* bound to another address */
         if (s->peer_port && (s->peer_ip != src_ip || s->peer_port != src_port)) continue;   /* connected elsewhere */
         if (s->queued >= 1024 || s->queued_bytes + len > QUEUE_BYTES) continue;   /* (full: dropped, as a LAN would) */
@@ -793,7 +873,7 @@ void vsock_deliver(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const voi
         s->queued++;
         s->queued_bytes += len;
         delivered = 1;
-        if (!broadcast && !s->reuse) break;
+        if (!broadcast && !s->reuse && s->open == 1) break;
     }
     ReleaseSRWLockExclusive(&lock);
     if (delivered) WakeAllConditionVariable(&activity);
@@ -809,6 +889,7 @@ static void do_socket(Cpu *c, i32 domain, i32 type, i32 proto) {
         if (!socks[i].open) {
             memset(&socks[i], 0, sizeof socks[i]);
             socks[i].open = 1;
+            socks[i].opened_n = ++opened_n;
             socks[i].type = base;
             socks[i].nonblock = (type & (SOCK_NONBLOCK_ | O_NONBLOCK_)) != 0;
             socks[i].rcvbuf = socks[i].sndbuf = 0x10000;
@@ -892,6 +973,7 @@ static void do_sendto(Cpu *c, i32 fd, u64 buf, u64 len, i32 flags, u64 addr, u32
     if (dst == LOOPBACK) vsock_deliver(LOOPBACK, sport, LOOPBACK, dport, data, (u32)len);
     else {
         if (dst == me || broadcast) vsock_deliver(me, sport, dst, dport, data, (u32)len);   /* (a broadcast reaches this player's sockets too) */
+        if (dst != me && !broadcast) net_note_peer(dst);   /* (the Online mode's match players: rollback's link finds them so) */
         if (dst != me) net_send(me, sport, broadcast ? NET_BROADCAST : dst, dport, data, (u32)len);
     }
     c->x[0] = len;
@@ -899,7 +981,19 @@ static void do_sendto(Cpu *c, i32 fd, u64 buf, u64 len, i32 flags, u64 addr, u32
 
 /* Wait for the activity condition until the deadline (ms since boot; ~0: for ever). Returns
  * 0 once it has passed. Called holding the lock. */
-static int wait_activity(u64 deadline) {
+/* (rollback, SSBU_RB) A guest thread waiting here parks during a savestate's hold as in the kernel's own waits
+ * (kernel_rb_park_guest): Online mode's NEX thread waits in poll() nearly always, and a hold that waited for its
+ * poll's timeout took ~95 ms a save. Its callers look at their wait again after any return. */
+int kernel_rb_park_guest(void *kthread);
+extern void (*kernel_rb_wake_hook)(void);
+static int wait_activity(Cpu *c, u64 deadline) {
+    if (!kernel_rb_wake_hook) kernel_rb_wake_hook = net_wake;
+    if (c && kernel_rb_park_guest(NULL)) {   /* (a hold now: park, without the lock) */
+        ReleaseSRWLockExclusive(&lock);
+        kernel_rb_park_guest(c->thread);
+        AcquireSRWLockExclusive(&lock);
+        return 1;
+    }
     DWORD ms = INFINITE;
     if (deadline != ~0ull) {
         u64 now = rt_now_ns() / 1000000;
@@ -937,7 +1031,7 @@ static void do_recvfrom(Cpu *c, i32 fd, u64 buf, u64 len, i32 flags, u64 addr, u
         if (s->type != SOCK_DGRAM_ && !s->peer_port && !s->port) { err = E_NOTCONN; break; }
         if (s->shut_rd) { ReleaseSRWLockExclusive(&lock); c->x[0] = 0; return; }
         if (s->nonblock || (flags & MSG_DONTWAIT_)) { err = E_AGAIN; break; }
-        if (!wait_activity(deadline)) { err = E_AGAIN; break; }
+        if (!wait_activity(c, deadline)) { err = E_AGAIN; break; }
     }
     if (err) { ReleaseSRWLockExclusive(&lock); fail(c, err); return; }
     Datagram *d = s->head;
@@ -950,7 +1044,8 @@ static void do_recvfrom(Cpu *c, i32 fd, u64 buf, u64 len, i32 flags, u64 addr, u
         if (!s->head) s->tail = NULL;
         s->queued--;
         s->queued_bytes -= d->len;
-        free(d);
+        if (rb_keep) keep_taken((int)(s - socks), s->port, d);   /* (a load may want it taken again) */
+        else free(d);
     }
     ReleaseSRWLockExclusive(&lock);
     write_addr(addr, alen_p, ip, port);
@@ -980,7 +1075,7 @@ static void do_poll(Cpu *c, u64 fds, u64 nfds, i32 timeout) {
             st16(p + 6, revents);
             ready += revents != 0;
         }
-        if (ready || timeout == 0 || !wait_activity(deadline)) break;
+        if (ready || timeout == 0 || !wait_activity(c, deadline)) break;
     }
     ReleaseSRWLockExclusive(&lock);
     if (net_log() > 2) fprintf(stderr, "[net] poll(%llu fds, %d ms) = %u\n", nfds, timeout, ready);
@@ -1064,7 +1159,8 @@ static void do_close(Cpu *c, i32 fd) {
     if (is_stream(fd)) online_stream_close(fd);
     AcquireSRWLockExclusive(&lock);
     VSock *s = sock_of(fd);
-    if (s) { drop_queue(s); memset(s, 0, sizeof *s); }
+    if (s && rb_keep && s->type == SOCK_DGRAM_) { s->open = 2; s->closed_n = ++closed_n; s->closed_ms = now_ms_(); }   /* (kept for a load: above) */
+    else if (s) { drop_queue(s); memset(s, 0, sizeof *s); }
     ReleaseSRWLockExclusive(&lock);
     WakeAllConditionVariable(&activity);
     if (net_log()) fprintf(stderr, "[net] close(%d)%s\n", fd, s ? "" : ": not a socket");
@@ -1082,7 +1178,7 @@ static void do_accept(Cpu *c, i32 fd) {   /* no stream ever connects: wait until
     VSock *s = sock_of(fd);
     int err = !s ? E_BADF : s->nonblock ? E_AGAIN : 0;
     while (!err) {
-        wait_activity(~0ull);
+        wait_activity(c, ~0ull);
         if (!(s = sock_of(fd)) || s->shut_rd) err = E_BADF;
     }
     ReleaseSRWLockExclusive(&lock);

@@ -255,6 +255,19 @@ def status(tree):
             "status": run,
             "source": source,
         })
+    # Custom plugins the user dropped into skyline/plugins: not part of the standard list.
+    known = {p["name"] for p in plugins}
+    if os.path.isdir(folder):
+        for name in sorted(os.listdir(folder)):
+            if not name.lower().endswith(".nro") or name in known:
+                continue
+            plugins.append({
+                "name": name,
+                "version": "",
+                "fetched": True,
+                "status": "runs",
+                "source": "custom",
+            })
     data["plugins"] = plugins
     data["mods"].append({"name": CODE, "title": CODE_TITLE, "enabled": code_patches_on(tree), "files": 0, "about": CODE_ABOUT,
                          "online": "same", "code": "", "new_slots": False})

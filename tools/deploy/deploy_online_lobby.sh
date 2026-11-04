@@ -45,6 +45,7 @@ systemctl daemon-reload
 if [ "$what" = install ]; then
     if command -v ufw > /dev/null && ufw status | grep -q '^Status: active'; then
         ufw allow $port/udp comment ssbu-online
+        ufw allow $((port + 10))/udp comment ssbu-online-nat
         ufw allow $port/tcp comment ssbu-online
     fi
     systemctl enable --now ssbu-online
@@ -70,6 +71,7 @@ rm -f /etc/systemd/system/ssbu-online.service
 systemctl daemon-reload
 if command -v ufw > /dev/null; then
     ufw delete allow $port/udp 2> /dev/null || true
+    ufw delete allow $((port + 10))/udp 2> /dev/null || true
     ufw delete allow $port/tcp 2> /dev/null || true
 fi
 rm -rf /opt/ssbu-online

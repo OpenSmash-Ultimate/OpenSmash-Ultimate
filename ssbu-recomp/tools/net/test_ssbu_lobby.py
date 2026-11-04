@@ -10,6 +10,9 @@ open room) hosts, the guest is told when the host's room opens and sees it first
 are in one room; cancel, leaving, timeout and expiry; an older game is never matched; PONG counts the searching players.
 Rollback matchmaking (1.4, MATCH op 2): paired only with another rollback search, the one that waited longer is player 1,
 RB between the pair is relayed and makes both TOGETHER, on the public code a stranger's RB never reaches them.
+Routers that change ports (1.5): PONG says where the lobby sees a game and where its PROBE to the NAT port came from;
+a room's PEERS give a player behind another router its mapped port (PING 'N' 'P') at its public address, never its LAN
+address, and end with 'N' '2' and its PROBE port.
     python test_ssbu_lobby.py        (starts the lobby itself on a free port; standard library only)
     LOBBY_EXE=<minilobby.exe> python test_ssbu_lobby.py   (the same against net_minilobby.c built standalone:
         clang -DMINILOBBY_MAIN -x c net_minilobby.c -o minilobby.exe -lws2_32 -ladvapi32; no status endpoint there)"""
@@ -51,10 +54,10 @@ def get_status(port):
 
 
 class Fake:
-    def __init__(self, lobby, name, build=b"build-x", mods=None, code=b"test"):
+    def __init__(self, lobby, name, build=b"build-x", mods=None, code=b"test", bind="127.0.0.1"):
         self.build, self.mods, self.code = build, mods, code
         self.s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.s.bind(("127.0.0.1", 0))
+        self.s.bind((bind, 0))
         self.s.settimeout(0.2)
         self.lobby, self.name, self.nonce = lobby, name, os.urandom(8)
         self.got = []
@@ -391,15 +394,61 @@ def rollback_matchmaking(lob):
     time.sleep(0.2)
 
 
+def nat_ports(lob, nat_port):
+    """1.5: PONG's 'N' 'A' (the port seen, the PROBE's, the NAT port); PEERS' (0, mapped port) and 'N' '2'."""
+    a = Fake(lob, "Nia")
+    try:
+        b = Fake(lob, "Nib", bind="127.0.0.2")
+    except OSError:
+        b = None   # (no 127.0.0.2 here: the PONG part only)
+    ia = a.join()
+    a.tx(L.PING, struct.pack(">QQB", a.cookie, 1, 0) + b"NP" + struct.pack(">H", 4444))   # (its router maps port 4444 to it)
+    pong = a.rx(L.PONG)
+    assert pong[16:18] == b"NA" and struct.unpack_from(">HHH", pong, 18) == (a.s.getsockname()[1], 0, nat_port), pong.hex()
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    probe.bind(("127.0.0.1", 0))
+    probe.sendto(L.hdr(L.PROBE) + struct.pack(">Q", a.cookie ^ 1), ("127.0.0.1", nat_port))   # (another cookie: nobody's)
+    probe.sendto(L.hdr(L.PROBE) + struct.pack(">Q", a.cookie), ("127.0.0.1", nat_port))
+    second = probe.getsockname()[1]
+    deadline = time.time() + 3
+    while True:
+        a.tx(L.PING, struct.pack(">QQB", a.cookie, 2, 0) + b"NP" + struct.pack(">H", 4444))
+        got = struct.unpack_from(">H", a.rx(L.PONG), 20)[0]
+        if got == second or time.time() > deadline:
+            break
+        time.sleep(0.1)
+    assert got == second, (got, second)
+    probe.close()
+    if b is not None:
+        ib = b.join()
+        session = os.urandom(16)
+        a.ldn(L.BROADCASTS[0], L.M_ADVERTISE, network_info(ia, session))
+        b.ldn(ia, L.M_JOIN, session + b"Nib".ljust(32, b"\0") + b"\0\0")
+        a.rx(L.DATA)
+        a.ldn(ib, L.M_ACCEPT, network_info(ia, session, ib))
+        a.ldn(L.BROADCASTS[0], L.M_ADVERTISE, network_info(ia, session, ib))
+        pb = b.rx(L.PEERS)
+        assert pb[4] == 1, pb[:5]
+        _, _, pub, pport, lan, lport, _ = struct.unpack_from(">I32sIHIHQ", pb, 5)
+        assert (pub, pport, lan, lport) == (0x7F000001, a.s.getsockname()[1], 0, 4444), (pub, pport, lan, lport)   # (never its LAN address)
+        assert pb[5 + 56:5 + 58] == b"N2" and struct.unpack_from(">H", pb, 5 + 58)[0] == second, pb.hex()
+        pa = a.rx(L.PEERS)
+        _, _, pub, pport, lan, lport, _ = struct.unpack_from(">I32sIHIHQ", pa, 5)
+        assert (lan, lport) == (0, 0) and pa[5 + 56:] == b"", pa.hex()   # (b keeps its port, maps none and sent no PROBE)
+        b.tx(L.LEAVE, struct.pack(">Q", b.cookie))
+    a.tx(L.LEAVE, struct.pack(">Q", a.cookie))
+    time.sleep(0.2)
+
+
 def main():
-    port, sport = free_port(), free_tcp_port()
+    port, sport, nat_port = free_port(), free_tcp_port(), free_port()
     exe = os.environ.get("LOBBY_EXE")
     if exe:
         proc = subprocess.Popen([exe, str(port)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                 env=dict(os.environ, SSBU_LOBBY_SEARCH_SECS="3", SSBU_LOBBY_MATCH_SECS="5"))
     else:
         proc = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "ssbu_lobby.py"), "--bind", "127.0.0.1", "--port", str(port), "--stats", "0",
-                                 "--status-port", str(sport), "--search-secs", "3", "--match-secs", "5"],
+                                 "--status-port", str(sport), "--search-secs", "3", "--match-secs", "5", "--nat-port", str(nat_port)],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     lines = []          # the lobby's output, read all along (a full pipe would stop the lobby on its next line)
     reader = threading.Thread(target=lambda: lines.extend(iter(proc.stdout.readline, "")), daemon=True)
@@ -418,6 +467,7 @@ def main():
             print("lobby self-test (%s): ok (room browser: builds parted, LIST flag, ROOMS, older game, cross-build join dropped; "
                   "matchmaking: same build and code only, host choice, room open, list order, together, cancel, leave, timeout, expiry, older game; rollback matchmaking: op 2 only with op 2, roles, RB relay, together)" % os.path.basename(exe))
             return 0
+        nat_ports(lob, nat_port)
         code, _, body = get_status(sport)
         st = json.loads(body)
         assert code == 200 and st["up"] is True and st["players"] == 0 and st["rooms"] == 0, body
@@ -476,7 +526,7 @@ def main():
         print("lobby self-test: ok (room browser: builds parted, LIST flag, ROOMS, older game, cross-build join dropped; 30 rooms: pages, picked first; "
               "matchmaking: same build and code only, host choice, room open, list order, together, cancel, leave, timeout, expiry, older game; "
               "rollback matchmaking: op 2 only with op 2, roles, RB relay, together, stranger dropped; join, list, room join, PEERS, "
-              "broadcast + unicast relay, outsider refused, room closed, status endpoint)")
+              "broadcast + unicast relay, outsider refused, room closed, status endpoint; NAT port: PONG's ports, PEERS' mapped port and PROBE port)")
         return 0
     finally:
         proc.terminate()
