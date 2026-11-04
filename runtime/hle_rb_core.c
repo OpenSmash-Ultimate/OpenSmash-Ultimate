@@ -36,6 +36,8 @@ void rb_pad(u32 id, u64 *buttons, i32 *lx, i32 *ly, i32 *rx, i32 *ry, i32 *lt, i
 }
 int rb_pad_sampling(u64 *sampling) { (void)sampling; return 0; }
 int rb_ra_predicting(void) { return 0; }
+void rb_guest_writing(void *p, u64 n) { (void)p; (void)n; }   /* (hle_rb_state.c's state map) */
+int rb_page_cold(const void *p) { (void)p; return 0; }
 #else
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
@@ -197,6 +199,7 @@ static void safe_point(Cpu *c, uintptr_t sp) {
     if (!on) {
         if (S.in_fight) {
             summary("fight over"); S.in_fight = 0;
+            { void rb_state_map_fight(int on); rb_state_map_fight(0); }   /* (hle_rb_state.c: the alias area writable again) */
             ra_fight_over();   /* (before the catch-up's end below: run-ahead's hidden frame is not one) */
             if (net_mode == 2) net_left_send();   /* (the others stop waiting for this game's pads: v0.9) */
             /* (the other players' name tags out of this PC's list now: the game saves its list as the results come,
@@ -220,6 +223,7 @@ static void safe_point(Cpu *c, uintptr_t sp) {
         tape_clear();
         S.in_fight = 1; S.fights++; S.frames = 0; S.thread = GetCurrentThreadId(); S.thread_changed = 0;
         S.sp_ref = sp; S.last_t = 0;
+        { void rb_state_map_fight(int on); rb_state_map_fight(1); }   /* (hle_rb_state.c: the fight's first save turns the state map on) */
         summary("fight start");   /* (clears the window; its numbers are all zero) */
         if (net_mode == 2) net_gone_reset();
         S.sp_same = 0;
@@ -2924,6 +2928,10 @@ void ra_pad_read(u32 id, u64 buttons) {
 static void ra_report(const char *why);
 /* the next segment hidden or shown */
 static void ra_next(Cpu *c, u32 key, int hide) {
+    extern volatile int gpu_hide_fast;
+    static int draw_hidden = -1;
+    if (draw_hidden < 0) { const char *e = getenv("SSBU_RA_DRAW_HIDDEN"); draw_hidden = e && *e == '1'; }
+    gpu_hide_fast = hide && !draw_hidden;
     InterlockedExchange(&rb_fast, hide ? 1 : 0);
     ra_seg_host = ra_shown;
     if (!hide) {
@@ -2951,6 +2959,7 @@ static void ra_next(Cpu *c, u32 key, int hide) {
 }
 
 extern double rb_load_parts[6]; extern long long rb_load_count;   /* (hle_rb_state.c) */
+extern long long rb_save_away_waits, rb_save_away_refused;
 static void ra_report(const char *why) {
     if (!ra_ms_n && !ra_gaps && !ra.paused && !ra.save_failed && !ra.load_refused) return;
     double n = ra_ms_n ? (double)ra_ms_n : 1;
@@ -2966,11 +2975,25 @@ static void ra_report(const char *why) {
                                                    - (rb_load_parts[3] - lp[3]) - (rb_load_parts[4] - lp[4])) / dl);
         memcpy(sp, rb_save_parts, sizeof sp); memcpy(lp, rb_load_parts, sizeof lp); sn = rb_save_count; ln = rb_load_count;
     }
+    {
+        extern double gpu_q_busy_ms[2]; extern long long gpu_q_jobs[2];
+        static double gb[2]; static long long gj[2];
+        double fr = ra_gaps ? (double)ra_gaps : 1;
+        fprintf(stderr, "[rb] run-ahead: the GPU thread per frame shown: %.2f ms in %.1f submissions of hidden frames, %.2f ms in %.1f of shown ones\n",
+                (gpu_q_busy_ms[1] - gb[1]) / fr, (gpu_q_jobs[1] - gj[1]) / fr, (gpu_q_busy_ms[0] - gb[0]) / fr, (gpu_q_jobs[0] - gj[0]) / fr);
+        memcpy(gb, gpu_q_busy_ms, sizeof gb); memcpy(gj, gpu_q_jobs, sizeof gj);
+        extern double watch_prof_ms[2][2]; extern long long watch_prof_n[2][3];
+        static double wm[2][2]; static long long wn[2][3];
+        for (int w = 0; w < 2; w++)
+            fprintf(stderr, "[rb] run-ahead: the write watch per frame shown, %s: asked %.1f times in %.2f ms, reset %.1f times in %.2f ms (%.0f pages)\n", w ? "the savestates" : "the renderer",
+                    (watch_prof_n[w][0] - wn[w][0]) / fr, (watch_prof_ms[w][0] - wm[w][0]) / fr, (watch_prof_n[w][1] - wn[w][1]) / fr, (watch_prof_ms[w][1] - wm[w][1]) / fr, (watch_prof_n[w][2] - wn[w][2]) / fr);
+        memcpy(wm, watch_prof_ms, sizeof wm); memcpy(wn, watch_prof_n, sizeof wn);
+    }
     fprintf(stderr, "[rb] run-ahead %d (%s): %lld frames shown ahead; per frame: the real frame %.2f ms (max %.1f), save %.2f (max %.1f), "
             "the frames after %.2f (max %.1f), load %.2f (max %.1f); a frame shown every %.2f ms (max %.1f, %lld over 20 ms); "
-            "%lld paused frames, %lld saves and %lld loads refused, %lld fights ended ahead\n",
+            "%lld paused frames, %lld saves and %lld loads refused (%lld saves waited for a job, %lld of them in vain), %lld fights ended ahead\n",
             ra.n, why, ra.cycles, ra_ms[0] / n, ra_ms_max[0], ra_ms[1] / n, ra_ms_max[1], ra_ms[2] / n, ra_ms_max[2], ra_ms[3] / n, ra_ms_max[3],
-            ra_gaps ? ra_ms[4] / (double)ra_gaps : 0, ra_ms_max[4], ra_gaps_late, ra.paused, ra.save_failed, ra.load_refused, ra_ended_ahead);
+            ra_gaps ? ra_ms[4] / (double)ra_gaps : 0, ra_ms_max[4], ra_gaps_late, ra.paused, ra.save_failed, ra.load_refused, rb_save_away_waits, rb_save_away_refused, ra_ended_ahead);
     memset(ra_ms, 0, sizeof ra_ms); memset(ra_ms_max, 0, sizeof ra_ms_max); ra_ms_n = 0; ra_gaps = ra_gaps_late = 0;
 }
 static void ra_add(int k, double ms) { ra_ms[k] += ms; if (ms > ra_ms_max[k]) ra_ms_max[k] = ms; }
@@ -2978,6 +3001,7 @@ static void ra_add(int k, double ms) { ra_ms[k] += ms; if (ms > ra_ms_max[k]) ra
 static void ra_fight_over(void) {
     if (ra.phase == RA_AHEAD) ra_ended_ahead++;   /* (the predicted frames stay: the fight is over) */
     if (ra.phase != RA_IDLE) InterlockedExchange(&rb_fast, 0);
+    { extern volatile int gpu_hide_fast; gpu_hide_fast = 0; }
     ra_stop(&ra);
     ra_shown_t = 0; ra_slow = 0;
     if (ra_engaged) ra_report("the fight is over");
@@ -3050,7 +3074,10 @@ int runahead_point(Cpu *c, u64 frame) {
         ra_trace(c, 'R', key);
         ra_t_save0 = now_ms();
         rb_save_tag = key;
+        extern int rb_save_home_only;
+        rb_save_home_only = 1;
         int r = rb_save(c, frame);
+        rb_save_home_only = 0;
         if (r == 2) {   /* a load came back here: the real game, at the logic frame after R's */
             double t = now_ms();
             ra_add(3, t - ra_t_load0);
