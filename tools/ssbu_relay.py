@@ -58,6 +58,8 @@ Python 3.8+, standard library only."""
 #                       3: then flags u8 (1: every key's rooms of the lobby code, its own key's first)
 # 10 LISTING     lobby: seq u32, host address u32, NetworkInfo[0x480]          (24 at most, best first)
 #                       3, LIST flag 1: then the host's build[40], sim u32, mod set
+#                       (3: LIST flags 2, the host its player picked in F1's room browser, u32 after the
+#                       flags, listed first; 4, a page: the u16 after that, the page-th 24 of the others)
 # 11 LIST_END    lobby: seq u32, count u8
 # 12 PEERS       lobby: cookie u64, version u32, count u8, count x (address u32, name[32], flags u8, public
 #                       address u32, port u16, LAN address u32, port u16, secret u64)   (its room's players;
@@ -74,8 +76,8 @@ Python 3.8+, standard library only."""
 # 17 ROOMS       game:  cookie u64, seq u32                                    (the room browser)
 # 18 ROOM_INFO   lobby: seq u32, host address u32, players u8, most u8, flags u8 (1 open, 2 yours, 4 mods
 #                       known, 8 of your key: you can join it), host name[32], build[40], sim u32, mod set
-#                       (every key's rooms of the lobby code, yours first; 32 at most)
-# 19 ROOMS_END   lobby: seq u32, count u8
+#                       (every key's rooms of the lobby code, yours first; ROOMS_MAX at most)
+# 19 ROOMS_END   lobby: seq u32, count u8 (255 at most), count u16 (3)
 # 20 MATCH       game:  cookie u64, op u8 (1 a search for a room, 2 for a rollback match, 0 cancel), search
 #                       id u32                                (again every 2 s while it searches or is matched)
 # 21 MATCH_STATE lobby: search id u32, state u8 (0 idle, 1 searching, 2 matched, 3 none found in time, 4 the
@@ -178,7 +180,7 @@ SU_PEERS_AGAIN = 5.0   # seconds: its PINGs don't say which PEERS came last, so 
 # room; their rooms are listed all the same, with the host's build and mods, and the game says why
 # it can't join one (ssbu-recomp/runtime/net_relay.c room_why).
 SU_ROOMS, SU_ROOM_INFO, SU_ROOMS_END = ROOMS, ROOM_INFO, ROOMS_END
-ROOMS_MAX = 32        # rooms in a ROOMS answer, at most
+ROOMS_MAX = 1000      # rooms in a ROOMS answer, at most (the browser pages them)
 MODS_MAX = 32         # a game's mod set (its JOIN ends with "MS" and it): mods at most...
 MOD_NAME = 31         # ...and a mod's name, bytes at most
 # Matchmaking ("Find an opponent"): a game searching sends MATCH (again every 2 s) and hears how it
@@ -661,7 +663,10 @@ class Lobby:
             if not c.lists.take(now):
                 self.drops["list rate"] += 1
                 return
-            self.on_list(c, p[12:16], now, wire is self.sn3 and len(p) > 16 and bool(p[16] & 1))   # (3: flags 1, every key's)
+            flags = p[16] if wire is self.sn3 and len(p) > 16 else 0   # (3: 1 every key's, 2 a picked host, 4 a page)
+            first = struct.unpack_from(">I", p, 17)[0] if flags & 2 and len(p) >= 21 else 0
+            page = struct.unpack_from(">H", p, 21)[0] if flags & 4 and len(p) >= 23 else 0
+            self.on_list(c, p[12:16], now, bool(flags & 1), first, page)
         elif kind == DATA:
             self.on_data(c, p, now)
         elif kind == BCAST:
@@ -861,17 +866,23 @@ class Lobby:
         self.to(c, su_header(SU_WELCOME) + nonce + struct.pack(">IQ", c.ip, c.cookie))
 
     # ---- rooms ----------------------------------------------------------------------------
-    def on_list(self, c, seq, now, every=False):
+    def on_list(self, c, seq, now, every=False, first=0, page=0):
         """The rooms this player's Rooms List shows: open ones first, fuller ones first, then the
         ones whose host is closest to the lobby (in 100 ms steps, taken when the room opened: the
         list must not reorder under the player's cursor from one scan to the next), then the oldest.
         every (SU, SN 3): the rooms of every build (SN 3: every key) of its lobby code, its own first,
         each LISTING ending with its host's build (SN 3: and simulation version and mod set). A player
-        matchmaking paired sees its host's room first."""
+        matchmaking paired sees its host's room first, then the room of the host it picked in its room
+        browser (first); the others LIST_MAX at a time from page x LIST_MAX (beyond the last: the first),
+        so that every room can be reached however many there are."""
         pool = self.code_rooms.get(c.code_key, ()) if every else self.part_rooms.get(c.part, ())
         host = c.match.host if c.match is not None and c.match.guest is c else None   # (the host it was matched with first)
         rooms = sorted((r for r in pool if r.owner is not c and now - r.updated <= self.o.listed_for),
-                       key=lambda r: (r.owner is not host, r.owner.part != c.part, *self.room_order(r)))[:LIST_MAX]
+                       key=lambda r: (r.owner is not host, r.owner.part != c.part, *self.room_order(r)))
+        picked = [r for r in rooms if r.owner is host or (first and r.owner.ip == first)]
+        rest = [r for r in rooms if r not in picked]
+        start = page * LIST_MAX if page * LIST_MAX < len(rest) else 0
+        rooms = (picked + rest[start:])[:LIST_MAX]
         su = c.wire is self.su
         for r in rooms:
             tail = r.owner.build[:BUILD_LEN].ljust(BUILD_LEN, b"\0") if every else b""
@@ -901,7 +912,7 @@ class Lobby:
             self.to(c, wire.header(ROOM_INFO) + seq + struct.pack(">IBBB", h.ip, r.count, r.info[NI_NODE_MAX], flags) +
                     h.name.encode()[:NAME_LEN].ljust(NAME_LEN, b"\0") + h.build[:BUILD_LEN].ljust(BUILD_LEN, b"\0") +
                     (b"" if su else struct.pack(">I", h.sim)) + (h.mods or b"\0"))
-        self.to(c, wire.header(ROOMS_END) + seq + bytes((len(rooms),)))
+        self.to(c, wire.header(ROOMS_END) + seq + bytes((min(len(rooms), 255),)) + (b"" if su else struct.pack(">H", len(rooms))))
 
     def on_ldn(self, c, p, dst, sport, dport, now):
         """Local wireless's own messages: only the ones its protocol has, between the players they

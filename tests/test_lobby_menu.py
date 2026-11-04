@@ -506,7 +506,7 @@ class Rooms(MenuTest):
         self.assertNotEqual(again, seq)
         lobby.rooms(again, room(FAKE_IP + 7, 'Bravo'))
         self.assertEqual(m.value_until('Rooms', lambda v: v != 'asking the lobby...'), '1, 1 you can join')
-        self.assertEqual(m.row('Bravo')['value'], '2/4 players, open')
+        self.assertEqual(m.row('Bravo')['value'], '2/4 players, open - A: join')
         m.type('1')
         m.type('5')   # (shown again: asked again)
         third = lobby.next(R.ROOMS)[8:12]
@@ -514,7 +514,7 @@ class Rooms(MenuTest):
         m.key('ESC')   # (the menu opened again on the page, the last question unanswered: not asked again)
         self.assertNotIn(R.ROOMS, lobby.kinds(0.3))
         lobby.rooms(third, room(FAKE_IP + 7, 'Bravo', players=3))
-        self.assertEqual(m.value_until('Bravo', lambda v: v.startswith('3')), '3/4 players, open')
+        self.assertEqual(m.value_until('Bravo', lambda v: v.startswith('3')), '3/4 players, open - A: join')
         m.key('ESC')
         m.key('ESC')   # (answered: asked again)
         lobby.next(R.ROOMS)
@@ -532,12 +532,12 @@ class Rooms(MenuTest):
         self.assertEqual(m.value_until('Rooms', lambda v: v != 'asking the lobby...'), '7, 2 you can join')
         rows = {r['label']: r for r in m.rows()}
         self.assertEqual([(k, rows[k]['value']) for k in ('Alpha (you)', 'Bravo', 'Golf', 'Charlie', 'Delta', 'Echo', 'Foxtrot')],
-                         [('Alpha (you)', '1/4 players, open'), ('Bravo', '2/4 players, open'), ('Golf', '4/4 players, full or closed'),
+                         [('Alpha (you)', '1/4 players, open'), ('Bravo', '2/4 players, open - A: join'), ('Golf', '4/4 players, full or closed'),
                           ('Charlie', "can't join: update your WindowSmash"), ('Delta', "can't join: their WindowSmash is older"),
                           ('Echo', "can't join: another game version"), ('Foxtrot', "can't join: other mods")])
         game = f'Game build {BUILD[:8]} (yours too), WindowSmash simulation version {SIM} (yours too), netplay version 3'
-        self.assertEqual(rows['Bravo']['help'], "Bravo's room, 2 of 4 players. To join it, close this menu, then Local Wireless > Rooms List and "
-                                                f"pick Bravo's room. / {game} / Mods: none")   # (the room's game and mods, against yours)
+        self.assertEqual(rows['Bravo']['help'], "Bravo's room, 2 of 4 players. A: put it first in Local Wireless > Rooms List, then close this menu "
+                                                f"and pick it there. / {game} / Mods: none")   # (the room's game and mods, against yours)
         self.assertIn(f'Game build {OTHER_BUILD[:8]} (yours {BUILD[:8]})', rows['Echo']['help'])
         self.assertIn(f'simulation version {SIM + 1} (yours {SIM})', rows['Charlie']['help'])
         self.assertIn(f'simulation version is {SIM + 1}, yours {SIM}', rows['Charlie']['help'])
@@ -545,7 +545,7 @@ class Rooms(MenuTest):
         self.assertIn('Theirs is the older one: the host needs to update.', rows['Delta']['help'])
         self.assertIn(f'build {OTHER_BUILD[:8]}, yours {BUILD[:8]}', rows['Echo']['help'])
         self.assertEqual(rows['Foxtrot']['help'], f"Mods you don't have: Alpha / {game} / Mods: Alpha (you don't have it)")
-        for label, said in (('Bravo', "Close this menu, then Local Wireless > Rooms List: Bravo's room"),
+        for label, said in (('Bravo', "Bravo's room comes first now: close this menu, then Local Wireless > Rooms List"),
                             ('Alpha (you)', 'This is your own room'),
                             ('Golf', "Golf's room is full or closed for now"),
                             ('Charlie', "Can't join Charlie's room: update your WindowSmash")):
@@ -555,6 +555,38 @@ class Rooms(MenuTest):
         self.assertEqual(m.page()[0], 1)   # (the menu stays open)
         m.go_to('Charlie')   # (its help's second line on a line of its own)
         self.assertTrue(any('needs updating) / Yours is the older one: update WindowSmash to join.' in line for line in m.draw()))
+
+    def test_many_rooms_paged_and_picked(self):
+        """More rooms than a page: 30 at a time, More/Earlier rooms; A on one puts it first in the game's Rooms List
+        (marked on its row); past 24 the game's list itself pages."""
+        m, lobby = self.v3()
+        seq = lobby.next(R.ROOMS)[8:12]
+        lobby.rooms(seq, *[room(FAKE_IP + 1 + i, 'R%02d' % i) for i in range(40)])
+        self.assertEqual(m.value_until('Rooms', lambda v: v != 'asking the lobby...'), '40, 40 you can join')
+        labels = m.labels()
+        self.assertIn('R29', labels)
+        self.assertNotIn('R30', labels)
+        self.assertEqual(m.row('More rooms')['value'], '31-40 of 40')
+        self.assertEqual(m.row("Game's Rooms List shows")['value'], 'rooms 1-24 of 40 (A: next)')
+        m.go_to('More rooms')
+        m.key('ENTER')
+        labels = m.labels()
+        self.assertIn('R30', labels)
+        self.assertNotIn('R29', labels)
+        self.assertEqual(m.row('Earlier rooms')['value'], '1-30')
+        m.go_to('R35')
+        m.key('ENTER')
+        self.assertEqual(m.toast(), "R35's room comes first now: close this menu, then Local Wireless > Rooms List")
+        self.assertEqual(m.row('R35')['value'], '2/4 players, open - picked: first in your Rooms List')
+        self.assertEqual(m.row("Game's Rooms List shows")['value'], 'rooms 1-24 of 39 (A: next)')
+        m.go_to("Game's Rooms List shows")
+        m.key('ENTER')
+        self.assertEqual(m.row("Game's Rooms List shows")['value'], 'rooms 25-39 of 39 (A: next)')
+        m.key('ENTER')
+        self.assertEqual(m.row("Game's Rooms List shows")['value'], 'rooms 1-24 of 39 (A: next)')
+        m.go_to('Earlier rooms')
+        m.key('ENTER')
+        self.assertIn('R00', m.labels())
 
     def test_cursor_stays_on_its_room(self):
         m, lobby = self.v3()
@@ -685,7 +717,7 @@ class RealLobby(MenuTest):
         rows = m.rows()
         got = {r['label']: r['value'] for r in rows if r['id'] >= 60}
         self.assertEqual([r['label'] for r in rows if r['id'] >= 60][0], 'Same')   # (the rooms of this game's key first)
-        self.assertEqual(got, {'Same': '1/8 players, open', 'Newer': "can't join: update your WindowSmash", 'Modded': "can't join: other mods",
+        self.assertEqual(got, {'Same': '1/8 players, open - A: join', 'Newer': "can't join: update your WindowSmash", 'Modded': "can't join: other mods",
                                'Older': "can't join: another game version"})
 
 
