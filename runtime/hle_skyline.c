@@ -274,7 +274,8 @@ void rt_inline_hook(Cpu *c, u64 at) {
 /* sky_memcpy(dest, src, n): plugins patch code and read-only data with it. Data changes work at
  * once. A change to code means nothing to the recompiled function until the next build lifts the
  * new instructions: each changed word goes into <data dir>/../skyline/patches.txt, "<module>
- * <offset> <old word> <new word>" (tools/recomp.py code_patches, tools/skyline.py stale_hooks). */
+ * <offset> <old word> <new word> <plugin>" - the plugin the call came from, so a build drops the
+ * patches of a plugin no longer loaded (tools/recomp.py code_patches, tools/skyline.py prune_patches). */
 const char *rt_code_offset(u64 addr, u64 *off);   /* (host.c) */
 /* Smashline's inline hooks in lua2cpp_common: it writes a `bl` at the hooked call to a code cave
  * (the original branch, as a `b`, after some nops) and inline-hooks the cave. Recompiled code runs
@@ -292,8 +293,10 @@ static u64 cave_site(u64 at) {
     return 0;
 }
 
-static void note_code_patch(u64 dest, u64 src, u64 n) {
-    char path[1200], line[160], have[160];
+static void note_code_patch(u64 dest, u64 src, u64 n, u64 caller) {
+    char path[1200], line[240], have[240];
+    u64 at;
+    const char *by = rt_code_offset(caller, &at);
     snprintf(path, sizeof path, "%s/../skyline/patches.txt", rt_data_dir);
     for (u64 w = dest & ~3ull; w < dest + n; w += 4) {
         u64 off;
@@ -304,7 +307,7 @@ static void note_code_patch(u64 dest, u64 src, u64 n) {
             if (w + b >= dest && w + b < dest + n) now = (now & ~(0xFFu << 8 * b)) | (u32)*P(u8, src + (w + b - dest)) << 8 * b;
         if (now == old) continue;
         note_cave(w, now);
-        snprintf(line, sizeof line, "%s %llx %08x %08x\n", mod, (unsigned long long)off, old, now);
+        snprintf(line, sizeof line, "%s %llx %08x %08x %s\n", mod, (unsigned long long)off, old, now, by ? by : "?");
         FILE *f = fopen(path, "r");
         int seen = 0;
         while (f && !seen && fgets(have, sizeof have, f)) seen = !strcmp(have, line);
@@ -316,7 +319,7 @@ HLE(sky_memcpy) {
     char a[96];
     u64 to = c->x[0];
     LOG("sky_memcpy %#llx bytes to %s", (unsigned long long)c->x[2], rt_describe(to, a, sizeof a));
-    note_code_patch(to, c->x[1], c->x[2]);
+    note_code_patch(to, c->x[1], c->x[2], c->x[30]);
     memcpy(G2H(to), G2H(c->x[1]), c->x[2]);
     c->x[0] = 0;
 }
@@ -424,8 +427,10 @@ static void lookup_symbol(Cpu *c) {
     c->x[0] = 0;
 }
 
-/* Plugins check that the plugins they need are installed (rom:/skyline/plugins/<lib>.nro); the
- * ones the runtime provides natively are. (hle_fs.c asks for a RomFS path with no "rom:/".) */
+/* Plugins check that the plugins they need are installed (rom:/skyline/plugins/<lib>.nro): the
+ * ones the runtime provides natively are, and so are the standard plugins in the port's own
+ * skyline/plugins (One Slot Effects, which Tofu Yi's movesets check for and stop without: their
+ * forms all shown at once, no specials). (hle_fs.c asks for a RomFS path with no "rom:/".) */
 int skyline_provides(const char *path) {
     static const char *const natives[] = {"skyline/plugins/libsmashline_plugin.nro", "skyline/plugins/libnro_hook.nro",
                                           "skyline/plugins/libarcropolis.nro",
@@ -438,7 +443,13 @@ int skyline_provides(const char *path) {
     while (*path == '/') path++;
     for (int i = 0; natives[i]; i++)
         if (!strcmp(path, natives[i])) return 1;
-    return 0;
+    const char *name = path + 16;   /* (after "skyline/plugins/") */
+    if (strncmp(path, "skyline/plugins/", 16) || !*name || strchr(name, '/') || strstr(name, "..")) return 0;
+    size_t n = strlen(name);
+    if (n < 5 || _stricmp(name + n - 4, ".nro")) return 0;
+    char host[1200];   /* (<tree>/skyline/plugins: the data dir is <tree>/dump/modules) */
+    snprintf(host, sizeof host, "%s/../../skyline/plugins/%s", rt_data_dir, name);
+    return GetFileAttributesA(host) != INVALID_FILE_ATTRIBUTES;
 }
 
 /* ---- Smashline 2 ------------------------------------------------------------------- */
