@@ -18,7 +18,6 @@
 /netplay_address.txt
 /netplay_id.txt
 /online_name.txt
-/online_server.txt
 # The online lobby's game server: players' accounts and ratings (tools/ssbu_online_lobby.py --state)
 /tools/nex/state/
 # This PC's settings, written on the first start (docs/PLAYING.md)

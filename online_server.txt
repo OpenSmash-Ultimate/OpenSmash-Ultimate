@@ -1,0 +1,5 @@
+# The online lobby Play SSBU.bat joins (see docs/MULTIPLAYER.md): the first line that is not a comment,
+# host:port, then an optional lobby code that only your friends use. "off": play offline.
+# Port 39421 is the lobby with the game's own Online mode (Quickplay) as well as Local Wireless
+# rooms; 39420 is the plain lobby that builds without the Online code use.
+smash.recomps.wtf:39421
