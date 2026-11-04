@@ -4428,6 +4428,20 @@ static void save_bmp(ID3D11Texture2D *back, const char *path) {
     ID3D11Texture2D_Release(staging);
 }
 
+/* SSBU_CAPTURE_FROM / SSBU_CAPTURE_TO=<fight frame>: captures only inside that span of a fight
+ * (with SSBU_DEBUG_MATCH or SSBU_DEBUG_END set, which count the fight frames). */
+extern volatile long long test_fight_frame;
+static int capture_fight_window(void) {
+    static int read; static long long from, to;
+    if (!read++) {
+        const char *f = getenv("SSBU_CAPTURE_FROM"), *t = getenv("SSBU_CAPTURE_TO");
+        from = f ? atoll(f) : 0; to = t ? atoll(t) : 0;
+    }
+    if (from && test_fight_frame < from) return 0;
+    if (to && test_fight_frame > to) return 0;
+    return 1;
+}
+
 static void capture(ID3D11Texture2D *back, ID3D11Texture2D *window) {
     static const char *dir;
     static int checked, count;
@@ -4440,10 +4454,12 @@ static void capture(ID3D11Texture2D *back, ID3D11Texture2D *window) {
         if (getenv("SSBU_CAPTURE_EVERY")) every = (u64)(atof(getenv("SSBU_CAPTURE_EVERY")) * 1e9);
     }
     if (!dir || count >= most || rt_now_ns() - last < every) return;
+    if (!capture_fight_window()) return;
     last = rt_now_ns();
     char path[1024];
     snprintf(path, sizeof path, "%s/frame_%03d.bmp", dir, count);
     save_bmp(back, path);
+    if (test_fight_frame) fprintf(stderr, "[capture] frame_%03d.bmp at fight frame %lld\n", count, test_fight_frame);
     if (window && getenv("SSBU_CAPTURE_WINDOW")) {
         snprintf(path, sizeof path, "%s/window_%03d.bmp", dir, count);
         save_bmp(window, path);

@@ -333,11 +333,13 @@ static DWORD WINAPI end_watch(LPVOID unused) {
 
 /* The vsync thread, at each frame shown (ipc_vi.c): the fight frames SSBU_DEBUG_END counts, and
  * the debug match's line when a fight starts. */
+volatile long long test_fight_frame;   /* the current fight's frame (0 outside fights): SSBU_CAPTURE_FROM / _TO */
 void test_fight_presented(void) {
     if (!end_limit && !match_on) return;
     shown++;
     int ended;
     long long n = dm_end_frame(&end, ready_go(), &ended);
+    test_fight_frame = n;
     if (ended) fprintf(stderr, "[fight] fight off (the game's ready-go cleared) at frame %lld shown, after %lld fight frames\n", shown, end.frames);
     if (n == 1) {
         u64 block = GAME_ADDR(MATCH_BLOCK), sel = stage_choice();
