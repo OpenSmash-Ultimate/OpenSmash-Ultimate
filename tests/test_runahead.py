@@ -75,7 +75,7 @@ class Wiring(unittest.TestCase):
     def test_frames(self):
         core, hid, fight = src('hle_rb_core.c'), src('hle_hid.c'), src('hle_fight_test.c')
         self.assertIn('if (!tape_on || ra_engaged) return;', core, 'every pad read live in run-ahead')
-        self.assertIn('InterlockedExchange(&rb_fast, hide ? 1 : 0);', core, 'hidden frames as a catch-up\'s, nothing of their drawing left out')
+        self.assertIn('InterlockedExchange(&rb_fast, hide ? 1 : 0);', core, 'hidden frames as a catch-up\'s (their GPU draws left out: test_rb_state_map.py)')
         self.assertIn('if (rb_ra_predicting()) {', hid, 'a predicted frame does not move SSBU_SEQ on')
         self.assertIn('    if (rb_ra_predicting()) return;\n    u64 agent', fight, 'nor counts as a fight frame')
         self.assertIn('int rb_ra_predicting(void) { return 0; }', core, 'off where rollback is not built')

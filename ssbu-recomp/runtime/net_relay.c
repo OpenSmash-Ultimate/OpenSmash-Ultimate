@@ -35,6 +35,13 @@
  *                         open), the other player's address u32, its name[32], players searching u16, players u16 (both of
  *                         this build and code), seconds waited u16
  *   PONG may end with: players searching u16 (this build and code), players u16 (every build of this code)
+ * Routers that change ports (2026-11-04, the same as WindowSmash's runtime/net_relay.c; an older lobby or game ignores it):
+ *   PING may end with 'N' 'P', the outside port this game's router maps to its own (PCP, NAT-PMP, UPnP; 0 none)
+ *   PONG may end (after the 4 counts) with 'N' 'A', the port the lobby sees this game at, the port it saw its PROBE at
+ *        (0 none yet) and the lobby's NAT port (0 none)
+ *   PEERS may end with 'N' '2' and each entry's PROBE port (0 unknown); an entry's LAN address 0 with a port: that
+ *        player's mapped (or own) port at its public address, for a player behind another router
+ *  30 PROBE  client: cookie u64   (to the lobby's NAT port: its router's port for a second destination, to compare)
  * R3 net3 (lobby 1.4): MATCH op 2 = a search for a ROLLBACK match (rb_net.c: Smash versus with rollback on, no room code, no
  * Local Wireless room): paired only with another op 2 search, the one that waited longer is player 1 (role 1); the lobby
  * says TOGETHER once it relayed rollback messages both ways between the two. An older lobby ignores op 2 (= older lobby).
@@ -72,6 +79,7 @@
 #define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
 #endif
 
+#define T_PROBE 30
 enum { T_JOIN = 1, T_WELCOME, T_REJECT, T_PING, T_PONG, T_DATA, T_LEAVE, T_LIST, T_LISTING, T_LIST_END,
        T_PEERS, T_PUNCH, T_DIRECT, T_BCAST };
 enum { T_ROOMS = 17, T_ROOM_INFO, T_ROOMS_END };      /* O1 room browser */
@@ -376,21 +384,40 @@ static char g_reject[80];
 static volatile LONG64 g_out_relay, g_out_direct, g_in_relay, g_in_direct;
 
 enum { PS_PUNCHING, PS_DIRECT, PS_RELAYED };
+/* Routers that change ports (a "symmetric" NAT gives every destination a port of its own: the lobby saw only the port for
+ * the lobby). Besides the lobby's addresses a player is tried at: the address its hellos really come from (learnt, below);
+ * its public address with its own or mapped port (PCP / NAT-PMP / UPnP: map_thread), which the lobby gives as a LAN
+ * address of 0; and, when its router hands out ports in turn (the lobby's NAT port saw a second port close to the first),
+ * the ports between and after the two (GUESSES), while punching only and GUESS_BUDGET hellos at most. A path that still does
+ * not open goes through the lobby, and the log says why and what turns it on. The relay is then this player -> the lobby
+ * -> the other: both legs. */
+#define GUESSES 16
+#define GUESS_SPAN 64
+#define GUESS_BUDGET 160
+#define RETRY_MS 30000                     /* relayed: the guessed ports once more this often (the path may open mid-match) */
+#define CANDS (2 + GUESSES + 1)
+enum { C_PUBLIC, C_LAN, C_PORT, C_LEARNT, C_GUESS };
+enum { WHY_NONE, WHY_MINE, WHY_THEIRS, WHY_BOTH, WHY_BLOCKED };
 typedef struct {
     struct sockaddr_in at;
+    int kind;
     uint64_t hello[HELLO_KEEP], hello_at[HELLO_KEEP];  /* our last hellos there (a ring; 0 = answered or unused) */
     unsigned hello_n;
 } Cand;
 typedef struct {
     uint32_t ip;
     char name[NAME_LEN + 1];
-    uint64_t secret, since, last_ack, next_hello, acks_window, learnt_at;
-    int state, via, ncand, nlob, acks, rtt;
-    /* through its router (as the lobby sees it), then on its own LAN (nlob: those the lobby gave), then the address its
-     * hellos really came from when that is another one (a router that gives each destination its own port, as carrier-grade
-     * NAT does: the lobby saw the port it uses for the lobby only); learnt from a PUNCH that carries its secret */
-    Cand cand[3];
+    uint64_t secret, since, last_ack, next_hello, acks_window, learnt_at, next_retry;
+    int state, via, ncand, nlob, acks, rtt, rounds, guessed, why, ever_direct, given_up;
+    uint16_t port2;                                    /* the port the lobby saw its PROBE at (0 unknown) */
+    /* through its router (as the lobby sees it), then on its own LAN or at its own port (nlob: those the lobby gave), its
+     * guessed ports, then the address its hellos really came from when that is another one; learnt from a PUNCH that
+     * carries its secret */
+    Cand cand[CANDS];
 } Peer;
+static volatile LONG g_seen_port, g_seen_probe, g_nat_port;   /* PONG's 'N' 'A' */
+static volatile LONG g_map_state, g_map_port;                 /* the router's mapping of this game's port: 0 not asked, 1 asking, 2 mapped, 3 none */
+static volatile LONG g_stat_introduced, g_stat_direct, g_stat_relayed[WHY_BLOCKED + 1];   /* how often a session ends relayed */
 static SRWLOCK g_peers_lock = SRWLOCK_INIT;
 static Peer g_peers[MAX_PEERS];
 static int g_npeers;
@@ -404,6 +431,41 @@ static const char *at_text(const struct sockaddr_in *a, char *buf) {          /*
     return buf;
 }
 static int fresh(const Peer *q, uint64_t t) { return q->state == PS_DIRECT && t - q->last_ack < FRESH_MS; }
+
+/* How a router hands out ports: from the game's own port, the port the lobby sees and the one its NAT port saw. */
+enum { NAT_UNKNOWN, NAT_KEEPS, NAT_ONE_PORT, NAT_IN_TURN, NAT_CHANGES };
+static int nat_kind(uint16_t own, uint16_t seen, uint16_t second) {
+    if (!seen) return NAT_UNKNOWN;
+    if (second && second != seen) { int d = (int)second - (int)seen; return d >= -GUESS_SPAN && d <= GUESS_SPAN ? NAT_IN_TURN : NAT_CHANGES; }
+    if (own && own == seen) return NAT_KEEPS;
+    return second ? NAT_ONE_PORT : NAT_UNKNOWN;
+}
+static int my_nat(void) { return nat_kind(g_lan_port, (uint16_t)g_seen_port, (uint16_t)g_seen_probe); }
+static int changes_ports(int kind) { return kind == NAT_IN_TURN || kind == NAT_CHANGES; }
+static int why_relayed(const Peer *q, char *out, size_t n) {
+    uint16_t own = 0;
+    for (int c = 0; c < q->nlob; c++) if (q->cand[c].kind == C_PORT || q->cand[c].kind == C_LAN) own = ntohs(q->cand[c].at.sin_port);
+    int mine = changes_ports(my_nat()) && g_map_state != 2, theirs = changes_ports(nat_kind(own, ntohs(q->cand[0].at.sin_port), q->port2));
+    if (mine && theirs) { snprintf(out, n, "both routers change ports (symmetric NAT): UPnP or NAT-PMP on in either router lets it through"); return WHY_BOTH; }
+    if (mine) {
+        snprintf(out, n, "your router changes ports (symmetric NAT, outside port %ld for the lobby, %ld for another): turn on UPnP or NAT-PMP in "
+                         "your router, or forward a UDP port to this PC and set it as online_local_port", (long)g_seen_port, (long)g_seen_probe);
+        return WHY_MINE;
+    }
+    if (theirs) {
+        snprintf(out, n, "%s's router changes ports (symmetric NAT) and yours lets in only what it sent to: UPnP or NAT-PMP on in %s's router lets it through",
+                 q->name, q->name);
+        return WHY_THEIRS;
+    }
+    snprintf(out, n, "a router or firewall blocks it");
+    return WHY_BLOCKED;
+}
+static void stats_line(char *out, size_t n) {
+    snprintf(out, n, "direct paths this session: %ld of %ld players introduced; relayed %ld (your router changes ports %ld, theirs %ld, both %ld, blocked %ld)",
+             (long)g_stat_direct, (long)g_stat_introduced,
+             (long)(g_stat_relayed[WHY_MINE] + g_stat_relayed[WHY_THEIRS] + g_stat_relayed[WHY_BOTH] + g_stat_relayed[WHY_BLOCKED]),
+             (long)g_stat_relayed[WHY_MINE], (long)g_stat_relayed[WHY_THEIRS], (long)g_stat_relayed[WHY_BOTH], (long)g_stat_relayed[WHY_BLOCKED]);
+}
 
 uint32_t net_my_ip(void) { return g_joined ? g_ip : 0; }
 int net_lobby_gone(void) { return g_cfg > 0 && !g_joined && ms_now() - g_unjoined_since > GONE_AFTER_MS; }
@@ -516,14 +578,27 @@ static void hello(Peer *q, int c, uint64_t t) {
     punch(q, c, 0, k->hello[i]);
 }
 
+static void add_cand(Peer *q, uint32_t ip, uint16_t port, int kind) {   /* (host order) once, never a port of 0 */
+    if (!ip || !port || q->ncand >= CANDS) return;
+    for (int c = 0; c < q->ncand; c++) if (q->cand[c].at.sin_addr.s_addr == htonl(ip) && q->cand[c].at.sin_port == htons(port)) return;
+    Cand *k = &q->cand[q->ncand++];
+    memset(k, 0, sizeof *k);
+    k->at.sin_family = AF_INET;
+    k->at.sin_addr.s_addr = htonl(ip);
+    k->at.sin_port = htons(port);
+    k->kind = kind;
+}
+
 static void read_peers(const uint8_t *p, int n) {               /* PEERS body */
     if (n < 5) return;
     uint32_t version = g32(p);
     int count = p[4];
     if ((int32_t)(version - g_peers_version) <= 0 || count > MAX_PEERS || 5 + count * PEER_LEN > n) return;
+    const uint8_t *tail = p + 5 + count * PEER_LEN;              /* ('N' '2': each player's PROBE port) */
+    int has2 = n >= 5 + count * PEER_LEN + 2 + 2 * count && tail[0] == 'N' && tail[1] == '2';
     uint64_t t = ms_now();
     Peer next[MAX_PEERS];
-    char lines[MAX_PEERS][120];
+    char lines[2 * MAX_PEERS][160];
     int nl = 0;
     memset(next, 0, sizeof next);
     AcquireSRWLockExclusive(&g_peers_lock);
@@ -533,32 +608,51 @@ static void read_peers(const uint8_t *p, int n) {               /* PEERS body */
         q->ip = g32(e);
         for (int k = 0; k < NAME_LEN; k++) q->name[k] = e[4 + k] && e[4 + k] < 0x20 ? '?' : (char)e[4 + k];
         q->secret = g64(a + 12);
-        q->ncand = 1;
-        q->cand[0].at.sin_family = AF_INET;
-        q->cand[0].at.sin_addr.s_addr = htonl(g32(a));
-        q->cand[0].at.sin_port = htons(g16(a + 4));
-        if (g32(a + 6) && g16(a + 10) && (g32(a + 6) != g32(a) || g16(a + 10) != g16(a + 4))) {
-            q->cand[1].at.sin_family = AF_INET;
-            q->cand[1].at.sin_addr.s_addr = htonl(g32(a + 6));
-            q->cand[1].at.sin_port = htons(g16(a + 10));
-            q->ncand = 2;
-        }
+        uint32_t pub = g32(a), lan = g32(a + 6);
+        uint16_t pport = g16(a + 4), lport = g16(a + 10);
+        q->port2 = has2 ? g16(tail + 2 + 2 * i) : 0;
+        add_cand(q, pub, pport, C_PUBLIC);
+        if (lan) add_cand(q, lan, lport, C_LAN);                  /* (behind this player's router too) */
+        else add_cand(q, pub, lport, C_PORT);                     /* (its own port, or its router's mapping of it) */
         q->nlob = q->ncand;
+        int d = (int)q->port2 - (int)pport, step = d < 0 ? -1 : 1;
+        if (q->port2 && d && d >= -GUESS_SPAN && d <= GUESS_SPAN) {   /* (its router hands out ports in turn: between the two, then after) */
+            for (int g = (int)pport + step; g != (int)q->port2 && q->ncand < q->nlob + GUESSES / 4; g += step) add_cand(q, pub, (uint16_t)g, C_GUESS);
+            for (int g = 1; q->ncand < q->nlob + GUESSES; g++) {
+                int guess = (int)q->port2 + d * g;
+                if (guess <= 0 || guess >= 65536) break;
+                add_cand(q, pub, (uint16_t)guess, C_GUESS);
+            }
+        }
         const Peer *old = NULL;
         for (int j = 0; j < g_npeers && !old; j++) if (g_peers[j].ip == q->ip && g_peers[j].secret == q->secret) old = &g_peers[j];
-        int same = old && old->nlob == q->nlob;
+        int same = old && old->nlob == q->nlob, same2 = same && old->port2 == q->port2;
         for (int c = 0; same && c < q->nlob; c++) same = same_at(&old->cand[c].at, &q->cand[c].at);
-        if (same) {
+        same2 &= same;
+        if (same) {   /* (the same player at the same addresses: its path kept; a new PROBE port only changes the guesses) */
             q->state = old->state; q->via = old->via; q->since = old->since; q->last_ack = old->last_ack; q->rtt = old->rtt;
-            q->ncand = old->ncand; q->learnt_at = old->learnt_at;      /* (with a learnt address) */
+            q->learnt_at = old->learnt_at; q->rounds = old->rounds; q->guessed = old->guessed; q->why = old->why;
+            q->ever_direct = old->ever_direct; q->given_up = old->given_up; q->next_retry = old->next_retry;
             q->next_hello = old->next_hello; q->acks = old->acks; q->acks_window = old->acks_window;
-            memcpy(q->cand, old->cand, sizeof q->cand);
+            if (same2) {
+                q->ncand = old->ncand;                            /* (with a learnt address) */
+                memcpy(q->cand, old->cand, sizeof q->cand);
+            } else {
+                memcpy(q->cand, old->cand, sizeof q->cand[0] * (size_t)q->nlob);
+                for (int c = q->nlob; c < old->ncand; c++) if (old->cand[c].kind == C_LEARNT && q->ncand < CANDS) q->cand[q->ncand++] = old->cand[c];
+                if (q->via >= q->ncand) q->via = 0;
+                if (q->state != PS_DIRECT) { q->state = PS_PUNCHING; q->since = t; q->guessed = 0; }
+                if (q->ncand > q->nlob && nl < 2 * MAX_PEERS) snprintf(lines[nl++], sizeof lines[0], "%s's router hands out ports in turn: trying its next ones too", q->name);
+            }
         } else {
             char at[24];
             q->state = PS_PUNCHING;
             q->since = q->next_hello = t;
-            if (nl < MAX_PEERS) snprintf(lines[nl++], sizeof lines[0], "%s (10.13.%u.%u) introduced at %s%s: punching", q->name,
-                                         q->ip >> 8 & 255, q->ip & 255, at_text(&q->cand[0].at, at), q->ncand > 1 ? " (or its LAN address)" : "");
+            InterlockedIncrement(&g_stat_introduced);
+            if (nl < 2 * MAX_PEERS) snprintf(lines[nl++], sizeof lines[0], "%s (10.13.%u.%u) introduced at %s%s%s: punching", q->name,
+                                             q->ip >> 8 & 255, q->ip & 255, at_text(&q->cand[0].at, at),
+                                             q->ncand > 1 && q->cand[1].kind == C_LAN ? " (or its LAN address)" : "",
+                                             q->ncand > q->nlob ? " (its router hands out ports in turn: its next ones too)" : "");
         }
     }
     memcpy(g_peers, next, sizeof next);
@@ -570,7 +664,7 @@ static void read_peers(const uint8_t *p, int n) {               /* PEERS body */
 
 static void peers_tick(uint64_t t) {
     static uint64_t last_report;
-    char lines[2 * MAX_PEERS][160];
+    char lines[3 * MAX_PEERS + 1][320];
     int nl = 0;
     AcquireSRWLockExclusive(&g_peers_lock);
     for (int i = 0; i < g_npeers; i++) {
@@ -579,13 +673,28 @@ static void peers_tick(uint64_t t) {
             q->state = PS_RELAYED; q->since = t;
             snprintf(lines[nl++], sizeof lines[0], "direct path to %s went quiet: through the lobby", q->name);
         } else if (q->state == PS_PUNCHING && t - q->since >= PUNCH_FOR_MS) {
+            char why[240];
             q->state = PS_RELAYED;
-            snprintf(lines[nl++], sizeof lines[0], "no direct path to %s (router or firewall): through the lobby", q->name);
+            q->why = why_relayed(q, why, sizeof why);
+            q->next_retry = t + RETRY_MS;
+            if (!q->ever_direct && !q->given_up) { q->given_up = 1; InterlockedIncrement(&g_stat_relayed[q->why]); }
+            snprintf(lines[nl++], sizeof lines[0], "no direct path to %s: %s; through the lobby's relay (you -> the lobby -> %s: a longer ping)", q->name, why, q->name);
+            if (q->guessed) snprintf(lines[nl++], sizeof lines[0], "(%d hellos to %s's guessed ports)", q->guessed, q->name);
         }
         if (t >= q->next_hello) {
             q->next_hello = t + (q->state == PS_PUNCHING ? 200 : q->state == PS_DIRECT || t - q->since < PUNCH_FOR_MS ? 400 : 5000);
+            q->rounds++;
+            int retry = q->state == PS_RELAYED && t >= q->next_retry;
             if (q->state == PS_DIRECT) hello(q, q->via, t);
-            else for (int c = 0; c < q->ncand; c++) hello(q, c, t);
+            else
+                for (int c = 0; c < q->ncand; c++) {
+                    if (q->cand[c].kind == C_GUESS) {      /* (while punching, every other round, within the budget; relayed, a round now and then) */
+                        if (!retry && (q->state != PS_PUNCHING || (q->rounds & 1) || q->guessed >= GUESS_BUDGET)) continue;
+                        q->guessed++;
+                    }
+                    hello(q, c, t);
+                }
+            if (retry) q->next_retry = t + RETRY_MS;
         }
     }
     if (g_log >= 1 && t - last_report >= 10000 && (g_out_relay || g_out_direct || g_in_relay || g_in_direct)) {
@@ -614,13 +723,16 @@ static Peer *peer_learn(uint64_t secret, uint32_t ip, const struct sockaddr_in *
     for (int i = 0; i < g_npeers; i++) {
         Peer *q = &g_peers[i];
         if (q->secret != secret || q->ip != ip) continue;
-        int c = q->nlob;
-        if (q->ncand > c && ((q->state == PS_DIRECT && q->via == c) || t - q->learnt_at < 2000)) return NULL;     /* (no flapping) */
+        int c = q->ncand;
+        for (int k = 0; k < q->ncand; k++) if (q->cand[k].kind == C_LEARNT) c = k;
+        if (c < q->ncand && ((q->state == PS_DIRECT && q->via == c) || t - q->learnt_at < 2000)) return NULL;     /* (no flapping) */
+        if (c >= CANDS) return NULL;
         char at[24];
         q->learnt_at = t;
         memset(&q->cand[c], 0, sizeof q->cand[c]);
         q->cand[c].at = *from;
-        q->ncand = c + 1;
+        q->cand[c].kind = C_LEARNT;
+        if (c == q->ncand) q->ncand++;
         *cand = c;
         snprintf(line, n, "%s answers from %s, not the address the lobby saw: trying that one", q->name, at_text(from, at));
         return q;
@@ -655,7 +767,7 @@ static void from_player(const uint8_t *p, int n, const struct sockaddr_in *from)
     char line[160] = "", learnt[160] = "";
     AcquireSRWLockExclusive(&g_peers_lock);
     Peer *q = peer_at(secret, from, &c);
-    if (!q && to_ip == g_ip) q = peer_learn(secret, from_ip, from, t, &c, learnt, sizeof learnt);
+    if (!q && !ack && to_ip == g_ip) q = peer_learn(secret, from_ip, from, t, &c, learnt, sizeof learnt);   /* (a hello from a port the lobby never saw) */
     if (q && q->ip == from_ip && to_ip == g_ip) {
         Cand *k = &q->cand[c];
         if (ack) {
@@ -666,11 +778,18 @@ static void from_player(const uint8_t *p, int n, const struct sockaddr_in *from)
                 k->hello[h - 1] = 0;
                 q->rtt = (int)(t - asked);
                 q->last_ack = t;
-                if (q->state != PS_DIRECT || (c == 1 && q->nlob == 2 && q->via == 0)) {
+                if (q->state != PS_DIRECT || (k->kind == C_LAN && q->cand[q->via].kind != C_LAN)) {
+                    static const char *const kinds[] = {"public", "LAN", "its own port at", "learnt", "guessed"};
                     char at[24];
+                    if (!q->ever_direct) {
+                        q->ever_direct = 1;
+                        InterlockedIncrement(&g_stat_direct);
+                        if (q->given_up) InterlockedDecrement(&g_stat_relayed[q->why]);   /* (it opened later: direct after all) */
+                    }
                     q->state = PS_DIRECT;
                     q->via = c;
-                    snprintf(line, sizeof line, "%s: direct path via %s %s (%d ms)", q->name, c >= q->nlob ? "learnt" : c ? "LAN" : "public", at_text(&k->at, at), q->rtt);
+                    q->why = WHY_NONE;
+                    snprintf(line, sizeof line, "%s: direct path via %s %s (%d ms)", q->name, kinds[k->kind], at_text(&k->at, at), q->rtt);
                 }
             }
         } else {
@@ -1129,7 +1248,8 @@ static int resolve(void) {
 
 /* ---------------------------------------------------------------- no server: room codes, STUN, the in-game lobby */
 #include "net_minilobby.c"                      /* the lobby of tools_net/ssbu_lobby.py in C: runs inside the host's game */
-#include "net_upnp.c"                           /* UPnP-IGD port mapping (HOST mode, online_upnp) */
+#include "net_upnp.c"                           /* UPnP-IGD port mapping (HOST mode, online_upnp; lobby mode: map_thread) */
+#include "net_pmp.c"                            /* PCP / NAT-PMP port mapping, and lobby mode's map_thread */
 
 /* A room code is an IPv4 address and a UDP port (6 bytes) in Crockford base32: 10 characters, shown as XXXXX-XXXXX.
  * Reading it ignores '-', spaces and case; O reads as 0, I and L as 1. "a.b.c.d:port" is accepted as well. */
@@ -1422,7 +1542,7 @@ static DWORD WINAPI client_thread(LPVOID unused) {
     }
     g_reject[0] = 0;
     { char a[16]; say("UDP port %u, lobby %s:%u", g_lan_port, ip_text(ntohl(g_lobby.sin_addr.s_addr), a), ntohs(g_lobby.sin_port)); }
-    uint64_t last_join = 0, last_ping = 0, last_tick = 0, said_blocked = 0;
+    uint64_t last_join = 0, last_ping = 0, last_tick = 0, said_blocked = 0, last_probe = 0, last_stats = ms_now();
     for (;;) {
         uint64_t t = ms_now();
         lan_switch_if_asked();
@@ -1435,7 +1555,7 @@ static DWORD WINAPI client_thread(LPVOID unused) {
         }
         if (!g_joined && t - last_join >= 500) { send_join(); last_join = t; }
         if (g_joined && t - last_ping >= 1000) {
-            uint8_t p[4 + 8 + 8 + 1];
+            uint8_t p[4 + 8 + 8 + 1 + 4];
             int nd = 0;
             hdr(p, T_PING);
             s64(p + 4, g_cookie);
@@ -1444,8 +1564,21 @@ static DWORD WINAPI client_thread(LPVOID unused) {
             for (int i = 0; i < g_npeers; i++) nd += fresh(&g_peers[i], t);
             ReleaseSRWLockShared(&g_peers_lock);
             p[20] = (uint8_t)nd;
+            p[21] = 'N'; p[22] = 'P';                    /* (the router's outside port for this game's: map_thread) */
+            s16(p + 23, g_map_state == 2 ? (uint16_t)g_map_port : 0);
             tx(p, sizeof p, &g_lobby);
             last_ping = t;
+            if (g_mode == NET_MODE_LOBBY && g_direct) map_start();
+            if (g_direct && g_nat_port && t - last_probe >= (g_seen_probe ? 20000u : 2000u)) {   /* (the lobby's NAT port: a second port of the router's) */
+                uint8_t q[12];
+                struct sockaddr_in at = g_lobby;
+                hdr(q, T_PROBE);
+                s64(q + 4, g_cookie);
+                at.sin_port = htons((uint16_t)g_nat_port);
+                tx(q, sizeof q, &at);
+                last_probe = t;
+            }
+            if (t - last_stats >= 600000) { char l[256]; last_stats = t; stats_line(l, sizeof l); if (g_stat_introduced) say("%s", l); }
         }
         if (g_joined && t - g_last_pong > LOBBY_TIMEOUT_MS) {
             g_unjoined_since = t;
@@ -1493,6 +1626,20 @@ static DWORD WINAPI client_thread(LPVOID unused) {
                 InterlockedExchange(&g_players, g16(buf + 12));
                 InterlockedExchange(&g_rooms, g16(buf + 14));
                 if (n >= 20) { InterlockedExchange(&g_searching, g16(buf + 16)); InterlockedExchange(&g_code_players, g16(buf + 18)); }   /* O2 (a newer lobby) */
+                if (n >= 28 && buf[20] == 'N' && buf[21] == 'A') {   /* (where the lobby sees this game; its NAT port) */
+                    int was = my_nat();
+                    InterlockedExchange(&g_seen_port, g16(buf + 22));
+                    InterlockedExchange(&g_seen_probe, g16(buf + 24));
+                    InterlockedExchange(&g_nat_port, g16(buf + 26));
+                    int kind = my_nat();
+                    if (kind != was && kind != NAT_UNKNOWN) {
+                        static const char *const said[] = {"", "keeps this game's port", "maps this game to one outside port for every destination",
+                                                           "changes ports for each destination, in turn (sequential symmetric NAT: the other player guesses the next)",
+                                                           "changes ports for each destination (symmetric NAT: direct paths need UPnP or NAT-PMP on in the router)"};
+                        say("your router %s (UDP port %u here, %ld outside%s)", said[kind], g_lan_port, (long)g_seen_port,
+                            g_seen_probe && g_seen_probe != g_seen_port ? ", another for a second destination" : "");
+                    }
+                }
             }
             break;
         case T_MATCH_STATE:
@@ -1530,6 +1677,7 @@ static DWORD WINAPI client_thread(LPVOID unused) {
 }
 
 static void leave(void) {
+    if (g_stat_introduced) { char l[256]; stats_line(l, sizeof l); say("%s", l); }
     if (!g_joined) return;
     uint8_t p[12];
     hdr(p, T_LEAVE);
@@ -1612,4 +1760,11 @@ void net_status(char *out, size_t n) {
     if (g_searching >= 0) snprintf(srch, sizeof srch, " (%ld searching)", (long)g_searching);
     snprintf(out, n, "online (%s): %ld players%s, %ld rooms, 10.13.%u.%u, ping %ld ms%s%s", m[g_mode], (long)g_players, srch, (long)g_rooms, g_ip >> 8 & 255, g_ip & 255,
              (long)g_ping, g_mode == NET_MODE_HOST && g_room_code[0] ? ", room code " : "", g_mode == NET_MODE_HOST ? g_room_code : "");
+    int mine = 0;
+    AcquireSRWLockShared(&g_peers_lock);
+    for (int i = 0; i < g_npeers; i++) mine |= g_peers[i].state == PS_RELAYED && (g_peers[i].why == WHY_MINE || g_peers[i].why == WHY_BOTH);
+    ReleaseSRWLockShared(&g_peers_lock);
+    size_t l = strlen(out);
+    if (mine && l + 1 < n)
+        snprintf(out + l, n - l, " | your router changes ports (symmetric NAT): relayed through the lobby; turn on UPnP or NAT-PMP in the router for direct paths");
 }

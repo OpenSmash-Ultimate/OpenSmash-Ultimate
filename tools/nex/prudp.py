@@ -404,5 +404,6 @@ class PrudpServer:
                 if not mine:
                     del self.hosts[host_of(c.addr)]
             c.state = "closed"
+            c.why = why
             self.log(f"{self.name}: {c.addr} gone ({why})")
             self.on_close(c)

@@ -374,8 +374,15 @@ static RECT windowed_rect(HWND h) {
     return (RECT){x, y, x + ww, y + wh};
 }
 
+/* (SSBU_HEADLESS=1, test runs: the window stays off every screen whatever happens - two headless games came onto
+ * the owner's desktop, 11-04; a monitor of another DPI sends WM_DPICHANGED with a rectangle on it) */
+static int win_headless(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("SSBU_HEADLESS"); v = e && !strcmp(e, "1"); }
+    return v;
+}
 static void set_mode(HWND h, int mode) {
-    if (mode == current_mode) return;
+    if (mode == current_mode || win_headless()) return;
     if (current_mode == MODE_WINDOWED) have_place = GetWindowPlacement(h, &windowed_place);
     current_mode = mode;
     if (mode == MODE_WINDOWED) {
@@ -426,7 +433,7 @@ HWND display_create_window(HINSTANCE inst, const wchar_t *cls, const wchar_t *ti
     if (headless) {   /* (test runs: shown off every screen, never focused, so it still draws) */
         SetWindowLongPtrW(h, GWL_EXSTYLE, GetWindowLongPtrW(h, GWL_EXSTYLE) | WS_EX_TOOLWINDOW);   /* (no taskbar button either) */
         SetWindowPos(h, NULL, -32000, -32000, 640, 360, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-        ShowWindow(h, SW_SHOWNOACTIVATE);
+        /* (not shown: a test watchdog takes any visible window for one on screen; Direct3D draws and presents a hidden one alike) */
         SetTimer(h, 1, 500, NULL);
         return h;
     }
@@ -522,7 +529,7 @@ int display_message(HWND h, UINT msg, WPARAM w, LPARAM l, LRESULT *result) {
     }
     case WM_DPICHANGED: {
         const RECT *r = (const RECT *)l;
-        if (current_mode == MODE_WINDOWED)
+        if (current_mode == MODE_WINDOWED && !win_headless())
             SetWindowPos(h, NULL, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
         *result = 0;
         return 1;
@@ -552,6 +559,13 @@ int display_message(HWND h, UINT msg, WPARAM w, LPARAM l, LRESULT *result) {
         return 0;
     case WM_TIMER:
         if (w != 1) return 0;
+        if (win_headless()) {   /* (put back off screen if anything moved it) */
+            RECT r;
+            if (GetWindowRect(h, &r) && (r.left != -32000 || r.top != -32000))
+                SetWindowPos(h, NULL, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            *result = 0;
+            return 1;
+        }
         if (cfg.hide_cursor && !hidden_cursor && GetTickCount64() - last_mouse_at > 2000) {
             POINT p;
             GetCursorPos(&p);

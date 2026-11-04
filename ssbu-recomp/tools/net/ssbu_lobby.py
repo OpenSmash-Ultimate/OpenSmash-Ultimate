@@ -36,6 +36,17 @@ match over RB messages (16) addressed to each other. The lobby counts the pair T
 between them. On the public lobby code an RB message to one player is relayed only to the player matched with the
 sender (or a player of its Local Wireless room). An older lobby ignores op 2 (the game then says "older lobby").
 
+Routers that change ports (lobby 1.5): a router that gives every destination its own port (a "symmetric" NAT: some ISP
+routers, mobile networks, carrier-grade NAT) shows the lobby one port and the other player another, so hole punching to
+the port the lobby saw fails and the room's traffic goes through this lobby (twice the distance). The lobby helps the games
+(net_relay.c, "Routers that change ports"): a second UDP port, --nat-port (default --port + 10; open it in the firewall
+too), where each game sends a PROBE (type 30, cookie u64) so the lobby sees its router's port for a second destination;
+PONG ends with 'N' 'A', the port the lobby sees, the port the PROBE came from (0 none yet) and the NAT port; PEERS end
+with 'N' '2' and each entry's PROBE port (two ports close together: the router hands them out in turn, and the other
+game tries the next ones); a player behind another router is given a LAN address of 0 and, as port, its router's mapping
+of its game's port (PING's 'N' 'P': PCP, NAT-PMP, UPnP) or else its own port - never its LAN address. An older game
+ignores all of it.
+
 Python 3.8+, standard library only. No authentication or encryption yet: run it for people you know."""
 import argparse
 import json
@@ -50,9 +61,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PROTO = 1
-LOBBY_VERSION = "1.4"
+LOBBY_VERSION = "1.5"
 (JOIN, WELCOME, REJECT, PING, PONG, DATA, LEAVE, LIST, LISTING, LIST_END,
  PEERS, PUNCH, DIRECT, BCAST) = range(1, 15)
+PROBE = 30   # 1.5: to the NAT port (--nat-port): cookie u64
 RB = 16          # online rollback messages between two games (recomp-study/net_relay.c T_RB, rb_net.c)
 ROOMS, ROOM_INFO, ROOMS_END = 17, 18, 19     # O1 room browser (net_relay.c): every room of this lobby code, any build
 MATCH, MATCH_STATE = 20, 21                  # O2 matchmaking (net_relay.c): find an opponent of the same build and code
@@ -124,6 +136,8 @@ class Client:
     def __init__(self, at, nonce, ip, name, part, lan, direct, now):
         self.at, self.nonce, self.ip, self.name, self.part = at, nonce, ip, name, part
         self.lan, self.direct = lan, direct
+        self.mapped = 0           # 1.5: the outside port its router maps to its game's (PING 'N' 'P'; 0 none)
+        self.probe_seen = 0       # 1.5: the port its PROBE came from to the NAT port (0 none yet)
         self.cookie = secrets.randbits(64)
         self.seen = now
         self.room = None          # the Room this player hosts
@@ -160,8 +174,10 @@ class Room:
 
 
 class Lobby:
-    def __init__(self, sock, verbose, search_for=SEARCH_FOR, match_for=MATCH_FOR):
+    def __init__(self, sock, verbose, search_for=SEARCH_FOR, match_for=MATCH_FOR, nat_sock=None):
         self.sock, self.verbose = sock, verbose
+        self.nat_sock = nat_sock   # 1.5: the NAT port's socket (None: none)
+        self.nat_port = nat_sock.getsockname()[1] if nat_sock is not None else 0
         self.search_for, self.match_for = search_for, match_for
         self.by_at, self.by_ip, self.rooms = {}, {}, {}
         self.next_ip = SUBNET + 2
@@ -235,7 +251,7 @@ class Lobby:
     # ---- direct paths: each member of a room learns the others' addresses and a pair secret
     def send_peers(self, c):
         room = self.room_of(c)
-        entries = []
+        entries, second = [], []
         if room is not None and c.direct:
             for m in self.members(room):
                 if m is c or not m.direct:
@@ -243,15 +259,41 @@ class Lobby:
                 pair = frozenset((c.ip, m.ip))
                 secret = room.secrets.setdefault(pair, secrets.randbits(64) | 1)
                 pub_ip = struct.unpack(">I", socket.inet_aton(m.at[0]))[0]
-                entries.append(struct.pack(">I32sIHIHQ", m.ip, m.name.encode()[:NAME_LEN], pub_ip, m.at[1], m.lan[0], m.lan[1], secret))
+                lan = m.lan
+                if m.at[0] != c.at[0]:   # (behind another router: its mapped or own port at its public address, never its LAN address)
+                    own = m.mapped or m.lan[1]
+                    lan = (0, own if own != m.at[1] else 0)
+                entries.append(struct.pack(">I32sIHIHQ", m.ip, m.name.encode()[:NAME_LEN], pub_ip, m.at[1], lan[0], lan[1], secret))
+                second.append(m.probe_seen)
         body = b"".join(entries)
+        if any(second):   # (1.5: 'N' '2', each one's PROBE port)
+            body += b"N2" + struct.pack(">%dH" % len(second), *second)
         if body == c.peers_sent:
             return
         c.peers_sent = body
         c.peers_version += 1
         self.send(hdr(PEERS) + struct.pack(">IB", c.peers_version, len(entries)) + body, c.at)
+        c.peers_entries = len(entries)
         if entries:
             self.log("%s introduced to %d player(s) of its room" % (c.name, len(entries)))
+
+    def changed(self, c):
+        """c's addresses changed: the players of its room get new PEERS."""
+        room = self.room_of(c)
+        if room is not None:
+            self.room_changed(room)
+
+    def on_probe(self, p, at):
+        """1.5: a PROBE to the NAT port: the port the game's router uses for a second destination."""
+        if len(p) < 12 or p[:2] != b"SU" or p[2] != PROTO or p[3] != PROBE:
+            return
+        cookie = struct.unpack_from(">Q", p, 4)[0]
+        for c in self.by_at.values():
+            if c.at[0] == at[0] and c.cookie == cookie:
+                if c.probe_seen != at[1]:
+                    c.probe_seen = at[1]
+                    self.changed(c)
+                return
 
     def room_changed(self, room):
         for m in self.members(room):
@@ -273,7 +315,12 @@ class Lobby:
             rooms = [r for r in self.rooms.values() if r.owner.part == c.part]
             searching = sum(1 for x in same if x.search_since is not None)
             code = sum(1 for x in self.by_at.values() if x.part[1] == c.part[1])
-            self.send(hdr(PONG) + p[12:20] + struct.pack(">HHHH", len(same), len(rooms), searching, code), at)   # (O2: the last two)
+            mapped = struct.unpack_from(">H", p, 23)[0] if len(p) >= 25 and p[21:23] == b"NP" else 0   # (1.5: its router's mapping)
+            if mapped != c.mapped:
+                c.mapped = mapped
+                self.changed(c)
+            self.send(hdr(PONG) + p[12:20] + struct.pack(">HHHH", len(same), len(rooms), searching, code)   # (O2: the last two)
+                      + b"NA" + struct.pack(">HHH", at[1], c.probe_seen, self.nat_port), at)   # (1.5: what its router does)
         elif kind == LEAVE and len(p) >= 12 and struct.unpack_from(">Q", p, 4)[0] == c.cookie:
             self.drop(c, "left")
         elif kind == LIST and len(p) >= 16 and struct.unpack_from(">Q", p, 4)[0] == c.cookie:
@@ -635,6 +682,8 @@ def main():
     ap.add_argument("--status-port", type=int, default=0, help="TCP port of the HTTP status endpoint GET /status (0: off)")
     ap.add_argument("--status-bind", default="127.0.0.1", help="address of the status endpoint (default 127.0.0.1, behind a proxy)")
     ap.add_argument("--search-secs", type=float, default=SEARCH_FOR, help="matchmaking: a search without an opponent ends after this (default 120)")
+    ap.add_argument("--nat-port", type=int, default=-1, help="UDP port where games show their routers' second port, for direct paths "
+                    "through routers that change ports; open it in the firewall too (0: none; default --port + 10)")
     ap.add_argument("--match-secs", type=float, default=MATCH_FOR, help="matchmaking: matched players not in one room by then are told it expired (default 180)")
     o = ap.parse_args()
     started = time.monotonic()
@@ -645,16 +694,36 @@ def main():
         except (AttributeError, OSError):
             pass
     sock.bind((o.bind, o.port))
-    lobby = Lobby(sock, o.verbose, o.search_secs, o.match_secs)
+    nat = None
+    nat_port = o.port + 10 if o.nat_port < 0 else o.nat_port
+    if nat_port:
+        nat = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if os.name == "nt":
+            try:
+                nat.ioctl(socket.SIO_UDP_CONNRESET, False)
+            except (AttributeError, OSError):
+                pass
+        nat.bind((o.bind, nat_port))
+    lobby = Lobby(sock, o.verbose, o.search_secs, o.match_secs, nat)
     lobby.say("lobby on UDP %s:%d (protocol SU %d)" % (o.bind, o.port, PROTO))
+    if nat is not None:
+        lobby.say("NAT port on UDP %s:%d (open it in the firewall too)" % (o.bind, lobby.nat_port))
     if o.status_port:
         srv = start_status_server(lobby, o.status_bind, o.status_port, started)
         lobby.say("status endpoint on http://%s:%d/status" % srv.server_address[:2])
     last_sweep = last_stats = time.monotonic()
     while True:
-        r, _, _ = select.select([sock], [], [], 0.5)
+        r, _, _ = select.select([sock] + ([nat] if nat is not None else []), [], [], 0.5)
         now = time.monotonic()
-        if r:
+        if nat is not None and nat in r:
+            try:
+                p, at = nat.recvfrom(2048)
+                lobby.on_probe(p, at)
+            except OSError:
+                pass
+            except Exception as e:   # (as below)
+                lobby.say("error on a NAT probe from %s: %r" % (at[0], e))
+        if sock in r:
             try:
                 p, at = sock.recvfrom(65536)
             except OSError:

@@ -21,6 +21,7 @@
 set -euo pipefail
 PORT="${1:-39500}"
 STATUS_PORT="${STATUS_PORT:-8080}"
+NAT_PORT=$((PORT + 10))   # (the lobby's NAT port: games' PROBEs show their routers' second port, for direct paths)
 DOMAIN="${DOMAIN:-}"
 ACME_EMAIL="${ACME_EMAIL:-}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,12 +40,12 @@ install -m 644 "$HERE/ssbu_lobby.py" /opt/ssbu-lobby/ssbu_lobby.py
 
 cat > /etc/systemd/system/ssbu-lobby.service <<EOF
 [Unit]
-Description=SSBU native port online lobby (UDP $PORT, status on 127.0.0.1:$STATUS_PORT)
+Description=SSBU native port online lobby (UDP $PORT and $NAT_PORT, status on 127.0.0.1:$STATUS_PORT)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/bin/python3 /opt/ssbu-lobby/ssbu_lobby.py --bind 0.0.0.0 --port $PORT --status-port $STATUS_PORT --status-bind 127.0.0.1
+ExecStart=/usr/bin/python3 /opt/ssbu-lobby/ssbu_lobby.py --bind 0.0.0.0 --port $PORT --nat-port $NAT_PORT --status-port $STATUS_PORT --status-bind 127.0.0.1
 Restart=always
 RestartSec=3
 DynamicUser=yes
@@ -64,8 +65,11 @@ EOF
 # the VM's own firewall (Oracle's Ubuntu images use iptables rules; ufw if it is active)
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
     ufw allow "$PORT/udp"
+    ufw allow "$NAT_PORT/udp"
 else
-    iptables -C INPUT -p udp --dport "$PORT" -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport "$PORT" -j ACCEPT
+    for p in "$PORT" "$NAT_PORT"; do
+        iptables -C INPUT -p udp --dport "$p" -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport "$p" -j ACCEPT
+    done
     if command -v netfilter-persistent >/dev/null; then netfilter-persistent save; else
         echo "note: install iptables-persistent to keep the firewall rule after a reboot"; fi
 fi
@@ -75,8 +79,8 @@ systemctl enable ssbu-lobby
 systemctl restart ssbu-lobby
 sleep 1
 systemctl --no-pager status ssbu-lobby | head -5
-echo "lobby running on UDP $PORT. Logs: journalctl -u ssbu-lobby -f"
-echo "remember the cloud firewall (Oracle: VCN Security List ingress rule, UDP $PORT)"
+echo "lobby running on UDP $PORT (NAT port $NAT_PORT). Logs: journalctl -u ssbu-lobby -f"
+echo "remember the cloud firewall (Oracle: VCN Security List ingress rules, UDP $PORT and UDP $NAT_PORT)"
 echo "status endpoint (local only): curl -s http://127.0.0.1:$STATUS_PORT/status"
 
 # ---- optional: https://DOMAIN/status through Caddy (automatic TLS)

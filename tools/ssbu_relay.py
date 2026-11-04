@@ -67,6 +67,16 @@ Python 3.8+, standard library only."""
 # 13 BCAST       game:  count u8, count x address u32 (players it reaches directly), then as DATA
 # 14 PUNCH       game to game: secret u64, from u32, to u32, ack u8, nonce u64
 # 15 DIRECT      game to game: secret u64, then as DATA
+# Routers that change ports (runtime/net_relay.c, "direct connections"); older games ignore all of it:
+# 30 PROBE       game:  cookie u64, to the lobby's NAT port (--nat-port; SU: --su-nat-port, the same message in
+#                       SU's header): the lobby sees the game's router at a second port, to compare
+#    PING        then 'N' 'P', the outside port the game's router maps to its own (UPnP, NAT-PMP, PCP; 0 none)
+#                (SU: after its 21 bytes)
+#    PONG        then (SN 2: after 4 bytes of zeros) 'N' 'A', the port the lobby sees the game at, the port it
+#                saw its PROBE at (0 none yet), the NAT port (0 none): the game tells its player what its router does
+#    PEERS       then 'N' '2' and each entry's PROBE port (0 unknown); a player behind another router gets a LAN
+#                address of 0 and, as its port, the other's mapped port, else its game's own port, when that
+#                differs from the one the lobby sees (where a port mapping or a port-keeping router lets it in)
 # Version 3 only, in SU's numbers and layouts (ssbu-recomp/runtime/net_relay.c); a lobby or game of
 # version 2 never sends them, and the lobby ignores them from one:
 # 16 RB          game:  cookie u64, destination u32 (0: every player of its key, not on the public code),
@@ -125,6 +135,8 @@ import time
 PROTOCOL = 2
 JOIN, WELCOME, REJECT, PING, PONG, DATA, MEMBERS, LEAVE, LIST, LISTING, LIST_END = range(1, 12)
 PEERS, BCAST, PUNCH, DIRECT = range(12, 16)   # (direct connections; PUNCH and DIRECT go between players)
+NAT_PROBE = 30   # (to the NAT port: the game's router at a second port)
+NAT_PORT_OFFSET = 10   # (the NAT port's default: the lobby's port + 10 - never + 1, the Online lobby's 39421 next to 39420)
 NAME_LEN = 32
 BUILD_LEN = 40
 # 13.0.5's main module build id (tools/game_version.py MAIN_BUILD_ID; this file is deployed on its own)
@@ -334,6 +346,19 @@ class Bucket:
         return True
 
 
+class NatEndpoint(asyncio.DatagramProtocol):
+    """A wire's NAT port: games' PROBEs, which show their routers' port for a second destination."""
+    def __init__(self, lobby, wire):
+        self.lobby, self.wire = lobby, wire
+
+    def datagram_received(self, p, at):
+        try:
+            self.lobby.on_probe(self.wire, p, at)
+        except Exception as e:   # (as received(): one bad packet never stops the lobby)
+            self.lobby.drops["error"] += 1
+            self.lobby.say(f"error on a NAT probe from {at[0]}: {e!r}")
+
+
 class Client:
     def __init__(self, at, nonce, ip, name, part, now, o, wire=None):
         self.at, self.nonce, self.ip, self.name, self.part = at, nonce, ip, name, part
@@ -359,6 +384,8 @@ class Client:
         self.ext = False           # its game can connect directly
         self.direct_ok = False     # ...and its player allows it (it shows the player's address)
         self.lan = None            # (address, port) on its own network
+        self.mapped = 0            # the outside port its router maps to its game's (PCP, NAT-PMP, UPnP; 0 none)
+        self.probe_seen = 0        # the port its PROBE came from (0: none yet)
         self.direct_count = 0      # the players it reaches directly now
         self.peers_version = 0     # of the last PEERS it was sent
         self.peers_sent = b""      # ...and its entries
@@ -404,13 +431,14 @@ class Listing:
 
 def options(**overrides):
     """The lobby's settings (main's command line; tests override some). su_port, status_port: SU's
-    port, the status page's (None: not served, 0: any free port)."""
+    port, the status page's, nat_port and su_nat_port the NAT ports of SN and SU, where games' PROBEs
+    show their routers' second port (None: not served, 0: any free port)."""
     o = argparse.Namespace(port=DEFAULT_PORT, su_port=None, bind="0.0.0.0", verbose=False, banlist=None,
                            max_clients=2000, max_pending=1000, per_ip=8, gate_rate=5.0, gate_burst=20,
                            packet_rate=600.0, byte_rate=400_000.0, max_data=1500, su_max_data=1500 + NI_SIZE,
                            client_timeout=10.0, pending_timeout=3.0, listed_for=3.5, listing_timeout=10.0,
                            search_for=120.0, match_for=180.0, status_port=None, status_bind="127.0.0.1",
-                           tick=1.0, stats=60.0)
+                           tick=1.0, stats=60.0, nat_port=None, su_nat_port=None)
     for k, v in overrides.items():
         setattr(o, k, v)
     return o
@@ -422,6 +450,7 @@ class Lobby:
         self.sn = Wire("SN", PROTOCOL, DATA, BCAST)
         self.sn3 = Wire("SN3", V3, DATA, BCAST, b"SN", self.sn)
         self.su = Wire("SU", SU_PROTOCOL, SU_DATA, SU_BCAST)
+        self.nat_ports = {}     # wire (SN, SU) -> the transport of its NAT port
         self.by_addr = {}       # (wire of the port, (host, port)) -> Client
         self.by_ip = {}         # virtual address -> Client
         self.parts = {}         # (wire name, build, lobby code), SN 3: (..., build, simulation, mods, code) -> set of Client
@@ -450,6 +479,8 @@ class Lobby:
         for wire in (self.sn, self.su):
             if wire.transport is not None:
                 wire.transport.close()
+        for t in self.nat_ports.values():
+            t.close()
         if self.status_server is not None:
             self.status_server.close()
 
@@ -626,6 +657,30 @@ class Lobby:
             self.drops["error"] += 1
             self.say(f"error on a packet from {at[0]}: {e!r}")
 
+    def nat_port(self, wire):
+        """Its NAT port's number (0: none)."""
+        t = self.nat_ports.get(wire)
+        return t.get_extra_info("sockname")[1] if t is not None else 0
+
+    def on_probe(self, wire, p, at):
+        """A PROBE to wire's NAT port: the port its game's router uses for a second destination."""
+        self.counts["in packets"] += 1
+        if len(p) < 12 or p[:2] != wire.magic or p[3] != NAT_PROBE:
+            return
+        cookie = struct.unpack_from(">Q", p, 4)[0]
+        for (port_wire, a), c in self.by_addr.items():
+            if port_wire is wire and a[0] == at[0] and c.cookie == cookie and c.verified:
+                if c.probe_seen != at[1]:
+                    c.probe_seen = at[1]
+                    self.mark(c)   # (its room's players: its PEERS entries change)
+                    if self.dirty or self.dirty_clients:
+                        self.flush(time.monotonic())
+                return
+
+    def nat_tail(self, c, wire):
+        """A PONG's 'N' 'A': where the lobby sees c, where it saw its PROBE, the NAT port."""
+        return b"NA" + struct.pack(">HHH", c.at[1], c.probe_seen, self.nat_port(wire))
+
     def packet(self, p, at, now):
         """A packet of WindowSmash's games (SN, version 2 or 3)."""
         kind = p[3]
@@ -651,6 +706,8 @@ class Lobby:
                                                               min(len(self.part_rooms.get(c.part, ())), 0xFFFF), 1)
             if wire is self.sn3:   # (and players searching of its key, players of its lobby code)
                 pong += struct.pack(">HH", min(len(self.searching.get(c.part, ())), 0xFFFF), min(self.code_players[c.code_key], 0xFFFF))
+            if c.ext:   # (a game that connects directly: what its router does)
+                pong = pong.ljust(21, b"\0") + self.nat_tail(c, self.sn)
             self.to(c, pong)
         elif kind == LEAVE:
             if len(p) >= 12 and p[4:12] == c.nonce:
@@ -827,9 +884,13 @@ class Lobby:
             if len(p) < SU_PING_SIZE:
                 return
             c.direct_count = min(p[20], ROOM_MAX - 1)
+            mapped = struct.unpack_from(">H", p, SU_PING_SIZE + 2)[0] if p[SU_PING_SIZE:SU_PING_SIZE + 2] == b"NP" and len(p) >= SU_PING_SIZE + 4 else 0
+            if mapped != c.mapped:
+                c.mapped = mapped
+                self.mark(c)
             counts = (len(self.parts.get(c.part, ())), len(self.part_rooms.get(c.part, ())),
                       len(self.searching.get(c.part, ())), self.code_players[c.code_key])   # (the last: every build's)
-            self.to(c, su_header(SU_PONG) + p[12:20] + struct.pack(">HHHH", *(min(n, 0xFFFF) for n in counts)))
+            self.to(c, su_header(SU_PONG) + p[12:20] + struct.pack(">HHHH", *(min(n, 0xFFFF) for n in counts)) + self.nat_tail(c, self.su))
             if c.peers_version and now - c.peers_at >= SU_PEERS_AGAIN:   # (in case the last was lost)
                 self.sync(c, now, again=True)
         elif kind == SU_LEAVE:
@@ -1221,8 +1282,10 @@ class Lobby:
     def on_ping_ext(self, c, p, now):
         have, lan_ip, lan_port, flags, ndirect = struct.unpack_from(">IIHBB", p, PING_SIZE)
         direct_ok, lan = bool(flags & 1), ((lan_ip, lan_port) if lan_ip and lan_port else None)
-        if not c.ext or direct_ok != c.direct_ok or lan != c.lan:
-            c.ext, c.direct_ok, c.lan = True, direct_ok, lan
+        o = PING_EXT_SIZE   # (then 'N' 'P' and the port its router maps to it)
+        mapped = struct.unpack_from(">H", p, o + 2)[0] if p[o:o + 2] == b"NP" and len(p) >= o + 4 else 0
+        if not c.ext or direct_ok != c.direct_ok or lan != c.lan or mapped != c.mapped:
+            c.ext, c.direct_ok, c.lan, c.mapped = True, direct_ok, lan, mapped
             self.mark(c)
         c.direct_count = min(ndirect, ROOM_MAX - 1)
         if have != c.peers_version:   # (a PEERS lost on the way: again)
@@ -1278,7 +1341,7 @@ class Lobby:
         listing = self.network_of(c)
         peers = sorted((m for m in self.members(listing) if m is not c), key=lambda m: m.ip) if listing else []
         su = c.wire is self.su
-        entries, introduced = [], 0
+        entries, introduced, second = [], 0, []
         for m in peers:
             secret = self.pair_secret(listing, c, m, now)
             pub = lan = (0, 0)
@@ -1287,13 +1350,21 @@ class Lobby:
                 pub = (address_number(m.at[0]), m.at[1])
                 if m.at[0] == c.at[0] and m.lan and m.lan != pub:   # (behind the same router: its address there too)
                     lan = m.lan
+                elif m.at[0] != c.at[0]:   # (behind another: its mapped or own port, where a mapping or a port-keeping router lets it in)
+                    own = m.mapped or (m.lan[1] if m.lan else 0)
+                    if own and own != m.at[1]:
+                        lan = (0, own)
             if su:   # (SU lists only the players introduced)
                 if secret:
                     entries.append(SU_PEER.pack(m.ip, m.name.encode()[:NAME_LEN], *pub, *lan, secret))
+                    second.append(m.probe_seen)
                 continue
             flags = (1 if secret else 0) | (0 if m.direct_ok else 2 if m.ext else 4)   # (2: it turned them off, 4: an older game)
             entries.append(PEER.pack(m.ip, m.name.encode()[:NAME_LEN], flags, *pub, *lan, secret))
+            second.append(m.probe_seen if secret else 0)
         entries = b"".join(entries)
+        if any(second):   # ('N' '2': each one's PROBE port, for a router that hands out ports in turn)
+            entries += b"N2" + struct.pack(">%dH" % len(second), *second)
         if entries == c.peers_sent and not again:
             return
         if now - c.peers_at < PEERS_GAP:
@@ -1406,6 +1477,9 @@ async def serve(o, make=None):
         transport, _ = await loop.create_datagram_endpoint(lambda: Endpoint(lobby, lobby.sn), local_addr=(o.bind, o.port))
         if o.su_port is not None:
             await loop.create_datagram_endpoint(lambda: Endpoint(lobby, lobby.su), local_addr=(o.bind, o.su_port))
+        for wire, nat in ((lobby.sn, getattr(o, "nat_port", None)), (lobby.su, getattr(o, "su_nat_port", None))):
+            if nat is not None and (wire is lobby.sn or o.su_port is not None):
+                lobby.nat_ports[wire], _ = await loop.create_datagram_endpoint(lambda w=wire: NatEndpoint(lobby, w), local_addr=(o.bind, nat))
         if o.status_port is not None:
             lobby.status_server = await asyncio.start_server(lobby.status, o.status_bind, o.status_port, limit=STATUS_REQUEST)
     except BaseException:
@@ -1419,6 +1493,9 @@ def say_more(o, lobby):
     if lobby.su.transport is not None:
         Lobby.say(f"and for ssbu-recomp's games on UDP {o.bind}:{lobby.su.transport.get_extra_info('sockname')[1]} "
                   f"(protocol SU {SU_PROTOCOL})")
+    for wire, t in lobby.nat_ports.items():
+        Lobby.say(f"NAT port for {wire.name} on UDP {o.bind}:{t.get_extra_info('sockname')[1]} (open it in the firewall too: "
+                  f"games compare their routers' ports there)")
     if lobby.status_server is not None:
         Lobby.say("status page on http://%s:%d/status" % lobby.status_server.sockets[0].getsockname()[:2])
 
@@ -1537,6 +1614,10 @@ def parse_args(argv=None, **defaults):
                    help="TCP port of the status page, GET /status: counts only (0: none; default %(default)s)")
     a.add_argument("--status-bind", default=d.status_bind,
                    help="the status page's address (default %(default)s: behind a TLS proxy on this machine)")
+    a.add_argument("--nat-port", type=int, default=-1,
+                   help="UDP port where games show their routers' second port, for direct paths through routers that hand out "
+                        "ports in turn; open it in the firewall too (0: none; default: --port + 10)")
+    a.add_argument("--su-nat-port", type=int, default=-1, help="the same for SU (0: none; default: --su-port + 10)")
     a.add_argument("--probe", metavar="HOST[:PORT]", help="instead of serving: check the lobby at this address")
     a.add_argument("--room", default="smash", help="(--probe) the lobby code (default: the public lobby)")
     a.add_argument("--build", default=REQUIRED_BUILD.decode(), help="(--probe) the game build id to join with "
@@ -1545,6 +1626,8 @@ def parse_args(argv=None, **defaults):
     for k, v in vars(args).items():
         setattr(d, k, v)
     d.su_port, d.status_port = d.su_port or None, d.status_port or None
+    d.nat_port = (d.port + NAT_PORT_OFFSET if d.port else None) if d.nat_port < 0 else d.nat_port or None
+    d.su_nat_port = (d.su_port + NAT_PORT_OFFSET if d.su_port else None) if d.su_nat_port < 0 else d.su_nat_port or None
     return d
 
 

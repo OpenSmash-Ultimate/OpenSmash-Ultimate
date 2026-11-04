@@ -203,6 +203,10 @@ int rbn_delay_for_rtt(double rtt_ms) {
     int d = 1 + (int)(rtt_ms > 0 ? (rtt_ms + 15) / 30 : 0);
     return d > 5 ? 5 : d;
 }
+int rbn_online_delay_for_rtt(double rtt_ms) {
+    int d = (int)(rtt_ms > 0 ? rtt_ms / 2 / (1000.0 / 60) + 0.5 : 0) - 1;
+    return d < 1 ? 1 : d > 4 ? 4 : d;
+}
 int rbn_hello_parse(const uint8_t *b, size_t len, RbnHello *h) {
     /* (a version 1 hello, 16 bytes, is read far enough to say which version the other game speaks) */
     if ((len != RBN_HELLO_BYTES && len != 16) || b[0] != RBN_MSG_HELLO || (b[1] >= RBN_PLAYERS && b[1] != 0xFF)) return 0;

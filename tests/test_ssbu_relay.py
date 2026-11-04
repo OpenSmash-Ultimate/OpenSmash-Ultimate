@@ -636,9 +636,10 @@ class Peers(LobbyTest):
         far.ldn(host.ip, R.LM_JOIN, session + bytes(34))
         host.advertise(session, [a.ip, far.ip])
         entries = {e[0]: e for e in talk_until_introduced(host, far)[1]}
-        self.assertEqual(entries[far.ip][2:5], (1, (R.address_number("127.0.0.2"), far.s.getsockname()[1]), (0, 0)))
+        # (another router: no LAN address, but its game's own port, where a port mapping or a port-keeping router lets it in)
+        self.assertEqual(entries[far.ip][2:5], (1, (R.address_number("127.0.0.2"), far.s.getsockname()[1]), (0, 7000)))
         to_host = {e[0]: e for e in talk_until_introduced(far, host)[1]}[host.ip]
-        self.assertEqual(to_host[2:5], (1, (LOCAL, host.s.getsockname()[1]), (0, 0)))   # (another router: no LAN address)
+        self.assertEqual(to_host[2:5], (1, (LOCAL, host.s.getsockname()[1]), (0, 5000)))
 
     def test_leaving_empties_and_coming_back_is_a_new_secret(self):
         host, session, (a, b) = self.room(2, ext=True)

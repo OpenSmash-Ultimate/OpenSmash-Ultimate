@@ -1409,10 +1409,20 @@ void kernel_rb_census(const void *self, u32 *alive, u32 *waiting, u32 *sleeping,
 }
 
 /* (rollback build, M2) Wakes every guest thread from kwait, for a hold (rb_hold already set). */
+void (*kernel_rb_wake_hook)(void);
 void kernel_rb_wake_all(void) {
     EnterCriticalSection(&klock);
     for (u32 i = 0; i < nthreads; i++) if (threads[i]) WakeConditionVariable(&threads[i]->woken);
     LeaveCriticalSection(&klock);
+    if (kernel_rb_wake_hook) kernel_rb_wake_hook();   /* (hle_net.c: the threads in its own waits) */
+}
+/* (rollback build) A guest thread in a service's own host wait (hle_net.c's poll, recv, accept) parks there during a
+ * hold as in kwait: its caller holds no kernel lock, and looks at its wait again after. kthread NULL: only asks
+ * whether a hold is on. 1: a hold is on (and, with a thread, it parked until the hold's end). */
+int kernel_rb_park_guest(void *kthread) {
+    if (!rb_hold || !kernel_rb_park) return 0;
+    if (kthread) kernel_rb_park(kthread);
+    return 1;
 }
 
 /* (rollback build, M2) The kernel's state for a savestate: objects, memory regions and maps, the

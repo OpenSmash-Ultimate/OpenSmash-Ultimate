@@ -54,13 +54,14 @@ def rule(proto, p, what):
             "description": what, key: {"destination-port-range": {"min": p, "max": p}}}
 add = []
 if not has("17", port): add.append(rule("17", port, "SSBU online lobby"))
+if not has("17", port + 10): add.append(rule("17", port + 10, "SSBU online lobby NAT port"))
 for p in (80, 443):
     if not has("6", p): add.append(rule("6", p, "SSBU lobby status page"))
 print(json.dumps(rules + add if add else None))
 PY
 if [ "$(cat /tmp/ssbu_ingress.json)" != "null" ]; then
   oci network security-list update --security-list-id "$SL" --ingress-security-rules file:///tmp/ssbu_ingress.json --force >/dev/null
-  say "   ports opened: UDP $PORT, TCP 80, 443"
+  say "   ports opened: UDP $PORT and $((PORT + 10)), TCP 80, 443"
 else say "   already open"; fi
 
 say "3. SSH key (stays in this Cloud Shell)"
