@@ -75,8 +75,8 @@ namespace OpenSmash.Launcher
         double _lastTick, _pendingDt;
         double _shownAt = -1, _heroAt, _viewAt, _promptAt, _ddAt;
         string _paintedView = "", _paintedDd;
-        bool _paintedPrompt, _paintedPluginPrompt;
-        double _pluginPromptAt;
+        bool _paintedPrompt, _paintedPluginPrompt, _paintedNewModsPrompt, _paintedUpdatePrompt, _paintedRebuildPrompt;
+        double _pluginPromptAt, _newModsPromptAt, _updatePromptAt, _rebuildPromptAt;
         float _alpha = 1;                                        // multiplies every colour drawn through A()
         readonly Dictionary<string, float> _hov = new();         // hit id -> hover progress 0..1
         readonly HashSet<string> _hovOn = new();                 // hit ids hovered or selected this frame
@@ -157,7 +157,7 @@ namespace OpenSmash.Launcher
                 case "nav:mods": GoView("mods"); return true;
                 case "nav:settings": GoView("settings"); return true;
                 case "nav:back": GoBack(); return true;
-                case "nav:play": StartPlay(); return true;
+                case "nav:play": if (!Busy) StartPlay(); return true;
                 case "nav:mode-prev": CycleLaunchMode(-1); return true;
                 case "nav:mode-next": CycleLaunchMode(1); return true;
                 case "min": WindowState = FormWindowState.Minimized; return true;
@@ -187,6 +187,7 @@ namespace OpenSmash.Launcher
             _tx += (_mx - _tx) * k;
             _ty += (_my - _ty) * k;
             StepField(dt * 60);
+            MaybeShowBootPrompts();
 
             // The marketplace page covers everything below the heading; only that strip moves.
             if (_view == "mods_browser" && _marketplaceWebView != null && _marketplaceWebView.Visible)
@@ -490,6 +491,9 @@ namespace OpenSmash.Launcher
             }
             if (_showSetupPrompt != _paintedPrompt) { _paintedPrompt = _showSetupPrompt; _promptAt = Now; }
             if (_pluginPrompt != _paintedPluginPrompt) { _paintedPluginPrompt = _pluginPrompt; _pluginPromptAt = Now; }
+            if (_newModsPrompt != _paintedNewModsPrompt) { _paintedNewModsPrompt = _newModsPrompt; _newModsPromptAt = Now; }
+            if (_updatePrompt != _paintedUpdatePrompt) { _paintedUpdatePrompt = _updatePrompt; _updatePromptAt = Now; }
+            if (_rebuildPrompt != _paintedRebuildPrompt) { _paintedRebuildPrompt = _rebuildPrompt; _rebuildPromptAt = Now; }
             if (_openDropdownKey != _paintedDd) { _paintedDd = _openDropdownKey; _ddAt = Now; _ddFirst = -1; }
 
             g.TextRenderingHint = TextRenderingHint.AntiAlias;
@@ -525,6 +529,9 @@ namespace OpenSmash.Launcher
             if (_view == "mods" && _showSetupPrompt) PaintSetupPrompt(g, W, H);
             if (_shaderPrompt) PaintShaderPrompt(g, W, H);
             if (_pluginPrompt) PaintPluginPrompt(g, W, H);
+            if (_newModsPrompt) PaintNewModsPrompt(g, W, H);
+            if (_updatePrompt) PaintUpdatePrompt(g, W, H);
+            if (_rebuildPrompt) PaintRebuildPrompt(g, W, H);
         }
 
         // ---------------------------------------------------------------------------
@@ -580,11 +587,12 @@ namespace OpenSmash.Launcher
             float ctaX = nx - 30 * s - cw;
             float prevX = ctaX - gap - aw, nextX = ctaX + cw + gap;
             string playLabel = _launchMode == "vanilla" ? "VANILLA" : "PLAY";
+            bool playEnabled = _built && !Busy;
             Theme.ButtonAnimated(g, "<", prevX, cy - chh / 2, aw, chh, s, primary: false, Hov("nav:mode-prev", _hover == "nav:mode-prev"), _built, 16 * s, _alpha, press: Press("nav:mode-prev"));
-            Theme.ButtonAnimated(g, playLabel, ctaX, cy - chh / 2, cw, chh, s, primary: true, Hov("nav:play", _hover == "nav:play"), _built, 13 * s, _alpha, press: Press("nav:play"));
+            Theme.ButtonAnimated(g, playLabel, ctaX, cy - chh / 2, cw, chh, s, primary: true, Hov("nav:play", playEnabled && _hover == "nav:play"), playEnabled, 13 * s, _alpha, press: Press("nav:play"));
             Theme.ButtonAnimated(g, ">", nextX, cy - chh / 2, aw, chh, s, primary: false, Hov("nav:mode-next", _hover == "nav:mode-next"), _built, 16 * s, _alpha, press: Press("nav:mode-next"));
             AddHit("nav:mode-prev", prevX, cy - chh / 2, aw, chh);
-            AddHit("nav:play", ctaX, cy - chh / 2, cw, chh);
+            if (playEnabled) AddHit("nav:play", ctaX, cy - chh / 2, cw, chh);
             AddHit("nav:mode-next", nextX, cy - chh / 2, aw, chh);
 
             // Section links with the red skewed underline
@@ -834,6 +842,7 @@ namespace OpenSmash.Launcher
                 float bx = left, by = 494 * s, bh = 52 * s, aw = bh, ag = 8 * s;
                 float[] widths = { 220, 150, 184, 128 };
                 string playLabel = _launchMode == "vanilla" ? "VANILLA" : "PLAY";
+                bool playEnabled = _built && !Busy;
                 Theme.ButtonAnimated(g, "<", bx, by, aw, bh, s, primary: false, Hov("nav:mode-prev", _hover == "nav:mode-prev"), _built, 18 * s, _alpha, press: Press("nav:mode-prev"));
                 AddHit("nav:mode-prev", bx, by, aw, bh);
                 bx += aw + ag;
@@ -841,10 +850,11 @@ namespace OpenSmash.Launcher
                 {
                     string id = $"menu:{i}";
                     float bw = widths[i] * s;
-                    float hv = Hov(id, _hover == id || (_keys && _sel == i));
-                    Theme.ButtonAnimated(g, i == 0 ? playLabel : _menuItems[i], bx, by, bw, bh, s, primary: i == 0, hv, i != 0 || _built, 15 * s, _alpha,
+                    bool enabled = i != 0 || playEnabled;
+                    float hv = Hov(id, enabled && (_hover == id || (_keys && _sel == i)));
+                    Theme.ButtonAnimated(g, i == 0 ? playLabel : _menuItems[i], bx, by, bw, bh, s, primary: i == 0, hv, enabled, 15 * s, _alpha,
                         i == 0 ? DrawArrow : null, press: Press(id));
-                    AddHit(id, bx, by, bw, bh);
+                    if (enabled) AddHit(id, bx, by, bw, bh);
                     bx += bw;
                     if (i == 0)
                     {
@@ -1325,13 +1335,15 @@ namespace OpenSmash.Launcher
                 var st = PushReveal(g, 5);
                 float bx = x, by = H - 104 * s, bh = 38 * s;
                 var f = FB(12 * s, true);
-                foreach (var (key, label) in new[] { ("open", "OPEN FOLDER"), ("add", "ADD MOD"), ("remove", "REMOVE"), ("refresh", "REFRESH") })
+                bool busy = Busy;
+                foreach (var (key, label) in new[] { ("open", "OPEN FOLDER"), ("add", "ADD MOD"), ("remove", "REMOVE"), ("refresh", "REFRESH"), ("rebuild", "REBUILD PLUGINS") })
                 {
                     string id = $"act:{key}";
-                    bool enabled = key != "remove" || _sel >= ModActionCount;
+                    bool enabled = key == "open" || !busy;
+                    if (key == "remove" && _sel < ModActionCount) enabled = false;
                     float bw = Theme.TextWidth(g, label, f, 1.2f * s) + 48 * s;
-                    Theme.ButtonAnimated(g, label, bx, by, bw, bh, s, primary: false, Hov(id, _hover == id), enabled, 12 * s, _alpha, press: Press(id));
-                    AddHit(id, bx, by, bw, bh);
+                    Theme.ButtonAnimated(g, label, bx, by, bw, bh, s, primary: false, Hov(id, enabled && _hover == id), enabled, 12 * s, _alpha, press: Press(id));
+                    if (enabled) AddHit(id, bx, by, bw, bh);
                     bx += bw + 10 * s;
                 }
                 PopFade(g, st);
@@ -1650,6 +1662,14 @@ namespace OpenSmash.Launcher
                 }
             }
 
+            if (tab < _settingsTabs.Length && string.Equals(_settingsTabs[tab].Name, "Update", StringComparison.OrdinalIgnoreCase))
+            {
+                _settingsMaxScroll = 0;
+                _settingsScroll = 0;
+                PaintUpdateSettings(g, W, H, x, cw, listTop, viewH);
+                return;
+            }
+
             _volTrackValid = false;
             Font valueFont = FM(13 * s);
             float valueSpacing = 13 * s * 0.06f;
@@ -1778,6 +1798,183 @@ namespace OpenSmash.Launcher
                 PaintDropdown(g, H, vis[openIdx], Array.IndexOf(_settings, vis[openIdx]), ctlX, ry + (rowH - ctlH) / 2, ctlW, ctlH);
             }
         }
+        void PaintNewModsPrompt(Graphics g, int W, int H)
+        {
+            float s = _s, e = Theme.Ease(Clamp01((float)(Now - _newModsPromptAt) / 0.4f));
+            using (var b = new SolidBrush(Color.FromArgb((int)(200 * e), 5, 5, 5))) g.FillRectangle(b, 0, 0, W, H);
+            AddHit("newmods:block", 0, 0, W, H);
+            var st = PushFade(g, e, 24 * s);
+            float mw = 660 * s, mh = 330 * s, mx = (W - mw) / 2, my = (H - mh) / 2;
+            using (var p = Theme.CutCorners(mx, my, mw, mh, 30 * s))
+            {
+                using (var b = new SolidBrush(A(Theme.Bg2))) g.FillPath(b, p);
+                using (var pen = new Pen(A(Theme.Line), Math.Max(1, s))) g.DrawPath(pen, p);
+                var cs = g.Save();
+                g.SetClip(p, CombineMode.Intersect);
+                using (var b = new SolidBrush(A(Theme.Accent))) g.FillRectangle(b, mx, my, mw, 4 * s);
+                g.Restore(cs);
+            }
+            float pad = 32 * s;
+            int count = _newMods.Count;
+            bool build = _newMods.Any(n => !ModHasPlugin(n));
+            Theme.Label(g, count == 1 ? "NEW MOD FOUND" : "NEW MODS FOUND", FD(32 * s), A(Theme.Text), mx + pad, my + 34 * s, 30 * s, 0.32f * s);
+            string names = string.Join(", ", _newMods.Take(4));
+            if (count > 4) names += $" and {count - 4} more";
+            string body = count == 1
+                ? $"{names} was dropped straight into the mods folder, so OpenSmash has not built its plugin yet."
+                : $"{names} were dropped straight into the mods folder, so OpenSmash has not built their plugins yet.";
+            body += " This must be done now: leaving it unbuilt breaks the rest of your mods.";
+            if (build)
+                body += count == 1
+                    ? " Build the plugin now so the game loads it. Only the plugin is built, not the whole game."
+                    : " Build the plugins now so the game loads them. Only the plugins are built, not the whole game.";
+            else
+                body += count == 1 ? " Add it now so the game loads it." : " Add them now so the game loads them.";
+            Theme.DrawWrapped(g, body, FB(15 * s), A(Theme.Muted), mx + pad, my + 84 * s, mw - pad * 2, 130 * s);
+            float bh = 46 * s, by = my + mh - bh - 28 * s;
+            float wBuild = 260 * s;
+            float xBuild = mx + (mw - wBuild) / 2;
+            Theme.ButtonAnimated(g, build ? "BUILD PLUGIN" : "ADD MOD", xBuild, by, wBuild, bh, s, true, Hov("newmods:build", _hover == "newmods:build"), true, 13 * s, _alpha, press: Press("newmods:build"));
+            AddHit("newmods:build", xBuild, by, wBuild, bh);
+            PopFade(g, st);
+        }
+
+        void PaintUpdatePrompt(Graphics g, int W, int H)
+        {
+            float s = _s, e = Theme.Ease(Clamp01((float)(Now - _updatePromptAt) / 0.4f));
+            using (var b = new SolidBrush(Color.FromArgb((int)(200 * e), 5, 5, 5))) g.FillRectangle(b, 0, 0, W, H);
+            AddHit("update_prompt:block", 0, 0, W, H);
+            var st = PushFade(g, e, 24 * s);
+            float mw = 700 * s, mh = 360 * s, mx = (W - mw) / 2, my = (H - mh) / 2;
+            using (var p = Theme.CutCorners(mx, my, mw, mh, 30 * s))
+            {
+                using (var b = new SolidBrush(A(Theme.Bg2))) g.FillPath(b, p);
+                using (var pen = new Pen(A(Theme.Line), Math.Max(1, s))) g.DrawPath(pen, p);
+                var cs = g.Save();
+                g.SetClip(p, CombineMode.Intersect);
+                using (var b = new SolidBrush(A(Theme.Accent))) g.FillRectangle(b, mx, my, mw, 4 * s);
+                g.Restore(cs);
+            }
+            float pad = 32 * s;
+            Theme.Label(g, "UPDATE DETECTED", FD(32 * s), A(Theme.Text), mx + pad, my + 34 * s, 30 * s, 0.32f * s);
+            Theme.DrawWrapped(g, _updateMessage, FB(16 * s), A(Theme.Text), mx + pad, my + 84 * s, mw - pad * 2, 60 * s);
+            if (!string.IsNullOrEmpty(_updateDetail))
+                Theme.DrawWrapped(g, _updateDetail, FB(13.5f * s), A(Theme.Muted), mx + pad, my + 150 * s, mw - pad * 2, 70 * s);
+            float bh = 46 * s, by = my + mh - bh - 28 * s;
+            float wUpdate = 170 * s, wLater = 170 * s;
+            float xUpdate = mx + mw - pad - wUpdate;
+            float xLater = xUpdate - 12 * s - wLater;
+            Theme.ButtonAnimated(g, "REMIND LATER", xLater, by, wLater, bh, s, false, Hov("update_prompt:later", _hover == "update_prompt:later"), true, 13 * s, _alpha, press: Press("update_prompt:later"));
+            AddHit("update_prompt:later", xLater, by, wLater, bh);
+            Theme.ButtonAnimated(g, "UPDATE", xUpdate, by, wUpdate, bh, s, true, Hov("update_prompt:update", _hover == "update_prompt:update"), !_updateApplying, 13 * s, _alpha, press: Press("update_prompt:update"));
+            if (!_updateApplying) AddHit("update_prompt:update", xUpdate, by, wUpdate, bh);
+            float cb = 18 * s, cbx = mx + pad, cby = by + (bh - cb) / 2;
+            using (var p = Theme.Para(cbx, cby, cb, cb, 4 * s))
+            {
+                using (var b = new SolidBrush(A(_updateDontShow ? Theme.Accent : White(10)))) g.FillPath(b, p);
+                using (var pen = new Pen(A(_updateDontShow ? Theme.Accent : Theme.Line), Math.Max(1, s))) g.DrawPath(pen, p);
+            }
+            if (_updateDontShow)
+            {
+                using var pen = new Pen(A(Theme.Bg), Math.Max(1.6f, 2 * s)) { LineJoin = LineJoin.Miter };
+                g.DrawLines(pen, new[] { new PointF(cbx + cb * 0.22f, cby + cb * 0.52f), new PointF(cbx + cb * 0.43f, cby + cb * 0.74f), new PointF(cbx + cb * 0.80f, cby + cb * 0.28f) });
+            }
+            Font cf = FM(12 * s);
+            float csp = 12 * s * 0.10f;
+            Theme.Label(g, "DON'T SHOW THIS AGAIN", cf, A(_updateDontShow ? Theme.Text : Theme.Muted), cbx + cb + 10 * s, by, bh, csp);
+            AddHit("update_prompt:dont", cbx - 6 * s, by, cb + 10 * s + Theme.TextWidth(g, "DON'T SHOW THIS AGAIN", cf, csp) + 6 * s, bh);
+            PopFade(g, st);
+        }
+
+        void PaintRebuildPrompt(Graphics g, int W, int H)
+        {
+            float s = _s, e = Theme.Ease(Clamp01((float)(Now - _rebuildPromptAt) / 0.4f));
+            using (var b = new SolidBrush(Color.FromArgb((int)(200 * e), 5, 5, 5))) g.FillRectangle(b, 0, 0, W, H);
+            AddHit("rebuild_prompt:block", 0, 0, W, H);
+            var st = PushFade(g, e, 24 * s);
+            float mw = 700 * s, mh = 360 * s, mx = (W - mw) / 2, my = (H - mh) / 2;
+            using (var p = Theme.CutCorners(mx, my, mw, mh, 30 * s))
+            {
+                using (var b = new SolidBrush(A(Theme.Bg2))) g.FillPath(b, p);
+                using (var pen = new Pen(A(Theme.Line), Math.Max(1, s))) g.DrawPath(pen, p);
+                var cs = g.Save();
+                g.SetClip(p, CombineMode.Intersect);
+                using (var b = new SolidBrush(A(Theme.Accent))) g.FillRectangle(b, mx, my, mw, 4 * s);
+                g.Restore(cs);
+            }
+            float pad = 32 * s;
+            Theme.Label(g, "REBUILD PLUGINS", FD(32 * s), A(Theme.Text), mx + pad, my + 34 * s, 30 * s, 0.32f * s);
+            Theme.DrawWrapped(g, "REFRESH PLUGIN rebuilds only the mod plugins' DLLs. The game program stays as it is. Use it when a moveset or plugin file changed.", FB(14.5f * s), A(Theme.Muted), mx + pad, my + 84 * s, mw - pad * 2, 56 * s);
+            Theme.DrawWrapped(g, "UPDATE PLUGINS rebuilds the plugins and relinks the game program too. Needed when a mod hooks a function, patches the game's code, or adds a community plugin.", FB(14.5f * s), A(Theme.Muted), mx + pad, my + 148 * s, mw - pad * 2, 64 * s);
+            float bh = 46 * s, by = my + mh - bh - 28 * s, gap = 12 * s;
+            float wUp = 190 * s, wRef = 190 * s, wCancel = 120 * s;
+            float xUp = mx + mw - pad - wUp;
+            float xRef = xUp - gap - wRef;
+            float xCancel = xRef - gap - wCancel;
+            Theme.ButtonAnimated(g, "CANCEL", xCancel, by, wCancel, bh, s, false, Hov("rebuild_prompt:cancel", _hover == "rebuild_prompt:cancel"), true, 13 * s, _alpha, press: Press("rebuild_prompt:cancel"));
+            AddHit("rebuild_prompt:cancel", xCancel, by, wCancel, bh);
+            Theme.ButtonAnimated(g, "REFRESH PLUGIN", xRef, by, wRef, bh, s, false, Hov("rebuild_prompt:refresh", _hover == "rebuild_prompt:refresh"), true, 13 * s, _alpha, press: Press("rebuild_prompt:refresh"));
+            AddHit("rebuild_prompt:refresh", xRef, by, wRef, bh);
+            Theme.ButtonAnimated(g, "UPDATE PLUGINS", xUp, by, wUp, bh, s, true, Hov("rebuild_prompt:update", _hover == "rebuild_prompt:update"), true, 13 * s, _alpha, press: Press("rebuild_prompt:update"));
+            AddHit("rebuild_prompt:update", xUp, by, wUp, bh);
+            PopFade(g, st);
+        }
+
+        void PaintUpdateSettings(Graphics g, int W, int H, float x, float cw, float listTop, float viewH)
+        {
+            float s = _s;
+            var st = PushFade(g, Up((float)(Now - _viewAt), 0.2f), 16 * s);
+            float cwIn = Math.Min(cw, 720 * s);
+            float ch = Math.Min(viewH, 420 * s);
+            float pad = 30 * s;
+            using (var p = Theme.CutCorners(x, listTop, cwIn, ch, 18 * s))
+            {
+                using (var b = new SolidBrush(A(White(10)))) g.FillPath(b, p);
+                using (var pen = new Pen(A(Theme.Line), Math.Max(1, s))) g.DrawPath(pen, p);
+            }
+            Font hf = FM(12 * s);
+            float hsp = 12 * s * 0.16f;
+            Theme.Label(g, "UPDATE", hf, A(Theme.Accent), x + pad, listTop, 52 * s, hsp);
+            float rule = x + pad + Theme.TextWidth(g, "UPDATE", hf, hsp) + 14 * s;
+            if (rule < x + cwIn - pad) HLine(g, rule, x + cwIn - pad, listTop + 26 * s);
+            string status; Color color;
+            switch (_updateState)
+            {
+                case "checking": status = "CHECKING GITHUB\u2026"; color = Theme.Muted; break;
+                case "updating": status = "UPDATING OPENSMASH\u2026"; color = Theme.Accent; break;
+                case "available": status = _updateBehind == 1 ? "1 NEW COMMIT" : $"{_updateBehind} NEW COMMITS"; color = Theme.Accent; break;
+                case "uptodate": status = "UP TO DATE"; color = Theme.Text; break;
+                case "error": status = "COULD NOT CHECK"; color = Theme.Muted; break;
+                default: status = "NOT CHECKED YET"; color = Theme.Dim; break;
+            }
+            Theme.Label(g, status, FD(34 * s), A(color), x + pad, listTop + 38 * s, 34 * s, 0.34f * s);
+            float ty = listTop + 90 * s;
+            string message = string.IsNullOrEmpty(_updateMessage) ? "Check GitHub for a newer version of OpenSmash. Play is paused while an update installs." : _updateMessage;
+            Theme.DrawWrapped(g, message, FB(15 * s), A(Theme.Muted), x + pad, ty, cwIn - pad * 2, 64 * s);
+            if (!string.IsNullOrEmpty(_updateDetail)) Theme.DrawWrapped(g, _updateDetail, FB(13 * s), A(Theme.Dim), x + pad, ty + 70 * s, cwIn - pad * 2, 54 * s);
+            if (_updateLocal.Length > 0 || _updateHead.Length > 0)
+            {
+                Font vf = FM(12 * s);
+                string versions = $"THIS COPY  {(_updateLocal.Length > 0 ? ShortCommit(_updateLocal) : "?")}   \u00B7   GITHUB  {(_updateHead.Length > 0 ? ShortCommit(_updateHead) : "?")}";
+                Theme.Label(g, versions, vf, A(Theme.Dim), x + pad, listTop + ch - 88 * s, 16 * s, 12 * s * 0.08f);
+            }
+            float bh = 44 * s, by = listTop + ch - bh - 28 * s;
+            float wApply = 150 * s, wCheck = 210 * s;
+            bool showApply = _updateState == "available" || _updateApplying;
+            float xApply = x + cwIn - pad - wApply;
+            float xCheck = showApply ? xApply - 12 * s - wCheck : x + (cwIn - wCheck) / 2;
+            bool canCheck = !_updateChecking && !_updateApplying;
+            Theme.ButtonAnimated(g, _updateState == "checking" ? "CHECKING\u2026" : "CHECK FOR UPDATE", xCheck, by, wCheck, bh, s, false, Hov("update:check", canCheck && _hover == "update:check"), canCheck, 12 * s, _alpha, press: Press("update:check"));
+            if (canCheck) AddHit("update:check", xCheck, by, wCheck, bh);
+            bool canApply = _updateState == "available" && !_updateApplying && !_updateChecking;
+            if (showApply)
+            {
+                Theme.ButtonAnimated(g, _updateApplying ? "UPDATING\u2026" : "UPDATE", xApply, by, wApply, bh, s, true, Hov("update:apply", canApply && _hover == "update:apply"), canApply, 13 * s, _alpha, press: Press("update:apply"));
+                if (canApply) AddHit("update:apply", xApply, by, wApply, bh);
+            }
+            PopFade(g, st);
+        }
+
         void PaintVolume(Graphics g, float ctlX, float cy, float ctlW, float ctlH)
         {
             float s = _s;

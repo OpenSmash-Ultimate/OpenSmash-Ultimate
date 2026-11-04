@@ -77,6 +77,9 @@ Prepare the game files (program, fonts, data, DLC, fighters) but stop before the
 Passed to the build: how many files to compile at a time (default: by the installed RAM).
 .PARAMETER NoUpdate
 Do not look for a newer WindowSmash (the updated installer is started with it).
+.PARAMETER UpdateOnly
+Only bring this folder to the newest commit, then stop. The launcher's Update button uses this so
+setup steps (compiler, game files, build) are not run again.
 .PARAMETER BuildTools
 For the compiler, install the Visual Studio Build Tools rather than download it into deps\.
 .PARAMETER Rebuild
@@ -101,6 +104,7 @@ param(
     [switch]$SkipBuild,
     [int]$Jobs,
     [switch]$NoUpdate,
+    [switch]$UpdateOnly,
     [switch]$BuildTools,
     [switch]$Rebuild,
     [switch]$AcceptLicense
@@ -700,7 +704,11 @@ function Step-Update {
     <# Brings this folder to the newest commit of GitHub's branch. $true when files changed. #>
     Write-Step '[1/10] Get the newest WindowSmash'
     if ($NoUpdate) { Write-Info 'not checking (-NoUpdate)'; return $false }
-    if (Test-Path -LiteralPath (Join-Path $Root '.git')) { return (Update-GitCheckout) }
+    if (Test-Path -LiteralPath (Join-Path $Root '.git')) {
+        $gitDirty = (& git -C $Root status --porcelain --untracked-files=no 2>$null | Out-String).Trim()
+        if (-not $gitDirty) { return (Update-GitCheckout) }
+        Write-Info 'this git checkout has local changes: using the download route instead'
+    }
     $local = Get-LocalCommit
     if (-not $local) {
         Write-Warn "this folder does not say which version it is ($SourceVersionFile names no commit): not updating."
@@ -1538,7 +1546,14 @@ function Main {
         Write-Host "  $Root"
         if ($DryRun) { Write-Host '  dry run: saying what each step would do, doing nothing' -ForegroundColor DarkGray }
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-        if (Step-Update) {
+        $updated = Step-Update
+        if ($UpdateOnly) {
+            # the launcher only asked for the files: do not run the rest of setup.
+            if ($updated) { Write-Host 'Updated.' -ForegroundColor Green }
+            else { Write-Host 'Nothing to update.' }
+            return 0
+        }
+        if ($updated) {
             # the rest is the new version's to do: start its installer in this window, as this one was
             Write-Host ''
             Write-Host 'Starting the updated installer' -ForegroundColor Cyan
