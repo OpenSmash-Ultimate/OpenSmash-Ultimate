@@ -27,6 +27,14 @@ static volatile LONG64 sampling;
  * typed. Players 2-8 keep their pads. */
 static Seq seq;
 static int seq_on, seq_keyboard, seq_log_every;
+/* SSBU_SEQ2: player 2's own sequence, in the same language, in player 1's ticks (marks and draw counts
+ * shared with player 1's), so a test can have both fighters act on cue (e.g. one throws
+ * projectiles at the other's reflector). Player 2 is then connected as a Pro Controller and its pad
+ * is not read. Only with SSBU_SEQ. */
+static Seq seq2;
+static int seq2_on;
+static long seq2_ticks;   /* player 1's ticks not yet taken by player 2 (the steps hook gives each tick once) */
+static int seq2_steps(void) { return (int)__atomic_exchange_n(&seq2_ticks, 0, __ATOMIC_RELAXED); }
 static SeqStepsFn *volatile seq_steps;
 static volatile long seq_draws = -1;   /* draw calls of the last frame shown (-1: none yet) */
 enum { SEQ_MARKS = 512 };   /* (a mark per module the game loads, and a few more) */
@@ -54,6 +62,12 @@ static BOOL CALLBACK seq_start(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     fprintf(stderr, "[seq] %d steps, counted in player 1's polls; player 1's pad is not read, the keyboard is %s\n", n,
             seq_keyboard ? "read (SSBU_SEQ_KEYBOARD)" : "nobody's");
     seq_on = 1;
+    if ((v = getenv("SSBU_SEQ2")) && *v) {
+        n = seq_parse(&seq2, v, why, sizeof why);
+        if (n < 0) { fprintf(stderr, "[seq] SSBU_SEQ2: %s\n", why); fflush(stderr); exit(2); }
+        seq2_on = n > 0;
+        fprintf(stderr, "[seq] player 2: %d steps (SSBU_SEQ2), its pad is not read\n", n);
+    }
     return TRUE;
 }
 
@@ -101,7 +115,8 @@ static void seq_player_poll(u64 *buttons, i32 *lx, i32 *ly) {
     AcquireSRWLockExclusive(&lock);
     seq_polls++;
     long draws = seq_draws;
-    seq_poll(&seq, seq_steps, draws, seq_seen, seq_log, NULL);
+    long ticks = seq_poll(&seq, seq_steps, draws, seq_seen, seq_log, NULL);
+    __atomic_add_fetch(&seq2_ticks, ticks, __ATOMIC_RELAXED);
     long long polls = seq_polls;
     if (!ended && seq_finished(&seq)) { ended = 1; fprintf(stderr, "[seq] poll %lld: the sequence has ended\n", polls); }
     if (seq_log_every > 0 && polls % seq_log_every == 0) fprintf(stderr, "[seq] poll %lld: %ld draw calls in the last frame shown\n", polls, draws);
@@ -111,7 +126,18 @@ static void seq_player_poll(u64 *buttons, i32 *lx, i32 *ly) {
     ReleaseSRWLockExclusive(&lock);
 }
 
-static int seq_player(u32 id) { return id == NPAD_NO1 && input_seq_on(); }
+static void seq2_log(const char *line, void *unused) { (void)unused; fprintf(stderr, "[seq2] %s\n", line); }
+static void seq2_player_poll(u64 *buttons, i32 *lx, i32 *ly) {
+    static SRWLOCK lock = SRWLOCK_INIT;
+    AcquireSRWLockExclusive(&lock);
+    seq_poll(&seq2, seq2_steps, seq_draws, seq_seen, seq2_log, NULL);
+    *buttons |= seq2.buttons;
+    if (seq2.lx) *lx = seq2.lx;
+    if (seq2.ly) *ly = seq2.ly;
+    ReleaseSRWLockExclusive(&lock);
+}
+static int seq_player(u32 id) { return (id == NPAD_NO1 && input_seq_on()) || (id == 1 && input_seq_on() && seq2_on); }
+int input_seq2_on(void) { return input_seq_on() && seq2_on; }
 static int keyboard_slot(void) { return input_seq_on() && !seq_keyboard ? -1 : pad_keyboard_slot(); }
 int bench_on(void);                         /* (hle_bench.c: a test run drives player 1 alone) */
 int bench_pads(void);                       /* (... unless its play mode hands the match to the pads) */
@@ -136,7 +162,7 @@ static int pad_connected(u32 id) {
     if (bench_on() && !bench_pads()) return id == NPAD_NO1;
     PadState p;
     u32 ph = rb_slot_phys(id);   /* (rollback: the game's slot reads this PC's slot ph; id itself with SSBU_RB unset) */
-    return (!seq_player(ph) && pad_get(ph, &p)) || (int)ph == keyboard_slot() || (ph == NPAD_NO1 && scripted) || rb_slot_remote(id);
+    return (!seq_player(ph) && pad_get(ph, &p)) || (int)ph == keyboard_slot() || (ph == NPAD_NO1 && scripted) || (ph == 1 && seq_player(ph)) || rb_slot_remote(id);
 }
 
 /* The player's style: a GameCube controller while its pad plays as one, else a Pro Controller. */
@@ -223,7 +249,7 @@ static void npad_state(u64 out, u32 id, u32 style) {
         u32 ph = rb_slot_phys(id);
         if (bench_on() && !bench_pads()) {
             if (id == NPAD_NO1) buttons = bench_buttons(&lx, &ly);
-        } else if (seq_player(ph)) seq_player_poll(&buttons, &lx, &ly);
+        } else if (seq_player(ph)) { if (ph == NPAD_NO1) seq_player_poll(&buttons, &lx, &ly); else seq2_player_poll(&buttons, &lx, &ly); }
         else if (pad_get(ph, &p) && (pad_background() || gfx_window_focused())) {
             buttons = p.buttons;
             lx = p.lx; ly = p.ly; rx = p.rx; ry = p.ry;
