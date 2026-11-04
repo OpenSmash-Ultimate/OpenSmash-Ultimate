@@ -34,7 +34,7 @@ class OnlineMatch(unittest.TestCase):
         core = src('hle_rb_core.c')
         self.assertIn('#define ONLINE_MELEE 14', core)
         self.assertIn('if (mode != ONLINE_MELEE)', core, 'other matches are played alone')
-        self.assertIn('int peers = net_recent_peers(seen, 8, 30000);', core, 'the other game: the one Pia talks to')
+        self.assertIn('peers = net_recent_peers(seen, 8, 30000);', core, 'the other game: the one Pia talks to')
         self.assertIn('if (peers != 1)', core, 'more than 2 players: the game\'s own netcode')
         self.assertIn('int own = ld32(st + 0x78) == 0 && !ld8(st + 0x451) ? 0 : 1;', core, 'player 1 is the network player or this game')
         self.assertIn('while (!hs_agreed && now_ms() - t0 < ONLINE_WAIT_MS)', core, 'a bounded wait for the other side')
