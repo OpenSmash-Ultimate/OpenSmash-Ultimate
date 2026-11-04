@@ -1270,7 +1270,6 @@ HLE(_ZN2nn2fs9CloseFileENS0_10FileHandleE) {
     LeaveCriticalSection(&lock);
 }
 HLE(_ZN2nn2fs10CreateFileEPKcl) {   /* (path, size) */
-    FS_TRACE("%s %s\n", "fs10CreateFileEPKcl", P(char, c->x[0]));
     const char *rest;
     ready();
     struct Mount *m = find_mount(P(char, c->x[0]), &rest);
@@ -1308,7 +1307,6 @@ HLE(_ZN2nn2fs10DeleteFileEPKc) {
     c->x[0] = DeleteFileA(path) ? 0 : R_PATH_NOT_FOUND;
 }
 HLE(_ZN2nn2fs15CreateDirectoryEPKc) {
-    FS_TRACE("%s %s\n", "fs15CreateDirectory", P(char, c->x[0]));
     const char *rest;
     ready();
     struct Mount *m = find_mount(P(char, c->x[0]), &rest);
