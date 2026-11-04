@@ -593,6 +593,7 @@ namespace OpenSmash.Launcher
                 UpdateMods();
                 _ = PushInstalledState();
                 Invalidate();
+                PlayDone();
             }
             if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
         }
@@ -605,6 +606,7 @@ namespace OpenSmash.Launcher
             {
                 _newModsPending = false;
                 _newModsPrompt = true;
+                PlayPopup();
                 Invalidate();
                 return;
             }
@@ -613,6 +615,7 @@ namespace OpenSmash.Launcher
                 _updatePromptPending = false;
                 _updatePrompt = true;
                 _updateDontShow = false;
+                PlayPopup();
                 Invalidate();
             }
         }
@@ -844,6 +847,7 @@ namespace OpenSmash.Launcher
                 _updateDetail = "";
                 MessageBox.Show("OpenSmash was updated. Your game files, settings, save and builds were left as they were.\n\nPress Play to rebuild what changed.", "OpenSmash");
             }
+            PlayDone();
             Invalidate();
         }
 
@@ -1906,7 +1910,7 @@ namespace OpenSmash.Launcher
             else if (id == "act:add") AddMod();
             else if (id == "act:remove") RemoveMod();
             else if (id == "act:refresh") { UpdateMods(); _ = PushInstalledState(); Invalidate(); }
-            else if (id == "act:rebuild") { _rebuildPrompt = true; Invalidate(); }
+            else if (id == "act:rebuild") { _rebuildPrompt = true; PlayPopup(); Invalidate(); }
             else if (id == "setup_mode:scratch")
             {
                 _setupMode = "scratch";
@@ -2621,6 +2625,7 @@ namespace OpenSmash.Launcher
             _pluginBuildUi = false;
             UpdateMods();
             _ = PushInstalledState();
+            PlayDone();
             Invalidate();
             if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
         }
@@ -2795,6 +2800,9 @@ namespace OpenSmash.Launcher
                 CopyDirectory(dir, Path.Combine(dst, Path.GetFileName(dir)));
         }
 
+        static void PlayPopup() { try { System.Media.SystemSounds.Asterisk.Play(); } catch { } }
+        static void PlayDone() { try { System.Media.SystemSounds.Exclamation.Play(); } catch { } }
+
         // ---------------------------------------------------------------------------
         // Play
         void SetLoad(string label, float progress)
@@ -2932,6 +2940,7 @@ namespace OpenSmash.Launcher
             _modsBusy = false;
             _pluginBuildUi = false;
             UpdateMods();
+            PlayDone();
             Invalidate();
             if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
         }
@@ -2959,6 +2968,7 @@ namespace OpenSmash.Launcher
             _modsBusy = false;
             _pluginBuildUi = false;
             UpdateMods();
+            PlayDone();
             Invalidate();
             if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
         }
@@ -2984,6 +2994,7 @@ namespace OpenSmash.Launcher
             catch (Exception ex) { why = ex.Message; _setupStep = "Download stopped"; }
             _setupModding = false;
             UpdateMods();
+            PlayDone();
             Invalidate();
             if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
         }
@@ -3002,6 +3013,7 @@ namespace OpenSmash.Launcher
             _pluginPromptKind = full ? "update" : "refresh";
             _pluginPromptText = why;
             _pluginPrompt = true;
+            PlayPopup();
             _pluginPromptWait = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             Invalidate();
             string choice = await _pluginPromptWait.Task;
