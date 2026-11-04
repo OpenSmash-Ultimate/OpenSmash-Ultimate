@@ -1400,8 +1400,19 @@ namespace OpenSmash.Launcher
                 };
                 using var p = Process.Start(psi);
                 if (p == null) return (false, "Could not read the folder.");
+                var errTask = p.StandardError.ReadToEndAsync();
                 string output = p.StandardOutput.ReadToEnd();
                 p.WaitForExit(120000);
+                string err = errTask.Wait(5000) ? errTask.Result : "";
+                if (output.Trim().Length == 0)
+                {
+                    // (gamefiles.py stopped before its answer: most often Python's packages - pycryptodomex for
+                    // the keys - aren't installed yet, which the build step does; issue #120)
+                    if (err.Contains("ModuleNotFoundError") || err.Contains("No module named"))
+                        return (true, "This folder will be read once the installer has set up Python's packages (the build does it first).");
+                    string last = err.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "";
+                    return (false, "Could not read the folder" + (last.Length > 0 ? ": " + last : " (the reader stopped without saying why)."));
+                }
                 using var doc = JsonDocument.Parse(output);
                 var root = doc.RootElement;
                 var lines = new List<string>();
