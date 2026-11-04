@@ -3521,12 +3521,8 @@ namespace OpenSmash.Launcher
         // ---------------------------------------------------------------------------
         readonly HashSet<string> _marketplaceInstalling = new();
 
-        // Downloads can be hundreds of megabytes, so they get their own client with a
-        // generous timeout instead of the 15s one used for small API calls.
-        static readonly HttpClient _downloadClient = new HttpClient
-        {
-            Timeout = TimeSpan.FromMinutes(30),
-        };
+        // Downloads get their own client with a long timeout (ProjectSetup's, which the first start uses too).
+        static HttpClient _downloadClient => ProjectSetup.DownloadClient;
 
         async Task InitializeMarketplaceWebView()
         {
@@ -3909,29 +3905,10 @@ namespace OpenSmash.Launcher
 
         async Task DownloadWithProgressAsync(string url, string destination, Func<int, Task> onProgress)
         {
-            using var response = await _downloadClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
-            response.EnsureSuccessStatusCode();
-
-            long total = response.Content.Headers.ContentLength ?? -1;
-            await using var source = await response.Content.ReadAsStreamAsync();
-            await using var target = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true);
-
-            var buffer = new byte[81920];
-            long received = 0;
-            int read;
-
-            while ((read = await source.ReadAsync(buffer)) > 0)
+            await ProjectSetup.DownloadAsync(url, destination, async (received, total) =>
             {
-                await target.WriteAsync(buffer.AsMemory(0, read));
-                received += read;
-
-                if (total > 0)
-                {
-                    int percent = (int)(received * 100 / total);
-                    await onProgress(percent);
-                }
-            }
-
+                if (total > 0) await onProgress((int)(received * 100 / total));
+            });
             await onProgress(100);
         }
 

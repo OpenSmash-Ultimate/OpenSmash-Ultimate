@@ -17,6 +17,18 @@ namespace OpenSmash.Launcher
         [STAThread]
         static void Main(string[] args)
         {
+            // Test entry points (ProjectSetup.RunHeadless): no window, no single-instance check.
+            if (ProjectSetup.IsHeadless(args)) { Environment.ExitCode = ProjectSetup.RunHeadless(args); return; }
+
+            // The Play SSBU shortcut: the game straight away once it is built (the launcher waits, hidden, for it).
+            if (args.Contains("--play", StringComparer.OrdinalIgnoreCase) && ProjectSetup.FindProject(AppContext.BaseDirectory) is string built
+                && WindowSmash.IsBuilt(built))
+            {
+                using var game = WindowSmash.StartGame(built);
+                game?.WaitForExit();
+                return;
+            }
+
             ApplicationConfiguration.Initialize();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
@@ -28,22 +40,41 @@ namespace OpenSmash.Launcher
             using var mutex = new Mutex(true, "Global\\OpenSmashLauncher", out bool createdNew);
             if (!createdNew) return;
 
-            // Resolve repo root (where the .exe lives or where it was launched from)
-            string repo = AppContext.BaseDirectory;
-            // If running from build output, go up to repo root
-            while (repo.EndsWith("OpenSmash.Launcher", StringComparison.OrdinalIgnoreCase) ||
-                   repo.EndsWith("bin", StringComparison.OrdinalIgnoreCase) ||
-                   repo.EndsWith("Debug", StringComparison.OrdinalIgnoreCase) ||
-                   repo.EndsWith("Release", StringComparison.OrdinalIgnoreCase) ||
-                   repo.EndsWith("publish", StringComparison.OrdinalIgnoreCase))
-            {
-                repo = Path.GetFullPath(Path.Combine(repo, ".."));
-            }
+            // Resolve repo root (where the .exe lives, or the repo above its build output folder)
+            string repo = ProjectSetup.ExeRoot(AppContext.BaseDirectory);
 
             // Extract embedded resources (PowerShell scripts, icon) to a temp folder
             string workDir = Path.Combine(Path.GetTempPath(), "OpenSmash_" + Guid.NewGuid().ToString("N")[..8]);
             Directory.CreateDirectory(workDir);
             ExtractResources(workDir);
+
+            // On its own (the release's OpenSmash Setup.exe, or OpenSmash.exe anywhere): the folder set up before,
+            // or the first-start screen, which downloads the project and makes the shortcuts. Then the launcher
+            // copied into that folder takes over, so everything starts from there as from a copy of the repo.
+            if (!ProjectSetup.IsProject(repo))
+            {
+                string? found = ProjectSetup.FindProject(AppContext.BaseDirectory);
+                if (found == null)
+                {
+                    using var first = new FirstRunForm(workDir, ProjectSetup.DefaultFolder(repo));
+                    Application.Run(first);
+                    if (first.Folder == "") return;
+                    found = first.Folder;
+                    string exe = Path.Combine(found, "OpenSmash.exe");
+                    if (File.Exists(exe) && !string.Equals(Path.GetFullPath(exe), Environment.ProcessPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        mutex.ReleaseMutex();
+                        mutex.Dispose();
+                        try
+                        {
+                            Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = found, UseShellExecute = true });
+                            return;
+                        }
+                        catch { }
+                    }
+                }
+                repo = found;
+            }
 
             // No build yet (or --installer): Install WindowSmash comes first.
             if (!WindowSmash.IsBuilt(repo) || args.Contains("--installer", StringComparer.OrdinalIgnoreCase))
