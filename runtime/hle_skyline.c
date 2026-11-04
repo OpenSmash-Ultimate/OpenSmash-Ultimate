@@ -335,6 +335,15 @@ static void display_version(Cpu *c) {
     memcpy(G2H(c->x[0]), "13.0.5", 6);
 }
 
+/* nn::oe::GetPseudoDeviceId(nn::util::Uuid *): an application-local identifier used by
+ * Training Modpack v7.1.1 (ssbu-recomp#63, runtime/sky_compat.c). There is no console
+ * device service here: use a fixed synthetic UUID, never a host device identifier. */
+static void pseudo_device_id(Cpu *c) {
+    static const u8 id[16] = {'O', 'p', 'e', 'n', 'S', 'm', 'a', 's', 'h', 0, 0, 0, 0, 0, 0, 1};
+    if (c->x[0]) memcpy(G2H(c->x[0]), id, sizeof id);
+    c->x[0] = 0;
+}
+
 /* The SDK functions plugins call that the game never does, whose SDK code would ask system services
  * that aren't here: their dispatch entries get these when plugins load (plugin_shims). */
 static void show_application_error(Cpu *c) {   /* (ApplicationErrorArg: the dialog's text at 0x10, the full screen's at 0x810) */
@@ -391,6 +400,7 @@ static void unavailable(Cpu *c) { c->x[0] = RESULT(123, 1); }   /* (nn::ssl: no 
 static void plugin_shims(void) {
     static const struct { const char *name; GuestFn *fn; } SHIMS[] = {
         {"_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE", display_version},
+        {"_ZN2nn2oe17GetPseudoDeviceIdEPNS_4util4UuidE", pseudo_device_id},
         {"_ZN2nn3err20ShowApplicationErrorERKNS0_19ApplicationErrorArgE", show_application_error},
         {"_ZN2nn2oe15ExitApplicationEv", exit_application},
         {"_ZN2nn3hid6detail22SetSupportedNpadIdTypeEPKji", nothing},
@@ -1521,16 +1531,21 @@ void skyline_load_plugins(Cpu *c) {
      * exports whatever the order */
     static char names[64][128];
     static u64 bases[64];
-    int count = 0;
+    int count = 0, missing = 0;
     while (fgets(line, sizeof line, f) && count < 64) {
         line[strcspn(line, "\r\n#")] = 0;
         if (!*line) continue;
         u64 base = rt_load_nro_named(c, line);
-        if (!base) { fprintf(stderr, "[skyline] plugin %s is not recompiled into this build: left out\n", line); continue; }
+        if (!base) { fprintf(stderr, "[skyline] plugin %s is not recompiled into this build: left out\n", line); missing++; continue; }
         snprintf(names[count], sizeof names[count], "%s", line);
         bases[count++] = base;
     }
     fclose(f);
+    if (missing && getenv("SSBU_SKYLINE_PROBE")) {
+        fprintf(stderr, "[skyline] probe failed: %d plugins could not load\n", missing);
+        fflush(stderr);
+        ExitProcess(1);
+    }
     for (int i = 0; i < count; i++) {
         u64 entry = rt_module_export(bases[i], "main");
         fprintf(stderr, "[skyline] plugin %s at %#llx: running main\n", names[i], (unsigned long long)bases[i]);

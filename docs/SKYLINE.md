@@ -18,6 +18,25 @@ of time and loads them natively (`tools/recomp.py`, `runtime/hle_ro.c`). A plugi
 kind of file, so the plan is: recompile each plugin the same way, and provide what Skyline,
 Smashline and the other dependency plugins provide on the console natively in the runtime.
 
+## Plugin discovery probes
+
+`tools/skyline.py probe` uses a fresh temporary `SSBU_DATA_ROOT`, with no copied save,
+cache or plugin files, and clears inherited `SSBU_*` settings before setting its own
+headless, offline test options. It still loads the enabled Skyline plugins from the
+configured game tree: those are the plugins being inspected. Its data directory is
+removed after the probe; diagnostics remain in `dump/skyline/probe.log`.
+
+If a listed plugin cannot load, the runtime exits the probe with an error before running
+plugin entry points. Nonzero exits and timeouts fail the Python probe rather than being
+treated as an unchanged successful result. Normal game launches keep their existing
+missing-plugin behavior. This does not add a preparation step to normal launches or
+change native dependency handling.
+
+The runtime also supplies the plugin-only `GetPseudoDeviceId` query with an explicitly
+synthetic, stable 16-byte value, as in `ssbu-recomp/runtime/sky_compat.c`. It does not read
+a console or host device identifier. These fixes are prerequisites for Training Modpack;
+they do not by themselves automate importing and preparing that mod.
+
 ## Survey (GameBanana, 2026-10-23)
 
 Most downloaded in Gameplay (category 26521) are movesets; Skyline (3322) holds the dependency

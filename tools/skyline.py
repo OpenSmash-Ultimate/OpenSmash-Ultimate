@@ -32,6 +32,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -521,8 +522,11 @@ def probe(tree, log=print):
     """Start the game until its plugins have loaded (SSBU_SKYLINE_PROBE): what they add to the select
     screen goes to dump/skyline/csk.json. The window stays hidden. True if that changed."""
     exe, p = program(tree), Paths(tree)
-    if not exe or not os.path.exists(p.list) or not open(p.list, encoding="utf-8").read().strip():
+    if not exe or not os.path.exists(p.list):
         return False
+    with open(p.list, encoding="utf-8") as listed:
+        if not listed.read().strip():
+            return False
     path = os.path.join(p.skyline, "csk.json")
 
     def entries():   # (as data: a plugin's maps come out in a different order each start)
@@ -542,14 +546,24 @@ def probe(tree, log=print):
                 pass
         return out
     before = entries(), outputs()
-    env = dict(os.environ, SSBU_SKYLINE_PROBE="1", SDL_AUDIO_DRIVER="dummy", SSBU_CWD=tree, SSBU_TESTRUN="skyline-probe",
-               SSBU_LOG=os.path.join(p.skyline, "probe.log"))
+    # The discovery boot must not use the player's saves or an inherited native-mod/input
+    # configuration. Start with fresh, empty data: no copied plugins, cache or save files.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SSBU_")}
+    env.update(SSBU_SKYLINE_PROBE="1", SDL_AUDIO_DRIVER="dummy", SSBU_CWD=tree,
+               SSBU_TESTRUN="skyline-probe", SSBU_RB="0", SSBU_RUNAHEAD="0",
+               SSBU_HEADLESS="1", SSBU_ERROR_DIALOG="0")
     log("loading the plugins once, with no window, for their select-screen entries")
-    try:
-        subprocess.run([exe, os.path.join(tree, "dump", "modules")], env=env, timeout=180, cwd=tree)
-    except subprocess.TimeoutExpired:
-        log("the probe did not finish (see dump/skyline/probe.log)")
-        return False
+    probe_log = os.path.join(p.skyline, "probe.log")
+    with tempfile.TemporaryDirectory(prefix="skyline-probe-") as data:
+        env["SSBU_DATA_ROOT"] = data
+        try:
+            with open(probe_log, "w", encoding="utf-8") as output:
+                ran = subprocess.run([exe, os.path.join(tree, "dump", "modules")], env=env,
+                                     timeout=180, cwd=tree, stdout=output, stderr=subprocess.STDOUT)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("The plugin probe timed out (dump/skyline/probe.log)") from None
+        if ran.returncode:
+            raise RuntimeError(f"The plugin probe failed (code {ran.returncode}; dump/skyline/probe.log)")
     return (entries(), outputs()) != before
 
 
