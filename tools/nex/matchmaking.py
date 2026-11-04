@@ -24,6 +24,7 @@ MAX_ATTRIBS = 16                 # game attributes a gathering may have (NEX's o
 MAX_CRITERIA = 16                # search criteria, and target gatherings, in one AutoMatchmake
 MAX_JOIN_MESSAGE = 256           # characters of a join message passed on to the others
 MAX_URL = 512                    # a station URL's length
+TALK_AFTER_LEAVING = 30.0        # seconds two players of one match may still exchange game traffic after one left it
 NO_GATHERING = 0x8006000A        # (RendezVous::SessionVoid-like)
 
 
@@ -200,14 +201,17 @@ class Criteria:
     def fits(rule, value):
         return rule is None or rule[0] <= value <= rule[1]
 
-    def matches(self, ms, joining):
+    def matches(self, ms, joining, attribs=True):
+        """attribs False: the game attributes left out (the fallback: a player whose search sets them apart -
+        Elite Smash's - still meets the others; the mode, the system and the room still count)."""
         if not self.fits(self.game_mode, ms.game_mode) or not self.fits(self.system_type, ms.system_type):
             return False
         if not self.fits(self.min_participants, ms.min_participants) or not self.fits(self.max_participants, ms.max_participants):
             return False
-        for rule, value in zip(self.attribs, ms.attribs):
-            if not self.fits(rule, value):
-                return False
+        if attribs:
+            for rule, value in zip(self.attribs, ms.attribs):
+                if not self.fits(rule, value):
+                    return False
         return len(ms.participants) + max(joining, self.vacant) <= room(ms)
 
     def __repr__(self):
@@ -220,6 +224,7 @@ class Matchmaking:
         self.nex = nex
         self.sessions = {}       # gid -> Session
         self.of_pid = {}         # pid -> the Session it is in (one at a time)
+        self.left_together = {}  # (pid, pid) -> when one of the two left a match they were in together
         self.next_gid = 0x10000
         r = nex.register
         r(109, 40, self.auto_matchmake)
@@ -284,7 +289,12 @@ class Matchmaking:
 
     def together(self, a, b):
         ms = self.of_pid.get(a.pid)
-        return ms is not None and ms is self.of_pid.get(b.pid)
+        if ms is not None and ms is self.of_pid.get(b.pid):
+            return True
+        # (players of one match a little after one of them left it: their games' rollback still tells the other the
+        # fight is over - runtime/hle_rb_core.c, SSBU_RB_NET=online - a game kicked by its own rules leaving first)
+        left = self.left_together.get((min(a.pid, b.pid), max(a.pid, b.pid)))
+        return left is not None and time.monotonic() - left < TALK_AFTER_LEAVING
 
     def encode_session(self, ms, private=True):
         out = StreamOut()
@@ -343,6 +353,12 @@ class Matchmaking:
     def leave(self, pid, ms, kind=N_PARTICIPANT_LEFT):
         if pid not in ms.participants:
             return
+        now = time.monotonic()
+        if len(self.left_together) > 4096:   # (old pairs out)
+            self.left_together = {k: t for k, t in self.left_together.items() if now - t < TALK_AFTER_LEAVING}
+        for other in ms.participants:
+            if other != pid:
+                self.left_together[(min(pid, other), max(pid, other))] = now
         ms.participants.remove(pid)
         if self.of_pid.get(pid) is ms:
             del self.of_pid[pid]
@@ -393,7 +409,7 @@ class Matchmaking:
         part = conn.user.get("part")
         mine = self.rating_of(conn.pid)
         now = time.monotonic()
-        candidates = []
+        candidates, fallback = [], []
         for ms in self.sessions.values():
             if ms.part != part or not ms.open or conn.pid in ms.participants:
                 continue
@@ -401,16 +417,24 @@ class Matchmaking:
                 continue
             if ms.game_mode != source.game_mode and not criteria:
                 continue
-            if criteria and not any(c.matches(ms, joining) for c in criteria):
-                continue
             if not criteria and len(ms.participants) + joining > room(ms):
                 continue
-            # ranked: the closest rating, within a window that widens while a session waits
             diff = abs(self.session_rating(ms) - mine)
+            if criteria and not any(c.matches(ms, joining) for c in criteria):
+                # (the search's game attributes set it apart - Elite Smash's searches, or the others' from an Elite
+                # player's gathering: with nobody else to meet, the queue never ended. Kept as a fallback)
+                if any(c.matches(ms, joining, attribs=False) for c in criteria):
+                    fallback.append((diff, ms.gid, ms))
+                continue
+            # ranked: the closest rating, within a window that widens while a session waits; past it, a fallback
             if diff > RATING_WINDOW + RATING_WIDENING * (now - ms.created):
+                fallback.append((diff, ms.gid, ms))
                 continue
             candidates.append((diff, ms.gid, ms))
-        found = min(candidates)[2] if candidates else None
+        # the closest of those the search asked for; else, rather than waiting for ever, the closest of the rest
+        found = min(candidates)[2] if candidates else min(fallback)[2] if fallback else None
+        if found is not None and not candidates:
+            self.info(f"{self.nex.name(conn)} (rating {mine}): no gathering fits the search; the closest other one, {found}")
         self.leave_others(conn, found)   # (before a new gathering: the old one may be the best place)
         if found is None:
             found = self.new_session(conn, source)

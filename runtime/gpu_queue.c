@@ -24,7 +24,12 @@
 #define JOBS 4096        /* submissions queued at most (the submitter waits beyond) */
 #define INLINE 16        /* GPFIFO entries kept in the job itself; more are allocated */
 
-typedef struct Job { u32 channel, count, syncpoint, fence; u64 *entries; u64 inline_entries[INLINE]; } Job;
+typedef struct Job { u32 channel, count, syncpoint, fence; int fast, hide; u64 *entries; u64 inline_entries[INLINE]; } Job;
+extern volatile LONG rb_fast;   /* (kernel.c) */
+/* (run-ahead's profile, hle_rb_core.c: the GPU thread's time in submissions, those made in hidden frames [1] and the others [0]) */
+double gpu_q_busy_ms[2]; long long gpu_q_jobs[2];
+extern volatile int gpu_job_hidden;   /* (gpu.c) */
+volatile int gpu_hide_fast;          /* (hle_rb_core.c, run-ahead: the submissions of hidden frames draw nothing) */
 
 static Job jobs[JOBS];
 static u64 queued, done;   /* submissions so far: queued, and run (jobs[n % JOBS] is number n) */
@@ -45,7 +50,11 @@ static DWORD WINAPI gpu_thread(LPVOID unused) {
         while (done == queued) SleepConditionVariableSRW(&work, &lock, INFINITE, 0);
         Job *j = &jobs[done % JOBS];
         ReleaseSRWLockExclusive(&lock);
+        u64 q0 = rt_now_ns();
+        gpu_job_hidden = j->hide;
         gpu_submit(j->channel, j->entries, j->count);   /* (the job stays put until `done` passes it) */
+        gpu_job_hidden = 0;
+        gpu_q_busy_ms[j->fast] += (double)(rt_now_ns() - q0) / 1e6; gpu_q_jobs[j->fast]++;
         AcquireSRWLockExclusive(&lock);
         u32 id = j->syncpoint;
         if (id < SYNCPT_MAX && (i32)(j->fence - gpu_syncpt_min[id]) > 0) gpu_syncpt_min[id] = j->fence;
@@ -84,6 +93,8 @@ void gpu_queue_submit(u32 channel, const u64 *entries, u32 count, u32 syncpoint,
     j->count = count;
     j->syncpoint = syncpoint;
     j->fence = fence;
+    j->fast = rb_fast > 0;
+    j->hide = j->fast && gpu_hide_fast;
     j->entries = count <= INLINE ? j->inline_entries : malloc(sizeof *entries * count);
     if (!j->entries) { j->entries = j->inline_entries; j->count = count = 0; }
     memcpy(j->entries, entries, sizeof *entries * count);   /* (the driver reuses its array) */

@@ -569,8 +569,10 @@ static char *nm_stristr(char *s, const char *name) {
     for (; *s; s++) if (!_strnicmp(s, name, n)) return s;
     return NULL;
 }
+int rb_page_cold(const void *p);   /* (hle_rb_state.c: read-only for the rollback state map, writable all the same) */
 static int nm_writable(void *p) {
     MEMORY_BASIC_INFORMATION mi;
+    if (rb_page_cold(p)) return 1;
     return VirtualQuery(p, &mi, sizeof mi) && mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD | PAGE_READONLY | PAGE_EXECUTE_READ));
 }
 /* A colour of a new fighter its data does not have: the path of another costume slot (a whole token c01..c07,

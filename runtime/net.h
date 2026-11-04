@@ -86,6 +86,11 @@ void net_rb_send(u32 dst_ip, const void *data, u32 len);   /* dst 0: every playe
 /* This player's room, itself included, lowest address first: a private room's members, or this
  * player and the players of its Local Wireless room in the lobby. 0 until joined. */
 int net_room_members(u32 *out, int max);
+/* The players this game's sockets sent datagrams to lately (hle_net.c notes each one; the lobby's
+ * own addresses left out): in the game's Online mode, the players of its match (Pia talks to them
+ * straight). Most recent first, those of the last `within_ms` only. */
+void net_note_peer(u32 ip);
+int net_recent_peers(u32 *out, int max, u32 within_ms);
 typedef struct NetRbCounts { long long out_data, out_lobby, in_direct, in_relayed, in_lobby; } NetRbCounts;
 void net_rb_counts(NetRbCounts *out);
 

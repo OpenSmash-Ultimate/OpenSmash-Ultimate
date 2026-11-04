@@ -56,6 +56,8 @@ static struct {
     int renderer;         /* RENDERER_* (renderer.h) */
 } cfg = {MODE_WINDOWED, 1280, 720, 3, 1, 1, 1, PACING_CLOCK, 0, "auto", 1.0f, 1.0, RENDERER_DEFAULT};
 
+static int cfg_runahead;   /* display.ini's runahead (display_runahead) */
+
 static const char DEFAULT_INI[] =
     "; display.ini: the game's window and the pacing of its frames. Read when the game starts; the\n"
     "; settings menu (Esc in the game) changes it too.\n"
@@ -120,6 +122,12 @@ static const char DEFAULT_INI[] =
     "low_latency = 1\n"
     "; hide_cursor = 1: hide the mouse pointer over the game after 2 seconds without moving it.\n"
     "hide_cursor = 1\n"
+#ifdef _WIN32
+    "; runahead = 0-3: in fights, show each frame this many frames ahead (less input delay; the settings menu's\n"
+    ";   Display page: off, 1, 2). 1 shows the real frame one frame sooner, 2 also predicts one frame on the\n"
+    ";   controls held now. Each frame ahead costs a frame of the game's work more per frame shown, and a savestate.\n"
+    "runahead = 0\n"
+#endif
     "; overlay = 1: show the frame rate in the corner from the start (F1 shows or hides it while playing).\n"
     "overlay = 1\n"
     "; volume = 0-100: the game's whole sound, over its own sound settings (0 is silent). The settings menu changes it while playing.\n"
@@ -235,6 +243,7 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else if (!_stricmp(key, "pacing")) parse_pacing(value);
         else if (!_stricmp(key, "latency")) cfg.latency = atoi(value);
         else if (!_stricmp(key, "low_latency")) cfg.low_latency = atoi(value) != 0;
+        else if (!_stricmp(key, "runahead")) cfg_runahead = atoi(value);
         else if (!_stricmp(key, "hide_cursor")) cfg.hide_cursor = atoi(value) != 0;
         else if (!_stricmp(key, "overlay")) cfg.overlay = atoi(value) != 0;
         else if (!_stricmp(key, "overlay_scale")) parse_overlay_scale(value);
@@ -269,6 +278,14 @@ static void load(void) {
 
 int display_latency(void) { load(); return cfg.latency; }
 int display_low_latency(void) { load(); return cfg.low_latency; }
+/* run-ahead's frames (display.ini; hle_rb_core.c reads it at each fight frame, SSBU_RUNAHEAD over it) */
+static volatile LONG saved_runahead = -1;
+int display_runahead(void) {
+    load();
+    int n = saved_runahead >= 0 ? (int)saved_runahead : cfg_runahead;
+    return n < 0 ? 0 : n > 3 ? 3 : n;
+}
+void display_set_runahead(int frames) { InterlockedExchange(&saved_runahead, frames < 0 ? 0 : frames > 3 ? 3 : frames); }
 Pacing display_pacing(void) { load(); return cfg.pacing; }
 const char *display_gpu(void) { load(); return cfg.gpu; }
 float display_render_scale(void) { load(); return cfg.render_scale; }
@@ -357,8 +374,15 @@ static RECT windowed_rect(HWND h) {
     return (RECT){x, y, x + ww, y + wh};
 }
 
+/* (SSBU_HEADLESS=1, test runs: the window stays off every screen whatever happens - two headless games came onto
+ * the owner's desktop, 11-04; a monitor of another DPI sends WM_DPICHANGED with a rectangle on it) */
+static int win_headless(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("SSBU_HEADLESS"); v = e && !strcmp(e, "1"); }
+    return v;
+}
 static void set_mode(HWND h, int mode) {
-    if (mode == current_mode) return;
+    if (mode == current_mode || win_headless()) return;
     if (current_mode == MODE_WINDOWED) have_place = GetWindowPlacement(h, &windowed_place);
     current_mode = mode;
     if (mode == MODE_WINDOWED) {
@@ -409,7 +433,7 @@ HWND display_create_window(HINSTANCE inst, const wchar_t *cls, const wchar_t *ti
     if (headless) {   /* (test runs: shown off every screen, never focused, so it still draws) */
         SetWindowLongPtrW(h, GWL_EXSTYLE, GetWindowLongPtrW(h, GWL_EXSTYLE) | WS_EX_TOOLWINDOW);   /* (no taskbar button either) */
         SetWindowPos(h, NULL, -32000, -32000, 640, 360, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-        ShowWindow(h, SW_SHOWNOACTIVATE);
+        /* (not shown: a test watchdog takes any visible window for one on screen; Direct3D draws and presents a hidden one alike) */
         SetTimer(h, 1, 500, NULL);
         return h;
     }
@@ -505,7 +529,7 @@ int display_message(HWND h, UINT msg, WPARAM w, LPARAM l, LRESULT *result) {
     }
     case WM_DPICHANGED: {
         const RECT *r = (const RECT *)l;
-        if (current_mode == MODE_WINDOWED)
+        if (current_mode == MODE_WINDOWED && !win_headless())
             SetWindowPos(h, NULL, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
         *result = 0;
         return 1;
@@ -535,6 +559,13 @@ int display_message(HWND h, UINT msg, WPARAM w, LPARAM l, LRESULT *result) {
         return 0;
     case WM_TIMER:
         if (w != 1) return 0;
+        if (win_headless()) {   /* (put back off screen if anything moved it) */
+            RECT r;
+            if (GetWindowRect(h, &r) && (r.left != -32000 || r.top != -32000))
+                SetWindowPos(h, NULL, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            *result = 0;
+            return 1;
+        }
         if (cfg.hide_cursor && !hidden_cursor && GetTickCount64() - last_mouse_at > 2000) {
             POINT p;
             GetCursorPos(&p);

@@ -348,7 +348,8 @@ class NexServer:
             other = next((c for c in self.by_pid.values() if c.addr[0] == ip), None)
             if other is not None:
                 self.at_ip[ip] = other
-        self.info(f"{self.name(conn)} left")
+        why = getattr(conn, "why", "")
+        self.info(f"{self.name(conn)} left" + (f" ({why})" if why else ""))
         for fn in self.on_disconnect:
             fn(conn)
 

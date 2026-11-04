@@ -63,8 +63,10 @@ typedef struct { u32 parent, sibling, child_dir, child_file, hash, name_len; cha
 typedef struct { u32 parent, sibling; u64 offset, size; u32 hash, name_len; char name[]; } RomFile;
 #define NONE 0xFFFFFFFFu
 
+void rb_guest_writing(void *p, u64 n);   /* (hle_rb_state.c: the rollback state map's read-only pages opened for the system's write) */
 static int pread_all(HANDLE h, u64 offset, void *buf, u64 size) {
     u8 *p = buf;
+    rb_guest_writing(buf, size);
     while (size) {
         OVERLAPPED o = {0};
         o.Offset = (DWORD)offset;
@@ -361,7 +363,8 @@ static u64 rb_closes[256][2];   /* (when closed, when opened) */
 static u32 rb_nclose;
 static int rb_fs = -1;
 static u64 rb_born[512];        /* (by slot) when its handle was opened */
-static int rb_fs_on(void) { if (rb_fs < 0) { const char *e = getenv("SSBU_RB"); rb_fs = e && *e && *e != '0'; } return rb_fs; }
+int kernel_rb_switch(void);   /* (kernel.c: SSBU_RB, or run-ahead) */
+static int rb_fs_on(void) { if (rb_fs < 0) rb_fs = kernel_rb_switch(); return rb_fs; }
 static void rb_closing(const Handle *h) {   /* (the lock held) */
     if (!rb_fs_on()) return;
     u32 i = (u32)(h - handles);
@@ -1086,11 +1089,12 @@ void fs_mount_sd(void) {
     add_mount("mods", M_HOST, root, NULL);   /* (host_path: the mods' files) */
 }
 int skyline_provides(const char *path);
+void select_screen_install(void);   /* (hle_select_screen.c) */
 /* (once the RomFS is there, Skyline's plugins load, as on the console) */
 HLE(_ZN2nn2fs8MountRomEPKcPvm) {
     ready();
     u32 r = add_mount(P(char, c->x[0]), M_ROM, "", NULL);
-    if (!r) { skyline_load_plugins(c); native_mods_load(); }   /* (the fighter SDK's hook.h mods: hle_native_mods.c) */
+    if (!r) { select_screen_install(); skyline_load_plugins(c); native_mods_load(); }   /* (more select-screen tiles: hle_select_screen.c; the fighter SDK's hook.h mods: hle_native_mods.c) */
     c->x[0] = r;
 }
 HLE(_ZN2nn2fs17MountCacheStorageEPKc) {
