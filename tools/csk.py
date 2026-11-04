@@ -158,7 +158,7 @@ def place_beyond(rows, last):
     return notes
 
 
-NEW_TILES = 4   # (the select screen's layout: a fifth new tile takes a 14th column, and the game aborts while loading the menus)
+NEW_TILES = 1000 - 91   # (the select screen is made for as many as come: tools/css_layout.py, MAX_TILES)
 
 
 def limit_new(entries, log=print):

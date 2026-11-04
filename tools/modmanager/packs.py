@@ -355,14 +355,6 @@ def check(tree, names):
         if s["new_dirs"] is None:
             out.append({"level": "error", "title": f"{n}: its config.json can't be read",
                         "detail": "Its new costume slots won't load. Reinstall the mod.", "mods": [n]})
-    # the select screen has room for 4 new characters (91 tiles): more need a bigger layout mod
-    new, arranged = mods.new_characters(tree, list(sums))
-    if len(new) > 4 and not arranged:
-        out.append({"level": "info", "title": f"{len(new)} new characters, and the select screen has room for 4",
-                    "detail": "Apply to game installs the CSS 91+ Layout Fix from GameBanana and turns it on: it makes room "
-                              "for them all (without it the select screen breaks). New characters: " + ", ".join(new) + ".",
-                    "mods": new, "fix": {"label": "Install the CSS 91+ Layout Fix", "gamebanana": mods.LAYOUT_FIX_ID,
-                                                 "file": mods.LAYOUT_FIX_FILE}})
     # the same costume slot from two mods: a skin's model and textures mixed with another's can look
     # broken or crash a match; a mod that only changes physics or animation goes with any skin
     by_slot = {}

@@ -2011,9 +2011,9 @@ def apply(tree, log=print):
     if os.path.exists(os.path.join(tree.root, "skyline", "plugins", "libarcropolis.nro")):
         # the real ARCropolis is among the standard plugins: it reads the turned-on mods from
         # sd:/ultimate/mods (runtime/hle_fs.c) as the game loads, so the game keeps its own data
-        select_screen_room(tree, on, log)
         characters_mod(tree, log)
         missing_shares(tree, on, log)
+        select_screen_arcropolis(tree, on, log)
         sync_plugins(tree, log)
         shutil.copyfile(tree.vanilla_cfg, tree.cfg)
         os.makedirs(tree.work, exist_ok=True)
@@ -2135,8 +2135,7 @@ def characters_mod(tree, log):
 
 
 ARRANGEMENT = ("ui", "param", "menu", "chara_icon_arrangement.prc")
-LAYOUT_FIX_ID, LAYOUT_FIX_FILE = 468582, 1055469   # (the GameBanana mod and its file without Squad Strike)
-LAYOUT_FIX = f"gamebanana.com/mods/{LAYOUT_FIX_ID} (CSS 91+ Layout Fix)"
+GAME_ROOM = 4   # new fighters the game's own select screen has room for (91 tiles, the game's fighters fill 87)
 
 
 def new_characters(tree, names):
@@ -2154,34 +2153,94 @@ def new_characters(tree, names):
     return new, arranged
 
 
-def select_screen_room(tree, on, log):
-    """The select screen holds 91 tiles (13 x 7: the game's ui/param/menu/chara_icon_arrangement.prc):
-    the game's own fill all but 4. More new characters (plugins adding a select-screen entry, the CSK
-    Collection's API) need a mod with a bigger arrangement and layout, or the screen breaks (one
-    column of tiles, or the game stops in the menus). When there's none, the CSS 91+ Layout Fix is
-    turned on (installed from GameBanana first if it isn't); `on` gains it. Without the internet,
-    says what to do."""
+def select_screen_count(tree, on):
+    """(how many fighters the turned-on mods add to the select screen, whether one of them brings its
+    own arrangement): the entries Skyline plugins add (dump/skyline/csk.json; before the game's first
+    start with them, one a plugin) and OpenSmash's own new fighters (config.json's new-fighters)."""
     new, arranged = new_characters(tree, on)
-    if len(new) <= 4 or arranged:
-        return
-    state = tree.load()
-    have = [n for n, m in state["mods"].items() if str(m.get("gamebanana")) == str(LAYOUT_FIX_ID)]
+    entries = [e for e in csk.load(tree.root) if e.get("kind") == "ui_chara_db"]
+    return (len(entries) if entries else len(new)) + len(mod_config(tree, on)["new-fighters"]), arranged
+
+
+def select_screen(tree, on, table, folder, log):
+    """The select screen for as many fighters as the mods add (tools/css_layout.py): the game's holds 91
+    tiles and its own fighters fill 87, so past 4 new fighters its layout and table are made again for
+    91 + their number of tiles, smaller tiles the more there are, into `folder` (the game's layout, or a
+    turned-on mod's own copy of it, as the base; kept in dump/mods/select_screen and made again when
+    what it is made from changes). runtime/hle_select_screen.c sets up the tiles the game
+    leaves out. Nothing is made when a mod brings its own arrangement (it is used as it is) or the
+    game's screen has room. [(data.arc path, file)] of the files made."""
+    import css_layout
+    extra, arranged = select_screen_count(tree, on)
+    paths = [css_layout.LAYOUT, css_layout.ARRANGEMENT]
+    if extra <= GAME_ROOM or arranged:
+        if arranged and extra > GAME_ROOM:
+            log(f"{extra} new fighters: a mod's own select screen arrangement is used")
+        shutil.rmtree(folder, ignore_errors=True)
+        return []
+    tiles = min(css_layout.GAME_TILES + extra, css_layout.MAX_TILES)
+    base = None
+    for name in on:   # (a mod's own copy of the screen's layout - a theme -: the last one, as it would win)
+        for root in find_roots(os.path.join(tree.mods, name)) or [os.path.join(tree.mods, name)]:
+            own = os.path.join(root, *css_layout.LAYOUT.split("/"))
+            if os.path.isfile(own):
+                base = own
+    if base:
+        with open(base, "rb") as f:
+            layout = f.read()
+    else:
+        layout = table.original(*table.file_targets(css_layout.LAYOUT)[0])
+    arrangement = table.original(*table.file_targets(css_layout.ARRANGEMENT)[0])
+    key = hashlib.sha1(layout + arrangement + str((tiles, css_layout.VERSION)).encode()).hexdigest()
+    stamp = os.path.join(folder, "made.txt")
+    files = [(p, os.path.join(folder, *p.split("/"))) for p in paths]
     try:
-        if not have:
-            log(f"{len(new)} new characters are on, and the select screen has room for 4: installing {LAYOUT_FIX}")
-            have = gamebanana_install(tree, LAYOUT_FIX_ID, LAYOUT_FIX_FILE)
-            state = tree.load()
-    except Exception as e:   # (offline, GameBanana down...: the rest of the mods still apply)
-        log(f"{len(new)} new characters are on, and the select screen has room for 4; {LAYOUT_FIX} couldn't be "
-            f"installed ({e}): install it from My mods, or turn some off (" + ", ".join(new) + ")")
+        with open(stamp, encoding="utf-8") as f:
+            same = f.read().strip() == key and all(os.path.isfile(src) for _p, src in files)
+    except OSError:
+        same = False
+    if not same:
+        shutil.rmtree(folder, ignore_errors=True)
+        css_layout.write_mod(folder, tiles, layout, arrangement)
+        with open(stamp, "w", encoding="utf-8") as f:
+            f.write(key + "\n")
+    log(f"{extra} new fighters: the select screen made for {tiles} tiles" + (f" (on {os.path.relpath(base, tree.mods)})" if base else ""))
+    return files
+
+
+def select_screen_arcropolis(tree, on, log):
+    """select_screen with the real ARCropolis: the files go in mods/.characters, which it loads last
+    (characters_mod), and the mods' own copies of the layout are hidden from it (dump/skyline/hidden.txt)."""
+    image = RomfsImage(tree.vanilla_cfg)
+    try:
+        arc_at = next(o for p, o, s in romfs_entries(image) if p == "data.arc")
+        table = Table(Arc(lambda off, n: image.read(arc_at + off, n)))
+        made = select_screen(tree, on, table, os.path.join(tree.work, "select_screen"), log)
+    finally:
+        close_image(image)
+    if not made:
         return
-    for n in have:
-        if not state["mods"][n].get("enabled"):
-            log(f"{n}: turned on (the select screen needs it for {len(new)} new characters)")
-        state["mods"][n]["enabled"] = True
-        if n not in on:
-            on.append(n)
-    tree.save(state)
+    top = os.path.join(tree.mods, CHARACTERS)
+    for path, src in made:   # (from the folder of its own into .characters itself, where ARCropolis reads)
+        out = os.path.join(top, *path.split("/"))
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        shutil.copyfile(src, out)
+    hidden_path = os.path.join(tree.root, "dump", "skyline", "hidden.txt")
+    try:
+        with open(hidden_path, encoding="utf-8") as f:
+            hidden = [l.strip() for l in f if l.strip()]
+    except OSError:
+        hidden = []
+    for name in on:
+        for root in find_roots(os.path.join(tree.mods, name)) or [os.path.join(tree.mods, name)]:
+            for path, _src in made:
+                own = os.path.join(root, *path.split("/"))
+                rel = os.path.relpath(own, tree.mods).replace(os.sep, "/")
+                if os.path.isfile(own) and rel not in hidden:
+                    hidden.append(rel)
+    os.makedirs(os.path.dirname(hidden_path), exist_ok=True)
+    with open(hidden_path, "w", encoding="utf-8", newline="\n") as f:
+        f.writelines(h + "\n" for h in hidden)
 
 
 SLOT = re.compile(r"/c(\d{2,3})/")
@@ -2280,6 +2339,9 @@ def _apply(tree, image, lines, state, on, log):
                 regional.setdefault(base.lower(), {})[region] = (path, src, name)
             else:
                 chosen[path.lower()] = (path, src, name)
+    # the select screen for more fighters than the game's holds (tools/css_layout.py)
+    for path, src in select_screen(tree, on, table, os.path.join(tree.work, "select_screen"), log):
+        chosen[path.lower()] = (path, src, "the select screen")
     # the characters plugins add to the select screen (the CSK Collection's API: dump/skyline/csk.json)
     csk_entries = csk.load(tree.root)
     for target in csk.targets(csk_entries):

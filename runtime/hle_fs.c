@@ -1087,11 +1087,12 @@ void fs_mount_sd(void) {
     add_mount("mods", M_HOST, root, NULL);   /* (host_path: the mods' files) */
 }
 int skyline_provides(const char *path);
+void select_screen_install(void);   /* (hle_select_screen.c) */
 /* (once the RomFS is there, Skyline's plugins load, as on the console) */
 HLE(_ZN2nn2fs8MountRomEPKcPvm) {
     ready();
     u32 r = add_mount(P(char, c->x[0]), M_ROM, "", NULL);
-    if (!r) { skyline_load_plugins(c); native_mods_load(); }   /* (the fighter SDK's hook.h mods: hle_native_mods.c) */
+    if (!r) { select_screen_install(); skyline_load_plugins(c); native_mods_load(); }   /* (more select-screen tiles: hle_select_screen.c; the fighter SDK's hook.h mods: hle_native_mods.c) */
     c->x[0] = r;
 }
 HLE(_ZN2nn2fs17MountCacheStorageEPKc) {
