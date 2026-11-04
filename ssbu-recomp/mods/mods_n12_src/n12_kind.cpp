@@ -43,9 +43,24 @@ static const uint64_t MASK40 = 0xffffffffffull;
 // 0x72 kinds = at most 20 new): ssbu_game_p15n3.dll. An exe linked against an unpatched DLL (ssbu_game_eh_o1.dll:
 // ssbu_tutto.exe, ssbu_n13.exe) reads B / A / container 2 outside the singleton: garbage rows, no parameter objects,
 // abort() in the fighter init (run both3).
-static const int FIRST = 0x5E, MAXNEW = 16;   // U16: 8 -> 16 = the spare rows of the engine's kind tables (0x5E-0x6D; 0x6E.. are the special kinds)
+// 2026-11-04 (KIND SLOTS): only 0x5E-0x6D (16 rows) are free in the engine's 0x76-row kind tables (0x6E-0x75 are
+// iceclimber, the Pokemon Trainer's, Pyra / Mythra), but a match has at most 8 fighters. So the 16 kind numbers are
+// SLOTS shared per match: every array of this component is indexed by the fighter's REGISTRY index (MAXNEW of them,
+// any number the select screen lists), and slot s (kind FIRST + s) is bound to one registry fighter at a time.
+// Fighters 0..15 start bound to their own slot (16 or fewer registered fighters: nothing changes); a fighter without
+// a slot gets one when a player record is built with it (the game's player-record function 0x7101788260, which
+// turns the select screen's pick into the match's fighter kind through the hash -> kind lookup 0x710066cd40): a free
+// slot, else the one used longest ago that no player's record holds. Binding rewrites the slot's rows of the engine's
+// name / sound name / upper-case name / kind hash tables and its fighter_param rows (B[kind]); everything else of the
+// fighter is found from its kind through reg_of() at the time it is asked. Outside a record build, the kind of a
+// fighter without a slot is its donor's (the select screen asks kinds of the whole roster).
+static const int FIRST = 0x5E, NSLOT = 16, MAXNEW = 128;
 static const uint64_t NAME_TABLE = MOD_GA(0x7104f80e20ull);
-static int g_donor[MAXNEW] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+static int g_donor[MAXNEW];
+static int g_slot_reg[NSLOT], g_reg_slot[MAXNEW], g_nslot = NSLOT;     // g_nslot: N12_SLOTS=<n> (test: fewer slots, so they are re-bound)
+static ULONGLONG g_slot_stamp[NSLOT];
+static int g_player_reg[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+static __declspec(thread) int t_binding;               // > 0 while a player record is built on this thread
 static char g_donor_name[MAXNEW][32];
 static const uint64_t NEW_B = 0x19a8;              // array B of the patched singleton (patches\kinds.txt)
 static const uint64_t OWNER_TABLE = MOD_GA(0x710455d7e4ull);   // int32 per weapon kind (617 rows)
@@ -99,7 +114,9 @@ static int readable(uint64_t a, size_t n) {
     ReleaseSRWLockExclusive(&g_rd_lock);
     return ok && a + n <= hi;
 }
-static int is_new(uint32_t kind) { return kind >= (uint32_t)FIRST && kind < (uint32_t)(FIRST + g_nnew); }
+static int is_new(uint32_t kind) { return kind >= (uint32_t)FIRST && kind < (uint32_t)(FIRST + NSLOT) && g_slot_reg[kind - FIRST] >= 0; }
+static int reg_of(uint32_t kind) { return is_new(kind) ? g_slot_reg[kind - FIRST] : -1; }      // registry index of a new kind
+static int kind_of(int r) { return r >= 0 && r < g_nnew && g_reg_slot[r] >= 0 ? FIRST + g_reg_slot[r] : -1; }
 static void set_row(uint64_t table, int row, uint64_t value, const char *what) {
     uint64_t *t = (uint64_t *)(uintptr_t)table; DWORD old;
     if (!readable(table, 8 * (row + 1))) { logf("[n4] kind: table %s %llx not readable", what, (unsigned long long)table); return; }
@@ -120,13 +137,15 @@ static void resolve_donors(void) {
             uint64_t s = ((uint64_t *)(uintptr_t)NAME_TABLE)[k];
             if (readable(s, 32) && strcmp((const char *)(uintptr_t)s, g_donor_name[n]) == 0) { g_donor[n] = k; break; }
         }
-        if (g_donor[n] >= 0) logf("[n6] kind 0x%x (%s): donor %s = kind 0x%x (row of the engine's name table %llx)", FIRST + n, g_name[n], g_donor_name[n], g_donor[n], (unsigned long long)NAME_TABLE);
+        if (g_donor[n] >= 0) logf("[n6] fighter %d (%s): donor %s = kind 0x%x (row of the engine's name table %llx)", n, g_name[n], g_donor_name[n], g_donor[n], (unsigned long long)NAME_TABLE);
         else all = 0;
     }
     if (all) InterlockedExchange(&done, 1);
 }
-static int dk(uint32_t kind) {                     // donor kind of a new kind
-    int n = (int)kind - FIRST;
+static int dk_reg(int n);
+static int dk(uint32_t kind) { return dk_reg(reg_of(kind)); }      // donor kind of a new kind
+static int dk_reg(int n) {                                          // donor kind of registry fighter n
+    uint32_t kind = (uint32_t)kind_of(n);
     if (n < 0 || n >= g_nnew) return 0;
     if (g_donor[n] < 0) {
         resolve_donors();
@@ -138,24 +157,28 @@ static int dk(uint32_t kind) {                     // donor kind of a new kind
     }
     return g_donor[n];
 }
-static void ensure_data(void) {
-    if (InterlockedCompareExchange(&g_data_done, 1, 0)) return;
+// the engine's four per-kind tables rows of slot s = its fighter's (names, sound names, upper-case names, kind hashes)
+static void write_slot_names(int s) {
     static const uint64_t tab[4] = { MOD_GA(0x7104f80e20ull), MOD_GA(0x7104f811d0ull), MOD_GA(0x7104f80a70ull), MOD_GA(0x710453b1c0ull) };
     static const char *what[4] = { "names", "sound names", "upper-case names", "kind hashes" };
-    resolve_donors();
-    for (int n = 0; n < g_nnew; n++) {
-        const int DONOR = dk(FIRST + n);
-        for (int t = 0; t < 4; t++) {
-            uint64_t v = ((uint64_t *)(uintptr_t)tab[t])[DONOR];
-            // N4_OWNNAME is a bit mask: 1 name (files, script module), 2 sound name, 4 upper-case name, 8 kind hash.
-            // The strings live in this DLL: host addresses, which the recompiled game reads as they are.
-            if (t == 0 && (g_ownname & 1)) v = (uint64_t)(uintptr_t)g_name[n];
-            if (t == 1 && (g_ownname & 2)) v = (uint64_t)(uintptr_t)g_sound[n];
-            if (t == 2 && (g_ownname & 4)) v = (uint64_t)(uintptr_t)g_upper[n];
-            if (t == 3 && (g_ownname & 8)) v = g_hash[n];
-            set_row(tab[t], FIRST + n, v, what[t]);
-        }
+    int n = g_slot_reg[s];
+    if (n < 0) return;
+    const int DONOR = dk_reg(n);
+    for (int t = 0; t < 4; t++) {
+        uint64_t v = ((uint64_t *)(uintptr_t)tab[t])[DONOR];
+        // N4_OWNNAME is a bit mask: 1 name (files, script module), 2 sound name, 4 upper-case name, 8 kind hash.
+        // The strings live in this DLL: host addresses, which the recompiled game reads as they are.
+        if (t == 0 && (g_ownname & 1)) v = (uint64_t)(uintptr_t)g_name[n];
+        if (t == 1 && (g_ownname & 2)) v = (uint64_t)(uintptr_t)g_sound[n];
+        if (t == 2 && (g_ownname & 4)) v = (uint64_t)(uintptr_t)g_upper[n];
+        if (t == 3 && (g_ownname & 8)) v = g_hash[n];
+        set_row(tab[t], FIRST + s, v, what[t]);
     }
+}
+static void ensure_data(void) {
+    if (InterlockedCompareExchange(&g_data_done, 1, 0)) return;
+    resolve_donors();
+    for (int s = 0; s < NSLOT; s++) write_slot_names(s);
     DWORD old;
     VirtualProtect((void *)(uintptr_t)OWNER_TABLE, 4 * WEAPON_KINDS, PAGE_READWRITE, &old);
 }
@@ -200,11 +223,69 @@ static int recall(Seen *tab, int n, uint64_t obj) {
 static HookOrig o_hash, o_record, o_callbacks, o_disp[9], o_build[2], o_get[2], o_loader, o_init, o_setup, o_winit, o_wdisp[4], o_fireball;
 static long g_n_hash, g_n_record, g_n_callbacks, g_n_disp[9], g_n_build[2], g_n_get[2], g_n_init, g_n_winit, g_n_wdisp[4], g_n_swap, g_n_fire[0x80];
 
+// ---- KIND SLOTS (see FIRST): binding a registry fighter to a slot
+static void write_slot_B(int s);
+static long g_n_bind;
+static int bind_slot(int r) {                      // under g_lock; returns the kind
+    if (g_reg_slot[r] >= 0) { g_slot_stamp[g_reg_slot[r]] = GetTickCount64(); return FIRST + g_reg_slot[r]; }
+    int best = -1;
+    for (int s = 0; s < g_nslot; s++) {
+        int held = 0, o = g_slot_reg[s];
+        for (int p = 0; p < 8; p++) if (o >= 0 && g_player_reg[p] == o) held = 1;
+        // a slot given or asked for in a record built in the last 5 s belongs to the match being set up (its players'
+        // records are built together; the debug match's wrap of the record function passes no player index here)
+        if (o >= 0 && g_slot_stamp[s] && GetTickCount64() - g_slot_stamp[s] < 5000) held = 1;
+        if (held) continue;
+        if (o < 0) { best = s; break; }
+        if (best < 0 || g_slot_stamp[s] < g_slot_stamp[best]) best = s;
+    }
+    if (best < 0) { logf("[slots] %s: NO kind slot free (every slot is held by a player record): the donor's kind is used", g_name[r]); return dk_reg(r); }
+    int old = g_slot_reg[best];
+    if (old >= 0) g_reg_slot[old] = -1;
+    g_slot_reg[best] = r; g_reg_slot[r] = best; g_slot_stamp[best] = GetTickCount64();
+    if (g_reg) {
+        ((SsbuRegFighter *)g_reg->fighters)[r].kind = FIRST + best;
+        if (old >= 0) ((SsbuRegFighter *)g_reg->fighters)[old].kind = -1;
+    }
+    write_slot_names(best);
+    write_slot_B(best);
+    uint8_t *P = *(uint8_t **)(uintptr_t)MOD_GA(0x71052bb3b0ull);
+    uint8_t *A = P ? P + 0x60 + 0x38 * (FIRST + best) : nullptr;
+    g_n_bind++;
+    logf("[slots] kind 0x%x (slot %d) is now %s (fighter %d of %d, donor %s = kind 0x%x)%s%s; A[0x%x] use counter %u, objects %llx | %llx",
+         FIRST + best, best, g_name[r], r, g_nnew, g_donor_name[r], dk_reg(r), old >= 0 ? ", was " : "", old >= 0 ? g_name[old] : "",
+         FIRST + best, A ? *(uint32_t *)A : 0, A ? *(unsigned long long *)(A + 0x10) : 0ull, A ? *(unsigned long long *)(A + 0x28) : 0ull);
+    return FIRST + best;
+}
+// Is this hash -> kind lookup the one of the player-record function? The lookup is called by the ui_chara accessor
+// 0x7103262130, which keeps a frame record ({x29, x30} at x29, `stp x29, x30, [sp, #0x40]; add x29, sp, #0x40`):
+// [x29 + 8] is where that accessor returns to. The record function is 0x7101788260 (its call at 0x71017882ec). (The
+// test runs' debug match wraps the same function in the runtime, and that wrap does not pass through this
+// component's hook on it: so the return address, not only t_binding.)
+static int in_player_record(Ctx *c) {
+    if (t_binding) return 1;
+    uint64_t fp = c->x[29];
+    if (!readable(fp, 16)) return 0;
+    uint64_t ra = *(uint64_t *)(uintptr_t)(fp + 8), lo = MOD_GA(0x7101788260ull);
+    return ra > lo && ra < lo + 0xd90;
+}
 static void h_hash(Ctx *c, void *) {               // hash40 -> kind
     ensure_data();
     uint64_t h = c->x[0] & MASK40;
     for (int n = 0; n < g_nnew; n++)
-        if (h == g_hash[n]) { if (!g_n_hash++) logf("[n4] kind: hash -> kind: %s -> 0x%x", g_name[n], FIRST + n); c->x[0] = FIRST + n; return; }
+        if (h == g_hash[n]) {
+            int k = kind_of(n);
+            int t_binding = in_player_record(c);
+            if (k < 0 && t_binding) { EnterCriticalSection(&g_lock); k = bind_slot(n); LeaveCriticalSection(&g_lock); }
+            else if (k >= 0 && t_binding) g_slot_stamp[k - FIRST] = GetTickCount64();
+            if (k < 0) {
+                k = dk_reg(n);
+                static long said; if (said++ < 6) logf("[slots] kind asked for %s, which has no kind slot (outside a player record): the donor's kind 0x%x", g_name[n], k);
+            }
+            if (g_n_hash++ < 3) logf("[n4] kind: hash -> kind: %s -> 0x%x", g_name[n], k);
+            c->x[0] = (uint64_t)k;
+            return;
+        }
     o_hash(c);
 }
 static void h_w0(Ctx *c, HookOrig o, long *n, const char *what) {      // functions taking the kind in w0
@@ -307,14 +388,14 @@ static void build_own_record(int n, uint64_t donor_record) {
     hdr[0] = (uint64_t)(uintptr_t)rows; hdr[1] = (uint64_t)total;
     *(uint64_t *)(rec + 8) = (uint64_t)(uintptr_t)hdr;
     g_own_record[n] = rec;
-    logf("[n12] kind 0x%x (%s): OWN description record %p (copy of the donor's %llx), article list: %d of the donor + %d own:%s", FIRST + n, g_name[n], (void *)rec, (unsigned long long)donor_record,
+    logf("[n12] kind 0x%x (%s): OWN description record %p (copy of the donor's %llx), article list: %d of the donor + %d own:%s", kind_of(n), g_name[n], (void *)rec, (unsigned long long)donor_record,
          dcount, g_nart[n], shown);
 }
 static void h_record(Ctx *c, void *) {
     uint32_t kind = (uint32_t)c->x[0];
     h_w0(c, o_record, &g_n_record, "description record");
     if (!articles_on() || !is_new(kind)) return;
-    int n = (int)kind - FIRST;
+    int n = reg_of(kind);
     if (!g_own_record[n]) {
         // the template rows' functions: the template owner's record, read through the same (original) lookup
         resolve_articles(n);
@@ -513,9 +594,9 @@ static void h_disp(Ctx *c, void *u) {              // dispatchers 0..4: kind at 
     int i = (int)(intptr_t)u;
     if (i >= 5) {
         uint32_t kind = (uint32_t)c->x[0];
-        if (g_reg && is_new(kind)) g_reg->agent_begin(g_name[kind - FIRST]);
+        if (g_reg && is_new(kind)) g_reg->agent_begin(g_name[reg_of(kind)]);
         h_w0(c, o_disp[i], &g_n_disp[i], "script dispatcher (share)");
-        if (g_reg) g_reg->agent_end(is_new(kind) ? g_name[kind - FIRST] : nullptr, c->x[0]);
+        if (g_reg) g_reg->agent_end(is_new(kind) ? g_name[reg_of(kind)] : nullptr, c->x[0]);
         return;
     }
     uint32_t *k = (uint32_t *)(uintptr_t)(c->x[0] + 0xc);
@@ -523,9 +604,9 @@ static void h_disp(Ctx *c, void *u) {              // dispatchers 0..4: kind at 
     if (is_new(kind)) {
         const int DONOR = dk(kind);
         if (g_n_disp[i]++ < 2) logf("[n4] kind: script dispatcher %d asked for kind 0x%x -> the donor's factory (kind 0x%x)%s", i, kind, DONOR, g_reg ? ", the agent goes to the new fighter's own module" : "");
-        if (g_reg) g_reg->agent_begin(g_name[kind - FIRST]);
+        if (g_reg) g_reg->agent_begin(g_name[reg_of(kind)]);
         *k = DONOR; o_disp[i](c); *k = kind;
-        if (g_reg) g_reg->agent_end(g_name[kind - FIRST], c->x[0]);
+        if (g_reg) g_reg->agent_end(g_name[reg_of(kind)], c->x[0]);
         return;
     }
     o_disp[i](c);
@@ -566,7 +647,7 @@ static int64_t arc_file_index(const char *path) {
 static void own_param_begin(uint32_t kind) {
     g_nlent = 0;
     if (!g_reg || !is_new(kind)) return;
-    int n = (int)kind - FIRST;
+    int n = reg_of(kind);
     const SsbuRegFighter *f = &g_reg->fighters[n];
     for (int k = 0; k < 2; k++) {
         if (!g_own[n][k].tried) {
@@ -621,7 +702,7 @@ static void h_group(Ctx *c, void *) {
         uint64_t h = c->x[1] & MASK40;
         if (c->x[0] != g_objN[n] && g_n_group < 3) {
             for (int t = 0; t < g_nart[n]; t++) if (h == g_hashT[n][t][0] || h == g_hashT[n][t][1])
-                logf("[n12] parameter group %llx asked of object %llx (not A[0x%x] + 0x10 = %llx)", (unsigned long long)h, (unsigned long long)c->x[0], FIRST + n, (unsigned long long)g_objN[n]);
+                logf("[n12] parameter group %llx asked of object %llx (not A[0x%x] + 0x10 = %llx)", (unsigned long long)h, (unsigned long long)c->x[0], kind_of(n), (unsigned long long)g_objN[n]);
         }
         for (int t = 0; t < g_nart[n]; t++)
             if (g_objT[n][t] && (h == g_hashT[n][t][0] || h == g_hashT[n][t][1])) {
@@ -641,7 +722,7 @@ static void install_group_hook(int n) {
     uint8_t *P = *(uint8_t **)(uintptr_t)MOD_GA(0x71052bb3b0ull);
     if (!P) return;
     resolve_articles(n);
-    g_objN[n] = *(uint64_t *)(P + 0x60 + 0x38 * (FIRST + n) + 0x10);
+    if (kind_of(n) < 0) return;
     for (int t = 0; t < g_nart[n]; t++) {
         int ok_ = g_art[n][t].owner_kind;
         if (ok_ < 0 || ok_ >= FIRST) continue;
@@ -690,7 +771,7 @@ static void h_build(Ctx *c, void *u) {             // (this, kind, x2): the case
     // (true when it is in the match; otherwise an open point, see the phase file).
     if (articles_on() && !g_a0_workaround && !(getenv("N13_LIVEPARAM") && getenv("N13_LIVEPARAM")[0] == '1')) {
         static int tdep_pending[FIRST];
-        int n = (int)kind - FIRST;
+        int n = reg_of(kind);
         resolve_articles(n);
         for (int t = 0; t < g_nart[n]; t++) {
             int ok_ = g_art[n][t].owner_kind;
@@ -715,7 +796,7 @@ static void h_build(Ctx *c, void *u) {             // (this, kind, x2): the case
     if (g_n_build[i]++ < 6) logf("[n4] kind: parameter object builder %d ran the donor's case for kind 0x%x: A[0x%x] = %llx %llx | %llx %llx ; A[donor 0x%x] = %llx | %llx", i, kind, kind,
                               *(unsigned long long *)(an + 0x10), *(unsigned long long *)(an + 0x18), *(unsigned long long *)(an + 0x28), *(unsigned long long *)(an + 0x30),
                               DONOR, *(unsigned long long *)(a0 + 0x10), *(unsigned long long *)(a0 + 0x28));
-    if (i == 1) install_group_hook((int)kind - FIRST);      // N12 test stand-in (N12_ARTGROUP=1)
+    if (i == 1) install_group_hook(reg_of(kind));      // N12 test stand-in (N12_ARTGROUP=1)
 }
 // A REAL ROW PER NEW KIND in the three row vectors the loader fills from fighter_param.prc / fighter_param_motion.prc
 // (holders at singleton + 0, + 0x10, + 0x20: begin at holder + 8, end at + 0x10; rows of 0x628, 0x218, 0x68 bytes; the
@@ -801,7 +882,7 @@ static int add_rows(Ctx *c, uint8_t *P, int holder_off, size_t row, int32_t *idx
     int donor_row[MAXNEW];
     for (int k = 0; k < g_nnew; k++) {                  // N6: the donor's row of EACH new kind
         int donor = -1;
-        uint64_t dh = ((uint64_t *)(uintptr_t)MOD_GA(0x710453bc58ull))[dk(FIRST + k)] & MASK40;       // the loader's own list of kind hashes
+        uint64_t dh = ((uint64_t *)(uintptr_t)MOD_GA(0x710453bc58ull))[dk_reg(k)] & MASK40;       // the loader's own list of kind hashes
         for (size_t i = 0; i < n; i++) if ((*(uint64_t *)(b + i * row) & MASK40) == dh) { donor = (int)i; break; }
         if (donor < 0) { logf("[n6] kind: row vector of 0x%x-byte rows: no row with the kind hash %llx of the donor %s: no rows added", (unsigned)row, (unsigned long long)dh, g_donor_name[k]); return 0; }
         donor_row[k] = donor;
@@ -830,31 +911,45 @@ static int add_rows(Ctx *c, uint8_t *P, int holder_off, size_t row, int32_t *idx
     }
     return 1;
 }
+// B[kind] of slot s: its fighter's own rows (made for every registered fighter at load), the donor's where none
+static int32_t g_rowidx[MAXNEW][3]; static int g_rows_made;
+static void write_slot_B(int s) {
+    uint8_t *P = *(uint8_t **)(uintptr_t)MOD_GA(0x71052bb3b0ull);
+    int n = g_slot_reg[s];
+    if (!P || n < 0 || !g_rows_made) return;          // (before the loader: it writes them)
+    int32_t *b = (int32_t *)(P + NEW_B);
+    int K = FIRST + s, D = dk_reg(n);
+    for (int j = 0; j < 3; j++) b[3 * K + j] = g_rowidx[n][j] >= 0 ? g_rowidx[n][j] : b[3 * D + j];
+}
 static void h_loader(Ctx *c, void *) {             // loads fighter_param: writes B[0..0x5D]; the rows of the new kinds are ours
     uint8_t *P = (uint8_t *)(uintptr_t)c->x[0];
     ensure_data();
     o_loader(c);
     int32_t *b = (int32_t *)(P + NEW_B);
-    for (int n = 0; n < g_nnew; n++) memcpy(b + 3 * (FIRST + n), b + 3 * dk(FIRST + n), 12);
+    for (int n = 0; n < g_nnew; n++) g_rowidx[n][0] = g_rowidx[n][1] = g_rowidx[n][2] = -1;
     if (g_row) {
-        int32_t i0[MAXNEW], i1[MAXNEW], i2[MAXNEW];
+        static int32_t i0[MAXNEW], i1[MAXNEW], i2[MAXNEW];
         // The third table (0x68-byte rows) is a KIND x KIND matrix: each row holds four vectors with 3 floats per
         // OPPONENT kind, indexed with B[opponent] (accessor 0x7100720f90). A row index 94 there means element 282 of
         // vectors that have 282 elements: std::out_of_range (run H1). Growing it needs a column per new kind in
         // every row; until then a new kind keeps the donor's row AND column there (N4_ROW=2 shows the failure).
+        // KIND SLOTS: one row per REGISTERED fighter (not per slot); binding a slot points B[kind] at its rows.
         int ok0 = add_rows(c, P, 0x00, 0x628, i0), ok1 = add_rows(c, P, 0x10, 0x218, i1), ok2 = g_row >= 2 ? add_rows(c, P, 0x20, 0x68, i2) : 0;
         for (int n = 0; n < g_nnew; n++) {
-            if (ok0) b[3 * (FIRST + n) + 0] = i0[n];
-            if (ok1) b[3 * (FIRST + n) + 1] = i1[n];
-            if (ok2) b[3 * (FIRST + n) + 2] = i2[n];
+            if (ok0) g_rowidx[n][0] = i0[n];
+            if (ok1) g_rowidx[n][1] = i1[n];
+            if (ok2) g_rowidx[n][2] = i2[n];
         }
-        char offs[120]; int k = 0; offs[0] = 0;
-        for (int i = 0; i < g_row_noff; i++) k += snprintf(offs + k, sizeof offs - k, " +0x%x", g_row_off[i]);
-        for (int n = 0; n < g_nnew; n++) {
-            int K = FIRST + n, D = dk(K);
-            logf("[n4] kind: OWN ROWS: B[0x%x] = %d %d %d (the donor's, kind 0x%x: %d %d %d); edit %08x -> %08x made in the new 0x628 row at:%s", K,
-                 b[3 * K], b[3 * K + 1], b[3 * K + 2], D, b[3 * D], b[3 * D + 1], b[3 * D + 2], g_row_find, g_row_set, g_row_noff ? offs : " (nowhere)");
-        }
+    }
+    g_rows_made = 1;
+    for (int s = 0; s < NSLOT; s++) write_slot_B(s);
+    char offs[120]; int k = 0; offs[0] = 0;
+    for (int i = 0; i < g_row_noff; i++) k += snprintf(offs + k, sizeof offs - k, " +0x%x", g_row_off[i]);
+    for (int s = 0; s < NSLOT; s++) {
+        if (g_slot_reg[s] < 0) continue;
+        int K = FIRST + s, D = dk(K);
+        logf("[n4] kind: OWN ROWS: B[0x%x] (%s) = %d %d %d (the donor's, kind 0x%x: %d %d %d); edit %08x -> %08x made in the new 0x628 row at:%s", K, g_name[g_slot_reg[s]],
+             b[3 * K], b[3 * K + 1], b[3 * K + 2], D, b[3 * D], b[3 * D + 1], b[3 * D + 2], g_row_find, g_row_set, g_row_noff ? offs : " (nowhere)");
     }
     logf("[n4] kind: parameter loader done: B[0x%x] = %d %d %d, B[0] = %d %d %d (B[1] = %d %d %d)", FIRST, b[3 * FIRST], b[3 * FIRST + 1], b[3 * FIRST + 2], b[0], b[1], b[2], b[3], b[4], b[5]);
 }
@@ -898,7 +993,7 @@ static void h_init(Ctx *c, void *) {               // fighter init: x0 = fighter
     }
     /* N8: the registry learns which new fighter is being set up on this thread (paths built with the donor's name) */
     int own_set = g_reg && g_reg->size >= offsetof(SsbuRegistry, owner_set) + sizeof(void *) && g_reg->owner_set && is_new((uint32_t)kind);
-    if (own_set) g_reg->owner_set(g_name[kind - FIRST]);
+    if (own_set) g_reg->owner_set(g_name[reg_of((uint32_t)kind)]);
     o_init(c);
     if (own_set) g_reg->owner_set(nullptr);
     t_init_kind = was;
@@ -1429,8 +1524,8 @@ static void h_wdisp(Ctx *c, void *u) {             // weapon agent dispatcher (w
         if (g_reg) {
             int32_t *t = (int32_t *)(uintptr_t)OWNER_TABLE;
             int so = static_owner(wk);
-            if (g_reg->size >= offsetof(SsbuRegistry, agent_begin_weapon) + sizeof(void *) && g_reg->agent_begin_weapon) g_reg->agent_begin_weapon(g_name[live - FIRST]);
-            else g_reg->agent_begin(g_name[live - FIRST]);
+            if (g_reg->size >= offsetof(SsbuRegistry, agent_begin_weapon) + sizeof(void *) && g_reg->agent_begin_weapon) g_reg->agent_begin_weapon(g_name[reg_of((uint32_t)live)]);
+            else g_reg->agent_begin(g_name[reg_of((uint32_t)live)]);
             EnterCriticalSection(&g_lock);              // the weapon init above us on this thread holds it already
             int32_t was = (wk >= 0 && wk < WEAPON_KINDS) ? t[wk] : 0;
             if (so >= 0) t[wk] = so;
@@ -1438,7 +1533,7 @@ static void h_wdisp(Ctx *c, void *u) {             // weapon agent dispatcher (w
             if (so >= 0) t[wk] = was;
             LeaveCriticalSection(&g_lock);
             if (own_obj && g_nownagent < 64) { g_ownagent[g_nownagent] = c->x[0]; g_ownagent_disp[g_nownagent++] = i; }   // N12: the own article's agents (life log)
-            g_reg->agent_end(g_name[live - FIRST], c->x[0]);
+            g_reg->agent_end(g_name[reg_of((uint32_t)live)], c->x[0]);
             return;
         }
     }
@@ -1506,7 +1601,7 @@ static HookOrig o_copysetup; static long g_n_copysetup;
 static void h_copysetup(Ctx *c, void *) {
     uint32_t kind = (uint32_t)c->x[2];
     if (is_new(kind)) {
-        if (g_n_copysetup++ < 8) logf("[n12] Kirby swallowed new kind 0x%x (%s): no copy ability (copy_setup gets kind 6, as for another Kirby)", kind, g_name[kind - FIRST]);
+        if (g_n_copysetup++ < 8) logf("[n12] Kirby swallowed new kind 0x%x (%s): no copy ability (copy_setup gets kind 6, as for another Kirby)", kind, g_name[reg_of(kind)]);
         c->x[2] = 6;
     }
     o_copysetup(c);
@@ -1548,7 +1643,7 @@ static void h_fireball(Ctx *c, void *) {           // (article, owner's module a
     // N12 (own articles, stage 1; N12_ARTWRAP=0: off): the template's native article function run for a NEW owner
     // sees the owner's kind field as the TEMPLATE OWNER's for the call only (the callback-wrap idea, scoped to it)
     if (articles_on() && is_new((uint32_t)kind) && !(getenv("N12_ARTWRAP") && getenv("N12_ARTWRAP")[0] == '0')) {
-        int n = kind - FIRST, tk = -1;
+        int n = reg_of((uint32_t)kind), tk = -1;
         for (int t = 0; t < g_nart[n]; t++) if (g_art[n][t].fn[0] == MOD_GA(0x7100cb9de0ull)) tk = g_art[n][t].owner_kind;
         uint64_t obj = 0;
         for (int i = 0; i < g_nfighter; i++) if (id && g_fighter[i].id == id) obj = g_fighter[i].obj;
@@ -1568,7 +1663,7 @@ static void h_fireball(Ctx *c, void *) {           // (article, owner's module a
 // player-record function 0x7101788260 (x0 panel state, x1 player, x3 record: + 8 fighter kind, + 0x19 colour; see
 // debug_mode.c) is followed here: a new kind whose folder has no model\body\c<colour> plays colour 0.
 // N12_COLOUR0=0: off.
-static HookOrig o_precord; static long g_n_colour;
+static HookOrig o_precord; static long g_n_colour; static int g_colour0_off;
 static int colour_present(int n, int colour) {
     if (!g_reg || n < 0 || n >= g_reg->count) return 1;
     char path[600]; snprintf(path, sizeof path, "%s\\fighter\\%s\\model\\body\\c%02d", g_reg->fighters[n].folder, g_reg->fighters[n].name, colour);
@@ -1577,17 +1672,40 @@ static int colour_present(int n, int colour) {
 }
 static void h_precord(Ctx *c, void *) {
     uint64_t rec = c->x[3]; int idx = (int)c->x[1];
+    t_binding++;                                       // KIND SLOTS: the hash -> kind lookup inside binds a slot
     o_precord(c);
+    t_binding--;
     if (!readable(rec, 0x20)) return;
     int kind = (int)(int8_t)*(uint8_t *)(uintptr_t)(rec + 8), colour = *(uint8_t *)(uintptr_t)(rec + 0x19);
-    if (!is_new((uint32_t)kind) || colour == 0 || colour_present(kind - FIRST, colour)) return;
+    if (idx >= 0 && idx < 8) {
+        int r = reg_of((uint32_t)kind);
+        if (g_player_reg[idx] != r) {
+            static long said; if (said++ < 40) logf("[slots] player %d record: %s (kind 0x%x)", idx, r >= 0 ? g_name[r] : "a fighter of the game's", kind);
+        }
+        g_player_reg[idx] = r;
+    }
+    if (g_colour0_off) return;
+    if (!is_new((uint32_t)kind) || colour == 0 || colour_present(reg_of((uint32_t)kind), colour)) return;
     *(uint8_t *)(uintptr_t)(rec + 0x19) = 0;
-    if (g_n_colour++ < 8) logf("[u1] player %d: new fighter %s (kind 0x%x) chosen with colour %d, which its folder does not have (no model\\body\\c%02d): colour 0", idx, g_name[kind - FIRST], kind, colour, colour);
+    if (g_n_colour++ < 8) logf("[u1] player %d: new fighter %s (kind 0x%x) chosen with colour %d, which its folder does not have (no model\\body\\c%02d): colour 0", idx, g_name[reg_of((uint32_t)kind)], kind, colour, colour);
+}
+// N12_KTRACE=<hex,..> (diagnosis): up to 64 game functions; a call whose x0, x1 or x2 is a NEW kind is logged (first 4
+// per function, with the return address)
+static HookOrig o_kt[64]; static uint64_t g_kt_addr[64]; static long g_kt_n[64];
+static void h_ktrace(Ctx *c, void *u) {
+    int i = (int)(intptr_t)u;
+    for (int a = 0; a < 3; a++)
+        if (is_new((uint32_t)c->x[a]) && c->x[a] < 0x100 && g_kt_n[i]++ < 4) {
+            logf("[ktrace] %llx called with a new kind 0x%x in x%d (x0 %llx x1 %llx x2 %llx) from %llx", (unsigned long long)g_kt_addr[i], (unsigned)c->x[a], a,
+                 (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[30]);
+            break;
+        }
+    o_kt[i](c);
 }
 extern "C" __declspec(dllexport) void mod_init(const HookApi *a) {
     api = a;
     const char *e = getenv("N3_NEWKIND");
-    char reglist[200] = "";
+    static char reglist[MAXNEW * 33] = "";       // (KIND SLOTS: was 200, overran with 20+ names)
     g_reg = ssbu_registry_get();
     if (g_reg && g_reg->count > 0) {
         for (int k = 0; k < g_reg->count && k < MAXNEW; k++) {
@@ -1599,7 +1717,7 @@ extern "C" __declspec(dllexport) void mod_init(const HookApi *a) {
     } else g_reg = nullptr;
     if (!e || !*e) { api->log("[n4] kind mod: no fighter registry and N3_NEWKIND not set, nothing installed"); return; }
     InitializeCriticalSection(&g_lock);
-    char list[200]; snprintf(list, sizeof list, "%s", e);
+    static char list[MAXNEW * 33]; snprintf(list, sizeof list, "%s", e);
     for (char *p = strtok(list, ","); p && g_nnew < MAXNEW; p = strtok(nullptr, ",")) {
         char kn[80]; snprintf(kn, sizeof kn, "fighter_kind_%s", p);
         g_hash[g_nnew] = hash40(kn);
@@ -1609,6 +1727,12 @@ extern "C" __declspec(dllexport) void mod_init(const HookApi *a) {
         if (!g_donor_name[g_nnew][0]) { const char *d = getenv("N3_DONOR"); snprintf(g_donor_name[g_nnew], 32, "%s", d && *d ? d : "mario"); }
         g_nnew++;
     }
+    for (int s = 0; s < NSLOT; s++) g_slot_reg[s] = -1;
+    for (int n = 0; n < MAXNEW; n++) { g_reg_slot[n] = -1; g_donor[n] = -1; }
+    if ((e = getenv("N12_SLOTS")) && atoi(e) > 0 && atoi(e) < NSLOT) g_nslot = atoi(e);
+    for (int n = 0; n < g_nnew && n < g_nslot; n++) { g_slot_reg[n] = n; g_reg_slot[n] = n; }     // KIND SLOTS: the first 16 start in their own slot
+    if (g_reg) for (int n = 0; n < g_reg->count && n < MAXNEW; n++) ((SsbuRegFighter *)g_reg->fighters)[n].kind = kind_of(n);
+    if (g_nnew > g_nslot) logf("[slots] %d new fighters, %d kind slots (0x%x-0x%x): fighters %d.. get a slot when a player record is built with them", g_nnew, g_nslot, FIRST, FIRST + g_nslot - 1, g_nslot);
     resolve_donors();                                   // when the game's data is mapped already; else at the first hook
     if (g_reg) for (int k = 0; k < g_nnew && k < g_reg->count; k++) read_articles(k);      // N12: fighter.json "articles"
     g_a0_workaround = (e = getenv("N4_A0_WORKAROUND")) && atoi(e);
@@ -1635,7 +1759,8 @@ extern "C" __declspec(dllexport) void mod_init(const HookApi *a) {
     for (int i = 0; i < 4; i++) { all++; ok += !!api->install(wdisp[i], h_wdisp, (void *)(intptr_t)i, &o_wdisp[i]); }
     all++; ok += !!api->install(MOD_GA(0x7100cb9de0ull), h_fireball, nullptr, &o_fireball);
     all++; ok += !!api->install(MOD_GA(0x71017e88d0ull), h_path, nullptr, &o_path);
-    if (!((e = getenv("N12_COLOUR0")) && e[0] == '0')) { all++; ok += !!api->install(MOD_GA(0x7101788260ull), h_precord, nullptr, &o_precord); }      // U1: colour of a new fighter
+    g_colour0_off = (e = getenv("N12_COLOUR0")) && e[0] == '0';
+    all++; ok += !!api->install(MOD_GA(0x7101788260ull), h_precord, nullptr, &o_precord);      // U1: colour of a new fighter; KIND SLOTS: the binding
     if (!((e = getenv("N13_WKLOOK")) && e[0] == '0'))       // N13: the two bounded per-weapon-kind lookups (phase file N13 section 2)
         for (int i = 0; i < 2; i++) { all++; ok += !!api->install(i ? MOD_GA(0x71033aa1e0ull) : MOD_GA(0x71033be790ull), h_wklook, (void *)(intptr_t)i, &o_wklook[i]); }
     if (!((e = getenv("N13_OWNFILES")) && e[0] == '0')) {
@@ -1673,6 +1798,15 @@ extern "C" __declspec(dllexport) void mod_init(const HookApi *a) {
             all++; ok += !!api->install(g_kf_addr[nk], h_kindfield, (void *)(intptr_t)nk, &o_kf[nk]);
         }
     }
+    if ((e = getenv("N12_KTRACE")) && *e) {
+        static char kl[2000]; snprintf(kl, sizeof kl, "%s", e); int nk = 0;
+        for (char *p = strtok(kl, ","); p && nk < 64; p = strtok(nullptr, ",")) {
+            g_kt_addr[nk] = MOD_GA(strtoull(p, nullptr, 16));
+            if (api->install(g_kt_addr[nk], h_ktrace, (void *)(intptr_t)nk, &o_kt[nk])) nk++;
+            else logf("[ktrace] %s: not hooked (%s)", p, api->error());
+        }
+        logf("[ktrace] %d functions traced", nk);
+    }
     if ((e = getenv("N6_TRACE_MAX"))) g_trace_max = atol(e);
     if ((e = getenv("N6_TRACE")) && *e) {
         char tl[300]; snprintf(tl, sizeof tl, "%s", e); int nt = 0;
@@ -1688,7 +1822,7 @@ extern "C" __declspec(dllexport) void mod_init(const HookApi *a) {
     if (g_kirby) { all++; ok += !!api->install(MOD_GA(0x7100ba0e80ull), h_copysetup, nullptr, &o_copysetup); }
     g_ai = !((e = getenv("N5_AI")) && e[0] == '0');
     if (g_ai) for (int i = 0; i < 8; i++) { all++; ok += !!api->install(ai[i], h_ai, (void *)(intptr_t)i, &o_ai[i]); }
-    char donors[1200]; int dn = 0; donors[0] = 0;   // U16: was 200 (overran with 16 new kinds)
+    static char donors[MAXNEW * 70]; int dn = 0; donors[0] = 0;   // U16: was 200 (overran with 16 new kinds)
     for (int k = 0; k < g_nnew && dn < (int)sizeof donors - 80; k++) dn += snprintf(donors + dn, sizeof donors - dn, "%s%s<-%s", k ? ", " : "", g_name[k], g_donor_name[k]);
     logf("[n4] kind mod loaded (n7_kind: donor per kind, donor callbacks wrapped): %d new kind(s) from 0x%x (first: %s, hash %llx), donors: %s; weapons: %s; own names %d; %d of %d hooks",
          g_nnew, FIRST, g_name[0], (unsigned long long)g_hash[0], donors, g_a0_workaround ? "N3 workaround (A[0])" : "live owner", g_ownname, ok, all);
