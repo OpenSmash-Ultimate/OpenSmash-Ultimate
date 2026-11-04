@@ -757,7 +757,8 @@ static volatile int rb_resumed;
 static double load_t0;
 static int quiet;
 double rb_save_ms[3];   /* the last save: hold and GPU drain, memory, in all (ms) */
-double rb_save_parts[4]; long long rb_save_count;   /* (M6: every save's parking, GPU drain, memory, in all (ms), summed; hle_rb_core.c reads and clears them) */
+double rb_save_parts[4]; long long rb_save_count;
+double rb_load_parts[6]; long long rb_load_count;   /* (run-ahead's profile: every load's hold, check and scratch stacks, GPU drain, memory, host state, in all (ms), summed) */   /* (M6: every save's parking, GPU drain, memory, in all (ms), summed; hle_rb_core.c reads and clears them) */
 
 static Slot *slot_at(int age) { return &ring[(ring_head - age + ring_size * 2) % ring_size]; }
 
@@ -959,6 +960,7 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     load_t0 = now_ms();
     if (held) { held = 0; n = held_n; }   /* (straight after a save that kept them held) */
     else if (!hold(c->thread, &n)) { refused++; return; }
+    double lt_hold = now_ms();
     const char *why = check(c, frame, n, s);
     /* M7, 4 players (4P1: 29 loads refused on PC 2, every retry the next frame too, until the guess was past the
      * states kept: a desync): a thread on another fiber than at the save may be in the middle of a job that ends in a
@@ -1006,9 +1008,12 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     ResetEvent(load_ev);
     u64 live[1025]; u32 skipped;
     u32 nlive = live_stacks(c->thread, live);
+    double lt_scratch = now_ms();
     gpu_queue_drain();
+    double lt_drain = now_ms();
     step("memory");
     memory_load();
+    double lt_mem = now_ms();
     double tm = now_ms();
     u64 undone = 0;
     for (int a = 1; a <= age; a++) { undo_apply(&slot_at(a)->undo); undone += slot_at(a)->undo.n; }
@@ -1032,6 +1037,9 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     audio_rb_load(s->audio);
     ipc_rb_load(s->ipc);
     step("threads' stacks, then this thread's");
+    double lt_host = now_ms();
+    rb_load_parts[0] += lt_hold - load_t0; rb_load_parts[1] += lt_scratch - lt_hold; rb_load_parts[2] += lt_drain - lt_scratch;
+    rb_load_parts[3] += lt_mem - lt_drain; rb_load_parts[4] += lt_host - lt_mem;
     copied = 0;
     loading = s;
     mstat.age = age;
@@ -1052,6 +1060,7 @@ static void finish_load(void) {
     loads++;
     release();
     double total = now_ms() - load_t0;
+    rb_load_parts[5] += total; rb_load_count++;
     if (!quiet || total > 12 || !(loads % 100))
         fprintf(stderr, "[rb] LOAD %lld: %.1f ms (save %lld, %d back); memory: %llu pages copied back (%llu MB; layout walk %u, %llu pages committed or decommitted) in %.1f ms "
                 "[layout %.1f, alias stamps %.1f, alias pages %.1f, watched %.1f, (de)commits %.1f, compared %.1f], undo %llu pages in %.1f ms\n",

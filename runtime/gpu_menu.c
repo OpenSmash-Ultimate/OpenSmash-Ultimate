@@ -88,7 +88,7 @@ enum {
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
     R_LANGUAGE, R_VOLUME, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
-    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE,
+    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE, R_RUNAHEAD,
     R_ROOM_FIRST = 60,    /* + the room's place on the page of rooms shown (ROOM_PAGE at most) */
     R_REMAP_FIRST = 100,  /* + console button */
     R_MOD_FIRST = 200,    /* + the mod's place in mods.json (MENU_MODS at most) */
@@ -629,6 +629,18 @@ static void build(void) {
         note_env(r, "SSBU_PACING");
         r = add(R_LATENCY, K_CHOICE, W_NOW, "Frames queued ahead", "How many frames the graphics card may work ahead: 1 is the most responsive, 3 the smoothest on a busy PC.");
         snprintf(r->value, sizeof r->value, "%d", ds.latency);
+#ifdef _WIN32
+        {   /* (run-ahead: hle_rb_core.c. Its savestates are set up when the game starts: a change from off takes a restart) */
+            int kernel_rb_switch(void);
+            int n = display_runahead();
+            r = add(R_RUNAHEAD, K_CHOICE, kernel_rb_switch() ? W_NOW : W_RESTART, "Run-ahead (experimental)",
+                    "Less input delay in fights: each frame is shown 1 or 2 frames ahead. 1 shows the real frame a frame sooner; "
+                    "2 also guesses one frame on the controls held now. Each frame ahead costs a frame of the game's work more: off on a slow PC.");
+            if (n) snprintf(r->value, sizeof r->value, "%d frame%s", n, n > 1 ? "s" : "");
+            else snprintf(r->value, sizeof r->value, "off");
+            note_env(r, "SSBU_RUNAHEAD");
+        }
+#endif
         r = add(R_CURSOR, K_CHOICE, W_NOW, "Hide the mouse pointer", "Hides the pointer over the game after 2 seconds without moving it.");
         snprintf(r->value, sizeof r->value, "%s", on_off(ds.hide_cursor));
         r = add(R_OVERLAY, K_CHOICE, W_NOW, "Frame rate in the corner", "The frame rate and a graph of frame times (F1 shows or hides it while playing; F2 adds details).");
@@ -862,6 +874,11 @@ static void change(const Row *row, int dir) {
         snprintf(v, sizeof v, "%d", cycle(ds.latency - 1, 3, dir) + 1);
         display_set_latency(atoi(v));
         set_display("latency", v);
+        break;
+    case R_RUNAHEAD:   /* off, 1, 2 (3 only by hand: display.ini or SSBU_RUNAHEAD) */
+        snprintf(v, sizeof v, "%d", cycle(display_runahead() > 2 ? 2 : display_runahead(), 3, dir));
+        display_set_runahead(atoi(v));
+        set_display("runahead", v);
         break;
     case R_VOLUME: {   /* 0 to 100 in steps of 10 */
         int vol = (audio_master_volume() + 5) / 10;
