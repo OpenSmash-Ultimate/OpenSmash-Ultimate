@@ -44,7 +44,8 @@ static char build_text[41];
 const char *rt_data_dir = ".";
 const RtModule rt_module_main = {.build_id = build_text};
 static const char *const FILES[CONFIG_FILES] = {"display.ini", "controllers.ini", "launcher.ini", "online_server.txt",
-                                                "online_name.txt", "online_direct.txt", "online_protocol.txt"};
+                                                "online_name.txt", "online_direct.txt", "online_protocol.txt",
+                                                "online_rollback.txt"};
 const char *config_path(enum ConfigFile file) { return (unsigned)file < CONFIG_FILES ? FILES[file] : NULL; }   /* (this folder's) */
 #ifdef _WIN32
 u64 rt_now_ns(void) {

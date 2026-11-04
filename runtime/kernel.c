@@ -564,11 +564,15 @@ static void watch_decommitting(u64 base, u64 size) {
 }
 
 int kernel_rb_wanted;   /* (hle_rb_core.c, before its first kernel_rb_switch: display.ini's runahead) */
+/* (hle_rb_core.c, before its first kernel_rb_switch: rollback netplay on by default, the game started online - --online
+ * with a lobby or a room, net.h's net_rollback_default - and SSBU_RB not set; SSBU_RB=0 or online_rollback.txt "off"
+ * leave it off. Offline nothing changes: no write watch, no savestates) */
+int kernel_rb_online;
 int kernel_rb_switch(void) {
     const char *v = getenv("SSBU_RB");
     if (v && *v && *v != '0') return 1;
 #ifdef _WIN32
-    if (kernel_rb_wanted) return 1;
+    if (kernel_rb_wanted || kernel_rb_online) return 1;
     v = getenv("SSBU_RUNAHEAD");   /* (run-ahead needs the savestates) */
     return v && atoi(v) > 0;
 #else

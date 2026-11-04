@@ -123,11 +123,11 @@ The game's own **Online** menu works with WindowSmash's game server, which runs 
 ### Rollback in Online mode
 
 > [!NOTE]
-> Being tried out, and off unless both players turn it on: start the game with `SSBU_RB=1` and `SSBU_RB_NET=online` set (in a console, `set SSBU_RB=1` and `set SSBU_RB_NET=online`, then `Play SSBU.bat` from that console).
+> On by default: a game started with `Play SSBU.bat` (or the launcher, which starts it with `--online`) plays Quickplay and [Local Wireless room](#rollback-in-local-wireless-rooms) matches with rollback whenever the other player's game has it on too. To play with the game's own netcode instead, set **Online > Rollback netcode** to **off** in the settings (Esc; it writes `online_rollback.txt`, and counts from the next start), or start the game with `SSBU_RB=0`. A game started offline has no rollback at all and costs nothing for it.
 
 With it, a Quickplay match is played with rollback netplay ([technical guide](TECHNICAL.md#rollback-netplay-ssbu_rb)) instead of the game's own delay-based netcode: your own inputs answer at once (after a small input delay), the other player's are guessed until they arrive, and the game quietly re-runs the few frames a wrong guess touched. Everything around the fight stays the game's own: matchmaking, the character screen, the results with GSP, the next search.
 
-- **Both players need it.** As the match is set up, the two games agree on rollback within 15 seconds; when the other game has it off (or is an older build), the match is played with the game's own netcode, as without it.
+- **Both players need it.** As the match is set up, the two games agree on rollback within 15 seconds; when the other game has it off (or is an older build), the match is played with the game's own netcode, as without it. A build from before rollback was on by default has it off unless its player turned it on with `SSBU_RB=1` and `SSBU_RB_NET=online`.
 - **Two players.** A Quickplay match of three or four players is played with the game's own netcode.
 - **Input delay:** chosen from the round trip the two games measure as the match is set up (the same on both). `SSBU_RB_NET=online,<frames>` sets it by hand.
 - **Desyncs and lost players:** both games compare a hash of the fight every few frames. If the other game stops answering for 8 seconds, or the two go out of sync, a box says so and the game writes `reports\rollback_<date>_<time>.txt` with its last rollback lines: send it with `play.log`.
@@ -147,8 +147,8 @@ Two games on one PC against a lobby of your own, for a test (each game in a fold
 
 ```powershell
 python tools/ssbu_online_lobby.py --bind 127.0.0.1 --port 39421 --state online-state --verbose
-# both games: SSBU_NET_RELAY=127.0.0.1:39421 SSBU_RB=1 SSBU_RB_NET=online, started with --online
-# tests only: SSBU_RB_NET_BOT=calm (the bots stay on the stage), SSBU_NET_SIM=<ms>[,<loss %>[,<jitter ms>]] (each game holds what it receives that long)
+# both games: started with --online, online_server.txt (or SSBU_NET_RELAY) naming 127.0.0.1:39421: rollback is on by default
+# tests only: SSBU_RB_NET_BOT=calm (a bot plays each game's player and stays on the stage; without it, the controllers play), SSBU_NET_SIM=<ms>[,<loss %>[,<jitter ms>]] (each game holds what it receives that long)
 ```
 
 ## Direct connections and your internet address
@@ -296,6 +296,10 @@ python tools/ssbu_online_lobby.py --port 39421 --state online-state --verbose
 
 The lobby checks where messages come from, limits how fast each player can send, and carries each room's traffic only between that room's players. A game accepts direct packets only from addresses the lobby gave it, carrying that pair's secret, and only from players in its own room. Even so, it's a transport for players you trust: lobby codes and room names aren't passwords, and the traffic isn't encrypted or authenticated.
 
+## Rollback in Local Wireless rooms
+
+Started with `Play SSBU.bat` (or the launcher), a Local Wireless room's 1-on-1 match is played with rollback too, by default: the room is made and joined as usual (in the lobby, or in a private room), and as the match is set up the two games agree on rollback within 15 seconds, exactly as a [Quickplay match](#rollback-in-online-mode) does. The character screen, the stage and the results stay the room's own. When the other game has rollback off (or is an older build), or the room has three or four players, the match is played with the game's own netcode. The same switch turns it off: **Online > Rollback netcode** in the settings, or `SSBU_RB=0`.
+
 ## Rollback netplay through the lobby or a private room
 
 Rollback netplay (`SSBU_RB=1`, being tried out: [technical guide](TECHNICAL.md#rollback-netplay-ssbu_rb)) can carry its messages through the same connection as Local Wireless instead of its own UDP port: set netplay up as usual (the lobby, or a private room) and add `SSBU_RB_NET=relay`. Nobody opens a port for it; a private room's host needs only the relay port it already has. Games in one Local Wireless room of the lobby send straight to each other when their routers allow it, and through the lobby otherwise.
@@ -338,7 +342,8 @@ The game server's log (`--nex-log`: `0` quiet, `1` each call, `2` every packet, 
 | `SSBU_NET_TEST_SAVE_ROOM=<file>`, `SSBU_NET_TEST_ROOMS=<file>[,<n>]` | Local tests of the Rooms List: a host writes its room's network to the file once a second; a game given that file also finds n rooms made from it at every scan (default 15, up to 24; `clone[,<n>]` copies the first room really found). They can't be joined. |
 | `SSBU_NET_LOG=1` / `2` | Network logging: a summary, or more detail. |
 | `SSBU_RB_NET=relay[,<player>[,<delay>,<frames>]]` | With `SSBU_RB=1`: rollback netplay's messages through this netplay connection. `<player>`: `auto` (by address in the room), `0`-`3`, or `-1` (the host gives one). See [above](#rollback-netplay-through-the-lobby-or-a-private-room). |
-| `SSBU_RB_NET=online[,<delay>]` | With `SSBU_RB=1`: the game's own Online mode with rollback ([Rollback in Online mode](#rollback-in-online-mode)); the players and their numbers come from each match. |
+| `SSBU_RB_NET=online[,<delay>]` | The game's own matches with rollback: Quickplay ([Rollback in Online mode](#rollback-in-online-mode)) and Local Wireless rooms ([Rollback in Local Wireless rooms](#rollback-in-local-wireless-rooms)); the players and their numbers come from each match. The default for a game started with `--online`. |
+| `SSBU_RB=0` | No rollback: the game's own netcode for every match, also when started with `--online` (as **Online > Rollback netcode** off). `SSBU_RB_NET=off` keeps the savestates but no rollback netplay. |
 | `SSBU_ONLINE_COUNTRY` | The country Online mode reports, as two letters such as `GB`. Default `US`. |
 | `SSBU_ONLINE_SERVER` | `off` turns Online mode off. Otherwise the game server's address inside the lobby, `10.13.0.1:60000` by default; only for tests. |
 

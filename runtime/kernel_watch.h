@@ -31,7 +31,8 @@ static inline UINT kernel_write_watch(int who, DWORD flags, PVOID base, SIZE_T s
  * kernel_init. */
 int kernel_ring_frames(void);
 
-/* SSBU_RB (rollback netplay, hle_rb_core.c) on: set, and not "0". Its savestates ask the system's
+/* SSBU_RB (rollback netplay, hle_rb_core.c) on: set, and not "0"; unset, on when the game is started
+ * online (kernel_rb_online, set by hle_rb_core.c before main) or for run-ahead. Its savestates ask the system's
  * write watch themselves (the heap, stack and thread-local areas reserved with it, and the
  * modules), so the ring and its shared watch stay off then. Read from the environment each time. */
 int kernel_rb_switch(void);

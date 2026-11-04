@@ -229,6 +229,20 @@ static void configure_from_files(void) {
     if (!getenv("SSBU_NET_DIRECT") && settings_line_read(config_path(CONFIG_ONLINE_DIRECT), line, sizeof line) && !_strnicmp(line, "off", 3)) direct_ok = 0;
 }
 
+int net_rollback_default(void) {
+    static int v = -1;
+    if (v >= 0) return v;
+    char line[256], host[256] = "";
+    const char *h = getenv("SSBU_NET_HOST"), *r = getenv("SSBU_NET_RELAY");
+    v = 0;
+    if (!settings_online()) return v;
+    if (settings_line_read(config_path(CONFIG_ONLINE_ROLLBACK), line, sizeof line) && !_strnicmp(line, "off", 3)) return v;
+    if (h && *h && strcmp(h, "0")) return v = 1;
+    if (r && *r) return v = _stricmp(r, "off") != 0;
+    if (settings_line_read(config_path(CONFIG_ONLINE_SERVER), line, sizeof line)) sscanf(line, "%255s", host);
+    return v = host[0] && _stricmp(host, "off") != 0;
+}
+
 /* online_protocol.txt (the settings menu's Online > Netplay version): 3 or 2, the version to ask for
  * first; anything else, or no file: otherwise. Read with any lobby, as SSBU_NET_PROTOCOL is: the
  * macOS and Linux launchers name the lobby in SSBU_NET_RELAY. */

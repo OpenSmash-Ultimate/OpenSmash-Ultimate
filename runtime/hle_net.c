@@ -271,6 +271,7 @@ static void ldn_receive(u32 from, const u8 *p, u32 n) {
                     memcpy(nd + 0x2E, m + 48, 2);
                     L.net[NI_NODE_COUNT]++;
                     if (net_log()) fprintf(stderr, "[net] ldn: %.32s joined as node %d\n", (const char *)nd + 0xC, i);
+                    input_seq_mark("ldn:station-joined");   /* (SSBU_SEQ: a test's room host waits for it) */
                 }
         if (node < 0) { u8 why = 1; ldn_send(from, LM_REJECT, &why, 1); break; }
         L.node_heard[node] = t;
@@ -421,6 +422,7 @@ static void create_network(Cpu *c, u64 config, u64 security, u64 secparam, u64 u
     ldn_state_to(LS_AP_CREATED);
     ldn_send(NET_BROADCAST, LM_ADVERTISE, n, NI_SIZE);
     if (net_log()) fprintf(stderr, "[net] ldn: network created by %.32s (%u players at most)\n", (const char *)host + 0xC, n[NI_NODE_MAX]);
+    input_seq_mark("ldn:created");
     ReleaseSRWLockExclusive(&L.lock);
     c->x[0] = 0;
 }
@@ -587,6 +589,7 @@ static void join(Cpu *c, const u8 *session, u64 user, u16 version) {
     L.join_answer = 0;
     L.join_host = 0;
     ReleaseSRWLockExclusive(&L.lock);
+    if (accepted) input_seq_mark("ldn:connected");
     c->x[0] = accepted ? 0 : R_LDN_CONNECT;
 }
 HLE(_ZN2nn3ldn7ConnectERKNS0_11NetworkInfoERKNS0_14SecurityConfigERKNS0_10UserConfigEiNS0_13ConnectOptionE) { LDN_TRACE;

@@ -46,6 +46,11 @@ const char *net_player_name(void);
  * with --online; NULL when it hosts a private room or plays offline. */
 const char *net_relay_address(void);
 int net_unreachable(void);           /* asked for, but the relay has not answered for a while: offline */
+/* Rollback netplay on by default (kernel.c's kernel_rb_switch when SSBU_RB is not set): started with
+ * --online, with a lobby or a private room to play in (SSBU_NET_HOST, SSBU_NET_RELAY, else
+ * online_server.txt not "off"), and online_rollback.txt (the settings menu's Online > Rollback
+ * netcode) not "off". Read from the files and variables alone, so it may be asked before main. */
+int net_rollback_default(void);
 
 /* LAN discovery: a game hosting a private room announces it on the local network (multicast
  * 239.255.13.13 and broadcast, UDP NET_LAN_PORT, every second; not while direct connections are off

@@ -22,12 +22,13 @@ const char *rt_exe_path(void);   /* (macos/platform.c: the program, from _NSGetE
 #include "settings.h"
 
 static SRWLOCK lock = SRWLOCK_INIT;
-static int online_files;
+static int online_files, args_seen;
 #ifdef __APPLE__
 static char **start_argv;   /* (settings_restart: macOS has no /proc/self/cmdline) */
 #endif
 
 void settings_args(int argc, char **argv) {
+    args_seen = 1;
     for (int i = 1; i < argc; i++)
         if (!strcmp(argv[i], "--online")) online_files = 1;
 #ifdef __APPLE__
@@ -36,7 +37,20 @@ void settings_args(int argc, char **argv) {
 #endif
 }
 
-int settings_online(void) { return online_files; }
+int settings_online(void) {
+#ifdef _WIN32
+    if (!args_seen) {   /* (asked before main read its arguments - hle_rb_core.c's constructor: rollback on by
+                         * default online, net_rollback_default): --online as a word of the command line itself */
+        const char *s = GetCommandLineA(), *p = s;
+        while (s && (p = strstr(p, "--online")) != NULL) {
+            if ((p == s || p[-1] == ' ' || p[-1] == '	' || p[-1] == '"') && (!p[8] || p[8] == ' ' || p[8] == '	' || p[8] == '"')) return 1;
+            p += 8;
+        }
+        return 0;
+    }
+#endif
+    return online_files;
+}
 
 /* ---- a file as lines --------------------------------------------------------------------- */
 typedef struct Text { char **line; int n, cap, crlf; } Text;
