@@ -18,47 +18,6 @@ of time and loads them natively (`tools/recomp.py`, `runtime/hle_ro.c`). A plugi
 kind of file, so the plan is: recompile each plugin the same way, and provide what Skyline,
 Smashline and the other dependency plugins provide on the console natively in the runtime.
 
-## Imported plugins: preparation before play
-
-The root Windows launcher, `Play SSBU.bat` and `launchers/Play SSBU Offline.bat` now
-prepare enabled Skyline plugins before starting the game. Extract an unmodified release
-ZIP into a folder, then use the launcher's Add Mod action to select that folder and enable
-it. For an SD-style package such as Ultimate Training Modpack, select the extracted folder
-containing `atmosphere/`; keep the dependency filenames intact. The command-line mod manager
-also accepts ZIP archives directly. `libnro_hook.nro` is loaded
-when supplied by a mod, rather than being discarded as an already implemented dependency.
-No training plugin, game asset or game instruction bytes are distributed with this support.
-
-On the first start, `tools/prepare_plugins.py` compiles the plugins, boots once without
-a window to discover their hooks and patches, and uses `tools/skyline.py build` to
-regenerate and compile the affected game modules. The probe uses a separate data directory
-and clears inherited scripted input and network settings. A new runtime may first need
-relinking before its probe can run. This needs the same compiler/toolchain as the game build.
-Later starts reuse the prepared result. Changed plugins (even with the same build ID),
-a changed runtime/game, missing outputs, or new recorded hook sites invalidate that result.
-Removing or disabling a plugin also discards its recorded code patches and restores the
-corresponding generated game code. Inline call sites may remain, with no callback installed.
-
-Preparation errors stop the modded launch and are recorded in
-`build/work/plugin_prepare.log` and `dump/skyline/probe.log`. A failed attempt is remembered
-until its inputs change or it is retried explicitly. Use the launcher's plugin Refresh action,
-or run:
-
-```
-python tools/prepare_plugins.py --force
-```
-
-For other frontends, run `python tools/os_mods.py prepare` before starting the executable.
-Directly starting `build/ssbu.exe` bypasses this preparation. The discovery boot records
-initialization hooks; if a plugin records additional sites when a later game module loads,
-those sites invalidate the cache at the next start. This does not promise compatibility
-with every Skyline plugin or game version.
-
-The design follows the automatic preparation in `ssbu-recomp/scripts/mods.py`
-([ssbu-recomp #63](https://github.com/OpenSmash-Ultimate/ssbu-recomp/pull/63), migrated by
-[#108](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/108)); the implementation
-here uses the root runtime, recompiler and mod library.
-
 ## Survey (GameBanana, 2026-10-23)
 
 Most downloaded in Gameplay (category 26521) are movesets; Skyline (3322) holds the dependency
@@ -92,7 +51,7 @@ Smashline 2 is not imported by symbol: each plugin finds `smashline_install_acmd
 `nn::ro::LookupSymbol`. lib_paramconfig's code is linked into the plugins themselves (its hooks
 on `FighterParamModule` getters and some vtables are the plugin's own `A64HookFunction` calls).
 Plugins check that their dependencies exist (`rom:/skyline/plugins/libsmashline_plugin.nro`,
-`libarcropolis.nro`, `libparam_config.nro`, `libthe_csk_collection.nro`).
+`libnro_hook.nro`, `libarcropolis.nro`, `libparam_config.nro`, `libthe_csk_collection.nro`).
 
 The dependency plugins themselves (latest releases):
 
@@ -129,9 +88,9 @@ The dependency plugins themselves (latest releases):
      functions, vtable entries) hook this way with **no rebuild of the game**. Directly called
      ones need the function wrapped at build time (the existing `HLE_WRAP` mechanism, made from
      a list of hook targets) - see the plan.
-   - `A64InlineHook` (a callback at one instruction, with the registers): recorded for the
-     next build, which inserts `rt_inline_hook` at that instruction. Preparation must finish
-     before playing a plugin that depends on these callbacks.
+   - `A64InlineHook` (a callback at one instruction, with the registers): not possible at run
+     time in recompiled code; logged and left out. Smashline's own inline hooks are replaced by
+     natively hooking the functions around them (below).
    - `getRegionAddress`, `sky_memcpy` (data writes work; code writes mean nothing to recompiled
      code - logged), `skyline_tcp_send_raw` (the plugin's log), `get_program_id`.
    - `nn::ro::LookupSymbol` answers from the runtime's symbol table, which includes the native
@@ -200,8 +159,7 @@ gives the same C before shipping).
 2. `tools/mods.py apply` (the Mods app's Apply) puts the files in and runs `tools/skyline.py sync`:
    each turned-on mod's plugin is copied into `dump/nro/`, placed and recompiled to C, and listed in
    `dump/skyline/plugins.txt`. The dependency plugins mods ship (Smashline 2, lib_paramconfig,
-   ARCropolis, the CSK Collection) are left out: the runtime provides them. The bundled
-   `nro_hook` dependency is compiled and loaded.
+   ARCropolis, nro_hook, the CSK Collection) are left out: the runtime provides them.
 3. `tools/skyline.py build [--jobs 2]` makes them part of the game: regenerates the C of any game
    module that gained hook targets (`dump/skyline/hooks.txt`; main takes ~1 min), compiles and
    links (runtime + plugins + changed files, a minute or two), starts the game once in probe mode
@@ -244,16 +202,16 @@ files, a later mod winning; the runtime reads the order from `dump/skyline/mods.
 
 ## Known limits
 
-- Inline hooks and code patches require preparation; loading the plugin DLL alone is insufficient.
-  The older prototype's other limits included ARCropolis file callbacks, Smashline state callbacks and status-line callbacks other than
+- inline hooks (`A64InlineHook`) and code patches (`sky_memcpy` to code) are logged and left out;
+  so are ARCropolis file callbacks, Smashline state callbacks and status-line callbacks other than
   Main, one-slot effects (`ef_<fighter>_cXX.eff`: the costume uses the fighter's effects), CSK's BGM,
   stage and narration tables.
 - `mods.py`'s unsharing breaks match loads when a mod with unshared files (here Mr. L: 14 Luigi
   files) is on together with a new character's new files: the match stays on the loading screen.
   Workaround used for the user's mods: `mods/Mr. L/config.json` with an `unshare-blacklist` of
   Mr. L's files (as for Dr. Eggman). The real fix is in `Table.unshare` (see the earlier notes).
-- Windows preparation uses clang-cl (`skyline.py build` runs `recomp.py all`). See the
-  pull request's validation for the plugin versions and checks actually run.
+- Windows: the same code builds with clang-cl in principle (`skyline.py build` runs
+  `recomp.py all` there), but nothing of this was run on Windows.
 - Online: everyone in a room needs the same plugins and mods.
 
 ## Plan (first version; steps 1, 2, 4 and part of 3 done since)

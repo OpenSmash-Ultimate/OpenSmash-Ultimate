@@ -2414,40 +2414,6 @@ namespace OpenSmash.Launcher
             });
         }
 
-        async Task<bool> PreparePluginsForLaunch()
-        {
-            if (_modsBusy) return false;
-            _modsBusy = true;
-            _pluginBuildUi = true;
-            _pluginFrac = -1;
-            _pluginDetail = "Preparing plugins for play";
-            _pluginEta = "";
-            Invalidate();
-            try
-            {
-                int code = await Task.Run(() => OsMods(new[] { "prepare" }, line =>
-                {
-                    if (line.StartsWith("LOG "))
-                        BeginInvoke(() => NotePluginBuild(line.Substring(4).Trim()));
-                }));
-                if (code != 0) throw new InvalidOperationException("Plugin preparation exited with code " + code);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Could not prepare the plugins.\n\n" + ex.Message
-                    + "\n\nSee build/work/plugin_prepare.log. Use Refresh to retry after fixing the problem.", "OpenSmash");
-                return false;
-            }
-            finally
-            {
-                _modsBusy = false;
-                _pluginBuildUi = false;
-                UpdateMods();
-                Invalidate();
-            }
-        }
-
         async Task RefreshPlugins()
         {
             if (_modsBusy) return;
@@ -2713,8 +2679,19 @@ namespace OpenSmash.Launcher
                 MessageBox.Show("The game is not built yet. Run the installer first.", "OpenSmash");
                 return;
             }
+            string unbuilt = await UnbuiltPluginChoice();
+            if (unbuilt == "cancel") return;
+            if (unbuilt == "build")
+            {
+                await BuildPlugins();
+                return;
+            }
+            if (unbuilt == "refresh")
+            {
+                await RefreshPlugins();
+                return;
+            }
             if (!await PrepareModsForLaunch()) return;
-            if (_launchMode != "vanilla" && !await PreparePluginsForLaunch()) return;
             try
             {
                 if (!SaveGameSettings()) return;
