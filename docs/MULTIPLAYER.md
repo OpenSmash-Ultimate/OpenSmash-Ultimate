@@ -103,13 +103,13 @@ With version 3 set, a lobby or private room of version 2 still works: the game j
 The game's own **Online** menu works with WindowSmash's game server, which runs inside the online lobby. **Quickplay** matches you with other WindowSmash players who are searching at the same time.
 
 > [!WARNING]
-> Online mode is new. Logging in, the Online menus, Quickplay's search, and two players being matched into one room have been tested, on one PC. The matches themselves, more than two players, and results and GSP afterwards haven't been tested yet. The Linux version has Online mode built in, but it hasn't been tried there.
+> Online mode is new. Tested on one PC (two games, a lobby of their own): logging in, the Online menus, Quickplay's search, two players matched, the whole match with the game's own netcode and with [rollback](#rollback-in-online-mode), the results with GSP, and both games back in Quickplay for the next search. Not tested yet: two PCs, more than two players. The Linux version has Online mode built in, but it hasn't been tried there.
 
 1. Start the game with **`Play SSBU.bat`**. `online_server.txt` must name a lobby with the game server: `smash.recomps.wtf:39421`, the default, has one.
 2. In the main menu, choose **Online**, then **Smash**, then **Quickplay**.
 3. Choose your rules and fighter, then **Ready to fight**. The game waits in its practice room until it finds another player.
 
-- **Who you meet:** players with the same lobby code (or none) who are searching too.
+- **Who you meet:** players with the same lobby code (or none) who are searching too: the closest rating first, and, when nobody fits your search (an Elite Smash player's search, or a rating far from everyone else's), whoever is searching rather than nobody.
 - **Your account:** the game server knows you by your `netplay_id.txt` and keeps your player name and ratings. Keep that file to keep your account, and don't give it to anyone: a copy of it plays as you.
 - **Your connection:** the game reaches the game server through the lobby, over TCP and UDP on the lobby's port. Nobody needs to open a port. Once players are matched, the match's traffic goes through the lobby: [direct connections](#direct-connections-and-your-internet-address) are only for Local Wireless rooms so far.
 
@@ -118,6 +118,38 @@ The game's own **Online** menu works with WindowSmash's game server, which runs 
 | An error as soon as you choose **Online** | Start the game with `Play SSBU.bat`, not `launchers\Play SSBU Offline.bat`, and check that the overlay (<kbd>F1</kbd>) says `Online`. |
 | An error code starting with **2306** | The game can't reach the game server. The lobby in `online_server.txt` has none (port 39420, or a lobby of your own run with `ssbu_relay.py`), or something blocks TCP to it. |
 | Quickplay keeps waiting | Nobody with your lobby code is searching right now. Find players on the [OpenSmash-Ultimate Discord](https://discord.gg/pkgyYGf3YB). |
+| "The connection was interrupted due to excessive inactivity" or "... self-destructs" | The game's own Online rules: a player who stands still or falls off too often is sent back to the menu. |
+
+### Rollback in Online mode
+
+> [!NOTE]
+> Being tried out, and off unless both players turn it on: start the game with `SSBU_RB=1` and `SSBU_RB_NET=online` set (in a console, `set SSBU_RB=1` and `set SSBU_RB_NET=online`, then `Play SSBU.bat` from that console).
+
+With it, a Quickplay match is played with rollback netplay ([technical guide](TECHNICAL.md#rollback-netplay-ssbu_rb)) instead of the game's own delay-based netcode: your own inputs answer at once (after a small input delay), the other player's are guessed until they arrive, and the game quietly re-runs the few frames a wrong guess touched. Everything around the fight stays the game's own: matchmaking, the character screen, the results with GSP, the next search.
+
+- **Both players need it.** As the match is set up, the two games agree on rollback within 15 seconds; when the other game has it off (or is an older build), the match is played with the game's own netcode, as without it.
+- **Two players.** A Quickplay match of three or four players is played with the game's own netcode.
+- **Input delay:** chosen from the round trip the two games measure as the match is set up (the same on both). `SSBU_RB_NET=online,<frames>` sets it by hand.
+- **Desyncs and lost players:** both games compare a hash of the fight every few frames. If the other game stops answering for 8 seconds, or the two go out of sync, a box says so and the game writes `reports\rollback_<date>_<time>.txt` with its last rollback lines: send it with `play.log`.
+
+How it behaves at a given round trip (two games on one PC, normal speed, the round trip simulated with `SSBU_NET_SIM`; a frame is 16.7 ms):
+
+| Round trip | Input delay | Rollbacks in a 3-minute match (each game) | Frames re-run in one | Time to re-run them (mean, worst) | Waits for the other | Fight hashes at the end |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| ~1 ms (same PC) | 1 (auto) | 1-6 | 2 | 7-10 ms | none | identical |
+| ~65 ms | 1 (auto) | 800-1200 | mostly 2-3 | 11-12 ms (27 ms) | none | identical |
+| ~110 ms | 1 (forced) | 770-1300 | mostly 3-5 | 17-20 ms (40 ms and more) | none | identical |
+| ~115 ms | 2 (auto) | 790-1280 | mostly 2-3 | 13-15 ms (41 ms) | none | identical |
+
+A re-run under 16.7 ms is not seen; one over it shows as a frame late. That is why the delay is the one-way trip in frames less one (up to ~85 ms round trip 1, up to ~115 ms 2, up to ~150 ms 3, at most 4): with less, the re-runs get longer than a frame; with more, every press waits longer. The bots of these tests press something every few frames, far more changes than a person makes, so a real match rolls back less. "Fight hashes at the end": every frame's hash, as each game kept it once both players' inputs were known, compared over the whole match.
+
+Two games on one PC against a lobby of your own, for a test (each game in a folder of its own, with its own save and `netplay_id.txt`):
+
+```powershell
+python tools/ssbu_online_lobby.py --bind 127.0.0.1 --port 39421 --state online-state --verbose
+# both games: SSBU_NET_RELAY=127.0.0.1:39421 SSBU_RB=1 SSBU_RB_NET=online, started with --online
+# tests only: SSBU_RB_NET_BOT=calm (the bots stay on the stage), SSBU_NET_SIM=<ms>[,<loss %>[,<jitter ms>]] (each game holds what it receives that long)
+```
 
 ## Direct connections and your internet address
 
@@ -306,6 +338,7 @@ The game server's log (`--nex-log`: `0` quiet, `1` each call, `2` every packet, 
 | `SSBU_NET_TEST_SAVE_ROOM=<file>`, `SSBU_NET_TEST_ROOMS=<file>[,<n>]` | Local tests of the Rooms List: a host writes its room's network to the file once a second; a game given that file also finds n rooms made from it at every scan (default 15, up to 24; `clone[,<n>]` copies the first room really found). They can't be joined. |
 | `SSBU_NET_LOG=1` / `2` | Network logging: a summary, or more detail. |
 | `SSBU_RB_NET=relay[,<player>[,<delay>,<frames>]]` | With `SSBU_RB=1`: rollback netplay's messages through this netplay connection. `<player>`: `auto` (by address in the room), `0`-`3`, or `-1` (the host gives one). See [above](#rollback-netplay-through-the-lobby-or-a-private-room). |
+| `SSBU_RB_NET=online[,<delay>]` | With `SSBU_RB=1`: the game's own Online mode with rollback ([Rollback in Online mode](#rollback-in-online-mode)); the players and their numbers come from each match. |
 | `SSBU_ONLINE_COUNTRY` | The country Online mode reports, as two letters such as `GB`. Default `US`. |
 | `SSBU_ONLINE_SERVER` | `off` turns Online mode off. Otherwise the game server's address inside the lobby, `10.13.0.1:60000` by default; only for tests. |
 

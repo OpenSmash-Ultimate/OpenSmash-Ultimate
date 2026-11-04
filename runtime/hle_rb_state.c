@@ -60,6 +60,8 @@ void setjmp_rb_free(void *p);
 void *vi_rb_save(void);
 void vi_rb_load(const void *p);
 void *audio_rb_save(void);
+void *net_rb_save(void);            /* (hle_net.c: the sockets' datagrams and NEX's streams) */
+void net_rb_load(const void *p);
 void audio_rb_load(const void *p);
 
 extern volatile int rb_hold;          /* (kernel.c: guest threads park in kwait while it is set) */
@@ -316,6 +318,22 @@ static u64 sm_ap(const void *p) { return ((u64)(uintptr_t)p - ALIAS_BASE) >> 12;
 static int sm_alias(const void *p) { u64 a = (u64)(uintptr_t)p; return a >= ALIAS_BASE && a < ALIAS_BASE + ALIAS_SIZE; }
 static int sm_bit(const u64 *m, u64 i) { return (int)(m[i >> 6] >> (i & 63) & 1); }
 static int sm_is_cold(const void *p) { return sm_cold && sm_alias(p) && sm_bit(sm_cold, sm_ap(p)); }
+/* VirtualProtect of a run of pages that may cross the alias area's reservations (one call can't: it fails whole,
+ * and a page left read-only that the map counts as open made a later write crash - the Online mode's results, after
+ * a fight with rollback): on a failure, a reservation at a time. */
+static void sm_protect(void *at, u64 len, DWORD prot) {
+    DWORD old;
+    if (VirtualProtect(at, len, prot, &old)) return;
+    u8 *p = at, *end = p + len;
+    while (p < end) {
+        MEMORY_BASIC_INFORMATION m;
+        if (!VirtualQuery(p, &m, sizeof m)) break;
+        u8 *stop = (u8 *)m.BaseAddress + m.RegionSize;
+        if (stop > end) stop = end;
+        if (m.State == MEM_COMMIT) VirtualProtect(p, (SIZE_T)(stop - p), prot, &old);
+        p = stop;
+    }
+}
 /* Pages [i, e) of the alias area: cold to read-write and hot (sm_lock held). Returns the pages opened. */
 static u64 sm_open_locked(u64 i, u64 e) {
     u64 n = 0;
@@ -323,8 +341,7 @@ static u64 sm_open_locked(u64 i, u64 e) {
         if (!sm_bit(sm_cold, i)) { i++; continue; }
         u64 j = i;
         while (j < e && sm_bit(sm_cold, j)) { sm_cold[j >> 6] &= ~(1ull << (j & 63)); sm_hot[j >> 6] |= 1ull << (j & 63); j++; }
-        DWORD old;
-        VirtualProtect((void *)(uintptr_t)(ALIAS_BASE + (i << 12)), (j - i) << 12, PAGE_READWRITE, &old);
+        sm_protect((void *)(uintptr_t)(ALIAS_BASE + (i << 12)), (j - i) << 12, PAGE_READWRITE);
         n += j - i;
         i = j;
     }
@@ -1027,8 +1044,7 @@ static void sm_end(void) {
             if (!sm_bit(sm_cold, b + k)) { k++; continue; }
             u32 e = k;
             while (e < CH_PAGES && sm_bit(sm_cold, b + e)) e++;
-            DWORD old;
-            VirtualProtect(c->base + ((u64)k << 12), (u64)(e - k) << 12, PAGE_READWRITE, &old);
+            sm_protect(c->base + ((u64)k << 12), (u64)(e - k) << 12, PAGE_READWRITE);
             k = e;
         }
         for (u32 w = 0; w < CH_PAGES / 64; w++) {
@@ -1118,7 +1134,7 @@ typedef struct Slot {
     int have;
     long long seq;                   /* the save's number */
     u32 tag;                         /* the caller's name for it (hle_rb_core.c: the logic frame) */
-    void *kernel, *fibers, *setjmps, *vi, *audio, *ipc;
+    void *kernel, *fibers, *setjmps, *vi, *audio, *ipc, *net;
     u64 fs_mark;                     /* (hle_fs.c) its count of file opens and closes at the save */
     u32 threads;                     /* other threads in the save */
     CONTEXT main;                    /* the main thread's registers in rb_save */
@@ -1146,7 +1162,7 @@ static Slot *slot_at(int age) { return &ring[(ring_head - age + ring_size * 2) %
 static void slot_free(Slot *s) {
     for (u32 i = 0; i < s->nthr; i++) free(s->thr[i].stack);
     free(s->thr); s->thr = NULL; s->nthr = 0;
-    free(s->kernel); fiber_rb_free(s->fibers); setjmp_rb_free(s->setjmps); free(s->vi); free(s->audio); ipc_rb_free(s->ipc); free(s->main_stack);
+    free(s->kernel); fiber_rb_free(s->fibers); setjmp_rb_free(s->setjmps); free(s->vi); free(s->audio); free(s->net); ipc_rb_free(s->ipc); free(s->main_stack);
     s->kernel = s->fibers = s->setjmps = s->vi = s->audio = s->ipc = NULL; s->main_stack = NULL;
     s->undo.n = 0;   /* (its buffers stay, for the next state in this slot) */
     s->have = 0;
@@ -1265,6 +1281,7 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     s->setjmps = setjmp_rb_save(&jmps);
     s->vi = vi_rb_save();
     s->audio = audio_rb_save();
+    s->net = net_rb_save();
     s->ipc = ipc_rb_save();
     s->fs_mark = fs_rb_mark();
     u64 thread_bytes = 0;
@@ -1444,6 +1461,7 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     step("display buffer queue");
     vi_rb_load(s->vi);
     audio_rb_load(s->audio);
+    net_rb_load(s->net);
     ipc_rb_load(s->ipc);
     step("threads' stacks, then this thread's");
     double lt_host = now_ms();

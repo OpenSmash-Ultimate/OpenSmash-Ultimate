@@ -290,6 +290,59 @@ class Matchmaking(Case):
         self.assertNotIn(gid, self.mm.sessions)
         self.assertFalse(self.server.may_talk(a.ip, b.ip))
 
+    def search(self, c, attribs=(1, 0, 0, 0, 0, 0), want=("", "", "", "", "", "")):
+        with contextlib.redirect_stdout(io.StringIO()):
+            return selftest.auto_matchmake(c, attribs=attribs, want=want)
+
+    def test_an_elite_search_still_meets_the_others(self):
+        """'Don't win too much: in Elite Smash the queue breaks.' A search whose game attributes set it apart (an
+        Elite player's, or the others' while only an Elite player is searching) still meets a player who is there,
+        rather than waiting for ever; given the choice, the gathering the search asked for wins."""
+        elite, normal = (1, 1, 0, 0, 0, 0), (1, 0, 0, 0, 0, 0)
+        a, b = self.player(2, "Elite"), self.player(3, "Bravo")
+        ga = self.search(a, attribs=elite, want=("", "1", "", "", "", ""))
+        gb = self.search(b, attribs=normal, want=("", "0", "", "", "", ""))
+        self.assertEqual(gb.gid, ga.gid)
+        self.assertEqual(self.mm.sessions[ga.gid].participants, [a.pid, b.pid])
+        # the other way round, and the preference: an Elite player meets the Elite gathering waiting, not the other
+        c, d, e = self.player(4, "Charlie"), self.player(5, "Delta"), self.player(6, "Elite2")
+        gc = self.search(c, attribs=normal, want=("", "0", "", "", "", ""))
+        gd = self.search(d, attribs=elite, want=("", "1", "", "", "", ""))
+        self.assertEqual(gd.gid, gc.gid)
+        f, x = self.player(7, "Foxtrot"), self.player(8, "Xray")
+        gf = self.search(f, attribs=elite, want=("", "1", "", "", "", ""))   # (nothing open: its own)
+        gx = Session.parse(self.ok(call(x, 109, 38, session_param())))   # (a gathering of the others' attributes)
+        ge = self.search(e, attribs=elite, want=("", "1", "", "", "", ""))
+        self.assertEqual(ge.gid, gf.gid, "the Elite gathering, though another was open")
+        self.assertEqual(self.mm.sessions[gx.gid].participants, [x.pid])
+
+    def test_far_ratings_still_meet(self):
+        """A player far above everyone (thousands of GSP) is matched with the closest one there, at once, rather
+        than after the rating window has widened for a minute."""
+        a, b = self.player(2, "Alpha"), self.player(3, "Bravo")
+        rating = {a.pid: 9000, b.pid: 1500}
+        self.mm.rating_of = lambda pid: rating.get(pid, 1500)
+        ga = self.search(a)
+        self.assertEqual(self.search(b).gid, ga.gid)
+
+    def test_players_of_a_match_talk_a_little_after_one_left(self):
+        """A game that leaves its match first (kicked by its own rules) still reaches the other for
+        TALK_AFTER_LEAVING seconds: rollback's 'this fight is over' gets through. Nobody else does."""
+        from nex import matchmaking
+        a, b, x = self.player(2, "Alpha"), self.player(3, "Bravo"), self.player(4, "Mallory")
+        g = self.auto(a)
+        self.auto(b)
+        self.assertTrue(self.server.may_talk(a.ip, b.ip))
+        self.mm.leave(b.pid, self.mm.sessions[g.gid])
+        self.assertTrue(self.server.may_talk(a.ip, b.ip))
+        self.assertFalse(self.server.may_talk(x.ip, b.ip))
+        real = matchmaking.time.monotonic
+        try:
+            matchmaking.time.monotonic = lambda: real() + matchmaking.TALK_AFTER_LEAVING + 1
+            self.assertFalse(self.server.may_talk(a.ip, b.ip))
+        finally:
+            matchmaking.time.monotonic = real
+
     def test_item10_find_by_gid_keeps_the_session_key_to_participants(self):
         a, x = self.player(2, "Alpha"), self.player(4, "Mallory")
         g = self.auto(a)

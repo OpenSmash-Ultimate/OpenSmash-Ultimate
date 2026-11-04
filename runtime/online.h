@@ -14,5 +14,13 @@ u16 online_stream_revents(i32 fd, u16 events);   /* poll: POLLIN / POLLOUT / POL
 int online_stream_error(i32 fd);                 /* SO_ERROR: the connect's outcome, once */
 void online_stream_close(i32 fd);
 
+/* (rollback, SSBU_RB: hle_net.c's net_rb_save / net_rb_load) Each stream's place in what the game read and
+ * sent at a save; a load puts back what was read since (read again) and leaves out what is sent again. */
+#define ONLINE_RB_STREAMS 16
+typedef struct OnlineRb { struct { i32 fd; u32 gen; u64 taken, sent; } s[ONLINE_RB_STREAMS]; } OnlineRb;
+void online_rb_save(OnlineRb *o);
+void online_rb_load(const OnlineRb *o);
+void online_rb_counts(long long *back, long long *left_out, long long *differ);
+
 /* (hle_net.c) Wake poll() and blocking calls: something changed on a stream. */
 void net_wake(void);
