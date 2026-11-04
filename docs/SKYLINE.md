@@ -21,9 +21,11 @@ Smashline and the other dependency plugins provide on the console natively in th
 ## Imported plugins: preparation before play
 
 The root Windows launcher, `Play SSBU.bat` and `launchers/Play SSBU Offline.bat` now
-prepare enabled Skyline plugins before starting the game. Import an unmodified release
-ZIP through the mod manager and enable it; SD-style packages such as Ultimate Training
-Modpack are kept with their dependency filenames intact. `libnro_hook.nro` is loaded
+prepare enabled Skyline plugins before starting the game. Extract an unmodified release
+ZIP into a folder, then use the launcher's Add Mod action to select that folder and enable
+it. For an SD-style package such as Ultimate Training Modpack, select the extracted folder
+containing `atmosphere/`; keep the dependency filenames intact. The command-line mod manager
+also accepts ZIP archives directly. `libnro_hook.nro` is loaded
 when supplied by a mod, rather than being discarded as an already implemented dependency.
 No training plugin, game asset or game instruction bytes are distributed with this support.
 
