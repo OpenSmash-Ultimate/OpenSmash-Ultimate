@@ -150,6 +150,11 @@ static void beside_exe(char *out, size_t n, const char *name) {
 
 /* Read once, by whichever thread asks first (the hitch log's reads it in the background at
  * start: names show up once it is done); the others wait. The symbols are published last. */
+typedef struct SymSort { U64 va; U32 name; } SymSort;
+static int sym_cmp(const void *a, const void *b) {
+    U64 x = ((const SymSort *)a)->va, y = ((const SymSort *)b)->va;
+    return x < y ? -1 : x > y;
+}
 static volatile LONG symbols_state;   /* 0 not read, 1 being read, 2 read (or there is no map) */
 static int symbols_found;
 static int load_symbols(void) {
@@ -172,7 +177,6 @@ static int load_symbols(void) {
         char name[256];
         U64 va;
         if (strncmp(line, " 0001:", 6) || sscanf(line, " %x:%x %255s %llx", &sect, &off, name, &va) != 4) continue;
-        if (n && va < va_of[n - 1]) continue;
         if (n == cap) {
             cap *= 2;
             va_of = realloc(va_of, sizeof *va_of * cap);
@@ -186,6 +190,22 @@ static int load_symbols(void) {
         pool_used += len;
     }
     fclose(map);
+    /* (the map lists the public symbols by address, then the static ones - functions of one file - by
+     * address again: sorted together, a static function is named rather than counted in the public one
+     * before it) */
+    SymSort *ss = malloc(sizeof *ss * (n ? n : 1));
+    if (ss) {
+        for (U32 i = 0; i < n; i++) ss[i] = (SymSort){va_of[i], name_of[i]};
+        qsort(ss, n, sizeof *ss, sym_cmp);
+        U32 m = 0;
+        for (U32 i = 0; i < n; i++) {
+            if (m && ss[i].va == va_of[m - 1]) continue;   /* (one name an address) */
+            va_of[m] = ss[i].va;
+            name_of[m++] = ss[i].name;
+        }
+        n = m;
+        free(ss);
+    }
     sym_va = va_of; sym_name = name_of; sym_pool = pool;
     __atomic_store_n(&nsyms, n, __ATOMIC_RELEASE);
     symbols_found = 1;
