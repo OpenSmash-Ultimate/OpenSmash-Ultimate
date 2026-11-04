@@ -3,6 +3,14 @@
 
 Usage:
   shader_aot.py [--jobs N] [--dry] [--parts]
+  shader_aot.py --files <file or folder>... [--tree <dir>] [--warm] [--jobs N]
+
+--files takes the programs of loose files instead of data.arc's: .eff, .nushdb and .arc files, or
+folders searched for them (a new fighter's folder, a mod's). Their keys not in the cache yet are
+compiled, and with --warm every one of their cache files is dated now, so the start's prewarm makes
+them: the fighter's effects are ready before its first match instead of compiling while the match
+loads (tools/fighter_mod.py --shaders runs this for a fighter folder). The cache is <tree>/dump/shadercache
+(default: this checkout's); the "every shader compiled" marker is left as it is.
 
 The game's GPU programs are stored in data.arc as they are uploaded: in the effect files
 (.eff), the shader databases (.nushdb) and nested archives (.arc); a few more are built into the
@@ -210,6 +218,45 @@ def find_programs(arc, read_errors=None, pause=0.5, modules=(), progress=None):
     return programs, unread
 
 
+LOOSE_EXT = {".eff": (256, 0x30), ".arc": (256, 0x30), ".nushdb": (8, 0)}
+
+
+def loose_files(paths):
+    """The .eff / .arc / .nushdb files among paths (folders searched), sorted."""
+    out = []
+    for p in paths:
+        if os.path.isdir(p):
+            for d, _dirs, names in os.walk(p):
+                out += [os.path.join(d, n) for n in names if os.path.splitext(n)[1].lower() in LOOSE_EXT]
+        elif os.path.splitext(p)[1].lower() in LOOSE_EXT:
+            out.append(p)
+    return sorted(set(out))
+
+
+def find_loose_programs(files):
+    """Distinct programs of loose files, as find_programs makes them from data.arc."""
+    programs, ids = [], {}
+    for path in files:
+        with open(path, "rb") as f:
+            data = f.read()
+        step, start = LOOSE_EXT[os.path.splitext(path)[1].lower()]
+        add_file(programs, ids, data, step, start)
+    return programs
+
+
+def warm(exe, pack, cache):
+    """Every key of the pack whose file is in the cache dated now (the runtime's prewarm makes the files
+    the game has used, newest first: gpu_d3d11.c prewarm_main). -> (dated, keys)."""
+    keys, _untranslated = discover(exe, pack, cache)
+    version, now, dated = cache_version(), time.time(), 0
+    for k in keys:
+        path = os.path.join(cache, cache_file_name(k, version))
+        if os.path.exists(path):
+            os.utime(path, (now, now))
+            dated += 1
+    return dated, len(keys)
+
+
 def read_error_text(errors, tree=None):
     """What to say about the files the disk could not read."""
     files = list(dict.fromkeys(e.filename for e in errors if getattr(e, "filename", None)))
@@ -339,7 +386,12 @@ def main():
     ap.add_argument("--priority", choices=("low", "medium", "high"), default="low")
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--parts", action="store_true", help="split the keys between the processes by hash (the older way)")
+    ap.add_argument("--files", nargs="+", help="loose .eff/.nushdb/.arc files or folders instead of data.arc")
+    ap.add_argument("--tree", default=ROOT, help="with --files: the tree whose dump/shadercache gets the files")
+    ap.add_argument("--warm", action="store_true", help="with --files: date their cache files now (the start's prewarm makes them)")
     a = ap.parse_args()
+    if a.files:
+        return main_files(a)
     tree = ROOT
     global _POPEN_PRIORITY, PRIORITY_SAID
     _POPEN_PRIORITY, PRIORITY_SAID = apply_priority(a.priority), a.priority
@@ -384,6 +436,38 @@ def main():
     if not a.dry and ok:
         with open(marker, "w", encoding="utf-8", newline="\n") as f:
             f.write(f"version {cache_version()}\n")
+    print(f"done in {time.time() - t0:.0f} s")
+    return 0
+
+
+def main_files(a):
+    global _POPEN_PRIORITY, PRIORITY_SAID
+    _POPEN_PRIORITY, PRIORITY_SAID = apply_priority(a.priority), a.priority
+    t0 = time.time()
+    files = loose_files(a.files)
+    if not files:
+        print("no .eff / .nushdb / .arc file in " + ", ".join(a.files))
+        return 0
+    programs = find_loose_programs(files)
+    nvs = sum(1 for p in programs if p[0] == 0)
+    print(f"{len(programs)} distinct programs ({nvs} vertex, {len(programs) - nvs} pixel) in {len(files)} files", flush=True)
+    if not programs:
+        return 0
+    work = os.path.join(a.tree, "dump", "aot")
+    os.makedirs(work, exist_ok=True)
+    pack = os.path.join(work, "programs_files.pack")
+    write_pack(programs, pack)
+    exe = os.path.join(ROOT, "build-linux", "shaderaot") if LINUX else os.path.join(ROOT, "build", "shaderaot.exe")
+    build_tool(exe)
+    cache = os.path.join(a.tree, "dump", "shadercache")
+    os.makedirs(cache, exist_ok=True)
+    try:
+        run_queue(exe, pack, cache, jobs_for(a.priority, a.jobs), a.dry)
+    except KeyboardInterrupt:
+        return 1
+    if a.warm and not a.dry:
+        dated, total = warm(exe, pack, cache)
+        print(f"{dated} of {total} keys dated now: the next start's prewarm makes them")
     print(f"done in {time.time() - t0:.0f} s")
     return 0
 
