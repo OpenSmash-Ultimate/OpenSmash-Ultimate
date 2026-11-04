@@ -220,7 +220,7 @@ The first start also writes **`display.ini`**, which sets how the game starts. T
 | `width`, `height` | The window's inside size at 100% display scaling. | `1280`, `720` |
 | `pacing` | `clock`: a steady 60 frames a second. `vrr`: for G-Sync or FreeSync monitors, each frame shown as soon as it's ready; best with `borderless`. `display`: follows a 60, 120 or 240 Hz monitor's own refresh. | `clock` |
 | `latency` | How many frames the graphics card may work ahead, 1–3. Lower is more responsive. | `3` |
-| `low_latency` | `1`: the game starts each frame as late as it can and still make the next refresh, so it reads your controller later: up to most of a frame less input delay. If a frame misses its refresh it turns itself off for a second. | `0` |
+| `low_latency` | `1`: the game starts each frame as late as it can and still make the next refresh, so it reads your controller later: up to most of a frame less input delay. If a frame misses its refresh it turns itself off for a second. | `1` |
 | `hide_cursor` | `1` hides the mouse pointer after two seconds without movement. | `1` |
 | `language` | The game's language: `auto` (the language Windows shows its menus in), or one of `ja`, `en-US`, `en-GB`, `fr`, `fr-CA`, `de`, `it`, `es`, `es-419`, `zh-Hans`, `zh-Hant`, `ko`, `nl`, `ru`. A language the game doesn't have plays in English. Chinese, Japanese and Korean text needs your console's firmware fonts. Read when the game starts; the settings menu's Game page changes it. `SSBU_LANGUAGE` overrides it. | `auto` |
 | `volume` | The game's whole sound, from `0` (silent) to `100`, over the game's own sound settings. The settings menu's Game page changes it while you play. `SSBU_VOLUME` overrides it. | `100` |
