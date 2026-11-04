@@ -1959,6 +1959,21 @@ namespace OpenSmash.Launcher
             }
             else if (id == "setup_start") _ = FetchPlugins(false);
             else if (id == "setup_again") _ = FetchPlugins(true);
+            else if (id == "setup_add")
+            {
+                using var d = new OpenFileDialog { Filter = "Plugin (*.nro)|*.nro|All files|*.*", Multiselect = true };
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                string folder = Path.Combine(_repo, "skyline", "plugins");
+                Directory.CreateDirectory(folder);
+                foreach (var src in d.FileNames)
+                {
+                    try { File.Copy(src, Path.Combine(folder, Path.GetFileName(src)), true); }
+                    catch (Exception ex) { MessageBox.Show($"Could not copy {Path.GetFileName(src)}: {ex.Message}", "OpenSmash"); }
+                }
+                UpdateMods();
+                _ = PushInstalledState();
+                Invalidate();
+            }
             else if (id.StartsWith("setup_import:"))
             {
                 int ei = int.Parse(id.Substring("setup_import:".Length));

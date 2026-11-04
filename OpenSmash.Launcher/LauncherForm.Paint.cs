@@ -1121,7 +1121,7 @@ namespace OpenSmash.Launcher
             PaintCard(g, "act:browse", x, cardY, cardW, cardH, 0, _keys && _sel == 0,
                 "GAMEBANANA", Theme.Text, Theme.Bg, "BROWSE MODS", "Find and install mods from GameBanana.");
             PaintCard(g, "act:setup", x + (cardW + gap), cardY, cardW, cardH, 1, _keys && _sel == 1,
-                "PLUGINS", Theme.Text, Theme.Bg, "SETUP MODDING", "Community plugins movesets and new characters are built on.");
+                "PLUGINS", Theme.Text, Theme.Bg, "PLUGINS", "Community plugins movesets and new characters are built on.");
             // (TRLLZR's mod manager ideas, NOTICE.md: conflicts, updates, shared lists - tools/os_mods.py)
             PaintCard(g, "act:check", x + 2 * (cardW + gap), cardY, cardW, cardH, 2, _keys && _sel == 2,
                 "CHECK", Theme.Text, Theme.Bg, "CONFLICTS & UPDATES", "Files two mods both change, and newer versions on GameBanana.");
@@ -1499,7 +1499,7 @@ namespace OpenSmash.Launcher
         void PaintSetupModding(Graphics g, int W, int H)
         {
             float s = _s, x = Gutter * s, cw = W - 2 * x;
-            PaintSectionHead(g, "02 / MODS", "SETUP MODDING");
+            PaintSectionHead(g, "02 / MODS", "PLUGINS");
 
             {
                 var st = PushReveal(g, 0);
@@ -1517,9 +1517,11 @@ namespace OpenSmash.Launcher
                 {
                     float ry = listY + i * rowH;
                     string label = items[i].Name.Replace(".nro", "") + "   " + items[i].Version;
-                    if (items[i].Fetched) Badge(g, "FETCHED", x, ry + (rowH - 20 * s) / 2, Theme.Text, Theme.Bg);
+                    bool custom = items[i].Source == "custom";
+                    if (custom) Badge(g, "CUSTOM", x, ry + (rowH - 20 * s) / 2, Color.FromArgb(255, 34, 197, 94), Theme.Bg);
+                    else if (items[i].Fetched) Badge(g, "FETCHED", x, ry + (rowH - 20 * s) / 2, Theme.Text, Theme.Bg);
                     else Badge(g, "MISSING", x, ry + (rowH - 20 * s) / 2, Color.Empty, Theme.Muted, outline: true);
-                    Theme.Label(g, label, FB(15 * s), A(items[i].Fetched ? Theme.Text : Theme.Muted), x + 104 * s, ry, rowH);
+                    Theme.Label(g, label, FB(15 * s), A(items[i].Fetched || custom ? Theme.Text : Theme.Muted), x + 104 * s, ry, rowH);
                     HLine(g, x, x + cw, ry + rowH);
                 }
                 PopFade(g, st);
@@ -1556,14 +1558,18 @@ namespace OpenSmash.Launcher
                 var st = PushReveal(g, 4);
                 float bx = x, by = H - 104 * s, bh = 46 * s;
                 var f = FB(13 * s, true);
-                string a = "DOWNLOAD MISSING", b = "DOWNLOAD AGAIN";
+                string a = "DOWNLOAD MISSING", b = "DOWNLOAD AGAIN", cbtn = "ADD PLUGINS";
                 float wa = Theme.TextWidth(g, a, f, 1.3f * s) + 52 * s;
                 float wb = Theme.TextWidth(g, b, f, 1.3f * s) + 52 * s;
+                float wc = Theme.TextWidth(g, cbtn, f, 1.3f * s) + 52 * s;
                 bool busy = _setupModding;
                 Theme.ButtonAnimated(g, a, bx, by, wa, bh, s, true, Hov("setup_start", _hover == "setup_start"), !busy, 13 * s, _alpha, press: Press("setup_start"));
                 if (!busy) AddHit("setup_start", bx, by, wa, bh);
                 Theme.ButtonAnimated(g, b, bx + wa + 12 * s, by, wb, bh, s, false, Hov("setup_again", _hover == "setup_again"), !busy, 13 * s, _alpha, press: Press("setup_again"));
                 if (!busy) AddHit("setup_again", bx + wa + 12 * s, by, wb, bh);
+                float xc = bx + wa + 12 * s + wb + 12 * s;
+                Theme.ButtonAnimated(g, cbtn, xc, by, wc, bh, s, false, Hov("setup_add", _hover == "setup_add"), !busy, 13 * s, _alpha, press: Press("setup_add"));
+                if (!busy) AddHit("setup_add", xc, by, wc, bh);
                 PopFade(g, st);
             }
         }
