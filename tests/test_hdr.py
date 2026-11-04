@@ -22,7 +22,9 @@ class HdrSwitch(unittest.TestCase):
         self.root = Path(self.tmp.name)
         (self.root / 'mods' / 'My Skin' / 'fighter').mkdir(parents=True)
         self.tree = mods.Tree(str(self.root))
-        self.tree.save(self.tree.load())
+        state = self.tree.load()
+        state['mods']['My Skin']['enabled'] = True   # (a folder just found starts off: the user turned it on)
+        self.tree.save(state)
 
     def tearDown(self):
         self.tmp.cleanup()

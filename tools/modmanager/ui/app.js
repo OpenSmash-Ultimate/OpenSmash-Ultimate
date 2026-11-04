@@ -81,7 +81,7 @@ function render(lib) {
   $("#hdr-toggle").hidden = !hdr.installed;
   $("#hdr-on").checked = !!hdr.on;
   $("#hdr-on").disabled = lib.game_running;
-  $("#hdr-toggle-state").textContent = hdr.on ? "On: applied with your mods" : "Off";
+  $("#hdr-toggle-state").textContent = hdr.on ? "On (only works with every other mod off)" : "Off";
   if ($("#view-hdr").classList.contains("active")) renderHdr();
   const gs = $("#game-state");
   gs.textContent = lib.game_running ? "● Game is open" : "Game closed";
@@ -308,6 +308,14 @@ function renderHdr() {
 }
 $("#hdr-on").addEventListener("change", async (e) => {
   try {
+    const others = (state.lib.mods || []).filter((m) => m.enabled && !state.lib.hdr.mods.includes(m.name)).length;
+    if (e.target.checked && others) {
+      if (!confirm(`HewDraw Remix only works with every other mod turned off.\n\nTurn your ${others} other mod${others > 1 ? "s" : ""} off now? (All on, in My mods, brings back the ones that were on.)`)) {
+        e.target.checked = false;
+        return;
+      }
+      await api("/api/all", { on: false });
+    }
     render(await api("/api/hdr/enable", { on: e.target.checked }));
     toast(e.target.checked ? "HewDraw Remix on: press Apply to game" : "HewDraw Remix off: press Apply to game");
   } catch (err) { e.target.checked = !e.target.checked; fail(err); }

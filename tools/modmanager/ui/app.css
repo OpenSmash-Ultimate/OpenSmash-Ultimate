@@ -328,3 +328,6 @@ input[type=checkbox].pick { width: 16px; height: 16px; accent-color: var(--gold)
 .hdr-cols ul li { margin-bottom: 6px; }
 .hdr-credits p { max-width: 90ch; }
 @media (max-width: 900px) { .hdr-hero, .hdr-cols { grid-template-columns: 1fr; } }
+.hdr-warn { border-color: var(--red); }
+.hdr-warn h3 { color: var(--red); }
+.hdr-only { display: inline-block; margin: 0 0 14px; padding: 7px 12px; border-radius: 8px; background: rgba(255, 61, 110, .14); border: 1px solid var(--red); color: var(--warn-head); }

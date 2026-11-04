@@ -24,7 +24,7 @@
       <div id="game-state" class="pill"></div>
       <div id="online-state"></div>
       <div id="applied-state"></div>
-      <label id="hdr-toggle" class="rail-switch" hidden title="On: Apply puts HewDraw Remix in the game with your mods (yours win where both change a file)">
+      <label id="hdr-toggle" class="rail-switch" hidden title="On: Apply puts HewDraw Remix in the game. It only works with every other mod off">
         <span class="rail-switch-text"><b>HewDraw Remix</b><small id="hdr-toggle-state"></small></span>
         <span class="switch"><input type="checkbox" id="hdr-on"><span></span></span>
       </label>
@@ -81,6 +81,7 @@
         <div>
           <h1>HewDraw Remix</h1>
           <p class="hdr-lede">A fan-made gameplay overhaul of Smash Ultimate: movement and techniques from the older games come back, the whole cast gets new and reworked moves, and it brings its own competitive stage list.</p>
+          <p class="hdr-only"><b>HDR only works with every other mod turned off.</b></p>
           <div class="hdr-links">
             <a href="https://github.com/HDR-Development/HewDraw-Remix" target="_blank" rel="noopener">GitHub</a>
             <a href="https://github.com/HDR-Development/HDR-PreReleases/releases" target="_blank" rel="noopener">Releases &amp; changelog</a>
@@ -100,11 +101,12 @@
             <li>A stage list of its own, with remade stages and alternate versions (stage_alts, stage_config)</li>
           </ul>
         </div>
-        <div class="card">
-          <h3>With your mods</h3>
+        <div class="card hdr-warn">
+          <h3>You have to turn every other mod off</h3>
           <ul>
-            <li>Turn it on with the switch above <b>Apply to game</b>, then apply. It goes in first and your mods on top, so your skins, stages and music still show.</li>
-            <li>A moveset mod for a fighter HDR changes can clash with HDR's version of that fighter. Turn one of them off if a fighter acts strangely.</li>
+            <li>HewDraw Remix only works with <b>every other mod turned off</b>. With your other mods on, matches crash.</li>
+            <li>Turning on the switch above <b>Apply to game</b> offers to turn them off for you. <b>All on</b>, in My mods, brings them back when you're done with HDR.</li>
+            <li>Then press <b>Apply to game</b> (and <b>Build plugins into the game</b> the first time).</li>
             <li>Online, everyone in the room needs HDR on, the same version.</li>
           </ul>
         </div>

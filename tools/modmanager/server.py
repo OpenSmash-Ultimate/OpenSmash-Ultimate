@@ -429,7 +429,8 @@ class App:
             # (a download's parts together, or every mod): off remembers which were on, on brings back
             # those, not the alternatives and copies left off
             state = t.load()
-            names = [n for n in body["names"] if n in state["mods"]] if path == "/api/group" else list(state["mods"])
+            names = [n for n in body["names"] if n in state["mods"]] if path == "/api/group" else \
+                [n for n in state["mods"] if n not in hdr.MODS]   # (HewDraw Remix has its own switch)
             key = "was_on" if path == "/api/group" else "all_was_on"
             if body["on"]:
                 was = [n for n in names if state["mods"][n].get(key)]
