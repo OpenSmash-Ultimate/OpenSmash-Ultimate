@@ -72,7 +72,7 @@ extern u64 gfx_stat_clears, gfx_stat_presented, gfx_stat_blits;   /* (gpu_d3d11.
     X(CmdBindDescriptorSets) X(CmdBindIndexBuffer) X(CmdDraw) X(CmdDrawIndexed) X(CmdSetViewport) X(CmdSetScissor) \
     X(CmdSetBlendConstants) X(CmdSetStencilReference) X(CmdSetStencilCompareMask) X(CmdSetStencilWriteMask) \
     X(CmdCopyBufferToImage) X(CmdBeginRenderingKHR) X(CmdEndRenderingKHR) X(GetPipelineCacheData) \
-    X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyBuffer)
+    X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyBuffer) X(CreateDescriptorUpdateTemplate) X(UpdateDescriptorSetWithTemplate)
 #define DECLARE(name) static PFN_vk##name vk##name;
 VK_INSTANCE_FUNCS(DECLARE)
 VK_DEVICE_FUNCS(DECLARE)
@@ -568,8 +568,10 @@ typedef struct Surface {
 static Surface surfaces[2048];
 static u32 nsurfaces;
 static u64 tick;
+static u64 tex_gen;   /* (counts textures and surfaces made and let go, and memory taken away: tex_memo's entries hold while it is the same) */
 
 static void release_surface(Surface *s) {
+    tex_gen++;
     bury_view(s->att);
     for (int i = 0; i < 4; i++) bury_view(s->smp[i]);
     bury_grave((Grave){s->image, VK_NULL_HANDLE, VK_NULL_HANDLE, s->alloc});
@@ -640,6 +642,7 @@ static Surface *surface(u64 guest, u32 width, u32 height, u32 format, int depth)
     s->storage = cf.storage; s->view = cf.view; s->klass = cf.klass; s->srgb = cf.srgb;
     s->image = image; s->alloc = mem;
     s->used = ++tick;
+    tex_gen++;
     VkCommandBuffer c = outside();
     image_layout(c, image, aspect_of(s), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
     /* (a new render target reads as zero, as Direct3D 11's do) */
@@ -938,9 +941,11 @@ static void vk_present(u64 guest, u32 width, u32 height) {
     vk_present_(guest, width, height);
     InterlockedAdd64((volatile LONG64 *)&vk_ns_present, (LONG64)(rt_clock_ns() - t0));
 }
+void hitch_present(void);   /* debug_profile.c (SSBU_HITCH's frame accounting, as gpu_d3d11.c's present) */
 static void vk_present_(u64 guest, u32 width, u32 height) {
     (void)width; (void)height;
     enter();
+    hitch_present();
     gfx_stat_presented++;
     unsigned bw, bh;
     if (display_take_size(&bw, &bh)) recreate = 1;   /* the window's new size (F11, a drag) */
@@ -971,6 +976,7 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
     if (keys & 16) {   /* F5: depth buffers sampled as textures, or not */
         if (depth_sampling < 0) depth_sampling = !getenv("SSBU_NO_DEPTH_SAMPLING");
         depth_sampling = !depth_sampling;
+        tex_gen++;
         fprintf(stderr, "[gfx] depth sampling %s (F5)\n", depth_sampling ? "on" : "off");
     }
     static double profile_at = -1;   /* SSBU_PROFILE_AT: the second to start one at (debug runs), as gpu_d3d11.c */
@@ -1508,9 +1514,22 @@ static void wait_for(volatile LONG *state) {
 /* What each stage's constant buffer slot was given last in this frame, with a copy of the bytes (gpu_d3d11.c's
  * last_upload): the same bytes from the same place again - most of a frame's 64 KB program constants, outside
  * the write-watched area, so not kept - get the same view, compared rather than copied again. */
-typedef struct LastCb { u64 va, serial; u32 size, cap, run; VkBufferView view; u8 *copy; } LastCb;   /* (run: the bytes mapped, the rest zeros) */
+/* SSBU_VK_MEMO=0: what a submission's draws found once is looked at again each time (constant buffers compared,
+ * shaders fingerprinted, textures looked up), as before: for measuring, and if a picture ever differs.
+ * SSBU_VK_MEMO=check: both, every time, and the status lines count the answers that differed (the test). */
+static u64 vk_stat_memo_checked, vk_stat_memo_wrong[3];   /* (constant buffers, shaders, textures) */
+static int memo_on(void) {   /* 0 off, 1 on, 2 checked */
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("SSBU_VK_MEMO");
+        on = v && !strcmp(v, "check") ? 2 : !(v && *v == '0');
+    }
+    return on;
+}
+typedef struct LastCb { u64 va, serial, batch, gen, g; u32 size, cap, run; VkBufferView view; u8 *copy; } LastCb;   /* (run: the bytes mapped, the rest zeros;
+ * batch, gen: the submission it was last found the same in, and writes_over then) */
 static LastCb last_cb[2][18];
-static u64 vk_stat_cb_compared, vk_stat_cb_same;
+static u64 vk_stat_cb_compared, vk_stat_cb_same, vk_stat_cb_unchanged;
 /* Big ones whose place changes from draw to draw (a ring of per-draw constants, each draw binding 64 KB
  * from its own start): GPU memory in 128 KB windows from 64 KB boundaries, read page by page as read_gpu
  * does (zeros where unmapped), copied once a submission - unless a page's mapping changed or the GPU's own
@@ -1548,6 +1567,13 @@ static LastCb big_cb[BIG_CBS];
 static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
     LastCb *l = size >= 0x1000 ? &big_cb[((va >> 4) * 0x9E3779B97F4A7C15ull ^ size) >> 54 & (BIG_CBS - 1)]
                                : &last_cb[stage == SHADER_VERTEX ? 0 : 1][slot];
+    /* (found the same in this submission and unwritten since: as below, without looking through its pages first -
+     * a mapping that changes meanwhile counts as a write: note_wrote(0, 0)) */
+    if (l->view && l->run && l->va == va && l->size == size && l->batch == gpu_stat_batches && l->serial == frames[frame_at].serial && memo_on() == 1 &&
+        l->gen == writes_over(l->g, l->run)) {
+        vk_stat_cb_unchanged++;
+        return l->view;
+    }
     u64 g = size ? gpu_va_to_guest(va) : 0;
     /* the bytes mapped in one piece from va; a 64 KB binding often runs past what is mapped, which reads as
      * zeros: then the mapped part is compared */
@@ -1561,9 +1587,17 @@ static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
     }
     const u8 *src = run ? P(const u8, g) : NULL;
     cmd();
+    u64 gen = src ? writes_over(g, run) : 0;
     if (src && l->view && l->va == va && l->size == size && l->run == run && l->serial == frames[frame_at].serial) {
+        /* (in the submission it was found the same in, unwritten by the GPU's commands since: the same bytes,
+         * as upload() takes them - not compared again) */
+        if (l->batch == gpu_stat_batches && l->gen == gen && memo_on()) {
+            if (memo_on() == 2) { vk_stat_memo_checked++; if (memcmp(l->copy, src, run)) vk_stat_memo_wrong[0]++; }
+            vk_stat_cb_unchanged++;
+            return l->view;
+        }
         vk_stat_cb_compared++;
-        if (!memcmp(l->copy, src, run)) { vk_stat_cb_same++; return l->view; }
+        if (!memcmp(l->copy, src, run)) { vk_stat_cb_same++; l->batch = gpu_stat_batches; l->gen = gen; l->g = g; return l->view; }
     }
     VkBufferView v = size >= 0x1000 ? upload_window(va, size) : VK_NULL_HANDLE;
     if (!v) {
@@ -1579,6 +1613,7 @@ static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
     }
     memcpy(l->copy, src, run);
     l->va = va; l->size = size; l->run = run; l->serial = frames[frame_at].serial; l->view = v;
+    l->batch = gpu_stat_batches; l->gen = gen; l->g = g;
     return v;
 }
 
@@ -1593,12 +1628,15 @@ typedef struct VShader {
     VkPipeline compute;    /* (a compute program's pipeline, made with it) */
     u32 written_mask, learn_runs;   /* compute: storage buffers it was seen to write, over its first runs */
     VkShaderModule module;
+    VkDescriptorUpdateTemplate tmpl;   /* (stage_set's writes for this program, made at its first set; 0 with tmpl_failed: none) */
+    int tmpl_failed;
     char name[64];
     ShaderInfo info;
 } VShader;
 static VShader **vshaders;
 static u32 nvshaders, vshaders_cap;
-typedef struct VSlot { u64 g, key, print; u32 size; VShader *s; u64 tables_at; } VSlot;
+typedef struct VSlot { u64 g, key, print; u32 size; VShader *s; u64 tables_at, batch, gen; } VSlot;   /* (batch, gen: the submission
+ * its fingerprint was last found the same in, and writes_over then: not taken again in it) */
 #define VSLOTS 16384
 static VSlot vslots[VSLOTS];
 
@@ -1721,8 +1759,13 @@ static VShader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding
     u64 key = (u64)stage | (u64)vs_outputs << 4 | (stage == SHADER_COMPUTE ? ((u64)local[0] ^ (u64)local[1] << 11 ^ (u64)local[2] << 22 ^ (u64)shared << 33) << 36 : 0)
             | (u64)(alpha_tested != 0) << 63;
     VSlot *slot = &vslots[((g >> 4) * 0x9E3779B97F4A7C15ull ^ key) >> 50 & (VSLOTS - 1)];
-    if (slot->s && slot->g == g && slot->key == key && slot->print == fingerprint(p + skip, slot->size - skip)) {
+    u64 gen = slot->s && slot->g == g && slot->key == key ? writes_over(g - skip, slot->size) : 0;
+    int same_batch = slot->s && slot->g == g && slot->key == key && slot->batch == gpu_stat_batches && slot->gen == gen && memo_on();
+    if (same_batch && memo_on() == 2) { vk_stat_memo_checked++; if (slot->print != fingerprint(p + skip, slot->size - skip)) vk_stat_memo_wrong[1]++; }
+    if (slot->s && slot->g == g && slot->key == key && (same_batch || slot->print == fingerprint(p + skip, slot->size - skip))) {
         VShader *s = slot->s;
+        slot->batch = gpu_stat_batches;
+        slot->gen = gen;
         if (!s->info.ntables) return s;
         u64 place = tables_place(&s->info, stage_cb);
         if (place && slot->tables_at == place) return s;
@@ -1921,6 +1964,7 @@ static void texture_index_add(Texture *t) {
     texture_index_put(t);
 }
 static void texture_drop(Texture *t) {
+    tex_gen++;
     for (int i = 0; i < 8; i++) bury_view(t->views[i]);
     if (t->image) bury_grave((Grave){t->image, VK_NULL_HANDLE, VK_NULL_HANDLE, t->alloc});
     memset(t->views, 0, sizeof t->views);
@@ -1976,10 +2020,12 @@ static VkImageView surface_attachment(Surface *s) {
 /* The texture a header describes, as a draw reads it (gpu_d3d11.c's get_texture): a render target at
  * its address, else the texture cache's (made from guest memory, again when the write watch or a
  * sample of its bytes says it changed). *rt: the render target it is, if one. */
+static Texture *got_texture;   /* (get_texture: the cache's texture it gave a view of, else NULL) */
 static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Surface **rt_out) {
     TextureDesc d;
     *scale = 1.0f;
     *rt_out = NULL;
+    got_texture = NULL;
     int ok = tic_decode(tic, &d);
     u64 g = gpu_va_to_guest(d.address);
     if (!g) return VK_NULL_HANDLE;
@@ -2034,7 +2080,7 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
             hit->asked = gfx_stat_presented;
             if (watch_written(hit->guest, hit->size, &hit->seen)) hit->stale = 1;
         }
-        if (watch ? !hit->stale : hit->sample_hash == sh) { hit->used = ++tick; return texture_view(hit, shader_type); }
+        if (watch ? !hit->stale : hit->sample_hash == sh) { hit->used = ++tick; got_texture = hit; return texture_view(hit, shader_type); }
         free_slot = hit;
     } else
         for (u32 i = 0; i < ntextures; i++) {
@@ -2141,7 +2187,47 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
     if (want1d) vk_stat_textures_1d++;
     t->is3d = is3d; t->cube = cube; t->levels = levels; t->layers = layers; t->format = format; t->map = map;
     vk_stat_textures++;
+    tex_gen++;
+    got_texture = t;
     return texture_view(t, shader_type);
+}
+
+/* get_texture's answers within a submission, by header and the program's texture type: a frame's draws ask for
+ * the same few hundred textures thousands of times, and each answer decoded the header, looked through the
+ * render targets, sized the texels and hashed a sample of them. Within one submission nothing but the GPU's own
+ * commands writes the memory its draws read (upload() relies on it too), so a texture of the cache found there
+ * stays the answer while no texture or render target is made or let go (tex_gen) and no command wrote its bytes
+ * (writes_over). Render targets are not kept here: which one an address names follows their use. */
+#define TEX_MEMO 4096
+typedef struct TexMemo { u32 tic[8], type; u64 batch, gen, wgen; Texture *t; VkImageView view; } TexMemo;
+static TexMemo tex_memo[TEX_MEMO];
+static u64 vk_stat_tex_memo;
+static VkImageView texture_of(const u32 *tic, u32 type, float *scale, Surface **rt_out) {
+    u64 h = 1469598103934665603ull ^ type;
+    for (u32 i = 0; i < 8; i++) h = (h ^ tic[i]) * 0x100000001B3ull;
+    TexMemo *m = &tex_memo[(h >> 40) & (TEX_MEMO - 1)];
+    if (!memo_on()) return get_texture(tic, type, scale, rt_out);
+    if (m->batch == gpu_stat_batches && m->gen == tex_gen && m->type == type && !memcmp(m->tic, tic, 32) && m->t->image &&
+        m->wgen == writes_over(m->t->guest, m->t->size)) {
+        *scale = 1.0f;
+        *rt_out = NULL;
+        m->t->used = ++tick;
+        vk_stat_tex_memo++;
+        if (memo_on() == 2) {
+            vk_stat_memo_checked++;
+            VkImageView v = get_texture(tic, type, scale, rt_out);
+            if (v != m->view || *rt_out || *scale != 1.0f) vk_stat_memo_wrong[2]++;
+            return v;
+        }
+        return m->view;
+    }
+    VkImageView v = get_texture(tic, type, scale, rt_out);
+    if (v && got_texture && !*rt_out && got_texture->size <= (4u << 20)) {   /* (a bigger one: its sample hashed instead, as before) */
+        memcpy(m->tic, tic, 32);
+        m->type = type; m->batch = gpu_stat_batches; m->gen = tex_gen; m->t = got_texture; m->view = v;
+        m->wgen = writes_over(got_texture->guest, got_texture->size);
+    } else m->batch = 0;
+    return v;
 }
 
 /* ---- samplers, by their 32-byte descriptors (TSC), as gpu_d3d11.c's get_sampler ----------------------- */
@@ -2443,7 +2529,7 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
         read_gpu(tic_pool + tic_index * 32ull, 32, tic);
         read_gpu(tsc_pool + tsc_index * 32ull, 32, tsc);
         float scale;
-        b->tex[k] = get_texture(tic, s->info.tex[k].type, &scale, &b->sampled[k]);
+        b->tex[k] = texture_of(tic, s->info.tex[k].type, &scale, &b->sampled[k]);
         /* (Direct3D 11 binds 16 samplers: the rest are its default one) */
         b->smp[k] = k < 16 ? get_sampler(tsc) : s->info.tex[k].shadow ? default_compare : default_sampler;
         params->swz[stage][k] = (tic[0] >> 19) & 0xFFF;
@@ -2465,6 +2551,8 @@ static struct {
     VkBuffer ibuf;
     VkDeviceSize ioff;
     VkIndexType itype;
+    VkDescriptorSet sets[2];   /* (the vertex and pixel programs' sets, bound with the parameters at poff) */
+    u32 poff;
 } bound;
 
 /* Sets already written this frame, by what they hold (the program, the parameters' buffer - its offset is
@@ -2474,8 +2562,9 @@ static struct {
 #define SET_KEY (2 + 18 + 32 + 16 + 64)
 typedef struct SetSlot { u64 serial; u32 n; VkDescriptorSet set; u64 key[SET_KEY]; } SetSlot;
 static SetSlot *set_slots;
-static u64 vk_stat_sets_made, vk_stat_sets_kept, vk_stat_index_reused;
-static VkDescriptorSet stage_set(const VShader *s, const StageBinds *b, VkBuffer pbuf) {
+typedef union TmplSlot { VkDescriptorBufferInfo b; VkBufferView v; VkDescriptorImageInfo i; } TmplSlot;   /* (an update template's data, one a descriptor) */
+static u64 vk_stat_sets_made, vk_stat_sets_kept, vk_stat_index_reused, vk_stat_params_kept, vk_stat_binds_kept;
+static VkDescriptorSet stage_set(VShader *s, const StageBinds *b, VkBuffer pbuf) {
     u64 key[SET_KEY];
     u32 nk = 0;
     key[nk++] = (u64)(uintptr_t)s;
@@ -2500,6 +2589,47 @@ static VkDescriptorSet stage_set(const VShader *s, const StageBinds *b, VkBuffer
     if (!set) return VK_NULL_HANDLE;
     vk_stat_sets_made++;
     if (slot) { slot->serial = serial; slot->n = nk; slot->set = set; memcpy(slot->key, key, nk * sizeof *key); }
+    /* (through the program's update template: the same writes in one call the driver need not take apart,
+     * measured some 10% of a draw's time in the character select screen's 3,200 draws a frame) */
+    if (!s->tmpl && !s->tmpl_failed && memo_on()) {
+        VkDescriptorUpdateTemplateEntry e[1 + 18 + 32 + 16 + 64];
+        u32 ne = 0;
+#define ENTRY(binding, type) (e[ne] = (VkDescriptorUpdateTemplateEntry){binding, 0, 1, type, ne * sizeof(TmplSlot), sizeof(TmplSlot)}, ne++)
+        ENTRY(SPIRV_BINDING_CBV(0), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
+        for (u32 k = 0; k < 18; k++)
+            if (s->info.cbuf_mask >> k & 1) ENTRY(SPIRV_BINDING_SRV(k), VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
+        if (s->stage == SHADER_VERTEX)
+            for (u32 k = 0; k < 32; k++)
+                if (s->info.inputs >> k & 1) ENTRY(SPIRV_BINDING_SRV(18 + k), VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
+        for (u32 k = 0; k < s->info.sb_count && k < 16; k++) ENTRY(SPIRV_BINDING_SRV(96 + k), VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
+        for (u32 k = 0; k < s->info.ntex && k < 32; k++) {
+            ENTRY(SPIRV_BINDING_SRV(64 + k), VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+            ENTRY(SPIRV_BINDING_SAMPLER(k), VK_DESCRIPTOR_TYPE_SAMPLER);
+        }
+#undef ENTRY
+        VkDescriptorUpdateTemplateCreateInfo ti = {VK_STRUCTURE_TYPE_DESCRIPTOR_UPDATE_TEMPLATE_CREATE_INFO, NULL, 0, ne, e,
+                                                   VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_DESCRIPTOR_SET, gfx_set_layout, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_NULL_HANDLE, 0};
+        if (vkCreateDescriptorUpdateTemplate(device, &ti, NULL, &s->tmpl) != VK_SUCCESS) { s->tmpl = VK_NULL_HANDLE; s->tmpl_failed = 1; }
+    }
+    if (s->tmpl && memo_on()) {
+        TmplSlot d[1 + 18 + 32 + 16 + 64];
+        u32 nd = 0;
+        d[nd++].b = (VkDescriptorBufferInfo){pbuf, 0, sizeof(DrawParams)};
+        for (u32 k = 0; k < 18; k++)
+            if (s->info.cbuf_mask >> k & 1) d[nd++].v = b->cb[k] ? b->cb[k] : dummy_texels;
+        if (s->stage == SHADER_VERTEX)
+            for (u32 k = 0; k < 32; k++)
+                if (s->info.inputs >> k & 1) d[nd++].v = b->vb[k] ? b->vb[k] : dummy_texels;
+        for (u32 k = 0; k < s->info.sb_count && k < 16; k++) d[nd++].v = b->gm[k] ? b->gm[k] : dummy_texels;
+        for (u32 k = 0; k < s->info.ntex && k < 32; k++) {
+            VkImageView v = b->tex[k] ? b->tex[k] : dummy_views[s->info.tex[k].type & 7];
+            if (!v) v = dummy_views[TEX_2D];
+            d[nd++].i = (VkDescriptorImageInfo){VK_NULL_HANDLE, v, VK_IMAGE_LAYOUT_GENERAL};
+            d[nd++].i = (VkDescriptorImageInfo){b->smp[k] ? b->smp[k] : default_sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+        }
+        vkUpdateDescriptorSetWithTemplate(device, set, s->tmpl, d);
+        return set;
+    }
     VkWriteDescriptorSet w[1 + 18 + 32 + 16 + 64];
     VkDescriptorImageInfo ii[64];
     u32 n = 0, ni = 0;
@@ -2539,8 +2669,10 @@ static void vk_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed
     vk_draw_(regs, cb, indexed);
     InterlockedAdd64((volatile LONG64 *)&vk_ns_draw, (LONG64)(rt_clock_ns() - t0));
 }
+static volatile DWORD draw_thread;   /* (the thread drawing: its run time in the status lines) */
 static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
     enter();
+    if (!draw_thread) draw_thread = GetCurrentThreadId();
     vk_timing = (vk_stat_draws & (TIMING_EVERY - 1)) == 0;
     u64 tp = vk_timing ? rt_clock_ns() : 0;
     vk_stat_draws++;
@@ -2689,18 +2821,22 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
                     bl[j] = bl[j] == VK_BLEND_FACTOR_SRC1_COLOR || bl[j] == VK_BLEND_FACTOR_SRC1_ALPHA ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_ONE;
     }
 
-    VkPipeline pipe = get_pipeline(&key);
+    /* (draws after one another mostly have the same state: the last one's pipeline without the lookup) */
+    static PipeKey last_key;
+    static VkPipeline last_pipe;
+    VkPipeline pipe = last_pipe && memo_on() && !memcmp(&last_key, &key, sizeof key) ? last_pipe : get_pipeline(&key);
     if (!pipe) { vk_stat_skip_pipeline++; leave(); return; }
+    if (pipe != last_pipe) { last_key = key; last_pipe = pipe; }
 
     PHASE(2);
     /* vertex streams: each attribute the shader reads gets its stream's data (t18 + n) */
     StageBinds vb, pb;
-    memset(&vb, 0, sizeof vb);
-    memset(&pb, 0, sizeof pb);
+    /* (not cleared, 2.6 KB a draw: each binding a program declares is written below before it is read) */
     VkBufferView stream_view[32] = {0};
     u32 stream_skip[32] = {0};   /* (how far before the stream its view starts: added to its attributes' offsets) */
     for (u32 n = 0; n < 32; n++) {
         if (!(vs->info.inputs >> n & 1)) continue;
+        vb.vb[n] = VK_NULL_HANDLE;
         u32 fmt = regs[M_VERTEX_ATTRIBUTE(n)], j = fmt & 0x1F;
         u32 st = regs[M_VERTEX_STREAM(j)];
         u64 start = (u64)regs[M_VERTEX_STREAM(j) + 1] << 32 | regs[M_VERTEX_STREAM(j) + 2];
@@ -2747,7 +2883,8 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     int ends = 0;
     for (int st = 0; st < 2; st++) {
         StageBinds *b = st ? &pb : &vb;
-        for (u32 k = 0; k < 32; k++) {
+        u32 ntex = st ? (ps ? ps->info.ntex : 0) : vs->info.ntex;
+        for (u32 k = 0; k < ntex && k < 32; k++) {
             Surface *s = b->sampled[k];
             if (!s) continue;
             int own = s == zs;
@@ -2802,11 +2939,28 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         vk_stat_upload_bytes += bytes;
     indices_done:;
     }
+    /* The parameters (1.3 KB) into the frame's upload memory - unless they are the last draw's in this frame:
+     * then its copy, and its offset (its descriptor sets and their binding may then stay as they are) */
+    static DrawParams last_params;
+    static u64 last_params_serial;
+    static VkBuffer last_pbuf;
+    static VkDeviceSize last_poff;
     VkBuffer pbuf;
     VkDeviceSize poff;
-    u8 *pdst = arena(sizeof params, ubo_align, &pbuf, &poff);
-    if (!pdst) { vk_stat_skip_other++; leave(); return; }
-    memcpy(pdst, &params, sizeof params);
+    cmd();
+    if (last_params_serial == frames[frame_at].serial && memo_on() && !memcmp(&last_params, &params, sizeof params)) {
+        pbuf = last_pbuf;
+        poff = last_poff;
+        vk_stat_params_kept++;
+    } else {
+        u8 *pdst = arena(sizeof params, ubo_align, &pbuf, &poff);
+        if (!pdst) { vk_stat_skip_other++; leave(); return; }
+        memcpy(pdst, &params, sizeof params);
+        last_params = params;
+        last_params_serial = frames[frame_at].serial;
+        last_pbuf = pbuf;
+        last_poff = poff;
+    }
     PHASE(5);
     VkDescriptorSet sets[2] = {stage_set(vs, &vb, pbuf), ps ? stage_set(ps, &pb, pbuf) : VK_NULL_HANDLE};
     if (!sets[0] || (ps && !sets[1])) { vk_stat_skip_other++; leave(); return; }
@@ -2843,7 +2997,12 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     if (bound.serial != frames[frame_at].serial) { memset(&bound, 0, sizeof bound); bound.serial = frames[frame_at].serial; }
     if (bound.pipe != pipe) { vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe); bound.pipe = pipe; }
     uint32_t dyn_off[2] = {(uint32_t)poff, (uint32_t)poff};
-    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, gfx_layout, 0, ps ? 2 : 1, sets, ps ? 2 : 1, dyn_off);
+    if (!bound.have || !memo_on() || bound.sets[0] != sets[0] || bound.poff != (u32)poff || (ps && bound.sets[1] != sets[1])) {
+        vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, gfx_layout, 0, ps ? 2 : 1, sets, ps ? 2 : 1, dyn_off);
+        bound.sets[0] = sets[0];
+        bound.sets[1] = ps ? sets[1] : VK_NULL_HANDLE;   /* (with no pixel program the one bound before stays: not known as bound) */
+        bound.poff = (u32)poff;
+    } else vk_stat_binds_kept++;
     VkViewport vp = {vx, vy + vh, vw, -vh, zmin, zmax};
     if (!bound.have || memcmp(&bound.vp, &vp, sizeof vp)) { vkCmdSetViewport(c, 0, 1, &vp); bound.vp = vp; }
     if (!bound.have || memcmp(&bound.scissor, &scissor, sizeof scissor)) { vkCmdSetScissor(c, 0, 1, &scissor); bound.scissor = scissor; }
@@ -2897,6 +3056,7 @@ static void vk_wrote(u64 va, u64 bytes) {
 /* Memory taken away: textures made from it are made again at their next use (if any). */
 static void vk_guest_unmapped(u64 addr, u64 size) {
     enter();
+    tex_gen++;
     residents_unmapped(addr, addr + size, 1);
     for (u32 i = 0; i < KEPT_SETS * KEPT_WAYS; i++)
         if (kept[i].buf && kept[i].guest < addr + size && addr < kept[i].guest + kept[i].size) kept_drop(&kept[i]);
@@ -2907,6 +3067,8 @@ static void vk_guest_unmapped(u64 addr, u64 size) {
 }
 static void vk_gpu_unmapped(u64 va, u64 size) {
     enter();
+    tex_gen++;
+    note_wrote(0, 0);   /* (what was uploaded by GPU address may have moved: nothing taken again unlooked) */
     residents_unmapped(va, va + size, 0);
     for (u32 i = 0; i < KEPT_SETS * KEPT_WAYS; i++)
         if (kept[i].buf && kept[i].va < va + size && va < kept[i].va + kept[i].size) kept_drop(&kept[i]);
@@ -3455,6 +3617,20 @@ static DWORD vk_last_enter_thread(void) { return last_enter_thread; }
 static void vk_report_compiles(void (*line)(const char *text)) { (void)line; }
 
 static void vk_status_lines(void) {
+    /* the drawing thread's own run time (preemption left out: a steadier measure than the times above on a busy
+     * computer) per draw since the last status */
+    static HANDLE dh;
+    static ULONG64 last_cycles, last_draws;
+    if (!dh && draw_thread) dh = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, draw_thread);
+    ULONG64 cycles = 0;
+    if (dh && QueryThreadCycleTime(dh, &cycles) && vk_stat_draws > last_draws)
+        fprintf(stderr, "[status] vulkan drawing thread: %.0f cycles a draw (%.2f G cycles for %llu draws)\n", (double)(cycles - last_cycles) / (double)(vk_stat_draws - last_draws),
+                (cycles - last_cycles) / 1e9, vk_stat_draws - last_draws);
+    last_cycles = cycles;
+    last_draws = vk_stat_draws;
+    if (memo_on() == 2)
+        fprintf(stderr, "[status] vulkan SSBU_VK_MEMO=check: %llu answers taken again checked, %llu differed (constant buffers %llu, shaders %llu, textures %llu)\n",
+                vk_stat_memo_checked, vk_stat_memo_wrong[0] + vk_stat_memo_wrong[1] + vk_stat_memo_wrong[2], vk_stat_memo_wrong[0], vk_stat_memo_wrong[1], vk_stat_memo_wrong[2]);
     fprintf(stderr, "[status] vulkan (%s): %llu frames shown (%llu with no window to show them in), %llu clears (%llu masked drawn, %llu masked not drawn), "
                     "%llu 2D blits (%llu between formats it cannot blit), %u surfaces, %u textures (%llu made, %llu decoded on the CPU), %llu MB device memory; "
                     "%llu draws: %llu drawn in %llu renderings, skipped %llu shader / %llu pipeline / %llu target / %llu topology / %llu other; "
@@ -3469,10 +3645,10 @@ static void vk_status_lines(void) {
             vk_stat_local_blocks);
     fprintf(stderr, "[status] vulkan draws' parts (s): shaders %.1f, targets %.1f, state %.1f, streams %.1f, resources %.1f, indices %.1f, sets %.1f, "
                     "recording %.1f (resources: constant buffers %.1f, storage buffers %.1f, textures %.1f); "
-                    "kept constant buffers: %llu made, %llu used, %llu found changed; constant buffers copied: %llu small (%llu MB), %llu big (%llu MB), %llu the same as the slot's last (of %llu compared); windows: %llu copied, %llu used again; buffer views: %llu made, %llu used again; descriptor sets: %llu written, %llu used again; indices used again %llu; textures: %llu 1D, %llu depth from guest memory; %llu frames shrunk into the window\n", vk_ns_phase[0] / 1e9, vk_ns_phase[1] / 1e9, vk_ns_phase[2] / 1e9, vk_ns_phase[3] / 1e9, vk_ns_phase[4] / 1e9,
-            vk_ns_phase[5] / 1e9, vk_ns_phase[6] / 1e9, vk_ns_phase[7] / 1e9, vk_ns_res[0] / 1e9, vk_ns_res[1] / 1e9, vk_ns_res[2] / 1e9, vk_stat_kept_made, vk_stat_kept_hits, vk_stat_kept_stale, vk_stat_cb_copies[0], vk_stat_cb_bytes[0] >> 20, vk_stat_cb_copies[1], vk_stat_cb_bytes[1] >> 20, vk_stat_cb_same, vk_stat_cb_compared, vk_stat_window_copies, vk_stat_window_hits,
-            vk_stat_views_made, vk_stat_views_kept, vk_stat_sets_made, vk_stat_sets_kept, vk_stat_index_reused,
-            vk_stat_textures_1d, vk_stat_depth_textures, vk_stat_downscaled);
+                    "kept constant buffers: %llu made, %llu used, %llu found changed; constant buffers copied: %llu small (%llu MB), %llu big (%llu MB), %llu the same as the slot's last (of %llu compared; %llu not compared, unchanged in their submission); windows: %llu copied, %llu used again; buffer views: %llu made, %llu used again; descriptor sets: %llu written, %llu used again; parameters: %llu the last draw's, sets left bound %llu; indices used again %llu; textures: %llu found again in their submission, %llu 1D, %llu depth from guest memory; %llu frames shrunk into the window\n", vk_ns_phase[0] / 1e9, vk_ns_phase[1] / 1e9, vk_ns_phase[2] / 1e9, vk_ns_phase[3] / 1e9, vk_ns_phase[4] / 1e9,
+            vk_ns_phase[5] / 1e9, vk_ns_phase[6] / 1e9, vk_ns_phase[7] / 1e9, vk_ns_res[0] / 1e9, vk_ns_res[1] / 1e9, vk_ns_res[2] / 1e9, vk_stat_kept_made, vk_stat_kept_hits, vk_stat_kept_stale, vk_stat_cb_copies[0], vk_stat_cb_bytes[0] >> 20, vk_stat_cb_copies[1], vk_stat_cb_bytes[1] >> 20, vk_stat_cb_same, vk_stat_cb_compared, vk_stat_cb_unchanged, vk_stat_window_copies, vk_stat_window_hits,
+            vk_stat_views_made, vk_stat_views_kept, vk_stat_sets_made, vk_stat_sets_kept, vk_stat_params_kept, vk_stat_binds_kept, vk_stat_index_reused,
+            vk_stat_tex_memo, vk_stat_textures_1d, vk_stat_depth_textures, vk_stat_downscaled);
 }
 
 /* The output (monitor) the window is on, referenced, for display pacing (gpu_display.c waits for its
@@ -3497,9 +3673,10 @@ static void *vk_display_output(void) {
     return found;
 }
 
-/* The pipeline cache to its file (written aside, then put in place): by a maker every 20 seconds while
+/* The pipeline cache to its file (written aside, then put in place): by a maker at most once a minute while
  * new pipelines are made, and at the end. */
 static void pipeline_cache_save(void) {
+    u64 t0 = rt_clock_ns();
     size_t size = 0;
     if (!pipeline_cache || vkGetPipelineCacheData(device, pipeline_cache, &size, NULL) != VK_SUCCESS || !size) return;
     void *data = malloc(size);
@@ -3514,6 +3691,7 @@ static void pipeline_cache_save(void) {
         }
     }
     free(data);
+    fprintf(stderr, "[vulkan] pipeline cache saved: %.1f MB in %.0f ms (at %.1f s)\n", size / 1048576.0, (rt_clock_ns() - t0) / 1e6, rt_now_ns() / 1e9);
 }
 static volatile LONG saving;
 static void save_job(Job *j) { (void)j; pipeline_cache_save(); InterlockedExchange(&saving, 0); }
@@ -3521,7 +3699,7 @@ static void pipeline_cache_tick(void) {
     static u64 saved, last;
     static Job job = {NULL, save_job};
     u64 made = vk_stat_pipelines, now = rt_now_ns();
-    if (made == saved || now - last < 20000000000ull || saving) return;
+    if (made == saved || now - last < 60000000000ull || saving) return;   /* (a minute apart: the file is 100 MB and more) */
     saved = made;
     last = now;
     InterlockedExchange(&saving, 1);
