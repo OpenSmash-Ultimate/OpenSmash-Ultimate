@@ -133,6 +133,8 @@ static void frame_end_before(Cpu *c, const u64 args[8], void *ctx);
 static void frame_end_after(Cpu *c, const u64 args[8], void *ctx);
 static void record_before(Cpu *c, const u64 args[8], void *ctx);
 static void record_after(Cpu *c, const u64 args[8], void *ctx);
+static int rb_by_default;   /* (rollback netplay on because the game was started online: net.h's net_rollback_default) */
+int net_rollback_default(void);   /* (net.h) */
 
 __attribute__((constructor)) static void rb_init(void) {
     const char *log = getenv("SSBU_RB_LOG"), *q = getenv("SSBU_RB_QUIET_MS");
@@ -140,6 +142,11 @@ __attribute__((constructor)) static void rb_init(void) {
      * SSBU_RUNAHEAD, which kernel_rb_switch reads itself, wins, 0 included) */
     {   extern int kernel_rb_wanted; int display_runahead(void); const char *e = getenv("SSBU_RUNAHEAD");
         if (!(e && *e) && display_runahead() > 0) kernel_rb_wanted = 1; }
+    /* (rollback netplay on by default online: started with --online and a lobby or a room to play in, SSBU_RB not set,
+     * online_rollback.txt not "off"; its net mode then the game's own matches, Quickplay and Local Wireless rooms:
+     * SSBU_RB_NET=online's, below) */
+    {   extern int kernel_rb_online; const char *e = getenv("SSBU_RB");
+        if (!(e && *e) && net_rollback_default()) kernel_rb_online = rb_by_default = 1; }
     rb_on = kernel_rb_switch();
     if (!rb_on) return;   /* (off: no hook, no line; the wraps only call the game's functions) */
     rb_log = log && *log && *log != '0';
@@ -151,6 +158,8 @@ __attribute__((constructor)) static void rb_init(void) {
     frame_hook_add(FRAME_HOOK_RECORD, FRAME_ORDER_NETPLAY, record_before, record_after, NULL);
     if (getenv("SSBU_RB") && *getenv("SSBU_RB") && *getenv("SSBU_RB") != '0')
         fprintf(stderr, "[rb] rollback netplay on (SSBU_RB; savestates: F7 save, F8 load)\n");
+    else if (rb_by_default)
+        fprintf(stderr, "[rb] rollback netplay on (started online, the default; SSBU_RB=0 or Online > Rollback netcode off: the game's own netcode)\n");
     else fprintf(stderr, "[rb] savestates on for run-ahead (SSBU_RUNAHEAD or display.ini's runahead)\n");
 }
 
@@ -2477,6 +2486,14 @@ static void savestates(Cpu *c, u64 frame) {
                     "each frame's fight hash checked against its first pass\n", ring_from, size, ring_every, ring_depth, ring_left);
         } else ring_from = -1;
         e = getenv("SSBU_RB_NET");
+        /* (started online, net_rollback_default: SSBU_RB_NET=online's mode unless another is set - the game's own matches,
+         * Quickplay and Local Wireless rooms, with rollback when both games have it; SSBU_RB_NET=off for none) */
+        {   const char *rb = getenv("SSBU_RB");
+            if (!(e && *e) && !(rb && *rb == '0') && net_rollback_default()) {
+                e = "online";
+                fprintf(stderr, "[rb] net mode: started online: Quickplay and Local Wireless room matches with rollback (SSBU_RB_NET=online's)\n");
+            }
+        }
         /* (R7: relay[,<player>[,<delay>[,<frames>]]], the link through the netplay relay: hle_rb_relay.c) */
         int via_relay = e && !strncmp(e, "relay", 5) && (e[5] == 0 || e[5] == ',');
         net_online = e && !strncmp(e, "online", 6) && (e[6] == 0 || e[6] == ',');
@@ -2518,7 +2535,10 @@ static void savestates(Cpu *c, u64 frame) {
                 rb_ring_size(RBN_MAX_BACK + 3);
                 rb_quiet(1);
                 if (net_frames < (1 << 19)) net_frames = 1 << 19;   /* (the whole fight: some 2.4 hours of frames) */
-                { const char *l = getenv("SSBU_RB_NET_LIVE"); net_live = l && *l == '1'; }
+                /* (#145: players play with their own controllers; the bot only when a test asks for it, SSBU_RB_NET_LIVE=0
+                 * or SSBU_RB_NET_BOT=<kind>. Before, the bot was the default and a real player's controls did nothing) */
+                {   const char *l = getenv("SSBU_RB_NET_LIVE"), *b = getenv("SSBU_RB_NET_BOT");
+                    net_live = l && *l ? *l != '0' : !(b && *b); }
                 fprintf(stderr, "[rb] net mode: this game's player plays with %s\n", net_live ? "its controllers (live)" : "its bot");
                 char dl[48];
                 if (net_delay < 0) snprintf(dl, sizeof dl, "%s", net_local == 0 ? "from the round trip" : "the host's");
@@ -2894,15 +2914,35 @@ static void online_forget(const char *why) {
     rules_have = 0; rules_id = 0; rules_chunks = 0;
 }
 /* (player 1's record about to be built) 1: this set-up is an Online match, now this game's rollback match */
+int ldn_in_network(u32 ip);   /* (net.h) */
+u32 net_local_ip(void);
+int net_room_members(u32 *out, int max);
+/* (a match of another melee mode) the other players of this game's Local Wireless room: the room's members (the lobby's
+ * room, or a private room's) that are nodes of the game's local wireless network now; 0 outside a room */
+static int lw_room_others(u32 *out, int max) {
+    u32 m[16], me = net_local_ip();
+    int n = net_room_members(m, 16), k = 0;
+    if (!me) return 0;
+    for (int i = 0; i < n && k < max; i++)
+        if (m[i] != me && ldn_in_network(m[i])) out[k++] = m[i];
+    return k;
+}
 static int online_setup(u64 st) {
     online_forget("a new match set-up");
     u8 mode = ld8(MELEE_INFO);
-    if (mode != ONLINE_MELEE) { fprintf(stderr, "[rb] online: a match of melee mode %u (not an Online one): played here alone\n", mode); return 0; }
-    if (!readable(st, 0x460)) return 0;
     u32 ips[RBN_PLAYERS] = {0}, seen[8];
-    int peers = net_recent_peers(seen, 8, 30000);
+    int peers;
+    const char *what = "an Online match";
+    if (mode != ONLINE_MELEE) {
+        /* (a Local Wireless room's match: set up by both games from the room's own, as an Online one is; the same
+         * rollback, the room's other game the peer) */
+        peers = lw_room_others(seen, 8);
+        if (!peers) { fprintf(stderr, "[rb] online: a match of melee mode %u (not an Online one, no Local Wireless room): played here alone\n", mode); return 0; }
+        what = "a Local Wireless room's match";
+    } else peers = net_recent_peers(seen, 8, 30000);
+    if (!readable(st, 0x460)) return 0;
     if (peers != 1) {
-        fprintf(stderr, "[rb] online: an Online match with %d other players' games heard from: left to the game's own netcode (rollback plays 2)\n", peers);
+        fprintf(stderr, "[rb] online: %s with %d other players' games: left to the game's own netcode (rollback plays 2)\n", what, peers);
         return 0;
     }
     int own = ld32(st + 0x78) == 0 && !ld8(st + 0x451) ? 0 : 1;   /* (player 1's panel is this game's own, or the network player's) */
@@ -2911,8 +2951,8 @@ static int online_setup(u64 st) {
     if (!rbl_relay_online(own, net_n, ips)) return 0;
     net_local = own; net_pending = 0;
     if (own == 0) rbl_players(net_n);
-    fprintf(stderr, "[rb] online: an Online match (melee mode %u): this game is player %d; waiting for the other game's rollback (up to %.0f s)\n",
-            mode, own + 1, ONLINE_WAIT_MS / 1000);
+    fprintf(stderr, "[rb] online: %s (melee mode %u): this game is player %d; waiting for the other game's rollback (up to %.0f s)\n",
+            what, mode, own + 1, ONLINE_WAIT_MS / 1000);
     double t0 = now_ms();
     while (!hs_agreed && now_ms() - t0 < ONLINE_WAIT_MS) {
         net_hello(1);
@@ -2927,8 +2967,8 @@ static int online_setup(u64 st) {
         return 0;
     }
     for (int k = 0; k < 5; k++) { net_hello_send(); Sleep(20); }   /* (the other's answer, again) */
-    fprintf(stderr, "[rb] online: agreed after %.1f s (input delay %d): the match is played with rollback, both players local on both games (melee mode %u)\n",
-            (now_ms() - t0) / 1000, net_delay, mode);
+    fprintf(stderr, "[rb] online: agreed after %.1f s (input delay %d): %s is played with rollback, both players local on both games (melee mode %u)\n",
+            (now_ms() - t0) / 1000, net_delay, what, mode);
     memcpy(online_hdr, P(u8, MELEE_INFO), ONLINE_HDR);
     memset(online_rec_have, 0, sizeof online_rec_have);
     /* (the melee mode stays the game's, 14: the scene loads as an Online match - its results, the GSP and the next search

@@ -88,7 +88,7 @@ enum {
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
     R_LANGUAGE, R_VOLUME, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
-    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE, R_RUNAHEAD,
+    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE, R_RUNAHEAD, R_NET_ROLLBACK,
     R_ROOM_FIRST = 60,    /* + the room's place on the page of rooms shown (ROOM_PAGE at most) */
     R_REMAP_FIRST = 100,  /* + console button */
     R_MOD_FIRST = 200,    /* + the mod's place in mods.json (MENU_MODS at most) */
@@ -138,7 +138,7 @@ static volatile LONG osk_state;
 static char osk_title[96], osk_text[64];
 static int osk_max = 32;
 
-static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol; } net;
+static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol, rollback; } net;
 enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_MODE_COUNT };
 static const char *const NET_MODES[NET_MODE_COUNT] = {"public lobby", "private lobby (a code)", "your own server", "offline",
                                                       "this network (LAN)"};
@@ -156,6 +156,8 @@ static void net_load(void) {
     settings_line_read(config_path(CONFIG_ONLINE_NAME), net.name, sizeof net.name);
     char direct[16] = "";
     net.direct = !(settings_line_read(config_path(CONFIG_ONLINE_DIRECT), direct, sizeof direct) && !_strnicmp(direct, "off", 3));
+    char rollback[16] = "";   /* (net_relay.c's net_rollback_default reads it the same way) */
+    net.rollback = !(settings_line_read(config_path(CONFIG_ONLINE_ROLLBACK), rollback, sizeof rollback) && !_strnicmp(rollback, "off", 3));
     char protocol[16] = "";   /* (net_relay.c reads it the same way) */
     int v = settings_line_read(config_path(CONFIG_ONLINE_PROTOCOL), protocol, sizeof protocol) ? atoi(protocol) : 0;
     net.protocol = v == NET_PROTOCOL || v == NET_PROTOCOL_V3 ? v : NET_PROTOCOL_DEFAULT;
@@ -765,6 +767,11 @@ static void build(void) {
         r = add(R_NET_DIRECT, K_CHOICE, W_RESTART, "Direct connections",
                 "On: rooms connect players directly when they can (less lag). Off: everything goes through the lobby, so other players never learn your internet address.");
         snprintf(r->value, sizeof r->value, "%s", on_off(net.direct));
+#ifdef _WIN32   /* (rollback netplay is Windows' only: hle_rb_core.c) */
+        r = add(R_NET_ROLLBACK, K_CHOICE, W_RESTART, "Rollback netcode",
+                "On: Quickplay and Local Wireless room matches are played with rollback when the other player has it on too (your inputs answer at once). Off: the game's own netcode.");
+        snprintf(r->value, sizeof r->value, "%s", on_off(net.rollback));
+#endif
         for (int i = 1; i < nrows; i++) {
             if (launcher) snprintf(rows[i].note, sizeof rows[i].note, "%s", launcher);
             else if (!settings_online()) snprintf(rows[i].note, sizeof rows[i].note, "for Play SSBU");
@@ -999,6 +1006,10 @@ static void change(const Row *row, int dir) {
     case R_NET_DIRECT:
         net.direct = !net.direct;
         settings_line_write(config_path(CONFIG_ONLINE_DIRECT), net.direct ? "on" : "off");
+        break;
+    case R_NET_ROLLBACK:
+        net.rollback = !net.rollback;
+        settings_line_write(config_path(CONFIG_ONLINE_ROLLBACK), net.rollback ? "on" : "off");
         break;
     case R_NET_PROTOCOL:
         net.protocol = net.protocol == NET_PROTOCOL_V3 ? NET_PROTOCOL : NET_PROTOCOL_V3;

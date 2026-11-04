@@ -24,7 +24,7 @@ Everything starts from a launcher. `Play SSBU.bat` and `Install WindowSmash.bat`
 
 | Launcher | What it does |
 | :--- | :--- |
-| **`Play SSBU.bat`** | Opens the WindowSmash window (below), then starts the game and joins the online lobby, so Local Wireless shows everyone's rooms. If the lobby doesn't answer, the game plays offline. |
+| **`Play SSBU.bat`** | Opens the WindowSmash window (below), then starts the game and joins the online lobby, so Local Wireless shows everyone's rooms. Quickplay and Local Wireless room matches are played with rollback netcode when the other player has it too ([how](MULTIPLAYER.md#rollback-in-online-mode)). If the lobby doesn't answer, the game plays offline. |
 | **`Play SSBU.bat`** with <kbd>Shift</kbd> held | Opens the WindowSmash window even when you've ticked **Start the game directly next time**. |
 | **`launchers\Play SSBU Offline.bat`** | Starts the game without going online. |
 | **`launchers\Host SSBU Netplay.bat`** | Starts the game as the host of a private room ([multiplayer guide](MULTIPLAYER.md#private-room)). |
