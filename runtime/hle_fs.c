@@ -63,8 +63,10 @@ typedef struct { u32 parent, sibling, child_dir, child_file, hash, name_len; cha
 typedef struct { u32 parent, sibling; u64 offset, size; u32 hash, name_len; char name[]; } RomFile;
 #define NONE 0xFFFFFFFFu
 
+void rb_guest_writing(void *p, u64 n);   /* (hle_rb_state.c: the rollback state map's read-only pages opened for the system's write) */
 static int pread_all(HANDLE h, u64 offset, void *buf, u64 size) {
     u8 *p = buf;
+    rb_guest_writing(buf, size);
     while (size) {
         OVERLAPPED o = {0};
         o.Offset = (DWORD)offset;
