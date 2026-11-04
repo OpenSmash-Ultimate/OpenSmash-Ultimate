@@ -121,6 +121,7 @@ namespace OpenSmash.Launcher
             || _updateApplying || _marketplaceInstalling.Count > 0;
 
         bool _rebuildPrompt;
+        bool _sharePrompt;
 
         // Game overlay state
         Process _gameProcess;
@@ -601,7 +602,7 @@ namespace OpenSmash.Launcher
         void MaybeShowBootPrompts()
         {
             if (_shownAt < 0 || Now - _shownAt < 0.8) return;
-            if (_newModsPrompt || _updatePrompt || _shaderPrompt || _pluginPrompt || _rebuildPrompt || _showSetupPrompt) return;
+            if (_newModsPrompt || _updatePrompt || _shaderPrompt || _pluginPrompt || _rebuildPrompt || _sharePrompt || _showSetupPrompt) return;
             if (_newModsPending)
             {
                 _newModsPending = false;
@@ -1767,6 +1768,13 @@ namespace OpenSmash.Launcher
                 return;
             }
 
+            if (_sharePrompt)
+            {
+                if (e.KeyCode == Keys.Escape) { _sharePrompt = false; Invalidate(); }
+                if (e.KeyCode == Keys.Enter) { _sharePrompt = false; Invalidate(); ShareModList(true); }
+                return;
+            }
+
             if (_shaderPrompt)
             {
                 if (e.KeyCode == Keys.Escape) { _shaderPrompt = false; Invalidate(); }
@@ -1903,7 +1911,7 @@ namespace OpenSmash.Launcher
             else if (id == "act:browse") GoView("mods_browser");
             else if (id == "act:setup") GoView("setup_modding");
             else if (id == "act:check") _ = CheckMods();
-            else if (id == "act:share") ShareModList();
+            else if (id == "act:share") { _sharePrompt = true; PlayPopup(); Invalidate(); }
             else if (id == "act:build") _ = BuildPlugins();
             else if (id == "act:open" && Directory.Exists(_modsDir))
                 Process.Start("explorer.exe", $"\"{_modsDir}\"");
@@ -1974,6 +1982,10 @@ namespace OpenSmash.Launcher
             else if (id == "rebuild_prompt:refresh") { _rebuildPrompt = false; Invalidate(); _ = RefreshPlugins(); }
             else if (id == "rebuild_prompt:update") { _rebuildPrompt = false; Invalidate(); _ = BuildPlugins(); }
             else if (id == "rebuild_prompt:block") { }
+            else if (id == "share_prompt:cancel") { _sharePrompt = false; Invalidate(); }
+            else if (id == "share_prompt:share") { _sharePrompt = false; Invalidate(); ShareModList(true); }
+            else if (id == "share_prompt:install") { _sharePrompt = false; Invalidate(); ShareModList(false); }
+            else if (id == "share_prompt:block") { }
             else if (id == "shader_prompt:low") StartShaders("low");
             else if (id == "shader_prompt:medium") StartShaders("medium");
             else if (id == "shader_prompt:high") StartShaders("high");
@@ -2736,17 +2748,17 @@ namespace OpenSmash.Launcher
             UpdateMods();
             _ = PushInstalledState();
             Invalidate();
-            MessageBox.Show(failed.Length == 0 ? "Updated." : "Some could not be updated:" + failed, "OpenSmash - mods");
+            SetLoad("CHECK DONE", 1);
+            _ = Task.Delay(1800).ContinueWith(_ => BeginInvoke(ClearLoad));
+            // PlayDone already called by... add here
+            PlayDone();
         }
 
-        void ShareModList()
+        void ShareModList(bool export)
         {
             if (_modsBusy) return;
-            var pick = MessageBox.Show("Yes: save your mods as a list file to share.\nNo: install the mods of a list file a friend sent you.",
-                "OpenSmash - mod list", MessageBoxButtons.YesNoCancel);
-            if (pick == DialogResult.Cancel) return;
             string path;
-            if (pick == DialogResult.Yes)
+            if (export)
             {
                 using var d = new SaveFileDialog { Filter = "Mod list (*.json)|*.json", FileName = "opensmash-mods.json" };
                 if (d.ShowDialog(this) != DialogResult.OK) return;
@@ -2758,7 +2770,6 @@ namespace OpenSmash.Launcher
                 if (d.ShowDialog(this) != DialogResult.OK) return;
                 path = d.FileName;
             }
-            bool export = pick == DialogResult.Yes;
             _modsBusy = true;
             SetLoad(export ? "SAVING THE LIST" : "INSTALLING THE LIST", -1);
             Invalidate();
