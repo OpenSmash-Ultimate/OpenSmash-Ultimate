@@ -29,6 +29,8 @@
 /online_protocol.txt
 # Crash, freeze and stop reports with their minidumps (docs/PLAYING.md)
 /reports/
+# Installed mods and the launcher's local mod index
+/mods/
 # Third-party packages as downloaded (SDL3 for controllers: docs/BUILDING.md)
 /deps/
 # The game version this folder was built from (tools/build_game.py); and what WindowSmash before
@@ -87,3 +89,5 @@ __pycache__/
 .DS_Store
 Thumbs.db
 tools/modmanager/installed.json
+/OpenSmash.Launcher/bin/
+/OpenSmash.Launcher/obj/

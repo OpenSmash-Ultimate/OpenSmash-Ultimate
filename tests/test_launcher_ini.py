@@ -177,11 +177,10 @@ class LauncherIniTests(unittest.TestCase):
     def test_online_server_first_line(self):
         got = self.edit(SERVER, [('line', 'smash.recomps.wtf:39421 abc')], 'online_server.txt')
         self.assertEqual(got, SERVER.replace(b'smash.example:39421 friends', b'smash.recomps.wtf:39421 abc'))
-        shipped = (ROOT / 'online_server.txt').read_bytes()
-        got = self.edit(shipped, [('line', 'off')], 'shipped.txt')
-        want = shipped.replace(b'smash.recomps.wtf:39421', b'off')
+        got = self.edit(SERVER, [('line', 'off')], 'shipped.txt')
+        want = SERVER.replace(b'smash.example:39421 friends', b'off')
         self.assertEqual(got, want)
-        self.assertEqual(sum(1 for l in got.splitlines() if l.startswith(b'#')), sum(1 for l in shipped.splitlines() if l.startswith(b'#')))
+        self.assertEqual(sum(1 for l in got.splitlines() if l.startswith(b'#')), sum(1 for l in SERVER.splitlines() if l.startswith(b'#')))
 
     def test_reading(self):
         path = self.dir / 'r.ini'
