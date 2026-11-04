@@ -121,9 +121,17 @@ The game's own **Online** menu works with WindowSmash's game server, which runs 
 
 ## Direct connections and your internet address
 
-Online, the games in a room send their traffic **straight to each other** whenever the players' routers allow it. The lobby introduces them, and the games open a path through their routers themselves (UDP hole punching), so nobody forwards a port for this either. Where that doesn't work, the traffic keeps going through the lobby. Some mobile networks, and providers that share one address between many customers (symmetric NAT), don't allow direct paths. A direct path that goes quiet falls back to the lobby within about a second and is tried again later.
+Online, the games in a room send their traffic **straight to each other** whenever the players' routers allow it. The lobby introduces them, and the games open a path through their routers themselves (UDP hole punching), so nobody forwards a port for this either. Where that doesn't work, the traffic keeps going through the lobby. A direct path that goes quiet falls back to the lobby within about a second; a relayed one keeps being tried during the match and switches to direct as soon as it opens.
 
-Through the lobby, the delay between two players is roughly both players' pings to the lobby added together. Directly, it's just the delay between the two PCs.
+Through the lobby, the delay between two players is roughly both players' pings to the lobby added together: the traffic goes from one player to the lobby and on to the other. The public lobbies run in Europe (Milan), so two players in North America who end up relayed cross the Atlantic twice, about 100 ms or more. Directly, it's just the delay between the two PCs.
+
+**Routers that change ports.** Some routers give every destination a port of their own (a *symmetric NAT*: some providers' routers, many mobile networks, providers that share one address between many customers). The lobby then sees one port and the other player's game another. The game works around it on its own:
+
+- it answers a player at the address that player's hellos really come from, which joins a router that changes ports with most others;
+- it asks your router to forward its port (UPnP, NAT-PMP or PCP, as a console does), and tells the other players that port;
+- where a router hands out ports in turn, the lobby sees two of them (its second port, the *NAT port*) and the other game tries the next few.
+
+When none of these works (for example two routers that change ports at random), the room goes through the lobby, and the game says so in its log (`[net] no direct path to ...`) and on <kbd>F1</kbd>: `relayed (your router changes ports)` means turning on **UPnP** or **NAT-PMP** in your router's settings gives direct paths; `relayed (their router changes ports)` means the other player's router needs it. At the end the log counts the session: `direct paths this session: 3 of 4 players introduced; relayed 1 (...)`.
 
 The overlay's second line shows each player in your room, for example `Room: Bravo direct 12 ms, Kim relayed`:
 
@@ -132,6 +140,8 @@ The overlay's second line shows each player in your room, for example `Room: Bra
 | `direct 12 ms` | Straight to that player, 12 ms there and back. |
 | `relayed` | Through the lobby. |
 | `relayed (trying direct)` | Still opening a direct path. |
+| `relayed (your router changes ports)` | Your router gives every destination its own port: turn on UPnP or NAT-PMP in it. |
+| `relayed (their router changes ports)` | The same for that player's router. |
 | `relayed (direct off)` | That player turned direct connections off. |
 | `relayed (direct off here)` | You turned them off. |
 | `relayed (older game)` | That player's WindowSmash is too old for direct connections. |
@@ -231,7 +241,7 @@ In a private room, the host has no relay hop to itself; each joining player's tr
 python tools/ssbu_relay.py --port 39420 --verbose
 ```
 
-1. Let incoming UDP 39420 through that machine's firewall, and any network firewall in front of it.
+1. Let incoming UDP 39420 through that machine's firewall, and any network firewall in front of it, and UDP 39430 too: the lobby's NAT port (`--nat-port`, the lobby's port + 10 unless given; `0` for none), where games compare their routers' ports for direct paths. ssbu-recomp's games on `--su-port` 39500 use 39510 (`--su-nat-port`).
 2. Every player puts the lobby's address in `online_server.txt` and starts the game with `Play SSBU.bat`.
 3. One player creates a Local Wireless room; the others pick it.
 
@@ -291,7 +301,8 @@ The game server's log (`--nex-log`: `0` quiet, `1` each call, `2` every packet, 
 | `SSBU_NET_LAN_PORT`, `SSBU_NET_LAN_TEST=1` | Local tests: the announcements' port (default `39501`), and announcements to `127.0.0.1` only, the looking game listening there. |
 | `SSBU_NET_DIRECT=0` | Online, send all traffic through the lobby. `Play SSBU.bat` sets it when `online_direct.txt` says `off`. |
 | `SSBU_NET_PROTOCOL=3` | Being tried out: join the lobby in netplay version 3, which has the [room browser and matchmaking](#room-browser-and-matchmaking-being-tried-out). A lobby of version 2 says no, and the game joins it in version 2. `2`, the default, is version 2 only. Without it, `online_protocol.txt` decides (`3` or `2`; the settings' **Online → Netplay version** writes it). Hosting a private room is always version 2. |
-| `SSBU_NET_TEST_NAT=1`, `SSBU_NET_TEST_BLOCK=<seconds>` | Local tests: filter incoming packets as a router would, or cut direct paths that many seconds after the start. |
+| `SSBU_NET_UPNP=0` | Leave the router alone: no UPnP for a hosted room, and online no port mapping (UPnP, NAT-PMP, PCP) of the game's port. |
+| `SSBU_NET_TEST_NAT=1`..`4`, `SSBU_NET_TEST_BLOCK=<seconds>` | Local tests: a router simulated in the game, `1` one that keeps the port and lets in only what comes from where it sent, `2` one that changes ports for every destination (at random), `3` the same in turn, `4` one that lets in anything from an address it sent to; or cut direct paths that many seconds after the start. `SSBU_NET_TEST_UPNP=1`: that router forwards the game's port. `SSBU_NET_TEST_LEARN=0`: no address learnt from a player's hellos. `SSBU_NET_TEST_GATEWAY=<ip:port>`: the PCP / NAT-PMP gateway to ask (no UPnP). |
 | `SSBU_NET_TEST_SAVE_ROOM=<file>`, `SSBU_NET_TEST_ROOMS=<file>[,<n>]` | Local tests of the Rooms List: a host writes its room's network to the file once a second; a game given that file also finds n rooms made from it at every scan (default 15, up to 24; `clone[,<n>]` copies the first room really found). They can't be joined. |
 | `SSBU_NET_LOG=1` / `2` | Network logging: a summary, or more detail. |
 | `SSBU_RB_NET=relay[,<player>[,<delay>,<frames>]]` | With `SSBU_RB=1`: rollback netplay's messages through this netplay connection. `<player>`: `auto` (by address in the room), `0`-`3`, or `-1` (the host gives one). See [above](#rollback-netplay-through-the-lobby-or-a-private-room). |
