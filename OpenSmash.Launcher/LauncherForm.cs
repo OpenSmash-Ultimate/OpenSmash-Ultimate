@@ -122,6 +122,9 @@ namespace OpenSmash.Launcher
 
         bool _rebuildPrompt;
         bool _sharePrompt;
+        bool _checkModsPrompt;
+        string _checkModsText = "";
+        List<(string gb, string file, string title)> _checkModsUpdates = new();
 
         // Game overlay state
         Process _gameProcess;
@@ -602,7 +605,7 @@ namespace OpenSmash.Launcher
         void MaybeShowBootPrompts()
         {
             if (_shownAt < 0 || Now - _shownAt < 0.8) return;
-            if (_newModsPrompt || _updatePrompt || _shaderPrompt || _pluginPrompt || _rebuildPrompt || _sharePrompt || _showSetupPrompt) return;
+            if (_newModsPrompt || _updatePrompt || _shaderPrompt || _pluginPrompt || _rebuildPrompt || _sharePrompt || _checkModsPrompt || _showSetupPrompt) return;
             if (_newModsPending)
             {
                 _newModsPending = false;
@@ -1775,6 +1778,17 @@ namespace OpenSmash.Launcher
                 return;
             }
 
+            if (_checkModsPrompt)
+            {
+                if (e.KeyCode == Keys.Escape) { _checkModsPrompt = false; Invalidate(); }
+                if (e.KeyCode == Keys.Enter)
+                {
+                    if (_checkModsUpdates.Count > 0) { _checkModsPrompt = false; Invalidate(); _ = InstallModUpdates(); }
+                    else { _checkModsPrompt = false; Invalidate(); }
+                }
+                return;
+            }
+
             if (_shaderPrompt)
             {
                 if (e.KeyCode == Keys.Escape) { _shaderPrompt = false; Invalidate(); }
@@ -1986,6 +2000,9 @@ namespace OpenSmash.Launcher
             else if (id == "share_prompt:share") { _sharePrompt = false; Invalidate(); ShareModList(true); }
             else if (id == "share_prompt:install") { _sharePrompt = false; Invalidate(); ShareModList(false); }
             else if (id == "share_prompt:block") { }
+            else if (id == "check_prompt:close") { _checkModsPrompt = false; Invalidate(); }
+            else if (id == "check_prompt:install") { _checkModsPrompt = false; Invalidate(); _ = InstallModUpdates(); }
+            else if (id == "check_prompt:block") { }
             else if (id == "shader_prompt:low") StartShaders("low");
             else if (id == "shader_prompt:medium") StartShaders("medium");
             else if (id == "shader_prompt:high") StartShaders("high");
@@ -2730,10 +2747,19 @@ namespace OpenSmash.Launcher
                 foreach (var x in updates) text.AppendLine($"  {x.title}");
             }
             else text.AppendLine("Updates: GameBanana could not be reached.");
-            if (updates.Count == 0) { MessageBox.Show(text.ToString(), "OpenSmash - mods"); return; }
-            text.AppendLine();
-            text.Append("Install the newer files now?");
-            if (MessageBox.Show(text.ToString(), "OpenSmash - mods", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
+            if (updates.Count == 0 && false) { }
+            _checkModsText = text.ToString().Trim();
+            _checkModsUpdates = updates;
+            _checkModsPrompt = true;
+            PlayPopup();
+            Invalidate();
+        }
+
+        async Task InstallModUpdates()
+        {
+            if (_modsBusy || _checkModsUpdates.Count == 0) return;
+            var updates = _checkModsUpdates;
+            _checkModsPrompt = false;
             _modsBusy = true;
             Invalidate();
             string failed = "";
@@ -2748,9 +2774,8 @@ namespace OpenSmash.Launcher
             UpdateMods();
             _ = PushInstalledState();
             Invalidate();
-            SetLoad("CHECK DONE", 1);
+            SetLoad(failed.Length == 0 ? "CHECK DONE" : "SOME FAILED", 1);
             _ = Task.Delay(1800).ContinueWith(_ => BeginInvoke(ClearLoad));
-            // PlayDone already called by... add here
             PlayDone();
         }
 

@@ -75,8 +75,8 @@ namespace OpenSmash.Launcher
         double _lastTick, _pendingDt;
         double _shownAt = -1, _heroAt, _viewAt, _promptAt, _ddAt;
         string _paintedView = "", _paintedDd;
-        bool _paintedPrompt, _paintedPluginPrompt, _paintedNewModsPrompt, _paintedUpdatePrompt, _paintedRebuildPrompt, _paintedSharePrompt;
-        double _pluginPromptAt, _newModsPromptAt, _updatePromptAt, _rebuildPromptAt, _sharePromptAt;
+        bool _paintedPrompt, _paintedPluginPrompt, _paintedNewModsPrompt, _paintedUpdatePrompt, _paintedRebuildPrompt, _paintedSharePrompt, _paintedCheckModsPrompt;
+        double _pluginPromptAt, _newModsPromptAt, _updatePromptAt, _rebuildPromptAt, _sharePromptAt, _checkModsPromptAt;
         float _alpha = 1;                                        // multiplies every colour drawn through A()
         readonly Dictionary<string, float> _hov = new();         // hit id -> hover progress 0..1
         readonly HashSet<string> _hovOn = new();                 // hit ids hovered or selected this frame
@@ -495,6 +495,7 @@ namespace OpenSmash.Launcher
             if (_updatePrompt != _paintedUpdatePrompt) { _paintedUpdatePrompt = _updatePrompt; _updatePromptAt = Now; }
             if (_rebuildPrompt != _paintedRebuildPrompt) { _paintedRebuildPrompt = _rebuildPrompt; _rebuildPromptAt = Now; }
             if (_sharePrompt != _paintedSharePrompt) { _paintedSharePrompt = _sharePrompt; _sharePromptAt = Now; }
+            if (_checkModsPrompt != _paintedCheckModsPrompt) { _paintedCheckModsPrompt = _checkModsPrompt; _checkModsPromptAt = Now; }
             if (_openDropdownKey != _paintedDd) { _paintedDd = _openDropdownKey; _ddAt = Now; _ddFirst = -1; }
 
             g.TextRenderingHint = TextRenderingHint.AntiAlias;
@@ -534,6 +535,7 @@ namespace OpenSmash.Launcher
             if (_updatePrompt) PaintUpdatePrompt(g, W, H);
             if (_rebuildPrompt) PaintRebuildPrompt(g, W, H);
             if (_sharePrompt) PaintSharePrompt(g, W, H);
+            if (_checkModsPrompt) PaintCheckModsPrompt(g, W, H);
         }
 
         // ---------------------------------------------------------------------------
@@ -2011,6 +2013,48 @@ namespace OpenSmash.Launcher
             AddHit("share_prompt:share", xShare, by, wShare, bh);
             Theme.ButtonAnimated(g, "INSTALL SHARED MODS", xInstall, by, wInstall, bh, s, true, Hov("share_prompt:install", _hover == "share_prompt:install"), true, 12 * s, _alpha, press: Press("share_prompt:install"));
             AddHit("share_prompt:install", xInstall, by, wInstall, bh);
+            PopFade(g, st);
+        }
+
+        void PaintCheckModsPrompt(Graphics g, int W, int H)
+        {
+            float s = _s, e = Theme.Ease(Clamp01((float)(Now - _checkModsPromptAt) / 0.4f));
+            using (var b = new SolidBrush(Color.FromArgb((int)(200 * e), 5, 5, 5))) g.FillRectangle(b, 0, 0, W, H);
+            AddHit("check_prompt:block", 0, 0, W, H);
+            var st = PushFade(g, e, 24 * s);
+            float mw = 720 * s, mh = 440 * s, mx = (W - mw) / 2, my = (H - mh) / 2;
+            using (var p = Theme.CutCorners(mx, my, mw, mh, 30 * s))
+            {
+                using (var b = new SolidBrush(A(Theme.Bg2))) g.FillPath(b, p);
+                using (var pen = new Pen(A(Theme.Line), Math.Max(1, s))) g.DrawPath(pen, p);
+                var cs = g.Save();
+                g.SetClip(p, CombineMode.Intersect);
+                using (var b = new SolidBrush(A(Theme.Accent))) g.FillRectangle(b, mx, my, mw, 4 * s);
+                g.Restore(cs);
+            }
+            float pad = 32 * s;
+            Theme.Label(g, "CHECK MODS", FD(32 * s), A(Theme.Text), mx + pad, my + 34 * s, 30 * s, 0.32f * s);
+            Theme.DrawWrapped(g, _checkModsText, FB(13.5f * s), A(Theme.Muted), mx + pad, my + 80 * s, mw - pad * 2, mh - 180 * s);
+            float bh = 46 * s, by = my + mh - bh - 24 * s, gap = 12 * s;
+            bool hasUpdates = _checkModsUpdates.Count > 0;
+            float wClose = 130 * s, wInstall = 190 * s;
+            float xClose, xInstall = 0;
+            if (hasUpdates)
+            {
+                xInstall = mx + mw - pad - wInstall;
+                xClose = xInstall - gap - wClose;
+            }
+            else
+            {
+                xClose = mx + (mw - wClose) / 2;
+            }
+            Theme.ButtonAnimated(g, "CLOSE", xClose, by, wClose, bh, s, false, Hov("check_prompt:close", _hover == "check_prompt:close"), true, 13 * s, _alpha, press: Press("check_prompt:close"));
+            AddHit("check_prompt:close", xClose, by, wClose, bh);
+            if (hasUpdates)
+            {
+                Theme.ButtonAnimated(g, "INSTALL UPDATES", xInstall, by, wInstall, bh, s, true, Hov("check_prompt:install", _hover == "check_prompt:install"), true, 12 * s, _alpha, press: Press("check_prompt:install"));
+                AddHit("check_prompt:install", xInstall, by, wInstall, bh);
+            }
             PopFade(g, st);
         }
 
