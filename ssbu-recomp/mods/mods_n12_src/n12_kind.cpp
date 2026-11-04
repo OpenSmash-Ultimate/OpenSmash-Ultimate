@@ -43,9 +43,9 @@ static const uint64_t MASK40 = 0xffffffffffull;
 // 0x72 kinds = at most 20 new): ssbu_game_p15n3.dll. An exe linked against an unpatched DLL (ssbu_game_eh_o1.dll:
 // ssbu_tutto.exe, ssbu_n13.exe) reads B / A / container 2 outside the singleton: garbage rows, no parameter objects,
 // abort() in the fighter init (run both3).
-static const int FIRST = 0x5E, MAXNEW = 8;
+static const int FIRST = 0x5E, MAXNEW = 16;   // U16: 8 -> 16 = the spare rows of the engine's kind tables (0x5E-0x6D; 0x6E.. are the special kinds)
 static const uint64_t NAME_TABLE = MOD_GA(0x7104f80e20ull);
-static int g_donor[MAXNEW] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+static int g_donor[MAXNEW] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
 static char g_donor_name[MAXNEW][32];
 static const uint64_t NEW_B = 0x19a8;              // array B of the patched singleton (patches\kinds.txt)
 static const uint64_t OWNER_TABLE = MOD_GA(0x710455d7e4ull);   // int32 per weapon kind (617 rows)
@@ -172,7 +172,7 @@ static int static_owner(int wk) {
 }
 
 // ---- live fighters and weapons ---------------------------------------------------------------------------------
-struct Seen { uint64_t obj; int kind; };
+struct Seen { uint64_t obj; int kind; uint32_t id; };   // (id: the object id at + 8, read once while the fighter is live)
 static Seen g_fighter[16], g_weapon[512];
 static int g_nfighter, g_nweapon;
 static __declspec(thread) int t_init_kind = -1;        // kind of the fighter init running on this thread
@@ -189,7 +189,8 @@ static int entry_kind(int slot) {                     // FighterManager -> entry
 }
 static void remember(Seen *tab, int *n, int cap, uint64_t obj, int kind) {
     for (int i = 0; i < *n; i++) if (tab[i].obj == obj) { tab[i].kind = kind; return; }
-    if (*n < cap) { tab[*n].obj = obj; tab[*n].kind = kind; (*n)++; }
+    for (int i = 0; i < *n; i++) if (tab[i].obj == 0) { tab[i].obj = obj; tab[i].kind = kind; tab[i].id = 0; return; }   // (a slot freed by a newer fighter of its id)
+    if (*n < cap) { tab[*n].obj = obj; tab[*n].kind = kind; tab[*n].id = 0; (*n)++; }
 }
 static int recall(Seen *tab, int n, uint64_t obj) {
     for (int i = 0; i < n; i++) if (tab[i].obj == obj) return tab[i].kind;
@@ -226,9 +227,9 @@ static void h_w0(Ctx *c, HookOrig o, long *n, const char *what) {      // functi
 // have 615 rows, the description lookup's bound is 614). The record handed out for the new kind is a COPY of the
 // donor's (RECORD_COPY bytes) whose + 8 points to the own header. N12_ARTICLES=1: on (default off until the
 // weapon-kind lookups are table-driven; WRITTEN, see the phase file for what is run).
-static const int NEW_WK_BASE = 640, NEW_WK_MAX = 64, RECORD_COPY = 0x400;
+static const int NEW_WK_BASE = 640, NEW_WK_MAX = 8 * MAXNEW, RECORD_COPY = 0x400;
 static uint64_t game_call2(Ctx *c, uint64_t addr, uint64_t a0, uint64_t a1);
-struct NewArticle { char name[32], tmpl[64]; int max, wk, tmpl_wk, owner_kind, resolved; uint64_t fn[3]; };
+struct NewArticle { char name[32], tmpl[64]; int max, wk, tmpl_wk, owner_kind, resolved, keep_on_hit; uint64_t fn[3]; };
 static NewArticle g_art[MAXNEW][8]; static int g_nart[MAXNEW];
 static uint8_t *g_own_record[MAXNEW]; static int g_articles_on = -1;
 static int weapon_kind_of(const char *owner, const char *weapon) {
@@ -255,6 +256,11 @@ static void read_articles(int k) {
         if ((q = strstr(obj, "\"name\"")) && (q = strchr(q + 6, '"'))) sscanf(q + 1, "%31[^\"]", a->name);
         if ((q = strstr(obj, "\"template\"")) && (q = strchr(q + 10, '"'))) sscanf(q + 1, "%63[^\"]", a->tmpl);
         if ((q = strstr(obj, "\"max\"")) && (q = strchr(q, ':'))) a->max = atoi(q + 1);
+        // "keep_on_hit": true - the template's native code must not remove the weapon when its hit box connects
+        // (it does so unless its is_penetration parameter is set): the article's own status code decides. Waluigi's
+        // dice block breaks with its rolled number's effect on any hit - shield, fighter - as the package's plugin
+        // does (its status main replaces the template's, so nothing native removes it there).
+        if ((q = strstr(obj, "\"keep_on_hit\"")) && (q = strchr(q, ':'))) { q++; while (*q == ' ') q++; a->keep_on_hit = !strncmp(q, "true", 4) || *q == '1'; }
         a->wk = NEW_WK_BASE + k * 8 + g_nart[k];
         g_nart[k]++;
         p = e + 1;
@@ -817,8 +823,8 @@ static int add_rows(Ctx *c, uint8_t *P, int holder_off, size_t row, int32_t *idx
     if (v[2] >= (uint64_t)(uintptr_t)e && v[2] - (uint64_t)(uintptr_t)e < 0x100000) v[2] = v[1];      // capacity end, if this is one
     // the old buffer is NOT given back (who allocated it was not checked): a leak of n rows, once per run
     {
-        char rows[120]; int rk = 0; rows[0] = 0;
-        for (int k = 0; k < g_nnew; k++) rk += snprintf(rows + rk, sizeof rows - rk, "%s%d (%s)", k ? ", " : "", donor_row[k], g_donor_name[k]);
+        char rows[1200]; int rk = 0; rows[0] = 0;   // U16: was 120 - with 10+ new kinds rk ran past the end and the next snprintf wrote behind it
+        for (int k = 0; k < g_nnew && rk < (int)sizeof rows - 64; k++) rk += snprintf(rows + rk, sizeof rows - rk, "%s%d (%s)", k ? ", " : "", donor_row[k], g_donor_name[k]);
         logf("[n4] kind: row vector of 0x%x-byte rows: %d -> %d rows (donor's row %s copied with the new kind hash; new buffer %p from the game's allocator)",
              (unsigned)row, (int)n, (int)n + g_nnew, rows, (void *)nb);
     }
@@ -896,6 +902,14 @@ static void h_init(Ctx *c, void *) {               // fighter init: x0 = fighter
     o_init(c);
     if (own_set) g_reg->owner_set(nullptr);
     t_init_kind = was;
+    {   // (2026-11-03, crashes n12_kind +0x45d4: h_fireball read + 8 of every remembered object, also of past matches'
+        // freed ones): the id is read here, once, from the live object; the newest fighter of an id replaces older ones
+        uint32_t id = readable(obj + 8, 4) ? *(uint32_t *)(uintptr_t)(obj + 8) : 0;
+        for (int i = 0; i < g_nfighter; i++) {
+            if (g_fighter[i].obj == obj) g_fighter[i].id = id;
+            else if (g_fighter[i].id == id) g_fighter[i].id = 0, g_fighter[i].obj = 0;
+        }
+    }
     if (is_new((uint32_t)kind) && readable(obj + 0x20, 8)) {
         uint64_t acc = *(uint64_t *)(uintptr_t)(obj + 0x20);
         int ok = readable(acc + 8, 4) && *(uint32_t *)(uintptr_t)(acc + 8) == *(uint32_t *)(uintptr_t)(obj + 8);
@@ -924,7 +938,7 @@ static int with_owner(Ctx *c, HookOrig o, int wk, int live) {      // run o with
 // call from the weapon object's module accessor (+ 0x20) -> work module (+ 0x50) -> areas (+ 0x18) -> area 0 -> ints
 // (+ 0x20, 8 bytes each), logged when it changes.
 static uint64_t g_life_w[8]; static int64_t g_life_v[8]; static int g_nlife; static long g_life_frames; static HookOrig o_lifeframe;
-static uint64_t g_ownw[16]; static int g_nownw, g_ownw_art[16][2];      // weapon objects of own articles (dispatcher hook), their fighter / article index
+static uint64_t g_ownw[32]; static int g_nownw, g_ownw_next, g_ownw_art[32][2];      // weapon objects of own articles (dispatcher hook), their fighter / article index
 static uint64_t g_ownagent[64]; static int g_ownagent_disp[64], g_nownagent, g_ownagent_seen[64]; static int64_t g_ownagent_life[64];
 static int64_t work_int(uint64_t w, int index, int *ok);
 static int64_t weapon_life(uint64_t w, int *ok) { return work_int(w, 5, ok); }
@@ -989,6 +1003,7 @@ static void h_lifeframe(Ctx *c, void *) {
     }
     o_lifeframe(c);
 }
+static void forget_own_weapon(uint64_t w);
 static void h_winit(Ctx *c, void *) {              // weapon init (weapon object, description)
     ensure_data();
     uint64_t w = c->x[0], d = c->x[1];
@@ -1006,6 +1021,10 @@ static void h_winit(Ctx *c, void *) {              // weapon init (weapon object
         if (said++ < 6) logf("[n12] weapon init for the OWN weapon kind %d (%s's %s): the template's kind %d is presented for the init (stage 1)", wk, fi < MAXNEW ? g_name[fi] : "?", t >= 0 ? g_art[fi][ai].name : "?", t);
         if (t >= 0) { own_wk = wk; *(int32_t *)(uintptr_t)(d + 0x9c) = t; wk = t; }
     }
+    // 2026-11-03 (owner: Mario's own fireball became invisible and harmless): a weapon object made AGAIN as an ordinary
+    // weapon (the next match's pools reuse the memory of this one's) must not stay in the own-article tables, or it gets
+    // the new fighter's agents and parameters. Every init of a non-own weapon takes its object out of them.
+    if (own_wk < 0) forget_own_weapon(w);
     int stat = (wk >= 0 && wk < WEAPON_KINDS) ? ((int32_t *)(uintptr_t)OWNER_TABLE)[wk] : -1;
     int by_slot = entry_kind(a8 >= 0 ? (a8 & 7) : -1), by_init = t_init_kind;
     int live = by_init >= 0 ? by_init : by_slot;
@@ -1071,8 +1090,16 @@ static void h_wklook(Ctx *c, void *u) {
 struct OwnPar { uint64_t key; int is_float; int32_t i; float f; };
 static OwnPar g_opar[MAXNEW][8][40]; static int g_nopar[MAXNEW][8], g_opar_tried[MAXNEW][8];
 static uint64_t g_opar_grp[MAXNEW][8][2];
-static uint64_t g_ownacc[16]; static int g_ownacc_art[16][2], g_nownacc;
-static HookOrig o_wparam[3]; static long g_n_wparam_own, g_n_wparam_miss;
+// (2026-11-03, the owner's crash in his third match: host exception reading a freed module accessor's + 0x50 inside
+// this hook. The weapon pools are made again for every match; the tables were 16 long, filled after two matches,
+// kept the old matches' freed objects and stopped taking the new ones. Now rings of 32, and the work module of each
+// accessor is read once when it is recorded, so the hook only compares pointers - nothing freed is ever read.)
+static uint64_t g_ownacc[32], g_ownacc_wm[32], g_ownacc_obj[32]; static int g_ownacc_art[32][2], g_nownacc, g_ownacc_next;
+static void forget_own_weapon(uint64_t w) {
+    for (int k = 0; k < g_nownw; k++) if (g_ownw[k] == w) g_ownw[k] = 0;
+    for (int k = 0; k < g_nownacc; k++) if (g_ownacc_obj[k] == w) { g_ownacc[k] = 0; g_ownacc_wm[k] = 0; g_ownacc_obj[k] = 0; }
+}
+static HookOrig o_wparam[4]; static long g_n_wparam_own, g_n_wparam_miss;
 static void load_own_params(int fi, int ai) {
     if (g_opar_tried[fi][ai]) return;
     g_opar_tried[fi][ai] = 1;
@@ -1128,8 +1155,9 @@ static void h_wparam(Ctx *c, void *u) {             // work module get_param (x0
     if (g_nownacc) {
         uint64_t wm = c->x[0], grp = c->x[1] & MASK40, key = c->x[2] & MASK40;
         for (int k = 0; k < g_nownacc; k++) {
-            if (!readable(g_ownacc[k] + 0x50, 8) || *(uint64_t *)(uintptr_t)(g_ownacc[k] + 0x50) != wm) continue;
+            if (g_ownacc_wm[k] != wm) continue;
             int fi = g_ownacc_art[k][0], ai = g_ownacc_art[k][1];
+
             load_own_params(fi, ai);
             // N13 (run n13w11): the package's own script asks the group by the article's bare name (Waluigi's dice block:
             // get_param_int(weapon, hash40("diceblock"), hash40("life"))); the game has no such group (it answered 0
@@ -1140,10 +1168,16 @@ static void h_wparam(Ctx *c, void *u) {             // work module get_param (x0
                                                  (unsigned long long)grp, (unsigned long long)key);
                 break;
             }
+            static const uint64_t K_PENETRATION = hash40("is_penetration");
+            if (g_art[fi][ai].keep_on_hit && key == K_PENETRATION) {
+                if (i >= 2) { float f = 1.0f; memset(&c->v[0], 0, 16); memcpy(&c->v[0], &f, 4); } else c->x[0] = 1;
+                static int said; if (said++ < 2) logf("[n13] own article %s: is_penetration answered 1 (fighter.json keep_on_hit): its own status code ends it on a hit", g_art[fi][ai].name);
+                return;
+            }
             for (int p = 0; p < g_nopar[fi][ai]; p++) {
                 OwnPar *o = &g_opar[fi][ai][p];
                 if (o->key != key) continue;
-                if (i == 2) { float f = o->is_float ? o->f : (float)o->i; memset(&c->v[0], 0, 16); memcpy(&c->v[0], &f, 4); }
+                if (i >= 2) { float f = o->is_float ? o->f : (float)o->i; memset(&c->v[0], 0, 16); memcpy(&c->v[0], &f, 4); }
                 else c->x[0] = (uint64_t)(uint32_t)(o->is_float ? (int32_t)o->f : o->i);
                 if (g_n_wparam_own++ < 16) logf("[n13] own article %s's weapon: parameter %llx.%llx answered from the fighter's own file: %g", g_art[fi][ai].name, (unsigned long long)grp,
                                                  (unsigned long long)key, o->is_float ? (double)o->f : (double)o->i);
@@ -1173,6 +1207,38 @@ static void h_wstart(Ctx *c, void *) {
     t_own_fi = fi; t_own_ai = ai;
     o_wstart(c);
     t_own_fi = pf; t_own_ai = pa;
+}
+// ---- 2026-11-04 (owner: Mario's fireball flew as Waluigi's dice, or popped at his hand next to Phantom, while the new
+// fighter had not thrown yet). The weapon resource manager keeps its loaded files in a map keyed by
+// kind | a << 25 | b << 17 | type (0x71017ee9a0 get: w2 kind; 0x71017eef20 request: w1 kind). An own article's weapon
+// start presented the TEMPLATE's kind (21, the object's kind field), so its model / motion files went into the map under
+// Mario's fireball key: the first of the two to be set up won and the other got its files (run mfw2: Waluigi's dice
+// start 10060000 asked key 21 before Mario's five fireballs). Inside an own article's start the two calls get the OWN
+// kind (640 +): its own key (the fighter's preload already asked for it, 0x71017eec78 with 648) and, through h_wpath,
+// its own paths; Mario's key holds Mario's files. N13_OWNRESKEY=0: off.
+static HookOrig o_reskey[2]; static long g_n_reskey;
+static void h_reskey(Ctx *c, void *u) {
+    int i = (int)(intptr_t)u, r = i ? 1 : 2;
+    if (t_own_fi >= 0 && t_own_fi < MAXNEW && t_own_ai >= 0 && t_own_ai < g_nart[t_own_fi] && (int32_t)c->x[r] == g_art[t_own_fi][t_own_ai].tmpl_wk) {
+        if (g_n_reskey++ < 8) logf("[n13] weapon resource %s for %s's %s: the template's kind %d -> the own kind %d (own key, own files)", i ? "request 0x71017eef20" : "get 0x71017ee9a0",
+                                   g_name[t_own_fi], g_art[t_own_fi][t_own_ai].name, (int)(int32_t)c->x[r], g_art[t_own_fi][t_own_ai].wk);
+        c->x[r] = (uint64_t)(uint32_t)g_art[t_own_fi][t_own_ai].wk;
+    }
+    o_reskey[i](c);
+}
+// ... and the start's own read of that map: 0x710339fee0 + 0x4c0 builds the key from the kind it read at its top (w22 =
+// object + 0xc, the template's) and looks it up with the map find 0x71017def60 (out, map, key) - run mfw3: with only
+// the two calls above it found nothing under the template's key and the start read a null (crash). Inside an own
+// article's start a key whose kind bits (0 .. 13; bits 14 and 16 are the get's type flag) are the template's is the
+// own one.
+static HookOrig o_resfind; static long g_n_resfind;
+static void h_resfind(Ctx *c, void *) {
+    if (t_own_fi >= 0 && t_own_fi < MAXNEW && t_own_ai >= 0 && t_own_ai < g_nart[t_own_fi] && (int)(c->x[2] & 0x3fff) == g_art[t_own_fi][t_own_ai].tmpl_wk) {
+        uint64_t k = (c->x[2] & ~0x3fffull) | (uint64_t)(uint32_t)g_art[t_own_fi][t_own_ai].wk;
+        if (g_n_resfind++ < 4) logf("[n13] weapon resource map find for %s's %s: key %llx -> %llx (own kind)", g_name[t_own_fi], g_art[t_own_fi][t_own_ai].name, (unsigned long long)c->x[2], (unsigned long long)k);
+        c->x[2] = k;
+    }
+    o_resfind(c);
 }
 static void h_wpath(Ctx *c, void *) {
     int wk = (int32_t)c->x[1];
@@ -1321,7 +1387,9 @@ static void h_wdisp(Ctx *c, void *u) {             // weapon agent dispatcher (w
         int t = fi < MAXNEW && ai < g_nart[fi] ? g_art[fi][ai].tmpl_wk : -1;
         static long said;
         if (said++ < 4) logf("[n12] weapon agent dispatcher %d: weapon object %llx has the OWN kind %d: its kind field becomes the template's %d (stage 1)", i, (unsigned long long)w, wk, t);
-        if (t >= 0) { *(int32_t *)(uintptr_t)(w + 0xc) = t; wk = t; if (g_nownw < 16) { g_ownw_art[g_nownw][0] = fi; g_ownw_art[g_nownw][1] = ai; g_ownw[g_nownw++] = w; } }
+        if (t >= 0) { *(int32_t *)(uintptr_t)(w + 0xc) = t; wk = t; int slot = -1; for (int k = 0; k < g_nownw; k++) if (g_ownw[k] == w) slot = k;
+            if (slot < 0) { slot = g_ownw_next; g_ownw_next = (g_ownw_next + 1) % 32; if (g_nownw < 32) g_nownw++; }
+            g_ownw_art[slot][0] = fi; g_ownw_art[slot][1] = ai; g_ownw[slot] = w; }
     }
     int own_obj = 0, own_fi = -1, own_ai = -1;
     for (int k = 0; k < g_nownw; k++) if (g_ownw[k] == w) { own_obj = 1; own_fi = g_ownw_art[k][0]; own_ai = g_ownw_art[k][1]; }
@@ -1333,10 +1401,14 @@ static void h_wdisp(Ctx *c, void *u) {             // weapon agent dispatcher (w
     // agent (its module's factory). For an own article whose fighter DLL brings `<article>__install`, the registry makes
     // the agent from the base class with the DLL's install and scripts (registry version 4); the factory's arguments
     // are the dispatcher's (x0 battle object, x1 module accessor, x2 lua state) moved up by one. N13_OWNAGENT=0: off.
-    if (own_obj && own_fi >= 0 && g_nownacc < 16) {         // N13: the weapon's module accessor, for its own parameters
-        int seen = 0;
-        for (int k = 0; k < g_nownacc; k++) seen |= g_ownacc[k] == c->x[1];
-        if (!seen) { g_ownacc_art[g_nownacc][0] = own_fi; g_ownacc_art[g_nownacc][1] = own_ai; g_ownacc[g_nownacc++] = c->x[1]; }
+    if (own_obj && own_fi >= 0 && readable(c->x[1] + 0x50, 8)) {   // N13: the weapon's module accessor, for its own parameters
+        int slot = -1;
+        for (int k = 0; k < g_nownacc; k++) if (g_ownacc[k] == c->x[1]) slot = k;
+        if (slot < 0) { slot = g_ownacc_next; g_ownacc_next = (g_ownacc_next + 1) % 32; if (g_nownacc < 32) g_nownacc++; }
+        g_ownacc_art[slot][0] = own_fi; g_ownacc_art[slot][1] = own_ai;
+        g_ownacc_wm[slot] = *(uint64_t *)(uintptr_t)(c->x[1] + 0x50);
+        g_ownacc_obj[slot] = w;
+        g_ownacc[slot] = c->x[1];
     }
     static int ownagent = -1; if (ownagent < 0) { const char *e = getenv("N13_OWNAGENT"); ownagent = !(e && e[0] == '0'); }
     if (ownagent && own_obj && own_fi >= 0 && own_fi < g_nnew && own_ai < g_nart[own_fi] && g_reg) {
@@ -1423,7 +1495,7 @@ static void h_fireball(Ctx *c, void *) {           // (article, owner's module a
     uint64_t acc = c->x[1];
     uint32_t id = readable(acc + 8, 4) ? *(uint32_t *)(uintptr_t)(acc + 8) : 0;
     int kind = 0x7f;
-    for (int i = 0; i < g_nfighter; i++) if (*(uint32_t *)(uintptr_t)(g_fighter[i].obj + 8) == id) kind = g_fighter[i].kind & 0x7f;
+    for (int i = 0; i < g_nfighter; i++) if (id && g_fighter[i].id == id) kind = g_fighter[i].kind & 0x7f;   // (2026-11-03 crash +0x45d4: the remembered objects of past matches are freed: their ids were read at their init, never again)
     long n = ++g_n_fire[kind];
     if (n <= 3 || n % 10 == 0) {
         uint64_t vt = readable(c->x[0], 8) ? *(uint64_t *)(uintptr_t)c->x[0] : 0;
@@ -1459,7 +1531,7 @@ static void h_fireball(Ctx *c, void *) {           // (article, owner's module a
         int n = kind - FIRST, tk = -1;
         for (int t = 0; t < g_nart[n]; t++) if (g_art[n][t].fn[0] == MOD_GA(0x7100cb9de0ull)) tk = g_art[n][t].owner_kind;
         uint64_t obj = 0;
-        for (int i = 0; i < g_nfighter; i++) if (*(uint32_t *)(uintptr_t)(g_fighter[i].obj + 8) == id) obj = g_fighter[i].obj;
+        for (int i = 0; i < g_nfighter; i++) if (id && g_fighter[i].id == id) obj = g_fighter[i].obj;
         if (tk >= 0 && obj && readable(obj + 0xc, 4)) {
             uint32_t *p = (uint32_t *)(uintptr_t)(obj + 0xc), was = *p;
             static long said; if (said++ < 4) logf("[n12] template article function 7100cb9de0 for the new owner 0x%x: the owner's kind field is the template owner's (%d) for the call", was, tk);
@@ -1549,12 +1621,19 @@ extern "C" __declspec(dllexport) void mod_init(const HookApi *a) {
     if (!((e = getenv("N13_OWNFILES")) && e[0] == '0')) {
         all++; ok += !!api->install(MOD_GA(0x71017e0840ull), h_wpath, nullptr, &o_wpath);
         all++; ok += !!api->install(MOD_GA(0x710339fee0ull), h_wstart, nullptr, &o_wstart);
+        if (!((e = getenv("N13_OWNRESKEY")) && e[0] == '0'))
+            { for (int i = 0; i < 2; i++) { all++; ok += !!api->install(MOD_GA(i ? 0x71017eef20ull : 0x71017ee9a0ull), h_reskey, (void *)(intptr_t)i, &o_reskey[i]); }
+              all++; ok += !!api->install(MOD_GA(0x71017def60ull), h_resfind, nullptr, &o_resfind); }
     }
-    if (!((e = getenv("N13_OWNPARAM")) && e[0] == '0') && readable(MOD_GA(0x7104f89490ull) + 616, 8)) {      // N13: work-module parameter getters (int, int, float)
-        static const int slot[3] = { 584, 592, 616 };
-        for (int i = 0; i < 3; i++) { all++; ok += !!api->install(*(uint64_t *)(uintptr_t)(MOD_GA(0x7104f89490ull) + slot[i]), h_wparam, (void *)(intptr_t)i, &o_wparam[i]); }
-        logf("[n13] own article parameters: work-module getters %llx %llx %llx hooked", *(unsigned long long *)(uintptr_t)(MOD_GA(0x7104f89490ull) + 584),
-             *(unsigned long long *)(uintptr_t)(MOD_GA(0x7104f89490ull) + 592), *(unsigned long long *)(uintptr_t)(MOD_GA(0x7104f89490ull) + 616));
+    if (!((e = getenv("N13_OWNPARAM")) && e[0] == '0') && readable(MOD_GA(0x7104f89490ull) + 624, 8)) {      // N13: work-module parameter getters (int, int, float)
+        // + 624 (class slot + 0x270, 0x71004e53e0 in 13.0.5): the float getter the template's NATIVE weapon code calls
+        // directly (Mario's fireball start 0x7103440120 and bounce 0x71034402a0 read speed / angle / gravity / wall angle
+        // through it): without it the dice block's native start set speed 0 (it stayed where it was made) and never bounced
+        static const int slot[4] = { 584, 592, 616, 624 };
+        for (int i = 0; i < 4; i++) { all++; ok += !!api->install(*(uint64_t *)(uintptr_t)(MOD_GA(0x7104f89490ull) + slot[i]), h_wparam, (void *)(intptr_t)i, &o_wparam[i]); }
+        logf("[n13] own article parameters: work-module getters %llx %llx %llx %llx hooked", *(unsigned long long *)(uintptr_t)(MOD_GA(0x7104f89490ull) + 584),
+             *(unsigned long long *)(uintptr_t)(MOD_GA(0x7104f89490ull) + 592), *(unsigned long long *)(uintptr_t)(MOD_GA(0x7104f89490ull) + 616),
+             *(unsigned long long *)(uintptr_t)(MOD_GA(0x7104f89490ull) + 624));
     } else logf("[n13] own article parameters: work-module class table not readable at start: NOT hooked");
     {
         e = getenv("N6_KINDFIELD");
@@ -1588,8 +1667,8 @@ extern "C" __declspec(dllexport) void mod_init(const HookApi *a) {
     if (g_kirby) { all++; ok += !!api->install(MOD_GA(0x71017f0bd0ull), h_kirby, nullptr, &o_kirby); }
     g_ai = !((e = getenv("N5_AI")) && e[0] == '0');
     if (g_ai) for (int i = 0; i < 8; i++) { all++; ok += !!api->install(ai[i], h_ai, (void *)(intptr_t)i, &o_ai[i]); }
-    char donors[200]; int dn = 0; donors[0] = 0;
-    for (int k = 0; k < g_nnew; k++) dn += snprintf(donors + dn, sizeof donors - dn, "%s%s<-%s", k ? ", " : "", g_name[k], g_donor_name[k]);
+    char donors[1200]; int dn = 0; donors[0] = 0;   // U16: was 200 (overran with 16 new kinds)
+    for (int k = 0; k < g_nnew && dn < (int)sizeof donors - 80; k++) dn += snprintf(donors + dn, sizeof donors - dn, "%s%s<-%s", k ? ", " : "", g_name[k], g_donor_name[k]);
     logf("[n4] kind mod loaded (n7_kind: donor per kind, donor callbacks wrapped): %d new kind(s) from 0x%x (first: %s, hash %llx), donors: %s; weapons: %s; own names %d; %d of %d hooks",
          g_nnew, FIRST, g_name[0], (unsigned long long)g_hash[0], donors, g_a0_workaround ? "N3 workaround (A[0])" : "live owner", g_ownname, ok, all);
 }
