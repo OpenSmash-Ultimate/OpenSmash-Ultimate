@@ -33,14 +33,19 @@ class StateMap(unittest.TestCase):
         self.assertIn('AddVectoredExceptionHandler(1, sm_fault)', state, 'first in the chain, before the crash reporter')
         self.assertIn('r->ExceptionInformation[0] != 1', state, 'writes only')
         self.assertIn('PAGE_READONLY, &old)', state, 'cold pages read-only')
-        self.assertIn('VirtualProtect((void *)(uintptr_t)(ALIAS_BASE + (i << 12)), (j - i) << 12, PAGE_READWRITE, &old);', state,
+        self.assertIn('sm_protect((void *)(uintptr_t)(ALIAS_BASE + (i << 12)), (j - i) << 12, PAGE_READWRITE);', state,
                       'a fault opens the group')
+        # a run crossing the alias area's reservations: one VirtualProtect fails whole, so it goes one at a time then
+        # (a page left read-only crashed the Online mode's results after a rollback fight)
+        self.assertIn('if (VirtualProtect(at, len, prot, &old)) return;', state)
+        self.assertIn('if (m.State == MEM_COMMIT) VirtualProtect(p, (SIZE_T)(stop - p), prot, &old);', state)
+        self.assertIn('sm_protect(c->base + ((u64)k << 12), (u64)(e - k) << 12, PAGE_READWRITE);', state, 'at the fight end too')
         # a cold page is present for the savestate, and a page committed since is hot
         self.assertIn('if (sm_on && m.State == MEM_COMMIT && m.Protect == PAGE_READONLY && sm_alias(p)) {', state)
         self.assertIn('{ sm_present(p); settle_page(p, 1, to_shadow); }', state)
         self.assertIn('sm_gone(p);', state)
         # the end: every cold page writable again
-        self.assertIn('VirtualProtect(c->base + ((u64)k << 12), (u64)(e - k) << 12, PAGE_READWRITE, &old);', state)
+        self.assertIn('sm_protect(c->base + ((u64)k << 12), (u64)(e - k) << 12, PAGE_READWRITE);', state)
 
     def test_system_writers(self):
         fs, net, reg, core = src('hle_fs.c'), src('hle_net.c'), src('hle_fighter_registry.c'), src('hle_rb_core.c')

@@ -218,6 +218,35 @@ class RelayLinkTests(unittest.TestCase):
             self.assertEqual((st['in_direct'], st['in_lobby'], st['out_lobby']), (0, 0, 0), st)
             self.assertIn("[rb] link: the room's players by address: 10.13.0.2, 10.13.0.3", ''.join(g.log))
 
+    def test_online_match_numbers(self):
+        """SSBU_RB_NET=online: the link opens with no number; an Online match's set-up numbers it (player 1 the
+        gathering's owner) with the other game's address, then the handshake and the pads go as in a room, and
+        the match's end forgets the number."""
+        from test_net_client_v3 import free_udp_port
+        port = free_udp_port()
+        host = self.game(None, name='Host', SSBU_NET_HOST=1, SSBU_NET_PORT=port, SSBU_NET_BIND='127.0.0.1')
+        host.join()
+        guest = self.game(f'127.0.0.1:{port}', name='Guest')
+        guest.join()
+        self.assertEqual(host.ask(f'online 0 {guest.ip}'), 'online 1 0', self.logs(host))
+        self.assertEqual(guest.ask(f'online 1 {host.ip}'), 'online 1 1', self.logs(guest))
+        got = self.both(host, guest, 'hello 20', 20)
+        self.assertEqual(got, ('hello OK 0', 'hello OK 1'), self.logs(host, guest))
+        self.pads(host, guest)
+        self.assertIn("[rb] link: an Online match's players: this game, ", ''.join(host.log))
+        self.assertEqual(host.ask('offline'), 'offline -1')
+
+    def test_recent_peers(self):
+        """The players the game's sockets sent to lately (Pia's in an Online match): most recent first, the lobby's
+        own addresses (10.13.0.1, Pia's second NAT check server 10.13.255.254, the broadcast) and this game left out."""
+        from test_net_client_v3 import free_udp_port
+        port = free_udp_port()
+        g = self.game(None, name='Host', SSBU_NET_HOST=1, SSBU_NET_PORT=port, SSBU_NET_BIND='127.0.0.1')
+        g.join()
+        for ip in (0x0A0D0001, 0x0A0DFFFE, 0x0A0DFFFF, 0x0A0D0005, 0x0A0D0007, g.ip, 0x0A0D0005, 0xC0A80001):
+            self.assertEqual(g.ask(f'note {ip}'), 'ok')
+        self.assertEqual(g.ask('recent 30000'), f'recent 2 {0x0A0D0005} {0x0A0D0007}')
+
     def test_lobby_room_direct(self):
         """In one Local Wireless room of the lobby: numbered by address; the messages through the lobby
         introduce the two games, which then send straight to each other."""

@@ -1271,6 +1271,38 @@ void net_rb_send(u32 dst, const void *data, u32 len) {
     if (rb && !(dst && in_room)) rb_lobby_send(dst, data, len);   /* (to every player of the code: the room's get it twice) */
 }
 static int u32_order(const void *a, const void *b) { u32 x = *(const u32 *)a, y = *(const u32 *)b; return x < y ? -1 : x > y; }
+
+/* (net.h) The players the game's sockets sent to lately: the Online mode's match players. */
+#define NOTED_MAX 8
+#define NAT_CHECK_SECOND 0x0A0DFFFEu   /* (10.13.255.254: Pia's second NAT check server, the lobby's: hle_online.c) */
+static struct { u32 ip; u64 at, order; } noted[NOTED_MAX];
+static u64 noted_order;
+static SRWLOCK noted_lock = SRWLOCK_INIT;
+void net_note_peer(u32 ip) {
+    if ((ip & NET_MASK) != NET_SUBNET || ip == NET_GATEWAY || ip == NAT_CHECK_SECOND || ip == NET_BROADCAST || ip == my_ip) return;
+    u64 t = now_ms();
+    AcquireSRWLockExclusive(&noted_lock);
+    int k = 0;
+    for (int i = 0; i < NOTED_MAX; i++) {
+        if (noted[i].ip == ip) { k = i; break; }
+        if (noted[i].at < noted[k].at) k = i;   /* (else the oldest makes room) */
+    }
+    noted[k].ip = ip; noted[k].at = t; noted[k].order = ++noted_order;
+    ReleaseSRWLockExclusive(&noted_lock);
+}
+int net_recent_peers(u32 *out, int max, u32 within_ms) {
+    u64 t = now_ms();
+    int n = 0;
+    AcquireSRWLockShared(&noted_lock);
+    for (int i = 0; i < NOTED_MAX && n < max; i++)
+        if (noted[i].ip && t - noted[i].at <= within_ms) out[n++] = noted[i].ip;
+    u64 at[NOTED_MAX];
+    for (int i = 0; i < n; i++) for (int j = 0; j < NOTED_MAX; j++) if (noted[j].ip == out[i]) at[i] = noted[j].order;
+    ReleaseSRWLockShared(&noted_lock);
+    for (int i = 1; i < n; i++)   /* (most recent first) */
+        for (int j = i; j > 0 && at[j] > at[j - 1]; j--) { u32 x = out[j]; out[j] = out[j - 1]; out[j - 1] = x; u64 y = at[j]; at[j] = at[j - 1]; at[j - 1] = y; }
+    return n;
+}
 int net_room_members(u32 *out, int max) {
     start();
     if (!joined || max <= 0) return 0;

@@ -185,6 +185,10 @@ int main(int argc, char **argv) {
         static const struct { double rtt; int d; } k[] = {{0, 1}, {3, 1}, {14.9, 1}, {15, 2}, {44.9, 2}, {45, 3}, {48, 3}, {74.9, 3}, {75, 4}, {105, 5}, {900, 5}, {-1, 1}};
         for (unsigned i = 0; i < sizeof k / sizeof *k; i++)
             if (rbn_delay_for_rtt(k[i].rtt) != k[i].d) { fprintf(stderr, "FAIL: delay for %.1f ms is %d, not %d\n", k[i].rtt, rbn_delay_for_rtt(k[i].rtt), k[i].d); return 1; }
+        /* (SSBU_RB_NET=online's: the one-way trip in frames, less one, from 1 to 4) */
+        static const struct { double rtt; int d; } o[] = {{0, 1}, {30, 1}, {50, 1}, {83, 1}, {84, 2}, {100, 2}, {116, 2}, {117, 3}, {150, 4}, {300, 4}, {-1, 1}};
+        for (unsigned i = 0; i < sizeof o / sizeof *o; i++)
+            if (rbn_online_delay_for_rtt(o[i].rtt) != o[i].d) { fprintf(stderr, "FAIL: online delay for %.1f ms is %d, not %d\n", o[i].rtt, rbn_online_delay_for_rtt(o[i].rtt), o[i].d); return 1; }
     }
     {   /* CHOICE: built and parsed back the same */
         RbnChoice c = {0, 3, 1, 1, 0xc100000000123456ull, {0}}, d;
