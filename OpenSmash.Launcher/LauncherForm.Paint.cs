@@ -1061,7 +1061,7 @@ namespace OpenSmash.Launcher
             float pad = 24 * s;
             Badge(g, badge, x + pad, y + 20 * s, badgeBg, badgeFg, badgeBg == Color.Empty);
             float titlePx = 30 * s;
-            float maxTitleW = w - pad * 2;
+            float maxTitleW = w - pad - 44 * s;
             while (titlePx > 18 * s && Theme.TextWidth(g, title, FD(titlePx), 0.3f * s) > maxTitleW) titlePx -= 1 * s;
             Theme.Label(g, title, FD(titlePx), A(Theme.Text), x + pad, y + 52 * s, 26 * s, 0.3f * s);
             Theme.DrawText(g, desc, FB(14 * s), A(Theme.Muted), x + pad, y + 88 * s, w - pad * 2 - 40 * s, 20 * s);
