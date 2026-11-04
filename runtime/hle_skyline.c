@@ -427,8 +427,10 @@ static void lookup_symbol(Cpu *c) {
     c->x[0] = 0;
 }
 
-/* Plugins check that the plugins they need are installed (rom:/skyline/plugins/<lib>.nro); the
- * ones the runtime provides natively are. (hle_fs.c asks for a RomFS path with no "rom:/".) */
+/* Plugins check that the plugins they need are installed (rom:/skyline/plugins/<lib>.nro): the
+ * ones the runtime provides natively are, and so are the standard plugins in the port's own
+ * skyline/plugins (One Slot Effects, which Tofu Yi's movesets check for and stop without: their
+ * forms all shown at once, no specials). (hle_fs.c asks for a RomFS path with no "rom:/".) */
 int skyline_provides(const char *path) {
     static const char *const natives[] = {"skyline/plugins/libsmashline_plugin.nro", "skyline/plugins/libnro_hook.nro",
                                           "skyline/plugins/libarcropolis.nro",
@@ -441,7 +443,13 @@ int skyline_provides(const char *path) {
     while (*path == '/') path++;
     for (int i = 0; natives[i]; i++)
         if (!strcmp(path, natives[i])) return 1;
-    return 0;
+    const char *name = path + 16;   /* (after "skyline/plugins/") */
+    if (strncmp(path, "skyline/plugins/", 16) || !*name || strchr(name, '/') || strstr(name, "..")) return 0;
+    size_t n = strlen(name);
+    if (n < 5 || _stricmp(name + n - 4, ".nro")) return 0;
+    char host[1200];   /* (<tree>/skyline/plugins: the data dir is <tree>/dump/modules) */
+    snprintf(host, sizeof host, "%s/../../skyline/plugins/%s", rt_data_dir, name);
+    return GetFileAttributesA(host) != INVALID_FILE_ATTRIBUTES;
 }
 
 /* ---- Smashline 2 ------------------------------------------------------------------- */
