@@ -7,6 +7,8 @@
 #   sh tools/deploy/deploy_lobby.sh <ssh host> status      the service's state and its last log lines
 #   sh tools/deploy/deploy_lobby.sh <ssh host> uninstall   stop and remove it, close the port again
 # The SSH login must be root (SSBU_SUDO=sudo for a user who can sudo). SSBU_LOBBY_PORT: 39420.
+# The lobby's NAT ports (port + 10, and SU's 39500 + 10: games compare their routers' ports there, for
+# direct paths through routers that change ports) are allowed in ufw on install and update.
 # Files on the server: /opt/ssbu-lobby/ssbu_relay.py, /etc/ssbu-lobby/banlist.txt (IP addresses
 # to turn away - edit it there, the lobby re-reads it), /etc/systemd/system/ssbu-lobby.service.
 set -e
@@ -33,6 +35,10 @@ install -d -m 755 /opt/ssbu-lobby /etc/ssbu-lobby
 tr -d '\r' < $tmp/ssbu_relay.py > /opt/ssbu-lobby/ssbu_relay.py
 chmod 644 /opt/ssbu-lobby/ssbu_relay.py
 [ -e /etc/ssbu-lobby/banlist.txt ] || printf '# IP addresses or networks (a.b.c.d/nn) the lobby turns away, one a line\n' > /etc/ssbu-lobby/banlist.txt
+if command -v ufw > /dev/null && ufw status | grep -q '^Status: active'; then
+    ufw allow $((port + 10))/udp comment ssbu-lobby-nat
+    ufw allow 39510/udp comment ssbu-lobby-nat
+fi
 if [ "$what" = install ]; then
     sed 's/--port 39420/--port $port/' $tmp/ssbu-lobby.service > /etc/systemd/system/ssbu-lobby.service
     systemctl daemon-reload
@@ -60,7 +66,9 @@ uninstall)
 systemctl disable --now ssbu-lobby 2> /dev/null || true
 rm -f /etc/systemd/system/ssbu-lobby.service
 systemctl daemon-reload
-if command -v ufw > /dev/null; then ufw delete allow $port/udp 2> /dev/null || true; fi
+if command -v ufw > /dev/null; then
+    for p in $port $((port + 10)) 39510; do ufw delete allow \$p/udp 2> /dev/null || true; done
+fi
 rm -rf /opt/ssbu-lobby
 echo "removed (the banlist in /etc/ssbu-lobby is kept)"
 EOF

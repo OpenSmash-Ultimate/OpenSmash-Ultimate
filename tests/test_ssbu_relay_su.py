@@ -533,7 +533,7 @@ class Peers(SuTest):
         far.ldn(host.ip, R.LM_JOIN, session + bytes(34))
         host.advertise(session, [a.ip, far.ip])
         entry = {e[0]: e for e in talk_until_introduced(host, far)[1]}[far.ip]
-        self.assertEqual(entry[2:4], ((R.address_number("127.0.0.2"), far.s.getsockname()[1]), (0, 0)))   # (another router)
+        self.assertEqual(entry[2:4], ((R.address_number("127.0.0.2"), far.s.getsockname()[1]), (0, 7000)))   # (another router: its own port only)
 
     def test_left_the_room_empties(self):
         host, session, (a,) = self.room(1)
@@ -671,7 +671,7 @@ class Matchmaking(SuTest):
         e.match(1, 301)
         self.assertEqual(e.state()[:2], (301, R.MS_SEARCHING))
         pong = a.ping()
-        self.assertEqual((len(pong), struct.unpack_from(">HHHH", pong, 12)), (20, (3, 0, 1, 4)))   # (and every build of "test": 4)
+        self.assertEqual((len(pong), struct.unpack_from(">HHHH", pong, 12)), (28, (3, 0, 1, 4)))   # (and every build of "test": 4)
         a.match(1, 101)   # (the same search asked again: still searching, not a new one)
         self.assertEqual(a.state()[:2], (101, R.MS_SEARCHING))
         b.match(1, 102)

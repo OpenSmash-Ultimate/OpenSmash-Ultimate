@@ -70,7 +70,15 @@ The host's router must let the port in:
 ### 3. Lobby server
 
 - `SSBU_ONLINE=<host:port>`, or `online_server = <host:port>`.
-- Players connect directly by UDP hole punching. If that fails, the lobby relays the traffic.
+- Players connect directly by UDP hole punching. If that fails, the lobby relays the traffic: from one player to the lobby
+  and on to the other, so two players far from the lobby (it runs in Milan) get both legs of delay.
+- Routers that give every destination a port of their own (symmetric NAT: some providers' routers, mobile networks)
+  are handled where it can be: the game answers a player at the port its hellos really come from, asks the router to
+  forward its port (UPnP, NAT-PMP, PCP; off with `online_upnp = off`), and, when the router hands out ports in turn,
+  the lobby's NAT port (its port + 10, e.g. 39510: open it in the server's firewall too) lets the other game guess the
+  next ones. When it still relays, the log says why (`[online] no direct path to ...: your router changes ports ...`):
+  turning on UPnP or NAT-PMP in the router usually gives direct paths. The log counts the session at the end
+  (`direct paths this session: ...`).
 - `online_direct = off` (or `SSBU_ONLINE_DIRECT=0`): relay only. The lobby does not give anyone your address.
 
 To run the lobby you need Python 3.8 or newer. It uses the standard library only, so there is nothing to install.

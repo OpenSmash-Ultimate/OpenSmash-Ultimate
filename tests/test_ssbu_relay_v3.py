@@ -123,7 +123,7 @@ class V3Player:
         pong = self.first(R.PONG)
         if pong is None:
             return None
-        assert len(pong) == 21 and pong[4:12] == struct.pack(">Q", 1234), pong.hex()
+        assert len(pong) == (29 if self.ext else 21) and pong[4:12] == struct.pack(">Q", 1234), pong.hex()   # (29: and 'N' 'A')
         return struct.unpack_from(">HHBHH", pong, 12)
 
     def leave(self):
