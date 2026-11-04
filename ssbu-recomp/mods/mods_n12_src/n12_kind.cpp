@@ -1491,6 +1491,26 @@ static void h_kirby(Ctx *c, void *) {
     }
     o_kirby(c);
 }
+// ---- Kirby's copy of a new fighter (2026-11-04). Kirby copies by kind: app::FighterSpecializer_Kirby::copy_setup
+// (accessor, slot, FighterKind, bool, bool) at 0x7100ba0e80 reads two per-kind pointer tables that have rows for
+// the 94 real kinds only, 0x7104fcd098[kind] (copy description) and 0x7104fcd388[kind] (the copy's motion remap,
+// also read by 0x71006e2680 / 0x71006e27f0 / 0x71006e29f0 / 0x7100ba4090 and four FighterMotionModuleImpl lua binds),
+// and writes the kind into Kirby's work int 0x100000fc. For a new kind the rows are other data (row 0x5e+n of the
+// first table is row n of the second): run kirby3 crashed in the weapon init called by copy_setup. Tried and dropped
+// (runs kirby4-12): the donor's kind (the copy's files are the victim's kirbycopy folder, loaded for the kinds in the
+// match only: the motion module found nothing for the donor's kind and crashed); the new kind with the donor's rows
+// swapped in during each of those calls (the copy's hat article then crashed in its init, 0x710341b040).
+// What is done: a new fighter is swallowed as another Kirby is (kind 6: copy_setup's own "no ability" path, which
+// does not touch the tables nor the work int): no crash, no copy ability. N5_KIRBY=0: off.
+static HookOrig o_copysetup; static long g_n_copysetup;
+static void h_copysetup(Ctx *c, void *) {
+    uint32_t kind = (uint32_t)c->x[2];
+    if (is_new(kind)) {
+        if (g_n_copysetup++ < 8) logf("[n12] Kirby swallowed new kind 0x%x (%s): no copy ability (copy_setup gets kind 6, as for another Kirby)", kind, g_name[kind - FIRST]);
+        c->x[2] = 6;
+    }
+    o_copysetup(c);
+}
 static void h_fireball(Ctx *c, void *) {           // (article, owner's module accessor)
     uint64_t acc = c->x[1];
     uint32_t id = readable(acc + 8, 4) ? *(uint32_t *)(uintptr_t)(acc + 8) : 0;
@@ -1665,6 +1685,7 @@ extern "C" __declspec(dllexport) void mod_init(const HookApi *a) {
     static const uint64_t ai[8] = { MOD_GA(0x71002c5cf0ull), MOD_GA(0x71002c9900ull), MOD_GA(0x710034b310ull), MOD_GA(0x7100351630ull), MOD_GA(0x710035fc50ull), MOD_GA(0x7100362df0ull), MOD_GA(0x710036c1c0ull), MOD_GA(0x71003719c0ull) };
     g_kirby = !((e = getenv("N5_KIRBY")) && e[0] == '0');
     if (g_kirby) { all++; ok += !!api->install(MOD_GA(0x71017f0bd0ull), h_kirby, nullptr, &o_kirby); }
+    if (g_kirby) { all++; ok += !!api->install(MOD_GA(0x7100ba0e80ull), h_copysetup, nullptr, &o_copysetup); }
     g_ai = !((e = getenv("N5_AI")) && e[0] == '0');
     if (g_ai) for (int i = 0; i < 8; i++) { all++; ok += !!api->install(ai[i], h_ai, (void *)(intptr_t)i, &o_ai[i]); }
     char donors[1200]; int dn = 0; donors[0] = 0;   // U16: was 200 (overran with 16 new kinds)
