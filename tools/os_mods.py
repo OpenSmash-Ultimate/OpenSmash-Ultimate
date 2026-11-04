@@ -9,7 +9,8 @@
     os_mods.py apply
     os_mods.py vanilla
     os_mods.py fetch [--again]
-    os_mods.py refresh                 a replaced plugin.nro: rebuild its DLL, leave the game
+    os_mods.py prepare                 prepare enabled plugins and their game hooks before play
+    os_mods.py refresh                 force preparation again (including after a failure)
     os_mods.py build
     os_mods.py conflicts               files more than one turned-on mod changes (RESULT: conflicts)
     os_mods.py updates                 installed GameBanana mods with a newer file (RESULT: updates)
@@ -366,9 +367,15 @@ def main(argv):
         if cmd == "fetch":
             fetch_plugins(tree, "--again" in argv, log)
             return result(True)
-        if cmd == "refresh":
-            skyline.sync(tree.root, log, skyline.build_jobs())
-            skyline.cache_mod_plugins(tree.root, skyline.build_jobs(), log)
+        if cmd in ("prepare", "refresh"):
+            if recomp_busy():
+                raise mods.Error("plugins are already being built into the game")
+            pending = os.path.join(tree.work, "apply_pending")
+            if os.path.exists(pending):
+                mods.apply(tree, log)
+                os.remove(pending)
+            import prepare_plugins
+            prepare_plugins.prepare(tree.root, log=log, force=cmd == "refresh")
             return result(True)
         if cmd == "build":
             if recomp_busy():
@@ -416,4 +423,7 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     sys.exit(main(sys.argv))

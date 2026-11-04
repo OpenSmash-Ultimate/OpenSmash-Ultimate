@@ -13,7 +13,7 @@ sync (tools/mods.py apply runs it): each turned-on mod's plugin goes into dump/n
 placed by tools/recomp.py, as a game NRO the runtime harvested would be), its C is generated
 (build/nro/<name>/) when it is new, and dump/skyline/plugins.txt lists the plugins to load, in
 the mods' order. The plugins the runtime provides itself (Smashline 2, lib_paramconfig,
-ARCropolis, nro_hook, the CSK Collection) are left out wherever a mod ships them. A plugin that
+ARCropolis, the CSK Collection) are left out wherever a mod ships them. A plugin that
 is listed but not compiled into the game yet is left out at start-up (the log says so): build
 compiles it - the runtime and the plugins only, a minute or two, not the whole game.
 
@@ -49,7 +49,7 @@ NATIVE_HOOKS = ("main 66dcf0", "main 3238a70", "main 64b730", "main 6079d0",
                                    0x33ae39c, 0x33ac514))
 # (provided natively by runtime/hle_skyline.c, or linked into the plugins that use them)
 NATIVE = {"libsmashline_plugin.nro", "libsmashline_hook.nro", "libparam_config.nro", "libarcropolis.nro",
-          "libnro_hook.nro", "libthe_csk_collection.nro", "libskyline.nro"}
+          "libthe_csk_collection.nro", "libskyline.nro"}
 
 
 def arg(name, default=None):
@@ -432,7 +432,14 @@ def _hook_sources(tree):
     p = Paths(tree)
     inline, patches = inline_targets(p), patch_lines(p)
     found = []
-    for mod in sorted(set(inline) | set(patches)):
+    compiled = set()
+    for parent in (os.path.join(tree, "build"), os.path.join(tree, "build", "nro")):
+        if os.path.isdir(parent):
+            for name in os.listdir(parent):
+                rec = os.path.join(parent, name, "plugin_patches.txt")
+                if os.path.isfile(rec) and os.path.getsize(rec):
+                    compiled.add(name)
+    for mod in sorted(set(inline) | set(patches) | compiled):
         table = os.path.join(tree, "build", mod, "g_module.c") if mod in ("main", "subsdk0", "sdk") else \
             os.path.join(tree, "build", "nro", mod, "g_module.c")
         found.append((mod, os.path.dirname(table), inline, patches))
@@ -492,9 +499,12 @@ def _stale_hooks(tree):
     out = []
     for mod, folder, inline, patches in _hook_sources(tree):
         table = os.path.join(folder, "g_module.c")
-        base = rc.MODULES.get(mod) or rc.nro_modules().get(mod) if os.path.exists(table) else None
-        if not base:
+        if not os.path.exists(table):
+            out.append(mod)
             continue
+        base = rc.MODULES.get(mod) or rc.nro_modules().get(mod)
+        if not base:
+            raise RuntimeError(f"Cannot find the module containing plugin hooks: {mod}")
         rec = os.path.join(folder, "plugin_patches.txt")
         if patches.get(mod, "") != (open(rec, encoding="utf-8").read() if os.path.exists(rec) else ""):
             out.append(mod)
@@ -542,14 +552,24 @@ def probe(tree, log=print):
                 pass
         return out
     before = entries(), outputs()
-    env = dict(os.environ, SSBU_SKYLINE_PROBE="1", SDL_AUDIO_DRIVER="dummy", SSBU_CWD=tree, SSBU_TESTRUN="skyline-probe",
-               SSBU_LOG=os.path.join(p.skyline, "probe.log"))
-    log("loading the plugins once, with no window, for their select-screen entries")
+    # An inherited match/input/network configuration must not drive the discovery boot or
+    # touch the player's save. The probe runs only plugin initialization, then exits.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SSBU_")}
+    data = os.path.join(tree, "build", "work", "skyline-probe")
+    os.makedirs(data, exist_ok=True)
+    env.update(SSBU_SKYLINE_PROBE="1", SDL_AUDIO_DRIVER="dummy", SSBU_CWD=tree,
+               SSBU_TESTRUN="skyline-probe", SSBU_DATA_ROOT=data, SSBU_RB="0",
+               SSBU_RUNAHEAD="0", SSBU_HEADLESS="1", SSBU_ERROR_DIALOG="0")
+    log("loading the plugins once, with no window, to discover their hooks and file changes")
+    probe_log = os.path.join(p.skyline, "probe.log")
     try:
-        subprocess.run([exe, os.path.join(tree, "dump", "modules")], env=env, timeout=180, cwd=tree)
+        with open(probe_log, "w", encoding="utf-8") as output:
+            ran = subprocess.run([exe, os.path.join(tree, "dump", "modules")], env=env, timeout=180,
+                                 cwd=tree, stdout=output, stderr=subprocess.STDOUT)
     except subprocess.TimeoutExpired:
-        log("the probe did not finish (see dump/skyline/probe.log)")
-        return False
+        raise RuntimeError("The plugin probe timed out (dump/skyline/probe.log)") from None
+    if ran.returncode:
+        raise RuntimeError(f"The plugin probe failed (code {ran.returncode}; dump/skyline/probe.log)")
     return (entries(), outputs()) != before
 
 
@@ -573,7 +593,7 @@ def run_logged(cmd, log, keep=60):
     it comes, and when it fails, its last `keep` lines. Each progress line becomes
     `what it is doing — percent%, time left` so a bar can follow the step, not only a spinner."""
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                            errors="replace", bufsize=1)
+                            errors="replace", bufsize=1, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
     tail = []
     for line in proc.stdout:
         line = line.rstrip()
@@ -645,7 +665,7 @@ __declspec(dllexport) void ssbu_plugin_bind(GuestFn *(*lookup)(u64), GuestFn *(*
 """
 
 
-def cache_mod_plugins(tree, jobs, log=print, quiet=False):
+def cache_mod_plugins(tree, jobs, log=print, quiet=False, strict=False):
     """Compile each turned-on mod's plugin into build/plugins/<name>.dll and list those files.
     The standard plugins stay in the program. Returns the module names that translated."""
     import cc
@@ -654,6 +674,7 @@ def cache_mod_plugins(tree, jobs, log=print, quiet=False):
     out_dir = os.path.join(tree, "build", "plugins")
     os.makedirs(out_dir, exist_ok=True)
     ready = []
+    failed = []
     for mod, source in turned_on(tree):
         if mod.startswith("(standard) "):
             continue
@@ -662,11 +683,13 @@ def cache_mod_plugins(tree, jobs, log=print, quiet=False):
         folder = os.path.join(tree, "build", "nro", name)
         if not os.path.isfile(os.path.join(folder, "manifest.tsv")):
             log(f"{mod}: {name} has no C yet")
+            failed.append(name)
             continue
         if not dll_current(tree, name):
             log(f"translating {name}")
             if not recomp.compile_dir(folder, max(1, jobs)):
                 log(f"{name}: this plugin did not compile, so its mod will not run")
+                failed.append(name)
                 continue
             bind = os.path.join(out_dir, name + "_bind.c")
             text = _BIND.format(name=name)
@@ -677,6 +700,7 @@ def cache_mod_plugins(tree, jobs, log=print, quiet=False):
             r = subprocess.run(cc.compile_command(bind, obj, "/O1", cc.GAME_CFLAGS), capture_output=True, text=True)
             if r.returncode:
                 log(f"{name}: the plugin loader did not compile\n{(r.stdout + r.stderr)[:1500]}")
+                failed.append(name)
                 continue
             objs = sorted(os.path.join(folder, n) for n in os.listdir(folder) if n.endswith(".obj"))
             objs.append(obj)
@@ -684,12 +708,15 @@ def cache_mod_plugins(tree, jobs, log=print, quiet=False):
                 cc.link_library(objs, dll_path(tree, name))
             except RuntimeError as e:
                 log(f"{name}: the plugin did not link\n{e}")
+                failed.append(name)
                 continue
             log(f"{name}: saved ({os.path.getsize(dll_path(tree, name)):,} bytes)")
         else:
             if not quiet:
                 log(f"{name}: already translated")
         ready.append(name)
+    if strict and failed:
+        raise RuntimeError("Plugins did not compile: " + ", ".join(failed))
     listed = "".join(f"build/plugins/{n}.dll\n" for n in ready)
     path = os.path.join(p.skyline, "plugin_dlls.txt")
     old = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
@@ -739,20 +766,23 @@ def game_link_reason(tree):
     patches = os.path.join(p.skyline, "patches.txt")
     if os.path.exists(patches) and os.path.getmtime(patches) > built:
         return "dump/skyline/patches.txt is newer than the game"
-    import std_plugins
-    for name, plugin in std_plugins.PLUGINS.items():
-        if plugin[5] == "runs" and not os.path.exists(os.path.join(std_plugins.folder(tree), name)):
-            return f"{name} isn't fetched"
     missing = unbuilt_standard(tree)
     if missing:
         return missing
     listed = os.path.join(p.skyline, "plugins.txt")
     names = [l.split("#")[0].strip() for l in open(listed, encoding="utf-8")] if os.path.exists(listed) else []
+    dlls = os.path.join(p.skyline, "plugin_dlls.txt")
+    dynamic = {os.path.splitext(os.path.basename(line.strip()))[0]
+               for line in open(dlls, encoding="utf-8")} if os.path.exists(dlls) else set()
     for name in names:
-        if name and not built_in(tree, name):
+        if name and name not in dynamic and not built_in(tree, name):
             return f"the standard plugin {name} isn't in the game"
     if stale_hooks(tree):
         return "a plugin hooks a function the game has no slot for"
+    for mod, folder, _inline, _patches in _hook_sources(tree):
+        if os.path.isdir(folder) and any(os.path.getmtime(os.path.join(folder, n)) > built
+                for n in os.listdir(folder) if n.startswith("g") and n.endswith((".c", ".obj"))):
+            return f"{mod}'s generated hooks have not been linked into the game"
     return None
 
 
@@ -760,8 +790,13 @@ def build(tree, jobs, log=print, again=True):
     """Translate each turned-on mod plugin into its own file. Link the game only when a standard
     plugin is missing, the runtime changed, or a plugin's inline hook or code patch is not in it.
     A function hook is patched into that one function when the game starts."""
+    if sys.platform == "win32":
+        import cc
+        if not os.path.isfile(cc.CLANG) and not shutil.which(cc.CLANG):
+            raise RuntimeError("The C compiler is unavailable; run the installer to set up the build toolchain "
+                               "or set SSBU_CLANG to clang-cl.exe")
     sync(tree, log, jobs)
-    cache_mod_plugins(tree, jobs, log)
+    cache_mod_plugins(tree, jobs, log, strict=True)
     reason = game_link_reason(tree)
     if reason:
         exefs = os.path.join(tree, "dump", "exefs")
@@ -769,7 +804,13 @@ def build(tree, jobs, log=print, again=True):
             log(f"writing {mod}'s C again — 0%, estimating the time left")
             src = os.path.join(exefs, mod) if mod in ("main", "subsdk0", "sdk") else os.path.join(tree, "dump", "nro", mod + ".nro")
             out = os.path.join(tree, "build", mod) if mod in ("main", "subsdk0", "sdk") else os.path.join(tree, "build", "nro", mod)
-            recomp_stream(Paths(tree), log, "build", src, "--out", out, "--jobs", str(jobs))
+            if sys.platform == "win32":
+                # build_all regenerates this module once, then stamps its compiled result.
+                # Generating here as well cleared that stamp and doubled the first-start work.
+                import modcache
+                modcache.clear_stamp(out)
+            else:
+                recomp_stream(Paths(tree), log, "build", src, "--out", out, "--jobs", str(jobs))
         log(f"linking the game once ({reason})")
         if sys.platform == "darwin":
             cmd = [sys.executable, os.path.join(HERE, "mac", "build_mac.py"), "--port", tree, "--jobs", str(jobs)]
@@ -786,6 +827,8 @@ def build(tree, jobs, log=print, again=True):
     if again and (stale_hooks(tree) or game_link_reason(tree)):
         log("the plugins asked for more hook points: building once more")
         return build(tree, jobs, log, again=False)
+    if stale_hooks(tree) or game_link_reason(tree):
+        raise RuntimeError("Plugin preparation did not converge; see dump/skyline/probe.log")
     return 0
 
 
@@ -794,7 +837,7 @@ def build(tree, jobs, log=print, again=True):
 NOT_BUILT = ("tools/modmanager/", "tools/dev/", "tools/mods.py", "tools/os_mods.py", "tools/progress.py", "tools/std_plugins.py", "tools/csk.py", "tools/miis.py",
              "tools/unlock_all.py", "tools/install_windowsmash.ps1", "tools/update.py", "tools/arc.py", "tools/prc.py",
              "tools/msbt.py", "tools/ssbu_online_lobby.py", "tools/ssbu_relay.py", "tools/skyline.py",
-             "tools/shader_aot.py")
+             "tools/shader_aot.py", "tools/prepare_plugins.py")
 
 
 def plugin_refresh_reason(tree):

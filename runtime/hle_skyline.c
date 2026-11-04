@@ -335,6 +335,14 @@ static void display_version(Cpu *c) {
     memcpy(G2H(c->x[0]), "13.0.5", 6);
 }
 
+/* Plugins use this only as an application-local identifier. There is no console device
+ * service here; return a fixed synthetic UUID without reading a host identifier. */
+static void pseudo_device_id(Cpu *c) {
+    static const u8 id[16] = {'O', 'p', 'e', 'n', 'S', 'm', 'a', 's', 'h', 0, 0, 0, 0, 0, 0, 1};
+    if (c->x[0]) memcpy(G2H(c->x[0]), id, sizeof id);
+    c->x[0] = 0;
+}
+
 /* The SDK functions plugins call that the game never does, whose SDK code would ask system services
  * that aren't here: their dispatch entries get these when plugins load (plugin_shims). */
 static void show_application_error(Cpu *c) {   /* (ApplicationErrorArg: the dialog's text at 0x10, the full screen's at 0x810) */
@@ -391,6 +399,7 @@ static void unavailable(Cpu *c) { c->x[0] = RESULT(123, 1); }   /* (nn::ssl: no 
 static void plugin_shims(void) {
     static const struct { const char *name; GuestFn *fn; } SHIMS[] = {
         {"_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE", display_version},
+        {"_ZN2nn2oe17GetPseudoDeviceIdEPNS_4util4UuidE", pseudo_device_id},
         {"_ZN2nn3err20ShowApplicationErrorERKNS0_19ApplicationErrorArgE", show_application_error},
         {"_ZN2nn2oe15ExitApplicationEv", exit_application},
         {"_ZN2nn3hid6detail22SetSupportedNpadIdTypeEPKji", nothing},
@@ -427,7 +436,7 @@ static void lookup_symbol(Cpu *c) {
 /* Plugins check that the plugins they need are installed (rom:/skyline/plugins/<lib>.nro); the
  * ones the runtime provides natively are. (hle_fs.c asks for a RomFS path with no "rom:/".) */
 int skyline_provides(const char *path) {
-    static const char *const natives[] = {"skyline/plugins/libsmashline_plugin.nro", "skyline/plugins/libnro_hook.nro",
+    static const char *const natives[] = {"skyline/plugins/libsmashline_plugin.nro",
                                           "skyline/plugins/libarcropolis.nro",
                                           /* (linked into each plugin that uses it) */
                                           "skyline/plugins/libparam_config.nro",
@@ -1521,12 +1530,12 @@ void skyline_load_plugins(Cpu *c) {
      * exports whatever the order */
     static char names[64][128];
     static u64 bases[64];
-    int count = 0;
+    int count = 0, missing = 0;
     while (fgets(line, sizeof line, f) && count < 64) {
         line[strcspn(line, "\r\n#")] = 0;
         if (!*line) continue;
         u64 base = rt_load_nro_named(c, line);
-        if (!base) { fprintf(stderr, "[skyline] plugin %s is not recompiled into this build: left out\n", line); continue; }
+        if (!base) { fprintf(stderr, "[skyline] plugin %s is not recompiled into this build: left out\n", line); missing++; continue; }
         snprintf(names[count], sizeof names[count], "%s", line);
         bases[count++] = base;
     }
@@ -1549,6 +1558,7 @@ void skyline_load_plugins(Cpu *c) {
     csk_publish();   /* (a change means the mods need applying again: tools/skyline.py probe does) */
     csk_loaded = 1;
     if (getenv("SSBU_SKYLINE_PROBE")) {
+        if (missing) { fprintf(stderr, "[skyline] probe failed: %d plugins could not load\n", missing); fflush(stderr); ExitProcess(1); }
         if (rt_symbol("arcrop_register_callback") && rt_module_export(rt_symbol("arcrop_register_callback") & ~0xFFFFFFull, "main"))
             CloseHandle(CreateThread(NULL, 0, probe_timer, NULL, 0, NULL));   /* (the real ARCropolis: the mods' plugins run later, as it mounts the mods) */
         else { fprintf(stderr, "[skyline] probe done\n"); fflush(stderr); ExitProcess(0); }
