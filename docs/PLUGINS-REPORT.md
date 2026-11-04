@@ -26,9 +26,12 @@ check. The runtime's own CSK steps aside by itself (plugins call the real one's 
 
 **More than 4 new characters**: not CSK's job. The select screen's arrangement
 (`ui/param/menu/chara_icon_arrangement.prc`) has 91 places (13 x 7); the game's fighters fill 87. A 5th new character
-breaks it (one column of tiles, or `abort` from main+0x19f1550, a lookup in that arrangement). On the console too: the
-community fix is a mod, **CSS 91+ Layout Fix** (GameBanana 468582: a bigger arrangement and a smaller-tile layout).
-With it, all 12 new characters show and play. `mods.py apply` now says so when more than 4 are on without it.
+broke it (one column of tiles, or `abort` from main+0x19f1550, a lookup in that arrangement). On the console the
+community fix is a mod (CSS 91+ Layout Fix, GameBanana 468582). OpenSmash now makes its own (2026-11-04): past 4 new
+characters, `mods.py apply` makes the screen's layout and table again for 91 + their number of tiles
+([`tools/css_layout.py`](../tools/css_layout.py): more tile panes, up to 13 rows, tile sizes smaller than the game's
+smallest), and [`runtime/hle_select_screen.c`](../runtime/hle_select_screen.c) sizes and hides the tiles past 91 that
+the game's code leaves alone. Checked with 143 fighters (16 x 9) and with 147 (17 x 9), a tile past 91 picked.
 
 Also: a 13.0.4 plugin's function hook that misses a function start moves by its region's shift when that lands on one
 (Shadow Mewtwo's 3 hooks); a standard plugin keeps its own exports when its C is made again for hooks into it
