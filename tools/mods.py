@@ -352,16 +352,33 @@ def install(tree, archive, name=None, meta=None):
             raise Error(f"{os.path.basename(archive)} has no files laid out as the game's (fighter/, ui/, sound/, stream;/ ...) "
                         "and no Skyline plugin (.nro)")
         base = safe_name(name or os.path.splitext(os.path.basename(archive))[0])
+        on = []   # (the game files of each of this pack's mods turned on)
         for root in roots:
             leaf = os.path.basename(root)
             label = base if len(roots) == 1 else f"{base} - {safe_name(leaf)}"
             final, k = label, 2
+            old = None
             while os.path.exists(os.path.join(tree.mods, final)):
+                # (the same download again - the same file, by its checksum: it replaces the copy there,
+                # turned on or off as it was, not a second copy "(2)" turned on beside it, the two
+                # changing the same files: Knuckles' 914)
+                if (meta or {}).get("md5") and state["mods"].get(final, {}).get("md5") == meta["md5"]:
+                    old = state["mods"][final]
+                    shutil.rmtree(os.path.join(tree.mods, final))
+                    break
                 final, k = f"{label} ({k})", k + 1
             inner = {os.path.normcase(r) for r in nested_roots(root, roots)}
             shutil.copytree(root, os.path.join(tree.mods, final),
                             ignore=lambda d, names: [n for n in names if os.path.normcase(os.path.join(d, n)) in inner])
-            entry = {"enabled": True}
+            # (a pack's choices - a moveset's Battle and Modern styles, one victory pose of several: a
+            # mod most of whose files another of the pack's turned-on mods changes too is the other's
+            # alternative, installed turned off; an add-on shares few. Both on, the later one's files
+            # won, and both movesets' plugins ran on the one fighter)
+            files = {p.lower() for p, _src in mod_files(os.path.join(tree.mods, final))}
+            choice = files and any(len(files & other) >= len(files) / 2 for other in on)
+            entry = {"enabled": old.get("enabled", True) if old else not choice}
+            if entry["enabled"]:
+                on.append(files)
             entry.update(meta or {})
             state = tree.load()
             state["mods"][final] = entry

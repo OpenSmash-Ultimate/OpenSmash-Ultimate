@@ -35,7 +35,7 @@ def arg(name, default=None):
 
 
 def game_pids():
-    r = subprocess.run(["pgrep", "-f", "MacOS/ssbu"], capture_output=True, text=True)
+    r = subprocess.run(["pgrep", "-x", "ssbu"], capture_output=True, text=True)
     return [int(p) for p in r.stdout.split()]
 
 
