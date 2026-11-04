@@ -14,10 +14,10 @@ It is the merge of two projects, [WindowSmash](https://github.com/OpenSmash-Ulti
 
 ## Install
 
-1. Get the files: click the green **Code** button, then **Download ZIP**, and extract it to a folder with room (about 60 GB free; not the Desktop or Documents). Optionally take `OpenSmash.exe` (the launcher) from the latest [release](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) and put it in that folder.
-2. Double-click **`Install WindowSmash.bat`** (or run `OpenSmash.exe`, which opens the same installer while no game is built).
+1. Download **[OpenSmash Setup.exe](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/latest/download/OpenSmash-Setup.exe)** from the latest [release](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) and run it. It does the rest.
+2. Choose where OpenSmash goes (about 60 GB free; not the Desktop or Documents) and click **Download and set up**. It downloads the project from GitHub into that folder, makes the **OpenSmash** and **Play SSBU** shortcuts (desktop and Start menu), and opens the launcher there.
 3. In the installer window, check that it found your game files (game plus its 13.0.5 update), keys and optionally firmware; fix any folder with **Browse**. Click **Set up and build** and wait: 30 minutes to a few hours.
-4. Press **Play** in the launcher, or double-click **`Play SSBU.bat`**.
+4. Press **Play** in the launcher, or use the **Play SSBU** shortcut.
 5. To update, open **Settings -> Update** in the launcher. Mods are in the launcher's **Mods** view; online is in **Settings -> Online**.
 
 You need your own copy of the game, version 13.0.5, dumped from your own Switch, and a 64-bit Windows 10 or 11 PC; AVX2 is recommended, SSE4.2 works too. Linux and macOS (Apple silicon) are experimental. The [installation guide](docs/INSTALL.md) explains each step; [docs/BUILDING.md](docs/BUILDING.md) is the step-by-step setup and building from source.

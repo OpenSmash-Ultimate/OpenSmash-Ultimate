@@ -2,6 +2,9 @@
 # installer (tools/install_windowsmash.ps1, Step-Launcher) downloads releases/latest/download/OpenSmash.exe and
 # checks it against OpenSmash.exe.sha256 beside it. Nothing in it comes from the game. A tag v<n> or
 # launcher-v<n> publishes both to that tag's release; a manual run keeps them as the run's artifact.
+# The same exe is also published as OpenSmash-Setup.exe (shown as "OpenSmash Setup.exe"; GitHub turns spaces in asset
+# names into dots): what players download. Alone, it gets the project from GitHub into a folder, makes the
+# shortcuts and opens the launcher there (OpenSmash.Launcher\FirstRunForm.cs).
 name: Launcher release
 
 on:
@@ -29,7 +32,10 @@ jobs:
           ./tools/build_launcher.ps1
           $h = (Get-FileHash OpenSmash.exe -Algorithm SHA256).Hash.ToLower()
           "$h  OpenSmash.exe" | Set-Content -Encoding ascii OpenSmash.exe.sha256
-          Get-Content OpenSmash.exe.sha256
+          Copy-Item OpenSmash.exe OpenSmash-Setup.exe
+          $h = (Get-FileHash OpenSmash-Setup.exe -Algorithm SHA256).Hash.ToLower()
+          "$h  OpenSmash-Setup.exe" | Set-Content -Encoding ascii OpenSmash-Setup.exe.sha256
+          Get-Content OpenSmash.exe.sha256, OpenSmash-Setup.exe.sha256
 
       - uses: actions/upload-artifact@v4
         with:
@@ -37,6 +43,8 @@ jobs:
           path: |
             OpenSmash.exe
             OpenSmash.exe.sha256
+            OpenSmash-Setup.exe
+            OpenSmash-Setup.exe.sha256
 
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/')
@@ -46,4 +54,4 @@ jobs:
         run: |
           $tag = '${{ github.ref_name }}'
           gh release view $tag 2>$null; if ($LASTEXITCODE -ne 0) { gh release create $tag --title $tag --notes "OpenSmash $tag" }
-          gh release upload $tag OpenSmash.exe OpenSmash.exe.sha256 --clobber
+          gh release upload $tag OpenSmash.exe OpenSmash.exe.sha256 'OpenSmash-Setup.exe#OpenSmash Setup.exe' OpenSmash-Setup.exe.sha256 --clobber
