@@ -405,6 +405,25 @@ class App:
                     state["mods"][n]["enabled"] = bool(body["enabled"])
             t.save(state)
             return self.library()
+        if path in ("/api/group", "/api/all"):
+            # (a download's parts together, or every mod): off remembers which were on, on brings back
+            # those, not the alternatives and copies left off
+            state = t.load()
+            names = [n for n in body["names"] if n in state["mods"]] if path == "/api/group" else list(state["mods"])
+            key = "was_on" if path == "/api/group" else "all_was_on"
+            if body["on"]:
+                was = [n for n in names if state["mods"][n].get(key)]
+                for n in was or names:   # (none remembered: all of them)
+                    state["mods"][n]["enabled"] = True
+                for n in names:
+                    state["mods"][n].pop(key, None)
+            elif any(state["mods"][n].get("enabled") for n in names):   # (already all off: what's remembered stays)
+                for n in names:
+                    m = state["mods"][n]
+                    m[key] = bool(m.get("enabled"))
+                    m["enabled"] = False
+            t.save(state)
+            return self.library()
         if path == "/api/order":
             state = t.load()
             names = [n for n in body["names"] if n in state["mods"]]

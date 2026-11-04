@@ -303,5 +303,6 @@ input[type=checkbox].pick { width: 16px; height: 16px; accent-color: var(--gold)
 .mod.part .thumb { display: none; }
 .mod .about { color: var(--text); opacity: .78; font-size: 12.5px; margin-top: 4px; line-height: 1.4; }
 .group > .head .about { color: var(--dim); opacity: 1; }
-.switch.mixed span { background: linear-gradient(90deg, rgba(139, 61, 255, .55), var(--line)); }
-.switch.mixed span::after { transform: translateX(10px); }
+.seg-pair { display: inline-flex; }
+.seg-pair button:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.seg-pair button:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 0; }
