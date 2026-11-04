@@ -274,7 +274,8 @@ void rt_inline_hook(Cpu *c, u64 at) {
 /* sky_memcpy(dest, src, n): plugins patch code and read-only data with it. Data changes work at
  * once. A change to code means nothing to the recompiled function until the next build lifts the
  * new instructions: each changed word goes into <data dir>/../skyline/patches.txt, "<module>
- * <offset> <old word> <new word>" (tools/recomp.py code_patches, tools/skyline.py stale_hooks). */
+ * <offset> <old word> <new word> <plugin>" - the plugin the call came from, so a build drops the
+ * patches of a plugin no longer loaded (tools/recomp.py code_patches, tools/skyline.py prune_patches). */
 const char *rt_code_offset(u64 addr, u64 *off);   /* (host.c) */
 /* Smashline's inline hooks in lua2cpp_common: it writes a `bl` at the hooked call to a code cave
  * (the original branch, as a `b`, after some nops) and inline-hooks the cave. Recompiled code runs
@@ -292,8 +293,10 @@ static u64 cave_site(u64 at) {
     return 0;
 }
 
-static void note_code_patch(u64 dest, u64 src, u64 n) {
-    char path[1200], line[160], have[160];
+static void note_code_patch(u64 dest, u64 src, u64 n, u64 caller) {
+    char path[1200], line[240], have[240];
+    u64 at;
+    const char *by = rt_code_offset(caller, &at);
     snprintf(path, sizeof path, "%s/../skyline/patches.txt", rt_data_dir);
     for (u64 w = dest & ~3ull; w < dest + n; w += 4) {
         u64 off;
@@ -304,7 +307,7 @@ static void note_code_patch(u64 dest, u64 src, u64 n) {
             if (w + b >= dest && w + b < dest + n) now = (now & ~(0xFFu << 8 * b)) | (u32)*P(u8, src + (w + b - dest)) << 8 * b;
         if (now == old) continue;
         note_cave(w, now);
-        snprintf(line, sizeof line, "%s %llx %08x %08x\n", mod, (unsigned long long)off, old, now);
+        snprintf(line, sizeof line, "%s %llx %08x %08x %s\n", mod, (unsigned long long)off, old, now, by ? by : "?");
         FILE *f = fopen(path, "r");
         int seen = 0;
         while (f && !seen && fgets(have, sizeof have, f)) seen = !strcmp(have, line);
@@ -316,7 +319,7 @@ HLE(sky_memcpy) {
     char a[96];
     u64 to = c->x[0];
     LOG("sky_memcpy %#llx bytes to %s", (unsigned long long)c->x[2], rt_describe(to, a, sizeof a));
-    note_code_patch(to, c->x[1], c->x[2]);
+    note_code_patch(to, c->x[1], c->x[2], c->x[30]);
     memcpy(G2H(to), G2H(c->x[1]), c->x[2]);
     c->x[0] = 0;
 }
@@ -425,17 +428,20 @@ HLE(get_plugin_addresses) {
 }
 
 /* nn::ro::LookupSymbol(*address, name) */
+static u64 smashline_adapt(const char *name, u64 addr);   /* (below: Smashline 2.0 for 1.6 plugins) */
 static void lookup_symbol(Cpu *c) {
     const char *name = guest_str(c->x[1]);
-    u64 addr = rt_resolve_weak(name);
+    u64 addr = smashline_adapt(name, rt_resolve_weak(name));
     LOG("LookupSymbol %s: %#llx", name, (unsigned long long)addr);
     if (!addr) { c->x[0] = R_NOT_FOUND; return; }
     *P(u64, c->x[0]) = addr;
     c->x[0] = 0;
 }
 
-/* Plugins check that the plugins they need are installed (rom:/skyline/plugins/<lib>.nro); the
- * ones the runtime provides natively are. (hle_fs.c asks for a RomFS path with no "rom:/".) */
+/* Plugins check that the plugins they need are installed (rom:/skyline/plugins/<lib>.nro): the
+ * ones the runtime provides natively are, and so are the standard plugins in the port's own
+ * skyline/plugins (One Slot Effects, which Tofu Yi's movesets check for and stop without: their
+ * forms all shown at once, no specials). (hle_fs.c asks for a RomFS path with no "rom:/".) */
 int skyline_provides(const char *path) {
     static const char *const natives[] = {"skyline/plugins/libsmashline_plugin.nro", "skyline/plugins/libnro_hook.nro",
                                           "skyline/plugins/libarcropolis.nro",
@@ -448,7 +454,13 @@ int skyline_provides(const char *path) {
     while (*path == '/') path++;
     for (int i = 0; natives[i]; i++)
         if (!strcmp(path, natives[i])) return 1;
-    return 0;
+    const char *name = path + 16;   /* (after "skyline/plugins/") */
+    if (strncmp(path, "skyline/plugins/", 16) || !*name || strchr(name, '/') || strstr(name, "..")) return 0;
+    size_t n = strlen(name);
+    if (n < 5 || _stricmp(name + n - 4, ".nro")) return 0;
+    char host[1200];   /* (<tree>/skyline/plugins: the data dir is <tree>/dump/modules) */
+    snprintf(host, sizeof host, "%s/../../skyline/plugins/%s", rt_data_dir, name);
+    return GetFileAttributesA(host) != INVALID_FILE_ATTRIBUTES;
 }
 
 /* ---- Smashline 2 ------------------------------------------------------------------- */
@@ -765,6 +777,189 @@ HLE(smashline_add_param_object) {   /* (fighter {ptr, len}, name {ptr, len}) */
 HLE(smashline_get_action_registry) { c->x[0] = 0; LOG("smashline: action registry (script files): not supported, none"); }
 HLE(smashline_reload_script) { (void)c; }
 HLE(smashline_remove_by_plugin_range) { (void)c; }
+
+/* ---- the real Smashline 2.0, for plugins built for 1.6 ---- */
+/* Smashline 2.0 changed three exports (smashline src/api.rs, v1.6.8 -> v2.0.0):
+ *   clone_weapon(original owner, article id, new owner, new name, use original code) -> index
+ *     is now (owner, name, article id, use original code) -> {generate id, weapon kind}: a clone is
+ *     a new weapon kind (0x267 on), where 1.6's kept the original's kind; 1.6 returned the clone's
+ *     place among its owner's added articles (generate id = the owner's vanilla count + it)
+ *   update_weapon_count(weapon kind, count) is now (fighter, generate id, count)
+ *   whitelist_kirby_copy_article(fighter, weapon kind) is now (fighter, generate id)
+ * Plugins find them with LookupSymbol, when first called: when the real Smashline is 2.0, those
+ * three answer with the adapters here. A plugin built for 2.0 has the names of 2.0's new functions
+ * in it, or clones with a name pointer where 1.6's had the article id: its calls go through as they
+ * are; any other's are changed to 2.0's (1.6's weapon kind = the fighters' vanilla articles of that
+ * kind and every clone the adapter made of it, before or after the call, as 1.6 matched them). */
+u32 rt_module_count(void);   /* (host.c) */
+u64 rt_module_base(u32 i);
+u64 rt_module_size(u32 i);
+#define SL_FIGHTERS 94
+static const signed char SL_MAX_GENERATE[SL_FIGHTERS] = {   /* (descriptors.rs MAX_GENERATE_ARTICLE_IDS) */
+    5, 0, 8, 8, 9, 3, 38, 5, 5, 3, 7, 1, 1, 3, 3, 1, 4, 3, 4, 5, 5, -1, 0, 7, 1, 3, 0, 0, 8, 2, 5, 1,
+    7, 2, 14, 0, 0, 2, 2, 9, 9, 3, 8, 4, 2, 9, 8, 4, 20, 16, 7, 3, 4, 3, 8, 5, 6, 2, 8, 11, 2, 2, 1, 4,
+    5, 11, 1, 9, 9, 6, 19, 3, 1, 4, 13, 7, 7, 0, -1, -1, 1, 3, 7, 9, 9, 3, 8, 21, 23, 4, 4, 7, 4, 7};
+static const char *const SL2_ONLY[] = {   /* (2.0's exports 1.6 has not) */
+    "smashline_clone_article_descriptor", "smashline_enable_weapon_module", "smashline_get_original_fighter_vtable",
+    "smashline_get_original_weapon_vtable", "smashline_load_weapon_lvd", "smashline_refresh_weapon_lvd",
+    "smashline_replace_article_descriptor_func", "smashline_replace_fighter_vtable",
+    "smashline_replace_fighter_vtable_costume", "smashline_replace_weapon_vtable",
+    "smashline_set_weapon_lvd_nodes", "smashline_set_weapon_module_factory", 0};
+static u64 sl_real[3];   /* clone_weapon, update_weapon_count, whitelist_kirby_copy_article: 2.0's */
+static struct { u64 base; int built_for_2; } sl_modules[64];
+static u32 sl_module_n;
+static struct { int owner, original_owner, weapon, generate; } sl_clones[256];
+static u32 sl_clone_n;
+static struct { int fighter, weapon, count; } sl_pending[256];   /* (fighter -1: a weapon count; else a whitelist) */
+static u32 sl_pending_n;
+static int sl_vanilla[SL_FIGHTERS][40], sl_vanilla_n[SL_FIGHTERS];   /* the weapon kind of each vanilla article */
+static SRWLOCK sl_lock = SRWLOCK_INIT;
+
+/* Whether the module calling (its return address) is built for Smashline 2.0: 2.0's new names in
+ * it, or it said so (clone_weapon's arguments); -1 for neither yet, 0 and 1 to set. */
+static int sl_built_for_2(u64 caller, int set) {
+    u64 base = 0, size = 0;
+    for (u32 i = 0; i < rt_module_count() && !base; i++)
+        if (caller - rt_module_base(i) < rt_module_size(i)) { base = rt_module_base(i); size = rt_module_size(i); }
+    if (!base) return 0;
+    AcquireSRWLockExclusive(&sl_lock);
+    u32 m = 0;
+    while (m < sl_module_n && sl_modules[m].base != base) m++;
+    if (m == sl_module_n && m < sizeof sl_modules / sizeof *sl_modules) {
+        int found = 0;
+        const char *image = P(const char, base);
+        for (int k = 0; SL2_ONLY[k] && !found; k++) {
+            size_t n = strlen(SL2_ONLY[k]) + 1;   /* (the name and its terminator: not a longer name's start) */
+            for (const char *p = image; !found && (p = memchr(p, 's', size - (u64)(p - image))) && (u64)(p - image) + n <= size; p++)
+                found = !memcmp(p, SL2_ONLY[k], n);
+        }
+        sl_modules[m].base = base;
+        sl_modules[m].built_for_2 = found;
+        sl_module_n++;
+        char a[96];
+        LOG("smashline: %s is built for Smashline %s", rt_describe(base, a, sizeof a), found ? "2.0" : "1.6 (adapted)");
+    }
+    int r = m < sl_module_n ? sl_modules[m].built_for_2 : 0;
+    if (m < sl_module_n && set >= 0) sl_modules[m].built_for_2 = r = set;
+    ReleaseSRWLockExclusive(&sl_lock);
+    return r;
+}
+
+/* A fighter's vanilla articles: the weapon kind of each, by generate id (2.0's static fighter data
+ * hook puts the vanilla ones first) */
+static int sl_vanilla_articles(Cpu *c, int fighter) {
+    if (fighter < 0 || fighter >= SL_FIGHTERS || SL_MAX_GENERATE[fighter] < 0) return 0;
+    if (!sl_vanilla_n[fighter]) {
+        c->x[0] = (u64)fighter;
+        rt_call(c, MAIN_BASE + STATIC_FIGHTER_DATA);
+        u64 data = c->x[0], info = data ? *P(u64, data + 8) : 0;
+        u64 n = info ? *P(u64, info + 8) : 0;
+        if (n > (u64)SL_MAX_GENERATE[fighter] + 1) n = (u64)SL_MAX_GENERATE[fighter] + 1;
+        if (n > 40) n = 40;
+        for (u64 i = 0; i < n; i++) sl_vanilla[fighter][i] = *P(i32, *P(u64, info) + 32 * i);
+        sl_vanilla_n[fighter] = n ? (int)n : -1;
+    }
+    return sl_vanilla_n[fighter] > 0 ? sl_vanilla_n[fighter] : 0;
+}
+
+static void sl_pend(int fighter, int weapon, int count) {
+    AcquireSRWLockExclusive(&sl_lock);
+    if (sl_pending_n < sizeof sl_pending / sizeof *sl_pending) {
+        sl_pending[sl_pending_n].fighter = fighter; sl_pending[sl_pending_n].weapon = weapon;
+        sl_pending[sl_pending_n++].count = count;
+    }
+    ReleaseSRWLockExclusive(&sl_lock);
+}
+static void sl_update(Cpu *c, int fighter, int generate, int count) {
+    LOG("smashline: (1.6) weapon count of fighter %d's article %d: %d", fighter, generate, count);
+    c->x[0] = (u64)fighter; c->x[1] = (u64)generate; c->x[2] = (u64)count;
+    rt_call(c, sl_real[1]);
+}
+static void sl_whitelist(Cpu *c, int fighter, int generate) {
+    LOG("smashline: (1.6) Kirby copies fighter %d's article %d", fighter, generate);
+    c->x[0] = (u64)fighter; c->x[1] = (u64)generate;
+    rt_call(c, sl_real[2]);
+}
+
+/* (1.6: original owner {ptr, len}, article id, new owner {ptr, len}, new name {ptr, len}, use original code) -> index
+ * (2.0: owner {ptr, len}, name {ptr, len}, article id, use original code) -> {generate id, weapon kind} */
+static void sl_clone_weapon(Cpu *c) {
+    if (c->x[3] < 0x10000) { sl_built_for_2(c->x[30], 1); rt_call(c, sl_real[0]); return; }   /* (a name's length, not 1.6's owner pointer: 2.0's) */
+    sl_built_for_2(c->x[30], 0);
+    int from = fighter_index(c->x[0], c->x[1]), weapon = (int)c->x[2], to = fighter_index(c->x[3], c->x[4]);
+    if (to < 0 || to >= SL_FIGHTERS) { c->x[0] = 0; return; }
+    int vanilla = SL_MAX_GENERATE[to] + 1;
+    AcquireSRWLockShared(&sl_lock);
+    for (u32 i = 0; i < sl_clone_n; i++)   /* (1.6: the same article of the same fighter cloned again is the one there) */
+        if (sl_clones[i].owner == to && sl_clones[i].original_owner == from && sl_clones[i].weapon == weapon) {
+            int generate = sl_clones[i].generate;
+            ReleaseSRWLockShared(&sl_lock);
+            c->x[0] = (u64)(u32)(generate - vanilla);
+            return;
+        }
+    ReleaseSRWLockShared(&sl_lock);
+    if (weapon < 0 || weapon >= WEAPON_COUNT) { c->x[0] = 0; return; }
+    const char *owner = guest_name(WEAPON_OWNER_NAMES, weapon, WEAPON_COUNT), *wanted = guest_name(FIGHTER_NAMES, from, FIGHTER_COUNT);
+    if (owner && wanted && strcmp(owner, wanted))   /* (2.0 takes the article from the fighter it belongs to) */
+        LOG("smashline: (1.6) clone of %s's article %d: 2.0 takes it from %s", wanted, weapon, owner);
+    u64 name = c->x[5], name_len = c->x[6], use_original_code = c->x[7] & 1;
+    c->x[0] = c->x[3]; c->x[1] = c->x[4];
+    c->x[2] = name; c->x[3] = name_len;
+    c->x[4] = (u64)(u32)weapon; c->x[5] = use_original_code;
+    rt_call(c, sl_real[0]);
+    int generate = (int)(u32)c->x[0], kind = (int)(c->x[0] >> 32);
+    AcquireSRWLockExclusive(&sl_lock);
+    if (sl_clone_n < sizeof sl_clones / sizeof *sl_clones) {
+        sl_clones[sl_clone_n].owner = to; sl_clones[sl_clone_n].original_owner = from;
+        sl_clones[sl_clone_n].weapon = weapon; sl_clones[sl_clone_n++].generate = generate;
+    }
+    u32 pending = sl_pending_n;
+    ReleaseSRWLockExclusive(&sl_lock);
+    LOG("smashline: (1.6) weapon %d of fighter %d cloned to fighter %d: weapon kind %#x, article %d (index %d)",
+        weapon, from, to, kind, generate, generate - vanilla);
+    for (u32 i = 0; i < pending; i++)   /* (what 1.6 would have applied to it too) */
+        if (sl_pending[i].weapon == weapon) {
+            if (sl_pending[i].fighter < 0) sl_update(c, to, generate, sl_pending[i].count);
+            else if (sl_pending[i].fighter == to) sl_whitelist(c, to, generate);
+        }
+    c->x[0] = (u64)(u32)(generate - vanilla);
+}
+
+/* (1.6: weapon kind, count; 2.0: fighter, generate id, count) */
+static void sl_update_weapon_count(Cpu *c) {
+    if (sl_built_for_2(c->x[30], -1)) { rt_call(c, sl_real[1]); return; }
+    int weapon = (int)c->x[0], count = (int)c->x[1];
+    sl_pend(-1, weapon, count);
+    for (int f = 0; f < SL_FIGHTERS; f++) {
+        int n = sl_vanilla_articles(c, f);
+        for (int i = 0; i < n; i++) if (sl_vanilla[f][i] == weapon) sl_update(c, f, i, count);
+    }
+    for (u32 i = 0; i < sl_clone_n; i++) if (sl_clones[i].weapon == weapon) sl_update(c, sl_clones[i].owner, sl_clones[i].generate, count);
+}
+
+/* (1.6: fighter, weapon kind; 2.0: fighter, generate id) */
+static void sl_whitelist_kirby_copy_article(Cpu *c) {
+    if (sl_built_for_2(c->x[30], -1)) { rt_call(c, sl_real[2]); return; }
+    int fighter = (int)c->x[0], weapon = (int)c->x[1];
+    sl_pend(fighter, weapon, 0);
+    int n = sl_vanilla_articles(c, fighter);
+    for (int i = 0; i < n; i++) if (sl_vanilla[fighter][i] == weapon) sl_whitelist(c, fighter, i);
+    for (u32 i = 0; i < sl_clone_n; i++)
+        if (sl_clones[i].owner == fighter && sl_clones[i].weapon == weapon) sl_whitelist(c, fighter, sl_clones[i].generate);
+}
+
+static u64 smashline_adapt(const char *name, u64 addr) {
+    static const char *const changed[3] = {"smashline_clone_weapon", "smashline_update_weapon_count", "smashline_whitelist_kirby_copy_article"};
+    static GuestFn *const adapters[3] = {sl_clone_weapon, sl_update_weapon_count, sl_whitelist_kirby_copy_article};
+    static u64 native[3];
+    for (int k = 0; k < 3; k++)
+        if (addr && !strcmp(name, changed[k]) && rt_resolve_weak("smashline_replace_fighter_vtable")) {   /* (the real 2.0) */
+            sl_real[k] = addr;
+            if (!native[k]) native[k] = rt_native(adapters[k], changed[k]);
+            return native[k];
+        }
+    return addr;
+}
 
 /* While a fighter is set up (main+0x6079d0: (object, id, kind, entry, hash)), the game looks up its
  * articles' data by owner and name: for a cloned one, the new owner's and name (inline hooks at

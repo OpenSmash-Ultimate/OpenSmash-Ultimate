@@ -1321,7 +1321,20 @@ HLE(_ZN2nn2fs15CreateDirectoryEPKc) {
     }
     char path[1024];
     host_path(path, sizeof path, m, rest);
-    c->x[0] = CreateDirectoryA(path, NULL) ? 0 : GetLastError() == ERROR_ALREADY_EXISTS ? R_PATH_EXISTS : R_PATH_NOT_FOUND;
+    BOOL made = CreateDirectoryA(path, NULL);
+    if (!made && (GetLastError() == ERROR_PATH_NOT_FOUND || GetLastError() == ERROR_FILE_NOT_FOUND)) {   /* (POSIX: ENOENT, runtime/linux/win32.c) */
+        /* (its parents too: Skyline's create_dir_all makes only the last folder, so a plugin that
+         * writes under sd:/atmosphere/contents/<title>/ - skyline-web's pages - counts on a console
+         * SD card having the rest; here the SD card starts empty) */
+        for (char *p = strchr(path, '\\'); p; p = strchr(p + 1, '\\')) {
+            if (p == path || p[-1] == ':' || !p[1]) continue;
+            *p = 0;
+            CreateDirectoryA(path, NULL);
+            *p = '\\';
+        }
+        made = CreateDirectoryA(path, NULL);
+    }
+    c->x[0] = made ? 0 : GetLastError() == ERROR_ALREADY_EXISTS ? R_PATH_EXISTS : R_PATH_NOT_FOUND;
 }
 HLE(_ZN2nn2fs15DeleteDirectoryEPKc) {
     const char *rest;
