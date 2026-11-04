@@ -32,6 +32,8 @@ int display_take_size(unsigned *w, unsigned *h);
 void display_fit(unsigned w, unsigned h, unsigned *x, unsigned *y, unsigned *fw, unsigned *fh);
 int display_latency(void);              /* frames the GPU may queue ahead: 1-3 */
 int display_low_latency(void);          /* low_latency: the game released late in the frame (ipc_vi.c) */
+int display_runahead(void);             /* runahead: frames run ahead in fights (hle_rb_core.c), 0 off */
+void display_set_runahead(int frames);  /* (the settings menu: from now on) */
 Pacing display_pacing(void);
 const char *display_gpu(void);          /* the graphics card to use: "auto", or part of its name (SSBU_GPU) */
 /* render_scale: the game's pictures are drawn this many times its 1920x1080 in each direction

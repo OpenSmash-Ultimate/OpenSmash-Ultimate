@@ -361,7 +361,8 @@ static u64 rb_closes[256][2];   /* (when closed, when opened) */
 static u32 rb_nclose;
 static int rb_fs = -1;
 static u64 rb_born[512];        /* (by slot) when its handle was opened */
-static int rb_fs_on(void) { if (rb_fs < 0) { const char *e = getenv("SSBU_RB"); rb_fs = e && *e && *e != '0'; } return rb_fs; }
+int kernel_rb_switch(void);   /* (kernel.c: SSBU_RB, or run-ahead) */
+static int rb_fs_on(void) { if (rb_fs < 0) rb_fs = kernel_rb_switch(); return rb_fs; }
 static void rb_closing(const Handle *h) {   /* (the lock held) */
     if (!rb_fs_on()) return;
     u32 i = (u32)(h - handles);

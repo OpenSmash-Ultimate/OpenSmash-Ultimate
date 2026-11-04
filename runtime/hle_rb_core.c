@@ -35,6 +35,7 @@ void rb_pad(u32 id, u64 *buttons, i32 *lx, i32 *ly, i32 *rx, i32 *ry, i32 *lt, i
     (void)id; (void)buttons; (void)lx; (void)ly; (void)rx; (void)ry; (void)lt; (void)rt;
 }
 int rb_pad_sampling(u64 *sampling) { (void)sampling; return 0; }
+int rb_ra_predicting(void) { return 0; }
 #else
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
@@ -48,6 +49,7 @@ int rb_pad_sampling(u64 *sampling) { (void)sampling; return 0; }
 #include "host.h"
 #include "frame_hooks.h"
 #include "kernel_watch.h"   /* (kernel_rb_switch) */
+#include "runahead.h"
 
 void kernel_rb_census(const void *self, u32 *alive, u32 *waiting, u32 *sleeping, u64 *busy, u32 max, u32 *nbusy);
 void fiber_rb_census(u32 *live, u32 *running);
@@ -76,6 +78,10 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx);
 
 __attribute__((constructor)) static void rb_init(void) {
     const char *log = getenv("SSBU_RB_LOG"), *q = getenv("SSBU_RB_QUIET_MS");
+    /* (run-ahead, display.ini's runahead = 1-3, needs the savestates, with the write watch on from the first module;
+     * SSBU_RUNAHEAD, which kernel_rb_switch reads itself, wins, 0 included) */
+    {   extern int kernel_rb_wanted; int display_runahead(void); const char *e = getenv("SSBU_RUNAHEAD");
+        if (!(e && *e) && display_runahead() > 0) kernel_rb_wanted = 1; }
     rb_on = kernel_rb_switch();
     if (!rb_on) return;   /* (off: no hook, no line; the wraps only call the game's functions) */
     rb_log = log && *log && *log != '0';
@@ -85,7 +91,9 @@ __attribute__((constructor)) static void rb_init(void) {
     /* the frame end and the record builder through their frame hooks (hle_each_frame.c holds the wraps) */
     frame_hook_add(FRAME_HOOK_END, FRAME_ORDER_NETPLAY, frame_end_before, frame_end_after, NULL);
     frame_hook_add(FRAME_HOOK_RECORD, FRAME_ORDER_NETPLAY, record_before, NULL, NULL);
-    fprintf(stderr, "[rb] rollback netplay on (SSBU_RB; savestates: F7 save, F8 load)\n");
+    if (getenv("SSBU_RB") && *getenv("SSBU_RB") && *getenv("SSBU_RB") != '0')
+        fprintf(stderr, "[rb] rollback netplay on (SSBU_RB; savestates: F7 save, F8 load)\n");
+    else fprintf(stderr, "[rb] savestates on for run-ahead (SSBU_RUNAHEAD or display.ini's runahead)\n");
 }
 
 /* lib::Singleton<app::FighterManager>::instance_ -> FighterManager -> its impl; +0xd2 is set while a fight
@@ -181,12 +189,15 @@ static void tape_clear(void);
 static void tag_restore(const char *why);
 static void net_left_send(void);
 static void net_gone_reset(void);
+static int ra_engaged;              /* (run-ahead, below: on in this fight) */
+static void ra_fight_over(void);
 static void safe_point(Cpu *c, uintptr_t sp) {
     S.points++;
     int on = fight_on();
     if (!on) {
         if (S.in_fight) {
             summary("fight over"); S.in_fight = 0;
+            ra_fight_over();   /* (before the catch-up's end below: run-ahead's hidden frame is not one) */
             if (net_mode == 2) net_left_send();   /* (the others stop waiting for this game's pads: v0.9) */
             /* (the other players' name tags out of this PC's list now: the game saves its list as the results come,
              * and a slot put back only after them had been saved with the friend's tag in it - gc2: 3 copies) */
@@ -229,7 +240,7 @@ static void safe_point(Cpu *c, uintptr_t sp) {
     for (;;) {
         kernel_rb_census(c->thread, &alive, &waiting, &sleeping, busy, 16, &nbusy);
         waited = now_ms() - t0;
-        if (!nbusy || waited >= quiet_limit_ms || rb_fast > 0) break;   /* (no waiting in the frames of a catch-up: M1's measure only) */
+        if (!nbusy || waited >= quiet_limit_ms || rb_fast > 0 || ra_engaged) break;   /* (no waiting in the frames of a catch-up or of run-ahead: M1's measure only) */
         SwitchToThread();
     }
     fp_census_last = waited;
@@ -406,7 +417,8 @@ void rb_pad(u32 id, u64 *buttons, i32 *lx, i32 *ly, i32 *rx, i32 *ry, i32 *lt, i
         if (net_mode == 2) *buttons &= ~(1ull << 10);   /* (the other players' too, as they came) */
         return;
     }
-    if (!tape_on) return;
+    {   void ra_pad_read(u32 id, u64 buttons); ra_pad_read(id, *buttons); }
+    if (!tape_on || ra_engaged) return;   /* (run-ahead: every read live; a tape would hand the real frame the predicted one's read) */
     u32 key = ld32(LOGIC_FRAME);
     if (key >= (1u << 20)) return;
     AcquireSRWLockExclusive(&tape_lock);
@@ -2450,7 +2462,11 @@ static void savestates(Cpu *c, u64 frame) {
                         settled, timed_out, settle_ms, nbusy ? ": a thread stayed busy" : "");
     }
     if (net_mode == 2 && !S.in_fight && net_countdown) net_pre_fight(c, frame);   /* (the GO! freeze) */
+    {   int ra_pre_point(Cpu *c, u64 frame);
+        if (!S.in_fight && ra_pre_point(c, frame)) return; }
     if (net_mode == 2 && net_armed && !S.in_fight && !net_countdown && net_got) net_results_frame(c);   /* (the results screen; not after the controls screen's test fight: no match was set up) */
+    {   int runahead_point(Cpu *c, u64 frame);
+        if (S.in_fight && runahead_point(c, frame)) return; }
     if (ring_from >= 0 && S.in_fight && S.frames >= ring_from) { ring_test(c, frame); return; }
     /* SSBU_RB_BENCH=<frame>,<count> (M3): a save at every fight frame from <frame>, <count> of them,
      * as rollback's per-frame capture would do; before a replay check's save, that save is a
@@ -2702,6 +2718,7 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx) {
             fp = ld64(fp);
         }
         fprintf(stderr, "[rb] record build: player 1's, called from %s\n", chain);
+        if (c->x[30] == MATCH_SETUP_CALLER) { void ra_set_up(void); ra_set_up(); }   /* (run-ahead: its first save's copy in the loading) */
         if (net_mode == 2) {
             net_armed = c->x[30] == MATCH_SETUP_CALLER;
             if (net_armed && fight_flag()) { net_leftover = 1; fprintf(stderr, "[rb] net mode: the controls screen's fight flag is still set: the fight starts once the game sets it anew\n"); }
@@ -2843,6 +2860,223 @@ __attribute__((noinline)) void rb_job_kick(Cpu *c, GuestFn *orig) {
         }
         fp_out = out;
     }
+}
+
+/* ---- Run-ahead (local play) ------------------------------------------------------------------
+ * SSBU_RUNAHEAD=<n> (0-3), or display.ini's runahead (the settings menu's Display page: off, 1, 2):
+ * in a fight, each frame shown runs n frames ahead of the game's own pipeline (runahead.h has the
+ * schedule): a real frame hidden, a save, n - 1 frames predicted on the controls held now, the frame
+ * shown, a load back to the save. 1 predicts nothing (the picture shown is the real logic frame's, one
+ * frame sooner); 2 shows one logic frame ahead. Only in fights (the fighter manager's ready-go flag, as
+ * ssbu-recomp's ra_fight_on), never with the net mode, the ring, the replay check, the save benchmark
+ * or the auto test (they own the savestates); every pad is read live then (no tape). The hidden frames
+ * run as a catch-up's (rb_fast: not shown, not paced; with rb_fast 1, so no presentation work is left
+ * out: the camera and the HUD go on in the real frames); the sound queued in the frames thrown away
+ * goes at the load (ipc_audio.c's splice, SSBU_RB_AUDIO_SPLICE). A load refused leaves the predicted
+ * frames as the real ones (counted); a save refused makes that frame a normal one.
+ * SSBU_RA_TRACE=<file> (tests, with or without run-ahead): per fight safe point, "R <logic frame> <fight
+ * hash> <player 1's status> <motion>" for a real state, "S <frame shown> <logic frame> <hash> <status>
+ * <motion>" for the state the next frame shown draws, and "P <frame shown> <logic frame> <buttons>"
+ * when player 1's buttons change (tools/runahead_trace.py reads them: the delay from a press to its
+ * picture, and the real frames against a run without run-ahead). Its fight hash costs some 5 ms.
+ * The "[rb] run-ahead" lines, every 10 s of frames shown, time each part; SSBU_RA_STATS=1 times the frames shown
+ * without run-ahead too. At normal speed a fight whose frames shown come more than 18.5 ms apart for 2 s goes on
+ * without run-ahead (SSBU_RA_KEEP=1: kept on). */
+static RaSched ra;
+static FILE *ra_tf;
+static long long ra_shown, ra_seg_host;   /* frames shown in fights; the frame shown the segment running now belongs to */
+static double ra_t_start, ra_t_save0, ra_t_save1, ra_t_load0;
+static double ra_ms[5], ra_ms_max[5]; static long long ra_ms_n;   /* real frame, save, the frames after, load; [4] the time between frames shown */
+static double ra_shown_t; static long long ra_gaps, ra_gaps_late;
+static int ra_slow;   /* (this fight: too slow with run-ahead, off) */
+static long long ra_ended_ahead;
+static u64 ra_last_buttons = ~0ull;
+
+static int ra_frames(void) {
+    static int env = -2;
+    if (env == -2) { const char *e = getenv("SSBU_RUNAHEAD"); env = e && *e ? atoi(e) : -1; }
+    int display_runahead(void);
+    int n = env >= 0 ? env : display_runahead();
+    return n < 0 ? 0 : n > 3 ? 3 : n;
+}
+int rb_ra_predicting(void) { return rb_on && ra_predicting(&ra); }
+
+static void ra_trace(Cpu *c, char kind, u32 key) {
+    if (!ra_tf) return;
+    static FFrame f;
+    static long long at = -1;
+    if (at != S.points) { fight_frame(c, &f); at = S.points; }   /* (R and S of one safe point: one hash) */
+    int i = 0;
+    while (i < (int)f.n && f.f[i].entry != 0) i++;
+    if (i == (int)f.n) i = 0;
+    int st = f.n ? f.f[i].st : -1;
+    u64 mot = f.n ? f.f[i].mot : 0;
+    if (kind == 'S') fprintf(ra_tf, "S %lld %u %016llx %d %llx\n", ra_shown, key, (unsigned long long)f.h, st, (unsigned long long)mot);
+    else fprintf(ra_tf, "R %u %016llx %d %llx\n", key, (unsigned long long)f.h, st, (unsigned long long)mot);
+}
+/* (rb_pad: player 1's reads, live; only the real frames' count) */
+void ra_pad_read(u32 id, u64 buttons) {
+    if (!ra_tf || id != 0 || ra_predicting(&ra) || buttons == ra_last_buttons) return;
+    ra_last_buttons = buttons;
+    fprintf(ra_tf, "P %lld %u %llx\n", ra_seg_host, ld32(LOGIC_FRAME), (unsigned long long)buttons);
+}
+
+static void ra_report(const char *why);
+/* the next segment hidden or shown */
+static void ra_next(Cpu *c, u32 key, int hide) {
+    InterlockedExchange(&rb_fast, hide ? 1 : 0);
+    ra_seg_host = ra_shown;
+    if (!hide) {
+        ra_trace(c, 'S', key); ra_shown++;
+        double t = now_ms();
+        if (ra_shown_t && (ra.phase != RA_IDLE || !ra.n)) { double g = t - ra_shown_t; ra_ms[4] += g; if (g > ra_ms_max[4]) ra_ms_max[4] = g; ra_gaps++; ra_gaps_late += g > 20; }
+        ra_shown_t = t;
+        /* (too slow for 60 frames a second: run-ahead off for the rest of this fight, rather than the game at half speed.
+         * At normal speed only; SSBU_RA_KEEP=1 keeps it on, to measure) */
+        static int keep = -1; static double win_t0; static long long win_n;
+        if (keep < 0) { const char *e = getenv("SSBU_RA_KEEP"); double display_speed(void); keep = (e && *e == '1') || display_speed() != 1; }
+        if (!keep && ra.phase != RA_IDLE && !ra_slow) {
+            if (!win_n++) win_t0 = t;
+            else if (win_n > 120) {
+                double mean = (t - win_t0) / (double)(win_n - 1);
+                if (mean > 18.5) {
+                    ra_slow = 1;
+                    fprintf(stderr, "[rb] run-ahead: a frame shown every %.1f ms over the last 2 s, too slow for 60 a second: off for the rest of this fight\n", mean);
+                }
+                win_n = 0;
+            }
+        }
+        if (ra_gaps && ra_gaps % 600 == 0) ra_report("10 s");
+    }
+}
+
+extern double rb_load_parts[6]; extern long long rb_load_count;   /* (hle_rb_state.c) */
+static void ra_report(const char *why) {
+    if (!ra_ms_n && !ra_gaps && !ra.paused && !ra.save_failed && !ra.load_refused) return;
+    double n = ra_ms_n ? (double)ra_ms_n : 1;
+    {   /* the save's and the load's parts since the last line */
+        static double sp[4], lp[6]; static long long sn, ln;
+        double ds = rb_save_count - sn ? (double)(rb_save_count - sn) : 1, dl = rb_load_count - ln ? (double)(rb_load_count - ln) : 1;
+        fprintf(stderr, "[rb] run-ahead: a save's parts: hold %.2f ms, GPU drain %.2f, memory %.2f, the rest %.2f; a load's: hold %.2f, check and stacks %.2f, "
+                "GPU drain %.2f, memory %.2f, host state %.2f, the rest %.2f (means)\n",
+                (rb_save_parts[0] - sp[0]) / ds, (rb_save_parts[1] - sp[1]) / ds, (rb_save_parts[2] - sp[2]) / ds,
+                (rb_save_parts[3] - sp[3] - (rb_save_parts[0] - sp[0]) - (rb_save_parts[1] - sp[1]) - (rb_save_parts[2] - sp[2])) / ds,
+                (rb_load_parts[0] - lp[0]) / dl, (rb_load_parts[1] - lp[1]) / dl, (rb_load_parts[2] - lp[2]) / dl, (rb_load_parts[3] - lp[3]) / dl,
+                (rb_load_parts[4] - lp[4]) / dl, (rb_load_parts[5] - lp[5] - (rb_load_parts[0] - lp[0]) - (rb_load_parts[1] - lp[1]) - (rb_load_parts[2] - lp[2])
+                                                   - (rb_load_parts[3] - lp[3]) - (rb_load_parts[4] - lp[4])) / dl);
+        memcpy(sp, rb_save_parts, sizeof sp); memcpy(lp, rb_load_parts, sizeof lp); sn = rb_save_count; ln = rb_load_count;
+    }
+    fprintf(stderr, "[rb] run-ahead %d (%s): %lld frames shown ahead; per frame: the real frame %.2f ms (max %.1f), save %.2f (max %.1f), "
+            "the frames after %.2f (max %.1f), load %.2f (max %.1f); a frame shown every %.2f ms (max %.1f, %lld over 20 ms); "
+            "%lld paused frames, %lld saves and %lld loads refused, %lld fights ended ahead\n",
+            ra.n, why, ra.cycles, ra_ms[0] / n, ra_ms_max[0], ra_ms[1] / n, ra_ms_max[1], ra_ms[2] / n, ra_ms_max[2], ra_ms[3] / n, ra_ms_max[3],
+            ra_gaps ? ra_ms[4] / (double)ra_gaps : 0, ra_ms_max[4], ra_gaps_late, ra.paused, ra.save_failed, ra.load_refused, ra_ended_ahead);
+    memset(ra_ms, 0, sizeof ra_ms); memset(ra_ms_max, 0, sizeof ra_ms_max); ra_ms_n = 0; ra_gaps = ra_gaps_late = 0;
+}
+static void ra_add(int k, double ms) { ra_ms[k] += ms; if (ms > ra_ms_max[k]) ra_ms_max[k] = ms; }
+
+static void ra_fight_over(void) {
+    if (ra.phase == RA_AHEAD) ra_ended_ahead++;   /* (the predicted frames stay: the fight is over) */
+    if (ra.phase != RA_IDLE) InterlockedExchange(&rb_fast, 0);
+    ra_stop(&ra);
+    ra_shown_t = 0; ra_slow = 0;
+    if (ra_engaged) ra_report("the fight is over");
+    ra_engaged = 0;
+    if (ra_tf) fflush(ra_tf);
+}
+
+/* (savestates, at a fight's safe point) 1: run-ahead (or its trace) has this safe point. */
+static int ra_blocked(void) { return net_mode || ring_from >= 0 || ver_at >= 0 || bench_from >= 0 || auto_at >= 0; }
+
+/* The fight's first save copied all of memory (2 GB, about a second) at GO!, as the net mode's did (its "GO! freeze",
+ * net_pre_fight): here too that copy is taken at the match set-up, in the loading screen, and kept current every
+ * RA_PRE_EVERY frames through the loading, the entrances and the countdown (each refresh waiting 4 ms at most for the
+ * threads, else left out), every state let go after; the save at GO! then copies a few frames' changes. */
+#define RA_PRE_EVERY 4
+static int ra_pre;
+static long long ra_pre_frames, ra_pre_ok, ra_pre_skipped;
+void ra_set_up(void) {
+    if (net_mode < 0 || ra_blocked() || !ra_frames()) return;
+    ra_pre = 1; ra_pre_frames = 0;
+}
+extern double rb_park_quick_ms;   /* (hle_rb_state.c) */
+int ra_pre_point(Cpu *c, u64 frame) {
+    if (!ra_pre) return 0;
+    if (ra_pre_frames > 1800) { ra_pre = 0; return 0; }   /* (a set-up left without a fight, or a long loading: 30 s, then no more) */
+    void rb_ring_drop(void);
+    if (ra_pre_frames++ % RA_PRE_EVERY) return 1;
+    double t0 = now_ms();
+    if (ra_pre_frames > 1) rb_park_quick_ms = 4;
+    rb_quiet(1);
+    rb_save_tag = 0xFFFFFFFFu;
+    int saved = rb_save(c, frame);
+    rb_park_quick_ms = 0;
+    if (saved == 1) { rb_ring_drop(); ra_pre_ok++; } else ra_pre_skipped++;
+    if (ra_pre_frames == 1)
+        fprintf(stderr, "[rb] run-ahead, before the fight: the whole copy at the set-up %s in %.0f ms\n", saved == 1 ? "taken" : "NOT taken (the threads didn't stop)", now_ms() - t0);
+    return 1;
+}
+
+int runahead_point(Cpu *c, u64 frame) {
+    static int blocked = -1;
+    if (ra_pre) {
+        fprintf(stderr, "[rb] run-ahead, before the fight: the copy refreshed %lld times in %lld frames, %lld left out (threads busy)\n", ra_pre_ok, ra_pre_frames, ra_pre_skipped);
+        ra_pre = 0; ra_pre_ok = ra_pre_skipped = 0;
+    }
+    if (blocked < 0) {
+        blocked = ra_blocked();
+        const char *t = getenv("SSBU_RA_TRACE");
+        if (t && *t && !blocked) { ra_tf = fopen(t, "w"); if (!ra_tf) fprintf(stderr, "[rb] SSBU_RA_TRACE: cannot write %s\n", t); }
+        if (ra_frames() || ra_tf)
+            fprintf(stderr, "[rb] run-ahead: %d frame(s)%s%s\n", ra_frames(), blocked ? ": OFF, another test mode has the savestates" : "",
+                    ra_tf ? "; the trace (SSBU_RA_TRACE) on" : "");
+    }
+    if (blocked) return 0;
+    ra.n = ra_slow ? 0 : ra_frames();
+    static int stats = -1;   /* (SSBU_RA_STATS=1: the frames shown timed without run-ahead too, to compare) */
+    if (stats < 0) { const char *e = getenv("SSBU_RA_STATS"); stats = e && *e == '1'; }
+    if (!ra.n && ra.phase == RA_IDLE && !ra_tf && !stats) {
+        if (ra_engaged) { ra_report("off"); ra_engaged = 0; }
+        return 0;
+    }
+    if (!ra_engaged) {
+        ra_engaged = 1;
+        static int quiet;
+        if (!quiet++) rb_quiet(1);   /* (a save and a load a frame: their lines only when slow) */
+    }
+    u32 key = ld32(LOGIC_FRAME);
+    int hide = 0, act = ra_point(&ra, key, &hide);
+    if (act == RA_SAVE) {
+        ra_trace(c, 'R', key);
+        ra_t_save0 = now_ms();
+        rb_save_tag = key;
+        int r = rb_save(c, frame);
+        if (r == 2) {   /* a load came back here: the real game, at the logic frame after R's */
+            double t = now_ms();
+            ra_add(3, t - ra_t_load0);
+            ra_ms_n++;
+            ra_loaded(&ra, ld32(LOGIC_FRAME), &hide);
+            ra_t_start = t;
+            ra_next(c, ld32(LOGIC_FRAME), hide);
+            return 1;
+        }
+        if (r == 1) { ra_t_save1 = now_ms(); ra_add(0, ra_t_save0 - ra_t_start); ra_add(1, ra_t_save1 - ra_t_save0); }
+        ra_saved(&ra, r == 1, &hide);
+        if (r != 1 && (ra.save_failed <= 5 || ra.save_failed % 600 == 0))
+            fprintf(stderr, "[rb] run-ahead: save refused at logic frame %u (%lld so far): a normal frame\n", key, ra.save_failed);
+    } else if (act == RA_LOAD) {
+        ra_t_load0 = now_ms();
+        ra_add(2, ra_t_load0 - ra_t_save1);
+        rb_load(c, frame);   /* (returns only if refused) */
+        ra_refused(&ra, &hide);
+        if (ra.load_refused <= 5 || ra.load_refused % 600 == 0)
+            fprintf(stderr, "[rb] run-ahead: load refused at logic frame %u (%lld so far): the predicted frames stay\n", key, ra.load_refused);
+    } else if (ra.phase != RA_AHEAD) {
+        ra_trace(c, 'R', key);   /* (a normal frame's state, or R's start: real) */
+        if (ra.phase == RA_REAL) ra_t_start = now_ms();
+    }
+    ra_next(c, key, hide);
+    return 1;
 }
 
 #endif   /* _WIN32 */

@@ -95,10 +95,18 @@ static long long seq_polls;
 static void seq_log(const char *line, void *unused) { (void)unused; fprintf(stderr, "[seq] poll %lld: %s\n", seq_polls, line); }
 
 /* One poll of player 1: the sequence moves on, and gives this poll's keys. */
+int rb_ra_predicting(void);   /* (hle_rb_core.c: run-ahead's predicted frames) */
 static void seq_player_poll(u64 *buttons, i32 *lx, i32 *ly) {
     static SRWLOCK lock = SRWLOCK_INIT;
     static int ended;
     AcquireSRWLockExclusive(&lock);
+    if (rb_ra_predicting()) {   /* (a predicted frame of run-ahead: the controls held now, the sequence not moved on) */
+        *buttons |= seq.buttons;
+        if (seq.lx) *lx = seq.lx;
+        if (seq.ly) *ly = seq.ly;
+        ReleaseSRWLockExclusive(&lock);
+        return;
+    }
     seq_polls++;
     long draws = seq_draws;
     seq_poll(&seq, seq_steps, draws, seq_seen, seq_log, NULL);
