@@ -1430,6 +1430,8 @@ namespace OpenSmash.Launcher
             else if (id == "close") Close();
             else if (id == "act:browse") GoView("mods_browser");
             else if (id == "act:setup") GoView("setup_modding");
+            else if (id == "act:check") _ = CheckMods();
+            else if (id == "act:share") ShareModList();
             else if (id == "act:build") _ = BuildPlugins();
             else if (id == "act:open" && Directory.Exists(_modsDir))
                 Process.Start("explorer.exe", $"\"{_modsDir}\"");
@@ -2155,6 +2157,136 @@ namespace OpenSmash.Launcher
                     _ = PushInstalledState();
                     Invalidate();
                     if (why.Length > 0) MessageBox.Show($"Could not remove: {why}", "OpenSmash");
+                });
+            });
+        }
+
+        // Conflicts, updates and shared lists (tools/os_mods.py; TRLLZR's mod manager ideas, NOTICE.md).
+        static JsonElement? OsModsResult(string output)
+        {
+            string line = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .LastOrDefault(l => l.StartsWith("RESULT ")) ?? "";
+            if (line.Length == 0) return null;
+            try { using var doc = JsonDocument.Parse(line.Substring("RESULT ".Length)); return doc.RootElement.Clone(); }
+            catch { return null; }
+        }
+
+        async Task CheckMods()
+        {
+            if (_modsBusy) return;
+            _modsBusy = true;
+            SetLoad("CHECKING MODS", -1);
+            Invalidate();
+            string conflictsOut = "", updatesOut = "", why = "";
+            await Task.Run(() =>
+            {
+                try
+                {
+                    RunPython(new[] { Path.Combine(_repo, "tools", "os_mods.py"), "conflicts" }, out conflictsOut);
+                    RunPython(new[] { Path.Combine(_repo, "tools", "os_mods.py"), "updates" }, out updatesOut);
+                }
+                catch (Exception ex) { why = ex.Message; }
+            });
+            _modsBusy = false;
+            ClearLoad();
+            Invalidate();
+            if (why.Length > 0) { MessageBox.Show($"Could not check the mods: {why}", "OpenSmash"); return; }
+            var text = new System.Text.StringBuilder();
+            var c = OsModsResult(conflictsOut);
+            if (c is JsonElement cr && cr.TryGetProperty("conflicts", out var list) && list.ValueKind == JsonValueKind.Array)
+            {
+                int nc = list.GetArrayLength();
+                text.AppendLine(nc == 0 ? "No file is changed by two turned-on mods."
+                                        : $"{nc} file(s) changed by more than one turned-on mod (the game reads the last one's):");
+                int shown = 0;
+                foreach (var x in list.EnumerateArray())
+                {
+                    if (shown++ == 12) { text.AppendLine($"  ... and {nc - 12} more"); break; }
+                    var ms = x.GetProperty("mods").EnumerateArray().Select(m => m.GetString()).ToArray();
+                    text.AppendLine($"  {GetString(x, "path")}: {string.Join(", ", ms)} -> {GetString(x, "wins")}");
+                }
+            }
+            else text.AppendLine("Conflicts: could not be read.");
+            text.AppendLine();
+            var u = OsModsResult(updatesOut);
+            var updates = new List<(string gb, string file, string title)>();
+            if (u is JsonElement ur && ur.TryGetProperty("updates", out var ul) && ul.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var x in ul.EnumerateArray())
+                    updates.Add((GetString(x, "gamebanana"), GetString(x, "file_id"), GetString(x, "title")));
+                text.AppendLine(updates.Count == 0 ? "Every GameBanana mod is up to date." : $"{updates.Count} mod(s) with a newer file on GameBanana:");
+                foreach (var x in updates) text.AppendLine($"  {x.title}");
+            }
+            else text.AppendLine("Updates: GameBanana could not be reached.");
+            if (updates.Count == 0) { MessageBox.Show(text.ToString(), "OpenSmash - mods"); return; }
+            text.AppendLine();
+            text.Append("Install the newer files now?");
+            if (MessageBox.Show(text.ToString(), "OpenSmash - mods", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
+            _modsBusy = true;
+            Invalidate();
+            string failed = "";
+            foreach (var x in updates)
+            {
+                SetLoad("UPDATING " + x.title.ToUpperInvariant(), -1);
+                try { await Task.Run(() => OsMods(new[] { "install", x.gb, x.file })); }
+                catch (Exception ex) { failed += $"\n{x.title}: {ex.Message}"; }
+            }
+            _modsBusy = false;
+            ClearLoad();
+            UpdateMods();
+            _ = PushInstalledState();
+            Invalidate();
+            MessageBox.Show(failed.Length == 0 ? "Updated." : "Some could not be updated:" + failed, "OpenSmash - mods");
+        }
+
+        void ShareModList()
+        {
+            if (_modsBusy) return;
+            var pick = MessageBox.Show("Yes: save your mods as a list file to share.\nNo: install the mods of a list file a friend sent you.",
+                "OpenSmash - mod list", MessageBoxButtons.YesNoCancel);
+            if (pick == DialogResult.Cancel) return;
+            string path;
+            if (pick == DialogResult.Yes)
+            {
+                using var d = new SaveFileDialog { Filter = "Mod list (*.json)|*.json", FileName = "opensmash-mods.json" };
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                path = d.FileName;
+            }
+            else
+            {
+                using var d = new OpenFileDialog { Filter = "Mod list (*.json)|*.json|All files|*.*" };
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                path = d.FileName;
+            }
+            bool export = pick == DialogResult.Yes;
+            _modsBusy = true;
+            SetLoad(export ? "SAVING THE LIST" : "INSTALLING THE LIST", -1);
+            Invalidate();
+            _ = Task.Run(() =>
+            {
+                string why = "", output = "";
+                try
+                {
+                    RunPython(new[] { Path.Combine(_repo, "tools", "os_mods.py"), export ? "export-list" : "import-list", path }, out output);
+                }
+                catch (Exception ex) { why = ex.Message; }
+                BeginInvoke(() =>
+                {
+                    _modsBusy = false;
+                    ClearLoad();
+                    UpdateMods();
+                    _ = PushInstalledState();
+                    Invalidate();
+                    var r = OsModsResult(output);
+                    if (why.Length == 0 && r is JsonElement e && e.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.False)
+                        why = GetString(e, "error");
+                    if (why.Length > 0) { MessageBox.Show($"Could not {(export ? "save" : "install")} the list: {why}", "OpenSmash"); return; }
+                    if (export) { MessageBox.Show($"Saved: {path}", "OpenSmash - mod list"); return; }
+                    int Count(string key) => r is JsonElement j && j.TryGetProperty(key, out var a) && a.ValueKind == JsonValueKind.Array ? a.GetArrayLength() : 0;
+                    string missing = r is JsonElement j2 && j2.TryGetProperty("missing", out var m) && m.ValueKind == JsonValueKind.Array
+                        ? string.Join(", ", m.EnumerateArray().Select(x => x.GetString())) : "";
+                    MessageBox.Show($"{Count("installed")} installed, {Count("already")} already here" +
+                                    (missing.Length > 0 ? $", not on GameBanana (ask your friend for them): {missing}" : "."), "OpenSmash - mod list");
                 });
             });
         }

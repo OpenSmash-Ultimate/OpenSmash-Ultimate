@@ -11,6 +11,11 @@
     os_mods.py fetch [--again]
     os_mods.py refresh                 a replaced plugin.nro: rebuild its DLL, leave the game
     os_mods.py build
+    os_mods.py conflicts               files more than one turned-on mod changes (RESULT: conflicts)
+    os_mods.py updates                 installed GameBanana mods with a newer file (RESULT: updates)
+    os_mods.py export-list <file>      the installed mods, to share (mods.py export-list)
+    os_mods.py import-list <file>      install a shared list's mods from GameBanana (RESULT: installed,
+                                       already, missing)
 
 status prints one JSON object. The others print "LOG ..." lines and a final "RESULT" line.
 
@@ -373,6 +378,28 @@ def main(argv):
             if code:
                 raise mods.Error("the plugin build stopped")
             return result(True)
+        if cmd == "conflicts":   # (TRLLZR's mod manager ideas, NOTICE.md; mods.py does the work)
+            found = mods.conflicts(tree)
+            log(f"{len(found)} file(s) changed by more than one turned-on mod")
+            return result(True, conflicts=found)
+        if cmd == "updates":
+            found = mods.updates(tree)
+            state = tree.load()
+            for u in found:   # (the page to install the newer file from: install <gamebanana> <file_id>)
+                u["gamebanana"] = str(state["mods"].get(u["name"], {}).get("gamebanana", ""))
+            log(f"{len(found)} mod(s) with a newer file on GameBanana")
+            return result(True, updates=found)
+        if cmd in ("export-list", "import-list"):
+            if len(argv) < 3:
+                raise mods.Error("name the list file")
+            if cmd == "export-list":
+                written = mods.export_list(tree, argv[2])
+                log(f"{len(written)} mods written to {argv[2]}")
+                return result(True, count=len(written))
+            got = mods.import_list(tree, argv[2], log)
+            normalize_picks(tree)
+            mods.apply(tree, log)
+            return result(True, **got)
         raise mods.Error(f"unknown command {cmd}")
     except mods.Error as e:
         if cmd == "status":
