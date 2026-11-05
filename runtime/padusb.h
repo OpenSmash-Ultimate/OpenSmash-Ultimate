@@ -32,3 +32,15 @@ typedef struct PadUsbState {
 const char *padusb_start(void);
 void padusb_poll(PadUsbState out[PADUSB_PORTS]);   /* every port, as last read */
 void padusb_rumble(int port, int on);
+
+/* The settings menu's stick page: a port's four stick axes as the device last reported them (the
+ * adapter: 0-255; the Switch 2 controller: 0-4095), with the calibration in effect: the centre,
+ * and how far below / above it an axis already reads as fully pushed. */
+typedef struct PadUsbAxes {
+    int connected;
+    int raw[4];                /* lx, ly, rx, ry, as reported (ly, ry before their sign flip) */
+    int centre[4], lo[4], hi[4];
+} PadUsbAxes;
+int padusb_axes(int port, PadUsbAxes *out);   /* 0: nothing on the port */
+void padusb_recalibrate(int port);            /* the centres are taken again (sticks at rest), the reach relearned */
+int padusb_rate(int port);                    /* input reports a second, measured over the last second (0: unknown) */

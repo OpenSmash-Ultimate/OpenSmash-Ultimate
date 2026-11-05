@@ -30,6 +30,9 @@
 const char *padusb_start(void) { return NULL; }
 void padusb_poll(PadUsbState out[PADUSB_PORTS]) { memset(out, 0, sizeof(PadUsbState) * PADUSB_PORTS); }
 void padusb_rumble(int port, int on) { (void)port; (void)on; }
+int padusb_axes(int port, PadUsbAxes *out) { (void)port; memset(out, 0, sizeof *out); return 0; }
+void padusb_recalibrate(int port) { (void)port; }
+int padusb_rate(int port) { (void)port; return 0; }
 #elif defined _WIN32
 #include <setupapi.h>
 
@@ -165,14 +168,58 @@ static SRWLOCK usb_lock = SRWLOCK_INIT;
 static PadUsbState usb_ports[PADUSB_PORTS];
 static int port_used[PADUSB_PORTS];        /* (by a device; under the lock) */
 static int rumble_want[PADUSB_PORTS];
+static PadUsbAxes port_axes[PADUSB_PORTS];   /* (under the lock: the settings menu's stick page) */
+static int port_rate[PADUSB_PORTS];          /* (under the lock) reports a second, over the last second */
+static volatile LONG recal_want[PADUSB_PORTS];
 
-typedef struct Axis { int seen; int centre, reach; } Axis;   /* a stick's axis as it has moved */
+/* A stick axis, calibrating itself. The centre is the mean of the first CENTRE_N reports with the
+ * stick at rest: one moving as the controller is plugged in keeps the default centre instead (and
+ * one resting far off it: worn sticks drift a few counts, not tens). Each direction's reach starts
+ * at `reach0` and grows only after GROW_N reports in a row past it, and never past reach0 * 5/4:
+ * a corrupt report (clones send them) must not shrink the stick's travel for the whole session,
+ * nor one direction's reach squeeze the other's. padusb_recalibrate starts this over. */
+enum { CENTRE_N = 32, GROW_N = 4 };
+typedef struct Axis {
+    int centre, lo, hi;          /* the calibration in effect */
+    int taking, n, sum, cmin, cmax;   /* the centre being taken: the reports so far and their spread */
+    int over_lo, over_hi;        /* reports in a row past lo / hi */
+} Axis;
 
-static i32 stick_value(Axis *a, int v, int centre, int reach) {
-    if (!a->seen) { a->seen = 1; a->centre = centre; a->reach = reach; }
-    int dv = v - a->centre, mag = dv < 0 ? -dv : dv;
-    if (mag > a->reach) a->reach = mag;   /* a stick that reaches further than thought */
-    long r = (long)dv * 32767 / a->reach;
+static void axis_begin(Axis *a, int centre, int reach0) {
+    memset(a, 0, sizeof *a);
+    a->centre = centre;
+    a->lo = a->hi = reach0;
+    a->taking = 1;
+}
+
+static i32 stick_value(Axis *a, int v, int centre, int reach0) {
+    if (!a->hi) axis_begin(a, centre, reach0);   /* (a zeroed axis: first use) */
+    if (a->taking) {
+        int done = 0;
+        if (!a->n) { a->sum = v; a->cmin = a->cmax = v; a->n = 1; }
+        else if (v < a->cmin - reach0 / 8 || v > a->cmax + reach0 / 8) done = 1;   /* moving: the default stays */
+        else {
+            a->sum += v; a->n++;
+            if (v < a->cmin) a->cmin = v;
+            if (v > a->cmax) a->cmax = v;
+            if (a->n >= CENTRE_N) done = 2;   /* rested all along: its mean is the centre */
+        }
+        if (done) {
+            a->taking = 0;
+            if (done == 2) {
+                int off = a->sum / a->n - centre;
+                if (off >= -reach0 / 4 && off <= reach0 / 4) a->centre = a->sum / a->n;
+            }
+        }
+    }
+    int dv = v - a->centre;
+    if (dv > a->hi) { if (++a->over_hi >= GROW_N) a->hi = dv > reach0 * 5 / 4 ? reach0 * 5 / 4 : dv; }
+    else a->over_hi = 0;
+    if (-dv > a->lo) { if (++a->over_lo >= GROW_N) a->lo = -dv > reach0 * 5 / 4 ? reach0 * 5 / 4 : -dv; }
+    else a->over_lo = 0;
+    int snap = reach0 / 26;   /* (rounding the mean leaves a count or two at rest) */
+    if (dv >= -snap && dv <= snap) return 0;
+    long r = (long)dv * 32767 / (dv >= 0 ? a->hi : a->lo);
     return (i32)(r > 32767 ? 32767 : r < -32767 ? -32767 : r);
 }
 
@@ -186,8 +233,10 @@ typedef struct Device {
     USHORT in_len, out_len;      /* through HID: its reports' sizes (with their id) */
     int first;                   /* its ports: first .. first + 3 (the adapter) or first */
     volatile LONG done;          /* the reading thread has stopped */
+    int rate_count;              /* reports since rate_from (the thread's own) */
+    ULONGLONG rate_from;
     Axis axes[4][6];
-    int trigger_rest[4][2], trigger_top[4][2];
+    int trigger_rest[4][2], trigger_top[4][2], trigger_over[4][2];   /* (over: reports in a row past the top) */
     struct { int neutral[2], min[2], max[2]; } calib[2];   /* (Switch 2) the sticks, from its memory */
     int trigger_zero[2];
     int started;                 /* (Switch 2) interface 1 took the start-up commands */
@@ -225,12 +274,14 @@ static void adapter_report(Device *d, const UCHAR *p, int n) {
         PadUsbState *o = &usb_ports[d->first + i];
         int was = o->connected;
         o->connected = (s[0] & 0x30) != 0;   /* 0x10 a cable, 0x20 a WaveBird */
-        if (!o->connected) continue;
-        if (!was) {   /* a controller plugged in: its sticks' centres and triggers' rests as they are now */
-            memset(d->axes[i], 0, sizeof d->axes[i]);
+        if (!o->connected) { port_axes[d->first + i].connected = 0; continue; }
+        if (!was || InterlockedExchange(&recal_want[d->first + i], 0)) {
+            /* plugged in (or Recalibrate sticks, from the menu): the centres and rests as they are now */
+            for (int k = 0; k < 4; k++) axis_begin(&d->axes[i][k], 128, 80);
             for (int t = 0; t < 2; t++) {
                 d->trigger_rest[i][t] = s[7 + t] < 70 ? s[7 + t] : 30;
                 d->trigger_top[i][t] = d->trigger_rest[i][t] + 140;
+                d->trigger_over[i][t] = 0;
             }
         }
         static const struct { int off; UCHAR bit; u32 pu; } BUTTONS[] = {
@@ -240,14 +291,22 @@ static void adapter_report(Device *d, const UCHAR *p, int n) {
         o->buttons = 0;
         for (int b = 0; b < (int)(sizeof BUTTONS / sizeof *BUTTONS); b++)
             if (s[BUTTONS[b].off] & BUTTONS[b].bit) o->buttons |= BUTTONS[b].pu;
-        int centre = 128;
-        o->lx = stick_value(&d->axes[i][0], s[3], s[3] > 80 && s[3] < 176 ? s[3] : centre, 80);
-        o->ly = -stick_value(&d->axes[i][1], s[4], s[4] > 80 && s[4] < 176 ? s[4] : centre, 80);
-        o->rx = stick_value(&d->axes[i][2], s[5], s[5] > 80 && s[5] < 176 ? s[5] : centre, 80);
-        o->ry = -stick_value(&d->axes[i][3], s[6], s[6] > 80 && s[6] < 176 ? s[6] : centre, 80);
+        o->lx = stick_value(&d->axes[i][0], s[3], 128, 80);
+        o->ly = -stick_value(&d->axes[i][1], s[4], 128, 80);
+        o->rx = stick_value(&d->axes[i][2], s[5], 128, 80);
+        o->ry = -stick_value(&d->axes[i][3], s[6], 128, 80);
+        PadUsbAxes *pa = &port_axes[d->first + i];
+        pa->connected = 1;
+        for (int k = 0; k < 4; k++) {
+            pa->raw[k] = s[3 + k];
+            pa->centre[k] = d->axes[i][k].centre;
+            pa->lo[k] = d->axes[i][k].lo;
+            pa->hi[k] = d->axes[i][k].hi;
+        }
         for (int t = 0; t < 2; t++) {
             int v = s[7 + t], rest = d->trigger_rest[i][t];
-            if (v > d->trigger_top[i][t]) d->trigger_top[i][t] = v;
+            if (v > d->trigger_top[i][t] && ++d->trigger_over[i][t] >= GROW_N) d->trigger_top[i][t] = v;
+            else if (v <= d->trigger_top[i][t]) d->trigger_over[i][t] = 0;
             int val = v <= rest ? 0 : (v - rest) * 32767 / (d->trigger_top[i][t] - rest);
             *(t ? &o->rt : &o->lt) = val > 32767 ? 32767 : val;
         }
@@ -346,15 +405,28 @@ static void switch2_report(Device *d, const UCHAR *p, int n) {
         {7, 0x01, PU_DOWN}, {7, 0x02, PU_UP}, {7, 0x04, PU_RIGHT}, {7, 0x08, PU_LEFT}, {7, 0x40, PU_L}, {7, 0x80, PU_ZL},
     };
     AcquireSRWLockExclusive(&usb_lock);
+    if (InterlockedExchange(&recal_want[d->first], 0))   /* (Recalibrate sticks: the fallback axes start over) */
+        for (int k = 0; k < 4; k++) axis_begin(&d->axes[0][k], 2048, 1400);
     PadUsbState *o = &usb_ports[d->first];
     o->connected = 1;
     o->buttons = 0;
     for (int b = 0; b < (int)(sizeof BUTTONS / sizeof *BUTTONS); b++)
         if (p[BUTTONS[b].off] & BUTTONS[b].bit) o->buttons |= BUTTONS[b].pu;
-    o->lx = switch2_axis(d, 0, 0, p[11] | (p[12] & 0x0F) << 8);
-    o->ly = -switch2_axis(d, 0, 1, p[12] >> 4 | p[13] << 4);
-    o->rx = switch2_axis(d, 1, 0, p[14] | (p[15] & 0x0F) << 8);
-    o->ry = -switch2_axis(d, 1, 1, p[15] >> 4 | p[16] << 4);
+    int raw[4] = {p[11] | (p[12] & 0x0F) << 8, p[12] >> 4 | p[13] << 4, p[14] | (p[15] & 0x0F) << 8, p[15] >> 4 | p[16] << 4};
+    o->lx = switch2_axis(d, 0, 0, raw[0]);
+    o->ly = -switch2_axis(d, 0, 1, raw[1]);
+    o->rx = switch2_axis(d, 1, 0, raw[2]);
+    o->ry = -switch2_axis(d, 1, 1, raw[3]);
+    PadUsbAxes *pa = &port_axes[d->first];
+    pa->connected = 1;
+    for (int k = 0; k < 4; k++) {   /* the calibration in effect: its memory's, or the axis's own */
+        const Axis *a = &d->axes[0][k];
+        int st = k >> 1, ax = k & 1, nn = d->calib[st].neutral[ax], mn = d->calib[st].min[ax], mx = d->calib[st].max[ax];
+        pa->raw[k] = raw[k];
+        pa->centre[k] = nn && mn && mx ? nn : a->centre;
+        pa->lo[k] = nn && mn && mx ? mn : a->lo;
+        pa->hi[k] = nn && mn && mx ? mx : a->hi;
+    }
     for (int t = 0; t < 2; t++) {
         int zero = d->trigger_zero[t], v = p[61 + t];
         int val = v <= zero || zero >= 232 ? 0 : (v - zero) * 32767 / (232 - zero);
@@ -369,7 +441,9 @@ static void release_ports(Device *d) {
     AcquireSRWLockExclusive(&usb_lock);
     for (int i = 0; i < count; i++) {
         memset(&usb_ports[d->first + i], 0, sizeof usb_ports[0]);
+        memset(&port_axes[d->first + i], 0, sizeof port_axes[0]);
         port_used[d->first + i] = 0;
+        port_rate[d->first + i] = 0;
         rumble_want[d->first + i] = 0;
     }
     ReleaseSRWLockExclusive(&usb_lock);
@@ -447,6 +521,18 @@ static DWORD WINAPI device_thread(LPVOID param) {
                         d->kind == KIND_ADAPTER ? "GameCube adapter" : "Switch 2 GameCube controller", n, p[0]);
             if (d->kind == KIND_ADAPTER) adapter_report(d, p, n);
             else if (d->started || p[0] == 0x05) switch2_report(d, p, n);   /* (else: not in the format it knows) */
+            ULONGLONG now = GetTickCount64();
+            if (!d->rate_from) d->rate_from = now;
+            d->rate_count++;
+            if (now - d->rate_from >= 1000) {   /* the stick page's "Adapter speed" */
+                int hz = (int)((u64)d->rate_count * 1000 / (now - d->rate_from));
+                int count = d->kind == KIND_ADAPTER ? 4 : 1;
+                AcquireSRWLockExclusive(&usb_lock);
+                for (int i = 0; i < count; i++) port_rate[d->first + i] = hz;
+                ReleaseSRWLockExclusive(&usb_lock);
+                d->rate_count = 0;
+                d->rate_from = now;
+            }
         }
         send_rumble(d, sent, &sent_at, &seq);
     }
@@ -634,5 +720,27 @@ void padusb_rumble(int port, int on) {
     AcquireSRWLockExclusive(&usb_lock);
     rumble_want[port] = on;
     ReleaseSRWLockExclusive(&usb_lock);
+}
+
+int padusb_axes(int port, PadUsbAxes *out) {
+    if (port < 0 || port >= PADUSB_PORTS) return 0;
+    AcquireSRWLockShared(&usb_lock);
+    *out = port_axes[port];
+    int on = out->connected;
+    ReleaseSRWLockShared(&usb_lock);
+    return on;
+}
+
+void padusb_recalibrate(int port) {
+    if (port < 0 || port >= PADUSB_PORTS) return;
+    InterlockedExchange(&recal_want[port], 1);
+}
+
+int padusb_rate(int port) {
+    if (port < 0 || port >= PADUSB_PORTS) return 0;
+    AcquireSRWLockShared(&usb_lock);
+    int hz = port_rate[port];
+    ReleaseSRWLockShared(&usb_lock);
+    return hz;
 }
 #endif
