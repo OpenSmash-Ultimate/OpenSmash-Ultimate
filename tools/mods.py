@@ -2135,12 +2135,27 @@ def characters_mod(tree, log):
         log("the new characters' select-screen files include these mods' own copies: " + ", ".join(hidden))
 
 
+def motion_list_text_unreadable(path):
+    """Whether ARCropolis' motion_list reader turns down this motion_list.yml: an older format, whose
+    motions' flags lack unk_800, unk_1000 and unk_2000 (Knuckles': "list.wait.flags: missing field
+    `unk_800`"). One in the current format is the mod's own motion list, often newer than the .bin
+    beside it (Electivire's and Zeraora's name their moves' scripts only there)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return False
+    flags = len(re.findall(r"^\s*flags:\s*$", text, re.M))
+    return any(len(re.findall(rf"^\s*{k}:", text, re.M)) < flags for k in ("unk_800", "unk_1000", "unk_2000"))
+
+
 def hide_shadowed_sources(tree, on, log):
     """A mod that ships a file both whole and as ARCropolis' text source next to it - Knuckles'
     fighter/sonic/motion/body/c120/motion_list.bin and motion_list.yml - has ARCropolis build the
     file from the text, and a .yml of an older format than this ARCropolis reads (missing a field)
-    then left the file unloaded and the match crashed. The whole file is what the mod's author
-    tested: its .yml is added to dump/skyline/hidden.txt (runtime/hle_fs.c hides it from ARCropolis)."""
+    then left the file unloaded and the match crashed. For such a .yml the whole file is what the
+    mod's author tested: it is added to dump/skyline/hidden.txt (runtime/hle_fs.c hides it from
+    ARCropolis). A .yml ARCropolis reads stays, as on the console: it is the motion list the mod uses."""
     hidden_path = os.path.join(tree.root, "dump", "skyline", "hidden.txt")
     shadowed = []
     for name in on:
@@ -2149,7 +2164,8 @@ def hide_shadowed_sources(tree, on, log):
                 lower = {f.lower() for f in files}
                 for f in files:
                     stem, ext = os.path.splitext(f)
-                    if ext.lower() == ".yml" and (stem + ".bin").lower() in lower:
+                    if (f.lower() == "motion_list.yml" and (stem + ".bin").lower() in lower
+                            and motion_list_text_unreadable(os.path.join(dp, f))):
                         shadowed.append(os.path.relpath(os.path.join(dp, f), tree.mods).replace(os.sep, "/"))
     if not shadowed:
         return
