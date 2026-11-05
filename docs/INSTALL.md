@@ -15,7 +15,7 @@ This is the short path from nothing to playing, on Windows 10 or 11. The game is
 
 ## Install
 
-1. Download **[OpenSmash Setup.exe](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/latest/download/OpenSmash-Setup.exe)** from the [latest release](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) (GitHub names the file `OpenSmash-Setup.exe`; `OpenSmash-Setup.exe.sha256` beside it is its checksum) and run it. That one file is all you need: it does the rest.
+1. Download **[OpenSmash Setup.exe](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/download/v0.3.0-alpha.3/OpenSmash-Setup.exe)** from the [latest release](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) (GitHub names the file `OpenSmash-Setup.exe`; `OpenSmash-Setup.exe.sha256` beside it is its checksum) and run it. That one file is all you need: it does the rest.
 
    Windows may warn that the publisher cannot be verified: choose **Run** (or **More info**, then **Run anyway**).
 2. The setup asks where OpenSmash goes. The default is an `OpenSmash` folder next to the setup file (or the setup's own folder, when the file is alone in a folder of its own); **Browse** picks another. Choose a drive with about 60 GB free, not the Desktop or Documents (cloud sync and long paths cause trouble). A folder that already has other files in it is never filled without asking: the setup offers a new folder inside it instead. **Download and set up** then:
