@@ -36,8 +36,10 @@ LOBBY_PAGE = 4   # (the Lobby page's number in the menu, less one)
 NO_ANSWER = 'no answer from the lobby (A: ask again)'
 
 
-def build(folder):
+def build(folder, yuzu=False):
     src = ['tools/dev/lobbymenutest.c', 'runtime/net_relay.c', 'runtime/hle_settings.c']
+    if yuzu:
+        src += ['runtime/net_yuzu.c', 'runtime/net_yuzu_wire.c']
     if os.name == 'nt':   # (as tests/test_net_client_v3.py builds netv3test.c)
         exe = os.path.join(folder, 'lobbymenutest.exe')
         cmd = [cc.CLANG, '/nologo', '/O1', *cc.LINK_FLAGS, *cc.CFLAGS, *src, '/Fe' + exe, '/Fo' + folder + os.sep, '/link', *cc.LINK_OPTIONS]
