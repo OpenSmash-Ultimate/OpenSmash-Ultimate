@@ -1348,6 +1348,10 @@ static void net_step(Cpu *c, u64 frame) {
         }
         rbn_reset(net_mode == 2 ? net_n : 2, net_mode == 2 ? net_local : 0, net_delay);
         rbn_sync_reset();
+        /* (the first frame's local pad is taken before this fight's first read: without this it was the last fight's last
+         * controls, a press nobody made - a lone up + B at the start sent Steve off the stage) */
+        net_live_pad = (RbnPad){0};
+        memset(net_last_pad, 0, sizeof net_last_pad);
         for (int p = 0; p < net_n; p++) {
             if (p == net_local || net_mode != 2) continue;
             if (!net_peer_check[p]) net_peer_check[p] = calloc(1u << 20, sizeof *net_peer_check[p]);
