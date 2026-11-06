@@ -1449,8 +1449,34 @@ namespace OpenSmash.Launcher
 
         void PickFolder(string which)
         {
-            using var dlg = new FolderBrowserDialog { Description = "Choose the folder", UseDescriptionForTitle = true };
             string cur = which switch { "keys" => _keysPath, "firmware" => _fwPath, _ => _gamePath };
+
+            // Game files and keys are usually picked by their actual file (the folder isn't
+            // obvious to a first-time user); firmware is inherently a folder of many .nca files.
+            if (which != "firmware")
+            {
+                string filter = which == "keys"
+                    ? "Keys|prod.keys;title.keys|All files|*.*"
+                    : "Switch game files|*.xci;*.xcz;*.nsp;*.nsz;*.nca|All files|*.*";
+                using var fd = new OpenFileDialog
+                {
+                    Title = "Choose the file, or Cancel to choose a folder instead",
+                    Filter = filter,
+                    CheckFileExists = true,
+                };
+                if (File.Exists(cur)) fd.InitialDirectory = Path.GetDirectoryName(cur);
+                else if (Directory.Exists(cur)) fd.InitialDirectory = cur;
+                if (fd.ShowDialog(this) == DialogResult.OK)
+                {
+                    string dir = Path.GetDirectoryName(fd.FileName) ?? "";
+                    if (which == "keys") _keysPath = dir; else _gamePath = dir;
+                    CheckLocal();
+                    _ = CheckGameAsync();
+                    return;
+                }
+            }
+
+            using var dlg = new FolderBrowserDialog { Description = "Choose the folder", UseDescriptionForTitle = true };
             if (Directory.Exists(cur)) dlg.SelectedPath = cur;
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
             if (which == "keys") _keysPath = dlg.SelectedPath;
