@@ -161,8 +161,29 @@ progress bar with the time left, runs at low priority, and keeps the PC awake me
 makes about 65,000 shaders: half an hour on a 16-thread desktop, and probably an hour or two on
 a Steam Deck. You can stop it with Ctrl+C and start it again later; what is done stays done. It
 needs the game built first, and the game files where they were. It prepares the first step, the
-shader programs themselves; DXVK and the graphics driver still make their own GPU code from them
-as each shader is first used, and keep it for next time.
+shader programs themselves.
+
+When the compile finishes, it also draws the cache once through DXVK
+(`build-linux/ssbu --warm-shaders dump/shadercache`), so DXVK makes each Vulkan pipeline and the
+graphics driver compiles its GPU code in advance, instead of during a match. The warm pass makes
+no window, runs below normal priority and uses up to `SSBU_WARM_THREADS` threads (1–6, by default
+half the processors). It writes `warm.log` in the shader cache and remembers what it drew in
+`warm.done`; a lock file keeps two passes apart. A warm pass that fails (no Vulkan GPU, say) does
+not fail Prepare Shaders: the compiled shaders are kept and the game makes the missing GPU code at
+first use as before. `--no-warm` skips it. After a Mesa/RADV, DXVK or other driver update, run
+`bash launchers/prepare-shaders.sh --rewarm` (or delete `warm.done`) to draw every shader again;
+`SSBU_SHADER_WARM_ALL=1` does the same for the next run. A different executable or DXVK library
+also makes the next run start afresh.
+
+Expect the first full pass to take a while and the caches to grow: the roughly 1,300 shaders the
+game has played already use about 0.5 GB of DXVK/Mesa cache, and a 65,000-shader cache can add many
+gigabytes, so check free disk space. The pass draws each program in one default state (a 1x1
+R8G8B8A8 target, no depth or blend), which covers DXVK's DXBC-to-SPIR-V translation and the
+driver's code for that state; a different pipeline state, or a program whose synthetic partner
+cannot be built, can still compile once at first use. On DXVK the renderer also waits up to 50 ms
+for a shader that is already in the cache, instead of skipping the first draw that needs it, so a
+new move's effect appears at once rather than a frame or two late; a shader that is not in the
+cache is still skipped rather than waiting for a full compile.
 
 The rest of this guide is about the package from Windows, apart from those sections.
 
@@ -327,10 +348,19 @@ log names each pad as it connects, with its type and GUID.
 
 **Shaders:** this folder carries the Windows build's compiled shaders that the game has used. Any
 other shader is compiled the first time it's needed, so a new effect can show a moment late once.
-The Windows build's start-up shader prewarm is off here: under DXVK it made a Vulkan pipeline for
-every cached shader at once and held up the first frame (`SSBU_SHADER_PREWARM=1` turns it on).
+The start-up shader prewarm is on: while the game starts, its compiler threads make the shader
+objects of the programs you have played before, so using one again takes no wait (it stops at a
+third of the PC's memory; `SSBU_SHADER_PREWARM=0` turns it off, `SSBU_SHADER_PREWARM_MB` sets its
+budget). A program never played yet still loads at first use, with a short wait.
+
+The same threads also decode a sRGB block-compressed texture's clear margin off the render
+thread (the stock icons' masks): the compressed texture draws until the decoded copy is ready, so
+a texture's first use can show its margin as a black square for a frame.
+`SSBU_ASYNC_DECODE=0` decodes on the render thread as before.
 The Windows build's ahead-of-time shaders (`launchers\Prepare Shaders.bat`) aren't in the package (about
-1.5 GB).
+1.5 GB). On Linux, `bash launchers/prepare-shaders.sh` makes them, then draws them once through
+DXVK so its pipelines and the driver's GPU code are made in advance
+([above](#shaders-and-first-time-stutter)).
 
 ## Other launchers
 

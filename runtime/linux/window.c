@@ -122,13 +122,29 @@ static void menu_key_of(const SDL_KeyboardEvent *k) {
 }
 
 /* ---- start-up and the event loop ---------------------------------------------------- */
-int rt_window_init(void) {
+static void video_hints(void) {
     setenv("DXVK_WSI_DRIVER", "SDL2", 0);   /* (DXVK's native build asks which window system) */
+    SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
+    SDL_SetHint(SDL_HINT_APP_NAME, "Super Smash Bros. Ultimate");
+}
+
+/* --warm-shaders (gpu_d3d11.c): DXVK's native build presents through SDL, so SDL's video system
+ * must be started before the first device, even though the warm pass makes no window (it draws
+ * into 1x1 targets of its own). 1: started. */
+int rt_video_init(void) {
+    video_hints();
+    if (SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
+        fprintf(stderr, "[warm] SDL could not start the video system: %s\n", SDL_GetError());
+        return 0;
+    }
+    return 1;
+}
+
+int rt_window_init(void) {
+    video_hints();
     SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");   /* positional, as hle_pad.c expects */
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");   /* (controllers.ini's background = ... decides) */
     SDL_SetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS, "0");              /* hle_pad.c's input thread updates the pads */
-    SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-    SDL_SetHint(SDL_HINT_APP_NAME, "Super Smash Bros. Ultimate");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS)) {
         fprintf(stderr, "[gfx] SDL could not start the video system: %s\n", SDL_GetError());
         return 0;
