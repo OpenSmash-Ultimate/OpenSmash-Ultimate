@@ -50,6 +50,11 @@ class RendererOption(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         return r.stdout.splitlines(), r.stderr.splitlines()
 
+    def test_menu_sees_windowed(self):
+        """Windowed shows as windowed, so the menu steps on from it; F11's full-screen mode stays."""
+        out, _ = self.run_test('shown', 'mode', '2', 'shown', 'mode', '0', 'shown', ini='window = borderless\n')
+        self.assertEqual(out, ['shown 1 1', 'shown 2 2', 'shown 0 2'])
+
     def test_names(self):
         out, _ = self.run_test('parse', 'vulkan', 'parse', 'Vulkan', 'parse', 'vk', 'parse', 'd3d11', 'parse', 'DXVK', 'parse', 'metal',
                                'parse', 'auto', 'parse', 'opengl', 'parse', '')

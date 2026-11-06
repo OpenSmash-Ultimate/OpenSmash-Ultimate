@@ -52,6 +52,7 @@ static const char *mode_name(int m) { return m == DISPLAY_WINDOWED ? "windowed" 
 static void set_mode(int m) {
     if (m == mode) return;
     mode = m;
+    display_note_mode(m);
     if (SDL_SetWindowFullscreen(window, m == DISPLAY_WINDOWED ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP))
         fprintf(stderr, "[display] cannot switch to %s: %s\n", mode_name(m), SDL_GetError());
     else fprintf(stderr, "[display] %s\n", mode_name(m));
@@ -177,6 +178,24 @@ void rt_window_loop(int every, void (*status)(void)) {
             case SDL_MOUSEMOTION:
                 mouse_moved_at = SDL_GetTicks64();
                 if (cursor_hidden) { SDL_ShowCursor(SDL_ENABLE); cursor_hidden = 0; }
+                {   int w, h;
+                    SDL_GetWindowSize(window, &w, &h);
+                    menu_mouse_move(e.motion.x, e.motion.y, w, h); }
+                break;
+            case SDL_MOUSEBUTTONDOWN:
+                if (menu_is_open() && (e.button.button == SDL_BUTTON_LEFT || e.button.button == SDL_BUTTON_RIGHT)) {
+                    int w, h;
+                    SDL_GetWindowSize(window, &w, &h);
+                    menu_mouse_move(e.button.x, e.button.y, w, h);
+                    menu_key(e.button.button == SDL_BUTTON_LEFT ? MENU_MOUSE_LEFT : MENU_MOUSE_RIGHT);
+                }
+                break;
+            case SDL_MOUSEWHEEL:
+                if (menu_is_open()) {
+                    int y = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e.wheel.y : e.wheel.y;
+                    for (; y > 0; y--) menu_key(MENU_WHEEL_UP);
+                    for (; y < 0; y++) menu_key(MENU_WHEEL_DOWN);
+                }
                 break;
             case SDL_TEXTINPUT:   /* (typed letters, for the settings menu) */
                 if (menu_is_open())

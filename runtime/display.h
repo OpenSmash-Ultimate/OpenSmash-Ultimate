@@ -21,6 +21,7 @@ int display_message(HWND h, UINT msg, WPARAM w, LPARAM l, LRESULT *result);
 /* Linux and macOS: linux/window.c or macos/window.m makes the window with SDL from display.ini's
  * settings and reports to it. */
 int display_window_mode(void);
+void display_note_mode(int mode);   /* the window's thread: its mode changed (F11 too), for the settings menu */
 void display_window_size(int *width, int *height);   /* (macOS: in points) */
 int display_hide_cursor(void);
 void display_note_size(unsigned w, unsigned h);   /* the window's inside changed (pixels) */
