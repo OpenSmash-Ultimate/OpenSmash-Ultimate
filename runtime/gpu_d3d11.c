@@ -2130,7 +2130,7 @@ typedef struct WarmRun {
     u32 n;
     u8 *done;   /* per file: drawn (or refused) by this run or an earlier one */
     IDXGIAdapter1 *adapter;
-    volatile LONG next, drawn, failed, slow, stop, devices, device_failures;
+    volatile LONG next, drawn, finished, failed, slow, stop, devices, device_failures;
 } WarmRun;
 
 /* One warm pass at a time: two would draw the same programs and fight over the caches. -2: busy,
@@ -2276,7 +2276,7 @@ static DWORD WINAPI warm_worker(void *arg) {
     LARGE_INTEGER freq;
     QueryPerformanceFrequency(&freq);
     if (w && warmer_init(w, d, c)) {
-        u32 pending = 0;   /* (drawn since the last wait) */
+        u32 pending = 0, drawn_pending = 0;   /* (done, and of those drawn, since the last wait) */
         for (LONG i; !r->stop && (i = InterlockedIncrement(&r->next) - 1) < (LONG)r->n;) {
             if (r->done[i]) continue;   /* (an earlier run drew it) */
             r->done[i] = 1;
@@ -2300,6 +2300,14 @@ static DWORD WINAPI warm_worker(void *arg) {
             if (!code || outputs == ~0u || FAILED(create_on(d, stage, code, size, &obj))) {
                 free(code);
                 InterlockedIncrement(&r->failed);
+                if (++pending >= WARM_BATCH) {
+                    if (drawn_pending) {
+                        warm_wait(w);
+                        drawn_pending = 0;
+                    }
+                    InterlockedExchangeAdd(&r->finished, pending);
+                    pending = 0;
+                }
                 continue;
             }
             free(code);
@@ -2320,12 +2328,20 @@ static DWORD WINAPI warm_worker(void *arg) {
             if (iq) ID3D11InfoQueue_ClearStoredMessages(iq);
             InterlockedIncrement(ok ? &r->drawn : &r->failed);
             if (ok && (double)(b.QuadPart - a.QuadPart) * 1000.0 / (double)freq.QuadPart > WARM_SLOW_MS) InterlockedIncrement(&r->slow);
-            if (ok && ++pending >= WARM_BATCH) {
-                warm_wait(w);
+            if (ok) drawn_pending++;
+            if (++pending >= WARM_BATCH) {
+                if (drawn_pending) {
+                    warm_wait(w);
+                    drawn_pending = 0;
+                }
+                InterlockedExchangeAdd(&r->finished, pending);
                 pending = 0;
             }
         }
-        if (pending) warm_wait(w);
+        if (pending) {
+            if (drawn_pending) warm_wait(w);
+            InterlockedExchangeAdd(&r->finished, pending);
+        }
     }
     if (w) {
         ID3D11DeviceContext_ClearState(c);
@@ -2379,16 +2395,20 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
     /* what earlier runs drew, with this driver and exe */
     snprintf(path, sizeof path, "%s/warm.done", dir);
     FILE *f = fopen(path, "rb");
+    int had_done = f != NULL;   /* (a later pass: the caches may be full already) */
+    int done_matches = 0;
     WarmDone had;
     u64 *names = NULL;
     u32 before = 0;
     if (!rewarm && f && fread(&had, sizeof had, 1, f) == 1 && !memcmp(had.magic, head.magic, sizeof had.magic) &&
         had.driver == head.driver && had.exe == head.exe && had.count <= (1u << 24) && (names = malloc(sizeof *names * (had.count + 1))) &&
-        fread(names, sizeof *names, had.count, f) == had.count)
+        fread(names, sizeof *names, had.count, f) == had.count) {
+        done_matches = 1;
         for (u32 i = 0; i < r.n; i++) {
             u64 k = name_hash(r.files[i].name);
             if (bsearch(&k, names, had.count, sizeof *names, by_u64)) { r.done[i] = 1; before++; }
         }
+    }
     if (f) fclose(f);
     free(names);
     if (rewarm) fprintf(stderr, "[warm] rewarm: drawing every shader again\n");
@@ -2404,7 +2424,15 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     const char *env = getenv("SSBU_WARM_THREADS");
-    u32 nthreads = env ? (u32)atoi(env) : si.dwNumberOfProcessors / 2;
+    /* On a full pass DXVK's shader-cache writer and the driver's cache writes are the bottleneck:
+     * a worker creates programs faster than those can write them, so more workers only build a
+     * backlog that the pass then waits out after its last draw (measured: 416 s with 6 threads,
+     * 377-402 s with 1, the last 178 s of the former spent writing the caches). A later pass over
+     * full caches is pipeline creation, which the workers do in parallel: 65 s with 6 against
+     * 79 s with 1. A matching warm.done, or an explicit rewarm after one, means the caches are
+     * probably full; otherwise SSBU_WARM_THREADS can force a count. */
+    int later_pass = had_done && (done_matches || rewarm);
+    u32 nthreads = env ? (u32)atoi(env) : later_pass ? si.dwNumberOfProcessors / 2 : 1;
     nthreads = nthreads < 1 ? 1 : nthreads > 6 ? 6 : nthreads;
     HANDLE threads[6];
     u8 finished[6];
@@ -2421,12 +2449,12 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
         if (lock >= 0) close(lock);
         return before >= r.n ? 0 : 1;
     }
-    fprintf(stderr, "[warm] %u shaders to draw on %s (%u already done), up to %u threads%s\n", r.n - before, name, before, started,
-            rewarm ? " - rewarming" : "");
+    fprintf(stderr, "[warm] %u shaders to draw on %s (%u already done), up to %u threads%s%s\n", r.n - before, name, before, started,
+            rewarm ? " - rewarming" : "", env || later_pass ? "" : " - a full pass: one thread while the caches are written");
     /* No WaitForMultipleObjects here: wait on each thread in turn, checking the count meanwhile, so
      * the Prepare Shaders window keeps showing progress without a line for every shader. */
     u32 last = 0;
-    u64 next_ms = GetTickCount64() + 5000;
+    u64 next_ms = GetTickCount64() + 5000, waiting_since = 0, releasing_since = 0;
     for (;;) {
         u32 live = 0;
         for (u32 i = 0; i < started; i++) {
@@ -2440,10 +2468,28 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
         if (!live) break;
         LONG at = r.next;
         if (at > (LONG)r.n) at = (LONG)r.n;
-        if (at >= (LONG)last + 500 || at == (LONG)r.n || GetTickCount64() >= next_ms) {
-            fprintf(stderr, "[warm] %ld/%u shaders (%ld drawn, %ld failed)\n", (long)at, r.n, (long)r.drawn, (long)r.failed);
-            last = (u32)(at < 0 ? 0 : at);
-            next_ms = GetTickCount64() + 5000;
+        /* (only work whose batch has finished, not just been drawn; before: earlier runs) */
+        LONG done = (LONG)before + r.finished;
+        if (done > (LONG)r.n) done = (LONG)r.n;
+        u64 now = GetTickCount64();
+        if (done >= (LONG)r.n) {
+            if (!releasing_since) releasing_since = now;
+        } else if (at >= (LONG)r.n) {
+            if (!waiting_since) waiting_since = now;
+        } else {
+            waiting_since = releasing_since = 0;
+        }
+        if ((u32)done >= last + 500 || now >= next_ms) {
+            if (done >= (LONG)r.n)
+                fprintf(stderr, "[warm] all %ld drawn; writing the shader caches (%.0f s, %ld failed)\n", (long)r.n,
+                        (now - releasing_since) / 1000.0, (long)r.failed);
+            else if (at >= (LONG)r.n)
+                fprintf(stderr, "[warm] all %ld drawn; waiting for the last batch (%ld finished, %ld failed, %.0f s)\n", (long)r.n,
+                        (long)done, (long)r.failed, (now - waiting_since) / 1000.0);
+            else
+                fprintf(stderr, "[warm] %ld/%u drawn (%ld finished, %ld failed)\n", (long)at, r.n, (long)done, (long)r.failed);
+            last = (u32)(done < 0 ? 0 : done);
+            next_ms = now + 5000;
         }
     }
     /* what has been drawn, for the next run */

@@ -166,11 +166,14 @@ shader programs themselves.
 When the compile finishes, it also draws the cache once through DXVK
 (`build-linux/ssbu --warm-shaders dump/shadercache`), so DXVK makes each Vulkan pipeline and the
 graphics driver compiles its GPU code in advance, instead of during a match. The warm pass makes
-no window, runs below normal priority and uses up to `SSBU_WARM_THREADS` threads (1–6, by default
-half the processors). It draws 512 programs between waits for the GPU (the pipeline is made during
-its draw, so a wait per program was only round trips), which lets DXVK's compiler threads work
-meanwhile: on a 16-thread desktop the full pass takes about 7 minutes from empty caches and about
-2 minutes when they already hold the programs. It writes `warm.log` in the shader cache
+no window, runs below normal priority and uses up to `SSBU_WARM_THREADS` threads (1–6). A full
+pass uses one thread by default, and a later pass over a matching `warm.done` uses half the
+processors (up to 6): on a full pass DXVK's shader-cache writer and the driver's cache writes are the
+bottleneck, so more workers only wait at the end for them. It draws 512 programs between waits for
+the GPU (the pipeline is made during its draw, so a wait per program was only round trips), which
+lets DXVK's compiler threads work meanwhile: on a 16-thread desktop the full pass takes about
+6.5 minutes from empty caches and about a minute when they already hold the programs.
+`SSBU_WARM_THREADS` overrides the count. It writes `warm.log` in the shader cache
 and remembers what it drew in `warm.done`; a lock file keeps two passes apart. A warm pass that
 fails (no Vulkan GPU, say) does not fail Prepare Shaders: the compiled shaders are kept and the
 game makes the missing GPU code at first use as before. `--no-warm` skips it.
