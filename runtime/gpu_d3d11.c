@@ -3295,7 +3295,11 @@ static ID3D11SamplerState *get_sampler(const u32 *tsc) {
     u32 mag = tsc[1] & 3, min = (tsc[1] >> 4) & 3, mip = (tsc[1] >> 6) & 3, aniso = (tsc[0] >> 20) & 7, cmp = (tsc[0] >> 9) & 1;
     int lin_mag = mag == 2, lin_min = min == 2, lin_mip = mip == 3;
     sd.Filter = (D3D11_FILTER)((lin_mip ? 1 : 0) | (lin_mag ? 4 : 0) | (lin_min ? 0x10 : 0));
-    if (aniso) { sd.Filter = D3D11_FILTER_ANISOTROPIC; sd.MaxAnisotropy = 1u << aniso; }
+    if (aniso) {   /* (Maxwell's field: 1, 2, 4, 6, 8, 10, 12, 16x; 1 << 7 = 128 is past Direct3D's 16 and CreateSamplerState fails) */
+        static const u8 ratio[8] = {1, 2, 4, 6, 8, 10, 12, 16};
+        sd.Filter = D3D11_FILTER_ANISOTROPIC;
+        sd.MaxAnisotropy = ratio[aniso];
+    }
     if (cmp) sd.Filter = (D3D11_FILTER)(sd.Filter | 0x80);
     sd.AddressU = wrap_mode(tsc[0] & 7); sd.AddressV = wrap_mode((tsc[0] >> 3) & 7); sd.AddressW = wrap_mode((tsc[0] >> 6) & 7);
     sd.ComparisonFunc = (D3D11_COMPARISON_FUNC)(((tsc[0] >> 10) & 7) + 1);
