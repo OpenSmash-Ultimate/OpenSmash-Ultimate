@@ -407,9 +407,13 @@ static DWORD WINAPI prewarm_main(void *unused);
 static int warm_mode;                              /* (see "first draws") 0 off, 1 the warm after the game, 2 also at start */
 static LUID warm_adapter;
 static void warm_start(void);
+void d3d11_warm_before_play(void);                 /* (host.c: Windows AMD's cold cache, before the game loads) */
 #ifdef _WIN32
 #define WARM_GAME "Local\\ssbu-game-running"
-static HANDLE game_mutex;                          /* (WARM_GAME) held while the game runs: ssbu --warm-shaders stops for it */
+static HANDLE game_mutex;                          /* (WARM_GAME) held while the game runs: ssbu --warm-shaders pauses for it */
+static u64 adapter_driver_version(IDXGIAdapter *adapter);
+static u64 warm_done_exe_key(void);
+static int warm_cache_cold(u64 driver);
 #endif
 
 /* Direct3D 11 is DXVK's: always on Linux; on Windows when d3d11.dll is not the system's (the
@@ -591,6 +595,23 @@ static IDXGIAdapter1 *pick_adapter(int *warp) {
     return named;
 }
 
+#ifdef _WIN32
+/* The driver's version, as warm.done keys it: the UMD's version from the adapter. */
+static u64 adapter_driver_version(IDXGIAdapter *adapter) {
+    LARGE_INTEGER umd;
+    return adapter && SUCCEEDED(IDXGIAdapter_CheckInterfaceSupport(adapter, &IID_IDXGIDevice, &umd)) ? (u64)umd.QuadPart : 0;
+}
+
+/* This executable, as warm.done keys it (ssbu --warm-shaders writes the same value). */
+static u64 warm_done_exe_key(void) {
+    wchar_t exe[MAX_PATH];
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (!GetModuleFileNameW(NULL, exe, MAX_PATH) || !GetFileAttributesExW(exe, GetFileExInfoStandard, &fa)) return 0;
+    return ((u64)fa.nFileSizeHigh << 32 | fa.nFileSizeLow) * 1099511628211ull ^
+           ((u64)fa.ftLastWriteTime.dwHighDateTime << 32 | fa.ftLastWriteTime.dwLowDateTime);
+}
+#endif
+
 /* SSBU_D3D_DEBUG=1: Direct3D's debug layer (Windows' optional "Graphics Tools" feature) checks
  * every call; its complaints go to the log at each present - each kind the first 3 times, then
  * every 1000th - as uses of the API one driver forgives and another does not. */
@@ -715,9 +736,16 @@ static BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *c) {
                                  levels, 2, D3D11_SDK_VERSION, &compile_dev, NULL, NULL)))
         compile_dev = NULL;
     /* AMD's: a program's GPU code is made by the driver's own threads, from its disk cache when
-     * that has it (see "first draws"). SSBU_SHADER_WARM=0/1/2 overrides. */
+     * that has it (see "first draws"). SSBU_SHADER_WARM=0/1/2 overrides. =2 draws the prewarm's
+     * programs at start too; that only helps when the driver's cache is cold (a new exe or driver),
+     * where it is the one in-process way to make AMD's threads compile them, so the default uses it
+     * only then and the post-play pass otherwise. */
     const char *wv = getenv("SSBU_SHADER_WARM");
-    warm_mode = wv ? atoi(wv) : ad.VendorId == 0x1002 && !on_dxvk() ? 1 : 0;
+#ifdef _WIN32
+    warm_mode = wv ? atoi(wv) : ad.VendorId == 0x1002 && !on_dxvk() ? (warm_cache_cold(adapter_driver_version(adapter)) ? 2 : 1) : 0;
+#else
+    warm_mode = wv ? atoi(wv) : 0;
+#endif
     warm_adapter = ad.AdapterLuid;
     /* The back buffer is the window's inside (display.ini sizes the window). Where the system
      * allows it, the swap chain may tear, which VRR pacing asks for at each Present. */
@@ -1654,16 +1682,21 @@ static int prewarm_busy(void) {
  *  - when the game closes (gfx_closing), this exe starts again as ssbu --warm-shaders, which draws
  *    every program of the cache once, on devices of its own - the game's played ones first, then
  *    the ones Prepare Shaders made - so that the driver's disk cache has them before a move first
- *    needs one. It notes what it drew (warm.done; all again for another driver or exe), stops as
- *    soon as a game starts and goes on after it, and writes its result to warm.log beside the
- *    cache, which the next start shows in its log;
+ *    needs one. It notes what it drew (warm.done; all again for another driver or exe), pauses
+ *    while a game runs and goes on after it, and writes its result to warm.log beside the cache,
+ *    which the next start shows in its log. Each thread draws WARM_BATCH programs before one wait;
+ *  - before the game loads (d3d11_warm_before_play), a cache whose warm.done is missing, or is
+ *    for another driver or exe, is drawn by the same pass and waited for, so the first match after
+ *    a driver update does not start cold. Prepare Shaders runs the pass too (shader_aot.py), on
+ *    Windows as on Linux;
  *  - SSBU_SHADER_WARM=2 also draws each program the prewarm made once on the rendering device
  *    (warm_prewarmed): into a 1x1 target, with a partner shader made to match its interface,
  *    taking at most a quarter of the time, newest first; after 3 slow ones in a row (over 20 ms:
- *    a compile), or 10 in all, it stops.
+ *    a compile), or 10 in all, it stops. It is the default only for a cold cache (above); a warm
+ *    one uses =1, the pass after the game.
  * On (=1) with AMD's driver, not under DXVK; SSBU_SHADER_WARM=0 turns it off, =1 or =2 on with
- * any. The partners declare the stages' interface as the translator does (gpu_shader.c: struct
- * VSOut). */
+ * any. SSBU_SHADER_WARM_PREPLAY=0 turns off the pass before play. The partners declare the
+ * stages' interface as the translator does (gpu_shader.c: struct VSOut). */
 #define WARM_SLOW_MS 20.0   /* (a first draw this long, or a warm pass's create-and-draw, was slow) */
 
 static u32 rd32(const u8 *p) { u32 v; memcpy(&v, p, 4); return v; }
@@ -1802,11 +1835,11 @@ static int warm_issue(Warmer *w, int stage, void *obj, u32 outputs) {
     return 1;
 }
 
-#ifndef _WIN32
 /* The GPU has run what was drawn since the last wait. A worker draws up to WARM_BATCH programs
  * before waiting once (a warm pass used to do a round trip per program: End, Flush, GetData); the
  * pipeline is made during its draw, so the wait only has to keep the submitted work bounded.
- * The pass's own device and context are not used by anything else meanwhile. */
+ * The pass's own device and context are not used by anything else meanwhile. Both platforms use
+ * this: AMD's warm pass on Windows had the same per-program round trip as Linux's once had. */
 #define WARM_BATCH 512
 static void warm_wait(Warmer *w) {
     ID3D11DeviceContext *c = w->ctx;
@@ -1816,7 +1849,6 @@ static void warm_wait(Warmer *w) {
                                                GetTickCount64() < until;)
         SwitchToThread();
 }
-#endif
 
 static Warmer render_warmer;   /* the rendering device's: its context is the renderer's (under its lock) */
 static int render_warmer_ok;
@@ -1831,7 +1863,7 @@ static void warm_start(void) {
     char path[1100], line[512];
     snprintf(path, sizeof path, "%s/warm.log", cache_dir());
     FILE *f = fopen(path, "r");
-    if (f && fgets(line, sizeof line, f)) fprintf(stderr, "[gfx] after the last game: %s%s", line, strchr(line, '\n') ? "" : "\n");
+    if (f && fgets(line, sizeof line, f)) fprintf(stderr, "[gfx] the shader warm pass last said: %s%s", line, strchr(line, '\n') ? "" : "\n");
     if (f) fclose(f);
 }
 
@@ -1901,6 +1933,23 @@ static void warm_prewarmed(Prewarm **order, u32 n) {
 typedef struct WarmDone { char magic[8]; u64 driver, exe; u32 count, unused; } WarmDone;
 static const char WARM_DONE_MAGIC[8] = {'s', 's', 'b', 'u', 'w', 'r', 'm', '1'};
 
+#ifdef _WIN32
+/* Whether the driver's own cache lacks programs this cache has: warm.done is missing, or it was
+ * written for another driver or executable (an update empties or invalidates the driver's cache).
+ * The warm pass itself still draws only the files warm.done does not name. */
+static int warm_cache_cold(u64 driver) {
+    char path[1100];
+    snprintf(path, sizeof path, "%s/warm.done", cache_dir());
+    FILE *f = fopen(path, "rb");
+    if (!f) return 1;
+    WarmDone had;
+    int ok = fread(&had, sizeof had, 1, f) == 1 && !memcmp(had.magic, WARM_DONE_MAGIC, sizeof had.magic) &&
+             had.driver == driver && had.exe == warm_done_exe_key();
+    fclose(f);
+    return !ok;
+}
+#endif
+
 static u64 name_hash(const char *s) {
     u64 h = 1469598103934665603ull;
     for (; *s; s++) h = (h ^ (u8)*s) * 1099511628211ull;
@@ -1913,18 +1962,21 @@ static int by_u64(const void *a, const void *b) {
 }
 
 #ifdef _WIN32
-/* ---- ssbu --warm-shaders <cache dir> <adapter LUID, hex>: started as the game closes. Each
- * thread draws programs once on a device of its own (compiling on the thread itself), then lets
- * the device go, so the driver keeps the GPU code in its disk cache. It runs in Windows'
- * background mode at idle priority (processor, disk and memory below what the user does), and
- * each game holds a mutex while it runs (WARM_GAME): once one does, the threads stop after the
- * program they are drawing. */
+/* ---- ssbu --warm-shaders <cache dir> [adapter LUID, hex | rewarm]: started as the game closes,
+ * and (before the game loads) when the driver's cache is cold. Each thread draws programs once on
+ * a device of its own (compiling on the thread itself), then lets the device go, so the driver
+ * keeps the GPU code in its disk cache. It runs in Windows' background mode at idle priority
+ * (processor, disk and memory below what the user does). Each game holds a mutex while it runs
+ * (WARM_GAME): the game's own pass (one started with its adapter) pauses and goes on when it
+ * ends, rather than stopping for the session; a launcher's pass (Prepare Shaders) ends, so it
+ * does not hold the tool. A worker draws up to WARM_BATCH programs before one wait (as Linux's). */
 typedef struct WarmRun {
     const char *dir;
     Found *files;
     u32 n;
     u8 *done;   /* per file: drawn (or refused) by this run or an earlier one */
     IDXGIAdapter1 *adapter;
+    int pause_for_game;   /* (the game's own pass: pause while a game runs; a launcher's pass: end) */
     volatile LONG next, drawn, failed, slow, stop;
 } WarmRun;
 
@@ -1932,6 +1984,15 @@ static int game_running(void) {
     HANDLE h = OpenMutexA(SYNCHRONIZE, FALSE, WARM_GAME);
     if (h) CloseHandle(h);
     return h != NULL;
+}
+
+/* A game is running: wait for it here, not end the pass. A quick restart would otherwise leave
+ * the rest of the cache for the next time the game closes. */
+static void warm_wait_for_game(WarmRun *r) {
+    static LONG said;
+    if (!said) { InterlockedExchange(&said, 1); fprintf(stderr, "[warm] paused: a game is running; the pass goes on when it ends\n"); }
+    while (!r->stop && game_running()) Sleep(500);
+    if (InterlockedExchange(&said, 0)) fprintf(stderr, "[warm] the game ended: drawing again\n");
 }
 
 static DWORD WINAPI warm_worker(void *arg) {
@@ -1949,8 +2010,21 @@ static DWORD WINAPI warm_worker(void *arg) {
     Warmer *w = calloc(1, sizeof *w);
     LARGE_INTEGER freq;
     QueryPerformanceFrequency(&freq);
-    if (w && warmer_init(w, d, c))
-        for (LONG i; !r->stop && (i = InterlockedIncrement(&r->next) - 1) < (LONG)r->n;) {
+    if (w && warmer_init(w, d, c)) {
+        u32 pending = 0, drawn_pending = 0;   /* (done, and of those drawn, since the last wait) */
+        for (;;) {
+            if (r->stop) break;
+            if (game_running()) {
+                if (r->pause_for_game) {   /* (the game's own pass: pause, not stop) */
+                    warm_wait_for_game(r);
+                    if (r->stop) break;
+                } else {   /* (Prepare Shaders, the launcher: end, as it did before) */
+                    InterlockedExchange(&r->stop, 1);
+                    break;
+                }
+            }
+            LONG i = InterlockedIncrement(&r->next) - 1;
+            if (i >= (LONG)r->n) break;
             if (r->done[i]) continue;   /* (an earlier run drew it) */
             r->done[i] = 1;
             u64 hash, tables;
@@ -1973,19 +2047,19 @@ static DWORD WINAPI warm_worker(void *arg) {
             if (!code || outputs == ~0u || FAILED(create_on(d, stage, code, size, &obj))) {
                 free(code);
                 InterlockedIncrement(&r->failed);
+                if (++pending >= WARM_BATCH) {
+                    if (drawn_pending) {
+                        warm_wait(w);
+                        drawn_pending = 0;
+                    }
+                    pending = 0;
+                }
                 continue;
             }
             free(code);
             LARGE_INTEGER a, b;
             QueryPerformanceCounter(&a);
             int ok = warm_issue(w, stage, obj, outputs);
-            if (ok) {
-                ID3D11DeviceContext_End(c, (ID3D11Asynchronous *)w->done);
-                ID3D11DeviceContext_Flush(c);
-                for (u64 until = GetTickCount64() + 10000; ID3D11DeviceContext_GetData(c, (ID3D11Asynchronous *)w->done, NULL, 0, 0) == S_FALSE &&
-                                                           GetTickCount64() < until;)
-                    SwitchToThread();
-            }
             QueryPerformanceCounter(&b);
             IUnknown_Release((IUnknown *)obj);
             for (UINT64 m = 0, nm = iq ? ID3D11InfoQueue_GetNumStoredMessages(iq) : 0; m < nm; m++) {
@@ -2000,7 +2074,17 @@ static DWORD WINAPI warm_worker(void *arg) {
             if (iq) ID3D11InfoQueue_ClearStoredMessages(iq);
             InterlockedIncrement(ok ? &r->drawn : &r->failed);
             if (ok && (double)(b.QuadPart - a.QuadPart) * 1000.0 / (double)freq.QuadPart > WARM_SLOW_MS) InterlockedIncrement(&r->slow);
+            if (ok) drawn_pending++;
+            if (++pending >= WARM_BATCH) {
+                if (drawn_pending) {
+                    warm_wait(w);
+                    drawn_pending = 0;
+                }
+                pending = 0;
+            }
         }
+        if (pending && drawn_pending) warm_wait(w);
+    }
     if (w) {
         ID3D11DeviceContext_ClearState(c);
         warmer_free(w);
@@ -2012,41 +2096,52 @@ static DWORD WINAPI warm_worker(void *arg) {
     return 0;
 }
 
-int gfx_warm_shaders_main(const char *dir, const char *luid) {
+int gfx_warm_shaders_main(const char *dir, const char *arg) {
     HANDLE one = CreateMutexA(NULL, TRUE, "Local\\ssbu-warm-shaders");   /* (one at a time) */
-    if (!one || GetLastError() == ERROR_ALREADY_EXISTS) return 0;
+    if (!one || GetLastError() == ERROR_ALREADY_EXISTS) {
+        if (one) CloseHandle(one);
+        return 0;
+    }
     /* disk and memory below what the user does; then the processor too (background mode alone puts
      * the class back to normal) */
     SetPriorityClass(GetCurrentProcess(), PROCESS_MODE_BACKGROUND_BEGIN);
     SetPriorityClass(GetCurrentProcess(), IDLE_PRIORITY_CLASS);
     driver_stacks();
-    u64 want = strtoull(luid, NULL, 16);
+    int rewarm = (arg && !strcmp(arg, "rewarm")) || (getenv("SSBU_SHADER_WARM_ALL") && atoi(getenv("SSBU_SHADER_WARM_ALL")));
+    u64 want = arg && *arg && strcmp(arg, "rewarm") ? strtoull(arg, NULL, 16) : 0;
     WarmRun r;
     memset(&r, 0, sizeof r);
     r.dir = dir;
+    r.pause_for_game = want != 0;   /* (the game's pass names its adapter; Prepare Shaders' does not) */
     char name[128] = "the default graphics card";
     WarmDone head;
     memset(&head, 0, sizeof head);
     memcpy(head.magic, WARM_DONE_MAGIC, sizeof head.magic);
+    /* The game passes its adapter's LUID. A pass of its own (Prepare Shaders, the launcher) picks
+     * the one the game would, so warm.done's driver key matches the game's post-play pass. */
+    int warp = 0;
+    if (!want) r.adapter = pick_adapter(&warp);
     IDXGIFactory1 *f1;
-    if (SUCCEEDED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&f1))) {
+    if (!r.adapter && SUCCEEDED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&f1))) {
         IDXGIAdapter1 *a;
         for (UINT i = 0; !r.adapter && SUCCEEDED(IDXGIFactory1_EnumAdapters1(f1, i, &a)); i++) {
             DXGI_ADAPTER_DESC1 d;
-            if (SUCCEEDED(IDXGIAdapter1_GetDesc1(a, &d)) && ((u64)(u32)d.AdapterLuid.HighPart << 32 | d.AdapterLuid.LowPart) == want) {
+            if (want && SUCCEEDED(IDXGIAdapter1_GetDesc1(a, &d)) &&
+                ((u64)(u32)d.AdapterLuid.HighPart << 32 | d.AdapterLuid.LowPart) == want) {
                 r.adapter = a;
-                adapter_name(&d, name, sizeof name);
-                LARGE_INTEGER umd;
-                if (SUCCEEDED(IDXGIAdapter1_CheckInterfaceSupport(a, &IID_IDXGIDevice, &umd))) head.driver = (u64)umd.QuadPart;
             } else IDXGIAdapter1_Release(a);
         }
         IDXGIFactory1_Release(f1);
     }
-    wchar_t exe[MAX_PATH];
-    WIN32_FILE_ATTRIBUTE_DATA fa;
-    if (GetModuleFileNameW(NULL, exe, MAX_PATH) && GetFileAttributesExW(exe, GetFileExInfoStandard, &fa))
-        head.exe = ((u64)fa.nFileSizeHigh << 32 | fa.nFileSizeLow) * 1099511628211ull ^
-                   ((u64)fa.ftLastWriteTime.dwHighDateTime << 32 | fa.ftLastWriteTime.dwLowDateTime);
+    if (!r.adapter) r.adapter = pick_adapter(&warp);
+    if (r.adapter) {
+        DXGI_ADAPTER_DESC1 d;
+        if (SUCCEEDED(IDXGIAdapter1_GetDesc1(r.adapter, &d))) {
+            adapter_name(&d, name, sizeof name);
+            head.driver = adapter_driver_version((IDXGIAdapter *)r.adapter);
+        }
+    }
+    head.exe = warm_done_exe_key();
     u64 t0 = GetTickCount64();
     r.n = cache_files(dir, &r.files, 1);
     r.done = calloc(r.n + 1, 1);
@@ -2057,7 +2152,7 @@ int gfx_warm_shaders_main(const char *dir, const char *luid) {
     WarmDone had;
     u64 *names = NULL;
     u32 before = 0;
-    if (f && fread(&had, sizeof had, 1, f) == 1 && !memcmp(had.magic, head.magic, sizeof had.magic) && had.driver == head.driver &&
+    if (!rewarm && f && fread(&had, sizeof had, 1, f) == 1 && !memcmp(had.magic, head.magic, sizeof had.magic) && had.driver == head.driver &&
         had.exe == head.exe && had.count <= (1u << 24) && (names = malloc(sizeof *names * (had.count + 1))) &&
         fread(names, sizeof *names, had.count, f) == had.count)
         for (u32 i = 0; i < r.n && r.done; i++) {
@@ -2066,6 +2161,8 @@ int gfx_warm_shaders_main(const char *dir, const char *luid) {
         }
     if (f) fclose(f);
     free(names);
+    if (rewarm) fprintf(stderr, "[warm] rewarm: drawing every shader again\n");
+    else if (before) fprintf(stderr, "[warm] %u shaders drawn by an earlier run\n", before);
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     const char *env = getenv("SSBU_WARM_THREADS");
@@ -2073,18 +2170,17 @@ int gfx_warm_shaders_main(const char *dir, const char *luid) {
     nthreads = nthreads < 1 ? 1 : nthreads > 6 ? 6 : nthreads;
     HANDLE threads[6];
     u32 started = 0;
-    if (game_running()) r.stop = 1;
+    if (!r.pause_for_game && game_running()) r.stop = 1;
     for (u32 i = 0; i < nthreads && r.done && before + i < r.n && !r.stop; i++)
         if ((threads[started] = CreateThread(NULL, 16 << 20, warm_worker, &r, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL))) started++;
-    while (started && WaitForMultipleObjects(started, threads, TRUE, 500) == WAIT_TIMEOUT)
-        if (!r.stop && game_running()) InterlockedExchange(&r.stop, 1);
+    if (started) WaitForMultipleObjects(started, threads, TRUE, INFINITE);   /* (a game's pass pauses for one; a launcher's ends) */
     for (u32 i = 0; i < started; i++) CloseHandle(threads[i]);
     /* what has been drawn, for the next run */
     u32 ndone = 0;
     for (u32 i = 0; i < r.n && r.done; i++) ndone += r.done[i];
     names = malloc(sizeof *names * (ndone + 1));
     snprintf(tmp, sizeof tmp, "%s.new", path);
-    if (names && ndone > before && (f = fopen(tmp, "wb"))) {
+    if (names && (ndone > before || r.n == 0) && (f = fopen(tmp, "wb"))) {   /* (an empty cache is warm too) */
         u32 k = 0;
         for (u32 i = 0; i < r.n; i++)
             if (r.done[i]) names[k++] = name_hash(r.files[i].name);
@@ -2113,6 +2209,7 @@ int gfx_warm_shaders_main(const char *dir, const char *luid) {
     free(r.done);
     free(r.files);
     if (r.adapter) IDXGIAdapter1_Release(r.adapter);
+    CloseHandle(one);
     return 0;
 }
 #else
@@ -2538,6 +2635,61 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
 }
 #endif
 
+/* Before the game loads (host.c), Windows AMD: if the driver's own cache is cold (a new game
+ * executable or driver, or no post-play pass yet), draw the whole cache once with the same
+ * ssbu --warm-shaders pass, and wait for it. This covers the programs Prepare Shaders made but
+ * the game has not played, which are the ones AMD's driver cache lacks. A warm cache starts at
+ * once: warm.done matches this exe and driver. SSBU_SHADER_WARM=0 or SSBU_SHADER_WARM_PREPLAY=0
+ * turns it off. */
+void d3d11_warm_before_play(void) {
+#ifdef _WIN32
+    const char *wv = getenv("SSBU_SHADER_WARM");
+    if (wv && !atoi(wv)) return;
+    const char *pp = getenv("SSBU_SHADER_WARM_PREPLAY");
+    if (pp && !atoi(pp)) return;
+    if (getenv("SSBU_BENCH") || getenv("SSBU_SEQ") || getenv("SSBU_INPUT")) return;
+    /* Another instance is playing: its pass owns the cache, and this one would pause for that game
+     * (WARM_GAME) and hold this game's start until it ended. */
+    if (game_running()) {
+        fprintf(stderr, "[gfx] shader warm before play: another game is running; skipped\n");
+        return;
+    }
+    int warp = 0;
+    IDXGIAdapter1 *a = pick_adapter(&warp);
+    if (!a) return;
+    DXGI_ADAPTER_DESC1 d;
+    int amd = SUCCEEDED(IDXGIAdapter1_GetDesc1(a, &d)) && d.VendorId == 0x1002;
+    u64 driver = amd ? adapter_driver_version((IDXGIAdapter *)a) : 0;
+    u64 luid = amd ? ((u64)(u32)d.AdapterLuid.HighPart << 32 | (u32)d.AdapterLuid.LowPart) : 0;
+    IDXGIAdapter1_Release(a);
+    if (!amd || !warm_cache_cold(driver)) return;
+    wchar_t exe[MAX_PATH], cmd[2 * MAX_PATH + 96];
+    char dir[MAX_PATH];
+    DWORD n = GetFullPathNameA(cache_dir(), MAX_PATH, dir, NULL);
+    if (!GetModuleFileNameW(NULL, exe, MAX_PATH) || !n || n >= MAX_PATH) return;
+    _snwprintf(cmd, sizeof cmd / sizeof *cmd, L"\"%ls\" --warm-shaders \"%hs\" %llx", exe, dir, (unsigned long long)luid);
+    cmd[sizeof cmd / sizeof *cmd - 1] = 0;
+    STARTUPINFOW si;
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi;
+    fprintf(stderr, "[gfx] the shader cache is cold (a new executable or driver, or no pass yet): drawing it once for the "
+                    "driver's own cache before the game loads; this can take a few minutes after a driver update "
+                    "(warm.log in the cache says how far it gets; SSBU_SHADER_WARM_PREPLAY=0 skips it)\n");
+    if (CreateProcessW(exe, cmd, NULL, NULL, FALSE, DETACHED_PROCESS | BELOW_NORMAL_PRIORITY_CLASS, NULL, NULL, &si, &pi)) {
+        CloseHandle(pi.hThread);
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD code = 0;
+        GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hProcess);
+        fprintf(stderr, "[gfx] shader warm before play: %s\n",
+                !code && !warm_cache_cold(driver) ? "done" : "did not finish; the game makes the rest as it needs them");
+    } else {
+        fprintf(stderr, "[gfx] shader warm before play: could not start (%lu)\n", GetLastError());
+    }
+#endif
+}
+
 /* The game is closing (its window, or the settings menu's Quit): with a driver that makes GPU
  * code on its own threads, the shader cache is drawn once for that driver's own cache, by a
  * process of its own that goes on after this one ends (see "first draws"). */
@@ -2547,6 +2699,14 @@ void d3d11_closing(void) {
     if (!ready || !warm_mode || InterlockedExchange(&once, 1)) return;
     if (game_mutex) CloseHandle(game_mutex);   /* (this game is done) */
     game_mutex = NULL;
+    /* An earlier pass that paused for this game is still alive: it draws again now, so there is
+     * nothing to start (and its warm.done is the one that matters). */
+    HANDLE warm = OpenMutexA(SYNCHRONIZE, FALSE, "Local\\ssbu-warm-shaders");
+    if (warm) {
+        CloseHandle(warm);
+        fprintf(stderr, "[gfx] the shader cache's background pass was waiting for this game: it goes on now\n");
+        return;
+    }
     wchar_t exe[MAX_PATH], cmd[2 * MAX_PATH + 96];
     char dir[MAX_PATH];
     DWORD n = GetFullPathNameA(cache_dir(), MAX_PATH, dir, NULL);
@@ -2558,12 +2718,23 @@ void d3d11_closing(void) {
     memset(&si, 0, sizeof si);
     si.cb = sizeof si;
     PROCESS_INFORMATION pi;
-    DWORD how = DETACHED_PROCESS | BELOW_NORMAL_PRIORITY_CLASS;   /* (out of a launcher's job if it allows that: not ended with it) */
-    if (CreateProcessW(exe, cmd, NULL, NULL, FALSE, how | CREATE_BREAKAWAY_FROM_JOB, NULL, NULL, &si, &pi) ||
-        CreateProcessW(exe, cmd, NULL, NULL, FALSE, how, NULL, NULL, &si, &pi)) {
+    /* Out of a launcher's job if it allows that, so the pass is not ended with the launcher. A
+     * launcher whose job forbids it (some terminals) leaves the child in the job: say so. */
+    DWORD how = DETACHED_PROCESS | BELOW_NORMAL_PRIORITY_CLASS;
+    BOOL in_job = FALSE;
+    IsProcessInJob(GetCurrentProcess(), NULL, &in_job);
+    BOOL started = CreateProcessW(exe, cmd, NULL, NULL, FALSE, how | CREATE_BREAKAWAY_FROM_JOB, NULL, NULL, &si, &pi);
+    DWORD breakaway_error = started ? 0 : GetLastError();
+    if (!started) started = CreateProcessW(exe, cmd, NULL, NULL, FALSE, how, NULL, NULL, &si, &pi);
+    if (started) {
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
         fprintf(stderr, "[gfx] the shader cache is drawn once for the driver's own cache, in the background (warm.log in the cache says how far it got)\n");
+        if (in_job && breakaway_error)
+            fprintf(stderr, "[gfx] note: the launcher's job did not allow the pass to leave it (%lu): it ends with the launcher\n",
+                    (unsigned long)breakaway_error);
+    } else {
+        fprintf(stderr, "[gfx] could not start the shader cache's background pass (%lu)\n", (unsigned long)GetLastError());
     }
 #endif
 }

@@ -21,12 +21,14 @@ depends on a draw's constant buffers), as are compute programs (on their launch'
 
 On Linux, after a successful compile, the cache is drawn once by the game itself
 (build-linux/ssbu --warm-shaders dump/shadercache): DXVK then makes each Vulkan pipeline and the
-Vulkan driver compiles its GPU code, so the first use in a game does not have to. It is skipped
-with --no-warm. It draws what warm.done says an earlier run has not; warm.done is keyed by this
-game and the DXVK and Vulkan driver libraries, so a Mesa, RADV, DXVK or other driver update (which
-may empty those caches) draws everything again by itself. --rewarm forces that. A warm pass that
-fails (no Vulkan GPU, say) is reported, but does not fail the compile: the game still works as
-without it.
+Vulkan driver compiles its GPU code, so the first use in a game does not have to. On Windows,
+AMD's Direct3D driver makes a program's GPU code on its own threads, so the same pass
+(build\ssbu.exe --warm-shaders dump\shadercache) draws every program for the driver's own
+cache. It is skipped with --no-warm. It draws what warm.done says an earlier run has not;
+warm.done is keyed by this game and the graphics driver, so a Mesa, RADV, DXVK, Direct3D or other
+driver update (which may empty those caches) draws everything again by itself. --rewarm forces
+that. A warm pass that fails (no GPU, say) is reported, but does not fail the compile: the game
+still works as without it.
 
 How the work is shared out: one discovery pass (shaderaot --dry) lists every key once; the
 keys not in the cache yet go into one queue, longest compile first (by the times recorded in
@@ -343,16 +345,21 @@ def jobs_for(priority, jobs):
 
 
 def warm_shaders(cache, rewarm):
-    """Draw every shader of the cache once through DXVK (build-linux/ssbu --warm-shaders), so
-    that DXVK has made each Vulkan pipeline and the Vulkan driver its GPU code before the game
+    """Draw every shader of the cache once (ssbu --warm-shaders): through DXVK on Linux, and with
+    AMD's Direct3D driver on Windows. The driver then has each program's GPU code before the game
     first uses it. Its lines ([warm] ...) go to this console as they come; True when it warmed."""
-    exe = os.path.join(ROOT, "build-linux", "ssbu")
+    if LINUX:
+        exe = os.path.join(ROOT, "build-linux", "ssbu")
+        what = "DXVK/Vulkan"
+    else:
+        exe = os.path.join(ROOT, "build", "ssbu.exe")
+        what = "Direct3D"
     if not os.path.isfile(exe):
-        print("warm: skipped: build-linux/ssbu is not there (build the game first); the cache is compiled, "
+        print(f"warm: skipped: {os.path.relpath(exe, ROOT)} is not there (build the game first); the cache is compiled, "
               "and the game will make the driver's code as it first uses each shader", flush=True)
         return False
     cmd = [exe, "--warm-shaders", cache] + (["rewarm"] if rewarm else [])
-    print("warm: drawing the cache once through DXVK/Vulkan so the first use does not compile it"
+    print(f"warm: drawing the cache once through {what} so the first use does not compile it"
           + (" (rewarm: every shader again)" if rewarm else ""), flush=True)
     try:
         proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -380,7 +387,7 @@ def warm_shaders(cache, rewarm):
         print(f"warm: not warmed (the warm pass stopped with code {code}); the compiled shaders are kept, "
               "and the game will make the driver's code as it first uses each shader", flush=True)
         return False
-    print("warm: warmed: DXVK's pipelines and the driver's GPU code are in their caches", flush=True)
+    print(f"warm: warmed: {what}'s pipelines and the driver's GPU code are in their caches", flush=True)
     return True
 
 
@@ -392,10 +399,10 @@ def main():
     ap.add_argument("--parts", action="store_true", help="split the keys between the processes by hash (the older way)")
     warm = ap.add_mutually_exclusive_group()
     warm.add_argument("--no-warm", action="store_true",
-                      help="do not draw the cache through DXVK after compiling (Linux)")
+                      help="do not draw the cache through the graphics driver after compiling")
     warm.add_argument("--rewarm", action="store_true",
-                      help="draw every shader through DXVK again, even ones warm.done has (Linux; "
-                           "a driver update does this by itself)")
+                      help="draw every shader through the driver again, even ones warm.done has "
+                           "(a driver update does this by itself)")
     a = ap.parse_args()
     tree = ROOT
     global _POPEN_PRIORITY, PRIORITY_SAID
@@ -447,9 +454,7 @@ def main():
     elif not ok:
         print("warm: skipped: the compile did not finish", flush=True)
     elif a.no_warm:
-        print("warm: skipped (--no-warm): the game makes DXVK's pipeline and the driver's code at first use", flush=True)
-    elif not LINUX:
-        print("warm: skipped on Windows: the game's close starts its own warm pass", flush=True)
+        print("warm: skipped (--no-warm): the game makes the driver's pipeline and GPU code at first use", flush=True)
     else:
         state = "warmed" if warm_shaders(cache, a.rewarm) else "not warmed"
     print(f"done in {time.time() - t0:.0f} s; driver cache {state}")
