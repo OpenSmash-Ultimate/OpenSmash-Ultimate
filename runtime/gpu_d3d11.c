@@ -921,7 +921,7 @@ typedef struct Shader {
     u64 hash, table_hash;
     u32 vs_outputs;
     int stage;
-    volatile LONG state;   /* 0 compiling, 1 ready, 2 failed */
+    volatile LONG state;   /* 0 compiling, 1 ready, 2 failed, 3 put away (evict_shaders: loaded again at its next use) */
     void *obj;             /* ID3D11VertexShader, ID3D11PixelShader or ID3D11ComputeShader */
     char *hlsl;            /* while compiling */
     char name[64];
@@ -931,6 +931,7 @@ typedef struct Shader {
     int cached;            /* an earlier run compiled it (its job is a load) */
     struct Prewarm *prewarm;   /* a prewarm job (not a shader of the game yet): the entry it fills */
     int drawn;             /* a draw (or launch) has used it: its first one was timed (first_draw_done) */
+    u64 used;              /* the frame (gfx_stat_presented) a draw last asked for it */
 } Shader;
 
 static Shader **shader_cache;
@@ -1150,6 +1151,7 @@ static LONG make_ready(struct Compiler *me, Shader *s) {
         free(code);
         if (ok) { cache_touch(path); return 1; }
     }
+    if (!s->hlsl) return 2;   /* (put away and its cache file gone since: nothing to make it from) */
     me->step = STEP_FXC;
     ID3DBlob *code = NULL, *errors = NULL;
     HRESULT hr = shader_cache_compile(s->hlsl, s->name, s->stage, &code, &errors);
@@ -1884,6 +1886,7 @@ static void driver_threads_line(void) {
 #endif
 
 static u32 ntextures, nresidents;   /* (below: the texture cache, the GPU-resident buffers) */
+static u64 shaders_put_away;        /* (below: evict_shaders) */
 
 /* What the driver says this process's resources take: in the card's own memory, and in the
  * computer's (shared: what does not fit, and what the driver keeps there). 0 when it can't say. */
@@ -1909,8 +1912,8 @@ void d3d11_status_lines(void) {
 #endif
     u64 vram, shared;
     video_memory(&vram, &shared);
-    fprintf(stderr, "[status] memory: %.0f MB private, graphics %.0f MB on the card + %.0f MB in RAM; %llu shaders made, prewarm %ld made / %ld taken by the game / %ld over its budget; %u textures, %u surfaces, %u GPU-resident buffers\n",
-            private_bytes() / 1048576.0, vram / 1048576.0, shared / 1048576.0, gfx_stat_shaders, (long)prewarm_ready, (long)prewarm_taken,
+    fprintf(stderr, "[status] memory: %.0f MB private, graphics %.0f MB on the card + %.0f MB in RAM; %llu shaders made (%llu put away so far), prewarm %ld made / %ld taken by the game / %ld over its budget; %u textures, %u surfaces, %u GPU-resident buffers\n",
+            private_bytes() / 1048576.0, vram / 1048576.0, shared / 1048576.0, gfx_stat_shaders, shaders_put_away, (long)prewarm_ready, (long)prewarm_taken,
             (long)prewarm_over, ntextures, nsurfaces, nresidents);
     if (!gfx_stat_first_draws) return;
     EnterCriticalSection(&lock);
@@ -1995,6 +1998,67 @@ static u64 table_hash(const ShaderInfo *info, CbufSource *src) {
 /* Programs by where they are: finding a shader by its contents means decoding the program for
  * its length and hashing all of it - per draw, per stage, far too slow - so each address
  * remembers the shader it last held, recognised again by a few of its words. */
+/* ---- shaders put away ------------------------------------------------------------------
+ * Every program the driver makes keeps its GPU code in this process (NVIDIA: most of a megabyte
+ * each), and a session draws thousands - every fighter, stage and menu seen - which used to stay
+ * for the whole run: gigabytes, until the system ran out. Past SSBU_SHADER_KEEP of them (default
+ * 2500; 0: keep all), the ones no draw has asked for in a minute are released, least recently
+ * used first, and the program loads again from the disk cache at its next use (a load, not a
+ * compile: a few ms on a compiler thread, the draw skipped meanwhile, as at its first use). */
+static Shader *touched(Shader *s) {
+    s->used = gfx_stat_presented;
+    if (s->state == 3) {   /* put away: loaded again from the disk cache */
+        s->state = 0;
+        s->cached = 1;
+        enqueue_shader(s);
+        if (s->stage == SHADER_COMPUTE)   /* (waited for, as at its first use: a skipped launch leaves skinned vertices unwritten) */
+            for (u64 until = GetTickCount64() + 250; s->state == 0 && GetTickCount64() < until;) SwitchToThread();
+    }
+    return s;
+}
+
+static int by_use(const void *a, const void *b) {
+    u64 x = (*(Shader *const *)a)->used, y = (*(Shader *const *)b)->used;
+    return x < y ? -1 : x > y;
+}
+
+/* (render thread, once a frame) */
+static void evict_shaders(void) {
+    static u32 keep = ~0u;
+    if (keep == ~0u) { const char *e = getenv("SSBU_SHADER_KEEP"); keep = e ? (u32)atoi(e) : 2500; }
+    if (!keep || gfx_stat_presented % 60) return;
+    u32 made = 0, old = 0;
+    for (u32 i = 0; i < shader_count; i++)
+        if (shader_cache[i]->state == 1 && shader_cache[i]->obj) {
+            made++;
+            if (gfx_stat_presented - shader_cache[i]->used > 3600) old++;
+        }
+    if (made <= keep || !old) return;
+    Shader **list = malloc(sizeof *list * old);
+    if (!list) return;
+    u32 n = 0;
+    for (u32 i = 0; i < shader_count && n < old; i++) {
+        Shader *s = shader_cache[i];
+        if (s->state == 1 && s->obj && gfx_stat_presented - s->used > 3600) list[n++] = s;
+    }
+    qsort(list, n, sizeof *list, by_use);
+    u32 gone = 0;
+    for (u32 i = 0; i < n && made > keep; i++) {
+        Shader *s = list[i];
+        char path[1200];
+        cache_path(s, path, sizeof path);
+        if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) continue;   /* (only what loads again) */
+        IUnknown_Release((IUnknown *)s->obj);
+        s->obj = NULL;
+        s->state = 3;
+        InterlockedDecrement64((volatile LONG64 *)&gfx_stat_shaders);
+        made--;
+        gone++;
+    }
+    free(list);
+    shaders_put_away += gone;
+}
+
 typedef struct ShaderSlot { u64 g, key, print; u32 size; Shader *s; u64 tables_at; } ShaderSlot;
 
 /* Where a program's jump tables were read from, if they are all its compiler constants (bank 1,
@@ -2029,11 +2093,11 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
     ShaderSlot *slot = &shader_slots[((g >> 4) * 0x9E3779B97F4A7C15ull ^ key) >> 50 & (SHADER_SLOTS - 1)];
     if (slot->s && slot->g == g && slot->key == key && slot->print == fingerprint(stage, p, slot->size)) {
         Shader *s = slot->s;
-        if (!s->info.ntables) return s;
+        if (!s->info.ntables) return touched(s);
         u64 place = tables_place(&s->info, stage_cb);
-        if (place && slot->tables_at == place) return s;
+        if (place && slot->tables_at == place) return touched(s);
         CbufSource src = {stage_cb};
-        if (s->table_hash == table_hash(&s->info, &src)) { slot->tables_at = place; return s; }
+        if (s->table_hash == table_hash(&s->info, &src)) { slot->tables_at = place; return touched(s); }
     }
     u32 size = shader_size(p, 0x40000), skip = stage == SHADER_COMPUTE ? 0x50 : 0;
     u64 h = shader_program_hash(p + skip, size - skip);
@@ -2048,12 +2112,13 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
         if (s->hash != h || s->stage != stage || (stage == SHADER_PIXEL && s->vs_outputs != vs_outputs)) continue;
         if (s->info.ntables && s->table_hash != table_hash(&s->info, &src)) continue;
         *slot = (ShaderSlot){g, key, fingerprint(stage, p, size), size, s};
-        return s;
+        return touched(s);
     }
     if (shader_count == shader_cap) shader_cache = realloc(shader_cache, sizeof *shader_cache * (shader_cap = shader_cap * 2 + 64));
     Shader *s = calloc(1, sizeof *s);
     shader_cache[shader_count++] = s;
     s->hash = h; s->stage = stage; s->vs_outputs = vs_outputs;
+    s->used = gfx_stat_presented;
     *slot = (ShaderSlot){g, key, fingerprint(stage, p, size), size, s};
     snprintf(s->name, sizeof s->name, "%s_%016llx%s", stage == SHADER_VERTEX ? "vs" : stage == SHADER_PIXEL ? "ps" : "cs", program_hash,
              alpha_tested ? "_alphatest" : "");
@@ -4959,6 +5024,7 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
     gfx_stat_presented++;
     release_graves();
     note_writes();
+    evict_shaders();
     debug_messages();
     static int logged, frames_logged, frames_to_log;
     static const char *after_compute = (const char *)1;
