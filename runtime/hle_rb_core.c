@@ -25,6 +25,8 @@
 #include "host.h"
 int rb_on, rb_log;
 int rb_lite_skip(Cpu *c, int group) { (void)c; (void)group; return 0; }
+int rb_vi_catchup(void) { return 0; }
+int rb_dequeue_pick(u64 freemask, int dflt) { (void)freemask; return dflt; }
 void rb_job_kick(Cpu *c, GuestFn *orig) { orig(c); }
 void rb_tree_node(Cpu *c, GuestFn *orig) { orig(c); }
 void rb_rand_draw(Cpu *c, GuestFn *orig, int which) { (void)which; orig(c); }
@@ -117,6 +119,9 @@ static void savestates(Cpu *c, u64 frame);
 #define WINDOW 600   /* fight frames per summary line (10 s) */
 
 int rb_on, rb_log;
+/* A rollback's load and catch-up under way (set before the load, so vi_rb_load sees it; off when caught up,
+ * refused or the fight over). Run-ahead's hidden frames set rb_fast too but never this. */
+static volatile int rb_catchup;
 static int clock_on = 1;   /* SSBU_RB_CLOCK=0: the real clock in fights too (kernel.c rt_ticks) */
 void rb_clock_frame(int fight, u64 gpu_now);   /* (kernel.c) */
 static double quiet_limit_ms = 4;
@@ -287,6 +292,7 @@ static void safe_point(Cpu *c, uintptr_t sp) {
                 fprintf(stderr, "[rb] the fight ended in the middle of a catch-up (%ld frames left): catch-up mode off\n", (long)rb_fast);
                 InterlockedExchange(&rb_fast, 0);
             }
+            rb_catchup = 0;
             { void rb_release_held(void); rb_release_held(); }
             if (net_mode == 2) { void rb_ring_drop(void); rb_ring_drop(); }   /* (the GO! freeze: no undo of the next loading at the next fight's first save) */
         }
@@ -705,6 +711,7 @@ static void ring_test(Cpu *c, u64 frame) {
     if (fast_on < 0) { const char *e = getenv("SSBU_RB_FAST"); fast_on = !(e && *e == '0'); }
     if (ring_rotate < 0) { const char *e = getenv("SSBU_RB_RING_ROTATE"); ring_rotate = e && *e == '1'; }
     if (rb_fast > 0 && InterlockedDecrement(&rb_fast) == 0) {   /* caught up: the load and every frame since */
+        rb_catchup = 0;
         double ms = now_ms() - ring_load_t0;
         caught_up++; catchup_ms += ms; if (ms > catchup_max) catchup_max = ms;
         if (cur_depth > 0 && cur_depth <= 64) { depth_catch[cur_depth] += ms; depth_n[cur_depth]++; }
@@ -804,7 +811,9 @@ static void ring_test(Cpu *c, u64 frame) {
         {   static int profiled; const char *e = getenv("SSBU_RB_PROFILE");
             if (!profiled && e && atof(e) > 0) { profiled = 1; profile_start_gated(atof(e)); } }
         pending_fast = (LONG)(key - found);
+        rb_catchup = fast_on;
         rb_load_age(c, frame, age);   /* (returns only if refused) */
+        rb_catchup = 0;
         rb_release_held();
         ring_loads--; ring_left++;
     }
@@ -1408,6 +1417,7 @@ static void net_step(Cpu *c, u64 frame) {
                 (unsigned long long)net_last_pad[1].buttons, net_last_pad[1].lx, net_last_pad[1].ly);
     }
     if (rb_fast > 0 && InterlockedDecrement(&rb_fast) == 0) {
+        rb_catchup = 0;
         double ms = now_ms() - ring_load_t0;
         net_catch_ms += ms; if (ms > net_catch_max) net_catch_max = ms;
     }
@@ -1529,6 +1539,7 @@ static void net_step(Cpu *c, u64 frame) {
     pending_fast = depth;
     ring_load_t0 = now_ms();
     rb_hist_add(key, found, 0);
+    rb_catchup = 1;
     rb_load_age(c, frame, age);   /* (returns only if refused) */
     net_rollbacks--; net_rerun -= depth; net_depth[depth < 15 ? depth : 15]--;
     /* M7: refused (a thread on another fiber than at that save, even after waiting): an older state may have had
@@ -1544,6 +1555,7 @@ static void net_step(Cpu *c, u64 frame) {
         rb_load_age(c, frame, older);   /* (returns only if refused) */
         net_rollbacks--; net_rerun -= d; net_depth[d < 15 ? d : 15]--; net_older--;
     }
+    rb_catchup = 0;   /* (every load refused) */
     rb_release_held();
     rbn_put_mismatch(m);
 }
@@ -2751,6 +2763,32 @@ static int lite_skipped_now(Cpu *c, int grp) {
 }
 /* (hle_rb_wraps.c: the presentation callees' wraps ask this) */
 int rb_lite_skip(Cpu *c, int group) { return lite_skipped_now(c, group); }
+
+/* ---- a catch-up's frames get the buffers their first pass got ----------------------------------
+ * The game keeps data per display buffer (the camera's among it) and picks it by the slot DequeueBuffer
+ * gives. The buffer queue is the host's (ipc_vi.c): a load puts its slot states back (vi_rb_load), but a
+ * catch-up's frames are freed at once and not paced, so they were given the slots in another order than
+ * their first pass. The per-buffer data was then a buffer out of step, and every rollback moved the
+ * camera back and forth (the "earthquake screen"; measured with ring tests 300,10,4 and 300,8,2: the
+ * camera's block differed from the first pass on 20-70% of the frames shown, none with this). ipc_vi.c
+ * asks these. SSBU_RB_SLOT_ORDER=0: as before. */
+static int slot_order_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_RB_SLOT_ORDER"); on = !(e && *e == '0'); }
+    return on;
+}
+/* (a rollback's load or catch-up is under way, and the slot order is kept) */
+int rb_vi_catchup(void) { return rb_catchup && slot_order_on(); }
+/* DequeueBuffer, under the queue's lock: `dflt` the slot it would give, `freemask` the free ones. A
+ * normal fight frame's slot is kept by logic frame; a catch-up's frame is given that slot again when free. */
+int rb_dequeue_pick(u64 freemask, int dflt) {
+    static u32 key_at[4096]; static u8 slot_at[4096], kept[4096];
+    if (!S.in_fight || !slot_order_on()) return dflt;
+    u32 key = ld32(LOGIC_FRAME), i = key % 4096;
+    if (rb_fast <= 0) { key_at[i] = key; slot_at[i] = (u8)dflt; kept[i] = 1; return dflt; }
+    if (rb_catchup && kept[i] && key_at[i] == key && slot_at[i] < 64 && (freemask >> slot_at[i] & 1)) return slot_at[i];
+    return dflt;
+}
 
 /* ---- M4 profile: the game's task tree (SSBU_RB_TREE=1) --------------------------------------
  * FUN 0x7103725030 (13.0.4 0x7103724a80, ssbu-recomp's ring_simulation.c profile 2) walks the
