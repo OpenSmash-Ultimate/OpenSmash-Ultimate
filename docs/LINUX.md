@@ -167,13 +167,20 @@ When the compile finishes, it also draws the cache once through DXVK
 (`build-linux/ssbu --warm-shaders dump/shadercache`), so DXVK makes each Vulkan pipeline and the
 graphics driver compiles its GPU code in advance, instead of during a match. The warm pass makes
 no window, runs below normal priority and uses up to `SSBU_WARM_THREADS` threads (1–6, by default
-half the processors). It writes `warm.log` in the shader cache and remembers what it drew in
-`warm.done`; a lock file keeps two passes apart. A warm pass that fails (no Vulkan GPU, say) does
-not fail Prepare Shaders: the compiled shaders are kept and the game makes the missing GPU code at
-first use as before. `--no-warm` skips it. After a Mesa/RADV, DXVK or other driver update, run
-`bash launchers/prepare-shaders.sh --rewarm` (or delete `warm.done`) to draw every shader again;
-`SSBU_SHADER_WARM_ALL=1` does the same for the next run. A different executable or DXVK library
-also makes the next run start afresh.
+half the processors). It draws 512 programs between waits for the GPU (the pipeline is made during
+its draw, so a wait per program was only round trips), which lets DXVK's compiler threads work
+meanwhile: on a 16-thread desktop the full pass takes about 7 minutes from empty caches and about
+2 minutes when they already hold the programs. It writes `warm.log` in the shader cache
+and remembers what it drew in `warm.done`; a lock file keeps two passes apart. A warm pass that
+fails (no Vulkan GPU, say) does not fail Prepare Shaders: the compiled shaders are kept and the
+game makes the missing GPU code at first use as before. `--no-warm` skips it.
+
+It runs after every successful compile, and draws only what `warm.done` says an earlier pass has
+not drawn, so running Prepare Shaders again to compile a few new shaders costs little. `warm.done`
+is keyed by this game, DXVK's libraries and the Vulkan driver's ICD manifest and library (Mesa's
+version is in the manifest), so a Mesa/RADV, DXVK or other driver update draws everything again by
+itself. `--rewarm` (or `SSBU_SHADER_WARM_ALL=1`) forces that, as does deleting `warm.done` (for
+example after clearing `~/.cache/dxvk` and `~/.cache/mesa_shader_cache`).
 
 Expect the first full pass to take a while and the caches to grow: the roughly 1,300 shaders the
 game has played already use about 0.5 GB of DXVK/Mesa cache, and a 65,000-shader cache can add many

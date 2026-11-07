@@ -22,9 +22,11 @@ depends on a draw's constant buffers), as are compute programs (on their launch'
 On Linux, after a successful compile, the cache is drawn once by the game itself
 (build-linux/ssbu --warm-shaders dump/shadercache): DXVK then makes each Vulkan pipeline and the
 Vulkan driver compiles its GPU code, so the first use in a game does not have to. It is skipped
-with --no-warm, and --rewarm draws every shader again (after a Mesa, RADV, DXVK or other driver
-update, which may empty those caches). A warm pass that fails (no Vulkan GPU, say) is reported,
-but does not fail the compile: the game still works as without it.
+with --no-warm. It draws what warm.done says an earlier run has not; warm.done is keyed by this
+game and the DXVK and Vulkan driver libraries, so a Mesa, RADV, DXVK or other driver update (which
+may empty those caches) draws everything again by itself. --rewarm forces that. A warm pass that
+fails (no Vulkan GPU, say) is reported, but does not fail the compile: the game still works as
+without it.
 
 How the work is shared out: one discovery pass (shaderaot --dry) lists every key once; the
 keys not in the cache yet go into one queue, longest compile first (by the times recorded in
@@ -392,7 +394,8 @@ def main():
     warm.add_argument("--no-warm", action="store_true",
                       help="do not draw the cache through DXVK after compiling (Linux)")
     warm.add_argument("--rewarm", action="store_true",
-                      help="draw every shader through DXVK again, as after a driver update (Linux)")
+                      help="draw every shader through DXVK again, even ones warm.done has (Linux; "
+                           "a driver update does this by itself)")
     a = ap.parse_args()
     tree = ROOT
     global _POPEN_PRIORITY, PRIORITY_SAID

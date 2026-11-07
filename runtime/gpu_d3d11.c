@@ -36,6 +36,7 @@
 #include <dlfcn.h>     /* (dladdr: the DXVK libraries, for warm.done's driver key) */
 #include <errno.h>
 #include <fcntl.h>
+#include <glob.h>      /* (the Vulkan ICD manifests, for warm.done's driver key) */
 #include <sys/file.h>  /* flock: one warm pass at a time */
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -1663,7 +1664,7 @@ static int prewarm_busy(void) {
  * On (=1) with AMD's driver, not under DXVK; SSBU_SHADER_WARM=0 turns it off, =1 or =2 on with
  * any. The partners declare the stages' interface as the translator does (gpu_shader.c: struct
  * VSOut). */
-#define WARM_SLOW_MS 20.0   /* a first draw this long compiled the program */
+#define WARM_SLOW_MS 20.0   /* (a first draw this long, or a warm pass's create-and-draw, was slow) */
 
 static u32 rd32(const u8 *p) { u32 v; memcpy(&v, p, 4); return v; }
 
@@ -1700,6 +1701,7 @@ typedef struct Warmer {
     ID3D11DeviceContext *ctx;
     ID3D11RenderTargetView *rtv;   /* 1x1 */
     ID3D11Query *done;
+    int prepared;                  /* (a worker's context: the fixed state is set once; render_warmer's is not) */
     SRWLOCK lock;                  /* (the partners) */
     u32 npartners;
     struct { u32 outputs; int stage; void *obj; } partner[256];
@@ -1783,19 +1785,38 @@ static int warm_issue(Warmer *w, int stage, void *obj, u32 outputs) {
     }
     void *partner = warm_partner(w, stage == SHADER_VERTEX ? SHADER_PIXEL : SHADER_VERTEX, outputs);
     if (!partner) return 0;
-    D3D11_VIEWPORT vp = {0, 0, 1, 1, 0, 1};
-    ID3D11DeviceContext_OMSetRenderTargets(c, 1, &w->rtv, NULL);
-    ID3D11DeviceContext_RSSetViewports(c, 1, &vp);
-    ID3D11DeviceContext_RSSetState(c, NULL);
-    ID3D11DeviceContext_OMSetBlendState(c, NULL, NULL, 0xFFFFFFFF);
-    ID3D11DeviceContext_OMSetDepthStencilState(c, NULL, 0);
-    ID3D11DeviceContext_IASetInputLayout(c, NULL);
-    ID3D11DeviceContext_IASetPrimitiveTopology(c, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    if (!w->prepared) {
+        D3D11_VIEWPORT vp = {0, 0, 1, 1, 0, 1};
+        ID3D11DeviceContext_OMSetRenderTargets(c, 1, &w->rtv, NULL);
+        ID3D11DeviceContext_RSSetViewports(c, 1, &vp);
+        ID3D11DeviceContext_RSSetState(c, NULL);
+        ID3D11DeviceContext_OMSetBlendState(c, NULL, NULL, 0xFFFFFFFF);
+        ID3D11DeviceContext_OMSetDepthStencilState(c, NULL, 0);
+        ID3D11DeviceContext_IASetInputLayout(c, NULL);
+        ID3D11DeviceContext_IASetPrimitiveTopology(c, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        w->prepared = 1;
+    }
     ID3D11DeviceContext_VSSetShader(c, (ID3D11VertexShader *)(stage == SHADER_VERTEX ? obj : partner), NULL, 0);
     ID3D11DeviceContext_PSSetShader(c, (ID3D11PixelShader *)(stage == SHADER_PIXEL ? obj : partner), NULL, 0);
     ID3D11DeviceContext_Draw(c, 3, 0);
     return 1;
 }
+
+#ifndef _WIN32
+/* The GPU has run what was drawn since the last wait. A worker draws up to WARM_BATCH programs
+ * before waiting once (a warm pass used to do a round trip per program: End, Flush, GetData); the
+ * pipeline is made during its draw, so the wait only has to keep the submitted work bounded.
+ * The pass's own device and context are not used by anything else meanwhile. */
+#define WARM_BATCH 512
+static void warm_wait(Warmer *w) {
+    ID3D11DeviceContext *c = w->ctx;
+    ID3D11DeviceContext_End(c, (ID3D11Asynchronous *)w->done);
+    ID3D11DeviceContext_Flush(c);
+    for (u64 until = GetTickCount64() + 10000; ID3D11DeviceContext_GetData(c, (ID3D11Asynchronous *)w->done, NULL, 0, 0) == S_FALSE &&
+                                               GetTickCount64() < until;)
+        SwitchToThread();
+}
+#endif
 
 static Warmer render_warmer;   /* the rendering device's: its context is the renderer's (under its lock) */
 static int render_warmer_ok;
@@ -1820,6 +1841,7 @@ static double render_warm(int stage, void *obj, u32 outputs) {
     if (stage == SHADER_COMPUTE || !warm_partner(&render_warmer, stage == SHADER_VERTEX ? SHADER_PIXEL : SHADER_VERTEX, outputs)) return -1;
     if (!enter()) return -1;
     u64 t0 = rt_clock_ns();
+    render_warmer.prepared = 0;   /* (the game's own draws change its context's state) */
     int drew = warm_issue(&render_warmer, stage, obj, outputs);
     if (drew) {
         ID3D11DeviceContext_End(ctx, (ID3D11Asynchronous *)render_warmer.done);
@@ -2128,8 +2150,9 @@ static int warm_lock(const char *dir) {
 
 /* The driver's part of warm.done's key, which a driver update changes (as the UMD version does on
  * Windows). DXVK's libraries are what turn the DXBC into Vulkan pipelines; their size and date
- * identify an update of it. Mesa's/RADV's version is not read here: after a driver update, run
- * Prepare Shaders again with --rewarm (or delete warm.done), which draws everything again. */
+ * identify an update of it. The Vulkan driver is Mesa/RADV (or another ICD): its manifest's
+ * content (Mesa's api_version is in it) and the library it names change with an update, so a
+ * Mesa/RADV update draws everything again by itself. Missing paths leave the key as it was. */
 static void warm_driver_lib(u64 *h, const void *addr) {
     Dl_info info;
     if (!addr || !dladdr(addr, &info) || !info.dli_fname) return;
@@ -2142,12 +2165,80 @@ static void warm_driver_lib(u64 *h, const void *addr) {
     *h = (*h ^ name_hash(text)) * 1099511628211ull;
 }
 
+/* A file in the key: its path, size and date, and for a manifest its content (it is tiny). */
+static void warm_driver_file(u64 *h, const char *path, int content) {
+    struct stat st;
+    char text[1300];
+    if (stat(path, &st))
+        snprintf(text, sizeof text, "%s|?", path);
+    else
+        snprintf(text, sizeof text, "%s|%llu|%lld", path, (unsigned long long)st.st_size, (long long)st.st_mtime);
+    *h = (*h ^ name_hash(text)) * 1099511628211ull;
+    FILE *f = content ? fopen(path, "rb") : NULL;
+    if (!f) return;
+    char buf[512];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0)
+        for (size_t i = 0; i < n; i++) *h = (*h ^ (u8)buf[i]) * 1099511628211ull;
+    fclose(f);
+}
+
+/* An ICD manifest, and the library its "library_path" names (relative to the manifest's folder). */
+static void warm_driver_icd(u64 *h, const char *path) {
+    warm_driver_file(h, path, 1);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    const char *at = strstr(buf, "\"library_path\"");
+    const char *q = at ? strchr(at + 14, '"') : NULL;
+    const char *end = q ? strchr(q + 1, '"') : NULL;
+    if (!end || end - q - 1 >= 1024) return;
+    char lib[1024], full[1300];
+    snprintf(lib, sizeof lib, "%.*s", (int)(end - q - 1), q + 1);
+    if (lib[0] == '/') snprintf(full, sizeof full, "%s", lib);
+    else {
+        const char *slash = strrchr(path, '/');
+        snprintf(full, sizeof full, "%.*s/%s", (int)(slash ? slash - path : 0), path, lib);
+    }
+    warm_driver_file(h, full, 0);
+}
+
+/* Every ICD the Vulkan loader would see: VK_DRIVER_FILES/VK_ICD_FILENAMES (a ':' list), else the
+ * loader's folders. Sorted, so that a directory listing order does not change the key. */
+static void warm_driver_icds(u64 *h) {
+    const char *env = getenv("VK_DRIVER_FILES");
+    if (!env || !*env) env = getenv("VK_ICD_FILENAMES");
+    if (env && *env) {
+        char list[2048];
+        snprintf(list, sizeof list, "%s", env);
+        for (char *p = list, *q; p && *p; p = q) {
+            q = strchr(p, ':');
+            if (q) *q++ = 0;
+            if (*p) warm_driver_icd(h, p);
+        }
+        return;
+    }
+    const char *dirs[] = {"/usr/share/vulkan/icd.d", "/etc/vulkan/icd.d", "/usr/local/share/vulkan/icd.d"};
+    for (u32 i = 0; i < sizeof dirs / sizeof *dirs; i++) {
+        char pattern[1300];
+        snprintf(pattern, sizeof pattern, "%s/*.json", dirs[i]);
+        glob_t g = {0};
+        if (!glob(pattern, 0, NULL, &g))
+            for (size_t j = 0; j < g.gl_pathc; j++) warm_driver_icd(h, g.gl_pathv[j]);
+        globfree(&g);
+    }
+}
+
 static u64 warm_driver_key(void) {
     const char *over = getenv("SSBU_WARM_DRIVER");
     if (over && *over) return name_hash(over);
     u64 h = 1469598103934665603ull;
     warm_driver_lib(&h, (const void *)D3D11CreateDevice);
     warm_driver_lib(&h, (const void *)CreateDXGIFactory1);
+    warm_driver_icds(&h);
     return h;
 }
 
@@ -2184,7 +2275,8 @@ static DWORD WINAPI warm_worker(void *arg) {
     Warmer *w = calloc(1, sizeof *w);
     LARGE_INTEGER freq;
     QueryPerformanceFrequency(&freq);
-    if (w && warmer_init(w, d, c))
+    if (w && warmer_init(w, d, c)) {
+        u32 pending = 0;   /* (drawn since the last wait) */
         for (LONG i; !r->stop && (i = InterlockedIncrement(&r->next) - 1) < (LONG)r->n;) {
             if (r->done[i]) continue;   /* (an earlier run drew it) */
             r->done[i] = 1;
@@ -2214,13 +2306,6 @@ static DWORD WINAPI warm_worker(void *arg) {
             LARGE_INTEGER a, b;
             QueryPerformanceCounter(&a);
             int ok = warm_issue(w, stage, obj, outputs);
-            if (ok) {
-                ID3D11DeviceContext_End(c, (ID3D11Asynchronous *)w->done);
-                ID3D11DeviceContext_Flush(c);
-                for (u64 until = GetTickCount64() + 10000; ID3D11DeviceContext_GetData(c, (ID3D11Asynchronous *)w->done, NULL, 0, 0) == S_FALSE &&
-                                                           GetTickCount64() < until;)
-                    SwitchToThread();
-            }
             QueryPerformanceCounter(&b);
             IUnknown_Release((IUnknown *)obj);
             for (UINT64 m = 0, nm = iq ? ID3D11InfoQueue_GetNumStoredMessages(iq) : 0; m < nm; m++) {
@@ -2235,7 +2320,13 @@ static DWORD WINAPI warm_worker(void *arg) {
             if (iq) ID3D11InfoQueue_ClearStoredMessages(iq);
             InterlockedIncrement(ok ? &r->drawn : &r->failed);
             if (ok && (double)(b.QuadPart - a.QuadPart) * 1000.0 / (double)freq.QuadPart > WARM_SLOW_MS) InterlockedIncrement(&r->slow);
+            if (ok && ++pending >= WARM_BATCH) {
+                warm_wait(w);
+                pending = 0;
+            }
         }
+        if (pending) warm_wait(w);
+    }
     if (w) {
         ID3D11DeviceContext_ClearState(c);
         warmer_free(w);
@@ -2382,7 +2473,7 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
         if (no_device) snprintf(rest, sizeof rest, "no Direct3D 11 device (Vulkan): the cache was not warmed");
         else if (left) snprintf(rest, sizeof rest, "%u left for the next run", left);
         else snprintf(rest, sizeof rest, "all %u of the cache drawn", r.n);
-        fprintf(out, "%04u-%02u-%02u %02u:%02u: %ld shaders drawn once on %s in %.1f s, %ld of them compiled there (over %.0f ms), %ld not drawn; "
+        fprintf(out, "%04u-%02u-%02u %02u:%02u: %ld shaders drawn once on %s in %.1f s, %ld of them took over %.0f ms to create or draw, %ld not drawn; "
                      "%u drawn before; %s\n",
                 st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, (long)r.drawn, name, (GetTickCount64() - t0) / 1000.0, (long)r.slow,
                 WARM_SLOW_MS, (long)r.failed, before, rest);
@@ -2391,8 +2482,8 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
     if (no_device)
         fprintf(stderr, "[warm] not warmed: no Direct3D 11 device (is a Vulkan GPU driver there?)\n");
     else
-        fprintf(stderr, "[warm] done: %ld shaders drawn in %.1f s (%ld failed, %ld over %.0f ms), %u already done, %u left\n",
-                (long)r.drawn, (GetTickCount64() - t0) / 1000.0, (long)r.failed, (long)r.slow, WARM_SLOW_MS, before, r.n - ndone);
+        fprintf(stderr, "[warm] done: %ld shaders drawn in %.1f s (%ld failed, %ld slow to create or draw), %u already done, %u left\n",
+                (long)r.drawn, (GetTickCount64() - t0) / 1000.0, (long)r.failed, (long)r.slow, before, r.n - ndone);
     free(r.done);
     free(r.files);
     if (r.adapter) IDXGIAdapter1_Release(r.adapter);
