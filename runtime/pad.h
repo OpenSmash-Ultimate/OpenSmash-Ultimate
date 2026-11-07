@@ -57,3 +57,4 @@ const char *pad_button_name(int npad);                    /* "A", ..., "DOWN" */
 const char *pad_ini_path(void);
 void pad_reload(void);                                    /* controllers.ini read again, pads set up again (soon) */
 int menu_blocks_input(void);                              /* (gpu_menu.c) the menu is open: the game sees no input */
+void pad_input_gate_set(int on);                          /* (hle_hid.c) hold the game's own input while shaders prepare */

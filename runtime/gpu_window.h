@@ -10,6 +10,9 @@ void *gfx_window_open(void);
 long gfx_take_hotkeys(void);
 /* (Linux: linux/window.c) F1 + n was pressed. */
 void gfx_hotkey(int n);
+/* (Linux: linux/window.c) Starts SDL's video system without making a window, for --warm-shaders
+ * (DXVK's native build presents through SDL). 1: started. */
+int rt_video_init(void);
 /* Whether the game's window has the keyboard. */
 int gfx_window_focused(void);
 /* (rollback netplay, hle_rb_core.c) what a match's set-up waits for, after the window's title. */

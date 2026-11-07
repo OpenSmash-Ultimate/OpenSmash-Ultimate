@@ -22,6 +22,12 @@ enum {   /* nn::hid::NpadButton */
 
 static volatile LONG64 sampling;
 
+/* While the renderer prepares the shaders (and lets the title screen's demo match make DXVK's
+ * pipeline states), the game gets no input: the user cannot start a match into the remaining
+ * hitches. Scripted runs and the benchmark keep their own input. */
+static volatile int input_gate;
+void pad_input_gate_set(int on) { input_gate = on; }
+
 /* SSBU_SEQ (input_seq.h): player 1 is the sequence's - its pad is not read - and the keyboard is
  * nobody's unless SSBU_SEQ_KEYBOARD=1, so that a run goes the same way whatever is plugged in or
  * typed. Players 2-8 keep their pads. */
@@ -239,7 +245,9 @@ static void npad_state(u64 out, u32 id, u32 style) {
         }
         if (ph == NPAD_NO1 && !bench_on()) buttons |= scripted_buttons(&lx, &ly);
         if ((int)ph == keyboard_slot() && (!bench_on() || bench_pads())) buttons |= keyboard_buttons(&lx, &ly, &rx, &ry);
-        if (menu_blocks_input()) { buttons = 0; lx = ly = rx = ry = 0; }   /* the settings menu has them (still connected) */
+        if (menu_blocks_input() || (input_gate && !bench_on() && !input_seq_on() && !getenv("SSBU_INPUT"))) {
+            buttons = 0; lx = ly = rx = ry = 0;   /* (the menu, or the shader preparation, has them; still connected) */
+        }
         rb_pad(id, &buttons, &lx, &ly, &rx, &ry, &lt, &rt);
         {
             /* the stick directions also exist as buttons */
