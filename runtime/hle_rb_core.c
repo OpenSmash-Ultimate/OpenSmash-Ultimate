@@ -2033,6 +2033,30 @@ static void net_rules_setup(u64 st) {
  *     logic frames after it, the same number on every game: they reach GO! together. (Not all at the barrier after
  *     PRE_WAIT_MS: each goes on, as before.)
  * Until that point, a line every 30 frames says what the frames before the fight hold (fighters, busy threads). */
+/* (the GO! hitch) With the whole copy taken in the loading, the fight's first save still turned the state map on
+ * (hle_rb_state.c sm_begin: every alias page read-only but the hot ones), 31-71 ms in the logs, so GO! came that much
+ * late (a frame gap up to 84 ms in a fight's first 600 frames, two games on one PC). Now it is turned on at a refresh
+ * of the copy in the entrances, once the logic frame has run SSBU_RB_SM_PRE frames since the set-up (default 60: it
+ * stands still through the loading and runs from the entrances on; GO! comes some 216 after); 0: at the fight's first
+ * save, as before. Left on with no fight after (a set-up given up), it is turned off at the next set-up. */
+void rb_state_map_fight(int on);   /* (hle_rb_state.c) */
+static int sm_pre = -1, sm_pre_armed;
+static u32 sm_pre_logic, sm_pre_runs;
+static void sm_pre_reset(void) {
+    if (sm_pre_armed && !S.in_fight) rb_state_map_fight(0);
+    sm_pre_armed = 0; sm_pre_runs = 0; sm_pre_logic = 0;
+}
+static void sm_pre_step(long long pre_frame) {
+    if (sm_pre < 0) { const char *e = getenv("SSBU_RB_SM_PRE"); sm_pre = e && *e ? atoi(e) : 60; }
+    u32 lf = ld32(LOGIC_FRAME);
+    if (lf != sm_pre_logic) { sm_pre_logic = lf; sm_pre_runs++; }
+    if (sm_pre <= 0 || sm_pre_armed || sm_pre_runs < (u32)sm_pre) return;
+    sm_pre_armed = 1;
+    rb_state_map_fight(1);   /* (the next refresh that holds the threads turns it on) */
+    fprintf(stderr, "[rb] before the fight: frame %lld since the set-up, the logic frame has run %u times (the entrances): the state map goes on at the next refresh\n",
+            pre_frame, sm_pre_runs);
+}
+
 #define PRE_EVERY 4
 #define PRE_QUIET 3
 #define PRE_WAIT_MS 30000.0
@@ -2067,6 +2091,7 @@ static void net_pre_reset(void) {
     pre_done = 0; pre_quiet = 0; pre_frames = 0; memset(ready_from, 0, sizeof ready_from); all_ready = 0;
     for (int p = 0; p < RBN_PLAYERS; p++) { pre_peer[p] = -1; pre_peer_ms[p] = 0; }
     pre_waited_ms = 0; pre_waits = 0;
+    sm_pre_reset();
 }
 static void net_pre_send_n(u32 frames) {
     u8 out[RBN_PRE_BYTES];
@@ -2142,6 +2167,7 @@ static long long pre_refreshed, pre_skipped;
 static void net_pre_fight(Cpu *c, u64 frame) {
     pre_frames++;
     net_pre_step();   /* (v0.9.4: in step with the others through the loading) */
+    sm_pre_step(pre_frames);   /* (the GO! hitch: the state map on in the entrances) */
     /* (hj2: "fighters not yet" on every frame to GO! - the game gives the players their fighters at GO!, though the
      * fighters do their entrances before - so the barrier never came, and the whole copy stayed at GO!: 358 ms here,
      * 526 ms on PC 2, whose GO! then came that much later: the stutter. The two games had come to GO! the same number
@@ -3336,15 +3362,20 @@ static int ra_blocked(void) { return net_mode || ring_from >= 0 || ver_at >= 0 |
 #define RA_PRE_EVERY 4
 static int ra_pre;
 static long long ra_pre_frames, ra_pre_ok, ra_pre_skipped;
+/* (the ring test, SSBU_RB_RING, offline: the same copy at the set-up, so that its first save at <frame> is a fight
+ * save as a match's is, not the whole 2 GB copy - 376-538 ms in its logs, a freeze no match has) */
 void ra_set_up(void) {
-    if (net_mode < 0 || ra_blocked() || !ra_frames()) return;
+    if (net_mode < 0) return;
+    if (ring_from >= 0 ? net_mode != 0 : (ra_blocked() || !ra_frames())) return;
     ra_pre = 1; ra_pre_frames = 0;
+    sm_pre_reset();
 }
 extern double rb_park_quick_ms;   /* (hle_rb_state.c) */
 int ra_pre_point(Cpu *c, u64 frame) {
     if (!ra_pre) return 0;
     if (ra_pre_frames > 1800) { ra_pre = 0; return 0; }   /* (a set-up left without a fight, or a long loading: 30 s, then no more) */
     void rb_ring_drop(void);
+    sm_pre_step(ra_pre_frames + 1);   /* (the GO! hitch: the state map on in the entrances) */
     if (ra_pre_frames++ % RA_PRE_EVERY) return 1;
     double t0 = now_ms();
     if (ra_pre_frames > 1) rb_park_quick_ms = 4;
