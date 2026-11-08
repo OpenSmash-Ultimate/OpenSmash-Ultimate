@@ -166,6 +166,15 @@ class ToolchainTests(unittest.TestCase):
 
 
 # ---- build_mac.py ------------------------------------------------------------------------------
+def overlay_atlas_size():
+    """ATLAS_W * ATLAS_H out of runtime/macos/gpu_metal_overlay.m's defines."""
+    import re
+    text = (ROOT / 'runtime' / 'macos' / 'gpu_metal_overlay.m').read_text()
+    n = {k: int(re.search(rf'#define {k} (\d+)', text).group(1)) for k in ('CELL_W', 'CELL_H', 'COLS')}
+    rows = int(re.search(r'#define ATLAS_H \(CELL_H \* (\d+)\)', text).group(1))
+    return n['CELL_W'] * n['COLS'] * n['CELL_H'] * rows
+
+
 class BuildMacTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='mac build test ')
@@ -192,6 +201,10 @@ class BuildMacTests(unittest.TestCase):
                                '-I', str(ROOT / 'runtime'), '-I', str(out / 'gen'), '-F', str(ROOT / 'deps' / 'SDL3'),
                                '-I', str(ROOT / 'third_party' / 'libvpx')])
         self.assertEqual(self.ns['RUNTIME_DEFINES'], ['-DSSBU_HAVE_OPUS', '-DSSBU_HAVE_VPX', '-DSSBU_HAVE_SDL3'])
+
+    def test_overlay_font_size(self):
+        # (a blank overlay_font.h of another size fails gpu_metal_overlay.m's _Static_assert: #155)
+        self.assertEqual(self.ns['OVERLAY_FONT_SIZE'], overlay_atlas_size())
 
     def test_modules(self):
         names = [(n, os.path.relpath(o, self.ns['OBJ'])) for n, _s, o in self.ns['modules']()]
@@ -966,7 +979,8 @@ class BuildGameMacTests(unittest.TestCase):
             with tempfile.TemporaryDirectory(prefix='check ') as tmp:
                 with self.assertRaises(self.g['Failed']) as e:
                     self.g['check_mac_runtime'](tc, tmp)
-                self.assertTrue((Path(tmp) / 'overlay_font.h').exists())
+                font = (Path(tmp) / 'overlay_font.h').read_text()   # (the atlas's size: gpu_metal_overlay.m asserts it)
+                self.assertIn('overlay_font[%d]' % overlay_atlas_size(), font)
         finally:
             sys.modules.pop('build_mac', None)
             if saved[0] is None:

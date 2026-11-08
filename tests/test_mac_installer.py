@@ -64,6 +64,23 @@ class CheckTests(unittest.TestCase):
         self.assertIsNone(im.macos_version('macOS'))
         self.assertTrue(im.macos_version('13.7.2') < im.MIN_MACOS <= im.macos_version('14.0'))
 
+    def test_check_tools_says_why(self):
+        # (build_game.py --check's error names a source and says the compiler's words are below it: #155)
+        out = ('[1/1] Check the tools\nERROR: cannot compile runtime/macos/gpu_metal_overlay.m (below).\n'
+               "x.m:56:20: error: static assertion failed\n   56 |     _Static_assert(a == b);\n"
+               '      |                    ^\n1 error generated.\n')
+        failed = subprocess.CompletedProcess([], 1, out, '')
+        with mock.patch.object(im.subprocess, 'run', return_value=failed):
+            with self.assertRaises(im.Stop) as e:
+                im.check_tools()
+        self.assertEqual(str(e.exception), 'The tools cannot build the game yet: cannot compile '
+                         'runtime/macos/gpu_metal_overlay.m (below).\nx.m:56:20: error: static assertion failed\n'
+                         '   56 |     _Static_assert(a == b);\n      |                    ^\n1 error generated.')
+        with mock.patch.object(im.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, 'no python\n', '')):
+            with self.assertRaises(im.Stop) as e:
+                im.check_tools()
+        self.assertEqual(str(e.exception), 'The tools cannot build the game yet: no python')
+
     def test_firewall_state(self):
         self.assertEqual(im.firewall_state('Firewall is disabled. (State = 0)\n'), 'off')
         self.assertEqual(im.firewall_state('Firewall is enabled. (State = 1)\n'), 'on')

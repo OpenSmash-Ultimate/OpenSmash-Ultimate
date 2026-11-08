@@ -779,9 +779,14 @@ def check_tools():
     game is (C++ exceptions through C, SDL3, Metal), and run."""
     r = subprocess.run([venv_python(), os.path.join(ROOT, "tools", "build_game.py"), "--check"], cwd=ROOT,
                        capture_output=True, text=True)
-    said = [line.strip() for line in (r.stdout + r.stderr).splitlines() if line.strip()]
+    lines = (r.stdout + r.stderr).splitlines()
+    said = [line.strip() for line in lines if line.strip()]
     if r.returncode:
-        problem = next((line[len("ERROR: "):] for line in said if line.startswith("ERROR: ")), said[-1] if said else "")
+        at = next((i for i, line in enumerate(lines) if line.startswith("ERROR: ")), None)
+        if at is None:
+            problem = said[-1] if said else ""
+        else:   # (with what follows it: the compiler's own words, which its message says are below)
+            problem = "\n".join(line.rstrip() for line in lines[at:]).strip()[len("ERROR: "):]
         raise Stop("The tools cannot build the game yet: " + problem)
     for line in said:   # (not its heading, nor the Python step 4 named)
         if not line.startswith(("[", "Python ")) and line != "The tools are ready.":
