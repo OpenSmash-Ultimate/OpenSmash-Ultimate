@@ -241,13 +241,11 @@ The game's graphics programs (*shaders*) are prepared the first time each one is
 
 To prepare them all before playing, double-click **`launchers\Prepare Shaders.bat`**. It runs at low priority so the PC stays usable, and shows a progress bar with the time left. A first run compiles about 40,000 shaders: about half an hour on a 16-thread processor, an hour or two on a 4- to 8-thread one. You can close it at any time and start it again later; what's done stays done, so a later run takes minutes. It needs Python and Visual Studio, as for [building](BUILDING.md).
 
-<<<<<<< HEAD
+On an AMD graphics card, Prepare Shaders also draws the prepared shaders once through the driver, and WindowSmash keeps filling the driver's cache in the background after each game (it pauses while you play). The first start after a graphics driver update fills it once before the game loads, which can take a few minutes; set `SSBU_SHADER_WARM_PREPLAY=0` to skip that and let the game make each shader the first time it is used.
+
 ## Playing with yuzu-compatible clients (Windows)
 
 The optional client connects to an existing yuzu-compatible room server, then uses the game's **Local Wireless** mode. Start it with **launchers/Join yuzu Room.bat**. Eden 0.2.0 and another unnamed compatible client have been reported working in multiple complete matches. Game UDP defaults to Eden's format; historical yuzu peers can use the separate format option. See [the client guide](YUZU_CLIENT.md) for dependencies, configuration, validation and logs.
-=======
-On an AMD graphics card, Prepare Shaders also draws the prepared shaders once through the driver, and WindowSmash keeps filling the driver's cache in the background after each game (it pauses while you play). The first start after a graphics driver update fills it once before the game loads, which can take a few minutes; set `SSBU_SHADER_WARM_PREPLAY=0` to skip that and let the game make each shader the first time it is used.
->>>>>>> origin/pr/175
 
 ## Low frame rate
 

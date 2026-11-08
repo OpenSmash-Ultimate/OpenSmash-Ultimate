@@ -2,8 +2,7 @@
 """Compile the game's shaders ahead of time, into the renderer's disk cache.
 
 Usage:
-<<<<<<< HEAD
-  shader_aot.py [--jobs N] [--dry] [--parts]
+  shader_aot.py [--jobs N] [--dry] [--parts] [--no-warm] [--rewarm]
   shader_aot.py --files <file or folder>... [--tree <dir>] [--warm] [--jobs N]
 
 --files takes the programs of loose files instead of data.arc's: .eff, .nushdb and .arc files, or
@@ -12,9 +11,6 @@ compiled, and with --warm every one of their cache files is dated now, so the st
 them: the fighter's effects are ready before its first match instead of compiling while the match
 loads (tools/fighter_mod.py --shaders runs this for a fighter folder). The cache is <tree>/dump/shadercache
 (default: this checkout's); the "every shader compiled" marker is left as it is.
-=======
-  shader_aot.py [--jobs N] [--dry] [--parts] [--no-warm] [--rewarm]
->>>>>>> origin/pr/175
 
 The game's GPU programs are stored in data.arc as they are uploaded: in the effect files
 (.eff), the shader databases (.nushdb) and nested archives (.arc); a few more are built into the
@@ -448,18 +444,15 @@ def main():
     ap.add_argument("--priority", choices=("low", "medium", "high"), default="low")
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--parts", action="store_true", help="split the keys between the processes by hash (the older way)")
-<<<<<<< HEAD
     ap.add_argument("--files", nargs="+", help="loose .eff/.nushdb/.arc files or folders instead of data.arc")
     ap.add_argument("--tree", default=ROOT, help="with --files: the tree whose dump/shadercache gets the files")
     ap.add_argument("--warm", action="store_true", help="with --files: date their cache files now (the start's prewarm makes them)")
-=======
     warm = ap.add_mutually_exclusive_group()
     warm.add_argument("--no-warm", action="store_true",
                       help="do not draw the cache through the graphics driver after compiling")
     warm.add_argument("--rewarm", action="store_true",
                       help="draw every shader through the driver again, even ones warm.done has "
                            "(a driver update does this by itself)")
->>>>>>> origin/pr/175
     a = ap.parse_args()
     if a.files:
         return main_files(a)
