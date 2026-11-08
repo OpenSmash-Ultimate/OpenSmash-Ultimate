@@ -226,7 +226,13 @@ static const char DEFAULT_INI[] =
     "; invert = rightx, righty\n"
     "; (the game's log line for each player names the pad with its GUID, as does padtest)\n"
     "; Nintendo's own adapter (USB 057e:0337) never needs a section: SDL reads it with its\n"
-    "; GameCube driver and the C-stick is already the right way up.\n";
+    "; GameCube driver and the C-stick is already the right way up.\n"
+    "; A worn stick that never reaches the edge (a dash or a smash needs about 80%): in Wii U\n"
+    "; mode the adapter is recalibrated from Esc > Controllers > Sticks..., with nothing to set\n"
+    "; here. In PC mode, if the driver does not already scale the stick to the edge, read how\n"
+    "; far it goes on that page and set outer_zone to a little under it, e.g.:\n"
+    "; [device gamecube]\n"
+    "; outer_zone = 88\n";
 
 static char *trim(char *s) {
     while (*s == ' ' || *s == '\t') s++;
@@ -827,6 +833,9 @@ typedef struct Dev {
     Mapping map;
     u16 sent_low, sent_high;      /* rumble last sent, and when */
     ULONGLONG sent_at;
+    i32 axis_lo[RA_COUNT], axis_hi[RA_COUNT];   /* the least and most each raw axis has read */
+    int axes_seen;                /* axis_lo/hi hold a first read */
+    volatile LONG axes_reset;     /* pad_reset_axes asked: they start over from the next read */
 } Dev;
 
 static Dev devs[16];
@@ -983,7 +992,16 @@ static i32 dev_trigger(const Dev *d, const Raw *raw, int b) {
     return v;
 }
 
-static void dev_state(const Dev *d, const Raw *raw, PadState *o) {
+static void dev_state(Dev *d, const Raw *raw, PadState *o) {
+    if (!d->axes_seen || InterlockedExchange(&d->axes_reset, 0)) {
+        memcpy(d->axis_lo, raw->axis, sizeof d->axis_lo);
+        memcpy(d->axis_hi, raw->axis, sizeof d->axis_hi);
+        d->axes_seen = 1;
+    } else
+        for (int a = 0; a < RA_COUNT; a++) {
+            if (raw->axis[a] < d->axis_lo[a]) d->axis_lo[a] = raw->axis[a];
+            if (raw->axis[a] > d->axis_hi[a]) d->axis_hi[a] = raw->axis[a];
+        }
     i32 threshold = d->trigger * 32767 / 100;
     o->connected = 1;
     o->gc = (u32)d->gc;
@@ -1037,6 +1055,10 @@ static void dev_info(const Dev *d, const Raw *raw, PadInfo *o) {
     o->raw = raw->buttons & ((1u << RB_COUNT) - 1);
     if (raw->axis[RA_LEFT_TRIGGER] > 16384) o->raw |= PAD_RAW_LEFT_TRIGGER;
     if (raw->axis[RA_RIGHT_TRIGGER] > 16384) o->raw |= PAD_RAW_RIGHT_TRIGGER;
+    o->usb_port = d->usb - 1;
+    memcpy(o->axis, raw->axis, sizeof o->axis);
+    memcpy(o->axis_lo, d->axis_lo, sizeof o->axis_lo);
+    memcpy(o->axis_hi, d->axis_hi, sizeof o->axis_hi);
 }
 
 static void publish(const PadState fresh[PAD_SLOTS], const char names[PAD_SLOTS][48], const PadInfo info[PAD_SLOTS]) {
@@ -1503,6 +1525,11 @@ int pad_info(u32 slot, PadInfo *out) {
     *out = slot_info[slot];
     ReleaseSRWLockShared(&lock);
     return out->connected;
+}
+
+void pad_reset_axes(u32 slot) {
+    for (int i = 0; i < (int)(sizeof devs / sizeof *devs); i++)
+        if (devs[i].used && devs[i].slot == (int)slot) InterlockedExchange(&devs[i].axes_reset, 1);
 }
 
 const char *pad_raw_name(int bit) {

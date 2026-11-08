@@ -92,6 +92,10 @@ int mods_running_count(void) { return 0; }
 int rt_code_patches_on(void) { return 0; }
 int pad_info(u32 slot, PadInfo *out) { (void)slot; memset(out, 0, sizeof *out); return 0; }   /* (no controllers) */
 int pad_get(u32 slot, PadState *out) { (void)slot; memset(out, 0, sizeof *out); return 0; }
+void pad_reset_axes(u32 slot) { (void)slot; }
+int padusb_axes(int port, PadUsbAxes *out) { (void)port; memset(out, 0, sizeof *out); return 0; }
+void padusb_recalibrate(int port) { (void)port; }
+int padusb_rate(int port) { (void)port; return 0; }
 void pad_rumble(u32 slot, int side, float amplitude) { (void)slot; (void)side; (void)amplitude; }
 void pad_reload(void) {}
 const char *pad_ini_path(void) { return FILES[CONFIG_CONTROLLERS]; }
