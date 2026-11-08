@@ -2863,6 +2863,7 @@ int net_recent_peers(u32 *out, int max, u32 within_ms);   /* (net.h) */
 #define ONLINE_MELEE 14
 #define ONLINE_WAIT_MS 15000.0
 static int online_match;   /* (the match set up now is an Online one played with rollback) */
+static int online_lw;      /* (... and a Local Wireless room's, not a Quickplay one: online_restore) */
 /* (what the game set up, put back as the fight ends: its own results and what follows them - the GSP, the next
  * search - run on the Online match, melee mode 14 and the other player a network player, as without rollback) */
 #define ONLINE_HDR 0x580   /* (the match block's rule header: the records follow, 0x260 bytes each) */
@@ -2884,6 +2885,23 @@ static void online_fight_start(void) {
 }
 static void online_restore(void) {
     if (!online_match) return;
+    /* A Local Wireless room's match (#180): its results go on rollback's own set-up, every player local as in the fight.
+     * With the room's set-up back (the other player a network player again) the results no longer matched the fight's
+     * fighters, built from rollback's: the room's results sync left the other game's player out (the host's first
+     * message 144 bytes where the room's own fight gives 192), the loser's card stayed blank and both games stood at
+     * "Gold Earned" for good, every match. On rollback's set-up the results run as a local melee's, the A and B passed
+     * between the games (net_results_frame) ready the other player's card, and the room's character select builds its
+     * panels anew, the other player a network player again. Quickplay keeps the game's set-up: its results, GSP and next
+     * search need the Online one. SSBU_RB_LW_RESTORE=1: a room's match too, as before. */
+    if (online_lw) {
+        const char *e = getenv("SSBU_RB_LW_RESTORE");
+        if (!(e && *e == '1')) {
+            fprintf(stderr, "[rb] online: the fight is over: a Local Wireless room's: its results on rollback's set-up (every player local)\n");
+            { void net_rb_counts_report(void); net_rb_counts_report(); }
+            online_match = 0;
+            return;
+        }
+    }
     memcpy(P(u8, MELEE_INFO), online_hdr, ONLINE_HDR);
     {   /* (and the fighter manager's copy of the melee mode, which it took at the match's start: + 0xc0; only
          * another with SSBU_RB_ONLINE_MODE) */
@@ -2976,7 +2994,7 @@ static int online_setup(u64 st) {
      * players are local ones here. SSBU_RB_ONLINE_MODE=<n>, research: the fight set up with melee mode n instead; 0, a
      * local melee, plays alike but ends on a local results screen the Online scene never leaves) */
     {   const char *e = getenv("SSBU_RB_ONLINE_MODE"); if (e && *e) st8(MELEE_INFO, (u8)atoi(e)); }
-    online_match = 1;
+    online_match = 1; online_lw = mode != ONLINE_MELEE;
     return 1;
 }
 static u64 record_caller;
