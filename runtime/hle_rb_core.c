@@ -840,7 +840,7 @@ static double net_t0;           /* and when (ms) */
 static u8 *net_got;             /* by frame - net_key0: delivered */
 static u32 net_low;             /* every frame below this delivered */
 static u64 *net_final;          /* by frame - net_key0: the fight hash once final (0: none) */
-static long long net_rollbacks, net_rerun, net_waits, net_too_deep, net_depth[16], net_saves_made, net_saves_skipped;
+static long long net_rollbacks, net_rerun, net_waits, net_too_deep, net_depth[16], net_saves_made, net_saves_skipped, net_saves_same;
 static long long net_older;   /* (M7: rollbacks done from an older state, the newest refused) */
 static double net_catch_ms, net_catch_max, net_wait_ms;
 static int net_done;
@@ -1150,7 +1150,8 @@ static void net_report(void) {
     }
     char hist[200] = ""; size_t k = 0;
     for (int d = 1; d < 16; d++) if (net_depth[d]) k += snprintf(hist + k, sizeof hist - k, " %d:%lld", d, net_depth[d]);
-    fprintf(stderr, "[rb] saves: %lld made, %lld left out (the other's next pad already there)\n", net_saves_made, net_saves_skipped);
+    fprintf(stderr, "[rb] saves: %lld made, %lld left out (the other's next pad already there, or %lld of them: their logic frame's state already kept)\n", net_saves_made,
+            net_saves_skipped, net_saves_same);
     fprintf(stderr, "[rb] loads held up by a thread on another fiber: %lld went ahead after a wait, %lld refused; %lld rollbacks from an older state instead\n",
             rb_fiber_retried_ok, rb_fiber_refused, net_older);
     fprintf(stderr, "[rb] net check: %lld frames hashed again after a rollback with their pads all real, %lld of them DIFFERENT%s\n", net_again, net_again_bad,
@@ -1356,7 +1357,7 @@ static void net_step(Cpu *c, u64 frame) {
         memset(net_acked_by, 0, sizeof net_acked_by); memset(net_heard, 0, sizeof net_heard); net_checked = key;
         net_countdown = 0;
         /* (every count of the report from zero: it added up over a session's fights, twopc14) */
-        net_rollbacks = net_rerun = net_waits = net_too_deep = net_saves_made = net_saves_skipped = net_older = 0;
+        net_rollbacks = net_rerun = net_waits = net_too_deep = net_saves_made = net_saves_skipped = net_saves_same = net_older = 0;
         rb_fiber_refused = rb_fiber_retried_ok = 0;
         memset(net_depth, 0, sizeof net_depth);
         net_catch_ms = net_catch_max = net_wait_ms = 0;
@@ -1453,6 +1454,18 @@ static void net_step(Cpu *c, u64 frame) {
     static int lazy = -1;
     if (lazy < 0) { const char *e = getenv("SSBU_RB_NET_LAZY"); lazy = !(e && *e == '0'); }
     int skip_save = lazy && rb_fast <= 0 && net_remote_low() >= key + 1;   /* (every other player's: M7) */
+    /* (#181) One state per logic frame. The logic frame can stand still over several safe points (a slow motion, and
+     * more often than that: a one-PC room match saved one logic frame 2 to 5 times in a row, about 100 times a fight),
+     * and every such save took a slot of the ring (RBN_MAX_BACK + 3 states), which then held only 5 or 6 logic frames:
+     * "419 418 417 417 416 416 416 415 414 413". A wrong guess 6 or 7 frames back found no state before it, was left
+     * as it was (too deep), and that game went on from the guess: a desync with every pad alike on both PCs, most often
+     * just after an analog push (the C-stick), which is guessed wrong frame after frame. The state kept is the logic
+     * frame's first: any of them is a state before the next logic frame, whose pads only its run reads. A catch-up from
+     * it runs the logic frame's still frames again too, and may end a frame or two behind; the next frames run as
+     * usual. SSBU_RB_RING_SAME=1: a save at every safe point, as before. */
+    static int ring_same = -1;
+    if (ring_same < 0) { const char *e = getenv("SSBU_RB_RING_SAME"); ring_same = e && *e == '1'; }
+    if (!skip_save && !ring_same && rb_fast <= 0 && rb_ring_count() > 0 && rb_ring_tag(0) == key) { skip_save = 1; net_saves_same++; }
     if (skip_save) { net_saves_skipped++; rb_save_ms[0] = rb_save_ms[1] = rb_save_ms[2] = 0; }
     else {
         rb_save_tag = key;
@@ -1522,7 +1535,12 @@ static void net_step(Cpu *c, u64 frame) {
     if (!m || m > key) { rb_release_held(); return; }
     u32 found = 0;
     int age = rb_ring_find(m - 1, &found);
-    if (age < 0) { net_too_deep++; rb_release_held(); return; }
+    if (age < 0) {   /* (#181: said, not left silently: this game now goes on from a guess that was wrong) */
+        if (++net_too_deep <= 5)
+            fprintf(stderr, "[rb] net mode: a wrong guess at logic frame %u found no state before it (this game at %u, the oldest state kept %u): not rolled back, a desync is likely\n",
+                    m, key, rb_ring_count() ? rb_ring_tag(rb_ring_count() - 1) : 0);
+        rb_release_held(); return;
+    }
     int depth = (int)(key - found);
     net_rollbacks++; net_rerun += depth; net_depth[depth < 15 ? depth : 15]++;
     for (u32 f = found + 1; f <= key; f++) if (f - net_key0 < 1u << 20) net_final[f - net_key0] = 0;
