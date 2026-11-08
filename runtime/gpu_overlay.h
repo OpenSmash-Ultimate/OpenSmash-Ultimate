@@ -11,6 +11,11 @@
 void overlay_present(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11RenderTargetView *rtv, unsigned x, unsigned y, unsigned w,
                      unsigned h, int show, const char *detail);
 
+/* A message in the middle of the picture, over the game and the overlay: text (NULL or "" clears
+ * it) and, when progress is 0..1, a bar under it. The renderer sets it each frame while the
+ * start-up shader preparation runs, and for a few seconds after it finishes. */
+void overlay_message(const char *text, float progress);
+
 /* The same overlay and menu for another renderer (runtime/gpu_vk.c): overlay_quads notes the frame's time
  * and returns the vertices overlay_present would draw for a picture w x h (a triangle list; 0: none);
  * overlay_coverage the glyph atlas they sample (one byte a texel: coverage, the colour's alpha). */

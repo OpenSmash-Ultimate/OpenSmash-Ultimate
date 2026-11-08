@@ -2,6 +2,7 @@
 """Compile the game's shaders ahead of time, into the renderer's disk cache.
 
 Usage:
+<<<<<<< HEAD
   shader_aot.py [--jobs N] [--dry] [--parts]
   shader_aot.py --files <file or folder>... [--tree <dir>] [--warm] [--jobs N]
 
@@ -11,6 +12,9 @@ compiled, and with --warm every one of their cache files is dated now, so the st
 them: the fighter's effects are ready before its first match instead of compiling while the match
 loads (tools/fighter_mod.py --shaders runs this for a fighter folder). The cache is <tree>/dump/shadercache
 (default: this checkout's); the "every shader compiled" marker is left as it is.
+=======
+  shader_aot.py [--jobs N] [--dry] [--parts] [--no-warm] [--rewarm]
+>>>>>>> origin/pr/175
 
 The game's GPU programs are stored in data.arc as they are uploaded: in the effect files
 (.eff), the shader databases (.nushdb) and nested archives (.arc); a few more are built into the
@@ -26,6 +30,17 @@ The files are dated 2001-01-01 until the game first uses them, so the start's pr
 makes the shaders the game has used. Programs with indirect branches are left out (their key
 depends on a draw's constant buffers), as are compute programs (on their launch's size).
 --dry translates without compiling and compares the keys with the cache that is there.
+
+On Linux, after a successful compile, the cache is drawn once by the game itself
+(build-linux/ssbu --warm-shaders dump/shadercache): DXVK then makes each Vulkan pipeline and the
+Vulkan driver compiles its GPU code, so the first use in a game does not have to. On Windows,
+AMD's Direct3D driver makes a program's GPU code on its own threads, so the same pass
+(build\ssbu.exe --warm-shaders dump\shadercache) draws every program for the driver's own
+cache. It is skipped with --no-warm. It draws what warm.done says an earlier run has not;
+warm.done is keyed by this game and the graphics driver, so a Mesa, RADV, DXVK, Direct3D or other
+driver update (which may empty those caches) draws everything again by itself. --rewarm forces
+that. A warm pass that fails (no GPU, say) is reported, but does not fail the compile: the game
+still works as without it.
 
 How the work is shared out: one discovery pass (shaderaot --dry) lists every key once; the
 keys not in the cache yet go into one queue, longest compile first (by the times recorded in
@@ -380,15 +395,71 @@ def jobs_for(priority, jobs):
     return default_jobs()
 
 
+def warm_shaders(cache, rewarm):
+    """Draw every shader of the cache once (ssbu --warm-shaders): through DXVK on Linux, and with
+    AMD's Direct3D driver on Windows. The driver then has each program's GPU code before the game
+    first uses it. Its lines ([warm] ...) go to this console as they come; True when it warmed."""
+    if LINUX:
+        exe = os.path.join(ROOT, "build-linux", "ssbu")
+        what = "DXVK/Vulkan"
+    else:
+        exe = os.path.join(ROOT, "build", "ssbu.exe")
+        what = "Direct3D"
+    if not os.path.isfile(exe):
+        print(f"warm: skipped: {os.path.relpath(exe, ROOT)} is not there (build the game first); the cache is compiled, "
+              "and the game will make the driver's code as it first uses each shader", flush=True)
+        return False
+    cmd = [exe, "--warm-shaders", cache] + (["rewarm"] if rewarm else [])
+    print(f"warm: drawing the cache once through {what} so the first use does not compile it"
+          + (" (rewarm: every shader again)" if rewarm else ""), flush=True)
+    try:
+        proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1, **low_priority())
+    except OSError as e:
+        print(f"warm: not warmed: cannot start {os.path.relpath(exe, ROOT)}: {e}", flush=True)
+        return False
+    try:
+        for line in proc.stdout:
+            line = line.rstrip()
+            # (DXVK's device setup logs at info level: keep the console to the warm progress,
+            # its warnings and errors, not a page for each of its threads' devices)
+            if line.startswith(("[warm]", "warm:", "[gfx]", "warn:", "err:")):
+                print(line, flush=True)
+        code = proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        print("warm: stopped; the compiled shaders are kept", flush=True)
+        return False
+    if code:
+        print(f"warm: not warmed (the warm pass stopped with code {code}); the compiled shaders are kept, "
+              "and the game will make the driver's code as it first uses each shader", flush=True)
+        return False
+    print(f"warm: warmed: {what}'s pipelines and the driver's GPU code are in their caches", flush=True)
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--jobs", type=int, default=0)
     ap.add_argument("--priority", choices=("low", "medium", "high"), default="low")
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--parts", action="store_true", help="split the keys between the processes by hash (the older way)")
+<<<<<<< HEAD
     ap.add_argument("--files", nargs="+", help="loose .eff/.nushdb/.arc files or folders instead of data.arc")
     ap.add_argument("--tree", default=ROOT, help="with --files: the tree whose dump/shadercache gets the files")
     ap.add_argument("--warm", action="store_true", help="with --files: date their cache files now (the start's prewarm makes them)")
+=======
+    warm = ap.add_mutually_exclusive_group()
+    warm.add_argument("--no-warm", action="store_true",
+                      help="do not draw the cache through the graphics driver after compiling")
+    warm.add_argument("--rewarm", action="store_true",
+                      help="draw every shader through the driver again, even ones warm.done has "
+                           "(a driver update does this by itself)")
+>>>>>>> origin/pr/175
     a = ap.parse_args()
     if a.files:
         return main_files(a)
@@ -436,7 +507,16 @@ def main():
     if not a.dry and ok:
         with open(marker, "w", encoding="utf-8", newline="\n") as f:
             f.write(f"version {cache_version()}\n")
-    print(f"done in {time.time() - t0:.0f} s")
+    state = "skipped"
+    if a.dry:
+        print("warm: skipped (--dry)", flush=True)
+    elif not ok:
+        print("warm: skipped: the compile did not finish", flush=True)
+    elif a.no_warm:
+        print("warm: skipped (--no-warm): the game makes the driver's pipeline and GPU code at first use", flush=True)
+    else:
+        state = "warmed" if warm_shaders(cache, a.rewarm) else "not warmed"
+    print(f"done in {time.time() - t0:.0f} s; driver cache {state}")
     return 0
 
 

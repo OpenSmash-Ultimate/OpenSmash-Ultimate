@@ -76,9 +76,8 @@ void movie_test_start(void);   /* (hle_movie_skip.c) SSBU_SKIP_MOVIES, SSBU_SEQ'
 void test_fight_start(void);   /* (hle_fight_test.c) SSBU_FIGHT_HASH, SSBU_DETERMINISTIC, SSBU_DEBUG_MATCH... */
 void gfx_report_compiles(void (*line)(const char *text));
 void gfx_status_lines(void);
-#ifdef _WIN32
-int gfx_warm_shaders_main(const char *dir, const char *luid);   /* (gpu_d3d11.c: ssbu --warm-shaders) */
-#endif
+int gfx_warm_shaders_main(const char *dir, const char *arg);   /* (gpu_d3d11.c: ssbu --warm-shaders) */
+void d3d11_warm_before_play(void);                             /* (gpu_d3d11.c: Windows AMD's cold cache, before the game) */
 const char *rt_data_dir;
 /* This thread is reading another thread's stack (debug_profile.c): a fault there is expected and
  * handled where it happens, not a crash. */
@@ -1573,7 +1572,9 @@ int main(int argc, char **argv) {
 #ifdef _WIN32
     if (argc == 2 && !strcmp(argv[1], "--yuzu-client-check")) { puts("yuzu-room-client protocol=1"); return 0; }
     if (argc >= 6 && !strcmp(argv[1], "--write-dump")) return write_dump_main(argv);
-    if (argc >= 4 && !strcmp(argv[1], "--warm-shaders")) return gfx_warm_shaders_main(argv[2], argv[3]);
+    if (argc >= 3 && !strcmp(argv[1], "--warm-shaders")) return gfx_warm_shaders_main(argv[2], argc >= 4 ? argv[3] : "");
+#else
+    if (argc >= 3 && !strcmp(argv[1], "--warm-shaders")) return gfx_warm_shaders_main(argv[2], argc >= 4 ? argv[3] : "");
 #endif
 #ifdef __APPLE__
     mac_start(argc, argv, &dir, &options);
@@ -1647,6 +1648,9 @@ int main(int argc, char **argv) {
 #endif
     if (getenv("SSBU_CRASH_TEST")) CloseHandle(CreateThread(NULL, 0, crash_test, (void *)(uintptr_t)atoi(getenv("SSBU_CRASH_TEST")), 0, NULL));
     rt_data_dir = dir;
+#ifdef _WIN32
+    d3d11_warm_before_play();   /* (AMD: a cold driver cache is drawn once before the game loads) */
+#endif
     void mods_start(const char *data_dir);   /* (hle_mod_switch.c: a pending apply of the mods, the code patches' switch) */
     mods_start(dir);
     kernel_init();

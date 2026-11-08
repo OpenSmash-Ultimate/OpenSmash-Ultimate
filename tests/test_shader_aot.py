@@ -1,4 +1,5 @@
 """tools/shader_aot.py's scan of data.arc for GPU programs. Made-up containers; no game files."""
+import os
 from pathlib import Path
 import sys
 import types
@@ -128,6 +129,56 @@ class ScanTests(unittest.TestCase):
             with mock.patch.object(shader_aot, 'containers', lambda a: []):
                 programs, _ = shader_aot.find_programs(arc, modules=paths)
         self.assertEqual([(stage, len(blob), sorted(pairs)) for stage, blob, pairs in programs], [(0, 0xE0, []), (1, 0x1D0, [0])])
+
+
+class WarmShadersTests(unittest.TestCase):
+    """Prepare Shaders' last step draws the cache through the driver: build-linux/ssbu on Linux,
+    build\\ssbu.exe on Windows (AMD's Direct3D driver fills its own cache from that pass)."""
+
+    def warm(self, linux, exists=True, rewarm=False, code=0):
+        proc = mock.Mock()
+        proc.stdout = iter(["[warm] drawing\n", "a line the console does not need\n"])
+        proc.wait.return_value = code
+        popen = mock.Mock(return_value=proc)
+        with mock.patch.object(shader_aot, 'LINUX', linux), \
+             mock.patch.object(shader_aot.os.path, 'isfile', return_value=exists), \
+             mock.patch.object(shader_aot, '_POPEN_PRIORITY', {}), \
+             mock.patch.object(shader_aot.subprocess, 'Popen', popen), \
+             mock.patch('builtins.print') as printed:
+            ok = shader_aot.warm_shaders('/a/cache', rewarm)
+        return ok, popen, printed
+
+    def printed(self, printed):
+        return ' '.join(str(call.args[0]) for call in printed.call_args_list)
+
+    def test_linux_uses_the_linux_program(self):
+        ok, popen, printed = self.warm(linux=True)
+        self.assertTrue(ok)
+        self.assertEqual(popen.call_args.args[0],
+                         [os.path.join(str(ROOT), 'build-linux', 'ssbu'), '--warm-shaders', '/a/cache'])
+        self.assertIn('DXVK/Vulkan', self.printed(printed))
+
+    def test_windows_uses_the_windows_program(self):
+        ok, popen, printed = self.warm(linux=False)
+        self.assertTrue(ok)
+        self.assertEqual(popen.call_args.args[0],
+                         [os.path.join(str(ROOT), 'build', 'ssbu.exe'), '--warm-shaders', '/a/cache'])
+        self.assertIn('Direct3D', self.printed(printed))
+
+    def test_rewarm_is_passed_to_the_pass(self):
+        _ok, popen, _printed = self.warm(linux=False, rewarm=True)
+        self.assertEqual(popen.call_args.args[0][-1], 'rewarm')
+
+    def test_a_missing_program_is_reported_not_started(self):
+        ok, popen, printed = self.warm(linux=False, exists=False)
+        self.assertFalse(ok)
+        popen.assert_not_called()
+        self.assertIn('skipped', self.printed(printed))
+
+    def test_a_failed_pass_keeps_the_cache(self):
+        ok, _popen, printed = self.warm(linux=False, code=1)
+        self.assertFalse(ok)
+        self.assertIn('not warmed', self.printed(printed))
 
 
 class RomfsImageReadErrorTests(unittest.TestCase):
