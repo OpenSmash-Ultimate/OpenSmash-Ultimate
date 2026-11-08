@@ -78,7 +78,7 @@ static class Tests
                 Check(!File.ReadAllText(YuzuRoomSettings.ConfigPath(repo)).Contains("not-saved"), "UI never saves password");
                 Directory.CreateDirectory(Path.Combine(repo,"tools"));
                 string script = Path.Combine(repo,"tools","yuzu_client.ps1");
-                File.WriteAllText(script, "param([switch]$Gui,[switch]$NoPrompt,[switch]$CheckOnly,[string]$Server,[string]$Nickname,[string]$ProxyProfile)\nif ($CheckOnly) { Write-Output 'ready'; exit 0 }\n$p = Start-Process powershell.exe -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -WindowStyle Hidden -PassThru\nNew-Item -ItemType Directory -Force build | Out-Null\nSet-Content build/yuzu-client.log '[yuzu] joined fixture as Guest'\nWrite-Output ('YUZU_RESULT {\"pid\":' + $p.Id + '}')\n");
+                File.WriteAllText(script, "param([switch]$Gui,[switch]$NoPrompt,[switch]$CheckOnly,[string]$Server,[string]$Nickname,[string]$ProxyProfile)\nif ($CheckOnly) { Write-Output 'ready'; exit 0 }\n$p = Start-Process powershell.exe -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -WindowStyle Hidden -PassThru -RedirectStandardOutput build/fixture-child.stdout.log -RedirectStandardError build/fixture-child.stderr.log\nNew-Item -ItemType Directory -Force build | Out-Null\nSet-Content build/yuzu-client.log '[yuzu] joined fixture as Guest'\nWrite-Output ('YUZU_RESULT {\"pid\":' + $p.Id + '}')\n");
                 Click(form,"check");
                 Until(() => !form.IsBusy && Find(form,"connect").Enabled, "setup check completes asynchronously");
                 Check(form.StatusText.StartsWith("Setup is ready"), "setup check does not claim connection");
@@ -87,19 +87,31 @@ static class Tests
                 {
                     Check(!Find(form,"connect").Enabled, "duplicate connect disabled during preparation");
                     Until(() => !form.IsBusy, "launch finishes asynchronously");
-                    Check(form.IsRunning, "child process tracked");
+                    Check(form.IsRunning, "child process handed off before inherited output pipes close");
                     Until(() => form.StatusText.StartsWith("Connected"), "actual admission log updates UI");
                     Check(!Find(form,"server").Enabled, "connection inputs locked while game runs");
                     File.AppendAllText(Path.Combine(repo,"build","yuzu-client.log"), "[yuzu] state: connection lost; retrying\r\n");
                     try { Until(() => form.StatusText.Contains("retrying"), "disconnect replaces connected status"); } catch { Console.WriteLine("Actual status: " + form.StatusText + " log=" + File.ReadAllText(Path.Combine(repo,"build","yuzu-client.log"))); throw; }
+                    File.AppendAllText(Path.Combine(repo,"build","yuzu-client.log"), "[yuzu] nickname is invalid or already in use\n");
+                    Until(() => form.StatusText.Contains("nickname"), "server refusal is shown while game runs");
                 }
                 finally { if (form.IsRunning) { form.GameProcess!.Kill(true); form.GameProcess.WaitForExit(); } }
                 Until(() => Find(form,"connect").Enabled, "game exit enables reconnect");
+                Check(form.StatusText.Contains("nickname"), "game exit preserves the room refusal");
                 File.WriteAllText(script,"Write-Error 'fixture preparation failed'; exit 7");
                 Click(form,"connect");
                 Until(() => !form.IsBusy && Find(form,"connect").Enabled, "failure releases busy state");
                 Check(form.StatusText.StartsWith("Could not start"), "startup error displayed in page");
                 Check(Find(form,"connect").Enabled, "failed launch can be retried");
+                File.WriteAllText(script, "param([switch]$Gui,[switch]$NoPrompt,[string]$Server,[string]$Nickname,[string]$ProxyProfile)\nSet-Content build/yuzu-client.log '[yuzu] nickname is invalid or already in use'\nWrite-Output 'YUZU_RESULT {\"pid\":2147483647}'\n");
+                Click(form,"connect");
+                Until(() => !form.IsBusy && Find(form,"connect").Enabled, "fast-exit launch can be retried");
+                Check(form.StatusText.Contains("nickname") && form.StatusText.Contains("already in use"), "fast exit displays actual room refusal");
+                Check(!form.StatusText.Contains("Process with an Id"), "fast exit never exposes raw PID exception");
+                File.WriteAllText(Path.Combine(repo,"build","yuzu-client.log"), "[yuzu] wrong room password\n" + new string('x', 150000) + "\n[gfx] window closed\n");
+                Check(YuzuRoomLaunch.EarlyExitMessage(repo).Contains("password"), "early refusal survives long boot logs");
+                File.Delete(Path.Combine(repo,"build","yuzu-client.log"));
+                Check(YuzuRoomLaunch.EarlyExitMessage(repo).Contains("Connection log"), "early exit without log has actionable fallback");
                 if (args.Length > 0)
                 {
                     Directory.CreateDirectory(args[0]);
@@ -115,7 +127,6 @@ static class Tests
                 }
                 host.Close();
             }
-            if (args.Length > 0)
             {
                 settings.Save(repo);
                 using var launcher = new LauncherForm(repo, repo, Path.Combine(repo,"build"), preview: true);
@@ -132,17 +143,17 @@ static class Tests
                 using var first = new Bitmap(1280,720); launcher.DrawToBitmap(first,new Rectangle(0,0,1280,720));
                 Thread.Sleep(1100);
                 using var bmp = new Bitmap(1280,720); launcher.DrawToBitmap(bmp,new Rectangle(0,0,1280,720));
-                bmp.Save(Path.Combine(args[0],"yuzu-launcher-embedded.png"));
+                if (args.Length > 0) bmp.Save(Path.Combine(args[0],"yuzu-launcher-embedded.png"));
                 type.GetMethod("GoView",flags)!.Invoke(launcher,new object[]{"home",true});
                 Check(!launcher.Controls.Find("yuzu-room-page",true).Single().Visible,"room controls hidden on home page");
                 launcher.Close();
             }
             // Check the process protocol without launching the game or any room connection.
             var fake = new ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-            foreach (string a in new[] { "-NoProfile", "-Command", "Write-Output 'YUZU_RESULT {\"pid\":42}'" }) fake.ArgumentList.Add(a);
+            foreach (string a in new[] { "-NoProfile", "-Command", "Write-Output 'YUZU_RESULT {\"pid\":" + Environment.ProcessId + "}'" }) fake.ArgumentList.Add(a);
             fake.Environment["SSBU_YUZU_PASSWORD"] = "secret";
-            int? pid = Task.Run(() => YuzuRoomLaunch.RunAsync(fake, _ => {})).GetAwaiter().GetResult();
-            Check(pid == 42 && !fake.Environment.ContainsKey("SSBU_YUZU_PASSWORD"), "structured result parsed and secret released");
+            using Process? handedOff = Task.Run(() => YuzuRoomLaunch.RunAsync(fake, _ => {})).GetAwaiter().GetResult();
+            Check(handedOff?.Id == Environment.ProcessId && !fake.Environment.ContainsKey("SSBU_YUZU_PASSWORD"), "structured result parsed and secret released");
             Console.WriteLine($"{count} checks passed");
         }
         finally { Directory.Delete(repo, true); }

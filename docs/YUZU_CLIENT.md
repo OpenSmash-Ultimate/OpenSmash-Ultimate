@@ -114,3 +114,9 @@ The client and script entry point are delivered together with the necessary exis
 The follow-up page uses the existing launcher navigation, section heading and Theme buttons, with native text fields embedded in that page. No separate connection window is opened. The built launcher passed 39 behavior checks, including input validation, password masking/non-persistence, setup-only behavior, asynchronous launch and failure, duplicate launch prevention, runtime admission/retry status, re-enabling controls after game exit, and hiding fields when navigating away. These checks use synthetic child processes and logs. The existing yuzu suites passed 36 tests, including a GUI password bridge test. A local full preflight rebuilt the runtime and prepared installed plugins successfully without making a room connection. Actual matches through this new GUI have not yet been retested.
 
 To run the GUI checks without game data: `dotnet run --project tests/launcher_yuzu_ui/LauncherYuzuUiTests.csproj -c Release`. Windows CI runs this alongside the existing tests.
+
+### GUI process handoff fix (2026-11-08)
+
+PowerShell's redirected output pipes can stay open until the launched game exits. The GUI now opens and retains the game process handle when it reads the final YUZU_RESULT record, rather than waiting for pipe EOF. Remaining output is drained without updating the completed preparation UI. If the game has already exited, the UI reads bounded sections of the runtime log and shows an actionable reason. Server refusals are retained after the game closes, and configuration/retry controls are restored.
+
+The UI suite now passes 46 checks, including a long-running child with redirected output, immediate process exit, nickname/password refusals, and preservation of early refusal messages before lengthy plugin/shader logs. A user reproduction showed a nickname refusal followed by a normal window close; no complete match was rerun for this UI-only fix.

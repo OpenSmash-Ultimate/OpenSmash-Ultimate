@@ -16,6 +16,7 @@ internal sealed class YuzuRoomPage : UserControl
     string selectedProfile = "eden";
     string statusText = "Enter a room address, then connect when you are ready.";
     bool statusError;
+    string? connectionError;
     readonly TextBox activity = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, TabStop = false, Name = "activity" };
     readonly RoomButton start = new("CONNECT & PLAY", "connect", true);
     readonly RoomButton check = new("CHECK SETUP", "check");
@@ -148,7 +149,7 @@ internal sealed class YuzuRoomPage : UserControl
         Text("Your server and nickname are remembered. Password stays private to this launch.",0,398,lw,36,12,Theme.Dim);
         using (var panel = new SolidBrush(Theme.Bg2)) g.FillRectangle(panel,rx*s,0,rw*s,407*s);
         using (var accent = new SolidBrush(statusError ? Theme.Bad : IsRunning ? Theme.Ready : Theme.Accent)) g.FillRectangle(accent,rx*s,0,3*s,52*s);
-        Text(busy ? "PREPARING" : IsRunning ? "GAME SESSION" : "READY TO CONNECT",rx+22,18,rw-44,24,13,statusError ? Theme.Bad : Theme.Text,true);
+        Text(statusError ? "NEEDS ATTENTION" : busy ? "PREPARING" : IsRunning ? "GAME SESSION" : "READY TO CONNECT",rx+22,18,rw-44,24,13,statusError ? Theme.Bad : Theme.Text,true);
         Text(statusText,rx+22,55,rw-44,93,15,statusError ? Theme.Bad : Theme.Muted);
         using(var line = new Pen(Theme.Line)) g.DrawLine(line,(rx+22)*s,151*s,(rx+rw-22)*s,151*s);
         if (!activity.Visible)
@@ -194,14 +195,14 @@ internal sealed class YuzuRoomPage : UserControl
         if (busy || IsRunning) return;
         var settings = ReadSettings();
         if (settings.Validate(password.Text) is string error) { SetStatus(error, true); return; }
-        busy = true; UpdateEnabled(); recent.Clear(); activity.Clear(); activity.Visible = true;
+        busy = true; connectionError = null; UpdateEnabled(); recent.Clear(); activity.Clear(); activity.Visible = true;
         SetStatus(checkOnly ? "Checking setup and preparing plugins…" : "Preparing game and client libraries…", false);
         try
         {
             if (!checkOnly && saveGameSettings != null && !saveGameSettings()) throw new IOException("Game settings could not be saved.");
             Directory.CreateDirectory(Path.Combine(repo, "build"));
             using var output = new StreamWriter(Path.Combine(repo, "build", "yuzu-ui-prepare.log"), false, new System.Text.UTF8Encoding(false)) { AutoFlush = true };
-            int? pid = await YuzuRoomLaunch.RunAsync(settings.StartInfo(repo, password.Text, checkOnly), line => {
+            Process? game = await YuzuRoomLaunch.RunAsync(settings.StartInfo(repo, password.Text, checkOnly), line => {
                 output.WriteLine(line);
                 if (recent.Count >= 60) recent.Dequeue(); recent.Enqueue(line);
                 activity.Text = string.Join(Environment.NewLine, recent); activity.SelectionStart = activity.TextLength; activity.ScrollToCaret();
@@ -210,8 +211,15 @@ internal sealed class YuzuRoomPage : UserControl
             else
             {
                 password.Clear();
-                GameProcess = Process.GetProcessById(pid!.Value);
+                GameProcess?.Dispose();
+                GameProcess = game;
                 log?.Dispose(); log = null;
+                if (game == null || game.HasExited)
+                {
+                    connectionError = YuzuRoomLaunch.EarlyExitMessage(repo);
+                    SetStatus(connectionError, true);
+                    return;
+                }
                 SetStatus("Game started. Waiting for the room connection…", false);
                 timer.Start(); PollGame();
             }
@@ -234,15 +242,16 @@ internal sealed class YuzuRoomPage : UserControl
             for (int i = 0; i < 250 && log != null; i++)
             {
                 string? line = log.ReadLine(); if (line == null) break;
-                if (YuzuRoomLaunch.RoomStatus(line) is string text) SetStatus(text, !text.StartsWith("Connected"));
+                if (YuzuRoomLaunch.ConnectionError(line) is string error) connectionError = error;
+                if (YuzuRoomLaunch.RoomStatus(line) is string text) SetStatus(text, connectionError != null);
             }
-            if (!IsRunning) { timer.Stop(); log?.Dispose(); log = null; SetStatus("Game closed. You can change settings and connect again. See the connection log if it exited unexpectedly.", false); UpdateEnabled(); }
+            if (!IsRunning) { timer.Stop(); log?.Dispose(); log = null; SetStatus(connectionError ?? "Game closed. You can change settings and connect again. See the connection log if it exited unexpectedly.", connectionError != null); UpdateEnabled(); }
         }
         catch (IOException) { /* A running game may briefly hold or rotate its log. Try next tick. */ }
     }
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { timer.Dispose(); log?.Dispose(); password.Clear(); }
+        if (disposing) { timer.Dispose(); log?.Dispose(); GameProcess?.Dispose(); password.Clear(); }
         base.Dispose(disposing);
     }
 }
