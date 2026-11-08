@@ -684,14 +684,15 @@ def local_patches(name):
 
 def plugin_patches(name):
     """[(offset, old word, new word)] the Skyline plugins write into module `name`'s code
-    (dump/skyline/patches.txt, which the runtime writes: sky_memcpy), and this PC's own (local_patches)."""
+    (dump/skyline/patches.txt, which the runtime writes: sky_memcpy; a fifth field names the plugin), and this PC's
+    own (local_patches)."""
     path = os.path.join(TREE, "dump", "skyline", "patches.txt")
     out = []
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
             for line in f:
                 p = line.split()
-                if len(p) == 4 and p[0] == name:
+                if len(p) in (4, 5) and p[0] == name:
                     out.append((int(p[1], 16), int(p[2], 16), int(p[3], 16)))
     return out + local_patches(name)
 
