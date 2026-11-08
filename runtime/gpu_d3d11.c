@@ -2175,7 +2175,19 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
     if (!r.pause_for_game && game_running()) r.stop = 1;
     for (u32 i = 0; i < nthreads && r.done && before + i < r.n && !r.stop; i++)
         if ((threads[started] = CreateThread(NULL, 16 << 20, warm_worker, &r, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL))) started++;
-    if (started) WaitForMultipleObjects(started, threads, TRUE, INFINITE);   /* (a game's pass pauses for one; a launcher's ends) */
+    fprintf(stderr, "[warm] preparing %u shaders on %s; compiled shaders are saved\n", r.n, name);
+    if (started) {
+        DWORD wait;
+        do {
+            wait = WaitForMultipleObjects(started, threads, TRUE, 5000);
+            LONG processed = (LONG)before + InterlockedCompareExchange(&r.drawn, 0, 0) + InterlockedCompareExchange(&r.failed, 0, 0);
+            if (processed > (LONG)r.n) processed = (LONG)r.n;
+            fprintf(stderr, "[warm] %ld/%u processed (%ld failed), elapsed %.0f s%s\n", (long)processed, r.n,
+                    (long)InterlockedCompareExchange(&r.failed, 0, 0), (GetTickCount64() - t0) / 1000.0,
+                    processed >= (LONG)r.n ? "; finishing driver-cache writes" : "; time remaining unknown");
+            fflush(stderr);
+        } while (wait == WAIT_TIMEOUT);
+    }
     for (u32 i = 0; i < started; i++) CloseHandle(threads[i]);
     /* what has been drawn, for the next run */
     u32 ndone = 0;

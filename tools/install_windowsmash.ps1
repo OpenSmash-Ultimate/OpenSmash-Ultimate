@@ -299,7 +299,8 @@ function Select-Sdl3Asset {
             if ($null -eq $best -or $v -gt $best.Version) {
                 $sha = $null
                 if ($a.PSObject.Properties['digest'] -and $a.digest -match '^sha256:([0-9a-fA-F]{64})$') { $sha = $Matches[1].ToLower() }
-                $best = @{ Version = $v; Url = $a.browser_download_url; Sha256 = $sha; Name = $a.name }
+                $apiUrl = if ($a.PSObject.Properties['url']) { $a.url } else { $null }
+                $best = @{ Version = $v; Url = $a.browser_download_url; ApiUrl = $apiUrl; Sha256 = $sha; Name = $a.name }
             }
         }
     }
@@ -486,7 +487,7 @@ function Write-Warn { param([string]$Text) Write-Host "  $Text" -ForegroundColor
 function Write-Would { param([string]$Text) Write-Host "  (dry run) would $Text" -ForegroundColor DarkGray }
 
 function Invoke-Download {
-    param([string]$Url, [string]$Dest, [string]$What)
+    param([string]$Url, [string]$Dest, [string]$What, [string]$Accept = '*/*')
     Write-Info "downloading $What"
     Write-Info "  from $Url"
     $dir = Split-Path -Parent $Dest
@@ -495,11 +496,27 @@ function Invoke-Download {
     $old = $ProgressPreference
     $ProgressPreference = 'SilentlyContinue'   # (the progress bar makes Windows PowerShell's downloads very slow)
     try {
-        Invoke-WebRequest -Uri $Url -OutFile $partial -UseBasicParsing -Headers @{ 'User-Agent' = $UserAgent }
+        for ($attempt = 1; $attempt -le 4; $attempt++) {
+            try {
+                Invoke-WebRequest -Uri $Url -OutFile $partial -UseBasicParsing -TimeoutSec 120 -Headers @{ 'User-Agent' = $UserAgent; 'Accept' = $Accept }
+                Move-Item -LiteralPath $partial -Destination $Dest -Force
+                break
+            } catch {
+                # A failed response or truncated archive must never become a cached download.
+                if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force }
+                $responseProperty = $_.Exception.PSObject.Properties['Response']
+                $response = if ($null -ne $responseProperty) { $responseProperty.Value } else { $null }
+                $status = if ($null -ne $response) { [int]$response.StatusCode } else { 0 }
+                $transient = $status -eq 0 -or $status -eq 408 -or $status -eq 429 -or $status -ge 500
+                if (-not $transient -or $attempt -eq 4) { throw }
+                $delay = [int][math]::Pow(2, $attempt)
+                Write-Warn "Download interrupted ($($_.Exception.Message)); retrying in $delay seconds (attempt $($attempt + 1)/4)."
+                Start-Sleep -Seconds $delay
+            }
+        }
     } finally {
         $ProgressPreference = $old
     }
-    Move-Item -LiteralPath $partial -Destination $Dest -Force
     Write-Info ("  {0:N1} MB" -f ((Get-Item -LiteralPath $Dest).Length / 1MB))
 }
 
@@ -1059,7 +1076,16 @@ function Step-Sdl3 {
     if (-not $asset) { $asset = @{ Version = [version]$SdlFallback.Version; Url = $SdlFallback.Url; Sha256 = $SdlFallback.Sha256; Name = (Split-Path -Leaf $SdlFallback.Url) } }
     if ($DryRun) { Write-Would "download SDL3 $($asset.Version) ($($asset.Url)) into deps\SDL3, checking its SHA-256 ($($asset.Sha256))"; return }
     $zip = Join-Path $Root "deps\$($asset.Name)"
-    if (-not (Test-Path -LiteralPath $zip)) { Invoke-Download $asset.Url $zip "SDL3 $($asset.Version)" }
+    if (-not (Test-Path -LiteralPath $zip)) {
+        # GitHub's release-page download can return persistent gateway timeouts even when
+        # the official asset API works. Both routes supply the same SHA-256-checked file.
+        try { Invoke-Download $asset.Url $zip "SDL3 $($asset.Version)" }
+        catch {
+            if (-not $asset.ContainsKey('ApiUrl') -or -not $asset.ApiUrl -or -not $asset.Sha256) { throw }
+            Write-Warn 'Trying the official GitHub asset API for the same SDL3 archive.'
+            Invoke-Download $asset.ApiUrl $zip "SDL3 $($asset.Version)" 'application/octet-stream'
+        }
+    }
     if ($asset.Sha256) {
         if (-not (Test-FileSha256 $zip $asset.Sha256)) { Remove-Item -LiteralPath $zip -Force; throw "The downloaded $($asset.Name) does not match the SHA-256 the release lists. Run this again to download it afresh." }
         Write-Info 'SHA-256 matches the release'

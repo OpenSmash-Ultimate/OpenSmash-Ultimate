@@ -87,6 +87,7 @@ namespace OpenSmash.Launcher
             public string Id = "", Title = "", State = "wait", Msg = "";
             public double Est = 10, Secs, Done, Total;
             public bool EstP;
+            public bool Warming;
             public DateTime? T0;
         }
         readonly List<Step> _steps = new();
@@ -760,6 +761,7 @@ namespace OpenSmash.Launcher
             s.Title = ShortTitle(title);
             s.Est = EstFor(title);
             s.Done = 0; s.Total = 0;
+            s.Warming = false;
             _genModules.Clear();
             _genTotal = 0;
             if (s.State != "run") SetStepState(s, "run", null, "");
@@ -790,6 +792,24 @@ namespace OpenSmash.Launcher
         {
             var run = _steps.LastOrDefault(s => s.State == "run");
             if (run == null) return;
+            if (line.StartsWith("warm: drawing", StringComparison.Ordinal))
+            {
+                run.Warming = true;
+                run.Done = run.Total = 0;
+                run.T0 = DateTime.Now;
+                run.Msg = "preparing the graphics-driver cache";
+                return;
+            }
+            if (run.Warming && line.StartsWith("[warm]", StringComparison.Ordinal))
+            {
+                var warm = Regex.Match(line, @"\[warm\]\s+(\d+)/(\d+) processed");
+                if (warm.Success && TryCount(warm.Groups[1].Value, out double wd) && TryCount(warm.Groups[2].Value, out double wt))
+                {
+                    run.Done = wd; run.Total = wt;
+                    run.Msg = wd >= wt ? "finishing driver-cache writes" : "preparing the graphics-driver cache";
+                }
+                return;
+            }
             var writing = Regex.Match(line, @"writing the C code:\s*([^,]+),\s*([\d,]+)\s+of\s+([\d,]+)\s+modules", RegexOptions.IgnoreCase);
             if (writing.Success && TryCount(writing.Groups[2].Value, out double idx) && TryCount(writing.Groups[3].Value, out double modules) && modules > 0)
             {
@@ -1746,6 +1766,7 @@ namespace OpenSmash.Launcher
             var curNow = _steps.FirstOrDefault(x => x.State == "run");
             double frac;
             if (_succeeded && !_jobDry && _steps.Count > 0) frac = 1.0;
+            else if (curNow?.Warming == true && curNow.Total <= 0) frac = 0;
             else if (curNow != null && curNow.Total > 0) frac = Math.Clamp(curNow.Done / curNow.Total, 0, 1);
             else
             {
@@ -1753,7 +1774,9 @@ namespace OpenSmash.Launcher
                 frac = _steps.Count > 0 ? n / (double)_steps.Count : 0;
             }
             using (var f = Theme.Display(60 * s))
-                Theme.DrawText(g, $"{(int)Math.Round(frac * 100)}%", f, Theme.Text, rx - 4 * s, 132 * s, 260 * s, 70 * s);
+                Theme.DrawText(g, curNow?.Warming == true && curNow.Total <= 0 ? "WARMING"
+                    : curNow?.Warming == true && curNow.Done >= curNow.Total ? "FINISHING"
+                    : $"{(int)Math.Round(frac * 100)}%", f, Theme.Text, rx - 4 * s, 132 * s, rw, 70 * s);
 
             float barY = 206 * s, barH = 10 * s;
             using (var p = Theme.Para(rx, barY, rw, barH, barH * 0.5f))
@@ -1773,7 +1796,8 @@ namespace OpenSmash.Launcher
             string eta = _running
                 ? "elapsed " + FmtDur((DateTime.Now - _jobStart).TotalSeconds)
                 : _jobEnd > _jobStart ? $"took {FmtDur((_jobEnd - _jobStart).TotalSeconds)}" : "";
-            if (_running && curNow != null && curNow.Total > 0 && curNow.Done > 0 && curNow.T0 != null)
+            if (_running && curNow?.Warming == true) eta += ", time remaining unknown";
+            else if (_running && curNow != null && curNow.Total > 0 && curNow.Done > 0 && curNow.T0 != null)
             {
                 double f = Math.Clamp(curNow.Done / curNow.Total, 0, 0.999);
                 double elap = (DateTime.Now - curNow.T0.Value).TotalSeconds;
@@ -1786,6 +1810,13 @@ namespace OpenSmash.Launcher
 
             // What stopped it
             float logLabelY = 262 * s;
+            if (_running && curNow?.Warming == true)
+            {
+                using (var f = Theme.Body(12.5f * s))
+                    Theme.DrawWrapped(g, "Shader compilation is complete and saved. The graphics driver is preparing its cache to reduce stutter; this can take a while. When it finishes, setup continues automatically.",
+                        f, Theme.Muted, rx, 254 * s, rw, 62 * s);
+                logLabelY = 326 * s;
+            }
             if (failed)
             {
                 float ey = 258 * s, eh = 104 * s;
