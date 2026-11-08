@@ -361,28 +361,29 @@ other shader is compiled the first time it's needed, so a new effect can show a 
 The start-up shader prewarm is on: while the game starts, its compiler threads make the shader
 objects of the programs you have played before, so using one again takes no wait (it stops at a
 third of the PC's memory; `SSBU_SHADER_PREWARM=0` turns it off, `SSBU_SHADER_PREWARM_MB` sets its
-budget). The first game start after Prepare Shaders' warm pass makes **every** program in the
-shader cache once, not only the played ones: on this PC's 65,283-program cache that is about 22
-seconds and 4.2 GB of RAM. While it runs, the middle of the picture shows `Preparing shaders...
-N%` and a bar. The shader objects are the prewarm's part; DXVK makes its Vulkan pipeline states
-when the game first draws a program with the match's state, and the title screen's demo match draws
-those states. The first whole-cache start then counts the distinct draw states it sees: it shows
-`Settling title screen... N states` while the demo match runs, and `Ready to play` once no new
-state (or new state whose first draw took over 2 ms) has appeared for 3 s. The game's own input is
-held during the prewarm and this settle, so a match cannot start into the remaining hitches;
-scripted runs (`SSBU_BENCH`, `SSBU_SEQ`, `SSBU_INPUT`) bypass the hold, and the host's F1/F2 keys
-still work. `SSBU_SHADER_SETTLE` is now the longest it will settle, in seconds (default 60; 0: no
-settle); later starts, which prewarm only the played programs, skip it. The log's `[gfx] prewarm:
-the whole cache was prepared once` line says the shader objects are ready, `[gfx] prewarm:
-settling done...` says how many draw states the demo match made, and `[status] pipeline states`
-tracks them later. A match started before `Ready to play` can still wait on the programs the
-prewarm has not reached (measured: 10 waits of 5–13 ms while the menus ran during preparation) or
-make DXVK's pipeline states itself; after the settle, the first match made 269 first draws with
-none over 4 ms and no shader wait. A marker
-in the cache (`prewarm-all.done`) makes later starts prewarm only the played programs; delete
-it, or run Prepare Shaders again, to do every program again. `SSBU_SHADER_PREWARM_UNPLAYED=vs`
-limits the once to vertex programs and `=all` forces it on every start; `=0` keeps the
-played-only behaviour. A PC with less memory prewarms as many as fit in the budget; raise
+budget). On a PC with 12 GB of memory or more it also makes every program in the shader cache
+that the game has not used yet; from 8 GB it makes the unused vertex programs (the ones a
+match's first draws wait for), and below 8 GB only the played ones. `SSBU_SHADER_PREWARM_UNPLAYED`
+overrides that: `=vs`, `=all` or `=0`. The first game start after Prepare Shaders' warm pass makes
+**every** program once, even on a PC below those thresholds: on this PC's 65,283-program cache
+that is about 22 seconds and 4.2 GB of RAM. While it runs, the middle of the picture shows
+`Preparing shaders... N%` and a bar. The shader objects are the prewarm's part; DXVK makes its
+Vulkan pipeline states when the game first draws a program with the match's state, and the title
+screen's demo match draws those states. The first whole-cache start then counts the distinct draw
+states it sees: it shows `Settling title screen... N states` while the demo match runs, and
+`Ready to play` once no new state (or new state whose first draw took over 2 ms) has appeared for
+3 s. The game's own input is held during the prewarm and this settle, so a match cannot start into
+the remaining hitches; scripted runs (`SSBU_BENCH`, `SSBU_SEQ`, `SSBU_INPUT`) bypass the hold, and
+the host's F1/F2 keys still work. `SSBU_SHADER_SETTLE` is now the longest it will settle, in
+seconds (default 60; 0: no settle); later starts skip it. The log's `[gfx] prewarm: the whole
+cache was prepared once` line says the shader objects are ready, `[gfx] prewarm: settling done...`
+says how many draw states the demo match made, and `[status] pipeline states` tracks them later.
+A match started before `Ready to play` can still wait on the programs the prewarm has not reached
+(measured: 10 waits of 5–13 ms while the menus ran during preparation) or make DXVK's pipeline
+states itself; after the settle, the first match made 269 first draws with none over 4 ms and no
+shader wait. A marker in the cache (`prewarm-all.done`) stops the one-time whole-cache pass; later
+starts follow the memory-based default above. Delete it, or run Prepare Shaders again, to do every
+program again. A PC with less memory prewarms as many as fit in the budget; raise
 `SSBU_SHADER_PREWARM_MB` for more (0: no limit).
 
 The same threads also decode a sRGB block-compressed texture's clear margin off the render

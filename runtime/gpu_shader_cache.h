@@ -3,7 +3,9 @@
  *
  * A file is "<dir>/v<version>_<vs|ps|cs>_<program hash>_<vs outputs>_<jump tables' hash>.dxbc".
  * The ahead-of-time compiler dates its files 2001-01-01 until the game first uses them (the
- * renderer then dates them now): the start's prewarm makes only shaders the game has used.
+ * renderer then dates them now): the start's prewarm makes the shaders the game has used, plus
+ * the unplayed ones SSBU_SHADER_PREWARM_UNPLAYED asks for (by default on Linux, what the PC's
+ * memory allows: see gpu_d3d11.c).
  *
  * The Metal renderer (macOS) keeps MSL source under the same key, named apart so that the two
  * never mix: "<dir>/m<MSL version>_<vs|ps|cs>_<...the same...>.metal" (shader_cache_file_msl),

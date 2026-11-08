@@ -1146,9 +1146,11 @@ static int create_noted(struct Compiler *me, Shader *s, const void *code, size_t
  * the game has never used (dated 2001). A new PC has none of the game's own played files yet,
  * so without this every first match's new programs are made at first use; the vertex programs
  * are the ones the waits showed. The same memory budget applies (raise SSBU_SHADER_PREWARM_MB
- * to make more of them, or 0 for every one of them). Left unset under DXVK, the first start
- * after a warm pass (warm.done) makes the whole cache once and writes prewarm-all.done; later
- * starts make the played programs only. That once is about 22 s and 4.2 GB for 65,000 here. */
+ * to make more of them, or 0 for every one of them). Left unset under DXVK on Linux, the default
+ * goes by the PC's memory: every program on 12 GB or more, the vertex programs from 8 GB, and
+ * only the played programs below that. The first start after a warm pass (warm.done) still makes
+ * the whole cache once and writes prewarm-all.done; that once is about 22 s and 4.2 GB for
+ * 65,000 here. Native Direct3D on Windows keeps the played-only default. */
 typedef struct Prewarm { u64 hash, table_hash; u32 vs_outputs, outputs; int stage; LONG state; void *obj; } Prewarm;
 enum { PW_EMPTY, PW_QUEUED, PW_LOADING, PW_READY, PW_TAKEN, PW_FAILED };
 #define PREWARM_SLOTS 131072
@@ -1178,7 +1180,8 @@ static volatile u64 prewarm_ready_at;   /* (when the settle ended: "Ready to pla
 static volatile LONG prewarm_settling;
 static int prewarm_whole;               /* (this start prepared the whole cache) */
 /* The first start after Prepare Shaders' warm pass makes the whole cache once (SSBU_SHADER_PREWARM_UNPLAYED).
- * Its marker remembers which warm.done and budget that was for; the played set is enough later. */
+ * Its marker remembers which warm.done and budget that was for; later starts make what the PC's
+ * memory allows (see prewarm_unplayed_default). */
 typedef struct PrewarmMark { char magic[8]; u64 warm_size, warm_time, budget, exe, driver; } PrewarmMark;
 static const char PREWARM_MARK_MAGIC[8] = {'s', 's', 'b', 'u', 'p', 'w', 'a', '2'};
 static u64 prewarm_mark_size, prewarm_mark_time, prewarm_mark_exe, prewarm_mark_driver;
@@ -1247,23 +1250,27 @@ static void prewarm_mark_write(const char *dir, u64 size, u64 time, u64 budget, 
  * (32 GB: about 10 GB; 16 GB: about 5 GB) - the whole 65,000-program cache measured at 4.2 GB
  * here, so both are enough; SSBU_SHADER_PREWARM_MB sets it, 0: no limit. */
 static u64 prewarm_budget = 1024ull << 20;
-static void prewarm_budget_default(void) {
+
+/* The PC's memory in bytes (0: unknown). */
+static u64 total_ram_bytes(void) {
 #ifdef _WIN32
     MEMORYSTATUSEX m = {sizeof m};
-    if (GlobalMemoryStatusEx(&m) && m.ullTotalPhys / 3 > prewarm_budget) prewarm_budget = m.ullTotalPhys / 3;
+    return GlobalMemoryStatusEx(&m) ? m.ullTotalPhys : 0;
 #else   /* (Linux: /proc/meminfo) */
+    u64 kb = 0;
     FILE *f = fopen("/proc/meminfo", "r");
     if (f) {
         char line[128];
         while (fgets(line, sizeof line, f))
-            if (!strncmp(line, "MemTotal:", 9)) {
-                u64 kb = strtoull(line + 9, NULL, 10);
-                if (kb >> 10 > prewarm_budget >> 20) prewarm_budget = (kb << 10) / 3;   /* (a third of the PC's memory) */
-                break;
-            }
+            if (!strncmp(line, "MemTotal:", 9)) { kb = strtoull(line + 9, NULL, 10); break; }
         fclose(f);
     }
+    return kb << 10;
 #endif
+}
+
+static void prewarm_budget_default(u64 ram) {
+    if (ram / 3 > prewarm_budget) prewarm_budget = ram / 3;   /* (a third of the PC's memory) */
 }
 
 static u64 private_bytes(void) {
@@ -1373,9 +1380,9 @@ static void prewarm_job(struct Compiler *me, Shader *s) {
                 else prewarm_ready_at = prewarm_finished_at;
             }
             if (prewarm_over)
-                fprintf(stderr, "[gfx] prewarm: the cache was tried once (%ld left: raise SSBU_SHADER_PREWARM_MB); later starts prewarm only the played programs\n", (long)prewarm_over);
+                fprintf(stderr, "[gfx] prewarm: the cache was tried once (%ld left: raise SSBU_SHADER_PREWARM_MB); later starts prewarm what this PC's memory allows\n", (long)prewarm_over);
             else
-                fprintf(stderr, "[gfx] prewarm: the whole cache was prepared once; later starts prewarm only the played programs\n");
+                fprintf(stderr, "[gfx] prewarm: the whole cache was prepared once; later starts prewarm what this PC's memory allows\n");
             if (prewarm_whole && prewarm_settle_ms)
                 fprintf(stderr, "[gfx] prewarm: shaders ready; settling while the title screen's demo match makes DXVK's pipeline states "
                                 "(up to %llu s; a new or slow state resets a %.0f s quiet timer); the game's input is held\n",
@@ -1527,13 +1534,37 @@ static int cache_name(const char *name, u64 *hash, u32 *vs_outputs, u64 *tables)
 
 static void warm_prewarmed(Prewarm **order, u32 n);   /* (see "first draws") */
 
+enum { UNPLAYED_NONE, UNPLAYED_VS, UNPLAYED_ALL };
+
+/* What a start makes beyond the played programs when SSBU_SHADER_PREWARM_UNPLAYED is unset:
+ * every program on a PC with 12 GB or more, the vertex programs from 8 GB, and only the played
+ * programs below that. A match's first draws wait for the vertex object (the pixel object is
+ * made alongside and is usually ready); the whole 65,000-program cache measured 4.2 GB, so the
+ * budget (a third of memory: about 5 GB on 16 GB, 3.9 GB on 12 GB) fits it on 16 GB and nearly
+ * all of it on 12 GB, and the vertex half fits on 8 GB. The thresholds sit a little under the
+ * marketed sizes: /proc/meminfo reports less than the installed memory (a 16 GB PC about
+ * 15.5 GiB, an 8 GB one about 7.6 GiB). Native Direct3D on Windows keeps the played-only
+ * default. */
+static int prewarm_unplayed_default(u64 ram) {
+#ifdef _WIN32
+    (void)ram;
+    return UNPLAYED_NONE;
+#else
+    if (!on_dxvk()) return UNPLAYED_NONE;
+    if (ram >= (11ull << 30)) return UNPLAYED_ALL;
+    if (ram >= (7ull << 30)) return UNPLAYED_VS;
+    return UNPLAYED_NONE;
+#endif
+}
+
 /* (a thread of its own, at start) every file of the disk cache into the prewarm queue */
 static DWORD WINAPI prewarm_main(void *unused) {
     (void)unused;
     SetThreadDescription(GetCurrentThread(), L"shader prewarm");
     const char *mb = getenv("SSBU_SHADER_PREWARM_MB");
+    u64 ram = total_ram_bytes();
     if (mb) prewarm_budget = strtoull(mb, NULL, 10) << 20;
-    else prewarm_budget_default();
+    else prewarm_budget_default(ram);
     const char *settle = getenv("SSBU_SHADER_SETTLE");
     if (settle && *settle) {
         double s = atof(settle);
@@ -1542,10 +1573,12 @@ static DWORD WINAPI prewarm_main(void *unused) {
     }
     const char *unplayed_env = getenv("SSBU_SHADER_PREWARM_UNPLAYED");
     int explicit_unplayed = unplayed_env && *unplayed_env;
-    enum { UNPLAYED_NONE, UNPLAYED_VS, UNPLAYED_ALL } unplayed =
-        !explicit_unplayed || !strcmp(unplayed_env, "0") ? UNPLAYED_NONE
-      : !strcmp(unplayed_env, "vs") ? UNPLAYED_VS
-      : !strcmp(unplayed_env, "all") || atoi(unplayed_env) ? UNPLAYED_ALL : UNPLAYED_NONE;
+    int unplayed = UNPLAYED_NONE;
+    if (explicit_unplayed)
+        unplayed = !strcmp(unplayed_env, "0") ? UNPLAYED_NONE
+                 : !strcmp(unplayed_env, "vs") ? UNPLAYED_VS
+                 : !strcmp(unplayed_env, "all") || atoi(unplayed_env) ? UNPLAYED_ALL
+                 : UNPLAYED_NONE;
     /* Under DXVK, the first game start after Prepare Shaders' warm pass makes the whole cache
      * once; its marker is keyed by that warm.done, this exe, DXVK's libraries and the budget, so
      * a rebuild, a rewarm or a larger budget tries again. Without a warm pass (no warm.done) only
@@ -1560,8 +1593,14 @@ static DWORD WINAPI prewarm_main(void *unused) {
     int auto_all = !explicit_unplayed && on_dxvk() && warm_done &&
                    !prewarm_mark_matches(cache_dir(), warm_size, warm_time, prewarm_budget, exe_key, driver_key);
 #endif
-    if (!explicit_unplayed) unplayed = auto_all ? UNPLAYED_ALL : UNPLAYED_NONE;
-    if (unplayed == UNPLAYED_ALL && warm_done) {
+    if (!explicit_unplayed)
+        unplayed = auto_all ? UNPLAYED_ALL
+                 : warm_done ? prewarm_unplayed_default(ram)
+                 : UNPLAYED_NONE;
+    /* The once-pass (and an explicit all) writes the marker and settles DXVK's pipeline states;
+     * a later start's memory-based all only fills the prewarm queue, since DXVK's pipeline cache
+     * is warm by then. */
+    if (unplayed == UNPLAYED_ALL && warm_done && (auto_all || explicit_unplayed)) {
         prewarm_mark_wanted = 1;
         prewarm_mark_size = warm_size;
         prewarm_mark_time = warm_time;
@@ -1613,8 +1652,11 @@ static DWORD WINAPI prewarm_main(void *unused) {
     ReleaseSRWLockExclusive(&jobs_lock);
     WakeAllConditionVariable(&jobs_cv);
     skipped = n - queued;   /* (the files not made now: another stage, or over the table's limit) */
-    fprintf(stderr, "[gfx] prewarm: %u shaders from the disk cache (%u left for first use), on %u threads\n",
-            queued, skipped, ncompilers - 1);
+    const char *mode = unplayed == UNPLAYED_ALL ? "every program"
+                     : unplayed == UNPLAYED_VS ? "the played programs and the unused vertex ones"
+                     : "the played programs";
+    fprintf(stderr, "[gfx] prewarm: %u shaders from the disk cache (%u left for first use; %s), on %u threads\n",
+            queued, skipped, mode, ncompilers - 1);
     if (warm_mode >= 2) warm_prewarmed(order, queued);
     free(order);
     return 0;
