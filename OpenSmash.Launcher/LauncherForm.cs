@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -205,14 +205,7 @@ namespace OpenSmash.Launcher
             _statePath = Path.Combine(buildDir, "state.json");
             _pluginsPath = Path.Combine(buildDir, "work", "plugin_bin", "plugins.txt");
 
-            // Find Python (prefer deps\python\python.exe)
-            _pythonExe = Path.Combine(repo, "deps", "python", "python.exe");
-            if (!File.Exists(_pythonExe))
-            {
-                string p = Path.Combine(buildDir, "python_path.txt");
-                if (File.Exists(p)) _pythonExe = File.ReadAllText(p).Trim();
-            }
-            if (!File.Exists(_pythonExe)) _pythonExe = "python";
+            _pythonExe = ModManagerProcess.FindPython(repo, buildDir);
 
             // Window setup
             Text = "OpenSmash-Ultimate";
@@ -1117,19 +1110,7 @@ namespace OpenSmash.Launcher
             var all = new List<string> { Path.Combine(_repo, "tools", "os_mods.py") };
             all.AddRange(args);
             int code = RunPython(all.ToArray(), out string output, onLine);
-            string err = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                .LastOrDefault(l => l.StartsWith("RESULT ")) ?? "";
-            if (err.Contains("\"ok\": false") || err.Contains("\"ok\":false"))
-            {
-                try
-                {
-                    using var doc = JsonDocument.Parse(err.Substring("RESULT ".Length));
-                    string why = GetString(doc.RootElement, "error");
-                    if (why.Length > 0) throw new InvalidOperationException(why);
-                }
-                catch (InvalidOperationException) { throw; }
-                catch { throw new InvalidOperationException("The mod manager stopped."); }
-            }
+            ModManagerProcess.ValidateResult(code, output);
             return code;
         }
 
@@ -2662,7 +2643,7 @@ namespace OpenSmash.Launcher
             _modsBusy = false;
             _pluginBuildUi = false;
             UpdateMods();
-            _ = PushInstalledState();
+            await PushInstalledState();
             PlayDone();
             Invalidate();
             if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
@@ -3721,7 +3702,6 @@ namespace OpenSmash.Launcher
                     await SendStatus(modId, "error", why, 0);
                     return;
                 }
-                UpdateMods();
                 await PushInstalledState();
                 await SendStatus(modId, "done", name + " installed and turned on.", 100);
             }
@@ -4176,10 +4156,10 @@ namespace OpenSmash.Launcher
 
         async Task PushInstalledState()
         {
+            // Read status before publishing installed IDs, including after a local import.
+            await RefreshMods();
             var core = _marketplaceWebView?.CoreWebView2;
             if (core == null) return;
-
-            UpdateMods();
 
             string installed = JsonSerializer.Serialize(GetInstalledModIds());
             string inventory = JsonSerializer.Serialize(new
