@@ -688,8 +688,12 @@ static void room_rows(void)
 }
 
 /* The Lobby page's rows (fresh: the page shows anew, so the rooms are asked for again). */
-static void build_lobby(int fresh)
-{
+static void build_lobby(int fresh) {
+    if (net_configured() && net_backend) {
+        Row *r=add(R_LOBBY,K_INFO,W_NONE,"yuzu room",
+                   "Play in Local Wireless > Create a Room or Rooms List. OpenSmash lobby matchmaking and Quickplay are unavailable in this mode.");
+        snprintf(r->value,sizeof r->value,"Use Local Wireless"); return;
+    }
     nlobby_rooms = net_rooms_get(lobby_rooms, LOBBY_ROOMS, &rooms_state);
     net_match_get(&match);
     if (fresh && (rooms_state == NET_ROOMS_LISTED || rooms_state == NET_ROOMS_NO_ANSWER))
@@ -1052,13 +1056,17 @@ static void build(void)
         char status[512];
         net_status(status, sizeof status);
         char *nl = strchr(status, '\n');
-        if (nl)
-        {
-            *nl = 0;
-            help_set(r, "What the game is connected to.\n%s", nl + 1);
-        } /* (a refusal's what-differs, the room's players) */
-        snprintf(r->value, sizeof r->value, "%.110s", status[0] ? status : net_configured() ? "connecting..."
-                                                                                            : "offline");
+        if (nl) { *nl = 0; help_set(r, "What the game is connected to.\n%s", nl + 1); }   /* (a refusal's what-differs, the room's players) */
+        snprintf(r->value, sizeof r->value, "%.110s", status[0] ? status : net_configured() ? "connecting..." : "offline");
+        if (net_backend) {
+            r=add(R_NET_MODE,K_INFO,W_NONE,"Connection","Change the room server and nickname using Join yuzu Room.bat.");
+            snprintf(r->value,sizeof r->value,"yuzu compatible (client)");
+            r=add(R_NET_NAME,K_INFO,W_NONE,"Your name","The nickname used to join this existing room server.");
+            snprintf(r->value,sizeof r->value,"%s",net_player_name());
+            r=add(R_NET_PROTOCOL,K_INFO,W_NONE,"Room protocol","Game traffic uses the room server. OpenSmash P2P, matchmaking and rollback are unavailable.");
+            snprintf(r->value,sizeof r->value,"yuzu version 1");
+            break;
+        }
         r = add(R_NET_MODE, K_CHOICE, W_RESTART, "Play online in",
                 "Public lobby: everyone's rooms in Local Wireless. Private: only players with the same code. Your own server: host:port. "
                 "Offline: no netplay. This network: a private room hosted on your local network, found by itself.");

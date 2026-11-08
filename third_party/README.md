@@ -104,3 +104,10 @@ makefiles; the header set from `clang-cl /showIncludes` over the selected source
 the table above and the versions in `tools/codec_libs.py` (`PACKAGE_VERSION`) and `NOTICE.md`, then
 build: `python tools/codec_libs.py --force` compiles both in a few seconds, and
 `tests/test_codec_libs.py` checks the layout.
+
+
+## Optional yuzu room client
+
+third_party/enet/include contains the public headers from ENet v1.3.18 (Lee Salzman), with its MIT LICENSE in third_party/enet/LICENSE. The optional Windows client dynamically loads the matching ENet DLL and Zstd; native OpenSmash networking does not require those DLLs.
+
+Run tools/yuzu_client_deps.py to download checksummed upstream source archives and build the optional DLLs under build/yuzu. Pinned sources and hashes are in that script; dependency license files are copied beside the DLLs. Only the client is exposed by OpenSmash. See docs/YUZU_CLIENT.md.

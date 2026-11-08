@@ -82,7 +82,7 @@ def base_cflags(target):
 
 
 BASE_CFLAGS = base_cflags(ISA)
-CFLAGS = [*BASE_CFLAGS, "/I", RUNTIME]
+CFLAGS = [*BASE_CFLAGS, "/I", RUNTIME, "/I", os.path.join(ROOT, "third_party", "enet", "include")]
 # runtime/cpu_check.c's: for any x64 processor, as it checks the processor before anything else runs
 CHECK_CFLAGS = [*base_cflags(isa.ANY), "/I", RUNTIME]
 # The generated C's flags: it includes recomp.h or module.h, which read none of the runtime's defines and

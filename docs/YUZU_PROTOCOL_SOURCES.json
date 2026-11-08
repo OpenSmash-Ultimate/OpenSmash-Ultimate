@@ -1,0 +1,118 @@
+{
+  "retrieved_on": "2026-11-05",
+  "purpose": "Public protocol references. Metadata only; emulator source and game data are not included.",
+  "references": [
+    {
+      "name": "historical-yuzu-wire-baseline",
+      "commit": "48d6226115f849c465202692b6988e1efb7d2410",
+      "files": [
+        {
+          "path": "src/network/room.h",
+          "url": "https://git.plexi09.me/Plexi09/eden-miror/raw/commit/48d6226115f849c465202692b6988e1efb7d2410/src/network/room.h",
+          "sha256": "f537c1ab3d8deafc49dea93f6b386e196d8a05b0665aae471fed07bf58bfe22c"
+        },
+        {
+          "path": "src/network/room.cpp",
+          "url": "https://git.plexi09.me/Plexi09/eden-miror/raw/commit/48d6226115f849c465202692b6988e1efb7d2410/src/network/room.cpp",
+          "sha256": "4d97a06d3af58f2215654fc509089b0715e77f35264b993a5f2678d3602dc7a4"
+        },
+        {
+          "path": "src/network/room_member.h",
+          "url": "https://git.plexi09.me/Plexi09/eden-miror/raw/commit/48d6226115f849c465202692b6988e1efb7d2410/src/network/room_member.h",
+          "sha256": "5a1f69f4a3746949941dd5ca877edcdbb798c19d962108bd6fbbd70eb6763329"
+        },
+        {
+          "path": "src/network/room_member.cpp",
+          "url": "https://git.plexi09.me/Plexi09/eden-miror/raw/commit/48d6226115f849c465202692b6988e1efb7d2410/src/network/room_member.cpp",
+          "sha256": "6c96279a029471df69b7400be617fe72be35842ff7ca038091640cd8f02a06fb"
+        },
+        {
+          "path": "src/network/packet.h",
+          "url": "https://git.plexi09.me/Plexi09/eden-miror/raw/commit/48d6226115f849c465202692b6988e1efb7d2410/src/network/packet.h",
+          "sha256": "9d0d1e82dcf9938752d8b509cc8893ec19c84a461fe53916639722163eb3793a"
+        },
+        {
+          "path": "src/network/packet.cpp",
+          "url": "https://git.plexi09.me/Plexi09/eden-miror/raw/commit/48d6226115f849c465202692b6988e1efb7d2410/src/network/packet.cpp",
+          "sha256": "0684c9a71cc83c5c70ba983f3ce81264dcbc0219caceccc8c0768df14554e362"
+        },
+        {
+          "path": "src/core/hle/service/ldn/lan_discovery.cpp",
+          "url": "https://git.plexi09.me/Plexi09/eden-miror/raw/commit/48d6226115f849c465202692b6988e1efb7d2410/src/core/hle/service/ldn/lan_discovery.cpp",
+          "sha256": "d73f8a726c96022260a55f5fd67cc5b7b8dbdead44d39525d9e060e629727415"
+        },
+        {
+          "path": "src/core/hle/service/ldn/ldn_types.h",
+          "url": "https://git.plexi09.me/Plexi09/eden-miror/raw/commit/48d6226115f849c465202692b6988e1efb7d2410/src/core/hle/service/ldn/ldn_types.h",
+          "sha256": "a1daebfa0fb407e7f6643cb031942e59f7a26e6680fec9ee2ac08432b8cd4d04"
+        },
+        {
+          "path": "src/core/internal_network/socket_proxy.cpp",
+          "url": "https://git.plexi09.me/Plexi09/eden-miror/raw/commit/48d6226115f849c465202692b6988e1efb7d2410/src/core/internal_network/socket_proxy.cpp",
+          "sha256": "67b99e99d70156db76b9fe655dd389e7c3ff3b0ad7ab7e14783c53e4f9118f28"
+        },
+        {
+          "path": "src/common/socket_types.h",
+          "url": "https://git.plexi09.me/Plexi09/eden-miror/raw/commit/48d6226115f849c465202692b6988e1efb7d2410/src/common/socket_types.h",
+          "sha256": "97e5c498bbca6f09be55c5fff1da115f1216f915c5ed027556e8b3be392c2d55"
+        }
+      ]
+    },
+    {
+      "name": "eden-v0.2.0",
+      "commit": "ee188168c12188340961314e1dfc70a4f7ad4f7a",
+      "files": [
+        {
+          "path": "src/common/socket_types.h",
+          "url": "https://git.eden-emu.dev/eden-emu/eden/raw/commit/ee188168c12188340961314e1dfc70a4f7ad4f7a/src/common/socket_types.h",
+          "sha256": "39ee3b998877f9170a70c4594aeeeab26e1e09e1723c1b9796f2749079ed8185"
+        },
+        {
+          "path": "src/core/hle/service/ldn/lan_discovery.cpp",
+          "url": "https://git.eden-emu.dev/eden-emu/eden/raw/commit/ee188168c12188340961314e1dfc70a4f7ad4f7a/src/core/hle/service/ldn/lan_discovery.cpp",
+          "sha256": "e0dc813cd13fd8a44fd35e8ea61bb3e4ee786a6099da74fbfdffc9134c693235"
+        },
+        {
+          "path": "src/core/hle/service/ldn/ldn_types.h",
+          "url": "https://git.eden-emu.dev/eden-emu/eden/raw/commit/ee188168c12188340961314e1dfc70a4f7ad4f7a/src/core/hle/service/ldn/ldn_types.h",
+          "sha256": "ae67914c89ff7fb0154ea7552f855233125fba7a37bbd966e1f1e6b2ca3c807f"
+        },
+        {
+          "path": "src/core/internal_network/socket_proxy.cpp",
+          "url": "https://git.eden-emu.dev/eden-emu/eden/raw/commit/ee188168c12188340961314e1dfc70a4f7ad4f7a/src/core/internal_network/socket_proxy.cpp",
+          "sha256": "f3d510d9574508f4b3900e601ffcc283746d4d8246151945dbe2470f89588f5c"
+        },
+        {
+          "path": "src/network/packet.cpp",
+          "url": "https://git.eden-emu.dev/eden-emu/eden/raw/commit/ee188168c12188340961314e1dfc70a4f7ad4f7a/src/network/packet.cpp",
+          "sha256": "0684c9a71cc83c5c70ba983f3ce81264dcbc0219caceccc8c0768df14554e362"
+        },
+        {
+          "path": "src/network/packet.h",
+          "url": "https://git.eden-emu.dev/eden-emu/eden/raw/commit/ee188168c12188340961314e1dfc70a4f7ad4f7a/src/network/packet.h",
+          "sha256": "7013d3a13ce0a8f3b384454bb14eb7cc8250e700d711fa1cb3ac41e8e4b1a0be"
+        },
+        {
+          "path": "src/network/room.cpp",
+          "url": "https://git.eden-emu.dev/eden-emu/eden/raw/commit/ee188168c12188340961314e1dfc70a4f7ad4f7a/src/network/room.cpp",
+          "sha256": "cd82d856b4f0aa68d15206af8dcfecb010d0b30f99b9b26c68bff1abe30cb84e"
+        },
+        {
+          "path": "src/network/room.h",
+          "url": "https://git.eden-emu.dev/eden-emu/eden/raw/commit/ee188168c12188340961314e1dfc70a4f7ad4f7a/src/network/room.h",
+          "sha256": "43de0b44b89e6736fb787cde39350a5bad2a18cc392c7c3f6dc4e21af1e0a4a0"
+        },
+        {
+          "path": "src/network/room_member.cpp",
+          "url": "https://git.eden-emu.dev/eden-emu/eden/raw/commit/ee188168c12188340961314e1dfc70a4f7ad4f7a/src/network/room_member.cpp",
+          "sha256": "925f7a1d285fc55d48faaf787db4cca608413370d21dadb57bc0e643b37c746e"
+        },
+        {
+          "path": "src/network/room_member.h",
+          "url": "https://git.eden-emu.dev/eden-emu/eden/raw/commit/ee188168c12188340961314e1dfc70a4f7ad4f7a/src/network/room_member.h",
+          "sha256": "abb84caca3ae6864be9f2bcb819c253889e4227bffa1cc293954ea35ccdb4673"
+        }
+      ]
+    }
+  ]
+}
