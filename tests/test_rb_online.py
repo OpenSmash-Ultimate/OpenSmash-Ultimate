@@ -30,6 +30,12 @@ class OnlineMatch(unittest.TestCase):
         self.assertIn('ok = rbl_open_relay(RBL_ONLINE, net_n);', core, 'the link opens with no number')
         self.assertIn('if (net_online) net_armed = net_armed && online_setup(st);', core, 'only an agreed Online match is armed')
 
+    def test_no_controls_left_from_the_last_fight(self):
+        core = src('hle_rb_core.c')
+        start = core.index('rbn_reset(net_mode == 2 ? net_n : 2')
+        self.assertIn('net_live_pad = (RbnPad){0};', core[start:core.index('rbn_local(key, net_live == 1', start)],
+                      'a fight\'s first local pad starts empty, not as the last fight ended')
+
     def test_setup(self):
         core = src('hle_rb_core.c')
         self.assertIn('#define ONLINE_MELEE 14', core)
