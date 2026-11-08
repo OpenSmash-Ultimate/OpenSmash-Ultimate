@@ -51,6 +51,34 @@ static int menu_keys(UINT msg, WPARAM w, LPARAM l) {
     return 1;
 }
 
+/* The pointer, for the same menu. */
+static int menu_mouse(HWND h, UINT msg, WPARAM w, LPARAM l) {
+    if (!menu_is_open()) return 0;
+    if (msg == WM_MOUSEMOVE) {   /* (Windows also sends one when the window changes under a still pointer: not a move) */
+        static POINT last;
+        POINT p;
+        GetCursorPos(&p);
+        if (p.x == last.x && p.y == last.y) return 0;
+        last = p;
+    }
+    if (msg == WM_MOUSEMOVE || msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN) {
+        RECT c;
+        GetClientRect(h, &c);
+        menu_mouse_move((short)LOWORD(l), (short)HIWORD(l), c.right, c.bottom);
+    }
+    switch (msg) {
+    case WM_LBUTTONDOWN: menu_key(MENU_MOUSE_LEFT); return 1;
+    case WM_RBUTTONDOWN: menu_key(MENU_MOUSE_RIGHT); return 1;
+    case WM_MOUSEWHEEL: {   /* (a fine-grained wheel sends less than a notch at a time) */
+        static int wheel;
+        wheel += GET_WHEEL_DELTA_WPARAM(w);
+        for (; wheel >= WHEEL_DELTA; wheel -= WHEEL_DELTA) menu_key(MENU_WHEEL_UP);
+        for (; wheel <= -WHEEL_DELTA; wheel += WHEEL_DELTA) menu_key(MENU_WHEEL_DOWN);
+        return 1; }
+    }
+    return 0;
+}
+
 /* (rollback netplay, hle_rb_core.c: what a match's set-up waits for, after the window's own title;
  * "" puts the title back. With a timeout: the window's thread never blocks the caller) */
 void gfx_set_status(const char *text) {
@@ -69,6 +97,8 @@ static LRESULT CALLBACK window_proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
     if (msg == WM_CLOSE) { fprintf(stderr, "[gfx] window closed\n"); gfx_closing(); rbl_upnp_close(); fflush(stderr); ExitProcess(0); }
     if (msg == WM_KEYDOWN && w >= VK_F1 && w <= VK_F6 && !(l & (1 << 30))) InterlockedOr(&hotkeys, 1 << (w - VK_F1));
     if (menu_keys(msg, w, l)) return 0;
+    if (msg == WM_MOUSEACTIVATE && LOWORD(l) == HTCLIENT && menu_is_open()) return MA_ACTIVATEANDEAT;   /* (the click that brings the window back isn't a press in the menu) */
+    if (menu_mouse(h, msg, w, l)) return 0;
     return DefWindowProcW(h, msg, w, l);
 }
 

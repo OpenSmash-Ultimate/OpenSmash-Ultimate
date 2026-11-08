@@ -392,6 +392,119 @@ class Pages(MenuTest):
         self.assertIn('choose a lobby in Online > Play online in', rows[0]['help'])
 
 
+class Mouse(MenuTest):
+    """The pointer on the menu. Places are menu_draw's at 1920 x 1080, where its scale is 1."""
+    GAME_PAGE = 3
+
+    def click(self, m, x, y, button='L', width=1920, height=1080):
+        m.ok(f'mouse {x} {y} {width} {height}')
+        m.ok(f'click {button}')
+
+    @staticmethod
+    def tab(i):
+        return 200, 195 + 60 * i
+
+    @staticmethod
+    def row_y(j):
+        assert j < 13   # (the rows that fit: the first ones, with nothing scrolled)
+        return 190 + 50 * j
+
+    def index(self, m, label):
+        return [r['label'] for r in m.rows()].index(label)
+
+    def test_page_tab(self):
+        m = self.menu()
+        m.key('ESC')
+        self.click(m, *self.tab(self.GAME_PAGE))
+        self.assertEqual(m.page()[1], self.GAME_PAGE)
+
+    def test_hover_selects_and_a_still_pointer_leaves_the_keys_alone(self):
+        m = self.menu()
+        m.key('ESC')
+        j = self.index(m, 'Frames queued ahead')
+        m.ok(f'mouse 500 {self.row_y(j)}')
+        self.assertEqual(m.at()['label'], 'Frames queued ahead')
+        m.key('DOWN')
+        m.ok(f'mouse 500 {self.row_y(j)}')   # (the same place again: not a move)
+        self.assertNotEqual(m.at()['label'], 'Frames queued ahead')
+
+    def test_choice_steps_by_side(self):
+        m = self.menu()
+        m.key('ESC')
+        y = self.row_y(self.index(m, 'Frames queued ahead'))
+        self.click(m, 1500, y)   # (right of the value: forward from the stand-in's 1)
+        self.assertRegex(m.file('display.ini'), r'latency\s*=\s*2')
+        self.click(m, 965, y)    # (the value's left half: back, round to 3)
+        self.assertRegex(m.file('display.ini'), r'latency\s*=\s*3')
+
+    def test_bars_are_left_out_of_the_place(self):
+        m = self.menu()
+        m.key('ESC')
+        x, y = self.tab(self.GAME_PAGE)
+        self.click(m, x + 320, y, width=2560, height=1080)   # (an ultrawide: 320 of bar on each side)
+        self.assertEqual(m.page()[1], self.GAME_PAGE)
+        m.type('1')
+        self.click(m, x // 2, y // 2, width=960, height=540)   # (a window in other units than the picture)
+        self.assertEqual(m.page()[1], self.GAME_PAGE)
+        m.type('1')
+        self.click(m, 100, y, width=2560, height=1080)   # (on the bar: nothing)
+        self.assertEqual(m.page()[1], 0)
+
+    def test_quit_asks_and_what_is_behind_is_out_of_reach(self):
+        m = self.menu()
+        m.key('ESC')
+        m.type(str(self.GAME_PAGE + 1))
+        y = self.row_y(self.index(m, 'Quit the game'))
+        self.click(m, 500, y)
+        self.assertIn('Quit the game?', m.draw())
+        self.click(m, *self.tab(0))   # (a page tab, behind the question)
+        self.assertEqual(m.page()[1], self.GAME_PAGE)
+        self.assertIn('Quit the game?', m.draw())
+        self.click(m, 900, 590)   # (no)
+        self.assertNotIn('Quit the game?', m.draw())
+        self.click(m, 500, y)
+        self.click(m, 500, y, 'R')   # (right: as B)
+        self.assertNotIn('Quit the game?', m.draw())
+        self.assertEqual(m.page()[0], 1)
+        self.click(m, 500, y)
+        m.ok('mouse 600 590')
+        m.p.stdin.write('click L\n')   # (yes: it ends with no answer)
+        m.p.stdin.flush()
+        self.assertEqual(m.p.wait(10), 0)
+
+    def test_restart_and_quit_buttons_on_every_page(self):
+        m = self.menu()
+        m.key('ESC')
+        for page in (1, 5):
+            m.type(str(page))
+            self.click(m, 200, 750)   # (restart: y 735 to 785)
+            self.assertIn('Start the game again?', m.draw())
+            self.click(m, 900, 590)   # (no)
+            self.click(m, 200, 810)   # (quit: y 795 to 845)
+            self.assertIn('Quit the game?', m.draw())
+            self.click(m, 900, 590)   # (no)
+            self.assertEqual(m.page()[:2], (1, page - 1))
+
+    def test_text_grid(self):
+        m = self.menu(files={'online_name.txt': 'Al\n'})
+        m.key('ESC')
+        m.type('3')
+        self.click(m, 500, self.row_y(self.index(m, 'Your name')))
+        self.click(m, 610, 415)    # (the grid's first cell: A)
+        self.click(m, 500, 300, 'R')   # (right, typing: not a deletion)
+        self.click(m, 1000, 700)   # (done)
+        self.assertEqual(m.file('online_name.txt'), 'AlA')
+
+    def test_wheel(self):
+        m = self.menu()
+        m.key('ESC')
+        before = m.at()['label']
+        m.ok('wheel D')
+        self.assertNotEqual(m.at()['label'], before)
+        m.ok('wheel U')
+        self.assertEqual(m.at()['label'], before)
+
+
 class Version(MenuTest):
     """Online > Netplay version (online_protocol.txt), and which version the game asks for."""
     def test_setting_saved(self):
