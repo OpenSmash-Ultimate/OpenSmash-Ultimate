@@ -22,7 +22,7 @@ namespace OpenSmash.Launcher
 
         Bitmap _bg;
         float _s;
-        readonly string[] _menuItems = { "PLAY", "MODS", "SETTINGS", "QUIT" };
+        readonly string[] _menuItems = { "PLAY", "YUZU ROOM", "MODS", "SETTINGS", "QUIT" };
 
         Setting[] _settings;
         SettingTab[] _settingsTabs;
@@ -156,6 +156,7 @@ namespace OpenSmash.Launcher
                 case "nav:home": GoView("home"); return true;
                 case "nav:mods": GoView("mods"); return true;
                 case "nav:settings": GoView("settings"); return true;
+                case "nav:yuzu": OpenYuzuRoom(); return true;
                 case "nav:back": GoBack(); return true;
                 case "nav:play": if (!Busy) StartPlay(); return true;
                 case "nav:mode-prev": CycleLaunchMode(-1); return true;
@@ -522,6 +523,7 @@ namespace OpenSmash.Launcher
                 case "mods_browser": PaintModsBrowser(g, W, H); break;
                 case "setup_modding": PaintSetupModding(g, W, H); break;
                 case "settings": PaintSettings(g, W, H); break;
+                case "yuzu": PaintYuzuRoom(g, W, H); break;
                 default: PaintHome(g, W, H); break;
             }
 
@@ -600,9 +602,9 @@ namespace OpenSmash.Launcher
             AddHit("nav:mode-next", nextX, cy - chh / 2, aw, chh);
 
             // Section links with the red skewed underline
-            string active = _view == "home" ? "nav:home" : _view == "settings" ? "nav:settings" : "nav:mods";
+            string active = _view == "home" ? "nav:home" : _view == "settings" ? "nav:settings" : _view == "yuzu" ? "nav:yuzu" : "nav:mods";
             float lx = prevX - 8 * s;
-            foreach (var (id, label) in new[] { ("nav:settings", "SETTINGS"), ("nav:mods", "MODS"), ("nav:home", "HOME") })
+            foreach (var (id, label) in new[] { ("nav:settings", "SETTINGS"), ("nav:mods", "MODS"), ("nav:yuzu", "ROOM"), ("nav:home", "HOME") })
             {
                 float tw = Theme.TextWidth(g, label, cf, csp), bw = tw + 24 * s;
                 lx -= bw;
@@ -684,6 +686,7 @@ namespace OpenSmash.Launcher
                 "home" => "\u2190 \u2192  SELECT     ENTER  CONFIRM",
                 "mods" => "\u2191 \u2193  SELECT     DEL  REMOVE     ESC  BACK",
                 "settings" => "\u2190 \u2192  TABS     ENTER  CHANGE     ESC  BACK",
+                "yuzu" => "TAB  NEXT FIELD     ENTER  CONNECT     ESC  BACK",
                 _ => "ESC  BACK",
             };
             Theme.Label(g, hint, FM(11 * s), A(Theme.Dim), 0, y, h, sp, StringAlignment.Far, W - 40 * s);
@@ -844,7 +847,7 @@ namespace OpenSmash.Launcher
             {
                 var st = PushFade(g, Up(t, 1.05f), 24 * s);
                 float bx = left, by = 494 * s, bh = 52 * s, aw = bh, ag = 8 * s;
-                float[] widths = { 220, 150, 184, 128 };
+                float[] widths = { 190, 180, 130, 160, 105 };
                 string playLabel = _launchMode == "vanilla" ? "VANILLA" : "PLAY";
                 bool playEnabled = _built && !Busy;
                 Theme.ButtonAnimated(g, "<", bx, by, aw, bh, s, primary: false, Hov("nav:mode-prev", _hover == "nav:mode-prev"), _built, 18 * s, _alpha, press: Press("nav:mode-prev"));
@@ -854,7 +857,7 @@ namespace OpenSmash.Launcher
                 {
                     string id = $"menu:{i}";
                     float bw = widths[i] * s;
-                    bool enabled = i != 0 || playEnabled;
+                    bool enabled = i <= 1 ? playEnabled : true;
                     float hv = Hov(id, enabled && (_hover == id || (_keys && _sel == i)));
                     Theme.ButtonAnimated(g, i == 0 ? playLabel : _menuItems[i], bx, by, bw, bh, s, primary: i == 0, hv, enabled, 15 * s, _alpha,
                         i == 0 ? DrawArrow : null, press: Press(id));

@@ -4,7 +4,20 @@ This mode connects OpenSmash to an **existing** yuzu-compatible room server. It 
 
 The wire baseline is room protocol 1, as preserved in yuzu-era network/LDN sources at commit 48d6226115f849c465202692b6988e1efb7d2410 in the review's source mirror. Compatibility with a named client version must be confirmed by real matches. Automated tests currently exercise the real ENet and Zstd libraries and OpenSmash's guest network HLE against a loopback test double; they do not prove a complete Smash match with an emulator.
 
-## Build and start (Windows)
+## Launcher page (Windows)
+
+Open **ROOM** in the launcher's top navigation, or **YUZU ROOM** on its home screen. This is an embedded launcher page, with the existing navigation and visual theme.
+
+- Enter the existing room's server and nickname. Enter a password only when the room requires one; it is masked and is never saved or put in command arguments.
+- Select **Eden / compatible** (default) or **Historical yuzu** for an older peer.
+- **Save** stores only the server, nickname and compatibility choice in the same config/yuzu_client.json used by the script. **Check setup** prepares and validates the local setup without connecting or saving these edits.
+- **Connect & play** prepares dependencies/plugins and starts the current game build with its enabled mods. The page shows preparation, game startup, admission, rejection and retry state. Only a runtime admission message is displayed as connected.
+- Once admitted, use the game's **Local Wireless** menu to create or join a game. Close the game to edit the connection settings and reconnect. Duplicate starts are disabled while preparing or running.
+- **Connection log** and **Setup log** open the runtime and preparation logs. Tab moves between controls; Escape returns to the previous launcher page. Normal Play continues to use native networking.
+
+Both the updated launcher and tools/yuzu_client.ps1 are required. The runtime's lifecycle log messages enable live retry status; older client builds can still report admission and refusal. UI behavior tests use synthetic child processes and room messages; they do not constitute another real match test.
+
+## Build and start from the script (Windows)
 
 1. Build this checkout normally so that build/ssbu.exe includes the new runtime. Updating only the launch script is insufficient. The launcher rejects older executables.
 2. Run: `python tools/yuzu_client_deps.py`. This downloads checksum-pinned ENet 1.3.18 and Zstd 1.5.7 sources and builds the optional client DLLs into build/yuzu/. The ordinary OpenSmash mode does not load them.
@@ -94,4 +107,10 @@ The client was integrated on upstream main at 078e05533d53100ce89186a9cff6163042
 
 Local validation on this integration: 20 client tests, nine codec tests, five launcher tests and one menu test passed. The affected native suites ran 83 tests (82 passed, one real-multicast test skipped). The full Windows runtime compiled and linked against synthetic modules without game data, both as a single executable and with the separate game DLL; the latter loaded successfully. Real matches reported above were played on the feature build before integration with this upstream revision; they were not rerun by the agent after integration.
 
-The client and script entry point are delivered together with the necessary existing-menu status adaptation. A graphical connection form, profile editor and connection-management UI are a separate follow-up.
+The client and script entry point are delivered together with the necessary existing-menu status adaptation. The embedded graphical connection page is delivered by the follow-up UI branch.
+
+## Embedded UI validation (2026-11-08)
+
+The follow-up page uses the existing launcher navigation, section heading and Theme buttons, with native text fields embedded in that page. No separate connection window is opened. The built launcher passed 39 behavior checks, including input validation, password masking/non-persistence, setup-only behavior, asynchronous launch and failure, duplicate launch prevention, runtime admission/retry status, re-enabling controls after game exit, and hiding fields when navigating away. These checks use synthetic child processes and logs. The existing yuzu suites passed 36 tests, including a GUI password bridge test. A local full preflight rebuilt the runtime and prepared installed plugins successfully without making a room connection. Actual matches through this new GUI have not yet been retested.
+
+To run the GUI checks without game data: `dotnet run --project tests/launcher_yuzu_ui/LauncherYuzuUiTests.csproj -c Release`. Windows CI runs this alongside the existing tests.
