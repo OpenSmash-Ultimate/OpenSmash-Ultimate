@@ -892,6 +892,16 @@ function Step-Python {
         if ((Invoke-Python @('-m', 'pip', 'install', '-r', (Join-Path $Root 'requirements.txt'))) -ne 0) { throw 'pip could not install the packages (see above).' }
         if (-not (Test-PythonPackages)) { throw 'The packages are still missing after pip install.' }
     }
+    # (#173) The Python chosen, as a full path, for the launcher and the game's Mods menu (build\python_path.txt):
+    # where only "py -3" finds it, plain "python" is Windows' Store shortcut and every tools\os_mods.py call failed.
+    if (-not $DryRun) {
+        $exe = (Get-PythonOutput @('-c', 'import sys; print(sys.executable)')).Output.Trim()
+        if ($exe -and (Test-Path -LiteralPath $exe)) {
+            $buildDir = Join-Path $Root 'build'
+            New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+            [IO.File]::WriteAllText((Join-Path $buildDir 'python_path.txt'), $exe)
+        }
+    }
     # py7zr: the Mods app opens .7z mods with it when 7-Zip isn't installed (Windows' tar can't).
     # Optional (not in requirements.txt): without it, only .7z mods need 7-Zip. Pinned: update after checking a newer one.
     if (-not $DryRun -and (Get-PythonOutput @('-c', 'import py7zr')).Code -ne 0) {
