@@ -1,7 +1,12 @@
 /* The disk cache of compiled shaders (DXBC files), shared by the renderer (gpu_d3d11.c) and the
  * ahead-of-time compiler (tools/shaderaot.c), so that both key, name and compile a program alike.
  *
- * A file is "<dir>/v<version>_<vs|ps|cs>_<program hash>_<vs outputs>_<jump tables' hash>.dxbc".
+ * A file is "<dir>/v<version>_<vs|ps|cs>_<program hash>_<interface>_<jump tables' hash>.dxbc":
+ * a vertex program's outputs, or, for a pixel program, the interface it shares with them (what it
+ * reads and the draw's vertex program writes), so one variant links with any vertex program that
+ * writes a superset of it. Both stages declare every attribute through the last one in that
+ * interface, gaps included, so ATTRn is register 2+n on both sides (Direct3D and DXVK link the
+ * stages by register). A vertex program's file name still has interface 0: its hash names it.
  * The ahead-of-time compiler dates its files 2001-01-01 until the game first uses them (the
  * renderer then dates them now): the start's prewarm makes the shaders the game has used, plus
  * the unplayed ones SSBU_SHADER_PREWARM_UNPLAYED asks for (by default on Linux, what the PC's
@@ -20,10 +25,16 @@
 #include "gpu_shader.h"
 
 /* Bump when the translator changes what it generates: older files are then ignored. */
-#define SHADER_CACHE_VERSION 10
+#define SHADER_CACHE_VERSION 11
+/* Bump when a complete cache has to hold more keys, though every file it holds stays valid: the
+ * launcher then asks for Prepare Shaders again, which compiles what is missing and keeps the rest.
+ * (SHADER_CACHE_VERSION would do it too, but by ignoring the files there are.) */
+#define SHADER_CACHE_PREPARE 2
 /* MSL files' version: the translator's, and the MSL dialect's own revision (bump the last
- * digits for a change to MSL alone). */
-#define SHADER_CACHE_MSL_VERSION (SHADER_CACHE_VERSION * 100 + 3)
+ * digits for a change to MSL alone). It stays at 10.3 though the DXBC version moved to 11: the
+ * register padding above is the Direct3D and DXVK interface's, and Metal's translator has its
+ * own. Bump the 10 by hand when a change to the shared translator does reach MSL. */
+#define SHADER_CACHE_MSL_VERSION 1003
 #define SHADER_CACHE_UNPLAYED 0x01C07385C89DC000ull   /* FILETIME 2001-01-01 */
 #define SHADER_CACHE_PLAYED   0x01C1925741648000ull   /* written after 2002-01-01: the game used it */
 #define SHADER_CACHE_UNPLAYED_UNIX 978307200ll        /* the same two, as Unix times */

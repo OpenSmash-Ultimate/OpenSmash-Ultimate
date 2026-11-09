@@ -3121,9 +3121,15 @@ namespace OpenSmash.Launcher
         {
             string marker = Path.Combine(_repo, "dump", "shadercache", "complete.txt");
             if (!File.Exists(marker)) return false;
-            var ver = Regex.Match(File.ReadAllText(Path.Combine(_repo, "runtime", "gpu_shader_cache.h")), @"#define SHADER_CACHE_VERSION (\d+)");
+            string header = File.ReadAllText(Path.Combine(_repo, "runtime", "gpu_shader_cache.h"));
+            var ver = Regex.Match(header, @"#define SHADER_CACHE_VERSION (\d+)");
             if (!ver.Success) return false;
-            return File.ReadAllText(marker).Contains("version " + ver.Groups[1].Value);
+            string text = File.ReadAllText(marker);
+            if (!text.Contains("version " + ver.Groups[1].Value)) return false;
+            // A prepare generation that grew the cache's keys (SHADER_CACHE_PREPARE) needs another
+            // pass too: its files are valid, but the new ones are not there yet.
+            var prep = Regex.Match(header, @"#define SHADER_CACHE_PREPARE (\d+)");
+            return !prep.Success || Regex.IsMatch(text, @"(?m)^prepare " + prep.Groups[1].Value + @"\r?$");
         }
 
         void StartShaders(string priority)

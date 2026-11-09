@@ -181,6 +181,37 @@ class WarmShadersTests(unittest.TestCase):
         self.assertIn('not warmed', self.printed(printed))
 
 
+class RemoveStaleTests(unittest.TestCase):
+    def test_removes_only_current_version_unplayed_unwanted(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            version = shader_aot.cache_version()
+            keep = shader_aot.Key('ps', 'a' * 16, '00000004', 0)
+            stale = shader_aot.Key('ps', 'b' * 16, '00000004', 0)
+            played = shader_aot.Key('ps', 'c' * 16, '00000004', 0)
+
+            def write(name, mtime):
+                path = os.path.join(d, name)
+                with open(path, 'wb') as f:
+                    f.write(b'x')
+                os.utime(path, (mtime, mtime))
+
+            write(shader_aot.cache_file_name(keep, version), shader_aot.PLAYED_UNIX - 1)
+            write(shader_aot.cache_file_name(stale, version), shader_aot.PLAYED_UNIX - 1)
+            write(shader_aot.cache_file_name(played, version), shader_aot.PLAYED_UNIX)
+            write(f'v{version - 1}_ps_' + 'd' * 16 + '_00000004_0000000000000000.dxbc',
+                  shader_aot.PLAYED_UNIX - 1)
+            write(f'v{version}_cs_' + 'e' * 16 + '_00000000_0000000000000000.dxbc',
+                  shader_aot.PLAYED_UNIX - 1)
+            shader_aot.remove_stale(d, [keep])
+            left = set(os.listdir(d))
+            self.assertIn(shader_aot.cache_file_name(keep, version), left)
+            self.assertIn(shader_aot.cache_file_name(played, version), left)
+            self.assertNotIn(shader_aot.cache_file_name(stale, version), left)
+            self.assertIn(f'v{version - 1}_ps_' + 'd' * 16 + '_00000004_0000000000000000.dxbc', left)
+            self.assertIn(f'v{version}_cs_' + 'e' * 16 + '_00000000_0000000000000000.dxbc', left)
+
+
 class RomfsImageReadErrorTests(unittest.TestCase):
     def test_the_error_names_its_file(self):
         import nca

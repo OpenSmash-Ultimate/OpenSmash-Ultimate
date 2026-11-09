@@ -1622,7 +1622,8 @@ typedef struct VShader {
     Job job;            /* (first: the job is the shader) */
     char *hlsl;         /* (while it is made) */
     u64 hash, table_hash;
-    u32 vs_outputs;
+    u32 vs_outputs;     /* the draw's vertex shader's outputs (a pixel program's request: its identity) */
+    u32 cache_outputs;  /* pixel: vs_outputs & info.inputs, the effective interface its cache file is named by */
     int stage;
     volatile LONG state;   /* 0 being made, 1 ready, 2 failed */
     VkPipeline compute;    /* (a compute program's pipeline, made with it) */
@@ -1683,7 +1684,7 @@ static const char *cache_dir(void) {
  * as a shader module. */
 static void shader_make(VShader *s, const char *hlsl) {
     char path[1200];
-    shader_cache_file(path, sizeof path, cache_dir(), s->stage, s->hash, s->vs_outputs, s->table_hash);
+    shader_cache_file(path, sizeof path, cache_dir(), s->stage, s->hash, s->cache_outputs, s->table_hash);
     void *dxbc = NULL;
     size_t size = 0;
     ID3DBlob *blob = NULL;
@@ -1802,6 +1803,8 @@ static VShader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding
     char *hlsl = stage == SHADER_COMPUTE ? shader_hlsl_cs(p, size, local, shared, &s->info, read_cbuf_word, &src)
                : alpha_tested            ? shader_hlsl_alpha_tested(p, size, vs_outputs, &s->info, read_cbuf_word, &src)
                                          : shader_hlsl_ex(p, size, stage, vs_outputs, &s->info, read_cbuf_word, &src);
+    /* A pixel program is named by its effective interface (as gpu_d3d11.c). */
+    s->cache_outputs = stage == SHADER_PIXEL ? s->vs_outputs & s->info.inputs : s->vs_outputs;
     s->table_hash = table_hash(&s->info, &src);
     if (s->info.unsupported[0]) fprintf(stderr, "[gfx] %s: %s\n", s->name, s->info.unsupported);
     if (!hlsl) { s->state = 2; vk_stat_shader_failures++; return s; }

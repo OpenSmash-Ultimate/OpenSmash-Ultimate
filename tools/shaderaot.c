@@ -69,10 +69,12 @@ _Noreturn void rt_fatal(const char *fmt, ...) {   /* the translator gave up on a
 
 static u32 zero_cbuf(void *user, u32 bank, u32 offset) { (void)user; (void)bank; (void)offset; return 0; }
 
+#define MAX_VMASKS 64          /* (the pack's distinct vertex output masks: 33 in 13.0.5) */
+
 typedef struct Program {
     int stage; u32 length, npairs; const u32 *pairs; const u8 *bytes; u32 size; u64 hash; int ok; u32 outputs, ntables;
     int mine;                  /* a vertex program this part compiles */
-    u32 nmasks, masks[16];     /* a pixel program's keys: its vertex programs' distinct output masks */
+    u32 nmasks, masks[MAX_VMASKS];   /* a pixel program's keys: its effective interface with each vertex output mask */
 } Program;
 
 static char *translate(Program *p, u32 vs_outputs, ShaderInfo *info) {
@@ -107,15 +109,16 @@ static void publish(const char *tmp, const char *path) {
 }
 #endif
 
-/* The distinct output masks of a pixel program's paired vertex programs (at most 16), into p->masks. */
-static u32 pixel_masks(Program *p, const Program *prog, u32 total) {
+/* The distinct keys a pixel program needs: what it reads AND each vertex program's outputs write.
+ * The renderer pairs a program with the vertex program of its draw, and they need not be in the
+ * same file, so every vertex output mask in the pack is one - the set is the whole pack's. A
+ * variant compiled for a mask links with any vertex program that writes a superset. */
+static u32 effective_masks(Program *p, u32 inputs, const u32 *vmask, u32 nvmask) {
     u32 n = 0;
-    for (u32 k = 0; k < p->npairs && n < 16; k++) {
-        const Program *v = p->pairs[k] < total ? &prog[p->pairs[k]] : NULL;
-        if (!v || !v->ok) continue;
-        u32 m = 0;
-        for (; m < n && p->masks[m] != v->outputs; m++) {}
-        if (m == n) p->masks[n++] = v->outputs;
+    for (u32 k = 0; k < nvmask && n < MAX_VMASKS; k++) {
+        u32 e = inputs & vmask[k], m = 0;
+        for (; m < n && p->masks[m] != e; m++) {}
+        if (m == n) p->masks[n++] = e;
     }
     return n;
 }
@@ -316,8 +319,9 @@ int main(int argc, char **argv) {
     }
     ShaderInfo info;
     char path[1200], name[64];
+    u32 vmasks[MAX_VMASKS], nvmasks = 0;
     if (serve) return serve_keys(prog, total, dir);
-    /* every vertex program: its key and outputs (what the pixel programs paired with it read);
+    /* every vertex program: its key and outputs (the masks a pixel program can be paired with);
        which of them are this part's to compile */
     for (u32 i = 0; i < total; i++) {
         Program *p = &prog[i];
@@ -334,9 +338,15 @@ int main(int argc, char **argv) {
         p->ntables = info.ntables;
         p->mine = first_time(p->hash * 3);
         progress_of += p->mine;
+        u32 m = 0;
+        for (; m < nvmasks && vmasks[m] != p->outputs; m++) {}
+        if (m == nvmasks) {
+            if (nvmasks < MAX_VMASKS) vmasks[nvmasks++] = p->outputs;
+            else { static int said; if (!said++) fprintf(stderr, "warning: more than %d vertex output masks; the rest are left out\n", MAX_VMASKS); }
+        }
     }
-    /* the pixel programs' keys, this part's counted: one per distinct output mask of their vertex
-       programs (or, with none, what the program reads) */
+    /* the pixel programs' keys, this part's counted: what each reads AND every vertex output mask
+       (or, with the pack holding no vertex program, what the program reads) */
     for (u32 i = 0; i < total; i++) {
         Program *p = &prog[i];
         if (p->stage != SHADER_PIXEL || p->length <= 0x50) continue;
@@ -344,13 +354,11 @@ int main(int argc, char **argv) {
         p->size = shader_size(p->bytes, p->length);
         if (p->size <= 0x50 || p->size >= MAX_SIZE) continue;   /* (no end found: not a program) */
         p->hash = shader_cache_hash(shader_program_hash(p->bytes, p->size), p->bytes, p->size, SHADER_PIXEL);
-        p->nmasks = pixel_masks(p, prog, total);
-        if (!p->nmasks) {   /* no vertex program known: what it reads */
-            char *probe = translate(p, 0xFFFFFFFFu, &info);
-            if (!probe) { count.translate_failed += ours(p->hash); p->size = 0; continue; }
-            free(probe);
-            p->masks[p->nmasks++] = info.inputs;
-        }
+        char *probe = translate(p, 0xFFFFFFFFu, &info);   /* (what it reads: every attribute there is) */
+        if (!probe) { count.translate_failed += ours(p->hash); p->size = 0; continue; }
+        free(probe);
+        p->nmasks = effective_masks(p, info.inputs, vmasks, nvmasks);
+        if (!p->nmasks) p->masks[p->nmasks++] = info.inputs;
         for (u32 m = 0; m < p->nmasks; m++) progress_of += to_count(p->hash * 5 ^ p->masks[m]);
     }
     fprintf(stderr, "progress 0 %u\n", progress_of);   /* (the total, before the first compile) */

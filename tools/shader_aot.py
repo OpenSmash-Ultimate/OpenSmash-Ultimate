@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the game's shaders ahead of time, into the renderer's disk cache.
+r"""Compile the game's shaders ahead of time, into the renderer's disk cache.
 
 Usage:
   shader_aot.py [--jobs N] [--dry] [--parts] [--no-warm] [--rewarm]
@@ -9,10 +9,14 @@ The game's GPU programs are stored in data.arc as they are uploaded: in the effe
 game's main executable (dump/modules/main.reloc.bin). This finds every program there (by its
 header word: 256-byte boundaries + 0x30 in effects and archives, 8-byte ones in databases - half
 of a database's programs start 8 bytes past a 16-byte one - and 16-byte ones in the executables),
-keeps one copy of each, pairs each pixel program with the vertex programs of its file (a vertex
-program's outputs are its pixel program's inputs), and has tools/shaderaot.c translate and
-compile them all into dump/shadercache, exactly as the renderer would: a program's first
-use in the game then loads its DXBC instead of compiling it.
+keeps one copy of each, pairs each pixel program with every vertex output mask in the pack (a
+pixel program's variant is keyed by the interface it shares with the draw's vertex program, which
+can come from another file), and has tools/shaderaot.c translate and compile them all into
+dump/shadercache, exactly as the renderer would: a program's first use in the game then loads its
+DXBC instead of compiling it. A first run compiles about 111,000 keys (the effective interfaces
+multiply the pixel programs' keys); a cache of this version keeps the variants it already has.
+The register-padded interface changed every DXBC, so the files of an earlier version are ignored
+and the first pass after that change compiles all of them again.
 
 The files are dated 2001-01-01 until the game first uses them, so the start's prewarm only
 makes the shaders the game has used. Programs with indirect branches are left out (their key
@@ -447,7 +451,7 @@ def main():
         return 1
     if not a.dry and ok:
         with open(marker, "w", encoding="utf-8", newline="\n") as f:
-            f.write(f"version {cache_version()}\n")
+            f.write(f"version {cache_version()}\nprepare {prepare_generation()}\n")
     state = "skipped"
     if a.dry:
         print("warm: skipped (--dry)", flush=True)
@@ -523,12 +527,15 @@ def run_queue(exe, pack, cache, jobs, dry):
             raise
         kept_said()
     print(summary(totals))
+    if not dry and not totals["died"]:
+        remove_stale(cache, keys)
     return not totals["died"]
 
 
 # ---- the queue: discovery, ordering, the workers ---------------------------------------------------------
 Key = collections.namedtuple("Key", "kind hash mask size")   # kind "vs" or "ps"; mask None for a vertex program
 TIMES_FILE = "compile_times.txt"   # (in dump/aot, with the pack: "<kind> <hash> [<mask>] <ms>" per key compiled)
+PLAYED_UNIX = 1009843200   # (runtime/gpu_shader_cache.h: an ahead-of-time file the game has not used is older)
 
 
 def key_of(kind, hash_, mask):
@@ -596,6 +603,33 @@ def parse_cache_file_name(name, version):
     if len(parts) == 5 and parts[0] == "v" + str(version) and parts[1] in ("vs", "ps") and parts[4] == "0" * 16:
         return key_of(parts[1], parts[2], parts[3])
     return None
+
+
+def remove_stale(cache, keys, version=None):
+    """Delete this version's ahead-of-time files whose key this pass found no program for: a
+    program the game no longer has, or a pixel variant whose effective interface this pack no
+    longer asks for. Files the game has used, and the renderer's own, are newer than PLAYED_UNIX
+    and stay; so do other versions, compute programs and MSL files."""
+    version = cache_version() if version is None else version
+    wanted = {k.key for k in keys}
+    removed = freed = 0
+    for name in os.listdir(cache):
+        k = parse_cache_file_name(name, version)
+        if not k or k in wanted:
+            continue
+        path = os.path.join(cache, name)
+        try:
+            st = os.stat(path)
+            if st.st_mtime >= PLAYED_UNIX:
+                continue
+            os.remove(path)
+        except OSError:
+            continue
+        removed += 1
+        freed += st.st_size
+    if removed:
+        print(f"removed {removed:,} shader files this tree no longer asks for ({freed / 1e9:.2f} GB; "
+              "the game's used ones and the renderer's own are kept)", flush=True)
 
 
 def load_times(folder):
@@ -934,9 +968,20 @@ def summary(totals):
     return text
 
 
+def cache_define(name):
+    with open(os.path.join(ROOT, "runtime", "gpu_shader_cache.h"), encoding="utf-8") as f:
+        text = f.read()
+    return int(re.search(rf"#define {name} (\d+)", text).group(1))
+
+
 def cache_version():
-    text = open(os.path.join(ROOT, "runtime", "gpu_shader_cache.h"), encoding="utf-8").read()
-    return int(re.search(r"#define SHADER_CACHE_VERSION (\d+)", text).group(1))
+    return cache_define("SHADER_CACHE_VERSION")
+
+
+def prepare_generation():
+    """What a complete.txt from this tree says (the launcher, SHADER_CACHE_PREPARE): a pass that
+    found more keys (the pixel programs' effective interfaces, say) writes a new one."""
+    return cache_define("SHADER_CACHE_PREPARE")
 
 
 if __name__ == "__main__":

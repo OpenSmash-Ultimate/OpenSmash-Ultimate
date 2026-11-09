@@ -964,7 +964,8 @@ static void dump_shaders(const u32 *regs) {
 
 typedef struct Shader {
     u64 hash, table_hash;
-    u32 vs_outputs;
+    u32 vs_outputs;     /* the draw's vertex shader's outputs (a pixel program's request: its identity) */
+    u32 cache_outputs;  /* pixel: vs_outputs & info.inputs, the effective interface its cache file is named by */
     int stage;
     volatile LONG state;   /* 0 compiling, 1 ready, 2 failed */
     void *obj;             /* ID3D11VertexShader, ID3D11PixelShader or ID3D11ComputeShader */
@@ -1089,7 +1090,7 @@ static const char *cache_dir(void) {
 }
 
 static void cache_path(const Shader *s, char *path, size_t n) {
-    shader_cache_file(path, n, cache_dir(), s->stage, s->hash, s->vs_outputs, s->table_hash);
+    shader_cache_file(path, n, cache_dir(), s->stage, s->hash, s->cache_outputs, s->table_hash);
 }
 
 /* A file the ahead-of-time compiler wrote (dated 2001), now used by the game: dated now, so the
@@ -1312,7 +1313,7 @@ static void *prewarm_take(const Shader *s) {
     if (!prewarm_table) return NULL;
     void *obj = NULL;
     AcquireSRWLockExclusive(&prewarm_lock);
-    Prewarm *p = prewarm_slot(s->stage, s->hash, s->vs_outputs, s->table_hash, 0);
+    Prewarm *p = prewarm_slot(s->stage, s->hash, s->cache_outputs, s->table_hash, 0);
     if (p && p->state == PW_READY) { obj = p->obj; p->obj = NULL; prewarm_taken++; }
     if (p && p->state != PW_FAILED) p->state = PW_TAKEN;
     ReleaseSRWLockExclusive(&prewarm_lock);
@@ -1334,7 +1335,7 @@ static void prewarm_job(struct Compiler *me, Shader *s) {
     if (go) p->state = PW_LOADING;
     ReleaseSRWLockExclusive(&prewarm_lock);
     void *obj = NULL;
-    u32 outputs = s->stage == SHADER_PIXEL ? s->vs_outputs : ~0u;
+    u32 outputs = s->stage == SHADER_PIXEL ? s->cache_outputs : ~0u;
     if (go) {
         char path[1200];
         cache_path(s, path, sizeof path);
@@ -1630,7 +1631,7 @@ static DWORD WINAPI prewarm_main(void *unused) {
             if (!wanted || (unplayed == UNPLAYED_ALL && pass == 0 && !played && stage != SHADER_VERTEX)) { skipped++; continue; }
             if (queued >= PREWARM_SLOTS / 2) { skipped++; continue; }
             Shader *s = calloc(1, sizeof *s);
-            s->hash = hash; s->stage = stage; s->vs_outputs = vs_outputs; s->table_hash = tables;
+            s->hash = hash; s->stage = stage; s->vs_outputs = vs_outputs; s->cache_outputs = vs_outputs; s->table_hash = tables;
             snprintf(s->name, sizeof s->name, "%s_%016llx", stage == SHADER_VERTEX ? "vs" : stage == SHADER_PIXEL ? "ps" : "cs", (unsigned long long)hash);
             AcquireSRWLockExclusive(&prewarm_lock);
             s->prewarm = prewarm_slot(stage, hash, vs_outputs, tables, 1);
@@ -1805,7 +1806,9 @@ static void warmer_free(Warmer *w) {
 
 /* The other side of a program's interface, on w's device (stage: the partner's): for a pixel
  * program, a vertex shader writing its inputs (a triangle over the target); for a vertex program,
- * a pixel shader reading all its outputs. NULL if it can't be made. */
+ * a pixel shader reading all its outputs. Like the translator (gpu_shader.c: struct VSOut), it
+ * declares every attribute up to the last one used, gaps too, since the two stages link by
+ * register. NULL if it can't be made. */
 static void *warm_partner(Warmer *w, int stage, u32 outputs) {
     void *obj = NULL;
     AcquireSRWLockShared(&w->lock);
@@ -1813,17 +1816,22 @@ static void *warm_partner(Warmer *w, int stage, u32 outputs) {
         if (w->partner[i].stage == stage && w->partner[i].outputs == outputs) obj = w->partner[i].obj;
     ReleaseSRWLockShared(&w->lock);
     if (obj) return obj;
+    u32 last = 0;
+    for (u32 n = 0; n < 32; n++)
+        if (outputs >> n & 1) last = n;
     char src[4096];
     int len = snprintf(src, sizeof src, "struct VSOut {\n  float4 pos : SV_Position;\n  float clipw : CLIPW;\n");
-    for (u32 n = 0; n < 32; n++)
-        if (outputs >> n & 1) len += snprintf(src + len, sizeof src - len, "  float4 a%u : ATTR%u;\n", n, n);
+    if (outputs)
+        for (u32 n = 0; n <= last; n++)
+            len += snprintf(src + len, sizeof src - len, "  float4 a%u : ATTR%u;\n", n, n);
     if (stage == SHADER_VERTEX)
         snprintf(src + len, sizeof src - len, "};\nVSOut main(uint vid : SV_VertexID) {\n  VSOut o = (VSOut)0;\n"
                                               "  o.pos = float4(vid == 1u ? 3.0f : -1.0f, vid == 2u ? -3.0f : 1.0f, 0.5f, 1.0f);\n  return o;\n}\n");
     else {
         len += snprintf(src + len, sizeof src - len, "};\nfloat4 main(VSOut i) : SV_Target {\n  float4 s = i.pos + i.clipw;\n");
-        for (u32 n = 0; n < 32; n++)
-            if (outputs >> n & 1) len += snprintf(src + len, sizeof src - len, "  s += i.a%u;\n", n);
+        if (outputs)
+            for (u32 n = 0; n <= last; n++)
+                len += snprintf(src + len, sizeof src - len, "  s += i.a%u;\n", n);
         snprintf(src + len, sizeof src - len, "  return s;\n}\n");
     }
     ID3DBlob *code = NULL, *errors = NULL;
@@ -2966,14 +2974,14 @@ void d3d11_report_compiles(void (*line)(const char *text)) {
         CreateDirectoryA(dir, NULL);
         const char *saved = "";
         if (s->hlsl) {
-            snprintf(path, sizeof path, "%s/%s_%08x_%016llx.hlsl", dir, s->name, s->vs_outputs, s->table_hash);
+            snprintf(path, sizeof path, "%s/%s_%08x_%016llx.hlsl", dir, s->name, s->cache_outputs, s->table_hash);
             FILE *f = fopen(path, "w");
             if (f) { fputs(s->hlsl, f); fclose(f); saved = "; HLSL saved"; }
         }
         const void *dxbc = compilers[i].dxbc;
         size_t size = compilers[i].dxbc_size;
         if (step == STEP_DRIVER && dxbc && size) {
-            snprintf(path, sizeof path, "%s/%s_%08x_%016llx.dxbc", dir, s->name, s->vs_outputs, s->table_hash);
+            snprintf(path, sizeof path, "%s/%s_%08x_%016llx.dxbc", dir, s->name, s->cache_outputs, s->table_hash);
             FILE *f = fopen(path, "wb");
             if (f) { fwrite(dxbc, 1, size, f); fclose(f); saved = s->hlsl ? "; HLSL and DXBC saved" : "; DXBC saved"; }
         }
@@ -3102,6 +3110,9 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
         FILE *f = fopen(path, "wb");
         if (f) { static const u8 zero[0x50]; fwrite(zero, 1, 0x50, f); fwrite(p + 0x50, 1, size - 0x50, f); fclose(f); }
     }
+    /* A pixel program is named by its effective interface: one variant links with any vertex
+     * program that writes a superset of it (shader_hlsl_ex declares only inputs & vs_outputs). */
+    s->cache_outputs = stage == SHADER_PIXEL ? s->vs_outputs & s->info.inputs : s->vs_outputs;
     s->table_hash = table_hash(&s->info, &src);
     if (s->info.unsupported[0]) fprintf(stderr, "[gfx] %s: %s\n", s->name, s->info.unsupported);
     const char *find = getenv("SSBU_GFX_FIND");   /* debug: other copies of this program in guest memory */

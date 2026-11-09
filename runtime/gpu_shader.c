@@ -1888,6 +1888,14 @@ static const char *texture_decl(u32 type, int shadow) {
     return "Texture2D<float4>";
 }
 
+/* Every attribute up to the highest one in mask, the gaps too: the two stages' declarations then
+ * put ATTRn in register 2+n on both sides, as Direct3D and DXVK link them. */
+static u32 attrs_through_last(u32 mask) {
+    u32 n = 32;
+    while (n && !(mask >> (n - 1) & 1)) n--;
+    return n == 32 ? 0xFFFFFFFFu : n ? (1u << n) - 1u : 0u;
+}
+
 /* The alpha test (shader_hlsl_alpha_tested): its passing outcomes as bits, alpha_test_mask's.
  * Selects, not a switch on the comparison: with the switch, Intel graphics showed none of the
  * alpha-tested draws. (MSL: a method of the program's struct, which holds params.) */
@@ -1929,8 +1937,15 @@ static void hlsl_out(Ctx *c, Str *out) {
         return;
     }
 
-    /* the interface between the stages: identical on both sides */
-    u32 outputs = stage == SHADER_VERTEX ? c->out_attr_mask : c->vs_outputs;
+    /* The interface between the stages: identical on both sides. Both declare every attribute up
+     * to the last one they use, gaps included: Direct3D and DXVK link these by register, and a
+     * packed declaration would put the same ATTR at different registers on the two sides. A pixel
+     * shader's last attribute is that of its effective interface (what it reads AND the vertex
+     * shader writes), so one variant links with any vertex shader that writes a superset; the
+     * cache is keyed by that mask, not the full one. The vertex shader's (VSOut)0 gives the gaps
+     * a value the pixel shader never reads. */
+    u32 used = stage == SHADER_VERTEX ? c->out_attr_mask : (info->inputs & c->vs_outputs);
+    u32 outputs = attrs_through_last(used);
     put(out, "struct VSOut {\n  float4 pos : SV_Position;\n  float clipw : CLIPW;\n");
     for (u32 n = 0; n < 32; n++) {
         if (!(outputs >> n & 1)) continue;
