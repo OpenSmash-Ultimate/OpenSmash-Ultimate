@@ -45,7 +45,7 @@ def build(folder):
         exe = os.path.join(folder, 'lobbymenutest')
         Path(folder, 'd3d11.h').write_text(D3D11_STAND_IN)
         layer = ['runtime/linux/win32.c']
-        layer += ['runtime/macos/memory.c', 'runtime/macos/platform.c'] if sys.platform == 'darwin' else ['-lpthread']
+        layer += ['runtime/macos/memory.c', 'runtime/macos/platform.c'] if sys.platform == 'darwin' else ['-lpthread', '-lm']
         cmd = ['clang', '-O1', '-w', '-I', folder, '-I', 'runtime/macos/include', '-I', 'runtime/linux/include', '-I', 'runtime', *src, *layer,
                '-o', exe]
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
