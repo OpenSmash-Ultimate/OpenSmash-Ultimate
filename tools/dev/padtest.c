@@ -44,14 +44,14 @@ static Dev make_dev(const char *guid, const char *serial, const char *path, cons
     return d;
 }
 
-static PadState state(const Dev *d, u32 raw_buttons, i32 lt, i32 rt) {
+static PadState state(Dev *d, u32 raw_buttons, i32 lt, i32 rt) {
     Raw raw = {raw_buttons, {0, 0, 0, 0, lt, rt}};
     PadState o;
     dev_state(d, &raw, &o);
     return o;
 }
 
-static u64 press(const Dev *d, u32 raw_buttons, i32 lt, i32 rt) {
+static u64 press(Dev *d, u32 raw_buttons, i32 lt, i32 rt) {
     Raw raw = {raw_buttons, {0, 0, 0, 0, lt, rt}};
     PadState o;
     dev_state(d, &raw, &o);
@@ -337,6 +337,62 @@ static void test_usb(void) {
     CHECK(usb_player(8).buttons == (1ull << N_Y | 1ull << N_X | 1ull << N_B), "Switch 2: Y X B");
 }
 
+/* The adapter's stick calibration (hle_padusb.c's Axis): the centre measured from still reports
+ * (a stick moving, or resting far off, as it is plugged in keeps the default), each direction's
+ * reach grown only after a few reports in a row agree, and recalibration. */
+static void test_axes(void) {
+    Device dev = {.kind = KIND_ADAPTER, .first = 0};
+    UCHAR r[37] = {0x21};
+    UCHAR *p1 = r + 1, *p2 = r + 1 + 9;
+    p1[0] = 0x10; p1[3] = p1[4] = p1[5] = p1[6] = 128; p1[7] = p1[8] = 30;
+    for (int i = 0; i < 40; i++) adapter_report(&dev, r, sizeof r);   /* at rest: the centre is measured */
+    PadUsbAxes ua;
+    CHECK(padusb_axes(0, &ua) && ua.centre[0] == 128 && ua.lo[0] == 80 && ua.hi[0] == 80 && ua.raw[0] == 128,
+          "rest: centre 128, reach 80: %d %d %d %d", ua.centre[0], ua.lo[0], ua.hi[0], ua.raw[0]);
+    CHECK(usb_ports[0].lx == 0 && usb_ports[0].ly == 0, "rest: zeroed");
+
+    p2[0] = 0x10; p2[3] = 150; p2[4] = p2[5] = p2[6] = 128; p2[7] = p2[8] = 30;
+    for (int i = 0; i < 40; i++) adapter_report(&dev, r, sizeof r);
+    CHECK(padusb_axes(1, &ua) && ua.centre[0] == 128, "plugged in 22 off: too far, the default centre stays: %d", ua.centre[0]);
+    CHECK(usb_ports[1].lx > 8000 && usb_ports[1].lx < 10000, "and its offset shows: %d", usb_ports[1].lx);
+    p2[0] = 0;
+
+    /* each direction's own reach */
+    p1[3] = 48;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].lx == -32767, "80 left is all the way: %d", usb_ports[0].lx);
+    p1[3] = 198;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].lx == 28671, "70 right with 80 of reach: %d", usb_ports[0].lx);
+    p1[3] = 128;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].lx == 0, "back to rest");
+
+    /* a corrupt report must not grow the reach: one spike, then four in a row */
+    p1[3] = 255;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(padusb_axes(0, &ua) && ua.hi[0] == 80 && usb_ports[0].lx == 32767, "one spike: saturated, the reach keeps 80: %d", ua.hi[0]);
+    p1[3] = 128;
+    adapter_report(&dev, r, sizeof r);
+    p1[3] = 255;
+    for (int i = 0; i < 4; i++) adapter_report(&dev, r, sizeof r);
+    CHECK(padusb_axes(0, &ua) && ua.hi[0] == 100, "four spikes in a row: the reach grows, capped: %d", ua.hi[0]);
+
+    /* Recalibrate sticks (the menu) starts it over */
+    padusb_recalibrate(0);
+    p1[3] = 128;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(padusb_axes(0, &ua) && ua.centre[0] == 128 && ua.hi[0] == 80, "recalibrated: as new");
+
+    /* a trigger's top is as careful */
+    CHECK(dev.trigger_top[0][0] == 170, "trigger top rest + 140: %d", dev.trigger_top[0][0]);
+    p1[7] = 255;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(dev.trigger_top[0][0] == 170, "one trigger spike: the top keeps 170");
+    for (int i = 0; i < 3; i++) adapter_report(&dev, r, sizeof r);
+    CHECK(dev.trigger_top[0][0] == 255, "four in a row: the top is relearned: %d", dev.trigger_top[0][0]);
+}
+
 /* The keyboard ([keyboard]): the defaults are the keys of before, rebinding, several keys, the
  * sticks' directions, Alt+Enter, ssbu-recomp's spellings and bad names. */
 static int held_keys[8], nheld;
@@ -434,6 +490,7 @@ int main(void) {
     test_mapping();
     test_gamecube();
     test_usb();
+    test_axes();
     test_sticks();
     test_slots();
     test_rumble();

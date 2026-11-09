@@ -3,7 +3,7 @@
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/pkgyYGf3YB)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 
-**[Website](https://denkishi.github.io/opensmash-site/) · [Discord](https://discord.gg/pkgyYGf3YB) · [Releases](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) · [Setup guide](docs/BUILDING.md) · [Issues](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/issues)**
+**[Website](https://denkishi.github.io/opensmash-site/) · [Discord](https://discord.gg/pkgyYGf3YB) · [Releases](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) · [Installation guide](docs/INSTALL.md) · [Issues](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/issues)**
 
 OpenSmash-Ultimate turns *Super Smash Bros. Ultimate* into a native PC program by static recompilation. It translates the game's ARM64 code into C once, ahead of time, compiles it, and links it with a runtime that stands in for the Nintendo Switch. The game's code and data come from a copy you dumped from your own console.
 
@@ -12,13 +12,15 @@ It is the merge of two projects, [WindowSmash](https://github.com/OpenSmash-Ulti
 > [!IMPORTANT]
 > **This repository does not contain the game.** It holds no game files, keys, firmware or saves, and never will. You need your own copy of the game, dumped from your own Switch.
 
-## Play
+## Install
 
-1. On this page, click the green **Code** button, then **Download ZIP**, and extract it somewhere with room (not the Desktop or Documents: the build is around 30 GB).
-2. Double-click **`Install WindowSmash.bat`**. It finds your game files, keys and firmware (yuzu's and Ryujinx's folders are found by themselves), installs what is missing and builds the game: 30 minutes to a few hours.
-3. Double-click **`Play SSBU.bat`**.
+1. Download **[OpenSmash Setup.exe](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/download/v0.3.0-alpha.3/OpenSmash-Setup.exe)** from the latest [release](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) and run it. It does the rest.
+2. Choose where OpenSmash goes (about 60 GB free; not the Desktop or Documents) and click **Download and set up**. It downloads the project from GitHub into that folder, makes the **OpenSmash** and **Play SSBU** shortcuts (desktop and Start menu), and opens the launcher there.
+3. In the installer window, check that it found your game files (game plus its 13.0.5 update), keys and optionally firmware; fix any folder with **Browse**. Click **Set up and build** and wait: 30 minutes to a few hours.
+4. Press **Play** in the launcher, or use the **Play SSBU** shortcut.
+5. To update, open **Settings -> Update** in the launcher. Mods are in the launcher's **Mods** view; online is in **Settings -> Online**.
 
-You need game version 13.0.5 and a 64-bit Windows 10 or 11 PC; a processor with AVX2 is recommended, SSE4.2 works too. Linux and macOS (Apple silicon) are experimental. The [setup guide](docs/BUILDING.md) explains every step and what to do if something goes wrong.
+You need your own copy of the game, version 13.0.5, dumped from your own Switch, and a 64-bit Windows 10 or 11 PC; AVX2 is recommended, SSE4.2 works too. Linux and macOS (Apple silicon) are experimental. The [installation guide](docs/INSTALL.md) explains each step; [docs/BUILDING.md](docs/BUILDING.md) is the step-by-step setup and building from source.
 
 ## What's in it
 
@@ -38,7 +40,8 @@ Rows that link to pull requests are being reviewed and land in `main` as they ar
 
 | Guide | Read it to |
 | :--- | :--- |
-| [Setup guide](docs/BUILDING.md) | install and build the game, step by step. |
+| [Installation guide](docs/INSTALL.md) | install, update, add mods and go online. |
+| [Setup guide](docs/BUILDING.md) | do every setup step by hand, and build from source. |
 | [Playing](docs/PLAYING.md) | change the controls or the window, and find saves, screenshots and problem reports. |
 | [Multiplayer](docs/MULTIPLAYER.md) | play with other people online or in a private room. |
 | [Mods and Skyline plugins](docs/SKYLINE.md) | install mods and plugins and turn them on or off. |

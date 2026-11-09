@@ -46,6 +46,11 @@ const char *net_player_name(void);
  * with --online; NULL when it hosts a private room or plays offline. */
 const char *net_relay_address(void);
 int net_unreachable(void);           /* asked for, but the relay has not answered for a while: offline */
+/* Rollback netplay on by default (kernel.c's kernel_rb_switch when SSBU_RB is not set): started with
+ * --online, with a lobby or a private room to play in (SSBU_NET_HOST, SSBU_NET_RELAY, else
+ * online_server.txt not "off"), and online_rollback.txt (the settings menu's Online > Rollback
+ * netcode) not "off". Read from the files and variables alone, so it may be asked before main. */
+int net_rollback_default(void);
 
 /* LAN discovery: a game hosting a private room announces it on the local network (multicast
  * 239.255.13.13 and broadcast, UDP NET_LAN_PORT, every second; not while direct connections are off
@@ -86,6 +91,11 @@ void net_rb_send(u32 dst_ip, const void *data, u32 len);   /* dst 0: every playe
 /* This player's room, itself included, lowest address first: a private room's members, or this
  * player and the players of its Local Wireless room in the lobby. 0 until joined. */
 int net_room_members(u32 *out, int max);
+/* The players this game's sockets sent datagrams to lately (hle_net.c notes each one; the lobby's
+ * own addresses left out): in the game's Online mode, the players of its match (Pia talks to them
+ * straight). Most recent first, those of the last `within_ms` only. */
+void net_note_peer(u32 ip);
+int net_recent_peers(u32 *out, int max, u32 within_ms);
 typedef struct NetRbCounts { long long out_data, out_lobby, in_direct, in_relayed, in_lobby; } NetRbCounts;
 void net_rb_counts(NetRbCounts *out);
 

@@ -291,9 +291,10 @@ class Bytes(ClientTest):
         self.assertEqual(g.joined(), (version, FAKE_IP, flags, 0, 0))
         ping, _ = lobby.next(R.PING)
         sent = ping[12:20]
-        # (no PONG yet: ping 0xFFFF; peers version 0, its own address and port, direct connections allowed, none direct)
+        # (no PONG yet: ping 0xFFFF; peers version 0, its own address and port, direct connections allowed, none direct;
+        # 'N' 'P' and no port mapped by the router)
         self.assertEqual(ping, head(R.PING) + nonce + sent + struct.pack('>QH', FAKE_COOKIE, 0xFFFF) +
-                         struct.pack('>IIHBB', 0, 0x7F000001, at[1], 1, 0))
+                         struct.pack('>IIHBB', 0, 0x7F000001, at[1], 1, 0) + b'NP\0\0')
         pong = head(R.PONG) + sent + struct.pack('>HHB', 4, 2, 1)
         lobby.s.sendto(pong + (struct.pack('>HH', 3, 9) if version == R.V3 else b''), at)
         g.send('list 9 3')

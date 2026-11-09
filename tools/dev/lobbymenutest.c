@@ -44,7 +44,8 @@ static char build_text[41];
 const char *rt_data_dir = ".";
 const RtModule rt_module_main = {.build_id = build_text};
 static const char *const FILES[CONFIG_FILES] = {"display.ini", "controllers.ini", "launcher.ini", "online_server.txt",
-                                                "online_name.txt", "online_direct.txt", "online_protocol.txt"};
+                                                "online_name.txt", "online_direct.txt", "online_protocol.txt",
+                                                "online_rollback.txt"};
 const char *config_path(enum ConfigFile file) { return (unsigned)file < CONFIG_FILES ? FILES[file] : NULL; }   /* (this folder's) */
 #ifdef _WIN32
 u64 rt_now_ns(void) {
@@ -91,6 +92,10 @@ int mods_running_count(void) { return 0; }
 int rt_code_patches_on(void) { return 0; }
 int pad_info(u32 slot, PadInfo *out) { (void)slot; memset(out, 0, sizeof *out); return 0; }   /* (no controllers) */
 int pad_get(u32 slot, PadState *out) { (void)slot; memset(out, 0, sizeof *out); return 0; }
+void pad_reset_axes(u32 slot) { (void)slot; }
+int padusb_axes(int port, PadUsbAxes *out) { (void)port; memset(out, 0, sizeof *out); return 0; }
+void padusb_recalibrate(int port) { (void)port; }
+int padusb_rate(int port) { (void)port; return 0; }
 void pad_rumble(u32 slot, int side, float amplitude) { (void)slot; (void)side; (void)amplitude; }
 void pad_reload(void) {}
 const char *pad_ini_path(void) { return FILES[CONFIG_CONTROLLERS]; }

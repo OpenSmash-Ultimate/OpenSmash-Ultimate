@@ -42,7 +42,7 @@ static SRWLOCK q_lock = SRWLOCK_INIT;
 static volatile LONG open_now;
 static u32 peers[LP];
 static int have[LP];
-static int local = -1, is_host, link_players = 2, want_players = 2, numbered;
+static int local = -1, is_host, link_players = 2, want_players = 2, numbered, online;
 static u32 last_from;
 static double last_at;
 static long long sent, received, dropped, overflowed;
@@ -77,13 +77,14 @@ static int rbr_open(int loc, int players) {
     }
     memset(peers, 0, sizeof peers); memset(have, 0, sizeof have);
     want_players = link_players = players < 2 ? 2 : players > LP ? LP : players;
-    local = loc < -1 ? -1 : loc; numbered = loc >= -1; is_host = loc == 0;
+    local = loc < -1 ? -1 : loc; numbered = loc >= -1; is_host = loc == 0; online = loc == RBL_ONLINE;
     q_head = q_tail = 0;
     sent = received = dropped = overflowed = 0;
     InterlockedExchange(&open_now, 1);
     net_rb_sink(sink);
     char who[64];
-    if (loc == -2) snprintf(who, sizeof who, "its number from the room's order, once %d players are in it", want_players);
+    if (loc == RBL_ONLINE) snprintf(who, sizeof who, "its number from each Online match's set-up");
+    else if (loc == -2) snprintf(who, sizeof who, "its number from the room's order, once %d players are in it", want_players);
     else if (loc == -1) snprintf(who, sizeof who, "its number from the host");
     else snprintf(who, sizeof who, "player %d%s", loc + 1, loc == 0 ? " (the host)" : "");
     fprintf(stderr, "[rb] link: through the netplay relay (virtual port %d, direct where the routers let it): %s\n", NET_RB_PORT, who);
@@ -100,6 +101,7 @@ static void rbr_close(void) {
  * every player; -1 until then (and while it has more members than players and this game is not among the first). */
 static int rbr_number(void) {
     if (numbered) return local;
+    if (online) return -1;   /* (rbl_relay_online numbers it) */
     u32 m[16], me = net_local_ip();
     int n = net_room_members(m, 16);
     if (!me || n < want_players) return -1;
@@ -135,19 +137,39 @@ static int welcome(u32 from) {
     for (int p = 0; p < LP; p++) if (have[p] && peers[p] == from) return 1;
     return is_host || !have[0];
 }
-static double link_delay_ms = -1;   /* (SSBU_RB_LINK_DELAY_MS, as hle_rb_link.c's) */
+/* (SSBU_RB_LINK_DELAY_MS and SSBU_NET_SIM=<ms>[,<loss %>[,<jitter ms>]], as hle_rb_link.c's: each message held that long
+ * after it came, that share of them lost, up to that much more on each; tests only. Two games on one PC each holding
+ * what they receive by <ms> play as over a round trip of 2 x <ms>.) */
+static double link_delay_ms = -1, sim_loss, sim_jitter;
+static unsigned sim_seed = 0x9E3779B9u;
+static long long sim_lost;
+static unsigned sim_rand(void) { sim_seed ^= sim_seed << 13; sim_seed ^= sim_seed >> 17; sim_seed ^= sim_seed << 5; return sim_seed; }
 static int rbr_recv(void *buf, int cap) {
     if (!open_now) return 0;
-    if (link_delay_ms < 0) { const char *e = getenv("SSBU_RB_LINK_DELAY_MS"); link_delay_ms = e && atof(e) > 0 ? atof(e) : 0; }
+    if (link_delay_ms < 0) {
+        const char *e = getenv("SSBU_RB_LINK_DELAY_MS"), *sim = getenv("SSBU_NET_SIM");
+        link_delay_ms = e && atof(e) > 0 ? atof(e) : 0;
+        if (sim && *sim) {
+            double ms = 0, loss = 0, jitter = 0;
+            sscanf(sim, "%lf,%lf,%lf", &ms, &loss, &jitter);
+            if (ms > 0) link_delay_ms = ms;
+            sim_loss = loss > 0 ? (loss < 100 ? loss : 100) : 0;
+            sim_jitter = jitter > 0 ? jitter : 0;
+            fprintf(stderr, "[rb] link (relay): SSBU_NET_SIM: %.0f ms held, %.1f%% lost, up to %.0f ms jitter\n", link_delay_ms, sim_loss, sim_jitter);
+        }
+    }
     for (;;) {
         AcquireSRWLockExclusive(&q_lock);
         if (q_head == q_tail) { ReleaseSRWLockExclusive(&q_lock); return 0; }
-        if (link_delay_ms > 0 && clock_ms() - q[q_head % QN].at < link_delay_ms) { ReleaseSRWLockExclusive(&q_lock); return 0; }
+        double hold = link_delay_ms;
+        if (sim_jitter > 0) hold += (double)((q_head * 2654435761u) % 1000) / 1000.0 * sim_jitter;   /* (the same for a message however often asked) */
+        if (hold > 0 && clock_ms() - q[q_head % QN].at < hold) { ReleaseSRWLockExclusive(&q_lock); return 0; }
         unsigned k = q_head++ % QN;
+        if (sim_loss > 0 && sim_rand() % 10000 < (unsigned)(sim_loss * 100)) { sim_lost++; ReleaseSRWLockExclusive(&q_lock); continue; }
         u32 from = q[k].from;
         int n = q[k].len < cap ? q[k].len : cap;
         memcpy(buf, q[k].data, (size_t)n);
-        double at = q[k].at;
+        double at = hold > 0 ? clock_ms() : q[k].at;   /* (a simulated hold: the message "arrives" as it is let through, so the round trips measured include it) */
         ReleaseSRWLockExclusive(&q_lock);
         if (!welcome(from)) { dropped++; continue; }
         last_from = from; last_at = at;
@@ -200,6 +222,31 @@ int rbl_open_relay(int loc, int players) {
     return rbl_relay != NULL;
 }
 int rbl_relay_number(void) { return rbl_relay == &ops ? rbr_number() : -1; }
+int rbl_relay_online(int loc, int players, const unsigned *ips) {
+    if (rbl_relay != &ops || !online || loc < 0 || loc >= LP || players < 2 || players > LP) return 0;
+    AcquireSRWLockExclusive(&q_lock);
+    q_head = q_tail;   /* (anything queued is from before this match) */
+    ReleaseSRWLockExclusive(&q_lock);
+    memset(peers, 0, sizeof peers); memset(have, 0, sizeof have);
+    want_players = link_players = players;
+    char t[160] = "", a[20];
+    size_t k = 0;
+    for (int p = 0; p < players; p++) {
+        if (p == loc) { k += (size_t)snprintf(t + k, sizeof t - k, "%sthis game", p ? ", " : ""); continue; }
+        if (!ips[p]) return 0;
+        peers[p] = ips[p]; have[p] = 1;
+        ip_text(ips[p], a, sizeof a); k += (size_t)snprintf(t + k, sizeof t - k, "%s%s", p ? ", " : "", a);
+    }
+    local = loc; is_host = loc == 0; numbered = 1;
+    fprintf(stderr, "[rb] link: an Online match's players: %s: this game is player %d%s\n", t, loc + 1, loc == 0 ? " (the host)" : "");
+    return 1;
+}
+void rbl_relay_online_end(void) {
+    if (rbl_relay != &ops || !online || !numbered) return;
+    memset(peers, 0, sizeof peers); memset(have, 0, sizeof have);
+    local = -1; is_host = 0; numbered = 0;
+    fprintf(stderr, "[rb] link: the Online match is over: its players forgotten\n");
+}
 void rbl_relay_report(void) { if (rbl_relay == &ops) rbr_report(); }
 
 #endif   /* _WIN32 */

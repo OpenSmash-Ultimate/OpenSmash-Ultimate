@@ -40,6 +40,9 @@ namespace OpenSmash.Launcher
         static readonly HttpClient _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
         static LauncherForm() { _httpClient.DefaultRequestHeaders.Add("User-Agent", "OpenSmash-Launcher/1.0"); }
 
+        const string UpdateRepo = "OpenSmash-Ultimate/OpenSmash-Ultimate";
+        const string UpdateApi = "https://api.github.com/repos/" + UpdateRepo;
+
         // ---------------------------------------------------------------------------
         // Paths & state
         readonly string _workDir;
@@ -63,6 +66,7 @@ namespace OpenSmash.Launcher
         bool _modsModded;
         bool _modsChecked;
         bool _modsBusy;
+        bool _startingPlay;
         string _pluginBuildReason = "";
         readonly Dictionary<string, Image> _modThumbs = new();
         readonly HashSet<string> _openGroups = new();
@@ -95,6 +99,32 @@ namespace OpenSmash.Launcher
         string _launchMode = "mods";
         Task<bool> _prepInflight;   /* mod convert + hook install, shared by launcher startup and Play */
         bool _playQueued;
+
+        // A mod dropped straight into mods\ while OpenSmash was closed: it is not in mods.json yet,
+        // so its plugin has not been built. The boot prompt offers to do that.
+        bool _newModsPrompt;
+        bool _newModsPending;
+        bool _newModsBusy;
+        readonly List<string> _newMods = new();
+
+        // A newer commit on GitHub's main. Checked when the window opens and from the Update tab.
+        bool _updateChecking, _updateApplying, _updatePromptPending, _updatePrompt, _updateDontShow;
+        string _updateState = "idle";   // idle, checking, uptodate, available, error, updating
+        string _updateMessage = "";
+        string _updateDetail = "";
+        string _updateLocal = "";
+        string _updateHead = "";
+        int _updateBehind;
+
+        // While any of these run, Play is greyed out so two jobs cannot overlap.
+        bool Busy => _modsBusy || _setupModding || _pluginBuildUi || _loadOn || _startingPlay || _newModsBusy
+            || _updateApplying || _marketplaceInstalling.Count > 0;
+
+        bool _rebuildPrompt;
+        bool _sharePrompt;
+        bool _checkModsPrompt;
+        string _checkModsText = "";
+        List<(string gb, string file, string title)> _checkModsUpdates = new();
 
         // Game overlay state
         Process _gameProcess;
@@ -251,6 +281,8 @@ namespace OpenSmash.Launcher
             {
                 AskShadersIfNeeded();
                 UpdateMods();
+                ScanForNewMods();
+                _ = CheckUpdatesAtBootAsync();
                 // The marketplace browser is heavy. Let the boot animation finish before it starts.
                 await Task.Delay(1100);
                 await InitializeMarketplaceWebView();
@@ -267,6 +299,7 @@ namespace OpenSmash.Launcher
                 new SettingTab { Name = "Audio", SettingKeys = new[] { "volume" } },
                 new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "code", "server", "direct" } },
                 new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "pads" } },
+                new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
             };
 
             _settings = new[]
@@ -440,7 +473,411 @@ namespace OpenSmash.Launcher
             catch { }
         }
 
-        void ApplyModStatus(int code, string output, bool persist = true)
+        // ---------------------------------------------------------------------------
+        // Mods copied into mods\ by hand (Explorer, a ZIP, another PC).
+        string KnownModsPath() => Path.Combine(_buildDir, "work", "known_mods.txt");
+
+        void ScanForNewMods()
+        {
+            try
+            {
+                if (!Directory.Exists(_modsDir)) return;
+                var present = Directory.GetDirectories(_modsDir)
+                    .Select(Path.GetFileName)
+                    .Where(n => !string.IsNullOrEmpty(n) && !n!.StartsWith("."))
+                    .Select(n => n!)
+                    .ToList();
+                var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                string listPath = KnownModsPath();
+                bool seeded = File.Exists(listPath);
+                if (seeded)
+                {
+                    foreach (string line in File.ReadAllLines(listPath))
+                    {
+                        string n = line.Trim();
+                        if (n.Length > 0 && present.Contains(n, StringComparer.OrdinalIgnoreCase)) known.Add(n);
+                    }
+                }
+                else
+                {
+                    known.UnionWith(present);
+                }
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(listPath)!);
+                    File.WriteAllLines(listPath, known.OrderBy(n => n, StringComparer.OrdinalIgnoreCase));
+                }
+                catch { }
+                if (!seeded) return;
+                try
+                {
+                    string index = Path.Combine(_modsDir, "mods.json");
+                    if (File.Exists(index))
+                    {
+                        using var doc = JsonDocument.Parse(File.ReadAllText(index));
+                        if (doc.RootElement.TryGetProperty("mods", out var mods) && mods.ValueKind == JsonValueKind.Object)
+                            foreach (var prop in mods.EnumerateObject()) known.Add(prop.Name);
+                    }
+                }
+                catch { }
+                var found = present.Where(n => !known.Contains(n)).ToList();
+                if (found.Count == 0) return;
+                _newMods.Clear();
+                _newMods.AddRange(found.OrderBy(n => n, StringComparer.OrdinalIgnoreCase));
+                _newModsPending = true;
+                Invalidate();
+            }
+            catch { }
+        }
+
+        bool ModHasPlugin(string name)
+        {
+            try
+            {
+                string folder = Path.Combine(_modsDir, name);
+                if (!Directory.Exists(folder)) return false;
+                foreach (string file in Directory.EnumerateFiles(folder, "*.nro", SearchOption.AllDirectories))
+                {
+                    string rel = Path.GetRelativePath(folder, file).Replace('\\', '/');
+                    if (!rel.StartsWith("prebuilt/", StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        void RememberNewMods(IEnumerable<string> names)
+        {
+            try
+            {
+                var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                string listPath = KnownModsPath();
+                if (File.Exists(listPath))
+                    foreach (string line in File.ReadAllLines(listPath))
+                        if (line.Trim().Length > 0) known.Add(line.Trim());
+                known.UnionWith(names);
+                Directory.CreateDirectory(Path.GetDirectoryName(listPath)!);
+                File.WriteAllLines(listPath, known.OrderBy(n => n, StringComparer.OrdinalIgnoreCase));
+            }
+            catch { }
+        }
+
+        async Task BuildNewModsAsync()
+        {
+            if (_newModsBusy) return;
+            _newModsPrompt = false;
+            _newModsPending = false;
+            if (_newMods.Count == 0) return;
+            string[] names = _newMods.ToArray();
+            _newMods.Clear();
+            _newModsBusy = true;
+            _pluginBuildUi = true;
+            _pluginFrac = -1;
+            _pluginDetail = names.Length == 1 ? "Building the new mod's plugin" : "Building the new mods' plugins";
+            _pluginEta = "";
+            Invalidate();
+            string why = "";
+            try
+            {
+                var args = new List<string> { "enable" };
+                args.AddRange(names);
+                await Task.Run(() => OsMods(args.ToArray(), line =>
+                {
+                    if (!line.StartsWith("LOG ")) return;
+                    string text = line.Substring(4).Trim();
+                    BeginInvoke(() => NotePluginBuild(text));
+                }));
+                RememberNewMods(names);
+            }
+            catch (Exception ex) { why = ex.Message; }
+            finally
+            {
+                _newModsBusy = false;
+                _pluginBuildUi = false;
+                UpdateMods();
+                _ = PushInstalledState();
+                Invalidate();
+                PlayDone();
+            }
+            if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
+        }
+
+        void MaybeShowBootPrompts()
+        {
+            if (_shownAt < 0 || Now - _shownAt < 0.8) return;
+            if (_newModsPrompt || _updatePrompt || _shaderPrompt || _pluginPrompt || _rebuildPrompt || _sharePrompt || _checkModsPrompt || _showSetupPrompt) return;
+            if (_newModsPending)
+            {
+                _newModsPending = false;
+                _newModsPrompt = true;
+                PlayPopup();
+                Invalidate();
+                return;
+            }
+            if (_updatePromptPending)
+            {
+                _updatePromptPending = false;
+                _updatePrompt = true;
+                _updateDontShow = false;
+                PlayPopup();
+                Invalidate();
+            }
+        }
+
+        static string ShortCommit(string sha) => string.IsNullOrEmpty(sha) ? "?" : (sha.Length > 7 ? sha.Substring(0, 7) : sha);
+        static string ShortError(string text)
+        {
+            text = (text ?? "").Replace("\r", " ").Replace("\n", " ").Trim();
+            return text.Length <= 180 ? text : text.Substring(0, 177) + "\u2026";
+        }
+
+        async Task CheckUpdatesAtBootAsync()
+        {
+            await Task.Delay(1600);
+            if (!IsDisposed) await CheckForUpdatesAsync(true);
+        }
+
+        async Task CheckForUpdatesAsync(bool atBoot)
+        {
+            if (_updateChecking || _updateApplying) return;
+            _updateChecking = true;
+            _updateState = "checking";
+            _updateMessage = "Checking GitHub for a newer version\u2026";
+            _updateDetail = "";
+            Invalidate();
+            try
+            {
+                string local = await Task.Run(FindLocalCommit);
+                _updateLocal = local;
+                string headBody = await GitHubGetAsync($"{UpdateApi}/commits/main");
+                using var headDoc = JsonDocument.Parse(headBody);
+                var head = headDoc.RootElement;
+                string sha = GetString(head, "sha").Trim();
+                string title = "";
+                if (head.TryGetProperty("commit", out var commit) && commit.TryGetProperty("message", out var message))
+                    title = (message.GetString() ?? "").Split('\n')[0].Trim();
+                _updateHead = sha;
+                if (sha.Length == 0) throw new InvalidOperationException("GitHub did not say which version main is.");
+                if (local.Length == 0)
+                {
+                    _updateState = "error";
+                    _updateMessage = "This copy doesn't say which version it is, so an update can't be checked.";
+                    _updateDetail = "tools\\source_version.txt names no commit and this is not a git checkout.";
+                    return;
+                }
+                if (local.Equals(sha, StringComparison.OrdinalIgnoreCase))
+                {
+                    _updateState = "uptodate";
+                    _updateBehind = 0;
+                    _updateMessage = $"OpenSmash is up to date ({ShortCommit(local)}).";
+                    _updateDetail = title;
+                    return;
+                }
+                string cmpBody;
+                try
+                {
+                    cmpBody = await GitHubGetAsync($"{UpdateApi}/compare/{local}...{sha}");
+                }
+                catch (Exception ex)
+                {
+                    _updateState = "error";
+                    _updateMessage = "This copy's commit isn't on GitHub's main branch, so updates can't be checked. (Normal for a development checkout.)";
+                    _updateDetail = ShortError(ex.Message);
+                    return;
+                }
+                using var cmpDoc = JsonDocument.Parse(cmpBody);
+                var cmp = cmpDoc.RootElement;
+                string status = GetString(cmp, "status");
+                int ahead = cmp.TryGetProperty("ahead_by", out var ab) && ab.TryGetInt32(out int n) ? n : 0;
+                if (status == "ahead")
+                {
+                    _updateState = "available";
+                    _updateBehind = ahead;
+                    _updateMessage = ahead == 1 ? "A newer version is on GitHub: 1 new commit." : $"A newer version is on GitHub: {ahead} new commits.";
+                    var titles = new List<string>();
+                    if (cmp.TryGetProperty("commits", out var commits) && commits.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var c in commits.EnumerateArray())
+                        {
+                            if (!c.TryGetProperty("commit", out var cm) || !cm.TryGetProperty("message", out var mm)) continue;
+                            string line = (mm.GetString() ?? "").Split('\n')[0].Trim();
+                            if (line.Length == 0 || line.StartsWith("Merge pull request", StringComparison.OrdinalIgnoreCase) || line.StartsWith("Merge branch", StringComparison.OrdinalIgnoreCase)) continue;
+                            titles.Add(line);
+                        }
+                    }
+                    _updateDetail = titles.Count > 0 ? string.Join("   \u00B7   ", titles.Take(3)) + (titles.Count > 3 ? "   \u00B7   \u2026" : "") : title;
+                }
+                else if (status == "identical") { _updateState = "uptodate"; _updateBehind = 0; _updateMessage = $"OpenSmash is up to date ({ShortCommit(local)})."; _updateDetail = title; }
+                else if (status == "behind") { _updateState = "uptodate"; _updateBehind = 0; _updateMessage = $"This copy ({ShortCommit(local)}) is newer than GitHub's main branch."; _updateDetail = ""; }
+                else if (status == "diverged") { _updateState = "error"; _updateMessage = "This copy comes from a different branch than GitHub's main, so it can't be updated automatically."; _updateDetail = ""; }
+                else { _updateState = "error"; _updateMessage = "GitHub's answer was not understood."; _updateDetail = status; }
+            }
+            catch (Exception ex) { _updateState = "error"; _updateMessage = "Could not check for updates: " + ShortError(ex.Message); _updateDetail = ""; try { System.IO.File.AppendAllText(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "os_update.log"), ex.ToString() + "\n---\n"); } catch { } }
+            finally
+            {
+                _updateChecking = false;
+                if (atBoot && _updateState == "available" && UpdatePromptEnabled()) _updatePromptPending = true;
+                Invalidate();
+            }
+        }
+
+        async Task<string> GitHubGetAsync(string url)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Accept.ParseAdd("application/vnd.github+json");
+            using var response = await _httpClient.SendAsync(request);
+            string body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"GitHub answered {(int)response.StatusCode} ({response.ReasonPhrase}) for {url}.");
+            return body;
+        }
+
+        string FindLocalCommit()
+        {
+            try
+            {
+                string dotGit = Path.Combine(_repo, ".git");
+                if (Directory.Exists(dotGit) || File.Exists(dotGit))
+                {
+                    // A git checkout is the commit it is on, changed or not: ApplyUpdate's script refuses a changed
+                    // checkout itself ("changes of its own") instead of laying a download over it.
+                    bool dirty = false;
+                    if (!dirty)
+                    {
+                        var psi = new ProcessStartInfo { FileName = "git", WorkingDirectory = _repo, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                        psi.ArgumentList.Add("rev-parse"); psi.ArgumentList.Add("HEAD");
+                        using var p = Process.Start(psi);
+                        if (p != null)
+                        {
+                            var output = p.StandardOutput.ReadToEndAsync();
+                            _ = p.StandardError.ReadToEndAsync();
+                            if (p.WaitForExit(5000) && p.ExitCode == 0)
+                            {
+                                var m = Regex.Match(output.GetAwaiter().GetResult().Trim(), @"^[0-9a-fA-F]{40}$");
+                                if (m.Success) return m.Value.ToLowerInvariant();
+                            }
+                            else { try { if (!p.HasExited) p.Kill(); } catch { } }
+                        }
+                    }
+                }
+            }
+            catch { }
+            try
+            {
+                string source = Path.Combine(_repo, "tools", "source_version.txt");
+                if (File.Exists(source))
+                {
+                    var m = Regex.Match(File.ReadAllText(source), @"(?<![0-9a-fA-F])([0-9a-fA-F]{40})(?![0-9a-fA-F])");
+                    if (m.Success) return m.Groups[1].Value.ToLowerInvariant();
+                }
+            }
+            catch { }
+            try
+            {
+                string version = Path.Combine(_repo, "version.txt");
+                if (File.Exists(version))
+                {
+                    var m = Regex.Match(File.ReadAllText(version), @"(?m)^main\s+([0-9a-fA-F]{40})\b");
+                    if (m.Success) return m.Groups[1].Value.ToLowerInvariant();
+                }
+            }
+            catch { }
+            return "";
+        }
+
+        bool UpdatePromptEnabled()
+        {
+            try { string v = IniValue(WindowSmash.ConfigFile(_repo, "launcher.ini"), "opensmash", "update_prompt"); return !string.Equals(v, "off", StringComparison.OrdinalIgnoreCase); }
+            catch { return true; }
+        }
+
+        void SaveUpdatePromptPreference(bool show)
+        {
+            try { SetIni(WindowSmash.ConfigFile(_repo, "launcher.ini"), "opensmash", "update_prompt", show ? "on" : "off"); }
+            catch { }
+        }
+
+        async Task ApplyUpdateAsync()
+        {
+            if (_updateApplying || _updateChecking) return;
+            bool fromPrompt = _updatePrompt;
+            if (fromPrompt && _updateDontShow) SaveUpdatePromptPreference(false);
+            _updatePrompt = false;
+            _updateApplying = true;
+            _updateState = "updating";
+            _updateMessage = "Updating OpenSmash\u2026";
+            _updateDetail = "";
+            SetLoad("UPDATING OPENSMASH", -1);
+            Invalidate();
+            string why = "";
+            string output = "";
+            try
+            {
+                string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
+                if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_windowsmash.ps1 is missing.");
+                var result = await Task.Run(() => RunPowerShellUpdate(script));
+                output = result.Output;
+                if (result.Code != 0) why = "The updater stopped (exit " + result.Code + ").";
+            }
+            catch (Exception ex) { why = ex.Message; }
+            finally
+            {
+                _updateApplying = false;
+                ClearLoad();
+                Invalidate();
+            }
+            _updateState = "checking";
+            _updateMessage = "Checking the update\u2026";
+            Invalidate();
+            await CheckForUpdatesAsync(false);
+            if (why.Length == 0 && _updateState != "uptodate") why = "The update did not finish. " + Tail(output);
+            if (why.Length > 0)
+            {
+                if (output.Contains("changes of its own")) why = "This copy has local changes, so it cannot be updated automatically. Update it with git, or use a clean download.";
+                _updateState = "error";
+                _updateMessage = "Update failed: " + ShortError(why);
+                _updateDetail = "";
+                MessageBox.Show("The update could not be installed.\n\n" + why, "OpenSmash");
+            }
+            else
+            {
+                _updateState = "uptodate";
+                _updateMessage = "Update installed. Press Play to rebuild what changed.";
+                _updateDetail = "";
+                MessageBox.Show("OpenSmash was updated. Your game files, settings, save and builds were left as they were.\n\nPress Play to rebuild what changed.", "OpenSmash");
+            }
+            PlayDone();
+            Invalidate();
+        }
+
+        static (int Code, string Output) RunPowerShellUpdate(string script)
+        {
+            string root = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(script)!, ".."));
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                WorkingDirectory = root,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+            };
+            psi.ArgumentList.Add("-NoProfile");
+            psi.ArgumentList.Add("-ExecutionPolicy");
+            psi.ArgumentList.Add("Bypass");
+            psi.ArgumentList.Add("-File");
+            psi.ArgumentList.Add(script);
+            psi.ArgumentList.Add("-UpdateOnly");
+            using var p = Process.Start(psi) ?? throw new InvalidOperationException("Could not start PowerShell.");
+            var stdout = p.StandardOutput.ReadToEndAsync();
+            var stderr = p.StandardError.ReadToEndAsync();
+            p.WaitForExit();
+            string output = (stdout.GetAwaiter().GetResult() + "\n" + stderr.GetAwaiter().GetResult()).Trim();
+            return (p.ExitCode, output);
+        }
+
+         void ApplyModStatus(int code, string output, bool persist = true)
         {
             var list = new List<ModInfo>();
             var keep = new HashSet<string>();
@@ -1302,6 +1739,50 @@ namespace OpenSmash.Launcher
             var nav = new[] { Keys.Up, Keys.Down, Keys.Left, Keys.Right };
             if (nav.Contains(e.KeyCode)) { _keys = true; _hover = ""; }
 
+            if (_newModsPrompt)
+            {
+                if (e.KeyCode == Keys.Enter) _ = BuildNewModsAsync();
+                return;
+            }
+
+            if (_updatePrompt)
+            {
+                if (e.KeyCode == Keys.Escape)
+                {
+                    if (_updateDontShow) SaveUpdatePromptPreference(false);
+                    _updatePrompt = false;
+                    _updatePromptPending = false;
+                    Invalidate();
+                }
+                if (e.KeyCode == Keys.Enter && !_updateApplying) _ = ApplyUpdateAsync();
+                return;
+            }
+
+            if (_rebuildPrompt)
+            {
+                if (e.KeyCode == Keys.Escape) { _rebuildPrompt = false; Invalidate(); }
+                if (e.KeyCode == Keys.Enter) { _rebuildPrompt = false; Invalidate(); _ = RefreshPlugins(); }
+                return;
+            }
+
+            if (_sharePrompt)
+            {
+                if (e.KeyCode == Keys.Escape) { _sharePrompt = false; Invalidate(); }
+                if (e.KeyCode == Keys.Enter) { _sharePrompt = false; Invalidate(); ShareModList(true); }
+                return;
+            }
+
+            if (_checkModsPrompt)
+            {
+                if (e.KeyCode == Keys.Escape) { _checkModsPrompt = false; Invalidate(); }
+                if (e.KeyCode == Keys.Enter)
+                {
+                    if (_checkModsUpdates.Count > 0) { _checkModsPrompt = false; Invalidate(); _ = InstallModUpdates(); }
+                    else { _checkModsPrompt = false; Invalidate(); }
+                }
+                return;
+            }
+
             if (_shaderPrompt)
             {
                 if (e.KeyCode == Keys.Escape) { _shaderPrompt = false; Invalidate(); }
@@ -1388,6 +1869,13 @@ namespace OpenSmash.Launcher
                         if (set != null && set.Text) BeginEdit(set);
                         else if (set == null || !set.Slider) ToggleDropdown(_sel);
                     }
+                    else if (_settingsTab < _settingsTabs.Length
+                        && string.Equals(_settingsTabs[_settingsTab].Name, "Update", StringComparison.OrdinalIgnoreCase)
+                        && !_updateChecking && !_updateApplying)
+                    {
+                        if (_updateState == "available") _ = ApplyUpdateAsync();
+                        else _ = CheckForUpdatesAsync(false);
+                    }
                 }
                 if (e.KeyCode == Keys.Escape)
                 {
@@ -1431,13 +1919,14 @@ namespace OpenSmash.Launcher
             else if (id == "act:browse") GoView("mods_browser");
             else if (id == "act:setup") GoView("setup_modding");
             else if (id == "act:check") _ = CheckMods();
-            else if (id == "act:share") ShareModList();
+            else if (id == "act:share") { _sharePrompt = true; PlayPopup(); Invalidate(); }
             else if (id == "act:build") _ = BuildPlugins();
             else if (id == "act:open" && Directory.Exists(_modsDir))
                 Process.Start("explorer.exe", $"\"{_modsDir}\"");
             else if (id == "act:add") AddMod();
             else if (id == "act:remove") RemoveMod();
             else if (id == "act:refresh") { UpdateMods(); _ = PushInstalledState(); Invalidate(); }
+            else if (id == "act:rebuild") { _rebuildPrompt = true; PlayPopup(); Invalidate(); }
             else if (id == "setup_mode:scratch")
             {
                 _setupMode = "scratch";
@@ -1464,6 +1953,21 @@ namespace OpenSmash.Launcher
             }
             else if (id == "setup_start") _ = FetchPlugins(false);
             else if (id == "setup_again") _ = FetchPlugins(true);
+            else if (id == "setup_add")
+            {
+                using var d = new OpenFileDialog { Filter = "Plugin (*.nro)|*.nro|All files|*.*", Multiselect = true };
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                string folder = Path.Combine(_repo, "skyline", "plugins");
+                Directory.CreateDirectory(folder);
+                foreach (var src in d.FileNames)
+                {
+                    try { File.Copy(src, Path.Combine(folder, Path.GetFileName(src)), true); }
+                    catch (Exception ex) { MessageBox.Show($"Could not copy {Path.GetFileName(src)}: {ex.Message}", "OpenSmash"); }
+                }
+                UpdateMods();
+                _ = PushInstalledState();
+                Invalidate();
+            }
             else if (id.StartsWith("setup_import:"))
             {
                 int ei = int.Parse(id.Substring("setup_import:".Length));
@@ -1479,6 +1983,35 @@ namespace OpenSmash.Launcher
             else if (id == "plugin_prompt:play") _pluginPromptWait?.TrySetResult("play");
             else if (id == "plugin_prompt:cancel") _pluginPromptWait?.TrySetResult("cancel");
             else if (id == "plugin_prompt:block") { }
+            else if (id == "newmods:build") _ = BuildNewModsAsync();
+            else if (id == "newmods:block") { }
+            else if (id == "update_prompt:dont")
+            {
+                _updateDontShow = !_updateDontShow;
+                Invalidate();
+            }
+            else if (id == "update_prompt:update") _ = ApplyUpdateAsync();
+            else if (id == "update_prompt:later")
+            {
+                if (_updateDontShow) SaveUpdatePromptPreference(false);
+                _updatePrompt = false;
+                _updatePromptPending = false;
+                Invalidate();
+            }
+            else if (id == "update_prompt:block") { }
+            else if (id == "update:check") _ = CheckForUpdatesAsync(false);
+            else if (id == "update:apply") _ = ApplyUpdateAsync();
+            else if (id == "rebuild_prompt:cancel") { _rebuildPrompt = false; Invalidate(); }
+            else if (id == "rebuild_prompt:refresh") { _rebuildPrompt = false; Invalidate(); _ = RefreshPlugins(); }
+            else if (id == "rebuild_prompt:update") { _rebuildPrompt = false; Invalidate(); _ = BuildPlugins(); }
+            else if (id == "rebuild_prompt:block") { }
+            else if (id == "share_prompt:cancel") { _sharePrompt = false; Invalidate(); }
+            else if (id == "share_prompt:share") { _sharePrompt = false; Invalidate(); ShareModList(true); }
+            else if (id == "share_prompt:install") { _sharePrompt = false; Invalidate(); ShareModList(false); }
+            else if (id == "share_prompt:block") { }
+            else if (id == "check_prompt:close") { _checkModsPrompt = false; Invalidate(); }
+            else if (id == "check_prompt:install") { _checkModsPrompt = false; Invalidate(); _ = InstallModUpdates(); }
+            else if (id == "check_prompt:block") { }
             else if (id == "shader_prompt:low") StartShaders("low");
             else if (id == "shader_prompt:medium") StartShaders("medium");
             else if (id == "shader_prompt:high") StartShaders("high");
@@ -2094,6 +2627,8 @@ namespace OpenSmash.Launcher
                 MessageBox.Show($"A mod called \"{name}\" is already installed.", "OpenSmash");
                 return;
             }
+            _modsBusy = true;
+            Invalidate();
             try
             {
                 Directory.CreateDirectory(_modsDir);
@@ -2102,10 +2637,11 @@ namespace OpenSmash.Launcher
             }
             catch (Exception ex)
             {
+                _modsBusy = false;
+                Invalidate();
                 MessageBox.Show(asLink ? $"Could not add the link: {ex.Message}" : $"Could not copy: {ex.Message}", "OpenSmash-Ultimate");
                 return;
             }
-            _modsBusy = true;
             _pluginBuildUi = true;
             _pluginFrac = -1;
             _pluginDetail = "Building the plugin";
@@ -2120,12 +2656,14 @@ namespace OpenSmash.Launcher
                     string text = line.Substring(4).Trim();
                     BeginInvoke(() => NotePluginBuild(text));
                 }));
+                RememberNewMods(new[] { name });
             }
             catch (Exception ex) { why = ex.Message; }
             _modsBusy = false;
             _pluginBuildUi = false;
             UpdateMods();
             _ = PushInstalledState();
+            PlayDone();
             Invalidate();
             if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
         }
@@ -2218,10 +2756,18 @@ namespace OpenSmash.Launcher
                 foreach (var x in updates) text.AppendLine($"  {x.title}");
             }
             else text.AppendLine("Updates: GameBanana could not be reached.");
-            if (updates.Count == 0) { MessageBox.Show(text.ToString(), "OpenSmash - mods"); return; }
-            text.AppendLine();
-            text.Append("Install the newer files now?");
-            if (MessageBox.Show(text.ToString(), "OpenSmash - mods", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
+            _checkModsText = text.ToString().Trim();
+            _checkModsUpdates = updates;
+            _checkModsPrompt = true;
+            PlayPopup();
+            Invalidate();
+        }
+
+        async Task InstallModUpdates()
+        {
+            if (_modsBusy || _checkModsUpdates.Count == 0) return;
+            var updates = _checkModsUpdates;
+            _checkModsPrompt = false;
             _modsBusy = true;
             Invalidate();
             string failed = "";
@@ -2236,17 +2782,16 @@ namespace OpenSmash.Launcher
             UpdateMods();
             _ = PushInstalledState();
             Invalidate();
-            MessageBox.Show(failed.Length == 0 ? "Updated." : "Some could not be updated:" + failed, "OpenSmash - mods");
+            SetLoad(failed.Length == 0 ? "CHECK DONE" : "SOME FAILED", 1);
+            _ = Task.Delay(1800).ContinueWith(_ => BeginInvoke(ClearLoad));
+            PlayDone();
         }
 
-        void ShareModList()
+        void ShareModList(bool export)
         {
             if (_modsBusy) return;
-            var pick = MessageBox.Show("Yes: save your mods as a list file to share.\nNo: install the mods of a list file a friend sent you.",
-                "OpenSmash - mod list", MessageBoxButtons.YesNoCancel);
-            if (pick == DialogResult.Cancel) return;
             string path;
-            if (pick == DialogResult.Yes)
+            if (export)
             {
                 using var d = new SaveFileDialog { Filter = "Mod list (*.json)|*.json", FileName = "opensmash-mods.json" };
                 if (d.ShowDialog(this) != DialogResult.OK) return;
@@ -2258,7 +2803,6 @@ namespace OpenSmash.Launcher
                 if (d.ShowDialog(this) != DialogResult.OK) return;
                 path = d.FileName;
             }
-            bool export = pick == DialogResult.Yes;
             _modsBusy = true;
             SetLoad(export ? "SAVING THE LIST" : "INSTALLING THE LIST", -1);
             Invalidate();
@@ -2299,6 +2843,9 @@ namespace OpenSmash.Launcher
             foreach (string dir in Directory.GetDirectories(src))
                 CopyDirectory(dir, Path.Combine(dst, Path.GetFileName(dir)));
         }
+
+        static void PlayPopup() { try { System.Media.SystemSounds.Asterisk.Play(); } catch { } }
+        static void PlayDone() { try { System.Media.SystemSounds.Exclamation.Play(); } catch { } }
 
         // ---------------------------------------------------------------------------
         // Play
@@ -2437,6 +2984,7 @@ namespace OpenSmash.Launcher
             _modsBusy = false;
             _pluginBuildUi = false;
             UpdateMods();
+            PlayDone();
             Invalidate();
             if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
         }
@@ -2464,6 +3012,7 @@ namespace OpenSmash.Launcher
             _modsBusy = false;
             _pluginBuildUi = false;
             UpdateMods();
+            PlayDone();
             Invalidate();
             if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
         }
@@ -2489,6 +3038,7 @@ namespace OpenSmash.Launcher
             catch (Exception ex) { why = ex.Message; _setupStep = "Download stopped"; }
             _setupModding = false;
             UpdateMods();
+            PlayDone();
             Invalidate();
             if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
         }
@@ -2507,6 +3057,7 @@ namespace OpenSmash.Launcher
             _pluginPromptKind = full ? "update" : "refresh";
             _pluginPromptText = why;
             _pluginPrompt = true;
+            PlayPopup();
             _pluginPromptWait = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             Invalidate();
             string choice = await _pluginPromptWait.Task;
@@ -2664,6 +3215,19 @@ namespace OpenSmash.Launcher
         }
 
         async void StartPlay()
+        {
+            if (Busy) return;
+            _startingPlay = true;
+            Invalidate();
+            try { await StartPlayCore(); }
+            finally
+            {
+                _startingPlay = false;
+                Invalidate();
+            }
+        }
+
+        async Task StartPlayCore()
         {
             if (_prepInflight != null && !_prepInflight.IsCompleted)
             {
@@ -2957,12 +3521,8 @@ namespace OpenSmash.Launcher
         // ---------------------------------------------------------------------------
         readonly HashSet<string> _marketplaceInstalling = new();
 
-        // Downloads can be hundreds of megabytes, so they get their own client with a
-        // generous timeout instead of the 15s one used for small API calls.
-        static readonly HttpClient _downloadClient = new HttpClient
-        {
-            Timeout = TimeSpan.FromMinutes(30),
-        };
+        // Downloads get their own client with a long timeout (ProjectSetup's, which the first start uses too).
+        static HttpClient _downloadClient => ProjectSetup.DownloadClient;
 
         async Task InitializeMarketplaceWebView()
         {
@@ -3345,29 +3905,10 @@ namespace OpenSmash.Launcher
 
         async Task DownloadWithProgressAsync(string url, string destination, Func<int, Task> onProgress)
         {
-            using var response = await _downloadClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
-            response.EnsureSuccessStatusCode();
-
-            long total = response.Content.Headers.ContentLength ?? -1;
-            await using var source = await response.Content.ReadAsStreamAsync();
-            await using var target = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true);
-
-            var buffer = new byte[81920];
-            long received = 0;
-            int read;
-
-            while ((read = await source.ReadAsync(buffer)) > 0)
+            await ProjectSetup.DownloadAsync(url, destination, async (received, total) =>
             {
-                await target.WriteAsync(buffer.AsMemory(0, read));
-                received += read;
-
-                if (total > 0)
-                {
-                    int percent = (int)(received * 100 / total);
-                    await onProgress(percent);
-                }
-            }
-
+                if (total > 0) await onProgress((int)(received * 100 / total));
+            });
             await onProgress(100);
         }
 

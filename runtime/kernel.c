@@ -564,11 +564,15 @@ static void watch_decommitting(u64 base, u64 size) {
 }
 
 int kernel_rb_wanted;   /* (hle_rb_core.c, before its first kernel_rb_switch: display.ini's runahead) */
+/* (hle_rb_core.c, before its first kernel_rb_switch: rollback netplay on by default, the game started online - --online
+ * with a lobby or a room, net.h's net_rollback_default - and SSBU_RB not set; SSBU_RB=0 or online_rollback.txt "off"
+ * leave it off. Offline nothing changes: no write watch, no savestates) */
+int kernel_rb_online;
 int kernel_rb_switch(void) {
     const char *v = getenv("SSBU_RB");
     if (v && *v && *v != '0') return 1;
 #ifdef _WIN32
-    if (kernel_rb_wanted) return 1;
+    if (kernel_rb_wanted || kernel_rb_online) return 1;
     v = getenv("SSBU_RUNAHEAD");   /* (run-ahead needs the savestates) */
     return v && atoi(v) > 0;
 #else
@@ -1409,10 +1413,20 @@ void kernel_rb_census(const void *self, u32 *alive, u32 *waiting, u32 *sleeping,
 }
 
 /* (rollback build, M2) Wakes every guest thread from kwait, for a hold (rb_hold already set). */
+void (*kernel_rb_wake_hook)(void);
 void kernel_rb_wake_all(void) {
     EnterCriticalSection(&klock);
     for (u32 i = 0; i < nthreads; i++) if (threads[i]) WakeConditionVariable(&threads[i]->woken);
     LeaveCriticalSection(&klock);
+    if (kernel_rb_wake_hook) kernel_rb_wake_hook();   /* (hle_net.c: the threads in its own waits) */
+}
+/* (rollback build) A guest thread in a service's own host wait (hle_net.c's poll, recv, accept) parks there during a
+ * hold as in kwait: its caller holds no kernel lock, and looks at its wait again after. kthread NULL: only asks
+ * whether a hold is on. 1: a hold is on (and, with a thread, it parked until the hold's end). */
+int kernel_rb_park_guest(void *kthread) {
+    if (!rb_hold || !kernel_rb_park) return 0;
+    if (kthread) kernel_rb_park(kthread);
+    return 1;
 }
 
 /* (rollback build, M2) The kernel's state for a savestate: objects, memory regions and maps, the

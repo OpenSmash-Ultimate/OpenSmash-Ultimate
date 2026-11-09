@@ -205,12 +205,30 @@ typedef struct Stream {
     u32 len, cap;
     u32 vip;
     u16 vport, dport;
+    /* (rollback, online_rb_*) what the game read and sent, for a savestate's load: the last HIST bytes of each */
+    u64 taken, sent, resend;   /* (resend < sent after a load: the game sends again what it had sent; left out while it matches) */
+    u8 *hist, *shist;
 } Stream;
 #define STREAMS 16
 static Stream streams[STREAMS];
 static SRWLOCK stream_lock = SRWLOCK_INIT;
 static CONDITION_VARIABLE stream_change = CONDITION_VARIABLE_INIT;
 static u32 stream_gen;
+
+/* ---- rollback (SSBU_RB): a stream through a savestate's load ---------------------------------------
+ * A load puts the game's memory back as it was at a save, NEX's state with it: what it read from a stream
+ * since is forgotten, and what it sent since it will send again. The stream itself can't go back, so it is
+ * the stream's ends that are made to agree: the bytes the game read after the save are put back in front of
+ * what is waiting (it reads them again), and the bytes it sends again are left out as long as they are the
+ * ones it had sent (once they differ, the rest goes: the lobby's NEX server then sees a packet twice, which
+ * it takes as a repeat). Kept only once savestates are taken (online_rb_save), HIST bytes a stream. */
+#define HIST (256u << 10)
+static int rb_keep;
+static long long rb_back_bytes, rb_resent_left_out, rb_resend_differ;
+static void hist_put(u8 **ring, u64 at, const u8 *data, u64 n) {
+    if (!*ring && !(*ring = malloc(HIST))) return;
+    for (u64 i = 0; i < n; i++) (*ring)[(at + i) % HIST] = data[i];
+}
 
 static Stream *stream_of(i32 fd) {
     for (int i = 0; i < STREAMS; i++)
@@ -376,10 +394,21 @@ i64 online_stream_send(i32 fd, const void *data, u64 len, int nonblock) {
     }
     i64 r = !st ? -E_NOTCONN_ : st->state == S_CONNECTING ? -E_AGAIN_ : st->state != S_OPEN || st->eof ? -E_PIPE_ : 0;
     SOCKET s = st && !r ? st->s : INVALID_SOCKET;
-    ReleaseSRWLockExclusive(&stream_lock);
-    if (r) return r;
     const char *p = data;
     u64 left = len;
+    if (!r && rb_keep) {   /* (after a load: what the game sends again) */
+        while (left && st->resend < st->sent) {
+            if (st->shist && (u8)*p == st->shist[st->resend % HIST]) { p++; left--; st->resend++; rb_resent_left_out++; continue; }
+            rb_resend_differ++;
+            if (rb_resend_differ <= 5) fprintf(stderr, "[online] stream %d: after a load the game sends other bytes than before (%llu of %llu again matched): the rest goes\n",
+                                              fd, (unsigned long long)(st->resend), (unsigned long long)st->sent);
+            st->resend = st->sent;
+        }
+        if (left) { hist_put(&st->shist, st->sent, (const u8 *)p, left); st->sent += left; st->resend = st->sent; }
+    }
+    ReleaseSRWLockExclusive(&stream_lock);
+    if (r) return r;
+    if (!left) return (i64)len;
     while (left) {   /* (the host socket blocks: everything goes, in order) */
         int n = send(s, p, left > 0x10000 ? 0x10000 : (int)left, 0);
         if (n <= 0) return len - left ? (i64)(len - left) : -E_CONNRESET_;
@@ -403,7 +432,10 @@ i64 online_stream_recv(i32 fd, void *buf, u64 len, int peek, int nonblock) {
     else if (st->len) {
         u32 n = st->len < len ? st->len : (u32)len;
         memcpy(buf, st->buf, n);
-        if (!peek) { memmove(st->buf, st->buf + n, st->len - n); st->len -= n; }
+        if (!peek) {
+            if (rb_keep) { hist_put(&st->hist, st->taken, st->buf, n); st->taken += n; }
+            memmove(st->buf, st->buf + n, st->len - n); st->len -= n;
+        }
         r = n;
     } else if (st->eof) r = 0;
     else if (st->state == S_FAILED) r = -st->err;
@@ -443,10 +475,47 @@ void online_stream_close(i32 fd) {
     SOCKET s = INVALID_SOCKET;
     if (st) {
         s = st->s;
-        free(st->buf);
+        free(st->buf); free(st->hist); free(st->shist);
         memset(st, 0, sizeof *st);   /* (its thread sees its fd gone and stops) */
     }
     ReleaseSRWLockExclusive(&stream_lock);
     if (s != INVALID_SOCKET) { shutdown(s, SD_BOTH); closesocket(s); }
     if (st) changed();
 }
+
+/* (hle_net.c's net_rb_save / net_rb_load, rollback) Each stream's place in what it read and sent. */
+void online_rb_save(OnlineRb *o) {
+    AcquireSRWLockExclusive(&stream_lock);
+    rb_keep = 1;
+    for (int i = 0; i < STREAMS && i < ONLINE_RB_STREAMS; i++) {
+        o->s[i].fd = streams[i].fd; o->s[i].gen = streams[i].gen;
+        o->s[i].taken = streams[i].taken; o->s[i].sent = streams[i].sent;
+    }
+    ReleaseSRWLockExclusive(&stream_lock);
+}
+void online_rb_load(const OnlineRb *o) {
+    int any = 0;
+    AcquireSRWLockExclusive(&stream_lock);
+    for (int i = 0; i < STREAMS && i < ONLINE_RB_STREAMS; i++) {
+        Stream *st = &streams[i];
+        if (!o->s[i].fd || st->fd != o->s[i].fd || st->gen != o->s[i].gen) continue;
+        u64 back = st->taken - o->s[i].taken;
+        if (back && back <= HIST && st->hist) {   /* (read since the save: in front of what is waiting, to be read again) */
+            if (st->len + back > st->cap) {
+                u32 cap = st->cap ? st->cap : 65536;
+                while (cap < st->len + back) cap *= 2;
+                u8 *b = realloc(st->buf, cap);
+                if (!b) continue;
+                st->buf = b; st->cap = cap;
+            }
+            memmove(st->buf + back, st->buf, st->len);
+            for (u64 k = 0; k < back; k++) st->buf[k] = st->hist[(o->s[i].taken + k) % HIST];
+            st->len += (u32)back; st->taken = o->s[i].taken;
+            rb_back_bytes += (long long)back; any = 1;
+        } else if (back) fprintf(stderr, "[online] stream %d: a load %llu bytes back: more than kept, not read again\n", st->fd, (unsigned long long)back);
+        if (o->s[i].sent < st->sent && st->sent - o->s[i].sent <= HIST) st->resend = o->s[i].sent;
+    }
+    ReleaseSRWLockExclusive(&stream_lock);
+    if (any) changed();
+}
+void online_rb_counts(long long *back, long long *left_out, long long *differ) { *back = rb_back_bytes; *left_out = rb_resent_left_out; *differ = rb_resend_differ; }

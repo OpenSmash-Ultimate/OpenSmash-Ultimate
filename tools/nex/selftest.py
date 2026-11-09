@@ -157,11 +157,13 @@ def stats(c, category):
     return r.u32()
 
 
-def auto_matchmake(c, app_buffer=b"rules"):
+def auto_matchmake(c, app_buffer=b"rules", attribs=(1, 0, 0, 0, 0, 0), want=("", "", "", "", "", "")):
+    """AutoMatchmake: a gathering of these game attributes, searching for one whose attributes fit `want`
+    (one filter each, "" for any)."""
     ms = Session()
     ms.data_level = 0
     ms.min_participants, ms.max_participants = 2, 2
-    ms.game_mode, ms.attribs, ms.app_buffer = 3, [1, 0, 0, 0, 0, 0], app_buffer
+    ms.game_mode, ms.attribs, ms.app_buffer = 3, list(attribs), app_buffer
     param = StreamOut()
 
     def p(o):
@@ -173,7 +175,7 @@ def auto_matchmake(c, app_buffer=b"rules"):
         o.u16(1)
 
         def crit(q):
-            q.list(["", "", "", "", "", ""], StreamOut.string)
+            q.list(list(want), StreamOut.string)
             q.string("3")
             q.string("")
             q.string("")
