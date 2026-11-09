@@ -1425,7 +1425,7 @@ static void write_gpu(u64 va, const u8 *src, u64 n) {
         u64 k = 0x1000 - ((va + done) & 0xFFF);
         if (k > n - done) k = n - done;
         u64 g = gpu_va_to_guest(va + done);
-        if (g) memcpy(P(void, g), src + done, k);
+        if (g) { memcpy(P(void, g), src + done, k); gpu_rb_wrote(g, k); }
         done += k;
     }
 }

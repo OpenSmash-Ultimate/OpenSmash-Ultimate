@@ -56,7 +56,9 @@ static void rbw_publish(void) {
     __atomic_store_n(&rbw_n, i + 1, __ATOMIC_RELEASE);
     rbw_phi = 0;
 }
+extern int rb_on;   /* (hle_rb_core.c: rollback netplay or run-ahead, fixed at boot) */
 void gpu_rb_wrote(u64 g, u64 n) {
+    if (!rb_on) return;   /* (no savestates: nothing logged, nothing paid) */
     if (!rbw_mine || !g || !n) return;
     u64 lo = g & ~0xFFFull, hi = (g + n + 0xFFF) & ~0xFFFull;
     if (rbw_phi && lo <= rbw_phi && hi >= rbw_plo) { if (lo < rbw_plo) rbw_plo = lo; if (hi > rbw_phi) rbw_phi = hi; return; }

@@ -731,6 +731,7 @@ static LONG pending_fast, catch_total;
 extern u32 rb_save_tag;
 int rb_ring_find(u32 target, u32 *tag);
 u32 rb_ring_tag(int age);
+u32 rb_ring_threads(int age);
 extern long long rb_fiber_refused, rb_fiber_retried_ok;   /* (hle_rb_state.c, M7) */
 void rb_keep_hold_next(void);
 void rb_release_held(void);
@@ -878,7 +879,7 @@ static double net_t0;           /* and when (ms) */
 static u8 *net_got;             /* by frame - net_key0: delivered */
 static u32 net_low;             /* every frame below this delivered */
 static u64 *net_final;          /* by frame - net_key0: the fight hash once final (0: none) */
-static long long net_rollbacks, net_rerun, net_waits, net_too_deep, net_depth[16], net_saves_made, net_saves_skipped, net_saves_same, net_saves_sparse;
+static long long net_rollbacks, net_rerun, net_waits, net_too_deep, net_depth[16], net_saves_made, net_saves_skipped, net_saves_same, net_saves_sparse, net_saves_threads;
 static long long net_older;   /* (M7: rollbacks done from an older state, the newest refused) */
 static double net_catch_ms, net_catch_max, net_wait_ms;
 static int net_done;
@@ -1189,7 +1190,8 @@ static void net_report(void) {
     char hist[200] = ""; size_t k = 0;
     for (int d = 1; d < 16; d++) if (net_depth[d]) k += snprintf(hist + k, sizeof hist - k, " %d:%lld", d, net_depth[d]);
     fprintf(stderr, "[rb] saves: %lld made, %lld left out (the other's next pad already there, or %lld of them: their logic frame's state already kept, %lld: "
-            "a state a frame or so before kept, SSBU_RB_NET_SAVE_EVERY)\n", net_saves_made, net_saves_skipped, net_saves_same, net_saves_sparse);
+            "a state a frame or so before kept, SSBU_RB_NET_SAVE_EVERY; %lld made all the same: "
+            "a guest thread came or went)\n", net_saves_made, net_saves_skipped, net_saves_same, net_saves_sparse, net_saves_threads);
     fprintf(stderr, "[rb] loads held up by a thread on another fiber: %lld went ahead after a wait, %lld refused; %lld rollbacks from an older state instead\n",
             rb_fiber_retried_ok, rb_fiber_refused, net_older);
     fprintf(stderr, "[rb] net check: %lld frames hashed again after a rollback with their pads all real, %lld of them DIFFERENT%s\n", net_again, net_again_bad,
@@ -1400,7 +1402,7 @@ static void net_step(Cpu *c, u64 frame) {
         memset(net_acked_by, 0, sizeof net_acked_by); memset(net_heard, 0, sizeof net_heard); net_checked = key;
         net_countdown = 0;
         /* (every count of the report from zero: it added up over a session's fights, twopc14) */
-        net_rollbacks = net_rerun = net_waits = net_too_deep = net_saves_made = net_saves_skipped = net_saves_same = net_saves_sparse = net_older = 0;
+        net_rollbacks = net_rerun = net_waits = net_too_deep = net_saves_made = net_saves_skipped = net_saves_same = net_saves_sparse = net_saves_threads = net_older = 0;
         rb_fiber_refused = rb_fiber_retried_ok = 0;
         memset(net_depth, 0, sizeof net_depth);
         net_catch_ms = net_catch_max = net_wait_ms = 0;
@@ -1510,7 +1512,12 @@ static void net_step(Cpu *c, u64 frame) {
     static int save_every = -1;
     if (save_every < 0) { const char *e = getenv("SSBU_RB_NET_SAVE_EVERY"); save_every = e && atoi(e) >= 1 ? atoi(e) : 2; if (save_every > 4) save_every = 4; }
     if (!skip_save && lazy && save_every > 1 && rb_fast <= 0 && rb_ring_count() > 0 && rb_ring_tag(0) < key && key - rb_ring_tag(0) < (u32)save_every) {
-        skip_save = 1; net_saves_sparse++;
+        /* (not when a guest thread came or went since that state: a load is refused across it - "another number of
+         * guest threads" - and a wrong guess after it would find no state it can load) */
+        u32 alive, waiting, sleeping, nbusy; u64 busy[1];
+        kernel_rb_census(c->thread, &alive, &waiting, &sleeping, busy, 0, &nbusy);
+        if (alive == rb_ring_threads(0)) { skip_save = 1; net_saves_sparse++; }
+        else net_saves_threads++;
     }
     /* (#181) One state per logic frame. The logic frame can stand still over several safe points (a slow motion, and
      * more often than that: a one-PC room match saved one logic frame 2 to 5 times in a row, about 100 times a fight),
