@@ -737,12 +737,11 @@ static BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *c) {
         compile_dev = NULL;
     /* AMD's: a program's GPU code is made by the driver's own threads, from its disk cache when
      * that has it (see "first draws"). SSBU_SHADER_WARM=0/1/2 overrides. =2 draws the prewarm's
-     * programs at start too; that only helps when the driver's cache is cold (a new exe or driver),
-     * where it is the one in-process way to make AMD's threads compile them, so the default uses it
-     * only then and the post-play pass otherwise. */
+     * programs at start too, which can hold the start while the driver compiles them: it is
+     * opt-in, and the default stays 1, the pass after the game. */
     const char *wv = getenv("SSBU_SHADER_WARM");
 #ifdef _WIN32
-    warm_mode = wv ? atoi(wv) : ad.VendorId == 0x1002 && !on_dxvk() ? (warm_cache_cold(adapter_driver_version(adapter)) ? 2 : 1) : 0;
+    warm_mode = wv ? atoi(wv) : ad.VendorId == 0x1002 && !on_dxvk() ? 1 : 0;
 #else
     warm_mode = wv ? atoi(wv) : 0;
 #endif
@@ -1047,7 +1046,9 @@ static void decode_job_run(AsyncDecode *dec) {
     if (!ok) {
         for (u32 i = 0; i < n; i++) free(rgba[i]);
         free(rgba);
-        InterlockedExchange(&dec->state, AD_CANCEL);   /* (its slot's next look frees it: decode_cancel) */
+        /* Its slot's next look frees it (decode_cancel), unless that look has already cancelled:
+         * then nobody else will, so this thread does. */
+        if (InterlockedExchange(&dec->state, AD_CANCEL) == AD_CANCEL) decode_free(dec);
         return;
     }
     dec->rgba = rgba;
@@ -1586,7 +1587,9 @@ static DWORD WINAPI prewarm_main(void *unused) {
      * the played files are worth making. Native Direct3D (Windows) keeps the played-only default. */
     u64 warm_size = 0, warm_time = 0;
     int warm_done = prewarm_warm_key(cache_dir(), &warm_size, &warm_time);
-    prewarm_warmed = warm_done;
+    /* warm.done is DXVK's cache being full: only then is the compile device not needed. On native
+     * Direct3D (Windows) the prewarm keeps using it, as NVIDIA's prewarm does. */
+    prewarm_warmed = warm_done && on_dxvk();
     u64 exe_key = prewarm_exe_key(), driver_key = prewarm_driver_key();
 #ifdef _WIN32
     int auto_all = 0;   /* (native Direct3D has its driver's cache; Windows behavior is unchanged) */
@@ -1629,6 +1632,8 @@ static DWORD WINAPI prewarm_main(void *unused) {
             int played = found[i].written >= SHADER_CACHE_PLAYED;
             int wanted = played || (unplayed == UNPLAYED_ALL && pass == 1) || (unplayed != UNPLAYED_NONE && stage == SHADER_VERTEX);
             if (!wanted || (unplayed == UNPLAYED_ALL && pass == 0 && !played && stage != SHADER_VERTEX)) { skipped++; continue; }
+            /* The table is sized for the whole cache at half full (65,000 files here): a smaller
+             * one would make this pass skip most of them. */
             if (queued >= PREWARM_SLOTS / 2) { skipped++; continue; }
             Shader *s = calloc(1, sizeof *s);
             s->hash = hash; s->stage = stage; s->vs_outputs = vs_outputs; s->cache_outputs = vs_outputs; s->table_hash = tables;
@@ -1735,11 +1740,10 @@ static int prewarm_busy(void) {
  *  - SSBU_SHADER_WARM=2 also draws each program the prewarm made once on the rendering device
  *    (warm_prewarmed): into a 1x1 target, with a partner shader made to match its interface,
  *    taking at most a quarter of the time, newest first; after 3 slow ones in a row (over 20 ms:
- *    a compile), or 10 in all, it stops. It is the default only for a cold cache (above); a warm
- *    one uses =1, the pass after the game.
+ *    a compile), or 10 in all, it stops. It is opt-in, not the default.
  * On (=1) with AMD's driver, not under DXVK; SSBU_SHADER_WARM=0 turns it off, =1 or =2 on with
- * any. SSBU_SHADER_WARM_PREPLAY=0 turns off the pass before play. The partners declare the
- * stages' interface as the translator does (gpu_shader.c: struct VSOut). */
+ * any. SSBU_SHADER_WARM_PREPLAY=1 turns on the pass before play (off unless set). The partners
+ * declare the stages' interface as the translator does (gpu_shader.c: struct VSOut). */
 #define WARM_SLOW_MS 20.0   /* (a first draw this long, or a warm pass's create-and-draw, was slow) */
 
 static u32 rd32(const u8 *p) { u32 v; memcpy(&v, p, 4); return v; }
@@ -2045,33 +2049,58 @@ static void warm_wait_for_game(WarmRun *r) {
     if (InterlockedExchange(&said, 0)) fprintf(stderr, "[warm] the game ended: drawing again\n");
 }
 
-static DWORD WINAPI warm_worker(void *arg) {
-    WarmRun *r = arg;
+/* (a worker) its device, context and warmer. A pass that pauses for a game closes them first
+ * and opens them again after it, so a paused pass holds no device. */
+static int warm_open(WarmRun *r, ID3D11Device **d, ID3D11DeviceContext **c, ID3D11InfoQueue **iq, Warmer **w) {
     D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
-    ID3D11Device *d = NULL;
-    ID3D11DeviceContext *c = NULL;
     /* (SSBU_D3D_DEBUG: Direct3D's debug layer, a draw it refused counted as not drawn, its message on stderr) */
     UINT debug = getenv("SSBU_D3D_DEBUG") ? D3D11_CREATE_DEVICE_DEBUG : 0;
+    *d = NULL; *c = NULL; *iq = NULL; *w = NULL;
     if (FAILED(D3D11CreateDevice((IDXGIAdapter *)r->adapter, r->adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, NULL,
-                                 D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS | debug, levels, 2, D3D11_SDK_VERSION, &d, NULL, &c)))
-        return 1;
-    ID3D11InfoQueue *iq = NULL;
-    if (debug && FAILED(ID3D11Device_QueryInterface(d, &IID_ID3D11InfoQueue, (void **)&iq))) iq = NULL;
-    Warmer *w = calloc(1, sizeof *w);
+                                 D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS | debug, levels, 2, D3D11_SDK_VERSION, d, NULL, c)))
+        return 0;
+    if (debug && FAILED(ID3D11Device_QueryInterface(*d, &IID_ID3D11InfoQueue, (void **)iq))) *iq = NULL;
+    *w = calloc(1, sizeof **w);
+    if (!*w || !warmer_init(*w, *d, *c)) {
+        if (*w) { warmer_free(*w); free(*w); *w = NULL; }
+        if (*iq) { ID3D11InfoQueue_Release(*iq); *iq = NULL; }
+        ID3D11DeviceContext_Release(*c); *c = NULL;
+        ID3D11Device_Release(*d); *d = NULL;
+        return 0;
+    }
+    return 1;
+}
+
+static void warm_close(ID3D11Device **d, ID3D11DeviceContext **c, ID3D11InfoQueue **iq, Warmer **w) {
+    if (*w) {
+        if (*c) ID3D11DeviceContext_ClearState(*c);
+        warmer_free(*w);
+        free(*w);
+        *w = NULL;
+    }
+    if (*iq) { ID3D11InfoQueue_Release(*iq); *iq = NULL; }
+    if (*c) { ID3D11DeviceContext_Release(*c); *c = NULL; }
+    if (*d) { ID3D11Device_Release(*d); *d = NULL; }
+}
+
+static DWORD WINAPI warm_worker(void *arg) {
+    WarmRun *r = arg;
     LARGE_INTEGER freq;
     QueryPerformanceFrequency(&freq);
-    if (w && warmer_init(w, d, c)) {
+    for (;;) {
+        ID3D11Device *d = NULL;
+        ID3D11DeviceContext *c = NULL;
+        ID3D11InfoQueue *iq = NULL;
+        Warmer *w = NULL;
+        if (!warm_open(r, &d, &c, &iq, &w)) return 1;
         u32 pending = 0, drawn_pending = 0;   /* (done, and of those drawn, since the last wait) */
+        int paused = 0;
         for (;;) {
             if (r->stop) break;
             if (game_running()) {
-                if (r->pause_for_game) {   /* (the game's own pass: pause, not stop) */
-                    warm_wait_for_game(r);
-                    if (r->stop) break;
-                } else {   /* (Prepare Shaders, the launcher: end, as it did before) */
-                    InterlockedExchange(&r->stop, 1);
-                    break;
-                }
+                if (r->pause_for_game) { paused = 1; break; }   /* (close the devices, then wait) */
+                InterlockedExchange(&r->stop, 1);   /* (Prepare Shaders, the launcher: end, as before) */
+                break;
             }
             LONG i = InterlockedIncrement(&r->next) - 1;
             if (i >= (LONG)r->n) break;
@@ -2134,15 +2163,11 @@ static DWORD WINAPI warm_worker(void *arg) {
             }
         }
         if (pending && drawn_pending) warm_wait(w);
+        warm_close(&d, &c, &iq, &w);
+        if (!paused || r->stop) break;
+        warm_wait_for_game(r);   /* (no device held while a game runs) */
+        if (r->stop) break;
     }
-    if (w) {
-        ID3D11DeviceContext_ClearState(c);
-        warmer_free(w);
-        free(w);
-    }
-    if (iq) ID3D11InfoQueue_Release(iq);
-    ID3D11DeviceContext_Release(c);
-    ID3D11Device_Release(d);
     return 0;
 }
 
@@ -2184,12 +2209,23 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
         IDXGIFactory1_Release(f1);
     }
     if (!r.adapter) r.adapter = pick_adapter(&warp);
+    int amd = 0;
     if (r.adapter) {
         DXGI_ADAPTER_DESC1 d;
         if (SUCCEEDED(IDXGIAdapter1_GetDesc1(r.adapter, &d))) {
             adapter_name(&d, name, sizeof name);
             head.driver = adapter_driver_version((IDXGIAdapter *)r.adapter);
+            amd = d.VendorId == 0x1002;
         }
+    }
+    if (!amd) {
+        /* This pass fills AMD's driver cache. On another vendor it only writes a warm.done that
+         * would make the prewarm skip the compile device NVIDIA's prewarm uses. */
+        fprintf(stderr, "[warm] not warmed: %s is not AMD's (this pass is for AMD's driver cache)\n",
+                r.adapter ? name : "no Direct3D 11 adapter");
+        if (r.adapter) IDXGIAdapter1_Release(r.adapter);
+        CloseHandle(one);
+        return 0;
     }
     head.exe = warm_done_exe_key();
     u64 t0 = GetTickCount64();
@@ -2689,14 +2725,18 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
  * executable or driver, or no post-play pass yet), draw the whole cache once with the same
  * ssbu --warm-shaders pass, and wait for it. This covers the programs Prepare Shaders made but
  * the game has not played, which are the ones AMD's driver cache lacks. A warm cache starts at
- * once: warm.done matches this exe and driver. SSBU_SHADER_WARM=0 or SSBU_SHADER_WARM_PREPLAY=0
- * turns it off. */
+ * once: warm.done matches this exe and driver. It is opt-in (SSBU_SHADER_WARM_PREPLAY=1), since
+ * it can hold the start for minutes after a driver update; SSBU_SHADER_WARM=0 turns the warm
+ * feature off. The Vulkan renderer and headless test runs skip it. */
 void d3d11_warm_before_play(void) {
 #ifdef _WIN32
+    if (display_renderer() == RENDERER_VULKAN) return;   /* (the Vulkan back end draws: D3D11's driver cache is not used) */
+    const char *hl = getenv("SSBU_HEADLESS");
+    if (hl && !strcmp(hl, "1")) return;   /* (a headless test run: no window, and no wait before it) */
     const char *wv = getenv("SSBU_SHADER_WARM");
     if (wv && !atoi(wv)) return;
     const char *pp = getenv("SSBU_SHADER_WARM_PREPLAY");
-    if (pp && !atoi(pp)) return;
+    if (!pp || !atoi(pp)) return;
     if (getenv("SSBU_BENCH") || getenv("SSBU_SEQ") || getenv("SSBU_INPUT")) return;
     /* Another instance is playing: its pass owns the cache, and this one would pause for that game
      * (WARM_GAME) and hold this game's start until it ended. */
@@ -2725,7 +2765,7 @@ void d3d11_warm_before_play(void) {
     PROCESS_INFORMATION pi;
     fprintf(stderr, "[gfx] the shader cache is cold (a new executable or driver, or no pass yet): drawing it once for the "
                     "driver's own cache before the game loads; this can take a few minutes after a driver update "
-                    "(warm.log in the cache says how far it gets; SSBU_SHADER_WARM_PREPLAY=0 skips it)\n");
+                    "(warm.log in the cache says how far it gets; SSBU_SHADER_WARM_PREPLAY=1 runs it)\n");
     if (CreateProcessW(exe, cmd, NULL, NULL, FALSE, DETACHED_PROCESS | BELOW_NORMAL_PRIORITY_CLASS, NULL, NULL, &si, &pi)) {
         CloseHandle(pi.hThread);
         WaitForSingleObject(pi.hProcess, INFINITE);
@@ -4323,28 +4363,28 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
             init[layer * levels + l] = (D3D11_SUBRESOURCE_DATA){buf, pbw * d.bytes, pbw * pbh * d.bytes};
             mem[layer * levels + l] = buf;
         }
+    AsyncDecode *adec = NULL;
     if (cpu_bc) {
         /* The decode (and the punch it is for) off the render thread: a compiler thread decodes
          * into its own buffers (decode_job_run), and a later get_texture swaps the decoded copy
          * in (apply_ready_decode). Until then the BC texture draws, its clear margin as stored -
          * a first use's stock-icon mask can show as a black square for a frame. The punch's
-         * outcome is the same whichever way it ran. SSBU_ASYNC_DECODE=0 decodes here as before. */
+         * outcome is the same whichever way it ran. SSBU_ASYNC_DECODE=0 decodes here as before.
+         * Native Direct3D keeps the inline decode; DXVK (Linux, and Windows' test builds) is the
+         * renderer this was measured on. The job is queued only after CreateTexture2D, which
+         * reads the blocks it would otherwise free first. */
         static int async_decode;
-        if (!async_decode) async_decode = !getenv("SSBU_ASYNC_DECODE") || atoi(getenv("SSBU_ASYNC_DECODE")) != 0 ? 1 : -1;
+        if (!async_decode)
+            async_decode = on_dxvk() && (!getenv("SSBU_ASYNC_DECODE") || atoi(getenv("SSBU_ASYNC_DECODE")) != 0) ? 1 : -1;
+        int decode_here = async_decode <= 0;
         if (async_decode > 0) {
-            AsyncDecode *dec = calloc(1, sizeof *dec);
-            if (dec) {
-                *dec = (AsyncDecode){AD_LOAD, d, levels, layers, td.MiscFlags, (int)shader_type, punch_only, 0, mem, NULL};
-                mem = NULL;   /* (the decode's: the BC texture is still made from it below) */
-                t->dec = dec;
-                AcquireSRWLockExclusive(&jobs_lock);
-                if (decode_queue.tail) decode_queue.tail->next = dec; else decode_queue.head = dec;
-                decode_queue.tail = dec;
-                ReleaseSRWLockExclusive(&jobs_lock);
-                WakeConditionVariable(&jobs_cv);
+            adec = calloc(1, sizeof *adec);
+            if (adec) {
+                *adec = (AsyncDecode){AD_LOAD, d, levels, layers, td.MiscFlags, (int)shader_type, punch_only, 0, mem, NULL};
                 cpu_bc = 0;   /* (the BC texture's own view, until the swap) */
-            }
-        } else {
+            } else decode_here = 1;   /* (no memory for the job: decode here) */
+        }
+        if (decode_here) {
         u8 **rgba = calloc(levels * layers, sizeof *rgba);
         int decoded = rgba != NULL;
         for (u32 i = 0; i < levels * layers && decoded; i++) {
@@ -4378,10 +4418,24 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
         }
     }
     HRESULT hr = ID3D11Device_CreateTexture2D(dev, &td, init, &t->tex);
+    if (adec) {
+        if (SUCCEEDED(hr)) {
+            /* CreateTexture2D has read the blocks: the worker may free them from here on. */
+            mem = NULL;   /* (the decode's) */
+            t->dec = adec;
+            AcquireSRWLockExclusive(&jobs_lock);
+            if (decode_queue.tail) decode_queue.tail->next = adec; else decode_queue.head = adec;
+            decode_queue.tail = adec;
+            ReleaseSRWLockExclusive(&jobs_lock);
+            WakeConditionVariable(&jobs_cv);
+        } else {
+            free(adec);   /* (never queued; its blocks are mem, freed below) */
+        }
+    }
     if (mem) for (u32 i = 0; i < levels * layers; i++) free(mem[i]);
     free(mem);
     free(init);
-    if (FAILED(hr)) { warn_texture(&d); decode_cancel(&t->dec); t->tex = NULL; return NULL; }
+    if (FAILED(hr)) { warn_texture(&d); t->tex = NULL; return NULL; }
     D3D11_SHADER_RESOURCE_VIEW_DESC sd;
     memset(&sd, 0, sizeof sd);
     sd.Format = d.dxgi == DXGI_FORMAT_R24G8_TYPELESS ? DXGI_FORMAT_R24_UNORM_X8_TYPELESS : d.dxgi;
@@ -4408,6 +4462,7 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
         else { sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sd.Texture2D.MipLevels = levels; }
     }
     if (FAILED(ID3D11Device_CreateShaderResourceView(dev, (ID3D11Resource *)t->tex, &sd, &t->srv))) {
+        decode_cancel(&t->dec);   /* (a queued decode has nowhere to go now) */
         ID3D11Texture2D_Release(t->tex); t->tex = NULL; t->srv = NULL; return NULL;
     }
     t->guest = g; t->size = size; t->watched = watch; t->stale = 0; t->asked = gfx_stat_presented;
@@ -5500,7 +5555,9 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
         else ID3D11DeviceContext_Draw(ctx, regs[M_VERTEX_ARRAY_COUNT], regs[M_VERTEX_ARRAY_START]);
         double pipe_ms = (double)(rt_clock_ns() - pipe_t0) / 1e6;
         gpu_times_after(vs->name, ps ? ps->name : "-", rt_w, rt_h);
-        pipeline_note(pipe_ms);
+        /* Only DXVK's settle reads these states; on another driver the table would grow on every
+         * draw for nothing. */
+        if (on_dxvk() && prewarm_settling) pipeline_note(pipe_ms);
     }
     if (first) {
         first_draw_done(rt_clock_ns() - first_t0, first);

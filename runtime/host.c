@@ -79,7 +79,7 @@ void gfx_status_lines(void);
 #if defined(_WIN32) || defined(__linux__)
 int gfx_warm_shaders_main(const char *dir, const char *arg);   /* (gpu_d3d11.c: ssbu --warm-shaders) */
 #endif
-void d3d11_warm_before_play(void);                             /* (gpu_d3d11.c: Windows AMD's cold cache, before the game) */
+void d3d11_warm_before_play(void);                             /* (gpu_d3d11.c: Windows AMD's cold cache, before the game; SSBU_SHADER_WARM_PREPLAY=1) */
 const char *rt_data_dir;
 /* This thread is reading another thread's stack (debug_profile.c): a fault there is expected and
  * handled where it happens, not a crash. */
@@ -1651,7 +1651,7 @@ int main(int argc, char **argv) {
     if (getenv("SSBU_CRASH_TEST")) CloseHandle(CreateThread(NULL, 0, crash_test, (void *)(uintptr_t)atoi(getenv("SSBU_CRASH_TEST")), 0, NULL));
     rt_data_dir = dir;
 #ifdef _WIN32
-    d3d11_warm_before_play();   /* (AMD: a cold driver cache is drawn once before the game loads) */
+    d3d11_warm_before_play();   /* (AMD: a cold driver cache is drawn once before the game loads, when opted in) */
 #endif
     void mods_start(const char *data_dir);   /* (hle_mod_switch.c: a pending apply of the mods, the code patches' switch) */
     mods_start(dir);
