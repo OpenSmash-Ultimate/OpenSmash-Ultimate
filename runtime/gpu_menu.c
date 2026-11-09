@@ -140,7 +140,7 @@ enum {
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
     R_LANGUAGE, R_VOLUME, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
-    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE, R_RUNAHEAD, R_NET_ROLLBACK,
+    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE, R_RUNAHEAD, R_NET_ROLLBACK, R_NET_DELAY,
     R_ROOM_FIRST = 60,    /* + the room's place on the page of rooms shown (ROOM_PAGE at most) */
     R_REMAP_FIRST = 100,  /* + console button */
     R_MOD_FIRST = 200,    /* + the mod's place in mods.json (MENU_MODS at most) */
@@ -1111,6 +1111,17 @@ static void build(void)
         r = add(R_NET_DIRECT, K_CHOICE, W_RESTART, "Direct connections",
                 "On: rooms connect players directly when they can (less lag). Off: everything goes through the lobby, so other players never learn your internet address.");
         snprintf(r->value, sizeof r->value, "%s", on_off(net.direct));
+        r = add(R_NET_DELAY, K_CHOICE, W_NOW, "Input delay",
+                "The frames the game's own netcode waits before your inputs count online (Auto: its own choice, from the connection). Fewer frames answer sooner but stutter on a slow connection. Counts from the next match.");
+        {
+            int d = online_delay_setting(), a = online_delay_last_auto();
+            if (d >= 0)
+                snprintf(r->value, sizeof r->value, "%d frame%s", d, d == 1 ? "" : "s");
+            else if (a >= 0)
+                snprintf(r->value, sizeof r->value, "Auto (%d last match)", a);
+            else
+                snprintf(r->value, sizeof r->value, "Auto");
+        }
 #ifdef _WIN32   /* (rollback netplay is Windows' only: hle_rb_core.c) */
         r = add(R_NET_ROLLBACK, K_CHOICE, W_RESTART, "Rollback netcode",
                 "On: Quickplay and Local Wireless room matches are played with rollback when the other player has it on too (your inputs answer at once). Off: the game's own netcode.");
@@ -1431,6 +1442,18 @@ static void change(const Row *row, int dir)
         net.direct = !net.direct;
         settings_line_write(config_path(CONFIG_ONLINE_DIRECT), net.direct ? "on" : "off");
         break;
+    case R_NET_DELAY: /* Auto, 0 .. 25, round */
+    {
+        int d = online_delay_setting() + dir;
+        if (d < -1)
+            d = 25;
+        if (d > 25)
+            d = -1;
+        char v[8];
+        snprintf(v, sizeof v, "%d", d);
+        settings_line_write(config_path(CONFIG_ONLINE_DELAY), d < 0 ? "auto" : v);
+        break;
+    }
     case R_NET_ROLLBACK:
         net.rollback = !net.rollback;
         settings_line_write(config_path(CONFIG_ONLINE_ROLLBACK), net.rollback ? "on" : "off");
