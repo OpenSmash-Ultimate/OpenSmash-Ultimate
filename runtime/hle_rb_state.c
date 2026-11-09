@@ -1090,11 +1090,36 @@ static int memory_save(int *lost) {
     }
     mstat.ms = now_ms() - t0;
     *lost = undo_lost;
+    return 1;
+}
+/* (rb_save, the GPU let run during the copies) The pages the GPU thread wrote since run `from` of its log
+ * (gpu_rb_wrote), its work queued before the save now done: copied again into the shadow, each with its undo
+ * entry if this save made none for it yet - the state then holds every write of the work queued before it, as when
+ * the queue was drained first. 0: the log ran over (the pages were left as copied: the next save takes them). */
+static int gpu_pages_again(u64 from, u64 *npages) {
+    u64 to = gpu_rb_written_count();
+    *npages = 0;
+    for (u64 i = from; i < to; i++) {
+        u64 lo, hi;
+        if (!gpu_rb_written_at(i, &lo, &hi)) return 0;
+        for (u64 g = lo; g < hi; g += 0x1000) {
+            u8 *p = (u8 *)G2H(g);
+            Chunk *c = chunk_of(p, 0);
+            if (!c) continue;
+            u32 k = (u32)((p - c->base) >> 12);
+            if (!is_present(c, k)) continue;   /* (not in the state: a page committed since is settled by the next save) */
+            undo_push(c, k, p, U_CONTENT);
+            memcpy(shadow_page(c, p), p, 0x1000);
+            (*npages)++;
+        }
+    }
+    return 1;
+}
+static void memory_check_after_save(void) {
     if (check_after == 1) {
         u64 first, lay, bad = shadow_mismatches(&first, &lay);
         fprintf(stderr, "[rb] check after the save: %llu pages differ from the shadow (first %#llx), %llu pages' presence differs\n", bad, first, lay);
     }
-    return 1;
 }
 
 /* (a load straight after a save that kept the threads held: memory is the shadow, nothing ran) */
@@ -1155,6 +1180,7 @@ static double load_t0;
 static int quiet;
 double rb_save_ms[3];   /* the last save: hold and GPU drain, memory, in all (ms) */
 double rb_save_parts[4]; long long rb_save_count;
+long long rb_save_gpu_pages, rb_save_gpu_overrun;   /* (pages the GPU wrote during saves' copies, copied again; saves whose GPU log ran over) */
 double rb_load_parts[6]; long long rb_load_count;   /* (run-ahead's profile: every load's hold, check and scratch stacks, GPU drain, memory, host state, in all (ms), summed) */   /* (M6: every save's parking, GPU drain, memory, in all (ms), summed; hle_rb_core.c reads and clears them) */
 
 static Slot *slot_at(int age) { return &ring[(ring_head - age + ring_size * 2) % ring_size]; }
@@ -1259,8 +1285,18 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
         }
         if (away) { refused++; rb_save_away_refused++; release(); return 0; }
     }
+    /* The GPU's queue: what was submitted before the save writes guest memory (semaphores, uploads, copies) as it
+     * runs, and the state is memory with all of it done. It was drained before the copies: 2.5 ms a save on
+     * average (14 with the PC busy), the copies waiting for the frame before's drawing. Now the copies run beside it
+     * and the pages it wrote meanwhile are copied again once it is done (gpu_pages_again). Drained first still: the
+     * first save (the whole layout), the one that turns the state map on (pages made read-only under the GPU's
+     * writes), and with SSBU_RB_SAVE_DRAIN=1. */
+    static int drain_first = -1;
+    if (drain_first < 0) { const char *e = getenv("SSBU_RB_SAVE_DRAIN"); drain_first = e && *e == '1'; }
+    int drain_now = drain_first || !gpu_threaded() || !shadow_ok || (sm_wanted_fight && !sm_on && sm_want > 0);
     double tp = now_ms();
-    gpu_queue_drain();
+    u64 gpu_mark = gpu_queue_mark(), gpu_log = gpu_rb_written_count();   /* (nothing more is queued: every guest thread is held) */
+    if (drain_now) gpu_queue_drain();
     double t1 = now_ms();
     rb_save_parts[0] += tp - t0; rb_save_parts[1] += t1 - tp;
     if (ring_count == ring_size) { slot_free(slot_at(ring_count - 1)); ring_count--; }   /* (the oldest) */
@@ -1272,6 +1308,18 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     undo_to = prev ? &prev->undo : NULL;
     int barrier = 0;
     if (!memory_save(&barrier)) { undo_to = NULL; release(); return 0; }
+    double tw = now_ms();
+    if (!drain_now) {
+        gpu_queue_wait(gpu_mark);
+        double tg = now_ms();
+        u64 again;
+        if (!gpu_pages_again(gpu_log, &again)) rb_save_gpu_overrun++;
+        rb_save_gpu_pages += again;
+        if (undo_lost) barrier = 1;   /* (an undo entry it could not make: the older states go, as memory_save says) */
+        rb_save_parts[1] += tg - tw;   /* (the GPU drain's part: what was left of it after the copies) */
+        mstat.ms += now_ms() - tg;
+    }
+    memory_check_after_save();
     undo_to = NULL;
     if (barrier && ring_count) { ring_keep(0); barriers++; }   /* (s is not among them: it was free) */
     u64 fib_bytes, live[1025]; u32 suspended, jmps, in_use;

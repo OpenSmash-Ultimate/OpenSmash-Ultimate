@@ -2846,7 +2846,7 @@ void d3d11_resident_flush(u64 va, u64 bytes) {
         if (SUCCEEDED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)st, 0, D3D11_MAP_READ, 0, &m))) {
             for (u64 a = lo; a < hi; a += 4) {
                 u64 g = gpu_va_to_guest(a);
-                if (g) st32(g, ((const u32 *)m.pData)[(a - lo) / 4]);
+                if (g) { st32(g, ((const u32 *)m.pData)[(a - lo) / 4]); gpu_rb_wrote(g, 4); }
             }
             ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)st, 0);
         }
@@ -4785,7 +4785,7 @@ void d3d11_dispatch(const u32 *regs, const u32 *q) {
                 if (now[i] == was[i]) continue;
                 changed = 1;
                 u64 gg = gpu_va_to_guest(va_of[k] + 4ull * i);
-                if (gg) st32(gg, now[i]);
+                if (gg) { st32(gg, now[i]); gpu_rb_wrote(gg, 4); }
             }
             ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)b->staging, 0);
             if (changed) {

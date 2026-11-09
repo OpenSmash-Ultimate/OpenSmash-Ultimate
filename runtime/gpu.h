@@ -26,6 +26,13 @@ u64 gpu_queue_mark(void);                                 /* submissions queued 
 void gpu_queue_wait(u64 mark);                            /* until that many have run */
 u64 gpu_queue_draws(u64 mark);                            /* (SSBU_SEQ) draw calls run once they had */
 void gpu_queue_drain(void);                               /* until everything queued has run */
+/* (rollback, hle_rb_state.c) The guest memory the GPU thread writes (semaphores, inline and copy-engine uploads,
+ * constant buffer loads, the renderer's write-backs): pages, logged as runs, a run published once its writes are
+ * done. A save copies memory while the GPU thread still runs what was queued before it, then waits for that and
+ * copies again the pages logged meanwhile: what a drain first gave, without the wait in front of the copies. */
+void gpu_rb_wrote(u64 guest, u64 bytes);                  /* (the GPU thread's writes; elsewhere nothing) */
+u64 gpu_rb_written_count(void);                           /* runs published so far */
+int gpu_rb_written_at(u64 i, u64 *lo, u64 *hi);           /* run i (guest pages [lo, hi)); 0: overwritten since */
 void gpu_memory_unmapping(u64 addr, u64 size);            /* guest memory about to be decommitted (hle_nv.c) */
 /* Until sync point `id` reaches `threshold` (or `timeout_ms` passes; ~0u: no limit): 1 reached. */
 int gpu_syncpt_wait(u32 id, u32 threshold, u32 timeout_ms);

@@ -41,10 +41,40 @@ extern u64 gpu_stat_draws;   /* (gpu.c) */
 static int count_draws;      /* SSBU_SEQ: drawn_by[n % JOBS] = draw calls run once submission n had */
 static u64 drawn_by[JOBS];
 
+/* (gpu.h, gpu_rb_wrote) The GPU thread's guest writes, as runs of pages: the run being built is the GPU thread's
+ * own; it is published (rbw_n, release) when a write goes elsewhere and at the end of every submission, so a run
+ * read after its index was published is complete, and a write whose run was published before a reader took the
+ * count is in memory before that reader's next loads. */
+#define RBW 16384
+static u64 rbw_lo[RBW], rbw_hi[RBW], rbw_n;
+static _Thread_local int rbw_mine;
+static u64 rbw_plo, rbw_phi;
+static void rbw_publish(void) {
+    if (!rbw_phi) return;
+    u64 i = rbw_n;
+    rbw_lo[i % RBW] = rbw_plo; rbw_hi[i % RBW] = rbw_phi;
+    __atomic_store_n(&rbw_n, i + 1, __ATOMIC_RELEASE);
+    rbw_phi = 0;
+}
+void gpu_rb_wrote(u64 g, u64 n) {
+    if (!rbw_mine || !g || !n) return;
+    u64 lo = g & ~0xFFFull, hi = (g + n + 0xFFF) & ~0xFFFull;
+    if (rbw_phi && lo <= rbw_phi && hi >= rbw_plo) { if (lo < rbw_plo) rbw_plo = lo; if (hi > rbw_phi) rbw_phi = hi; return; }
+    rbw_publish();
+    rbw_plo = lo; rbw_phi = hi;
+}
+u64 gpu_rb_written_count(void) { return __atomic_load_n(&rbw_n, __ATOMIC_ACQUIRE); }
+int gpu_rb_written_at(u64 i, u64 *lo, u64 *hi) {
+    if (gpu_rb_written_count() - i > RBW) return 0;
+    *lo = rbw_lo[i % RBW]; *hi = rbw_hi[i % RBW];
+    return 1;
+}
+
 static DWORD WINAPI gpu_thread(LPVOID unused) {
     (void)unused;
     SetThreadDescription(GetCurrentThread(), L"gpu");
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    rbw_mine = 1;
     for (;;) {
         AcquireSRWLockExclusive(&lock);
         while (done == queued) SleepConditionVariableSRW(&work, &lock, INFINITE, 0);
@@ -54,6 +84,7 @@ static DWORD WINAPI gpu_thread(LPVOID unused) {
         gpu_job_hidden = j->hide;
         gpu_submit(j->channel, j->entries, j->count);   /* (the job stays put until `done` passes it) */
         gpu_job_hidden = 0;
+        rbw_publish();   /* (before `done` passes it: a save that waited for this submission finds its writes) */
         gpu_q_busy_ms[j->fast] += (double)(rt_now_ns() - q0) / 1e6; gpu_q_jobs[j->fast]++;
         AcquireSRWLockExclusive(&lock);
         u32 id = j->syncpoint;

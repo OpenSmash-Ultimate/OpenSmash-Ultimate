@@ -261,7 +261,7 @@ static double fp_census_last, fp_hash_last, fp_in, fp_out, fp_sum[2][7];   /* (f
 static long long fp_n[2];
 static int fp_fast, fp_loaded;
 extern double rb_save_ms[3];
-extern double rb_save_parts[4]; extern long long rb_save_count;   /* (hle_rb_state.c: parking, GPU drain, memory, in all) */
+extern double rb_save_parts[4]; extern long long rb_save_count; extern long long rb_save_gpu_pages, rb_save_gpu_overrun;   /* (hle_rb_state.c: parking, GPU drain, memory, in all) */
 void profile_start_gated(double seconds);
 static void tape_clear(void);
 static void tag_restore(const char *why);
@@ -878,7 +878,7 @@ static double net_t0;           /* and when (ms) */
 static u8 *net_got;             /* by frame - net_key0: delivered */
 static u32 net_low;             /* every frame below this delivered */
 static u64 *net_final;          /* by frame - net_key0: the fight hash once final (0: none) */
-static long long net_rollbacks, net_rerun, net_waits, net_too_deep, net_depth[16], net_saves_made, net_saves_skipped, net_saves_same;
+static long long net_rollbacks, net_rerun, net_waits, net_too_deep, net_depth[16], net_saves_made, net_saves_skipped, net_saves_same, net_saves_sparse;
 static long long net_older;   /* (M7: rollbacks done from an older state, the newest refused) */
 static double net_catch_ms, net_catch_max, net_wait_ms;
 static int net_done;
@@ -1188,8 +1188,8 @@ static void net_report(void) {
     }
     char hist[200] = ""; size_t k = 0;
     for (int d = 1; d < 16; d++) if (net_depth[d]) k += snprintf(hist + k, sizeof hist - k, " %d:%lld", d, net_depth[d]);
-    fprintf(stderr, "[rb] saves: %lld made, %lld left out (the other's next pad already there, or %lld of them: their logic frame's state already kept)\n", net_saves_made,
-            net_saves_skipped, net_saves_same);
+    fprintf(stderr, "[rb] saves: %lld made, %lld left out (the other's next pad already there, or %lld of them: their logic frame's state already kept, %lld: "
+            "a state a frame or so before kept, SSBU_RB_NET_SAVE_EVERY)\n", net_saves_made, net_saves_skipped, net_saves_same, net_saves_sparse);
     fprintf(stderr, "[rb] loads held up by a thread on another fiber: %lld went ahead after a wait, %lld refused; %lld rollbacks from an older state instead\n",
             rb_fiber_retried_ok, rb_fiber_refused, net_older);
     fprintf(stderr, "[rb] net check: %lld frames hashed again after a rollback with their pads all real, %lld of them DIFFERENT%s\n", net_again, net_again_bad,
@@ -1400,7 +1400,7 @@ static void net_step(Cpu *c, u64 frame) {
         memset(net_acked_by, 0, sizeof net_acked_by); memset(net_heard, 0, sizeof net_heard); net_checked = key;
         net_countdown = 0;
         /* (every count of the report from zero: it added up over a session's fights, twopc14) */
-        net_rollbacks = net_rerun = net_waits = net_too_deep = net_saves_made = net_saves_skipped = net_saves_same = net_older = 0;
+        net_rollbacks = net_rerun = net_waits = net_too_deep = net_saves_made = net_saves_skipped = net_saves_same = net_saves_sparse = net_older = 0;
         rb_fiber_refused = rb_fiber_retried_ok = 0;
         memset(net_depth, 0, sizeof net_depth);
         net_catch_ms = net_catch_max = net_wait_ms = 0;
@@ -1497,7 +1497,21 @@ static void net_step(Cpu *c, u64 frame) {
      * about 20 ms a frame and held PC 1 back (twopc10, twopc14). SSBU_RB_NET_LAZY=0: a save every frame. */
     static int lazy = -1;
     if (lazy < 0) { const char *e = getenv("SSBU_RB_NET_LAZY"); lazy = !(e && *e == '0'); }
+    /* (the pads come since the last frame first: at 40 ms round trip and delay 2 the peer's pad for key + 1 came some
+     * 0.2 frame after this safe point, just too late to leave the save out - 24 of 1080 left out - though no guess
+     * was ever wrong) */
+    if (lazy && rb_fast <= 0 && net_mode == 2) net_receive(key);
     int skip_save = lazy && rb_fast <= 0 && net_remote_low() >= key + 1;   /* (every other player's: M7) */
+    /* SSBU_RB_NET_SAVE_EVERY=<n> (default 2): a state at least every n-th logic frame while pads are guessed, not every
+     * one. A wrong guess at m then loads the newest state at m - 1 or before (rb_ring_find): at most n - 1 frames more
+     * run again, and only on a rollback, while a save is paid at every guessed frame (a save cost 6.7 ms on average,
+     * 25 ms with the PC busy; a frame run again in a catch-up draws nothing). The ring then reaches n times as far back.
+     * 1: a save at every guessed frame, as before. */
+    static int save_every = -1;
+    if (save_every < 0) { const char *e = getenv("SSBU_RB_NET_SAVE_EVERY"); save_every = e && atoi(e) >= 1 ? atoi(e) : 2; if (save_every > 4) save_every = 4; }
+    if (!skip_save && lazy && save_every > 1 && rb_fast <= 0 && rb_ring_count() > 0 && rb_ring_tag(0) < key && key - rb_ring_tag(0) < (u32)save_every) {
+        skip_save = 1; net_saves_sparse++;
+    }
     /* (#181) One state per logic frame. The logic frame can stand still over several safe points (a slow motion, and
      * more often than that: a one-PC room match saved one logic frame 2 to 5 times in a row, about 100 times a fight),
      * and every such save took a slot of the ring (RBN_MAX_BACK + 3 states), which then held only 5 or 6 logic frames:
@@ -1561,11 +1575,12 @@ static void net_step(Cpu *c, u64 frame) {
                     rb_ff_get_n, rb_ff_get_ms, rb_rng_slow_n, rb_rng_slow_ms);
             if (rb_save_count) {
                 double k = (double)rb_save_count;
-                fprintf(stderr, "[rb] net saves, the last second: %lld, a save %.2f ms on average: parking the threads %.2f, GPU drain %.2f, memory %.2f, the rest %.2f\n",
+                fprintf(stderr, "[rb] net saves, the last second: %lld, a save %.2f ms on average: parking the threads %.2f, GPU drain %.2f, memory %.2f, the rest %.2f; "
+                        "%lld pages the GPU wrote meanwhile copied again (%lld log overruns)\n",
                         rb_save_count, rb_save_parts[3] / k, rb_save_parts[0] / k, rb_save_parts[1] / k, rb_save_parts[2] / k,
-                        (rb_save_parts[3] - rb_save_parts[0] - rb_save_parts[1] - rb_save_parts[2]) / k);
+                        (rb_save_parts[3] - rb_save_parts[0] - rb_save_parts[1] - rb_save_parts[2]) / k, rb_save_gpu_pages, rb_save_gpu_overrun);
             }
-            memset(rb_save_parts, 0, sizeof rb_save_parts); rb_save_count = 0;
+            memset(rb_save_parts, 0, sizeof rb_save_parts); rb_save_count = 0; rb_save_gpu_pages = rb_save_gpu_overrun = 0;
             memset(net_w_ms, 0, sizeof net_w_ms); memset(net_w_max, 0, sizeof net_w_max); memset(net_w_n, 0, sizeof net_w_n);
             rb_ff_get_ms = rb_rng_slow_ms = 0; rb_ff_get_n = rb_rng_slow_n = 0;
             net_rtt_min_s = 1e9;
