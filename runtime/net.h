@@ -102,6 +102,12 @@ void net_rb_counts(NetRbCounts *out);
 /* One line about the connection for the overlay (empty when netplay is off). */
 void net_status(char *out, size_t n);
 
+/* The other players of this player's room, for the ping badge (gpu_overlay.c, after saad-script's
+ * ssbu-online-deluxe idea): name, round trip in ms (-1 not known: relayed), relayed, and the quality
+ * 0 good (green), 1 so-so (yellow), 2 poor (red). Returns how many (0 when not in a room). */
+typedef struct NetPeerQ { char name[40]; int rtt_ms, relayed, quality; } NetPeerQ;
+int net_peer_quality(NetPeerQ *out, int max);
+
 /* ---- version 3: the room browser and matchmaking, for a menu page ---------------------------
  * A lobby of version 3 has them when its WELCOME says so; with a lobby of version 2 or a private
  * room's relay, both say NET_*_OFF. Nothing here blocks: the client thread asks the lobby and
