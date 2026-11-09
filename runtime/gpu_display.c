@@ -303,10 +303,14 @@ float display_overlay_scale(void) { load(); return overlay_scale; }
 
 /* ---- the settings menu's changes ------------------------------------------------------- */
 static volatile LONG asked_mode = -1, asked_latency;
+/* The mode the window is in or was last asked for, for the menu. cfg.mode can't say: it keeps the
+ * full-screen mode F11 goes back to, so it stays there while the window is windowed. */
+static volatile int shown_mode = -1;
+void display_note_mode(int mode) { shown_mode = mode; }
 
 void display_settings(DisplaySettings *out) {
     load();
-    *out = (DisplaySettings){cfg.mode, cfg.width, cfg.height, cfg.latency, cfg.hide_cursor, cfg.overlay, cfg.pacing, "", render_scale_saved ? saved_render_scale : cfg.render_scale};
+    *out = (DisplaySettings){shown_mode >= 0 ? shown_mode : cfg.mode, cfg.width, cfg.height, cfg.latency, cfg.hide_cursor, cfg.overlay, cfg.pacing, "", render_scale_saved ? saved_render_scale : cfg.render_scale};
     snprintf(out->gpu, sizeof out->gpu, "%s", cfg.gpu);
     out->renderer = saved_renderer >= 0 ? saved_renderer : cfg.renderer;
 }
@@ -385,6 +389,7 @@ static void set_mode(HWND h, int mode) {
     if (mode == current_mode || win_headless()) return;
     if (current_mode == MODE_WINDOWED) have_place = GetWindowPlacement(h, &windowed_place);
     current_mode = mode;
+    display_note_mode(mode);
     if (mode == MODE_WINDOWED) {
         SetWindowLongPtrW(h, GWL_STYLE, WINDOWED_STYLE);
         if (have_place) {
@@ -410,6 +415,7 @@ static void set_mode(HWND h, int mode) {
 void display_set_mode(int mode) {
     load();
     if (mode != MODE_WINDOWED) cfg.mode = mode;
+    display_note_mode(mode);
     HWND h = (HWND)gfx_window_handle();
     if (h) PostMessageW(h, WM_DISPLAY_MODE, (WPARAM)mode, 0);
 }
@@ -590,6 +596,7 @@ int display_window_mode(void) { load(); return cfg.mode; }
 void display_set_mode(int mode) {   /* (the window's loop takes it: display_take_mode) */
     load();
     if (mode != MODE_WINDOWED) cfg.mode = mode;
+    display_note_mode(mode);
     InterlockedExchange(&asked_mode, mode);
 }
 void display_window_size(int *width, int *height) { load(); *width = cfg.width; *height = cfg.height; }
