@@ -367,6 +367,23 @@ class ToolchainChoiceTests(unittest.TestCase):
         Path(self.msvc, 'windowsmash.json').write_text('{}')
         self.assertEqual(self.choose()[1], self.msvc)   # deps first, Visual Studio or not
 
+    def test_bundled_llvm_uses_visual_studio_runtime_without_deps_msvc(self):
+        crt = Path(self.no_vs, 'Microsoft Visual Studio', '2022', 'Community',
+                   'VC', 'Tools', 'MSVC', '14.42', 'lib', 'x64', 'libcmt.lib')
+        crt.parent.mkdir(parents=True)
+        crt.write_bytes(b'')
+        # A compiler plus the C runtime alone still lacks the Windows SDK.
+        self.assertEqual(self.choose()[:2], ('clang-cl', None))
+        sdk = Path(self.no_vs, 'Windows Kits', '10', 'Lib', '10.0.22621.0',
+                   'um', 'x64', 'kernel32.lib')
+        sdk.parent.mkdir(parents=True)
+        sdk.write_bytes(b'')
+        clang, root, what = self.choose()
+        self.assertEqual((clang, root), (os.path.join(self.llvm, 'bin', 'clang-cl.exe'), None))
+        self.assertIn("Visual Studio's C++ runtime", what)
+        crt.unlink()
+        self.assertEqual(self.choose()[:2], ('clang-cl', None))
+
     def test_flags_follow_the_system_root(self):
         # (the module's own choice on this PC: /winsysroot exactly when deps\msvc is used)
         self.assertEqual('/winsysroot' in cc.BASE_CFLAGS, cc.WINSYSROOT is not None)
