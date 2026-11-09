@@ -496,8 +496,13 @@ def run_queue(exe, pack, cache, jobs, dry):
     """Discovery once, then the keys not cached yet through N workers pulling from one queue."""
     print("getting ready: listing the shaders (translating the vertex programs)...", flush=True)
     keys, untranslated = discover(exe, pack, cache)
+    known = {k.key for k in keys}
+    drawn = [k for k in drawn_keys(cache) if k.key not in known]   # (the variants the game drew that the files don't say)
+    if drawn:
+        print(f"{len(drawn):,} more keys the game compiled at a first draw ({DRAWN_KEYS})", flush=True)
+    keys = keys + drawn
     have = cached_keys(cache)
-    todo = [k for k in keys if k.key not in have]
+    todo = [k for k in keys if not cached(k, have)]
     if dry:
         print(f"the cache has {len(have)} vertex/pixel keys; {len(have & {k.key for k in keys})} of them are among the {len(keys)} found here"
               + (f"; {untranslated} programs not translated (no key)" if untranslated else ""))
@@ -538,7 +543,7 @@ def run_queue(exe, pack, cache, jobs, dry):
 
 
 # ---- the queue: discovery, ordering, the workers ---------------------------------------------------------
-Key = collections.namedtuple("Key", "kind hash mask size")   # kind "vs" or "ps"; mask None for a vertex program
+Key = collections.namedtuple("Key", "kind hash mask size")   # kind "vs", "ps" or "pa" (alpha-tested pixel); mask None for a vertex program
 TIMES_FILE = "compile_times.txt"   # (in dump/aot, with the pack: "<kind> <hash> [<mask>] <ms>" per key compiled)
 
 
@@ -557,9 +562,37 @@ def parse_key_line(line):
     p = line.split()
     if len(p) >= 2 and p[0] == "vs" and len(p[1]) == 16:
         return Key("vs", p[1].lower(), None, int(p[2]) if len(p) > 2 and p[2].isdigit() else 0)
-    if len(p) >= 3 and p[0] == "ps" and len(p[1]) == 16 and len(p[2]) == 8:
-        return Key("ps", p[1].lower(), p[2].lower(), int(p[3]) if len(p) > 3 and p[3].isdigit() else 0)
+    if len(p) >= 3 and p[0] in ("ps", "pa") and len(p[1]) == 16 and len(p[2]) == 8:
+        return Key(p[0], p[1].lower(), p[2].lower(), int(p[3]) if len(p) > 3 and p[3].isdigit() else 0)
     return None
+
+
+ALPHA_SALT = 0x616C706861743032   # (gpu_d3d11.c find_shader_ex: an alpha-tested variant's cache key)
+
+
+def alpha_file_hash(hash_):
+    """The cache file's hash of a program's alpha-tested variant."""
+    return f"{((int(hash_, 16) ^ ALPHA_SALT) * 1099511628211) & 0xFFFFFFFFFFFFFFFF:016x}"
+
+
+def cached(key, have):
+    """Whether a key's file is in the cache (an alpha-tested variant under its salted hash)."""
+    if key.kind == "pa":
+        return key_of("ps", alpha_file_hash(key.hash), key.mask) in have
+    return key.key in have
+
+
+DRAWN_KEYS = "drawn_keys.txt"   # (in the cache folder: the renderer's programs compiled at their first draw)
+
+
+def drawn_keys(cache):
+    """The keys the game compiled at a first draw (gpu_d3d11.c writes them), once each."""
+    try:
+        with open(os.path.join(cache, DRAWN_KEYS), encoding="ascii", errors="replace") as f:
+            keys = [k for k in (parse_key_line(line) for line in f) if k]
+    except OSError:
+        return []
+    return list({k.key: k for k in keys}.values())
 
 
 def parse_done_line(line):
@@ -568,8 +601,8 @@ def parse_done_line(line):
     p = line.split()
     if len(p) == 5 and p[0] == "done" and p[1] == "vs":
         return key_of("vs", p[2].lower(), None), p[3], int(p[4]) if p[4].isdigit() else 0
-    if len(p) == 6 and p[0] == "done" and p[1] == "ps":
-        return key_of("ps", p[2].lower(), p[3].lower()), p[4], int(p[5]) if p[5].isdigit() else 0
+    if len(p) == 6 and p[0] == "done" and p[1] in ("ps", "pa"):
+        return key_of(p[1], p[2].lower(), p[3].lower()), p[4], int(p[5]) if p[5].isdigit() else 0
     return None
 
 
