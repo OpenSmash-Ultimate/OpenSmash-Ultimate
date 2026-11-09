@@ -924,10 +924,19 @@ class Lifter(SimdMixin):
         else:
             bits, load = 8 << size, opc != 0
             signed, to64 = opc >= 2, opc != 3
-            if opc == 2 and size == 3:   # prfm
-                return ";"
-            if opc == 3 and size >= 2:
-                raise Unsupported("reserved load/store")
+            if opc == 2 and size == 3:   # prfm, and in the same opc: 64-bit LSE acquire forms, ldapr x, ldrab
+                if (w >> 24) & 1 or (w >> 10) & 3 == (2 if (w >> 21) & 1 else 0):   # prfm (imm, reg), prfum
+                    if not (w >> 24) & 1 and (w >> 21) & 1 and not (w >> 14) & 1:
+                        raise Unsupported("reserved register-offset extend")   # (as for every other load)
+                    return ";"
+                if not (w >> 21) & 1:
+                    raise Unsupported("reserved load/store")
+                raise Unsupported("atomic memory operation (LSE)" if (w >> 10) & 3 == 0 else "pointer-auth load")
+            if opc == 3 and size >= 2:   # (32- and 64-bit LSE acquire-release forms there, ldrab with a negative offset, the rest reserved)
+                mode, idx = (w >> 10) & 3, not (w >> 24) & 1 and (w >> 21) & 1
+                if idx and mode == 0:
+                    raise Unsupported("atomic memory operation (LSE)")
+                raise Unsupported("pointer-auth load" if idx and size == 3 and mode & 1 else "reserved load/store")
         scale = bits.bit_length() - 4
         if (w >> 24) & 1:
             return self.access(vec, load, bits, signed, to64, rt, f"{base} + {const(((w >> 10) & 0xFFF) << scale)}")
