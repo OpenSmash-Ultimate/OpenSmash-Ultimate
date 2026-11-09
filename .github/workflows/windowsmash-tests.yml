@@ -29,6 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The launcher's process tests compile the production C# helper without opening a window.
+      - uses: actions/setup-dotnet@v4
+        if: runner.os == 'Windows'
+        with:
+          dotnet-version: '8.0.x'
+
       # 3.14: the Python the Windows installer puts in deps/python
       - uses: actions/setup-python@v5
         with:

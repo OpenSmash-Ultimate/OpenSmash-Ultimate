@@ -177,34 +177,6 @@ namespace OpenSmash.Launcher
         // Hit-testing
         List<Hit> _hits = new();
 
-        // (#173) The newest python.exe of a standard Python 3.10+ install (per user, then for all users), or null.
-        static string FindInstalledPython()
-        {
-            var roots = new[] {
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Python"),
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            };
-            foreach (string root in roots)
-            {
-                try
-                {
-                    if (!Directory.Exists(root)) continue;
-                    string best = null; int bestMinor = -1;
-                    foreach (string dir in Directory.GetDirectories(root, "Python3*"))
-                    {
-                        string name = Path.GetFileName(dir);   // Python313, Python314-32 ...
-                        string digits = new string(name.Substring(7).TakeWhile(char.IsDigit).ToArray());
-                        if (!int.TryParse(digits, out int minor) || minor < 10) continue;
-                        string exe = Path.Combine(dir, "python.exe");
-                        if (File.Exists(exe) && minor > bestMinor) { best = exe; bestMinor = minor; }
-                    }
-                    if (best != null) return best;
-                }
-                catch { }
-            }
-            return null;
-        }
-
         // ---------------------------------------------------------------------------
         public LauncherForm(string workDir, string repo, string buildDir)
         {
@@ -232,16 +204,7 @@ namespace OpenSmash.Launcher
             _statePath = Path.Combine(buildDir, "state.json");
             _pluginsPath = Path.Combine(buildDir, "work", "plugin_bin", "plugins.txt");
 
-            // Find Python (prefer deps\python\python.exe)
-            _pythonExe = Path.Combine(repo, "deps", "python", "python.exe");
-            if (!File.Exists(_pythonExe))
-            {
-                string p = Path.Combine(buildDir, "python_path.txt");
-                if (File.Exists(p)) _pythonExe = File.ReadAllText(p).Trim().Trim('"');
-            }
-            // (#173) a Python installed without "Add python.exe to PATH": "python" is then Windows' Store
-            // shortcut; the newest per-user or all-users install of 3.10+ instead
-            if (!File.Exists(_pythonExe)) _pythonExe = FindInstalledPython() ?? "python";
+            _pythonExe = ModManagerProcess.FindPython(repo, buildDir);
 
             // Window setup
             Text = "OpenSmash-Ultimate";
@@ -1146,19 +1109,7 @@ namespace OpenSmash.Launcher
             var all = new List<string> { Path.Combine(_repo, "tools", "os_mods.py") };
             all.AddRange(args);
             int code = RunPython(all.ToArray(), out string output, onLine);
-            string err = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                .LastOrDefault(l => l.StartsWith("RESULT ")) ?? "";
-            if (err.Contains("\"ok\": false") || err.Contains("\"ok\":false"))
-            {
-                try
-                {
-                    using var doc = JsonDocument.Parse(err.Substring("RESULT ".Length));
-                    string why = GetString(doc.RootElement, "error");
-                    if (why.Length > 0) throw new InvalidOperationException(why);
-                }
-                catch (InvalidOperationException) { throw; }
-                catch { throw new InvalidOperationException("The mod manager stopped."); }
-            }
+            ModManagerProcess.ValidateResult(code, output);
             return code;
         }
 
@@ -2691,7 +2642,7 @@ namespace OpenSmash.Launcher
             _modsBusy = false;
             _pluginBuildUi = false;
             UpdateMods();
-            _ = PushInstalledState();
+            await PushInstalledState();
             PlayDone();
             Invalidate();
             if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
@@ -3750,7 +3701,6 @@ namespace OpenSmash.Launcher
                     await SendStatus(modId, "error", why, 0);
                     return;
                 }
-                UpdateMods();
                 await PushInstalledState();
                 await SendStatus(modId, "done", name + " installed and turned on.", 100);
             }
@@ -4205,10 +4155,10 @@ namespace OpenSmash.Launcher
 
         async Task PushInstalledState()
         {
+            // Read status before publishing installed IDs, including after a local import.
+            await RefreshMods();
             var core = _marketplaceWebView?.CoreWebView2;
             if (core == null) return;
-
-            UpdateMods();
 
             string installed = JsonSerializer.Serialize(GetInstalledModIds());
             string inventory = JsonSerializer.Serialize(new
