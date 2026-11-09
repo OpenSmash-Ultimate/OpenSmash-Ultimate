@@ -3033,6 +3033,63 @@ static int unpacked_formats(DXGI_FORMAT f, Unpacked *u) {
 /* Software decode (ssbu-recomp/runtime/tex_decode.c). RGBA8 is the stored bytes, alpha included;
  * an sRGB view is applied later, so the colour space stays what the file asked for. */
 int tex_decode_rgba8(int nvn_format, const void *src, int w, int h, uint8_t *dst);
+
+/* The CPU decode of a big texture (sRGB BC, decoded here because Direct3D 11 has no sRGB BC6/7 view of
+ * the game's kind) took up to 29 ms on the renderer's thread at a match's load (2026-11-04): split into
+ * bands of block rows decoded on the system's thread pool at once, each band its own call of the same
+ * decoder (a band's source starts at its first block row, its picture at that row's pixels). Small ones are
+ * decoded as before. Returns tex_decode_rgba8's answer (0 good). */
+typedef struct DecodeBand { int nf, w, h; const u8 *src; u8 *dst; volatile LONG *left, *failed; HANDLE done; } DecodeBand;
+static void CALLBACK decode_band(PTP_CALLBACK_INSTANCE inst, void *ctx) {
+    (void)inst;
+    DecodeBand *b = ctx;
+    if (tex_decode_rgba8(b->nf, b->src, b->w, b->h, b->dst)) InterlockedExchange(b->failed, 1);
+    if (!InterlockedDecrement(b->left)) SetEvent(b->done);
+}
+static int decode_rgba8_parallel(int nf, const u8 *src, int w, int h, u8 *dst, u32 bw, u32 bh, u32 bpb) {
+    enum { MAX_BANDS = 16 };
+    u32 wb = (w + bw - 1) / bw, hb = (h + bh - 1) / bh;
+    static int threads;
+    if (!threads) { SYSTEM_INFO si; GetSystemInfo(&si); threads = si.dwNumberOfProcessors > MAX_BANDS ? MAX_BANDS : (int)si.dwNumberOfProcessors; }
+    int bands = (int)(hb / 8);   /* (at least 8 block rows a band: 32 pixel rows of a BC texture) */
+    if (bands > threads) bands = threads;
+    if ((u64)w * h < 256 * 256 || bands < 2) return tex_decode_rgba8(nf, src, w, h, dst);
+    DecodeBand b[MAX_BANDS];
+    volatile LONG left = bands, failed = 0;
+    HANDLE done = CreateEventA(NULL, TRUE, FALSE, NULL);
+    if (!done) return tex_decode_rgba8(nf, src, w, h, dst);
+    u64 t_par = rt_now_ns();
+    u32 per = (hb + bands - 1) / bands;
+    int queued = 0;
+    for (int i = 0; i < bands; i++) {
+        u32 r0 = i * per, r1 = r0 + per > hb ? hb : r0 + per;
+        if (r0 >= r1) { if (!InterlockedDecrement(&left)) SetEvent(done); continue; }
+        int y0 = (int)(r0 * bh), y1 = (int)(r1 * bh) > h ? h : (int)(r1 * bh);
+        b[i] = (DecodeBand){nf, w, y1 - y0, src + (size_t)r0 * wb * bpb, dst + (size_t)y0 * w * 4, &left, &failed, done};
+        if (!TrySubmitThreadpoolCallback(decode_band, &b[i], NULL)) decode_band(NULL, &b[i]);   /* (no pool: here) */
+        queued++;
+    }
+    (void)queued;
+    WaitForSingleObject(done, INFINITE);
+    CloseHandle(done);
+    t_par = rt_now_ns() - t_par;
+    /* SSBU_DECODE_CHECK=1 (tests): the same texture decoded whole as well, and compared */
+    static int check = -1;
+    if (check < 0) { const char *e = getenv("SSBU_DECODE_CHECK"); check = e && *e == '1'; }
+    if (check && !failed) {
+        static volatile LONG checked, differed;
+        static double ms_par, ms_ser;
+        u8 *ref = malloc((size_t)w * h * 4);
+        u64 t_ser = rt_now_ns();
+        if (ref && !tex_decode_rgba8(nf, src, w, h, ref)) {
+            ms_ser += (rt_now_ns() - t_ser) / 1e6; ms_par += t_par / 1e6;
+            LONG n = InterlockedIncrement(&checked), d = memcmp(ref, dst, (size_t)w * h * 4) ? InterlockedIncrement(&differed) : differed;
+            if (n <= 3 || (n % 50) == 0 || d && n == d) fprintf(stderr, "[gfx] SSBU_DECODE_CHECK: %ld textures decoded in %d bands, %ld differed (last %dx%d); %.1f ms in bands vs %.1f ms whole\n", (long)n, bands, (long)d, w, h, ms_par, ms_ser);
+        }
+        free(ref);
+    }
+    return failed ? -1 : 0;
+}
 /* BC7 often cannot store alpha 0. A clear texel is then (1,1,1,1). The alpha test keeps any
  * alpha above 0 and the black is drawn (Paper Mario's sticker wheel). A real clear texel, as on
  * the stickers sheet, is alpha 0 and is thrown away. */
@@ -3218,7 +3275,7 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
             u32 l = i % levels;
             u32 tw = (d.width >> l) ? d.width >> l : 1, th = (d.height >> l) ? d.height >> l : 1;
             rgba[i] = malloc((size_t)tw * th * 4);
-            if (!rgba[i] || tex_decode_rgba8(cpu_bc, mem[i], (int)tw, (int)th, rgba[i])) decoded = 0;
+            if (!rgba[i] || decode_rgba8_parallel(cpu_bc, mem[i], (int)tw, (int)th, rgba[i], d.bw, d.bh, d.bytes)) decoded = 0;
         }
         int punched = 0;
         if (decoded)
