@@ -92,8 +92,13 @@ int main(void) {
             src = Path(tmp) / 'gc_layout.c'
             exe = Path(tmp) / ('gc_layout.exe' if os.name == 'nt' else 'gc_layout')
             src.write_text(harness)
-            subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror', str(src), '-o', str(exe)], check=True, capture_output=True, text=True)
-            subprocess.run([str(exe)], check=True, capture_output=True, text=True)
+            build = subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror', str(src), '-o', str(exe)],
+                                   capture_output=True, text=True)
+            if build.returncode:
+                self.fail(f"the harness did not compile with {compiler}:\n{build.stdout}{build.stderr}")
+            run = subprocess.run([str(exe)], capture_output=True, text=True)
+            if run.returncode:
+                self.fail(f"the harness failed ({run.returncode}):\n{run.stdout}{run.stderr}")
 
 
 if __name__ == '__main__':
