@@ -2729,6 +2729,27 @@ static void start(void) {
     InitOnceComplete(&once, 0, NULL);
 }
 
+int net_peer_quality(NetPeerQ *out, int max) {
+    if (!configured || !joined) return 0;
+    u64 t = now_ms();
+    int n = 0;
+    AcquireSRWLockShared(&peers_lock);
+    for (int i = 0; i < npeers && n < max; i++) {
+        const Peer *q = &peers[i];
+        NetPeerQ *o = &out[n++];
+        snprintf(o->name, sizeof o->name, "%s", q->name);
+        int direct = usable(q, t);
+        o->relayed = !direct;
+        o->rtt_ms = direct ? (int)q->rtt : -1;
+        /* (good: a direct path under 60 ms; so-so: up to 120 ms, or through the lobby's relay; poor: slower, or
+         * nothing heard from them for over 2 s) */
+        int quiet = q->last_ack && t - q->last_ack > 2000 && direct;
+        o->quality = quiet ? 2 : !direct ? 1 : q->rtt <= 60 ? 0 : q->rtt <= 120 ? 1 : 2;
+    }
+    ReleaseSRWLockShared(&peers_lock);
+    return n;
+}
+
 void net_status(char *out, size_t n) {
     start();
     if (!configured) { if (n) out[0] = 0; return; }

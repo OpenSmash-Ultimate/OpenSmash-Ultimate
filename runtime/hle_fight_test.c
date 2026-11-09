@@ -77,6 +77,13 @@ static int entry_work_id(Cpu *c, u64 *id) {
 }
 
 /* The game's FighterManager says a fight is on: its ready-go flag (impl + 0xd2). Any thread. */
+static int ready_go(void);
+/* (gpu_overlay.c's ping badge: hidden while a fight is on) Read on the game's thread at each frame end and kept
+ * here: the overlay runs on the presenting thread, which must not take the kernel's lock (kernel_read64) - the
+ * game's thread holds it while it waits for the renderer, and the first try froze the game that way. */
+static volatile LONG fight_flag;
+int game_fight_on(void) { return (int)fight_flag; }
+static void fight_flag_hook(Cpu *c, const u64 args[8], void *unused) { (void)c; (void)args; (void)unused; InterlockedExchange(&fight_flag, ready_go()); }
 static int ready_go(void) {
     static u64 inst;
     u64 mgr, impl, word;
@@ -376,6 +383,7 @@ void test_fight_start(void) {
         frame_hook_add(FRAME_HOOK_LINE, FRAME_ORDER_FIGHT_TEST, frame_line_hook, NULL, NULL);
     }
     if (det) frame_hook_add(FRAME_HOOK_END, FRAME_ORDER_FIGHT_TEST, NULL, frame_end_hook, NULL);
+    frame_hook_add(FRAME_HOOK_END, FRAME_ORDER_FIGHT_TEST, NULL, fight_flag_hook, NULL);   /* (game_fight_on, always) */
     if (det && !(det_off & DET_OFF_STEPS)) input_seq_set_steps(seq_steps);
     if (fixed_seed_parse(getenv("SSBU_FIXED_SEED"), &n)) {
         fixed_on = 1;
