@@ -89,7 +89,7 @@ static void note_refresh(void) {
 static void set_full(int on) {
     if (on == full) return;
     if (!SDL_SetWindowFullscreen(window, on)) fprintf(stderr, "[display] cannot switch to %s: %s\n", on ? "full screen" : "the window", SDL_GetError());
-    else full = on;
+    else { full = on; display_note_mode(on ? display_window_mode() : DISPLAY_WINDOWED); }
 }
 
 static void show_pointer(void) {
@@ -301,6 +301,25 @@ _Noreturn void rt_window_loop(int every, void (*status)(void)) {
             case SDL_EVENT_MOUSE_MOTION:
                 mouse_moved_at = SDL_GetTicks();
                 show_pointer();
+                {   int w, h;
+                    SDL_GetWindowSize(window, &w, &h);
+                    menu_mouse_move((int)e.motion.x, (int)e.motion.y, w, h); }
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                if (menu_is_open() && (e.button.button == SDL_BUTTON_LEFT || e.button.button == SDL_BUTTON_RIGHT)) {
+                    int w, h;
+                    SDL_GetWindowSize(window, &w, &h);
+                    menu_mouse_move((int)e.button.x, (int)e.button.y, w, h);
+                    menu_key(e.button.button == SDL_BUTTON_LEFT ? MENU_MOUSE_LEFT : MENU_MOUSE_RIGHT);
+                }
+                break;
+            case SDL_EVENT_MOUSE_WHEEL:
+                if (menu_is_open()) {   /* (a trackpad sends fractions of a notch) */
+                    static float wheel;
+                    wheel += e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e.wheel.y : e.wheel.y;
+                    for (; wheel >= 1.0f; wheel -= 1.0f) menu_key(MENU_WHEEL_UP);
+                    for (; wheel <= -1.0f; wheel += 1.0f) menu_key(MENU_WHEEL_DOWN);
+                }
                 break;
             case SDL_EVENT_TEXT_INPUT:   /* (typed letters, for the settings menu) */
                 if (menu_is_open())

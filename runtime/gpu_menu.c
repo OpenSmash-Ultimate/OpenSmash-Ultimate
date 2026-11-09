@@ -79,6 +79,22 @@ void menu_char(unsigned ch)
         push((LONG)(0x10000 | ch));
 }
 
+/* The pointer's place in the picture (bars and scaling left out): x << 16 | y, each 0..65534 of the
+ * picture's width and height; -1 outside it. Only a real move counts: a window can repeat its last. */
+static volatile LONG mouse_at = -1, mouse_moved;
+
+void menu_mouse_move(int x, int y, int w, int h) {
+    if (!open_ || w <= 0 || h <= 0) return;
+    unsigned fx, fy, fw, fh;
+    display_fit((unsigned)w, (unsigned)h, &fx, &fy, &fw, &fh);
+    x -= (int)fx;
+    y -= (int)fy;
+    LONG at = -1;
+    if (x >= 0 && y >= 0 && x < (int)fw && y < (int)fh)
+        at = (LONG)((u32)((u64)(unsigned)x * 65534 / fw) << 16 | (u32)((u64)(unsigned)y * 65534 / fh));
+    if (at != mouse_at) { InterlockedExchange(&mouse_at, at); InterlockedExchange(&mouse_moved, 1); }
+}
+
 /* ---- what can be pressed ---------------------------------------------------------------- */
 enum
 { /* (from keys, pads or the test script) */
@@ -1794,6 +1810,77 @@ static void move_sel(int dir)
     }
 }
 
+/* ---- the pointer ------------------------------------------------------------------------------ */
+/* What can be pointed at, as the last draw placed it (menu_draw notes it, so the layout has one home).
+ * Same thread as the rest of the menu: menu_frame and menu_draw run at the present. */
+enum { HIT_PAGE = 1, HIT_ROW, HIT_GRID, HIT_YES, HIT_NO, HIT_RESTART, HIT_QUIT };
+typedef struct Hit
+{
+    float x0, y0, x1, y1, value_x, value_mid;
+    int kind, a, b;
+    char label[48];
+} Hit;
+enum { MENU_HITS = 96 };
+static Hit hits[MENU_HITS];
+static int nhits;
+static float draw_w, draw_h;
+
+static Hit *hit_add(float x, float y, float w, float h, int kind, int a, int b)
+{
+    Hit *t = &hits[nhits < MENU_HITS - 1 ? nhits++ : MENU_HITS - 1];
+    memset(t, 0, sizeof *t);
+    t->x0 = x;
+    t->y0 = y;
+    t->x1 = x + w;
+    t->y1 = y + h;
+    t->kind = kind;
+    t->a = a;
+    t->b = b;
+    return t;
+}
+
+static const Hit *hit_at(float *px)
+{
+    LONG at = mouse_at;
+    if (at == -1)
+        return NULL;
+    float x = (float)((u32)at >> 16) / 65534.0f * draw_w, y = (float)((u32)at & 0xFFFF) / 65534.0f * draw_h;
+    if (px)
+        *px = x;
+    for (int i = nhits - 1; i >= 0; i--)
+        if (x >= hits[i].x0 && x < hits[i].x1 && y >= hits[i].y0 && y < hits[i].y1)
+            return &hits[i];
+    return NULL;
+}
+
+/* The row a hit showed, if it is still there: a room's id is only its place in the list, and the list
+ * can refresh between the draw and the click, so its name must match too (not someone else's room). */
+static int hit_row(const Hit *t)
+{
+    for (int i = 0; i < nrows; i++)
+        if (rows[i].id == t->a && !strcmp(rows[i].label, t->label))
+            return selectable(&rows[i]) ? i : -1;
+    return -1;
+}
+
+static void mouse_hover(void)
+{
+    const Hit *t = hit_at(NULL);
+    if (!t)
+        return;
+    if (t->kind == HIT_GRID)
+    {
+        grid_r = t->a;
+        grid_c = t->b;
+    }
+    else if (t->kind == HIT_ROW)
+    {
+        int i = hit_row(t);
+        if (i >= 0)
+            sel[page] = i;
+    }
+}
+
 static void event(int ev, unsigned ch)
 {
     if (confirm)
@@ -1889,6 +1976,68 @@ static void event(int ev, unsigned ch)
         else if (ch == ' ' && row && selectable(row))
             action(row);
         break;
+    }
+}
+
+/* A button or a wheel notch: the same events as the keys, so everything they guard stays guarded. */
+static void mouse_press(int v)
+{
+    int capturing = capture_key >= 0 || capture_button >= 0;
+    if (v == MENU_WHEEL_UP || v == MENU_WHEEL_DOWN)
+    {
+        if (!confirm && !editing && !capturing)
+            move_sel(v == MENU_WHEEL_UP ? -1 : 1);
+        return;
+    }
+    if (v == MENU_MOUSE_RIGHT)
+    {
+        if (capturing)
+            event(EV_ESC, 0);
+        else if (!editing) /* (typing: its "delete" and "cancel" are on the grid) */
+            event(EV_B, 0);
+        return;
+    }
+    if (v != MENU_MOUSE_LEFT)
+        return;
+    if (capturing) /* (a control is being waited for: a click must not open the Restart/Quit question) */
+        return;
+    float x = 0;
+    const Hit *t = hit_at(&x);
+    if (!t)
+        return;
+    Hit h = *t;
+    nhits = 0; /* (what this click brings up isn't drawn yet: a second one in this frame must not land on it blind) */
+    switch (h.kind)
+    {
+    case HIT_PAGE:
+        page = h.a;
+        break;
+    case HIT_YES:
+        event(EV_A, 0);
+        break;
+    case HIT_NO:
+        event(EV_B, 0);
+        break;
+    case HIT_RESTART:
+        confirm = R_RESTART;
+        break;
+    case HIT_QUIT:
+        confirm = R_QUIT;
+        break;
+    case HIT_GRID:
+        grid_r = h.a;
+        grid_c = h.b;
+        event(EV_A, 0);
+        break;
+    case HIT_ROW:
+    {
+        int i = hit_row(&h);
+        if (i < 0)
+            break;
+        sel[page] = i;
+        event(rows[i].kind == K_CHOICE && x >= h.value_x && x < h.value_mid ? EV_LEFT : rows[i].kind == K_CHOICE ? EV_RIGHT : EV_A, 0);
+        break;
+    }
     }
 }
 
@@ -2021,6 +2170,8 @@ int menu_frame(int *overlay, int f3)
     }
     if (open_)
         build();
+    if (InterlockedExchange(&mouse_moved, 0) && open_)
+        mouse_hover();
     while (q_tail != q_head)
     {
         LONG v = q[q_tail & 63];
@@ -2031,6 +2182,14 @@ int menu_frame(int *overlay, int f3)
         {
             if (open_)
                 event(EV_CHAR, (unsigned)(v & 0xFF));
+            continue;
+        }
+        if (v >= MENU_MOUSE_LEFT)
+        {
+            if (open_)
+                mouse_press((int)v);
+            if (open_)
+                build();
             continue;
         }
         static const int EV_OF[] = {0, EV_ESC, EV_UP, EV_DOWN, EV_LEFT, EV_RIGHT, EV_ENTER, EV_BKSP, EV_NEXT, EV_PREV, EV_DEL};
@@ -2133,7 +2292,10 @@ int menu_frame(int *overlay, int f3)
             }
     }
     if (!open_)
+    {
         nav_held = nb;
+        nhits = 0;
+    }
     if (releasing && !open_ && !nb && !keys_held())
         releasing = 0;
     match_follow();
@@ -2201,6 +2363,7 @@ static int toast_now(char *t, size_t size)
 /* A question or an editor over the menu: the menu dimmed, the box lighter and solid. */
 static void modal_box(float w, float h, float x, float y, float bw, float bh, float s)
 {
+    nhits = 0; /* (what is behind it can't be pointed at) */
     ovl_rect(0, 0, w, h, OVL_RGBA(0, 0, 0, 120));
     ovl_rect(x, y, bw, bh, OVL_RGBA(30, 34, 48, 255));
     ovl_rect(x, y, bw, 3 * s, OVL_RGBA(225, 60, 60, 255));
@@ -2217,6 +2380,13 @@ static void draw_toast(float w, float h, float s)
     ovl_text(x + 24 * s, y + 14 * s, size, OVL_RGBA(240, 240, 240, 255), t);
 }
 
+static void mouse_button(float x, float y, float bw, float bh, float size, float s, int kind, unsigned color, const char *text)
+{
+    const Hit *t = hit_add(x, y, bw, bh, kind, 0, 0);
+    ovl_rect(x, y, bw, bh, hit_at(NULL) == t ? OVL_RGBA(55, 62, 90, 255) : OVL_RGBA(40, 45, 62, 255));
+    ovl_text(x + 12 * s, y + (bh - size) / 2, size, color, text);
+}
+
 void menu_draw(float w, float h)
 {
     float s = h / 1080.0f;
@@ -2225,6 +2395,9 @@ void menu_draw(float w, float h)
         draw_toast(w, h, s);
         return;
     }
+    nhits = 0;
+    draw_w = w;
+    draw_h = h;
     const unsigned WHITE = OVL_RGBA(240, 240, 245, 255), GREY = OVL_RGBA(150, 155, 170, 255), DIM = OVL_RGBA(110, 115, 130, 255),
                    GREEN = OVL_RGBA(120, 220, 140, 255), AMBER = OVL_RGBA(245, 190, 90, 255), ACCENT = OVL_RGBA(225, 60, 60, 255);
     ovl_rect(0, 0, w, h, OVL_RGBA(0, 0, 0, 150));
@@ -2253,6 +2426,7 @@ void menu_draw(float w, float h)
     for (int i = 0; i < PAGES; i++)
     {
         int on = page == i || (SUB_PAGE(page) && i == P_PADS);
+        hit_add(px + 20 * s, ty - 6 * s, 250 * s, 60 * s, HIT_PAGE, i, 0);
         if (on)
             ovl_rect(px + 20 * s, ty - 6 * s, 250 * s, 50 * s, OVL_RGBA(55, 62, 90, 255));
         char t[32];
@@ -2263,6 +2437,9 @@ void menu_draw(float w, float h)
     /* the rows */
     float rx = px + 300 * s, ry = py + 110 * s, rw = px + pw - 28 * s - rx, rh = 50 * s, size = 29 * s;
     float help_y = py + ph - 150 * s;
+    /* always there for the pointer, under the pages (keys and pads: the Game page's rows) */
+    mouse_button(px + 20 * s, help_y - 130 * s, 250 * s, 50 * s, 28 * s, s, HIT_RESTART, WHITE, "Restart game");
+    mouse_button(px + 20 * s, help_y - 70 * s, 250 * s, 50 * s, 28 * s, s, HIT_QUIT, WHITE, "Quit game");
     int fit = (int)((help_y - 16 * s - ry) / rh);
     if (fit < 1)
         fit = 1;
@@ -2297,6 +2474,10 @@ void menu_draw(float w, float h)
             v[room > 3 ? room - 3 : 0] = 0;
             strcat(v, "...");
         }
+        Hit *t = hit_add(rx, y - 6 * s, rw, rh, HIT_ROW, r->id, 0);
+        snprintf(t->label, sizeof t->label, "%s", r->label);
+        t->value_x = vx;
+        t->value_mid = vx + text_w(v, size) / 2; /* (a choice: its left half steps back, the rest forward) */
         ovl_text(vx, y, size, r->warn ? ACCENT : r->kind == K_INFO ? WHITE
                                              : on                  ? WHITE
                                                                    : OVL_RGBA(200, 205, 220, 255),
@@ -2329,7 +2510,8 @@ void menu_draw(float w, float h)
         modal_box(w, h, bx, by, bw, bh, s);
         ovl_text(bx + 36 * s, by + 34 * s, 34 * s, WHITE, confirm == R_RESTART ? "Start the game again?" : "Quit the game?");
         ovl_text(bx + 36 * s, by + 84 * s, 26 * s, GREY, "A match in progress is lost.");
-        ovl_text(bx + 36 * s, by + 140 * s, 26 * s, AMBER, "A / Enter: yes      B / Esc: no");
+        mouse_button(bx + 24 * s, by + 128 * s, text_w("A / Enter: yes", 26 * s) + 24 * s, 50 * s, 26 * s, s, HIT_YES, AMBER, "A / Enter: yes");
+        mouse_button(bx + 300 * s, by + 128 * s, text_w("B / Esc: no", 26 * s) + 24 * s, 50 * s, 26 * s, s, HIT_NO, AMBER, "B / Esc: no");
     }
     else if (editing)
     {
@@ -2359,6 +2541,7 @@ void menu_draw(float w, float h)
                     cw = 2.75f * cs - 6 * s;
                 }
                 int on = r == grid_r && c == grid_c;
+                hit_add(cx, gy + r * cs, cw + 6 * s, cs, HIT_GRID, r, c);
                 ovl_rect(cx, gy + r * cs, cw, cs - 6 * s, on ? OVL_RGBA(225, 60, 60, 255) : OVL_RGBA(40, 45, 62, 255));
                 ovl_text(cx + (cw - text_w(cell, 30 * s)) / 2, gy + r * cs + 10 * s, 30 * s, WHITE, cell);
             }
