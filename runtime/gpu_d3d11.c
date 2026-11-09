@@ -3885,7 +3885,12 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
     /* The fixed-function alpha test (ui2d's alpha compare: the main menu's stencil masks are cut
      * from a texture's alpha this way) needs the pixel shader's variant that discards; while that
      * compiles, the plain one draws as before. */
-    D3D11_COMPARISON_FUNC alpha_func = regs[M_ALPHA_TEST] & 1 && !(gfx_debug() & 64) ? compare_func(regs[M_ALPHA_FUNC]) : D3D11_COMPARISON_ALWAYS;
+    /* Alpha to coverage (a material's "alpha sample to coverage": Waluigi's down-special
+     * icons) on targets of one sample keeps a pixel whose alpha is at least one half; without
+     * it the clear texels were drawn black. Done as that alpha test when the game's own test is off. */
+    int a2c = (regs[M_ANTI_ALIAS_ALPHA_CONTROL] & 1) && !(regs[M_ALPHA_TEST] & 1) && !(gfx_debug() & 64);
+    D3D11_COMPARISON_FUNC alpha_func = regs[M_ALPHA_TEST] & 1 && !(gfx_debug() & 64) ? compare_func(regs[M_ALPHA_FUNC])
+                                     : a2c ? D3D11_COMPARISON_GREATER_EQUAL : D3D11_COMPARISON_ALWAYS;
     Shader *pa_e = alpha_func != D3D11_COMPARISON_ALWAYS && ps_e && ps_e->state != 2 && (ps_e->info.color_mask & 1)
                  ? find_shader_ex(ps_g, SHADER_PIXEL, vs_e->info.outputs, cb[STAGE_FRAGMENT], NULL, 0, 1) : NULL;
     Shader *vs = vs_e && vs_e->state == 1 ? vs_e : NULL;
@@ -3956,7 +3961,7 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
     /* the fragment position in the game's pixels: SV_Position times these (gpu_shader.c ps_input) */
     params.base[2] = f32_bits(1.0f / rt_sx);
     params.base[3] = f32_bits(1.0f / rt_sy);
-    if (pa_e && ps == pa_e) { params.frag[2] = f32_of(alpha_test_mask(alpha_func)); params.frag[3] = f32_of(regs[M_ALPHA_REF]); }
+    if (pa_e && ps == pa_e) { params.frag[2] = f32_of(alpha_test_mask(alpha_func)); params.frag[3] = a2c ? 0.5f : f32_of(regs[M_ALPHA_REF]); }
     /* Facing: the hardware takes the signed area in window coordinates (x, y_w = scale * ndc + offset)
      * as GL does, counter-clockwise positive, and WINDOW_ORIGIN.FLIP_Y (bit 4) swaps the front face.
      * D3D judges the winding as seen on the target, which after the fix-up above is the window
@@ -4436,6 +4441,20 @@ static void save_bmp(ID3D11Texture2D *back, const char *path) {
     ID3D11Texture2D_Release(staging);
 }
 
+/* SSBU_CAPTURE_FROM / SSBU_CAPTURE_TO=<fight frame>: captures only inside that span of a fight
+ * (with SSBU_DEBUG_MATCH or SSBU_DEBUG_END set, which count the fight frames). */
+extern volatile long long test_fight_frame;
+static int capture_fight_window(void) {
+    static int read; static long long from, to;
+    if (!read++) {
+        const char *f = getenv("SSBU_CAPTURE_FROM"), *t = getenv("SSBU_CAPTURE_TO");
+        from = f ? atoll(f) : 0; to = t ? atoll(t) : 0;
+    }
+    if (from && test_fight_frame < from) return 0;
+    if (to && test_fight_frame > to) return 0;
+    return 1;
+}
+
 static void capture(ID3D11Texture2D *back, ID3D11Texture2D *window) {
     static const char *dir;
     static int checked, count;
@@ -4448,10 +4467,12 @@ static void capture(ID3D11Texture2D *back, ID3D11Texture2D *window) {
         if (getenv("SSBU_CAPTURE_EVERY")) every = (u64)(atof(getenv("SSBU_CAPTURE_EVERY")) * 1e9);
     }
     if (!dir || count >= most || rt_now_ns() - last < every) return;
+    if (!capture_fight_window()) return;
     last = rt_now_ns();
     char path[1024];
     snprintf(path, sizeof path, "%s/frame_%03d.bmp", dir, count);
     save_bmp(back, path);
+    if (test_fight_frame) fprintf(stderr, "[capture] frame_%03d.bmp at fight frame %lld\n", count, test_fight_frame);
     if (window && getenv("SSBU_CAPTURE_WINDOW")) {
         snprintf(path, sizeof path, "%s/window_%03d.bmp", dir, count);
         save_bmp(window, path);

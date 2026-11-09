@@ -33,7 +33,8 @@ for line in sys.stdin:
     if p[1].startswith("s1"):
         time.sleep(1.0)
     if p[1].startswith("s0"):
-        time.sleep(0.05)
+        time.sleep(0.2)   # (long enough that the last worker is up before the first two finish: a busy
+                          # Windows runner took over 1.5 s to start it, and it got no key)
     outcome = "failed" if p[1].startswith("bad") else "compiled"
     sys.stderr.write("ps_x: shader compiler failed: no\n" if outcome == "failed" else "noise\n")
     sys.stdout.write("done " + " ".join(p) + " %s %s\n" % (outcome, me))

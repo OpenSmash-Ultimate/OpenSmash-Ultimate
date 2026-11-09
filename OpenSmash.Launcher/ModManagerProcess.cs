@@ -13,13 +13,15 @@ namespace OpenSmash.Launcher
             string configured = Path.Combine(buildDir, "python_path.txt");
             if (File.Exists(configured))
             {
-                string candidate = File.ReadAllText(configured).Trim();
+                string candidate = File.ReadAllText(configured).Trim().Trim('"');
                 if (File.Exists(candidate)) return candidate;
             }
 
             // A source build may install its packages in .venv instead of system Python.
             string venv = Path.Combine(repo, ".venv", "Scripts", "python.exe");
-            return File.Exists(venv) ? venv : "python";
+            if (File.Exists(venv)) return venv;
+            // (#173) a Python installed without "Add python.exe to PATH": "python" is then Windows' Store shortcut
+            return LauncherForm.FindInstalledPython() ?? "python";
         }
 
         public static void ValidateResult(int code, string output)
