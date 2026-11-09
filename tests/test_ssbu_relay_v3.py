@@ -639,6 +639,9 @@ class Rules(V3Test):
             doc = json.loads(r.read())
         self.assertEqual(doc["players"], 1)
         self.assertIn(f"SN {R.PROTOCOL} and {R.V3}", doc["version"])
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/badge.json", timeout=3) as r:
+            badge = json.loads(r.read())
+        self.assertEqual((badge["schemaVersion"], badge["label"], badge["message"], badge["color"]), (1, "players online", "1", "brightgreen"))
 
 
 class OnlineLobby(unittest.TestCase):
