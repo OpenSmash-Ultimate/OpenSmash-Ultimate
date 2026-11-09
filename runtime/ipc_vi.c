@@ -33,7 +33,7 @@ enum {   /* IGraphicBufferProducer transactions */
     ALLOCATE_BUFFERS = 13, SET_PREALLOCATED_BUFFER = 14, GET_BUFFER_HISTORY = 17
 };
 
-typedef struct Slot { int state, has_buffer; u8 buffer[0x400]; u32 buffer_size; u64 queued_at, gpu_mark; } Slot;
+typedef struct Slot { int state, has_buffer; u8 buffer[0x400]; u32 buffer_size; u64 queued_at, gpu_mark; int keep; } Slot;
 static struct {
     Slot slots[SLOTS];
     u32 buffer_event, vsync_event;
@@ -69,6 +69,12 @@ volatile u64 rb_vsync_gpu_wait_qpc, rb_vsync_gpu_waits;   /* (the profile: this 
  * twopc15, 276 holds and PC 1 still 4-6 frames ahead the whole match.) */
 volatile LONG rb_vsync_skip;
 volatile LONG64 rb_vsync_skipped;
+/* (rollback: a catch-up's last frame, the game's frame now, is kept to be shown at the next refresh as on
+ * its first pass; until then the vsync thread is out of fast mode. hle_rb_core.c says when a catch-up is a
+ * rollback's - run-ahead's hidden frames are fast too - and which slot each of its frames had.) */
+int rb_vi_catchup(void);
+int rb_dequeue_pick(u64 freemask, int dflt);
+static volatile int keep_pending;
 static u8 shown[sizeof queue.slots[0].buffer];
 static u32 shown_size;
 static u64 shown_mark;
@@ -83,6 +89,7 @@ static int take_oldest(void) {
     if (oldest >= 0) {
         for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == ACQUIRED) queue.slots[i].state = FREE;
         queue.slots[oldest].state = ACQUIRED;
+        if (queue.slots[oldest].keep) { queue.slots[oldest].keep = 0; keep_pending = 0; }
         queue.frames++;
         shown_size = queue.slots[oldest].buffer_size;
         memcpy(shown, queue.slots[oldest].buffer, shown_size);
@@ -219,7 +226,7 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
     for (;;) {
         /* (rollback build, M4: while rb_fast, the frames a load runs again are neither paced nor
          * shown: each is taken off the queue as soon as it is drawn, and the next refresh is now) */
-        int fast = rb_fast > 0;
+        int fast = rb_fast > 0 && !keep_pending;
         if (!fast) display_wait_tick();   /* the next refresh (display.ini's pacing) */
         if (!fast && rb_vsync_skip > 0) { InterlockedDecrement(&rb_vsync_skip); InterlockedIncrement64(&rb_vsync_skipped); continue; }
         queue_lock();
@@ -290,7 +297,14 @@ void *vi_rb_save(void) {
 void vi_rb_load(const void *p) {
     const ViSlot *s = p;
     queue_lock();
-    for (int i = 0; i < SLOTS; i++) { queue.slots[i].state = s[i].state; queue.slots[i].queued_at = s[i].queued_at; queue.slots[i].gpu_mark = s[i].gpu_mark; }
+    for (int i = 0; i < SLOTS; i++) { queue.slots[i].state = s[i].state; queue.slots[i].queued_at = s[i].queued_at; queue.slots[i].gpu_mark = s[i].gpu_mark; queue.slots[i].keep = 0; }
+    keep_pending = 0;
+    /* (a rollback's load: the frames the save had queued, and the one shown, were shown on the first pass. Let
+     * go now - a catch-up presents nothing - rather than left queued: their slots were free again for the
+     * catch-up's frames on the first pass, and the oldest of them was shown after the catch-up, a picture
+     * from before the rollback. No refreshes for them: the game counted those as late frames and ran extra.) */
+    if (rb_vi_catchup())
+        for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == QUEUED || queue.slots[i].state == ACQUIRED) queue.slots[i].state = FREE;
     queue_unlock();
     if (queue.started) { kernel_signal_event(queue.buffer_event); WakeAllConditionVariable(&queue.freed); }
 }
@@ -360,8 +374,10 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
     }
     case DEQUEUE_BUFFER: {   /* never blocks: "would block" sends the client back to the event */
         int slot = -1;
-        for (int i = 0; i < SLOTS && slot < 0; i++)
-            if (queue.slots[i].has_buffer && queue.slots[i].state == FREE) slot = i;
+        u64 freemask = 0;
+        for (int i = 0; i < SLOTS; i++)
+            if (queue.slots[i].has_buffer && queue.slots[i].state == FREE) { freemask |= 1ull << i; if (slot < 0) slot = i; }
+        if (slot >= 0) slot = rb_dequeue_pick(freemask, slot);   /* (a catch-up's frame: its first pass's slot) */
         if (slot < 0) {
             w32(out, 0xFFFFFFFF);
             w32(out, 0);
@@ -389,7 +405,12 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
              * waited 0.9 ms a re-run frame for that round trip. SSBU_RB_QFREE=0: through the thread.) */
             static int qfree = -1;
             if (qfree < 0) { const char *e = getenv("SSBU_RB_QFREE"); qfree = !(e && *e == '0'); }
-            if (qfree && rb_fast > 0) {
+            queue.slots[slot].keep = 0;
+            if (rb_fast == 1 && rb_vi_catchup()) {   /* (a catch-up's last frame: shown at the next refresh) */
+                queue.slots[slot].keep = 1;
+                keep_pending = 1;
+                WakeConditionVariable(&queue.queued);
+            } else if (qfree && rb_fast > 0) {
                 for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == ACQUIRED) queue.slots[i].state = FREE;
                 queue.slots[slot].state = FREE;
                 queue.frames++;
