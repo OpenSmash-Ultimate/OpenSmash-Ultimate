@@ -211,7 +211,7 @@ def nsz_ncas(path, keys):
     return out
 
 
-def scan(folder, keys, depth=1, convert_nsz=True):
+def scan(folder, keys, depth=2, convert_nsz=True):   # (two levels: Game\Updates\x.nsp, an emulator's per-title folders)
     """{"contents": [records], "unread": ["name: why"]} for the folder's NCAs and packages. With
     convert_nsz False an .nsz is not made plain (a quick look: the installers' check), so its
     program's data.arc version and its control data's names are not read."""
