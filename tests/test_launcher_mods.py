@@ -12,6 +12,33 @@ import tempfile
 import unittest
 from xml.sax.saxutils import escape
 
+
+def installed_python():
+    """What ModManagerProcess.FindInstalledPython finds on this PC (#173), else "python": the newest
+    standard Python 3.10+ install, per user then for all users."""
+    for root in (os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Python"), os.environ.get("ProgramFiles", "")):
+        best, minor_best = None, -1
+        try:
+            names = os.listdir(root) if root and os.path.isdir(root) else []
+        except OSError:
+            names = []
+        for name in names:
+            if not name.lower().startswith("python3"):
+                continue
+            digits = ""
+            for ch in name[7:]:
+                if not ch.isdigit():
+                    break
+                digits += ch
+            if not digits or int(digits) < 10:
+                continue
+            exe = os.path.join(root, name, "python.exe")
+            if os.path.isfile(exe) and int(digits) > minor_best:
+                best, minor_best = exe, int(digits)
+        if best:
+            return best
+    return "python"
+
 ROOT = Path(__file__).resolve().parent.parent
 DOTNET = shutil.which("dotnet")
 
@@ -77,7 +104,7 @@ else
         (self.build / "python_path.txt").write_text(value, encoding="utf-8")
 
     def test_system_fallback(self):
-        self.assertEqual(self.selected(), "python")
+        self.assertEqual(self.selected(), installed_python())
 
     def test_project_venv(self):
         venv = self.touch(".venv/Scripts/python.exe")
@@ -103,7 +130,7 @@ else
 
     def test_empty_configuration_falls_back_to_path(self):
         self.configure("\n")
-        self.assertEqual(self.selected(), "python")
+        self.assertEqual(self.selected(), installed_python())
 
     def test_success(self):
         result = self.invoke("validate", 0, output='LOG percent 100\r\nRESULT {"ok": true}\r\n')

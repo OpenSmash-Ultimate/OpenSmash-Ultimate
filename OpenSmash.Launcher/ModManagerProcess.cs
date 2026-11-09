@@ -21,7 +21,35 @@ namespace OpenSmash.Launcher
             string venv = Path.Combine(repo, ".venv", "Scripts", "python.exe");
             if (File.Exists(venv)) return venv;
             // (#173) a Python installed without "Add python.exe to PATH": "python" is then Windows' Store shortcut
-            return LauncherForm.FindInstalledPython() ?? "python";
+            return FindInstalledPython() ?? "python";
+        }
+
+        // (#173) The newest python.exe of a standard Python 3.10+ install (per user, then for all users), or null.
+        public static string FindInstalledPython()
+        {
+            var roots = new[] {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Python"),
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            };
+            foreach (string root in roots)
+            {
+                try
+                {
+                    if (!Directory.Exists(root)) continue;
+                    string best = null; int bestMinor = -1;
+                    foreach (string dir in Directory.GetDirectories(root, "Python3*"))
+                    {
+                        string name = Path.GetFileName(dir);   // Python313, Python314-32 ...
+                        string digits = new string(name.Substring(7).TakeWhile(char.IsDigit).ToArray());
+                        if (!int.TryParse(digits, out int minor) || minor < 10) continue;
+                        string exe = Path.Combine(dir, "python.exe");
+                        if (File.Exists(exe) && minor > bestMinor) { best = exe; bestMinor = minor; }
+                    }
+                    if (best != null) return best;
+                }
+                catch { }
+            }
+            return null;
         }
 
         public static void ValidateResult(int code, string output)
