@@ -215,7 +215,7 @@ static void net_load(void)
     char direct[16] = "";
     net.direct = !(settings_line_read(config_path(CONFIG_ONLINE_DIRECT), direct, sizeof direct) && !_strnicmp(direct, "off", 3));
     char rollback[16] = "";   /* (net_relay.c's net_rollback_default reads it the same way) */
-    net.rollback = !(settings_line_read(config_path(CONFIG_ONLINE_ROLLBACK), rollback, sizeof rollback) && !_strnicmp(rollback, "off", 3));
+    net.rollback = settings_line_read(config_path(CONFIG_ONLINE_ROLLBACK), rollback, sizeof rollback) && !_strnicmp(rollback, "on", 2);   /* (off by default: net_relay.c) */
     char protocol[16] = "";   /* (net_relay.c reads it the same way) */
     int v = settings_line_read(config_path(CONFIG_ONLINE_PROTOCOL), protocol, sizeof protocol) ? atoi(protocol) : 0;
     net.protocol = v == NET_PROTOCOL || v == NET_PROTOCOL_V3 ? v : NET_PROTOCOL_DEFAULT;
