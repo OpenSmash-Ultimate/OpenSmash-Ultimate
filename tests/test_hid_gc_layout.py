@@ -18,6 +18,7 @@ class GcStateLayoutTests(unittest.TestCase):
         begin = source.index('static void npad_state(')
         end = source.index('\nHLE(', begin)
         harness = r'''
+#define _CRT_SECURE_NO_WARNINGS   /* (Windows: getenv is deprecated under -Werror, and npad_state reads it) */
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
