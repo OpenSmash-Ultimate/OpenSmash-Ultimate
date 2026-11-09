@@ -69,7 +69,11 @@ class Wiring(unittest.TestCase):
         core = src('hle_rb_core.c')
         self.assertIn("return net_mode || ring_from >= 0 || ver_at >= 0 || bench_from >= 0 || auto_at >= 0;", core,
                       'never with the net mode or the savestate tests')
-        self.assertIn('if (S.in_fight && runahead_point(c, frame)) return;', core, 'only in a fight')
+        self.assertIn('if (S.in_fight && (!S.idle || ra_engaged) && runahead_point(c, frame)) return;', core,
+                      'only in a fight, and not in one that started with run-ahead off (it starts at the next fight)')
+        self.assertIn('if (!S.idle && !ra_engaged && rb_idle()) {', core, 'turned off mid-fight: no savestate work from then on')
+        self.assertIn('if (!nbusy || waited >= quiet_limit_ms || rb_fast > 0 || ra_engaged || S.idle) break;', core,
+                      'no wait for the other threads when nothing needs the savestates')
         self.assertIn('ra_fight_over();', core)
 
     def test_frames(self):
