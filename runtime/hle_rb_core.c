@@ -164,7 +164,7 @@ __attribute__((constructor)) static void rb_init(void) {
     if (getenv("SSBU_RB") && *getenv("SSBU_RB") && *getenv("SSBU_RB") != '0')
         fprintf(stderr, "[rb] rollback netplay on (SSBU_RB; savestates: F7 save, F8 load)\n");
     else if (rb_by_default)
-        fprintf(stderr, "[rb] rollback netplay on (started online, the default; SSBU_RB=0 or Online > Rollback netcode off: the game's own netcode)\n");
+        fprintf(stderr, "[rb] rollback netplay on (started online, Online > Rollback netcode on; off or SSBU_RB=0: the game's own netcode)\n");
     else fprintf(stderr, "[rb] savestates on for run-ahead (SSBU_RUNAHEAD or display.ini's runahead)\n");
 }
 
