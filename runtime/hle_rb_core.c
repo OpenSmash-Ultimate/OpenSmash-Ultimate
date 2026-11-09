@@ -219,6 +219,7 @@ static struct {
     struct { u64 id; long long n; } busy[16]; int nb;
     double last_t, gap_lo, gap_hi, gap_sum; long long ngap;
     long long win;
+    int idle;                           /* this fight: no savestate work (run-ahead off, no rollback or test mode) */
 } S;
 
 static int cmp_d(const void *a, const void *b) { double x = *(const double *)a, y = *(const double *)b; return (x > y) - (x < y); }
@@ -268,6 +269,7 @@ static void net_left_send(void);
 static void net_gone_reset(void);
 static int ra_engaged;              /* (run-ahead, below: on in this fight) */
 static void ra_fight_over(void);
+static int rb_idle(void);   /* (below: nothing in this fight needs the savestates) */
 static void online_restore(void);   /* (SSBU_RB_NET=online, below) */
 static void online_fight_start(void);
 static void online_forget(const char *why);
@@ -303,7 +305,11 @@ static void safe_point(Cpu *c, uintptr_t sp) {
         tape_clear();
         S.in_fight = 1; S.fights++; S.frames = 0; S.thread = GetCurrentThreadId(); S.thread_changed = 0;
         S.sp_ref = sp; S.last_t = 0;
-        { void rb_state_map_fight(int on); rb_state_map_fight(1); }   /* (hle_rb_state.c: the fight's first save turns the state map on) */
+        /* (run-ahead off in the settings menu and no rollback: this fight needs no savestates, so no state map, no wait
+         * for the other threads at each frame - the cost a player saw after turning run-ahead off, until a restart) */
+        S.idle = rb_idle();
+        if (!S.idle) { void rb_state_map_fight(int on); rb_state_map_fight(1); }   /* (hle_rb_state.c: the fight's first save turns the state map on) */
+        else fprintf(stderr, "[rb] this fight needs no savestates (run-ahead off, no rollback): no per-frame work\n");
         summary("fight start");   /* (clears the window; its numbers are all zero) */
         if (net_mode == 2) net_gone_reset();
         online_fight_start();
@@ -313,6 +319,12 @@ static void safe_point(Cpu *c, uintptr_t sp) {
         if (g < S.gap_lo) S.gap_lo = g;
         if (g > S.gap_hi) S.gap_hi = g;
         S.gap_sum += g; S.ngap++;
+    }
+    /* (run-ahead turned off mid-fight: its savestate work stops from the next frame, once its own cycle has ended) */
+    if (!S.idle && !ra_engaged && rb_idle()) {
+        void rb_state_map_fight(int on); rb_state_map_fight(0);
+        S.idle = 1;
+        fprintf(stderr, "[rb] run-ahead off: no savestate work for the rest of this fight\n");
     }
     S.frames++;
     if (GetCurrentThreadId() != S.thread) S.thread_changed = 1;
@@ -325,7 +337,7 @@ static void safe_point(Cpu *c, uintptr_t sp) {
     for (;;) {
         kernel_rb_census(c->thread, &alive, &waiting, &sleeping, busy, 16, &nbusy);
         waited = now_ms() - t0;
-        if (!nbusy || waited >= quiet_limit_ms || rb_fast > 0 || ra_engaged) break;   /* (no waiting in the frames of a catch-up or of run-ahead: M1's measure only) */
+        if (!nbusy || waited >= quiet_limit_ms || rb_fast > 0 || ra_engaged || S.idle) break;   /* (no waiting in the frames of a catch-up or of run-ahead: M1's measure only) */
         SwitchToThread();
     }
     fp_census_last = waited;
@@ -2686,7 +2698,7 @@ static void savestates(Cpu *c, u64 frame) {
         if (!S.in_fight && ra_pre_point(c, frame)) return; }
     if (net_mode == 2 && net_armed && !S.in_fight && !net_countdown && net_got) net_results_frame(c);   /* (the results screen; not after the controls screen's test fight: no match was set up) */
     {   int runahead_point(Cpu *c, u64 frame);
-        if (S.in_fight && runahead_point(c, frame)) return; }
+        if (S.in_fight && (!S.idle || ra_engaged) && runahead_point(c, frame)) return; }   /* (turned on mid-fight: from the next fight) */
     if (ring_from >= 0 && S.in_fight && S.frames >= ring_from) { ring_test(c, frame); return; }
     /* SSBU_RB_BENCH=<frame>,<count> (M3): a save at every fight frame from <frame>, <count> of them,
      * as rollback's per-frame capture would do; before a replay check's save, that save is a
@@ -3450,6 +3462,14 @@ static void ra_fight_over(void) {
 
 /* (savestates, at a fight's safe point) 1: run-ahead (or its trace) has this safe point. */
 static int ra_blocked(void) { return net_mode || ring_from >= 0 || ver_at >= 0 || bench_from >= 0 || auto_at >= 0; }
+/* Nothing in this fight needs the savestates: run-ahead off (the settings menu's, read each time), no net mode, no test
+ * mode, and SSBU_RB not asked for by hand (F7/F8 saves, the research switches). Unknown net mode (-1): not idle.
+ * Run-ahead switched off as too slow (ra_slow) counts as off. */
+static int rb_idle(void) {
+    static int by_hand = -1;
+    if (by_hand < 0) { const char *e = getenv("SSBU_RB"); by_hand = e && *e && *e != '0'; }
+    return net_mode == 0 && !by_hand && !ra_blocked() && (ra_frames() == 0 || ra_slow);   /* (ra_slow: off as too slow, this fight) */
+}
 
 /* The fight's first save copied all of memory (2 GB, about a second) at GO!, as the net mode's did (its "GO! freeze",
  * net_pre_fight): here too that copy is taken at the match set-up, in the loading screen, and kept current every
