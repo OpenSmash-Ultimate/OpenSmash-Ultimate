@@ -16,7 +16,10 @@ typedef struct SsbuRegFighter {
     char donor[32];                // the existing fighter that supplies what the folder does not bring
     char dll[64];                  // file name of the script DLL in the fighter's folder ("" = none)
     char folder[260];              // the fighter's folder
-    int kind;                      // the fighter kind number given to it (0x5E, 0x5F, ...)
+    int kind;                      // the fighter kind number it has NOW (0x5E..0x6D), -1 = none: the engine has 16 spare kind
+                                   // rows, which the kind component (n12_kind) shares per match (a match has at most 8
+                                   // fighters): it rewrites this field each time it binds a kind to a fighter, so read it
+                                   // when it is needed, not once at start
     int own_name;                  // 1: the engine's name row is the fighter's own name (own module, own file paths)
 } SsbuRegFighter;
 

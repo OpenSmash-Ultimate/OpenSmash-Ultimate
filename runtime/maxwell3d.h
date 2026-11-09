@@ -55,6 +55,7 @@
 #define M_GLOBAL_BASE_INSTANCE     0x50E
 #define M_POINT_SIZE               0x546
 #define M_ZT_SELECT                0x54E
+#define M_ANTI_ALIAS_ALPHA_CONTROL 0x54F                  /* bit 0 alpha to coverage, bit 4 alpha to one */
 #define M_TEX_SAMPLER_POOL         0x557                  /* + 0 address hi, 1 lo, 2 maximum index */
 #define M_TEX_HEADER_POOL          0x55D                  /* + 0 address hi, 1 lo, 2 maximum index */
 #define M_BACK_STENCIL_REF         0x3D5
