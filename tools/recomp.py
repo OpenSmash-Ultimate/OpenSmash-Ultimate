@@ -649,6 +649,9 @@ CODE_PATCHES = {
         (0x35BC508, 0x54003D62, [0xD503201F], "nop: b.hs (Inkling)"),
         (0x35BCF90, 0x7100231F, [0x12000B18, 0x7100231F], "and w24, w24, #7 before cmp w24, #8 (Inkling ink)"),
         (0xB0B614, 0xF9400008, [0x1400000E], "b +0x38 (Inkling c10+)"),
+        # ARCropolis writes that branch as 8 bytes, a zero word after it (the plugin's patch list has
+        # it: a udf). The branch skips it with the patches on; off, the game's own word must run there
+        (0xB0B618, 0xF9402908, [0xF9402908], "the game's own word after b +0x38 (Inkling c10+)"),
         # Inkling's ink color list (8 colors), read with the color in three places: the index wraps
         # instead of aborting past the end (not in ARCropolis' list; with Inkling c08 the match
         # stopped loading, and refilling ink stopped the game)
@@ -684,14 +687,15 @@ def local_patches(name):
 
 def plugin_patches(name):
     """[(offset, old word, new word)] the Skyline plugins write into module `name`'s code
-    (dump/skyline/patches.txt, which the runtime writes: sky_memcpy), and this PC's own (local_patches)."""
+    (dump/skyline/patches.txt, which the runtime writes: sky_memcpy; a fifth field names the plugin), and this PC's
+    own (local_patches)."""
     path = os.path.join(TREE, "dump", "skyline", "patches.txt")
     out = []
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
             for line in f:
                 p = line.split()
-                if len(p) == 4 and p[0] == name:
+                if len(p) in (4, 5) and p[0] == name:
                     out.append((int(p[1], 16), int(p[2], 16), int(p[3], 16)))
     return out + local_patches(name)
 

@@ -19,6 +19,9 @@
  *   rows           a frame, then "rows OPEN PAGE SEL N" and N lines "row ID KIND|LABEL|VALUE|NOTE|HELP"
  *                  (a HELP of several lines on one, " / " between them)
  *   draw           the menu drawn at 1920 x 1080: "draw N", then N lines, the text drawn
+ *   mouse X Y [W H] the pointer moved to X, Y in a window of W x H (1920 x 1080), after a draw, then a frame: "ok"
+ *   click L|R      a button pressed, after a draw, then a frame: "ok"
+ *   wheel U|D      a wheel notch, then a frame: "ok"
  *   toast          the last message since the last "toast" ("" for none): "toast TEXT"
  *   net SECS       wait until joined: "net WANTED SPOKEN LOBBY" (net_protocol_wanted, _spoken, net_lobby)
  *   quit           ends (net_relay.c's exit handler sends LEAVE)
@@ -62,6 +65,12 @@ int rt_upnp_add(u16 port_, const char *lan, const char *what, char *pub, size_t 
 void rt_upnp_remove(void) {}
 SHORT GetAsyncKeyState(int vk) { (void)vk; return 0; }   /* (no keys held: the window's) */
 #endif
+void display_fit(unsigned w, unsigned h, unsigned *x, unsigned *y, unsigned *fw, unsigned *fh) {   /* (gpu_display.c's: the picture's 16:9 place) */
+    if ((unsigned long long)w * 9 > (unsigned long long)h * 16) { *fh = h; *fw = h * 16 / 9; }
+    else { *fw = w; *fh = w * 9 / 16; }
+    *x = (w - *fw) / 2;
+    *y = (h - *fh) / 2;
+}
 int gfx_window_focused(void) { return 1; }
 void gfx_closing(void) {}
 int gfx_present_again(void) { return 0; }   /* (no renderer: the game's text box keeps its dialog) */
@@ -92,6 +101,10 @@ int mods_running_count(void) { return 0; }
 int rt_code_patches_on(void) { return 0; }
 int pad_info(u32 slot, PadInfo *out) { (void)slot; memset(out, 0, sizeof *out); return 0; }   /* (no controllers) */
 int pad_get(u32 slot, PadState *out) { (void)slot; memset(out, 0, sizeof *out); return 0; }
+void pad_reset_axes(u32 slot) { (void)slot; }
+int padusb_axes(int port, PadUsbAxes *out) { (void)port; memset(out, 0, sizeof *out); return 0; }
+void padusb_recalibrate(int port) { (void)port; }
+int padusb_rate(int port) { (void)port; return 0; }
 void pad_rumble(u32 slot, int side, float amplitude) { (void)slot; (void)side; (void)amplitude; }
 void pad_reload(void) {}
 const char *pad_ini_path(void) { return FILES[CONFIG_CONTROLLERS]; }
@@ -211,6 +224,25 @@ int main(int argc, char **argv) {
         else if (!strcmp(what, "rows")) cmd_rows();
         else if (!strcmp(what, "draw")) cmd_draw();
         else if (!strcmp(what, "toast")) cmd_toast();
+        else if (!strcmp(what, "mouse")) {
+            int x = 0, y = 0, w = 1920, h = 1080;
+            if (sscanf(line, "mouse %d %d %d %d", &x, &y, &w, &h) < 2) { say("error"); continue; }
+            frame();
+            menu_draw(1920, 1080);
+            menu_mouse_move(x, y, w, h);
+            frame();
+            say("ok");
+        }
+        else if (!strcmp(what, "click") || !strcmp(what, "wheel")) {
+            int key = !strcmp(line, "click L") ? MENU_MOUSE_LEFT : !strcmp(line, "click R") ? MENU_MOUSE_RIGHT
+                    : !strcmp(line, "wheel U") ? MENU_WHEEL_UP : !strcmp(line, "wheel D") ? MENU_WHEEL_DOWN : 0;
+            if (!key) { say("error"); continue; }
+            frame();
+            menu_draw(1920, 1080);
+            menu_key(key);
+            frame();
+            say("ok");
+        }
         else if (!strcmp(what, "net") && sscanf(line, "net %lf", &secs) == 1) {
             u64 end = GetTickCount64() + (u64)(secs * 1000);
             if (net_configured()) while (!net_local_ip() && GetTickCount64() < end) Sleep(20);

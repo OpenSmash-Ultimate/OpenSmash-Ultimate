@@ -41,6 +41,7 @@ static int64_t sampling;
 static u32 pad_style(u32 id) { (void)id; return active_style; }
 static int seq_player(u32 id) { (void)id; return 0; }
 static void seq_player_poll(u64*b,i32*x,i32*y) { (void)b;(void)x;(void)y; }
+static void seq2_player_poll(u64*b,i32*x,i32*y) { (void)b;(void)x;(void)y; }
 static int pad_get(u32 id,PadState*p) { (void)id; *p=pad;return 1; }
 static int pad_background(void) { return 1; }
 static int gfx_window_focused(void) { return 1; }

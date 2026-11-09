@@ -19,7 +19,9 @@ PS = S.Key('ps', 'fedcba9876543210', '00000007', 712)
 
 # A worker as shaderaot --serve answers: "done <key> <outcome> <ms>" per key read, with the
 # worker's number (FAKE_ID) as the ms, so that a test sees which worker took which key. A hash
-# starting with "s1" takes a second; "dead" ends the worker without an answer.
+# starting with "s1" takes a second, "s0" a twentieth of one (an instant answer lets the first
+# worker's thread drain the whole queue before a later worker's process is up); "dead" ends the
+# worker without an answer.
 FAKE_WORKER = r'''
 import os, sys, time
 me = os.environ.get("FAKE_ID", "0")
@@ -30,6 +32,9 @@ for line in sys.stdin:
         sys.exit(3)
     if p[1].startswith("s1"):
         time.sleep(1.0)
+    if p[1].startswith("s0"):
+        time.sleep(0.2)   # (long enough that the last worker is up before the first two finish: a busy
+                          # Windows runner took over 1.5 s to start it, and it got no key)
     outcome = "failed" if p[1].startswith("bad") else "compiled"
     sys.stderr.write("ps_x: shader compiler failed: no\n" if outcome == "failed" else "noise\n")
     sys.stdout.write("done " + " ".join(p) + " %s %s\n" % (outcome, me))
@@ -161,7 +166,7 @@ class ServeTests(unittest.TestCase):
         return totals, times, shown
 
     def test_every_key_once_and_the_totals_add_up(self):
-        todo = keys(30)
+        todo = keys(30, prefix='s0')   # (not instant answers: the last worker started must get keys too)
         totals, times, shown = self.serve(todo, 3)
         self.assertEqual(totals, {'compiled': 30})
         self.assertEqual(set(times), {k.key for k in todo})

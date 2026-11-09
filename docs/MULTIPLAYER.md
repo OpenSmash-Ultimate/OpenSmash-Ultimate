@@ -123,7 +123,7 @@ The game's own **Online** menu works with WindowSmash's game server, which runs 
 ### Rollback in Online mode
 
 > [!NOTE]
-> On by default: a game started with `Play SSBU.bat` (or the launcher, which starts it with `--online`) plays Quickplay and [Local Wireless room](#rollback-in-local-wireless-rooms) matches with rollback whenever the other player's game has it on too. To play with the game's own netcode instead, set **Online > Rollback netcode** to **off** in the settings (Esc; it writes `online_rollback.txt`, and counts from the next start), or start the game with `SSBU_RB=0`. A game started offline has no rollback at all and costs nothing for it.
+> Off by default (from v0.3.0-alpha.4): online matches are played with the game's own netcode, the stable one, until rollback has passed tests between two PCs. To try rollback, set **Online > Rollback netcode** to **on** in the settings (Esc; it writes `on` in `online_rollback.txt`, and counts from the next start), or start the game with `SSBU_RB=1` and `SSBU_RB_NET=online`. A match uses it only when both players have it on. A game started offline has no rollback at all and costs nothing for it.
 
 With it, a Quickplay match is played with rollback netplay ([technical guide](TECHNICAL.md#rollback-netplay-ssbu_rb)) instead of the game's own delay-based netcode: your own inputs answer at once (after a small input delay), the other player's are guessed until they arrive, and the game quietly re-runs the few frames a wrong guess touched. Everything around the fight stays the game's own: matchmaking, the character screen, the results with GSP, the next search.
 
@@ -141,7 +141,7 @@ How it behaves at a given round trip (two games on one PC, normal speed, the rou
 | ~110 ms | 1 (forced) | 770-1300 | mostly 3-5 | 17-20 ms (40 ms and more) | none | identical |
 | ~115 ms | 2 (auto) | 790-1280 | mostly 2-3 | 13-15 ms (41 ms) | none | identical |
 
-A re-run under 16.7 ms is not seen; one over it shows as a frame late. That is why the delay is the one-way trip in frames less one (up to ~85 ms round trip 1, up to ~115 ms 2, up to ~150 ms 3, at most 4): with less, the re-runs get longer than a frame; with more, every press waits longer. The bots of these tests press something every few frames, far more changes than a person makes, so a real match rolls back less. "Fight hashes at the end": every frame's hash, as each game kept it once both players' inputs were known, compared over the whole match.
+A re-run under 16.7 ms is not seen; one over it shows as a frame late. That is why the delay is the one-way trip in frames less one (1 only under 15 ms round trip, a home network; otherwise at least 2, up to ~115 ms 2, up to ~150 ms 3, at most 4): with less, the re-runs get longer than a frame; with more, every press waits longer. The floor of 2 comes from a live two-PC match at a 40 ms round trip, with people playing: delay 1 made 1263 rollbacks in one fight, ran at about 50 frames a second and desynced; delay 2 made 15 rollbacks in two fights, 60 frames a second, in sync. The table above is from before it. The bots of these tests press something every few frames, far more changes than a person makes, so a real match rolls back less. "Fight hashes at the end": every frame's hash, as each game kept it once both players' inputs were known, compared over the whole match.
 
 Two games on one PC against a lobby of your own, for a test (each game in a folder of its own, with its own save and `netplay_id.txt`):
 
@@ -298,7 +298,7 @@ The lobby checks where messages come from, limits how fast each player can send,
 
 ## Rollback in Local Wireless rooms
 
-Started with `Play SSBU.bat` (or the launcher), a Local Wireless room's 1-on-1 match is played with rollback too, by default: the room is made and joined as usual (in the lobby, or in a private room), and as the match is set up the two games agree on rollback within 15 seconds, exactly as a [Quickplay match](#rollback-in-online-mode) does. The character screen, the stage and the results stay the room's own. When the other game has rollback off (or is an older build), or the room has three or four players, the match is played with the game's own netcode. The same switch turns it off: **Online > Rollback netcode** in the settings, or `SSBU_RB=0`.
+Started with `Play SSBU.bat` (or the launcher), a Local Wireless room's 1-on-1 match is played with rollback too when both players have turned it on: the room is made and joined as usual (in the lobby, or in a private room), and as the match is set up the two games agree on rollback within 15 seconds, exactly as a [Quickplay match](#rollback-in-online-mode) does. The character screen, the stage and the results stay the room's own. When the other game has rollback off (or is an older build), or the room has three or four players, the match is played with the game's own netcode. The same switch turns it on: **Online > Rollback netcode** in the settings (off by default).
 
 ## Rollback netplay through the lobby or a private room
 

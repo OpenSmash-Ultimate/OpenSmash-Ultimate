@@ -279,6 +279,34 @@ def seed_lists(p):
                 f.writelines(l + "\n" for l in new)
 
 
+def prune_patches(p, live, log=print):
+    """Drop from dump/skyline/patches.txt the code patches of plugins no longer loaded (turned off,
+    removed, or another build of one, under a new module name): compiled into the game, they'd go on
+    changing its code for a plugin that isn't there (Smashline 2.0.0's, left after going back to
+    1.6.8, crashed every match). A line without its plugin (from before the runtime named it) is kept
+    if the standard plugins' seed has it, else dropped: a loaded plugin's is listed again as it runs."""
+    path = os.path.join(p.skyline, "patches.txt")
+    if not os.path.exists(path):
+        return
+    seed = os.path.join(SEED, "patches.txt")
+    seed = set(open(seed, encoding="utf-8").read().splitlines()) if os.path.exists(seed) else set()
+    lines = open(path, encoding="utf-8").read().splitlines()
+    keep, dropped = [], {}
+    for line in lines:
+        parts = line.split()
+        if len(parts) == 5 and parts[4] not in live and parts[4] != "?":
+            dropped[parts[4]] = dropped.get(parts[4], 0) + 1
+        elif len(parts) == 4 and line not in seed:
+            dropped["no plugin named"] = dropped.get("no plugin named", 0) + 1
+        elif line.strip():
+            keep.append(line)
+    if dropped:
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.writelines(l + "\n" for l in keep)
+        log("code patches of plugins no longer loaded dropped (the next build leaves them out): "
+            + ", ".join(f"{n} ({k})" for n, k in sorted(dropped.items())))
+
+
 def sync(tree, log=print, jobs=1):
     """Recompile the turned-on mods' plugins and list them to load; returns the list."""
     p = Paths(tree)
@@ -305,6 +333,7 @@ def sync(tree, log=print, jobs=1):
         if name not in names:
             names.append(name)
             log(f"{mod}: plugin {os.path.basename(source)} -> {name}")
+    prune_patches(p, set(names), log)
     with open(p.record, "w", encoding="utf-8") as f:
         json.dump(record, f, indent=1)
     import mods
@@ -356,11 +385,13 @@ def built_in(tree, name):
     c = os.path.join(tree, "build", "nro", name, "g_module.c")
     if c_stale(c):
         return False
-    programs = [os.path.join(tree, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu"), os.path.join(tree, "build", "ssbu.exe")]
+    programs = [os.path.join(tree, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu"), os.path.join(tree, "build", "ssbu.exe"),
+                os.path.join(tree, "build-linux", "ssbu")]
     built = max((os.path.getmtime(x) for x in programs if os.path.exists(x)), default=0)
     if os.path.getmtime(c) > built:
         return False
-    for table in (os.path.join(tree, "build-mac", "gen", "nro_table.c"), os.path.join(tree, "build", "rt", "nro_table.c")):
+    for table in (os.path.join(tree, "build-mac", "gen", "nro_table.c"), os.path.join(tree, "build", "rt", "nro_table.c"),
+                  os.path.join(tree, "build-linux", "gen", "nro_table.c")):
         if os.path.exists(table) and f"rt_module_{name}," in open(table, encoding="utf-8").read():
             return True
     return False
@@ -389,7 +420,9 @@ def plugin_state(tree, mod, rels):
         except Exception:   # (not an NRO the recompiler reads)
             entry = None
         name = entry and entry["module"]
-        out.append({"file": rel, "module": name, "built": dll_current(tree, name) if name else None})
+        # (Windows: its own DLL, cache_mod_plugins; macOS and Linux: compiled into the program)
+        built = (dll_current(tree, name) if os.name == "nt" else built_in(tree, name)) if name else None
+        out.append({"file": rel, "module": name, "built": built})
     return out
 
 
@@ -423,8 +456,8 @@ def patch_lines(p):
     if os.path.exists(path):
         for line in open(path, encoding="utf-8"):
             parts = line.split()
-            if len(parts) == 4:
-                out[parts[0]] = out.get(parts[0], "") + " ".join(parts[1:]) + "\n"
+            if len(parts) in (4, 5):   # (the plugin that made it, the fifth: not in recomp.py's record)
+                out[parts[0]] = out.get(parts[0], "") + " ".join(parts[1:4]) + "\n"
     return out
 
 
@@ -662,6 +695,8 @@ __declspec(dllexport) void ssbu_plugin_bind(GuestFn *(*lookup)(u64), GuestFn *(*
 def cache_mod_plugins(tree, jobs, log=print, quiet=False):
     """Compile each turned-on mod's plugin into build/plugins/<name>.dll and list those files.
     The standard plugins stay in the program. Returns the module names that translated."""
+    if os.name != "nt":   # (macOS and Linux load no plugin DLLs: a mod's plugin is compiled into the program,
+        return []         # which game_link_reason links again for: unbuilt_mod_plugin)
     import cc
     import recomp
     p = Paths(tree)
@@ -733,9 +768,26 @@ def unbuilt_standard(tree):
     return None
 
 
+def unbuilt_mod_plugin(tree):
+    """macOS and Linux: a turned-on mod's plugin the program doesn't have compiled in, or None (on
+    Windows each is its own DLL, which the game loads at start: cache_mod_plugins)."""
+    record = load_record(Paths(tree))
+    for mod, source in turned_on(tree):
+        if mod.startswith("(standard) "):
+            continue
+        try:
+            entry = record.get(nro_build_id(source))
+        except ValueError:
+            continue
+        name = entry["module"] if entry else None
+        if not name or not built_in(tree, name):
+            return f"{mod}'s plugin isn't in the game"
+    return None
+
+
 def game_link_reason(tree):
-    """Why the program itself must be linked again, or None. A mod plugin's own file is not a reason:
-    the game loads that at start."""
+    """Why the program itself must be linked again, or None. On Windows a mod plugin's own file is not
+    a reason: the game loads that at start. On macOS and Linux it is compiled into the program."""
     exe = program(tree)
     if not exe:
         return "the game isn't built"
@@ -757,7 +809,7 @@ def game_link_reason(tree):
     for name, plugin in std_plugins.PLUGINS.items():
         if plugin[5] == "runs" and not os.path.exists(os.path.join(std_plugins.folder(tree), name)):
             return f"{name} isn't fetched"
-    missing = unbuilt_standard(tree)
+    missing = unbuilt_standard(tree) or (unbuilt_mod_plugin(tree) if os.name != "nt" else None)
     if missing:
         return missing
     listed = os.path.join(p.skyline, "plugins.txt")
@@ -771,8 +823,9 @@ def game_link_reason(tree):
 
 
 def build(tree, jobs, log=print, again=True):
-    """Translate each turned-on mod plugin into its own file. Link the game only when a standard
-    plugin is missing, the runtime changed, or a plugin's inline hook or code patch is not in it.
+    """Translate each turned-on mod plugin into its own file (Windows; on macOS and Linux it is linked
+    into the program). Link the game only when a plugin it should have is missing, the runtime
+    changed, or a plugin's inline hook or code patch is not in it.
     A function hook is patched into that one function when the game starts."""
     sync(tree, log, jobs)
     cache_mod_plugins(tree, jobs, log)
@@ -832,7 +885,8 @@ def needs_build(tree):
     """Why the game's program needs building again, or None: it's missing, a file that goes into it
     (the runtime, the recompiler, the build's tools, the plugins' hook lists) is newer than it, a
     standard plugin isn't fetched, or a plugin that runs isn't compiled in (current)."""
-    programs = [os.path.join(tree, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu"), os.path.join(tree, "build", "ssbu.exe")]
+    programs = [os.path.join(tree, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu"), os.path.join(tree, "build", "ssbu.exe"),
+                os.path.join(tree, "build-linux", "ssbu")]
     built = max((os.path.getmtime(x) for x in programs if os.path.exists(x)), default=0)
     if not built:
         return "it isn't built"

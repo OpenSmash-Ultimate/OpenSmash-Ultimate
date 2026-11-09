@@ -41,8 +41,8 @@ static HookOrig orig_roster, orig_grid;
 static int patched;                 // 0 not yet, 1 done, -1 gave up
 static int g_rows;
 static uint64_t g_inner; static uint32_t g_first;      // set by try_patch: the database and the index of row n3t0
-static char g_donor[48] = "mario", g_newkind[300];      // U1: 48 -> 300 (a list of up to NEWROWS names)
-#define NEWROWS 8                                        // U1: 4 -> 8 = the registry's NM_MAX
+static char g_donor[48] = "mario", g_newkind[128 * 33];  // U1: 48 -> 300; KIND SLOTS: any number of names
+#define NEWROWS 128                                      // KIND SLOTS: = the registry's NM_MAX (the 16 kind numbers are shared per match by n12_kind)
 static char g_kinds[NEWROWS][32]; static int g_nkinds;        // N4: names of the new kinds, row k -> name k
 static char g_row_donor[NEWROWS][32];                         // N6: the donor of row k (the manifest's "donor"); "" = g_donor
 static const char *donor_of_row(int k) { return k >= 0 && k < NEWROWS && g_row_donor[k][0] ? g_row_donor[k] : g_donor; }
@@ -314,7 +314,7 @@ extern "C" __declspec(dllexport) void mod_init(const HookApi *a) {
     if ((e = getenv("N3_DONOR")) && *e) snprintf(g_donor, sizeof g_donor, "%s", e);
     if ((e = getenv("N3_NEWKIND")) && *e) {
         snprintf(g_newkind, sizeof g_newkind, "%s", e);
-        char list[200]; snprintf(list, sizeof list, "%s", e);
+        static char list[NEWROWS * 33]; snprintf(list, sizeof list, "%s", e);
         for (char *p = strtok(list, ","); p && g_nkinds < NEWROWS; p = strtok(nullptr, ",")) snprintf(g_kinds[g_nkinds++], 32, "%s", p);
     }
     g_reg = ssbu_registry_get();

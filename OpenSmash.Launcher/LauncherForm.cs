@@ -177,10 +177,37 @@ namespace OpenSmash.Launcher
         // Hit-testing
         List<Hit> _hits = new();
 
+        // (#173) The newest python.exe of a standard Python 3.10+ install (per user, then for all users), or null.
+        static string FindInstalledPython()
+        {
+            var roots = new[] {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Python"),
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            };
+            foreach (string root in roots)
+            {
+                try
+                {
+                    if (!Directory.Exists(root)) continue;
+                    string best = null; int bestMinor = -1;
+                    foreach (string dir in Directory.GetDirectories(root, "Python3*"))
+                    {
+                        string name = Path.GetFileName(dir);   // Python313, Python314-32 ...
+                        string digits = new string(name.Substring(7).TakeWhile(char.IsDigit).ToArray());
+                        if (!int.TryParse(digits, out int minor) || minor < 10) continue;
+                        string exe = Path.Combine(dir, "python.exe");
+                        if (File.Exists(exe) && minor > bestMinor) { best = exe; bestMinor = minor; }
+                    }
+                    if (best != null) return best;
+                }
+                catch { }
+            }
+            return null;
+        }
+
         // ---------------------------------------------------------------------------
         public LauncherForm(string workDir, string repo, string buildDir)
         {
-            try { File.AppendAllText(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "opensmash_log.txt"), $"[{DateTime.Now}] Constructor start\n"); } catch { }
             _workDir = workDir;
             _repo = repo;
             _buildDir = buildDir;
@@ -210,9 +237,11 @@ namespace OpenSmash.Launcher
             if (!File.Exists(_pythonExe))
             {
                 string p = Path.Combine(buildDir, "python_path.txt");
-                if (File.Exists(p)) _pythonExe = File.ReadAllText(p).Trim();
+                if (File.Exists(p)) _pythonExe = File.ReadAllText(p).Trim().Trim('"');
             }
-            if (!File.Exists(_pythonExe)) _pythonExe = "python";
+            // (#173) a Python installed without "Add python.exe to PATH": "python" is then Windows' Store
+            // shortcut; the newest per-user or all-users install of 3.10+ instead
+            if (!File.Exists(_pythonExe)) _pythonExe = FindInstalledPython() ?? "python";
 
             // Window setup
             Text = "OpenSmash-Ultimate";

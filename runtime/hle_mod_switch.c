@@ -64,7 +64,23 @@ static int exists(const char *path) {
 static void python_command(char *out, size_t n, const char *args) {
     char py[1100];
     snprintf(py, sizeof py, "%s\\deps\\python\\python.exe", root);
-    if (exists(py)) snprintf(out, n, "\"%s\" \"%s\\tools\\os_mods.py\" %s", py, root, args);
+    if (!exists(py)) {
+        /* (#173) the Python the installer chose (build\python_path.txt: a PC where only the py launcher
+         * finds it, "python" being Windows' Store shortcut), else plain python */
+        char file[1100], *t;
+        snprintf(file, sizeof file, "%s\\build\\python_path.txt", root);
+        py[0] = 0;
+        if ((t = read_all(file, 1000)) != NULL) {
+            size_t k = strcspn(t, "\r\n");
+            t[k] = 0;
+            while (k && (t[k - 1] == ' ' || t[k - 1] == '"')) t[--k] = 0;
+            const char *s = t;
+            while (*s == ' ' || *s == '"') s++;
+            if (*s && exists(s)) snprintf(py, sizeof py, "%s", s);
+            free(t);
+        }
+    }
+    if (py[0]) snprintf(out, n, "\"%s\" \"%s\\tools\\os_mods.py\" %s", py, root, args);
     else snprintf(out, n, "python \"%s\\tools\\os_mods.py\" %s", root, args);
 }
 /* Runs it and waits (up to wait_ms); its exit code, or -1 when it didn't start or finish. Its output

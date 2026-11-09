@@ -753,28 +753,102 @@ class Lifter(SimdMixin):
                 return None
             return None
 
+        def small(i, first):
+            """The other form (LLVM's for small tables, as in Rust code): entries of 1 or 2 bytes,
+            each a count of instructions past an anchor the code takes with adr:
+                adr xT, table ; adr xA, anchor ; ldrb/ldrh wE, [xT, xI] ; add xA, xA, xE, lsl #2 ; br xA
+            (anchor, table, entry size, signed, shift), or None."""
+            j = self.find_def((ws[i] >> 5) & 31, i)
+            if j is None or ws[j] & 0xFFE00000 != 0x8B000000:      # add xD, xN, xM, lsl #s
+                return None
+            shift, rn_, rm_ = (ws[j] >> 10) & 63, (ws[j] >> 5) & 31, (ws[j] >> 16) & 31
+            k = self.find_def(rm_, j)
+            if k is None:
+                return None
+            load = ws[k]
+            # ldrb / ldrh (register), or ldrsw (register, lsl #2): a debug build's table of 32-bit
+            # offsets from an anchor of its own (adr xA, .), not from the table
+            size, signed = {0x38600800: (1, False), 0x78600800: (2, False), 0xB8A00800: (4, True)}.get(load & 0xFFE00C00, (0, False))
+            if not size:
+                return None
+            if i not in looked:
+                self.table_like += first
+                looked.add(i)
+            anchor = reach(rn_, j, True)
+            table = reach((load >> 5) & 31, k, True)
+            if not anchor or len(anchor) != 1 or not table or len(table) != 1:
+                guessed[i] = frozenset(reach((load >> 5) & 31, k, False))
+                return None
+            spec = (next(iter(anchor)), next(iter(table)), size, signed, shift)
+            return spec if small_targets(spec, len(self.img)) else None
+
+        def small_targets(spec, limit):
+            """A small table's targets: its entries up to `limit`, each leading into the function
+            (the first that doesn't, or that leads between two of its instructions, ends it)."""
+            anchor, table, size, signed, shift = spec
+            targets = set()
+            for e in range(min({1: 256, 2: 4096, 4: 4096}[size], (min(limit, len(self.img)) - table) // size)):
+                at = table + e * size
+                t = anchor + (int.from_bytes(self.img[at:at + size], "little", signed=signed) << shift)
+                if not self.fstart <= t < self.fend or t & 3:   # (past the table's end: no instruction there)
+                    break
+                targets.add(t)
+            return targets
+
+        def large_targets(table, limit):
+            targets = set()
+            for e in range((min(limit, len(self.img), table + 4 * 4096) - table) // 4):
+                t = entry(table, e)
+                if t is None:
+                    break
+                targets.add(t)
+            return targets
+
+        def tables_found(guesses=()):
+            """{index of `br`: targets} of the tables found so far, each ending where the next
+            table of the function starts (the compiler lays them out back to back). A small
+            table's entries can't show where it ends, and ones read past it are the next table's
+            cases: edges from the wrong dispatch, which hide the definitions behind the right one.
+            `guesses`: where tables not found yet may start, ending tables for the graph only (a
+            wrong one could cut a table short; an over-long table only adds cases never taken)."""
+            starts = sorted(set(bases.values()) | {s[1] for s in smalls.values()} | set(guesses))
+
+            def limit(table):
+                nxt = bisect.bisect_right(starts, table)
+                return starts[nxt] if nxt < len(starts) else len(self.img)
+            out = {i: large_targets(t, limit(t)) for i, t in bases.items()}
+            out.update((i, small_targets(s, limit(s[1]))) for i, s in smalls.items())
+            return out
+
         # Case blocks are reached only through their table, so a dispatch inside a case of
         # another table cannot see the definitions before that table until its edges exist:
-        # resolve in passes, adding the edges of each table found to the graph.
-        bases, pending, looked = {}, list(brs), set()
-        for attempt in range(6):
-            found = {}
+        # resolve in passes, the graph's table edges made again after each from every table found
+        # so far (small tables' too: in Rust code one match's case is often another's dispatch).
+        # The small tables still to find are where the found ones may end: the table addresses
+        # their dispatches could read (lenient) end tables for the graph, and a pass that changes
+        # those guesses goes again even if it found nothing.
+        plain = {t: list(p) for t, p in preds.items()}
+        bases, smalls, pending, looked = {}, {}, list(brs), set()
+        guessed, guesses = {}, set()
+        for attempt in range(8):
+            found = 0
             for i in pending:
                 table = resolve(i, attempt == 0)
                 if table is not None:
-                    found[i] = table
-            if not found:
+                    bases[i], found = table, found + 1
+                    continue
+                spec = small(i, attempt == 0)
+                if spec:
+                    smalls[i], found = spec, found + 1
+            pending = [i for i in pending if i not in bases and i not in smalls]
+            now = {t for i in pending for t in guessed.get(i, ())}
+            if not found and now <= guesses:
                 break
-            bases.update(found)
-            pending = [i for i in pending if i not in found]
-            starts = sorted(set(bases.values()))
-            for i, table in found.items():
-                nxt = bisect.bisect_right(starts, table)
-                limit = min(starts[nxt] if nxt < len(starts) else len(self.img), table + 4 * 4096)
-                for e in range((limit - table) // 4):
-                    t = entry(table, e)
-                    if t is None:
-                        break
+            guesses |= now
+            preds.clear()
+            preds.update((t, list(p)) for t, p in plain.items())
+            for i, targets in tables_found(guesses).items():
+                for t in targets:
                     ti = (t - self.fstart) // 4
                     if 0 <= ti < n:
                         preds.setdefault(ti, []).append(i)
@@ -783,55 +857,8 @@ class Lifter(SimdMixin):
         for i in pending:
             if i in looked:
                 self.unresolved.append(self.fstart + i * 4)
+        self.table_at.update(tables_found())
 
-        starts = sorted(set(bases.values()))
-        for i, table in bases.items():
-            nxt = bisect.bisect_right(starts, table)
-            limit = min(starts[nxt] if nxt < len(starts) else len(self.img), len(self.img), table + 4 * 4096)
-            targets = set()
-            for e in range((limit - table) // 4):
-                t = entry(table, e)
-                if t is None:
-                    break
-                targets.add(t)
-            self.table_at[i] = targets
-
-        # The other form (LLVM's for small tables, as in Rust code): entries of 1 or 2 bytes,
-        # each a count of instructions past an anchor the code takes with adr:
-        #     adr xT, table ; adr xA, anchor ; ldrb/ldrh wE, [xT, xI] ; add xA, xA, xE, lsl #2 ; br xA
-        # The table's length is not checked here; entries leading out of the function, or between two
-        # of its instructions, end it.
-        for i in pending:
-            j = self.find_def((ws[i] >> 5) & 31, i)
-            if j is None or ws[j] & 0xFFE00000 != 0x8B000000:      # add xD, xN, xM, lsl #s
-                continue
-            shift, rn_, rm_ = (ws[j] >> 10) & 63, (ws[j] >> 5) & 31, (ws[j] >> 16) & 31
-            anchor = reach(rn_, j, True)
-            k = self.find_def(rm_, j)
-            if not anchor or len(anchor) != 1 or k is None:
-                continue
-            load = ws[k]
-            # ldrb / ldrh (register), or ldrsw (register, lsl #2): a debug build's table of 32-bit
-            # offsets from an anchor of its own (adr xA, .), not from the table
-            size, signed = {0x38600800: (1, False), 0x78600800: (2, False), 0xB8A00800: (4, True)}.get(load & 0xFFE00C00, (0, False))
-            table = reach((load >> 5) & 31, k, True) if size else None
-            if not table or len(table) != 1:
-                continue
-            anchor, table = next(iter(anchor)), next(iter(table))
-            targets = set()
-            for e in range({1: 256, 2: 4096, 4: 4096}[size]):
-                at = table + e * size
-                if at + size > len(self.img):
-                    break
-                t = anchor + (int.from_bytes(self.img[at:at + size], "little", signed=signed) << shift)
-                if not self.fstart <= t < self.fend or t & 3:   # (past the table's end: no instruction there)
-                    break
-                targets.add(t)
-            if targets:
-                self.table_like += 1
-                self.table_at[i] = targets
-                if self.fstart + i * 4 in self.unresolved:
-                    self.unresolved.remove(self.fstart + i * 4)
         # A Skyline plugin's dispatch that is still not resolved goes anywhere in its function: every
         # instruction a case (SSBU_DYNAMIC_JUMPS, which recomp.py sets for modules without an unwind
         # table, whose tables come in more forms than the game's compiler makes).

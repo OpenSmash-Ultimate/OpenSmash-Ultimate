@@ -270,6 +270,7 @@ static u64 stage_choice(void) {
  * frame hook (hle_each_frame.c holds the wrap: rollback netplay needs the function too),
  * registered while a debug match is on. Called on the game's main thread, one player at a time:
  * what the panel was is kept here between the two halves. */
+int input_seq2_on(void);   /* (hle_hid.c) */
 static u64 record_was;
 static u32 record_type_was;
 static void record_before(Cpu *c, const u64 args[8], void *ctx) {
@@ -289,6 +290,12 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx) {
         fprintf(stderr, "[fight] debug match: the screens' stage choice: ui_stage %llx form %u, hazards %u; rule: stock %u, item appear %u\n",
                 (unsigned long long)ld64(sel), ld32(sel + 8), ld8(GAME_ADDR(STAGE_HAZARDS)), ld8(block + 0x4c), ld32(block + 0x54));
         dm_stage(&match, P(u8, sel), P(u8, GAME_ADDR(STAGE_HAZARDS)), P(u8, block + 0x54));
+    }
+    /* SSBU_SEQ2: a human player 2 plays on controller slot 2, which the sequence drives (as a controller that
+     * joined the panel: + 0x210 the controller slot, + 0x450 a human's panel; hle_rb_core.c) */
+    if (idx == 1 && ld32(st + 0x78) == 0 && input_seq2_on()) {
+        st32(st + 0x210, 1); st8(st + 0x450, 1);
+        fprintf(stderr, "[fight] debug match: player 2 is human on controller slot 2 (SSBU_SEQ2)\n");
     }
     if (idx == 1) { memcpy(match_p2, P(u8, st), DM_STATE); match_p2_ok = 1; }
     record_was = was;
@@ -330,11 +337,13 @@ static DWORD WINAPI end_watch(LPVOID unused) {
 
 /* The vsync thread, at each frame shown (ipc_vi.c): the fight frames SSBU_DEBUG_END counts, and
  * the debug match's line when a fight starts. */
+volatile long long test_fight_frame;   /* the current fight's frame (0 outside fights): SSBU_CAPTURE_FROM / _TO */
 void test_fight_presented(void) {
     if (!end_limit && !match_on) return;
     shown++;
     int ended;
     long long n = dm_end_frame(&end, ready_go(), &ended);
+    test_fight_frame = n;
     if (ended) fprintf(stderr, "[fight] fight off (the game's ready-go cleared) at frame %lld shown, after %lld fight frames\n", shown, end.frames);
     if (n == 1) {
         u64 block = GAME_ADDR(MATCH_BLOCK), sel = stage_choice();
