@@ -46,6 +46,7 @@ import skyline  # noqa: E402
 import packs  # noqa: E402
 import describe  # noqa: E402
 import std_plugins  # noqa: E402
+import hdr  # noqa: E402
 
 UI = os.path.join(HERE, "ui")
 GAME = 6498           # GameBanana's Super Smash Bros. Ultimate
@@ -102,7 +103,7 @@ class Jobs:
             with self.busy:
                 try:
                     job["result"] = fn(log, progress)
-                except (mods.Error, packs.PackError) as e:
+                except (mods.Error, packs.PackError, hdr.Error) as e:
                     job["error"] = str(e)
                 except (OSError, urllib.error.URLError, ValueError) as e:
                     job["error"] = f"{type(e).__name__}: {e}"
@@ -277,7 +278,7 @@ def install_url(tree, url, log, progress, meta=None):
 def game_running():
     try:
         if sys.platform == "darwin":
-            return subprocess.run(["pgrep", "-f", "MacOS/ssbu"], capture_output=True).returncode == 0
+            return subprocess.run(["pgrep", "-x", "ssbu"], capture_output=True).returncode == 0
         if os.name == "nt":
             r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq ssbu.exe", "/NH"], capture_output=True, text=True)
             return "ssbu.exe" in r.stdout.lower()
@@ -349,9 +350,14 @@ class App:
             g = out["groups"].setdefault(key, {"title": (m.get("title") if key.startswith("gb:") else None)
                                                or name.split(" - ", 1)[0], "image": None})
             g["image"] = g["image"] or m.get("image") or m.get("local_image")
-        out["unsafe_on"] = [m.get("title") or m["name"] for m in out["mods"] if m["enabled"] and m["online"]["level"] == "unsafe"]
-        out["same_on"] = [m.get("title") or m["name"] for m in out["mods"] if m["enabled"] and m["online"]["level"] == "same"]
-        out["unbuilt"] = [m.get("title") or m["name"] for m in out["mods"] if m["enabled"] and any(not p["built"] for p in m["plugin_state"])]
+        # (by title, once: a download's parts share one - HewDraw Remix's three folders)
+        out["unsafe_on"] = list(dict.fromkeys(m.get("title") or m["name"] for m in out["mods"] if m["enabled"] and m["online"]["level"] == "unsafe"))
+        out["same_on"] = list(dict.fromkeys(m.get("title") or m["name"] for m in out["mods"] if m["enabled"] and m["online"]["level"] == "same"))
+        out["unbuilt"] = list(dict.fromkeys(m.get("title") or m["name"] for m in out["mods"] if m["enabled"] and any(not p["built"] for p in m["plugin_state"])))
+        out["hdr"] = hdr.status(self.tree)   # (HewDraw Remix: its own tab and switch, its mods not in My mods)
+        if out["hdr"]["on"] and not all(skyline.built_in(self.tree.root, os.path.splitext(n)[0][3:]) for n in hdr.PLUGINS) \
+                and "HewDraw Remix" not in out["unbuilt"]:
+            out["unbuilt"].append("HewDraw Remix")
         out["game_running"] = game_running()
         out["root"] = self.tree.root
         out["platform"] = sys.platform
@@ -395,14 +401,48 @@ class App:
             return {"plugins": [{"name": n, "version": v, "have": os.path.exists(os.path.join(std_plugins.folder(t.root), n)),
                                  "status": st, "source": src, "ported": n in std_plugins.PORTS}
                                 for n, (v, _u, _m, _s, src, st) in std_plugins.PLUGINS.items()]}
+        if path == "/api/hdr":
+            return hdr.status(t)
         if method != "POST":
             raise mods.Error(f"unknown {path}")
+        if path == "/api/hdr/download":
+            return self.jobs.start(f"Downloading HewDraw Remix {hdr.VERSION}", lambda log, progress: hdr.download(t, progress, log))
+        if path == "/api/hdr/enable":
+            try:
+                hdr.set_on(t, bool(body["on"]))
+            except hdr.Error as e:
+                raise mods.Error(str(e))
+            return self.library()
+        if path == "/api/hdr/remove":
+            if game_running():
+                raise mods.Error("the game is open: close it first")
+            return self.jobs.start("Removing HewDraw Remix", lambda log, progress: hdr.remove(t, log))
         # changes
         if path == "/api/enable":
             state = t.load()
             for n in body["names"]:
                 if n in state["mods"]:
                     state["mods"][n]["enabled"] = bool(body["enabled"])
+            t.save(state)
+            return self.library()
+        if path in ("/api/group", "/api/all"):
+            # (a download's parts together, or every mod): off remembers which were on, on brings back
+            # those, not the alternatives and copies left off
+            state = t.load()
+            names = [n for n in body["names"] if n in state["mods"]] if path == "/api/group" else \
+                [n for n in state["mods"] if n not in hdr.MODS]   # (HewDraw Remix has its own switch)
+            key = "was_on" if path == "/api/group" else "all_was_on"
+            if body["on"]:
+                was = [n for n in names if state["mods"][n].get(key)]
+                for n in was or names:   # (none remembered: all of them)
+                    state["mods"][n]["enabled"] = True
+                for n in names:
+                    state["mods"][n].pop(key, None)
+            elif any(state["mods"][n].get("enabled") for n in names):   # (already all off: what's remembered stays)
+                for n in names:
+                    m = state["mods"][n]
+                    m[key] = bool(m.get("enabled"))
+                    m["enabled"] = False
             t.save(state)
             return self.library()
         if path == "/api/order":
@@ -619,7 +659,7 @@ def make_handler(app):
                     body = json.loads(self.rfile.read(n) or b"{}") if n else {}
                 try:
                     return self.send(200, app.api(method, path, q, body))
-                except (mods.Error, packs.PackError) as e:
+                except (mods.Error, packs.PackError, hdr.Error) as e:
                     return self.send(400, {"error": str(e)})
                 except (urllib.error.URLError, OSError) as e:
                     return self.send(502, {"error": f"couldn't reach it: {getattr(e, 'reason', e)}"})

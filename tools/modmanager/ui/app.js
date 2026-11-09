@@ -52,6 +52,7 @@ function show(view) {
   if (view === "browse" && !state.gbLoaded) loadBrowse();
   if (view === "packs") loadPacks();
   if (view === "settings") showSettings();
+  if (view === "hdr") renderHdr();
 }
 $$(".tab").forEach((t) => t.addEventListener("click", () => show(t.dataset.view)));
 document.addEventListener("click", (e) => {
@@ -73,7 +74,15 @@ function render(lib) {
   state.lib = lib;
   state.installedIds = new Set(lib.mods.filter((m) => m.gamebanana).map((m) => +m.gamebanana));
   const on = lib.mods.filter((m) => m.enabled);
-  $("#count-on").textContent = lib.mods.length ? `${on.length}/${lib.mods.length}` : "";
+  // (HewDraw Remix's own mods: its tab and switch run them, not My mods)
+  const hdr = lib.hdr || {}, hdrNames = new Set(hdr.installed ? hdr.mods : []);
+  const mine = lib.mods.filter((m) => !hdrNames.has(m.name)), mineOn = mine.filter((m) => m.enabled);
+  $("#count-on").textContent = mine.length ? `${mineOn.length}/${mine.length}` : "";
+  $("#hdr-toggle").hidden = !hdr.installed;
+  $("#hdr-on").checked = !!hdr.on;
+  $("#hdr-on").disabled = lib.game_running;
+  $("#hdr-toggle-state").textContent = hdr.on ? "On (only works with every other mod off)" : "Off";
+  if ($("#view-hdr").classList.contains("active")) renderHdr();
   const gs = $("#game-state");
   gs.textContent = lib.game_running ? "● Game is open" : "Game closed";
   gs.classList.toggle("on", lib.game_running);
@@ -102,8 +111,8 @@ function render(lib) {
   const q = $("#lib-filter").value.trim().toLowerCase();
   const list = $("#lib-list");
   list.innerHTML = "";
-  $("#lib-empty").classList.toggle("hidden", lib.mods.length > 0);
-  const shown = lib.mods.filter((m) => !q || ((m.title || m.name) + " " + (m.part || "") + " " + (m.category || "") + " " + (m.author || "") + " " + (m.about || "")).toLowerCase().includes(q));
+  $("#lib-empty").classList.toggle("hidden", mine.length > 0);
+  const shown = mine.filter((m) => !q || ((m.title || m.name) + " " + (m.part || "") + " " + (m.category || "") + " " + (m.author || "") + " " + (m.about || "")).toLowerCase().includes(q));
   const groups = {};   // (parts of one download, shown under one row: its own parts' list opens below it)
   for (const m of shown) if (m.group) (groups[m.group] = groups[m.group] || []).push(m);
   for (const m of shown) {
@@ -133,13 +142,14 @@ function groupRow(key, g, parts, draggable) {
         <div class="about">${esc(parts.map((p) => p.part).join(" · "))}</div>
       </div>
       <div class="end">
-        <label class="switch${on > 0 && on < parts.length ? " mixed" : ""}" title="All its parts on / off"><input type="checkbox" ${on === parts.length ? "checked" : ""}><span></span></label>
+        <label class="switch" title="${on ? "Turn its parts off" : "Turn its parts back on (the ones that were on)"}"><input type="checkbox" ${on ? "checked" : ""}><span></span></label>
       </div>
     </div>
     <div class="parts"></div>`;
-  const all = $(".head .switch input", box);
-  all.indeterminate = on > 0 && on < parts.length;
-  all.addEventListener("change", (e) => setEnabled(parts.map((p) => p.name), e.target.checked));
+  // (on while any part is: off remembers which were, on brings back those - a pack's alternatives stay off)
+  $(".head .switch input", box).addEventListener("change", async (e) => {
+    try { render(await api("/api/group", { names: parts.map((p) => p.name), on: e.target.checked })); } catch (err) { fail(err); }
+  });
   const toggle = () => {
     box.classList.toggle("open");
     box.classList.contains("open") ? openGroups.add(key) : openGroups.delete(key);
@@ -244,6 +254,12 @@ $("#check").addEventListener("click", async () => {
   try { renderIssues((await api("/api/check", {})).issues); } catch (e) { fail(e); }
 });
 
+for (const [id, on] of [["#all-on", true], ["#all-off", false]]) {
+  $(id).addEventListener("click", async () => {
+    try { render(await api("/api/all", { on })); } catch (e) { fail(e); }
+  });
+}
+
 $("#apply").addEventListener("click", async () => {
   try {
     const { issues } = await api("/api/check", {});
@@ -261,6 +277,48 @@ $("#build-plugins").addEventListener("click", async () => {
 });
 $("#vanilla").addEventListener("click", async () => {
   try { runJob(await api("/api/vanilla", {}), () => loadLibrary()); } catch (e) { fail(e); }
+});
+
+// ---- HewDraw Remix ---------------------------------------------------------------------------
+function renderHdr() {
+  const lib = state.lib || {}, h = lib.hdr;
+  const box = $("#hdr-get");
+  if (!h) { box.innerHTML = ""; return; }
+  if (!h.installed) {
+    box.innerHTML = `<h3>Get HewDraw Remix</h3>
+      <p>Version <b>${esc(h.release)}</b> · ${mb(h.size)} download · about ${mb(h.installed_size)} once installed</p>
+      <button id="hdr-download" class="big">Download HDR</button>
+      <p class="fine">From HDR's official releases on GitHub. It installs turned off: switch it on above <b>Apply to game</b> when you want it.</p>`;
+    $("#hdr-download").addEventListener("click", async () => {
+      try {
+        runJob(await api("/api/hdr/download", {}), (j) => { if (!j.error) toast("HewDraw Remix is installed: turn it on above Apply to game"); loadLibrary(); });
+      } catch (e) { fail(e); }
+    });
+    return;
+  }
+  const waiting = (lib.unbuilt || []).includes("HewDraw Remix") || (lib.mods || []).some((m) => h.mods.includes(m.name) && m.enabled && (m.plugin_state || []).some((p) => !p.built));
+  box.innerHTML = `<h3>HewDraw Remix ${esc(h.installed)}</h3>
+    <p>${h.on ? "<b>On.</b> " + (waiting ? "Press <b>Build plugins into the game</b>, then <b>Apply to game</b>." : "Press <b>Apply to game</b> after changing it.")
+      : "<b>Off.</b> Turn it on with the switch above <b>Apply to game</b>."}</p>
+    <button id="hdr-remove" class="ghost small danger">Remove HDR</button>`;
+  $("#hdr-remove").addEventListener("click", async () => {
+    if (!confirm("Delete HewDraw Remix from this computer? (About " + mb(h.installed_size) + "; you can download it again.)")) return;
+    try { runJob(await api("/api/hdr/remove", {}), () => loadLibrary()); } catch (e) { fail(e); }
+  });
+}
+$("#hdr-on").addEventListener("change", async (e) => {
+  try {
+    const others = (state.lib.mods || []).filter((m) => m.enabled && !state.lib.hdr.mods.includes(m.name)).length;
+    if (e.target.checked && others) {
+      if (!confirm(`HewDraw Remix only works with every other mod turned off.\n\nTurn your ${others} other mod${others > 1 ? "s" : ""} off now? (All on, in My mods, brings back the ones that were on.)`)) {
+        e.target.checked = false;
+        return;
+      }
+      await api("/api/all", { on: false });
+    }
+    render(await api("/api/hdr/enable", { on: e.target.checked }));
+    toast(e.target.checked ? "HewDraw Remix on: press Apply to game" : "HewDraw Remix off: press Apply to game");
+  } catch (err) { e.target.checked = !e.target.checked; fail(err); }
 });
 
 // ---- jobs -----------------------------------------------------------------------------------
