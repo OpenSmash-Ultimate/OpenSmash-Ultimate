@@ -56,6 +56,10 @@ class OnlineMatch(unittest.TestCase):
         self.assertIn('memcpy(online_rec[idx], P(u8, rec), ONLINE_REC); online_rec_have[idx] = 1;', core)
         self.assertIn('online_restore();   /* (an Online match: the game\'s own set-up back for its results) */', core)
         self.assertIn('memcpy(P(u8, MELEE_INFO), online_hdr, ONLINE_HDR);', core)
+        # a Local Wireless room's match: its results on rollback's set-up, every player local (#180)
+        self.assertIn('online_match = 1; online_lw = mode != ONLINE_MELEE;', core)
+        self.assertIn('if (online_lw) {', core)
+        self.assertIn('getenv("SSBU_RB_LW_RESTORE")', core)
         self.assertIn('if (net_online) { online_forget("the results are over"); net_armed = 0; }', core,
                       'the next match may have other players')
 
