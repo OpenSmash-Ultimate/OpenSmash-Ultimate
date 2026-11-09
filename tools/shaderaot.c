@@ -234,7 +234,8 @@ static int serve_keys(Program *prog, u32 total, const char *dir) {
     while (fgets(line, sizeof line, stdin)) {
         mask = 0;
         int n = sscanf(line, "%3s %llx %x", kind, &hash, &mask);
-        int stage = n >= 2 && !strcmp(kind, "vs") ? SHADER_VERTEX : n == 3 && !strcmp(kind, "ps") ? SHADER_PIXEL : -1;
+        int alpha = n == 3 && !strcmp(kind, "pa");   /* (a pixel program's alpha-tested variant: drawn_keys.txt's) */
+        int stage = n >= 2 && !strcmp(kind, "vs") ? SHADER_VERTEX : n == 3 && (!strcmp(kind, "ps") || alpha) ? SHADER_PIXEL : -1;
         if (stage < 0) { fprintf(stderr, "bad key: %s", line); continue; }
         unsigned long long t0 = clock_ms();
         const char *outcome;
@@ -243,11 +244,13 @@ static int serve_keys(Program *prog, u32 total, const char *dir) {
         if (!p) outcome = "missing";
         else {
             u32 vs_outputs = stage == SHADER_VERTEX ? 0 : mask;
-            snprintf(name, sizeof name, "%s_%016llx", stage == SHADER_VERTEX ? "vs" : "ps", hash);
-            shader_cache_file(path, sizeof path, dir, stage, p->hash, vs_outputs, 0);
+            snprintf(name, sizeof name, "%s_%016llx%s", stage == SHADER_VERTEX ? "vs" : "ps", hash, alpha ? "_alphatest" : "");
+            /* (the alpha test's salt, as gpu_d3d11.c's find_shader_ex adds it to the cache key) */
+            u64 file_hash = alpha ? (p->hash ^ 0x616C706861743032ull) * 1099511628211ull : p->hash;
+            shader_cache_file(path, sizeof path, dir, stage, file_hash, vs_outputs, 0);
             if (exists(path)) { count.existing++; outcome = "existing"; }
             else {
-                char *hlsl = translate(p, vs_outputs, &info);
+                char *hlsl = alpha ? shader_hlsl_alpha_tested(p->bytes, p->size, vs_outputs, &info, zero_cbuf, NULL) : translate(p, vs_outputs, &info);
                 if (!hlsl) { count.translate_failed++; outcome = "untranslated"; }
                 else if (info.ntables) { count.tables++; outcome = "tables"; }
                 else outcome = compile_to(hlsl, name, stage, path) ? "compiled" : "failed";
@@ -255,7 +258,7 @@ static int serve_keys(Program *prog, u32 total, const char *dir) {
             }
         }
         if (stage == SHADER_VERTEX) printf("done vs %016llx %s %llu\n", hash, outcome, clock_ms() - t0);
-        else printf("done ps %016llx %08x %s %llu\n", hash, mask, outcome, clock_ms() - t0);
+        else printf("done %s %016llx %08x %s %llu\n", alpha ? "pa" : "ps", hash, mask, outcome, clock_ms() - t0);
         fflush(stdout);
     }
     fprintf(stderr, "served: %u keys; %u compiled, %u already cached, %u with jump tables (left out), %u fxc failures, %u not translated\n",

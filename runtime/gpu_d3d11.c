@@ -2053,6 +2053,7 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
     if (stage == SHADER_COMPUTE) h = (h ^ ((u64)local[0] | (u64)local[1] << 16 | (u64)local[2] << 32 | (u64)shared << 40)) * 1099511628211ull;
     u64 program_hash = h;   /* (the shader's name) */
     h = shader_cache_hash(h, p, size, stage);
+    u64 key_hash = h;   /* (before the alpha test's salt: the key tools/shader_aot.py knows the program by) */
     /* (the salt changes with the alpha test's code, so cache files of an older form are not used) */
     if (alpha_tested) h = (h ^ 0x616C706861743032ull) * 1099511628211ull;
     CbufSource src = {stage_cb};
@@ -2130,6 +2131,24 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
     cache_path(s, path, sizeof path);
     s->cached = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
     s->asked_ms = GetTickCount64();
+    /* A program compiled at its first draw (fxc, seconds: its draws skipped until then) is noted in the cache folder's
+     * drawn_keys.txt, so that Prepare Shaders (tools/shader_aot.py) compiles it ahead next time, with the variant the
+     * draw wanted (the vertex outputs it was paired with, the alpha test's): the pairings the ahead-of-time pass
+     * can't guess from the game's files. Programs whose code depends on a draw's constant buffers (tables) can't be
+     * made ahead, nor compute programs (their launch size): left out. */
+    if (!s->cached && stage != SHADER_COMPUTE && !s->info.ntables) {
+        static SRWLOCK keys_lock = SRWLOCK_INIT;
+        char kp[1100];
+        snprintf(kp, sizeof kp, "%s/drawn_keys.txt", cache_dir());
+        AcquireSRWLockExclusive(&keys_lock);
+        FILE *kf = fopen(kp, "a");
+        if (kf) {
+            if (stage == SHADER_VERTEX) fprintf(kf, "vs %016llx\n", (unsigned long long)key_hash);
+            else fprintf(kf, "%s %016llx %08x\n", alpha_tested ? "pa" : "ps", (unsigned long long)key_hash, vs_outputs);
+            fclose(kf);
+        }
+        ReleaseSRWLockExclusive(&keys_lock);
+    }
     enqueue_shader(s);
     /* a program that was compiled before is waited for (a few ms, its load): a skipped draw is an effect missing
      * the first time it is used (vertex and pixel programs too, from 2026-11-09), a skipped launch leaves its
