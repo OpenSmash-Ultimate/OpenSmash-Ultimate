@@ -2765,7 +2765,7 @@ void d3d11_warm_before_play(void) {
     PROCESS_INFORMATION pi;
     fprintf(stderr, "[gfx] the shader cache is cold (a new executable or driver, or no pass yet): drawing it once for the "
                     "driver's own cache before the game loads; this can take a few minutes after a driver update "
-                    "(warm.log in the cache says how far it gets; SSBU_SHADER_WARM_PREPLAY=1 runs it)\n");
+                    "(warm.log in the cache says how far it gets; SSBU_SHADER_WARM_PREPLAY=0 turns it off)\n");
     if (CreateProcessW(exe, cmd, NULL, NULL, FALSE, DETACHED_PROCESS | BELOW_NORMAL_PRIORITY_CLASS, NULL, NULL, &si, &pi)) {
         CloseHandle(pi.hThread);
         WaitForSingleObject(pi.hProcess, INFINITE);
