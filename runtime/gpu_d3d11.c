@@ -929,6 +929,7 @@ typedef struct Shader {
     u32 written_mask, learn_runs;   /* compute: storage buffers it was seen to write, over its first runs */
     struct Shader *next_job;
     int cached;            /* an earlier run compiled it (its job is a load) */
+    u64 asked_ms;          /* when a draw first asked for it (GetTickCount64), for the first-use log */
     struct Prewarm *prewarm;   /* a prewarm job (not a shader of the game yet): the entry it fills */
     int drawn;             /* a draw (or launch) has used it: its first one was timed (first_draw_done) */
 } Shader;
@@ -1201,6 +1202,18 @@ static DWORD WINAPI compiler_main(void *arg) {
         else InterlockedIncrement64((volatile LONG64 *)&gfx_stat_shader_failures);
         InterlockedExchange(&s->state, state);
         InterlockedDecrement(&compiles_pending);
+        /* (a program a draw asked for that was not ready: those draws were skipped until now, an effect missing
+         * the first time it is used - the owner's report 2026-11-09. Every one is logged, up to 200, then counted) */
+        if (s->asked_ms) {
+            static volatile LONG logged;
+            LONG n = InterlockedIncrement(&logged);
+            u64 ms = GetTickCount64() - s->asked_ms;
+            if (n <= 200)
+                fprintf(stderr, "[gfx] first use: %s %s in %llu ms%s\n", s->name, s->cached ? "loaded from the disk cache" : "compiled",
+                        (unsigned long long)ms, state == 1 ? "" : " (FAILED)");
+            else if (n == 201)
+                fprintf(stderr, "[gfx] first use: more than 200 programs made at their first draw; no more lines\n");
+        }
     }
 }
 
@@ -2116,10 +2129,12 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
     char path[1200];
     cache_path(s, path, sizeof path);
     s->cached = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+    s->asked_ms = GetTickCount64();
     enqueue_shader(s);
-    /* a compute program that was compiled before is waited for (a few ms): a skipped launch
-     * leaves its outputs (skinned vertices) unwritten for a frame */
-    if (stage == SHADER_COMPUTE && s->cached)
+    /* a program that was compiled before is waited for (a few ms, its load): a skipped draw is an effect missing
+     * the first time it is used (vertex and pixel programs too, from 2026-11-09), a skipped launch leaves its
+     * outputs (skinned vertices) unwritten for a frame. One compiled from scratch (fxc, seconds) is not waited for. */
+    if (s->cached)
         for (u64 until = GetTickCount64() + 250; s->state == 0 && GetTickCount64() < until;) SwitchToThread();
     return s;
 }
