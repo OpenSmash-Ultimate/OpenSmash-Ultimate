@@ -51,6 +51,10 @@ int net_unreachable(void);           /* asked for, but the relay has not answere
  * online_server.txt not "off"), and online_rollback.txt (the settings menu's Online > Rollback
  * netcode) not "off". Read from the files and variables alone, so it may be asked before main. */
 int net_rollback_default(void);
+/* (hle_online_delay.c) The game's own netcode's online input delay: the setting (-1 auto, else 0-25 frames,
+ * config/online_delay.txt) and the game's own choice at the last match set-up (-1 none yet). */
+int online_delay_setting(void);
+int online_delay_last_auto(void);
 
 /* LAN discovery: a game hosting a private room announces it on the local network (multicast
  * 239.255.13.13 and broadcast, UDP NET_LAN_PORT, every second; not while direct connections are off
