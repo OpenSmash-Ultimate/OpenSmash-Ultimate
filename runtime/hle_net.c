@@ -506,7 +506,7 @@ static void rooms_browse(Cpu *c) {
     rt_call(c, rooms_browse_original);
 }
 static void rooms_install(void) {
-    static volatile long done;
+    static volatile LONG done;
     if (InterlockedExchange(&done, 1)) return;
     rooms_browse_original = rt_hook_function(ROOMS_BROWSE, rt_native(rooms_browse, "local wireless rooms list"));
     if (!rooms_browse_original) fprintf(stderr, "[net] ldn: rooms list hook missed: 10 rooms at most\n");
