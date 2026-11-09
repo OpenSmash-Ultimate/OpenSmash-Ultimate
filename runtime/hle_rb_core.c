@@ -411,6 +411,21 @@ static volatile LONG64 rb_sampling, rb_sampling_base;
 static struct { int at, hold; u64 button; int stick; } tin[64];
 static int ntin = -1, tin_period;
 #define LOGIC_FRAME 0x71052c5184ull
+/* (#181) A logic frame can last more than one frame: in a slow motion (a KO's zoom, the fight's last KO) the logic frame
+ * stands still for 2 to 8 frames or more while the fight goes on (motion frames on by 0.5 or less, the generators drawn).
+ * The fight hash, kept and compared by logic frame, is taken at the first frame of each, the one every game and every
+ * run of it have alike; a hash of a later one (the second half of a half-speed frame) was compared with the first's, and
+ * which one a game sent depended on when it sent: the "DIFFERENT" runs again and the desyncs at KOs. Once a safe point;
+ * a load sets it to the loaded state's logic frame (the next frame may be a later one of the same). */
+static u32 lf_last = 0xffffffffu;
+static long long lf_fight = -1;
+static int logic_frame_new(u32 key) {
+    if (lf_fight != S.fights) { lf_fight = S.fights; lf_last = 0xffffffffu; }
+    int n = key != lf_last;
+    lf_last = key;
+    return n;
+}
+static void logic_frame_loaded(void) { lf_fight = S.fights; lf_last = ld32(LOGIC_FRAME); }
 
 static void test_input_parse(void) {
     ntin = 0;
@@ -719,12 +734,13 @@ static void ring_test(Cpu *c, u64 frame) {
     /* this frame's state, against its first pass */
     if (!ring_first) ring_first = calloc(RING_FRAMES, sizeof *ring_first);
     u32 key = ld32(LOGIC_FRAME);
+    int lf_new = logic_frame_new(key);
     FFrame f;
     /* (its getter calls cost some 5 ms a frame: in the middle of a catch-up only with
      * SSBU_RB_HASHALL=1; by default the last re-run frame and every normal one are checked) */
     static int hash_all = -1;
     if (hash_all < 0) { const char *e = getenv("SSBU_RB_HASHALL"); hash_all = e && *e == '1'; }
-    int hash_now = hash_all || rb_fast <= 0;
+    int hash_now = (hash_all || rb_fast <= 0) && lf_new;
     double th = now_ms();
     if (hash_now) fight_frame(c, &f);
     fp_hash_last = now_ms() - th;
@@ -781,6 +797,7 @@ static void ring_test(Cpu *c, u64 frame) {
     if (keep_hold_on && ring_since + 1 >= ring_every && rb_fast <= 0) rb_keep_hold_next();
     int r = rb_save(c, frame);
     if (r == 2) {   /* a load came back here: the state `ring_depth` frames back */
+        logic_frame_loaded();
         double ms = now_ms() - ring_load_t0;
         ring_load_ms += ms; if (ms > ring_load_max) ring_load_max = ms;
         if (cur_depth > 0 && cur_depth <= 64) depth_load[cur_depth] += ms;
@@ -1343,6 +1360,7 @@ static void net_send(u32 key) {
 }
 static void net_step(Cpu *c, u64 frame) {
     u32 key = ld32(LOGIC_FRAME);
+    int lf_new = logic_frame_new(key);
     static long long net_fight = -1;
     if (net_fight != S.fights || !net_got) {   /* a fight starts (by its number: S.frames == 1 came twice once) */
         net_fight = S.fights;
@@ -1428,7 +1446,7 @@ static void net_step(Cpu *c, u64 frame) {
     u32 i = key - net_key0;
     if (i < 1u << 20) {
         if (net_every < 0) { const char *e = getenv("SSBU_RB_NET_CHECK_EVERY"); net_every = e && atoi(e) > 0 ? atoi(e) : 1; }   /* (v0.9.6: every frame, was 10: a desync's first frame exact) */
-        if (rb_fast <= 0 && !net_done && key % (u32)net_every == 0) {
+        if (rb_fast <= 0 && !net_done && key % (u32)net_every == 0 && lf_new) {
             /* the fighters and the generators, all but generator 1: something outside the fight (on Final
              * Destination; its background?) draws from it every other frame, starting at a different frame
              * each run, while the fighters stay the same to the last bit (dbg1-3, seed6: 30 s alike) */
@@ -1440,7 +1458,7 @@ static void net_step(Cpu *c, u64 frame) {
             net_work(0, t0);
             check_again(key, &f, net_final[i]);
         }
-        else net_final[i] = 0;   /* (run again in the middle of a catch-up: not hashed) */
+        else if (lf_new) net_final[i] = 0;   /* (run again in the middle of a catch-up: not hashed; a later frame of the same logic frame keeps its first's) */
     }
     if (!net_done && S.frames >= net_frames) { net_done = 1; net_report(); }
     if (rb_fast <= 0 && S.frames % 60 == 0 && S.frames <= net_frames) {   /* (once a second: who reads which pad, where the fighters are) */
@@ -1471,7 +1489,7 @@ static void net_step(Cpu *c, u64 frame) {
     else {
         rb_save_tag = key;
         double t0 = now_ms();
-        if (rb_save(c, frame) == 2) { catch_total = pending_fast; rb_fast = pending_fast; return; }
+        if (rb_save(c, frame) == 2) { logic_frame_loaded(); catch_total = pending_fast; rb_fast = pending_fast; return; }
         if (rb_fast <= 0) net_work(1, t0);
         net_saves_made++;
     }
@@ -3469,6 +3487,7 @@ int runahead_point(Cpu *c, u64 frame) {
         int r = rb_save(c, frame);
         rb_save_home_only = 0;
         if (r == 2) {   /* a load came back here: the real game, at the logic frame after R's */
+            logic_frame_loaded();
             double t = now_ms();
             ra_add(3, t - ra_t_load0);
             ra_ms_n++;
