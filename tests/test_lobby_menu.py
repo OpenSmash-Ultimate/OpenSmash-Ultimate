@@ -336,7 +336,7 @@ class Pages(MenuTest):
     def test_other_pages_as_before(self):
         m = self.menu()
         m.key('ESC')
-        display = ['Window', 'Frame pacing', 'Frames queued ahead'] + (['Run-ahead (experimental)'] if os.name == 'nt' else []) + ['Hide the mouse pointer', 'Frame rate in the corner', 'Window size',
+        display = ['Window', 'Frame pacing', 'Frames queued ahead'] + ['Hide the mouse pointer', 'Frame rate in the corner', 'Window size',
                    'Render scale'] + (['Graphics card'] if os.name == 'nt' else []) + (['Renderer'] if sys.platform != 'darwin' else [])
         self.assertEqual(m.labels(), display)
         m.type('2')
