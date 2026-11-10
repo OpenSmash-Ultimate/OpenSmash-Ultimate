@@ -944,6 +944,7 @@ static void submit(VkSemaphore wait, VkSemaphore signal) {
 static void pipeline_cache_tick(void);
 static void residents_retire(void);
 static void vk_present_(u64 guest, u32 width, u32 height);
+static void trial_passed(void);
 static int compose(VkCommandBuffer c, Surface *src, int show_overlay, const char *detail);
 static const char *vk_detail(int details);
 static VkImage win_image;
@@ -960,6 +961,7 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
     enter();
     hitch_present();
     gfx_stat_presented++;
+    if (gfx_stat_presented == 600) trial_passed();   /* (renderer = auto: past its first seconds) */
     unsigned bw, bh;
     if (display_take_size(&bw, &bh)) recreate = 1;   /* the window's new size (F11, a drag) */
     if (swapchain && wanted_mode() != present_mode) recreate = 1;
@@ -3992,7 +3994,17 @@ static int has_ext(const VkExtensionProperties *e, uint32_t n, const char *name)
     return 0;
 }
 
-const GfxBackend *vk_backend_start(char *why, size_t size) {
+/* renderer = auto's trial (gpu_vk.h): a file while the Vulkan back end has not yet shown its first 600 frames. */
+static char trial_path[1100];
+static int trial_open;
+static void trial_path_make(void) { snprintf(trial_path, sizeof trial_path, "%s/vulkan_auto_trial.txt", cache_dir()); }
+static void trial_passed(void) {   /* (vk_present_, at the 600th frame shown) */
+    if (!trial_open) return;
+    trial_open = 0;
+    DeleteFileA(trial_path);
+}
+
+const GfxBackend *vk_backend_start(char *why, size_t size, int automatic) {
     PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)vk_loader(why, size);
     if (!gipa) return NULL;
     InitializeCriticalSection(&lock);
@@ -4030,6 +4042,27 @@ const GfxBackend *vk_backend_start(char *why, size_t size) {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(physical, &props);
     snprintf(card, sizeof card, "%s", props.deviceName);
+    trial_path_make();
+    /* (auto: Vulkan on AMD's cards alone; SSBU_VK_AUTO_VENDOR=<hex PCI vendor> names another, to test auto elsewhere) */
+    unsigned auto_vendor = getenv("SSBU_VK_AUTO_VENDOR") ? (unsigned)strtoul(getenv("SSBU_VK_AUTO_VENDOR"), NULL, 16) : 0x1002;
+    if (automatic && props.vendorID != auto_vendor) {
+        snprintf(why, size, "%s is not an AMD card, Direct3D 11 is the default for it (renderer = vulkan to draw with Vulkan)", card);
+        vkDestroySurfaceKHR(instance, vk_surface, NULL);
+        vkDestroyInstance(instance, NULL);
+        vk_surface = VK_NULL_HANDLE;
+        instance = VK_NULL_HANDLE;
+        return NULL;
+    }
+    if (automatic && GetFileAttributesA(trial_path) != INVALID_FILE_ATTRIBUTES) {
+        snprintf(why, size, "the Vulkan renderer stopped before showing its first 600 frames the time before (%s; a crash, or the game closed early): "
+                 "Direct3D 11 this time. Settings > Display > Renderer = vulkan tries Vulkan again", trial_path);
+        vkDestroySurfaceKHR(instance, vk_surface, NULL);
+        vkDestroyInstance(instance, NULL);
+        vk_surface = VK_NULL_HANDLE;
+        instance = VK_NULL_HANDLE;
+        return NULL;
+    }
+    if (!automatic) DeleteFileA(trial_path);   /* (asked for by name: auto tries it again after this) */
     if (props.apiVersion < VK_API_VERSION_1_1) { snprintf(why, size, "%s has Vulkan %u.%u: 1.1 is needed", card, VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion)); return NULL; }
     vkGetPhysicalDeviceMemoryProperties(physical, &memory_props);
 
@@ -4165,6 +4198,16 @@ const GfxBackend *vk_backend_start(char *why, size_t size) {
     }
     if (scale < 0.5f || scale > 4) scale = 1;
     render_scale = scale;
+    if (automatic) {   /* (a trial until the 600th frame: vk_present_ takes the file away then) */
+        FILE *t = fopen(trial_path, "w");
+        if (t) {
+            fprintf(t, "renderer = auto started the Vulkan renderer; this file goes once it has shown 600 frames.\n"
+                       "While it is here, auto starts Direct3D 11 instead (renderer = vulkan in display.ini, or the\n"
+                       "settings menu, tries Vulkan again).\n");
+            fclose(t);
+            trial_open = 1;
+        }
+    }
     fprintf(stderr, "[vulkan] drawing with %s (Vulkan %u.%u.%u)%s: %u frames in flight, render scale %.3g, present modes%s%s\n",
             card, VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion), VK_API_VERSION_PATCH(props.apiVersion),
             float_controls ? ", float controls" : "", nframes, render_scale, have_immediate ? " immediate" : "", have_mailbox ? " mailbox" : "");
@@ -4173,7 +4216,8 @@ const GfxBackend *vk_backend_start(char *why, size_t size) {
 
 #else
 
-const struct GfxBackend *vk_backend_start(char *why, size_t size) {
+const struct GfxBackend *vk_backend_start(char *why, size_t size, int automatic) {
+    (void)automatic;
     snprintf(why, size, "this program has no Vulkan back end (Windows builds with the Vulkan headers have it)");
     return NULL;
 }

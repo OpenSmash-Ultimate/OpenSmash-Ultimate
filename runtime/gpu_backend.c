@@ -48,9 +48,15 @@ static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
 static BOOL CALLBACK choose(PINIT_ONCE o, PVOID p, PVOID *c) {
     (void)o; (void)p; (void)c;
     const GfxBackend *b = &D3D11;
-    if (display_renderer() == RENDERER_VULKAN) {
+    int asked = display_renderer();
+#ifdef _WIN32
+    int automatic = asked == RENDERER_DEFAULT;   /* (auto: Vulkan on an AMD card) */
+#else
+    int automatic = 0;
+#endif
+    if (asked == RENDERER_VULKAN || automatic) {
         char why[600];
-        const GfxBackend *v = vk_backend_start(why, sizeof why);
+        const GfxBackend *v = vk_backend_start(why, sizeof why, automatic);
         if (v) { b = v; gfx_renderer_chosen(RENDERER_VULKAN, NULL); }
         else gfx_renderer_chosen(RENDERER_DEFAULT, why);
     }

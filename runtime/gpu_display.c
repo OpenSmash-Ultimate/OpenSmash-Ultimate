@@ -161,14 +161,17 @@ static const char DEFAULT_INI[] =
 #ifndef __APPLE__
     "\n"
 #ifdef _WIN32
-    "; renderer = d3d11 | vulkan\n"
-    ";   d3d11:  Direct3D 11, the renderer the game is played and tested with.\n"
+    "; renderer = auto | direct3d11 | vulkan\n"
+    ";   auto:       Vulkan on an AMD graphics card, Direct3D 11 on any other (and whenever Vulkan cannot\n"
+    ";               start, or stopped the game in its first seconds the time before).\n"
+    ";   direct3d11: Direct3D 11 on any card.\n"
+    ";   vulkan:     Vulkan on any card (Direct3D 11 if it cannot start; the log says why).\n"
 #else
     "; renderer = dxvk | vulkan\n"
     ";   dxvk:   Direct3D 11 through DXVK, the renderer the game is played and tested with.\n"
-#endif
     ";   vulkan: the Vulkan renderer, in development. Until it can draw the game, the game checks Vulkan\n"
     ";           on this PC at its start, says what it found in its log, and draws as before.\n"
+#endif
     "renderer = " RENDERER_DEFAULT_NAME "\n"
 #endif
     ;
@@ -199,7 +202,11 @@ static void parse_render_scale(const char *v) {
 /* renderer = d3d11 | dxvk | metal (the system's own: renderer.h) | vulkan */
 static void parse_renderer(const char *v, const char *where) {
     int r = renderer_parse(v);
+#ifdef _WIN32
+    if (r < 0) fprintf(stderr, "[display] %s: renderer is auto, direct3d11 or vulkan, not '%s': auto it is\n", where, v);
+#else
     if (r < 0) fprintf(stderr, "[display] %s: renderer is %s or vulkan, not '%s': %s it is\n", where, RENDERER_DEFAULT_NAME, v, RENDERER_DEFAULT_NAME);
+#endif
     cfg.renderer = r < 0 ? RENDERER_DEFAULT : r;
 }
 
@@ -301,7 +308,7 @@ static float saved_render_scale;
 static int render_scale_saved;
 void display_set_render_scale(float scale) { saved_render_scale = scale; render_scale_saved = 1; }
 static int saved_renderer = -1;   /* (the same for the renderer: -1 none saved) */
-void display_set_renderer(int renderer) { saved_renderer = renderer == RENDERER_VULKAN ? RENDERER_VULKAN : RENDERER_DEFAULT; }
+void display_set_renderer(int renderer) { saved_renderer = renderer == RENDERER_VULKAN || renderer == RENDERER_D3D11 ? renderer : RENDERER_DEFAULT; }
 int display_overlay(void) { load(); return cfg.overlay; }
 float display_overlay_scale(void) { load(); return overlay_scale; }
 

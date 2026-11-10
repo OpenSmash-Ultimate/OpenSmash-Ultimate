@@ -302,7 +302,7 @@ namespace OpenSmash.Launcher
                 new Setting { Key = "pacing", Label = "Frame pacing", Values = new[] { "clock", "vrr", "display" }, Labels = new[] { "Steady 60 (any monitor)", "G-Sync / FreeSync monitor", "Follow the monitor's refresh" } },
                 new Setting { Key = "render_scale", Label = "Render scale", Values = new[] { "1", "auto", "1.5", "2", "3" }, Labels = new[] { "1: 1920x1080 (the game's own)", "Auto: as big as the window", "1.5: 2880x1620", "2: 3840x2160 (4K)", "3: 5760x3240" } },
                 new Setting { Key = "gpu", Label = "Graphics card", Values = new[] { "auto", "warp" }, Labels = new[] { "The fastest (auto)", "WARP (Windows itself, no card: slow)" } },
-                new Setting { Key = "renderer", Label = "Renderer", Values = new[] { "d3d11", "vulkan" }, Labels = new[] { "Direct3D 11 (default)", "Vulkan (in development)" } },
+                new Setting { Key = "renderer", Label = "Renderer", Values = new[] { "auto", "direct3d11", "vulkan" }, Labels = new[] { "Auto: Vulkan on AMD cards, Direct3D 11 on others", "Direct3D 11", "Vulkan" } },
                 new Setting { Key = "hide_cursor", Label = "Hide the mouse pointer", Values = new[] { "1", "0" }, Labels = new[] { "When it stops moving", "Keep it shown" } },
                 new Setting { Key = "overlay", Label = "Frame rate", Values = new[] { "1", "0" }, Labels = new[] { "Show it in the corner", "Hidden" } },
                 new Setting { Key = "volume", Label = "Volume", Slider = true },
@@ -1275,7 +1275,8 @@ namespace OpenSmash.Launcher
             _iniValues["pacing"] = D("pacing", "clock");
             _iniValues["render_scale"] = D("render_scale", "1");
             _iniValues["gpu"] = D("gpu", "auto");
-            _iniValues["renderer"] = D("renderer", "d3d11").Trim().ToLowerInvariant() is "vulkan" or "vk" ? "vulkan" : "d3d11";
+            // (runtime/renderer.h's names: d3d11, which older display.ini files carry, is auto)
+            _iniValues["renderer"] = D("renderer", "auto").Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
             _iniValues["hide_cursor"] = D("hide_cursor", "1");
             _iniValues["overlay"] = D("overlay", "1");
             _iniValues["volume"] = D("volume", "100");
@@ -1419,7 +1420,7 @@ namespace OpenSmash.Launcher
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "pacing", _iniValues.GetValueOrDefault("pacing", "clock"));
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "render_scale", _iniValues.GetValueOrDefault("render_scale", "1"));
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "gpu", _iniValues.GetValueOrDefault("gpu", "auto"));
-            SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "renderer", _iniValues.GetValueOrDefault("renderer", "d3d11"));
+            SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "renderer", _iniValues.GetValueOrDefault("renderer", "auto"));
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "hide_cursor", _iniValues.GetValueOrDefault("hide_cursor", "1"));
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "overlay", _iniValues.GetValueOrDefault("overlay", "1"));
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "volume", _iniValues.GetValueOrDefault("volume", "100"));

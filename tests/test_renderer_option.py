@@ -57,23 +57,25 @@ class RendererOption(unittest.TestCase):
 
     def test_names(self):
         out, _ = self.run_test('parse', 'vulkan', 'parse', 'Vulkan', 'parse', 'vk', 'parse', 'd3d11', 'parse', 'DXVK', 'parse', 'metal',
-                               'parse', 'auto', 'parse', 'opengl', 'parse', '')
-        self.assertEqual(out, ['parse vulkan -> 1 vulkan', 'parse Vulkan -> 1 vulkan', 'parse vk -> 1 vulkan', 'parse d3d11 -> 0 d3d11',
-                               'parse DXVK -> 0 d3d11', 'parse metal -> 0 d3d11', 'parse auto -> 0 d3d11', 'parse opengl -> -1 -',
-                               'parse  -> -1 -'])
+                               'parse', 'auto', 'parse', 'direct3d11', 'parse', 'DX11', 'parse', 'opengl', 'parse', '')
+        # (d3d11, the value every default display.ini before auto was written with, is auto; direct3d11 is Direct3D 11)
+        self.assertEqual(out, ['parse vulkan -> 1 vulkan', 'parse Vulkan -> 1 vulkan', 'parse vk -> 1 vulkan', 'parse d3d11 -> 0 auto',
+                               'parse DXVK -> 0 auto', 'parse metal -> 0 auto', 'parse auto -> 0 auto', 'parse direct3d11 -> 2 direct3d11',
+                               'parse DX11 -> 2 direct3d11', 'parse opengl -> -1 -', 'parse  -> -1 -'])
 
     def test_default_is_unchanged(self):
-        """No renderer key, or the default's name: Direct3D 11, and the start says nothing."""
+        """No renderer key, or the default's name: auto (gpu_backend.c's choice, not made here: Direct3D 11 starts),
+        and the start says nothing."""
         for ini in ('window = windowed\n', 'renderer = d3d11\n', 'renderer = auto   ; the default\n'):
             out, err = self.run_test('chosen', 'start', ini=ini)
-            self.assertEqual(out, ['chosen d3d11', 'start d3d11'], ini)
+            self.assertEqual(out, ['chosen auto', 'start auto'], ini)
             self.assertEqual([l for l in err if 'renderer' in l], [], ini)
 
     def test_vulkan_asked(self):
         """Vulkan checked (whatever this PC has), one line about it, and Direct3D 11 draws."""
         out, err = self.run_test('chosen', 'start', ini='renderer = vulkan\n')
         self.assertEqual(out[0], 'chosen vulkan')
-        self.assertEqual(out[1], 'start d3d11')   # (the Vulkan back end does not draw yet: Direct3D 11 does)
+        self.assertEqual(out[1], 'start auto')   # (gfx_renderer_start alone: the default, Direct3D 11, draws)
         said = [l for l in err if l.startswith('[gfx] renderer = vulkan')]
         self.assertEqual(len(said), 1, err)
         self.assertTrue(said[0].endswith('Direct3D 11 draws'), said)
@@ -81,33 +83,33 @@ class RendererOption(unittest.TestCase):
 
     def test_vulkan_without_loader(self):
         out, err = self.run_test('start', ini='renderer = vulkan\n', SSBU_VULKAN_LOADER='no-such-vulkan-loader.dll')
-        self.assertEqual(out, ['start d3d11'])
+        self.assertEqual(out, ['start auto'])
         self.assertIn('[gfx] renderer = vulkan: Vulkan cannot be used here: no Vulkan loader (no-such-vulkan-loader.dll): the graphics '
                       'driver installs it. Direct3D 11 draws', err)
 
     def test_environment_wins(self):
-        out, _ = self.run_test('chosen', ini='renderer = vulkan\n', renderer='d3d11')
-        self.assertEqual(out, ['chosen d3d11'])
+        out, _ = self.run_test('chosen', ini='renderer = vulkan\n', renderer='direct3d11')
+        self.assertEqual(out, ['chosen direct3d11'])
         out, _ = self.run_test('chosen', ini='renderer = d3d11\n', renderer='vulkan')
         self.assertEqual(out, ['chosen vulkan'])
 
     def test_unknown_value(self):
         out, err = self.run_test('chosen', ini='renderer = opengl\n')
-        self.assertEqual(out, ['chosen d3d11'])
-        self.assertTrue(any("renderer is d3d11 or vulkan, not 'opengl': d3d11 it is" in l for l in err), err)
+        self.assertEqual(out, ['chosen auto'])
+        self.assertTrue(any("renderer is auto, direct3d11 or vulkan, not 'opengl': auto it is" in l for l in err), err)
 
     def test_default_file(self):
         """The display.ini the game writes names the key, both values, and the default."""
         out, _ = self.run_test('default')
         text = '\n'.join(out)
-        self.assertIn('; renderer = d3d11 | vulkan', text)
-        self.assertIn('\nrenderer = d3d11', text)
+        self.assertIn('; renderer = auto | direct3d11 | vulkan', text)
+        self.assertIn('\nrenderer = auto', text)
         # (and it reads back as the default: the file is written when there is none)
         d = Path(tempfile.mkdtemp(dir=self.folder))
         env = {k: v for k, v in os.environ.items() if not k.upper().startswith('SSBU_')}
         r = subprocess.run([self.exe, 'chosen'], cwd=d, env=env, capture_output=True, text=True, timeout=60)
-        self.assertEqual(r.stdout.split(), ['chosen', 'd3d11'])
-        self.assertIn('renderer = d3d11', (d / 'display.ini').read_text())
+        self.assertEqual(r.stdout.split(), ['chosen', 'auto'])
+        self.assertIn('renderer = auto', (d / 'display.ini').read_text())
 
 
 @unittest.skipUnless(HAVE_CLANG, 'Windows with clang-cl only (deps\\llvm, or Visual Studio\'s C++ Clang tools)')
