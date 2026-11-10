@@ -76,6 +76,7 @@ void gpu_rb_semaphore(u64 g) {
     rbs_page[i % RBS] = pg;
     __atomic_store_n(&rbs_n, i + 1, __ATOMIC_RELEASE);
 }
+int gpu_rb_is_gpu_thread(void) { return rbw_mine; }
 u64 gpu_rb_sema_count(void) { return __atomic_load_n(&rbs_n, __ATOMIC_ACQUIRE); }
 u64 gpu_rb_sema_at(u64 i) { return gpu_rb_sema_count() - i > RBS ? 0 : rbs_page[i % RBS]; }
 int gpu_rb_written_at(u64 i, u64 *lo, u64 *hi) {
