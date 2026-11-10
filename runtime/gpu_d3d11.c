@@ -1105,6 +1105,18 @@ static void *prewarm_take(const Shader *s) {
     return obj;
 }
 
+/* How many compiler threads make prewarm programs at once. Every one of them while the game starts
+ * (PREWARM_FULL_MS: logos, the first loads), then prewarm_after: where the driver compiles each program at every
+ * start (25 ms each on a player's RTX 2060, 12,000 programs: five minutes on 4 threads, well into the first matches)
+ * the threads took the processor and the driver from the game's own frames, which dropped and hitched (owner's report
+ * 2026-11-10). SSBU_SHADER_PREWARM_THREADS sets prewarm_after (0: the prewarm stops there; what is left loads at
+ * first use). */
+#define PREWARM_FULL_MS 30000
+static LONG prewarm_after = 1;
+static LONG prewarm_running;   /* (under jobs_lock) */
+static int prewarm_room(void) {   /* (under jobs_lock) */
+    return GetTickCount64() - prewarm_t0 < PREWARM_FULL_MS || prewarm_running < prewarm_after;
+}
 static u32 dxbc_outputs(const u8 *code, size_t size);   /* (see "first draws") */
 
 /* (on a compiler thread) one prewarm job: the file, then both devices' objects */
@@ -1196,11 +1208,12 @@ static DWORD WINAPI compiler_main(void *arg) {
     int prewarms = me != &compilers[0];
     for (;;) {
         AcquireSRWLockExclusive(&jobs_lock);
-        while (!job_queue[0].head && !job_queue[1].head && !(prewarms && job_queue[2].head))
+        while (!job_queue[0].head && !job_queue[1].head && !(prewarms && job_queue[2].head && prewarm_room()))
             SleepConditionVariableSRW(&jobs_cv, &jobs_lock, INFINITE, 0);
         int q = job_queue[0].head ? 0 : job_queue[1].head ? 1 : 2;
         Shader *s = job_queue[q].head;
         if (!(job_queue[q].head = s->next_job)) job_queue[q].tail = NULL;
+        if (q == 2) prewarm_running++;
         ReleaseSRWLockExclusive(&jobs_lock);
         me->since_ms = GetTickCount64();
         me->job = s;
@@ -1209,6 +1222,10 @@ static DWORD WINAPI compiler_main(void *arg) {
             me->step = STEP_IDLE;
             me->job = NULL;
             free(s);
+            AcquireSRWLockExclusive(&jobs_lock);
+            prewarm_running--;
+            ReleaseSRWLockExclusive(&jobs_lock);
+            WakeConditionVariable(&jobs_cv);   /* (a thread held back by prewarm_room takes the next one, should this one get a job of the game's) */
             continue;
         }
         LONG state = make_ready(me, s);
@@ -1316,10 +1333,16 @@ static int prewarm_queue_file(const char *fname, Shader **head, Shader **tail, P
 
 /* (prewarm_main) the shipped list's programs whose files are in this cache, after the played ones: beside the exe,
  * else media\ (the working folder: the repository). *order grows to hold them; returns how many were queued, and in
- * *listed how many the list names. SSBU_SHADER_PREWARM_LIST=0: not read. */
+ * *listed how many the list names. The list only fills the queue up to PREWARM_LIST_TOTAL programs: a player whose
+ * cache already has that many played ones gets none (for him the list doubled the prewarm, 6,500 to 12,300 programs,
+ * past its memory budget and five minutes long; nine in ten of them are never drawn in a session).
+ * SSBU_SHADER_PREWARM_LIST=0: not read; a larger number is that total. */
+#define PREWARM_LIST_TOTAL 6000
 static u32 prewarm_queue_list(Shader **head, Shader **tail, Prewarm ***order, u32 *cap, u32 *queued, u32 *listed) {
-    const char *off = getenv("SSBU_SHADER_PREWARM_LIST");
-    if (off && *off == '0') return 0;
+    const char *set = getenv("SSBU_SHADER_PREWARM_LIST");
+    u32 total = set && *set ? (u32)strtoul(set, NULL, 10) : PREWARM_LIST_TOTAL;
+    if (set && *set && total < 2) total = total ? PREWARM_LIST_TOTAL : 0;   /* (=1 was "on" before the number meant a total) */
+    if (*queued >= total) return 0;
     FILE *f = NULL;
 #ifdef _WIN32
     char path[MAX_PATH + 64] = "";
@@ -1338,6 +1361,7 @@ static u32 prewarm_queue_list(Shader **head, Shader **tail, Prewarm ***order, u3
         line[m] = 0;
         if (!m || line[0] == '#') continue;
         (*listed)++;
+        if (*queued >= total) continue;
         snprintf(fname, sizeof fname, "v%u_%s.dxbc", SHADER_CACHE_VERSION, line);
         snprintf(file, sizeof file, "%s/%s", cache_dir(), fname);
         if (GetFileAttributesA(file) == INVALID_FILE_ATTRIBUTES) continue;   /* (not made by Prepare Shaders here) */
@@ -1363,6 +1387,8 @@ static DWORD WINAPI prewarm_main(void *unused) {
     const char *mb = getenv("SSBU_SHADER_PREWARM_MB");
     if (mb) prewarm_budget = strtoull(mb, NULL, 10) << 20;
     else prewarm_budget_default();
+    const char *threads = getenv("SSBU_SHADER_PREWARM_THREADS");
+    if (threads && *threads) prewarm_after = atoi(threads) > 0 ? atoi(threads) : 0;
     Prewarm *table = calloc(PREWARM_SLOTS, sizeof *table);
     prewarm_table = table;
     u32 order_cap = n ? n : 1024;   /* (grows for the shipped list: prewarm_queue_list) */
@@ -1385,7 +1411,7 @@ static DWORD WINAPI prewarm_main(void *unused) {
     ReleaseSRWLockExclusive(&jobs_lock);
     WakeAllConditionVariable(&jobs_cv);
     fprintf(stderr, "[gfx] prewarm: %u shaders from the disk cache, %u more from the shipped list (%u programs played), on %u threads\n",
-            queued - shipped, shipped, listed, ncompilers - 1);
+            queued - shipped, shipped, listed, ncompilers - 1, PREWARM_FULL_MS / 1000, (long)prewarm_after);
     if (warm_mode >= 2) warm_prewarmed(order, queued);
     free(order);
     return 0;
