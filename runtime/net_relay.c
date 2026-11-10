@@ -80,6 +80,7 @@
 #pragma comment(lib, "iphlpapi.lib")   /* (GetBestRoute: the gateway, for PCP and NAT-PMP) */
 #else
 #include <sys/select.h>
+#include <fcntl.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -231,8 +232,12 @@ static double connect_ms(const char *hostport) {
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     double ms = -1;
     if (s != INVALID_SOCKET) {
+#ifdef _WIN32
         u_long nb = 1;
         ioctlsocket(s, FIONBIO, &nb);
+#else
+        fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
+#endif
         LARGE_INTEGER f, t0, t1;
         QueryPerformanceFrequency(&f);
         QueryPerformanceCounter(&t0);
@@ -240,7 +245,10 @@ static double connect_ms(const char *hostport) {
         fd_set w, e;
         FD_ZERO(&w); FD_ZERO(&e); FD_SET(s, &w); FD_SET(s, &e);
         struct timeval tv = {1, 500000};
-        if (select(0, NULL, &w, &e, &tv) == 1 && FD_ISSET(s, &w)) {
+        int err = 0;
+        socklen_t el = sizeof err;   /* (a refused connect is writable too on Linux/macOS: its error says) */
+        if (select((int)s + 1, NULL, &w, &e, &tv) >= 1 && FD_ISSET(s, &w) && !FD_ISSET(s, &e)
+            && !getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&err, &el) && !err) {
             QueryPerformanceCounter(&t1);
             ms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
         }
@@ -250,8 +258,10 @@ static double connect_ms(const char *hostport) {
     return ms;
 }
 static void nearest_lobby(char *out, size_t n) {
+#ifdef _WIN32
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
     double best = -1;
     char said[512] = "";
     size_t l = 0;
