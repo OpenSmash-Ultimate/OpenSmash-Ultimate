@@ -119,6 +119,29 @@ class SaveJournalTests(unittest.TestCase):
             found.append(self.verify(folder))
         self.assertEqual(found, ['old'] * 2 + ['new'] * (steps - 2))
 
+    @unittest.skipIf(os.name == 'nt', 'the lock is a named mutex on Windows (fstest checks makes it fail there)')
+    def test_no_recovery_without_the_lock(self):
+        """A commit cut short after it was decided, and a lock file that cannot be opened (a folder
+        in its place): the next mount fails and touches nothing; once the lock can be taken, it
+        finishes the commit."""
+        folder = self.folder()
+        self.assertEqual(self.fstest(folder, 'old').returncode, 0)
+        self.assertEqual(self.fstest(folder, 'new', crash_at=3).returncode, CRASHED)
+        save = Path(folder) / 'save'
+        before = sorted(p.name for p in save.iterdir())
+        marker = [p for p in save.iterdir() if p.name.endswith('.commit')]
+        self.assertEqual(len(marker), 1, before)
+        lock = marker[0].with_suffix('.lock')
+        if lock.exists():
+            lock.unlink()
+        lock.mkdir()
+        r = self.fstest(folder, 'verify')
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('MountSaveData', r.stdout)
+        self.assertEqual({p.name for p in save.iterdir()} | {lock.name}, set(before) | {lock.name})   # (marker and working folder kept)
+        lock.rmdir()
+        self.assertEqual(self.verify(folder), 'new')
+
     def test_crash_while_recovering(self):
         """A commit cut short after it was decided (right after the rename, and before the marker
         is deleted), then the mount finishing it cut short at each of its steps too."""

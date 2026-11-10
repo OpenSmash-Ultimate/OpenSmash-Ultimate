@@ -731,7 +731,9 @@ static const char *data_root(char *out, size_t n, const char *leaf) {   /* nativ
  * Windows a committed file still open for reading is replaced as POSIX does it, and a read-only
  * mark is cleared first.
  * One process at a time commits or recovers: a lock file beside the save (save/<user>.lock),
- * on Windows a named mutex. One process mounts a save once. */
+ * on Windows a named mutex. Without the lock nothing is done: the mount fails, Commit fails
+ * and a decided commit waits (another process may be applying it). One process mounts a save
+ * once. */
 #define SHARE_ALL (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)   /* (a commit can move a file someone reads) */
 #define JOURNAL_FORMAT "ssbu-save-journal 1"   /* the journal's first line */
 #ifndef ERROR_SHARING_VIOLATION
@@ -742,13 +744,18 @@ static const char *data_root(char *out, size_t n, const char *leaf) {   /* nativ
 #endif
 
 #ifdef _WIN32
-typedef HANDLE SaveLock;
+typedef HANDLE SaveLock;   /* (NULL: not taken) */
 static SaveLock lock_saves(const char *root) {
     (void)root;
     HANDLE mx = CreateMutexA(NULL, FALSE, "Local\\ssbu-save-journal");
-    if (mx) WaitForSingleObject(mx, INFINITE);   /* (WAIT_ABANDONED: its holder died; it is ours now) */
-    return mx;
+    DWORD w = mx ? WaitForSingleObject(mx, INFINITE) : WAIT_FAILED;
+    if (w == WAIT_OBJECT_0 || w == WAIT_ABANDONED) return mx;   /* (WAIT_ABANDONED: its holder died; it is ours now) */
+    DWORD err = GetLastError();
+    if (mx) CloseHandle(mx);
+    SetLastError(err);
+    return NULL;
 }
+static int saves_locked(SaveLock mx) { return mx != NULL; }
 static void unlock_saves(SaveLock mx) { if (mx) { ReleaseMutex(mx); CloseHandle(mx); } }
 static int pid_alive(DWORD pid) {
     HANDLE p = OpenProcess(SYNCHRONIZE, FALSE, pid);
@@ -764,14 +771,19 @@ static int pid_alive(DWORD pid) {
  * before it, whole. */
 static void flush_dir(const char *path) { (void)path; }
 #else
-typedef int SaveLock;
+typedef int SaveLock;   /* (-1: not taken) */
 static SaveLock lock_saves(const char *root) {   /* (flock: the shim's objects have no names) */
     char path[1024], unix_path[1024];
     snprintf(path, sizeof path, "%s.lock", root);
-    int fd = open(rt_unix_path(path, unix_path, sizeof unix_path), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
-    if (fd >= 0) while (flock(fd, LOCK_EX) && errno == EINTR) {}
+    int fd = open(rt_unix_path(path, unix_path, sizeof unix_path), O_RDWR | O_CREAT | O_CLOEXEC, 0644), r = -1;
+    if (fd < 0 && (errno == EACCES || errno == EROFS))   /* (flock needs no write access: a lock file left read-only, or another user's) */
+        fd = open(unix_path, O_RDONLY | O_CLOEXEC);
+    while (fd >= 0 && (r = flock(fd, LOCK_EX)) && errno == EINTR) {}
+    if (fd >= 0 && r) { int err = errno; close(fd); errno = err; fd = -1; }
+    if (fd < 0) SetLastError(rt_win32_error(errno));
     return fd;
 }
+static int saves_locked(SaveLock fd) { return fd >= 0; }
 static void unlock_saves(SaveLock fd) { if (fd >= 0) close(fd); }
 static int pid_alive(DWORD pid) { return pid && pid <= 0x7FFFFFFF && (kill((pid_t)pid, 0) == 0 || errno == EPERM); }
 static void flush_dir(const char *path) {   /* the names in a folder: POSIX makes them durable only so */
@@ -1145,7 +1157,9 @@ static void journal_done(struct Mount *m) {
 static int journal_settle(struct Mount *m) {
     if (!m->pending) return 1;
     SaveLock l = lock_saves(m->root);
-    if (journal_apply(m->root) >= 0) journal_done(m);
+    if (!saves_locked(l))
+        fprintf(stderr, "[fs] %s: a decided save waits: the save lock could not be taken (error %lu)\n", m->root, (unsigned long)GetLastError());
+    else if (journal_apply(m->root) >= 0) journal_done(m);
     unlock_saves(l);
     return !m->pending;
 }
@@ -1194,6 +1208,10 @@ static u32 journal_commit(struct Mount *m) {
     char journal[1024], marker[1024], pid[16];
     if (writer_open(m->id)) return R_WRITE_FILE_OPEN;   /* ([sdk] FileSystemAccessor::Commit refuses too) */
     SaveLock l = lock_saves(m->root);
+    if (!saves_locked(l)) {
+        fprintf(stderr, "[fs] commit of %s refused: the save lock could not be taken (error %lu)\n", m->root, (unsigned long)GetLastError());
+        return R_HOST_FAILURE;
+    }
     if (journal_apply(m->root) < 0) { unlock_saves(l); return R_HOST_FAILURE; }   /* (a decided commit first, whichever process made it) */
     if (m->pending) journal_done(m);
     if (!m->ntomb && folder_empty(m->work)) { unlock_saves(l); return 0; }   /* (nothing changed) */
@@ -1253,7 +1271,7 @@ static u32 journal_mount(const char *name, const char *where) {
     if (!r) {
         make_dirs(root);
         SaveLock l = lock_saves(root);
-        r = journal_recover(root);
+        r = saves_locked(l) ? journal_recover(root) : R_HOST_FAILURE;   /* (nothing recovered or dropped without it) */
         if (!r) {   /* (left by a process that had this number before) */
             snprintf(work, sizeof work, "%s.work.%lu", root, (unsigned long)GetCurrentProcessId());
             snprintf(journal, sizeof journal, "%s.journal.%lu", root, (unsigned long)GetCurrentProcessId());
