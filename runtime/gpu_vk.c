@@ -1002,9 +1002,9 @@ static void vk_blit2d(const u32 *regs) {
 
 /* ---- the swap chain ------------------------------------------------------------------------------ */
 static VkSwapchainKHR swapchain;
-static VkImage swap_images[8];
-static VkSemaphore swap_ready[8];   /* (per image: its frame's work is done, it may be shown) */
-static u32 nswap, swap_w, swap_h;
+static VkImage *swap_images;
+static VkSemaphore *swap_ready;   /* (per image: its frame's work is done, it may be shown) */
+static u32 nswap, swap_cap, swap_w, swap_h;   /* (swap_cap: what the two arrays hold, grown to the images listed) */
 static VkPresentModeKHR present_mode;
 
 /* ---- how evenly the frames reach the display ------------------------------------------------- */
@@ -1091,8 +1091,28 @@ static int make_swapchain(void) {
         swapchain = VK_NULL_HANDLE;
         return 0;
     }
-    nswap = 8;
-    vkGetSwapchainImagesKHR(device, swapchain, &nswap, swap_images);
+    /* (all of its images listed: the count asked for is a least, a driver may make more, and any of them can be
+     * acquired; the arrays grow to hold them) */
+    uint32_t n = 0;
+    r = vkGetSwapchainImagesKHR(device, swapchain, &n, NULL);
+    if (r == VK_SUCCESS && n > swap_cap) {
+        VkImage *images = realloc(swap_images, sizeof *images * n);
+        if (images) swap_images = images;
+        VkSemaphore *ready = images ? realloc(swap_ready, sizeof *ready * n) : NULL;
+        if (ready) { swap_ready = ready; swap_cap = n; }
+    }
+    if (r == VK_SUCCESS && n && n <= swap_cap) r = vkGetSwapchainImagesKHR(device, swapchain, &n, swap_images);
+    if (r != VK_SUCCESS || !n || n > swap_cap) {
+        static int told;
+        if (!told++)
+            fprintf(stderr, "[vulkan] the swap chain (%ux%u, %s): its %u images cannot be listed (%d): no frames shown\n", ext.width, ext.height,
+                    mode_name(present_mode), n, (int)r);
+        vkDestroySwapchainKHR(device, swapchain, NULL);
+        swapchain = VK_NULL_HANDLE;
+        nswap = 0;
+        return 0;
+    }
+    nswap = n;
     VkSemaphoreCreateInfo sem = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, NULL, 0};
     for (u32 i = 0; i < nswap; i++) vkCreateSemaphore(device, &sem, NULL, &swap_ready[i]);
     swap_w = ext.width;
