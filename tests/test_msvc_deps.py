@@ -91,9 +91,9 @@ class KeptFilesTests(unittest.TestCase):
                          'VC/Tools/MSVC/14.51.36254/include/vcruntime.h')   # a headers package with another build number
         self.assertEqual(msvc_deps.vc_member('Contents/VC/Tools/MSVC/14.51.36254/include/cliext/list', f),
                          'VC/Tools/MSVC/14.51.36254/include/cliext/list')
-        for lib in ('libcmt.lib', 'libvcruntime.lib', 'oldnames.lib', 'LIBCMT.LIB'):
+        for lib in ('libcmt.lib', 'libvcruntime.lib', 'oldnames.lib', 'LIBCMT.LIB', 'msvcrt.lib', 'msvcprt.lib', 'vcruntime.lib'):
             self.assertEqual(msvc_deps.vc_member(f'Contents/VC/Tools/MSVC/{f}/lib/x64/{lib}', f), f'VC/Tools/MSVC/{f}/lib/x64/{lib}')
-        for name in (f'Contents/VC/Tools/MSVC/{f}/lib/x64/libcmtd.lib', f'Contents/VC/Tools/MSVC/{f}/lib/x64/msvcrt.lib',
+        for name in (f'Contents/VC/Tools/MSVC/{f}/lib/x64/libcmtd.lib', f'Contents/VC/Tools/MSVC/{f}/lib/x64/msvcrtd.lib',
                      f'Contents/VC/Tools/MSVC/{f}/lib/x64/libcmt.amd64.pdb', f'Contents/VC/Tools/MSVC/{f}/lib/x86/libcmt.lib',
                      f'Contents/VC/Tools/MSVC/{f}/lib/onecore/x64/libcmt.lib', f'Contents/VC/Tools/MSVC/{f}/bin/Hostx64/x64/cl.exe',
                      f'Contents/VC/Tools/MSVC/{f}/crt/src/vcruntime/frame.cpp', 'Contents/VC/Auxiliary/Build/vcvarsall.bat',

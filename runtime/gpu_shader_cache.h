@@ -53,6 +53,16 @@ static inline void shader_cache_file(char *out, size_t n, const char *dir, int s
              (unsigned long long)table_hash);
 }
 
+/* The Vulkan back end's SPIR-V made by glslang from the HLSL (gpu_spirv.h's spirv_from_hlsl), under
+ * the same key: "<dir>/g<version>_<vs|ps|cs>_<...the same...>.spv". Its version: the translator's,
+ * and the glslang dialect's own revision (bump the last digits for a change to it alone). */
+#define SHADER_CACHE_SPV_VERSION (SHADER_CACHE_VERSION * 100 + 1)
+static inline void shader_cache_file_spv(char *out, size_t n, const char *dir, int stage, u64 hash, u32 vs_outputs, u64 table_hash) {
+    snprintf(out, n, "%s/g%u_%s_%016llx_%08x_%016llx.spv", dir, SHADER_CACHE_SPV_VERSION,
+             stage == SHADER_VERTEX ? "vs" : stage == SHADER_PIXEL ? "ps" : "cs", (unsigned long long)hash, vs_outputs,
+             (unsigned long long)table_hash);
+}
+
 static inline void shader_cache_file_msl(char *out, size_t n, const char *dir, int stage, u64 hash, u32 vs_outputs, u64 table_hash) {
     snprintf(out, n, "%s/m%u_%s_%016llx_%08x_%016llx.metal", dir, SHADER_CACHE_MSL_VERSION,
              stage == SHADER_VERTEX ? "vs" : stage == SHADER_PIXEL ? "ps" : "cs", (unsigned long long)hash, vs_outputs,

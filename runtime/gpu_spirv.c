@@ -1,7 +1,7 @@
-/* DXBC to SPIR-V for the Vulkan back end in development, through vkd3d-shader (gpu_spirv.h: the
- * binding map). The same DXBC the Direct3D 11 back end makes and caches (gpu_shader.c's HLSL,
- * gpu_shader_cache.h's files, tools/shader_aot.py's cache filled ahead of time), so the
- * translator, the cache and the prewarm serve both back ends. */
+/* SPIR-V for the Vulkan back end (gpu_spirv.h: the binding map). DXBC through vkd3d-shader: the
+ * same DXBC the Direct3D 11 back end makes and caches (gpu_shader.c's HLSL, gpu_shader_cache.h's
+ * files, tools/shader_aot.py's cache filled ahead of time). Or the HLSL through glslang, in
+ * ssbu_glslang.dll (tools/glslang_shim.c), loaded here at the first ask. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,7 +17,7 @@
 /* (gpu_shader.h's stages, repeated so this file needs no runtime header) */
 enum { STAGE_VERTEX, STAGE_PIXEL, STAGE_COMPUTE };
 
-int spirv_available(void) { return 1; }
+int spirv_have_vkd3d(void) { return 1; }
 
 /* One binding a register of each kind, for one stage's visibility and set. */
 static unsigned map_stage(struct vkd3d_shader_resource_binding *b, enum vkd3d_shader_visibility visibility, unsigned set) {
@@ -100,7 +100,7 @@ int spirv_from_dxbc(const void *dxbc, size_t size, int stage, SpirvCode *out, ch
     return 1;
 }
 #else
-int spirv_available(void) { return 0; }
+int spirv_have_vkd3d(void) { return 0; }
 
 int spirv_from_dxbc(const void *dxbc, size_t size, int stage, SpirvCode *out, char *err, size_t err_size) {
     (void)dxbc; (void)size; (void)stage;
@@ -110,6 +110,88 @@ int spirv_from_dxbc(const void *dxbc, size_t size, int stage, SpirvCode *out, ch
     return 0;
 }
 #endif
+
+/* ---- glslang (ssbu_glslang.dll) ---------------------------------------------------------- */
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+typedef int (*HlslToSpirv)(int stage, const char *hlsl, unsigned **words, size_t *count, char *log, size_t log_size);
+typedef void (*SpirvWordsFree)(unsigned *words);
+static HlslToSpirv glslang_compile;
+static SpirvWordsFree glslang_free;
+static char glslang_why[300];
+static INIT_ONCE glslang_once = INIT_ONCE_STATIC_INIT;
+
+/* The DLL beside the program (not one found elsewhere on the search path). */
+static BOOL CALLBACK glslang_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
+    (void)once; (void)arg; (void)ctx;
+    wchar_t path[4096];   /* (wide: a folder named outside the system's code page) */
+    DWORD n = GetModuleFileNameW(NULL, path, 4000);
+    if (!n || n >= 4000) { snprintf(glslang_why, sizeof glslang_why, "the program's folder is unknown"); return TRUE; }
+    wchar_t *slash = wcsrchr(path, L'\\');
+    wcscpy(slash ? slash + 1 : path, L"ssbu_glslang.dll");
+    HMODULE m = LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (!m) {
+        DWORD e = GetLastError();
+        snprintf(glslang_why, sizeof glslang_why, e == ERROR_MOD_NOT_FOUND && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES
+                 ? "ssbu_glslang.dll needs the Visual C++ runtime (vcruntime140.dll, msvcp140.dll), which this PC lacks"
+                 : "no ssbu_glslang.dll beside the program (tools/glslang_lib.py makes it; error %lu)", (unsigned long)e);
+        return TRUE;
+    }
+    glslang_compile = (HlslToSpirv)(void (*)(void))GetProcAddress(m, "ssbu_hlsl_to_spirv");
+    glslang_free = (SpirvWordsFree)(void (*)(void))GetProcAddress(m, "ssbu_spirv_free");
+    if (!glslang_compile || !glslang_free) {
+        glslang_compile = NULL;
+        snprintf(glslang_why, sizeof glslang_why, "ssbu_glslang.dll is not this program's (its functions are missing)");
+    }
+    return TRUE;
+}
+
+int spirv_have_glslang(char *err, size_t err_size) {
+    InitOnceExecuteOnce(&glslang_once, glslang_load, NULL, NULL);
+    if (!glslang_compile && err_size) snprintf(err, err_size, "%s", glslang_why);
+    return glslang_compile != NULL;
+}
+
+int spirv_from_hlsl(const char *hlsl, int stage, SpirvCode *out, char *err, size_t err_size) {
+    out->code = NULL;
+    out->size = 0;
+    if (!spirv_have_glslang(err, err_size)) return 0;
+    unsigned *words = NULL;
+    size_t count = 0;
+    if (!glslang_compile(stage, hlsl, &words, &count, err, err_size) || !words || !count) {
+        if (words) glslang_free(words);
+        if (err_size && !*err) snprintf(err, err_size, "glslang made no SPIR-V");
+        return 0;
+    }
+    /* (copied: the DLL has a C runtime of its own, so its memory is given back to it) */
+    if (!(out->code = malloc(count * 4))) {
+        glslang_free(words);
+        if (err_size) snprintf(err, err_size, "out of memory");
+        return 0;
+    }
+    memcpy(out->code, words, count * 4);
+    out->size = count * 4;
+    glslang_free(words);
+    return 1;
+}
+#else
+int spirv_have_glslang(char *err, size_t err_size) {
+    if (err_size) snprintf(err, err_size, "glslang's library is made for Windows only");
+    return 0;
+}
+
+int spirv_from_hlsl(const char *hlsl, int stage, SpirvCode *out, char *err, size_t err_size) {
+    (void)hlsl; (void)stage;
+    out->code = NULL;
+    out->size = 0;
+    spirv_have_glslang(err, err_size);
+    return 0;
+}
+#endif
+
+int spirv_available(void) { return spirv_have_vkd3d() || spirv_have_glslang(NULL, 0); }
 
 void spirv_free(SpirvCode *code) {
     free(code->code);

@@ -256,7 +256,12 @@ static u64 vk_stat_dispatches, vk_stat_dispatched, vk_stat_clears_skipped, vk_st
 static u64 vk_stat_local_blocks, vk_ns_draw, vk_ns_dispatch, vk_ns_wait, vk_ns_present;
 static u64 vk_stat_pipelines, vk_stat_shaders, vk_stat_shader_failures, vk_stat_textures, vk_stat_upload_bytes, vk_stat_reused, vk_stat_passes;
 
+static VkCommandBuffer cmd(void);
+/* Something the GPU may still use, destroyed once the frame recording now is done. The frame is begun first: a
+ * slot not yet begun frees its graves as it begins, after waiting for its own last work only, while the frames
+ * after it may still use what was buried (the validation layer: buffers destroyed in use by command buffers). */
 static void bury_grave(Grave g) {
+    if (!frames[frame_at].recording) cmd();
     Frame *f = &frames[frame_at];
     if (f->ngraves == f->graves_cap) {
         u32 cap = f->graves_cap * 2 + 32;
@@ -897,20 +902,28 @@ static void readback_save(Readback *rb) {
     vkFreeMemory(device, rb->memory, NULL);
 }
 
-/* SSBU_CAPTURE=<dir> (with SSBU_CAPTURE_MAX, SSBU_CAPTURE_EVERY), as gpu_d3d11.c: the path of this
- * frame's picture, or NULL. */
+/* SSBU_CAPTURE=<dir> (with SSBU_CAPTURE_MAX, SSBU_CAPTURE_EVERY, and SSBU_CAPTURE_FROM / SSBU_CAPTURE_TO, a span of
+ * a test fight's frames), as gpu_d3d11.c: the path of this frame's picture, or NULL. The same fight frame captured
+ * under both back ends compares their pictures. */
+extern volatile long long test_fight_frame;
 static const char *capture_path(char *path, size_t size) {
     static const char *dir;
     static int checked, count, most = 40;
     static u64 last, every = 3000000000ull;
+    static long long from, to;
     if (!checked++) {
         dir = getenv("SSBU_CAPTURE");
         if (getenv("SSBU_CAPTURE_MAX")) most = atoi(getenv("SSBU_CAPTURE_MAX"));
         if (getenv("SSBU_CAPTURE_EVERY")) every = (u64)(atof(getenv("SSBU_CAPTURE_EVERY")) * 1e9);
+        if (getenv("SSBU_CAPTURE_FROM")) from = atoll(getenv("SSBU_CAPTURE_FROM"));
+        if (getenv("SSBU_CAPTURE_TO")) to = atoll(getenv("SSBU_CAPTURE_TO"));
     }
     if (!dir || !*dir || count >= most || rt_now_ns() - last < every) return NULL;
+    if ((from && test_fight_frame < from) || (to && test_fight_frame > to)) return NULL;
     last = rt_now_ns();
-    snprintf(path, size, "%s/vk_frame_%03d.bmp", dir, count++);
+    snprintf(path, size, "%s/vk_frame_%03d.bmp", dir, count);
+    if (test_fight_frame) fprintf(stderr, "[capture] vk_frame_%03d.bmp at fight frame %lld\n", count, test_fight_frame);
+    count++;
     return path;
 }
 
@@ -1631,6 +1644,7 @@ typedef struct VShader {
     VkShaderModule module;
     VkDescriptorUpdateTemplate tmpl;   /* (stage_set's writes for this program, made at its first set; 0 with tmpl_failed: none) */
     int tmpl_failed;
+    int glslang;        /* its SPIR-V is glslang's: SV_VertexID is the vertex index itself (see vk_draw) */
     char name[64];
     ShaderInfo info;
 } VShader;
@@ -1680,51 +1694,85 @@ static const char *cache_dir(void) {
     return dir;
 }
 
-/* The program's DXBC (the disk cache's, else fxc's, then kept there as gpu_d3d11.c keeps it), as SPIR-V,
- * as a shader module. */
-static void shader_make(VShader *s, const char *hlsl) {
-    char path[1200];
-    shader_cache_file(path, sizeof path, cache_dir(), s->stage, s->hash, s->vs_outputs, s->table_hash);
-    void *dxbc = NULL;
-    size_t size = 0;
-    ID3DBlob *blob = NULL;
+/* Which translator makes the SPIR-V (chosen once, at the first shader): glslang from the HLSL when its
+ * library loads (no fxc, no DXBC: gpu_spirv.h), else vkd3d-shader from the DXBC when the build has it.
+ * SSBU_VK_SPIRV=vkd3d or glslang asks for one; the other is taken if it is missing. */
+static int use_glslang(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *want = getenv("SSBU_VK_SPIRV");
+        char why[300] = "";
+        int glslang = spirv_have_glslang(why, sizeof why), vkd3d = spirv_have_vkd3d();
+        v = glslang && (!vkd3d || !want || _stricmp(want, "vkd3d") != 0);
+        fprintf(stderr, "[vulkan] shaders: %s%s%s\n", v ? "glslang (HLSL to SPIR-V, ssbu_glslang.dll)" : "vkd3d-shader (DXBC to SPIR-V)",
+                !glslang ? "; no glslang: " : "", !glslang ? why : "");
+    }
+    return v;
+}
+
+/* glslang for a game program of this stage (SHADER_*): SSBU_VK_GLSLANG_STAGES=<mask> (bit 0 vertex, 1 pixel,
+ * 2 compute; debugging, with both translators in the build) gives the others to vkd3d-shader. */
+static int glslang_for(int stage) {
+    static int mask = -1;
+    if (mask < 0) mask = getenv("SSBU_VK_GLSLANG_STAGES") ? atoi(getenv("SSBU_VK_GLSLANG_STAGES")) & 7 : 7;
+    return use_glslang() && (spirv_have_vkd3d() ? mask >> stage & 1 : 1);
+}
+
+/* A file's bytes (malloc'd; *size), or NULL. */
+static void *read_file(const char *path, size_t *size) {
+    void *data = NULL;
+    *size = 0;
     FILE *f = fopen(path, "rb");
-    if (f) {
-        fseek(f, 0, SEEK_END);
-        long n = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        if (n > 0 && (dxbc = malloc((size_t)n)) && fread(dxbc, 1, (size_t)n, f) == (size_t)n) size = (size_t)n;
-        else { free(dxbc); dxbc = NULL; }
-        fclose(f);
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (n > 0 && (data = malloc((size_t)n)) && fread(data, 1, (size_t)n, f) == (size_t)n) *size = (size_t)n;
+    else { free(data); data = NULL; }
+    fclose(f);
+    return data;
+}
+
+/* bytes written to `path` through a file of this process's, then renamed (another process may write it too) */
+static void write_file(const char *path, const void *data, size_t size) {
+    char tmp[1240];
+    snprintf(tmp, sizeof tmp, "%s.vk%lu.tmp", path, GetCurrentProcessId());
+    FILE *o = fopen(tmp, "wb");
+    if (o) {
+        int ok = fwrite(data, 1, size, o) == size;
+        if (fclose(o) || !ok || !MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) DeleteFileA(tmp);
     }
-    if (!dxbc) {
-        ID3DBlob *errors = NULL;
-        HRESULT hr = shader_cache_compile(hlsl, s->name, s->stage, &blob, &errors);
-        if (FAILED(hr) || !blob) {
-            fprintf(stderr, "[vulkan] %s: fxc failed: %.300s\n", s->name, errors ? (const char *)ID3D10Blob_GetBufferPointer(errors) : "?");
-            if (errors) ID3D10Blob_Release(errors);
-            if (blob) ID3D10Blob_Release(blob);
-            InterlockedExchange(&s->state, 2);
-            return;
-        }
-        if (errors) ID3D10Blob_Release(errors);
-        dxbc = ID3D10Blob_GetBufferPointer(blob);
-        size = ID3D10Blob_GetBufferSize(blob);
-        char tmp[1240];
-        snprintf(tmp, sizeof tmp, "%s.vk%lu.tmp", path, GetCurrentProcessId());
-        FILE *o = fopen(tmp, "wb");
-        if (o) {
-            int ok = fwrite(dxbc, 1, size, o) == size;
-            if (fclose(o) || !ok || !MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) DeleteFileA(tmp);
-        }
+}
+
+/* The program's SPIR-V by glslang: the disk cache's (shader_cache_file_spv), else made from the HLSL and kept there. */
+static int spirv_glslang(VShader *s, const char *hlsl, SpirvCode *spv) {
+    char path[1200];
+    shader_cache_file_spv(path, sizeof path, cache_dir(), s->stage, s->hash, s->vs_outputs, s->table_hash);
+    size_t size;
+    void *code = read_file(path, &size);
+    if (code && size >= 20 && size % 4 == 0 && *(const u32 *)code == 0x07230203) {
+        spv->code = code;
+        spv->size = size;
+        return 1;
     }
-    SpirvCode spv;
+    free(code);
     char err[600];
-    int ok = spirv_from_dxbc(dxbc, size, s->stage, &spv, err, sizeof err);
-    if (blob) ID3D10Blob_Release(blob);
-    else free(dxbc);
-    if (!ok) {
-        fprintf(stderr, "[vulkan] %s: no SPIR-V: %.400s\n", s->name, err);
+    if (!spirv_from_hlsl(hlsl, s->stage, spv, err, sizeof err)) {
+        fprintf(stderr, "[vulkan] %s: glslang failed: %.500s\n", s->name, err);
+        return 0;
+    }
+    write_file(path, spv->code, spv->size);
+    return 1;
+}
+
+/* The program's SPIR-V by vkd3d-shader: its DXBC (the disk cache's, else fxc's, then kept there as gpu_d3d11.c
+ * keeps it) translated. */
+static int spirv_vkd3d(VShader *s, const char *hlsl, SpirvCode *spv);
+
+/* The program as SPIR-V (spirv_glslang or spirv_vkd3d), as a shader module (and a compute program's pipeline). */
+static void shader_make(VShader *s, const char *hlsl) {
+    SpirvCode spv;
+    if (!(glslang_for(s->stage) ? spirv_glslang(s, hlsl, &spv) : spirv_vkd3d(s, hlsl, &spv))) {
         InterlockedExchange(&s->state, 2);
         return;
     }
@@ -1741,6 +1789,34 @@ static void shader_make(VShader *s, const char *hlsl) {
         if (!made) fprintf(stderr, "[vulkan] %s: cannot make its pipeline\n", s->name);
     }
     InterlockedExchange(&s->state, made ? 1 : 2);   /* (the module written before: a full barrier) */
+}
+
+static int spirv_vkd3d(VShader *s, const char *hlsl, SpirvCode *spv) {
+    char path[1200];
+    shader_cache_file(path, sizeof path, cache_dir(), s->stage, s->hash, s->vs_outputs, s->table_hash);
+    size_t size = 0;
+    void *dxbc = read_file(path, &size);
+    ID3DBlob *blob = NULL;
+    if (!dxbc) {
+        ID3DBlob *errors = NULL;
+        HRESULT hr = shader_cache_compile(hlsl, s->name, s->stage, &blob, &errors);
+        if (FAILED(hr) || !blob) {
+            fprintf(stderr, "[vulkan] %s: fxc failed: %.300s\n", s->name, errors ? (const char *)ID3D10Blob_GetBufferPointer(errors) : "?");
+            if (errors) ID3D10Blob_Release(errors);
+            if (blob) ID3D10Blob_Release(blob);
+            return 0;
+        }
+        if (errors) ID3D10Blob_Release(errors);
+        dxbc = ID3D10Blob_GetBufferPointer(blob);
+        size = ID3D10Blob_GetBufferSize(blob);
+        write_file(path, dxbc, size);
+    }
+    char err[600];
+    int ok = spirv_from_dxbc(dxbc, size, s->stage, spv, err, sizeof err);
+    if (blob) ID3D10Blob_Release(blob);
+    else free(dxbc);
+    if (!ok) fprintf(stderr, "[vulkan] %s: no SPIR-V: %.400s\n", s->name, err);
+    return ok;
 }
 
 static void shader_job(Job *j) {
@@ -1800,23 +1876,37 @@ static VShader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding
     *slot = (VSlot){g, key, fingerprint(p + skip, size - skip), size, s, 0};
     snprintf(s->name, sizeof s->name, "%s_%016llx%s", stage == SHADER_VERTEX ? "vs" : stage == SHADER_PIXEL ? "ps" : "cs", program_hash,
              alpha_tested ? "_alphatest" : "");
-    char *hlsl = stage == SHADER_COMPUTE ? shader_hlsl_cs(p, size, local, shared, &s->info, read_cbuf_word, &src)
+    int glslang = glslang_for(stage);   /* (its own dialect of the HLSL: gpu_shader.h) */
+    s->glslang = glslang;
+    char *hlsl = glslang ? (alpha_tested ? shader_translate_alpha_tested(SHADER_HLSL_GLSLANG, p, size, vs_outputs, &s->info, read_cbuf_word, &src)
+                                         : shader_translate(SHADER_HLSL_GLSLANG, p, size, stage, vs_outputs, local, shared, &s->info, read_cbuf_word, &src))
+               : stage == SHADER_COMPUTE ? shader_hlsl_cs(p, size, local, shared, &s->info, read_cbuf_word, &src)
                : alpha_tested            ? shader_hlsl_alpha_tested(p, size, vs_outputs, &s->info, read_cbuf_word, &src)
                                          : shader_hlsl_ex(p, size, stage, vs_outputs, &s->info, read_cbuf_word, &src);
     s->table_hash = table_hash(&s->info, &src);
     if (s->info.unsupported[0]) fprintf(stderr, "[gfx] %s: %s\n", s->name, s->info.unsupported);
     if (!hlsl) { s->state = 2; vk_stat_shader_failures++; return s; }
+    static const char *dump;   /* SSBU_DUMP_HLSL=<dir>: each program's HLSL, as gpu_d3d11.c writes it (debugging) */
+    static int dump_checked;
+    if (!dump_checked++) dump = getenv("SSBU_DUMP_HLSL");
+    if (dump) {
+        char path[1024];
+        snprintf(path, sizeof path, "%s/%s%s.hlsl", dump, s->name, glslang ? "_glslang" : "");
+        FILE *f = fopen(path, "w");
+        if (f) { fputs(hlsl, f); fclose(f); }
+    }
     s->hlsl = hlsl;
     s->job.run = shader_job;
     char cached_path[1200];
     shader_cache_file(cached_path, sizeof cached_path, cache_dir(), s->stage, s->hash, s->vs_outputs, s->table_hash);
-    int cached = GetFileAttributesA(cached_path) != INVALID_FILE_ATTRIBUTES;
+    int cached = glslang || GetFileAttributesA(cached_path) != INVALID_FILE_ATTRIBUTES;
     job_add(&s->job);
     if (wait_makes()) wait_for(&s->state);
     /* a program compiled before (its DXBC in the disk cache: only the SPIR-V and the module to make, milliseconds) is
      * waited for a little, as gpu_d3d11.c does: a skipped draw is an effect missing the first time it is used (the
      * owner's report 2026-11-09), a skipped launch leaves its outputs (skinned vertices) unwritten for a frame.
-     * Compute programs were waited for already; every stage now. One compiled from scratch (fxc) is not waited for. */
+     * Compute programs were waited for already; every stage now. One compiled from scratch (fxc) is not waited for;
+     * with glslang there is no fxc (its SPIR-V is made from the HLSL in milliseconds): every program is waited for. */
     if (cached || stage == SHADER_COMPUTE)
         for (u64 until = GetTickCount64() + 250; s->state == 0 && GetTickCount64() < until;) SwitchToThread();
     return s;
@@ -3051,8 +3141,11 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
             vkCmdBindIndexBuffer(c, ibuf, ioff, itype);
             bound.ibuf = ibuf; bound.ioff = ioff; bound.itype = itype;
         }
-        vkCmdDrawIndexed(c, regs[M_DRAW_INDEX_COUNT], 1, 0, (int32_t)regs[M_GLOBAL_BASE_VERTEX], 0);
-    } else vkCmdDraw(c, regs[M_VERTEX_ARRAY_COUNT], 1, regs[M_VERTEX_ARRAY_START], 0);
+        vkCmdDrawIndexed(c, regs[M_DRAW_INDEX_COUNT], 1, 0, vs->glslang ? 0 : (int32_t)regs[M_GLOBAL_BASE_VERTEX], 0);
+    } else vkCmdDraw(c, regs[M_VERTEX_ARRAY_COUNT], 1, vs->glslang ? 0 : regs[M_VERTEX_ARRAY_START], 0);
+    /* (Direct3D's SV_VertexID leaves out the base vertex and the first vertex - vkd3d-shader's SPIR-V reads it as
+     * VertexIndex - BaseVertex - while glslang's is VertexIndex: for its programs the draw gives no offset, as the
+     * vertices are pulled by the program, not by the input assembler, so the offset only ever showed in the index) */
     PHASE(7);
     vk_stat_drawn++;
     leave();
@@ -3226,7 +3319,7 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
 }
 
 /* ---- masked clears: a full-target triangle of the clear colour through the channel mask (gpu_d3d11.c's
- * clear_channels), its two small programs compiled at the first one (fxc, then vkd3d-shader) ---------- */
+ * clear_channels), its two small programs compiled at the first one (glslang; or fxc, then vkd3d-shader) ---- */
 static VkShaderModule clear_vs, clear_ps;
 static int clear_ready;   /* 0 not tried, 1 ready, -1 failed */
 static struct { VkFormat format; u32 mask; VkPipeline pipe; } clear_pipes[64];
@@ -3236,6 +3329,16 @@ static u64 vk_stat_masked_clears;
 static VkShaderModule small_module(const char *hlsl, const char *target, int stage) {
     ID3DBlob *code = NULL, *errors = NULL;
     VkShaderModule m = VK_NULL_HANDLE;
+    if (use_glslang()) {   /* (glslang: from the HLSL itself) */
+        SpirvCode spv;
+        char err[600];
+        if (spirv_from_hlsl(hlsl, stage, &spv, err, sizeof err)) {
+            VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, spv.size, spv.code};
+            if (vkCreateShaderModule(device, &ci, NULL, &m) != VK_SUCCESS) m = VK_NULL_HANDLE;
+            spirv_free(&spv);
+        } else fprintf(stderr, "[vulkan] a %s program of the back end's own: glslang failed: %.500s\n", target, err);
+        return m;
+    }
     if (SUCCEEDED(D3DCompile(hlsl, strlen(hlsl), "clear", NULL, NULL, "main", target, 0, 0, &code, &errors)) && code) {
         SpirvCode spv;
         char err[300];
@@ -3355,6 +3458,13 @@ static const char OVL_VS[] =   /* (gpu_overlay.c's, its vertices read from a raw
     "O main(uint id : SV_VertexID) { uint4 w = vtx.Load4(id * 20); uint col = vtx.Load(id * 20 + 16); O o;\n"
     "  o.p = float4(asfloat(w.xy) * inv_size.xy * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = asfloat(w.zw);\n"
     "  o.c = float4(col & 255, (col >> 8) & 255, (col >> 16) & 255, col >> 24) / 255.0f; return o; }\n";
+static const char OVL_VS_WORDS[] =   /* (the same for glslang: the raw buffer as Buffer<uint>, a uniform texel buffer as above) */
+    "cbuffer C : register(b0) { float4 inv_size; };\n"
+    "Buffer<uint> vtx : register(t18);\n"
+    "struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; float4 c : COLOR0; };\n"
+    "O main(uint id : SV_VertexID) { uint i = id * 5u; uint4 w = uint4(vtx[i], vtx[i + 1u], vtx[i + 2u], vtx[i + 3u]); uint col = vtx[i + 4u]; O o;\n"
+    "  o.p = float4(asfloat(w.xy) * inv_size.xy * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = asfloat(w.zw);\n"
+    "  o.c = float4(col & 255, (col >> 8) & 255, (col >> 16) & 255, col >> 24) / 255.0f; return o; }\n";
 static const char OVL_PS[] =
     "Texture2D t : register(t64); SamplerState s : register(s0);\n"
     "struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; float4 c : COLOR0; };\n"
@@ -3392,7 +3502,7 @@ static int compose_ready(VkCommandBuffer c) {
     win_srgb_format = other_gamma(swap_format, 1);
     full_vs = small_module(FULL_VS, "vs_5_0", SHADER_VERTEX);
     down_ps = small_module(DOWN_PS, "ps_5_0", SHADER_PIXEL);
-    ovl_vs = small_module(OVL_VS, "vs_5_0", SHADER_VERTEX);
+    ovl_vs = small_module(use_glslang() ? OVL_VS_WORDS : OVL_VS, "vs_5_0", SHADER_VERTEX);
     ovl_ps = small_module(OVL_PS, "ps_5_0", SHADER_PIXEL);
     if (!full_vs || !down_ps || !ovl_vs || !ovl_ps) { fprintf(stderr, "[vulkan] the window's programs could not be made: no overlay or menu\n"); return 0; }
     if (win_srgb_format != swap_format) down_pipe = small_pipeline(full_vs, down_ps, win_srgb_format, 0);
@@ -3944,14 +4054,22 @@ const GfxBackend *vk_backend_start(char *why, size_t size) {
     if (!has_ext(dext, ndext, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) { snprintf(why, size, "%s: no swap chains", card); return NULL; }
     /* draws go into dynamic renderings (VK_KHR_dynamic_rendering: core in Vulkan 1.3; drivers of
      * Vulkan 1.1 cards have it too, as an extension) */
-    VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamic = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR};
+    /* (and the draw parameters: vkd3d-shader's SPIR-V reads BaseVertex and BaseInstance - Vulkan 1.1's feature,
+     * which a device must be given to use them) */
+    VkPhysicalDeviceShaderDrawParametersFeatures drawp = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES};
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamic = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR, &drawp};
     VkPhysicalDeviceFeatures2 f2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &dynamic};
     if (vkGetPhysicalDeviceFeatures2) vkGetPhysicalDeviceFeatures2(physical, &f2);
     if (!has_ext(dext, ndext, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) || !dynamic.dynamicRendering) {
         snprintf(why, size, "%s: no dynamic rendering (VK_KHR_dynamic_rendering), which the Vulkan renderer draws with", card);
         return NULL;
     }
-    if (!spirv_available()) { snprintf(why, size, "this program has no shader translator for Vulkan (vkd3d-shader)"); return NULL; }
+    if (!spirv_available()) {
+        char g[300] = "";
+        spirv_have_glslang(g, sizeof g);
+        snprintf(why, size, "no shader translator for Vulkan: %s (and no vkd3d-shader in this build)", g);
+        return NULL;
+    }
     const char *want_ext[8] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME};
     uint32_t nwant = 2;
     if (has_ext(dext, ndext, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME)) want_ext[nwant++] = VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME;
@@ -3970,6 +4088,7 @@ const GfxBackend *vk_backend_start(char *why, size_t size) {
     enable.dualSrcBlend = have.dualSrcBlend;
     enable.depthClamp = have.depthClamp;
     enable.samplerAnisotropy = have.samplerAnisotropy;
+    enable.shaderImageGatherExtended = have.shaderImageGatherExtended;   /* (gathers with offsets: the SPIR-V declares it) */
     enable.textureCompressionBC = have.textureCompressionBC;
     enable.fragmentStoresAndAtomics = have.fragmentStoresAndAtomics;
     enable.vertexPipelineStoresAndAtomics = have.vertexPipelineStoresAndAtomics;
@@ -3978,7 +4097,9 @@ const GfxBackend *vk_backend_start(char *why, size_t size) {
     float priority = 1.0f;
     VkDeviceQueueCreateInfo qci = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, NULL, 0, queue_family, 1, &priority};
     enabled = enable;
-    VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamic_on = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR, NULL, VK_TRUE};
+    VkPhysicalDeviceShaderDrawParametersFeatures drawp_on = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES, NULL, VK_TRUE};
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamic_on = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR,
+                                                              drawp.shaderDrawParameters ? &drawp_on : NULL, VK_TRUE};
     VkDeviceCreateInfo dci = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &dynamic_on, 0, 1, &qci, 0, NULL, nwant, want_ext, &enable};
     if ((r = vkCreateDevice(physical, &dci, NULL, &device)) != VK_SUCCESS) { snprintf(why, size, "%s: vkCreateDevice failed (%d)", card, (int)r); return NULL; }
 #define LOAD_D(name) vk##name = (PFN_vk##name)vkGetDeviceProcAddr(device, "vk" #name);
