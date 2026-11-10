@@ -234,6 +234,33 @@ game's abort. `SSBU_CSS_FIT=0` leaves the hook out. For a test with many tiles w
 component's `N3_ROWS=<n>` (copies of a donor's row, `ssbu-recomp/mods/mods_n6_src/n6_roster.cpp`) with a screen made by
 `python tools/css_layout.py make --tiles <t> --out <tree>/mods/<name>`.
 
+## The Vulkan renderer's switches
+
+The Vulkan back end ([`gpu_vk.c`](../runtime/gpu_vk.c)) is chosen with `SSBU_RENDERER=vulkan` (or display.ini's `renderer`). These switches are for testing it; unset, each leaves the renderer as a player has it.
+
+| Variable | What it does |
+| :--- | :--- |
+| `SSBU_VK_WARM=0` | No warm start: nothing is made from the warm list when the game starts, so every pipeline is made at its first draw, as on a first run. The list is still kept up to date. |
+| `SSBU_SHADER_PREWARM_MB=<n>` | The warm start's memory budget, as Direct3D 11's prewarm has it: it stops once the process has grown by n MB (unset: a third of the PC's memory, 1 GB at least). |
+| `SSBU_VK_AUTO_VENDOR=<hex>` | The card maker `renderer=auto` takes for AMD, as a PCI vendor number (`10de` NVIDIA, `8086` Intel): the automatic choice, its trial and its fall back to Direct3D 11 tested on a PC without an AMD card. |
+| `SSBU_VK_WAIT=1` | A draw waits for its shaders and its pipeline instead of being left out while they are made: every draw of every frame is drawn. For comparing pictures (`SSBU_CAPTURE`), not for timing. |
+| `SSBU_VK_SPIRV=vkd3d` or `glslang` | The shader translator asked for, in a build that has both (glslang is the usual one); the other is taken when the one asked for is missing. |
+| `SSBU_VK_GLSLANG_STAGES=<mask>` | With both translators: the stages glslang takes (1 vertex, 2 pixel, 4 compute); vkd3d-shader takes the others. For finding which stage a wrong picture comes from. |
+| `SSBU_DUMP_HLSL=<folder>` | Each program's HLSL as it is given to the translator (glslang's dialect in files named `..._glslang`). |
+| `SSBU_VK_MEMO=0` or `check` | The draw's lookup memo (the pipeline and descriptor sets of a draw that repeats) off, or checked against a full lookup on every hit. |
+| `SSBU_VK_SYSMEM=1` | The back end's buffers in system memory, not in the card's own memory that the CPU can write (the usual place, where the card has some). |
+| `SSBU_VK_DRAWN_CLEARS=1` | Whole colour clears of floating-point targets are drawn as rectangles, as the masked ones are. |
+| `SSBU_CAPTURE=<folder>` | Frames shown written as pictures; `SSBU_CAPTURE_EVERY`, `SSBU_CAPTURE_FROM`, `SSBU_CAPTURE_TO` and `SSBU_CAPTURE_MAX` say which. |
+| `SSBU_HITCH=<ms>` | Both renderers: a `[hitch] frame N: X ms` line for every frame that took longer, with what the threads spent it on. |
+| `SSBU_AOT_SPIRV=0` | Prepare Shaders (`tools/shader_aot.py`, also `--no-spirv`): the Vulkan renderer's SPIR-V files are not made. |
+
+**What is kept on disk, and when a stall is left.** The files are in the shader cache's folder (`dump/shadercache`, or `SSBU_SHADER_CACHE`):
+
+- `g<version>.<library>_<stage>_<key>.spv`: a program's SPIR-V. `<version>` is `gpu_shader_cache.h`'s `SHADER_CACHE_SPV_VERSION` and `<library>` is what `ssbu_glslang.dll` says of itself (the shim's revision and glslang's version), so a new translator or a new DLL never reads the files of an older one. Prepare Shaders writes them with the DXBC files when `ssbu_glslang.dll` is beside its tool (`shaderaot --spirv`); the game writes the ones it had to translate itself. Programs with jump tables and compute programs are not in Prepare Shaders' pack: the game translates those at their first use.
+- `vulkan_<vendor>_<device>.warm`: the warm list, one record for each pipeline and compute program the game used on this card. At the next start, threads below the game's priority load the listed programs' SPIR-V and make the pipelines again (from `vulkan_<vendor>_<device>.pipelines`, the driver's pipeline cache as Vulkan hands it over) before the game asks for them. The log says `[vulkan] warm start: N programs loaded and M pipelines made of K listed in S s`, and a `[status]` line repeats it. While those threads work there is a `vulkan_<vendor>_<device>.warm.warming` file beside the list: one found at a start means the last warm start did not finish (the driver crashed on a record, or the game was closed in those seconds), so the list is started again and nothing is warmed that once. The list only grows, to 16384 records at most; deleting it is safe.
+
+So after Prepare Shaders alone no program is translated during play, but each pipeline is still made by the driver at its first draw; from the second start on, the pipelines a player has already seen are made before the first frame. To measure it: normal speed (no `SSBU_SPEED`), no `SSBU_VK_WAIT`, `SSBU_HITCH=25`, and the frames over 50 ms counted in the log; `SSBU_SHADER_CACHE=<an empty folder>` gives a cold run without touching the player's cache.
+
 ## An example run
 
 A made-up sequence for a run (its draw counts are made up too, so find yours with `SSBU_SEQ_LOG`):

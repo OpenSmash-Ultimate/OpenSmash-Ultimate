@@ -2,7 +2,8 @@
  * packs them) into the renderer's disk cache, translated and compiled exactly as the renderer
  * would, so that a program's first use loads its DXBC instead of compiling it.
  *
- * Usage: shaderaot <pack> <cache dir> [<part> <parts>] [--dry] [--keys <file>] [--serve]
+ * Usage: shaderaot <pack> <cache dir> [<part> <parts>] [--dry] [--keys <file>] [--serve] [--spirv]
+ *        shaderaot --spirv-version
  *   Part mode (the default, part 0 of 1): the process translates all vertex programs (their
  *   outputs are the paired pixel programs' inputs) and compiles the keys that are <part> modulo
  *   <parts> - by the key, not by where the program is in the pack (the same program is often
@@ -16,6 +17,12 @@
  *   compiled and answered on stdout with "done <key> <outcome> <ms>", outcome one of compiled,
  *   existing, tables, failed, untranslated, missing (not in the pack), until stdin ends. The
  *   last line on stderr says what it did, as in part mode.
+ *   --spirv (Windows, ssbu_glslang.dll beside this program): each key's SPIR-V for the Vulkan
+ *   back end too, made by glslang from the HLSL of its dialect as gpu_vk.c makes it at a first
+ *   draw, in the same folder under gpu_shader_cache.h's shader_cache_file_spv name. A key is
+ *   "existing" when both its files are there. --spirv-version prints the start of those names
+ *   ("g<version>.<library>", what tools/shader_aot.py looks for in the cache) and nothing else;
+ *   exit code 3 without the library.
  *
  * Pack: "SAOT", u32 count; then per program u32 stage (0 vertex, 1 pixel), u32 length, u32 pairs,
  * u32 pair[pairs] (the vertex programs found before it in its containers), then its bytes
@@ -53,6 +60,9 @@ static unsigned long long clock_ms(void) {
 #endif
 
 #include "../runtime/gpu_shader_cache.h"
+#ifdef _WIN32
+#include "../runtime/gpu_spirv.h"
+#endif
 
 u32 shader_size(const u8 *program, u32 max);
 #define MAX_SIZE 0x40000   /* (what the renderer reads of a program at most) */
@@ -120,7 +130,7 @@ static u32 pixel_masks(Program *p, const Program *prog, u32 total) {
     return n;
 }
 
-static struct { u32 compiled, existing, tables, failed, translate_failed, keys; } count;
+static struct { u32 compiled, existing, tables, failed, translate_failed, keys, spirv, spirv_failed; } count;
 
 /* How far this part is, for shader_aot.py's progress bar: "progress <done> <of>" on stderr, counted
    in keys (one compile each, or a look in the cache): first the total, then every 16th and the last. */
@@ -160,6 +170,56 @@ static int compile_to(const char *hlsl, const char *name, int stage, const char 
     if (errors) errors->lpVtbl->Release(errors);
     return ok;
 }
+
+/* ---- --spirv: the Vulkan back end's file of a key ------------------------------------------------- */
+static int spirv_on;   /* --spirv, and glslang's library is there */
+enum { SPV_OFF, SPV_EXISTING, SPV_MADE, SPV_TABLES, SPV_FAILED };
+
+#ifdef _WIN32
+/* A key's SPIR-V, if its file is not there yet: the program in the glslang dialect (gpu_vk.c's
+ * find_shader), through glslang, written dated as not yet used. file_hash: the cache's (an
+ * alpha-tested variant's salted one). */
+static int spirv_to(Program *p, int stage, u32 vs_outputs, int alpha, u64 file_hash, const char *name, const char *dir) {
+    if (!spirv_on) return SPV_OFF;
+    char path[1200], tmp[1300], err[600];
+    shader_cache_file_spv(path, sizeof path, dir, stage, file_hash, vs_outputs, 0, spirv_glslang_version());
+    if (exists(path)) return SPV_EXISTING;
+    ShaderInfo info;
+    char *volatile hlsl = NULL;
+    if (!setjmp(on_fatal))
+        hlsl = alpha ? shader_translate_alpha_tested(SHADER_HLSL_GLSLANG, p->bytes, p->size, vs_outputs, &info, zero_cbuf, NULL)
+                     : shader_translate(SHADER_HLSL_GLSLANG, p->bytes, p->size, stage, vs_outputs, NULL, 0, &info, zero_cbuf, NULL);
+    if (!hlsl) { count.spirv_failed++; return SPV_FAILED; }
+    if (info.ntables) { free(hlsl); return SPV_TABLES; }   /* (its key depends on a draw's constant buffers) */
+    SpirvCode spv;
+    err[0] = 0;
+    int ok = spirv_from_hlsl(hlsl, stage, &spv, err, sizeof err);
+    free(hlsl);
+    if (!ok) {
+        count.spirv_failed++;
+        fprintf(stderr, "%s: glslang failed: %.500s\n", name, err);
+        return SPV_FAILED;
+    }
+    snprintf(tmp, sizeof tmp, "%s.%lu.tmp", path, process_id());
+    FILE *f = fopen(tmp, "wb");
+    size_t wrote = f ? fwrite(spv.code, 1, spv.size, f) : 0;
+    if (f && (fclose(f) || wrote != spv.size)) { DeleteFileA(tmp); f = NULL; }
+    spirv_free(&spv);
+    if (!f) {
+        count.spirv_failed++;
+        fprintf(stderr, "%s: the cache file could not be written: %s\n", name, tmp);
+        return SPV_FAILED;
+    }
+    publish(tmp, path);
+    count.spirv++;
+    return SPV_MADE;
+}
+#else
+static int spirv_to(Program *p, int stage, u32 vs_outputs, int alpha, u64 file_hash, const char *name, const char *dir) {
+    (void)p; (void)stage; (void)vs_outputs; (void)alpha; (void)file_hash; (void)name; (void)dir;
+    return SPV_OFF;   /* (glslang's library is made for Windows only) */
+}
+#endif
 
 /* Sets of keys: the ones this process has seen (the same program is often packed more than
  * once), and --keys' list. */
@@ -248,7 +308,7 @@ static int serve_keys(Program *prog, u32 total, const char *dir) {
             /* (the alpha test's salt, as gpu_d3d11.c's find_shader_ex adds it to the cache key) */
             u64 file_hash = alpha ? (p->hash ^ 0x616C706861743032ull) * 1099511628211ull : p->hash;
             shader_cache_file(path, sizeof path, dir, stage, file_hash, vs_outputs, 0);
-            if (exists(path)) { count.existing++; outcome = "existing"; }
+            if (exists(path)) outcome = "existing";
             else {
                 char *hlsl = alpha ? shader_hlsl_alpha_tested(p->bytes, p->size, vs_outputs, &info, zero_cbuf, NULL) : translate(p, vs_outputs, &info);
                 if (!hlsl) { count.translate_failed++; outcome = "untranslated"; }
@@ -256,25 +316,42 @@ static int serve_keys(Program *prog, u32 total, const char *dir) {
                 else outcome = compile_to(hlsl, name, stage, path) ? "compiled" : "failed";
                 free(hlsl);
             }
+            /* (the Vulkan back end's file too; a key is "existing" when nothing was left to make) */
+            if (outcome[0] == 'e' || outcome[0] == 'c') {
+                int v = spirv_to(p, stage, vs_outputs, alpha, file_hash, name, dir);
+                if (v == SPV_FAILED) outcome = "failed";
+                else if (v == SPV_MADE) outcome = "compiled";
+            }
+            if (outcome[0] == 'e') count.existing++;
         }
         if (stage == SHADER_VERTEX) printf("done vs %016llx %s %llu\n", hash, outcome, clock_ms() - t0);
         else printf("done %s %016llx %08x %s %llu\n", alpha ? "pa" : "ps", hash, mask, outcome, clock_ms() - t0);
         fflush(stdout);
     }
+    if (spirv_on) fprintf(stderr, "spirv: %u made, %u failures\n", count.spirv, count.spirv_failed);
     fprintf(stderr, "served: %u keys; %u compiled, %u already cached, %u with jump tables (left out), %u fxc failures, %u not translated\n",
             count.keys, count.compiled, count.existing, count.tables, count.failed, count.translate_failed);
     return 0;
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3) { fprintf(stderr, "usage: shaderaot <pack> <cache dir> [<part> <parts>] [--dry] [--keys <file>] [--serve]\n"); return 2; }
+#ifdef _WIN32
+    if (argc == 2 && !strcmp(argv[1], "--spirv-version")) {
+        char why[300];
+        if (!spirv_have_glslang(why, sizeof why)) { fprintf(stderr, "%s\n", why); return 3; }
+        printf("g%u.%08x\n", SHADER_CACHE_SPV_VERSION, spirv_glslang_version());
+        return 0;
+    }
+#endif
+    if (argc < 3) { fprintf(stderr, "usage: shaderaot <pack> <cache dir> [<part> <parts>] [--dry] [--keys <file>] [--serve] [--spirv]\n"); return 2; }
     const char *dir = argv[2];
-    int dry = 0, serve = 0, positional = 0;
+    int dry = 0, serve = 0, positional = 0, spirv = 0;
     part = 0;
     parts = 1;
     for (int a = 3; a < argc; a++) {
         if (!strcmp(argv[a], "--dry")) dry = 1;
         else if (!strcmp(argv[a], "--serve")) serve = 1;
+        else if (!strcmp(argv[a], "--spirv")) spirv = 1;
         else if (argv[a][0] != '-' && positional < 2) {   /* <part> <parts> */
             if (positional++ == 0) part = (u32)atoi(argv[a]); else parts = (u32)atoi(argv[a]);
         }
@@ -295,6 +372,15 @@ int main(int argc, char **argv) {
         else { fprintf(stderr, "unknown argument %s\n", argv[a]); return 2; }
     }
     if (!parts || part >= parts) { fprintf(stderr, "bad part %u of %u\n", part, parts); return 2; }
+#ifdef _WIN32
+    if (spirv && !dry) {
+        char why[300];
+        spirv_on = spirv_have_glslang(why, sizeof why);
+        if (!spirv_on) fprintf(stderr, "--spirv: %s: no SPIR-V is made\n", why);
+    }
+#else
+    if (spirv) fprintf(stderr, "--spirv: glslang's library is made for Windows only: no SPIR-V is made\n");
+#endif
     FILE *f = fopen(argv[1], "rb");
     if (!f) { fprintf(stderr, "cannot open %s\n", argv[1]); return 1; }
     _fseeki64(f, 0, SEEK_END);
@@ -369,11 +455,16 @@ int main(int argc, char **argv) {
             shader_cache_file(path, sizeof path, dir, SHADER_VERTEX, p->hash, 0, 0);
             if (dry) { printf("vs %016llx %u\n", (unsigned long long)p->hash, p->size); continue; }
             if (p->ntables) { count.tables++; continue; }
-            if (exists(path)) { count.existing++; continue; }
-            char *hlsl = translate(p, 0, &info);
-            if (!hlsl) { count.translate_failed++; continue; }
-            compile_to(hlsl, name, SHADER_VERTEX, path);
-            free(hlsl);
+            int made = 1;
+            if (exists(path)) made = 0;
+            else {
+                char *hlsl = translate(p, 0, &info);
+                if (!hlsl) { count.translate_failed++; continue; }
+                int ok = compile_to(hlsl, name, SHADER_VERTEX, path);
+                free(hlsl);
+                if (!ok) continue;
+            }
+            if (spirv_to(p, SHADER_VERTEX, 0, 0, p->hash, name, dir) <= SPV_EXISTING && !made) count.existing++;
             continue;
         }
         if (p->stage != SHADER_PIXEL || p->size <= 0x50) continue;
@@ -384,15 +475,20 @@ int main(int argc, char **argv) {
             snprintf(name, sizeof name, "ps_%016llx", (unsigned long long)p->hash);
             shader_cache_file(path, sizeof path, dir, SHADER_PIXEL, p->hash, p->masks[m], 0);
             if (dry) { printf("ps %016llx %08x %u\n", (unsigned long long)p->hash, p->masks[m], p->size); continue; }
-            if (exists(path)) { count.existing++; continue; }
-            char *hlsl = translate(p, p->masks[m], &info);
-            if (!hlsl) { count.translate_failed++; continue; }
-            if (info.ntables) count.tables++;
-            else compile_to(hlsl, name, SHADER_PIXEL, path);
-            free(hlsl);
+            int made = 1;
+            if (exists(path)) made = 0;
+            else {
+                char *hlsl = translate(p, p->masks[m], &info);
+                if (!hlsl) { count.translate_failed++; continue; }
+                int ok = info.ntables ? (count.tables++, 0) : compile_to(hlsl, name, SHADER_PIXEL, path);
+                free(hlsl);
+                if (!ok) continue;
+            }
+            if (spirv_to(p, SHADER_PIXEL, p->masks[m], 0, p->hash, name, dir) <= SPV_EXISTING && !made) count.existing++;
         }
     }
     fprintf(stderr, "progress %u %u\n", progress_done, progress_of);
+    if (spirv_on) fprintf(stderr, "spirv: %u made, %u failures\n", count.spirv, count.spirv_failed);
     fprintf(stderr, "part %u/%u: %u keys; %u compiled, %u already cached, %u with jump tables (left out), %u fxc failures, %u not translated\n",
             part, parts, count.keys, count.compiled, count.existing, count.tables, count.failed, count.translate_failed);
     return 0;

@@ -35,6 +35,11 @@ int spirv_have_vkd3d(void);
 /* glslang's library, ssbu_glslang.dll (tools/glslang_lib.py: Windows), loaded at the first ask:
  * 1 if it is there and loads; 0 otherwise, `err` (if given) says why. */
 int spirv_have_glslang(char *err, size_t err_size);
+/* That library's version, which its SPIR-V files are named by (gpu_shader_cache.h's
+ * shader_cache_file_spv): the shim's revision and glslang's version in one number
+ * (tools/glslang_shim.c's ssbu_glslang_version). 0 without the library, and for one from before
+ * it said its version. */
+unsigned spirv_glslang_version(void);
 /* gpu_shader.c's HLSL of its SHADER_HLSL_GLSLANG dialect to SPIR-V 1.3 for Vulkan 1.1, through
  * glslang's HLSL front end, with the same binding map and descriptor kinds as spirv_from_dxbc's
  * (its Buffer<uint>s uniform texel buffers, as vkd3d-shader makes the ByteAddressBuffers' DXBC),

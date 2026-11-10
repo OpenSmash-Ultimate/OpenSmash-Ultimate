@@ -17,6 +17,7 @@
 #include <windows.h>
 
 #include <glslang/Include/glslang_c_interface.h>
+#include <glslang/build_info.h>
 #include <glslang/Public/resource_limits_c.h>
 
 #include "../runtime/gpu_spirv.h"
@@ -28,6 +29,15 @@ static BOOL CALLBACK start(PINIT_ONCE o, PVOID arg, PVOID *ctx) {
 }
 
 __declspec(dllexport) void ssbu_spirv_free(uint32_t *words) { free(words); }
+
+/* What made the SPIR-V: this file's revision (bump SHIM_REVISION when what it asks of glslang or
+ * rewrites in its SPIR-V changes) and glslang's version, as revision << 24 | major << 16 |
+ * minor << 8 | patch. The cache's file names carry it (gpu_shader_cache.h's
+ * shader_cache_file_spv), so another DLL never reads this one's files. Never 0. */
+#define SHIM_REVISION 1
+__declspec(dllexport) unsigned ssbu_glslang_version(void) {
+    return (unsigned)SHIM_REVISION << 24 | (GLSLANG_VERSION_MAJOR & 0xFF) << 16 | (GLSLANG_VERSION_MINOR & 0xFF) << 8 | (GLSLANG_VERSION_PATCH & 0xFF);
+}
 
 /* stage: 0 vertex, 1 pixel, 2 compute (gpu_shader.h's SHADER_*). 1 and a malloc'd SPIR-V (free it with
  * ssbu_spirv_free; count in 32-bit words), or 0 with glslang's messages in log. */
