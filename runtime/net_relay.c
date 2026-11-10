@@ -300,6 +300,9 @@ int net_rollback_default(void) {
     char line[256], host[256] = "";
     const char *h = getenv("SSBU_NET_HOST"), *r = getenv("SSBU_NET_RELAY");
     v = 0;
+    /* This can run before backend registration (the rollback constructor). */
+    const char *backend = getenv("SSBU_NET_BACKEND");
+    if (backend && !_stricmp(backend, "yuzu")) return v;
     /* (off unless asked for: online_rollback.txt "on", the settings menu's Online > Rollback netcode. The game's
      * own netcode is the default until rollback passes two-PC tests; alpha.3's players found it unplayable) */
     if (!(settings_line_read(config_path(CONFIG_ONLINE_ROLLBACK), line, sizeof line) && !_strnicmp(line, "on", 2))) return v;
@@ -321,8 +324,16 @@ static int protocol_from_file(int otherwise) {
     return v == NET_PROTOCOL || v == NET_PROTOCOL_V3 ? v : otherwise;
 }
 
+const NetBackend *net_backend_candidate, *net_backend;
+NetLdnSink net_backend_ldn_sink;
+
 static void configure(void) {
     if (configured >= 0) return;
+    if (net_backend_candidate && net_backend_candidate->selected()) {
+        net_backend=net_backend_candidate; configured=1;
+        const char *log=getenv("SSBU_NET_LOG"); if(log) logging=atoi(log);
+        return;
+    }
     const char *h = getenv("SSBU_NET_HOST"), *r = getenv("SSBU_NET_RELAY"), *v;
     hosting = h && *h && strcmp(h, "0");
     if ((v = getenv("SSBU_NET_PORT")) && atoi(v) > 0 && atoi(v) < 65536) port = (u16)atoi(v);
@@ -360,7 +371,7 @@ static void configure(void) {
 static void start(void);
 int net_configured(void) { start(); return configured; }
 int net_log(void) { configure(); return logging; }
-const char *net_player_name(void) { configure(); return name; }
+const char *net_player_name(void) { configure(); return net_backend ? net_backend->name() : name; }
 const char *net_relay_address(void) { configure(); return !hosting && !lan_mode && relay_text[0] ? relay_text : NULL; }
 
 /* ---- the relay (host mode) ------------------------------------------------------------ */
@@ -804,10 +815,10 @@ static u32 member_ips[ROOM_MEMBERS];      /* (a private room's: its MEMBERS, thi
 static int member_count;
 static SRWLOCK members_lock = SRWLOCK_INIT;
 
-u32 net_local_ip(void) { start(); return joined ? my_ip : 0; }
-int net_protocol_wanted(void) { configure(); return proto_wanted; }
+u32 net_local_ip(void) { start(); return net_backend ? net_backend->ip() : joined ? my_ip : 0; }
+int net_protocol_wanted(void) { configure(); return net_backend ? 0 : proto_wanted; }
 int net_protocol_spoken(void) { start(); return joined ? (int)proto : 0; }
-int net_unreachable(void) { start(); return configured && !joined && now_ms() - unjoined_since > UNREACHABLE_MS; }
+int net_unreachable(void) { start(); return net_backend ? net_backend->unreachable() : configured && !joined && now_ms() - unjoined_since > UNREACHABLE_MS; }
 int net_lobby(void) { start(); return joined && lobby; }
 
 /* ---- rollback messages (net.h's NET_RB_PORT; SSBU_RB_NET=relay, hle_rb_relay.c) --------------
@@ -1276,6 +1287,7 @@ static void local_address(void) {   /* this player's own address and port, for p
 /* To one player (straight there while a direct path works, else through the lobby), or to the
  * room: straight to each player reached directly, through the lobby to the rest. */
 void net_send(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const void *data, u32 len) {
+    if (net_backend) { net_backend->send(src_ip,src_port,dst_ip,dst_port,data,len); return; }
     if (!joined || client_sock == INVALID_SOCKET || len > 65000) return;
     enum { ROOM = 4 + 1 + 4 * PEERS_MAX };   /* (before the DATA body: room for the longest header, BCAST's) */
     u8 stack[1600], *buf = ROOM + 12 + len <= sizeof stack ? stack : malloc(ROOM + 12 + len);
@@ -2745,6 +2757,7 @@ static void start(void) {
     InitOnceBeginInitialize(&once, 0, &pending, NULL);
     if (!pending) return;
     configure();
+    if (net_backend) { net_backend->start(); InitOnceComplete(&once,0,NULL); return; }
     if (configured) {
 #ifdef _WIN32
         WSADATA wsa;
@@ -2817,6 +2830,7 @@ int net_peer_quality(NetPeerQ *out, int max) {
 
 void net_status(char *out, size_t n) {
     start();
+    if (net_backend) { net_backend->status(out,n); return; }
     if (!configured) { if (n) out[0] = 0; return; }
     if (reject_text[0] && !joined) { snprintf(out, n, "Netplay: %s%s%s", reject_text, reject_detail[0] ? "\n" : "", reject_detail); return; }
     if (lan_mode && !joined && lan_state != NET_LAN_FOUND) { snprintf(out, n, "Netplay: looking for a room on this network..."); return; }

@@ -292,6 +292,7 @@ namespace OpenSmash.Launcher
                 new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "code", "server", "direct" } },
                 new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "pads" } },
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
+                new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
             };
 
             _settings = new[]
@@ -1102,6 +1103,37 @@ namespace OpenSmash.Launcher
             if (m.HasChips || !string.IsNullOrEmpty(m.Meta)) h += 26;
             if (!string.IsNullOrEmpty(m.About)) h += 44;
             return Math.Max(68, h + 16);
+        }
+
+        // ---- Storage: where dump\ and build\ live (tools/data_location.py), and moving them to another drive ----
+        string _storageText = "";
+        bool _storageBusy;
+        async Task StorageStatusAsync()
+        {
+            if (_storageBusy) return;
+            _storageBusy = true; _storageText = "Looking…"; Invalidate();
+            string output = "";
+            int code = await Task.Run(() => RunPython(new[] { Path.Combine(_repo, "tools", "data_location.py") }, out output));
+            _storageText = code == 0 ? output.Trim() : "Could not read where the folders are:\n" + output.Trim();
+            _storageBusy = false; Invalidate();
+        }
+        async Task StorageMoveAsync()
+        {
+            if (_storageBusy) return;
+            string target;
+            using (var dlg = new FolderBrowserDialog { Description = "The folder on another drive for the game's files (dump) and the compiled game (build): tens of GB", UseDescriptionForTitle = true })
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK || string.IsNullOrEmpty(dlg.SelectedPath)) return;
+                target = dlg.SelectedPath;
+            }
+            if (MessageBox.Show(this, $"Move dump\\ and build\\ into {target}?\n\nClose the game first. A link is left in their place, so everything finds them where they were. This can take a while.",
+                                "OpenSmash", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+            _storageBusy = true; _storageText = "Moving the folders to " + target + "… (don't start the game)"; Invalidate();
+            string output = "";
+            int code = await Task.Run(() => RunPython(new[] { Path.Combine(_repo, "tools", "data_location.py"), "--move", target }, out output));
+            _storageBusy = false;
+            _storageText = (code == 0 ? "Moved.\n" : "The move stopped (what was moved was put back):\n") + output.Trim();
+            Invalidate();
         }
 
         int OsMods(string[] args, Action<string> onLine = null)
@@ -1980,6 +2012,8 @@ namespace OpenSmash.Launcher
             }
             else if (id == "update_prompt:block") { }
             else if (id == "update:check") _ = CheckForUpdatesAsync(false);
+            else if (id == "storage:refresh") _ = StorageStatusAsync();
+            else if (id == "storage:move") _ = StorageMoveAsync();
             else if (id == "update:apply") _ = ApplyUpdateAsync();
             else if (id == "rebuild_prompt:cancel") { _rebuildPrompt = false; Invalidate(); }
             else if (id == "rebuild_prompt:refresh") { _rebuildPrompt = false; Invalidate(); _ = RefreshPlugins(); }
