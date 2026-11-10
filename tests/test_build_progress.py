@@ -119,6 +119,28 @@ class EstimateTests(unittest.TestCase):
         self.assertAlmostEqual(left2, 200 + P.LINK)             # (taking longer: so does the time left)
         self.assertGreaterEqual(frac2, frac1)
 
+    def test_c_written_again_the_same_is_not_compiled_again(self):
+        # (a change to the generator: every module's C written again, none of it different. Before, the bar
+        # counted a whole compile of each module until its C was written, and said 40 min for a 10 min build.)
+        clock = Clock()
+        b = P.Build(12, clock=clock)
+        for n in ('main', 'mod_a', 'mod_b', 'mod_c'):
+            b.module(n, 4_000_000)
+        guess_all = b.status()[0]
+        b.begin('gen', 'main')
+        clock.now = 30
+        b.written('main', [])            # (its C came out the same: nothing to compile)
+        b.end('gen', 'main')
+        frac, _left, _label = b.status()
+        gens = 4 * (P.GEN[0] + P.GEN[1] * 4_000_000)
+        self.assertAlmostEqual(frac, (gens / 4) / (gens + P.LINK))   # the others' compiles: as main's turned out
+        self.assertGreater(frac, 10 * guess_all)
+        b.begin('gen', 'mod_a')
+        b.written('mod_a', [('g0000.c', 50.0)])   # one file did change: the guess goes by both
+        b.end('gen', 'mod_a')
+        self.assertAlmostEqual(b._cost(('compile', 'mod_b')), b.cost[('compile', 'mod_b')] *
+                               b.cost[('compile', 'mod_a')] / (b.learned[0]))
+
     def test_never_backwards(self):
         clock = Clock()
         b = P.Build(4, clock=clock)

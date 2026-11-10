@@ -140,6 +140,11 @@ class Build:
         self.gen_samples = []      # the same of every module whose C was written
         self.shown = 0.0
         self.label = ""
+        # A module whose C is written again is guessed to compile all of it, but the files that come out
+        # the same are not written, so their objects stay (a change to the generator often changes none):
+        # the guesses of the modules still to come go by how the written ones turned out (guessed, real).
+        self.guessed = {}          # module -> its compile's guess, until its C is written
+        self.learned = [0.0, 0.0]
 
     def module(self, name, insns, files=None):
         """A module to build, of `insns` instructions; `files` [(source, estimate)] if its C is
@@ -150,6 +155,7 @@ class Build:
                 self.cost[("gen", name)] = GEN[0] + GEN[1] * insns
                 self.cost[("compile", name)] = makespan([file_cost(*PRIOR)] * max(1, -(-insns // PRIOR[0])),
                                                         [0.0] * self.jobs) if self.compiling else 0.0
+                self.guessed[name] = self.cost[("compile", name)]
             else:
                 self.cost[("gen", name)] = 0.0
                 self._set_files(name, files)
@@ -162,6 +168,17 @@ class Build:
         """The module's C is there: compiling it is these files."""
         with self.lock:
             self._set_files(name, files)
+            guess = self.guessed.pop(name, 0.0)
+            if guess:
+                self.learned[0] += guess
+                self.learned[1] += self.cost[("compile", name)]
+
+    def _cost(self, step):
+        """A step's estimate, a compile still guessed as the ones written so far turned out."""
+        c = self.cost[step]
+        if step[0] == "compile" and step[1] in self.guessed and self.learned[0]:
+            c *= self.learned[1] / self.learned[0]
+        return c
 
     def begin(self, kind, name=None, files=None):
         with self.lock:
@@ -236,7 +253,7 @@ class Build:
         with self.lock:
             now = self.clock() if now is None else now
             pace = self.pace(now)
-            rest = sum(c for step, c in self.cost.items() if step not in self.done and step != self.step)
+            rest = sum(self._cost(step) for step in self.cost if step not in self.done and step != self.step)
             label = self.label
             if self.step:
                 # a step under way: what is left of it, counting the time it has had at this pace
@@ -249,7 +266,7 @@ class Build:
                         label += " - a big one takes minutes"
                 else:
                     rest += left_of(self.cost[self.step], self.since)
-            total = sum(self.cost.values())
+            total = sum(self._cost(step) for step in self.cost)
             self.shown = max(self.shown, 1.0 - rest / total if total else 1.0)   # (never backwards)
             return self.shown, rest * pace if pace else None, label
 
