@@ -486,7 +486,8 @@ def start_driver_warm(cache, game=None):
     game = game or os.path.join(ROOT, "build", "ssbu.exe")
     if not os.path.exists(game):
         return None
-    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "IDLE_PRIORITY_CLASS", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    # (CREATE_NO_WINDOW alone: Windows ignores it next to DETACHED_PROCESS)
+    flags = getattr(subprocess, "IDLE_PRIORITY_CLASS", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         p = subprocess.Popen([game, "--warm-shaders", cache, "auto"], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              stdin=subprocess.DEVNULL, creationflags=flags)
