@@ -24,6 +24,7 @@
 #include "game_addr.h"
 #include "host.h"
 #include "input_seq.h"
+#include "pad.h"
 
 #define FD(s) "_ZN3app8lua_bind" s "EPNS_26BattleObjectModuleAccessorE"
 #define FIGHTER_MANAGER "_ZN3lib9SingletonIN3app14FighterManagerEE9instance_E"
@@ -300,9 +301,12 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx) {
     }
     /* SSBU_SEQ2: a human player 2 plays on controller slot 2, which the sequence drives (as a controller that
      * joined the panel: + 0x210 the controller slot, + 0x450 a human's panel; hle_rb_core.c) */
-    if (idx == 1 && ld32(st + 0x78) == 0 && input_seq2_on()) {
+    /* (also with a pad connected on slot 2 and no SSBU_SEQ2: a test can then play player 2 with a pad, e.g. a remap test) */
+    PadState p2pad;
+    int seq2 = input_seq2_on();
+    if (idx == 1 && ld32(st + 0x78) == 0 && (seq2 || pad_get(1, &p2pad))) {
         st32(st + 0x210, 1); st8(st + 0x450, 1);
-        fprintf(stderr, "[fight] debug match: player 2 is human on controller slot 2 (SSBU_SEQ2)\n");
+        fprintf(stderr, "[fight] debug match: player 2 is human on controller slot 2 (%s)\n", seq2 ? "SSBU_SEQ2" : "the pad there");
     }
     if (idx == 1) { memcpy(match_p2, P(u8, st), DM_STATE); match_p2_ok = 1; }
     record_was = was;
