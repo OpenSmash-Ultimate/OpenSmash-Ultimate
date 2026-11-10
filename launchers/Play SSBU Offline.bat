@@ -1,5 +1,6 @@
 @echo off
 setlocal
+set "SSBU_NET_BACKEND="
 set "SSBU_DATA_ROOT="
 set "SSBU_INPUT="
 set "SSBU_NET_HOST="
