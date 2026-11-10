@@ -488,17 +488,29 @@ static void job_add(u8 *d1, const u8 *s1, u8 *d2, const u8 *s2, u32 slot) {
     if (njobs == jobs_cap) jobs = realloc(jobs, sizeof *jobs * (jobs_cap = jobs_cap ? jobs_cap * 2 : 8192));
     jobs[njobs++] = (CopyJob){d1, s1, d2, s2, slot, NULL, 0};
 }
+/* (a load beside the GPU's queue, memory_load) The GPU's pages a load writes back, held until the queue is done:
+ * shadow s2 -> memory d2, compared first when `same` (a steady page). ld_defer: sync lists them here. */
+static CopyJob *djobs;
+static u32 ndjobs, djobs_cap;
+static int ld_defer;
+static void djob_add(u8 *d2, const u8 *s2, u8 *same) {
+    if (ndjobs == djobs_cap) djobs = realloc(djobs, sizeof *djobs * (djobs_cap = djobs_cap ? djobs_cap * 2 : 4096));
+    djobs[ndjobs++] = (CopyJob){NULL, NULL, d2, s2, NO_SLOT, same, 0};
+}
 /* (SSBU_RB_STAMPS=3: the alias stamps' ranges, asked on the copy threads too; see sync) */
 void watch_rb_scan(u64 lo, u64 hi, u64 stamp, void **pages);
 static u64 (*scan_ranges)[2];
 static u32 nscan, scan_cap;
 static u64 scan_stamp;
+static u64 *scan_dirty;   /* (a load's questions: the pages found written set here, nothing reset - watch_rb_dirty_scan) */
+void watch_rb_dirty_scan(u64 lo, u64 hi, u64 *bits, void **pages);
 static void jobs_work(void) {
     if (nscan) {
         static __declspec(thread) void **buf;
         if (!buf) buf = malloc(sizeof *buf * 65536);
         for (LONG j; buf && (j = InterlockedIncrement(&jobs_next) - 1) < (LONG)nscan;)
-            watch_rb_scan(scan_ranges[j][0], scan_ranges[j][1], scan_stamp, buf);
+            if (scan_dirty) watch_rb_dirty_scan(scan_ranges[j][0], scan_ranges[j][1], scan_dirty, buf);
+            else watch_rb_scan(scan_ranges[j][0], scan_ranges[j][1], scan_stamp, buf);
         return;
     }
     for (;;) {
@@ -548,9 +560,13 @@ static void scan_run(void) {
     while (jobs_done < nworkers) YieldProcessor();
     nscan = 0;
 }
-static void undo_apply(const Undo *u) {
+/* part 0: every entry; 1: only the content of pages not the GPU's (a load beside the GPU's queue, before it is done:
+ * memory_load); 2: every entry but those */
+static int is_gpu_page(const void *p);
+static void undo_apply(const Undo *u, int part) {
     for (u32 i = 0; i < u->n; i++) {
         u8 *p = u->cur[i];
+        if (part && (part == 1) != (u->how[i] == U_CONTENT && !is_gpu_page(p))) continue;
         Chunk *c = chunk_of(p, 1);
         if (!c) continue;
         u32 k = (u32)((p - c->base) >> 12);
@@ -716,7 +732,9 @@ static u64 SM_GAP = 1u << 20;
  * SSBU_RB_SM_CALL, SSBU_RB_SM_SCOST.) */
 static u64 SM_CALL_COST = 3300, SM_STEADY_COST = 130;   /* (hot runs closer than this many pages are asked in one call: SSBU_RB_SM_GAP) */
 static int sm_split = 1;
-static u64 SM_QGAP = 1u << 20;   /* (a load's questions, which reset nothing: a call ~2 us, a page of the range ~15 ns; SSBU_RB_SM_QGAP) */    /* (SSBU_RB_SM_SPLIT=0: steady pages inside a run asked about too) */
+static u64 SM_QGAP = 256;   /* (was 1 << 20, so a load merged runs as a save does, up to 3300 pages apart: some 180,000 pages
+                              * of range a load, 15 ns each. A call costs ~130 pages of range: runs closer than 256 merged) */
+/* (a load's questions, which reset nothing: a call ~2 us, a page of the range ~15 ns; SSBU_RB_SM_QGAP) */    /* (SSBU_RB_SM_SPLIT=0: steady pages inside a run asked about too) */
 void rb_stamp_report(void) {
     for (int m = 0; m < 4; m++)
         if (stamp_n[m])
@@ -1030,7 +1048,7 @@ static u64 sm_steady_count(u64 a, u64 b) {
 static int sm_par = -1;
 void watch_rb_prepare(u64 lo, u64 hi);
 static void sm_run(int reset, u64 lo, u64 hi, u64 *clock, u32 *calls) {
-    if (reset && sm_par) {
+    if (sm_par) {   /* (a save's and a load's runs alike, asked on the copy threads too: sm_ask) */
         if (nscan == scan_cap) scan_ranges = realloc(scan_ranges, sizeof *scan_ranges * (scan_cap = scan_cap ? scan_cap * 2 : 256));
         scan_ranges[nscan][0] = ALIAS_BASE + (lo << 12); scan_ranges[nscan][1] = ALIAS_BASE + (hi << 12);
         nscan++;
@@ -1072,6 +1090,11 @@ static void sm_ask(int reset, u64 *clock, u32 *calls) {
     if (reset && sm_par && nscan) {
         for (u32 j = 0; j < nscan; j++) watch_rb_prepare(scan_ranges[j][0], scan_ranges[j][1]);   /* (no chunk made on two threads at once) */
         scan_stamp = watch_rb_begin(); scan_run(); *clock = scan_stamp; watch_rb_end();
+    }
+    /* (a load: its runs asked on the copy threads too, under the renderer's lock taken once, as a save's are: a load's
+     * questions were one call after the other, ~2.8 ms a load over some 180,000 pages of range - r27) */
+    if (!reset && sm_par && nscan) {
+        watch_rb_begin(); scan_dirty = sm_dirty; scan_run(); scan_dirty = NULL; watch_rb_end();
     }
     if (reset && !*calls) { *clock = watch_rb_begin(); watch_rb_end(); }
     mstat.calls = *calls;
@@ -1181,8 +1204,9 @@ static void sync(int to_shadow) {
         Chunk *c = chunk_map[chunk_ids[i]];
         u8 *end = c->base + (1ull << CH_SHIFT);
 #define COPY_PAGE(p) do { u8 *cur_ = (p); u32 k_ = (u32)((cur_ - c->base) >> 12); \
-            if (!is_present(c, k_)) break; u8 *sh_ = c->copy + (cur_ - c->base); \
-            if (to_shadow) job_add(NULL, sh_, sh_, cur_, undo_reserve(c, k_, cur_, U_CONTENT)); else job_add(NULL, NULL, cur_, sh_, NO_SLOT); n++;             if (is_gpu_page(cur_)) mstat.g_copied++; } while (0)
+            if (!is_present(c, k_)) break; u8 *sh_ = c->copy + (cur_ - c->base); int gp_ = is_gpu_page(cur_); \
+            if (to_shadow) job_add(NULL, sh_, sh_, cur_, undo_reserve(c, k_, cur_, U_CONTENT)); else if (ld_defer && gp_) djob_add(cur_, sh_, NULL); else job_add(NULL, NULL, cur_, sh_, NO_SLOT); n++; \
+            if (gp_) mstat.g_copied++; } while (0)
         t = now_ms();
         if (c->kind == K_ALIAS && sm_on) {
             u64 b = sm_ap(c->base);
@@ -1197,9 +1221,10 @@ static void sync(int to_shadow) {
                     mstat.steady++;
                     if (sm_gpu && sm_bit(sm_gpu, b + k)) mstat.g_steady++;
                     if (undo_cmp) { if (!sm_same[b + k]) { job_add(NULL, sh, sh, cur, undo_reserve(c, k, cur, U_CONTENT)); n++; if (sm_gpu && sm_bit(sm_gpu, b + k)) mstat.g_copied++; } continue; }
+                    n++;
+                    if (!to_shadow && ld_defer && sm_gpu && sm_bit(sm_gpu, b + k)) { djob_add(cur, sh, &sm_same[b + k]); continue; }   /* (after the GPU's queue: see memory_load) */
                     if (to_shadow) job_add(NULL, sh, sh, cur, NO_SLOT); else job_add(NULL, NULL, cur, sh, NO_SLOT);
                     jobs[njobs - 1].same = &sm_same[b + k];
-                    n++;
                 }
             for (u64 p = sm_cmp > 0 ? (u64)end : watch_rb_next((u64)c->base, (u64)end, shadow_seen); p < (u64)end; p = watch_rb_next(p + 0x1000, (u64)end, shadow_seen)) {
                 u64 a = sm_ap((void *)(uintptr_t)p);
@@ -1492,7 +1517,44 @@ static void memory_check_after_save(void) {
 
 /* (a load straight after a save that kept the threads held: memory is the shadow, nothing ran) */
 static int memory_untouched;
-static void memory_load(void) {
+/* A LOAD BESIDE THE GPU'S QUEUE. A load drained the queue first (the frame before's drawing, still running: 3 ms on
+ * average, 5-12 at worst, r27), then copied memory back (6 ms). The GPU reads and writes only its own memory (the
+ * nvmap allocations, is_gpu_page), and every write of its thread is in its log (gpu_rb_wrote). So the copies of every
+ * other page run beside it: the GPU's own pages are listed (djob_add) and copied once it is done, and then so is every
+ * page its log says it wrote since the load began - written after the questions, or between them and the copies.
+ * Not beside it (drained first, as before): a page committed or decommitted since the save (the layout's changes run
+ * the GPU's unmapping), the nvmap allocations changed since the last save (its set of pages is then old), the GPU's
+ * memory left out (SSBU_RB_SKIP_GPU). SSBU_RB_LOAD_BESIDE_GPU=0: never. */
+static long long ld_beside, ld_beside_overrun, ld_beside_again;
+static double ld_gpu_wait_ms;   /* (the last load beside the queue: how long it still waited for it) */
+static int load_beside_gpu_ok(void) {
+    static int want = -1;
+    if (want < 0) { const char *e = getenv("SSBU_RB_LOAD_BESIDE_GPU"); want = !(e && *e == '0'); }
+    if (!want || memory_untouched || !gpu_threaded() || skip_gpu > 0 || !sm_on || !sm_gpu || !gpu_rng || gpu_gen_seen != nv_rb_gen || rb_mem_nchanged) return 0;
+    static u64 guest[16384][2];
+    u32 ng;
+    return kmap(guest, &ng) == kmap_sig;
+}
+/* (the GPU's log ran over during a load beside it: which pages it wrote is not known) every present page compared with
+ * the shadow, and those that differ copied back. Some hundreds of ms, and only then. */
+static u64 load_compare_all(void) {
+    u64 n = 0;
+    for (u32 i = 0; i < nchunks; i++) {
+        Chunk *c = chunk_map[chunk_ids[i]];
+        for (u32 k = 0; k < CH_PAGES; k++) {
+            if (!is_present(c, k)) continue;
+            u8 *p = c->base + ((u64)k << 12), *sh = c->copy + ((u64)k << 12);
+            if (is_skip_page(p) || (sm_on && sm_is_cold(p)) || !memcmp(p, sh, 0x1000)) continue;
+            job_add(NULL, NULL, p, sh, NO_SLOT);
+            n++;
+        }
+    }
+    jobs_run();
+    return n;
+}
+static u64 undo_beside(int age, int phase);   /* (below the ring) */
+static double ld_undo_ms;
+static void memory_load(int beside, u64 gmark, u64 glog, int age) {
     if (memory_untouched) {
         memset(mstat.t, 0, sizeof mstat.t);
         mstat.pages = mstat.whole_pages = 0; mstat.whole = 0; mstat.ms = 0;
@@ -1506,11 +1568,50 @@ static void memory_load(void) {
     double t0 = now_ms();
     flags_once();
     memset(mstat.t, 0, sizeof mstat.t);
+    ld_defer = beside;
     sync(0);
-    mstat.ms = now_ms() - t0;
+    ld_defer = 0;
+    ld_gpu_wait_ms = 0; ld_undo_ms = 0;
+    if (beside) {
+        double tu = now_ms();
+        undo_beside(age, 1);
+        ld_undo_ms = now_ms() - tu;
+        double tw = now_ms();
+        gpu_queue_wait(gmark);   /* (nothing more is queued: every guest thread is held) */
+        ld_gpu_wait_ms = now_ms() - tw;
+        for (u32 i = 0; i < ndjobs; i++) {   /* the GPU's own pages */
+            if (njobs == jobs_cap) jobs = realloc(jobs, sizeof *jobs * (jobs_cap = jobs_cap ? jobs_cap * 2 : 8192));
+            jobs[njobs++] = djobs[i];
+        }
+        ndjobs = 0;
+        jobs_run();
+        /* then every page its thread wrote since the load began (a batch of its own: a page may be in both) */
+        u64 to = gpu_rb_written_count(), again = 0;
+        int over = 0;
+        for (u64 i = glog; i < to && !over; i++) {
+            u64 lo, hi;
+            if (!gpu_rb_written_at(i, &lo, &hi)) { over = 1; break; }
+            for (u64 g = lo; g < hi; g += 0x1000) {
+                u8 *p = (u8 *)G2H(g);
+                if (is_skip_page(p)) continue;
+                Chunk *c = chunk_of(p, 0);
+                if (!c || !is_present(c, (u32)((p - c->base) >> 12))) continue;
+                job_add(NULL, NULL, p, shadow_page(c, p), NO_SLOT);
+                again++;
+            }
+        }
+        if (over) { njobs = 0; ld_beside_overrun++; again = load_compare_all(); }
+        else jobs_run();
+        ld_beside++; ld_beside_again += again;
+        tu = now_ms();
+        mstat.undo_pages = undo_beside(age, 2);
+        ld_undo_ms += now_ms() - tu;
+    }
+    mstat.ms = now_ms() - t0 - ld_gpu_wait_ms - ld_undo_ms;
     if (check_after) {
         u64 first, lay, bad = shadow_mismatches(&first, &lay);
-        fprintf(stderr, "[rb] check after the load: %llu pages differ from the shadow (first %#llx), %llu pages' presence differs\n", bad, first, lay);
+        fprintf(stderr, "[rb] check after the load%s: %llu pages differ from the shadow (first %#llx), %llu pages' presence differs\n",
+                beside ? " (beside the GPU's queue)" : "", bad, first, lay);
     }
 }
 
@@ -1552,6 +1653,24 @@ long long rb_save_gpu_pages, rb_save_gpu_overrun;   /* (pages the GPU wrote duri
 double rb_load_parts[6]; long long rb_load_count;   /* (run-ahead's profile: every load's hold, check and scratch stacks, GPU drain, memory, host state, in all (ms), summed) */   /* (M6: every save's parking, GPU drain, memory, in all (ms), summed; hle_rb_core.c reads and clears them) */
 
 static Slot *slot_at(int age) { return &ring[(ring_head - age + ring_size * 2) % ring_size]; }
+
+/* (a load beside the GPU's queue, memory_load) The undo records of states 1..age, in that order. Phase 1, before the
+ * queue is done: the content of every page not the GPU's, when the records hold nothing but content (a page committed
+ * or decommitted in one of them: all of it after the queue, as before). Phase 2, after the queue and the GPU's pages:
+ * the rest, in the same order (an entry of an older state still comes after a newer one's for the same page). */
+static u64 undo_beside(int age, int phase) {
+    static int split;
+    u64 n = 0;
+    if (phase == 1) {
+        split = age > 0;
+        for (int a = 1; a <= age && split; a++) { const Undo *u = &slot_at(a)->undo; for (u32 i = 0; i < u->n; i++) if (u->how[i] != U_CONTENT) { split = 0; break; } }
+        if (split) for (int a = 1; a <= age; a++) undo_apply(&slot_at(a)->undo, 1);
+        return 0;
+    }
+    for (int a = 1; a <= age; a++) { undo_apply(&slot_at(a)->undo, split ? 2 : 0); n += slot_at(a)->undo.n; }
+    split = 0;
+    return n;
+}
 
 static void slot_free(Slot *s) {
     for (u32 i = 0; i < s->nthr; i++) free(s->thr[i].stack);
@@ -1889,16 +2008,24 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
      * memory left out of the states, SSBU_RB_SKIP_GPU, a load writes none of what the GPU reads or writes: the
      * queue is drained after the memory, beside it, before the host state) */
     int drain_late = 0;   /* (the GPU's written pages are restored too: drained first) */
-    if (!drain_late) gpu_queue_drain();
+    /* (or the memory copied back beside it, its own pages after it: memory_load) */
+    int beside = !drain_late && load_beside_gpu_ok();
+    u64 gmark = 0, glog = 0;
+    if (beside) { gmark = gpu_queue_mark(); glog = gpu_rb_written_count(); }
+    else if (!drain_late) gpu_queue_drain();
     double lt_drain = now_ms();
     step("memory");
     rb_loading_mem = 1;
-    memory_load();
+    memory_load(beside, gmark, glog, age);
     double lt_mem = now_ms();
-    double tm = now_ms();
-    u64 undone = 0;
-    for (int a = 1; a <= age; a++) { undo_apply(&slot_at(a)->undo); undone += slot_at(a)->undo.n; }
-    mstat.undo_pages = undone; mstat.undo_ms = now_ms() - tm;
+    if (beside) {   /* (its wait counted as the GPU drain's part, its undo records as theirs, the rest as memory's) */
+        lt_drain += ld_gpu_wait_ms; lt_mem -= ld_undo_ms; mstat.undo_ms = ld_undo_ms;
+    } else {
+        double tm = now_ms();
+        u64 undone = 0;
+        for (int a = 1; a <= age; a++) { undo_apply(&slot_at(a)->undo, 0); undone += slot_at(a)->undo.n; }
+        mstat.undo_pages = undone; mstat.undo_ms = now_ms() - tm;
+    }
     ld_ev_flush();
     rb_loading_mem = 0;
     double late_drain = 0;
@@ -1952,10 +2079,10 @@ static void finish_load(void) {
     if (!quiet || total > 12 || !(loads % 100))
         fprintf(stderr, "[rb] LOAD %lld: %.1f ms (save %lld, %d back); memory: %llu pages copied back (%llu MB; layout walk %u, %llu pages committed or decommitted) in %.1f ms "
                 "[layout %.1f, alias stamps %.1f, alias pages %.1f, watched %.1f, (de)commits %.1f, compared %.1f], undo %llu pages in %.1f ms; state map %llu hot pages (%llu steady), %llu calls over %llu pages; "
-                "hold %.1f, scratch stacks %.1f, GPU drain %.1f, host state %.1f, stacks back %.1f ms\n",
+                "hold %.1f, scratch stacks %.1f, GPU drain %.1f, host state %.1f, stacks back %.1f ms; %lld loads beside the GPU's queue (%lld pages it wrote copied again, %lld log overruns)\n",
                 loads, total, loading->seq, mstat.age, mstat.pages, mstat.pages >> 8, mstat.whole, mstat.whole_pages, mstat.ms,
                 mstat.t[0], mstat.t[1], mstat.t[2], mstat.t[3], mstat.t[4], mstat.t[5], mstat.undo_pages, mstat.undo_ms, mstat.hot, mstat.steady, mstat.calls, mstat.span,
-                load_last[0], load_last[1], load_last[2], load_last[3], now_ms() - load_last[4]);
+                load_last[0], load_last[1], load_last[2], load_last[3], now_ms() - load_last[4], ld_beside, ld_beside_again, ld_beside_overrun);
 }
 
 /* ---------------------------------------------------------------- the replay check (M2: determinism)
