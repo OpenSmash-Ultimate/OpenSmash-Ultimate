@@ -2893,15 +2893,23 @@ static DWORD WINAPI warm_main(void *unused) {
 /* The start's last step (the makers run): the list opened, and the warm threads started on it. */
 static void warm_start(void) {
     char list[1100];
+    int again = 0;
     snprintf(list, sizeof list, "%s/vulkan_%04x_%04x.warm", cache_dir(), limits_vendor, limits_device);
     snprintf(warm_marker, sizeof warm_marker, "%s.warming", list);
     if (GetFileAttributesA(warm_marker) != INVALID_FILE_ATTRIBUTES) {
         fprintf(stderr, "[vulkan] warm start: the last one did not finish (%s): the list is started again, nothing is warmed this time\n", warm_marker);
-        DeleteFileA(list);
-        DeleteFileA(warm_marker);
+        /* (A list that can't be removed - read-only, held open - keeps its marker, and no start warms from it.) */
+        if (DeleteFileA(list) || GetLastError() == ERROR_FILE_NOT_FOUND) DeleteFileA(warm_marker);
+        else again = 1;
     }
     warm_list_open();
     if (!warm_nrecords) return;
+    if (again) {
+        fprintf(stderr, "[vulkan] warm start: the list could not be removed (%s), %u records left unused
+", list, warm_nrecords);
+        warm_shader_slots = 0;
+        return;
+    }
     if (getenv("SSBU_VK_WARM") && !atoi(getenv("SSBU_VK_WARM"))) {
         fprintf(stderr, "[vulkan] warm start: off (SSBU_VK_WARM=0), %u pipelines and programs listed\n", warm_nrecords);
         warm_shader_slots = 0;   /* (no draw looks its programs up) */
@@ -2919,6 +2927,8 @@ static void warm_start(void) {
     InterlockedExchange(&warm_running, (LONG)n);
     FILE *mark = fopen(warm_marker, "wb");
     if (mark) fclose(mark);
+    else fprintf(stderr, "[vulkan] warm start: no marker file (%s): one that does not finish will not be noticed
+", warm_marker);
     for (u32 i = 0; i < n; i++) {
         HANDLE t = CreateThread(NULL, 64ull << 20, warm_main, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
         if (!t) {
@@ -4200,6 +4210,8 @@ static void pipeline_cache_tick(void) {
 }
 
 static void vk_closing(void) {
+    /* (Closed while it warms: the threads make no more, and the marker goes - a close is not a warm start that died.) */
+    if (warm_running) { InterlockedExchange(&warm_stopped, 1); DeleteFileA(warm_marker); }
     if (!saving) pipeline_cache_save();
 }
 
