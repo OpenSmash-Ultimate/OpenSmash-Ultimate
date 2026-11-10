@@ -93,6 +93,8 @@ void display_set_runahead(int frames) { (void)frames; }
 int kernel_rb_switch(void) { return 0; }
 void display_set_render_scale(float scale) { (void)scale; }
 void display_set_renderer(int renderer) { renderer_saved = renderer; }
+int display_renderer(void) { return RENDERER_DEFAULT; }   /* (the setting this start began with: auto, which drew with Direct3D 11) */
+int gfx_renderer(void) { return RENDERER_D3D11; }
 int audio_master_volume(void) { return 100; }                 /* (ipc_audio.c: the master volume) */
 void audio_set_master_volume(int percent) { (void)percent; }
 /* (hle_mod_switch.c: no mods here) */
