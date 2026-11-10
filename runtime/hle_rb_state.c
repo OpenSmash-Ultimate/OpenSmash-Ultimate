@@ -1282,7 +1282,13 @@ static u64 shadow_mismatches(u64 *first, u64 *layout_bad) {
             if (p >= m_end) { if (!VirtualQuery(p, &m, sizeof m)) break; m_end = (u8 *)m.BaseAddress + m.RegionSize; now = rw_committed(&m); }
             int was = is_present(c, k);
             int there = now || (sm_on && m.State == MEM_COMMIT && m.Protect == PAGE_READONLY && sm_is_cold(p));   /* (a cold page of the state map: there) */
-            if (was != (there && in_guest((u64)(uintptr_t)p, guest, ng))) { (*layout_bad)++; continue; }
+            if (was != (there && in_guest((u64)(uintptr_t)p, guest, ng))) {
+                static u8 *run_end; static u32 told;   /* (diagnostic: the first runs of them, once) */
+                if (told < 24 && p != run_end) { told++; extern int kernel_rb_region_at(u64, u64 *, u64 *); u64 rb_ = 0, rs_ = 0; int st_ = kernel_rb_region_at((u64)(uintptr_t)p, &rb_, &rs_);
+                    fprintf(stderr, "[rb] presence differs at %p: in the layout %d, committed rw %d, protect %#lx, in the guest map %d, cold %d; kernel region: state %d, %#llx + %#llx\n", (void *)p, was, now, (unsigned long)m.Protect, in_guest((u64)(uintptr_t)p, guest, ng), sm_on ? sm_is_cold(p) : -1, st_, (unsigned long long)rb_, (unsigned long long)rs_); }
+                run_end = p + 0x1000;
+                (*layout_bad)++; continue;
+            }
             if (was && is_skip_page(p)) continue;   /* (left out: SSBU_RB_SKIP_GPU) */
             if (was && memcmp(p, c->copy + ((u64)k << 12), 0x1000)) { if (!n) *first = (u64)(uintptr_t)p; n++; }
         }
