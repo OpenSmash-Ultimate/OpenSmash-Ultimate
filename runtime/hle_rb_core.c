@@ -261,7 +261,8 @@ static double fp_census_last, fp_hash_last, fp_in, fp_out, fp_sum[2][7];   /* (f
 static long long fp_n[2];
 static int fp_fast, fp_loaded;
 extern double rb_save_ms[3];
-extern double rb_save_parts[4]; extern long long rb_save_count; extern long long rb_save_gpu_pages, rb_save_gpu_overrun; extern double rb_load_parts[6]; extern long long rb_load_count;   /* (hle_rb_state.c: parking, GPU drain, memory, in all) */
+extern double rb_save_parts[4]; extern long long rb_save_count; extern long long rb_save_gpu_pages, rb_save_gpu_overrun; extern double rb_load_parts[6]; extern long long rb_load_count;
+extern long long rb_save_away_waits, rb_save_away_refused;   /* (hle_rb_state.c: parking, GPU drain, memory, in all) */
 void profile_start_gated(double seconds);
 static void tape_clear(void);
 static void tag_restore(const char *why);
@@ -1192,6 +1193,7 @@ static void net_report(void) {
     fprintf(stderr, "[rb] saves: %lld made, %lld left out (the other's next pad already there, or %lld of them: their logic frame's state already kept, %lld: "
             "a state a frame or so before kept, SSBU_RB_NET_SAVE_EVERY; %lld made all the same: "
             "a guest thread came or went)\n", net_saves_made, net_saves_skipped, net_saves_same, net_saves_sparse, net_saves_threads);
+    fprintf(stderr, "[rb] saves held up by a thread in a job: %lld waited for it, %lld not made (SSBU_RB_SAVE_HOME)\n", rb_save_away_waits, rb_save_away_refused);
     fprintf(stderr, "[rb] loads held up by a thread on another fiber: %lld went ahead after a wait, %lld refused; %lld rollbacks from an older state instead\n",
             rb_fiber_retried_ok, rb_fiber_refused, net_older);
     fprintf(stderr, "[rb] net check: %lld frames hashed again after a rollback with their pads all real, %lld of them DIFFERENT%s\n", net_again, net_again_bad,

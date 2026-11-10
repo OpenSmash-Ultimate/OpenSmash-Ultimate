@@ -78,7 +78,8 @@ class RunAhead(unittest.TestCase):
 
     def test_save_on_own_fibers(self):
         state, core = src('hle_rb_state.c'), src('hle_rb_core.c')
-        self.assertIn('if (rb_save_home_only && away_from_home(c->thread)) {', state)
+        self.assertIn('if ((rb_save_home_only || save_home) && away_from_home(c->thread)) {', state)
+        self.assertIn('getenv("SSBU_RB_SAVE_HOME")', state, 'net rollback saves wait for the jobs too (off: =0)')
         self.assertIn('getenv("SSBU_RB_SAVE_RETRY_MS")', state)
         self.assertIn('rb_save_home_only = 1;\n        int r = rb_save(c, frame);\n        rb_save_home_only = 0;', core,
                       'run-ahead\'s saves only')
