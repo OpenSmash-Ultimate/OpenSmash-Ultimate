@@ -563,9 +563,10 @@ static void describe_pc(U64 pc, char *buf, size_t n) {
     else snprintf(buf, n, "%#llx", pc);
 }
 
-/* Every thread's stack but the caller's, a line at a time to line. Each thread is suspended only
- * while its stack is read; everything else (names, descriptions) after all run again. */
-int profile_dump_threads(void (*line)(const char *text)) {
+/* Every thread's stack but the caller's (only: just the nonly threads with these ids), a line at a
+ * time to line. Each thread is suspended only while its stack is read; everything else (names,
+ * descriptions) after all run again. */
+static int dump_threads(const unsigned long *only, unsigned nonly, void (*line)(const char *text)) {
     if (InterlockedCompareExchange(&running, 1, 0)) { line("  (the profiler is running: no stacks)\n"); return 0; }
     static struct { DWORD tid; U32 depth; U64 pc[STACK_DEPTH], cpu_ms; HANDLE h; } t[256];
     U32 n = 0;
@@ -575,6 +576,11 @@ int profile_dump_threads(void (*line)(const char *text)) {
     THREADENTRY32 te = {sizeof te};
     for (BOOL ok = Thread32First(snap, &te); ok && n < 256; ok = Thread32Next(snap, &te)) {
         if (te.th32OwnerProcessID != pid || te.th32ThreadID == self) continue;
+        if (only) {
+            unsigned k = 0;
+            while (k < nonly && only[k] != te.th32ThreadID) k++;
+            if (k == nonly) continue;
+        }
         HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID);
         if (!h) continue;
         t[n].tid = te.th32ThreadID;
@@ -608,6 +614,8 @@ int profile_dump_threads(void (*line)(const char *text)) {
     InterlockedExchange(&running, 0);
     return 1;
 }
+int profile_dump_threads(void (*line)(const char *text)) { return dump_threads(NULL, 0, line); }
+int profile_dump_some(const unsigned long *tids, unsigned n, void (*line)(const char *text)) { return n ? dump_threads(tids, n, line) : 1; }
 
 /* ---- the hitch log (SSBU_HITCH=<ms>) ------------------------------------------------------
  * A sampler wakes about every millisecond and notes where three threads are: the guest's main

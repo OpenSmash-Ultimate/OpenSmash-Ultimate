@@ -1478,6 +1478,19 @@ void kernel_rb_census(const void *self, u32 *alive, u32 *waiting, u32 *sleeping,
     }
 }
 
+/* (rollback build) For a hold that failed: the alive guest threads other than `self`, up to max: each one's record
+ * (what kernel_rb_park is given), id, entry and host thread id. Read without the lock, as the census. */
+u32 kernel_rb_list(const void *self, void **kthread, u64 *id, u64 *entry, unsigned long *tid, u32 max) {
+    u32 n = 0;
+    for (u32 i = 0; i < nthreads && n < max; i++) {
+        KThread *t = threads[i];
+        if (!t || t == self || !t->started || t->exited || !t->host) continue;
+        kthread[n] = t; id[n] = t->id; entry[n] = t->entry; tid[n] = (unsigned long)GetThreadId(t->host);
+        n++;
+    }
+    return n;
+}
+
 /* (rollback build, M2) Wakes every guest thread from kwait, for a hold (rb_hold already set). */
 void (*kernel_rb_wake_hook)(void);
 void kernel_rb_wake_all(void) {

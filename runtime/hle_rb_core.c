@@ -2230,6 +2230,7 @@ static void sm_pre_step(long long pre_frame) {
 }
 
 #define PRE_EVERY 4
+#define PRE_STALE 40   /* (a multiple of PRE_EVERY) */
 #define PRE_QUIET 3
 #define PRE_WAIT_MS 30000.0
 static int pre_done, pre_quiet;
@@ -2335,7 +2336,7 @@ static int fighters_made(Cpu *c) {
     return id != 0x50000000u && id != 0;
 }
 extern double rb_park_quick_ms;   /* (hle_rb_state.c) */
-static long long pre_refreshed, pre_skipped;
+static long long pre_refreshed, pre_skipped, pre_last_ok;   /* (pre_last_ok: the frame since the set-up of the last copy taken, 0 none yet) */
 static void net_pre_fight(Cpu *c, u64 frame) {
     pre_frames++;
     net_pre_step();   /* (v0.9.4: in step with the others through the loading) */
@@ -2357,16 +2358,22 @@ static void net_pre_fight(Cpu *c, u64 frame) {
             int saved = rb_save(c, frame);
             rb_ring_drop();
             pre_refreshed = pre_skipped = 0;
+            pre_last_ok = saved == 1 ? pre_frames : 0;
             fprintf(stderr, "[rb] before the fight: the whole copy at the set-up %s in %.0f ms\n", saved == 1 ? "taken" : "NOT taken (the threads didn't stop)", now_ms() - t0);
             return;
         }
         if (pre_frames % PRE_EVERY) return;
-        rb_park_quick_ms = 4;
+        /* (r16_3: the copy at the set-up not taken, then 7 refreshes in 480 frames, 113 left out: the copy was old at
+         * GO! and the state map never went on, so the fight's first saves were whole ones, 435 ms each. A copy
+         * PRE_STALE frames old gets a longer wait for the threads once every PRE_STALE frames, and longer still after
+         * three times that.) */
+        long long stale = pre_frames - pre_last_ok;
+        rb_park_quick_ms = stale >= PRE_STALE && pre_frames % PRE_STALE == 0 ? (stale >= 3 * PRE_STALE ? 200 : 50) : 4;
         rb_save_tag = 0xFFFFFFFFu;
         double t0 = now_ms();
         int saved = rb_save(c, frame);
         rb_park_quick_ms = 0;
-        if (saved == 1) { rb_ring_drop(); pre_refreshed++; } else pre_skipped++;
+        if (saved == 1) { rb_ring_drop(); pre_refreshed++; pre_last_ok = pre_frames; } else pre_skipped++;
         if (pre_frames % 120 == 0)
             fprintf(stderr, "[rb] before the fight: frame %lld since the set-up: the copy refreshed %lld times, %lld left out (threads busy); this one %.1f ms\n",
                     pre_frames, pre_refreshed, pre_skipped, now_ms() - t0);
