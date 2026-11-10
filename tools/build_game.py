@@ -1224,6 +1224,11 @@ def build(a):
                  "--out", "build", "--jobs", str(jobs), *(["--game-dll"] if dll else [])],
                 "The build failed (see above). If the PC ran out of memory, build with fewer jobs at a time: open "
                 "OpenSmash.exe, set Compiler jobs to 4, and press Set up and build again.")
+    if not LINUX and not MACOS:
+        # the Vulkan renderer's shader translator (glslang, ssbu_glslang.dll beside the program): fetched once,
+        # made again when stale; without it Vulkan does not start and Direct3D 11 draws, so a failure is not fatal
+        import glslang_lib
+        glslang_lib.ensure(os.path.join(os.path.dirname(EXE), glslang_lib.DLL_NAME), log=log)
     if LINUX:
         log(f"\nDone: {exe} is ready. Start the game with ./play-ssbu.sh, or WindowSmash in your applications menu.")
     elif MACOS:

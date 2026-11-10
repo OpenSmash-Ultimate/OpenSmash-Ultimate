@@ -1477,6 +1477,11 @@ def link(dirs, exe, rt_dir=None, steps=None):
         if not os.path.exists(dll) or os.path.getsize(dll) != os.path.getsize(cc.SDL3_DLL) or \
                 os.path.getmtime(dll) < os.path.getmtime(cc.SDL3_DLL):
             shutil.copy2(cc.SDL3_DLL, dll)
+    # the Vulkan back end's shader translator, ssbu_glslang.dll, when deps/glslang is there (tools/glslang_lib.py)
+    if sys.platform == "win32":
+        import glslang_lib
+        if glslang_lib.have():
+            glslang_lib.build(os.path.join(os.path.dirname(os.path.abspath(exe)), glslang_lib.DLL_NAME))
     print(f"linked {len(objs)} objects into {exe} ({os.path.getsize(exe) / 1048576:,.0f} MB) in {time.time() - t0:,.0f}s")
     if GAME_DLL:
         print(f"linked {len(library)} objects into {game_lib} ({os.path.getsize(game_lib) / 1048576:,.0f} MB)")

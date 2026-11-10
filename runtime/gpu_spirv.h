@@ -1,7 +1,9 @@
-/* The shaders' DXBC (gpu_shader.c's HLSL, compiled and cached as the Direct3D 11 back end has it)
- * turned into SPIR-V for the Vulkan back end in development, by vkd3d-shader (gpu_spirv.c;
- * docs/TECHNICAL.md, "A second back end: Vulkan"). Built with it where the build has vkd3d-shader
- * (SSBU_HAVE_VKD3D: tools/vkd3d_lib.py on Windows); elsewhere spirv_from_dxbc says it cannot.
+/* The shaders as SPIR-V for the Vulkan back end (gpu_spirv.c; docs/TECHNICAL.md, "A second back
+ * end: Vulkan"), by either of two translators: vkd3d-shader from their DXBC (gpu_shader.c's HLSL,
+ * compiled and cached as the Direct3D 11 back end has it), where the build has it (SSBU_HAVE_VKD3D:
+ * tools/vkd3d_lib.py on Windows; elsewhere spirv_from_dxbc says it cannot); or glslang from the
+ * HLSL itself (spirv_from_hlsl), through ssbu_glslang.dll beside the program (tools/glslang_lib.py,
+ * which the Windows build makes): no vkd3d-shader and no fxc needed.
  *
  * The binding map: the HLSL's registers as Vulkan descriptor bindings, one binding a register, in
  * one descriptor set a stage (the vertex program's set 0, the pixel program's set 1, a compute
@@ -26,8 +28,18 @@ enum {
 
 typedef struct SpirvCode { void *code; size_t size; } SpirvCode;   /* (size in bytes) */
 
-/* Whether this build has the translator (vkd3d-shader). */
+/* Whether there is a translator: vkd3d-shader in this build (DXBC), or glslang's library beside
+ * the program (HLSL: spirv_from_hlsl). */
 int spirv_available(void);
+int spirv_have_vkd3d(void);
+/* glslang's library, ssbu_glslang.dll (tools/glslang_lib.py: Windows), loaded at the first ask:
+ * 1 if it is there and loads; 0 otherwise, `err` (if given) says why. */
+int spirv_have_glslang(char *err, size_t err_size);
+/* gpu_shader.c's HLSL of its SHADER_HLSL_GLSLANG dialect to SPIR-V 1.3 for Vulkan 1.1, through
+ * glslang's HLSL front end, with the same binding map and descriptor kinds as spirv_from_dxbc's
+ * (its Buffer<uint>s uniform texel buffers, as vkd3d-shader makes the ByteAddressBuffers' DXBC),
+ * entry point "main"; no fxc, no DXBC. 1 if done (*out: spirv_free), 0 if not (`err`). */
+int spirv_from_hlsl(const char *hlsl, int stage, SpirvCode *out, char *err, size_t err_size);
 /* DXBC of `stage` (gpu_shader.h's SHADER_VERTEX, SHADER_PIXEL, SHADER_COMPUTE) to SPIR-V for Vulkan
  * 1.1 with the binding map above, entry point "main". 1 if done (*out holds it: spirv_free);
  * 0 if not, `err` says why (vkd3d-shader's messages, cut to fit). */
