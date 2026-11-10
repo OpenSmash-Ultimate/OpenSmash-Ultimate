@@ -1053,14 +1053,17 @@ static u64 prewarm_t0, prewarm_bytes0;
 /* Each program the driver makes holds its GPU code in this process (NVIDIA: some 0.4-0.8 MB), and a
  * player's cache keeps every program played before: thousands, gigabytes. The prewarm stops making
  * them once the process has grown this much since it began (newest first: the ones played last are
- * made); the rest load at first use as without a prewarm. The budget is a third of the PC's memory
- * (16 GB: about 5 GB, every program of a full cache; 8 GB: some 2.7 GB), so a load does not stop
- * on programs made at first use; SSBU_SHADER_PREWARM_MB sets it, 0: no limit. */
+ * made); the rest load at first use as without a prewarm. The budget is an eighth of the PC's memory, 1 GB at least
+ * and 1.5 GB at most (some 4,500 programs: a session draws 400-600, the newest played come first; 2.5 GB left the
+ * game at 4.9 GB): with every program of the shipped list made (a third of the memory
+ * allowed it) the game went from 3.7 to 5.5 GB and every player found it slower (owner 2026-11-10, after #248);
+ * SSBU_SHADER_PREWARM_MB sets it, 0: no limit. */
 static u64 prewarm_budget = 1024ull << 20;
 static void prewarm_budget_default(void) {
 #ifdef _WIN32
     MEMORYSTATUSEX m = {sizeof m};
-    if (GlobalMemoryStatusEx(&m) && m.ullTotalPhys / 3 > prewarm_budget) prewarm_budget = m.ullTotalPhys / 3;
+    if (GlobalMemoryStatusEx(&m) && m.ullTotalPhys / 8 > prewarm_budget) prewarm_budget = m.ullTotalPhys / 8;
+    if (prewarm_budget > (1536ull << 20)) prewarm_budget = 1536ull << 20;
 #endif
 }
 
@@ -1346,11 +1349,11 @@ static int prewarm_queue_file(const char *fname, Shader **head, Shader **tail, P
 
 /* (prewarm_main) the shipped list's programs whose files are in this cache, after the played ones: beside the exe,
  * else media\ (the working folder: the repository). *order grows to hold them; returns how many were queued, and in
- * *listed how many the list names. Every one of them is queued: the game waits at its first present until the prewarm
- * is done (prewarm_gate), so no program of normal play is made at its first draw, invisible that once (owner,
- * 2026-11-10: "DEVE essere tutti"). The memory budget still stops it (SSBU_SHADER_PREWARM_MB).
- * SSBU_SHADER_PREWARM_LIST=0: not read; another number caps the queue at that many programs. */
-#define PREWARM_LIST_TOTAL 0xFFFFFFFFu   /* (every program the list names: the first present waits for them, prewarm_gate) */
+ * *listed how many the list names. The list fills the queue up to PREWARM_LIST_TOTAL programs (played ones first): every
+ * one of 12,000 made took the game to 5.5 GB and every player found it slower (owner 2026-11-10, after #248); the
+ * game waits at its first present until the queue is made (prewarm_gate). SSBU_SHADER_PREWARM_LIST=0: not read; another
+ * number caps the queue at that many programs. */
+#define PREWARM_LIST_TOTAL 6000
 static u32 prewarm_queue_list(Shader **head, Shader **tail, Prewarm ***order, u32 *cap, u32 *queued, u32 *listed) {
     const char *set = getenv("SSBU_SHADER_PREWARM_LIST");
     u32 total = set && *set ? (u32)strtoul(set, NULL, 10) : PREWARM_LIST_TOTAL;
