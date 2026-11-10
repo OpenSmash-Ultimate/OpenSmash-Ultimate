@@ -1573,7 +1573,9 @@ static void net_step(Cpu *c, u64 frame) {
     if (!skip_save && !ring_same && rb_fast <= 0 && rb_ring_count() > 0 && rb_ring_tag(0) == key) { skip_save = 1; net_saves_same++; }
     /* (a wrong guess not rolled back yet - this frame's, or a load refused before: a state now is built on it, and saving
      * it would push out the older states the rollback needs) */
-    if (!skip_save && rb_fast <= 0 && rbn_peek_mismatch() && rbn_peek_mismatch() <= key) { skip_save = 1; net_saves_pending++; }
+    static int pending_save = -1;
+    if (pending_save < 0) { const char *e = getenv("SSBU_RB_PENDING_SAVE"); pending_save = e && *e == '1'; }   /* (=1: saved all the same, as before) */
+    if (!skip_save && !pending_save && rb_fast <= 0 && rbn_peek_mismatch() && rbn_peek_mismatch() <= key) { skip_save = 1; net_saves_pending++; }
     if (skip_save) { net_saves_skipped++; rb_save_ms[0] = rb_save_ms[1] = rb_save_ms[2] = 0; }
     else {
         rb_save_tag = key;
