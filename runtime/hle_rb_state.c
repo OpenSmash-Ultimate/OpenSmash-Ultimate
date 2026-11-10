@@ -40,6 +40,9 @@ extern int rb_log;   /* (hle_rb_core.c) */
 
 void kernel_rb_census(const void *self, u32 *alive, u32 *waiting, u32 *sleeping, u64 *busy, u32 max, u32 *nbusy);
 void kernel_rb_wake_all(void);
+u32 kernel_rb_list(const void *self, void **kthread, u64 *id, u64 *entry, unsigned long *tid, u32 max);
+int profile_dump_some(const unsigned long *tids, unsigned n, void (*line)(const char *text));   /* (debug_profile.c) */
+const char *rt_describe(u64 addr, char *buf, size_t n);   /* (host.c) */
 void *kernel_rb_save(void);
 const char *kernel_rb_check(const void *p);
 void kernel_rb_load(const void *p);
@@ -185,6 +188,29 @@ static void release(void) {
     SetEvent(release_ev);
 }
 
+/* A hold that failed (the first few of a run): which guest threads did not park, and where each one is. The hold is
+ * still on: a thread that parks meanwhile shows rb_park_thread in its stack. (r16_3: one thread of 22 did not park in
+ * 500 ms at the set-up and through a fight's first 70 frames, each of those a 500 ms wait: which one was not known.) */
+static void hold_line(const char *text) { fprintf(stderr, "[rb]   %s", text); }
+static LONG hold_reports_max = 3;   /* (SSBU_RB_HOLD_REPORT=<n>: n reports, and of the short holds before a fight too) */
+static int hold_report_short;
+static void hold_report(void *self) {
+    static void *kt[64]; static u64 id[64], entry[64]; static unsigned long tid[64];
+    static volatile LONG reports;
+    if (InterlockedIncrement(&reports) > hold_reports_max) return;
+    u32 n = kernel_rb_list(self, kt, id, entry, tid, 64), nbusy = 0;
+    unsigned long busy[64];
+    char name[160];
+    for (u32 i = 0; i < n; i++) {
+        int parked = 0;
+        for (LONG r = 0; r < nrecs; r++) if (recs[r]->kthread == kt[i] && recs[r]->in_park) { parked = 1; break; }
+        if (parked) continue;
+        fprintf(stderr, "[rb] hold: guest thread %llu (host thread %lu, entry %s) not parked\n", id[i], tid[i], rt_describe(entry[i], name, sizeof name));
+        busy[nbusy++] = tid[i];
+    }
+    profile_dump_some(busy, nbusy, hold_line);
+}
+
 /* Every other guest thread parked, or 0 (released again) when not within the limit. */
 static int hold(void *self, u32 *n) {
     if (!release_ev) {
@@ -193,6 +219,8 @@ static int hold(void *self, u32 *n) {
         copy_ev = CreateEventA(NULL, TRUE, FALSE, NULL);
         const char *e = getenv("SSBU_RB_PARK_MS");
         if (e && *e) park_limit_ms = atof(e);
+        e = getenv("SSBU_RB_HOLD_REPORT");
+        if (e && atoi(e) > 0) { hold_reports_max = atoi(e); hold_report_short = 1; }
         kernel_rb_park = rb_park_thread;   /* (kernel.c's kwait parks here while rb_hold is set) */
     }
     ResetEvent(release_ev);
@@ -204,6 +232,7 @@ static int hold(void *self, u32 *n) {
     while (parked_now(self) < *n) {
         if (now_ms() - t0 > limit) {
             if (rb_park_quick_ms <= 0) fprintf(stderr, "[rb] hold: %u of %u threads parked within %.0f ms: not now\n", parked_now(self), *n, limit);
+            if (limit >= 50 || hold_report_short) hold_report(self);
             release();
             return 0;
         }
@@ -1606,7 +1635,21 @@ static double load_last[5];   /* (the last load: hold, check and scratch stacks,
 __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     u32 n;
     double t0 = now_ms();
-    if (!hold(c->thread, &n)) { refused++; return 0; }
+    /* (r16_3: a guest thread that would not park cost the full limit, 500 ms, at every save: 70 frames of a fight at a
+     * frame a second, and the other player gave this one up. After a save the threads didn't stop for, the next ones
+     * wait SAVE_AGAIN_MS at most until one holds them. Loads keep the full limit.) */
+#define SAVE_AGAIN_MS 30.0
+    static u32 save_fails;
+    double quick = rb_park_quick_ms;
+    if (save_fails && quick <= 0) rb_park_quick_ms = SAVE_AGAIN_MS;
+    int held = hold(c->thread, &n);
+    rb_park_quick_ms = quick;
+    if (!held) {
+        if (quick <= 0 && ++save_fails % 60 == 0) fprintf(stderr, "[rb] hold: %u saves in a row the threads didn't stop for\n", save_fails);
+        refused++;
+        return 0;
+    }
+    if (quick <= 0) save_fails = 0;
     /* (net rollback too, SSBU_RB_SAVE_HOME=0: not. A state saved with a thread in a job could not be loaded once the job
      * was over - "thread 2 was on a job's fiber at the save" - and at a fight's start (link-pikachu, logic frame 11)
      * every state kept was such a one: 10 loads refused, then a wrong guess with no state before it, a desync.) */
