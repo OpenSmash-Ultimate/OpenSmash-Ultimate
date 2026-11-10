@@ -880,6 +880,8 @@ static double net_t0;           /* and when (ms) */
 static u8 *net_got;             /* by frame - net_key0: delivered */
 static u32 net_low;             /* every frame below this delivered */
 static u64 *net_final;          /* by frame - net_key0: the fight hash once final (0: none) */
+static int start_guard = -1;
+static long long net_guard_waits; static double net_guard_ms, net_guard_max;
 static long long net_rollbacks, net_rerun, net_waits, net_too_deep, net_depth[16], net_saves_made, net_saves_skipped, net_saves_same, net_saves_sparse, net_saves_threads, net_saves_pending;
 static long long net_resyncs, net_desyncs_at_resync, net_impossible;
 static u32 net_resync_last, net_resync_key, net_last_good, net_resync_seen; static int net_resync_pending;
@@ -1200,6 +1202,7 @@ static void net_report(void) {
     fprintf(stderr, "[rb] resyncs: %lld (%lld DESYNCs at frames 30 or more after the last one's rollback), rollbacks impossible: %lld, saves left out while a wrong guess waited: %lld\n",
             net_resyncs, net_desyncs_at_resync, net_impossible, net_saves_pending);
     fprintf(stderr, "[rb] resyncs with no state in the frames hashed alike: %lld; saves refused (a thread stayed in a job): %lld\n", net_resync_impossible, net_saves_refused);
+    if (start_guard > 0) fprintf(stderr, "[rb] start guard: the first %d logic frames waited for the pads: %lld frames waited, %.1f ms in all, %.1f ms at most\n", start_guard, net_guard_waits, net_guard_ms, net_guard_max);
     fprintf(stderr, "[rb] saves held up by a thread in a job: %lld waited for it, %lld not made (SSBU_RB_SAVE_HOME)\n", rb_save_away_waits, rb_save_away_refused);
     fprintf(stderr, "[rb] loads held up by a thread on another fiber: %lld went ahead after a wait, %lld refused; %lld rollbacks from an older state instead\n",
             rb_fiber_retried_ok, rb_fiber_refused, net_older);
@@ -1402,6 +1405,16 @@ static void net_receive(u32 key) {
         rbn_put_mismatch(bad);
     }
 }
+/* SSBU_RB_START_GUARD=<n> (logic frames, 0 = off): for a fight's first n frames nothing is guessed - each frame waits
+ * for the other players' pads, as a delay netcode does - so no rollback and no load happens there. The fights that
+ * failed (samus-fox, the 0x7100485xxx-0x710049xxxx walk: a null owner, a list walk that never ends) failed early, after
+ * the first rollbacks, while the fighters' resources were still loading. */
+static int net_may_run(u32 key) {
+    if (!rbn_can_run(key + 1)) return 0;
+    if (start_guard < 0) { const char *e = getenv("SSBU_RB_START_GUARD"); start_guard = e && *e ? atoi(e) : 0; }
+    if (start_guard > 0 && key + 1 - net_key0 < (u32)start_guard && net_remote_low() < key + 1) return 0;
+    return 1;
+}
 static void net_send(u32 key) {
     static RbnMsg m;
     static u8 buf[RBN_MSG_MAX];
@@ -1450,6 +1463,7 @@ static void net_step(Cpu *c, u64 frame) {
         net_countdown = 0;
         /* (every count of the report from zero: it added up over a session's fights, twopc14) */
         net_rollbacks = net_rerun = net_waits = net_too_deep = net_saves_made = net_saves_skipped = net_saves_same = net_saves_sparse = net_saves_threads = net_saves_pending = net_older = 0;
+        net_guard_waits = 0; net_guard_ms = net_guard_max = 0;
         net_resyncs = net_impossible = 0; net_resync_last = net_resync_key = net_last_good = net_resync_seen = 0; net_resync_pending = 0;
         net_alike_from = net_last_bad = net_resync_min = 0; net_saves_refused = net_resync_impossible = 0; net_desyncs_at_resync = 0;
         rb_fiber_refused = rb_fiber_retried_ok = 0;
@@ -1609,18 +1623,20 @@ static void net_step(Cpu *c, u64 frame) {
         net_compare(key);
         net_send(key);
         net_gone_check(key, 0);
-        if (!rbn_can_run(key + 1)) {
+        if (!net_may_run(key)) {
             net_waits++;
+            int guard = rbn_can_run(key + 1);   /* (waiting only for the start guard) */
             double w0 = now_ms(), last = w0;
             /* (10 min: two PCs a room apart, started by one person; but a player heard from this fight and quiet for
              * NET_GONE_MS, or whose fight is over, is gone and waited for no more: rb_net - v0.9) */
-            while (!rbn_can_run(key + 1) && now_ms() - w0 < 600000) {
+            while (!net_may_run(key) && now_ms() - w0 < 600000) {
                 Sleep(1);
                 net_receive(key);
                 if (now_ms() - last > 16) { net_send(key); last = now_ms(); }   /* (our pads and acks again: the peer may be waiting too) */
                 net_gone_check(key, now_ms() - w0);
             }
             net_wait_ms += now_ms() - w0;
+            if (guard) { net_guard_waits++; net_guard_ms += now_ms() - w0; if (now_ms() - w0 > net_guard_max) net_guard_max = now_ms() - w0; }
             if (!rbn_can_run(key + 1)) fprintf(stderr, "[rb] net mode: no pads from the peer for 10 min (logic frame %u): going on with guesses\n", key);
         }
         if (net_hold_sleep < 0) { const char *e = getenv("SSBU_RB_NET_HOLD"); net_hold_sleep = e && !strcmp(e, "sleep"); }
