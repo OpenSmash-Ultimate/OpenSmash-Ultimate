@@ -13,6 +13,12 @@ The separately identified third-party material below keeps its own license. The 
 
 ## WindowSmash (repository root)
 
+### Optional yuzu-compatible room client
+
+The public ENet v1.3.18 headers in `third_party/enet/include/` are by Lee Salzman under the MIT license, preserved in `third_party/enet/LICENSE`. `tools/yuzu_client_deps.py` downloads checksum-pinned ENet 1.3.18 and Zstd 1.5.7 sources and builds the optional Windows DLLs. Zstd is available under BSD-3-Clause or GPL-2.0; its upstream LICENSE and COPYING, and ENet's LICENSE, are copied beside those DLLs. No dependency DLLs are checked in.
+
+The room, LDN and compressed UDP formats were studied from public yuzu-era and Eden 0.2.0 sources, credited to the yuzu Emulator Project and Eden Emulator Project under the licenses stated in those sources. `docs/YUZU_PROTOCOL_SOURCES.json` records the exact source revisions and hashes. The client codecs and adapter are written in C for this runtime; no emulator Core or UI source is vendored.
+
 ### libvpx
 
 The VP9 decoder of the WebM Project's libvpx, release v1.15.2, is included as source in [`third_party/libvpx/`](third_party/libvpx/) and compiled into the game when it is built (the game's movies are VP9). [`third_party/README.md`](third_party/README.md) says exactly which files and how they were taken from the upstream release; none is modified. The upstream license and additional patent grant are kept there:

@@ -241,6 +241,10 @@ The game's graphics programs (*shaders*) are prepared the first time each one is
 
 To prepare them all before playing, double-click **`launchers\Prepare Shaders.bat`**. It runs at low priority so the PC stays usable, and shows a progress bar with the time left. A first run compiles about 40,000 shaders: about half an hour on a 16-thread processor, an hour or two on a 4- to 8-thread one. You can close it at any time and start it again later; what's done stays done, so a later run takes minutes. It needs Python and Visual Studio, as for [building](BUILDING.md).
 
+## Playing with yuzu-compatible clients (Windows)
+
+The optional client connects to an existing yuzu-compatible room server, then uses the game's **Local Wireless** mode. Start it with **launchers/Join yuzu Room.bat**. Eden 0.2.0 and another unnamed compatible client have been reported working in multiple complete matches. Game UDP defaults to Eden's format; historical yuzu peers can use the separate format option. See [the client guide](YUZU_CLIENT.md) for dependencies, configuration, validation and logs.
+
 ## Low frame rate
 
 If matches run slowly on a PC that should manage them (press <kbd>F1</kbd> for the frame rate), check these first:

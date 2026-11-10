@@ -1571,6 +1571,7 @@ int main(int argc, char **argv) {
     const char *dir = argc >= 2 ? argv[1] : NULL;
     int options = 2;   /* (where the options after it start) */
 #ifdef _WIN32
+    if (argc == 2 && !strcmp(argv[1], "--yuzu-client-check")) { puts("yuzu-room-client protocol=1"); return 0; }
     if (argc >= 6 && !strcmp(argv[1], "--write-dump")) return write_dump_main(argv);
     if (argc >= 4 && !strcmp(argv[1], "--warm-shaders")) return gfx_warm_shaders_main(argv[2], argv[3]);
 #endif
