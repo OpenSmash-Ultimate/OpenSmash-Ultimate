@@ -882,7 +882,7 @@ static u32 net_low;             /* every frame below this delivered */
 static u64 *net_final;          /* by frame - net_key0: the fight hash once final (0: none) */
 static long long net_rollbacks, net_rerun, net_waits, net_too_deep, net_depth[16], net_saves_made, net_saves_skipped, net_saves_same, net_saves_sparse, net_saves_threads, net_saves_pending;
 static long long net_resyncs, net_desyncs_at_resync, net_impossible;
-static u32 net_resync_last, net_resync_key, net_last_good;   /* (net_resync_key: the frame this game was at when the resync's rollback ran) */
+static u32 net_resync_last, net_resync_key, net_last_good, net_resync_seen; static int net_resync_pending;   /* (net_resync_key: the frame this game was at when the resync's rollback ran) */
 static long long net_older;   /* (M7: rollbacks done from an older state, the newest refused) */
 static double net_catch_ms, net_catch_max, net_wait_ms;
 static int net_done;
@@ -1195,7 +1195,7 @@ static void net_report(void) {
     fprintf(stderr, "[rb] saves: %lld made, %lld left out (the other's next pad already there, or %lld of them: their logic frame's state already kept, %lld: "
             "a state a frame or so before kept, SSBU_RB_NET_SAVE_EVERY; %lld made all the same: "
             "a guest thread came or went)\n", net_saves_made, net_saves_skipped, net_saves_same, net_saves_sparse, net_saves_threads);
-    fprintf(stderr, "[rb] resyncs: %lld (%lld DESYNCs found at frames run after a resync), rollbacks impossible: %lld, saves left out while a wrong guess waited: %lld\n",
+    fprintf(stderr, "[rb] resyncs: %lld (%lld DESYNCs at frames 30 or more after the last one's rollback), rollbacks impossible: %lld, saves left out while a wrong guess waited: %lld\n",
             net_resyncs, net_desyncs_at_resync, net_impossible, net_saves_pending);
     fprintf(stderr, "[rb] saves held up by a thread in a job: %lld waited for it, %lld not made (SSBU_RB_SAVE_HOME)\n", rb_save_away_waits, rb_save_away_refused);
     fprintf(stderr, "[rb] loads held up by a thread on another fiber: %lld went ahead after a wait, %lld refused; %lld rollbacks from an older state instead\n",
@@ -1278,15 +1278,17 @@ static void net_desync_pads(u32 f) {
 /* A DESYNC (a final frame's hash differs from the other game's) rolls this game back to the state before that frame
  * and runs the frames again with the pads both games have: what a wrong guess left uncorrected (a load refused, a
  * rollback too deep, SSBU_RB_TEST_IGNORE) is corrected so, in both games, as each sees the other's hash differ. At most
- * one a 30 logic frames, 8 a fight; SSBU_RB_RESYNC=0: off (the DESYNC said, and play on). */
+ * one a 30 logic frames (by the frame found different), 30 a fight; SSBU_RB_RESYNC=0: off (the DESYNC said, and play on). */
 __declspec(noinline) static void net_resync(u32 f) {
     static int on = -1;
     /* (back to the frame after the last one both games hashed alike: the frames between, run on a wrong guess, had
      * their hashes cleared and are not compared, so the first one found different can lie after the wrong guess) */
+    u32 seen = f;
     if (net_last_good >= net_key0 && net_last_good + 1 < f) f = net_last_good + 1;
     if (on < 0) { const char *e = getenv("SSBU_RB_RESYNC"); on = !(e && *e == '0'); }
-    if (!on || net_resyncs >= 8 || (net_resync_last && f < net_resync_last + 30)) return;
-    net_resyncs++; net_resync_last = f; net_resync_key = 0;
+    /* (counted by the frame found different: the target stays at the last frame alike until the games agree again) */
+    if (!on || net_resyncs >= 30 || (net_resync_seen && seen < net_resync_seen + 30)) return;
+    net_resyncs++; net_resync_last = f; net_resync_seen = seen; net_resync_key = 0; net_resync_pending = 1;
     rbn_put_mismatch(f);
     fprintf(stderr, "[rb] net mode: RESYNC %lld: the games differ at logic frame %u: back to the state before it, its frames run again with the pads both games have\n",
             net_resyncs, f);
@@ -1321,7 +1323,7 @@ __declspec(noinline) static void net_compare(u32 key) {
                     check_desync_show(f);
                     if (net_desyncs == 1) { net_desync_pads(f); net_desync_dump(); rb_keep_dump("a desync"); }
                 }
-                if (net_resync_key && f > net_resync_key) net_desyncs_at_resync++;
+                if (net_resync_key && f > net_resync_key + 30) net_desyncs_at_resync++;
                 net_resync(f);
             }
         }
@@ -1376,7 +1378,7 @@ __declspec(noinline) static void net_receive(u32 key) {
                         check_desync_show(m.check_frame);
                         if (net_desyncs == 1) { net_desync_pads(m.check_frame); net_desync_dump(); rb_keep_dump("a desync"); }
                     }
-                    if (net_resync_key && m.check_frame > net_resync_key) net_desyncs_at_resync++;
+                    if (net_resync_key && m.check_frame > net_resync_key + 30) net_desyncs_at_resync++;
                     net_resync(m.check_frame);
                 }
                 net_peer_check[p][i] = 0;
@@ -1444,7 +1446,7 @@ static void net_step(Cpu *c, u64 frame) {
         net_countdown = 0;
         /* (every count of the report from zero: it added up over a session's fights, twopc14) */
         net_rollbacks = net_rerun = net_waits = net_too_deep = net_saves_made = net_saves_skipped = net_saves_same = net_saves_sparse = net_saves_threads = net_saves_pending = net_older = 0;
-        net_resyncs = net_impossible = 0; net_resync_last = net_resync_key = net_last_good = 0; net_desyncs_at_resync = 0;
+        net_resyncs = net_impossible = 0; net_resync_last = net_resync_key = net_last_good = net_resync_seen = 0; net_resync_pending = 0; net_desyncs_at_resync = 0;
         rb_fiber_refused = rb_fiber_retried_ok = 0;
         memset(net_depth, 0, sizeof net_depth);
         net_catch_ms = net_catch_max = net_wait_ms = 0;
@@ -1655,7 +1657,7 @@ static void net_step(Cpu *c, u64 frame) {
     u32 m = rbn_take_mismatch();
     if (!m || m > key) { rb_release_held(); return; }
     int tl = 0;
-    if (test_case(0, "SSBU_RB_TEST_IGNORE", key, NULL)) {
+    if (!net_resync_pending && test_case(0, "SSBU_RB_TEST_IGNORE", key, NULL)) {   /* (a resync's own rollback is never left out) */
         fprintf(stderr, "[rb] TEST: the wrong guess at logic frame %u left as it is (this game at %u)\n", m, key);
         rb_release_held(); return;
     }
@@ -1675,7 +1677,7 @@ static void net_step(Cpu *c, u64 frame) {
         rb_release_held(); return;
     }
     int depth = (int)(key - found);
-    if (net_resyncs && m == net_resync_last && !net_resync_key) net_resync_key = key;
+    if (net_resync_pending) { net_resync_pending = 0; net_resync_key = key; }
     net_rollbacks++; net_rerun += depth; net_depth[depth < 15 ? depth : 15]++;
     for (u32 f = found + 1; f <= key; f++) if (f - net_key0 < 1u << 20) net_final[f - net_key0] = 0;
     pending_fast = depth;
