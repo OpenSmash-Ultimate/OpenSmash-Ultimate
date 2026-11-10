@@ -1725,19 +1725,18 @@ static DWORD WINAPI warm_worker(void *arg) {
     return 0;
 }
 
-/* The adapter "auto" means: the first AMD card's LUID (any: the first hardware card's), 0 when there is none. */
+/* The adapter "auto" means: the card the game itself draws on (pick_adapter: display.ini's or SSBU_GPU's, else the
+ * fastest; not the first one listed, which on a laptop is the integrated one), as its LUID. 0 when that is not an
+ * AMD card (any: not a hardware card), since only AMD's driver compiles at the first draw. */
 static u64 warm_auto_adapter(int any) {
+    int warp;
+    IDXGIAdapter1 *a = pick_adapter(&warp);
+    if (!a) return 0;
     u64 found = 0;
-    IDXGIFactory1 *f1;
-    if (FAILED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&f1))) return 0;
-    IDXGIAdapter1 *a;
-    for (UINT i = 0; !found && SUCCEEDED(IDXGIFactory1_EnumAdapters1(f1, i, &a)); i++) {
-        DXGI_ADAPTER_DESC1 d;
-        if (SUCCEEDED(IDXGIAdapter1_GetDesc1(a, &d)) && !(d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) && (d.VendorId == 0x1002 || any))
-            found = (u64)(u32)d.AdapterLuid.HighPart << 32 | d.AdapterLuid.LowPart;
-        IDXGIAdapter1_Release(a);
-    }
-    IDXGIFactory1_Release(f1);
+    DXGI_ADAPTER_DESC1 d;
+    if (SUCCEEDED(IDXGIAdapter1_GetDesc1(a, &d)) && !(d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) && (d.VendorId == 0x1002 || any))
+        found = (u64)(u32)d.AdapterLuid.HighPart << 32 | d.AdapterLuid.LowPart;
+    IDXGIAdapter1_Release(a);
     return found;
 }
 
@@ -1799,12 +1798,13 @@ int gfx_warm_shaders_main(const char *dir, const char *luid) {
     SetPriorityClass(GetCurrentProcess(), PROCESS_MODE_BACKGROUND_BEGIN);
     SetPriorityClass(GetCurrentProcess(), IDLE_PRIORITY_CLASS);
     driver_stacks();
-    /* "auto" (Prepare Shaders, tools/shader_aot.py, which knows no adapter): the first AMD card, or with SSBU_SHADER_WARM
-     * set the first hardware one; none of them: nothing to do (the other drivers compile at creation, see "first draws") */
+    /* "auto" (Prepare Shaders, tools/shader_aot.py, which knows no adapter): the game's own card when it is an AMD one, or
+     * with SSBU_SHADER_WARM set whatever hardware card it is; otherwise nothing to do (the other drivers compile at creation, see "first draws") */
     int any = getenv("SSBU_SHADER_WARM") && atoi(getenv("SSBU_SHADER_WARM")) > 0;
-    u64 want = !strcmp(luid, "auto") ? warm_auto_adapter(any) : strtoull(luid, NULL, 16);
-    if (!want) {
-        printf("[warm] no AMD graphics card: nothing to draw (SSBU_SHADER_WARM=1 draws with any card)\n");
+    int automatic = !strcmp(luid, "auto");
+    u64 want = automatic ? warm_auto_adapter(any) : strtoull(luid, NULL, 16);
+    if (automatic && !want) {   /* (a LUID of 0 from the game still means the default card, as before) */
+        printf("[warm] the game's graphics card is not an AMD one: nothing to draw (SSBU_SHADER_WARM=1 draws with any card)\n");
         return 0;
     }
     WarmRun r;
