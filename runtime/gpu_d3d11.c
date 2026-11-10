@@ -1441,10 +1441,12 @@ static void prewarm_gate(void) {
         if (!ht[nhelp]) break;
         nhelp++;
     }
-    for (u32 i = 0; i < ncompilers; i++) {   /* (the compiler threads too, at normal priority while it waits) */
+#ifdef _WIN32
+    for (u32 i = 0; i < ncompilers; i++) {   /* (the compiler threads too, at normal priority while it waits; Windows) */
         HANDLE t = compilers[i].thread ? OpenThread(THREAD_SET_INFORMATION, FALSE, compilers[i].thread) : NULL;
         if (t) { SetThreadPriority(t, THREAD_PRIORITY_NORMAL); CloseHandle(t); }
     }
+#endif
     char note[64];
     int last = -1;
     for (;;) {
@@ -1462,10 +1464,12 @@ static void prewarm_gate(void) {
     InterlockedExchange(&prewarm_waiting, 0);
     WakeAllConditionVariable(&jobs_cv);
     for (u32 i = 0; i < nhelp; i++) CloseHandle(ht[i]);   /* (each ends after the job it is on; the game does not wait for it) */
+#ifdef _WIN32
     for (u32 i = 0; i < ncompilers; i++) {
         HANDLE t = compilers[i].thread ? OpenThread(THREAD_SET_INFORMATION, FALSE, compilers[i].thread) : NULL;
         if (t) { SetThreadPriority(t, THREAD_PRIORITY_BELOW_NORMAL); CloseHandle(t); }
     }
+#endif
     display_loading_note(NULL);
     watchdog_pause(0);
     fprintf(stderr, "[gfx] shader loading: the first frame waited %.1f s for %ld shaders (%ld of %ld made, %ld ready), on %u threads%s\n",
