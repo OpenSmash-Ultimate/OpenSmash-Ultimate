@@ -2053,6 +2053,7 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
     if (stage == SHADER_COMPUTE) h = (h ^ ((u64)local[0] | (u64)local[1] << 16 | (u64)local[2] << 32 | (u64)shared << 40)) * 1099511628211ull;
     u64 program_hash = h;   /* (the shader's name) */
     h = shader_cache_hash(h, p, size, stage);
+    u64 key_hash = h;   /* (before the alpha test's salt: the key tools/shader_aot.py knows the program by) */
     /* (the salt changes with the alpha test's code, so cache files of an older form are not used) */
     if (alpha_tested) h = (h ^ 0x616C706861743032ull) * 1099511628211ull;
     CbufSource src = {stage_cb};
@@ -2130,6 +2131,24 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
     cache_path(s, path, sizeof path);
     s->cached = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
     s->asked_ms = GetTickCount64();
+    /* A program compiled at its first draw (fxc, seconds: its draws skipped until then) is noted in the cache folder's
+     * drawn_keys.txt, so that Prepare Shaders (tools/shader_aot.py) compiles it ahead next time, with the variant the
+     * draw wanted (the vertex outputs it was paired with, the alpha test's): the pairings the ahead-of-time pass
+     * can't guess from the game's files. Programs whose code depends on a draw's constant buffers (tables) can't be
+     * made ahead, nor compute programs (their launch size): left out. */
+    if (!s->cached && stage != SHADER_COMPUTE && !s->info.ntables) {
+        static SRWLOCK keys_lock = SRWLOCK_INIT;
+        char kp[1100];
+        snprintf(kp, sizeof kp, "%s/drawn_keys.txt", cache_dir());
+        AcquireSRWLockExclusive(&keys_lock);
+        FILE *kf = fopen(kp, "a");
+        if (kf) {
+            if (stage == SHADER_VERTEX) fprintf(kf, "vs %016llx\n", (unsigned long long)key_hash);
+            else fprintf(kf, "%s %016llx %08x\n", alpha_tested ? "pa" : "ps", (unsigned long long)key_hash, vs_outputs);
+            fclose(kf);
+        }
+        ReleaseSRWLockExclusive(&keys_lock);
+    }
     enqueue_shader(s);
     /* a program that was compiled before is waited for (a few ms, its load): a skipped draw is an effect missing
      * the first time it is used (vertex and pixel programs too, from 2026-11-09), a skipped launch leaves its
@@ -2846,7 +2865,7 @@ void d3d11_resident_flush(u64 va, u64 bytes) {
         if (SUCCEEDED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)st, 0, D3D11_MAP_READ, 0, &m))) {
             for (u64 a = lo; a < hi; a += 4) {
                 u64 g = gpu_va_to_guest(a);
-                if (g) st32(g, ((const u32 *)m.pData)[(a - lo) / 4]);
+                if (g) { st32(g, ((const u32 *)m.pData)[(a - lo) / 4]); gpu_rb_wrote(g, 4); }
             }
             ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)st, 0);
         }
@@ -3039,6 +3058,7 @@ int tex_decode_rgba8(int nvn_format, const void *src, int w, int h, uint8_t *dst
  * bands of block rows decoded on the system's thread pool at once, each band its own call of the same
  * decoder (a band's source starts at its first block row, its picture at that row's pixels). Small ones are
  * decoded as before. Returns tex_decode_rgba8's answer (0 good). */
+#ifdef _WIN32   /* (the system thread pool; elsewhere (Linux/macOS builds of this file) decoded whole) */
 typedef struct DecodeBand { int nf, w, h; const u8 *src; u8 *dst; volatile LONG *left, *failed; HANDLE done; } DecodeBand;
 static void CALLBACK decode_band(PTP_CALLBACK_INSTANCE inst, void *ctx) {
     (void)inst;
@@ -3090,6 +3110,12 @@ static int decode_rgba8_parallel(int nf, const u8 *src, int w, int h, u8 *dst, u
     }
     return failed ? -1 : 0;
 }
+#else
+static int decode_rgba8_parallel(int nf, const u8 *src, int w, int h, u8 *dst, u32 bw, u32 bh, u32 bpb) {
+    (void)bw; (void)bh; (void)bpb;
+    return tex_decode_rgba8(nf, src, w, h, dst);
+}
+#endif
 /* BC7 often cannot store alpha 0. A clear texel is then (1,1,1,1). The alpha test keeps any
  * alpha above 0 and the black is drawn (Paper Mario's sticker wheel). A real clear texel, as on
  * the stickers sheet, is alpha 0 and is thrown away. */
@@ -4842,7 +4868,7 @@ void d3d11_dispatch(const u32 *regs, const u32 *q) {
                 if (now[i] == was[i]) continue;
                 changed = 1;
                 u64 gg = gpu_va_to_guest(va_of[k] + 4ull * i);
-                if (gg) st32(gg, now[i]);
+                if (gg) { st32(gg, now[i]); gpu_rb_wrote(gg, 4); }
             }
             ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)b->staging, 0);
             if (changed) {
@@ -5330,6 +5356,7 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
     gpu_times_frame();
     LARGE_INTEGER p0, p1;
     QueryPerformanceCounter(&p0);
+    display_before_present();   /* (gpu_display.c: the loading animation stops) */
     hr = IDXGISwapChain1_Present(swapchain, 0, display_present_flags());   /* (blocks while the GPU is frames behind) */
 #ifdef _WIN32
     if (SUCCEEDED(hr)) display_show_window();

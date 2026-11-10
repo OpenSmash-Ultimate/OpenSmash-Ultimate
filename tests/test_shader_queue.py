@@ -235,3 +235,27 @@ class ServeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DrawnKeysTests(unittest.TestCase):
+    """drawn_keys.txt: programs the game compiled at a first draw, with their variant (2026-11-09)."""
+
+    def test_parse_and_cache_names(self):
+        k = S.parse_key_line('pa 0123456789abcdef 0000000f')
+        self.assertEqual((k.kind, k.hash, k.mask), ('pa', '0123456789abcdef', '0000000f'))
+        self.assertEqual(k.line, 'pa 0123456789abcdef 0000000f')
+        salted = S.alpha_file_hash('0123456789abcdef')   # (gpu_d3d11.c: (h ^ salt) * FNV prime, 64 bits)
+        self.assertEqual(salted, f"{((0x0123456789abcdef ^ 0x616C706861743032) * 1099511628211) & (2**64 - 1):016x}")
+        have = {S.key_of('ps', salted, '0000000f')}
+        self.assertTrue(S.cached(k, have))
+        self.assertFalse(S.cached(S.parse_key_line('ps 0123456789abcdef 0000000f'), have))
+        self.assertEqual(S.parse_done_line('done pa 0123456789abcdef 0000000f compiled 12'), (('pa', '0123456789abcdef', '0000000f'), 'compiled', 12))
+
+    def test_drawn_keys_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, S.DRAWN_KEYS), 'w') as f:
+                f.write('vs 00000000000000aa\nps 00000000000000bb 00000003\nps 00000000000000bb 00000003\npa 00000000000000bb 00000003\njunk\n')
+            keys = S.drawn_keys(d)
+            self.assertEqual(sorted(k.line for k in keys), ['pa 00000000000000bb 00000003', 'ps 00000000000000bb 00000003', 'vs 00000000000000aa'])
+        self.assertEqual(S.drawn_keys(os.path.join(d, 'gone')), [])

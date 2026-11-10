@@ -40,8 +40,12 @@
 #include "display.h"
 #include "host.h"
 #include "testrun.h"
+#include <wchar.h>
 #ifndef __APPLE__
 #include <dxgi.h>
+#endif
+#ifdef _WIN32
+#include "gpu_display_loading.inc"   /* (the loading animation until the game's first present, Windows) */
 #endif
 
 enum { MODE_WINDOWED = DISPLAY_WINDOWED, MODE_BORDERLESS = DISPLAY_BORDERLESS, MODE_FULLSCREEN = DISPLAY_FULLSCREEN };
@@ -441,6 +445,7 @@ HWND display_create_window(HINSTANCE inst, const wchar_t *cls, const wchar_t *ti
         SetWindowPos(h, NULL, -32000, -32000, 640, 360, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         /* (not shown: a test watchdog takes any visible window for one on screen; Direct3D draws and presents a hidden one alike) */
         SetTimer(h, 1, 500, NULL);
+        InterlockedExchange(&g_la_off, 1);   /* (no loading animation off screen) */
         return h;
     }
     RECT r = windowed_rect(h);
@@ -449,6 +454,7 @@ HWND display_create_window(HINSTANCE inst, const wchar_t *cls, const wchar_t *ti
     if (!probe && cfg.mode != MODE_WINDOWED) set_mode(h, cfg.mode);
     if (!probe) ShowWindow(h, SW_SHOW);
     SetTimer(h, 1, 500, NULL);   /* the idle pointer */
+    la_start(h, !probe);         /* the loading animation (gpu_display_loading.inc) */
     return h;
 }
 
@@ -481,6 +487,7 @@ void display_fit(unsigned w, unsigned h, unsigned *x, unsigned *y, unsigned *fw,
 
 #ifdef _WIN32
 int display_message(HWND h, UINT msg, WPARAM w, LPARAM l, LRESULT *result) {
+    if (la_wndproc(h, msg, w)) { *result = 0; return 1; }   /* (the loading animation's paint and timer) */
     switch (msg) {
     case WM_KEYDOWN:
         if (w != VK_F11 || (l & (1 << 30))) return 0;
@@ -757,4 +764,11 @@ void display_speed_tick(void) {
         if (left * 1000 > 2 * freq.QuadPart) Sleep(1);
         else YieldProcessor();
     }
+}
+
+/* (both renderers, just before each present: the loading animation stops at the first) */
+void display_before_present(void) {
+#ifdef _WIN32
+    if (!g_la_first) la_stop();
+#endif
 }

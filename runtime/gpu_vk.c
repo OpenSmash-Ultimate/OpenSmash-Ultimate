@@ -1036,6 +1036,7 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
         image_layout(c, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
         submit(f->acquired, swap_ready[index]);
         VkPresentInfoKHR pi = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, NULL, 1, &swap_ready[index], 1, &swapchain, &index, NULL};
+        display_before_present();   /* (gpu_display.c: the loading animation stops) */
         VkResult pr = vkQueuePresentKHR(queue, &pi);
         if (pr == VK_SUBOPTIMAL_KHR || pr == VK_ERROR_OUT_OF_DATE_KHR) recreate = 1;
         else check(pr, "showing a frame");
@@ -1425,7 +1426,7 @@ static void write_gpu(u64 va, const u8 *src, u64 n) {
         u64 k = 0x1000 - ((va + done) & 0xFFF);
         if (k > n - done) k = n - done;
         u64 g = gpu_va_to_guest(va + done);
-        if (g) memcpy(P(void, g), src + done, k);
+        if (g) { memcpy(P(void, g), src + done, k); gpu_rb_wrote(g, k); }
         done += k;
     }
 }

@@ -89,6 +89,14 @@ void watch_rb_dirty(u64 lo, u64 hi, u64 *bits) {
     }
     ReleaseSRWLockExclusive(&watch_lock);
 }
+/* (hle_rb_state.c, SSBU_RB_SM_PAR) The stamp chunks of [lo, hi) made now, on one thread, before watch_rb_scan
+ * stamps ranges that may share one on several. */
+void watch_rb_prepare(u64 lo, u64 hi) {
+    for (u64 p = (lo - ALIAS_BASE) >> 12; p < (hi - ALIAS_BASE + 0xFFF) >> 12; p = (p / WATCH_CHUNK + 1) * WATCH_CHUNK) {
+        WatchChunk **c = &watch_chunks[p / WATCH_CHUNK];
+        if (!*c) *c = calloc(1, sizeof **c);
+    }
+}
 void watch_rb_scan(u64 lo, u64 hi, u64 stamp, void **pages) {
     void *first;
     ULONG_PTR count = 1;
