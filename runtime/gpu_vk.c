@@ -944,6 +944,7 @@ static void submit(VkSemaphore wait, VkSemaphore signal) {
 }
 
 static void pipeline_cache_tick(void);
+static void vk_warm_gate(void);   /* (the shader loading at the first present) */
 static void residents_retire(void);
 static void vk_present_(u64 guest, u32 width, u32 height);
 static void trial_passed(void);
@@ -1053,6 +1054,11 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
         image_layout(c, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
         submit(f->acquired, swap_ready[index]);
         VkPresentInfoKHR pi = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, NULL, 1, &swap_ready[index], 1, &swapchain, &index, NULL};
+        static int gated;
+        if (!gated) {   /* (the first present: the warm start's pipelines made first, vk_warm_gate) */
+            gated = 1;
+            vk_warm_gate();
+        }
         display_before_present();   /* (gpu_display.c: the loading animation stops) */
         VkResult pr = vkQueuePresentKHR(queue, &pi);
         if (pr == VK_SUBOPTIMAL_KHR || pr == VK_ERROR_OUT_OF_DATE_KHR) recreate = 1;
@@ -2749,6 +2755,20 @@ static void warm_list_open(void) {
     WarmHeader head = {"OSVKWRM", sizeof(WarmRecord), sizeof(PipeKey), SHADER_CACHE_SPV_VERSION, spirv_glslang_version(), WARM_LIST_VERSION, 0};
     size_t size = 0;
     u8 *data = read_file(path, &size);
+    if (!data) {   /* (none for this card yet: the shipped list, beside the exe or media\, the pipelines of normal play) */
+        char shipped[MAX_PATH + 64] = "";
+#ifdef _WIN32
+        DWORD k = GetModuleFileNameA(NULL, shipped, MAX_PATH);
+#else
+        DWORD k = 0;
+#endif
+        char *slash = k && k < MAX_PATH ? strrchr(shipped, '\\') : NULL;
+        if (slash) { strcpy(slash + 1, "vulkan_pipelines.warm"); data = read_file(shipped, &size); }
+        if (!data) data = read_file("media/vulkan_pipelines.warm", &size);
+        if (data && (size < sizeof head || memcmp(data, &head, sizeof head))) { free(data); data = NULL; size = 0; }
+        if (data) fprintf(stderr, "[vulkan] warm start: the shipped list of pipelines, %u records (none for this card yet)\n", (u32)((size - sizeof head) / sizeof(WarmRecord)));
+        if (data) { write_file(path, data, size); }
+    }
     int rewrite = !data;
     u32 n = 0;
     if (data && (size < sizeof head || memcmp(data, &head, sizeof head))) { size = 0; rewrite = 1; }
@@ -2888,6 +2908,49 @@ static DWORD WINAPI warm_main(void *unused) {
                 warm_stopped ? ": the memory budget, SSBU_SHADER_PREWARM_MB" : "", rt_now_ns() / 1e9);
     }
     return 0;
+}
+
+/* ---- the shader loading: the first present waits for the warm start ----------------------------------------
+ * As a PC game compiles its pipelines behind a loading screen: the warm list's pipelines (this card's, or the shipped
+ * list on a first start) are made before the game's first frame, with "Shaders N%" beside the loading animation, on more
+ * threads while it waits; they go into our pipeline cache, so the next start has them in a second. A pipeline not made
+ * yet when the game first draws with it is made then, and that draw waits (a hitch). SSBU_SHADER_PREWARM_WAIT=0: no
+ * wait; N: N seconds at most (as Direct3D 11's). */
+void watchdog_pause(int on);   /* debug_watchdog.c */
+static DWORD WINAPI warm_main(void *unused);
+static void vk_warm_gate(void) {
+    const char *set = getenv("SSBU_SHADER_PREWARM_WAIT");
+    double limit_s = set && *set ? atof(set) : 0;
+    if ((set && *set && limit_s <= 0) || !warm_running || !warm_nrecords) return;
+    u64 t0 = GetTickCount64();
+    watchdog_pause(1);
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    u32 extra = 0, want = si.dwNumberOfProcessors > 4 ? si.dwNumberOfProcessors - 4 : 0;   /* (beside the makers and the game) */
+    if (want > 12) want = 12;
+    for (; extra < want && warm_running; extra++) {
+        InterlockedIncrement(&warm_running);
+        HANDLE t = CreateThread(NULL, 64ull << 20, warm_main, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+        if (!t) { InterlockedDecrement(&warm_running); break; }
+        CloseHandle(t);
+    }
+    char note[64];
+    int last = -1;
+    while (warm_running) {
+        if (limit_s > 0 && (GetTickCount64() - t0) / 1000.0 >= limit_s) break;
+        LONG at = warm_at;
+        int pct = (int)((long long)(at > (LONG)warm_nrecords ? (LONG)warm_nrecords : at) * 100 / warm_nrecords);
+        if (pct != last) {
+            snprintf(note, sizeof note, "Shaders %d%%", pct);
+            display_loading_note(note);
+            last = pct;
+        }
+        Sleep(50);
+    }
+    display_loading_note(NULL);
+    watchdog_pause(0);
+    fprintf(stderr, "[vulkan] shader loading: the first frame waited %.1f s for the warm start (%lld pipelines made of %u listed, %u more threads)\n",
+            (GetTickCount64() - t0) / 1000.0, (long long)vk_stat_warm_pipelines, warm_nrecords, extra);
 }
 
 /* The start's last step (the makers run): the list opened, and the warm threads started on it. */
