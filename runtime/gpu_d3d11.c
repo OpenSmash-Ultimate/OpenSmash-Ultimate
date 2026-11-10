@@ -1274,6 +1274,66 @@ static int cache_name(const char *name, u64 *hash, u32 *vs_outputs, u64 *tables)
 
 static void warm_prewarmed(Prewarm **order, u32 n);   /* (see "first draws") */
 
+/* (prewarm_main) one cache file into the prewarm queue, unless already there or the queue is full: 1 queued */
+static int prewarm_queue_file(const char *fname, Shader **head, Shader **tail, Prewarm **order, u32 *queued) {
+    u64 hash, tables;
+    u32 vs_outputs;
+    int stage = cache_name(fname, &hash, &vs_outputs, &tables);
+    if (stage < 0 || *queued >= PREWARM_SLOTS / 2) return 0;
+    Shader *s = calloc(1, sizeof *s);
+    if (!s) return 0;
+    s->hash = hash; s->stage = stage; s->vs_outputs = vs_outputs; s->table_hash = tables;
+    snprintf(s->name, sizeof s->name, "%s_%016llx", stage == SHADER_VERTEX ? "vs" : stage == SHADER_PIXEL ? "ps" : "cs", (unsigned long long)hash);
+    AcquireSRWLockExclusive(&prewarm_lock);
+    s->prewarm = prewarm_slot(stage, hash, vs_outputs, tables, 1);
+    if (s->prewarm && s->prewarm->state == PW_EMPTY) s->prewarm->state = PW_QUEUED;
+    else { free(s); s = NULL; }
+    ReleaseSRWLockExclusive(&prewarm_lock);
+    if (!s) return 0;
+    if (*tail) (*tail)->next_job = s; else *head = s;
+    *tail = s;
+    order[(*queued)++] = s->prewarm;
+    return 1;
+}
+
+/* (prewarm_main) the shipped list's programs whose files are in this cache, after the played ones: beside the exe,
+ * else media\ (the working folder: the repository). *order grows to hold them; returns how many were queued, and in
+ * *listed how many the list names. SSBU_SHADER_PREWARM_LIST=0: not read. */
+static u32 prewarm_queue_list(Shader **head, Shader **tail, Prewarm ***order, u32 *cap, u32 *queued, u32 *listed) {
+    const char *off = getenv("SSBU_SHADER_PREWARM_LIST");
+    if (off && *off == '0') return 0;
+    FILE *f = NULL;
+#ifdef _WIN32
+    char path[MAX_PATH + 64] = "";
+    DWORD k = GetModuleFileNameA(NULL, path, MAX_PATH);
+    if (k && k < MAX_PATH) {
+        char *slash = strrchr(path, '\\');
+        if (slash) { strcpy(slash + 1, "shader_prewarm.txt"); f = fopen(path, "r"); }
+    }
+#endif
+    if (!f) f = fopen("media/shader_prewarm.txt", "r");
+    if (!f) return 0;
+    u32 added = 0;
+    char line[160], fname[200], file[1300];
+    while (fgets(line, sizeof line, f)) {
+        size_t m = strcspn(line, "\r\n");
+        line[m] = 0;
+        if (!m || line[0] == '#') continue;
+        (*listed)++;
+        snprintf(fname, sizeof fname, "v%u_%s.dxbc", SHADER_CACHE_VERSION, line);
+        snprintf(file, sizeof file, "%s/%s", cache_dir(), fname);
+        if (GetFileAttributesA(file) == INVALID_FILE_ATTRIBUTES) continue;   /* (not made by Prepare Shaders here) */
+        if (*queued == *cap) {
+            Prewarm **more = realloc(*order, sizeof **order * (*cap = *cap * 2 + 1024));
+            if (!more) break;
+            *order = more;
+        }
+        added += (u32)prewarm_queue_file(fname, head, tail, *order, queued);
+    }
+    fclose(f);
+    return added;
+}
+
 /* (a thread of its own, at start) every file of the disk cache into the prewarm queue */
 static DWORD WINAPI prewarm_main(void *unused) {
     (void)unused;
@@ -1287,28 +1347,18 @@ static DWORD WINAPI prewarm_main(void *unused) {
     else prewarm_budget_default();
     Prewarm *table = calloc(PREWARM_SLOTS, sizeof *table);
     prewarm_table = table;
-    Prewarm **order = n ? malloc(sizeof *order * n) : NULL;   /* (the entries in queue order) */
+    u32 order_cap = n ? n : 1024;   /* (grows for the shipped list: prewarm_queue_list) */
+    Prewarm **order = malloc(sizeof *order * order_cap);   /* (the entries in queue order) */
     Shader *head = NULL, *tail = NULL;
     u32 queued = 0;
-    for (u32 i = 0; i < n && table && order; i++) {
-        u64 hash, tables;
-        u32 vs_outputs;
-        int stage = cache_name(found[i].name, &hash, &vs_outputs, &tables);
-        if (stage < 0 || queued >= PREWARM_SLOTS / 2) continue;
-        Shader *s = calloc(1, sizeof *s);
-        s->hash = hash; s->stage = stage; s->vs_outputs = vs_outputs; s->table_hash = tables;
-        snprintf(s->name, sizeof s->name, "%s_%016llx", stage == SHADER_VERTEX ? "vs" : stage == SHADER_PIXEL ? "ps" : "cs", (unsigned long long)hash);
-        AcquireSRWLockExclusive(&prewarm_lock);
-        s->prewarm = prewarm_slot(stage, hash, vs_outputs, tables, 1);
-        if (s->prewarm && s->prewarm->state == PW_EMPTY) s->prewarm->state = PW_QUEUED;
-        else { free(s); s = NULL; }
-        ReleaseSRWLockExclusive(&prewarm_lock);
-        if (!s) continue;
-        if (tail) tail->next_job = s; else head = s;
-        tail = s;
-        order[queued++] = s->prewarm;
-    }
+    for (u32 i = 0; i < n && table && order; i++)
+        prewarm_queue_file(found[i].name, &head, &tail, order, &queued);
     free(found);
+    /* then the programs the game draws in normal play (media/shader_prewarm.txt, from a played cache) that Prepare
+     * Shaders put in this cache: a new player's cache has those files but none dated as played, so without the list
+     * each would be made at its first draw (30-125 ms on NVIDIA, issue #227) */
+    u32 listed = 0, shipped = 0;
+    if (table && order) shipped = prewarm_queue_list(&head, &tail, &order, &order_cap, &queued, &listed);
     if (!queued) { free(order); return 0; }
     prewarm_total = (LONG)queued;
     AcquireSRWLockExclusive(&jobs_lock);
@@ -1316,7 +1366,8 @@ static DWORD WINAPI prewarm_main(void *unused) {
     job_queue[2].tail = tail;
     ReleaseSRWLockExclusive(&jobs_lock);
     WakeAllConditionVariable(&jobs_cv);
-    fprintf(stderr, "[gfx] prewarm: %u shaders from the disk cache, on %u threads\n", queued, ncompilers - 1);
+    fprintf(stderr, "[gfx] prewarm: %u shaders from the disk cache, %u more from the shipped list (%u programs played), on %u threads\n",
+            queued - shipped, shipped, listed, ncompilers - 1);
     if (warm_mode >= 2) warm_prewarmed(order, queued);
     free(order);
     return 0;
