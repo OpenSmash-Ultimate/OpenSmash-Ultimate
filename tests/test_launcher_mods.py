@@ -59,6 +59,9 @@ class LauncherMods(unittest.TestCase):
   <ItemGroup><Compile Include="{source}" Link="ModManagerProcess.cs" /></ItemGroup>
 </Project>""", encoding="utf-8")
         (folder / "Program.cs").write_text("""using OpenSmash.Launcher;
+// (UTF-8 out, as the test reads it: a redirected console otherwise writes the OEM code page, and a
+// path with a character outside it comes back as "?" on such a PC, e.g. cp850 on an Italian Windows)
+Console.OutputEncoding = new System.Text.UTF8Encoding(false);
 if (args[0] == "python")
     Console.Write(ModManagerProcess.FindPython(args[1], args[2]));
 else
