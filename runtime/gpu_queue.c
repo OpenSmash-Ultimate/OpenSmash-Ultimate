@@ -66,6 +66,18 @@ void gpu_rb_wrote(u64 g, u64 n) {
     rbw_plo = lo; rbw_phi = hi;
 }
 u64 gpu_rb_written_count(void) { return __atomic_load_n(&rbw_n, __ATOMIC_ACQUIRE); }
+/* (the semaphores' pages: what the game waits on; one entry a page change, published at once) */
+#define RBS 4096
+static u64 rbs_page[RBS], rbs_n;
+void gpu_rb_semaphore(u64 g) {
+    if (!rb_on || !rbw_mine || !g) return;
+    u64 pg = g & ~0xFFFull, i = rbs_n;
+    if (i && rbs_page[(i - 1) % RBS] == pg) return;
+    rbs_page[i % RBS] = pg;
+    __atomic_store_n(&rbs_n, i + 1, __ATOMIC_RELEASE);
+}
+u64 gpu_rb_sema_count(void) { return __atomic_load_n(&rbs_n, __ATOMIC_ACQUIRE); }
+u64 gpu_rb_sema_at(u64 i) { return gpu_rb_sema_count() - i > RBS ? 0 : rbs_page[i % RBS]; }
 int gpu_rb_written_at(u64 i, u64 *lo, u64 *hi) {
     if (gpu_rb_written_count() - i > RBW) return 0;
     *lo = rbw_lo[i % RBW]; *hi = rbw_hi[i % RBW];
