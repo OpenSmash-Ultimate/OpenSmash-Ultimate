@@ -18,10 +18,10 @@
  * (runtime/macos/platform.c), thread ids are Mach thread ports, priorities are QoS classes,
  * and the clock is mach_absolute_time. */
 #define _GNU_SOURCE 1
+#include <ctype.h>
 #include <dirent.h>
 #include <execinfo.h>
 #include <fcntl.h>
-#include <fnmatch.h>
 #ifndef __APPLE__
 #include <linux/futex.h>
 #include <linux/userfaultfd.h>
@@ -203,7 +203,9 @@ typedef struct Obj {
     LPTHREAD_START_ROUTINE fn;
     void *param;
     int fd;                        /* files */
-    DIR *dir;                      /* searches */
+    DIR *dir;                      /* searches: the names found, in order, and the next one */
+    char **names;
+    int nnames, next;
     u64 due_ns;                    /* timers: when (CLOCK_MONOTONIC), while armed */
     int armed;
     char dir_path[1024], pattern[256];
@@ -240,6 +242,8 @@ static void obj_release(Obj *o) {
     if (__atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL)) return;
     if (o->fd >= 0) close(o->fd);
     if (o->dir) closedir(o->dir);
+    for (int i = 0; i < o->nnames; i++) free(o->names[i]);
+    free(o->names);
     pthread_mutex_destroy(&o->m);
     pthread_cond_destroy(&o->cv);
     o->magic = 0;
@@ -1430,14 +1434,65 @@ LONG CompareFileTime(const FILETIME *a, const FILETIME *b) {
     return x < y ? -1 : x > y;
 }
 
-/* Directory searches: "<dir>/<pattern>", with "." and ".." listed as Windows does. */
+/* Directory searches: "<dir>/<pattern>", with "." and ".." listed first, as Windows does on
+ * NTFS. The rest come in NTFS's order, not readdir's: a folder's index is sorted by the names in
+ * upper case, compared as UTF-16 code units - so "B.dll" comes before "_a.dll", and the order is
+ * the same on every disk (save listings, the order native mods load in: hle_native_mods.c). Here
+ * only a-z are made upper case (NTFS's table has the other alphabets too), and two names the
+ * same but for case, which NTFS cannot hold, come in strcmp order.
+ * The pattern matches as Windows' does for its ordinary forms, ignoring case: * any run of
+ * characters (dots too), ? one character, *.* everything. Not done: DOS's special cases ("*."
+ * for names without a dot, "a.*" also matching "a", a trailing ? matching nothing) and matches on
+ * 8.3 short names. */
+static const char *utf16_unit(const char *s, u32 *unit, u32 *low) {   /* the next code point, as one or two units */
+    const u8 *p = (const u8 *)s;
+    u32 c = p[0], n = c >= 0xF0 && c < 0xF8 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+    if (c >= 0x80 && c < 0xC0) n = 0;   /* (not UTF-8: the byte as it is) */
+    for (u32 i = 1; i <= n; i++) if ((p[i] & 0xC0) != 0x80) n = 0;
+    if (n) { c &= 0x3F >> n; for (u32 i = 1; i <= n; i++) c = c << 6 | (p[i] & 0x3F); }
+    if (c >= 'a' && c <= 'z') c -= 32;
+    *low = 0;
+    if (c >= 0x10000) { *low = 0xDC00 | (c & 0x3FF); c = 0xD800 | ((c - 0x10000) >> 10); }
+    *unit = c;
+    return s + n + 1;
+}
+static int ntfs_order(const void *x, const void *y) {
+    const char *a = *(char *const *)x, *b = *(char *const *)y;
+    while (*a && *b) {
+        u32 ua, la, ub, lb;
+        a = utf16_unit(a, &ua, &la);
+        b = utf16_unit(b, &ub, &lb);
+        if (ua != ub) return ua < ub ? -1 : 1;
+        if (la != lb) return la < lb ? -1 : 1;
+    }
+    if (*a || *b) return *a ? 1 : -1;
+    return strcmp(*(char *const *)x, *(char *const *)y);
+}
+static int win_match(const char *p, const char *s) {
+    for (;;) {
+        if (*p == '*') {
+            while (*p == '*') p++;
+            if (!*p) return 1;
+            for (; *s; s++) if (win_match(p, s)) return 1;
+            return 0;
+        }
+        if (!*s) return !*p;
+        if (*p == '?') {   /* (one character: its UTF-8 continuation bytes with it) */
+            p++;
+            for (s++; (*(const u8 *)s & 0xC0) == 0x80; s++) {}
+            continue;
+        }
+        if (!*p || tolower((u8)*p) != tolower((u8)*s)) return 0;
+        p++, s++;
+    }
+}
 static BOOL find_next(Obj *o, WIN32_FIND_DATAA *data) {
-    for (struct dirent *e; (e = readdir(o->dir));) {
-        if (fnmatch(o->pattern, e->d_name, 0)) continue;
+    while (o->next < o->nnames) {
+        const char *name = o->names[o->next++];
         memset(data, 0, sizeof *data);
-        snprintf(data->cFileName, sizeof data->cFileName, "%s", e->d_name);
+        snprintf(data->cFileName, sizeof data->cFileName, "%s", name);
         char full[2048];
-        snprintf(full, sizeof full, "%s/%s", o->dir_path, e->d_name);
+        snprintf(full, sizeof full, "%s/%s", o->dir_path, name);
         struct stat st;
         if (!stat(full, &st)) {
             data->dwFileAttributes = S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
@@ -1467,6 +1522,30 @@ HANDLE FindFirstFileA(LPCSTR pattern, WIN32_FIND_DATAA *data) {
     if (!strcmp(o->pattern, "*.*")) snprintf(o->pattern, sizeof o->pattern, "*");
     o->dir = opendir(o->dir_path);
     if (!o->dir) { last_error = rt_win32_error(errno) == ERROR_FILE_NOT_FOUND ? ERROR_PATH_NOT_FOUND : rt_win32_error(errno); obj_release(o); return INVALID_HANDLE_VALUE; }
+    int cap = 0, dots = 0;   /* (every name now, then the folder is closed: the search is a snapshot, sorted) */
+    for (struct dirent *e; (e = readdir(o->dir));) {
+        int dot = !strcmp(e->d_name, ".") || !strcmp(e->d_name, "..");
+        if (!win_match(o->pattern, e->d_name)) continue;
+        if (o->nnames == cap) {
+            char **more = realloc(o->names, sizeof *more * (size_t)(cap ? cap * 2 : 64));
+            if (more) { o->names = more; cap = cap ? cap * 2 : 64; }
+        }
+        char *copy = o->nnames < cap ? strdup(e->d_name) : NULL;
+        if (!copy) {   /* (no partial list: a search that missed names would look complete) */
+            obj_release(o);
+            last_error = ERROR_NOT_ENOUGH_MEMORY;
+            return INVALID_HANDLE_VALUE;
+        }
+        if (dot) {   /* ("." before "..", both before the rest) */
+            memmove(o->names + dots + 1, o->names + dots, sizeof *o->names * (size_t)(o->nnames - dots));
+            o->names[dots++] = copy;
+            if (dots == 2 && !strcmp(o->names[0], "..")) { char *t = o->names[0]; o->names[0] = o->names[1]; o->names[1] = t; }
+        } else o->names[o->nnames] = copy;
+        o->nnames++;
+    }
+    closedir(o->dir);
+    o->dir = NULL;
+    if (o->nnames > dots) qsort(o->names + dots, (size_t)(o->nnames - dots), sizeof *o->names, ntfs_order);
     if (!find_next(o, data)) { obj_release(o); last_error = ERROR_FILE_NOT_FOUND; return INVALID_HANDLE_VALUE; }
     return o;
 }
