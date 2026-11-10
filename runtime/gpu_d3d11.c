@@ -1410,7 +1410,7 @@ static DWORD WINAPI prewarm_main(void *unused) {
     job_queue[2].tail = tail;
     ReleaseSRWLockExclusive(&jobs_lock);
     WakeAllConditionVariable(&jobs_cv);
-    fprintf(stderr, "[gfx] prewarm: %u shaders from the disk cache, %u more from the shipped list (%u programs played), on %u threads\n",
+    fprintf(stderr, "[gfx] prewarm: %u shaders from the disk cache, %u more from the shipped list (%u programs played), on %u threads for %d s, then %ld\n",
             queued - shipped, shipped, listed, ncompilers - 1, PREWARM_FULL_MS / 1000, (long)prewarm_after);
     if (warm_mode >= 2) warm_prewarmed(order, queued);
     free(order);
