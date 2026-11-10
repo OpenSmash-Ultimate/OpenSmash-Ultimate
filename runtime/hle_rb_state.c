@@ -1749,11 +1749,14 @@ static const char *check(Cpu *c, u64 frame, u32 n, const Slot *s) {
     u32 nlive = live_stacks(c->thread, live);
     why = fiber_rb_check(s->fibers, live, nlive);
     if (why) return why;
-    /* a game file open at the save and closed since (hle_fs.c): its handle is gone after the load. SSBU_RB_STRICT=1
-     * refuses such a load (an older state is tried, as for a fiber); by default it goes on as before, counted and logged */
+    /* a game file open at the save and closed since (hle_fs.c): its handle is gone after the load. Refused (an older
+     * state is tried, as for a fiber); SSBU_RB_FS_LOAD=1: loaded anyway, counted and logged, as before */
     if (fs_rb_closed_since(s->fs_mark)) {
-        if (kernel_rb_strict()) return "a game file open at the save was closed since (SSBU_RB_STRICT)";
-        if (++rb_fs_closed_loads <= 10) fprintf(stderr, "[rb] load: a game file open at the save was closed since; loading anyway (SSBU_RB_STRICT=1 refuses)\n");
+        static int loose = -1;
+        if (loose < 0) { const char *e = getenv("SSBU_RB_FS_LOAD"); loose = e && *e == '1'; }
+        ++rb_fs_closed_loads;
+        if (kernel_rb_strict() || !loose) return "a game file open at the save was closed since";
+        if (rb_fs_closed_loads <= 10) fprintf(stderr, "[rb] load: a game file open at the save was closed since; loading anyway (SSBU_RB_FS_LOAD=1)\n");
     }
     return NULL;
 }
