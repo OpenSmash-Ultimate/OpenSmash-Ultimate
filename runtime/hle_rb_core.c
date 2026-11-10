@@ -25,6 +25,7 @@
 #include "host.h"
 int rb_on, rb_log;
 int rb_lite_skip(Cpu *c, int group) { (void)c; (void)group; return 0; }
+void rb_owner_trace(Cpu *c, u64 obj) { (void)c; (void)obj; }
 int rb_vi_catchup(void) { return 0; }
 int rb_dequeue_pick(u64 freemask, int dflt) { (void)freemask; return dflt; }
 void rb_job_kick(Cpu *c, GuestFn *orig) { orig(c); }
@@ -2949,6 +2950,30 @@ static int lite_skipped_now(Cpu *c, int grp) {
 }
 /* (hle_rb_wraps.c: the presentation callees' wraps ask this) */
 int rb_lite_skip(Cpu *c, int group) { return lite_skipped_now(c, group); }
+
+/* SSBU_RB_OWNER_TRACE=1 (a diagnostic, for a test build whose generated C calls it at the entry of 0x710048f4b0, the walk
+ * of the samus-fox crash): every object the walk visits, by address, with its owner (+0x8) and the owner's +0x88; a line
+ * when an object is first seen, when its owner changes, and every time it is seen with no owner - with the logic frame,
+ * whether the frame is run again after a load (rb_fast), and the loads so far. */
+static int owner_trace = -1;
+static struct { u64 obj, owner; } owner_seen[8192];
+void rb_owner_trace(Cpu *c, u64 obj) {
+    (void)c;
+    if (owner_trace < 0) { const char *e = getenv("SSBU_RB_OWNER_TRACE"); owner_trace = e && *e == '1'; }
+    if (!owner_trace || !obj) return;
+    u64 owner = readable(obj + 8, 8) ? ld64(obj + 8) : ~0ull, m88 = owner && owner != ~0ull && readable(owner + 0x88, 8) ? ld64(owner + 0x88) : 0;
+    u32 h = (u32)((obj >> 4) * 2654435761u) & 8191, n = 0;
+    while (owner_seen[h].obj && owner_seen[h].obj != obj && n++ < 8192) h = (h + 1) & 8191;
+    int first = owner_seen[h].obj != obj, changed = !first && owner_seen[h].owner != owner;
+    if (first || changed || !owner) {
+        static long long lines;
+        if (lines++ < 20000)
+            fprintf(stderr, "[owner] logic %u%s, rollbacks %lld: object %#llx owner %#llx (+0x88 %#llx)%s\n", ld32(LOGIC_FRAME),
+                    rb_fast > 0 ? " (run again)" : "", net_rollbacks, obj, owner, m88,
+                    first ? " first seen" : changed ? " OWNER CHANGED" : " NO OWNER");
+    }
+    owner_seen[h].obj = obj; owner_seen[h].owner = owner;
+}
 
 /* ---- a catch-up's frames get the buffers their first pass got ----------------------------------
  * The game keeps data per display buffer (the camera's among it) and picks it by the slot DequeueBuffer
