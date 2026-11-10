@@ -874,7 +874,8 @@ static void build(void)
         note_env(r, "SSBU_PACING");
         r = add(R_LATENCY, K_CHOICE, W_NOW, "Frames queued ahead", "How many frames the graphics card may work ahead: 1 is the most responsive, 3 the smoothest on a busy PC.");
         snprintf(r->value, sizeof r->value, "%d", ds.latency);
-#ifdef _WIN32
+#if 0   /* (run-ahead off for everyone, issue #250 and the owner 2026-11-10: hitches at GO! and in fights on mid-range PCs;
+         * only SSBU_RUNAHEAD turns it on now, for tests) */
         { /* (run-ahead: hle_rb_core.c. Its savestates are set up when the game starts: a change from off takes a restart) */
             int kernel_rb_switch(void);
             int n = display_runahead();

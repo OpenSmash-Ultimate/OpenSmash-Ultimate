@@ -126,12 +126,6 @@ static const char DEFAULT_INI[] =
     "low_latency = 1\n"
     "; hide_cursor = 1: hide the mouse pointer over the game after 2 seconds without moving it.\n"
     "hide_cursor = 1\n"
-#ifdef _WIN32
-    "; runahead = 0-3: in fights, show each frame this many frames ahead (less input delay; the settings menu's\n"
-    ";   Display page: off, 1, 2). 1 shows the real frame one frame sooner, 2 also predicts one frame on the\n"
-    ";   controls held now. Each frame ahead costs a frame of the game's work more per frame shown, and a savestate.\n"
-    "runahead = 0\n"
-#endif
     "; overlay = 1: show the frame rate in the corner from the start (F1 shows or hides it while playing).\n"
     "overlay = 1\n"
     "; volume = 0-100: the game's whole sound, over its own sound settings (0 is silent). The settings menu changes it while playing.\n"
@@ -254,7 +248,7 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else if (!_stricmp(key, "pacing")) parse_pacing(value);
         else if (!_stricmp(key, "latency")) cfg.latency = atoi(value);
         else if (!_stricmp(key, "low_latency")) cfg.low_latency = atoi(value) != 0;
-        else if (!_stricmp(key, "runahead")) cfg_runahead = atoi(value);
+        else if (!_stricmp(key, "runahead")) (void)value;   /* (ignored: run-ahead is off for everyone, issue #250; SSBU_RUNAHEAD only) */
         else if (!_stricmp(key, "hide_cursor")) cfg.hide_cursor = atoi(value) != 0;
         else if (!_stricmp(key, "overlay")) cfg.overlay = atoi(value) != 0;
         else if (!_stricmp(key, "overlay_scale")) parse_overlay_scale(value);
