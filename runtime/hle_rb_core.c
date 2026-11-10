@@ -261,7 +261,7 @@ static double fp_census_last, fp_hash_last, fp_in, fp_out, fp_sum[2][7];   /* (f
 static long long fp_n[2];
 static int fp_fast, fp_loaded;
 extern double rb_save_ms[3];
-extern double rb_save_parts[4]; extern long long rb_save_count; extern long long rb_save_gpu_pages, rb_save_gpu_overrun;   /* (hle_rb_state.c: parking, GPU drain, memory, in all) */
+extern double rb_save_parts[4]; extern long long rb_save_count; extern long long rb_save_gpu_pages, rb_save_gpu_overrun; extern double rb_load_parts[6]; extern long long rb_load_count;   /* (hle_rb_state.c: parking, GPU drain, memory, in all) */
 void profile_start_gated(double seconds);
 static void tape_clear(void);
 static void tag_restore(const char *why);
@@ -1586,6 +1586,13 @@ static void net_step(Cpu *c, u64 frame) {
                         "%lld pages the GPU wrote meanwhile copied again (%lld log overruns)\n",
                         rb_save_count, rb_save_parts[3] / k, rb_save_parts[0] / k, rb_save_parts[1] / k, rb_save_parts[2] / k,
                         (rb_save_parts[3] - rb_save_parts[0] - rb_save_parts[1] - rb_save_parts[2]) / k, rb_save_gpu_pages, rb_save_gpu_overrun);
+            }
+            if (rb_load_count) {
+                double k = (double)rb_load_count;
+                fprintf(stderr, "[rb] net loads, the last second: %lld, a load %.2f ms on average: holding the threads %.2f, scratch stacks %.2f, GPU drain %.2f, "
+                        "memory %.2f, undo and host state %.2f\n", rb_load_count, rb_load_parts[5] / k, rb_load_parts[0] / k, rb_load_parts[1] / k,
+                        rb_load_parts[2] / k, rb_load_parts[3] / k, rb_load_parts[4] / k);
+                memset(rb_load_parts, 0, sizeof rb_load_parts); rb_load_count = 0;
             }
             memset(rb_save_parts, 0, sizeof rb_save_parts); rb_save_count = 0; rb_save_gpu_pages = rb_save_gpu_overrun = 0;
             memset(net_w_ms, 0, sizeof net_w_ms); memset(net_w_max, 0, sizeof net_w_max); memset(net_w_n, 0, sizeof net_w_n);

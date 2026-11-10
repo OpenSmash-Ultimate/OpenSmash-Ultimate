@@ -226,7 +226,7 @@ static u32 *chunk_ids, nchunks, chunks_cap;   /* the chunks made, in address ord
 static int shadow_ok, check_after = -1;
 static u64 shadow_seen;              /* the renderer's stamp clock when memory last matched the shadow */
 static u64 kmap_sig;                 /* the kernel's memory map then */
-static struct { u64 pages, whole_pages, undo_pages, hot, calls, steady, span; u32 whole; int age; double ms, undo_ms, t[8]; } mstat;
+static struct { u64 pages, whole_pages, undo_pages, hot, calls, steady, span, g_hot, g_steady, g_copied; u32 whole; int age; double ms, undo_ms, t[8]; } mstat;
 /* t: layout, alias stamps, alias pages, watched, committed/decommitted, compared, the steady pages' comparison, the state map's streaks (ms) */
 extern u64 rb_mem_changed[][2];
 extern volatile LONG rb_mem_nchanged;
@@ -708,6 +708,117 @@ static void sm_streaks(void) {
  * (no reset: the next save's reset takes those pages' news, which are written again by the load
  * anyway) and lists the pages in sm_dirty. */
 static u64 *sm_dirty;
+/* ---- GPU memory: the nvmap allocations (hle_nv.c) ----
+ * Command buffers, constant and vertex data, textures: what the game writes there each frame the GPU reads, and the fight
+ * never reads back. In a fight those pages are left out of saves and loads (not asked about, not compared, not copied):
+ * two games kept equal fight hashes over whole fights so. SSBU_RB_SKIP_GPU=0: in, counted in the SAVE lines. */
+static int skip_gpu = -1;
+static u64 *sm_gpu;                    /* a bit per alias page: in an nvmap allocation */
+static u64 *sm_skip;                   /* a bit per alias page: left out (the GPU's with SSBU_RB_SKIP_GPU=1, SSBU_RB_SKIP's ranges) */
+static u64 (*gpu_rng)[2]; static u32 ngpu_rng;   /* every allocation, sorted and merged (guest addresses) */
+static long gpu_gen_seen = -1;
+extern volatile long nv_rb_gen;
+u32 nv_rb_maps(u64 (*out)[2], u32 max);
+static int rng_cmp(const void *a, const void *b) { u64 x = ((const u64 *)a)[0], y = ((const u64 *)b)[0]; return (x > y) - (x < y); }
+extern int rb_save_home_only;   /* (below: run-ahead's saves; their states keep the GPU's memory, as before) */
+static void gpu_set_refresh(void) {
+    static int skip_env = -1;
+    if (skip_env < 0) { const char *e = getenv("SSBU_RB_SKIP_GPU"); skip_env = !(e && *e == '0'); }
+    int want = skip_env && !rb_save_home_only;
+    if (want != skip_gpu) { skip_gpu = want; gpu_gen_seen = -1; }
+    if (gpu_gen_seen == nv_rb_gen && gpu_rng) return;
+    gpu_gen_seen = nv_rb_gen;
+    static u64 (*tmp)[2];
+    if (!tmp) tmp = malloc(sizeof *tmp * 65536);
+    if (!gpu_rng) gpu_rng = malloc(sizeof *gpu_rng * 65536);
+    if (!sm_gpu) sm_gpu = VirtualAlloc(NULL, SM_PAGES / 8, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!sm_skip) sm_skip = VirtualAlloc(NULL, SM_PAGES / 8, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!tmp || !gpu_rng || !sm_gpu || !sm_skip) { skip_gpu = 0; return; }
+    u32 n = nv_rb_maps(tmp, 65536);
+    qsort(tmp, n, sizeof *tmp, rng_cmp);
+    ngpu_rng = 0;
+    for (u32 i = 0; i < n; i++) {
+        u64 lo = tmp[i][0] & ~0xFFFull, hi = (tmp[i][0] + tmp[i][1] + 0xFFF) & ~0xFFFull;
+        if (ngpu_rng && lo <= gpu_rng[ngpu_rng - 1][1]) { if (hi > gpu_rng[ngpu_rng - 1][1]) gpu_rng[ngpu_rng - 1][1] = hi; continue; }
+        gpu_rng[ngpu_rng][0] = lo; gpu_rng[ngpu_rng][1] = hi; ngpu_rng++;
+    }
+    memset(sm_gpu, 0, SM_PAGES / 8);
+    for (u32 i = 0; i < ngpu_rng; i++)
+        for (u64 g = gpu_rng[i][0]; g < gpu_rng[i][1]; g += 0x1000) {
+            u8 *p = (u8 *)G2H(g);
+            if (sm_alias(p)) { u64 a = sm_ap(p); sm_gpu[a >> 6] |= 1ull << (a & 63); }
+        }
+    /* SSBU_RB_SKIP=<lo>-<hi>[,...]: guest ranges of the alias area left out too (hex; the state map's experiments) */
+    memset(sm_skip, 0, SM_PAGES / 8);
+    if (skip_gpu > 0) memcpy(sm_skip, sm_gpu, SM_PAGES / 8);
+    const char *r = getenv("SSBU_RB_SKIP");
+    while (r && *r) {
+        char *e;
+        u64 lo = strtoull(r, &e, 16), hi = *e == '-' ? strtoull(e + 1, &e, 16) : lo;
+        for (u64 g = lo & ~0xFFFull; g < hi; g += 0x1000) {
+            u8 *p = (u8 *)G2H(g);
+            if (sm_alias(p)) { u64 a = sm_ap(p); sm_skip[a >> 6] |= 1ull << (a & 63); }
+        }
+        r = *e == ',' ? e + 1 : NULL;
+    }
+    static int told;
+    if (!told++ && (skip_gpu > 0 || getenv("SSBU_RB_SKIP"))) fprintf(stderr, "[rb] state map: left out: %s%s%s\n", skip_gpu > 0 ? "GPU memory (nvmap allocations) " : "",
+                                                                 getenv("SSBU_RB_SKIP") ? "ranges " : "", getenv("SSBU_RB_SKIP") ? getenv("SSBU_RB_SKIP") : "");
+}
+static int is_gpu_page(const void *p) {
+    if (sm_alias(p)) return sm_gpu && sm_bit(sm_gpu, sm_ap(p));
+    u64 lo = 0, hi = ngpu_rng;
+    while (lo < hi) { u64 m = (lo + hi) / 2; if ((u64)(uintptr_t)G2H(gpu_rng[m][1]) <= (u64)(uintptr_t)p) lo = m + 1; else hi = m; }
+    return lo < ngpu_rng && (u64)(uintptr_t)G2H(gpu_rng[lo][0]) <= (u64)(uintptr_t)p;
+}
+static u64 gpu_word(u64 i) { return sm_gpu ? sm_gpu[i] : 0; }   /* (a word of sm_gpu) */
+static u64 skip_word(u64 i) { return sm_skip ? sm_skip[i] : 0; }
+static int is_skip_page(const void *p) {
+    if (!sm_on) return 0;   /* (outside a fight every page is in) */
+    if (sm_alias(p)) return sm_skip && sm_bit(sm_skip, sm_ap(p));
+    return skip_gpu > 0 && is_gpu_page(p);
+}
+/* SSBU_RB_SM_CMP=1 (off by default: one samus-fox fight on Peach's Castle 64 hung with it, the game's main thread
+ * spinning in the SDK, not seen without it; a save cost about the same as asking with the GPU's memory left out):
+ * the fight's hot pages are never asked about (the write watch's ~80 calls a save, 2-3 ms, one after
+ * the other in the system): every hot page is compared with the shadow at each save and load, as the steady ones were,
+ * and a hot page found unchanged at SSBU_RB_SM_COLD saves in a row (default 30) is made read-only again (cold) at the
+ * end of the save, every thread held and the page the shadow's own: a write to it faults it hot again. So the pages
+ * compared are those written lately: the fight's state, as the game writes it, and what the frame writes besides. */
+static int sm_cmp = -1, sm_cold_after = 30;
+static long long sm_cooled;
+static u64 cmp_word(u64 i) { return (sm_cmp > 0 ? sm_hot[i] : sm_steady[i]) & ~skip_word(i); }
+static void sm_cool(void) {
+    AcquireSRWLockExclusive(&sm_lock);
+    for (u32 i = 0; i < nchunks; i++) {
+        Chunk *c = chunk_map[chunk_ids[i]];
+        if (c->kind != K_ALIAS) continue;
+        u64 b = sm_ap(c->base);
+        for (u32 w = 0; w < CH_PAGES / 64; w++) {
+            u64 wi = (b >> 6) + w, cool = 0;
+            for (u64 bits = cmp_word(wi) & ~gpu_word(wi); bits; bits &= bits - 1) {
+                unsigned long z;
+                _BitScanForward64(&z, bits);
+                u64 a = (wi << 6) + z;
+                if (!sm_same[a]) { sm_streak[a] = 0; continue; }
+                if (++sm_streak[a] >= sm_cold_after && is_present(c, w * 64 + z)) cool |= 1ull << z;
+            }
+            while (cool) {   /* (runs of a word at a time) */
+                unsigned long z;
+                _BitScanForward64(&z, cool);
+                u32 e = z;
+                while (e < 64 && (cool >> e & 1)) e++;
+                sm_protect(c->base + ((u64)(w * 64 + z) << 12), (u64)(e - z) << 12, PAGE_READONLY);
+                u64 m = (e == 64 ? ~0ull : (1ull << e) - 1) & ~((1ull << z) - 1);
+                sm_hot[wi] &= ~m; sm_steady[wi] &= ~m; sm_cold[wi] |= m;
+                for (u32 k = z; k < e; k++) sm_streak[(wi << 6) + k] = 0;
+                sm_cooled += e - z;
+                cool &= ~m;
+            }
+        }
+    }
+    ReleaseSRWLockExclusive(&sm_lock);
+}
 static u64 sm_steady_count(u64 a, u64 b) {
     u64 n = 0;
     for (u64 i = a; i < b;) {
@@ -735,12 +846,15 @@ static void sm_run(int reset, u64 lo, u64 hi, u64 *clock, u32 *calls) {
 static void sm_ask(int reset, u64 *clock, u32 *calls) {
     u64 lo = 0, hi = 0;
     if (sm_par < 0) { const char *e = getenv("SSBU_RB_SM_PAR"); sm_par = !(e && *e == '0'); }
+    if (sm_cmp > 0) { if (reset) { *clock = watch_rb_begin(); watch_rb_end(); } mstat.calls = 0; return; }   /* (nothing asked: SSBU_RB_SM_CMP) */
     for (u32 i = 0; i < nchunks; i++) {
         Chunk *c = chunk_map[chunk_ids[i]];
         if (c->kind != K_ALIAS) continue;
         u64 b = sm_ap(c->base);
         for (u32 w = 0; w < CH_PAGES / 64; w++) {
             u64 bits = sm_hot[(b >> 6) + w] & ~sm_steady[(b >> 6) + w];
+            mstat.g_hot += (u64)__popcnt64(bits & gpu_word((b >> 6) + w));
+            bits &= ~skip_word((b >> 6) + w);
             while (bits) {
                 unsigned long z;
                 _BitScanForward64(&z, bits);
@@ -776,6 +890,13 @@ static void sync(int to_shadow) {
     u64 n = 0, clock = 0;
     double t = now_ms();
     mstat.whole = 0; mstat.whole_pages = 0; mstat.hot = mstat.calls = mstat.steady = mstat.span = 0;
+    mstat.g_hot = mstat.g_steady = mstat.g_copied = 0;
+    gpu_set_refresh();
+    if (sm_cmp < 0) {
+        const char *e = getenv("SSBU_RB_SM_CMP"), *k = getenv("SSBU_RB_SM_COLD");
+        sm_cmp = e && *e == '1';
+        if (k && atoi(k) > 0) sm_cold_after = atoi(k);
+    }
     if (to_shadow) for (u32 i = 0; i < nchunks; i++) memset(chunk_map[chunk_ids[i]]->pushed, 0, sizeof chunk_map[chunk_ids[i]]->pushed);
     /* the renderer's stamps first, for the alias area. SSBU_RB_STAMPS (measuring which is cheaper):
      * 1 a call per run of consecutive chunks, 2 one call from the first chunk to the last (the
@@ -844,7 +965,7 @@ static void sync(int to_shadow) {
             if (c->kind != K_ALIAS) continue;
             u64 b = sm_ap(c->base);
             for (u32 w = 0; w < CH_PAGES / 64; w++)
-                for (u64 bits = sm_steady[(b >> 6) + w]; bits; bits &= bits - 1) {
+                for (u64 bits = cmp_word((b >> 6) + w); bits; bits &= bits - 1) {
                     unsigned long z;
                     _BitScanForward64(&z, bits);
                     u32 k = w * 64 + z;
@@ -863,34 +984,35 @@ static void sync(int to_shadow) {
         u8 *end = c->base + (1ull << CH_SHIFT);
 #define COPY_PAGE(p) do { u8 *cur_ = (p); u32 k_ = (u32)((cur_ - c->base) >> 12); \
             if (!is_present(c, k_)) break; u8 *sh_ = c->copy + (cur_ - c->base); \
-            if (to_shadow) job_add(NULL, sh_, sh_, cur_, undo_reserve(c, k_, cur_, U_CONTENT)); else job_add(NULL, NULL, cur_, sh_, NO_SLOT); n++; } while (0)
+            if (to_shadow) job_add(NULL, sh_, sh_, cur_, undo_reserve(c, k_, cur_, U_CONTENT)); else job_add(NULL, NULL, cur_, sh_, NO_SLOT); n++;             if (is_gpu_page(cur_)) mstat.g_copied++; } while (0)
         t = now_ms();
         if (c->kind == K_ALIAS && sm_on) {
             u64 b = sm_ap(c->base);
             /* the steady pages: compared and copied every time, never asked about (see sm_steady) */
             for (u32 w = 0; w < CH_PAGES / 64; w++)
-                for (u64 bits = sm_steady[(b >> 6) + w]; bits; bits &= bits - 1) {
+                for (u64 bits = cmp_word((b >> 6) + w); bits; bits &= bits - 1) {
                     unsigned long z;
                     _BitScanForward64(&z, bits);
                     u32 k = w * 64 + z;
                     if (!is_present(c, k)) continue;
                     u8 *cur = c->base + ((u64)k << 12), *sh = c->copy + ((u64)k << 12);
                     mstat.steady++;
-                    if (undo_cmp) { if (!sm_same[b + k]) { job_add(NULL, sh, sh, cur, undo_reserve(c, k, cur, U_CONTENT)); n++; } continue; }
+                    if (sm_gpu && sm_bit(sm_gpu, b + k)) mstat.g_steady++;
+                    if (undo_cmp) { if (!sm_same[b + k]) { job_add(NULL, sh, sh, cur, undo_reserve(c, k, cur, U_CONTENT)); n++; if (sm_gpu && sm_bit(sm_gpu, b + k)) mstat.g_copied++; } continue; }
                     if (to_shadow) job_add(NULL, sh, sh, cur, NO_SLOT); else job_add(NULL, NULL, cur, sh, NO_SLOT);
                     jobs[njobs - 1].same = &sm_same[b + k];
                     n++;
                 }
-            for (u64 p = watch_rb_next((u64)c->base, (u64)end, shadow_seen); p < (u64)end; p = watch_rb_next(p + 0x1000, (u64)end, shadow_seen)) {
+            for (u64 p = sm_cmp > 0 ? (u64)end : watch_rb_next((u64)c->base, (u64)end, shadow_seen); p < (u64)end; p = watch_rb_next(p + 0x1000, (u64)end, shadow_seen)) {
                 u64 a = sm_ap((void *)(uintptr_t)p);
-                if (sm_bit(sm_steady, a)) continue;
+                if (sm_bit(sm_steady, a) || (sm_skip && sm_bit(sm_skip, a))) continue;
                 if (to_shadow) { sm_wr[a >> 6] |= 1ull << (a & 63); COPY_PAGE((u8 *)p); }
                 else sm_dirty[a >> 6] |= 1ull << (a & 63);   /* (stamped by the renderer's questions: their bits reset) */
             }
             if (!to_shadow)   /* (a load: the pages its questions found, and those stamped) */
                 for (u32 w = 0; w < CH_PAGES / 64; w++) {
                     u64 *d = &sm_dirty[(b >> 6) + w];
-                    for (u64 bits = *d & ~sm_steady[(b >> 6) + w]; bits; bits &= bits - 1) {
+                    for (u64 bits = *d & ~sm_steady[(b >> 6) + w] & ~skip_word((b >> 6) + w); bits; bits &= bits - 1) {
                         unsigned long z;
                         _BitScanForward64(&z, bits);
                         COPY_PAGE(c->base + ((u64)(w * 64 + z) << 12));
@@ -921,7 +1043,7 @@ static void sync(int to_shadow) {
                         count = CH_PAGES;
                         if (GetWriteWatch(wf, lo, (SIZE_T)(part - lo), pages, &count, &gran) != 0) count = 0;
                     }
-                    for (ULONG_PTR q = 0; q < count; q++) COPY_PAGE((u8 *)pages[q]);
+                    for (ULONG_PTR q = 0; q < count; q++) { if (is_skip_page(pages[q])) continue; COPY_PAGE((u8 *)pages[q]); }
                     lo = part;
                 }
                 k = e;
@@ -938,7 +1060,7 @@ static void sync(int to_shadow) {
     jobs_run();   /* (the copies of the pages listed above) */
     mstat.t[2] += now_ms() - t;
     t = now_ms();
-    if (sm_on && to_shadow) sm_streaks();
+    if (sm_on && to_shadow) { if (sm_cmp > 0) sm_cool(); else sm_streaks(); }
     mstat.t[7] = now_ms() - t;
     if (clock) shadow_seen = clock;   /* (a page a load writes back is stamped later: copied again next time, the same bytes) */
     rb_mem_nchanged = 0;
@@ -963,6 +1085,7 @@ static u64 shadow_mismatches(u64 *first, u64 *layout_bad) {
             int was = is_present(c, k);
             int there = now || (sm_on && m.State == MEM_COMMIT && m.Protect == PAGE_READONLY && sm_is_cold(p));   /* (a cold page of the state map: there) */
             if (was != (there && in_guest((u64)(uintptr_t)p, guest, ng))) { (*layout_bad)++; continue; }
+            if (was && is_skip_page(p)) continue;   /* (left out: SSBU_RB_SKIP_GPU) */
             if (was && memcmp(p, c->copy + ((u64)k << 12), 0x1000)) { if (!n) *first = (u64)(uintptr_t)p; n++; }
         }
     }
@@ -1123,6 +1246,7 @@ static int gpu_pages_again(u64 from, u64 *npages) {
         if (!gpu_rb_written_at(i, &lo, &hi)) return 0;
         for (u64 g = lo; g < hi; g += 0x1000) {
             u8 *p = (u8 *)G2H(g);
+            if (is_skip_page(p)) continue;
             Chunk *c = chunk_of(p, 0);
             if (!c) continue;
             u32 k = (u32)((p - c->base) >> 12);
@@ -1349,7 +1473,10 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     int barrier = 0;
     if (!memory_save(&barrier)) { undo_to = NULL; release(); return 0; }
     double tw = now_ms();
-    if (!drain_now) {
+    /* (the fight's state map with the GPU's memory left out, SSBU_RB_SKIP_GPU: the GPU writes nothing the state holds,
+     * so the save neither waits for it nor copies anything again) */
+    int gpu_free = !drain_now && sm_on && skip_gpu > 0;
+    if (!drain_now && !gpu_free) {
         gpu_queue_wait(gpu_mark);
         double tg = now_ms();
         u64 again;
@@ -1410,9 +1537,9 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     if (!quiet || slow || barrier || !(saves % 600)) {
         present_runs();
         fprintf(stderr, "[rb] SAVE %lld: memory: %llu pages copied (%llu MB; layout walk %u, %llu pages committed or decommitted; undo %u pages) in %.1f ms "
-                "[layout %.1f, alias stamps %.1f, alias pages %.1f, watched %.1f, (de)commits %.1f, compared %.1f, steady compared %.1f, streaks %.1f]%s; state map %llu hot pages (%llu steady; %lld became steady, %lld no longer), %llu calls\n", saves,
+                "[layout %.1f, alias stamps %.1f, alias pages %.1f, watched %.1f, (de)commits %.1f, compared %.1f, steady compared %.1f, streaks %.1f]%s; state map %llu hot pages (%llu steady; %lld became steady, %lld no longer), %llu calls; GPU memory: %llu hot asked, %llu steady, %llu copied%s; %lld pages made cold again\n", saves,
                 mstat.pages, mstat.pages >> 8, mstat.whole, mstat.whole_pages, prev && !barrier ? prev->undo.n : 0, mstat.ms,
-                mstat.t[0], mstat.t[1], mstat.t[2], mstat.t[3], mstat.t[4], mstat.t[5], mstat.t[6], mstat.t[7], barrier ? " (new memory runs: older states dropped)" : "", mstat.hot, mstat.steady, sm_promoted, sm_demoted, mstat.calls);
+                mstat.t[0], mstat.t[1], mstat.t[2], mstat.t[3], mstat.t[4], mstat.t[5], mstat.t[6], mstat.t[7], barrier ? " (new memory runs: older states dropped)" : "", mstat.hot, mstat.steady, sm_promoted, sm_demoted, mstat.calls, mstat.g_hot, mstat.g_steady, mstat.g_copied, skip_gpu > 0 ? " (left out)" : "", sm_cooled);
         fprintf(stderr, "[rb] SAVE %lld: %.1f ms (hold %.1f ms): guest memory %llu MB in %u regions; %u other threads (%llu KB of host stack), "
                 "main stack %llu KB (%#llx..%#llx, host thread %lu); %u switched-away fibers (%llu KB), %u more on stacks in use; %u setjmp records; "
                 "%d of %d states kept\n",
@@ -1523,7 +1650,11 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     u64 live[1025]; u32 skipped;
     u32 nlive = live_stacks(c->thread, live);
     double lt_scratch = now_ms();
-    gpu_queue_drain();
+    /* (the GPU's queue may read memory a load writes, and write memory it restores: drained first. With the GPU's
+     * memory left out of the states, SSBU_RB_SKIP_GPU, a load writes none of what the GPU reads or writes: the
+     * queue is drained after the memory, beside it, before the host state) */
+    int drain_late = skip_gpu > 0 && sm_on && gpu_threaded();
+    if (!drain_late) gpu_queue_drain();
     double lt_drain = now_ms();
     step("memory");
     memory_load();
@@ -1532,6 +1663,8 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     u64 undone = 0;
     for (int a = 1; a <= age; a++) { undo_apply(&slot_at(a)->undo); undone += slot_at(a)->undo.n; }
     mstat.undo_pages = undone; mstat.undo_ms = now_ms() - tm;
+    double late_drain = 0;
+    if (drain_late) { double td = now_ms(); gpu_queue_drain(); late_drain = now_ms() - td; }
     for (int a = 0; a < age; a++) slot_free(slot_at(a));   /* (the newer states) */
     ring_head = (int)(s - ring); ring_count -= age;
     s->undo.n = 0;
@@ -1554,8 +1687,8 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     step("threads' stacks, then this thread's");
     double lt_host = now_ms();
     rb_load_parts[0] += lt_hold - load_t0; rb_load_parts[1] += lt_scratch - lt_hold; rb_load_parts[2] += lt_drain - lt_scratch;
-    rb_load_parts[3] += lt_mem - lt_drain; rb_load_parts[4] += lt_host - lt_mem;
-    load_last[0] = lt_hold - load_t0; load_last[1] = lt_scratch - lt_hold; load_last[2] = lt_drain - lt_scratch; load_last[3] = lt_host - lt_mem - mstat.undo_ms;
+    rb_load_parts[3] += lt_mem - lt_drain; rb_load_parts[4] += lt_host - lt_mem - late_drain; rb_load_parts[2] += late_drain;
+    load_last[0] = lt_hold - load_t0; load_last[1] = lt_scratch - lt_hold; load_last[2] = lt_drain - lt_scratch + late_drain; load_last[3] = lt_host - lt_mem - mstat.undo_ms - late_drain;
     load_last[4] = now_ms();
     copied = 0;
     loading = s;
