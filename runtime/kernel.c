@@ -716,39 +716,47 @@ void rb_mem_note(u64 at, u64 size) {   /* (host.c too: modules loaded) */
  * Always on: an entry is a few stores. */
 typedef struct MemEvent { u64 ns, addr, size; u32 tid; char kind; } MemEvent;
 static MemEvent mem_events[1024];
-static volatile LONG mem_event_n;
+static volatile LONG64 mem_event_n;
 void kernel_mem_event(char kind, u64 addr, u64 size) {
-    LONG i = InterlockedIncrement(&mem_event_n) - 1;
+    LONG64 i = InterlockedIncrement64(&mem_event_n) - 1;
     MemEvent *e = &mem_events[i & 1023];
     e->ns = now_ns(); e->addr = addr; e->size = size; e->tid = GetCurrentThreadId(); e->kind = kind;
 }
 static const char *mem_event_name(char k) {
-    return k == 'C' ? "committed" : k == 'D' ? "decommitted (UnmapPhysicalMemory)" : k == 'M' ? "mapped (MapMemory, a copy)" :
-           k == 'U' ? "unmapped (UnmapMemory)" : k == 'L' ? "decommitted by a rollback load" : k == 'R' ? "recommitted by a rollback load" : "?";
+    return k == 'C' ? "committed" : k == 'D' ? "decommitted (UnmapPhysicalMemory)" : k == 'U' ? "unmapped (UnmapMemory)" :
+           k == 'L' ? "pages decommitted by a rollback load, within" : k == 'R' ? "pages recommitted by a rollback load, within" : "?";
 }
-/* (host.c, a crash's report) What the kernel's map and Windows say about guest address g, and the recent changes near it. */
-void kernel_fault_report(void (*line)(const char *), u64 g) {
+/* (host.c, a crash's report) What the kernel's map and Windows say about guest address g, and the recent changes near it.
+ * 0, nothing said: g is in none of the guest's reservations (a host pointer, 0xffff...: the report says so). */
+static const struct { u64 base, size; } guest_areas[] = {{HEAP_BASE, HEAP_LIMIT}, {ALIAS_BASE, ALIAS_SIZE}, {STACK_BASE, STACK_SIZE}, {KERNEL_BASE, TLR_AREA}};
+int kernel_fault_report(void (*line)(const char *), u64 g) {
     char t[320];
-    int found = 0;
+    MEMORY_BASIC_INFORMATION m;
+    int have = VirtualQuery(G2H(g), &m, sizeof m) != 0, guest = 0;
+    for (u32 i = 0; have && i < sizeof guest_areas / sizeof *guest_areas; i++)   /* (the kernel's own reservations) */
+        if (m.AllocationBase == G2H(guest_areas[i].base)) guest = 1;
+    if (have && m.AllocationBase && g >= 0x7100000000ull && g < NATIVE_BASE) guest = 1;   /* (a module's reservation, host.c) */
+    if (!guest) return 0;
+    int locked = TryEnterCriticalSection(&klock), found = 0;
     for (u32 i = 0; i < region_count; i++)
         if (g >= regions[i].base && g < regions[i].base + regions[i].size) {
-            snprintf(t, sizeof t, "  kernel map: %#llx in the region %#llx..%#llx (state %#x, permission %u)\n", g, regions[i].base,
-                     regions[i].base + regions[i].size, regions[i].state, regions[i].perm);
+            snprintf(t, sizeof t, "  kernel map: %#llx in the region %#llx..%#llx (state %#x, permission %u)%s\n", g, regions[i].base,
+                     regions[i].base + regions[i].size, regions[i].state, regions[i].perm, locked ? "" : " (read without the kernel's lock)");
             line(t); found = 1;
         }
-    if (!found) { snprintf(t, sizeof t, "  kernel map: %#llx is in no region of the guest's\n", g); line(t); }
-    MEMORY_BASIC_INFORMATION m;
-    if (VirtualQuery(G2H(g), &m, sizeof m)) {
+    if (locked) LeaveCriticalSection(&klock);
+    if (!found) { snprintf(t, sizeof t, "  kernel map: %#llx is in no region of the guest's%s\n", g, locked ? "" : " (read without the kernel's lock)"); line(t); }
+    {
         snprintf(t, sizeof t, "  Windows: the page is %s, protection %#lx, in the run %p..%p of the reservation at %p\n",
                  m.State == MEM_COMMIT ? "committed" : m.State == MEM_RESERVE ? "reserved, not committed" : "free",
                  (unsigned long)m.Protect, m.BaseAddress, (u8 *)m.BaseAddress + m.RegionSize, m.AllocationBase);
         line(t);
     }
-    LONG n = mem_event_n, from = n > 1024 ? n - 1024 : 0;
+    LONG64 n = mem_event_n, from = n > 1024 ? n - 1024 : 0;
     u64 now = now_ns();
     int shown = 0;
     line("  the memory map's changes within 16 MB of it, newest first (of the last 1024 changes):\n");
-    for (LONG i = n - 1; i >= from && shown < 24; i--) {
+    for (LONG64 i = n - 1; i >= from && shown < 24; i--) {
         MemEvent *e = &mem_events[i & 1023];
         if (e->addr + e->size + (16ull << 20) < g || e->addr > g + (16ull << 20)) continue;
         snprintf(t, sizeof t, "    %.3f s ago, host thread %lu: %#llx..%#llx %s%s\n", (double)(now - e->ns) / 1e9, (unsigned long)e->tid,
@@ -757,12 +765,13 @@ void kernel_fault_report(void (*line)(const char *), u64 g) {
     }
     if (!shown) line("    (none)\n");
     line("  the last 6 changes anywhere:\n");
-    for (LONG i = n - 1; i >= from && i >= n - 6; i--) {
+    for (LONG64 i = n - 1; i >= from && i >= n - 6; i--) {
         MemEvent *e = &mem_events[i & 1023];
         snprintf(t, sizeof t, "    %.3f s ago, host thread %lu: %#llx..%#llx %s\n", (double)(now - e->ns) / 1e9, (unsigned long)e->tid,
                  e->addr, e->addr + e->size, mem_event_name(e->kind));
         line(t);
     }
+    return 1;
 }
 static void *commit(u64 at, u64 size, const char *what) {
     kernel_mem_event('C', at, size);

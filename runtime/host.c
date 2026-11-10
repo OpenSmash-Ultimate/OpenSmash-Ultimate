@@ -364,7 +364,7 @@ void rt_backtrace_thread(HANDLE thread, int max_frames) {
  * the graphics driver's threads, whose stacks are 64 KB, there is no room to keep for one). */
 static struct { HANDLE go; EXCEPTION_POINTERS *e; DWORD tid; } fault;
 
-void kernel_fault_report(void (*line)(const char *), u64 g);   /* (kernel.c) */
+int kernel_fault_report(void (*line)(const char *), u64 g);    /* (kernel.c) */
 void kernel_thread_states(void (*line)(const char *text));     /* (kernel.c) */
 int profile_dump_threads(void (*line)(const char *text));      /* (debug_profile.c) */
 static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
@@ -380,7 +380,10 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
     /* (an address in guest memory that is not mapped: what the kernel's map says, and its recent changes there - the
      * r9n_1 crash, an alias address read on the character select screen while not committed) */
     u64 fault_addr = code == EXCEPTION_ACCESS_VIOLATION ? (u64)e->ExceptionRecord->ExceptionInformation[1] : 0;
-    if (fault_addr >= RT_MEMBASE + 0x1000000ull) { out("memory at the address:\n"); kernel_fault_report(out_line, H2G((void *)(uintptr_t)fault_addr)); }
+    if (fault_addr) {
+        out("memory at the address:\n");
+        if (!kernel_fault_report(out_line, H2G((void *)(uintptr_t)fault_addr))) out("  not a guest address\n");
+    }
     /* where on the host: the faulting instruction's module and offset (symbolize with tools/dev/hostsym.py) */
     HMODULE mod = NULL;
     char modname[MAX_PATH] = "?";
