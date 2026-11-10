@@ -914,13 +914,13 @@ static void build(void)
 #ifndef __APPLE__
         r = add(R_RENDERER, K_CHOICE, W_RESTART, "Renderer",
 #ifdef _WIN32
-                "Direct3D 11: the renderer the game is played and tested with. Vulkan: in development; until it can draw the game, "
+                "auto: Vulkan on an AMD card (no first-use stutter there), Direct3D 11 on any other. direct3d11 or vulkan: that one on any card."
+                " If Vulkan cannot start (its shaders come from ssbu_glslang.dll beside the game, which needs the Visual C++ runtime), or"
+                " stopped the game in its first seconds twice in a row, Direct3D 11 draws and the log says why."
 #else
                 "DXVK: Direct3D 11 on Vulkan, the renderer the game is played and tested with. Vulkan: in development; until it can draw the game, "
-#endif
                 "the game checks Vulkan at its start, says what it found in its log, and draws as before."
-                " Vulkan's shaders come from ssbu_glslang.dll beside the game (the build makes it: tools/glslang_lib.py); without it,"
-                " or without the Visual C++ runtime it needs, Vulkan does not start and the log says why."
+#endif
                 );
         snprintf(r->value, sizeof r->value, "%s", renderer_name(ds.renderer));
         note_env(r, "SSBU_RENDERER");
@@ -1349,8 +1349,14 @@ static void change(const Row *row, int dir)
         break;
     }
     case R_RENDERER:
-    { /* the system's own, then vulkan */
+    { /* the system's own (Windows: auto), then vulkan; on Windows direct3d11 too */
+#ifdef _WIN32
+        static const int ORDER[] = {RENDERER_DEFAULT, RENDERER_D3D11, RENDERER_VULKAN};
+        int at = ds.renderer == RENDERER_D3D11 ? 1 : ds.renderer == RENDERER_VULKAN ? 2 : 0;
+        int next = ORDER[cycle(at, 3, dir)];
+#else
         int next = cycle(ds.renderer == RENDERER_VULKAN, 2, dir) ? RENDERER_VULKAN : RENDERER_DEFAULT;
+#endif
         set_display("renderer", renderer_name(next));
         display_set_renderer(next); /* (shown now; the renderer is chosen at the next start) */
         break;

@@ -363,17 +363,21 @@ class Pages(MenuTest):
 
     @unittest.skipIf(sys.platform == 'darwin', 'the Mac program has no Renderer row (Metal only)')
     def test_renderer_row(self):
-        """Display > Renderer: the system's own renderer, then Vulkan, saved in display.ini for the
-        next start (runtime/renderer.h's names)."""
-        own = 'd3d11' if os.name == 'nt' else 'dxvk'
+        """Display > Renderer: the system's own renderer (Windows: auto, then direct3d11), then Vulkan,
+        saved in display.ini for the next start (runtime/renderer.h's names)."""
+        own = 'auto' if os.name == 'nt' else 'dxvk'
         m = self.menu()
         m.key('ESC')
         labels = m.labels()
         at = labels.index('Renderer')
         self.assertEqual(m.row('Renderer')['value'], own)
-        self.assertIn('Vulkan: in development', m.row('Renderer')['help'])
+        self.assertIn('Vulkan on an AMD card' if os.name == 'nt' else 'Vulkan: in development', m.row('Renderer')['help'])
         m.key('DOWN', at)
         self.assertEqual(m.at()['label'], 'Renderer')
+        if os.name == 'nt':
+            m.key('RIGHT')
+            self.assertEqual(m.row('Renderer')['value'], 'direct3d11')
+            self.assertIn('renderer = direct3d11', (m.dir / 'display.ini').read_text())
         m.key('RIGHT')
         self.assertEqual(m.row('Renderer')['value'], 'vulkan')
         self.assertIn('renderer = vulkan', (m.dir / 'display.ini').read_text())

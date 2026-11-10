@@ -1,20 +1,23 @@
 /* Which renderer draws the game: display.ini's renderer, SSBU_RENDERER (gpu_display.c reads them,
- * gpu_renderer.c acts on them at the renderer's start).
+ * gpu_backend.c and gpu_renderer.c act on them at the renderer's start).
  *
- * The default is the system's own back end: Direct3D 11 on Windows (gpu_d3d11.c), the same
- * Direct3D 11 through DXVK on Linux, Metal on macOS (macos/gpu_metal.m). vulkan is the Vulkan back
- * end behind gpu_backend.h (gpu_vulkan.c; docs/TECHNICAL.md, "A second back end: Vulkan"), in
- * development: until it draws the game it is checked at the start and the default draws.
+ * The default is the system's own back end - Direct3D 11 through DXVK on Linux, Metal on macOS -
+ * and on Windows "auto": the Vulkan back end (gpu_vk.c; docs/TECHNICAL.md, "A second back end:
+ * Vulkan") on an AMD card, where it draws the game without Direct3D 11's first-use stutter, and
+ * Direct3D 11 (gpu_d3d11.c) on any other card and whenever Vulkan cannot start. vulkan and
+ * direct3d11 choose one. "d3d11", which every default display.ini before auto was written with,
+ * counts as auto (so AMD players get Vulkan without editing it); direct3d11 (or dx11, direct3d)
+ * is Direct3D 11 whatever the card.
  *
  * Plain C, no system headers: tools/dev/renderertest.c checks the names on any system. */
 #pragma once
 
-typedef enum { RENDERER_DEFAULT = 0, RENDERER_VULKAN = 1 } Renderer;
+typedef enum { RENDERER_DEFAULT = 0, RENDERER_VULKAN = 1, RENDERER_D3D11 = 2 } Renderer;
 
 #if defined(__APPLE__)
 #define RENDERER_DEFAULT_NAME "metal"
 #elif defined(_WIN32)
-#define RENDERER_DEFAULT_NAME "d3d11"
+#define RENDERER_DEFAULT_NAME "auto"
 #else
 #define RENDERER_DEFAULT_NAME "dxvk"
 #endif
@@ -31,13 +34,20 @@ static inline int renderer_lower_eq(const char *a, const char *b) {
  * default name means the default here (a display.ini carried from another system keeps working):
  * the Linux build's Direct3D 11 is DXVK's, so d3d11 and dxvk are one renderer there. */
 static inline int renderer_parse(const char *v) {
-    static const char *const DEFAULTS[] = {"auto", "default", "d3d11", "dx11", "direct3d", "direct3d11", "dxvk", "metal"};
+    static const char *const DEFAULTS[] = {"auto", "default", "d3d11", "dxvk", "metal"};
+    static const char *const D3D11[] = {"direct3d11", "direct3d", "dx11"};
     if (!v) return -1;
     for (unsigned i = 0; i < sizeof DEFAULTS / sizeof *DEFAULTS; i++)
         if (renderer_lower_eq(v, DEFAULTS[i])) return RENDERER_DEFAULT;
+    for (unsigned i = 0; i < sizeof D3D11 / sizeof *D3D11; i++)
+#ifdef _WIN32
+        if (renderer_lower_eq(v, D3D11[i])) return RENDERER_D3D11;
+#else
+        if (renderer_lower_eq(v, D3D11[i])) return RENDERER_DEFAULT;   /* (Linux: DXVK's Direct3D 11 is the default) */
+#endif
     if (renderer_lower_eq(v, "vulkan") || renderer_lower_eq(v, "vk")) return RENDERER_VULKAN;
     return -1;
 }
 
 /* The name display.ini is written with (the settings menu, the default file). */
-static inline const char *renderer_name(int r) { return r == RENDERER_VULKAN ? "vulkan" : RENDERER_DEFAULT_NAME; }
+static inline const char *renderer_name(int r) { return r == RENDERER_VULKAN ? "vulkan" : r == RENDERER_D3D11 ? "direct3d11" : RENDERER_DEFAULT_NAME; }

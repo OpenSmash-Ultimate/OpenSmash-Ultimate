@@ -584,6 +584,24 @@ static IDXGIAdapter1 *pick_adapter(int *warp) {
     return named;
 }
 
+/* (gpu_backend.c, renderer = auto) The PCI vendor of the card Direct3D 11 would draw with (pick_adapter's choice), its
+ * name in `name`; 0 for Windows' own renderer (gpu = warp) or no card listed. Through DXGI alone: nothing of Vulkan's
+ * is loaded to learn it. */
+unsigned d3d11_card_vendor(char *name, size_t size) {
+    int warp;
+    if (size) name[0] = 0;
+    IDXGIAdapter1 *a = pick_adapter(&warp);
+    if (!a) return 0;
+    DXGI_ADAPTER_DESC1 d;
+    unsigned vendor = 0;
+    if (SUCCEEDED(IDXGIAdapter1_GetDesc1(a, &d))) {
+        vendor = d.VendorId;
+        if (size) adapter_name(&d, name, size);
+    }
+    IDXGIAdapter1_Release(a);
+    return vendor;
+}
+
 /* SSBU_D3D_DEBUG=1: Direct3D's debug layer (Windows' optional "Graphics Tools" feature) checks
  * every call; its complaints go to the log at each present - each kind the first 3 times, then
  * every 1000th - as uses of the API one driver forgives and another does not. */
