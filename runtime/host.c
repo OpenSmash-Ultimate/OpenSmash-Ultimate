@@ -910,7 +910,10 @@ static void map_module(u32 m, const char *dir) {
     else for (u32 b = 0; b < 3; b++)
         if (!strcmp(mod->name, BOOT[b].name) && BOOT[b].ro == text) { ro = BOOT[b].ro; data = BOOT[b].data; }
     if (ro != text || data < ro || data > size) ro = data = text;
-    rb_mem_note(mod->base, size);   /* (SSBU_RB: the savestate sees the new pages; nothing otherwise) */
+    /* (SSBU_RB: the savestate sees the new pages; nothing otherwise. The data only: code and read-only data are not in
+     * the memory a savestate holds (kernel_rb_regions), and noted here they entered its layout all the same - 713 pages
+     * of lua2cpp_samus and lua2cpp_fox, loaded after the copy at the set-up, that the next whole walk dropped.) */
+    rb_mem_note(mod->base + data, size - data);
     kernel_add_region(mod->base, text, 3, 5);                        /* code */
     kernel_add_region(mod->base + ro, data - ro, 3, 1);              /* read-only data */
     kernel_add_region(mod->base + data, size - data, 4, 3);          /* data */

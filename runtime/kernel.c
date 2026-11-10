@@ -1448,6 +1448,14 @@ void kernel_thread_states(void (*line)(const char *text)) {
  * module code or the shared fonts. On Windows the guest lives at its own addresses, among the
  * host's own allocations, so this map, not the address range, says what is the guest's. Writes
  * up to max ranges to out[] (base, size); returns how many there are. */
+/* (diagnostic) The region holding guest address a: its state, base and size; -1 none. */
+int kernel_rb_region_at(u64 a, u64 *base, u64 *size) {
+    int s = -1;
+    EnterCriticalSection(&klock);
+    for (u32 i = 0; i < region_count; i++) if (a >= regions[i].base && a < regions[i].base + regions[i].size) { s = (int)regions[i].state; *base = regions[i].base; *size = regions[i].size; break; }
+    LeaveCriticalSection(&klock);
+    return s;
+}
 u32 kernel_rb_regions(u64 (*out)[2], u32 max) {
     u32 n = 0;
     EnterCriticalSection(&klock);
