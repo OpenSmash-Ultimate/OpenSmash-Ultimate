@@ -468,8 +468,32 @@ def main_files(a):
     if a.warm and not a.dry:
         dated, total = warm(exe, pack, cache)
         print(f"{dated} of {total} keys dated now: the next start's prewarm makes them")
+    if not a.dry:
+        start_driver_warm(cache)
     print(f"done in {time.time() - t0:.0f} s")
     return 0
+
+
+def start_driver_warm(cache, game=None):
+    """AMD's Direct3D 11 driver makes a shader's GPU code at its first draw, not when it is created (runtime/gpu_d3d11.c,
+    "first draws"), so a fresh cache still stutters in the first matches. The game draws the cache once for the driver's
+    own cache when it closes (ssbu --warm-shaders); this starts that pass now too, in the background at idle priority, so
+    the first match already finds the shaders it needs (the game's own list first). The exe decides: with no AMD card it
+    exits at once. It must be the exe the game runs as (the driver's cache goes by the exe), so build\\ssbu.exe. Returns
+    the process, or None."""
+    if LINUX or os.environ.get("SSBU_SHADER_WARM") == "0":
+        return None
+    game = game or os.path.join(ROOT, "build", "ssbu.exe")
+    if not os.path.exists(game):
+        return None
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "IDLE_PRIORITY_CLASS", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        p = subprocess.Popen([game, "--warm-shaders", cache, "auto"], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             stdin=subprocess.DEVNULL, creationflags=flags)
+    except OSError:
+        return None
+    print("the graphics driver's own shader cache is being filled in the background (AMD cards only; it stops while the game runs)")
+    return p
 
 
 STOPPED = "stopped: what is done stays done; run this again to carry on"
