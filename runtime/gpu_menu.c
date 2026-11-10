@@ -25,6 +25,7 @@
 #include "gpu_menu.h"
 #include "audio.h"
 #include "gpu_overlay.h"
+#include "gpu_renderer.h"
 #include "language.h"
 #include "mod_switch.h"
 #include "net.h"
@@ -923,6 +924,12 @@ static void build(void)
 #endif
                 );
         snprintf(r->value, sizeof r->value, "%s", renderer_name(ds.renderer));
+#ifdef _WIN32
+        /* (auto says which one it picked: a player on an NVIDIA card read "auto" as Vulkan, 2026-11-10. Only while the
+         * setting is the one this start began with: display_renderer() is what the renderer was chosen from.) */
+        if (ds.renderer == RENDERER_DEFAULT && display_renderer() == RENDERER_DEFAULT)
+            snprintf(r->value, sizeof r->value, "auto (%s)", gfx_renderer() == RENDERER_VULKAN ? "Vulkan" : "Direct3D 11");
+#endif
         note_env(r, "SSBU_RENDERER");
 #endif
         break;

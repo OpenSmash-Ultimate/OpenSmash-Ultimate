@@ -365,7 +365,7 @@ class Pages(MenuTest):
     def test_renderer_row(self):
         """Display > Renderer: the system's own renderer (Windows: auto, then direct3d11), then Vulkan,
         saved in display.ini for the next start (runtime/renderer.h's names)."""
-        own = 'auto' if os.name == 'nt' else 'dxvk'
+        own = 'auto (Direct3D 11)' if os.name == 'nt' else 'dxvk'   # (auto says which one this start drew with)
         m = self.menu()
         m.key('ESC')
         labels = m.labels()
@@ -383,7 +383,7 @@ class Pages(MenuTest):
         self.assertIn('renderer = vulkan', (m.dir / 'display.ini').read_text())
         m.key('RIGHT')
         self.assertEqual(m.row('Renderer')['value'], own)
-        self.assertIn(f'renderer = {own}', (m.dir / 'display.ini').read_text())
+        self.assertIn(f'renderer = {own.split()[0]}', (m.dir / 'display.ini').read_text())
         m.key('LEFT')
         self.assertEqual(m.row('Renderer')['value'], 'vulkan')
 
