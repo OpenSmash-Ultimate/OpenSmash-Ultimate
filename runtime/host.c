@@ -374,7 +374,7 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
     report_open("crash", report, sizeof report);
     out("\n*** host exception %#lx%s during %s", code, code == EXCEPTION_STACK_OVERFLOW ? " (stack overflow)" : "", phase);
     if (code == EXCEPTION_ACCESS_VIOLATION)
-        out(": %s address %s", e->ExceptionRecord->ExceptionInformation[0] ? "writing" : "reading",
+        out(": %s address %s", e->ExceptionRecord->ExceptionInformation[0] == 8 ? "executing" : e->ExceptionRecord->ExceptionInformation[0] ? "writing" : "reading",
             rt_describe(e->ExceptionRecord->ExceptionInformation[1], name, sizeof name));
     out("\n");
     /* (an address in guest memory that is not mapped: what the kernel's map says, and its recent changes there - the
@@ -397,6 +397,17 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
         pc - (u64)mod, tid, desc && desc[0] ? ", " : "", desc && desc[0] ? desc : L"");
     if (desc) LocalFree(desc);
     if (thread) CloseHandle(thread);
+    {   /* (r22_1: the registers, and the stack's words either side of the stack pointer: a return through a wrong stack pointer shows there) */
+        const CONTEXT *x = e->ContextRecord;
+        out("  rax %#llx rcx %#llx rdx %#llx rbx %#llx rsp %#llx rbp %#llx rsi %#llx rdi %#llx\n  r8 %#llx r9 %#llx r10 %#llx r11 %#llx r12 %#llx r13 %#llx r14 %#llx r15 %#llx\n",
+            x->Rax, x->Rcx, x->Rdx, x->Rbx, x->Rsp, x->Rbp, x->Rsi, x->Rdi, x->R8, x->R9, x->R10, x->R11, x->R12, x->R13, x->R14, x->R15);
+        MEMORY_BASIC_INFORMATION mi;
+        u64 lo = x->Rsp - 0xC0, hi = x->Rsp + 0x80;
+        if (VirtualQuery((void *)(uintptr_t)lo, &mi, sizeof mi) && mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_GUARD | PAGE_NOACCESS))
+            && (u64)(uintptr_t)mi.BaseAddress + mi.RegionSize >= hi)
+            for (u64 a = lo; a < hi; a += 32)
+                out("  stack %+5lld: %#llx %#llx %#llx %#llx\n", (long long)(a - x->Rsp), *(u64 *)(uintptr_t)a, *(u64 *)(uintptr_t)(a + 8), *(u64 *)(uintptr_t)(a + 16), *(u64 *)(uintptr_t)(a + 24));
+    }
     {   /* and the host frames above it */
         CONTEXT ctx = *e->ContextRecord;
         for (int i = 0; i < 24; i++) {
