@@ -364,6 +364,9 @@ void rt_backtrace_thread(HANDLE thread, int max_frames) {
  * the graphics driver's threads, whose stacks are 64 KB, there is no room to keep for one). */
 static struct { HANDLE go; EXCEPTION_POINTERS *e; DWORD tid; } fault;
 
+void kernel_fault_report(void (*line)(const char *), u64 g);   /* (kernel.c) */
+void kernel_thread_states(void (*line)(const char *text));     /* (kernel.c) */
+int profile_dump_threads(void (*line)(const char *text));      /* (debug_profile.c) */
 static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
     DWORD code = e->ExceptionRecord->ExceptionCode;
     char name[96], report[MAX_PATH];
@@ -374,6 +377,10 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
         out(": %s address %s", e->ExceptionRecord->ExceptionInformation[0] ? "writing" : "reading",
             rt_describe(e->ExceptionRecord->ExceptionInformation[1], name, sizeof name));
     out("\n");
+    /* (an address in guest memory that is not mapped: what the kernel's map says, and its recent changes there - the
+     * r9n_1 crash, an alias address read on the character select screen while not committed) */
+    u64 fault_addr = code == EXCEPTION_ACCESS_VIOLATION ? (u64)e->ExceptionRecord->ExceptionInformation[1] : 0;
+    if (fault_addr >= RT_MEMBASE + 0x1000000ull) { out("memory at the address:\n"); kernel_fault_report(out_line, H2G((void *)(uintptr_t)fault_addr)); }
     /* where on the host: the faulting instruction's module and offset (symbolize with tools/dev/hostsym.py) */
     HMODULE mod = NULL;
     char modname[MAX_PATH] = "?";
@@ -407,6 +414,12 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
     gfx_report_compiles(out_line);   /* (a fault in the driver's shader compiler names the program) */
     void *frames[62];
     print_frames(frames, unwind(*e->ContextRecord, frames, 62), 1);   /* from the faulting frame */
+    if (fault_addr) {   /* (the other threads too: who else was at work on that memory) */
+        out("\nGuest threads:\n");
+        kernel_thread_states(out_line);
+        out("\nEvery other thread's stack (innermost first):\n");
+        profile_dump_threads(out_line);
+    }
     char dump[MAX_PATH];
     snprintf(dump, sizeof dump, "%.*s.dmp", (int)strlen(report) - 4, report);
     int dumped = report_file != INVALID_HANDLE_VALUE && rt_write_dump(dump, tid, e, 100000);
@@ -1559,9 +1572,16 @@ static int game_version_ok(void) {
     return 0;
 }
 
-/* SSBU_CRASH_TEST=<seconds>: a deliberate fault then (to try the crash report and minidump). */
+/* SSBU_CRASH_TEST=<seconds>[,<guest address, hex>]: a deliberate fault then (to try the crash report and minidump):
+ * a write to address 0, or a read of that guest address (an unmapped one: the report's memory section). */
 static DWORD WINAPI crash_test(void *seconds) {
     Sleep((DWORD)(uintptr_t)seconds * 1000);
+    const char *e = getenv("SSBU_CRASH_TEST"), *comma = e ? strchr(e, ',') : NULL;
+    if (comma) {
+        u64 g = strtoull(comma + 1, NULL, 16);
+        fprintf(stderr, "[test] SSBU_CRASH_TEST: reading guest address %#llx\n", g);
+        (void)*(volatile u32 *)G2H(g);
+    }
     fprintf(stderr, "[test] SSBU_CRASH_TEST: writing to address 0\n");
     *(volatile int *)0 = 0;
     return 0;

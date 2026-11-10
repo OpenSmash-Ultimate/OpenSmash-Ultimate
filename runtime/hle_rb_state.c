@@ -52,6 +52,7 @@ void ipc_rb_free(void *p);
 u64 fs_rb_mark(void);
 int fs_rb_closed_since(u64 mark);
 int kernel_rb_strict(void);
+void kernel_mem_event(char kind, u64 addr, u64 size);   /* (kernel.c: the memory map's changes, for a crash report) */
 void fiber_rb_load(const void *p, const u64 *live, u32 nlive, u32 *skipped);
 void fiber_rb_free(void *p);
 void *setjmp_rb_save(u32 *count);
@@ -514,12 +515,13 @@ static void undo_apply(const Undo *u) {
         u32 k = (u32)((p - c->base) >> 12);
         if (u->how[i] == U_ABSENT) {
             gpu_memory_unmapping((u64)(uintptr_t)p, 0x1000);
+            kernel_mem_event('L', H2G(p), 0x1000);
             VirtualFree(p, 0x1000, MEM_DECOMMIT);
             sm_gone(p);
             set_present(c, k, 0);
             continue;
         }
-        if (u->how[i] == U_COMMIT) { VirtualAlloc(p, 0x1000, MEM_COMMIT, PAGE_READWRITE); sm_present(p); }
+        if (u->how[i] == U_COMMIT) { kernel_mem_event('R', H2G(p), 0x1000); VirtualAlloc(p, 0x1000, MEM_COMMIT, PAGE_READWRITE); sm_present(p); }
         job_add(p, u->data + ((size_t)i << 12), shadow_page(c, p), u->data + ((size_t)i << 12), NO_SLOT);
         set_present(c, k, 1);
     }
@@ -563,10 +565,11 @@ static void settle_page(u8 *p, int now, int to_shadow) {
         } else return;
     } else {
         if (was) {
-            if (!now) { VirtualAlloc(p, 0x1000, MEM_COMMIT, PAGE_READWRITE); sm_present(p); }
+            if (!now) { kernel_mem_event('R', H2G(p), 0x1000); VirtualAlloc(p, 0x1000, MEM_COMMIT, PAGE_READWRITE); sm_present(p); }
             memcpy(p, shadow_page(c, p), 0x1000);
         } else if (now) {
             gpu_memory_unmapping((u64)(uintptr_t)p, 0x1000);
+            kernel_mem_event('L', H2G(p), 0x1000);
             VirtualFree(p, 0x1000, MEM_DECOMMIT);
             sm_gone(p);
         } else return;
