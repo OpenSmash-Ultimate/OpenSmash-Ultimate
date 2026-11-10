@@ -40,6 +40,8 @@ RECOMPILER = ("recomp.py", "lift.py", "lift_simd.py", "regcache.py", "plugin_eh.
 sys.path.insert(0, HERE)
 ROOT = os.path.dirname(HERE)
 
+import progress  # noqa: E402  (a neighbour: after HERE is on sys.path, for python -P)
+
 # Game functions runtime/hle_skyline.c hooks itself that the game also calls directly (the CSK
 # Collection's select-screen redirect: the fighter set-up and the portrait paths)
 NATIVE_HOOKS = ("main 66dcf0", "main 3238a70", "main 64b730", "main 6079d0",
@@ -249,7 +251,7 @@ def generate(p, name, log, own_exports=False, jobs=1):
     if fresh_c or not os.path.exists(img) or os.path.getmtime(img) < os.path.getmtime(nro):
         recomp(p, "image", nro, "--out", img)
     if fresh_c:
-        log(f"writing {name}'s C — 0%, estimating the time left")
+        log(f"writing {name}'s C")
         if own_exports:
             os.environ["SSBU_OWN_EXPORTS"] = "1"
         try:
@@ -612,16 +614,32 @@ def probe_and_apply(tree, log=print):
 
 
 _BAR = re.compile(r"^\[[#-]+\]\s+(\d+)%\s+(.*?)\s*(?:\(\s*(.*?)\s*\))?\s*$")
+# A plugin build relinking the game (main's hooks, the plugins, the link), before its own bar has a time left.
+# (one guess for every PC: 3-4 min on a fast one; the build's own bar replaces it as soon as it has a time left)
+RELINK = 180.0
+_CHAIN = None
 
 
-def run_logged(cmd, log, keep=60):
+def chain():
+    """This run's one bar (progress.Chain) across every program run_logged starts: the Mods app's
+    bar follows one command (os_mods.py build), so it does not start over at each program."""
+    global _CHAIN
+    if _CHAIN is None:
+        _CHAIN = progress.Chain()
+    return _CHAIN
+
+
+def run_logged(cmd, log, keep=60, later=None):
     """Run the game's build with its output in `log` (the Mods app's window and manager.log - its
     pythonw.exe has no console, and a failed build said nothing of why): what reads as a problem as
     it comes, and when it fails, its last `keep` lines. Each progress line becomes
-    `what it is doing — percent%, time left` so a bar can follow the step, not only a spinner."""
+    `what it is doing — percent%, time left`, the percent and the time left being the whole run's
+    (chain(); `later`: seconds estimated for what comes after this program), so a bar can follow it."""
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                             errors="replace", bufsize=1)
-    tail = []
+    whole = chain()
+    whole.start(later)
+    tail, detail = [], "building the game"
     for line in proc.stdout:
         line = line.rstrip()
         if not line:
@@ -629,9 +647,9 @@ def run_logged(cmd, log, keep=60):
         tail = (tail + [line])[-keep:]
         bar = _BAR.match(line.strip())
         if bar:
-            detail = (bar.group(3) or "building the game").strip()
-            eta = (bar.group(2) or "").strip()
-            log(f"{detail} — {int(bar.group(1))}%, {eta}")
+            detail = (bar.group(3) or detail).strip()   # (its last line, "100%  done", names nothing)
+            frac, left = whole.update(int(bar.group(1)) / 100, progress.seconds_left(bar.group(2) or ""))
+            log(f"{detail} — {int(frac * 100)}%, {progress.left_text(frac, left)}")
         elif re.search(r"error|failed|warning: .*(undeclared|implicit)|did not compile|LNK\d", line, re.I):
             log(line[:400])
         elif re.search(r"generating its C|C up to date|modules reused|linking the|applying the mods", line, re.I):
@@ -827,13 +845,14 @@ def build(tree, jobs, log=print, again=True):
     into the program). Link the game only when a plugin it should have is missing, the runtime
     changed, or a plugin's inline hook or code patch is not in it.
     A function hook is patched into that one function when the game starts."""
+    chain().later = RELINK if game_link_reason(tree) else 0.0   # (the bar: a relink comes after the plugins' C)
     sync(tree, log, jobs)
     cache_mod_plugins(tree, jobs, log)
     reason = game_link_reason(tree)
     if reason:
         exefs = os.path.join(tree, "dump", "exefs")
         for mod in stale_hooks(tree):
-            log(f"writing {mod}'s C again — 0%, estimating the time left")
+            log(f"writing {mod}'s C again")
             src = os.path.join(exefs, mod) if mod in ("main", "subsdk0", "sdk") else os.path.join(tree, "dump", "nro", mod + ".nro")
             out = os.path.join(tree, "build", mod) if mod in ("main", "subsdk0", "sdk") else os.path.join(tree, "build", "nro", mod)
             recomp_stream(Paths(tree), log, "build", src, "--out", out, "--jobs", str(jobs))
@@ -844,7 +863,7 @@ def build(tree, jobs, log=print, again=True):
             cmd = [sys.executable, os.path.join(HERE, "recomp.py"), "all", exefs, "--out", os.path.join(tree, "build"),
                    "--jobs", str(jobs), "--tree", tree]
         log(" ".join(cmd))
-        rc = run_logged(cmd, log)
+        rc = run_logged(cmd, log, later=0.0)
         if rc:
             return rc
     else:

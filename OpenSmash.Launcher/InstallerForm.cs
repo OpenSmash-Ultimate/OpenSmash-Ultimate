@@ -87,21 +87,25 @@ namespace OpenSmash.Launcher
             public string Id = "", Title = "", State = "wait", Msg = "";
             public double Est = 10, Secs, Done, Total;
             public bool EstP;
+            public bool Percent;              // Done/Total is the step's own bar (0..100), not a count
+            public double? Left;              // the time left the step's own bar said, at LeftAt
+            public DateTime LeftAt;
             public DateTime? T0;
+            public DateTime? SubT0;           // since when its bar has been counting (a bar that starts over restarts it)
         }
         readonly List<Step> _steps = new();
         bool _jsonSeen;
         int _fallbackN;
-        readonly HashSet<string> _genModules = new(StringComparer.OrdinalIgnoreCase);
-        int _genTotal;
+        double _shownFrac;                    // the big percent: never backwards within a job
         string _errMsg = "", _errHint = "", _errAction = "", _doneMsg = "";
         bool? _doneOk;
 
-        // setup.py's own steps, by their share of a first build (used only when no plan event arrives)
-        static readonly Dictionary<string, double> FallbackWeights = new()
+        // tools\install_windowsmash.ps1's ten steps, so the steps not reached yet have their names and
+        // estimates from the start: a step's estimate counts in the time left until it says its own.
+        static readonly string[] InstallerSteps =
         {
-            ["deps"] = 1, ["stage"] = 1, ["convert"] = 1, ["modules"] = 2, ["tables"] = 1, ["lift"] = 15,
-            ["sdk"] = 8, ["compile"] = 55, ["nro"] = 12, ["link"] = 3, ["check"] = 1
+            "Get the newest WindowSmash", "Check this PC", "Python", "The compiler", "SDL3",
+            "Music and movie codecs", "Your game files", "Shortcut and firewall", "Build the game", "Shaders"
         };
 
         // Log + status line
@@ -596,7 +600,7 @@ namespace OpenSmash.Launcher
         void ResetSteps()
         {
             _steps.Clear();
-            _jsonSeen = false; _fallbackN = 0;
+            _jsonSeen = false; _fallbackN = 0; _shownFrac = 0;
             _errMsg = _errHint = _errAction = _doneMsg = "";
             _doneOk = null;
         }
@@ -620,38 +624,38 @@ namespace OpenSmash.Launcher
             if (state == "done" && s.Total > 0) s.Done = s.Total;
         }
 
-        static double Frac(Step s)
+        static double Frac(Step s) => s.Total > 0 ? Math.Clamp(s.Done / s.Total, 0, 1) : 0;
+
+        // A running step's time left, and whether it was measured (its own bar's, or its share done at its
+        // pace so far) rather than its estimate.
+        static (double Left, bool Measured) StepLeft(Step s, DateTime now)
         {
-            if (s.Total > 0) return Math.Clamp(s.Done / s.Total, 0, 1);
-            if (s.T0 != null) return Math.Min(0.95, (DateTime.Now - s.T0.Value).TotalSeconds / s.Est);
-            return 0;
+            if (s.Left is double l)
+                return (Math.Max(5, l - (now - s.LeftAt).TotalSeconds), true);
+            double f = Frac(s);
+            double sub = s.SubT0 is DateTime t ? (now - t).TotalSeconds : 0;
+            if (f >= 0.03 && sub >= 15) return (sub * (1 - f) / f, true);
+            double el = s.T0 is DateTime t0 ? (now - t0).TotalSeconds : 0;
+            return (Math.Max(s.Est - el, el / 4), false);   // (past its estimate: a quarter of its time so far again)
         }
 
-        // Overall fraction and time left, corrected by real/estimated time of the steps already finished.
-        (double Frac, double Left) Overall()
+        // The whole job's share done and time left (null: still an estimate). The share is the time spent over
+        // the time spent and left, so the two say the same thing, and a step's weight is what it really takes:
+        // a step that is "already done" in a second weighs a second, and the build what its own bar says.
+        (double Frac, double? Left) Overall()
         {
-            double tot = 0, done = 0, rs = 0, re = 0, wait = 0;
+            var now = DateTime.Now;
+            if (!_running) return (_succeeded && !_jobDry && _steps.Count > 0 ? 1.0 : _shownFrac, null);
+            double left = 0;
+            bool measured = false;
             foreach (var s in _steps)
             {
-                tot += s.Est;
-                if (s.State is "done" or "skip" or "dry")
-                {
-                    done += s.Est;
-                    if (s.State == "done" && s.Secs > 0) { rs += s.Secs; re += s.Est; }
-                }
-                else if (s.State is "run" or "fail") done += s.Est * Frac(s);
-                else wait += s.Est;
+                if (s.State == "run") { var (l, m) = StepLeft(s, now); left += l; measured |= m; }
+                else if (s.State == "wait") left += s.Est;
             }
-            double ratio = re > 0 ? Math.Clamp(rs / re, 0.25, 5.0) : 1.0;
-            double left = wait * ratio;
-            foreach (var s in _steps.Where(s => s.State == "run"))
-            {
-                double f = Frac(s);
-                double el = s.T0 != null ? (DateTime.Now - s.T0.Value).TotalSeconds : 0;
-                if (s.Total > 0 && f >= 0.03 && el >= 15) left += el * (1 - f) / f;
-                else left += s.Est * (1 - f) * ratio;
-            }
-            return (tot > 0 ? Math.Min(1.0, done / tot) : 0, left);
+            double spent = (now - _jobStart).TotalSeconds;
+            if (spent + left > 0) _shownFrac = Math.Max(_shownFrac, Math.Min(0.99, spent / (spent + left)));
+            return (_shownFrac, measured ? left : null);
         }
 
         void HandleEvent(JsonElement e)
@@ -723,11 +727,14 @@ namespace OpenSmash.Launcher
             return p > 8 ? title[..p] : title;
         }
 
-        static double EstFor(string title)
+        double EstFor(string title)
         {
             string t = title.ToLowerInvariant();
-            if (t.Contains("build the game")) return 5400;
-            if (t.Contains("shader")) return 600;
+            // (a first build is 30 minutes to a few hours; after that, what changed: minutes, mostly the link.
+            // one guess each: the build's own bar replaces it as soon as it has a time left)
+            if (t.Contains("build the game")) return WindowSmash.IsBuilt(_repo) ? 300 : 5400;
+            // (65,000 shaders took 1.5 hours on a fast PC at low priority; none when not wanted)
+            if (t.Contains("shader")) return _optShaders ? 3600 : 5;
             if (t.Contains("compiler") || t.Contains("python package")) return 180;
             if (t.Contains("fighter")) return 120;
             if (t.Contains("font")) return 90;
@@ -749,19 +756,29 @@ namespace OpenSmash.Launcher
             int i = int.Parse(m.Groups[1].Value), n = int.Parse(m.Groups[2].Value);
             string title = m.Groups[3].Value.Trim();
             if (n < 1 || n > 40 || i < 1 || i > n || title == "") return false;
+            // A program a step runs has its own "[i/n]" (tools\build_game.py's nine, in step 9): those are the
+            // step's parts, not a new list of steps, which would make the bar start over.
+            var running = _steps.LastOrDefault(x => x.State == "run");
+            if (_fallbackN != 0 && n != _fallbackN && running != null)
+            {
+                running.Msg = ShortTitle(title);
+                return true;
+            }
             if (_steps.Count == 0 || _fallbackN != n)
             {
                 _steps.Clear(); _fallbackN = n;
-                for (int k = 1; k <= n; k++) AddStep("s" + k, "step " + k, 30);
+                for (int k = 1; k <= n; k++)
+                {
+                    string named = n == InstallerSteps.Length ? InstallerSteps[k - 1] : "step " + k;
+                    AddStep("s" + k, named, n == InstallerSteps.Length ? EstFor(named) : 30);
+                }
             }
             for (int k = 0; k < i - 1; k++)
                 if (_steps[k].State is "wait" or "run") SetStepState(_steps[k], "done", null, "");
             var s = _steps[i - 1];
             s.Title = ShortTitle(title);
             s.Est = EstFor(title);
-            s.Done = 0; s.Total = 0;
-            _genModules.Clear();
-            _genTotal = 0;
+            s.Done = 0; s.Total = 0; s.Left = null; s.Percent = false;
             if (s.State != "run") SetStepState(s, "run", null, "");
             for (int k = i; k < _steps.Count; k++)
                 if (_steps[k].State == "run") _steps[k].State = "wait";
@@ -775,60 +792,67 @@ namespace OpenSmash.Launcher
             return true;
         }
 
-        void NoteGen(Step run, double atLeast)
+        static readonly Regex TimeLeft = new(@"under a minute left|about (?:(\d+) h )?(\d+) min left");
+
+        // "about 1 h 05 min left" (tools\progress.py's time_left) in seconds, or null.
+        static double? SecondsLeft(string text)
         {
-            if (_genTotal <= 0) return;
-            run.Done = Math.Max(atLeast, _genModules.Count);
-            run.Total = _genTotal;
-            run.Msg = "writing the C code";
+            var m = TimeLeft.Match(text);
+            if (!m.Success) return null;
+            if (!m.Groups[2].Success) return 30;
+            int h = m.Groups[1].Success ? int.Parse(m.Groups[1].Value) : 0;
+            return (h * 60 + int.Parse(m.Groups[2].Value)) * 60.0;
         }
 
-        // Block checks, each module's C ("name: 8 files, 37 MB of C"), and the build's own bar.
-        // That bar's percent is a time estimate, and writing C is a small part of it, so a line
-        // that names "N of M modules" moves the bar by modules instead of sitting near 0%.
+        // The running step's own bar: Done/Total, its time left and what it is doing.
+        static void NoteBar(Step run, int pct, string label, string rest)
+        {
+            double f = pct / 100.0;
+            if (!run.Percent || run.SubT0 == null || f < Frac(run) - 0.05) run.SubT0 = DateTime.Now;   // (a bar that starts over)
+            run.Percent = true;
+            run.Done = pct; run.Total = 100;
+            run.Left = pct >= 100 ? null : SecondsLeft(rest);
+            run.LeftAt = DateTime.Now;
+            if (label != "") run.Msg = label;
+        }
+
+        // What the running step's program says of how far it is: tools\progress.py's bar (the build's, the
+        // shaders'), tools\skyline.py's "what — N%, time left" (the plugins built in), or a count.
         void ApplyMeasure(string line)
         {
             var run = _steps.LastOrDefault(s => s.State == "run");
             if (run == null) return;
-            var writing = Regex.Match(line, @"writing the C code:\s*([^,]+),\s*([\d,]+)\s+of\s+([\d,]+)\s+modules", RegexOptions.IgnoreCase);
-            if (writing.Success && TryCount(writing.Groups[2].Value, out double idx) && TryCount(writing.Groups[3].Value, out double modules) && modules > 0)
+            var bar = Regex.Match(line, @"\[[#\-]+\]\s+(\d+)\s*%\s*(.*)$");
+            if (bar.Success && int.TryParse(bar.Groups[1].Value, out int pct))
             {
-                _genTotal = (int)modules;
-                _genModules.Add(writing.Groups[1].Value.Trim());
-                NoteGen(run, idx);
+                string rest = bar.Groups[2].Value;
+                var paren = Regex.Match(rest, @"\(([^()]*)\)\s*$");
+                string label = paren.Success ? paren.Groups[1].Value.Trim() : TimeLeft.Replace(rest, "").Trim(' ', ',');
+                // (one module's own bar, "writing main's C, 3 of 12 files", is not the build's: an older
+                // tools\recomp.py printed it under the build's)
+                if (Regex.IsMatch(label, @"^writing \S+'s C, [\d,]+ of [\d,]+ files$")) return;
+                NoteBar(run, pct, label == "done" ? "" : label, rest);
                 return;
             }
-            var summary = Regex.Match(line, @"^([A-Za-z0-9_]+):\s+\d+\s+files,\s+[\d,.]+\s+MB of C\b");
-            if (summary.Success)
+            // (the dash may come through the console's code page as another character)
+            var chain = Regex.Match(line, @"^(.+?)\s+\S{1,3}\s+(\d+)%,\s*(.*)$");
+            if (chain.Success && int.TryParse(chain.Groups[2].Value, out int cp))
             {
-                _genModules.Add(summary.Groups[1].Value);
-                NoteGen(run, _genModules.Count);
+                NoteBar(run, cp, chain.Groups[1].Value.Trim(), chain.Groups[3].Value);
                 return;
             }
             var reading = Regex.Match(line, @"(listing|reading) shader files:\s*([\d,]+)\s+of\s+([\d,]+)", RegexOptions.IgnoreCase);
             if (reading.Success && TryCount(reading.Groups[2].Value, out double rd) && TryCount(reading.Groups[3].Value, out double rt) && rt > 0)
             {
+                run.Percent = false; run.Left = null;
                 run.Done = rd; run.Total = rt; run.Msg = reading.Groups[1].Value.ToLowerInvariant() + " shader files";
-                return;
-            }
-            var shaders = Regex.Match(line, @"([\d,]+)\s+of\s+([\d,]+)\s+shaders", RegexOptions.IgnoreCase);
-            if (shaders.Success && TryCount(shaders.Groups[1].Value, out double sd) && TryCount(shaders.Groups[2].Value, out double stotal) && stotal > 0)
-            {
-                run.Done = sd; run.Total = stotal; run.Msg = "compiling shaders";
                 return;
             }
             var blocks = Regex.Match(line, @"([\d,]+)\s+of\s+([\d,]+)\s+blocks", RegexOptions.IgnoreCase);
             if (blocks.Success && TryCount(blocks.Groups[1].Value, out double d) && TryCount(blocks.Groups[2].Value, out double t) && t > 0)
             {
+                run.Percent = false; run.Left = null;
                 run.Done = d; run.Total = t; run.Msg = "verified";
-                return;
-            }
-            var bar = Regex.Match(line, @"\[[#\-]+\]\s+(\d+)\s*%");
-            if (bar.Success && int.TryParse(bar.Groups[1].Value, out int pct) && !line.Contains("writing the C code", StringComparison.OrdinalIgnoreCase))
-            {
-                run.Done = pct; run.Total = 100;
-                if (line.Contains("linking", StringComparison.OrdinalIgnoreCase)) run.Msg = "linking";
-                else if (line.Contains("compiling", StringComparison.OrdinalIgnoreCase)) run.Msg = "compiling";
             }
         }
 
@@ -1743,15 +1767,8 @@ namespace OpenSmash.Launcher
 
             // Progress
             float rx = left + lw + 48 * s, rw = right - rx;
-            var curNow = _steps.FirstOrDefault(x => x.State == "run");
-            double frac;
-            if (_succeeded && !_jobDry && _steps.Count > 0) frac = 1.0;
-            else if (curNow != null && curNow.Total > 0) frac = Math.Clamp(curNow.Done / curNow.Total, 0, 1);
-            else
-            {
-                int n = _steps.Count(x => x.State is "done" or "skip" or "dry");
-                frac = _steps.Count > 0 ? n / (double)_steps.Count : 0;
-            }
+            // (the big percent and the time left are the whole job's; the line under the bar is the step's own)
+            var (frac, jobLeft) = Overall();
             using (var f = Theme.Display(60 * s))
                 Theme.DrawText(g, $"{(int)Math.Round(frac * 100)}%", f, Theme.Text, rx - 4 * s, 132 * s, 260 * s, 70 * s);
 
@@ -1768,21 +1785,17 @@ namespace OpenSmash.Launcher
             var cur = _steps.FirstOrDefault(x => x.State == "run") ?? _steps.FirstOrDefault(x => x.State == "fail");
             string curText = cur == null ? ""
                 : cur.Total > 0
-                    ? cur.Title + "  \u2014  " + (cur.Msg != "" ? cur.Msg + ", " : "") + $"{cur.Done:N0} / {cur.Total:N0}"
+                    ? cur.Title + "  \u2014  " + (cur.Msg != "" ? cur.Msg + ", " : "")
+                        + (cur.Percent ? $"{(int)cur.Done}%" : $"{cur.Done:N0} / {cur.Total:N0}")
                     : cur.Title + (cur.Msg != "" ? "  \u2014  " + cur.Msg : "");
             string eta = _running
                 ? "elapsed " + FmtDur((DateTime.Now - _jobStart).TotalSeconds)
+                    + ", " + (jobLeft is double jl ? FmtLeft(jl) : "estimating the time left")
                 : _jobEnd > _jobStart ? $"took {FmtDur((_jobEnd - _jobStart).TotalSeconds)}" : "";
-            if (_running && curNow != null && curNow.Total > 0 && curNow.Done > 0 && curNow.T0 != null)
-            {
-                double f = Math.Clamp(curNow.Done / curNow.Total, 0, 0.999);
-                double elap = (DateTime.Now - curNow.T0.Value).TotalSeconds;
-                if (f >= 0.03 && elap >= 8) eta += ", " + FmtLeft(elap * (1 - f) / f) + " on this step";
-            }
             using (var f = Theme.Body(13.5f * s, true))
-                Theme.DrawText(g, curText, f, failed ? Theme.Bad : Theme.Text, rx, 222 * s, rw - 260 * s, 26 * s);
+                Theme.DrawText(g, curText, f, failed ? Theme.Bad : Theme.Text, rx, 222 * s, rw - 330 * s, 26 * s);
             using (var f = Theme.Body(12.5f * s))
-                Theme.DrawText(g, eta, f, Theme.Muted, rx + rw - 260 * s, 222 * s, 260 * s, 26 * s, StringAlignment.Far);
+                Theme.DrawText(g, eta, f, Theme.Muted, rx + rw - 330 * s, 222 * s, 330 * s, 26 * s, StringAlignment.Far);
 
             // What stopped it
             float logLabelY = 262 * s;

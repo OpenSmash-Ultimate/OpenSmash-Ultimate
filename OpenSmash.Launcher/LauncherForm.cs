@@ -2886,9 +2886,15 @@ namespace OpenSmash.Launcher
             if (step.Success && int.TryParse(step.Groups[2].Value, out int pct))
             {
                 string detail = Regex.Replace(step.Groups[1].Value, @"[^A-Za-z0-9.)\]]+$", "").Trim();
-                _pluginDetail = detail.Length > 0 ? detail : text;
-                _pluginFrac = Math.Clamp(pct / 100f, 0f, 1f);
-                _pluginEta = step.Groups[3].Value.Trim().TrimStart(',', ' ');
+                // The percent is the whole build's (tools\skyline.py run_logged), across every program it runs;
+                // one that goes down (an older tools folder: a program's own bar starting over) is not shown.
+                float frac = Math.Clamp(pct / 100f, 0f, 1f);
+                if (frac >= _pluginFrac)
+                {
+                    _pluginDetail = detail.Length > 0 ? detail : text;
+                    _pluginFrac = frac;
+                    _pluginEta = step.Groups[3].Value.Trim().TrimStart(',', ' ');
+                }
             }
             else if (!text.Contains("recomp.py") && text.Length < 240)
                 _pluginDetail = text;

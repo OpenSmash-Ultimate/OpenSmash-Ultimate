@@ -2,6 +2,7 @@
 Build and Line) and Prepare Shaders (tools/shader_aot.py)."""
 import heapq
 import os
+import re
 import shutil
 import sys
 import threading
@@ -24,6 +25,14 @@ def time_left(seconds):
     if minutes < 60:
         return f"about {minutes} min left"
     return f"about {minutes // 60} h {minutes % 60:02d} min left"
+
+
+def seconds_left(text):
+    """time_left's words back in seconds, or None (not one of them: "estimating", "done")."""
+    if "under a minute left" in text:
+        return 30.0
+    m = re.search(r"about (?:(\d+) h )?(\d+) min left", text)
+    return (int(m.group(1) or 0) * 60 + int(m.group(2))) * 60.0 if m else None
 
 
 def bar(frac, width=30):
@@ -245,6 +254,43 @@ class Build:
             return self.shown, rest * pace if pace else None, label
 
 
+class Chain:
+    """Programs run one after another (the Mods app's plugin build: each plugin's C, then the game's
+    build and link) as one bar that does not start over at each of them. The share done is the time
+    spent over the time spent and left; the time left is the running program's (its bar's, else its
+    share done at its pace so far) and `later`, an estimate of what comes after it. So the share
+    and the time left say the same thing. Never backwards, and under 100 % until the caller says
+    it is all done."""
+
+    def __init__(self, later=0.0, clock=time.time):
+        self.clock = clock
+        self.t0 = clock()
+        self.later = later
+        self.part_t0 = self.t0
+        self.shown = 0.0
+
+    def start(self, later=None):
+        """A program starts; `later`: seconds estimated for what comes after it (None: as before)."""
+        self.part_t0 = self.clock()
+        if later is not None:
+            self.later = later
+
+    def update(self, frac, left):
+        """The running program's (share done, time left or None) -> the whole's."""
+        now = self.clock()
+        spent = now - self.part_t0
+        if frac >= 1.0:
+            left = 0.0
+        elif left is None and frac >= 0.03 and spent >= 10:
+            left = spent * (1 - frac) / frac
+        if left is None:   # (not known yet: the share stays where it was)
+            return self.shown, None
+        left += self.later
+        spent = now - self.t0
+        self.shown = max(self.shown, min(0.99, spent / (spent + left) if spent + left > 0 else 0.0))
+        return self.shown, left
+
+
 # ---- showing it -----------------------------------------------------------------------------------
 # The window title: on Windows the console's own; elsewhere the terminal's, set by the escape
 # sequence most terminals know, written to the terminal itself (so it works while the output goes
@@ -294,6 +340,9 @@ def restore_title(saved):
         pass
 
 
+_BAR_LINE = re.compile(r"\[[#-]+\] +\d+%")
+
+
 class Line:
     """A progress bar under what a program prints, from status() -> (share done, seconds left or
     None, what is being done), shown every second while the `with` block runs.
@@ -316,6 +365,7 @@ class Line:
         self.text = None
         self.drawn = 0             # (console) how much of the bar is on the screen
         self.line_start = True     # (console) the program's own output has ended its line
+        self.dropped = False       # another bar was left out (write_through); its "\n" goes too
         self.logged = None         # (log) (when, percent, label) of the last line written
         self.old_title = None
         self.shown_title = None
@@ -362,8 +412,14 @@ class Line:
             self.drawn = 0
 
     def write_through(self, real, s):
-        """What the program prints while the bar is up: above it."""
+        """What the program prints while the bar is up: above it. Another bar (recomp.py's of one
+        module's C, under build_all's) is left out: one under the other, a window that reads the
+        output took each for the build's and its percent jumped (12 %, 100 %, 4 %)."""
         with self.lock:
+            if _BAR_LINE.match(s) or (s == "\n" and self.dropped):   # (print writes its "\n" apart)
+                self.dropped = not self.dropped
+                return len(s)
+            self.dropped = False
             if self.console and s:
                 self._erase()
             real.write(s)
