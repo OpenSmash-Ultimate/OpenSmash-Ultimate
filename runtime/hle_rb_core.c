@@ -1273,13 +1273,11 @@ static void net_desync_pads(u32 f) {
         fprintf(stderr, "\n");
     }
 }
-/* (noinline, these and net_receive/net_compare: net_step - the safe point's caller - keeps its own frame small; inlined,
- * its frame grew some 2 KB with the resync and the main stack each state copies with it) */
 /* A DESYNC (a final frame's hash differs from the other game's) rolls this game back to the state before that frame
  * and runs the frames again with the pads both games have: what a wrong guess left uncorrected (a load refused, a
  * rollback too deep, SSBU_RB_TEST_IGNORE) is corrected so, in both games, as each sees the other's hash differ. At most
  * one a 30 logic frames (by the frame found different), 30 a fight; SSBU_RB_RESYNC=0: off (the DESYNC said, and play on). */
-__declspec(noinline) static void net_resync(u32 f) {
+static void net_resync(u32 f) {
     static int on = -1;
     /* (back to the frame after the last one both games hashed alike: the frames between, run on a wrong guess, had
      * their hashes cleared and are not compared, so the first one found different can lie after the wrong guess) */
@@ -1297,14 +1295,14 @@ __declspec(noinline) static void net_resync(u32 f) {
  * it is (a silent desync, as when no state could be loaded); SSBU_RB_TEST_REFUSE=<frame>,<n>: the first n rollbacks from
  * that frame on are refused (as a thread on another fiber refuses a load); SSBU_RB_TEST_DROP=<frame>: every state is
  * dropped before the first rollback from that frame on (no state old enough). */
-__declspec(noinline) static int test_case(int k, const char *name, u32 key, int *left) {
+static int test_case(int k, const char *name, u32 key, int *left) {
     static int init[3]; static long at[3], n[3];
     if (!init[k]) { init[k] = 1; const char *e = getenv(name); at[k] = e && *e ? strtol(e, NULL, 0) : -1; n[k] = 1; if (e && strchr(e, ',')) n[k] = strtol(strchr(e, ',') + 1, NULL, 0); }
     if (at[k] < 0 || (long)key < at[k] || n[k] <= 0) return 0;
     n[k]--; if (left) *left = (int)n[k];
     return 1;
 }
-__declspec(noinline) static void net_compare(u32 key) {
+static void net_compare(u32 key) {
     u32 c = rbn_confirmed();   /* (final: see net_final_frame) */
     if (c > key) c = key;
     for (u32 f = net_checked + 1; f <= c; f++) {
@@ -1330,7 +1328,7 @@ __declspec(noinline) static void net_compare(u32 key) {
     }
     if (c > net_checked) net_checked = c;
 }
-__declspec(noinline) static void net_receive(u32 key) {
+static void net_receive(u32 key) {
     static u8 buf[2048];
     int n;
     while ((n = rbl_recv(buf, sizeof buf)) > 0) {
