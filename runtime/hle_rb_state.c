@@ -1606,7 +1606,12 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
         while (away && now_ms() - tr < retry_ms) {
             release();
             SwitchToThread();
-            if (!hold(c->thread, &n)) { refused++; rb_save_away_refused++; return 0; }
+            /* (the hold itself bounded by what is left of the retry: a hold may wait up to SSBU_RB_PARK_MS, 500) */
+            double q = rb_park_quick_ms, left = retry_ms - (now_ms() - tr);
+            rb_park_quick_ms = left > 0.5 ? left : 0.5;
+            int ok = hold(c->thread, &n);
+            rb_park_quick_ms = q;
+            if (!ok) { refused++; rb_save_away_refused++; return 0; }
             away = away_from_home(c->thread);
         }
         if (away) { refused++; rb_save_away_refused++; release(); return 0; }

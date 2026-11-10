@@ -1537,9 +1537,10 @@ static void net_step(Cpu *c, u64 frame) {
     else {
         rb_save_tag = key;
         double t0 = now_ms();
-        if (rb_save(c, frame) == 2) { logic_frame_loaded(); catch_total = pending_fast; rb_fast = pending_fast; return; }
+        int r = rb_save(c, frame);
+        if (r == 2) { logic_frame_loaded(); catch_total = pending_fast; rb_fast = pending_fast; return; }
         if (rb_fast <= 0) net_work(1, t0);
-        net_saves_made++;
+        if (r == 1) net_saves_made++;   /* (0: refused - counted in the "saves held up" line) */
     }
     if (rb_fast > 0) return;
     if (net_mode == 2) {
