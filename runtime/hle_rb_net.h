@@ -31,6 +31,7 @@ void rbn_remote(int p, uint32_t frame, RbnPad pad);
 uint32_t rbn_remote_newest(int p);                     /* the newest frame such that every one up to it arrived */
 /* the pad player p uses at `frame`: the real one, else a guess (*guessed = 1), checked when the real one comes */
 RbnPad rbn_get(int p, uint32_t frame, int *guessed);
+uint32_t rbn_peek_mismatch(void);                      /* (the pending one, left where it is) */
 uint32_t rbn_take_mismatch(void);                      /* the earliest frame run on a wrong guess since the last call, or 0 */
 void rbn_put_mismatch(uint32_t frame);                 /* (a rollback that could not be done now: again next time) */
 uint32_t rbn_confirmed(void);                          /* the newest frame every player's real pad is known for */

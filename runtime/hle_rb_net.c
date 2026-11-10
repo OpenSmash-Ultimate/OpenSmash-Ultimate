@@ -104,6 +104,7 @@ RbnPad rbn_get(int p, uint32_t frame, int *guessed) {
     return g;
 }
 
+uint32_t rbn_peek_mismatch(void) { return mismatch; }
 uint32_t rbn_take_mismatch(void) { uint32_t m = mismatch; mismatch = 0; return m; }
 void rbn_put_mismatch(uint32_t m) { if (m && (!mismatch || m < mismatch)) mismatch = m; }
 
