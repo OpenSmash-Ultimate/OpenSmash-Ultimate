@@ -215,7 +215,9 @@ static u64 process_age_ms(void) { return rt_now_ns() / 1000000; }
  * and kept there when it is missing); online_direct.txt: "off" for no direct connections. */
 /* online_server.txt "auto": the public lobby this PC reaches fastest (a TCP connect to each, timed; their game
  * servers answer TCP on the same port). Lobbies are separate until federation (TODO): players on different ones
- * don't see each other, so "auto" is a choice in the settings, not the default. */
+ * don't see each other. "auto" is the default (owner 2026-11-10: a player in Italy on the North American lobby saw
+ * 124-217 ms where the European one answers in 21), and the North American lobby's line without a code, the old
+ * default every install wrote, means "auto" too; "na"/"eu" (or the full address with a code) pin one. */
 static const struct { const char *where, *host; } PUBLIC_LOBBIES[] = {
     {"North America", "smash.recomps.wtf:39421"},
     {"Europe", "opensmash-lobby.duckdns.org:39421"},
@@ -280,7 +282,9 @@ static void configure_from_files(void) {
     char line[256], host[256] = "", code[NAME_LEN + 1] = "";
     if (settings_line_read(config_path(CONFIG_ONLINE_SERVER), line, sizeof line)) sscanf(line, "%255s %32s", host, code);
     if (!host[0] || !_stricmp(host, "off")) return;
-    if (!_stricmp(host, "auto")) nearest_lobby(host, sizeof host);
+    if (!_stricmp(host, "auto") || (!code[0] && !_stricmp(host, PUBLIC_LOBBIES[0].host))) nearest_lobby(host, sizeof host);
+    else if (!_stricmp(host, "na")) snprintf(host, sizeof host, "%s", PUBLIC_LOBBIES[0].host);
+    else if (!_stricmp(host, "eu")) snprintf(host, sizeof host, "%s", PUBLIC_LOBBIES[1].host);
     snprintf(relay_text, sizeof relay_text, "%s", host);
     if (code[0] && !getenv("SSBU_NET_ROOM")) { snprintf(room, sizeof room, "%s", code); room_named = 1; }
     if (!getenv("SSBU_NET_NAME")) {
