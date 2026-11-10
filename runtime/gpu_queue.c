@@ -29,7 +29,7 @@ extern volatile LONG rb_fast;   /* (kernel.c) */
 /* (run-ahead's profile, hle_rb_core.c: the GPU thread's time in submissions, those made in hidden frames [1] and the others [0]) */
 double gpu_q_busy_ms[2]; long long gpu_q_jobs[2];
 extern volatile int gpu_job_hidden;   /* (gpu.c) */
-volatile int gpu_hide_fast;          /* (hle_rb_core.c, run-ahead: the submissions of hidden frames draw nothing) */
+volatile int gpu_hide_fast;          /* (hle_rb_core.c, run-ahead: the submissions of hidden frames draw nothing; 2: those of a net catch-up's frames but the last) */
 
 static Job jobs[JOBS];
 static u64 queued, done;   /* submissions so far: queued, and run (jobs[n % JOBS] is number n) */
@@ -140,7 +140,7 @@ void gpu_queue_submit(u32 channel, const u64 *entries, u32 count, u32 syncpoint,
     j->syncpoint = syncpoint;
     j->fence = fence;
     j->fast = rb_fast > 0;
-    j->hide = j->fast && gpu_hide_fast;
+    j->hide = gpu_hide_fast == 2 ? rb_fast > 1 : j->fast && gpu_hide_fast;   /* (2, a net catch-up: all but its last frame, the one shown) */
     j->entries = count <= INLINE ? j->inline_entries : malloc(sizeof *entries * count);
     if (!j->entries) { j->entries = j->inline_entries; j->count = count = 0; }
     memcpy(j->entries, entries, sizeof *entries * count);   /* (the driver reuses its array) */

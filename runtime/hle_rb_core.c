@@ -887,6 +887,24 @@ static u32 net_alike_from, net_last_bad, net_resync_min;   /* (the first frame o
 static long long net_saves_refused, net_resync_impossible;   /* (net_resync_key: the frame this game was at when the resync's rollback ran) */
 static long long net_older;   /* (M7: rollbacks done from an older state, the newest refused) */
 static double net_catch_ms, net_catch_max, net_wait_ms;
+static long long net_saves_real;   /* (catch-up saves at the newest all-real frame, SSBU_RB_RERUN_REAL) */
+/* A catch-up by part (r26: 14 ms on average, 31-36 at worst, against a 16.7 ms frame): the load, then each frame run
+ * again, by depth; one over SSBU_RB_CATCH_SLOW ms (25) gets its own line, 40 a fight at most. */
+static double catch_load_ms, catch_at[17], catch_d_ms[16], catch_d_load[16];
+static long long catch_d_n[16], catch_over, catch_lines;
+static int catch_n, catch_depth;
+static void catch_done(u32 key, double ms) {
+    static double slow = -1;
+    if (slow < 0) { const char *e = getenv("SSBU_RB_CATCH_SLOW"); slow = e && *e ? atof(e) : 25; }
+    int d = catch_depth < 15 ? catch_depth : 15;
+    catch_d_n[d]++; catch_d_ms[d] += ms; catch_d_load[d] += catch_load_ms;
+    if (ms > 1000.0 / 60) catch_over++;
+    if (ms < slow || catch_lines >= 40) return;
+    catch_lines++;
+    char t[256] = ""; size_t k = 0;
+    for (int i = 1; i <= catch_n && k < sizeof t - 12; i++) k += snprintf(t + k, sizeof t - k, " %.1f", catch_at[i] - catch_at[i - 1]);
+    fprintf(stderr, "[rb] slow catch-up at logic %u: %.1f ms, depth %d: load %.1f, frames run again%s\n", key, ms, catch_depth, catch_load_ms, t);
+}
 static int net_done;
 static long long net_reads[8];   /* (pad reads by slot since the last line, the diagnostic once a second) */
 static u32 net_last_key[8];
@@ -1209,6 +1227,19 @@ static void net_report(void) {
             "%lld frames waited for pads (%.1f ms), %lld rollbacks too deep for the ring; %lld final hashes in %s\n",
             net_delay, net_lag_lo, net_lag_hi, net_loss, net_rollbacks, k ? hist : " none", net_rerun,
             net_rollbacks ? net_catch_ms / net_rollbacks : 0, net_catch_max, net_waits, net_wait_ms, net_too_deep, n, name);
+    {
+        char t[512] = ""; size_t q = 0;
+        for (int d = 1; d < 16 && q < sizeof t - 60; d++) if (catch_d_n[d])
+            q += snprintf(t + q, sizeof t - q, " %d: %.1f ms (load %.1f, a frame %.1f)", d, catch_d_ms[d] / catch_d_n[d], catch_d_load[d] / catch_d_n[d],
+                          (catch_d_ms[d] - catch_d_load[d]) / catch_d_n[d] / d);
+        if (net_saves_real) fprintf(stderr, "[rb] catch-up saves at the newest all-real frame: %lld\n", net_saves_real);
+        extern double gpu_q_busy_ms[2]; extern long long gpu_q_jobs[2];
+        static double gb[2]; static long long gj[2];
+        if (net_rerun) fprintf(stderr, "[rb] the GPU thread: %.2f ms in %.1f submissions a frame run again, %.1f ms in all the others\n",
+                               (gpu_q_busy_ms[1] - gb[1]) / net_rerun, (double)(gpu_q_jobs[1] - gj[1]) / net_rerun, gpu_q_busy_ms[0] - gb[0]);
+        memcpy(gb, gpu_q_busy_ms, sizeof gb); memcpy(gj, gpu_q_jobs, sizeof gj);
+        if (q) fprintf(stderr, "[rb] catch-ups by depth:%s; %lld of %lld over a frame (16.7 ms)\n", t, catch_over, net_rollbacks);
+    }
     if (net_mode == 2) {
         long long s, r, e; rbl_stats(&s, &r, &e);
         s -= net_link_base[0]; r -= net_link_base[1]; e -= net_link_base[2];   /* (this fight's) */
@@ -1454,7 +1485,14 @@ static void net_step(Cpu *c, u64 frame) {
         net_alike_from = net_last_bad = net_resync_min = 0; net_saves_refused = net_resync_impossible = 0; net_desyncs_at_resync = 0;
         rb_fiber_refused = rb_fiber_retried_ok = 0;
         memset(net_depth, 0, sizeof net_depth);
-        net_catch_ms = net_catch_max = net_wait_ms = 0;
+        net_catch_ms = net_catch_max = net_wait_ms = 0; net_saves_real = 0;
+        {   /* (SSBU_RB_NET_HIDE=1, a test: the draws and clears of a catch-up's frames left out on the GPU thread, all but the last frame's) */
+            extern volatile int gpu_hide_fast;
+            const char *e = getenv("SSBU_RB_NET_HIDE");
+            if (e && *e == '1') gpu_hide_fast = 2;
+        }
+        memset(catch_d_n, 0, sizeof catch_d_n); memset(catch_d_ms, 0, sizeof catch_d_ms); memset(catch_d_load, 0, sizeof catch_d_load);
+        catch_over = catch_lines = 0;
         net_checks = net_desyncs = net_msgs_in = net_msgs_out = net_sync_waits = 0;
         net_first_desync = -1;
         memset(check_recs, 0, sizeof check_recs); net_again = net_again_bad = 0;
@@ -1506,7 +1544,9 @@ static void net_step(Cpu *c, u64 frame) {
         rb_catchup = 0;
         double ms = now_ms() - ring_load_t0;
         net_catch_ms += ms; if (ms > net_catch_max) net_catch_max = ms;
-    }
+        if (catch_n < 16) catch_at[++catch_n] = ring_load_t0 + ms;
+        catch_done(key, ms);
+    } else if (rb_fast > 0 && catch_n < 16) catch_at[++catch_n] = now_ms();
     u32 i = key - net_key0;
     if (i < 1u << 20) {
         if (net_every < 0) { const char *e = getenv("SSBU_RB_NET_CHECK_EVERY"); net_every = e && atoi(e) > 0 ? atoi(e) : 1; }   /* (v0.9.6: every frame, was 10: a desync's first frame exact) */
@@ -1539,7 +1579,13 @@ static void net_step(Cpu *c, u64 frame) {
     }
     if (rb_fast > 0) {   /* the middle of a catch-up: a save every n-th frame, nothing else */
         LONG done = catch_total - rb_fast;
-        if (rerun_save != 1 && (rerun_save == 0 || done % rerun_save)) { rb_save_ms[0] = rb_save_ms[1] = rb_save_ms[2] = 0; return; }
+        /* SSBU_RB_RERUN_REAL=1 (a test): the one save of a catch-up at the newest frame whose pads are all real - the
+         * newest state no later wrong guess can be before - not at every n-th frame, which may be a guessed one. */
+        static int rerun_real = -1;
+        if (rerun_real < 0) { const char *e = getenv("SSBU_RB_RERUN_REAL"); rerun_real = e && *e == '1'; }
+        int keep = rerun_real && net_mode == 2 ? key == net_remote_low() : rerun_save == 1 || (rerun_save != 0 && done % rerun_save == 0);
+        if (keep && rerun_real) net_saves_real++;
+        if (!keep) { rb_save_ms[0] = rb_save_ms[1] = rb_save_ms[2] = 0; return; }
     }
     /* A save only where a rollback could come back to it: a wrong guess at frame m loads a state tagged m - 1 or
      * before, so a state is needed at `key` only while the other player's pad for key + 1 hasn't come (it will be
@@ -1594,7 +1640,11 @@ static void net_step(Cpu *c, u64 frame) {
         rb_save_tag = key;
         double t0 = now_ms();
         int r = rb_save(c, frame);
-        if (r == 2) { logic_frame_loaded(); catch_total = pending_fast; rb_fast = pending_fast; return; }
+        if (r == 2) {
+            logic_frame_loaded(); catch_total = pending_fast; rb_fast = pending_fast;
+            catch_depth = (int)pending_fast; catch_n = 0; catch_at[0] = now_ms(); catch_load_ms = catch_at[0] - ring_load_t0;
+            return;
+        }
         if (rb_fast <= 0) net_work(1, t0);
         if (r == 1) net_saves_made++; else net_saves_refused++;
     }
