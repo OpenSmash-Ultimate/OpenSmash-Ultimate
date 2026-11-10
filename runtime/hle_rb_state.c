@@ -1592,7 +1592,12 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     u32 n;
     double t0 = now_ms();
     if (!hold(c->thread, &n)) { refused++; return 0; }
-    if (rb_save_home_only && away_from_home(c->thread)) {
+    /* (net rollback too, SSBU_RB_SAVE_HOME=0: not. A state saved with a thread in a job could not be loaded once the job
+     * was over - "thread 2 was on a job's fiber at the save" - and at a fight's start (link-pikachu, logic frame 11)
+     * every state kept was such a one: 10 loads refused, then a wrong guess with no state before it, a desync.) */
+    static int save_home = -1;
+    if (save_home < 0) { const char *e = getenv("SSBU_RB_SAVE_HOME"); save_home = !(e && *e == '0'); }
+    if ((rb_save_home_only || save_home) && away_from_home(c->thread)) {
         static double retry_ms = -1;
         if (retry_ms < 0) { const char *e = getenv("SSBU_RB_SAVE_RETRY_MS"); retry_ms = e && *e ? atof(e) : 4; }
         rb_save_away_waits++;
@@ -1601,7 +1606,12 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
         while (away && now_ms() - tr < retry_ms) {
             release();
             SwitchToThread();
-            if (!hold(c->thread, &n)) { refused++; rb_save_away_refused++; return 0; }
+            /* (the hold itself bounded by what is left of the retry: a hold may wait up to SSBU_RB_PARK_MS, 500) */
+            double q = rb_park_quick_ms, left = retry_ms - (now_ms() - tr);
+            rb_park_quick_ms = left > 0.5 ? left : 0.5;
+            int ok = hold(c->thread, &n);
+            rb_park_quick_ms = q;
+            if (!ok) { refused++; rb_save_away_refused++; return 0; }
             away = away_from_home(c->thread);
         }
         if (away) { refused++; rb_save_away_refused++; release(); return 0; }
