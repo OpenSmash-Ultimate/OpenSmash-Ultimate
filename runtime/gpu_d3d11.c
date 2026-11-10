@@ -1028,6 +1028,9 @@ static int create_noted(struct Compiler *me, Shader *s, const void *code, size_t
     me->dxbc_size = size;
     me->step = STEP_DRIVER;
     void *warm = NULL;
+    /* (the compile device first even while the first frame waits, prewarm_gate: made on the game's device alone, NVIDIA's
+     * driver left the work to its own threads, which then took 300-420 CPU-seconds every 30 s of play on 16 threads and
+     * twice the late frames - measured 2026-11-10, a cold start) */
     if (compile_dev && SUCCEEDED(create_on(compile_dev, s->stage, code, size, &warm))) IUnknown_Release((IUnknown *)warm);
     int ok = SUCCEEDED(create_on(dev, s->stage, code, size, &s->obj));
     me->dxbc = NULL;
@@ -2012,8 +2015,29 @@ int gfx_warm_shaders_main(const char *dir, const char *luid) {
     if (game_running()) r.stop = 1;
     for (u32 i = 0; i < nthreads && r.done && before + i < r.n && !r.stop; i++)
         if ((threads[started] = CreateThread(NULL, 16 << 20, warm_worker, &r, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL))) started++;
-    while (started && WaitForMultipleObjects(started, threads, TRUE, 500) == WAIT_TIMEOUT)
+    /* (issue #182) while it runs, warm.log says how far it is every 10 s: drawn of the total, failures, time, time left */
+    char logpath[1100];
+    snprintf(logpath, sizeof logpath, "%s/warm.log", dir);
+    u64 said = GetTickCount64();
+    while (started && WaitForMultipleObjects(started, threads, TRUE, 500) == WAIT_TIMEOUT) {
         if (!r.stop && game_running()) InterlockedExchange(&r.stop, 1);
+        u64 now = GetTickCount64();
+        if (now - said < 10000) continue;
+        said = now;
+        FILE *lf = fopen(logpath, "w");
+        if (!lf) continue;
+        double s = (now - t0) / 1000.0;
+        long drawn = r.drawn, failed = r.failed;
+        long left = (long)r.n - (long)before - drawn - failed;
+        if (left < 0) left = 0;
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        fprintf(lf, "%04u-%02u-%02u %02u:%02u: running on %s: %ld of %u shaders drawn (%u before), %ld not drawn, %.0f s so far",
+                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, name, drawn + (long)before, r.n, before, failed, s);
+        if (drawn > 0) fprintf(lf, ", about %.0f min left", left * (s / drawn) / 60.0);
+        fprintf(lf, "%s" "\n", r.stop ? " (stopping: a game started)" : "");
+        fclose(lf);
+    }
     for (u32 i = 0; i < started; i++) CloseHandle(threads[i]);
     /* what has been drawn, for the next run */
     u32 ndone = 0;
