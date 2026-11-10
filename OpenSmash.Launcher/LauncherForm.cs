@@ -95,7 +95,7 @@ namespace OpenSmash.Launcher
         string _setupLog = "";
         string _setupMode = ""; // "scratch" or "import"
 
-        // Play (mods, ssbu_sky.exe) or Vanilla (ssbu_native.exe, plugins off). Remembered in build\launch_mode.txt.
+        // Play (mods) or Vanilla (the game's own data and no mods: mods.play_vanilla); both start build\ssbu.exe. Remembered in build\launch_mode.txt.
         string _launchMode = "mods";
         Task<bool> _prepInflight;   /* mod convert + hook install, shared by launcher startup and Play */
         bool _playQueued;
@@ -3062,13 +3062,17 @@ namespace OpenSmash.Launcher
 
         async Task<string> UnbuiltPluginChoice()
         {
-            if (_launchMode == "vanilla") return "play";
+            // Without mods it is the same program (build\ssbu.exe, the community plugins loaded): a link it needs
+            // (an update changed the runtime) is asked for as with mods. The mods' own plugins are not loaded then,
+            // so one waiting or to be refreshed is not.
+            bool vanilla = _launchMode == "vanilla";
             await RefreshMods();
-            var waiting = _mods.Where(m => m.Enabled && m.Code == "waiting")
+            var waiting = vanilla ? new List<string>() : _mods.Where(m => m.Enabled && m.Code == "waiting")
                 .Select(m => string.IsNullOrEmpty(m.Title) ? m.Name : m.Title)
                 .Distinct()
                 .ToList();
             bool full = !string.IsNullOrEmpty(_pluginBuildReason);
+            if (vanilla && !full) return "play";
             string why = full ? PluginUpdateWhy(waiting, _pluginBuildReason) : PluginRefreshWhy(waiting, _pluginRefreshReason);
             if (why.Length == 0) return "play";
             _pluginPromptKind = full ? "update" : "refresh";
