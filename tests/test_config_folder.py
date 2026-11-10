@@ -192,7 +192,8 @@ class FolderTests(ConfigTestCase):
         self.assertEqual(got, {'display': self.config('display.ini'), 'controllers': self.config('controllers.ini'),
                                'launcher': self.config('launcher.ini'), 'online_server': 'online_server.txt',
                                'online_name': self.config('online_name.txt'), 'online_direct': self.config('online_direct.txt'),
-                               'online_protocol': self.config('online_protocol.txt'), 'online_rollback': self.config('online_rollback.txt')})
+                               'online_protocol': self.config('online_protocol.txt'), 'online_rollback': self.config('online_rollback.txt'),
+                               'online_delay': self.config('online_delay.txt')})
         self.assertEqual(sorted(tree(self.top)), ['config/version.ini'])
         text = self.version()
         self.assertIn('\nversion = 1\n', text.replace('\r\n', '\n'))

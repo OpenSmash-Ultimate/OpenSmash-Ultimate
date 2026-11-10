@@ -48,7 +48,7 @@ const char *rt_data_dir = ".";
 const RtModule rt_module_main = {.build_id = build_text};
 static const char *const FILES[CONFIG_FILES] = {"display.ini", "controllers.ini", "launcher.ini", "online_server.txt",
                                                 "online_name.txt", "online_direct.txt", "online_protocol.txt",
-                                                "online_rollback.txt"};
+                                                "online_rollback.txt", "online_delay.txt"};
 const char *config_path(enum ConfigFile file) { return (unsigned)file < CONFIG_FILES ? FILES[file] : NULL; }   /* (this folder's) */
 #ifdef _WIN32
 u64 rt_now_ns(void) {
@@ -65,6 +65,8 @@ int rt_upnp_add(u16 port_, const char *lan, const char *what, char *pub, size_t 
 void rt_upnp_remove(void) {}
 SHORT GetAsyncKeyState(int vk) { (void)vk; return 0; }   /* (no keys held: the window's) */
 #endif
+int online_delay_setting(void) { return -1; }   /* (hle_online_delay.c: auto) */
+int online_delay_last_auto(void) { return -1; }
 void display_fit(unsigned w, unsigned h, unsigned *x, unsigned *y, unsigned *fw, unsigned *fh) {   /* (gpu_display.c's: the picture's 16:9 place) */
     if ((unsigned long long)w * 9 > (unsigned long long)h * 16) { *fh = h; *fw = h * 16 / 9; }
     else { *fw = w; *fh = w * 9 / 16; }
