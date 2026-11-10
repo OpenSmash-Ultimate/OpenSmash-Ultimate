@@ -124,7 +124,8 @@ class Build:
         self.since = 0.0
         self.queue = {}            # (compile) source -> estimate, of the files not started, in order
         self.running = {}          # (compile) source -> (estimate, started at)
-        self.compiled = 0          # (compile) files finished
+        self.compiled = 0          # (compile) files finished (each counted once: finished_files)
+        self.finished_files = set()
         self.samples = []          # (when, seconds, estimate) of every file compiled
         self.unpaced = set()       # (compile) files the ladder compiles again another way: no sample of the pace
         self.gen_samples = []      # the same of every module whose C was written
@@ -160,6 +161,7 @@ class Build:
             self.step, self.since = (kind, name), self.clock()
             if kind == "compile":
                 self.queue, self.running, self.compiled, self.unpaced = dict(self.files[name]), {}, 0, set()
+                self.finished_files = set()
             self.label = self._label()
 
     def started(self, job):
@@ -169,7 +171,10 @@ class Build:
     def finished(self, job, seconds):
         with self.lock:
             cost, _t = self.running.pop(job[0], (0.0, 0.0))
-            self.compiled += 1
+            # (a file is counted once, however many times it is reported: a user saw 2835 of 2660)
+            if job[0] not in self.finished_files:
+                self.finished_files.add(job[0])
+                self.compiled += 1
             if job[0] in self.unpaced:
                 self.unpaced.discard(job[0])
             else:
