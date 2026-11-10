@@ -3994,17 +3994,75 @@ static int has_ext(const VkExtensionProperties *e, uint32_t n, const char *name)
     return 0;
 }
 
-/* renderer = auto's trial (gpu_vk.h): a file while the Vulkan back end has not yet shown its first 600 frames. */
+/* renderer = auto's trial (gpu_vk.h): vulkan_auto_trial.txt in the shader cache's folder, holding the number of auto
+ * starts in a row that did not reach their 600th frame ("strikes N"). Written before anything of Vulkan's is made
+ * (a driver or a layer crashing in vkCreateInstance or vkCreateDevice counts too), put back as it was when the start
+ * declines or fails (Direct3D 11 then draws, and that is no strike), taken away at the 600th frame shown. Two strikes:
+ * auto takes Direct3D 11 until renderer = vulkan, which takes the file away, or a run of it reaches its 600th frame. */
+#define TRIAL_STRIKES 2
 static char trial_path[1100];
-static int trial_open;
+static int trial_open, trial_before;   /* (a trial running; the strikes before it) */
 static void trial_path_make(void) { snprintf(trial_path, sizeof trial_path, "%s/vulkan_auto_trial.txt", cache_dir()); }
+static int trial_read(void) {
+    FILE *f = fopen(trial_path, "r");
+    int n = 0;
+    if (!f) return 0;
+    if (fscanf(f, "strikes %d", &n) != 1 || n < 1) n = 1;   /* (an older or broken file: one) */
+    fclose(f);
+    return n;
+}
+static int trial_write(int strikes) {
+    FILE *f = fopen(trial_path, "w");
+    if (!f) return 0;
+    fprintf(f, "strikes %d\n"
+               "renderer = auto started the Vulkan renderer this many times in a row without it showing 600 frames (a crash,\n"
+               "or the game closed early). At %d, auto starts Direct3D 11 instead; renderer = vulkan (display.ini or the\n"
+               "settings menu) tries Vulkan again. The file goes when Vulkan shows its 600th frame.\n", strikes, TRIAL_STRIKES);
+    return !fclose(f);
+}
 static void trial_passed(void) {   /* (vk_present_, at the 600th frame shown) */
     if (!trial_open) return;
     trial_open = 0;
     DeleteFileA(trial_path);
 }
+static void trial_undo(void) {   /* (the start declined or failed: no strike) */
+    if (!trial_open) return;
+    trial_open = 0;
+    if (trial_before) trial_write(trial_before);
+    else DeleteFileA(trial_path);
+}
+
+static const GfxBackend *start_backend(char *why, size_t size, int automatic);
 
 const GfxBackend *vk_backend_start(char *why, size_t size, int automatic) {
+    trial_path_make();
+    if (!automatic) DeleteFileA(trial_path);   /* (asked for by name: auto tries it again after this) */
+    else {
+        trial_before = trial_read();
+        if (trial_before >= TRIAL_STRIKES) {
+            snprintf(why, size, "the Vulkan renderer stopped before showing its first 600 frames the last %d times (%s; a crash, or the game "
+                     "closed early): Direct3D 11. Settings > Display > Renderer = vulkan tries Vulkan again", trial_before, trial_path);
+            return NULL;
+        }
+        if (trial_write(trial_before + 1)) trial_open = 1;
+        else fprintf(stderr, "[vulkan] renderer = auto: %s could not be written: a crash of the Vulkan renderer will not be noticed next time\n", trial_path);
+    }
+    const GfxBackend *b = start_backend(why, size, automatic);
+    if (!b) {
+        trial_undo();
+        /* (what the start made before it failed: the device, if made, is left - its objects are not all known
+         * here - but not the surface on the window Direct3D 11 now draws in, nor the instance) */
+        if (!device) {
+            if (vk_surface && vkDestroySurfaceKHR) vkDestroySurfaceKHR(instance, vk_surface, NULL);
+            if (instance && vkDestroyInstance) vkDestroyInstance(instance, NULL);
+            vk_surface = VK_NULL_HANDLE;
+            instance = VK_NULL_HANDLE;
+        }
+    }
+    return b;
+}
+
+static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
     PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)vk_loader(why, size);
     if (!gipa) return NULL;
     InitializeCriticalSection(&lock);
@@ -4042,27 +4100,13 @@ const GfxBackend *vk_backend_start(char *why, size_t size, int automatic) {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(physical, &props);
     snprintf(card, sizeof card, "%s", props.deviceName);
-    trial_path_make();
-    /* (auto: Vulkan on AMD's cards alone; SSBU_VK_AUTO_VENDOR=<hex PCI vendor> names another, to test auto elsewhere) */
+    /* (auto: Vulkan on AMD's cards alone - gpu_backend.c asked Direct3D 11's choice of card first; this is Vulkan's;
+     * SSBU_VK_AUTO_VENDOR=<hex PCI vendor> names another, to test auto elsewhere) */
     unsigned auto_vendor = getenv("SSBU_VK_AUTO_VENDOR") ? (unsigned)strtoul(getenv("SSBU_VK_AUTO_VENDOR"), NULL, 16) : 0x1002;
     if (automatic && props.vendorID != auto_vendor) {
         snprintf(why, size, "%s is not an AMD card, Direct3D 11 is the default for it (renderer = vulkan to draw with Vulkan)", card);
-        vkDestroySurfaceKHR(instance, vk_surface, NULL);
-        vkDestroyInstance(instance, NULL);
-        vk_surface = VK_NULL_HANDLE;
-        instance = VK_NULL_HANDLE;
         return NULL;
     }
-    if (automatic && GetFileAttributesA(trial_path) != INVALID_FILE_ATTRIBUTES) {
-        snprintf(why, size, "the Vulkan renderer stopped before showing its first 600 frames the time before (%s; a crash, or the game closed early): "
-                 "Direct3D 11 this time. Settings > Display > Renderer = vulkan tries Vulkan again", trial_path);
-        vkDestroySurfaceKHR(instance, vk_surface, NULL);
-        vkDestroyInstance(instance, NULL);
-        vk_surface = VK_NULL_HANDLE;
-        instance = VK_NULL_HANDLE;
-        return NULL;
-    }
-    if (!automatic) DeleteFileA(trial_path);   /* (asked for by name: auto tries it again after this) */
     if (props.apiVersion < VK_API_VERSION_1_1) { snprintf(why, size, "%s has Vulkan %u.%u: 1.1 is needed", card, VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion)); return NULL; }
     vkGetPhysicalDeviceMemoryProperties(physical, &memory_props);
 
@@ -4198,16 +4242,6 @@ const GfxBackend *vk_backend_start(char *why, size_t size, int automatic) {
     }
     if (scale < 0.5f || scale > 4) scale = 1;
     render_scale = scale;
-    if (automatic) {   /* (a trial until the 600th frame: vk_present_ takes the file away then) */
-        FILE *t = fopen(trial_path, "w");
-        if (t) {
-            fprintf(t, "renderer = auto started the Vulkan renderer; this file goes once it has shown 600 frames.\n"
-                       "While it is here, auto starts Direct3D 11 instead (renderer = vulkan in display.ini, or the\n"
-                       "settings menu, tries Vulkan again).\n");
-            fclose(t);
-            trial_open = 1;
-        }
-    }
     fprintf(stderr, "[vulkan] drawing with %s (Vulkan %u.%u.%u)%s: %u frames in flight, render scale %.3g, present modes%s%s\n",
             card, VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion), VK_API_VERSION_PATCH(props.apiVersion),
             float_controls ? ", float controls" : "", nframes, render_scale, have_immediate ? " immediate" : "", have_mailbox ? " mailbox" : "");

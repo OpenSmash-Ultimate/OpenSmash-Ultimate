@@ -163,7 +163,7 @@ static const char DEFAULT_INI[] =
 #ifdef _WIN32
     "; renderer = auto | direct3d11 | vulkan\n"
     ";   auto:       Vulkan on an AMD graphics card, Direct3D 11 on any other (and whenever Vulkan cannot\n"
-    ";               start, or stopped the game in its first seconds the time before).\n"
+    ";               start, or stopped the game in its first seconds twice in a row).\n"
     ";   direct3d11: Direct3D 11 on any card.\n"
     ";   vulkan:     Vulkan on any card (Direct3D 11 if it cannot start; the log says why).\n"
 #else

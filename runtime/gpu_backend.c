@@ -13,6 +13,7 @@
  * each entry point is one indirect call into the chosen back end. */
 #ifndef __APPLE__
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "display.h"
 #include "gpu_d3d11.h"
@@ -54,8 +55,22 @@ static BOOL CALLBACK choose(PINIT_ONCE o, PVOID p, PVOID *c) {
 #else
     int automatic = 0;
 #endif
+    char why[600];
+#ifdef _WIN32
+    if (automatic) {   /* (the card Direct3D 11 would take, through DXGI: on another vendor's, Vulkan is not even loaded) */
+        const char *test = getenv("SSBU_VK_AUTO_VENDOR");   /* (testing: another vendor taken for AMD's) */
+        unsigned amd = test && *test ? (unsigned)strtoul(test, NULL, 16) : 0x1002;
+        char name[128];
+        unsigned vendor = d3d11_card_vendor(name, sizeof name);
+        if (vendor != amd) {
+            if (vendor) snprintf(why, sizeof why, "%s is not an AMD card, Direct3D 11 is the default for it (renderer = vulkan to draw with Vulkan)", name);
+            else snprintf(why, sizeof why, "no graphics card of AMD's (gpu = warp, or none listed): Direct3D 11");
+            gfx_renderer_chosen(RENDERER_DEFAULT, why);
+            automatic = 0;
+        }
+    }
+#endif
     if (asked == RENDERER_VULKAN || automatic) {
-        char why[600];
         const GfxBackend *v = vk_backend_start(why, sizeof why, automatic);
         if (v) { b = v; gfx_renderer_chosen(RENDERER_VULKAN, NULL); }
         else gfx_renderer_chosen(RENDERER_DEFAULT, why);

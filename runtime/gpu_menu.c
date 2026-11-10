@@ -916,7 +916,7 @@ static void build(void)
 #ifdef _WIN32
                 "auto: Vulkan on an AMD card (no first-use stutter there), Direct3D 11 on any other. direct3d11 or vulkan: that one on any card."
                 " If Vulkan cannot start (its shaders come from ssbu_glslang.dll beside the game, which needs the Visual C++ runtime), or"
-                " stopped the game in its first seconds the time before, Direct3D 11 draws and the log says why."
+                " stopped the game in its first seconds twice in a row, Direct3D 11 draws and the log says why."
 #else
                 "DXVK: Direct3D 11 on Vulkan, the renderer the game is played and tested with. Vulkan: in development; until it can draw the game, "
                 "the game checks Vulkan at its start, says what it found in its log, and draws as before."

@@ -365,15 +365,16 @@ namespace OpenSmash.Launcher
         }
 
         // The renderer the game starts with, as runtime/renderer.h reads it: SSBU_RENDERER, else
-        // display.ini's renderer (vulkan or vk: Vulkan; anything else: the default, Direct3D 11).
-        bool VulkanSelected()
+        // display.ini's renderer (vulkan or vk: Vulkan; direct3d11, direct3d or dx11: Direct3D 11;
+        // anything else, d3d11 included: auto, Vulkan on an AMD card and Direct3D 11 on others).
+        string RendererAsked()
         {
             string v = Environment.GetEnvironmentVariable("SSBU_RENDERER") ?? "";
             if (v.Trim() == "") v = _settingsLoaded ? _iniValues.GetValueOrDefault("renderer", "") : _rendererIni;
-            return v.Trim().ToLowerInvariant() is "vulkan" or "vk";
+            return v.Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
         }
 
-        string RendererChip() => VulkanSelected() ? "VULKAN RENDERER" : "D3D11 RENDERER";
+        string RendererChip() => RendererAsked() switch { "vulkan" => "VULKAN RENDERER", "direct3d11" => "D3D11 RENDERER", _ => "AUTO RENDERER" };
 
         int _modsGen;
 
