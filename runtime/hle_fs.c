@@ -715,9 +715,10 @@ static const char *data_root(char *out, size_t n, const char *leaf) {   /* nativ
  *     deletions are remembered (tombstones). Every open, listing and query sees the working
  *     folder over the committed one, without the deleted paths.
  *   - Commit flushes the changed files, writes the list of changes to the journal
- *     save/<user>.journal.<process id>, flushes it and renames it to save/<user>.commit: the
- *     commit is decided there. Then the changes are applied (deletions, new folders, each file
- *     moved over the committed one) and that marker deleted. Every step can be done again, so
+ *     save/<user>.journal.<process id>, flushes it and renames it to save/<user>.commit (never
+ *     over another): the commit is decided there. Once that name is flushed to the disk, the
+ *     changes are applied (deletions, new folders, each file moved over the committed one) and
+ *     that marker deleted; a flush that fails leaves the commit pending, applied later. Every step can be done again, so
  *     a process stopped after the rename has its commit finished by the next mount, by any
  *     process; one stopped before leaves the committed save as it was.
  *   - Unmount discards uncommitted changes, as the console does; so does the next mount, for
@@ -770,7 +771,7 @@ static int pid_alive(DWORD pid) {
  * goes to the disk within seconds, not when MoveFileEx returns (MOVEFILE_WRITE_THROUGH is
  * documented for moves done as a copy): a power cut just after a commit can bring back the save
  * before it, whole. */
-static void flush_dir(const char *path) { (void)path; }
+static int flush_dir(const char *path) { (void)path; return 1; }
 #else
 typedef int SaveLock;   /* (-1: not taken) */
 static SaveLock lock_saves(const char *root) {   /* (flock: the shim's objects have no names) */
@@ -787,15 +788,28 @@ static SaveLock lock_saves(const char *root) {   /* (flock: the shim's objects h
 static int saves_locked(SaveLock fd) { return fd >= 0; }
 static void unlock_saves(SaveLock fd) { if (fd >= 0) close(fd); }
 static int pid_alive(DWORD pid) { return pid && pid <= 0x7FFFFFFF && (kill((pid_t)pid, 0) == 0 || errno == EPERM); }
-static void flush_dir(const char *path) {   /* the names in a folder: POSIX makes them durable only so */
+/* The names in a folder: POSIX makes them durable only so. 0 if that failed (an I/O error). Some
+ * file systems cannot flush a folder at all (EINVAL, ENOTSUP, ENOSYS: some network and FUSE
+ * ones): there the save goes on as it did before folders were flushed, with no promise about a
+ * power cut, said once in the log - failing would leave the save unmountable for good. */
+static int flush_dir(const char *path) {
+    static int unflushable_said;
     char unix_path[1024];
-    int fd = open(rt_unix_path(path, unix_path, sizeof unix_path), O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return;
+    int fd = open(rt_unix_path(path, unix_path, sizeof unix_path), O_RDONLY | O_CLOEXEC), r = -1;
+    if (fd < 0) { SetLastError(rt_win32_error(errno)); return 0; }
 #ifdef __APPLE__
-    if (fcntl(fd, F_FULLFSYNC))   /* (fsync leaves it in the drive's cache) */
+    if ((r = fcntl(fd, F_FULLFSYNC)))   /* (fsync leaves it in the drive's cache) */
 #endif
-        fsync(fd);
+        r = fsync(fd);
+    int err = errno;
     close(fd);
+    if (r && (err == EINVAL || err == ENOTSUP || err == ENOSYS)) {
+        if (!__atomic_exchange_n(&unflushable_said, 1, __ATOMIC_RELAXED))
+            fprintf(stderr, "[fs] %s: this file system cannot flush a folder (errno %d); saves go on without it\n", path, err);
+        return 1;
+    }
+    if (r) { fprintf(stderr, "[fs] %s: flushing the folder failed (errno %d)\n", path, err); SetLastError(rt_win32_error(err)); }
+    return !r;
 }
 #endif
 
@@ -831,6 +845,11 @@ static void crash_point(void) {
 #endif
 
 static DWORD attributes(const char *p) { return GetFileAttributesA(p); }
+static int absent(const char *p) {   /* nothing there - not a path that could not be looked at (no access, a disk error) */
+    if (attributes(p) != INVALID_FILE_ATTRIBUTES) return 0;
+    DWORD e = GetLastError();
+    return e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND;
+}
 static int is_dir(const char *p) { DWORD a = attributes(p); return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY); }
 static int is_file(const char *p) { DWORD a = attributes(p); return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY); }
 static void join(char *out, size_t n, const char *dir, const char *rel) {   /* (dir "": rel alone) */
@@ -886,6 +905,15 @@ static int move_file(const char *from, const char *to) {
     not_read_only(to);
     for (DWORD wait = 1;; wait *= 2) {
         if (MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) || replace_open_file(from, to)) return 1;
+        if (!held() || wait > 512) return 0;
+        Sleep(wait);
+    }
+}
+/* A move that never replaces (0 if something is at `to`), on the disk when it returns: the
+ * journal becoming the marker. */
+static int move_new(const char *from, const char *to) {
+    for (DWORD wait = 1;; wait *= 2) {
+        if (MoveFileExA(from, to, MOVEFILE_WRITE_THROUGH)) return 1;
         if (!held() || wait > 512) return 0;
         Sleep(wait);
     }
@@ -1062,8 +1090,8 @@ static void journal_deletes(Text *t, struct Mount *m, const char *rel) {
     FindClose(h);
 }
 
-/* Every folder (M) and file (F) of the working folder, parents first; each file flushed.
- * 0 if one could not be. */
+/* Every folder (M) and file (F) of the working folder, parents first; each file and folder
+ * flushed. 0 if one could not be: the commit then fails before it is decided. */
 static int journal_work(Text *t, const char *work, const char *rel) {
     char dir[1024], pat[1024], sub[512], full[1024];
     WIN32_FIND_DATAA fd;
@@ -1087,7 +1115,7 @@ static int journal_work(Text *t, const char *work, const char *rel) {
         }
     } while (FindNextFileA(h, &fd));
     FindClose(h);
-    flush_dir(dir);
+    ok &= flush_dir(dir);
     return ok;
 }
 
@@ -1104,8 +1132,8 @@ static int journal_apply(const char *root) {
     char marker[1024], parent[1024], work[1024] = "", a[1024], b[1024];
     snprintf(marker, sizeof marker, "%s.commit", root);
     parent_of(parent, sizeof parent, root);
-    if (attributes(marker) == INVALID_FILE_ATTRIBUTES) return 1;
-    char *text = read_text(marker);
+    if (absent(marker)) return 1;
+    char *text = read_text(marker);   /* (NULL too when the marker could not be looked at: tried again later) */
     if (!text) return -1;
     size_t len = strlen(text), head = strlen(JOURNAL_FORMAT "\n");
     if (len < head + 2 || memcmp(text, JOURNAL_FORMAT "\n", head) || strcmp(text + len - 2, "E\n") || (len > head + 2 && text[len - 3] != '\n')) {
@@ -1114,6 +1142,11 @@ static int journal_apply(const char *root) {
         if (!delete_file(marker)) return -1;
         flush_dir(parent);
         return 0;
+    }
+    if (!flush_dir(parent)) {   /* (nothing moved over the committed save before the marker's name is on the disk) */
+        free(text);
+        fprintf(stderr, "[fs] %s: the save's folder could not be flushed (error %lu); applied later\n", marker, (unsigned long)GetLastError());
+        return -1;
     }
     int ok = 1;
     for (char *line = text + head, *next; ok && *line; line = next) {
@@ -1145,7 +1178,7 @@ static int journal_apply(const char *root) {
             flush_dir(b);
         } else if (!strcmp(line, "F")) {   /* a file: the working copy moves over the committed one */
             join(b, sizeof b, work, arg);
-            if (attributes(b) != INVALID_FILE_ATTRIBUTES) { make_parents(a); ok = move_file(b, a); }
+            if (!absent(b)) { make_parents(a); ok = move_file(b, a); }   /* (absent: moved already; one that cannot be looked at fails the move) */
         } else ok = 0;
         crash_point();
     }
@@ -1156,7 +1189,8 @@ static int journal_apply(const char *root) {
     }
     crash_point();
     if (!delete_file(marker)) return -1;
-    flush_dir(parent);   /* (before anything else goes into the working folder: the marker must not be applied twice) */
+    flush_dir(parent);   /* (before anything else goes into the working folder: the marker must not be applied twice.
+                          * An I/O error here is logged, not a failure: the commit is applied, and its marker gone) */
     crash_point();
     return 1;
 }
@@ -1253,7 +1287,13 @@ static u32 journal_commit(struct Mount *m) {
     } else ok = 0;
     free(t.p);
     crash_point();
-    if (ok && !move_file(journal, marker)) ok = attributes(journal) == INVALID_FILE_ATTRIBUTES && attributes(marker) != INVALID_FILE_ATTRIBUTES;
+    /* the decision: the journal takes the marker's name, never over another marker (journal_apply
+     * above left none). A move that went through but whose flush failed is decided but not known
+     * to be on the disk: left pending, not applied now */
+    int synced = ok && move_new(journal, marker);
+    DWORD move_error = GetLastError();
+    if (ok && !synced) ok = absent(journal) && attributes(marker) != INVALID_FILE_ATTRIBUTES;
+    SetLastError(move_error);
     if (!ok) {   /* not decided: the committed save is as it was */
         fprintf(stderr, "[fs] commit of %s failed before it was decided (error %lu)\n", m->root, (unsigned long)GetLastError());
         DeleteFileA(journal);
@@ -1262,7 +1302,8 @@ static u32 journal_commit(struct Mount *m) {
     }
     crash_point();   /* (decided) */
     m->pending = 1;
-    if (journal_apply(m->root) >= 0) journal_done(m);
+    if (!synced) fprintf(stderr, "[fs] commit of %s decided, but its flush failed (error %lu); applied later\n", m->root, (unsigned long)GetLastError());
+    else if (journal_apply(m->root) >= 0) journal_done(m);
     unlock_saves(l);
     if (!m->pending) fprintf(stderr, "[fs] save committed (%d changes)\n", changes);
     return m->pending ? R_HOST_FAILURE : 0;   /* (pending: every call on the mount tries it again first; the next mount finishes it) */

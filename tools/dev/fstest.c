@@ -13,7 +13,8 @@
  *       entry types of the merged save; deleting and making again, files becoming folders and
  *       back; leftovers of dead processes dropped (not a running one's); an incomplete journal
  *       ignored; a commit decided but not applied (a file the PC will not replace), finished
- *       later; nothing mounted, committed or recovered without the save lock; read-only files;
+ *       later; nothing mounted, committed or recovered without the save lock; a commit whose
+ *       decision's flush failed applied by the next call, not at once; read-only files;
  *       the cache and the RomFS read and written directly
  *   fstest <folder> old       puts the old save in the committed folder, nothing else
  *   fstest <folder> new       mounts it and changes it into the new save (files new, changed,
@@ -30,6 +31,19 @@
  * one by one. */
 #define FS_TEST
 #include <stdarg.h>
+#include <string.h>
+#include "../../runtime/host.h"
+
+/* sync_fails = 1: the next move onto a commit marker is made, then fails as a flush after it
+ * would (hle_fs.c's moves go through here) */
+static int sync_fails;
+static BOOL test_move(LPCSTR from, LPCSTR to, DWORD flags) {
+    BOOL r = MoveFileExA(from, to, flags);
+    size_t n = strlen(to);
+    if (r && sync_fails && n > 7 && !strcmp(to + n - 7, ".commit")) { sync_fails = 0; SetLastError(ERROR_DISK_FULL); return FALSE; }
+    return r;
+}
+#define MoveFileExA test_move
 #include "../../runtime/hle_fs.c"
 char rt_romfs_warning[320];   /* (host.c's, not linked here) */
 #ifndef _WIN32
@@ -496,6 +510,15 @@ static void checks_all(DWORD live_pid) {
         chmod(unix_lock, 0644);
     }
 #endif
+
+    /* the decision's flush fails: the commit is decided but waits, applied by the next call */
+    snprintf(committed, sizeof committed, "%s", h_save("a.bin") ? h_save("a.bin") : "");
+    CHECK(mount_save() == 0 && t_write("save:/a.bin", 0, "A7", 0, NULL) == 0, "a write");
+    sync_fails = 1;
+    CHECK(commit("save") == R_HOST_FAILURE && h_exists(h_beside("commit")) && !h_exists(own("journal")) && is(h_save("a.bin"), committed),
+          "a commit whose flush failed was applied: %s", h_save("a.bin") ? h_save("a.bin") : "(none)");
+    CHECK(is(t_read("save:/a.bin"), "A7") && is(h_save("a.bin"), "A7") && !h_exists(h_beside("commit")), "the next call applies it");
+    unmount("save");
 
     /* files marked read-only in the committed save are replaced and deleted all the same */
     h_put("ro1.bin", "RO1-old"); h_put("ro2.bin", "RO2-old");

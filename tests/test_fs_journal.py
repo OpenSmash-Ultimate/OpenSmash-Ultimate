@@ -28,20 +28,22 @@ else:
 CRASHED = 99   # (fstest's exit code at the step SSBU_FS_CRASH_AT names)
 
 
-def build(folder):
+def build(folder, dirsync=False):
+    """fstest; `dirsync` (POSIX): with tools/dev/fstest_dirsync.h, whose SSBU_FS_DIRSYNC makes folder flushes fail."""
     src = str(ROOT / 'tools' / 'dev' / 'fstest.c')
     if os.name == 'nt':
         exe = os.path.join(folder, 'fstest.exe')
         cmd = [cc.CLANG, '/nologo', '/O1', *cc.LINK_FLAGS, *cc.BASE_CFLAGS, src, '/Fe' + exe, '/Fo' + os.path.join(folder, 'fstest.obj'),
                '/link', *cc.LINK_OPTIONS]
     else:
-        exe = os.path.join(folder, 'fstest')
+        exe = os.path.join(folder, 'fstest_dirsync' if dirsync else 'fstest')
         layer = ['runtime/linux/win32.c']   # (the platform layer)
         if sys.platform == 'darwin':
             layer += ['runtime/macos/memory.c', 'runtime/macos/platform.c']
         else:
             layer += ['-lpthread']
-        cmd = ['clang', '-O1', '-w', '-I', 'runtime/macos/include', '-I', 'runtime/linux/include', '-I', 'runtime', src, *layer, '-o', exe]
+        cmd = ['clang', '-O1', '-w', '-I', 'runtime/macos/include', '-I', 'runtime/linux/include', '-I', 'runtime',
+               *(['-include', 'tools/dev/fstest_dirsync.h'] if dirsync else []), src, *layer, '-o', exe]
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     if r.returncode:
         raise AssertionError('fstest.c did not build:\n' + r.stdout + r.stderr)
@@ -60,13 +62,18 @@ class SaveJournalTests(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.dir, ignore_errors=True)
 
-    def fstest(self, folder, *args, crash_at=None, strict=False):
-        env = {k: v for k, v in os.environ.items() if k not in ('SSBU_FS_CRASH_AT', 'SSBU_DATA_ROOT', 'SSBU_FS_LOCK_STRICT')}
+    def fstest(self, folder, *args, crash_at=None, dirsync=None, strict=False):
+        env = {k: v for k, v in os.environ.items() if k not in ('SSBU_FS_CRASH_AT', 'SSBU_DATA_ROOT', 'SSBU_FS_DIRSYNC', 'SSBU_FS_LOCK_STRICT')}
         if crash_at:
             env['SSBU_FS_CRASH_AT'] = str(crash_at)
         if strict:
             env['SSBU_FS_LOCK_STRICT'] = '1'
-        return subprocess.run([self.exe, folder, *args], capture_output=True, text=True, env=env, timeout=120)
+        exe = self.exe
+        if dirsync:   # (the build whose folder flushes fail)
+            if getattr(type(self), 'dirsync_exe', None) is None:
+                type(self).dirsync_exe = build(self.dir, dirsync=True)
+            exe, env['SSBU_FS_DIRSYNC'] = self.dirsync_exe, dirsync
+        return subprocess.run([exe, folder, *args], capture_output=True, text=True, env=env, timeout=120)
 
     def folder(self):
         return tempfile.mkdtemp(dir=self.dir)
@@ -163,6 +170,43 @@ class SaveJournalTests(unittest.TestCase):
         self.assertEqual(r.stdout.split()[0], 'new')
         self.assertIn('going on without it', r.stderr)
         lock.rmdir()
+
+    @unittest.skipIf(os.name == 'nt', 'Windows flushes no folder')
+    def test_folders_that_cannot_be_flushed(self):
+        """A file system on which flushing a folder fails with EINVAL (some network and FUSE ones):
+        saves work as before folders were flushed - every check, a commit, and a commit cut short
+        after it was decided finished by the next mount (which once refused every apply, for good)."""
+        r = self.fstest(self.folder(), 'checks', str(os.getpid()), dirsync='einval')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r'\d+ checks, 0 failed')
+        self.assertIn('cannot flush a folder', r.stderr)
+        folder = self.folder()
+        self.assertEqual(self.fstest(folder, 'old').returncode, 0)
+        r = self.fstest(folder, 'new', dirsync='einval')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.fstest(folder, 'verify', dirsync='einval').stdout.split()[0], 'new')
+        self.assertEqual(self.fstest(folder, 'old').returncode, 0)
+        self.assertEqual(self.fstest(folder, 'new', crash_at=3).returncode, CRASHED)
+        r = self.fstest(folder, 'verify', dirsync='einval')
+        self.assertEqual((r.returncode, r.stdout.split()[:1]), (0, ['new']), r.stdout + r.stderr)
+
+    @unittest.skipIf(os.name == 'nt', 'Windows flushes no folder')
+    def test_folder_flush_io_error(self):
+        """Flushing a folder fails with EIO: a commit fails before it is decided (the old save stays,
+        no marker); a commit decided before is not applied while the error lasts, and is once it
+        is gone."""
+        folder = self.folder()
+        self.assertEqual(self.fstest(folder, 'old').returncode, 0)
+        r = self.fstest(folder, 'new', dirsync='eio')
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('failed before it was decided', r.stderr)
+        self.assertFalse([p for p in (Path(folder) / 'save').iterdir() if p.name.endswith('.commit')])
+        self.assertEqual(self.verify(folder), 'old')
+        self.assertEqual(self.fstest(folder, 'new', crash_at=3).returncode, CRASHED)
+        r = self.fstest(folder, 'verify', dirsync='eio')
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue([p for p in (Path(folder) / 'save').iterdir() if p.name.endswith('.commit')])
+        self.assertEqual(self.verify(folder), 'new')
 
     def test_crash_while_recovering(self):
         """A commit cut short after it was decided (right after the rename, and before the marker
