@@ -406,15 +406,18 @@ static void test_tap(const u8 *pcm, u64 size) {
         u64 k = size < (u64)WAV_SECONDS * RATE * FRAME - wav_bytes ? size : (u64)WAV_SECONDS * RATE * FRAME - wav_bytes;
         fwrite(pcm, 1, (size_t)k, wav);
         wav_bytes += k;
-        /* (the sizes written now, so a game that is killed leaves a playable file) */
-        u32 data = (u32)wav_bytes, riff = data + 36;
-        u8 le[4];
-        long at = ftell(wav);
-        fseek(wav, 4, SEEK_SET); le[0] = riff & 0xFF; le[1] = riff >> 8 & 0xFF; le[2] = riff >> 16 & 0xFF; le[3] = riff >> 24; fwrite(le, 1, 4, wav);
-        fseek(wav, 40, SEEK_SET); le[0] = data & 0xFF; le[1] = data >> 8 & 0xFF; le[2] = data >> 16 & 0xFF; le[3] = data >> 24; fwrite(le, 1, 4, wav);
-        fseek(wav, at, SEEK_SET);
-        fflush(wav);
-        if (wav_bytes >= (u64)WAV_SECONDS * RATE * FRAME) { fclose(wav); wav = NULL; fprintf(stderr, "[audio] SSBU_WAV: %d s written\n", WAV_SECONDS); }
+        /* (the sizes written every 64 buffers and at the end, so a game that is killed leaves a playable file) */
+        int last = wav_bytes >= (u64)WAV_SECONDS * RATE * FRAME;
+        if (!(index & 63) || last) {
+            u32 data = (u32)wav_bytes, riff = data + 36;
+            u8 le[4];
+            long at = ftell(wav);
+            fseek(wav, 4, SEEK_SET); le[0] = riff & 0xFF; le[1] = riff >> 8 & 0xFF; le[2] = riff >> 16 & 0xFF; le[3] = riff >> 24; fwrite(le, 1, 4, wav);
+            fseek(wav, 40, SEEK_SET); le[0] = data & 0xFF; le[1] = data >> 8 & 0xFF; le[2] = data >> 16 & 0xFF; le[3] = data >> 24; fwrite(le, 1, 4, wav);
+            fseek(wav, at, SEEK_SET);
+            fflush(wav);
+        }
+        if (last) { fclose(wav); wav = NULL; fprintf(stderr, "[audio] SSBU_WAV: %d s written\n", WAV_SECONDS); }
     }
 }
 
