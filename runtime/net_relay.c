@@ -212,10 +212,65 @@ static u64 process_age_ms(void) { return rt_now_ns() / 1000000; }
  * the files the settings menu and the launcher write, where no SSBU_NET_* variable says them.
  * online_server.txt: "host:port [lobby code]" or "off"; online_name.txt: the name (one is picked
  * and kept there when it is missing); online_direct.txt: "off" for no direct connections. */
+/* online_server.txt "auto": the public lobby this PC reaches fastest (a TCP connect to each, timed; their game
+ * servers answer TCP on the same port). Lobbies are separate until federation (TODO): players on different ones
+ * don't see each other, so "auto" is a choice in the settings, not the default. */
+static const struct { const char *where, *host; } PUBLIC_LOBBIES[] = {
+    {"North America", "smash.recomps.wtf:39421"},
+    {"Europe", "opensmash-lobby.duckdns.org:39421"},
+};
+static double connect_ms(const char *hostport) {
+    char host[256], *colon;
+    snprintf(host, sizeof host, "%s", hostport);
+    if (!(colon = strrchr(host, ':'))) return -1;
+    *colon = 0;
+    struct addrinfo hints = {0}, *res = NULL;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, colon + 1, &hints, &res) || !res) return -1;
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    double ms = -1;
+    if (s != INVALID_SOCKET) {
+        u_long nb = 1;
+        ioctlsocket(s, FIONBIO, &nb);
+        LARGE_INTEGER f, t0, t1;
+        QueryPerformanceFrequency(&f);
+        QueryPerformanceCounter(&t0);
+        connect(s, res->ai_addr, (int)res->ai_addrlen);
+        fd_set w, e;
+        FD_ZERO(&w); FD_ZERO(&e); FD_SET(s, &w); FD_SET(s, &e);
+        struct timeval tv = {1, 500000};
+        if (select(0, NULL, &w, &e, &tv) == 1 && FD_ISSET(s, &w)) {
+            QueryPerformanceCounter(&t1);
+            ms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
+        }
+        closesocket(s);
+    }
+    freeaddrinfo(res);
+    return ms;
+}
+static void nearest_lobby(char *out, size_t n) {
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+    double best = -1;
+    char said[512] = "";
+    size_t l = 0;
+    for (size_t i = 0; i < sizeof PUBLIC_LOBBIES / sizeof *PUBLIC_LOBBIES; i++) {
+        double ms = connect_ms(PUBLIC_LOBBIES[i].host);
+        int w = ms >= 0 ? snprintf(said + l, sizeof said - l, "%s%s %.0f ms", l ? ", " : "", PUBLIC_LOBBIES[i].where, ms)
+                        : snprintf(said + l, sizeof said - l, "%s%s no answer", l ? ", " : "", PUBLIC_LOBBIES[i].where);
+        if (w > 0 && (size_t)w < sizeof said - l) l += (size_t)w;
+        if (ms >= 0 && (best < 0 || ms < best)) { best = ms; snprintf(out, n, "%s", PUBLIC_LOBBIES[i].host); }
+    }
+    if (best < 0) snprintf(out, n, "%s", PUBLIC_LOBBIES[0].host);
+    fprintf(stderr, "[net] the nearest public lobby: %s (%s)\n", out, said);
+}
+
 static void configure_from_files(void) {
     char line[256], host[256] = "", code[NAME_LEN + 1] = "";
     if (settings_line_read(config_path(CONFIG_ONLINE_SERVER), line, sizeof line)) sscanf(line, "%255s %32s", host, code);
     if (!host[0] || !_stricmp(host, "off")) return;
+    if (!_stricmp(host, "auto")) nearest_lobby(host, sizeof host);
     snprintf(relay_text, sizeof relay_text, "%s", host);
     if (code[0] && !getenv("SSBU_NET_ROOM")) { snprintf(room, sizeof room, "%s", code); room_named = 1; }
     if (!getenv("SSBU_NET_NAME")) {
