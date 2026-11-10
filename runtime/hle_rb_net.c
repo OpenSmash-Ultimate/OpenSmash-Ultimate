@@ -196,21 +196,25 @@ size_t rbn_hello_build(uint8_t *b, size_t cap, const RbnHello *h) {
     put64(b + 8, h->seed); put64(b + 16, h->t); put64(b + 24, h->echo); put32(b + 32, h->hold);
     return RBN_HELLO_BYTES;
 }
+#define RBN_DELAY_MAX 8
 int rbn_delay_for_rtt(double rtt_ms) {
     /* one more frame each 30 ms, rounded: at 46 ms and delay 1 the internet test rolled back every 4 frames (the
      * other player snapping about); at 48 ms and delay 2 still every 6 on the host, the joiner's pads late over its
      * Wi-Fi (the round trip, the least of 30, can't show one way being slower): 45-75 ms now gets 3. Under 15 ms (a
-     * home network) stays 1 */
+     * home network) stays 1. At most RBN_DELAY_MAX (was 5: a slow path rolled back 6-9 frames, the teleporting the
+     * owner saw, 2026-11-10) */
     int d = 1 + (int)(rtt_ms > 0 ? (rtt_ms + 15) / 30 : 0);
-    return d > 5 ? 5 : d;
+    return d > RBN_DELAY_MAX ? RBN_DELAY_MAX : d;
 }
 int rbn_online_delay_for_rtt(double rtt_ms) {
-    /* the one-way trip in frames, less one, from 2 to 4, and 1 under 15 ms (a home network). 2 at the least: at a 40 ms
+    /* the one-way trip in frames, less one, from 2 to RBN_DELAY_MAX (was 4: at 150 ms one way, delay 4 waited for pads
+     * 13-30 % of the time and rolled back 6-9 frames, catch-ups of 60-65 ms, the teleporting the owner saw; delay 7 waited
+     * once, catch-ups 22 ms - pair runs 2026-11-10), and 1 under 15 ms (a home network). 2 at the least: at a 40 ms
      * round trip, delay 1 made 1263 rollbacks in a fight, about 50 frames a second and a desync; delay 2 made 15 in two
      * fights, 60 a second, in sync */
     if (rtt_ms < 15) return 1;
     int d = (int)(rtt_ms / 2 / (1000.0 / 60) + 0.5) - 1;
-    return d < 2 ? 2 : d > 4 ? 4 : d;
+    return d < 2 ? 2 : d > RBN_DELAY_MAX ? RBN_DELAY_MAX : d;
 }
 int rbn_hello_parse(const uint8_t *b, size_t len, RbnHello *h) {
     /* (a version 1 hello, 16 bytes, is read far enough to say which version the other game speaks) */
