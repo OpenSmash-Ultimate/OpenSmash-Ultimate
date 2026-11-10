@@ -46,7 +46,7 @@
 
 static const char *const NAMES[CONFIG_FILES] = {"display.ini", "controllers.ini", "launcher.ini", "online_server.txt",
                                                 "online_name.txt", "online_direct.txt", "online_protocol.txt",
-                                                "online_rollback.txt"};
+                                                "online_rollback.txt", "online_delay.txt"};
 static char paths[CONFIG_FILES][64];
 
 /* ---- files ------------------------------------------------------------------------------- */

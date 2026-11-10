@@ -22,7 +22,8 @@ enum ConfigFile {
     CONFIG_ONLINE_NAME,     /* online_name.txt */
     CONFIG_ONLINE_DIRECT,   /* online_direct.txt */
     CONFIG_ONLINE_PROTOCOL, /* online_protocol.txt (net_relay.c: the netplay version) */
-    CONFIG_ONLINE_ROLLBACK, /* online_rollback.txt (net_relay.c: "off" turns rollback netplay's default off) */
+    CONFIG_ONLINE_ROLLBACK, /* online_rollback.txt (net_relay.c: "on" turns rollback netplay on) */
+    CONFIG_ONLINE_DELAY,    /* online_delay.txt (hle_online_delay.c: the game's own netcode's input delay, "auto" or 0-25) */
     CONFIG_FILES
 };
 
