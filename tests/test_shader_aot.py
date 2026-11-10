@@ -152,5 +152,30 @@ class RomfsImageReadErrorTests(unittest.TestCase):
             real.close()
 
 
+class DriverWarmTests(unittest.TestCase):
+    """After Prepare Shaders, the game exe's --warm-shaders pass starts in the background (AMD's driver compiles at a
+    shader's first draw): with the cache, "auto" for the card, at idle priority, in the repository."""
+
+    def test_starts_the_game_exe_with_auto(self):
+        with mock.patch.object(shader_aot, 'LINUX', False), mock.patch.object(shader_aot.os.path, 'exists', lambda p: True), \
+                mock.patch.dict(shader_aot.os.environ, {}, clear=False), mock.patch.object(shader_aot.subprocess, 'Popen') as popen:
+            shader_aot.os.environ.pop('SSBU_SHADER_WARM', None)
+            p = shader_aot.start_driver_warm('C:/tree/dump/shadercache', game='C:/repo/build/ssbu.exe')
+        self.assertIs(p, popen.return_value)
+        args, kw = popen.call_args
+        self.assertEqual(args[0], ['C:/repo/build/ssbu.exe', '--warm-shaders', 'C:/tree/dump/shadercache', 'auto'])
+        self.assertEqual(kw['cwd'], shader_aot.ROOT)
+
+    def test_nothing_without_the_exe_on_linux_or_when_turned_off(self):
+        with mock.patch.object(shader_aot.subprocess, 'Popen') as popen:
+            with mock.patch.object(shader_aot, 'LINUX', True):
+                self.assertIsNone(shader_aot.start_driver_warm('c'))
+            with mock.patch.object(shader_aot, 'LINUX', False), mock.patch.object(shader_aot.os.path, 'exists', lambda p: False):
+                self.assertIsNone(shader_aot.start_driver_warm('c'))
+            with mock.patch.object(shader_aot, 'LINUX', False), mock.patch.dict(shader_aot.os.environ, {'SSBU_SHADER_WARM': '0'}):
+                self.assertIsNone(shader_aot.start_driver_warm('c', game='x'))
+        popen.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

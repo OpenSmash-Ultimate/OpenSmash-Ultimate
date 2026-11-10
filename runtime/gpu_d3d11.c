@@ -1725,6 +1725,72 @@ static DWORD WINAPI warm_worker(void *arg) {
     return 0;
 }
 
+/* The adapter "auto" means: the first AMD card's LUID (any: the first hardware card's), 0 when there is none. */
+static u64 warm_auto_adapter(int any) {
+    u64 found = 0;
+    IDXGIFactory1 *f1;
+    if (FAILED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&f1))) return 0;
+    IDXGIAdapter1 *a;
+    for (UINT i = 0; !found && SUCCEEDED(IDXGIFactory1_EnumAdapters1(f1, i, &a)); i++) {
+        DXGI_ADAPTER_DESC1 d;
+        if (SUCCEEDED(IDXGIAdapter1_GetDesc1(a, &d)) && !(d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) && (d.VendorId == 0x1002 || any))
+            found = (u64)(u32)d.AdapterLuid.HighPart << 32 | d.AdapterLuid.LowPart;
+        IDXGIAdapter1_Release(a);
+    }
+    IDXGIFactory1_Release(f1);
+    return found;
+}
+
+/* The cache's files in the order they are drawn: the played ones first (newest first, as cache_files gives them), then
+ * the ones the shipped list names (media/shader_prewarm.txt, or beside the exe: the programs the game draws, see
+ * prewarm_queue_list), then the rest of what Prepare Shaders made. A first match needs the listed ones; drawn first,
+ * they are in the driver's cache long before the other ~50,000 are. Returns how many listed files moved up. */
+static u32 warm_order_listed(Found *files, u32 n) {
+    FILE *f = NULL;
+    char path[MAX_PATH + 64] = "";
+    DWORD k = GetModuleFileNameA(NULL, path, MAX_PATH);
+    if (k && k < MAX_PATH) {
+        char *slash = strrchr(path, '\\');
+        if (slash) { strcpy(slash + 1, "shader_prewarm.txt"); f = fopen(path, "r"); }
+    }
+    if (!f) f = fopen("media/shader_prewarm.txt", "r");
+    if (!f || !n) { if (f) fclose(f); return 0; }
+    u64 *names = NULL;
+    u32 count = 0, cap = 0;
+    char line[160], fname[200];
+    while (fgets(line, sizeof line, f)) {
+        size_t m = strcspn(line, "\r\n");
+        line[m] = 0;
+        if (!m || line[0] == '#') continue;
+        if (count == cap) {
+            u64 *more = realloc(names, sizeof *names * (cap = cap * 2 + 1024));
+            if (!more) break;
+            names = more;
+        }
+        snprintf(fname, sizeof fname, "v%u_%s.dxbc", SHADER_CACHE_VERSION, line);
+        names[count++] = name_hash(fname);
+    }
+    fclose(f);
+    u32 moved = 0;
+    Found *tmp = names && count ? malloc(sizeof *tmp * n) : NULL;
+    if (tmp) {
+        qsort(names, count, sizeof *names, by_u64);
+        u32 played = 0;
+        while (played < n && files[played].written >= SHADER_CACHE_PLAYED) played++;
+        u32 o = 0;
+        for (int pass = 0; pass < 2; pass++)   /* (stable: listed, then the others, each in cache_files' order) */
+            for (u32 i = played; i < n; i++) {
+                u64 h = name_hash(files[i].name);
+                int in = bsearch(&h, names, count, sizeof *names, by_u64) != NULL;
+                if (in == !pass) { tmp[o++] = files[i]; moved += in; }
+            }
+        memcpy(files + played, tmp, sizeof *tmp * o);
+        free(tmp);
+    }
+    free(names);
+    return moved;
+}
+
 int gfx_warm_shaders_main(const char *dir, const char *luid) {
     HANDLE one = CreateMutexA(NULL, TRUE, "Local\\ssbu-warm-shaders");   /* (one at a time) */
     if (!one || GetLastError() == ERROR_ALREADY_EXISTS) return 0;
@@ -1733,7 +1799,14 @@ int gfx_warm_shaders_main(const char *dir, const char *luid) {
     SetPriorityClass(GetCurrentProcess(), PROCESS_MODE_BACKGROUND_BEGIN);
     SetPriorityClass(GetCurrentProcess(), IDLE_PRIORITY_CLASS);
     driver_stacks();
-    u64 want = strtoull(luid, NULL, 16);
+    /* "auto" (Prepare Shaders, tools/shader_aot.py, which knows no adapter): the first AMD card, or with SSBU_SHADER_WARM
+     * set the first hardware one; none of them: nothing to do (the other drivers compile at creation, see "first draws") */
+    int any = getenv("SSBU_SHADER_WARM") && atoi(getenv("SSBU_SHADER_WARM")) > 0;
+    u64 want = !strcmp(luid, "auto") ? warm_auto_adapter(any) : strtoull(luid, NULL, 16);
+    if (!want) {
+        printf("[warm] no AMD graphics card: nothing to draw (SSBU_SHADER_WARM=1 draws with any card)\n");
+        return 0;
+    }
     WarmRun r;
     memset(&r, 0, sizeof r);
     r.dir = dir;
@@ -1762,6 +1835,7 @@ int gfx_warm_shaders_main(const char *dir, const char *luid) {
                    ((u64)fa.ftLastWriteTime.dwHighDateTime << 32 | fa.ftLastWriteTime.dwLowDateTime);
     u64 t0 = GetTickCount64();
     r.n = cache_files(dir, &r.files, 1);
+    u32 listed = warm_order_listed(r.files, r.n);
     r.done = calloc(r.n + 1, 1);
     /* what earlier runs drew, with this driver and exe */
     char path[1100], tmp[1110];
@@ -1818,9 +1892,9 @@ int gfx_warm_shaders_main(const char *dir, const char *luid) {
         if (left) snprintf(rest, sizeof rest, "%u left for after the next game%s", left, r.stop ? " (a game started)" : "");
         else snprintf(rest, sizeof rest, "all %u of the cache drawn", r.n);
         fprintf(out, "%04u-%02u-%02u %02u:%02u: %ld shaders drawn once on %s in %.1f s, %ld of them compiled there (over %.0f ms), %ld not drawn; "
-                     "%u drawn before; %s\n",
+                     "%u drawn before; %u of the shipped list put first; %s\n",
                 st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, (long)r.drawn, name, (GetTickCount64() - t0) / 1000.0, (long)r.slow,
-                WARM_SLOW_MS, (long)r.failed, before, rest);
+                WARM_SLOW_MS, (long)r.failed, before, listed, rest);
         fclose(out);
     }
     free(r.done);
