@@ -40,6 +40,11 @@ class GlslangTests(unittest.TestCase):
         lib = ctypes.WinDLL(self.dll)
         self.assertTrue(hasattr(lib, 'ssbu_hlsl_to_spirv'))
         self.assertTrue(hasattr(lib, 'ssbu_spirv_free'))
+        # (the SPIR-V cache files' names carry it: the shim's revision in the top byte, then glslang's version)
+        lib.ssbu_glslang_version.restype = ctypes.c_uint32
+        version = lib.ssbu_glslang_version()
+        self.assertGreaterEqual(version >> 24, 1)
+        self.assertNotEqual(version & 0xFFFFFF, 0)
 
     @unittest.skipUnless(PACK.exists(), 'no dump/aot/programs.pack (tools/shader_aot.py --dry makes it)')
     def test_pack_sample(self):

@@ -95,6 +95,60 @@ class CacheTests(unittest.TestCase):
                 open(os.path.join(d, name), 'w').close()
             self.assertEqual(S.cached_keys(d, 10), {VS.key, PS.key})
 
+    def test_spirv_file_names(self):
+        g = 'g1001.01100600'
+        self.assertEqual(S.spirv_file_name(VS, g), 'g1001.01100600_vs_0123456789abcdef_00000000_0000000000000000.spv')
+        self.assertEqual(S.spirv_file_name(PS, g), 'g1001.01100600_ps_fedcba9876543210_00000007_0000000000000000.spv')
+        self.assertEqual(S.parse_spirv_file_name(S.spirv_file_name(PS, g), g), PS.key)
+        self.assertEqual(S.parse_spirv_file_name(S.spirv_file_name(VS, g), g), VS.key)
+        self.assertIsNone(S.parse_spirv_file_name(S.spirv_file_name(PS, g), 'g1001.01100601'))   # another library
+        self.assertIsNone(S.parse_spirv_file_name(S.spirv_file_name(PS, g), 'g1002.01100600'))   # another version
+        self.assertIsNone(S.parse_spirv_file_name('g1001.01100600_ps_fedcba9876543210_00000007_00000000000000ab.spv', g))   # jump tables
+        self.assertIsNone(S.parse_spirv_file_name('g1001.01100600_cs_fedcba9876543210_00000000_0000000000000000.spv', g))   # compute
+        self.assertIsNone(S.parse_spirv_file_name(S.cache_file_name(PS, 10), g))
+
+    def test_with_spirv_a_key_is_cached_when_both_its_files_are_there(self):
+        g = 'g1001.01100600'
+        with tempfile.TemporaryDirectory() as d:
+            for name in (S.cache_file_name(VS, 10), S.cache_file_name(PS, 10), S.spirv_file_name(PS, g),
+                         S.spirv_file_name(VS, 'g1001.01100500'),                     # (an older library's)
+                         S.spirv_file_name(S.Key('ps', 'a' * 16, '00000001', 1), g)):  # (no DXBC beside it)
+                open(os.path.join(d, name), 'w').close()
+            self.assertEqual(S.cached_keys(d, 10, spirv=g), {PS.key})
+            self.assertEqual(S.cached_keys(d, 10), {VS.key, PS.key})
+
+    def test_an_alpha_tested_key_is_cached_under_its_salted_hash(self):
+        g = 'g1001.01100600'
+        pa = S.Key('pa', PS.hash, PS.mask, 1)
+        salted = S.Key('ps', S.alpha_file_hash(PS.hash), PS.mask, 1)
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, S.cache_file_name(salted, 10)), 'w').close()
+            self.assertTrue(S.cached(pa, S.cached_keys(d, 10)))
+            self.assertFalse(S.cached(pa, S.cached_keys(d, 10, spirv=g)))
+            open(os.path.join(d, S.spirv_file_name(salted, g)), 'w').close()
+            self.assertTrue(S.cached(pa, S.cached_keys(d, 10, spirv=g)))
+
+    def test_the_tool_is_asked_for_spirv_only_when_it_can_make_it(self):
+        was = S.SPIRV
+        try:
+            S.SPIRV = None
+            self.assertEqual(S.tool_command('t.exe', 'pack', 'cache', '--serve'), ['t.exe', 'pack', 'cache', '--serve'])
+            S.SPIRV = 'g1001.01100600'
+            self.assertEqual(S.tool_command('t.exe', 'pack', 'cache', '0', '4'), ['t.exe', 'pack', 'cache', '0', '4', '--spirv'])
+        finally:
+            S.SPIRV = was
+
+    def test_no_spirv_when_it_is_turned_off(self):
+        was = os.environ.get('SSBU_AOT_SPIRV')
+        os.environ['SSBU_AOT_SPIRV'] = '0'
+        try:
+            self.assertIsNone(S.spirv_names('no such tool.exe', log=lambda *_: None))
+        finally:
+            if was is None:
+                del os.environ['SSBU_AOT_SPIRV']
+            else:
+                os.environ['SSBU_AOT_SPIRV'] = was
+
 
 class TimesTests(unittest.TestCase):
     def test_missing_file_is_empty(self):
@@ -144,6 +198,10 @@ class WeightTests(unittest.TestCase):
         self.assertEqual(w[a.key], 1000.0)
         self.assertEqual(w[b.key], 101 * 10 + 1)
         self.assertEqual(w[c.key], 102 * 10 + 1)
+
+    def test_an_alpha_tested_key_weighs_as_a_pixel_program(self):
+        pa = S.Key('pa', 'c' * 16, '00000001', 100)   # (drawn_keys.txt's kind: it stopped the queue with a KeyError)
+        self.assertAlmostEqual(S.weights([pa], {})[pa.key], 100 * S.MS_PER_BYTE['ps'] + 1)
 
     def test_without_any_time_the_kinds_have_their_own_rate(self):
         v, = keys(1, 'vs', 'a')

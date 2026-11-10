@@ -288,6 +288,9 @@ def build_tool(exe):
     headers = [os.path.join(ROOT, "runtime", n) for n in ("host.h", "gpu_shader.h", "gpu_shader_cache.h")]
     if LINUX:
         sources.append(os.path.join(ROOT, "runtime", "linux", "d3dcompile_vkd3d.c"))
+    else:   # (--spirv: the Vulkan back end's translator, through ssbu_glslang.dll beside the tool)
+        sources.append(os.path.join(ROOT, "runtime", "gpu_spirv.c"))
+        headers.append(os.path.join(ROOT, "runtime", "gpu_spirv.h"))
     if os.path.exists(exe) and os.path.getmtime(exe) > max(os.path.getmtime(p) for p in sources + headers):
         return
     os.makedirs(os.path.dirname(exe), exist_ok=True)
@@ -299,6 +302,34 @@ def build_tool(exe):
                        capture_output=True, text=True, cwd=os.path.dirname(exe))
     if r.returncode:
         raise SystemExit("cannot build shaderaot:\n" + (r.stdout + r.stderr)[-3000:])
+
+
+SPIRV = None   # (main: the start of the SPIR-V files' names, "g<version>.<library>", when they are made too)
+
+
+def spirv_names(exe, log=print):
+    """Whether the tool can make the Vulkan back end's SPIR-V too (Windows: ssbu_glslang.dll beside it, which
+    the game's build puts in build\\ and tools/glslang_lib.py makes when deps/glslang is there): the start of
+    its files' names (shaderaot --spirv-version, "g<version>.<library>"), else None."""
+    if LINUX or os.environ.get("SSBU_AOT_SPIRV") == "0":
+        return None
+    try:
+        import glslang_lib
+        if glslang_lib.have():
+            glslang_lib.build(os.path.join(os.path.dirname(exe), glslang_lib.DLL_NAME), log=lambda *_: None)
+        r = subprocess.run([exe, "--spirv-version"], capture_output=True, text=True, timeout=60)
+    except (OSError, SystemExit, subprocess.SubprocessError, ImportError):
+        return None
+    m = re.fullmatch(r"g\d+\.[0-9a-f]{8}", r.stdout.strip())
+    if r.returncode or not m:
+        return None
+    log("the Vulkan renderer's shaders (SPIR-V) are made too")
+    return m.group(0)
+
+
+def tool_command(exe, pack, cache, *more):
+    """shaderaot's command line, with --spirv when the SPIR-V is made too."""
+    return [exe, pack, cache, *more, *(["--spirv"] if SPIRV else [])]
 
 
 def build_tool_linux(exe, sources):
@@ -389,7 +420,11 @@ def main():
     ap.add_argument("--files", nargs="+", help="loose .eff/.nushdb/.arc files or folders instead of data.arc")
     ap.add_argument("--tree", default=ROOT, help="with --files: the tree whose dump/shadercache gets the files")
     ap.add_argument("--warm", action="store_true", help="with --files: date their cache files now (the start's prewarm makes them)")
+    ap.add_argument("--no-spirv", action="store_true", help="leave out the Vulkan renderer's SPIR-V files (Windows makes them "
+                    "when ssbu_glslang.dll is there; SSBU_AOT_SPIRV=0 does the same)")
     a = ap.parse_args()
+    if a.no_spirv:
+        os.environ["SSBU_AOT_SPIRV"] = "0"
     if a.files:
         return main_files(a)
     tree = ROOT
@@ -420,6 +455,8 @@ def main():
     write_pack(programs, pack)
     exe = os.path.join(ROOT, "build-linux", "shaderaot") if LINUX else os.path.join(ROOT, "build", "shaderaot.exe")
     build_tool(exe)
+    global SPIRV
+    SPIRV = spirv_names(exe)
     cache = os.path.join(tree, "dump", "shadercache")
     os.makedirs(cache, exist_ok=True)
     marker = os.path.join(cache, "complete.txt")   # (the launcher: every shader compiled once)
@@ -459,6 +496,8 @@ def main_files(a):
     write_pack(programs, pack)
     exe = os.path.join(ROOT, "build-linux", "shaderaot") if LINUX else os.path.join(ROOT, "build", "shaderaot.exe")
     build_tool(exe)
+    global SPIRV
+    SPIRV = spirv_names(exe)
     cache = os.path.join(a.tree, "dump", "shadercache")
     os.makedirs(cache, exist_ok=True)
     try:
@@ -503,7 +542,7 @@ STOPPED = "stopped: what is done stays done; run this again to carry on"
 def run_parts(exe, pack, cache, jobs):
     """The older way: N processes, each translating every vertex program and compiling the keys
     that are its by hash (shaderaot <part> <parts>)."""
-    procs = [subprocess.Popen([exe, pack, cache, str(i), str(jobs)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+    procs = [subprocess.Popen(tool_command(exe, pack, cache, str(i), str(jobs)), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                               text=True, **low_priority()) for i in range(jobs)]
     print(f"compiling with {jobs} processes at {PRIORITY_SAID} priority (stop it with " + ("Ctrl+C" if LINUX else "closing this window") + ": "
           "what is done stays done)", flush=True)
@@ -526,7 +565,7 @@ def run_queue(exe, pack, cache, jobs, dry):
     if drawn:
         print(f"{len(drawn):,} more keys the game compiled at a first draw ({DRAWN_KEYS})", flush=True)
     keys = keys + drawn
-    have = cached_keys(cache)
+    have = cached_keys(cache, spirv=SPIRV)
     todo = [k for k in keys if not cached(k, have)]
     if dry:
         print(f"the cache has {len(have)} vertex/pixel keys; {len(have & {k.key for k in keys})} of them are among the {len(keys)} found here"
@@ -649,15 +688,32 @@ def cache_file_name(key, version):
     return f"v{version}_{key.kind}_{key.hash}_{key.mask or '00000000'}_{'0' * 16}.dxbc"
 
 
-def cached_keys(cache, version=None):
-    """The keys of this version's files in the cache folder."""
+def cached_keys(cache, version=None, spirv=None):
+    """The keys of this version's files in the cache folder; with `spirv` (the start of the SPIR-V files'
+    names: spirv_names), the keys that have that file as well."""
     version = cache_version() if version is None else version
-    have = set()
+    have, have_spirv = set(), set()
     for name in os.listdir(cache):
         k = parse_cache_file_name(name, version)
         if k:
             have.add(k)
-    return have
+        elif spirv:
+            k = parse_spirv_file_name(name, spirv)
+            if k:
+                have_spirv.add(k)
+    return have & have_spirv if spirv else have
+
+
+def spirv_file_name(key, spirv):
+    """The SPIR-V file of a key (runtime/gpu_shader_cache.h's shader_cache_file_spv: jump-table hash 0)."""
+    return f"{spirv}_{key.kind}_{key.hash}_{key.mask or '00000000'}_{'0' * 16}.spv"
+
+
+def parse_spirv_file_name(name, spirv):
+    parts = name[:-4].split("_") if name.endswith(".spv") else []
+    if len(parts) == 5 and parts[0] == spirv and parts[1] in ("vs", "ps") and parts[4] == "0" * 16:
+        return key_of(parts[1], parts[2], parts[3])
+    return None
 
 
 def parse_cache_file_name(name, version):
@@ -710,7 +766,7 @@ def weights(keys, times):
         timed = [(times[k.key], k.size) for k in keys if k.kind == kind and k.key in times and k.size > 0]
         if timed:
             rate[kind] = sum(ms for ms, _size in timed) / sum(size for _ms, size in timed)
-    return {k.key: float(times[k.key]) if k.key in times else k.size * rate[k.kind] + 1.0 for k in keys}
+    return {k.key: float(times[k.key]) if k.key in times else k.size * rate.get(k.kind, rate["ps"]) + 1.0 for k in keys}   # ("pa": a pixel program)
 
 
 def order(keys, times):
@@ -740,7 +796,7 @@ class Worker:
 
     def _drain_stderr(self):   # (the compiler's own chatter would fill the pipe and stop the worker)
         for line in self.proc.stderr:
-            if ("shader compiler failed" in line or "could not be written" in line) and len(self.errors) < 50:
+            if ("shader compiler failed" in line or "glslang failed" in line or "could not be written" in line) and len(self.errors) < 50:
                 self.errors.append(line.rstrip())
 
     def send(self, key):
@@ -808,7 +864,7 @@ def serve(exe, pack, cache, todo, jobs, times, show, every=1.0, popen=None, out=
     KeyboardInterrupt lands in the main thread alone, and twice when pressed twice) cannot cut
     short: the last save is waited for before the interrupt goes on. Returns the outcomes counted."""
     out = out or sys.stdout
-    popen = popen or (lambda: subprocess.Popen([exe, pack, cache, "--serve"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    popen = popen or (lambda: subprocess.Popen(tool_command(exe, pack, cache, "--serve"), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                                stderr=subprocess.PIPE, text=True, bufsize=1, **low_priority()))
     q = queue.Queue()
     for k in todo:
@@ -995,7 +1051,7 @@ def summary(totals):
     """One line of what was done, from the outcomes counted (serve(), totals_from_parts())."""
     t = collections.Counter(totals)
     text = (f"{t['keys']:,} shaders: {t['compiled']:,} compiled, {t['existing']:,} already there, "
-            f"{t['tables']:,} left out (jump tables), {t['failed']:,} that fxc could not compile, "
+            f"{t['tables']:,} left out (jump tables), {t['failed']:,} that {'fxc or glslang' if SPIRV else 'fxc'} could not compile, "
             f"{t['untranslated']:,} not translated")
     extra = {k: v for k, v in t.items() if v and k in ("missing", "died")}
     if extra:

@@ -120,6 +120,7 @@ typedef int (*HlslToSpirv)(int stage, const char *hlsl, unsigned **words, size_t
 typedef void (*SpirvWordsFree)(unsigned *words);
 static HlslToSpirv glslang_compile;
 static SpirvWordsFree glslang_free;
+static unsigned glslang_version;
 static char glslang_why[300];
 static INIT_ONCE glslang_once = INIT_ONCE_STATIC_INIT;
 
@@ -144,7 +145,10 @@ static BOOL CALLBACK glslang_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
     if (!glslang_compile || !glslang_free) {
         glslang_compile = NULL;
         snprintf(glslang_why, sizeof glslang_why, "ssbu_glslang.dll is not this program's (its functions are missing)");
+        return TRUE;
     }
+    unsigned (*version)(void) = (unsigned (*)(void))(void (*)(void))GetProcAddress(m, "ssbu_glslang_version");
+    if (version) glslang_version = version();   /* (a DLL from before it had one: 0) */
     return TRUE;
 }
 
@@ -153,6 +157,8 @@ int spirv_have_glslang(char *err, size_t err_size) {
     if (!glslang_compile && err_size) snprintf(err, err_size, "%s", glslang_why);
     return glslang_compile != NULL;
 }
+
+unsigned spirv_glslang_version(void) { return spirv_have_glslang(NULL, 0) ? glslang_version : 0; }
 
 int spirv_from_hlsl(const char *hlsl, int stage, SpirvCode *out, char *err, size_t err_size) {
     out->code = NULL;
@@ -181,6 +187,8 @@ int spirv_have_glslang(char *err, size_t err_size) {
     if (err_size) snprintf(err, err_size, "glslang's library is made for Windows only");
     return 0;
 }
+
+unsigned spirv_glslang_version(void) { return 0; }
 
 int spirv_from_hlsl(const char *hlsl, int stage, SpirvCode *out, char *err, size_t err_size) {
     (void)hlsl; (void)stage;
