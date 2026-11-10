@@ -710,11 +710,15 @@ static void sm_streaks(void) {
 static u64 *sm_dirty;
 /* ---- GPU memory: the nvmap allocations (hle_nv.c) ----
  * Command buffers, constant and vertex data, textures: what the game writes there each frame the GPU reads, and the fight
- * never reads back. In a fight those pages are left out of saves and loads (not asked about, not compared, not copied):
- * two games kept equal fight hashes over whole fights so. SSBU_RB_SKIP_GPU=0: in, counted in the SAVE lines. */
+ * never reads back. SSBU_RB_SKIP_GPU=1 (experimental, off): in a fight those pages are left out of saves and loads (not
+ * asked about, not compared, not copied). Fight hashes stayed equal over whole fights so, but 3 fights of 7 hung after a
+ * rollback, the game's main thread spinning in the SDK (sdk+0x427010 -> 0x3ce7d0: NVN), also with the semaphores' pages
+ * kept in (gpu_written_in): the CPU's own data in the GPU's memory is state too. Off: in, counted in the SAVE lines. */
 static int skip_gpu = -1;
 static u64 *sm_gpu;                    /* a bit per alias page: in an nvmap allocation */
 static u64 *sm_skip;                   /* a bit per alias page: left out (the GPU's with SSBU_RB_SKIP_GPU=1, SSBU_RB_SKIP's ranges) */
+static u64 *sm_gpuw;                   /* a bit per alias page: the GPU thread wrote it (semaphores, reports, uploads): kept in */
+static u64 gpuw_cursor;               /* (the GPU log's runs read so far) */
 static u64 (*gpu_rng)[2]; static u32 ngpu_rng;   /* every allocation, sorted and merged (guest addresses) */
 static long gpu_gen_seen = -1;
 extern volatile long nv_rb_gen;
@@ -723,7 +727,7 @@ static int rng_cmp(const void *a, const void *b) { u64 x = ((const u64 *)a)[0], 
 extern int rb_save_home_only;   /* (below: run-ahead's saves; their states keep the GPU's memory, as before) */
 static void gpu_set_refresh(void) {
     static int skip_env = -1;
-    if (skip_env < 0) { const char *e = getenv("SSBU_RB_SKIP_GPU"); skip_env = !(e && *e == '0'); }
+    if (skip_env < 0) { const char *e = getenv("SSBU_RB_SKIP_GPU"); skip_env = e && *e == '1'; }
     int want = skip_env && !rb_save_home_only;
     if (want != skip_gpu) { skip_gpu = want; gpu_gen_seen = -1; }
     if (gpu_gen_seen == nv_rb_gen && gpu_rng) return;
@@ -750,7 +754,10 @@ static void gpu_set_refresh(void) {
         }
     /* SSBU_RB_SKIP=<lo>-<hi>[,...]: guest ranges of the alias area left out too (hex; the state map's experiments) */
     memset(sm_skip, 0, SM_PAGES / 8);
-    if (skip_gpu > 0) memcpy(sm_skip, sm_gpu, SM_PAGES / 8);
+    if (skip_gpu > 0) {
+        if (!sm_gpuw) sm_gpuw = VirtualAlloc(NULL, SM_PAGES / 8, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        for (u64 i = 0; i < SM_PAGES / 64; i++) sm_skip[i] = sm_gpu[i] & ~(sm_gpuw ? sm_gpuw[i] : 0);
+    }
     const char *r = getenv("SSBU_RB_SKIP");
     while (r && *r) {
         char *e;
@@ -778,8 +785,39 @@ static int is_skip_page(const void *p) {
     if (sm_alias(p)) return sm_skip && sm_bit(sm_skip, sm_ap(p));
     return skip_gpu > 0 && is_gpu_page(p);
 }
-/* SSBU_RB_SM_CMP=1 (off by default: one samus-fox fight on Peach's Castle 64 hung with it, the game's main thread
- * spinning in the SDK, not seen without it; a save cost about the same as asking with the GPU's memory left out):
+/* (a save's sync, the GPU's memory left out) The pages of the semaphores the GPU released since the last look
+ * (gpu_rb_semaphore) are kept in from now on: the game waits on what the GPU writes there (NVN's fences and the
+ * command memory's tracking; the uploads' and constant buffers' pages, which the GPU writes too, stay out), and with those pages left out a load put the game's side back and not theirs - the main
+ * thread spun for good in the SDK (two fights). A page taken in is copied into the shadow now (its undo entry holds
+ * what the shadow had: stale for the older states, once). */
+static void gpu_written_in(void) {
+    u64 to = gpu_rb_sema_count();
+    if (skip_gpu <= 0 || !sm_gpuw || !sm_skip) { gpuw_cursor = to; return; }
+    if (to - gpuw_cursor > 4096) gpuw_cursor = to - 4096;   /* (older entries overwritten in the log) */
+    for (u64 i = gpuw_cursor; i < to; i++) {
+        u64 lo = gpu_rb_sema_at(i), hi = lo + 0x1000;
+        if (!lo) continue;
+        for (u64 g = lo; g < hi; g += 0x1000) {
+            u8 *p = (u8 *)G2H(g);
+            if (!sm_alias(p)) continue;
+            u64 a = sm_ap(p);
+            if (sm_bit(sm_gpuw, a)) continue;
+            sm_gpuw[a >> 6] |= 1ull << (a & 63);
+            if (!sm_bit(sm_skip, a)) continue;
+            sm_skip[a >> 6] &= ~(1ull << (a & 63));
+            Chunk *c = chunk_of(p, 0);
+            if (!c || !is_present(c, (u32)((p - c->base) >> 12))) continue;
+            AcquireSRWLockExclusive(&sm_lock);
+            if (sm_cold && sm_bit(sm_cold, a)) sm_open_locked(a, a + 1); else if (sm_hot) sm_hot[a >> 6] |= 1ull << (a & 63);
+            ReleaseSRWLockExclusive(&sm_lock);
+            undo_push(c, (u32)((p - c->base) >> 12), p, U_CONTENT);
+            memcpy(shadow_page(c, p), p, 0x1000);
+        }
+    }
+    gpuw_cursor = to;
+}
+/* SSBU_RB_SM_CMP=1 (experimental, off: tried only with the GPU's memory left out, where a save cost about the same as
+ * asking; the hang seen then was SSBU_RB_SKIP_GPU's):
  * the fight's hot pages are never asked about (the write watch's ~80 calls a save, 2-3 ms, one after
  * the other in the system): every hot page is compared with the shadow at each save and load, as the steady ones were,
  * and a hot page found unchanged at SSBU_RB_SM_COLD saves in a row (default 30) is made read-only again (cold) at the
@@ -898,6 +936,7 @@ static void sync(int to_shadow) {
         if (k && atoi(k) > 0) sm_cold_after = atoi(k);
     }
     if (to_shadow) for (u32 i = 0; i < nchunks; i++) memset(chunk_map[chunk_ids[i]]->pushed, 0, sizeof chunk_map[chunk_ids[i]]->pushed);
+    if (to_shadow && sm_on) gpu_written_in();
     /* the renderer's stamps first, for the alias area. SSBU_RB_STAMPS (measuring which is cheaper):
      * 1 a call per run of consecutive chunks, 2 one call from the first chunk to the last (the
      * holes too: the alias area is one reservation), 0 the two in turn, each timed. Default 1:
@@ -1475,7 +1514,7 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     double tw = now_ms();
     /* (the fight's state map with the GPU's memory left out, SSBU_RB_SKIP_GPU: the GPU writes nothing the state holds,
      * so the save neither waits for it nor copies anything again) */
-    int gpu_free = !drain_now && sm_on && skip_gpu > 0;
+    int gpu_free = 0;   /* (the GPU's written pages are in the state: waited for, as when every page was in) */
     if (!drain_now && !gpu_free) {
         gpu_queue_wait(gpu_mark);
         double tg = now_ms();
@@ -1653,7 +1692,7 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     /* (the GPU's queue may read memory a load writes, and write memory it restores: drained first. With the GPU's
      * memory left out of the states, SSBU_RB_SKIP_GPU, a load writes none of what the GPU reads or writes: the
      * queue is drained after the memory, beside it, before the host state) */
-    int drain_late = skip_gpu > 0 && sm_on && gpu_threaded();
+    int drain_late = 0;   /* (the GPU's written pages are restored too: drained first) */
     if (!drain_late) gpu_queue_drain();
     double lt_drain = now_ms();
     step("memory");

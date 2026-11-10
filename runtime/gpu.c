@@ -66,6 +66,7 @@ static void release(u64 va, u32 payload, int four_words) {
     __atomic_thread_fence(__ATOMIC_RELEASE);
     write32(va, payload);
     gfx_guest_wrote(va, four_words ? 16 : 4);
+    gpu_rb_semaphore(gpu_va_to_guest(va));
 }
 
 static void syncpoint_increment(u32 id) {
