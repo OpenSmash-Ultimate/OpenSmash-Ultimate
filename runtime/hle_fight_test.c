@@ -299,14 +299,16 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx) {
                 (unsigned long long)ld64(sel), ld32(sel + 8), ld8(GAME_ADDR(STAGE_HAZARDS)), ld8(block + 0x4c), ld32(block + 0x54));
         dm_stage(&match, P(u8, sel), P(u8, GAME_ADDR(STAGE_HAZARDS)), P(u8, block + 0x54));
     }
-    /* SSBU_SEQ2: a human player 2 plays on controller slot 2, which the sequence drives (as a controller that
-     * joined the panel: + 0x210 the controller slot, + 0x450 a human's panel; hle_rb_core.c) */
-    /* (also with a pad connected on slot 2 and no SSBU_SEQ2: a test can then play player 2 with a pad, e.g. a remap test) */
-    PadState p2pad;
-    int seq2 = input_seq2_on();
-    if (idx == 1 && ld32(st + 0x78) == 0 && (seq2 || pad_get(1, &p2pad))) {
-        st32(st + 0x210, 1); st8(st + 0x450, 1);
-        fprintf(stderr, "[fight] debug match: player 2 is human on controller slot 2 (%s)\n", seq2 ? "SSBU_SEQ2" : "the pad there");
+    /* A human player 2 plays on controller slot 2 when something drives it: SSBU_SEQ2's sequence, else a pad
+     * connected there (a remap test's scripted pad, tools/dev/fakexi.c). Set as a controller that joined the
+     * panel: + 0x210 the controller slot, + 0x450 a human's panel (hle_rb_core.c) */
+    if (idx == 1 && ld32(st + 0x78) == 0) {
+        PadState pad;
+        const char *by = input_seq2_on() ? "SSBU_SEQ2" : pad_get(1, &pad) ? "the pad connected there" : NULL;
+        if (by) {
+            st32(st + 0x210, 1); st8(st + 0x450, 1);
+            fprintf(stderr, "[fight] debug match: player 2 is human on controller slot 2 (%s)\n", by);
+        }
     }
     if (idx == 1) { memcpy(match_p2, P(u8, st), DM_STATE); match_p2_ok = 1; }
     record_was = was;
