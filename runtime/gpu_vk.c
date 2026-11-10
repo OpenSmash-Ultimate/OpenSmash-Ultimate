@@ -2905,8 +2905,7 @@ static void warm_start(void) {
     warm_list_open();
     if (!warm_nrecords) return;
     if (again) {
-        fprintf(stderr, "[vulkan] warm start: the list could not be removed (%s), %u records left unused
-", list, warm_nrecords);
+        fprintf(stderr, "[vulkan] warm start: the list could not be removed (%s), %u records left unused\n", list, warm_nrecords);
         warm_shader_slots = 0;
         return;
     }
@@ -2927,8 +2926,7 @@ static void warm_start(void) {
     InterlockedExchange(&warm_running, (LONG)n);
     FILE *mark = fopen(warm_marker, "wb");
     if (mark) fclose(mark);
-    else fprintf(stderr, "[vulkan] warm start: no marker file (%s): one that does not finish will not be noticed
-", warm_marker);
+    else fprintf(stderr, "[vulkan] warm start: no marker file (%s): one that does not finish will not be noticed\n", warm_marker);
     for (u32 i = 0; i < n; i++) {
         HANDLE t = CreateThread(NULL, 64ull << 20, warm_main, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
         if (!t) {
