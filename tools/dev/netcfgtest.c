@@ -39,7 +39,8 @@ typedef struct Case {
 } Case;
 
 static const Case CASES[] = {
-    {"public lobby from the file", "# the lobby\nsmash.recomps.wtf:39421\n", NULL, "--online", "smash.recomps.wtf:39421", "smash"},
+    {"public lobby from the file", "# the lobby\nna\n", NULL, "--online", "smash.recomps.wtf:39421", "smash"},   /* (na pins North America: its address alone now means auto, which needs the network) */
+    {"eu pins Europe", "eu\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
     {"lobby code from the file", "smash.recomps.wtf:39421 OurCode\n", NULL, "--online", "smash.recomps.wtf:39421", "OurCode"},
     {"offline in the file", "off\n", NULL, "--online", NULL, "smash"},
     {"no file", NULL, NULL, "--online", NULL, "smash"},

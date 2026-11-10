@@ -1289,6 +1289,7 @@ namespace OpenSmash.Launcher
             _iniValues["code"] = words.Length > 1 ? words[1] : "";
             const string Public = "smash.recomps.wtf:39421";
             if (host == "" || host.Equals("off", StringComparison.OrdinalIgnoreCase)) _iniValues["lobby"] = "offline";
+            else if (host.Equals("auto", StringComparison.OrdinalIgnoreCase) || host.Equals("na", StringComparison.OrdinalIgnoreCase) || host.Equals("eu", StringComparison.OrdinalIgnoreCase)) _iniValues["lobby"] = "public";   // (auto: the nearest public lobby, the default)
             else if (host.Equals(Public, StringComparison.OrdinalIgnoreCase)) _iniValues["lobby"] = _iniValues["code"] == "" ? "public" : "private";
             else { _iniValues["lobby"] = "custom"; _iniValues["server"] = host; }
             if (!_iniValues.ContainsKey("server")) _iniValues["server"] = "";
@@ -1413,7 +1414,7 @@ namespace OpenSmash.Launcher
                 "offline" => "off",
                 "private" => Public + " " + code,
                 "custom" => (host == "" ? "127.0.0.1:39420" : host) + (code == "" ? "" : " " + code),
-                _ => Public
+                _ => "auto"   // (the nearest public lobby: Europe or North America, runtime/net_relay.c)
             };
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "window", _iniValues.GetValueOrDefault("window", "windowed"));
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "width", _iniValues.GetValueOrDefault("width", "1280"));

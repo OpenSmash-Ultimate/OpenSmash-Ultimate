@@ -207,7 +207,7 @@ static int osk_max = 32;
 
 static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol, rollback; } net;
 enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_NEAREST, NET_MODE_COUNT };
-static const char *const NET_MODES[NET_MODE_COUNT] = {"public lobby", "private lobby (a code)", "your own server", "offline",
+static const char *const NET_MODES[NET_MODE_COUNT] = {"public lobby (North America)", "private lobby (a code)", "your own server", "offline",
                                                       "this network (LAN)", "the nearest public lobby (Europe / North America)"};
 
 static void net_load(void)
@@ -221,10 +221,12 @@ static void net_load(void)
         net.mode = NET_OFFLINE;
     else if (!_stricmp(host, "lan"))
         net.mode = NET_LAN; /* (net_relay.c's LAN discovery) */
-    else if (!_stricmp(host, "auto"))
-        net.mode = NET_NEAREST; /* (net_relay.c: the public lobby with the shortest connect time) */
+    else if (!_stricmp(host, "auto") || (!code[0] && !_stricmp(host, PUBLIC_LOBBY)))
+        net.mode = NET_NEAREST; /* (net_relay.c: the public lobby with the shortest connect time; the old default line too) */
+    else if (!_stricmp(host, "na"))
+        net.mode = NET_PUBLIC;
     else if (!_stricmp(host, PUBLIC_LOBBY))
-        net.mode = code[0] ? NET_PRIVATE : NET_PUBLIC;
+        net.mode = NET_PRIVATE;
     else
     {
         net.mode = NET_CUSTOM;
@@ -250,7 +252,7 @@ static void net_save_server(void)
     else if (net.mode == NET_NEAREST)
         snprintf(line, sizeof line, "auto");
     else if (net.mode == NET_PUBLIC)
-        snprintf(line, sizeof line, "%s", PUBLIC_LOBBY);
+        snprintf(line, sizeof line, "na");   /* (the North American lobby itself: its address alone now means "auto") */
     else if (net.mode == NET_PRIVATE)
     {
         if (!net.code[0])
