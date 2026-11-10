@@ -222,7 +222,9 @@ namespace OpenSmash.Launcher
 
         string ResolvePython()
         {
-            string p = Path.Combine(_repo, "deps", "python", "python.exe");
+            string p = Path.Combine(_repo, "deps", "venv", "Scripts", "python.exe");
+            if (File.Exists(p)) return p;
+            p = Path.Combine(_repo, "deps", "python", "python.exe");
             if (File.Exists(p)) return p;
             try
             {

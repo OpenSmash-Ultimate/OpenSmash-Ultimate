@@ -126,6 +126,13 @@ else
         self.touch(".venv/Scripts/python.exe")
         self.assertEqual(self.selected(), str(bundled))
 
+    def test_installers_venv_comes_first(self):
+        venv = self.touch("deps/venv/Scripts/python.exe")
+        self.touch("deps/python/python.exe")
+        self.configure(str(self.touch("custom/python.exe")))
+        self.touch(".venv/Scripts/python.exe")
+        self.assertEqual(self.selected(), str(venv))
+
     def test_stale_configuration_falls_back_to_venv(self):
         self.configure(str(self.root / "missing.exe"))
         venv = self.touch(".venv/Scripts/python.exe")

@@ -54,7 +54,7 @@ namespace OpenSmash.Launcher
         readonly string _iniPath;
         readonly string _statePath;
         readonly string _pluginsPath;
-        readonly string _pythonExe;
+        string _pythonExe;
 
         readonly ResolutionSetting _resolutionSetting = new ResolutionSetting();
 
@@ -272,6 +272,7 @@ namespace OpenSmash.Launcher
             Shown += async (s, e) =>
             {
                 AskShadersIfNeeded();
+                await EnsureOwnPythonAsync();
                 UpdateMods();
                 ScanForNewMods();
                 _ = CheckUpdatesAtBootAsync();
@@ -625,6 +626,46 @@ namespace OpenSmash.Launcher
             return text.Length <= 180 ? text : text.Substring(0, 177) + "\u2026";
         }
 
+        // The tools' own Python (deps\venv): an install from before it has none, and one whose venv's Python was
+        // uninstalled has one that no longer runs. The installer's Python step makes it (tools\install_windowsmash.ps1
+        // -PythonOnly); a PC with deps\python (it had no Python) keeps that.
+        async Task EnsureOwnPythonAsync()
+        {
+            string venv = Path.Combine(_repo, "deps", "venv", "Scripts", "python.exe");
+            bool ok = await Task.Run(() => File.Exists(venv) ? PythonRuns(venv) : File.Exists(Path.Combine(_repo, "deps", "python", "python.exe")));
+            if (!ok) await RunPythonStepAsync("SETTING UP PYTHON");
+        }
+
+        async Task RunPythonStepAsync(string label)
+        {
+            string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
+            if (!File.Exists(script)) return;
+            SetLoad(label, -1);
+            try
+            {
+                var r = await Task.Run(() => RunPowerShellUpdate(script, "-PythonOnly"));
+                if (r.Code != 0) try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "os_update.log"), r.Output + "\n---\n"); } catch { }
+            }
+            catch { }
+            finally { ClearLoad(); }
+            _pythonExe = ModManagerProcess.FindPython(_repo, _buildDir);
+        }
+
+        static bool PythonRuns(string exe)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo { FileName = exe, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                psi.ArgumentList.Add("-c"); psi.ArgumentList.Add("import sys");
+                using var p = Process.Start(psi);
+                if (p == null) return false;
+                _ = p.StandardOutput.ReadToEndAsync(); _ = p.StandardError.ReadToEndAsync();
+                if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } return false; }
+                return p.ExitCode == 0;
+            }
+            catch { return false; }
+        }
+
         async Task CheckUpdatesAtBootAsync()
         {
             await Task.Delay(1600);
@@ -811,6 +852,7 @@ namespace OpenSmash.Launcher
                 var result = await Task.Run(() => RunPowerShellUpdate(script));
                 output = result.Output;
                 if (result.Code != 0) why = "The updater stopped (exit " + result.Code + ").";
+                else await RunPythonStepAsync("UPDATING PYTHON PACKAGES");   // (an update can need a new package)
             }
             catch (Exception ex) { why = ex.Message; }
             finally
@@ -843,7 +885,7 @@ namespace OpenSmash.Launcher
             Invalidate();
         }
 
-        static (int Code, string Output) RunPowerShellUpdate(string script)
+        static (int Code, string Output) RunPowerShellUpdate(string script, string only = "-UpdateOnly")
         {
             string root = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(script)!, ".."));
             var psi = new ProcessStartInfo
@@ -862,7 +904,7 @@ namespace OpenSmash.Launcher
             psi.ArgumentList.Add("Bypass");
             psi.ArgumentList.Add("-File");
             psi.ArgumentList.Add(script);
-            psi.ArgumentList.Add("-UpdateOnly");
+            psi.ArgumentList.Add(only);
             using var p = Process.Start(psi) ?? throw new InvalidOperationException("Could not start PowerShell.");
             var stdout = p.StandardOutput.ReadToEndAsync();
             var stderr = p.StandardError.ReadToEndAsync();
