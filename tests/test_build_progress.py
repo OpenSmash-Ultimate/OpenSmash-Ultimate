@@ -132,6 +132,16 @@ class EstimateTests(unittest.TestCase):
         b.written('b', [('b/g0000.c', 5000.0)])                # its C shows a lot more to compile
         self.assertEqual(b.status()[0], before)
 
+    def test_a_file_reported_twice_is_counted_once(self):
+        b = P.Build(4, clock=Clock())
+        b.module('a', 40000, [('a/g0000.c', 1.0), ('a/g0001.c', 1.0)])
+        b.begin('compile', 'a', b.files['a'])
+        for _ in range(2):   # (a compile reported finished again: the counter once said 2835 of 2660)
+            b.started(('a/g0000.c',))
+            b.finished(('a/g0000.c',), 1.0)
+        self.assertEqual(b.compiled, 1)
+        self.assertIn('1 of 2 files', b.label)
+
     def test_pace_goes_by_the_last_ten_minutes(self):
         clock = Clock()
         b = P.Build(1, clock=clock)
