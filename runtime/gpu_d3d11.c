@@ -3058,6 +3058,7 @@ int tex_decode_rgba8(int nvn_format, const void *src, int w, int h, uint8_t *dst
  * bands of block rows decoded on the system's thread pool at once, each band its own call of the same
  * decoder (a band's source starts at its first block row, its picture at that row's pixels). Small ones are
  * decoded as before. Returns tex_decode_rgba8's answer (0 good). */
+#ifdef _WIN32   /* (the system thread pool; elsewhere (Linux/macOS builds of this file) decoded whole) */
 typedef struct DecodeBand { int nf, w, h; const u8 *src; u8 *dst; volatile LONG *left, *failed; HANDLE done; } DecodeBand;
 static void CALLBACK decode_band(PTP_CALLBACK_INSTANCE inst, void *ctx) {
     (void)inst;
@@ -3109,6 +3110,12 @@ static int decode_rgba8_parallel(int nf, const u8 *src, int w, int h, u8 *dst, u
     }
     return failed ? -1 : 0;
 }
+#else
+static int decode_rgba8_parallel(int nf, const u8 *src, int w, int h, u8 *dst, u32 bw, u32 bh, u32 bpb) {
+    (void)bw; (void)bh; (void)bpb;
+    return tex_decode_rgba8(nf, src, w, h, dst);
+}
+#endif
 /* BC7 often cannot store alpha 0. A clear texel is then (1,1,1,1). The alpha test keeps any
  * alpha above 0 and the black is drawn (Paper Mario's sticker wheel). A real clear texel, as on
  * the stickers sheet, is alpha 0 and is thrown away. */
