@@ -1873,6 +1873,7 @@ static void put_vertex_fetch_words(Str *out) {
     static const char HEAD[] = "uint4 decode_attr(%s b, uint addr, uint fmt) {\n";
     static const char LOADS[] = "  uint4 w = b.Load4(base); uint w4 = b.Load(base + 16u);\n";
     const char *at = strstr(VERTEX_FETCH, LOADS);
+    if (!at || strncmp(VERTEX_FETCH, HEAD, sizeof HEAD - 1)) rt_fatal("VERTEX_FETCH changed: put_vertex_fetch_words no longer fits it");
     put(out, "uint4 decode_attr(uint4 w, uint w4, uint addr, uint fmt) {\n");
     Str mid = {0};
     put(&mid, "%.*s", (int)(at - VERTEX_FETCH - (sizeof HEAD - 1)), VERTEX_FETCH + sizeof HEAD - 1);

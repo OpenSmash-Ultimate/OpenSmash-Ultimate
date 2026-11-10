@@ -126,15 +126,15 @@ static INIT_ONCE glslang_once = INIT_ONCE_STATIC_INIT;
 /* The DLL beside the program (not one found elsewhere on the search path). */
 static BOOL CALLBACK glslang_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
     (void)once; (void)arg; (void)ctx;
-    char path[MAX_PATH + 32];
-    DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
-    if (!n || n >= MAX_PATH) { snprintf(glslang_why, sizeof glslang_why, "the program's folder is unknown"); return TRUE; }
-    char *slash = strrchr(path, '\\');
-    snprintf(slash ? slash + 1 : path, sizeof path - (size_t)(slash ? slash + 1 - path : 0), "ssbu_glslang.dll");
-    HMODULE m = LoadLibraryExA(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    wchar_t path[4096];   /* (wide: a folder named outside the system's code page) */
+    DWORD n = GetModuleFileNameW(NULL, path, 4000);
+    if (!n || n >= 4000) { snprintf(glslang_why, sizeof glslang_why, "the program's folder is unknown"); return TRUE; }
+    wchar_t *slash = wcsrchr(path, L'\\');
+    wcscpy(slash ? slash + 1 : path, L"ssbu_glslang.dll");
+    HMODULE m = LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!m) {
         DWORD e = GetLastError();
-        snprintf(glslang_why, sizeof glslang_why, e == ERROR_MOD_NOT_FOUND && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES
+        snprintf(glslang_why, sizeof glslang_why, e == ERROR_MOD_NOT_FOUND && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES
                  ? "ssbu_glslang.dll needs the Visual C++ runtime (vcruntime140.dll, msvcp140.dll), which this PC lacks"
                  : "no ssbu_glslang.dll beside the program (tools/glslang_lib.py makes it; error %lu)", (unsigned long)e);
         return TRUE;

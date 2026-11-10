@@ -115,17 +115,22 @@ def build(dll, log=print):
     os.makedirs(obj_dir, exist_ok=True)
     flags = ["/nologo", "/MD", "/O2", "/LD", "-w", *cc.LINK_FLAGS,   # (LINK_FLAGS: lld, and deps\msvc's root)
              "/I", INCLUDE, "/Fo" + obj_dir + os.sep]
-    if os.path.isfile(dll):   # (a running game holds it open: renamed, which Windows allows, then made anew)
-        old = dll + ".old"
-        try:
-            if os.path.isfile(old):
-                os.remove(old)
-            os.replace(dll, old)
-            os.remove(old)
-        except OSError:
-            pass
-    cmd = [cc.CLANG, *flags, SHIM, "/Fe" + dll, "/link", *cc.LINK_OPTIONS, "/LIBPATH:" + LIBDIR, *LIBS]
+    new = dll[:-4] + ".new.dll"   # (made beside it, then put in its place: a failed link leaves the old one)
+    cmd = [cc.CLANG, *flags, SHIM, "/Fe" + new, "/link", *cc.LINK_OPTIONS, "/LIBPATH:" + LIBDIR, *LIBS]
     r = subprocess.run(cmd, capture_output=True, text=True)
+    if not r.returncode and os.path.isfile(new):
+        try:
+            os.replace(new, dll)
+        except OSError:   # (a running game holds it open: renamed aside, which Windows allows, then replaced)
+            old = dll + ".old"
+            try:
+                if os.path.isfile(old):
+                    os.remove(old)
+                os.replace(dll, old)
+                os.replace(new, dll)
+            except OSError as e:
+                log(f"  {DLL_NAME} could not be replaced ({e}): the old one stays")
+                return False
     if r.returncode or not os.path.isfile(dll):
         text = (r.stdout + r.stderr)[-2000:]
         hint = ""
@@ -134,9 +139,12 @@ def build(dll, log=print):
                     "Run tools\\msvc_deps.py again, or build with Visual Studio's Build Tools.)")
         log(f"  ssbu_glslang.dll could not be built: Vulkan will have no shader translator.\n{text}{hint}")
         return False
-    for leftover in (dll[:-4] + ".lib", dll[:-4] + ".exp"):
-        if os.path.isfile(leftover):
-            os.remove(leftover)
+    for leftover in (new[:-4] + ".lib", new[:-4] + ".exp", dll + ".old"):
+        try:
+            if os.path.isfile(leftover):
+                os.remove(leftover)
+        except OSError:
+            pass
     log(f"  {DLL_NAME}: {os.path.relpath(dll, ROOT) if dll.startswith(ROOT) else dll}")
     return True
 
@@ -145,10 +153,10 @@ def ensure(dll, zip_path=None, log=print):
     """fetch() and build(), for tools/build_game.py: False (said) when either fails."""
     try:
         fetch(zip_path, log)
-    except SystemExit as e:
-        log(f"  glslang could not be fetched ({e}): Vulkan will have no shader translator")
+        return build(dll, log)
+    except (SystemExit, Exception) as e:   # (never fatal to the game's build: Direct3D 11 draws without it)
+        log(f"  glslang could not be set up ({e}): Vulkan will have no shader translator")
         return False
-    return build(dll, log)
 
 
 def main():

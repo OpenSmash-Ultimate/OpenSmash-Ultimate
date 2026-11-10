@@ -1644,6 +1644,7 @@ typedef struct VShader {
     VkShaderModule module;
     VkDescriptorUpdateTemplate tmpl;   /* (stage_set's writes for this program, made at its first set; 0 with tmpl_failed: none) */
     int tmpl_failed;
+    int glslang;        /* its SPIR-V is glslang's: SV_VertexID is the vertex index itself (see vk_draw) */
     char name[64];
     ShaderInfo info;
 } VShader;
@@ -1876,6 +1877,7 @@ static VShader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding
     snprintf(s->name, sizeof s->name, "%s_%016llx%s", stage == SHADER_VERTEX ? "vs" : stage == SHADER_PIXEL ? "ps" : "cs", program_hash,
              alpha_tested ? "_alphatest" : "");
     int glslang = glslang_for(stage);   /* (its own dialect of the HLSL: gpu_shader.h) */
+    s->glslang = glslang;
     char *hlsl = glslang ? (alpha_tested ? shader_translate_alpha_tested(SHADER_HLSL_GLSLANG, p, size, vs_outputs, &s->info, read_cbuf_word, &src)
                                          : shader_translate(SHADER_HLSL_GLSLANG, p, size, stage, vs_outputs, local, shared, &s->info, read_cbuf_word, &src))
                : stage == SHADER_COMPUTE ? shader_hlsl_cs(p, size, local, shared, &s->info, read_cbuf_word, &src)
@@ -3139,8 +3141,11 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
             vkCmdBindIndexBuffer(c, ibuf, ioff, itype);
             bound.ibuf = ibuf; bound.ioff = ioff; bound.itype = itype;
         }
-        vkCmdDrawIndexed(c, regs[M_DRAW_INDEX_COUNT], 1, 0, (int32_t)regs[M_GLOBAL_BASE_VERTEX], 0);
-    } else vkCmdDraw(c, regs[M_VERTEX_ARRAY_COUNT], 1, regs[M_VERTEX_ARRAY_START], 0);
+        vkCmdDrawIndexed(c, regs[M_DRAW_INDEX_COUNT], 1, 0, vs->glslang ? 0 : (int32_t)regs[M_GLOBAL_BASE_VERTEX], 0);
+    } else vkCmdDraw(c, regs[M_VERTEX_ARRAY_COUNT], 1, vs->glslang ? 0 : regs[M_VERTEX_ARRAY_START], 0);
+    /* (Direct3D's SV_VertexID leaves out the base vertex and the first vertex - vkd3d-shader's SPIR-V reads it as
+     * VertexIndex - BaseVertex - while glslang's is VertexIndex: for its programs the draw gives no offset, as the
+     * vertices are pulled by the program, not by the input assembler, so the offset only ever showed in the index) */
     PHASE(7);
     vk_stat_drawn++;
     leave();

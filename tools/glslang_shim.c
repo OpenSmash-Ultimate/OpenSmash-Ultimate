@@ -108,7 +108,7 @@ __declspec(dllexport) int ssbu_hlsl_to_spirv(int stage, const char *hlsl, uint32
             uint32_t op = (*words)[i] & 0xFFFF, len = (*words)[i] >> 16;
             if (!len || i + len > n) break;
             if (op == 25 && len >= 9 && (*words)[i + 3] == 5 && (*words)[i + 7] == 1) (*words)[i + 8] = 0;   /* Dim Buffer, Sampled 1 */
-            if (op == 11 && len >= 3 && !memcmp(&(*words)[i + 2], "GLSL.std.450", 13)) glsl_std = (*words)[i + 1];   /* OpExtInstImport */
+            if (op == 11 && len >= 6 && !memcmp(&(*words)[i + 2], "GLSL.std.450", 13)) glsl_std = (*words)[i + 1];   /* OpExtInstImport */
             if (op == 12 && len >= 5 && glsl_std && (*words)[i + 3] == glsl_std) {   /* OpExtInst type result set instruction */
                 uint32_t *inst = &(*words)[i + 4];
                 if (*inst == 37) *inst = 79;        /* FMin -> NMin */
