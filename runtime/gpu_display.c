@@ -773,6 +773,14 @@ void display_speed_tick(void) {
     }
 }
 
+void display_loading_note(const char *note) {
+#ifdef _WIN32
+    la_note(note);
+#else
+    (void)note;
+#endif
+}
+
 /* (both renderers, just before each present: the loading animation stops at the first) */
 void display_before_present(void) {
 #ifdef _WIN32

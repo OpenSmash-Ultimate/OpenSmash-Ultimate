@@ -398,6 +398,7 @@ static const char DECODE_HLSL[] =
 
 static void start_compilers(void);                 /* (see "shaders") */
 static DWORD WINAPI prewarm_main(void *unused);
+static volatile LONG prewarm_listed = 2;   /* 0 listing the cache (prewarm_main), 1 queued, 2 none: the first present waits for 0 and 1 (prewarm_gate) */
 static int warm_mode;                              /* (see "first draws") 0 off, 1 the warm after the game, 2 also at start */
 static LUID warm_adapter;
 static void warm_start(void);
@@ -805,7 +806,11 @@ static BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *c) {
      * behind them (5,948 shaders: 600 CPU-seconds, no frame for over 30 s). So under DXVK it is
      * off unless SSBU_SHADER_PREWARM=1. */
     const char *prewarm = getenv("SSBU_SHADER_PREWARM");
-    if (prewarm ? atoi(prewarm) != 0 : !on_dxvk()) CloseHandle(CreateThread(NULL, 0, prewarm_main, NULL, 0, NULL));
+    if (prewarm ? atoi(prewarm) != 0 : !on_dxvk()) {
+        prewarm_listed = 0;
+        HANDLE t = CreateThread(NULL, 0, prewarm_main, NULL, 0, NULL);
+        if (t) CloseHandle(t); else prewarm_listed = 2;
+    }
     else if (!prewarm) fprintf(stderr, "[gfx] prewarm: off under DXVK (SSBU_SHADER_PREWARM=1 turns it on)\n");
 #ifdef _WIN32
     game_mutex = CreateMutexA(NULL, FALSE, WARM_GAME);
@@ -1106,16 +1111,19 @@ static void *prewarm_take(const Shader *s) {
 }
 
 /* How many compiler threads make prewarm programs at once. Every one of them while the game starts
- * (PREWARM_FULL_MS: logos, the first loads), then prewarm_after: where the driver compiles each program at every
+ * (PREWARM_FULL_MS: logos, the first loads) and whenever no fight is on (menus, fighter select, loads, results:
+ * game_fight_on), and prewarm_after during a fight: where the driver compiles each program at every
  * start (25 ms each on a player's RTX 2060, 12,000 programs: five minutes on 4 threads, well into the first matches)
  * the threads took the processor and the driver from the game's own frames, which dropped and hitched (owner's report
  * 2026-11-10). SSBU_SHADER_PREWARM_THREADS sets prewarm_after (0: the prewarm stops there; what is left loads at
  * first use). */
 #define PREWARM_FULL_MS 30000
+int game_fight_on(void);   /* (hle_fight_test.c) */
 static LONG prewarm_after = 1;
 static LONG prewarm_running;   /* (under jobs_lock) */
+static volatile LONG prewarm_waiting;   /* (prewarm_gate: the first present waits for the prewarm) */
 static int prewarm_room(void) {   /* (under jobs_lock) */
-    return GetTickCount64() - prewarm_t0 < PREWARM_FULL_MS || prewarm_running < prewarm_after;
+    return prewarm_waiting || GetTickCount64() - prewarm_t0 < PREWARM_FULL_MS || !game_fight_on() || prewarm_running < prewarm_after;
 }
 static u32 dxbc_outputs(const u8 *code, size_t size);   /* (see "first draws") */
 
@@ -1314,7 +1322,12 @@ static int prewarm_queue_file(const char *fname, Shader **head, Shader **tail, P
     u64 hash, tables;
     u32 vs_outputs;
     int stage = cache_name(fname, &hash, &vs_outputs, &tables);
-    if (stage < 0 || *queued >= PREWARM_SLOTS / 2) return 0;
+    if (stage < 0) return 0;
+    if (*queued >= PREWARM_SLOTS / 2) {
+        static int said;
+        if (!said++) fprintf(stderr, "[gfx] prewarm: the queue is full at %u programs; the rest load at first use\n", *queued);
+        return 0;
+    }
     Shader *s = calloc(1, sizeof *s);
     if (!s) return 0;
     s->hash = hash; s->stage = stage; s->vs_outputs = vs_outputs; s->table_hash = tables;
@@ -1333,11 +1346,11 @@ static int prewarm_queue_file(const char *fname, Shader **head, Shader **tail, P
 
 /* (prewarm_main) the shipped list's programs whose files are in this cache, after the played ones: beside the exe,
  * else media\ (the working folder: the repository). *order grows to hold them; returns how many were queued, and in
- * *listed how many the list names. The list only fills the queue up to PREWARM_LIST_TOTAL programs: a player whose
- * cache already has that many played ones gets none (for him the list doubled the prewarm, 6,500 to 12,300 programs,
- * past its memory budget and five minutes long; nine in ten of them are never drawn in a session).
- * SSBU_SHADER_PREWARM_LIST=0: not read; a larger number is that total. */
-#define PREWARM_LIST_TOTAL 6000
+ * *listed how many the list names. Every one of them is queued: the game waits at its first present until the prewarm
+ * is done (prewarm_gate), so no program of normal play is made at its first draw, invisible that once (owner,
+ * 2026-11-10: "DEVE essere tutti"). The memory budget still stops it (SSBU_SHADER_PREWARM_MB).
+ * SSBU_SHADER_PREWARM_LIST=0: not read; another number caps the queue at that many programs. */
+#define PREWARM_LIST_TOTAL 0xFFFFFFFFu   /* (every program the list names: the first present waits for them, prewarm_gate) */
 static u32 prewarm_queue_list(Shader **head, Shader **tail, Prewarm ***order, u32 *cap, u32 *queued, u32 *listed) {
     const char *set = getenv("SSBU_SHADER_PREWARM_LIST");
     u32 total = set && *set ? (u32)strtoul(set, NULL, 10) : PREWARM_LIST_TOTAL;
@@ -1376,6 +1389,90 @@ static u32 prewarm_queue_list(Shader **head, Shader **tail, Prewarm ***order, u3
     return added;
 }
 
+void watchdog_pause(int on);   /* debug_watchdog.c */
+/* ---- the shader loading: the first present waits for the prewarm --------------------------------
+ * A program the prewarm has not made yet when the game first draws it is made then, and its draws are skipped meanwhile
+ * (an effect missing the first time, a hitch). So the game's first present waits until every program of the queue is
+ * made, with "Shaders N%" beside the loading animation, on every processor but one (the compiler threads and helpers
+ * of the gate's own, at normal priority). Owner 2026-11-10: "aggiungiamo un caricamento in modo da avere tempo di
+ * caricare le shader". SSBU_SHADER_PREWARM_WAIT=0: no wait; N: N seconds at most. */
+static DWORD WINAPI prewarm_helper(void *arg) {
+    struct Compiler *me = arg;
+    me->thread = GetCurrentThreadId();
+    SetThreadDescription(GetCurrentThread(), L"shader loading");
+    for (;;) {
+        AcquireSRWLockExclusive(&jobs_lock);
+        /* (while the cache is still being listed the queue is empty: wait for it, the gate waits too) */
+        while (prewarm_waiting && !job_queue[2].head && prewarm_listed == 0)
+            SleepConditionVariableSRW(&jobs_cv, &jobs_lock, 100, 0);
+        Shader *s = prewarm_waiting ? job_queue[2].head : NULL;
+        if (s && !(job_queue[2].head = s->next_job)) job_queue[2].tail = NULL;
+        if (s) prewarm_running++;
+        ReleaseSRWLockExclusive(&jobs_lock);
+        if (!s) return 0;
+        me->since_ms = GetTickCount64();
+        me->job = s;
+        prewarm_job(me, s);
+        me->step = STEP_IDLE;
+        me->job = NULL;
+        free(s);
+        AcquireSRWLockExclusive(&jobs_lock);
+        prewarm_running--;
+        ReleaseSRWLockExclusive(&jobs_lock);
+    }
+}
+
+static void prewarm_gate(void) {
+    const char *set = getenv("SSBU_SHADER_PREWARM_WAIT");
+    double limit_s = set && *set ? atof(set) : 0;
+    if ((set && *set && limit_s <= 0) || prewarm_listed == 2) return;
+    u64 t0 = GetTickCount64();
+    LONG done0 = prewarm_done;
+    watchdog_pause(1);   /* (debug_watchdog.c: the wait is not a freeze) */
+    InterlockedExchange(&prewarm_waiting, 1);
+    WakeAllConditionVariable(&jobs_cv);
+    static struct Compiler helpers[COMPILERS_MAX];
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    u32 want = si.dwNumberOfProcessors > 1 ? si.dwNumberOfProcessors - 1 : 1, nhelp = 0;
+    HANDLE ht[COMPILERS_MAX];
+    while (ncompilers - 1 + nhelp < want && nhelp < COMPILERS_MAX) {
+        ht[nhelp] = CreateThread(NULL, COMPILER_STACK, prewarm_helper, &helpers[nhelp], STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+        if (!ht[nhelp]) break;
+        nhelp++;
+    }
+    for (u32 i = 0; i < ncompilers; i++) {   /* (the compiler threads too, at normal priority while it waits) */
+        HANDLE t = compilers[i].thread ? OpenThread(THREAD_SET_INFORMATION, FALSE, compilers[i].thread) : NULL;
+        if (t) { SetThreadPriority(t, THREAD_PRIORITY_NORMAL); CloseHandle(t); }
+    }
+    char note[64];
+    int last = -1;
+    for (;;) {
+        LONG listed = prewarm_listed, total = prewarm_total, done = prewarm_done;
+        if (listed == 2 || (listed == 1 && done >= total)) break;
+        if (limit_s > 0 && (GetTickCount64() - t0) / 1000.0 >= limit_s) break;
+        int pct = listed == 1 && total ? (int)((long long)done * 100 / total) : 0;
+        if (pct != last) {
+            snprintf(note, sizeof note, "Shaders %d%%", pct);
+            display_loading_note(note);
+            last = pct;
+        }
+        Sleep(50);
+    }
+    InterlockedExchange(&prewarm_waiting, 0);
+    WakeAllConditionVariable(&jobs_cv);
+    for (u32 i = 0; i < nhelp; i++) CloseHandle(ht[i]);   /* (each ends after the job it is on; the game does not wait for it) */
+    for (u32 i = 0; i < ncompilers; i++) {
+        HANDLE t = compilers[i].thread ? OpenThread(THREAD_SET_INFORMATION, FALSE, compilers[i].thread) : NULL;
+        if (t) { SetThreadPriority(t, THREAD_PRIORITY_BELOW_NORMAL); CloseHandle(t); }
+    }
+    display_loading_note(NULL);
+    watchdog_pause(0);
+    fprintf(stderr, "[gfx] shader loading: the first frame waited %.1f s for %ld shaders (%ld of %ld made, %ld ready), on %u threads%s\n",
+            (GetTickCount64() - t0) / 1000.0, (long)(prewarm_done - done0), (long)prewarm_done, (long)prewarm_total, (long)prewarm_ready,
+            ncompilers - 1 + nhelp, prewarm_done < prewarm_total ? " (SSBU_SHADER_PREWARM_WAIT: the rest go on behind the game)" : "");
+}
+
 /* (a thread of its own, at start) every file of the disk cache into the prewarm queue */
 static DWORD WINAPI prewarm_main(void *unused) {
     (void)unused;
@@ -1403,15 +1500,16 @@ static DWORD WINAPI prewarm_main(void *unused) {
      * each would be made at its first draw (30-125 ms on NVIDIA, issue #227) */
     u32 listed = 0, shipped = 0;
     if (table && order) shipped = prewarm_queue_list(&head, &tail, &order, &order_cap, &queued, &listed);
-    if (!queued) { free(order); return 0; }
+    if (!queued) { free(order); InterlockedExchange(&prewarm_listed, 2); return 0; }
     prewarm_total = (LONG)queued;
+    InterlockedExchange(&prewarm_listed, 1);
     AcquireSRWLockExclusive(&jobs_lock);
     if (job_queue[2].tail) job_queue[2].tail->next_job = head; else job_queue[2].head = head;
     job_queue[2].tail = tail;
     ReleaseSRWLockExclusive(&jobs_lock);
     WakeAllConditionVariable(&jobs_cv);
-    fprintf(stderr, "[gfx] prewarm: %u shaders from the disk cache, %u more from the shipped list (%u programs played), on %u threads for %d s, then %ld\n",
-            queued - shipped, shipped, listed, ncompilers - 1, PREWARM_FULL_MS / 1000, (long)prewarm_after);
+    fprintf(stderr, "[gfx] prewarm: %u shaders from the disk cache, %u more from the shipped list (%u programs played), on %u threads, %ld during a fight after the first %d s\n",
+            queued - shipped, shipped, listed, ncompilers - 1, (long)prewarm_after, PREWARM_FULL_MS / 1000);
     if (warm_mode >= 2) warm_prewarmed(order, queued);
     free(order);
     return 0;
@@ -5525,6 +5623,11 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
     gpu_times_frame();
     LARGE_INTEGER p0, p1;
     QueryPerformanceCounter(&p0);
+    static int gated;
+    if (!gated) {   /* (the first present: every shader is made first, prewarm_gate) */
+        gated = 1;
+        prewarm_gate();
+    }
     display_before_present();   /* (gpu_display.c: the loading animation stops) */
     hr = IDXGISwapChain1_Present(swapchain, 0, display_present_flags());   /* (blocks while the GPU is frames behind) */
 #ifdef _WIN32
