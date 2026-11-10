@@ -2840,6 +2840,11 @@ static WarmShader *warm_ready(const WarmKey *k) {
     return w->state == WARM_READY ? w : NULL;
 }
 
+/* "<list>.warming": there while the warm threads work. One found at a start means the last warm start did not
+ * finish - the driver crashed on a record, or the game was closed in those seconds - so the list is started
+ * again rather than given to the driver once more: one start without warmed pipelines, not a crash at each. */
+static char warm_marker[1200];
+
 static DWORD WINAPI warm_main(void *unused) {
     (void)unused;
     for (;;) {
@@ -2856,30 +2861,45 @@ static DWORD WINAPI warm_main(void *unused) {
         key.vs = vs->module;
         key.ps = ps ? ps->module : VK_NULL_HANDLE;
         u32 h = desc_hash(&key, sizeof key) & (PIPE_SLOTS - 1);
-        Pipe *e = NULL;
-        int found = 0;
+        Pipe *e = calloc(1, sizeof *e);   /* (made before the lock the draws take: this thread runs below them) */
+        if (!e) { InterlockedIncrement(&warm_left); continue; }
+        e->key = key;
+        e->warm = 1;
+        int found = 0, put = 0;
         AcquireSRWLockExclusive(&pipes_lock);
         for (u32 n = 0; n < PIPE_SLOTS && pipes[h] && !found; n++, h = (h + 1) & (PIPE_SLOTS - 1))
             found = !memcmp(&pipes[h]->key, &key, sizeof key);
-        if (!found && npipes < PIPE_SLOTS / 2 && (e = calloc(1, sizeof *e)) != NULL) {   /* (room left for the game's own) */
-            e->key = key;
-            e->warm = 1;
+        if (!found && npipes < PIPE_SLOTS / 2) {   /* (room left for the game's own) */
             pipes[h] = e;
             npipes++;
+            put = 1;
         }
         ReleaseSRWLockExclusive(&pipes_lock);
-        if (e) pipe_make(e);
-        else if (!found) InterlockedIncrement(&warm_left);
+        if (put) pipe_make(e);
+        else {
+            free(e);
+            if (!found) InterlockedIncrement(&warm_left);
+        }
     }
-    if (!InterlockedDecrement(&warm_running))
+    if (!InterlockedDecrement(&warm_running)) {
+        DeleteFileA(warm_marker);
         fprintf(stderr, "[vulkan] warm start: %lld programs loaded and %lld pipelines made of %u listed in %.1f s (%ld left out%s; at %.1f s)\n",
                 (long long)vk_stat_warm_loaded, (long long)vk_stat_warm_pipelines, warm_nrecords, (rt_clock_ns() - warm_t0) / 1e9, (long)warm_left,
                 warm_stopped ? ": the memory budget, SSBU_SHADER_PREWARM_MB" : "", rt_now_ns() / 1e9);
+    }
     return 0;
 }
 
 /* The start's last step (the makers run): the list opened, and the warm threads started on it. */
 static void warm_start(void) {
+    char list[1100];
+    snprintf(list, sizeof list, "%s/vulkan_%04x_%04x.warm", cache_dir(), limits_vendor, limits_device);
+    snprintf(warm_marker, sizeof warm_marker, "%s.warming", list);
+    if (GetFileAttributesA(warm_marker) != INVALID_FILE_ATTRIBUTES) {
+        fprintf(stderr, "[vulkan] warm start: the last one did not finish (%s): the list is started again, nothing is warmed this time\n", warm_marker);
+        DeleteFileA(list);
+        DeleteFileA(warm_marker);
+    }
     warm_list_open();
     if (!warm_nrecords) return;
     if (getenv("SSBU_VK_WARM") && !atoi(getenv("SSBU_VK_WARM"))) {
@@ -2897,10 +2917,12 @@ static void warm_start(void) {
     if (n < 1) n = 1;
     if (n > 3) n = 3;
     InterlockedExchange(&warm_running, (LONG)n);
+    FILE *mark = fopen(warm_marker, "wb");
+    if (mark) fclose(mark);
     for (u32 i = 0; i < n; i++) {
         HANDLE t = CreateThread(NULL, 64ull << 20, warm_main, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
         if (!t) {
-            if (!InterlockedDecrement(&warm_running)) warm_shader_slots = 0;   /* (no thread at all: nothing is loaded) */
+            if (!InterlockedDecrement(&warm_running)) { warm_shader_slots = 0; DeleteFileA(warm_marker); }   /* (no thread at all: nothing is loaded) */
             continue;
         }
         SetThreadPriority(t, THREAD_PRIORITY_BELOW_NORMAL);
@@ -4169,7 +4191,7 @@ static void save_job(Job *j) { (void)j; pipeline_cache_save(); InterlockedExchan
 static void pipeline_cache_tick(void) {
     static u64 saved, last;
     static Job job = {NULL, save_job};
-    u64 made = vk_stat_pipelines, now = rt_now_ns();
+    u64 made = vk_stat_pipelines + (u64)vk_stat_warm_pipelines, now = rt_now_ns();   /* (the warm threads' too: a lost cache file made again) */
     if (made == saved || now - last < 60000000000ull || saving) return;   /* (a minute apart: the file is 100 MB and more) */
     saved = made;
     last = now;

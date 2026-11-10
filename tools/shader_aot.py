@@ -298,7 +298,9 @@ def build_tool(exe):
         build_tool_linux(exe, sources)
         return
     import cc
-    r = subprocess.run([cc.CLANG, "/nologo", "/O2", *cc.LINK_FLAGS, *cc.CFLAGS, *sources, "/Fe" + exe, "/link", *cc.LINK_OPTIONS, "d3dcompiler.lib"],
+    # (/U: gpu_spirv.c without its vkd3d-shader half, whose library a build that has it would need linked here)
+    r = subprocess.run([cc.CLANG, "/nologo", "/O2", *cc.LINK_FLAGS, *cc.CFLAGS, "/USSBU_HAVE_VKD3D", *sources, "/Fe" + exe, "/link", *cc.LINK_OPTIONS,
+                        "d3dcompiler.lib"],
                        capture_output=True, text=True, cwd=os.path.dirname(exe))
     if r.returncode:
         raise SystemExit("cannot build shaderaot:\n" + (r.stdout + r.stderr)[-3000:])
