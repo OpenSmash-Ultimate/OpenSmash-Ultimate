@@ -49,3 +49,26 @@ HLE_WRAP(71016cc940) {
         else fprintf(stderr, "[net] online input delay: %d frame%s, the setting (the game chose %u; call %ld)\n", want, want == 1 ? "" : "s", game, calls);
     }
 }
+
+/* FUN 0x71016d7730: the per-frame step of the same object (a state machine at this+0x62, 0..5;
+ * it calls 0x71016cc940 itself in one state) that reads the delay at this+0x41 to decide how far
+ * the local inputs run ahead of the remote ones. With our servers the setter was never seen to
+ * run, so a number chosen by hand is also applied here before every step, and the game's value
+ * and state are logged when they change (SSBU_NET_DELAY_LOG=1: every 600 calls too). */
+/* signature: 16 words, sha256 7e149cf38a92e47e */
+HLE_WRAP(71016d7730) {
+    u64 self = c->x[0];
+    static int logged_state = -1, logged_delay = -1, verbose = -1;
+    static long calls;
+    if (verbose < 0) { const char *v = getenv("SSBU_NET_DELAY_LOG"); verbose = v && v[0] == '1'; }
+    u8 state = ld8(self + 0x62), game = ld8(self + 0x41);
+    int want = online_delay_setting();
+    if (want >= 0 && want != game) st8(self + 0x41, (u8)want);
+    calls++;
+    if (state != logged_state || game != logged_delay || (verbose && calls % 600 == 0)) {
+        logged_state = state; logged_delay = game;
+        fprintf(stderr, "[net] online step: state %u, delay %u (base %u, flag %u), setting %d, call %ld\n",
+                state, game, ld8(self + 0x43), ld8(self + 0x3C), want, calls);
+    }
+    f_71016d7730_orig(c);
+}
