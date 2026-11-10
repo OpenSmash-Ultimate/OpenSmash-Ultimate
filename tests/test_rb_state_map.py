@@ -71,7 +71,7 @@ class RunAhead(unittest.TestCase):
         gpu, queue, core = src('gpu.c'), src('gpu_queue.c'), src('hle_rb_core.c')
         self.assertIn('if (!gpu_job_hidden) gfx_draw(e->regs, e->cb, e->indexed);', gpu)
         self.assertIn('if (!gpu_job_hidden) gfx_clear(e->regs, arg);', gpu)
-        self.assertIn('j->hide = j->fast && gpu_hide_fast;', queue, 'decided when the frame submits')
+        self.assertIn('j->hide = gpu_hide_fast == 2 ? rb_fast > 1 : j->fast && gpu_hide_fast;', queue, 'decided when the frame submits')
         self.assertIn('gpu_job_hidden = j->hide;', queue)
         self.assertIn('gpu_hide_fast = hide && !draw_hidden;', core, 'SSBU_RA_DRAW_HIDDEN=1 draws them')
         self.assertIn('gpu_hide_fast = 0;', core, 'off when the fight ends')
