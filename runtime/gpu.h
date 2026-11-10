@@ -34,6 +34,7 @@ void gpu_rb_wrote(u64 guest, u64 bytes);                  /* (the GPU thread's w
 u64 gpu_rb_written_count(void);                           /* runs published so far */
 void gpu_rb_semaphore(u64 guest);                         /* (a semaphore release or report: its page, logged on its own) */
 u64 gpu_rb_sema_count(void);
+int gpu_rb_is_gpu_thread(void);                           /* (this thread is the GPU thread) */
 u64 gpu_rb_sema_at(u64 i);                                /* page i of that log (guest), 0: overwritten since */
 int gpu_rb_written_at(u64 i, u64 *lo, u64 *hi);           /* run i (guest pages [lo, hi)); 0: overwritten since */
 void gpu_memory_unmapping(u64 addr, u64 size);            /* guest memory about to be decommitted (hle_nv.c) */
