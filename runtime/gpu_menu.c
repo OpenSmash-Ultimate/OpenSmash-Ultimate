@@ -918,7 +918,12 @@ static void build(void)
 #else
                 "DXVK: Direct3D 11 on Vulkan, the renderer the game is played and tested with. Vulkan: in development; until it can draw the game, "
 #endif
-                "the game checks Vulkan at its start, says what it found in its log, and draws as before.");
+                "the game checks Vulkan at its start, says what it found in its log, and draws as before."
+#ifndef SSBU_HAVE_VKD3D
+                " This build has no shader translator for Vulkan (vkd3d-shader), so Vulkan never starts: python tools/vkd3d_lib.py,"
+                " then a rebuild, adds it."
+#endif
+                );
         snprintf(r->value, sizeof r->value, "%s", renderer_name(ds.renderer));
         note_env(r, "SSBU_RENDERER");
 #endif
