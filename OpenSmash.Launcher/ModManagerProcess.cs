@@ -7,6 +7,11 @@ namespace OpenSmash.Launcher
     {
         public static string FindPython(string repo, string buildDir)
         {
+            // The installer's own Python: deps\venv, made from one on the PC with the packages in it, else
+            // deps\python on a PC that had none (tools\install_windowsmash.ps1, step 3). The venv counts only once
+            // its packages are in (the installer then writes .opensmash-ready): an offline pip leaves it empty.
+            string own = Path.Combine(repo, "deps", "venv", "Scripts", "python.exe");
+            if (File.Exists(own) && File.Exists(Path.Combine(repo, "deps", "venv", ".opensmash-ready"))) return own;
             string bundled = Path.Combine(repo, "deps", "python", "python.exe");
             if (File.Exists(bundled)) return bundled;
 

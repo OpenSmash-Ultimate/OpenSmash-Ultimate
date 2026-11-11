@@ -914,7 +914,7 @@ def build(tree, jobs, log=print, again=True):
 NOT_BUILT = ("tools/modmanager/", "tools/dev/", "tools/mods.py", "tools/os_mods.py", "tools/progress.py", "tools/std_plugins.py", "tools/csk.py", "tools/miis.py",
              "tools/unlock_all.py", "tools/install_windowsmash.ps1", "tools/update.py", "tools/arc.py", "tools/prc.py",
              "tools/msbt.py", "tools/ssbu_online_lobby.py", "tools/ssbu_relay.py", "tools/skyline.py",
-             "tools/shader_aot.py")
+             "tools/shader_aot.py", "tools/find_python.bat")
 
 
 def plugin_refresh_reason(tree):
