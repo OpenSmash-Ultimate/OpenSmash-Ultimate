@@ -3275,6 +3275,8 @@ static void panel_dump(const char *when, int idx, u64 st) {
  * and the match is left to the game's own netcode on both. Online matches of more than 2 players are left to it too. */
 int net_recent_peers(u32 *out, int max, u32 within_ms);   /* (net.h) */
 #define ONLINE_MELEE 14
+#define ARENA_MELEE 20     /* (a Battle Arena's match: set up by the ring's players' games as a Quickplay one is, its other
+                            * players' games the Pia peers of the arena's gathering; its results go back to the arena) */
 #define ONLINE_WAIT_MS 15000.0
 static int online_match;   /* (the match set up now is an Online one played with rollback) */
 static int online_lw;      /* (... and a Local Wireless room's, not a Quickplay one: online_restore) */
@@ -3364,8 +3366,8 @@ static int online_setup(u64 st) {
     u8 mode = ld8(MELEE_INFO);
     u32 ips[RBN_PLAYERS] = {0}, seen[8];
     int peers;
-    const char *what = "an Online match";
-    if (mode != ONLINE_MELEE) {
+    const char *what = mode == ARENA_MELEE ? "a Battle Arena match" : "an Online match";
+    if (mode != ONLINE_MELEE && mode != ARENA_MELEE) {
         /* (a Local Wireless room's match: set up by both games from the room's own, as an Online one is; the same
          * rollback, the room's other game the peer) */
         peers = lw_room_others(seen, 8);
@@ -3408,7 +3410,7 @@ static int online_setup(u64 st) {
      * players are local ones here. SSBU_RB_ONLINE_MODE=<n>, research: the fight set up with melee mode n instead; 0, a
      * local melee, plays alike but ends on a local results screen the Online scene never leaves) */
     {   const char *e = getenv("SSBU_RB_ONLINE_MODE"); if (e && *e) st8(MELEE_INFO, (u8)atoi(e)); }
-    online_match = 1; online_lw = mode != ONLINE_MELEE;
+    online_match = 1; online_lw = mode != ONLINE_MELEE && mode != ARENA_MELEE;
     return 1;
 }
 static u64 record_caller;

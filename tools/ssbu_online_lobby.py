@@ -124,6 +124,17 @@ class OnlineLobby(relay.Lobby):
                 return
         super().on_game(c, p, dst)
 
+    def on_rb(self, c, p, now):
+        """A rollback message: on the public code the relay passes it only to the player of a rollback match the
+        lobby made, or of a room; the players of one Online match (a Quickplay match, a Battle Arena's ring) are
+        partners too, as their game traffic is (NexServer.may_talk)."""
+        if 16 < len(p) <= relay.RB_MAX:
+            m = self.by_ip.get(struct.unpack_from(">I", p, 12)[0])
+            if (m is not None and m is not c and m.wire is not self.su and c.rb_peer is not m
+                    and self.nex.may_talk(relay.ip_text(c.ip), relay.ip_text(m.ip))):
+                c.rb_peer = m
+        super().on_rb(c, p, now)
+
     def drop(self, c, why):
         super().drop(c, why)
         self.nex.player_gone(relay.ip_text(c.ip))

@@ -122,15 +122,16 @@ The game's own **Online** menu works with WindowSmash's game server, which runs 
 
 ### Battle Arenas
 
-**Online > Smash > Battle Arenas** works with the same game server: make an arena with your own rules, find one, join it.
+**Online > Smash > Battle Arenas** works with the same game server: make an arena with your own rules, find one, join it, and play its matches in turn.
 
 > [!WARNING]
-> Battle Arenas are newer still. Tested on one PC (two games, a lobby of their own): making an arena (its rules, name and arena ID), finding it with **Advanced search**, joining it, both players on the waiting platform, each choosing a fighter. **The arena's matches don't start yet**: the ring keeps saying it is waiting for opponents.
+> Battle Arenas are newer still. Tested on one PC (two games, a lobby of their own): making an arena (its rules, name and arena ID), finding it with **Advanced search**, joining it, both players' tokens in the ring, **Start**, the match, its results, and the next match. Not tested yet: more than two players, two PCs.
 
 - **Make one:** **Create Arena**, choose the rules, **Next** (<kbd>+</kbd>), type a name, **Create Arena**. The arena ID in the top-right corner is the one the game server gave it.
 - **Find one:** **Find Arena > Advanced search** lists the open arenas with room of players with your lobby code (or none) that fit the search, the fullest first.
-- **Join:** pick it, **Join**. You see the others on the waiting platform; the fighter button by your name chooses your fighter.
-- **Not yet:** the matches in the ring, **Arena ID** search (wired, not tried from the game), friends' arenas (the game server has no friend lists), arenas with a password (not tried).
+- **Join:** pick it, **Join**. Your token waits on the waiting platform; the fighter button by your name chooses your fighter.
+- **Play:** pick up your token with the hand (<kbd>A</kbd>) and put it in the ring (<kbd>A</kbd> again, where it says **Join**). With two in the ring, **Start** (<kbd>+</kbd>) begins the match; each player confirms their fighter (<kbd>A</kbd>) before the seconds run out. Matches with two players are played with [rollback](#rollback-in-online-mode), as Quickplay's.
+- **Not yet:** **Arena ID** search (wired, not tried from the game), friends' arenas (the game server has no friend lists), arenas with a password (not tried).
 
 ### Rollback in Online mode
 
