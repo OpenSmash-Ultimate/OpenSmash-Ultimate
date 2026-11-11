@@ -39,7 +39,9 @@ class OnlineMatch(unittest.TestCase):
     def test_setup(self):
         core = src('hle_rb_core.c')
         self.assertIn('#define ONLINE_MELEE 14', core)
-        self.assertIn('if (mode != ONLINE_MELEE)', core, 'other matches are played alone')
+        self.assertIn('#define ARENA_MELEE 20', core)
+        self.assertIn('if (mode != ONLINE_MELEE && mode != ARENA_MELEE)', core,
+                      'other matches (not Quickplay or a Battle Arena) are played alone or as a room match')
         self.assertIn('peers = net_recent_peers(seen, 8, 30000);', core, 'the other game: the one Pia talks to')
         self.assertIn('if (peers != 1)', core, 'more than 2 players: the game\'s own netcode')
         self.assertIn('int own = ld32(st + 0x78) == 0 && !ld8(st + 0x451) ? 0 : 1;', core, 'player 1 is the network player or this game')
@@ -57,7 +59,8 @@ class OnlineMatch(unittest.TestCase):
         self.assertIn('online_restore();   /* (an Online match: the game\'s own set-up back for its results) */', core)
         self.assertIn('memcpy(P(u8, MELEE_INFO), online_hdr, ONLINE_HDR);', core)
         # a Local Wireless room's match: its results on rollback's set-up, every player local (#180)
-        self.assertIn('online_match = 1; online_lw = mode != ONLINE_MELEE;', core)
+        self.assertIn('online_match = 1; online_lw = mode != ONLINE_MELEE && mode != ARENA_MELEE;', core,
+                      'Quickplay and Battle Arena matches get the game set-up back; Local Wireless room matches do not')
         self.assertIn('if (online_lw) {', core)
         self.assertIn('getenv("SSBU_RB_LW_RESTORE")', core)
         self.assertIn('if (net_online) { online_forget("the results are over"); net_armed = 0; }', core,
