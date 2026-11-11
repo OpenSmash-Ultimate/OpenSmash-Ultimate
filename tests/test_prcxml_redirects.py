@@ -153,7 +153,8 @@ class RuntimeLoadsTheList(unittest.TestCase):
         src = Path(cls.tmp.name) / 'load.c'
         src.write_text(HARNESS % {'load': function_source(source, 'static void load_prcxml_redirects(')}, encoding='utf-8')
         cls.exe = Path(cls.tmp.name) / ('load.exe' if os.name == 'nt' else 'load')
-        subprocess.run([compiler, '-std=c11', '-Wall', '-Werror', '-o', str(cls.exe), str(src)], check=True)
+        crt = ['-D_CRT_SECURE_NO_WARNINGS'] if os.name == 'nt' else []   # (clang on Windows: the CRT's fopen/sscanf deprecation warnings, -Werror)
+        subprocess.run([compiler, '-std=c11', '-Wall', '-Werror', *crt, '-o', str(cls.exe), str(src)], check=True)
 
     @classmethod
     def tearDownClass(cls):
