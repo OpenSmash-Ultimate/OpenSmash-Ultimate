@@ -1614,6 +1614,26 @@ static void ui_path(Cpu *c) {
     rt_call(c, ui_path_original);
 }
 
+/* The characters mods add with a ui_chara_db.prcxml alone, on another fighter's costumes (Popple:
+ * Mario's from c24): no plugin calls the CSK Collection for them, so tools/mods.py prcxml_redirects
+ * lists them (ui_chara hash40, first costume). A character already redirected keeps its first costume. */
+static void load_prcxml_redirects(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[128];
+    while (fgets(line, sizeof line, f) && redirect_n < 64) {
+        unsigned long long id;
+        int start, known = 0;
+        if (sscanf(line, "%llx %d", &id, &start) != 2 || start < 1 || start > 255) continue;
+        id &= 0xFFFFFFFFFFull;
+        for (u32 r = 0; r < redirect_n; r++) known |= redirects[r].ui_chara == id;
+        if (known) continue;
+        redirects[redirect_n++] = (Redirect){id, 0, start};
+        LOG("redirect recorded: character %#llx uses costumes from c%02d (.prcxml)", id, start);
+    }
+    fclose(f);
+}
+
 static void fighter_setup(Cpu *c) {
     u64 rec = c->x[0];
     int entry = *P(u8, rec + 0xa7);
@@ -1722,6 +1742,9 @@ void skyline_load_plugins(Cpu *c) {
     pre_battle_original = rt_hook_function(MAIN_BASE + PRE_BATTLE, rt_native(pre_battle, "csk pre-battle"));
     fighter_setup_original = rt_hook_function(MAIN_BASE + FIGHTER_SETUP, rt_native(fighter_setup, "csk fighter set-up"));
     note_hook_target(MAIN_BASE + FIGHTER_SETUP);   /* (called directly too: hookable from the next build on) */
+    char prcxml_list[1100];
+    snprintf(prcxml_list, sizeof prcxml_list, "%s/../skyline/prcxml_redirects.txt", rt_data_dir);
+    load_prcxml_redirects(prcxml_list);
     ui_path_original = rt_hook_function(MAIN_BASE + UI_PATH, rt_native(ui_path, "csk portrait paths"));
     note_hook_target(MAIN_BASE + UI_PATH);
     /* every plugin loaded (its exports there for the others), then each main run, as Skyline does:
