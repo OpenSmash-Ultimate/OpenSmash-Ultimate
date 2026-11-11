@@ -185,8 +185,9 @@ int main(int argc, char **argv) {
         static const struct { double rtt; int d; } k[] = {{0, 1}, {3, 1}, {14.9, 1}, {15, 2}, {44.9, 2}, {45, 3}, {48, 3}, {74.9, 3}, {75, 4}, {105, 5}, {165, 7}, {900, 8}, {-1, 1}};
         for (unsigned i = 0; i < sizeof k / sizeof *k; i++)
             if (rbn_delay_for_rtt(k[i].rtt) != k[i].d) { fprintf(stderr, "FAIL: delay for %.1f ms is %d, not %d\n", k[i].rtt, rbn_delay_for_rtt(k[i].rtt), k[i].d); return 1; }
-        /* (SSBU_RB_NET=online's: under 15 ms 1; else the one-way trip in frames, less one, from 2 to 8) */
-        static const struct { double rtt; int d; } o[] = {{0, 1}, {14.9, 1}, {15, 2}, {30, 2}, {40, 2}, {50, 2}, {83, 2}, {84, 2}, {100, 2}, {116, 2}, {117, 3}, {150, 4}, {300, 8}, {900, 8}, {-1, 1}};
+        /* (SSBU_RB_NET=online's: under 15 ms 1; else the one-way trip in frames, less one up to 100 ms one way, from 2 to 9) */
+        static const struct { double rtt; int d; } o[] = {{0, 1}, {14.9, 1}, {15, 2}, {30, 2}, {40, 2}, {50, 2}, {83, 2}, {84, 2}, {100, 2}, {116, 2}, {117, 3}, {150, 4},
+                                                          {199, 5}, {200, 6}, {240, 7}, {300, 9}, {900, 9}, {-1, 1}};
         for (unsigned i = 0; i < sizeof o / sizeof *o; i++)
             if (rbn_online_delay_for_rtt(o[i].rtt) != o[i].d) { fprintf(stderr, "FAIL: online delay for %.1f ms is %d, not %d\n", o[i].rtt, rbn_online_delay_for_rtt(o[i].rtt), o[i].d); return 1; }
     }
