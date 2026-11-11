@@ -9,7 +9,10 @@ import sys
 import tempfile
 import unittest
 
-from Crypto.Cipher import AES
+try:
+    from Crypto.Cipher import AES
+except ImportError:   # (pycryptodome is the extractor's own dependency; the CI's Python may not have it)
+    raise unittest.SkipTest('pycryptodome (Crypto) is not installed')
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'ssbu-recomp' / 'tools' / 'extract'))
