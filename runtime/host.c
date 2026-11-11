@@ -1085,15 +1085,15 @@ static void load_plugin_dlls(void) {
             fprintf(stderr, "[plugins] %s did not load (error %lu)\n", full, (unsigned long)GetLastError());
             continue;
         }
-        void (*bind)(GuestFn *(*)(u64), GuestFn *(*)(u64, RtCache *), void (*)(Cpu *, u64, const char *)) =
-            (void *)GetProcAddress(lib, "ssbu_plugin_bind");
+        void (*bind)(GuestFn *(*)(u64), GuestFn *(*)(u64, RtCache *), void (*)(Cpu *, u64, const char *),
+                     void (*)(Cpu *, u32)) = (void *)GetProcAddress(lib, "ssbu_plugin_bind");
         const RtModule *(*modfn)(void) = (void *)GetProcAddress(lib, "ssbu_plugin_module");
         if (!bind || !modfn) {
             fprintf(stderr, "[plugins] %s has no plugin entry\n", full);
             FreeLibrary(lib);
             continue;
         }
-        bind(rt_lookup, rt_lookup_cached, rt_trap);
+        bind(rt_lookup, rt_lookup_cached, rt_trap, rt_svc);   /* (a DLL built before rt_svc ignores the 4th) */
         const RtModule *mod = modfn();
         if (!mod || nro_linked(mod)) {
             FreeLibrary(lib);

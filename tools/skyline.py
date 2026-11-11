@@ -725,13 +725,16 @@ extern const RtModule rt_module_{name};
 static GuestFn *(*plugin_lookup)(u64);
 static GuestFn *(*plugin_lookup_cached)(u64, RtCache *);
 static void (*plugin_trap)(Cpu *, u64, const char *);
+static void (*plugin_svc)(Cpu *, u32);
 GuestFn *rt_lookup(u64 addr) {{ return plugin_lookup(addr); }}
 GuestFn *rt_lookup_cached(u64 addr, RtCache *cache) {{ return plugin_lookup_cached(addr, cache); }}
 void rt_trap(Cpu *c, u64 pc, const char *why) {{ plugin_trap(c, pc, why); }}
+/* A plugin whose code makes a system call (an svc: Raichu's svcQueryMemory) calls this. */
+void rt_svc(Cpu *c, u32 number) {{ plugin_svc(c, number); }}
 __declspec(dllexport) const RtModule *ssbu_plugin_module(void) {{ return &rt_module_{name}; }}
 __declspec(dllexport) void ssbu_plugin_bind(GuestFn *(*lookup)(u64), GuestFn *(*lookup_cached)(u64, RtCache *),
-                                            void (*trap)(Cpu *, u64, const char *)) {{
-    plugin_lookup = lookup; plugin_lookup_cached = lookup_cached; plugin_trap = trap;
+                                            void (*trap)(Cpu *, u64, const char *), void (*svc)(Cpu *, u32)) {{
+    plugin_lookup = lookup; plugin_lookup_cached = lookup_cached; plugin_trap = trap; plugin_svc = svc;
 }}
 """
 
