@@ -4769,7 +4769,10 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
      * draws its masks unculled and relies on one face's write mask.) Which face is which differs
      * from culling: WINDOW_ORIGIN.FLIP_Y swaps the front face for culling (see the facing above)
      * but not for the stencil state - with it set, the hardware's "back" state is what D3D's
-     * front faces get (seen on the main menu's tiles, whose fills need it). */
+     * front faces get (seen on the main menu's tiles, whose fills need it). All of that state: the
+     * test and the operations as well as the reference and the masks - the KO zooms' effects have
+     * a "not over a fighter" test on one face and "always" on the other, and the reference of one
+     * with the test of the other hid them (the finish zoom's red and black lightning). */
     u32 back_ref = regs[M_BACK_STENCIL_REF] & 0xFF, back_write = regs[M_BACK_STENCIL_MASK] & 0xFF, back_read = regs[M_BACK_STENCIL_FUNC_MASK] & 0xFF;
     int split = dd.StencilEnable && (regs[M_TWO_SIDED_STENCIL] & 1) &&
                 (back_ref != (regs[M_STENCIL_REF] & 0xFF) || back_write != dd.StencilWriteMask || back_read != dd.StencilReadMask);
@@ -4786,6 +4789,7 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
             D3D11_DEPTH_STENCIL_DESC d = dd;
             r.CullMode = back_faces ? D3D11_CULL_FRONT : D3D11_CULL_BACK;   /* just this pass's faces */
             if (back) { d.StencilReadMask = (UINT8)back_read; d.StencilWriteMask = (UINT8)back_write; }
+            d.FrontFace = d.BackFace = back ? dd.BackFace : dd.FrontFace;   /* (this pass draws one kind of face) */
             cur.rs = raster_state(&r);
             cur.ds = depth_state(&d);
             cur.stencil_ref = back ? back_ref : regs[M_STENCIL_REF] & 0xFF;
