@@ -592,8 +592,9 @@ class InstallerDecisionTests(unittest.TestCase):
                             "u.find_spec = lambda n, _f=u.find_spec: None if n == 'tomli' else _f(n); " + f'exec({check!r})'],
                            capture_output=True, text=True)
         self.assertEqual((r.returncode, r.stderr), (1, ''))          # 3.10 without tomli: a plain no
-        r = subprocess.run([sys.executable, '-c', check], capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)                  # this Python (3.11 or newer): tomllib
+        if sys.version_info >= (3, 11):                              # (the tools still run on 3.10, maybe without tomli)
+            r = subprocess.run([sys.executable, '-c', check], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)              # this Python (3.11 or newer): tomllib
 
 
 class InstallerPatternTests(unittest.TestCase):

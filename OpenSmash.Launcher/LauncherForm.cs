@@ -626,13 +626,15 @@ namespace OpenSmash.Launcher
             return text.Length <= 180 ? text : text.Substring(0, 177) + "\u2026";
         }
 
-        // The tools' own Python (deps\venv): an install from before it has none, and one whose venv's Python was
-        // uninstalled has one that no longer runs. The installer's Python step makes it (tools\install_windowsmash.ps1
-        // -PythonOnly); a PC with deps\python (it had no Python) keeps that.
+        // The tools' own Python (deps\venv): an install from before it has none, one whose venv's Python was
+        // uninstalled has one that no longer runs, and one whose pip failed (offline) has no packages. The installer's
+        // Python step makes it or adds them (tools\install_windowsmash.ps1 -PythonOnly); a PC with deps\python (it had
+        // no Python) keeps that.
         async Task EnsureOwnPythonAsync()
         {
-            string venv = Path.Combine(_repo, "deps", "venv", "Scripts", "python.exe");
-            bool ok = await Task.Run(() => File.Exists(venv) ? PythonRuns(venv) : File.Exists(Path.Combine(_repo, "deps", "python", "python.exe")));
+            string own = Path.Combine(_repo, "deps", "venv", "Scripts", "python.exe");
+            if (!File.Exists(own)) own = Path.Combine(_repo, "deps", "python", "python.exe");
+            bool ok = await Task.Run(() => File.Exists(own) && PythonHasPackages(own));
             if (!ok) await RunPythonStepAsync("SETTING UP PYTHON");
         }
 
@@ -651,12 +653,13 @@ namespace OpenSmash.Launcher
             _pythonExe = ModManagerProcess.FindPython(_repo, _buildDir);
         }
 
-        static bool PythonRuns(string exe)
+        // (pycryptodomex alone: pip installs requirements.txt all at once or not at all)
+        static bool PythonHasPackages(string exe)
         {
             try
             {
                 var psi = new ProcessStartInfo { FileName = exe, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-                psi.ArgumentList.Add("-c"); psi.ArgumentList.Add("import sys");
+                psi.ArgumentList.Add("-c"); psi.ArgumentList.Add("import Cryptodome");
                 using var p = Process.Start(psi);
                 if (p == null) return false;
                 _ = p.StandardOutput.ReadToEndAsync(); _ = p.StandardError.ReadToEndAsync();

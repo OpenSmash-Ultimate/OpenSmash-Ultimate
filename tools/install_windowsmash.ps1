@@ -840,6 +840,7 @@ function Find-OwnPython {
     if (Test-Path -LiteralPath $venvPy) {
         $v = Test-PythonCommand @($venvPy)
         if ($v) { return @{ Command = @($venvPy); Version = $v } }
+        if ($DryRun) { Write-Would 'remove deps\venv, which does not run any more, and make it again'; return $null }
         Write-Warn 'deps\venv does not run any more (the Python it was made from was removed?): making it again'
         Remove-Item -LiteralPath (Join-Path $Root 'deps\venv') -Recurse -Force
     }
