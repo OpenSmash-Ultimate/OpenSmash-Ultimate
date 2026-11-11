@@ -363,7 +363,14 @@ static void configure(void) {
     if ((v = getenv("SSBU_NET_LAN_PORT")) && atoi(v) > 0 && atoi(v) < 65536) lan_port = (u16)atoi(v);
     if ((v = getenv("SSBU_NET_LAN_TEST"))) lan_test = atoi(v) > 0;
     if (hosting) snprintf(relay_text, sizeof relay_text, "127.0.0.1:%u", port);
-    else if (r && *r) { if (_stricmp(r, "off")) snprintf(relay_text, sizeof relay_text, "%s", r); }
+    else if (r && *r) {
+        /* (the macOS and Linux launchers pass online_server.txt's first word as SSBU_NET_RELAY: "auto", "na" and "eu"
+         * are the public lobbies there too - issue #259, they were taken as host names and nothing was joined) */
+        if (!_stricmp(r, "auto")) nearest_lobby(relay_text, sizeof relay_text);
+        else if (!_stricmp(r, "na")) snprintf(relay_text, sizeof relay_text, "%s", PUBLIC_LOBBIES[0].host);
+        else if (!_stricmp(r, "eu")) snprintf(relay_text, sizeof relay_text, "%s", PUBLIC_LOBBIES[1].host);
+        else if (_stricmp(r, "off")) snprintf(relay_text, sizeof relay_text, "%s", r);
+    }
     else if (settings_online()) configure_from_files();
     lan_mode = !hosting && !_stricmp(relay_text, "lan");
     configured = hosting || relay_text[0];
