@@ -248,6 +248,9 @@ class NexServer:
         if ranked is not None:
             ranked.tick(now)
             ranked.flush(now, force)
+        services = getattr(self, "services", None)
+        if services is not None:
+            services.powers.flush(now, force)
 
     def servers(self):
         return (self.auth, self.secure, self.auth_lite, self.secure_lite)
