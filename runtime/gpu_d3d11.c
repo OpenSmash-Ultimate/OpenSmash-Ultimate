@@ -1028,6 +1028,9 @@ static int create_noted(struct Compiler *me, Shader *s, const void *code, size_t
     me->dxbc_size = size;
     me->step = STEP_DRIVER;
     void *warm = NULL;
+    /* (the compile device first even while the first frame waits, prewarm_gate: made on the game's device alone, NVIDIA's
+     * driver left the work to its own threads, which then took 300-420 CPU-seconds every 30 s of play on 16 threads and
+     * twice the late frames - measured 2026-11-10, a cold start) */
     if (compile_dev && SUCCEEDED(create_on(compile_dev, s->stage, code, size, &warm))) IUnknown_Release((IUnknown *)warm);
     int ok = SUCCEEDED(create_on(dev, s->stage, code, size, &s->obj));
     me->dxbc = NULL;
@@ -1053,14 +1056,17 @@ static u64 prewarm_t0, prewarm_bytes0;
 /* Each program the driver makes holds its GPU code in this process (NVIDIA: some 0.4-0.8 MB), and a
  * player's cache keeps every program played before: thousands, gigabytes. The prewarm stops making
  * them once the process has grown this much since it began (newest first: the ones played last are
- * made); the rest load at first use as without a prewarm. The budget is a third of the PC's memory
- * (16 GB: about 5 GB, every program of a full cache; 8 GB: some 2.7 GB), so a load does not stop
- * on programs made at first use; SSBU_SHADER_PREWARM_MB sets it, 0: no limit. */
+ * made); the rest load at first use as without a prewarm. The budget is an eighth of the PC's memory, 1 GB at least
+ * and 1.5 GB at most (some 4,500 programs: a session draws 400-600, the newest played come first; 2.5 GB left the
+ * game at 4.9 GB): with every program of the shipped list made (a third of the memory
+ * allowed it) the game went from 3.7 to 5.5 GB and every player found it slower (owner 2026-11-10, after #248);
+ * SSBU_SHADER_PREWARM_MB sets it, 0: no limit. */
 static u64 prewarm_budget = 1024ull << 20;
 static void prewarm_budget_default(void) {
 #ifdef _WIN32
     MEMORYSTATUSEX m = {sizeof m};
-    if (GlobalMemoryStatusEx(&m) && m.ullTotalPhys / 3 > prewarm_budget) prewarm_budget = m.ullTotalPhys / 3;
+    if (GlobalMemoryStatusEx(&m) && m.ullTotalPhys / 8 > prewarm_budget) prewarm_budget = m.ullTotalPhys / 8;
+    if (prewarm_budget > (1536ull << 20)) prewarm_budget = 1536ull << 20;
 #endif
 }
 
@@ -1346,11 +1352,11 @@ static int prewarm_queue_file(const char *fname, Shader **head, Shader **tail, P
 
 /* (prewarm_main) the shipped list's programs whose files are in this cache, after the played ones: beside the exe,
  * else media\ (the working folder: the repository). *order grows to hold them; returns how many were queued, and in
- * *listed how many the list names. Every one of them is queued: the game waits at its first present until the prewarm
- * is done (prewarm_gate), so no program of normal play is made at its first draw, invisible that once (owner,
- * 2026-11-10: "DEVE essere tutti"). The memory budget still stops it (SSBU_SHADER_PREWARM_MB).
- * SSBU_SHADER_PREWARM_LIST=0: not read; another number caps the queue at that many programs. */
-#define PREWARM_LIST_TOTAL 0xFFFFFFFFu   /* (every program the list names: the first present waits for them, prewarm_gate) */
+ * *listed how many the list names. The list fills the queue up to PREWARM_LIST_TOTAL programs (played ones first): every
+ * one of 12,000 made took the game to 5.5 GB and every player found it slower (owner 2026-11-10, after #248); the
+ * game waits at its first present until the queue is made (prewarm_gate). SSBU_SHADER_PREWARM_LIST=0: not read; another
+ * number caps the queue at that many programs. */
+#define PREWARM_LIST_TOTAL 6000
 static u32 prewarm_queue_list(Shader **head, Shader **tail, Prewarm ***order, u32 *cap, u32 *queued, u32 *listed) {
     const char *set = getenv("SSBU_SHADER_PREWARM_LIST");
     u32 total = set && *set ? (u32)strtoul(set, NULL, 10) : PREWARM_LIST_TOTAL;
@@ -2009,8 +2015,29 @@ int gfx_warm_shaders_main(const char *dir, const char *luid) {
     if (game_running()) r.stop = 1;
     for (u32 i = 0; i < nthreads && r.done && before + i < r.n && !r.stop; i++)
         if ((threads[started] = CreateThread(NULL, 16 << 20, warm_worker, &r, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL))) started++;
-    while (started && WaitForMultipleObjects(started, threads, TRUE, 500) == WAIT_TIMEOUT)
+    /* (issue #182) while it runs, warm.log says how far it is every 10 s: drawn of the total, failures, time, time left */
+    char logpath[1100];
+    snprintf(logpath, sizeof logpath, "%s/warm.log", dir);
+    u64 said = GetTickCount64();
+    while (started && WaitForMultipleObjects(started, threads, TRUE, 500) == WAIT_TIMEOUT) {
         if (!r.stop && game_running()) InterlockedExchange(&r.stop, 1);
+        u64 now = GetTickCount64();
+        if (now - said < 10000) continue;
+        said = now;
+        FILE *lf = fopen(logpath, "w");
+        if (!lf) continue;
+        double s = (now - t0) / 1000.0;
+        long drawn = r.drawn, failed = r.failed;
+        long left = (long)r.n - (long)before - drawn - failed;
+        if (left < 0) left = 0;
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        fprintf(lf, "%04u-%02u-%02u %02u:%02u: running on %s: %ld of %u shaders drawn (%u before), %ld not drawn, %.0f s so far",
+                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, name, drawn + (long)before, r.n, before, failed, s);
+        if (drawn > 0) fprintf(lf, ", about %.0f min left", left * (s / drawn) / 60.0);
+        fprintf(lf, "%s" "\n", r.stop ? " (stopping: a game started)" : "");
+        fclose(lf);
+    }
     for (u32 i = 0; i < started; i++) CloseHandle(threads[i]);
     /* what has been drawn, for the next run */
     u32 ndone = 0;
@@ -4850,6 +4877,44 @@ static void capture(ID3D11Texture2D *back, ID3D11Texture2D *window) {
     count++;
 }
 
+/* SSBU_PRESENT_HASH=<file> (a test): a line a picture shown - its number, the fight frame, whether a submission whose draws
+ * were left out ran since the last one (a hidden frame run again), and a hash of the picture - to compare two runs' pictures
+ * without looking at them (the hidden frames of a catch-up: does anything drawn only now and then stay stale?) */
+static void present_hash(ID3D11Texture2D *tex) {
+    static FILE *out; static int checked; static u64 n; static ID3D11Texture2D *staging; static u32 sw, sh;
+    extern volatile int gpu_hidden_since_present;
+    if (!checked++) { const char *p = getenv("SSBU_PRESENT_HASH"); if (p && *p) out = fopen(p, "w"); }
+    int hid = gpu_hidden_since_present; gpu_hidden_since_present = 0;
+    if (!out || !tex) return;
+    D3D11_TEXTURE2D_DESC td;
+    ID3D11Texture2D_GetDesc(tex, &td);
+    if (!staging || sw != td.Width || sh != td.Height) {
+        if (staging) ID3D11Texture2D_Release(staging);
+        td.Usage = D3D11_USAGE_STAGING; td.BindFlags = 0; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ; td.MiscFlags = 0;
+        if (FAILED(ID3D11Device_CreateTexture2D(dev, &td, NULL, &staging))) { staging = NULL; return; }
+        sw = td.Width; sh = td.Height;
+    }
+    ID3D11DeviceContext_CopyResource(ctx, (ID3D11Resource *)staging, (ID3D11Resource *)tex);
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (FAILED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)staging, 0, D3D11_MAP_READ, 0, &m))) return;
+    u64 h = 0xcbf29ce484222325ull;
+    static u64 grid[16 * 9];   /* (and the picture's brightness on a 16 x 9 grid: two runs' pictures are not bit for bit alike) */
+    memset(grid, 0, sizeof grid);
+    for (u32 y = 0; y < sh; y++) {
+        const u8 *row = (const u8 *)m.pData + (size_t)y * m.RowPitch;
+        const u64 *p = (const u64 *)row;
+        for (u32 x = 0; x < sw / 2; x++) { h ^= p[x]; h *= 0x100000001b3ull; }   /* (4 bytes a pixel, 2 a word) */
+        u64 *g = &grid[(y * 9 / sh) * 16];
+        for (u32 x = 0; x < sw; x++) g[x * 16 / sw] += (u64)row[x * 4] + row[x * 4 + 1] + row[x * 4 + 2];
+    }
+    ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)staging, 0);
+    char gs[16 * 9 * 2 + 1];
+    u64 cell = (u64)(sw / 16) * (sh / 9) * 3;
+    for (int i = 0; i < 16 * 9; i++) snprintf(gs + i * 2, 3, "%02x", (unsigned)(cell ? (grid[i] / cell > 255 ? 255 : grid[i] / cell) : 0));
+    fprintf(out, "%llu %lld %d %016llx %s\n", (unsigned long long)n++, test_fight_frame, hid, (unsigned long long)h, gs);
+    fflush(out);
+}
+
 /* 2D engine: source and destination surfaces (format, layout, block size, depth, layer,
  * pitch, width, height, address) at methods 0x80 and 0x8C; the blit rectangle and the
  * 32.32 fixed-point source position and step at 0x22C-0x237. */
@@ -5473,6 +5538,7 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
     }
     if (rtv_srgb) ID3D11RenderTargetView_Release(rtv_srgb);
     capture(final_tex, back);   /* (before the overlay) */
+    present_hash(final_tex);
 
     /* debug keys and the overlay */
     LONG keys = (LONG)gfx_take_hotkeys();

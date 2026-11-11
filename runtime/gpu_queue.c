@@ -29,6 +29,7 @@ extern volatile LONG rb_fast;   /* (kernel.c) */
 /* (run-ahead's profile, hle_rb_core.c: the GPU thread's time in submissions, those made in hidden frames [1] and the others [0]) */
 double gpu_q_busy_ms[2]; long long gpu_q_jobs[2];
 extern volatile int gpu_job_hidden;   /* (gpu.c) */
+volatile int gpu_hidden_since_present;   /* (SSBU_PRESENT_HASH: a hidden submission ran since the last picture shown) */
 volatile int gpu_hide_fast;          /* (hle_rb_core.c, run-ahead: the submissions of hidden frames draw nothing; 2: those of a net catch-up's frames but the last) */
 
 static Job jobs[JOBS];
@@ -97,6 +98,7 @@ static DWORD WINAPI gpu_thread(LPVOID unused) {
         ReleaseSRWLockExclusive(&lock);
         u64 q0 = rt_now_ns();
         gpu_job_hidden = j->hide;
+        if (j->hide) gpu_hidden_since_present = 1;
         gpu_submit(j->channel, j->entries, j->count);   /* (the job stays put until `done` passes it) */
         gpu_job_hidden = 0;
         rbw_publish();   /* (before `done` passes it: a save that waited for this submission finds its writes) */

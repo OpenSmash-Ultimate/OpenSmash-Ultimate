@@ -829,9 +829,11 @@ def unbuilt_mod_plugin(tree):
     return None
 
 
-def game_link_reason(tree):
+def game_link_reason(tree, mods=True):
     """Why the program itself must be linked again, or None. On Windows a mod plugin's own file is not
-    a reason: the game loads that at start. On macOS and Linux it is compiled into the program."""
+    a reason: the game loads that at start. On macOS and Linux it is compiled into the program.
+    mods=False (Play without mods): only what the game and the community plugins need, not the mods'
+    plugins or the hook points and code patches the plugins asked for (the lists don't say whose)."""
     exe = program(tree)
     if not exe:
         return "the game isn't built"
@@ -847,13 +849,13 @@ def game_link_reason(tree):
                     return f"{rel} is newer than the game"
     p = Paths(tree)
     patches = os.path.join(p.skyline, "patches.txt")
-    if os.path.exists(patches) and os.path.getmtime(patches) > built:
+    if mods and os.path.exists(patches) and os.path.getmtime(patches) > built:
         return "dump/skyline/patches.txt is newer than the game"
     import std_plugins
     for name, plugin in std_plugins.PLUGINS.items():
         if plugin[5] == "runs" and not os.path.exists(os.path.join(std_plugins.folder(tree), name)):
             return f"{name} isn't fetched"
-    missing = unbuilt_standard(tree) or (unbuilt_mod_plugin(tree) if os.name != "nt" else None)
+    missing = unbuilt_standard(tree) or (unbuilt_mod_plugin(tree) if mods and os.name != "nt" else None)
     if missing:
         return missing
     listed = os.path.join(p.skyline, "plugins.txt")
@@ -861,7 +863,7 @@ def game_link_reason(tree):
     for name in names:
         if name and not built_in(tree, name):
             return f"the standard plugin {name} isn't in the game"
-    if stale_hooks(tree):
+    if mods and stale_hooks(tree):
         return "a plugin hooks a function the game has no slot for"
     return None
 
@@ -880,7 +882,10 @@ def build(tree, jobs, log=print, again=True):
     reason = game_link_reason(tree)
     if reason:
         exefs = os.path.join(tree, "dump", "exefs")
-        for mod in stale_hooks(tree):
+        # (recomp.py all writes again the C of a module whose hooks or code patches changed - its fingerprint
+        # has them - so writing it here first was done twice: main's, the biggest. macOS's link, build_mac.py,
+        # writes no C: there it is written here.)
+        for mod in stale_hooks(tree) if sys.platform == "darwin" else ():
             log(f"writing {mod}'s C again")
             src = os.path.join(exefs, mod) if mod in ("main", "subsdk0", "sdk") else os.path.join(tree, "dump", "nro", mod + ".nro")
             out = os.path.join(tree, "build", mod) if mod in ("main", "subsdk0", "sdk") else os.path.join(tree, "build", "nro", mod)

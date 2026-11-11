@@ -1463,6 +1463,10 @@ namespace OpenSmash.Launcher
             if (path == null) return null;
             foreach (string dir in path.Split(Path.PathSeparator))
             {
+                // (WindowsApps' python.exe is the Microsoft Store's shortcut: with no Python installed it only prints
+                // "Python was not found...", the game folder was reported unreadable, and the install would not start.
+                // The installer sets up its own Python; the folder is read after that.)
+                if (dir.Contains(@"\WindowsApps", StringComparison.OrdinalIgnoreCase)) continue;
                 string py = Path.Combine(dir, "py.exe");
                 if (File.Exists(py)) return py;
                 string python = Path.Combine(dir, "python.exe");

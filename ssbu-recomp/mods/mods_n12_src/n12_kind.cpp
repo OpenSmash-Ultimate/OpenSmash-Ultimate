@@ -1689,6 +1689,32 @@ static void h_precord(Ctx *c, void *) {
     *(uint8_t *)(uintptr_t)(rec + 0x19) = 0;
     if (g_n_colour++ < 8) logf("[u1] player %d: new fighter %s (kind 0x%x) chosen with colour %d, which its folder does not have (no model\\body\\c%02d): colour 0", idx, g_name[reg_of((uint32_t)kind)], kind, colour, colour);
 }
+// RESULTS SCREEN (2026-11-11): the results scene's set-up of the fighters (0x7101491460, 13.0.4 = 13.0.5) frames each
+// LOSER's panel with a camera it looks up by the player's fighter kind (the int8 at + 0x60 of the player's 0x3860-byte
+// entry in the match's player table, 0x7101465a30) in a hash map of the results parameters (*(0x71052c2600) + 8, map at
+// + 0x60, node data: eye x/y, eye z, target x/y, target z, offsets from the fighter's place). The map has the game's
+// fighters only: for a new kind the lookup misses and the code falls back to eye (0, 11, 15) -> target (0, 11, 0), a
+// camera 15 units from the waist (the "zoomed" loser panel; the winner's pose has its own camera file and is right).
+// The winner's turn-angle map at + 0x38 is looked up the same way. So, for that one call, every player whose kind is a
+// new one shows the DONOR's kind there; the entries are put back right after. N12_RESULTCAM=0: off.
+static HookOrig o_resultcam; static int g_resultcam = 1; static long g_n_resultcam;
+static void h_resultcam(Ctx *c, void *) {
+    uint8_t *swapped[8]; int8_t was[8]; int n = 0;
+    uint64_t t = g_resultcam && g_nnew ? game_call2(c, MOD_GA(0x7101465a30ull), 0, 0) : 0;
+    if (t && readable(t, 8 * 0x3860))
+        for (int p = 0; p < 8; p++) {
+            uint8_t *e = (uint8_t *)(uintptr_t)(t + (uint64_t)p * 0x3860);
+            int kind = (int)(int8_t)e[0x60];
+            if (e[0x62] == 2 || !is_new((uint32_t)kind)) continue;
+            int d = dk((uint32_t)kind);
+            if (d < 0 || d >= FIRST) continue;
+            swapped[n] = e + 0x60; was[n] = (int8_t)e[0x60]; n++;
+            e[0x60] = (uint8_t)d;
+            if (g_n_resultcam++ < 8) logf("[n12] results screen: player %d is %s (kind 0x%x): its panel camera is looked up as its donor's (kind 0x%x)", p, g_name[reg_of((uint32_t)kind)], kind, d);
+        }
+    o_resultcam(c);
+    for (int k = 0; k < n; k++) *swapped[k] = (uint8_t)was[k];
+}
 // N12_KTRACE=<hex,..> (diagnosis): up to 64 game functions; a call whose x0, x1 or x2 is a NEW kind is logged (first 4
 // per function, with the return address)
 static HookOrig o_kt[64]; static uint64_t g_kt_addr[64]; static long g_kt_n[64];
@@ -1761,6 +1787,8 @@ extern "C" __declspec(dllexport) void mod_init(const HookApi *a) {
     all++; ok += !!api->install(MOD_GA(0x71017e88d0ull), h_path, nullptr, &o_path);
     g_colour0_off = (e = getenv("N12_COLOUR0")) && e[0] == '0';
     all++; ok += !!api->install(MOD_GA(0x7101788260ull), h_precord, nullptr, &o_precord);      // U1: colour of a new fighter; KIND SLOTS: the binding
+    g_resultcam = !((e = getenv("N12_RESULTCAM")) && e[0] == '0');
+    if (g_resultcam) { all++; ok += !!api->install(MOD_GA(0x7101491460ull), h_resultcam, nullptr, &o_resultcam); }      // the results screen's loser-panel cameras
     if (!((e = getenv("N13_WKLOOK")) && e[0] == '0'))       // N13: the two bounded per-weapon-kind lookups (phase file N13 section 2)
         for (int i = 0; i < 2; i++) { all++; ok += !!api->install(i ? MOD_GA(0x71033aa1e0ull) : MOD_GA(0x71033be790ull), h_wklook, (void *)(intptr_t)i, &o_wklook[i]); }
     if (!((e = getenv("N13_OWNFILES")) && e[0] == '0')) {

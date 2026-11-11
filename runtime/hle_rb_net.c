@@ -2,6 +2,7 @@
  * entries by frame & (RBN_RING - 1), and every entry keeps its frame number too, so one left from
  * an older lap is never taken for the current frame. */
 #include <string.h>
+#include <stdlib.h>
 #include "hle_rb_net.h"
 
 #define MASK (RBN_RING - 1)
@@ -72,6 +73,7 @@ int rbn_local_get(uint32_t frame, RbnPad *out) {
 }
 uint32_t rbn_local_newest(void) { return local_newest; }
 
+long long rbn_miss[5];   /* wrong guesses: buttons; left stick only; right stick only; triggers only; of the sticks', under 2048 apart */
 void rbn_remote(int p, uint32_t frame, RbnPad pad) {
     if (p < 0 || p >= nplayers || p == local_player || !frame) return;
     Remote *r = &remote[p];
@@ -82,6 +84,15 @@ void rbn_remote(int p, uint32_t frame, RbnPad pad) {
     r->pad[frame & MASK] = pad; r->at[frame & MASK] = frame;
     while (r->at[(r->newest + 1) & MASK] == r->newest + 1) r->newest++;
     if (r->guess_at[frame & MASK] == frame) {
+        const RbnPad *g = &r->guess[frame & MASK];
+        if (!rbn_same(g, &pad)) {   /* (a wrong guess, by kind: the report's census of what mispredicts) */
+            int d = 0;
+            if (g->buttons != pad.buttons) rbn_miss[0]++;
+            else if (g->lx != pad.lx || g->ly != pad.ly) { rbn_miss[1]++; d = abs(g->lx - pad.lx) > abs(g->ly - pad.ly) ? abs(g->lx - pad.lx) : abs(g->ly - pad.ly); }
+            else if (g->rx != pad.rx || g->ry != pad.ry) { rbn_miss[2]++; d = abs(g->rx - pad.rx) > abs(g->ry - pad.ry) ? abs(g->rx - pad.rx) : abs(g->ry - pad.ry); }
+            else rbn_miss[3]++;
+            if (d && d < 2048) rbn_miss[4]++;
+        }
         if (!rbn_same(&r->guess[frame & MASK], &pad) && (!mismatch || frame < mismatch)) mismatch = frame;
         r->guess_at[frame & MASK] = 0;
     }
@@ -197,6 +208,7 @@ size_t rbn_hello_build(uint8_t *b, size_t cap, const RbnHello *h) {
     return RBN_HELLO_BYTES;
 }
 #define RBN_DELAY_MAX 8
+#define RBN_ONLINE_DELAY_MAX 9   /* (the online rule's: 150 ms one way is 9 frames) */
 int rbn_delay_for_rtt(double rtt_ms) {
     /* one more frame each 30 ms, rounded: at 46 ms and delay 1 the internet test rolled back every 4 frames (the
      * other player snapping about); at 48 ms and delay 2 still every 6 on the host, the joiner's pads late over its
@@ -212,9 +224,14 @@ int rbn_online_delay_for_rtt(double rtt_ms) {
      * once, catch-ups 22 ms - pair runs 2026-11-10), and 1 under 15 ms (a home network). 2 at the least: at a 40 ms
      * round trip, delay 1 made 1263 rollbacks in a fight, about 50 frames a second and a desync; delay 2 made 15 in two
      * fights, 60 a second, in sync */
+    /* From 100 ms one way, the whole trip in frames, not less one, at most RBN_ONLINE_DELAY_MAX: a frame less made
+     * rollbacks of 4-6 frames there, and with the load each over the 16.7 ms frame - pair runs 2026-11-11, catch-ups over
+     * a frame at 120 ms one way, delay 6 -> 7: 25 % / 18 % -> 4.6 % / 2.1 %; at 150, 8 -> 9: 27 % / 14 % -> 3.5 % / 4.3 %.
+     * The frame more is 17 ms of input delay, where the trip is already 100 ms or more. */
     if (rtt_ms < 15) return 1;
-    int d = (int)(rtt_ms / 2 / (1000.0 / 60) + 0.5) - 1;
-    return d < 2 ? 2 : d > RBN_DELAY_MAX ? RBN_DELAY_MAX : d;
+    double one_way = rtt_ms / 2;
+    int d = (int)(one_way / (1000.0 / 60) + 0.5) - (one_way >= 100 ? 0 : 1);
+    return d < 2 ? 2 : d > RBN_ONLINE_DELAY_MAX ? RBN_ONLINE_DELAY_MAX : d;
 }
 int rbn_hello_parse(const uint8_t *b, size_t len, RbnHello *h) {
     /* (a version 1 hello, 16 bytes, is read far enough to say which version the other game speaks) */
