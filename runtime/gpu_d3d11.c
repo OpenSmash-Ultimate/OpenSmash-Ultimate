@@ -14,6 +14,7 @@
 #include "display.h"
 #include "gpu_d3d11.h"
 #include "gpu_menu.h"
+#include "gpu_nvcache.h"
 #include "gpu_overlay.h"
 #include "gpu_renderer.h"
 #include "net.h"
@@ -853,6 +854,7 @@ static BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *c) {
     else if (!prewarm) fprintf(stderr, "[gfx] prewarm: off (SSBU_SHADER_PREWARM=1 turns it on)\n");
     ready = 1;
     fprintf(stderr, "[gfx] Direct3D 11 ready%s\n", compile_dev ? " (shaders compile on a device of their own first)" : "");
+    if (nvidia) nv_cache_check(0);   /* (the driver's cache size against its setting, in the log: gpu_nvcache.c) */
     return TRUE;
 }
 
