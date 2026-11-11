@@ -236,7 +236,7 @@ static void net_load(void)
     char direct[16] = "";
     net.direct = !(settings_line_read(config_path(CONFIG_ONLINE_DIRECT), direct, sizeof direct) && !_strnicmp(direct, "off", 3));
     char rollback[16] = "";   /* (net_relay.c's net_rollback_default reads it the same way) */
-    net.rollback = settings_line_read(config_path(CONFIG_ONLINE_ROLLBACK), rollback, sizeof rollback) && !_strnicmp(rollback, "on", 2);   /* (off by default: net_relay.c) */
+    net.rollback = !(settings_line_read(config_path(CONFIG_ONLINE_ROLLBACK), rollback, sizeof rollback) && !_strnicmp(rollback, "off", 3));   /* (on by default: net_relay.c) */
     char protocol[16] = "";   /* (net_relay.c reads it the same way) */
     int v = settings_line_read(config_path(CONFIG_ONLINE_PROTOCOL), protocol, sizeof protocol) ? atoi(protocol) : 0;
     net.protocol = v == NET_PROTOCOL || v == NET_PROTOCOL_V3 ? v : NET_PROTOCOL_DEFAULT;
@@ -918,7 +918,7 @@ static void build(void)
 #ifndef __APPLE__
         r = add(R_RENDERER, K_CHOICE, W_RESTART, "Renderer",
 #ifdef _WIN32
-                "auto: Vulkan on an AMD card (no first-use stutter there), Direct3D 11 on any other. direct3d11 or vulkan: that one on any card."
+                "auto: Vulkan on an AMD or NVIDIA card (no first-use stutter there), Direct3D 11 on any other. direct3d11 or vulkan: that one on any card."
                 " If Vulkan cannot start (its shaders come from ssbu_glslang.dll beside the game, which needs the Visual C++ runtime), or"
                 " stopped the game in its first seconds twice in a row, Direct3D 11 draws and the log says why."
 #else

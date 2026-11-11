@@ -307,9 +307,11 @@ int net_rollback_default(void) {
     /* This can run before backend registration (the rollback constructor). */
     const char *backend = getenv("SSBU_NET_BACKEND");
     if (backend && !_stricmp(backend, "yuzu")) return v;
-    /* (off unless asked for: online_rollback.txt "on", the settings menu's Online > Rollback netcode. The game's
-     * own netcode is the default until rollback passes two-PC tests; alpha.3's players found it unplayable) */
-    if (!(settings_line_read(config_path(CONFIG_ONLINE_ROLLBACK), line, sizeof line) && !_strnicmp(line, "on", 2))) return v;
+    /* (alpha.3's players found rollback unplayable and #201 made the game's own netcode the default) */
+    /* (on again by default since 2026-11-11: catch-ups fit in a frame - over 16.7 ms in under 1 % at 40 ms one way, about
+     * 3-4 % at 120-150 ms, input delay from the measured trip up to 9 frames, 0 desyncs in pair runs (#254-#277); online_rollback.txt
+     * "off" or the settings menu gives the game's own netcode) */
+    if (settings_line_read(config_path(CONFIG_ONLINE_ROLLBACK), line, sizeof line) && !_strnicmp(line, "off", 3)) return v;
     /* (a private room started by Host/Join SSBU Netplay.bat: SSBU_NET_HOST or SSBU_NET_RELAY, no --online) */
     if (h && *h && strcmp(h, "0")) return v = 1;
     if (r && *r) return v = _stricmp(r, "off") != 0;
