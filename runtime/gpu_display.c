@@ -643,12 +643,15 @@ static int monitor_hz(void) {
 /* `display` pacing: the next vblank the game should see, or 0 to use the clock this time. */
 static int vblank_tick(void) {
     static IDXGIOutput *output;
-    static int divisor, failed;
+    static int divisor, failed, hz_now;
+    static LONGLONG last;   /* (the refresh the last tick returned at, performance counter; 0 none) */
     if (failed) return 0;
     if (InterlockedExchange(&monitor_changed, 0) || !output) {
         if (output) IDXGIOutput_Release(output);
         output = (IDXGIOutput *)gfx_display_output();
         int hz = monitor_hz();
+        hz_now = hz;
+        last = 0;
         divisor = hz >= 58 && hz <= 61 ? 1 : hz >= 118 && hz <= 121 ? 2 : hz >= 238 && hz <= 241 ? 4 : 0;
         static int logged_hz = -1;
         if (hz != logged_hz && output) {
@@ -656,13 +659,24 @@ static int vblank_tick(void) {
             fprintf(stderr, "[display] %d Hz monitor: %s\n", hz, divisor ? "display pacing" : "clock pacing (display pacing needs 60, 120 or 240 Hz)");
         }
     }
-    if (!output || !divisor) return 0;
+    if (!output || !divisor) { last = 0; return 0; }
     LARGE_INTEGER t0, t1, freq;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&t0);
-    for (int i = 0; i < divisor; i++)
+    /* The divisor-th refresh after the one the last tick returned at, not after now: the vsync thread comes
+     * back here late when its frame's work - or low_latency's held signal, up to most of a 60 Hz frame - ran
+     * past the monitor's next refresh, and "two refreshes from now" at 120 Hz was then three after the last
+     * tick, 25 ms (a fight on a 120 Hz monitor: up to ~1 frame in 100 shown 1.5 frames late). Refreshes are counted
+     * by their times, so a wait that returns at once or misses one is counted as what it was. */
+    LONGLONG period = freq.QuadPart / hz_now;
+    for (int waits = 0;;) {
         if (FAILED(IDXGIOutput_WaitForVBlank(output))) { failed = 1; break; }
+        QueryPerformanceCounter(&t1);
+        if (!last || ++waits >= 2 * divisor + 2) break;   /* (the first tick; and never more than a few refreshes) */
+        if ((t1.QuadPart - last + period / 2) / period >= divisor) break;
+    }
     QueryPerformanceCounter(&t1);
+    last = t1.QuadPart;
     if (!failed && (t1.QuadPart - t0.QuadPart) * 1000 / freq.QuadPart > 50 * divisor) failed = 1;
     if (failed) fprintf(stderr, "[display] waiting for the monitor's refresh failed: clock pacing from now on\n");
     return !failed;
