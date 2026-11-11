@@ -48,6 +48,8 @@ typedef struct PadInfo {
     int connected, slot, xinput;
     char name[96], type[24], guid[40], section[96];
     int layout, deadzone, rumble, trigger;    /* layout 0 positional, 1 labels */
+    int stick_taunts;                         /* the left stick's directions press the D-pad's buttons */
+    int dpad_moves;                           /* the D-pad drives the left stick */
     char map[16][40];
     u32 raw;
     int usb_port;              /* the GameCube-adapter port it is read over (0-3), -1 not one */

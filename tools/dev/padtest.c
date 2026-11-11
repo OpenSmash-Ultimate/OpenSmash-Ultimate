@@ -19,7 +19,7 @@ static int failures, checks;
 static void load_text(const char *text) {
     memset(&cfg, 0, sizeof cfg);
     cfg.keyboard_slot = 0; cfg.background = 1; cfg.rumble = 1;
-    cfg.def.layout = cfg.def.style = cfg.def.deadzone = cfg.def.rumble = cfg.def.trigger = cfg.def.invert = -1;
+    cfg.def.layout = cfg.def.style = cfg.def.deadzone = cfg.def.rumble = cfg.def.trigger = cfg.def.invert = cfg.def.dpad_moves = cfg.def.stick_taunts = -1;
     kb_defaults();
     char path[MAX_PATH], dir[MAX_PATH];
     GetTempPathA(sizeof dir, dir);
@@ -484,6 +484,78 @@ static void test_keyboard(void) {
     CHECK(lx == 32767 && cfg.kb_ssf2 == 0, "movement = full: fully at once");
 }
 
+static void test_dpad_moves(void) {
+    load_text("[device default]\ndpad_moves = on\n[device ps5]\ndpad_moves = off\n");
+    CHECK(cfg.def.dpad_moves == 1 && cfg.dev[0].dpad_moves == 0, "dpad_moves parsed per section");
+    load_text("");
+    CHECK(cfg.def.stick_taunts == -1, "stick_taunts unset by default");
+    CHECK(cfg.def.dpad_moves == -1, "dpad_moves unset by default");
+    Dev d = make_dev("g", "", "", "Xbox", "xboxone");
+    int labels[4] = {N_A, N_B, N_X, N_Y};
+    dev_configure(&d, labels);
+    CHECK(d.dpad_moves == 0, "dpad_moves off by default");
+    Raw raw = {1u << RB_DPAD_RIGHT, {0, 0, 0, 0, 0, 0}};
+    PadState o;
+    dev_state(&d, &raw, &o);
+    CHECK(o.lx == 0 && (o.buttons >> N_RIGHT & 1), "off: the D-pad is only buttons");
+    load_text("[device default]\ndpad_moves = on\n");
+    Dev e = make_dev("g", "", "", "Xbox", "xboxone");
+    dev_configure(&e, labels);
+    CHECK(e.dpad_moves == 1, "dpad_moves on");
+    dev_state(&e, &raw, &o);
+    CHECK(o.lx == 32767 && o.ly == 0 && !(o.buttons >> N_RIGHT & 1), "right: full tilt, no D-pad button");
+    raw.buttons = 1u << RB_DPAD_UP | 1u << RB_DPAD_LEFT;
+    dev_state(&e, &raw, &o);
+    CHECK(o.lx == -23170 && o.ly == 23170 && !(o.buttons >> N_UP & 1), "diagonal on the circle");
+    raw.buttons = 1u << RB_DPAD_DOWN;
+    dev_state(&e, &raw, &o);
+    CHECK(o.ly == -32767, "down is negative y");
+    raw.buttons = 1u << RB_DPAD_RIGHT;
+    raw.axis[RA_LEFTX] = -20000;   /* the stick pushed less far the other way: the D-pad wins */
+    dev_state(&e, &raw, &o);
+    CHECK(o.lx == 32767, "larger wins: D-pad over a small stick");
+    raw.buttons = 0;
+    raw.axis[RA_LEFTX] = 30000;
+    dev_state(&e, &raw, &o);
+    CHECK(o.lx > 29000 && o.lx <= 32767, "no D-pad: the stick as it is");
+}
+
+static void test_stick_taunts(void) {
+    int labels[4] = {N_A, N_B, N_X, N_Y};
+    load_text("[device default]\nstick_taunts = on\n[device ps5]\nstick_taunts = off\n");
+    CHECK(cfg.def.stick_taunts == 1 && cfg.dev[0].stick_taunts == 0, "stick_taunts parsed per section");
+    load_text("");
+    Dev d = make_dev("g", "", "", "Xbox", "xboxone");
+    dev_configure(&d, labels);
+    Raw raw = {0, {32767, 0, 0, 0, 0, 0}};
+    PadState o;
+    dev_state(&d, &raw, &o);
+    CHECK(d.stick_taunts == 0 && o.lx == 32767 && !(o.buttons >> N_RIGHT & 1), "off by default: the stick is the stick");
+    load_text("[device default]\nstick_taunts = on\n");
+    Dev e = make_dev("g", "", "", "Xbox", "xboxone");
+    dev_configure(&e, labels);
+    dev_state(&e, &raw, &o);
+    CHECK(e.stick_taunts == 1 && (o.buttons >> N_RIGHT & 1) && o.lx == 0, "stick right: right taunt, stick still");
+    raw.axis[RA_LEFTX] = 0; raw.axis[RA_LEFTY] = -32767;   /* (the raw y is down-positive: up is negative) */
+    dev_state(&e, &raw, &o);
+    CHECK((o.buttons >> N_UP & 1) && !(o.buttons >> N_DOWN & 1) && o.ly == 0, "stick up: up taunt");
+    raw.axis[RA_LEFTY] = 32767;
+    dev_state(&e, &raw, &o);
+    CHECK((o.buttons >> N_DOWN & 1) && !(o.buttons >> N_UP & 1), "stick down: down taunt");
+    raw.axis[RA_LEFTX] = -32767; raw.axis[RA_LEFTY] = 0;
+    dev_state(&e, &raw, &o);
+    CHECK((o.buttons >> N_LEFT & 1), "stick left: left taunt");
+    raw.axis[RA_LEFTX] = 10000;
+    dev_state(&e, &raw, &o);
+    CHECK(!(o.buttons & (1ull << N_RIGHT | 1ull << N_LEFT | 1ull << N_UP | 1ull << N_DOWN)), "a light push is no taunt");
+    load_text("[device default]\nstick_taunts = on\ndpad_moves = on\n");
+    Dev f = make_dev("g", "", "", "Xbox", "xboxone");
+    dev_configure(&f, labels);
+    Raw both = {1u << RB_DPAD_LEFT, {0, -32767, 0, 0, 0, 0}};
+    dev_state(&f, &both, &o);
+    CHECK((o.buttons >> N_UP & 1) && o.lx == -32767 && o.ly == 0, "together: the stick taunts, the D-pad walks");
+}
+
 int main(void) {
     test_keyboard();
     test_config();
@@ -494,6 +566,8 @@ int main(void) {
     test_sticks();
     test_slots();
     test_rumble();
+    test_dpad_moves();
+    test_stick_taunts();
     printf("%d of %d checks passed\n", checks - failures, checks);
     return failures != 0;
 }
