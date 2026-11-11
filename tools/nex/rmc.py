@@ -43,7 +43,8 @@ METHODS = {
           41: "FindMatchmakeSessionByGatheringIdDetail", 44: "UpdateMatchmakeSessionPart",
           48: "FindMatchmakeSessionByGatheringId", 49: "FindMatchmakeSessionBySingleGatheringId",
           50: "FindMatchmakeSessionByOwner", 51: "FindMatchmakeSessionByParticipant",
-          52: "BrowseMatchmakeSessionNoHolderNoResultRange", 54: "FindCommunityByOwner"},
+          52: "BrowseMatchmakeSessionNoHolderNoResultRange", 54: "FindCommunityByOwner",
+          55: "GetArenaId (SSBU)", 56: "method 56 (SSBU)", 58: "method 58 (SSBU)"},
     110: {7: "GetIntegerSettings", 8: "GetStringSettings", 11: "GetGameEvents"},
     120: {1: "StartRound", 2: "GetStartRoundParam", 3: "EndRound", 4: "EndRoundWithoutReport", 12: "GetOrCreateStats"},
 }

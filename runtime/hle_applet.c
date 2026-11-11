@@ -5,6 +5,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "host.h"
 #include "gpu_backend.h"
+#include <stdio.h>
 
 void watchdog_pause(int on);   /* debug_watchdog.c */
 int menu_osk_run(const char *title, const char *initial, int max_len, char *out, size_t cap);   /* gpu_menu.c */
@@ -135,7 +136,15 @@ HLE(_ZN2nn5swkbd12ShowKeyboardEPNS0_6StringERKNS0_15ShowKeyboardArgE) {
      * SSBU_SWKBD=dialog or the renderer can't show a frame again; letters, digits and - _ . : only */
     int ok = -1;
     const char *how = getenv("SSBU_SWKBD");
-    if (!(how && !_stricmp(how, "dialog")) && !k.multiline) {
+    if (how && !_strnicmp(how, "text:", 5)) {
+        /* (tests: headless runs walked by SSBU_SEQ) answered at once: that text, or the game's own when empty */
+        if (how[5]) MultiByteToWideChar(CP_UTF8, 0, how + 5, -1, k.text, 1024);
+        char asked[200];
+        WideCharToMultiByte(CP_UTF8, 0, k.header[0] ? k.header : k.guide, -1, asked, sizeof asked, NULL, NULL);
+        fprintf(stderr, "[swkbd] \"%s\" (%d to %d characters%s) answered with SSBU_SWKBD's text (%d characters)\n", asked,
+                k.min_len, k.max_len, k.multiline ? ", several lines" : "", (int)wcslen(k.text));
+        ok = 1;
+    } else if (!(how && !_stricmp(how, "dialog")) && !k.multiline) {
         char title[200], initial[64], typed[64];
         WideCharToMultiByte(CP_UTF8, 0, k.header[0] ? k.header : k.guide, -1, title, sizeof title, NULL, NULL);
         WideCharToMultiByte(CP_UTF8, 0, k.text, -1, initial, sizeof initial, NULL, NULL);
@@ -169,6 +178,7 @@ HLE(_ZN2nn5swkbd12ShowKeyboardEPNS0_6StringERKNS0_15ShowKeyboardArgE) {
  * macOS: an alert over the game's window (macos/window.m: AppKit's, on the main thread; it shows
  * in the game's full-screen space too, and takes the keyboard), else the terminal's. */
 #include <spawn.h>
+#include <strings.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -324,8 +334,14 @@ HLE(_ZN2nn5swkbd12ShowKeyboardEPNS0_6StringERKNS0_15ShowKeyboardArgE) {
     utf8_of(initial, ni, init8, sizeof init8);
     int ok;
     size_t n;
+    const char *how = getenv("SSBU_SWKBD");
     for (;;) {
-        ok = ask_text(prompt, init8, multiline, text8, sizeof text8);
+        if (how && !strncasecmp(how, "text:", 5)) {   /* (tests: answered at once, as on Windows) */
+            snprintf(text8, sizeof text8, "%s", how[5] ? how + 5 : init8);
+            fprintf(stderr, "[swkbd] answered with SSBU_SWKBD's text (%d bytes)\n", (int)strlen(text8));
+            ok = 1;
+        } else
+            ok = ask_text(prompt, init8, multiline, text8, sizeof text8);
         n = utf16_of(ok ? text8 : init8, answer, sizeof answer / sizeof *answer);
         if ((int)n > max_len) answer[n = (size_t)max_len] = 0;
         if (!ok || (int)n >= min_len) break;
