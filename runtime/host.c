@@ -15,6 +15,7 @@
 #include <stdlib.h>
 
 #include "host.h"
+char rt_romfs_warning[320];   /* (hle_fs.c fills it: unconfirmed game data, for crash reports) */   /* (every platform) */
 #include "clock.h"
 #include "display.h"
 #include "hookable.h"
@@ -377,6 +378,7 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
         out(": %s address %s", e->ExceptionRecord->ExceptionInformation[0] == 8 ? "executing" : e->ExceptionRecord->ExceptionInformation[0] ? "writing" : "reading",
             rt_describe(e->ExceptionRecord->ExceptionInformation[1], name, sizeof name));
     out("\n");
+    if (rt_romfs_warning[0]) out("%s\n", rt_romfs_warning);   /* (hle_fs.c: wrong game data can be the cause) */
     /* (an address in guest memory that is not mapped: what the kernel's map says, and its recent changes there - the
      * r9n_1 crash, an alias address read on the character select screen while not committed) */
     u64 fault_addr = code == EXCEPTION_ACCESS_VIOLATION ? (u64)e->ExceptionRecord->ExceptionInformation[1] : 0;
@@ -624,6 +626,7 @@ static void on_fault(int sig, siginfo_t *si, void *ucv) {
     if (sig == SIGSEGV || sig == SIGBUS) out(": %s address %s", writing ? "writing" : "reading", rt_describe(addr, name, sizeof name));
 #endif
     out("\n");
+    if (rt_romfs_warning[0]) out("%s\n", rt_romfs_warning);   /* (hle_fs.c: wrong game data can be the cause) */
     out("host pc %#llx (thread %d %s):\n", pc, (int)me, rt_thread_description(me));
     host_frame("  ", (void *)pc);
     void *frames[64];
@@ -680,6 +683,7 @@ _Noreturn void rt_fatal(const char *fmt, ...) {
     va_end(ap);
     report_open("stopped", report, sizeof report);
     out("\n*** stopped during %s: %s\n", phase, text);
+    if (rt_romfs_warning[0]) out("%s\n", rt_romfs_warning);
     rt_backtrace();
     report_close(report);
     fflush(stderr);

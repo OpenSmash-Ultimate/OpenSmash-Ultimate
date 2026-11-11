@@ -118,6 +118,29 @@ static HANDLE rom_file_open(const char *path) {
     return h;
 }
 
+/* romfs.unverified.txt beside romfs.cfg (tools/update.py): 16 KB blocks of the updated RomFS whose
+ * bytes could not be confirmed against the update's hashes, one "<block> <image offset>" line each
+ * (what each holds indented below it). A player's merged base left LoupeSubstance's model files
+ * wrong there, and the game crashed at boot with nothing to say why: every crash report now
+ * carries this line (host.c). Empty when there is no such file. */
+/* (rt_romfs_warning: host.c's, which every build links - a crash report reads it) */
+
+static void rom_unverified_note(void) {
+    char path[1100], line[512];
+    snprintf(path, sizeof path, "%s/romfs.unverified.txt", rt_data_dir);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    unsigned blocks = 0;
+    while (fgets(line, sizeof line, f))
+        if (line[0] >= '0' && line[0] <= '9') blocks++;   /* (not "#" notes, nor the indented lines under a block) */
+    fclose(f);
+    if (!blocks) return;
+    snprintf(rt_romfs_warning, sizeof rt_romfs_warning,
+             "game data: %u blocks of 16 KB unconfirmed (dump/modules/romfs.unverified.txt) - the base had an update "
+             "merged in; a crash may come from them", blocks);
+    fprintf(stderr, "[fs] warning: %s\n", rt_romfs_warning);
+}
+
 /* romfs.cfg: "<file>\n<byte offset>\n" (the image in place in one file), or "layered\n<layer
  * map>\n<source 0>\n<source 1>...\n" (tools/update.py). */
 static void rom_open(void) {
@@ -152,6 +175,7 @@ static void rom_open(void) {
         rom.file = rom_file_open(path);
     }
     fclose(f);
+    rom_unverified_note();
     u64 h[10];
     if (!rom_read(0, h, sizeof h) || h[0] != 0x50) rt_fatal("%s: no RomFS image there", cfg);
     rom.dirs = malloc(h[4]);
