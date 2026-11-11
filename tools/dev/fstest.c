@@ -30,6 +30,7 @@
 #define FS_TEST
 #include <stdarg.h>
 #include "../../runtime/hle_fs.c"
+char rt_romfs_warning[320];   /* (host.c's, not linked here) */
 #ifndef _WIN32
 #include <sys/stat.h>
 #endif

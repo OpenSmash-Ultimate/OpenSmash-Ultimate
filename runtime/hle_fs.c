@@ -123,7 +123,7 @@ static HANDLE rom_file_open(const char *path) {
  * (what each holds indented below it). A player's merged base left LoupeSubstance's model files
  * wrong there, and the game crashed at boot with nothing to say why: every crash report now
  * carries this line (host.c). Empty when there is no such file. */
-char rt_romfs_warning[320];
+/* (rt_romfs_warning: host.c's, which every build links - a crash report reads it) */
 
 static void rom_unverified_note(void) {
     char path[1100], line[512];

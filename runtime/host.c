@@ -15,6 +15,7 @@
 #include <stdlib.h>
 
 #include "host.h"
+char rt_romfs_warning[320];   /* (hle_fs.c fills it: unconfirmed game data, for crash reports) */   /* (every platform) */
 #include "clock.h"
 #include "display.h"
 #include "hookable.h"
