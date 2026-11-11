@@ -2,6 +2,7 @@
  * entries by frame & (RBN_RING - 1), and every entry keeps its frame number too, so one left from
  * an older lap is never taken for the current frame. */
 #include <string.h>
+#include <stdlib.h>
 #include "hle_rb_net.h"
 
 #define MASK (RBN_RING - 1)
@@ -72,6 +73,7 @@ int rbn_local_get(uint32_t frame, RbnPad *out) {
 }
 uint32_t rbn_local_newest(void) { return local_newest; }
 
+long long rbn_miss[5];   /* wrong guesses: buttons; left stick only; right stick only; triggers only; of the sticks', under 2048 apart */
 void rbn_remote(int p, uint32_t frame, RbnPad pad) {
     if (p < 0 || p >= nplayers || p == local_player || !frame) return;
     Remote *r = &remote[p];
@@ -82,6 +84,15 @@ void rbn_remote(int p, uint32_t frame, RbnPad pad) {
     r->pad[frame & MASK] = pad; r->at[frame & MASK] = frame;
     while (r->at[(r->newest + 1) & MASK] == r->newest + 1) r->newest++;
     if (r->guess_at[frame & MASK] == frame) {
+        const RbnPad *g = &r->guess[frame & MASK];
+        if (!rbn_same(g, &pad)) {   /* (a wrong guess, by kind: the report's census of what mispredicts) */
+            int d = 0;
+            if (g->buttons != pad.buttons) rbn_miss[0]++;
+            else if (g->lx != pad.lx || g->ly != pad.ly) { rbn_miss[1]++; d = abs(g->lx - pad.lx) > abs(g->ly - pad.ly) ? abs(g->lx - pad.lx) : abs(g->ly - pad.ly); }
+            else if (g->rx != pad.rx || g->ry != pad.ry) { rbn_miss[2]++; d = abs(g->rx - pad.rx) > abs(g->ry - pad.ry) ? abs(g->rx - pad.rx) : abs(g->ry - pad.ry); }
+            else rbn_miss[3]++;
+            if (d && d < 2048) rbn_miss[4]++;
+        }
         if (!rbn_same(&r->guess[frame & MASK], &pad) && (!mismatch || frame < mismatch)) mismatch = frame;
         r->guess_at[frame & MASK] = 0;
     }

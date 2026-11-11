@@ -28,6 +28,7 @@ int rbn_local_get(uint32_t frame, RbnPad *out);
 uint32_t rbn_local_newest(void);
 /* a pad of player p for `frame` from the network (one already known: ignored) */
 void rbn_remote(int p, uint32_t frame, RbnPad pad);
+extern long long rbn_miss[5];   /* (wrong guesses by kind: buttons, left stick, right stick, triggers; sticks under 2048 apart) */
 uint32_t rbn_remote_newest(int p);                     /* the newest frame such that every one up to it arrived */
 /* the pad player p uses at `frame`: the real one, else a guess (*guessed = 1), checked when the real one comes */
 RbnPad rbn_get(int p, uint32_t frame, int *guessed);
