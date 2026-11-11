@@ -32,6 +32,7 @@
 
 #include "display.h"
 #include "gpu_backend.h"
+#include "gpu_nvcache.h"
 #include "gpu_shader.h"
 #include "gpu_shader_cache.h"
 #include "gpu_spirv.h"
@@ -4630,6 +4631,7 @@ const GfxBackend *vk_backend_start(char *why, size_t size, int automatic) {
 }
 
 static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
+    nv_cache_vulkan_setup(cache_dir());   /* (NVIDIA's driver cache in the game's folder: before the driver loads, gpu_nvcache.c) */
     PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)vk_loader(why, size);
     if (!gipa) return NULL;
     InitializeCriticalSection(&lock);
@@ -4814,6 +4816,7 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
             float_controls ? ", float controls" : "", nframes, render_scale, have_immediate ? " immediate" : "", have_mailbox ? " mailbox" : "");
     makers_start();
     warm_start();
+    if (limits_vendor == 0x10de) nv_cache_check(1);
     return &VULKAN;
 }
 
