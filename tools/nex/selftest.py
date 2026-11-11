@@ -243,4 +243,7 @@ if __name__ == "__main__":
     main()
     print("---- what untrusted clients may not do (nex/test_hardening.py)")
     from . import test_hardening
-    sys.exit(test_hardening.run())
+    failed = test_hardening.run()
+    print("---- Battle Arenas (nex/test_arenas.py)")
+    from . import test_arenas
+    sys.exit(failed or test_arenas.run())

@@ -12,6 +12,7 @@ These switches make a scripted run of the game quicker and less dependent on the
 | `SSBU_SEQ=<steps>` | Player 1's input as a sequence counted in the game's frames, not in seconds. Empty, or with no steps, it is the same as unset. |
 | `SSBU_SEQ_LOG=<n>` | With `SSBU_SEQ`: logs the draw calls of the last frame shown every n polls, to find the ranges for `@draws`. |
 | `SSBU_SEQ_KEYBOARD=1` | With `SSBU_SEQ`: the keyboard still plays. It is ignored otherwise. |
+| `SSBU_SWKBD=text:<text>` | The game's software keyboard (an arena's name, a room's comment) answered at once with that text, or with the game's own text when it is empty (`text:`): no text grid or dialog, for headless runs walked by `SSBU_SEQ`. `SSBU_SWKBD=dialog` (Windows) asks with a dialog box instead of the grid. |
 | `SSBU_SEQ2=<steps>` | With `SSBU_SEQ`: player 2's input as its own sequence (same language, counted in player 2's polls; marks such as `@fight` are shared). Player 2 is connected as a Pro Controller and its pad is not read. Use it with `p2=human`. |
 | (no `SSBU_SEQ2`, `p2=human`) | A pad connected on controller slot 2 plays player 2 in the debug match. With `tools/dev/fakexi.c` built as `xinput1_4.dll` beside a test exe it is a scripted XInput pad (`FAKEXI_GO`, `FAKEXI_MASK`): controller remaps can be tested without a pad. |
 | `SSBU_SKIP_MOVIES=<n>` | Every movie's stream ends after n samples (`1` means 12), and the game ends the movie as it ends any movie. |

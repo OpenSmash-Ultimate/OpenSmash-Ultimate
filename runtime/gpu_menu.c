@@ -135,7 +135,7 @@ enum { K_INFO, K_CHOICE, K_ACTION, K_TEXT };
 enum { W_NONE, W_NOW, W_RESTART };
 enum {
     R_NONE, R_WINDOW, R_PACING, R_LATENCY, R_CURSOR, R_OVERLAY, R_SIZE, R_SCALE, R_GPU,
-    R_PAD, R_PAD_PLAYER, R_PAD_LAYOUT, R_PAD_DEADZONE, R_PAD_RUMBLE, R_PAD_TRIGGER, R_PAD_REMAP, R_PAD_TEST, R_PAD_RESET,
+    R_PAD, R_PAD_PLAYER, R_PAD_LAYOUT, R_PAD_DEADZONE, R_PAD_RUMBLE, R_PAD_TRIGGER, R_PAD_DPAD, R_PAD_STICKTAUNT, R_PAD_REMAP, R_PAD_TEST, R_PAD_RESET,
     R_PAD_STICKS, R_PAD_RECAL, R_STICKS_BACK,
     R_RUMBLE, R_KEYBOARD, R_BACKGROUND, R_PADS_FILE,
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
@@ -966,6 +966,10 @@ static void build(void)
                 snprintf(r->value, sizeof r->value, "%d%%", pad->rumble);
                 r = add(R_PAD_TRIGGER, K_CHOICE, W_NOW, "Trigger press point", "How far a trigger is pulled before it counts as ZL / ZR.");
                 snprintf(r->value, sizeof r->value, "%d%%", pad->trigger);
+                r = add(R_PAD_DPAD, K_CHOICE, W_NOW, "D-pad moves", "On: the D-pad drives the left stick (tap to walk, double-tap to dash) and no longer presses the taunt buttons. Off: the D-pad is the D-pad.");
+                snprintf(r->value, sizeof r->value, "%s", on_off(pad->dpad_moves));
+                r = add(R_PAD_STICKTAUNT, K_CHOICE, W_NOW, "Stick taunts", "On: the left stick's four directions press the taunt buttons and the stick no longer moves (use with D-pad moves). Off: the stick is the stick.");
+                snprintf(r->value, sizeof r->value, "%s", on_off(pad->stick_taunts));
                 add(R_PAD_REMAP, K_ACTION, W_NOW, "Buttons...", "Which control on this pad is each of the game's buttons.");
                 add(R_PAD_STICKS, K_ACTION, W_NOW, "Sticks...", "The sticks' numbers live: their centre, how far they reach, and the adapter's speed.");
                 add(R_PAD_TEST, K_ACTION, W_NONE, "Test rumble", "Rumbles this pad for half a second.");
@@ -1444,6 +1448,14 @@ static void change(const Row *row, int dir)
             set_pad(pad, "trigger_threshold", v);
         }
         break;
+    case R_PAD_STICKTAUNT:
+        if (pad)
+            set_pad(pad, "stick_taunts", pad->stick_taunts ? "off" : "on");
+        break;
+    case R_PAD_DPAD:
+        if (pad)
+            set_pad(pad, "dpad_moves", pad->dpad_moves ? "off" : "on");
+        break;
     case R_KEYBOARD:
         snprintf(v, sizeof v, "%d", cycle(pad_keyboard_slot() + 1, PAD_SLOTS + 1, dir));
         settings_ini_set(pad_ini_path(), "general", "keyboard_player", v);
@@ -1644,7 +1656,7 @@ static void action(const Row *row)
     case R_PAD_RESET:
         if (pad)
         {
-            static const char *const KEYS[] = {"layout", "deadzone", "rumble", "trigger_threshold"};
+            static const char *const KEYS[] = {"layout", "deadzone", "rumble", "trigger_threshold", "dpad_moves", "stick_taunts"};
             char section[128];
             pad_section(pad, section, sizeof section);
             for (u32 i = 0; i < sizeof KEYS / sizeof *KEYS; i++)

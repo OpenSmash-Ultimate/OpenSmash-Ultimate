@@ -453,7 +453,7 @@ static void image_layout(VkCommandBuffer c, VkImage image, VkImageAspectFlags as
 
 /* Draws go into a rendering (dynamic rendering) kept open while the draws after it use the same
  * attachments; anything else recorded (clears, copies, blits, uploads) ends it first: outside(). */
-static struct { int active; u32 ncolor; VkImageView color[8], depth; VkImage images[9]; } rp;
+static struct { int active, depth_written; u32 ncolor; VkImageView color[8], depth; VkImage images[9]; } rp;
 static void end_rendering(void) {
     if (!rp.active) return;
     VkCommandBuffer c = frames[frame_at].cmd;
@@ -2864,6 +2864,7 @@ static WarmShader *warm_ready(const WarmKey *k) {
  * finish - the driver crashed on a record, or the game was closed in those seconds - so the list is started
  * again rather than given to the driver once more: one start without warmed pipelines, not a crash at each. */
 static char warm_marker[1200];
+#define WARM_RETRIES 3   /* (unfinished warm starts in a row before the list is started again) */
 
 static DWORD WINAPI warm_main(void *unused) {
     (void)unused;
@@ -2959,11 +2960,23 @@ static void warm_start(void) {
     int again = 0;
     snprintf(list, sizeof list, "%s/vulkan_%04x_%04x.warm", cache_dir(), limits_vendor, limits_device);
     snprintf(warm_marker, sizeof warm_marker, "%s.warming", list);
+    /* (A warm start that did not finish leaves its marker, holding how many in a row did not. Most are a game closed or
+     * killed during the shader loading, not a bad record: the list is warmed again; only after WARM_RETRIES unfinished
+     * ones in a row is it started again - 2026-11-11: a single killed start used to throw the whole list away, and the
+     * next start then compiled every pipeline at its first draw.) */
+    int tries = 0;
     if (GetFileAttributesA(warm_marker) != INVALID_FILE_ATTRIBUTES) {
-        fprintf(stderr, "[vulkan] warm start: the last one did not finish (%s): the list is started again, nothing is warmed this time\n", warm_marker);
-        /* (A list that can't be removed - read-only, held open - keeps its marker, and no start warms from it.) */
-        if (DeleteFileA(list) || GetLastError() == ERROR_FILE_NOT_FOUND) DeleteFileA(warm_marker);
-        else again = 1;
+        FILE *mf = fopen(warm_marker, "rb");
+        if (mf) { if (fscanf(mf, "%d", &tries) != 1) tries = 1; fclose(mf); }
+        if (tries < 1) tries = 1;
+        if (tries < WARM_RETRIES)
+            fprintf(stderr, "[vulkan] warm start: the last one did not finish (%s, %d in a row): warmed again\n", warm_marker, tries);
+        else {
+            fprintf(stderr, "[vulkan] warm start: %d in a row did not finish (%s): the list is started again, nothing is warmed this time\n", tries, warm_marker);
+            /* (A list that can't be removed - read-only, held open - keeps its marker, and no start warms from it.) */
+            if (DeleteFileA(list) || GetLastError() == ERROR_FILE_NOT_FOUND) { DeleteFileA(warm_marker); tries = 0; }
+            else again = 1;
+        }
     }
     warm_list_open();
     if (!warm_nrecords) return;
@@ -2988,7 +3001,7 @@ static void warm_start(void) {
     if (n > 3) n = 3;
     InterlockedExchange(&warm_running, (LONG)n);
     FILE *mark = fopen(warm_marker, "wb");
-    if (mark) fclose(mark);
+    if (mark) { fprintf(mark, "%d", tries + 1); fclose(mark); }
     else fprintf(stderr, "[vulkan] warm start: no marker file (%s): one that does not finish will not be noticed\n", warm_marker);
     for (u32 i = 0; i < n; i++) {
         HANDLE t = CreateThread(NULL, 64ull << 20, warm_main, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
@@ -3007,6 +3020,19 @@ static u32 vk_debug(void) {   /* (SSBU_GFX_DEBUG, as gpu_d3d11.c reads it) */
     static u32 v;
     if (!checked++ && getenv("SSBU_GFX_DEBUG")) v = (u32)strtoul(getenv("SSBU_GFX_DEBUG"), NULL, 0);
     return v;
+}
+/* Two-sided stencil whose back faces have their own reference or masks, with WINDOW_ORIGIN.FLIP_Y:
+ * the faces Vulkan (as Direct3D in gpu_d3d11.c) calls front take the hardware's back state, and the
+ * other way round - the whole state: test and operations as well as reference and masks (the KO
+ * zooms' effects, whose two faces have different tests, need the test to go with its reference). */
+static int stencil_faces_swapped(const u32 *regs) {
+    static int force_swap = -2;   /* debug: SSBU_STENCIL_SWAP=0/1 overrides */
+    if (force_swap == -2) force_swap = getenv("SSBU_STENCIL_SWAP") ? atoi(getenv("SSBU_STENCIL_SWAP")) != 0 : -1;
+    if (!(regs[M_TWO_SIDED_STENCIL] & 1)) return 0;
+    if ((regs[M_BACK_STENCIL_REF] & 0xFF) == (regs[M_STENCIL_REF] & 0xFF) && (regs[M_BACK_STENCIL_MASK] & 0xFF) == (regs[M_STENCIL_MASK] & 0xFF) &&
+        (regs[M_BACK_STENCIL_FUNC_MASK] & 0xFF) == (regs[M_STENCIL_FUNC_MASK] & 0xFF))
+        return 0;
+    return force_swap >= 0 ? force_swap : (int)((regs[M_WINDOW_ORIGIN] >> 4) & 1);
 }
 static u32 instance_counter;
 static float f32_of(u32 bits);
@@ -3071,6 +3097,13 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
         /* (Direct3D 11 binds 16 samplers: the rest are its default one) */
         b->smp[k] = k < 16 ? get_sampler(tsc) : s->info.tex[k].shadow ? default_compare : default_sampler;
         params->swz[stage][k] = (tic[0] >> 19) & 0xFFF;
+        /* a 24-bit depth buffer: the hardware's depth is green (S8Z24), this view's red (gpu_d3d11.c) */
+        const Surface *z = b->sampled[k];
+        if (z && z->depth && (z->format == 0x14 || z->format == 0x15 || z->format == 0x16)) {
+            u32 sw = params->swz[stage][k], out = 0;
+            for (int i = 0; i < 4; i++) { u32 c = (sw >> (3 * i)) & 7; out |= (c == 3 ? 2u : c == 2 ? 3u : c) << (3 * i); }
+            params->swz[stage][k] = out;
+        }
         if (scale != 1.0f) params->swz[stage][k] |= (u32)(scale * 4096.0f + 0.5f) << 16;
     }
     if (vk_timing) vk_ns_res[2] += (rt_clock_ns() - t0) * TIMING_EVERY;
@@ -3333,6 +3366,10 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         key.sback[0] = stencil_op(regs[M_BACK_STENCIL_OP_FAIL]); key.sback[1] = stencil_op(regs[M_BACK_STENCIL_OP_ZFAIL]);
         key.sback[2] = stencil_op(regs[M_BACK_STENCIL_OP_ZPASS]); key.sback[3] = compare_func(regs[M_BACK_STENCIL_FUNC]);
     }
+    if (key.stencil_test && stencil_faces_swapped(regs)) {   /* (the references and masks below swap with them) */
+        u32 t[4];
+        memcpy(t, key.sfront, sizeof t); memcpy(key.sfront, key.sback, sizeof t); memcpy(key.sback, t, sizeof t);
+    }
     if (!key.depth_test) key.depth_func = 8;
     if (!key.stencil_test) { memset(key.sfront, 0, sizeof key.sfront); memset(key.sback, 0, sizeof key.sback); key.sfront[3] = key.sback[3] = 8; }
     u32 ncolor = 0;
@@ -3419,16 +3456,25 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     if (ps) stage_resources(regs, cb, SHADER_PIXEL, ps, &params, &pb);
 
     /* a render target this draw also samples reads as nothing (Direct3D unbinds it); one an open rendering
-     * wrote reads what it wrote (the rendering ends first) */
-    int ends = 0;
+     * wrote reads what it wrote (the rendering ends first). Except its own depth target, for a draw that
+     * writes neither depth nor stencil (soft particles, the KO zooms' backgrounds: they fade by the scene
+     * depth): it stays the attachment, read-only for the draw, in the GENERAL layout it always has here,
+     * and is sampled too - after a rendering that wrote it has ended, so the writes are seen. */
+    int ends = 0, depth_read_only = !key.depth_write && !key.stencil_test;
     for (int st = 0; st < 2; st++) {
         StageBinds *b = st ? &pb : &vb;
         u32 ntex = st ? (ps ? ps->info.ntex : 0) : vs->info.ntex;
         for (u32 k = 0; k < ntex && k < 32; k++) {
             Surface *s = b->sampled[k];
             if (!s) continue;
-            int own = s == zs;
+            int own = s == zs && !depth_read_only;
             for (u32 i = 0; i < ncolor; i++) own |= rts[i] == s;
+            if (s == zs && !own) {
+                static int told;
+                if (!told++) fprintf(stderr, "[gfx] vulkan: a draw samples its own depth target, read-only (soft particles)\n");
+                ends |= rp.active && rp.depth_written && rp.images[8] == s->image;
+                continue;
+            }
             if (own) { b->tex[k] = VK_NULL_HANDLE; continue; }
             for (u32 i = 0; rp.active && i < 9; i++) ends |= rp.images[i] == s->image;
         }
@@ -3531,6 +3577,7 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         memset(rp.images, 0, sizeof rp.images);
         for (u32 i = 0; i < ncolor; i++) rp.images[i] = rts[i] ? rts[i]->image : VK_NULL_HANDLE;
         rp.images[8] = zs ? zs->image : VK_NULL_HANDLE;
+        rp.depth_written = 0;
         vk_stat_passes++;
     }
     /* (state the command buffer already has is not set again: bound) */
@@ -3559,9 +3606,7 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     u32 bref = regs[M_BACK_STENCIL_REF] & 0xFF, bwrite = regs[M_BACK_STENCIL_MASK] & 0xFF, bread = regs[M_BACK_STENCIL_FUNC_MASK] & 0xFF;
     int split = key.stencil_test && (regs[M_TWO_SIDED_STENCIL] & 1) && (bref != fref || bwrite != fwrite || bread != fread);
     if (!split) { bref = fref; bwrite = fwrite; bread = fread; }
-    static int force_swap = -2;
-    if (force_swap == -2) force_swap = getenv("SSBU_STENCIL_SWAP") ? atoi(getenv("SSBU_STENCIL_SWAP")) != 0 : -1;
-    int swap_faces = split && (force_swap >= 0 ? force_swap : (int)((regs[M_WINDOW_ORIGIN] >> 4) & 1));
+    int swap_faces = key.stencil_test && stencil_faces_swapped(regs);
     u32 stencil[6] = {swap_faces ? bref : fref, swap_faces ? fref : bref, swap_faces ? bwrite : fwrite, swap_faces ? fwrite : bwrite,
                       swap_faces ? bread : fread, swap_faces ? fread : bread};
     if (!bound.have || memcmp(bound.stencil, stencil, sizeof stencil)) {
@@ -3582,6 +3627,7 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         }
         vkCmdDrawIndexed(c, regs[M_DRAW_INDEX_COUNT], 1, 0, vs->glslang ? 0 : (int32_t)regs[M_GLOBAL_BASE_VERTEX], 0);
     } else vkCmdDraw(c, regs[M_VERTEX_ARRAY_COUNT], 1, vs->glslang ? 0 : regs[M_VERTEX_ARRAY_START], 0);
+    if (key.depth_write || key.stencil_test) rp.depth_written = 1;
     /* (Direct3D's SV_VertexID leaves out the base vertex and the first vertex - vkd3d-shader's SPIR-V reads it as
      * VertexIndex - BaseVertex - while glslang's is VertexIndex: for its programs the draw gives no offset, as the
      * vertices are pulled by the program, not by the input assembler, so the offset only ever showed in the index) */

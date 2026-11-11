@@ -158,6 +158,8 @@ The first time the game starts, it writes **`controllers.ini`** into the WindowS
 | `deadzone` | How much of the stick's travel around the centre is ignored, 0–50 percent. | `0` |
 | `rumble` | Rumble strength, 0–100 percent. `0` turns it off. (In `[general]`: `0` turns rumble off for every controller, `1` leaves each at its own strength.) | `100` (`1` in `[general]`) |
 | `trigger_threshold` | How far a trigger must be pulled to press ZL or ZR, 1–99 percent. (On a GameCube controller, the game itself decides how far L and R are pulled.) | `25` |
+| `stick_taunts` | `on`: the left stick's four directions (past half way) press the D-pad's buttons, the taunts, and the stick no longer moves; meant to go with `dpad_moves = on`. Also in Settings, Controllers, "Stick taunts". | `off` |
+| `dpad_moves` | `on`: the D-pad drives the left stick (full tilt: tap to walk, double-tap to dash; with the stick, the larger wins) and stops pressing its own buttons, the taunts. Also in Settings, Controllers, "D-pad moves". | `off` |
 | *remaps* | `<Switch button> = <pad control>`, for example `ZR = rightshoulder`. The file lists every name. | |
 
 The file has these sections:
