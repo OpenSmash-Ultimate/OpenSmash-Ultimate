@@ -704,9 +704,11 @@ void kernel_map_status(void) {
 u64 rb_mem_changed[RB_CHANGES][2];
 volatile LONG rb_mem_nchanged;
 static int rb_switch = -1;   /* kernel_rb_switch(), once */
+void rb_shadow_note(u64 at, u64 size);   /* (hle_rb_state.c: the shadow's copies of pages it shares with memory, made now) */
 void rb_mem_note(u64 at, u64 size) {   /* (host.c too: modules loaded) */
     if (rb_switch < 0) rb_switch = kernel_rb_switch();
     if (!rb_switch) return;
+    rb_shadow_note(at, size);
     LONG i = InterlockedIncrement(&rb_mem_nchanged) - 1;
     if (i < RB_CHANGES) { rb_mem_changed[i][0] = at; rb_mem_changed[i][1] = size; }
 }
