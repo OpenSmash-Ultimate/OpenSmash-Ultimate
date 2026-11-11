@@ -93,7 +93,8 @@ size_t rbn_hello_build(uint8_t *buf, size_t cap, const RbnHello *h);
 /* The input delay for a round trip (ms), when it is left to the handshake (RB_DELAY=auto): 1 up to 50 ms,
  * one more for each 50 ms, at most 5. The rest of the trip the rollback covers (RBN_MAX_BACK frames). */
 int rbn_delay_for_rtt(double rtt_ms);
-/* (SSBU_RB_NET=online) Less delay, more rollback: the one-way trip in frames, less one, from 2 to 4 (1 under 15 ms: a home network). Measured on the
+/* (SSBU_RB_NET=online) Less delay, more rollback: the one-way trip in frames, less one (from 100 ms one way, not less one), from 2 to 9
+ * (1 under 15 ms: a home network). Measured on the
  * game (docs/MULTIPLAYER.md): at ~110 ms round trip delay 2 rolls back 2-3 frames, re-run in 10-11 ms (a frame shown
  * stays under 16.7 ms), where delay 1 rolls back 3-5 in 17-20 ms (frames late) and the general rule's 4 adds 67 ms. */
 int rbn_online_delay_for_rtt(double rtt_ms);
