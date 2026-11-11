@@ -24,7 +24,7 @@ The build extracts and compiles the 98 modules in the game archive's `prebuilt:/
 
 ## Turn on your DLC
 
-Without `aoc.cfg`, the game sees no DLC. **With `Install WindowSmash.bat`**, put your DLC `.nsp` files in the game folder you give it (loose, or in a folder named `dlc` there), next to the game and its 13.0.5 update, and run it: it makes `aoc.cfg` itself, and reads the DLC again each time it runs, so DLC added after the first build counts too. With an emulator's installed-content folder (yuzu's or Ryujinx's `registered`), install the DLC in the emulator and give that folder.
+Without `aoc.cfg`, the game sees no DLC. **With `OpenSmash.exe`**, put your DLC `.nsp` files in the game folder you give it (loose, or in a folder named `dlc` there), next to the game and its 13.0.5 update, and run it: it makes `aoc.cfg` itself, and reads the DLC again each time it runs, so DLC added after the first build counts too. With an emulator's installed-content folder (yuzu's or Ryujinx's `registered`), install the DLC in the emulator and give that folder.
 
 To make `aoc.cfg` by hand from your own DLC files:
 

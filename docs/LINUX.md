@@ -13,7 +13,7 @@ The same recompiled game as the Windows build, as a native x86-64 Linux program.
 There are two ways to get it:
 
 - **Install it on Linux.** `install-windowsmash.sh` sets up WindowSmash on the Linux machine and
-  builds the game there from your own files, as `Install WindowSmash.bat` does on Windows. See
+  builds the game there from your own files, as `OpenSmash.exe` does on Windows. See
   [Installing on Linux](#installing-on-linux).
 - **Copy over a package from Windows.** A Windows PC that has built the game can make an
   `ssbu-linux` folder to copy to a Linux machine or virtual machine. See [Setting up](#setting-up).
@@ -124,11 +124,11 @@ The launchers work like the Windows ones: `play-ssbu.sh` at the top of the folde
 
 | Launcher | On Windows | What it does |
 | :--- | :--- | :--- |
-| `play-ssbu.sh` | `Play SSBU.bat` | The game, online through the lobby in `online_server.txt` ([Multiplayer](MULTIPLAYER.md)). |
-| `launchers/play-ssbu-offline.sh` | `Play SSBU Offline.bat` | The game, offline. |
+| `play-ssbu.sh` | `OpenSmash.exe` | The game, online through the lobby in `online_server.txt` ([Multiplayer](MULTIPLAYER.md)). |
+| `launchers/play-ssbu-offline.sh` | the launcher's Offline lobby setting | The game, offline. |
 | `launchers/host-ssbu-netplay.sh`, `launchers/join-ssbu-netplay.sh` | `Host/Join SSBU Netplay.bat` | A private room. |
 | `launchers/unlock-all-fighters.sh` | `Unlock All Fighters.bat` | The unlock tool, on this folder's save. Run it with the game closed. |
-| `launchers/prepare-shaders.sh` | `Prepare Shaders.bat` | Compiles all of the game's shaders in advance ([below](#shaders-and-first-time-stutter)). |
+| `launchers/prepare-shaders.sh` | the launcher's shader preparation | Compiles all of the game's shaders in advance ([below](#shaders-and-first-time-stutter)). |
 
 The game reads its data in place from your game folder, or from the decrypted copy in
 `dump/modules` when the game had to be decrypted first. If your game folder is on a disk or shared
@@ -267,7 +267,7 @@ with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> and press <kbd>Enter</kbd>.
 
    The log goes to `build/play.log` and to the terminal.
 
-`run.sh` plays online, as `Play SSBU.bat` does on Windows: the game joins the online lobby named
+`run.sh` plays online, as `OpenSmash.exe` does on Windows: the game joins the online lobby named
 in `online_server.txt`, and Local Wireless lists every room that players in the same lobby
 create, on Windows or Linux ([Multiplayer](MULTIPLAYER.md)). The first time, it asks for the name other
 players see and keeps it in `online_name.txt`.
@@ -391,7 +391,7 @@ The same threads also decode a sRGB block-compressed texture's clear margin off 
 thread (the stock icons' masks): the compressed texture draws until the decoded copy is ready, so
 a texture's first use can show its margin as a black square for a frame.
 `SSBU_ASYNC_DECODE=0` decodes on the render thread as before.
-The Windows build's ahead-of-time shaders (`launchers\Prepare Shaders.bat`) aren't in the package (about
+The Windows build's ahead-of-time shaders (`python tools\shader_aot.py`) aren't in the package (about
 1.5 GB). On Linux, `bash launchers/prepare-shaders.sh` makes them, then draws them once through
 DXVK so its pipelines and the driver's GPU code are made in advance
 ([above](#shaders-and-first-time-stutter)).
@@ -400,7 +400,7 @@ DXVK so its pipelines and the driver's GPU code are made in advance
 
 | Launcher | What it does |
 | :--- | :--- |
-| `run-offline.sh` | The game without going online, as `launchers\Play SSBU Offline.bat` on Windows. |
+| `run-offline.sh` | The game without going online, as the launcher's Offline lobby setting on Windows. |
 | `host-netplay.sh`, `join-netplay.sh` | A private room, as `launchers\Host SSBU Netplay.bat` and `launchers\Join SSBU Netplay.bat` on Windows ([Multiplayer](MULTIPLAYER.md)). |
 | `unlock-all-fighters.sh` | The unlock tool, on this folder's save. Run it with the game closed. Like `launchers\Unlock All Fighters.bat`, it knows 13.0.5's save layout (it checks that this folder's game is 13.0.5) and changes nothing otherwise. |
 

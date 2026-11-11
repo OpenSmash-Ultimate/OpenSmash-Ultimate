@@ -56,17 +56,17 @@ Open Sans is a trademark of Google. Source is a trademark of Adobe Systems Incor
 
 Controller input can use [SDL3](https://www.libsdl.org/) (Simple DirectMedia Layer), copyright Sam Lantinga, under the [zlib license](https://github.com/libsdl-org/SDL/blob/main/LICENSE.txt).
 
-SDL3 is an external dependency: this repository contains no SDL source files or binaries. The runtime is compiled against the headers of the official SDL3 Windows development package (`deps/SDL3`, which `Install WindowSmash.bat` downloads from SDL's GitHub releases, or `SSBU_SDL3_DIR`) and loads `SDL3.dll` from the executable's folder at run time. A package that includes `SDL3.dll` should include that package's `LICENSE.txt` too.
+SDL3 is an external dependency: this repository contains no SDL source files or binaries. The runtime is compiled against the headers of the official SDL3 Windows development package (`deps/SDL3`, which `OpenSmash.exe` downloads from SDL's GitHub releases, or `SSBU_SDL3_DIR`) and loads `SDL3.dll` from the executable's folder at run time. A package that includes `SDL3.dll` should include that package's `LICENSE.txt` too.
 
 [`runtime/hle_padusb.c`](runtime/hle_padusb.c) reads Nintendo's GameCube adapter and the Switch 2 GameCube controller over USB without SDL. It is new code, written for Windows' own USB and HID libraries, but it follows SDL's HIDAPI GameCube and Switch 2 drivers, as its header says: from the Switch 2 driver it takes the controller's start-up commands, flash addresses and stick-calibration layout. SDL's drivers are under the zlib license above.
 
 ### Python
 
-`Install WindowSmash.bat` may put a copy of [Python](https://www.python.org/) (the embeddable package from python.org, under the [PSF license](https://docs.python.org/3/license.html)) into `deps/python`, with [pip](https://pip.pypa.io/) and the packages below, when the PC has no Python it can use. Nothing from it is distributed with OpenSmash-Ultimate.
+`OpenSmash.exe` may put a copy of [Python](https://www.python.org/) (the embeddable package from python.org, under the [PSF license](https://docs.python.org/3/license.html)) into `deps/python`, with [pip](https://pip.pypa.io/) and the packages below, when the PC has no Python it can use. Nothing from it is distributed with OpenSmash-Ultimate.
 
 ### The compiler: LLVM, and Microsoft's C runtime and Windows SDK
 
-`tools/msvc_deps.py` (which `Install WindowSmash.bat` and `launchers\Build WindowSmash.bat` run when the PC has no compiler) downloads two external dependencies onto the PC that builds the game. Neither is part of this repository or distributed with OpenSmash-Ultimate.
+`tools/msvc_deps.py` (which `OpenSmash.exe` and `python tools\build_game.py` run when the PC has no compiler) downloads two external dependencies onto the PC that builds the game. Neither is part of this repository or distributed with OpenSmash-Ultimate.
 
 - **LLVM** (`clang-cl`, `lld-link`, `llvm-lib` and clang's headers) into `deps/llvm`, from LLVM's official release on GitHub, under the [Apache License 2.0 with LLVM exceptions](https://llvm.org/LICENSE.txt).
 - **Microsoft's C runtime and Windows SDK** (headers and 64-bit libraries) into `deps/msvc`, from Microsoft's servers, under Microsoft's license terms for the Visual Studio Build Tools, which the tool shows and asks you to accept first. They are Microsoft's software, used to build the game on that PC; they are not for passing on. The game built with them links Microsoft's static C runtime, as it does when built with Visual Studio.

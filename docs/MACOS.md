@@ -9,7 +9,7 @@ Linux versions.
 - The game draws with **Metal**, through a renderer of its own that is new: the game's shaders are
   translated to Metal's shading language and compiled the first time each one is used.
 - The window, controllers and sound use **SDL3**.
-- `Install WindowSmash.command` sets it all up and builds the game, as `Install WindowSmash.bat` does
+- `Install WindowSmash.command` sets it all up and builds the game, as `OpenSmash.exe` does
   on Windows.
 
 As on Windows, the game must be version 13.0.5, its last update
@@ -143,12 +143,12 @@ Terminal window that shows the game's log as it goes; closing that window leaves
 | Launcher | On Windows | What it does |
 | :--- | :--- | :--- |
 | **Play SSBU** (`~/Applications`, Desktop) | the desktop shortcut | The game, online, through the lobby in `online_server.txt` ([Multiplayer](MULTIPLAYER.md)). It asks its questions in small windows and shows no log. |
-| `Play SSBU.command` | `Play SSBU.bat` | The same, with the log in Terminal. |
-| `launchers/Play SSBU Offline.command` | `Play SSBU Offline.bat` | The game, offline. |
+| `Play SSBU.command` | `OpenSmash.exe` | The same, with the log in Terminal. |
+| `launchers/Play SSBU Offline.command` | the launcher's Offline lobby setting | The game, offline. |
 | `launchers/Host SSBU Netplay.command` | `Host SSBU Netplay.bat` | Hosts a private room, and shows the address to give the others. |
 | `launchers/Join SSBU Netplay.command` | `Join SSBU Netplay.bat` | Joins a host's private room. |
 | `launchers/Unlock All Fighters.command` | `Unlock All Fighters.bat` | Unlocks every base-game fighter on your save ([DLC and unlocks](DLC-AND-UNLOCKS.md)). Close the game first. |
-| `launchers/Build WindowSmash.command` | `Build WindowSmash.bat` | Builds the game from your files, when the installer has set up the tools. |
+| `launchers/Build WindowSmash.command` | `python toolsuild_game.py` | Builds the game from your files, when the installer has set up the tools. |
 
 - The first time you play online, it asks for the name other players see and keeps it in
   `online_name.txt`.

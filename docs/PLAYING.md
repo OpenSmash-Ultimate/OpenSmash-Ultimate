@@ -20,22 +20,21 @@ Everything about playing once the game is built: how to start it, the controls, 
 
 ## Starting the game
 
-Everything starts from a launcher. `Play SSBU.bat` and `Install WindowSmash.bat` are in the WindowSmash folder; the others are in its `launchers` folder. Double-click the one you want:
+Everything starts from a launcher. `OpenSmash.exe` is in the WindowSmash folder; the others are in its `launchers` folder. Double-click the one you want:
 
 | Launcher | What it does |
 | :--- | :--- |
-| **`Play SSBU.bat`** | Opens the WindowSmash window (below), then starts the game and joins the online lobby, so Local Wireless shows everyone's rooms. Quickplay and Local Wireless room matches are played with rollback netcode when the other player has it too ([how](MULTIPLAYER.md#rollback-in-online-mode)). If the lobby doesn't answer, the game plays offline. |
-| **`Play SSBU.bat`** with <kbd>Shift</kbd> held | Opens the WindowSmash window even when you've ticked **Start the game directly next time**. |
-| **`launchers\Play SSBU Offline.bat`** | Starts the game without going online. |
+| **`OpenSmash.exe`** | Opens the WindowSmash window (below), then starts the game and joins the online lobby, so Local Wireless shows everyone's rooms. Quickplay and Local Wireless room matches are played with rollback netcode when the other player has it too ([how](MULTIPLAYER.md#rollback-in-online-mode)). If the lobby doesn't answer, the game plays offline. |
+| **`OpenSmash.exe`** with <kbd>Shift</kbd> held | Opens the WindowSmash window even when you've ticked **Start the game directly next time**. |
+| the launcher's **Lobby: Offline** setting | Starts the game without going online. |
 | **`launchers\Host SSBU Netplay.bat`** | Starts the game as the host of a private room ([multiplayer guide](MULTIPLAYER.md#private-room)). |
 | **`launchers\Join SSBU Netplay.bat`** | Starts the game and joins someone's private room. |
 | **`launchers\Unlock All Fighters.bat`** | Unlocks every base-game fighter on your save. Close the game first ([DLC and unlocks](DLC-AND-UNLOCKS.md#unlock-every-base-game-fighter)). |
-| **`launchers\Prepare Shaders.bat`** | Prepares all of the game's shaders ahead of time ([below](#shaders-and-first-time-stutter)). |
-| **`Install WindowSmash.bat`** | Sets everything up and builds the game ([setup guide](BUILDING.md#install-in-one-go)). Run it again to get the newest WindowSmash and build it. |
-| **`launchers\Build WindowSmash.bat`** | Builds the game from your files, when the tools are already installed ([setup guide](BUILDING.md#shortcut-build-windowsmashbat)). |
+| **`python tools\shader_aot.py`** (the launcher also offers it after the install) | Prepares all of the game's shaders ahead of time ([below](#shaders-and-first-time-stutter)). |
+| **`python tools\build_game.py`** | Builds the game from your files, when the tools are already installed ([setup guide](BUILDING.md#shortcut-build_gamepy)). |
 | **`launchers\Configure Game Data.bat`** | Points WindowSmash at your game data and fonts ([setup guide, step 10](BUILDING.md#step-10-connect-your-game-data)). |
 
-`Play SSBU.bat` first opens a small window that shows the game version (13.0.5) and changes the most used settings: your online name and lobby, the window and frame pacing, the render scale, the graphics card, and which player the keyboard is. **Play** saves what you changed and starts the game; **Close** changes nothing. It edits the same files as the in-game [settings](#settings), keeping their comments. Tick **Start the game directly next time** to skip the window; hold <kbd>Shift</kbd> while you start `Play SSBU.bat` to see it again.
+`OpenSmash.exe` first opens a small window that shows the game version (13.0.5) and changes the most used settings: your online name and lobby, the window and frame pacing, the render scale, the graphics card, and which player the keyboard is. **Play** saves what you changed and starts the game; **Close** changes nothing. It edits the same files as the in-game [settings](#settings), keeping their comments. Tick **Start the game directly next time** to skip the window; hold <kbd>Shift</kbd> while you start `OpenSmash.exe` to see it again.
 
 The first time you play online, the game picks a name for you, such as `Player1234`, and shows it at the bottom of the screen. To change it, open the [settings](#settings) and go to **Online**.
 
@@ -241,7 +240,7 @@ A `display.ini` written by an older WindowSmash has no `gpu`, `render_scale` or 
 
 The game's graphics programs (*shaders*) are prepared the first time each one is used, so a new effect can show a moment late, or stutter, the first time you see it. WindowSmash keeps every prepared shader in `dump\shadercache\` and loads them in the background each time the game starts, so each stutter happens only once.
 
-To prepare them all before playing, double-click **`launchers\Prepare Shaders.bat`**. It runs at low priority so the PC stays usable, and shows a progress bar with the time left. A first run compiles about 40,000 shaders: about half an hour on a 16-thread processor, an hour or two on a 4- to 8-thread one. You can close it at any time and start it again later; what's done stays done, so a later run takes minutes. It needs Python and Visual Studio, as for [building](BUILDING.md).
+To prepare them all before playing, double-click **`python tools\shader_aot.py`** (the launcher also offers it after the install). It runs at low priority so the PC stays usable, and shows a progress bar with the time left. A first run compiles about 40,000 shaders: about half an hour on a 16-thread processor, an hour or two on a 4- to 8-thread one. You can close it at any time and start it again later; what's done stays done, so a later run takes minutes. It needs Python and Visual Studio, as for [building](BUILDING.md).
 
 ## Playing with yuzu-compatible clients (Windows)
 

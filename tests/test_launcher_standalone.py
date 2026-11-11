@@ -1,9 +1,9 @@
-"""OpenSmash.exe on its own (the release's OpenSmash Setup.exe): the first start's folder checks, the
+"""OpenSmash.exe on its own (the release's OpenSmash.exe): the first start's folder checks, the
 project ZIP's unpacking (ProjectSetup.InstallAsync) and the shortcuts, through the launcher's
 test entry points (--fetch-project, --find-project, --make-shortcuts), which open no window. ZIPs are
 made here, so nothing is downloaded; the remembered folder goes to OPENSMASH_SETTINGS_DIR and the
 shortcuts to a temporary folder, never the real desktop. Skipped off Windows and where the launcher
-is not built (Build Launcher.bat, or dotnet publish into OpenSmash.Launcher/bin/publish)."""
+is not built (toolsuild_launcher.ps1, or dotnet publish into OpenSmash.Launcher/bin/publish)."""
 from pathlib import Path
 import os
 import shutil
@@ -62,8 +62,8 @@ class StandaloneLauncherTests(unittest.TestCase):
         # an exe somewhere else, with no project around it, finds the remembered folder
         lone = self.dir / 'Downloads'
         lone.mkdir()
-        shutil.copy2(EXE, lone / 'OpenSmash Setup.exe')
-        code, out = self.run_exe('--find-project', exe=lone / 'OpenSmash Setup.exe')
+        shutil.copy2(EXE, lone / 'OpenSmash.exe')
+        code, out = self.run_exe('--find-project', exe=lone / 'OpenSmash.exe')
         self.assertEqual((code, out), (0, [str(target)]))
 
     def test_build_output_finds_its_repo(self):

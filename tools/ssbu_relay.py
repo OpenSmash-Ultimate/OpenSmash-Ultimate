@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Netplay lobby for the SSBU native port: the server every player's game joins to play online.
 
-Players' games join it at start (Play SSBU.bat). A game that isn't version 13.0.5 is refused, with a
+Players' games join it at start (OpenSmash.exe). A game that isn't version 13.0.5 is refused, with a
 message the game shows (WindowSmash plays 13.0.5 only: REQUIRED_BUILD). A room anyone creates in
 Local Wireless is listed to every player of the same lobby code, who join it from the game's Rooms List;
 the lobby then carries the room's traffic between its players only. Players only send to the

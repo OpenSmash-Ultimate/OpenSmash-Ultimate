@@ -12,7 +12,7 @@ using System.Windows.Forms;
 namespace OpenSmash.Launcher
 {
     // ============================================================================
-    // FirstRunForm: shown when OpenSmash.exe (the release's OpenSmash Setup.exe)
+    // FirstRunForm: shown when OpenSmash.exe (the release's OpenSmash.exe)
     // starts with no project around it and none set up before. It asks where
     // OpenSmash goes, downloads the project from GitHub into that folder
     // (ProjectSetup.InstallAsync), makes the shortcuts, and hands the folder to

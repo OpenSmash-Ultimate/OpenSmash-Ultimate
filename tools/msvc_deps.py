@@ -27,7 +27,7 @@ where from, download and unpacked sizes; it is written last, so a folder without
 and cc.py does not use it. Downloads go to deps\\downloads and are deleted afterwards: LLVM's
 archive and Microsoft's packages at the same time, those DOWNLOAD_JOBS files at a time.
 
-The setup is part of the build: Install WindowSmash.bat runs this (step 4) when no compiler works,
+The setup is part of the build: OpenSmash.exe runs this (step 4) when no compiler works,
 and tools/build_game.py (launchers\\Build WindowSmash.bat) asks agree() at its first step and runs
 install() in the background while it prepares the game files.
 

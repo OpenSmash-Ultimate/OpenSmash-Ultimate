@@ -15,10 +15,10 @@ This guide takes you from a fresh download to playing. No programming knowledge 
 **What you need:** a Windows 10 or 11 PC (64-bit, a processor with AVX2 or at the least SSE4.2 ([which](#the-instruction-set)), 16 GB of RAM is comfortable, about 60 GB free) and your own game files: the game as dumped from your Switch, with its **13.0.5 update** (WindowSmash needs version 13.0.5), your console's keys (`prod.keys` and `title.keys`) and its firmware. If you have played the game in **yuzu or Ryujinx on this PC, updated to 13.0.5, you already have all three**, and the installer finds them by itself. Otherwise, put the game (its `.xci`, `.nsp` or `.nca` files), its 13.0.5 update `.nsp` and your DLC `.nsp` files in one folder; [Part 2](#part-2-gather-your-game-files) below says what the files are.
 
 1. On **<https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate>**, click the green **Code** button, then **Download ZIP**. Extract the ZIP somewhere with room, for example to `C:\WindowSmash`. Keep it out of the Desktop and Documents folders: OneDrive may try to upload them, and the finished build is around 30 GB.
-2. Double-click **`Install WindowSmash.bat`** in that folder. Windows asks whether to run it (**The publisher could not be verified**): click **Run**. On some PCs a blue **Windows protected your PC** box comes up instead: click **More info**, then **Run anyway**. Windows asks this about anything downloaded that isn't signed; the installer takes that mark off WindowSmash's other files, so it asks only this once.
+2. Download **`OpenSmash.exe`** from the [latest release](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/latest) into that folder and double-click it (the first start opens the installer; `tools\install_windowsmash.ps1` is what it runs). Windows asks whether to run it (**The publisher could not be verified**): click **Run**. On some PCs a blue **Windows protected your PC** box comes up instead: click **More info**, then **Run anyway**. Windows asks this about anything downloaded that isn't signed; the installer takes that mark off WindowSmash's other files, so it asks only this once.
 3. A window opens with the folders it found for your game files, keys and firmware, and a line under each saying what is in it. Change a folder with **Browse…** if it is wrong or empty. If the game isn't version 13.0.5, the line under it says so in red: put the 13.0.5 update `.nsp` in the game folder and click **Check files**. Type the online name other players will see, and click **Set up and build**.
-4. Wait. The installer gets what is missing (Python, a compiler, SDL3), prepares your game files, and builds the game: **30 minutes to a few hours**, depending on your PC. You can keep using the PC meanwhile. If it stops, run `Install WindowSmash.bat` again: it carries on where it stopped.
-5. Play: double-click **`Play SSBU.bat`**, or the **Play SSBU** shortcut it put on the desktop.
+4. Wait. The installer gets what is missing (Python, a compiler, SDL3), prepares your game files, and builds the game: **30 minutes to a few hours**, depending on your PC. You can keep using the PC meanwhile. If it stops, run `OpenSmash.exe` again: it carries on where it stopped.
+5. Play: double-click **`OpenSmash.exe`**, or the **Play SSBU** shortcut it put on the desktop.
 
 <details>
 <summary><strong>What the installer does</strong></summary>
@@ -34,7 +34,7 @@ Each step is skipped when it is already done, so running it again never repeats 
 - **SDL3** for PlayStation, Switch Pro and other controllers, into `deps\SDL3`, from SDL's own releases, checked against the SHA-256 the release lists.
 - **Music and movies:** nothing to download. The codecs (libopus and libvpx) are built from the sources in `third_party` as part of the game build.
 - **Your folders:** suggests yuzu's and Ryujinx's (keys, firmware and installed games), shows what it finds, and remembers your answers. The game's program, data and DLC are taken from there, even when they are still encrypted as the Switch stores them, or when the 13.0.5 update sits next to the game. A game that isn't 13.0.5 gets a red line saying what to add.
-- **Afterwards:** writes `online_name.txt`, puts a shortcut on the desktop, adds a Windows Firewall rule for the game if you leave that ticked (it asks for administrator rights once), runs the build ([`launchers\Build WindowSmash.bat`](#shortcut-build-windowsmashbat)'s steps), and if ticked starts `launchers\Prepare Shaders.bat` in a window of its own.
+- **Afterwards:** writes `online_name.txt`, puts a shortcut on the desktop, adds a Windows Firewall rule for the game if you leave that ticked (it asks for administrator rights once), runs the build ([`python tools\build_game.py`](#shortcut-build_gamepy)'s steps), and if ticked starts ``python tools\shader_aot.py`` in a window of its own.
 - Everything it prints also goes to `install.log` in the WindowSmash folder.
 
 Options for a PowerShell window: `tools\install_windowsmash.ps1 -DryRun` says what each step would do without doing it; `-NoWizard` asks in the window instead; `-Game`, `-Keys` and `-Firmware` give the folders; `-NoUpdate` skips the update check; `-BuildTools` installs the Visual Studio Build Tools for the compiler instead of downloading it into `deps`.
@@ -50,7 +50,7 @@ Prefer to do it yourself, or want to know what each step does? The rest of this 
 
 **How long it takes:** about an hour, plus 30 minutes to a few hours while your PC builds the game. You copy each command from this page and paste it into PowerShell.
 
-**Want it done for you?** After step 5, [`launchers\Build WindowSmash.bat`](#shortcut-build-windowsmashbat) does steps 7–14 in one go. **Comfortable with a command line?** Skip to the [quick version](#quick-version).
+**Want it done for you?** After step 5, [`python tools\build_game.py`](#shortcut-build_gamepy) does steps 7–14 in one go. **Comfortable with a command line?** Skip to the [quick version](#quick-version).
 
 ## Contents
 
@@ -59,7 +59,7 @@ Prefer to do it yourself, or want to know what each step does? The rest of this 
 | [**Part 1: Check your PC**](#part-1-check-your-pc) | [1. Check your PC](#step-1-check-your-pc) |
 | [**Part 2: Gather your game files**](#part-2-gather-your-game-files) | [2. Put your game files in three folders](#step-2-put-your-game-files-in-three-folders) |
 | [**Part 3: Install the tools**](#part-3-install-the-tools) | [3. Python](#step-3-install-python) · [4. The compiler](#step-4-install-the-compiler) |
-| [**Part 4: Get WindowSmash**](#part-4-get-windowsmash) | [5. Download](#step-5-download-windowsmash) · [Shortcut: one-click build](#shortcut-build-windowsmashbat) · [6. Open PowerShell](#step-6-open-powershell-in-the-windowsmash-folder) · [7. Install the helpers](#step-7-install-windowsmashs-helpers) |
+| [**Part 4: Get WindowSmash**](#part-4-get-windowsmash) | [5. Download](#step-5-download-windowsmash) · [Shortcut: one-click build](#shortcut-build_gamepy) · [6. Open PowerShell](#step-6-open-powershell-in-the-windowsmash-folder) · [7. Install the helpers](#step-7-install-windowsmashs-helpers) |
 | [**Part 5: Prepare the game**](#part-5-prepare-the-game) | [8. Program](#step-8-copy-the-games-program) · [9. Fonts](#step-9-take-the-fonts-out-of-your-firmware) · [10. Game data](#step-10-connect-your-game-data) · [11. DLC](#step-11-optional-turn-on-your-dlc) · [12. More controllers](#step-12-optional-support-more-kinds-of-controllers) · [13. Fighters](#step-13-take-out-the-fighters) |
 | [**Part 6: Build and play**](#part-6-build-and-play) | [14. Build](#step-14-build-the-game) · [15. Play](#step-15-play) · [16. Shaders](#step-16-optional-prepare-the-shaders) |
 | [**Afterwards**](#afterwards) | [Update WindowSmash](#update-windowsmash) · [If something goes wrong](#if-something-goes-wrong) · [Quick version](#quick-version) · [Reference](#reference) |
@@ -98,7 +98,7 @@ You need these files from your own Switch:
 > **WindowSmash needs version 13.0.5 of the game**, its last update, and no other. The program and the data must both be 13.0.5's: the build checks both and stops with any other version. One version for everyone means anyone can play with anyone, and every bug is fixed in the same game. [Which copies count](UPDATES.md#what-counts-as-1305).
 
 > [!TIP]
-> **With `Install WindowSmash.bat` or `launchers\Build WindowSmash.bat` you don't need `romfs.bin`.** Put the game (a game card dump `.xci`, an `.nsp`, or its `.nca` files; or point at the folder yuzu or Ryujinx installed it in), its 13.0.5 update's `.nsp`, and your DLC `.nsp` files (loose, or in a `dlc` folder) into one folder. They find the program, decrypt what needs it, and apply the update over the game themselves. Compressed packages (`.nsz`) work too: each is first made plain once, in `dump\nsz` (as big as the package unpacked; seconds to minutes). Decrypting the game needs about 15 GB more space and the update about 4 GB; both take a few minutes. The game as first released (version 1.0.0) is the best base for the update: it applies exactly. Over a game with an earlier update merged in, the update is rebuilt and checked ([how](UPDATES.md#how-the-installer-applies-it)).
+> **With `OpenSmash.exe` or `python tools\build_game.py` you don't need `romfs.bin`.** Put the game (a game card dump `.xci`, an `.nsp`, or its `.nca` files; or point at the folder yuzu or Ryujinx installed it in), its 13.0.5 update's `.nsp`, and your DLC `.nsp` files (loose, or in a `dlc` folder) into one folder. They find the program, decrypt what needs it, and apply the update over the game themselves. Compressed packages (`.nsz`) work too: each is first made plain once, in `dump\nsz` (as big as the package unpacked; seconds to minutes). Decrypting the game needs about 15 GB more space and the update about 4 GB; both take a few minutes. The game as first released (version 1.0.0) is the best base for the update: it applies exactly. Over a game with an earlier update merged in, the update is rebuilt and checked ([how](UPDATES.md#how-the-installer-applies-it)).
 
 <details>
 <summary><strong>What do "update applied" and "unencrypted" mean?</strong></summary>
@@ -160,7 +160,7 @@ It should answer `Python 3.` followed by a version of 3.10 or higher.
 
 The compiler turns the game into a Windows program. **You don't need to install anything for it now:** WindowSmash downloads its own, which needs no Visual Studio (about 570 MB, no administrator rights). [The compiler without Visual Studio](#the-compiler-without-visual-studio) says what it downloads, and from where.
 
-- **With [`launchers\Build WindowSmash.bat`](#shortcut-build-windowsmashbat)**, it does this by itself when your PC has no compiler. At the start it shows where to read Microsoft's license terms for Microsoft's part of it and asks whether you accept them: type `yes` and press <kbd>Enter</kbd>. It then downloads the compiler while it prepares your game files, so the build can start straight away.
+- **With [`python tools\build_game.py`](#shortcut-build_gamepy)**, it does this by itself when your PC has no compiler. At the start it shows where to read Microsoft's license terms for Microsoft's part of it and asks whether you accept them: type `yes` and press <kbd>Enter</kbd>. It then downloads the compiler while it prepares your game files, so the build can start straight away.
 - **Step by step**, once you have done [step 7](#step-7-install-windowsmashs-helpers), run this in the same PowerShell window. It asks the same question, downloads for a minute or a few, and ends with `Done`:
 
   ```powershell
@@ -203,12 +203,12 @@ git clone https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate.git C:\Window
 
 </details>
 
-### Shortcut: Build WindowSmash.bat
+### Shortcut: build_game.py
 
-Once steps 1–5 are done, **`launchers\Build WindowSmash.bat`** can do steps 7 to 14 for you in one go:
+Once steps 1–5 are done, **`python tools\build_game.py`** can do steps 7 to 14 for you in one go:
 
 1. If you want PlayStation, Switch Pro and other controllers, do [step 12](#step-12-optional-support-more-kinds-of-controllers) first.
-2. Double-click **`launchers\Build WindowSmash.bat`** in `C:\WindowSmash`.
+2. In PowerShell, in `C:\WindowSmash`, run **`python tools\build_game.py`** (steps 6 and 7 show how to open PowerShell there).
 3. It asks for the folders with your game files, keys and firmware. Press <kbd>Enter</kbd> to accept `D:\MyDump`, `D:\MyKeys` and `D:\MyFirmware`, or type your own. It remembers the answers for next time.
 4. If your PC has no compiler, it asks whether you accept Microsoft's license terms for the compiler's Microsoft part ([step 4](#step-4-install-the-compiler)): type `yes` and press <kbd>Enter</kbd>. It downloads the compiler meanwhile.
 5. It finds the program file by itself (no need to rename it) and checks that it is 13.0.5's, copies the fonts, connects your `romfs.bin` (or a decrypted program `.nca`), turns on your DLC if `D:\MyDump\dlc` exists, takes out the fighters, and builds with a `--jobs` number that fits your RAM.
@@ -373,7 +373,7 @@ python tools/recomp.py all dump/exefs --out build --jobs 16
 
 ### Step 15: Play
 
-Double-click **`Play SSBU.bat`** in `C:\WindowSmash`.
+Double-click **`OpenSmash.exe`** in `C:\WindowSmash`.
 
 - The first time, it asks for **your online name**, the name other players see. Press <kbd>Enter</kbd> to keep the suggested one.
 - If Windows Security asks whether to allow `ssbu.exe` on networks, allow it; it's needed for playing online.
@@ -381,17 +381,17 @@ Double-click **`Play SSBU.bat`** in `C:\WindowSmash`.
 - The first start takes a little longer, and some effects can stutter the first time they appear (see step 16).
 
 > [!TIP]
-> For a desktop shortcut, right-click `Play SSBU.bat` → **Show more options** (Windows 11) → **Send to → Desktop (create shortcut)**.
+> For a desktop shortcut, right-click `OpenSmash.exe` → **Show more options** (Windows 11) → **Send to → Desktop (create shortcut)**.
 
 **What next?**
 
-- Controls and settings: the [playing guide](PLAYING.md). `launchers\Play SSBU Offline.bat` starts the game without going online.
+- Controls and settings: the [playing guide](PLAYING.md). set the launcher's lobby to **Offline** to play without going online.
 - Playing with friends: the [multiplayer guide](MULTIPLAYER.md).
 - Unlocking every fighter on your save: [DLC and unlocks](DLC-AND-UNLOCKS.md#unlock-every-base-game-fighter).
 
 ### Step 16: (Optional) Prepare the shaders
 
-The game's graphics programs (*shaders*) are prepared the first time each one is needed, which is why a new effect can stutter once. To prepare them all in advance, double-click **`launchers\Prepare Shaders.bat`**. It runs at low priority, so you can keep using the PC, and shows a progress bar with the time left: about half an hour on a 16-thread processor, an hour or two on a 4- to 8-thread one. You can close it at any time and start it again later; it keeps what it has done.
+The game's graphics programs (*shaders*) are prepared the first time each one is needed, which is why a new effect can stutter once. To prepare them all in advance, let the launcher prepare them when it offers (or run `python tools\shader_aot.py`). It runs at low priority, so you can keep using the PC, and shows a progress bar with the time left: about half an hour on a 16-thread processor, an hour or two on a 4- to 8-thread one. You can close it at any time and start it again later; it keeps what it has done.
 
 </details>
 
@@ -401,11 +401,11 @@ The game's graphics programs (*shaders*) are prepared the first time each one is
 
 ### Update WindowSmash
 
-Double-click **`Install WindowSmash.bat`** again. It downloads the newest WindowSmash from GitHub if there is one, replaces the files that changed, and builds again. That takes minutes, unless the update changes the compile flags or the header the game's code includes (`runtime/recomp.h`), or the compiler is new (a Visual Studio update): then the whole game is compiled again, about as long as the first build, and the build's log says why. If it stops, run it again to carry on. Your game files, settings, save and a lobby code in `online_server.txt` stay as they are.
+Double-click **`OpenSmash.exe`** again. It downloads the newest WindowSmash from GitHub if there is one, replaces the files that changed, and builds again. That takes minutes, unless the update changes the compile flags or the header the game's code includes (`runtime/recomp.h`), or the compiler is new (a Visual Studio update): then the whole game is compiled again, about as long as the first build, and the build's log says why. If it stops, run it again to carry on. Your game files, settings, save and a lobby code in `online_server.txt` stay as they are.
 
-**Built from another game version before?** WindowSmash used to build other game versions too, most often 11.0.0. Such a folder is set up again as 13.0.5 the next time `Install WindowSmash.bat` runs, once your game folder has the 13.0.5 update: the game's files are prepared again and the game is built again, while your save, settings and prepared shaders stay. [A folder built from another version](UPDATES.md#a-folder-built-from-another-version) has the details, including what to do with an old `v13.0.5` folder.
+**Built from another game version before?** WindowSmash used to build other game versions too, most often 11.0.0. Such a folder is set up again as 13.0.5 the next time `OpenSmash.exe` runs, once your game folder has the 13.0.5 update: the game's files are prepared again and the game is built again, while your save, settings and prepared shaders stay. [A folder built from another version](UPDATES.md#a-folder-built-from-another-version) has the details, including what to do with an old `v13.0.5` folder.
 
-By hand: download the ZIP again, unblock it as in [step 5](#step-5-download-windowsmash), and copy the contents of its `OpenSmash-Ultimate-main` folder over `C:\WindowSmash`, replacing the files. Then build again ([step 14](#step-14-build-the-game), or double-click `launchers\Build WindowSmash.bat`). With Git, run `git pull` instead of downloading.
+By hand: download the ZIP again, unblock it as in [step 5](#step-5-download-windowsmash), and copy the contents of its `OpenSmash-Ultimate-main` folder over `C:\WindowSmash`, replacing the files. Then build again ([step 14](#step-14-build-the-game), or double-click `python tools\build_game.py`). With Git, run `git pull` instead of downloading.
 
 ### A runtime update without a rebuild
 
@@ -415,23 +415,23 @@ A build made with `python tools/build_game.py --game-dll` keeps the game in `bui
 
 | What you see | What to do |
 | :--- | :--- |
-| `Install WindowSmash.bat` stops at a check | It says what the PC lacks: 64-bit Windows 10 or 11, a processor with SSE4.2, 8 GB of RAM, or free space (about 60 GB, less what is built already). Free some space or move WindowSmash to a drive with room, then run it again. |
-| `Install WindowSmash.bat` says winget is not available | The compiler download didn't work either (the message above it says why). Install the compiler by hand: download the **Build Tools for Visual Studio** from <https://visualstudio.microsoft.com/visual-cpp-build-tools/>, tick **Desktop development with C++** and, under Installation details, **C++ Clang tools for Windows**, install, then run `Install WindowSmash.bat` again. |
-| `Microsoft's license terms were not accepted` | The compiler needs Microsoft's C runtime and Windows SDK, and those come under Microsoft's license terms, whichever way you get them. To accept them, run `Install WindowSmash.bat` again and type `yes` when it asks. |
+| `OpenSmash.exe` stops at a check | It says what the PC lacks: 64-bit Windows 10 or 11, a processor with SSE4.2, 8 GB of RAM, or free space (about 60 GB, less what is built already). Free some space or move WindowSmash to a drive with room, then run it again. |
+| `OpenSmash.exe` says winget is not available | The compiler download didn't work either (the message above it says why). Install the compiler by hand: download the **Build Tools for Visual Studio** from <https://visualstudio.microsoft.com/visual-cpp-build-tools/>, tick **Desktop development with C++** and, under Installation details, **C++ Clang tools for Windows**, install, then run `OpenSmash.exe` again. |
+| `Microsoft's license terms were not accepted` | The compiler needs Microsoft's C runtime and Windows SDK, and those come under Microsoft's license terms, whichever way you get them. To accept them, run `OpenSmash.exe` again and type `yes` when it asks. |
 | The installer's window says a folder has a problem | The line under the folder says what: no `prod.keys`, no `.nca` files, no program among the game files. Point it at the right folder ([Part 2](#part-2-gather-your-game-files)) and click **Check files**. |
-| `WindowSmash needs version 13.0.5` (in the installer's window, or when the build stops at its step 4 or 6) | Your game files are another version of the game: the game without its 13.0.5 update, or with another update. Put the game's 13.0.5 update `.nsp` in the game folder, next to the game (with yuzu or Ryujinx, install the update there). If the installer's window said it, click **Check files** and go on; if the build said it, run `Install WindowSmash.bat` again. A `romfs.bin` you made yourself must be made again with the 13.0.5 update applied. |
+| `WindowSmash needs version 13.0.5` (in the installer's window, or when the build stops at its step 4 or 6) | Your game files are another version of the game: the game without its 13.0.5 update, or with another update. Put the game's 13.0.5 update `.nsp` in the game folder, next to the game (with yuzu or Ryujinx, install the update there). If the installer's window said it, click **Check files** and go on; if the build said it, run `OpenSmash.exe` again. A `romfs.bin` you made yourself must be made again with the 13.0.5 update applied. |
 | `… set up from version 11.0.0 of the game` (or another version) | The folder was built by an older WindowSmash, from another game version. With the 13.0.5 update in your game folder, the installer sets the folder up again as 13.0.5 and builds again; your save, settings and prepared shaders stay. Without the update, it stops before changing anything and says what to add. See [a folder built from another version](UPDATES.md#a-folder-built-from-another-version). |
-| `This WindowSmash was built from another version of the game`, when the game starts | The game was built from a version other than 13.0.5. Put the 13.0.5 update in your game folder and run `Install WindowSmash.bat` again: it sets the folder up again, keeping your save and settings. |
+| `This WindowSmash was built from another version of the game`, when the game starts | The game was built from a version other than 13.0.5. Put the 13.0.5 update in your game folder and run `OpenSmash.exe` again: it sets the folder up again, keeping your save and settings. |
 | `is the game's update, whose data is a patch over the game's own` | Your folder has the update but not the game itself. Put the game's own (base) program `.nca` next to it; from yuzu or Ryujinx, the installed-content folder has both. |
-| `The update could not be applied`, `data.arc is incomplete`, `looks damaged or incomplete`, `unpack_from requires a buffer of at least … (actual buffer size is 0)`, `data corruption detected` | A file of the game, of the update or of a DLC is incomplete. Most often: a download in several parts that was not joined into one file, an archive (`.zip`, `.rar`, `.7z`) not unpacked to the end, or a copy that stopped. Compare each file's size with the original's (the game alone is well over 10 GB), unpack or copy it again, and run `Install WindowSmash.bat` again. Give the installer the game's package itself (`.xci`, `.nsp` or its `.nca` files), not files already taken out of it. |
+| `The update could not be applied`, `data.arc is incomplete`, `looks damaged or incomplete`, `unpack_from requires a buffer of at least … (actual buffer size is 0)`, `data corruption detected` | A file of the game, of the update or of a DLC is incomplete. Most often: a download in several parts that was not joined into one file, an archive (`.zip`, `.rar`, `.7z`) not unpacked to the end, or a copy that stopped. Compare each file's size with the original's (the game alone is well over 10 GB), unpack or copy it again, and run `OpenSmash.exe` again. Give the installer the game's package itself (`.xci`, `.nsp` or its `.nca` files), not files already taken out of it. |
 | `Could not copy the program out of … .nca` | Your keys don't open that file: most often they are older than the game's update. Use keys dumped from your Switch after its latest system update, with the firmware from that same update. If they are, check that the file is complete (row above). |
-| The installer says *WARNING: these fonts were not in* your firmware | The build goes on with the open fonts (Chinese, Japanese and Korean text is missing). Most often the firmware is newer than your keys: use keys and firmware from the same system update of your Switch, then run `Install WindowSmash.bat` again to get your console's own fonts. |
-| `CERTIFICATE_VERIFY_FAILED` while downloading | Python could not check the server's certificate. The installer then downloads through Windows' own `curl.exe` by itself. If that fails too, run Windows Update (it also brings Windows' root certificates), or turn off the HTTPS scanning of your antivirus for a moment, then run `Install WindowSmash.bat` again. |
-| The build stays at 0 % for a long time | The first build compiles the whole game: 30 minutes on a fast PC, several hours on a slow one or on a hard disk (not an SSD). Leave it running, close other programs, and don't let the PC sleep. On a PC with processor graphics, check in the BIOS that it doesn't keep a large part of the memory for the graphics. If it really stops, close it and run `Install WindowSmash.bat` again: it carries on where it stopped. |
-| The PC turns itself off, or freezes, while building | It runs out of memory or overheats with that many compiles at once. Build with fewer: open PowerShell in the WindowSmash folder and run `& ".\launchers\Build WindowSmash.bat" --jobs 4` (or `--jobs 2`). |
-| `python` is not recognized, or *Python was not found* | Python isn't installed, or **Add python.exe to PATH** wasn't ticked. Install it again ([step 3](#step-3-install-python)), then open a new PowerShell window. Or double-click `Install WindowSmash.bat`, which brings its own. |
+| The installer says *WARNING: these fonts were not in* your firmware | The build goes on with the open fonts (Chinese, Japanese and Korean text is missing). Most often the firmware is newer than your keys: use keys and firmware from the same system update of your Switch, then run `OpenSmash.exe` again to get your console's own fonts. |
+| `CERTIFICATE_VERIFY_FAILED` while downloading | Python could not check the server's certificate. The installer then downloads through Windows' own `curl.exe` by itself. If that fails too, run Windows Update (it also brings Windows' root certificates), or turn off the HTTPS scanning of your antivirus for a moment, then run `OpenSmash.exe` again. |
+| The build stays at 0 % for a long time | The first build compiles the whole game: 30 minutes on a fast PC, several hours on a slow one or on a hard disk (not an SSD). Leave it running, close other programs, and don't let the PC sleep. On a PC with processor graphics, check in the BIOS that it doesn't keep a large part of the memory for the graphics. If it really stops, close it and run `OpenSmash.exe` again: it carries on where it stopped. |
+| The PC turns itself off, or freezes, while building | It runs out of memory or overheats with that many compiles at once. Build with fewer: open PowerShell in the WindowSmash folder and run `python tools\build_game.py --jobs 4` (or `--jobs 2`). |
+| `python` is not recognized, or *Python was not found* | Python isn't installed, or **Add python.exe to PATH** wasn't ticked. Install it again ([step 3](#step-3-install-python)), then open a new PowerShell window. Or double-click `OpenSmash.exe`, which brings its own. |
 | `No module named 'Cryptodome'` or `No module named 'zstandard'` | Run [step 7](#step-7-install-windowsmashs-helpers) (with the same Python as the failing command). |
-| **Windows protected your PC**, or **The publisher could not be verified** | Click **More info**, then **Run anyway** (or **Run**). Unblocking the ZIP first ([step 5](#step-5-download-windowsmash)) prevents it; `Install WindowSmash.bat` unblocks the rest of the folder itself. |
+| **Windows protected your PC**, or **The publisher could not be verified** | Click **More info**, then **Run anyway** (or **Run**). Unblocking the ZIP first ([step 5](#step-5-download-windowsmash)) prevents it; `OpenSmash.exe` unblocks the rest of the folder itself. |
 | `Cannot find path 'D:\MyDump…'` or `No such file or directory` | A file or folder isn't where the command expects it. Check the names from [step 2](#step-2-put-your-game-files-in-three-folders), including the ending (`program.nca`). No D: drive? Change `D:\` to `C:\` in the command. |
 | `bad header_key?`, `missing title key` or `missing key_area_key` | Your keys are missing or too old. Check that `prod.keys` and `title.keys` are in `D:\MyKeys`, dumped from your Switch after its latest system update. |
 | `not a PFS0 … wrong key?` in step 8 | That `.nca` probably isn't the program. Find the right one with the first command of [step 8](#step-8-copy-the-games-program). |
@@ -443,15 +443,15 @@ A build made with `python tools/build_game.py --game-dll` keeps the game in `bui
 | `did not finish compiling within its time limit` | A file took longer than its time limit every way the build tried. The PC is most likely short of memory: close other programs and run the build again with a smaller `--jobs`. To give each file more time, set `SSBU_COMPILE_LIMIT` to seconds before building (`$env:SSBU_COMPILE_LIMIT = '7200'`), or to `0` for no limit. |
 | `The game isn't built here yet` when starting the game | The build hasn't finished. Run [step 14](#step-14-build-the-game) again. |
 | The game closes, or stays black | Look at the end of `C:\WindowSmash\build\play.log` and in the `reports` folder. [Getting help](../README.md#getting-help) says what to send. On a laptop, check that the game draws with the NVIDIA or AMD chip ([low frame rate](PLAYING.md#low-frame-rate)). |
-| `build\ssbu.exe` closes at once when started by itself | It needs to be started from the WindowSmash folder with its arguments: use `Play SSBU.bat`. To start it from Steam, see [Steam and Steam Input](PLAYING.md#steam-and-steam-input). |
-| DLC fighters don't show up | Put your DLC `.nsp` files in your game folder (loose, or in a folder named `dlc` there), next to the game and its 13.0.5 update, and run `Install WindowSmash.bat` again: it reads them each time. The DLC fighters also need the 13.0.5 update. [DLC and unlocks](DLC-AND-UNLOCKS.md) has the details. |
+| `build\ssbu.exe` closes at once when started by itself | It needs to be started from the WindowSmash folder with its arguments: use `OpenSmash.exe`. To start it from Steam, see [Steam and Steam Input](PLAYING.md#steam-and-steam-input). |
+| DLC fighters don't show up | Put your DLC `.nsp` files in your game folder (loose, or in a folder named `dlc` there), next to the game and its 13.0.5 update, and run `OpenSmash.exe` again: it reads them each time. The DLC fighters also need the 13.0.5 update. [DLC and unlocks](DLC-AND-UNLOCKS.md) has the details. |
 | No music, or movies don't play | The build was made before the codecs came with WindowSmash. Download the newest WindowSmash and build again ([Update WindowSmash](#update-windowsmash)); see [Audio and video codecs](#audio-and-video-codecs). |
 | A controller does nothing | Press <kbd>F2</kbd> in the game to see which pads it found. Anything other than an Xbox pad needs [step 12](#step-12-optional-support-more-kinds-of-controllers), then step 14 again. |
 | Effects stutter the first time | That's shaders being prepared. [Step 16](#step-16-optional-prepare-the-shaders) does them all ahead of time. |
 
 ### Quick version
 
-The example paths are your game files in `D:\MyDump`, your keys in `D:\MyKeys` and your firmware in `D:\MyFirmware`; `python` must be 3.10 or newer. (`launchers\Build WindowSmash.bat` does the same from `python -m pip` on, and takes an emulator's installed-content folder as the game folder.)
+The example paths are your game files in `D:\MyDump`, your keys in `D:\MyKeys` and your firmware in `D:\MyFirmware`; `python` must be 3.10 or newer. (`python tools\build_game.py` does the same from `python -m pip` on, and takes an emulator's installed-content folder as the game folder.)
 
 ```powershell
 git clone https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate.git WindowSmash
@@ -464,7 +464,7 @@ Get-ChildItem D:\MyFirmware\*.nca | ForEach-Object { python tools/nca.py romfs-g
 python tools/nca.py aoc-cfg "D:\MyDump\dlc" --keys "D:\MyKeys" --out dump/modules/aoc.cfg    # optional: DLC
 python tools/arc.py nro
 python tools/recomp.py all dump/exefs --out build --jobs 16
-& ".\Play SSBU.bat"
+& ".\OpenSmash.exe"
 ```
 
 ---
@@ -478,7 +478,7 @@ python tools/recomp.py all dump/exefs --out build --jobs 16
 | Operating system | Windows 10 or 11, 64-bit. |
 | CPU | x64 with AVX2, FMA, BMI1, BMI2 and LZCNT for the default build; at the least x86-64-v2 (SSE4.2 and POPCNT), with the build for it ([the instruction set](#the-instruction-set)). |
 | Graphics | A Direct3D 11 GPU and a working driver. |
-| Python | **3.10 or newer**, with the packages from `requirements.txt` (`pycryptodomex`, and `zstandard` on Pythons before 3.14, which has `compression.zstd` built in). `Install WindowSmash.bat` makes `deps/venv` from the newest 3.10 to 3.14 there is (Python 3.10 also gets `tomli`, for mods' `config_param.toml`), or puts a copy of 3.14 into `deps/python` when there is none. |
+| Python | **3.10 or newer**, with the packages from `requirements.txt` (`pycryptodomex`, and `zstandard` on Pythons before 3.14, which has `compression.zstd` built in). `OpenSmash.exe` makes `deps/venv` from the newest 3.10 to 3.14 there is (Python 3.10 also gets `tomli`, for mods' `config_param.toml`), or puts a copy of 3.14 into `deps/python` when there is none. |
 | C toolchain | `clang-cl` and `lld-link` with Microsoft's C runtime and a Windows SDK: either `deps/llvm` with `deps/msvc` from `tools/msvc_deps.py` ([without Visual Studio](#the-compiler-without-visual-studio)), or Visual Studio 2022 or newer, or its Build Tools, with **Desktop development with C++** (which includes a Windows SDK) and **C++ Clang tools for Windows**. `tools/cc.py` takes `deps` when both folders are there, else finds Visual Studio's `clang-cl`; set `SSBU_CLANG` to use another (it wins over both). |
 | Game inputs | Version 13.0.5 only: its ExeFS (from the 13.0.5 update's Program NCA), an unencrypted RomFS with the 13.0.5 update applied (or a layered one from `tools/update.py`), and six firmware fonts. Keys for reading packages. `tools/build_game.py` checks main's build ID (step 4) and data.arc's version (step 6). |
 | Disk space | About 17 GB for the game data, which stays where it is, and around 30 GB for `build/`. |
@@ -495,8 +495,7 @@ python -m pip install -r requirements.txt
 
 ```text
 WindowSmash/
-  Install WindowSmash.bat     sets everything up and builds the game
-  Play SSBU.bat               starts the game
+  OpenSmash.exe               sets everything up, builds and starts the game
   launchers/                  the other launchers: offline play, private rooms, shaders, unlocks, building
   docs/                       these guides
   runtime/                    the Windows runtime (source)
@@ -511,7 +510,7 @@ WindowSmash/
     shadercache/              compiled shaders, made while playing
   deps/
     SDL3/                     optional: SDL3's Windows development package (step 12)
-    python/                   optional: the Python Install WindowSmash.bat set up
+    python/                   optional: the Python OpenSmash.exe set up
     llvm/, msvc/              optional: the compiler without Visual Studio (step 4)
   third_party/                the music and movie codecs' sources (libopus, libvpx)
   build/                      generated C, objects, ssbu.exe, play.log (step 14)
@@ -577,7 +576,7 @@ The runtime is compiled against SDL3's headers only and loads `SDL3.dll` when it
 
 ### The compiler without Visual Studio
 
-`python tools\msvc_deps.py install` (which `Install WindowSmash.bat` and `launchers\Build WindowSmash.bat` run when no compiler works yet; the latter downloads while it prepares the game files) sets up two folders. It needs no administrator rights and installs nothing into Windows:
+`python tools\msvc_deps.py install` (which `OpenSmash.exe` and `python tools\build_game.py` run when no compiler works yet; the latter downloads while it prepares the game files) sets up two folders. It needs no administrator rights and installs nothing into Windows:
 
 | Folder | What it holds | Where it comes from | Download | On disk |
 | :--- | :--- | :--- | ---: | ---: |
@@ -611,12 +610,12 @@ The build takes `avx2` when this PC's processor has AVX2, else `x86-64-v2`. It a
 
 ```powershell
 $env:SSBU_ISA = 'x86-64-v2'
-& ".\launchers\Build WindowSmash.bat"
+python tools\build_game.py
 ```
 
 `build\isa.txt` (on Linux, `build-linux/isa.txt`) says what the game was built for. When today's choice is another, the game is built again, all of it: every object's compile command changed ([incremental builds](TECHNICAL.md#incremental-builds)). A game an older version built is built again once, all of it, for either: it was compiled with other flags. libopus is compiled for the same one, its AVX2 code for `avx2` only.
 
-The game checks the processor as it starts, before any of its own code runs. One built for AVX2, started on a processor without it, stops with a message box saying what the processor lacks and to run `Install WindowSmash.bat` again, instead of crashing at its first AVX instruction. If the message comes back (a Windows older than 10 version 2004, where neither the installer nor the build can ask Windows: the processor's name says AVX2 where the PC, a virtual machine say, has none, or the name says nothing and the game was built for AVX2 before), set `SSBU_ISA=x86-64-v2` as above and run `Install WindowSmash.bat` again. Once that build has finished, the installer keeps the choice.
+The game checks the processor as it starts, before any of its own code runs. One built for AVX2, started on a processor without it, stops with a message box saying what the processor lacks and to run `OpenSmash.exe` again, instead of crashing at its first AVX instruction. If the message comes back (a Windows older than 10 version 2004, where neither the installer nor the build can ask Windows: the processor's name says AVX2 where the PC, a virtual machine say, has none, or the name says nothing and the game was built for AVX2 before), set `SSBU_ISA=x86-64-v2` as above and run `OpenSmash.exe` again. Once that build has finished, the installer keeps the choice.
 
 ### What the build does
 
