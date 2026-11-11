@@ -123,6 +123,8 @@ typedef struct NexIo {
 NexServer *nex_server_new(const NexIo *io, NexStore store, int verbose);
 void nex_server_free(NexServer *s);
 void nex_server_set_now(NexServer *s, double now);             /* monotonic seconds (ratings' window, rounds) */
+/* seconds without a packet that close a connection (tools/nex's 40 by default; 0: never) */
+void nex_server_set_idle_timeout(NexServer *s, double seconds);
 void nex_server_set_round_base(NexServer *s, uint64_t next_round);   /* (tests: ranked.py's int(time.time()) << 16) */
 /* PIDs: by default from the token's NSA id; identity, when set (the EOS product user id), takes its place */
 void nex_server_set_identity(NexServer *s, const char *identity);

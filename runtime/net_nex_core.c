@@ -489,7 +489,7 @@ static void conn_free(NexConn *c) {
     free(c->part);
     free(c);
 }
-static void server_closed(NexServer *s, NexConn *c);
+static void server_closed(NexServer *s, NexConn *c, const char *why);
 static void conn_close(NexServer *s, NexConn *c, const char *why) {
     int k = c->secure;
     for (int i = 0; i < s->nconns[k]; i++) {
@@ -504,7 +504,7 @@ static void conn_close(NexServer *s, NexConn *c, const char *why) {
             if (!s->dead) abort();
         }
         s->dead[s->ndead++] = c;
-        server_closed(s, c);
+        server_closed(s, c, why);
         return;
     }
 }
@@ -568,7 +568,12 @@ static void server_message(NexServer *s, NexConn *c, const uint8_t *data, size_t
     int served = c->secure ? m.protocol != 10 && c->pid && nex_by_pid(s, c->pid) == c : m.protocol == 10;
     NexOut reply = {0};
     if (!fn || !served) {
-        nex_log(s, 1, "%s protocol %u method %u from pid %llu", fn ? "not served there:" : "UNHANDLED", m.protocol, m.method, (unsigned long long)c->pid);
+        char hex[2 * 48 + 4] = "";   /* (the start of its parameters, as tools/nex shows them; none of logging in's,
+                                        which carry the account's token) */
+        size_t hn = m.protocol == 10 ? 0 : m.n < 48 ? m.n : 48;
+        for (size_t i = 0; i < hn; i++) snprintf(hex + 2 * i, 3, "%02x", m.body[i]);
+        if (m.n > hn) strcat(hex, "..");
+        nex_log(s, 1, "%s protocol %u method %u from pid %llu: %s", fn ? "not served there:" : "UNHANDLED", m.protocol, m.method, (unsigned long long)c->pid, hex);
         rmc_error(&reply, m.protocol, m.call_id, NEX_CORE_NOT_IMPLEMENTED);
     } else {
         NexIn in = ni_make(m.body, m.n, &s->arena);
@@ -781,10 +786,10 @@ static int connect_answer(NexServer *s, NexConn *c, const uint8_t *payload, size
     return 1;
 }
 
-static void server_closed(NexServer *s, NexConn *c) {
+static void server_closed(NexServer *s, NexConn *c, const char *why) {
     if (!c->secure || !c->in_by_pid) return;
     c->in_by_pid = 0;
-    nex_log(s, 1, "pid %llu left", (unsigned long long)c->pid);
+    nex_log(s, 1, "pid %llu left (%s)", (unsigned long long)c->pid, why);
     nex_match_gone(s, c);
 }
 
@@ -1067,9 +1072,25 @@ static uint32_t ds_84(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
     no_struct_end(out, at);
     return 0;
 }
+/* 115/21 PostMetaBinary (DataStorePreparePostParam) -> u64 data id: nothing kept, the PID as the id */
+static uint32_t ds_post_meta_binary(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
+    (void)s;
+    ni_struct(in, NULL);
+    if (in->err) return NEX_EINVAL;
+    no_u64(out, c->pid);
+    return 0;
+}
+/* 115/95 (SSBU's own, no parameters) -> structure {bool}: false */
+static uint32_t ds_95(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
+    (void)s; (void)c; (void)in;
+    size_t at = no_struct_begin(out, 0);
+    no_u8(out, 0);
+    no_struct_end(out, at);
+    return 0;
+}
 
 static NexHandler core_handler(uint32_t protocol, uint32_t method) {
-    static const uint8_t ds_no_reply[] = {3, 6, 11, 18, 22, 26, 31, 32, 37, 38, 41, 51, 56, 57, 58, 74, 76, 78, 79, 82, 83, 86, 89, 91, 92, 94, 96};
+    static const uint8_t ds_no_reply[] = {3, 6, 11, 18, 22, 26, 31, 32, 37, 38, 41, 51, 56, 57, 58, 74, 76, 78, 79, 82, 83, 86, 89, 91, 92, 94, 96, 97};
     switch (protocol) {
     case 10:
         if (method == 6) return tg_validate_with_param;
@@ -1097,6 +1118,8 @@ static NexHandler core_handler(uint32_t protocol, uint32_t method) {
         if (method == 8) return ds_get_meta;
         if (method == 60 || method == 61) return u32_zero;
         if (method == 84) return ds_84;
+        if (method == 21) return ds_post_meta_binary;
+        if (method == 95) return ds_95;
         for (size_t i = 0; i < sizeof ds_no_reply; i++) if (method == ds_no_reply[i]) return read_all_reply;
         return NULL;
     case 124:
@@ -1111,6 +1134,7 @@ NexServer *nex_server_new(const NexIo *io, NexStore store, int verbose) {
     if (!s) return NULL;
     s->io = *io;
     s->store = store;
+    s->idle_timeout = IDLE_TIMEOUT;
     s->verbose = verbose;
     s->call_id = 1;
     s->next_round = (uint64_t)time(NULL) << 16;
@@ -1141,6 +1165,7 @@ void nex_server_free(NexServer *s) {
     free(s);
 }
 void nex_server_set_now(NexServer *s, double now) { s->now = now; }
+void nex_server_set_idle_timeout(NexServer *s, double seconds) { s->idle_timeout = seconds; }
 void nex_server_set_round_base(NexServer *s, uint64_t next_round) { s->next_round = next_round; }
 void nex_server_set_identity(NexServer *s, const char *identity) {
     free(s->identity);
@@ -1326,7 +1351,7 @@ void nex_server_tick(NexServer *s, double now) {
     for (int k = 0; k < 2; k++)
         for (int i = 0; i < s->nconns[k];) {
             NexConn *c = s->conns[k][i];
-            if (now - c->seen > IDLE_TIMEOUT) conn_close(s, c, "timed out");
+            if (s->idle_timeout > 0 && now - c->seen > s->idle_timeout) conn_close(s, c, "timed out");
             else i++;
         }
     nex_ranked_tick(s, now);
