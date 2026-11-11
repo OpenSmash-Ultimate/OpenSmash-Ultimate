@@ -2755,21 +2755,46 @@ static void warm_list_open(void) {
     WarmHeader head = {"OSVKWRM", sizeof(WarmRecord), sizeof(PipeKey), SHADER_CACHE_SPV_VERSION, spirv_glslang_version(), WARM_LIST_VERSION, 0};
     size_t size = 0;
     u8 *data = read_file(path, &size);
-    if (!data) {   /* (none for this card yet: the shipped list, beside the exe or media\, the pipelines of normal play) */
-        char shipped[MAX_PATH + 64] = "";
+    /* The shipped list (beside the exe or media/: the pipelines of normal play, from runs over every stage and fighter)
+     * is read every start and joined to this card's list: a card's list that was started again or cut short (a start
+     * closed during the shader loading, tests) left most pipelines to their first draw - the owner's play.log 2026-11-11:
+     * 643 listed, every other pipeline made during play. Records both lists have are warmed once (warm_see). */
+    char shipped[MAX_PATH + 64] = "";
 #ifdef _WIN32
-        DWORD k = GetModuleFileNameA(NULL, shipped, MAX_PATH);
+    DWORD k = GetModuleFileNameA(NULL, shipped, MAX_PATH);
 #else
-        DWORD k = 0;
+    DWORD k = 0;
 #endif
-        char *slash = k && k < MAX_PATH ? strrchr(shipped, '\\') : NULL;
-        if (slash) { strcpy(slash + 1, "vulkan_pipelines.warm"); data = read_file(shipped, &size); }
-        if (!data) data = read_file("media/vulkan_pipelines.warm", &size);
-        if (data && (size < sizeof head || memcmp(data, &head, sizeof head))) { free(data); data = NULL; size = 0; }
-        if (data) fprintf(stderr, "[vulkan] warm start: the shipped list of pipelines, %u records (none for this card yet)\n", (u32)((size - sizeof head) / sizeof(WarmRecord)));
-        if (data) { write_file(path, data, size); }
+    char *slash = k && k < MAX_PATH ? strrchr(shipped, '\\') : NULL;
+    size_t ship_size = 0;
+    u8 *ship = NULL;
+    if (slash) { strcpy(slash + 1, "vulkan_pipelines.warm"); ship = read_file(shipped, &ship_size); }
+    if (!ship) ship = read_file("media/vulkan_pipelines.warm", &ship_size);
+    if (ship && (ship_size < sizeof head || memcmp(ship, &head, sizeof head))) { free(ship); ship = NULL; }
+    int joined = 0;
+    if (ship) {
+        if (data && size >= sizeof head && !memcmp(data, &head, sizeof head)) {
+            size_t extra = (ship_size - sizeof head) / sizeof(WarmRecord) * sizeof(WarmRecord);
+            size_t mine = (size - sizeof head) / sizeof(WarmRecord) * sizeof(WarmRecord);
+            u8 *both = malloc(sizeof head + mine + extra);
+            if (both) {
+                memcpy(both, data, sizeof head + mine);
+                memcpy(both + sizeof head + mine, ship + sizeof head, extra);
+                free(data);
+                data = both;
+                size = sizeof head + mine + extra;
+                joined = 1;
+            }
+            free(ship);
+        } else {
+            free(data);
+            data = ship;
+            size = ship_size;
+            joined = 1;
+            fprintf(stderr, "[vulkan] warm start: the shipped list of pipelines, %u records (none for this card yet)\n", (u32)((size - sizeof head) / sizeof(WarmRecord)));
+        }
     }
-    int rewrite = !data;
+    int rewrite = !data || joined;
     u32 n = 0;
     if (data && (size < sizeof head || memcmp(data, &head, sizeof head))) { size = 0; rewrite = 1; }
     else if (data) {
@@ -2779,6 +2804,7 @@ static void warm_list_open(void) {
         for (u32 i = 0; i < listed; i++)
             if (warm_record_ok(&rec[i]) && warm_see(&rec[i])) rec[n++] = rec[i];
             else rewrite = 1;
+        if (joined && n != listed) rewrite = 1;   /* (the card's list written again with the shipped records it lacked) */
         warm_records = rec;
         warm_nrecords = n;
     }
