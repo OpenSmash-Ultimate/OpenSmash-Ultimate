@@ -6927,9 +6927,9 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
     leave();
 }
 
-/* (gpu_menu.c, while the game waits for its software keyboard) the last frame shown once more, overlay and
- * menu on top: 1, or 0 before any frame */
-int gfx_present_again(void) {
+/* (gpu_backend.c's gfx_present_again, while the game waits for its software keyboard) the last frame shown
+ * once more, overlay and menu on top: 1, or 0 before any frame */
+int d3d11_present_again(void) {
     if (!ready || !presented_once) return 0;
     gfx_present(last_present_guest, 0, 0);
     return 1;

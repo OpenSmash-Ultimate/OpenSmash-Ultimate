@@ -45,6 +45,8 @@ static int menu_keys(UINT msg, WPARAM w, LPARAM l) {
     case VK_BACK: key = MENU_KEY_BACKSPACE; break;
     case VK_DELETE: key = MENU_KEY_DELETE; break;
     case VK_TAB: if (!repeat) key = GetKeyState(VK_SHIFT) & 0x8000 ? MENU_KEY_SHIFT_TAB : MENU_KEY_TAB; break;
+    case VK_PRIOR: if (!repeat) key = MENU_KEY_PAGE_UP; break;     /* (the menu's pages, as L and R) */
+    case VK_NEXT: if (!repeat) key = MENU_KEY_PAGE_DOWN; break;
     }
     if (!key || (key != MENU_KEY_ESC && !menu_is_open())) return 0;
     menu_key(key);

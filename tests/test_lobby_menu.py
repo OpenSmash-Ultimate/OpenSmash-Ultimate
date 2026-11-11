@@ -1,4 +1,6 @@
-"""The settings menu's Lobby page (runtime/gpu_menu.c): the online lobby's room browser and
+"""The settings menu (runtime/gpu_menu.c): its pages as tabs switched with L / R, every row reachable with a
+pad (Restart game and Quit game under each page's rows), the text grid the game's software keyboard is
+typed on (the one the menu's own names use: pad and keyboard), and its Lobby page: the online lobby's room browser and
 matchmaking in netplay version 3, and Online > Netplay version (online_protocol.txt), through
 tools/dev/lobbymenutest.c (the menu and the game's netplay client with no game around them, driven
 line by line), against fake lobbies that answer by hand and the real one (tools/ssbu_relay.py) on
@@ -97,13 +99,39 @@ class Menu:
     def type(self, text):
         self.ok(f'type {text}')
 
+    def pad(self, buttons, n=1):
+        """Pad 1's buttons (A B X Y L R PLUS UP DOWN LEFT RIGHT, joined by +) pressed and let go, n times."""
+        self.ok(f'pad {buttons} {n}')
+
+    def cursor(self):
+        """(page, the cursor's row, on Restart game (1) / Quit game (2) or 0)."""
+        _, page, sel, _ = self.page()
+        return page, sel, self.foot
+
+    def osk(self, initial='', title='', guide='', least=0, most=20):
+        """The game asks for text (its software keyboard, as hle_applet.c asks), on a thread of its own."""
+        self.ok(f'osk {least} {most} {initial}|{title}|{guide}')
+
+    def osk_state(self):
+        """(open, the grid's row, its column, the text)."""
+        head, text = self.ask('oskstate').split('|', 1)
+        return (*map(int, head.split()[1:]), text)
+
+    def osk_result(self, wait=3.0):
+        """(1 typed / 0 cancelled, the text), or None while the game still waits."""
+        got = self.ask(f'oskresult {wait}', wait + 10)
+        if got == 'oskresult pending':
+            return None
+        ok, text = got[len('oskresult '):].split('|', 1)
+        return int(ok), text
+
     def frames(self, secs):
         self.ok(f'frame {secs}')
 
     def page(self):
         """(open, page, the cursor's row, [rows]): each row a dict of id, kind, label, value, note, help."""
         head = self.ask('rows').split()
-        is_open, page, sel, n = map(int, head[1:])
+        is_open, page, sel, n, self.foot = map(int, head[1:6])
         out = []
         for _ in range(n):
             ids, label, value, note, helptext = self.answer().split('|')
@@ -329,7 +357,18 @@ class Pages(MenuTest):
         drawn = m.draw()
         for i, name in enumerate(('Display', 'Controllers', 'Online', 'Game', 'Lobby', 'Mods')):
             self.assertIn(f'{i + 1} {name}', drawn)
-        self.assertIn('Up/Down: choose   Left/Right: change   A/Enter: select   L/R or Tab, 1-6: page   B/Esc: close', drawn)
+        self.assertIn('Up/Down: choose   Left/Right: change   A/Enter: select   L/R, Q/E or Tab: page   B/Esc: close', drawn)
+        for icon in ('L', 'R', 'Restart game', 'Quit game'):   # (the tab bar's buttons, and under the rows)
+            self.assertIn(icon, drawn)
+        m.key('PGDN')
+        self.assertEqual(m.page()[1], LOBBY_PAGE + 1)
+        m.key('PGUP')
+        m.key('PGUP')
+        self.assertEqual(m.page()[1], 3)
+        m.type('e')
+        self.assertEqual(m.page()[1], LOBBY_PAGE)
+        m.type('Q')
+        self.assertEqual(m.page()[1], 3)
         m.key('ESC')
         self.assertEqual(m.page()[0], 0)
 
@@ -406,12 +445,12 @@ class Mouse(MenuTest):
 
     @staticmethod
     def tab(i):
-        return 200, 195 + 60 * i
+        return 342 + 247 * i, 185   # (the tabs across the top, between L and R)
 
     @staticmethod
     def row_y(j):
-        assert j < 13   # (the rows that fit: the first ones, with nothing scrolled)
-        return 190 + 50 * j
+        assert j < 12   # (the rows that fit: the first ones, with nothing scrolled)
+        return 262 + 50 * j
 
     def index(self, m, label):
         return [r['label'] for r in m.rows()].index(label)
@@ -438,7 +477,7 @@ class Mouse(MenuTest):
         y = self.row_y(self.index(m, 'Frames queued ahead'))
         self.click(m, 1500, y)   # (right of the value: forward from the stand-in's 1)
         self.assertRegex(m.file('display.ini'), r'latency\s*=\s*2')
-        self.click(m, 965, y)    # (the value's left half: back, round to 3)
+        self.click(m, 805, y)    # (the value's left half: back, round to 3)
         self.assertRegex(m.file('display.ini'), r'latency\s*=\s*3')
 
     def test_bars_are_left_out_of_the_place(self):
@@ -481,13 +520,21 @@ class Mouse(MenuTest):
         m.key('ESC')
         for page in (1, 5):
             m.type(str(page))
-            self.click(m, 200, 750)   # (restart: y 735 to 785)
+            self.click(m, 1426, 978)   # (restart: under the rows, right; y 955 to 1001)
             self.assertIn('Start the game again?', m.draw())
             self.click(m, 900, 590)   # (no)
-            self.click(m, 200, 810)   # (quit: y 795 to 845)
+            self.click(m, 1662, 978)   # (quit: right of it)
             self.assertIn('Quit the game?', m.draw())
             self.click(m, 900, 590)   # (no)
             self.assertEqual(m.page()[:2], (1, page - 1))
+
+    def test_l_and_r_buttons(self):
+        m = self.menu()
+        m.key('ESC')
+        self.click(m, 175, 185)   # (R's twin at the left: L)
+        self.assertEqual(m.page()[1], 5)
+        self.click(m, 1745, 185)   # (R)
+        self.assertEqual(m.page()[1], 0)
 
     def test_text_grid(self):
         m = self.menu(files={'online_name.txt': 'Al\n'})
@@ -507,6 +554,147 @@ class Mouse(MenuTest):
         self.assertNotEqual(m.at()['label'], before)
         m.ok('wheel U')
         self.assertEqual(m.at()['label'], before)
+
+
+class Pad(MenuTest):
+    """The menu with a pad alone: L / R switch the pages, and every row of every page, Restart game and
+    Quit game included, is reached with the d-pad."""
+    def test_l_and_r_switch_pages(self):
+        m = self.menu()
+        m.key('ESC')
+        m.pad('R')
+        self.assertEqual(m.page()[1], 1)
+        m.pad('R', 4)
+        self.assertEqual(m.page()[1], 5)
+        m.pad('R')
+        self.assertEqual(m.page()[1], 0)   # (round)
+        m.pad('L')
+        self.assertEqual(m.page()[1], 5)
+        m.pad('L', 2)
+        self.assertEqual(m.page()[1], 3)
+
+    def test_every_row_reachable(self):
+        m = self.menu()
+        m.key('ESC')
+        for p in range(6):
+            _, page, _, rows = m.page()
+            self.assertEqual(page, p)
+            wanted = {i for i, r in enumerate(rows) if r['kind'] != 0}   # (K_INFO rows are read, not chosen)
+            seen, feet = set(), set()
+            for _ in range(len(rows) + 3):   # (down: each row, then Restart game, then round to the first)
+                _, sel, foot = m.cursor()
+                if foot:
+                    feet.add(foot)
+                else:
+                    seen.add(sel)
+                m.pad('DOWN')
+            self.assertEqual(seen, wanted, rows)
+            self.assertEqual(feet, {1})
+            while m.cursor()[2] != 1:
+                m.pad('DOWN')
+            m.pad('RIGHT')
+            self.assertEqual(m.cursor()[2], 2)
+            m.pad('A')
+            self.assertIn('Quit the game?', m.draw())
+            m.pad('B')   # (no)
+            self.assertNotIn('Quit the game?', m.draw())
+            m.pad('LEFT')
+            m.pad('A')
+            self.assertIn('Start the game again?', m.draw())
+            m.pad('B')
+            self.assertEqual(m.page()[:2], (1, p))
+            m.pad('UP')   # (back up: the last row)
+            self.assertEqual(m.cursor()[1:], (max(wanted), 0) if wanted else (m.cursor()[1], 1))
+            m.pad('R')
+        self.assertEqual(m.page()[1], 0)
+
+    def test_up_from_the_first_row(self):
+        m = self.menu()
+        m.key('ESC')
+        first = m.cursor()[1]
+        m.pad('UP')
+        self.assertEqual(m.cursor()[2], 1)   # (Restart game, under the last row)
+        m.pad('DOWN')
+        self.assertEqual(m.cursor()[1:], (first, 0))
+
+    def test_rows_scroll(self):
+        m = self.menu()
+        m.key('ESC')
+        m.pad('R')   # (Controllers)
+        m.go_to('Keyboard keys...')
+        m.pad('A')
+        labels = m.labels()
+        self.assertGreater(len(labels), 12)   # (more than fit)
+        self.assertNotIn(labels[-1], m.draw())
+        m.pad('DOWN', len(labels) - 1)
+        self.assertEqual(m.at()['label'], labels[-1])
+        drawn = m.draw()
+        self.assertIn(labels[-1], drawn)
+        self.assertNotIn(labels[0], drawn)   # (scrolled past)
+        m.pad('B')
+        self.assertEqual(m.labels()[3], 'Keyboard keys...')
+
+
+class Keyboard(MenuTest):
+    """The game's software keyboard (an arena's name...) on the menu's text grid, the one its own names use:
+    a pad or the keyboard types, the game's limits kept, the game waits for the answer."""
+    def test_pad_types(self):
+        m = self.menu()
+        m.osk(title='Arena name', most=10)
+        self.assertEqual(m.osk_state(), (1, 0, 0, ''))
+        drawn = m.draw()
+        self.assertIn('Arena name', drawn)
+        m.pad('A')            # A
+        m.pad('DOWN')
+        m.pad('RIGHT')
+        m.pad('A')            # O
+        m.pad('A')            # O
+        self.assertEqual(m.osk_state(), (1, 1, 1, 'AOO'))
+        m.pad('B')            # (delete)
+        self.assertEqual(m.osk_state()[3], 'AO')
+        self.assertIsNone(m.osk_result(0.2))   # (the game still waits)
+        m.pad('PLUS')
+        self.assertEqual(m.osk_result(), (1, 'AO'))
+        self.assertEqual(m.page()[0], 0)   # (the menu closed with it)
+
+    def test_keyboard_types(self):
+        m = self.menu()
+        m.osk(initial='Hi', title='Arena name', guide='Name', most=5)
+        self.assertEqual(m.osk_state()[3], 'Hi')
+        m.type('qeabcdef')   # (q and e: letters here, not the pages)
+        self.assertEqual(m.osk_state()[3], 'Hiqea')   # (5 at most)
+        m.key('BKSP')
+        self.assertEqual(m.osk_state()[3], 'Hiqe')
+        m.key('ENTER')
+        self.assertEqual(m.osk_result(), (1, 'Hiqe'))
+
+    def test_guide_as_title(self):
+        m = self.menu()
+        m.osk(guide='Arena comment')
+        self.assertIn('Arena comment', m.draw())
+        m.key('ESC')
+        self.assertEqual(m.osk_result(), (0, ''))
+
+    def test_cancel(self):
+        m = self.menu()
+        m.osk(initial='x')
+        m.key('ESC')
+        self.assertEqual(m.osk_result(), (0, ''))
+        m.osk()
+        m.pad('L')   # (the pad's cancel)
+        self.assertEqual(m.osk_result(), (0, ''))
+        self.assertEqual(m.page()[0], 0)
+
+    def test_shortest(self):
+        m = self.menu()
+        m.osk(least=3)
+        m.type('ab')
+        m.key('ENTER')
+        self.assertIsNone(m.osk_result(0.3))
+        self.assertEqual(m.toast(), 'At least 3 characters')
+        m.type('c')
+        m.key('ENTER')
+        self.assertEqual(m.osk_result(), (1, 'abc'))
 
 
 class Version(MenuTest):

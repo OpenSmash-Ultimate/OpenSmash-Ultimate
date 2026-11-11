@@ -12,3 +12,6 @@ struct GfxBackend;
  * vulkan_auto_trial.txt in the shader cache's folder counts them, gpu_vk.c's trial; renderer =
  * vulkan takes it away). */
 const struct GfxBackend *vk_backend_start(char *why, size_t size, int automatic);
+/* (gpu_backend.c's gfx_present_again) the last frame shown once more, overlay and menu on top: 1, or 0
+ * before any frame (or with no Vulkan back end in this program). */
+int vk_present_again(void);

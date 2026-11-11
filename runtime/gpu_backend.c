@@ -136,4 +136,12 @@ DWORD gfx_lock_owner(void) { return gfx_backend.lock_owner(); }
 DWORD gfx_last_enter_thread(void) { return gfx_backend.last_enter_thread(); }
 void gfx_report_compiles(void (*line)(const char *text)) { gfx_backend.report_compiles(line); }
 void *gfx_display_output(void) { return gfx_backend.display_output(); }
+/* (gpu_menu.c's software keyboard, while the game waits for it) the last frame once more, with the overlay
+ * and the menu: the back end drawing's (Vulkan's too: it was Direct3D 11's alone, so with Vulkan drawing
+ * the keyboard fell back to the Windows text box). 1, or 0 before any frame. */
+int gfx_present_again(void) {
+    if (gfx_backend.present == start_present) return 0;   /* (no back end chosen: nothing shown yet) */
+    if (gfx_backend.present == d3d11_present) return d3d11_present_again();
+    return vk_present_again();
+}
 #endif
