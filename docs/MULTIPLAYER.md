@@ -123,7 +123,7 @@ The game's own **Online** menu works with WindowSmash's game server, which runs 
 ### Rollback in Online mode
 
 > [!NOTE]
-> Off by default (from v0.3.0-alpha.4): online matches are played with the game's own netcode, the stable one, until rollback has passed tests between two PCs. To try rollback, set **Online > Rollback netcode** to **on** in the settings (Esc; it writes `on` in `online_rollback.txt`, and counts from the next start), or start the game with `SSBU_RB=1` and `SSBU_RB_NET=online`. A match uses it only when both players have it on. A game started offline has no rollback at all and costs nothing for it.
+> On by default again (2026-11-11, after v0.3.0-alpha.4 had it off): a rollback's catch-up now fits in one frame almost always (over 16.7 ms in under 1 % of them at 40 ms one way, about 3-4 % at 120-150 ms), and the input delay grows with the measured trip, up to 9 frames online. **Online > Rollback netcode** set to **off** in the settings (Esc; it writes `off` in `online_rollback.txt`, from the next start) plays the game's own netcode, as `SSBU_RB=0` does. A match uses rollback only when both players have it on. A game started offline has no rollback at all and costs nothing for it.
 
 With it, a Quickplay match is played with rollback netplay ([technical guide](TECHNICAL.md#rollback-netplay-ssbu_rb)) instead of the game's own delay-based netcode: your own inputs answer at once (after a small input delay), the other player's are guessed until they arrive, and the game quietly re-runs the few frames a wrong guess touched. Everything around the fight stays the game's own: matchmaking, the character screen, the results with GSP, the next search.
 

@@ -4595,11 +4595,11 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(physical, &props);
     snprintf(card, sizeof card, "%s", props.deviceName);
-    /* (auto: Vulkan on AMD's cards alone - gpu_backend.c asked Direct3D 11's choice of card first; this is Vulkan's;
+    /* (auto: Vulkan on AMD's and NVIDIA's cards - gpu_backend.c asked Direct3D 11's choice of card first; this is Vulkan's;
      * SSBU_VK_AUTO_VENDOR=<hex PCI vendor> names another, to test auto elsewhere) */
     unsigned auto_vendor = getenv("SSBU_VK_AUTO_VENDOR") ? (unsigned)strtoul(getenv("SSBU_VK_AUTO_VENDOR"), NULL, 16) : 0x1002;
-    if (automatic && props.vendorID != auto_vendor) {
-        snprintf(why, size, "%s is not an AMD card, Direct3D 11 is the default for it (renderer = vulkan to draw with Vulkan)", card);
+    if (automatic && props.vendorID != auto_vendor && props.vendorID != 0x10de) {
+        snprintf(why, size, "%s is not an AMD or NVIDIA card, Direct3D 11 is the default for it (renderer = vulkan to draw with Vulkan)", card);
         return start_undo();
     }
     if (props.apiVersion < VK_API_VERSION_1_1) { snprintf(why, size, "%s has Vulkan %u.%u: 1.1 is needed", card, VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion)); return start_undo(); }
