@@ -26,6 +26,7 @@
  *   quit                   ends (net_relay.c's exit handler sends LEAVE)
  * Anything else: "error". */
 #include "../../runtime/net_relay.c"
+#include "../../runtime/net_eos.c"
 #include "../../runtime/hle_rb_link.h"
 #include "../../runtime/hle_rb_net.h"
 

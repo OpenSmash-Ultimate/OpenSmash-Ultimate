@@ -9,6 +9,7 @@
  *
  * (tests/test_settings.py builds and runs it.) Exit code 0 when every check passes. */
 #include "../../runtime/net_relay.c"
+#include "../../runtime/net_eos.c"
 #include "../../runtime/hle_settings.c"
 #include "../../runtime/hle_config.c"
 

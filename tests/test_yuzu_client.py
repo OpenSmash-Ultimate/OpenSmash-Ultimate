@@ -224,7 +224,7 @@ class YuzuClientTests(unittest.TestCase):
         if not Path(clang).is_file():clang=str(ROOT/'deps/llvm/bin/clang-cl.exe')
         if not Path(clang).is_file():raise unittest.SkipTest('clang-cl required')
         cls.temp=tempfile.TemporaryDirectory(prefix='yuzu-client-test-');cls.exe=Path(cls.temp.name)/'client.exe'
-        sources=['tools/dev/yuzuclienttest.c','runtime/net_relay.c','runtime/hle_net.c','runtime/net_yuzu.c','runtime/net_yuzu_wire.c']
+        sources=['tools/dev/yuzuclienttest.c','runtime/net_relay.c','runtime/net_eos.c','runtime/hle_net.c','runtime/net_yuzu.c','runtime/net_yuzu_wire.c']
         command=[clang,'/nologo','/O1','/Gy',*cc.CFLAGS,*[str(ROOT/p) for p in sources],'/Fe'+str(cls.exe),'/Fo'+cls.temp.name+os.sep,
                  '/link',*cc.LINK_OPTIONS,'/OPT:REF','ws2_32.lib','iphlpapi.lib','advapi32.lib','user32.lib','ole32.lib','oleaut32.lib']
         result=subprocess.run(command,capture_output=True,text=True,timeout=120)
