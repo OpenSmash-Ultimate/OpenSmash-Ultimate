@@ -2001,6 +2001,11 @@ static void net_hello(int now) {
         if (ready) {
             if (net_delay < 0) {
                 net_delay = net_online ? rbn_online_delay_for_rtt(worst) : rbn_delay_for_rtt(worst);
+                {   /* (SSBU_RB_DELAY_RULE=online, tests: the Online mode's rule on the direct link or the relay too - two games
+                     * on one PC under SSBU_NET_SIM choose their delay as an Online match would) */
+                    const char *r = getenv("SSBU_RB_DELAY_RULE");
+                    if (r && !strcmp(r, "online")) net_delay = rbn_online_delay_for_rtt(worst);
+                }
                 char t[200] = ""; size_t k = 0;
                 for (int p = 1; p < net_n; p++) k += snprintf(t + k, sizeof t - k, "%s player %d %.1f ms", p > 1 ? "," : "", p + 1, hs_rtt_min[p]);
                 fprintf(stderr, "[rb] handshake: round trips (the least of %d over 5 s or more):%s; the longest %.1f ms: input delay %d\n", HS_RTT_SAMPLES, t, worst, net_delay);
