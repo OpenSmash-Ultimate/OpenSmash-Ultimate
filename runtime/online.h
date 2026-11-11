@@ -22,5 +22,9 @@ void online_rb_save(OnlineRb *o);
 void online_rb_load(const OnlineRb *o);
 void online_rb_counts(long long *back, long long *left_out, long long *differ);
 
+/* (hle_net.c's sendto) 1: a datagram for the game server's addresses, answered by the server in the game (Online over
+ * EOS, or SSBU_NEX_LOCAL=1: Pia's NAT check and keepalive) */
+int online_nex_datagram(u32 src_ip, u16 sport, u32 dst, u16 dport, const void *data, u32 len);
+
 /* (hle_net.c) Wake poll() and blocking calls: something changed on a stream. */
 void net_wake(void);

@@ -1097,7 +1097,8 @@ static void do_sendto(Cpu *c, i32 fd, u64 buf, u64 len, i32 flags, u64 addr, u32
     else {
         if (dst == me || broadcast) vsock_deliver(me, sport, dst, dport, data, (u32)len);   /* (a broadcast reaches this player's sockets too) */
         if (!net_backend && dst != me && !broadcast) net_note_peer(dst);   /* (native Online rollback's match players) */
-        if (dst != me) net_send(me, sport, broadcast ? net_broadcast_ip() : dst, dport, data, (u32)len);
+        if (dst != me && (broadcast || !online_nex_datagram(me, sport, dst, dport, data, (u32)len)))   /* (the game server in the game's) */
+            net_send(me, sport, broadcast ? net_broadcast_ip() : dst, dport, data, (u32)len);
     }
     c->x[0] = len;
 }
