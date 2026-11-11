@@ -120,6 +120,18 @@ The game's own **Online** menu works with WindowSmash's game server, which runs 
 | Quickplay keeps waiting | Nobody with your lobby code is searching right now. Find players on the [OpenSmash-Ultimate Discord](https://discord.gg/pkgyYGf3YB). |
 | "The connection was interrupted due to excessive inactivity" or "... self-destructs" | The game's own Online rules: a player who stands still or falls off too often is sent back to the menu. |
 
+### Battle Arenas
+
+**Online > Smash > Battle Arenas** works with the same game server: make an arena with your own rules, find one, join it.
+
+> [!WARNING]
+> Battle Arenas are newer still. Tested on one PC (two games, a lobby of their own): making an arena (its rules, name and arena ID), finding it with **Advanced search**, joining it, both players on the waiting platform, each choosing a fighter. **The arena's matches don't start yet**: the ring keeps saying it is waiting for opponents.
+
+- **Make one:** **Create Arena**, choose the rules, **Next** (<kbd>+</kbd>), type a name, **Create Arena**. The arena ID in the top-right corner is the one the game server gave it.
+- **Find one:** **Find Arena > Advanced search** lists the open arenas with room of players with your lobby code (or none) that fit the search, the fullest first.
+- **Join:** pick it, **Join**. You see the others on the waiting platform; the fighter button by your name chooses your fighter.
+- **Not yet:** the matches in the ring, **Arena ID** search (wired, not tried from the game), friends' arenas (the game server has no friend lists), arenas with a password (not tried).
+
 ### Rollback in Online mode
 
 > [!NOTE]
