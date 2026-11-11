@@ -28,14 +28,14 @@ install|update)
     tmp=/tmp/ssbu-online-deploy
     ssh "$host" "rm -rf $tmp && mkdir -m 700 $tmp $tmp/nex"
     scp -q tools/ssbu_online_lobby.py tools/ssbu_relay.py "$here/ssbu-online.service" "$host:$tmp/"
-    scp -q tools/nex/__init__.py tools/nex/crypto.py tools/nex/matchmaking.py tools/nex/prudp.py tools/nex/ranked.py \
-        tools/nex/rmc.py tools/nex/server.py tools/nex/services.py tools/nex/streams.py "$host:$tmp/nex/"
+    # (every module of tools/nex but its tests: arenas.py was left out when Battle Arenas came, #290)
+    nexfiles=$(cd tools/nex && ls *.py | grep -v '^test_' | grep -v '^selftest')
+    for f in $nexfiles; do scp -q "tools/nex/$f" "$host:$tmp/nex/"; done
     remote <<EOF
 set -e
 command -v python3 > /dev/null || { echo "python3 is missing"; exit 1; }
 install -d -m 755 /opt/ssbu-online /opt/ssbu-online/nex /etc/ssbu-lobby
-for f in ssbu_online_lobby.py ssbu_relay.py nex/__init__.py nex/crypto.py nex/matchmaking.py nex/prudp.py nex/ranked.py \
-         nex/rmc.py nex/server.py nex/services.py nex/streams.py; do
+for f in ssbu_online_lobby.py ssbu_relay.py \$(cd $tmp && ls nex/*.py); do
     tr -d '\r' < $tmp/\$f > /opt/ssbu-online/\$f
     chmod 644 /opt/ssbu-online/\$f
 done
