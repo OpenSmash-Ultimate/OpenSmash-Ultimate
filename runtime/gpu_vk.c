@@ -2864,6 +2864,7 @@ static WarmShader *warm_ready(const WarmKey *k) {
  * finish - the driver crashed on a record, or the game was closed in those seconds - so the list is started
  * again rather than given to the driver once more: one start without warmed pipelines, not a crash at each. */
 static char warm_marker[1200];
+#define WARM_RETRIES 3   /* (unfinished warm starts in a row before the list is started again) */
 
 static DWORD WINAPI warm_main(void *unused) {
     (void)unused;
@@ -2959,11 +2960,23 @@ static void warm_start(void) {
     int again = 0;
     snprintf(list, sizeof list, "%s/vulkan_%04x_%04x.warm", cache_dir(), limits_vendor, limits_device);
     snprintf(warm_marker, sizeof warm_marker, "%s.warming", list);
+    /* (A warm start that did not finish leaves its marker, holding how many in a row did not. Most are a game closed or
+     * killed during the shader loading, not a bad record: the list is warmed again; only after WARM_RETRIES unfinished
+     * ones in a row is it started again - 2026-11-11: a single killed start used to throw the whole list away, and the
+     * next start then compiled every pipeline at its first draw.) */
+    int tries = 0;
     if (GetFileAttributesA(warm_marker) != INVALID_FILE_ATTRIBUTES) {
-        fprintf(stderr, "[vulkan] warm start: the last one did not finish (%s): the list is started again, nothing is warmed this time\n", warm_marker);
-        /* (A list that can't be removed - read-only, held open - keeps its marker, and no start warms from it.) */
-        if (DeleteFileA(list) || GetLastError() == ERROR_FILE_NOT_FOUND) DeleteFileA(warm_marker);
-        else again = 1;
+        FILE *mf = fopen(warm_marker, "rb");
+        if (mf) { if (fscanf(mf, "%d", &tries) != 1) tries = 1; fclose(mf); }
+        if (tries < 1) tries = 1;
+        if (tries < WARM_RETRIES)
+            fprintf(stderr, "[vulkan] warm start: the last one did not finish (%s, %d in a row): warmed again\n", warm_marker, tries);
+        else {
+            fprintf(stderr, "[vulkan] warm start: %d in a row did not finish (%s): the list is started again, nothing is warmed this time\n", tries, warm_marker);
+            /* (A list that can't be removed - read-only, held open - keeps its marker, and no start warms from it.) */
+            if (DeleteFileA(list) || GetLastError() == ERROR_FILE_NOT_FOUND) { DeleteFileA(warm_marker); tries = 0; }
+            else again = 1;
+        }
     }
     warm_list_open();
     if (!warm_nrecords) return;
@@ -2988,7 +3001,7 @@ static void warm_start(void) {
     if (n > 3) n = 3;
     InterlockedExchange(&warm_running, (LONG)n);
     FILE *mark = fopen(warm_marker, "wb");
-    if (mark) fclose(mark);
+    if (mark) { fprintf(mark, "%d", tries + 1); fclose(mark); }
     else fprintf(stderr, "[vulkan] warm start: no marker file (%s): one that does not finish will not be noticed\n", warm_marker);
     for (u32 i = 0; i < n; i++) {
         HANDLE t = CreateThread(NULL, 64ull << 20, warm_main, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
