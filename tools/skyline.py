@@ -832,7 +832,10 @@ def build(tree, jobs, log=print, again=True):
     reason = game_link_reason(tree)
     if reason:
         exefs = os.path.join(tree, "dump", "exefs")
-        for mod in stale_hooks(tree):
+        # (recomp.py all writes again the C of a module whose hooks or code patches changed - its fingerprint
+        # has them - so writing it here first was done twice: main's, the biggest. macOS's link, build_mac.py,
+        # writes no C: there it is written here.)
+        for mod in stale_hooks(tree) if sys.platform == "darwin" else ():
             log(f"writing {mod}'s C again — 0%, estimating the time left")
             src = os.path.join(exefs, mod) if mod in ("main", "subsdk0", "sdk") else os.path.join(tree, "dump", "nro", mod + ".nro")
             out = os.path.join(tree, "build", mod) if mod in ("main", "subsdk0", "sdk") else os.path.join(tree, "build", "nro", mod)
