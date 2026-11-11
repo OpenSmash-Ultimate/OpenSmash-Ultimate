@@ -89,6 +89,22 @@ void watch_rb_dirty(u64 lo, u64 hi, u64 *bits) {
     }
     ReleaseSRWLockExclusive(&watch_lock);
 }
+/* (hle_rb_state.c, a load's questions on several threads at once) watch_rb_dirty without the lock, which the caller
+ * holds (watch_rb_begin .. watch_rb_end) for all of them: `bits` set with atomic ORs (two ranges may share a word),
+ * `pages` the calling thread's own room for 65536. */
+void watch_rb_dirty_scan(u64 lo, u64 hi, u64 *bits, void **pages) {
+    for (u64 at = lo; at < hi;) {
+        ULONG_PTR count = 65536;
+        ULONG granularity;
+        if (kernel_write_watch(WATCH_RENDERER, 0, (void *)at, hi - at, pages, &count, &granularity) != 0 || !count) return;
+        for (ULONG_PTR k = 0; k < count; k++) {
+            u64 p = ((u64)pages[k] - ALIAS_BASE) >> 12;
+            __atomic_fetch_or(&bits[p >> 6], 1ull << (p & 63), __ATOMIC_RELAXED);
+        }
+        if (count < 65536) return;
+        at = (u64)pages[count - 1] + 0x1000;
+    }
+}
 /* (hle_rb_state.c, SSBU_RB_SM_PAR) The stamp chunks of [lo, hi) made now, on one thread, before watch_rb_scan
  * stamps ranges that may share one on several. */
 void watch_rb_prepare(u64 lo, u64 hi) {
