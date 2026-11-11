@@ -1015,6 +1015,8 @@ def serve(exe, pack, cache, todo, jobs, times, show, every=1.0, popen=None, out=
                       else "the game has closed: the compile goes on", file=out, flush=True)
                 was_paused = now_paused
             time.sleep(every)
+        if was_paused:   # (the workers all finished between two looks: the game had closed)
+            print("the game has closed: the compile goes on", file=out, flush=True)
         for w in workers:
             w.proc.wait()
             w.drain.join()
