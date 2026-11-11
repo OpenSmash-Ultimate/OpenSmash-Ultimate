@@ -213,26 +213,157 @@ class UnverifiedFilesTests(unittest.TestCase):
         self.assertEqual(update.report_unverified(str(self.cfg), [], BS, str(self.report)), [])
         self.assertFalse(self.report.exists())   # (every block confirmed: no report)
 
-    def check(self, bad):
+    def check(self, bad, found=()):
         patch = types.SimpleNamespace(block=BS)
-        with mock.patch.object(update, 'verify', lambda p, cfg: bad):
-            return update.check_result(patch, str(self.cfg), str(self.report))
+        logged = []
+        with mock.patch.object(update, 'verify', lambda p, cfg: bad), \
+                mock.patch.object(update, 'recover', lambda p, cfg, b: {k: ('src', 0) for k in found}), \
+                mock.patch.object(update, 'log', logged.append):
+            return update.check_result(patch, str(self.cfg), str(self.report)), logged
 
     def test_harmless_blocks_go_on(self):
-        self.assertEqual(self.check([self.block(0x180), self.block(STREAM)]), [self.block(0x180), self.block(STREAM)])
+        left, _ = self.check([self.block(0x180), self.block(STREAM)])
+        self.assertEqual(left, [self.block(0x180), self.block(STREAM)])
         self.assertTrue(self.cfg.exists())
         self.assertTrue(self.report.exists())
 
-    def test_a_loaded_file_stops_the_install(self):
-        with self.assertRaises(update.UnsafeData) as e:
-            self.check([self.block(FILE_A), self.block(STREAM)])
-        self.assertEqual(e.exception.code, update.UNSAFE_EXIT)
-        self.assertIn('2 blocks of 16 KB of the updated game data could not be confirmed, 1 of them inside files the game '
-                      'loads', e.exception.message)
-        self.assertIn('original release (1.0.0', e.exception.message)
-        self.assertFalse(self.cfg.exists())   # (set aside: nothing starts the game with it, the next build applies again)
-        self.assertTrue(Path(str(self.cfg) + '.unsafe').exists())
+    def test_a_loaded_file_warns_and_goes_on(self):
+        """(Most players have only a merged base - a console dumps the game updated: the install
+        goes on, with a warning, the report, and the runtime's line in every crash report.)"""
+        left, logged = self.check([self.block(FILE_A), self.block(STREAM)])
+        self.assertEqual(left, [self.block(FILE_A), self.block(STREAM)])
+        self.assertTrue(self.cfg.exists())
+        self.assertFalse(Path(str(self.cfg) + '.unsafe').exists())
         self.assertTrue(self.report.exists())
+        warning = [line for line in logged if line.startswith('WARNING')]
+        self.assertEqual(len(warning), 1)
+        self.assertIn('2 blocks of 16 KB of the updated game data are unconfirmed, 1 of them inside files the game loads',
+                      warning[0])
+        self.assertIn('A crash in the game\'s data may come from them', warning[0])
+
+    def test_recovered_blocks_are_not_listed(self):
+        left, logged = self.check([self.block(FILE_A), self.block(STREAM)], found=[self.block(FILE_A)])
+        self.assertEqual(left, [self.block(STREAM)])
+        self.assertNotIn(f'{self.block(FILE_A)} ', self.report.read_text())
+        left, logged = self.check([self.block(FILE_A)], found=[self.block(FILE_A)])
+        self.assertEqual(left, [])
+        self.assertFalse(self.report.exists())
+        self.assertFalse([line for line in logged if line.startswith('WARNING')])
+
+
+# ---- the blocks still unconfirmed, looked for by their hash ------------------------------------
+class FakePatch:
+    """An update over a made-up image: in each block in `own`, the second half is the update's own
+    data (certain); every other byte is the original release's, to be found in the base."""
+
+    def __init__(self, image, own):
+        self.l6, self.l6size, self.block = 0, len(image), BS
+        self.blocks = (len(image) + BS - 1) // BS
+        self.image, self.own = image, set(own)
+        self.hashes = b''.join(sha(image[i:i + BS] + bytes(BS - len(image[i:i + BS]))) for i in range(0, len(image), BS))
+
+    def block_hash(self, b):
+        return self.hashes[b * 32:b * 32 + 32]
+
+    def pieces(self, v, size):
+        end = v + size
+        while v < end:
+            b, half = v // BS, BS // 2
+            mid = b * BS + half
+            st = 1 if b in self.own and v >= mid else 0
+            n = min(end, mid if v < mid else (b + 1) * BS) - v
+            yield v, n, st, v
+            v += n
+
+    def storage(self, off, n):
+        return self.image[off:off + n]
+
+
+def noise(n, seed):
+    out, x = bytearray(), seed
+    for _ in range(n):
+        x = (x * 1103515245 + 12345) & 0x7FFFFFFF
+        out.append(x >> 16 & 0xFF)
+    return bytes(out)
+
+
+class RecoverTests(unittest.TestCase):
+    """A block left wrong by a merged base is found again by its hash: its certain bytes (the
+    update's own data) anchor the search over the base's file and romfs_patch.bin."""
+    LOST, ELSEWHERE, IN_PATCH, GONE, NO_ANCHOR = 3, 5, 7, 9, 11
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory(prefix='update-recover-')
+        self.addCleanup(self.dir.cleanup)
+        top = Path(self.dir.name)
+        self.image = noise(BLOCKS * BS, 7)
+        own = [b for b in range(BLOCKS) if b != self.NO_ANCHOR]
+        self.patch = FakePatch(self.image, own)
+        base = bytearray(self.image)
+        for b in (self.LOST, self.ELSEWHERE, self.IN_PATCH, self.GONE, self.NO_ANCHOR):
+            base[b * BS:b * BS + BS // 2] = noise(BS // 2, 100 + b)       # the merged base: the original bytes moved away
+        base += noise(1000, 3) + self.blk(self.LOST) + noise(37, 4) + self.blk(self.ELSEWHERE)   # (at odd offsets)
+        patch_bin = noise(500, 5) + self.blk(self.IN_PATCH) + noise(11, 6)
+        (top / 'base.bin').write_bytes(bytes(base))
+        (top / 'romfs_patch.bin').write_bytes(patch_bin)
+        self.layers = top / 'romfs.layers'
+        update.write_layers(str(self.layers), len(self.image), [(0, 0, 0)])
+        self.cfg = top / 'romfs.cfg'
+        self.cfg.write_text(f"layered\n{self.layers}\n{top / 'base.bin'}\n{top / 'romfs_patch.bin'}\n")
+        self.where = {self.LOST: (str(top / 'base.bin'), BLOCKS * BS + 1000),
+                      self.ELSEWHERE: (str(top / 'base.bin'), BLOCKS * BS + 1000 + BS + 37),
+                      self.IN_PATCH: (str(top / 'romfs_patch.bin'), 500)}
+        for name, value in (('SCAN', 100), ('log', lambda msg: None)):   # (small reads: anchors across their edges)
+            patcher = mock.patch.object(update, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def blk(self, b):
+        return self.image[b * BS:(b + 1) * BS]
+
+    def bad(self):
+        return update.verify(self.patch, str(self.cfg))
+
+    def test_the_anchor(self):
+        self.assertEqual(update.anchor([(32, self.image[32:64])]), (32, self.image[32:64]))
+        self.assertIsNone(update.anchor([(0, bytes(64))]))            # (zeros tell nothing)
+        self.assertIsNone(update.anchor([(0, self.image[:31])]))      # (too short)
+
+    def test_dry_run(self):
+        bad = self.bad()
+        self.assertEqual(bad, [self.LOST, self.ELSEWHERE, self.IN_PATCH, self.GONE, self.NO_ANCHOR])
+        before = self.layers.read_bytes()
+        found = update.recover(self.patch, str(self.cfg), bad, dry_run=True)
+        self.assertEqual(found, self.where)
+        self.assertEqual(self.layers.read_bytes(), before)            # (nothing changed)
+
+    def test_found_blocks_are_mapped(self):
+        found = update.recover(self.patch, str(self.cfg), self.bad())
+        self.assertEqual(found, self.where)
+        self.assertEqual(self.bad(), [self.GONE, self.NO_ANCHOR])     # (the others read back right through romfs.cfg)
+        img = update.RomfsImage(str(self.cfg))
+        try:
+            for b in range(BLOCKS):
+                if b not in (self.GONE, self.NO_ANCHOR):
+                    self.assertEqual(img.read(b * BS, BS), self.blk(b))
+        finally:
+            img.close()
+
+    def test_a_block_of_original_release_data_by_its_guess(self):
+        """No certain bytes in it (all of it the original release's): pieces of its best guess,
+        right where the guess is right, anchor the search (13.0.5 over a merged 13.0.4: such a
+        block, its guess wrong in 202 of 16,384 bytes, was found 4 KB before its place)."""
+        base = Path(self.dir.name) / 'base.bin'
+        at = base.stat().st_size + 3
+        base.write_bytes(base.read_bytes() + b'\x01\x02\x03' + self.blk(self.NO_ANCHOR))
+        with mock.patch.object(update, 'GUESSES', 2):   # (64-byte blocks: two 32-byte pieces of the guess)
+            found = update.recover(self.patch, str(self.cfg), self.bad())
+        self.assertEqual(found[self.NO_ANCHOR], (str(base), at))
+        self.assertEqual(self.bad(), [self.GONE])
+
+    def test_too_many_is_not_this_image(self):
+        with mock.patch.object(update, 'MAX_RECOVER', 2):
+            self.assertEqual(update.recover(self.patch, str(self.cfg), self.bad()), {})
 
 
 if __name__ == '__main__':

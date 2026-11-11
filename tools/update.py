@@ -4,6 +4,7 @@
 Usage:
   update.py apply  <update> --base <base romfs.cfg> --keys <dir>
   update.py verify <update> --keys <dir>
+  update.py recover <update> --keys <dir> [--dry-run]
 
 <update> is the update's Patch NSP, an NSP holding the game and its update together (the update's
 Program NCA is the one whose RomFS is a patch; --inner <name> names it), or its Program NCA on its
@@ -18,12 +19,9 @@ own (a .nca file, or the 00 file of one an emulator installed).
   modules/romfs.unverified.txt  only if some 16 KB blocks could not be confirmed (see below): each
                                 block, its image offset, and what of the game's data it holds
 `verify` reads the updated RomFS back through romfs.cfg and checks every block's hash.
-
-An unconfirmed block inside a file the game loads (any file of data.arc's file section, its
-header and tables, or another file of the RomFS) stops the install (exit code UNSAFE_EXIT, the
-message UNSAFE_BASE): a player's merged base left the LoupeSubstance model files wrong, and the
-game crashed at boot. romfs.cfg is then set aside (romfs.cfg.unsafe), so that nothing starts the
-game with it and the build's next run applies the update again.
+`recover` does that, then looks for each unconfirmed block by its hash (step 3 below) and maps
+those found in romfs.layers (an install made before that step); with --dry-run it only says
+which it would find, and where, and changes nothing.
 
 An update's RomFS is a patch (BKTR) over the RomFS of the original release: a map of the new
 image whose pieces are either the update's own data or bytes of the original base at given
@@ -47,12 +45,24 @@ folder. So the pieces are found again:
      so each choice is checked; a block that does not match is solved again with more
      candidates: the shift of the nearest confirmed data in the original release's own order
      (the patch also borrows runs of bytes from other files of the original), the same bytes
-     elsewhere in the new image, zeros - per piece, then several pieces at once.
+     elsewhere in the new image, zeros - per piece, then several pieces at once;
+  3. a block still unconfirmed after the whole image is written is looked for by its hash
+     (recover): a 16 KB run whose SHA-256 is the one the update has for it, anywhere in the
+     layer map's sources (the base's file, romfs_patch.bin). Runs of 32 bytes anchor the
+     search: the block's certain bytes (the update's own data in it), and pieces of its best
+     guess, which is most often wrong in a few hundred bytes only. Every place an anchor
+     occurs is a candidate start, and only those are hashed - one pass over each file for
+     all the blocks. A block found is mapped there in romfs.layers.
 
-With 13.0.5 over a merged 11.0.0 base this confirmed all but 8 of 1,074,277 blocks (128 KB, inside
-a few models' material and texture files whose original-release bytes are no longer in the
-merged base); those keep the best guess and are listed in romfs.unverified.txt - and, being
-inside files the game loads, stop the install (above).
+With 13.0.5 over a merged 11.0.0 base, steps 1 and 2 confirmed all but 8 of 1,074,277 blocks
+(128 KB, inside a few models' material and texture files whose original-release bytes are no
+longer where the patch expects them). With 13.0.5 over a merged 13.0.4 base they left 1, all
+original-release data with its guess wrong in 202 bytes; step 3 found it in the base 4 KB
+before its place, and every block matched. What is still unconfirmed after step 3 keeps the best
+guess and is listed in romfs.unverified.txt, each block with what it holds; the install goes on
+(a player's console dumps the game already updated, so most players have only a merged base),
+with a warning: the build says how many blocks, the runtime logs it, and every crash report
+carries that line (runtime/hle_fs.c, host.c).
 
 The hash tree is part of the patched image too, so an update could reuse the original release's
 hashes for blocks that are the same as in that release. 13.0.5 carries a hash of its own for
@@ -71,14 +81,9 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from arc import Arc, data_arc_offset  # noqa: E402
 from game_version import needs  # noqa: E402
-from nca import LAYER_ZERO, Nca, RomfsImage, copy_out, nsp_ncas, pfs0_entries, romfs_entries, write_layers  # noqa: E402
+from nca import LAYER_ZERO, Nca, RomfsImage, copy_out, nsp_ncas, pfs0_entries, read_layers, romfs_entries, write_layers  # noqa: E402
 
 ZERO = "zero"        # a piece of zeros
-UNSAFE_EXIT = 3      # apply's exit code when unconfirmed bytes are in files the game loads (build_game.py)
-UNSAFE_BASE = ("The game given as the base most likely has an earlier update merged into it, and the 13.0.5 update "
-               "cannot be rebuilt over it exactly: some of the game's files would be wrong, and the game would crash. "
-               "Set it up again with the game's original release (1.0.0, as dumped, with no update merged in) and the "
-               "13.0.5 update next to it, or with a dump of the game that has 13.0.5 merged in.")
 DUMP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dump")
 NODE = 0x4000        # bucket tree node size
 
@@ -644,14 +649,6 @@ def verify(patch, cfg, report=None):
     return bad
 
 
-class UnsafeData(SystemExit):
-    """Unconfirmed bytes inside files the game loads: the install stops (exit code UNSAFE_EXIT)."""
-
-    def __init__(self, message):
-        super().__init__(UNSAFE_EXIT)
-        self.message = message
-
-
 def held_in(cfg, blocks, block_size):
     """What of the game's data each block of the RomFS image that `cfg` describes holds:
     {block: [(loaded, text)]}; loaded: whether the game reads those bytes (a file of data.arc's
@@ -736,9 +733,168 @@ def report_unverified(cfg, bad, block_size, report):
     return loaded
 
 
-def unsafe_message(bad, loaded, report):
-    return (f"{len(bad)} blocks of 16 KB of the updated game data could not be confirmed, {len(loaded)} of them inside "
-            f"files the game loads (listed in {report}). " + UNSAFE_BASE)
+# ---- the blocks still unconfirmed, looked for by their hash ----------------------------------
+ANCHOR = 32          # bytes that anchor the search for a block
+GUESSES = 8          # anchors taken from a block's best guess, one in each 1/8 of it
+SCAN = 64 << 20      # how much of a source is searched at a time
+MAX_HITS = 20000     # places a block's anchors may occur (each a 16 KB read and hash) before it is given up
+MAX_RECOVER = 4096   # unconfirmed blocks beyond which none is looked for (the image is not the update's at all)
+
+
+def certain_bytes(patch, b):
+    """Block b's bytes that are the update's own data, so certain: [(offset in the block, bytes)]."""
+    v0 = patch.l6 + b * patch.block
+    return [(pv - v0, patch.storage(ph, m)) for pv, m, st, ph in patch.pieces(v0, block_size_at(patch, b)) if st == 1]
+
+
+def anchor(runs, size=ANCHOR):
+    """(offset in the block, bytes): the `size` bytes of these runs with the most distinct values
+    (the least likely to occur elsewhere by chance); None when no run is that long, or every
+    window of them is nearly uniform (zeros, a fill pattern)."""
+    best = None
+    for at, data in runs:
+        for i in range(0, len(data) - size + 1, size // 2):
+            w = data[i:i + size]
+            score = len(set(w))
+            if best is None or score > best[0]:
+                best = (score, at + i, w)
+    return (best[1], best[2]) if best and best[0] >= size // 4 else None
+
+
+def anchors(patch, b, guess):
+    """Where block b's search starts from: [(offset in the block, bytes)]. First its certain
+    bytes (the update's own data in it); then pieces of its best guess (`guess`, the bytes the
+    image has there now), one from each eighth of it: a wrong guess is most often wrong in a few
+    hundred bytes only, so most of these are the block's own bytes (with 13.0.5 over a merged
+    13.0.4, the one block left was all original-release data, its guess wrong in 202 bytes)."""
+    out = [a for a in [anchor(certain_bytes(patch, b))] if a]
+    part = len(guess) // GUESSES
+    for k in range(GUESSES):
+        a = anchor([(k * part, guess[k * part:(k + 1) * part])])
+        if a and a[1] not in (x[1] for x in out):
+            out.append(a)
+    return out
+
+
+def block_size_at(patch, b):
+    """How many bytes of the image block b holds (the last block may be short)."""
+    return min(patch.block, patch.l6size - b * patch.block)
+
+
+def block_matches(patch, b, data):
+    """Whether `data` (block b's bytes, as many as the image has there) has the hash the update has for b."""
+    return hashlib.sha256(data + bytes(patch.block - len(data))).digest() == patch.block_hash(b)
+
+
+def find_blocks(patch, paths, wanted):
+    """Each wanted block {b: [(offset in the block, anchor bytes)]} looked for in the files `paths`:
+    every place one of its anchors occurs is a candidate start, read and hashed - one pass over
+    each file for all the blocks. {b: (path index, offset)} for those found."""
+    found, todo, hits, tried = {}, defaultdict(list), defaultdict(int), defaultdict(set)
+    for b, ancs in wanted.items():
+        for q, needle in ancs:
+            todo[needle].append((b, q))
+    left = set(wanted)
+
+    def drop(b):
+        left.discard(b)
+        for needle in list(todo):
+            todo[needle] = [w for w in todo[needle] if w[0] != b]
+            if not todo[needle]:
+                del todo[needle]
+    for src, path in enumerate(paths):
+        if not todo:
+            break
+        t0, size = time.time(), os.path.getsize(path)
+        log(f"  searching {path} ({size / 2**30:.1f} GiB) for {len(left)} blocks")
+        with open(path, "rb") as f, open(path, "rb") as g:
+            pos, tail = 0, b""
+            while todo:
+                chunk = f.read(SCAN)
+                if not chunk:
+                    break
+                buf, at = tail + chunk, pos - len(tail)
+                for needle in list(todo):
+                    i = buf.find(needle)
+                    while i >= 0 and needle in todo:
+                        for b, q in list(todo.get(needle, ())):
+                            x = at + i - q
+                            if x < 0 or x in tried[b]:
+                                continue
+                            tried[b].add(x)
+                            hits[b] += 1
+                            g.seek(x)
+                            if block_matches(patch, b, g.read(block_size_at(patch, b))):
+                                found[b] = (src, x)
+                                log(f"  block {b}: found at {path}+{x:#x}")
+                                drop(b)
+                            elif hits[b] >= MAX_HITS:
+                                log(f"  block {b}: its anchors occur over {MAX_HITS} times; given up")
+                                drop(b)
+                        i = buf.find(needle, i + 1)
+                tail = buf[-(ANCHOR - 1):]
+                pos += len(chunk)
+        log(f"  ({time.time() - t0:.0f}s)")
+    for b in sorted(left):
+        log(f"  block {b}: not found ({hits[b]} places tried)")
+    return found
+
+
+def remap(cfg, moves):
+    """romfs.layers (of the layered `cfg`) with each [image offset, + n) taken from (source, offset):
+    moves [(image offset, n, source, offset)]."""
+    with open(cfg, encoding="utf-8-sig") as f:
+        map_path = [line.strip() for line in f.read().splitlines() if line.strip()][1]
+    size, entries = read_layers(map_path)
+    for start, n, src, off in sorted(moves):
+        end = start + n
+        k = bisect.bisect_right([e[0] for e in entries], end) - 1
+        a, s, o = entries[k]
+        after = [(end, s, o if s == LAYER_ZERO else o + (end - a))] if end < size else []
+        entries = [e for e in entries if e[0] < start] + [(start, src, off)] + after + [e for e in entries if e[0] > end]
+    write_layers(map_path + ".partial", size, entries)
+    os.replace(map_path + ".partial", map_path)
+
+
+def recover(patch, cfg, bad, dry_run=False):
+    """Every unconfirmed block looked for by its hash in the files the image is made of (the
+    base's file - the old base's other copies of the same bytes - and romfs_patch.bin, the
+    update's own data), anchored by its certain bytes and pieces of its best guess (anchors). A block
+    found is mapped there in romfs.layers - unless `dry_run`, which only says where it is.
+    Returns {block: (path, offset)} of the blocks found (and, unless dry_run, confirmed by
+    reading them back through romfs.cfg)."""
+    img = RomfsImage(cfg)
+    layered, paths = img.entries is not None, list(img.paths)
+    img.close()
+    if len(bad) > MAX_RECOVER:
+        log(f"{len(bad):,} blocks unconfirmed: too many to look for one by one (this image is not the update's, laid out "
+            "otherwise, or its base is not this game)")
+        return {}
+    wanted = {}
+    img = RomfsImage(cfg)
+    try:
+        for b in bad:
+            ancs = anchors(patch, b, img.read(b * patch.block, block_size_at(patch, b)))
+            if ancs:
+                wanted[b] = ancs
+            else:
+                log(f"  block {b}: nothing in it to search by (zeros, a fill pattern); not searched")
+    finally:
+        img.close()
+    log(f"looking for {len(wanted)} of the {len(bad)} unconfirmed blocks by their hash:")
+    found = find_blocks(patch, paths, wanted) if wanted else {}
+    out = {b: (paths[src], x) for b, (src, x) in found.items()}
+    if not found or dry_run or not layered:
+        log(f"{len(found)} of {len(bad)} unconfirmed blocks found" + (" (dry run: nothing changed)" if dry_run else ""))
+        return out
+    remap(cfg, [(b * patch.block, block_size_at(patch, b), src, x) for b, (src, x) in found.items()])
+    img = RomfsImage(cfg)
+    try:
+        out = {b: w for b, w in out.items() if block_matches(patch, b, img.read(b * patch.block, block_size_at(patch, b)))}
+    finally:
+        img.close()
+    log(f"{len(out)} of {len(bad)} unconfirmed blocks found and mapped in romfs.layers")
+    return out
 
 
 def write_patch_data(patch, path, end):
@@ -809,17 +965,17 @@ def apply_romfs(patch, base_cfg, keydir, dump):
 
 
 def check_result(patch, cfg, report):
-    """The updated RomFS verified, its unconfirmed blocks listed in `report`; with any inside a
-    file the game loads, romfs.cfg is set aside (romfs.cfg.unsafe: nothing starts the game with
-    it, and the build's next run applies the update again) and the install stops (UnsafeData).
-    Returns the unconfirmed blocks."""
+    """The updated RomFS verified; the blocks that don't match are looked for by their hash
+    (recover) and those still unconfirmed listed in `report`, with a warning. The install goes
+    on: most players have only a merged base. Returns the blocks left unconfirmed."""
     bad = verify(patch, cfg)
+    if bad:
+        found = recover(patch, cfg, bad)
+        bad = [b for b in bad if b not in found]
     loaded = report_unverified(cfg, bad, patch.block, report)
     if bad:
-        log(f"unconfirmed blocks listed in {report}")
-    if loaded:
-        os.replace(cfg, cfg + ".unsafe")
-        raise UnsafeData(unsafe_message(bad, loaded, report))
+        log(f"WARNING: {len(bad)} blocks of 16 KB of the updated game data are unconfirmed, {len(loaded)} of them inside "
+            f"files the game loads (listed in {report}). A crash in the game's data may come from them.")
     return bad
 
 
@@ -831,31 +987,37 @@ def apply(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["apply", "verify"])
+    ap.add_argument("cmd", choices=["apply", "verify", "recover"])
     ap.add_argument("nsp", help="the update: a Patch NSP, or its Program NCA (a .nca file, or an installed one's 00 file)")
     ap.add_argument("--keys", required=True, help="folder with prod.keys (and title.keys)")
     ap.add_argument("--dump", default=DUMP, help=argparse.SUPPRESS)   # (where to write: tests)
     ap.add_argument("--base", help="apply: romfs.cfg of the installed base (e.g. dump/modules/romfs.cfg)")
     ap.add_argument("--inner", help="the update's Program NCA inside the package, by name (a package can hold the "
                                     "game and its update together; without it, the Program NCA with a patch RomFS)")
+    ap.add_argument("--dry-run", action="store_true", help="recover: only say which unconfirmed blocks would be found, "
+                                                           "and where; change nothing")
     a = ap.parse_args()
-    try:
-        if a.cmd == "apply":
-            if not a.base:
-                raise SystemExit("apply needs --base <the base's romfs.cfg>")
-            apply(a)
-        else:
-            patch = Patch(a.nsp, a.keys, a.inner)
-            modules = os.path.join(a.dump, "modules")
-            cfg, report = os.path.join(modules, "romfs.cfg"), os.path.join(modules, "romfs.unverified.txt")
-            bad = verify(patch, cfg)
-            loaded = report_unverified(cfg, bad, patch.block, report)
-            if loaded:
-                raise UnsafeData(unsafe_message(bad, loaded, report))
-            sys.exit(1 if bad else 0)
-    except UnsafeData as e:
-        print(f"\n{e.message}", file=sys.stderr, flush=True)
-        sys.exit(UNSAFE_EXIT)
+    if a.cmd == "apply":
+        if not a.base:
+            raise SystemExit("apply needs --base <the base's romfs.cfg>")
+        apply(a)
+        return
+    patch = Patch(a.nsp, a.keys, a.inner)
+    modules = os.path.join(a.dump, "modules")
+    cfg, report = os.path.join(modules, "romfs.cfg"), os.path.join(modules, "romfs.unverified.txt")
+    if a.cmd == "recover" and not a.dry_run:   # (an install made before blocks were looked for by their hash)
+        bad = check_result(patch, cfg, report)
+    elif a.cmd == "recover":
+        bad = verify(patch, cfg)
+        found = recover(patch, cfg, bad, dry_run=True)
+        for b in bad:
+            log(f"  block {b} ({b * patch.block:#x}): " + (f"found at {found[b][0]}+{found[b][1]:#x}" if b in found
+                                                           else "not found"))
+        bad = [b for b in bad if b not in found]
+    else:
+        bad = verify(patch, cfg)
+        report_unverified(cfg, bad, patch.block, report)
+    sys.exit(1 if bad else 0)
 
 
 if __name__ == "__main__":

@@ -107,7 +107,7 @@ class BuildStepsTests(unittest.TestCase):
             find_program=lambda game, keys: (self.program['path'], BASE, self.program, {'contents': self.contents}),
             romfs_cfg_ok=lambda cfg: True, missing_fonts=lambda folder: [], check_same_game=lambda rec: None,
             check_game_data=lambda cfg, game: None,
-            run=lambda args, failure, failures=None: self.calls.append([str(a) for a in args]))
+            run=lambda args, failure: self.calls.append([str(a) for a in args]))
         self.args = types.SimpleNamespace(game=str(self.game), keys=str(keys), firmware=str(firmware), jobs=None,
                                           prepare_only=True)
 
