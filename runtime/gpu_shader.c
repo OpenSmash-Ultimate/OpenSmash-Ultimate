@@ -209,6 +209,7 @@ typedef struct Ctx {
     int four_gathers;             /* a gather with an offset per texel as four gathers (vkd3d-shader, MSL) */
     int lod_long;                 /* TMML from the coordinates' derivatives (vkd3d-shader) */
     int sb_words;                 /* compute storage buffers as structured buffers of words (vkd3d-shader) */
+    int texel_bufs;               /* buffers only read as Buffer<uint>, indexed by word (glslang) */
     u32 tex_counter;              /* MSL: texture results' names (HLSL's count on across programs) */
 } Ctx;
 
@@ -263,7 +264,13 @@ static const char *cbuf(Ctx *c, u32 bank, u32 offset) {
         while (k < c->info->sb_count && c->info->sb_offset[k] != o) k++;
         if (k == c->info->sb_count && k < 16) c->info->sb_offset[c->info->sb_count++] = o;
     }
-    return tmp("cb%u.Load(%uu)", bank, offset & ~3u);
+    return c->texel_bufs ? tmp("cb%u[%uu]", bank, offset >> 2) : tmp("cb%u.Load(%uu)", bank, offset & ~3u);
+}
+
+/* A word of a buffer only read, at a byte address (a multiple of 4): ByteAddressBuffer's Load, or
+ * Buffer<uint>'s word (glslang). */
+static const char *raw_word(Ctx *c, const char *buf, const char *addr) {
+    return c->texel_bufs ? tmp("%s[(%s) >> 2u]", buf, addr) : tmp("%s.Load(%s)", buf, addr);
 }
 
 /* Operand forms. */
@@ -737,7 +744,7 @@ static void goto_pc(Ctx *c, u32 target) { line(c, "npc_ = 0x%xu; break;", target
 /* ---- instructions ------------------------------------------------------------------- */
 /* A constant shift count: Direct3D's shifts use its low 5 bits, MSL's (C++'s) by 32 or more
  * are undefined. */
-static u32 shift(Ctx *c, u32 n) { return c->msl ? n & 31 : n; }
+static u32 shift(Ctx *c, u32 n) { return c->msl || c->texel_bufs ? n & 31 : n; }   /* (MSL, SPIR-V: undefined from 32 on) */
 
 static const char *half(const char *x, u32 swizzle, int hi) {   /* one half of a packed pair, as float */
     switch (swizzle) {
@@ -1010,6 +1017,7 @@ static void emit_insn(Ctx *c, const Insn *in) {
         x = tmp("%s(%s)", rnd == 0 && c->msl ? "rint" : rf[rnd], x);
         if (dst == 1) x = is_signed ? tmp("clamp(%s, -32768.0f, 32767.0f)", x) : tmp("clamp(%s, 0.0f, 65535.0f)", x);
         if (c->msl) set_u(c, d, is_signed ? tmp("asuint(f2i_(%s))", x) : tmp("f2u_(%s)", x));   /* (saturating: see MSL_PRELUDE) */
+        else if (c->texel_bufs) set_u(c, d, is_signed ? tmp("asuint(f2i_(%s))", x) : tmp("f2u_(%s)", x));   /* (glslang: as MSL) */
         else set_u(c, d, is_signed ? tmp("asuint((int)%s)", x) : tmp("(uint)%s", x));
         break;
     }
@@ -1276,11 +1284,12 @@ static void emit_insn(Ctx *c, const Insn *in) {
             else if (c->info->cbuf_extent[idx] < end) c->info->cbuf_extent[idx] = end;
         } else if (off >= 0 && c->info->cbuf_extent[idx] < ((u32)off & ~7u) + 8) c->info->cbuf_extent[idx] = ((u32)off & ~7u) + 8;
         line(c, "{ uint addr_ = %s + %du;", R(c, ra), off);
-        if (size == 4) set_u(c, d, tmp("cb%u.Load(addr_ & ~3u)", idx));
-        else if (size == 5) { set_u(c, d, tmp("cb%u.Load(addr_ & ~7u)", idx)); set_u(c, d == RZ ? RZ : d + 1, tmp("cb%u.Load((addr_ & ~7u) + 4u)", idx)); }
+        const char *cb = tmp("cb%u", idx);
+        if (size == 4) set_u(c, d, raw_word(c, cb, "addr_ & ~3u"));
+        else if (size == 5) { set_u(c, d, raw_word(c, cb, "addr_ & ~7u")); set_u(c, d == RZ ? RZ : d + 1, raw_word(c, cb, "(addr_ & ~7u) + 4u")); }
         else {
             u32 bits = size < 2 ? 8 : 16, sg = size & 1;
-            const char *word = tmp("(cb%u.Load(addr_ & ~3u) >> ((addr_ & 3u) * 8u))", idx);
+            const char *word = tmp("(%s >> ((addr_ & 3u) * 8u))", raw_word(c, cb, "addr_ & ~3u"));
             set_u(c, d, sg ? tmp("asuint(((int)(%s << %u)) >> %u)", word, 32 - bits, 32 - bits) : tmp("(%s & 0x%xu)", word, (1u << bits) - 1));
         }
         line(c, "}");
@@ -1766,6 +1775,13 @@ static const char VERTEX_FETCH[] =
     "  return o;\n"
     "}\n";
 
+/* Direct3D's float to integer conversions, saturating (NaN: 0), for glslang's SPIR-V, where a value out of range
+ * converts to anything (MSL_PRELUDE's f2i_ and f2u_, in HLSL). */
+static const char F2I_HLSL[] =
+    "int f2i_(float x) { return isnan(x) ? 0 : x >= 2147483648.0f ? 2147483647 : x <= -2147483648.0f ? (-2147483647 - 1) : (int)x; }\n";
+static const char F2U_HLSL[] =
+    "uint f2u_(float x) { return !(x > 0.0f) ? 0u : x >= 4294967296.0f ? 0xFFFFFFFFu : (uint)x; }\n";
+
 static const char LOP3[] =
     "uint lop3(uint a, uint b, uint c, uint lut) {\n"
     "  uint r = 0u;\n"
@@ -1816,7 +1832,9 @@ static void put_gmem(Ctx *c, Str *out) {
     put(out, "uint gload_(uint lo, uint hi) {\n");
     for (u32 k = 0; k < info->sb_count; k++)
         put(out, words ? "  { uint4 s = params.sb[%u]; uint d = lo - s.x; if (hi - s.y - (lo < s.x ? 1u : 0u) == 0u && d < s.z) return gm%u[d >> 2u]; }\n"
-                       : "  { uint4 s = params.sb[%u]; uint d = lo - s.x; if (hi - s.y - (lo < s.x ? 1u : 0u) == 0u && d < s.z) return gm%u.Load(d); }\n",
+                       : c->texel_bufs && c->stage != SHADER_COMPUTE
+                           ? "  { uint4 s = params.sb[%u]; uint d = lo - s.x; if (hi - s.y - (lo < s.x ? 1u : 0u) == 0u && d < s.z) return gm%u[d >> 2u]; }\n"
+                           : "  { uint4 s = params.sb[%u]; uint d = lo - s.x; if (hi - s.y - (lo < s.x ? 1u : 0u) == 0u && d < s.z) return gm%u.Load(d); }\n",
             first + k, k);
     put(out, "  return 0u;\n}\n");
     if (c->stage == SHADER_COMPUTE) {
@@ -1847,6 +1865,32 @@ static void put_finish(Str *out, int msl) {
              "  o.pos = float4(o.pos.x * params.fix.x, o.pos.y * params.fix.y, o.pos.z * params.fix.z + o.pos.w * params.fix.w, o.pos.w);\n"
              "%s"
              "  return o;\n}\n", msl ? "  o.psize_ = 1.0f;\n" : "");
+}
+
+/* VERTEX_FETCH for glslang: given the five words it reads rather than the buffer (a Buffer<uint> passed to a
+ * function, glslang's SPIR-V read nothing through it on NVIDIA), read by put_fetch_words. */
+static void put_vertex_fetch_words(Str *out) {
+    static const char HEAD[] = "uint4 decode_attr(%s b, uint addr, uint fmt) {\n";
+    static const char LOADS[] = "  uint4 w = b.Load4(base); uint w4 = b.Load(base + 16u);\n";
+    const char *at = strstr(VERTEX_FETCH, LOADS);
+    if (!at || strncmp(VERTEX_FETCH, HEAD, sizeof HEAD - 1)) rt_fatal("VERTEX_FETCH changed: put_vertex_fetch_words no longer fits it");
+    put(out, "uint4 decode_attr(uint4 w, uint w4, uint addr, uint fmt) {\n");
+    Str mid = {0};
+    put(&mid, "%.*s", (int)(at - VERTEX_FETCH - (sizeof HEAD - 1)), VERTEX_FETCH + sizeof HEAD - 1);
+    put(out, "%s", mid.s);
+    put(out, at + sizeof LOADS - 1, "[unroll] ");
+    free(mid.s);
+}
+static void put_fetch_words(Str *out, u32 n) {
+    put(out, "uint4 fetch%u(uint vid, uint iid) {\n"
+             "  uint4 a = params.attr[%u];\n"
+             "  if ((a.x & 0x40u) != 0u || a.w == 0u) return uint4(0u, 0u, 0u, 0x3F800000u);\n"
+             /* (never a division by 0, even in the branch not taken: undefined in SPIR-V, NVIDIA's compiler took
+              * the divisor for nonzero and the instanced branch always - every vertex read from index -1) */
+             "  uint index = a.z != 0u ? params.base.y + iid / max(a.z, 1u) : vid;\n"
+             "  uint addr = index * a.y + ((a.x >> 7) & 0x3FFFu), i_ = addr >> 2u;\n"
+             "  return decode_attr(uint4(vb%u[i_], vb%u[i_ + 1u], vb%u[i_ + 2u], vb%u[i_ + 3u]), vb%u[i_ + 4u], addr, a.x);\n"
+             "}\n", n, n, n, n, n, n, n);
 }
 
 static void put_registers(Ctx *c, Str *out) {
@@ -1888,14 +1932,6 @@ static const char *texture_decl(u32 type, int shadow) {
     return "Texture2D<float4>";
 }
 
-/* Every attribute up to the highest one in mask, the gaps too: the two stages' declarations then
- * put ATTRn in register 2+n on both sides, as Direct3D and DXVK link them. */
-static u32 attrs_through_last(u32 mask) {
-    u32 n = 32;
-    while (n && !(mask >> (n - 1) & 1)) n--;
-    return n == 32 ? 0xFFFFFFFFu : n ? (1u << n) - 1u : 0u;
-}
-
 /* The alpha test (shader_hlsl_alpha_tested): its passing outcomes as bits, alpha_test_mask's.
  * Selects, not a switch on the comparison: with the switch, Intel graphics showed none of the
  * alpha-tested draws. (MSL: a method of the program's struct, which holds params.) */
@@ -1907,21 +1943,25 @@ static const char ALPHA_PASS[] =
 static void hlsl_out(Ctx *c, Str *out) {
     ShaderInfo *info = c->info;
     int stage = c->stage;
+    const char *raw = c->texel_bufs ? "Buffer<uint>" : "ByteAddressBuffer";   /* (buffers only read) */
     put(out, "cbuffer Params : register(b0) { struct { uint4 attr[32]; float4 fix; float4 frag; uint4 base; uint4 swz[16]; uint4 sb[32]; } params; };\n");
     put_swz(out, stage);
     put_scale(c, out);
     for (u32 b = 0; b < 18; b++)
-        if (info->cbuf_mask >> b & 1) put(out, "ByteAddressBuffer cb%u : register(t%u);\n", b, b);
+        if (info->cbuf_mask >> b & 1) put(out, "%s cb%u : register(t%u);\n", raw, b, b);
     for (u32 k = 0; k < info->ntex; k++) {
         put(out, "%s tex%u : register(t%u);\n", texture_decl(info->tex[k].type, info->tex[k].shadow), k, 64 + k);
         put(out, "%s smp%u : register(s%u);\n", info->tex[k].shadow ? "SamplerComparisonState" : "SamplerState", k, k);
     }
     if (strstr(c->body.s ? c->body.s : "", "lop3(")) put(out, "%s", LOP3);
+    if (c->texel_bufs && strstr(c->body.s ? c->body.s : "", "f2i_(")) put(out, "%s", F2I_HLSL);
+    if (c->texel_bufs && strstr(c->body.s ? c->body.s : "", "f2u_(")) put(out, "%s", F2U_HLSL);
     if (c->uses_gmem) {
         int words = stage == SHADER_COMPUTE && c->sb_words;
         for (u32 k = 0; k < info->sb_count; k++)
-            put(out, stage != SHADER_COMPUTE ? "ByteAddressBuffer gm%u : register(t%u);\n" : words ? "RWStructuredBuffer<uint> gm%u : register(u%u);\n"
-                     : "RWByteAddressBuffer gm%u : register(u%u);\n", k, stage == SHADER_COMPUTE ? k : 96 + k);
+            put(out, stage != SHADER_COMPUTE ? (c->texel_bufs ? "Buffer<uint> gm%u : register(t%u);\n" : "ByteAddressBuffer gm%u : register(t%u);\n")
+                     : words ? "RWStructuredBuffer<uint> gm%u : register(u%u);\n" : "RWByteAddressBuffer gm%u : register(u%u);\n",
+                k, stage == SHADER_COMPUTE ? k : 96 + k);
         put_gmem(c, out);
     }
     if (stage == SHADER_COMPUTE) {
@@ -1937,35 +1977,36 @@ static void hlsl_out(Ctx *c, Str *out) {
         return;
     }
 
-    /* The interface between the stages: identical on both sides. Both declare every attribute up
-     * to the last one they use, gaps included: Direct3D and DXVK link these by register, and a
-     * packed declaration would put the same ATTR at different registers on the two sides. A pixel
-     * shader's last attribute is that of its effective interface (what it reads AND the vertex
-     * shader writes), so one variant links with any vertex shader that writes a superset; the
-     * cache is keyed by that mask, not the full one. The vertex shader's (VSOut)0 gives the gaps
-     * a value the pixel shader never reads. */
-    u32 used = stage == SHADER_VERTEX ? c->out_attr_mask : (info->inputs & c->vs_outputs);
-    u32 outputs = attrs_through_last(used);
-    put(out, "struct VSOut {\n  float4 pos : SV_Position;\n  float clipw : CLIPW;\n");
-    for (u32 n = 0; n < 32; n++) {
+    /* the interface between the stages: identical on both sides */
+    u32 outputs = stage == SHADER_VERTEX ? c->out_attr_mask : c->vs_outputs;
+    /* (glslang: the locations fxc's signature gives them, then vkd3d-shader: clipw 1, the attributes from 2 in turn) */
+    put(out, c->texel_bufs ? "struct VSOut {\n  float4 pos : SV_Position;\n  [[vk::location(1)]] float clipw : CLIPW;\n"
+                           : "struct VSOut {\n  float4 pos : SV_Position;\n  float clipw : CLIPW;\n");
+    for (u32 n = 0, loc = 2; n < 32; n++) {
         if (!(outputs >> n & 1)) continue;
         const char *interp = "";
         if (stage == SHADER_PIXEL) {
             u32 mode = interp_mode(c->prog, n);
             interp = mode == 1 ? "nointerpolation " : mode == 3 ? "noperspective " : "";
         }
-        put(out, "  %sfloat4 a%u : ATTR%u;\n", interp, n, n);
+        if (c->texel_bufs) put(out, "  [[vk::location(%u)]] ", loc++);
+        else put(out, "  ");
+        put(out, "%sfloat4 a%u : ATTR%u;\n", interp, n, n);
     }
+    /* (glslang: the point size written, as vkd3d-shader's SPIR-V writes it) */
+    if (c->texel_bufs && stage == SHADER_VERTEX) put(out, "  [[vk::builtin(\"PointSize\")]] float psize_ : PSIZE;\n");
     put(out, "};\n");
 
     if (stage == SHADER_VERTEX) {
-        put(out, VERTEX_FETCH, "ByteAddressBuffer", "[unroll] ");
+        if (c->texel_bufs) put_vertex_fetch_words(out);
+        else put(out, VERTEX_FETCH, raw, "[unroll] ");
         for (u32 n = 0; n < 32; n++) {
             if (!(info->inputs >> n & 1)) continue;
-            put(out, "ByteAddressBuffer vb%u : register(t%u);\n", n, 18 + n);
-            put_fetch(out, n);
+            put(out, "%s vb%u : register(t%u);\n", raw, n, 18 + n);
+            if (c->texel_bufs) put_fetch_words(out, n);
+            else put_fetch(out, n);
         }
-        put_finish(out, 0);
+        put_finish(out, c->texel_bufs);
         put(out, "VSOut main(uint vid : SV_VertexID, uint iid : SV_InstanceID) {\n");
         put(out, "  VSOut o = (VSOut)0; o.pos.w = 1.0f;\n");
         for (u32 n = 0; n < 32; n++)
@@ -2286,6 +2327,45 @@ static void msl_out(Ctx *c, Str *out) {
     free(args.s);
 }
 
+/* glslang folds asint() of a constant, and asuint() of an integer constant, to 0 (glslang 16.6.0: asint(0x1u),
+ * asint(-5), asint(1.0f), asuint(-1) all 0; a value known only when the program runs is right). The translator
+ * writes such constants everywhere (an ISETP against an immediate: asint(r3) == asint(0x00000001u), which made
+ * DK's skinning take the wrong path), so for glslang every asint and asuint goes through functions of its own,
+ * which convert with the right bits - glslang folds those right (int(0x80000005u), asuint(1.0f)). */
+static const char GLSLANG_CASTS[] =
+    "int asi_(int x) { return x; } int2 asi_(int2 x) { return x; } int3 asi_(int3 x) { return x; } int4 asi_(int4 x) { return x; }\n"
+    "int asi_(uint x) { return int(x); } int2 asi_(uint2 x) { return int2(x); } int3 asi_(uint3 x) { return int3(x); }\n"
+    "int4 asi_(uint4 x) { return int4(x); }\n"
+    "int asi_(float x) { return int(asuint (x)); } int2 asi_(float2 x) { return int2(asuint (x)); }\n"
+    "int3 asi_(float3 x) { return int3(asuint (x)); } int4 asi_(float4 x) { return int4(asuint (x)); }\n"
+    "uint asu_(uint x) { return x; } uint2 asu_(uint2 x) { return x; } uint3 asu_(uint3 x) { return x; } uint4 asu_(uint4 x) { return x; }\n"
+    "uint asu_(int x) { return uint(x); } uint2 asu_(int2 x) { return uint2(x); } uint3 asu_(int3 x) { return uint3(x); }\n"
+    "uint4 asu_(int4 x) { return uint4(x); }\n"
+    "uint asu_(float x) { return asuint (x); } uint2 asu_(float2 x) { return asuint (x); } uint3 asu_(float3 x) { return asuint (x); }\n"
+    "uint4 asu_(float4 x) { return asuint (x); }\n";
+
+static char *glslang_casts(char *text) {
+    if (!text) return NULL;
+    Str out = {0};
+    put(&out, "%s", GLSLANG_CASTS);
+    for (const char *p = text; *p;) {
+        int i = !strncmp(p, "asint(", 6), u = !strncmp(p, "asuint(", 7);
+        /* (not inside a longer name: the character before is not one of a name's) */
+        char before = p > text ? p[-1] : ' ';
+        int word = !(before == '_' || (before >= '0' && before <= '9') || (before >= 'a' && before <= 'z') || (before >= 'A' && before <= 'Z'));
+        if (word && i) { put(&out, "asi_("); p += 6; }
+        else if (word && u) { put(&out, "asu_("); p += 7; }
+        else {
+            const char *q = p + 1;
+            while (*q && *q != 'a') q++;
+            put(&out, "%.*s", (int)(q - p), p);
+            p = q;
+        }
+    }
+    free(text);
+    return out.s;
+}
+
 /* ---- translation ----------------------------------------------------------------------------- */
 static char *translate(int lang, const u8 *program, u32 size, int stage, u32 vs_outputs, ShaderInfo *info, CbufReader *read, void *user,
                        const u32 local[3], u32 shared, int alpha_test) {
@@ -2296,7 +2376,8 @@ static char *translate(int lang, const u8 *program, u32 size, int stage, u32 vs_
     c->lang = lang;
     c->msl = lang == SHADER_MSL;
     c->four_gathers = lang != SHADER_HLSL_FXC;
-    c->lod_long = c->sb_words = lang == SHADER_HLSL_VKD3D;
+    c->lod_long = c->sb_words = lang == SHADER_HLSL_VKD3D || lang == SHADER_HLSL_GLSLANG;
+    c->texel_bufs = lang == SHADER_HLSL_GLSLANG;
     if (local) { c->local[0] = local[0]; c->local[1] = local[1]; c->local[2] = local[2]; }
     c->shared = shared;
     c->alpha_test = alpha_test;
@@ -2318,6 +2399,7 @@ static char *translate(int lang, const u8 *program, u32 size, int stage, u32 vs_
     free(c->body.s);
     free(c->ins);
     free(c->leader);
+    if (lang == SHADER_HLSL_GLSLANG) return glslang_casts(out.s);
     return out.s;
 }
 

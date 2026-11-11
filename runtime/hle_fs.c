@@ -101,7 +101,20 @@ static int rom_read(u64 at, void *buf, u64 size) {
 
 static HANDLE rom_file_open(const char *path) {
     HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_RANDOM_ACCESS, NULL);
-    if (h == INVALID_HANDLE_VALUE) rt_fatal("cannot open the game's RomFS at %s", path);
+    if (h == INVALID_HANDLE_VALUE) {
+        /* (the folder was moved or copied: romfs.cfg names its own files by their old full path. A file inside the
+         * old dump folder is looked for in this one's - "cannot find the path" after a move, 2026-11-03's report) */
+        const char *rest = NULL;
+        for (const char *s = path; (s = strstr(s, "dump")) != NULL; s += 4)
+            if ((s == path || s[-1] == '/' || s[-1] == '\\') && (s[4] == '/' || s[4] == '\\')) rest = s + 5;   /* (the last dump folder named) */
+        if (rest && !_strnicmp(rest, "modules", 7) && (rest[7] == '/' || rest[7] == '\\')) {   /* (only this folder's own dump\modules files: the game's files elsewhere are not guessed) */
+            char moved[1100];
+            snprintf(moved, sizeof moved, "%s/../%s", rt_data_dir, rest);
+            h = CreateFileA(moved, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_RANDOM_ACCESS, NULL);
+            if (h != INVALID_HANDLE_VALUE) fprintf(stderr, "[fs] romfs.cfg names %s, which is not there: using %s (the folder was moved)\n", path, moved);
+        }
+    }
+    if (h == INVALID_HANDLE_VALUE) rt_fatal("cannot open the game's RomFS at %s (moved the folder to another PC? run the installer there once)", path);
     return h;
 }
 

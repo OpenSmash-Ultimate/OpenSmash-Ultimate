@@ -319,7 +319,9 @@ int rbl_recv(void *buf, int cap) {
         struct sockaddr_in from = q[k].from;
         int n = q[k].len < cap ? q[k].len : cap;
         memcpy(buf, q[k].data, (size_t)n);
-        double at = q[k].at;
+        /* (held: it arrives when the hold ends, as over the link it stands for - the handshake's round trips, timed by
+         * arrival, took the hold for time spent in this game and left it out: 0.2 ms at SSBU_NET_SIM=120, delay 1) */
+        double at = q[k].at + (hold > 0 ? hold : 0);
         ReleaseSRWLockExclusive(&q_lock);
         if (!welcome(&from)) { dropped++; continue; }   /* (not one of the games) */
         last_from = from; last_at = at;

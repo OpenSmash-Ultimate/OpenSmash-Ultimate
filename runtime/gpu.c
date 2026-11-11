@@ -40,8 +40,8 @@ static u64 guest(u64 va) {
     return g;
 }
 
-static void write32(u64 va, u32 value) { u64 g = guest(va); if (g) st32(g, value); }
-static void write64(u64 va, u64 value) { u64 g = guest(va); if (g) st64(g, value); }
+static void write32(u64 va, u32 value) { u64 g = guest(va); if (g) { st32(g, value); gpu_rb_wrote(g, 4); } }
+static void write64(u64 va, u64 value) { u64 g = guest(va); if (g) { st64(g, value); gpu_rb_wrote(g, 8); } }
 
 /* The GPU's clock: rt_now_ns, but in a rollback fight (SSBU_RB) the kernel's fixed clock, so that
  * a frame run again reads the same times (kernel.c, "rollback: the fixed clock"). hle_nv.c's
@@ -66,6 +66,7 @@ static void release(u64 va, u32 payload, int four_words) {
     __atomic_thread_fence(__ATOMIC_RELEASE);
     write32(va, payload);
     gfx_guest_wrote(va, four_words ? 16 : 4);
+    gpu_rb_semaphore(gpu_va_to_guest(va));
 }
 
 static void syncpoint_increment(u32 id) {
@@ -113,6 +114,7 @@ static void i2m_load(Engine *e, u32 base, u32 arg) {   /* the I2M register block
         if (g) {
             u32 n = line - x < 4 ? line - x : 4;
             memcpy(P(void, g), &arg, n);
+            gpu_rb_wrote(g, n);
             gfx_stream_wrote(dst + (u64)y * pitch + x, n);
         }
     }
@@ -163,7 +165,7 @@ static void surface_to_guest(const DmaSurface *src) {
     for (u32 y = 0; y < h; y++)
         for (u32 x = 0; x < w; x++) {
             u64 d = guest(dma_address(&s, x * 4, y));
-            if (d) memcpy(P(void, d), px + ((u64)y * w + x) * 4, 4);
+            if (d) { memcpy(P(void, d), px + ((u64)y * w + x) * 4, 4); gpu_rb_wrote(d, 4); }
         }
     free(px);
     if (told++ < 8) fprintf(stderr, "[gpu] copy engine: read the GPU's %ux%u picture at %#llx back first\n", w, h, g);
@@ -202,7 +204,7 @@ static void dma_launch(Engine *e, u32 arg) {
                 u64 sv = src.base + (u64)y * src.pitch, dv = dst.base + (u64)y * dst.pitch;
                 if (gfx_copy_resident(dv, sv, (u64)line * src_bpe)) continue;
                 u64 s = guest(sv), d = guest(dv);
-                if (s && d) memmove(P(void, d), P(void, s), (size_t)line * src_bpe);
+                if (s && d) { memmove(P(void, d), P(void, s), (size_t)line * src_bpe); gpu_rb_wrote(d, (u64)line * src_bpe); }
                 gfx_resident_written(dv, (u64)line * src_bpe);
             }
         } else if (identity) {
@@ -215,7 +217,7 @@ static void dma_launch(Engine *e, u32 arg) {
                     if (!dst.pitch_linear && 16 - ((x + dst.ox) % 16) < n) n = 16 - ((x + dst.ox) % 16);
                     if (n > bytes - x) n = bytes - x;
                     u64 s = guest(dma_address(&src, x, y)), d = guest(dma_address(&dst, x, y));
-                    if (s && d) memcpy(P(void, d), P(void, s), n);
+                    if (s && d) { memcpy(P(void, d), P(void, s), n); gpu_rb_wrote(d, n); }
                     x += n;
                 }
         } else {   /* remapped components, constants included: element by element */
@@ -236,6 +238,7 @@ static void dma_launch(Engine *e, u32 arg) {
                         else if (sel == 5) memcpy(out + k * csize, &e->regs[0x1C1], csize);
                     }
                     memcpy(P(void, d), out, dst_bpe);
+                    gpu_rb_wrote(d, dst_bpe);
                 }
         }
         if (dst_span && !(src.pitch_linear && identity)) gfx_resident_written(dst.base, dst_span);   /* (the plain case did it per line) */

@@ -72,8 +72,12 @@ char *shader_hlsl_cs(const u8 *program, u32 size, const u32 local[3], u32 shared
 static inline u32 alpha_test_mask(u32 func) { return (func - 1) | (func == 6 || func == 8 ? 8u : 0u); }
 
 /* Output languages: HLSL for fxc (Windows), HLSL within what vkd3d-shader compiles (Linux, or
- * SSBU_HLSL_FOR_VKD3D; shader_hlsl* write the build's), Metal Shading Language (macOS). */
-enum { SHADER_HLSL_FXC, SHADER_HLSL_VKD3D, SHADER_MSL };
+ * SSBU_HLSL_FOR_VKD3D; shader_hlsl* write the build's), Metal Shading Language (macOS), and HLSL
+ * for glslang's HLSL front end (the Vulkan back end's SPIR-V without vkd3d-shader: gpu_spirv.h):
+ * vkd3d-shader's HLSL with the buffers only read (constant buffers, vertex streams, a draw's
+ * storage buffers) as Buffer<uint>, read a word at a time - uniform texel buffers in SPIR-V, the
+ * descriptors gpu_vk.c binds for them, as vkd3d-shader's SPIR-V of the DXBC has them. */
+enum { SHADER_HLSL_FXC, SHADER_HLSL_VKD3D, SHADER_MSL, SHADER_HLSL_GLSLANG };
 
 /* Any stage in any of them: `local` and `shared` are a compute program's (as shader_hlsl_cs
  * takes them; otherwise ignored), `vs_outputs` a pixel program's. Safe to call from several

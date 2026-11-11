@@ -372,11 +372,61 @@ static void open_device(void) {
     }
 }
 
+/* TEST ONLY (ported from ssbu-recomp's nnaudio.c), nothing without the variables; both see the game's
+ * own samples as it appends them, before the volume and with or without a device (muted headless runs too):
+ *   SSBU_WAV=<file>         the first 30 s written to a 48 kHz stereo 16-bit WAV file
+ *   SSBU_AUDIO_HASH=<file>  one line per buffer: index, frames, peak, FNV-1a 64 of its bytes (two builds'
+ *                           mixer output compared line by line). Rollback replays are recorded again. */
+#define WAV_SECONDS 30
+static void test_tap(const u8 *pcm, u64 size) {
+    static int tried;
+    static FILE *wav, *hash;
+    static u64 wav_bytes, index;
+    if (!tried) {
+        tried = 1;
+        const char *w = getenv("SSBU_WAV"), *h = getenv("SSBU_AUDIO_HASH");
+        if (w && *w && (wav = fopen(w, "wb"))) {
+            static const u8 header[44] = {'R','I','F','F', 0,0,0,0, 'W','A','V','E', 'f','m','t',' ', 16,0,0,0, 1,0, CHANNELS,0,
+                                          RATE & 0xFF, (RATE >> 8) & 0xFF, RATE >> 16, 0, (RATE * FRAME) & 0xFF, ((RATE * FRAME) >> 8) & 0xFF,
+                                          (RATE * FRAME) >> 16, 0, FRAME, 0, 16, 0, 'd','a','t','a', 0,0,0,0};
+            fwrite(header, 1, sizeof header, wav);
+        }
+        if (h && *h) hash = fopen(h, "w");
+    }
+    if (hash) {
+        u64 fnv = 0xcbf29ce484222325ull;
+        int peak = 0;
+        for (u64 i = 0; i < size; i++) { fnv ^= pcm[i]; fnv *= 0x100000001b3ull; }
+        for (u64 i = 0; i + 1 < size; i += 2) { int v = (i16)(pcm[i] | pcm[i + 1] << 8); if (v < 0) v = -v; if (v > peak) peak = v; }
+        fprintf(hash, "%llu %llu %d %016llx\n", (unsigned long long)index, (unsigned long long)(size / FRAME), peak, (unsigned long long)fnv);
+        if (!(index & 63)) fflush(hash);
+    }
+    index++;
+    if (wav && wav_bytes < (u64)WAV_SECONDS * RATE * FRAME) {
+        u64 k = size < (u64)WAV_SECONDS * RATE * FRAME - wav_bytes ? size : (u64)WAV_SECONDS * RATE * FRAME - wav_bytes;
+        fwrite(pcm, 1, (size_t)k, wav);
+        wav_bytes += k;
+        /* (the sizes written every 64 buffers and at the end, so a game that is killed leaves a playable file) */
+        int last = wav_bytes >= (u64)WAV_SECONDS * RATE * FRAME;
+        if (!(index & 63) || last) {
+            u32 data = (u32)wav_bytes, riff = data + 36;
+            u8 le[4];
+            long at = ftell(wav);
+            fseek(wav, 4, SEEK_SET); le[0] = riff & 0xFF; le[1] = riff >> 8 & 0xFF; le[2] = riff >> 16 & 0xFF; le[3] = riff >> 24; fwrite(le, 1, 4, wav);
+            fseek(wav, 40, SEEK_SET); le[0] = data & 0xFF; le[1] = data >> 8 & 0xFF; le[2] = data >> 16 & 0xFF; le[3] = data >> 24; fwrite(le, 1, 4, wav);
+            fseek(wav, at, SEEK_SET);
+            fflush(wav);
+        }
+        if (last) { fclose(wav); wav = NULL; fprintf(stderr, "[audio] SSBU_WAV: %d s written\n", WAV_SECONDS); }
+    }
+}
+
 /* Append { u64 next; u64 address; u64 capacity; u64 size; u64 offset } with a 64-bit tag. */
 static void append(u64 desc, u64 tag) {
     u64 addr = ld64(desc + 8), size = ld64(desc + 24) & ~(u64)(FRAME - 1), offset = ld64(desc + 32);
     static DWORD raised;   /* (the game's sound thread keeps pace with the device: before other work) */
     if (raised != GetCurrentThreadId()) { raised = GetCurrentThreadId(); SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL); }
+    test_tap(P(u8, addr + offset), size);
     EnterCriticalSection(&audio.lock);
     int any;
     if (!audio.output || audio.count == MAX_BUFFERS || audio.wpos + size - audio.rpos > RING) {

@@ -893,6 +893,13 @@ static void dev_configure(Dev *d, const int labels[4]) {
         if (layers[l]->rumble >= 0) d->rumble = layers[l]->rumble;
         if (layers[l]->trigger >= 0) d->trigger = layers[l]->trigger;
     }
+    /* (issue #153: a GameCube stick's dashes came out uneven with no dead zone and the whole travel; testers measured
+     * missed dashes 12 % -> 1 % with ssbu-recomp's 10 / 98. A GameCube pad gets those unless its own section sets them;
+     * [general]'s 0 / 100 - the file's defaults - don't count as a choice for it) */
+    if (gamecube) {
+        if ((!best || best->deadzone < 0) && d->deadzone == 0) d->deadzone = 10;
+        if ((!best || best->outer < 0) && d->outer == 100) d->outer = 98;
+    }
     /* positional: the console's A is the right face button, B the bottom, X the top, Y the left */
     static const struct { int npad; Source src; } POSITIONAL[16] = {
         {N_A, {SRC_BUTTON, RB_EAST}}, {N_B, {SRC_BUTTON, RB_SOUTH}}, {N_X, {SRC_BUTTON, RB_NORTH}}, {N_Y, {SRC_BUTTON, RB_WEST}},

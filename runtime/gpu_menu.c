@@ -25,6 +25,7 @@
 #include "gpu_menu.h"
 #include "audio.h"
 #include "gpu_overlay.h"
+#include "gpu_renderer.h"
 #include "language.h"
 #include "mod_switch.h"
 #include "net.h"
@@ -140,7 +141,7 @@ enum {
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
     R_LANGUAGE, R_VOLUME, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
-    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE, R_RUNAHEAD, R_NET_ROLLBACK,
+    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE, R_RUNAHEAD, R_NET_ROLLBACK, R_NET_DELAY,
     R_ROOM_FIRST = 60,    /* + the room's place on the page of rooms shown (ROOM_PAGE at most) */
     R_REMAP_FIRST = 100,  /* + console button */
     R_MOD_FIRST = 200,    /* + the mod's place in mods.json (MENU_MODS at most) */
@@ -205,9 +206,9 @@ static char osk_title[96], osk_text[64];
 static int osk_max = 32;
 
 static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol, rollback; } net;
-enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_MODE_COUNT };
-static const char *const NET_MODES[NET_MODE_COUNT] = {"public lobby", "private lobby (a code)", "your own server", "offline",
-                                                      "this network (LAN)"};
+enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_NEAREST, NET_MODE_COUNT };
+static const char *const NET_MODES[NET_MODE_COUNT] = {"public lobby (North America)", "private lobby (a code)", "your own server", "offline",
+                                                      "this network (LAN)", "the nearest public lobby (Europe / North America)"};
 
 static void net_load(void)
 {
@@ -220,8 +221,12 @@ static void net_load(void)
         net.mode = NET_OFFLINE;
     else if (!_stricmp(host, "lan"))
         net.mode = NET_LAN; /* (net_relay.c's LAN discovery) */
+    else if (!_stricmp(host, "auto") || (!code[0] && !_stricmp(host, PUBLIC_LOBBY)))
+        net.mode = NET_NEAREST; /* (net_relay.c: the public lobby with the shortest connect time; the old default line too) */
+    else if (!_stricmp(host, "na"))
+        net.mode = NET_PUBLIC;
     else if (!_stricmp(host, PUBLIC_LOBBY))
-        net.mode = code[0] ? NET_PRIVATE : NET_PUBLIC;
+        net.mode = NET_PRIVATE;
     else
     {
         net.mode = NET_CUSTOM;
@@ -231,7 +236,7 @@ static void net_load(void)
     char direct[16] = "";
     net.direct = !(settings_line_read(config_path(CONFIG_ONLINE_DIRECT), direct, sizeof direct) && !_strnicmp(direct, "off", 3));
     char rollback[16] = "";   /* (net_relay.c's net_rollback_default reads it the same way) */
-    net.rollback = settings_line_read(config_path(CONFIG_ONLINE_ROLLBACK), rollback, sizeof rollback) && !_strnicmp(rollback, "on", 2);   /* (off by default: net_relay.c) */
+    net.rollback = !(settings_line_read(config_path(CONFIG_ONLINE_ROLLBACK), rollback, sizeof rollback) && !_strnicmp(rollback, "off", 3));   /* (on by default: net_relay.c) */
     char protocol[16] = "";   /* (net_relay.c reads it the same way) */
     int v = settings_line_read(config_path(CONFIG_ONLINE_PROTOCOL), protocol, sizeof protocol) ? atoi(protocol) : 0;
     net.protocol = v == NET_PROTOCOL || v == NET_PROTOCOL_V3 ? v : NET_PROTOCOL_DEFAULT;
@@ -244,8 +249,10 @@ static void net_save_server(void)
         snprintf(line, sizeof line, "off");
     else if (net.mode == NET_LAN)
         snprintf(line, sizeof line, "lan");
+    else if (net.mode == NET_NEAREST)
+        snprintf(line, sizeof line, "auto");
     else if (net.mode == NET_PUBLIC)
-        snprintf(line, sizeof line, "%s", PUBLIC_LOBBY);
+        snprintf(line, sizeof line, "na");   /* (the North American lobby itself: its address alone now means "auto") */
     else if (net.mode == NET_PRIVATE)
     {
         if (!net.code[0])
@@ -706,6 +713,13 @@ static void room_rows(void)
 /* The Lobby page's rows (fresh: the page shows anew, so the rooms are asked for again). */
 static void build_lobby(int fresh)
 {
+    if (net_configured() && net_backend)
+    {
+        Row *r = add(R_LOBBY, K_INFO, W_NONE, "yuzu room",
+                     "Play in Local Wireless > Create a Room or Rooms List. OpenSmash lobby matchmaking and Quickplay are unavailable in this mode.");
+        snprintf(r->value, sizeof r->value, "Use Local Wireless");
+        return;
+    }
     nlobby_rooms = net_rooms_get(lobby_rooms, LOBBY_ROOMS, &rooms_state);
     net_match_get(&match);
     if (fresh && (rooms_state == NET_ROOMS_LISTED || rooms_state == NET_ROOMS_NO_ANSWER))
@@ -862,7 +876,8 @@ static void build(void)
         note_env(r, "SSBU_PACING");
         r = add(R_LATENCY, K_CHOICE, W_NOW, "Frames queued ahead", "How many frames the graphics card may work ahead: 1 is the most responsive, 3 the smoothest on a busy PC.");
         snprintf(r->value, sizeof r->value, "%d", ds.latency);
-#ifdef _WIN32
+#if 0   /* (run-ahead off for everyone, issue #250 and the owner 2026-11-10: hitches at GO! and in fights on mid-range PCs;
+         * only SSBU_RUNAHEAD turns it on now, for tests) */
         { /* (run-ahead: hle_rb_core.c. Its savestates are set up when the game starts: a change from off takes a restart) */
             int kernel_rb_switch(void);
             int n = display_runahead();
@@ -903,12 +918,21 @@ static void build(void)
 #ifndef __APPLE__
         r = add(R_RENDERER, K_CHOICE, W_RESTART, "Renderer",
 #ifdef _WIN32
-                "Direct3D 11: the renderer the game is played and tested with. Vulkan: in development; until it can draw the game, "
+                "auto: Vulkan on an AMD or NVIDIA card (no first-use stutter there), Direct3D 11 on any other. direct3d11 or vulkan: that one on any card."
+                " If Vulkan cannot start (its shaders come from ssbu_glslang.dll beside the game, which needs the Visual C++ runtime), or"
+                " stopped the game in its first seconds twice in a row, Direct3D 11 draws and the log says why."
 #else
                 "DXVK: Direct3D 11 on Vulkan, the renderer the game is played and tested with. Vulkan: in development; until it can draw the game, "
+                "the game checks Vulkan at its start, says what it found in its log, and draws as before."
 #endif
-                "the game checks Vulkan at its start, says what it found in its log, and draws as before.");
+                );
         snprintf(r->value, sizeof r->value, "%s", renderer_name(ds.renderer));
+#ifdef _WIN32
+        /* (auto says which one it picked: a player on an NVIDIA card read "auto" as Vulkan, 2026-11-10. Only while the
+         * setting is the one this start began with: display_renderer() is what the renderer was chosen from.) */
+        if (ds.renderer == RENDERER_DEFAULT && display_renderer() == RENDERER_DEFAULT)
+            snprintf(r->value, sizeof r->value, "auto (%s)", gfx_renderer() == RENDERER_VULKAN ? "Vulkan" : "Direct3D 11");
+#endif
         note_env(r, "SSBU_RENDERER");
 #endif
         break;
@@ -1075,6 +1099,16 @@ static void build(void)
         } /* (a refusal's what-differs, the room's players) */
         snprintf(r->value, sizeof r->value, "%.110s", status[0] ? status : net_configured() ? "connecting..."
                                                                                             : "offline");
+        if (net_backend)
+        {
+            r = add(R_NET_MODE, K_INFO, W_NONE, "Connection", "Change the room server and nickname using Join yuzu Room.bat.");
+            snprintf(r->value, sizeof r->value, "yuzu compatible (client)");
+            r = add(R_NET_NAME, K_INFO, W_NONE, "Your name", "The nickname used to join this existing room server.");
+            snprintf(r->value, sizeof r->value, "%s", net_player_name());
+            r = add(R_NET_PROTOCOL, K_INFO, W_NONE, "Room protocol", "Game traffic uses the room server. OpenSmash P2P, matchmaking and rollback are unavailable.");
+            snprintf(r->value, sizeof r->value, "yuzu version 1");
+            break;
+        }
         r = add(R_NET_MODE, K_CHOICE, W_RESTART, "Play online in",
                 "Public lobby: everyone's rooms in Local Wireless. Private: only players with the same code. Your own server: host:port. "
                 "Offline: no netplay. This network: a private room hosted on your local network, found by itself.");
@@ -1094,6 +1128,17 @@ static void build(void)
         r = add(R_NET_DIRECT, K_CHOICE, W_RESTART, "Direct connections",
                 "On: rooms connect players directly when they can (less lag). Off: everything goes through the lobby, so other players never learn your internet address.");
         snprintf(r->value, sizeof r->value, "%s", on_off(net.direct));
+        r = add(R_NET_DELAY, K_CHOICE, W_NOW, "Input delay",
+                "The frames the game's own netcode waits before your inputs count online (Auto: its own choice, from the connection). Fewer frames answer sooner but stutter on a slow connection. Counts from the next match.");
+        {
+            int d = online_delay_setting(), a = online_delay_last_auto();
+            if (d >= 0)
+                snprintf(r->value, sizeof r->value, "%d frame%s", d, d == 1 ? "" : "s");
+            else if (a >= 0)
+                snprintf(r->value, sizeof r->value, "Auto (%d last match)", a);
+            else
+                snprintf(r->value, sizeof r->value, "Auto");
+        }
 #ifdef _WIN32   /* (rollback netplay is Windows' only: hle_rb_core.c) */
         r = add(R_NET_ROLLBACK, K_CHOICE, W_RESTART, "Rollback netcode",
                 "On: Quickplay and Local Wireless room matches are played with rollback when the other player has it on too (your inputs answer at once). Off: the game's own netcode.");
@@ -1314,8 +1359,14 @@ static void change(const Row *row, int dir)
         break;
     }
     case R_RENDERER:
-    { /* the system's own, then vulkan */
+    { /* the system's own (Windows: auto), then vulkan; on Windows direct3d11 too */
+#ifdef _WIN32
+        static const int ORDER[] = {RENDERER_DEFAULT, RENDERER_D3D11, RENDERER_VULKAN};
+        int at = ds.renderer == RENDERER_D3D11 ? 1 : ds.renderer == RENDERER_VULKAN ? 2 : 0;
+        int next = ORDER[cycle(at, 3, dir)];
+#else
         int next = cycle(ds.renderer == RENDERER_VULKAN, 2, dir) ? RENDERER_VULKAN : RENDERER_DEFAULT;
+#endif
         set_display("renderer", renderer_name(next));
         display_set_renderer(next); /* (shown now; the renderer is chosen at the next start) */
         break;
@@ -1414,6 +1465,18 @@ static void change(const Row *row, int dir)
         net.direct = !net.direct;
         settings_line_write(config_path(CONFIG_ONLINE_DIRECT), net.direct ? "on" : "off");
         break;
+    case R_NET_DELAY: /* Auto, 0 .. 25, round */
+    {
+        int d = online_delay_setting() + dir;
+        if (d < -1)
+            d = 25;
+        if (d > 25)
+            d = -1;
+        char v[8];
+        snprintf(v, sizeof v, "%d", d);
+        settings_line_write(config_path(CONFIG_ONLINE_DELAY), d < 0 ? "auto" : v);
+        break;
+    }
     case R_NET_ROLLBACK:
         net.rollback = !net.rollback;
         settings_line_write(config_path(CONFIG_ONLINE_ROLLBACK), net.rollback ? "on" : "off");

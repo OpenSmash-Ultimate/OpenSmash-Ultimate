@@ -36,8 +36,10 @@ LOBBY_PAGE = 4   # (the Lobby page's number in the menu, less one)
 NO_ANSWER = 'no answer from the lobby (A: ask again)'
 
 
-def build(folder):
+def build(folder, yuzu=False):
     src = ['tools/dev/lobbymenutest.c', 'runtime/net_relay.c', 'runtime/hle_settings.c']
+    if yuzu:
+        src += ['runtime/net_yuzu.c', 'runtime/net_yuzu_wire.c']
     if os.name == 'nt':   # (as tests/test_net_client_v3.py builds netv3test.c)
         exe = os.path.join(folder, 'lobbymenutest.exe')
         cmd = [cc.CLANG, '/nologo', '/O1', *cc.LINK_FLAGS, *cc.CFLAGS, *src, '/Fe' + exe, '/Fo' + folder + os.sep, '/link', *cc.LINK_OPTIONS]
@@ -334,7 +336,7 @@ class Pages(MenuTest):
     def test_other_pages_as_before(self):
         m = self.menu()
         m.key('ESC')
-        display = ['Window', 'Frame pacing', 'Frames queued ahead'] + (['Run-ahead (experimental)'] if os.name == 'nt' else []) + ['Hide the mouse pointer', 'Frame rate in the corner', 'Window size',
+        display = ['Window', 'Frame pacing', 'Frames queued ahead'] + ['Hide the mouse pointer', 'Frame rate in the corner', 'Window size',
                    'Render scale'] + (['Graphics card'] if os.name == 'nt' else []) + (['Renderer'] if sys.platform != 'darwin' else [])
         self.assertEqual(m.labels(), display)
         m.type('2')
@@ -350,7 +352,7 @@ class Pages(MenuTest):
         m.key('BKSP')
         self.assertEqual(m.labels()[3], 'Keyboard keys...')
         m.type('3')
-        self.assertEqual(m.labels(), ['Now', 'Play online in', 'Your name', 'Direct connections'] + (['Rollback netcode'] if os.name == 'nt' else [])
+        self.assertEqual(m.labels(), ['Now', 'Play online in', 'Your name', 'Direct connections', 'Input delay'] + (['Rollback netcode'] if os.name == 'nt' else [])
                          + ['Netplay version'])   # (offline: no code)
         m.type('6')
         self.assertEqual(m.labels(), ['Mods', 'ARCropolis code patches', 'No mod installed'])   # (the harness has no mods)
@@ -361,23 +363,27 @@ class Pages(MenuTest):
 
     @unittest.skipIf(sys.platform == 'darwin', 'the Mac program has no Renderer row (Metal only)')
     def test_renderer_row(self):
-        """Display > Renderer: the system's own renderer, then Vulkan, saved in display.ini for the
-        next start (runtime/renderer.h's names)."""
-        own = 'd3d11' if os.name == 'nt' else 'dxvk'
+        """Display > Renderer: the system's own renderer (Windows: auto, then direct3d11), then Vulkan,
+        saved in display.ini for the next start (runtime/renderer.h's names)."""
+        own = 'auto (Direct3D 11)' if os.name == 'nt' else 'dxvk'   # (auto says which one this start drew with)
         m = self.menu()
         m.key('ESC')
         labels = m.labels()
         at = labels.index('Renderer')
         self.assertEqual(m.row('Renderer')['value'], own)
-        self.assertIn('Vulkan: in development', m.row('Renderer')['help'])
+        self.assertIn('Vulkan on an AMD or NVIDIA card' if os.name == 'nt' else 'Vulkan: in development', m.row('Renderer')['help'])
         m.key('DOWN', at)
         self.assertEqual(m.at()['label'], 'Renderer')
+        if os.name == 'nt':
+            m.key('RIGHT')
+            self.assertEqual(m.row('Renderer')['value'], 'direct3d11')
+            self.assertIn('renderer = direct3d11', (m.dir / 'display.ini').read_text())
         m.key('RIGHT')
         self.assertEqual(m.row('Renderer')['value'], 'vulkan')
         self.assertIn('renderer = vulkan', (m.dir / 'display.ini').read_text())
         m.key('RIGHT')
         self.assertEqual(m.row('Renderer')['value'], own)
-        self.assertIn(f'renderer = {own}', (m.dir / 'display.ini').read_text())
+        self.assertIn(f'renderer = {own.split()[0]}', (m.dir / 'display.ini').read_text())
         m.key('LEFT')
         self.assertEqual(m.row('Renderer')['value'], 'vulkan')
 

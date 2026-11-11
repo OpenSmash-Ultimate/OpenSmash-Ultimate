@@ -82,6 +82,8 @@ typedef struct Surface {
     ID3D11Texture2D *tex;
     ID3D11RenderTargetView *rtv;
     ID3D11DepthStencilView *dsv;
+    ID3D11DepthStencilView *dsv_ro;       /* depth: the same, read-only, so a draw can sample it while it is bound */
+    int sampled_bound;                    /* depth: a draw sampled it while it was its depth target */
     ID3D11ShaderResourceView *srv;
     ID3D11ShaderResourceView *srv_other;  /* 8-bit colour: the other reading of the bytes (sRGB / plain) */
     u64 used;
@@ -159,9 +161,10 @@ static DXGI_FORMAT depth_format(u32 f, DXGI_FORMAT *typeless) {
 static void release_views(Surface *s) {
     if (s->rtv) ID3D11RenderTargetView_Release(s->rtv);
     if (s->dsv) ID3D11DepthStencilView_Release(s->dsv);
+    if (s->dsv_ro) ID3D11DepthStencilView_Release(s->dsv_ro);
     if (s->srv) ID3D11ShaderResourceView_Release(s->srv);
     if (s->srv_other) ID3D11ShaderResourceView_Release(s->srv_other);
-    s->rtv = NULL; s->dsv = NULL; s->srv = NULL; s->srv_other = NULL;
+    s->rtv = NULL; s->dsv = NULL; s->dsv_ro = NULL; s->srv = NULL; s->srv_other = NULL;
 }
 
 static void release_surface(Surface *s) {
@@ -219,6 +222,13 @@ static void make_views(Surface *s, DXGI_FORMAT view) {
     if (s->depth) {
         D3D11_DEPTH_STENCIL_VIEW_DESC dd = {view, D3D11_DSV_DIMENSION_TEXTURE2D, 0};
         ID3D11Device_CreateDepthStencilView(dev, (ID3D11Resource *)s->tex, &dd, &s->dsv);
+        /* Read-only: Direct3D unbinds (reads as zero) a texture of a draw whose depth target is the
+         * same surface and writable. Soft particles sample the depth buffer they are tested against
+         * with depth writes off (the KO zooms' backgrounds, smoke, ...). */
+        dd.Flags = D3D11_DSV_READ_ONLY_DEPTH |
+                   (view == DXGI_FORMAT_D24_UNORM_S8_UINT || view == DXGI_FORMAT_D32_FLOAT_S8X24_UINT ? D3D11_DSV_READ_ONLY_STENCIL : 0);
+        ID3D11Device_CreateDepthStencilView(dev, (ID3D11Resource *)s->tex, &dd, &s->dsv_ro);
+        s->sampled_bound = 0;
         DXGI_FORMAT sampled = depth_sampled(view);
         if (sampled != DXGI_FORMAT_UNKNOWN) s->srv = make_srv(s->tex, sampled);
     } else {
@@ -404,16 +414,13 @@ static const char DECODE_HLSL[] =
 
 static void start_compilers(void);                 /* (see "shaders") */
 static DWORD WINAPI prewarm_main(void *unused);
+static volatile LONG prewarm_listed = 2;   /* 0 listing the cache (prewarm_main), 1 queued, 2 none: the first present waits for 0 and 1 (prewarm_gate) */
 static int warm_mode;                              /* (see "first draws") 0 off, 1 the warm after the game, 2 also at start */
 static LUID warm_adapter;
 static void warm_start(void);
-void d3d11_warm_before_play(void);                 /* (host.c: Windows AMD's cold cache, before the game loads) */
 #ifdef _WIN32
 #define WARM_GAME "Local\\ssbu-game-running"
 static HANDLE game_mutex;                          /* (WARM_GAME) held while the game runs: ssbu --warm-shaders pauses for it */
-static u64 adapter_driver_version(IDXGIAdapter *adapter);
-static u64 warm_done_exe_key(void);
-static int warm_cache_cold(u64 driver);
 #endif
 
 /* Direct3D 11 is DXVK's: always on Linux; on Windows when d3d11.dll is not the system's (the
@@ -595,22 +602,23 @@ static IDXGIAdapter1 *pick_adapter(int *warp) {
     return named;
 }
 
-#ifdef _WIN32
-/* The driver's version, as warm.done keys it: the UMD's version from the adapter. */
-static u64 adapter_driver_version(IDXGIAdapter *adapter) {
-    LARGE_INTEGER umd;
-    return adapter && SUCCEEDED(IDXGIAdapter_CheckInterfaceSupport(adapter, &IID_IDXGIDevice, &umd)) ? (u64)umd.QuadPart : 0;
+/* (gpu_backend.c, renderer = auto) The PCI vendor of the card Direct3D 11 would draw with (pick_adapter's choice), its
+ * name in `name`; 0 for Windows' own renderer (gpu = warp) or no card listed. Through DXGI alone: nothing of Vulkan's
+ * is loaded to learn it. */
+unsigned d3d11_card_vendor(char *name, size_t size) {
+    int warp;
+    if (size) name[0] = 0;
+    IDXGIAdapter1 *a = pick_adapter(&warp);
+    if (!a) return 0;
+    DXGI_ADAPTER_DESC1 d;
+    unsigned vendor = 0;
+    if (SUCCEEDED(IDXGIAdapter1_GetDesc1(a, &d))) {
+        vendor = d.VendorId;
+        if (size) adapter_name(&d, name, size);
+    }
+    IDXGIAdapter1_Release(a);
+    return vendor;
 }
-
-/* This executable, as warm.done keys it (ssbu --warm-shaders writes the same value). */
-static u64 warm_done_exe_key(void) {
-    wchar_t exe[MAX_PATH];
-    WIN32_FILE_ATTRIBUTE_DATA fa;
-    if (!GetModuleFileNameW(NULL, exe, MAX_PATH) || !GetFileAttributesExW(exe, GetFileExInfoStandard, &fa)) return 0;
-    return ((u64)fa.nFileSizeHigh << 32 | fa.nFileSizeLow) * 1099511628211ull ^
-           ((u64)fa.ftLastWriteTime.dwHighDateTime << 32 | fa.ftLastWriteTime.dwLowDateTime);
-}
-#endif
 
 /* SSBU_D3D_DEBUG=1: Direct3D's debug layer (Windows' optional "Graphics Tools" feature) checks
  * every call; its complaints go to the log at each present - each kind the first 3 times, then
@@ -831,7 +839,11 @@ static BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *c) {
      * IR, so a prewarm job is a quick IR load: it is on by default now, DXVK included. Its budget
      * keeps it from making every program of a full cache (a third of the PC's memory). */
     const char *prewarm = getenv("SSBU_SHADER_PREWARM");
-    if (prewarm ? atoi(prewarm) != 0 : 1) CloseHandle(CreateThread(NULL, 0, prewarm_main, NULL, 0, NULL));
+    if (prewarm ? atoi(prewarm) != 0 : 1) {   /* (on by default, DXVK included: see above) */
+        prewarm_listed = 0;
+        HANDLE t = CreateThread(NULL, 0, prewarm_main, NULL, 0, NULL);
+        if (t) CloseHandle(t); else prewarm_listed = 2;
+    }
     else if (!prewarm) fprintf(stderr, "[gfx] prewarm: off (SSBU_SHADER_PREWARM=1 turns it on)\n");
 #ifdef _WIN32
     game_mutex = CreateMutexA(NULL, FALSE, WARM_GAME);
@@ -964,9 +976,8 @@ static void dump_shaders(const u32 *regs) {
 typedef struct Shader {
     u64 hash, table_hash;
     u32 vs_outputs;     /* the draw's vertex shader's outputs (a pixel program's request: its identity) */
-    u32 cache_outputs;  /* pixel: vs_outputs & info.inputs, the effective interface its cache file is named by */
     int stage;
-    volatile LONG state;   /* 0 compiling, 1 ready, 2 failed */
+    volatile LONG state;   /* 0 compiling, 1 ready, 2 failed, 3 put away (evict_shaders: loaded again at its next use) */
     void *obj;             /* ID3D11VertexShader, ID3D11PixelShader or ID3D11ComputeShader */
     char *hlsl;            /* while compiling */
     char name[64];
@@ -978,6 +989,7 @@ typedef struct Shader {
     u64 asked_ms;          /* when a draw first asked for it (GetTickCount64), for the first-use log */
     struct Prewarm *prewarm;   /* a prewarm job (not a shader of the game yet): the entry it fills */
     int drawn;             /* a draw (or launch) has used it: its first one was timed (first_draw_done) */
+    u64 used;              /* the frame (gfx_stat_presented) a draw last asked for it */
 } Shader;
 
 /* ---- a texture's sRGB BC decode, off the render thread ------------------------------------
@@ -1092,7 +1104,7 @@ static const char *cache_dir(void) {
 }
 
 static void cache_path(const Shader *s, char *path, size_t n) {
-    shader_cache_file(path, n, cache_dir(), s->stage, s->hash, s->cache_outputs, s->table_hash);
+    shader_cache_file(path, n, cache_dir(), s->stage, s->hash, s->vs_outputs, s->table_hash);
 }
 
 /* A file the ahead-of-time compiler wrote (dated 2001), now used by the game: dated now, so the
@@ -1128,6 +1140,9 @@ static int create_noted(struct Compiler *me, Shader *s, const void *code, size_t
     me->dxbc_size = size;
     me->step = STEP_DRIVER;
     void *warm = NULL;
+    /* (the compile device first even while the first frame waits, prewarm_gate: made on the game's device alone, NVIDIA's
+     * driver left the work to its own threads, which then took 300-420 CPU-seconds every 30 s of play on 16 threads and
+     * twice the late frames - measured 2026-11-10, a cold start) */
     if (compile_dev_first && compile_dev && SUCCEEDED(create_on(compile_dev, s->stage, code, size, &warm))) IUnknown_Release((IUnknown *)warm);
     int ok = SUCCEEDED(create_on(dev, s->stage, code, size, &s->obj));
     me->dxbc = NULL;
@@ -1249,9 +1264,12 @@ static void prewarm_mark_write(const char *dir, u64 size, u64 time, u64 budget, 
 /* Each program the driver makes holds its GPU code in this process (NVIDIA: some 0.4-0.8 MB), and a
  * player's cache keeps every program played before: thousands, gigabytes. The prewarm stops making
  * them once the process has grown this much since it began (newest first: the ones played last are
- * made); the rest load at first use as without a prewarm. The budget is a third of the PC's memory
- * (32 GB: about 10 GB; 16 GB: about 5 GB) - the whole 65,000-program cache measured at 4.2 GB
- * here, so both are enough; SSBU_SHADER_PREWARM_MB sets it, 0: no limit. */
+ * made); the rest load at first use as without a prewarm. The budget is an eighth of the PC's memory, 1 GB at least
+ * and 1.5 GB at most (some 4,500 programs: a session draws 400-600, the newest played come first; 2.5 GB left the
+ * game at 4.9 GB): with every program of the shipped list made (a third of the memory
+ * allowed it) the game went from 3.7 to 5.5 GB and every player found it slower (owner 2026-11-10, after #248);
+ * under DXVK (Linux) a third of it, as its whole-cache prewarm needs (the whole 65,000-program cache measured
+ * 4.2 GB there); SSBU_SHADER_PREWARM_MB sets it, 0: no limit. */
 static u64 prewarm_budget = 1024ull << 20;
 
 /* The PC's memory in bytes (0: unknown). */
@@ -1273,7 +1291,12 @@ static u64 total_ram_bytes(void) {
 }
 
 static void prewarm_budget_default(u64 ram) {
-    if (ram / 3 > prewarm_budget) prewarm_budget = ram / 3;   /* (a third of the PC's memory) */
+    if (on_dxvk()) {   /* (DXVK: a third of the PC's memory, for its whole-cache prewarm) */
+        if (ram / 3 > prewarm_budget) prewarm_budget = ram / 3;
+        return;
+    }
+    if (ram / 8 > prewarm_budget) prewarm_budget = ram / 8;
+    if (prewarm_budget > (1536ull << 20)) prewarm_budget = 1536ull << 20;
 }
 
 static u64 private_bytes(void) {
@@ -1315,13 +1338,28 @@ static void *prewarm_take(const Shader *s) {
     if (!prewarm_table) return NULL;
     void *obj = NULL;
     AcquireSRWLockExclusive(&prewarm_lock);
-    Prewarm *p = prewarm_slot(s->stage, s->hash, s->cache_outputs, s->table_hash, 0);
+    Prewarm *p = prewarm_slot(s->stage, s->hash, s->vs_outputs, s->table_hash, 0);
     if (p && p->state == PW_READY) { obj = p->obj; p->obj = NULL; prewarm_taken++; }
     if (p && p->state != PW_FAILED) p->state = PW_TAKEN;
     ReleaseSRWLockExclusive(&prewarm_lock);
     return obj;
 }
 
+/* How many compiler threads make prewarm programs at once. Every one of them while the game starts
+ * (PREWARM_FULL_MS: logos, the first loads) and whenever no fight is on (menus, fighter select, loads, results:
+ * game_fight_on), and prewarm_after during a fight: where the driver compiles each program at every
+ * start (25 ms each on a player's RTX 2060, 12,000 programs: five minutes on 4 threads, well into the first matches)
+ * the threads took the processor and the driver from the game's own frames, which dropped and hitched (owner's report
+ * 2026-11-10). SSBU_SHADER_PREWARM_THREADS sets prewarm_after (0: the prewarm stops there; what is left loads at
+ * first use). */
+#define PREWARM_FULL_MS 30000
+int game_fight_on(void);   /* (hle_fight_test.c) */
+static LONG prewarm_after = 1;
+static LONG prewarm_running;   /* (under jobs_lock) */
+static volatile LONG prewarm_waiting;   /* (prewarm_gate: the first present waits for the prewarm) */
+static int prewarm_room(void) {   /* (under jobs_lock) */
+    return prewarm_waiting || GetTickCount64() - prewarm_t0 < PREWARM_FULL_MS || !game_fight_on() || prewarm_running < prewarm_after;
+}
 static u32 dxbc_outputs(const u8 *code, size_t size);   /* (see "first draws") */
 
 /* (on a compiler thread) one prewarm job: the file, then both devices' objects */
@@ -1337,7 +1375,7 @@ static void prewarm_job(struct Compiler *me, Shader *s) {
     if (go) p->state = PW_LOADING;
     ReleaseSRWLockExclusive(&prewarm_lock);
     void *obj = NULL;
-    u32 outputs = s->stage == SHADER_PIXEL ? s->cache_outputs : ~0u;
+    u32 outputs = s->stage == SHADER_PIXEL ? s->vs_outputs : ~0u;
     if (go) {
         char path[1200];
         cache_path(s, path, sizeof path);
@@ -1413,6 +1451,7 @@ static LONG make_ready(struct Compiler *me, Shader *s) {
         free(code);
         if (ok) { cache_touch(path); return 1; }
     }
+    if (!s->hlsl) return 2;   /* (put away and its cache file gone since: nothing to make it from) */
     me->step = STEP_FXC;
     ID3DBlob *code = NULL, *errors = NULL;
     HRESULT hr = shader_cache_compile(s->hlsl, s->name, s->stage, &code, &errors);
@@ -1440,7 +1479,7 @@ static DWORD WINAPI compiler_main(void *arg) {
     int prewarms = me != &compilers[0];
     for (;;) {
         AcquireSRWLockExclusive(&jobs_lock);
-        while (!job_queue[0].head && !job_queue[1].head && !decode_queue.head && !(prewarms && job_queue[2].head))
+        while (!job_queue[0].head && !job_queue[1].head && !decode_queue.head && !(prewarms && job_queue[2].head && prewarm_room()))
             SleepConditionVariableSRW(&jobs_cv, &jobs_lock, INFINITE, 0);
         int q = job_queue[0].head ? 0 : job_queue[1].head ? 1 : decode_queue.head ? 3 : 2;
         if (q == 3) {   /* (a texture's decode: see AsyncDecode) */
@@ -1453,6 +1492,7 @@ static DWORD WINAPI compiler_main(void *arg) {
         Shader *s = job_queue[q].head;
         if (!(job_queue[q].head = s->next_job)) job_queue[q].tail = NULL;
         InterlockedExchange(&s->queued, 0);   /* (out of the queue: a waiting draw no longer bumps it) */
+        if (q == 2) prewarm_running++;
         ReleaseSRWLockExclusive(&jobs_lock);
         me->since_ms = GetTickCount64();
         me->job = s;
@@ -1461,6 +1501,10 @@ static DWORD WINAPI compiler_main(void *arg) {
             me->step = STEP_IDLE;
             me->job = NULL;
             free(s);
+            AcquireSRWLockExclusive(&jobs_lock);
+            prewarm_running--;
+            ReleaseSRWLockExclusive(&jobs_lock);
+            WakeConditionVariable(&jobs_cv);   /* (a thread held back by prewarm_room takes the next one, should this one get a job of the game's) */
             continue;
         }
         LONG state = make_ready(me, s);
@@ -1572,6 +1616,166 @@ static int prewarm_unplayed_default(u64 ram) {
 #endif
 }
 
+/* (prewarm_main) one cache file into the prewarm queue, unless already there or the queue is full: 1 queued */
+static int prewarm_queue_file(const char *fname, Shader **head, Shader **tail, Prewarm **order, u32 *queued) {
+    u64 hash, tables;
+    u32 vs_outputs;
+    int stage = cache_name(fname, &hash, &vs_outputs, &tables);
+    if (stage < 0) return 0;
+    if (*queued >= PREWARM_SLOTS / 2) {
+        static int said;
+        if (!said++) fprintf(stderr, "[gfx] prewarm: the queue is full at %u programs; the rest load at first use\n", *queued);
+        return 0;
+    }
+    Shader *s = calloc(1, sizeof *s);
+    if (!s) return 0;
+    s->hash = hash; s->stage = stage; s->vs_outputs = vs_outputs; s->table_hash = tables;
+    snprintf(s->name, sizeof s->name, "%s_%016llx", stage == SHADER_VERTEX ? "vs" : stage == SHADER_PIXEL ? "ps" : "cs", (unsigned long long)hash);
+    AcquireSRWLockExclusive(&prewarm_lock);
+    s->prewarm = prewarm_slot(stage, hash, vs_outputs, tables, 1);
+    if (s->prewarm && s->prewarm->state == PW_EMPTY) s->prewarm->state = PW_QUEUED;
+    else { free(s); s = NULL; }
+    ReleaseSRWLockExclusive(&prewarm_lock);
+    if (!s) return 0;
+    if (*tail) (*tail)->next_job = s; else *head = s;
+    *tail = s;
+    order[(*queued)++] = s->prewarm;
+    return 1;
+}
+
+/* (prewarm_main) the shipped list's programs whose files are in this cache, after the played ones: beside the exe,
+ * else media\ (the working folder: the repository). *order grows to hold them; returns how many were queued, and in
+ * *listed how many the list names. The list fills the queue up to PREWARM_LIST_TOTAL programs (played ones first): every
+ * one of 12,000 made took the game to 5.5 GB and every player found it slower (owner 2026-11-10, after #248); the
+ * game waits at its first present until the queue is made (prewarm_gate). SSBU_SHADER_PREWARM_LIST=0: not read; another
+ * number caps the queue at that many programs. */
+#define PREWARM_LIST_TOTAL 6000
+static u32 prewarm_queue_list(Shader **head, Shader **tail, Prewarm ***order, u32 *cap, u32 *queued, u32 *listed) {
+    const char *set = getenv("SSBU_SHADER_PREWARM_LIST");
+    u32 total = set && *set ? (u32)strtoul(set, NULL, 10) : PREWARM_LIST_TOTAL;
+    if (set && *set && total < 2) total = total ? PREWARM_LIST_TOTAL : 0;   /* (=1 was "on" before the number meant a total) */
+    if (*queued >= total) return 0;
+    FILE *f = NULL;
+#ifdef _WIN32
+    char path[MAX_PATH + 64] = "";
+    DWORD k = GetModuleFileNameA(NULL, path, MAX_PATH);
+    if (k && k < MAX_PATH) {
+        char *slash = strrchr(path, '\\');
+        if (slash) { strcpy(slash + 1, "shader_prewarm.txt"); f = fopen(path, "r"); }
+    }
+#endif
+    if (!f) f = fopen("media/shader_prewarm.txt", "r");
+    if (!f) return 0;
+    u32 added = 0;
+    char line[160], fname[200], file[1300];
+    while (fgets(line, sizeof line, f)) {
+        size_t m = strcspn(line, "\r\n");
+        line[m] = 0;
+        if (!m || line[0] == '#') continue;
+        (*listed)++;
+        if (*queued >= total) continue;
+        snprintf(fname, sizeof fname, "v%u_%s.dxbc", SHADER_CACHE_VERSION, line);
+        snprintf(file, sizeof file, "%s/%s", cache_dir(), fname);
+        if (GetFileAttributesA(file) == INVALID_FILE_ATTRIBUTES) continue;   /* (not made by Prepare Shaders here) */
+        if (*queued == *cap) {
+            Prewarm **more = realloc(*order, sizeof **order * (*cap = *cap * 2 + 1024));
+            if (!more) break;
+            *order = more;
+        }
+        added += (u32)prewarm_queue_file(fname, head, tail, *order, queued);
+    }
+    fclose(f);
+    return added;
+}
+
+void watchdog_pause(int on);   /* debug_watchdog.c */
+/* ---- the shader loading: the first present waits for the prewarm --------------------------------
+ * A program the prewarm has not made yet when the game first draws it is made then, and its draws are skipped meanwhile
+ * (an effect missing the first time, a hitch). So the game's first present waits until every program of the queue is
+ * made, with "Shaders N%" beside the loading animation, on every processor but one (the compiler threads and helpers
+ * of the gate's own, at normal priority). Owner 2026-11-10: "aggiungiamo un caricamento in modo da avere tempo di
+ * caricare le shader". SSBU_SHADER_PREWARM_WAIT=0: no wait; N: N seconds at most. */
+static DWORD WINAPI prewarm_helper(void *arg) {
+    struct Compiler *me = arg;
+    me->thread = GetCurrentThreadId();
+    SetThreadDescription(GetCurrentThread(), L"shader loading");
+    for (;;) {
+        AcquireSRWLockExclusive(&jobs_lock);
+        /* (while the cache is still being listed the queue is empty: wait for it, the gate waits too) */
+        while (prewarm_waiting && !job_queue[2].head && prewarm_listed == 0)
+            SleepConditionVariableSRW(&jobs_cv, &jobs_lock, 100, 0);
+        Shader *s = prewarm_waiting ? job_queue[2].head : NULL;
+        if (s && !(job_queue[2].head = s->next_job)) job_queue[2].tail = NULL;
+        if (s) prewarm_running++;
+        ReleaseSRWLockExclusive(&jobs_lock);
+        if (!s) return 0;
+        me->since_ms = GetTickCount64();
+        me->job = s;
+        prewarm_job(me, s);
+        me->step = STEP_IDLE;
+        me->job = NULL;
+        free(s);
+        AcquireSRWLockExclusive(&jobs_lock);
+        prewarm_running--;
+        ReleaseSRWLockExclusive(&jobs_lock);
+    }
+}
+
+static void prewarm_gate(void) {
+    const char *set = getenv("SSBU_SHADER_PREWARM_WAIT");
+    double limit_s = set && *set ? atof(set) : 0;
+    if ((set && *set && limit_s <= 0) || prewarm_listed == 2) return;
+    u64 t0 = GetTickCount64();
+    LONG done0 = prewarm_done;
+    watchdog_pause(1);   /* (debug_watchdog.c: the wait is not a freeze) */
+    InterlockedExchange(&prewarm_waiting, 1);
+    WakeAllConditionVariable(&jobs_cv);
+    static struct Compiler helpers[COMPILERS_MAX];
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    u32 want = si.dwNumberOfProcessors > 1 ? si.dwNumberOfProcessors - 1 : 1, nhelp = 0;
+    HANDLE ht[COMPILERS_MAX];
+    while (ncompilers - 1 + nhelp < want && nhelp < COMPILERS_MAX) {
+        ht[nhelp] = CreateThread(NULL, COMPILER_STACK, prewarm_helper, &helpers[nhelp], STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+        if (!ht[nhelp]) break;
+        nhelp++;
+    }
+#ifdef _WIN32
+    for (u32 i = 0; i < ncompilers; i++) {   /* (the compiler threads too, at normal priority while it waits; Windows) */
+        HANDLE t = compilers[i].thread ? OpenThread(THREAD_SET_INFORMATION, FALSE, compilers[i].thread) : NULL;
+        if (t) { SetThreadPriority(t, THREAD_PRIORITY_NORMAL); CloseHandle(t); }
+    }
+#endif
+    char note[64];
+    int last = -1;
+    for (;;) {
+        LONG listed = prewarm_listed, total = prewarm_total, done = prewarm_done;
+        if (listed == 2 || (listed == 1 && done >= total)) break;
+        if (limit_s > 0 && (GetTickCount64() - t0) / 1000.0 >= limit_s) break;
+        int pct = listed == 1 && total ? (int)((long long)done * 100 / total) : 0;
+        if (pct != last) {
+            snprintf(note, sizeof note, "Shaders %d%%", pct);
+            display_loading_note(note);
+            last = pct;
+        }
+        Sleep(50);
+    }
+    InterlockedExchange(&prewarm_waiting, 0);
+    WakeAllConditionVariable(&jobs_cv);
+    for (u32 i = 0; i < nhelp; i++) CloseHandle(ht[i]);   /* (each ends after the job it is on; the game does not wait for it) */
+#ifdef _WIN32
+    for (u32 i = 0; i < ncompilers; i++) {
+        HANDLE t = compilers[i].thread ? OpenThread(THREAD_SET_INFORMATION, FALSE, compilers[i].thread) : NULL;
+        if (t) { SetThreadPriority(t, THREAD_PRIORITY_BELOW_NORMAL); CloseHandle(t); }
+    }
+#endif
+    display_loading_note(NULL);
+    watchdog_pause(0);
+    fprintf(stderr, "[gfx] shader loading: the first frame waited %.1f s for %ld shaders (%ld of %ld made, %ld ready), on %u threads%s\n",
+            (GetTickCount64() - t0) / 1000.0, (long)(prewarm_done - done0), (long)prewarm_done, (long)prewarm_total, (long)prewarm_ready,
+            ncompilers - 1 + nhelp, prewarm_done < prewarm_total ? " (SSBU_SHADER_PREWARM_WAIT: the rest go on behind the game)" : "");
+}
+
 /* (a thread of its own, at start) every file of the disk cache into the prewarm queue */
 static DWORD WINAPI prewarm_main(void *unused) {
     (void)unused;
@@ -1628,11 +1832,14 @@ static DWORD WINAPI prewarm_main(void *unused) {
     u32 n = cache_files(cache_dir(), &found, unplayed != UNPLAYED_NONE);
     prewarm_t0 = GetTickCount64();
     prewarm_bytes0 = private_bytes();
+    const char *threads = getenv("SSBU_SHADER_PREWARM_THREADS");
+    if (threads && *threads) prewarm_after = atoi(threads) > 0 ? atoi(threads) : 0;
     Prewarm *table = calloc(PREWARM_SLOTS, sizeof *table);
     prewarm_table = table;
-    Prewarm **order = n ? malloc(sizeof *order * n) : NULL;   /* (the entries in queue order) */
+    u32 order_cap = n ? n : 1024;   /* (grows for the shipped list: prewarm_queue_list) */
+    Prewarm **order = malloc(sizeof *order * order_cap);   /* (the entries in queue order) */
     Shader *head = NULL, *tail = NULL;
-    u32 queued = 0, skipped = 0;
+    u32 queued = 0;
     /* The vertex programs first: they are the ones whose object the first draw waits for
      * (the pixel program's is made alongside and is usually ready by then). With all of the
      * cache, this lets the first match start after the vertex half is ready. */
@@ -1641,41 +1848,32 @@ static DWORD WINAPI prewarm_main(void *unused) {
             u64 hash, tables;
             u32 vs_outputs;
             int stage = cache_name(found[i].name, &hash, &vs_outputs, &tables);
-            if (stage < 0) { skipped++; continue; }
+            if (stage < 0) continue;
             int played = found[i].written >= SHADER_CACHE_PLAYED;
             int wanted = played || (unplayed == UNPLAYED_ALL && pass == 1) || (unplayed != UNPLAYED_NONE && stage == SHADER_VERTEX);
-            if (!wanted || (unplayed == UNPLAYED_ALL && pass == 0 && !played && stage != SHADER_VERTEX)) { skipped++; continue; }
-            /* The table is sized for the whole cache at half full (65,000 files here): a smaller
-             * one would make this pass skip most of them. */
-            if (queued >= PREWARM_SLOTS / 2) { skipped++; continue; }
-            Shader *s = calloc(1, sizeof *s);
-            s->hash = hash; s->stage = stage; s->vs_outputs = vs_outputs; s->cache_outputs = vs_outputs; s->table_hash = tables;
-            snprintf(s->name, sizeof s->name, "%s_%016llx", stage == SHADER_VERTEX ? "vs" : stage == SHADER_PIXEL ? "ps" : "cs", (unsigned long long)hash);
-            AcquireSRWLockExclusive(&prewarm_lock);
-            s->prewarm = prewarm_slot(stage, hash, vs_outputs, tables, 1);
-            if (s->prewarm && s->prewarm->state == PW_EMPTY) s->prewarm->state = PW_QUEUED;
-            else { free(s); s = NULL; }
-            ReleaseSRWLockExclusive(&prewarm_lock);
-            if (!s) continue;
-            if (tail) tail->next_job = s; else head = s;
-            tail = s;
-            order[queued++] = s->prewarm;
+            if (!wanted || (unplayed == UNPLAYED_ALL && pass == 0 && !played && stage != SHADER_VERTEX)) continue;
+            prewarm_queue_file(found[i].name, &head, &tail, order, &queued);   /* (the table holds the whole cache at half full) */
         }
     }
     free(found);
-    if (!queued) { free(order); return 0; }
+    /* then the programs the game draws in normal play (media/shader_prewarm.txt, from a played cache) that Prepare
+     * Shaders put in this cache: a new player's cache has those files but none dated as played, so without the list
+     * each would be made at its first draw (30-125 ms on NVIDIA, issue #227) */
+    u32 listed = 0, shipped = 0;
+    if (table && order) shipped = prewarm_queue_list(&head, &tail, &order, &order_cap, &queued, &listed);
+    if (!queued) { free(order); InterlockedExchange(&prewarm_listed, 2); return 0; }
     prewarm_total = (LONG)queued;
+    InterlockedExchange(&prewarm_listed, 1);
     AcquireSRWLockExclusive(&jobs_lock);
     if (job_queue[2].tail) job_queue[2].tail->next_job = head; else job_queue[2].head = head;
     job_queue[2].tail = tail;
     ReleaseSRWLockExclusive(&jobs_lock);
     WakeAllConditionVariable(&jobs_cv);
-    skipped = n - queued;   /* (the files not made now: another stage, or over the table's limit) */
     const char *mode = unplayed == UNPLAYED_ALL ? "every program"
                      : unplayed == UNPLAYED_VS ? "the played programs and the unused vertex ones"
                      : "the played programs";
-    fprintf(stderr, "[gfx] prewarm: %u shaders from the disk cache (%u left for first use; %s), on %u threads\n",
-            queued, skipped, mode, ncompilers - 1);
+    fprintf(stderr, "[gfx] prewarm: %u shaders from the disk cache (%s), %u more from the shipped list (%u programs played), on %u threads, %ld during a fight after the first %d s\n",
+            queued - shipped, mode, shipped, listed, ncompilers - 1, (long)prewarm_after, PREWARM_FULL_MS / 1000);
     if (warm_mode >= 2) warm_prewarmed(order, queued);
     free(order);
     return 0;
@@ -1743,20 +1941,16 @@ static int prewarm_busy(void) {
  *  - when the game closes (gfx_closing), this exe starts again as ssbu --warm-shaders, which draws
  *    every program of the cache once, on devices of its own - the game's played ones first, then
  *    the ones Prepare Shaders made - so that the driver's disk cache has them before a move first
- *    needs one. It notes what it drew (warm.done; all again for another driver or exe), pauses
- *    while a game runs and goes on after it, and writes its result to warm.log beside the cache,
- *    which the next start shows in its log. Each thread draws WARM_BATCH programs before one wait;
- *  - before the game loads (d3d11_warm_before_play), a cache whose warm.done is missing, or is
- *    for another driver or exe, is drawn by the same pass and waited for, so the first match after
- *    a driver update does not start cold. Prepare Shaders runs the pass too (shader_aot.py), on
- *    Windows as on Linux;
+ *    needs one. It notes what it drew (warm.done; all again for another driver or exe), stops as
+ *    soon as a game starts and goes on after it, and writes its result to warm.log beside the
+ *    cache, which the next start shows in its log;
  *  - SSBU_SHADER_WARM=2 also draws each program the prewarm made once on the rendering device
  *    (warm_prewarmed): into a 1x1 target, with a partner shader made to match its interface,
  *    taking at most a quarter of the time, newest first; after 3 slow ones in a row (over 20 ms:
- *    a compile), or 10 in all, it stops. It is opt-in, not the default.
+ *    a compile), or 10 in all, it stops.
  * On (=1) with AMD's driver, not under DXVK; SSBU_SHADER_WARM=0 turns it off, =1 or =2 on with
- * any. SSBU_SHADER_WARM_PREPLAY=1 turns on the pass before play (off unless set). The partners
- * declare the stages' interface as the translator does (gpu_shader.c: struct VSOut). */
+ * any. The partners declare the stages' interface as the translator does (gpu_shader.c: struct
+ * VSOut). */
 #define WARM_SLOW_MS 20.0   /* (a first draw this long, or a warm pass's create-and-draw, was slow) */
 
 static u32 rd32(const u8 *p) { u32 v; memcpy(&v, p, 4); return v; }
@@ -1823,9 +2017,7 @@ static void warmer_free(Warmer *w) {
 
 /* The other side of a program's interface, on w's device (stage: the partner's): for a pixel
  * program, a vertex shader writing its inputs (a triangle over the target); for a vertex program,
- * a pixel shader reading all its outputs. Like the translator (gpu_shader.c: struct VSOut), it
- * declares every attribute up to the last one used, gaps too, since the two stages link by
- * register. NULL if it can't be made. */
+ * a pixel shader reading all its outputs. NULL if it can't be made. */
 static void *warm_partner(Warmer *w, int stage, u32 outputs) {
     void *obj = NULL;
     AcquireSRWLockShared(&w->lock);
@@ -1833,22 +2025,17 @@ static void *warm_partner(Warmer *w, int stage, u32 outputs) {
         if (w->partner[i].stage == stage && w->partner[i].outputs == outputs) obj = w->partner[i].obj;
     ReleaseSRWLockShared(&w->lock);
     if (obj) return obj;
-    u32 last = 0;
-    for (u32 n = 0; n < 32; n++)
-        if (outputs >> n & 1) last = n;
     char src[4096];
     int len = snprintf(src, sizeof src, "struct VSOut {\n  float4 pos : SV_Position;\n  float clipw : CLIPW;\n");
-    if (outputs)
-        for (u32 n = 0; n <= last; n++)
-            len += snprintf(src + len, sizeof src - len, "  float4 a%u : ATTR%u;\n", n, n);
+    for (u32 n = 0; n < 32; n++)
+        if (outputs >> n & 1) len += snprintf(src + len, sizeof src - len, "  float4 a%u : ATTR%u;\n", n, n);
     if (stage == SHADER_VERTEX)
         snprintf(src + len, sizeof src - len, "};\nVSOut main(uint vid : SV_VertexID) {\n  VSOut o = (VSOut)0;\n"
                                               "  o.pos = float4(vid == 1u ? 3.0f : -1.0f, vid == 2u ? -3.0f : 1.0f, 0.5f, 1.0f);\n  return o;\n}\n");
     else {
         len += snprintf(src + len, sizeof src - len, "};\nfloat4 main(VSOut i) : SV_Target {\n  float4 s = i.pos + i.clipw;\n");
-        if (outputs)
-            for (u32 n = 0; n <= last; n++)
-                len += snprintf(src + len, sizeof src - len, "  s += i.a%u;\n", n);
+        for (u32 n = 0; n < 32; n++)
+            if (outputs >> n & 1) len += snprintf(src + len, sizeof src - len, "  s += i.a%u;\n", n);
         snprintf(src + len, sizeof src - len, "  return s;\n}\n");
     }
     ID3DBlob *code = NULL, *errors = NULL;
@@ -2000,23 +2187,6 @@ static void warm_prewarmed(Prewarm **order, u32 n) {
 typedef struct WarmDone { char magic[8]; u64 driver, exe; u32 count, unused; } WarmDone;
 static const char WARM_DONE_MAGIC[8] = {'s', 's', 'b', 'u', 'w', 'r', 'm', '1'};
 
-#ifdef _WIN32
-/* Whether the driver's own cache lacks programs this cache has: warm.done is missing, or it was
- * written for another driver or executable (an update empties or invalidates the driver's cache).
- * The warm pass itself still draws only the files warm.done does not name. */
-static int warm_cache_cold(u64 driver) {
-    char path[1100];
-    snprintf(path, sizeof path, "%s/warm.done", cache_dir());
-    FILE *f = fopen(path, "rb");
-    if (!f) return 1;
-    WarmDone had;
-    int ok = fread(&had, sizeof had, 1, f) == 1 && !memcmp(had.magic, WARM_DONE_MAGIC, sizeof had.magic) &&
-             had.driver == driver && had.exe == warm_done_exe_key();
-    fclose(f);
-    return !ok;
-}
-#endif
-
 static u64 name_hash(const char *s) {
     u64 h = 1469598103934665603ull;
     for (; *s; s++) h = (h ^ (u8)*s) * 1099511628211ull;
@@ -2029,21 +2199,18 @@ static int by_u64(const void *a, const void *b) {
 }
 
 #ifdef _WIN32
-/* ---- ssbu --warm-shaders <cache dir> [adapter LUID, hex | rewarm]: started as the game closes,
- * and (before the game loads) when the driver's cache is cold. Each thread draws programs once on
- * a device of its own (compiling on the thread itself), then lets the device go, so the driver
- * keeps the GPU code in its disk cache. It runs in Windows' background mode at idle priority
- * (processor, disk and memory below what the user does). Each game holds a mutex while it runs
- * (WARM_GAME): the game's own pass (one started with its adapter) pauses and goes on when it
- * ends, rather than stopping for the session; a launcher's pass (Prepare Shaders) ends, so it
- * does not hold the tool. A worker draws up to WARM_BATCH programs before one wait (as Linux's). */
+/* ---- ssbu --warm-shaders <cache dir> <adapter LUID, hex>: started as the game closes. Each
+ * thread draws programs once on a device of its own (compiling on the thread itself), then lets
+ * the device go, so the driver keeps the GPU code in its disk cache. It runs in Windows'
+ * background mode at idle priority (processor, disk and memory below what the user does), and
+ * each game holds a mutex while it runs (WARM_GAME): once one does, the threads stop after the
+ * program they are drawing. What has been drawn is in warm.done (WarmDone, above). */
 typedef struct WarmRun {
     const char *dir;
     Found *files;
     u32 n;
     u8 *done;   /* per file: drawn (or refused) by this run or an earlier one */
     IDXGIAdapter1 *adapter;
-    int pause_for_game;   /* (the game's own pass: pause while a game runs; a launcher's pass: end) */
     volatile LONG next, drawn, failed, slow, stop;
 } WarmRun;
 
@@ -2053,70 +2220,23 @@ static int game_running(void) {
     return h != NULL;
 }
 
-/* A game is running: wait for it here, not end the pass. A quick restart would otherwise leave
- * the rest of the cache for the next time the game closes. */
-static void warm_wait_for_game(WarmRun *r) {
-    static LONG said;
-    if (!said) { InterlockedExchange(&said, 1); fprintf(stderr, "[warm] paused: a game is running; the pass goes on when it ends\n"); }
-    while (!r->stop && game_running()) Sleep(500);
-    if (InterlockedExchange(&said, 0)) fprintf(stderr, "[warm] the game ended: drawing again\n");
-}
-
-/* (a worker) its device, context and warmer. A pass that pauses for a game closes them first
- * and opens them again after it, so a paused pass holds no device. */
-static int warm_open(WarmRun *r, ID3D11Device **d, ID3D11DeviceContext **c, ID3D11InfoQueue **iq, Warmer **w) {
-    D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
-    /* (SSBU_D3D_DEBUG: Direct3D's debug layer, a draw it refused counted as not drawn, its message on stderr) */
-    UINT debug = getenv("SSBU_D3D_DEBUG") ? D3D11_CREATE_DEVICE_DEBUG : 0;
-    *d = NULL; *c = NULL; *iq = NULL; *w = NULL;
-    if (FAILED(D3D11CreateDevice((IDXGIAdapter *)r->adapter, r->adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, NULL,
-                                 D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS | debug, levels, 2, D3D11_SDK_VERSION, d, NULL, c)))
-        return 0;
-    if (debug && FAILED(ID3D11Device_QueryInterface(*d, &IID_ID3D11InfoQueue, (void **)iq))) *iq = NULL;
-    *w = calloc(1, sizeof **w);
-    if (!*w || !warmer_init(*w, *d, *c)) {
-        if (*w) { warmer_free(*w); free(*w); *w = NULL; }
-        if (*iq) { ID3D11InfoQueue_Release(*iq); *iq = NULL; }
-        ID3D11DeviceContext_Release(*c); *c = NULL;
-        ID3D11Device_Release(*d); *d = NULL;
-        return 0;
-    }
-    return 1;
-}
-
-static void warm_close(ID3D11Device **d, ID3D11DeviceContext **c, ID3D11InfoQueue **iq, Warmer **w) {
-    if (*w) {
-        if (*c) ID3D11DeviceContext_ClearState(*c);
-        warmer_free(*w);
-        free(*w);
-        *w = NULL;
-    }
-    if (*iq) { ID3D11InfoQueue_Release(*iq); *iq = NULL; }
-    if (*c) { ID3D11DeviceContext_Release(*c); *c = NULL; }
-    if (*d) { ID3D11Device_Release(*d); *d = NULL; }
-}
-
 static DWORD WINAPI warm_worker(void *arg) {
     WarmRun *r = arg;
+    D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+    ID3D11Device *d = NULL;
+    ID3D11DeviceContext *c = NULL;
+    /* (SSBU_D3D_DEBUG: Direct3D's debug layer, a draw it refused counted as not drawn, its message on stderr) */
+    UINT debug = getenv("SSBU_D3D_DEBUG") ? D3D11_CREATE_DEVICE_DEBUG : 0;
+    if (FAILED(D3D11CreateDevice((IDXGIAdapter *)r->adapter, r->adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, NULL,
+                                 D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS | debug, levels, 2, D3D11_SDK_VERSION, &d, NULL, &c)))
+        return 1;
+    ID3D11InfoQueue *iq = NULL;
+    if (debug && FAILED(ID3D11Device_QueryInterface(d, &IID_ID3D11InfoQueue, (void **)&iq))) iq = NULL;
+    Warmer *w = calloc(1, sizeof *w);
     LARGE_INTEGER freq;
     QueryPerformanceFrequency(&freq);
-    for (;;) {
-        ID3D11Device *d = NULL;
-        ID3D11DeviceContext *c = NULL;
-        ID3D11InfoQueue *iq = NULL;
-        Warmer *w = NULL;
-        if (!warm_open(r, &d, &c, &iq, &w)) return 1;
-        u32 pending = 0, drawn_pending = 0;   /* (done, and of those drawn, since the last wait) */
-        int paused = 0;
-        for (;;) {
-            if (r->stop) break;
-            if (game_running()) {
-                if (r->pause_for_game) { paused = 1; break; }   /* (close the devices, then wait) */
-                InterlockedExchange(&r->stop, 1);   /* (Prepare Shaders, the launcher: end, as before) */
-                break;
-            }
-            LONG i = InterlockedIncrement(&r->next) - 1;
-            if (i >= (LONG)r->n) break;
+    if (w && warmer_init(w, d, c))
+        for (LONG i; !r->stop && (i = InterlockedIncrement(&r->next) - 1) < (LONG)r->n;) {
             if (r->done[i]) continue;   /* (an earlier run drew it) */
             r->done[i] = 1;
             u64 hash, tables;
@@ -2139,19 +2259,19 @@ static DWORD WINAPI warm_worker(void *arg) {
             if (!code || outputs == ~0u || FAILED(create_on(d, stage, code, size, &obj))) {
                 free(code);
                 InterlockedIncrement(&r->failed);
-                if (++pending >= WARM_BATCH) {
-                    if (drawn_pending) {
-                        warm_wait(w);
-                        drawn_pending = 0;
-                    }
-                    pending = 0;
-                }
                 continue;
             }
             free(code);
             LARGE_INTEGER a, b;
             QueryPerformanceCounter(&a);
             int ok = warm_issue(w, stage, obj, outputs);
+            if (ok) {
+                ID3D11DeviceContext_End(c, (ID3D11Asynchronous *)w->done);
+                ID3D11DeviceContext_Flush(c);
+                for (u64 until = GetTickCount64() + 10000; ID3D11DeviceContext_GetData(c, (ID3D11Asynchronous *)w->done, NULL, 0, 0) == S_FALSE &&
+                                                           GetTickCount64() < until;)
+                    SwitchToThread();
+            }
             QueryPerformanceCounter(&b);
             IUnknown_Release((IUnknown *)obj);
             for (UINT64 m = 0, nm = iq ? ID3D11InfoQueue_GetNumStoredMessages(iq) : 0; m < nm; m++) {
@@ -2166,83 +2286,129 @@ static DWORD WINAPI warm_worker(void *arg) {
             if (iq) ID3D11InfoQueue_ClearStoredMessages(iq);
             InterlockedIncrement(ok ? &r->drawn : &r->failed);
             if (ok && (double)(b.QuadPart - a.QuadPart) * 1000.0 / (double)freq.QuadPart > WARM_SLOW_MS) InterlockedIncrement(&r->slow);
-            if (ok) drawn_pending++;
-            if (++pending >= WARM_BATCH) {
-                if (drawn_pending) {
-                    warm_wait(w);
-                    drawn_pending = 0;
-                }
-                pending = 0;
-            }
         }
-        if (pending && drawn_pending) warm_wait(w);
-        warm_close(&d, &c, &iq, &w);
-        if (!paused || r->stop) break;
-        warm_wait_for_game(r);   /* (no device held while a game runs) */
-        if (r->stop) break;
+    if (w) {
+        ID3D11DeviceContext_ClearState(c);
+        warmer_free(w);
+        free(w);
     }
+    if (iq) ID3D11InfoQueue_Release(iq);
+    ID3D11DeviceContext_Release(c);
+    ID3D11Device_Release(d);
     return 0;
 }
 
-int gfx_warm_shaders_main(const char *dir, const char *arg) {
-    HANDLE one = CreateMutexA(NULL, TRUE, "Local\\ssbu-warm-shaders");   /* (one at a time) */
-    if (!one || GetLastError() == ERROR_ALREADY_EXISTS) {
-        if (one) CloseHandle(one);
-        return 0;
+/* The adapter "auto" means: the card the game itself draws on (pick_adapter: display.ini's or SSBU_GPU's, else the
+ * fastest; not the first one listed, which on a laptop is the integrated one), as its LUID. 0 when that is not an
+ * AMD card (any: not a hardware card), since only AMD's driver compiles at the first draw. */
+static u64 warm_auto_adapter(int any) {
+    int warp;
+    IDXGIAdapter1 *a = pick_adapter(&warp);
+    if (!a) return 0;
+    u64 found = 0;
+    DXGI_ADAPTER_DESC1 d;
+    if (SUCCEEDED(IDXGIAdapter1_GetDesc1(a, &d)) && !(d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) && (d.VendorId == 0x1002 || any))
+        found = (u64)(u32)d.AdapterLuid.HighPart << 32 | d.AdapterLuid.LowPart;
+    IDXGIAdapter1_Release(a);
+    return found;
+}
+
+/* The cache's files in the order they are drawn: the played ones first (newest first, as cache_files gives them), then
+ * the ones the shipped list names (media/shader_prewarm.txt, or beside the exe: the programs the game draws, see
+ * prewarm_queue_list), then the rest of what Prepare Shaders made. A first match needs the listed ones; drawn first,
+ * they are in the driver's cache long before the other ~50,000 are. Returns how many listed files moved up. */
+static u32 warm_order_listed(Found *files, u32 n) {
+    FILE *f = NULL;
+    char path[MAX_PATH + 64] = "";
+    DWORD k = GetModuleFileNameA(NULL, path, MAX_PATH);
+    if (k && k < MAX_PATH) {
+        char *slash = strrchr(path, '\\');
+        if (slash) { strcpy(slash + 1, "shader_prewarm.txt"); f = fopen(path, "r"); }
     }
+    if (!f) f = fopen("media/shader_prewarm.txt", "r");
+    if (!f || !n) { if (f) fclose(f); return 0; }
+    u64 *names = NULL;
+    u32 count = 0, cap = 0;
+    char line[160], fname[200];
+    while (fgets(line, sizeof line, f)) {
+        size_t m = strcspn(line, "\r\n");
+        line[m] = 0;
+        if (!m || line[0] == '#') continue;
+        if (count == cap) {
+            u64 *more = realloc(names, sizeof *names * (cap = cap * 2 + 1024));
+            if (!more) break;
+            names = more;
+        }
+        snprintf(fname, sizeof fname, "v%u_%s.dxbc", SHADER_CACHE_VERSION, line);
+        names[count++] = name_hash(fname);
+    }
+    fclose(f);
+    u32 moved = 0;
+    Found *tmp = names && count ? malloc(sizeof *tmp * n) : NULL;
+    if (tmp) {
+        qsort(names, count, sizeof *names, by_u64);
+        u32 played = 0;
+        while (played < n && files[played].written >= SHADER_CACHE_PLAYED) played++;
+        u32 o = 0;
+        for (int pass = 0; pass < 2; pass++)   /* (stable: listed, then the others, each in cache_files' order) */
+            for (u32 i = played; i < n; i++) {
+                u64 h = name_hash(files[i].name);
+                int in = bsearch(&h, names, count, sizeof *names, by_u64) != NULL;
+                if (in == !pass) { tmp[o++] = files[i]; moved += in; }
+            }
+        memcpy(files + played, tmp, sizeof *tmp * o);
+        free(tmp);
+    }
+    free(names);
+    return moved;
+}
+
+int gfx_warm_shaders_main(const char *dir, const char *luid) {
+    HANDLE one = CreateMutexA(NULL, TRUE, "Local\\ssbu-warm-shaders");   /* (one at a time) */
+    if (!one || GetLastError() == ERROR_ALREADY_EXISTS) return 0;
     /* disk and memory below what the user does; then the processor too (background mode alone puts
      * the class back to normal) */
     SetPriorityClass(GetCurrentProcess(), PROCESS_MODE_BACKGROUND_BEGIN);
     SetPriorityClass(GetCurrentProcess(), IDLE_PRIORITY_CLASS);
     driver_stacks();
-    int rewarm = (arg && !strcmp(arg, "rewarm")) || (getenv("SSBU_SHADER_WARM_ALL") && atoi(getenv("SSBU_SHADER_WARM_ALL")));
-    u64 want = arg && *arg && strcmp(arg, "rewarm") ? strtoull(arg, NULL, 16) : 0;
+    /* "auto" (Prepare Shaders, tools/shader_aot.py, which knows no adapter): the game's own card when it is an AMD one, or
+     * with SSBU_SHADER_WARM set whatever hardware card it is; otherwise nothing to do (the other drivers compile at creation, see "first draws") */
+    int any = getenv("SSBU_SHADER_WARM") && atoi(getenv("SSBU_SHADER_WARM")) > 0;
+    int automatic = !strcmp(luid, "auto");
+    u64 want = automatic ? warm_auto_adapter(any) : strtoull(luid, NULL, 16);
+    if (automatic && !want) {   /* (a LUID of 0 from the game still means the default card, as before) */
+        printf("[warm] the game's graphics card is not an AMD one: nothing to draw (SSBU_SHADER_WARM=1 draws with any card)\n");
+        return 0;
+    }
     WarmRun r;
     memset(&r, 0, sizeof r);
     r.dir = dir;
-    r.pause_for_game = want != 0;   /* (the game's pass names its adapter; Prepare Shaders' does not) */
     char name[128] = "the default graphics card";
     WarmDone head;
     memset(&head, 0, sizeof head);
     memcpy(head.magic, WARM_DONE_MAGIC, sizeof head.magic);
-    /* The game passes its adapter's LUID. A pass of its own (Prepare Shaders, the launcher) picks
-     * the one the game would, so warm.done's driver key matches the game's post-play pass. */
-    int warp = 0;
-    if (!want) r.adapter = pick_adapter(&warp);
     IDXGIFactory1 *f1;
-    if (!r.adapter && SUCCEEDED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&f1))) {
+    if (SUCCEEDED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&f1))) {
         IDXGIAdapter1 *a;
         for (UINT i = 0; !r.adapter && SUCCEEDED(IDXGIFactory1_EnumAdapters1(f1, i, &a)); i++) {
             DXGI_ADAPTER_DESC1 d;
-            if (want && SUCCEEDED(IDXGIAdapter1_GetDesc1(a, &d)) &&
-                ((u64)(u32)d.AdapterLuid.HighPart << 32 | d.AdapterLuid.LowPart) == want) {
+            if (SUCCEEDED(IDXGIAdapter1_GetDesc1(a, &d)) && ((u64)(u32)d.AdapterLuid.HighPart << 32 | d.AdapterLuid.LowPart) == want) {
                 r.adapter = a;
+                adapter_name(&d, name, sizeof name);
+                LARGE_INTEGER umd;
+                if (SUCCEEDED(IDXGIAdapter1_CheckInterfaceSupport(a, &IID_IDXGIDevice, &umd))) head.driver = (u64)umd.QuadPart;
             } else IDXGIAdapter1_Release(a);
         }
         IDXGIFactory1_Release(f1);
     }
-    if (!r.adapter) r.adapter = pick_adapter(&warp);
-    int amd = 0;
-    if (r.adapter) {
-        DXGI_ADAPTER_DESC1 d;
-        if (SUCCEEDED(IDXGIAdapter1_GetDesc1(r.adapter, &d))) {
-            adapter_name(&d, name, sizeof name);
-            head.driver = adapter_driver_version((IDXGIAdapter *)r.adapter);
-            amd = d.VendorId == 0x1002;
-        }
-    }
-    if (!amd) {
-        /* This pass fills AMD's driver cache. On another vendor it only writes a warm.done that
-         * would make the prewarm skip the compile device NVIDIA's prewarm uses. */
-        fprintf(stderr, "[warm] not warmed: %s is not AMD's (this pass is for AMD's driver cache)\n",
-                r.adapter ? name : "no Direct3D 11 adapter");
-        if (r.adapter) IDXGIAdapter1_Release(r.adapter);
-        CloseHandle(one);
-        return 0;
-    }
-    head.exe = warm_done_exe_key();
+    wchar_t exe[MAX_PATH];
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (GetModuleFileNameW(NULL, exe, MAX_PATH) && GetFileAttributesExW(exe, GetFileExInfoStandard, &fa))
+        head.exe = ((u64)fa.nFileSizeHigh << 32 | fa.nFileSizeLow) * 1099511628211ull ^
+                   ((u64)fa.ftLastWriteTime.dwHighDateTime << 32 | fa.ftLastWriteTime.dwLowDateTime);
     u64 t0 = GetTickCount64();
     r.n = cache_files(dir, &r.files, 1);
+    u32 listed = warm_order_listed(r.files, r.n);
     r.done = calloc(r.n + 1, 1);
     /* what earlier runs drew, with this driver and exe */
     char path[1100], tmp[1110];
@@ -2251,7 +2417,7 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
     WarmDone had;
     u64 *names = NULL;
     u32 before = 0;
-    if (!rewarm && f && fread(&had, sizeof had, 1, f) == 1 && !memcmp(had.magic, head.magic, sizeof had.magic) && had.driver == head.driver &&
+    if (f && fread(&had, sizeof had, 1, f) == 1 && !memcmp(had.magic, head.magic, sizeof had.magic) && had.driver == head.driver &&
         had.exe == head.exe && had.count <= (1u << 24) && (names = malloc(sizeof *names * (had.count + 1))) &&
         fread(names, sizeof *names, had.count, f) == had.count)
         for (u32 i = 0; i < r.n && r.done; i++) {
@@ -2260,8 +2426,6 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
         }
     if (f) fclose(f);
     free(names);
-    if (rewarm) fprintf(stderr, "[warm] rewarm: drawing every shader again\n");
-    else if (before) fprintf(stderr, "[warm] %u shaders drawn by an earlier run\n", before);
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     const char *env = getenv("SSBU_WARM_THREADS");
@@ -2269,17 +2433,39 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
     nthreads = nthreads < 1 ? 1 : nthreads > 6 ? 6 : nthreads;
     HANDLE threads[6];
     u32 started = 0;
-    if (!r.pause_for_game && game_running()) r.stop = 1;
+    if (game_running()) r.stop = 1;
     for (u32 i = 0; i < nthreads && r.done && before + i < r.n && !r.stop; i++)
         if ((threads[started] = CreateThread(NULL, 16 << 20, warm_worker, &r, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL))) started++;
-    if (started) WaitForMultipleObjects(started, threads, TRUE, INFINITE);   /* (a game's pass pauses for one; a launcher's ends) */
+    /* (issue #182) while it runs, warm.log says how far it is every 10 s: drawn of the total, failures, time, time left */
+    char logpath[1100];
+    snprintf(logpath, sizeof logpath, "%s/warm.log", dir);
+    u64 said = GetTickCount64();
+    while (started && WaitForMultipleObjects(started, threads, TRUE, 500) == WAIT_TIMEOUT) {
+        if (!r.stop && game_running()) InterlockedExchange(&r.stop, 1);
+        u64 now = GetTickCount64();
+        if (now - said < 10000) continue;
+        said = now;
+        FILE *lf = fopen(logpath, "w");
+        if (!lf) continue;
+        double s = (now - t0) / 1000.0;
+        long drawn = r.drawn, failed = r.failed;
+        long left = (long)r.n - (long)before - drawn - failed;
+        if (left < 0) left = 0;
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        fprintf(lf, "%04u-%02u-%02u %02u:%02u: running on %s: %ld of %u shaders drawn (%u before), %ld not drawn, %.0f s so far",
+                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, name, drawn + (long)before, r.n, before, failed, s);
+        if (drawn > 0) fprintf(lf, ", about %.0f min left", left * (s / drawn) / 60.0);
+        fprintf(lf, "%s" "\n", r.stop ? " (stopping: a game started)" : "");
+        fclose(lf);
+    }
     for (u32 i = 0; i < started; i++) CloseHandle(threads[i]);
     /* what has been drawn, for the next run */
     u32 ndone = 0;
     for (u32 i = 0; i < r.n && r.done; i++) ndone += r.done[i];
     names = malloc(sizeof *names * (ndone + 1));
     snprintf(tmp, sizeof tmp, "%s.new", path);
-    if (names && (ndone > before || r.n == 0) && (f = fopen(tmp, "wb"))) {   /* (an empty cache is warm too) */
+    if (names && ndone > before && (f = fopen(tmp, "wb"))) {
         u32 k = 0;
         for (u32 i = 0; i < r.n; i++)
             if (r.done[i]) names[k++] = name_hash(r.files[i].name);
@@ -2300,15 +2486,14 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
         if (left) snprintf(rest, sizeof rest, "%u left for after the next game%s", left, r.stop ? " (a game started)" : "");
         else snprintf(rest, sizeof rest, "all %u of the cache drawn", r.n);
         fprintf(out, "%04u-%02u-%02u %02u:%02u: %ld shaders drawn once on %s in %.1f s, %ld of them compiled there (over %.0f ms), %ld not drawn; "
-                     "%u drawn before; %s\n",
+                     "%u drawn before; %u of the shipped list put first; %s\n",
                 st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, (long)r.drawn, name, (GetTickCount64() - t0) / 1000.0, (long)r.slow,
-                WARM_SLOW_MS, (long)r.failed, before, rest);
+                WARM_SLOW_MS, (long)r.failed, before, listed, rest);
         fclose(out);
     }
     free(r.done);
     free(r.files);
     if (r.adapter) IDXGIAdapter1_Release(r.adapter);
-    CloseHandle(one);
     return 0;
 }
 #else
@@ -2734,65 +2919,6 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
 }
 #endif
 
-/* Before the game loads (host.c), Windows AMD: if the driver's own cache is cold (a new game
- * executable or driver, or no post-play pass yet), draw the whole cache once with the same
- * ssbu --warm-shaders pass, and wait for it. This covers the programs Prepare Shaders made but
- * the game has not played, which are the ones AMD's driver cache lacks. A warm cache starts at
- * once: warm.done matches this exe and driver. It is opt-in (SSBU_SHADER_WARM_PREPLAY=1), since
- * it can hold the start for minutes after a driver update; SSBU_SHADER_WARM=0 turns the warm
- * feature off. The Vulkan renderer and headless test runs skip it. */
-void d3d11_warm_before_play(void) {
-#ifdef _WIN32
-    if (display_renderer() == RENDERER_VULKAN) return;   /* (the Vulkan back end draws: D3D11's driver cache is not used) */
-    const char *hl = getenv("SSBU_HEADLESS");
-    if (hl && !strcmp(hl, "1")) return;   /* (a headless test run: no window, and no wait before it) */
-    const char *wv = getenv("SSBU_SHADER_WARM");
-    if (wv && !atoi(wv)) return;
-    const char *pp = getenv("SSBU_SHADER_WARM_PREPLAY");
-    if (!pp || !atoi(pp)) return;
-    if (getenv("SSBU_BENCH") || getenv("SSBU_SEQ") || getenv("SSBU_INPUT")) return;
-    /* Another instance is playing: its pass owns the cache, and this one would pause for that game
-     * (WARM_GAME) and hold this game's start until it ended. */
-    if (game_running()) {
-        fprintf(stderr, "[gfx] shader warm before play: another game is running; skipped\n");
-        return;
-    }
-    int warp = 0;
-    IDXGIAdapter1 *a = pick_adapter(&warp);
-    if (!a) return;
-    DXGI_ADAPTER_DESC1 d;
-    int amd = SUCCEEDED(IDXGIAdapter1_GetDesc1(a, &d)) && d.VendorId == 0x1002;
-    u64 driver = amd ? adapter_driver_version((IDXGIAdapter *)a) : 0;
-    u64 luid = amd ? ((u64)(u32)d.AdapterLuid.HighPart << 32 | (u32)d.AdapterLuid.LowPart) : 0;
-    IDXGIAdapter1_Release(a);
-    if (!amd || !warm_cache_cold(driver)) return;
-    wchar_t exe[MAX_PATH], cmd[2 * MAX_PATH + 96];
-    char dir[MAX_PATH];
-    DWORD n = GetFullPathNameA(cache_dir(), MAX_PATH, dir, NULL);
-    if (!GetModuleFileNameW(NULL, exe, MAX_PATH) || !n || n >= MAX_PATH) return;
-    _snwprintf(cmd, sizeof cmd / sizeof *cmd, L"\"%ls\" --warm-shaders \"%hs\" %llx", exe, dir, (unsigned long long)luid);
-    cmd[sizeof cmd / sizeof *cmd - 1] = 0;
-    STARTUPINFOW si;
-    memset(&si, 0, sizeof si);
-    si.cb = sizeof si;
-    PROCESS_INFORMATION pi;
-    fprintf(stderr, "[gfx] the shader cache is cold (a new executable or driver, or no pass yet): drawing it once for the "
-                    "driver's own cache before the game loads; this can take a few minutes after a driver update "
-                    "(warm.log in the cache says how far it gets; SSBU_SHADER_WARM_PREPLAY=0 turns it off)\n");
-    if (CreateProcessW(exe, cmd, NULL, NULL, FALSE, DETACHED_PROCESS | BELOW_NORMAL_PRIORITY_CLASS, NULL, NULL, &si, &pi)) {
-        CloseHandle(pi.hThread);
-        WaitForSingleObject(pi.hProcess, INFINITE);
-        DWORD code = 0;
-        GetExitCodeProcess(pi.hProcess, &code);
-        CloseHandle(pi.hProcess);
-        fprintf(stderr, "[gfx] shader warm before play: %s\n",
-                !code && !warm_cache_cold(driver) ? "done" : "did not finish; the game makes the rest as it needs them");
-    } else {
-        fprintf(stderr, "[gfx] shader warm before play: could not start (%lu)\n", GetLastError());
-    }
-#endif
-}
-
 /* The game is closing (its window, or the settings menu's Quit): with a driver that makes GPU
  * code on its own threads, the shader cache is drawn once for that driver's own cache, by a
  * process of its own that goes on after this one ends (see "first draws"). */
@@ -2802,14 +2928,6 @@ void d3d11_closing(void) {
     if (!ready || !warm_mode || InterlockedExchange(&once, 1)) return;
     if (game_mutex) CloseHandle(game_mutex);   /* (this game is done) */
     game_mutex = NULL;
-    /* An earlier pass that paused for this game is still alive: it draws again now, so there is
-     * nothing to start (and its warm.done is the one that matters). */
-    HANDLE warm = OpenMutexA(SYNCHRONIZE, FALSE, "Local\\ssbu-warm-shaders");
-    if (warm) {
-        CloseHandle(warm);
-        fprintf(stderr, "[gfx] the shader cache's background pass was waiting for this game: it goes on now\n");
-        return;
-    }
     wchar_t exe[MAX_PATH], cmd[2 * MAX_PATH + 96];
     char dir[MAX_PATH];
     DWORD n = GetFullPathNameA(cache_dir(), MAX_PATH, dir, NULL);
@@ -2821,23 +2939,12 @@ void d3d11_closing(void) {
     memset(&si, 0, sizeof si);
     si.cb = sizeof si;
     PROCESS_INFORMATION pi;
-    /* Out of a launcher's job if it allows that, so the pass is not ended with the launcher. A
-     * launcher whose job forbids it (some terminals) leaves the child in the job: say so. */
-    DWORD how = DETACHED_PROCESS | BELOW_NORMAL_PRIORITY_CLASS;
-    BOOL in_job = FALSE;
-    IsProcessInJob(GetCurrentProcess(), NULL, &in_job);
-    BOOL started = CreateProcessW(exe, cmd, NULL, NULL, FALSE, how | CREATE_BREAKAWAY_FROM_JOB, NULL, NULL, &si, &pi);
-    DWORD breakaway_error = started ? 0 : GetLastError();
-    if (!started) started = CreateProcessW(exe, cmd, NULL, NULL, FALSE, how, NULL, NULL, &si, &pi);
-    if (started) {
+    DWORD how = DETACHED_PROCESS | BELOW_NORMAL_PRIORITY_CLASS;   /* (out of a launcher's job if it allows that: not ended with it) */
+    if (CreateProcessW(exe, cmd, NULL, NULL, FALSE, how | CREATE_BREAKAWAY_FROM_JOB, NULL, NULL, &si, &pi) ||
+        CreateProcessW(exe, cmd, NULL, NULL, FALSE, how, NULL, NULL, &si, &pi)) {
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
         fprintf(stderr, "[gfx] the shader cache is drawn once for the driver's own cache, in the background (warm.log in the cache says how far it got)\n");
-        if (in_job && breakaway_error)
-            fprintf(stderr, "[gfx] note: the launcher's job did not allow the pass to leave it (%lu): it ends with the launcher\n",
-                    (unsigned long)breakaway_error);
-    } else {
-        fprintf(stderr, "[gfx] could not start the shader cache's background pass (%lu)\n", (unsigned long)GetLastError());
     }
 #endif
 }
@@ -2930,6 +3037,8 @@ static void driver_threads_line(void) {
 #endif
 
 static u32 ntextures, nresidents;   /* (below: the texture cache, the GPU-resident buffers) */
+static u64 shaders_put_away;        /* (below: evict_shaders) */
+extern u64 gfx_stat_skipped;
 
 /* What the driver says this process's resources take: in the card's own memory, and in the
  * computer's (shared: what does not fit, and what the driver keeps there). 0 when it can't say. */
@@ -2955,8 +3064,8 @@ void d3d11_status_lines(void) {
 #endif
     u64 vram, shared;
     video_memory(&vram, &shared);
-    fprintf(stderr, "[status] memory: %.0f MB private, graphics %.0f MB on the card + %.0f MB in RAM; %llu shaders made, prewarm %ld made / %ld taken by the game / %ld over its budget; %u textures, %u surfaces, %u GPU-resident buffers\n",
-            private_bytes() / 1048576.0, vram / 1048576.0, shared / 1048576.0, gfx_stat_shaders, (long)prewarm_ready, (long)prewarm_taken,
+    fprintf(stderr, "[status] memory: %.0f MB private, graphics %.0f MB on the card + %.0f MB in RAM; %llu shaders made (%llu put away so far), prewarm %ld made / %ld taken by the game / %ld over its budget; %u textures, %u surfaces, %u GPU-resident buffers\n",
+            private_bytes() / 1048576.0, vram / 1048576.0, shared / 1048576.0, gfx_stat_shaders, shaders_put_away, (long)prewarm_ready, (long)prewarm_taken,
             (long)prewarm_over, ntextures, nsurfaces, nresidents);
     if (!gfx_stat_first_draws) return;
     EnterCriticalSection(&lock);
@@ -3027,14 +3136,14 @@ void d3d11_report_compiles(void (*line)(const char *text)) {
         CreateDirectoryA(dir, NULL);
         const char *saved = "";
         if (s->hlsl) {
-            snprintf(path, sizeof path, "%s/%s_%08x_%016llx.hlsl", dir, s->name, s->cache_outputs, s->table_hash);
+            snprintf(path, sizeof path, "%s/%s_%08x_%016llx.hlsl", dir, s->name, s->vs_outputs, s->table_hash);
             FILE *f = fopen(path, "w");
             if (f) { fputs(s->hlsl, f); fclose(f); saved = "; HLSL saved"; }
         }
         const void *dxbc = compilers[i].dxbc;
         size_t size = compilers[i].dxbc_size;
         if (step == STEP_DRIVER && dxbc && size) {
-            snprintf(path, sizeof path, "%s/%s_%08x_%016llx.dxbc", dir, s->name, s->cache_outputs, s->table_hash);
+            snprintf(path, sizeof path, "%s/%s_%08x_%016llx.dxbc", dir, s->name, s->vs_outputs, s->table_hash);
             FILE *f = fopen(path, "wb");
             if (f) { fwrite(dxbc, 1, size, f); fclose(f); saved = s->hlsl ? "; HLSL and DXBC saved" : "; DXBC saved"; }
         }
@@ -3065,6 +3174,95 @@ static u64 table_hash(const ShaderInfo *info, CbufSource *src) {
 /* Programs by where they are: finding a shader by its contents means decoding the program for
  * its length and hashing all of it - per draw, per stage, far too slow - so each address
  * remembers the shader it last held, recognised again by a few of its words. */
+/* ---- shaders put away ------------------------------------------------------------------
+ * Every program the driver makes keeps its GPU code in this process (NVIDIA: most of a megabyte
+ * each), and a session draws thousands - every fighter, stage and menu seen - which used to stay
+ * for the whole run: gigabytes, until the system ran out. Past SSBU_SHADER_KEEP of them (default
+ * 2500; 0: keep all), the ones no draw has asked for in a minute are released, least recently
+ * used first, and the program loads again from the disk cache at its next use (a load, not a
+ * compile: a few ms on a compiler thread, the draw skipped meanwhile, as at its first use). */
+/* What a program is made from (a put-away one whose cache file has gone is translated again from it). */
+typedef struct ShaderSrc { const u8 *p; u32 size; int stage; u32 vs_outputs; const u32 *local; u32 shared; const CbufSource *src; int alpha_tested; } ShaderSrc;
+
+static char *shader_make_hlsl(const ShaderSrc *o, ShaderInfo *info) {
+    return o->stage == SHADER_COMPUTE ? shader_hlsl_cs(o->p, o->size, o->local, o->shared, info, read_cbuf_word, o->src)
+         : o->alpha_tested            ? shader_hlsl_alpha_tested(o->p, o->size, o->vs_outputs, info, read_cbuf_word, o->src)
+                                      : shader_hlsl_ex(o->p, o->size, o->stage, o->vs_outputs, info, read_cbuf_word, o->src);
+}
+
+static Shader *touched(Shader *s, const ShaderSrc *o) {
+    s->used = gfx_stat_presented;
+    if (s->state == 3) {   /* put away: loaded again from the disk cache */
+        char path[1200];
+        cache_path(s, path, sizeof path);
+        if (!s->hlsl && GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {   /* (its file has gone since: made from the program again) */
+            ShaderInfo scratch;
+            memset(&scratch, 0, sizeof scratch);
+            s->hlsl = shader_make_hlsl(o, &scratch);
+        }
+        s->asked_ms = 0;   /* (its first use was logged once) */
+        s->state = 0;
+        s->cached = 1;
+        enqueue_shader(s);
+        /* waited for, as get_shader_ex does for a program that was compiled before: a skipped draw flickers,
+         * a skipped launch leaves skinned vertices unwritten for a frame */
+        for (u64 until = GetTickCount64() + 250; s->state == 0 && GetTickCount64() < until;) SwitchToThread();
+    }
+    return s;
+}
+
+static int by_use(const void *a, const void *b) {
+    u64 x = (*(Shader *const *)a)->used, y = (*(Shader *const *)b)->used;
+    return x < y ? -1 : x > y;
+}
+
+/* (render thread, once a frame) */
+static void evict_shaders(void) {
+    static u32 keep = ~0u;
+    if (keep == ~0u) { const char *e = getenv("SSBU_SHADER_KEEP"); keep = e ? (u32)atoi(e) : 2500; }
+    if (!keep || gfx_stat_presented % 60) return;
+    u32 made = 0, old = 0;
+    for (u32 i = 0; i < shader_count; i++)
+        if (shader_cache[i]->state == 1 && shader_cache[i]->obj) {
+            made++;
+            if (gfx_stat_presented - shader_cache[i]->used > 3600) old++;
+        }
+    /* (the prewarm's programs no draw has taken yet are live too, up to thousands: they cannot be put away, so the
+     * game's own are put away for them) */
+    LONG pw = prewarm_ready - prewarm_taken;
+    u32 live = made + (pw > 0 ? (u32)pw : 0);
+    if (live <= keep || !old) return;
+    Shader **list = malloc(sizeof *list * old);
+    if (!list) return;
+    u32 n = 0;
+    for (u32 i = 0; i < shader_count && n < old; i++) {
+        Shader *s = shader_cache[i];
+        if (s->state == 1 && s->obj && gfx_stat_presented - s->used > 3600) list[n++] = s;
+    }
+    qsort(list, n, sizeof *list, by_use);
+    u32 gone = 0;
+    for (u32 i = 0; i < n && live > keep; i++) {
+        Shader *s = list[i];
+        char path[1200];
+        cache_path(s, path, sizeof path);
+        if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) continue;   /* (only what loads again) */
+        IUnknown_Release((IUnknown *)s->obj);
+        s->obj = NULL;
+        s->state = 3;
+        InterlockedDecrement64((volatile LONG64 *)&gfx_stat_shaders);
+        live--;
+        gone++;
+    }
+    free(list);
+    shaders_put_away += gone;
+    if (gone) {
+        static int logged;
+        if (logged++ < 20)
+            fprintf(stderr, "[gfx] shaders put away: %u now (%llu so far); %u live (game %u, prewarm %ld untaken), keep %u; draws skipped so far %llu\n",
+                    gone, (unsigned long long)shaders_put_away, live, made, (long)pw, keep, (unsigned long long)gfx_stat_skipped);
+    }
+}
+
 typedef struct ShaderSlot { u64 g, key, print; u32 size; Shader *s; u64 tables_at; } ShaderSlot;
 
 /* Where a program's jump tables were read from, if they are all its compiler constants (bank 1,
@@ -3125,17 +3323,19 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
     ShaderSlot *slot = &shader_slots[((g >> 4) * 0x9E3779B97F4A7C15ull ^ key) >> 50 & (SHADER_SLOTS - 1)];
     if (slot->s && slot->g == g && slot->key == key && slot->print == fingerprint(stage, p, slot->size)) {
         Shader *s = slot->s;
-        if (!s->info.ntables) return s;
+        CbufSource src0 = {stage_cb};
+        ShaderSrc so0 = {p, slot->size, stage, vs_outputs, local, shared, &src0, alpha_tested};
+        if (!s->info.ntables) return touched(s, &so0);
         u64 place = tables_place(&s->info, stage_cb);
-        if (place && slot->tables_at == place) return s;
-        CbufSource src = {stage_cb};
-        if (s->table_hash == table_hash(&s->info, &src)) { slot->tables_at = place; return s; }
+        if (place && slot->tables_at == place) return touched(s, &so0);
+        if (s->table_hash == table_hash(&s->info, &src0)) { slot->tables_at = place; return touched(s, &so0); }
     }
     u32 size = shader_size(p, 0x40000), skip = stage == SHADER_COMPUTE ? 0x50 : 0;
     u64 h = shader_program_hash(p + skip, size - skip);
     if (stage == SHADER_COMPUTE) h = (h ^ ((u64)local[0] | (u64)local[1] << 16 | (u64)local[2] << 32 | (u64)shared << 40)) * 1099511628211ull;
     u64 program_hash = h;   /* (the shader's name) */
     h = shader_cache_hash(h, p, size, stage);
+    u64 key_hash = h;   /* (before the alpha test's salt: the key tools/shader_aot.py knows the program by) */
     /* (the salt changes with the alpha test's code, so cache files of an older form are not used) */
     if (alpha_tested) h = (h ^ 0x616C706861743032ull) * 1099511628211ull;
     CbufSource src = {stage_cb};
@@ -3144,12 +3344,14 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
         if (s->hash != h || s->stage != stage || (stage == SHADER_PIXEL && s->vs_outputs != vs_outputs)) continue;
         if (s->info.ntables && s->table_hash != table_hash(&s->info, &src)) continue;
         *slot = (ShaderSlot){g, key, fingerprint(stage, p, size), size, s};
-        return s;
+        ShaderSrc so = {p, size, stage, vs_outputs, local, shared, &src, alpha_tested};
+        return touched(s, &so);
     }
     if (shader_count == shader_cap) shader_cache = realloc(shader_cache, sizeof *shader_cache * (shader_cap = shader_cap * 2 + 64));
     Shader *s = calloc(1, sizeof *s);
     shader_cache[shader_count++] = s;
     s->hash = h; s->stage = stage; s->vs_outputs = vs_outputs;
+    s->used = gfx_stat_presented;
     *slot = (ShaderSlot){g, key, fingerprint(stage, p, size), size, s};
     snprintf(s->name, sizeof s->name, "%s_%016llx%s", stage == SHADER_VERTEX ? "vs" : stage == SHADER_PIXEL ? "ps" : "cs", program_hash,
              alpha_tested ? "_alphatest" : "");
@@ -3163,9 +3365,6 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
         FILE *f = fopen(path, "wb");
         if (f) { static const u8 zero[0x50]; fwrite(zero, 1, 0x50, f); fwrite(p + 0x50, 1, size - 0x50, f); fclose(f); }
     }
-    /* A pixel program is named by its effective interface: one variant links with any vertex
-     * program that writes a superset of it (shader_hlsl_ex declares only inputs & vs_outputs). */
-    s->cache_outputs = stage == SHADER_PIXEL ? s->vs_outputs & s->info.inputs : s->vs_outputs;
     s->table_hash = table_hash(&s->info, &src);
     if (s->info.unsupported[0]) fprintf(stderr, "[gfx] %s: %s\n", s->name, s->info.unsupported);
     const char *find = getenv("SSBU_GFX_FIND");   /* debug: other copies of this program in guest memory */
@@ -3216,6 +3415,24 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
     cache_path(s, path, sizeof path);
     s->cached = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
     s->asked_ms = GetTickCount64();
+    /* A program compiled at its first draw (fxc, seconds: its draws skipped until then) is noted in the cache folder's
+     * drawn_keys.txt, so that Prepare Shaders (tools/shader_aot.py) compiles it ahead next time, with the variant the
+     * draw wanted (the vertex outputs it was paired with, the alpha test's): the pairings the ahead-of-time pass
+     * can't guess from the game's files. Programs whose code depends on a draw's constant buffers (tables) can't be
+     * made ahead, nor compute programs (their launch size): left out. */
+    if (!s->cached && stage != SHADER_COMPUTE && !s->info.ntables) {
+        static SRWLOCK keys_lock = SRWLOCK_INIT;
+        char kp[1100];
+        snprintf(kp, sizeof kp, "%s/drawn_keys.txt", cache_dir());
+        AcquireSRWLockExclusive(&keys_lock);
+        FILE *kf = fopen(kp, "a");
+        if (kf) {
+            if (stage == SHADER_VERTEX) fprintf(kf, "vs %016llx\n", (unsigned long long)key_hash);
+            else fprintf(kf, "%s %016llx %08x\n", alpha_tested ? "pa" : "ps", (unsigned long long)key_hash, vs_outputs);
+            fclose(kf);
+        }
+        ReleaseSRWLockExclusive(&keys_lock);
+    }
     enqueue_shader(s);
     /* A compute program that was compiled before is waited for here (a few ms): a skipped launch
      * leaves its outputs (skinned vertices) unwritten for a frame. The graphics programs are
@@ -3237,6 +3454,7 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
  * meanwhile). A program not in the cache is not waited for: that would be a full compile. */
 static void wait_cached_shader(Shader *s, int stage) {
     if (!s || s->state != 0) return;   /* (ready or failed: nothing to wait for) */
+    if (!on_dxvk()) return;   /* (native Direct3D: its programs are made before the first frame, prewarm_gate) */
     if (!s->cached) {   /* not in the cache: a full compile; its first draws are skipped until it is ready */
         static char seen[64][32];
         static u32 nseen;
@@ -3963,7 +4181,7 @@ void d3d11_resident_flush(u64 va, u64 bytes) {
         if (SUCCEEDED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)st, 0, D3D11_MAP_READ, 0, &m))) {
             for (u64 a = lo; a < hi; a += 4) {
                 u64 g = gpu_va_to_guest(a);
-                if (g) st32(g, ((const u32 *)m.pData)[(a - lo) / 4]);
+                if (g) { st32(g, ((const u32 *)m.pData)[(a - lo) / 4]); gpu_rb_wrote(g, 4); }
             }
             ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)st, 0);
         }
@@ -4120,6 +4338,7 @@ static void texture_index_add(Texture *t) {
 }
 
 static int depth_sampling = -1;   /* depth buffers as textures (shadow maps, ...); SSBU_NO_DEPTH_SAMPLING or F5: off */
+static Surface *depth_sampled_now;   /* the depth surface get_texture last gave (bind_resources, gfx_draw) */
 
 /* Block-compressed textures whose size is not a multiple of the 4x4 block: Direct3D 11 makes
  * level 0 whole blocks, and a texture a few texels bigger is sampled wrongly at its right and
@@ -4157,6 +4376,7 @@ int tex_decode_rgba8(int nvn_format, const void *src, int w, int h, uint8_t *dst
  * bands of block rows decoded on the system's thread pool at once, each band its own call of the same
  * decoder (a band's source starts at its first block row, its picture at that row's pixels). Small ones are
  * decoded as before. Returns tex_decode_rgba8's answer (0 good). */
+#ifdef _WIN32   /* (the system thread pool; elsewhere (Linux/macOS builds of this file) decoded whole) */
 typedef struct DecodeBand { int nf, w, h; const u8 *src; u8 *dst; volatile LONG *left, *failed; HANDLE done; } DecodeBand;
 static void CALLBACK decode_band(PTP_CALLBACK_INSTANCE inst, void *ctx) {
     (void)inst;
@@ -4208,6 +4428,12 @@ static int decode_rgba8_parallel(int nf, const u8 *src, int w, int h, u8 *dst, u
     }
     return failed ? -1 : 0;
 }
+#else
+static int decode_rgba8_parallel(int nf, const u8 *src, int w, int h, u8 *dst, u32 bw, u32 bh, u32 bpb) {
+    (void)bw; (void)bh; (void)bpb;
+    return tex_decode_rgba8(nf, src, w, h, dst);
+}
+#endif
 /* BC7 often cannot store alpha 0. A clear texel is then (1,1,1,1). The alpha test keeps any
  * alpha above 0 and the black is drawn (Paper Mario's sticker wheel). A real clear texel, as on
  * the stickers sheet, is alpha 0 and is thrown away. */
@@ -4339,6 +4565,7 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
         if (!rt || s->used > rt->used) rt = s;
     }
     if (rt && draw_logging) note_sampled(rt);
+    if (rt && rt->depth) depth_sampled_now = rt;
     if (rt) { *scale = rt->sx; return surface_srv(rt, (int)d.srgb); }
     if (!ok || d.type == TIC_1D_BUFFER || d.bytes == 0) { warn_texture(&d); return NULL; }
     u32 layers = d.type == TIC_CUBE ? 6 : d.type == TIC_CUBE_ARRAY ? 6 * d.depth : d.type == TIC_2D_ARRAY || d.type == TIC_1D_ARRAY ? d.depth : 1;
@@ -4987,6 +5214,20 @@ static void set_samplers(int stage, u32 count, ID3D11SamplerState *const *v) {
 }
 
 /* Bind a stage's constant buffers and textures. */
+/* A 24-bit depth buffer read as a texture: the hardware gives the depth in green and the stencil in
+ * red (S8Z24), the view here the depth in red - the texture header's swizzle has its red and green
+ * swapped to match. The game's depth reads ask for green (the soft particles' fade by depth, the KO
+ * finish zoom's background among them), which read 0 here before. */
+static u32 depth_green_red(u32 swz) {
+    u32 out = 0;
+    for (int i = 0; i < 4; i++) {
+        u32 c = (swz >> (3 * i)) & 7;
+        out |= (c == 3 ? 2u : c == 2 ? 3u : c) << (3 * i);
+    }
+    return out;
+}
+static int depth_24bit(u32 zeta_format) { return zeta_format == 0x14 || zeta_format == 0x15 || zeta_format == 0x16; }
+
 static void bind_resources(const u32 *regs, const CbBinding cb[STAGES][18], int stage, const Shader *s, DrawParams *params) {
     int mstage = stage == SHADER_VERTEX ? STAGE_VERTEX : STAGE_FRAGMENT;
     ID3D11ShaderResourceView *srv[18] = {0};
@@ -5088,9 +5329,13 @@ static void bind_resources(const u32 *regs, const CbBinding cb[STAGES][18], int 
         read_gpu(tic_pool + tic_index * 32ull, 32, tic);
         read_gpu(tsc_pool + tsc_index * 32ull, 32, tsc);
         float scale;
+        Surface *depth_before = depth_sampled_now;
+        depth_sampled_now = NULL;
         tex[k] = get_texture(tic, s->info.tex[k].type, &scale);
         if (k < 16) smp[k] = get_sampler(tsc);
         params->swz[stage][k] = (tic[0] >> 19) & 0xFFF;
+        if (depth_sampled_now && depth_24bit(depth_sampled_now->format)) params->swz[stage][k] = depth_green_red(params->swz[stage][k]);
+        if (!depth_sampled_now) depth_sampled_now = depth_before;
         /* a render target's render scale, 4.12 fixed point in the top half (0: 1), for the few
          * programs that step in texels (gpu_shader.c: tsc_) */
         if (scale != 1.0f) params->swz[stage][k] |= (u32)(scale * 4096.0f + 0.5f) << 16;
@@ -5248,10 +5493,18 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
         Surface *sf = surface(gpu_va_to_guest(va), regs[M_CT(ct) + 2], regs[M_CT(ct) + 3], regs[M_CT(ct) + 4], 0);
         if (sf) { rtv[i] = sf->rtv; if (!rt_w) { rt_w = sf->width; rt_h = sf->height; rt_sx = sf->sx; rt_sy = sf->sy; } }
     }
+    Surface *zsf = NULL;
+    /* a draw that writes neither depth nor stencil keeps its depth target read-only, so that it can
+     * sample it too (soft particles); one known to sample it gets the read-only view from the start */
+    int depth_read_only = !(regs[M_DEPTH_WRITE] & 1) && !(regs[M_STENCIL_TEST] & 1);
     if (regs[M_ZT_SELECT] & 1) {
         u64 va = (u64)regs[M_ZT_A] << 32 | regs[M_ZT_A + 1];
         Surface *sf = surface(gpu_va_to_guest(va), regs[M_ZT_SIZE], regs[M_ZT_SIZE + 1], regs[M_ZT_A + 2], 1);
-        if (sf) { dsv = sf->dsv; if (!rt_w) { rt_w = sf->width; rt_h = sf->height; rt_sx = sf->sx; rt_sy = sf->sy; } }
+        if (sf) {
+            zsf = sf;
+            dsv = depth_read_only && sf->sampled_bound && sf->dsv_ro ? sf->dsv_ro : sf->dsv;
+            if (!rt_w) { rt_w = sf->width; rt_h = sf->height; rt_sx = sf->sx; rt_sy = sf->sy; }
+        }
     }
     if (!rt_w) { gfx_stat_skipped++; gfx_skip_target++; leave(); return; }
     /* (a render target bound as a texture of the same draw is unbound by D3D: fine) */
@@ -5477,8 +5730,19 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
     params.base[0] = regs[M_GLOBAL_BASE_VERTEX];
     params.base[1] = regs[M_GLOBAL_BASE_INSTANCE] + instance_counter;
 
+    depth_sampled_now = NULL;
     bind_resources(regs, cb, SHADER_VERTEX, vs, &params);
     if (ps) bind_resources(regs, cb, SHADER_PIXEL, ps, &params);
+    if (zsf && depth_sampled_now == zsf && dsv == zsf->dsv && depth_read_only && zsf->dsv_ro) {
+        /* the first such draw: its depth texture was refused while the target was writable */
+        zsf->sampled_bound = 1;
+        dsv = zsf->dsv_ro;
+        ID3D11DeviceContext_OMSetRenderTargets(ctx, 8, rtv, dsv);
+        cur.dsv = dsv;
+        forget_resource_bindings();
+        bind_resources(regs, cb, SHADER_VERTEX, vs, &params);
+        if (ps) bind_resources(regs, cb, SHADER_PIXEL, ps, &params);
+    }
 
     /* per-draw parameters */
     if (!params_buffer) {
@@ -5610,7 +5874,10 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
      * draws its masks unculled and relies on one face's write mask.) Which face is which differs
      * from culling: WINDOW_ORIGIN.FLIP_Y swaps the front face for culling (see the facing above)
      * but not for the stencil state - with it set, the hardware's "back" state is what D3D's
-     * front faces get (seen on the main menu's tiles, whose fills need it). */
+     * front faces get (seen on the main menu's tiles, whose fills need it). All of that state: the
+     * test and the operations as well as the reference and the masks - the KO zooms' effects have
+     * a "not over a fighter" test on one face and "always" on the other, and the reference of one
+     * with the test of the other hid them (the finish zoom's red and black lightning). */
     u32 back_ref = regs[M_BACK_STENCIL_REF] & 0xFF, back_write = regs[M_BACK_STENCIL_MASK] & 0xFF, back_read = regs[M_BACK_STENCIL_FUNC_MASK] & 0xFF;
     int split = dd.StencilEnable && (regs[M_TWO_SIDED_STENCIL] & 1) &&
                 (back_ref != (regs[M_STENCIL_REF] & 0xFF) || back_write != dd.StencilWriteMask || back_read != dd.StencilReadMask);
@@ -5627,6 +5894,7 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
             D3D11_DEPTH_STENCIL_DESC d = dd;
             r.CullMode = back_faces ? D3D11_CULL_FRONT : D3D11_CULL_BACK;   /* just this pass's faces */
             if (back) { d.StencilReadMask = (UINT8)back_read; d.StencilWriteMask = (UINT8)back_write; }
+            d.FrontFace = d.BackFace = back ? dd.BackFace : dd.FrontFace;   /* (this pass draws one kind of face) */
             cur.rs = raster_state(&r);
             cur.ds = depth_state(&d);
             cur.stencil_ref = back ? back_ref : regs[M_STENCIL_REF] & 0xFF;
@@ -5817,6 +6085,44 @@ static void capture(ID3D11Texture2D *back, ID3D11Texture2D *window) {
     }
     if (getenv("SSBU_CAPTURE_SURFACES")) capture_surfaces(dir, count);
     count++;
+}
+
+/* SSBU_PRESENT_HASH=<file> (a test): a line a picture shown - its number, the fight frame, whether a submission whose draws
+ * were left out ran since the last one (a hidden frame run again), and a hash of the picture - to compare two runs' pictures
+ * without looking at them (the hidden frames of a catch-up: does anything drawn only now and then stay stale?) */
+static void present_hash(ID3D11Texture2D *tex) {
+    static FILE *out; static int checked; static u64 n; static ID3D11Texture2D *staging; static u32 sw, sh;
+    extern volatile int gpu_hidden_since_present;
+    if (!checked++) { const char *p = getenv("SSBU_PRESENT_HASH"); if (p && *p) out = fopen(p, "w"); }
+    int hid = gpu_hidden_since_present; gpu_hidden_since_present = 0;
+    if (!out || !tex) return;
+    D3D11_TEXTURE2D_DESC td;
+    ID3D11Texture2D_GetDesc(tex, &td);
+    if (!staging || sw != td.Width || sh != td.Height) {
+        if (staging) ID3D11Texture2D_Release(staging);
+        td.Usage = D3D11_USAGE_STAGING; td.BindFlags = 0; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ; td.MiscFlags = 0;
+        if (FAILED(ID3D11Device_CreateTexture2D(dev, &td, NULL, &staging))) { staging = NULL; return; }
+        sw = td.Width; sh = td.Height;
+    }
+    ID3D11DeviceContext_CopyResource(ctx, (ID3D11Resource *)staging, (ID3D11Resource *)tex);
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (FAILED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)staging, 0, D3D11_MAP_READ, 0, &m))) return;
+    u64 h = 0xcbf29ce484222325ull;
+    static u64 grid[16 * 9];   /* (and the picture's brightness on a 16 x 9 grid: two runs' pictures are not bit for bit alike) */
+    memset(grid, 0, sizeof grid);
+    for (u32 y = 0; y < sh; y++) {
+        const u8 *row = (const u8 *)m.pData + (size_t)y * m.RowPitch;
+        const u64 *p = (const u64 *)row;
+        for (u32 x = 0; x < sw / 2; x++) { h ^= p[x]; h *= 0x100000001b3ull; }   /* (4 bytes a pixel, 2 a word) */
+        u64 *g = &grid[(y * 9 / sh) * 16];
+        for (u32 x = 0; x < sw; x++) g[x * 16 / sw] += (u64)row[x * 4] + row[x * 4 + 1] + row[x * 4 + 2];
+    }
+    ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)staging, 0);
+    char gs[16 * 9 * 2 + 1];
+    u64 cell = (u64)(sw / 16) * (sh / 9) * 3;
+    for (int i = 0; i < 16 * 9; i++) snprintf(gs + i * 2, 3, "%02x", (unsigned)(cell ? (grid[i] / cell > 255 ? 255 : grid[i] / cell) : 0));
+    fprintf(out, "%llu %lld %d %016llx %s\n", (unsigned long long)n++, test_fight_frame, hid, (unsigned long long)h, gs);
+    fflush(out);
 }
 
 /* 2D engine: source and destination surfaces (format, layout, block size, depth, layer,
@@ -6108,7 +6414,7 @@ void d3d11_dispatch(const u32 *regs, const u32 *q) {
                 if (now[i] == was[i]) continue;
                 changed = 1;
                 u64 gg = gpu_va_to_guest(va_of[k] + 4ull * i);
-                if (gg) st32(gg, now[i]);
+                if (gg) { st32(gg, now[i]); gpu_rb_wrote(gg, 4); }
             }
             ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)b->staging, 0);
             if (changed) {
@@ -6322,6 +6628,7 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
     gfx_stat_presented++;
     release_graves();
     note_writes();
+    evict_shaders();
     debug_messages();
     static int logged, frames_logged, frames_to_log;
     static const char *after_compute = (const char *)1;
@@ -6442,6 +6749,7 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
     }
     if (rtv_srgb) ID3D11RenderTargetView_Release(rtv_srgb);
     capture(final_tex, back);   /* (before the overlay) */
+    present_hash(final_tex);
 
     /* debug keys and the overlay */
     LONG keys = (LONG)gfx_take_hotkeys();
@@ -6601,6 +6909,14 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
     gpu_times_frame();
     LARGE_INTEGER p0, p1;
     QueryPerformanceCounter(&p0);
+    static int gated;
+    if (!gated) {   /* (the first present: every shader is made first, prewarm_gate) */
+        gated = 1;
+        /* (not under DXVK: its whole-cache prewarm shows its own bar over the game and holds the input instead, and
+         * its settle needs the title screen's frames; prewarm_status, prewarm_busy) */
+        if (!on_dxvk()) prewarm_gate();
+    }
+    display_before_present();   /* (gpu_display.c: the loading animation stops) */
     hr = IDXGISwapChain1_Present(swapchain, 0, display_present_flags());   /* (blocks while the GPU is frames behind) */
 #ifdef _WIN32
     if (SUCCEEDED(hr)) display_show_window();

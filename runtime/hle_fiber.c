@@ -184,7 +184,14 @@ void fiber_rb_load(const void *p, const u64 *live, u32 nlive, u32 *skipped) {
             fprintf(stderr, "[rb] load: fiber %u's saved host stack %#llx..%#llx is in use now: not copied back\n",
                     i, *(u64 *)(v->blk + 0x20), *(u64 *)(v->blk + 0x10));
         } else if (v->stack) {
+            /* (r23_1: the block's StackLimit (+0x18) is the lowest page the stack has committed, and it only goes down.
+             * The saved one put back was higher than what the fiber had committed since; the fiber went below it again
+             * with no guard page left to move it, and the next stack probe (__chkstk writes a 0 byte at every page
+             * from the limit down) wrote into its own return address: a return into the middle of an instruction.
+             * The limit of now is kept when it is the lower one.) */
+            u64 limit_now = *(const u64 *)((const u8 *)f->host + 0x18);
             memcpy(f->host, v->blk, RB_FIBER_BLOCK);
+            if (limit_now && limit_now < *(u64 *)((u8 *)f->host + 0x18)) *(u64 *)((u8 *)f->host + 0x18) = limit_now;
             memcpy((void *)(uintptr_t)v->rsp, v->stack, v->n);
         }
     }

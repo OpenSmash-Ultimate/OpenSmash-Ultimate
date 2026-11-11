@@ -54,7 +54,7 @@ namespace OpenSmash.Launcher
         readonly string _iniPath;
         readonly string _statePath;
         readonly string _pluginsPath;
-        readonly string _pythonExe;
+        string _pythonExe;
 
         readonly ResolutionSetting _resolutionSetting = new ResolutionSetting();
 
@@ -68,6 +68,7 @@ namespace OpenSmash.Launcher
         bool _modsBusy;
         bool _startingPlay;
         string _pluginBuildReason = "";
+        string _vanillaBuildReason = "";   // (os_mods status: needs_build_vanilla, the link Play without mods needs)
         readonly Dictionary<string, Image> _modThumbs = new();
         readonly HashSet<string> _openGroups = new();
         readonly HashSet<string> _knownGroups = new();
@@ -95,7 +96,7 @@ namespace OpenSmash.Launcher
         string _setupLog = "";
         string _setupMode = ""; // "scratch" or "import"
 
-        // Play (mods, ssbu_sky.exe) or Vanilla (ssbu_native.exe, plugins off). Remembered in build\launch_mode.txt.
+        // Play (mods) or Vanilla (the game's own data and no mods: mods.play_vanilla); both start build\ssbu.exe. Remembered in build\launch_mode.txt.
         string _launchMode = "mods";
         Task<bool> _prepInflight;   /* mod convert + hook install, shared by launcher startup and Play */
         bool _playQueued;
@@ -272,6 +273,7 @@ namespace OpenSmash.Launcher
             Shown += async (s, e) =>
             {
                 AskShadersIfNeeded();
+                _ = EnsureOwnPythonAsync();   // (not awaited: the launcher does not wait for pip, nor stop if it fails)
                 UpdateMods();
                 ScanForNewMods();
                 _ = CheckUpdatesAtBootAsync();
@@ -292,6 +294,7 @@ namespace OpenSmash.Launcher
                 new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "code", "server", "direct" } },
                 new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "pads" } },
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
+                new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
             };
 
             _settings = new[]
@@ -301,7 +304,7 @@ namespace OpenSmash.Launcher
                 new Setting { Key = "pacing", Label = "Frame pacing", Values = new[] { "clock", "vrr", "display" }, Labels = new[] { "Steady 60 (any monitor)", "G-Sync / FreeSync monitor", "Follow the monitor's refresh" } },
                 new Setting { Key = "render_scale", Label = "Render scale", Values = new[] { "1", "auto", "1.5", "2", "3" }, Labels = new[] { "1: 1920x1080 (the game's own)", "Auto: as big as the window", "1.5: 2880x1620", "2: 3840x2160 (4K)", "3: 5760x3240" } },
                 new Setting { Key = "gpu", Label = "Graphics card", Values = new[] { "auto", "warp" }, Labels = new[] { "The fastest (auto)", "WARP (Windows itself, no card: slow)" } },
-                new Setting { Key = "renderer", Label = "Renderer", Values = new[] { "d3d11", "vulkan" }, Labels = new[] { "Direct3D 11 (default)", "Vulkan (in development)" } },
+                new Setting { Key = "renderer", Label = "Renderer", Values = new[] { "auto", "direct3d11", "vulkan" }, Labels = new[] { "Auto: Vulkan on AMD cards, Direct3D 11 on others", "Direct3D 11", "Vulkan" } },
                 new Setting { Key = "hide_cursor", Label = "Hide the mouse pointer", Values = new[] { "1", "0" }, Labels = new[] { "When it stops moving", "Keep it shown" } },
                 new Setting { Key = "overlay", Label = "Frame rate", Values = new[] { "1", "0" }, Labels = new[] { "Show it in the corner", "Hidden" } },
                 new Setting { Key = "volume", Label = "Volume", Slider = true },
@@ -364,15 +367,16 @@ namespace OpenSmash.Launcher
         }
 
         // The renderer the game starts with, as runtime/renderer.h reads it: SSBU_RENDERER, else
-        // display.ini's renderer (vulkan or vk: Vulkan; anything else: the default, Direct3D 11).
-        bool VulkanSelected()
+        // display.ini's renderer (vulkan or vk: Vulkan; direct3d11, direct3d or dx11: Direct3D 11;
+        // anything else, d3d11 included: auto, Vulkan on an AMD card and Direct3D 11 on others).
+        string RendererAsked()
         {
             string v = Environment.GetEnvironmentVariable("SSBU_RENDERER") ?? "";
             if (v.Trim() == "") v = _settingsLoaded ? _iniValues.GetValueOrDefault("renderer", "") : _rendererIni;
-            return v.Trim().ToLowerInvariant() is "vulkan" or "vk";
+            return v.Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
         }
 
-        string RendererChip() => VulkanSelected() ? "VULKAN RENDERER" : "D3D11 RENDERER";
+        string RendererChip() => RendererAsked() switch { "vulkan" => "VULKAN RENDERER", "direct3d11" => "D3D11 RENDERER", _ => "AUTO RENDERER" };
 
         int _modsGen;
 
@@ -623,6 +627,54 @@ namespace OpenSmash.Launcher
             return text.Length <= 180 ? text : text.Substring(0, 177) + "\u2026";
         }
 
+        // The tools' own Python (deps\venv): an install from before it has none, one whose venv's Python was
+        // uninstalled has one that no longer runs, and one whose pip failed (offline) has no packages. The installer's
+        // Python step makes it or adds them (tools\install_windowsmash.ps1 -PythonOnly); a PC with deps\python (it had
+        // no Python) keeps that.
+        async Task EnsureOwnPythonAsync()
+        {
+            // (an install on a Python of the PC's keeps it until deps\venv has its packages: .opensmash-ready)
+            try
+            {
+                string ready = Path.Combine(_repo, "deps", "venv", ".opensmash-ready");
+                string bundled = Path.Combine(_repo, "deps", "python", "python.exe");
+                bool ok = await Task.Run(() => File.Exists(ready) || (File.Exists(bundled) && PythonHasPackages(bundled)));
+                if (!ok) await RunPythonStepAsync("SETTING UP PYTHON");
+            }
+            catch { }
+        }
+
+        async Task RunPythonStepAsync(string label)
+        {
+            string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
+            if (!File.Exists(script)) return;
+            SetLoad(label, -1);
+            try
+            {
+                var r = await Task.Run(() => RunPowerShellUpdate(script, "-PythonOnly"));
+                if (r.Code != 0) try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "os_update.log"), r.Output + "\n---\n"); } catch { }
+            }
+            catch { }
+            finally { ClearLoad(); }
+            _pythonExe = ModManagerProcess.FindPython(_repo, _buildDir);
+        }
+
+        // (pycryptodomex alone: pip installs requirements.txt all at once or not at all)
+        static bool PythonHasPackages(string exe)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo { FileName = exe, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                psi.ArgumentList.Add("-c"); psi.ArgumentList.Add("import Cryptodome");
+                using var p = Process.Start(psi);
+                if (p == null) return false;
+                _ = p.StandardOutput.ReadToEndAsync(); _ = p.StandardError.ReadToEndAsync();
+                if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } return false; }
+                return p.ExitCode == 0;
+            }
+            catch { return false; }
+        }
+
         async Task CheckUpdatesAtBootAsync()
         {
             await Task.Delay(1600);
@@ -809,6 +861,7 @@ namespace OpenSmash.Launcher
                 var result = await Task.Run(() => RunPowerShellUpdate(script));
                 output = result.Output;
                 if (result.Code != 0) why = "The updater stopped (exit " + result.Code + ").";
+                else await RunPythonStepAsync("UPDATING PYTHON PACKAGES");   // (an update can need a new package)
             }
             catch (Exception ex) { why = ex.Message; }
             finally
@@ -841,7 +894,7 @@ namespace OpenSmash.Launcher
             Invalidate();
         }
 
-        static (int Code, string Output) RunPowerShellUpdate(string script)
+        static (int Code, string Output) RunPowerShellUpdate(string script, string only = "-UpdateOnly")
         {
             string root = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(script)!, ".."));
             var psi = new ProcessStartInfo
@@ -860,7 +913,7 @@ namespace OpenSmash.Launcher
             psi.ArgumentList.Add("Bypass");
             psi.ArgumentList.Add("-File");
             psi.ArgumentList.Add(script);
-            psi.ArgumentList.Add("-UpdateOnly");
+            psi.ArgumentList.Add(only);
             using var p = Process.Start(psi) ?? throw new InvalidOperationException("Could not start PowerShell.");
             var stdout = p.StandardOutput.ReadToEndAsync();
             var stderr = p.StandardError.ReadToEndAsync();
@@ -877,6 +930,7 @@ namespace OpenSmash.Launcher
             bool parsed = false;
             bool modded = _modsModded;
             string reason = _pluginBuildReason;
+            string vanillaReason = _vanillaBuildReason;
             string refresh = _pluginRefreshReason;
             string json = "";
             try
@@ -888,6 +942,7 @@ namespace OpenSmash.Launcher
                     var root = doc.RootElement;
                     modded = root.TryGetProperty("modded", out var md) && md.ValueKind == JsonValueKind.True;
                     reason = root.TryGetProperty("needs_build", out var nb) ? nb.GetString() ?? "" : "";
+                    vanillaReason = root.TryGetProperty("needs_build_vanilla", out var nv) ? nv.GetString() ?? "" : reason;   // (older tools: needs_build)
                     refresh = root.TryGetProperty("needs_refresh", out var nr) ? nr.GetString() ?? "" : "";
                     if (root.TryGetProperty("plugins", out var plugins) && plugins.ValueKind == JsonValueKind.Array)
                     {
@@ -962,6 +1017,7 @@ namespace OpenSmash.Launcher
             if (!parsed) return;
             _modsModded = modded;
             _pluginBuildReason = reason;
+            _vanillaBuildReason = vanillaReason;
             _pluginRefreshReason = refresh;
             _stdPlugins = pluginsSeen;
             foreach (string old in _modThumbs.Keys.Where(k => !keep.Contains(k)).ToList())
@@ -1104,6 +1160,37 @@ namespace OpenSmash.Launcher
             return Math.Max(68, h + 16);
         }
 
+        // ---- Storage: where dump\ and build\ live (tools/data_location.py), and moving them to another drive ----
+        string _storageText = "";
+        bool _storageBusy;
+        async Task StorageStatusAsync()
+        {
+            if (_storageBusy) return;
+            _storageBusy = true; _storageText = "Looking…"; Invalidate();
+            string output = "";
+            int code = await Task.Run(() => RunPython(new[] { Path.Combine(_repo, "tools", "data_location.py") }, out output));
+            _storageText = code == 0 ? output.Trim() : "Could not read where the folders are:\n" + output.Trim();
+            _storageBusy = false; Invalidate();
+        }
+        async Task StorageMoveAsync()
+        {
+            if (_storageBusy) return;
+            string target;
+            using (var dlg = new FolderBrowserDialog { Description = "The folder on another drive for the game's files (dump) and the compiled game (build): tens of GB", UseDescriptionForTitle = true })
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK || string.IsNullOrEmpty(dlg.SelectedPath)) return;
+                target = dlg.SelectedPath;
+            }
+            if (MessageBox.Show(this, $"Move dump\\ and build\\ into {target}?\n\nClose the game first. A link is left in their place, so everything finds them where they were. This can take a while.",
+                                "OpenSmash", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+            _storageBusy = true; _storageText = "Moving the folders to " + target + "… (don't start the game)"; Invalidate();
+            string output = "";
+            int code = await Task.Run(() => RunPython(new[] { Path.Combine(_repo, "tools", "data_location.py"), "--move", target }, out output));
+            _storageBusy = false;
+            _storageText = (code == 0 ? "Moved.\n" : "The move stopped (what was moved was put back):\n") + output.Trim();
+            Invalidate();
+        }
+
         int OsMods(string[] args, Action<string> onLine = null)
         {
             var all = new List<string> { Path.Combine(_repo, "tools", "os_mods.py") };
@@ -1243,7 +1330,8 @@ namespace OpenSmash.Launcher
             _iniValues["pacing"] = D("pacing", "clock");
             _iniValues["render_scale"] = D("render_scale", "1");
             _iniValues["gpu"] = D("gpu", "auto");
-            _iniValues["renderer"] = D("renderer", "d3d11").Trim().ToLowerInvariant() is "vulkan" or "vk" ? "vulkan" : "d3d11";
+            // (runtime/renderer.h's names: d3d11, which older display.ini files carry, is auto)
+            _iniValues["renderer"] = D("renderer", "auto").Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
             _iniValues["hide_cursor"] = D("hide_cursor", "1");
             _iniValues["overlay"] = D("overlay", "1");
             _iniValues["volume"] = D("volume", "100");
@@ -1255,6 +1343,7 @@ namespace OpenSmash.Launcher
             _iniValues["code"] = words.Length > 1 ? words[1] : "";
             const string Public = "smash.recomps.wtf:39421";
             if (host == "" || host.Equals("off", StringComparison.OrdinalIgnoreCase)) _iniValues["lobby"] = "offline";
+            else if (host.Equals("auto", StringComparison.OrdinalIgnoreCase) || host.Equals("na", StringComparison.OrdinalIgnoreCase) || host.Equals("eu", StringComparison.OrdinalIgnoreCase)) _iniValues["lobby"] = "public";   // (auto: the nearest public lobby, the default)
             else if (host.Equals(Public, StringComparison.OrdinalIgnoreCase)) _iniValues["lobby"] = _iniValues["code"] == "" ? "public" : "private";
             else { _iniValues["lobby"] = "custom"; _iniValues["server"] = host; }
             if (!_iniValues.ContainsKey("server")) _iniValues["server"] = "";
@@ -1379,7 +1468,7 @@ namespace OpenSmash.Launcher
                 "offline" => "off",
                 "private" => Public + " " + code,
                 "custom" => (host == "" ? "127.0.0.1:39420" : host) + (code == "" ? "" : " " + code),
-                _ => Public
+                _ => "auto"   // (the nearest public lobby: Europe or North America, runtime/net_relay.c)
             };
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "window", _iniValues.GetValueOrDefault("window", "windowed"));
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "width", _iniValues.GetValueOrDefault("width", "1280"));
@@ -1387,7 +1476,7 @@ namespace OpenSmash.Launcher
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "pacing", _iniValues.GetValueOrDefault("pacing", "clock"));
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "render_scale", _iniValues.GetValueOrDefault("render_scale", "1"));
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "gpu", _iniValues.GetValueOrDefault("gpu", "auto"));
-            SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "renderer", _iniValues.GetValueOrDefault("renderer", "d3d11"));
+            SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "renderer", _iniValues.GetValueOrDefault("renderer", "auto"));
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "hide_cursor", _iniValues.GetValueOrDefault("hide_cursor", "1"));
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "overlay", _iniValues.GetValueOrDefault("overlay", "1"));
             SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "volume", _iniValues.GetValueOrDefault("volume", "100"));
@@ -1980,6 +2069,8 @@ namespace OpenSmash.Launcher
             }
             else if (id == "update_prompt:block") { }
             else if (id == "update:check") _ = CheckForUpdatesAsync(false);
+            else if (id == "storage:refresh") _ = StorageStatusAsync();
+            else if (id == "storage:move") _ = StorageMoveAsync();
             else if (id == "update:apply") _ = ApplyUpdateAsync();
             else if (id == "rebuild_prompt:cancel") { _rebuildPrompt = false; Invalidate(); }
             else if (id == "rebuild_prompt:refresh") { _rebuildPrompt = false; Invalidate(); _ = RefreshPlugins(); }
@@ -2849,9 +2940,15 @@ namespace OpenSmash.Launcher
             if (step.Success && int.TryParse(step.Groups[2].Value, out int pct))
             {
                 string detail = Regex.Replace(step.Groups[1].Value, @"[^A-Za-z0-9.)\]]+$", "").Trim();
-                _pluginDetail = detail.Length > 0 ? detail : text;
-                _pluginFrac = Math.Clamp(pct / 100f, 0f, 1f);
-                _pluginEta = step.Groups[3].Value.Trim().TrimStart(',', ' ');
+                // The percent is the whole build's (tools\skyline.py run_logged), across every program it runs;
+                // one that goes down (an older tools folder: a program's own bar starting over) is not shown.
+                float frac = Math.Clamp(pct / 100f, 0f, 1f);
+                if (frac >= _pluginFrac)
+                {
+                    _pluginDetail = detail.Length > 0 ? detail : text;
+                    _pluginFrac = frac;
+                    _pluginEta = step.Groups[3].Value.Trim().TrimStart(',', ' ');
+                }
             }
             else if (!text.Contains("recomp.py") && text.Length < 240)
                 _pluginDetail = text;
@@ -3025,14 +3122,19 @@ namespace OpenSmash.Launcher
 
         async Task<string> UnbuiltPluginChoice()
         {
-            if (_launchMode == "vanilla") return "play";
+            // Without mods it is the same program (build\ssbu.exe, the community plugins loaded): a link it needs
+            // (an update changed the runtime) is asked for as with mods. The mods' own plugins are not loaded then,
+            // so one waiting, to be refreshed or not linked in yet is not (needs_build_vanilla).
+            bool vanilla = _launchMode == "vanilla";
             await RefreshMods();
-            var waiting = _mods.Where(m => m.Enabled && m.Code == "waiting")
+            var waiting = vanilla ? new List<string>() : _mods.Where(m => m.Enabled && m.Code == "waiting")
                 .Select(m => string.IsNullOrEmpty(m.Title) ? m.Name : m.Title)
                 .Distinct()
                 .ToList();
-            bool full = !string.IsNullOrEmpty(_pluginBuildReason);
-            string why = full ? PluginUpdateWhy(waiting, _pluginBuildReason) : PluginRefreshWhy(waiting, _pluginRefreshReason);
+            string reason = vanilla ? _vanillaBuildReason : _pluginBuildReason;
+            bool full = !string.IsNullOrEmpty(reason);
+            if (vanilla && !full) return "play";
+            string why = full ? PluginUpdateWhy(waiting, reason) : PluginRefreshWhy(waiting, _pluginRefreshReason);
             if (why.Length == 0) return "play";
             _pluginPromptKind = full ? "update" : "refresh";
             _pluginPromptText = why;
@@ -3101,15 +3203,9 @@ namespace OpenSmash.Launcher
         {
             string marker = Path.Combine(_repo, "dump", "shadercache", "complete.txt");
             if (!File.Exists(marker)) return false;
-            string header = File.ReadAllText(Path.Combine(_repo, "runtime", "gpu_shader_cache.h"));
-            var ver = Regex.Match(header, @"#define SHADER_CACHE_VERSION (\d+)");
+            var ver = Regex.Match(File.ReadAllText(Path.Combine(_repo, "runtime", "gpu_shader_cache.h")), @"#define SHADER_CACHE_VERSION (\d+)");
             if (!ver.Success) return false;
-            string text = File.ReadAllText(marker);
-            if (!text.Contains("version " + ver.Groups[1].Value)) return false;
-            // A prepare generation that grew the cache's keys (SHADER_CACHE_PREPARE) needs another
-            // pass too: its files are valid, but the new ones are not there yet.
-            var prep = Regex.Match(header, @"#define SHADER_CACHE_PREPARE (\d+)");
-            return !prep.Success || Regex.IsMatch(text, @"(?m)^prepare " + prep.Groups[1].Value + @"\r?$");
+            return File.ReadAllText(marker).Contains("version " + ver.Groups[1].Value);
         }
 
         void StartShaders(string priority)

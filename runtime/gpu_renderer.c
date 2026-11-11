@@ -28,10 +28,18 @@ void gfx_renderer_chosen(int renderer, const char *why) {
     drawing = renderer;
     tried = 1;
     snprintf(failed, sizeof failed, "%s", why ? why : "");
-    if (renderer == RENDERER_VULKAN) fprintf(stderr, "[gfx] renderer = vulkan: the Vulkan back end draws (in development: docs/TECHNICAL.md, \"A second back end: Vulkan\")\n");
+    if (renderer == RENDERER_VULKAN)
+        fprintf(stderr, "[gfx] renderer = %s: the Vulkan back end draws (docs/TECHNICAL.md, \"A second back end: Vulkan\")\n",
+                display_renderer() == RENDERER_VULKAN ? "vulkan" : "auto (an AMD or NVIDIA card)");
 }
 
 int gfx_renderer_start(void *window) {
+#ifdef _WIN32
+    if (display_renderer() == RENDERER_DEFAULT && tried) {   /* (auto: gpu_backend.c's choice tried Vulkan) */
+        fprintf(stderr, "[gfx] renderer = auto: %s. " DEFAULT_WORDS " draws\n", failed);
+        return drawing = RENDERER_DEFAULT;
+    }
+#endif
     if (display_renderer() != RENDERER_VULKAN) return drawing = RENDERER_DEFAULT;
     if (tried) {   /* (the Vulkan back end could not start: Direct3D 11 is starting instead) */
         fprintf(stderr, "[gfx] renderer = vulkan: the Vulkan back end cannot start here: %s. " DEFAULT_WORDS " draws\n", failed);

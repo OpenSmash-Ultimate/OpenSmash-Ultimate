@@ -80,6 +80,7 @@
 #pragma comment(lib, "iphlpapi.lib")   /* (GetBestRoute: the gateway, for PCP and NAT-PMP) */
 #else
 #include <sys/select.h>
+#include <fcntl.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -212,10 +213,78 @@ static u64 process_age_ms(void) { return rt_now_ns() / 1000000; }
  * the files the settings menu and the launcher write, where no SSBU_NET_* variable says them.
  * online_server.txt: "host:port [lobby code]" or "off"; online_name.txt: the name (one is picked
  * and kept there when it is missing); online_direct.txt: "off" for no direct connections. */
+/* online_server.txt "auto": the public lobby this PC reaches fastest (a TCP connect to each, timed; their game
+ * servers answer TCP on the same port). Lobbies are separate until federation (TODO): players on different ones
+ * don't see each other. "auto" is the default (owner 2026-11-10: a player in Italy on the North American lobby saw
+ * 124-217 ms where the European one answers in 21), and the North American lobby's line without a code, the old
+ * default every install wrote, means "auto" too; "na"/"eu" (or the full address with a code) pin one. */
+static const struct { const char *where, *host; } PUBLIC_LOBBIES[] = {
+    {"North America", "smash.recomps.wtf:39421"},
+    {"Europe", "opensmash-lobby.duckdns.org:39421"},
+};
+static double connect_ms(const char *hostport) {
+    char host[256], *colon;
+    snprintf(host, sizeof host, "%s", hostport);
+    if (!(colon = strrchr(host, ':'))) return -1;
+    *colon = 0;
+    struct addrinfo hints = {0}, *res = NULL;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, colon + 1, &hints, &res) || !res) return -1;
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    double ms = -1;
+    if (s != INVALID_SOCKET) {
+#ifdef _WIN32
+        u_long nb = 1;
+        ioctlsocket(s, FIONBIO, &nb);
+#else
+        fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
+#endif
+        LARGE_INTEGER f, t0, t1;
+        QueryPerformanceFrequency(&f);
+        QueryPerformanceCounter(&t0);
+        connect(s, res->ai_addr, (int)res->ai_addrlen);
+        fd_set w, e;
+        FD_ZERO(&w); FD_ZERO(&e); FD_SET(s, &w); FD_SET(s, &e);
+        struct timeval tv = {1, 500000};
+        int err = 0;
+        socklen_t el = sizeof err;   /* (a refused connect is writable too on Linux/macOS: its error says) */
+        if (select((int)s + 1, NULL, &w, &e, &tv) >= 1 && FD_ISSET(s, &w) && !FD_ISSET(s, &e)
+            && !getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&err, &el) && !err) {
+            QueryPerformanceCounter(&t1);
+            ms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
+        }
+        closesocket(s);
+    }
+    freeaddrinfo(res);
+    return ms;
+}
+static void nearest_lobby(char *out, size_t n) {
+#ifdef _WIN32
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
+    double best = -1;
+    char said[512] = "";
+    size_t l = 0;
+    for (size_t i = 0; i < sizeof PUBLIC_LOBBIES / sizeof *PUBLIC_LOBBIES; i++) {
+        double ms = connect_ms(PUBLIC_LOBBIES[i].host);
+        int w = ms >= 0 ? snprintf(said + l, sizeof said - l, "%s%s %.0f ms", l ? ", " : "", PUBLIC_LOBBIES[i].where, ms)
+                        : snprintf(said + l, sizeof said - l, "%s%s no answer", l ? ", " : "", PUBLIC_LOBBIES[i].where);
+        if (w > 0 && (size_t)w < sizeof said - l) l += (size_t)w;
+        if (ms >= 0 && (best < 0 || ms < best)) { best = ms; snprintf(out, n, "%s", PUBLIC_LOBBIES[i].host); }
+    }
+    if (best < 0) snprintf(out, n, "%s", PUBLIC_LOBBIES[0].host);
+    fprintf(stderr, "[net] the nearest public lobby: %s (%s)\n", out, said);
+}
+
 static void configure_from_files(void) {
     char line[256], host[256] = "", code[NAME_LEN + 1] = "";
     if (settings_line_read(config_path(CONFIG_ONLINE_SERVER), line, sizeof line)) sscanf(line, "%255s %32s", host, code);
     if (!host[0] || !_stricmp(host, "off")) return;
+    if (!_stricmp(host, "auto") || (!code[0] && !_stricmp(host, PUBLIC_LOBBIES[0].host))) nearest_lobby(host, sizeof host);
+    else if (!_stricmp(host, "na")) snprintf(host, sizeof host, "%s", PUBLIC_LOBBIES[0].host);
+    else if (!_stricmp(host, "eu")) snprintf(host, sizeof host, "%s", PUBLIC_LOBBIES[1].host);
     snprintf(relay_text, sizeof relay_text, "%s", host);
     if (code[0] && !getenv("SSBU_NET_ROOM")) { snprintf(room, sizeof room, "%s", code); room_named = 1; }
     if (!getenv("SSBU_NET_NAME")) {
@@ -235,9 +304,14 @@ int net_rollback_default(void) {
     char line[256], host[256] = "";
     const char *h = getenv("SSBU_NET_HOST"), *r = getenv("SSBU_NET_RELAY");
     v = 0;
-    /* (off unless asked for: online_rollback.txt "on", the settings menu's Online > Rollback netcode. The game's
-     * own netcode is the default until rollback passes two-PC tests; alpha.3's players found it unplayable) */
-    if (!(settings_line_read(config_path(CONFIG_ONLINE_ROLLBACK), line, sizeof line) && !_strnicmp(line, "on", 2))) return v;
+    /* This can run before backend registration (the rollback constructor). */
+    const char *backend = getenv("SSBU_NET_BACKEND");
+    if (backend && !_stricmp(backend, "yuzu")) return v;
+    /* (alpha.3's players found rollback unplayable and #201 made the game's own netcode the default) */
+    /* (on again by default since 2026-11-11: catch-ups fit in a frame - over 16.7 ms in under 1 % at 40 ms one way, about
+     * 3-4 % at 120-150 ms, input delay from the measured trip up to 9 frames, 0 desyncs in pair runs (#254-#277); online_rollback.txt
+     * "off" or the settings menu gives the game's own netcode) */
+    if (settings_line_read(config_path(CONFIG_ONLINE_ROLLBACK), line, sizeof line) && !_strnicmp(line, "off", 3)) return v;
     /* (a private room started by Host/Join SSBU Netplay.bat: SSBU_NET_HOST or SSBU_NET_RELAY, no --online) */
     if (h && *h && strcmp(h, "0")) return v = 1;
     if (r && *r) return v = _stricmp(r, "off") != 0;
@@ -256,8 +330,16 @@ static int protocol_from_file(int otherwise) {
     return v == NET_PROTOCOL || v == NET_PROTOCOL_V3 ? v : otherwise;
 }
 
+const NetBackend *net_backend_candidate, *net_backend;
+NetLdnSink net_backend_ldn_sink;
+
 static void configure(void) {
     if (configured >= 0) return;
+    if (net_backend_candidate && net_backend_candidate->selected()) {
+        net_backend=net_backend_candidate; configured=1;
+        const char *log=getenv("SSBU_NET_LOG"); if(log) logging=atoi(log);
+        return;
+    }
     const char *h = getenv("SSBU_NET_HOST"), *r = getenv("SSBU_NET_RELAY"), *v;
     hosting = h && *h && strcmp(h, "0");
     if ((v = getenv("SSBU_NET_PORT")) && atoi(v) > 0 && atoi(v) < 65536) port = (u16)atoi(v);
@@ -295,7 +377,7 @@ static void configure(void) {
 static void start(void);
 int net_configured(void) { start(); return configured; }
 int net_log(void) { configure(); return logging; }
-const char *net_player_name(void) { configure(); return name; }
+const char *net_player_name(void) { configure(); return net_backend ? net_backend->name() : name; }
 const char *net_relay_address(void) { configure(); return !hosting && !lan_mode && relay_text[0] ? relay_text : NULL; }
 
 /* ---- the relay (host mode) ------------------------------------------------------------ */
@@ -739,10 +821,10 @@ static u32 member_ips[ROOM_MEMBERS];      /* (a private room's: its MEMBERS, thi
 static int member_count;
 static SRWLOCK members_lock = SRWLOCK_INIT;
 
-u32 net_local_ip(void) { start(); return joined ? my_ip : 0; }
-int net_protocol_wanted(void) { configure(); return proto_wanted; }
+u32 net_local_ip(void) { start(); return net_backend ? net_backend->ip() : joined ? my_ip : 0; }
+int net_protocol_wanted(void) { configure(); return net_backend ? 0 : proto_wanted; }
 int net_protocol_spoken(void) { start(); return joined ? (int)proto : 0; }
-int net_unreachable(void) { start(); return configured && !joined && now_ms() - unjoined_since > UNREACHABLE_MS; }
+int net_unreachable(void) { start(); return net_backend ? net_backend->unreachable() : configured && !joined && now_ms() - unjoined_since > UNREACHABLE_MS; }
 int net_lobby(void) { start(); return joined && lobby; }
 
 /* ---- rollback messages (net.h's NET_RB_PORT; SSBU_RB_NET=relay, hle_rb_relay.c) --------------
@@ -1211,6 +1293,7 @@ static void local_address(void) {   /* this player's own address and port, for p
 /* To one player (straight there while a direct path works, else through the lobby), or to the
  * room: straight to each player reached directly, through the lobby to the rest. */
 void net_send(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const void *data, u32 len) {
+    if (net_backend) { net_backend->send(src_ip,src_port,dst_ip,dst_port,data,len); return; }
     if (!joined || client_sock == INVALID_SOCKET || len > 65000) return;
     enum { ROOM = 4 + 1 + 4 * PEERS_MAX };   /* (before the DATA body: room for the longest header, BCAST's) */
     u8 stack[1600], *buf = ROOM + 12 + len <= sizeof stack ? stack : malloc(ROOM + 12 + len);
@@ -2680,6 +2763,7 @@ static void start(void) {
     InitOnceBeginInitialize(&once, 0, &pending, NULL);
     if (!pending) return;
     configure();
+    if (net_backend) { net_backend->start(); InitOnceComplete(&once,0,NULL); return; }
     if (configured) {
 #ifdef _WIN32
         WSADATA wsa;
@@ -2752,6 +2836,7 @@ int net_peer_quality(NetPeerQ *out, int max) {
 
 void net_status(char *out, size_t n) {
     start();
+    if (net_backend) { net_backend->status(out,n); return; }
     if (!configured) { if (n) out[0] = 0; return; }
     if (reject_text[0] && !joined) { snprintf(out, n, "Netplay: %s%s%s", reject_text, reject_detail[0] ? "\n" : "", reject_detail); return; }
     if (lan_mode && !joined && lan_state != NET_LAN_FOUND) { snprintf(out, n, "Netplay: looking for a room on this network..."); return; }

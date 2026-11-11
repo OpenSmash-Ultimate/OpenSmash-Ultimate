@@ -79,7 +79,6 @@ void gfx_status_lines(void);
 #if defined(_WIN32) || defined(__linux__)
 int gfx_warm_shaders_main(const char *dir, const char *arg);   /* (gpu_d3d11.c: ssbu --warm-shaders) */
 #endif
-void d3d11_warm_before_play(void);                             /* (gpu_d3d11.c: Windows AMD's cold cache, before the game; SSBU_SHADER_WARM_PREPLAY=1) */
 const char *rt_data_dir;
 /* This thread is reading another thread's stack (debug_profile.c): a fault there is expected and
  * handled where it happens, not a crash. */
@@ -365,6 +364,9 @@ void rt_backtrace_thread(HANDLE thread, int max_frames) {
  * the graphics driver's threads, whose stacks are 64 KB, there is no room to keep for one). */
 static struct { HANDLE go; EXCEPTION_POINTERS *e; DWORD tid; } fault;
 
+int kernel_fault_report(void (*line)(const char *), u64 g);    /* (kernel.c) */
+void kernel_thread_states(void (*line)(const char *text));     /* (kernel.c) */
+int profile_dump_threads(void (*line)(const char *text));      /* (debug_profile.c) */
 static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
     DWORD code = e->ExceptionRecord->ExceptionCode;
     char name[96], report[MAX_PATH];
@@ -372,9 +374,16 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
     report_open("crash", report, sizeof report);
     out("\n*** host exception %#lx%s during %s", code, code == EXCEPTION_STACK_OVERFLOW ? " (stack overflow)" : "", phase);
     if (code == EXCEPTION_ACCESS_VIOLATION)
-        out(": %s address %s", e->ExceptionRecord->ExceptionInformation[0] ? "writing" : "reading",
+        out(": %s address %s", e->ExceptionRecord->ExceptionInformation[0] == 8 ? "executing" : e->ExceptionRecord->ExceptionInformation[0] ? "writing" : "reading",
             rt_describe(e->ExceptionRecord->ExceptionInformation[1], name, sizeof name));
     out("\n");
+    /* (an address in guest memory that is not mapped: what the kernel's map says, and its recent changes there - the
+     * r9n_1 crash, an alias address read on the character select screen while not committed) */
+    u64 fault_addr = code == EXCEPTION_ACCESS_VIOLATION ? (u64)e->ExceptionRecord->ExceptionInformation[1] : 0;
+    if (fault_addr) {
+        out("memory at the address:\n");
+        if (!kernel_fault_report(out_line, H2G((void *)(uintptr_t)fault_addr))) out("  not a guest address\n");
+    }
     /* where on the host: the faulting instruction's module and offset (symbolize with tools/dev/hostsym.py) */
     HMODULE mod = NULL;
     char modname[MAX_PATH] = "?";
@@ -388,6 +397,17 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
         pc - (u64)mod, tid, desc && desc[0] ? ", " : "", desc && desc[0] ? desc : L"");
     if (desc) LocalFree(desc);
     if (thread) CloseHandle(thread);
+    {   /* (r22_1: the registers, and the stack's words either side of the stack pointer: a return through a wrong stack pointer shows there) */
+        const CONTEXT *x = e->ContextRecord;
+        out("  rax %#llx rcx %#llx rdx %#llx rbx %#llx rsp %#llx rbp %#llx rsi %#llx rdi %#llx\n  r8 %#llx r9 %#llx r10 %#llx r11 %#llx r12 %#llx r13 %#llx r14 %#llx r15 %#llx\n",
+            x->Rax, x->Rcx, x->Rdx, x->Rbx, x->Rsp, x->Rbp, x->Rsi, x->Rdi, x->R8, x->R9, x->R10, x->R11, x->R12, x->R13, x->R14, x->R15);
+        MEMORY_BASIC_INFORMATION mi;
+        u64 lo = x->Rsp - 0xC0, hi = x->Rsp + 0x80;
+        if (VirtualQuery((void *)(uintptr_t)lo, &mi, sizeof mi) && mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_GUARD | PAGE_NOACCESS))
+            && (u64)(uintptr_t)mi.BaseAddress + mi.RegionSize >= hi)
+            for (u64 a = lo; a < hi; a += 32)
+                out("  stack %+5lld: %#llx %#llx %#llx %#llx\n", (long long)(a - x->Rsp), *(u64 *)(uintptr_t)a, *(u64 *)(uintptr_t)(a + 8), *(u64 *)(uintptr_t)(a + 16), *(u64 *)(uintptr_t)(a + 24));
+    }
     {   /* and the host frames above it */
         CONTEXT ctx = *e->ContextRecord;
         for (int i = 0; i < 24; i++) {
@@ -408,6 +428,12 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
     gfx_report_compiles(out_line);   /* (a fault in the driver's shader compiler names the program) */
     void *frames[62];
     print_frames(frames, unwind(*e->ContextRecord, frames, 62), 1);   /* from the faulting frame */
+    if (fault_addr) {   /* (the other threads too: who else was at work on that memory) */
+        out("\nGuest threads:\n");
+        kernel_thread_states(out_line);
+        out("\nEvery other thread's stack (innermost first):\n");
+        profile_dump_threads(out_line);
+    }
     char dump[MAX_PATH];
     snprintf(dump, sizeof dump, "%.*s.dmp", (int)strlen(report) - 4, report);
     int dumped = report_file != INVALID_HANDLE_VALUE && rt_write_dump(dump, tid, e, 100000);
@@ -895,7 +921,10 @@ static void map_module(u32 m, const char *dir) {
     else for (u32 b = 0; b < 3; b++)
         if (!strcmp(mod->name, BOOT[b].name) && BOOT[b].ro == text) { ro = BOOT[b].ro; data = BOOT[b].data; }
     if (ro != text || data < ro || data > size) ro = data = text;
-    rb_mem_note(mod->base, size);   /* (SSBU_RB: the savestate sees the new pages; nothing otherwise) */
+    /* (SSBU_RB: the savestate sees the new pages; nothing otherwise. The data only: code and read-only data are not in
+     * the memory a savestate holds (kernel_rb_regions), and noted here they entered its layout all the same - 713 pages
+     * of lua2cpp_samus and lua2cpp_fox, loaded after the copy at the set-up, that the next whole walk dropped.) */
+    rb_mem_note(mod->base + data, size - data);
     kernel_add_region(mod->base, text, 3, 5);                        /* code */
     kernel_add_region(mod->base + ro, data - ro, 3, 1);              /* read-only data */
     kernel_add_region(mod->base + data, size - data, 4, 3);          /* data */
@@ -1560,9 +1589,16 @@ static int game_version_ok(void) {
     return 0;
 }
 
-/* SSBU_CRASH_TEST=<seconds>: a deliberate fault then (to try the crash report and minidump). */
+/* SSBU_CRASH_TEST=<seconds>[,<guest address, hex>]: a deliberate fault then (to try the crash report and minidump):
+ * a write to address 0, or a read of that guest address (an unmapped one: the report's memory section). */
 static DWORD WINAPI crash_test(void *seconds) {
     Sleep((DWORD)(uintptr_t)seconds * 1000);
+    const char *e = getenv("SSBU_CRASH_TEST"), *comma = e ? strchr(e, ',') : NULL;
+    if (comma) {
+        u64 g = strtoull(comma + 1, NULL, 16);
+        fprintf(stderr, "[test] SSBU_CRASH_TEST: reading guest address %#llx\n", g);
+        (void)*(volatile u32 *)G2H(g);
+    }
     fprintf(stderr, "[test] SSBU_CRASH_TEST: writing to address 0\n");
     *(volatile int *)0 = 0;
     return 0;
@@ -1572,6 +1608,7 @@ int main(int argc, char **argv) {
     const char *dir = argc >= 2 ? argv[1] : NULL;
     int options = 2;   /* (where the options after it start) */
 #ifdef _WIN32
+    if (argc == 2 && !strcmp(argv[1], "--yuzu-client-check")) { puts("yuzu-room-client protocol=1"); return 0; }
     if (argc >= 6 && !strcmp(argv[1], "--write-dump")) return write_dump_main(argv);
     if (argc >= 3 && !strcmp(argv[1], "--warm-shaders")) return gfx_warm_shaders_main(argv[2], argc >= 4 ? argv[3] : "");
 #elif defined(__linux__)
@@ -1650,9 +1687,6 @@ int main(int argc, char **argv) {
 #endif
     if (getenv("SSBU_CRASH_TEST")) CloseHandle(CreateThread(NULL, 0, crash_test, (void *)(uintptr_t)atoi(getenv("SSBU_CRASH_TEST")), 0, NULL));
     rt_data_dir = dir;
-#ifdef _WIN32
-    d3d11_warm_before_play();   /* (AMD: a cold driver cache is drawn once before the game loads, when opted in) */
-#endif
     void mods_start(const char *data_dir);   /* (hle_mod_switch.c: a pending apply of the mods, the code patches' switch) */
     mods_start(dir);
     kernel_init();

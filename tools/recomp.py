@@ -1362,6 +1362,20 @@ def compile_dir(outdir, jobs, shown=None, steps=None):
     return not failures
 
 
+def main_kind_room(dirs):
+    """tools/fighter_kinds.py room of the main build folder among `dirs` (its plugin_patches.txt: the code patches
+    it was lifted with); -1 when there is none or it does not say (a folder from before the file)."""
+    import fighter_kinds
+    for d in dirs:
+        path = os.path.join(d, "plugin_patches.txt")
+        if os.path.basename(os.path.normpath(d)) != "main" or not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8") as f:
+            rows = [tuple(int(x, 16) for x in p) for p in (line.split() for line in f) if len(p) == 3]
+        return fighter_kinds.room(rows)
+    return -1
+
+
 def link(dirs, exe, rt_dir=None, steps=None):
     """Compile the host runtime and link it with the given module build directories. The
     runtime's objects go to rt_dir (default: rt beside the exe). steps: the build's ladder.Ladder
@@ -1422,6 +1436,11 @@ def link(dirs, exe, rt_dir=None, steps=None):
                      + "".join(f"&rt_module_{n}, " for n in nros) + "0};\n"
                      + f"const u32 rt_nro_count = {len(nros)};\n")
     want(nro_table, nro_table[:-2] + ".obj", "/O1")
+    # The fighter kinds main's code has room for (tools/fighter_kinds.py room: its build folder's plugin_patches.txt,
+    # the patches it was lifted with), for the fighter registry (runtime/hle_fighter_registry.c rt_main_kind_room)
+    kind_room = os.path.join(rt_dir, "kind_room.c")
+    write_if_changed(kind_room, f"const int rt_main_kind_room = {main_kind_room(dirs):#x};\n")
+    want(kind_room, kind_room[:-2] + ".obj", "/O1", rt_flags)
     funcs, tables = os.path.join(rt_dir, game_dll.FUNCS), os.path.join(rt_dir, game_dll.TABLES)
     if GAME_DLL:   # (the program's side of the interface, and the library's, compiled as the game is)
         write_if_changed(funcs, game_dll.funcs_text(cc.RUNTIME))
@@ -1448,7 +1467,7 @@ def link(dirs, exe, rt_dir=None, steps=None):
         print(f"FAILED {os.path.basename(src)}:\n{err[:4000]}")
     if failures:
         return False
-    objs = [os.path.join(rt_dir, n[:-2] + ".obj") for n in sources] + [check, table[:-2] + ".obj"]
+    objs = [os.path.join(rt_dir, n[:-2] + ".obj") for n in sources] + [check, table[:-2] + ".obj", kind_room[:-2] + ".obj"]
     if os.path.isfile(decode_src):
         objs.append(decode_obj)
     objs.append(nro_table[:-2] + ".obj")   # (last: a --game-dll build moves it into the library)
@@ -1477,6 +1496,11 @@ def link(dirs, exe, rt_dir=None, steps=None):
         if not os.path.exists(dll) or os.path.getsize(dll) != os.path.getsize(cc.SDL3_DLL) or \
                 os.path.getmtime(dll) < os.path.getmtime(cc.SDL3_DLL):
             shutil.copy2(cc.SDL3_DLL, dll)
+    # the Vulkan back end's shader translator, ssbu_glslang.dll, when deps/glslang is there (tools/glslang_lib.py)
+    if sys.platform == "win32":
+        import glslang_lib
+        if glslang_lib.have():
+            glslang_lib.build(os.path.join(os.path.dirname(os.path.abspath(exe)), glslang_lib.DLL_NAME))
     print(f"linked {len(objs)} objects into {exe} ({os.path.getsize(exe) / 1048576:,.0f} MB) in {time.time() - t0:,.0f}s")
     if GAME_DLL:
         print(f"linked {len(library)} objects into {game_lib} ({os.path.getsize(game_lib) / 1048576:,.0f} MB)")

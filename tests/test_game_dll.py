@@ -248,7 +248,7 @@ class WindowsLink(made_up.Folder):
         ok, runs = self.link(True)
         self.assertTrue(ok, self.said)
         self.assertEqual(runs, ['cpu_check.c /O2', 'game_funcs.c /O1', 'game_tables.c /O1', 'hle_a.c /O2', 'hle_b.c /O2',
-                                'hle_table.c /O1', 'host.c /O2', 'kernel.c /O2', 'nro_table.c /O1'])
+                                'hle_table.c /O1', 'host.c /O2', 'kernel.c /O2', 'kind_room.c /O1', 'nro_table.c /O1'])
         for name in ('host', 'kernel', 'hle_a', 'hle_table', 'game_funcs'):   # (the runtime, compiled to load the library)
             self.assertIn('/DSSBU_GAME_DLL', (self.rt / f'{name}.obj').read_text(), name)
             self.assertIn('/DSSBU_HAVE_SDL3', (self.rt / f'{name}.obj').read_text(), name)
@@ -260,7 +260,7 @@ class WindowsLink(made_up.Folder):
         self.assertEqual((self.rt / game_dll.FUNCS).read_text(), game_dll.funcs_text(str(self.runtime)))
         [(objs, options)] = self.linked
         self.assertEqual(sorted(objs), sorted(self.obj(n) for n in ('host.obj', 'kernel.obj', 'hle_a.obj', 'hle_b.obj',
-                                                                      'cpu_check.obj', 'hle_table.obj', 'game_funcs.obj')))
+                                                                      'cpu_check.obj', 'hle_table.obj', 'kind_room.obj', 'game_funcs.obj')))
         self.assertEqual(options, [])   # (no stub originals: game_funcs.c has them)
         self.assertEqual(self.libraries, [([self.obj('game_tables.obj'), self.obj('nro_table.obj'),
                                             str(self.module / 'g0000.obj'), str(self.module / 'g_module.obj')], str(self.dll))])
@@ -276,8 +276,8 @@ class WindowsLink(made_up.Folder):
         self.assertTrue(self.dll.exists())
         ok, runs = self.link(False)
         self.assertTrue(ok, self.said)
-        self.assertEqual(runs, ['hle_a.c /O2', 'hle_b.c /O2', 'hle_table.c /O1', 'host.c /O2', 'kernel.c /O2'])
-        self.assertIn('runtime: 5 objects to compile again: the compile command changed', self.said)
+        self.assertEqual(runs, ['hle_a.c /O2', 'hle_b.c /O2', 'hle_table.c /O1', 'host.c /O2', 'kernel.c /O2', 'kind_room.c /O1'])
+        self.assertIn('runtime: 6 objects to compile again: the compile command changed', self.said)
         self.assertEqual(self.linked, default)
         [(objs, options)] = self.linked
         self.assertEqual(objs[-3:], [self.obj('nro_table.obj'), str(self.module / 'g0000.obj'), str(self.module / 'g_module.obj')])
@@ -289,7 +289,7 @@ class WindowsLink(made_up.Folder):
         self.assertNotIn('/DSSBU_GAME_DLL', (self.rt / 'host.obj').read_text())
         ok, runs = self.link(True)
         self.assertEqual(runs, ['game_funcs.c /O1', 'game_tables.c /O1', 'hle_a.c /O2', 'hle_b.c /O2', 'hle_table.c /O1',
-                                'host.c /O2', 'kernel.c /O2'])   # (its own two kept from before)
+                                'host.c /O2', 'kernel.c /O2', 'kind_room.c /O1'])   # (its own two kept from before)
 
     def test_the_librarys_link(self):
         """cc.link_library: the objects in a response file beside the DLL, linked as the program is but with none of its

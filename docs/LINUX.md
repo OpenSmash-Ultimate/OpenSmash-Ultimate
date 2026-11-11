@@ -158,26 +158,10 @@ The game's graphics programs (*shaders*) are made the first time each one is nee
 a new effect can show a moment late once. To make them all in advance, run
 `bash launchers/prepare-shaders.sh` from a terminal (on a Steam Deck: in Desktop Mode). It shows a
 progress bar with the time left, runs at low priority, and keeps the PC awake meanwhile. A first run
-makes about 111,000 shaders (18,466 vertex and 92,792 pixel variants): about half an hour on
-a 16-thread desktop, and one to three hours on a Steam Deck. You can stop it with Ctrl+C and start it again later; what is done stays done. It
+makes about 65,000 shaders: half an hour on a 16-thread desktop, and probably an hour or two on
+a Steam Deck. You can stop it with Ctrl+C and start it again later; what is done stays done. It
 needs the game built first, and the game files where they were. It prepares the first step, the
 shader programs themselves.
-
-A pixel program is kept under the interface it actually shares with the draw's vertex program
-(the attributes it reads that the vertex program writes), not all of that vertex program's
-outputs. One compiled variant then serves every vertex program that writes at least those
-attributes, including the pairs that come from different effect files. Both stages also declare
-every attribute through the last one in that interface, gaps included: Direct3D and DXVK link
-the stages by register, so `ATTRn` has to be register `2 + n` on both sides. A packed declaration
-would put the same attribute at different registers when a program skips one.
-
-That changes the generated code of every shader, not just the new pixel variants, so this tree's
-shader cache version is 11: the first Prepare Shaders after the update compiles the whole cache
-once (see the counts and times above) instead of reusing the files from version 10. The launcher
-asks for that pass. The old `dump/shadercache/v10_*.dxbc` files are ignored; delete them to
-reclaim their space (the 65,000-file version-10 cache measured here was about 2.7 GB). The cleanup
-after a pass deletes only this version's unplayed ahead-of-time files that the pass no longer asks
-for; the game's used files, the renderer's own files and other versions stay.
 
 When the compile finishes, it also draws the cache once through DXVK
 (`build-linux/ssbu --warm-shaders dump/shadercache`), so DXVK makes each Vulkan pipeline and the
@@ -202,8 +186,8 @@ itself. `--rewarm` (or `SSBU_SHADER_WARM_ALL=1`) forces that, as does deleting `
 example after clearing `~/.cache/dxvk` and `~/.cache/mesa_shader_cache`).
 
 Expect the first full pass to take a while and the caches to grow: the roughly 1,300 shaders the
-game has played already use about 0.5 GB of DXVK/Mesa cache, and a 111,000-shader cache can add
-several gigabytes (about 4 GB of DXBC itself, plus DXVK's and Mesa's caches), so check free disk
+game has played already use about 0.5 GB of DXVK/Mesa cache, and a 65,000-shader cache can add
+several gigabytes (about 2.7 GB of DXBC itself, plus DXVK's and Mesa's caches), so check free disk
 space. The pass draws each program in one default state (a 1x1
 R8G8B8A8 target, no depth or blend), which covers DXVK's DXBC-to-SPIR-V translation and the
 driver's code for that state; a different pipeline state, or a program whose synthetic partner

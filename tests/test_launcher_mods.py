@@ -59,6 +59,9 @@ class LauncherMods(unittest.TestCase):
   <ItemGroup><Compile Include="{source}" Link="ModManagerProcess.cs" /></ItemGroup>
 </Project>""", encoding="utf-8")
         (folder / "Program.cs").write_text("""using OpenSmash.Launcher;
+// (UTF-8 out, as the test reads it: a redirected console otherwise writes the OEM code page, and a
+// path with a character outside it comes back as "?" on such a PC, e.g. cp850 on an Italian Windows)
+Console.OutputEncoding = new System.Text.UTF8Encoding(false);
 if (args[0] == "python")
     Console.Write(ModManagerProcess.FindPython(args[1], args[2]));
 else
@@ -122,6 +125,20 @@ else
         self.configure(str(configured))
         self.touch(".venv/Scripts/python.exe")
         self.assertEqual(self.selected(), str(bundled))
+
+    def test_venv_without_its_packages_is_skipped(self):
+        # (no .opensmash-ready: pip did not finish, so the Python the install had before stays)
+        self.touch("deps/venv/Scripts/python.exe")
+        bundled = self.touch("deps/python/python.exe")
+        self.assertEqual(self.selected(), str(bundled))
+
+    def test_installers_venv_comes_first(self):
+        venv = self.touch("deps/venv/Scripts/python.exe")
+        self.touch("deps/venv/.opensmash-ready")
+        self.touch("deps/python/python.exe")
+        self.configure(str(self.touch("custom/python.exe")))
+        self.touch(".venv/Scripts/python.exe")
+        self.assertEqual(self.selected(), str(venv))
 
     def test_stale_configuration_falls_back_to_venv(self):
         self.configure(str(self.root / "missing.exe"))

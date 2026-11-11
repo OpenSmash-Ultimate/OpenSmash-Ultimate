@@ -13,6 +13,12 @@ The separately identified third-party material below keeps its own license. The 
 
 ## WindowSmash (repository root)
 
+### Optional yuzu-compatible room client
+
+The public ENet v1.3.18 headers in `third_party/enet/include/` are by Lee Salzman under the MIT license, preserved in `third_party/enet/LICENSE`. `tools/yuzu_client_deps.py` downloads checksum-pinned ENet 1.3.18 and Zstd 1.5.7 sources and builds the optional Windows DLLs. Zstd is available under BSD-3-Clause or GPL-2.0; its upstream LICENSE and COPYING, and ENet's LICENSE, are copied beside those DLLs. No dependency DLLs are checked in.
+
+The room, LDN and compressed UDP formats were studied from public yuzu-era and Eden 0.2.0 sources, credited to the yuzu Emulator Project and Eden Emulator Project under the licenses stated in those sources. `docs/YUZU_PROTOCOL_SOURCES.json` records the exact source revisions and hashes. The client codecs and adapter are written in C for this runtime; no emulator Core or UI source is vendored.
+
 ### libvpx
 
 The VP9 decoder of the WebM Project's libvpx, release v1.15.2, is included as source in [`third_party/libvpx/`](third_party/libvpx/) and compiled into the game when it is built (the game's movies are VP9). [`third_party/README.md`](third_party/README.md) says exactly which files and how they were taken from the upstream release; none is modified. The upstream license and additional patent grant are kept there:
@@ -76,6 +82,7 @@ These are external dependencies, not bundled implementations. Their own licenses
 | zstandard | Reading `data.arc` on Pythons older than 3.14 | `requirements.txt` (Python 3.14 has `compression.zstd` built in). |
 | Capstone, Unicorn | Disassembly and differential tests | `tests/requirements-dev.txt`, optional. |
 | vkd3d-shader (vkd3d 2.1, Wine project, LGPL-2.1-or-later) and SPIRV-Headers (Khronos, MIT) | The Linux build's HLSL to DXBC; on Windows, DXBC to SPIR-V for the Vulkan back end in development, linked statically when built | Downloaded and checked against their SHA-256 ([`tools/linux/install_linux.py`](tools/linux/install_linux.py); on Windows [`tools/vkd3d_lib.py`](tools/vkd3d_lib.py), optional), never checked in. A program linked with it carries LGPL-2.1 obligations when distributed. |
+| glslang 16.6.0 (Khronos, BSD-3-Clause and others as its `LICENSE.txt` lists) with SPIRV-Tools (Khronos, Apache-2.0) | The Vulkan back end's shader translator on Windows: `ssbu_glslang.dll`, made beside the program from Khronos' Windows release | Downloaded and checked against its SHA-256 by [`tools/glslang_lib.py`](tools/glslang_lib.py) (the build runs it), never checked in. |
 
 A developer can link their own libopus or libvpx builds instead of the included sources (`SSBU_OPUS_LIBS`, `SSBU_VPX_DIR`: [`tools/cc.py`](tools/cc.py)). No binaries of any library are checked into this repository.
 

@@ -27,6 +27,7 @@
  * With neither set the game stays offline, as before. */
 #pragma once
 #include "recomp.h"
+#include "net_backend.h"
 
 #define NET_SUBNET      0x0A0D0000u   /* 10.13.0.0 */
 #define NET_MASK        0xFFFF0000u
@@ -41,6 +42,10 @@
 int net_configured(void);            /* netplay asked for (host or join) */
 int net_log(void);                   /* SSBU_NET_LOG */
 u32 net_local_ip(void);              /* this player's virtual address (host order), 0 until the relay gives one */
+/* The compatibility client exposes the room-assigned addresses to the game. */
+static inline u32 net_broadcast_ip(void) { return net_backend ? 0xffffffffu : NET_BROADCAST; }
+static inline u32 net_gateway_ip(void) { return net_backend ? (net_local_ip() & NET_MASK) | 1u : NET_GATEWAY; }
+static inline int net_address_allowed(u32 ip) { return (ip & NET_MASK) == (net_backend ? net_local_ip() & NET_MASK : NET_SUBNET); }
 const char *net_player_name(void);
 /* The lobby or relay this game joins (host[:port]): SSBU_NET_RELAY's, else online_server.txt's
  * with --online; NULL when it hosts a private room or plays offline. */
@@ -51,6 +56,10 @@ int net_unreachable(void);           /* asked for, but the relay has not answere
  * online_server.txt not "off"), and online_rollback.txt (the settings menu's Online > Rollback
  * netcode) not "off". Read from the files and variables alone, so it may be asked before main. */
 int net_rollback_default(void);
+/* (hle_online_delay.c) The game's own netcode's online input delay: the setting (-1 auto, else 0-25 frames,
+ * config/online_delay.txt) and the game's own choice at the last match set-up (-1 none yet). */
+int online_delay_setting(void);
+int online_delay_last_auto(void);
 
 /* LAN discovery: a game hosting a private room announces it on the local network (multicast
  * 239.255.13.13 and broadcast, UDP NET_LAN_PORT, every second; not while direct connections are off

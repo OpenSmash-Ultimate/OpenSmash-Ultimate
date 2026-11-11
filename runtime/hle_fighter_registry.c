@@ -166,12 +166,28 @@ static int nm_json_str(const char *js, const char *key, char *out, size_t n) {
 static int nm_cmp_fighter(const void *a, const void *b) { return strcmp(((const NewMod *)a)->f.name, ((const NewMod *)b)->f.name); }
 static int nm_exists(const char *path) { return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES; }
 
+/* The fighter kinds main's code has room for: tools/recomp.py link writes it (kind_room.c, from the patches main was
+ * lifted with: tools/fighter_kinds.py room); -1 in a program linked some other way. A main without the room
+ * (0x5E: the game's own) aborts the set-up of a fighter of kind 0x5E.. (its `kind < 0x5E` checks, e.g. the fighter
+ * init 0x71006867e0: svcBreak from abort), and the kind component's rows of array B, written at +0x19A8 of the
+ * parameter object, fall past the end of the game's 0x19A8-byte one: heap corruption that stops even a match of
+ * the game's own fighters, wherever the heap's layout puts something there. */
+extern const int rt_main_kind_room;
+const int rt_main_kind_room_unknown = -1;
+#pragma comment(linker, "/alternatename:rt_main_kind_room=rt_main_kind_room_unknown")
+
 /* (hle_native_mods.c, before it reads SSBU_MODS; and ssbu_registry()) */
 void fighter_registry_scan(void) {
     static LONG done;
     if (InterlockedExchange(&done, 1)) return;
     const char *root = getenv("SSBU_CHARACTERS");
     if (!root || !root[0]) return;
+    if (rt_main_kind_room >= 0 && rt_main_kind_room <= 0x5e) {
+        nm_log("[registry] SSBU_CHARACTERS=%s: NO NEW FIGHTER: this program's main was built without room for new fighter kinds "
+               "(it has 0x%x); make it with `python tools/fighter_kinds.py` (dump/patches/main.txt) and build the game again", root,
+               rt_main_kind_room);
+        return;
+    }
     char pat[MAX_PATH * 2];
     WIN32_FIND_DATAA fd;
     snprintf(pat, sizeof pat, "%s\\*", root);
@@ -230,7 +246,8 @@ void fighter_registry_scan(void) {
             snprintf(exe + n, sizeof exe - n, "registry_bin");
             _putenv_s("SSBU_MODS", exe);
         }
-        nm_log("[registry] %d new fighter(s) from %s; components from %s", g_nm_count, root, getenv("SSBU_MODS"));
+        nm_log("[registry] %d new fighter(s) from %s; components from %s; main's kinds: 0x%x%s", g_nm_count, root, getenv("SSBU_MODS"),
+               rt_main_kind_room, rt_main_kind_room < 0 ? " (not known: linked other than by tools/recomp.py link)" : "");
     } else nm_log("[registry] SSBU_CHARACTERS=%s: no sub-folder with a fighter.json: no new fighter", root);
 }
 

@@ -576,6 +576,26 @@ class InstallerDecisionTests(unittest.TestCase):
         self.assertEqual(got['d1'], 35)
         self.assertEqual(got['d2'], 0)
 
+    def test_venv_base(self):
+        # deps\venv is made from 3.10 up to $PythonMinor (the tested one), never the Microsoft Store's Python
+        store = 'C:\\Users\\a\\AppData\\Local\\Microsoft\\WindowsApps\\PythonSoftwareFoundation.Python.3.13_q\\python.exe'
+        got = ps("@{ ok = (Test-VenvBase '3.13.3' 'C:\\Python313\\python.exe'); top = (Test-VenvBase '3.14.2' 'C:\\Python314\\python.exe'); "
+                 "new = (Test-VenvBase '3.15.0a1' 'C:\\Python315\\python.exe'); old = (Test-VenvBase '3.9.13' 'C:\\Python39\\python.exe'); "
+                 f"store = (Test-VenvBase '3.13.3' '{store}'); none = (Test-VenvBase '3.13.3' ''); minor = $PythonMinor }}")
+        self.assertEqual(got['minor'], '3.14')
+        self.assertEqual([got[k] for k in ('ok', 'top', 'new', 'old', 'store', 'none')], [True, True, False, False, False, False])
+
+    def test_toml_check_before_python_311(self):
+        check = re.search(r"^\$TomlCheck = '(.*)'\r?$", SCRIPT.read_text(encoding='utf-8'), re.M).group(1).replace("''", "'")
+        older = "import sys; sys.version_info = (3, 10, 12, 'final', 0); "
+        r = subprocess.run([sys.executable, '-c', older + "import importlib.util as u; "
+                            "u.find_spec = lambda n, _f=u.find_spec: None if n == 'tomli' else _f(n); " + f'exec({check!r})'],
+                           capture_output=True, text=True)
+        self.assertEqual((r.returncode, r.stderr), (1, ''))          # 3.10 without tomli: a plain no
+        if sys.version_info >= (3, 11):                              # (the tools still run on 3.10, maybe without tomli)
+            r = subprocess.run([sys.executable, '-c', check], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)              # this Python (3.11 or newer): tomllib
+
 
 class InstallerPatternTests(unittest.TestCase):
     """Test-Sse42ByName's patterns, read from the installer and tried with Python's re where PowerShell is not there to
