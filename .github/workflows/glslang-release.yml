@@ -1,0 +1,51 @@
+# The Vulkan back end's shader translator, prebuilt: ssbu_glslang.dll (tools/glslang_lib.py, tools/glslang_shim.c) made here
+# and published as the release glslang-<version>-<key>, the key a hash of glslang's version, the shim and the binding map
+# (glslang_lib.py --key). tools/build_game.py takes it from there (glslang_lib.ensure), so a player's PC needs no
+# compiler or C runtime libraries for it; a build where the download fails still makes it there as before (2026-11-11:
+# players' builds without it fell back to Direct3D 11 without a word). Runs when the sources change on main.
+name: glslang release
+
+on:
+  push:
+    branches: [main]
+    paths: ['tools/glslang_shim.c', 'tools/glslang_lib.py', 'runtime/gpu_spirv.h', '.github/workflows/glslang-release.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  glslang:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Tag
+        id: tag
+        shell: pwsh
+        run: |
+          $tag = python tools/glslang_lib.py --key
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          "exists=$([int]($LASTEXITCODE -eq 0))" >> $env:GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Build and publish
+        if: steps.tag.outputs.exists == '0'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          python tools/glslang_lib.py --out dist\ssbu_glslang.dll
+          if ($LASTEXITCODE -ne 0) { throw 'ssbu_glslang.dll was not built' }
+          Push-Location dist
+          $hash = (Get-FileHash ssbu_glslang.dll -Algorithm SHA256).Hash.ToLower()
+          Set-Content SHA256SUMS "$hash  ssbu_glslang.dll" -NoNewline
+          Pop-Location
+          gh release create "${{ steps.tag.outputs.tag }}" --repo $env:GITHUB_REPOSITORY --title "glslang ${{ steps.tag.outputs.tag }}" `
+            --notes "ssbu_glslang.dll, the Vulkan renderer's shader translator (glslang 16.6.0, Khronos: BSD-3-Clause and others; SPIRV-Tools: Apache-2.0), built from commit ${{ github.sha }}. tools/build_game.py fetches it." `
+            dist\ssbu_glslang.dll dist\SHA256SUMS
