@@ -223,7 +223,7 @@ The first start also writes **`display.ini`**, which sets how the game starts. T
 | `window` | `windowed`: a window that keeps 16:9 as you resize it. `borderless`: covers its whole monitor. `fullscreen`: borderless and always on top; the monitor keeps its resolution. | `windowed` |
 | `width`, `height` | The window's inside size at 100% display scaling. | `1280`, `720` |
 | `pacing` | `clock`: a steady 60 frames a second. `vrr`: for G-Sync or FreeSync monitors, each frame shown as soon as it's ready; best with `borderless`. `display`: follows a 60, 120 or 240 Hz monitor's own refresh. | `clock` |
-| `latency` | How many frames the graphics card may work ahead, 1–3. Lower is more responsive. | `3` |
+| `latency` | How many frames the graphics card may work ahead, 1–3. Lower is more responsive. The Vulkan renderer keeps 2 at least: with 1 the processor and the card wait for each other every frame. | `3` |
 | `low_latency` | `1`: the game starts each frame as late as it can and still make the next refresh, so it reads your controller later: up to most of a frame less input delay. If a frame misses its refresh it turns itself off for a second. | `1` |
 | `hide_cursor` | `1` hides the mouse pointer after two seconds without movement. | `1` |
 | `runahead` | No longer read: run-ahead hitched at *GO!* and in fights on mid-range PCs (issue #250), so it is off for everyone. `SSBU_RUNAHEAD=1-3` still turns it on, for tests. | — |

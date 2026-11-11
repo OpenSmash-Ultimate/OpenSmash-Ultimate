@@ -120,6 +120,7 @@ static const char DEFAULT_INI[] =
 #endif
     "pacing = clock\n"
     "; latency = 1-3: how many frames the graphics card may work ahead. Lower is more responsive.\n"
+    ";   (the Vulkan renderer keeps 2 at least: with 1 the processor and the card wait for each other every frame)\n"
     "latency = 3\n"
     "; low_latency = 1: the game starts each frame later, as late as it can and still be ready for the next\n"
     ";   refresh, so it reads the controller later: up to most of a frame less input delay. 0: at the refresh.\n"

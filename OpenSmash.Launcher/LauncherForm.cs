@@ -82,6 +82,7 @@ namespace OpenSmash.Launcher
         bool _keys = false;
         int _modScroll = 0;
         Dictionary<string, string> _iniValues = new();
+        readonly HashSet<string> _changed = new();   // settings changed here since ReadSettings: the only ones written
 
         // WebView2 for MOSAIC marketplace
         WebView2 _marketplaceWebView;
@@ -1320,6 +1321,7 @@ namespace OpenSmash.Launcher
         void ReadSettings()
         {
             _iniValues.Clear();
+            _changed.Clear();
             string display = WindowSmash.ConfigFile(_repo, "display.ini");
             string pads = WindowSmash.ConfigFile(_repo, "controllers.ini");
             string D(string key, string fallback) => IniValue(display, "", key) ?? fallback;
@@ -1409,7 +1411,9 @@ namespace OpenSmash.Launcher
         void CommitEdit()
         {
             if (_editingKey == null || _settingEdit == null || !_settingEdit.Visible) return;
-            _iniValues[_editingKey] = _settingEdit.Text.Trim();
+            string typed = _settingEdit.Text.Trim();
+            if (_iniValues.GetValueOrDefault(_editingKey, "") != typed) _changed.Add(_editingKey);
+            _iniValues[_editingKey] = typed;
             _settingEdit.Visible = false;
             _editingKey = null;
             Invalidate();
@@ -1434,11 +1438,14 @@ namespace OpenSmash.Launcher
         void WriteSetting(string key, string value)
         {
             _iniValues[key] = value;
+            _changed.Add(key);
             if (key == "window_size" && value.Contains('x'))
             {
                 var parts = value.Split('x');
                 _iniValues["width"] = parts[0];
                 _iniValues["height"] = parts[1];
+                _changed.Add("width");
+                _changed.Add("height");
             }
             PersistSettings();
         }
@@ -1470,22 +1477,26 @@ namespace OpenSmash.Launcher
                 "custom" => (host == "" ? "127.0.0.1:39420" : host) + (code == "" ? "" : " " + code),
                 _ => "auto"   // (the nearest public lobby: Europe or North America, runtime/net_relay.c)
             };
-            SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "window", _iniValues.GetValueOrDefault("window", "windowed"));
-            SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "width", _iniValues.GetValueOrDefault("width", "1280"));
-            SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "height", _iniValues.GetValueOrDefault("height", "720"));
-            SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "pacing", _iniValues.GetValueOrDefault("pacing", "clock"));
-            SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "render_scale", _iniValues.GetValueOrDefault("render_scale", "1"));
-            SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "gpu", _iniValues.GetValueOrDefault("gpu", "auto"));
-            SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "renderer", _iniValues.GetValueOrDefault("renderer", "auto"));
-            SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "hide_cursor", _iniValues.GetValueOrDefault("hide_cursor", "1"));
-            SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "overlay", _iniValues.GetValueOrDefault("overlay", "1"));
-            SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", "volume", _iniValues.GetValueOrDefault("volume", "100"));
-            SetIni(WindowSmash.ConfigFile(_repo, "controllers.ini"), "general", "keyboard_player", _iniValues.GetValueOrDefault("keyboard_player", "1"));
-            SetIni(WindowSmash.ConfigFile(_repo, "controllers.ini"), "general", "background", _iniValues.GetValueOrDefault("background", "1"));
-            if (serverReady)
+            // Only what was changed here since the files were read: the game's own settings menu (Esc)
+            // writes these files too, while this window waits hidden for the game to close - writing
+            // every value back when it closed put the game's changes (the renderer, the window...) back
+            // to what they were before the game started.
+            string display = WindowSmash.ConfigFile(_repo, "display.ini"), pads = WindowSmash.ConfigFile(_repo, "controllers.ini");
+            foreach (var (key, fallback) in new[] { ("window", "windowed"), ("width", "1280"), ("height", "720"), ("pacing", "clock"),
+                                                    ("render_scale", "1"), ("gpu", "auto"), ("renderer", "auto"), ("hide_cursor", "1"),
+                                                    ("overlay", "1"), ("volume", "100") })
+                if (_changed.Contains(key)) SetIni(display, "", key, _iniValues.GetValueOrDefault(key, fallback));
+            foreach (var (key, fallback) in new[] { ("keyboard_player", "1"), ("background", "1") })
+                if (_changed.Contains(key)) SetIni(pads, "general", key, _iniValues.GetValueOrDefault(key, fallback));
+            bool serverChanged = _changed.Contains("lobby") || _changed.Contains("code") || _changed.Contains("server");
+            if (serverReady && serverChanged)
                 SetFirstLine(WindowSmash.ConfigFile(_repo, "online_server.txt"), server);
-            SetFirstLine(WindowSmash.ConfigFile(_repo, "online_name.txt"), _iniValues.GetValueOrDefault("name", "").Trim());
-            SetFirstLine(WindowSmash.ConfigFile(_repo, "online_direct.txt"), _iniValues.GetValueOrDefault("direct", "on"));
+            if (_changed.Contains("name"))
+                SetFirstLine(WindowSmash.ConfigFile(_repo, "online_name.txt"), _iniValues.GetValueOrDefault("name", "").Trim());
+            if (_changed.Contains("direct"))
+                SetFirstLine(WindowSmash.ConfigFile(_repo, "online_direct.txt"), _iniValues.GetValueOrDefault("direct", "on"));
+            _changed.Clear();   // (written: the game's later changes stay)
+            if (serverChanged && !serverReady) { _changed.Add("lobby"); _changed.Add("code"); _changed.Add("server"); }
             string launcherIni = WindowSmash.ConfigFile(_repo, "launcher.ini");
             SetIni(launcherIni, "opensmash", "lobby", lobby);
             SetIni(launcherIni, "opensmash", "code", code);
@@ -1615,6 +1626,7 @@ namespace OpenSmash.Launcher
                 int val = (int)Math.Round(frac * 100f);
                 val = (int)(Math.Round(val / 5.0) * 5);
                 _iniValues["volume"] = val.ToString();
+                _changed.Add("volume");
                 Invalidate();
             }
             string id = HitAt(e.X, e.Y);

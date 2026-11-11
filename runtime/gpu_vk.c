@@ -296,7 +296,7 @@ static void check(VkResult r, const char *doing) {
 static VkQueryPool gpu_time_pool;
 static double gpu_time_ms = -1, gpu_time_period;
 static u32 gpu_time_frames[MAX_FRAMES];   /* (the slot's timestamps written: bits 0 begin, 1 end) */
-#define GPU_POINTS 2048   /* (the timestamps between) */
+#define GPU_POINTS 8192   /* (the timestamps between: a fight frame with effects has over 2048) */
 #define GPU_QS (GPU_POINTS + 2)
 static u64 vk_first_uses, gpu_first_at[MAX_FRAMES];   /* (pipelines drawn with for the first time: in the slot's work) */
 static u64 gpu_allocs_at[MAX_FRAMES], gpu_tex_at[MAX_FRAMES], gpu_up_at[MAX_FRAMES];   /* (memory allocations, textures made, bytes uploaded: in it) */
@@ -1407,6 +1407,9 @@ static u32 nresidents;   /* (slots in use up to here; a free one has no buffer) 
 static u64 vk_stat_residents_made, vk_stat_resident_refills, vk_stat_skip_compute, vk_stat_flushes, vk_stat_residents_retired,
     vk_stat_learned, vk_stat_resident_copies, vk_stat_resident_flushed;
 static VkDeviceSize ssbo_align = 256;
+/* where a launch's time goes (the status lines): finding its program, its constant buffers, its storage buffers
+ * (and of them the compute inputs taken again: count, bytes), its descriptor set, recording, learning's read-back */
+static u64 vk_ns_launch[6], vk_stat_input_refills, vk_stat_input_refill_bytes;
 
 static VkBuffer make_buffer(VkDeviceSize size, VkBufferUsageFlags usage, Alloc *a) {
     VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, size, usage, VK_SHARING_MODE_EXCLUSIVE, 0, NULL};
@@ -1535,7 +1538,7 @@ static Resident *input_buffer(u64 va, u64 size) {
         b->used = ++tick;
         /* (asked every launch: asking once a submission, as resident_check does, drew the fighters pale again -
          * the CPU rewrites these inputs between launches of one submission) */
-        if (watch_written(g, size, &b->seen)) resident_fill(b, 0, size);
+        if (watch_written(g, size, &b->seen)) { resident_fill(b, 0, size); vk_stat_input_refills++; vk_stat_input_refill_bytes += size; }
         return b;
     }
     b = lru;
@@ -3674,7 +3677,7 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
      * writes neither depth nor stencil (soft particles, the KO zooms' backgrounds: they fade by the scene
      * depth): it stays the attachment, read-only for the draw, in the GENERAL layout it always has here,
      * and is sampled too - after a rendering that wrote it has ended, so the writes are seen. */
-    int ends = 0, depth_read_only = !key.depth_write && !key.stencil_test;
+    int ends = 0, depth_read_only = !key.depth_write && !key.stencil_test, samples_own_depth = 0, samples_surface = 0;
     for (int st = 0; st < 2; st++) {
         StageBinds *b = st ? &pb : &vb;
         u32 ntex = st ? (ps ? ps->info.ntex : 0) : vs->info.ntex;
@@ -3686,10 +3689,12 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
             if (s == zs && !own) {
                 static int told;
                 if (!told++) fprintf(stderr, "[gfx] vulkan: a draw samples its own depth target, read-only (soft particles)\n");
+                samples_own_depth = 1;
                 ends |= rp.active && rp.depth_written && rp.images[8] == s->image;
                 continue;
             }
             if (own) { b->tex[k] = VK_NULL_HANDLE; continue; }
+            samples_surface |= s->depth ? 2 : 1;
             for (u32 i = 0; rp.active && i < 9; i++) ends |= rp.images[i] == s->image;
         }
     }
@@ -3845,7 +3850,9 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         gpu_more[0] = (u64)(uintptr_t)vs->name;
         gpu_more[1] = (u64)(indexed ? regs[M_DRAW_INDEX_COUNT] : regs[M_VERTEX_ARRAY_COUNT]) << 32 | (u64)(u32)topo << 24 | (u64)((u32)vw & 0xFFF) << 12 | ((u32)(vh < 0 ? -vh : vh) & 0xFFF);
     }
-    gpu_time_point(c, ps ? "draw, pixel program" : "draw, vertex program", ps ? ps->hash : vs->hash);
+    gpu_time_point(c, samples_own_depth ? "draw sampling its depth target, pixel program" : samples_surface & 2 ? "draw sampling a depth target, pixel program"
+                   : samples_surface ? "draw sampling a render target, pixel program" : ps ? "draw, pixel program" : "draw, vertex program",
+                   ps ? ps->hash : vs->hash);
     if (key.depth_write || key.stencil_test) rp.depth_written = 1;
     /* (Direct3D's SV_VertexID leaves out the base vertex and the first vertex - vkd3d-shader's SPIR-V reads it as
      * VertexIndex - BaseVertex - while glslang's is VertexIndex: for its programs the draw gives no offset, as the
@@ -3885,6 +3892,42 @@ static void vk_gpu_unmapped(u64 va, u64 size) {
 }
 
 /* ---- compute launches (the plan's step 6), as gpu_d3d11.c's d3d11_dispatch -------------------------- */
+/* Learning's read-back (a program's first 8 launches, below): what it wrote is copied on the GPU into memory the
+ * CPU reads through its caches, and compared there. The frame's upload memory, where the launch's buffers are, is
+ * the card's own memory where the CPU can map it (resizable BAR): fast to write, but read by the CPU across the bus
+ * uncached - the skinning programs' buffers, read back so for each of their first launches, held the fight's first
+ * frame 3.4 s (RTX 5000 laptop: learning's read-back 3.05 s of 4.7 s in launches) and a player's RTX 4070 Ti 5.4 s.
+ * One buffer, grown as needed; each use is waited for before the next. NULL if there is no such memory: the upload
+ * memory is read as before. */
+static VkBuffer rb_buf;
+static VkDeviceMemory rb_mem;
+static u8 *rb_map;
+static VkDeviceSize rb_size;
+static int rb_failed;
+static u8 *readback_space(VkDeviceSize need) {
+    if (need <= rb_size) return rb_map;
+    if (rb_failed) return NULL;
+    if (rb_buf) { vkDestroyBuffer(device, rb_buf, NULL); vkFreeMemory(device, rb_mem, NULL); rb_buf = VK_NULL_HANDLE; rb_mem = VK_NULL_HANDLE; rb_map = NULL; rb_size = 0; }
+    VkDeviceSize size = 1u << 20;
+    while (size < need) size *= 2;
+    VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL};
+    if (vkCreateBuffer(device, &bci, NULL, &rb_buf) != VK_SUCCESS) { rb_buf = VK_NULL_HANDLE; rb_failed = 1; return NULL; }
+    VkMemoryRequirements mr;
+    vkGetBufferMemoryRequirements(device, rb_buf, &mr);
+    int type = memory_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, (uint32_t)type};
+    if (type < 0 || vkAllocateMemory(device, &mai, NULL, &rb_mem) != VK_SUCCESS || vkBindBufferMemory(device, rb_buf, rb_mem, 0) != VK_SUCCESS ||
+        vkMapMemory(device, rb_mem, 0, VK_WHOLE_SIZE, 0, (void **)&rb_map) != VK_SUCCESS) {
+        if (rb_mem) vkFreeMemory(device, rb_mem, NULL);
+        vkDestroyBuffer(device, rb_buf, NULL);
+        rb_buf = VK_NULL_HANDLE; rb_mem = VK_NULL_HANDLE; rb_map = NULL; rb_failed = 1;
+        fprintf(stderr, "[vulkan] no memory the CPU reads through its caches: learning's read-back reads the upload memory\n");
+        return NULL;
+    }
+    rb_size = size;
+    return rb_map;
+}
+
 static void vk_dispatch_(const u32 *regs, const u32 *q);
 static void vk_dispatch(const u32 *regs, const u32 *q) {
     u64 t0 = rt_clock_ns();
@@ -3904,7 +3947,10 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
     for (u32 i = 0; i < 8; i++)
         if (q[20] >> i & 1) { cb[i].address = (u64)(q[30 + 2 * i] & 0xFF) << 32 | q[29 + 2 * i]; cb[i].size = q[30 + 2 * i] >> 15; }
     if (!g || !grid[0] || !grid[1] || !grid[2] || !local[0]) { leave(); return; }
+    u64 tp = rt_clock_ns(), tn;
+#define LAUNCH_PART(i) (tn = rt_clock_ns(), vk_ns_launch[i] += tn - tp, tp = tn)
     VShader *cs = find_shader_ex(g, SHADER_COMPUTE, 0, cb, 0, local, shared);
+    LAUNCH_PART(0);
     if (!cs || cs->state != 1 || !cs->compute) { vk_stat_skip_compute++; leave(); return; }
 
     VkBufferView cbv[18] = {0};
@@ -3914,6 +3960,7 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
         if (size > cs->info.cbuf_extent[b]) size = cs->info.cbuf_extent[b];
         cbv[b] = upload(cb[b].address, size);
     }
+    LAUNCH_PART(1);
     DrawParams params;
     memset(&params, 0, sizeof params);
     VkDescriptorBufferInfo sb[16];
@@ -3927,6 +3974,8 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
     u8 *learn_at[16] = {0}, *before[16] = {0};
     u64 learn_va[16] = {0};
     u32 learn_size[16] = {0};
+    VkBuffer learn_buf[16] = {0};
+    VkDeviceSize learn_off[16] = {0};
     for (u32 k = 0; k < cs->info.sb_count && k < 16; k++) {
         u32 desc[4] = {0};
         if (cb[0].address) read_gpu(cb[0].address + cs->info.sb_offset[k], 16, desc);
@@ -3961,14 +4010,16 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
         u32 bytes = (size + 15) & ~15u;
         u8 *p = arena(bytes, ssbo_align, &buf, &boff);
         if (!p) continue;
-        read_gpu(va, size, p);
+        /* (learning: guest memory into a copy of the CPU's first, the upload memory from it - never read back from there) */
+        if (!learned && cs->info.stores && (before[k] = malloc(size)) != NULL) {
+            read_gpu(va, size, before[k]);
+            memcpy(p, before[k], size);
+            learn_at[k] = p; learn_va[k] = va; learn_size[k] = size; learn_buf[k] = buf; learn_off[k] = boff;
+        } else read_gpu(va, size, p);
         if (bytes > size) memset(p + size, 0, bytes - size);
         sb[k] = (VkDescriptorBufferInfo){buf, boff, bytes};
-        if (!learned && cs->info.stores && (before[k] = malloc(size)) != NULL) {
-            memcpy(before[k], p, size);
-            learn_at[k] = p; learn_va[k] = va; learn_size[k] = size;
-        }
     }
+    LAUNCH_PART(2);
     VkBuffer pbuf;
     VkDeviceSize poff;
     u8 *pdst = arena(sizeof params, ubo_align, &pbuf, &poff);
@@ -3997,6 +4048,7 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
                                         VK_DESCRIPTOR_TYPE_SAMPLER, &ii[ni++], NULL, NULL};
     }
     vkUpdateDescriptorSets(device, n, w, 0, NULL);
+    LAUNCH_PART(3);
     VkCommandBuffer c = outside();
     vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_COMPUTE, cs->compute);
     vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_COMPUTE, cs_layout, 0, 1, &set, 0, NULL);
@@ -4004,7 +4056,22 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
     sync_all(c);
     gpu_time_point(c, "launch", cs->hash);
     vk_stat_dispatched++;
+    LAUNCH_PART(4);
     if (!learned && cs->info.stores) {   /* learning: the results, read back */
+        VkDeviceSize at[16] = {0}, need = 0;
+        for (u32 k = 0; k < 16; k++)
+            if (before[k]) { at[k] = need; need += (learn_size[k] + 15) & ~15ull; }
+        u8 *rb = need ? readback_space(need) : NULL;
+        if (rb) {   /* (copied where the CPU reads them fast: readback_space) */
+            for (u32 k = 0; k < 16; k++) {
+                if (!before[k]) continue;
+                VkBufferCopy bc = {learn_off[k], at[k], (learn_size[k] + 15) & ~15ull};
+                vkCmdCopyBuffer(c, learn_buf[k], rb_buf, 1, &bc);
+                learn_at[k] = rb + at[k];
+            }
+            VkMemoryBarrier hb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
+            vkCmdPipelineBarrier(c, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &hb, 0, NULL, 0, NULL);
+        }
         flush_wait();
         for (u32 k = 0; k < 16; k++) {
             if (!before[k]) continue;
@@ -4019,7 +4086,9 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
             free(before[k]);
         }
         if (++cs->learn_runs == 8) vk_stat_learned++;
+        LAUNCH_PART(5);
     }
+#undef LAUNCH_PART
     leave();
 }
 
@@ -4469,6 +4538,10 @@ static void vk_status_lines(void) {
             vk_stat_residents_made, vk_stat_resident_refills, vk_stat_residents_retired, vk_stat_resident_copies, vk_stat_resident_flushed,
             vk_stat_learned, vk_stat_flushes, vk_ns_draw / 1e9, vk_ns_dispatch / 1e9, vk_ns_present / 1e9, vk_ns_wait / 1e9,
             vk_stat_local_blocks);
+    fprintf(stderr, "[status] vulkan launches' parts (s): program %.2f, constant buffers %.2f, storage buffers %.2f, set %.2f, recording %.2f, "
+                    "learning's read-back %.2f; compute inputs taken again %llu (%llu MB)\n",
+            vk_ns_launch[0] / 1e9, vk_ns_launch[1] / 1e9, vk_ns_launch[2] / 1e9, vk_ns_launch[3] / 1e9, vk_ns_launch[4] / 1e9, vk_ns_launch[5] / 1e9,
+            vk_stat_input_refills, vk_stat_input_refill_bytes >> 20);
     if (warm_nrecords)
         fprintf(stderr, "[status] vulkan warm start: %u pipelines and programs listed, %lld programs loaded (%llu taken by draws), %lld pipelines made (%llu drawn with), %ld left out%s\n",
                 warm_nrecords, (long long)vk_stat_warm_loaded, vk_stat_warm_taken, (long long)vk_stat_warm_pipelines, vk_stat_warm_used, (long)warm_left,
@@ -4959,9 +5032,15 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
     ssbo_align = limits.minStorageBufferOffsetAlignment > 16 ? limits.minStorageBufferOffsetAlignment : 16;
     granularity = limits.bufferImageGranularity > 256 ? limits.bufferImageGranularity : 256;
 
-    /* frames: as many in flight as display.ini's latency */
+    /* frames: as many in flight as display.ini's latency, two at least - with one the CPU waits for the GPU every frame
+     * (it records the next frame only once the last is drawn, and the GPU waits for that recording): a player's RTX 2070
+     * SUPER fought at 17-43 fps with latency = 1. latency = 1 still means the least delay through low_latency's pacing,
+     * which starts each frame as late as it can. */
     nframes = (u32)display_latency();
-    if (nframes < 1) nframes = 1;
+    if (nframes < 2) {
+        fprintf(stderr, "[vulkan] latency = %u in display.ini: 2 frames in flight (with 1 the CPU and the GPU would wait for each other every frame)\n", nframes);
+        nframes = 2;
+    }
     if (nframes > MAX_FRAMES) nframes = MAX_FRAMES;
     VkCommandPoolCreateInfo pci = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, queue_family};
     if (vkCreateCommandPool(device, &pci, NULL, &pool) != VK_SUCCESS) { snprintf(why, size, "%s: no command pool", card); return start_undo(); }
