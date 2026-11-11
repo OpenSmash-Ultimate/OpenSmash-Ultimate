@@ -18,9 +18,11 @@ class GcStateLayoutTests(unittest.TestCase):
         begin = source.index('static void npad_state(')
         end = source.index('\nHLE(', begin)
         harness = r'''
+#define _CRT_SECURE_NO_WARNINGS   /* (Windows: getenv is deprecated under -Werror, and npad_state reads it) */
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdlib.h>
 #include <assert.h>
 typedef uint64_t u64; typedef uint32_t u32; typedef int32_t i32;
 enum { STYLE_FULLKEY=1, STYLE_GC=32, NPAD_NO1=0, ATTR_CONNECTED=1, ATTR_WIRED=2 };
@@ -48,6 +50,8 @@ static u64 scripted_buttons(i32*x,i32*y) { (void)x;(void)y;return 0; }
 static int keyboard_slot(void) { return -1; }
 static u64 keyboard_buttons(i32*x,i32*y,i32*z,i32*w) { (void)x;(void)y;(void)z;(void)w;return 0; }
 static int menu_blocks_input(void) { return 0; }
+static volatile int input_gate;
+static int input_seq_on(void) { return 0; }
 static int64_t InterlockedIncrement64(int64_t*p) { return ++*p; }
 static void st64(u64 p,u64 v) { memcpy((void*)(uintptr_t)p,&v,8); }
 static void st32(u64 p,u32 v) { memcpy((void*)(uintptr_t)p,&v,4); }
@@ -89,8 +93,13 @@ int main(void) {
             src = Path(tmp) / 'gc_layout.c'
             exe = Path(tmp) / ('gc_layout.exe' if os.name == 'nt' else 'gc_layout')
             src.write_text(harness)
-            subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror', str(src), '-o', str(exe)], check=True, capture_output=True, text=True)
-            subprocess.run([str(exe)], check=True, capture_output=True, text=True)
+            build = subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror', str(src), '-o', str(exe)],
+                                   capture_output=True, text=True)
+            if build.returncode:
+                self.fail(f"the harness did not compile with {compiler}:\n{build.stdout}{build.stderr}")
+            run = subprocess.run([str(exe)], capture_output=True, text=True)
+            if run.returncode:
+                self.fail(f"the harness failed ({run.returncode}):\n{run.stdout}{run.stderr}")
 
 
 if __name__ == '__main__':
