@@ -57,7 +57,7 @@ class BuildPassesTheChoiceTests(unittest.TestCase):
         build = runpy.run_path(str(ROOT / 'tools/build_game.py'), run_name='build_game_package')['write_romfs_cfg']
         self.g = build.__globals__   # (the module's own globals: run_path returns a copy)
         self.g.update(ROOT=str(top / 'port'), MODULES=str(self.modules), log=lambda msg='': None,   # (as test_build_game.py)
-                      run=lambda args, failure: self.calls.append([str(a) for a in args]))
+                      run=lambda args, failure, failures=None: self.calls.append([str(a) for a in args]))
         self.write_romfs_cfg = build
 
     def record(self, name, kind, romfs, container):
@@ -84,6 +84,38 @@ class BuildPassesTheChoiceTests(unittest.TestCase):
         base = self.record('base.nca', 'base', 'plain', None)
         call = self.apply_call(program, base)
         self.assertNotIn('--inner', call)
+
+    def test_unconfirmed_files_say_why(self):
+        """update.py stopping on unconfirmed bytes inside files the game loads (its exit code
+        UNSAFE_EXIT): the build's error is that, not the generic "a file is incomplete" - the
+        installers show the build's ERROR line to the player."""
+        Failed = self.g['Failed']
+
+        def run(args, failure, failures=None):
+            self.calls.append([str(a) for a in args])
+            if 'update.py' in ' '.join(map(str, args)):
+                raise Failed((failures or {}).get(update.UNSAFE_EXIT, failure))
+        self.g['run'] = run
+        program = self.record('update.nca', 'update', 'patch', None)
+        base = self.record('base.nca', 'base', 'plain', None)
+        with self.assertRaises(Failed) as e:
+            self.apply_call(program, base)
+        self.assertIn('romfs.unverified.txt lists them', str(e.exception))
+        self.assertIn(update.UNSAFE_BASE, str(e.exception))
+
+
+class RunExitCodeTests(unittest.TestCase):
+    """build_game.run: a tool's exit code picks its own message."""
+
+    def test_codes(self):
+        g = runpy.run_path(str(ROOT / 'tools/build_game.py'), run_name='build_game_run')
+        run, Failed = g['run'], g['Failed']
+        run.__globals__['log'] = lambda msg='': None
+        for code, want in ((3, 'its own message'), (1, 'the usual message')):
+            with self.assertRaises(Failed) as e:
+                run([sys.executable, '-c', f'import sys; sys.exit({code})'], 'the usual message', {3: 'its own message'})
+            self.assertEqual(str(e.exception), want)
+        run([sys.executable, '-c', 'pass'], 'the usual message', {3: 'its own message'})   # (no exit code: no error)
 
 
 if __name__ == '__main__':

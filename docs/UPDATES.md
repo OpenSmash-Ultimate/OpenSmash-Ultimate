@@ -46,7 +46,8 @@ When your game folder has the game and its 13.0.5 update side by side, the insta
 4. Every 16 KB block of the result is checked against the update's own SHA-256 hashes.
 
 - **Over the game as first released (1.0.0),** the update applies exactly, as it does on a Switch, and every block matches.
-- **Over a game with an earlier update merged in** (for example 11.0.0 rebuilt into one file), the update is rebuilt over it ([how](#patching-a-merged-base)). With 13.0.5 over a merged 11.0.0, all but 8 of 1,074,277 blocks matched. Those 8 blocks (128 KB, in a few models' files, none of them in a fighter module) keep the best guess, and `dump\modules\romfs.unverified.txt` lists them.
+- **Over a game with an earlier update merged in** (for example 11.0.0 rebuilt into one file), the update is rebuilt over it ([how](#patching-a-merged-base)). With 13.0.5 over a merged 11.0.0, all but 8 of 1,074,277 blocks matched. Those 8 blocks (128 KB, in a few models' files) can't be confirmed, and `dump\modules\romfs.unverified.txt` lists them with the files each one falls in.
+- **When an unconfirmed block is inside a file the game loads,** the installer stops and says so: set it up again with the game's original release (1.0.0, with no update merged in) and the 13.0.5 update next to it, or with a dump of the game that has 13.0.5 merged in. A player's merged base left the files of one model (LoupeSubstance) wrong this way, and the game crashed at boot. Blocks only in padding, music or movies are listed and the install goes on.
 
 Leave your game files where they are afterwards: the game reads its data from them.
 
@@ -108,7 +109,9 @@ If your base is the original release, unpacked, those places are right. `update.
 1. **Files.** data.arc's file tables, in both versions, give every file's place in the new image and in your base. A file the patch takes from the original release is found under its path in the base, or as another file of exactly the same size. Music and movies come from their own table. The padding between files is taken from its neighbours, or is zeros.
 2. **Checking.** The update carries a SHA-256 hash for every 16 KB block of the new image, so every guess is checked. A block that fails is solved again with more candidates: the shift of the nearest confirmed data in the original release's own order, the same bytes elsewhere in the image, or zeros. First one piece at a time, then several.
 
-With 13.0.5 over a merged 11.0.0 base, **1,074,269 of 1,074,277 blocks matched the update's hashes**. The other 8 blocks (128 KB) are inside a few models' material, texture and helper-bone files whose original-release bytes no longer exist in a merged base. They keep the best guess and are listed in `romfs.unverified.txt`. None of them is in a fighter module. With the original release's data as the base, the patch applies exactly.
+With 13.0.5 over a merged 11.0.0 base, **1,074,269 of 1,074,277 blocks matched the update's hashes**. The other 8 blocks (128 KB) are inside a few models' material, texture and helper-bone files whose original-release bytes no longer exist in a merged base. They keep the best guess and are listed in `romfs.unverified.txt`, each with what it holds: data.arc's files by offset, size and path hash (data.arc stores only hashes of its paths), its streams, other RomFS files, or padding. Because they are in files the game loads, `update.py apply` then stops (exit code 3, which `tools/build_game.py` turns into the message for the player) and renames `romfs.cfg` to `romfs.cfg.unsafe`, so nothing starts the game with that data. With the original release's data as the base, the patch applies exactly.
+
+If the game runs with a `romfs.unverified.txt` beside `romfs.cfg` all the same (a folder set up before this check), it logs `[fs] warning: game data: N blocks of 16 KB unconfirmed ...`, and every crash report carries that line.
 
 13.0.5 carries a hash of its own for every block. An update that takes some of its hashes from the original release isn't 13.0.5's, and `update.py` refuses it.
 

@@ -120,11 +120,13 @@ def shown(path):
     return path.replace("\\", "/") if LINUX or MACOS else path
 
 
-def run(args, failure):
-    """Run a tool from the port's folder, showing its command; `failure` explains a failed run."""
+def run(args, failure, failures=None):
+    """Run a tool from the port's folder, showing its command; `failure` explains a failed run,
+    or `failures` {exit code: message} one that ended with that code."""
     log("  " + subprocess.list2cmdline(["python" if a == sys.executable else a for a in args]))
-    if subprocess.run(args, cwd=ROOT).returncode:
-        raise Failed(failure)
+    code = subprocess.run(args, cwd=ROOT).returncode
+    if code:
+        raise Failed((failures or {}).get(code, failure))
 
 
 # ---- what the steps decide by (also tested: tests/test_build_game.py) ---------------------
@@ -914,11 +916,15 @@ def write_romfs_cfg(game, keys, the_program):
             f"The game data inside {gamefiles.where(base)} can't be read (see above).")
         log("  applying the update over the game's data (a few minutes; every block of the result is checked)")
         inner = ["--inner", program["name"]] if program["container"] else []   # (the package may hold the game too)
+        import update   # (unconfirmed bytes inside files the game loads: the base has an update merged in - its own message)
         run([sys.executable, os.path.join("tools", "update.py"), "apply", path, *inner, "--base", base_cfg, "--keys", keys],
             "The update could not be applied over the game's data (see above). Most often a file of the game or of "
             "the update is incomplete: a copy cut short, a download in parts not joined into one file, or an archive "
             "not unpacked to the end. Compare each file's size with the original's, copy or dump it again, and run "
-            "this again.")
+            "this again.",
+            {update.UNSAFE_EXIT: "The update was applied, but some of the game's files could not be confirmed ("
+                                 + shown(os.path.join("dump", "modules", "romfs.unverified.txt")) + " lists them). "
+                                 + update.UNSAFE_BASE})
     else:
         raise Failed(f"There is no romfs.bin in {game}, and {gamefiles.where(program)} holds no game data. Put the game's "
                      "data there as romfs.bin: unencrypted, with the 13.0.5 update applied (setup guide part 2).")

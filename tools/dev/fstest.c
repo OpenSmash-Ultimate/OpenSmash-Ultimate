@@ -232,6 +232,13 @@ static void setup(const char *dir) {
     snprintf(text, sizeof text, "%s\n0\n", path);
     f = CreateFileA(cfg, GENERIC_WRITE, SHARE_ALL, NULL, CREATE_ALWAYS, 0, NULL);
     if (f != INVALID_HANDLE_VALUE) { write_all(f, text, strlen(text)); CloseHandle(f); }
+    /* and two unconfirmed blocks beside it (tools/update.py's report: notes, then each block and what it holds) */
+    static const char unverified[] = "# 16 KB blocks of the updated RomFS whose bytes are unconfirmed\n# 2 blocks, 1 inside files the game loads\n"
+                                     "613780 0x257650000\n  loaded file data.arc+0x2575f0000 (0x9c40 bytes): path hash40 0x2a0b1c2d3e\n"
+                                     "613781 0x257654000\n  listed no file: padding between files\n";
+    snprintf(path, sizeof path, "%s/romfs.unverified.txt", data);
+    f = CreateFileA(path, GENERIC_WRITE, SHARE_ALL, NULL, CREATE_ALWAYS, 0, NULL);
+    if (f != INVALID_HANDLE_VALUE) { write_all(f, unverified, sizeof unverified - 1); CloseHandle(f); }
 }
 
 /* ---- in one process --------------------------------------------------------------------- */
@@ -239,6 +246,9 @@ static void checks_all(DWORD live_pid) {
     char path[1024];
     u64 h = 0;
     ready();
+
+    /* romfs.unverified.txt beside romfs.cfg: one line for every crash report (host.c), its blocks counted */
+    CHECK(strstr(rt_romfs_warning, "game data: 2 blocks of 16 KB unconfirmed") == rt_romfs_warning, "the unconfirmed blocks' line: %s", rt_romfs_warning);
 
     /* the RomFS and the cache: no journal */
     CHECK(call(hle__ZN2nn2fs8MountRomEPKcPvm, G("rom"), 0, 0, 0, 0) == 0, "MountRom");

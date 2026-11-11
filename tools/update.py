@@ -15,8 +15,15 @@ own (a .nca file, or the 00 file of one an emulator installed).
   modules/romfs.layers          where each piece of the updated RomFS comes from: the base's
                                 file, romfs_patch.bin, or zeros (nca.write_layers)
   modules/romfs.cfg             "layered" and those files: what the runtime and tools read
-  modules/romfs.unverified.txt  only if some 16 KB blocks could not be confirmed (see below)
+  modules/romfs.unverified.txt  only if some 16 KB blocks could not be confirmed (see below): each
+                                block, its image offset, and what of the game's data it holds
 `verify` reads the updated RomFS back through romfs.cfg and checks every block's hash.
+
+An unconfirmed block inside a file the game loads (any file of data.arc's file section, its
+header and tables, or another file of the RomFS) stops the install (exit code UNSAFE_EXIT, the
+message UNSAFE_BASE): a player's merged base left the LoupeSubstance model files wrong, and the
+game crashed at boot. romfs.cfg is then set aside (romfs.cfg.unsafe), so that nothing starts the
+game with it and the build's next run applies the update again.
 
 An update's RomFS is a patch (BKTR) over the RomFS of the original release: a map of the new
 image whose pieces are either the update's own data or bytes of the original base at given
@@ -44,7 +51,8 @@ folder. So the pieces are found again:
 
 With 13.0.5 over a merged 11.0.0 base this confirmed all but 8 of 1,074,277 blocks (128 KB, inside
 a few models' material and texture files whose original-release bytes are no longer in the
-merged base); those keep the best guess and are listed in romfs.unverified.txt.
+merged base); those keep the best guess and are listed in romfs.unverified.txt - and, being
+inside files the game loads, stop the install (above).
 
 The hash tree is part of the patched image too, so an update could reuse the original release's
 hashes for blocks that are the same as in that release. 13.0.5 carries a hash of its own for
@@ -63,9 +71,14 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from arc import Arc, data_arc_offset  # noqa: E402
 from game_version import needs  # noqa: E402
-from nca import LAYER_ZERO, Nca, RomfsImage, copy_out, nsp_ncas, pfs0_entries, write_layers  # noqa: E402
+from nca import LAYER_ZERO, Nca, RomfsImage, copy_out, nsp_ncas, pfs0_entries, romfs_entries, write_layers  # noqa: E402
 
 ZERO = "zero"        # a piece of zeros
+UNSAFE_EXIT = 3      # apply's exit code when unconfirmed bytes are in files the game loads (build_game.py)
+UNSAFE_BASE = ("The game given as the base most likely has an earlier update merged into it, and the 13.0.5 update "
+               "cannot be rebuilt over it exactly: some of the game's files would be wrong, and the game would crash. "
+               "Set it up again with the game's original release (1.0.0, as dumped, with no update merged in) and the "
+               "13.0.5 update next to it, or with a dump of the game that has 13.0.5 merged in.")
 DUMP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dump")
 NODE = 0x4000        # bucket tree node size
 
@@ -610,26 +623,122 @@ def unconfirmed(patch, digests):
 
 
 def verify(patch, cfg, report=None):
-    """Check every block of the RomFS that `cfg` describes against the update's hash tree."""
+    """Check every block of the RomFS that `cfg` describes against the update's hash tree;
+    `report`: romfs.unverified.txt, written (report_unverified) or removed."""
     img = RomfsImage(cfg)
     digests, t0 = bytearray(), time.time()
-    for b in range(patch.blocks):
-        data = img.read(b * patch.block, patch.block)
-        if len(data) < patch.block:
-            data += bytes(patch.block - len(data))
-        digests += hashlib.sha256(data).digest()
-        if b % 200000 == 0 and b:
-            log(f"  verified {b:,} of {patch.blocks:,} blocks ({time.time() - t0:.0f}s)")
+    try:
+        for b in range(patch.blocks):
+            data = img.read(b * patch.block, patch.block)
+            if len(data) < patch.block:
+                data += bytes(patch.block - len(data))
+            digests += hashlib.sha256(data).digest()
+            if b % 200000 == 0 and b:
+                log(f"  verified {b:,} of {patch.blocks:,} blocks ({time.time() - t0:.0f}s)")
+    finally:
+        img.close()
     bad = unconfirmed(patch, bytes(digests))
     log(f"{patch.blocks - len(bad):,} of {patch.blocks:,} blocks match the update's hash tree; {len(bad)} do not")
     if report:
-        if bad:
-            with open(report, "w", newline="\n") as f:
-                f.write("# 16 KB blocks of the updated RomFS whose bytes are unconfirmed: <block> <image offset>\n")
-                f.writelines(f"{b} {b * patch.block:#x}\n" for b in bad)
-        elif os.path.exists(report):
-            os.remove(report)
+        report_unverified(cfg, bad, patch.block, report)
     return bad
+
+
+class UnsafeData(SystemExit):
+    """Unconfirmed bytes inside files the game loads: the install stops (exit code UNSAFE_EXIT)."""
+
+    def __init__(self, message):
+        super().__init__(UNSAFE_EXIT)
+        self.message = message
+
+
+def held_in(cfg, blocks, block_size):
+    """What of the game's data each block of the RomFS image that `cfg` describes holds:
+    {block: [(loaded, text)]}; loaded: whether the game reads those bytes (a file of data.arc's
+    file section, data.arc's header or file table, another file of the RomFS). The music and
+    movies (data.arc's streams) are listed but not counted: wrong bytes there are heard or seen,
+    not a crash. data.arc stores only hashes of its paths: a file is named by its path's hash40."""
+    img = RomfsImage(cfg)
+    try:
+        entries = list(romfs_entries(img))
+        others = [(off, off + size, f"RomFS file {path}") for path, off, size in entries if path != "data.arc" and size]
+        others.append((0, struct.unpack("<10Q", img.read(0, 0x50))[9], "the RomFS's own header and tables"))
+        arc_at = data_arc_offset(img)
+        arc_end = arc_at + next(size for path, _off, size in entries if path == "data.arc")
+        arc, why, files, streams = None, "", [], []
+        try:
+            arc = Arc(lambda off, n: img.read(arc_at + off, n))
+        except SystemExit as e:   # (data.arc's own table among the wrong bytes)
+            why = str(e.code)
+        if arc:
+            tables = arc.header[4]
+            data_start, _decomp, comp, _ = struct.unpack("<4I", arc.read(tables, 16))
+            files.append((0, 0x38, "data.arc's header"))
+            files.append((tables, tables + data_start + comp, "data.arc's file table"))
+            names = defaultdict(set)
+            for (h, region), (o, st, _sz, _fl) in arc.files_by_path().items():
+                if st:
+                    names[(o, st)].add(f"{h:#012x}" + (f" (region {region})" if region else ""))
+            for o, st, _sz, _fl in arc.reachable():
+                if st:
+                    names.setdefault((o, st), set())
+            for (o, st), paths in names.items():
+                files.append((o, o + st, f"file data.arc+{o:#x} ({st:#x} bytes): " +
+                              ("path hash40 " + ", ".join(sorted(paths)) if paths else "reached by no path of its own")))
+            for (h, variant), (o, size) in arc.streams().items():
+                if size:
+                    streams.append((o, o + size, f"stream data.arc+{o:#x} ({size:#x} bytes): hash40 {h:#012x}"
+                                    + (f" (variant {variant})" if variant else "") + ", music or a movie"))
+        files.sort()
+        starts = [f[0] for f in files]
+        reach = list(itertools.accumulate((f[1] for f in files), max))   # (the furthest end so far)
+        out = {}
+        for b in blocks:
+            s, e = b * block_size, (b + 1) * block_size
+            found = [(True, text) for a, z, text in others if a < e and s < z]
+            if arc_at < e and s < arc_end:
+                if arc is None:
+                    found.append((True, f"data.arc, whose file table could not be read ({why})"))
+                a, z = s - arc_at, e - arc_at
+                i, hits = bisect.bisect_left(starts, z) - 1, []
+                while i >= 0 and reach[i] > a:
+                    if files[i][1] > a:
+                        hits.append((True, files[i][2]))
+                    i -= 1
+                found += reversed(hits)
+                found += [(False, text) for o, oe, text in streams if o < z and a < oe]
+            out[b] = found
+        return out
+    finally:
+        img.close()
+
+
+def report_unverified(cfg, bad, block_size, report):
+    """romfs.unverified.txt: each unconfirmed block, its image offset, and what it holds
+    (held_in) - or no file, when every block is confirmed. Returns the blocks inside files the
+    game loads."""
+    if not bad:
+        if os.path.exists(report):
+            os.remove(report)
+        return []
+    held = held_in(cfg, bad, block_size)
+    loaded = [b for b in bad if any(ld for ld, _ in held[b])]
+    with open(report, "w", newline="\n") as f:
+        f.write("# 16 KB blocks of the updated RomFS whose bytes are unconfirmed: <block> <image offset>, then what\n"
+                "# each holds, indented: \"loaded\" (the game reads it) or \"listed\" (music, movies, padding)\n"
+                f"# {len(bad)} blocks, {len(loaded)} inside files the game loads\n")
+        for b in bad:
+            f.write(f"{b} {b * block_size:#x}\n")
+            for ld, text in held[b] or [(False, "no file: padding between files")]:
+                f.write(f"  {'loaded' if ld else 'listed'} {text}\n")
+    for b in loaded:
+        log(f"  block {b} ({b * block_size:#x}): " + "; ".join(text for ld, text in held[b] if ld))
+    return loaded
+
+
+def unsafe_message(bad, loaded, report):
+    return (f"{len(bad)} blocks of 16 KB of the updated game data could not be confirmed, {len(loaded)} of them inside "
+            f"files the game loads (listed in {report}). " + UNSAFE_BASE)
 
 
 def write_patch_data(patch, path, end):
@@ -694,8 +803,23 @@ def apply_romfs(patch, base_cfg, keydir, dump):
     with open(cfg, "w", newline="\n") as f:
         f.write(f"layered\n{map_path}\n{b.base_path}\n{bin_path}\n")
     log(f"wrote {cfg}; verifying the result as the runtime will read it:")
-    bad = verify(patch, cfg, os.path.join(modules, "romfs.unverified.txt"))
-    log(f"done in {time.time() - t0:.0f}s" + (f"; unconfirmed blocks listed in {modules}/romfs.unverified.txt" if bad else ""))
+    bad = check_result(patch, cfg, os.path.join(modules, "romfs.unverified.txt"))
+    log(f"done in {time.time() - t0:.0f}s")
+    return bad
+
+
+def check_result(patch, cfg, report):
+    """The updated RomFS verified, its unconfirmed blocks listed in `report`; with any inside a
+    file the game loads, romfs.cfg is set aside (romfs.cfg.unsafe: nothing starts the game with
+    it, and the build's next run applies the update again) and the install stops (UnsafeData).
+    Returns the unconfirmed blocks."""
+    bad = verify(patch, cfg)
+    loaded = report_unverified(cfg, bad, patch.block, report)
+    if bad:
+        log(f"unconfirmed blocks listed in {report}")
+    if loaded:
+        os.replace(cfg, cfg + ".unsafe")
+        raise UnsafeData(unsafe_message(bad, loaded, report))
     return bad
 
 
@@ -715,14 +839,23 @@ def main():
     ap.add_argument("--inner", help="the update's Program NCA inside the package, by name (a package can hold the "
                                     "game and its update together; without it, the Program NCA with a patch RomFS)")
     a = ap.parse_args()
-    if a.cmd == "apply":
-        if not a.base:
-            raise SystemExit("apply needs --base <the base's romfs.cfg>")
-        apply(a)
-    else:
-        patch = Patch(a.nsp, a.keys, a.inner)
-        modules = os.path.join(a.dump, "modules")
-        sys.exit(1 if verify(patch, os.path.join(modules, "romfs.cfg"), os.path.join(modules, "romfs.unverified.txt")) else 0)
+    try:
+        if a.cmd == "apply":
+            if not a.base:
+                raise SystemExit("apply needs --base <the base's romfs.cfg>")
+            apply(a)
+        else:
+            patch = Patch(a.nsp, a.keys, a.inner)
+            modules = os.path.join(a.dump, "modules")
+            cfg, report = os.path.join(modules, "romfs.cfg"), os.path.join(modules, "romfs.unverified.txt")
+            bad = verify(patch, cfg)
+            loaded = report_unverified(cfg, bad, patch.block, report)
+            if loaded:
+                raise UnsafeData(unsafe_message(bad, loaded, report))
+            sys.exit(1 if bad else 0)
+    except UnsafeData as e:
+        print(f"\n{e.message}", file=sys.stderr, flush=True)
+        sys.exit(UNSAFE_EXIT)
 
 
 if __name__ == "__main__":

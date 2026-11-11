@@ -6,6 +6,7 @@ from pathlib import Path
 import hashlib
 import struct
 import sys
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -110,6 +111,128 @@ class OpenTests(unittest.TestCase):
             self.open([(4, 12)])
         self.assertIn('WindowSmash needs version 13.0.5 of the game, and this update takes some of its hashes from '
                       'the original release', str(e.exception.code))
+
+
+# ---- the blocks left unconfirmed: what of the game's data each holds -----------------------------
+FILE_DATA = 0x100   # where the made-up RomFS's file data starts
+ARC = 0x400         # data.arc: the first file, this long; other.bin after it
+TABLE = 0x40        # data.arc's file table: [0x40, 0x70)
+FILE_A, FILE_B, STREAM = 0x100, 0x140, 0x200   # (data.arc offsets) a file by path, a file no path names, a stream
+
+
+def romfs(files):
+    """A RomFS image (header, one root folder, `files` [(name, data)] in it, the data from FILE_DATA)."""
+    meta, at, out = bytearray(), 0, bytearray()
+    for k, (name, data) in enumerate(files):
+        raw = name.encode()
+        entry_size = 0x20 + (len(raw) + 3) // 4 * 4
+        sibling = len(meta) + entry_size if k + 1 < len(files) else 0xFFFFFFFF
+        meta += struct.pack('<IIQQII', 0, sibling, at, len(data), 0, len(raw)) + raw + bytes(-len(raw) % 4)
+        out += data
+        at += len(data)
+    dirs = struct.pack('<6I', 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0)
+    head = struct.pack('<10Q', 0x50, 0x50, 0, 0x50, len(dirs), 0x50 + len(dirs), 0, 0x50 + len(dirs), len(meta), FILE_DATA)
+    tables = head + dirs + bytes(meta)
+    return tables + bytes(FILE_DATA - len(tables)) + bytes(out)
+
+
+class FakeArc:
+    """data.arc's tables as update.held_in reads them (the real table is tens of MB, zstd)."""
+    header = (0, 0, 0, 0, TABLE, 0, 0)
+
+    def __init__(self, read):
+        self.read = lambda off, n: struct.pack('<4I', 0x10, 0x40, 0x20, 0) if off == TABLE else read(off, n)
+
+    def files_by_path(self):
+        return {(0x2A0B1C2D3E, 0): (FILE_A, 0x40, 0x80, 3), (0x2A0B1C2D3E, 1): (FILE_A, 0x40, 0x80, 3)}
+
+    def reachable(self):
+        return [(FILE_A, 0x40, 0x80, 3), (FILE_B, 0x20, 0x20, 0)]
+
+    def streams(self):
+        return {(0x1F00000001, 0): (STREAM, 0x100)}
+
+
+class UnverifiedFilesTests(unittest.TestCase):
+    """romfs.unverified.txt names what each unconfirmed block holds; one inside a file the game
+    loads stops the install (a player's merged base: LoupeSubstance's models wrong, a crash at boot)."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory(prefix='update-unverified-')
+        self.addCleanup(self.dir.cleanup)
+        top = Path(self.dir.name)
+        (top / 'rom.bin').write_bytes(b'\xAA' * 0x10 + romfs([('data.arc', bytes(ARC)), ('other.bin', bytes(0x40))]))
+        self.cfg = top / 'romfs.cfg'
+        self.cfg.write_text(f"{top / 'rom.bin'}\n16\n")   # (the image 16 bytes into its file)
+        self.report = top / 'romfs.unverified.txt'
+        patcher = mock.patch.object(update, 'Arc', FakeArc)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def block(self, arc_offset):
+        return (FILE_DATA + arc_offset) // BS
+
+    def held(self, *blocks):
+        return update.held_in(str(self.cfg), list(blocks), BS)
+
+    def test_what_each_block_holds(self):
+        a, b, pad, stream = self.block(FILE_A), self.block(FILE_B), self.block(0x180), self.block(STREAM)
+        other = (FILE_DATA + ARC) // BS
+        held = self.held(a, b, pad, stream, other, 0, self.block(0), self.block(TABLE))
+        self.assertEqual(held[a], [(True, 'file data.arc+0x100 (0x40 bytes): path hash40 0x2a0b1c2d3e, 0x2a0b1c2d3e (region 1)')])
+        self.assertEqual(held[b], [(True, 'file data.arc+0x140 (0x20 bytes): reached by no path of its own')])
+        self.assertEqual(held[pad], [])
+        self.assertEqual(held[stream], [(False, 'stream data.arc+0x200 (0x100 bytes): hash40 0x1f00000001, music or a movie')])
+        self.assertEqual(held[other], [(True, 'RomFS file other.bin')])
+        self.assertEqual(held[0], [(True, "the RomFS's own header and tables")])
+        self.assertEqual(held[self.block(0)], [(True, "data.arc's header")])
+        self.assertEqual(held[self.block(TABLE)], [(True, "data.arc's file table")])
+
+    def test_an_unreadable_file_table(self):
+        def broken(read):
+            raise SystemExit('data.arc does not begin as the game\'s does')
+        with mock.patch.object(update, 'Arc', broken):
+            held = self.held(self.block(0x180))
+        self.assertEqual(held[self.block(0x180)], [(True, "data.arc, whose file table could not be read (data.arc does not "
+                                                          "begin as the game's does)")])
+
+    def test_the_report(self):
+        a, pad, stream = self.block(FILE_A), self.block(0x180), self.block(STREAM)
+        loaded = update.report_unverified(str(self.cfg), [a, pad, stream], BS, str(self.report))
+        self.assertEqual(loaded, [a])
+        lines = self.report.read_text().splitlines()
+        body = [l for l in lines if not l.startswith('#')]
+        self.assertEqual(body, [f'{a} {a * BS:#x}', '  loaded file data.arc+0x100 (0x40 bytes): path hash40 0x2a0b1c2d3e, '
+                                '0x2a0b1c2d3e (region 1)',
+                                f'{pad} {pad * BS:#x}', '  listed no file: padding between files',
+                                f'{stream} {stream * BS:#x}', '  listed stream data.arc+0x200 (0x100 bytes): hash40 0x1f00000001, '
+                                'music or a movie'])
+        self.assertIn('# 3 blocks, 1 inside files the game loads', lines)
+        # (the runtime counts the lines that start with a digit: runtime/hle_fs.c rom_unverified_note)
+        self.assertEqual(sum(1 for l in lines if l[:1].isdigit()), 3)
+        self.assertEqual(update.report_unverified(str(self.cfg), [], BS, str(self.report)), [])
+        self.assertFalse(self.report.exists())   # (every block confirmed: no report)
+
+    def check(self, bad):
+        patch = types.SimpleNamespace(block=BS)
+        with mock.patch.object(update, 'verify', lambda p, cfg: bad):
+            return update.check_result(patch, str(self.cfg), str(self.report))
+
+    def test_harmless_blocks_go_on(self):
+        self.assertEqual(self.check([self.block(0x180), self.block(STREAM)]), [self.block(0x180), self.block(STREAM)])
+        self.assertTrue(self.cfg.exists())
+        self.assertTrue(self.report.exists())
+
+    def test_a_loaded_file_stops_the_install(self):
+        with self.assertRaises(update.UnsafeData) as e:
+            self.check([self.block(FILE_A), self.block(STREAM)])
+        self.assertEqual(e.exception.code, update.UNSAFE_EXIT)
+        self.assertIn('2 blocks of 16 KB of the updated game data could not be confirmed, 1 of them inside files the game '
+                      'loads', e.exception.message)
+        self.assertIn('original release (1.0.0', e.exception.message)
+        self.assertFalse(self.cfg.exists())   # (set aside: nothing starts the game with it, the next build applies again)
+        self.assertTrue(Path(str(self.cfg) + '.unsafe').exists())
+        self.assertTrue(self.report.exists())
 
 
 if __name__ == '__main__':
