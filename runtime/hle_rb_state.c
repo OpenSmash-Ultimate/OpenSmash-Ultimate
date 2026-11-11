@@ -394,7 +394,7 @@ static void sm_protect(void *at, u64 len, DWORD prot) {
  * on it, whatever is saved or loaded. sm_unc: the shadow's copy is not committed (a lazy page's, or one a load
  * decommitted since). SSBU_RB_LAZY_SHADOW=0: off (the shadow keeps a copy of every page, as before). */
 static int lazy_want = -1;
-static long long lazy_filled, lazy_lost;
+static long long lazy_filled, lazy_lost, lazy_between;   /* (lazy_between: lazy pages given their copy between fights) */
 static int sm_ap_lazy(const u8 *p) { return sm_unc && sm_alias(p) && (sm_unc[sm_ap(p) >> 6] >> (sm_ap(p) & 63) & 1); }   /* (its shadow copy not committed) */
 /* (sm_lock held) Alias page a: its shadow copy committed, and memory's bytes in it if it was lazy. */
 static void lazy_fill_locked(u64 a) {
@@ -404,8 +404,16 @@ static void lazy_fill_locked(u64 a) {
     if (!c) return;
     u8 *sh = c->copy + (p - c->base);
     if (!VirtualAlloc(sh, 0x1000, MEM_COMMIT, PAGE_READWRITE)) rt_fatal("rollback: cannot commit a page of the shadow (error %lu)", (unsigned long)GetLastError());
-    if (sm_bit(sm_lazy, a)) { memcpy(sh, p, 0x1000); sm_lazy[a >> 6] &= ~(1ull << (a & 63)); lazy_filled++; InterlockedDecrement64(&lazy_pages); }
+    int was_lazy = sm_bit(sm_lazy, a);
+    if (was_lazy) { memcpy(sh, p, 0x1000); sm_lazy[a >> 6] &= ~(1ull << (a & 63)); lazy_filled++; InterlockedDecrement64(&lazy_pages); }
     sm_unc[a >> 6] &= ~(1ull << (a & 63));
+    /* (between fights a cold page is a lazy one and nothing else: once it has its copy it is writable and not cold -
+     * else a page decommitted and committed again, read-write, kept its cold mark into the next fight, whose state map
+     * then took it for a shared one while it was written without a fault, and a load did not put it back) */
+    if (!sm_on && sm_bit(sm_cold, a)) {
+        sm_cold[a >> 6] &= ~(1ull << (a & 63));
+        if (was_lazy) { DWORD old; VirtualProtect(p, 0x1000, PAGE_READWRITE, &old); lazy_between++; }
+    }
 }
 static void shadow_ensure(Chunk *c, const u8 *p) {
     (void)c;
@@ -472,16 +480,16 @@ void rb_guest_writing(void *p, u64 n) {
 /* (fighter registry and the like: writing the page would not fault for good) */
 int rb_page_cold(const void *p) { return (sm_on || lazy_pages) && sm_is_cold(p); }
 /* A page read-write now (committed since, by the game or by a load): hot, whatever its bit said. */
-static void sm_present(const u8 *p) {
-    if (!sm_on || !sm_alias(p)) return;
+static void sm_present(const u8 *p) {   /* (between fights too: a cold mark there is a lazy page's, and it is gone) */
+    if (!sm_cold || !sm_alias(p)) return;
     u64 i = sm_ap(p);
     AcquireSRWLockExclusive(&sm_lock);
     sm_cold[i >> 6] &= ~(1ull << (i & 63));
     sm_hot[i >> 6] |= 1ull << (i & 63);
     ReleaseSRWLockExclusive(&sm_lock);
 }
-static void sm_gone(const u8 *p) {   /* a page decommitted: its protection went with it */
-    if (!sm_on || !sm_alias(p)) return;
+static void sm_gone(const u8 *p) {   /* a page decommitted: its protection went with it (between fights too) */
+    if (!sm_cold || !sm_alias(p)) return;
     u64 i = sm_ap(p);
     AcquireSRWLockExclusive(&sm_lock);
     sm_cold[i >> 6] &= ~(1ull << (i & 63));
@@ -690,7 +698,7 @@ static void settle_page(u8 *p, int now, int to_shadow) {
         /* (a lazy page gone from memory without rb_shadow_note first: its bytes are lost. Never seen; the states
          * before this save can't be rebuilt then - dropped, as when memory runs out for an undo record) */
         AcquireSRWLockExclusive(&sm_lock);
-        if (sm_bit(sm_lazy, sm_ap(p))) { sm_lazy[sm_ap(p) >> 6] &= ~(1ull << (sm_ap(p) & 63)); InterlockedDecrement64(&lazy_pages); lazy_lost++; if (to_shadow) undo_lost = 1; }
+        if (sm_bit(sm_lazy, sm_ap(p))) { sm_lazy[sm_ap(p) >> 6] &= ~(1ull << (sm_ap(p) & 63)); sm_cold[sm_ap(p) >> 6] &= ~(1ull << (sm_ap(p) & 63)); InterlockedDecrement64(&lazy_pages); lazy_lost++; if (to_shadow) undo_lost = 1; }
         ReleaseSRWLockExclusive(&sm_lock);
     }
     Chunk *c = chunk_of(p, now && to_shadow);   /* (no chunk: no page of it present in the shadow) */
@@ -1442,7 +1450,11 @@ static u64 shadow_mismatches(u64 *first, u64 *layout_bad) {
                 (*layout_bad)++; continue;
             }
             if (was && is_skip_page(p)) continue;   /* (left out: SSBU_RB_SKIP_GPU) */
-            if (was && sm_lazy && sm_alias(p) && sm_bit(sm_lazy, sm_ap(p))) continue;   /* (read-only since the shadow left it: the same) */
+            if (was && sm_lazy && sm_alias(p) && sm_bit(sm_lazy, sm_ap(p))) {   /* (read-only since the shadow left it: the same) */
+                if (m.State == MEM_COMMIT && m.Protect == PAGE_READONLY) continue;
+                if (!n) *first = (u64)(uintptr_t)p;   /* (writable: it may have changed, and its copy is gone - a desync) */
+                n++; continue;
+            }
             if (was && memcmp(p, shadow_page(c, p), 0x1000)) { if (!n) *first = (u64)(uintptr_t)p; n++; }
         }
     }
@@ -1490,18 +1502,30 @@ static void sm_begin(u64 before) {
         if (g && *g) { int v = atoi(g); sm_group = v >= 1 && v <= 512 && !(v & (v - 1)) ? v : 16; }
     }
     if (!sm_veh) sm_veh = AddVectoredExceptionHandler(1, sm_fault);
-    u64 cold = 0, hot = 0;
+    u64 cold = 0, hot = 0, stale = 0;
     AcquireSRWLockExclusive(&sm_lock);
     for (u32 i = 0; i < nchunks; i++) {
         Chunk *c = chunk_map[chunk_ids[i]];
         if (c->kind != K_ALIAS) continue;
         u64 b = sm_ap(c->base), end = (u64)(uintptr_t)c->base + (1ull << CH_SHIFT);
+        /* (hot marks from between the fights - shared pages opened by a write or the system - say nothing now: hot is
+         * what the write watch found written since the save before. Kept, fight 2 began with 114,000 hot pages, 445 MB
+         * the shadow did not share) */
+        for (u32 w = 0; w < CH_PAGES / 64; w++) sm_hot[(b >> 6) + w] = 0;
         for (u64 p = watch_rb_next((u64)(uintptr_t)c->base, end, before); p < end; p = watch_rb_next(p + 0x1000, end, before)) {
             u64 k = sm_ap((void *)(uintptr_t)p);
             sm_hot[k >> 6] |= 1ull << (k & 63);
         }
         if (skip_gpu == 2 && sm_gpu)   /* (the GPU's memory read-only whole, the semaphores' pages but: a CPU write to it faults - SSBU_RB_SKIP_GPU=2) */
             for (u32 w = 0; w < CH_PAGES / 64; w++) sm_hot[(b >> 6) + w] &= ~(sm_gpu[(b >> 6) + w] & ~(sm_gpuw ? sm_gpuw[(b >> 6) + w] : 0));
+        /* (a cold mark left on a hot page or an absent one - from before this fight - goes: a hot page written since a
+         * lazy one is opened, its copy made first; never seen once lazy_fill_locked clears them between fights) */
+        for (u32 k = 0; k < CH_PAGES; k++)
+            if (sm_bit(sm_cold, b + k) && (!is_present(c, k) || sm_bit(sm_hot, b + k))) {
+                stale++;
+                if (is_present(c, k)) sm_open_locked(b + k, b + k + 1);
+                else sm_cold[(b + k) >> 6] &= ~(1ull << ((b + k) & 63));
+            }
         for (u32 k = 0; k < CH_PAGES;) {
             if (!is_present(c, k) || sm_bit(sm_hot, b + k)) { hot += is_present(c, k); k++; continue; }
             u32 e = k;
@@ -1540,7 +1564,7 @@ static void sm_begin(u64 before) {
             if (c->kind != K_ALIAS) continue;
             u64 b = sm_ap(c->base);
             /* (and the copies of pages not there at all: nothing to keep; committed again when one is) */
-#define SM_SHARES(j) (!sm_bit(sm_unc, b + (j)) && (is_present(c, j) ? sm_bit(sm_cold, b + (j)) : 1))
+#define SM_SHARES(j) (!sm_bit(sm_unc, b + (j)) && !sm_bit(sm_hot, b + (j)) && (is_present(c, j) ? sm_bit(sm_cold, b + (j)) : 1))
             for (u32 k = 0; k < CH_PAGES;) {
                 if (!SM_SHARES(k)) { k++; continue; }
                 u32 e = k;
@@ -1561,7 +1585,9 @@ static void sm_begin(u64 before) {
     sm_fights++;
     sm_on_ms = now_ms() - t0;
     fprintf(stderr, "[rb] state map: on for this fight: %llu alias pages cold (read-only, %llu MB), %llu hot, %llu written meanwhile, in %.1f ms; "
-            "the shadow shares %llu MB with memory (%llu MB more this fight)\n", cold, cold >> 8, hot, late, sm_on_ms, (unsigned long long)lazy_pages >> 8, lazied >> 8);
+            "the shadow shares %llu MB with memory (%llu MB more this fight); since the last fight %lld shared pages got their copy back, %llu cold marks were left over\n",
+            cold, cold >> 8, hot, late, sm_on_ms, (unsigned long long)lazy_pages >> 8, lazied >> 8, lazy_between, stale);
+    lazy_between = 0;
 }
 /* Every cold page writable again (any time: nothing is written while it is cold). */
 static void sm_end(void) {

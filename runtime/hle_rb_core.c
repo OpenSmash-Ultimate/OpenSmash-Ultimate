@@ -2132,7 +2132,7 @@ static void tag_find(void) {
             if (!VirtualQuery(G2H(a), &mi, sizeof mi)) break;
             u64 run_end = H2G((u8 *)mi.BaseAddress + mi.RegionSize);
             if (run_end > end) run_end = end;
-            int ok = mi.State == MEM_COMMIT && (mi.Protect & PAGE_READWRITE) && !(mi.Protect & PAGE_GUARD);
+            int ok = mi.State == MEM_COMMIT && (mi.Protect & (PAGE_READWRITE | PAGE_READONLY)) && !(mi.Protect & PAGE_GUARD);   /* (read-only too: the state map's cold pages, kept so between fights; only read here) */
             const u8 *lo = (const u8 *)G2H(a), *he = (const u8 *)G2H(run_end);
             for (const u8 *q = lo + 4; ok && q + 8 <= he && tag_lists < 2; q++) {
                 q = memchr(q, 0xc5, (size_t)(he - q));

@@ -174,9 +174,11 @@ static u32 splice_span(u8 *base, size_t n, const u8 *oldb, u32 old_size, const u
     return hits;
 }
 
+int rb_page_cold(const void *p);   /* (hle_rb_state.c: read-only for the rollback state map, writable all the same) */
 static int span_writable(const MEMORY_BASIC_INFORMATION *m) {
     if (m->State != MEM_COMMIT || (m->Protect & PAGE_GUARD)) return 0;
     DWORD p = m->Protect & 0xFF;
+    if (p == PAGE_READONLY && rb_page_cold(m->BaseAddress)) return 1;   /* (a write faults into the state map, which opens it) */
     return p == PAGE_READWRITE || p == PAGE_EXECUTE_READWRITE || p == PAGE_WRITECOPY || p == PAGE_EXECUTE_WRITECOPY;
 }
 
