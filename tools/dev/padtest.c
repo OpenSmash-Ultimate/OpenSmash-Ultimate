@@ -556,12 +556,32 @@ static void test_stick_taunts(void) {
     CHECK((o.buttons >> N_UP & 1) && o.lx == -32767 && o.ly == 0, "together: the stick taunts, the D-pad walks");
 }
 
+/* The adapter's pipes found from its descriptors, not assumed (official 0x81/0x02, GC Pocket+ 0x82/0x01). */
+static void test_pipes(void) {
+    UCHAR in, out; USHORT len;
+    { UCHAR id[] = {0x81, 0x02}, ty[] = {3, 3}; USHORT sz[] = {37, 6};
+      padusb_pick_pipes(id, ty, sz, 2, &in, &out, &len);
+      CHECK(in == 0x81 && out == 0x02 && len == 37, "official: in 0x%02x out 0x%02x len %u", in, out, len); }
+    { UCHAR id[] = {0x01, 0x82}, ty[] = {3, 3}; USHORT sz[] = {64, 64};
+      padusb_pick_pipes(id, ty, sz, 2, &in, &out, &len);
+      CHECK(in == 0x82 && out == 0x01 && len == 64, "0x82/0x01 in either order: in 0x%02x out 0x%02x len %u", in, out, len); }
+    { UCHAR id[] = {0x83}, ty[] = {3}; USHORT sz[] = {512};
+      padusb_pick_pipes(id, ty, sz, 1, &in, &out, &len);
+      CHECK(in == 0x83 && out == 0 && len == 37, "input only: in 0x%02x out 0x%02x len %u", in, out, len); }
+    { UCHAR id[] = {0x84, 0x05, 0x81, 0x02}, ty[] = {2, 2, 3, 3}; USHORT sz[] = {64, 64, 37, 5};
+      padusb_pick_pipes(id, ty, sz, 4, &in, &out, &len);
+      CHECK(in == 0x81 && out == 0x02, "interrupt wins over bulk: in 0x%02x out 0x%02x", in, out); }
+    padusb_pick_pipes(NULL, NULL, NULL, 0, &in, &out, &len);
+    CHECK(!in && !out, "no pipes: nothing found");
+}
+
 int main(void) {
     test_keyboard();
     test_config();
     test_mapping();
     test_gamecube();
     test_usb();
+    test_pipes();
     test_axes();
     test_sticks();
     test_slots();

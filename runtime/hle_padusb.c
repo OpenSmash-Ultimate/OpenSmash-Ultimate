@@ -260,8 +260,23 @@ static int hid_write(Device *d, const UCHAR *data, int n) {
     return ok;
 }
 
+/* The adapter's pipes from its interface's descriptors, whatever their addresses (the official one:
+ * 0x81 in, 0x02 out; HandHeldLegend's GC Pocket+ and RP2040 adapters: 0x82 / 0x01). The first
+ * interrupt (or, failing that, bulk) pipe each way; *in_len is what a read asks for: the packet size
+ * when it holds a report (37..64), else 37. The output pipe may be missing: it is only the start command and rumble. */
+static void padusb_pick_pipes(const UCHAR *ids, const UCHAR *types, const USHORT *sizes, int n, UCHAR *in, UCHAR *out, USHORT *in_len) {
+    *in = *out = 0; *in_len = 37;
+    for (int want = 3; want >= 2; want--)   /* interrupt first, then bulk */
+        for (int i = 0; i < n; i++) {
+            if (types[i] != want) continue;
+            if ((ids[i] & 0x80) && !*in) { *in = ids[i]; if (sizes[i] >= 37 && sizes[i] <= 64) *in_len = sizes[i]; }
+            else if (!(ids[i] & 0x80) && !*out) *out = ids[i];
+        }
+}
+
 static int dev_write(Device *d, const UCHAR *data, int n) {
     if (!d->usb) return hid_write(d, data, n);
+    if (!d->out) return 0;
     ULONG put = 0;
     return api.UsbWrite(d->usb, d->out, (UCHAR *)data, (ULONG)n, &put, NULL) && put == (ULONG)n;
 }
@@ -498,7 +513,7 @@ static DWORD WINAPI device_thread(LPVOID param) {
         int n = -1;
         if (d->usb) {   /* the adapter through WinUSB */
             ULONG got = 0;
-            if (api.UsbRead(d->usb, d->in, buf, 37, &got, NULL)) n = (int)got;
+            if (api.UsbRead(d->usb, d->in, buf, d->in_len, &got, NULL)) n = (int)got;
             else if (GetLastError() == ERROR_SEM_TIMEOUT) n = 0;
         } else {        /* a HID interface */
             DWORD got = 0;
@@ -600,17 +615,21 @@ static int open_device(Device *d, const Found *f, const wchar_t *bulk_path) {
             return 0;
         }
         UsbInterfaceDescriptor desc;
+        UCHAR ids[16], types[16];
+        USHORT sizes[16];
+        int np = 0;
         if (api.UsbInterface(d->usb, 0, &desc))
-            for (UCHAR e = 0; e < desc.endpoints; e++) {
+            for (UCHAR e = 0; e < desc.endpoints && np < 16; e++) {
                 WinUsbPipe p;
-                if (!api.UsbPipe(d->usb, 0, e, &p) || p.type != 3) continue;
-                if (p.id & 0x80) d->in = p.id;
-                else d->out = p.id;
+                if (!api.UsbPipe(d->usb, 0, e, &p)) continue;
+                ids[np] = p.id; types[np] = (UCHAR)p.type; sizes[np++] = p.max_packet;
             }
-        if (!d->in || !d->out) { fprintf(stderr, "[input] GameCube adapter: no interrupt pipes\n"); close_device(d); return 0; }
+        padusb_pick_pipes(ids, types, sizes, np, &d->in, &d->out, &d->in_len);
+        if (!d->in) { fprintf(stderr, "[input] GameCube adapter: no input pipe\n"); close_device(d); return 0; }
+        if (!d->out) fprintf(stderr, "[input] GameCube adapter: no output pipe: no start command and no rumble, reading as it streams\n");
         ULONG timeout = 100;
         api.UsbPolicy(d->usb, d->in, PIPE_TIMEOUT_POLICY, sizeof timeout, &timeout);
-        api.UsbPolicy(d->usb, d->out, PIPE_TIMEOUT_POLICY, sizeof timeout, &timeout);
+        if (d->out) api.UsbPolicy(d->usb, d->out, PIPE_TIMEOUT_POLICY, sizeof timeout, &timeout);
         WinUsbSetup protocol = {0x21, 11, 1, 0, 0};   /* (HID SET_PROTOCOL: other brands' adapters need it) */
         ULONG got = 0;
         api.UsbControl(d->usb, protocol, NULL, 0, &got, NULL);

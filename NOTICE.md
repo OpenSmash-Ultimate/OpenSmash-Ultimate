@@ -58,7 +58,7 @@ Controller input can use [SDL3](https://www.libsdl.org/) (Simple DirectMedia Lay
 
 SDL3 is an external dependency: this repository contains no SDL source files or binaries. The runtime is compiled against the headers of the official SDL3 Windows development package (`deps/SDL3`, which `OpenSmash.exe` downloads from SDL's GitHub releases, or `SSBU_SDL3_DIR`) and loads `SDL3.dll` from the executable's folder at run time. A package that includes `SDL3.dll` should include that package's `LICENSE.txt` too.
 
-[`runtime/hle_padusb.c`](runtime/hle_padusb.c) reads Nintendo's GameCube adapter and the Switch 2 GameCube controller over USB without SDL. It is new code, written for Windows' own USB and HID libraries, but it follows SDL's HIDAPI GameCube and Switch 2 drivers, as its header says: from the Switch 2 driver it takes the controller's start-up commands, flash addresses and stick-calibration layout. SDL's drivers are under the zlib license above.
+[`runtime/hle_padusb.c`](runtime/hle_padusb.c) reads Nintendo's GameCube adapter and the Switch 2 GameCube controller over USB without SDL. It is new code, written for Windows' own USB and HID libraries, but it follows SDL's HIDAPI GameCube and Switch 2 drivers, as its header says: from the Switch 2 driver it takes the controller's start-up commands, flash addresses and stick-calibration layout. SDL's drivers are under the zlib license above. The idea of reading the adapter's pipe addresses from its descriptors (for third-party adapters on 0x82/0x01) comes from Dizi0's ssbu-recomp pull request #139, rewritten here.
 
 ### Python
 
