@@ -48,7 +48,7 @@ namespace OpenSmash.Launcher
             Directory.CreateDirectory(workDir);
             ExtractResources(workDir);
 
-            // On its own (the release's OpenSmash Setup.exe, or OpenSmash.exe anywhere): the folder set up before,
+            // On its own (the release's OpenSmash.exe, or OpenSmash.exe anywhere): the folder set up before,
             // or the first-start screen, which downloads the project and makes the shortcuts. Then the launcher
             // copied into that folder takes over, so everything starts from there as from a copy of the repo.
             if (!ProjectSetup.IsProject(repo))

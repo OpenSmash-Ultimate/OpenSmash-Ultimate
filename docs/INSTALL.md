@@ -15,7 +15,7 @@ This is the short path from nothing to playing, on Windows 10 or 11. The game is
 
 ## Install
 
-1. Download **[OpenSmash Setup.exe](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/download/v0.3.0-alpha.3/OpenSmash-Setup.exe)** from the [latest release](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) (GitHub names the file `OpenSmash-Setup.exe`; `OpenSmash-Setup.exe.sha256` beside it is its checksum) and run it. That one file is all you need: it does the rest.
+1. Download **[OpenSmash.exe](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/download/v0.3.0-alpha.3/OpenSmash.exe)** from the [latest release](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) (GitHub names the file `OpenSmash.exe`; `OpenSmash.exe.sha256` beside it is its checksum) and run it. That one file is all you need: it does the rest.
 
    Windows may warn that the publisher cannot be verified: choose **Run** (or **More info**, then **Run anyway**).
 2. The setup asks where OpenSmash goes. The default is an `OpenSmash` folder next to the setup file (or the setup's own folder, when the file is alone in a folder of its own); **Browse** picks another. Choose a drive with about 60 GB free, not the Desktop or Documents (cloud sync and long paths cause trouble). A folder that already has other files in it is never filled without asking: the setup offers a new folder inside it instead. **Download and set up** then:
@@ -24,7 +24,7 @@ This is the short path from nothing to playing, on Windows 10 or 11. The game is
    - makes the shortcuts, if their boxes are ticked: **OpenSmash** (the launcher) and **Play SSBU** (the game straight away once it is built) on the desktop and in a Start menu folder named OpenSmash;
    - opens the launcher from the folder, which shows the installer window below while no game is built.
 
-   Already have a copy (a ZIP from the **Code** button, extracted, or a `git clone`)? Press **I already have it** and choose its folder, or run `Install WindowSmash.bat` in it. The setup remembers the folder, so running the setup file again later opens the launcher there.
+   Already have a copy (a ZIP from the **Code** button, extracted, or a `git clone`)? Press **I already have it** and choose its folder, or run `OpenSmash.exe` in it. The setup remembers the folder, so running the setup file again later opens the launcher there.
 3. In the installer window, point it at your files. It looks in yuzu's and Ryujinx's folders by itself and shows a line under each entry saying what it found.
    - **Game files**: the folder with your game (`.xci`, `.nsp`, `.nca`), its 13.0.5 update, and any DLC.
    - **Keys**: the folder with `prod.keys` and `title.keys`.
@@ -34,7 +34,7 @@ This is the short path from nothing to playing, on Windows 10 or 11. The game is
    **Check files** re-reads the folders. If the game is not 13.0.5, the line turns red and tells you what to add; **Set up and build** will not go on until it is fixed.
 4. Choose the options on the right: a desktop shortcut, the Windows Firewall rule (asks for administrator rights once; needed to play online), preparing shaders after the build (you pick low, medium or high; it stops the first-time stutter), checking for updates first, accepting Microsoft's license terms for the compiler download (about 570 MB), and the number of compiler jobs (fewer keeps the PC usable). Click **Set up and build**.
 5. Wait: **30 minutes to a few hours**. You can keep using the PC. If it stops or you close it, run the installer again: finished steps are skipped and it carries on. Everything it prints goes to `install.log`.
-6. When it finishes, the launcher opens. Press **Play**, or later use the **OpenSmash** or **Play SSBU** shortcut, `OpenSmash.exe`, or `Play SSBU.bat`.
+6. When it finishes, the launcher opens. Press **Play**, or later use the **OpenSmash** or **Play SSBU** shortcut, `OpenSmash.exe`, or `OpenSmash.exe`.
 
 ## Update
 
@@ -43,8 +43,8 @@ OpenSmash is updated from GitHub's `main` branch, not from release files.
 - The launcher checks when it opens. Open **Settings**, then the **Update** tab, to check again. If a newer version exists it says how many new commits there are; apply it from there.
 - Applying runs the repository's installer in update mode: changed files are replaced, and your game files, settings, save and builds are left as they are. Then press **Play**, which rebuilds what changed (minutes, not hours).
 - A copy with local changes is not updated automatically; update it with `git`, or use a clean download. A development checkout whose commit is not on `main` cannot be checked.
-- Running `Install WindowSmash.bat` again also brings the folder up to date and builds again.
-- To replace an old `OpenSmash.exe`, take the one from the newest release (compare its SHA-256 with `OpenSmash.exe.sha256`), or run `Build Launcher.bat` with the .NET 8 SDK installed.
+- Running `OpenSmash.exe` again also brings the folder up to date and builds again.
+- To replace an old `OpenSmash.exe`, take the one from the newest release (compare its SHA-256 with `OpenSmash.exe.sha256`), or run `toolsuild_launcher.ps1` with the .NET 8 SDK installed.
 
 ## Mods
 
@@ -52,7 +52,7 @@ Mods (skins, stages, music, movesets, new fighters from GameBanana, or a `.zip` 
 
 ## Online
 
-`Play SSBU.bat` and the launcher start the game joined to the online lobby; if the lobby does not answer, the game plays offline. Set your name and lobby in the launcher's **Settings → Online** tab, or in the game (<kbd>Esc</kbd> → **Online**). Players only meet when they run the same game version (13.0.5) and the same mods. Rooms with a code, LAN rooms and rollback netplay are explained in the [multiplayer guide](MULTIPLAYER.md). Allow the game through Windows Firewall (the installer option above) or direct connections will fail and matches use the relay.
+`OpenSmash.exe` and the launcher start the game joined to the online lobby; if the lobby does not answer, the game plays offline. Set your name and lobby in the launcher's **Settings → Online** tab, or in the game (<kbd>Esc</kbd> → **Online**). Players only meet when they run the same game version (13.0.5) and the same mods. Rooms with a code, LAN rooms and rollback netplay are explained in the [multiplayer guide](MULTIPLAYER.md). Allow the game through Windows Firewall (the installer option above) or direct connections will fail and matches use the relay.
 
 ## If something goes wrong
 

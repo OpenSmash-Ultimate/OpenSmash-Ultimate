@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-The window Play SSBU.bat opens before the game: the game version, online, display and controller
+The window OpenSmash.exe opens before the game: the game version, online, display and controller
 settings, then Play.
 
 .DESCRIPTION
@@ -11,9 +11,9 @@ their comments and every line it does not change:
   online_server.txt the first line that is not a '#' comment: host:port [lobby code], or off
   online_name.txt   the online name (empty: the game picks one at its first online start)
   online_direct.txt on / off: direct connections
-  launcher.ini      show_launcher = 0: Play SSBU.bat starts the game directly (hold Shift for this window)
+  launcher.ini      show_launcher = 0: OpenSmash.exe starts the game directly (hold Shift for this window)
 They are in config\ once the game has made that folder (runtime/config_folder.h), in the port's folder before.
-Play saves only the values changed in the window, then starts what Play SSBU.bat starts: the game
+Play saves only the values changed in the window, then starts what OpenSmash.exe starts: the game
 with --online, its output in build\play.log. Close starts nothing and saves nothing. The game
 version shown is version.txt's (what the build wrote: 13.0.5).
 
@@ -21,10 +21,10 @@ The ini writer follows the game's own (runtime/hle_settings.c, settings_ini_set)
 tests/test_launcher_ini.py checks the two give the same files.
 
 Exit codes: 0 played or closed, 1 the game isn't built here, 2 the window could not be opened
-(Play SSBU.bat then starts the game the old way).
+(OpenSmash.exe then starts the game the old way).
 
 .PARAMETER Auto
-What Play SSBU.bat passes: start the game directly when launcher.ini says show_launcher = 0 and
+What OpenSmash.exe passes: start the game directly when launcher.ini says show_launcher = 0 and
 Shift is not held; otherwise open the window.
 .PARAMETER DryRun
 Print the files Play would change and the command line it would start, and change or start nothing.
@@ -44,7 +44,7 @@ $Defaults = @{
     window = 'windowed'; width = '1280'; height = '720'; pacing = 'clock'; latency = '3'
     hide_cursor = '1'; overlay = '1'; gpu = 'auto'; render_scale = '1'; keyboard_player = '1'; background = '1'
 }
-# What Play SSBU.bat clears, so the files count (the variables win over them in the game).
+# What OpenSmash.exe clears, so the files count (the variables win over them in the game).
 $ClearedVars = @('SSBU_DATA_ROOT', 'SSBU_INPUT', 'SSBU_NET_HOST', 'SSBU_NET_RELAY', 'SSBU_NET_BIND',
                  'SSBU_NET_ROOM', 'SSBU_NET_NAME', 'SSBU_NET_DIRECT', 'SSBU_NET_PORT')
 
@@ -250,7 +250,7 @@ function Get-GameVersion([string]$Dir) {
 }
 
 function Get-GameCommand {
-    <# What Play SSBU.bat runs, inside start "SSBU log" /min cmd /c "...". #>
+    <# What OpenSmash.exe runs, inside start "SSBU log" /min cmd /c "...". #>
     return 'build\ssbu.exe dump\modules --status 30 --online > build\play.log 2>&1'
 }
 
@@ -575,7 +575,7 @@ function Save-WindowValues($Before, $Now) {
             continue
         }
         if ($file -eq $launcherIni -and -not (Test-Path -LiteralPath $file)) {
-            [IO.File]::WriteAllText($file, "; launcher.ini: the window Play SSBU.bat opens (tools\launcher.ps1).`r`n" +
+            [IO.File]::WriteAllText($file, "; launcher.ini: the window OpenSmash.exe opens (tools\launcher.ps1).`r`n" +
                 "; show_launcher = 0: start the game directly; hold Shift while starting to see the window.`r`n", [Text.Encoding]::ASCII)
         }
         [void](Set-IniValue $file $section $key $v)

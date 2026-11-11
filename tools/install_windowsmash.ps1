@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Sets WindowSmash up on this PC in one go: what "Install WindowSmash.bat" runs.
+Sets WindowSmash up on this PC in one go: what "OpenSmash.exe" runs.
 
 .DESCRIPTION
 Steps, each skipped when it is already done, so running it again carries on where it stopped:
@@ -195,7 +195,7 @@ function Get-RemovedPaths {
 }
 
 function Get-LobbyLine {
-    <# The line of an online_server.txt that Play SSBU.bat reads (the first that is not empty or a
+    <# The line of an online_server.txt that OpenSmash.exe reads (the first that is not empty or a
        comment): @{Address; Code; Index}, or $null. #>
     param([string[]]$Lines)
     for ($i = 0; $i -lt $Lines.Count; $i++) {
@@ -1575,7 +1575,7 @@ function Step-Build {
 function Step-Launcher {
     # The OpenSmash launcher (OpenSmash.exe): the one window for playing, settings and mods. Built here when the
     # .NET 8 SDK is on this PC (tools\build_launcher.ps1); otherwise taken from the organisation's latest release,
-    # checked against the SHA-256 published beside it. Without either, Play SSBU.bat keeps its own window.
+    # checked against the SHA-256 published beside it. Without either, OpenSmash.exe keeps its own window.
     $exe = Join-Path $Root 'OpenSmash.exe'
     if (Test-Path -LiteralPath $exe) { Write-Info 'launcher: OpenSmash.exe is here'; return }
     if ($DryRun) { Write-Would 'build or download OpenSmash.exe (the launcher)'; return }
@@ -1594,14 +1594,14 @@ function Step-Launcher {
         Move-Item -LiteralPath $tmp -Destination $exe -Force
         Write-Info 'launcher: OpenSmash.exe downloaded and checked'
     } catch {
-        Write-Warn "launcher: not available ($($_.Exception.Message)); Play SSBU.bat opens its own window instead (Build Launcher.bat builds OpenSmash.exe with the .NET 8 SDK)"
+        Write-Warn "launcher: not available ($($_.Exception.Message)); OpenSmash.exe opens its own window instead (toolsuild_launcher.ps1 builds OpenSmash.exe with the .NET 8 SDK)"
     }
 }
 
 function Step-Shaders {
     param([hashtable]$Answers, [bool]$Built)
     Write-Step '[10/10] Shaders'
-    if (-not $Answers.Shaders) { Write-Info 'not wanted (launchers\Prepare Shaders.bat does it any time)'; return }
+    if (-not $Answers.Shaders) { Write-Info 'not wanted (`python tools\shader_aot.py` does it any time)'; return }
     if ($DryRun -or -not $Built) { Write-Would 'ask low, medium, or high, then compile the shaders in this window'; return }
     Write-Host ''
     Write-Host 'How hard should this PC work on the shaders? low keeps it usable, high finishes sooner.'
@@ -1614,7 +1614,7 @@ function Step-Shaders {
     Write-Info "shader priority: $choice"
     $py = @((Join-Path $Root 'tools\shader_aot.py'), '--priority', $choice)
     if ((Invoke-Python $py) -ne 0) {
-        Write-Warn 'the shader compile stopped (see above). What finished is kept; launchers\Prepare Shaders.bat runs the rest.'
+        Write-Warn 'the shader compile stopped (see above). What finished is kept; `python tools\shader_aot.py` runs the rest.'
     }
 }
 

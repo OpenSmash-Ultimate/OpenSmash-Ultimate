@@ -117,7 +117,7 @@ try {
     } else {
         [IO.File]::Move($temporary, $cfg)
     }
-    Write-Host 'Game-data setup complete. Run Play SSBU.bat.'
+    Write-Host 'Game-data setup complete. Run OpenSmash.exe.'
 } catch {
     Write-Host ('ERROR: ' + $_.Exception.Message) -ForegroundColor Red
     exit 1
