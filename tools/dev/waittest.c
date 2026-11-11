@@ -36,6 +36,7 @@
 static BOOL seen_set_priority(HANDLE thread, int priority);
 #define SetThreadPriority seen_set_priority
 #include "../../runtime/kernel.c"
+void rb_shadow_note(u64 at, u64 size) { (void)at; (void)size; }   /* (hle_rb_state.c: the rollback shadow's shared pages) */
 #undef SetThreadPriority
 #include "../../runtime/clock.h"
 
