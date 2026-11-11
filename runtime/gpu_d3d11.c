@@ -76,6 +76,8 @@ typedef struct Surface {
     ID3D11Texture2D *tex;
     ID3D11RenderTargetView *rtv;
     ID3D11DepthStencilView *dsv;
+    ID3D11DepthStencilView *dsv_ro;       /* depth: the same, read-only, so a draw can sample it while it is bound */
+    int sampled_bound;                    /* depth: a draw sampled it while it was its depth target */
     ID3D11ShaderResourceView *srv;
     ID3D11ShaderResourceView *srv_other;  /* 8-bit colour: the other reading of the bytes (sRGB / plain) */
     u64 used;
@@ -153,9 +155,10 @@ static DXGI_FORMAT depth_format(u32 f, DXGI_FORMAT *typeless) {
 static void release_views(Surface *s) {
     if (s->rtv) ID3D11RenderTargetView_Release(s->rtv);
     if (s->dsv) ID3D11DepthStencilView_Release(s->dsv);
+    if (s->dsv_ro) ID3D11DepthStencilView_Release(s->dsv_ro);
     if (s->srv) ID3D11ShaderResourceView_Release(s->srv);
     if (s->srv_other) ID3D11ShaderResourceView_Release(s->srv_other);
-    s->rtv = NULL; s->dsv = NULL; s->srv = NULL; s->srv_other = NULL;
+    s->rtv = NULL; s->dsv = NULL; s->dsv_ro = NULL; s->srv = NULL; s->srv_other = NULL;
 }
 
 static void release_surface(Surface *s) {
@@ -213,6 +216,13 @@ static void make_views(Surface *s, DXGI_FORMAT view) {
     if (s->depth) {
         D3D11_DEPTH_STENCIL_VIEW_DESC dd = {view, D3D11_DSV_DIMENSION_TEXTURE2D, 0};
         ID3D11Device_CreateDepthStencilView(dev, (ID3D11Resource *)s->tex, &dd, &s->dsv);
+        /* Read-only: Direct3D unbinds (reads as zero) a texture of a draw whose depth target is the
+         * same surface and writable. Soft particles sample the depth buffer they are tested against
+         * with depth writes off (the KO zooms' backgrounds, smoke, ...). */
+        dd.Flags = D3D11_DSV_READ_ONLY_DEPTH |
+                   (view == DXGI_FORMAT_D24_UNORM_S8_UINT || view == DXGI_FORMAT_D32_FLOAT_S8X24_UINT ? D3D11_DSV_READ_ONLY_STENCIL : 0);
+        ID3D11Device_CreateDepthStencilView(dev, (ID3D11Resource *)s->tex, &dd, &s->dsv_ro);
+        s->sampled_bound = 0;
         DXGI_FORMAT sampled = depth_sampled(view);
         if (sampled != DXGI_FORMAT_UNKNOWN) s->srv = make_srv(s->tex, sampled);
     } else {
@@ -3319,6 +3329,7 @@ static void texture_index_add(Texture *t) {
 }
 
 static int depth_sampling = -1;   /* depth buffers as textures (shadow maps, ...); SSBU_NO_DEPTH_SAMPLING or F5: off */
+static Surface *depth_sampled_now;   /* the depth surface get_texture last gave (bind_resources, gfx_draw) */
 
 /* Block-compressed textures whose size is not a multiple of the 4x4 block: Direct3D 11 makes
  * level 0 whole blocks, and a texture a few texels bigger is sampled wrongly at its right and
@@ -3499,6 +3510,7 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
         if (!rt || s->used > rt->used) rt = s;
     }
     if (rt && draw_logging) note_sampled(rt);
+    if (rt && rt->depth) depth_sampled_now = rt;
     if (rt) { *scale = rt->sx; return surface_srv(rt, (int)d.srgb); }
     if (!ok || d.type == TIC_1D_BUFFER || d.bytes == 0) { warn_texture(&d); return NULL; }
     u32 layers = d.type == TIC_CUBE ? 6 : d.type == TIC_CUBE_ARRAY ? 6 * d.depth : d.type == TIC_2D_ARRAY || d.type == TIC_1D_ARRAY ? d.depth : 1;
@@ -4053,6 +4065,20 @@ static void set_samplers(int stage, u32 count, ID3D11SamplerState *const *v) {
 }
 
 /* Bind a stage's constant buffers and textures. */
+/* A 24-bit depth buffer read as a texture: the hardware gives the depth in green and the stencil in
+ * red (S8Z24), the view here the depth in red - the texture header's swizzle has its red and green
+ * swapped to match. The game's depth reads ask for green (the soft particles' fade by depth, the KO
+ * finish zoom's background among them), which read 0 here before. */
+static u32 depth_green_red(u32 swz) {
+    u32 out = 0;
+    for (int i = 0; i < 4; i++) {
+        u32 c = (swz >> (3 * i)) & 7;
+        out |= (c == 3 ? 2u : c == 2 ? 3u : c) << (3 * i);
+    }
+    return out;
+}
+static int depth_24bit(u32 zeta_format) { return zeta_format == 0x14 || zeta_format == 0x15 || zeta_format == 0x16; }
+
 static void bind_resources(const u32 *regs, const CbBinding cb[STAGES][18], int stage, const Shader *s, DrawParams *params) {
     int mstage = stage == SHADER_VERTEX ? STAGE_VERTEX : STAGE_FRAGMENT;
     ID3D11ShaderResourceView *srv[18] = {0};
@@ -4154,9 +4180,13 @@ static void bind_resources(const u32 *regs, const CbBinding cb[STAGES][18], int 
         read_gpu(tic_pool + tic_index * 32ull, 32, tic);
         read_gpu(tsc_pool + tsc_index * 32ull, 32, tsc);
         float scale;
+        Surface *depth_before = depth_sampled_now;
+        depth_sampled_now = NULL;
         tex[k] = get_texture(tic, s->info.tex[k].type, &scale);
         if (k < 16) smp[k] = get_sampler(tsc);
         params->swz[stage][k] = (tic[0] >> 19) & 0xFFF;
+        if (depth_sampled_now && depth_24bit(depth_sampled_now->format)) params->swz[stage][k] = depth_green_red(params->swz[stage][k]);
+        if (!depth_sampled_now) depth_sampled_now = depth_before;
         /* a render target's render scale, 4.12 fixed point in the top half (0: 1), for the few
          * programs that step in texels (gpu_shader.c: tsc_) */
         if (scale != 1.0f) params->swz[stage][k] |= (u32)(scale * 4096.0f + 0.5f) << 16;
@@ -4311,10 +4341,18 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
         Surface *sf = surface(gpu_va_to_guest(va), regs[M_CT(ct) + 2], regs[M_CT(ct) + 3], regs[M_CT(ct) + 4], 0);
         if (sf) { rtv[i] = sf->rtv; if (!rt_w) { rt_w = sf->width; rt_h = sf->height; rt_sx = sf->sx; rt_sy = sf->sy; } }
     }
+    Surface *zsf = NULL;
+    /* a draw that writes neither depth nor stencil keeps its depth target read-only, so that it can
+     * sample it too (soft particles); one known to sample it gets the read-only view from the start */
+    int depth_read_only = !(regs[M_DEPTH_WRITE] & 1) && !(regs[M_STENCIL_TEST] & 1);
     if (regs[M_ZT_SELECT] & 1) {
         u64 va = (u64)regs[M_ZT_A] << 32 | regs[M_ZT_A + 1];
         Surface *sf = surface(gpu_va_to_guest(va), regs[M_ZT_SIZE], regs[M_ZT_SIZE + 1], regs[M_ZT_A + 2], 1);
-        if (sf) { dsv = sf->dsv; if (!rt_w) { rt_w = sf->width; rt_h = sf->height; rt_sx = sf->sx; rt_sy = sf->sy; } }
+        if (sf) {
+            zsf = sf;
+            dsv = depth_read_only && sf->sampled_bound && sf->dsv_ro ? sf->dsv_ro : sf->dsv;
+            if (!rt_w) { rt_w = sf->width; rt_h = sf->height; rt_sx = sf->sx; rt_sy = sf->sy; }
+        }
     }
     if (!rt_w) { gfx_stat_skipped++; gfx_skip_target++; leave(); return; }
     /* (a render target bound as a texture of the same draw is unbound by D3D: fine) */
@@ -4540,8 +4578,19 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
     params.base[0] = regs[M_GLOBAL_BASE_VERTEX];
     params.base[1] = regs[M_GLOBAL_BASE_INSTANCE] + instance_counter;
 
+    depth_sampled_now = NULL;
     bind_resources(regs, cb, SHADER_VERTEX, vs, &params);
     if (ps) bind_resources(regs, cb, SHADER_PIXEL, ps, &params);
+    if (zsf && depth_sampled_now == zsf && dsv == zsf->dsv && depth_read_only && zsf->dsv_ro) {
+        /* the first such draw: its depth texture was refused while the target was writable */
+        zsf->sampled_bound = 1;
+        dsv = zsf->dsv_ro;
+        ID3D11DeviceContext_OMSetRenderTargets(ctx, 8, rtv, dsv);
+        cur.dsv = dsv;
+        forget_resource_bindings();
+        bind_resources(regs, cb, SHADER_VERTEX, vs, &params);
+        if (ps) bind_resources(regs, cb, SHADER_PIXEL, ps, &params);
+    }
 
     /* per-draw parameters */
     if (!params_buffer) {

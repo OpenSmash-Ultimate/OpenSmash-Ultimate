@@ -3084,6 +3084,13 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
         /* (Direct3D 11 binds 16 samplers: the rest are its default one) */
         b->smp[k] = k < 16 ? get_sampler(tsc) : s->info.tex[k].shadow ? default_compare : default_sampler;
         params->swz[stage][k] = (tic[0] >> 19) & 0xFFF;
+        /* a 24-bit depth buffer: the hardware's depth is green (S8Z24), this view's red (gpu_d3d11.c) */
+        const Surface *z = b->sampled[k];
+        if (z && z->depth && (z->format == 0x14 || z->format == 0x15 || z->format == 0x16)) {
+            u32 sw = params->swz[stage][k], out = 0;
+            for (int i = 0; i < 4; i++) { u32 c = (sw >> (3 * i)) & 7; out |= (c == 3 ? 2u : c == 2 ? 3u : c) << (3 * i); }
+            params->swz[stage][k] = out;
+        }
         if (scale != 1.0f) params->swz[stage][k] |= (u32)(scale * 4096.0f + 0.5f) << 16;
     }
     if (vk_timing) vk_ns_res[2] += (rt_clock_ns() - t0) * TIMING_EVERY;
