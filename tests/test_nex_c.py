@@ -351,6 +351,7 @@ if HAVE_CLANG:
     TicketsAgainstC = with_tee(test_hardening.Tickets, skip=SKIP_TICKETS)
     LiteTicketsAgainstC = with_tee(test_hardening.LiteTickets)
     RankedAgainstC = with_tee(test_hardening.Ranked)
+    PowersAgainstC = with_tee(test_hardening.Powers)
     ArenasAgainstC = with_tee(test_arenas.Arenas)
     MatchmakingWsAgainstC = with_tee(test_hardening.Matchmaking, WsTeeNet, skip=SKIP_MM)
     ArenasWsAgainstC = with_tee(test_arenas.Arenas, WsTeeNet)

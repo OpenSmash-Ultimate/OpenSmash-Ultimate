@@ -567,12 +567,14 @@ static void server_message(NexServer *s, NexConn *c, const uint8_t *data, size_t
     if (!fn) fn = nex_ranked_handler(m.protocol, m.method);
     int served = c->secure ? m.protocol != 10 && c->pid && nex_by_pid(s, c->pid) == c : m.protocol == 10;
     NexOut reply = {0};
+    char hex[2 * 64 + 4] = "";   /* (the start of its parameters, as tools/nex shows them; none of logging in's,
+                                    which carry the account's token) */
+    size_t hn = m.protocol == 10 ? 0 : m.n < 64 ? m.n : 64;
+    for (size_t i = 0; i < hn; i++) snprintf(hex + 2 * i, 3, "%02x", m.body[i]);
+    if (m.n > hn) strcat(hex, "..");
+    if (fn && served && m.protocol == 115 && m.method != 8)   /* (DataStore: each call, as tools/nex logs them) */
+        nex_log(s, 1, "DataStore method %u from pid %llu: %s", m.method, (unsigned long long)c->pid, m.n ? hex : "(nothing)");
     if (!fn || !served) {
-        char hex[2 * 48 + 4] = "";   /* (the start of its parameters, as tools/nex shows them; none of logging in's,
-                                        which carry the account's token) */
-        size_t hn = m.protocol == 10 ? 0 : m.n < 48 ? m.n : 48;
-        for (size_t i = 0; i < hn; i++) snprintf(hex + 2 * i, 3, "%02x", m.body[i]);
-        if (m.n > hn) strcat(hex, "..");
         nex_log(s, 1, "%s protocol %u method %u from pid %llu: %s", fn ? "not served there:" : "UNHANDLED", m.protocol, m.method, (unsigned long long)c->pid, hex);
         rmc_error(&reply, m.protocol, m.call_id, NEX_CORE_NOT_IMPLEMENTED);
     } else {
@@ -1064,9 +1066,61 @@ static uint32_t ds_get_meta(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
     if (t.err) return NEX_EINVAL;
     return NEX_DATASTORE_NOT_FOUND;
 }
+/* ---- fighter records: DataStore 82 posts one, 84 gives them back (tools/nex/services.py Powers) ---- */
+#define MAX_POWER_ENTRIES 4096
+static uint64_t power_pid(const uint8_t *e) { uint64_t v = 0; for (int i = 7; i >= 0; i--) v = v << 8 | e[i]; return v; }
+static int power_put(NexServer *s, uint64_t pid, const uint8_t *rec) {
+    for (int i = 0; i < s->npowers; i++) {
+        uint8_t *e = s->powers + (size_t)i * NEX_POWER_ENTRY;
+        if (power_pid(e) == pid && e[8] == rec[0]) { memcpy(e + 8, rec, NEX_POWER_RECORD); return 1; }
+    }
+    if (s->npowers >= MAX_POWER_ENTRIES) return 0;
+    if (s->npowers == s->cappowers) {
+        s->cappowers = s->cappowers ? s->cappowers * 2 : 16;
+        s->powers = realloc(s->powers, (size_t)s->cappowers * NEX_POWER_ENTRY);
+        if (!s->powers) abort();
+    }
+    uint8_t *e = s->powers + (size_t)s->npowers++ * NEX_POWER_ENTRY;
+    for (int i = 0; i < 8; i++) e[i] = (uint8_t)(pid >> (8 * i));
+    memcpy(e + 8, rec, NEX_POWER_RECORD);
+    return 1;
+}
+const uint8_t *nex_server_powers(NexServer *s, size_t *n) { *n = (size_t)s->npowers * NEX_POWER_ENTRY; return s->powers; }
+void nex_server_set_powers(NexServer *s, const uint8_t *data, size_t n) {
+    for (size_t at = 0; at + NEX_POWER_ENTRY <= n; at += NEX_POWER_ENTRY) power_put(s, power_pid(data + at), data + at + 8);
+}
+/* 115/82 (SSBU's own) {u8 fighter, u32, u32, u32, DateTime, u32} -> nothing: one of the player's fighter records
+ * (its GSP), posted as a match is set up and after it; kept */
+static uint32_t ds_post_power(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
+    (void)out;
+    NexIn p = ni_struct(in, NULL);
+    if (in->err) return NEX_EINVAL;
+    if (p.end - p.p != NEX_POWER_RECORD) return NEX_CORE_INVALID_ARGUMENT;
+    const uint8_t *r = p.d + p.p;
+    nex_log(s, 1, "pid %llu: fighter %u's record: %u %u %u", (unsigned long long)c->pid, r[0],
+            (unsigned)(r[1] | r[2] << 8 | r[3] << 16 | (uint32_t)r[4] << 24),
+            (unsigned)(r[5] | r[6] << 8 | r[7] << 16 | (uint32_t)r[8] << 24),
+            (unsigned)(r[9] | r[10] << 8 | r[11] << 16 | (uint32_t)r[12] << 24));
+    if (power_put(s, c->pid, r) && s->io.powers_changed) s->io.powers_changed(s->io.ctx);
+    return 0;
+}
+/* 115/84 -> Map<u8 fighter, the records 82 posts> (by fighter), then a structure {u32, u32, u32, u64}: zeros */
 static uint32_t ds_84(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
-    (void)s; (void)c; (void)in;
-    no_u32(out, 0);
+    (void)in;
+    const uint8_t *mine[256] = {0};
+    uint32_t count = 0;
+    for (int i = 0; i < s->npowers; i++) {
+        const uint8_t *e = s->powers + (size_t)i * NEX_POWER_ENTRY;
+        if (power_pid(e) == c->pid && !mine[e[8]]) { mine[e[8]] = e + 8; count++; }
+    }
+    no_u32(out, count);
+    for (int f = 0; f < 256; f++) {
+        if (!mine[f]) continue;
+        no_u8(out, (uint32_t)f);
+        size_t at = no_struct_begin(out, 0);
+        no_put(out, mine[f], NEX_POWER_RECORD);
+        no_struct_end(out, at);
+    }
     size_t at = no_struct_begin(out, 0);
     no_u32(out, 0); no_u32(out, 0); no_u32(out, 0); no_u64(out, 0);
     no_struct_end(out, at);
@@ -1090,7 +1144,7 @@ static uint32_t ds_95(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
 }
 
 static NexHandler core_handler(uint32_t protocol, uint32_t method) {
-    static const uint8_t ds_no_reply[] = {3, 6, 11, 18, 22, 26, 31, 32, 37, 38, 41, 51, 56, 57, 58, 74, 76, 78, 79, 82, 83, 86, 89, 91, 92, 94, 96, 97};
+    static const uint8_t ds_no_reply[] = {3, 6, 11, 18, 22, 26, 31, 32, 37, 38, 41, 51, 56, 57, 58, 74, 76, 78, 79, 83, 86, 89, 91, 92, 94, 96, 97};
     switch (protocol) {
     case 10:
         if (method == 6) return tg_validate_with_param;
@@ -1118,6 +1172,7 @@ static NexHandler core_handler(uint32_t protocol, uint32_t method) {
         if (method == 8) return ds_get_meta;
         if (method == 60 || method == 61) return u32_zero;
         if (method == 84) return ds_84;
+        if (method == 82) return ds_post_power;
         if (method == 21) return ds_post_meta_binary;
         if (method == 95) return ds_95;
         for (size_t i = 0; i < sizeof ds_no_reply; i++) if (method == ds_no_reply[i]) return read_all_reply;
@@ -1160,6 +1215,7 @@ void nex_server_free(NexServer *s) {
     free(s->pia);
     free(s->identity);
     nex_ranked_free(s);
+    free(s->powers);
     free(s->arena.p);
     if (s->store.destroy) s->store.destroy(s->store.ctx);
     free(s);

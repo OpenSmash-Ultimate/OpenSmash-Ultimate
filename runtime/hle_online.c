@@ -304,12 +304,42 @@ static const char *nex_part_of(void *ctx, u32 ip) {   /* (who may meet: game bui
     return part;
 }
 static int nex_on_eos;   /* (its gatherings in EOS Lobbies: net_eos_lobby.c) */
+/* The players' fighter records (their GSP, DataStore 82 / 84) in nex_powers.bin beside the save folder, as
+ * netplay_id.txt: the game asks for them at each login and shows the GSP they hold. */
+static void nex_powers_path(char *path, size_t n) {
+    const char *root = getenv("SSBU_DATA_ROOT");
+    if (root) snprintf(path, n, "%s/nex_powers.bin", root);
+    else snprintf(path, n, "%s/../../nex_powers.bin", rt_data_dir);
+}
+static void nex_powers_load(NexServer *ns) {
+    char path[1024];
+    nex_powers_path(path, sizeof path);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    static u8 buf[NEX_POWER_ENTRY * 4096];
+    size_t n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+    nex_server_set_powers(ns, buf, n);
+}
+static void nex_powers_changed(void *ctx) {   /* (under nex_lock) */
+    (void)ctx;
+    size_t n;
+    const u8 *d = nex_server_powers(nex_srv, &n);
+    char path[1024], tmp[1040];
+    nex_powers_path(path, sizeof path);
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return;
+    int ok = fwrite(d, 1, n, f) == n;
+    ok &= fclose(f) == 0;
+    if (ok) MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING);
+}
 static void nex_log_line(void *ctx, int level, const char *line) { (void)ctx; (void)level; if (net_log()) fprintf(stderr, "[nex] %s\n", line); }
 /* the server, under nex_lock, its clock set (NULL: none could be made) */
 static NexServer *nex_enter(void) {
     AcquireSRWLockExclusive(&nex_lock);
     if (!nex_srv) {
-        NexIo io = {NULL, nex_stream_out, nex_datagram_out, nex_part_of, nex_log_line, NULL, NULL};
+        NexIo io = {NULL, nex_stream_out, nex_datagram_out, nex_part_of, nex_log_line, NULL, NULL, nex_powers_changed};
         nex_on_eos = net_backend == &net_eos_backend;
         nex_srv = nex_server_new(&io, nex_on_eos ? nex_store_eos() : nex_store_local(), net_log());
         /* No idle timeout: the only connections are this game's own, which end when it closes its stream
@@ -319,6 +349,7 @@ static NexServer *nex_enter(void) {
          * frames, 7 s of the game's time, in 40 s), and tools/nex's 40 s without a packet closed a live connection
          * in the middle of a fight (error 2306-0332). */
         if (nex_srv) nex_server_set_idle_timeout(nex_srv, 0);
+        if (nex_srv) nex_powers_load(nex_srv);
         if (net_log()) fprintf(stderr, "[online] the game server is in the game (Online over %s)\n", net_backend == &net_eos_backend ? "EOS" : "SSBU_NEX_LOCAL");
     }
     if (nex_srv) {
