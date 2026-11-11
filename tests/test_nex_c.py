@@ -421,6 +421,19 @@ class Flows(unittest.TestCase):
         t.stream_closed(a.addr, py_server.SECURE_PORT)                 # (the owner gone: c owns it now)
         self.assertTrue(h.call(c, 21, 2, struct.pack('<I', g.gid)).success)
 
+    def test_datastore_answers(self):
+        """DataStore 115/21 (PostMetaBinary: the PID as the data id) and 115/95 (a structure {bool}: false), as the
+        game reads them, the same from both servers."""
+        net = TeeNet()
+        h = test_hardening
+        a = quiet(selftest.login, net, ('10.13.0.2', 49152), 0x3002, 'P2')
+        m = h.call(a, 115, 21, b'\0' + struct.pack('<I', 4) + struct.pack('<I', 7))
+        self.assertTrue(m.success)
+        self.assertEqual(m.body, struct.pack('<Q', a.pid))
+        m = h.call(a, 115, 95, b'')
+        self.assertTrue(m.success)
+        self.assertEqual(m.body, b'\0' + struct.pack('<I', 1) + b'\0')
+
     def test_pids(self):
         c = CServer()
         try:

@@ -19,7 +19,7 @@ def u32(v):
 # Methods whose reply the game does not read (their response parsers are empty): logged, answered
 # with success and nothing else.
 NO_REPLY = {
-    115: (3, 6, 11, 18, 22, 26, 31, 32, 37, 38, 41, 51, 56, 57, 58, 74, 76, 78, 79, 82, 83, 86, 89, 91, 92, 94, 96),
+    115: (3, 6, 11, 18, 22, 26, 31, 32, 37, 38, 41, 51, 56, 57, 58, 74, 76, 78, 79, 82, 83, 86, 89, 91, 92, 94, 96, 97),
     124: (1,),
 }
 
@@ -36,6 +36,8 @@ class Services:
         r(115, 61, self.datastore_61)
         r(115, 60, self.datastore_60)
         r(115, 84, self.datastore_84)
+        r(115, 21, self.datastore_post_meta_binary)
+        r(115, 95, self.datastore_95)
         for protocol, methods in NO_REPLY.items():
             for method in methods:
                 r(protocol, method, self.no_reply(protocol, method))
@@ -105,6 +107,23 @@ class Services:
     # DataStore method 60 (no parameters) -> List of 56-byte structures (parser main+0x28e4b0): none.
     def datastore_60(self, conn, s):
         return u32(0)
+
+    # DataStore.PostMetaBinary(DataStorePreparePostParam) -> u64 data id (13.0.4: request main+0x2679f0, its
+    # parameter written by main+0x28b9b0; answer read by main+0x28cd10, a u64). Nothing is stored: the player's
+    # PID as the id, an object GetMeta then does not find.
+    def datastore_post_meta_binary(self, conn, s):
+        s.struct()
+        self.nex.info(f"{self.nex.name(conn)}: DataStore.PostMetaBinary: data {conn.pid}, not kept")
+        out = StreamOut()
+        out.u64(conn.pid)
+        return out.get()
+
+    # DataStore method 95 (SSBU's own; no parameters, asked at login) -> a structure {bool} (13.0.4: request
+    # main+0x272a40, answer read by main+0x28f390): false.
+    def datastore_95(self, conn, s):
+        out = StreamOut()
+        out.struct(lambda o: o.bool(False))
+        return out.get()
 
     # DataStore method 84 (no parameters) -> a list (main+0x298420), then a structure
     # {u32, u32, u32, u64} (main+0x2852f0): empty, zeros.

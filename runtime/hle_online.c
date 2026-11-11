@@ -312,6 +312,13 @@ static NexServer *nex_enter(void) {
         NexIo io = {NULL, nex_stream_out, nex_datagram_out, nex_part_of, nex_log_line, NULL, NULL};
         nex_on_eos = net_backend == &net_eos_backend;
         nex_srv = nex_server_new(&io, nex_on_eos ? nex_store_eos() : nex_store_local(), net_log());
+        /* No idle timeout: the only connections are this game's own, which end when it closes its stream
+         * (online_stream_close). The game paces its keep-alive pings on its own clock, which in a rollback fight is
+         * the fixed clock (kernel.c rt_ticks: one 60 Hz frame a logic frame, set back by every load): with a slow
+         * link it falls far behind the wall clock (2026-11-11, SSBU_NET_SIM=130,1,15 at 24 fps shown: 431 logic
+         * frames, 7 s of the game's time, in 40 s), and tools/nex's 40 s without a packet closed a live connection
+         * in the middle of a fight (error 2306-0332). */
+        if (nex_srv) nex_server_set_idle_timeout(nex_srv, 0);
         if (net_log()) fprintf(stderr, "[online] the game server is in the game (Online over %s)\n", net_backend == &net_eos_backend ? "EOS" : "SSBU_NEX_LOCAL");
     }
     if (nex_srv) {

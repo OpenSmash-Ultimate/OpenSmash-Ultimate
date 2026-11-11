@@ -115,6 +115,7 @@ struct NexServer {
     NexStore store;
     int verbose;
     double now;
+    double idle_timeout;                /* (seconds without a packet that close a connection; 0: never) */
     uint8_t server_key[16];
     uint8_t sig_key[2][16];             /* the Lite servers': authentication, secure */
     NexConn **conns[2]; int nconns[2], capconns[2];
