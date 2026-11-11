@@ -51,8 +51,10 @@ jobs:
       - name: Linux packages
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang lld llvm
+          # (the runners' Azure apt mirror stopped resolving, 2026-11-11: fall back to archive.ubuntu.com and retry)
+          sudo sed -i 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+          for i in 1 2 3; do sudo apt-get update -qq -o Acquire::Retries=3 && break; sleep 20; done
+          sudo apt-get install -y -qq -o Acquire::Retries=3 clang lld llvm
 
       # bash 5 for the Linux launchers' tests (macOS's own bash is 3.2); an LLVM for tools/linux/toolchain.py
       # (SSBU_LLVM_BIN: it searches for one only on Linux and Windows); 127.0.0.2 for test_ssbu_relay's second
