@@ -410,7 +410,7 @@ class Pages(MenuTest):
         labels = m.labels()
         at = labels.index('Renderer')
         self.assertEqual(m.row('Renderer')['value'], own)
-        self.assertIn('Vulkan on an AMD or NVIDIA card' if os.name == 'nt' else 'Vulkan: in development', m.row('Renderer')['help'])
+        self.assertIn('Vulkan on an AMD, NVIDIA or Intel card' if os.name == 'nt' else 'Vulkan: in development', m.row('Renderer')['help'])
         m.key('DOWN', at)
         self.assertEqual(m.at()['label'], 'Renderer')
         if os.name == 'nt':

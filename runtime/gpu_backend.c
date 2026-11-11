@@ -51,7 +51,7 @@ static BOOL CALLBACK choose(PINIT_ONCE o, PVOID p, PVOID *c) {
     const GfxBackend *b = &D3D11;
     int asked = display_renderer();
 #ifdef _WIN32
-    int automatic = asked == RENDERER_DEFAULT;   /* (auto: Vulkan on an AMD or NVIDIA card) */
+    int automatic = asked == RENDERER_DEFAULT;   /* (auto: Vulkan on an AMD, NVIDIA or Intel card) */
 #else
     int automatic = 0;
 #endif
@@ -64,10 +64,13 @@ static BOOL CALLBACK choose(PINIT_ONCE o, PVOID p, PVOID *c) {
         unsigned vendor = d3d11_card_vendor(name, sizeof name);
         /* (NVIDIA too since 2026-11-11: Vulkan keeps its own pipeline cache, so a second start has every pipeline in about
          * 2 s where Direct3D 11 compiled them again for 200-265 s whenever the driver's cache had dropped them - the owner:
-         * a recompiled game must handle its shaders as a PC game does. Intel and others stay on Direct3D 11.) */
-        if (vendor != amd && vendor != 0x10de) {
-            if (vendor) snprintf(why, sizeof why, "%s is not an AMD or NVIDIA card, Direct3D 11 is the default for it (renderer = vulkan to draw with Vulkan)", name);
-            else snprintf(why, sizeof why, "no graphics card of AMD's or NVIDIA's (gpu = warp, or none listed): Direct3D 11");
+         * a recompiled game must handle its shaders as a PC game does.
+         * Intel too since 2026-11-11 (#81): Intel's Direct3D 11 driver draws the fight wrong - red light over the fighters
+         * and the stage around them, no damage numbers and no timer (Raptor Lake UHD, driver 32.0.101.7088, both checked
+         * headless on Green Hill Zone) - where its Vulkan driver draws it as NVIDIA's does. Others stay on Direct3D 11.) */
+        if (vendor != amd && vendor != 0x10de && vendor != 0x8086) {
+            if (vendor) snprintf(why, sizeof why, "%s is not an AMD, NVIDIA or Intel card, Direct3D 11 is the default for it (renderer = vulkan to draw with Vulkan)", name);
+            else snprintf(why, sizeof why, "no graphics card of AMD's, NVIDIA's or Intel's (gpu = warp, or none listed): Direct3D 11");
             gfx_renderer_chosen(RENDERER_DEFAULT, why);
             automatic = 0;
         }
