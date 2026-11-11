@@ -11,140 +11,30 @@
  *
  * Every EOS call is made on this file's own thread (the SDK is not thread-safe): it ticks the SDK every
  * millisecond, sends what eos_send() queued and hands what arrives to net_eos_packet() (net_relay.c).
- * SSBU_EOS_NEWID=1 (tests: a second player on the same PC) makes a new Device ID first. */
+ * SSBU_EOS_NEWID=1 (tests: a second player on the same PC) makes a new Device ID first. Other files have work done on
+ * that thread with eos_post(); P2P channel 1 (reliable, ordered: eos_send_reliable) carries net_eos_lobby.c's messages,
+ * channel 0 the game's datagrams. SSBU_EOS_RELAY=force (tests: two games on one PC as over the internet) sends every
+ * P2P packet through Epic's relay servers, never straight. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "host.h"
 #include "net_eos.h"
+#include "net_eos_sdk.h"
+#include "net_nex.h"
 
 #ifdef _WIN32
 #include <windows.h>
 #pragma comment(lib, "winmm.lib")
 
-typedef int32_t EOS_Bool;
-typedef int32_t EOS_EResult;
-typedef struct EOS_PlatformHandle *EOS_HPlatform;
-typedef struct EOS_ConnectHandle *EOS_HConnect;
-typedef struct EOS_P2PHandle *EOS_HP2P;
-typedef struct EOS_ProductUserIdDetails *EOS_ProductUserId;
-typedef struct EOS_ContinuanceTokenDetails *EOS_ContinuanceToken;
-typedef uint64_t EOS_NotificationId;
-#define EOS_CALL __stdcall
-enum { EOS_SUCCESS = 0, EOS_INVALID_USER = 3, EOS_ECT_DEVICEID_ACCESS_TOKEN = 10, EOS_PR_UNRELIABLE_UNORDERED = 0 };
-#define EOS_PF_DISABLE_OVERLAY 0x2ull
-
-typedef struct { int32_t ApiVersion; void *Alloc, *Realloc, *Release; const char *ProductName, *ProductVersion; void *Reserved, *SystemInitializeOptions, *OverrideThreadAffinity; } EosInitializeOptions;   /* (API 5) */
-typedef struct { const char *ClientId, *ClientSecret; } EosClientCredentials;
-typedef struct {   /* (API 15) */
-    int32_t ApiVersion; void *Reserved; const char *ProductId, *SandboxId; EosClientCredentials ClientCredentials; EOS_Bool bIsServer;
-    const char *EncryptionKey, *OverrideCountryCode, *OverrideLocaleCode, *DeploymentId; uint64_t Flags; const char *CacheDirectory;
-    uint32_t TickBudgetInMilliseconds; const void *RTCOptions; void *IntegratedPlatformOptionsContainerHandle; const void *SystemSpecificOptions; double *TaskNetworkTimeoutSeconds;
-} EosPlatformOptions;
-typedef struct { int32_t ApiVersion; const char *Token; int32_t Type; } EosConnectCredentials;                 /* (API 1) */
-typedef struct { int32_t ApiVersion; const char *DisplayName, *NsaIdToken; } EosUserLoginInfo;                   /* (API 2) */
-typedef struct { int32_t ApiVersion; const EosConnectCredentials *Credentials; const EosUserLoginInfo *UserLoginInfo; } EosLoginOptions;   /* (API 2) */
-typedef struct { EOS_EResult ResultCode; void *ClientData; EOS_ProductUserId LocalUserId; EOS_ContinuanceToken ContinuanceToken; } EosLoginInfo;
-typedef struct { int32_t ApiVersion; EOS_ContinuanceToken ContinuanceToken; } EosCreateUserOptions;              /* (API 1) */
-typedef struct { EOS_EResult ResultCode; void *ClientData; EOS_ProductUserId LocalUserId; } EosCreateUserInfo;
-typedef struct { int32_t ApiVersion; const char *DeviceModel; } EosCreateDeviceIdOptions;                      /* (API 1) */
-typedef struct { int32_t ApiVersion; } EosDeleteDeviceIdOptions;                                               /* (API 1) */
-typedef struct { EOS_EResult ResultCode; void *ClientData; } EosDeviceIdInfo;                                  /* (create and delete) */
-typedef struct { int32_t ApiVersion; char SocketName[33]; } EosSocketId;                                       /* (API 1) */
-typedef struct { int32_t ApiVersion; EOS_ProductUserId LocalUserId, RemoteUserId; const EosSocketId *SocketId; uint8_t Channel; uint32_t DataLengthBytes;
-                 const void *Data; EOS_Bool bAllowDelayedDelivery; int32_t Reliability; EOS_Bool bDisableAutoAcceptConnection; } EosSendPacketOptions;   /* (API 3) */
-typedef struct { int32_t ApiVersion; EOS_ProductUserId LocalUserId; uint32_t MaxDataSizeBytes; const uint8_t *RequestedChannel; } EosReceivePacketOptions;   /* (API 2) */
-typedef struct { int32_t ApiVersion; EOS_ProductUserId LocalUserId, RemoteUserId; const EosSocketId *SocketId; } EosAcceptOptions;   /* (API 1) */
-typedef struct { int32_t ApiVersion; EOS_ProductUserId LocalUserId; const EosSocketId *SocketId; } EosNotifyRequestOptions;            /* (API 1) */
-typedef struct { void *ClientData; EOS_ProductUserId LocalUserId, RemoteUserId; const EosSocketId *SocketId; } EosRequestInfo;
-
-/* Lobbies (eos_lobby_types.h) */
-typedef struct EOS_LobbyHandle *EOS_HLobby;
-typedef struct EOS_LobbySearchHandle *EOS_HLobbySearch;
-typedef struct EOS_LobbyDetailsHandle *EOS_HLobbyDetails;
-typedef struct EOS_LobbyModificationHandle *EOS_HLobbyModification;
-enum { EOS_AT_INT64 = 1, EOS_AT_STRING = 3, EOS_LAT_PUBLIC = 0, EOS_CO_EQUAL = 0, EOS_CO_GREATERTHANOREQUAL = 3, EOS_LPL_PUBLICADVERTISED = 0,
-       EOS_LMS_JOINED = 0, EOS_LMS_LEFT = 1, EOS_LMS_DISCONNECTED = 2, EOS_LMS_KICKED = 3, EOS_LMS_PROMOTED = 4, EOS_LMS_CLOSED = 5 };
-typedef struct { int32_t ApiVersion; const char *Key; union { int64_t AsInt64; double AsDouble; EOS_Bool AsBool; const char *AsUtf8; } Value; int32_t ValueType; } EosAttrData;   /* (API 1) */
-typedef struct { int32_t ApiVersion; EosAttrData *Data; int32_t Visibility; } EosAttr;
-typedef struct { int32_t ApiVersion; EOS_ProductUserId LocalUserId; uint32_t MaxLobbyMembers; int32_t PermissionLevel; EOS_Bool bPresenceEnabled, bAllowInvites;
-                 const char *BucketId; EOS_Bool bDisableHostMigration, bEnableRTCRoom; const void *LocalRTCOptions; const char *LobbyId; EOS_Bool bEnableJoinById,
-                 bRejoinAfterKickRequiresInvite; const uint32_t *AllowedPlatformIds; uint32_t AllowedPlatformIdsCount; EOS_Bool bCrossplayOptOut; int32_t RTCRoomJoinActionType; } EosCreateLobbyOptions;   /* (API 10) */
-typedef struct { EOS_EResult ResultCode; void *ClientData; const char *LobbyId; } EosLobbyResult;   /* (create, join, update, leave) */
-typedef struct { int32_t ApiVersion; uint32_t MaxResults; } EosCreateSearchOptions;
-typedef struct { int32_t ApiVersion; const EosAttrData *Parameter; int32_t ComparisonOp; } EosSetParameterOptions;
-typedef struct { int32_t ApiVersion; EOS_ProductUserId LocalUserId; } EosFindOptions;
-typedef struct { EOS_EResult ResultCode; void *ClientData; } EosFindInfo;
-typedef struct { int32_t ApiVersion; } EosVersionOnly;
-typedef struct { int32_t ApiVersion; uint32_t Index; } EosIndexOptions;
-typedef struct { int32_t ApiVersion; EOS_HLobbyDetails LobbyDetailsHandle; EOS_ProductUserId LocalUserId; EOS_Bool bPresenceEnabled; const void *LocalRTCOptions;
-                 EOS_Bool bCrossplayOptOut; int32_t RTCRoomJoinActionType; } EosJoinLobbyOptions;   /* (API 5) */
-typedef struct { int32_t ApiVersion; EOS_ProductUserId LocalUserId; const char *LobbyId; } EosLobbyUserOptions;   /* (update modification, leave: API 1) */
-typedef struct { int32_t ApiVersion; const EosAttrData *Attribute; int32_t Visibility; } EosAddAttrOptions;   /* (API 2) */
-typedef struct { int32_t ApiVersion; EOS_HLobbyModification LobbyModificationHandle; } EosUpdateLobbyOptions;
-typedef struct { int32_t ApiVersion; const char *LobbyId; EOS_ProductUserId LocalUserId; } EosCopyDetailsOptions;
-typedef struct { int32_t ApiVersion; EOS_ProductUserId TargetUserId; const char *AttrKey; } EosCopyMemberAttrOptions;
-typedef struct { void *ClientData; const char *LobbyId; EOS_ProductUserId TargetUserId; int32_t CurrentStatus; } EosMemberStatusInfo;
-typedef struct { void *ClientData; const char *LobbyId; EOS_ProductUserId TargetUserId; } EosMemberUpdateInfo;
-typedef void (EOS_CALL *LobbyCb)(const EosLobbyResult *);
-typedef void (EOS_CALL *FindCb)(const EosFindInfo *);
-typedef void (EOS_CALL *MemberStatusCb)(const EosMemberStatusInfo *);
-typedef void (EOS_CALL *MemberUpdateCb)(const EosMemberUpdateInfo *);
-
-typedef void (EOS_CALL *LoginCb)(const EosLoginInfo *);
-typedef void (EOS_CALL *CreateUserCb)(const EosCreateUserInfo *);
-typedef void (EOS_CALL *DeviceIdCb)(const EosDeviceIdInfo *);
-typedef void (EOS_CALL *RequestCb)(const EosRequestInfo *);
-
-#define EOS_FUNCS(X) \
-    X(EOS_EResult, EOS_Initialize, (const EosInitializeOptions *)) \
-    X(EOS_HPlatform, EOS_Platform_Create, (const EosPlatformOptions *)) \
-    X(void, EOS_Platform_Tick, (EOS_HPlatform)) \
-    X(EOS_HConnect, EOS_Platform_GetConnectInterface, (EOS_HPlatform)) \
-    X(EOS_HP2P, EOS_Platform_GetP2PInterface, (EOS_HPlatform)) \
-    X(void, EOS_Connect_Login, (EOS_HConnect, const EosLoginOptions *, void *, LoginCb)) \
-    X(void, EOS_Connect_CreateUser, (EOS_HConnect, const EosCreateUserOptions *, void *, CreateUserCb)) \
-    X(void, EOS_Connect_CreateDeviceId, (EOS_HConnect, const EosCreateDeviceIdOptions *, void *, DeviceIdCb)) \
-    X(void, EOS_Connect_DeleteDeviceId, (EOS_HConnect, const EosDeleteDeviceIdOptions *, void *, DeviceIdCb)) \
-    X(EOS_EResult, EOS_P2P_SendPacket, (EOS_HP2P, const EosSendPacketOptions *)) \
-    X(EOS_EResult, EOS_P2P_ReceivePacket, (EOS_HP2P, const EosReceivePacketOptions *, EOS_ProductUserId *, EosSocketId *, uint8_t *, void *, uint32_t *)) \
-    X(EOS_EResult, EOS_P2P_AcceptConnection, (EOS_HP2P, const EosAcceptOptions *)) \
-    X(EOS_NotificationId, EOS_P2P_AddNotifyPeerConnectionRequest, (EOS_HP2P, const EosNotifyRequestOptions *, void *, RequestCb)) \
-    X(EOS_EResult, EOS_ProductUserId_ToString, (EOS_ProductUserId, char *, int32_t *)) \
-    X(EOS_ProductUserId, EOS_ProductUserId_FromString, (const char *)) \
-    X(const char *, EOS_EResult_ToString, (EOS_EResult)) \
-    X(EOS_HLobby, EOS_Platform_GetLobbyInterface, (EOS_HPlatform)) \
-    X(void, EOS_Lobby_CreateLobby, (EOS_HLobby, const EosCreateLobbyOptions *, void *, LobbyCb)) \
-    X(void, EOS_Lobby_JoinLobby, (EOS_HLobby, const EosJoinLobbyOptions *, void *, LobbyCb)) \
-    X(void, EOS_Lobby_LeaveLobby, (EOS_HLobby, const EosLobbyUserOptions *, void *, LobbyCb)) \
-    X(EOS_EResult, EOS_Lobby_UpdateLobbyModification, (EOS_HLobby, const EosLobbyUserOptions *, EOS_HLobbyModification *)) \
-    X(void, EOS_Lobby_UpdateLobby, (EOS_HLobby, const EosUpdateLobbyOptions *, void *, LobbyCb)) \
-    X(EOS_EResult, EOS_Lobby_CreateLobbySearch, (EOS_HLobby, const EosCreateSearchOptions *, EOS_HLobbySearch *)) \
-    X(EOS_EResult, EOS_Lobby_CopyLobbyDetailsHandle, (EOS_HLobby, const EosCopyDetailsOptions *, EOS_HLobbyDetails *)) \
-    X(EOS_NotificationId, EOS_Lobby_AddNotifyLobbyMemberStatusReceived, (EOS_HLobby, const EosVersionOnly *, void *, MemberStatusCb)) \
-    X(EOS_NotificationId, EOS_Lobby_AddNotifyLobbyMemberUpdateReceived, (EOS_HLobby, const EosVersionOnly *, void *, MemberUpdateCb)) \
-    X(EOS_EResult, EOS_LobbyModification_AddMemberAttribute, (EOS_HLobbyModification, const EosAddAttrOptions *)) \
-    X(EOS_EResult, EOS_LobbyModification_AddAttribute, (EOS_HLobbyModification, const EosAddAttrOptions *)) \
-    X(void, EOS_LobbyModification_Release, (EOS_HLobbyModification)) \
-    X(EOS_EResult, EOS_LobbySearch_SetParameter, (EOS_HLobbySearch, const EosSetParameterOptions *)) \
-    X(void, EOS_LobbySearch_Find, (EOS_HLobbySearch, const EosFindOptions *, void *, FindCb)) \
-    X(uint32_t, EOS_LobbySearch_GetSearchResultCount, (EOS_HLobbySearch, const EosVersionOnly *)) \
-    X(EOS_EResult, EOS_LobbySearch_CopySearchResultByIndex, (EOS_HLobbySearch, const EosIndexOptions *, EOS_HLobbyDetails *)) \
-    X(void, EOS_LobbySearch_Release, (EOS_HLobbySearch)) \
-    X(uint32_t, EOS_LobbyDetails_GetMemberCount, (EOS_HLobbyDetails, const EosVersionOnly *)) \
-    X(EOS_ProductUserId, EOS_LobbyDetails_GetMemberByIndex, (EOS_HLobbyDetails, const EosIndexOptions *)) \
-    X(EOS_EResult, EOS_LobbyDetails_CopyMemberAttributeByKey, (EOS_HLobbyDetails, const EosCopyMemberAttrOptions *, EosAttr **)) \
-    X(void, EOS_LobbyDetails_Release, (EOS_HLobbyDetails)) \
-    X(EOS_ProductUserId, EOS_LobbyDetails_GetLobbyOwner, (EOS_HLobbyDetails, const EosVersionOnly *)) \
-    X(void, EOS_Lobby_Attribute_Release, (EosAttr *))
-#define DECLARE(ret, name, args) static ret (EOS_CALL *p_##name) args;
+#define DECLARE(ret, name, args) ret (EOS_CALL *p_##name) args;
 EOS_FUNCS(DECLARE)
 
-static EOS_HPlatform eos_plat;
+EOS_HPlatform eos_plat;
 static EOS_HConnect eos_con;
 static EOS_HP2P eos_p2p;
-static EOS_ProductUserId eos_me;
+EOS_ProductUserId eos_me;
 static char eos_my_text[NET_EOS_ID_LEN + 8];
 static volatile LONG eos_phase;   /* 0 off, 1 logging in, 2 ready, -1 failed */
 static EosSocketId eos_sock = {1, "opensmash"};
@@ -152,10 +42,14 @@ static HANDLE eos_wake;
 
 /* eos_send's eos_queue: copies, eos_sent on the EOS thread */
 #define QUEUE 256
-static struct { char to[NET_EOS_ID_LEN + 1]; u32 len; u8 data[NET_EOS_MAX]; } eos_queue[QUEUE];
+static struct { char to[NET_EOS_ID_LEN + 1]; u32 len; u8 channel, data[NET_EOS_MAX]; } eos_queue[QUEUE];
 static u32 eos_q_head, eos_q_tail;
 static SRWLOCK eos_q_lock = SRWLOCK_INIT;
 static volatile LONG64 eos_sent, eos_received, eos_dropped;
+/* eos_post's: work for the EOS thread, in order */
+#define POSTS 1024
+static struct { void (*fn)(void *); void *arg; } eos_posts[POSTS];
+static u32 eos_p_head, eos_p_tail;
 
 static void EOS_CALL eos_created(const EosCreateUserInfo *d) {
     if (d->ResultCode == EOS_SUCCESS) { eos_me = d->LocalUserId; InterlockedExchange(&eos_phase, 2); }
@@ -220,7 +114,17 @@ static void eos_pump(void) {   /* (EOS thread) what arrived, then what is queued
         int32_t idn = sizeof id;
         if (p_EOS_ProductUserId_ToString(from, id, &idn) != EOS_SUCCESS) continue;
         InterlockedIncrement64(&eos_received);
-        net_eos_packet(id, buf, n);
+        if (ch == 1) nexeos_packet(id, buf, n);
+        else net_eos_packet(id, buf, n);
+    }
+    for (;;) {   /* (work posted by other threads) */
+        AcquireSRWLockExclusive(&eos_q_lock);
+        if (eos_p_head == eos_p_tail) { ReleaseSRWLockExclusive(&eos_q_lock); break; }
+        u32 k = eos_p_head++ % POSTS;
+        void (*fn)(void *) = eos_posts[k].fn;
+        void *arg = eos_posts[k].arg;
+        ReleaseSRWLockExclusive(&eos_q_lock);
+        fn(arg);
     }
     for (;;) {
         AcquireSRWLockExclusive(&eos_q_lock);
@@ -229,11 +133,12 @@ static void eos_pump(void) {   /* (EOS thread) what arrived, then what is queued
         char to[NET_EOS_ID_LEN + 1];
         u8 data[NET_EOS_MAX];
         u32 len = eos_queue[k].len;
+        u8 channel = eos_queue[k].channel;
         memcpy(to, eos_queue[k].to, sizeof to);
         memcpy(data, eos_queue[k].data, len);
         ReleaseSRWLockExclusive(&eos_q_lock);
         EOS_ProductUserId peer = p_EOS_ProductUserId_FromString(to);
-        EosSendPacketOptions o = {3, eos_me, peer, &eos_sock, 0, len, data, 0, EOS_PR_UNRELIABLE_UNORDERED, 0};
+        EosSendPacketOptions o = {3, eos_me, peer, &eos_sock, channel, len, data, channel != 0, channel ? EOS_PR_RELIABLE_ORDERED : EOS_PR_UNRELIABLE_UNORDERED, 0};
         if (p_EOS_P2P_SendPacket(eos_p2p, &o) == EOS_SUCCESS) InterlockedIncrement64(&eos_sent);
         else InterlockedIncrement64(&eos_dropped);
     }
@@ -253,8 +158,15 @@ static u64 hub_refresh_at, hub_retry_at, hub_merge_at;
 static int hub_merging;   /* (alone in our hub: another of the same bucket, whose owner sorts first, is joined instead) */
 static EOS_HLobbySearch hub_search;
 static SRWLOCK hub_lock = SRWLOCK_INIT;
-static struct { char id[NET_EOS_ID_LEN + 1]; u32 ip; } hub_members[64];
+#define HUB_URL 256
+typedef struct HubMember { char id[NET_EOS_ID_LEN + 1]; u32 ip, rating; u64 pid; char url[HUB_URL]; } HubMember;
+static HubMember hub_members[64];
 static int hub_count;
+/* this game's player as the other games see it (net_eos_lobby.c: its NEX PID, station URL and rating, member
+ * attributes PID, RT and U0..U3, the URL in pieces of 60 characters: an attribute holds 64) */
+static struct { u64 pid; u32 rating; char url[HUB_URL]; } hub_me, hub_me_set;
+static int hub_me_dirty;
+static u64 hub_me_at;
 
 static u32 hub_address(const char *id, u32 salt) {   /* 10.13.x.y, never .0/.255, 10.13.0.1 or 10.13.255.254 */
     u32 h = 2166136261u ^ salt * 16777619u;
@@ -289,7 +201,7 @@ static void hub_refresh(void) {   /* (EOS thread) the members and their addresse
     if (p_EOS_Lobby_CopyLobbyDetailsHandle(eos_lobby, &o, &det) != EOS_SUCCESS) return;
     EosVersionOnly v = {1};
     u32 n = p_EOS_LobbyDetails_GetMemberCount(det, &v), clash = 0;
-    struct { char id[NET_EOS_ID_LEN + 1]; u32 ip; } got[64];
+    static HubMember got[64];
     int k = 0;
     for (u32 i = 0; i < n && k < 64; i++) {
         EosIndexOptions io = {1, i};
@@ -305,8 +217,22 @@ static void hub_refresh(void) {   /* (EOS thread) the members and their addresse
             p_EOS_Lobby_Attribute_Release(at);
         }
         if (strcmp(id, eos_my_text) && ip && ip == hub_set && strcmp(id, eos_my_text) < 0) clash = 1;   /* (theirs first: we move) */
-        snprintf(got[k].id, sizeof got[k].id, "%s", id);
-        got[k++].ip = ip;
+        HubMember *g = &got[k++];
+        memset(g, 0, sizeof *g);
+        snprintf(g->id, sizeof g->id, "%s", id);
+        g->ip = ip;
+        static const char *const KEYS[6] = {"PID", "RT", "U0", "U1", "U2", "U3"};
+        for (int a = 0; a < 6; a++) {
+            EosCopyMemberAttrOptions ko = {1, who, KEYS[a]};
+            EosAttr *v = NULL;
+            if (p_EOS_LobbyDetails_CopyMemberAttributeByKey(det, &ko, &v) != EOS_SUCCESS || !v) continue;
+            if (v->Data && a < 2 && v->Data->ValueType == EOS_AT_INT64) { if (a == 0) g->pid = (u64)v->Data->Value.AsInt64; else g->rating = (u32)v->Data->Value.AsInt64; }
+            else if (v->Data && a >= 2 && v->Data->ValueType == EOS_AT_STRING && v->Data->Value.AsUtf8) {
+                size_t at = strlen(g->url);
+                snprintf(g->url + at, sizeof g->url - at, "%s", v->Data->Value.AsUtf8);
+            }
+            p_EOS_Lobby_Attribute_Release(v);
+        }
     }
     p_EOS_LobbyDetails_Release(det);
     AcquireSRWLockExclusive(&hub_lock);
@@ -330,6 +256,7 @@ static void EOS_CALL hub_entered(const EosLobbyResult *d) {
     }
     snprintf(hub_id, sizeof hub_id, "%s", d->LobbyId ? d->LobbyId : "");
     InterlockedExchange(&hub_state, 3);
+    if (hub_me.pid) hub_me_dirty = 1;   /* (a hub joined again: our player there too) */
     hub_claim();
     hub_refresh_at = 0;
 }
@@ -406,6 +333,41 @@ static void hub_find(void) {
 }
 static void EOS_CALL hub_member_status(const EosMemberStatusInfo *d) { (void)d; hub_refresh_at = 0; }
 static void EOS_CALL hub_member_update(const EosMemberUpdateInfo *d) { (void)d; hub_refresh_at = 0; }
+static void EOS_CALL hub_player_set(const EosLobbyResult *d) {
+    if (d->ResultCode != EOS_SUCCESS) { fprintf(stderr, "[eos] hub: our player not set (%s)\n", p_EOS_EResult_ToString(d->ResultCode)); hub_me_dirty = 1; }
+    hub_refresh_at = 0;
+}
+static void hub_player(void) {   /* (EOS thread) our player's PID, rating and station URL as member attributes */
+    AcquireSRWLockExclusive(&hub_lock);
+    hub_me_set = hub_me;
+    hub_me_dirty = 0;
+    ReleaseSRWLockExclusive(&hub_lock);
+    EosLobbyUserOptions o = {1, eos_me, hub_id};
+    EOS_HLobbyModification m = NULL;
+    if (p_EOS_Lobby_UpdateLobbyModification(eos_lobby, &o, &m) != EOS_SUCCESS) { hub_me_dirty = 1; return; }
+    EosAttrData a = {1, "PID", {0}, EOS_AT_INT64};
+    a.Value.AsInt64 = (int64_t)hub_me_set.pid;
+    EosAddAttrOptions ao = {2, &a, EOS_LAT_PUBLIC};
+    p_EOS_LobbyModification_AddMemberAttribute(m, &ao);
+    a.Key = "RT";
+    a.Value.AsInt64 = hub_me_set.rating;
+    p_EOS_LobbyModification_AddMemberAttribute(m, &ao);
+    static const char *const U[4] = {"U0", "U1", "U2", "U3"};
+    char piece[4][61];
+    size_t len = strlen(hub_me_set.url);
+    for (int i = 0; i < 4; i++) {
+        size_t at = (size_t)i * 60, n = at < len ? (len - at < 60 ? len - at : 60) : 0;
+        memcpy(piece[i], hub_me_set.url + (at < len ? at : len), n);
+        piece[i][n] = 0;
+        EosAttrData u = {1, U[i], {0}, EOS_AT_STRING};
+        u.Value.AsUtf8 = piece[i];
+        EosAddAttrOptions uo = {2, &u, EOS_LAT_PUBLIC};
+        p_EOS_LobbyModification_AddMemberAttribute(m, &uo);
+    }
+    EosUpdateLobbyOptions up = {1, m};
+    p_EOS_Lobby_UpdateLobby(eos_lobby, &up, NULL, hub_player_set);
+    p_EOS_LobbyModification_Release(m);
+}
 static void hub_tick(void) {   /* (EOS thread) */
     static int notified;
     u64 t = GetTickCount64();
@@ -419,6 +381,7 @@ static void hub_tick(void) {   /* (EOS thread) */
     }
     if (hub_state == 0 && t >= hub_retry_at) hub_find();
     if (hub_state == 3 && t >= hub_refresh_at) { hub_refresh_at = t + 2000; hub_refresh(); }
+    if (hub_state == 3 && hub_me_dirty && t >= hub_me_at) { hub_me_at = t + 300; hub_player(); }
     if (hub_state == 3 && hub_count <= 1 && !hub_search && t >= hub_merge_at) { hub_merge_at = t + 5000; hub_merging = 1; hub_find(); }
 }
 
@@ -451,11 +414,17 @@ static DWORD WINAPI eos_thread_(LPVOID dll) {
             p_EOS_ProductUserId_ToString(eos_me, eos_my_text, &n);
             EosNotifyRequestOptions o = {1, eos_me, &eos_sock};
             p_EOS_P2P_AddNotifyPeerConnectionRequest(eos_p2p, &o, NULL, eos_connection_request);
+            const char *relay = getenv("SSBU_EOS_RELAY");
+            if (relay && !_stricmp(relay, "force")) {
+                EosRelayControlOptions rc = {1, EOS_RC_FORCE_RELAYS};
+                EOS_EResult rr = p_EOS_P2P_SetRelayControl(eos_p2p, &rc);
+                fprintf(stderr, "[eos] SSBU_EOS_RELAY=force: every P2P packet through Epic's relays (%s)\n", p_EOS_EResult_ToString(rr));
+            }
             fprintf(stderr, "[eos] ready in %llu ms: the relay of last resort is Epic's (player %s)\n", (unsigned long long)(GetTickCount64() - t0), eos_my_text);
             told = 1;
         }
         if (ph < 0) { fprintf(stderr, "[eos] off: the lobby's relay stays the last resort\n"); return 0; }
-        if (ph == 2) { eos_pump(); hub_tick(); }
+        if (ph == 2) { eos_pump(); hub_tick(); nexeos_tick(); }
         WaitForSingleObject(eos_wake, 1);
     }
 }
@@ -483,18 +452,34 @@ void eos_start(void) {
 int eos_ready(void) { return eos_phase == 2 && eos_my_text[0]; }
 const char *eos_my_id(void) { return eos_ready() ? eos_my_text : NULL; }
 
-int eos_send(const char *to, const void *data, u32 len) {
+static int eos_send_on(const char *to, const void *data, u32 len, u8 channel) {
     if (!eos_ready() || len > NET_EOS_MAX || !to || strlen(to) != NET_EOS_ID_LEN) return 0;
     AcquireSRWLockExclusive(&eos_q_lock);
     if (eos_q_tail - eos_q_head >= QUEUE) { ReleaseSRWLockExclusive(&eos_q_lock); InterlockedIncrement64(&eos_dropped); return 0; }
     u32 k = eos_q_tail++ % QUEUE;
     memcpy(eos_queue[k].to, to, NET_EOS_ID_LEN + 1);
     eos_queue[k].len = len;
+    eos_queue[k].channel = channel;
     memcpy(eos_queue[k].data, data, len);
     ReleaseSRWLockExclusive(&eos_q_lock);
     SetEvent(eos_wake);
     return 1;
 }
+
+int eos_send(const char *to, const void *data, u32 len) { return eos_send_on(to, data, len, 0); }
+int eos_send_reliable(const char *to, const void *data, u32 len) { return eos_send_on(to, data, len, 1); }
+int eos_post(void (*fn)(void *), void *arg) {
+    if (eos_phase <= 0) return 0;
+    AcquireSRWLockExclusive(&eos_q_lock);
+    if (eos_p_tail - eos_p_head >= POSTS) { ReleaseSRWLockExclusive(&eos_q_lock); return 0; }
+    u32 k = eos_p_tail++ % POSTS;
+    eos_posts[k].fn = fn;
+    eos_posts[k].arg = arg;
+    ReleaseSRWLockExclusive(&eos_q_lock);
+    SetEvent(eos_wake);
+    return 1;
+}
+EOS_HLobby eos_lobby_interface(void) { if (!eos_lobby) eos_lobby = p_EOS_Platform_GetLobbyInterface(eos_plat); return eos_lobby; }
 
 void eos_counts(u64 *out_sent, u64 *out_received, u64 *out_dropped) { *out_sent = (u64)eos_sent; *out_received = (u64)eos_received; *out_dropped = (u64)eos_dropped; }
 
@@ -520,6 +505,31 @@ int eos_hub_member_ip(const char *id, u32 *ip) {   /* 1: a member, its address i
     ReleaseSRWLockShared(&hub_lock);
     return found;
 }
+void eos_hub_set_player(u64 pid, const char *url, u32 rating) {
+    AcquireSRWLockExclusive(&hub_lock);
+    if (hub_me.pid != pid || hub_me.rating != rating || strncmp(hub_me.url, url ? url : "", sizeof hub_me.url - 1)) {
+        hub_me.pid = pid;
+        hub_me.rating = rating;
+        snprintf(hub_me.url, sizeof hub_me.url, "%s", url ? url : "");
+        hub_me_dirty = 1;
+    }
+    ReleaseSRWLockExclusive(&hub_lock);
+}
+void eos_hub_refresh_soon(void) { hub_refresh_at = 0; }
+int eos_hub_player(u64 pid, char id[NET_EOS_ID_LEN + 1], char *url, size_t cap, u32 *rating) {
+    int found = 0;
+    AcquireSRWLockShared(&hub_lock);
+    for (int i = 0; i < hub_count && !found; i++) {
+        HubMember *m = &hub_members[i];
+        if (m->pid ? m->pid != pid : nex_pid_of(m->id) != pid) continue;
+        found = 1;
+        if (id) memcpy(id, m->id, NET_EOS_ID_LEN + 1);
+        if (url && cap) snprintf(url, cap, "%s", m->url);
+        if (rating) *rating = m->rating;
+    }
+    ReleaseSRWLockShared(&hub_lock);
+    return found;
+}
 int eos_hub_member_id(u32 ip, char id[NET_EOS_ID_LEN + 1]) {   /* 1: the member at that address */
     int found = 0;
     AcquireSRWLockShared(&hub_lock);
@@ -530,6 +540,11 @@ int eos_hub_member_id(u32 ip, char id[NET_EOS_ID_LEN + 1]) {   /* 1: the member 
 }
 
 #else   /* (Linux, macOS: not yet) */
+void eos_hub_set_player(u64 pid, const char *url, u32 rating) { (void)pid; (void)url; (void)rating; }
+void eos_hub_refresh_soon(void) {}
+int eos_hub_player(u64 pid, char id[NET_EOS_ID_LEN + 1], char *url, size_t cap, u32 *rating) { (void)pid; (void)id; (void)url; (void)cap; (void)rating; return 0; }
+int eos_send_reliable(const char *to, const void *data, u32 len) { (void)to; (void)data; (void)len; return 0; }
+int eos_post(void (*fn)(void *), void *arg) { (void)fn; (void)arg; return 0; }
 void eos_hub_join(const char *bucket) { (void)bucket; }
 u32 eos_hub_ip(void) { return 0; }
 int eos_hub_failed(void) { return 1; }

@@ -46,6 +46,7 @@ typedef int SOCKET;
 #include "net_backend.h"
 #include "net_eos.h"
 #include "net_nex.h"
+#include "net_eos_lobby.h"
 #include "online.h"
 
 #define DEFAULT_HOST "10.13.0.1"
@@ -296,14 +297,21 @@ static void nex_datagram_out(void *ctx, u32 ip, u16 port, u32 src_ip, u16 sport,
     (void)ctx;
     vsock_deliver(src_ip, sport, ip, port, data, (u32)n);
 }
-static const char *nex_part_of(void *ctx, u32 ip) { (void)ctx; (void)ip; return "eos"; }   /* (part B: build, lobby code, mods) */
+static const char *nex_part_of(void *ctx, u32 ip) {   /* (who may meet: game build, lobby code, simulation version, mods) */
+    static char part[64];
+    (void)ctx; (void)ip;
+    if (!part[0]) net_part_key(part, sizeof part);
+    return part;
+}
+static int nex_on_eos;   /* (its gatherings in EOS Lobbies: net_eos_lobby.c) */
 static void nex_log_line(void *ctx, int level, const char *line) { (void)ctx; (void)level; if (net_log()) fprintf(stderr, "[nex] %s\n", line); }
 /* the server, under nex_lock, its clock set (NULL: none could be made) */
 static NexServer *nex_enter(void) {
     AcquireSRWLockExclusive(&nex_lock);
     if (!nex_srv) {
         NexIo io = {NULL, nex_stream_out, nex_datagram_out, nex_part_of, nex_log_line, NULL, NULL};
-        nex_srv = nex_server_new(&io, nex_store_local(), net_log());
+        nex_on_eos = net_backend == &net_eos_backend;
+        nex_srv = nex_server_new(&io, nex_on_eos ? nex_store_eos() : nex_store_local(), net_log());
         if (net_log()) fprintf(stderr, "[online] the game server is in the game (Online over %s)\n", net_backend == &net_eos_backend ? "EOS" : "SSBU_NEX_LOCAL");
     }
     if (nex_srv) {
@@ -313,6 +321,7 @@ static NexServer *nex_enter(void) {
         if (now - ticked >= 1000) { ticked = now; nex_server_tick(nex_srv, (double)now / 1000.0); }   /* (idle connections, old rounds) */
         const char *id = !identity_set && net_backend == &net_eos_backend ? eos_my_id() : NULL;   /* (the PID: from the EOS id, else the token's) */
         if (id) { nex_server_set_identity(nex_srv, id); identity_set = 1; }
+        if (nex_on_eos) nex_store_eos_sync(nex_srv);
     }
     nex_woke = 0;
     return nex_srv;
@@ -322,6 +331,17 @@ static void nex_leave(void) {
     nex_woke = 0;
     ReleaseSRWLockExclusive(&nex_lock);
     if (woke) changed();
+}
+/* (net_eos_lobby.c, on the EOS thread) what EOS brought, to the server now if nothing holds it */
+int online_nex_deliver(void) {
+    if (!TryAcquireSRWLockExclusive(&nex_lock)) return 0;
+    nex_woke = 0;
+    if (nex_srv && nex_on_eos) {
+        nex_server_set_now(nex_srv, (double)GetTickCount64() / 1000.0);
+        nex_store_eos_sync(nex_srv);
+    }
+    nex_leave();
+    return 1;
 }
 
 /* (hle_net.c's sendto) A datagram for the game server's addresses while it is in the game: answered here. */

@@ -921,6 +921,18 @@ int nex_station_url(NexServer *s, NexConn *c, char *out, size_t cap) {
     no_free(&o);
     return ok;
 }
+int nex_server_player(NexServer *s, uint64_t *pid, char *url, size_t cap, uint32_t *rating) {
+    for (int i = 0; i < s->nconns[1]; i++) {
+        NexConn *c = s->conns[1][i];
+        if (!c->in_by_pid || !c->pid) continue;
+        *pid = c->pid;
+        if (!c->registered || !nex_station_url(s, c, url, cap)) url[0] = 0;
+        *rating = nex_rating_of(s, c->pid);
+        arena_clear(&s->arena);
+        return 1;
+    }
+    return 0;
+}
 int nex_url_of_pid(NexServer *s, uint64_t pid, char *out, size_t cap) {
     NexConn *c = nex_by_pid(s, pid);
     if (c) return nex_station_url(s, c, out, cap);
