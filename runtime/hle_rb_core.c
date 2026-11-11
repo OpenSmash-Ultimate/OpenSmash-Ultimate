@@ -2863,6 +2863,10 @@ static void savestates(Cpu *c, u64 frame) {
             rb_quiet(1);
             fprintf(stderr, "[rb] ring test: from fight frame %lld a save every frame (%d kept); every %lld frames back %lld, %lld times; "
                     "each frame's fight hash checked against its first pass\n", ring_from, size, ring_every, ring_depth, ring_left);
+            {   /* (SSBU_RB_RING_HIDE=1: the catch-ups' frames but the last not drawn, as a net catch-up's: SSBU_PRESENT_HASH's test) */
+                const char *h = getenv("SSBU_RB_RING_HIDE");
+                if (h && *h == '1') { extern volatile int gpu_hide_fast; gpu_hide_fast = 2; }
+            }
         } else ring_from = -1;
         e = getenv("SSBU_RB_NET");
         /* (started online, net_rollback_default: SSBU_RB_NET=online's mode unless another is set - the game's own matches,

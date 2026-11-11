@@ -4877,6 +4877,44 @@ static void capture(ID3D11Texture2D *back, ID3D11Texture2D *window) {
     count++;
 }
 
+/* SSBU_PRESENT_HASH=<file> (a test): a line a picture shown - its number, the fight frame, whether a submission whose draws
+ * were left out ran since the last one (a hidden frame run again), and a hash of the picture - to compare two runs' pictures
+ * without looking at them (the hidden frames of a catch-up: does anything drawn only now and then stay stale?) */
+static void present_hash(ID3D11Texture2D *tex) {
+    static FILE *out; static int checked; static u64 n; static ID3D11Texture2D *staging; static u32 sw, sh;
+    extern volatile int gpu_hidden_since_present;
+    if (!checked++) { const char *p = getenv("SSBU_PRESENT_HASH"); if (p && *p) out = fopen(p, "w"); }
+    int hid = gpu_hidden_since_present; gpu_hidden_since_present = 0;
+    if (!out || !tex) return;
+    D3D11_TEXTURE2D_DESC td;
+    ID3D11Texture2D_GetDesc(tex, &td);
+    if (!staging || sw != td.Width || sh != td.Height) {
+        if (staging) ID3D11Texture2D_Release(staging);
+        td.Usage = D3D11_USAGE_STAGING; td.BindFlags = 0; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ; td.MiscFlags = 0;
+        if (FAILED(ID3D11Device_CreateTexture2D(dev, &td, NULL, &staging))) { staging = NULL; return; }
+        sw = td.Width; sh = td.Height;
+    }
+    ID3D11DeviceContext_CopyResource(ctx, (ID3D11Resource *)staging, (ID3D11Resource *)tex);
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (FAILED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)staging, 0, D3D11_MAP_READ, 0, &m))) return;
+    u64 h = 0xcbf29ce484222325ull;
+    static u64 grid[16 * 9];   /* (and the picture's brightness on a 16 x 9 grid: two runs' pictures are not bit for bit alike) */
+    memset(grid, 0, sizeof grid);
+    for (u32 y = 0; y < sh; y++) {
+        const u8 *row = (const u8 *)m.pData + (size_t)y * m.RowPitch;
+        const u64 *p = (const u64 *)row;
+        for (u32 x = 0; x < sw / 2; x++) { h ^= p[x]; h *= 0x100000001b3ull; }   /* (4 bytes a pixel, 2 a word) */
+        u64 *g = &grid[(y * 9 / sh) * 16];
+        for (u32 x = 0; x < sw; x++) g[x * 16 / sw] += (u64)row[x * 4] + row[x * 4 + 1] + row[x * 4 + 2];
+    }
+    ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)staging, 0);
+    char gs[16 * 9 * 2 + 1];
+    u64 cell = (u64)(sw / 16) * (sh / 9) * 3;
+    for (int i = 0; i < 16 * 9; i++) snprintf(gs + i * 2, 3, "%02x", (unsigned)(cell ? (grid[i] / cell > 255 ? 255 : grid[i] / cell) : 0));
+    fprintf(out, "%llu %lld %d %016llx %s\n", (unsigned long long)n++, test_fight_frame, hid, (unsigned long long)h, gs);
+    fflush(out);
+}
+
 /* 2D engine: source and destination surfaces (format, layout, block size, depth, layer,
  * pitch, width, height, address) at methods 0x80 and 0x8C; the blit rectangle and the
  * 32.32 fixed-point source position and step at 0x22C-0x237. */
@@ -5500,6 +5538,7 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
     }
     if (rtv_srgb) ID3D11RenderTargetView_Release(rtv_srgb);
     capture(final_tex, back);   /* (before the overlay) */
+    present_hash(final_tex);
 
     /* debug keys and the overlay */
     LONG keys = (LONG)gfx_take_hotkeys();
