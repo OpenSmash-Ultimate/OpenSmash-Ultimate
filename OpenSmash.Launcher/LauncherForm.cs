@@ -68,6 +68,7 @@ namespace OpenSmash.Launcher
         bool _modsBusy;
         bool _startingPlay;
         string _pluginBuildReason = "";
+        string _vanillaBuildReason = "";   // (os_mods status: needs_build_vanilla, the link Play without mods needs)
         readonly Dictionary<string, Image> _modThumbs = new();
         readonly HashSet<string> _openGroups = new();
         readonly HashSet<string> _knownGroups = new();
@@ -95,7 +96,7 @@ namespace OpenSmash.Launcher
         string _setupLog = "";
         string _setupMode = ""; // "scratch" or "import"
 
-        // Play (mods, ssbu_sky.exe) or Vanilla (ssbu_native.exe, plugins off). Remembered in build\launch_mode.txt.
+        // Play (mods) or Vanilla (the game's own data and no mods: mods.play_vanilla); both start build\ssbu.exe. Remembered in build\launch_mode.txt.
         string _launchMode = "mods";
         Task<bool> _prepInflight;   /* mod convert + hook install, shared by launcher startup and Play */
         bool _playQueued;
@@ -879,6 +880,7 @@ namespace OpenSmash.Launcher
             bool parsed = false;
             bool modded = _modsModded;
             string reason = _pluginBuildReason;
+            string vanillaReason = _vanillaBuildReason;
             string refresh = _pluginRefreshReason;
             string json = "";
             try
@@ -890,6 +892,7 @@ namespace OpenSmash.Launcher
                     var root = doc.RootElement;
                     modded = root.TryGetProperty("modded", out var md) && md.ValueKind == JsonValueKind.True;
                     reason = root.TryGetProperty("needs_build", out var nb) ? nb.GetString() ?? "" : "";
+                    vanillaReason = root.TryGetProperty("needs_build_vanilla", out var nv) ? nv.GetString() ?? "" : reason;   // (older tools: needs_build)
                     refresh = root.TryGetProperty("needs_refresh", out var nr) ? nr.GetString() ?? "" : "";
                     if (root.TryGetProperty("plugins", out var plugins) && plugins.ValueKind == JsonValueKind.Array)
                     {
@@ -964,6 +967,7 @@ namespace OpenSmash.Launcher
             if (!parsed) return;
             _modsModded = modded;
             _pluginBuildReason = reason;
+            _vanillaBuildReason = vanillaReason;
             _pluginRefreshReason = refresh;
             _stdPlugins = pluginsSeen;
             foreach (string old in _modThumbs.Keys.Where(k => !keep.Contains(k)).ToList())
@@ -3062,14 +3066,19 @@ namespace OpenSmash.Launcher
 
         async Task<string> UnbuiltPluginChoice()
         {
-            if (_launchMode == "vanilla") return "play";
+            // Without mods it is the same program (build\ssbu.exe, the community plugins loaded): a link it needs
+            // (an update changed the runtime) is asked for as with mods. The mods' own plugins are not loaded then,
+            // so one waiting, to be refreshed or not linked in yet is not (needs_build_vanilla).
+            bool vanilla = _launchMode == "vanilla";
             await RefreshMods();
-            var waiting = _mods.Where(m => m.Enabled && m.Code == "waiting")
+            var waiting = vanilla ? new List<string>() : _mods.Where(m => m.Enabled && m.Code == "waiting")
                 .Select(m => string.IsNullOrEmpty(m.Title) ? m.Name : m.Title)
                 .Distinct()
                 .ToList();
-            bool full = !string.IsNullOrEmpty(_pluginBuildReason);
-            string why = full ? PluginUpdateWhy(waiting, _pluginBuildReason) : PluginRefreshWhy(waiting, _pluginRefreshReason);
+            string reason = vanilla ? _vanillaBuildReason : _pluginBuildReason;
+            bool full = !string.IsNullOrEmpty(reason);
+            if (vanilla && !full) return "play";
+            string why = full ? PluginUpdateWhy(waiting, reason) : PluginRefreshWhy(waiting, _pluginRefreshReason);
             if (why.Length == 0) return "play";
             _pluginPromptKind = full ? "update" : "refresh";
             _pluginPromptText = why;
