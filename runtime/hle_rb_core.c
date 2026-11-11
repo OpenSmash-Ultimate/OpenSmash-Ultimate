@@ -3371,7 +3371,14 @@ static int online_setup(u64 st) {
         /* (a Local Wireless room's match: set up by both games from the room's own, as an Online one is; the same
          * rollback, the room's other game the peer) */
         peers = lw_room_others(seen, 8);
-        if (!peers) { fprintf(stderr, "[rb] online: a match of melee mode %u (not an Online one, no Local Wireless room): played here alone\n", mode); return 0; }
+        if (!peers) {
+            u32 m[16]; int n = net_room_members(m, 16);
+            fprintf(stderr, "[rb] online: a match of melee mode %u (not an Online one, no Local Wireless room): played here alone"
+                    " (this game %08x; %d room members:", mode, net_local_ip(), n);
+            for (int i = 0; i < n; i++) fprintf(stderr, " %08x%s", m[i], ldn_in_network(m[i]) ? "+ldn" : "");
+            fprintf(stderr, ")\n");
+            return 0;
+        }
         what = "a Local Wireless room's match";
     } else peers = net_recent_peers(seen, 8, 30000);
     if (!readable(st, 0x460)) return 0;
