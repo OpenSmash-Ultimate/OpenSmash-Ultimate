@@ -380,6 +380,22 @@ static void configure(void) {
     else if (configured && !hosting) proto_wanted = protocol_from_file(proto_wanted);
     if (hosting || lan_mode) proto_wanted = NET_PROTOCOL;   /* (a private room's relay: version 2) */
     proto = proto_wanted;
+    if (!hosting && !_stricmp(relay_text, "eos")) net_backend = &net_eos_backend;   /* (net_eos_net.c: no lobby server of ours) */
+}
+
+/* (net_eos_net.c) "eos" for the lobby: online through Epic Online Services alone */
+int net_eos_selected(void) {
+    const char *r = getenv("SSBU_NET_RELAY");
+    char line[256], host[64] = "";
+    if (r && *r) return !_stricmp(r, "eos");
+    if (!settings_online() || !settings_line_read(config_path(CONFIG_ONLINE_SERVER), line, sizeof line)) return 0;
+    sscanf(line, "%63s", host);
+    return !_stricmp(host, "eos");
+}
+void net_eos_names(char *code, size_t code_n, char *who, size_t who_n) {
+    configure();
+    snprintf(code, code_n, "%s", room);
+    snprintf(who, who_n, "%s", name);
 }
 
 static void start(void);
@@ -855,6 +871,7 @@ static int rb_take(u32 src, u16 dport, const u8 *data, u32 len, volatile LONG64 
     if (len) s(src, data, len);
     return 1;
 }
+int net_rb_deliver(u32 src, const u8 *data, u32 len) { return rb_take(src, NET_RB_PORT, data, len, &rb_in_direct); }   /* (net_eos_net.c) */
 void net_rb_counts(NetRbCounts *out) {
     out->out_data = rb_out_data; out->out_lobby = rb_out_lobby;
     out->in_direct = rb_in_direct; out->in_relayed = rb_in_relayed; out->in_lobby = rb_in_lobby;
@@ -1277,6 +1294,7 @@ static void eos_told(u32 src, const u8 *p, u32 n) {   /* (client thread) a playe
 
 /* (net_eos.c, the EOS thread) A packet from another player through EOS: as a direct one, with the pair's secret. */
 void net_eos_packet(const char *from, const u8 *p, u32 n) {
+    if (n >= 2 && p[0] == 'E' && p[1] == 'B') { net_eos_net_packet(from, p, n); return; }   /* (net_eos_net.c's) */
     u64 t = now_ms();
     if (!lobby || !joined || n < DIRECT_HEAD + 12 || p[0] != MAGIC0 || p[1] != MAGIC1 || p[2] != proto || p[3] != T_DIRECT) return;
     u64 secret = get64(p + 4);
@@ -1468,6 +1486,11 @@ static int is_room_peer(u32 ip) {   /* (the lobby: a player of this player's Loc
 static void rb_lobby_send(u32 dst, const void *data, u32 len);
 static int lobby_has_rb(void);
 void net_rb_send(u32 dst, const void *data, u32 len) {
+    if (net_backend && len) {   /* (EOS alone: to that member, or every one) */
+        net_backend->send(net_local_ip(), NET_RB_PORT, dst ? dst : 0xFFFFFFFFu, NET_RB_PORT, data, len);
+        InterlockedIncrement64(&rb_out_data);
+        return;
+    }
     if (!joined || client_sock == INVALID_SOCKET || !len) return;
     u32 to = dst ? dst : NET_BROADCAST;
     if (!lobby) {   /* (a private room's relay: DATA to its members) */
@@ -1517,6 +1540,14 @@ int net_recent_peers(u32 *out, int max, u32 within_ms) {
 }
 int net_room_members(u32 *out, int max) {
     start();
+    if (net_backend == &net_eos_backend && max > 0) {   /* (EOS alone: the hub's members; rollback keeps those in the room's network) */
+        char ids[64][NET_EOS_ID_LEN + 1];
+        u32 ips[64];
+        int n = eos_hub_members(ids, ips, 64), k = 0;
+        for (int i = 0; i < n && k < max; i++) if (ips[i]) out[k++] = ips[i];
+        qsort(out, (size_t)k, sizeof out[0], u32_order);
+        return k;
+    }
     if (!joined || max <= 0) return 0;
     u32 all[ROOM_MEMBERS + PEERS_MAX];
     int n = 0;

@@ -389,7 +389,7 @@ static void ldn_backend_receive(u32 from,unsigned type,const void *data,u32 len)
         if(node<0 && L.net[NI_POLICY]!=1 && L.net[NI_NODE_COUNT]<L.net[NI_NODE_MAX])
             for(int i=1;i<8;i++) if(!L.net[NODE(i)+0xB]) { node=i; break; }
         if(node<=0) { net_backend->ldn_send(from,YLDN_DESTROY,NULL,0); break; }
-        if(!L.net[NODE(node)+0xB]) L.net[NI_NODE_COUNT]++;
+        if(!L.net[NODE(node)+0xB]) { L.net[NI_NODE_COUNT]++; input_seq_mark("ldn:station-joined"); }   /* (SSBU_SEQ: as LM_JOIN's) */
         memcpy(L.net+NODE(node),p,0x40); L.net[NODE(node)+0xA]=(u8)node; L.net[NODE(node)+0xB]=1;
         L.node_heard[node]=now_ms_(); ldn_send(net_broadcast_ip(),LM_ADVERTISE,L.net,NI_SIZE); ldn_signal();
         break;
