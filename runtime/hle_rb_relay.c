@@ -31,6 +31,7 @@ typedef int hle_rb_relay_unused;   /* (rollback netplay is written for Windows: 
 #include <stdlib.h>
 #include <string.h>
 #include "net.h"
+#include "net_eos.h"
 #include "hle_rb_link.h"
 
 #define LP 8
@@ -149,6 +150,10 @@ static int rbr_recv(void *buf, int cap) {
     if (link_delay_ms < 0) {
         const char *e = getenv("SSBU_RB_LINK_DELAY_MS"), *sim = getenv("SSBU_NET_SIM");
         link_delay_ms = e && atof(e) > 0 ? atof(e) : 0;
+        if (sim && *sim && net_backend == &net_eos_backend) {   /* (EOS's network holds and drops all the game's traffic itself: net_eos_net.c) */
+            fprintf(stderr, "[rb] link (relay): SSBU_NET_SIM applied by the EOS network to everything sent, not again here\n");
+            sim = NULL;
+        }
         if (sim && *sim) {
             double ms = 0, loss = 0, jitter = 0;
             sscanf(sim, "%lf,%lf,%lf", &ms, &loss, &jitter);

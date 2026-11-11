@@ -353,12 +353,18 @@ static uint32_t mm_auto(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
     uint32_t joining = h.count > 1 + h.nextra ? h.count : 1 + h.nextra;
     const char *part = c->has_part ? c->part : NULL;
     double mine = nex_rating_of(s, c->pid);
+    if (s->store.refresh) s->store.refresh(s->store.ctx, part, (uint32_t)mine, NULL);
+    uint32_t refused[8], nrefused = 0;   /* (gatherings the store could not enter: another game filled them first) */
+again:;
     NexSession *best = NULL, *best_fb = NULL;
     double best_d = 0, best_fb_d = 0;
     int n = s->store.count(s->store.ctx);
     for (int i = 0; i < n; i++) {
         NexSession *ms = s->store.at(s->store.ctx, i);
         if (!same_part(ms->part, part) || !ms->open || has_pid(ms, c->pid)) continue;
+        int no = 0;
+        for (uint32_t k = 0; k < nrefused; k++) if (refused[k] == ms->gid) no = 1;
+        if (no) continue;
         if (ntargets) {
             int t = 0;
             for (uint32_t k = 0; k < ntargets; k++) if (targets[k] == ms->gid) t = 1;
@@ -386,6 +392,11 @@ static uint32_t mm_auto(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
         else if (!best || diff < best_d) { best = ms; best_d = diff; }
     }
     NexSession *found = best ? best : best_fb;
+    if (found && s->store.claim && !s->store.claim(s->store.ctx, found)) {
+        nex_log(s, 1, "gathering %u could not be entered: looking again", found->gid);
+        if (nrefused < 8) { refused[nrefused++] = found->gid; goto again; }
+        found = NULL;
+    }
     uint32_t found_gid = found ? found->gid : 0;
     leave_others(s, c, found);
     if (found_gid) found = get(s, found_gid);   /* (still there: c was not in it) */
@@ -427,6 +438,9 @@ static uint32_t mm_join(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
         if (!same_part(ms->part, c->has_part ? c->part : NULL)) return NEX_NO_GATHERING;
         if (!ms->open) return NEX_RV_SESSION_CLOSED;
         if (ms->nparticipants + 1 > room(ms)) return NEX_RV_SESSION_FULL;
+        if (s->store.claim && !s->store.claim(s->store.ctx, ms)) return NEX_RV_SESSION_FULL;
+        if (!(ms = get(s, gid))) return NEX_NO_GATHERING;
+        if (ms->nparticipants + 1 > room(ms)) return NEX_RV_SESSION_FULL;   /* (the store's latest) */
     }
     if (*ms->system_password && strcmp(system_password, ms->system_password)) return NEX_WRONG_PASSWORD;
     if (ms->user_password_enabled && strcmp(user_password, ms->user_password)) return NEX_WRONG_PASSWORD;
@@ -603,6 +617,7 @@ static uint32_t ar_56(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
         size_t n = (size_t)(e - b);
         for (size_t i = 0; i < n; i++) code[i] = b[i] >= 'a' && b[i] <= 'z' ? (char)(b[i] - 32) : b[i];
         code[n] = 0;
+        if (s->store.refresh) s->store.refresh(s->store.ctx, c->has_part ? c->part : NULL, nex_rating_of(s, c->pid), code);
         NexSession *ms = arena_named(s, code);
         if (ms && same_part(ms->part, c->has_part ? c->part : NULL)) gid = ms->gid;
         if (!gid) return NEX_NO_GATHERING;
@@ -620,6 +635,7 @@ static uint32_t ar_browse(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
     if (in->err) return NEX_EINVAL;
     Criteria cr;
     if (!criteria_parse(&p, &cr)) return NEX_EINVAL;
+    if (s->store.refresh) s->store.refresh(s->store.ctx, c->has_part ? c->part : NULL, nex_rating_of(s, c->pid), NULL);
     int n = s->store.count(s->store.ctx), k = 0;
     NexSession **found = nex_tmp(&s->arena, sizeof *found * (size_t)(n + 1));
     for (int i = 0; i < n; i++) {
@@ -869,6 +885,10 @@ NexHandler nex_match_handler(uint32_t protocol, uint32_t method) {
     return NULL;
 }
 
+void nex_server_notify(NexServer *s, uint64_t pid, uint32_t kind, uint64_t source, uint64_t p1, uint64_t p2) {
+    if (nex_by_pid(s, pid)) nex_notify(s, &pid, 1, kind, source, p1, p2, "", 0);
+}
+
 /* ==== the local store: this process's gatherings ======================================================= */
 typedef struct LocalStore { NexSession **s; int n, cap; uint32_t next_gid; } LocalStore;
 static int ls_count(void *ctx) { return ((LocalStore *)ctx)->n; }
@@ -909,6 +929,6 @@ NexStore nex_store_local(void) {
     LocalStore *l = calloc(1, sizeof *l);
     if (!l) abort();
     l->next_gid = 0x10000;
-    NexStore st = {l, ls_count, ls_at, ls_get, ls_add, ls_remove, NULL, NULL, NULL, NULL, NULL, ls_destroy};
+    NexStore st = {l, ls_count, ls_at, ls_get, ls_add, ls_remove, NULL, NULL, NULL, NULL, NULL, ls_destroy, NULL, NULL};
     return st;
 }

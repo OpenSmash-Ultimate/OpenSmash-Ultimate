@@ -17,6 +17,7 @@
 
 #include "host.h"
 #include "net.h"
+#include "net_eos.h"
 #include "online.h"
 #include "input_seq.h"
 
@@ -1096,7 +1097,7 @@ static void do_sendto(Cpu *c, i32 fd, u64 buf, u64 len, i32 flags, u64 addr, u32
     if (dst == LOOPBACK) vsock_deliver(LOOPBACK, sport, LOOPBACK, dport, data, (u32)len);
     else {
         if (dst == me || broadcast) vsock_deliver(me, sport, dst, dport, data, (u32)len);   /* (a broadcast reaches this player's sockets too) */
-        if (!net_backend && dst != me && !broadcast) net_note_peer(dst);   /* (native Online rollback's match players) */
+        if ((!net_backend || net_backend == &net_eos_backend) && dst != me && !broadcast) net_note_peer(dst);   /* (native Online rollback's match players: the lobby's network or EOS's) */
         if (dst != me && (broadcast || !online_nex_datagram(me, sport, dst, dport, data, (u32)len)))   /* (the game server in the game's) */
             net_send(me, sport, broadcast ? net_broadcast_ip() : dst, dport, data, (u32)len);
     }

@@ -98,6 +98,11 @@ typedef struct NexStore {
                                                                /* a NEX request (notification, probe) for it */
     void (*stats_changed)(void *ctx, const NexStats *e);       /* a local player's statistics changed (EOS Stats) */
     void (*destroy)(void *ctx);
+    /* (optional: a store whose gatherings live elsewhere) before a search for gatherings (Quickplay, an arena ID, a
+     * browse): bring count/at up to date for players of part, rating the searcher's, arena_id the ID asked for (NULL:
+     * any); it may block a moment. claim: before a player of this server enters ms - 0: it cannot (full, gone). */
+    void (*refresh)(void *ctx, const char *part, uint32_t rating, const char *arena_id);
+    int (*claim)(void *ctx, NexSession *ms);
 } NexStore;
 NexStore nex_store_local(void);
 void nex_session_free(NexSession *ms);
@@ -135,3 +140,8 @@ void nex_datagram(NexServer *s, uint32_t ip, uint16_t port, uint16_t dport, uint
 void nex_server_tick(NexServer *s, double now);
 /* (part B) something that happened elsewhere, for local players: a NEX request to pid */
 void nex_server_remote_call(NexServer *s, uint64_t pid, uint32_t protocol, uint32_t method, const uint8_t *body, size_t n);
+/* (part B) a matchmaking notification (14/1) for pid, if it is a player of this server */
+void nex_server_notify(NexServer *s, uint64_t pid, uint32_t kind, uint64_t source, uint64_t p1, uint64_t p2);
+/* (part B) this server's player (the first logged in to the secure server): 1 and its PID, station URL ("" before it
+ * registered one) and rating; 0: none */
+int nex_server_player(NexServer *s, uint64_t *pid, char *url, size_t cap, uint32_t *rating);

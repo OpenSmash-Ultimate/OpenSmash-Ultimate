@@ -2071,6 +2071,25 @@ static void mod_set_make(void) {
     free(m);
 }
 
+/* (the in-game NEX server's gatherings in EOS Lobbies) who may meet whom, as one short key: the game build, the lobby
+ * code, the simulation version and the mods (their hashes, in any order: the lobby's mods_key) - "p1-" and 16 hex
+ * digits of their FNV-1a 64 hash, short enough for an EOS lobby's bucket */
+void net_part_key(char *out, size_t n) {
+    configure();
+    mod_set_make();
+    u32 h[MODS_MAX];
+    int k = 0, o = 1;
+    for (int i = 0; i < mod_set[0] && k < MODS_MAX; i++) { h[k++] = get32(mod_set + o); o += 5 + mod_set[o + 4]; }
+    qsort(h, (size_t)k, sizeof *h, u32_cmp);
+    u64 x = 0xcbf29ce484222325ull;
+    char text[256];
+    const char *build = rt_module_main.build_id ? rt_module_main.build_id : "";
+    snprintf(text, sizeof text, "%s|%s|%u|", build, room, (unsigned)SIM_VERSION);
+    for (char *p = text; *p; p++) { x ^= (u8)(*p >= 'a' && *p <= 'z' ? *p - 32 : *p); x *= 0x100000001b3ull; }
+    for (int i = 0; i < k; i++) for (int b = 0; b < 4; b++) { x ^= (u8)(h[i] >> (8 * b)); x *= 0x100000001b3ull; }
+    snprintf(out, n, "p1-%016llx", (unsigned long long)x);
+}
+
 static void send_join(void) {
     u8 p[JOIN_V3_MAX + 2] = {0};
     mod_set_make();
