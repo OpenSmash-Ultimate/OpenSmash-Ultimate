@@ -41,7 +41,7 @@ class StateMap(unittest.TestCase):
         self.assertIn('if (m.State == MEM_COMMIT) VirtualProtect(p, (SIZE_T)(stop - p), prot, &old);', state)
         self.assertIn('sm_protect(c->base + ((u64)k << 12), (u64)(e - k) << 12, PAGE_READWRITE);', state, 'at the fight end too')
         # a cold page is present for the savestate, and a page committed since is hot
-        self.assertIn('if (sm_on && m.State == MEM_COMMIT && m.Protect == PAGE_READONLY && sm_alias(p)) {', state)
+        self.assertIn('if ((sm_on || lazy_pages) && m.State == MEM_COMMIT && m.Protect == PAGE_READONLY && sm_alias(p)) {', state)
         self.assertIn('{ sm_present(p); settle_page(p, 1, to_shadow); }', state)
         self.assertIn('sm_gone(p);', state)
         # the end: every cold page writable again

@@ -40,6 +40,7 @@ int rb_pad_sampling(u64 *sampling) { (void)sampling; return 0; }
 int rb_ra_predicting(void) { return 0; }
 void rb_guest_writing(void *p, u64 n) { (void)p; (void)n; }   /* (hle_rb_state.c's state map) */
 int rb_page_cold(const void *p) { (void)p; return 0; }
+void rb_shadow_note(u64 at, u64 size) { (void)at; (void)size; }
 #else
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
@@ -1239,8 +1240,10 @@ static void net_deliver(u32 now, int force) {
     }
     while (net_low - net_key0 < 1u << 20 && net_got[net_low - net_key0]) net_low++;
 }
+void rb_ring_memory(char *buf, size_t size);   /* (hle_rb_state.c) */
 static void net_report(void) {
     char name[64];
+    {   char m[768]; rb_ring_memory(m, sizeof m); fprintf(stderr, "[rb] ring memory at the fight's end: %s\n", m); }
     if (net_mode == 2) snprintf(name, sizeof name, "build\\rb_net_%d.txt", net_local);
     else snprintf(name, sizeof name, "build\\rb_loop_%d.txt", net_lag_hi);
     FILE *o = fopen(name, "w");
@@ -1804,6 +1807,7 @@ static void net_step(Cpu *c, u64 frame) {
                     "of them the game's getters %lld (%.1f ms), generator look-ups that asked Windows %lld (%.1f ms)\n",
                     net_w_n[0], net_w_ms[0], net_w_max[0], net_w_n[1], net_w_ms[1], net_w_max[1], net_w_n[2], net_w_ms[2], net_w_max[2],
                     rb_ff_get_n, rb_ff_get_ms, rb_rng_slow_n, rb_rng_slow_ms);
+            if (S.frames % 600 == 0) { char m[768]; rb_ring_memory(m, sizeof m); fprintf(stderr, "[rb] ring memory, fight frame %lld: %s\n", S.frames, m); }
             if (rb_save_count) {
                 double k = (double)rb_save_count;
                 fprintf(stderr, "[rb] net saves, the last second: %lld, a save %.2f ms on average: parking the threads %.2f, GPU drain %.2f, memory %.2f, the rest %.2f; "
@@ -2128,7 +2132,7 @@ static void tag_find(void) {
             if (!VirtualQuery(G2H(a), &mi, sizeof mi)) break;
             u64 run_end = H2G((u8 *)mi.BaseAddress + mi.RegionSize);
             if (run_end > end) run_end = end;
-            int ok = mi.State == MEM_COMMIT && (mi.Protect & PAGE_READWRITE) && !(mi.Protect & PAGE_GUARD);
+            int ok = mi.State == MEM_COMMIT && (mi.Protect & (PAGE_READWRITE | PAGE_READONLY)) && !(mi.Protect & PAGE_GUARD);   /* (read-only too: the state map's cold pages, kept so between fights; only read here) */
             const u8 *lo = (const u8 *)G2H(a), *he = (const u8 *)G2H(run_end);
             for (const u8 *q = lo + 4; ok && q + 8 <= he && tag_lists < 2; q++) {
                 q = memchr(q, 0xc5, (size_t)(he - q));
