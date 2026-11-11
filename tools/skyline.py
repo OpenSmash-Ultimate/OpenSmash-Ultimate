@@ -871,6 +871,9 @@ def build(tree, jobs, log=print, again=True):
     into the program). Link the game only when a plugin it should have is missing, the runtime
     changed, or a plugin's inline hook or code patch is not in it.
     A function hook is patched into that one function when the game starts."""
+    global _CHAIN
+    if again:   # (a bar of its own: the Mods app runs every build in one process, and would start at the last one's end)
+        _CHAIN = progress.Chain()
     chain().later = (RELINK if game_link_reason(tree) else 0.0) + PROBE   # (the bar: a relink, then a test boot)
     sync(tree, log, jobs)
     cache_mod_plugins(tree, jobs, log)

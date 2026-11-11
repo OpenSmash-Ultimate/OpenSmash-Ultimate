@@ -272,6 +272,20 @@ class ChainTests(unittest.TestCase):
         self.assertLess(pcts[-1], 100)
         self.assertTrue(all(line.startswith('testing the plugins in the game — ') for line in got))
 
+    def test_each_build_has_a_bar_of_its_own(self):
+        # (the Mods app runs every plugin build in one process: the second one started at the first's 98 %)
+        import skyline
+        quiet = dict(sync=None, cache_mod_plugins=None, probe_and_apply=None)
+        with mock.patch.multiple(skyline, **{k: mock.DEFAULT for k in quiet}), \
+             mock.patch.object(skyline, 'game_link_reason', return_value=None), \
+             mock.patch.object(skyline, 'stale_hooks', return_value=[]):
+            skyline.build('tree', 1, log=lambda _m: None)
+            first = skyline.chain()
+            first.shown = 0.98
+            skyline.build('tree', 1, log=lambda _m: None)
+        self.assertIsNot(skyline.chain(), first)
+        self.assertEqual(skyline.chain().shown, 0.0)
+
     def test_unknown_time_left_holds_the_share(self):
         clock = Clock()
         c = P.Chain(clock=clock)
