@@ -3008,6 +3008,19 @@ static u32 vk_debug(void) {   /* (SSBU_GFX_DEBUG, as gpu_d3d11.c reads it) */
     if (!checked++ && getenv("SSBU_GFX_DEBUG")) v = (u32)strtoul(getenv("SSBU_GFX_DEBUG"), NULL, 0);
     return v;
 }
+/* Two-sided stencil whose back faces have their own reference or masks, with WINDOW_ORIGIN.FLIP_Y:
+ * the faces Vulkan (as Direct3D in gpu_d3d11.c) calls front take the hardware's back state, and the
+ * other way round - the whole state: test and operations as well as reference and masks (the KO
+ * zooms' effects, whose two faces have different tests, need the test to go with its reference). */
+static int stencil_faces_swapped(const u32 *regs) {
+    static int force_swap = -2;   /* debug: SSBU_STENCIL_SWAP=0/1 overrides */
+    if (force_swap == -2) force_swap = getenv("SSBU_STENCIL_SWAP") ? atoi(getenv("SSBU_STENCIL_SWAP")) != 0 : -1;
+    if (!(regs[M_TWO_SIDED_STENCIL] & 1)) return 0;
+    if ((regs[M_BACK_STENCIL_REF] & 0xFF) == (regs[M_STENCIL_REF] & 0xFF) && (regs[M_BACK_STENCIL_MASK] & 0xFF) == (regs[M_STENCIL_MASK] & 0xFF) &&
+        (regs[M_BACK_STENCIL_FUNC_MASK] & 0xFF) == (regs[M_STENCIL_FUNC_MASK] & 0xFF))
+        return 0;
+    return force_swap >= 0 ? force_swap : (int)((regs[M_WINDOW_ORIGIN] >> 4) & 1);
+}
 static u32 instance_counter;
 static float f32_of(u32 bits);
 static u32 f32_bits(float f) { u32 u; memcpy(&u, &f, 4); return u; }
@@ -3333,6 +3346,10 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         key.sback[0] = stencil_op(regs[M_BACK_STENCIL_OP_FAIL]); key.sback[1] = stencil_op(regs[M_BACK_STENCIL_OP_ZFAIL]);
         key.sback[2] = stencil_op(regs[M_BACK_STENCIL_OP_ZPASS]); key.sback[3] = compare_func(regs[M_BACK_STENCIL_FUNC]);
     }
+    if (key.stencil_test && stencil_faces_swapped(regs)) {   /* (the references and masks below swap with them) */
+        u32 t[4];
+        memcpy(t, key.sfront, sizeof t); memcpy(key.sfront, key.sback, sizeof t); memcpy(key.sback, t, sizeof t);
+    }
     if (!key.depth_test) key.depth_func = 8;
     if (!key.stencil_test) { memset(key.sfront, 0, sizeof key.sfront); memset(key.sback, 0, sizeof key.sback); key.sfront[3] = key.sback[3] = 8; }
     u32 ncolor = 0;
@@ -3559,9 +3576,7 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     u32 bref = regs[M_BACK_STENCIL_REF] & 0xFF, bwrite = regs[M_BACK_STENCIL_MASK] & 0xFF, bread = regs[M_BACK_STENCIL_FUNC_MASK] & 0xFF;
     int split = key.stencil_test && (regs[M_TWO_SIDED_STENCIL] & 1) && (bref != fref || bwrite != fwrite || bread != fread);
     if (!split) { bref = fref; bwrite = fwrite; bread = fread; }
-    static int force_swap = -2;
-    if (force_swap == -2) force_swap = getenv("SSBU_STENCIL_SWAP") ? atoi(getenv("SSBU_STENCIL_SWAP")) != 0 : -1;
-    int swap_faces = split && (force_swap >= 0 ? force_swap : (int)((regs[M_WINDOW_ORIGIN] >> 4) & 1));
+    int swap_faces = key.stencil_test && stencil_faces_swapped(regs);
     u32 stencil[6] = {swap_faces ? bref : fref, swap_faces ? fref : bref, swap_faces ? bwrite : fwrite, swap_faces ? fwrite : bwrite,
                       swap_faces ? bread : fread, swap_faces ? fread : bread};
     if (!bound.have || memcmp(bound.stencil, stencil, sizeof stencil)) {
