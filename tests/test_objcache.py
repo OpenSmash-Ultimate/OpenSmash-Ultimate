@@ -639,7 +639,7 @@ class WindowsBuildTests(Folder):
                 ok = recomp.link([], str(exe), str(rt))
             self.said = out.getvalue()
             return ok, self.cc.runs()
-        every = ['cpu_check.c /O2', 'hle_table.c /O1', 'host.c /O2', 'kernel.c /O2', 'nro_table.c /O1']
+        every = ['cpu_check.c /O2', 'hle_table.c /O1', 'host.c /O2', 'kernel.c /O2', 'kind_room.c /O1', 'nro_table.c /O1']
         self.assertEqual(link(), (True, every))
         self.assertIn(str(rt / 'cpu_check.obj'), linked[-1])
         self.assertNotIn('/arch:AVX2', (rt / 'cpu_check.obj').read_text())   # (its own flags, not the runtime's)
@@ -652,10 +652,10 @@ class WindowsBuildTests(Folder):
         self.assertEqual(link(), (True, ['host.c /O2']))
         write(self.runtime / 'host.h', '#pragma once\n#include "module.h"\nint more;\n')
         self.assertEqual(link(), (True, every))
-        self.assertIn('runtime: 5 objects to compile again: the runtime headers changed', self.said)
+        self.assertIn('runtime: 6 objects to compile again: the runtime headers changed', self.said)
         self.rt_flags.append('/DSSBU_HAVE_OPUS')
         self.assertEqual(link(), (True, [j for j in every if not j.startswith('cpu_check')]))
-        self.assertIn('runtime: 4 objects to compile again: the compile command changed', self.said)
+        self.assertIn('runtime: 5 objects to compile again: the compile command changed', self.said)
         check_flags.append('/DMORE')
         self.assertEqual(link(), (True, ['cpu_check.c /O2']))
         self.cc.version('fake clang version 20.1.8')
