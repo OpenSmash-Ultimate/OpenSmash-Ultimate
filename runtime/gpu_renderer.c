@@ -30,7 +30,7 @@ void gfx_renderer_chosen(int renderer, const char *why) {
     snprintf(failed, sizeof failed, "%s", why ? why : "");
     if (renderer == RENDERER_VULKAN)
         fprintf(stderr, "[gfx] renderer = %s: the Vulkan back end draws (docs/TECHNICAL.md, \"A second back end: Vulkan\")\n",
-                display_renderer() == RENDERER_VULKAN ? "vulkan" : "auto (an AMD or NVIDIA card)");
+                display_renderer() == RENDERER_VULKAN ? "vulkan" : "auto (an AMD, NVIDIA or Intel card)");
 }
 
 int gfx_renderer_start(void *window) {

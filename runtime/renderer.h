@@ -3,8 +3,9 @@
  *
  * The default is the system's own back end - Direct3D 11 through DXVK on Linux, Metal on macOS -
  * and on Windows "auto": the Vulkan back end (gpu_vk.c; docs/TECHNICAL.md, "A second back end:
- * Vulkan") on an AMD card, where it draws the game without Direct3D 11's first-use stutter, and
- * Direct3D 11 (gpu_d3d11.c) on any other card and whenever Vulkan cannot start. vulkan and
+ * Vulkan") on an AMD, NVIDIA or Intel card, where it draws the game without Direct3D 11's first-use
+ * stutter (and, on Intel's, without its driver's wrong colours: #81), and Direct3D 11 (gpu_d3d11.c)
+ * on any other card and whenever Vulkan cannot start. vulkan and
  * direct3d11 choose one. "d3d11", which every default display.ini before auto was written with,
  * counts as auto (so AMD players get Vulkan without editing it); direct3d11 (or dx11, direct3d)
  * is Direct3D 11 whatever the card.

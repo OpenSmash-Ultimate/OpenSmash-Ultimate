@@ -540,9 +540,12 @@ static VkFormat depth_format(u32 f) {
     switch (f) {
     case 0x0A: return VK_FORMAT_D32_SFLOAT;
     case 0x13: return VK_FORMAT_D16_UNORM;
-    case 0x14: case 0x15: case 0x16:
-        return features_of(VK_FORMAT_D24_UNORM_S8_UINT) & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT ? VK_FORMAT_D24_UNORM_S8_UINT
-                                                                                                        : VK_FORMAT_D32_SFLOAT_S8_UINT;
+    case 0x14: case 0x15: case 0x16: {
+        static int no_d24 = -1;   /* SSBU_VK_NO_D24=1 (a test): as on a card without D24S8 (AMD) */
+        if (no_d24 < 0) { const char *e = getenv("SSBU_VK_NO_D24"); no_d24 = e && *e == '1'; }
+        return !no_d24 && features_of(VK_FORMAT_D24_UNORM_S8_UINT) & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT ? VK_FORMAT_D24_UNORM_S8_UINT
+                                                                                                                   : VK_FORMAT_D32_SFLOAT_S8_UINT;
+    }
     case 0x19: return VK_FORMAT_D32_SFLOAT_S8_UINT;
     }
     return VK_FORMAT_UNDEFINED;
@@ -4641,11 +4644,11 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(physical, &props);
     snprintf(card, sizeof card, "%s", props.deviceName);
-    /* (auto: Vulkan on AMD's and NVIDIA's cards - gpu_backend.c asked Direct3D 11's choice of card first; this is Vulkan's;
+    /* (auto: Vulkan on AMD's, NVIDIA's and Intel's cards - gpu_backend.c asked Direct3D 11's choice of card first; this is Vulkan's;
      * SSBU_VK_AUTO_VENDOR=<hex PCI vendor> names another, to test auto elsewhere) */
     unsigned auto_vendor = getenv("SSBU_VK_AUTO_VENDOR") ? (unsigned)strtoul(getenv("SSBU_VK_AUTO_VENDOR"), NULL, 16) : 0x1002;
-    if (automatic && props.vendorID != auto_vendor && props.vendorID != 0x10de) {
-        snprintf(why, size, "%s is not an AMD or NVIDIA card, Direct3D 11 is the default for it (renderer = vulkan to draw with Vulkan)", card);
+    if (automatic && props.vendorID != auto_vendor && props.vendorID != 0x10de && props.vendorID != 0x8086) {
+        snprintf(why, size, "%s is not an AMD, NVIDIA or Intel card, Direct3D 11 is the default for it (renderer = vulkan to draw with Vulkan)", card);
         return start_undo();
     }
     if (props.apiVersion < VK_API_VERSION_1_1) { snprintf(why, size, "%s has Vulkan %u.%u: 1.1 is needed", card, VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion)); return start_undo(); }

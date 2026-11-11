@@ -6780,6 +6780,12 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
         save_bmp(final_tex, path);
         fprintf(stderr, "[gfx] screenshot: %s\n", path);
     }
+    {   /* SSBU_F4_AT=<fight frame> (test runs, with SSBU_DEBUG_MATCH or SSBU_DEBUG_END): F4 at that frame of the fight */
+        static long long f4_at = -1;
+        extern volatile long long test_fight_frame;
+        if (f4_at == -1) f4_at = getenv("SSBU_F4_AT") ? atoll(getenv("SSBU_F4_AT")) : 0;
+        if (f4_at > 0 && test_fight_frame >= f4_at) { f4_at = 0; keys |= 8; }
+    }
     static char f4_dir[160];   /* F4's render targets go here, once the logged frame is drawn */
     if (f4_dir[0] && !draw_logging) {
         capture_surfaces(f4_dir, 0);

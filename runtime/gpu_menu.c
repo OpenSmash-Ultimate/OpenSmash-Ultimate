@@ -922,7 +922,7 @@ static void build(void)
 #ifndef __APPLE__
         r = add(R_RENDERER, K_CHOICE, W_RESTART, "Renderer",
 #ifdef _WIN32
-                "auto: Vulkan on an AMD or NVIDIA card (no first-use stutter there), Direct3D 11 on any other. direct3d11 or vulkan: that one on any card."
+                "auto: Vulkan on an AMD, NVIDIA or Intel card (no first-use stutter there), Direct3D 11 on any other. direct3d11 or vulkan: that one on any card."
                 " If Vulkan cannot start (its shaders come from ssbu_glslang.dll beside the game, which needs the Visual C++ runtime), or"
                 " stopped the game in its first seconds twice in a row, Direct3D 11 draws and the log says why."
 #else
