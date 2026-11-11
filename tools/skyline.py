@@ -23,6 +23,7 @@ directly as well needs it built in: the runtime lists every hook target it is as
 dump/skyline/hooks.txt, and the targets the generated C calls directly are made hookable
 (tools/recomp.py HOOKABLE) by the next build, which regenerates the C of the modules they are in
 (that takes long for main: tens of minutes)."""
+import contextlib
 import filecmp
 import hashlib
 import json
@@ -33,6 +34,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -592,7 +594,7 @@ def probe(tree, log=print):
     with tempfile.TemporaryDirectory(prefix="skyline-probe-") as data:
         env["SSBU_DATA_ROOT"] = data
         try:
-            with open(probe_log, "w", encoding="utf-8") as output:
+            with open(probe_log, "w", encoding="utf-8") as output, counting(log, "testing the plugins in the game", PROBE):
                 ran = subprocess.run([exe, os.path.join(tree, "dump", "modules")], env=env,
                                      timeout=180, cwd=tree, stdout=output, stderr=subprocess.STDOUT)
         except subprocess.TimeoutExpired:
@@ -617,6 +619,9 @@ _BAR = re.compile(r"^\[[#-]+\]\s+(\d+)%\s+(.*?)\s*(?:\(\s*(.*?)\s*\))?\s*$")
 # A plugin build relinking the game (main's hooks, the plugins, the link), before its own bar has a time left.
 # (one guess for every PC: 3-4 min on a fast one; the build's own bar replaces it as soon as it has a time left)
 RELINK = 180.0
+# A test boot (probe): runtime/hle_skyline.c's probe_timer ends it a fixed 60 s after the plugins have loaded (the
+# real ARCropolis), and getting there took about 5 s (i5-12600K). The game says nothing meanwhile: the bar goes by this.
+PROBE = 65.0
 _CHAIN = None
 
 
@@ -627,6 +632,27 @@ def chain():
     if _CHAIN is None:
         _CHAIN = progress.Chain()
     return _CHAIN
+
+
+@contextlib.contextmanager
+def counting(log, label, seconds, every=2.0):
+    """While a program of known length runs and prints nothing (the test boot), the bar goes on by its time,
+    a line every `every` seconds: `label — percent%, time left`, as run_logged's."""
+    whole, stop, t0 = chain(), threading.Event(), time.time()
+    whole.start(0.0)
+
+    def tick():
+        while not stop.wait(every):
+            spent = time.time() - t0
+            frac, left = whole.update(min(spent / seconds, 0.99), max(seconds - spent, 5.0))
+            log(f"{label} — {int(frac * 100)}%, {progress.left_text(frac, left)}")
+    thread = threading.Thread(target=tick, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
 
 
 def run_logged(cmd, log, keep=60, later=None):
@@ -845,7 +871,7 @@ def build(tree, jobs, log=print, again=True):
     into the program). Link the game only when a plugin it should have is missing, the runtime
     changed, or a plugin's inline hook or code patch is not in it.
     A function hook is patched into that one function when the game starts."""
-    chain().later = RELINK if game_link_reason(tree) else 0.0   # (the bar: a relink comes after the plugins' C)
+    chain().later = (RELINK if game_link_reason(tree) else 0.0) + PROBE   # (the bar: a relink, then a test boot)
     sync(tree, log, jobs)
     cache_mod_plugins(tree, jobs, log)
     reason = game_link_reason(tree)
@@ -863,7 +889,7 @@ def build(tree, jobs, log=print, again=True):
             cmd = [sys.executable, os.path.join(HERE, "recomp.py"), "all", exefs, "--out", os.path.join(tree, "build"),
                    "--jobs", str(jobs), "--tree", tree]
         log(" ".join(cmd))
-        rc = run_logged(cmd, log, later=0.0)
+        rc = run_logged(cmd, log, later=PROBE)
         if rc:
             return rc
     else:

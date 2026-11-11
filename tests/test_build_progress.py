@@ -253,6 +253,25 @@ class ChainTests(unittest.TestCase):
         self.assertLess(pcts[2], 50)                               # the first program's 100 % is not the whole's
         self.assertTrue(all(line.startswith('writing x C — ') for line in got))   # (its last line names nothing)
 
+    def test_test_boot_counts_down_after_the_link(self):
+        # (the plugin test boot prints nothing for a minute; the bar sat at 99 % through it)
+        import time
+        import skyline
+        got = []
+        with mock.patch.object(skyline, '_CHAIN', None):
+            whole = skyline.chain()
+            whole.start(later=0.6)                    # a link, with a 0.6 s test boot to come
+            frac, _left = whole.update(1.0, None)     # the link done
+            self.assertLess(frac, 0.9)
+            with skyline.counting(got.append, 'testing the plugins in the game', 0.6, every=0.05):
+                time.sleep(0.5)
+        pcts = [int(line.split(' — ')[1].split('%')[0]) for line in got]
+        self.assertGreater(len(pcts), 3)
+        self.assertEqual(pcts, sorted(pcts))
+        self.assertGreater(pcts[-1], pcts[0])
+        self.assertLess(pcts[-1], 100)
+        self.assertTrue(all(line.startswith('testing the plugins in the game — ') for line in got))
+
     def test_unknown_time_left_holds_the_share(self):
         clock = Clock()
         c = P.Chain(clock=clock)
