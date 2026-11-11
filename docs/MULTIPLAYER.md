@@ -151,6 +151,8 @@ python tools/ssbu_online_lobby.py --bind 127.0.0.1 --port 39421 --state online-s
 # tests only: SSBU_RB_NET_BOT=calm (a bot plays each game's player and stays on the stage; without it, the controllers play), SSBU_RB_DELAY_RULE=online (the Online mode's delay rule on the direct link: a pair under SSBU_NET_SIM chooses its own delay), SSBU_RB_NET_BOT_CSTICK=<player 1-8> (that player's bot jumps and pushes the C-stick in the air, its magnitude changing every frame: #181's case), SSBU_NET_SIM=<ms>[,<loss %>[,<jitter ms>]] (each game holds what it receives that long)
 ```
 
+Rollback's catch-up switches (each restores the older behaviour, for comparisons): `SSBU_RB_NET_HIDE=0` draws every frame run again (by default only a catch-up's last frame is drawn); `SSBU_RB_RERUN_LAZY=0` saves every frame run again (by default a catch-up keeps one state, at the newest frame whose pads are all real, and the next normal frame saves); `SSBU_RB_RERUN_KEEP_BACK=<n>` (8) keeps a state anyway once the newest would be more than n frames back; `SSBU_RB_LOAD_BESIDE_GPU=0` copies a load's memory only after the GPU's queue is drained (by default the pages the GPU cannot touch are copied while it drains).
+
 ## Direct connections and your internet address
 
 Online, the games in a room send their traffic **straight to each other** whenever the players' routers allow it. The lobby introduces them, and the games open a path through their routers themselves (UDP hole punching), so nobody forwards a port for this either. Where that doesn't work, the traffic keeps going through the lobby. A direct path that goes quiet falls back to the lobby within about a second; a relayed one keeps being tried during the match and switches to direct as soon as it opens.
