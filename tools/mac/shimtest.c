@@ -1273,6 +1273,7 @@ void skyline_module_loaded(const char *name, u64 base) { (void)name; (void)base;
 void native_mods_module_loaded(void) {}
 void fighter_src_module_loaded(const char *module, u64 base) { (void)module; (void)base; }
 void skyline_note_sleep(void) {}
+int movie_preroll_skip(u64 ns) { (void)ns; return 0; }
 void rtld_module_loaded(u64 base, u64 size) { (void)base; (void)size; }
 void discord_init(void) {}
 void mods_start(const char *data_dir) { (void)data_dir; }

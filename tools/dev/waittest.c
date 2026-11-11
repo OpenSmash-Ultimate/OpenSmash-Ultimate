@@ -42,6 +42,7 @@ static BOOL seen_set_priority(HANDLE thread, int priority);
 /* ---- what kernel.c needs from the rest of the runtime ---------------------------------- */
 int rt_trace;
 void skyline_note_sleep(void) {}   /* (hle_skyline.c: no Skyline plugins here) */
+int movie_preroll_skip(u64 ns) { (void)ns; return 0; }   /* (hle_movie.c: no movie here) */
 u64 rt_clock_ns(void) { return clock_now_ns(); }
 void rt_call(Cpu *c, u64 guest_addr) { ((GuestFn *)(uintptr_t)guest_addr)(c); }   /* (an "entry" is a C function here) */
 const char *rt_describe(u64 guest_addr, char *buf, size_t n) { snprintf(buf, n, "test function %#llx", (unsigned long long)guest_addr); return buf; }
