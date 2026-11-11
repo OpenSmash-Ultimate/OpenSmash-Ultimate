@@ -29,7 +29,8 @@ extern volatile LONG rb_fast;   /* (kernel.c) */
 /* (run-ahead's profile, hle_rb_core.c: the GPU thread's time in submissions, those made in hidden frames [1] and the others [0]) */
 double gpu_q_busy_ms[2]; long long gpu_q_jobs[2];
 extern volatile int gpu_job_hidden;   /* (gpu.c) */
-volatile int gpu_hide_fast;          /* (hle_rb_core.c, run-ahead: the submissions of hidden frames draw nothing) */
+volatile int gpu_hidden_since_present;   /* (SSBU_PRESENT_HASH: a hidden submission ran since the last picture shown) */
+volatile int gpu_hide_fast;          /* (hle_rb_core.c, run-ahead: the submissions of hidden frames draw nothing; 2: those of a net catch-up's frames but the last) */
 
 static Job jobs[JOBS];
 static u64 queued, done;   /* submissions so far: queued, and run (jobs[n % JOBS] is number n) */
@@ -41,10 +42,55 @@ extern u64 gpu_stat_draws;   /* (gpu.c) */
 static int count_draws;      /* SSBU_SEQ: drawn_by[n % JOBS] = draw calls run once submission n had */
 static u64 drawn_by[JOBS];
 
+/* (gpu.h, gpu_rb_wrote) The GPU thread's guest writes, as runs of pages: the run being built is the GPU thread's
+ * own; it is published (rbw_n, release) when a write goes elsewhere and at the end of every submission, so a run
+ * read after its index was published is complete, and a write whose run was published before a reader took the
+ * count is in memory before that reader's next loads. */
+#define RBW 16384
+static u64 rbw_lo[RBW], rbw_hi[RBW], rbw_n;
+static _Thread_local int rbw_mine;
+static u64 rbw_plo, rbw_phi;
+static void rbw_publish(void) {
+    if (!rbw_phi) return;
+    u64 i = rbw_n;
+    rbw_lo[i % RBW] = rbw_plo; rbw_hi[i % RBW] = rbw_phi;
+    __atomic_store_n(&rbw_n, i + 1, __ATOMIC_RELEASE);
+    rbw_phi = 0;
+}
+extern int rb_on;   /* (hle_rb_core.c: rollback netplay or run-ahead, fixed at boot) */
+void gpu_rb_wrote(u64 g, u64 n) {
+    if (!rb_on) return;   /* (no savestates: nothing logged, nothing paid) */
+    if (!rbw_mine || !g || !n) return;
+    u64 lo = g & ~0xFFFull, hi = (g + n + 0xFFF) & ~0xFFFull;
+    if (rbw_phi && lo <= rbw_phi && hi >= rbw_plo) { if (lo < rbw_plo) rbw_plo = lo; if (hi > rbw_phi) rbw_phi = hi; return; }
+    rbw_publish();
+    rbw_plo = lo; rbw_phi = hi;
+}
+u64 gpu_rb_written_count(void) { return __atomic_load_n(&rbw_n, __ATOMIC_ACQUIRE); }
+/* (the semaphores' pages: what the game waits on; one entry a page change, published at once) */
+#define RBS 4096
+static u64 rbs_page[RBS], rbs_n;
+void gpu_rb_semaphore(u64 g) {
+    if (!rb_on || !rbw_mine || !g) return;
+    u64 pg = g & ~0xFFFull, i = rbs_n;
+    if (i && rbs_page[(i - 1) % RBS] == pg) return;
+    rbs_page[i % RBS] = pg;
+    __atomic_store_n(&rbs_n, i + 1, __ATOMIC_RELEASE);
+}
+int gpu_rb_is_gpu_thread(void) { return rbw_mine; }
+u64 gpu_rb_sema_count(void) { return __atomic_load_n(&rbs_n, __ATOMIC_ACQUIRE); }
+u64 gpu_rb_sema_at(u64 i) { return gpu_rb_sema_count() - i > RBS ? 0 : rbs_page[i % RBS]; }
+int gpu_rb_written_at(u64 i, u64 *lo, u64 *hi) {
+    if (gpu_rb_written_count() - i > RBW) return 0;
+    *lo = rbw_lo[i % RBW]; *hi = rbw_hi[i % RBW];
+    return 1;
+}
+
 static DWORD WINAPI gpu_thread(LPVOID unused) {
     (void)unused;
     SetThreadDescription(GetCurrentThread(), L"gpu");
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    rbw_mine = 1;
     for (;;) {
         AcquireSRWLockExclusive(&lock);
         while (done == queued) SleepConditionVariableSRW(&work, &lock, INFINITE, 0);
@@ -52,8 +98,10 @@ static DWORD WINAPI gpu_thread(LPVOID unused) {
         ReleaseSRWLockExclusive(&lock);
         u64 q0 = rt_now_ns();
         gpu_job_hidden = j->hide;
+        if (j->hide) gpu_hidden_since_present = 1;
         gpu_submit(j->channel, j->entries, j->count);   /* (the job stays put until `done` passes it) */
         gpu_job_hidden = 0;
+        rbw_publish();   /* (before `done` passes it: a save that waited for this submission finds its writes) */
         gpu_q_busy_ms[j->fast] += (double)(rt_now_ns() - q0) / 1e6; gpu_q_jobs[j->fast]++;
         AcquireSRWLockExclusive(&lock);
         u32 id = j->syncpoint;
@@ -94,7 +142,7 @@ void gpu_queue_submit(u32 channel, const u64 *entries, u32 count, u32 syncpoint,
     j->syncpoint = syncpoint;
     j->fence = fence;
     j->fast = rb_fast > 0;
-    j->hide = j->fast && gpu_hide_fast;
+    j->hide = gpu_hide_fast == 2 ? rb_fast > 1 : j->fast && gpu_hide_fast;   /* (2, a net catch-up: all but its last frame, the one shown) */
     j->entries = count <= INLINE ? j->inline_entries : malloc(sizeof *entries * count);
     if (!j->entries) { j->entries = j->inline_entries; j->count = count = 0; }
     memcpy(j->entries, entries, sizeof *entries * count);   /* (the driver reuses its array) */

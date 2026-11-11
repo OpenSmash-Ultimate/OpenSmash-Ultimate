@@ -1675,6 +1675,14 @@ namespace OpenSmash.Launcher
                 }
             }
 
+            if (tab < _settingsTabs.Length && string.Equals(_settingsTabs[tab].Name, "Storage", StringComparison.OrdinalIgnoreCase))
+            {
+                _settingsMaxScroll = 0;
+                _settingsScroll = 0;
+                if (_storageText.Length == 0 && !_storageBusy) _ = StorageStatusAsync();
+                PaintStorageSettings(g, W, H, x, cw, listTop, viewH);
+                return;
+            }
             if (tab < _settingsTabs.Length && string.Equals(_settingsTabs[tab].Name, "Update", StringComparison.OrdinalIgnoreCase))
             {
                 _settingsMaxScroll = 0;
@@ -1930,6 +1938,35 @@ namespace OpenSmash.Launcher
             AddHit("rebuild_prompt:refresh", xRef, by, wRef, bh);
             Theme.ButtonAnimated(g, "UPDATE PLUGINS", xUp, by, wUp, bh, s, true, Hov("rebuild_prompt:update", _hover == "rebuild_prompt:update"), true, 13 * s, _alpha, press: Press("rebuild_prompt:update"));
             AddHit("rebuild_prompt:update", xUp, by, wUp, bh);
+            PopFade(g, st);
+        }
+
+        void PaintStorageSettings(Graphics g, int W, int H, float x, float cw, float listTop, float viewH)
+        {
+            float s = _s;
+            var st = PushFade(g, Up((float)(Now - _viewAt), 0.2f), 16 * s);
+            float cwIn = Math.Min(cw, 720 * s);
+            float ch = Math.Min(viewH, 420 * s);
+            float pad = 30 * s;
+            using (var p = Theme.CutCorners(x, listTop, cwIn, ch, 18 * s))
+            {
+                using (var b = new SolidBrush(A(White(10)))) g.FillPath(b, p);
+                using (var pen = new Pen(A(Theme.Line), Math.Max(1, s))) g.DrawPath(pen, p);
+            }
+            Font hf = FM(12 * s);
+            float hsp = 12 * s * 0.16f;
+            Theme.Label(g, "STORAGE", hf, A(Theme.Accent), x + pad, listTop, 52 * s, hsp);
+            float rule = x + pad + Theme.TextWidth(g, "STORAGE", hf, hsp) + 14 * s;
+            if (rule < x + cwIn - pad) HLine(g, rule, x + cwIn - pad, listTop + 26 * s);
+            string text = _storageText.Length > 0 ? _storageText : "The game's files (dump) and the compiled game (build) take tens of GB. They can live on another drive: the move leaves a link in their place.";
+            Theme.DrawWrapped(g, text, FB(14 * s), A(Theme.Muted), x + pad, listTop + 50 * s, cwIn - pad * 2, ch - 140 * s);
+            float bh = 44 * s, by = listTop + ch - bh - 28 * s, wMove = 260 * s, wRef = 150 * s;
+            float xMove = x + cwIn - pad - wMove, xRef = xMove - 12 * s - wRef;
+            bool can = !_storageBusy;
+            Theme.ButtonAnimated(g, "REFRESH", xRef, by, wRef, bh, s, false, Hov("storage:refresh", can && _hover == "storage:refresh"), can, 12 * s, _alpha, press: Press("storage:refresh"));
+            if (can) AddHit("storage:refresh", xRef, by, wRef, bh);
+            Theme.ButtonAnimated(g, _storageBusy ? "WORKING…" : "MOVE TO ANOTHER DRIVE", xMove, by, wMove, bh, s, true, Hov("storage:move", can && _hover == "storage:move"), can, 13 * s, _alpha, press: Press("storage:move"));
+            if (can) AddHit("storage:move", xMove, by, wMove, bh);
             PopFade(g, st);
         }
 

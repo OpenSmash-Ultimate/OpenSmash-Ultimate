@@ -16,6 +16,7 @@
 
 #include "gpu_overlay.h"
 #include "gpu_menu.h"
+#include "net.h"
 
 #define CELL_W 24                 /* the atlas's cells */
 #define CELL_H 48
@@ -192,6 +193,41 @@ static int lines_of(const char *s, int *widest) {
 
 /* ---- the frame ---------------------------------------------------------------------- */
 static void hud(const char *detail);
+int game_fight_on(void);   /* (hle_fight_test.c) */
+
+/* The other players' ping in a room, top right, outside fights (on the character select, the stage vote, the
+ * results): a dot coloured by the connection's quality and the round trip. After saad-script's
+ * ssbu-online-deluxe (its idea; nothing taken from its code). Returns 1 when something is to be drawn. */
+static NetPeerQ badge_peers[4];
+static int badge_n;
+static int badge_wanted(void) {
+    static u64 next;
+    u64 t = GetTickCount64();
+    if (t >= next) {   /* (twice a second) */
+        int was = badge_n;
+        next = t + 500;
+        badge_n = net_peer_quality(badge_peers, 4);
+        if (badge_n && !was)
+            fprintf(stderr, "[net] ping badge: %d player%s (%s: %d ms%s, quality %d)\n", badge_n, badge_n == 1 ? "" : "s", badge_peers[0].name,
+                    badge_peers[0].rtt_ms, badge_peers[0].relayed ? ", relayed" : "", badge_peers[0].quality);
+    }
+    return badge_n > 0 && !game_fight_on();
+}
+static float text_sized(float x, float y, float size, unsigned color, const char *s);
+static void badge(float w) {
+    static const unsigned dot[3] = {OVL_RGBA(90, 220, 110, 255), OVL_RGBA(250, 210, 70, 255), OVL_RGBA(240, 80, 70, 255)};
+    float size = 18, row = size + 6, bw = 300, x = w - bw - 12, y = 12;
+    rect(x - 8, y - 6, bw + 8, row * badge_n + 6, OVL_RGBA(0, 0, 0, 150));
+    for (int i = 0; i < badge_n; i++) {
+        const NetPeerQ *p = &badge_peers[i];
+        char line[96];
+        if (p->rtt_ms >= 0) snprintf(line, sizeof line, "%.24s  %d ms", p->name, p->rtt_ms);
+        else snprintf(line, sizeof line, "%.24s  relayed", p->name);
+        int q = p->quality < 0 ? 0 : p->quality > 2 ? 2 : p->quality;
+        rect(x, y + row * i + 4, size - 6, size - 6, dot[q]);
+        text_sized(x + size + 2, y + row * i, size, OVL_RGBA(235, 235, 235, 255), line);
+    }
+}
 static void draw(ID3D11DeviceContext *ctx, ID3D11RenderTargetView *rtv, unsigned x0, unsigned y0, unsigned w, unsigned h);
 static double history[HISTORY];   /* milliseconds per frame, newest at [head - 1] */
 static unsigned head, filled;
@@ -208,12 +244,13 @@ void overlay_present(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11RenderTa
         if (filled < HISTORY) filled++;
     }
     last = now;
-    int menu = menu_visible();
-    if (!show && !menu) return;
+    int menu = menu_visible(), ping = !menu && badge_wanted();
+    if (!show && !menu && !ping) return;
     if (!state) state = init(dev) ? 1 : -1;
     if (state < 0) return;
     nverts = 0;
     if (show && !menu_blocks_input()) hud(detail);   /* (an open menu instead of the overlay) */
+    if (ping) badge((float)w);
     if (menu) menu_draw((float)w, (float)h);
     draw(ctx, rtv, x0, y0, w, h);
 }
@@ -232,11 +269,12 @@ unsigned overlay_quads(unsigned w, unsigned h, int show, const char *detail, con
         if (filled < HISTORY) filled++;
     }
     last = now;
-    int menu = menu_visible();
+    int menu = menu_visible(), ping = !menu && badge_wanted();
     *verts = (const OverlayVertex *)verts_out();
-    if (!show && !menu) return 0;
+    if (!show && !menu && !ping) return 0;
     nverts = 0;
     if (show && !menu_blocks_input()) hud(detail);
+    if (ping) badge((float)w);
     if (menu) menu_draw((float)w, (float)h);
     return nverts;
 }

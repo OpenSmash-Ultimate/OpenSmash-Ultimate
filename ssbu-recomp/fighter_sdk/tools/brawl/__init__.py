@@ -9,6 +9,7 @@ native model formats. Pure Python, standard library only. Contains no game conte
     psa.py      the moveset file: sections, sub-action scripts, hitbox listing
     ssbh.py     native skeleton / mesh / model description / material files: reader and writer
     nutexb.py   native texture file: writer (RGBA8, block-linear layout) and reader of the footer
+    reff.py     particle effects: effect list (EFLS), emitters (REFF), textures (REFT) -> PNG / .nutexb + report
     inventory.py, convert_model.py, convert_anim.py   command-line tools
 
 Every tool takes paths as arguments. Run with  python -I  when the input is a downloaded package.

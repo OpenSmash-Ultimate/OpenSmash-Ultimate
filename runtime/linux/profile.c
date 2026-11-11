@@ -509,6 +509,9 @@ static double cpu_seconds(pid_t tid) {
     return (double)(utime + stime) / (double)sysconf(_SC_CLK_TCK);
 }
 
+/* (Windows only so far: rollback's failed-hold report names the threads but shows no stacks here) */
+int profile_dump_some(const unsigned long *tids, unsigned n, void (*line)(const char *text)) { (void)tids; (void)n; (void)line; return 0; }
+
 /* Every thread's stack but the caller's, a line at a time to line. */
 int profile_dump_threads(void (*line)(const char *text)) {
     if (InterlockedCompareExchange(&running, 1, 0)) { line("  (the profiler is running: no stacks)\n"); return 0; }

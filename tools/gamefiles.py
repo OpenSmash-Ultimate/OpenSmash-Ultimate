@@ -59,10 +59,12 @@ def version_string(version):
 
 
 # ---- the folder's files -------------------------------------------------------------------------
-def list_ncas(folder, depth=1):
+def list_ncas(folder, depth=1, convert_nsz=True):
     """[(path, name)] of the NCAs in a folder and `depth` levels of subfolders: <name>.nca as a
     file, or a folder <name>.nca holding the file as 00 (Ryujinx); .nsp and .xci packages
-    likewise, as (path, name) in the second list."""
+    likewise, as (path, name) in the second list. An .nsz is listed through its plain copy
+    (tools/nsz.py: minutes, made once), or with convert_nsz False as itself, read in place by
+    scan (its NCZ entries' headers only)."""
     ncas, nsps = [], []
 
     def visit(d, level):
@@ -81,8 +83,11 @@ def list_ncas(folder, depth=1):
             elif low.endswith((".nsp", ".xci")) and os.path.isfile(p):
                 nsps.append((p, n))
             elif low.endswith(".nsz") and os.path.isfile(p):   # (read through its plain copy in dump/nsz: tools/nsz.py)
-                import nsz
-                nsps.append((nsz.plain_nsp(p), n))
+                if convert_nsz:
+                    import nsz
+                    nsps.append((nsz.plain_nsp(p), n))
+                else:
+                    nsps.append((p, n))
             elif os.path.isdir(p) and level < depth:
                 visit(p, level + 1)
 
@@ -183,10 +188,35 @@ def apply_metadata(contents, metas):
     return contents
 
 
-def scan(folder, keys, depth=1):
-    """{"contents": [records], "unread": ["name: why"]} for the folder's NCAs and packages."""
+def nsz_ncas(path, keys):
+    """[(name, Nca)] of an .nsz read in place: its plain NCAs (the .cnmt.nca), and its compressed
+    .ncz ones, whose first 0x4000 bytes are the NCA's own header (title id, type, sections) while
+    the body is compressed: only the header is read from those (Nca.ncz True)."""
+    from nca import Nca, nsp_title_keys, pfs0_files
+    tks = nsp_title_keys(path)
+    out, first_error = [], None
+    for name, off, _size in pfs0_files(path):
+        low = name.lower()
+        if not low.endswith((".nca", ".ncz")):
+            continue
+        try:
+            nca = Nca(path, keys, off, tks)
+        except SystemExit as e:
+            first_error = first_error or f"{name}: {e}"
+            continue
+        nca.ncz = low.endswith(".ncz")
+        out.append((name[:-4] + ".nca" if nca.ncz else name, nca))
+    if not out and first_error:
+        raise SystemExit(f"{path}: no readable NCA - {first_error}")
+    return out
+
+
+def scan(folder, keys, depth=2, convert_nsz=True):   # (two levels: Game\Updates\x.nsp, an emulator's per-title folders)
+    """{"contents": [records], "unread": ["name: why"]} for the folder's NCAs and packages. With
+    convert_nsz False an .nsz is not made plain (a quick look: the installers' check), so its
+    program's data.arc version and its control data's names are not read."""
     contents, unread = [], []
-    ncas, nsps = list_ncas(folder, depth)
+    ncas, nsps = list_ncas(folder, depth, convert_nsz)
     opened = []
     for path, name in ncas:
         try:
@@ -197,7 +227,7 @@ def scan(folder, keys, depth=1):
         opened.append((nca, path, name, None))
     for path, name in nsps:
         try:
-            for inner, nca in nsp_ncas(path, keys):
+            for inner, nca in (nsz_ncas(path, keys) if path.lower().endswith(".nsz") else nsp_ncas(path, keys)):
                 opened.append((nca, path, inner, name))
         except (SystemExit, OSError, ValueError, struct.error) as e:
             unread.append(f"{name}: {e}")
@@ -205,7 +235,8 @@ def scan(folder, keys, depth=1):
     for nca, path, name, container in opened:
         try:
             rec = describe_nca(nca, path, name, container)
-            if rec["romfs"] in ("plain", "encrypted") and int(rec["app"], 16) == APP_ID:
+            compressed = getattr(nca, "ncz", False)   # (an .nsz's body read in place: compressed, header only)
+            if rec["romfs"] in ("plain", "encrypted") and int(rec["app"], 16) == APP_ID and not compressed:
                 rec["data_version"] = data_arc_version(nca.section(0))
             if nca.content_type == 1:
                 info = cnmt_info(nca)
@@ -214,7 +245,7 @@ def scan(folder, keys, depth=1):
                     rec["version"] = version
                     rec["kind"] = META_KINDS.get(mtype, rec["kind"])
                     metas.append((title, version, mtype, ids))
-            elif nca.content_type == 2:
+            elif nca.content_type == 2 and not compressed:
                 info = nacp_info(nca)
                 if info:
                     rec["game"], rec["display_version"] = info
@@ -319,10 +350,12 @@ def main():
     ap.add_argument("folder")
     ap.add_argument("--keys", required=True, help="folder with prod.keys and title.keys")
     ap.add_argument("--json", action="store_true", help="the scan as JSON, with the program to build from under 'program'")
+    ap.add_argument("--convert-nsz", action="store_true",
+                    help="make each .nsz plain first (minutes) to read its program's data version; without it an .nsz is read in place")
     a = ap.parse_args()
     if not os.path.isdir(a.folder):
         raise SystemExit(f"there is no folder {a.folder}")
-    result = scan(a.folder, a.keys)
+    result = scan(a.folder, a.keys, convert_nsz=a.convert_nsz)
     try:
         program = pick_program(result["contents"])
         problem = game_version.scan_problem(program)

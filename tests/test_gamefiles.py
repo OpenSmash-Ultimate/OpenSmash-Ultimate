@@ -183,6 +183,44 @@ class FolderTests(unittest.TestCase):
         control = types.SimpleNamespace(content_type=2, title_id=APP, size=5, plaintext=False, section=lambda fs_type: None)
         self.assertEqual(gamefiles.describe_nca(control, 'c', 'c.nca')['type'], 'control')
 
+    def test_an_nsz_is_read_in_place_without_converting(self):
+        # (the installers' check: making an .nsz plain took minutes and the window sat on "Checking...")
+        import struct as st
+        import nca as nca_mod
+        def pfs0(entries):
+            strings = b''.join(n.encode() + b'\0' for n, _ in entries)
+            strings += b'\0' * ((-(16 + 24 * len(entries) + len(strings))) % 0x20)
+            table, at, off = b'', 0, 0
+            for n, data in entries:
+                table += st.pack('<QQII', at, len(data), off, 0)
+                at += len(data); off += len(n) + 1
+            return st.pack('<4sIII', b'PFS0', len(entries), len(strings), 0) + table + strings + b''.join(d for _, d in entries)
+        opened = []
+        class FakeNca:
+            def __init__(self, path, keys, offset=0, title_keys=None):
+                opened.append(offset)
+                self.content_type, self.title_id, self.size, self.plaintext = 0, APP, 10, False
+                self.f = open(path, 'rb')
+            def section(self, fs_type):
+                return types.SimpleNamespace(enc_type=3)
+        with tempfile.TemporaryDirectory(prefix='gamefiles-nsz-') as tmp:
+            pkg = os.path.join(tmp, 'Game.nsz')
+            with open(pkg, 'wb') as f:
+                f.write(pfs0([('0123456789abcdef0123456789abcdef.ncz', b'x' * 64), ('t.tik', b'')]))
+            ncas, nsps = gamefiles.list_ncas(tmp, convert_nsz=False)
+            self.assertEqual(nsps, [(pkg, 'Game.nsz')])   # (itself: no plain copy made)
+            saved = (nca_mod.Nca, nca_mod.nsp_title_keys, gamefiles.data_arc_version)
+            nca_mod.Nca, nca_mod.nsp_title_keys = FakeNca, lambda path: {}
+            gamefiles.data_arc_version = lambda sec: self.fail('a compressed body must not be read')
+            try:
+                result = gamefiles.scan(tmp, tmp, convert_nsz=False)
+            finally:
+                nca_mod.Nca, nca_mod.nsp_title_keys, gamefiles.data_arc_version = saved
+            self.assertEqual(result['unread'], [])
+            [rec] = result['contents']
+            self.assertEqual((rec['type'], rec['name'], rec['container'], rec['data_version']),
+                             ('program', '0123456789abcdef0123456789abcdef.nca', 'Game.nsz', None))
+
 
 if __name__ == '__main__':
     unittest.main()

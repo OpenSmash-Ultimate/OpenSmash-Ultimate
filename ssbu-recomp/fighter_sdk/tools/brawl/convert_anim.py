@@ -201,7 +201,7 @@ def read_bool_track(data, flags, frame_count):
     return [bool(data[off + (i >> 3)] >> (i & 7) & 1) for i in range(n)]
 
 
-def build_file(name, tracks, frame_count, visibility=None):
+def build_file(name, tracks, frame_count, visibility=None, transform_flags=None):
     """visibility: {mesh name: [bool per frame]} -> a Visibility group as the game's motion files have it."""
     buf = bytearray()
     vis_nodes = []
@@ -219,7 +219,8 @@ def build_file(name, tracks, frame_count, visibility=None):
         off = len(buf)
         buf.extend(data)
         nodes.append({'name': bone, 'tracks': [{'name': 'Transform', 'flags': flags, 'frame_count': cnt,
-                                                'transform_flags': 0, 'data_offset': off, 'data_size': len(data)}]})
+                                                'transform_flags': (transform_flags or {}).get(bone, 0),
+                                                'data_offset': off, 'data_size': len(data)}]})
     value = {'final_frame_index': float(frame_count - 1), 'unk1': 1, 'unk2': 3, 'name': name,
              'groups': [{'type': 1, 'nodes': nodes}] + ([{'type': 2, 'nodes': vis_nodes}] if vis_nodes else []),
              'buffer': bytes(buf), 'unk_a': [], 'unk_b': []}

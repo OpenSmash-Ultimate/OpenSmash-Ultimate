@@ -2,6 +2,7 @@
 Build and Line) and Prepare Shaders (tools/shader_aot.py)."""
 import heapq
 import os
+import re
 import shutil
 import sys
 import threading
@@ -24,6 +25,14 @@ def time_left(seconds):
     if minutes < 60:
         return f"about {minutes} min left"
     return f"about {minutes // 60} h {minutes % 60:02d} min left"
+
+
+def seconds_left(text):
+    """time_left's words back in seconds, or None (not one of them: "estimating", "done")."""
+    if "under a minute left" in text:
+        return 30.0
+    m = re.search(r"about (?:(\d+) h )?(\d+) min left", text)
+    return (int(m.group(1) or 0) * 60 + int(m.group(2))) * 60.0 if m else None
 
 
 def bar(frac, width=30):
@@ -124,12 +133,18 @@ class Build:
         self.since = 0.0
         self.queue = {}            # (compile) source -> estimate, of the files not started, in order
         self.running = {}          # (compile) source -> (estimate, started at)
-        self.compiled = 0          # (compile) files finished
+        self.compiled = 0          # (compile) files finished (each counted once: finished_files)
+        self.finished_files = set()
         self.samples = []          # (when, seconds, estimate) of every file compiled
         self.unpaced = set()       # (compile) files the ladder compiles again another way: no sample of the pace
         self.gen_samples = []      # the same of every module whose C was written
         self.shown = 0.0
         self.label = ""
+        # A module whose C is written again is guessed to compile all of it, but the files that come out
+        # the same are not written, so their objects stay (a change to the generator often changes none):
+        # the guesses of the modules still to come go by how the written ones turned out (guessed, real).
+        self.guessed = {}          # module -> its compile's guess, until its C is written
+        self.learned = [0.0, 0.0]
 
     def module(self, name, insns, files=None):
         """A module to build, of `insns` instructions; `files` [(source, estimate)] if its C is
@@ -140,6 +155,7 @@ class Build:
                 self.cost[("gen", name)] = GEN[0] + GEN[1] * insns
                 self.cost[("compile", name)] = makespan([file_cost(*PRIOR)] * max(1, -(-insns // PRIOR[0])),
                                                         [0.0] * self.jobs) if self.compiling else 0.0
+                self.guessed[name] = self.cost[("compile", name)]
             else:
                 self.cost[("gen", name)] = 0.0
                 self._set_files(name, files)
@@ -152,6 +168,17 @@ class Build:
         """The module's C is there: compiling it is these files."""
         with self.lock:
             self._set_files(name, files)
+            guess = self.guessed.pop(name, 0.0)
+            if guess:
+                self.learned[0] += guess
+                self.learned[1] += self.cost[("compile", name)]
+
+    def _cost(self, step):
+        """A step's estimate, a compile still guessed as the ones written so far turned out."""
+        c = self.cost[step]
+        if step[0] == "compile" and step[1] in self.guessed and self.learned[0]:
+            c *= self.learned[1] / self.learned[0]
+        return c
 
     def begin(self, kind, name=None, files=None):
         with self.lock:
@@ -160,6 +187,7 @@ class Build:
             self.step, self.since = (kind, name), self.clock()
             if kind == "compile":
                 self.queue, self.running, self.compiled, self.unpaced = dict(self.files[name]), {}, 0, set()
+                self.finished_files = set()
             self.label = self._label()
 
     def started(self, job):
@@ -169,7 +197,10 @@ class Build:
     def finished(self, job, seconds):
         with self.lock:
             cost, _t = self.running.pop(job[0], (0.0, 0.0))
-            self.compiled += 1
+            # (a file is counted once, however many times it is reported: a user saw 2835 of 2660)
+            if job[0] not in self.finished_files:
+                self.finished_files.add(job[0])
+                self.compiled += 1
             if job[0] in self.unpaced:
                 self.unpaced.discard(job[0])
             else:
@@ -222,7 +253,7 @@ class Build:
         with self.lock:
             now = self.clock() if now is None else now
             pace = self.pace(now)
-            rest = sum(c for step, c in self.cost.items() if step not in self.done and step != self.step)
+            rest = sum(self._cost(step) for step in self.cost if step not in self.done and step != self.step)
             label = self.label
             if self.step:
                 # a step under way: what is left of it, counting the time it has had at this pace
@@ -235,9 +266,46 @@ class Build:
                         label += " - a big one takes minutes"
                 else:
                     rest += left_of(self.cost[self.step], self.since)
-            total = sum(self.cost.values())
+            total = sum(self._cost(step) for step in self.cost)
             self.shown = max(self.shown, 1.0 - rest / total if total else 1.0)   # (never backwards)
             return self.shown, rest * pace if pace else None, label
+
+
+class Chain:
+    """Programs run one after another (the Mods app's plugin build: each plugin's C, then the game's
+    build and link) as one bar that does not start over at each of them. The share done is the time
+    spent over the time spent and left; the time left is the running program's (its bar's, else its
+    share done at its pace so far) and `later`, an estimate of what comes after it. So the share
+    and the time left say the same thing. Never backwards, and under 100 % until the caller says
+    it is all done."""
+
+    def __init__(self, later=0.0, clock=time.time):
+        self.clock = clock
+        self.t0 = clock()
+        self.later = later
+        self.part_t0 = self.t0
+        self.shown = 0.0
+
+    def start(self, later=None):
+        """A program starts; `later`: seconds estimated for what comes after it (None: as before)."""
+        self.part_t0 = self.clock()
+        if later is not None:
+            self.later = later
+
+    def update(self, frac, left):
+        """The running program's (share done, time left or None) -> the whole's."""
+        now = self.clock()
+        spent = now - self.part_t0
+        if frac >= 1.0:
+            left = 0.0
+        elif left is None and frac >= 0.03 and spent >= 10:
+            left = spent * (1 - frac) / frac
+        if left is None:   # (not known yet: the share stays where it was)
+            return self.shown, None
+        left += self.later
+        spent = now - self.t0
+        self.shown = max(self.shown, min(0.99, spent / (spent + left) if spent + left > 0 else 0.0))
+        return self.shown, left
 
 
 # ---- showing it -----------------------------------------------------------------------------------
@@ -289,6 +357,9 @@ def restore_title(saved):
         pass
 
 
+_BAR_LINE = re.compile(r"\[[#-]+\] +\d+%")
+
+
 class Line:
     """A progress bar under what a program prints, from status() -> (share done, seconds left or
     None, what is being done), shown every second while the `with` block runs.
@@ -311,6 +382,7 @@ class Line:
         self.text = None
         self.drawn = 0             # (console) how much of the bar is on the screen
         self.line_start = True     # (console) the program's own output has ended its line
+        self.dropped = False       # another bar was left out (write_through); its "\n" goes too
         self.logged = None         # (log) (when, percent, label) of the last line written
         self.old_title = None
         self.shown_title = None
@@ -357,8 +429,14 @@ class Line:
             self.drawn = 0
 
     def write_through(self, real, s):
-        """What the program prints while the bar is up: above it."""
+        """What the program prints while the bar is up: above it. Another bar (recomp.py's of one
+        module's C, under build_all's) is left out: one under the other, a window that reads the
+        output took each for the build's and its percent jumped (12 %, 100 %, 4 %)."""
         with self.lock:
+            if _BAR_LINE.match(s) or (s == "\n" and self.dropped):   # (print writes its "\n" apart)
+                self.dropped = not self.dropped
+                return len(s)
+            self.dropped = False
             if self.console and s:
                 self._erase()
             real.write(s)

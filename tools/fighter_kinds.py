@@ -253,6 +253,20 @@ def patches(u32):
     return out, bad
 
 
+def room(rows):
+    """The number of fighter kinds main's code has room for, from the patches it was lifted with
+    (`rows`: (offset, old word, new word), recomp.py plugin_patches / a build folder's plugin_patches.txt):
+    NEW_KINDS when every site holds its patched immediate, else KINDS (the game's own 0x5E). recomp.py link
+    writes it into the runtime (rt_main_kind_room), so the fighter registry never hands kinds 0x5E.. to a
+    main built without the room: its bound checks abort the fighter set-up, and the kind component's rows
+    of array B (+0x19A8) would fall past the end of the game's smaller object."""
+    have = {off: new for off, _old, new in rows}
+    for off, kind, _old, new, _what in sites():
+        if off not in have or decode(have[off], kind) != new:
+            return KINDS
+    return NEW_KINDS
+
+
 def main_words(tree):
     import recomp
     path = os.path.join(tree, "dump", "exefs", "main")

@@ -310,6 +310,14 @@ static u32 address_space(u32 nr, u64 a, u32 request) {
  * one less) and only one no longer held is reused; queued GPU work may still read what freed handles
  * held, so it runs first, once per batch of them. Nothing changes before the numbers run out. */
 static u32 nvmap_refs[NVMAP_MAX];
+/* (rollback, hle_rb_state.c) The nvmap allocations now, as guest ranges; nv_rb_gen moves when one is made or freed. */
+volatile long nv_rb_gen;
+u32 nv_rb_maps(u64 (*out)[2], u32 max) {
+    u32 n = next_handle < NVMAP_MAX ? next_handle : NVMAP_MAX, k = 0;
+    for (u32 h = 1; h < n && k < max; h++)
+        if (gpu_maps[h].addr && gpu_maps[h].size && nvmap_refs[h]) { out[k][0] = gpu_maps[h].addr; out[k][1] = gpu_maps[h].size; k++; }
+    return k;
+}
 static u32 nvmap_freed[NVMAP_MAX], nvmap_nfreed;   /* freed since the last batch was made reusable */
 static u32 nvmap_spare[NVMAP_MAX], nvmap_nspare;   /* reusable now */
 
@@ -356,10 +364,12 @@ static u32 nvmap(u32 nr, u64 a, u32 request) {
         gpu_maps[h].align = ld32(a + 12);
         gpu_maps[h].kind = ld8(a + 16);
         gpu_maps[h].addr = ld64(a + 24);
+        nv_rb_gen++;
         return NV_OK;
     }
     case 0x05: {                                                          /* Free */
         u32 h = ld32(a);
+        nv_rb_gen++;
         if (!h || h >= NVMAP_MAX) return NV_BAD_PARAMETER;
         st64(a + 8, gpu_maps[h].addr);
         st32(a + 16, (u32)gpu_maps[h].size);

@@ -11,6 +11,17 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import fighter_kinds as fk  # noqa: E402
 
 
+def made_up(kind, old, new):
+    """A made-up instruction of that kind holding old, and the same one holding new (a load or store of the
+    widest size both offsets fit)."""
+    if kind == 'ls':
+        size = next(z for z in (3, 2, 1, 0) if not old % (1 << z) and not new % (1 << z) and max(old, new) >> z <= 0xFFF)
+        base = 0x39400000 | size << 30
+    else:
+        base = {'imm12': 0x7100001F, 'movz': 0x52800000, 'movn': 0x12800000}[kind]
+    return fk.encode(base, kind, old), fk.encode(base, kind, new)
+
+
 class Table(unittest.TestCase):
     def test_sites(self):
         s = fk.sites()
@@ -40,6 +51,30 @@ class Table(unittest.TestCase):
         self.assertEqual(fk.decode(fk.encode(movz, 'movz', 0x1F00), 'movz'), 0x1F00)
         self.assertIsNone(fk.decode(movz, 'imm12'))
         self.assertIsNone(fk.decode(cmp_w8, 'ls'))
+
+    def test_room(self):
+        """The kinds a main has room for, from the patches it was lifted with (recomp.py link -> rt_main_kind_room)."""
+        rows = [(off, *made_up(kind, old, new)) for off, kind, old, new, _ in fk.sites()]
+        self.assertEqual(fk.room(rows), fk.NEW_KINDS)
+        self.assertEqual(fk.room([]), fk.KINDS)                  # (main lifted as the game has it)
+        self.assertEqual(fk.room(rows[1:]), fk.KINDS)            # (one site missing)
+        self.assertEqual(fk.room([(rows[0][0], rows[0][1], rows[0][1])] + rows[1:]), fk.KINDS)   # (one left as it was)
+
+    def test_link_reads_the_main_folder(self):
+        import tempfile
+        import recomp
+        with tempfile.TemporaryDirectory() as d:
+            main, sdk = os.path.join(d, 'main'), os.path.join(d, 'sdk')
+            os.makedirs(main)
+            os.makedirs(sdk)
+            self.assertEqual(recomp.main_kind_room([main, sdk]), -1)   # (no plugin_patches.txt: not known)
+            with open(os.path.join(main, 'plugin_patches.txt'), 'w') as f:
+                f.write('')
+            self.assertEqual(recomp.main_kind_room([sdk, main]), fk.KINDS)
+            with open(os.path.join(main, 'plugin_patches.txt'), 'w') as f:
+                for off, kind, old, new, _ in fk.sites():
+                    f.write('%x %08x %08x\n' % (off, *made_up(kind, old, new)))
+            self.assertEqual(recomp.main_kind_room([sdk, main]), fk.NEW_KINDS)
 
     def test_wrong_main(self):
         """A main whose words are not the expected instructions: nothing is patched."""

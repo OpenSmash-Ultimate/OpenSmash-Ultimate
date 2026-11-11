@@ -23,3 +23,6 @@ DWORD d3d11_lock_owner(void);
 DWORD d3d11_last_enter_thread(void);
 void d3d11_report_compiles(void (*line)(const char *text));
 void *d3d11_display_output(void);
+/* (renderer = auto: gpu_backend.c) The PCI vendor of the card Direct3D 11 would draw with, its name in `name`; 0 for
+ * Windows' own renderer (gpu = warp) or none. */
+unsigned d3d11_card_vendor(char *name, size_t size);

@@ -68,6 +68,10 @@ Rows that link to pull requests are being reviewed and land in `main` as they ar
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Its three rules hold for every change: nothing derived from the game goes into the repository, clean sources only, and every claim is measured.
 
+### Built with AI coding tools
+
+Much of OpenSmash-Ultimate was written with AI coding assistants, directed and checked by its maintainers: reading the game's code in a disassembler, writing the runtime and the tools, running the game headless to prove each change with its own logs and counters, and reviewing pull requests. That lowers the bar to contribute: you don't need to know ARM64, Direct3D or the Switch's services before you start. Describe the problem, let an assistant read the code with you, and hold it to the same rules as anyone else: [CONTRIBUTING.md](CONTRIBUTING.md)'s three rules, a measurement for every claim, and a test that fails without the fix. Say in your pull request what you checked yourself.
+
 WindowSmash's source-only tests use made-up data and need no game files. Run them from the repository root, in PowerShell or a Unix shell:
 
 ```

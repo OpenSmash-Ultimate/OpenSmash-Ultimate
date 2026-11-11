@@ -80,6 +80,9 @@ Do not look for a newer WindowSmash (the updated installer is started with it).
 .PARAMETER UpdateOnly
 Only bring this folder to the newest commit, then stop. The launcher's Update button uses this so
 setup steps (compiler, game files, build) are not run again.
+.PARAMETER PythonOnly
+Only step 3: WindowSmash's own Python (deps\venv) and its packages, then stop. The launcher uses this
+for an install from before deps\venv, one whose venv no longer runs, and after an update.
 .PARAMETER BuildTools
 For the compiler, install the Visual Studio Build Tools rather than download it into deps\.
 .PARAMETER Rebuild
@@ -105,6 +108,7 @@ param(
     [int]$Jobs,
     [switch]$NoUpdate,
     [switch]$UpdateOnly,
+    [switch]$PythonOnly,
     [switch]$BuildTools,
     [switch]$Rebuild,
     [switch]$AcceptLicense
@@ -143,6 +147,8 @@ $UserAgent = 'WindowSmash-installer'
 # compression.zstd raises an error instead of answering no (there is no compression package).
 # (No double quotes in it: Windows PowerShell hands them to programs unescaped.)
 $ZstdCheck = 'import sys, importlib.util as u; sys.exit(0 if u.find_spec(''zstandard'') or (sys.version_info >= (3, 14) and u.find_spec(''compression.zstd'')) else 1)'
+# tomllib is Python 3.11's; on 3.10 the tomli package (paramconfig.py reads mods' config_param.toml with it)
+$TomlCheck = 'import sys, importlib.util as u; sys.exit(0 if sys.version_info >= (3, 11) or u.find_spec(''tomli'') else 1)'
 # where updates come from: this repository's branch
 $RepoOwner = 'OpenSmash-Ultimate'
 $RepoName = 'OpenSmash-Ultimate'
@@ -503,6 +509,14 @@ function Invoke-Download {
     Write-Info ("  {0:N1} MB" -f ((Get-Item -LiteralPath $Dest).Length / 1MB))
 }
 
+function Expand-Zip {
+    <# Expand-Archive, unpacking into a folder that is not there yet, about ten times faster: Windows
+       PowerShell 5.1's took 12.6 s for WindowSmash's ZIP (1,541 files), this 1.1 s. #>
+    param([string]$Zip, [string]$Dest)
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::ExtractToDirectory($Zip, $Dest)
+}
+
 function Get-Json {
     param([string]$Url)
     return Invoke-RestMethod -Uri $Url -UseBasicParsing -Headers @{ 'User-Agent' = $UserAgent; 'Accept' = 'application/vnd.github+json' }
@@ -645,7 +659,7 @@ function Update-FromZip {
     $zip = Join-Path $work "WindowSmash-$New.zip"
     Invoke-Download "https://codeload.github.com/$RepoOwner/$RepoName/zip/$New" $zip "WindowSmash $($New.Substring(0, 7))"
     $extract = Join-Path $work 'extract'
-    Expand-Archive -LiteralPath $zip -DestinationPath $extract
+    Expand-Zip $zip $extract
     $top = @(Get-ChildItem -LiteralPath $extract -Directory)
     if ($top.Count -ne 1 -or -not (Test-Path -LiteralPath (Join-Path $top[0].FullName 'tools\recomp.py'))) {
         throw 'The downloaded WindowSmash does not look complete; nothing was changed. Run this again.'
@@ -817,29 +831,85 @@ function Step-CheckPc {
 }
 
 # ---- step 3: Python -----------------------------------------------------------------------------------
-function Find-Python {
-    <# The first Python 3.10+ that runs: deps\python, python on the PATH, the py launcher. #>
+function Test-VenvBase {
+    <# Whether deps\venv may be made from this Python (its version text and python.exe): 3.10 up to $PythonMinor,
+       the newest the tools are tested on (and the one deps\python gets), and not the Microsoft Store's, whose
+       files Windows redirects. #>
+    param([string]$Version, [string]$Exe)
+    if (-not (Test-PythonVersionText $Version)) { return $false }
+    $m = [regex]::Match($Version, '(\d+)\.(\d+)')
+    if ([version]("{0}.{1}" -f $m.Groups[1].Value, $m.Groups[2].Value) -gt [version]$PythonMinor) { return $false }
+    return ($Exe -and $Exe -notmatch '\\WindowsApps\\')
+}
+
+function Find-OwnPython {
+    <# WindowSmash's own Python, if it runs: deps\venv, else deps\python (a PC that had no Python). #>
+    $venvPy = Join-Path $Root 'deps\venv\Scripts\python.exe'
+    if (Test-Path -LiteralPath $venvPy) {
+        $v = Test-PythonCommand @($venvPy)
+        if ($v) { return @{ Command = @($venvPy); Version = $v } }
+        if ($DryRun) { Write-Would 'remove deps\venv, which does not run any more, and make it again'; return $null }
+        Write-Warn 'deps\venv does not run any more (the Python it was made from was removed?): making it again'
+        Remove-Item -LiteralPath (Join-Path $Root 'deps\venv') -Recurse -Force
+    }
     $own = Join-Path $Root 'deps\python\python.exe'
-    $candidates = @(, @($own)) + @(, @('python')) + @(, @('py', '-3'))
+    if (Test-Path -LiteralPath $own) {
+        $v = Test-PythonCommand @($own)
+        if ($v) { return @{ Command = @($own); Version = $v } }
+    }
+    return $null
+}
+
+function Find-VenvBase {
+    <# The Python deps\venv is made from: the newest of 3.10 to $PythonMinor the py launcher has, else python on
+       the PATH when it is one of those. #>
+    $top = [int]($PythonMinor.Split('.')[1])
+    $candidates = @(for ($m = $top; $m -ge 10; $m--) { , @('py', "-3.$m") }) + @(, @('python'))
     foreach ($c in $candidates) {
-        if ($c[0] -eq $own -and -not (Test-Path -LiteralPath $own)) { continue }
         $v = Test-PythonCommand $c
-        if ($v) { return @{ Command = $c; Version = $v } }
+        if (-not $v) { continue }
+        $pre = @()
+        if ($c.Count -gt 1) { $pre = @($c[1..($c.Count - 1)]) }
+        $old = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $exe = ((& $c[0] @pre '-c' 'import sys; print(sys.executable)' 2>$null) | Out-String).Trim()
+        $ErrorActionPreference = $old
+        if (Test-VenvBase $v $exe) { return @{ Command = $c; Version = $v; Exe = $exe } }
     }
     return $null
 }
 
 function Test-PythonPackages {
-    <# Whether the chosen Python has what the tools import (pycryptodomex, and a zstd). #>
+    <# Whether the chosen Python has what the tools import (pycryptodomex, a zstd, and a TOML reader). #>
     $r = Get-PythonOutput @('-c', 'import Cryptodome')
     if ($r.Code -ne 0) { return $false }
     $r = Get-PythonOutput @('-c', $ZstdCheck)
+    if ($r.Code -ne 0) { return $false }
+    $r = Get-PythonOutput @('-c', $TomlCheck)
     return ($r.Code -eq 0)
 }
 
 function Step-Python {
     Write-Step '[3/10] Python'
-    $found = Find-Python
+    # The tools' packages go into a Python of WindowSmash's own (deps\venv, as on Linux and macOS), not into one
+    # installed on the PC: pip there can need administrator rights, and the launcher could later pick another.
+    $found = Find-OwnPython
+    if (-not $found) {
+        $base = Find-VenvBase
+        if ($base -and $DryRun) { Write-Would "make deps\venv from Python $($base.Version) ($($base.Exe)) and install requirements.txt there"; return }
+        if ($base) {
+            Write-Info "Python $($base.Version) ($($base.Exe)): making deps\venv from it; the packages go there, not into that Python"
+            $venv = Join-Path $Root 'deps\venv'
+            $old = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            & $base.Exe -m venv $venv | Out-Host
+            $ErrorActionPreference = $old
+            $venvPy = Join-Path $venv 'Scripts\python.exe'
+            $v = Test-PythonCommand @($venvPy)
+            if (-not $v) { throw "deps\venv could not be made from Python $($base.Version) (see above)." }
+            $found = @{ Command = @($venvPy); Version = $v }
+        }
+    }
     if ($found) {
         $Script:Python = $found.Command
         Write-Info "Python $($found.Version): $($found.Command -join ' ')"
@@ -856,7 +926,7 @@ function Step-Python {
         $zip = Join-Path $Root "deps\python-$($pick.Version)-embed-amd64.zip"
         if (-not (Test-Path -LiteralPath $zip)) { Invoke-Download $pick.Url $zip "Python $($pick.Version)" }
         if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
-        Expand-Archive -LiteralPath $zip -DestinationPath $target
+        Expand-Zip $zip $target
         Remove-Item -LiteralPath $zip -Force
         # the embeddable Python ignores site-packages until its ._pth file says "import site"
         foreach ($pth in Get-ChildItem -LiteralPath $target -Filter 'python3*._pth') {
@@ -891,6 +961,20 @@ function Step-Python {
         Write-Info 'installing the packages (requirements.txt)'
         if ((Invoke-Python @('-m', 'pip', 'install', '-r', (Join-Path $Root 'requirements.txt'))) -ne 0) { throw 'pip could not install the packages (see above).' }
         if (-not (Test-PythonPackages)) { throw 'The packages are still missing after pip install.' }
+    }
+    # deps\venv is the tools' Python only from here on, with its packages in (the launcher and find_python.bat look for this file)
+    if (-not $DryRun -and $Script:Python.Count -eq 1 -and $Script:Python[0] -eq (Join-Path $Root 'deps\venv\Scripts\python.exe')) {
+        [IO.File]::WriteAllText((Join-Path $Root 'deps\venv\.opensmash-ready'), 'packages installed')
+    }
+    # (#173) The Python chosen, as a full path, for the launcher and the game's Mods menu (build\python_path.txt):
+    # where only "py -3" finds it, plain "python" is Windows' Store shortcut and every tools\os_mods.py call failed.
+    if (-not $DryRun) {
+        $exe = (Get-PythonOutput @('-c', 'import sys; print(sys.executable)')).Output.Trim()
+        if ($exe -and (Test-Path -LiteralPath $exe)) {
+            $buildDir = Join-Path $Root 'build'
+            New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+            [IO.File]::WriteAllText((Join-Path $buildDir 'python_path.txt'), $exe)
+        }
     }
     # py7zr: the Mods app opens .7z mods with it when 7-Zip isn't installed (Windows' tar can't).
     # Optional (not in requirements.txt): without it, only .7z mods need 7-Zip. Pinned: update after checking a newer one.
@@ -1068,7 +1152,7 @@ function Step-Sdl3 {
     }
     $extract = Join-Path $Root 'deps\SDL3-extract'
     if (Test-Path -LiteralPath $extract) { Remove-Item -LiteralPath $extract -Recurse -Force }
-    Expand-Archive -LiteralPath $zip -DestinationPath $extract
+    Expand-Zip $zip $extract
     $inner = Get-ChildItem -LiteralPath $extract -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'include\SDL3\SDL_gamepad.h') } | Select-Object -First 1
     if (-not $inner) { throw "$($asset.Name) does not hold include\SDL3 as expected." }
     if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
@@ -1542,6 +1626,10 @@ function Main {
         Write-Host "  $Root"
         if ($DryRun) { Write-Host '  dry run: saying what each step would do, doing nothing' -ForegroundColor DarkGray }
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        if ($PythonOnly) {
+            Step-Python
+            return 0
+        }
         $updated = Step-Update
         if ($UpdateOnly) {
             # the launcher only asked for the files: do not run the rest of setup.

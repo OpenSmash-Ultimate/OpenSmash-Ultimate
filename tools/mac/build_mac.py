@@ -395,6 +395,12 @@ def nro_table_text(nros):
             + f"const u32 rt_nro_count = {len(nros)};\n")
 
 
+# The glyph atlas's size in bytes: runtime/macos/gpu_metal_overlay.m's ATLAS_W * ATLAS_H (CELL_W 24 x
+# COLS 16 by CELL_H 48 x 6 rows), which it asserts overlay_font.h has. The fallback header below and
+# tools/build_game.py's check of the runtime write a blank one of this size.
+OVERLAY_FONT_SIZE = 24 * 16 * 48 * 6
+
+
 def overlay_font():
     """gen/overlay_font.h: the debug overlay's glyphs, drawn by Core Text (make_overlay_font.m)
     as the Windows build draws them with GDI."""
@@ -413,7 +419,7 @@ def overlay_font():
     if code:   # (only the debug overlay's text needs it: not worth stopping the build for)
         print(f"could not draw the overlay font: the overlay (F1, F2) and the settings menu show no text\n{out.strip()[:2000]}")
         with open(header, "w", newline="\n") as f:
-            f.write("static const unsigned char overlay_font[%d] = {0};\n" % (24 * 16 * 48 * 6))
+            f.write("static const unsigned char overlay_font[%d] = {0};\n" % OVERLAY_FONT_SIZE)
 
 
 def ico_png(path, size=256):

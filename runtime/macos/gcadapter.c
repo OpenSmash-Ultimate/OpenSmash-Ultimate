@@ -11,9 +11,11 @@
  *   [status] bit 4 wired, bit 5 wireless   [buttons] A B X Y LEFT RIGHT DOWN UP   [buttons] START Z R L
  *   [stick x] [stick y] [c-stick x] [c-stick y] [L] [R]   (0-255, +y up)
  * and 0x11 with a motor byte a port (0 stop, 1 rumble, 2 stop hard) drives the rumble. Sticks and
- * triggers are scaled as hle_padusb.c scales them: a stick's centre where it is when the
- * controller is plugged in, its reach 80 (or as far as it goes); a trigger's rest where it is
- * then, its top 140 past that. SSBU_GC_USB=0 leaves the adapter alone. */
+ * triggers keep this file's own scaling: a stick's centre where it is when the controller is
+ * plugged in, its reach 80 (or as far as it goes); a trigger's rest where it is then, its top 140
+ * past that. (hle_padusb.c on Windows calibrates more carefully: it measures the centre over a
+ * moment of still reports and grows each side of the reach on its own, after a few reports agree;
+ * port it over when it can be tried on a Mac.) SSBU_GC_USB=0 leaves the adapter alone. */
 #include <dlfcn.h>
 #include <pthread.h>
 #include <pthread/qos.h>
@@ -73,6 +75,16 @@ void padusb_rumble(int port, int on) {
     rumble_want[port] = on;
     pthread_mutex_unlock(&lock);
 }
+
+int padusb_axes(int port, PadUsbAxes *out) {
+    (void)port;
+    memset(out, 0, sizeof *out);   /* (no per-axis calibration to show: this build scales as it always did) */
+    return 0;
+}
+
+void padusb_recalibrate(int port) { (void)port; }   /* (a replug is the recalibration here) */
+
+int padusb_rate(int port) { (void)port; return 0; }
 
 /* ---- the adapter thread -------------------------------------------------------------------- */
 typedef struct Axis { int centre, reach; } Axis;

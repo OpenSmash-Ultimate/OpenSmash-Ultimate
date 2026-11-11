@@ -17,7 +17,7 @@ ssbu-recomp's games join the same lobby on a port of their own (--su-port, 39500
 is "SU" version 1 (ssbu-recomp/runtime/net_relay.c), with its own numbers and layouts, and the
 same rooms, limits, rates and timeouts (but datagrams as large as ssbu-recomp's lobby took:
 --su-max-data). Players of the two protocols never share a room. ssbu-recomp's games also have a
-room browser, matchmaking and a rollback relay here. --status-port serves GET /status
+room browser, matchmaking and a rollback relay here. --status-port serves GET /status (and /badge.json, shields.io's endpoint badge of the players online)
 (counts only: players, rooms, players searching) for the project's site.
 
     python3 ssbu_relay.py [--port 39420] [--su-port 39500] [--bind 0.0.0.0] [--verbose] [--banlist FILE]
@@ -1388,6 +1388,13 @@ class Lobby:
                            "version": f"{LOBBY_VERSION} (protocols SN {PROTOCOL} and {V3}, SU {SU_PROTOCOL})",
                            "uptime_s": int(now - self.started)})
 
+    def badge_json(self, now):
+        """GET /badge.json: shields.io's endpoint badge (README: img.shields.io/endpoint?url=<this page>), the players
+        online now. Counts only, as /status."""
+        players = len(self.by_addr) - self.pending
+        return json.dumps({"schemaVersion": 1, "label": "players online", "message": str(players),
+                           "color": "brightgreen" if players else "lightgrey", "cacheSeconds": 60})
+
     async def status(self, reader, writer):
         """One request to the status page: GET or HEAD /status, OPTIONS; any page may read it (CORS),
         and nothing is logged (it would hold the callers' addresses). STATUS_OPEN at once,
@@ -1406,6 +1413,8 @@ class Lobby:
                 code, body = 405, b'{"error":"method not allowed"}'
             elif path == b"/status":
                 code, body = 200, self.status_json(time.monotonic()).encode()
+            elif path == b"/badge.json":
+                code, body = 200, self.badge_json(time.monotonic()).encode()
             else:
                 code, body = 404, b'{"error":"not found"}'
             reason = {200: "OK", 204: "No Content", 404: "Not Found", 405: "Method Not Allowed"}[code]

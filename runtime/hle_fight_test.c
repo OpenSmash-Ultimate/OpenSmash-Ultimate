@@ -24,6 +24,7 @@
 #include "game_addr.h"
 #include "host.h"
 #include "input_seq.h"
+#include "pad.h"
 
 #define FD(s) "_ZN3app8lua_bind" s "EPNS_26BattleObjectModuleAccessorE"
 #define FIGHTER_MANAGER "_ZN3lib9SingletonIN3app14FighterManagerEE9instance_E"
@@ -77,6 +78,13 @@ static int entry_work_id(Cpu *c, u64 *id) {
 }
 
 /* The game's FighterManager says a fight is on: its ready-go flag (impl + 0xd2). Any thread. */
+static int ready_go(void);
+/* (gpu_overlay.c's ping badge: hidden while a fight is on) Read on the game's thread at each frame end and kept
+ * here: the overlay runs on the presenting thread, which must not take the kernel's lock (kernel_read64) - the
+ * game's thread holds it while it waits for the renderer, and the first try froze the game that way. */
+static volatile LONG fight_flag;
+int game_fight_on(void) { return (int)fight_flag; }
+static void fight_flag_hook(Cpu *c, const u64 args[8], void *unused) { (void)c; (void)args; (void)unused; InterlockedExchange(&fight_flag, ready_go()); }
 static int ready_go(void) {
     static u64 inst;
     u64 mgr, impl, word;
@@ -270,6 +278,7 @@ static u64 stage_choice(void) {
  * frame hook (hle_each_frame.c holds the wrap: rollback netplay needs the function too),
  * registered while a debug match is on. Called on the game's main thread, one player at a time:
  * what the panel was is kept here between the two halves. */
+int input_seq2_on(void);   /* (hle_hid.c) */
 static u64 record_was;
 static u32 record_type_was;
 static void record_before(Cpu *c, const u64 args[8], void *ctx) {
@@ -289,6 +298,17 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx) {
         fprintf(stderr, "[fight] debug match: the screens' stage choice: ui_stage %llx form %u, hazards %u; rule: stock %u, item appear %u\n",
                 (unsigned long long)ld64(sel), ld32(sel + 8), ld8(GAME_ADDR(STAGE_HAZARDS)), ld8(block + 0x4c), ld32(block + 0x54));
         dm_stage(&match, P(u8, sel), P(u8, GAME_ADDR(STAGE_HAZARDS)), P(u8, block + 0x54));
+    }
+    /* A human player 2 plays on controller slot 2 when something drives it: SSBU_SEQ2's sequence, else a pad
+     * connected there (a remap test's scripted pad, tools/dev/fakexi.c). Set as a controller that joined the
+     * panel: + 0x210 the controller slot, + 0x450 a human's panel (hle_rb_core.c) */
+    if (idx == 1 && ld32(st + 0x78) == 0) {
+        PadState pad;
+        const char *by = input_seq2_on() ? "SSBU_SEQ2" : pad_get(1, &pad) ? "the pad connected there" : NULL;
+        if (by) {
+            st32(st + 0x210, 1); st8(st + 0x450, 1);
+            fprintf(stderr, "[fight] debug match: player 2 is human on controller slot 2 (%s)\n", by);
+        }
     }
     if (idx == 1) { memcpy(match_p2, P(u8, st), DM_STATE); match_p2_ok = 1; }
     record_was = was;
@@ -330,11 +350,13 @@ static DWORD WINAPI end_watch(LPVOID unused) {
 
 /* The vsync thread, at each frame shown (ipc_vi.c): the fight frames SSBU_DEBUG_END counts, and
  * the debug match's line when a fight starts. */
+volatile long long test_fight_frame;   /* the current fight's frame (0 outside fights): SSBU_CAPTURE_FROM / _TO */
 void test_fight_presented(void) {
     if (!end_limit && !match_on) return;
     shown++;
     int ended;
     long long n = dm_end_frame(&end, ready_go(), &ended);
+    test_fight_frame = n;
     if (ended) fprintf(stderr, "[fight] fight off (the game's ready-go cleared) at frame %lld shown, after %lld fight frames\n", shown, end.frames);
     if (n == 1) {
         u64 block = GAME_ADDR(MATCH_BLOCK), sel = stage_choice();
@@ -367,6 +389,7 @@ void test_fight_start(void) {
         frame_hook_add(FRAME_HOOK_LINE, FRAME_ORDER_FIGHT_TEST, frame_line_hook, NULL, NULL);
     }
     if (det) frame_hook_add(FRAME_HOOK_END, FRAME_ORDER_FIGHT_TEST, NULL, frame_end_hook, NULL);
+    frame_hook_add(FRAME_HOOK_END, FRAME_ORDER_FIGHT_TEST, NULL, fight_flag_hook, NULL);   /* (game_fight_on, always) */
     if (det && !(det_off & DET_OFF_STEPS)) input_seq_set_steps(seq_steps);
     if (fixed_seed_parse(getenv("SSBU_FIXED_SEED"), &n)) {
         fixed_on = 1;

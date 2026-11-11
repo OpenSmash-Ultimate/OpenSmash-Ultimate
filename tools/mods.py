@@ -352,16 +352,33 @@ def install(tree, archive, name=None, meta=None):
             raise Error(f"{os.path.basename(archive)} has no files laid out as the game's (fighter/, ui/, sound/, stream;/ ...) "
                         "and no Skyline plugin (.nro)")
         base = safe_name(name or os.path.splitext(os.path.basename(archive))[0])
+        on = []   # (the game files of each of this pack's mods turned on)
         for root in roots:
             leaf = os.path.basename(root)
             label = base if len(roots) == 1 else f"{base} - {safe_name(leaf)}"
             final, k = label, 2
+            old = None
             while os.path.exists(os.path.join(tree.mods, final)):
+                # (the same download again - the same file, by its checksum: it replaces the copy there,
+                # turned on or off as it was, not a second copy "(2)" turned on beside it, the two
+                # changing the same files: Knuckles' 914)
+                if (meta or {}).get("md5") and state["mods"].get(final, {}).get("md5") == meta["md5"]:
+                    old = state["mods"][final]
+                    shutil.rmtree(os.path.join(tree.mods, final))
+                    break
                 final, k = f"{label} ({k})", k + 1
             inner = {os.path.normcase(r) for r in nested_roots(root, roots)}
             shutil.copytree(root, os.path.join(tree.mods, final),
                             ignore=lambda d, names: [n for n in names if os.path.normcase(os.path.join(d, n)) in inner])
-            entry = {"enabled": True}
+            # (a pack's choices - a moveset's Battle and Modern styles, one victory pose of several: a
+            # mod most of whose files another of the pack's turned-on mods changes too is the other's
+            # alternative, installed turned off; an add-on shares few. Both on, the later one's files
+            # won, and both movesets' plugins ran on the one fighter)
+            files = {p.lower() for p, _src in mod_files(os.path.join(tree.mods, final))}
+            choice = files and any(len(files & other) >= len(files) / 2 for other in on)
+            entry = {"enabled": old.get("enabled", True) if old else not choice}
+            if entry["enabled"]:
+                on.append(files)
             entry.update(meta or {})
             state = tree.load()
             state["mods"][final] = entry
@@ -2012,6 +2029,7 @@ def apply(tree, log=print):
         # the real ARCropolis is among the standard plugins: it reads the turned-on mods from
         # sd:/ultimate/mods (runtime/hle_fs.c) as the game loads, so the game keeps its own data
         characters_mod(tree, log)
+        hide_shadowed_sources(tree, on, log)
         missing_shares(tree, on, log)
         select_screen_arcropolis(tree, on, log)
         sync_plugins(tree, log)
@@ -2132,6 +2150,46 @@ def characters_mod(tree, log):
         f.writelines(h + "\n" for h in hidden)
     if hidden:
         log("the new characters' select-screen files include these mods' own copies: " + ", ".join(hidden))
+
+
+def motion_list_text_unreadable(path):
+    """Whether ARCropolis' motion_list reader turns down this motion_list.yml: an older format, whose
+    motions' flags lack unk_800, unk_1000 and unk_2000 (Knuckles': "list.wait.flags: missing field
+    `unk_800`"). One in the current format is the mod's own motion list, often newer than the .bin
+    beside it (Electivire's and Zeraora's name their moves' scripts only there)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return False
+    flags = len(re.findall(r"^\s*flags:\s*$", text, re.M))
+    return any(len(re.findall(rf"^\s*{k}:", text, re.M)) < flags for k in ("unk_800", "unk_1000", "unk_2000"))
+
+
+def hide_shadowed_sources(tree, on, log):
+    """A mod that ships a file both whole and as ARCropolis' text source next to it - Knuckles'
+    fighter/sonic/motion/body/c120/motion_list.bin and motion_list.yml - has ARCropolis build the
+    file from the text, and a .yml of an older format than this ARCropolis reads (missing a field)
+    then left the file unloaded and the match crashed. For such a .yml the whole file is what the
+    mod's author tested: it is added to dump/skyline/hidden.txt (runtime/hle_fs.c hides it from
+    ARCropolis). A .yml ARCropolis reads stays, as on the console: it is the motion list the mod uses."""
+    hidden_path = os.path.join(tree.root, "dump", "skyline", "hidden.txt")
+    shadowed = []
+    for name in on:
+        for root in find_roots(os.path.join(tree.mods, name)) or [os.path.join(tree.mods, name)]:
+            for dp, _dirs, files in os.walk(root):
+                lower = {f.lower() for f in files}
+                for f in files:
+                    stem, ext = os.path.splitext(f)
+                    if (f.lower() == "motion_list.yml" and (stem + ".bin").lower() in lower
+                            and motion_list_text_unreadable(os.path.join(dp, f))):
+                        shadowed.append(os.path.relpath(os.path.join(dp, f), tree.mods).replace(os.sep, "/"))
+    if not shadowed:
+        return
+    with open(hidden_path, "a", encoding="utf-8", newline="\n") as f:
+        f.writelines(h + "\n" for h in shadowed)
+    log(f"{len(shadowed)} text source(s) left to the whole file beside them (ARCropolis would build that "
+        "file from the text): " + ", ".join(shadowed[:5]) + (" ..." if len(shadowed) > 5 else ""))
 
 
 ARRANGEMENT = ("ui", "param", "menu", "chara_icon_arrangement.prc")

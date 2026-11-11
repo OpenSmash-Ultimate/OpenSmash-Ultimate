@@ -119,6 +119,28 @@ class EstimateTests(unittest.TestCase):
         self.assertAlmostEqual(left2, 200 + P.LINK)             # (taking longer: so does the time left)
         self.assertGreaterEqual(frac2, frac1)
 
+    def test_c_written_again_the_same_is_not_compiled_again(self):
+        # (a change to the generator: every module's C written again, none of it different. Before, the bar
+        # counted a whole compile of each module until its C was written, and said 40 min for a 10 min build.)
+        clock = Clock()
+        b = P.Build(12, clock=clock)
+        for n in ('main', 'mod_a', 'mod_b', 'mod_c'):
+            b.module(n, 4_000_000)
+        guess_all = b.status()[0]
+        b.begin('gen', 'main')
+        clock.now = 30
+        b.written('main', [])            # (its C came out the same: nothing to compile)
+        b.end('gen', 'main')
+        frac, _left, _label = b.status()
+        gens = 4 * (P.GEN[0] + P.GEN[1] * 4_000_000)
+        self.assertAlmostEqual(frac, (gens / 4) / (gens + P.LINK))   # the others' compiles: as main's turned out
+        self.assertGreater(frac, 10 * guess_all)
+        b.begin('gen', 'mod_a')
+        b.written('mod_a', [('g0000.c', 50.0)])   # one file did change: the guess goes by both
+        b.end('gen', 'mod_a')
+        self.assertAlmostEqual(b._cost(('compile', 'mod_b')), b.cost[('compile', 'mod_b')] *
+                               b.cost[('compile', 'mod_a')] / (b.learned[0]))
+
     def test_never_backwards(self):
         clock = Clock()
         b = P.Build(4, clock=clock)
@@ -131,6 +153,16 @@ class EstimateTests(unittest.TestCase):
         before = b.status()[0]
         b.written('b', [('b/g0000.c', 5000.0)])                # its C shows a lot more to compile
         self.assertEqual(b.status()[0], before)
+
+    def test_a_file_reported_twice_is_counted_once(self):
+        b = P.Build(4, clock=Clock())
+        b.module('a', 40000, [('a/g0000.c', 1.0), ('a/g0001.c', 1.0)])
+        b.begin('compile', 'a', b.files['a'])
+        for _ in range(2):   # (a compile reported finished again: the counter once said 2835 of 2660)
+            b.started(('a/g0000.c',))
+            b.finished(('a/g0000.c',), 1.0)
+        self.assertEqual(b.compiled, 1)
+        self.assertIn('1 of 2 files', b.label)
 
     def test_pace_goes_by_the_last_ten_minutes(self):
         clock = Clock()
@@ -172,7 +204,118 @@ class EstimateTests(unittest.TestCase):
         self.assertEqual(b.status()[2], 'compiling game: 0 of 1,500 files')
 
 
+class ChainTests(unittest.TestCase):
+    """Programs run one after another (the Mods app's plugin build) as one bar: it never starts over,
+    and its share done and time left say the same thing."""
+
+    def test_seconds_left_reads_time_left_back(self):
+        for s in (5 * 60, 59 * 60, 61 * 60, 2 * 3600 + 7 * 60):
+            self.assertEqual(P.seconds_left(P.time_left(s)), s)
+        self.assertEqual(P.seconds_left('under a minute left'), 30.0)
+        self.assertIsNone(P.seconds_left('estimating the time left'))
+        self.assertIsNone(P.seconds_left('done'))
+
+    def test_one_bar_across_programs(self):
+        clock = Clock()
+        c = P.Chain(later=180, clock=clock)
+        shown = []
+        # a plugin's C: 20 s, its own bar 0 -> 100 %
+        c.start()
+        for t, frac, left in ((0, 0.0, None), (10, 0.5, 10), (20, 1.0, None)):
+            clock.now = t
+            shown.append(c.update(frac, left))
+        # the relink: its own bar starts at 0 again, and has no time left at first
+        clock.now = 20
+        c.start(later=0)
+        for t, frac, left in ((21, 0.0, None), (60, 0.04, None), (120, 0.5, 100), (219, 0.99, 1), (220, 1.0, None)):
+            clock.now = t
+            shown.append(c.update(frac, left))
+        fracs = [f for f, _l in shown]
+        self.assertEqual(fracs, sorted(fracs))                     # never backwards
+        self.assertLess(fracs[2], 0.2)                             # the plugin's 100 % is not the whole's
+        self.assertLess(max(fracs), 1.0)                           # done only when the caller says so
+        self.assertAlmostEqual(shown[5][0], 120 / 220)             # spent / (spent + left)
+        self.assertEqual(shown[5][1], 100)
+
+    def test_run_logged_keeps_one_bar_across_programs(self):
+        import skyline
+        prog = ("import progress as P\n"
+                "for f in (0.0, 0.5, 1.0): print(P.line_text(f, 30 if f < 1 else 0, 'writing x C'), flush=True)\n")
+        cmd = [sys.executable, '-c', f'import sys; sys.path.insert(0, {str(ROOT / "tools")!r})\n' + prog]
+        got = []
+        with mock.patch.object(skyline, '_CHAIN', None):
+            skyline.chain().later = 600   # (a relink still to come)
+            skyline.run_logged(cmd, got.append)
+            skyline.run_logged(cmd, got.append, later=0)
+        pcts = [int(line.split(' — ')[1].split('%')[0]) for line in got]
+        self.assertEqual(len(pcts), 6)
+        self.assertEqual(pcts, sorted(pcts))
+        self.assertLess(pcts[2], 50)                               # the first program's 100 % is not the whole's
+        self.assertTrue(all(line.startswith('writing x C — ') for line in got))   # (its last line names nothing)
+
+    def test_test_boot_counts_down_after_the_link(self):
+        # (the plugin test boot prints nothing for a minute; the bar sat at 99 % through it)
+        import time
+        import skyline
+        got = []
+        with mock.patch.object(skyline, '_CHAIN', None):
+            whole = skyline.chain()
+            whole.start(later=0.6)                    # a link, with a 0.6 s test boot to come
+            frac, _left = whole.update(1.0, None)     # the link done
+            self.assertLess(frac, 0.9)
+            with skyline.counting(got.append, 'testing the plugins in the game', 0.6, every=0.05):
+                time.sleep(0.5)
+        pcts = [int(line.split(' — ')[1].split('%')[0]) for line in got]
+        self.assertGreater(len(pcts), 3)
+        self.assertEqual(pcts, sorted(pcts))
+        self.assertGreater(pcts[-1], pcts[0])
+        self.assertLess(pcts[-1], 100)
+        self.assertTrue(all(line.startswith('testing the plugins in the game — ') for line in got))
+
+    def test_each_build_has_a_bar_of_its_own(self):
+        # (the Mods app runs every plugin build in one process: the second one started at the first's 98 %)
+        import skyline
+        quiet = dict(sync=None, cache_mod_plugins=None, probe_and_apply=None)
+        with mock.patch.multiple(skyline, **{k: mock.DEFAULT for k in quiet}), \
+             mock.patch.object(skyline, 'game_link_reason', return_value=None), \
+             mock.patch.object(skyline, 'stale_hooks', return_value=[]):
+            skyline.build('tree', 1, log=lambda _m: None)
+            first = skyline.chain()
+            first.shown = 0.98
+            skyline.build('tree', 1, log=lambda _m: None)
+        self.assertIsNot(skyline.chain(), first)
+        self.assertEqual(skyline.chain().shown, 0.0)
+
+    def test_unknown_time_left_holds_the_share(self):
+        clock = Clock()
+        c = P.Chain(clock=clock)
+        clock.now = 5
+        self.assertEqual(c.update(0.5, None), (0.0, None))         # too early to go by its pace
+        clock.now = 20
+        f, left = c.update(0.5, None)                              # its share at its pace so far
+        self.assertAlmostEqual(left, 20)
+        self.assertAlmostEqual(f, 0.5)
+
+
 class LineTests(unittest.TestCase):
+    def test_a_bar_printed_under_the_line_is_left_out(self):
+        for tty in (False, True):
+            out = Out(tty=tty)
+            with mock.patch('sys.stdout', out), mock.patch('sys.stderr', out):
+                with P.Line(lambda: (0.04, None, 'writing the C code: main, 1 of 101 modules'), out=out):
+                    print('main: 12 files, 25 MB of C')
+                    print(P.line_text(0.5, 30, "writing main's C, 6 of 12 files"), flush=True)
+                    print(P.line_text(1.0, 0), flush=True)
+                    print('')
+                    print('sdk: C up to date')
+            text = out.getvalue()
+            self.assertNotIn("writing main's C", text)
+            self.assertNotIn('100%', text)
+            for line in ('main: 12 files, 25 MB of C', 'sdk: C up to date'):
+                self.assertIn(line, text)
+            if not tty:   # (the program's own blank line stays; the left-out bars leave none)
+                self.assertIn('main: 12 files, 25 MB of C\n\nsdk: C up to date\n', text)
+
     def test_text(self):
         self.assertEqual(P.line_text(0.5, 25 * 60, 'compiling main: 120 of 394 files'),
                          '[###############---------------]  50%  about 25 min left  (compiling main: 120 of 394 files)')

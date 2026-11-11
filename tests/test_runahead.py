@@ -58,18 +58,20 @@ class Wiring(unittest.TestCase):
         self.assertIn('getenv("SSBU_RUNAHEAD")', kernel, 'SSBU_RUNAHEAD switches the savestates on')
         self.assertIn('kernel_rb_wanted', kernel)
         self.assertIn('kernel_rb_wanted = 1', core, "display.ini's runahead switches them on before the first module")
-        self.assertIn('"runahead = 0\\n"', disp, "display.ini's default: off")
-        self.assertIn('!_stricmp(key, "runahead")', disp)
-        self.assertIn('R_RUNAHEAD', menu)
-        self.assertIn('"Run-ahead (experimental)"', menu)
-        self.assertIn('set_display("runahead", v)', menu)
-        self.assertIn('note_env(r, "SSBU_RUNAHEAD")', menu)
+        # (issue #250: off for everyone - display.ini's runahead is read but ignored, the menu row is compiled out)
+        self.assertNotIn('"runahead = 0', disp, "display.ini no longer offers it")
+        self.assertIn('!_stricmp(key, "runahead")) (void)value;', disp, "a saved runahead = 1 is ignored")
+        self.assertIn('#if 0   /* (run-ahead off for everyone, issue #250', menu, "no menu row")
 
     def test_only_in_local_fights(self):
         core = src('hle_rb_core.c')
         self.assertIn("return net_mode || ring_from >= 0 || ver_at >= 0 || bench_from >= 0 || auto_at >= 0;", core,
                       'never with the net mode or the savestate tests')
-        self.assertIn('if (S.in_fight && runahead_point(c, frame)) return;', core, 'only in a fight')
+        self.assertIn('if (S.in_fight && (!S.idle || ra_engaged) && runahead_point(c, frame)) return;', core,
+                      'only in a fight, and not in one that started with run-ahead off (it starts at the next fight)')
+        self.assertIn('if (!S.idle && !ra_engaged && rb_idle()) {', core, 'turned off mid-fight: no savestate work from then on')
+        self.assertIn('if (!nbusy || waited >= quiet_limit_ms || rb_fast > 0 || ra_engaged || S.idle) break;', core,
+                      'no wait for the other threads when nothing needs the savestates')
         self.assertIn('ra_fight_over();', core)
 
     def test_frames(self):

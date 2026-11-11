@@ -12,6 +12,8 @@ These switches make a scripted run of the game quicker and less dependent on the
 | `SSBU_SEQ=<steps>` | Player 1's input as a sequence counted in the game's frames, not in seconds. Empty, or with no steps, it is the same as unset. |
 | `SSBU_SEQ_LOG=<n>` | With `SSBU_SEQ`: logs the draw calls of the last frame shown every n polls, to find the ranges for `@draws`. |
 | `SSBU_SEQ_KEYBOARD=1` | With `SSBU_SEQ`: the keyboard still plays. It is ignored otherwise. |
+| `SSBU_SEQ2=<steps>` | With `SSBU_SEQ`: player 2's input as its own sequence (same language, counted in player 2's polls; marks such as `@fight` are shared). Player 2 is connected as a Pro Controller and its pad is not read. Use it with `p2=human`. |
+| (no `SSBU_SEQ2`, `p2=human`) | A pad connected on controller slot 2 plays player 2 in the debug match. With `tools/dev/fakexi.c` built as `xinput1_4.dll` beside a test exe it is a scripted XInput pad (`FAKEXI_GO`, `FAKEXI_MASK`): controller remaps can be tested without a pad. |
 | `SSBU_SKIP_MOVIES=<n>` | Every movie's stream ends after n samples (`1` means 12), and the game ends the movie as it ends any movie. |
 | `SSBU_HEADLESS=1` | The window is placed off every screen and never takes the focus, so a test run draws as usual without covering the desktop (Windows). |
 | `SSBU_FIGHT_HASH=<file>` | One line per fighter per fight frame, with a running hash, to `<file>` (`1`: to the standard output). |
@@ -212,6 +214,11 @@ New fighters, each a folder `<folder>\<name>` with a `fighter.json` (`name`, `do
 
 A path the game's data has under the new name - a file, a directory (a load group: `fighter/<name>/c00`, `cmn/ai`, `c00/camera`) or a folder of the search tables (`fighter/<name>/motion/body/c00`, `effect/fighter/<name>`) - is the fighter's own; any other falls back to the donor's path. The log has one line per path: `[registry] path asked: fighter/waluigi/c00 (...) -> OWN directory of waluigi in the data`, or `... -> DONOR FALLBACK: fighter/dolly/c00`. The paths get into the data as a mod: `python tools/fighter_mod.py <folder>\<name> --tree <tree> --apply` puts the folder's data files into `<tree>/mods/<name>` with a `config.json` of `{"new-fighters": {"<name>": "<donor>"}}`, and `tools/mods.py apply` copies the donor's directories under the new name with the folder's files in the donor's place (`Table.clone_fighter`; a file named `0x<hash40 of its name>.<ext>` is taken by that hash). Give `--tree` a tree of your own: `apply` rewrites its `dump/modules/romfs.cfg`. mods.py needs a RomFS whose tables come after data.arc (the installer's); one made from an extracted romfs folder with its tables first has to be laid out again first.
 
+Two more steps for a fighter's folder:
+
+- **Its effects' shaders before its first match**: `fighter_mod.py ... --shaders` (or `python tools/shader_aot.py --files <folder> --tree <tree> --warm`) compiles the GPU programs of the folder's effect files into `<tree>/dump/shadercache` and dates them now, so the start's prewarm makes them. Without it a new fighter's effects compile while its first match loads: a freeze, and the effects not drawn until they are ready (the log's `skipped (N shader)` draws). Waluigi and Phantom Ganon: 385 programs, 276 of them in no cache before.
+- **A skin made for the donor**: `python tools/fighter_skin.py <skin mod> <folder>` copies a skin mod made for the donor (`fighter/ganon/...`, `sound/bank/fighter_voice/vc_ganon_cNN`, `ui/replace/chara/chara_N/chara_N_ganon_NN`, `effect/fighter/ganon/ef_ganon_cNN.eff`) into the folder under the fighter's name, every colour; the colours' effect file, when they all have the same one, becomes the fighter's own effect file; a file the folder had under its name's hash is replaced; the mod's author goes into `fighter.json` `"credits"`. The folder stays local (the mods' authors' terms).
+
 What was run (2026-11-03, 13.0.5, gate2 sequence, `SSBU_DETERMINISTIC=1 SSBU_FIXED_SEED=1`, `p2=donkey,p2=cpu,cpu=3,stage=end`): Waluigi (donor `dolly`) with his folder as a mod - all 21 paths asked are his own, 0 fallbacks; his model, portrait and stock icon in the fight; two runs with the same fight hash over 42,034 lines. A Mario copy (`n3test`) on the unmodded data and Mario on the modded data without the variable both give Mario's fight hash.
 
 ## More fighters than the select screen holds
@@ -226,6 +233,35 @@ of 147, rows 16 16 16 .., size 17`); more fighters than the layout holds are lef
 game's abort. `SSBU_CSS_FIT=0` leaves the hook out. For a test with many tiles without as many fighters: the roster
 component's `N3_ROWS=<n>` (copies of a donor's row, `ssbu-recomp/mods/mods_n6_src/n6_roster.cpp`) with a screen made by
 `python tools/css_layout.py make --tiles <t> --out <tree>/mods/<name>`.
+
+## The Vulkan renderer's switches
+
+The Vulkan back end ([`gpu_vk.c`](../runtime/gpu_vk.c)) is chosen with `SSBU_RENDERER=vulkan` (or display.ini's `renderer`). These switches are for testing it; unset, each leaves the renderer as a player has it.
+
+| Variable | What it does |
+| :--- | :--- |
+| `SSBU_VK_WARM=0` | No warm start: nothing is made from the warm list when the game starts, so every pipeline is made at its first draw, as on a first run. The list is still kept up to date. |
+| `SSBU_SHADER_PREWARM_MB=<n>` | The warm start's memory budget, as Direct3D 11's prewarm has it: it stops once the process has grown by n MB (unset: a third of the PC's memory, 1 GB at least). |
+| `SSBU_VK_AUTO_VENDOR=<hex>` | The card maker `renderer=auto` takes for AMD, as a PCI vendor number (`10de` NVIDIA, `8086` Intel): the automatic choice, its trial and its fall back to Direct3D 11 tested on a PC without an AMD card. |
+| `SSBU_VK_WAIT=1` | A draw waits for its shaders and its pipeline instead of being left out while they are made: every draw of every frame is drawn. For comparing pictures (`SSBU_CAPTURE`), not for timing. |
+| `SSBU_PRESENT_HASH=<file>` | Direct3D 11: a line for each picture shown: its number, the fight frame, 1 if a hidden submission (a catch-up frame not drawn) ran since the last picture, a hash of the picture and its brightness on a 16 x 9 grid. Two runs' pictures are not identical bit for bit, so compare the grids. |
+| `SSBU_RB_RING_HIDE=1` | With `SSBU_RB_RING`: the ring test's catch-up frames, all but the last, are not drawn, as in a net catch-up. Together with `SSBU_PRESENT_HASH`, it checks the picture after a catch-up against a run that draws every frame. |
+| `SSBU_VK_SPIRV=vkd3d` or `glslang` | The shader translator asked for, in a build that has both (glslang is the usual one); the other is taken when the one asked for is missing. |
+| `SSBU_VK_GLSLANG_STAGES=<mask>` | With both translators: the stages glslang takes (1 vertex, 2 pixel, 4 compute); vkd3d-shader takes the others. For finding which stage a wrong picture comes from. |
+| `SSBU_DUMP_HLSL=<folder>` | Each program's HLSL as it is given to the translator (glslang's dialect in files named `..._glslang`). |
+| `SSBU_VK_MEMO=0` or `check` | The draw's lookup memo (the pipeline and descriptor sets of a draw that repeats) off, or checked against a full lookup on every hit. |
+| `SSBU_VK_SYSMEM=1` | The back end's buffers in system memory, not in the card's own memory that the CPU can write (the usual place, where the card has some). |
+| `SSBU_VK_DRAWN_CLEARS=1` | Whole colour clears of floating-point targets are drawn as rectangles, as the masked ones are. |
+| `SSBU_CAPTURE=<folder>` | Frames shown written as pictures; `SSBU_CAPTURE_EVERY`, `SSBU_CAPTURE_FROM`, `SSBU_CAPTURE_TO` and `SSBU_CAPTURE_MAX` say which. |
+| `SSBU_HITCH=<ms>` | Both renderers: a `[hitch] frame N: X ms` line for every frame that took longer, with what the threads spent it on. |
+| `SSBU_AOT_SPIRV=0` | Prepare Shaders (`tools/shader_aot.py`, also `--no-spirv`): the Vulkan renderer's SPIR-V files are not made. |
+
+**What is kept on disk, and when a stall is left.** The files are in the shader cache's folder (`dump/shadercache`, or `SSBU_SHADER_CACHE`):
+
+- `g<version>.<library>_<stage>_<key>.spv`: a program's SPIR-V. `<version>` is `gpu_shader_cache.h`'s `SHADER_CACHE_SPV_VERSION` and `<library>` is what `ssbu_glslang.dll` says of itself (the shim's revision and glslang's version), so a new translator or a new DLL never reads the files of an older one. Prepare Shaders writes them with the DXBC files when `ssbu_glslang.dll` is beside its tool (`shaderaot --spirv`); the game writes the ones it had to translate itself. Programs with jump tables and compute programs are not in Prepare Shaders' pack: the game translates those at their first use.
+- `vulkan_<vendor>_<device>.warm`: the warm list, one record for each pipeline and compute program the game used on this card. At the next start, threads below the game's priority load the listed programs' SPIR-V and make the pipelines again (from `vulkan_<vendor>_<device>.pipelines`, the driver's pipeline cache as Vulkan hands it over) before the game asks for them. The log says `[vulkan] warm start: N programs loaded and M pipelines made of K listed in S s`, and a `[status]` line repeats it. While those threads work there is a `vulkan_<vendor>_<device>.warm.warming` file beside the list: one found at a start means the last warm start did not finish (the driver crashed on a record, or the game was closed in those seconds), so the list is started again and nothing is warmed that once. The list only grows, to 16384 records at most; deleting it is safe.
+
+So after Prepare Shaders alone no program is translated during play, but each pipeline is still made by the driver at its first draw; from the second start on, the pipelines a player has already seen are made before the first frame. To measure it: normal speed (no `SSBU_SPEED`), no `SSBU_VK_WAIT`, `SSBU_HITCH=25`, and the frames over 50 ms counted in the log; `SSBU_SHADER_CACHE=<an empty folder>` gives a cold run without touching the player's cache.
 
 ## An example run
 

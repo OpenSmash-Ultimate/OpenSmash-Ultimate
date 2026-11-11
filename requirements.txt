@@ -3,3 +3,5 @@ pycryptodomex
 # arc.py reads zstd-compressed tables: Python 3.14 has compression.zstd built in, older
 # Pythons (3.10 to 3.13) get the zstandard package instead.
 zstandard; python_version < "3.14"
+# paramconfig.py reads mods' config_param.toml: Python 3.11 has tomllib built in, 3.10 gets tomli.
+tomli; python_version < "3.11"

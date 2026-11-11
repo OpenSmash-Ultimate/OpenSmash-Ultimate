@@ -505,7 +505,7 @@ def check_mac_runtime(tc, tmp):
     hours of turning the game into C."""
     import build_mac
     with open(os.path.join(tmp, "overlay_font.h"), "w") as f:   # (build_mac.py makes it: its fallback)
-        f.write("static const unsigned char overlay_font[%d] = {0};\n" % (12 * 16 * 24 * 6))
+        f.write("static const unsigned char overlay_font[%d] = {0};\n" % build_mac.OVERLAY_FONT_SIZE)
     flags = build_mac.RUNTIME_INCLUDES + ["-I", tmp] + build_mac.RUNTIME_DEFINES
     jobs = [(src, os.path.join(tmp, "syntax.o"), "-O0", flags) for src, _obj in build_mac.runtime_sources()
             if not src.endswith(".S")]
@@ -1224,6 +1224,11 @@ def build(a):
                  "--out", "build", "--jobs", str(jobs), *(["--game-dll"] if dll else [])],
                 "The build failed (see above). If the PC ran out of memory, build with fewer jobs at a time: open "
                 "OpenSmash.exe, set Compiler jobs to 4, and press Set up and build again.")
+    if not LINUX and not MACOS:
+        # the Vulkan renderer's shader translator (glslang, ssbu_glslang.dll beside the program): fetched once,
+        # made again when stale; without it Vulkan does not start and Direct3D 11 draws, so a failure is not fatal
+        import glslang_lib
+        glslang_lib.ensure(os.path.join(os.path.dirname(EXE), glslang_lib.DLL_NAME), log=log)
     if LINUX:
         log(f"\nDone: {exe} is ready. Start the game with ./play-ssbu.sh, or WindowSmash in your applications menu.")
     elif MACOS:

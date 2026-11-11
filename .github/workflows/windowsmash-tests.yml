@@ -29,6 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The launcher's process tests compile the production C# helper without opening a window.
+      - uses: actions/setup-dotnet@v4
+        if: runner.os == 'Windows'
+        with:
+          dotnet-version: '8.0.x'
+
       # 3.14: the Python the Windows installer puts in deps/python
       - uses: actions/setup-python@v5
         with:
@@ -64,6 +70,11 @@ jobs:
             https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.dmg
           echo "c1adf3da91108dbc3e4205da5dacebc203085d283fa89e86eb2c889abd03a853  deps/downloads/SDL3-3.4.18.dmg" | shasum -a 256 -c
           python -c "import sys; sys.path.insert(0, 'tools/mac'); import install_mac; install_mac.install_sdl3_framework('deps/downloads/SDL3-3.4.18.dmg', 'deps/SDL3')"
+
+      # Exercise the real ENet/Zstd client on Windows, with synthetic loopback data.
+      - name: yuzu client libraries
+        if: runner.os == 'Windows'
+        run: python tools/yuzu_client_deps.py
 
       # gfxtest (the Metal renderer) skips on the runner's paravirtual GPU, where it never finished; a manual run
       # (workflow_dispatch) runs it anyway and shows what it printed before its 300 s timeout

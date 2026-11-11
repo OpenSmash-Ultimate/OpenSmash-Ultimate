@@ -36,8 +36,10 @@ LOBBY_PAGE = 4   # (the Lobby page's number in the menu, less one)
 NO_ANSWER = 'no answer from the lobby (A: ask again)'
 
 
-def build(folder):
+def build(folder, yuzu=False):
     src = ['tools/dev/lobbymenutest.c', 'runtime/net_relay.c', 'runtime/hle_settings.c']
+    if yuzu:
+        src += ['runtime/net_yuzu.c', 'runtime/net_yuzu_wire.c']
     if os.name == 'nt':   # (as tests/test_net_client_v3.py builds netv3test.c)
         exe = os.path.join(folder, 'lobbymenutest.exe')
         cmd = [cc.CLANG, '/nologo', '/O1', *cc.LINK_FLAGS, *cc.CFLAGS, *src, '/Fe' + exe, '/Fo' + folder + os.sep, '/link', *cc.LINK_OPTIONS]
@@ -45,7 +47,7 @@ def build(folder):
         exe = os.path.join(folder, 'lobbymenutest')
         Path(folder, 'd3d11.h').write_text(D3D11_STAND_IN)
         layer = ['runtime/linux/win32.c']
-        layer += ['runtime/macos/memory.c', 'runtime/macos/platform.c'] if sys.platform == 'darwin' else ['-lpthread']
+        layer += ['runtime/macos/memory.c', 'runtime/macos/platform.c'] if sys.platform == 'darwin' else ['-lpthread', '-lm']
         cmd = ['clang', '-O1', '-w', '-I', folder, '-I', 'runtime/macos/include', '-I', 'runtime/linux/include', '-I', 'runtime', *src, *layer,
                '-o', exe]
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
@@ -334,7 +336,7 @@ class Pages(MenuTest):
     def test_other_pages_as_before(self):
         m = self.menu()
         m.key('ESC')
-        display = ['Window', 'Frame pacing', 'Frames queued ahead'] + (['Run-ahead (experimental)'] if os.name == 'nt' else []) + ['Hide the mouse pointer', 'Frame rate in the corner', 'Window size',
+        display = ['Window', 'Frame pacing', 'Frames queued ahead'] + ['Hide the mouse pointer', 'Frame rate in the corner', 'Window size',
                    'Render scale'] + (['Graphics card'] if os.name == 'nt' else []) + (['Renderer'] if sys.platform != 'darwin' else [])
         self.assertEqual(m.labels(), display)
         m.type('2')
@@ -350,7 +352,7 @@ class Pages(MenuTest):
         m.key('BKSP')
         self.assertEqual(m.labels()[3], 'Keyboard keys...')
         m.type('3')
-        self.assertEqual(m.labels(), ['Now', 'Play online in', 'Your name', 'Direct connections'] + (['Rollback netcode'] if os.name == 'nt' else [])
+        self.assertEqual(m.labels(), ['Now', 'Play online in', 'Your name', 'Direct connections', 'Input delay'] + (['Rollback netcode'] if os.name == 'nt' else [])
                          + ['Netplay version'])   # (offline: no code)
         m.type('6')
         self.assertEqual(m.labels(), ['Mods', 'ARCropolis code patches', 'No mod installed'])   # (the harness has no mods)
@@ -361,23 +363,27 @@ class Pages(MenuTest):
 
     @unittest.skipIf(sys.platform == 'darwin', 'the Mac program has no Renderer row (Metal only)')
     def test_renderer_row(self):
-        """Display > Renderer: the system's own renderer, then Vulkan, saved in display.ini for the
-        next start (runtime/renderer.h's names)."""
-        own = 'd3d11' if os.name == 'nt' else 'dxvk'
+        """Display > Renderer: the system's own renderer (Windows: auto, then direct3d11), then Vulkan,
+        saved in display.ini for the next start (runtime/renderer.h's names)."""
+        own = 'auto (Direct3D 11)' if os.name == 'nt' else 'dxvk'   # (auto says which one this start drew with)
         m = self.menu()
         m.key('ESC')
         labels = m.labels()
         at = labels.index('Renderer')
         self.assertEqual(m.row('Renderer')['value'], own)
-        self.assertIn('Vulkan: in development', m.row('Renderer')['help'])
+        self.assertIn('Vulkan on an AMD card' if os.name == 'nt' else 'Vulkan: in development', m.row('Renderer')['help'])
         m.key('DOWN', at)
         self.assertEqual(m.at()['label'], 'Renderer')
+        if os.name == 'nt':
+            m.key('RIGHT')
+            self.assertEqual(m.row('Renderer')['value'], 'direct3d11')
+            self.assertIn('renderer = direct3d11', (m.dir / 'display.ini').read_text())
         m.key('RIGHT')
         self.assertEqual(m.row('Renderer')['value'], 'vulkan')
         self.assertIn('renderer = vulkan', (m.dir / 'display.ini').read_text())
         m.key('RIGHT')
         self.assertEqual(m.row('Renderer')['value'], own)
-        self.assertIn(f'renderer = {own}', (m.dir / 'display.ini').read_text())
+        self.assertIn(f'renderer = {own.split()[0]}', (m.dir / 'display.ini').read_text())
         m.key('LEFT')
         self.assertEqual(m.row('Renderer')['value'], 'vulkan')
 
@@ -388,6 +394,119 @@ class Pages(MenuTest):
         self.assertEqual([(r['label'], r['value']) for r in rows], [('Lobby', 'offline'), ('Netplay version', '2')])
         self.assertEqual(sel, 1)   # (the Lobby row is information: the cursor is on the next)
         self.assertIn('choose a lobby in Online > Play online in', rows[0]['help'])
+
+
+class Mouse(MenuTest):
+    """The pointer on the menu. Places are menu_draw's at 1920 x 1080, where its scale is 1."""
+    GAME_PAGE = 3
+
+    def click(self, m, x, y, button='L', width=1920, height=1080):
+        m.ok(f'mouse {x} {y} {width} {height}')
+        m.ok(f'click {button}')
+
+    @staticmethod
+    def tab(i):
+        return 200, 195 + 60 * i
+
+    @staticmethod
+    def row_y(j):
+        assert j < 13   # (the rows that fit: the first ones, with nothing scrolled)
+        return 190 + 50 * j
+
+    def index(self, m, label):
+        return [r['label'] for r in m.rows()].index(label)
+
+    def test_page_tab(self):
+        m = self.menu()
+        m.key('ESC')
+        self.click(m, *self.tab(self.GAME_PAGE))
+        self.assertEqual(m.page()[1], self.GAME_PAGE)
+
+    def test_hover_selects_and_a_still_pointer_leaves_the_keys_alone(self):
+        m = self.menu()
+        m.key('ESC')
+        j = self.index(m, 'Frames queued ahead')
+        m.ok(f'mouse 500 {self.row_y(j)}')
+        self.assertEqual(m.at()['label'], 'Frames queued ahead')
+        m.key('DOWN')
+        m.ok(f'mouse 500 {self.row_y(j)}')   # (the same place again: not a move)
+        self.assertNotEqual(m.at()['label'], 'Frames queued ahead')
+
+    def test_choice_steps_by_side(self):
+        m = self.menu()
+        m.key('ESC')
+        y = self.row_y(self.index(m, 'Frames queued ahead'))
+        self.click(m, 1500, y)   # (right of the value: forward from the stand-in's 1)
+        self.assertRegex(m.file('display.ini'), r'latency\s*=\s*2')
+        self.click(m, 965, y)    # (the value's left half: back, round to 3)
+        self.assertRegex(m.file('display.ini'), r'latency\s*=\s*3')
+
+    def test_bars_are_left_out_of_the_place(self):
+        m = self.menu()
+        m.key('ESC')
+        x, y = self.tab(self.GAME_PAGE)
+        self.click(m, x + 320, y, width=2560, height=1080)   # (an ultrawide: 320 of bar on each side)
+        self.assertEqual(m.page()[1], self.GAME_PAGE)
+        m.type('1')
+        self.click(m, x // 2, y // 2, width=960, height=540)   # (a window in other units than the picture)
+        self.assertEqual(m.page()[1], self.GAME_PAGE)
+        m.type('1')
+        self.click(m, 100, y, width=2560, height=1080)   # (on the bar: nothing)
+        self.assertEqual(m.page()[1], 0)
+
+    def test_quit_asks_and_what_is_behind_is_out_of_reach(self):
+        m = self.menu()
+        m.key('ESC')
+        m.type(str(self.GAME_PAGE + 1))
+        y = self.row_y(self.index(m, 'Quit the game'))
+        self.click(m, 500, y)
+        self.assertIn('Quit the game?', m.draw())
+        self.click(m, *self.tab(0))   # (a page tab, behind the question)
+        self.assertEqual(m.page()[1], self.GAME_PAGE)
+        self.assertIn('Quit the game?', m.draw())
+        self.click(m, 900, 590)   # (no)
+        self.assertNotIn('Quit the game?', m.draw())
+        self.click(m, 500, y)
+        self.click(m, 500, y, 'R')   # (right: as B)
+        self.assertNotIn('Quit the game?', m.draw())
+        self.assertEqual(m.page()[0], 1)
+        self.click(m, 500, y)
+        m.ok('mouse 600 590')
+        m.p.stdin.write('click L\n')   # (yes: it ends with no answer)
+        m.p.stdin.flush()
+        self.assertEqual(m.p.wait(10), 0)
+
+    def test_restart_and_quit_buttons_on_every_page(self):
+        m = self.menu()
+        m.key('ESC')
+        for page in (1, 5):
+            m.type(str(page))
+            self.click(m, 200, 750)   # (restart: y 735 to 785)
+            self.assertIn('Start the game again?', m.draw())
+            self.click(m, 900, 590)   # (no)
+            self.click(m, 200, 810)   # (quit: y 795 to 845)
+            self.assertIn('Quit the game?', m.draw())
+            self.click(m, 900, 590)   # (no)
+            self.assertEqual(m.page()[:2], (1, page - 1))
+
+    def test_text_grid(self):
+        m = self.menu(files={'online_name.txt': 'Al\n'})
+        m.key('ESC')
+        m.type('3')
+        self.click(m, 500, self.row_y(self.index(m, 'Your name')))
+        self.click(m, 610, 415)    # (the grid's first cell: A)
+        self.click(m, 500, 300, 'R')   # (right, typing: not a deletion)
+        self.click(m, 1000, 700)   # (done)
+        self.assertEqual(m.file('online_name.txt'), 'AlA')
+
+    def test_wheel(self):
+        m = self.menu()
+        m.key('ESC')
+        before = m.at()['label']
+        m.ok('wheel D')
+        self.assertNotEqual(m.at()['label'], before)
+        m.ok('wheel U')
+        self.assertEqual(m.at()['label'], before)
 
 
 class Version(MenuTest):
