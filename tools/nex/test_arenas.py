@@ -107,6 +107,41 @@ class Arenas(Case):
         self.assertNotIn(gf, found(call(f, 109, 52, criteria())))
 
 
+class ArenaRollback(unittest.TestCase):
+    """The online lobby passes rollback messages between the players of one Online match (a Battle Arena's ring, a
+    Quickplay match) on the public code, as their game traffic; not to anyone else."""
+
+    def test_rollback_messages_between_the_players_of_a_match(self):
+        import struct
+        import tempfile
+        import time
+        import ssbu_online_lobby as lobby
+        import ssbu_relay as relay
+        with tempfile.TemporaryDirectory() as tmp:
+            o = lobby.parse_args(["--state", tmp, "--nex-log", "0"])
+            lob = lobby.OnlineLobby(o)
+            now = time.monotonic()
+            a, b, x = (relay.Client(("127.0.0.1", 5 + i), b"n" * 8, relay.SUBNET + 2 + i, n, ("sn", "b", "smash"), now, o)
+                       for i, n in enumerate(("A", "B", "X")))
+            for c in (a, b, x):
+                c.verified, c.code = True, relay.V3_PUBLIC
+                lob.by_ip[c.ip] = c
+                lob.parts.setdefault(c.part, set()).add(c)
+            sent = []
+            lob.to = lambda c, data: sent.append(c)
+            together = {(a.ip, b.ip), (b.ip, a.ip)}
+            lob.nex.may_talk = lambda i, j: (lobby.ip_int(i), lobby.ip_int(j)) in together
+
+            def rb(src, dst):
+                sent.clear()
+                lob.on_rb(src, bytes(12) + struct.pack(">I", dst.ip) + b"rollback", now)
+                return sent[:]
+            self.assertEqual(rb(a, b), [b])
+            self.assertEqual(rb(b, a), [a])
+            self.assertEqual(rb(x, a), [])      # (a stranger)
+            self.assertEqual(rb(a, x), [])
+
+
 def run():
     result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__]))
     return 0 if result.wasSuccessful() else 1
