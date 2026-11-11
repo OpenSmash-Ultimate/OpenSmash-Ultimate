@@ -355,7 +355,18 @@ HLE(_ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_) { memcpy(P(void, c->x[0]), P(void, c-
  * and at most 3 a run: a game that keeps failing (a network gone) is not a wall of boxes. */
 void watchdog_pause(int on);   /* debug_watchdog.c */
 void *gfx_window_handle(void);
+void menu_toast(const char *text);   /* gpu_menu.h */
 static void error_dialog(u32 category, u32 number) {
+    /* (2306: the game's online service - most often its login at the start, when the lobby's game server does not
+     * answer. Players saw "Error Code: 2306-0103" as a box over the game at every start while offline play went on
+     * fine (#195, a player's report 2026-11-11): a message at the bottom of the picture instead, the game not held.) */
+    if (category == 2306) {
+        char t[160];
+        snprintf(t, sizeof t, "Online: the game server didn't answer (error %04u-%04u). Offline play works; online, check online_server.txt.",
+                 category, number);
+        menu_toast(t);
+        return;
+    }
 #ifdef _WIN32
     static LONG shown;
     const char *off = getenv("SSBU_ERROR_DIALOG"), *headless = getenv("SSBU_HEADLESS");
