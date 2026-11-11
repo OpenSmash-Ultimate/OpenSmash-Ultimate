@@ -4,7 +4,10 @@ response parsers; 11.0.0 addresses in the comments).
 
 Every call is logged; a call this file does not know falls through to the server's "not
 implemented", which the game reports as error 2306-0103."""
-from .rmc import NexError
+import os
+
+from .rmc import CORE_INVALID_ARGUMENT, NexError
+from .server import JsonStore
 from .streams import StreamIn, StreamOut
 
 DATASTORE_NOT_FOUND = 0x80690004
@@ -19,14 +22,45 @@ def u32(v):
 # Methods whose reply the game does not read (their response parsers are empty): logged, answered
 # with success and nothing else.
 NO_REPLY = {
-    115: (3, 6, 11, 18, 22, 26, 31, 32, 37, 38, 41, 51, 56, 57, 58, 74, 76, 78, 79, 82, 83, 86, 89, 91, 92, 94, 96, 97),
+    115: (3, 6, 11, 18, 22, 26, 31, 32, 37, 38, 41, 51, 56, 57, 58, 74, 76, 78, 79, 83, 86, 89, 91, 92, 94, 96, 97),
     124: (1,),
 }
+
+
+POWER_RECORD = 25      # a fighter record's bytes (DataStore 82 / 84): u8, u32, u32, u32, DateTime, u32
+MAX_POWER_PLAYERS = 200000
+
+
+class Powers(JsonStore):
+    """Each player's fighter records (DataStore 82 posts one, 84 gives them all back): the GSP the
+    game computes and shows, kept for it as the console's server keeps it. "pid" -> {"fighter": hex}."""
+
+    def __init__(self, state_dir):
+        super().__init__(os.path.join(state_dir, "nex_powers.json") if state_dir else None)
+        self.of_pid = self.load() or {}
+
+    def content(self):
+        return self.of_pid
+
+    def put(self, pid, record):
+        mine = self.of_pid.get(str(pid))
+        if mine is None:
+            if len(self.of_pid) >= MAX_POWER_PLAYERS:
+                return False
+            mine = self.of_pid[str(pid)] = {}
+        mine[str(record[0])] = record.hex()
+        self.dirty = True
+        return True
+
+    def records(self, pid):
+        """pid's records, by fighter."""
+        return sorted((int(k), bytes.fromhex(v)) for k, v in self.of_pid.get(str(pid), {}).items())
 
 
 class Services:
     def __init__(self, nex):
         self.nex = nex
+        self.powers = Powers(getattr(nex, "state_dir", None))
         r = nex.register
         r(110, 7, self.get_integer_settings)
         r(110, 9, self.utility_9)
@@ -36,6 +70,7 @@ class Services:
         r(115, 61, self.datastore_61)
         r(115, 60, self.datastore_60)
         r(115, 84, self.datastore_84)
+        r(115, 82, self.datastore_post_power)
         r(115, 21, self.datastore_post_meta_binary)
         r(115, 95, self.datastore_95)
         for protocol, methods in NO_REPLY.items():
@@ -125,10 +160,29 @@ class Services:
         out.struct(lambda o: o.bool(False))
         return out.get()
 
-    # DataStore method 84 (no parameters) -> a list (main+0x298420), then a structure
-    # {u32, u32, u32, u64} (main+0x2852f0): empty, zeros.
+    # DataStore method 82 (SSBU's own) {u8 fighter, u32, u32, u32, DateTime, u32} -> nothing (13.0.4:
+    # request main+0x27255c, parameter written by main+0x284ee0, answer main+0x28ee70 reads nothing). The
+    # game posts one of its fighters' records - its GSP (seen: fighter 0x2b, 1460, 123, 1460, 0, 1) - as a
+    # match is set up and again after it; kept, and given back by method 84.
+    def datastore_post_power(self, conn, s):
+        _v, raw = s.struct()
+        if len(raw) != POWER_RECORD:
+            raise NexError(CORE_INVALID_ARGUMENT, f"a fighter record of {len(raw)} bytes")
+        p = StreamIn(raw)
+        fighter, a, b, c, when, d = p.u8(), p.u32(), p.u32(), p.u32(), p.u64(), p.u32()
+        self.nex.info(f"{self.nex.name(conn)}: DataStore 82 fighter {fighter}: {a} {b} {c} {when:#x} {d}")
+        self.powers.put(conn.pid, raw)
+        return b""
+
+    # DataStore method 84 (no parameters) -> Map<u8 fighter, the records method 82 posts> (13.0.4: answer
+    # main+0x28ee90; the map main+0x298420, a record main+0x285010), then a structure {u32, u32, u32, u64}
+    # (main+0x2852f0, not known yet: zeros). Asked at login: the player's GSP of each fighter, as posted.
     def datastore_84(self, conn, s):
         out = StreamOut()
-        out.u32(0)
+        mine = self.powers.records(conn.pid)
+        out.u32(len(mine))
+        for fighter, raw in mine:
+            out.u8(fighter)
+            out.struct(lambda o, raw=raw: o.write(raw))
         out.struct(lambda o: (o.u32(0), o.u32(0), o.u32(0), o.u64(0)))
         return out.get()

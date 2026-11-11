@@ -129,6 +129,8 @@ struct NexServer {
     NexStats **stats; int nstats, capstats;    /* in the order made */
     NexRound *rounds; int nrounds, caprounds;
     uint64_t next_round;
+    /* the players' fighter records (DataStore 82 / 84): NEX_POWER_ENTRY bytes each, pid then the record */
+    uint8_t *powers; int npowers, cappowers;
 };
 
 /* rng: the system's, or the test's (io.random) */
