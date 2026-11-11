@@ -659,6 +659,12 @@ static BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *c) {
 #endif
     window = (HWND)gfx_window_open();
     if (!window) { fprintf(stderr, "[gfx] cannot create the window\n"); return TRUE; }
+#ifdef _WIN32
+    /* (WARM_GAME from here, not once Direct3D is ready: Prepare Shaders (tools/shader_aot.py) pauses its
+     * compile for it, and its workers on every core left a 4-core laptop's start nothing: it stopped
+     * after "drawing with", before the built-in shaders were compiled) */
+    game_mutex = CreateMutexA(NULL, FALSE, WARM_GAME);
+#endif
     gfx_renderer_start(window);   /* (display.ini's renderer: this one draws unless another can: gpu_renderer.c) */
 
     D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
@@ -845,9 +851,6 @@ static BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *c) {
         if (t) CloseHandle(t); else prewarm_listed = 2;
     }
     else if (!prewarm) fprintf(stderr, "[gfx] prewarm: off (SSBU_SHADER_PREWARM=1 turns it on)\n");
-#ifdef _WIN32
-    game_mutex = CreateMutexA(NULL, FALSE, WARM_GAME);
-#endif
     ready = 1;
     fprintf(stderr, "[gfx] Direct3D 11 ready%s\n", compile_dev ? " (shaders compile on a device of their own first)" : "");
     return TRUE;

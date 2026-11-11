@@ -375,11 +375,13 @@ def default_jobs():
     return jobs
 
 
-# (Windows priority class, Linux nice). High is above normal, not real-time: the installer stays usable.
+# (Windows priority class, Linux nice). Never above normal: high was Windows' high class on every core, which left
+# nothing to the launcher's window (its bar stayed at 0 while the shaders compiled) or to a game started meanwhile
+# (it stopped as Direct3D started, on a 4-core laptop). High is every core at normal priority instead.
 _PRIORITY = {
     "low": (0x00004000, 10),
     "medium": (0x00000020, 0),
-    "high": (0x00008000, -5),
+    "high": (0x00000020, 0),
 }
 
 
@@ -667,7 +669,7 @@ def run_queue(exe, pack, cache, jobs, dry):
             if kept:
                 print(f"compile times kept for {kept[-1]:,} shaders ({os.path.join(os.path.relpath(times_dir, ROOT), TIMES_FILE)})", flush=True)
         try:
-            totals.update(serve(exe, pack, cache, todo, jobs, times, Progress(sys.stdout, window=None), save=save))
+            totals.update(serve(exe, pack, cache, todo, jobs, times, Progress(sys.stdout, window=None), save=save, paused=game_running))
         except KeyboardInterrupt:
             print("\n" + STOPPED)
             kept_said()
@@ -892,6 +894,26 @@ class Worker:
             pass
 
 
+GAME_RUNNING = "Local\\ssbu-game-running"   # (runtime/gpu_d3d11.c WARM_GAME: the game holds it while it runs)
+PAUSE_POLL = 1.0   # seconds between looks at whether the game still runs
+
+
+def game_running():
+    """Whether the game runs (Windows: its mutex is there). The compile pauses meanwhile: its workers on
+    every core left the game nothing as it started."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.OpenMutexW.restype = ctypes.c_void_p
+    k.OpenMutexW.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_wchar_p)
+    k.CloseHandle.argtypes = (ctypes.c_void_p,)
+    h = k.OpenMutexW(0x00100000, 0, GAME_RUNNING)   # (SYNCHRONIZE)
+    if h:
+        k.CloseHandle(h)
+    return bool(h)
+
+
 def offer(worker, todo):
     """The queue's next key to the worker; False when the queue is empty or the worker is gone."""
     try:
@@ -906,11 +928,13 @@ def offer(worker, todo):
     return True
 
 
-def feed(worker, todo, report):
+def feed(worker, todo, report, paused=None):
     """(a thread) The worker's share of the queue: whatever is next, once it has answered its last,
     until the queue is empty. report(key, outcome, ms) for each answer; a worker that stops with a
-    key pending reports it as "died"."""
+    key pending reports it as "died". While paused() (the game runs) it sends no new key."""
     while True:
+        while paused and not worker.pending and not todo.empty() and paused():
+            time.sleep(PAUSE_POLL)
         while len(worker.pending) < Worker.IN_FLIGHT and offer(worker, todo):
             pass
         if not worker.pending:
@@ -927,13 +951,15 @@ def feed(worker, todo, report):
     worker.close()
 
 
-def serve(exe, pack, cache, todo, jobs, times, show, every=1.0, popen=None, out=None, save=None, save_every=30.0):
+def serve(exe, pack, cache, todo, jobs, times, show, every=1.0, popen=None, out=None, save=None, save_every=30.0, paused=None):
     """The keys compiled by `jobs` workers pulling from one queue, the progress shown through
     `show` ([(done, of)], work=(done, of) in compile time, by weights()) and the compiler's
     failures printed to `out`; compile times recorded in `times`, and given to save(times, last)
     every save_every seconds and once at the end - from a thread of its own, which a Ctrl+C (a
     KeyboardInterrupt lands in the main thread alone, and twice when pressed twice) cannot cut
-    short: the last save is waited for before the interrupt goes on. Returns the outcomes counted."""
+    short: the last save is waited for before the interrupt goes on. While paused() (game_running)
+    no new key is sent, said once on `out` when it pauses and once when it goes on. Returns the
+    outcomes counted."""
     out = out or sys.stdout
     popen = popen or (lambda: subprocess.Popen(tool_command(exe, pack, cache, "--serve"), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                                stderr=subprocess.PIPE, text=True, bufsize=1, **low_priority()))
@@ -974,7 +1000,8 @@ def serve(exe, pack, cache, todo, jobs, times, show, every=1.0, popen=None, out=
     saver = threading.Thread(target=saving) if save else None
     workers = [Worker(p) for p in procs]   # (each is given one key, and its next once that is answered: longest
                                            # first, so the longest compiles go to as many workers as there are)
-    feeders = [threading.Thread(target=feed, args=(w, q, report), daemon=True) for w in workers]
+    feeders = [threading.Thread(target=feed, args=(w, q, report, paused), daemon=True) for w in workers]
+    was_paused = False
     try:
         if saver:
             saver.start()
@@ -982,7 +1009,14 @@ def serve(exe, pack, cache, todo, jobs, times, show, every=1.0, popen=None, out=
             t.start()
         while any(t.is_alive() for t in feeders):
             show([(done[0], len(todo))], work=(work[0], work_of))
+            now_paused = bool(paused and not q.empty() and paused())
+            if now_paused != was_paused:
+                print("paused: the game is running; the compile goes on when it closes" if now_paused
+                      else "the game has closed: the compile goes on", file=out, flush=True)
+                was_paused = now_paused
             time.sleep(every)
+        if was_paused:   # (the workers all finished between two looks: the game had closed)
+            print("the game has closed: the compile goes on", file=out, flush=True)
         for w in workers:
             w.proc.wait()
             w.drain.join()
@@ -1033,9 +1067,12 @@ def share(done, of, work=None):
 
 class Progress:
     """Shows the progress (the parts' combined, or the queue's): one line drawn over itself in a
-    console, else a line every percent (for a log, and the launcher's bar)."""
+    console, else a line every percent (for a log, and the launcher's bar), and one at least every
+    LOG_EVERY seconds the count has moved: by work, the queue's first percent is its longest
+    compiles, which a 4-core PC takes many minutes over (the launcher said "0 of 65,189" meanwhile)."""
 
-    WINDOW = 120   # seconds of recent pace the time left goes by (the parts' pace picks up after the start);
+    LOG_EVERY = 5.0   # seconds: the longest a log goes without a line while shaders are being done
+    WINDOW = 120  # seconds of recent pace the time left goes by (the parts' pace picks up after the start);
                    # None for the pace since the start (the queue's, by work: steadier than a window a long compile lands in)
 
     def __init__(self, out, console=None, window=WINDOW):
@@ -1046,6 +1083,8 @@ class Progress:
         self.ready_said = False
         self.shown = -1     # (the last percent a log line was written for)
         self.last = None
+        self.last_at = None   # (when the last log line was written, and its count)
+        self.last_done = None
         self.width = 0
 
     def rate(self, now, done):
@@ -1073,10 +1112,12 @@ class Progress:
         else:
             wdone, wof = work if work and work[1] else (done, of)
             step = int(min(100, 100 * wdone // wof)) if wof else 100   # (100 * done // of: exact for counts)
-            if step > self.shown or (final and text != self.last):
+            moved = self.last_at is not None and done != self.last_done and now - self.last_at >= self.LOG_EVERY
+            if step > self.shown or (final and text != self.last) or moved:
                 self.out.write(text + "\n")
                 self.out.flush()
                 self.shown, self.last = step, text
+                self.last_at, self.last_done = now, done
 
 
 def follow(procs, show, every=1.0):
