@@ -112,10 +112,12 @@ def main(argv):
         print(__doc__)
         return 2
     try:
-        fetch(argv[1])
+        exe = fetch(argv[1])
     except (Error, OSError) as e:
         print(e)
         return 1
+    import glslang_lib   # (the Vulkan renderer's shader translator beside it: prebuilt, else built here; never fatal)
+    glslang_lib.ensure(os.path.join(os.path.dirname(exe), glslang_lib.DLL_NAME))
     return 0
 
 
