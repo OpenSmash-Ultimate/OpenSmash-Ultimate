@@ -954,6 +954,10 @@ function Step-Python {
         if ((Invoke-Python @('-m', 'pip', 'install', '-r', (Join-Path $Root 'requirements.txt'))) -ne 0) { throw 'pip could not install the packages (see above).' }
         if (-not (Test-PythonPackages)) { throw 'The packages are still missing after pip install.' }
     }
+    # deps\venv is the tools' Python only from here on, with its packages in (the launcher and find_python.bat look for this file)
+    if (-not $DryRun -and $Script:Python.Count -eq 1 -and $Script:Python[0] -eq (Join-Path $Root 'deps\venv\Scripts\python.exe')) {
+        [IO.File]::WriteAllText((Join-Path $Root 'deps\venv\.opensmash-ready'), 'packages installed')
+    }
     # (#173) The Python chosen, as a full path, for the launcher and the game's Mods menu (build\python_path.txt):
     # where only "py -3" finds it, plain "python" is Windows' Store shortcut and every tools\os_mods.py call failed.
     if (-not $DryRun) {

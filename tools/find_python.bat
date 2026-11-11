@@ -4,7 +4,8 @@ rem ones Install WindowSmash.bat sets up (deps\venv, else deps\python on a PC th
 rem python on the PATH, then the py launcher - the first that is 3.10 or newer. Run from the port's folder; exits with 1, after
 rem saying what to do, if there is none.
 set "PY="
-if exist "deps\venv\Scripts\python.exe" (
+rem (the venv counts once its packages are in: the installer then writes deps\venv\.opensmash-ready)
+if exist "deps\venv\.opensmash-ready" if exist "deps\venv\Scripts\python.exe" (
     set "PY=deps\venv\Scripts\python.exe"
     exit /b 0
 )

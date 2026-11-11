@@ -272,7 +272,7 @@ namespace OpenSmash.Launcher
             Shown += async (s, e) =>
             {
                 AskShadersIfNeeded();
-                await EnsureOwnPythonAsync();
+                _ = EnsureOwnPythonAsync();   // (not awaited: the launcher does not wait for pip, nor stop if it fails)
                 UpdateMods();
                 ScanForNewMods();
                 _ = CheckUpdatesAtBootAsync();
@@ -632,10 +632,15 @@ namespace OpenSmash.Launcher
         // no Python) keeps that.
         async Task EnsureOwnPythonAsync()
         {
-            string own = Path.Combine(_repo, "deps", "venv", "Scripts", "python.exe");
-            if (!File.Exists(own)) own = Path.Combine(_repo, "deps", "python", "python.exe");
-            bool ok = await Task.Run(() => File.Exists(own) && PythonHasPackages(own));
-            if (!ok) await RunPythonStepAsync("SETTING UP PYTHON");
+            // (an install on a Python of the PC's keeps it until deps\venv has its packages: .opensmash-ready)
+            try
+            {
+                string ready = Path.Combine(_repo, "deps", "venv", ".opensmash-ready");
+                string bundled = Path.Combine(_repo, "deps", "python", "python.exe");
+                bool ok = await Task.Run(() => File.Exists(ready) || (File.Exists(bundled) && PythonHasPackages(bundled)));
+                if (!ok) await RunPythonStepAsync("SETTING UP PYTHON");
+            }
+            catch { }
         }
 
         async Task RunPythonStepAsync(string label)

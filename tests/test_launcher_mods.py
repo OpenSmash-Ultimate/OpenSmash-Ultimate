@@ -126,8 +126,15 @@ else
         self.touch(".venv/Scripts/python.exe")
         self.assertEqual(self.selected(), str(bundled))
 
+    def test_venv_without_its_packages_is_skipped(self):
+        # (no .opensmash-ready: pip did not finish, so the Python the install had before stays)
+        self.touch("deps/venv/Scripts/python.exe")
+        bundled = self.touch("deps/python/python.exe")
+        self.assertEqual(self.selected(), str(bundled))
+
     def test_installers_venv_comes_first(self):
         venv = self.touch("deps/venv/Scripts/python.exe")
+        self.touch("deps/venv/.opensmash-ready")
         self.touch("deps/python/python.exe")
         self.configure(str(self.touch("custom/python.exe")))
         self.touch(".venv/Scripts/python.exe")

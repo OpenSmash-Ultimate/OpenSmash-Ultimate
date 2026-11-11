@@ -222,8 +222,9 @@ namespace OpenSmash.Launcher
 
         string ResolvePython()
         {
+            // (deps\venv counts once its packages are in: .opensmash-ready)
             string p = Path.Combine(_repo, "deps", "venv", "Scripts", "python.exe");
-            if (File.Exists(p)) return p;
+            if (File.Exists(p) && File.Exists(Path.Combine(_repo, "deps", "venv", ".opensmash-ready"))) return p;
             p = Path.Combine(_repo, "deps", "python", "python.exe");
             if (File.Exists(p)) return p;
             try
