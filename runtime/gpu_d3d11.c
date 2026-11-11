@@ -2198,6 +2198,7 @@ static void driver_threads_line(void) {
 
 static u32 ntextures, nresidents;   /* (below: the texture cache, the GPU-resident buffers) */
 static u64 shaders_put_away;        /* (below: evict_shaders) */
+extern u64 gfx_stat_skipped;
 
 /* What the driver says this process's resources take: in the card's own memory, and in the
  * computer's (shared: what does not fit, and what the driver keeps there). 0 when it can't say. */
@@ -2316,14 +2317,32 @@ static u64 table_hash(const ShaderInfo *info, CbufSource *src) {
  * 2500; 0: keep all), the ones no draw has asked for in a minute are released, least recently
  * used first, and the program loads again from the disk cache at its next use (a load, not a
  * compile: a few ms on a compiler thread, the draw skipped meanwhile, as at its first use). */
-static Shader *touched(Shader *s) {
+/* What a program is made from (a put-away one whose cache file has gone is translated again from it). */
+typedef struct ShaderSrc { const u8 *p; u32 size; int stage; u32 vs_outputs; const u32 *local; u32 shared; const CbufSource *src; int alpha_tested; } ShaderSrc;
+
+static char *shader_make_hlsl(const ShaderSrc *o, ShaderInfo *info) {
+    return o->stage == SHADER_COMPUTE ? shader_hlsl_cs(o->p, o->size, o->local, o->shared, info, read_cbuf_word, o->src)
+         : o->alpha_tested            ? shader_hlsl_alpha_tested(o->p, o->size, o->vs_outputs, info, read_cbuf_word, o->src)
+                                      : shader_hlsl_ex(o->p, o->size, o->stage, o->vs_outputs, info, read_cbuf_word, o->src);
+}
+
+static Shader *touched(Shader *s, const ShaderSrc *o) {
     s->used = gfx_stat_presented;
     if (s->state == 3) {   /* put away: loaded again from the disk cache */
+        char path[1200];
+        cache_path(s, path, sizeof path);
+        if (!s->hlsl && GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {   /* (its file has gone since: made from the program again) */
+            ShaderInfo scratch;
+            memset(&scratch, 0, sizeof scratch);
+            s->hlsl = shader_make_hlsl(o, &scratch);
+        }
+        s->asked_ms = 0;   /* (its first use was logged once) */
         s->state = 0;
         s->cached = 1;
         enqueue_shader(s);
-        if (s->stage == SHADER_COMPUTE)   /* (waited for, as at its first use: a skipped launch leaves skinned vertices unwritten) */
-            for (u64 until = GetTickCount64() + 250; s->state == 0 && GetTickCount64() < until;) SwitchToThread();
+        /* waited for, as get_shader_ex does for a program that was compiled before: a skipped draw flickers,
+         * a skipped launch leaves skinned vertices unwritten for a frame */
+        for (u64 until = GetTickCount64() + 250; s->state == 0 && GetTickCount64() < until;) SwitchToThread();
     }
     return s;
 }
@@ -2344,7 +2363,11 @@ static void evict_shaders(void) {
             made++;
             if (gfx_stat_presented - shader_cache[i]->used > 3600) old++;
         }
-    if (made <= keep || !old) return;
+    /* (the prewarm's programs no draw has taken yet are live too, up to thousands: they cannot be put away, so the
+     * game's own are put away for them) */
+    LONG pw = prewarm_ready - prewarm_taken;
+    u32 live = made + (pw > 0 ? (u32)pw : 0);
+    if (live <= keep || !old) return;
     Shader **list = malloc(sizeof *list * old);
     if (!list) return;
     u32 n = 0;
@@ -2354,7 +2377,7 @@ static void evict_shaders(void) {
     }
     qsort(list, n, sizeof *list, by_use);
     u32 gone = 0;
-    for (u32 i = 0; i < n && made > keep; i++) {
+    for (u32 i = 0; i < n && live > keep; i++) {
         Shader *s = list[i];
         char path[1200];
         cache_path(s, path, sizeof path);
@@ -2363,11 +2386,17 @@ static void evict_shaders(void) {
         s->obj = NULL;
         s->state = 3;
         InterlockedDecrement64((volatile LONG64 *)&gfx_stat_shaders);
-        made--;
+        live--;
         gone++;
     }
     free(list);
     shaders_put_away += gone;
+    if (gone) {
+        static int logged;
+        if (logged++ < 20)
+            fprintf(stderr, "[gfx] shaders put away: %u now (%llu so far); %u live (game %u, prewarm %ld untaken), keep %u; draws skipped so far %llu\n",
+                    gone, (unsigned long long)shaders_put_away, live, made, (long)pw, keep, (unsigned long long)gfx_stat_skipped);
+    }
 }
 
 typedef struct ShaderSlot { u64 g, key, print; u32 size; Shader *s; u64 tables_at; } ShaderSlot;
@@ -2404,11 +2433,12 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
     ShaderSlot *slot = &shader_slots[((g >> 4) * 0x9E3779B97F4A7C15ull ^ key) >> 50 & (SHADER_SLOTS - 1)];
     if (slot->s && slot->g == g && slot->key == key && slot->print == fingerprint(stage, p, slot->size)) {
         Shader *s = slot->s;
-        if (!s->info.ntables) return touched(s);
+        CbufSource src0 = {stage_cb};
+        ShaderSrc so0 = {p, slot->size, stage, vs_outputs, local, shared, &src0, alpha_tested};
+        if (!s->info.ntables) return touched(s, &so0);
         u64 place = tables_place(&s->info, stage_cb);
-        if (place && slot->tables_at == place) return touched(s);
-        CbufSource src = {stage_cb};
-        if (s->table_hash == table_hash(&s->info, &src)) { slot->tables_at = place; return touched(s); }
+        if (place && slot->tables_at == place) return touched(s, &so0);
+        if (s->table_hash == table_hash(&s->info, &src0)) { slot->tables_at = place; return touched(s, &so0); }
     }
     u32 size = shader_size(p, 0x40000), skip = stage == SHADER_COMPUTE ? 0x50 : 0;
     u64 h = shader_program_hash(p + skip, size - skip);
@@ -2424,7 +2454,8 @@ static Shader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding 
         if (s->hash != h || s->stage != stage || (stage == SHADER_PIXEL && s->vs_outputs != vs_outputs)) continue;
         if (s->info.ntables && s->table_hash != table_hash(&s->info, &src)) continue;
         *slot = (ShaderSlot){g, key, fingerprint(stage, p, size), size, s};
-        return touched(s);
+        ShaderSrc so = {p, size, stage, vs_outputs, local, shared, &src, alpha_tested};
+        return touched(s, &so);
     }
     if (shader_count == shader_cap) shader_cache = realloc(shader_cache, sizeof *shader_cache * (shader_cap = shader_cap * 2 + 64));
     Shader *s = calloc(1, sizeof *s);
