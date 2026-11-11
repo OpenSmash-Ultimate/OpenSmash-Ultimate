@@ -45,6 +45,8 @@ static const Case CASES[] = {
     {"offline in the file", "off\n", NULL, "--online", NULL, "smash"},
     {"no file", NULL, NULL, "--online", NULL, "smash"},
     {"no --online: the file is not read", "smash.recomps.wtf:39421\n", NULL, "", NULL, "smash"},
+    {"SSBU_NET_RELAY=na (the macOS / Linux launchers pass the file's word, #259)", "na\n", "SSBU_NET_RELAY=na", "--online", "smash.recomps.wtf:39421", "smash"},
+    {"SSBU_NET_RELAY=eu", "eu\n", "SSBU_NET_RELAY=eu", "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
     {"SSBU_NET_RELAY wins", "smash.recomps.wtf:39421\n", "SSBU_NET_RELAY=127.0.0.1:39420", "--online", "127.0.0.1:39420", "smash"},
     {"SSBU_NET_RELAY=off wins", "smash.recomps.wtf:39421\n", "SSBU_NET_RELAY=off", "--online", NULL, "smash"},
     {"hosting a private room: no lobby", "smash.recomps.wtf:39421\n", "SSBU_NET_HOST=1", "--online", NULL, "smash"},
