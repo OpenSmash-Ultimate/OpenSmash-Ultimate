@@ -567,11 +567,13 @@ class NexServer:
 
 def make_server(send, host="10.13.0.1", state_dir=None, log=print, verbose=1):
     """The game server with every service it has."""
+    from .arenas import Arenas
     from .matchmaking import Matchmaking
     from .ranked import Ranked
     from .services import Services
     nex = NexServer(send, host, state_dir, log, verbose)
     nex.ranked = Ranked(nex, state_dir)
     nex.matchmaking = Matchmaking(nex)
+    nex.arenas = Arenas(nex, nex.matchmaking)
     nex.services = Services(nex)
     return nex
