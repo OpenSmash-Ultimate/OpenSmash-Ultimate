@@ -74,7 +74,7 @@ extern u64 gfx_stat_clears, gfx_stat_presented, gfx_stat_blits;   /* (gpu_d3d11.
     X(CmdCopyBufferToImage) X(CmdBeginRenderingKHR) X(CmdEndRenderingKHR) X(GetPipelineCacheData) \
     X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyBuffer) X(CreateDescriptorUpdateTemplate) X(UpdateDescriptorSetWithTemplate) \
     X(DestroyDevice) X(DestroyCommandPool) X(DestroyFence) X(DestroySampler) X(DestroyPipelineCache) X(DestroyPipelineLayout) \
-    X(DestroyDescriptorSetLayout)
+    X(DestroyDescriptorSetLayout) X(CreateQueryPool) X(DestroyQueryPool) X(CmdResetQueryPool) X(CmdWriteTimestamp) X(GetQueryPoolResults)
 #define DECLARE(name) static PFN_vk##name vk##name;
 VK_INSTANCE_FUNCS(DECLARE)
 VK_DEVICE_FUNCS(DECLARE)
@@ -156,6 +156,7 @@ static void chunk_give(Chunk *c, VkDeviceSize off, VkDeviceSize size) {
     range_insert(c, i, (Range){off, size});
 }
 
+static u64 vk_allocs;   /* (vkAllocateMemory calls: SSBU_VK_GPU_TIME's lines) */
 /* Memory for an image or buffer: device local where there is some; host: memory the CPU writes (a->ptr). */
 static int dev_alloc_in(const VkMemoryRequirements *mr, Alloc *a, int host) {
     VkMemoryPropertyFlags want = host ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
@@ -168,6 +169,7 @@ static int dev_alloc_in(const VkMemoryRequirements *mr, Alloc *a, int host) {
     a->size = mr->size;
     if (mr->size > CHUNK_SIZE / 4) {   /* big ones: their own */
         VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr->size, (uint32_t)type};
+        vk_allocs++;
         if (vkAllocateMemory(device, &mai, NULL, &a->mem) != VK_SUCCESS) { a->mem = VK_NULL_HANDLE; return 0; }
         if (mappable && vkMapMemory(device, a->mem, 0, VK_WHOLE_SIZE, 0, (void **)&a->ptr) != VK_SUCCESS) a->ptr = NULL;
         if (host && !a->ptr) { vkFreeMemory(device, a->mem, NULL); a->mem = VK_NULL_HANDLE; return 0; }
@@ -185,6 +187,7 @@ static int dev_alloc_in(const VkMemoryRequirements *mr, Alloc *a, int host) {
     if (nchunks == sizeof chunks / sizeof *chunks) return 0;
     Chunk *c = &chunks[nchunks];
     VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, CHUNK_SIZE, (uint32_t)type};
+    vk_allocs++;
     if (vkAllocateMemory(device, &mai, NULL, &c->mem) != VK_SUCCESS) return 0;
     c->type = (uint32_t)type;
     c->nfree = 0;
@@ -283,6 +286,105 @@ static void check(VkResult r, const char *doing) {
     fprintf(stderr, "[vulkan] %s failed (%d)\n", doing, (int)r);
 }
 
+/* SSBU_VK_GPU_TIME=<ms> (measuring): the GPU's time for each frame's work, from timestamps - its first command to its last,
+ * and one after each rendering, launch, upload and draw - with a line for each frame whose work took longer, or whose
+ * renderer waited longer for it, naming the stretch between two timestamps that took longest (a draw: its pixel and vertex
+ * programs, its count, topology and viewport) and what the frame did besides (pipelines first drawn with, memory
+ * allocated, textures made); every 512 frames, how many slow frames and others did those. Tells a GPU busy with our work
+ * from one held back (the 2026-11-11 fight stalls: 35-45 ms between two small draws, at any draw). */
+static VkQueryPool gpu_time_pool;
+static double gpu_time_ms = -1, gpu_time_period;
+static u32 gpu_time_frames[MAX_FRAMES];   /* (the slot's timestamps written: bits 0 begin, 1 end) */
+#define GPU_POINTS 2048   /* (the timestamps between) */
+#define GPU_QS (GPU_POINTS + 2)
+static u64 vk_first_uses, gpu_first_at[MAX_FRAMES];   /* (pipelines drawn with for the first time: in the slot's work) */
+static u64 gpu_allocs_at[MAX_FRAMES], gpu_tex_at[MAX_FRAMES], gpu_up_at[MAX_FRAMES];   /* (memory allocations, textures made, bytes uploaded: in it) */
+static u32 gpu_npoints[MAX_FRAMES];
+static const char *gpu_point_kind[MAX_FRAMES][GPU_POINTS];
+static u64 gpu_point_id[MAX_FRAMES][GPU_POINTS], gpu_point_draws[MAX_FRAMES][GPU_POINTS], gpu_point_more[MAX_FRAMES][GPU_POINTS][2];
+static u64 gpu_more[2];   /* (the next point's details: a draw's vertex program, count and viewport) */
+static int gpu_time_on(void) {
+    if (gpu_time_ms < 0) { const char *v = getenv("SSBU_VK_GPU_TIME"); gpu_time_ms = v && *v ? atof(v) : 0; }
+    return gpu_time_ms > 0 && gpu_time_pool;
+}
+static void gpu_time_mark(Frame *f, VkCommandBuffer c, u32 which) {
+    if (!gpu_time_on()) return;
+    u32 slot = (u32)(f - frames);
+    vkCmdWriteTimestamp(c, which ? VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, gpu_time_pool, slot * GPU_QS + which);
+    gpu_time_frames[slot] |= 1u << which;
+    if (which == 1) {
+        gpu_first_at[slot] = vk_first_uses - gpu_first_at[slot];
+        gpu_allocs_at[slot] = vk_allocs - gpu_allocs_at[slot];
+        gpu_tex_at[slot] = vk_stat_textures - gpu_tex_at[slot];
+        gpu_up_at[slot] = vk_stat_upload_bytes - gpu_up_at[slot];
+    }
+}
+static void gpu_time_begin(Frame *f) {
+    if (!gpu_time_on()) return;
+    u32 slot = (u32)(f - frames);
+    vkCmdResetQueryPool(f->cmd, gpu_time_pool, slot * GPU_QS, GPU_QS);
+    gpu_first_at[slot] = vk_first_uses;
+    gpu_allocs_at[slot] = vk_allocs;
+    gpu_tex_at[slot] = vk_stat_textures;
+    gpu_up_at[slot] = vk_stat_upload_bytes;
+    gpu_time_frames[slot] = 0;
+    gpu_npoints[slot] = 0;
+    gpu_time_mark(f, f->cmd, 0);
+}
+
+static void gpu_time_point(VkCommandBuffer c, const char *kind, u64 id) {
+    if (!gpu_time_on()) return;
+    u32 slot = frame_at, n = gpu_npoints[slot];
+    if (n >= GPU_POINTS || c != frames[slot].cmd) return;
+    vkCmdWriteTimestamp(c, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, gpu_time_pool, slot * GPU_QS + 2 + n);
+    gpu_point_kind[slot][n] = kind;
+    gpu_point_id[slot][n] = id;
+    gpu_point_draws[slot][n] = vk_stat_draws;
+    gpu_point_more[slot][n][0] = gpu_more[0];
+    gpu_point_more[slot][n][1] = gpu_more[1];
+    gpu_more[0] = gpu_more[1] = 0;
+    gpu_npoints[slot] = n + 1;
+}
+static void gpu_time_read(Frame *f, double waited_ms) {
+    if (!gpu_time_on()) return;
+    u32 slot = (u32)(f - frames);
+    if ((gpu_time_frames[slot] & 3) != 3) return;
+    static u64 t[GPU_QS];
+    u32 np = gpu_npoints[slot];
+    if (vkGetQueryPoolResults(device, gpu_time_pool, slot * GPU_QS, 2 + np, sizeof t, t, sizeof *t, VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) return;
+    double work = (double)(t[1] - t[0]) * gpu_time_period / 1e6;
+    static u64 frames_timed, slow;
+    static double sum_work;
+    frames_timed++;
+    sum_work += work;
+    {
+        static u64 fast_first, fast_n, slow_first, slow_n, fast_alloc, slow_alloc, fast_tex, slow_tex;
+        int is_slow = work > gpu_time_ms || waited_ms > gpu_time_ms;
+        if (is_slow) { slow_n++; slow_first += gpu_first_at[slot] != 0; slow_alloc += gpu_allocs_at[slot] != 0; slow_tex += gpu_tex_at[slot] != 0; }
+        else { fast_n++; fast_first += gpu_first_at[slot] != 0; fast_alloc += gpu_allocs_at[slot] != 0; fast_tex += gpu_tex_at[slot] != 0; }
+        if (((fast_n + slow_n) & 511) == 0)
+            fprintf(stderr, "[gputime] slow frames %llu, others %llu; with a pipeline first drawn with: %llu / %llu; with a memory allocation: %llu / %llu; with a texture made: %llu / %llu\n",
+                    slow_n, fast_n, slow_first, fast_first, slow_alloc, fast_alloc, slow_tex, fast_tex);
+    }
+    if (work > gpu_time_ms || waited_ms > gpu_time_ms) {
+        slow++;
+        double worst = 0;
+        u32 at = 0;
+        for (u32 i = 0; i < np; i++) {
+            u64 from = i ? t[2 + i - 1] : t[0];
+            double d = t[2 + i] > from ? (double)(t[2 + i] - from) * gpu_time_period / 1e6 : 0;
+            if (d > worst) { worst = d; at = i; }
+        }
+        fprintf(stderr, "[gputime] frame %llu: work %.1f ms, the renderer waited %.1f ms for it (mean work %.2f ms, %llu slow of %llu); "
+                        "slowest: %.1f ms to %s %llx (point %u of %u, %llu draws since the one before; %s %llx)\n",
+                (unsigned long long)gfx_stat_presented, work, waited_ms, sum_work / frames_timed, slow, frames_timed, worst,
+                np ? gpu_point_kind[slot][at] : "-", np ? (unsigned long long)gpu_point_id[slot][at] : 0ull, at, np,
+                np ? (unsigned long long)(gpu_point_draws[slot][at] - (at ? gpu_point_draws[slot][at - 1] : 0)) : 0ull,
+                np && gpu_point_more[slot][at][0] ? (const char *)(uintptr_t)gpu_point_more[slot][at][0] : "-", np ? (unsigned long long)gpu_point_more[slot][at][1] : 0ull);
+        { SYSTEMTIME st; GetLocalTime(&st); fprintf(stderr, "[gputime]   at %02u:%02u:%02u.%03u, %llu pipelines first drawn with, %llu memory allocations, %llu textures made, %llu KB uploaded\n", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, (unsigned long long)gpu_first_at[slot], (unsigned long long)gpu_allocs_at[slot], (unsigned long long)gpu_tex_at[slot], (unsigned long long)(gpu_up_at[slot] >> 10)); }
+    }
+}
+
 /* The frame's command buffer, begun the first time it is asked for (after the GPU is done with the
  * slot's previous work, whose graves, upload memory, views and descriptor sets are then taken back). */
 static VkCommandBuffer cmd(void) {
@@ -293,6 +395,7 @@ static VkCommandBuffer cmd(void) {
         check(vkWaitForFences(device, 1, &f->done, VK_TRUE, UINT64_MAX), "waiting for a frame");
         vk_ns_wait += rt_clock_ns() - t0;
         f->submitted = 0;
+        gpu_time_read(f, (rt_clock_ns() - t0) / 1e6);
     }
     for (u32 i = 0; i < f->nviews; i++) vkDestroyBufferView(device, f->views[i], NULL);
     f->nviews = 0;
@@ -313,6 +416,7 @@ static VkCommandBuffer cmd(void) {
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL};
     check(vkBeginCommandBuffer(f->cmd, &bi), "starting a frame's commands");
     f->recording = 1;
+    gpu_time_begin(f);
     return f->cmd;
 }
 
@@ -459,6 +563,7 @@ static void end_rendering(void) {
     VkCommandBuffer c = frames[frame_at].cmd;
     vkCmdEndRenderingKHR(c);
     sync_all(c);
+    gpu_time_point(c, "rendering", (u64)(uintptr_t)rp.images[0]);
     rp.active = 0;
 }
 static VkCommandBuffer outside(void) {
@@ -934,6 +1039,7 @@ static void submit(VkSemaphore wait, VkSemaphore signal) {
     Frame *f = &frames[frame_at];
     end_rendering();
     if (!f->recording) cmd();
+    gpu_time_mark(f, f->cmd, 1);
     check(vkEndCommandBuffer(f->cmd), "ending a frame's commands");
     f->recording = 0;
     vkResetFences(device, 1, &f->done);
@@ -945,6 +1051,7 @@ static void submit(VkSemaphore wait, VkSemaphore signal) {
 
 static void pipeline_cache_tick(void);
 static void vk_warm_gate(void);   /* (the shader loading at the first present) */
+static int vk_gated;   /* (the first present's shader loading done: what is made from here on is made during play) */
 static void residents_retire(void);
 static void vk_present_(u64 guest, u32 width, u32 height);
 static void trial_passed(void);
@@ -1058,6 +1165,7 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
         if (!gated) {   /* (the first present: the warm start's pipelines made first, vk_warm_gate) */
             gated = 1;
             vk_warm_gate();
+            vk_gated = 1;
         }
         display_before_present();   /* (gpu_display.c: the loading animation stops) */
         VkResult pr = vkQueuePresentKHR(queue, &pi);
@@ -1323,6 +1431,7 @@ static void resident_fill(Resident *r, VkDeviceSize off, u64 n) {
     VkBufferCopy bc = {soff, off, n};
     vkCmdCopyBuffer(c, src, r->buf, 1, &bc);
     sync_all(c);
+    gpu_time_point(c, "region fill", n);
     vk_stat_upload_bytes += n;
 }
 
@@ -1890,6 +1999,18 @@ static void warm_adopt(VShader *s) {
     InterlockedExchange(&s->state, 1);
 }
 
+static int make_log_left(void);
+static u64 vk_stat_play_shaders, vk_stat_play_shaders_listed;
+static double vk_play_shader_ms;
+static void make_note_shader(const VShader *s, int listed, double ms) {   /* (a new program during play: make_note_pipe) */
+    vk_stat_play_shaders++;
+    vk_stat_play_shaders_listed += listed != 0;
+    vk_play_shader_ms += ms;
+    if ((listed && ms < 2.0) || !make_log_left()) return;
+    fprintf(stderr, "[vulkan] made in play: program %s %016llx took %.1f ms (%s; %s) at %.2f s\n", s->name, (unsigned long long)s->hash, ms,
+            !s->glslang ? "not listable" : listed ? "LISTED" : "not listed", s->state == 1 ? "ready" : s->state == 2 ? "failed" : "not ready", rt_now_ns() / 1e9);
+}
+
 /* The shader for the program at guest address g (as gpu_d3d11.c's find_shader_ex), made by a maker if it
  * is new. alpha_tested: the pixel shader's variant with the alpha test. A compute program has no header:
  * it is translated as if it had one (never read); local and shared: its workgroup and shared memory. */
@@ -1939,6 +2060,7 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
     *slot = (VSlot){g, key, fingerprint(p + skip, size - skip), size, s, 0};
     snprintf(s->name, sizeof s->name, "%s_%016llx%s", stage == SHADER_VERTEX ? "vs" : stage == SHADER_PIXEL ? "ps" : "cs", program_hash,
              alpha_tested ? "_alphatest" : "");
+    u64 t_new = rt_clock_ns();
     int glslang = glslang_for(stage);   /* (its own dialect of the HLSL: gpu_shader.h) */
     s->glslang = glslang;
     char *hlsl = glslang ? (alpha_tested ? shader_translate_alpha_tested(SHADER_HLSL_GLSLANG, p, size, vs_outputs, &s->info, read_cbuf_word, &src)
@@ -1978,6 +2100,7 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
      * with glslang there is no fxc (its SPIR-V is made from the HLSL in milliseconds): every program is waited for. */
     if (cached || stage == SHADER_COMPUTE)
         for (u64 until = GetTickCount64() + 250; s->state == 0 && GetTickCount64() < until;) { if (s->adopt) warm_adopt(s); SwitchToThread(); }
+    if (vk_gated) make_note_shader(s, w != NULL, (rt_clock_ns() - t_new) / 1e6);
     return s;
 }
 static VShader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding *stage_cb, int alpha_tested, const u32 *local, u32 shared) {
@@ -2349,6 +2472,7 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
     image_layout(c, t->image, aspect, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
     vkCmdCopyBufferToImage(c, buf, t->image, VK_IMAGE_LAYOUT_GENERAL, nregions, regions);
     sync_all(c);
+    gpu_time_point(c, "texture upload", total);
     free(regions);
     t->guest = g; t->size = size; t->watched = watch; t->stale = 0; t->asked = gfx_stat_presented;
     memcpy(t->tic, tic, 32); t->sample_hash = sh; t->used = ++tick;
@@ -2624,6 +2748,22 @@ static void pipe_make(Pipe *e) {
 }
 static void pipe_job(Job *j) { pipe_make((Pipe *)j); }
 
+/* What is made during play (after the shader loading), one line each: the hitches a warm start should have spared.
+ * "[vulkan] made in play: pipeline <key> waited <ms> ms (<listed>)": listed - the record is in the warm list read at
+ * the start (it should have been made there: a key or module that differs, or the warm start left it out); not
+ * listed - new to the list (added now); warm, being made - a warm thread had not finished it. Programs likewise (a listed
+ * one only when it took 2 ms or more: the others are the warm start's, taken in microseconds). The status lines count them
+ * all. SSBU_VK_MAKE_LOG=0: no lines; the first 300 otherwise. */
+static int make_log_left(void) {
+    static volatile LONG left = -1;
+    if (left == -1) { const char *v = getenv("SSBU_VK_MAKE_LOG"); InterlockedExchange(&left, v && *v == '0' ? 0 : 300); }
+    if (left <= 0) return 0;
+    return InterlockedDecrement(&left) >= 0;
+}
+static u64 vk_stat_play_pipes, vk_stat_play_pipes_listed;
+static double vk_play_wait_ms;
+static void make_note_pipe(const Pipe *e, int made, double ms);
+
 /* The pipeline for these shaders and this state, or NULL while a maker makes it (or if it cannot be made). */
 static u64 vk_stat_warm_used;
 static int warm_list_on(void);
@@ -2649,8 +2789,10 @@ static VkPipeline get_pipeline(const PipeKey *k, const VShader *vs, const VShade
     }
     ReleaseSRWLockExclusive(&pipes_lock);
     if (!e) return VK_NULL_HANDLE;
-    if (made) job_add(&e->job);
-    else if (e->warm && !e->used) { e->used = 1; vk_stat_warm_used++; }
+    if (made) { job_add(&e->job); vk_first_uses++; }
+    else if (e->warm && !e->used) { e->used = 1; vk_stat_warm_used++; vk_first_uses++; }
+    u64 t_wait = rt_clock_ns();
+    int first_wait = e->state == 0 && (made || !e->waited);
     if (e->state == 0 && wait_makes()) wait_for(&e->state);
     /* a new pipeline is waited for a little (its shaders are ready: the driver makes it in milliseconds, less with the
      * pipeline cache warm), rather than its first draws skipped - an effect missing the first time (2026-11-09); so is
@@ -2659,6 +2801,7 @@ static VkPipeline get_pipeline(const PipeKey *k, const VShader *vs, const VShade
         e->waited = 1;
         for (u64 until = GetTickCount64() + 100; e->state == 0 && GetTickCount64() < until;) SwitchToThread();
     }
+    if (vk_gated && (made || first_wait)) make_note_pipe(e, made, (rt_clock_ns() - t_wait) / 1e6);
     return e->state == 1 ? e->pipe : VK_NULL_HANDLE;
 }
 
@@ -2700,6 +2843,43 @@ static int warm_see(const WarmRecord *r) {
             return 1;
         }
     }
+}
+
+/* (1: the record was listed - read at the start, or added since; the hash as warm_see's) */
+static int warm_listed(const WarmRecord *r) {
+    const u8 *p = (const u8 *)r;
+    u64 h = 1469598103934665603ull;
+    for (size_t i = 0; i < sizeof *r; i++) h = (h ^ p[i]) * 1099511628211ull;
+    if (!h) h = 1;
+    u32 slots = sizeof warm_seen / sizeof *warm_seen;
+    int found = 0;
+    AcquireSRWLockShared(&warm_list_lock);
+    for (u32 at = (u32)(h >> 20) & (slots - 1); warm_seen[at]; at = (at + 1) & (slots - 1))
+        if (warm_seen[at] == h) { found = 1; break; }
+    ReleaseSRWLockShared(&warm_list_lock);
+    return found;
+}
+static void make_note_pipe(const Pipe *e, int made, double ms) {
+    vk_play_wait_ms += ms;
+    int listed = -1;
+    if (made) {
+        vk_stat_play_pipes++;
+        if (e->listable) {
+            WarmRecord r;
+            memset(&r, 0, sizeof r);
+            r.kind = 1; r.vs = e->wvs; r.ps = e->wps;
+            memcpy(&r.key, &e->key, sizeof r.key);
+            r.key.vs = r.key.ps = VK_NULL_HANDLE;
+            r.sum = desc_hash(&r.vs, sizeof r - offsetof(WarmRecord, vs));
+            listed = warm_listed(&r);
+            if (listed) vk_stat_play_pipes_listed++;
+        }
+    }
+    if (!make_log_left()) return;
+    fprintf(stderr, "[vulkan] made in play: pipeline %08x vs %016llx ps %016llx waited %.1f ms (%s; %s) at %.2f s\n", desc_hash(&e->key, sizeof e->key),
+            (unsigned long long)e->wvs.hash, (unsigned long long)e->wps.hash, ms,
+            !made ? "warm, being made" : listed < 0 ? "not listable" : listed ? "LISTED" : "not listed",
+            e->state == 1 ? "ready" : e->state == 2 ? "failed" : "not ready: draw skipped", rt_now_ns() / 1e9);
 }
 
 static void warm_list_add(WarmRecord *r) {
@@ -3653,6 +3833,11 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         }
         vkCmdDrawIndexed(c, regs[M_DRAW_INDEX_COUNT], 1, 0, vs->glslang ? 0 : (int32_t)regs[M_GLOBAL_BASE_VERTEX], 0);
     } else vkCmdDraw(c, regs[M_VERTEX_ARRAY_COUNT], 1, vs->glslang ? 0 : regs[M_VERTEX_ARRAY_START], 0);
+    if (gpu_time_ms > 0) {
+        gpu_more[0] = (u64)(uintptr_t)vs->name;
+        gpu_more[1] = (u64)(indexed ? regs[M_DRAW_INDEX_COUNT] : regs[M_VERTEX_ARRAY_COUNT]) << 32 | (u64)(u32)topo << 24 | (u64)((u32)vw & 0xFFF) << 12 | ((u32)(vh < 0 ? -vh : vh) & 0xFFF);
+    }
+    gpu_time_point(c, ps ? "draw, pixel program" : "draw, vertex program", ps ? ps->hash : vs->hash);
     if (key.depth_write || key.stencil_test) rp.depth_written = 1;
     /* (Direct3D's SV_VertexID leaves out the base vertex and the first vertex - vkd3d-shader's SPIR-V reads it as
      * VertexIndex - BaseVertex - while glslang's is VertexIndex: for its programs the draw gives no offset, as the
@@ -3809,6 +3994,7 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
     vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_COMPUTE, cs_layout, 0, 1, &set, 0, NULL);
     vkCmdDispatch(c, grid[0], grid[1], grid[2]);
     sync_all(c);
+    gpu_time_point(c, "launch", cs->hash);
     vk_stat_dispatched++;
     if (!learned && cs->info.stores) {   /* learning: the results, read back */
         flush_wait();
@@ -4279,6 +4465,9 @@ static void vk_status_lines(void) {
         fprintf(stderr, "[status] vulkan warm start: %u pipelines and programs listed, %lld programs loaded (%llu taken by draws), %lld pipelines made (%llu drawn with), %ld left out%s\n",
                 warm_nrecords, (long long)vk_stat_warm_loaded, vk_stat_warm_taken, (long long)vk_stat_warm_pipelines, vk_stat_warm_used, (long)warm_left,
                 warm_running ? ", running" : "");
+    if (vk_gated)
+        fprintf(stderr, "[status] vulkan made in play: %llu pipelines (%llu of them listed), %llu programs (%llu listed); waited %.0f ms for pipelines, %.0f ms on new programs\n",
+                vk_stat_play_pipes, vk_stat_play_pipes_listed, vk_stat_play_shaders, vk_stat_play_shaders_listed, vk_play_wait_ms, vk_play_shader_ms);
     fprintf(stderr, "[status] vulkan draws' parts (s): shaders %.1f, targets %.1f, state %.1f, streams %.1f, resources %.1f, indices %.1f, sets %.1f, "
                     "recording %.1f (resources: constant buffers %.1f, storage buffers %.1f, textures %.1f); "
                     "kept constant buffers: %llu made, %llu used, %llu found changed; constant buffers copied: %llu small (%llu MB), %llu big (%llu MB), %llu the same as the slot's last (of %llu compared; %llu not compared, unchanged in their submission); windows: %llu copied, %llu used again; buffer views: %llu made, %llu used again; descriptor sets: %llu written, %llu used again; parameters: %llu the last draw's, sets left bound %llu; indices used again %llu; textures: %llu found again in their submission, %llu 1D, %llu depth from guest memory; %llu frames shrunk into the window\n", vk_ns_phase[0] / 1e9, vk_ns_phase[1] / 1e9, vk_ns_phase[2] / 1e9, vk_ns_phase[3] / 1e9, vk_ns_phase[4] / 1e9,
@@ -4491,6 +4680,8 @@ static const GfxBackend *start_undo(void) {
     if (device) {
         vkDeviceWaitIdle(device);
         if (pool) vkDestroyCommandPool(device, pool, NULL);   /* (and the frames' command buffers with it) */
+        if (gpu_time_pool) vkDestroyQueryPool(device, gpu_time_pool, NULL);
+        gpu_time_pool = VK_NULL_HANDLE;
         pool = VK_NULL_HANDLE;
         for (u32 i = 0; i < MAX_FRAMES; i++) {
             if (frames[i].done) vkDestroyFence(device, frames[i].done, NULL);
@@ -4774,6 +4965,12 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
             snprintf(why, size, "%s: cannot make the frames' command buffers", card);
             return start_undo();
         }
+    }
+    if (gpu_time_ms != 0 && getenv("SSBU_VK_GPU_TIME") && limits.timestampPeriod > 0) {
+        VkQueryPoolCreateInfo qi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_TIMESTAMP, MAX_FRAMES * GPU_QS, 0};
+        if (vkCreateQueryPool(device, &qi, NULL, &gpu_time_pool) != VK_SUCCESS) gpu_time_pool = VK_NULL_HANDLE;
+        gpu_time_period = limits.timestampPeriod;
+        if (gpu_time_pool) fprintf(stderr, "[gputime] GPU timestamps on (SSBU_VK_GPU_TIME): %.2f ns a tick\n", gpu_time_period);
     }
 
     if (!draw_objects()) { snprintf(why, size, "%s: cannot make the drawing's descriptor layouts or stand-in resources", card); return start_undo(); }

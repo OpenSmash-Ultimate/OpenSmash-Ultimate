@@ -255,6 +255,8 @@ The Vulkan back end ([`gpu_vk.c`](../runtime/gpu_vk.c)) is chosen with `SSBU_REN
 | `SSBU_VK_DRAWN_CLEARS=1` | Whole colour clears of floating-point targets are drawn as rectangles, as the masked ones are. |
 | `SSBU_CAPTURE=<folder>` | Frames shown written as pictures; `SSBU_CAPTURE_EVERY`, `SSBU_CAPTURE_FROM`, `SSBU_CAPTURE_TO` and `SSBU_CAPTURE_MAX` say which. |
 | `SSBU_HITCH=<ms>` | Both renderers: a `[hitch] frame N: X ms` line for every frame that took longer, with what the threads spent it on. |
+| `SSBU_VK_GPU_TIME=<ms>` | Vulkan: GPU timestamps around each frame's work and after each rendering, launch, upload and draw. A `[gputime] frame N` line for each frame whose work on the GPU (or the renderer's wait for it) took longer, naming the stretch between two timestamps that took longest; every 512 frames, how many slow frames and others first drew with a pipeline, allocated memory or made a texture. Tells a GPU busy with our work from one held back. |
+| `SSBU_VK_MAKE_LOG=0` | Vulkan: no `[vulkan] made in play:` lines. Otherwise each pipeline made after the shader loading gets one (how long the draw waited for it, and whether the warm list already had it: `LISTED` means the warm start should have made it), and so does each new program that was not listed or took 2 ms or more; the first 300. The status lines count them all (`[status] vulkan made in play`). |
 | `SSBU_AOT_SPIRV=0` | Prepare Shaders (`tools/shader_aot.py`, also `--no-spirv`): the Vulkan renderer's SPIR-V files are not made. |
 
 **What is kept on disk, and when a stall is left.** The files are in the shader cache's folder (`dump/shadercache`, or `SSBU_SHADER_CACHE`):
