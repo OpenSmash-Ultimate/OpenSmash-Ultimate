@@ -54,4 +54,3 @@ u64 watch_rb_next(u64 p, u64 hi, u64 seen);
 u64 watch_rb_begin(void);
 void watch_rb_end(void);
 void watch_rb_scan(u64 lo, u64 hi, u64 stamp, void **pages);
-void watch_rb_dirty_scan(u64 lo, u64 hi, u64 *bits, void **pages);
