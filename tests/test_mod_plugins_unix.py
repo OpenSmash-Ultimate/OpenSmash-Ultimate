@@ -65,6 +65,24 @@ class ModPlugins(unittest.TestCase):
         with mock.patch.object(skyline, 'built_in', return_value=True):
             self.assertIsNone(skyline.unbuilt_mod_plugin(self.tree))
 
+    def test_play_without_mods_links_only_for_the_game(self):
+        # (30 mods turned on but not built in don't make the plain game wait for a link; an update does)
+        self.on('posix')
+        exe = os.path.join(self.tree, 'build-linux', 'ssbu')
+        os.makedirs(os.path.dirname(exe))
+        open(exe, 'wb').close()
+        os.utime(exe, (1e9, 1e9))
+        with mock.patch.object(skyline, 'program', return_value=exe), \
+                mock.patch.object(skyline, 'unbuilt_standard', return_value=None), \
+                mock.patch.object(skyline, 'built_in', return_value=False), \
+                mock.patch.object(skyline, 'stale_hooks', return_value=['main']), \
+                mock.patch.dict('std_plugins.PLUGINS', clear=True):
+            self.assertEqual(skyline.game_link_reason(self.tree), f"{MOD}'s plugin isn't in the game")
+            self.assertIsNone(skyline.game_link_reason(self.tree, mods=False))
+            os.makedirs(os.path.join(self.tree, 'runtime'))
+            open(os.path.join(self.tree, 'runtime', 'host.c'), 'w').close()
+            self.assertEqual(skyline.game_link_reason(self.tree, mods=False), 'runtime/host.c is newer than the game')
+
 
 if __name__ == '__main__':
     unittest.main()
