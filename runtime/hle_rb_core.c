@@ -1623,7 +1623,7 @@ static void net_step(Cpu *c, u64 frame) {
         if (rerun_lazy < 0) { const char *e = getenv("SSBU_RB_RERUN_LAZY"), *s = getenv("SSBU_RB_RERUN_SAVE"); rerun_lazy = !(e && *e == '0') && !(s && *s); }
         int keep;
         if (rerun_real && net_mode == 2) keep = key == net_remote_low();
-        else if (rerun_lazy && (net_mode == 1 || net_mode == 2)) {
+        else if (rerun_lazy && (net_mode == 1 || net_mode == 2) && !net_resync_pending) {   /* (a resync's rollback may go back before L: every 3rd frame then) */
             u32 low = net_remote_low();
             static int every = -1;
             if (every < 0) { const char *e = getenv("SSBU_RB_RERUN_GUESS_EVERY"); every = e && *e ? atoi(e) : 0; }
@@ -1696,7 +1696,7 @@ static void net_step(Cpu *c, u64 frame) {
      * spared a save of every page its frames wrote (7-9 ms at 120 ms one way). SSBU_RB_RERUN_LAST_SAVE=1: saved.) */
     {   static int last_save = -1;
         if (last_save < 0) { const char *e = getenv("SSBU_RB_RERUN_LAST_SAVE"); last_save = e && *e == '1'; }
-        if (catch_last && !skip_save && !last_save && rb_fast <= 0 && rb_ring_count() && rb_ring_tag(0) > catch_from && rb_ring_tag(0) < key) {
+        if (catch_last && !skip_save && !last_save && !net_resync_pending && rb_fast <= 0 && rb_ring_count() && rb_ring_tag(0) > catch_from && rb_ring_tag(0) < key) {
             u32 alive, waiting, sleeping, nbusy; u64 busy[1];
             kernel_rb_census(c->thread, &alive, &waiting, &sleeping, busy, 0, &nbusy);
             if (alive == rb_ring_threads(0)) { skip_save = 1; net_saves_after_catch++; }
