@@ -148,7 +148,7 @@ Two games on one PC against a lobby of your own, for a test (each game in a fold
 ```powershell
 python tools/ssbu_online_lobby.py --bind 127.0.0.1 --port 39421 --state online-state --verbose
 # both games: started with --online, online_server.txt (or SSBU_NET_RELAY) naming 127.0.0.1:39421: rollback is on by default
-# tests only: SSBU_RB_NET_BOT=calm (a bot plays each game's player and stays on the stage; without it, the controllers play), SSBU_NET_SIM=<ms>[,<loss %>[,<jitter ms>]] (each game holds what it receives that long)
+# tests only: SSBU_RB_NET_BOT=calm (a bot plays each game's player and stays on the stage; without it, the controllers play), SSBU_RB_NET_BOT_CSTICK=<player 1-8> (that player's bot jumps and pushes the C-stick in the air, its magnitude changing every frame: #181's case), SSBU_NET_SIM=<ms>[,<loss %>[,<jitter ms>]] (each game holds what it receives that long)
 ```
 
 ## Direct connections and your internet address

@@ -466,7 +466,13 @@ static void tape_clear(void) {
     AcquireSRWLockExclusive(&tape_lock);
     for (int i = 0; i < 8; i++) if (tape[i].rec) memset(tape[i].rec, 0, sizeof(PadRec) * tape[i].cap);
     ReleaseSRWLockExclusive(&tape_lock);
-    rb_sampling_base = rb_sampling + 1000;
+    /* (#181) In an online fight the pads' sampling number is the same on every PC: the base is the next multiple of 2^32
+     * above every number given before, not this PC's own count of menu polls + 1000 (a different count on each PC). The
+     * game does not read it (13.0.4: both of its GetNpadState calls, 0x7103666c60 and 0x71036682e0, read the buttons,
+     * sticks, attributes and GC triggers, never the sampling number), so it could not split two PCs; it is the same on
+     * both all the same, as everything a fight is built from. */
+    if (net_mode == 2) rb_sampling_base = (LONG64)(((u64)rb_sampling + 1000 + 0xffffffffull) & ~0xffffffffull);
+    else rb_sampling_base = rb_sampling + 1000;
 }
 
 static double seg_poll, seg_fe_in, seg_fe_out;   /* (the profile of re-run frames: this frame's marks) */
@@ -1187,6 +1193,20 @@ static RbnPad net_pad(int who, u32 f) {
     static int calm = -1;
     if (calm < 0) { const char *e = getenv("SSBU_RB_NET_BOT"); calm = e && !strcmp(e, "calm"); }
     if (calm) { p.lx = 0; if (p.ly > 0) p.ly = 0; p.buttons &= ~(1ull << 2); }   /* (no walking, no jumps: buttons where it stands) */
+    /* (#181) SSBU_RB_NET_BOT_CSTICK=<player, 1..8>: that bot jumps often and pushes the right stick (the C-stick) in the
+     * air: a direction held a few frames at a magnitude that moves every frame (as a thumb does: the real desyncs had
+     * y -29280, -32580 .. -31527, 3336 .. 30846), then released - an analog value guessed wrong frame after frame. */
+    static int cstick = -2;
+    if (cstick == -2) { const char *e = getenv("SSBU_RB_NET_BOT_CSTICK"); cstick = e && *e ? atoi(e) - 1 : -1; }
+    if (who == cstick) {
+        u64 g = net_mix((u64)who * 104729 + 3, f / 4), k = net_mix((u64)who * 15485863 + 5, f);
+        if ((g & 3) == 0) p.buttons |= 1ull << 2;   /* (X: jump) */
+        if (((g >> 4) & 3) != 0) {   /* (3 of 4 windows: the C-stick pushed, a direction a window) */
+            int mag = 3000 + (int)(k % 29767u), d = (int)((g >> 8) & 3);
+            if (d == 0) p.rx = (int16_t)-mag; else if (d == 1) p.rx = (int16_t)mag; else if (d == 2) p.ry = (int16_t)mag; else p.ry = (int16_t)-mag;
+            p.buttons &= ~((1ull << 0) | (1ull << 1));   /* (no A or B over it: the C-stick's own attack) */
+        }
+    }
     return rbn_rest(p);
 }
 /* the logic frame at which player 2's pad for frame F gets here. (In this game's frames, not on
@@ -1623,7 +1643,7 @@ static void net_step(Cpu *c, u64 frame) {
         if (rerun_lazy < 0) { const char *e = getenv("SSBU_RB_RERUN_LAZY"), *s = getenv("SSBU_RB_RERUN_SAVE"); rerun_lazy = !(e && *e == '0') && !(s && *s); }
         int keep;
         if (rerun_real && net_mode == 2) keep = key == net_remote_low();
-        else if (rerun_lazy && (net_mode == 1 || net_mode == 2) && !net_resync_pending) {   /* (a resync's rollback may go back before L: every 3rd frame then) */
+        else if (rerun_lazy && (net_mode == 1 || net_mode == 2)) {
             u32 low = net_remote_low();
             static int every = -1;
             if (every < 0) { const char *e = getenv("SSBU_RB_RERUN_GUESS_EVERY"); every = e && *e ? atoi(e) : 0; }
@@ -1701,7 +1721,7 @@ static void net_step(Cpu *c, u64 frame) {
      * spared a save of every page its frames wrote (7-9 ms at 120 ms one way). SSBU_RB_RERUN_LAST_SAVE=1: saved.) */
     {   static int last_save = -1;
         if (last_save < 0) { const char *e = getenv("SSBU_RB_RERUN_LAST_SAVE"); last_save = e && *e == '1'; }
-        if (catch_last && !skip_save && !last_save && !net_resync_pending && rb_fast <= 0 && rb_ring_count() && rb_ring_tag(0) > catch_from && rb_ring_tag(0) < key) {
+        if (catch_last && !skip_save && !last_save && rb_fast <= 0 && rb_ring_count() && rb_ring_tag(0) > catch_from && rb_ring_tag(0) < key) {
             u32 alive, waiting, sleeping, nbusy; u64 busy[1];
             kernel_rb_census(c->thread, &alive, &waiting, &sleeping, busy, 0, &nbusy);
             if (alive == rb_ring_threads(0)) { skip_save = 1; net_saves_after_catch++; }
