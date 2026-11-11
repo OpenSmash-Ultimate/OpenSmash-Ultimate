@@ -1627,9 +1627,14 @@ static void net_step(Cpu *c, u64 frame) {
             u32 low = net_remote_low();
             static int every = -1;
             if (every < 0) { const char *e = getenv("SSBU_RB_RERUN_GUESS_EVERY"); every = e && *e ? atoi(e) : 0; }
+            static int anchor_left = -1;
+            if (anchor_left < 0) { const char *e = getenv("SSBU_RB_RERUN_ANCHOR_LEFT"); anchor_left = e && *e ? atoi(e) : 3; }
             if (key < low) { keep = 0; net_rerun_left++; }   /* (its next pad is real) */
             else if (rb_ring_count() && rb_ring_tag(0) == key) { keep = 0; net_rerun_left++; }   /* (its logic frame's state already kept: #181's one a logic frame) */
-            else if (key == low || !rb_ring_count() || rb_ring_tag(0) > key) keep = 1;
+            else if (!rb_ring_count() || rb_ring_tag(0) > key) keep = 1;
+            /* (L with fewer than SSBU_RB_RERUN_ANCHOR_LEFT frames (3) left to run: not saved; the catch-up's last frame is,
+             * below, outside the catch-up's time - a 2-3 frame catch-up at 40 ms one way was 5 ms slower with L saved) */
+            else if (key == low && rb_fast >= anchor_left) keep = 1;
             else if (every > 0 && key - rb_ring_tag(0) >= (u32)every) keep = 1;
             else {   /* (left out, unless a guest thread came or went since the newest state: a load is refused across that) */
                 u32 alive, waiting, sleeping, nbusy; u64 busy[1];
