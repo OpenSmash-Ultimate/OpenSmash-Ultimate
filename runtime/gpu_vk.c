@@ -453,7 +453,7 @@ static void image_layout(VkCommandBuffer c, VkImage image, VkImageAspectFlags as
 
 /* Draws go into a rendering (dynamic rendering) kept open while the draws after it use the same
  * attachments; anything else recorded (clears, copies, blits, uploads) ends it first: outside(). */
-static struct { int active; u32 ncolor; VkImageView color[8], depth; VkImage images[9]; } rp;
+static struct { int active, depth_written; u32 ncolor; VkImageView color[8], depth; VkImage images[9]; } rp;
 static void end_rendering(void) {
     if (!rp.active) return;
     VkCommandBuffer c = frames[frame_at].cmd;
@@ -3456,16 +3456,25 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     if (ps) stage_resources(regs, cb, SHADER_PIXEL, ps, &params, &pb);
 
     /* a render target this draw also samples reads as nothing (Direct3D unbinds it); one an open rendering
-     * wrote reads what it wrote (the rendering ends first) */
-    int ends = 0;
+     * wrote reads what it wrote (the rendering ends first). Except its own depth target, for a draw that
+     * writes neither depth nor stencil (soft particles, the KO zooms' backgrounds: they fade by the scene
+     * depth): it stays the attachment, read-only for the draw, in the GENERAL layout it always has here,
+     * and is sampled too - after a rendering that wrote it has ended, so the writes are seen. */
+    int ends = 0, depth_read_only = !key.depth_write && !key.stencil_test;
     for (int st = 0; st < 2; st++) {
         StageBinds *b = st ? &pb : &vb;
         u32 ntex = st ? (ps ? ps->info.ntex : 0) : vs->info.ntex;
         for (u32 k = 0; k < ntex && k < 32; k++) {
             Surface *s = b->sampled[k];
             if (!s) continue;
-            int own = s == zs;
+            int own = s == zs && !depth_read_only;
             for (u32 i = 0; i < ncolor; i++) own |= rts[i] == s;
+            if (s == zs && !own) {
+                static int told;
+                if (!told++) fprintf(stderr, "[gfx] vulkan: a draw samples its own depth target, read-only (soft particles)\n");
+                ends |= rp.active && rp.depth_written && rp.images[8] == s->image;
+                continue;
+            }
             if (own) { b->tex[k] = VK_NULL_HANDLE; continue; }
             for (u32 i = 0; rp.active && i < 9; i++) ends |= rp.images[i] == s->image;
         }
@@ -3568,6 +3577,7 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         memset(rp.images, 0, sizeof rp.images);
         for (u32 i = 0; i < ncolor; i++) rp.images[i] = rts[i] ? rts[i]->image : VK_NULL_HANDLE;
         rp.images[8] = zs ? zs->image : VK_NULL_HANDLE;
+        rp.depth_written = 0;
         vk_stat_passes++;
     }
     /* (state the command buffer already has is not set again: bound) */
@@ -3617,6 +3627,7 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         }
         vkCmdDrawIndexed(c, regs[M_DRAW_INDEX_COUNT], 1, 0, vs->glslang ? 0 : (int32_t)regs[M_GLOBAL_BASE_VERTEX], 0);
     } else vkCmdDraw(c, regs[M_VERTEX_ARRAY_COUNT], 1, vs->glslang ? 0 : regs[M_VERTEX_ARRAY_START], 0);
+    if (key.depth_write || key.stencil_test) rp.depth_written = 1;
     /* (Direct3D's SV_VertexID leaves out the base vertex and the first vertex - vkd3d-shader's SPIR-V reads it as
      * VertexIndex - BaseVertex - while glslang's is VertexIndex: for its programs the draw gives no offset, as the
      * vertices are pulled by the program, not by the input assembler, so the offset only ever showed in the index) */
