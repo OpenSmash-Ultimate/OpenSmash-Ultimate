@@ -953,8 +953,12 @@ static const char *vk_detail(int details);
 static VkImage win_image;
 static u32 win_w, win_h;
 static int depth_sampling;
+static volatile u64 vk_last_guest;   /* (vk_present_again) the frame shown last */
+static volatile LONG vk_presented_once;
 static void vk_present(u64 guest, u32 width, u32 height) {
     u64 t0 = rt_clock_ns();
+    vk_last_guest = guest;
+    vk_presented_once = 1;
     vk_present_(guest, width, height);
     InterlockedAdd64((volatile LONG64 *)&vk_ns_present, (LONG64)(rt_clock_ns() - t0));
 }
@@ -4817,7 +4821,17 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
     return &VULKAN;
 }
 
+/* (gpu_menu.c's software keyboard, on the game's thread while it waits: gpu_backend.c) the last frame
+ * once more, so the overlay and the menu over it keep being drawn; as Direct3D 11's d3d11_present_again. */
+int vk_present_again(void) {
+    if (!vk_presented_once) return 0;
+    vk_present(vk_last_guest, 0, 0);
+    return 1;
+}
+
 #else
+
+int vk_present_again(void) { return 0; }
 
 const struct GfxBackend *vk_backend_start(char *why, size_t size, int automatic) {
     (void)automatic;

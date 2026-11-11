@@ -9,9 +9,14 @@
  * of a pad's buttons), Online, Game, Lobby (the online lobby's room browser and matchmaking, in
  * netplay version 3: net.h).
  *
+ * The pages are tabs across the top, switched with L / R (Q / E, Page Up / Page Down, Tab); a page's
+ * rows are a list under them, scrolled when they don't fit, and under the list Restart game and Quit
+ * game, which the cursor reaches past a page's last row (or above its first).
+ *
  * Tests: SSBU_MENU_AT=<seconds> opens it then; SSBU_MENU_KEYS="<seconds>:<key>,..." presses
- * UP DOWN LEFT RIGHT ENTER ESC TAB BKSP DEL, SHOT (a screenshot with the menu), or types
- * =<text>. */
+ * UP DOWN LEFT RIGHT ENTER ESC TAB BKSP DEL, the pad's A B Y L R PLUS, SHOT (a screenshot with
+ * the menu), or types =<text>; SSBU_MENU_OSK="<seconds>:<title>" opens the software keyboard
+ * then as the game would (what is typed is logged, nobody waits for it). */
 #define _CRT_SECURE_NO_WARNINGS
 #include <math.h>
 #include <stdarg.h>
@@ -182,8 +187,9 @@ static Row *add(int id, int kind, int when, const char *label, const char *help)
 static int page, sel[P_STICKS + 1], top[P_STICKS + 1];
 static int pad_slot = -1;           /* the pad the Controllers page sets up */
 static int confirm;                 /* a row asking yes or no */
+static int foot, foot_page;         /* the cursor on Restart game (1) or Quit game (2), under foot_page's rows */
 static int editing, grid_r, grid_c; /* a text row being typed */
-static char edit_buf[64];
+static char edit_buf[1024];
 static int capture_button = -1; /* the console button a new control is wanted for */
 static u32 capture_held;
 static ULONGLONG capture_until;
@@ -202,8 +208,8 @@ static int built_page = -1; /* the page build() made last (-1: none since the me
 /* The game's software keyboard (nn::swkbd, hle_applet.c) typed on the text grid: asked from the game's
  * thread (menu_osk_run), opened and answered here. 0 none, 1 asked, 2 open, 3 done, 4 cancelled. */
 static volatile LONG osk_state;
-static char osk_title[96], osk_text[64];
-static int osk_max = 32;
+static char osk_title[160], osk_text[1024];
+static int osk_max = 32, osk_min, osk_scripted; /* (osk_scripted: SSBU_MENU_OSK's, nobody waits for it) */
 
 static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol, rollback; } net;
 enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_NEAREST, NET_PUBLIC_EU, NET_MODE_COUNT };
@@ -1211,6 +1217,15 @@ static void build(void)
 
 static int selectable(const Row *r) { return r->kind != K_INFO; }
 
+/* UTF-8 text (the game's initial text can be any): its characters. */
+static size_t utf8_chars(const char *s)
+{
+    size_t n = 0;
+    for (; *s; s++)
+        n += ((unsigned char)*s & 0xC0) != 0x80;
+    return n;
+}
+
 /* ---- changing a row ----------------------------------------------------------------------- */
 static int cycle(int v, int n, int dir) { return ((v + dir) % n + n) % n; }
 
@@ -1227,6 +1242,13 @@ static void finish_edit(void)
 {
     if (editing == R_OSK)
     { /* the game's text box: as typed */
+        if ((int)utf8_chars(edit_buf) < osk_min)
+        {
+            char t[80];
+            snprintf(t, sizeof t, "At least %d characters", osk_min);
+            menu_toast(t);
+            return;
+        }
         snprintf(osk_text, sizeof osk_text, "%s", edit_buf);
         editing = 0;
         InterlockedExchange(&osk_state, 3);
@@ -1889,10 +1911,42 @@ static void move_sel(int dir)
     }
 }
 
+/* The cursor up or down a page: its rows, then Restart game and Quit game under them, round. */
+static int at_foot(void) { return foot && foot_page == page; }
+
+static void move_cursor(int dir)
+{
+    int first = -1, last = -1;
+    for (int i = 0; i < nrows; i++)
+        if (selectable(&rows[i]))
+        {
+            if (first < 0)
+                first = i;
+            last = i;
+        }
+    if (at_foot())
+    {
+        foot = 0;
+        if (first >= 0)
+            sel[page] = dir > 0 ? first : last;
+        else
+            foot = 1; /* (nothing else on the page) */
+        foot_page = page;
+        return;
+    }
+    if (first < 0 || (dir > 0 && sel[page] >= last) || (dir < 0 && sel[page] <= first))
+    {
+        foot = 1;
+        foot_page = page;
+        return;
+    }
+    move_sel(dir);
+}
+
 /* ---- the pointer ------------------------------------------------------------------------------ */
 /* What can be pointed at, as the last draw placed it (menu_draw notes it, so the layout has one home).
  * Same thread as the rest of the menu: menu_frame and menu_draw run at the present. */
-enum { HIT_PAGE = 1, HIT_ROW, HIT_GRID, HIT_YES, HIT_NO, HIT_RESTART, HIT_QUIT };
+enum { HIT_PAGE = 1, HIT_ROW, HIT_GRID, HIT_YES, HIT_NO, HIT_RESTART, HIT_QUIT, HIT_PREV, HIT_NEXT };
 typedef struct Hit
 {
     float x0, y0, x1, y1, value_x, value_mid;
@@ -1956,7 +2010,15 @@ static void mouse_hover(void)
     {
         int i = hit_row(t);
         if (i >= 0)
+        {
             sel[page] = i;
+            foot = 0;
+        }
+    }
+    else if ((t->kind == HIT_RESTART || t->kind == HIT_QUIT) && !editing && !confirm)
+    {
+        foot = t->kind == HIT_RESTART ? 1 : 2;
+        foot_page = page;
     }
 }
 
@@ -2002,14 +2064,31 @@ static void event(int ev, unsigned ch)
             capture_key = -1;
         return;
     }
+    if (ev == EV_CHAR && (ch == 'q' || ch == 'Q' || ch == 'e' || ch == 'E'))
+        ev = ch == 'q' || ch == 'Q' ? EV_PREV : EV_NEXT; /* (Q / E: the pages, as L / R) */
+    if (at_foot())
+    { /* Restart game, Quit game */
+        if (ev == EV_LEFT || ev == EV_RIGHT)
+        {
+            foot = 3 - foot;
+            return;
+        }
+        if (ev == EV_A || ev == EV_ENTER || (ev == EV_CHAR && ch == ' '))
+        {
+            confirm = foot == 1 ? R_RESTART : R_QUIT;
+            return;
+        }
+        if (ev == EV_DEL)
+            return;
+    }
     Row *row = sel[page] < nrows ? &rows[sel[page]] : NULL;
     switch (ev)
     {
     case EV_UP:
-        move_sel(-1);
+        move_cursor(-1);
         break;
     case EV_DOWN:
-        move_sel(1);
+        move_cursor(1);
         break;
     case EV_LEFT:
     case EV_RIGHT:
@@ -2091,6 +2170,10 @@ static void mouse_press(int v)
     case HIT_PAGE:
         page = h.a;
         break;
+    case HIT_PREV:
+    case HIT_NEXT:
+        event(h.kind == HIT_PREV ? EV_PREV : EV_NEXT, 0);
+        break;
     case HIT_YES:
         event(EV_A, 0);
         break;
@@ -2114,6 +2197,7 @@ static void mouse_press(int v)
         if (i < 0)
             break;
         sel[page] = i;
+        foot = 0;
         event(rows[i].kind == K_CHOICE && x >= h.value_x && x < h.value_mid ? EV_LEFT : rows[i].kind == K_CHOICE ? EV_RIGHT : EV_A, 0);
         break;
     }
@@ -2143,7 +2227,7 @@ static int script_events(void)
         {
             const char *name;
             int ev;
-        } NAMES[] = {{"UP", EV_UP}, {"DOWN", EV_DOWN}, {"LEFT", EV_LEFT}, {"RIGHT", EV_RIGHT}, {"ENTER", EV_ENTER}, {"ESC", EV_ESC}, {"TAB", EV_NEXT}, {"BKSP", EV_BKSP}, {"DEL", EV_DEL}, {"SHOT", -1}};
+        } NAMES[] = {{"UP", EV_UP}, {"DOWN", EV_DOWN}, {"LEFT", EV_LEFT}, {"RIGHT", EV_RIGHT}, {"ENTER", EV_ENTER}, {"ESC", EV_ESC}, {"TAB", EV_NEXT}, {"BKSP", EV_BKSP}, {"DEL", EV_DEL}, {"A", EV_A}, {"B", EV_B}, {"Y", EV_DEL}, {"L", EV_PREV}, {"R", EV_NEXT}, {"PLUS", EV_DONE}, {"SHOT", -1}};
         while (s && *s && nsteps < 64)
         {
             char tok[64];
@@ -2173,6 +2257,24 @@ static int script_events(void)
     {
         opened = 1;
         open_menu();
+    }
+    static double osk_at = -2;
+    if (osk_at == -2)
+    {
+        const char *o = getenv("SSBU_MENU_OSK");
+        int n = 0;
+        osk_at = o && *o && sscanf(o, "%lf%n", &osk_at, &n) == 1 ? osk_at : -1;
+        if (osk_at >= 0)
+            snprintf(osk_title, sizeof osk_title, "%s", o[n] == ':' && o[n + 1] ? o + n + 1 : "Enter text");
+    }
+    if (osk_at >= 0 && now >= osk_at && osk_state == 0)
+    {
+        osk_at = -1;
+        osk_text[0] = 0;
+        osk_min = 0;
+        osk_max = 20;
+        osk_scripted = 1;
+        InterlockedExchange(&osk_state, 1);
     }
     for (int i = 0; i < nsteps; i++)
     {
@@ -2242,6 +2344,7 @@ int menu_frame(int *overlay, int f3)
         if (!open_)
             open_menu();
         editing = R_OSK;
+        confirm = foot = 0;
         grid_r = grid_c = 0;
         snprintf(edit_buf, sizeof edit_buf, "%s", osk_text);
         nav_held = nb;
@@ -2271,7 +2374,7 @@ int menu_frame(int *overlay, int f3)
                 build();
             continue;
         }
-        static const int EV_OF[] = {0, EV_ESC, EV_UP, EV_DOWN, EV_LEFT, EV_RIGHT, EV_ENTER, EV_BKSP, EV_NEXT, EV_PREV, EV_DEL};
+        static const int EV_OF[] = {0, EV_ESC, EV_UP, EV_DOWN, EV_LEFT, EV_RIGHT, EV_ENTER, EV_BKSP, EV_NEXT, EV_PREV, EV_DEL, EV_PREV, EV_NEXT};
         if (v == MENU_KEY_ESC && !open_)
         {
             open_menu();
@@ -2377,6 +2480,15 @@ int menu_frame(int *overlay, int f3)
     }
     if (releasing && !open_ && !nb && !keys_held())
         releasing = 0;
+    if (osk_scripted && (osk_state == 3 || osk_state == 4))
+    { /* (SSBU_MENU_OSK's keyboard: nobody waits for it) */
+        if (osk_state == 3)
+            fprintf(stderr, "[menu] keyboard (test): typed \"%s\"\n", osk_text);
+        else
+            fprintf(stderr, "[menu] keyboard (test): cancelled\n");
+        osk_scripted = 0;
+        InterlockedExchange(&osk_state, 0);
+    }
     match_follow();
     if (open_)
     {
@@ -2466,6 +2578,25 @@ static void mouse_button(float x, float y, float bw, float bh, float size, float
     ovl_text(x + 12 * s, y + (bh - size) / 2, size, color, text);
 }
 
+/* A pad button's picture (L, R beside the tabs: they switch the pages), and the pointer's too. */
+static void button_icon(float x, float y, float bw, float bh, float s, int kind, const char *text)
+{
+    const Hit *t = hit_add(x, y, bw, bh, kind, 0, 0);
+    ovl_rect(x, y, bw, bh, hit_at(NULL) == t ? OVL_RGBA(100, 108, 140, 255) : OVL_RGBA(78, 84, 110, 255));
+    ovl_rect(x, y + bh - 4 * s, bw, 4 * s, OVL_RGBA(40, 44, 60, 255));
+    float size = 30 * s;
+    ovl_text(x + (bw - text_w(text, size)) / 2, y + (bh - 4 * s - size) / 2, size, OVL_RGBA(240, 240, 245, 255), text);
+}
+
+/* Restart game, Quit game: under every page's rows (on: the cursor is on it). */
+static void foot_button(float x, float y, float bw, float bh, float s, int kind, int on, const char *text)
+{
+    const Hit *t = hit_add(x, y, bw, bh, kind, 0, 0);
+    ovl_rect(x, y, bw, bh, on ? OVL_RGBA(225, 60, 60, 255) : hit_at(NULL) == t ? OVL_RGBA(55, 62, 90, 255) : OVL_RGBA(40, 45, 62, 255));
+    float size = 26 * s;
+    ovl_text(x + (bw - text_w(text, size)) / 2, y + (bh - size) / 2, size, OVL_RGBA(240, 240, 245, 255), text);
+}
+
 void menu_draw(float w, float h)
 {
     float s = h / 1080.0f;
@@ -2500,25 +2631,36 @@ void menu_draw(float w, float h)
         ovl_text(px + 300 * s, py + 34 * s, 24 * s, WHITE, t); /* (a message, in the menu: here) */
     else if (banner[0])
         ovl_text(px + 300 * s, py + 34 * s, 24 * s, strstr(status, "Room:") ? ACCENT : AMBER, banner);
-    /* the pages */
-    float ty = py + 110 * s;
+    /* the pages: tabs across the top, between the L and R buttons that switch them */
+    float tab_y = py + 92 * s, tab_h = 56 * s, icon = 56 * s;
+    float lx = px + 32 * s, rx_icon = px + pw - 32 * s - icon;
+    float tabs_x = lx + icon + 16 * s, tab_w = (rx_icon - 16 * s - tabs_x) / PAGES;
+    button_icon(lx, tab_y + 4 * s, icon, tab_h - 8 * s, s, HIT_PREV, "L");
+    button_icon(rx_icon, tab_y + 4 * s, icon, tab_h - 8 * s, s, HIT_NEXT, "R");
     for (int i = 0; i < PAGES; i++)
     {
         int on = page == i || (SUB_PAGE(page) && i == P_PADS);
-        hit_add(px + 20 * s, ty - 6 * s, 250 * s, 60 * s, HIT_PAGE, i, 0);
+        float x = tabs_x + (float)i * tab_w;
+        const Hit *t = hit_add(x, tab_y, tab_w, tab_h, HIT_PAGE, i, 0);
         if (on)
-            ovl_rect(px + 20 * s, ty - 6 * s, 250 * s, 50 * s, OVL_RGBA(55, 62, 90, 255));
-        char t[32];
-        snprintf(t, sizeof t, "%d %s", i + 1, PAGE_NAMES[i]);
-        ovl_text(px + 36 * s, ty, 32 * s, on ? WHITE : GREY, t);
-        ty += 60 * s;
+        {
+            ovl_rect(x + 2 * s, tab_y, tab_w - 4 * s, tab_h, OVL_RGBA(55, 62, 90, 255));
+            ovl_rect(x + 2 * s, tab_y + tab_h - 4 * s, tab_w - 4 * s, 4 * s, ACCENT);
+        }
+        else if (hit_at(NULL) == t)
+            ovl_rect(x + 2 * s, tab_y, tab_w - 4 * s, tab_h, OVL_RGBA(40, 45, 62, 255));
+        char name[32];
+        snprintf(name, sizeof name, "%d %s", i + 1, PAGE_NAMES[i]);
+        ovl_text(x + (tab_w - text_w(name, 30 * s)) / 2, tab_y + 12 * s, 30 * s, on ? WHITE : GREY, name);
     }
+    ovl_rect(px + 20 * s, tab_y + tab_h + 10 * s, pw - 40 * s, 2 * s, OVL_RGBA(60, 66, 90, 255));
     /* the rows */
-    float rx = px + 300 * s, ry = py + 110 * s, rw = px + pw - 28 * s - rx, rh = 50 * s, size = 29 * s;
+    float rx = px + 32 * s, ry = tab_y + tab_h + 34 * s, rw = pw - 64 * s, rh = 50 * s, size = 29 * s;
     float help_y = py + ph - 150 * s;
-    /* always there for the pointer, under the pages (keys and pads: the Game page's rows) */
-    mouse_button(px + 20 * s, help_y - 130 * s, 250 * s, 50 * s, 28 * s, s, HIT_RESTART, WHITE, "Restart game");
-    mouse_button(px + 20 * s, help_y - 70 * s, 250 * s, 50 * s, 28 * s, s, HIT_QUIT, WHITE, "Quit game");
+    /* under the rows: Restart game and Quit game, on every page (the cursor goes there past the last row) */
+    float fb_w = 220 * s, fb_h = 46 * s, fb_y = py + ph - 62 * s, quit_x = px + pw - 32 * s - fb_w, restart_x = quit_x - 16 * s - fb_w;
+    foot_button(restart_x, fb_y, fb_w, fb_h, s, HIT_RESTART, at_foot() && foot == 1, "Restart game");
+    foot_button(quit_x, fb_y, fb_w, fb_h, s, HIT_QUIT, at_foot() && foot == 2, "Quit game");
     int fit = (int)((help_y - 16 * s - ry) / rh);
     if (fit < 1)
         fit = 1;
@@ -2534,7 +2676,7 @@ void menu_draw(float w, float h)
     {
         const Row *r = &rows[i];
         float y = ry + (float)(i - *t0) * rh;
-        int on = i == sel[page];
+        int on = i == sel[page] && !at_foot();
         if (on)
             ovl_rect(rx, y - 6 * s, rw, rh - 4 * s, OVL_RGBA(55, 62, 90, 255));
         ovl_text(rx + 16 * s, y, size, r->kind == K_INFO ? GREY : WHITE, r->label);
@@ -2571,17 +2713,20 @@ void menu_draw(float w, float h)
         ovl_text(rx + rw - 40 * s, help_y - 34 * s, 26 * s, GREY, "v");
     /* the selected row's help, and the keys */
     ovl_rect(px + 20 * s, help_y - 8 * s, pw - 40 * s, 2 * s, OVL_RGBA(60, 66, 90, 255));
-    if (sel[page] < nrows && rows[sel[page]].help)
+    const char *help = at_foot() ? (foot == 1 ? "Starts the game again (for the settings marked 'next start'). A match in progress is lost."
+                                               : "Closes the game. A match in progress is lost.")
+                       : sel[page] < nrows ? rows[sel[page]].help : NULL;
+    if (help)
     {
         char wrapped[600];
-        wrap(rows[sel[page]].help, (int)((pw - 80 * s) / (13 * s)), wrapped, sizeof wrapped);
+        wrap(help, (int)((pw - 80 * s) / (13 * s)), wrapped, sizeof wrapped);
         ovl_text(px + 36 * s, help_y + 4 * s, 26 * s, OVL_RGBA(200, 210, 230, 255), wrapped);
     }
     ovl_text(px + 36 * s, py + ph - 44 * s, 22 * s, DIM,
              page == P_REMAP    ? "Up/Down: choose   A/Enter: press a new control   Y/Delete: default   B/Backspace: back   Esc: close"
              : page == P_KEYS   ? "Up/Down: choose   A/Enter: press a new key   Y/Delete: default   B/Backspace: back   Esc: close"
              : page == P_STICKS ? "The numbers update live   B/Backspace: back   Esc: close"
-                                : "Up/Down: choose   Left/Right: change   A/Enter: select   L/R or Tab, 1-6: page   B/Esc: close");
+                                : "Up/Down: choose   Left/Right: change   A/Enter: select   L/R, Q/E or Tab: page   B/Esc: close");
     /* on top: a question, the text being typed, or a control being waited for */
     if (confirm)
     {
@@ -2655,16 +2800,19 @@ void menu_draw(float w, float h)
 }
 
 /* (hle_applet.c, on the game's thread) the game's software keyboard on the menu's text grid, the last frame
- * shown again under it while the game waits. 1 typed (out, ASCII), 0 cancelled, -1 not here (the renderer
- * can't show a frame again: the caller uses its dialog). */
+ * shown again under it while the game waits. title: the header (or ""), guide: the title when there is no
+ * header, initial: the text it starts with (UTF-8), min_len / max_len in characters. 1 typed
+ * (out, UTF-8), 0 cancelled, -1 not here (the renderer can't show a frame again: the caller uses its dialog). */
 int gfx_present_again(void); /* (the renderer) the last frame once more, with the overlay and the menu */
-int menu_osk_run(const char *title, const char *initial, int max_len, char *out, size_t cap)
+int menu_osk_run(const char *title, const char *guide, const char *initial, int min_len, int max_len, char *out, size_t cap)
 {
     if (!gfx_present_again())
         return -1;
-    snprintf(osk_title, sizeof osk_title, "%s", title && *title ? title : "Enter text");
+    snprintf(osk_title, sizeof osk_title, "%s", title && *title ? title : guide && *guide ? guide : "Enter text");
     snprintf(osk_text, sizeof osk_text, "%s", initial ? initial : "");
-    osk_max = max_len > 0 && max_len < (int)sizeof osk_text ? max_len : (int)sizeof osk_text - 1;
+    osk_max = max_len > 0 && max_len < (int)sizeof osk_text / 4 ? max_len : (int)sizeof osk_text / 4 - 1;
+    osk_min = min_len > 0 && min_len <= osk_max ? min_len : 0;
+    osk_scripted = 0;
     InterlockedExchange(&osk_state, 1);
     while (osk_state == 1 || osk_state == 2)
     {

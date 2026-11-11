@@ -117,6 +117,8 @@ static void menu_key_of(const SDL_KeyboardEvent *k) {
     case SDL_SCANCODE_BACKSPACE: key = MENU_KEY_BACKSPACE; break;
     case SDL_SCANCODE_DELETE: key = MENU_KEY_DELETE; break;
     case SDL_SCANCODE_TAB: if (!k->repeat) key = k->keysym.mod & KMOD_SHIFT ? MENU_KEY_SHIFT_TAB : MENU_KEY_TAB; break;
+    case SDL_SCANCODE_PAGEUP: if (!k->repeat) key = MENU_KEY_PAGE_UP; break;   /* (the menu's pages, as L and R) */
+    case SDL_SCANCODE_PAGEDOWN: if (!k->repeat) key = MENU_KEY_PAGE_DOWN; break;
     default: break;
     }
     if (key && (key == MENU_KEY_ESC || menu_is_open())) menu_key(key);

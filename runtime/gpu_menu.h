@@ -10,7 +10,7 @@ int menu_visible(void);              /* open, or a message showing */
 /* The window's thread (Win32 window procedure, Linux's SDL loop): keys while the menu is open
  * (Esc also while it is closed), and typed characters (printable ASCII). */
 enum { MENU_KEY_ESC = 1, MENU_KEY_UP, MENU_KEY_DOWN, MENU_KEY_LEFT, MENU_KEY_RIGHT, MENU_KEY_ENTER, MENU_KEY_BACKSPACE,
-       MENU_KEY_TAB, MENU_KEY_SHIFT_TAB, MENU_KEY_DELETE };
+       MENU_KEY_TAB, MENU_KEY_SHIFT_TAB, MENU_KEY_DELETE, MENU_KEY_PAGE_UP, MENU_KEY_PAGE_DOWN };
 void menu_key(int key);
 void menu_char(unsigned ch);
 /* The pointer while the menu is open: where it is, in any units as long as the window's size w x h
