@@ -305,7 +305,7 @@ namespace OpenSmash.Launcher
                 new Setting { Key = "pacing", Label = "Frame pacing", Values = new[] { "clock", "vrr", "display" }, Labels = new[] { "Steady 60 (any monitor)", "G-Sync / FreeSync monitor", "Follow the monitor's refresh" } },
                 new Setting { Key = "render_scale", Label = "Render scale", Values = new[] { "1", "auto", "1.5", "2", "3" }, Labels = new[] { "1: 1920x1080 (the game's own)", "Auto: as big as the window", "1.5: 2880x1620", "2: 3840x2160 (4K)", "3: 5760x3240" } },
                 new Setting { Key = "gpu", Label = "Graphics card", Values = new[] { "auto", "warp" }, Labels = new[] { "The fastest (auto)", "WARP (Windows itself, no card: slow)" } },
-                new Setting { Key = "renderer", Label = "Renderer", Values = new[] { "auto", "direct3d11", "vulkan" }, Labels = new[] { "Auto: Vulkan on AMD cards, Direct3D 11 on others", "Direct3D 11", "Vulkan" } },
+                new Setting { Key = "renderer", Label = "Renderer", Values = new[] { "auto", "direct3d11", "vulkan" }, Labels = new[] { "Auto: Vulkan on AMD, NVIDIA and Intel cards, Direct3D 11 on others", "Direct3D 11", "Vulkan" } },
                 new Setting { Key = "hide_cursor", Label = "Hide the mouse pointer", Values = new[] { "1", "0" }, Labels = new[] { "When it stops moving", "Keep it shown" } },
                 new Setting { Key = "overlay", Label = "Frame rate", Values = new[] { "1", "0" }, Labels = new[] { "Show it in the corner", "Hidden" } },
                 new Setting { Key = "volume", Label = "Volume", Slider = true },
@@ -368,13 +368,13 @@ namespace OpenSmash.Launcher
         }
 
         // The renderer the game starts with, as runtime/renderer.h reads it: SSBU_RENDERER, else
-        // display.ini's renderer (vulkan or vk: Vulkan; direct3d11, direct3d or dx11: Direct3D 11;
-        // anything else, d3d11 included: auto, Vulkan on an AMD card and Direct3D 11 on others).
+        // display.ini's renderer (vulkan or vk: Vulkan; direct3d11, d3d11, direct3d or dx11: Direct3D 11;
+        // anything else: auto, Vulkan on an AMD, NVIDIA or Intel card and Direct3D 11 on others).
         string RendererAsked()
         {
             string v = Environment.GetEnvironmentVariable("SSBU_RENDERER") ?? "";
             if (v.Trim() == "") v = _settingsLoaded ? _iniValues.GetValueOrDefault("renderer", "") : _rendererIni;
-            return v.Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
+            return v.Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "d3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
         }
 
         string RendererChip() => RendererAsked() switch { "vulkan" => "VULKAN RENDERER", "direct3d11" => "D3D11 RENDERER", _ => "AUTO RENDERER" };
@@ -1332,8 +1332,8 @@ namespace OpenSmash.Launcher
             _iniValues["pacing"] = D("pacing", "clock");
             _iniValues["render_scale"] = D("render_scale", "1");
             _iniValues["gpu"] = D("gpu", "auto");
-            // (runtime/renderer.h's names: d3d11, which older display.ini files carry, is auto)
-            _iniValues["renderer"] = D("renderer", "auto").Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
+            // (runtime/renderer.h's names: d3d11, which older display.ini files carry, is Direct3D 11)
+            _iniValues["renderer"] = D("renderer", "auto").Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "d3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
             _iniValues["hide_cursor"] = D("hide_cursor", "1");
             _iniValues["overlay"] = D("overlay", "1");
             _iniValues["volume"] = D("volume", "100");

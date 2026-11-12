@@ -58,15 +58,15 @@ class RendererOption(unittest.TestCase):
     def test_names(self):
         out, _ = self.run_test('parse', 'vulkan', 'parse', 'Vulkan', 'parse', 'vk', 'parse', 'd3d11', 'parse', 'DXVK', 'parse', 'metal',
                                'parse', 'auto', 'parse', 'direct3d11', 'parse', 'DX11', 'parse', 'opengl', 'parse', '')
-        # (d3d11, the value every default display.ini before auto was written with, is auto; direct3d11 is Direct3D 11)
-        self.assertEqual(out, ['parse vulkan -> 1 vulkan', 'parse Vulkan -> 1 vulkan', 'parse vk -> 1 vulkan', 'parse d3d11 -> 0 auto',
+        # (d3d11, the value every default display.ini before auto was written with, is Direct3D 11 as it says, not auto)
+        self.assertEqual(out, ['parse vulkan -> 1 vulkan', 'parse Vulkan -> 1 vulkan', 'parse vk -> 1 vulkan', 'parse d3d11 -> 2 direct3d11',
                                'parse DXVK -> 0 auto', 'parse metal -> 0 auto', 'parse auto -> 0 auto', 'parse direct3d11 -> 2 direct3d11',
                                'parse DX11 -> 2 direct3d11', 'parse opengl -> -1 -', 'parse  -> -1 -'])
 
     def test_default_is_unchanged(self):
         """No renderer key, or the default's name: auto (gpu_backend.c's choice, not made here: Direct3D 11 starts),
         and the start says nothing."""
-        for ini in ('window = windowed\n', 'renderer = d3d11\n', 'renderer = auto   ; the default\n'):
+        for ini in ('window = windowed\n', 'renderer = auto   ; the default\n'):
             out, err = self.run_test('chosen', 'start', ini=ini)
             self.assertEqual(out, ['chosen auto', 'start auto'], ini)
             self.assertEqual([l for l in err if 'renderer' in l], [], ini)
