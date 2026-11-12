@@ -76,7 +76,7 @@ static void test_parse(void) {
     bad("@a_mark_whose_name_runs_on_far_too_long_for_a_step", "longer than 47");
     char many[SEQ_STEPS * 2 + 8] = "";
     for (int i = 0; i <= SEQ_STEPS; i++) strcat(many, "1 ");
-    bad(many, "more than 256 steps");
+    bad(many, "more than 2048 steps");
 }
 
 /* ---- the step machine ------------------------------------------------------------------ */
