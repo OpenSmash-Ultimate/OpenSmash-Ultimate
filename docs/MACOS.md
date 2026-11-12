@@ -155,7 +155,7 @@ Terminal window that shows the game's log as it goes; closing that window leaves
   `online_name.txt`.
 - There is no **Prepare Shaders** on a Mac yet: each shader is compiled when it is first needed, so a
   new effect can show a moment late, or stutter, the first time.
-- `controllers.ini` and `display.ini` in the WindowSmash folder work as on Windows
+- `controllers.ini` and `display.ini` in the WindowSmash folder's `config` folder work as on Windows
   ([Playing](PLAYING.md#controllers)). In `display.ini`, the window's width and height are points,
   as macOS sizes windows: on a Retina display each point is 2×2 pixels. `borderless` and
   `fullscreen` are both macOS's full screen, in a space of its own. `render_scale` draws the
