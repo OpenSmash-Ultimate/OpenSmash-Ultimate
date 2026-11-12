@@ -26,6 +26,11 @@ headless, offline test options. It still loads the enabled Skyline plugins from 
 configured game tree: those are the plugins being inspected. Its data directory is
 removed after the probe; diagnostics remain in `dump/skyline/probe.log`.
 
+When ARCropolis has been installed over a tree using the native mod overlay, the probe
+first reapplies the enabled mods in ARCropolis mode. This restores `romfs_vanilla.cfg`
+before starting the game; reading a pre-expanded archive again can make ARCropolis' share
+lookup index past the original file table. The enabled mod selection is preserved.
+
 If a listed plugin cannot load, the runtime exits the probe with an error before running
 plugin entry points. Nonzero exits and timeouts fail the Python probe rather than being
 treated as an unchanged successful result. Normal game launches keep their existing
@@ -280,3 +285,8 @@ Mods it unlocks, in order: movesets over an existing fighter that use only ACMD 
 main-loop callbacks (Sonic Re-Imagined and most mRama movesets: Knuckles, Funky Kong, Kamek,
 Bandana Dee, Silver/Waluigi once costume filtering and CSK are in), then new characters
 (CSK), then mods that depend on inline hooks.
+
+With ARCropolis enabled, mods named `plugin.nro` are left for its chainloader.
+Other named libraries stay in Skyline's direct-load list, in dependency order;
+the skip list still applies, and each module is listed once. Windows plugin DLLs
+already in `plugin_dlls.txt` do not require relinking the game executable.
