@@ -11,7 +11,8 @@
  *
  * Every EOS call is made on this file's own thread (the SDK is not thread-safe): it ticks the SDK every
  * millisecond, sends what eos_send() queued and hands what arrives to net_eos_packet() (net_relay.c).
- * SSBU_EOS_NEWID=1 (tests: a second player on the same PC) makes a new Device ID first. Other files have work done on
+ * SSBU_EOS_NEWID=1 (tests: a second player on the same PC) makes a new Device ID first; SSBU_EOS_IDFILE=<file> keeps
+ * one per file across runs (below). Other files have work done on
  * that thread with eos_post(); P2P channel 1 (reliable, ordered: eos_send_reliable) carries net_eos_lobby.c's messages,
  * channel 0 the game's datagrams. SSBU_EOS_RELAY=force (tests: two games on one PC as over the internet) sends every
  * P2P packet through Epic's relay servers, never straight. */
@@ -58,6 +59,7 @@ static void EOS_CALL eos_created(const EosCreateUserInfo *d) {
 static void EOS_CALL eos_logged_in(const EosLoginInfo *d) {
     if (d->ResultCode == EOS_SUCCESS) { eos_me = d->LocalUserId; InterlockedExchange(&eos_phase, 2); return; }
     if (d->ResultCode == EOS_INVALID_USER) {   /* (this Device ID's first eos_login: a user of the product is made) */
+        fprintf(stderr, "[eos] this Device ID has no player yet: a new one is made\n");
         EosCreateUserOptions o = {1, d->ContinuanceToken};
         p_EOS_Connect_CreateUser(eos_con, &o, NULL, eos_created);
         return;
@@ -77,6 +79,57 @@ static void EOS_CALL eos_device_id_gone(const EosDeviceIdInfo *d) {
     EosCreateDeviceIdOptions o = {1, "PC"};
     p_EOS_Connect_CreateDeviceId(eos_con, &o, NULL, eos_device_id);
 }
+/* SSBU_EOS_IDFILE=<file> (tests: two players on one PC that keep who they are from one run to the next, each with its
+ * own data root): the SDK keeps the Device ID's credentials per Windows user, in the Windows credential store
+ * (generic credentials "eos-sdk:<ProductId>:<n>"). With the file there, its copy goes back into the store before the
+ * login; without it, a new Device ID is made (as SSBU_EOS_NEWID=1) and, once logged in, copied into the file. */
+#include <wincred.h>
+#pragma comment(lib, "advapi32.lib")
+#define ID_PIECES 8
+static char eos_cred[5][128];   /* (eos.txt's, below) */
+static const char *eos_id_file(void) { const char *f = getenv("SSBU_EOS_IDFILE"); return f && *f ? f : NULL; }
+static void eos_id_target(wchar_t *t, size_t n, int piece) { _snwprintf(t, n, L"eos-sdk:%hs:%d", eos_cred[0], piece); t[n - 1] = 0; }
+static int eos_id_restore(const char *path) {   /* (1: the file's credentials are in the store) */
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    static u8 blob[ID_PIECES][CRED_MAX_CREDENTIAL_BLOB_SIZE];
+    u32 head[2];
+    int n = 0;
+    while (n < ID_PIECES && fread(head, sizeof head, 1, f) == 1 && head[0] >= 1 && head[0] <= ID_PIECES && head[1] <= sizeof blob[0] &&
+           fread(blob[n], 1, head[1], f) == head[1]) {
+        wchar_t t[96];
+        eos_id_target(t, 96, (int)head[0]);
+        CREDENTIALW c;
+        memset(&c, 0, sizeof c);
+        c.Type = CRED_TYPE_GENERIC; c.TargetName = t; c.Comment = L"Epic Online Services SDK";
+        c.CredentialBlobSize = head[1]; c.CredentialBlob = blob[n]; c.Persist = CRED_PERSIST_LOCAL_MACHINE;
+        if (!CredWriteW(&c, 0)) { fprintf(stderr, "[eos] SSBU_EOS_IDFILE: the store refused piece %u (%lu)\n", head[0], GetLastError()); break; }
+        n++;
+    }
+    fclose(f);
+    if (n) fprintf(stderr, "[eos] SSBU_EOS_IDFILE: the Device ID of %s (%d piece%s) put back\n", path, n, n == 1 ? "" : "s");
+    return n > 0;
+}
+static void eos_id_save(const char *path) {   /* (after a login with a new Device ID) */
+    FILE *f = fopen(path, "wb");
+    if (!f) { fprintf(stderr, "[eos] SSBU_EOS_IDFILE: %s cannot be written\n", path); return; }
+    int n = 0;
+    for (int piece = 1; piece <= ID_PIECES; piece++) {
+        wchar_t t[96];
+        eos_id_target(t, 96, piece);
+        PCREDENTIALW c;
+        if (!CredReadW(t, CRED_TYPE_GENERIC, 0, &c)) continue;
+        u32 head[2] = {(u32)piece, c->CredentialBlobSize};
+        fwrite(head, sizeof head, 1, f);
+        fwrite(c->CredentialBlob, 1, c->CredentialBlobSize, f);
+        CredFree(c);
+        n++;
+    }
+    fclose(f);
+    fprintf(stderr, "[eos] SSBU_EOS_IDFILE: the new Device ID kept in %s (%d piece%s)\n", path, n, n == 1 ? "" : "s");
+}
+static int eos_id_new;   /* (a new Device ID was made: eos_id_save once logged in) */
+
 static void EOS_CALL eos_connection_request(const EosRequestInfo *d) {   /* (any player may open one: what it sends must still carry the pair's secret, net_relay.c) */
     EosAcceptOptions o = {1, eos_me, d->RemoteUserId, &eos_sock};
     p_EOS_P2P_AcceptConnection(eos_p2p, &o);
@@ -401,7 +454,12 @@ static DWORD WINAPI eos_thread_(LPVOID dll) {
     eos_con = p_EOS_Platform_GetConnectInterface(eos_plat);
     eos_p2p = p_EOS_Platform_GetP2PInterface(eos_plat);
     const char *nid = getenv("SSBU_EOS_NEWID");
-    if (nid && *nid == '1') { EosDeleteDeviceIdOptions o = {1}; p_EOS_Connect_DeleteDeviceId(eos_con, &o, NULL, eos_device_id_gone); }
+    if (eos_id_file() && !(nid && *nid == '1') && !eos_id_restore(eos_id_file())) eos_id_new = 1;
+    if (eos_id_new) {   /* (only the store's copy is removed, not with EOS_Connect_DeleteDeviceId: seen, a Device ID that
+                           call had replaced, put back from its file later, no longer led to its player - a new one was made) */
+        for (int piece = 1; piece <= ID_PIECES; piece++) { wchar_t t[96]; eos_id_target(t, 96, piece); CredDeleteW(t, CRED_TYPE_GENERIC, 0); }
+        EosCreateDeviceIdOptions o = {1, "PC"}; p_EOS_Connect_CreateDeviceId(eos_con, &o, NULL, eos_device_id);
+    } else if (nid && *nid == '1') { EosDeleteDeviceIdOptions o = {1}; p_EOS_Connect_DeleteDeviceId(eos_con, &o, NULL, eos_device_id_gone); }
     else { EosCreateDeviceIdOptions o = {1, "PC"}; p_EOS_Connect_CreateDeviceId(eos_con, &o, NULL, eos_device_id); }
     timeBeginPeriod(1);
     u64 t0 = GetTickCount64();
@@ -421,6 +479,7 @@ static DWORD WINAPI eos_thread_(LPVOID dll) {
                 fprintf(stderr, "[eos] SSBU_EOS_RELAY=force: every P2P packet through Epic's relays (%s)\n", p_EOS_EResult_ToString(rr));
             }
             fprintf(stderr, "[eos] ready in %llu ms: the relay of last resort is Epic's (player %s)\n", (unsigned long long)(GetTickCount64() - t0), eos_my_text);
+            if (eos_id_new) eos_id_save(eos_id_file());
             told = 1;
         }
         if (ph < 0) { fprintf(stderr, "[eos] off: the lobby's relay stays the last resort\n"); return 0; }

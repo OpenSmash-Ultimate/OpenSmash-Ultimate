@@ -106,6 +106,13 @@ class Arenas(Case):
         self.assertEqual(found(call(b, 109, 52, criteria())), [])
         self.assertNotIn(gf, found(call(f, 109, 52, criteria())))
 
+    def test_friends_arenas_are_an_empty_list(self):
+        a, b = self.player(2, "Alpha"), self.player(3, "Bravo")
+        self.arena(a)
+        m = call(b, 109, 51, criteria())
+        self.ok(m)
+        self.assertEqual(m.body, b"\0\0\0\0")
+
 
 class ArenaRollback(unittest.TestCase):
     """The online lobby passes rollback messages between the players of one Online match (a Battle Arena's ring, a
