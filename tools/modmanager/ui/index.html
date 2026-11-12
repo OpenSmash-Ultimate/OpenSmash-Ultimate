@@ -31,6 +31,7 @@
       <button id="apply" class="big">Apply to game</button>
       <button id="build-plugins" class="ghost small" hidden title="Compiles the turned-on mods' code plugins (movesets, new characters) into the game: a few minutes">Build plugins into the game</button>
       <button id="vanilla" class="ghost small">Play without mods</button>
+      <button id="back-launcher" class="ghost small" hidden>&#8592; Back to the launcher</button>
     </div>
   </nav>
 
@@ -202,7 +203,7 @@
 </div>
 
 <!-- a GameBanana mod -->
-<div id="drawer" class="hidden">
+<div id="drawer" class="hidden" data-gp-scope>
   <div class="drawer-bg" data-close></div>
   <article class="drawer-panel">
     <button class="x" data-close>&times;</button>
@@ -211,7 +212,7 @@
 </div>
 
 <!-- dialogs -->
-<div id="dialog" class="hidden">
+<div id="dialog" class="hidden" data-gp-scope>
   <div class="drawer-bg" data-close></div>
   <div class="dialog-panel" id="dialog-body"></div>
 </div>
@@ -220,6 +221,7 @@
 <div id="dropzone" class="hidden"><div>Drop to install</div></div>
 <div id="toast" class="hidden"></div>
 
+<script src="/ui/gamepad.js"></script>
 <script src="/ui/app.js"></script>
 </body>
 </html>

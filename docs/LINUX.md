@@ -12,6 +12,10 @@ The same recompiled game as the Windows build, as a native x86-64 Linux program.
 
 There are two ways to get it:
 
+- **The OpenSmash Launcher** (the easiest): double-click `OpenSmash Launcher` in the folder, or run
+  `bash opensmash-launcher.sh`. Setup, updates, Play, settings and the mod manager in a window, with a
+  mouse or a game pad, no terminal. It works in Steam's Game Mode too. See
+  [The OpenSmash Launcher](#the-opensmash-launcher).
 - **Install it on Linux.** `install-windowsmash.sh` sets up WindowSmash on the Linux machine and
   builds the game there from your own files, as `OpenSmash.exe` does on Windows. See
   [Installing on Linux](#installing-on-linux).
@@ -26,6 +30,7 @@ As on Windows, the game must be version 13.0.5, its last update
 
 ## Contents
 
+- [The OpenSmash Launcher](#the-opensmash-launcher)
 - [Installing on Linux](#installing-on-linux)
 - [What you need](#what-you-need)
 - [Setting up](#setting-up)
@@ -36,6 +41,83 @@ As on Windows, the game must be version 13.0.5, its last update
 - [Saves](#saves)
 - [If something goes wrong](#if-something-goes-wrong)
 - [Building it](#building-it)
+
+## The OpenSmash Launcher
+
+`OpenSmash.exe` is Windows-only. On Linux the same features run in a browser window instead. The
+launcher is a small server on your own computer (`tools/weblauncher/launcher.py`, Python's standard
+library only, reachable from this computer alone and only with the key it opens the page with).
+
+To start it, double-click **`OpenSmash Launcher`** in the WindowSmash folder. On KDE (SteamOS's and
+Bazzite's Desktop Mode) choose *Continue* when it asks. On GNOME, right-click it and choose *Allow
+Launching*. You can also run `bash opensmash-launcher.sh`. It needs Python 3.10 or newer, which
+almost every distribution has. The first start adds **OpenSmash Launcher** to your applications menu.
+The window is a Chrome, Chromium, Brave or Edge app window if one is installed (from the distribution
+or as a Flatpak). Without one, the launcher opens in your default browser.
+
+| Tab | What it does | What runs |
+| :--- | :--- | :--- |
+| **Play** | *Play* (online, the lobby in Settings), *Play offline*, *Play without mods*. Before the game starts, it applies the turned-on mods, and asks to build the mods' plugins into the game when they need it. It then shows the game's log while the game runs. | `play-ssbu.sh`, `launchers/play-ssbu-offline.sh`; `tools/os_mods.py apply`, `vanilla`, `build` |
+| **Setup** | The first-run setup: your game, keys and firmware folders (found by themselves when an emulator has them; *Browse…* picks another), your online name, then the whole install and build with its log. *Build again* builds what changed. | `tools/linux/install_linux.py` (the same steps as `install-windowsmash.sh`), `tools/build_game.py` |
+| **Mods** | Opens WindowSmash Mods (GameBanana's mods: browse, install, turn on and off, modpacks) in the same window. *Back to the launcher* (or B) returns. *Build plugins into the game* compiles movesets' and new characters' code into the game. | `tools/modmanager/server.py`, `tools/os_mods.py build` |
+| **Settings** | Display, online (name, public or private lobby, lobby code, your own server, direct connections) and controllers. These are the same files and values `OpenSmash.exe` and the game's own settings menu write. | `display.ini`, `controllers.ini`, `online_*.txt`, `launcher.ini` |
+| **Update** | Checks GitHub for a newer OpenSmash and installs it (a `git pull`, or the newer files of a ZIP download). Your game files, save, settings and builds stay. | `install_linux.py --update-only` |
+
+The setup installs the build's packages with `sudo`. With no terminal, `sudo` asks for your password
+in a dialog (`tools/linux/askpass.sh`: zenity, kdialog or ssh-askpass). The notes in
+[Installing on Linux](#installing-on-linux) apply as they are:
+
+- **Steam Deck (SteamOS):** run `sudo steamos-readonly disable` (and `passwd`, if the `deck` user
+  has no password) in Konsole first.
+- **Bazzite** and other image-based systems: the packages may only arrive after a restart. The log
+  says so. Restart, then press *Set up and build* again.
+
+Run the setup in Desktop Mode. A password dialog may not show in Game Mode.
+
+### Steam Deck and Game Mode
+
+1. In Desktop Mode, open Steam, choose *Games > Add a Non-Steam Game to My Library*, tick
+   **OpenSmash Launcher** (the launcher's first start put it in the list), and press *Add Selected
+   Programs*.
+2. In Game Mode, start it from your library. In Game Mode (gamescope) the launcher fills the screen.
+3. The page works with the controller:
+
+   | Control | Action |
+   | :--- | :--- |
+   | D-pad or left stick | Move |
+   | A | Press |
+   | B | Back, or close a dialog |
+   | LB / RB | Change tab |
+   | Start | Play |
+   | Right stick | Scroll |
+   | Left or right on a list | Change the setting |
+
+   The arrow keys, Enter and Escape do the same. If the pad does nothing, set the shortcut's
+   controller layout to a *Gamepad* one in Steam, or to a keyboard-and-mouse layout, which also
+   works. Steam's on-screen keyboard (Steam + X) types the name and the lobby code.
+4. *Play* starts the game from the launcher, so Steam keeps counting it as running, and the game's
+   window comes in front. Set *Window* to *Full screen* in Settings for Game Mode. When the game
+   closes, the launcher comes back. When the launcher's window is closed (and no game or build is
+   running), the launcher ends, and Steam sees the game as closed.
+
+Its own log is `build/launcher.log`. The game's log is still `build/play.log`.
+
+### Mods on Linux
+
+The mod manager is the same as on Windows and macOS. These fixes make it work fully on Linux:
+
+- **Movesets and new characters work.** *Build plugins into the game* (and the plugin build *Play*
+  asks for) compiles the mods' plugins into `build-linux/ssbu`: the C written by
+  `recomp.py all --generate-only`, then `tools/linux/build_linux.py`. Before, it ran the Windows
+  link, which can't work on Linux, so a moveset's fighter stayed the original.
+- **.7z and .rar mods unpack.** GNU tar reads neither. The mod manager now uses bsdtar, 7-Zip
+  (`7zz`, `7z`, `7za`), `unrar` or `unar`, whichever is installed. The setup also adds `py7zr`,
+  which opens .7z on its own. For .rar you need one of those programs. Arch and SteamOS usually have
+  `bsdtar` already. On Fedora install `bsdtar` or `7zip`. On Bazzite and other image-based systems
+  use `rpm-ostree install bsdtar`. On Debian and Ubuntu install `libarchive-tools` or `7zip`.
+- **The game being open is noticed.** The mod manager no longer applies mods under a running game
+  on Linux.
+- **Its window opens** in a Flatpak Chrome, Chromium, Brave or Edge, too.
 
 ## Installing on Linux
 

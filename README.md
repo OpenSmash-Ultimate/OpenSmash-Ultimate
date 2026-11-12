@@ -47,7 +47,7 @@ Rows that link to pull requests are being reviewed and land in `main` as they ar
 | [Mods and Skyline plugins](docs/SKYLINE.md) | install mods and plugins and turn them on or off. |
 | [DLC and unlocks](docs/DLC-AND-UNLOCKS.md) | use your DLC, or unlock every base-game fighter on your save. |
 | [The 13.0.5 update](docs/UPDATES.md) | see which copies of the game count as 13.0.5 and how the update is applied. |
-| [Linux](docs/LINUX.md) · [macOS](docs/MACOS.md) | install, build and run the experimental versions. |
+| [Linux](docs/LINUX.md) · [macOS](docs/MACOS.md) | install, build and run the experimental versions. The OpenSmash Launcher (`opensmash-launcher.sh`, `OpenSmash Launcher.command`) does setup, updates, Play, settings and mods in a window, with a game pad too (Steam Deck Game Mode). |
 | [How it works](docs/TECHNICAL.md) | understand the recompiler, the runtime and every tool. |
 
 ## `ssbu-recomp/`

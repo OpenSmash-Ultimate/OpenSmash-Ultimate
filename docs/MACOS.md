@@ -142,6 +142,7 @@ Terminal window that shows the game's log as it goes; closing that window leaves
 
 | Launcher | On Windows | What it does |
 | :--- | :--- | :--- |
+| **`OpenSmash Launcher.command`** | `OpenSmash.exe` | Setup, updates, Play, settings and the mod manager in a browser window, no Terminal commands ([below](#the-opensmash-launcher)). |
 | **Play SSBU** (`~/Applications`, Desktop) | the desktop shortcut | The game, online, through the lobby in `online_server.txt` ([Multiplayer](MULTIPLAYER.md)). It asks its questions in small windows and shows no log. |
 | `Play SSBU.command` | `OpenSmash.exe` | The same, with the log in Terminal. |
 | `launchers/Play SSBU Offline.command` | the launcher's Offline lobby setting | The game, offline. |
@@ -165,6 +166,25 @@ Terminal window that shows the game's log as it goes; closing that window leaves
   controllers.ini** opens the file in your text editor.
 - When the game asks for text, such as a name, a small window opens over the game for you to type
   it in.
+
+### The OpenSmash Launcher
+
+`OpenSmash Launcher.command` gives a Mac the Windows launcher's features in one window. Double-click
+it in Finder; it runs `tools/weblauncher/launcher.py`, a small server on this Mac only. Its page opens
+as an app window of Chrome, Edge or Brave if one is in `/Applications`, else in your default browser.
+Keep the Terminal window open while you use it.
+
+| Tab | What it does |
+| :--- | :--- |
+| **Play** | *Play*, *Play offline*, *Play without mods* (`tools/mac/launch.sh`). The turned-on mods are applied first, and a plugin build is offered when the mods need one. |
+| **Setup** | Your game, keys and firmware folders and your online name, then `tools/mac/install_mac.py` with them (the same steps as `Install WindowSmash.command`, without its dialogs). *Build again* runs `tools/build_game.py`. |
+| **Mods** | WindowSmash Mods in the same window, with *Back to the launcher*. |
+| **Settings** | Display, online and controllers: the same files `OpenSmash.exe` and the game's settings menu write. macOS has no renderer or graphics-card choice; the game draws with Metal. |
+| **Update** | Checks GitHub and installs the newer version (`install_mac.py --update-only`). |
+
+It needs Python 3.10 or newer. Run `Install WindowSmash.command` once if the Mac has none, since the
+installer gets one. A game pad works on the page too: the D-pad moves, A presses, B goes back, and
+LB/RB change tab ([the Linux guide](LINUX.md#steam-deck-and-game-mode) lists every control).
 
 ## Controls
 

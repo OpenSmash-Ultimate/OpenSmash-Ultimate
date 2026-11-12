@@ -547,12 +547,47 @@ def _stale_hooks(tree):
     return out
 
 
+def programs(tree, platform=None):
+    """The game's programs a tree can hold, this system's first (a folder can hold another system's
+    build too: a Windows build cross-compiled for Linux keeps build/ssbu.exe beside build-linux/ssbu)."""
+    platform = platform or sys.platform
+    mac = os.path.join(tree, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu")
+    win = os.path.join(tree, "build", "ssbu.exe")
+    linux = os.path.join(tree, "build-linux", "ssbu")
+    if platform.startswith("linux"):
+        return [linux, win, mac]
+    if platform == "darwin":
+        return [mac, win, linux]
+    return [win, mac, linux]
+
+
 def program(tree):
-    for exe in (os.path.join(tree, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu"),
-                os.path.join(tree, "build", "ssbu.exe"), os.path.join(tree, "build-linux", "ssbu")):
+    for exe in programs(tree):
         if os.path.exists(exe):
             return exe
     return None
+
+
+def link_commands(tree, jobs, platform=None):
+    """The commands that link the game again with the turned-on mods' plugins, on this system: macOS's
+    build_mac.py; on Linux the C written into build/ (recomp.py all --generate-only: recomp.py's own
+    compile is the Windows one, clang-cl and the MSVC libraries, which a Linux PC does not have), then
+    compiled and linked into build-linux/ssbu by build_linux.py, as tools/build_game.py's build does;
+    on Windows recomp.py all, which compiles and links build/ssbu.exe."""
+    platform = platform or sys.platform
+    exefs = os.path.join(tree, "dump", "exefs")
+    if platform == "darwin":
+        return [[sys.executable, os.path.join(HERE, "mac", "build_mac.py"), "--port", tree, "--jobs", str(jobs)]]
+    if platform.startswith("linux"):
+        out = os.path.join(tree, "build-linux")
+        import game_dll
+        dll = ["--game-dll"] if os.path.exists(os.path.join(out, game_dll.SO)) else []   # (built that way before: kept)
+        return [[sys.executable, os.path.join(HERE, "recomp.py"), "all", exefs, "--out", os.path.join(tree, "build"),
+                 "--jobs", str(jobs), "--tree", tree, "--generate-only"],
+                [sys.executable, os.path.join(HERE, "linux", "build_linux.py"), "--port", tree, "--out", out,
+                 "--jobs", str(jobs), *dll]]
+    return [[sys.executable, os.path.join(HERE, "recomp.py"), "all", exefs, "--out", os.path.join(tree, "build"),
+             "--jobs", str(jobs), "--tree", tree]]
 
 
 def probe(tree, log=print):
@@ -894,15 +929,11 @@ def build(tree, jobs, log=print, again=True):
             out = os.path.join(tree, "build", mod) if mod in ("main", "subsdk0", "sdk") else os.path.join(tree, "build", "nro", mod)
             recomp_stream(Paths(tree), log, "build", src, "--out", out, "--jobs", str(jobs))
         log(f"linking the game once ({reason})")
-        if sys.platform == "darwin":
-            cmd = [sys.executable, os.path.join(HERE, "mac", "build_mac.py"), "--port", tree, "--jobs", str(jobs)]
-        else:
-            cmd = [sys.executable, os.path.join(HERE, "recomp.py"), "all", exefs, "--out", os.path.join(tree, "build"),
-                   "--jobs", str(jobs), "--tree", tree]
-        log(" ".join(cmd))
-        rc = run_logged(cmd, log, later=PROBE)
-        if rc:
-            return rc
+        for cmd in link_commands(tree, jobs):
+            log(" ".join(cmd))
+            rc = run_logged(cmd, log, later=PROBE)
+            if rc:
+                return rc
     else:
         log("the mod plugins are translated; the game itself was left as it is")
     probe_and_apply(tree, log)
@@ -914,10 +945,11 @@ def build(tree, jobs, log=print, again=True):
 
 # What isn't part of the game's program: an update that changes only these needs no build (the Mods
 # app's files are read as it runs; the tools here run as they are)
-NOT_BUILT = ("tools/modmanager/", "tools/dev/", "tools/mods.py", "tools/os_mods.py", "tools/progress.py", "tools/std_plugins.py", "tools/csk.py", "tools/miis.py",
-             "tools/unlock_all.py", "tools/install_windowsmash.ps1", "tools/update.py", "tools/arc.py", "tools/prc.py",
-             "tools/msbt.py", "tools/ssbu_online_lobby.py", "tools/ssbu_relay.py", "tools/skyline.py",
-             "tools/shader_aot.py", "tools/find_python.bat")
+NOT_BUILT = ("tools/modmanager/", "tools/weblauncher/", "tools/app_window.py", "tools/linux/askpass.sh",
+             "tools/dev/", "tools/mods.py", "tools/os_mods.py", "tools/progress.py", "tools/std_plugins.py",
+             "tools/csk.py", "tools/miis.py", "tools/unlock_all.py", "tools/install_windowsmash.ps1",
+             "tools/update.py", "tools/arc.py", "tools/prc.py", "tools/msbt.py", "tools/ssbu_online_lobby.py",
+             "tools/ssbu_relay.py", "tools/skyline.py", "tools/shader_aot.py", "tools/find_python.bat")
 
 
 def plugin_refresh_reason(tree):
