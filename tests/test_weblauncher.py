@@ -12,6 +12,7 @@ import threading
 import time
 import unittest
 from http.server import ThreadingHTTPServer
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
@@ -305,6 +306,51 @@ class Server(unittest.TestCase):
         status, r = self.call("POST", "/api/setup/check", {"game": self.root, "keys": "", "firmware": ""})
         self.assertEqual(status, 200)
         self.assertFalse(r["checks"]["keys"]["ok"])
+
+    def test_rebuild_all_runs_the_platform_script(self):
+        original_host = launcher.HOST
+        launcher.HOST = "linux"
+        try:
+            with mock.patch.object(launcher, "venv_python", return_value=sys.executable), \
+             mock.patch.object(self.app, "game_running", return_value=False), \
+             mock.patch.object(self.app.jobs, "start", return_value={"id": "build"}) as start:
+                status, result = self.call("POST", "/api/rebuild-all", {"jobs": "4"})
+        finally:
+            launcher.HOST = original_host
+        self.assertEqual((status, result), (200, {"id": "build"}))
+        title, commands, cwd = start.call_args.args[:3]
+        self.assertEqual(title, "Building the game and launcher")
+        self.assertEqual(cwd, self.root)
+        self.assertEqual(commands, [["bash", os.path.join(self.root, "tools", "linux", "rebuild-all.sh"), "--jobs", "4"]])
+
+    def test_rebuild_all_uses_the_macos_script(self):
+        original_host = launcher.HOST
+        launcher.HOST = "macos"
+        try:
+            with mock.patch.object(launcher, "venv_python", return_value=sys.executable), \
+                 mock.patch.object(self.app, "game_running", return_value=False), \
+                 mock.patch.object(self.app.jobs, "start", return_value={"id": "build"}) as start:
+                status, _result = self.call("POST", "/api/rebuild-all", {})
+        finally:
+            launcher.HOST = original_host
+        self.assertEqual(status, 200)
+        self.assertEqual(start.call_args.args[1],
+                         [["bash", os.path.join(self.root, "tools", "mac", "rebuild-all.command")]])
+
+    def test_rebuild_all_uses_the_windows_script(self):
+        original_host = launcher.HOST
+        launcher.HOST = "windows"
+        try:
+            with mock.patch.object(launcher, "venv_python", return_value=sys.executable), \
+                 mock.patch.object(self.app, "game_running", return_value=False), \
+                 mock.patch.object(self.app.jobs, "start", return_value={"id": "build"}) as start:
+                status, _result = self.call("POST", "/api/rebuild-all", {"jobs": "8"})
+        finally:
+            launcher.HOST = original_host
+        self.assertEqual(status, 200)
+        self.assertEqual(start.call_args.args[1],
+                         [["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                           os.path.join(self.root, "tools", "rebuild-all.ps1"), "-Jobs", "8"]])
 
     def test_play_before_the_build(self):
         status, err = self.call("POST", "/api/play", {"mode": "online"})
