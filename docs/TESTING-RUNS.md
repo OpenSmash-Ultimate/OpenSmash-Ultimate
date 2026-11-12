@@ -24,6 +24,7 @@ These switches make a scripted run of the game quicker and less dependent on the
 | `SSBU_FIXED_SEED=<n>` | The clock reads and random bytes the game seeds its generators from come from n. |
 | `SSBU_DEBUG_MATCH=<settings>` | The fighters, stage and rules of the match, whatever the menus chose. `SSBU_DEBUG_MATCH_LIST=<file>` takes one line per match. |
 | `SSBU_DEBUG_END=<n>s` | The run ends after n seconds of fight (`<n>` without `s`: n fight frames). |
+| `SSBU_DEBUG_FINAL=<first>[,<every>]` | Each fighter gets its Final Smash at its fight frame `<first>`, and again every `<every>` frames: its `FIGHTER_INSTANCE_WORK_ID_FLAG_FINAL` turned on (`WorkModule::on_flag`, what breaking a Smash Ball gives) and its status asked to be `FIGHTER_STATUS_KIND_FINAL` (`StatusModule::change_status_request_from_script`): the Final Smash starts there. For the [pipeline sweep](#the-pipeline-sweep). |
 | `SSBU_CHARACTERS=<folder>` | New fighters: each `<folder>\<name>\fighter.json` is a fighter of its own (kind 0x5E on), playable with `SSBU_DEBUG_MATCH=p1=<name>`. With `SSBU_FIGHTER_BIN` (its script libraries) and `SSBU_MODS` (the registry's components). Unset, nothing changes. |
 
 `SSBU_INPUT` (buttons on a timetable in seconds) is unchanged, and it still adds to player 1 when `SSBU_SEQ` is set.
@@ -272,6 +273,25 @@ The Vulkan back end ([`gpu_vk.c`](../runtime/gpu_vk.c)) is chosen with `SSBU_REN
 - `vulkan_<vendor>_<device>.warm`: the warm list, one record for each pipeline and compute program the game used on this card. At the next start, threads below the game's priority load the listed programs' SPIR-V and make the pipelines again (from `vulkan_<vendor>_<device>.pipelines`, the driver's pipeline cache as Vulkan hands it over) before the game asks for them. The log says `[vulkan] warm start: N programs loaded and M pipelines made of K listed in S s`, and a `[status]` line repeats it. While those threads work there is a `vulkan_<vendor>_<device>.warm.warming` file beside the list: one found at a start means the last warm start did not finish (the driver crashed on a record, or the game was closed in those seconds), so the list is started again and nothing is warmed that once. The list only grows, to 16384 records at most; deleting it is safe.
 
 So after Prepare Shaders alone no program is translated during play, but each pipeline is still made by the driver at its first draw; from the second start on, the pipelines a player has already seen are made before the first frame. To measure it: normal speed (no `SSBU_SPEED`), no `SSBU_VK_WAIT`, `SSBU_HITCH=25`, and the frames over 50 ms counted in the log; `SSBU_SHADER_CACHE=<an empty folder>` gives a cold run without touching the player's cache.
+
+## The pipeline sweep
+
+[`tools/dev/pipeline_sweep.py`](../tools/dev/pipeline_sweep.py) completes the two shipped lists of what the GPU makes: `media/vulkan_pipelines.warm` (the Vulkan warm start's records: every pipeline drawn with and every compute program, by their programs' keys and the pipeline's state) and `media/shader_prewarm.txt` (Direct3D 11's prewarm: the programs, `<stage>_<hash>_<vs outputs>_<tables>`, the same keys as the cache files). Only keys go in, no game code or data. Run it for each release, and after any change to the shader translator or to `PipeKey`:
+
+```
+python tools/dev/pipeline_sweep.py run --exe <a test exe of this checkout> --tree <the folder the game runs in> --jobs 3 --forms
+python tools/dev/pipeline_sweep.py count media/vulkan_pipelines.warm
+```
+
+What it plays, headless, muted, `SSBU_SPEED=0`, Vulkan, the 100% save swapped in (and the tree's own put back after):
+
+- the main menus, walked through (`menus.log`);
+- one match per stage (every versus stage; with `--forms` also each one's Battlefield and Omega form, 900 fight frames), hazards on, items on, four fighters: player 1 is each fighter in turn, spamming every move through `SSBU_SEQ` (jabs, tilts, smash attacks, aerials, the four specials on the ground and in the air, charged, grabs and throws, shield, dodges, taunts), the other three level 9 CPU players a quarter of the list apart. `SSBU_DEBUG_FINAL=600,900` gives every fighter its Final Smash at fight frame 600 and every 900 after; the run says for which fighters the hash log (`SSBU_FIGHT_HASH`) saw one start.
+
+Each job has a shader cache of its own (`--work`/`cache<n>`, `SSBU_SHADER_CACHE`) holding the newest SPIR-V files of the tree's cache and no per-device list, and the exe's folder gets a `vulkan_pipelines.warm` that is not a list while it runs, so the shipped list is not joined in: the per-device lists hold what the sweep drew. At the end they are merged into `media/` (`merge` does it again from `--work`): the shipped records first, then the new ones in the order they were first drawn, at most 16,384 (the renderer's limit). A shipped list of an older translator keeps its records under the new header when the record layout is the same. A run that stalls 60 s is killed; its log stays in `--work`, and the end lists the runs that did not reach the end of their fight: `--redo <file> --keep` plays such matches again (a line each: `<stage> <form> <f1>,<f2>,<f3>,<f4>`) into the same lists. The Mii Fighters are left out: a debug match with one crashes as it loads (their Mii is chosen on the select screen, which `SSBU_DEBUG_MATCH` does not walk).
+
+The first sweep (2026-11-12, this build, RTX 5000 Ada): 341 runs, 53 again with `--redo` (the Mii Fighters' matches); `media/vulkan_pipelines.warm` went from 8,090 records (8,011 programs) to 13,663 (12,311 programs), `media/shader_prewarm.txt` from 12,178 programs to 14,971; Final Smashes were seen start for 81 of the 83 fighters (not Samus' and Dark Samus', whose Final Smash may not pass through that status: not checked); and a start from a shader cache holding only the SPIR-V files (no pipeline cache, no per-device list) made every listed pipeline before the first frame and **none** during a fight of fighters never played there (Sora, Kazuya, Sephiroth, Steve on Pikmin Planet). The NVIDIA driver compiling them all from nothing took that start 241 s; its next starts take seconds.
+
 
 ## An example run
 

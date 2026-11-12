@@ -29,7 +29,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum { SEQ_STEPS = 256, SEQ_TEXT = 48, SEQ_HOLD = 8, SEQ_RUN = 20, SEQ_PERIOD = 200 };
+enum { SEQ_STEPS = 2048, SEQ_TEXT = 48, SEQ_HOLD = 8, SEQ_RUN = 20, SEQ_PERIOD = 200 };
 #define SEQ_MAX_N 10000000L   /* (any count in a step: some 46 hours of frames) */
 
 typedef enum { SEQ_KEYS, SEQ_MARK, SEQ_DRAWS, SEQ_UNTIL, SEQ_UNTILMARK } SeqKind;

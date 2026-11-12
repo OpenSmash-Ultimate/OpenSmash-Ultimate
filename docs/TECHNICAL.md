@@ -512,5 +512,6 @@ Switches for scripted runs. Each is off unless it is set, and the game then runs
 - `SSBU_FIXED_SEED`: the clock reads and random bytes the game seeds its random numbers from come from a number.
 - `SSBU_DEBUG_MATCH`: the fighters, stage and rules of the match, whatever the menus chose; `SSBU_DEBUG_MATCH_LIST` gives one line per match.
 - `SSBU_DEBUG_END`: the run ends after a number of seconds or frames of fight.
+- `SSBU_DEBUG_FINAL`: each fighter in the debug match goes into its Final Smash (the pipeline sweep, tools/dev/pipeline_sweep.py).
 
 [`game_addr.h`](../runtime/game_addr.h) holds the 13.0.5 game addresses that the test modes ported from ssbu-recomp use, each with 13.0.4's beside it. `tests/test_game_addr.py` checks them against ssbu-recomp's table. [`testruntest.c`](../tools/dev/testruntest.c) checks the sequence parser and step machine on made-up input. [`fighttest.c`](../tools/dev/fighttest.c) checks the fight switches' logic, and [`fightruntest.c`](../tools/dev/fightruntest.c) runs their hooks on made-up guest memory. The frame line and frame end hooks are registered on the [frame hooks](#code-tied-to-the-game-version) ([`frame_hooks.h`](../runtime/frame_hooks.h)), which rollback shares.
