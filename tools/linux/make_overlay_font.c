@@ -8,11 +8,14 @@
 #include <string.h>
 #include <windows.h>
 
+#include "../../runtime/ui_catalog.generated.h"
+#include "../../runtime/ui_utf8.h"
+
 #define CELL_W 24
 #define CELL_H 48
-#define COLS 16
+#define COLS UI_FONT_COLS
 #define ATLAS_W (CELL_W * COLS)
-#define ATLAS_H (CELL_H * 6)
+#define ATLAS_H (CELL_H * UI_FONT_ROWS)
 
 int main(int argc, char **argv) {
     if (argc < 2) return 2;
@@ -34,6 +37,21 @@ int main(int argc, char **argv) {
         char ch = (char)c;
         TextOutA(dc, (c - 32) % COLS * CELL_W, (c - 32) / COLS * CELL_H + 2, &ch, 1);
     }
+    HFONT unicode_font = CreateFontW(-38, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+    HFONT japanese_font = CreateFontW(-38, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Yu Gothic UI");
+    HFONT korean_font = CreateFontW(-38, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Malgun Gothic");
+    for (unsigned i = 0; i < UI_GLYPH_COUNT; i++) {
+        unsigned cp = ui_glyphs[i], cell = 96 + i * 2;
+        SelectObject(dc, cp >= 0xac00 && cp <= 0xd7af ? korean_font :
+            cp >= 0x3040 && cp <= 0x30ff ? japanese_font : ui_columns(cp) > 1 ? unicode_font : font);
+        WCHAR chars[2]; int count = 1;
+        if (cp > 0xffff) { cp -= 0x10000; chars[0] = (WCHAR)(0xd800 + (cp >> 10)); chars[1] = (WCHAR)(0xdc00 + (cp & 1023)); count = 2; }
+        else chars[0] = (WCHAR)cp;
+        TextOutW(dc, cell % COLS * CELL_W, cell / COLS * CELL_H + 2, chars, count);
+    }
     GdiFlush();
     FILE *f = fopen(argv[1], "w");
     if (!f) return 1;
@@ -43,5 +61,11 @@ int main(int argc, char **argv) {
     for (int i = 0; i < ATLAS_W * ATLAS_H; i++) fprintf(f, "%u,%s", (px[i] >> 16) & 255, i % 32 == 31 ? "\n" : "");
     fprintf(f, "};\n");
     fclose(f);
+    DeleteDC(dc);
+    DeleteObject(japanese_font);
+    DeleteObject(korean_font);
+    DeleteObject(unicode_font);
+    DeleteObject(font);
+    DeleteObject(bmp);
     return 0;
 }

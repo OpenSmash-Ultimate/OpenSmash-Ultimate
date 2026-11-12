@@ -25,7 +25,7 @@ const unsigned char *overlay_coverage(unsigned *w, unsigned *h);
 #endif
 
 /* For menu_draw, in the picture's pixels (0, 0 its top left): a rectangle, and a line of text
- * whose letters are `size` pixels high and size / 2 wide (printable ASCII; '\n' starts a line).
+ * whose letters are `size` pixels high (UTF-8; ASCII advances size / 2, CJK size; '\n' starts a line).
  * Colours are 0xAABBGGRR (OVL_RGBA). ovl_text returns the y below the text. */
 #define OVL_RGBA(r, g, b, a) ((unsigned)(r) | (unsigned)(g) << 8 | (unsigned)(b) << 16 | (unsigned)(a) << 24)
 void ovl_rect(float x, float y, float w, float h, unsigned color);

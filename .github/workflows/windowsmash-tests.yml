@@ -40,6 +40,13 @@ jobs:
         with:
           python-version: '3.14'
 
+      - name: Launcher localization behavior
+        if: runner.os == 'Windows'
+        run: dotnet run --project tests/launcher_localization/LauncherLocalizationTests.csproj -c Release
+
+      - name: Shared UI catalogs
+        run: python tools/localization.py --check
+
       # pycryptodomex (requirements.txt), capstone and unicorn (tests/requirements-dev.txt); zstandard for
       # test_arc_zstd's fallback-package test (requirements.txt asks for it only before Python 3.14)
       - name: Python packages

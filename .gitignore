@@ -91,3 +91,6 @@ Thumbs.db
 tools/modmanager/installed.json
 /OpenSmash.Launcher/bin/
 /OpenSmash.Launcher/obj/
+
+/tests/launcher_localization/bin/
+/tests/launcher_localization/obj/

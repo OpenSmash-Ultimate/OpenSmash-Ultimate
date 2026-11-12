@@ -131,6 +131,9 @@ static const char DEFAULT_INI[] =
     "overlay = 1\n"
     "; volume = 0-100: the game's whole sound, over its own sound settings (0 is silent). The settings menu changes it while playing.\n"
     "volume = 100\n"
+    "; ui_language: auto follows the system UI language; en and zh-CN are supplied (locales/ adds more).\n"
+    ";   Shared by the launcher and external menu; independent of the game's language. SSBU_UI_LANGUAGE overrides it.\n"
+    "ui_language = auto\n"
     "; overlay_scale = 0.25-2: the overlay's size (0.5: half as big, out of the way of the game).\n"
     "overlay_scale = 1\n"
     "\n"
@@ -256,6 +259,7 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else if (!_stricmp(key, "gpu")) snprintf(cfg.gpu, sizeof cfg.gpu, "%s", value);
         else if (!_stricmp(key, "render_scale")) parse_render_scale(value);
         else if (!_stricmp(key, "renderer")) parse_renderer(value, path);
+        else if (!_stricmp(key, "ui_language")) {}   /* (ui_locale.h reads it for the external menu) */
         else if (!_stricmp(key, "volume")) {}   /* (the master volume: ipc_audio.c's audio_master_volume reads it) */
         else fprintf(stderr, "[display] %s: unknown setting '%s'\n", path, key);
     }
