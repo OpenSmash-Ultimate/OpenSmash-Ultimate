@@ -66,7 +66,7 @@ The **Mods** page lists every installed mod with its own switch: the same switch
 
 **ARCropolis code patches** are the fixes ARCropolis makes to the game's code for costume slots that mods add (c08 and up). They have a switch of their own: **auto** (the default) turns them on while a mod runs and off otherwise, so the game with no mod runs its own code, as an unmodded game. They count when the game starts, and players online need the same setting. `SSBU_CODE_PATCHES=1` or `0` sets them for one start (tests).
 
-The settings are kept in the same files as always: `display.ini`, `controllers.ini` and the `online_*.txt` files in the WindowSmash folder. You can still edit those files by hand, and the settings keep your comments in them. Some things are only in the files, such as settings for a whole kind of controller ([below](#controllersini)).
+The settings are kept in files: `display.ini`, `controllers.ini` and the `online_*.txt` files in the **`config`** folder inside the WindowSmash folder. (Older versions kept them in the WindowSmash folder itself; the first start of a newer one copies them into `config` once, and from then on the copies left in the WindowSmash folder are not read.) You can still edit those files by hand, and the settings keep your comments in them. Some things are only in the files, such as settings for a whole kind of controller ([below](#controllersini)).
 
 ## Controls
 
@@ -146,7 +146,7 @@ Any other pad can use the game's GameCube controls too: set `style = gamecube` f
 
 ### controllers.ini
 
-The first time the game starts, it writes **`controllers.ini`** into the WindowSmash folder. The [settings](#settings) change it for you; you can also open it in Notepad (**Controllers → Open controllers.ini** opens it). Every setting is explained inside the file. Changes made by hand apply the next time the game starts, and deleting the file brings back the defaults.
+The first time the game starts, it writes **`controllers.ini`** into the WindowSmash folder's `config` folder (`config\controllers.ini`: a `controllers.ini` left beside `OpenSmash.exe` by an older version is no longer read). The [settings](#settings) change it for you; you can also open it in Notepad (**Controllers → Open controllers.ini** opens it). Every setting is explained inside the file. Changes made by hand apply the next time the game starts, and deleting the file brings back the defaults.
 
 | Setting | What it does | Default |
 | :--- | :--- | :--- |
