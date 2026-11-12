@@ -37,7 +37,14 @@ static struct {
     unsigned (*is_error)(size_t);
 } Y;
 
-static void detail(const char *s) { AcquireSRWLockExclusive(&Y.lock); snprintf(Y.detail,sizeof Y.detail,"%s",s); ReleaseSRWLockExclusive(&Y.lock); }
+static void detail(const char *s) {
+    AcquireSRWLockExclusive(&Y.lock);
+    int changed=strcmp(Y.detail,s)!=0;
+    snprintf(Y.detail,sizeof Y.detail,"%s",s);
+    ReleaseSRWLockExclusive(&Y.lock);
+    /* Lifecycle only, no credentials or packet contents; consumed by the launcher UI. */
+    if(changed) fprintf(stderr,"[yuzu] state: %s\n",s);
+}
 static int selected(void) { const char *s=getenv("SSBU_NET_BACKEND"); return s && !_stricmp(s,"yuzu"); }
 static uint32_t local_ip(void) { return (uint32_t)InterlockedCompareExchange(&Y.ip,0,0); }
 static const char *player_name(void) { return Y.name[0]?Y.name:"OpenSmash"; }

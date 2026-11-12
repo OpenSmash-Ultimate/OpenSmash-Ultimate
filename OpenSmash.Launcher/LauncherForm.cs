@@ -122,7 +122,7 @@ namespace OpenSmash.Launcher
         int _updateBehind;
 
         // While any of these run, Play is greyed out so two jobs cannot overlap.
-        bool Busy => _modsBusy || _setupModding || _pluginBuildUi || _loadOn || _startingPlay || _newModsBusy
+        bool Busy => _yuzuPage?.IsBusy == true || _modsBusy || _setupModding || _pluginBuildUi || _loadOn || _startingPlay || _newModsBusy
             || _updateApplying || _marketplaceInstalling.Count > 0;
 
         bool _rebuildPrompt;
@@ -183,7 +183,7 @@ namespace OpenSmash.Launcher
         List<Hit> _hits = new();
 
         // ---------------------------------------------------------------------------
-        public LauncherForm(string workDir, string repo, string buildDir)
+        public LauncherForm(string workDir, string repo, string buildDir, bool preview = false)
         {
             _workDir = workDir;
             _repo = repo;
@@ -261,6 +261,7 @@ namespace OpenSmash.Launcher
             KeyDown += OnKeyDown;
             FormClosing += (s, e) => 
             { 
+                if (_yuzuPage?.IsBusy == true) { e.Cancel = true; return; }
                 CommitEdit();
                 PersistSettings();
                 // Only kill the game if the launcher is closing without having
@@ -276,6 +277,7 @@ namespace OpenSmash.Launcher
             };
             Shown += async (s, e) =>
             {
+                if (preview) return; // UI tests render without startup tasks or network access.
                 if (TryResumePendingLauncherBuild()) return;
                 AskShadersIfNeeded();
                 _ = EnsureOwnPythonAsync();   // (not awaited: the launcher does not wait for pip, nor stop if it fails)
@@ -300,6 +302,7 @@ namespace OpenSmash.Launcher
                 new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "pads" } },
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
+                new SettingTab { Name = "Advanced", SettingKeys = Array.Empty<string>() },
             };
 
             _settings = new[]
@@ -1701,7 +1704,9 @@ namespace OpenSmash.Launcher
                 else _navBack.Push(_view);
             }
             if (_view == "settings" && name != "settings") CommitEdit();
+            if (_yuzuPage != null && name != "yuzu") _yuzuPage.Visible = false;
             _view = name;
+            KeyPreview = name == "yuzu";
             _sel = 0;
             _hover = "";
             // Hide the WebView when leaving the marketplace. Entering is handled by
@@ -2044,6 +2049,11 @@ namespace OpenSmash.Launcher
                 return;
             }
 
+            if (_view == "yuzu")
+            {
+                if (e.KeyCode == Keys.Escape) { GoBack(); e.SuppressKeyPress = true; }
+                return;
+            }
             if (_view == "home")
             {
                 if (e.KeyCode == Keys.Up) { _sel = (_sel + _menuItems.Length - 1) % _menuItems.Length; Invalidate(); }
@@ -2117,6 +2127,8 @@ namespace OpenSmash.Launcher
                         if (set != null && set.Text) BeginEdit(set);
                         else if (set == null || !set.Slider) ToggleDropdown(_sel);
                     }
+                    else if (_settingsTab < _settingsTabs.Length && _settingsTabs[_settingsTab].Name == "Advanced")
+                        OpenYuzuRoom();
                     else if (_settingsTab < _settingsTabs.Length
                         && string.Equals(_settingsTabs[_settingsTab].Name, "Update", StringComparison.OrdinalIgnoreCase)
                         && !_updateChecking && !_updateApplying)
@@ -3483,6 +3495,7 @@ namespace OpenSmash.Launcher
         async void StartPlay()
         {
             if (Busy) return;
+            if (YuzuGameRunning()) { OpenYuzuRoom(); return; }
             _startingPlay = true;
             Invalidate();
             try { await StartPlayCore(); }

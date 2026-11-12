@@ -78,6 +78,10 @@ jobs:
         if: runner.os == 'Windows'
         run: python tools/yuzu_client_deps.py
 
+      - name: Embedded room UI behavior
+        if: runner.os == 'Windows'
+        run: dotnet run --project tests/launcher_yuzu_ui/LauncherYuzuUiTests.csproj -c Release
+
       # gfxtest (the Metal renderer) skips on the runner's paravirtual GPU, where it never finished; a manual run
       # (workflow_dispatch) runs it anyway and shows what it printed before its 300 s timeout
       - name: Unit tests
