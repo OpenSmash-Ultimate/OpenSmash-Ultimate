@@ -8,6 +8,7 @@ using System.Drawing.Text;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -55,6 +56,8 @@ namespace OpenSmash.Launcher
         readonly string _statePath;
         readonly string _pluginsPath;
         string _pythonExe;
+        string GameBuildPendingPath => Path.Combine(_repo, "config", "update-game-build.pending");
+        string LauncherBuildPendingPath => Path.Combine(_repo, "config", "update-launcher-build.pending");
 
         readonly ResolutionSetting _resolutionSetting = new ResolutionSetting();
 
@@ -273,6 +276,7 @@ namespace OpenSmash.Launcher
             };
             Shown += async (s, e) =>
             {
+                if (TryResumePendingLauncherBuild()) return;
                 AskShadersIfNeeded();
                 _ = EnsureOwnPythonAsync();   // (not awaited: the launcher does not wait for pip, nor stop if it fails)
                 UpdateMods();
@@ -645,14 +649,13 @@ namespace OpenSmash.Launcher
         async Task RunPythonStepAsync(string label)
         {
             string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
-            if (!File.Exists(script)) return;
+            if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_windowsmash.ps1 is missing.");
             SetLoad(label, -1);
             try
             {
                 var r = await Task.Run(() => RunPowerShellUpdate(script, "-PythonOnly"));
-                if (r.Code != 0) try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "os_update.log"), r.Output + "\n---\n"); } catch { }
+                if (r.Code != 0) throw new InvalidOperationException("Updating Python packages stopped (exit " + r.Code + "). " + Tail(r.Output));
             }
-            catch { }
             finally { ClearLoad(); }
             _pythonExe = ModManagerProcess.FindPython(_repo, _buildDir);
         }
@@ -679,9 +682,9 @@ namespace OpenSmash.Launcher
             if (!IsDisposed) await CheckForUpdatesAsync(true);
         }
 
-        async Task CheckForUpdatesAsync(bool atBoot)
+        async Task CheckForUpdatesAsync(bool atBoot, bool allowDuringUpdate = false)
         {
-            if (_updateChecking || _updateApplying) return;
+            if (_updateChecking || (_updateApplying && !allowDuringUpdate)) return;
             _updateChecking = true;
             _updateState = "checking";
             _updateMessage = "Checking GitHub for a newer version\u2026";
@@ -838,6 +841,110 @@ namespace OpenSmash.Launcher
             catch { }
         }
 
+        // The launcher is rebuilt only where the .NET 8 SDK is (toolsuild_launcher.ps1 needs it): most players have
+        // the release's OpenSmash.exe and no SDK, and a rebuild that can never work would be offered at every start.
+        static bool DotnetSdkAvailable()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo { FileName = "dotnet", UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                psi.ArgumentList.Add("--list-sdks");
+                using var p = Process.Start(psi);
+                if (p == null) return false;
+                var output = p.StandardOutput.ReadToEndAsync();
+                _ = p.StandardError.ReadToEndAsync();
+                if (!p.WaitForExit(10000)) { try { p.Kill(); } catch { } return false; }
+                return p.ExitCode == 0 && Regex.IsMatch(output.GetAwaiter().GetResult(), @"(?m)^\s*\d+\.");
+            }
+            catch { return false; }
+        }
+
+        static string LauncherBuildInputsFingerprint(string repo)
+        {
+            string project = Path.Combine(repo, "OpenSmash.Launcher");
+            string projectFile = Path.Combine(project, "OpenSmash.Launcher.csproj");
+            string buildScript = Path.Combine(repo, "tools", "build_launcher.ps1");
+            if (!File.Exists(projectFile) || !File.Exists(buildScript))
+                throw new FileNotFoundException("The launcher project or its build script is missing.");
+
+            var files = Directory.EnumerateFiles(project, "*", SearchOption.AllDirectories)
+                .Where(path => !Path.GetRelativePath(project, path).Split(Path.DirectorySeparatorChar)
+                    .Any(part => part.Equals("bin", StringComparison.OrdinalIgnoreCase)
+                        || part.Equals("obj", StringComparison.OrdinalIgnoreCase)))
+                .Append(projectFile)
+                .Append(buildScript)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => Path.GetRelativePath(repo, path), StringComparer.OrdinalIgnoreCase);
+
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            foreach (string path in files)
+            {
+                string relative = Path.GetRelativePath(repo, path).Replace('\\', '/') + "\0";
+                hash.AppendData(Encoding.UTF8.GetBytes(relative));
+                using var stream = File.OpenRead(path);
+                byte[] buffer = new byte[81920];
+                int read;
+                while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                    hash.AppendData(buffer, 0, read);
+            }
+            return Convert.ToHexString(hash.GetHashAndReset());
+        }
+
+        void ScheduleLauncherBuildAndRestart()
+        {
+            string helper = Path.Combine(_repo, "tools", "rebuild_launcher_after_update.ps1");
+            if (!File.Exists(helper)) throw new FileNotFoundException("tools\\rebuild_launcher_after_update.ps1 is missing.");
+            Directory.CreateDirectory(Path.Combine(_repo, "config"));
+            File.WriteAllText(LauncherBuildPendingPath, DateTime.UtcNow.ToString("O"));
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                WorkingDirectory = _repo,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            foreach (string arg in new[] {
+                "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", helper,
+                "-WaitForProcessId", Environment.ProcessId.ToString(),
+                "-Repo", _repo, "-LauncherPath", Path.Combine(_repo, "OpenSmash.exe"),
+                "-PendingMarker", LauncherBuildPendingPath
+            })
+                psi.ArgumentList.Add(arg);
+            _ = Process.Start(psi) ?? throw new InvalidOperationException("Could not start the launcher update helper.");
+        }
+
+        bool TryResumePendingLauncherBuild()
+        {
+            if (!File.Exists(LauncherBuildPendingPath) || File.Exists(GameBuildPendingPath)) return false;
+            if (!DotnetSdkAvailable()) { try { File.Delete(LauncherBuildPendingPath); } catch { } return false; }
+            var choice = MessageBox.Show(this,
+                "The launcher update could not be completed last time. Rebuild and restart OpenSmash now?",
+                "OpenSmash update", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (choice != DialogResult.Yes) return false;
+            try
+            {
+                ScheduleLauncherBuildAndRestart();
+                Close();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Could not restart the launcher update.\n\n" + ex.Message, "OpenSmash update",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+        }
+
+        async Task<(int Code, string Output)> BuildGameAfterUpdateAsync()
+        {
+            string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
+            if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_windowsmash.ps1 is missing.");
+            SetLoad("REBUILDING THE GAME", -1);
+            try { return await Task.Run(() => RunPowerShellUpdate(script, "-BuildAfterUpdate")); }
+            finally { ClearLoad(); }
+        }
+
         async Task ApplyUpdateAsync()
         {
             if (_updateApplying || _updateChecking) return;
@@ -852,41 +959,104 @@ namespace OpenSmash.Launcher
             Invalidate();
             string why = "";
             string output = "";
+            string beforeCommit = "";
+            string beforeLauncherFingerprint = "";
             try
             {
+                beforeCommit = await Task.Run(FindLocalCommit);
+                if (beforeCommit.Length == 0) throw new InvalidOperationException("This copy does not identify its source version.");
+                beforeLauncherFingerprint = await Task.Run(() => LauncherBuildInputsFingerprint(_repo));
                 string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
                 if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_windowsmash.ps1 is missing.");
                 var result = await Task.Run(() => RunPowerShellUpdate(script));
                 output = result.Output;
-                if (result.Code != 0) why = "The updater stopped (exit " + result.Code + ").";
+                if (result.Code != 0) throw new InvalidOperationException("The updater stopped (exit " + result.Code + ").");
                 else await RunPythonStepAsync("UPDATING PYTHON PACKAGES");   // (an update can need a new package)
             }
             catch (Exception ex) { why = ex.Message; }
             finally
             {
-                _updateApplying = false;
                 ClearLoad();
                 Invalidate();
             }
             _updateState = "checking";
             _updateMessage = "Checking the update\u2026";
             Invalidate();
-            await CheckForUpdatesAsync(false);
+            await CheckForUpdatesAsync(false, allowDuringUpdate: true);
             if (why.Length == 0 && _updateState != "uptodate") why = "The update did not finish. " + Tail(output);
+
+            bool sourceChanged = beforeCommit.Length > 0
+                && !beforeCommit.Equals(_updateLocal, StringComparison.OrdinalIgnoreCase);
+            bool launcherChanged = false;
+            if (sourceChanged)
+            {
+                try
+                {
+                    Directory.CreateDirectory(Path.Combine(_repo, "config"));
+                    File.WriteAllText(GameBuildPendingPath, _updateLocal);
+                    string afterFingerprint = await Task.Run(() => LauncherBuildInputsFingerprint(_repo));
+                    launcherChanged = !beforeLauncherFingerprint.Equals(afterFingerprint, StringComparison.Ordinal)
+                        && await Task.Run(DotnetSdkAvailable);
+                }
+                catch (Exception ex)
+                {
+                    launcherChanged = true;
+                    if (why.Length == 0) why = "Could not verify the updated launcher sources: " + ex.Message;
+                }
+                if (launcherChanged)
+                {
+                    try { File.WriteAllText(LauncherBuildPendingPath, _updateLocal); }
+                    catch (Exception ex) { if (why.Length == 0) why = "Could not save the pending launcher rebuild: " + ex.Message; }
+                }
+            }
+
+            if (why.Length == 0 && (sourceChanged || File.Exists(GameBuildPendingPath)))
+            {
+                _updateState = "updating";
+                _updateMessage = "Rebuilding the game after the update\u2026";
+                Invalidate();
+                try
+                {
+                    var result = await BuildGameAfterUpdateAsync();
+                    output = result.Output;
+                    if (result.Code != 0)
+                        throw new InvalidOperationException("The game rebuild stopped (exit " + result.Code + "). " + Tail(output));
+                    if (File.Exists(GameBuildPendingPath)) File.Delete(GameBuildPendingPath);
+                    if (File.Exists(LauncherBuildPendingPath))
+                    {
+                        ScheduleLauncherBuildAndRestart();
+                        MessageBox.Show(this, "The game is current. OpenSmash will close briefly to rebuild the launcher, then reopen.",
+                            "OpenSmash update", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        Close();
+                        return;
+                    }
+                }
+                catch (Exception ex) { why = ex.Message; }
+                finally
+                {
+                    _updateApplying = false;
+                    ClearLoad();
+                    Invalidate();
+                }
+            }
+
+            _updateApplying = false;
             if (why.Length > 0)
             {
                 if (output.Contains("changes of its own")) why = "This copy has local changes, so it cannot be updated automatically. Update it with git, or use a clean download.";
                 _updateState = "error";
                 _updateMessage = "Update failed: " + ShortError(why);
                 _updateDetail = "";
-                MessageBox.Show("The update could not be installed.\n\n" + why, "OpenSmash");
+                MessageBox.Show("The update or rebuild could not be completed.\n\n" + why, "OpenSmash");
             }
             else
             {
                 _updateState = "uptodate";
-                _updateMessage = "Update installed. Press Play to rebuild what changed.";
+                _updateMessage = sourceChanged ? "Update installed and the game is current." : "OpenSmash is already up to date.";
                 _updateDetail = "";
-                MessageBox.Show("OpenSmash was updated. Your game files, settings, save and builds were left as they were.\n\nPress Play to rebuild what changed.", "OpenSmash");
+                MessageBox.Show(sourceChanged
+                    ? "OpenSmash was updated. The game was rebuilt if its inputs changed."
+                    : "OpenSmash is already up to date. No rebuild was needed.", "OpenSmash");
             }
             PlayDone();
             Invalidate();
@@ -3334,6 +3504,35 @@ namespace OpenSmash.Launcher
                 if (!ready) return;
             }
             else if (_loadOn) return;
+            if (File.Exists(GameBuildPendingPath))
+            {
+                var retry = MessageBox.Show(this,
+                    "The game rebuild after the update did not finish. Retry it before starting the game?",
+                    "OpenSmash update", MessageBoxButtons.RetryCancel, MessageBoxIcon.Warning);
+                if (retry != DialogResult.Retry) return;
+                try
+                {
+                    var result = await BuildGameAfterUpdateAsync();
+                    if (result.Code != 0)
+                        throw new InvalidOperationException("The game rebuild stopped (exit " + result.Code + "). " + Tail(result.Output));
+                    File.Delete(GameBuildPendingPath);
+                    RefreshInfo();
+                    if (File.Exists(LauncherBuildPendingPath))
+                    {
+                        ScheduleLauncherBuildAndRestart();
+                        MessageBox.Show(this, "The game is current. OpenSmash will close briefly to rebuild the launcher, then reopen.",
+                            "OpenSmash update", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        Close();
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, "The game is still out of date and cannot be started.\n\n" + ex.Message,
+                        "OpenSmash update", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+            }
             if (!_built)
             {
                 MessageBox.Show("The game is not built yet. Run the installer first.", "OpenSmash");

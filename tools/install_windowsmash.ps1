@@ -83,6 +83,9 @@ setup steps (compiler, game files, build) are not run again.
 .PARAMETER PythonOnly
 Only step 3: WindowSmash's own Python (deps\venv) and its packages, then stop. The launcher uses this
 for an install from before deps\venv, one whose venv no longer runs, and after an update.
+.PARAMETER BuildAfterUpdate
+Check build prerequisites and incrementally rebuild the game from the folders saved by the last build.
+Does not update source files, open the setup wizard, or rebuild the launcher.
 .PARAMETER BuildTools
 For the compiler, install the Visual Studio Build Tools rather than download it into deps\.
 .PARAMETER Rebuild
@@ -109,6 +112,7 @@ param(
     [switch]$NoUpdate,
     [switch]$UpdateOnly,
     [switch]$PythonOnly,
+    [switch]$BuildAfterUpdate,
     [switch]$BuildTools,
     [switch]$Rebuild,
     [switch]$AcceptLicense
@@ -1202,6 +1206,13 @@ function Get-DetectedFolders {
     return @{ Game = $game; Keys = $keys; Firmware = $firmware }
 }
 
+function Get-UpdateBuildAnswers {
+    $folders = Get-DetectedFolders
+    if (-not $folders.Game) { throw 'The saved game folder could not be found. Open Setup and select the game files, then retry the update.' }
+    if (-not $folders.Keys) { throw 'The saved keys folder could not be found. Open Setup and select the keys, then retry the update.' }
+    return @{ Game = $folders.Game; Keys = $folders.Keys; Firmware = $folders.Firmware }
+}
+
 function Test-KeysFolder {
     param([string]$Folder)
     if (-not $Folder -or -not (Test-Path -LiteralPath $Folder -PathType Container)) { return @{ Ok = $false; Text = 'Choose the folder with prod.keys and title.keys.' } }
@@ -1571,6 +1582,20 @@ function Step-Build {
     return $true
 }
 
+function Invoke-UpdateGameBuild {
+    Write-Info 'Checking the game build after the source update'
+    Step-CheckPc
+    Step-Python
+    $compiler = Test-Compiler
+    if (-not $compiler.Ok) {
+        throw ("The game compiler is not ready. Open Setup to repair the compiler, then retry the update.`n" + $compiler.Output)
+    }
+    Step-Sdl3
+    Step-Codecs
+    Step-Build (Get-UpdateBuildAnswers) | Out-Null
+    Write-Host 'The game is current.' -ForegroundColor Green
+}
+
 # ---- step 10: shaders --------------------------------------------------------------------------------------------
 function Step-Launcher {
     # The OpenSmash launcher (OpenSmash.exe): the one window for playing, settings and mods. Built here when the
@@ -1628,6 +1653,10 @@ function Main {
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
         if ($PythonOnly) {
             Step-Python
+            return 0
+        }
+        if ($BuildAfterUpdate) {
+            Invoke-UpdateGameBuild
             return 0
         }
         $updated = Step-Update
