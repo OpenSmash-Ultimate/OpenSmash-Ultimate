@@ -58,9 +58,11 @@ VENV = os.path.join(DEPS, "venv")
 TOOLCHAIN = os.path.join(DEPS, "linux-toolchain")
 NEED_DISK_GB = 30   # (the C, the objects and the program: 7 GB; the update's data: 4; a game to decrypt first: 17)
 MIN_RAM_GB = 7   # (8 GB machines report a little less)
+PY7ZR = "py7zr==1.1.4"   # (the Windows installer's pin)
 PYTHON_EXTRA = ["pillow"]   # (the overlay font: tools/linux/make_overlay_font.py)
-LAUNCHERS = ["install-windowsmash.sh", "play-ssbu.sh", "launchers/play-ssbu-offline.sh", "launchers/host-ssbu-netplay.sh",
-             "launchers/join-ssbu-netplay.sh", "launchers/unlock-all-fighters.sh", "launchers/prepare-shaders.sh"]   # (as the .bat ones: two at the top)
+LAUNCHERS = ["install-windowsmash.sh", "play-ssbu.sh", "opensmash-launcher.sh", "tools/linux/askpass.sh",
+             "launchers/play-ssbu-offline.sh", "launchers/host-ssbu-netplay.sh", "launchers/join-ssbu-netplay.sh",
+             "launchers/unlock-all-fighters.sh", "launchers/prepare-shaders.sh"]   # (made runnable: chmod 755)
 # The third-party parts of the build (tools/linux/toolchain.py): (what, URL, SHA-256, file, where it goes,
 # the archive's folder whose contents go there)
 PARTS = [
@@ -285,6 +287,27 @@ def desktop_entry(root):
             "Comment=Super Smash Bros. Ultimate, recompiled from your own copy\n"
             f"Exec={exec_line}\nPath={root}\nIcon={posixpath.join(root, 'docs', 'assets', 'windowsmash.ico')}\n"
             "Terminal=true\nCategories=Game;\n")
+
+
+def launcher_desktop_entry(root):
+    """The OpenSmash Launcher's entry in the applications menu (opensmash-launcher.sh: setup, update, Play, settings
+    and mods in a window, no terminal); Steam's Add a Non-Steam Game lists it from there."""
+    exec_line = " ".join(desktop_quote(a) for a in ("bash", posixpath.join(root, "opensmash-launcher.sh")))
+    return ("[Desktop Entry]\nType=Application\nName=OpenSmash Launcher\nGenericName=Super Smash Bros. Ultimate\n"
+            "Comment=Set up, update, play and mod OpenSmash (Super Smash Bros. Ultimate, recompiled from your own copy)\n"
+            f"Exec={exec_line}\nPath={root}\nIcon={posixpath.join(root, 'docs', 'assets', 'windowsmash.ico')}\n"
+            "Terminal=false\nCategories=Game;\n")
+
+
+def write_desktop_entry(path, text):
+    """An applications-menu entry, written when it says something else; whether it was written."""
+    if read_text(path) == text:
+        return False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+    os.chmod(path, 0o755)
+    return True
 
 
 def strip_member(name, prefix):
@@ -640,8 +663,20 @@ def installed(manager, pkg):
     return False
 
 
+def sudo_command(cmd, euid=None, tty=None, askpass=None):
+    """cmd as root: as it is for root; through sudo, which asks for the password in the terminal - or, with no
+    terminal (the launcher's setup page runs this), with sudo -A through SUDO_ASKPASS's program (a password
+    dialog: tools/linux/askpass.sh)."""
+    euid = os.geteuid() if euid is None else euid
+    if euid == 0:
+        return list(cmd)
+    tty = sys.stdin.isatty() if tty is None else tty
+    askpass = os.environ.get("SUDO_ASKPASS") if askpass is None else askpass
+    return ["sudo", "-A", *cmd] if not tty and askpass else ["sudo", *cmd]
+
+
 def sudo_run(cmd, dry):
-    full = ([] if os.geteuid() == 0 else ["sudo"]) + cmd
+    full = sudo_command(cmd)
     info("$ " + " ".join(full))
     if dry:
         return True
@@ -838,6 +873,8 @@ def step_python(a):
                           "or (sys.version_info >= (3, 14) and u.find_spec('compression.zstd')) else 1)"], capture_output=True)
     if need.returncode == 0:
         info("packages: installed")
+        if not a.dry_run:
+            step_python_optional(py)
         return
     if a.dry_run:
         would("install requirements.txt and Pillow there with pip")
@@ -847,6 +884,17 @@ def step_python(a):
                         *PYTHON_EXTRA])
     if r.returncode:
         raise Stop("pip could not install the packages (see above). Check the internet connection, then run this again.")
+    step_python_optional(py)
+
+
+def step_python_optional(py):
+    """py7zr: the mod manager opens .7z mods with it when no 7-Zip or bsdtar is installed (GNU tar can't); as the
+    Windows installer adds it. Not needed for the game: a failure is only said."""
+    if subprocess.run([py, "-c", "import py7zr"], capture_output=True).returncode == 0:
+        return
+    info("adding py7zr (the mod manager opens .7z mods with it)")
+    if subprocess.run([py, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", PY7ZR]).returncode:
+        info("py7zr could not be added: .7z mods need 7-Zip or bsdtar from your distribution (p7zip, 7zip or libarchive-tools)")
 
 
 # ---- step 5: the build's third-party parts ------------------------------------------------------------
@@ -1041,6 +1089,12 @@ def step_launchers(a):
             f.write(text)
         os.chmod(entry, 0o755)
         info(f"applications menu: WindowSmash ({entry})")
+    launcher = os.path.join(apps, "opensmash-launcher.desktop")
+    if a.dry_run:
+        would(f"add the OpenSmash Launcher to the applications menu ({launcher})")
+    else:
+        write_desktop_entry(launcher, launcher_desktop_entry(ROOT))
+        info(f"applications menu: OpenSmash Launcher ({launcher}): setup, updates, Play, settings and mods in a window")
     info("in this folder: play-ssbu.sh (online); in launchers/: play-ssbu-offline.sh, host-ssbu-netplay.sh, "
          "join-ssbu-netplay.sh, unlock-all-fighters.sh, prepare-shaders.sh")
     firewall = None
@@ -1089,6 +1143,7 @@ def main(argv=None):
     ap.add_argument("--jobs", type=int, help="how many files to compile at a time (default: by the RAM)")
     ap.add_argument("--skip-build", action="store_true", help="everything but compiling the game")
     ap.add_argument("--no-update", action="store_true", help="don't look for a newer WindowSmash")
+    ap.add_argument("--update-only", action="store_true", help="only get the newest WindowSmash (the launcher's Update)")
     ap.add_argument("--no-packages", action="store_true", help="don't install packages from the distribution")
     ap.add_argument("--yes", action="store_true", help="take the folders found or given, without asking")
     ap.add_argument("--dry-run", action="store_true", help="say what each step would do, do nothing")
@@ -1103,6 +1158,9 @@ def main(argv=None):
             args = [x for x in (argv if argv is not None else sys.argv[1:]) if x != "--no-update"]
             os.execv(sys.executable, [sys.executable, "-u", os.path.join(ROOT, "tools", "linux", "install_linux.py"),
                                       *args, "--no-update"])
+        if a.update_only:
+            print("Update done." if not a.dry_run else "")
+            return 0
         step_check_pc()
         step_packages(a)
         step_python(a)
