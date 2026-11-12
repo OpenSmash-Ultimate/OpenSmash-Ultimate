@@ -24,6 +24,12 @@
 const char *rt_data_dir = ".";
 int rt_code_patches_on(void) { const char *e = getenv("SSBU_CODE_PATCHES"); return e && *e == '1'; }   /* (hle_mod_switch.c: SSBU_CODE_PATCHES here) */
 const RtModule rt_module_main;
+/* (net_eos_net.c, net_eos_lobby.c and the NEX server's: the EOS hub alone, the game's NEX over EOS; never reached here) */
+const struct NetBackend net_eos_backend;
+void net_eos_net_packet(const char *from, const u8 *p, u32 n) { (void)from; (void)p; (void)n; }
+void nexeos_tick(void) {}
+void nexeos_packet(const char *from, const u8 *data, u32 len) { (void)from; (void)data; (void)len; }
+uint64_t nex_pid_of(const char *key) { (void)key; return 0; }
 void vsock_deliver(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const void *data, u32 len) {}
 int ldn_in_network(u32 ip) { return 0; }
 void ldn_listing(u32 seq, u32 owner, const u8 *info) {}

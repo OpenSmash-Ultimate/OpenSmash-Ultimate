@@ -42,6 +42,12 @@ static char build_text[BUILD_LEN + 1];
 const char *rt_data_dir = ".";
 int rt_code_patches_on(void) { const char *e = getenv("SSBU_CODE_PATCHES"); return e && *e == '1'; }   /* (hle_mod_switch.c: SSBU_CODE_PATCHES here) */
 const RtModule rt_module_main = {.build_id = build_text};
+/* (net_eos_net.c, net_eos_lobby.c and the NEX server's: the EOS hub alone, the game's NEX over EOS; never reached here) */
+const struct NetBackend net_eos_backend;
+void net_eos_net_packet(const char *from, const u8 *p, u32 n) { (void)from; (void)p; (void)n; }
+void nexeos_tick(void) {}
+void nexeos_packet(const char *from, const u8 *data, u32 len) { (void)from; (void)data; (void)len; }
+uint64_t nex_pid_of(const char *key) { (void)key; return 0; }
 int settings_online(void) { return 0; }
 int settings_line_read(const char *path, char *out, int size) { (void)path; (void)out; (void)size; return 0; }
 int settings_line_write(const char *path, const char *line) { (void)path; (void)line; return 0; }
