@@ -368,13 +368,13 @@ namespace OpenSmash.Launcher
         }
 
         // The renderer the game starts with, as runtime/renderer.h reads it: SSBU_RENDERER, else
-        // display.ini's renderer (vulkan or vk: Vulkan; direct3d11, d3d11, direct3d or dx11: Direct3D 11;
-        // anything else: auto, Vulkan on an AMD, NVIDIA or Intel card and Direct3D 11 on others).
+        // display.ini's renderer (vulkan or vk: Vulkan; direct3d11, direct3d or dx11: Direct3D 11;
+        // anything else, d3d11 included: auto, Vulkan on an AMD card and Direct3D 11 on others).
         string RendererAsked()
         {
             string v = Environment.GetEnvironmentVariable("SSBU_RENDERER") ?? "";
             if (v.Trim() == "") v = _settingsLoaded ? _iniValues.GetValueOrDefault("renderer", "") : _rendererIni;
-            return v.Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "d3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
+            return v.Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
         }
 
         string RendererChip() => RendererAsked() switch { "vulkan" => "VULKAN RENDERER", "direct3d11" => "D3D11 RENDERER", _ => "AUTO RENDERER" };
@@ -1332,8 +1332,8 @@ namespace OpenSmash.Launcher
             _iniValues["pacing"] = D("pacing", "clock");
             _iniValues["render_scale"] = D("render_scale", "1");
             _iniValues["gpu"] = D("gpu", "auto");
-            // (runtime/renderer.h's names: d3d11, which older display.ini files carry, is Direct3D 11)
-            _iniValues["renderer"] = D("renderer", "auto").Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "d3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
+            // (runtime/renderer.h's names: d3d11, which older display.ini files carry, is auto)
+            _iniValues["renderer"] = D("renderer", "auto").Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
             _iniValues["hide_cursor"] = D("hide_cursor", "1");
             _iniValues["overlay"] = D("overlay", "1");
             _iniValues["volume"] = D("volume", "100");

@@ -6,11 +6,9 @@
  * Vulkan") on an AMD, NVIDIA or Intel card, where it draws the game without Direct3D 11's first-use
  * stutter (and, on Intel's, without its driver's wrong colours: #81), and Direct3D 11 (gpu_d3d11.c)
  * on any other card and whenever Vulkan cannot start. vulkan and
- * direct3d11 choose one: direct3d11 (or d3d11, dx11, direct3d) is Direct3D 11 whatever the card.
- * Policy change: "d3d11" (the value every default display.ini before auto was written with) used to
- * count as auto, to move those players to Vulkan without their editing it; a name that says Direct3D
- * 11 and draws with Vulkan was counterintuitive, so it is Direct3D 11 again, and those files keep
- * Direct3D 11 until their player picks auto.
+ * direct3d11 choose one. "d3d11", which every default display.ini before auto was written with,
+ * counts as auto (so AMD players get Vulkan without editing it); direct3d11 (or dx11, direct3d)
+ * is Direct3D 11 whatever the card.
  *
  * Plain C, no system headers: tools/dev/renderertest.c checks the names on any system. */
 #pragma once
@@ -37,8 +35,8 @@ static inline int renderer_lower_eq(const char *a, const char *b) {
  * default name means the default here (a display.ini carried from another system keeps working):
  * the Linux build's Direct3D 11 is DXVK's, so d3d11 and dxvk are one renderer there. */
 static inline int renderer_parse(const char *v) {
-    static const char *const DEFAULTS[] = {"auto", "default", "dxvk", "metal"};
-    static const char *const D3D11[] = {"direct3d11", "d3d11", "direct3d", "dx11"};
+    static const char *const DEFAULTS[] = {"auto", "default", "d3d11", "dxvk", "metal"};
+    static const char *const D3D11[] = {"direct3d11", "direct3d", "dx11"};
     if (!v) return -1;
     for (unsigned i = 0; i < sizeof DEFAULTS / sizeof *DEFAULTS; i++)
         if (renderer_lower_eq(v, DEFAULTS[i])) return RENDERER_DEFAULT;
