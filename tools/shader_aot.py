@@ -534,7 +534,7 @@ def main():
         return 1
     if not a.dry and ok:
         with open(marker, "w", encoding="utf-8", newline="\n") as f:
-            f.write(f"version {cache_version()}\n")
+            f.write(marker_text(cache_version(), SPIRV))
     state = "skipped"
     if a.dry:
         print("warm: skipped (--dry)", flush=True)
@@ -1169,6 +1169,12 @@ def summary(totals):
     if extra:
         text += " (" + ", ".join(f"{v:,} {'not in the pack' if k == 'missing' else 'lost when a worker stopped'}" for k, v in extra.items()) + ")"
     return text
+
+
+def marker_text(version, spirv):
+    """complete.txt: the cache's version, and "spirv <names>" when the Vulkan renderer's SPIR-V was made too
+    (the launcher asks for Prepare Shaders again when Vulkan may draw and the marker lacks it)."""
+    return f"version {version}\n" + (f"spirv {spirv}\n" if spirv else "")
 
 
 def cache_version():
