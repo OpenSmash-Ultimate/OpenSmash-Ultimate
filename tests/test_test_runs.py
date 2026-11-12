@@ -102,7 +102,7 @@ class DocumentedTests(unittest.TestCase):
                 'SSBU_SEQ_KEYBOARD': 'hle_hid.c', 'SSBU_SKIP_MOVIES': 'hle_movie_skip.c',
                 'SSBU_FIGHT_HASH': 'hle_fight_test.c', 'SSBU_DETERMINISTIC': 'hle_fight_test.c', 'SSBU_DET_OFF': 'hle_fight_test.c',
                 'SSBU_FIXED_SEED': 'hle_fight_test.c', 'SSBU_DEBUG_MATCH': 'hle_fight_test.c',
-                'SSBU_DEBUG_MATCH_LIST': 'hle_fight_test.c', 'SSBU_DEBUG_END': 'hle_fight_test.c'}
+                'SSBU_DEBUG_MATCH_LIST': 'hle_fight_test.c', 'SSBU_DEBUG_END': 'hle_fight_test.c', 'SSBU_DEBUG_FINAL': 'hle_fight_test.c'}
 
     def test_switches(self):
         doc, technical = DOC.read_text(encoding='utf-8'), (ROOT / 'docs' / 'TECHNICAL.md').read_text(encoding='utf-8')
@@ -116,7 +116,7 @@ class DocumentedTests(unittest.TestCase):
         text = (ROOT / 'runtime' / 'hle_fight_test.c').read_text(encoding='utf-8')
         read = set(re.findall(r'getenv\("(SSBU_\w+)"\)', text))
         self.assertEqual(read - set(self.SWITCHES), set())
-        self.assertEqual(len(read), 7)
+        self.assertEqual(len(read), 8)
 
 
 if __name__ == '__main__':
