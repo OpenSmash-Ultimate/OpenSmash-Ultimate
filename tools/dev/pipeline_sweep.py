@@ -42,8 +42,9 @@ FIGHTERS = """mario donkey link samus samusd yoshi kirby fox pikachu luigi ness 
 ice_climber sheik zelda mariod pichu falco marth lucina younglink ganon mewtwo roy chrom gamewatch metaknight pit
 pitb szerosuit wario snake ike ptrainer diddy lucas sonic dedede pikmin lucario robot toonlink wolf murabito rockman
 wiifit rosetta littlemac gekkouga palutena pacman reflet shulk koopajr duckhunt ryu ken cloud kamui bayonetta inkling
-ridley simon richter krool shizue gaogaen packun jack brave buddy dolly master tantan pickel edge element demon trail
-miifighter miiswordsman miigunner""".split()
+ridley simon richter krool shizue gaogaen packun jack brave buddy dolly master tantan pickel edge element demon trail""".split()
+# (not the Mii Fighters: a debug match with one crashes as it loads - their Mii is chosen on the select screen, which
+# SSBU_DEBUG_MATCH does not walk; their moves' effects are the other fighters' and the items')
 STAGES = """battle_field battle_field_l battle_field_s end mario_castle64 dk_jungle zelda_hyrule yoshi_story
 kirby_pupupu64 fox_corneria poke_yamabuki mario_past64 mother_onett zelda_greatbay zelda_temple metroid_zebesdx
 yoshi_yoster kirby_fountain fox_venom poke_stadium mother_fourside mario_castledx mario_rainbow dk_waterfall
@@ -252,7 +253,7 @@ def menus_env(cache):
             "SSBU_RENDERER": "vulkan", "SSBU_SHADER_CACHE": cache, "SSBU_SEQ": seq, "SSBU_VK_MAKE_LOG": "0"}
 
 
-def run_one(exe, tree, env, log, seconds, stall=60, end_line="[fight] SSBU_DEBUG_END"):
+def run_one(exe, tree, env, log, seconds, stall=60, end_line="fight frames at frame"):
     """One game; killed when its log has not grown for `stall` s or after `seconds`. Returns (ok, wall seconds)."""
     full = dict(os.environ)
     full.update(env)
@@ -330,7 +331,10 @@ def cmd_run(a):
     results = []
     try:
         matches = plan(a.forms, a.only)
-        jobs = [("menus", None, None)] + [(f"m{i:03d}", m, None) for i, m in enumerate(matches)]
+        if a.redo:   # (matches again, one a line: <stage> <form> <f1>,<f2>,<f3>,<f4> - those that did not finish)
+            matches = [{"stage": l.split()[0], "form": l.split()[1], "fighters": l.split()[2].split(",")}
+                       for l in open(a.redo, encoding="utf-8") if len(l.split()) == 3]
+        jobs = [("menus", None, None)] + [(f"{'r' if a.redo else 'm'}{i:03d}", m, None) for i, m in enumerate(matches)]
         if a.no_menus:
             jobs = jobs[1:]
         import threading
@@ -347,7 +351,7 @@ def cmd_run(a):
                 if name == "menus":
                     env, end = menus_env(caches[slot]), None
                 else:
-                    env, end = match_env(m, a.frames if m["form"] == "normal" else a.form_frames, caches[slot]), "[fight] SSBU_DEBUG_END"
+                    env, end = match_env(m, a.frames if m["form"] == "normal" else a.form_frames, caches[slot]), "fight frames at frame"
                     env["SSBU_FIGHT_HASH"] = os.path.join(work, f"{name}.fh.txt")
                 ok, secs = run_one(exe, tree, env, log, a.seconds if name != "menus" else 240, end_line=end)
                 text = open(log, "rb").read().decode("utf-8", "replace")
@@ -410,6 +414,7 @@ def main():
     r.add_argument("--only", type=int, default=0)
     r.add_argument("--keep", action="store_true", help="keep the per-device lists of a run before (continue a sweep)")
     r.add_argument("--no-menus", action="store_true")
+    r.add_argument("--redo", help="a file of matches to play instead of the plan (with --keep: added to the lists so far)")
     r.add_argument("--no-merge", action="store_true")
     r.add_argument("--into")
     m = sub.add_parser("merge")
