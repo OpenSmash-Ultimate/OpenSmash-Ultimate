@@ -304,6 +304,9 @@ static u32 gpu_npoints[MAX_FRAMES];
 static const char *gpu_point_kind[MAX_FRAMES][GPU_POINTS];
 static u64 gpu_point_id[MAX_FRAMES][GPU_POINTS], gpu_point_draws[MAX_FRAMES][GPU_POINTS], gpu_point_more[MAX_FRAMES][GPU_POINTS][2];
 static u64 gpu_more[2];   /* (the next point's details: a draw's vertex program, count and viewport) */
+/* (and what the draw drew to and read: its rendering and textures, for the slow point's line) */
+#define GPU_DESC 240
+static char (*gpu_point_desc)[GPU_POINTS][GPU_DESC], gpu_desc[GPU_DESC];
 static int gpu_time_on(void) {
     if (gpu_time_ms < 0) { const char *v = getenv("SSBU_VK_GPU_TIME"); gpu_time_ms = v && *v ? atof(v) : 0; }
     return gpu_time_ms > 0 && gpu_time_pool;
@@ -344,6 +347,9 @@ static void gpu_time_point(VkCommandBuffer c, const char *kind, u64 id) {
     gpu_point_more[slot][n][0] = gpu_more[0];
     gpu_point_more[slot][n][1] = gpu_more[1];
     gpu_more[0] = gpu_more[1] = 0;
+    if (!gpu_point_desc) gpu_point_desc = calloc(MAX_FRAMES, sizeof *gpu_point_desc);
+    if (gpu_point_desc) memcpy(gpu_point_desc[slot][n], gpu_desc, GPU_DESC);
+    gpu_desc[0] = 0;
     gpu_npoints[slot] = n + 1;
 }
 static void gpu_time_read(Frame *f, double waited_ms) {
@@ -382,6 +388,10 @@ static void gpu_time_read(Frame *f, double waited_ms) {
                 np ? gpu_point_kind[slot][at] : "-", np ? (unsigned long long)gpu_point_id[slot][at] : 0ull, at, np,
                 np ? (unsigned long long)(gpu_point_draws[slot][at] - (at ? gpu_point_draws[slot][at - 1] : 0)) : 0ull,
                 np && gpu_point_more[slot][at][0] ? (const char *)(uintptr_t)gpu_point_more[slot][at][0] : "-", np ? (unsigned long long)gpu_point_more[slot][at][1] : 0ull);
+        if (np && gpu_point_desc && gpu_point_desc[slot][at][0]) fprintf(stderr, "[gputime]   the draw: %s\n", gpu_point_desc[slot][at]);
+        for (u32 b = at > 3 ? at - 3 : 0; np && b < at; b++)   /* (what came just before the slowest stretch) */
+            fprintf(stderr, "[gputime]   before it: %s %llx, %.2f ms\n", gpu_point_kind[slot][b], (unsigned long long)gpu_point_id[slot][b],
+                    (double)(t[2 + b] - (b ? t[2 + b - 1] : t[0])) * gpu_time_period / 1e6);
         { SYSTEMTIME st; GetLocalTime(&st); fprintf(stderr, "[gputime]   at %02u:%02u:%02u.%03u, %llu pipelines first drawn with, %llu memory allocations, %llu textures made, %llu KB uploaded\n", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, (unsigned long long)gpu_first_at[slot], (unsigned long long)gpu_allocs_at[slot], (unsigned long long)gpu_tex_at[slot], (unsigned long long)(gpu_up_at[slot] >> 10)); }
     }
 }
@@ -2517,6 +2527,7 @@ static VkImageView texture_of(const u32 *tic, u32 type, float *scale, Surface **
         *scale = 1.0f;
         *rt_out = NULL;
         m->t->used = ++tick;
+        got_texture = m->t;
         vk_stat_tex_memo++;
         if (memo_on() == 2) {
             vk_stat_memo_checked++;
@@ -3264,6 +3275,8 @@ typedef struct StageBinds {
 
 /* A stage's constant buffers, storage buffers and textures (gpu_d3d11.c's bind_resources). */
 static u64 vk_ns_res[3];   /* (constant buffers, storage buffers, textures) */
+static const Texture *draw_tex[2][4];   /* (SSBU_VK_GPU_TIME: the draw's first textures of each stage, for its line) */
+static u32 draw_tsc[2][4];
 /* The parts of a draw are timed in one draw of every TIMING_EVERY (a clock read is some 25 ns, a draw's parts
  * take a dozen: timing every draw cost more than some of the parts), the times scaled up. */
 #define TIMING_EVERY 32
@@ -3311,6 +3324,7 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
         read_gpu(tsc_pool + tsc_index * 32ull, 32, tsc);
         float scale;
         b->tex[k] = texture_of(tic, s->info.tex[k].type, &scale, &b->sampled[k]);
+        if (gpu_time_ms > 0 && k < 4) { draw_tex[stage == SHADER_PIXEL][k] = b->sampled[k] ? NULL : got_texture; draw_tsc[stage == SHADER_PIXEL][k] = tsc[0] ^ tsc[1] << 3; }
         /* (Direct3D 11 binds 16 samplers: the rest are its default one) */
         b->smp[k] = k < 16 ? get_sampler(tsc) : s->info.tex[k].shadow ? default_compare : default_sampler;
         params->swz[stage][k] = (tic[0] >> 19) & 0xFFF;
@@ -3669,6 +3683,7 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     params.base[0] = regs[M_GLOBAL_BASE_VERTEX];
     params.base[1] = regs[M_GLOBAL_BASE_INSTANCE] + instance_counter;
     PHASE(3);
+    if (gpu_time_ms > 0) memset(draw_tex, 0, sizeof draw_tex);
     stage_resources(regs, cb, SHADER_VERTEX, vs, &params, &vb);
     if (ps) stage_resources(regs, cb, SHADER_PIXEL, ps, &params, &pb);
 
@@ -3776,6 +3791,7 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     for (u32 i = 0; i < ncolor; i++) colors[i] = rts[i] ? surface_attachment(rts[i]) : VK_NULL_HANDLE;
     if (rp.active && (ends || rp.ncolor != ncolor || rp.depth != depth || memcmp(rp.color, colors, sizeof colors))) end_rendering();
     VkCommandBuffer c = cmd();
+    int began = !rp.active;
     if (!rp.active) {
         VkRenderingAttachmentInfoKHR ca[8], da;
         memset(ca, 0, sizeof ca);
@@ -3847,6 +3863,16 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         vkCmdDrawIndexed(c, regs[M_DRAW_INDEX_COUNT], 1, 0, vs->glslang ? 0 : (int32_t)regs[M_GLOBAL_BASE_VERTEX], 0);
     } else vkCmdDraw(c, regs[M_VERTEX_ARRAY_COUNT], 1, vs->glslang ? 0 : regs[M_VERTEX_ARRAY_START], 0);
     if (gpu_time_ms > 0) {
+        int n = snprintf(gpu_desc, GPU_DESC, "%s rendering %ux%u, %u colour (%d %ux%u) depth %d; blend %u/%u/%u depth test %u write %u;",
+                         began ? "new" : "open", area_w, area_h, ncolor, ncolor && rts[0] ? (int)rts[0]->storage : -1,
+                         ncolor && rts[0] ? rts[0]->hw : 0, ncolor && rts[0] ? rts[0]->hh : 0, zs ? (int)zs->storage : -1,
+                         key.blend[0][0], key.blend[0][2], key.blend[0][3], key.depth_test, key.depth_write);
+        for (int st = 0; st < 2; st++)
+            for (int k = 0; k < 4 && n > 0 && n < GPU_DESC; k++) {
+                const Texture *t = draw_tex[st][k];
+                if (t) n += snprintf(gpu_desc + n, GPU_DESC - n, " %s%d fmt %d %llu B %ux%u%s%s smp %x;", st ? "ps" : "vs", k, (int)t->format,
+                                     (unsigned long long)t->size, t->levels, t->layers, t->is3d ? " 3d" : "", t->cube ? " cube" : "", draw_tsc[st][k]);
+            }
         gpu_more[0] = (u64)(uintptr_t)vs->name;
         gpu_more[1] = (u64)(indexed ? regs[M_DRAW_INDEX_COUNT] : regs[M_VERTEX_ARRAY_COUNT]) << 32 | (u64)(u32)topo << 24 | (u64)((u32)vw & 0xFFF) << 12 | ((u32)(vh < 0 ? -vh : vh) & 0xFFF);
     }
