@@ -192,6 +192,54 @@ class InstallerDecisionTests(unittest.TestCase):
         self.assertIn('--game D:\\G --keys D:\\K --no-firmware', out)
         self.assertIn('--game D:\\G --keys D:\\K --firmware D:\\F', out)
 
+    def test_update_build_answers_use_saved_game_folders(self):
+        got = ps("$global:saved = @{ game = 'D:\\Game'; keys = 'D:\\Keys'; firmware = 'D:\\Firmware' }; "
+                 "function Get-SavedFolders { $global:saved }; "
+                 "function Get-FolderCandidates { @{ Game = @(); Keys = @(); Firmware = @() } }; "
+                 "$a = Get-UpdateBuildAnswers; "
+                 "@{ game = $a.Game; keys = $a.Keys; firmware = $a.Firmware }")
+        self.assertEqual(got, {'game': 'D:\\Game', 'keys': 'D:\\Keys', 'firmware': 'D:\\Firmware'})
+
+        out = ps_text("$global:saved = @{ game = 'D:\\Game' }; "
+                      "function Get-SavedFolders { $global:saved }; "
+                      "function Get-FolderCandidates { @{ Game = @(); Keys = @(); Firmware = @() } }; "
+                      "try { Get-UpdateBuildAnswers } catch { 'ERROR: ' + $_.Exception.Message }")
+        self.assertIn('ERROR: The saved keys folder could not be found.', out)
+
+    def test_update_game_build_checks_prerequisites_before_build(self):
+        out = ps_text("$global:steps = [Collections.Generic.List[string]]::new(); "
+                      "function Step-CheckPc { $global:steps.Add('pc') }; "
+                      "function Step-Python { $global:steps.Add('python') }; "
+                      "function Test-Compiler { $global:steps.Add('compiler'); @{ Ok = $true; Output = '' } }; "
+                      "function Step-Sdl3 { $global:steps.Add('sdl') }; "
+                      "function Step-Codecs { $global:steps.Add('codecs') }; "
+                      "function Get-UpdateBuildAnswers { $global:steps.Add('answers'); @{ Game = 'D:\\Game'; Keys = 'D:\\Keys' } }; "
+                      "function Step-Build { param($Answers) $global:steps.Add('build:' + $Answers.Game) }; "
+                      "Invoke-UpdateGameBuild; $global:steps -join ','")
+        self.assertIn('pc,python,compiler,sdl,codecs,answers,build:D:\\Game', out)
+
+        out = ps_text("$global:steps = [Collections.Generic.List[string]]::new(); "
+                      "function Step-CheckPc { $global:steps.Add('pc') }; "
+                      "function Step-Python { $global:steps.Add('python') }; "
+                      "function Test-Compiler { $global:steps.Add('compiler'); @{ Ok = $false; Output = 'missing clang' } }; "
+                      "function Step-Sdl3 { $global:steps.Add('sdl') }; "
+                      "function Step-Codecs { $global:steps.Add('codecs') }; "
+                      "function Get-UpdateBuildAnswers { @{ Game = 'D:\\Game'; Keys = 'D:\\Keys' } }; "
+                      "function Step-Build { $global:steps.Add('build') }; "
+                      "try { Invoke-UpdateGameBuild } catch { 'ERROR: ' + $_.Exception.Message }; "
+                      "'STEPS: ' + ($global:steps -join ',')")
+        self.assertIn('ERROR: The game compiler is not ready.', out)
+        self.assertIn('STEPS: pc,python,compiler', out)
+
+    def test_update_game_build_skips_current_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, 'build'))
+            Path(tmp, 'build', 'ssbu.exe').write_bytes(b'current game')
+            out = ps_text(f"$Root = '{tmp}'; $DryRun = $false; $Rebuild = $false; $SkipBuild = $false; "
+                          "function Invoke-Python { return 0 }; "
+                          "Step-Build @{ Game = 'D:\\Game'; Keys = 'D:\\Keys'; Firmware = '' } | Out-Null")
+        self.assertIn('nothing that goes into the game changed: no build', out)
+
     def test_firmware_question_optional(self):
         # -NoWizard: the question says it is optional and what for; Enter on nothing, or none over the one found, is none
         mocks = ("$global:prompts = @(); "
