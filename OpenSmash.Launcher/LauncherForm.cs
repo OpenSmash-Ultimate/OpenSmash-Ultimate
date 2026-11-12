@@ -844,6 +844,24 @@ namespace OpenSmash.Launcher
             catch { }
         }
 
+        // The launcher is rebuilt only where the .NET 8 SDK is (toolsuild_launcher.ps1 needs it): most players have
+        // the release's OpenSmash.exe and no SDK, and a rebuild that can never work would be offered at every start.
+        static bool DotnetSdkAvailable()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo { FileName = "dotnet", UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                psi.ArgumentList.Add("--list-sdks");
+                using var p = Process.Start(psi);
+                if (p == null) return false;
+                var output = p.StandardOutput.ReadToEndAsync();
+                _ = p.StandardError.ReadToEndAsync();
+                if (!p.WaitForExit(10000)) { try { p.Kill(); } catch { } return false; }
+                return p.ExitCode == 0 && Regex.IsMatch(output.GetAwaiter().GetResult(), @"(?m)^\s*\d+\.");
+            }
+            catch { return false; }
+        }
+
         static string LauncherBuildInputsFingerprint(string repo)
         {
             string project = Path.Combine(repo, "OpenSmash.Launcher");
@@ -902,6 +920,7 @@ namespace OpenSmash.Launcher
         bool TryResumePendingLauncherBuild()
         {
             if (!File.Exists(LauncherBuildPendingPath) || File.Exists(GameBuildPendingPath)) return false;
+            if (!DotnetSdkAvailable()) { try { File.Delete(LauncherBuildPendingPath); } catch { } return false; }
             var choice = MessageBox.Show(this,
                 "The launcher update could not be completed last time. Rebuild and restart OpenSmash now?",
                 "OpenSmash update", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
@@ -979,7 +998,8 @@ namespace OpenSmash.Launcher
                     Directory.CreateDirectory(Path.Combine(_repo, "config"));
                     File.WriteAllText(GameBuildPendingPath, _updateLocal);
                     string afterFingerprint = await Task.Run(() => LauncherBuildInputsFingerprint(_repo));
-                    launcherChanged = !beforeLauncherFingerprint.Equals(afterFingerprint, StringComparison.Ordinal);
+                    launcherChanged = !beforeLauncherFingerprint.Equals(afterFingerprint, StringComparison.Ordinal)
+                        && await Task.Run(DotnetSdkAvailable);
                 }
                 catch (Exception ex)
                 {
