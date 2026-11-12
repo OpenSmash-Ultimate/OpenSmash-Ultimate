@@ -87,3 +87,12 @@ html:not(.host-windows) .windows-only { display: none; }
   .rail-foot { margin: 0; flex-direction: row; }
   main { padding: 20px 16px; }
 }
+
+/* the Discord account (discord_account.py) */
+.dc-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.dc-head img { width: 44px; height: 44px; border-radius: 50%; background: #5865f2; }
+.dc-name { font-size: 18px; font-weight: 700; }
+.dc-rank { color: var(--accent); font-weight: 700; margin-left: 6px; }
+.dc-gsp { width: 100%; border-collapse: collapse; font-size: 14px; margin: 6px 0 10px; }
+.dc-gsp td { padding: 3px 0; border-bottom: 1px solid var(--line); }
+.dc-gsp td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }

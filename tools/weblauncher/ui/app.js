@@ -325,6 +325,32 @@ $("#update-run").onclick = async () => {
   }
 };
 
+/* ---- Discord: sign-in and the player's GSP and position (discord_account.py) ---- */
+let discordTimer = null;
+async function refreshDiscord() {
+  let d;
+  try { d = await api("/api/discord"); } catch (e) { $("#discord-box").innerHTML = `<p class="muted">${esc(e.message)}</p>`; return; }
+  const box = $("#discord-box");
+  if (!d.signed_in) {
+    box.innerHTML = `<p class="muted">Sign in to show your Discord name, rank and GSP, and to play online as the same player on every PC.</p>
+      ${d.error ? `<p class="small" style="color:var(--bad)">${esc(d.error)}</p>` : ""}
+      <div class="buttons"><button id="discord-signin" class="primary"${d.busy ? " disabled" : ""}>${d.busy ? "Finish in the browser…" : "Sign in with Discord"}</button></div>`;
+    $("#discord-signin").onclick = async () => { await api("/api/discord/signin", {}).catch(() => {}); refreshDiscord(); };
+  } else {
+    const rows = (d.fighters || []).slice(0, 10).map(f =>
+      `<tr><td>${esc(f.name)}</td><td class="num">${f.rank ? "#" + f.rank + " · " : ""}${Number(f.gsp).toLocaleString("en-US")}</td></tr>`).join("");
+    box.innerHTML = `<div class="dc-head">${d.avatar ? `<img src="${esc(d.avatar)}" alt="">` : "<img alt=\"\">"}
+        <div><span class="dc-name">${esc(d.name)}</span>${d.rank ? `<span class="dc-rank">#${d.rank}</span>` : ""}
+        <div class="muted small">${d.rank ? "in the GSP leaderboard" : "not ranked yet"}</div></div></div>
+      ${rows ? `<table class="dc-gsp">${rows}</table>` : `<p class="muted small">No online matches yet: play Quickplay to get a GSP.</p>`}
+      <div class="buttons"><button id="discord-signout" class="ghost">Sign out</button></div>`;
+    $("#discord-signout").onclick = async () => { await api("/api/discord/signout", {}).catch(() => {}); refreshDiscord(); };
+  }
+  clearTimeout(discordTimer);
+  discordTimer = setTimeout(refreshDiscord, d.busy ? 1500 : 60000);
+}
+refreshDiscord();
+
 /* ---- the window ---- */
 $("#quit").onclick = async () => {
   try { await api("/api/quit", {}); } catch (e) { /* */ }
