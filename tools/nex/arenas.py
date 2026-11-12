@@ -32,6 +32,7 @@ class Arenas:
         r(109, 55, self.arena_id)
         r(109, 56, self.mme_56)
         r(109, 52, self.browse)
+        r(109, 51, self.friends)
 
     def name(self, conn):
         return self.nex.name(conn)
@@ -91,6 +92,14 @@ class Arenas:
             raise rmc.NexError(NO_GATHERING, f"no arena {clean(text, MAX_ID_TEXT)!r}")
         out = StreamOut()
         out.u32(gid)
+        return out.get()
+
+    # 51 FindMatchmakeSessionByParticipant: the arenas of the asker's friends (Battle Arenas, the friends' list). There are no friends here:
+    # an empty list (the parser, main+0x253ae0, reads List<a wrapped MatchmakeSession>); the request is not read.
+    def friends(self, conn, s):
+        s.read(s.left())
+        out = StreamOut()
+        out.u32(0)
         return out.get()
 
     # 52: the arenas a search finds - open gatherings of the asker's build and lobby code that fit the criteria and

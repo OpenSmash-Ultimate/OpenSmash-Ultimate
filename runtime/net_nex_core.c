@@ -1113,9 +1113,13 @@ static uint32_t ds_84(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
         const uint8_t *e = s->powers + (size_t)i * NEX_POWER_ENTRY;
         if (power_pid(e) == c->pid && !mine[e[8]]) { mine[e[8]] = e + 8; count++; }
     }
+    nex_log(s, 1, "pid %llu: %u fighter record%s given back", (unsigned long long)c->pid, (unsigned)count, count == 1 ? "" : "s");
     no_u32(out, count);
     for (int f = 0; f < 256; f++) {
         if (!mine[f]) continue;
+        const uint8_t *r = mine[f];
+        nex_log(s, 1, "pid %llu: fighter %d's record given back: %u", (unsigned long long)c->pid, f,
+                (unsigned)(r[1] | r[2] << 8 | r[3] << 16 | (uint32_t)r[4] << 24));
         no_u8(out, (uint32_t)f);
         size_t at = no_struct_begin(out, 0);
         no_put(out, mine[f], NEX_POWER_RECORD);

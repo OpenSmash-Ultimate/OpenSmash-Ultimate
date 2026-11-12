@@ -648,6 +648,14 @@ static uint32_t ar_browse(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
     for (int i = 0; i < k; i++) encode_session(s, out, found[i], 0);
     return 0;
 }
+/* 51 FindMatchmakeSessionByParticipant (Battle Arenas > friends' arenas; request main+0x2503c0, answer parser main+0x253ae0 reads
+ * List<the session in a wrapper>): no friends here, so an empty list; its parameters are not read */
+static uint32_t ar_friends(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
+    (void)s; (void)c;
+    in->p = in->end;
+    no_u32(out, 0);
+    return 0;
+}
 
 /* ==== Match Making (21), Match Making Ext (50) ========================================================= */
 static uint32_t mk_session_urls(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
@@ -858,6 +866,7 @@ NexHandler nex_match_handler(uint32_t protocol, uint32_t method) {
         case 55: return ar_arena_id;
         case 56: return ar_56;
         case 52: return ar_browse;
+        case 51: return ar_friends;
         }
         return NULL;
     case 21:
