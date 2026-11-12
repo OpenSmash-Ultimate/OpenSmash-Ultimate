@@ -719,6 +719,27 @@ class App:
             if body.get("jobs"):
                 cmd += ["--jobs", str(int(body["jobs"]))]
             return self.jobs.start("Building the game", [cmd], self.root, {**os.environ, "PYTHONUNBUFFERED": "1"})
+        if path == "/api/rebuild-all":
+            if self.game_running():
+                raise Error("Close the game first")
+            if not venv_python(self.root):
+                raise Error("Run the setup first")
+            if HOST == "windows":
+                script = os.path.join(self.root, "tools", "rebuild-all.ps1")
+                cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script]
+                if body.get("jobs"):
+                    cmd += ["-Jobs", str(int(body["jobs"]))]
+            else:
+                if HOST == "linux":
+                    script = os.path.join(self.root, "tools", "linux", "rebuild-all.sh")
+                else:
+                    script = os.path.join(self.root, "tools", "mac", "rebuild-all.command")
+                cmd = ["bash", script]
+                if body.get("jobs"):
+                    cmd.append("--jobs")
+                    cmd.append(str(int(body["jobs"])))
+            return self.jobs.start("Building the game and launcher", [cmd], self.root,
+                                   {**os.environ, "PYTHONUNBUFFERED": "1"})
         if path == "/api/update":
             if self.game_running():
                 raise Error("Close the game first")
