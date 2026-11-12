@@ -6,7 +6,7 @@ The wire baseline is room protocol 1, as preserved in yuzu-era network/LDN sourc
 
 ## Launcher page (Windows)
 
-Open **ROOM** in the launcher's top navigation, or **YUZU ROOM** on its home screen. This is an embedded launcher page, with the existing navigation and visual theme.
+Open **Settings → Advanced → YUZU ROOM**. This optional connection page uses the launcher’s existing theme and returns to Settings with Back or Escape. Enter also opens it from the Advanced tab.
 
 - Enter the existing room's server and nickname. Enter a password only when the room requires one; it is masked and is never saved or put in command arguments.
 - Select **Eden / compatible** (default) or **Historical yuzu** for an older peer.

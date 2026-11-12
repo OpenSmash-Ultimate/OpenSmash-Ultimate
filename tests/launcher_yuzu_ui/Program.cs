@@ -135,7 +135,16 @@ static class Tests
                 launcher.Show(); Application.DoEvents();
                 var type = typeof(LauncherForm);
                 var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-                type.GetMethod("OpenYuzuRoom",flags)!.Invoke(launcher,null);
+                Check(!((string[])type.GetField("_menuItems", flags)!.GetValue(launcher)!).Contains("YUZU ROOM"), "room is absent from home buttons");
+                type.GetMethod("GoView", flags)!.Invoke(launcher, new object[] { "settings", true });
+                var tabs = (Array)type.GetField("_settingsTabs", flags)!.GetValue(launcher)!;
+                Check((string)tabs.GetValue(tabs.Length - 1)!.GetType().GetField("Name")!.GetValue(tabs.GetValue(tabs.Length - 1))! == "Advanced", "room lives under last settings tab");
+                type.GetMethod("ShowSettingsSection", flags)!.Invoke(launcher, new object[] { tabs.Length - 1 });
+                type.GetMethod("OnKeyDown", flags, null, new[] { typeof(object), typeof(KeyEventArgs) }, null)!.Invoke(launcher, new object[] { launcher, new KeyEventArgs(Keys.Enter) });
+                Check((string)type.GetField("_view", flags)!.GetValue(launcher)! == "yuzu", "Enter opens optional room from advanced settings");
+                type.GetMethod("GoBack", flags)!.Invoke(launcher, null);
+                Check((string)type.GetField("_view", flags)!.GetValue(launcher)! == "settings", "room back returns to settings");
+                type.GetMethod("OpenYuzuRoom", flags)!.Invoke(launcher, null);
                 type.GetField("_paintedView",flags)!.SetValue(launcher, "yuzu");
                 type.GetField("_viewAt",flags)!.SetValue(launcher, -10d);
                 // Paint without showing: no Shown startup work or network.

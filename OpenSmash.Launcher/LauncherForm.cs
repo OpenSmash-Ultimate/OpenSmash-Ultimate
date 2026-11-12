@@ -302,6 +302,7 @@ namespace OpenSmash.Launcher
                 new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "pads" } },
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
+                new SettingTab { Name = "Advanced", SettingKeys = Array.Empty<string>() },
             };
 
             _settings = new[]
@@ -2126,6 +2127,8 @@ namespace OpenSmash.Launcher
                         if (set != null && set.Text) BeginEdit(set);
                         else if (set == null || !set.Slider) ToggleDropdown(_sel);
                     }
+                    else if (_settingsTab < _settingsTabs.Length && _settingsTabs[_settingsTab].Name == "Advanced")
+                        OpenYuzuRoom();
                     else if (_settingsTab < _settingsTabs.Length
                         && string.Equals(_settingsTabs[_settingsTab].Name, "Update", StringComparison.OrdinalIgnoreCase)
                         && !_updateChecking && !_updateApplying)
@@ -2167,9 +2170,8 @@ namespace OpenSmash.Launcher
             {
                 int i = int.Parse(id.Substring(5));
                 if (i == 0) StartPlay();
-                else if (i == 1) OpenYuzuRoom();
-                else if (i == 2) GoView("mods");
-                else if (i == 3) GoView("settings");
+                else if (i == 1) GoView("mods");
+                else if (i == 2) GoView("settings");
                 else Close();
             }
             else if (id == "back") GoBack();

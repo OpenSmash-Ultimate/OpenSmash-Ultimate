@@ -22,7 +22,7 @@ namespace OpenSmash.Launcher
 
         Bitmap _bg;
         float _s;
-        readonly string[] _menuItems = { "PLAY", "YUZU ROOM", "MODS", "SETTINGS", "QUIT" };
+        readonly string[] _menuItems = { "PLAY", "MODS", "SETTINGS", "QUIT" };
 
         Setting[] _settings;
         SettingTab[] _settingsTabs;
@@ -602,9 +602,9 @@ namespace OpenSmash.Launcher
             AddHit("nav:mode-next", nextX, cy - chh / 2, aw, chh);
 
             // Section links with the red skewed underline
-            string active = _view == "home" ? "nav:home" : _view == "settings" ? "nav:settings" : _view == "yuzu" ? "nav:yuzu" : "nav:mods";
+            string active = _view == "home" ? "nav:home" : _view == "settings" || _view == "yuzu" ? "nav:settings" : "nav:mods";
             float lx = prevX - 8 * s;
-            foreach (var (id, label) in new[] { ("nav:settings", "SETTINGS"), ("nav:mods", "MODS"), ("nav:yuzu", "ROOM"), ("nav:home", "HOME") })
+            foreach (var (id, label) in new[] { ("nav:settings", "SETTINGS"), ("nav:mods", "MODS"), ("nav:home", "HOME") })
             {
                 float tw = Theme.TextWidth(g, label, cf, csp), bw = tw + 24 * s;
                 lx -= bw;
@@ -847,7 +847,7 @@ namespace OpenSmash.Launcher
             {
                 var st = PushFade(g, Up(t, 1.05f), 24 * s);
                 float bx = left, by = 494 * s, bh = 52 * s, aw = bh, ag = 8 * s;
-                float[] widths = { 190, 180, 130, 160, 105 };
+                float[] widths = { 190, 130, 160, 105 };
                 string playLabel = _launchMode == "vanilla" ? "VANILLA" : "PLAY";
                 bool playEnabled = _built && !Busy;
                 Theme.ButtonAnimated(g, "<", bx, by, aw, bh, s, primary: false, Hov("nav:mode-prev", _hover == "nav:mode-prev"), _built, 18 * s, _alpha, press: Press("nav:mode-prev"));
@@ -857,7 +857,7 @@ namespace OpenSmash.Launcher
                 {
                     string id = $"menu:{i}";
                     float bw = widths[i] * s;
-                    bool enabled = i <= 1 ? playEnabled : true;
+                    bool enabled = i == 0 ? playEnabled : true;
                     float hv = Hov(id, enabled && (_hover == id || (_keys && _sel == i)));
                     Theme.ButtonAnimated(g, i == 0 ? playLabel : _menuItems[i], bx, by, bw, bh, s, primary: i == 0, hv, enabled, 15 * s, _alpha,
                         i == 0 ? DrawArrow : null, press: Press(id));
@@ -1676,6 +1676,14 @@ namespace OpenSmash.Launcher
                     PopFade(g, st);
                     tx += tw + gap;
                 }
+            }
+
+            if (tab < _settingsTabs.Length && _settingsTabs[tab].Name == "Advanced")
+            {
+                _settingsMaxScroll = 0;
+                _settingsScroll = 0;
+                PaintAdvancedMultiplayer(g, x, cw, listTop);
+                return;
             }
 
             if (tab < _settingsTabs.Length && string.Equals(_settingsTabs[tab].Name, "Storage", StringComparison.OrdinalIgnoreCase))
