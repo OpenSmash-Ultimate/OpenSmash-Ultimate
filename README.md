@@ -50,6 +50,8 @@ Rows that link to pull requests are being reviewed and land in `main` as they ar
 | [Linux](docs/LINUX.md) · [macOS](docs/MACOS.md) | install, build and run the experimental versions. The OpenSmash Launcher (`opensmash-launcher.sh`, `OpenSmash Launcher.command`) does setup, updates, Play, settings and mods in a window, with a game pad too (Steam Deck Game Mode). |
 | [How it works](docs/TECHNICAL.md) | understand the recompiler, the runtime and every tool. |
 
+UI language: the launcher and external menu offer English and Simplified Chinese, with a shared **Interface language** setting. See [UI languages and translation guide](docs/LOCALIZATION.md) for adding a language or translating new UI text.
+
 ## `ssbu-recomp/`
 
 [`ssbu-recomp/`](ssbu-recomp/) holds ssbu-recomp as it was imported, with its history, so `git log` and `git blame` still show who wrote what. Its parts move out of the folder as they are ported to the root runtime, and the folder goes when it is empty. Material taken from the game was removed from every commit of its history on import.

@@ -235,7 +235,7 @@ def overlay_font():
     os.makedirs(GEN, exist_ok=True)
     header = os.path.join(GEN, "overlay_font.h")
     tool_src = os.path.join(REPO, "tools", "linux", "make_overlay_font.py" if HOST_LINUX else "make_overlay_font.c")
-    if not needs(header, tool_src):
+    if not needs(header, tool_src, os.path.join(REPO, "runtime", "ui_catalog.generated.h")):
         return True
     if HOST_LINUX:
         r = subprocess.run([sys.executable, tool_src, header], capture_output=True, text=True)
@@ -243,7 +243,9 @@ def overlay_font():
         if r.returncode:   # (only the debug overlay's text needs it: not worth stopping the build for)
             print("could not draw the overlay font: the overlay (F1, F2) shows no text")
             with open(header, "w", newline="\n") as f:
-                f.write("static const unsigned char overlay_font[%d] = {0};\n" % (24 * 16 * 48 * 6))
+                from localization import font_layout
+                fw, fh, cols, rows, _ = font_layout()
+                f.write("static const unsigned char overlay_font[%d] = {0};\n" % (fw * fh * cols * rows))
         return True
     exe = os.path.join(GEN, "make_overlay_font.exe")
     code, out = run([os.path.join(LLVM, "clang-cl.exe"), "/nologo", "/O1", "-w", "-fuse-ld=lld", tool_src, "/Fe" + exe, "/link", "gdi32.lib", "user32.lib"])

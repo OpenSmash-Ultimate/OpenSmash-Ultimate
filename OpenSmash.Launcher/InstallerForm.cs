@@ -280,14 +280,14 @@ namespace OpenSmash.Launcher
             bool haveDump = IsDir(b) || File.Exists(Path.Combine(loc, "dump", "romfs", "data.arc"));
             if (!haveDump)
             {
-                n += _dumpGb; parts.Add($"unpacked game {_dumpGb:N0} GB");
+                n += _dumpGb; parts.Add(UiLocale.Interpolate($"unpacked game {_dumpGb:N0} GB"));
                 double t = 0;
                 foreach (var p in new[] { b, Val("update") })
                     if (p.EndsWith(".nsz", StringComparison.OrdinalIgnoreCase) && IsFile(p)) t += new FileInfo(p).Length;
                 if (t > 0)
                 {
                     double tg = Math.Round(t * 1.25 / 1073741824.0, 1);
-                    n += tg; parts.Add($"{tg:N0} GB for a while to decompress the .nsz");
+                    n += tg; parts.Add(UiLocale.Interpolate($"{tg:N0} GB for a while to decompress the .nsz"));
                 }
             }
             return (n, string.Join(" + ", parts));
@@ -345,14 +345,14 @@ namespace OpenSmash.Launcher
                 var it = FindItem("dumps", v);
                 string fnt = !Directory.Exists(Path.Combine(v, "sysdata", "fonts")) && Val("firmware") == ""
                     ? " No fonts in this dump and no firmware: open-source fonts will be used." : "";
-                if (it is JsonElement i) SetFieldStatus("base", "Dump folder: " + StripDesc(i) + fnt, Theme.Ready);
-                else if (Directory.Exists(Path.Combine(v, "exefs")) && Directory.Exists(Path.Combine(v, "romfs"))) SetFieldStatus("base", "Dump folder: exefs and romfs found." + fnt, Theme.Ready);
+                if (it is JsonElement i) SetFieldStatus("base", UiLocale.Text("Dump folder: ") + StripDesc(i) + fnt, Theme.Ready);
+                else if (Directory.Exists(Path.Combine(v, "exefs")) && Directory.Exists(Path.Combine(v, "romfs"))) SetFieldStatus("base", UiLocale.Text("Dump folder: exefs and romfs found.") + fnt, Theme.Ready);
                 else SetFieldStatus("base", "This folder has no exefs\\ and romfs\\ inside: choose the game file instead, or the right folder.", Theme.Bad);
             }
             else if (IsFile(v))
             {
                 if (FindItem("base", v) is JsonElement i) SetFieldStatus("base", StripDesc(i), Bool(i, "supported") == false ? Theme.Bad : Theme.Ready);
-                else SetFieldStatus("base", $"{Path.GetExtension(v).ToLowerInvariant()}, {new FileInfo(v).Length / 1073741824.0:N2} GB (not checked yet; the installer reads it)", Theme.Info);
+                else SetFieldStatus("base", UiLocale.Interpolate($"{Path.GetExtension(v).ToLowerInvariant()}, {new FileInfo(v).Length / 1073741824.0:N2} GB (not checked yet; the installer reads it)"), Theme.Info);
             }
             else SetFieldStatus("base", "This path does not exist.", Theme.Bad);
 
@@ -395,7 +395,7 @@ namespace OpenSmash.Launcher
             int n = _dlc.Count;
             if (n > 0 && baseIsDump) SetFieldStatus("dlc", "The base game is an extracted dump, so these packages are not used.", Theme.Warn);
             else if (n == 0) SetFieldStatus("dlc", searching ? looking : "None chosen. Optional: they only unlock their content.", Theme.Dim);
-            else SetFieldStatus("dlc", $"{n} package{(n == 1 ? "" : "s")} will be read. Optional: the game runs without them.", Theme.Ready);
+            else SetFieldStatus("dlc", UiLocale.Format(n == 1 ? "{0} package will be read. Optional: the game runs without them." : "{0} packages will be read. Optional: the game runs without them.", n), Theme.Ready);
 
             UpdateLocStatus();
             _dirty = true;
@@ -410,22 +410,22 @@ namespace OpenSmash.Launcher
             string root = Path.GetPathRoot(loc) ?? "";
             if (root != "" && !root.StartsWith(@"\\") && !Directory.Exists(root))
             {
-                SetFieldStatus("buildloc", $"The drive {root} is not on this PC (or not connected): choose another folder.", Theme.Bad);
+                SetFieldStatus("buildloc", UiLocale.Interpolate($"The drive {root} is not on this PC (or not connected): choose another folder."), Theme.Bad);
                 return;
             }
             string t;
             Color c;
-            if (free is not double fr) { t = $"Free space of {root} unknown; about {need.Gb:N0} GB needed ({need.Text})."; c = Theme.Warn; }
+            if (free is not double fr) { t = UiLocale.Interpolate($"Free space of {root} unknown; about {need.Gb:N0} GB needed ({need.Text})."); c = Theme.Warn; }
             else
             {
-                t = $"{fr:N0} GB free on {root.TrimEnd('\\')}, about {need.Gb:N0} GB needed ({need.Text}).";
+                t = UiLocale.Interpolate($"{fr:N0} GB free on {root.TrimEnd('\\')}, about {need.Gb:N0} GB needed ({need.Text}).");
                 if (fr < need.Gb) { c = Theme.Bad; t += " Not enough: choose a folder on another drive, or free some space."; }
                 else if (fr < need.Gb * 1.25) { c = Theme.Warn; t += " It fits, but only just."; }
                 else c = Theme.Ready;
             }
             if (_storedBuild != "" && !SamePath(loc, _storedBuild) && File.Exists(Path.Combine(_storedBuild, "state.json")))
             {
-                t += $" Note: the last install is in {_storedBuild}; a new location starts from the beginning there.";
+                t += UiLocale.Interpolate($" Note: the last install is in {_storedBuild}; a new location starts from the beginning there.");
                 if (c == Theme.Ready) c = Theme.Info;
             }
             else if (HasState(loc)) t += " An install is already here: Resume goes on with it.";
@@ -526,7 +526,7 @@ namespace OpenSmash.Launcher
             if (r is not JsonElement root)
             {
                 string err = _scanFind.ErrorText.Trim().Split('\n').LastOrDefault() ?? "";
-                SetStatus($"Searching for your game files did not work (code {_scanFind.ExitCode}). You can still choose them yourself. {err}", Theme.Warn);
+                SetStatus(UiLocale.Interpolate($"Searching for your game files did not work (code {_scanFind.ExitCode}). You can still choose them yourself. {err}"), Theme.Warn);
                 Log("find_inputs failed: " + _scanFind.ErrorText);
                 UpdateFieldStatus();
                 return;
@@ -549,11 +549,11 @@ namespace OpenSmash.Launcher
             }
             UpdateFieldStatus();
             if (note != "" && IsDir(Val("base")))
-                _f["base"].Status += $" Your package {Path.GetFileName(note)} was found too: press FILE to use it instead.";
+                _f["base"].Status += UiLocale.Interpolate($" Your package {Path.GetFileName(note)} was found too: press FILE to use it instead.");
 
             int n = new[] { "base", "update", "prodkeys", "firmware" }.Count(k => Val(k) != "");
             double secs = Num(root, "seconds") ?? 0;
-            SetStatus($"Search finished ({secs.ToString("0.0", CultureInfo.InvariantCulture)} s): {n} of 4 file fields filled in. Check them, then press Install.", Theme.Muted);
+            SetStatus(UiLocale.Interpolate($"Search finished ({secs.ToString("0.0", CultureInfo.InvariantCulture)} s): {n} of 4 file fields filled in. Check them, then press Install."), Theme.Muted);
             if (root.TryGetProperty("notes", out var notes) && notes.ValueKind == JsonValueKind.Array)
                 foreach (var nt in notes.EnumerateArray())
                     if (nt.ValueKind == JsonValueKind.String && nt.GetString() != "") Log("note: " + nt.GetString());
@@ -590,7 +590,7 @@ namespace OpenSmash.Launcher
             catch { res.Clear(); }
             if (res.Count == 0)
             {
-                _checks = new List<Check> { new() { Level = "warn", What = "Checks", Msg = $"The PC check did not run (code {_scanPre.ExitCode})." } };
+                _checks = new List<Check> { new() { Level = "warn", What = "Checks", Msg = UiLocale.Interpolate($"The PC check did not run (code {_scanPre.ExitCode}).") } };
                 return;
             }
             _checks = res;
@@ -916,7 +916,7 @@ namespace OpenSmash.Launcher
                 SetStatus("Accept Microsoft's license terms to continue.", Theme.Warn);
                 Confirm(
                     "ACCEPT MICROSOFT'S LICENSE?",
-                    "The compiler needs Microsoft's C runtime and the Windows SDK (about 570 MB). They come from Microsoft. Yes accepts the Visual Studio Build Tools license terms. Read them first:\n" + url,
+                    UiLocale.Text("The compiler needs Microsoft's C runtime and the Windows SDK (about 570 MB). They come from Microsoft. Yes accepts the Visual Studio Build Tools license terms. Read them first:\n") + url,
                     "YES",
                     () => AnswerCompilerLicense(true),
                     () => AnswerCompilerLicense(false));
@@ -936,7 +936,7 @@ namespace OpenSmash.Launcher
             if (_gameOk != true) bad.Add("Game files");
             if (!dry && bad.Count > 0)
             {
-                Alert("FIX THESE FOLDERS", "Please fix: " + string.Join(", ", bad) + ".\n\nThe line under each folder says what is wrong. Press Check files after you change one.");
+                Alert("FIX THESE FOLDERS", UiLocale.Text("Please fix: ") + string.Join(", ", bad) + UiLocale.Text(".\n\nThe line under each folder says what is wrong. Press Check files after you change one."));
                 return;
             }
             string ps1 = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
@@ -997,12 +997,12 @@ namespace OpenSmash.Launcher
             if (kind == "update") AddStep("update", "Update from GitHub", 15);
             if (kind == "bootstrap") AddStep("python", "Set up Python for the installer", 120);
             Log($"=== {DateTime.Now:yyyy-MM-dd HH:mm:ss} {kind}: {exe} {string.Join(" ", args)}", toScreen: false);
-            Log("Starting " + kind + (dry ? " (dry run)" : "") + " \u2026");
+            Log(UiLocale.Text("Starting ") + kind + (dry ? " (dry run)" : "") + " \u2026");
             _job = new Proc(capture: false);
             if (!_job.Start(exe, args, _repo))
             {
-                Log("Could not start: " + _job.StartError);
-                _errMsg = "Could not start " + Path.GetFileName(exe) + ": " + _job.StartError;
+                Log(UiLocale.Text("Could not start: ") + _job.StartError);
+                _errMsg = UiLocale.Text("Could not start ") + Path.GetFileName(exe) + ": " + _job.StartError;
             }
             else if (kind is "update" or "bootstrap") SetStepState(_steps[0], "run", null, "");
             _view = "build";
@@ -1047,7 +1047,7 @@ namespace OpenSmash.Launcher
             {
                 foreach (var s in _steps.Where(s => s.State == "run")) SetStepState(s, "fail", null, "");
                 _failedBefore = _jobKind == "install";
-                if (_errMsg == "") _errMsg = $"It stopped (code {code}). The log below says why.";
+                if (_errMsg == "") _errMsg = UiLocale.Interpolate($"It stopped (code {code}). The log below says why.");
                 if (_errHint == "")
                     _errHint = _jobKind == "install"
                         ? "Fix the problem, then press Resume: finished steps are not repeated."
@@ -1103,7 +1103,7 @@ namespace OpenSmash.Launcher
                             " & echo. & echo Finished: read the lines above. Close this window and press Resume in the installer.") { UseShellExecute = true });
                         Log("started in a console: " + cmd);
                     }
-                    catch (Exception ex) { Alert("COULD NOT START", "The console could not start: " + ex.Message); }
+                    catch (Exception ex) { Alert("COULD NOT START", UiLocale.Text("The console could not start: ") + ex.Message); }
                 });
         }
 
@@ -1159,7 +1159,7 @@ namespace OpenSmash.Launcher
                 Directory.CreateDirectory(dir);
                 File.WriteAllText(Path.Combine(dir, ".msvc-license-answer"), accept ? "yes\n" : "no\n");
             }
-            catch (Exception ex) { Log("Could not answer the license prompt: " + ex.Message); }
+            catch (Exception ex) { Log(UiLocale.Text("Could not answer the license prompt: ") + ex.Message); }
             try { _job?.WriteLine(accept ? "yes" : "no"); } catch { }
         }
 
@@ -1377,7 +1377,7 @@ namespace OpenSmash.Launcher
                 int n = 0;
                 try { n = Directory.EnumerateFiles(_fwPath, "*.nca").Count(); } catch { }
                 if (n == 0) { _fwOk = false; _fwStatus = "There are no .nca files here."; }
-                else { _fwOk = true; _fwStatus = n + " .nca files (the game's fonts are taken out of them)."; }
+                else { _fwOk = true; _fwStatus = n + UiLocale.Text(" .nca files (the game's fonts are taken out of them)."); }
             }
             if (!Directory.Exists(_gamePath)) { _gameOk = false; _gameStatus = "Choose the folder with your game files."; }
             else if (_keysOk != true) { _gameOk = false; _gameStatus = "The keys folder is needed to read the game files."; }
@@ -1438,7 +1438,7 @@ namespace OpenSmash.Launcher
                     if (err.Contains("ModuleNotFoundError") || err.Contains("No module named"))
                         return (true, "This folder will be read once the installer has set up Python's packages (the build does it first).");
                     string last = err.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "";
-                    return (false, "Could not read the folder" + (last.Length > 0 ? ": " + last : " (the reader stopped without saying why)."));
+                    return (false, UiLocale.Text("Could not read the folder") + (last.Length > 0 ? ": " + last : " (the reader stopped without saying why)."));
                 }
                 using var doc = JsonDocument.Parse(output);
                 var root = doc.RootElement;
@@ -1450,11 +1450,11 @@ namespace OpenSmash.Launcher
                 string text = string.Join(" ", lines.Where(s => s.Length > 0));
                 if (program) return (true, text.Length > 0 ? text : "Game files found.");
                 string problem = root.TryGetProperty("problem", out var pr) && pr.ValueKind == JsonValueKind.String ? pr.GetString() ?? "the game was not found" : "the game was not found";
-                return (false, ("Problem: " + problem + " " + text).Trim());
+                return (false, (UiLocale.Text("Problem: ") + problem + " " + text).Trim());
             }
             catch (Exception ex)
             {
-                return (false, "Could not read the folder: " + ex.Message);
+                return (false, UiLocale.Text("Could not read the folder: ") + ex.Message);
             }
         }
 
@@ -1938,11 +1938,11 @@ namespace OpenSmash.Launcher
         static string FmtLeft(double secs)
         {
             if (secs < 60) return "less than a minute left";
-            if (secs < 5400) return $"about {(int)Math.Round(secs / 60)} min left";
+            if (secs < 5400) return UiLocale.Interpolate($"about {(int)Math.Round(secs / 60)} min left");
             double h = Math.Floor(secs / 3600);
             int m = (int)Math.Round((secs - h * 3600) / 60);
             if (m >= 60) { h += 1; m = 0; }
-            return $"about {(int)h} h {m} min left";
+            return UiLocale.Interpolate($"about {(int)h} h {m} min left");
         }
 
         // ---------------------------------------------------------------------------

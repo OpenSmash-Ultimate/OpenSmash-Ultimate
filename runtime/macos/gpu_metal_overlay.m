@@ -15,13 +15,15 @@
 #include "gpu_menu.h"
 #include "gpu_overlay.h"
 
+#include "../ui_font.h"
+
 #define CELL_W 24                 /* the atlas's cells */
 #define CELL_H 48
 #define TEXT_W 12                 /* the overlay's own letters: half size */
 #define TEXT_H 24
-#define COLS 16
+#define COLS UI_FONT_COLS
 #define ATLAS_W (CELL_W * COLS)
-#define ATLAS_H (CELL_H * 6)      /* ' '..'~', then the solid cell (127) */
+#define ATLAS_H (CELL_H * UI_FONT_ROWS)      /* ' '..'~', then the solid cell (127) */
 #define MAX_QUADS 8192
 #define HISTORY 240
 #define FRAMES 3
@@ -105,7 +107,7 @@ static id<MTLRenderPipelineState> pipeline(id<MTLDevice> dev, MTLPixelFormat for
 static void quad(float x, float y, float w, float h, int cell, unsigned color) {
     if (nverts + 6 > MAX_QUADS * 6) return;
     float u0 = (float)(cell % COLS * CELL_W) / ATLAS_W, v0 = (float)(cell / COLS * CELL_H) / ATLAS_H;
-    float u1 = u0 + (float)CELL_W / ATLAS_W, v1 = v0 + (float)CELL_H / ATLAS_H;
+    float u1 = u0 + (float)(CELL_W * ui_font_span(cell)) / ATLAS_W, v1 = v0 + (float)CELL_H / ATLAS_H;
     if (cell == 127 - 32) { u0 = u1 = u0 + 0.5f * CELL_W / ATLAS_W; v0 = v1 = v0 + 0.5f * CELL_H / ATLAS_H; }   /* solid: its middle */
     Vertex a = {x, y, u0, v0, color}, b = {x + w, y, u1, v0, color}, c = {x, y + h, u0, v1, color}, d = {x + w, y + h, u1, v1, color};
     Vertex *o = &verts[nverts];
@@ -119,14 +121,15 @@ static void rect(float x, float y, float w, float h, unsigned color) { quad(x, y
 /* Text at (x, y), letters size high, one line per '\n'; returns the y below it. */
 static float text_sized(float x, float y, float size, unsigned color, const char *s) {
     float cx = x, w = size / 2, shadow = size >= 32 ? 2.0f : 1.0f;
-    for (; *s; s++) {
-        if (*s == '\n') { cx = x; y += size; continue; }
-        int c = (unsigned char)*s;
-        if (c > 32 && c < 127) {
-            quad(cx + shadow, y + shadow, w, size, c - 32, RGBA(0, 0, 0, 200));   /* shadow */
-            quad(cx, y, w, size, c - 32, color);
+    while (*s) {
+        unsigned c = ui_utf8_next(&s);
+        if (c == '\n') { cx = x; y += size; continue; }
+        int columns = ui_columns(c), cell = ui_font_cell(c);
+        if (c > 32 && columns) {
+            quad(cx + shadow, y + shadow, w * columns, size, cell, RGBA(0, 0, 0, 200));
+            quad(cx, y, w * columns, size, cell, color);
         }
-        cx += w;
+        cx += w * columns;
     }
     return y + size;
 }

@@ -58,16 +58,26 @@ namespace OpenSmash.Launcher
             catch { return null; }
         }
 
-        public static Font Display(float px) =>
-            Anton != null
+        static string? UiFontFamily => UiLocale.Language switch
+        {
+            "zh-CN" => Installed.Contains("Microsoft YaHei UI") ? "Microsoft YaHei UI" : "Segoe UI",
+            "ja" => Installed.Contains("Yu Gothic UI") ? "Yu Gothic UI" : "Segoe UI",
+            "ko" => Installed.Contains("Malgun Gothic") ? "Malgun Gothic" : "Segoe UI",
+            _ => null
+        };
+
+        public static Font Display(float px, bool localize = true) =>
+            localize && UiFontFamily is string family
+                ? new Font(family, px, FontStyle.Regular, GraphicsUnit.Pixel)
+                : Anton != null
                 ? new Font(Anton, px, FontStyle.Regular, GraphicsUnit.Pixel)
                 : new Font(Installed.Contains("Bahnschrift SemiBold Condensed") ? "Bahnschrift SemiBold Condensed" : "Segoe UI", px, FontStyle.Regular, GraphicsUnit.Pixel);
 
         public static Font Body(float px, bool bold = false) =>
-            new Font(BodyFamily, px, bold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel);
+            new Font(UiFontFamily ?? BodyFamily, px, bold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel);
 
         public static Font Mono(float px, bool bold = false) =>
-            new Font(MonoFamily, px, bold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel);
+            new Font(UiFontFamily ?? MonoFamily, px, bold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel);
 
         // cubic-bezier(.2, .8, .2, 1): the site's --ease
         public static float Ease(float t)
@@ -96,8 +106,9 @@ namespace OpenSmash.Launcher
         // ---------------------------------------------------------------------------
         // Text
         public static void DrawText(Graphics g, string text, Font font, Color color, float x, float y, float w, float h,
-            StringAlignment align = StringAlignment.Near, StringAlignment valign = StringAlignment.Center)
+            StringAlignment align = StringAlignment.Near, StringAlignment valign = StringAlignment.Center, bool localize = true)
         {
+            if (localize) text = UiLocale.Text(text);
             if (string.IsNullOrEmpty(text)) return;
             using var sf = new StringFormat { Alignment = align, LineAlignment = valign, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
             using var b = new SolidBrush(color);
@@ -107,6 +118,7 @@ namespace OpenSmash.Launcher
         // Wrapped paragraph, clipped to the box (last visible line gets an ellipsis).
         public static void DrawWrapped(Graphics g, string text, Font font, Color color, float x, float y, float w, float h)
         {
+            text = UiLocale.Text(text);
             if (string.IsNullOrEmpty(text)) return;
             using var sf = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Near, Trimming = StringTrimming.EllipsisWord, FormatFlags = StringFormatFlags.LineLimit };
             using var b = new SolidBrush(color);
@@ -149,8 +161,9 @@ namespace OpenSmash.Launcher
             return w;
         }
 
-        public static float TextWidth(Graphics g, string text, Font f, float spacing = 0)
+        public static float TextWidth(Graphics g, string text, Font f, float spacing = 0, bool localize = true)
         {
+            if (localize) text = UiLocale.Text(text);
             if (string.IsNullOrEmpty(text)) return 0;
             if (spacing == 0) return g.MeasureString(text, f, 100000, Typo).Width;
             float w = 0;
@@ -160,6 +173,7 @@ namespace OpenSmash.Launcher
 
         public static void DrawSpaced(Graphics g, string text, Font f, Brush b, float x, float y, float spacing)
         {
+            text = UiLocale.Text(text);
             if (string.IsNullOrEmpty(text)) return;
             if (spacing == 0) { g.DrawString(text, f, b, x, y, Typo); return; }
             float cx = x;

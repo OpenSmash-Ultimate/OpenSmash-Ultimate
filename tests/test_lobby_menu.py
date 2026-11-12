@@ -63,16 +63,16 @@ class Menu:
     settings files, configured as the launchers configure the game: a command in, its answer out."""
     def __init__(self, exe, top, relay=None, protocol=None, room='menu', name='Alpha', args=(), files=None, **more):
         env = {k: v for k, v in os.environ.items() if not k.upper().startswith('SSBU_') and k.upper() != 'LOBBYMENUTEST_BUILD'}
-        env.update(SSBU_NET_UPNP='0', LOBBYMENUTEST_BUILD=BUILD)
+        env.update(SSBU_NET_UPNP='0', SSBU_UI_LANGUAGE='en', LOBBYMENUTEST_BUILD=BUILD)
         for k, v in (('SSBU_NET_RELAY', relay), ('SSBU_NET_PROTOCOL', protocol), ('SSBU_NET_ROOM', room), ('SSBU_NET_NAME', name)):
             if v is not None:
                 env[k] = str(v)
         env.update({k: str(v) for k, v in more.items()})
         self.dir = Path(tempfile.mkdtemp(prefix='menu ', dir=top))
         for f, text in (files or {}).items():
-            (self.dir / f).write_text(text)
+            (self.dir / f).write_text(text, encoding='utf-8')
         self.name = name
-        self.p = subprocess.Popen([exe, *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+        self.p = subprocess.Popen([exe, *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", env=env,
                                   cwd=self.dir)
         self.answers, self.log = queue.Queue(), []
         for stream, keep in ((self.p.stdout, self.answers.put), (self.p.stderr, self.log.append)):
@@ -398,7 +398,7 @@ class Pages(MenuTest):
         m.type('4')
         keys = (['F1, Cmd+1', 'F2, Cmd+2', 'F3, Cmd+3', 'Option+Return'] if sys.platform == 'darwin'
                 else ['F1', 'F2', 'F3', 'F11, Alt+Enter'])
-        self.assertEqual(m.labels(), ['Game language', 'Volume', 'Restart the game', 'Quit the game', 'Esc / Home button', *keys, 'Version'])
+        self.assertEqual(m.labels(), ['Interface language', 'Game language', 'Volume', 'Restart the game', 'Quit the game', 'Esc / Home button', *keys, 'Version'])
 
     @unittest.skipIf(sys.platform == 'darwin', 'the Mac program has no Renderer row (Metal only)')
     def test_renderer_row(self):

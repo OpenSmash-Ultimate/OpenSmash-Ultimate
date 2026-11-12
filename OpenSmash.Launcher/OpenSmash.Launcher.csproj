@@ -29,9 +29,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="..\locales\*.json" LogicalName="Locales.%(Filename)%(Extension)" />
     <EmbeddedResource Include="..\media\opensmash.ico" LogicalName="opensmash.ico" />
     <!-- Mod browser UI: kept as a real HTML file so the markup/JS is plain
          UTF-8 instead of an escaped C# string literal. -->
+    <EmbeddedResource Include="UiLocale.Web.js" LogicalName="UiLocale.Web.js" />
     <EmbeddedResource Include="MarketplaceHtml.html" LogicalName="MarketplaceHtml.html" />
     <!-- The site's display face (SIL OFL, Assets\Anton-OFL.txt) and its white emblem. -->
     <EmbeddedResource Include="Assets\Anton-Regular.ttf" LogicalName="Anton-Regular.ttf" />
