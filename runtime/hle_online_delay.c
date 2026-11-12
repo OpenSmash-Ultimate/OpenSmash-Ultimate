@@ -121,8 +121,10 @@ HLE_WRAP(71016d7730) {
     calls++;
     if (state != logged_state || game != logged_delay || (verbose && calls % 600 == 0)) {
         logged_state = state; logged_delay = game;
-        fprintf(stderr, "[net] online step: state %u, delay %u (base %u, flag %u), setting %d, call %ld\n",
-                state, game, ld8(self + 0x43), ld8(self + 0x3C), want, calls);
+        fprintf(stderr, "[net] online step: state %u, delay %u (base %u, flag %u), setting %d, call %ld; relay role %u (mode %u, flag %u), "
+                        "station %u, result %u, end %u/%u\n",
+                state, game, ld8(self + 0x43), ld8(self + 0x3C), want, calls, ld8(self), ld8(0x71052C51B0ull), ld8(0x71052C51B6ull),
+                ld8(self + 1), ld8(self + 0x5E), ld8(self + 0x63), ld16(self + 0x64));
     }
     online_pads_local(self, 0);
     {   /* (rollback's Online match: the step's own ends of the match. Its end asked is +0x63 - 1 over, main+0x16d5e50 when
@@ -134,11 +136,12 @@ HLE_WRAP(71016d7730) {
          * at its logic frame 37, and the game left the gathering. So the step is not run while rollback plays the match
          * (below), and what main+0x16d5e50 asks meanwhile is taken back. Once the fight is over - the same logic frame on
          * both games - the step runs again with "over" asked, the game's own end of a match: its state 5, then 6.
-         * (Open: the results screen then stays at its first screen, result mode 0, after both Quickplay and arena
-         * matches played this way - the step's results exchange seems to need the step run through the fight; asked
-         * 100 frames into the results instead, the step went to state 6 by itself and the results stood alike.
-         * SSBU_RB_OVER_AFTER=<frames>: asked that many frames after the fight.) SSBU_RB_STEP_END=1: left as the game
-         * does it.) */
+         * "Over" asked, 30 frames on main+0x16cced0 calls the step's +0x68 (main+0x156b860 -> the Online melee scene's
+         * main+0x15695a0: its +0x53, the "match over" main+0x156a570 waits for) and the step goes to state 6; the results
+         * follow, result mode on 118-137 frames after the fight, and the games pass them (Quickplay and Battle Arena, EOS
+         * relay forced, 60 ms + 1 % loss). Run through the fight instead (SSBU_RB_STEP_RUN=1), the step ends rollback's
+         * fight at its first frame. SSBU_RB_OVER_AFTER=<frames>: asked that many frames after the fight.)
+         * SSBU_RB_STEP_END=1: left as the game does it.) */
         int rb_online_match_now(void);
         static int keep = -1, played, after = -1, since;
         static u64 played_self;
@@ -177,19 +180,24 @@ HLE_WRAP(71016d7730) {
         if (end != end_was) {
             end_was = end;
             if (end) fprintf(stderr, "[net] online step: the match's end asked (kind %u: %s, code %u, in %u frames; state %u, logic frame %u; "
-                             "host %u, heard %u, quiet check %u/%u, last heard %llu, stations apart %u)\n",
+                             "relay role %u, heard %u, quiet check %u/%u, last heard %llu, stations apart %u)\n",
                              end, end == 1 ? "over" : end == 2 ? "cut short" : "?", ld16(self + 0x64), ld16(self + 0x66), state, ld32(0x71052c5184ull),
                              ld8(self), ld16(self + 2), ld8(self + 0x3E), ld8(self + 0x3F), (unsigned long long)ld64(self + 0x98), ld8(self + 0x5F));
         }
         static long heard_log;
         if (verbose && ++heard_log % 600 == 0)
-            fprintf(stderr, "[net] online step: host %u, heard %u, quiet check %u/%u, last heard %llu, keep-alive sent %llu\n", ld8(self), ld16(self + 2),
+            fprintf(stderr, "[net] online step: relay role %u, heard %u, quiet check %u/%u, last heard %llu, keep-alive sent %llu\n", ld8(self), ld16(self + 2),
                     ld8(self + 0x3E), ld8(self + 0x3F), (unsigned long long)ld64(self + 0x98), (unsigned long long)ld64(self + 0x80));
     }
-    {   /* (rollback's Online match: the guest's 31 s quiet check, main+0x16cf320 -> main+0x16cf7c4: no message of the
-         * host's step heard since +0x98 - its keep-alive, once a second - and +0x3e armed: the match cut short, code 2,
-         * on both games - "INCONTRO ANNULLATO" - at logic frame 1700 of a Battle Arena match, every time. Neither game
-         * is the step's host there (+0x0 = 0 on both, every arena match over EOS): no game sends the keep-alive. While
+    {   /* (rollback's Online match: the 31 s quiet check, main+0x16cf320 -> main+0x16cf7c4: +0x98 not renewed for 31 s
+         * and +0x3e armed: the match cut short, code 2, on both games - "INCONTRO ANNULLATO" - at logic frame 1700 of a
+         * Battle Arena match, every time. +0x98 is renewed by main+0x16d5e50 (main+0x16d75dc) each time a lockstep frame
+         * has every station's pads, on a game whose +0x0 is 0; with the step left out (below) no station sends its pads,
+         * so it is never renewed. +0x0 is not the arena's host: it is a relay role (a station that plays no pads of its
+         * own and passes the others' on, main+0x16cf3e0, its keep-alive once a second, main+0x16d8c48), set when the
+         * object is made (main+0x16d5b10 from main+0x134c09c) from the game's mode, main+0x52c51b0 (20 Battle Arena, 14
+         * Quickplay: 0 on both games, as it should) and main+0x52c51b6; the gathering's owner and host in the NEX store
+         * are the arena's maker, as the game expects. While
          * rollback plays the fight its link hears the other game every frame and says when it is gone (net_gone_check),
          * so the check is marked as already said (+0x3f), through the results to the step's own end (state 5 or 6:
          * "over" is asked in the results, above), and put back then. SSBU_RB_QUIET_CHECK=1: left on.) */
@@ -207,7 +215,7 @@ HLE_WRAP(71016d7730) {
         if (!keep && now && !ld8(self) && ld8(self + 0x63) == 0 && (state == 4 || (marked && state < 4))) {
             if (!marked) {
                 was = ld8(self + 0x3F); marked = 1; marked_self = self;
-                fprintf(stderr, "[net] rollback's Online match: the game's 31 s quiet check off (armed %u, host %u)\n", ld8(self + 0x3E), ld8(self));
+                fprintf(stderr, "[net] rollback's Online match: the game's 31 s quiet check off (armed %u, relay role %u)\n", ld8(self + 0x3E), ld8(self));
             }
             if (!ld8(self + 0x3F)) st8(self + 0x3F, 1);
         }

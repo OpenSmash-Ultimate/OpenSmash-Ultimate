@@ -230,6 +230,8 @@ void nex_notify(NexServer *s, const uint64_t *pids, uint32_t n, uint32_t kind, u
     no_u64(&body, source); no_u32(&body, kind); no_u64(&body, p1); no_u64(&body, p2); no_str(&body, text); no_u64(&body, p3);
     no_struct_end(&body, at);
     for (uint32_t i = 0; i < n; i++) nex_call(s, pids[i], 14, 1, body.p, body.n);
+    nex_log(s, 2, "notification %u (from pid %llu, %llu, %llu) to %u player%s", kind, (unsigned long long)source, (unsigned long long)p1,
+            (unsigned long long)p2, n, n == 1 ? "" : "s");
     no_free(&body);
 }
 static void notify1(NexServer *s, uint64_t pid, uint32_t kind, uint64_t source, uint64_t p1, uint64_t p2) { nex_notify(s, &pid, 1, kind, source, p1, p2, "", 0); }
