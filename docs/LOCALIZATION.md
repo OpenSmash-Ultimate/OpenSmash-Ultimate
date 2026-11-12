@@ -128,7 +128,8 @@ The tests cover catalog safety, adding a language without adapter changes,
 UTF-8 layout, production-menu switching/persistence, user text, Windows atlas
 coverage and quad widths, launcher settings, and the embedded browser with
 local synthetic responses when WebView2 is installed. The launcher test accepts
-an output directory for English/Chinese settings screenshots at 100% and 150%.
+an output directory for English/Chinese settings screenshots at 100% and 150%,
+plus Japanese, Korean, Spanish, French and German settings screenshots at 100%.
 These tests do not establish in-match rendering, Vulkan validation-layer
 cleanliness or frame-time performance. Measure those on actual hardware when
 validating a release, as required by `CONTRIBUTING.md`.

@@ -50,7 +50,7 @@ Rows that link to pull requests are being reviewed and land in `main` as they ar
 | [Linux](docs/LINUX.md) · [macOS](docs/MACOS.md) | install, build and run the experimental versions. The OpenSmash Launcher (`opensmash-launcher.sh`, `OpenSmash Launcher.command`) does setup, updates, Play, settings and mods in a window, with a game pad too (Steam Deck Game Mode). |
 | [How it works](docs/TECHNICAL.md) | understand the recompiler, the runtime and every tool. |
 
-UI language: the launcher and external menu offer English and Simplified Chinese, with a shared **Interface language** setting. See [UI languages and translation guide](docs/LOCALIZATION.md) for adding a language or translating new UI text.
+UI language: the launcher and external menu offer English, Simplified Chinese, Japanese, Korean, Spanish, French and German, with a shared **Interface language** setting. See [UI languages and translation guide](docs/LOCALIZATION.md) for adding a language or translating new UI text.
 
 ## `ssbu-recomp/`
 
