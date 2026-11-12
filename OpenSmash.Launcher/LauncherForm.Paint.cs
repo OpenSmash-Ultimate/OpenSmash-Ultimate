@@ -526,6 +526,7 @@ namespace OpenSmash.Launcher
             }
 
             PaintHeader(g, W, H);
+            PaintDiscordCard(g, W, H);
             if (_loadOn && _view != "mods") PaintLoad(g, W, H);
             PaintStatus(g, W, H);
             if (_view == "mods" && _showSetupPrompt) PaintSetupPrompt(g, W, H);
@@ -568,6 +569,7 @@ namespace OpenSmash.Launcher
             float ww = Theme.Label(g, "OPENSMASH", FD(21 * s), A(Theme.Text), wx, 0, HeaderH * s, 0.84f * s);
             float ww2 = Theme.Label(g, "-ULTIMATE", FD(21 * s), A(Theme.Dim), wx + ww + 0.84f * s, 0, HeaderH * s, 0.84f * s);
             AddHit("brand", mx, my, mark + 10 * s + ww + ww2, mark);
+            PaintDiscordHeader(g, wx + ww + 0.84f * s + ww2 + 36 * s, HeaderH * s / 2);   // (LauncherForm.Discord.cs)
 
             // Window buttons
             float cx = W - 40 * s, cy = HeaderH * s / 2, a = 7 * s;

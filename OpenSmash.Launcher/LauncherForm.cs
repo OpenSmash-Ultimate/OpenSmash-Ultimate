@@ -277,6 +277,7 @@ namespace OpenSmash.Launcher
                 UpdateMods();
                 ScanForNewMods();
                 _ = CheckUpdatesAtBootAsync();
+                DiscordInit();   // (LauncherForm.Discord.cs: the account, refreshed if it expired)
                 // The marketplace browser is heavy. Let the boot animation finish before it starts.
                 await Task.Delay(1100);
                 await InitializeMarketplaceWebView();
@@ -1974,6 +1975,7 @@ namespace OpenSmash.Launcher
         {
             if (_openDropdownKey != null && _openDropdownKey.StartsWith("modpick:") && !id.StartsWith("modpick:"))
                 _openDropdownKey = null;
+            if (ActivateDiscordHit(id)) return;
             if (ActivateNavHit(id)) return;
             if (id.StartsWith("menu:"))
             {
