@@ -1255,6 +1255,9 @@ def build(a):
         # made again when stale; without it Vulkan does not start and Direct3D 11 draws, so a failure is not fatal
         import glslang_lib
         glslang_lib.ensure(os.path.join(os.path.dirname(EXE), glslang_lib.DLL_NAME), log=log)
+        # Epic Online Services (runtime/net_eos.c): the online relay of last resort; without it, the lobby's relay
+        import eos_fetch
+        eos_fetch.ensure(os.path.dirname(EXE), log=log)
     if LINUX:
         log(f"\nDone: {exe} is ready. Start the game with ./play-ssbu.sh, or WindowSmash in your applications menu.")
     elif MACOS:

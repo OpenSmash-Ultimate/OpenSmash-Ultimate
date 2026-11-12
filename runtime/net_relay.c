@@ -103,6 +103,7 @@ typedef int SOCKET;
 #include "host.h"
 #include "mod_diff.h"
 #include "net.h"
+#include "net_eos.h"
 #include "room_code.h"
 #include "settings.h"
 #include "sim_version.h"
@@ -912,6 +913,10 @@ typedef struct Peer {
     LONG rtt;
     Candidate cand[CANDS];                            /* the lobby's, its guessed ports, then the one learnt */
     volatile LONG in_direct, in_relayed, out_direct, out_relayed, dropped;
+    char eos[NET_EOS_ID_LEN + 1];                     /* (net_eos.c) its EOS id, told through the lobby; "" unknown */
+    volatile LONG64 eos_in_at;                        /* the last packet from it through EOS (ms) */
+    u64 eos_told_at, eos_hello_at;
+    volatile LONG in_eos, out_eos;
 } Peer;
 static SRWLOCK peers_lock = SRWLOCK_INIT;   /* (never held while calling hle_net, or printing) */
 static Peer peers[PEERS_MAX];
@@ -968,6 +973,12 @@ static const char *addr_text(const struct sockaddr_in *a, char *buf) {   /* (buf
 static u64 random64(void) { unsigned int a, b; rand_s(&a); rand_s(&b); return (u64)a << 32 | b; }
 
 static int usable(const Peer *q, u64 t) { return q->state == P_DIRECT && t - q->last_ack < USABLE_MS && t < test_block_at; }
+/* EOS (net_eos.c), where no direct path works: each player tells the other its EOS id through the lobby
+ * (DATA to NET_EOS_PORT), then both send EOS hellos (DIRECT packets with the pair's secret, to NET_EOS_PORT)
+ * every 300 ms; while hellos come back, the game's traffic to that player goes through EOS - which punches
+ * through routers itself and, where it can't, relays near both players - instead of the lobby's relay. */
+#define NET_EOS_PORT 7702
+static int usable_eos(const Peer *q, u64 t) { return q->eos[0] && t - (u64)q->eos_in_at < USABLE_MS && eos_ready(); }
 
 static const char *peer_state(const Peer *q, u64 t, char *buf) {   /* (buf: 48 bytes) */
     if (usable(q, t)) { snprintf(buf, 48, "direct %ld ms", (long)q->rtt); return buf; }
@@ -1129,6 +1140,8 @@ static void read_peers(const u8 *p, int n) {
         if (old) {
             q->in_direct = old->in_direct; q->in_relayed = old->in_relayed; q->dropped = old->dropped;
             q->out_direct = old->out_direct; q->out_relayed = old->out_relayed; q->rtt = old->rtt;
+            memcpy(q->eos, old->eos, sizeof q->eos); q->eos_in_at = old->eos_in_at; q->eos_told_at = old->eos_told_at;
+            q->eos_hello_at = old->eos_hello_at; q->in_eos = old->in_eos; q->out_eos = old->out_eos;
         }
         if (same) {   /* (the same player at the same addresses: its path kept; a new PROBE port only changes the guesses) */
             q->state = old->state; q->via = old->via; q->t0 = old->t0; q->last_ack = old->last_ack;
@@ -1170,10 +1183,23 @@ static void read_peers(const u8 *p, int n) {
 static void peers_tick(u64 t) {
     static u64 last_report;
     Notes ns = {0};
+    const char *my_eos = eos_my_id();
+    u32 tell[PEERS_MAX];   /* (sent after the lock: net_send takes it) */
+    struct { char id[NET_EOS_ID_LEN + 1]; u64 secret; u32 ip; } eos_hi[PEERS_MAX];
+    int ntell = 0, nhi = 0;
     AcquireSRWLockExclusive(&peers_lock);
     for (int i = 0; i < npeers; i++) {
         Peer *q = &peers[i];
         if (!q->introduced) continue;
+        if (my_eos && !usable(q, t)) {   /* (EOS: our id through the lobby until its hellos come, and hellos while it is known) */
+            if (!usable_eos(q, t) && t - q->eos_told_at >= 1000) { q->eos_told_at = t; tell[ntell++] = q->ip; }
+            if (q->eos[0] && t - q->eos_hello_at >= 300) {
+                q->eos_hello_at = t;
+                memcpy(eos_hi[nhi].id, q->eos, sizeof q->eos);
+                eos_hi[nhi].secret = q->secret;
+                eos_hi[nhi++].ip = q->ip;
+            }
+        }
         if (q->state == P_DIRECT && t - q->last_ack >= USABLE_MS) {
             q->state = P_RELAYED;
             q->t0 = t;   /* (and hellos every 400 ms for a while: it may come back) */
@@ -1208,12 +1234,76 @@ static void peers_tick(u64 t) {
         for (int i = 0; i < npeers; i++) {
             char st[48];
             const Peer *q = &peers[i];
-            note(&ns, "peer %s: %s; in %ld direct + %ld relayed, out %ld direct + %ld relayed, %ld dropped", q->name,
-                 peer_state(q, t, st), (long)q->in_direct, (long)q->in_relayed, (long)q->out_direct, (long)q->out_relayed, (long)q->dropped);
+            note(&ns, "peer %s: %s; in %ld direct + %ld EOS + %ld relayed, out %ld direct + %ld EOS + %ld relayed, %ld dropped", q->name,
+                 peer_state(q, t, st), (long)q->in_direct, (long)q->in_eos, (long)q->in_relayed, (long)q->out_direct, (long)q->out_eos,
+                 (long)q->out_relayed, (long)q->dropped);
         }
     }
     ReleaseSRWLockExclusive(&peers_lock);
     print_notes(&ns);
+    for (int i = 0; i < ntell; i++) net_send(my_ip, NET_EOS_PORT, tell[i], NET_EOS_PORT, my_eos, NET_EOS_ID_LEN);
+    for (int i = 0; i < nhi; i++) {
+        u8 b[DIRECT_HEAD + 12 + NET_EOS_ID_LEN];
+        header(b, T_DIRECT);
+        put64(b + 4, eos_hi[i].secret);
+        put32(b + DIRECT_HEAD, my_ip);
+        put32(b + DIRECT_HEAD + 4, eos_hi[i].ip);
+        put16(b + DIRECT_HEAD + 8, NET_EOS_PORT);
+        put16(b + DIRECT_HEAD + 10, NET_EOS_PORT);
+        memcpy(b + DIRECT_HEAD + 12, my_eos, NET_EOS_ID_LEN);
+        eos_send(eos_hi[i].id, b, sizeof b);
+    }
+}
+
+static int eos_id_ok(const u8 *p, u32 n) {   /* 32 hex digits */
+    if (n < NET_EOS_ID_LEN) return 0;
+    for (int i = 0; i < NET_EOS_ID_LEN; i++) if (!((p[i] >= '0' && p[i] <= '9') || (p[i] >= 'a' && p[i] <= 'f'))) return 0;
+    return 1;
+}
+static void eos_told(u32 src, const u8 *p, u32 n) {   /* (client thread) a player's EOS id, through the lobby */
+    if (!eos_id_ok(p, n)) return;
+    Notes ns = {0};
+    AcquireSRWLockExclusive(&peers_lock);
+    for (int i = 0; i < npeers; i++)
+        if (peers[i].ip == src && memcmp(peers[i].eos, p, NET_EOS_ID_LEN)) {
+            memcpy(peers[i].eos, p, NET_EOS_ID_LEN);
+            peers[i].eos[NET_EOS_ID_LEN] = 0;
+            peers[i].eos_hello_at = 0;
+            note(&ns, "%s: EOS player %s", peers[i].name, peers[i].eos);
+        }
+    ReleaseSRWLockExclusive(&peers_lock);
+    print_notes(&ns);
+}
+
+/* (net_eos.c, the EOS thread) A packet from another player through EOS: as a direct one, with the pair's secret. */
+void net_eos_packet(const char *from, const u8 *p, u32 n) {
+    u64 t = now_ms();
+    if (!lobby || !joined || n < DIRECT_HEAD + 12 || p[0] != MAGIC0 || p[1] != MAGIC1 || p[2] != proto || p[3] != T_DIRECT) return;
+    u64 secret = get64(p + 4);
+    const u8 *b = p + DIRECT_HEAD;
+    u32 src = get32(b), dst = get32(b + 4);
+    u16 sport = get16(b + 8), dport = get16(b + 10);
+    int ok = 0, first = 0;
+    Notes ns = {0};
+    AcquireSRWLockShared(&peers_lock);
+    for (int i = 0; i < npeers; i++) {
+        Peer *q = &peers[i];
+        if (!q->introduced || q->secret != secret || q->ip != src) continue;
+        ok = (dst == my_ip || dst == NET_BROADCAST || dst == 0xFFFFFFFFu) && sport != NET_LDN_PORT && dport != NET_LDN_PORT &&
+             !strncmp(q->eos, from, NET_EOS_ID_LEN);
+        if (ok) {
+            first = t - (u64)InterlockedExchange64(&q->eos_in_at, (LONG64)t) >= USABLE_MS;
+            if (first) note(&ns, "%s: through EOS (Epic's P2P) rather than the lobby's relay", q->name);
+            InterlockedIncrement(&q->in_eos);
+        } else InterlockedIncrement(&q->dropped);
+        break;
+    }
+    ReleaseSRWLockShared(&peers_lock);
+    print_notes(&ns);
+    if (!ok || dport == NET_EOS_PORT) return;   /* (a hello: the path works) */
+    u32 len = n - DIRECT_HEAD - 12;
+    if (rb_take(src, dport, b + 12, len, &rb_in_direct)) return;
+    if (ldn_in_network(src)) vsock_deliver(src, sport, dst, dport, b + 12, len);
 }
 
 /* A packet from another player, straight (not from the relay). */
@@ -1235,6 +1325,7 @@ static void direct_packet(const u8 *p, int n, const struct sockaddr_in *from) {
             InterlockedIncrement(ok ? &q->in_direct : &q->dropped);
         }
         ReleaseSRWLockShared(&peers_lock);
+        if (ok && dport == NET_EOS_PORT) { if (eos_id_ok(b + 12, (u32)(n - DIRECT_HEAD - 12))) eos_told(src, b + 12, (u32)(n - DIRECT_HEAD - 12)); return; }
         if (ok && rb_take(src, dport, b + 12, (u32)(n - DIRECT_HEAD - 12), &rb_in_direct)) return;   /* (rollback's: the pair's secret is the proof) */
         if (ok && ldn_in_network(src)) vsock_deliver(src, sport, dst, dport, b + 12, (u32)(n - DIRECT_HEAD - 12));
         else if (ok) InterlockedIncrement(&direct_not_in_room);
@@ -1313,6 +1404,8 @@ void net_send(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const void *da
     memcpy(body + 12, data, len);
     int n = 12 + (int)len, broadcast = dst_ip == NET_BROADCAST || dst_ip == 0xFFFFFFFFu, nd = 0, relayed = 0;
     struct { struct sockaddr_in at; u64 secret; u32 ip; } direct[PEERS_MAX];
+    struct { char id[NET_EOS_ID_LEN + 1]; u64 secret; u32 ip; } viaeos[PEERS_MAX];
+    int ne = 0;
     if (src_port != NET_LDN_PORT && dst_port != NET_LDN_PORT) {   /* (local wireless's own: always through the lobby) */
         u64 t = now_ms();
         AcquireSRWLockShared(&peers_lock);
@@ -1324,6 +1417,11 @@ void net_send(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const void *da
                 direct[nd].secret = q->secret;
                 direct[nd++].ip = q->ip;
                 InterlockedIncrement(&q->out_direct);
+            } else if (n + DIRECT_HEAD <= NET_EOS_MAX && usable_eos(q, t)) {
+                memcpy(viaeos[ne].id, q->eos, sizeof q->eos);
+                viaeos[ne].secret = q->secret;
+                viaeos[ne++].ip = q->ip;
+                InterlockedIncrement(&q->out_eos);
             } else {
                 relayed++;
                 InterlockedIncrement(&q->out_relayed);
@@ -1337,12 +1435,19 @@ void net_send(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const void *da
         put64(h + 4, direct[i].secret);
         send_udp(client_sock, h, n + DIRECT_HEAD, &direct[i].at);
     }
-    if (!nd || (broadcast && relayed)) {
-        if (nd) {   /* (a broadcast some players got directly: the lobby leaves those out) */
-            h = body - (5 + 4 * nd);
+    for (int i = 0; i < ne; i++) {
+        h = body - DIRECT_HEAD;
+        header(h, T_DIRECT);
+        put64(h + 4, viaeos[i].secret);
+        eos_send(viaeos[i].id, h, (u32)(n + DIRECT_HEAD));
+    }
+    if (!(nd + ne) || (broadcast && relayed)) {
+        if (nd + ne) {   /* (a broadcast some players got directly or through EOS: the lobby leaves those out) */
+            h = body - (5 + 4 * (nd + ne));
             header(h, T_BCAST);
-            h[4] = (u8)nd;
+            h[4] = (u8)(nd + ne);
             for (int i = 0; i < nd; i++) put32(h + 5 + 4 * i, direct[i].ip);
+            for (int i = 0; i < ne; i++) put32(h + 5 + 4 * (nd + i), viaeos[i].ip);
         } else {
             h = body - 4;
             header(h, T_DATA);
@@ -2658,6 +2763,7 @@ static DWORD WINAPI client_thread(LPVOID unused) {
         switch (buf[3]) {
         case T_DATA:
             if (n >= 16 && joined) {
+                if (get16(buf + 14) == NET_EOS_PORT) { eos_told(get32(buf + 4), buf + 16, (u32)(n - 16)); break; }
                 if (get16(buf + 12) != NET_LDN_PORT) count_relayed_in(get32(buf + 4));
                 if (!rb_take(get32(buf + 4), get16(buf + 14), buf + 16, (u32)(n - 16), &rb_in_relayed))
                     vsock_deliver(get32(buf + 4), get16(buf + 12), get32(buf + 8), get16(buf + 14), buf + 16, (u32)(n - 16));
@@ -2677,6 +2783,7 @@ static DWORD WINAPI client_thread(LPVOID unused) {
             if (!joined && lobby) fprintf(stderr, "[net] joined the lobby on %s as 10.13.%u.%u (lobby code %s)%s\n", relay_text, my_ip >> 8 & 255, my_ip & 255, room,
                                           proto == NET_PROTOCOL_V3 ? ", protocol 3" : "");
             else if (!joined) fprintf(stderr, "[net] joined room %s on %s as 10.13.%u.%u (%ld players)\n", room, relay_text, my_ip >> 8 & 255, my_ip & 255, (long)members);
+            if (lobby) eos_start();   /* (net_eos.c: the relay of last resort, when the SDK and eos.txt are beside the program) */
             InterlockedExchange(&joined, 1);
             break;
         case T_REJECT:
