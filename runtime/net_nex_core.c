@@ -574,6 +574,8 @@ static void server_message(NexServer *s, NexConn *c, const uint8_t *data, size_t
     if (m.n > hn) strcat(hex, "..");
     if (fn && served && m.protocol == 115 && m.method != 8)   /* (DataStore: each call, as tools/nex logs them) */
         nex_log(s, 1, "DataStore method %u from pid %llu: %s", m.method, (unsigned long long)c->pid, m.n ? hex : "(nothing)");
+    else if (fn && served && m.protocol != 115)   /* (SSBU_NET_LOG=2: every other call too) */
+        nex_log(s, 2, "protocol %u method %u from pid %llu: %s", m.protocol, m.method, (unsigned long long)c->pid, m.n ? hex : "(nothing)");
     if (!fn || !served) {
         nex_log(s, 1, "%s protocol %u method %u from pid %llu: %s", fn ? "not served there:" : "UNHANDLED", m.protocol, m.method, (unsigned long long)c->pid, hex);
         rmc_error(&reply, m.protocol, m.call_id, NEX_CORE_NOT_IMPLEMENTED);
