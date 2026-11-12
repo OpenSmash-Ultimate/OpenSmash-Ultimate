@@ -18,6 +18,8 @@
 #include "host.h"
 #include "net.h"
 #include "net_eos.h"
+#include "net_backend.h"
+#include "net_discord.h"
 #include "online.h"
 #include "input_seq.h"
 
@@ -248,7 +250,16 @@ static DWORD WINAPI ldn_agent(LPVOID unused) {   /* advertising, keeping in touc
             if (tick) ldn_send(get_u32(L.net + NODE(0)), LM_KEEP, L.net + NI_SESSION, 16);
             if (t - L.host_heard > 6000) lost_network(DR_SIGNAL_LOST);
         }
+        int in_room = L.state == LS_AP_CREATED || L.state == LS_CONNECTED, hosting = L.state == LS_AP_CREATED, players = L.net[NI_NODE_COUNT], max = L.net[NI_NODE_MAX];
+        u32 host_ip = get_u32(L.net + NODE(0));
         ReleaseSRWLockExclusive(&L.lock);
+        if (tick) {   /* (Discord's Rich Presence: the room, and its host's EOS id as what friends join) */
+            char host[NET_EOS_ID_LEN + 1] = "";
+            const char *me = hosting ? eos_my_id() : NULL;
+            if (me) snprintf(host, sizeof host, "%s", me);
+            else if (in_room && net_backend == &net_eos_backend) eos_hub_member_id(host_ip, host);
+            discord_note_room(in_room, players, max, hosting, host);
+        }
     }
 }
 

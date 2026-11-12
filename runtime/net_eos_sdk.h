@@ -17,7 +17,7 @@ typedef struct EOS_ProductUserIdDetails *EOS_ProductUserId;
 typedef struct EOS_ContinuanceTokenDetails *EOS_ContinuanceToken;
 typedef uint64_t EOS_NotificationId;
 #define EOS_CALL __stdcall
-enum { EOS_SUCCESS = 0, EOS_INVALID_USER = 3, EOS_ECT_DEVICEID_ACCESS_TOKEN = 10, EOS_PR_UNRELIABLE_UNORDERED = 0, EOS_PR_RELIABLE_ORDERED = 2 };
+enum { EOS_SUCCESS = 0, EOS_INVALID_USER = 3, EOS_ECT_DEVICEID_ACCESS_TOKEN = 10, EOS_ECT_DISCORD_ACCESS_TOKEN = 4, EOS_PR_UNRELIABLE_UNORDERED = 0, EOS_PR_RELIABLE_ORDERED = 2 };
 #define EOS_PF_DISABLE_OVERLAY 0x2ull
 
 typedef struct { int32_t ApiVersion; void *Alloc, *Realloc, *Release; const char *ProductName, *ProductVersion; void *Reserved, *SystemInitializeOptions, *OverrideThreadAffinity; } EosInitializeOptions;   /* (API 5) */
@@ -33,7 +33,11 @@ typedef struct { int32_t ApiVersion; const EosConnectCredentials *Credentials; c
 typedef struct { EOS_EResult ResultCode; void *ClientData; EOS_ProductUserId LocalUserId; EOS_ContinuanceToken ContinuanceToken; } EosLoginInfo;
 typedef struct { int32_t ApiVersion; EOS_ContinuanceToken ContinuanceToken; } EosCreateUserOptions;              /* (API 1) */
 typedef struct { EOS_EResult ResultCode; void *ClientData; EOS_ProductUserId LocalUserId; } EosCreateUserInfo;
-typedef struct { int32_t ApiVersion; const char *DeviceModel; } EosCreateDeviceIdOptions;                      /* (API 1) */
+typedef struct { int32_t ApiVersion; EOS_ProductUserId LocalUserId; EOS_ContinuanceToken ContinuanceToken; } EosLinkAccountOptions;   /* (API 1) */
+typedef struct { EOS_EResult ResultCode; void *ClientData; EOS_ProductUserId LocalUserId; } EosLinkAccountInfo;
+typedef struct { int32_t ApiVersion; EOS_ProductUserId PrimaryLocalUserId, LocalDeviceUserId, ProductUserIdToPreserve; } EosTransferDeviceIdOptions;   /* (API 1) */
+typedef struct { EOS_EResult ResultCode; void *ClientData; EOS_ProductUserId LocalUserId; } EosTransferDeviceIdInfo;
+typedef struct { int32_t ApiVersion; const char *DeviceModel; } EosCreateDeviceIdOptions;                     /* (API 1) */
 typedef struct { int32_t ApiVersion; } EosDeleteDeviceIdOptions;                                               /* (API 1) */
 typedef struct { EOS_EResult ResultCode; void *ClientData; } EosDeviceIdInfo;                                  /* (create and delete) */
 typedef struct { int32_t ApiVersion; char SocketName[33]; } EosSocketId;                                       /* (API 1) */
@@ -93,6 +97,8 @@ typedef void (EOS_CALL *MemberUpdateCb)(const EosMemberUpdateInfo *);
 typedef void (EOS_CALL *LoginCb)(const EosLoginInfo *);
 typedef void (EOS_CALL *CreateUserCb)(const EosCreateUserInfo *);
 typedef void (EOS_CALL *DeviceIdCb)(const EosDeviceIdInfo *);
+typedef void (EOS_CALL *LinkAccountCb)(const EosLinkAccountInfo *);
+typedef void (EOS_CALL *TransferDeviceIdCb)(const EosTransferDeviceIdInfo *);
 typedef void (EOS_CALL *RequestCb)(const EosRequestInfo *);
 
 #define EOS_FUNCS(X) \
@@ -105,6 +111,8 @@ typedef void (EOS_CALL *RequestCb)(const EosRequestInfo *);
     X(void, EOS_Connect_CreateUser, (EOS_HConnect, const EosCreateUserOptions *, void *, CreateUserCb)) \
     X(void, EOS_Connect_CreateDeviceId, (EOS_HConnect, const EosCreateDeviceIdOptions *, void *, DeviceIdCb)) \
     X(void, EOS_Connect_DeleteDeviceId, (EOS_HConnect, const EosDeleteDeviceIdOptions *, void *, DeviceIdCb)) \
+    X(void, EOS_Connect_LinkAccount, (EOS_HConnect, const EosLinkAccountOptions *, void *, LinkAccountCb)) \
+    X(void, EOS_Connect_TransferDeviceIdAccount, (EOS_HConnect, const EosTransferDeviceIdOptions *, void *, TransferDeviceIdCb)) \
     X(EOS_EResult, EOS_P2P_SendPacket, (EOS_HP2P, const EosSendPacketOptions *)) \
     X(EOS_EResult, EOS_P2P_ReceivePacket, (EOS_HP2P, const EosReceivePacketOptions *, EOS_ProductUserId *, EosSocketId *, uint8_t *, void *, uint32_t *)) \
     X(EOS_EResult, EOS_P2P_AcceptConnection, (EOS_HP2P, const EosAcceptOptions *)) \

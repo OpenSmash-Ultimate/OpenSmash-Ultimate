@@ -134,6 +134,22 @@ void nex_server_set_idle_timeout(NexServer *s, double seconds);
 #define NEX_POWER_ENTRY (8 + NEX_POWER_RECORD)
 const uint8_t *nex_server_powers(NexServer *s, size_t *n);
 void nex_server_set_powers(NexServer *s, const uint8_t *data, size_t n);
+/* (Discord's presence and EOS Stats, hle_online.c) a record's GSP: its first u32 (seen: 1460, 123, 1460 - which of the
+ * record's numbers the game shows as the GSP is to be confirmed in the game) */
+uint32_t nex_power_gsp(const uint8_t *rec);
+/* 1: a record was posted since the last call: the newest one, its player's and that player's best GSP of all fighters */
+int nex_server_take_power(NexServer *s, uint64_t *pid, uint8_t rec[NEX_POWER_RECORD], uint32_t *top);
+/* Where this server's own player (its first secure connection) is: the gathering it is in, if any. 0: no player yet. */
+typedef struct NexWhere {
+    uint64_t pid;
+    int in_gathering;
+    uint32_t gid, game_mode, state, players, max_players;
+    int open;                  /* the gathering takes players (closed: its match is on, as far as NEX tells) */
+    char arena_id[8];          /* "" none */
+    int fighter;               /* the fighter of its newest record, -1 none */
+    uint32_t gsp;              /* that record's GSP */
+} NexWhere;
+int nex_server_where(NexServer *s, NexWhere *w);
 void nex_server_set_round_base(NexServer *s, uint64_t next_round);   /* (tests: ranked.py's int(time.time()) << 16) */
 /* PIDs: by default from the token's NSA id; identity, when set (the EOS product user id), takes its place */
 void nex_server_set_identity(NexServer *s, const char *identity);

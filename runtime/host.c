@@ -1689,6 +1689,8 @@ int main(int argc, char **argv) {
     rt_data_dir = dir;
     void mods_start(const char *data_dir);   /* (hle_mod_switch.c: a pending apply of the mods, the code patches' switch) */
     mods_start(dir);
+    void discord_start(void);   /* (net_discord.c: Discord's sign-in and Rich Presence, when its SDK is beside the program) */
+    discord_start();
     kernel_init();
     load(dir);
     movie_test_start();

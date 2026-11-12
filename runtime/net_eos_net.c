@@ -21,6 +21,7 @@
 #include "net.h"
 #include "net_backend.h"
 #include "net_eos.h"
+#include "net_discord.h"
 
 #define HEAD 20
 #define PIECE (NET_EOS_MAX - HEAD)
@@ -66,6 +67,7 @@ static void start(void) {
     snprintf(bucket, sizeof bucket, "ssbu1:%s", room_code);   /* (the build and mods join it in phase 2's gatherings) */
     eos_start();
     eos_hub_join(bucket);
+    discord_note_lobby_code(room_code);   /* (in Discord's join secret: a friend's game must have the same) */
     fprintf(stderr, "[eos] online through Epic Online Services alone: lobby code %s, as %s\n", room_code, player);
 }
 

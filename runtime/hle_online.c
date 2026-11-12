@@ -47,6 +47,7 @@ typedef int SOCKET;
 #include "net_eos.h"
 #include "net_nex.h"
 #include "net_eos_lobby.h"
+#include "net_discord.h"
 #include "online.h"
 
 #define DEFAULT_HOST "10.13.0.1"
@@ -335,6 +336,26 @@ static void nex_powers_changed(void *ctx) {   /* (under nex_lock) */
     if (ok) MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING);
 }
 static void nex_log_line(void *ctx, int level, const char *line) { (void)ctx; (void)level; if (net_log()) fprintf(stderr, "[nex] %s\n", line); }
+/* (under nex_lock, at most once a second) the player's place, fighter and GSP for Discord's Rich Presence
+ * (net_discord.c), and each fighter record the game posts as the player's GSP in EOS Stats (net_eos_lobby.c). */
+static void nex_tell_discord(NexServer *ns, u64 now) {
+    uint64_t pid;
+    uint8_t rec[NEX_POWER_RECORD];
+    uint32_t top;
+    if (nex_server_take_power(ns, &pid, rec, &top) && nex_on_eos) nexeos_post_gsp(rec[0], nex_power_gsp(rec), top);
+    static u64 told;
+    if (now - told < 1000) return;
+    told = now;
+    NexWhere w;
+    if (!nex_server_where(ns, &w)) return;
+    if (w.fighter >= 0) discord_note_fighter(w.fighter, w.gsp);
+    if (!w.in_gathering) { discord_note_online(DP_MENUS, 0, 0, 0, NULL, NULL); return; }
+    char party[64];
+    int arena = w.arena_id[0] != 0;
+    if (arena) snprintf(party, sizeof party, "os-a%s", w.arena_id);
+    else snprintf(party, sizeof party, "os-g%u", (unsigned)w.gid);
+    discord_note_online(arena ? DP_ARENA : DP_QUICKPLAY, (int)w.players, (int)w.max_players, !w.open, w.arena_id, party);
+}
 /* the server, under nex_lock, its clock set (NULL: none could be made) */
 static NexServer *nex_enter(void) {
     AcquireSRWLockExclusive(&nex_lock);
@@ -360,6 +381,7 @@ static NexServer *nex_enter(void) {
         const char *id = !identity_set && net_backend == &net_eos_backend ? eos_my_id() : NULL;   /* (the PID: from the EOS id, else the token's) */
         if (id) { nex_server_set_identity(nex_srv, id); identity_set = 1; }
         if (nex_on_eos) nex_store_eos_sync(nex_srv);
+        nex_tell_discord(nex_srv, now);
     }
     nex_woke = 0;
     return nex_srv;

@@ -1101,8 +1101,49 @@ static uint32_t ds_post_power(NexServer *s, NexConn *c, NexIn *in, NexOut *out) 
             (unsigned)(r[1] | r[2] << 8 | r[3] << 16 | (uint32_t)r[4] << 24),
             (unsigned)(r[5] | r[6] << 8 | r[7] << 16 | (uint32_t)r[8] << 24),
             (unsigned)(r[9] | r[10] << 8 | r[11] << 16 | (uint32_t)r[12] << 24));
+    memcpy(s->last_power, r, NEX_POWER_RECORD); s->last_power_pid = c->pid; s->last_power_new = s->has_last_power = 1;
     if (power_put(s, c->pid, r) && s->io.powers_changed) s->io.powers_changed(s->io.ctx);
     return 0;
+}
+uint32_t nex_power_gsp(const uint8_t *rec) { return rec[1] | rec[2] << 8 | rec[3] << 16 | (uint32_t)rec[4] << 24; }
+static uint32_t power_top(NexServer *s, uint64_t pid) {
+    uint32_t top = 0;
+    for (int i = 0; i < s->npowers; i++) {
+        const uint8_t *e = s->powers + (size_t)i * NEX_POWER_ENTRY;
+        if (power_pid(e) == pid && nex_power_gsp(e + 8) > top) top = nex_power_gsp(e + 8);
+    }
+    return top;
+}
+int nex_server_take_power(NexServer *s, uint64_t *pid, uint8_t rec[NEX_POWER_RECORD], uint32_t *top) {
+    if (!s->last_power_new) return 0;
+    s->last_power_new = 0;
+    *pid = s->last_power_pid;
+    memcpy(rec, s->last_power, NEX_POWER_RECORD);
+    *top = power_top(s, s->last_power_pid);
+    return 1;
+}
+int nex_server_where(NexServer *s, NexWhere *w) {
+    memset(w, 0, sizeof *w);
+    w->fighter = -1;
+    for (int i = 0; i < s->nconns[1] && !w->pid; i++) if (s->conns[1][i]->in_by_pid && s->conns[1][i]->pid) w->pid = s->conns[1][i]->pid;
+    if (!w->pid) return 0;
+    if (s->has_last_power && s->last_power_pid == w->pid) { w->fighter = s->last_power[0]; w->gsp = nex_power_gsp(s->last_power); }
+    int n = s->store.count(s->store.ctx);
+    for (int i = 0; i < n; i++) {
+        NexSession *ms = s->store.at(s->store.ctx, i);
+        if (!ms) continue;
+        for (uint32_t k = 0; k < ms->nparticipants; k++) {
+            if (ms->participants[k] != w->pid) continue;
+            w->in_gathering = 1;
+            w->gid = ms->gid; w->game_mode = ms->game_mode; w->state = ms->state; w->open = ms->open;
+            w->players = ms->nparticipants;
+            w->max_players = ms->max_participants;
+            memcpy(w->arena_id, ms->arena_id, sizeof w->arena_id);
+            w->arena_id[sizeof w->arena_id - 1] = 0;
+            return 1;
+        }
+    }
+    return 1;
 }
 /* 115/84 -> Map<u8 fighter, the records 82 posts> (by fighter), then a structure {u32, u32, u32, u64}: zeros */
 static uint32_t ds_84(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {

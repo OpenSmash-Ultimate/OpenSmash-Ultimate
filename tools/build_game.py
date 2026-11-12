@@ -1232,6 +1232,9 @@ def build(a):
         # Epic Online Services (runtime/net_eos.c): the online relay of last resort; without it, the lobby's relay
         import eos_fetch
         eos_fetch.ensure(os.path.dirname(EXE), log=log)
+        # Discord's Social SDK (runtime/net_discord.c): sign-in with Discord and Rich Presence; without it, neither
+        import discord_fetch
+        discord_fetch.ensure(os.path.dirname(EXE), log=log)
     if LINUX:
         log(f"\nDone: {exe} is ready. Start the game with ./play-ssbu.sh, or WindowSmash in your applications menu.")
     elif MACOS:

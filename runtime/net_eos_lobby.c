@@ -548,6 +548,31 @@ static void do_stat(void *arg) {
     if (stats) p_EOS_Stats_IngestStat(stats, &o, NULL, ingested);
     free(st);
 }
+/* The player's GSP for the leaderboards (plan/EOS_MIGRATION.md "Account, rank e classifiche"; the site's workflow reads
+ * them): GSP_F<fighter kind> the fighter's, GSP_TOP the best of the player's fighters (both LATEST in the portal; the
+ * leaderboard GSP_TOP ranks by the second). */
+typedef struct Gsp { uint32_t fighter, gsp, top; } Gsp;
+static void EOS_CALL gsp_ingested(const EosIngestInfo *d) {
+    static int said;
+    if (d->ResultCode != EOS_SUCCESS && !said++) fprintf(stderr, "[eos] stats: GSP not saved (%s): the product needs stats GSP_TOP and GSP_F0..GSP_F93 (Developer Portal)\n", p_EOS_EResult_ToString(d->ResultCode));
+}
+static void do_gsp(void *arg) {
+    Gsp *g = arg;
+    EOS_HStats stats = p_EOS_Platform_GetStatsInterface(eos_plat);
+    char name[16];
+    snprintf(name, sizeof name, "GSP_F%u", g->fighter);
+    EosIngestData d[2] = {{1, name, (int32_t)(g->gsp > 0x7fffffff ? 0x7fffffff : g->gsp)}, {1, "GSP_TOP", (int32_t)(g->top > 0x7fffffff ? 0x7fffffff : g->top)}};
+    EosIngestOptions o = {3, eos_me, d, 2, eos_me};
+    if (stats && eos_me) p_EOS_Stats_IngestStat(stats, &o, NULL, gsp_ingested);
+    free(g);
+}
+void nexeos_post_gsp(uint32_t fighter, uint32_t gsp, uint32_t top) {
+    if (!eos_ready() || fighter > 255) return;
+    Gsp *g = malloc(sizeof *g);
+    if (!g) return;
+    g->fighter = fighter; g->gsp = gsp; g->top = top;
+    if (!eos_post(do_gsp, g)) free(g);
+}
 
 /* ---- waiting for EOS (a search, a join): the game thread waits, the EOS thread answers ---- */
 typedef struct Found { uint8_t *blob; size_t n; } Found;
@@ -962,4 +987,5 @@ void nex_store_eos_sync(NexServer *s) {
 #else   /* (Linux, macOS: their EOS libraries come in phase 5) */
 NexStore nex_store_eos(void) { return nex_store_local(); }
 void nex_store_eos_sync(NexServer *s) { (void)s; }
+void nexeos_post_gsp(uint32_t fighter, uint32_t gsp, uint32_t top) { (void)fighter; (void)gsp; (void)top; }
 #endif

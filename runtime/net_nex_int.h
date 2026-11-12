@@ -131,6 +131,7 @@ struct NexServer {
     uint64_t next_round;
     /* the players' fighter records (DataStore 82 / 84): NEX_POWER_ENTRY bytes each, pid then the record */
     uint8_t *powers; int npowers, cappowers;
+    uint8_t last_power[NEX_POWER_RECORD]; uint64_t last_power_pid; int last_power_new, has_last_power;   /* (nex_server_take_power) */
 };
 
 /* rng: the system's, or the test's (io.random) */

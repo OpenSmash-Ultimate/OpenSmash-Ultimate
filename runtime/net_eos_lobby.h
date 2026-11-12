@@ -8,3 +8,5 @@ NexStore nex_store_eos(void);
 void nex_store_eos_sync(NexServer *s);
 /* (runtime/hle_online.c, called on the EOS thread) take the server's lock if it is free and sync; 0: busy, later */
 int online_nex_deliver(void);
+/* (hle_online.c) the local player's GSP for EOS Stats: GSP_F<fighter> and GSP_TOP (net_eos_lobby.c; nothing when EOS is off) */
+void nexeos_post_gsp(uint32_t fighter, uint32_t gsp, uint32_t top);

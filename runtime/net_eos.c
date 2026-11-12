@@ -51,12 +51,82 @@ static volatile LONG64 eos_sent, eos_received, eos_dropped;
 static struct { void (*fn)(void *); void *arg; } eos_posts[POSTS];
 static u32 eos_p_head, eos_p_tail;
 
+/* ---- signed in with Discord (net_discord.c): the same player ----------------------------------------------
+ * The Device ID logs in first, as always. When net_discord.c has a Discord access token (eos_external_token, set
+ * only while its SDK runs), EOS Connect logs in with it too before anything else starts:
+ *   - no product user has that Discord account yet: it is linked to the Device ID's user (EOS_Connect_LinkAccount):
+ *     the player and everything kept under their id stay as they were;
+ *   - it is the Device ID's user already: nothing to do;
+ *   - it is another user (signed in on another PC first): this PC's Device ID moves under it
+ *     (EOS_Connect_TransferDeviceIdAccount, keeping the Discord account's user) and the game plays as that user.
+ * Any failure keeps the Device ID's user. A token that comes once the game is on (a sign-in made then) is only
+ * linked when no user has it yet - the player's id never changes mid-game; another user takes over at the next start. */
+int (*eos_external_token)(char *out, size_t n);   /* 1: a Discord access token in out, 0: none, -1: not known yet */
+static EOS_ProductUserId eos_device_user;
+static int eos_ext_state;      /* 0 not asked, 1 waiting for the token, 2 logging in, 3 done without one, 4 one given later, 5 done with it */
+static u64 eos_ext_until;
+static char eos_ext_token[1024];
+static void eos_id_text(EOS_ProductUserId id, char *out, int32_t n) { out[0] = 0; if (id) p_EOS_ProductUserId_ToString(id, out, &n); }
+static void eos_ready_as(EOS_ProductUserId id) { eos_me = id; eos_ext_state = eos_ext_state == 4 ? 4 : eos_ext_state == 2 ? 5 : 3; InterlockedExchange(&eos_phase, 2); }
+static void EOS_CALL eos_ext_transferred(const EosTransferDeviceIdInfo *d) {
+    if (d->ResultCode == EOS_SUCCESS) { fprintf(stderr, "[eos] Discord: this PC's Device ID now signs in as the Discord account's player\n"); eos_ready_as(d->LocalUserId); }
+    else { fprintf(stderr, "[eos] Discord: the Device ID could not move to the Discord account's player (%s): playing as before\n", p_EOS_EResult_ToString(d->ResultCode)); eos_ready_as(eos_device_user); }
+}
+static void EOS_CALL eos_ext_linked(const EosLinkAccountInfo *d) {
+    if (d->ResultCode == EOS_SUCCESS) fprintf(stderr, "[eos] Discord: account linked to this player\n");
+    else fprintf(stderr, "[eos] Discord: not linked (%s)\n", p_EOS_EResult_ToString(d->ResultCode));
+    if (eos_ext_state != 4) eos_ready_as(eos_device_user);
+}
+static void EOS_CALL eos_ext_logged_in(const EosLoginInfo *d) {
+    EOS_ProductUserId mine = eos_ext_state == 4 ? eos_me : eos_device_user;
+    if (d->ResultCode == EOS_INVALID_USER && d->ContinuanceToken) {   /* (a Discord account no player has yet) */
+        EosLinkAccountOptions o = {1, mine, d->ContinuanceToken};
+        p_EOS_Connect_LinkAccount(eos_con, &o, NULL, eos_ext_linked);
+        return;
+    }
+    if (d->ResultCode != EOS_SUCCESS) {
+        fprintf(stderr, "[eos] Discord: sign-in refused (%s): the Device ID's player plays\n", p_EOS_EResult_ToString(d->ResultCode));
+        if (eos_ext_state != 4) eos_ready_as(eos_device_user);
+        return;
+    }
+    char a[NET_EOS_ID_LEN + 8], b[NET_EOS_ID_LEN + 8];
+    eos_id_text(d->LocalUserId, a, sizeof a);
+    eos_id_text(mine, b, sizeof b);
+    if (!strcmp(a, b)) { if (eos_ext_state != 4) eos_ready_as(mine); return; }   /* (linked already) */
+    if (eos_ext_state == 4) { fprintf(stderr, "[eos] Discord: that account is another player's (%s): it takes over at the next start\n", a); return; }
+    EosTransferDeviceIdOptions o = {1, d->LocalUserId, eos_device_user, d->LocalUserId};
+    p_EOS_Connect_TransferDeviceIdAccount(eos_con, &o, NULL, eos_ext_transferred);
+}
+static void eos_ext_login(void) {   /* (EOS thread) eos_ext_token is set */
+    static EosConnectCredentials c = {1, NULL, EOS_ECT_DISCORD_ACCESS_TOKEN};
+    c.Token = eos_ext_token;
+    EosLoginOptions o = {2, &c, NULL};
+    p_EOS_Connect_Login(eos_con, &o, NULL, eos_ext_logged_in);
+}
+static void eos_device_ready(EOS_ProductUserId id) {   /* the Device ID's player is in: Discord's, if any, next */
+    eos_device_user = id;
+    if (!eos_external_token) { eos_ready_as(id); return; }
+    eos_ext_state = 1;
+    eos_ext_until = GetTickCount64() + 8000;
+}
+static void eos_ext_tick(u64 t) {   /* (EOS thread, every tick) */
+    static u64 next;
+    if (eos_ext_state == 1) {
+        int r = eos_external_token(eos_ext_token, sizeof eos_ext_token);
+        if (r > 0) { eos_ext_state = 2; eos_ext_login(); }
+        else if (r == 0 || t >= eos_ext_until) { if (r < 0) fprintf(stderr, "[eos] Discord: no token in time: the Device ID's player plays\n"); eos_ready_as(eos_device_user); }
+    } else if (eos_ext_state == 3 && eos_external_token && t >= next) {   /* (no token at the start: a sign-in made later) */
+        next = t + 2000;
+        if (eos_external_token(eos_ext_token, sizeof eos_ext_token) > 0) { eos_ext_state = 4; eos_ext_login(); }
+    }
+}
+
 static void EOS_CALL eos_created(const EosCreateUserInfo *d) {
-    if (d->ResultCode == EOS_SUCCESS) { eos_me = d->LocalUserId; InterlockedExchange(&eos_phase, 2); }
+    if (d->ResultCode == EOS_SUCCESS) eos_device_ready(d->LocalUserId);
     else { fprintf(stderr, "[eos] new user: %s\n", p_EOS_EResult_ToString(d->ResultCode)); InterlockedExchange(&eos_phase, -1); }
 }
 static void EOS_CALL eos_logged_in(const EosLoginInfo *d) {
-    if (d->ResultCode == EOS_SUCCESS) { eos_me = d->LocalUserId; InterlockedExchange(&eos_phase, 2); return; }
+    if (d->ResultCode == EOS_SUCCESS) { eos_device_ready(d->LocalUserId); return; }
     if (d->ResultCode == EOS_INVALID_USER) {   /* (this Device ID's first eos_login: a user of the product is made) */
         EosCreateUserOptions o = {1, d->ContinuanceToken};
         p_EOS_Connect_CreateUser(eos_con, &o, NULL, eos_created);
@@ -424,6 +494,7 @@ static DWORD WINAPI eos_thread_(LPVOID dll) {
             told = 1;
         }
         if (ph < 0) { fprintf(stderr, "[eos] off: the lobby's relay stays the last resort\n"); return 0; }
+        if (ph >= 1) eos_ext_tick(GetTickCount64());
         if (ph == 2) { eos_pump(); hub_tick(); nexeos_tick(); }
         WaitForSingleObject(eos_wake, 1);
     }
@@ -552,6 +623,7 @@ int eos_hub_members(char ids[][NET_EOS_ID_LEN + 1], u32 *ips, int max) { (void)i
 int eos_hub_member_ip(const char *id, u32 *ip) { (void)id; (void)ip; return 0; }
 int eos_hub_member_id(u32 ip, char id[NET_EOS_ID_LEN + 1]) { (void)ip; (void)id; return 0; }
 void eos_start(void) {}
+int (*eos_external_token)(char *out, size_t n);
 int eos_ready(void) { return 0; }
 const char *eos_my_id(void) { return NULL; }
 int eos_send(const char *to, const void *data, u32 len) { (void)to; (void)data; (void)len; return 0; }

@@ -14,6 +14,9 @@ int eos_send(const char *to, const void *data, u32 len);  /* queued; 0: not sent
 int eos_send_reliable(const char *to, const void *data, u32 len);   /* the same on channel 1: reliable, in order */
 int eos_post(void (*fn)(void *), void *arg);              /* fn(arg) on the EOS thread, in order; 0: EOS off, queue full */
 void eos_counts(u64 *sent, u64 *received, u64 *dropped);
+/* (net_discord.c sets it while Discord's SDK runs) a Discord access token to sign this player in with: 1 in out, 0 none,
+ * -1 not known yet (the start waits a few seconds for it). The EOS thread asks; see net_eos.c "signed in with Discord". */
+extern int (*eos_external_token)(char *out, size_t n);
 
 /* The hub (phase 1 of plan/EOS_MIGRATION.md): one EOS lobby per lobby code, each member's virtual address an attribute. */
 void eos_hub_join(const char *bucket);
