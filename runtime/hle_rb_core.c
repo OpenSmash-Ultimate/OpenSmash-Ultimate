@@ -3096,7 +3096,7 @@ static void frame_end_after(Cpu *c, const u64 args[8], void *ctx) {
  *  - SSBU_RB_SKIP=<mask> (default 0; was 49, the PR's, which crashed long fights): the job-group kicks (FUN 0x7103549720) called
  *    from: 1 the render preparation (0x710374a0d4 - the safe point's own call - 0x710374baa8,
  *    0x710374bad8, 0x710374bb08); 16 preparation list A (0x7103749aac); 32 list B (0x7103749b48);
- *  - SSBU_RB_LITE=<mask> (default 57: all but 2, 4 and 64, see skip_flags): the presentation callees of the main loop (FUN
+ *  - SSBU_RB_LITE=<mask> (default 49: all but 2, 4, 8 and 64, see skip_flags): the presentation callees of the main loop (FUN
  *    0x7103747820, 0x6000 bytes), by group: 1 camera, 2 UI, 4 lighting, 8 render layers,
  *    16 recorder, 32 dynamic resolution, 64 effect emitter tick; each returns a fixed value.
  * The fight hash then says whether the frames after are still the same. */
@@ -3108,11 +3108,17 @@ static void skip_flags(void) {
                                           * fights - a null read in the job system or the game after some 4 000 - 14 000 logic
                                           * frames of rollbacks, often as the fight ended; the very same fight (stress3 / stress4,
                                           * bots, 6359 frames) crashed at the winner screen with 49 and finished with 0) */
-    lite_mask = l && *l ? atoi(l) : 57;    /* (not 64 either, the effect emitter tick: effects made in re-run frames and never ticked crashed the
+    lite_mask = l && *l ? atoi(l) : 49;    /* (not 64 either, the effect emitter tick: effects made in re-run frames and never ticked crashed the
                                             * fight's end after many rollbacks - main+0x35c4580 - the same fight crashing with it skipped (stress5)
                                             * and finishing twice without (stress7) and with no lite skips at all (stress6)) */   /* (not 4, lighting: fighters and items drew flat green from then on, and it saved nothing measurable;
                                             * not 2, UI: the HUD's animations ("GO!", the stock counter after a KO) jittered and stuck in the game
-                                            * that rolled back most, every load putting them back and the re-run frames not moving them on: ui1) */
+                                            * that rolled back most, every load putting them back and the re-run frames not moving them on: ui1;
+                                            * not 8, the render layers, while the UI runs: was 57, and after some rollbacks of 2 frames or more
+                                            * the next picture's HUD looked drawn twice over - for one picture the see-through name bars went solid
+                                            * black and the stock icons brighter, a flicker under lag (why is not traced). Ring test 300,10,7, 400
+                                            * pictures compared: 17 to 25 such pictures a run with 57, none with 49 or 0, none without rollbacks; the
+                                            * same with the catch-ups hidden as a net one's (SSBU_RB_RING_HIDE=1): 15 with 57, none with 49; the
+                                            * catch-ups not measurably slower) */
 }
 static int kick_skipped(u64 lr) {
     if (rb_fast <= 1) return 0;
