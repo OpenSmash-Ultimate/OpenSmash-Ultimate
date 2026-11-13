@@ -1,4 +1,5 @@
-/* Mid-match refresh of mod files. Training reset is L+R+A (on an Xbox pad in the positional
+/* Opt-in training-mode refresh of mod files (launcher.ini opensmash.hot_reload_mod_assets=1).
+ * Training reset is L+R+A (on an Xbox pad in the positional
  * layout, LB+RB and the right face button). That press still resets training. It also copies a
  * mod file the match already loaded, when the file on disk changed and stayed the same size:
  * the new bytes replace the old ones wherever they sit in the match's memory.
@@ -12,6 +13,8 @@
 #include "frame_hooks.h"
 #include "kernel_watch.h"
 #include "pad.h"
+#include "settings.h"
+#include "config_folder.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -303,14 +306,33 @@ static void refresh(void) {
     if (models)
         fprintf(stderr, "[mods] %d of those %s a model or texture; one the graphics card already has stays as it was until the fighter loads again\n",
                 models, models == 1 ? "is" : "are");
-    static int said_online;
-    if (refreshed && !said_online) {
-        said_online = 1;
-        fprintf(stderr, "[mods] this changes your game only; the other side of an online match keeps the old file\n");
+}
+
+static int mod_refresh_enabled(void) {
+    /* Read once per game launch, before allocating the snapshot. Missing/invalid is off. */
+    static int enabled = -1;
+    if (enabled < 0) {
+        char value[32];
+        enabled = settings_ini_get(config_path(CONFIG_LAUNCHER), "opensmash",
+                                   "hot_reload_mod_assets", value, sizeof value) && !strcmp(value, "1");
     }
+    return enabled;
+}
+
+static int mod_refresh_training(Cpu *c) {
+    /* Use the game's mode check; being launched with --online does not mean the
+     * player cannot enter local training. If the export is absent, fail closed. */
+    u64 fn = rt_symbol("_ZN3app9smashball16is_training_modeEv");
+    if (!fn) return 0;
+    Cpu saved = *c;
+    rt_call(c, fn);
+    int training = (c->x[0] & 0xff) != 0;
+    *c = saved;
+    return training;
 }
 
 static void mod_refresh_start(void) {
+    if (!mod_refresh_enabled()) return;
     if (InterlockedCompareExchange(&snap_started, 1, 0) != 0) return;
     HANDLE t = CreateThread(NULL, 0, snap_main, NULL, 0, NULL);
     if (t) CloseHandle(t);
@@ -324,7 +346,8 @@ static void mod_refresh_boot(Cpu *c, const u64 args[8], void *ctx) {
 
 /* Before the fighter's frame, so the training reset that this same press runs reads the new bytes. */
 static void mod_refresh_before(Cpu *c, const u64 args[8], void *ctx) {
-    (void)c; (void)args; (void)ctx;
+    (void)args; (void)ctx;
+    if (!mod_refresh_enabled()) return;
     mod_refresh_start();
     if (menu_blocks_input()) return;
     static u64 prev[PAD_SLOTS];
@@ -337,7 +360,7 @@ static void mod_refresh_before(Cpu *c, const u64 args[8], void *ctx) {
         prev[s] = st.buttons;
     }
     if (fire && InterlockedCompareExchange(&busy, 1, 0) == 0) {
-        refresh();
+        if (mod_refresh_training(c)) refresh();
         InterlockedExchange(&busy, 0);
     }
 }

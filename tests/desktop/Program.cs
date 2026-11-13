@@ -134,8 +134,8 @@ try
         surface.InvalidateVisual();
         using var frame=window.CaptureRenderedFrame();
         Check(frame!=null&&frame.PixelSize.Width==1440, "renders original artwork: "+name);
-        using(var png=new MemoryStream()){frame!.Save(png);ReferenceImages.Compare(name,png.ToArray());}
         if(screenshot!=null){Directory.CreateDirectory(Path.GetDirectoryName(screenshot)!);frame!.Save(Path.Combine(Path.GetDirectoryName(screenshot)!,name+".png"));}
+        using(var png=new MemoryStream()){frame!.Save(png);ReferenceImages.Compare(name,png.ToArray());}
     }
     Capture("installer-setup");
     surface.BeginInstall();
@@ -162,7 +162,7 @@ try
     surface.ChangeSetting("volume","45");surface.ChangeSetting("window","borderless");
     Check(surface.GetSetting("volume")=="45"&&File.ReadAllText(project.ConfigFile("display.ini")).Contains("volume = 45"),"original settings controls persist game configuration");
     Capture("launcher-settings");
-    foreach(var (tab,name) in new[]{(1,"graphics"),(2,"audio"),(3,"online"),(4,"controllers"),(5,"update"),(6,"storage")})
+    foreach(var (tab,name) in new[]{(1,"graphics"),(2,"audio"),(3,"online"),(4,"controllers"),(5,"update"),(6,"storage"),(7,"developer")})
     {
         if(tab==6)surface.SetStorageResult("Synthetic storage fixture: game files stay on this computer.");
         surface.Activate("tab:"+tab);Capture("launcher-settings-"+name);

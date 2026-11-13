@@ -82,6 +82,7 @@ void InitializeSettings() {
                 new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "pads" } },
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
+                new SettingTab { Name = "Developer", SettingKeys = new[] { "hot_reload_mod_assets" } },
             };
 
             _settings = new[]
@@ -103,6 +104,7 @@ void InitializeSettings() {
                 new Setting { Key = "keyboard_player", Label = "Keyboard plays as", Values = new[] { "1", "2", "3", "4", "5", "6", "7", "8", "0" }, Labels = new[] { "Player 1", "Player 2", "Player 3", "Player 4", "Player 5", "Player 6", "Player 7", "Player 8", "Nobody (no keyboard)" } },
                 new Setting { Key = "background", Label = "Controllers in the background", Values = new[] { "1", "0" }, Labels = new[] { "Work while another window is in front", "Only while the game is in front" } },
                 new Setting { Key = "pads", Label = "controllers.ini", Values = new[] { "open" }, Labels = new[] { "Open the file" } },
+                new Setting { Key = "hot_reload_mod_assets", Label = "Hot reload mod assets in training mode by doing L + R + A", Values = new[] { "0", "1" }, Labels = new[] { "Disabled", "Enabled" } },
             };
 }
         bool SettingOn(Setting s)
@@ -272,6 +274,7 @@ void InitializeSettings() {
             else { _iniValues["lobby"] = "custom"; _iniValues["server"] = host; }
             if (!_iniValues.ContainsKey("server")) _iniValues["server"] = "";
             string launcherIni = Project.ConfigFile("launcher.ini");
+            _iniValues["hot_reload_mod_assets"] = IniValue(launcherIni, "opensmash", "hot_reload_mod_assets") == "1" ? "1" : "0";
             string savedLobby = IniValue(launcherIni, "opensmash", "lobby");
             string savedCode = IniValue(launcherIni, "opensmash", "code");
             string savedServer = IniValue(launcherIni, "opensmash", "server");
@@ -334,6 +337,7 @@ void InitializeSettings() {
             if(serverReady&&serverChanged)SetFirstLine(Project.ConfigFile("online_server.txt"),server);
             if(_changedSettings.Contains("name"))SetFirstLine(Project.ConfigFile("online_name.txt"),_iniValues.GetValueOrDefault("name","").Trim());
             if(_changedSettings.Contains("direct"))SetFirstLine(Project.ConfigFile("online_direct.txt"),_iniValues.GetValueOrDefault("direct","on"));
+            if(_changedSettings.Contains("hot_reload_mod_assets"))SetIni(Project.ConfigFile("launcher.ini"),"opensmash","hot_reload_mod_assets",_iniValues.GetValueOrDefault("hot_reload_mod_assets","0"));
             _changedSettings.Clear();
             if(serverChanged&&!serverReady)_changedSettings.UnionWith(["lobby","code","server"]);
             string launcherIni = Project.ConfigFile("launcher.ini");

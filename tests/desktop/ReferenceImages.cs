@@ -20,6 +20,8 @@ static class ReferenceImages
         {
             // Elapsed build-clock text is intentionally live; animation time is frozen.
             if(reference=="build"&&((x>=470&&x<530&&y>=188&&y<450)||(x>=1060&&x<1333&&y>=248&&y<279)))continue;
+            // The appended Developer tab is new. Keep comparing every existing tab and row.
+            if(reference.StartsWith("settings")&&x>=828&&x<944&&y>=202&&y<246)continue;
             // Upstream changed only the renderer wording. Preserve the original
             // geometry baseline while checking the new wording in regression tests.
             if(reference=="settings-graphics"&&((x>=815&&x<1282&&y>=498&&y<526)||(x>=192&&x<765&&y>=517&&y<543)))continue;
