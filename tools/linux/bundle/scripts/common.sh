@@ -1,8 +1,8 @@
 # Shared by the launchers (sourced from the folder the game is in).
 #
 # They serve two kinds of folder: this package, copied over from Windows (the game is ./ssbu), and
-# a WindowSmash folder the game was built in on Linux (install-windowsmash.sh), whose launchers
-# (play-ssbu.sh and so on) set SSBU_GAME_DIR to it and SSBU_EXE to build-linux/ssbu, and run
+# a WindowSmash folder the game was built in on Linux (tools/linux/install.sh), whose launchers
+# (tools/linux/play.sh and so on) set SSBU_GAME_DIR to it and SSBU_EXE to build-linux/ssbu, and run
 # these. There the game data is where the build found it: dump/modules/romfs.cfg says where.
 #
 # The game's data - its RomFS, about 17 GB - stays in the files it came in, read in place. For

@@ -14,10 +14,10 @@ It is the merge of two projects, [WindowSmash](https://github.com/OpenSmash-Ulti
 
 ## Install
 
-1. Download **[OpenSmash.exe](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/download/v0.3.0-alpha.3/OpenSmash.exe)** from the latest [release](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) and run it. It does the rest.
-2. Choose where OpenSmash goes (about 60 GB free; not the Desktop or Documents) and click **Download and set up**. It downloads the project from GitHub into that folder, makes the **OpenSmash** and **Play SSBU** shortcuts (desktop and Start menu), and opens the launcher there.
+1. Download **OpenSmash.exe** (Windows), **OpenSmash** (Linux), or **OpenSmash.app** (macOS) from the [release](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) for your platform and run it.
+2. Choose a location with about 60 GB free and click **Download & Continue**. It creates an **OpenSmash** folder there, downloads the project, and opens its installer.
 3. In the installer window, check that it found your game files (game plus its 13.0.5 update), keys and optionally firmware; fix any folder with **Browse**. Click **Set up and build** and wait: 30 minutes to a few hours.
-4. Press **Play** in the launcher, or use the **Play SSBU** shortcut.
+4. Press **Play**. The launcher shows **Starting game**, then closes once the game window opens.
 5. To update, open **Settings -> Update** in the launcher. Mods are in the launcher's **Mods** view; online is in **Settings -> Online**.
 
 You need your own copy of the game, version 13.0.5, dumped from your own Switch, and a 64-bit Windows 10 or 11 PC; AVX2 is recommended, SSE4.2 works too. Linux and macOS (Apple silicon) are experimental. The [installation guide](docs/INSTALL.md) explains each step; [docs/BUILDING.md](docs/BUILDING.md) is the step-by-step setup and building from source.
@@ -38,6 +38,10 @@ Rows that link to pull requests are being reviewed and land in `main` as they ar
 
 ## Guides
 
+The launcher uses one shared implementation on Windows, Linux and macOS.
+[Build it](docs/DESKTOP-LAUNCHER.md) with `Build Launcher Windows.bat`,
+`Build Launcher Linux.sh`, or `Build Launcher macOS.command`.
+
 | Guide | Read it to |
 | :--- | :--- |
 | [Installation guide](docs/INSTALL.md) | install, update, add mods and go online. |
@@ -47,7 +51,7 @@ Rows that link to pull requests are being reviewed and land in `main` as they ar
 | [Mods and Skyline plugins](docs/SKYLINE.md) | install mods and plugins and turn them on or off. |
 | [DLC and unlocks](docs/DLC-AND-UNLOCKS.md) | use your DLC, or unlock every base-game fighter on your save. |
 | [The 13.0.5 update](docs/UPDATES.md) | see which copies of the game count as 13.0.5 and how the update is applied. |
-| [Linux](docs/LINUX.md) · [macOS](docs/MACOS.md) | install, build and run the experimental versions. The OpenSmash Launcher (`opensmash-launcher.sh`, `OpenSmash Launcher.command`) does setup, updates, Play, settings and mods in a window, with a game pad too (Steam Deck Game Mode). |
+| [Linux](docs/LINUX.md) · [macOS](docs/MACOS.md) | install, build and run the experimental versions. |
 | [How it works](docs/TECHNICAL.md) | understand the recompiler, the runtime and every tool. |
 
 ## `ssbu-recomp/`

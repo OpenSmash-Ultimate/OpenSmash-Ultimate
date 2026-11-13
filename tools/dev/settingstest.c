@@ -1,7 +1,7 @@
 /* Offline checks of the settings files' writer (runtime/hle_settings.c), as the settings menu
  * uses it on display.ini, controllers.ini and the online_*.txt files: values changed in place
  * with their comments kept, keys added to and removed from sections, line ends kept, nothing
- * written when nothing changes, and the one-line files read as Play SSBU.bat reads them.
+ * written when nothing changes, and the one-line files read as OpenSmash.exe reads them.
  *
  *   python -c "import sys; sys.path.insert(0,'tools'); import cc, subprocess; subprocess.run([cc.CLANG, '/nologo', '/O1', *cc.CFLAGS, 'tools/dev/settingstest.c', '/Febuild/settingstest.exe'], check=True)"
  *   build\settingstest.exe

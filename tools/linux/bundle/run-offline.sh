@@ -9,4 +9,5 @@ check_libraries || exit 1
 unset SSBU_NET_RELAY SSBU_NET_HOST
 mkdir -p build
 echo "Starting the game offline (log: build/play.log)..."
+set -o pipefail  # Preserve a game failure through tee for callers such as the desktop launcher.
 "$SSBU_EXE" dump/modules --status 30 "$@" 2>&1 | tee build/play.log

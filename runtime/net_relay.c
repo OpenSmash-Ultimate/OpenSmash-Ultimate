@@ -209,7 +209,7 @@ static u64 process_age_ms(void) {
 static u64 process_age_ms(void) { return rt_now_ns() / 1000000; }
 #endif
 
-/* Started with --online (Play SSBU.bat; settings.h): the lobby, name and direct connections from
+/* Started with --online (OpenSmash.exe; settings.h): the lobby, name and direct connections from
  * the files the settings menu and the launcher write, where no SSBU_NET_* variable says them.
  * online_server.txt: "host:port [lobby code]" or "off"; online_name.txt: the name (one is picked
  * and kept there when it is missing); online_direct.txt: "off" for no direct connections. */

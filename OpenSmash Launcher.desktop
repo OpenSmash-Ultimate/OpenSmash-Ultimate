@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=OpenSmash Launcher
-GenericName=Super Smash Bros. Ultimate
-Comment=Set up, update, play and mod OpenSmash (opens opensmash-launcher.sh, in this folder)
-Exec=sh -c 'exec bash "$(dirname "$1")/opensmash-launcher.sh"' sh %k
-Icon=applications-games
-Terminal=false
-Categories=Game;

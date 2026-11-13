@@ -10,7 +10,7 @@
  * Wireless rooms to the others and carries each room's traffic between its players only) or a
  * private room's relay inside the host player's game (its port opened with UPnP).
  *
- * Configured by the launchers (Play SSBU.bat, launchers\Host/Join SSBU Netplay.bat) through the environment:
+ * Configured by the launchers (OpenSmash.exe, launchers\Host/Join SSBU Netplay.bat) through the environment:
  *   SSBU_NET_HOST=1         run the relay here and join it (port SSBU_NET_PORT, 39420)
  *   SSBU_NET_RELAY=addr     join the lobby or relay at addr[:port]; "lan": a private room on this network,
  *                           found by its host's beacon (no address or code to type; online_server.txt "lan")

@@ -12,11 +12,8 @@ The same recompiled game as the Windows build, as a native x86-64 Linux program.
 
 There are two ways to get it:
 
-- **The OpenSmash Launcher** (the easiest): double-click `OpenSmash Launcher` in the folder, or run
-  `bash opensmash-launcher.sh`. Setup, updates, Play, settings and the mod manager in a window, with a
-  mouse or a game pad, no terminal. It works in Steam's Game Mode too. See
-  [The OpenSmash Launcher](#the-opensmash-launcher).
-- **Install it on Linux.** `install-windowsmash.sh` sets up WindowSmash on the Linux machine and
+- **The shared OpenSmash launcher** (recommended): download and open the Linux **OpenSmash** executable. Setup, updates, Play, settings and mods use the same window as the other platforms. See [The OpenSmash Launcher](#the-opensmash-launcher).
+- **Install it on Linux.** `tools/linux/install.sh` sets up WindowSmash on the Linux machine and
   builds the game there from your own files, as `OpenSmash.exe` does on Windows. See
   [Installing on Linux](#installing-on-linux).
 - **Copy over a package from Windows.** A Windows PC that has built the game can make an
@@ -44,63 +41,11 @@ As on Windows, the game must be version 13.0.5, its last update
 
 ## The OpenSmash Launcher
 
-`OpenSmash.exe` is Windows-only. On Linux the same features run in a browser window instead. The
-launcher is a small server on your own computer (`tools/weblauncher/launcher.py`, Python's standard
-library only, reachable from this computer alone and only with the key it opens the page with).
+Download **OpenSmash** for Linux, make it executable if needed, and open it. It uses the same interface as Windows and macOS for setup, updates, mods, settings and Play. The launcher downloads its project into your selected OpenSmash folder. See [Installing](INSTALL.md).
 
-To start it, double-click **`OpenSmash Launcher`** in the WindowSmash folder. On KDE (SteamOS's and
-Bazzite's Desktop Mode) choose *Continue* when it asks. On GNOME, right-click it and choose *Allow
-Launching*. You can also run `bash opensmash-launcher.sh`. It needs Python 3.10 or newer, which
-almost every distribution has. The first start adds **OpenSmash Launcher** to your applications menu.
-The window is a Chrome, Chromium, Brave or Edge app window if one is installed (from the distribution
-or as a Flatpak). Without one, the launcher opens in your default browser.
+Setup uses desktop authorization for package installation. Run it in Desktop Mode on Steam Deck; Steam Input can map the controller to the launcher's arrow keys, Enter and Escape. After game readiness, the launcher closes and leaves the game running.
 
-| Tab | What it does | What runs |
-| :--- | :--- | :--- |
-| **Play** | *Play* (online, the lobby in Settings), *Play offline*, *Play without mods*. Before the game starts, it applies the turned-on mods, and asks to build the mods' plugins into the game when they need it. It then shows the game's log while the game runs. | `play-ssbu.sh`, `launchers/play-ssbu-offline.sh`; `tools/os_mods.py apply`, `vanilla`, `build` |
-| **Setup** | The first-run setup: your game, keys and firmware folders (found by themselves when an emulator has them; *Browse…* picks another), your online name, then the whole install and build with its log. *Build again* builds what changed. | `tools/linux/install_linux.py` (the same steps as `install-windowsmash.sh`), `tools/build_game.py` |
-| **Mods** | Opens WindowSmash Mods (GameBanana's mods: browse, install, turn on and off, modpacks) in the same window. *Back to the launcher* (or B) returns. *Build plugins into the game* compiles movesets' and new characters' code into the game. | `tools/modmanager/server.py`, `tools/os_mods.py build` |
-| **Settings** | Display, online (name, public or private lobby, lobby code, your own server, direct connections) and controllers. These are the same files and values `OpenSmash.exe` and the game's own settings menu write. | `display.ini`, `controllers.ini`, `online_*.txt`, `launcher.ini` |
-| **Update** | Checks GitHub for a newer OpenSmash and installs it (a `git pull`, or the newer files of a ZIP download). Your game files, save, settings and builds stay. | `install_linux.py --update-only` |
-
-The setup installs the build's packages with `sudo`. With no terminal, `sudo` asks for your password
-in a dialog (`tools/linux/askpass.sh`: zenity, kdialog or ssh-askpass). The notes in
-[Installing on Linux](#installing-on-linux) apply as they are:
-
-- **Steam Deck (SteamOS):** run `sudo steamos-readonly disable` (and `passwd`, if the `deck` user
-  has no password) in Konsole first.
-- **Bazzite** and other image-based systems: the packages may only arrive after a restart. The log
-  says so. Restart, then press *Set up and build* again.
-
-Run the setup in Desktop Mode. A password dialog may not show in Game Mode.
-
-### Steam Deck and Game Mode
-
-1. In Desktop Mode, open Steam, choose *Games > Add a Non-Steam Game to My Library*, tick
-   **OpenSmash Launcher** (the launcher's first start put it in the list), and press *Add Selected
-   Programs*.
-2. In Game Mode, start it from your library. In Game Mode (gamescope) the launcher fills the screen.
-3. The page works with the controller:
-
-   | Control | Action |
-   | :--- | :--- |
-   | D-pad or left stick | Move |
-   | A | Press |
-   | B | Back, or close a dialog |
-   | LB / RB | Change tab |
-   | Start | Play |
-   | Right stick | Scroll |
-   | Left or right on a list | Change the setting |
-
-   The arrow keys, Enter and Escape do the same. If the pad does nothing, set the shortcut's
-   controller layout to a *Gamepad* one in Steam, or to a keyboard-and-mouse layout, which also
-   works. Steam's on-screen keyboard (Steam + X) types the name and the lobby code.
-4. *Play* starts the game from the launcher, so Steam keeps counting it as running, and the game's
-   window comes in front. Set *Window* to *Full screen* in Settings for Game Mode. When the game
-   closes, the launcher comes back. When the launcher's window is closed (and no game or build is
-   running), the launcher ends, and Steam sees the game as closed.
-
-Its own log is `build/launcher.log`. The game's log is still `build/play.log`.
+Advanced command-line setup and play remain under `tools/linux/`. They are backend scripts, not extra root launchers.
 
 ### Mods on Linux
 
@@ -121,7 +66,7 @@ The mod manager is the same as on Windows and macOS. These fixes make it work fu
 
 ## Installing on Linux
 
-`install-windowsmash.sh` does everything in one go: it gets the newest WindowSmash, installs what
+`tools/linux/install.sh` does everything in one go: it gets the newest WindowSmash, installs what
 the build needs, finds your game files, and builds the game. It needs:
 
 - **An x86-64 PC with AVX2** (recommended) **or at the least SSE4.2** (x86-64-v2: the game is built for it, and is
@@ -151,7 +96,7 @@ the build needs, finds your game files, and builds the game. It needs:
 3. **Run the installer:**
 
    ```bash
-   bash install-windowsmash.sh
+   bash tools/linux/install.sh
    ```
 
 4. **Answer its questions.** It asks for three folders, and fills in yuzu's, its forks' (Eden,
@@ -168,11 +113,11 @@ the build needs, finds your game files, and builds the game. It needs:
    game that isn't version 13.0.5 is refused, with what to add.
 5. **Wait for the build.** The first one compiles the whole game: from one to a few hours,
    depending on the processor and the memory. Later ones redo only what changed. If it stops, run
-   `bash install-windowsmash.sh` again: it carries on where it stopped. Everything it says also
+   `bash tools/linux/install.sh` again: it carries on where it stopped. Everything it says also
    goes to `install.log`. While it writes the game's code as C, then while it compiles it, a line
    now and then shows how far it has got and the time left. The time left appears once the first
    files are compiled. Most terminals also show it in the window's title.
-6. **Play:** run `./play-ssbu.sh` in the folder, or choose **WindowSmash** in your applications
+6. **Play:** run `./tools/linux/play.sh` in the folder, or choose **WindowSmash** in your applications
    menu.
 
 The installer's steps:
@@ -201,12 +146,12 @@ Running it again later updates WindowSmash and builds again what the update chan
 | `--no-packages` | Don't install packages: for a distribution it doesn't know, install them yourself first. |
 | `--dry-run` | Say what each step would do, and do nothing. |
 
-The launchers work like the Windows ones: `play-ssbu.sh` at the top of the folder, the others in
+The launchers work like the Windows ones: `tools/linux/play.sh` at the top of the folder, the others in
 `launchers/`.
 
 | Launcher | On Windows | What it does |
 | :--- | :--- | :--- |
-| `play-ssbu.sh` | `OpenSmash.exe` | The game, online through the lobby in `online_server.txt` ([Multiplayer](MULTIPLAYER.md)). |
+| `tools/linux/play.sh` | `OpenSmash.exe` | The game, online through the lobby in `online_server.txt` ([Multiplayer](MULTIPLAYER.md)). |
 | `launchers/play-ssbu-offline.sh` | the launcher's Offline lobby setting | The game, offline. |
 | `launchers/host-ssbu-netplay.sh`, `launchers/join-ssbu-netplay.sh` | `Host/Join SSBU Netplay.bat` | A private room. |
 | `launchers/unlock-all-fighters.sh` | `Unlock All Fighters.bat` | The unlock tool, on this folder's save. Run it with the game closed. |
@@ -220,7 +165,7 @@ folder that isn't mounted, the launchers say so. The [Controls](#controls), [Set
 
 ### Updating
 
-Run `bash install-windowsmash.sh` again whenever you want the newest WindowSmash. It looks at
+Run `bash tools/linux/install.sh` again whenever you want the newest WindowSmash. It looks at
 what changed and builds only that: your game files aren't asked for again (they are read once,
 into `dump/`), and the game's code is compiled again only when the update changes it. An update
 of the program's own parts (the graphics, the audio, the kernel: the files in `runtime/`) compiles
@@ -228,7 +173,7 @@ those files and links the program again, which takes minutes. An update that cha
 game's code is translated (a performance change to the translator, say), the header the game's
 code includes (`runtime/recomp.h`) or the compile flags, or a new compiler, compiles the game's
 code again, once: about as long as the first build. To build from other
-game files, name them: `bash install-windowsmash.sh --game <folder>`.
+game files, name them: `bash tools/linux/install.sh --game <folder>`.
 
 A folder an older WindowSmash built from another game version, such as 11.0.0, is set up again
 as 13.0.5 once your game folder has the 13.0.5 update; your save and settings stay
@@ -501,7 +446,7 @@ back.
 | What you see | What to do |
 | :--- | :--- |
 | *Some libraries the game needs are not installed* | Run `bash install-deps.sh`. |
-| *`SDL.h` file not found*, or another `.h` file, while building | The package is installed without its header files (SteamOS does this). Run `bash install-windowsmash.sh` again: it puts them back. |
+| *`SDL.h` file not found*, or another `.h` file, while building | The package is installed without its header files (SteamOS does this). Run `bash tools/linux/install.sh` again: it puts them back. |
 | A black window, or `cannot create the window` / DXVK errors in the log | Run `vulkaninfo --summary`. If it lists no device, install `mesa-vulkan-drivers`. |
 | No sound | SDL uses PulseAudio or PipeWire. Check the log for `[audio]` lines. |
 | A crash | It writes `reports/crash_<date>_<time>.txt`: the guest function and host frames (`*** host exception`), also at the end of the log. Send it with `build/play.log`. When the port stops the game itself (something it can't do yet), it writes `reports/stopped_*.txt`. |
@@ -511,7 +456,7 @@ back.
 
 ## Building it
 
-On Linux, `install-windowsmash.sh` builds it ([Installing on Linux](#installing-on-linux)). By hand:
+On Linux, `tools/linux/install.sh` builds it ([Installing on Linux](#installing-on-linux)). By hand:
 `tools/build_game.py` prepares the game tree and then, on Linux, generates the game's C
 (`tools/recomp.py all --generate-only`) and runs `build_vkd3d.py` and `build_linux.py` below with
 the system's clang and lld. The third-party parts then live in `deps/linux-toolchain`, where the

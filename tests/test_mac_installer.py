@@ -1,5 +1,5 @@
-"""The macOS installer (Install WindowSmash.command, tools/mac/install_mac.py) and launchers
-(Play SSBU.command, launchers/*.command, tools/mac/launch.sh, the Play SSBU app the
+"""The macOS installer (tools/mac/install.sh, tools/mac/install_mac.py) and launchers
+(tools/mac/play.sh, launchers/*.command, tools/mac/launch.sh, the Play SSBU app the
 installer makes). What decides is tested on any POSIX system with bash; what needs macOS (open,
 osacompile, hdiutil, sips, codesign) only on a Mac, where a stand-in game app records how it was
 started. No dialog is ever shown: osascript is stood in for. No game files."""
@@ -30,7 +30,7 @@ import install_mac as im  # noqa: E402
 
 BASH = '/bin/bash' if os.path.exists('/bin/bash') else shutil.which('bash')
 DARWIN = sys.platform == 'darwin'
-INSTALL = ROOT / 'Install WindowSmash.command'
+INSTALL = ROOT / 'tools/mac/install.sh'
 SCRIPTS = [ROOT / n for n in im.LAUNCHERS]
 
 
@@ -865,7 +865,7 @@ class LauncherAppTests(unittest.TestCase):
 
 @unittest.skipUnless(BASH, 'needs bash')
 class BootstrapTests(unittest.TestCase):
-    """Install WindowSmash.command: which Python it runs the installer with, and the Python it
+    """tools/mac/install.sh: which Python it runs the installer with, and the Python it
     downloads when there is none (stood in for: curl copies a local file)."""
 
     def setUp(self):
@@ -1004,7 +1004,7 @@ def make_tree(top, tree='.', version=None, data=True, built=True):
 
 
 def copy_launchers(top):
-    for name in ('Play SSBU.command', 'launchers/Play SSBU Offline.command', 'launchers/Host SSBU Netplay.command',
+    for name in ('tools/mac/play.sh', 'launchers/Play SSBU Offline.command', 'launchers/Host SSBU Netplay.command',
                  'launchers/Join SSBU Netplay.command', 'launchers/Unlock All Fighters.command',
                  'launchers/Build WindowSmash.command', 'tools/mac/launch.sh'):
         (Path(top) / name).parent.mkdir(parents=True, exist_ok=True)
@@ -1058,7 +1058,7 @@ class LaunchScriptTests(unittest.TestCase):
         self.assertEqual(self.online(head + 'a.example:1\n', 'Mario\n', 'on\nOff  # all through the lobby\n')[0],
                          'R=a.example:1|C=|N=Mario|D=0')
         self.assertEqual(self.online(head + 'a.example:1\n', 'Mario\n', 'on\n')[0], 'R=a.example:1|C=|N=Mario|D=')
-        self.assertEqual(self.online('off\n', None, 'off')[0], 'R=|C=|N=|D=0')   # (as Play SSBU.bat: read either way)
+        self.assertEqual(self.online('off\n', None, 'off')[0], 'R=|C=|N=|D=0')   # (as OpenSmash.exe: read either way)
         self.assertFalse((self.top / 'online_name.txt').exists())                # (offline: no name asked)
 
     def test_name_asked_the_first_time(self):
@@ -1102,7 +1102,7 @@ class LaunchScriptTests(unittest.TestCase):
     def test_game_checks(self):
         r = self.sh('pick_game; echo "not here"')
         self.assertEqual(r.returncode, 1)
-        self.assertIn("The game isn't built here yet: double-click Install WindowSmash.command", r.stdout)
+        self.assertIn("The game isn't built here yet: run bash tools/mac/install.sh", r.stdout)
         self.assertNotIn('not here', r.stdout)
         make_tree(self.top, '.', '13.0.5')
         r = self.sh('pick_game >/dev/null; echo "tree=$tree"')
@@ -1126,16 +1126,16 @@ class LaunchScriptTests(unittest.TestCase):
         self.assertIn(f'built: {self.top}/base.nca.', r.stdout)
 
     def test_not_built(self):
-        for name in ('Play SSBU.command', 'launchers/Play SSBU Offline.command', 'launchers/Host SSBU Netplay.command',
+        for name in ('tools/mac/play.sh', 'launchers/Play SSBU Offline.command', 'launchers/Host SSBU Netplay.command',
                      'launchers/Join SSBU Netplay.command', 'launchers/Unlock All Fighters.command'):
             r = subprocess.run([BASH, str(self.top / name)], capture_output=True, text=True, stdin=subprocess.DEVNULL,
                                cwd='/', timeout=60)
             self.assertEqual(r.returncode, 1, name)
-            self.assertIn("The game isn't built here yet: double-click Install WindowSmash.command", r.stdout, name)
+            self.assertIn("The game isn't built here yet: run bash tools/mac/install.sh", r.stdout, name)
         r = subprocess.run([BASH, str(self.top / 'launchers/Build WindowSmash.command')], capture_output=True, text=True,
                            stdin=subprocess.DEVNULL, cwd='/', timeout=60)
         self.assertEqual(r.returncode, 1)
-        self.assertIn("WindowSmash's Python (deps/venv) is not set up yet: double-click Install WindowSmash.command", r.stdout)
+        self.assertIn("WindowSmash's Python (deps/venv) is not set up yet: run bash tools/mac/install.sh", r.stdout)
 
     def test_unlock(self):
         make_tree(self.top, '.', '13.0.5')
@@ -1162,7 +1162,7 @@ class LaunchScriptTests(unittest.TestCase):
                            stdin=subprocess.DEVNULL, cwd='/', timeout=60)
         self.assertEqual(r.returncode, 1)
         self.assertIn("WindowSmash's Python (deps/venv) is one the tools cannot use (they need Python 3.10 or newer, as "
-                      "arm64): double-click Install WindowSmash.command, which makes it again.", r.stdout)
+                      "arm64): run bash tools/mac/install.sh, which makes it again.", r.stdout)
         self.assertNotIn('PY ', r.stdout)
 
     def test_build(self):
@@ -1204,13 +1204,13 @@ class OpenTests(unittest.TestCase):
         (self.top / 'online_server.txt').write_text('# the lobby\nlobby.example:39421 FRIENDS\n')
         (self.top / 'online_name.txt').write_text('Tester\n')
         (self.top / 'online_direct.txt').write_text('off\n')
-        r = self.run_launcher('Play SSBU.command', SSBU_HITCH='40', SSBU_NET_HOST='1', SSBU_DATA_ROOT='/elsewhere',
+        r = self.run_launcher('tools/mac/play.sh', SSBU_HITCH='40', SSBU_NET_HOST='1', SSBU_DATA_ROOT='/elsewhere',
                               SSBU_NET_BIND='127.0.0.1', SSBU_NET_ROOM='mine', SSBU_LOG='/tmp/not-this', SSBU_CWD='/tmp')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         cwd, args, env = self.record()
         self.assertEqual(args, [f'{tree}/dump/modules', '--status', '30'])
         self.assertEqual(cwd, 'cwd=/')   # (open starts apps in /: the runtime goes to SSBU_CWD)
-        # (what Play SSBU.bat clears is gone, SSBU_LOG and SSBU_CWD are the launcher's, the rest passes on)
+        # (what OpenSmash.exe clears is gone, SSBU_LOG and SSBU_CWD are the launcher's, the rest passes on)
         self.assertEqual(env, {'SSBU_CWD': str(self.top), 'SSBU_LOG': f'{tree}/build/play.log', 'SSBU_HITCH': '40',
                                'SSBU_NET_RELAY': 'lobby.example:39421', 'SSBU_NET_ROOM': 'FRIENDS',
                                'SSBU_NET_NAME': 'Tester', 'SSBU_NET_DIRECT': '0'})
@@ -1262,7 +1262,7 @@ class OpenTests(unittest.TestCase):
         exe = tree / 'build-mac' / 'WindowSmash.app' / 'Contents' / 'MacOS' / 'ssbu'
         exe.write_text(exe.read_text().replace('sleep 1', 'echo "*** stopped during boot: cannot open x" >> "$SSBU_LOG"\nsleep 1'))
         (self.top / 'online_server.txt').write_text('off\n')
-        r = self.run_launcher('Play SSBU.command')
+        r = self.run_launcher('tools/mac/play.sh')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('The game stopped with an error: stopped during boot: cannot open x. Its report is in', r.stdout)
 
@@ -1272,7 +1272,7 @@ class OpenTests(unittest.TestCase):
         exe = tree / 'build-mac' / 'WindowSmash.app' / 'Contents' / 'MacOS' / 'ssbu'
         exe.write_text(exe.read_text().replace('echo "stand-in game: running" >> "$SSBU_LOG"\nsleep 1\n', 'exit 0\n'))
         (self.top / 'online_server.txt').write_text('off\n')
-        r = self.run_launcher('Play SSBU.command')
+        r = self.run_launcher('tools/mac/play.sh')
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn('The game did not start.', r.stdout)
 
@@ -1315,7 +1315,7 @@ class ScriptSyntaxTests(unittest.TestCase):
     def test_launchers_listed(self):
         # (the installer makes each runnable: every .command, and the scripts they run)
         commands = {p.relative_to(ROOT).as_posix() for p in [*ROOT.glob('*.command'), *(ROOT / 'launchers').glob('*.command')]}
-        self.assertEqual(commands | {'tools/mac/launch.sh'}, set(im.LAUNCHERS))
+        self.assertEqual(commands | {'tools/mac/launch.sh', 'tools/mac/install.sh', 'tools/mac/play.sh'}, set(im.LAUNCHERS))
         self.assertTrue(all((ROOT / n).is_file() for n in im.LAUNCHERS))
 
     def test_install_body_is_one_block(self):

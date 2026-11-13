@@ -1,6 +1,6 @@
 #!/bin/bash
-# The macOS launchers' shared part: Play SSBU.command, launchers/*.command and the Play SSBU app the
-# installer makes (~/Applications) run it, as Play SSBU.bat and launchers\*.bat do on Windows.
+# The macOS launchers' shared part: tools/mac/play.sh, launchers/*.command and the Play SSBU app the
+# installer makes (~/Applications) run it, as OpenSmash.exe and launchers\*.bat do on Windows.
 #
 #   launch.sh [--gui] play|offline|host|join|unlock|miis|build [arguments for unlock_all.py, miis.py or build_game.py]
 #
@@ -106,7 +106,7 @@ lower() {
     printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
-# What Play SSBU.bat clears (the others keep the room and name variables: they ask for them)
+# What OpenSmash.exe clears (the others keep the room and name variables: they ask for them)
 clear_net() {
     unset SSBU_DATA_ROOT SSBU_INPUT SSBU_NET_HOST SSBU_NET_RELAY SSBU_NET_BIND "$@"
 }
@@ -119,7 +119,7 @@ game_folder() {
         *) tree="$root/$SSBU_TREE" ;;
     esac
     [ -x "$tree/build-mac/WindowSmash.app/Contents/MacOS/ssbu" ] ||
-        fail "The game isn't built here yet: double-click Install WindowSmash.command (in $root) to build it."
+        fail "The game isn't built here yet: run bash tools/mac/install.sh (in $root) to build it."
 }
 
 # The game to start ($tree), built and with its game data where its romfs.cfg says
@@ -127,14 +127,14 @@ pick_game() {
     local cfg path
     game_folder
     cfg="$tree/dump/modules/romfs.cfg"
-    [ -f "$cfg" ] || fail "The game is not set up yet ($cfg is missing): double-click Install WindowSmash.command."
+    [ -f "$cfg" ] || fail "The game is not set up yet ($cfg is missing): run bash tools/mac/install.sh."
     while IFS= read -r path || [ -n "$path" ]; do
         path=${path%$'\r'}
         [ -n "$path" ] && [ ! -f "$path" ] || continue
         if ls -d "$path" 2>&1 | grep -q "not permitted"; then
             fail "macOS does not let the launcher read the game data ($path). Allow it in System Settings > Privacy & Security > Files and Folders (or Full Disk Access), then start it again."
         fi
-        fail "The game data is not where it was when the game was built: $path. Make it reachable there again (a disk that is not connected?), or double-click Install WindowSmash.command to set it up again from where it is now."
+        fail "The game data is not where it was when the game was built: $path. Make it reachable there again (a disk that is not connected?), or run bash tools/mac/install.sh to set it up again from where it is now."
     done < <(if [ "$(head -n 1 "$cfg" | tr -d '\r')" = layered ]; then tail -n +2 "$cfg"; else head -n 1 "$cfg"; fi)
 }
 
@@ -341,9 +341,9 @@ tools_python() {
         return 0
     fi
     if [ -x "$py" ]; then
-        fail "WindowSmash's Python (deps/venv) is one the tools cannot use (they need Python 3.10 or newer, as arm64): double-click Install WindowSmash.command, which makes it again."
+        fail "WindowSmash's Python (deps/venv) is one the tools cannot use (they need Python 3.10 or newer, as arm64): run bash tools/mac/install.sh, which makes it again."
     fi
-    fail "WindowSmash's Python (deps/venv) is not set up yet: double-click Install WindowSmash.command, which sets everything up."
+    fail "WindowSmash's Python (deps/venv) is not set up yet: run bash tools/mac/install.sh, which sets everything up."
 }
 
 mode_unlock() {

@@ -267,7 +267,7 @@ static void cmd_pad(const char *names, int n) {
 }
 
 int main(int argc, char **argv) {
-    settings_args(argc, argv);   /* (--online: the lobby from online_server.txt, as Play SSBU.bat starts the game) */
+    settings_args(argc, argv);   /* (--online: the lobby from online_server.txt, as OpenSmash.exe starts the game) */
     const char *b = getenv("LOBBYMENUTEST_BUILD");
     snprintf(build_text, sizeof build_text, "%s", b ? b : "");
     static const struct { const char *name; int key; } KEYS[] = {

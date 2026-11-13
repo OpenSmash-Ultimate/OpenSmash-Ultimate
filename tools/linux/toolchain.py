@@ -2,10 +2,10 @@
 
 On Windows it cross-compiles, with the Visual Studio clang and an Ubuntu 22.04 sysroot. On Linux
 it builds natively, with the system's clang and lld and its headers and libraries
-(install-windowsmash.sh installs them).
+(tools/linux/install.sh installs them).
 
 Everything third-party lives outside the repository: in this checkout's deps/linux-toolchain
-(where install-windowsmash.sh puts it), else in linux-toolchain/ next to the checkout
+(where tools/linux/install.sh puts it), else in linux-toolchain/ next to the checkout
 (SSBU_LINUX_TOOLCHAIN overrides; docs/LINUX.md says where each part comes from):
   sysroot/        (cross-compiling only) Ubuntu 22.04 packages (glibc 2.35, libgcc, libstdc++,
                   SDL2, libopus, libvpx)
@@ -114,7 +114,7 @@ def _find_llvm():
                               lambda d, t: os.access(os.path.join(d, t), os.X_OK), clang_major)
         if not found:
             raise SystemExit("clang, ld.lld, llvm-ar and llvm-nm were not found: install clang, lld and llvm "
-                             "(install-windowsmash.sh does), or name their folder in SSBU_LLVM_BIN")
+                             "(tools/linux/install.sh does), or name their folder in SSBU_LLVM_BIN")
         return found
     roots = [os.environ.get("ProgramFiles", r"C:\Program Files"), os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")]
     found = []

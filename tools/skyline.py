@@ -945,11 +945,7 @@ def build(tree, jobs, log=print, again=True):
 
 # What isn't part of the game's program: an update that changes only these needs no build (the Mods
 # app's files are read as it runs; the tools here run as they are)
-NOT_BUILT = ("tools/modmanager/", "tools/weblauncher/", "tools/app_window.py", "tools/linux/askpass.sh",
-             "tools/dev/", "tools/mods.py", "tools/os_mods.py", "tools/progress.py", "tools/std_plugins.py",
-             "tools/csk.py", "tools/miis.py", "tools/unlock_all.py", "tools/install_windowsmash.ps1",
-             "tools/update.py", "tools/arc.py", "tools/prc.py", "tools/msbt.py", "tools/ssbu_online_lobby.py",
-             "tools/ssbu_relay.py", "tools/skyline.py", "tools/shader_aot.py", "tools/find_python.bat")
+NOT_BUILT = ('tools/modmanager/', 'tools/weblauncher/', 'tools/app_window.py', 'tools/linux/askpass.sh', 'tools/dev/', 'tools/mods.py', 'tools/os_mods.py', 'tools/progress.py', 'tools/std_plugins.py', 'tools/csk.py', 'tools/miis.py', 'tools/unlock_all.py', 'tools/install_windowsmash.ps1', 'tools/update.py', 'tools/arc.py', 'tools/prc.py', 'tools/msbt.py', 'tools/ssbu_online_lobby.py', 'tools/ssbu_relay.py', 'tools/skyline.py', 'tools/shader_aot.py', 'tools/find_python.bat', 'tools/build_desktop_launcher.py', 'tools/build_launcher.py', 'tools/build_launcher.ps1', 'tools/prepare_desktop_source.py', 'tools/desktop_update.py', 'tools/linux/install.sh', 'tools/linux/play.sh', 'tools/mac/install.sh', 'tools/mac/play.sh', 'tools/mac/launch.sh', 'tools/linux/install_linux.py', 'tools/mac/install_mac.py', 'tools/linux/bundle/', 'tools/mac/ModsApp.swift', 'tools/mac/ModsShell.swift')
 
 
 def plugin_refresh_reason(tree):

@@ -1,4 +1,4 @@
-"""The Linux installer (install-windowsmash.sh, tools/linux/install_linux.py), the Linux build on a
+"""The Linux installer (tools/linux/install.sh, tools/linux/install_linux.py), the Linux build on a
 Linux host (tools/linux/toolchain.py, build_game.py's step 9, recomp.py all --generate-only) and the
 launchers of a folder built on Linux. What runs only on Linux is stood in for; no game files."""
 from pathlib import Path
@@ -18,6 +18,16 @@ import unittest.mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools' / 'linux'))
 import install_linux as il  # noqa: E402
+
+
+class SharedLauncherShortcutTests(unittest.TestCase):
+    def test_shared_launcher_is_the_menu_entry_when_present(self):
+        with tempfile.TemporaryDirectory(prefix='OpenSmash menu ') as folder:
+            (Path(folder) / 'OpenSmash').write_text('synthetic launcher')
+            text = il.desktop_entry(folder)
+            self.assertIn('Exec=' + il.desktop_quote(folder + '/OpenSmash'), text)
+            self.assertIn('Terminal=false', text)
+            self.assertNotIn('Exec=bash', text)
 
 
 class UpdateTests(unittest.TestCase):
@@ -251,9 +261,9 @@ class SystemTests(unittest.TestCase):
 
     def test_desktop_entry(self):
         self.assertEqual(il.desktop_quote('bash'), 'bash')
-        self.assertEqual(il.desktop_quote('/home/me/My Games/$x"`\\/play-ssbu.sh'), '"/home/me/My Games/\\$x\\"\\`\\\\/play-ssbu.sh"')
+        self.assertEqual(il.desktop_quote('/home/me/My Games/$x"`\\/tools/linux/play.sh'), '"/home/me/My Games/\\$x\\"\\`\\\\/tools/linux/play.sh"')
         text = il.desktop_entry('/home/me/Win Smash')
-        self.assertIn('Exec=bash "/home/me/Win Smash/play-ssbu.sh"\nPath=/home/me/Win Smash\n', text)
+        self.assertIn('Exec=bash "/home/me/Win Smash/tools/linux/play.sh"\nPath=/home/me/Win Smash\n', text)
         self.assertIn('Terminal=true\n', text)
         self.assertTrue(text.startswith('[Desktop Entry]\nType=Application\n'))
 
@@ -640,7 +650,7 @@ BASH = find_bash()
 
 @unittest.skipUnless(BASH, 'needs bash')
 class LauncherTests(unittest.TestCase):
-    """The launchers of a folder built on Linux (play-ssbu.sh and the rest) run the package's
+    """The launchers of a folder built on Linux (tools/linux/play.sh and the rest) run the package's
     launchers for it: build-linux/ssbu with dump/modules, from the folder, after their checks."""
 
     def setUp(self):
@@ -648,7 +658,7 @@ class LauncherTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.top = Path(self.temp.name) / 'Win Smash'
         top = self.top
-        for name in ('play-ssbu.sh', 'launchers/play-ssbu-offline.sh'):   # (one at the top, one in launchers/)
+        for name in ('tools/linux/play.sh', 'launchers/play-ssbu-offline.sh'):   # (one at the top, one in launchers/)
             (top / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(ROOT / name, top / name)
         shutil.copytree(ROOT / 'tools' / 'linux' / 'bundle', top / 'tools' / 'linux' / 'bundle')
@@ -684,7 +694,7 @@ class LauncherTests(unittest.TestCase):
         self.assertTrue((self.top / 'build' / 'play.log').exists())
 
     def test_online_off_plays_offline(self):
-        r = self.run_launcher('play-ssbu.sh')
+        r = self.run_launcher('tools/linux/play.sh')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('Playing offline (no lobby in online_server.txt).', r.stdout)
 
@@ -696,11 +706,11 @@ class LauncherTests(unittest.TestCase):
         (self.top / 'config').mkdir()
         (self.top / 'config' / 'version.ini').write_text('version = 1\n', newline='\n')
         (self.top / 'config' / 'online_name.txt').write_text('Made-up Name\n', newline='\n')
-        r = self.run_launcher('play-ssbu.sh')
+        r = self.run_launcher('tools/linux/play.sh')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('Online: lobby lobby.example:39421 (lobby code FRIENDS), as Made-up Name.', r.stdout)
         (self.top / 'config' / 'online_server.txt').write_text('off\n', newline='\n')
-        r = self.run_launcher('play-ssbu.sh')
+        r = self.run_launcher('tools/linux/play.sh')
         self.assertIn('Playing offline (no lobby in online_server.txt).', r.stdout)
 
     def test_data_gone(self):
@@ -714,7 +724,7 @@ class LauncherTests(unittest.TestCase):
         (self.top / 'build-linux' / 'ssbu').unlink()
         r = self.run_launcher('launchers/play-ssbu-offline.sh')
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn('The game is not built yet (build-linux/ssbu): run  bash install-windowsmash.sh', r.stdout)
+        self.assertIn('The game is not built yet (build-linux/ssbu): run  bash tools/linux/install.sh', r.stdout)
 
 
 @unittest.skipUnless(BASH, 'needs bash')

@@ -1,0 +1,143 @@
+name: OpenSmash setup release
+
+on:
+  push:
+    tags: ['desktop-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing desktop-v* tag to build
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.prepare.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Audit committed source for game data
+        run: python .github/scripts/check_no_game_data.py
+      - name: Prepare exact source and bootstrap manifest
+        id: prepare
+        shell: bash
+        run: |
+          case "$RELEASE_TAG" in desktop-v*) ;; *) exit 1 ;; esac
+          python tools/prepare_desktop_source.py --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-source
+          path: dist/launcher-release-source/
+
+  launcher:
+    needs: source
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            asset: OpenSmash.exe
+          - os: ubuntu-latest
+            rid: linux-x64
+            asset: OpenSmash-linux-x64.tar.gz
+          - os: macos-14
+            rid: osx-arm64
+            asset: OpenSmash-macos-arm64.tar.gz
+    runs-on: ${{ matrix.os }}
+    env:
+      OPENSMASH_TEST_SCREENSHOT: ${{ github.workspace }}/OpenSmash.Launcher/bin/artwork.png
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.commit }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-release-source
+          path: release-source
+      - run: dotnet run --project tests/desktop -c Release
+      - run: python -m unittest discover -s tests -p test_desktop_release_source.py -v
+      - run: python -m unittest discover -s tests -p test_desktop_install_bridge.py -v
+      - run: python tools/build_desktop_launcher.py --rid ${{ matrix.rid }} --source-manifest release-source/bootstrap-source.json
+      - name: Name release asset
+        shell: python
+        env:
+          RELEASE_RID: ${{ matrix.rid }}
+          RELEASE_ASSET: ${{ matrix.asset }}
+        run: |
+          import os, pathlib, shutil
+          rid = os.environ['RELEASE_RID']
+          source = pathlib.Path('dist/launcher') / (rid + '.tar.gz')
+          if rid == 'win-x64':
+              source = pathlib.Path('dist/launcher/win-x64/OpenSmash.exe')
+          pathlib.Path('release-assets').mkdir()
+          shutil.copy2(source, pathlib.Path('release-assets') / os.environ['RELEASE_ASSET'])
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-setup-${{ matrix.rid }}
+          path: release-assets/
+
+  draft:
+    needs: [source, launcher]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.commit }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-setup-*
+          merge-multiple: true
+          path: release-assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-release-source
+          path: release-assets
+      - name: Write release checksums
+        shell: python
+        run: |
+          import hashlib, pathlib
+          root = pathlib.Path('release-assets')
+          binary = root / 'OpenSmash.exe'
+          with binary.open('rb') as stream:
+              digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+          (root / 'OpenSmash.exe.sha256').write_text(digest + '  OpenSmash.exe\n', encoding='ascii')
+          files = sorted(p for p in root.iterdir() if p.is_file())
+          rows = []
+          for path in files:
+              with path.open('rb') as stream:
+                  rows.append(hashlib.file_digest(stream, 'sha256').hexdigest() + '  ' + path.name)
+          (root / 'SHA256SUMS.txt').write_text('\n'.join(rows) + '\n', encoding='ascii')
+      - name: Create or update draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' > release-state.txt; then
+            test "$(cat release-state.txt)" = "true" || { echo "Refusing to change a published release"; exit 1; }
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --prerelease --title "OpenSmash $RELEASE_TAG" --notes-file docs/DESKTOP-RELEASE-NOTES.md
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber

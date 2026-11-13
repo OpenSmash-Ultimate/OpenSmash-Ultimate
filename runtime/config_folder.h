@@ -17,7 +17,7 @@
 enum ConfigFile {
     CONFIG_DISPLAY,         /* display.ini (gpu_display.c) */
     CONFIG_CONTROLLERS,     /* controllers.ini (hle_pad.c) */
-    CONFIG_LAUNCHER,        /* launcher.ini (tools/launcher.ps1 only) */
+    CONFIG_LAUNCHER,        /* launcher.ini (OpenSmash settings) */
     CONFIG_ONLINE_SERVER,   /* online_server.txt: config/'s once there is one, else the port's own */
     CONFIG_ONLINE_NAME,     /* online_name.txt */
     CONFIG_ONLINE_DIRECT,   /* online_direct.txt */

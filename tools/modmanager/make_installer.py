@@ -51,7 +51,7 @@ for p in "$target/deps/venv/bin/python" "$target/deps/python/bin/python3" python
     if command -v "$p" >/dev/null 2>&1 && "$p" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then py="$p"; break; fi
 done
 if [ -z "$py" ]; then
-    echo "WindowSmash's Python wasn't found: install WindowSmash first (Install WindowSmash.command)."
+    echo "WindowSmash's Python wasn't found: install WindowSmash first (tools/mac/install.sh)."
     read -r -p "Press Return to close." _; exit 1
 fi
 "$py" "$here/installer/install_mods.py" --target "$target"

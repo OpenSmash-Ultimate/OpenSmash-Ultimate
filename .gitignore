@@ -91,3 +91,13 @@ Thumbs.db
 tools/modmanager/installed.json
 /OpenSmash.Launcher/bin/
 /OpenSmash.Launcher/obj/
+/tests/desktop/bin/
+/tests/desktop/obj/
+/dist/desktop/
+/tests/desktop-native/bin/
+/tests/desktop-native/obj/
+
+/OpenSmash
+/OpenSmash.app/
+/.OpenSmash-build-*
+/.OpenSmash-backup-*

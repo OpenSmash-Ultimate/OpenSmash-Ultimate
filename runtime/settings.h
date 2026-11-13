@@ -3,7 +3,7 @@
  * comments and every line it does not change, so the files stay what players and the docs edit
  * by hand.
  *
- * Started with --online (Play SSBU.bat, play-ssbu.sh), the game takes its netplay settings from
+ * Started with --online (OpenSmash.exe, tools/linux/play.sh), the game takes its netplay settings from
  * online_server.txt, online_name.txt and online_direct.txt itself (net_relay.c); SSBU_NET_*
  * variables still win. */
 #pragma once
@@ -21,7 +21,7 @@ int settings_ini_get(const char *path, const char *section, const char *key, cha
 int settings_ini_set(const char *path, const char *section, const char *key, const char *value);
 
 /* The one-line files (online_*.txt): the first line that is neither empty nor a '#' comment, as
- * Play SSBU.bat reads it. write replaces that line (or adds it), keeping the comments. */
+ * OpenSmash.exe reads it. write replaces that line (or adds it), keeping the comments. */
 int settings_line_read(const char *path, char *out, int size);
 int settings_line_write(const char *path, const char *line);
 

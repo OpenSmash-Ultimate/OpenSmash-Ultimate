@@ -59,7 +59,7 @@ jobs:
       # bash 5 for the Linux launchers' tests (macOS's own bash is 3.2); an LLVM for tools/linux/toolchain.py
       # (SSBU_LLVM_BIN: it searches for one only on Linux and Windows); 127.0.0.2 for test_ssbu_relay's second
       # address; SDL3 3.4.18's DMG (the SHA-256 tools/mac/install_mac.py pins) and the framework in it, as
-      # Install WindowSmash.command puts them, for test_mac_installer and test_mac_build
+      # tools/mac/install.sh puts them, for test_mac_installer and test_mac_build
       - name: macOS packages
         if: runner.os == 'macOS'
         run: |

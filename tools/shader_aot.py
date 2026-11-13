@@ -64,7 +64,11 @@ except ImportError:                                               # 3.10 to 3.13
     import zstandard
 
     def zstd_decompress(data):
-        return zstandard.ZstdDecompressor().decompressobj().decompress(data)
+        decoder = zstandard.ZstdDecompressor().decompressobj()
+        result = decoder.decompress(data)
+        if not decoder.eof:
+            raise zstandard.ZstdError("incomplete zstd frame")
+        return result
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import arc as A    # noqa: E402

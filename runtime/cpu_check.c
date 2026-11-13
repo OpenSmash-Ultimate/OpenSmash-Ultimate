@@ -5,7 +5,7 @@
  * XGETBV for whether the system saves the YMM registers) for each extension the program's code may
  * use - host.c's rt_cpu_needs, from the compiler's own macros (cpu_check.h) - and if one is
  * missing, says which and what to do (on Windows in a message box too, as the game is started from
- * Play SSBU.bat with its output in build\play.log), then stops.
+ * OpenSmash.exe with its output in build\play.log), then stops.
  *
  * It must not need more of the processor than any x86-64 one has, so this file alone is compiled
  * for plain x86-64 whatever the build's instruction set (tools/cc.py's CHECK_CFLAGS, tools/linux/
@@ -96,7 +96,7 @@ int rt_cpu_message(unsigned needs, unsigned has, char *out, size_t size) {
 #ifdef _WIN32
 #define RT_CPU_AGAIN "Run OpenSmash.exe again: it builds the game for this processor"
 #else
-#define RT_CPU_AGAIN "Run install-windowsmash.sh again: it builds the game for this processor"
+#define RT_CPU_AGAIN "Run tools/linux/install.sh again: it builds the game for this processor"
 #endif
     /* (the second sentence for when the first does not help: a Windows older than 10 version 2004 cannot be asked
      * about AVX2, and the installer then goes by the processor's name, which may say AVX2 where a virtual machine
