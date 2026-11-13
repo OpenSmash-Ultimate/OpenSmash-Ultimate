@@ -174,17 +174,18 @@ size_t rbn_build(uint8_t *b, size_t cap, const RbnMsg *m) {
         put16(q + 15, (uint16_t)p->ry); put16(q + 17, (uint16_t)p->lt); put16(q + 19, (uint16_t)p->rt);
         n += RBN_RUN_BYTES; runs++; i += k;
     }
-    b[0] = RBN_MSG_PADS; b[1] = (uint8_t)m->player; b[2] = (uint8_t)m->count; b[3] = (uint8_t)runs;
+    b[0] = RBN_MSG_PADS; b[1] = (uint8_t)m->player; b[2] = (uint8_t)m->count; b[3] = (uint8_t)(runs | (m->behind ? 0x80 : 0));
     return n;
 }
 int rbn_parse(const uint8_t *b, size_t len, RbnMsg *m) {
     if (len < RBN_HEAD || b[0] != RBN_MSG_PADS || b[1] >= RBN_PLAYERS || b[2] > RBN_MAX_PADS) return 0;
-    if (len != RBN_HEAD + (size_t)b[3] * RBN_RUN_BYTES) return 0;
-    m->type = RBN_MSG_PADS; m->player = b[1]; m->count = b[2];
+    int runs = b[3] & 0x7f;
+    if (len != RBN_HEAD + (size_t)runs * RBN_RUN_BYTES) return 0;
+    m->type = RBN_MSG_PADS; m->player = b[1]; m->count = b[2]; m->behind = b[3] >> 7;
     m->first = get32(b + 4); m->frame = get32(b + 8); m->check_frame = get32(b + 12); m->check = get32(b + 16);
     for (int p = 0; p < RBN_PLAYERS; p++) { m->ack[p] = get32(b + 20 + 4 * p); m->heard[p] = get32(b + 20 + 4 * RBN_PLAYERS + 4 * p); }
     int i = 0;
-    for (int r = 0; r < b[3]; r++) {
+    for (int r = 0; r < runs; r++) {
         const uint8_t *q = b + RBN_HEAD + (size_t)r * RBN_RUN_BYTES;
         int k = q[0];
         if (!k || i + k > m->count) return 0;   /* (the runs must add up to the count, no more) */
@@ -362,4 +363,31 @@ int rbn_sync_wait(uint32_t frame) {
         return 1;
     }
     return 0;
+}
+
+/* ---- pace ---- */
+void rbn_pace_reset(RbnPace *p) { memset(p, 0, sizeof *p); }
+int rbn_pace_frame(RbnPace *p, double game_ms) {
+    int late = game_ms > RBN_PACE_LATE_MS;
+    if (p->n == RBN_PACE_SPAN) p->nlate -= p->late[p->next];
+    else p->n++;
+    p->late[p->next] = (uint8_t)late;
+    p->ms[p->next] = game_ms < RBN_PACE_CLAMP_MS ? game_ms : RBN_PACE_CLAMP_MS;
+    p->nlate += late;
+    p->next = (p->next + 1) % RBN_PACE_SPAN;
+    return late;
+}
+int rbn_pace_behind(const RbnPace *p) {
+    if (p->n * 2 < RBN_PACE_SPAN) return 0;
+    double sum = 0;
+    for (int k = 0; k < p->n; k++) sum += p->ms[k];
+    return sum / p->n > RBN_PACE_BEHIND_MS;
+}
+int rbn_pace_verdict(double own_behind, double peer_behind, double speed, double catch_share) {
+    if (speed >= RBN_VERDICT_SPEED) return RBN_VERDICT_FULL;   /* (the fight ran at speed: nobody is blamed, whatever the behind shares) */
+    int ours = own_behind >= RBN_VERDICT_BEHIND, peer = peer_behind >= RBN_VERDICT_BEHIND;
+    if (ours && peer) return RBN_VERDICT_BOTH;
+    if (ours) return RBN_VERDICT_OURS;
+    if (peer) return RBN_VERDICT_PEER;
+    return catch_share >= RBN_VERDICT_CATCH_SHARE ? RBN_VERDICT_CATCH : RBN_VERDICT_LINK;
 }
