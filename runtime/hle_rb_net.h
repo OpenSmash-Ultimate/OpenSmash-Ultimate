@@ -44,12 +44,15 @@ void rbn_gone(int p, uint32_t after, uint32_t ran);   /* (ran: the newest frame 
 uint32_t rbn_gone_after(int p);                        /* 0: not gone */
 
 /* ---- the wire (little-endian, lengths checked) ----
- * PADS: type 1 | player u8 | count u8 | runs u8 | first u32 | frame u32 | check_frame u32 | check u32 |
+ * PADS: type 1 | player u8 | count u8 | runs u8 (bit 7: behind, version 14) | first u32 | frame u32 | check_frame u32 | check u32 |
  *       ack u32 x RBN_PLAYERS | heard u32 x RBN_PLAYERS | runs x (frames u8 | pad: 20 bytes: buttons u64, lx ly rx ry lt rt i16)
  * first: the frame of the first pad; count: the pads in all (the runs' frames add up to it), each run one pad held
  * for that many frames in a row; frame: the frame the sender is running; check: its fight hash at check_frame;
  * ack[p]: the newest frame of player p's pads the sender has all of; heard[p]: the newest frame player p said it was
  * running, as the sender heard it (both 0 for the sender itself and for players not in the match).
+ * behind (version 14): the sender could not keep its own pace - the mean of its last 60 timed frames over its
+ * own schedule (RBN_PACE_BEHIND_MS), frames after a rollback, a wait for pads or a hold not counted (rbn_pace below). Runs are at most
+ * RBN_MAX_PADS (64), so bit 7 of that byte was free.
  * (M7, version 5, 3+ players: an ack and a frame heard per player, not one peer's. A game resends its pads from the
  * oldest any other player lacks; each game's frame advantage over each other is told from heard: see rbn_sync.)
  * (M6, version 3: runs. Every pad not yet acknowledged goes in every message, so a longer trip made longer
@@ -65,6 +68,7 @@ typedef struct RbnMsg {
     int type, player, count;
     uint32_t first, frame, check_frame, check;
     uint32_t ack[RBN_PLAYERS], heard[RBN_PLAYERS];
+    int behind;
     RbnPad pads[RBN_MAX_PADS];
 } RbnMsg;
 size_t rbn_build(uint8_t *buf, size_t cap, const RbnMsg *m);    /* bytes written, 0 when it doesn't fit */
@@ -79,11 +83,12 @@ int rbn_parse(const uint8_t *buf, size_t len, RbnMsg *m);       /* 1: a valid me
  * no seed until it has chosen, so player 2 takes both at once). */
 enum { RBN_MSG_HELLO = 2 };
 #define RBN_HELLO_BYTES 40
-#define RBN_VERSION 13  /* (3: PADS in runs; 4: a frame hash final once its own pads are real; M6. 5: an ack and a frame heard per player;
+#define RBN_VERSION 14  /* (3: PADS in runs; 4: a frame hash final once its own pads are real; M6. 5: an ack and a frame heard per player;
                             * 6: Host/Join, a joiner's number from the host; M7. 7: RULES. 8: READY. 9: MENU. 10: the name tag in CHOICE.
                             * 11: no + in fights (no pause menu online): every game must take it out alike.
                             * 12: a GameCube controller in CHOICE: its slot one on every PC, analog triggers and its controls.
-                            * 13: a player without a tag sends its no-name controls as a tag: every game must, or they differ) */
+                            * 13: a player without a tag sends its no-name controls as a tag: every game must, or they differ.
+                            * 14: PADS carry the sender's behind bit: an older game would read it as 128 more runs) */
 /* (M7: players, byte 5: how many play, from the host; 0 from the others.
  * Host/Join, version 6: a joining game has no number yet: player -1 (0xFF on the wire), and its seed field carries a
  * random join id instead, so the host tells two joiners from one address apart and knows one that comes back. The
@@ -165,6 +170,38 @@ void rbn_sync_sample(int p, int32_t local_adv, int32_t remote_adv);   /* one per
 int rbn_sync_wait(uint32_t frame);                              /* frames to wait before this one (0 or 1) */
 int rbn_players(void);
 int rbn_local_player(void);
+
+/* ---- pace: which PC could not keep full speed ----
+ * A game's frames are timed against its own schedule: from the end of one frame's net work to the end of the
+ * next's save, the game's own time, and late past RBN_PACE_LATE_MS. A frame after a rollback, a wait for pads or a hold
+ * is not counted: those are the other PC's or the link's doing. behind: the last RBN_PACE_SPAN
+ * counted frames, the mean of their times over RBN_PACE_BEHIND_MS (at least half of them counted; one frame counts at
+ * most RBN_PACE_CLAMP_MS, so a single stall does not keep a PC behind for a span). The mean, not the share of late
+ * frames: a PC that keeps the frame period exactly has about half its frames past any margin, by jitter. Every PADS message carries it, so each game's log can say
+ * which PC fell behind: a slow peer and a slow link look alike in the frame advantage, not in this bit.
+ * (Background, not measured here: the P+ Brawl rollback notes at brawlonline.net describe the same trouble with
+ * following the gap alone. The thresholds below are untested on two PCs: only simulated slow PCs on one.) */
+#define RBN_PACE_FRAME_MS (1000.0 / 60)
+#define RBN_PACE_LATE_MS (RBN_PACE_FRAME_MS + 2.0)
+#define RBN_PACE_BEHIND_MS (RBN_PACE_FRAME_MS + 1.5)
+#define RBN_PACE_CLAMP_MS (RBN_PACE_FRAME_MS * 3)
+#define RBN_PACE_SPAN 60
+typedef struct RbnPace { uint8_t late[RBN_PACE_SPAN]; double ms[RBN_PACE_SPAN]; int n, next, nlate; } RbnPace;
+void rbn_pace_reset(RbnPace *p);
+int rbn_pace_frame(RbnPace *p, double game_ms);   /* one counted frame, its own time; 1: late (past RBN_PACE_LATE_MS; a count for the log) */
+int rbn_pace_behind(const RbnPace *p);
+/* The fight's verdict from the share of this game's counted frames it was behind at, the share of the peer's messages
+ * that said behind, the fight's speed (logic frames / (seconds * 60)) and catch_share (below). Speed first: at
+ * RBN_VERDICT_SPEED or faster the verdict is FULL, whatever the shares. Slower: BOTH, OURS or PEER by the shares
+ * (RBN_VERDICT_BEHIND, a quarter, or more is behind), then CATCH when catch_share is a quarter or more, else LINK. */
+enum { RBN_VERDICT_FULL, RBN_VERDICT_OURS, RBN_VERDICT_PEER, RBN_VERDICT_BOTH, RBN_VERDICT_LINK, RBN_VERDICT_CATCH };
+#define RBN_VERDICT_BEHIND 0.25
+#define RBN_VERDICT_SPEED 0.95
+#define RBN_VERDICT_CATCH_SHARE 0.25
+/* catch_share: the share of the fight's time this game spent running frames again after a rollback. Those frames are
+ * not timed (see above), so a PC slowed by its own rollbacks is not "behind"; when the fight ran slow, nobody was
+ * behind and this share is a quarter or more, the verdict says so (RBN_VERDICT_CATCH). */
+int rbn_pace_verdict(double own_behind, double peer_behind, double speed, double catch_share);
 
 void *rbn_state(size_t *size);   /* (the whole session's state: the test swaps two) */
 

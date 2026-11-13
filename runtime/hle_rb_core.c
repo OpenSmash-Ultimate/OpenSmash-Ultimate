@@ -1022,6 +1022,122 @@ static int net_hold_sleep = -1;
 static double net_sent_ms[RBN_RING]; static u32 net_sent_at[RBN_RING];
 static double net_rtt_min_s = 1e9, net_rtt_sum; static long long net_rtt_n;
 static int32_t net_adv_ours, net_adv_peer;
+/* Pace: which PC could not keep full speed (hle_rb_net.h, rbn_pace). Each normal frame is timed from the end of the
+ * last one's net work (pads, waits, holds) to the end of this net_step's save: the game's own time, its saves included. A
+ * frame after a catch-up, a wait for pads or a hold is not timed. Every 600 frames a "net pace" line; at the fight's
+ * end a verdict. Each game's behind bit goes out in its PADS. SSBU_RB_TEST_FRAME_COST_US=<us>: this game spins that
+ * long at every fight frame in net mode, a test of a PC too slow for the game (both sides' logs must name this one). */
+static RbnPace pace;
+static double pace_end_ms;   /* (0: no frame timed yet this fight) */
+static int pace_excused, pace_behind, pace_pending;   /* (pace_pending: this fight's verdict not yet printed) */
+typedef struct PaceCount {
+    double t; u32 key; long long frames, timed, late, behind, still; double game_ms;
+    long long rollbacks, rerun, waits, holds; double catch_ms, wait_ms;
+    u32 heard[RBN_PLAYERS]; long long msgs[RBN_PLAYERS], msgs_behind[RBN_PLAYERS];
+} PaceCount;
+static PaceCount pace_now, pace_win;   /* (the fight's counts so far; as they were at the window's start) */
+static int pace_peer_behind[RBN_PLAYERS];
+static void pace_spin(void) {
+    static double us = -1;
+    if (us < 0) {
+        const char *e = getenv("SSBU_RB_TEST_FRAME_COST_US");
+        us = e && *e ? atof(e) : 0; if (us < 0) us = 0;
+        if (us > 0) fprintf(stderr, "[rb] test: %.0f us spun at every fight frame (SSBU_RB_TEST_FRAME_COST_US)\n", us);
+    }
+    if (us <= 0) return;
+    double t = now_ms();
+    while (now_ms() - t < us / 1000) {}
+}
+static void pace_fill(PaceCount *c) {   /* (the counts kept elsewhere, as they are now) */
+    c->t = now_ms(); c->rollbacks = net_rollbacks; c->rerun = net_rerun; c->waits = net_waits; c->holds = net_sync_waits;
+    c->catch_ms = net_catch_ms; c->wait_ms = net_wait_ms;
+    for (int p = 0; p < RBN_PLAYERS; p++) c->heard[p] = net_heard[p];
+}
+static void pace_reset(u32 key) {
+    rbn_pace_reset(&pace); pace_end_ms = 0; pace_excused = 1; pace_behind = 0; pace_pending = 1;
+    memset(&pace_now, 0, sizeof pace_now); memset(pace_peer_behind, 0, sizeof pace_peer_behind);
+    pace_fill(&pace_now); pace_now.key = key; pace_win = pace_now;
+}
+/* (a normal frame: end_ms is when net_step has finished the game's frame and its save) */
+static void pace_frame(u32 key, int lf_new, double end_ms) {
+    pace_now.frames++;
+    if (!lf_new) pace_now.still++;
+    if (key > pace_now.key) pace_now.key = key;
+    if (pace_end_ms > 0 && !pace_excused) {
+        double g = end_ms - pace_end_ms;
+        pace_now.timed++; pace_now.game_ms += g;
+        pace_now.late += rbn_pace_frame(&pace, g);
+    }
+    pace_excused = 0;
+    pace_behind = rbn_pace_behind(&pace);
+    if (pace_behind) pace_now.behind++;
+}
+static const char *pace_verdict_text(int v) {
+    switch (v) {
+    case RBN_VERDICT_OURS: return "this PC could not keep full speed";
+    case RBN_VERDICT_PEER: return "the other player's PC could not keep full speed";
+    case RBN_VERDICT_BOTH: return "neither PC could keep full speed";
+    case RBN_VERDICT_CATCH: return "no PC fell behind its own schedule, yet the fight ran slow, and this PC spent a large share of its time running frames again after rollbacks (that time is not counted as behind)";
+    case RBN_VERDICT_LINK: return "both PCs kept their own pace, yet the fight ran slow (the time went waiting on pads or holding: the connection, or pacing outside the PCs)";
+    default: return "both PCs kept full speed";
+    }
+}
+static double pace_peer_share(const PaceCount *a, const PaceCount *b, int *who) {   /* (the peer most often behind, between two counts; -1: no message came from any peer) */
+    double worst = -1; *who = -1;
+    for (int p = 0; p < net_n; p++) {
+        if (p == net_local) continue;
+        long long m = a->msgs[p] - b->msgs[p];
+        if (m <= 0) continue;
+        double s = (double)(a->msgs_behind[p] - b->msgs_behind[p]) / m;
+        if (s > worst) { worst = s; *who = p; }
+    }
+    return worst;
+}
+static void pace_line(u32 key) {
+    PaceCount *a = &pace_now, *b = &pace_win;
+    pace_fill(a);
+    double sec = (a->t - b->t) / 1000;
+    if (sec <= 0) return;
+    long long timed = a->timed - b->timed, fr = a->frames - b->frames;
+    char peers[512] = ""; size_t k = 0;
+    for (int p = 0; p < net_n && k < sizeof peers - 100; p++) if (p != net_local)
+        k += snprintf(peers + k, sizeof peers - k, "; player %d: %.1f logic frames/s heard, behind in %lld of %lld messages%s", p + 1,
+                      (double)(int32_t)(a->heard[p] - b->heard[p]) / sec, a->msgs_behind[p] - b->msgs_behind[p], a->msgs[p] - b->msgs[p],
+                      pace_peer_behind[p] ? " (behind now)" : "");
+    fprintf(stderr, "[rb] net pace, fight frame %lld (logic %u), the last %.1f s: %.1f frames/s, %.1f logic frames/s (%lld frames the logic frame stood still); "
+            "this PC: %lld of %lld frames timed late (%.0f%%), %.1f ms of its own a frame, behind at %lld of %lld frames%s; "
+            "%lld rollbacks (%lld frames run again, %.1f ms), %lld waits for pads (%.1f ms), %lld holds; frame advantage ours %d, the peer's %d%s\n",
+            S.frames, key, sec, fr / sec, (double)(a->key - b->key) / sec, a->still - b->still,
+            a->late - b->late, timed, timed ? 100.0 * (a->late - b->late) / timed : 0.0, timed ? (a->game_ms - b->game_ms) / timed : 0.0,
+            a->behind - b->behind, fr, pace_behind ? " (behind now)" : "",
+            a->rollbacks - b->rollbacks, a->rerun - b->rerun, a->catch_ms - b->catch_ms, a->waits - b->waits, a->wait_ms - b->wait_ms,
+            a->holds - b->holds, net_adv_ours, net_adv_peer, peers);
+    pace_win = pace_now;
+}
+static void pace_verdict(void) {
+    PaceCount start; memset(&start, 0, sizeof start);
+    pace_behind = 0;   /* (the fight is over: no stale bit in a PADS sent before the next fight's reset) */
+    pace_fill(&pace_now);
+    /* (the fight's time and speed run to its last normal frame, not to now: the GAME! freeze after it is not slow play) */
+    double sec = (pace_end_ms - net_t0) / 1000;
+    if (sec <= 0 || !pace_now.frames) return;
+    double own = (double)pace_now.behind / pace_now.frames;
+    int who; double peer = pace_peer_share(&pace_now, &start, &who);
+    int known = peer >= 0;
+    double speed = (double)(pace_now.key - net_key0) / (sec * 60);
+    double catch_share = pace_now.catch_ms / (sec * 1000);
+    int v = rbn_pace_verdict(own, known ? peer : 0, speed, catch_share);
+    char peer_text[96] = "no pace data came from the other PC";
+    if (known) snprintf(peer_text, sizeof peer_text, "player %d said behind in %.0f%% of its messages", who + 1, 100 * peer);
+    char head[400];
+    if (!known && v != RBN_VERDICT_OURS && v != RBN_VERDICT_BOTH)
+        snprintf(head, sizeof head, "unknown for the other PC (no pace data came from it); this PC %s", v == RBN_VERDICT_FULL ? "kept full speed" : v == RBN_VERDICT_CATCH ? "was not behind, yet the fight ran slow, and it spent a large share of its time running frames again after rollbacks" : "was not behind, yet the fight ran slow (the time went waiting on pads or holding: the connection, or pacing outside the PCs)");
+    else snprintf(head, sizeof head, "%s", pace_verdict_text(v));
+    fprintf(stderr, "[rb] net pace verdict: %s. This PC behind at %.0f%% of its frames (%lld of %lld timed late, %.1f ms of its own a frame), %.0f%% of its time in frames run again after rollbacks; "
+            "%s; the fight ran %.1f logic frames/s (%.0f%% speed) over %.1f s (to its last frame), %.1f frames/s\n",
+            head, 100 * own, pace_now.late, pace_now.timed, pace_now.timed ? pace_now.game_ms / pace_now.timed : 0.0, 100 * catch_share,
+            peer_text, speed * 60, 100 * speed, sec, pace_now.frames / sec);
+}
 static long long net_bytes_s, net_msgs_s, net_bytes_max_s;   /* (the PADS messages sent this second: bytes, count, the longest) */
 /* (M6: the rollback's own work on the frames of this second, to tell it from the game's: the fight hash every
  * net_every frames, the saves, the once-a-second fighter line; sum, worst, count) */
@@ -1441,6 +1557,7 @@ static void net_receive(u32 key) {
         if (net_local == 0) hs_heard_ms[p] = now_ms();   /* (Host/Join: pads count as heard: a fight's players are no quiet slots) */
         if (net_local == 0) for (int k = 1; k < net_n; k++) if (k != p) rbl_send_to(k, buf, n);   /* (the host passes it on: M7) */
         net_msgs_in++;
+        pace_now.msgs[p]++; pace_now.msgs_behind[p] += m.behind; pace_peer_behind[p] = m.behind;
         net_pads_heard_ms[p] = now_ms();
         for (int k = 0; k < m.count; k++) rbn_remote(p, m.first + (u32)k, m.pads[k]);
         u32 ack = m.ack[net_local];
@@ -1500,13 +1617,15 @@ static void net_send(u32 key) {
     }
     m.first = (low == ~0u ? 0 : low) + 1;
     for (u32 f = m.first; f <= rbn_local_newest() && m.count < RBN_MAX_PADS; f++) rbn_local_get(f, &m.pads[m.count++]);
-    m.frame = key;
+    m.frame = key; m.behind = pace_behind;
     u64 h = 0;
     m.check_frame = net_final_frame(key, &h); m.check = (u32)h;
     size_t len = rbn_build(buf, sizeof buf, &m);
     if (len) { rbl_send(buf, (int)len); net_msgs_out++; net_bytes_s += (long long)len; net_msgs_s++; if ((long long)len > net_bytes_max_s) net_bytes_max_s = (long long)len; }
 }
 static void net_step(Cpu *c, u64 frame) {
+    pace_spin();
+    if (rb_fast > 0) pace_excused = 1;   /* (a catch-up's frames, the one that ends it too, are not timed) */
     u32 key = ld32(LOGIC_FRAME);
     int lf_new = logic_frame_new(key);
     static long long net_fight = -1;
@@ -1557,6 +1676,7 @@ static void net_step(Cpu *c, u64 frame) {
         memset(net_sent_at, 0, sizeof net_sent_at);
         rbl_stats(&net_link_base[0], &net_link_base[1], &net_link_base[2]);
         net_key0 = net_low = key; net_t0 = now_ms(); net_done = 0;
+        pace_reset(key);
         fprintf(stderr, "[rb] loop mode: fight starts at logic frame %u\n", key);
         if (net_mode == 2) fprintf(stderr, "[rb] net mode: the match seed %s (%016llx)\n", hs_agreed ? "was agreed" : "was NOT agreed: the start may differ", (unsigned long long)hs_seed);
         /* SSBU_RB_SEED=<n>: the 9 script random generators (4 state words and a call count each) set
@@ -1768,6 +1888,7 @@ static void net_step(Cpu *c, u64 frame) {
     }
     if (rb_fast > 0) return;
     if (net_mode == 2) {
+        pace_frame(key, lf_new, now_ms());   /* (after the save: this PC's own saves are part of its frame) */
         /* this game's pad for the frame `delay` on; the peer's that came; ours to the peer; then the next
          * frame waits while it would run too far ahead of the peer's pads, or for the frame advantage */
         rbn_local(key, net_live == 1 ? net_live_pad : net_pad(net_local, key));
@@ -1778,7 +1899,7 @@ static void net_step(Cpu *c, u64 frame) {
         net_send(key);
         net_gone_check(key, 0);
         if (!rbn_can_run(key + 1)) {
-            net_waits++;
+            net_waits++; pace_excused = 1;
             double w0 = now_ms(), last = w0;
             /* (10 min: two PCs a room apart, started by one person; but a player heard from this fight and quiet for
              * NET_GONE_MS, or whose fight is over, is gone and waited for no more: rb_net - v0.9) */
@@ -1793,7 +1914,7 @@ static void net_step(Cpu *c, u64 frame) {
         }
         if (net_hold_sleep < 0) { const char *e = getenv("SSBU_RB_NET_HOLD"); net_hold_sleep = e && !strcmp(e, "sleep"); }
         if (rbn_sync_wait(key + 1)) {
-            net_sync_waits++;
+            net_sync_waits++; pace_excused = 1;
             if (net_hold_sleep) Sleep(16); else InterlockedIncrement(&rb_vsync_skip);
         }
         if (S.frames % 60 == 0) {
@@ -1827,6 +1948,8 @@ static void net_step(Cpu *c, u64 frame) {
             rb_ff_get_ms = rb_rng_slow_ms = 0; rb_ff_get_n = rb_rng_slow_n = 0;
             net_rtt_min_s = 1e9;
         }
+        if (pace_now.frames % 600 == 0) pace_line(key);
+        pace_end_ms = now_ms();
     } else {
         /* the pads that came; the next frame waits while it would run too far ahead of them */
         net_deliver(key, 0);
@@ -2956,6 +3079,7 @@ static void savestates(Cpu *c, u64 frame) {
     if (net_mode && S.in_fight && (net_mode != 2 || net_armed)) { net_step(c, frame); return; }
     /* (net mode: a fight that ended before <frames> still gets its report, and the whole fight is checked:
      * the launcher's 7200 is a floor, not a window - twopc8's report never came, its fight ending sooner) */
+    if (net_mode == 2 && !S.in_fight && net_got && pace_pending) { pace_pending = 0; pace_verdict(); }   /* (the whole fight's, not the first <frames> of it that net_report covers) */
     if (net_mode == 2 && !S.in_fight && net_got && !net_done) {
         net_done = 1; net_report(); ch_have_mine = 0; memset(ch_have_peer, 0, sizeof ch_have_peer);
         rules_have = 0; rules_id = 0; rules_chunks = 0;   /* (the next set-up's rules again: the host's may change) */

@@ -251,6 +251,38 @@ int main(int argc, char **argv) {
         if (rbn_parse(b, n, &g)) { fprintf(stderr, "FAIL: runs past the count accepted%c", 10); return 1; }
         b[RBN_HEAD] = 0;
         if (rbn_parse(b, n, &g)) { fprintf(stderr, "FAIL: a run of 0 frames accepted%c", 10); return 1; }
+        /* (version 14) the behind bit rides in the runs byte: it comes back, and the pads with it */
+        for (int bh = 0; bh < 2; bh++) {
+            m.behind = bh;
+            n = rbn_build(b, sizeof b, &m);
+            if (!n || !rbn_parse(b, n, &g) || g.behind != bh || g.count != m.count || memcmp(g.pads, m.pads, sizeof m.pads)) {
+                fprintf(stderr, "FAIL: PADS with behind %d round trip%c", bh, 10); return 1;
+            }
+        }
+        m.behind = 0;
+    }
+    {   /* pace: late past RBN_PACE_LATE_MS; behind once the mean of a full enough span is over RBN_PACE_BEHIND_MS; the verdict */
+        RbnPace p; rbn_pace_reset(&p);   /* (behind: the mean of a full enough span over RBN_PACE_BEHIND_MS) */
+        for (int k = 0; k < RBN_PACE_SPAN / 2 - 1; k++) rbn_pace_frame(&p, 40);
+        if (rbn_pace_behind(&p)) { fprintf(stderr, "FAIL: pace behind before half a span was counted%c", 10); return 1; }
+        rbn_pace_frame(&p, 40);
+        if (!rbn_pace_behind(&p)) { fprintf(stderr, "FAIL: pace not behind with every frame late%c", 10); return 1; }
+        for (int k = 0; k < RBN_PACE_SPAN; k++) rbn_pace_frame(&p, k % 2 ? 19 : 14.5);   /* (half late, mean 16.75: a healthy PC at the frame period) */
+        if (rbn_pace_behind(&p) || p.nlate != RBN_PACE_SPAN / 2) { fprintf(stderr, "FAIL: pace behind at half late, mean on the period (%d)%c", p.nlate, 10); return 1; }
+        for (int k = 0; k < RBN_PACE_SPAN; k++) rbn_pace_frame(&p, k % 2 ? 22 : 16.7);   /* (mean 19.35: slow) */
+        if (!rbn_pace_behind(&p)) { fprintf(stderr, "FAIL: pace not behind at a mean of 19 ms%c", 10); return 1; }
+        for (int k = 0; k < RBN_PACE_SPAN; k++) rbn_pace_frame(&p, k == 7 ? 900 : 15);   /* (one stall, clamped: the mean stays under) */
+        if (rbn_pace_behind(&p)) { fprintf(stderr, "FAIL: pace behind after one stall%c", 10); return 1; }
+        for (int k = 0; k < RBN_PACE_SPAN; k++) rbn_pace_frame(&p, RBN_PACE_FRAME_MS + 1.0);   /* (a frame's jitter is on time) */
+        if (rbn_pace_behind(&p) || p.nlate) { fprintf(stderr, "FAIL: pace late within the margin%c", 10); return 1; }
+        for (int k = 0; k < RBN_PACE_SPAN; k++) rbn_pace_frame(&p, 24.3);   /* (the one-PC slow window) */
+        if (!rbn_pace_behind(&p)) { fprintf(stderr, "FAIL: pace not behind at 24 ms%c", 10); return 1; }
+        if (rbn_pace_verdict(0.9, 0, 0.6, 0) != RBN_VERDICT_OURS || rbn_pace_verdict(0, 0.9, 0.6, 0) != RBN_VERDICT_PEER ||
+            rbn_pace_verdict(0.5, 0.5, 0.6, 0) != RBN_VERDICT_BOTH || rbn_pace_verdict(0.1, 0.1, 0.5, 0.1) != RBN_VERDICT_LINK ||
+            rbn_pace_verdict(0.1, 0.1, 0.5, 0.4) != RBN_VERDICT_CATCH || rbn_pace_verdict(0.9, 0, 0.5, 0.4) != RBN_VERDICT_OURS ||
+            rbn_pace_verdict(0.1, 0.1, 0.99, 0.4) != RBN_VERDICT_FULL ||
+            rbn_pace_verdict(0.9, 0, 0.99, 0) != RBN_VERDICT_FULL || rbn_pace_verdict(0, 0.9, 0.96, 0) != RBN_VERDICT_FULL) { fprintf(stderr, "FAIL: pace verdicts%c", 10); return 1; }
+        printf("pace: late, behind and verdicts as expected\n");
     }
     sabotage = argc > 2 && !strcmp(argv[2], "norollback");
     slow = argc > 2 && !strcmp(argv[2], "slow");
