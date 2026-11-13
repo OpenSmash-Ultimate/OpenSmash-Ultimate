@@ -52,7 +52,7 @@ public sealed partial class ClassicSurface
     {
         if(_view=="settings")PaintSettings(g,W,H);else if(_view=="setup_modding")PaintSetupModding(g,W,H);else if(_view=="mods_browser")PaintMarketplace(g,W,H);else PaintMods(g,W,H);
     }
-    GraphicsState PushReveal(Graphics g,int i)=>PushFade(g,ArtworkTheme.Ease(Clamp01(((float)(Now-_viewAt)-.2f-(i%6)*.07f)/.9f)),40*_s);
+    GraphicsState PushReveal(Graphics g,int i,bool repeat=true)=>PushFade(g,ArtworkTheme.Ease(Clamp01(((float)(Now-_viewAt)-.2f-(repeat?i%6:i)*.07f)/.9f)),40*_s);
     void FitSettingEdit(Rectangle rect)
     {
         _settingEdit.FontSize=15*_s/_pixelScale;_settingEdit.Width=Math.Max(1,(rect.Width-24*_s)/_pixelScale);_settingEdit.Height=Math.Max(1,(rect.Height-8*_s)/_pixelScale);

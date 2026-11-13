@@ -77,7 +77,7 @@ public sealed partial class ClassicSurface
                 {
                     string id = $"tab:{t}", name = _settingsTabs[t].Name.ToUpperInvariant();
                     bool on = t == active;
-                    var st = PushReveal(g, t);
+                    var st = PushReveal(g, t, repeat: false);
                     float tw = ArtworkTheme.TextWidth(g, name, f, px * 0.1f) + pad;
                     float hv = Hov(id, _hover == id);
                     using (var p = ArtworkTheme.Para(tx, ty, tw, th, 6 * s))
