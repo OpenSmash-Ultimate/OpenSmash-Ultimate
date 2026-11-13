@@ -285,7 +285,7 @@ def desktop_entry(root):
     shared = os.path.isfile(os.path.join(root, "OpenSmash"))
     command = (posixpath.join(root, "OpenSmash"),) if shared else ("bash", posixpath.join(root, "tools/linux/play.sh"))
     exec_line = " ".join(desktop_quote(a) for a in command)
-    return ("[Desktop Entry]\nType=Application\nName=WindowSmash\nGenericName=Super Smash Bros. Ultimate\n"
+    return ("[Desktop Entry]\nType=Application\nName=OpenSmash\nGenericName=Super Smash Bros. Ultimate\n"
             "Comment=Super Smash Bros. Ultimate, recompiled from your own copy\n"
             f"Exec={exec_line}\nPath={root}\nIcon={posixpath.join(root, 'docs', 'assets', 'windowsmash.ico')}\n"
             f"Terminal={'false' if shared else 'true'}\nCategories=Game;\n")
@@ -669,7 +669,7 @@ def sudo_command(cmd, euid=None, tty=None, askpass=None):
 
 def sudo_run(cmd, dry):
     if os.environ.get("SSBU_GUI_INSTALL") == "1" and os.geteuid() != 0:
-        full = (["pkexec"] if shutil.which("pkexec") else ["sudo", "-n"]) + cmd
+        full = (["pkexec"] if shutil.which("pkexec") else ["sudo", "-A"] if os.environ.get("SUDO_ASKPASS") else ["sudo", "-n"]) + cmd
     else:
         full = sudo_command(cmd)
     info("$ " + " ".join(full))

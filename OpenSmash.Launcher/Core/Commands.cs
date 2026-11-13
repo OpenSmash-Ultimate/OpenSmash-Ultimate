@@ -40,6 +40,13 @@ public static class Commands
         if(!options.Updates)unix.Add("--no-update");
         return new("/bin/bash",unix,p.Root);
     }
+    public static IReadOnlyDictionary<string,string> GuiEnvironment(Project p,bool shortcuts=false,bool firewall=false)
+    {
+        var values=new Dictionary<string,string>{{"SSBU_GUI_INSTALL","1"},{"SSBU_GUI_SHORTCUTS",shortcuts?"1":"0"},{"SSBU_GUI_FIREWALL",firewall?"1":"0"}};
+        string askpass=p.PathIn("tools","linux","askpass.sh");
+        if(p.Platform==DesktopPlatform.Linux&&File.Exists(askpass))values["SUDO_ASKPASS"]=askpass;
+        return values;
+    }
     public static readonly string[] ClearedGameVariables = ["SSBU_NET_BACKEND", "SSBU_DATA_ROOT", "SSBU_INPUT", "SSBU_RENDERER",
         "SSBU_NET_HOST", "SSBU_NET_RELAY", "SSBU_NET_BIND", "SSBU_NET_ROOM", "SSBU_NET_NAME", "SSBU_NET_DIRECT", "SSBU_NET_PORT"];
 

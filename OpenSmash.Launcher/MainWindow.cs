@@ -167,7 +167,7 @@ public sealed partial class MainWindow : Window
         {
             exit=await ProcessRunner.Run(Commands.Install(p,options),line=>Dispatcher.UIThread.Post(()=>Surface.ReceiveInstallLine(line)),_installerCancel.Token,
                 logPath:p.PathIn("build","logs","installer_window.log"),inputReady:writer=>_installerInput=writer,
-                environment:new Dictionary<string,string>{{"SSBU_GUI_INSTALL","1"},{"SSBU_GUI_SHORTCUTS",options.Shortcuts?"1":"0"},{"SSBU_GUI_FIREWALL",options.Firewall?"1":"0"}});
+                environment:Commands.GuiEnvironment(p,options.Shortcuts,options.Firewall));
             if(exit==0&&p.IsBuilt&&options.Shaders&&p.Platform!=DesktopPlatform.Windows)
             {
                 _installerInput=null;_shaderPriority=new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);

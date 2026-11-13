@@ -25,6 +25,10 @@ class DesktopAuthorizationTests(unittest.TestCase):
     def test_gui_fails_promptly_without_authorization_agent(self):
         self.assertEqual(self.invoke('1', False), ['sudo', '-n', 'apt-get', 'update'])
 
+    def test_gui_can_use_askpass_without_pkexec(self):
+        with mock.patch.dict(os.environ, {"SUDO_ASKPASS": "/project/tools/linux/askpass.sh"}):
+            self.assertEqual(self.invoke('1', False), ['sudo', '-A', 'apt-get', 'update'])
+
     def test_terminal_keeps_its_original_sudo_prompt(self):
         self.assertEqual(self.invoke('0', True), ['sudo', 'apt-get', 'update'])
 

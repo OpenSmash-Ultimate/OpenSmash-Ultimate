@@ -19,6 +19,9 @@
     <AvaloniaResource Include="Assets/emblem-white.png" />
     <AvaloniaResource Include="Assets/*.ttf" />
     <EmbeddedResource Include="Assets/MarketplaceHtml.html" LogicalName="MarketplaceHtml.html" />
+    <EmbeddedResource Include="../tools/linux/install_linux.py" LogicalName="layout.linux.backend.py" />
+    <EmbeddedResource Include="../tools/mac/install_mac.py" LogicalName="layout.mac.backend.py" />
+    <EmbeddedResource Include="../tools/linux/askpass.sh" LogicalName="layout.linux.askpass.sh" />
     <EmbeddedResource Include="../tools/linux/install.sh" LogicalName="layout.linux.install.sh" />
     <EmbeddedResource Include="../tools/mac/install.sh" LogicalName="layout.mac.install.sh" />
     <EmbeddedResource Include="../tools/linux/play.sh" LogicalName="layout.linux.play.sh" />

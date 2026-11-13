@@ -16,7 +16,12 @@ static class BootstrapChecks
             {
                 string[] files=incomplete?["readme.txt"]:["runtime/fixture.txt","tools/os_mods.py","tools/recomp.py","tools/install_windowsmash.ps1","tools/linux/install.sh","tools/mac/install.sh"];
                 if(legacy)files=files.Select(f=>f.Replace("tools/linux/install.sh","install-windowsmash.sh").Replace("tools/mac/install.sh","Install WindowSmash.command")).ToArray();
-                foreach(string file in files){var entry=zip.CreateEntry(prefix+file);using var writer=new StreamWriter(entry.Open());writer.Write("synthetic fixture");}
+                if(legacy)files=files.Concat(["tools/linux/install_linux.py","tools/mac/install_mac.py","opensmash-launcher.sh","OpenSmash Launcher.command","OpenSmash Launcher.desktop"]).ToArray();
+                foreach(string file in files)
+                {
+                    var entry=zip.CreateEntry(prefix+file);using var writer=new StreamWriter(entry.Open());
+                    writer.Write(file.EndsWith("install_linux.py")?"import os, sys, shutil, posixpath\nLAUNCHERS = [\"opensmash-launcher.sh\", \"install-windowsmash.sh\"]\ndef sentinel():\n    return 9\ndef desktop_entry(root):\n    return 'old'\ndef sudo_run(cmd, dry):\n    return False\ndef step_launchers(a):\n    return None\ndef tail():\n    return 4\n":file.EndsWith("install_mac.py")?"LAUNCHERS = [\"Install WindowSmash.command\", \"OpenSmash Launcher.command\"]\ndef sentinel():\n    return 9\ndef step_launchers(a, files):\n    return None\ndef tail():\n    return 4\n":"synthetic fixture");
+                }
                 if(bad!=null){var entry=zip.CreateEntry(bad);if(symlink)entry.ExternalAttributes=unchecked((int)0xa1ff0000);using var writer=new StreamWriter(entry.Open());writer.Write("outside");}
             }
             return bytes.ToArray();
@@ -34,6 +39,15 @@ static class BootstrapChecks
             check(File.ReadAllText(result.Launcher!)=="synthetic launcher"&&progress.Any(p=>p.Phase=="extract"),"bootstrap copies the launcher and reports real download/extract progress");
             check(File.Exists(Path.Combine(result.ProjectFolder,"tools","linux","install.sh"))&&File.Exists(Path.Combine(result.ProjectFolder,"tools","mac","install.sh")),"downloaded source uses internal setup scripts");
             check(!File.Exists(Path.Combine(result.ProjectFolder,"install-windowsmash.sh"))&&!File.Exists(Path.Combine(result.ProjectFolder,"Install WindowSmash.command")),"legacy downloaded setup wrappers are migrated out of the root");
+            if(legacy)
+            {
+                string linux=File.ReadAllText(Path.Combine(result.ProjectFolder,"tools","linux","install_linux.py")),mac=File.ReadAllText(Path.Combine(result.ProjectFolder,"tools","mac","install_mac.py"));
+                check(linux.Contains("SSBU_GUI_INSTALL")&&linux.Contains("SUDO_ASKPASS")&&linux.Contains("posixpath.join(root, \"OpenSmash\")"),"downloaded Linux backend uses native launcher shortcuts and desktop authorization");
+                check(mac.Contains("shared = os.path.join(ROOT, \"OpenSmash.app\")")&&mac.Contains("return 9"),"downloaded macOS backend links the native app and preserves unrelated code");
+                check(new[]{"opensmash-launcher.sh","OpenSmash Launcher.command","OpenSmash Launcher.desktop"}.All(n=>!File.Exists(Path.Combine(result.ProjectFolder,n))),"superseded browser entry points are removed from downloaded projects");
+                check(File.Exists(Path.Combine(result.ProjectFolder,"tools","linux","askpass.sh")),"older archives receive the internal authorization helper");
+                ProjectLayout.Normalize(result.ProjectFolder);check(File.ReadAllText(Path.Combine(result.ProjectFolder,"tools","linux","install_linux.py"))==linux,"layout adaptation is idempotent");
+            }
             check(!Directory.GetDirectories(parent,".OpenSmash-download-*").Any(),"successful bootstrap cleans only its staging folder");
             var again=await new ProjectBootstrap(http).Install(parent,Source(zip),deployment,_=>{},CancellationToken.None);
             check(again.Existing&&handler.Requests==1,"existing projects are reused without another download");

@@ -5,7 +5,7 @@ public sealed partial class MainWindow
 {
     async Task RunUpdateStep(Command command,string log)
     {
-        var lines=new List<string>();int exit=await ProcessRunner.Run(command,line=>{if(lines.Count==20)lines.RemoveAt(0);lines.Add(line);},CancellationToken.None,logPath:RequireProject().PathIn("build","logs",log),environment:new Dictionary<string,string>{{"SSBU_GUI_INSTALL","1"},{"SSBU_GUI_SHORTCUTS","0"},{"SSBU_GUI_FIREWALL","0"}});
+        var lines=new List<string>();int exit=await ProcessRunner.Run(command,line=>{if(lines.Count==20)lines.RemoveAt(0);lines.Add(line);},CancellationToken.None,logPath:RequireProject().PathIn("build","logs",log),environment:Commands.GuiEnvironment(RequireProject()));
         if(exit!=0)throw new InvalidOperationException("Update step stopped (exit "+exit+").\n"+string.Join("\n",lines));
     }
     bool CanBuildSharedLauncher()=>File.Exists(RequireProject().PathIn("OpenSmash.Launcher","OpenSmash.csproj"))&&File.Exists(RequireProject().PathIn("tools","build_launcher.py"));
