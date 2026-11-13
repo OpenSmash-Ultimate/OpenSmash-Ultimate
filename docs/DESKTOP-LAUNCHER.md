@@ -126,6 +126,8 @@ already uploaded to the GPU still need a new match. The preference is stored as
 `hot_reload_mod_assets = 1` (enabled) or `0` (disabled) in `launcher.ini`'s
 `[opensmash]` section, under `config/` once migrated. A game built before this
 setting was added must be rebuilt; updating the launcher alone cannot change its runtime.
+Watched mod extensions are `.numshb`, `.nusktb`, `.nuhlpb`, `.numatb`, `.numdlb`,
+`.numshexb`, `.nutexb`, `.nuanmb`, and `.btnx` (case-insensitive).
 Installs/removals, progress, installed-state synchronization, shared lists,
 conflict checks and local folder imports use the existing Python backend.
 Plugin requirements use the project's checksum-pinned `std_plugins.py` releases;

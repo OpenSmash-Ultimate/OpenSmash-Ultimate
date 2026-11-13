@@ -48,7 +48,8 @@ static int ext_is(const char *name, const char *ext) {
 static int file_kind(const char *name) {
     if (ext_is(name, "nuanmb") || ext_is(name, "nuhlpb")) return KIND_ANIM;
     if (ext_is(name, "numdlb") || ext_is(name, "numshb") || ext_is(name, "nusktb") ||
-        ext_is(name, "nutexb") || ext_is(name, "numatb")) return KIND_MODEL;
+        ext_is(name, "nutexb") || ext_is(name, "numatb") || ext_is(name, "numshexb") ||
+        ext_is(name, "btnx")) return KIND_MODEL;
     return -1;
 }
 

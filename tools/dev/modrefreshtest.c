@@ -32,6 +32,24 @@ static void tick(u64 value) {
 }
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL line %d\n", __LINE__); return 1; } } while (0)
 int main(int argc, char **argv) {
+    /* Every requested format enters the same buffer refresh path. Validate replacement,
+     * clearing a smaller export's tail, and rejecting an export that cannot fit. */
+    const char *assets[] = { "model.numshb", "model.nusktb", "model.nuhlpb", "model.numatb",
+        "model.numdlb", "model.numshexb", "model.nutexb", "motion.nuanmb", "texture.btnx",
+        "TEXTURE.BTNX", "MODEL.NUMSHEXB" };
+    for (unsigned i = 0; i < sizeof assets / sizeof assets[0]; i++) {
+        CHECK(file_kind(assets[i]) >= 0);
+        u8 old[16], replacement[16], memory[32];
+        memset(old, 0x12, sizeof old); memset(replacement, 0x34, sizeof replacement);
+        memset(memory, 0xff, sizeof memory); memcpy(memory + 8, old, sizeof old);
+        CHECK(splice_span(memory, sizeof memory, old, sizeof old, replacement, 12, 16, 1) == 1);
+        CHECK(!memcmp(memory + 8, replacement, 12));
+        CHECK(memory[20] == 0 && memory[23] == 0 && memory[7] == 0xff && memory[24] == 0xff);
+        memcpy(memory + 8, old, sizeof old);
+        CHECK(splice_span(memory, sizeof memory, old, sizeof old, replacement, 16, 12, 1) == 0);
+        CHECK(!memcmp(memory + 8, old, sizeof old));
+    }
+    CHECK(file_kind("plugin.nro") == -1 && file_kind("texture.btnx.bak") == -1);
     preference = argc > 1 ? argv[1] : NULL;
     memset(&cpu, 0x35, sizeof cpu); saved = cpu;
     if (!preference || strcmp(preference, "1")) {
