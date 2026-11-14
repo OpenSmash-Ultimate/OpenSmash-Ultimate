@@ -1,9 +1,12 @@
 """Compile the real mod refresh handlers; exercise opt-in, mode checks and controller edges."""
 import subprocess
+import sys
+import struct
+from pathlib import Path
 import tempfile
 import unittest
 
-from test_frame_hooks import build, HAVE, WHY
+from test_frame_hooks import build, HAVE, WHY, ROOT
 
 
 @unittest.skipUnless(HAVE, WHY)
@@ -23,3 +26,19 @@ class ModRefreshTests(unittest.TestCase):
                     self.assertIn('PASS mod refresh policy', result.stdout)
                     self.assertEqual(result.stderr.count('[mods]'), 1 if preference == '1' else 0,
                                      result.stderr)
+            sys.path.insert(0, str(ROOT / 'ssbu-recomp/fighter_sdk/tools/brawl'))
+            import ssbh
+            def material(vector, second):
+                return ssbh.build(b'LTAM', {'entries': [{'label': 'goku_test', 'shader_label': 'SFX_PBS_010000080800826b_opaque',
+                    'attributes': [{'param_id': 160, 'param': (5, struct.pack('<4f', *vector))},
+                                   {'param_id': 161, 'param': (5, struct.pack('<4f', *second))},
+                                   {'param_id': 162, 'param': (5, struct.pack('<4f', 1, 2, 3, 4))}]},
+                    # Unused entries in the same file must not block visible materials.
+                    {'label': 'unused_costume', 'shader_label': 'SFX_PBS_010000080800826b_opaque',
+                     'attributes': [{'param_id': 160, 'param': (5, struct.pack('<4f', *vector))}]}]})
+            old, new = Path(out) / 'old.numatb', Path(out) / 'new.numatb'
+            old.write_bytes(material((1, 1, 1, 1), (0, 0, 0, 0)))
+            new.write_bytes(material((.2, .3, .4, 1), (.4, .5, .6, 1)) + b'\0' * 4096)
+            result = subprocess.run([exe, '--materials', str(old), str(new)], capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('PASS live material updates', result.stdout)

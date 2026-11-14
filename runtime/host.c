@@ -1695,6 +1695,8 @@ int main(int argc, char **argv) {
     mods_start(dir);
     kernel_init();
     load(dir);
+    void mod_refresh_init(void);
+    mod_refresh_init();   /* material lifetime hooks, before guest threads start */
     movie_test_start();
     test_fight_start();
 #ifndef _WIN32

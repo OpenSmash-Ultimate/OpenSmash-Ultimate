@@ -15,6 +15,7 @@
 #include "pad.h"
 #include "settings.h"
 #include "config_folder.h"
+#include "mod_material.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +34,11 @@ typedef struct Snap {
     u32 capacity;   /* the buffer the match loaded: the file's size at boot */
     FILETIME mtime;
     int kind;
+    u64 material_request;
+    u8 *material_bytes;
+    u32 material_size;
+    FILETIME material_mtime;
+    int material_partial;
 } Snap;
 
 static Snap snaps[SNAP_MAX];
@@ -91,6 +97,8 @@ static void remember(const char *path, int kind) {
     if (!b) return;
     snap_bytes += size;
     snaps[snap_count++] = (Snap){ _strdup(path), b, size, size, mtime, kind };
+    if (getenv("SSBU_MOD_REFRESH_TRACE") && ext_is(path, "numatb"))
+        fprintf(stderr, "[mods] watching material %s (%u bytes)\n", path, size);
 }
 
 static void walk(const char *dir, int depth) {
@@ -126,6 +134,7 @@ static DWORD WINAPI snap_main(void *unused) {
     }
     snprintf(mods, sizeof mods, "%s\\..\\..\\mods", rt_data_dir ? rt_data_dir : ".");
     if (!GetFullPathNameA(mods, PATH_MAX_, full, NULL)) full[0] = 0;
+    fprintf(stderr, "[mods] hot reload folder: %s\n", full[0] ? full : mods);
     DWORD attr = full[0] ? GetFileAttributesA(full) : INVALID_FILE_ATTRIBUTES;
     if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) walk(full, 0);
     int anims = 0, models = 0;
@@ -221,7 +230,25 @@ static const char *short_name(const char *path) {
     return mods ? mods + 6 : path;
 }
 
-static void refresh(void) {
+/* A queued revision is committed only after its render updates completed.
+ * Resolve it before checking current disk metadata: a second export may have
+ * arrived while the first one was waiting for the renderer. */
+static int material_complete(Snap *s, char *reason, u32 reason_size) {
+    if (!s->material_request) return MOD_MATERIAL_APPLIED;
+    int result = mod_material_result(s->material_request, 1, reason, reason_size);
+    if (result == MOD_MATERIAL_PENDING) return result;
+    if (result == MOD_MATERIAL_APPLIED) {
+        free(s->bytes); s->bytes = s->material_bytes; s->size = s->material_size;
+        s->capacity = s->material_size; s->mtime = s->material_mtime;
+    } else {
+        free(s->material_bytes);
+        if (result == MOD_MATERIAL_PARTIAL) s->material_partial = 1;
+    }
+    s->material_request = 0; s->material_bytes = NULL; s->material_size = 0;
+    return result;
+}
+
+static void refresh(Cpu *c) {
     if (!snap_ready) {
         if (!snap_budget) return;   /* (off: the press is only the training reset) */
         fprintf(stderr, "[mods] still reading the mods folder; press the training reset again in a moment\n");
@@ -231,10 +258,22 @@ static void refresh(void) {
     QueryPerformanceCounter(&t0);
     QueryPerformanceFrequency(&freq);
     int refreshed = 0, models = 0, grown = 0, missing = 0, already = 0;
+    int material_pending = 0;
     const char *names[3], *grown_names[3];
     int name_n = 0, grown_n = 0;
     int scanned = 0;
     for (int i = 0; i < snap_count; i++) {
+        if (snaps[i].material_request) {
+            char reason[200];
+            int result = material_complete(&snaps[i], reason, sizeof reason);
+            if (result == MOD_MATERIAL_PENDING) { material_pending++; continue; }
+            fprintf(stderr, "[mods] %s: %s\n", short_name(snaps[i].path), reason);
+            if (result == MOD_MATERIAL_APPLIED) refreshed++;
+        }
+        if (snaps[i].material_partial) {
+            fprintf(stderr, "[mods] %s: previous material update partially applied; restart the game before retrying\n", short_name(snaps[i].path));
+            material_pending++; continue;
+        }
         WIN32_FILE_ATTRIBUTE_DATA a;
         if (!GetFileAttributesExA(snaps[i].path, GetFileExInfoStandard, &a)) continue;
         if (CompareFileTime(&a.ftLastWriteTime, &snaps[i].mtime) == 0) continue;
@@ -245,6 +284,26 @@ static void refresh(void) {
         if (size == snaps[i].size && memcmp(neu, snaps[i].bytes, size) == 0) {
             snaps[i].mtime = mtime;
             free(neu);
+            continue;
+        }
+        if (ext_is(snaps[i].path, "numatb")) {
+            static ModMaterialFile files[SNAP_MAX];
+            u32 count = 0, target = 0;
+            for (int j = 0; j < snap_count; j++) if (ext_is(snaps[j].path, "numatb")) {
+                if (j == i) target = count;
+                files[count++] = (ModMaterialFile){snaps[j].bytes, snaps[j].size};
+            }
+            char reason[200]; u32 updated = 0; u64 request = 0;
+            if (mod_material_refresh(c, files, count, target, neu, size, &updated, &request, reason, sizeof reason)) {
+                fprintf(stderr, "[mods] %s: %s\n", short_name(snaps[i].path), reason);
+                snaps[i].material_request = request; snaps[i].material_bytes = neu;
+                snaps[i].material_size = size; snaps[i].material_mtime = mtime;
+                material_pending++;
+            } else {
+                fprintf(stderr, "[mods] %s: %s (not applied; will retry on the next L+R+A)\n", short_name(snaps[i].path), reason);
+                material_pending++;
+                free(neu);
+            }
             continue;
         }
         if (size > snaps[i].capacity) {
@@ -284,7 +343,7 @@ static void refresh(void) {
     }
     QueryPerformanceCounter(&t1);
     double ms = freq.QuadPart ? (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart : 0;
-    if (!refreshed && !grown && !missing && !already) {
+    if (!refreshed && !grown && !missing && !already && !material_pending) {
         fprintf(stderr, "[mods] training reset: no mod file has changed (%.0f ms)\n", ms);
         return;
     }
@@ -332,6 +391,10 @@ static int mod_refresh_training(Cpu *c) {
     return training;
 }
 
+void mod_refresh_init(void) {
+    if (mod_refresh_enabled()) mod_material_init();
+}
+
 static void mod_refresh_start(void) {
     if (!mod_refresh_enabled()) return;
     if (InterlockedCompareExchange(&snap_started, 1, 0) != 0) return;
@@ -361,7 +424,7 @@ static void mod_refresh_before(Cpu *c, const u64 args[8], void *ctx) {
         prev[s] = st.buttons;
     }
     if (fire && InterlockedCompareExchange(&busy, 1, 0) == 0) {
-        if (mod_refresh_training(c)) refresh();
+        if (mod_refresh_training(c)) refresh(c);
         InterlockedExchange(&busy, 0);
     }
 }
