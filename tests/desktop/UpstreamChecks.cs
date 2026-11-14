@@ -9,10 +9,36 @@ static class UpstreamChecks
     static void Finish(Task task){var until=DateTime.UtcNow.AddSeconds(20);while(!task.IsCompleted){Dispatcher.UIThread.RunJobs();if(DateTime.UtcNow>until)throw new TimeoutException();Thread.Sleep(10);}task.GetAwaiter().GetResult();}
     public static void Run(string temporary)
     {
+        var fit=typeof(MainWindow).GetMethod("FitToArea",BindingFlags.Static|BindingFlags.NonPublic)!;
+        Avalonia.PixelRect Fit(Avalonia.PixelRect w,Avalonia.PixelRect a)=>(Avalonia.PixelRect)fit.Invoke(null,[w,a])!;
+        var second=new Avalonia.PixelRect(1920,0,1280,720);
+        var grown=Fit(new Avalonia.PixelRect(2000,40,2160,1215),second);
+        Check(grown.Width<=1280&&grown.Height<=720&&second.Contains(grown)&&Math.Abs(grown.Width*9-grown.Height*16)<=16,"a window larger than the monitor it moved to is fitted inside it at 16:9");
+        var fits=new Avalonia.PixelRect(2000,40,960,540);
+        Check(Fit(fits,second)==fits,"a window that fits its monitor keeps its size and place");
         string root=Path.Combine(temporary,"upstream-regressions");Directory.CreateDirectory(Path.Combine(root,"tools"));Directory.CreateDirectory(Path.Combine(root,"runtime"));File.WriteAllText(Path.Combine(root,"tools","os_mods.py"),"");
         var project=new Project(root,Project.CurrentPlatform);Directory.CreateDirectory(Path.GetDirectoryName(project.GameExecutable)!);File.WriteAllText(project.GameExecutable,"synthetic fixture");
         File.WriteAllText(project.ConfigFile("display.ini"),"renderer = auto\nwindow = windowed\nvolume = 100\n");
         var window=new MainWindow([],root,enableBackgroundActions:false);var surface=window.Surface;
+        var settingDefinitions=(Array)typeof(OpenSmash.Visuals.ClassicSurface).GetField("_settings",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(surface)!;
+        int shaderIndex=Array.FindIndex(settingDefinitions.Cast<object>().ToArray(),s=>(string)s.GetType().GetField("Key")!.GetValue(s)! == "preload_shaders");
+        object shaderSetting=settingDefinitions.GetValue(shaderIndex)!;
+        Check(((string[])shaderSetting.GetType().GetField("Values")!.GetValue(shaderSetting)!).Length==0,"Preload all shaders is an action without dropdown values");
+        string? shaderAction=null;surface.ActionRequested+=id=>shaderAction=id;
+        surface.Activate("set:"+shaderIndex);Check(shaderAction=="settings:shaders","Display shader button requests the installer's shader compilation");
+        File.WriteAllText(project.PathIn("tools","shader_aot.py"),"import pathlib,sys,time\np=pathlib.Path('.')\nwith (p/'shader-runs.txt').open('a') as f:f.write(' '.join(sys.argv[1:])+'\\n')\nprint('42 of 100 shaders, about a minute left',flush=True)\nwhile not (p/'shader-release').exists():time.sleep(.05)\nprint('100 of 100 shaders, done',flush=True)\n");
+        var compile=typeof(MainWindow).GetMethod("CompileShaders",BindingFlags.Instance|BindingFlags.NonPublic)!;
+        var active=(bool?)false;
+        void WaitForProgress(){var until=DateTime.UtcNow.AddSeconds(15);while((float)typeof(OpenSmash.Visuals.ClassicSurface).GetField("_shaderFrac",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(surface)!<.42f){Dispatcher.UIThread.RunJobs();if(DateTime.UtcNow>until)throw new TimeoutException("Shader progress fixture did not run");Thread.Sleep(10);}}
+        var shaderTask=(Task)compile.Invoke(window,["medium"])!;WaitForProgress();
+        Check(((Task)compile.Invoke(window,["medium"])!).IsCompleted&&File.ReadAllLines(project.PathIn("shader-runs.txt")).Length==1,"repeated starts do not launch a second shader compiler");
+        File.WriteAllText(project.PathIn("shader-release"),"");Finish(shaderTask);
+        active=(bool)typeof(OpenSmash.Visuals.ClassicSurface).GetField("_shaderUi",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(surface)!;
+        Check(active==false&&File.ReadAllText(project.PathIn("shader-runs.txt")).Contains("--priority medium"),"shader action uses the existing compiler and clears progress on success");
+        File.Delete(project.PathIn("shader-release"));shaderTask=(Task)compile.Invoke(window,["medium"])!;WaitForProgress();
+        surface.Activate("set:"+shaderIndex);Check(shaderAction=="shaders:cancel","running shader button offers cancellation");
+        Finish((Task)typeof(MainWindow).GetMethod("Action",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(window,["shaders:cancel"])!);Finish(shaderTask);
+        Check(!(bool)typeof(OpenSmash.Visuals.ClassicSurface).GetField("_shaderUi",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(surface)!&&!File.ReadAllText(project.ConfigFile("display.ini")).Contains("preload_shaders"),"cancel stops compilation without saving a shader toggle");
         Check(surface.GetSetting("hot_reload_mod_assets")=="0","mod asset hot reload is disabled without a saved preference");
         surface.ChangeSetting("hot_reload_mod_assets","1");
         var reopened=new MainWindow([],root,enableBackgroundActions:false);

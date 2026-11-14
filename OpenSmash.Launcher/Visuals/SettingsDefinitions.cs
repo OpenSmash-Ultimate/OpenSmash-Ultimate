@@ -66,6 +66,7 @@ namespace OpenSmash.Visuals;
         public string[] Labels;
         public bool Text;
         public bool Slider;
+        public string Action;
         public bool IsResolution = false; // when true, value is "WxH" from Values
     }
 
@@ -75,7 +76,7 @@ public sealed partial class ClassicSurface
 void InitializeSettings() {
             _settingsTabs = new[]
             {
-                new SettingTab { Name = "Display", SettingKeys = new[] { "window", "window_size", "pacing" } },
+                new SettingTab { Name = "Display", SettingKeys = new[] { "window", "window_size", "pacing", "preload_shaders" } },
                 new SettingTab { Name = "Graphics", SettingKeys = new[] { "render_scale", "gpu", "renderer", "overlay", "hide_cursor" } },
                 new SettingTab { Name = "Audio", SettingKeys = new[] { "volume" } },
                 new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "code", "server", "direct" } },
@@ -90,6 +91,7 @@ void InitializeSettings() {
                 new Setting { Key = "window", Label = "Window", Values = new[] { "windowed", "borderless", "fullscreen" }, Labels = new[] { "A window", "Borderless (whole monitor)", "Full screen" } },
                 new Setting { Key = "window_size", Label = "Window size", Values = new[] { "1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160" } },
                 new Setting { Key = "pacing", Label = "Frame pacing", Values = new[] { "clock", "vrr", "display" }, Labels = new[] { "Steady 60 (any monitor)", "G-Sync / FreeSync monitor", "Follow the monitor's refresh" } },
+                new Setting { Key = "preload_shaders", Label = "Preload all shaders", Action = "settings:shaders" },
                 new Setting { Key = "render_scale", Label = "Render scale", Values = new[] { "1", "auto", "1.5", "2", "3" }, Labels = new[] { "1: 1920x1080 (the game's own)", "Auto: as big as the window", "1.5: 2880x1620", "2: 3840x2160 (4K)", "3: 5760x3240" } },
                 new Setting { Key = "gpu", Label = "Graphics card", Values = new[] { "auto", "warp" }, Labels = new[] { "The fastest (auto)", "WARP (Windows itself, no card: slow)" } },
                 new Setting { Key = "renderer", Label = "Renderer", Values = new[] { "auto", "direct3d11", "vulkan" }, Labels = new[] { "Auto: Vulkan on AMD, NVIDIA and Intel", "Direct3D 11", "Vulkan" } },
@@ -109,6 +111,7 @@ void InitializeSettings() {
 }
         bool SettingOn(Setting s)
         {
+            if (s.Key == "preload_shaders") return Project?.IsBuilt == true;
             string lobby = _iniValues.GetValueOrDefault("lobby", "public");
             if (s.Key is "name" or "direct") return lobby != "offline";
             return true;
@@ -116,6 +119,7 @@ void InitializeSettings() {
 
         string ShownValue(Setting s)
         {
+            if (s.Key == "preload_shaders") return _shaderUi ? "Cancel compilation" : "Compile shaders";
             string v = _iniValues.GetValueOrDefault(s.Key, s.Text || s.Slider || s.Values.Length == 0 ? "" : s.Values[0]);
             if (s.Slider) return v;
             if (s.Text) return v == "" ? "type here" : v;

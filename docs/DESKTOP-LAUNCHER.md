@@ -126,8 +126,36 @@ already uploaded to the GPU still need a new match. The preference is stored as
 `hot_reload_mod_assets = 1` (enabled) or `0` (disabled) in `launcher.ini`'s
 `[opensmash]` section, under `config/` once migrated. A game built before this
 setting was added must be rebuilt; updating the launcher alone cannot change its runtime.
+Settings -> Display -> Preload all shaders is a Compile shaders button, not a
+saved preference. It runs the installer's `tools/shader_aot.py --priority medium`
+step, reusing completed work. The bottom progress bar shows listing/compilation
+counts and the estimated time remaining; while running, the button offers Cancel
+compilation. Duplicate starts are ignored, and closing the launcher cancels its
+compiler process. Failures are reported with the log path, and the next run resumes.
+This prepares the disk shader cache; the game's existing startup loading policy
+and memory budgets are unchanged.
 Watched mod extensions are `.numshb`, `.nusktb`, `.nuhlpb`, `.numatb`, `.numdlb`,
 `.numshexb`, `.nutexb`, `.nuanmb`, and `.btnx` (case-insensitive).
+On the verified 13.0.5 build, the experimental vector-only `.numatb` path
+(including CustomVector8) queues edits for the material's normal rendering update,
+then uses the game's setter and shader dirty flags there. Materials are
+tracked from construction to destruction and indexed by material name; reloading
+does not scan the game heap. Validation has a 200 ms limit and defers the edit
+without applying it if that limit is exceeded. This also permits
+a re-export whose serialized size changed. Material/shader names and parameter
+types must stay the same. Matching checks the previous values of edited vectors while preserving unrelated
+parameters changed by gameplay or animation, and edits
+are rejected if another watched asset has the same material identity. Unsupported
+or currently unloaded material edits stay pending and are retried on the next
+L + R + A; the log explains why. File snapshots advance only after rendering confirms
+all queued writes. Destruction or invalidation cancels pending writes; a partial
+application requires restarting before another attempt. The game copies each
+material's animation baseline back into the live value every frame (main+36a8320),
+which used to restore the old color on the next frame. The applied value now replaces
+that baseline on this path only while the baseline still equals the replaced value,
+so animated keys still win; it is dropped when the material is destroyed. This has
+not yet been confirmed in a live match; the path remains experimental.
+Other asset formats still use raw buffer replacement.
 Installs/removals, progress, installed-state synchronization, shared lists,
 conflict checks and local folder imports use the existing Python backend.
 Plugin requirements use the project's checksum-pinned `std_plugins.py` releases;

@@ -22,11 +22,16 @@ public sealed partial class MainWindow
     }
     async Task CompileShaders(string priority)
     {
+        if(_shaderCancel!=null||_closed)return;
+        if(_project?.IsBuilt!=true){Surface.Alert("BUILD THE GAME FIRST","Finish installing the game before compiling shaders.");return;}
         var p=RequireProject();using var cancel=new CancellationTokenSource();_shaderCancel=cancel;Surface.ShaderActivity(true);
         try
         {
             int exit=await ProcessRunner.Run(new Command(p.Python,[p.PathIn("tools","shader_aot.py"),"--priority",priority],p.Root),
-                line=>Dispatcher.UIThread.Post(()=>Surface.ShaderActivity(true,line)),cancel.Token,logPath:p.PathIn("build","logs","shader_window.log"));
+                line=>Dispatcher.UIThread.Post(()=>
+                {
+                    if(!_closed&&ReferenceEquals(_shaderCancel,cancel))Surface.ShaderActivity(true,line);
+                }),cancel.Token,logPath:p.PathIn("build","logs","shader_window.log"));
             if(exit!=0&&!_closed)Surface.Alert("SHADER COMPILE STOPPED","See build/logs/shader_window.log. The next start resumes completed work.");
         }
         catch(OperationCanceledException){}

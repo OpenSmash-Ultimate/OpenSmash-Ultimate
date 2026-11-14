@@ -17,6 +17,7 @@ public sealed partial class ClassicSurface : Control
     public Project? Project { get; private set; }
     public event Action<string>? ActionRequested;
     public event Action<PointerPressedEventArgs>? DragRequested;
+    public event Action<WindowEdge,PointerPressedEventArgs>? ResizeRequested;
     public event Action<string>? InputRequested;
     public bool IsInstaller { get; private set; } = true;
     public bool IsInstalling => _running;
@@ -256,7 +257,7 @@ public sealed partial class ClassicSurface : Control
         _pixelScale=TopLevel.GetTopLevel(this)?.RenderScaling??1;
         int W=Math.Max(1,(int)Math.Round(Bounds.Width*_pixelScale)),H=Math.Max(1,(int)Math.Round(Bounds.Height*_pixelScale));
         _s=H/720f;_built=Project?.IsBuilt==true;
-        if(_frame==null||_frame.PixelSize.Width!=W||_frame.PixelSize.Height!=H) { _frame?.Dispose();_frame=new WriteableBitmap(new PixelSize(W,H),new Vector(96*_pixelScale,96*_pixelScale),PixelFormat.Bgra8888,AlphaFormat.Premul); }
+        if(_frame==null||_frame.PixelSize.Width!=W||_frame.PixelSize.Height!=H) { _frame?.Dispose();_frame=new WriteableBitmap(new PixelSize(W,H),new Vector(96,96),PixelFormat.Bgra8888,AlphaFormat.Premul); }
         using(var fb=_frame.Lock())
         using(var surface=SKSurface.Create(new SKImageInfo(W,H,SKColorType.Bgra8888,SKAlphaType.Premul),fb.Address,fb.RowBytes))
         using(var g=Graphics.ForFrame(surface.Canvas,W,H,fb.Address,fb.RowBytes))
@@ -287,8 +288,23 @@ public sealed partial class ClassicSurface : Control
             if(_modal!=null)PaintModal(g,W,H);
             surface.Canvas.Flush();
         }
+        // Avalonia takes DrawImage's source rect as pixels but derives it from the DPI-scaled size; at 96 DPI both agree.
         context.DrawImage(_frame,new Rect(0,0,Bounds.Width,Bounds.Height));
     }
+    // The window has no system frame, so its outer few pixels act as the resize border.
+    WindowEdge? EdgeAt(Avalonia.Point p)
+    {
+        if(TopLevel.GetTopLevel(this) is not Window{CanResize:true,WindowState:WindowState.Normal})return null;
+        const double m=6;bool l=p.X<m,r=p.X>Bounds.Width-m,t=p.Y<m,b=p.Y>Bounds.Height-m;
+        return t&&l?WindowEdge.NorthWest:t&&r?WindowEdge.NorthEast:b&&l?WindowEdge.SouthWest:b&&r?WindowEdge.SouthEast:
+               l?WindowEdge.West:r?WindowEdge.East:t?WindowEdge.North:b?WindowEdge.South:null;
+    }
+    static StandardCursorType EdgeCursor(WindowEdge edge)=>edge switch
+    {
+        WindowEdge.NorthWest=>StandardCursorType.TopLeftCorner,WindowEdge.NorthEast=>StandardCursorType.TopRightCorner,
+        WindowEdge.SouthWest=>StandardCursorType.BottomLeftCorner,WindowEdge.SouthEast=>StandardCursorType.BottomRightCorner,
+        WindowEdge.West or WindowEdge.East=>StandardCursorType.SizeWestEast,_=>StandardCursorType.SizeNorthSouth
+    };
     string HitAt(Avalonia.Point p)=>_hits.LastOrDefault(h=>h.R.Contains((float)(p.X*_pixelScale),(float)(p.Y*_pixelScale))).Id??"";
 
     protected override void OnPointerMoved(PointerEventArgs e)
@@ -296,7 +312,8 @@ public sealed partial class ClassicSurface : Control
         base.OnPointerMoved(e);var p=e.GetPosition(this);_keys=false;
         _hover=HitAt(p);
         _mx=(float)(p.X/Math.Max(1,Bounds.Width)-.5)*2;_my=(float)(p.Y/Math.Max(1,Bounds.Height)-.5)*2;
-        Cursor=new Cursor(_hover==""||_hover=="log"||_hover.StartsWith("step:")?StandardCursorType.Arrow:StandardCursorType.Hand);
+        var edge=_pressed==""?EdgeAt(p):null;if(edge!=null)_hover="";
+        Cursor=new Cursor(edge is { } e2?EdgeCursor(e2):_hover==""||_hover=="log"||_hover.StartsWith("step:")?StandardCursorType.Arrow:StandardCursorType.Hand);
         if(_pressed is "modscroll" or "setscroll")ScrollDetailsTo((float)(p.Y*_pixelScale));
         if(_pressed=="vol:volume"&&_volTrackValid)ChangeSetting("volume",Math.Clamp((int)Math.Round(((float)(p.X*_pixelScale)-_volTrackX)/_volTrackW*100),0,100).ToString());
         if(_hover.Contains(":opt:")&&int.TryParse(_hover.Split(':').Last(),out int option))_dropdownHoverIndex=option;
@@ -306,7 +323,9 @@ public sealed partial class ClassicSurface : Control
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
         base.OnPointerPressed(e);if(!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)return;
-        var p=e.GetPosition(this);_pressed=HitAt(p);
+        var p=e.GetPosition(this);
+        if(_modal==null&&EdgeAt(p) is { } edge){ResizeRequested?.Invoke(edge,e);return;}
+        _pressed=HitAt(p);
         if(_pressed is "modscroll" or "setscroll")ScrollDetailsTo((float)(p.Y*_pixelScale));
         if(_pressed=="vol:volume"&&_volTrackValid)ChangeSetting("volume",Math.Clamp((int)Math.Round(((float)(p.X*_pixelScale)-_volTrackX)/_volTrackW*100),0,100).ToString());
         if(_pressed==""&&_modal==null)DragRequested?.Invoke(e);else { Focus();e.Pointer.Capture(this); }

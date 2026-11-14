@@ -25,12 +25,20 @@ public sealed partial class MainWindow : Window
     public MainWindow(string[] args,string? launcherDirectory=null,bool enableBackgroundActions=true)
     {
         _backgroundActions=enableBackgroundActions;
-        Title="OpenSmash";WindowDecorations=Avalonia.Controls.WindowDecorations.None;CanResize=false;
+        Title="OpenSmash";WindowDecorations=Avalonia.Controls.WindowDecorations.None;CanResize=true;MinWidth=640;MinHeight=360;
         Background=Avalonia.Media.Brush.Parse("#050505");Width=1440;Height=810;
         WindowStartupLocation=WindowStartupLocation.CenterScreen;Content=Surface;
         using(var stream=typeof(MainWindow).Assembly.GetManifestResourceStream("opensmash.ico")) if(stream!=null)Icon=new WindowIcon(stream);
         if(enableBackgroundActions)Surface.ActionRequested+=async id=>await Action(id);
-        Surface.DragRequested+=e=>BeginMoveDrag(e);
+        Surface.DragRequested+=e=>
+        {
+            // Windows runs the move loop inside BeginMoveDrag: fit once on release, not while crossing monitors.
+            _moving=OperatingSystem.IsWindows();try{BeginMoveDrag(e);}finally{if(_moving){_moving=false;FitToScreen();}}
+        };
+        Surface.ResizeRequested+=(edge,e)=>BeginResizeDrag(edge,e);
+        ScalingChanged+=(_,_)=>{if(!_moving)Dispatcher.UIThread.Post(FitToScreen);};
+        if(OperatingSystem.IsWindows())Win32Properties.AddWndProcHookCallback(this,KeepAspectWhileSizing);
+        else Resized+=(_,e)=>{if(e.Reason==WindowResizeReason.User)Dispatcher.UIThread.Post(KeepAspect);};
         if(enableBackgroundActions)Surface.MarketplaceMessage+=async message=>await MarketplaceMessage(message);
         Surface.InputRequested+=answer=> {if(_shaderPriority!=null){_shaderPriority.TrySetResult(answer);return;}try{_installerInput?.WriteLine(answer);}catch(IOException error){Surface.Alert("INPUT FAILED",error.Message);} };
         Closing+=(_,e)=>
@@ -68,6 +76,50 @@ public sealed partial class MainWindow : Window
         if(args.Contains("--play")&&_project?.IsBuilt==true)Opened+=async(_,_)=>await Play();
     }
 
+    bool _moving;
+    // A monitor with other scaling keeps the size in DIPs, so the window can grow past that screen.
+    void FitToScreen()
+    {
+        if(_closed||WindowState!=WindowState.Normal||Screens.ScreenFromWindow(this) is not { } screen)return;
+        double scale=RenderScaling;var now=new PixelRect(Position,PixelSize.FromSize(ClientSize,scale));
+        var fit=FitToArea(now,screen.WorkingArea);if(fit==now)return;
+        Width=fit.Width/scale;Height=fit.Height/scale;Position=fit.Position;
+    }
+    internal static PixelRect FitToArea(PixelRect window,PixelRect area)
+    {
+        if(window.Width<=area.Width&&window.Height<=area.Height)return window;
+        int h=(int)(area.Height*.88),w=(int)(h*16d/9);
+        if(w>area.Width*.94){w=(int)(area.Width*.94);h=(int)(w*9d/16);}
+        int x=Math.Clamp(window.X+(window.Width-w)/2,area.X,area.Right-w),y=Math.Clamp(window.Y+(window.Height-h)/2,area.Y,area.Bottom-h);
+        return new PixelRect(x,y,w,h);
+    }
+    void KeepAspect()
+    {
+        if(_closed||WindowState!=WindowState.Normal)return;
+        double h=Math.Round(ClientSize.Width*9/16);if(Math.Abs(h-ClientSize.Height)>1)Height=h;
+    }
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    struct Win32Rect{public int Left,Top,Right,Bottom;}
+    [System.Runtime.InteropServices.DllImport("user32.dll")]static extern bool GetWindowRect(IntPtr hwnd,out Win32Rect rect);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]static extern bool GetClientRect(IntPtr hwnd,out Win32Rect rect);
+    IntPtr KeepAspectWhileSizing(IntPtr hwnd,uint message,IntPtr edge,IntPtr rectPointer,ref bool handled)
+    {
+        const uint WM_SIZING=0x0214;if(message!=WM_SIZING||!GetWindowRect(hwnd,out var outer)||!GetClientRect(hwnd,out var inner))return IntPtr.Zero;
+        var rect=System.Runtime.InteropServices.Marshal.PtrToStructure<Win32Rect>(rectPointer);
+        int frameW=outer.Right-outer.Left-inner.Right,frameH=outer.Bottom-outer.Top-inner.Bottom;
+        rect=SizeWithAspect(rect,(int)edge,frameW,frameH);
+        System.Runtime.InteropServices.Marshal.StructureToPtr(rect,rectPointer,false);handled=true;return new IntPtr(1);
+    }
+    // WMSZ_ edges: 1 left, 2 right, 3 top, 4 top-left, 5 top-right, 6 bottom, 7 bottom-left, 8 bottom-right.
+    static Win32Rect SizeWithAspect(Win32Rect r,int edge,int frameW,int frameH)
+    {
+        int w=r.Right-r.Left-frameW,h=r.Bottom-r.Top-frameH;
+        if(edge is 3 or 6)w=(int)Math.Round(h*16d/9);else h=(int)Math.Round(w*9d/16);
+        if(edge is 1 or 4 or 7)r.Left=r.Right-w-frameW;else r.Right=r.Left+w+frameW;
+        if(edge is 3 or 4 or 5)r.Top=r.Bottom-h-frameH;else r.Bottom=r.Top+h+frameH;
+        return r;
+    }
+
     void SetProject(string root,bool forceInstaller=false)
     {
         _project=new Project(root,Project.CurrentPlatform);ProjectLayout.Normalize(_project.Root);Surface.SetProject(_project,forceInstaller);
@@ -95,6 +147,8 @@ public sealed partial class MainWindow : Window
                 case "bootstrap:download":await DownloadProject();break;
                 case "bootstrap:cancel":_bootstrapCancel?.Cancel();break;
                 case "play":await Play();break;
+                case "settings:shaders":await CompileShaders("medium");break;
+                case "shaders:cancel":_shaderCancel?.Cancel();break;
                 case "pick:game":case "pick:keys":case "pick:firmware":
                     var folders=await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions{Title="Choose "+id[5..]+" folder",AllowMultiple=false});
                     if(folders.FirstOrDefault()?.TryGetLocalPath() is string folder)Surface.SetFolder(id[5..],folder);break;

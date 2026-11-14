@@ -162,6 +162,7 @@ try
     surface.ChangeSetting("volume","45");surface.ChangeSetting("window","borderless");
     Check(surface.GetSetting("volume")=="45"&&File.ReadAllText(project.ConfigFile("display.ini")).Contains("volume = 45"),"original settings controls persist game configuration");
     Capture("launcher-settings");
+    surface.ShaderActivity(true,"42 of 100 shaders, about a minute left");Capture("launcher-settings-shader-progress");surface.ShaderActivity(false);
     foreach(var (tab,name) in new[]{(1,"graphics"),(2,"audio"),(3,"online"),(4,"controllers"),(5,"update"),(6,"storage"),(7,"developer")})
     {
         if(tab==6)surface.SetStorageResult("Synthetic storage fixture: game files stay on this computer.");
@@ -197,6 +198,9 @@ try
     Check(surface.CurrentView=="mods","marketplace Back returns to the installed mods screen");
     surface.FrozenTime=20;surface.Navigate("setup_modding");surface.FrozenTime=25;Capture("launcher-plugins");
     surface.Navigate("home");surface.FrozenTime=30;surface.InvalidateVisual();using(var frame=window.CaptureRenderedFrame()){}
+    // Avalonia reads DrawImage's source rect in pixels; a DPI-scaled frame was cropped and magnified on a 175% monitor.
+    var frameDpi=((Avalonia.Media.Imaging.WriteableBitmap)typeof(OpenSmash.Visuals.ClassicSurface).GetField("_frame",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.GetValue(surface)!).Dpi;
+    Check(frameDpi==new Vector(96,96),"the launcher frame is drawn 1:1 at every monitor scaling");
     window.MouseDown(new Avalonia.Point(1080,36),Avalonia.Input.MouseButton.Left);
     window.MouseUp(new Avalonia.Point(1080,36),Avalonia.Input.MouseButton.Left);
     Check(surface.CurrentView=="settings","original header hit targets navigate through real pointer events");

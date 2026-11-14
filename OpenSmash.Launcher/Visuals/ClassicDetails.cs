@@ -104,6 +104,7 @@ public sealed partial class ClassicSurface
         if(id.StartsWith("set:")&&int.TryParse(id.Split(':')[1],out int index)&&index>=0&&index<_settings.Length)
         {
             var setting=_settings[index];var words=id.Split(':');
+            if(setting.Action!=null){if(SettingOn(setting))ActionRequested?.Invoke(setting.Key=="preload_shaders"&&_shaderUi?"shaders:cancel":setting.Action);return true;}
             if(words.Length==4&&words[2]=="opt"&&int.TryParse(words[3],out int option)&&option>=0&&option<setting.Values.Length)
             {ChangeSetting(setting.Key,setting.Values[option]);_openDropdownKey=null;return true;}
             if(setting.Key=="pads"){ActionRequested?.Invoke("settings:pads");return true;}
