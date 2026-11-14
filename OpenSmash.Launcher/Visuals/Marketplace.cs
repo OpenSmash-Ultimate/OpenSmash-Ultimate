@@ -9,7 +9,7 @@ public sealed partial class ClassicSurface
 {
     NativeWebView? _marketplace;
     bool _marketplaceReady;
-    public void MarketplaceLoaded()=>_marketplaceReady=true;
+    public void MarketplaceLoaded(){_marketplaceReady=true;_ = MarketplaceScript(ThemeScript());}
     string _marketplaceError = "";
     public event Action<string>? MarketplaceMessage;
     public string[] InstalledModIds => _mods.Where(m => !string.IsNullOrEmpty(m.GamebananaId)).Select(m => m.GamebananaId).Distinct().ToArray();
@@ -59,7 +59,7 @@ public sealed partial class ClassicSurface
                 throw new InvalidOperationException(string.Join(" ", available.Select(info => info.UnavailableReason)));
             var view = new NativeWebView
             {
-                Background = Avalonia.Media.Brush.Parse("#08090b"),
+                Background = Avalonia.Media.Brushes.Transparent,
                 AdapterPreference = available.Where(info => info.IsInstalled).Select(info => info.Type).ToArray()
             };
             view.NavigationStarted += (_, e) =>
@@ -78,7 +78,7 @@ public sealed partial class ClassicSurface
             {
                 if (!e.IsSuccess) MarketplaceFailed("The system web view could not load the mod browser.");
             };
-            view.NavigateToString(MarketplaceHtml());
+            view.NavigateToString(MarketplaceHtml().Replace("</head>", "<script>document.addEventListener('DOMContentLoaded',()=>{" + ThemeScript() + "});</script></head>"));
             _marketplace = view;
             LogicalChildren.Add(view);
             VisualChildren.Add(view);

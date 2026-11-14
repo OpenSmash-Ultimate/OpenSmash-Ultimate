@@ -200,7 +200,7 @@ public sealed partial class ClassicSurface
             float csp = 13 * s * 0.12f;
             float labelW = Math.Max(ArtworkTheme.TextWidth(g, "PLAY", cf, csp), ArtworkTheme.TextWidth(g, "VANILLA", cf, csp));
             float cw = labelW + 44 * s, chh = 38 * s, gap = 6 * s, aw = chh;
-            float ctaX = nx - 30 * s - cw;
+            float ctaX = nx - 30 * s - aw - gap - cw;
             float prevX = ctaX - gap - aw, nextX = ctaX + cw + gap;
             string playLabel = _launchMode == "vanilla" ? "VANILLA" : "PLAY";
             bool playEnabled = _built && !Busy;

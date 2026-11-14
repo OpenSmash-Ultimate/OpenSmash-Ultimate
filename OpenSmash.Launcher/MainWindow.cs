@@ -28,6 +28,7 @@ public sealed partial class MainWindow : Window
         Title="OpenSmash";WindowDecorations=Avalonia.Controls.WindowDecorations.None;CanResize=true;MinWidth=640;MinHeight=360;
         Background=Avalonia.Media.Brush.Parse("#050505");Width=1440;Height=810;
         WindowStartupLocation=WindowStartupLocation.CenterScreen;Content=Surface;
+        InitializeWindowsChrome();
         Surface.ShadersPending=()=>_project?.IsBuilt==true&&!ShadersDone();
         using(var stream=typeof(MainWindow).Assembly.GetManifestResourceStream("opensmash.ico")) if(stream!=null)Icon=new WindowIcon(stream);
         if(enableBackgroundActions)Surface.ActionRequested+=async id=>await Action(id);
@@ -141,7 +142,7 @@ public sealed partial class MainWindow : Window
             switch(id)
             {
                 case "close":Close();break;
-                case "min":WindowState=WindowState.Minimized;break;
+                case "min":MinimizeWindow();break;
                 case "project:ready":await CheckExternalChanges(atBoot:true);break;
                 case "project:choose":await ChooseProject();break;
                 case "bootstrap:browse":await ChooseBootstrapParent();break;

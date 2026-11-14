@@ -14,6 +14,7 @@ namespace OpenSmash.Visuals;
 
 public sealed partial class ClassicSurface : Control
 {
+    readonly ArtworkTheme ArtworkTheme = new();
     public Project? Project { get; private set; }
     public event Action<string>? ActionRequested;
     public event Action<PointerPressedEventArgs>? DragRequested;
@@ -122,7 +123,7 @@ public sealed partial class ClassicSurface : Control
     bool? _doneOk;
     DateTime _jobStart,_jobEnd;
     string _status="Looking for your game files…";
-    Color _statusColor=ArtworkTheme.Muted;
+    Color _statusColor=Color.FromArgb(180,180,176);
     bool Installed => Project?.IsBuilt==true;
     sealed class Prompt
     {
@@ -255,7 +256,7 @@ public sealed partial class ClassicSurface : Control
     {
         UpdateMarketplace();
         _username.IsVisible=IsInstaller&&_view=="setup"&&!HasPrompt;
-        if(!IsInstaller||_view!="settings"||HasPrompt)_settingEdit.IsVisible=false;
+        if(IsInstaller||_view!="settings"||HasPrompt)_settingEdit.IsVisible=false;
         float s=(float)(Bounds.Height>0?Bounds.Height/720:1);
         double scale=TopLevel.GetTopLevel(this)?.RenderScaling??1;
         _username.FontSize=15*s;
@@ -443,7 +444,7 @@ public sealed partial class ClassicSurface : Control
     static double? Num(JsonElement e,string name)=>e.TryGetProperty(name,out var v)&&v.ValueKind==JsonValueKind.Number&&v.TryGetDouble(out double n)?n:null;
     static bool? Bool(JsonElement e,string name)=>e.TryGetProperty(name,out var v)&&v.ValueKind is JsonValueKind.True or JsonValueKind.False?v.GetBoolean():null;
     static float Clamp01(float v)=>Math.Clamp(v,0,1);
-    static float Up(float t,float delay,float dur=.8f)=>ArtworkTheme.Ease(Clamp01((t-delay)/dur));
+    float Up(float t,float delay,float dur=.8f)=>ArtworkTheme.Ease(Clamp01((t-delay)/dur));
     Color A(Color c)=>ArtworkTheme.Fade(c,_alpha);
     static Color White(int alpha)=>Color.FromArgb(Math.Clamp(alpha,0,255),255,255,255);
     float Hov(string id,bool on) {if(on)_hovOn.Add(id);if(!_hov.TryGetValue(id,out float value)){if(!on)return 0;_hov[id]=0;return 0;}return value;}

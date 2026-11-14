@@ -45,6 +45,7 @@ public sealed partial class ClassicSurface
     void InitializeDetails()
     {
         InitializeSettings();LogicalChildren.Add(_settingEdit);VisualChildren.Add(_settingEdit);
+        AttachedToVisualTree+=(_,_)=>ApplyWindowIcon();
         _settingEdit.LostFocus+=(_,_)=>CommitEdit();
         _settingEdit.KeyDown+=(_,e)=> { if(e.Key is Key.Enter or Key.Escape){CommitEdit();Focus();e.Handled=true;} };
     }
@@ -72,6 +73,8 @@ public sealed partial class ClassicSurface
     {
         if(Project==null)return;
         if(!_settingsLoaded)LoadSettings();
+        if(key=="theme_preset") { ApplyThemePreset(value); return; }
+        if(key.StartsWith("theme_")) { ChangeThemeColor(key,value); return; }
         if(GameRunning) { Alert("CLOSE THE GAME","Close the game before changing its settings.");return; }
         _changedSettings.Add(key);
         _iniValues[key]=value;
@@ -104,6 +107,9 @@ public sealed partial class ClassicSurface
         if(id.StartsWith("set:")&&int.TryParse(id.Split(':')[1],out int index)&&index>=0&&index<_settings.Length)
         {
             var setting=_settings[index];var words=id.Split(':');
+            if(setting.Key=="theme_reset"){ResetTheme();return true;}
+            if(setting.Key=="theme_save"){_ = NameThemePreset();return true;}
+            if(ThemeDefaults().Any(item=>item.Key==setting.Key)){_ = PickThemeColor(setting.Key,setting.Label);return true;}
             if(setting.Action!=null){if(SettingOn(setting))ActionRequested?.Invoke(setting.Key=="preload_shaders"&&_shaderUi?"shaders:cancel":setting.Action);return true;}
             if(words.Length==4&&words[2]=="opt"&&int.TryParse(words[3],out int option)&&option>=0&&option<setting.Values.Length)
             {ChangeSetting(setting.Key,setting.Values[option]);_openDropdownKey=null;return true;}

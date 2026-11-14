@@ -5,6 +5,12 @@ public sealed partial class ClassicSurface
 {
         static readonly Dictionary<string, string> SettingInfo = new()
         {
+            ["theme_preset"] = "Built-in palettes and your saved themes. Manual color edits are kept as custom colors.",
+            ["theme_save"] = "Save all three colors as a named preset. Existing names ask before replacement.",
+            ["theme_accent"] = "Buttons and highlights. Open the color wheel or enter a hex code.",
+            ["theme_background"] = "Open the color wheel or enter a hex code.",
+            ["theme_text"] = "Pick a color readable against your background.",
+            ["theme_reset"] = "Restore the original launcher colors.",
             ["window"] = "A window you can resize, borderless over the monitor, or full screen. F11 switches while playing.",
             ["window_size"] = "The inside of the window. The picture stays 16:9.",
             ["pacing"] = "Steady 60 on any monitor. G-Sync / FreeSync shows each frame as soon as it is ready.",
@@ -184,7 +190,22 @@ public sealed partial class ClassicSurface
                     string val = ShownValue(set);
                     if (set.Text && inView)
                         _editRects[set.Key] = new Rectangle((int)ctlX, (int)cy, (int)ctlW, (int)ctlH);
-                    if (set.Action != null)
+                    if (ThemeDefaults().Any(item => item.Key == set.Key))
+                    {
+                        ArtworkTheme.ButtonAnimated(g, "PICK COLOR   " + val, ctlX, cy, ctlW, ctlH, s, false,
+                            Hov(id + ":dd", enabled && _hover == id + ":dd"), enabled, 13 * s, _alpha, press: Press(id + ":dd"));
+                        if (ThemeColorPicker.TryHex(val, out var color))
+                        {
+                            using var swatch = new SolidBrush(Color.FromArgb(color.R, color.G, color.B));
+                            g.FillRectangle(swatch, ctlX + 14*s, cy + 10*s, 20*s, ctlH - 20*s);
+                        }
+                    }
+                    else if (set.Key == "theme_save")
+                    {
+                        ArtworkTheme.ButtonAnimated(g, "SAVE AS PRESET", ctlX, cy, ctlW, ctlH, s, false,
+                            Hov(id + ":dd", enabled && _hover == id + ":dd"), enabled, 13 * s, _alpha, press: Press(id + ":dd"));
+                    }
+                    else if (set.Action != null)
                     {
                         ArtworkTheme.ButtonAnimated(g, val.ToUpperInvariant(), ctlX, cy, ctlW, ctlH, s, false,
                             Hov(id + ":dd", enabled && _hover == id + ":dd"), enabled, 13 * s, _alpha, press: Press(id + ":dd"));

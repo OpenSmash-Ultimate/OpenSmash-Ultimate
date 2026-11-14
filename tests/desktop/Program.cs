@@ -5,6 +5,8 @@ using Avalonia.Interactivity;
 using OpenSmash;
 using OpenSmash.Core;
 
+if (args.Contains("--native-window-check") || args.Contains("--native-taskbar-check")) { NativeWindowChecks.Run(args.Contains("--native-taskbar-check")); return; }
+
 if (args.Contains("--process-fixture"))
 {
     Console.WriteLine("stdout fixture");
@@ -128,6 +130,16 @@ try
     var window = new MainWindow(["--project", root], root,enableBackgroundActions:false);
     window.Show(); window.Width=1440;window.Height=810;
     var surface=window.Surface;surface.FrozenTime=5;
+    Check(window.WindowDecorations==(OperatingSystem.IsWindows()?WindowDecorations.Full:WindowDecorations.None),"Windows uses native shell decorations while other platforms keep borderless mode");
+    if(OperatingSystem.IsWindows())
+    {
+        Check(window.ExtendClientAreaToDecorationsHint&&window.ExtendClientAreaTitleBarHeightHint==0,"custom header uses the supported extended client area");
+        var decoration=window.WindowDecorationsTheme?.Setters.OfType<Avalonia.Styling.Setter>().Single(setter=>setter.Property==Avalonia.Controls.Chrome.WindowDrawnDecorations.TemplateProperty).Value as Avalonia.Controls.Chrome.IWindowDrawnDecorationsTemplate;
+        Check(decoration?.Build().Result.Overlay is Panel { IsHitTestVisible:false, Height:0 } overlay&&overlay.Children.Count==0,"custom chrome supplies an explicit empty caption template instead of falling back to standard buttons");
+    }
+    typeof(MainWindow).GetMethod("MinimizeWindow",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.Invoke(window,null);
+    Check(window.WindowState==WindowState.Minimized,"non-native platforms retain the normal minimize fallback");
+    window.WindowState=WindowState.Normal;
     Check(surface.IsInstaller && surface.CurrentView=="installer:setup", "unbuilt projects open the original installer screen");
     string? screenshot = Environment.GetEnvironmentVariable("OPENSMASH_TEST_SCREENSHOT");
     void Capture(string name)
@@ -162,6 +174,17 @@ try
     Check(!surface.IsInstaller&&surface.CurrentView=="home","built projects open the regular launcher");
     surface.FrozenTime=10;
     Capture("launcher-home");
+    foreach(string mode in new[]{"mods","vanilla"})
+    {
+        surface.InvalidateVisual();
+        using(var frame=window.CaptureRenderedFrame()){}
+        var hits=(List<(string Id,System.Drawing.RectangleF R)>)typeof(OpenSmash.Visuals.ClassicSurface)
+            .GetField("_hits",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.GetValue(surface)!;
+        var minimize=hits.Single(hit=>hit.Id=="min").R;
+        Check(hits.Where(hit=>hit.Id.StartsWith("nav:")).All(hit=>hit.R.Right<minimize.Left),
+            mode+": header navigation leaves the minimize button clear");
+        surface.Activate("nav:mode-next");
+    }
     surface.GameRunning=true;surface.StartingGame=true;Capture("launcher-starting");
     Check(surface.StartingGame,"Play exposes the Starting game state while readiness is pending");
     surface.GameRunning=false;surface.StartingGame=false;
@@ -255,6 +278,9 @@ try
     Check(unbuilt.Surface.CurrentView=="installer:setup","placing the launcher beside an unbuilt project shows the installer");unbuilt.Close();
     ChangeChecks.Controller(root);
     UpstreamChecks.Run(root);
+    ThemeChecks.Run(root);
+    ThemePresetChecks.Run(root);
+    ThemePersistenceChecks.Run(root);
     Console.WriteLine("All desktop launcher checks passed.");
 }
 finally

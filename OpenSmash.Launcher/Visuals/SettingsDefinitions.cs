@@ -85,10 +85,17 @@ void InitializeSettings() {
                 new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Developer", SettingKeys = new[] { "hot_reload_mod_assets" } },
                 new SettingTab { Name = "Game", SettingKeys = new[] { "game_files" } },
+                new SettingTab { Name = "Theme", SettingKeys = new[] { "theme_preset", "theme_accent", "theme_background", "theme_text", "theme_save", "theme_reset" } },
             };
 
             _settings = new[]
             {
+                new Setting { Key = "theme_preset", Label = "Color preset", Values = new[] { "custom" }, Labels = new[] { "Custom colors" } },
+                new Setting { Key = "theme_save", Label = "Save your colors", Values = new[] { "Save as preset" } },
+                new Setting { Key = "theme_accent", Label = "Accent color", Text = true },
+                new Setting { Key = "theme_background", Label = "Background color", Text = true },
+                new Setting { Key = "theme_text", Label = "Text color", Text = true },
+                new Setting { Key = "theme_reset", Label = "Default colors", Action = "theme:reset" },
                 new Setting { Key = "window", Label = "Window", Values = new[] { "windowed", "borderless", "fullscreen" }, Labels = new[] { "A window", "Borderless (whole monitor)", "Full screen" } },
                 new Setting { Key = "window_size", Label = "Window size", Values = new[] { "1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160" } },
                 new Setting { Key = "pacing", Label = "Frame pacing", Values = new[] { "clock", "vrr", "display" }, Labels = new[] { "Steady 60 (any monitor)", "G-Sync / FreeSync monitor", "Follow the monitor's refresh" } },
@@ -127,6 +134,7 @@ void InitializeSettings() {
         {
             if (s.Key == "preload_shaders") return _shaderUi ? "Cancel compilation" : "Compile shaders";
             if (s.Key == "game_files") return "Open setup";
+            if (s.Key == "theme_reset") return "Reset colors";
             string v = _iniValues.GetValueOrDefault(s.Key, s.Text || s.Slider || s.Values.Length == 0 ? "" : s.Values[0]);
             if (s.Slider) return v;
             if (s.Text) return v == "" ? "type here" : v;
@@ -312,6 +320,13 @@ void InitializeSettings() {
                 gpu.Values = gpu.Values.Append(_iniValues["gpu"]).ToArray();
                 gpu.Labels = gpu.Labels.Append(_iniValues["gpu"]).ToArray();
             }
+            foreach (var (key, fallback) in ThemeDefaults())
+            {
+                string value = IniValue(launcherIni, "theme", key) ?? fallback;
+                _iniValues[key] = ValidThemeColor(value) ? value.ToUpperInvariant() : fallback;
+            }
+            ApplyTheme();
+            LoadThemePresets();
             _settingsLoaded = true;
             var size = _settings.First(s => s.Key == "window_size");
             if (!size.Values.Contains(_iniValues["window_size"]))
