@@ -62,6 +62,8 @@ class OnlineMatch(unittest.TestCase):
         self.assertIn('online_match = 1; online_lw = mode != ONLINE_MELEE && mode != ARENA_MELEE;', core,
                       'Quickplay and Battle Arena matches get the game set-up back; Local Wireless room matches do not')
         self.assertIn('if (online_lw) {', core)
+        self.assertIn('else if (online_lw) st8(MELEE_INFO, LOCAL_MELEE);', core,
+                      'a Local Wireless room fight is a local melee: the room mode split on C-stick inputs (#181)')
         self.assertIn('getenv("SSBU_RB_LW_RESTORE")', core)
         self.assertIn('if (net_online) { online_forget("the results are over"); net_armed = 0; }', core,
                       'the next match may have other players')

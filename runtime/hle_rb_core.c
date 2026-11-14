@@ -3279,6 +3279,7 @@ static void panel_dump(const char *when, int idx, u64 st) {
  * and the match is left to the game's own netcode on both. Online matches of more than 2 players are left to it too. */
 int net_recent_peers(u32 *out, int max, u32 within_ms);   /* (net.h) */
 #define ONLINE_MELEE 14
+#define LOCAL_MELEE 0      /* (a local melee: what a Local Wireless room's rollback fight is set up as, #181) */
 #define ARENA_MELEE 20     /* (a Battle Arena's match: set up by the ring's players' games as a Quickplay one is, its other
                             * players' games the Pia peers of the arena's gathering; its results go back to the arena) */
 #define ONLINE_WAIT_MS 15000.0
@@ -3312,7 +3313,8 @@ static void online_restore(void) {
      * "Gold Earned" for good, every match. On rollback's set-up the results run as a local melee's, the A and B passed
      * between the games (net_results_frame) ready the other player's card, and the room's character select builds its
      * panels anew, the other player a network player again. Quickplay keeps the game's set-up: its results, GSP and next
-     * search need the Online one. SSBU_RB_LW_RESTORE=1: a room's match too, as before. */
+     * search need the Online one. SSBU_RB_LW_RESTORE=1: a room's match too, as before (and the room's melee mode with it,
+     * which the fight no longer has: #181). */
     if (online_lw) {
         const char *e = getenv("SSBU_RB_LW_RESTORE");
         if (!(e && *e == '1')) {
@@ -3324,7 +3326,7 @@ static void online_restore(void) {
     }
     memcpy(P(u8, MELEE_INFO), online_hdr, ONLINE_HDR);
     {   /* (and the fighter manager's copy of the melee mode, which it took at the match's start: + 0xc0; only
-         * another with SSBU_RB_ONLINE_MODE) */
+         * another with SSBU_RB_ONLINE_MODE, or after a Local Wireless room's fight, a local melee: #181) */
         u64 impl = fm_impl();
         if (impl && readable(impl + 0xc0, 4) && ld8(impl + 0xc0) != online_hdr[0]) {
             fprintf(stderr, "[rb] online: the fighter manager's melee mode %u -> %u\n", ld32(impl + 0xc0), online_hdr[0]);
@@ -3405,16 +3407,30 @@ static int online_setup(u64 st) {
         return 0;
     }
     for (int k = 0; k < 5; k++) { net_hello_send(); Sleep(20); }   /* (the other's answer, again) */
-    fprintf(stderr, "[rb] online: agreed after %.1f s (input delay %d): %s is played with rollback, both players local on both games (melee mode %u)\n",
+    fprintf(stderr, "[rb] online: agreed after %.1f s (input delay %d): %s is played with rollback, both players local on both games (the set-up's melee mode %u)\n",
             (now_ms() - t0) / 1000, net_delay, what, mode);
     memcpy(online_hdr, P(u8, MELEE_INFO), ONLINE_HDR);
     memset(online_rec_have, 0, sizeof online_rec_have);
-    /* (the melee mode stays the game's, 14: the scene loads as an Online match - its results, the GSP and the next search
-     * run as without rollback, and so do its rules for the players, as the kick for too many self-destructs. Only the
-     * players are local ones here. SSBU_RB_ONLINE_MODE=<n>, research: the fight set up with melee mode n instead; 0, a
-     * local melee, plays alike but ends on a local results screen the Online scene never leaves) */
-    {   const char *e = getenv("SSBU_RB_ONLINE_MODE"); if (e && *e) st8(MELEE_INFO, (u8)atoi(e)); }
+    /* (Quickplay and Battle Arenas: the melee mode stays the game's, 14 or 20: the scene loads as an Online match - its
+     * results, the GSP and the next search run as without rollback, and so do its rules for the players, as the kick for
+     * too many self-destructs. Only the players are local ones here. SSBU_RB_ONLINE_MODE=<n>, research: the fight set up
+     * with melee mode n instead; 0, a local melee, plays alike but ends on a local results screen the Online scene never
+     * leaves. A Local Wireless room's match: below) */
     online_match = 1; online_lw = mode != ONLINE_MELEE && mode != ARENA_MELEE;
+    /* (#181: a Local Wireless room's fight is set up as a local melee, mode 0. With the room's own mode, 1, two games with
+     * the same pads split on a fighter that had just used the C-stick: two games on one PC in a room, both players bots,
+     * player 1's SSBU_RB_NET_BOT_CSTICK, SSBU_NET_SIM=70,0,5: DESYNC at logic frame 381 of the first match (player 1 in
+     * status 0x36, x speed 0.0100 on one game, 0.1432 on the other, the pads of frames 362-381 identical); with mode 0,
+     * three matches, 0 of 924, 1862 and 2107 hashes different, 250-1164 rollbacks a game a match in those three, up to 11
+     * frames deep. The room's results already run on rollback's set-up as a local melee's (#180), and the room's
+     * character select builds the match block anew: every set-up after a mode-0 fight in these runs logged melee mode 1
+     * again (nothing here puts it back: online_restore leaves a room's match as it is). Only byte 0 is written; whether
+     * a local melee's byte 1 differs from a room's was not checked. SSBU_RB_ONLINE_MODE=1: the room's own mode, as
+     * before) */
+    {   const char *e = getenv("SSBU_RB_ONLINE_MODE");
+        if (e && *e) st8(MELEE_INFO, (u8)atoi(e));
+        else if (online_lw) st8(MELEE_INFO, LOCAL_MELEE);
+    }
     return 1;
 }
 static u64 record_caller;
