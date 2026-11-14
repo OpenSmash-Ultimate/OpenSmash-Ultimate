@@ -19,6 +19,11 @@ static class UpstreamChecks
         string root=Path.Combine(temporary,"upstream-regressions");Directory.CreateDirectory(Path.Combine(root,"tools"));Directory.CreateDirectory(Path.Combine(root,"runtime"));File.WriteAllText(Path.Combine(root,"tools","os_mods.py"),"");
         var project=new Project(root,Project.CurrentPlatform);Directory.CreateDirectory(Path.GetDirectoryName(project.GameExecutable)!);File.WriteAllText(project.GameExecutable,"synthetic fixture");
         File.WriteAllText(project.ConfigFile("display.ini"),"renderer = auto\nwindow = windowed\nvolume = 100\n");
+        string defaultsRoot=Path.Combine(temporary,"display-defaults");Directory.CreateDirectory(Path.Combine(defaultsRoot,"tools"));Directory.CreateDirectory(Path.Combine(defaultsRoot,"runtime"));File.WriteAllText(Path.Combine(defaultsRoot,"tools","os_mods.py"),"");
+        var defaults=new MainWindow([],defaultsRoot,enableBackgroundActions:false);
+        Check(defaults.Surface.GetSetting("window")=="borderless"&&defaults.Surface.GetSetting("window_size")=="1920x1080"&&defaults.Surface.GetSetting("pacing")=="display"&&defaults.Surface.GetSetting("render_scale")=="1"&&defaults.Surface.GetSetting("gpu")=="auto","fresh launcher uses the requested portable display and graphics defaults");
+        if(OperatingSystem.IsWindows())Check(defaults.Surface.GetSetting("renderer")=="vulkan","fresh Windows launcher defaults to Vulkan");
+        defaults.Close();
         var window=new MainWindow([],root,enableBackgroundActions:false);var surface=window.Surface;
         var settingDefinitions=(Array)typeof(OpenSmash.Visuals.ClassicSurface).GetField("_settings",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(surface)!;
         int shaderIndex=Array.FindIndex(settingDefinitions.Cast<object>().ToArray(),s=>(string)s.GetType().GetField("Key")!.GetValue(s)! == "preload_shaders");
@@ -61,7 +66,7 @@ static class UpstreamChecks
         Directory.CreateDirectory(project.PathIn("dump","shadercache"));File.WriteAllText(project.PathIn("runtime","gpu_shader_cache.h"),"#define SHADER_CACHE_VERSION 9");
         File.WriteAllText(project.PathIn("build","ssbu_glslang.dll"),"fixture");string marker=project.PathIn("dump","shadercache","complete.txt");File.WriteAllText(marker,"version 9\n");
         surface.ChangeSetting("renderer","auto");bool Done()=>(bool)typeof(MainWindow).GetMethod("ShadersDone",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(window,null)!;
-        Check(!Done(),"Vulkan-capable shader cache is unfinished until SPIR-V is recorded");File.AppendAllText(marker,"spirv fixture\n");Check(Done(),"complete SPIR-V marker satisfies shader readiness");File.WriteAllText(marker,"version 9\n");surface.ChangeSetting("renderer","direct3d11");Check(Done(),"explicit Direct3D does not demand a SPIR-V cache");
+        Check(!Done(),"Vulkan-capable shader cache is unfinished until SPIR-V is recorded");Check(surface.ShadersPending(),"preload button remains available for unfinished shaders");File.AppendAllText(marker,"spirv fixture\n");Check(Done(),"complete SPIR-V marker satisfies shader readiness");Check(!surface.ShadersPending(),"preload button disappears when shaders are complete");File.WriteAllText(marker,"version 9\n");surface.ChangeSetting("renderer","direct3d11");Check(Done(),"explicit Direct3D does not demand a SPIR-V cache");
         Directory.CreateDirectory(project.PathIn("OpenSmash.Launcher","bin"));File.WriteAllText(project.PathIn("OpenSmash.Launcher","source.cs"),"source");string fingerprint=UpdateState.LauncherFingerprint(project);File.WriteAllText(project.PathIn("OpenSmash.Launcher","bin","generated.dll"),"ignored");Check(UpdateState.LauncherFingerprint(project)==fingerprint,"launcher update fingerprint ignores build outputs");File.AppendAllText(project.PathIn("OpenSmash.Launcher","source.cs"),"changed");Check(UpdateState.LauncherFingerprint(project)!=fingerprint,"launcher update fingerprint detects source changes");
         if(OperatingSystem.IsWindows())
         {

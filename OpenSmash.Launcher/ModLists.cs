@@ -48,6 +48,10 @@ public sealed partial class MainWindow
     async Task AddLocalMod()
     {
         CheckModIdle();
+        if(_addingLocalMod)return;
+        _addingLocalMod=true;
+        try
+        {
         // (asked before the folder picker, so the choice is seen up front)
         string choice=await Surface.ChooseModImport();if(choice=="cancel"||_closed)return;
         var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = choice=="link" ? "Choose a mod folder to add as a link" : "Choose a mod folder to copy", AllowMultiple = false });
@@ -68,6 +72,8 @@ public sealed partial class MainWindow
             finally{Surface.OperationRunning=false;}
         }
         await ModCommand("enable",[name]);
+        }
+        finally{_addingLocalMod=false;}
     }
     static void CopyModFolder(string source,string destination)
     {

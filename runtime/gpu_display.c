@@ -58,7 +58,13 @@ static struct {
     float render_scale;   /* 0: auto */
     double speed;         /* SSBU_SPEED (test runs): 1 normal */
     int renderer;         /* RENDERER_* (renderer.h) */
-} cfg = {MODE_WINDOWED, 1280, 720, 3, 1, 1, 1, PACING_CLOCK, 0, "auto", 1.0f, 1.0, RENDERER_DEFAULT};
+} cfg = {MODE_BORDERLESS, 1920, 1080, 3, 1, 1, 1, PACING_DISPLAY, 0, "auto", 1.0f, 1.0,
+#ifdef _WIN32
+    RENDERER_VULKAN
+#else
+    RENDERER_DEFAULT
+#endif
+};
 
 static int cfg_runahead;   /* display.ini's runahead (display_runahead) */
 
@@ -85,7 +91,7 @@ static const char DEFAULT_INI[] =
 #ifndef __APPLE__
     "; F11 or Alt+Enter switches between the window and full screen while playing.\n"
 #endif
-    "window = windowed\n"
+    "window = borderless\n"
 #ifdef _WIN32
     "; width, height: the window's inside, at 100% display scaling (scaled with Windows' setting).\n"
 #elif defined __APPLE__
@@ -93,8 +99,8 @@ static const char DEFAULT_INI[] =
 #else
     "; width, height: the window's inside, in the desktop's units (scaled ones on a scaled Wayland desktop).\n"
 #endif
-    "width = 1280\n"
-    "height = 720\n"
+    "width = 1920\n"
+    "height = 1080\n"
     "\n"
     "; pacing = clock | vrr | display\n"
 #ifdef _WIN32
@@ -118,7 +124,7 @@ static const char DEFAULT_INI[] =
     ";            every frame stays on screen exactly 16.7 ms. Best with window = fullscreen.\n"
     ";   display: as clock (Linux has no wait for the monitor's refresh here).\n"
 #endif
-    "pacing = clock\n"
+    "pacing = display\n"
     "; latency = 1-3: how many frames the graphics card may work ahead. Lower is more responsive.\n"
     ";   (the Vulkan renderer keeps 2 at least: with 1 the processor and the card wait for each other every frame)\n"
     "latency = 3\n"
@@ -167,7 +173,11 @@ static const char DEFAULT_INI[] =
     ";   vulkan: the Vulkan renderer, in development. Until it can draw the game, the game checks Vulkan\n"
     ";           on this PC at its start, says what it found in its log, and draws as before.\n"
 #endif
+#ifdef _WIN32
+    "renderer = vulkan\n"
+#else
     "renderer = " RENDERER_DEFAULT_NAME "\n"
+#endif
 #endif
     ;
 

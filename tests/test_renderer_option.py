@@ -63,13 +63,15 @@ class RendererOption(unittest.TestCase):
                                'parse DXVK -> 0 auto', 'parse metal -> 0 auto', 'parse auto -> 0 auto', 'parse direct3d11 -> 2 direct3d11',
                                'parse DX11 -> 2 direct3d11', 'parse opengl -> -1 -', 'parse  -> -1 -'])
 
-    def test_default_is_unchanged(self):
-        """No renderer key, or the default's name: auto (gpu_backend.c's choice, not made here: Direct3D 11 starts),
-        and the start says nothing."""
-        for ini in ('window = windowed\n', 'renderer = d3d11\n', 'renderer = auto   ; the default\n'):
+    def test_default_is_vulkan(self):
+        out, _ = self.run_test('chosen', ini='window = windowed'+chr(10))
+        self.assertEqual(out, ['chosen vulkan'])
+
+    def test_explicit_auto_is_preserved(self):
+        for ini in ('renderer = d3d11'+chr(10), 'renderer = auto   ; the default'+chr(10)):
             out, err = self.run_test('chosen', 'start', ini=ini)
             self.assertEqual(out, ['chosen auto', 'start auto'], ini)
-            self.assertEqual([l for l in err if 'renderer' in l], [], ini)
+            self.assertEqual([line for line in err if 'renderer' in line], [], ini)
 
     def test_vulkan_asked(self):
         """Vulkan checked (whatever this PC has), one line about it, and Direct3D 11 draws."""
@@ -103,13 +105,15 @@ class RendererOption(unittest.TestCase):
         out, _ = self.run_test('default')
         text = '\n'.join(out)
         self.assertIn('; renderer = auto | direct3d11 | vulkan', text)
-        self.assertIn('\nrenderer = auto', text)
+        self.assertIn('\nrenderer = vulkan', text)
+        for setting in ('window = borderless', 'width = 1920', 'height = 1080', 'pacing = display', 'render_scale = 1', 'gpu = auto'):
+            self.assertIn(setting, text)
         # (and it reads back as the default: the file is written when there is none)
         d = Path(tempfile.mkdtemp(dir=self.folder))
         env = {k: v for k, v in os.environ.items() if not k.upper().startswith('SSBU_')}
         r = subprocess.run([self.exe, 'chosen'], cwd=d, env=env, capture_output=True, text=True, timeout=60)
-        self.assertEqual(r.stdout.split(), ['chosen', 'auto'])
-        self.assertIn('renderer = auto', (d / 'display.ini').read_text())
+        self.assertEqual(r.stdout.split(), ['chosen', 'vulkan'])
+        self.assertIn('renderer = vulkan', (d / 'display.ini').read_text())
 
 
 @unittest.skipUnless(HAVE_CLANG, 'Windows with clang-cl only (deps\\llvm, or Visual Studio\'s C++ Clang tools)')

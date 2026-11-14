@@ -28,6 +28,7 @@ public sealed partial class MainWindow : Window
         Title="OpenSmash";WindowDecorations=Avalonia.Controls.WindowDecorations.None;CanResize=true;MinWidth=640;MinHeight=360;
         Background=Avalonia.Media.Brush.Parse("#050505");Width=1440;Height=810;
         WindowStartupLocation=WindowStartupLocation.CenterScreen;Content=Surface;
+        Surface.ShadersPending=()=>_project?.IsBuilt==true&&!ShadersDone();
         using(var stream=typeof(MainWindow).Assembly.GetManifestResourceStream("opensmash.ico")) if(stream!=null)Icon=new WindowIcon(stream);
         if(enableBackgroundActions)Surface.ActionRequested+=async id=>await Action(id);
         Surface.DragRequested+=e=>
@@ -288,6 +289,7 @@ public sealed partial class MainWindow : Window
         if(Surface.ModsRunning)throw new InvalidOperationException("Close the mod manager before changing mods here.");
         if(Surface.OperationRunning)throw new InvalidOperationException("Wait for the current mod operation to finish.");
         Surface.SetOperationLabel(command switch {"fetch"=>"DOWNLOADING PLUGINS","install"=>"INSTALLING MODS","remove"=>"REMOVING MODS","build"=>"UPDATING PLUGINS","refresh"=>"REFRESHING PLUGINS","apply"=>"PREPARING MODS","vanilla"=>"PREPARING VANILLA",_=>"UPDATING MODS"});
+        _modMutationVersion++;
         Surface.OperationRunning=true;Surface.InvalidateVisual();
         bool pluginJob=command is "enable" or "disable" or "refresh" or "build";
         if(pluginJob)Surface.PluginBuildActivity(true);
@@ -301,6 +303,7 @@ public sealed partial class MainWindow : Window
         if(command=="install"&&document.RootElement.TryGetProperty("names",out var added))
             new ModChanges(RequireProject()).Remember(added.EnumerateArray().Select(n=>n.GetString()!).Where(n=>n!=null));
         if(refresh)await RefreshMods();
+        if(command is "enable" or "install")_dismissedPluginState=PluginPromptState();
         }
         finally{if(pluginJob)Surface.PluginBuildActivity(false);Surface.OperationRunning=false;Surface.InvalidateVisual();}
     }

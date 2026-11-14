@@ -124,6 +124,7 @@ try
 
     AppBuilder.Configure<App>().WithInterFont().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions {
         UseHeadlessDrawing = false }).SetupWithoutStarting();
+    File.WriteAllText(project.ConfigFile("display.ini"),"renderer = auto\nwindow = windowed\nwidth = 1280\nheight = 720\npacing = clock\n");
     var window = new MainWindow(["--project", root], root,enableBackgroundActions:false);
     window.Show(); window.Width=1440;window.Height=810;
     var surface=window.Surface;surface.FrozenTime=5;

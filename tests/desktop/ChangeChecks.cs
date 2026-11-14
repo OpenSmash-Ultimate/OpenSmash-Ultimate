@@ -38,18 +38,50 @@ static class ChangeChecks
     {
         string fixture=Path.Combine(root,"change-controller");Directory.CreateDirectory(Path.Combine(fixture,"runtime"));Directory.CreateDirectory(Path.Combine(fixture,"tools"));
         File.WriteAllText(Path.Combine(fixture,"tools","os_mods.py"),"""
-import json,sys,pathlib
+import json,sys,pathlib,time
 root=pathlib.Path(__file__).resolve().parent.parent
 cmd=sys.argv[1]
 with (root/'calls.txt').open('a') as f:f.write(cmd+'\n')
-if cmd=='status':print((root/'status.json').read_text())
+if cmd=='status':
+ if (root/'hold-status').exists():
+  (root/'status-started').touch()
+  while (root/'hold-status').exists():time.sleep(.01)
+ print((root/'status.json').read_text())
 elif cmd=='enable' and (root/'fail-enable').exists():print('RESULT '+json.dumps({'ok':False,'error':'synthetic failure'}))
-else:print('RESULT '+json.dumps({'ok':True}));(root/'status.json').write_text('{"mods":[]}')
+else:
+ print('RESULT '+json.dumps({'ok':True}))
+ if not (root/'retain-status').exists():(root/'status.json').write_text('{"mods":[]}')
 """);
         var p=new Project(fixture,Project.CurrentPlatform);Directory.CreateDirectory(Path.GetDirectoryName(p.GameExecutable)!);File.WriteAllText(p.GameExecutable,"fixture");Directory.CreateDirectory(p.PathIn("mods"));File.WriteAllText(p.PathIn("mods","mods.json"),"{\"mods\":{}}");
         var changes=new ModChanges(p);changes.Scan();
         var window=new MainWindow([],fixture,enableBackgroundActions:false);var surface=window.Surface;
         void Status(string build="",string refresh="",string vanilla="")=>File.WriteAllText(p.PathIn("status.json"),JsonSerializer.Serialize(new {mods=Array.Empty<object>(),needs_build=build,needs_refresh=refresh,needs_build_vanilla=vanilla}));
+        File.WriteAllText(p.PathIn("retain-status"),"");
+        Status(refresh:"newly imported plugin");
+        Finish(Invoke(window,"ModCommand","enable",new[]{"imported"},true));
+        Status(refresh:"newly imported plugin");
+        Finish(Invoke(window,"CheckExternalChanges",false,false));
+        Check(!surface.HasPrompt,"launcher import does not immediately show an update warning");
+        File.Delete(p.PathIn("retain-status"));
+        Status(refresh:"plugin observed while choosing a folder");
+        var choosing=Invoke(window,"AddLocalMod");
+        Check(surface.HasPrompt&&!choosing.IsCompleted,"local import owns the flow before opening the folder picker");
+        Finish(Invoke(window,"CheckExternalChanges",false,true));
+        Check(!(bool)typeof(OpenSmash.Visuals.ClassicSurface).GetField("_pluginPrompt",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(surface)!,"folder-picker focus checks cannot open a plugin warning");
+        surface.Activate("modal:no");Finish(choosing);
+        Check(!(bool)typeof(MainWindow).GetField("_addingLocalMod",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(window)!,"cancelled folder selection releases the import guard");
+        File.WriteAllText(p.PathIn("hold-status"),"");
+        var racing=Invoke(window,"CheckExternalChanges",false,false);
+        PumpUntil(()=>File.Exists(p.PathIn("status-started")));
+        File.WriteAllText(p.PathIn("retain-status"),"");
+        var importing=Invoke(window,"ModCommand","enable",new[]{"linked-import"},true);
+        File.Delete(p.PathIn("hold-status"));
+        PumpUntil(()=>racing.IsCompleted||surface.HasPrompt);
+        Check(!surface.HasPrompt,"an in-flight pre-import status check cannot show an update prompt");
+        Finish(racing);Finish(importing);
+        Finish(Invoke(window,"CheckExternalChanges",false,false));
+        Check(!surface.HasPrompt,"focus after import completion keeps the imported plugin warning acknowledged");
+        File.Delete(p.PathIn("retain-status"));
         Status("the plugin example isn't in the game","DLL also changed");
         var check=Invoke(window,"CheckExternalChanges",false,true);PumpUntil(()=>surface.HasPrompt||check.IsCompleted);
         Check(surface.PluginBuildReason.Length>0&&surface.PluginRefreshReason.Length>0&&surface.HasPrompt,"external check consumes both backend readiness reasons");

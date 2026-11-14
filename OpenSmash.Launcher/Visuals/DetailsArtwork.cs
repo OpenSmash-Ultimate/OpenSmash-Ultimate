@@ -38,7 +38,7 @@ public sealed partial class ClassicSurface
             int tab = _settingsTabs.Length == 0 ? 0 : Math.Clamp(_settingsTab, 0, _settingsTabs.Length - 1);
             _settingsTab = tab;
             int pageStart = SectionStart(tab);
-            int pageCount = tab < _settingsTabs.Length ? _settingsTabs[tab].SettingKeys.Length : 0;
+            int pageCount = tab < _settingsTabs.Length ? _settingsTabs[tab].SettingKeys.Count(SettingVisible) : 0;
             if (pageCount > 0 && (_sel < pageStart || _sel >= pageStart + pageCount)) _sel = pageStart;
             var rowTops = new float[vis.Length];
             float content = headerH;

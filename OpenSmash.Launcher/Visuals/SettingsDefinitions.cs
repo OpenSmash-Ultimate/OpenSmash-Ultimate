@@ -109,6 +109,9 @@ void InitializeSettings() {
                 new Setting { Key = "hot_reload_mod_assets", Label = "Hot reload mod assets in training mode by doing L + R + A", Values = new[] { "0", "1" }, Labels = new[] { "Disabled", "Enabled" } },
             };
 }
+        public Func<bool> ShadersPending {get;set;}=()=>false;
+        bool SettingVisible(string key)=>key!="preload_shaders"||_shaderUi||ShadersPending();
+
         bool SettingOn(Setting s)
         {
             if (s.Key == "preload_shaders") return Project?.IsBuilt == true;
@@ -135,7 +138,7 @@ void InitializeSettings() {
         {
             int n = 0;
             for (int i = 0; i < tab && i < _settingsTabs.Length; i++)
-                n += _settingsTabs[i].SettingKeys.Length;
+                n += _settingsTabs[i].SettingKeys.Count(SettingVisible);
             return n;
         }
 
@@ -146,7 +149,7 @@ void InitializeSettings() {
                 foreach (var key in tab.SettingKeys)
                 {
                     var set = _settings.FirstOrDefault(s => s.Key == key);
-                    if (set != null) list.Add(set);
+                    if (set != null && SettingVisible(key)) list.Add(set);
                 }
             return list.ToArray();
         }
@@ -253,15 +256,15 @@ void InitializeSettings() {
             string display = Project.ConfigFile("display.ini");
             string pads = Project.ConfigFile("controllers.ini");
             string D(string key, string fallback) => IniValue(display, "", key) ?? fallback;
-            _iniValues["window"] = D("window", "windowed");
-            _iniValues["width"] = D("width", "1280");
-            _iniValues["height"] = D("height", "720");
+            _iniValues["window"] = D("window", "borderless");
+            _iniValues["width"] = D("width", "1920");
+            _iniValues["height"] = D("height", "1080");
             _iniValues["window_size"] = _iniValues["width"] + "x" + _iniValues["height"];
-            _iniValues["pacing"] = D("pacing", "clock");
+            _iniValues["pacing"] = D("pacing", "display");
             _iniValues["render_scale"] = D("render_scale", "1");
             _iniValues["gpu"] = D("gpu", "auto");
             // (runtime/renderer.h's names: d3d11, which older display.ini files carry, is auto)
-            _iniValues["renderer"] = D("renderer", "auto").Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
+            _iniValues["renderer"] = D("renderer", OperatingSystem.IsWindows()?"vulkan":"auto").Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
             _iniValues["hide_cursor"] = D("hide_cursor", "1");
             _iniValues["overlay"] = D("overlay", "1");
             _iniValues["volume"] = D("volume", "100");
@@ -333,7 +336,7 @@ void InitializeSettings() {
                 "custom" => (host == "" ? "127.0.0.1:39420" : host) + (code == "" ? "" : " " + code),
                 _ => "auto"   // (the nearest public lobby: Europe or North America, runtime/net_relay.c)
             };
-            foreach(var (key,fallback) in new[]{("window","windowed"),("width","1280"),("height","720"),("pacing","clock"),("render_scale","1"),("gpu","auto"),("renderer","auto"),("hide_cursor","1"),("overlay","1"),("volume","100")})
+            foreach(var (key,fallback) in new[]{("window","borderless"),("width","1920"),("height","1080"),("pacing","display"),("render_scale","1"),("gpu","auto"),("renderer",OperatingSystem.IsWindows()?"vulkan":"auto"),("hide_cursor","1"),("overlay","1"),("volume","100")})
                 if(_changedSettings.Contains(key))SetIni(Project.ConfigFile("display.ini"),"",key,_iniValues.GetValueOrDefault(key,fallback));
             foreach(var (key,fallback) in new[]{("keyboard_player","1"),("background","1")})
                 if(_changedSettings.Contains(key))SetIni(Project.ConfigFile("controllers.ini"),"general",key,_iniValues.GetValueOrDefault(key,fallback));

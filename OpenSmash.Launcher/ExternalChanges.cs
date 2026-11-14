@@ -6,9 +6,11 @@ public sealed partial class MainWindow
 {
     bool _opened,_closed,_checkingChanges,_playPreflight,_playQueued;
     string _dismissedPluginState="";
+    bool _addingLocalMod;
+    long _modMutationVersion;
     async Task CheckExternalChanges(bool atBoot=false,bool force=false)
     {
-        if(_closed||_checkingChanges||_playPreflight||_project==null||!_project.IsBuilt||Surface.IsInstaller||Surface.HasPrompt||Surface.OperationRunning||Surface.GameRunning)return;
+        if(_closed||_checkingChanges||_playPreflight||_addingLocalMod||_project==null||!_project.IsBuilt||Surface.IsInstaller||Surface.HasPrompt||Surface.OperationRunning||Surface.GameRunning)return;
         _checkingChanges=true;
         try
         {
@@ -34,11 +36,13 @@ public sealed partial class MainWindow
     async Task<bool> PrepareExternalChanges(bool forPlay,bool force=false)
     {
         if(forPlay&&!await FinishPendingGameUpdate())return false;
+        long mutationVersion=_modMutationVersion;
         var changes=new ModChanges(RequireProject());
         // Snapshot BEFORE Python status: its Tree.load can register newly found folders.
         string[] added=changes.Scan();
         await RefreshMods();
         if(_closed)return false;
+        if(!forPlay&&(_addingLocalMod||Surface.OperationRunning||mutationVersion!=_modMutationVersion))return false;
         if(added.Length>0)
         {
             string choice=await Surface.ShowNewMods(added);
@@ -48,11 +52,12 @@ public sealed partial class MainWindow
         bool vanilla=forPlay&&Surface.LaunchMode=="vanilla";
         string buildReason=vanilla?Surface.VanillaBuildReason:Surface.PluginBuildReason;
         bool full=buildReason.Length>0;
+        if(!forPlay&&added.Length>0)return true;
         if(vanilla&&!full)return true;
         var waiting=vanilla?new List<string>():Surface.WaitingPlugins.ToList();
         string why=full?PluginUpdateWhy(waiting,buildReason):PluginRefreshWhy(waiting,Surface.PluginRefreshReason);
         if(why.Length==0){_dismissedPluginState="";return true;}
-        string state=RequireProject().Root+"\n"+full+"\n"+Surface.PluginBuildReason+"\n"+Surface.PluginRefreshReason+"\n"+why;
+        string state=PluginPromptState();
         if(!forPlay&&!force&&_dismissedPluginState==state)return true;
         string action=await Surface.ShowPluginPrompt(!full,why);
         if(_closed)return false;
@@ -65,6 +70,13 @@ public sealed partial class MainWindow
         if(action=="cancel")_playQueued=false;
         _dismissedPluginState=state;
         return action=="play";
+    }
+    string PluginPromptState()
+    {
+        bool full=Surface.PluginBuildReason.Length>0;
+        var waiting=Surface.WaitingPlugins.ToList();
+        string why=full?PluginUpdateWhy(waiting,Surface.PluginBuildReason):PluginRefreshWhy(waiting,Surface.PluginRefreshReason);
+        return RequireProject().Root+"\n"+full+"\n"+Surface.PluginBuildReason+"\n"+Surface.PluginRefreshReason+"\n"+why;
     }
     async Task AddPluginFiles()
     {
