@@ -1,30 +1,16 @@
-# Builds OpenSmash.exe (the launcher) and copies it to the folder root.
-# The root exe is a build product. *.exe is gitignored, so GitHub shows the
-# project (OpenSmash.Launcher) and this script, not the 72 MB file.
-# Close OpenSmash first. Windows will not replace an exe that is still running.
-param(
-    [string]$Configuration = "Release"
-)
-
-$ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent $PSScriptRoot
-$Project = Join-Path $Root "OpenSmash.Launcher\OpenSmash.Launcher.csproj"
-$Out = Join-Path $Root "OpenSmash.Launcher\bin\publish"
-$Exe = Join-Path $Root "OpenSmash.exe"
-
-if (-not (Test-Path $Project)) { throw "Launcher project not found: $Project" }
-$dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
-if (-not $dotnet) { throw "dotnet was not found. Install the .NET 8 SDK, then run this again." }
-
-if (Get-Process -Name OpenSmash -ErrorAction SilentlyContinue) {
-    throw "OpenSmash is still running. Quit it (the window and the game), then run this again."
+# Windows adapter shared by Build Launcher Windows.bat and the game installer.
+param([ValidateSet('Release','Debug')][string]$Configuration = 'Release')
+$ErrorActionPreference = 'Stop'
+$launcherRoot = Split-Path -Parent $PSScriptRoot
+$embeddedPython = Join-Path $launcherRoot 'deps/python/python.exe'
+$builder = Join-Path $PSScriptRoot 'build_launcher.py'
+if (Test-Path -LiteralPath $embeddedPython) {
+    & $embeddedPython $builder --rid win-x64 --configuration $Configuration
+} elseif (Get-Command py -ErrorAction SilentlyContinue) {
+    & py -3 $builder --rid win-x64 --configuration $Configuration
+} elseif (Get-Command python -ErrorAction SilentlyContinue) {
+    & python $builder --rid win-x64 --configuration $Configuration
+} else {
+    throw 'Python 3 was not found. Install Python 3 and the .NET 8 SDK, then run this again.'
 }
-
-Write-Host "Publishing the launcher..."
-& dotnet publish $Project -c $Configuration -o $Out
-if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed ($LASTEXITCODE)." }
-
-$built = Join-Path $Out "OpenSmash.exe"
-if (-not (Test-Path $built)) { throw "Publish finished but $built is missing." }
-Copy-Item -LiteralPath $built -Destination $Exe -Force
-Write-Host "Wrote $Exe"
+if ($LASTEXITCODE -ne 0) { throw "OpenSmash build failed ($LASTEXITCODE)." }

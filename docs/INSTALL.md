@@ -15,36 +15,28 @@ This is the short path from nothing to playing, on Windows 10 or 11. The game is
 
 ## Install
 
-1. Download **[OpenSmash.exe](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/download/v0.3.0-alpha.3/OpenSmash.exe)** from the [latest release](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) (GitHub names the file `OpenSmash.exe`; `OpenSmash.exe.sha256` beside it is its checksum) and run it. That one file is all you need: it does the rest.
+1. Download **OpenSmash.exe** (Windows), **OpenSmash** (Linux), or **OpenSmash.app** (Apple silicon macOS) from the project's release assets.
+2. Open it and choose where to save the project. The launcher downloads the required source into an **OpenSmash** folder and opens setup there.
+3. Choose your own game files, keys and optional firmware, enter your online name, and start setup. Dependencies, game compilation, progress and logs are handled by the launcher. Completed work is kept if you stop and resume.
+4. Once setup finishes, use **Play** in OpenSmash. Later launches beside that built project open the regular launcher.
 
-   Windows may warn that the publisher cannot be verified: choose **Run** (or **More info**, then **Run anyway**).
-2. The setup asks where OpenSmash goes. The default is an `OpenSmash` folder next to the setup file (or the setup's own folder, when the file is alone in a folder of its own); **Browse** picks another. Choose a drive with about 60 GB free, not the Desktop or Documents (cloud sync and long paths cause trouble). A folder that already has other files in it is never filled without asking: the setup offers a new folder inside it instead. **Download and set up** then:
-   - downloads the project from GitHub (the newest `main`, about 20 MB) and unpacks it into the folder;
-   - copies the launcher into it as `OpenSmash.exe`;
-   - makes the shortcuts, if their boxes are ticked: **OpenSmash** (the launcher) and **Play SSBU** (the game straight away once it is built) on the desktop and in a Start menu folder named OpenSmash;
-   - opens the launcher from the folder, which shows the installer window below while no game is built.
+If you already downloaded the source, place the matching launcher in that folder, or build it with **Build Launcher Windows.bat**, **Build Launcher Linux.sh**, or **Build Launcher macOS.command**.
 
-   Already have a copy (a ZIP from the **Code** button, extracted, or a `git clone`)? Press **I already have it** and choose its folder, or run `OpenSmash.exe` in it. The setup remembers the folder, so running the setup file again later opens the launcher there.
-3. In the installer window, point it at your files. It looks in yuzu's and Ryujinx's folders by itself and shows a line under each entry saying what it found.
-   - **Game files**: the folder with your game (`.xci`, `.nsp`, `.nca`), its 13.0.5 update, and any DLC.
-   - **Keys**: the folder with `prod.keys` and `title.keys`.
-   - **Firmware** (optional).
-   - **Username**: your online name.
+The root installer/play shortcuts are removed. Internal setup remains under `tools/`:
 
-   **Check files** re-reads the folders. If the game is not 13.0.5, the line turns red and tells you what to add; **Set up and build** will not go on until it is fixed.
-4. Choose the options on the right: a desktop shortcut, the Windows Firewall rule (asks for administrator rights once; needed to play online), preparing shaders after the build (you pick low, medium or high; it stops the first-time stutter), checking for updates first, accepting Microsoft's license terms for the compiler download (about 570 MB), and the number of compiler jobs (fewer keeps the PC usable). Click **Set up and build**.
-5. Wait: **30 minutes to a few hours**. You can keep using the PC. If it stops or you close it, run the installer again: finished steps are skipped and it carries on. Everything it prints goes to `install.log`.
-6. When it finishes, the launcher opens. Press **Play**, or later use the **OpenSmash** or **Play SSBU** shortcut, `OpenSmash.exe`, or `OpenSmash.exe`.
+| Platform | Setup backend |
+| --- | --- |
+| Windows | `tools/install_windowsmash.ps1` |
+| Linux | `tools/linux/install.sh` and `install_linux.py` |
+| macOS | `tools/mac/install.sh` and `install_mac.py` |
 
-## Update
+Developers can run those scripts directly, but users normally open OpenSmash. Keep the `tools/` folder: the standalone launcher downloads it with the project and then calls these backends.
 
-OpenSmash is updated from GitHub's `main` branch, not from release files.
+## Updates
 
-- The launcher checks when it opens. Open **Settings**, then the **Update** tab, to check again. If a newer version exists it says how many new commits there are; apply it from the startup prompt or Settings. Both use the same rebuild flow.
-- Applying updates changed repository files and Python packages, then checks the game build and rebuilds only if its inputs changed. Your game files, settings and save are preserved. If the launcher code changed too, OpenSmash closes briefly after the game build and reopens with the new launcher.
-- A copy with local changes is not updated automatically; update it with `git`, or use a clean download. A development checkout whose commit is not on `main` cannot be checked.
-- If a game rebuild is interrupted, **Play** offers to retry before starting the game. If the launcher rebuild is interrupted, OpenSmash offers to retry on the next start.
-- To replace an old `OpenSmash.exe`, take the one from the newest release (compare its SHA-256 with `OpenSmash.exe.sha256`), or run `toolsuild_launcher.ps1` with the .NET 8 SDK installed.
+Use **Settings ? Update ? Check for updates**. The updater replaces changed project files while preserving game files, settings, saves and builds. Then use **Play** to prepare anything that changed. Copies with local changes or a different branch may need a manual update with git.
+
+To replace the launcher itself, download its matching release asset or use the platform's Build Launcher script.
 
 ## Mods
 
@@ -52,7 +44,7 @@ Mods (skins, stages, music, movesets, new fighters from GameBanana, or a `.zip` 
 
 ## Online
 
-`OpenSmash.exe` and the launcher start the game joined to the online lobby; if the lobby does not answer, the game plays offline. Set your name and lobby in the launcher's **Settings → Online** tab, or in the game (<kbd>Esc</kbd> → **Online**). Players only meet when they run the same game version (13.0.5) and the same mods. Rooms with a code, LAN rooms and rollback netplay are explained in the [multiplayer guide](MULTIPLAYER.md). Allow the game through Windows Firewall (the installer option above) or direct connections will fail and matches use the relay.
+OpenSmash starts the game joined to the online lobby; if the lobby does not answer, the game plays offline. Set your name and lobby in the launcher's **Settings → Online** tab, or in the game (<kbd>Esc</kbd> → **Online**). Players only meet when they run the same game version (13.0.5) and the same mods. Rooms with a code, LAN rooms and rollback netplay are explained in the [multiplayer guide](MULTIPLAYER.md). Allow the game through Windows Firewall (the installer option above) or direct connections will fail and matches use the relay.
 
 ## If something goes wrong
 

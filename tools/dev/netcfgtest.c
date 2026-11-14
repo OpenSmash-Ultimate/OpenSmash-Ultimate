@@ -1,5 +1,5 @@
 /* Offline checks of where the game goes online (runtime/net_relay.c's configure): the lobby from
- * SSBU_NET_RELAY, or from online_server.txt when started with --online as Play SSBU.bat does,
+ * SSBU_NET_RELAY, or from online_server.txt when started with --online as OpenSmash.exe does,
  * and net_relay_address(), which the game's Online mode (hle_online.c) logs in through. Nothing
  * is sent: only the settings are read. Each case runs in a child process of its own (the settings
  * are read once a process), in a folder of its own.

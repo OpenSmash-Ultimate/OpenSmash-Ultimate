@@ -69,7 +69,7 @@ jobs:
           if (-not $inner) { throw "$zip does not hold include\SDL3" }
           Move-Item -LiteralPath $inner.FullName -Destination deps\SDL3
 
-      # what install-windowsmash.sh installs for the build (tools/linux/install_linux.py's apt packages), and Pillow
+      # what tools/linux/install.sh installs for the build (tools/linux/install_linux.py's apt packages), and Pillow
       # for the overlay's font (tools/linux/make_overlay_font.py)
       - name: Linux packages
         if: runner.os == 'Linux'

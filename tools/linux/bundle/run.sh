@@ -13,4 +13,5 @@ check_libraries || exit 1
 go_online
 mkdir -p build
 echo "Starting the game (log: build/play.log)..."
+set -o pipefail  # Preserve a game failure through tee for callers such as the desktop launcher.
 "$SSBU_EXE" dump/modules --status 30 --online "$@" 2>&1 | tee build/play.log

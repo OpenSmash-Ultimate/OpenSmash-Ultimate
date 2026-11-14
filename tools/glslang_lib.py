@@ -38,6 +38,9 @@ INCLUDE = os.path.join(DIR, "include")
 LIBDIR = os.path.join(DIR, "lib")
 LIBS = ("glslang.lib", "glslang-default-resource-limits.lib", "SPIRV-Tools-opt.lib", "SPIRV-Tools.lib")
 SHIM = os.path.join(TOOLS, "glslang_shim.c")
+# (added only when the toolset's C++ library lacks what Khronos' newer build of glslang calls)
+STL_FALLBACK = os.path.join(TOOLS, "glslang_stl_fallback.c")
+STL_MISSING = "__std_find_first_of_trivial_pos_"
 HEADERS = [os.path.join(ROOT, "runtime", "gpu_spirv.h")]
 DLL_NAME = "ssbu_glslang.dll"
 # what the DLL links of the C runtime besides the static libraries the program uses (deps\msvc keeps
@@ -102,7 +105,7 @@ def dll_current(dll):
     if not os.path.isfile(dll):
         return False
     t = os.path.getmtime(dll)
-    return all(os.path.getmtime(p) < t for p in [SHIM, *HEADERS, *(os.path.join(LIBDIR, n) for n in LIBS)])
+    return all(os.path.getmtime(p) < t for p in [SHIM, STL_FALLBACK, *HEADERS, *(os.path.join(LIBDIR, n) for n in LIBS)])
 
 
 def build(dll, log=print):
@@ -116,8 +119,12 @@ def build(dll, log=print):
     flags = ["/nologo", "/MD", "/O2", "/LD", "-w", *cc.LINK_FLAGS,   # (LINK_FLAGS: lld, and deps\msvc's root)
              "/I", INCLUDE, "/Fo" + obj_dir + os.sep]
     new = dll[:-4] + ".new.dll"   # (made beside it, then put in its place: a failed link leaves the old one)
-    cmd = [cc.CLANG, *flags, SHIM, "/Fe" + new, "/link", *cc.LINK_OPTIONS, "/LIBPATH:" + LIBDIR, *LIBS]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    def link(*sources):
+        cmd = [cc.CLANG, *flags, *sources, "/Fe" + new, "/link", *cc.LINK_OPTIONS, "/LIBPATH:" + LIBDIR, *LIBS]
+        return subprocess.run(cmd, capture_output=True, text=True)
+    r = link(SHIM)
+    if r.returncode and STL_MISSING in r.stdout + r.stderr:
+        r = link(SHIM, STL_FALLBACK)
     if not r.returncode and os.path.isfile(new):
         try:
             os.replace(new, dll)

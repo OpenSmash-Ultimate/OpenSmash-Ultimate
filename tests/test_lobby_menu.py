@@ -750,7 +750,7 @@ class Version(MenuTest):
         self.assertEqual(join[2], 3)
 
     def test_online_files(self):
-        """Started with --online (Play SSBU.bat): the lobby and code from online_server.txt, the version from online_protocol.txt."""
+        """Started with --online (OpenSmash.exe): the lobby and code from online_server.txt, the version from online_protocol.txt."""
         lobby = FakeLobby()
         self.fakes.append(lobby)
         m = self.menu(room=None, name=None, args=['--online'],

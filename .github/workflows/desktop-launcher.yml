@@ -1,0 +1,48 @@
+name: OpenSmash launcher
+on:
+  push:
+    paths: ['Build Launcher*', 'tools/build_launcher.py', 'tools/build_launcher.ps1', 'OpenSmash.Launcher/**', 'tests/desktop/**', 'tests/test_desktop_install_bridge.py', 'tools/build_desktop_launcher.py', 'tools/prepare_desktop_source.py', 'tests/test_desktop_release_source.py', 'tools/linux/install_linux.py', 'tools/mac/install_mac.py', 'tools/linux/install.sh', 'tools/linux/play.sh', 'tools/mac/install.sh', 'tools/mac/play.sh', '.github/workflows/desktop-launcher.yml']
+  pull_request:
+    paths: ['Build Launcher*', 'tools/build_launcher.py', 'tools/build_launcher.ps1', 'OpenSmash.Launcher/**', 'tests/desktop/**', 'tests/test_desktop_install_bridge.py', 'tools/build_desktop_launcher.py', 'tools/prepare_desktop_source.py', 'tests/test_desktop_release_source.py', 'tools/linux/install_linux.py', 'tools/mac/install_mac.py', 'tools/linux/install.sh', 'tools/linux/play.sh', 'tools/mac/install.sh', 'tools/mac/play.sh', '.github/workflows/desktop-launcher.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    env:
+      OPENSMASH_TEST_SCREENSHOT: ${{ github.workspace }}/OpenSmash.Launcher/bin/artwork.png
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-15
+            rid: osx-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: dotnet run --project tests/desktop -c Release
+      - run: python -m unittest discover -s tests -p test_desktop_bundle_exit.py -v
+      - run: python -m unittest discover -s tests -p test_desktop_install_bridge.py -v
+      - run: python -m unittest discover -s tests -p test_internal_entrypoints.py -v
+      - run: python -m unittest discover -s tests -p test_desktop_release_source.py -v
+      - run: python tools/build_desktop_launcher.py --rid ${{ matrix.rid }}
+      - uses: actions/upload-artifact@v4
+        if: runner.os != 'Windows'
+        with:
+          name: OpenSmash-${{ matrix.rid }}
+          path: dist/launcher/${{ matrix.rid }}.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: OpenSmash-${{ matrix.rid }}
+          path: dist/launcher/${{ matrix.rid }}.zip

@@ -53,7 +53,7 @@ Leave your game files where they are afterwards: the game reads its data from th
 
 ## A folder built from another version
 
-WindowSmash used to build other versions of the game too, and many WindowSmash folders were set up from 11.0.0. Such a folder is **set up again as 13.0.5** the next time you run the installer (`OpenSmash.exe`; on Linux `install-windowsmash.sh`, on a Mac `Install WindowSmash.command`), once your game folder has the 13.0.5 update:
+WindowSmash used to build other versions of the game too, and many WindowSmash folders were set up from 11.0.0. Such a folder is **set up again as 13.0.5** the next time you run the installer (`OpenSmash.exe`; on Linux `tools/linux/install.sh`, on a Mac `tools/mac/install.sh`), once your game folder has the 13.0.5 update:
 
 1. Put the game's 13.0.5 update `.nsp` in your game folder, next to the game. (With yuzu or Ryujinx, install the update there.)
 2. Run the installer. It says *This folder was set up from version 11.0.0 of the game. WindowSmash needs 13.0.5 now*, and sets the folder up again from your game folder.

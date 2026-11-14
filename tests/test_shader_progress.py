@@ -25,7 +25,7 @@ class ProgressTests(unittest.TestCase):
         # (OpenSmash.Launcher's ShadersDone asks for Prepare Shaders again when Vulkan may draw and "\nspirv " is missing)
         self.assertEqual(S.marker_text(10, None), 'version 10\n')
         self.assertIn('\nspirv g1001.01100600\n', S.marker_text(10, 'g1001.01100600'))
-        self.assertIn('"\\nspirv "', (ROOT / 'OpenSmash.Launcher' / 'LauncherForm.cs').read_text(encoding='utf-8'))
+        self.assertIn('"\\nspirv "', (ROOT / 'OpenSmash.Launcher' / 'Shaders.cs').read_text(encoding='utf-8'))
 
     def test_parse(self):
         self.assertEqual(S.parse_progress('progress 16 11601\n'), (16, 11601))

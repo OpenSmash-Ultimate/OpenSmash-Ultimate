@@ -42,7 +42,7 @@ class SettingsFileTests(unittest.TestCase):
 
     def test_online_lobby_from_files(self):
         """Started with --online, the lobby in online_server.txt is the one the Online mode logs in
-        through, as SSBU_NET_RELAY's was when Play SSBU.bat set it."""
+        through, as SSBU_NET_RELAY's was when OpenSmash.exe set it."""
         self.assertIn('0 failed', self.build_and_run('netcfgtest'))
 
 

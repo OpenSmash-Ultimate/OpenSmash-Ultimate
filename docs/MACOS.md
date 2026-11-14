@@ -9,7 +9,7 @@ Linux versions.
 - The game draws with **Metal**, through a renderer of its own that is new: the game's shaders are
   translated to Metal's shading language and compiled the first time each one is used.
 - The window, controllers and sound use **SDL3**.
-- `Install WindowSmash.command` sets it all up and builds the game, as `OpenSmash.exe` does
+- `tools/mac/install.sh` sets it all up and builds the game, as `OpenSmash.exe` does
   on Windows.
 
 As on Windows, the game must be version 13.0.5, its last update
@@ -54,11 +54,11 @@ opening and menus, at 60 fps; full matches haven't been yet.
    the folder to your home folder (the one with your name, in Finder's **Go** menu) and call it
    `WindowSmash`. Keep it out of Desktop, Documents and Downloads: iCloud Drive may try to upload the
    build (around 30 GB), and macOS asks for permission for those folders.
-2. **Double-click `Install WindowSmash.command`** in that folder. The first time, macOS refuses to open
+2. **Double-click `tools/mac/install.sh`** in that folder. The first time, macOS refuses to open
    it, because it was downloaded and isn't signed by a developer Apple knows: it says
-   *"Install WindowSmash.command" Not Opened*. Click **Done**, then:
+   *"tools/mac/install.sh" Not Opened*. Click **Done**, then:
    1. Open **System Settings → Privacy & Security** and scroll down to **Security**.
-   2. Next to *"Install WindowSmash.command" was blocked to protect your Mac*, click **Open Anyway**,
+   2. Next to *"tools/mac/install.sh" was blocked to protect your Mac*, click **Open Anyway**,
       and confirm with your password or Touch ID.
    3. Click **Open** in the box that follows.
 
@@ -76,11 +76,11 @@ opening and menus, at 60 fps; full matches haven't been yet.
    can be picked.
 5. **Wait for the build.** The first one translates and compiles the whole game: one to a few hours,
    depending on the Mac. The Mac stays awake meanwhile, and you can keep using it. If the build stops,
-   double-click `Install WindowSmash.command` again: it carries on where it stopped. It's finished
+   double-click `tools/mac/install.sh` again: it carries on where it stopped. It's finished
    when the window says **Done**.
 6. **Play:** open **Play SSBU** from the Desktop or Spotlight, or from the Applications folder in your
    home folder (`~/Applications`, not the one in Finder's sidebar: in Finder, **Go → Home**, then
-   **Applications**), or double-click `Play SSBU.command` in the WindowSmash folder.
+   **Applications**), or double-click `tools/mac/play.sh` in the WindowSmash folder.
 
 <details>
 <summary><strong>Without Open Anyway: from Terminal</strong></summary>
@@ -94,13 +94,13 @@ WindowSmash.command` from Finder into the window, and press <kbd>Return</kbd>.
 Or download and start everything with one command. This puts WindowSmash in `~/WindowSmash`:
 
 ```bash
-mkdir -p ~/WindowSmash && curl -fL https://codeload.github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/tar.gz/refs/heads/main | tar -xz -C ~/WindowSmash --strip-components 1 && bash ~/WindowSmash/"Install WindowSmash.command"
+mkdir -p ~/WindowSmash && curl -fL https://codeload.github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/tar.gz/refs/heads/main | tar -xz -C ~/WindowSmash --strip-components 1 && bash ~/WindowSmash/"tools/mac/install.sh"
 ```
 
 </details>
 
 The installer's options, for a Terminal window in the WindowSmash folder
-(`./"Install WindowSmash.command" --help`):
+(`./"tools/mac/install.sh" --help`):
 
 | Option | What it does |
 | :--- | :--- |
@@ -113,7 +113,7 @@ The installer's options, for a Terminal window in the WindowSmash folder
 | `--no-update` | Don't look for a newer WindowSmash. |
 | `--dry-run` | Say what each step would do, and do nothing. |
 
-**To update WindowSmash**, double-click `Install WindowSmash.command` again. It downloads the newest
+**To update WindowSmash**, double-click `tools/mac/install.sh` again. It downloads the newest
 WindowSmash if there is one, and builds again what the update changed: minutes, not hours. Your game
 files, settings, save and online name stay as they are. A folder an older WindowSmash built from
 another game version is set up again as 13.0.5 once your game folder has the 13.0.5 update
@@ -128,7 +128,7 @@ Each step is skipped when it is already done, so running it again never repeats 
 | 1. Update | Asks GitHub whether a newer WindowSmash is out than the one in your folder, and if so replaces the files that changed, then carries on as the new version. A folder made with Git is updated with `git pull` instead, when it is on the `main` branch with no changes of its own. |
 | 2. This Mac | Checks for Apple silicon (and that Terminal isn't running under Rosetta), macOS 14 or newer, the memory and the free space, and warns when the folder is in iCloud Drive, Downloads, or on a disk that isn't APFS. |
 | 3. Command Line Tools | Has macOS install Apple's Command Line Tools (the compiler, the macOS SDK and Git) when they are missing, then builds and runs a test program with them, and checks that their macOS SDK is 15 or newer. |
-| 4. Python | Makes a Python of WindowSmash's own in `deps/venv`, with the packages the tools use. When the Mac has no Python 3.10 or newer, `Install WindowSmash.command` first puts one into `deps/python` (a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) Python 3.14, checked against its SHA-256). Nothing else on the Mac changes. |
+| 4. Python | Makes a Python of WindowSmash's own in `deps/venv`, with the packages the tools use. When the Mac has no Python 3.10 or newer, `tools/mac/install.sh` first puts one into `deps/python` (a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) Python 3.14, checked against its SHA-256). Nothing else on the Mac changes. |
 | 5. SDL3 | Copies `SDL3.framework` out of SDL's own release (`SDL3-<version>.dmg`) into `deps/SDL3`, checked against the SHA-256 the release lists. Then it builds and runs a test program as the game is built (`tools/build_game.py --check`), so a missing piece shows before the questions. |
 | 6. Your files | Finds your keys, firmware and game in Ryujinx's folders (and the folders Ryujinx lists its games in) and in those of yuzu's forks (Eden, Citron, Sudachi, Suyu, Torzu), and asks for the folders, your online name and the options. |
 | 7. Build | Takes the program, fonts, data, DLC and fighters out of your files, then builds `build-mac/WindowSmash.app`, with the Mac kept awake. |
@@ -142,9 +142,9 @@ Terminal window that shows the game's log as it goes; closing that window leaves
 
 | Launcher | On Windows | What it does |
 | :--- | :--- | :--- |
-| **`OpenSmash Launcher.command`** | `OpenSmash.exe` | Setup, updates, Play, settings and the mod manager in a browser window, no Terminal commands ([below](#the-opensmash-launcher)). |
+| **OpenSmash.app** | `OpenSmash.exe` | Setup, updates, Play, settings and mods through the shared launcher. |
 | **Play SSBU** (`~/Applications`, Desktop) | the desktop shortcut | The game, online, through the lobby in `online_server.txt` ([Multiplayer](MULTIPLAYER.md)). It asks its questions in small windows and shows no log. |
-| `Play SSBU.command` | `OpenSmash.exe` | The same, with the log in Terminal. |
+| `tools/mac/play.sh` | `OpenSmash.exe` | The same, with the log in Terminal. |
 | `launchers/Play SSBU Offline.command` | the launcher's Offline lobby setting | The game, offline. |
 | `launchers/Host SSBU Netplay.command` | `Host SSBU Netplay.bat` | Hosts a private room, and shows the address to give the others. |
 | `launchers/Join SSBU Netplay.command` | `Join SSBU Netplay.bat` | Joins a host's private room. |
@@ -169,22 +169,9 @@ Terminal window that shows the game's log as it goes; closing that window leaves
 
 ### The OpenSmash Launcher
 
-`OpenSmash Launcher.command` gives a Mac the Windows launcher's features in one window. Double-click
-it in Finder; it runs `tools/weblauncher/launcher.py`, a small server on this Mac only. Its page opens
-as an app window of Chrome, Edge or Brave if one is in `/Applications`, else in your default browser.
-Keep the Terminal window open while you use it.
+Open **OpenSmash.app** for setup, updates, Play, settings and mods through the shared launcher interface. It does not need a browser or a Terminal window. The first-time setup downloads the project and prepares Python and the build tools internally. See [Installing](INSTALL.md).
 
-| Tab | What it does |
-| :--- | :--- |
-| **Play** | *Play*, *Play offline*, *Play without mods* (`tools/mac/launch.sh`). The turned-on mods are applied first, and a plugin build is offered when the mods need one. |
-| **Setup** | Your game, keys and firmware folders and your online name, then `tools/mac/install_mac.py` with them (the same steps as `Install WindowSmash.command`, without its dialogs). *Build again* runs `tools/build_game.py`. |
-| **Mods** | WindowSmash Mods in the same window, with *Back to the launcher*. |
-| **Settings** | Display, online and controllers: the same files `OpenSmash.exe` and the game's settings menu write. macOS has no renderer or graphics-card choice; the game draws with Metal. |
-| **Update** | Checks GitHub and installs the newer version (`install_mac.py --update-only`). |
-
-It needs Python 3.10 or newer. Run `Install WindowSmash.command` once if the Mac has none, since the
-installer gets one. A game pad works on the page too: the D-pad moves, A presses, B goes back, and
-LB/RB change tab ([the Linux guide](LINUX.md#steam-deck-and-game-mode) lists every control).
+The game still uses Metal on macOS. Its internal setup and launch scripts live under `tools/mac/`; developers can run them through bash if needed.
 
 ## Controls
 
@@ -224,7 +211,7 @@ WindowSmash may meet:
 
 | What macOS asks | When | What to do |
 | :--- | :--- | :--- |
-| *"Install WindowSmash.command" Not Opened* | The first double-click on the installer. | **Open Anyway**, as in [Install and build](#install-and-build). |
+| *"tools/mac/install.sh" Not Opened* | The first double-click on the installer. | **Open Anyway**, as in [Install and build](#install-and-build). |
 | *"WindowSmash" would like to find and connect to devices on your local network* | The first time the game goes online. | **Allow.** The game then can open your router's port for a private room (UPnP), and connect straight to players on your own network. The online lobby works either way. Changed your mind? System Settings → Privacy & Security → Local Network. |
 | *… would like to access files in your Desktop / Documents / Downloads folder*, or *on a removable volume* | The game reads its data where your game files are; Terminal makes the Desktop link. | **Allow**, or keep your game files elsewhere, for example in a folder in your home folder. |
 | *… would like to receive keystrokes from any application* (Input Monitoring) | Some controllers are read through macOS's input devices, and macOS may ask for that. | **Allow** for those controllers; the keyboard and most pads work without it. System Settings → Privacy & Security → Input Monitoring. |
@@ -245,7 +232,7 @@ All of these are in the WindowSmash folder, unless the table says otherwise:
 | The installer's log | `install.log` |
 | WindowSmash's own tools | `deps/`: `venv` (its Python), `python` (when the Mac had none), `SDL3`. |
 | The generated C and objects | `build/`, `build-mac/obj/` (around 30 GB). |
-| Play SSBU | `~/Applications/Play SSBU.app`, and a link on the Desktop. It starts the game from this folder; if you move the folder, double-click `Install WindowSmash.command` in its new place to make Play SSBU again. |
+| Play SSBU | `~/Applications/Play SSBU.app`, and a link on the Desktop. It starts the game from this folder; if you move the folder, double-click `tools/mac/install.sh` in its new place to make Play SSBU again. |
 
 > [!TIP]
 > Time Machine backs up the build too. To leave out what can be made again, run
@@ -260,16 +247,16 @@ everything it showed.
 | What you see | What to do |
 | :--- | :--- |
 | *Not Opened* or *cannot be opened because Apple cannot check it* | **Open Anyway** in System Settings → Privacy & Security ([Install and build](#install-and-build)), or start it from Terminal. |
-| *could not be executed because you do not have appropriate access privileges* | The ZIP was unpacked by a program that dropped the files' permissions. Unpack it again with Finder (a double-click), or start it from Terminal with `bash "Install WindowSmash.command"`. |
+| *could not be executed because you do not have appropriate access privileges* | The ZIP was unpacked by a program that dropped the files' permissions. Unpack it again with Finder (a double-click), or start it from Terminal with `bash "tools/mac/install.sh"`. |
 | *needs a Mac with Apple silicon* | WindowSmash builds for Apple silicon only: an Intel Mac can't run it. |
 | The Command Line Tools' window doesn't appear, or their install fails | Install them from System Settings → General → Software Update, or download *Command Line Tools for Xcode* from [Apple's developer site](https://developer.apple.com/download/all/), then run the installer again. The window may open behind Terminal; if you close it, the installer says so and stops. |
 | *the game needs the macOS 15 SDK or newer* / *cannot compile the game's runtime* | The Command Line Tools are too old. Update them in System Settings → General → Software Update (on macOS 14, update macOS to 14.5 or newer first), or download *Command Line Tools for Xcode* 16 or newer from [Apple's developer site](https://developer.apple.com/download/all/). |
 | *Xcode's licence has not been accepted yet* | With Xcode installed and chosen as the developer tools, its licence must be accepted once: open Xcode, or run `sudo xcodebuild -license` in Terminal. |
-| The build stops after a long time, the Mac very slow | It may have run out of memory: run the installer again with fewer jobs, in Terminal: `./"Install WindowSmash.command" --jobs 4`. |
+| The build stops after a long time, the Mac very slow | It may have run out of memory: run the installer again with fewer jobs, in Terminal: `./"tools/mac/install.sh" --jobs 4`. |
 | *The game data is not where it was when the game was built* | The game reads its data in place. Connect the disk it is on again, or run the installer to set it up from where it is now. |
 | *WindowSmash needs version 13.0.5* | Your game files are another version of the game. Put the game's 13.0.5 update `.nsp` in your game folder, next to the game (with Ryujinx or a yuzu fork, install the update there), then run the installer again ([which copies count](UPDATES.md#what-counts-as-1305)). |
 | *… set up from version 11.0.0 of the game* (or another version) | An older WindowSmash built this folder from another game version. With the 13.0.5 update in your game folder, the installer sets it up again as 13.0.5; your save and settings stay ([more](UPDATES.md#a-folder-built-from-another-version)). |
-| *The game isn't built here yet* | Run `Install WindowSmash.command`. |
+| *The game isn't built here yet* | Run `tools/mac/install.sh`. |
 | The game window doesn't appear, or closes at once | Look at the end of `build/play.log` and at the newest file in `reports/`. Play SSBU says when the game stopped with an error. |
 | No sound, or a controller does nothing | Check the log's `[audio]` and `[input]` lines. Press <kbd>F2</kbd> to see the pads the game knows. |
 | Hosting a room: nobody can join | Allow the game on the local network (above), and through the firewall if it is on. The [multiplayer guide](MULTIPLAYER.md#which-address-to-give) says which address to give. |
@@ -286,7 +273,7 @@ Terminal in the WindowSmash folder:
 1. **The tools:** Apple's Command Line Tools 16 or newer (`xcode-select --install`), and a Python 3.10
    or newer, running as arm64, of WindowSmash's own. The `python3` that comes with the Command Line
    Tools (`/usr/bin/python3`) is Python 3.9: too old. Use another, such as Homebrew's
-   (`brew install python@3.13`, then `python3.13` below), or the one `Install WindowSmash.command`
+   (`brew install python@3.13`, then `python3.13` below), or the one `tools/mac/install.sh`
    downloads into `deps/python` when the Mac has none (`deps/python/bin/python3`).
 
    ```bash

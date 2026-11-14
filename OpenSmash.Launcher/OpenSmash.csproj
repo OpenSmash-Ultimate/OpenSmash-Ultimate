@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>OpenSmash</AssemblyName>
+    <ApplicationIcon>../media/opensmash.ico</ApplicationIcon>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Controls.WebView" Version="12.1.1" />
+    <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
+
+    <AvaloniaResource Include="Assets/emblem-white.png" />
+    <AvaloniaResource Include="Assets/*.ttf" />
+    <EmbeddedResource Include="Assets/MarketplaceHtml.html" LogicalName="MarketplaceHtml.html" />
+    <EmbeddedResource Include="../tools/linux/install_linux.py" LogicalName="layout.linux.backend.py" />
+    <EmbeddedResource Include="../tools/mac/install_mac.py" LogicalName="layout.mac.backend.py" />
+    <EmbeddedResource Include="../tools/linux/askpass.sh" LogicalName="layout.linux.askpass.sh" />
+    <EmbeddedResource Include="../tools/linux/install.sh" LogicalName="layout.linux.install.sh" />
+    <EmbeddedResource Include="../tools/mac/install.sh" LogicalName="layout.mac.install.sh" />
+    <EmbeddedResource Include="../tools/linux/play.sh" LogicalName="layout.linux.play.sh" />
+    <EmbeddedResource Include="../tools/mac/play.sh" LogicalName="layout.mac.play.sh" />
+    <EmbeddedResource Include="../media/opensmash.ico" LogicalName="opensmash.ico" />
+    <EmbeddedResource Include="BootstrapSource.json" LogicalName="BootstrapSource.json" Condition="'$(BootstrapSourceManifest)' == ''" />
+    <EmbeddedResource Include="$(BootstrapSourceManifest)" LogicalName="BootstrapSource.json" Condition="'$(BootstrapSourceManifest)' != ''" />
+    <EmbeddedResource Include="$(EmbeddedNoticesArchive)" LogicalName="ThirdPartyNotices.zip" Condition="Exists('$(EmbeddedNoticesArchive)')" />
+  </ItemGroup>
+  <Target Name="TrackBootstrapResourceSelection" BeforeTargets="CoreCompile">
+    <!-- Raw resources with the same logical name can otherwise retain a newer
+         override when switching back to an older development manifest. -->
+    <WriteLinesToFile File="$(IntermediateOutputPath)bootstrap-resource-inputs.txt"
+                      Lines="$(BootstrapSourceManifest);$(EmbeddedNoticesArchive)"
+                      Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <CustomAdditionalCompileInputs Include="$(IntermediateOutputPath)bootstrap-resource-inputs.txt" />
+      <FileWrites Include="$(IntermediateOutputPath)bootstrap-resource-inputs.txt" />
+    </ItemGroup>
+  </Target>
+</Project>

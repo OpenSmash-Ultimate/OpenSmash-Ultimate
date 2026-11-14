@@ -46,6 +46,27 @@ class GlslangTests(unittest.TestCase):
         self.assertGreaterEqual(version >> 24, 1)
         self.assertNotEqual(version & 0xFFFFFF, 0)
 
+    def test_stl_fallback(self):
+        # Older Visual Studio toolsets lack these; glslang 16.6.0 calls the byte version.
+        exe = os.path.join(self.folder, 'stlfallback.exe')
+        main = os.path.join(self.folder, 'stlfallback_main.c')
+        Path(main).write_text('''#include <stddef.h>
+#include <stdint.h>
+size_t __stdcall __std_find_first_of_trivial_pos_1(const void *, size_t, const void *, size_t);
+size_t __stdcall __std_find_first_of_trivial_pos_4(const void *, size_t, const void *, size_t);
+int main(void) {
+    const uint32_t wide[] = {7, 8, 9};
+    return !(__std_find_first_of_trivial_pos_1("hello world", 11, " w", 2) == 5 &&
+             __std_find_first_of_trivial_pos_1("hello", 5, "xyz", 3) == SIZE_MAX &&
+             __std_find_first_of_trivial_pos_1("", 0, "a", 1) == SIZE_MAX &&
+             __std_find_first_of_trivial_pos_4(wide, 3, wide + 2, 1) == 2);
+}
+''')
+        r = subprocess.run([cc.CLANG, '/nologo', *cc.LINK_FLAGS, main, glslang_lib.STL_FALLBACK, '/Fe' + exe,
+                            '/Fo' + self.folder + os.sep, '/link', *cc.LINK_OPTIONS], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(subprocess.run([exe]).returncode, 0)
+
     @unittest.skipUnless(PACK.exists(), 'no dump/aot/programs.pack (tools/shader_aot.py --dry makes it)')
     def test_pack_sample(self):
         r = subprocess.run([self.exe, str(PACK), '-every', '500'], capture_output=True, text=True, timeout=1200)

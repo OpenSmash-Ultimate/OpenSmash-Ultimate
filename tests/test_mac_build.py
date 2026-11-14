@@ -848,7 +848,7 @@ class BuildOnMacTests(unittest.TestCase):
         self.assertEqual(self.popens, [['caffeinate', '-i', '-w', str(os.getpid())]])   # (kept awake while it builds)
         text = '\n'.join(self.logged)
         self.assertIn(f"[9/9] Build the game ({os.path.join('build-mac', 'WindowSmash.app')})", text)
-        self.assertIn('Play SSBU.command', text)
+        self.assertIn('tools/mac/play.sh', text)
         self.assertNotIn('.bat', text)
 
     def test_running_game_not_overwritten(self):

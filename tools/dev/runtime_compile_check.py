@@ -31,7 +31,7 @@ Usage: runtime_compile_check.py [--tree <dir>] [--jobs N] [--game-dll]
   --game-dll  the game in a library of its own, the program the runtime alone (above)
 
 The tools are a player's: on Windows clang-cl (tools/cc.py finds it) and SDL3 in deps\\SDL3 if
-there; on Linux install-windowsmash.sh's packages and deps/linux-toolchain; on macOS the Command
+there; on Linux tools/linux/install.sh's packages and deps/linux-toolchain; on macOS the Command
 Line Tools and SDL3.framework in deps/SDL3 (SSBU_SDL3_DIR names another folder).
 Exit status: 0 the program linked with every source (and with --game-dll loaded the library), 1 a
 step failed (its output says why), a source is missing or misplaced, or the library is wrong, 2 a

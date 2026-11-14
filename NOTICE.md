@@ -110,6 +110,25 @@ None of these is in the repository. Their own licenses apply when you obtain, li
 | [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) | Apache-2.0 (some files Apache-2.0 or MIT, as its `LICENSE.md` says) | Compiling the Vulkan renderer | Windows: the v1.4.329 source archive, pinned by SHA-256 in `ssbu-recomp/scripts/install.py`. CI on Linux and macOS: cloned at the v1.4.351 tag. |
 | [libopus](https://opus-codec.org/) | BSD-3-Clause | The game's music: the runtime loads `libopus-0.dll` | Windows: MSYS2's ucrt64 package of Opus 1.6.1, fetched by `ssbu-recomp/scripts/fetch_media.py` with the package and the DLL pinned by SHA-256; the package's `COPYING` is kept beside the DLL as `LICENSE-opus.txt`. Linux and macOS: system packages. |
 
+### Shared desktop launcher dependencies
+
+`OpenSmash` uses [Avalonia](https://github.com/AvaloniaUI/Avalonia)
+(MIT), including its Fluent theme and desktop backends, fetched from NuGet.
+The original marketplace is hosted through
+[Avalonia.Controls.WebView](https://github.com/AvaloniaUI/Avalonia.Controls.WebView)
+12.1.1 (MIT), using the operating system web engine.
+Its transitive native dependencies include [SkiaSharp](https://github.com/mono/SkiaSharp)
+(MIT; Skia is BSD-3-Clause) and [HarfBuzzSharp](https://github.com/mono/SkiaSharp)
+(MIT; HarfBuzz uses its own permissive license). Their license terms apply to
+published bundles. The bundled Anton font remains under the SIL Open Font License;
+the shared launcher also bundles Inter through `Avalonia.Fonts.Inter` (SIL OFL).
+Its original canvas pins Inter 3.012 and Cascadia Mono 2102.025 as documented in
+`OpenSmash.Launcher/Assets/README.md`, with their font licenses in published notices.
+The Windows-only rasterizer uses `System.Drawing.Common` from NuGet (MIT), already
+used by the original launcher; other platforms render the same layouts with Skia.
+`Anton-OFL.txt` is copied into each published package. NuGet package metadata and
+upstream license files are the source for the full dependency license terms.
+
 ### FFmpeg
 
 `ssbu-recomp/scripts/fetch_media.py` downloads `ssbu-ffmpeg-8.1.3-lgpl-win64.zip` from ssbu-recomp's `ffmpeg-8.1.3-lgpl` release: the five FFmpeg 8.1.3 DLLs that `ssbu-recomp/runtime/mf_ffmpeg.c` loads when Windows' Media Foundation can't play the game's movies, with FFmpeg's headers and `COPYING.LGPLv2.1`. FFmpeg is licensed under the GNU Lesser General Public License, version 2.1 or later (LGPL-2.1-or-later); this build has no GPL or non-free parts. It was built from FFmpeg's release source with [`ssbu-recomp/scripts/ffmpeg/build_ffmpeg_win.sh`](ssbu-recomp/scripts/ffmpeg/build_ffmpeg_win.sh). It includes an H.264 decoder, and H.264 is covered by patents in some countries.

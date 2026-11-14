@@ -789,7 +789,7 @@ def main():
     ladder.settings()   # (SSBU_COMPILE_LIMIT, SSBU_OPTNONE_ABOVE, SSBU_LONGEST_FIRST: one that is not a number stops the build now)
     os.makedirs(OUT, exist_ok=True)
     if not os.path.isfile(os.path.join(SDL3_FRAMEWORK, "Headers", "SDL.h")):
-        raise SystemExit(f"SDL3.framework is not in {SDL3_DIR}: Install WindowSmash.command downloads it "
+        raise SystemExit(f"SDL3.framework is not in {SDL3_DIR}: tools/mac/install.sh downloads it "
                          "(SSBU_SDL3_DIR names another folder holding one)")
     if not modules() and "--runtime-only" not in sys.argv:
         raise SystemExit(f"no recompiled game in {os.path.join(PORT, 'build')} (tools/recomp.py all --generate-only)")

@@ -12,6 +12,12 @@ import shader_aot  # noqa: E402
 
 
 class EmptyFilesTests(unittest.TestCase):
+    def test_complete_and_truncated_zstd_frames(self):
+        frame = bytes.fromhex("28b52ffd0000c1000073796e746865746963207368616465722066697874757265")
+        self.assertEqual(shader_aot.zstd_decompress(frame), b'synthetic shader fixture')
+        with self.assertRaises(Exception):
+            shader_aot.zstd_decompress(frame[:-1])
+
     def test_empty_files_are_not_unreadable(self):
         """data.arc has a few empty files marked compressed (the same 7 in 11.0.0 and 13.0.5): nothing
         to read in them. Prepare Shaders said "7 files could not be read" for them."""

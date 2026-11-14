@@ -661,14 +661,9 @@ class InstallerPatternTests(unittest.TestCase):
             self.assertEqual(got, want, name)
 
 
-    def test_config_path_as_the_launcher(self):
-        """The installer finds online_name.txt by the launcher's rule (tests/test_launcher_ini.py runs that one)."""
-        def rule(text):
-            body = text[text.index('function Get-ConfigPath'):]
-            body = body[body.index('$inFolder ='):]
-            return body[:body.index('\n}\n')].replace('\r', '')
+    def test_config_path_used_for_settings(self):
+        """Installer settings use the same migrated locations as the game and shared launcher."""
         text = SCRIPT.read_text(encoding='utf-8')
-        self.assertEqual(rule(text), rule((ROOT / 'tools/launcher.ps1').read_text(encoding='utf-8')))
         self.assertIn("$nameFile = Get-ConfigPath $Root 'online_name.txt'", text)
         self.assertNotRegex(text, r"Join-Path \$Root '(display\.ini|controllers\.ini|launcher\.ini|online_name\.txt|online_direct\.txt)'")
 

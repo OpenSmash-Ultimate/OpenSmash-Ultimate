@@ -67,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         p.standardOutput = out
         p.standardError = err
         do { try p.run() } catch {
-            fail("Can't start WindowSmash's Python (\(py)): run Install WindowSmash.command first.\n\n\(error.localizedDescription)")
+            fail("Can't start WindowSmash's Python (\(py)): run tools/mac/install.sh first.\n\n\(error.localizedDescription)")
             return
         }
         server = p

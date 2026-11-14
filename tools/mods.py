@@ -63,6 +63,8 @@ Limits, as against ARCropolis on a Switch: a file in a folder the game doesn't h
 config.json telling of its directory, is skipped and listed.
 """
 import argparse
+import contextlib
+import contextvars
 import filecmp
 import hashlib
 import json
@@ -243,20 +245,48 @@ def arc_path(rel):
     return rel
 
 
-def mod_files(folder):
-    """(arc path, file) of every file a mod's folder holds (not its code plugins: plugins())."""
-    out = []
+_WALKS = contextvars.ContextVar("mod_walks", default=None)
+
+
+@contextlib.contextmanager
+def walk_once():
+    """Inside it each mod folder is walked once: status reads the same folders several times over."""
+    token = _WALKS.set({})
+    try:
+        yield
+    finally:
+        _WALKS.reset(token)
+
+
+def _walk(folder):
+    """(mod_files, plugins) of a folder, in one walk."""
+    cache = _WALKS.get()
+    if cache is not None and folder in cache:
+        return cache[folder]
+    out, code = [], []
     for dp, dirs, files in os.walk(folder):
         dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        rel_dir = os.path.relpath(dp, folder)
         for n in sorted(files):
+            full = os.path.join(dp, n)
+            rel = n if rel_dir == "." else os.path.join(rel_dir, n)
+            path = arc_path(rel)
+            if is_plugin(path):
+                code.append(rel.replace(os.sep, "/"))
             if n.startswith(".") or n.lower() in SKIP_FILES:
                 continue
-            full = os.path.join(dp, n)
-            path = arc_path(os.path.relpath(full, folder))
             if is_plugin(path) or path.split("/", 1)[0].lower() in PLUGIN_DATA or "/" not in path:
                 continue   # (and a file at the mod's top - victory.toml, config_param.toml: its plugins' settings, not data.arc's)
             out.append((path, full))
-    return out
+    walked = (tuple(out), tuple(sorted(code)))
+    if cache is not None:
+        cache[folder] = walked
+    return walked
+
+
+def mod_files(folder):
+    """(arc path, file) of every file a mod's folder holds (not its code plugins: plugins())."""
+    return list(_walk(folder)[0])
 
 
 def is_plugin(path):
@@ -267,14 +297,7 @@ def is_plugin(path):
 
 def plugins(folder):
     """The code plugins a mod's folder holds (paths in it)."""
-    out = []
-    for dp, dirs, files in os.walk(folder):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
-        for n in files:
-            rel = os.path.relpath(os.path.join(dp, n), folder)
-            if is_plugin(arc_path(rel)):
-                out.append(rel.replace(os.sep, "/"))
-    return sorted(out)
+    return list(_walk(folder)[1])
 
 
 def find_roots(top):

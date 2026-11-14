@@ -8,7 +8,7 @@ This guide takes you from a fresh download to playing. No programming knowledge 
 > WindowSmash doesn't include the game. You need your own copy of Super Smash Bros. Ultimate, dumped from your own Nintendo Switch, together with your console's keys and firmware. Your copy must be **version 13.0.5**, the game's last update ([which copies count](UPDATES.md#what-counts-as-1305)). This guide starts once you have those files.
 
 > [!NOTE]
-> **On a Mac** with Apple silicon, `Install WindowSmash.command` does what this guide's installer does: see [WindowSmash on a Mac](MACOS.md).
+> **On a Mac** with Apple silicon, `tools/mac/install.sh` does what this guide's installer does: see [WindowSmash on a Mac](MACOS.md).
 
 ## Install in one go
 
