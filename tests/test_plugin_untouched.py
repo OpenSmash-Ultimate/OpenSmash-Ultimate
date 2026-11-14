@@ -85,12 +85,18 @@ class PluginUntouched(unittest.TestCase):
         Path(self.source).write_bytes(nro(name=b'gogeta_', build_id=bytes([0x56, 0x78] * 8)))
         self.assertEqual(skyline.module_of(self.p, self.source, record, 'gogeta')[1], 'gogeta_')
 
-    def test_with_module_name_pads_to_mod0(self):
-        data = nro()
-        out = skyline.with_module_name(data, Module(self.source), 'ab')
-        self.assertEqual(out[0x204:0x240], struct.pack('<I', 2) + b'ab' + bytes(0x240 - 0x20a))
+    def test_with_module_name_writes_only_old_name(self):
+        # (MOD0 well after the name, the plugin's own data between: a moveset's lost 48 KB of strings, 2026-11-13)
+        data = bytearray(nro())
+        data[0x216:0x22e] = b'plugin data, not padding'
+        Path(self.source).write_bytes(data)
+        out = skyline.with_module_name(bytes(data), Module(self.source), 'ab')
+        self.assertEqual(out[0x204:0x216], struct.pack('<I', 2) + b'ab' + bytes(12))
         self.assertEqual(out[:0x204], data[:0x204])
-        self.assertEqual(out[0x240:], data[0x240:])
+        self.assertEqual(out[0x216:], data[0x216:])
+        longer = skyline.with_module_name(bytes(data), Module(self.source), 'a_very_long_character_name')
+        self.assertEqual(longer[0x204:0x216], struct.pack('<I', 14) + b'a_very_long_ch')
+        self.assertEqual(longer[0x216:], data[0x216:])
 
 
 if __name__ == '__main__':

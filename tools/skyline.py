@@ -138,14 +138,17 @@ def template_module(name):
 
 def with_module_name(data, m, name):
     """The NRO's bytes (`data`, module `m`) with the module name `name`. Smashline identifies a plugin
-    by the length-prefixed name in front of MOD0, not by the file name. That slot ends at MOD0, so a
-    longer name stops there. Unchanged when there is no such slot."""
+    by the length-prefixed name at the start of rodata, not by the file name. Only the old name's bytes
+    are written over: what follows it is the plugin's own data (MOD0 can be 50 KB further on), so a
+    longer name is cut to the old one's length. Unchanged when there is no such name."""
     start = m.rodata.mem + 8
-    mod0 = bytes(m.image).find(b"MOD0", start)
-    raw = name.encode("ascii", "ignore")[:mod0 - start] if mod0 >= 0 else b""
+    old = struct.unpack_from("<I", data, start - 4)[0] if start <= len(data) else 0
+    if not 0 < old <= 0x200 or start + old > len(data):
+        return bytes(data)
+    raw = name.encode("ascii", "ignore")[:old]
     if not raw:
         return bytes(data)
-    blob = struct.pack("<I", len(raw)) + raw + b"\0" * (mod0 - start - len(raw))
+    blob = struct.pack("<I", len(raw)) + raw + b"\0" * (old - len(raw))
     out = bytearray(data)
     out[m.rodata.mem + 4:m.rodata.mem + 4 + len(blob)] = blob
     return bytes(out)
