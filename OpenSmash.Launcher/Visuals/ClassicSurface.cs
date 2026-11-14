@@ -160,7 +160,8 @@ public sealed partial class ClassicSurface : Control
         foreach(string key in _hov.Keys.ToArray())
         {bool on=_hovOn.Contains(key);float value=_hov[key];value=on?Math.Min(1,value+dt/.3f):Math.Max(0,value-dt/.3f);if(value==0&&!on)_hov.Remove(key);else _hov[key]=value;}
         float k=1-MathF.Pow(.94f,dt*60);_tx+=(_mx-_tx)*k;_ty+=(_my-_ty)*k;
-        InvalidateVisual();
+        // Frozen artwork never animates; a self-scheduled frame slower than the tick (GDI+) would starve headless capture.
+        if(FrozenTime==null)InvalidateVisual();
     }
     public void StartEntrance(){_shownAt=_heroAt=_viewAt=_lastTick=Now;_pendingDt=0;}
     public void SetProject(Project? project,bool forceInstaller=false)
