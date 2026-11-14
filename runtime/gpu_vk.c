@@ -38,6 +38,7 @@
 #include "gpu_spirv.h"
 #include "gpu_texture.h"
 #include "gpu_vulkan.h"
+#include "gpu_wait_budget.h"
 #include "gpu_watch.h"
 #include "gpu_window.h"
 #include "debug_profile.h"
@@ -1666,6 +1667,18 @@ static int wait_makes(void) {
 static void wait_for(volatile LONG *state) {
     while (!*state) SwitchToThread();
 }
+/* SSBU_VK_WAIT_BUDGET=<ms>: what a frame may spend waiting for new pipelines and graphics programs, all
+ * together (default 6; 0: never wait). Most are ready in a few ms; the rest were not ready after the 100 ms
+ * the wait used to last either, so each of those was a 100 ms hitch for a skipped draw (2026-11-13's log:
+ * 47 of 58). Past the budget the draw is skipped and the maker carries on: the effect draws from its next use. */
+static WaitBudget wait_budget = {~0ull, 0, ~0ull};
+static u64 budget_until(u32 cap_ms) {
+    if (wait_budget.budget_ns == ~0ull) {
+        const char *v = getenv("SSBU_VK_WAIT_BUDGET");
+        wait_budget.budget_ns = (v && *v ? (u64)atoi(v) : 6) * 1000000ull;
+    }
+    return wait_budget_until(&wait_budget, gfx_stat_presented, rt_clock_ns(), cap_ms * 1000000ull);
+}
 
 /* What each stage's constant buffer slot was given last in this frame, with a copy of the bytes (gpu_d3d11.c's
  * last_upload): the same bytes from the same place again - most of a frame's 64 KB program constants, outside
@@ -2119,8 +2132,12 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
      * owner's report 2026-11-09), a skipped launch leaves its outputs (skinned vertices) unwritten for a frame.
      * Compute programs were waited for already; every stage now. One compiled from scratch (fxc) is not waited for;
      * with glslang there is no fxc (its SPIR-V is made from the HLSL in milliseconds): every program is waited for. */
-    if (cached || stage == SHADER_COMPUTE)
-        for (u64 until = GetTickCount64() + 250; s->state == 0 && GetTickCount64() < until;) { if (s->adopt) warm_adopt(s); SwitchToThread(); }
+    if (cached || stage == SHADER_COMPUTE) {
+        /* (a compute program's whole wait: a skipped launch is a frame of unwritten vertices, not a missing effect) */
+        u64 t0 = rt_clock_ns(), until = stage == SHADER_COMPUTE ? t0 + 250000000ull : budget_until(250);
+        for (; s->state == 0 && rt_clock_ns() < until;) { if (s->adopt) warm_adopt(s); SwitchToThread(); }
+        wait_budget_spend(&wait_budget, rt_clock_ns() - t0);
+    }
     if (vk_gated) make_note_shader(s, w != NULL, (rt_clock_ns() - t_new) / 1e6);
     return s;
 }
@@ -2818,10 +2835,12 @@ static VkPipeline get_pipeline(const PipeKey *k, const VShader *vs, const VShade
     if (e->state == 0 && wait_makes()) wait_for(&e->state);
     /* a new pipeline is waited for a little (its shaders are ready: the driver makes it in milliseconds, less with the
      * pipeline cache warm), rather than its first draws skipped - an effect missing the first time (2026-11-09); so is
-     * one a warm thread is making now, once */
+     * one a warm thread is making now, once. Within the frame's budget (budget_until). */
     if (e->state == 0 && (made || !e->waited)) {
         e->waited = 1;
-        for (u64 until = GetTickCount64() + 100; e->state == 0 && GetTickCount64() < until;) SwitchToThread();
+        u64 t0 = rt_clock_ns();
+        for (u64 until = budget_until(100); e->state == 0 && rt_clock_ns() < until;) SwitchToThread();
+        wait_budget_spend(&wait_budget, rt_clock_ns() - t0);
     }
     if (vk_gated && (made || first_wait)) make_note_pipe(e, made, (rt_clock_ns() - t_wait) / 1e6);
     return e->state == 1 ? e->pipe : VK_NULL_HANDLE;
