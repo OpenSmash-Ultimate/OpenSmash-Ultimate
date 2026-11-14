@@ -84,6 +84,7 @@ void InitializeSettings() {
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Developer", SettingKeys = new[] { "hot_reload_mod_assets" } },
+                new SettingTab { Name = "Game", SettingKeys = new[] { "game_files" } },
             };
 
             _settings = new[]
@@ -92,6 +93,7 @@ void InitializeSettings() {
                 new Setting { Key = "window_size", Label = "Window size", Values = new[] { "1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160" } },
                 new Setting { Key = "pacing", Label = "Frame pacing", Values = new[] { "clock", "vrr", "display" }, Labels = new[] { "Steady 60 (any monitor)", "G-Sync / FreeSync monitor", "Follow the monitor's refresh" } },
                 new Setting { Key = "preload_shaders", Label = "Preload all shaders", Action = "settings:shaders" },
+                new Setting { Key = "game_files", Label = "Add DLC or change game files", Action = "settings:game" },
                 new Setting { Key = "render_scale", Label = "Render scale", Values = new[] { "1", "auto", "1.5", "2", "3" }, Labels = new[] { "1: 1920x1080 (the game's own)", "Auto: as big as the window", "1.5: 2880x1620", "2: 3840x2160 (4K)", "3: 5760x3240" } },
                 new Setting { Key = "gpu", Label = "Graphics card", Values = new[] { "auto", "warp" }, Labels = new[] { "The fastest (auto)", "WARP (Windows itself, no card: slow)" } },
                 new Setting { Key = "renderer", Label = "Renderer", Values = new[] { "auto", "direct3d11", "vulkan" }, Labels = new[] { "Auto: Vulkan on AMD, NVIDIA and Intel", "Direct3D 11", "Vulkan" } },
@@ -115,6 +117,7 @@ void InitializeSettings() {
         bool SettingOn(Setting s)
         {
             if (s.Key == "preload_shaders") return Project?.IsBuilt == true;
+            if (s.Key == "game_files") return Project?.IsBuilt == true && !Busy;
             string lobby = _iniValues.GetValueOrDefault("lobby", "public");
             if (s.Key is "name" or "direct") return lobby != "offline";
             return true;
@@ -123,6 +126,7 @@ void InitializeSettings() {
         string ShownValue(Setting s)
         {
             if (s.Key == "preload_shaders") return _shaderUi ? "Cancel compilation" : "Compile shaders";
+            if (s.Key == "game_files") return "Open setup";
             string v = _iniValues.GetValueOrDefault(s.Key, s.Text || s.Slider || s.Values.Length == 0 ? "" : s.Values[0]);
             if (s.Slider) return v;
             if (s.Text) return v == "" ? "type here" : v;

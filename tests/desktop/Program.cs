@@ -175,6 +175,15 @@ try
     Check(OpenSmash.Visuals.ClassicSurface.MarketplaceHtml().Contains("invokeCSharpAction(JSON.stringify(value))"),"original marketplace page uses the portable host transport");
     surface.SetMods("{\"mods\":[{\"name\":\"example\",\"gamebanana\":\"123\",\"enabled\":false}]}");
     Check(surface.InstalledModIds.Contains("123"),"marketplace recognizes installed mods even when switched off");
+    string savedMods=surface.SavedModsFile(project),savedA=Path.Combine(root,"mods","Saved A"),savedB=Path.Combine(root,"mods","Saved B");
+    string[] Rows(){var rows=new List<string>();for(int i=0;surface.ModNames(i).Length>0;i++)rows.AddRange(surface.ModNames(i));return rows.Order().ToArray();}
+    Directory.CreateDirectory(savedA);Directory.CreateDirectory(Path.GetDirectoryName(savedMods)!);
+    File.WriteAllText(savedMods,"{\"mods\":[{\"name\":\"Saved A\",\"gamebanana\":\"77\"},{\"name\":\":code_patches\"}]}");
+    surface.SetProject(project);
+    Check(surface.InstalledModIds.Contains("77")&&Rows().Contains("Saved A"),"mods list shows the last status at once, before Python answers");
+    Directory.CreateDirectory(savedB);surface.SetProject(project);
+    Check(!surface.InstalledModIds.Contains("77")&&Rows().SequenceEqual(new[]{"Saved A","Saved B"}),"a saved list that no longer matches the folders falls back to their names, with rows");
+    Directory.Delete(savedA);Directory.Delete(savedB);File.Delete(savedMods);
 
     surface.FrozenTime=15;surface.Navigate("mods");surface.SetMods("{\"mods\":[]}");surface.FrozenTime=20;
     Capture("launcher-mods");
@@ -205,6 +214,17 @@ try
     window.MouseDown(new Avalonia.Point(1080,36),Avalonia.Input.MouseButton.Left);
     window.MouseUp(new Avalonia.Point(1080,36),Avalonia.Input.MouseButton.Left);
     Check(surface.CurrentView=="settings","original header hit targets navigate through real pointer events");
+    {
+        var settingRows=(Array)typeof(OpenSmash.Visuals.ClassicSurface).GetField("_settings",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.GetValue(surface)!;
+        int gameRow=-1;for(int i=0;i<settingRows.Length;i++)if((string?)settingRows.GetValue(i)!.GetType().GetField("Key")!.GetValue(settingRows.GetValue(i))=="game_files")gameRow=i;
+        string? requested=null;void Seen(string id)=>requested=id;surface.ActionRequested+=Seen;
+        surface.Navigate("settings");surface.Activate($"set:{gameRow}");surface.ActionRequested-=Seen;
+        Check(gameRow>=0&&requested=="settings:game","Settings offers adding DLC to a built game");
+        surface.Navigate("setup");
+        Check(surface.IsInstaller&&surface.CurrentView=="installer:setup","adding DLC reopens setup for a built game");
+        surface.Activate("act:home");
+        Check(!surface.IsInstaller&&surface.CurrentView=="home","setup opened from Settings has a way back to the launcher");
+    }
     surface.SetProject(project,forceInstaller:true);
     Check(surface.IsInstaller,"explicit installer mode still opens setup for built projects");
     window.Close();

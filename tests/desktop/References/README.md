@@ -12,7 +12,7 @@ preserved images on Windows. Only live elapsed-clock text in the build view is
 masked, with the same rectangles as the retired reference harness. The graphics
 renderer caption and help text are also masked: upstream now enables Vulkan on
 AMD, NVIDIA and Intel. Their updated wording has separate regression checks;
-settings column geometry and all other original pixels remain compared. Portable Skia
+settings column geometry and all other original pixels remain compared. The settings tabs appended after Storage (Developer, Game) are masked; every original tab is still compared. Portable Skia
 checks still render all states, but do not claim pixel equivalence to GDI+.
 
 Keep the baselines unchanged when editing the launcher. Changes require deliberate

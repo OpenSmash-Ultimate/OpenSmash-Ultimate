@@ -20,8 +20,8 @@ static class ReferenceImages
         {
             // Elapsed build-clock text is intentionally live; animation time is frozen.
             if(reference=="build"&&((x>=470&&x<530&&y>=188&&y<450)||(x>=1060&&x<1333&&y>=248&&y<279)))continue;
-            // The appended Developer tab is new. Keep comparing every existing tab and row.
-            if(reference.StartsWith("settings")&&x>=828&&x<944&&y>=202&&y<246)continue;
+            // The appended Developer and Game tabs are new. Keep comparing every existing tab and row.
+            if(reference.StartsWith("settings")&&x>=828&&x<1024&&y>=202&&y<246)continue;
             // Display now appends Preload shaders below the original three rows.
             // Preserve the original comparison everywhere outside that new row.
             if((reference=="settings"||reference=="settings-dropdown")&&x>=100&&x<1340&&y>=553&&y<639)continue;

@@ -9,6 +9,7 @@ public sealed partial class ClassicSurface
             ["window_size"] = "The inside of the window. The picture stays 16:9.",
             ["pacing"] = "Steady 60 on any monitor. G-Sync / FreeSync shows each frame as soon as it is ready.",
             ["preload_shaders"] = "Runs the installer's shader compilation. Progress appears along the bottom; completed work is kept.",
+            ["game_files"] = "DLC bought after the first build, or another game, keys or firmware folder. Only what changed is rebuilt.",
             ["render_scale"] = "How big the game draws. 2 is four times the pixels of 1.",
             ["gpu"] = "Auto picks the fastest card.",
             ["renderer"] = "Auto uses Vulkan on AMD, NVIDIA and Intel graphics. Direct3D 11 is available as a fallback.",

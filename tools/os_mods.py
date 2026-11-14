@@ -312,7 +312,8 @@ def main(argv):
     cmd = argv[1] if len(argv) > 1 else "status"
     try:
         if cmd == "status":
-            return status(tree)
+            with mods.walk_once():
+                return status(tree)
         if cmd in ("enable", "disable"):
             if len(argv) < 3:
                 raise mods.Error("name the mod's folder")

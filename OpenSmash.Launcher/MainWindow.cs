@@ -149,6 +149,7 @@ public sealed partial class MainWindow : Window
                 case "bootstrap:cancel":_bootstrapCancel?.Cancel();break;
                 case "play":await Play();break;
                 case "settings:shaders":await CompileShaders("medium");break;
+                case "settings:game":Surface.Navigate("setup");break;   // the build re-reads the game folder's DLC; finished steps are skipped
                 case "shaders:cancel":_shaderCancel?.Cancel();break;
                 case "pick:game":case "pick:keys":case "pick:firmware":
                     var folders=await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions{Title="Choose "+id[5..]+" folder",AllowMultiple=false});
@@ -281,6 +282,8 @@ public sealed partial class MainWindow : Window
             using var document=JsonDocument.Parse(json);
             if(document.RootElement.TryGetProperty("error",out var error))throw new InvalidOperationException(error.GetString());
             if(project==_project&&!_closed)Surface.SetMods(json);
+            try{string saved=Surface.SavedModsFile(project);Directory.CreateDirectory(Path.GetDirectoryName(saved)!);File.WriteAllText(saved,json);}
+            catch(Exception saveError) when(saveError is IOException or UnauthorizedAccessException){}   // only a faster first paint is lost
         }
         finally{_modStatusGate.Release();}
     }

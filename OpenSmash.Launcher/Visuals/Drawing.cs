@@ -131,6 +131,7 @@ sealed class Matrix(float a,float b,float c,float d,float x,float y)
 sealed class Bitmap : IDisposable
 {
     internal System.Drawing.Bitmap? Windows;
+    SKBitmap? _scaled;
     public byte[]? Encoded { get; }
     public SKBitmap Native { get; }
     public int Width => Native.Width;
@@ -138,7 +139,14 @@ sealed class Bitmap : IDisposable
     public Bitmap(int w, int h) { Native = new(w,h, SKColorType.Bgra8888, SKAlphaType.Premul); Native.Erase(SKColors.Transparent); }
     public Bitmap(SKBitmap bitmap) { Native = bitmap; }
     public Bitmap(byte[] encoded) {Encoded=encoded;Native=SKBitmap.Decode(encoded);}
-    public void Dispose() {Windows?.Dispose();Native.Dispose();}
+    // Skia: a large image drawn small (the 512px emblem in a 34px header) is resampled once per size, not every frame.
+    internal SKBitmap Scaled(int w,int h)
+    {
+        if(_scaled==null||_scaled.Width!=w||_scaled.Height!=h){_scaled?.Dispose();_scaled=Native.Resize(new SKImageInfo(w,h,Native.ColorType,Native.AlphaType),new SKSamplingOptions(SKCubicResampler.Mitchell));}
+        return _scaled??Native;
+    }
+    internal static bool Shrinks(Bitmap image,Rectangle dest)=>dest.Width>0&&dest.Height>0&&dest.Width*2<=image.Width&&dest.Height*2<=image.Height;
+    public void Dispose() {Windows?.Dispose();_scaled?.Dispose();Native.Dispose();}
 }
 sealed class Graphics(SKCanvas canvas, bool owns = false,System.Drawing.Graphics? windows=null,System.Drawing.Bitmap? windowsFrame=null) : IDisposable
 {
@@ -180,10 +188,22 @@ sealed class Graphics(SKCanvas canvas, bool owns = false,System.Drawing.Graphics
     public void FillEllipse(Brush b,RectangleF r) => FillEllipse(b,r.X,r.Y,r.Width,r.Height);
     public void DrawEllipse(Pen b,float x,float y,float w,float h) {if(windows!=null){using var wp=WindowsRasterizer.Pen(b);windows.DrawEllipse(wp,x,y,w,h);return;}using var p = b.Paint(); canvas.DrawOval(new SKRect(x,y,x+w,y+h),p); }
     public void DrawImageUnscaled(Bitmap image,int x,int y) {if(windows!=null){var view=WindowsRasterizer.View(image);windows.DrawImageUnscaled(view,x,y);return;}canvas.DrawBitmap(image.Native,x,y);}
+    // An opaque full-frame layer: copy it instead of blending it over the previous frame.
+    public void CopyImage(Bitmap image)
+    {
+        if(windows!=null){var mode=windows.CompositingMode;windows.CompositingMode=System.Drawing.Drawing2D.CompositingMode.SourceCopy;windows.DrawImageUnscaled(WindowsRasterizer.View(image),0,0);windows.CompositingMode=mode;return;}
+        using var p=new SKPaint{BlendMode=SKBlendMode.Src};canvas.DrawBitmap(image.Native,0,0,p);
+    }
     public void DrawImage(Bitmap image, RectangleF r, float alpha=1)
     {
-        if(windows!=null){var view=WindowsRasterizer.View(image);using var ia=new System.Drawing.Imaging.ImageAttributes();ia.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix{Matrix33=alpha});windows.DrawImage(view,Rectangle.Round(r),0,0,image.Width,image.Height,System.Drawing.GraphicsUnit.Pixel,ia);return;}
-        using var p = new SKPaint { Color = SKColors.White.WithAlpha((byte)(255*alpha)), FilterQuality=SKFilterQuality.High }; canvas.DrawBitmap(image.Native,R(r),p);
+        var dest=Rectangle.Round(r);
+        if(windows!=null)
+        {
+            var view=WindowsRasterizer.View(image);
+            if(alpha>=1){windows.DrawImage(view,dest,0,0,view.Width,view.Height,System.Drawing.GraphicsUnit.Pixel);return;}
+            using var ia=new System.Drawing.Imaging.ImageAttributes();ia.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix{Matrix33=alpha});windows.DrawImage(view,dest,0,0,view.Width,view.Height,System.Drawing.GraphicsUnit.Pixel,ia);return;
+        }
+        using var p = new SKPaint { Color = SKColors.White.WithAlpha((byte)(255*alpha)), FilterQuality=SKFilterQuality.High }; canvas.DrawBitmap(Bitmap.Shrinks(image,dest)?image.Scaled(dest.Width,dest.Height):image.Native,R(r),p);
     }
     public void DrawImage(Bitmap image,float x,float y,float w,float h)=>DrawImage(image,new RectangleF(x,y,w,h));
     public SizeF MeasureString(string text, Font font, int max=100000, StringFormat? format=null)

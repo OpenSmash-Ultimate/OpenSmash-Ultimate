@@ -76,8 +76,12 @@ public sealed partial class ClassicSurface
             float leftW = right - left - rightW - gap;
             float rx = left + leftW + gap;
 
-            PaintHeader(g, W, "FIRST-TIME SETUP", "BUILD THE GAME",
-                "Folders found on this PC are filled in. Change any of them with Browse.");
+            if (Installed)
+                PaintHeader(g, W, "GAME FILES", "REBUILD THE GAME",
+                    "New DLC: put its .nsp files in the game folder (or a dlc folder in it), or install it in your emulator. Then Rebuild.");
+            else
+                PaintHeader(g, W, "FIRST-TIME SETUP", "BUILD THE GAME",
+                    "Folders found on this PC are filled in. Change any of them with Browse.");
 
             SectionLabel(g, "YOUR FILES", left, 138 * s);
             float y = 158 * s;
@@ -122,12 +126,14 @@ public sealed partial class ClassicSurface
             else using (var f = ArtworkTheme.Body(12.5f * s)) ArtworkTheme.DrawWrapped(g, "The platform installer checks and installs the build dependencies. System authorization is handled by your desktop; completed work is kept if setup stops.", f, ArtworkTheme.Muted, rx + 16 * s, oy + 70 * s, rightW - 32 * s, 68 * s);
 
             float ay = 574 * s;
-            string label = _failedBefore || Project?.IsBuilt == true ? "RESUME"
+            string label = _failedBefore ? "RESUME"
                 : _succeeded && _jobKind == "install" && !_jobDry ? "BUILD AGAIN"
+                : Installed ? "REBUILD"
                 : "SET UP AND BUILD";
             float ax = ActionButton(g, "act:check", "CHECK FILES", left, ay, primary: false);
             ax = ActionButton(g, "act:install", label, ax, ay, primary: true);
-            ActionButton(g, "act:logs", "OPEN LOGS", ax, ay, false);
+            ax = ActionButton(g, "act:logs", "OPEN LOGS", ax, ay, false);
+            if (Installed) ActionButton(g, "act:home", "BACK", ax, ay, false);
         }
 
         float PaintPathRow(Graphics g, string id, string title, string hint, string path, string status, bool? ok, float x, float y, float w)
@@ -371,7 +377,7 @@ public sealed partial class ClassicSurface
             using (var f = ArtworkTheme.Body(13.5f * s))
                 ArtworkTheme.DrawText(g, text, f, col, left + 15 * s, bottom, W - 2 * left - 340 * s, 28 * s);
             using (var f = ArtworkTheme.Body(13.5f * s))
-                ArtworkTheme.DrawText(g, "First-time setup", f, ArtworkTheme.Muted, W - left - 260 * s, bottom - 14 * s, 260 * s, 22 * s, StringAlignment.Far);
+                ArtworkTheme.DrawText(g, Installed ? "Game files" : "First-time setup", f, ArtworkTheme.Muted, W - left - 260 * s, bottom - 14 * s, 260 * s, 22 * s, StringAlignment.Far);
             using (var f = ArtworkTheme.Body(12 * s))
                 ArtworkTheme.DrawText(g, "OpenSmash-Ultimate \u2014 native PC port", f, ArtworkTheme.Dim, W - left - 320 * s, bottom + 8 * s, 320 * s, 20 * s, StringAlignment.Far);
         }

@@ -57,7 +57,7 @@ public sealed partial class ClassicSurface : Control
         Background=Avalonia.Media.Brush.Parse("#101012"), Foreground=Avalonia.Media.Brush.Parse("#ECECEC"),
         BorderBrush=Avalonia.Media.Brush.Parse("#555555"), BorderThickness=new Thickness(1), CornerRadius=new CornerRadius(0), Padding=new Thickness(1,0), MinHeight=0, VerticalContentAlignment=Avalonia.Layout.VerticalAlignment.Top };
     readonly Stopwatch _clock = Stopwatch.StartNew();
-    readonly DispatcherTimer _timer;
+    bool _animating;
     WriteableBitmap? _frame;
     double _pixelScale=1;
     Bitmap? _bg, _logo;
@@ -141,11 +141,12 @@ public sealed partial class ClassicSurface : Control
         InitializeDetails();
         using(var image=AssetLoader.Open(new Uri("avares://OpenSmash/Assets/emblem-white.png")))
         {using var bytes=new MemoryStream();image.CopyTo(bytes);_logo=new Bitmap(bytes.ToArray());}
-        _timer=new DispatcherTimer(TimeSpan.FromMilliseconds(15),DispatcherPriority.Render,(_,_)=>Tick());
-        AttachedToVisualTree+=(_,_)=>_timer.Start();
-        DetachedFromVisualTree+=(_,_)=>_timer.Stop();
+        // One step per compositor frame: a 15 ms timer beats against a 60 Hz display and moves the field unevenly.
+        AttachedToVisualTree+=(_,_)=>{if(!_animating){_animating=true;NextFrame();}};
+        DetachedFromVisualTree+=(_,_)=>_animating=false;
     }
 
+    void NextFrame()=>TopLevel.GetTopLevel(this)?.RequestAnimationFrame(_=>{if(!_animating)return;Tick();NextFrame();});
     void Tick()
     {
         UpdateNativeControls();
@@ -163,6 +164,30 @@ public sealed partial class ClassicSurface : Control
         // Frozen artwork never animates; a self-scheduled frame slower than the tick (GDI+) would starve headless capture.
         if(FrozenTime==null)InvalidateVisual();
     }
+    // The list the last status check returned, so rows show at once; the check that follows replaces it.
+    public string SavedModsFile(Project project)=>project.PathIn("build","work","launcher_mods.json");
+    void ShowSavedMods(Project project)
+    {
+        var folders=Directory.Exists(project.PathIn("mods"))?Directory.GetDirectories(project.PathIn("mods")).Select(path=>Path.GetFileName(path)).ToList():[];
+        try
+        {
+            string saved=SavedModsFile(project);
+            if(File.Exists(saved))
+            {
+                string json=File.ReadAllText(saved);
+                using(var doc=JsonDocument.Parse(json))
+                {
+                    var names=doc.RootElement.GetProperty("mods").EnumerateArray().Select(m=>m.GetProperty("name").GetString()??"").Where(n=>!n.StartsWith(':'));
+                    if(names.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(folders)){SetMods(json);return;}
+                }
+            }
+        }
+        catch(Exception error) when(error is IOException or UnauthorizedAccessException or JsonException or KeyNotFoundException or InvalidOperationException){}
+        _mods.Clear();
+        _plugins=Directory.Exists(project.PathIn("skyline","plugins"))?Directory.GetFiles(project.PathIn("skyline","plugins"),"*.nro").Length:0;
+        _mods.AddRange(folders.Select(name=>new ModInfo{Name=name,Title=name}));
+        BuildModLines();
+    }
     public void StartEntrance(){_shownAt=_heroAt=_viewAt=_lastTick=Now;_pendingDt=0;}
     public void SetProject(Project? project,bool forceInstaller=false)
     {
@@ -176,9 +201,7 @@ public sealed partial class ClassicSurface : Control
             _version=File.Exists(version)?File.ReadLines(version).FirstOrDefault(l=>l.Trim().Length>0 && !l.StartsWith('#') && !l.StartsWith(';'))?.Trim()??"":"";
             string launch=project.PathIn("build","launch_mode.txt");
             if(changed && File.Exists(launch)) _launchMode=File.ReadAllText(launch).Trim()=="vanilla"?"vanilla":"mods";
-            _mods.Clear();
-            _plugins=Directory.Exists(project.PathIn("skyline","plugins"))?Directory.GetFiles(project.PathIn("skyline","plugins"),"*.nro").Length:0;
-            if(Directory.Exists(project.PathIn("mods"))) _mods.AddRange(Directory.GetDirectories(project.PathIn("mods")).Select(path=>new ModInfo{Name=Path.GetFileName(path),Title=Path.GetFileName(path)}));
+            ShowSavedMods(project);
             if(changed||!wasBuilt&&_built)LoadSettings();
         }
         UpdateNativeControls();InvalidateVisual();
@@ -224,7 +247,7 @@ public sealed partial class ClassicSurface : Control
         _gameStatus=_gameOk==true?"Game folder selected — Check files verifies the dump":"Choose the folder containing your own dumped game";
         _keysStatus=_keysOk==true?"prod.keys found":"prod.keys was not found in this folder";
         _fwStatus=_fwPath==""?"Optional: open-source fonts will be used":_fwOk==true?"Firmware folder selected":"Folder not found";
-        _status="Choose your files, type a username, then Set up and build.";
+        _status=Installed?"Check the folders, then Rebuild. Steps already done are skipped.":"Choose your files, type a username, then Set up and build.";
         InvalidateVisual();return _gameOk==true&&_keysOk==true&&_fwOk==true;
     }
     void UpdateNativeControls()
@@ -266,7 +289,7 @@ public sealed partial class ClassicSurface : Control
             g.GridFit=IsInstaller;
             bool home=!IsInstaller&&_view=="home";
             if(_bg==null||_bg.Width!=W||_bg.Height!=H||_backgroundHome!=home) { _bg?.Dispose();_bg=ArtworkTheme.MakeBackground(W,H,null,!home);_backgroundHome=home; }
-            g.DrawImageUnscaled(_bg,0,0);_hits.Clear();_tips.Clear();_hovOn.Clear();
+            g.CopyImage(_bg);_hits.Clear();_tips.Clear();_hovOn.Clear();
             if(IsInstaller)
             {
                 if(IsFirstRun)PaintBootstrap(g,W,H);else if(_view=="build") PaintBuild(g,W,H);else PaintSetup(g,W,H);
@@ -382,6 +405,7 @@ public sealed partial class ClassicSurface : Control
         else if(id is "menu:3")ActionRequested?.Invoke("close");
         else if(id is "menu:0" or "nav:play")ActionRequested?.Invoke("play");
         else if(id=="act:back")Navigate("setup");
+        else if(id=="act:home"&&Installed&&!_running)Navigate("home");
         else if(id=="act:continue") { if(Installed){Navigate("home");ActionRequested?.Invoke("project:ready");}else ActionRequested?.Invoke("close"); }
         else ActionRequested?.Invoke(id);
         UpdateNativeControls();InvalidateVisual();
