@@ -143,7 +143,7 @@ static int material_index_checks(void) {
 static int material_checks(const char *old_path, const char *new_path) {
     u32 old_size, new_size; u8 *old = read_all(old_path, &old_size, NULL), *next = read_all(new_path, &new_size, NULL);
     CHECK(old && next);
-    arena = VirtualAlloc((void *)0x6000000000ull, 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    arena = VirtualAlloc(G2H(0x6000000000ull), 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);   /* (macOS: guest memory is 1 TiB up) */
     CHECK(arena == G2H(0x6000000000ull));
     CHECK(material_index_checks() == 0);
     char variant[128];
