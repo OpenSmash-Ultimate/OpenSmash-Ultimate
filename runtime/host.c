@@ -727,7 +727,14 @@ static volatile int net_match_seen;
 int net_match_on(void);   /* (hle_rb_core.c) */
 static volatile int hud_wide_seen;
 static int hud_wide_now(void);   /* (below) */
-static void net_match_watch(Cpu *c, const u64 args[8], void *ctx) { (void)c; (void)args; (void)ctx; net_match_seen = net_match_on(); hud_wide_seen = hud_wide_now(); }
+static int hud_fought, hud_over;   /* (hud_wide_now's latch: this scene had its fight, and the fight is over) */
+static void net_match_watch(Cpu *c, const u64 args[8], void *ctx) {
+    (void)c; (void)args; (void)ctx;
+    net_match_seen = net_match_on();
+    hud_wide_seen = hud_wide_now();   /* (first: a new scene clears the latch) */
+    if (game_fight_on()) hud_fought = 1;
+    else if (hud_fought && !line_on()) hud_over = 1;   /* (the KO's finish after GAME! is still the fight: the fighters' line runs) */
+}
 /* (for the renderer: the HUD's panels reach the picture's edges, so its 2D may too - gpu_d3d11.c's 2D clip) */
 int hud_wide_on(void) { return hud_wide_seen; }
 int net_match_now(void) { return net_match_seen; }
@@ -857,8 +864,17 @@ static int pane_extent(u64 p, float *l, float *r, int depth) {
     return 1;
 }
 /* A fight's scene, from its loading on (the game's camera manager, main+0x52b8f00, exists only there): the
- * HUD's layouts are placed once when they load, before GO!, and again only when they change. */
-static int hud_wide_now(void) { return aspect_native() && *P(u64, 0x71052b8f00ull) != 0; }
+ * HUD's layouts are placed once when they load, before GO!, and again only when they change. Until the fight
+ * is over: the results screens (the winner's pose, the cards) come in the same scene, the camera manager still
+ * there, and are a menu - they stay in the middle 16:9 (owner, 2026-11-14: the cards were pushed apart to the
+ * picture's sides). Over: the ready-go flag went off after it was on (a pause keeps it on), and the fighters' frame
+ * line stopped (the finish after GAME! runs it: cut there, its effect lost the side areas). */
+static u64 hud_scene;
+static int hud_wide_now(void) {
+    u64 m = *P(u64, 0x71052b8f00ull);
+    if (m != hud_scene) { hud_scene = m; hud_fought = hud_over = 0; }
+    return aspect_native() && m && !hud_over;
+}
 static GuestFn *pane_place_orig, *pane_calc_orig;
 /* When the picture's shape changes inside a fight's scene, every layout is placed again for half a second
  * (Pane::Calculate, f_7100058700, with x3 = 1 at a root: its whole tree recomputed), so a panel that never

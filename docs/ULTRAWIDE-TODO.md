@@ -121,6 +121,13 @@ Rule for every row: once turned on it stays on; any change takes effect at the n
 
 ## Bugs to reproduce (found 2026-11-14)
 
+- [x] **Results screen: the cards pushed apart** (owner, 2026-11-14, Vulkan; Direct3D 11 the same): the HUD's
+      "panels to the picture's sides" rule keyed on the fight's camera manager, which the results screens still
+      have, so the cards went to the sides. Now the rule ends with the fight (the ready-go flag off and the
+      fighters' line stopped; the finish after GAME! keeps the whole picture) until the next scene: the results
+      stay in the middle 16:9, as menus do. Checked by a debug match run into the results at 21:9 on both back
+      ends (`build\aspect_test\auto\vkres21b`, `d3res21b`; 16:9: `vkres169b`). The winner's pose was framed as
+      at 16:9 there (Donkey Kong); the owner's "zoomed in" not seen yet. Not checked: Sudden Death.
 - [ ] **A tag off its fighter right after a mid-fight shape change** (both back ends, so the HUD's side,
       `host.c`): with `SSBU_TEST_ASPECT_CYCLE=7` (hybrid), a capture less than a second after 21:9 -> 32:9 has
       P1 well away from Ganondorf (Vulkan fight frame 3836; Direct3D 11's e2_scycle frame 4041). With the
