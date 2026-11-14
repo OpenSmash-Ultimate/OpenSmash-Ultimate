@@ -264,7 +264,11 @@ class ChainTests(unittest.TestCase):
             frac, _left = whole.update(1.0, None)     # the link done
             self.assertLess(frac, 0.9)
             with skyline.counting(got.append, 'testing the plugins in the game', 0.6, every=0.05):
-                time.sleep(0.5)
+                # (lines, not a fixed time: a busy CI runner's ticker logged only 3 in 0.5 s)
+                for _ in range(400):
+                    if len(got) > 3:
+                        break
+                    time.sleep(0.025)
         pcts = [int(line.split(' — ')[1].split('%')[0]) for line in got]
         self.assertGreater(len(pcts), 3)
         self.assertEqual(pcts, sorted(pcts))

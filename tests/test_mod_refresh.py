@@ -1,4 +1,5 @@
 """Compile the real mod refresh handlers; exercise opt-in, mode checks and controller edges."""
+import os
 import subprocess
 import sys
 import struct
@@ -15,6 +16,11 @@ class ModRefreshTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as out:
             cmd, exe = build(out)
             cmd = [part.replace('framehooktest', 'modrefreshtest') for part in cmd]
+            if os.name != 'nt':   # (its file and thread calls: the platform layer, as the game's own build has)
+                layer = ['runtime/linux/win32.c'] + (['runtime/macos/memory.c', 'runtime/macos/platform.c']
+                                                     if sys.platform == 'darwin' else ['-lpthread'])
+                cmd = [part for part in cmd if part not in ('-Wall', '-Werror')]   # (the layer is built with -w elsewhere)
+                cmd[-2:-2] = ['-w', *(str(ROOT / f) if f.endswith('.c') else f for f in layer), '-lm']
             exe = exe.replace('framehooktest', 'modrefreshtest')
             result = subprocess.run(cmd, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
