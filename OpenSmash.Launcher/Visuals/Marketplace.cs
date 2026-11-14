@@ -21,8 +21,29 @@ public sealed partial class ClassicSurface
         using var stream = typeof(ClassicSurface).Assembly.GetManifestResourceStream("MarketplaceHtml.html")!;
         using var reader = new StreamReader(stream);
         return reader.ReadToEnd().Replace("const wv = window.chrome && window.chrome.webview;",
-            "const wv = { postMessage: value => invokeCSharpAction(JSON.stringify(value)) };");
+            "const wv = { postMessage: value => invokeCSharpAction(JSON.stringify(value)) };")
+            .Replace("/*@osm-fonts*/", MarketplaceFonts.Value);
     }
+
+    // The page is loaded from a string, so it cannot reach avares:// assets: the launcher's own fonts go in as data URIs.
+    // Cascadia Mono stays out to keep the page under WebView2's 2 MB NavigateToString limit; the CSS falls back to Consolas.
+    static readonly Lazy<string> MarketplaceFonts = new(() =>
+    {
+        var css = new System.Text.StringBuilder();
+        foreach (var (family, file, weight) in new[] { ("Anton", "Anton-Regular.ttf", 400), ("Inter", "Inter-Regular.ttf", 400), ("Inter", "Inter-Bold.ttf", 700) })
+        {
+            try
+            {
+                using var source = Avalonia.Platform.AssetLoader.Open(new Uri("avares://OpenSmash/Assets/" + file));
+                using var bytes = new MemoryStream();
+                source.CopyTo(bytes);
+                css.Append("@font-face{font-family:\"").Append(family).Append("\";font-weight:").Append(weight)
+                   .Append(";src:url(data:font/ttf;base64,").Append(Convert.ToBase64String(bytes.ToArray())).Append(") format(\"truetype\");}");
+            }
+            catch (Exception error) { System.Diagnostics.Trace.WriteLine(error); }   // the CSS's system fallbacks take over
+        }
+        return css.ToString();
+    });
 
     public void EnsureMarketplace()
     {
