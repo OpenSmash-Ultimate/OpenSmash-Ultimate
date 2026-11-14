@@ -266,14 +266,7 @@ public sealed partial class ClassicSurface
             // Progress
             float rx = left + lw + 48 * s, rw = right - rx;
             var curNow = _steps.FirstOrDefault(x => x.State == "run");
-            double frac;
-            if (_succeeded && !_jobDry && _steps.Count > 0) frac = 1.0;
-            else if (curNow != null && curNow.Total > 0) frac = Math.Clamp(curNow.Done / curNow.Total, 0, 1);
-            else
-            {
-                int n = _steps.Count(x => x.State is "done" or "skip" or "dry");
-                frac = _steps.Count > 0 ? n / (double)_steps.Count : 0;
-            }
+            double frac = Progress;
             using (var f = ArtworkTheme.Display(60 * s))
                 ArtworkTheme.DrawText(g, $"{(int)Math.Round(frac * 100)}%", f, ArtworkTheme.Text, rx - 4 * s, 132 * s, 260 * s, 70 * s);
 

@@ -44,7 +44,8 @@ public sealed partial class ClassicSurface : Control
     public string LaunchMode => _launchMode;
     public string CurrentView => IsInstaller ? "installer:"+_view : _view;
     public string CurrentStep => _steps.FirstOrDefault(s=>s.State=="run")?.Title ?? "";
-    public double Progress => _steps.FirstOrDefault(s=>s.State=="run") is {Total:>0} run ? run.Done/run.Total : 0;
+    public double Progress => _succeeded && !_jobDry ? 1 : _overallProgress;
+    double _overallProgress;
     public IReadOnlyList<string> LogLines => _log;
     double? _frozenTime;
     public double? FrozenTime // deterministic artwork verification; null in normal use
@@ -421,6 +422,7 @@ public sealed partial class ClassicSurface : Control
         if(line.Trim()=="SHADER_PRIORITY?") { _modal=new Prompt{Title="SHADER COMPILE",Body="Shaders compile in this window, and the bar shows how far along they are. Low keeps the PC easy to use. Medium is in between. High finishes sooner, and the PC feels slower until it is done.",Yes="HIGH",Mid="MEDIUM",No="LOW",OnYes=()=>InputRequested?.Invoke("high"),OnMid=()=>InputRequested?.Invoke("medium"),OnNo=()=>InputRequested?.Invoke("low")};return; }
         if(line.StartsWith("##ssbu ")) { try {using var doc=JsonDocument.Parse(line[7..]);HandleEvent(doc.RootElement);}catch(JsonException){Log(line);} }
         else { Log(line);if(!_jsonSeen&&!ParseSetupLine(line.Trim()))ApplyMeasure(line.Trim());if(line.Trim().StartsWith("ERROR")||line.StartsWith("FAILED"))_errMsg=line;_status=line; }
+        UpdateOverallProgress();
         InvalidateVisual();
     }
     public void EndInstall(int exit)

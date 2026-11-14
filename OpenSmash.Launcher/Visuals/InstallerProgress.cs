@@ -8,9 +8,26 @@ public sealed partial class ClassicSurface
         void ResetSteps()
         {
             _steps.Clear();
+            _overallProgress = 0;
             _jsonSeen = false; _fallbackN = 0;
             _errMsg = _errHint = _errAction = _doneMsg = "";
             _doneOk = null;
+        }
+
+        void UpdateOverallProgress()
+        {
+            double total = 0, done = 0;
+            foreach (var step in _steps)
+            {
+                total += step.Est;
+                double fraction = step.State is "done" or "skip" or "dry" ? 1
+                    : step.Total > 0 ? Math.Clamp(step.Done / step.Total, 0, 1) : 0;
+                done += step.Est * fraction;
+            }
+            // Unix shader preparation runs separately after the backend finishes.
+            if (_optShaders && Project?.Platform != OpenSmash.Core.DesktopPlatform.Windows
+                && !_steps.Any(step => step.Id == "shaders")) total += 600;
+            if (total > 0) _overallProgress = Math.Max(_overallProgress, Math.Min(.99, done / total));
         }
 
         Step AddStep(string id, string title, double est)
