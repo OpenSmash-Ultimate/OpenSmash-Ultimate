@@ -1207,10 +1207,12 @@ function Get-DetectedFolders {
 }
 
 function Get-UpdateBuildAnswers {
+    <# The last build's folders, for the build after an update. One that is not there any more is left out: a game
+       already set up needs none of them, and build_game.py names the folder itself when a step still needs it.
+       (It used to stop the update with "Open Setup", which the launcher has no way to open: issue #340.) #>
     $folders = Get-DetectedFolders
-    if (-not $folders.Game) { throw 'The saved game folder could not be found. Open Setup and select the game files, then retry the update.' }
-    if (-not $folders.Keys) { throw 'The saved keys folder could not be found. Open Setup and select the keys, then retry the update.' }
-    return @{ Game = $folders.Game; Keys = $folders.Keys; Firmware = $folders.Firmware }
+    $there = { param($p) if ($p -and (Test-Path -LiteralPath $p -PathType Container)) { $p } else { $null } }
+    return @{ Game = (& $there $folders.Game); Keys = (& $there $folders.Keys); Firmware = (& $there $folders.Firmware) }
 }
 
 function Test-KeysFolder {
@@ -1553,7 +1555,9 @@ function Step-Extras {
 function Step-Build {
     param([hashtable]$Answers)
     Write-Step '[9/10] Build the game'
-    $build = @((Join-Path $Root 'tools\build_game.py'), '--game', $Answers.Game, '--keys', $Answers.Keys)
+    $build = @((Join-Path $Root 'tools\build_game.py'))
+    if ($Answers.Game) { $build += @('--game', $Answers.Game) }   # (none: the update's build, whose saved folder is gone)
+    if ($Answers.Keys) { $build += @('--keys', $Answers.Keys) }
     if ($Answers.Firmware) { $build += @('--firmware', $Answers.Firmware) } else { $build += '--no-firmware' }   # (none: the open fonts)
     if ($Jobs) { $build += @('--jobs', "$Jobs") }
     if ($SkipBuild) { $build += '--prepare-only' }
@@ -1561,7 +1565,16 @@ function Step-Build {
     # (an update of the mod manager or other tools only: the game is as it was, no build - its own check)
     if (-not $Rebuild -and -not $SkipBuild -and (Test-Path (Join-Path $Root 'build\ssbu.exe')) -and
         (Invoke-Python @((Join-Path $Root 'tools\skyline.py'), 'uptodate')) -eq 0) {
-        Write-Info 'nothing that goes into the game changed: no build (run OpenSmash.exe again to build it anyway)'
+        Write-Info 'nothing that goes into the game changed: no build'
+        # (DLC put in the game folder since the last build: build_game.py's step 7 reads it, quickly and without a
+        # build, since the game reads its DLC list when it starts. Once a build had found none, nothing ran step 7
+        # again: issue #340. Not being able to read it leaves the game as it was.)
+        if ($Answers.Game) {
+            Write-Info 'the game folder is read again, for DLC added since the last build'
+            if ((Invoke-Python ($build + '--prepare-only')) -ne 0) {
+                Write-Warn 'the game folder could not be read again (see above): DLC added since the last build is not turned on yet; the game is as it was'
+            }
+        }
         return $true
     }
     if ($SkipBuild) { Write-Info 'the program, fonts, data, DLC and fighters; not the build itself (-SkipBuild)' }
