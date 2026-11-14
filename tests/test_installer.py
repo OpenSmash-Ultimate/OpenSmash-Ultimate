@@ -193,18 +193,62 @@ class InstallerDecisionTests(unittest.TestCase):
         self.assertIn('--game D:\\G --keys D:\\K --firmware D:\\F', out)
 
     def test_update_build_answers_use_saved_game_folders(self):
-        got = ps("$global:saved = @{ game = 'D:\\Game'; keys = 'D:\\Keys'; firmware = 'D:\\Firmware' }; "
-                 "function Get-SavedFolders { $global:saved }; "
-                 "function Get-FolderCandidates { @{ Game = @(); Keys = @(); Firmware = @() } }; "
-                 "$a = Get-UpdateBuildAnswers; "
-                 "@{ game = $a.Game; keys = $a.Keys; firmware = $a.Firmware }")
-        self.assertEqual(got, {'game': 'D:\\Game', 'keys': 'D:\\Keys', 'firmware': 'D:\\Firmware'})
+        with tempfile.TemporaryDirectory() as tmp:
+            game, keys, fw = (os.path.join(tmp, n) for n in ('Game', 'Keys', 'Firmware'))
+            for d in (game, keys, fw):
+                os.makedirs(d)
+            got = ps(f"$global:saved = @{{ game = '{game}'; keys = '{keys}'; firmware = '{fw}' }}; "
+                     "function Get-SavedFolders { $global:saved }; "
+                     "function Get-FolderCandidates { @{ Game = @(); Keys = @(); Firmware = @() } }; "
+                     "$a = Get-UpdateBuildAnswers; "
+                     "@{ game = $a.Game; keys = $a.Keys; firmware = $a.Firmware }")
+            self.assertEqual(got, {'game': game, 'keys': keys, 'firmware': fw})
 
-        out = ps_text("$global:saved = @{ game = 'D:\\Game' }; "
-                      "function Get-SavedFolders { $global:saved }; "
-                      "function Get-FolderCandidates { @{ Game = @(); Keys = @(); Firmware = @() } }; "
-                      "try { Get-UpdateBuildAnswers } catch { 'ERROR: ' + $_.Exception.Message }")
-        self.assertIn('ERROR: The saved keys folder could not be found.', out)
+            # (a saved folder that is gone - moved, a drive unplugged - is left out, not an error: a game already set
+            # up needs none, and the launcher has no setup to open; issue #340)
+            os.rmdir(game)
+            out = ps_text(f"$global:saved = @{{ game = '{game}'; keys = '{keys}' }}; "
+                          "function Get-SavedFolders { $global:saved }; "
+                          "function Get-FolderCandidates { @{ Game = @(); Keys = @(); Firmware = @() } }; "
+                          "try { $a = Get-UpdateBuildAnswers; 'GAME: [' + $a.Game + '] KEYS: [' + $a.Keys + ']' } "
+                          "catch { 'ERROR: ' + $_.Exception.Message }")
+            self.assertIn(f'GAME: [] KEYS: [{keys}]', out)
+            self.assertNotIn('ERROR', out)
+
+    def test_current_build_reads_the_game_folder_again_for_dlc(self):
+        # (issue #340: DLC added after the first build; no build is needed, but step 7 of build_game.py is run)
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, 'build'))
+            Path(tmp, 'build', 'ssbu.exe').write_bytes(b'current game')
+            run = (f"$Root = '{tmp}'; $DryRun = $false; $Rebuild = $false; $SkipBuild = $false; "
+                   "$global:calls = [Collections.Generic.List[string]]::new(); "
+                   "function Invoke-Python { param($Arguments) $a = @($Arguments); $a[0] = Split-Path $a[0] -Leaf; "
+                   "$global:calls.Add($a -join ' '); if ($a[0] -eq 'build_game.py') { return $global:prep }; return 0 }; ")
+            out = ps_text(run + "$global:prep = 0; "
+                          "$r = Step-Build @{ Game = 'D:\\Game'; Keys = 'D:\\Keys'; Firmware = '' }; "
+                          "'RESULT: ' + $r; 'CALLS: ' + ($global:calls -join '|')")
+            self.assertIn('build_game.py --game D:\\Game --keys D:\\Keys --no-firmware --prepare-only', out)
+            self.assertIn('RESULT: True', out)
+            self.assertNotIn('run OpenSmash.exe again', out)
+
+            # (the folder can't be read: a warning, and the update goes on with the game as it was)
+            out = ps_text(run + "$global:prep = 1; "
+                          "$r = Step-Build @{ Game = 'D:\\Game'; Keys = 'D:\\Keys'; Firmware = '' }; 'RESULT: ' + $r")
+            self.assertIn('could not be read again', out)
+            self.assertIn('RESULT: True', out)
+
+            # (no game folder - the update's, gone since: nothing is read, nothing stops)
+            out = ps_text(run + "$global:prep = 1; "
+                          "$r = Step-Build @{ Game = $null; Keys = $null; Firmware = $null }; "
+                          "'RESULT: ' + $r; 'CALLS: ' + ($global:calls -join '|')")
+            self.assertNotIn('build_game.py', out.split('CALLS: ')[-1])
+            self.assertIn('RESULT: True', out)
+
+    def test_build_leaves_out_a_folder_it_was_not_given(self):
+        out = ps_text("$DryRun = $true; $Script:Python = @('python'); "
+                      "Step-Build @{ Game = $null; Keys = $null; Firmware = $null } | Out-Null")
+        self.assertIn('build_game.py --no-firmware', out)
+        self.assertNotIn('--game', out)
 
     def test_update_game_build_checks_prerequisites_before_build(self):
         out = ps_text("$global:steps = [Collections.Generic.List[string]]::new(); "
