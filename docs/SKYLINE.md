@@ -227,6 +227,11 @@ files, a later mod winning; the runtime reads the order from `dump/skyline/mods.
 - hookable functions: `recomp.py` makes each hook target in `dump/skyline/hooks.txt` reachable
   through the dispatch table from direct calls too (`f_X` -> `rt_lookup(X)`, the body as `f_X_orig`);
   per-module fingerprints, so only the modules concerned are generated again.
+- direct calls to a hooked function (Windows): `runtime/hle_detour.c` patches the function's first
+  bytes when the plugin hooks it, so a new function hook needs no rebuild. Where clang copied the
+  function into a caller in its file, that copy never reaches the patch: `skyline.py stale_hooks`
+  compiles that one file again with `-Rpass=inline` (once, kept in `build/work/inlined.json`) and
+  asks for a game update only then, which puts the function behind its dispatcher.
 - CRC32 instructions (crc32b/h/w/x, crc32c*: plugins compute Hash40s with them) and the
   `fcvtn`/`fcvtl` 64-bit-destination forms.
 - getting the order of hashbrown maps right, Smashline costume rules (a slot a plugin claimed

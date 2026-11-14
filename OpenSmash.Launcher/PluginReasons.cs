@@ -24,7 +24,9 @@ public sealed partial class MainWindow
             bool sameAsWaiting = reason.Contains("isn't translated") || reason.Contains("isn't recompiled");
             if (!string.IsNullOrEmpty(reason) && !(waiting.Count > 0 && sameAsWaiting))
             {
-                if (reason.Contains("hooks a function"))
+                if (reason.Contains("copied into its callers"))
+                    parts.Add("A mod hooks a function the game also runs from copies inside other functions. The game has to be updated once so the hook reaches those too.");
+                else if (reason.Contains("hooks a function"))
                     parts.Add("A mod hooks the middle of a function. The game has to be updated once so that hook can run.");
                 else if (reason.StartsWith("the plugin "))
                     parts.Add(reason.Substring("the plugin ".Length).Replace(" isn't in the game", "") + " was added. The game has to be updated once so that plugin can run.");

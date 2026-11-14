@@ -136,33 +136,39 @@ def template_module(name):
     return name == "smashline_test" or name.startswith("smashline_test_")
 
 
-def write_module_name(path, name):
-    """Smashline identifies a plugin by the length-prefixed name in front of MOD0, not by the
-    file name. That slot ends at MOD0, so a longer name stops there."""
-    from nso import Module
-    m = Module(path)
+def with_module_name(data, m, name):
+    """The NRO's bytes (`data`, module `m`) with the module name `name`. Smashline identifies a plugin
+    by the length-prefixed name in front of MOD0, not by the file name. That slot ends at MOD0, so a
+    longer name stops there. Unchanged when there is no such slot."""
     start = m.rodata.mem + 8
     mod0 = bytes(m.image).find(b"MOD0", start)
-    if mod0 < 0:
-        return m.module_name()
-    raw = name.encode("ascii", "ignore")[:mod0 - start]
+    raw = name.encode("ascii", "ignore")[:mod0 - start] if mod0 >= 0 else b""
     if not raw:
-        return m.module_name()
+        return bytes(data)
     blob = struct.pack("<I", len(raw)) + raw + b"\0" * (mod0 - start - len(raw))
-    with open(path, "r+b") as f:
-        f.seek(m.rodata.mem + 4)
-        f.write(blob)
-    return raw.decode("ascii")
+    out = bytearray(data)
+    out[m.rodata.mem + 4:m.rodata.mem + 4 + len(blob)] = blob
+    return bytes(out)
 
 
-def stamp_identity(path, prefer, p):
-    """A Skyline template leaves every moveset named smashline_test. Smashline then treats the
-    second one as the first, and its character never reaches the select screen. The name becomes
-    the character the mod folder names."""
+def write_module_name(path, name):
+    """with_module_name, written into the file at `path` (a copy in dump/nro/, never a mod's own file)."""
     from nso import Module
     m = Module(path)
+    with open(path, "rb") as f:
+        data = with_module_name(f.read(), m, name)
+    with open(path, "wb") as f:
+        f.write(data)
+    return Module(path).module_name()
+
+
+def identity(m, prefer, p):
+    """The module name a plugin's copy gets: a Skyline template leaves every moveset named
+    smashline_test. Smashline then treats the second one as the first, and its character never
+    reaches the select screen, so the copy is named after the character the mod folder names.
+    None: the plugin keeps its own name."""
     if not prefer or not template_module(m.module_name()):
-        return
+        return None
     taken = set()
     bases = os.path.join(p.nro, "bases.txt")
     if os.path.isfile(bases):
@@ -173,7 +179,27 @@ def stamp_identity(path, prefer, p):
     name = prefer
     while name in taken:
         name += "_"
-    write_module_name(path, name)
+    return name
+
+
+def placed_bytes(source, m, name):
+    """What dump/nro/ holds for the plugin at `source` (module `m`): its bytes, under `name` (identity)
+    when it has one. The mod's own file is only read."""
+    with open(source, "rb") as f:
+        data = f.read()
+    return with_module_name(data, m, name) if name else data
+
+
+def place(path, data):
+    """Write a plugin's copy unless it already holds these bytes (its date then stays as it is)."""
+    if os.path.isfile(path):
+        with open(path, "rb") as f:
+            if f.read() == data:
+                return
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
 
 
 def rename_template(p, build_id, current, prefer):
@@ -204,19 +230,48 @@ def rename_template(p, build_id, current, prefer):
     return name
 
 
+def retire_older(p, source, build_id, record):
+    """Forget the earlier builds of the plugin at `source` (the record's entries for the same file under
+    another build id): their rows of bases.txt, their copies in dump/nro/ and their record entries. Returns
+    the module name the latest of them had (the new build keeps it), or None."""
+    rel = os.path.relpath(source, p.tree)
+    older = [(b, e["module"]) for b, e in record.items()
+             if b != build_id and isinstance(e, dict) and e.get("module") and
+             os.path.normcase(os.path.normpath(e.get("file", ""))) == os.path.normcase(os.path.normpath(rel))]
+    if not older:
+        return None
+    bases = os.path.join(p.nro, "bases.txt")
+    rows = [l.split() for l in open(bases, encoding="utf-8") if l.strip()] if os.path.isfile(bases) else []
+    gone = {b for b, _name in older}
+    names = {r[0] for r in rows if len(r) == 4 and r[3] in gone}
+    with open(bases, "w", encoding="utf-8", newline="\n") as f:
+        f.writelines(" ".join(r) + "\n" for r in rows if not (len(r) == 4 and r[3] in gone))
+    for name in names:
+        copy = os.path.join(p.nro, name + ".nro")
+        if os.path.isfile(copy):
+            os.remove(copy)
+    for b in gone:
+        del record[b]
+    kept = [name for _b, name in older if name in names]
+    return kept[-1] if kept else None
+
+
 def module_of(p, source, record, prefer=None):
     """The module name tools/recomp.py gives the plugin: placed in dump/nro/ if it is new."""
     import recomp as rc
     from nso import Module
-    stamp_identity(source, prefer, p)
     m = Module(source)
     placed = os.path.join(p.nro, record[m.build_id]["module"] + ".nro") if m.build_id in record else None
     if placed and os.path.exists(placed):
-        if not filecmp.cmp(source, placed, shallow=False):   # (same build, other bytes: a ported plugin, tools/port_plugin.py)
-            shutil.copyfile(source, placed)
+        # (same build, other bytes: a ported plugin, tools/port_plugin.py)
+        named = record[m.build_id]["module"] if prefer and template_module(m.module_name()) else None
+        place(placed, placed_bytes(source, m, named))
         return m.build_id, rename_template(p, m.build_id, record[m.build_id]["module"], prefer)
     rc.NRO_DIR = p.nro
-    shutil.copyfile(source, os.path.join(p.nro, m.build_id[:16] + ".nro"))
+    # (a new build of a plugin the game has: it takes the old one's place and name, not a name with a _ more)
+    reused = retire_older(p, source, m.build_id, record)
+    named = (reused or identity(m, prefer, p)) if prefer and template_module(m.module_name()) else None
+    place(os.path.join(p.nro, m.build_id[:16] + ".nro"), placed_bytes(source, m, named))
     rc.nro_modules()   # (names it after the module, gives it an address: bases.txt)
     for row in open(os.path.join(p.nro, "bases.txt"), encoding="utf-8").read().splitlines():
         parts = row.split()
@@ -466,11 +521,13 @@ def patch_lines(p):
 
 
 def _hook_sources(tree):
-    """(module, folder of its generated C) for every module with an inline hook or a code patch."""
+    """(module, folder of its generated C) for every module with an inline hook or a code patch, and
+    (Windows: copied_hooks) a function hook."""
     p = Paths(tree)
     inline, patches = inline_targets(p), patch_lines(p)
+    functions = hook_targets(p) if os.name == "nt" else {}
     found = []
-    for mod in sorted(set(inline) | set(patches)):
+    for mod in sorted(set(inline) | set(patches) | set(functions)):
         table = os.path.join(tree, "build", mod, "g_module.c") if mod in ("main", "subsdk0", "sdk") else \
             os.path.join(tree, "build", "nro", mod, "g_module.c")
         found.append((mod, os.path.dirname(table), inline, patches))
@@ -501,37 +558,139 @@ def _hooks_sig(tree):
 
 
 def stale_hooks(tree):
-    """The game modules whose generated C lacks an inline hook or a code patch the runtime listed.
-    A function hook (A64HookFunction) is patched into that function when the game starts, so it
-    is not a reason to rebuild the program. The answer is cached: reading every generated file is
-    what made the mods page wait."""
+    """The game modules whose generated C lacks an inline hook or a code patch the runtime listed,
+    or (Windows) has a function hook the compiler copied into a caller (copied_hooks). Any other
+    function hook (A64HookFunction) is patched into that function when the game starts
+    (runtime/hle_detour.c), so it is not a reason to rebuild the program. The answer is cached:
+    reading every generated file is what made the mods page wait."""
+    return _hooks_state(tree)["mods"]
+
+
+def copied_hooks(tree):
+    """The modules of stale_hooks that are there for a function hook the compiler copied into a
+    caller in the same file. The patch at the function's start does not reach that copy, so the
+    module's C is generated again with the function behind its dispatcher (recomp.py hookable)."""
+    return _hooks_state(tree)["copied"]
+
+
+def _hooks_state(tree):
     cache = os.path.join(tree, "build", "work", "stale_hooks.json")
     sig = _hooks_sig(tree)
     try:
         with open(cache, encoding="utf-8") as f:
             saved = json.load(f)
-        if saved.get("sig") == sig and isinstance(saved.get("mods"), list):
-            return saved["mods"]
-    except (OSError, ValueError):
+        if saved.get("sig") == sig and isinstance(saved.get("mods"), list) and isinstance(saved.get("copied"), list):
+            return saved
+    except (OSError, ValueError, AttributeError):
         pass
-    out = _stale_hooks(tree)
+    mods, copied = _stale_hooks(tree)
+    out = {"sig": sig, "mods": mods, "copied": copied}
     try:
         os.makedirs(os.path.dirname(cache), exist_ok=True)
         with open(cache, "w", encoding="utf-8") as f:
-            json.dump({"sig": sig, "mods": out}, f)
+            json.dump(out, f)
     except OSError:
         pass
     return out
 
 
+INLINED_REMARK = re.compile(r"'f_([0-9a-f]+)' inlined into ")
+DEFINITION = re.compile(r"void (f_[0-9a-f]+)\(Cpu \*c\)")
+
+
+def _defined_in(folder, names):
+    """{name: generated file} of the functions among `names` the module's files define."""
+    want, out = set(names), {}
+    for n in sorted(os.listdir(folder)):
+        if not want:
+            break
+        if not (n.startswith("g") and n.endswith(".c")) or n == "g_module.c":
+            continue
+        with open(os.path.join(folder, n), encoding="utf-8") as f:
+            for line in f:
+                m = DEFINITION.match(line) if line.startswith("void f_") else None
+                if m and m.group(1) in want:
+                    out[m.group(1)] = os.path.join(folder, n)
+                    want.discard(m.group(1))
+    return out
+
+
+def inlined_functions(tree, src):
+    """Guest addresses of the functions clang copies into a caller when it compiles generated file
+    `src` (its -Rpass=inline remarks), at the level the build compiled it (compile_times.json); None
+    if it did not compile. The ladder may have compiled it with fewer functions optimised, which
+    only copies fewer. Kept in build/work/inlined.json by the file's content and the compile command,
+    so each file is compiled once for this."""
+    import cc
+    import ladder
+    build = os.path.join(tree, "build")
+    rel = os.path.relpath(src, build).replace(os.sep, "/")
+    try:
+        with open(os.path.join(build, ladder.TIMES_FILE), encoding="utf-8") as f:
+            level = json.load(f)["files"][rel]["level"]
+    except (OSError, ValueError, KeyError, TypeError):
+        level = "/O2"
+    path = os.path.join(build, "work", "inlined.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        saved = {}
+    saved = saved if isinstance(saved, dict) else {}
+    with tempfile.TemporaryDirectory(prefix="inlined ") as tmp:
+        cmd = cc.compile_command(src, os.path.join(tmp, "x.obj"), level, cc.GAME_CFLAGS)
+        cmd[1:1] = ["/clang:-Rpass=inline"]
+        with open(src, "rb") as f:
+            key = hashlib.sha256(f.read() + "\0".join([level, *cc.GAME_CFLAGS]).encode("utf-8")).hexdigest()
+        entry = saved.get(rel)
+        if isinstance(entry, dict) and entry.get("key") == key and isinstance(entry.get("copied"), list):
+            return {int(a, 16) for a in entry["copied"]}
+        r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode:
+        return None
+    found = sorted({int(a, 16) for a in INLINED_REMARK.findall(r.stdout + r.stderr)})
+    saved[rel] = {"key": key, "copied": [f"{a:x}" for a in found]}
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(saved, f)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
+    return set(found)
+
+
+def _copied_targets(tree, folder, base, offsets):
+    """Of a module's function hook targets (offsets), the addresses of those its C has no dispatcher
+    for yet that the compiler copied into a caller (inlined_functions; one that did not compile:
+    taken as copied)."""
+    with open(os.path.join(folder, "g_module.c"), encoding="utf-8") as f:
+        table = f.read()
+    names = {f"f_{base + o:x}": base + o for o in offsets if f"f_{base + o:x}_orig" not in table}
+    by_file = {}
+    for name, src in _defined_in(folder, names).items():
+        by_file.setdefault(src, set()).add(names[name])
+    out = set()
+    for src, addrs in sorted(by_file.items()):
+        copied = inlined_functions(tree, src)
+        out |= addrs if copied is None else addrs & copied
+    return out
+
+
 def _stale_hooks(tree):
+    """(stale_hooks, copied_hooks)."""
     import recomp as rc
     rc.TREE = tree
-    out = []
+    out, copied = [], []
+    functions = hook_targets(Paths(tree)) if os.name == "nt" else {}
     for mod, folder, inline, patches in _hook_sources(tree):
         table = os.path.join(folder, "g_module.c")
         base = rc.MODULES.get(mod) or rc.nro_modules().get(mod) if os.path.exists(table) else None
         if not base:
+            continue
+        if functions.get(mod) and _copied_targets(tree, folder, base, functions[mod]):
+            out.append(mod)
+            copied.append(mod)
             continue
         rec = os.path.join(folder, "plugin_patches.txt")
         if patches.get(mod, "") != (open(rec, encoding="utf-8").read() if os.path.exists(rec) else ""):
@@ -544,7 +703,7 @@ def _stale_hooks(tree):
                     have |= {int(h, 16) for h in re.findall(r"rt_inline_hook\(c, 0x([0-9A-Fa-f]+)ull\)", open(os.path.join(folder, n), encoding="utf-8").read())}
             if any(base + o not in have for o in inline[mod]):
                 out.append(mod)
-    return out
+    return out, copied
 
 
 def programs(tree, platform=None):
@@ -902,6 +1061,8 @@ def game_link_reason(tree, mods=True):
         if name and not built_in(tree, name):
             return f"the standard plugin {name} isn't in the game"
     if mods and stale_hooks(tree):
+        if set(stale_hooks(tree)) <= set(copied_hooks(tree)):
+            return "a plugin hooks a function the game copied into its callers"
         return "a plugin hooks a function the game has no slot for"
     return None
 
