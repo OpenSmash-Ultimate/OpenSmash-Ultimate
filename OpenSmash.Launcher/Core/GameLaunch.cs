@@ -6,18 +6,33 @@ public static partial class GameLaunch
 {
     // The child writes directly to files, never to pipes owned by the launcher.
     // Disposing its process handles after readiness therefore leaves the game alive.
-    public static async Task<int> StartAndWait(Command command, DesktopPlatform platform, string logPath,
-        string? nativeLog = null, CancellationToken cancellation = default)
+    public static Task<int> StartAndWait(Command command, DesktopPlatform platform, string logPath,
+        string? nativeLog = null, CancellationToken cancellation = default) =>
+        Launch(command, logPath, nativeLog, null, cancellation);
+
+    public static Task<int> Monitor(Command command, string logPath, Action ready,
+        string? nativeLog = null, CancellationToken cancellation = default) =>
+        Launch(command, logPath, nativeLog, ready, cancellation);
+
+    static async Task<int> Launch(Command command, string logPath, string? nativeLog,
+        Action? ready, CancellationToken cancellation)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
         if (nativeLog != null) { Directory.CreateDirectory(Path.GetDirectoryName(nativeLog)!); File.WriteAllText(nativeLog, ""); }
         using var child = OperatingSystem.IsWindows() ? StartWindows(command, logPath) : StartUnix(command, logPath);
+        bool opened = false;
         while (!child.HasExited)
         {
             cancellation.ThrowIfCancellationRequested();
-            if (child.HasWindow || IsReady(logPath) || nativeLog != null && IsReady(nativeLog)) return child.Id;
+            if (!opened && (child.HasWindow || IsReady(logPath) || nativeLog != null && IsReady(nativeLog)))
+            {
+                if (ready == null) return child.Id;
+                opened = true;
+                ready();
+            }
             await Task.Delay(100, cancellation);
         }
+        if (ready != null) return child.ExitCode;
         throw new InvalidOperationException($"The game stopped before its window opened (exit {child.ExitCode}). See {logPath} for details.");
     }
 

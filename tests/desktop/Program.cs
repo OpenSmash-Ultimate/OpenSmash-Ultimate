@@ -27,6 +27,13 @@ if(args.Length==3&&args[0]=="--game-launch-fixture")
     while(!File.Exists(args[1]+".release")&&DateTime.UtcNow<deadline)await Task.Delay(30);
     Console.WriteLine("after launcher handoff");File.WriteAllText(args[1],"survived");return;
 }
+if(args.Contains("--game-crash-fixture"))
+{
+    Console.WriteLine("[gfx] window ready");
+    var deadline=DateTime.UtcNow.AddSeconds(30);
+    while(!File.Exists(args[^1])&&DateTime.UtcNow<deadline)await Task.Delay(30);
+    Console.Error.WriteLine("[error] synthetic renderer failure");Environment.ExitCode=23;return;
+}
 if(args.Contains("--game-fail-fixture")){Console.Error.WriteLine("synthetic startup failure");Environment.ExitCode=9;return;}
 
 if(args.Length==1&&args[0]=="--source-info"){Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(BootstrapSource.Bundled()));return;}
@@ -124,12 +131,44 @@ try
     catch(InvalidOperationException error){failedBeforeWindow=error.Message.Contains("exit 9");}
     Check(failedBeforeWindow,"startup failure is reported instead of closing the launcher");
 
+    int readyCount=0;
+    string crashLog=Path.Combine(root,"crash-game.log");
+    string crashRelease=Path.Combine(root,"release-crash");
+    int crashExit=await GameLaunch.Monitor(new Command("dotnet",[fixture,"--game-crash-fixture",crashRelease],root),crashLog,()=>{readyCount++;File.WriteAllText(crashRelease,"");});
+    Check(readyCount==1&&crashExit==23,"game monitor waits beyond readiness and captures abnormal exit exactly once");
+    Check(GameExitReport.Describe(crashExit,crashLog).Contains("synthetic renderer failure"),"crash report includes the actual logged error");
+    Check(GameExitReport.Describe(unchecked((int)0xC0000005),Path.Combine(root,"missing.log")).Contains("access violation"),"Windows crash reason is available even without a log");
+    Check(GameExitReport.Describe(23,Path.Combine(root,"missing.log")).Contains("did not report a specific cause"),"unknown crash reasons are not invented");
+    string normalMarker=Path.Combine(root,"normal-game-marker");
+    int normalExit=await GameLaunch.Monitor(new Command("dotnet",[fixture,"--game-launch-fixture",normalMarker,"normal"],root),Path.Combine(root,"normal-game.log"),()=>File.WriteAllText(normalMarker+".release",""));
+    Check(normalExit==0,"normal game exit is distinguished from a crash");
+    int earlyReady=0;
+    int earlyExit=await GameLaunch.Monitor(new Command("dotnet",[fixture,"--game-fail-fixture"],root),Path.Combine(root,"early-game.log"),()=>earlyReady++);
+    Check(earlyExit==9&&earlyReady==0,"startup crashes retain their exit code without hiding the launcher");
+
     AppBuilder.Configure<App>().WithInterFont().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions {
         UseHeadlessDrawing = false }).SetupWithoutStarting();
     File.WriteAllText(project.ConfigFile("display.ini"),"renderer = auto\nwindow = windowed\nwidth = 1280\nheight = 720\npacing = clock\n");
     var window = new MainWindow(["--project", root], root,enableBackgroundActions:false);
     window.Show(); window.Width=1440;window.Height=810;
     var surface=window.Surface;surface.FrozenTime=5;
+    var restoreAfterGame=typeof(MainWindow).GetMethod("RestoreAfterGame",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!;
+    surface.GameRunning=true;window.Hide();
+    restoreAfterGame.Invoke(window,[normalExit,crashLog,root]);
+    Check(window.IsVisible&&window.WindowState==WindowState.Normal&&!surface.GameRunning&&!surface.StartingGame,"normal game exit restores the hidden launcher instead of closing it");
+    Check(!surface.HasPrompt,"normal close such as Alt+F4 does not show a false crash warning");
+    surface.GameRunning=true;window.Hide();
+    restoreAfterGame.Invoke(window,[crashExit,crashLog,root]);
+    Check(window.IsVisible&&surface.HasPrompt&&!surface.GameRunning,"abnormal game exit restores the launcher with a crash popup");
+    surface.Activate("modal:no");
+    bool openedCrashLogs=false;
+    surface.ShowGameFailure("Synthetic crash",()=>openedCrashLogs=true);
+    Check(surface.HasPrompt,"unexpected game exit opens a popup");
+    surface.Activate("modal:no");
+    Check(!surface.HasPrompt&&!openedCrashLogs,"Close dismisses the crash popup without opening logs");
+    surface.ShowGameFailure("Synthetic crash",()=>openedCrashLogs=true);
+    surface.Activate("modal:yes");
+    Check(!surface.HasPrompt&&openedCrashLogs,"Open logs opens logs and dismisses the crash popup");
     Check(window.WindowDecorations==(OperatingSystem.IsWindows()?WindowDecorations.Full:WindowDecorations.None),"Windows uses native shell decorations while other platforms keep borderless mode");
     if(OperatingSystem.IsWindows())
     {

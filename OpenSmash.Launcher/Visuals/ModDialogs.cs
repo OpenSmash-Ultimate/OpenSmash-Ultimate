@@ -11,6 +11,13 @@ public sealed partial class ClassicSurface
     public void ShowModCheck(string text, List<(string gb, string file, string title)> updates)
     { _checkModsText = text; _checkModsUpdates = updates; _checkModsPromptAt = Now; _checkModsPrompt = true; InvalidateVisual(); }
 
+    public void ShowGameFailure(string reason, Action openLogs)
+    {
+        _modal = new Prompt { Title = "GAME CLOSED UNEXPECTEDLY", Body = reason,
+            Yes = "OPEN LOGS", No = "CLOSE", OnYes = openLogs };
+        UpdateNativeControls(); InvalidateVisual();
+    }
+
     bool ActivateModDialog(string id)
     {
         if (!_sharePrompt && !_checkModsPrompt) return false;

@@ -256,11 +256,23 @@ public sealed partial class MainWindow : Window
             await Task.Delay(150); // Give the starting state its first frame before preparing mods.
             if(Directory.Exists(p.PathIn("mods"))&&File.Exists(p.PathIn("mods","mods.json")))await ModCommand(Surface.LaunchMode=="vanilla"?"vanilla":"apply",refresh:false);
             Directory.CreateDirectory(p.PathIn("build"));
-            await GameLaunch.StartAndWait(Commands.Play(p,true),p.Platform,p.PathIn("build","opensmash-play.log"),
+            string log=p.PathIn("build","opensmash-play.log");
+            int exit=await GameLaunch.Monitor(Commands.Play(p,true),log,()=>{Surface.StartingGame=false;Hide();},
                 nativeLog:p.Platform==DesktopPlatform.MacOS?p.PathIn("build","play.log"):null);
-            Surface.GameRunning=false;Surface.StartingGame=false;Close();
+            RestoreAfterGame(exit,log,p.PathIn("build"));
+        }
+        catch(Exception error)
+        {
+            Surface.ShowGameFailure("The game could not start or could not be monitored. "+error.Message,()=>Commands.OpenPath(p.PathIn("build")));
+            Show();WindowState=WindowState.Normal;Activate();
         }
         finally{Surface.GameRunning=false;Surface.StartingGame=false;Surface.InvalidateVisual();}
+    }
+    void RestoreAfterGame(int exit,string log,string logsDirectory)
+    {
+        Surface.GameRunning=false;Surface.StartingGame=false;
+        if(exit!=0)Surface.ShowGameFailure(GameExitReport.Describe(exit,log),()=>Commands.OpenPath(logsDirectory));
+        Show();WindowState=WindowState.Normal;Activate();
     }
     Task<string> Python(string script,params string[] args)=>Python(script,args,null);
     async Task<string> Python(string script,string[] args,Action<string>? observe)
