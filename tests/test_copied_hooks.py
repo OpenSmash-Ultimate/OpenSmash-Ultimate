@@ -20,9 +20,17 @@ else:
 
 # f_7100000010 is small and called by f_7100000020 in the same file: clang copies it there.
 SOURCE = '''typedef struct Cpu { unsigned long long x[4]; } Cpu;
-void f_7100000010(Cpu *c) { c->x[0] += 1; }
-void f_7100000020(Cpu *c) { f_7100000010(c); c->x[1] = c->x[0] * 3; }
-void f_7100000030(Cpu *c) { c->x[2] ^= c->x[3]; }
+typedef void GuestFn(Cpu *c);
+void f_7100000010(Cpu *c) {
+    c->x[0] += 1;
+}
+void f_7100000020(Cpu *c) {
+    f_7100000010(c);
+    c->x[1] = c->x[0] * 3;
+}
+void f_7100000030(Cpu *c) {
+    c->x[2] ^= c->x[3];
+}
 '''
 
 
@@ -56,6 +64,23 @@ class CopiedHooks(unittest.TestCase):
 
     def test_function_not_copied_needs_none(self):
         self.hooks(0x30)
+        self.assertEqual(skyline.stale_hooks(self.tree), [])
+
+    def test_forwarded_function_needs_none(self):
+        # (a runtime wrap: the build forwards it, so no rebuild gives it a dispatcher; it asked after every update)
+        Path(self.main, 'g0000.c').write_text(SOURCE + 'GuestFn hle_wrap_7100000040;\n'
+                                              'void f_7100000040(Cpu *c) { hle_wrap_7100000040(c); }\n'
+                                              'void f_7100000050(Cpu *c) { f_7100000040(c); c->x[1] = 2; }\n')
+        self.table('')
+        self.hooks(0x40)
+        self.assertEqual(skyline.stale_hooks(self.tree), [])
+
+    def test_answer_of_an_earlier_check_not_kept(self):
+        self.hooks(0x30)
+        cache = Path(self.tree, 'build', 'work', 'stale_hooks.json')
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        sig = skyline._hooks_sig(self.tree).replace(f'v{skyline.HOOKS_CHECK_VERSION}|', 'v1|')
+        cache.write_text(json.dumps({'sig': sig, 'mods': ['main'], 'copied': ['main']}))
         self.assertEqual(skyline.stale_hooks(self.tree), [])
 
     def test_dispatcher_already_there_needs_none(self):

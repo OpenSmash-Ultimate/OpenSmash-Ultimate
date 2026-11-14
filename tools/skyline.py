@@ -537,10 +537,14 @@ def _hook_sources(tree):
     return found
 
 
+# (bump when what _stale_hooks decides changes: an answer cached by an earlier version is asked again)
+HOOKS_CHECK_VERSION = 2
+
+
 def _hooks_sig(tree):
-    """Changes when the hook lists or the generated C that carries them change."""
+    """Changes when the hook lists or the generated C that carries them change, or the check itself."""
     p = Paths(tree)
-    parts = []
+    parts = [f"v{HOOKS_CHECK_VERSION}"]
     for path in (p.hooks, os.path.join(p.skyline, "patches.txt")):
         if os.path.exists(path):
             st = os.stat(path)
@@ -602,7 +606,9 @@ DEFINITION = re.compile(r"void (f_[0-9a-f]+)\(Cpu \*c\)")
 
 
 def _defined_in(folder, names):
-    """{name: generated file} of the functions among `names` the module's files define."""
+    """{name: generated file} of the functions among `names` the module's files lift. One the build
+    forwards (a runtime wrap, an export it hands on: a one-line `{ other(c); }`) is left out: no
+    rebuild gives it a dispatcher, so asking for one would ask after every update."""
     want, out = set(names), {}
     for n in sorted(os.listdir(folder)):
         if not want:
@@ -612,7 +618,7 @@ def _defined_in(folder, names):
         with open(os.path.join(folder, n), encoding="utf-8") as f:
             for line in f:
                 m = DEFINITION.match(line) if line.startswith("void f_") else None
-                if m and m.group(1) in want:
+                if m and m.group(1) in want and line.rstrip().endswith("{"):
                     out[m.group(1)] = os.path.join(folder, n)
                     want.discard(m.group(1))
     return out
