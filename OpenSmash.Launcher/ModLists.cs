@@ -48,10 +48,11 @@ public sealed partial class MainWindow
     async Task AddLocalMod()
     {
         CheckModIdle();
-        var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = "Choose a mod folder", AllowMultiple = false });
+        // (asked before the folder picker, so the choice is seen up front)
+        string choice=await Surface.ChooseModImport();if(choice=="cancel"||_closed)return;
+        var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = choice=="link" ? "Choose a mod folder to add as a link" : "Choose a mod folder to copy", AllowMultiple = false });
         if (folders.FirstOrDefault()?.TryGetLocalPath() is not string path) return;
         CheckModIdle();
-        string choice=await Surface.ChooseModImport();if(choice=="cancel"||_closed)return;
         string name=Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
         string destination=RequireProject().PathIn("mods",name);
         if(Directory.Exists(destination)||File.Exists(destination))throw new InvalidOperationException("A mod called "+name+" is already installed.");

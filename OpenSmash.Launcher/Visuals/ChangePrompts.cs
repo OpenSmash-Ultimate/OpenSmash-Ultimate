@@ -33,7 +33,7 @@ public sealed partial class ClassicSurface
     public Task<string> ChooseModImport()
     {
         _importChoice=new(TaskCreationOptions.RunContinuationsAsynchronously);
-        _modal=new Prompt{Title="ADD MOD",Body="Copy the selected folder, or add a symbolic link so changes to the original folder are shared. A link needs its original folder to stay in place.",Yes="COPY",Mid="ADD AS LINK",No="CANCEL",OnYes=()=>_importChoice?.TrySetResult("copy"),OnMid=()=>_importChoice?.TrySetResult("link"),OnNo=()=>_importChoice?.TrySetResult("cancel")};
+        _modal=new Prompt{Title="ADD MOD",Body="Copy a mod folder into this project, or add it as a symbolic link so changes to the original folder are shared. A link needs its original folder to stay in place. You choose the folder next.",Yes="COPY",Mid="ADD AS LINK",No="CANCEL",OnYes=()=>_importChoice?.TrySetResult("copy"),OnMid=()=>_importChoice?.TrySetResult("link"),OnNo=()=>_importChoice?.TrySetResult("cancel")};
         UpdateNativeControls();InvalidateVisual();return _importChoice.Task;
     }
     public void CancelChangePrompt(){_importChoice?.TrySetResult("cancel");FinishChangeChoice("cancel");}
