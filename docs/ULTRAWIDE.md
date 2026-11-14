@@ -8,6 +8,12 @@ Goals agreed with the owner: the fight must stay exactly what 16:9 computes (onl
 stays in the middle 16:9, unstretched; the P1/CPU tags and the magnifying glasses sit on their fighters;
 the camera should feel like 16:9's (centred, pulling in, not showing much past the stage).
 
+**Every change reaches both renderers and every supported system** (owner, 2026-11-14). A change to the
+picture, the views or the HUD lands in Direct3D 11 and Vulkan together, and on Windows and Linux together.
+The decisions belong in shared code (`gpu_aspect.c` for the renderers, `host.c` for the game's side), and
+each back end only applies them. A change that one renderer or system can't carry yet is not done: it stays
+in [ULTRAWIDE-TODO.md](ULTRAWIDE-TODO.md) until it can. macOS (Metal) stays held at 16:9 until its port.
+
 ## HUD decisions
 
 One row per HUD element: its kind (static, dynamic or custom), what it does in each view, and why. When
@@ -29,14 +35,14 @@ do is in [ULTRAWIDE-TODO.md](ULTRAWIDE-TODO.md).
 | Battle Camera frame (camera controls) | dynamic | marks the whole picture | same | same | to do | 2026-11-12 (owner): the frame shows the shot, so it marks everything the picture shows. |
 | Menus, loading screens | static | black side areas | same | same | done (first PR) | 2026-11-12 (owner): black for the first PR; a blurred fill after it. |
 
-## Settings and switches (Direct3D 11 only: `renderer = direct3d11`)
+## Settings and switches (Direct3D 11 and Vulkan, on Windows and Linux)
 
 The words used here (picture shape, wide / zoomed / hybrid view, stage range, ...) are defined in
 [ULTRAWIDE-CONTEXT.md](ULTRAWIDE-CONTEXT.md).
 
 | Setting | What it does |
 | :--- | :--- |
-| `display.ini` `aspect = 16:9 \| auto \| W:H` (`SSBU_ASPECT` over it) | The picture shape, at most 32:9. 16:9 (the default): nothing changes. auto: the primary monitor's. Also in the settings menu ("Picture shape"): taken at the next frame, in fights too. 16:9 while an online match is set up or under way (taken before its GO!, never inside an online fight), and for the whole session unless `renderer = direct3d11` (auto draws with Vulkan on AMD, NVIDIA and Intel cards, not ported yet). |
+| `display.ini` `aspect = 16:9 \| auto \| W:H` (`SSBU_ASPECT` over it) | The picture shape, at most 32:9. 16:9 (the default): nothing changes. auto: the primary monitor's. Also in the settings menu ("Picture shape"): taken at the next frame, in fights too. 16:9 while an online match is set up or under way (taken before its GO!, never inside an online fight), and for the whole session on macOS (Metal not ported yet). On Linux, auto and the 21:9 / 32:9 snapping read the window's monitor through SDL. |
 | `display.ini` `view = wide \| zoomed \| hybrid` (`SSBU_VIEW` over it) | The view, with a picture wider than 16:9. Default hybrid. Also in the settings menu ("View"), at once, mid-fight too. |
 | `SSBU_DEBUG_REFERENCE_VIEW=1` | The reference view: tells the game itself the picture shape. Changes fights: offline comparison only (`build\aspect_test\liked.bat`). |
 | `SSBU_DEBUG_CAMERA_HUNT`, `SSBU_DEBUG_CAM_TRACE=<n>` (`SSBU_DEBUG_CAM_TRACE_OBJ`), `SSBU_DEBUG_FRAMING_DUMP=<n>`, `SSBU_DEBUG_PANES=<text>`, F9 | Research and measurement: who writes the camera's matrices, both cameras every n fight frames, the framing camera object, the HUD's panes by name, which 2D draw is which. |
@@ -49,26 +55,35 @@ The words used here (picture shape, wide / zoomed / hybrid view, stage range, ..
 - `runtime/display.h`, `runtime/gpu_display.c`: the settings. `display_aspect()` is the shape the picture
   has now; the menu or `display.ini` asks for one (`display_set_aspect`), and the renderer takes it at
   its next present (`display_aspect_take`: at once offline, before GO! for an online match, never inside
-  an online fight). `display_shape_locked()`: 16:9 for the session unless `renderer = direct3d11`.
+  an online fight). `display_shape_locked()`: 16:9 for the session on macOS only.
   `display_view()` / `display_set_view()`: the view, read every frame. `display_fit` fits the picture
   at the shape.
-- `runtime/gpu_d3d11.c`:
-  - `scaled_size`: a 16:9 render target is made `shape / (16/9)` times wider (kept as `Surface.wide`).
-    At a shape change every 16:9-shaped target is released and made again at the new width on its next
-    use (they are looked up by the game's address).
-  - The squeeze (in `d3d11_draw`): the game draws 3D wide itself; a 2D draw (no depth test) that is not a
+- `runtime/gpu_aspect.c` (`gpu_aspect.h`): the renderers' decisions, in one place so the two cannot drift.
+  Each back end hands it a draw (`AspectDraw`) and applies the answer (`AspectDecision`).
+  - `aspect_widening`: a 16:9 render target is made `shape / (16/9)` times wider (each back end's
+    `scaled_size` keeps it as `Surface.wide`).
+  - The squeeze (`aspect_draw`): the game draws 3D wide itself; a 2D draw (no depth test) that is not a
     full-screen pass has its clip-space x divided by the widening (`params.fix[0]`), so the HUD sits in
-    the middle 16:9, scissored to it (the game's own scissor squeezed with it).
+    the middle 16:9, scissored to it (the game's own scissor squeezed with it; in a fight the whole picture).
   - Magnifying bubbles: known by the portrait's vertex program and the two draws after it (ring, arrow),
     moved to the picture's edge in the zoomed and hybrid views (HUD decisions), in a fight only: menus draw
-    replay thumbnails and selection frames with the same programs.
-  - Research: `cam_hunt_cb`, the F9 picker, the `aspect:` line in F4's draw log.
+    replay thumbnails and selection frames with the same programs. The back end shifts the viewport.
+  - Research: the F9 picker (`aspect_pick_next`).
+- `runtime/gpu_d3d11.c`, `runtime/gpu_vk.c`: apply them. `scaled_size` widens with `aspect_widening`; the draw
+  fills an `AspectDraw` (the target's widening, depth test, whether it samples a widened target, the game's
+  scissor, the vertex bank 3) and sets `params.fix[0]`, the scissor and the viewport from the answer. At a
+  shape change (`display_aspect_take`, at a present) every target whose size changes is released and made
+  again on its next use (they are looked up by the game's address). Direct3D 11 also changes the render
+  scale live; Vulkan takes it at the next start. Direct3D 11's research: `cam_hunt_cb`, the `aspect:` line
+  in F4's draw log.
 - `runtime/gpu_menu.c`: the settings menu's Picture shape and View rows (both take effect without a
   restart).
-- `runtime/gpu_window.c`: F9 passed to the renderer.
+- `runtime/gpu_window.c`, `runtime/linux/window.c`: F9 passed to the renderer. Linux: the windowed SDL window
+  takes the picture's shape (at the start, and at a shape change or a new window size from the menu, never
+  inside an online fight: `display_take_window_size`); `rt_monitor_shape` gives `auto` the monitor's shape.
 - `runtime/hle_rb_core.c`: `net_match_on()`, whether an online match is set up or under way (ADR 0002).
 - `runtime/hle_fight_test.c`: `fight_test_frame0()`, so the camera trace's lines join the fight hash log's.
-- `runtime/host.c` (Windows only for now):
+- `runtime/host.c` (Windows and Linux; the camera hunt, `SSBU_DEBUG_CAMERA_HUNT`, Windows only):
   - `wide_camera` (each frame's end): the render camera's width `+0x164` (and `+0x16c`) set from the
     shape when wider than 16:9, written back to 16:9's once when 16:9 returns.
   - `pane_place` (nn::ui2d's Pane::CalculateGlobalMatrixSelf, `f_71000589a0`): in a fight's scene (the game's camera
@@ -336,4 +351,9 @@ What is left is in [ULTRAWIDE-TODO.md](ULTRAWIDE-TODO.md). Done, with what was l
    16:9: 32:9 zoomed, 32:9 wide, the view switched every 200 frames and the shape every 7 s (21 switches)
    the same up to GAME! (frame 5153, the winner's pose); 21:9 hybrid the same throughout.
 7. **Upstream merged** (2026-11-12, 52 commits): `auto` draws with Vulkan on AMD, NVIDIA and Intel cards
-   since, so wider pictures need `renderer = direct3d11` until the Vulkan port.
+   since, so wider pictures needed `renderer = direct3d11` until the Vulkan port.
+8. **Vulkan and Linux** (2026-11-14): the renderers' decisions moved into `gpu_aspect.c`, which Vulkan now
+   applies too; the views and the HUD made portable for Linux. Vulkan, on the Eldin replay: 32:9 zoomed the
+   same as 16:9 up to GAME!; the shape switched every 7 s, the same over the whole log; the same frames
+   captured on both back ends show the same layout (`build\aspect_test\auto\vkz32`, `d3z32`, `vkh32`, `d3h32`,
+   `vkscyc`). Linux: compiled against the headers, not run.

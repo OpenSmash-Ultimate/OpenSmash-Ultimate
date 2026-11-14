@@ -938,9 +938,9 @@ static void build(void)
                 "16:9 (original) is the game as it was made. A wider shape shows more of the stage at the sides without stretching "
                 "anything, and fights play exactly as they do at 16:9. The damage meters stay in the middle; menus and panels move to the sides. 21:9 and 32:9 match your monitor "
                 "when it is close to that shape, and auto always uses your monitor's shape. Online matches are played at 16:9. "
-                "Works with the Direct3D 11 renderer only for now.");
+                "Not on macOS yet.");
         snprintf(r->value, sizeof r->value, "%s%s", display_aspect_setting(), original ? " (original)" : "");
-        if (locked && !original) snprintf(r->note, sizeof r->note, "Direct3D 11 only");
+        if (locked && !original) snprintf(r->note, sizeof r->note, "not on macOS yet");
         note_env(r, "SSBU_ASPECT");
         r = add(R_VIEW, original || locked ? K_INFO : K_CHOICE, W_NOW, "View (wider pictures)",
                 "wide: the game's own camera with the sides added (it can show past the stage). zoomed: the fight framed for the wider "
@@ -1218,7 +1218,7 @@ static void build(void)
                 "the fight for you and your opponent, and can make the match go out of sync. Takes effect when the game starts again.");
         snprintf(r->value, sizeof r->value, "%s", on_off(display_uw_online_saved()));
         if (display_shape_locked())
-            snprintf(r->note, sizeof r->note, "Direct3D 11 only");
+            snprintf(r->note, sizeof r->note, "not on macOS yet");
 #ifdef _WIN32
         add(R_OPEN_LOGS, K_ACTION, W_NONE, "Open log folder",
             "Opens the folder with the game's log, play.log, so you can send it to the developers. play.prev.log is the one "

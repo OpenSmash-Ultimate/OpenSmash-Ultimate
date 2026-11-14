@@ -341,8 +341,7 @@ float display_render_scale(void) { load(); return cfg.render_scale; }
 int display_renderer(void) { load(); return cfg.renderer; }
 /* The picture shape (display.ini aspect, SSBU_ASPECT over it): "W:H", a number, or auto (the primary
  * monitor's shape); 16:9 for anything not wider, at most 32:9 (the widest supported). 16:9 for online
- * matches (display_aspect_take) and, for the whole session, unless display.ini asks for Direct3D 11 by
- * name (renderer = direct3d11; auto may draw with Vulkan, not ported yet): display_shape_locked. */
+ * matches (display_aspect_take) and, for the whole session, on macOS (Metal not ported yet): display_shape_locked. */
 int game_fight_on(void);     /* (hle_fight_test.c) */
 static void window_follow_shape(void);   /* (the window section: a windowed window takes the new shape) */
 static volatile LONG size_pending;       /* (the menu's window size: the window's timer takes it, after an online fight) */
@@ -353,16 +352,13 @@ int display_shape_locked(void) {
     static int locked = -1;
     if (locked < 0) {
         load();
-#ifdef _WIN32
-        /* (asked for, not drawing: the hooks go in before the first GPU work chooses the back end, and auto
-         * chooses Vulkan on most cards. ponytail: auto on a card it gives Direct3D 11 is held at 16:9 too;
-         * gone once Vulkan draws wider pictures) */
-        locked = cfg.renderer != RENDERER_D3D11;
+#ifdef __APPLE__
+        locked = 1;   /* (Direct3D 11 and Vulkan draw wider pictures, on Windows and Linux; Metal not yet) */
 #else
-        locked = 1;
+        locked = 0;
 #endif
         if (locked && _stricmp(cfg.aspect, "16:9"))
-            fprintf(stderr, "[display] picture shape 16:9 (aspect = %s set): only Direct3D 11 draws wider pictures yet (renderer = direct3d11)\n", cfg.aspect);
+            fprintf(stderr, "[display] picture shape 16:9 (aspect = %s set): not on macOS yet\n", cfg.aspect);
     }
     return locked;
 }
@@ -385,6 +381,9 @@ static float shape_of(const char *e) {
 #ifdef _WIN32
     int mw = GetSystemMetrics(SM_CXSCREEN), mh = GetSystemMetrics(SM_CYSCREEN);   /* ponytail: the primary monitor's; the window's own if that matters */
     if (mw > 0 && mh > 0) monitor = (float)mw / (float)mh;
+#elif defined(__linux__)
+    float rt_monitor_shape(void);   /* (linux/window.c: the window's monitor, 0 before SDL's video starts) */
+    monitor = rt_monitor_shape();
 #endif
     return shape_for(e, monitor);
 }
@@ -815,9 +814,24 @@ void display_note_size(unsigned w, unsigned h) {
     if (w && h && w < 0x8000 && h < 0x10000) InterlockedExchange(&pending_size, (LONG)(w << 16 | h));
 }
 void display_note_refresh(int hz) { InterlockedExchange(&refresh_hz, hz); }
-static void window_follow_shape(void) {}   /* ponytail: SDL's window keeps its size on Linux and macOS (bars) */
-void display_set_window_height(int height) { load(); cfg.height = height; cfg.width = (int)((float)height * 16 / 9 + 0.5f); }
-int display_window_height_fits(int height) { return height <= 1080; }
+/* The windowed size (display.ini height; the width follows the picture's shape): SDL's window takes it on the
+ * main thread (linux/window.c, display_take_window_size), never inside an online fight. */
+static volatile LONG follow_pending;
+static void window_follow_shape(void) { InterlockedExchange(&follow_pending, 1); }
+void display_set_window_height(int height) {
+    load();
+    cfg.height = height;
+    cfg.width = (int)((float)height * display_aspect() + 0.5f);
+    window_follow_shape();
+}
+int display_take_window_size(int *w, int *h) {
+    if (!follow_pending || (net_match_now() && game_fight_on()) || !InterlockedExchange(&follow_pending, 0)) return 0;
+    load();
+    *h = cfg.height;
+    *w = (int)((float)cfg.height * display_aspect() + 0.5f);
+    return 1;
+}
+int display_window_height_fits(int height) { return height <= 1080; }   /* ponytail: the monitor's own size if Linux players ask */
 #endif
 
 /* ---- pacing ----------------------------------------------------------------------------- */

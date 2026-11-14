@@ -32,7 +32,7 @@ int display_take_size(unsigned *w, unsigned *h);
 /* The picture's shape, width over height, as drawn now: 16:9 unless display.ini's aspect (SSBU_ASPECT)
  * says otherwise, at most 32:9; 16:9 for online matches (gpu_display.c, display_aspect_take). */
 float display_aspect(void);
-/* 1: always 16:9 this session (started for online play, or a renderer not ported yet). */
+/* 1: always 16:9 this session (macOS: Metal not ported yet). */
 int display_shape_locked(void);
 /* (the renderer, between two frames) 1 when a new shape is taken now (never in an online fight). */
 int display_aspect_take(void);
@@ -90,6 +90,9 @@ int display_take_latency(void);           /* the renderer, at a present: a new l
 void display_set_render_scale(float scale);   /* (Direct3D 11 takes it at its next present; the others at the next start) */
 void display_set_window_height(int height);   /* the windowed height; the width follows the picture shape (Windows: now) */
 int display_window_height_fits(int height);
+#ifndef _WIN32
+int display_take_window_size(int *w, int *h);   /* (linux/window.c's loop) 1: the windowed window takes this size now */
+#endif
 int display_window_sizing(void);
 /* The settings' Experimental tab: the picture shape kept in online matches (display.ini
  * experimental_ultrawide_online, read at the start; docs/adr/0001, 0002). */

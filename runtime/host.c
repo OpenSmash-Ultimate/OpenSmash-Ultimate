@@ -335,8 +335,6 @@ static int unwind(CONTEXT ctx, void **frames, int max) {
  * (the page opened for one instruction, single-stepped, and closed again). Which code builds the
  * camera's projection, so its shape can be widened where the game makes it.
  * ponytail: page-protection tracer, one thread's write at a time; research only */
-#include <math.h>
-#include "frame_hooks.h"
 #define HUNT_MAX 16
 static struct { u64 at; u8 *page; DWORD old; int armed; } hunt[HUNT_MAX];
 static int nhunt;
@@ -377,6 +375,16 @@ static void hunt_scan(Cpu *c, const u64 args[8], void *ctx) {
     hunt_until = rt_now_ns() + 2000000000ull;
     for (int i = 0; i < nhunt; i++) hunt[i].armed = VirtualProtect(hunt[i].page, 4096, PAGE_READONLY, &hunt[i].old) != 0;
 }
+
+#else
+void camera_hunt_watch(u64 guest) { (void)guest; }   /* (SSBU_DEBUG_CAMERA_HUNT: Windows only, a research tool) */
+#endif
+
+/* ---- ultrawide (docs/ULTRAWIDE.md): the views and the HUD for a picture wider than 16:9, on Windows and
+ * Linux (macOS is held at 16:9: display_shape_locked) ---------------------------------------------- */
+#ifndef __APPLE__
+#include <math.h>
+#include "frame_hooks.h"
 
 /* SSBU_DEBUG_CAM_TRACE=<n> (research): every n fight frames, both cameras on one line, to see how the 16:9
  * camera behaves (docs/ULTRAWIDE.md). The fight frame is SSBU_FIGHT_HASH's (hle_fight_test.c), so its
@@ -946,6 +954,11 @@ static void hook_hud_projection(void) {
     printf("[aspect] the HUD's world-to-screen given 16:9: %d of %d functions\n", n, (int)NHUD);
 }
 
+#else
+int net_match_now(void) { return 0; }   /* (macOS: held at 16:9) */
+#endif   /* (ultrawide) */
+
+#ifdef _WIN32
 static LONG CALLBACK hunt_fault(EXCEPTION_POINTERS *e) {
     DWORD code = e->ExceptionRecord->ExceptionCode;
     if (code == EXCEPTION_SINGLE_STEP && hunt_rearm) {
@@ -2005,9 +2018,7 @@ static DWORD WINAPI guest_main(LPVOID unused) {
     c->x[1] = 0;
     c->x[2] = rt_native(exception_handler_ready, "exception_handler_ready");
     c->x[3] = rt_native(call_initializers, "call_initializers");
-#ifdef _WIN32
-#endif
-#ifdef _WIN32
+#ifndef __APPLE__   /* (ultrawide: Windows and Linux) */
     if (!display_shape_locked()) hook_hud_projection();
     hook_hud_anchors();   /* (the timer's place is a setting at any shape; the widening parts wait for a wider picture) */   /* (the shape can change between fights: in from the start, passing through at 16:9) */
     int views = !display_shape_locked() && !getenv("SSBU_DEBUG_REFERENCE_VIEW");   /* (every view's hooks: view and shape can change) */
@@ -2374,12 +2385,6 @@ int main(int argc, char **argv) {
 #ifdef _WIN32
     crash_reporter_start();
     AddVectoredExceptionHandler(1, on_fault);
-    if (!display_shape_locked()) {
-        frame_hook_add(FRAME_HOOK_END, 300, NULL, wide_camera, NULL);
-        frame_hook_add(FRAME_HOOK_END, 300, NULL, net_match_watch, NULL);
-        printf("[aspect] native: the fight camera and its framing told %.4g\n", display_aspect());
-    }
-    if (getenv("SSBU_DEBUG_CAM_TRACE")) frame_hook_add(FRAME_HOOK_END, 300, NULL, cam_trace, NULL);
     if (getenv("SSBU_DEBUG_CAMERA_HUNT")) { AddVectoredExceptionHandler(1, hunt_fault); frame_hook_add(FRAME_HOOK_END, 300, NULL, hunt_scan, NULL); }
     dump_helper_start();
 #else
@@ -2397,6 +2402,14 @@ int main(int argc, char **argv) {
     test_fight_start();
 #ifndef _WIN32
     rt_window_init();   /* (SDL wants its window and events on the main thread, which then runs them) */
+#endif
+#ifndef __APPLE__   /* (ultrawide: Windows and Linux; on Linux after the window, so "auto" knows the monitor) */
+    if (!display_shape_locked()) {
+        frame_hook_add(FRAME_HOOK_END, 300, NULL, wide_camera, NULL);
+        frame_hook_add(FRAME_HOOK_END, 300, NULL, net_match_watch, NULL);
+        printf("[aspect] native: the fight camera and its framing told %.4g\n", display_aspect());
+    }
+    if (getenv("SSBU_DEBUG_CAM_TRACE")) frame_hook_add(FRAME_HOOK_END, 300, NULL, cam_trace, NULL);
 #endif
     /* Guest call depth becomes host call depth, so the guest runs on a thread with a large stack. */
     HANDLE t = CreateThread(NULL, 512ull << 20, guest_main, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);

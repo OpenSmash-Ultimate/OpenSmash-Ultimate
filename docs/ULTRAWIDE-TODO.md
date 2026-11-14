@@ -95,20 +95,36 @@ Rule for every row: once turned on it stays on; any change takes effect at the n
       every fight frame, stops in a pause, so the zoom fell to 1 the moment the game paused. The other
       cameras' copies leave the views alone now.
 
+- [ ] **An Assist Trophy that takes the camera** (owner, 2026-11-14: one zooms in on itself and pulls the blast
+      zones in; which one is not known). The fight should be the same in every view (nothing the fight reads is
+      written), but the zoomed view's shadow camera only moves on frames that run the game's normal framing: if the
+      trophy's camera skips it, the zoomed view keeps a stale offset and zoom. To be established with the owner
+      (a case of their own); the plan so far: log the fight frames that skip the normal framing, fall back to the
+      game's camera on them, CPU-only fights with Assist Trophies only on high, each view's hash against 16:9.
+
 ## Renderers
 
-- [ ] **Vulkan port**: the squeeze, 2D clip, bubble shift and shape-change surface rebuild in shared code
-      both back ends call; Vulkan proven by the replay fight hash (renderer-independent) and by captures of
-      the same frames from both back ends compared. Then the lock becomes "Direct3D 11 or Vulkan".
-      Scoped 2026-11-12 (owner: wait for upstream's Vulkan changes still in the works, then port): `gpu_vk.c` has the
-      same seams as `gpu_d3d11.c` - `scaled_size` (a 16:9 target widened by the picture's widening), the
-      draw's `rt_sx`/`rt_sy` and `params.fix[0]` (the squeeze: x over the widening for 2D), the game's
-      scissor (2D clipped to the picture's reach: `hud_wide_on`), the viewport (the bubble's shift), and
-      the present (the picture's area); plus the surfaces rebuilt at a shape change (`display_aspect_take`).
-      The decisions (is this a 16:9 target, is this draw squeezed, the clip's reach, the bubble's shift)
-      move into one shared file both back ends call; each back end only applies them.
-- [ ] **Linux** (Direct3D 11 through DXVK): if making `host.c`'s Windows-only parts portable is small;
-      else after the first PR.
+- [x] **Vulkan port** (2026-11-14, owner: go ahead without waiting for upstream): the squeeze, 2D clip, bubble
+      shift and F9 picker in `gpu_aspect.c`, which both back ends call; each applies the answer (`params.fix[0]`,
+      scissor, viewport) and rebuilds its 16:9-shaped targets at a shape change. The lock is now macOS only.
+      Proven on the owner's Eldin replay (NVIDIA RTX 2070): Vulkan 32:9 zoomed the same fight as 16:9 up to
+      GAME! (frame 5153, as Direct3D 11); Vulkan with the shape switched every 7 s (21 switches) the same over
+      the whole log; 32:9 zoomed and 32:9 hybrid captured at the same fight frames on both back ends: the same
+      layout (HUD, bubbles, tags), the pictures a few game frames apart (each back end's capture lags
+      differently: mean difference 0.75-1.5 at hybrid). Vulkan's render scale still waits for the next start.
+- [ ] **Linux** (Direct3D 11 through DXVK, and Vulkan): done 2026-11-14, **untested on Linux**. The views and the
+      HUD (`host.c`) are out of its Windows-only part (the camera hunt stays Windows only); `auto` and the
+      21:9 / 32:9 snapping read the monitor through SDL; the windowed SDL window takes the picture's shape.
+      Checked here only by compiling the touched files against DXVK's, the DirectX, Vulkan and SDL2 headers
+      and resolving their symbols (no Linux toolchain on this machine; the branch could not have linked on
+      Linux before). To tick: a Linux player runs 21:9 or 32:9, both renderers, windowed and fullscreen.
+
+## Bugs to reproduce (found 2026-11-14)
+
+- [ ] **A tag off its fighter right after a mid-fight shape change** (both back ends, so the HUD's side,
+      `host.c`): with `SSBU_TEST_ASPECT_CYCLE=7` (hybrid), a capture less than a second after 21:9 -> 32:9 has
+      P1 well away from Ganondorf (Vulkan fight frame 3836; Direct3D 11's e2_scycle frame 4041). With the
+      shape fixed from the start the tag is on him on both back ends. How long it stays off: to measure.
 
 ## Clean-up
 

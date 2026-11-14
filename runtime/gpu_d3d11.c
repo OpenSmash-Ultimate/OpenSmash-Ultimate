@@ -12,6 +12,7 @@
 
 #include "debug_profile.h"
 #include "display.h"
+#include "gpu_aspect.h"
 #include "gpu_d3d11.h"
 #include "gpu_menu.h"
 #include "gpu_nvcache.h"
@@ -308,7 +309,7 @@ static float scale_wanted(void) {
 static float scaled_size(u32 w, u32 h, u32 *hw, u32 *hh) {   /* (returns the widening it applied, 1 for none) */
     *hw = w; *hh = h;
     /* SSBU_ASPECT: every target this much wider than tall, as the camera's projection now is */
-    float wide = (u64)w * 9 == (u64)h * 16 ? display_aspect() / (16.0f / 9) : 1.0f;   /* (16:9 targets only: not shadow maps) */
+    float wide = aspect_widening(w, h);   /* (16:9 targets only: not shadow maps) */
     if ((render_scale == 1.0f && wide == 1.0f) || scale_skipped(w, h)) return 1.0f;
     float x = (float)w * render_scale * wide + 0.5f, y = (float)h * render_scale + 0.5f;
     if (x < 1) x = 1;
@@ -4563,11 +4564,6 @@ static ID3D11Texture2D *unpack_texture(ID3D11Texture2D *bc, const TextureDesc *d
     return out;
 }
 
-int aspect_native(void);   /* (host.c) */
-int hud_wide_on(void);     /* (host.c: in a fight's scene the HUD reaches the picture's edges) */
-static const Shader *pick_vs[64], *pick_ps[64];
-static u64 pick_seen[64];
-static int npick, pick = -1;
 static int draw_reads_wide;   /* (SSBU_ASPECT: the draw being bound samples a widened target) */
 static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, float *scale) {
     TextureDesc d;
@@ -5813,88 +5809,23 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
         if (ps) bind_resources(regs, cb, SHADER_PIXEL, ps, &params);
         bind_resources(regs, cb, SHADER_VERTEX, vs, &params);
     }
-    int depth_on = (regs[M_DEPTH_TEST] & 1) && dsv;
-    /* SSBU_ASPECT: on a widened target every draw is squeezed back to the game's 16:9 shape (x times
-     * 16:9 over the aspect: 3D then keeps its proportions and shows more at the sides; the HUD sits in
-     * the middle 16:9, over the fighters its tags follow), except a full-screen pass, which must
-     * cover the whole width: one that reads a widened target with no depth test (tone mapping,
-     * bloom, the lighting passes). 3D effects that read the scene (soft particles) test depth.
-     * ponytail: per-draw heuristic, no shader change (a new vertex shader costs every player ~1 h
-     * of compiling); a fade without a texture is squeezed too - check one if bars show */
-    /* (a full-screen pass may test depth with ALWAYS to write it: the half-size depth copy the
-     * smoke and other effects are tested against) */
-    int depth_tests = depth_on && dd.DepthFunc != D3D11_COMPARISON_ALWAYS;
-    /* (a wider picture: the game draws 3D wide itself; only 2D that is not a full-screen pass is squeezed) */
-    int squeeze = aspect_native() ? !depth_on && !draw_reads_wide : !(draw_reads_wide && !depth_tests);
-    /* (research, a wider picture: F9 steps through the kinds of squeezed 2D draw - vertex and pixel
-     * program - drawn in the last second, leaving one unsqueezed: which kind the P1/CPU tags are) */
-    if (rt_wide > 1.0f && squeeze && !depth_on && aspect_native()) {
-        int k = 0;
-        while (k < npick && !(pick_vs[k] == vs && pick_ps[k] == ps)) k++;
-        if (k == npick && npick < 64) { pick_vs[k] = vs; pick_ps[k] = ps; npick++; }
-        if (k < 64) pick_seen[k] = gfx_stat_presented;
-        if (k == pick) squeeze = 0;
-    }
-    if (rt_wide > 1.0f && squeeze) {
-        params.fix[0] /= rt_wide;
-        /* A 2D draw (no depth test: the HUD, menus) stays inside the middle 16:9: the game parks
-         * hidden panels just off its screen, which the squeeze would bring into view. Its scissor
-         * (in the game's pixels) is squeezed towards the middle with it. 3D keeps the full width. */
-        if (!depth_on) {
-            /* (in a fight the HUD's panels sit where their layouts anchor them, out to the picture's edges
-             * (host.c, pane_place): there the 2D reaches the whole picture, ±960 x the widening) */
-            float cx = (float)rt_w / 2, reach = hud_wide_on() ? cx * rt_wide : cx;
-            float l = cx - reach, r = cx + reach;
-            if (regs[M_SCISSOR(0)] & 1) { u32 sh = regs[M_SCISSOR(0) + 1]; l = (float)(sh & 0xFFFF); r = (float)(sh >> 16); }
-            if (l <= 0 && r >= (float)rt_w) { l = cx - reach; r = cx + reach; }   /* (the game's whole screen: in a fight, the whole picture) */
-            if (l < cx - reach) l = cx - reach;
-            if (r > cx + reach) r = cx + reach;   /* (a scissor past the screen still stops at its edge) */
-            D3D11_RECT sr = cur.scissor;
-            sr.left = (LONG)floorf((cx + (l - cx) / rt_wide) * rt_sx);
-            sr.right = (LONG)ceilf((cx + (r - cx) / rt_wide) * rt_sx);
-            if (memcmp(&cur.scissor, &sr, sizeof sr)) { ID3D11DeviceContext_RSSetScissorRects(ctx, 1, &sr); cur.scissor = sr; }
+    {   /* A wider picture (gpu_aspect.c): the squeeze, the 2D clip, a bubble's shift */
+        AspectDraw ad = {rt_wide, rt_w, rt_sx, (regs[M_DEPTH_TEST] & 1) && dsv, dd.DepthFunc == D3D11_COMPARISON_ALWAYS, draw_reads_wide,
+                         regs[M_SCISSOR(0)], regs[M_SCISSOR(0) + 1], vs, ps, vs ? vs->name : NULL, ps ? ps->name : NULL,
+                         cb[STAGE_VERTEX][3].address, cb[STAGE_VERTEX][3].size, read_gpu};
+        AspectDecision ao;
+        aspect_draw(&ad, &ao);
+        params.fix[0] *= ao.fix0;
+        D3D11_RECT sr = cur.scissor;
+        if (ao.clip) { sr.left = ao.clip_l; sr.right = ao.clip_r; }
+        if (ao.shift) {
+            D3D11_VIEWPORT bv = cur.vp;
+            bv.TopLeftX += ao.shift_by * bv.Width / 2;
+            ID3D11DeviceContext_RSSetViewports(ctx, 1, &bv);
+            cur.vp = bv;
+            sr = (D3D11_RECT){0, 0, 16384, 16384};
         }
-        /* A magnifying bubble at a side of the 16:9 view is moved out to the same side of the picture,
-         * as far from its edge as it was from the 16:9 one (docs/ULTRAWIDE-CONTEXT.md). Known by its
-         * portrait - a program of its own, the fighter's picture - and the two draws right after it
-         * at the same place (ring, arrow). The element's x, in the HUD's pixels from the middle, is
-         * in its vertex bank 3 at +0x4c, or +0x5c (the ring). When the bubble shows stays the game's.
-         * Not in the wide view: there the fighter is still in the picture past the 16:9 edge, and a
-         * bubble at the picture's edge looks like the fighter jumped there (owner, 2026-11-11). */
-        static int bubble_left;
-        static float bubble_t;
-        /* (fights only: menus draw replay thumbnails and selection frames with the same programs, and the
-         * left tile sat where a bubble would - its frame was moved out to the picture's edge, owner 2026-11-12) */
-        if (!depth_on && aspect_native() && display_view() != VIEW_WIDE && game_fight_on() && cb[STAGE_VERTEX][3].address && cb[STAGE_VERTEX][3].size >= 0x60) {
-            float row[8];
-            read_gpu(cb[STAGE_VERTEX][3].address + 0x40, sizeof row, row);
-            int portrait = vs && !strncmp(vs->name, "vs_545fbedf170d65dd", 19);
-            if (portrait) {
-                bubble_left = 0;
-                float x = row[3], w = rt_wide;
-                if (fabsf(x) > 960 * 0.55f && fabsf(x) < 1200) {
-                    float sgn = x < 0 ? -1.0f : 1.0f, target = sgn * (1 - (960 - fabsf(x)) / (960 * w));
-                    bubble_t = target - x / (960 * w);
-                    bubble_left = 3;
-                    static float bubble_x;
-                    bubble_x = x;
-                    (void)bubble_x;
-                }
-            }
-            if (bubble_left > 0) {
-                static float anchor;
-                if (portrait) anchor = row[3];
-                if (portrait || fabsf(row[3] - anchor) < 120 || fabsf(row[7] - anchor) < 120) {
-                    bubble_left--;
-                    D3D11_VIEWPORT bv = cur.vp;
-                    bv.TopLeftX += bubble_t * bv.Width / 2;
-                    ID3D11DeviceContext_RSSetViewports(ctx, 1, &bv);
-                    cur.vp = bv;
-                    D3D11_RECT all = {0, 0, 16384, 16384};
-                    if (memcmp(&cur.scissor, &all, sizeof all)) { ID3D11DeviceContext_RSSetScissorRects(ctx, 1, &all); cur.scissor = all; }
-                } else bubble_left = 0;
-            }
-        }
+        if (memcmp(&cur.scissor, &sr, sizeof sr)) { ID3D11DeviceContext_RSSetScissorRects(ctx, 1, &sr); cur.scissor = sr; }
     }
     if (draw_logging && rt_wide > 1.0f) fprintf(stderr, "[draw]   aspect: x %g (reads wide %d, depth %d)\n", params.fix[0], draw_reads_wide, (int)((regs[M_DEPTH_TEST] & 1) && dsv));
 
@@ -6993,14 +6924,7 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
     if (profile_at == -1) profile_at = getenv("SSBU_PROFILE_AT") ? atof(getenv("SSBU_PROFILE_AT")) : -2;
     if (profile_at >= 0 && rt_now_ns() > (u64)(profile_at * 1e9)) { profile_at = -2; keys |= 32; }
     if (keys & 32) profile_start(10.0);   /* F6 */
-    if (keys & 256) {   /* F9: the next kind of 2D draw left unsqueezed (above) */
-        int k = pick;
-        do k = k + 1 >= npick ? -1 : k + 1;
-        while (k >= 0 && gfx_stat_presented - pick_seen[k] > 60);
-        pick = k;
-        if (k < 0) fprintf(stderr, "[aspect] F9: every 2D draw squeezed\n");
-        else fprintf(stderr, "[aspect] F9: not squeezed: %s %s\n", pick_vs[k]->name, pick_ps[k] ? pick_ps[k]->name : "(no ps)");
-    }
+    if (keys & 256) aspect_pick_next();   /* F9: the next kind of 2D draw left unsqueezed (gpu_aspect.c) */
     static char detail[1800], hint[640];
     static u64 last_ns, last_presented, last_drawn, last_dispatched, last_skipped, last_watch, last_busy, last_upload, last_waits, last_composed, last_reused, last_kind[4];
     u64 now = rt_now_ns();
