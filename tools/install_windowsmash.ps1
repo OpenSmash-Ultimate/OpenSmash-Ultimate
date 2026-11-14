@@ -1582,6 +1582,13 @@ function Step-Build {
     return $true
 }
 
+function Step-StaleShaders {
+    <# After a build, or none needed: prepared shaders under other SPIR-V names than the built game reads (a change
+       of SHADER_CACHE_SPV_VERSION or of glslang, in this update or one before) lose dump\shadercache\complete.txt,
+       so the launcher offers Prepare Shaders again (tools\shader_aot.py forget_stale_marker). #>
+    Invoke-Python @((Join-Path $Root 'tools\shader_aot.py'), '--forget-stale') | Out-Null
+}
+
 function Invoke-UpdateGameBuild {
     Write-Info 'Checking the game build after the source update'
     Step-CheckPc
@@ -1592,7 +1599,7 @@ function Invoke-UpdateGameBuild {
     }
     Step-Sdl3
     Step-Codecs
-    Step-Build (Get-UpdateBuildAnswers) | Out-Null
+    if (Step-Build (Get-UpdateBuildAnswers)) { Step-StaleShaders }
     Write-Host 'The game is current.' -ForegroundColor Green
 }
 
@@ -1684,6 +1691,7 @@ function Main {
         $answers = Step-GameFiles
         Step-Extras $answers
         $built = Step-Build $answers
+        if ($built) { Step-StaleShaders }
         Step-Shaders $answers $built
         Step-Launcher
         Write-Host ''

@@ -27,6 +27,26 @@ class ProgressTests(unittest.TestCase):
         self.assertIn('\nspirv g1001.01100600\n', S.marker_text(10, 'g1001.01100600'))
         self.assertIn('"\\nspirv "', (ROOT / 'OpenSmash.Launcher' / 'LauncherForm.cs').read_text(encoding='utf-8'))
 
+    def test_a_marker_for_other_spirv_names_is_removed(self):
+        # (#330 changed g1001 to g1002; the launcher's "\nspirv " check let the stale cache count as prepared)
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            marker = Path(root, 'dump', 'shadercache', 'complete.txt')
+            marker.parent.mkdir(parents=True)
+            said = []
+            for text, expected, removed in (('version 10\nspirv g1002.01100600\n', 'g1002.01100600', False),
+                                            ('version 10\n', 'g1002.01100600', False),   # (no SPIR-V made: #326's check asks)
+                                            ('version 10\nspirv g1001.01100600\n', 'g1002.01100600', True),
+                                            ('version 10\nspirv g1002.01100600\n', 'g1002.01110000', True)):   # (a newer glslang)
+                marker.write_text(text, encoding='utf-8')
+                self.assertEqual(S.forget_stale_marker(root, expected, log=said.append), removed, text)
+                self.assertEqual(marker.exists(), not removed)
+            self.assertFalse(S.forget_stale_marker(root, 'g1002.01100600', log=said.append))   # (no marker at all)
+            self.assertIn('g1001.01100600', said[0])
+        # (the header's SPIR-V version is read as the game's file name has it)
+        header = (ROOT / 'runtime' / 'gpu_shader_cache.h').read_text(encoding='utf-8')
+        self.assertIsNotNone(S.SPV_VERSION.search(header))
+
     def test_parse(self):
         self.assertEqual(S.parse_progress('progress 16 11601\n'), (16, 11601))
         self.assertIsNone(S.parse_progress('part 0/4: 11596 keys; ...'))

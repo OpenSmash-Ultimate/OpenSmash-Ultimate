@@ -484,7 +484,12 @@ def main():
     ap.add_argument("--warm", action="store_true", help="with --files: date their cache files now (the start's prewarm makes them)")
     ap.add_argument("--no-spirv", action="store_true", help="leave out the Vulkan renderer's SPIR-V files (Windows makes them "
                     "when ssbu_glslang.dll is there; SSBU_AOT_SPIRV=0 does the same)")
+    ap.add_argument("--forget-stale", action="store_true", help="only remove complete.txt when its SPIR-V names are not "
+                    "the ones the built game reads, so that the launcher asks for Prepare Shaders again")
     a = ap.parse_args()
+    if a.forget_stale:
+        forget_stale_marker()
+        return 0
     if a.no_spirv:
         os.environ["SSBU_AOT_SPIRV"] = "0"
     if a.files:
@@ -1180,6 +1185,53 @@ def marker_text(version, spirv):
 def cache_version():
     text = open(os.path.join(ROOT, "runtime", "gpu_shader_cache.h"), encoding="utf-8").read()
     return int(re.search(r"#define SHADER_CACHE_VERSION (\d+)", text).group(1))
+
+
+SPV_VERSION = re.compile(r"#define SHADER_CACHE_SPV_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)")
+
+
+def spirv_expected(root=ROOT):
+    """The start of the SPIR-V files' names the built game reads, "g<version>.<library>" (runtime/gpu_shader_cache.h's
+    shader_cache_file_spv), or None: no build\\ssbu_glslang.dll (no SPIR-V), or a header or DLL this can't read. The
+    library is asked of the DLL as the game asks it (gpu_spirv.c: ssbu_glslang_version, 0 for a DLL without it)."""
+    import ctypes
+    dll = os.path.join(root, "build", "ssbu_glslang.dll")
+    try:
+        text = open(os.path.join(root, "runtime", "gpu_shader_cache.h"), encoding="utf-8").read()
+        lib = ctypes.CDLL(dll) if os.name == "nt" and os.path.exists(dll) else None
+    except OSError:
+        return None
+    spv, version = SPV_VERSION.search(text), re.search(r"#define SHADER_CACHE_VERSION (\d+)", text)
+    if not lib or not spv or not version:
+        return None
+    try:
+        ask = lib.ssbu_glslang_version
+        ask.restype = ctypes.c_uint
+        library = ask()
+    except AttributeError:
+        library = 0
+    return f"g{int(version.group(1)) * 100 + int(spv.group(1))}.{library:08x}"
+
+
+def forget_stale_marker(root=ROOT, expected=None, log=print):
+    """complete.txt says the SPIR-V was made, under other names than the built game reads (SHADER_CACHE_SPV_VERSION or
+    glslang changed since): it is removed, so the launcher offers Prepare Shaders again, which makes only the files
+    missing. The launcher only looks for a "spirv" line (LauncherForm.cs ShadersDone): after #330's g1001 -> g1002
+    every prepared cache still counted, and every shader was made in play. install_windowsmash.ps1 runs this after
+    each build, and when no build was needed. True when it was removed."""
+    marker = os.path.join(root, "dump", "shadercache", "complete.txt")
+    try:
+        with open(marker, encoding="utf-8") as f:
+            have = re.search(r"^spirv (\S+)$", f.read(), re.M)
+    except OSError:
+        return False
+    expected = expected or spirv_expected(root)
+    if not have or not expected or have.group(1) == expected:
+        return False
+    os.remove(marker)
+    log(f"shaders: the prepared Vulkan shaders are {have.group(1)}, the game reads {expected}: "
+        "OpenSmash offers Prepare Shaders again (only the missing files are made)")
+    return True
 
 
 if __name__ == "__main__":

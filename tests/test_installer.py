@@ -240,6 +240,21 @@ class InstallerDecisionTests(unittest.TestCase):
                           "Step-Build @{ Game = 'D:\\Game'; Keys = 'D:\\Keys'; Firmware = '' } | Out-Null")
         self.assertIn('nothing that goes into the game changed: no build', out)
 
+    def test_build_forgets_stale_prepared_shaders(self):
+        # (built, or nothing to build: tools\shader_aot.py --forget-stale asks for Prepare Shaders again when the
+        # prepared SPIR-V's names are not the game's; an update before this one may have changed them)
+        for built, forgets in (('$true', True), ('$false', False)):   # ($false: a dry run, or -SkipBuild)
+            out = ps_text("$global:calls = [Collections.Generic.List[string]]::new(); "
+                          "function Step-CheckPc { }; function Step-Python { }; function Step-Sdl3 { }; function Step-Codecs { }; "
+                          "function Test-Compiler { @{ Ok = $true; Output = '' } }; "
+                          "function Get-UpdateBuildAnswers { @{ Game = 'D:\\Game'; Keys = 'D:\\Keys' } }; "
+                          f"function Step-Build {{ {built} }}; "
+                          "function Invoke-Python { param($Arguments) $global:calls.Add((Split-Path $Arguments[0] -Leaf) + ' ' + $Arguments[1]); return 0 }; "
+                          "Invoke-UpdateGameBuild; 'CALLS: ' + ($global:calls -join '|')")
+            self.assertEqual('shader_aot.py --forget-stale' in out.split('CALLS: ')[-1], forgets, out)
+        # (the setup window's build: the same, after Step-Build in Main)
+        self.assertRegex(SCRIPT.read_text(encoding='utf-8'), r'\$built = Step-Build \$answers\s+if \(\$built\) \{ Step-StaleShaders \}')
+
     def test_firmware_question_optional(self):
         # -NoWizard: the question says it is optional and what for; Enter on nothing, or none over the one found, is none
         mocks = ("$global:prompts = @(); "
