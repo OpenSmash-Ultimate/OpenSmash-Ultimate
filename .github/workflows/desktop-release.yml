@@ -55,7 +55,7 @@ jobs:
           - os: ubuntu-latest
             rid: linux-x64
             asset: OpenSmash-linux-x64.tar.gz
-          - os: macos-14
+          - os: macos-15
             rid: osx-arm64
             asset: OpenSmash-macos-arm64.tar.gz
     runs-on: ${{ matrix.os }}

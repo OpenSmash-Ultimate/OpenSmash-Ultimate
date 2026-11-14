@@ -380,7 +380,7 @@ static void apply_override(Cpu *c) {
     ReleaseSRWLockShared(&material_lock);
 }
 static void material_setter(Cpu *c) {
-    if (ReadAcquire(&override_count) && c->x[30] == rt_module_main.base + RESET_CALLER) apply_override(c);
+    if (__atomic_load_n(&override_count, __ATOMIC_ACQUIRE) && c->x[30] == rt_module_main.base + RESET_CALLER) apply_override(c);
     if (material_trace && trace_setter_remaining && c->x[0] == trace_followup.object &&
         readable(c->x[1], 12) && mm_u32((u8 *)G2H(c->x[1]) + 8) == trace_followup.id) {
         trace_setter_remaining--;

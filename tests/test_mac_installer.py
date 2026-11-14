@@ -913,10 +913,11 @@ class BootstrapTests(unittest.TestCase):
     def test_runs_the_installer(self):
         root = self.top / 'Win Smash'
         root.mkdir()
-        shutil.copy2(INSTALL, root / INSTALL.name)
+        (root / 'tools' / 'mac').mkdir(parents=True)   # (where it is: it works from two folders up)
+        shutil.copy2(INSTALL, root / 'tools' / 'mac' / INSTALL.name)
         write(root / 'tools' / 'mac' / 'install_mac.py', '# (stand-in)\n')
         py = self.fake_python(self.bin / 'python3', code=7)
-        r = subprocess.run([BASH, str(root / INSTALL.name), '--dry-run', '--game', '/My Games'], cwd='/',
+        r = subprocess.run([BASH, str(root / 'tools' / 'mac' / INSTALL.name), '--dry-run', '--game', '/My Games'], cwd='/',
                            capture_output=True, text=True, stdin=subprocess.DEVNULL,
                            env={**os.environ, 'PATH': f'{py.parent}:/usr/bin:/bin:/usr/sbin:/sbin'})
         if os.uname().machine != 'arm64':
