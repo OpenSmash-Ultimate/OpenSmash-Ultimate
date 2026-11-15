@@ -934,7 +934,7 @@ static void build(void)
             snprintf(r->value, sizeof r->value, "%gx", ds.render_scale);
         note_env(r, "SSBU_RENDER_SCALE");
         int original = !_stricmp(display_aspect_setting(), "16:9"), locked = display_shape_locked();
-        r = add(R_ASPECT, K_CHOICE, W_NOW, "Aspect Ratio",
+        r = add(R_ASPECT, K_CHOICE, W_NOW, "Aspect ratio",
                 "16:9 (original) is the game as it was made. A wider aspect ratio shows more of the stage at the sides without stretching "
                 "anything, and fights play exactly as they do at 16:9. The damage meters stay in the middle; menus and panels move to the sides. 21:9 and 32:9 match your monitor "
                 "when it is close to that shape, and auto always matches your monitor. Online matches are played at 16:9. "
@@ -942,7 +942,7 @@ static void build(void)
         snprintf(r->value, sizeof r->value, "%s%s", display_aspect_setting(), original ? " (original)" : "");
         if (locked && !original) snprintf(r->note, sizeof r->note, "not on macOS yet");
         note_env(r, "SSBU_ASPECT");
-        r = add(R_VIEW, original || locked ? K_INFO : K_CHOICE, W_NOW, "View (wider pictures)",
+        r = add(R_VIEW, original || locked ? K_INFO : K_CHOICE, W_NOW, "Views",
                 "wide: the game's own camera with the sides added (it can show past the stage). zoomed: the fight framed for the wider "
                 "picture, closer and kept on the stage. hybrid: wide, zoomed in just enough to keep the picture on the stage.");
         {
