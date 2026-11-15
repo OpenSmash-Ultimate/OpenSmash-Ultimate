@@ -974,10 +974,11 @@ static void pane_place(Cpu *c) {
         x0 = *x;
         if (screen_like(pane)) {
             *x = x0 * g;                              /* (a screen: parked one screen away stays one picture away) */
-            /* (a screen-sized fill - a pane that draws, with nothing under it - is stretched across the picture: the popup's
-             * dimming, system/popup's set_bg_00 (2000 x 1160), dimmed only the 16:9 middle behind "End the game?" (owner,
-             * 2026-11-15). Not a container: what is under it would stretch too. Not the yellow frame, hidden above) */
-            if (!sx && *P(u64, pane) != 0x7104f3f810ull && *P(u64, pane + 0x28) == pane + 0x20) {
+            /* (the popup's dimming, system/popup's set_bg_00 (2000 x 1160) under anim_BG_00, is stretched across the picture:
+             * it dimmed only the 16:9 middle behind "End the game?" (owner, 2026-11-15). By name: every screen-sized fill
+             * stretched the results wipe's still of the fight's last frame too, which already fills the picture (it reads the
+             * wide picture, so the renderer does not squeeze it) - the damage meters spread out for a few frames after GAME!) */
+            if (!sx && !strcmp(name, "set_bg_00") && !strcmp(P(char, parent + 0xb0), "anim_BG_00")) {
                 sx = P(float, pane + 0x48);
                 sx0 = *sx;
                 *sx = sx0 * g;
