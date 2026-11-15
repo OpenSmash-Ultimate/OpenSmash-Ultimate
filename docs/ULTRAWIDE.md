@@ -25,7 +25,7 @@ do is in [ULTRAWIDE-TODO.md](ULTRAWIDE-TODO.md).
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | Tags (P1, CPU) | dynamic | over the fighter | over the fighter | over the fighter | done | 2026-11-11: they follow the view the picture shows (fixed: the HUD read the camera's own matrix, not the moved one). |
 | Magnifying bubbles | custom: by view | at the 16:9 edge | at the picture's edge | at the picture's edge | done | 2026-11-11/12: they show at the 16:9 off-screen boundary in every view (the game's rule, a useful cue near the blast zone). In the wide view the picture shows past that boundary, so the bubble stays on it: at the picture's far edge it would look like the fighter jumped. In zoomed and hybrid the picture's edge is where the fighter leaves the picture. |
-| Fighter in a bubble | custom: by view | the game's | hidden (the game's) | hidden (the game's) | done | 2026-11-12 (owner): in the wide view the bubble at the 16:9 edge is right as it is: it marks a fighter off the standard view. No change. |
+| Fighter in a bubble | custom: by view | not drawn in the side area (known limitation) | hidden (the game's) | hidden (the game's) | known limitation | 2026-11-12 (owner): in the wide view the bubble at the 16:9 edge is right as it is: it marks a fighter off the standard view. 2026-11-14 (owner): the fighter disappearing from the side area is a known limitation until there is a proper UX solution; see "Known limitations". |
 | Triple arrows | dynamic | by the picture's edge | same | same | done | 2026-11-14 (owner): they only say a fighter is off that side, so one rule in every view, unlike the bubble, which marks a place (`set_parts_arrow_*`, host.c `pane_place`); their size is the game's. |
 | Damage meters | static | 16:9 view | 16:9 view | 16:9 view | done | 2026-11-11: left with the 16:9 view. |
 | Timer | custom: player setting | right, center, left or hidden | same | same | done | 2026-11-12 (owner): "Timer position" on the Display page (display.ini `timer`), at any shape. Right is the game's place, at the picture's top-right corner (the default); left keeps the same margin from the picture's left edge; center centres it; hidden folds it away. Placed by its own 256 px box, which holds a two-digit minute: checked with a 15-minute match (14:52) in all four places, 32:9 and 16:9, nothing cut off. |
@@ -34,6 +34,16 @@ do is in [ULTRAWIDE-TODO.md](ULTRAWIDE-TODO.md).
 | Training mode elements | dynamic | at the picture's sides | same | same | done | 2026-11-12 (owner): as the pause menu: the damage panel at the right edge, the + menu (Quit Training, the settings list) at the left; the help line stays centred. The damage meters stay static (an exception by name). |
 | Battle Camera frame (camera controls) | dynamic | marks the whole picture | same | same | to do | 2026-11-12 (owner): the frame shows the shot, so it marks everything the picture shows. |
 | Menus, loading screens | static | black side areas | same | same | done (first PR) | 2026-11-12 (owner): black for the first PR; a blurred fill after it. |
+
+## Known limitations
+
+- **A fighter disappears past the 16:9 edge** (the wide view; the hybrid view now and then, when it shows
+  past the 16:9 view). Once a fighter is fully outside the game's 16:9 view, the game draws them only inside
+  their magnifying bubble: their model is moved out of the main picture and into the bubble. At 16:9 nobody
+  sees this, because that area is off the screen; in a wider picture the fighter is still in view, so they
+  vanish from the side area while the bubble shows them. The zoomed view does not show past the 16:9 view, so
+  it is not affected. Left as it is for now (owner, 2026-11-14): it needs a proper UX solution, not only a
+  rendering change. What was tried is under "Tried and dropped".
 
 ## Settings and switches (Direct3D 11 and Vulkan, on Windows and Linux)
 
@@ -317,6 +327,13 @@ few seconds into a fight (16:9 too).
 - `f_710364b620`'s visible rectangle (+0x950 = height x 16 / 9): 0 x 0 in fights.
 - Panning the render camera to keep the stage's range in view, with the rest dimmed (2026-11-11):
   no dimming seen; reverted.
+- Drawing a fighter in a bubble in the main picture too (2026-11-14, Mario on Bridge of Eldin, 32:9 wide):
+  the bubble's start (`main+0x490d10`, the model module's vtable +0x2a0: player slot, in a bubble) moves the
+  render model's group to `0x7650000 | slot`, which lib's node lookup (`main+0x35db540`) turns into
+  `NODE_LOUPE_<slot>` instead of the main view's node. Keeping the main group left the bubble empty and the
+  fighter still not drawn; a second node slot on the drawable (`main+0x35fb5c0`, slot 2) drew nothing (the
+  slot seems to pick the pass: 1 is the shadow's); widening every 1920x1080 camera the renderer copies only
+  stretched the bubble's portrait. Something else hides the fighter at the same boundary; not found. Reverted.
 
 ## Done (history)
 

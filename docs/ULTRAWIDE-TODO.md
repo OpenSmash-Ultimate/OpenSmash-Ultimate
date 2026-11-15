@@ -16,8 +16,8 @@ Order agreed with the owner (2026-11-11): HUD work first, then the Vulkan port.
       shape. No bars in fullscreen inside those ranges; bars outside them are expected.
 - [x] **Window size and render scale change without a restart**: at once offline; in an online match,
       after it (as the picture shape). Window size: any renderer on Windows (Linux and macOS: next start).
-      Render scale: Direct3D 11 (Vulkan and Metal: next start); only the targets whose size changes are
-      made again.
+      Render scale: Direct3D 11 and Vulkan (2026-11-14, Vulkan's untested yet; Metal: next start); only the
+      targets whose size changes are made again.
 - [x] **Window size options fit the picture shape and the monitor**: the menu offers heights 720 to 2160
       whose width (height x shape) fits the monitor's work area; display.ini keeps width and height.
 - [x] **Render scale auto follows the shape**: chosen again whenever the window's picture changes size
@@ -114,7 +114,7 @@ Rule for every row: once turned on it stays on; any change takes effect at the n
       GAME! (frame 5153, as Direct3D 11); Vulkan with the shape switched every 7 s (21 switches) the same over
       the whole log; 32:9 zoomed and 32:9 hybrid captured at the same fight frames on both back ends: the same
       layout (HUD, bubbles, tags), the pictures a few game frames apart (each back end's capture lags
-      differently: mean difference 0.75-1.5 at hybrid). Vulkan's render scale still waits for the next start.
+      differently: mean difference 0.75-1.5 at hybrid). Vulkan's render scale changes without a restart since 2026-11-14 (untested yet).
 - [ ] **Linux** (Direct3D 11 through DXVK, and Vulkan): done 2026-11-14, **untested on Linux**. The views and the
       HUD (`host.c`) are out of its Windows-only part (the camera hunt stays Windows only); `auto` and the
       21:9 / 32:9 snapping read the monitor through SDL; the windowed SDL window takes the picture's shape.
@@ -150,6 +150,10 @@ Rule for every row: once turned on it stays on; any change takes effect at the n
 - [x] `docs/PLAYING.md`: the settings text (aspect, view, timer) matches what ships.
 
 ## After the first PR (not blocking)
+
+- [ ] **A fighter disappears past the 16:9 edge** (wide view; hybrid now and then): a known limitation (owner,
+      2026-11-14), see ULTRAWIDE.md's "Known limitations". Needs a UX decision first (what the side area should
+      show for a fighter the game has put in a bubble), then the rendering.
 
 - Menus and loading screens: a blurred fill of the side areas instead of black.
 
