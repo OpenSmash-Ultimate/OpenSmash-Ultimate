@@ -915,7 +915,7 @@ static void build(void)
         snprintf(r->value, sizeof r->value, "%d x %d", ds.width, ds.height);
 #else
         r = add(R_SIZE, ds.mode == DISPLAY_WINDOWED ? K_CHOICE : K_INFO, W_NOW, "Window size",
-                "The size of the game's window when it is not full screen, at 100% Windows scaling. The width follows the picture shape, "
+                "The size of the game's window when it is not full screen, at 100% Windows scaling. The width follows the aspect ratio, "
                 "and sizes too big for your monitor are left out.");
         snprintf(r->value, sizeof r->value, "%d x %d", (int)((float)ds.height * display_aspect() + 0.5f), ds.height);
         if (ds.mode != DISPLAY_WINDOWED) snprintf(r->note, sizeof r->note, "windowed only");
@@ -934,10 +934,10 @@ static void build(void)
             snprintf(r->value, sizeof r->value, "%gx", ds.render_scale);
         note_env(r, "SSBU_RENDER_SCALE");
         int original = !_stricmp(display_aspect_setting(), "16:9"), locked = display_shape_locked();
-        r = add(R_ASPECT, K_CHOICE, W_NOW, "Picture shape",
-                "16:9 (original) is the game as it was made. A wider shape shows more of the stage at the sides without stretching "
+        r = add(R_ASPECT, K_CHOICE, W_NOW, "Aspect Ratio",
+                "16:9 (original) is the game as it was made. A wider aspect ratio shows more of the stage at the sides without stretching "
                 "anything, and fights play exactly as they do at 16:9. The damage meters stay in the middle; menus and panels move to the sides. 21:9 and 32:9 match your monitor "
-                "when it is close to that shape, and auto always uses your monitor's shape. Online matches are played at 16:9. "
+                "when it is close to that shape, and auto always matches your monitor. Online matches are played at 16:9. "
                 "Not on macOS yet.");
         snprintf(r->value, sizeof r->value, "%s%s", display_aspect_setting(), original ? " (original)" : "");
         if (locked && !original) snprintf(r->note, sizeof r->note, "not on macOS yet");
@@ -1214,7 +1214,7 @@ static void build(void)
         break;
     case P_EXP: /* (features still being tried: each is saved, and takes effect at the next start; docs/adr/0001) */
         r = add(R_UW_ONLINE, display_shape_locked() ? K_INFO : K_CHOICE, W_RESTART, "Ultrawide online",
-                "Experimental. Keeps your picture shape in online matches instead of 16:9. A mistake in this feature changes "
+                "Experimental. Keeps your aspect ratio in online matches instead of 16:9. A mistake in this feature changes "
                 "the fight for you and your opponent, and can make the match go out of sync. Takes effect when the game starts again.");
         snprintf(r->value, sizeof r->value, "%s", on_off(display_uw_online_saved()));
         if (display_shape_locked())

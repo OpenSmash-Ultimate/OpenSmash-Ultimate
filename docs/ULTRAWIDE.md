@@ -54,7 +54,7 @@ The words used here (picture shape, wide / zoomed / hybrid view, stage range, ..
 
 | Setting | What it does |
 | :--- | :--- |
-| `display.ini` `aspect = 16:9 \| auto \| W:H` (`SSBU_ASPECT` over it) | The picture shape, at most 32:9. 16:9 (the default): nothing changes. auto: the primary monitor's. Also in the settings menu ("Picture shape"): taken at the next frame, in fights too. 16:9 while an online match is set up or under way (taken before its GO!, never inside an online fight), and for the whole session on macOS (Metal not ported yet). On Linux, auto and the 21:9 / 32:9 snapping read the window's monitor through SDL. |
+| `display.ini` `aspect = 16:9 \| auto \| W:H` (`SSBU_ASPECT` over it) | The picture shape, at most 32:9. 16:9 (the default): nothing changes. auto: the primary monitor's. Also in the settings menu ("Aspect Ratio"): taken at the next frame, in fights too. 16:9 while an online match is set up or under way (taken before its GO!, never inside an online fight), and for the whole session on macOS (Metal not ported yet). On Linux, auto and the 21:9 / 32:9 snapping read the window's monitor through SDL. |
 | `display.ini` `view = wide \| zoomed \| hybrid` (`SSBU_VIEW` over it) | The view, with a picture wider than 16:9. Default hybrid. Also in the settings menu ("View"), at once, mid-fight too. |
 | `SSBU_DEBUG_REFERENCE_VIEW=1` | The reference view: tells the game itself the picture shape. Changes fights: offline comparison only (`build\aspect_test\liked.bat`). |
 | `SSBU_DEBUG_CAMERA_HUNT`, `SSBU_DEBUG_CAM_TRACE=<n>` (`SSBU_DEBUG_CAM_TRACE_OBJ`), `SSBU_DEBUG_FRAMING_DUMP=<n>`, `SSBU_DEBUG_PANES=<text>`, `SSBU_DEBUG_PANES_MOVED=1`, F9 | Research and measurement: who writes the camera's matrices, both cameras every n fight frames, the framing camera object, the HUD's panes by name, each pane the HUD's side, arrow and TIME! rules move, which 2D draw is which. |
@@ -88,7 +88,7 @@ The words used here (picture shape, wide / zoomed / hybrid view, stage range, ..
   again on its next use (they are looked up by the game's address). Both also change the render scale
   live, the same way. Direct3D 11's research: `cam_hunt_cb`, the `aspect:` line
   in F4's draw log.
-- `runtime/gpu_menu.c`: the settings menu's Picture shape and View rows (both take effect without a
+- `runtime/gpu_menu.c`: the settings menu's Aspect Ratio and View rows (both take effect without a
   restart).
 - `runtime/gpu_window.c`, `runtime/linux/window.c`: F9 passed to the renderer. Linux: the windowed SDL window
   takes the picture's shape (at the start, and at a shape change or a new window size from the menu, never

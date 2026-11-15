@@ -11,7 +11,7 @@ fight a 16:9 screen would have. The working notes and the map of the game's code
 **Picture shape**:
 The width over the height of what the player sees, e.g. 32:9 or 43:18; from 16:9 up to 32:9, the widest supported. It can change at any time offline, and is 16:9 for online matches.
 "21:9" is a marketing name, not one shape: 2560x1080 is 64:27 (2.37), 3440x1440 is 43:18 (2.39), true 21:9 is 2.33. So the menu's wider choices stand for a range and take the monitor's own shape when it falls inside it.
-_Avoid_: aspect, resolution, ratio
+_Avoid_: resolution. The settings menu calls it **Aspect Ratio**, the word players know (owner, 2026-11-14), and `display.ini` `aspect`; in code and notes it is the picture shape.
 
 **16:9 (original)**:
 The picture shape the game was made for: the game untouched, every view the same. The fallback to the intended display.
