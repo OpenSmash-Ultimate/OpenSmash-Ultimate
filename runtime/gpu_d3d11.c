@@ -6159,8 +6159,26 @@ static void capture(ID3D11Texture2D *back, ID3D11Texture2D *window) {
         if (getenv("SSBU_CAPTURE_MAX")) most = atoi(getenv("SSBU_CAPTURE_MAX"));
         if (getenv("SSBU_CAPTURE_EVERY")) every = (u64)(atof(getenv("SSBU_CAPTURE_EVERY")) * 1e9);
     }
-    if (!dir || count >= most || rt_now_ns() - last < every) return;
-    if (!capture_fight_window()) return;
+    /* SSBU_CAPTURE_AT=<fight frame>,<fight frame>,...: one capture at each of these frames of a test fight
+     * (the first frame shown at or past it), whatever SSBU_CAPTURE_EVERY says: the same moments in runs that
+     * differ only in what they draw (the same replay at other shapes) */
+    static long long at[32];
+    static int nat = -1, next_at;
+    if (nat < 0) {
+        nat = 0;
+        for (const char *e = getenv("SSBU_CAPTURE_AT"); e && *e && nat < 32; ) {
+            at[nat++] = atoll(e);
+            e = strchr(e, ',');
+            if (e) e++;
+        }
+    }
+    if (nat > 0) {
+        if (!dir || next_at >= nat || !test_fight_frame || test_fight_frame < at[next_at]) return;
+        while (next_at < nat && at[next_at] <= test_fight_frame) next_at++;
+    } else {
+        if (!dir || count >= most || rt_now_ns() - last < every) return;
+        if (!capture_fight_window()) return;
+    }
     last = rt_now_ns();
     char path[1024];
     snprintf(path, sizeof path, "%s/frame_%03d.bmp", dir, count);

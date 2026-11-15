@@ -261,6 +261,7 @@ The Vulkan back end ([`gpu_vk.c`](../runtime/gpu_vk.c)) is chosen with `SSBU_REN
 | `SSBU_VK_DRAWN_CLEARS=1` | Whole colour clears of floating-point targets are drawn as rectangles, as the masked ones are. |
 | `SSBU_CAPTURE=<folder>` | Frames shown written as pictures; `SSBU_CAPTURE_EVERY`, `SSBU_CAPTURE_FROM`, `SSBU_CAPTURE_TO` and `SSBU_CAPTURE_MAX` say which. |
 | `SSBU_F4_AT=<fight frame>` | Direct3D 11: F4 at that frame of a test fight (`SSBU_DEBUG_MATCH` or `SSBU_DEBUG_END`): every draw of the frame to the log, the render targets it samples and the textures to `screenshots/frame_<date>`. |
+| `SSBU_CAPTURE_AT=<fight frame>,...` | Direct3D 11: one capture at each of these fight frames (the first frame shown at or past it), instead of `SSBU_CAPTURE_EVERY`: the same moments in runs that differ only in what they draw. |
 | `SSBU_F4_AFTER_END=<frames>` | Direct3D 11: F4 that many frames shown after a test fight's last frame (TIME!, GAME!), as `SSBU_F4_AT`. |
 | `SSBU_VK_NO_D24=1` | Vulkan: 24-bit depth buffers made 32-bit float with stencil, as on a card without D24S8 (AMD's), to check AMD's depth on another card. Run it with its own `SSBU_SHADER_CACHE`: its pipelines are new ones. |
 | `SSBU_HITCH=<ms>` | Both renderers: a `[hitch] frame N: X ms` line for every frame that took longer, with what the threads spent it on. |

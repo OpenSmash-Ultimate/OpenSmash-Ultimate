@@ -85,8 +85,8 @@ The words used here (picture shape, wide / zoomed / hybrid view, stage range, ..
   fills an `AspectDraw` (the target's widening, depth test, whether it samples a widened target, the game's
   scissor, the vertex bank 3) and sets `params.fix[0]`, the scissor and the viewport from the answer. At a
   shape change (`display_aspect_take`, at a present) every target whose size changes is released and made
-  again on its next use (they are looked up by the game's address). Direct3D 11 also changes the render
-  scale live; Vulkan takes it at the next start. Direct3D 11's research: `cam_hunt_cb`, the `aspect:` line
+  again on its next use (they are looked up by the game's address). Both also change the render scale
+  live, the same way. Direct3D 11's research: `cam_hunt_cb`, the `aspect:` line
   in F4's draw log.
 - `runtime/gpu_menu.c`: the settings menu's Picture shape and View rows (both take effect without a
   restart).
