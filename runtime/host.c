@@ -936,7 +936,11 @@ static void pane_place(Cpu *c) {
         sx0 = *sx;
         *sx = 0;
     }
-    int meter = name[0] == 'p' && name[1] >= '1' && name[1] <= '8' && !name[2];   /* (the damage meters p1..p8: static, owner) */
+    /* (the damage meters: static, owner. info_melee's p1..p4 for up to 4 fighters, p1_2 p2_2 p3_2 p4_2 p5..p8 for 5 to 8 - by the side
+     * rules only the row's ends moved, P1 to the picture's edge (owner, 2026-11-15, 8 fighters); and the online waiting room's
+     * row of player slots, info_waiting's trans_players: player_00 and _03 went to the picture's edges, the middle two stayed) */
+    int meter = (name[0] == 'p' && name[1] >= '1' && name[1] <= '8' && (!name[2] || !strcmp(name + 2, "_2"))) ||
+                (parent && !strcmp(P(char, parent + 0xb0), "trans_players"));
     /* (the tags - P1/CPU set_cursor_p1.., items' set_cursor_00.. - and their layer, 720p: placed by the game's world-to-screen
      * (hud_call), they follow what they mark. Moved by the side rules they jumped 330 px near the 16:9 edges, every tag of the
      * layer at once when one of them made the layer reach an edge: owner, 2026-11-14, all three views) */
