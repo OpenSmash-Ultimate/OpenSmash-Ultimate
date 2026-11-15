@@ -54,7 +54,7 @@ Rule for every row: once turned on it stays on; any change takes effect at the n
       overlap other things)
 - [x] A shape changed mid-fight reaches every HUD panel at once (owner, 2026-11-12): the layouts are placed again for
       half a second after the change; the replay with the shape cycling every 7 s matches 16:9 up to GAME!
-- [x] Triple arrows follow the bubbles out (2026-11-14): `set_parts_arrow_l_00`.. under the HUD's root, put by the game
+- [x] Triple arrows follow the bubbles out (2026-11-14): `set_parts_arrow_*` (`_l_00`.. seen; the right side's not, owner: not moved before) under the HUD's root, put by the game
       a fixed way inside the 16:9 edge (x -752); in the zoomed and hybrid views moved as far from the picture's edge
       (host.c, `pane_place`), in the wide view left by the 16:9 edge with the bubble. Seen on the Eldin replay at 32:9
       zoomed and wide (`build\aspect_test\auto\arrz32`, `arrw32`); hybrid takes the zoomed path, not run. Their size is
