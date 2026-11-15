@@ -931,11 +931,11 @@ static void pane_place(Cpu *c) {
      * layer at once when one of them made the layer reach an edge: owner, 2026-11-14, all three views) */
     int tag = !strncmp(name, "set_cursor_", 11) || !strcmp(name, "720p");
     /* (the triple arrows, set_parts_arrow_l_00.. (and the right side's, whatever their name: set_parts_arrow_*) under the HUD's
-     * root: three arrows the game puts a fixed way inside the 16:9 edge, on the off-screen fighter's side, x -752 or so. They follow the bubble out (owner, 2026-11-11): in the zoomed and
-     * hybrid views, where the renderer moves the bubble to the picture's edge (gpu_aspect.c), they go as far from the
-     * picture's edge as they were from the 16:9 one; in the wide view the bubble stays at the 16:9 edge, and so do they) */
+     * root: three arrows the game puts a fixed way inside the 16:9 edge, on the off-screen fighter's side, x -752 or so. Dynamic
+     * (owner, 2026-11-14): as far from the picture's edge as they were from the 16:9 one, in every view - they only say "a
+     * fighter is off this side", where the bubble marks a place (and is custom: by view, gpu_aspect.c)) */
     int arrows = !strncmp(name, "set_parts_arrow_", 16) && parent && !*P(u64, parent + 0x18);   /* (not the menus' set_parts_arrow_l/_r, under anim_POP_00) */
-    if (arrows && on && g > 1.001f && display_view() != VIEW_WIDE) {
+    if (arrows && on && g > 1.001f) {
         x = P(float, pane + 0x30);
         x0 = *x;
         if (fabsf(x0) > 960 * 0.5f) *x = x0 + (x0 < 0 ? -1 : 1) * 960 * (g - 1);

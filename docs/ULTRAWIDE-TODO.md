@@ -54,11 +54,11 @@ Rule for every row: once turned on it stays on; any change takes effect at the n
       overlap other things)
 - [x] A shape changed mid-fight reaches every HUD panel at once (owner, 2026-11-12): the layouts are placed again for
       half a second after the change; the replay with the shape cycling every 7 s matches 16:9 up to GAME!
-- [x] Triple arrows follow the bubbles out (2026-11-14): `set_parts_arrow_*` (`_l_00`.. seen; the right side's not, owner: not moved before) under the HUD's root, put by the game
-      a fixed way inside the 16:9 edge (x -752); in the zoomed and hybrid views moved as far from the picture's edge
-      (host.c, `pane_place`), in the wide view left by the 16:9 edge with the bubble. Seen on the Eldin replay at 32:9
-      zoomed and wide (`build\aspect_test\auto\arrz32`, `arrw32`); hybrid takes the zoomed path, not run. Their size is
-      the game's (30 x 34 px each at 1080 high: squeezed); 32:9 on a 21:9 monitor is letterboxed, so 21:9 looks bigger.
+- [x] Triple arrows (2026-11-14, owner: dynamic): `set_parts_arrow_*` under the HUD's root, put by the game a fixed way
+      inside the 16:9 edge (x -752); in every view moved as far from the picture's edge (host.c, `pane_place`): they
+      only say a fighter is off that side, where the bubble (custom, by view) marks a place. Left and right checked by
+      the owner (the view rule before this). Their size is the game's (30 x 34 px each at 1080 high: squeezed); 32:9 on
+      a 21:9 monitor is letterboxed, so 21:9 looks bigger.
 - [x] Wide view: the bubble stays at the 16:9 edge, marking a fighter off the standard view (owner, 2026-11-12: as it
       should be; no change)
 - [x] Menus and loading screens: black side areas for the first PR (owner); the blurred fill after it
