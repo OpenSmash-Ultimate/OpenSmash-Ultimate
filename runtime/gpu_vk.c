@@ -706,6 +706,29 @@ static void release_surface(Surface *s) {
     memset(s, 0, sizeof *s);
 }
 
+int game_fight_on(void);   /* (hle_fight_test.c) */
+int net_match_now(void);   /* (host.c: an online match set up or under way) */
+/* The render scale display.ini asks for (auto: the picture's height in the window now over the game's
+ * 1080), as gpu_d3d11.c's scale_wanted: taken at the start and, when it changes (the menu, the window's
+ * size), at a present: the targets whose size changes are made again. */
+static float scale_wanted(void) {
+    float scale = display_render_scale();
+    if (scale == 0 && display_window_sizing() && render_scale > 0) return render_scale;   /* (auto: once the drag ends) */
+    if (scale == 0) {
+        scale = 1;
+        VkSurfaceCapabilitiesKHR caps;
+        if (vk_surface && vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, vk_surface, &caps) == VK_SUCCESS && caps.currentExtent.width != 0xFFFFFFFFu) {
+            unsigned fx, fy, fw, fh;
+            display_fit(caps.currentExtent.width, caps.currentExtent.height, &fx, &fy, &fw, &fh);
+            scale = (float)fh / 1080.0f;
+            if (scale < 1) scale = 1;
+            if (scale > 4) scale = 4;
+        }
+    }
+    if (scale < 0.5f || scale > 4) scale = 1;
+    return scale;
+}
+
 static float scaled_size(u32 w, u32 h, u32 *hw, u32 *hh) {   /* (returns the widening it applied, 1 for none) */
     *hw = w; *hh = h;
     float wide = aspect_widening(w, h);   /* (a picture wider than 16:9: the 16:9 targets as much wider) */
@@ -1205,10 +1228,17 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
         for (int i = 0; i < nshots; i++) readback_save(&shot[i]);
     }
     frame_at = (frame_at + 1) % nframes;
-    /* A new picture shape (gpu_display.c, display_aspect_take): the 16:9-shaped targets made again at its width
-     * (the render scale stays the start's on Vulkan). Only those whose size changes: one the game drew once
-     * keeps its picture. */
-    if (display_aspect_take())
+    /* A new picture shape (gpu_display.c, display_aspect_take): the 16:9-shaped targets made again at its width.
+     * A new render scale (menu, window size; never inside an online fight, where a hitch is both players'):
+     * every target made again. Only those whose size changes: one the game drew once keeps its picture. */
+    int new_shape = display_aspect_take();
+    float scale = scale_wanted();
+    int new_scale = scale != render_scale && !(game_fight_on() && net_match_now());
+    if (new_scale) {
+        fprintf(stderr, "[vulkan] render scale now %.3g%s (was %.3g)\n", scale, display_render_scale() == 0 ? " (auto)" : "", render_scale);
+        render_scale = scale;
+    }
+    if (new_shape || new_scale)
         for (u32 i = 0; i < nsurfaces; i++) {
             u32 w, h;
             if (!surfaces[i].image) continue;
@@ -5137,22 +5167,7 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
     int bgra = 0;
     for (uint32_t i = 0; i < nsf; i++) bgra |= sf[i].format == VK_FORMAT_B8G8R8A8_UNORM;
     swap_format = bgra || !nsf ? VK_FORMAT_B8G8R8A8_UNORM : sf[0].format;
-    /* The render scale (display.ini render_scale; auto: the picture's height in the window now over
-     * the game's 1080), fixed from here on, as gpu_d3d11.c's */
-    float scale = display_render_scale();
-    if (scale == 0) {
-        scale = 1;
-        VkSurfaceCapabilitiesKHR caps;
-        if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, vk_surface, &caps) == VK_SUCCESS && caps.currentExtent.width != 0xFFFFFFFFu) {
-            unsigned fx, fy, fw, fh;
-            display_fit(caps.currentExtent.width, caps.currentExtent.height, &fx, &fy, &fw, &fh);
-            scale = (float)fh / 1080.0f;
-            if (scale < 1) scale = 1;
-            if (scale > 4) scale = 4;
-        }
-    }
-    if (scale < 0.5f || scale > 4) scale = 1;
-    render_scale = scale;
+    render_scale = scale_wanted();
     fprintf(stderr, "[vulkan] drawing with %s (Vulkan %u.%u.%u)%s: %u frames in flight, render scale %.3g, present modes%s%s\n",
             card, VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion), VK_API_VERSION_PATCH(props.apiVersion),
             float_controls ? ", float controls" : "", nframes, render_scale, have_immediate ? " immediate" : "", have_mailbox ? " mailbox" : "");

@@ -924,7 +924,7 @@ static void build(void)
 #ifdef __APPLE__
         int scale_when = W_RESTART;
 #else
-        int scale_when = gfx_renderer() == RENDERER_VULKAN ? W_RESTART : W_NOW;   /* (Direct3D 11 takes it at its next present) */
+        int scale_when = W_NOW;   /* (Direct3D 11 and Vulkan take it at their next present) */
 #endif
         r = add(R_SCALE, K_CHOICE, scale_when, "Render scale",
                 "How many times 1920x1080 the game draws at: sharper on a big screen, more work for the graphics card. Auto: as many pixels as the window has.");
@@ -1467,7 +1467,7 @@ static void change(const Row *row, int dir)
                 i = k;
         i = i < 0 ? (dir > 0 ? 0 : n - 1) : cycle(i, n, dir);
         set_display("render_scale", SCALES[i]);
-        display_set_render_scale(VALUES[i]); /* (Direct3D 11 takes it at its next present; Vulkan and Metal at the next start) */
+        display_set_render_scale(VALUES[i]); /* (Direct3D 11 and Vulkan take it at their next present; Metal at the next start) */
         break;
     }
     case R_ASPECT:

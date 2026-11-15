@@ -87,7 +87,7 @@ void display_set_pacing(Pacing pacing);
 void display_set_hide_cursor(int on);
 void display_set_latency(int frames);
 int display_take_latency(void);           /* the renderer, at a present: a new latency, or 0 */
-void display_set_render_scale(float scale);   /* (Direct3D 11 takes it at its next present; the others at the next start) */
+void display_set_render_scale(float scale);   /* (Direct3D 11 and Vulkan take it at their next present; Metal at the next start) */
 void display_set_window_height(int height);   /* the windowed height; the width follows the picture shape (Windows: now) */
 int display_window_height_fits(int height);
 #ifndef _WIN32
