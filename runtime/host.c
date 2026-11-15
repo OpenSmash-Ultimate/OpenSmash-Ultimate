@@ -961,18 +961,14 @@ static void pane_place(Cpu *c) {
      * every view). Their x is widened instead: they start past the picture's edges and still meet in the middle) */
     int timeup = parent && !strcmp(P(char, parent + 0xb0), "timeup");
     /* (the vs screen before a fight, system/matchup: each fighter's background, set_panel_bg_00.. (960 x 1080 at x +-480
-     * with two fighters), is widened with the picture, not moved: its x and the width of what it draws times the widening,
-     * so the backgrounds still meet in the middle and reach the picture's edges. Moved by the side rules they left a gap
-     * in the middle (owner, 2026-11-15, who chose this). The fighters, their banners and the series logo keep their places) */
+     * with two fighters), stays in the 16:9 view, the side areas open. Moved by the side rules they left a gap in the
+     * middle; widened, they stretched (owner, 2026-11-15: open ends until there is a better idea) */
     int vs_bg = parent && !strncmp(name, "set_panel_bg_", 13);
-    if ((timeup || vs_bg) && on && g > 1.001f) {
+    if (timeup && on && g > 1.001f) {
         x = P(float, pane + 0x30);
         x0 = *x;
         *x = x0 * g;
     }
-    if (on && g > 1.001f && !sx && (!strcmp(name, "mask_bg") || !strncmp(name, "pic_bg_", 7)))   /* (its clip, texture, gradient) */
-        for (u64 q = parent, d = 0; q && d < 8; q = *P(u64, q + 0x18), d++)
-            if (!strncmp(P(char, q + 0xb0), "set_panel_bg_", 13)) { sx = P(float, pane + 0x48); sx0 = *sx; *sx = sx0 * g; break; }
     if (parent && on && g > 1.001f && !meter && !tag && !arrows && !timeup && !vs_bg && screen_chain(parent) && strncmp(name, "set_parts_message_", 18) && !screen_group(pane)) {
         x = P(float, pane + 0x30);
         x0 = *x;
