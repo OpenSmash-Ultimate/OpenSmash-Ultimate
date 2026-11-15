@@ -68,7 +68,11 @@ void aspect_draw(const AspectDraw *d, AspectDecision *o) {
     float l = cx - reach, r = cx + reach;
     if (d->scissor & 1) { l = (float)(d->scissor_lr & 0xFFFF); r = (float)(d->scissor_lr >> 16); }
     if (l <= 0 && r >= (float)d->rt_w) { l = cx - reach; r = cx + reach; }   /* (the game's whole screen: in a fight, the whole picture) */
-    if (l < cx - reach) l = cx - reach;
+    /* (a scissor's left is unsigned, so one past the screen's left edge comes as 0, where its right past the other edge
+     * stays past it: a mask moved out to the left (pane_place) was cut at the 16:9 edge - the vs screen's left background
+     * panel, the waiting room's P1 slot (owner, 2026-11-15). 0 reaches as far as the right does: the picture's edge in a
+     * fight, the screen's elsewhere) */
+    if (l <= 0 || l < cx - reach) l = cx - reach;
     if (r > cx + reach) r = cx + reach;   /* (a scissor past the screen still stops at its edge) */
     o->clip = 1;
     o->clip_l = (int)floorf((cx + (l - cx) / d->wide) * d->rt_sx);
