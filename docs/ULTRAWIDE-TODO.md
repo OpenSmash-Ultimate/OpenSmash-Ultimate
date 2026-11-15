@@ -121,6 +121,11 @@ Rule for every row: once turned on it stays on; any change takes effect at the n
 
 ## Bugs to reproduce (found 2026-11-14)
 
+- [x] **Tags off their fighters near the 16:9 edges** (owner, 2026-11-14, all three views, items' tags too): the
+      HUD's side rules moved the tags' panes (`set_cursor_p1`.., items' `set_cursor_00`..) and their layer (`720p`):
+      a tag within 120 px of a 16:9 edge was taken for a panel against it and moved 330 px (21:9), and once one
+      tag made the layer reach an edge, every tag moved with it. The tags are left alone now (the game places them
+      on what they mark). Found with `SSBU_DEBUG_PANES_MOVED=1` (each pane the side rules move, with its parents).
 - [x] **Results screen: the cards pushed apart** (owner, 2026-11-14, Vulkan; Direct3D 11 the same): the HUD's
       "panels to the picture's sides" rule keyed on the fight's camera manager, which the results screens still
       have, so the cards went to the sides. Now the rule ends with the fight (the ready-go flag off and the

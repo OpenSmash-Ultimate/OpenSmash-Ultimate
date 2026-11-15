@@ -821,8 +821,8 @@ static GuestFn *const hud_wrappers[NHUD] = {hud_w0, hud_w1, hud_w2, hud_w3, hud_
  * and whose right edge is within 120 px of the screen's right edge (the timer, the pause menu,
  * Training's damage panel) is moved right by the picture's extra width on that side, whole and at its
  * own size; the left edge likewise (P1 PAUSE, the camera controls list); a pane reaching both, or
- * neither, stays. The renderer's 2D squeeze maps the wider range back onto the picture. Tags and bubbles
- * hang under a larger "world" pane, not the screen, and are left to their own rules. In fights only:
+ * neither, stays. The renderer's 2D squeeze maps the wider range back onto the picture. The tags (set_cursor_*,
+ * in the 720p layer) are left alone by name: the game places them on what they mark (hud_call). In fights only:
  * menus keep 16:9 (black sides, owner). */
 static int screen_like(u64 p) {   /* (the screen's size, 1920 x 1080, or a little more: a frame just past its edges) */
     float w = *P(float, p + 0x50), h = *P(float, p + 0x54);
@@ -926,7 +926,11 @@ static void pane_place(Cpu *c) {
         *sx = 0;
     }
     int meter = name[0] == 'p' && name[1] >= '1' && name[1] <= '8' && !name[2];   /* (the damage meters p1..p8: static, owner) */
-    if (parent && on && g > 1.001f && !meter && screen_chain(parent) && strncmp(name, "set_parts_message_", 18) && !screen_group(pane)) {
+    /* (the tags - P1/CPU set_cursor_p1.., items' set_cursor_00.. - and their layer, 720p: placed by the game's world-to-screen
+     * (hud_call), they follow what they mark. Moved by the side rules they jumped 330 px near the 16:9 edges, every tag of the
+     * layer at once when one of them made the layer reach an edge: owner, 2026-11-14, all three views) */
+    int tag = !strncmp(name, "set_cursor_", 11) || !strcmp(name, "720p");
+    if (parent && on && g > 1.001f && !meter && !tag && screen_chain(parent) && strncmp(name, "set_parts_message_", 18) && !screen_group(pane)) {
         x = P(float, pane + 0x30);
         x0 = *x;
         if (screen_like(pane)) {
@@ -937,6 +941,21 @@ static void pane_place(Cpu *c) {
             int right = r >= 960 - 120, left = l <= -960 + 120;
             if (l >= 960 || r <= -960) *x = x0 * g;                        /* (parked off the screen: off the picture) */
             else if (right != left) *x = x0 + (right ? 1 : -1) * 960 * (g - 1);   /* (against one edge: against the picture's) */
+        }
+        static int moved_log = -1;   /* SSBU_DEBUG_PANES_MOVED=1 (HUD research): each pane name the side rules move, once, with its parents */
+        if (moved_log < 0) moved_log = getenv("SSBU_DEBUG_PANES_MOVED") != NULL;
+        if (moved_log && *x != x0) {
+            static char seen[4096];
+            char key[40];
+            snprintf(key, sizeof key, "|%.30s|", name);
+            if (!strstr(seen, key) && strlen(seen) + strlen(key) < sizeof seen) {
+                strcat(seen, key);
+                char chain[200];
+                int n = 0;
+                for (u64 q = parent; q && n < (int)sizeof chain - 40; q = *P(u64, q + 0x18))
+                    n += snprintf(chain + n, sizeof chain - n, " < %.24s", P(char, q + 0xb0));
+                printf("[panes] moved %-24.24s x %g -> %g (vt %#llx)%s\n", name, x0, *x, (unsigned long long)*P(u64, pane), chain);
+            }
         }
     }
     if (getenv("SSBU_DEBUG_PANES")) {   /* SSBU_DEBUG_PANES=<text> (HUD research): the panes whose name, or a parent's, holds it */
