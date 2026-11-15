@@ -80,6 +80,7 @@ public sealed partial class ClassicSurface
         ApplyLogoTheme();
         ApplyWindowIcon();
         _bg?.Dispose(); _bg = null;
+        _slashCache?.Dispose(); _slashCache = null;
         _settingEdit.Background = Avalonia.Media.Brush.Parse(Hex(ArtworkTheme.Bg2));
         _settingEdit.Foreground = Avalonia.Media.Brush.Parse(Hex(ArtworkTheme.Text));
         if (_marketplaceReady) _ = MarketplaceScript(ThemeScript());

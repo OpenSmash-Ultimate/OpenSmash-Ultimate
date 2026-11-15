@@ -2,6 +2,18 @@ using Avalonia.Input;
 namespace OpenSmash.Visuals;
 public sealed partial class ClassicSurface
 {
+    const int SettingsDropdownRows=8;
+    bool ScrollSettingsDropdown(double delta)
+    {
+        if(_modal!=null||_openDropdownKey==null)return false;
+        var setting=_settings.FirstOrDefault(s=>s.Key==_openDropdownKey);
+        if(setting==null)return false;
+        if(_ddFirst<0)_ddFirst=Math.Max(0,Array.IndexOf(setting.Values,GetSetting(setting.Key))-SettingsDropdownRows/2);
+        _ddFirst=Math.Clamp(_ddFirst-(int)Math.Sign(delta)*(int)Math.Ceiling(Math.Abs(delta)*3),0,Math.Max(0,setting.Values.Length-SettingsDropdownRows));
+        _dropdownHoverIndex=-1;
+        return true;
+    }
+
     bool HandleSettingsKey(Key key)
     {
         var visible=GetVisibleSettings();

@@ -364,6 +364,7 @@ public sealed partial class ClassicSurface : Control
     }
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
+        if(ScrollSettingsDropdown(e.Delta.Y)){e.Handled=true;InvalidateVisual();return;}
         if(IsInstaller)_logScroll=Math.Max(0,_logScroll+(int)(e.Delta.Y*3));
         else if(_view=="settings")_settingsScroll=Math.Clamp(_settingsScroll-(float)e.Delta.Y*40*_s,0,_settingsMaxScroll);
         else if(_view=="mods")_modScroll=Math.Clamp(_modScroll-(int)(e.Delta.Y*40),0,_modMaxScroll);

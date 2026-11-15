@@ -299,7 +299,7 @@ public sealed partial class ClassicSurface
         {
             float s = _s;
             var vals = set.Values;
-            const int MaxRows = 8;
+            const int MaxRows = SettingsDropdownRows;
             int count = Math.Min(vals.Length, MaxRows);
             string current = _iniValues.GetValueOrDefault(set.Key, vals.Length > 0 ? vals[0] : "");
             if (_ddFirst < 0) _ddFirst = Math.Max(0, Array.IndexOf(vals, current) - MaxRows / 2);

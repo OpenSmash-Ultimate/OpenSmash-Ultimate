@@ -48,7 +48,30 @@ static class ThemePersistenceChecks
         Check(reopened.Surface.GetSetting("theme_preset")=="saved:"+name,"saved preset name restores even when its colors equal a built-in palette");
         Check(reopened.Surface.GetSetting("theme_accent")=="#88C0D0"&&reopened.Surface.GetSetting("theme_background")=="#2E3440"&&reopened.Surface.GetSetting("theme_text")=="#ECEFF4","all saved colors restore on reopening a migrated project");
         Check(saved.SequenceEqual(File.ReadAllBytes(presets)),"reopening does not rewrite or lose named presets");
-        reopened.Surface.ChangeSetting("theme_accent","#123456"); reopened.Close();
+        reopened.Surface.ChangeSetting("theme_accent","#123456");
+        var edited=reopened.Surface;
+        var presetSetting=((Array)Field("_settings").GetValue(edited)!).Cast<object>().Single(s=>(string)s.GetType().GetField("Key")!.GetValue(s)! =="theme_preset");
+        var options=(string[])presetSetting.GetType().GetField("Values")!.GetValue(presetSetting)!;
+        int savedIndex=Array.IndexOf(options,"saved:"+name);
+        Check(savedIndex>=8&&saved.SequenceEqual(File.ReadAllBytes(presets)),"editing colors preserves saved presets and their dropdown entries");
+        Field("_openDropdownKey").SetValue(edited,"theme_preset");
+        Field("_ddFirst").SetValue(edited,0);
+        Field("_dropdownHoverIndex").SetValue(edited,0);
+        var scroll=typeof(ClassicSurface).GetMethod("ScrollSettingsDropdown",BindingFlags.Instance|BindingFlags.NonPublic)!;
+        float pageScroll=(float)Field("_settingsScroll").GetValue(edited)!;
+        Check((bool)scroll.Invoke(edited,[-1d])!&&(int)Field("_ddFirst").GetValue(edited)!>0
+            &&savedIndex<(int)Field("_ddFirst").GetValue(edited)!+8
+            &&(int)Field("_dropdownHoverIndex").GetValue(edited)! ==-1
+            &&(float)Field("_settingsScroll").GetValue(edited)! ==pageScroll,"scrolling the preset dropdown reveals saved themes without scrolling the page or snapping back");
+        scroll.Invoke(edited,[-100d]);
+        Check((int)Field("_ddFirst").GetValue(edited)! ==options.Length-8,"preset dropdown scrolling stops at the last option");
+        scroll.Invoke(edited,[100d]);
+        Check((int)Field("_ddFirst").GetValue(edited)! ==0,"preset dropdown can scroll back to the first option");
+        Field("_openDropdownKey").SetValue(edited,null);
+        Check(!(bool)scroll.Invoke(edited,[-1d])!,"closed dropdowns leave normal page scrolling available");
+        edited.ChangeSetting("theme_preset","saved:"+name);
+        Check(edited.GetSetting("theme_accent")=="#88C0D0","saved preset remains selectable after editing its colors");
+        edited.ChangeSetting("theme_accent","#123456"); reopened.Close();
         var custom=new MainWindow([],root,enableBackgroundActions:false);
         Check(custom.Surface.GetSetting("theme_preset")=="custom"&&custom.Surface.GetSetting("theme_accent")=="#123456","manual edits persist as custom instead of reapplying the previous preset");
         custom.Close();

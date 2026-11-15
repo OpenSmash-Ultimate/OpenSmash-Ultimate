@@ -13,6 +13,18 @@ static class ThemeChecks
         return bitmap.GetPixel(x,y);
     }
 
+    static object WarmSlashCache(ClassicSurface surface)
+    {
+        var assembly = typeof(ClassicSurface).Assembly;
+        var bitmapType = assembly.GetType("OpenSmash.Visuals.Bitmap")!;
+        var graphicsType = assembly.GetType("OpenSmash.Visuals.Graphics")!;
+        using var bitmap = (IDisposable)Activator.CreateInstance(bitmapType, [320, 180])!;
+        using var graphics = (IDisposable)graphicsType.GetMethod("FromImage")!.Invoke(null, [bitmap])!;
+        typeof(ClassicSurface).GetMethod("DrawSlashes", BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(surface, [graphics, 320, 180, 5f]);
+        return typeof(ClassicSurface).GetField("_slashCache", BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(surface)
+            ?? throw new Exception("Settled diagonal artwork did not populate its cache.");
+    }
+
     static void PickerChecks(MainWindow owner)
     {
         var assembly = typeof(ClassicSurface).Assembly;
@@ -53,9 +65,14 @@ static class ThemeChecks
         var window = new MainWindow([],root,enableBackgroundActions:false);
         var surface = window.Surface;
         Check(surface.GetSetting("theme_accent")=="#FF3B30", "invalid saved color falls back to default");
-        surface.ChangeSetting("theme_accent","#12abef");
-        surface.ChangeSetting("theme_background","#112233");
-        surface.ChangeSetting("theme_text","#EEEEDD");
+        foreach (var (key, color) in new[] { ("theme_accent", "#12abef"), ("theme_background", "#112233"), ("theme_text", "#EEEEDD") })
+        {
+            var previous = WarmSlashCache(surface);
+            surface.ChangeSetting(key, color);
+            Check(typeof(ClassicSurface).GetField("_slashCache", BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(surface) == null,
+                key + " immediately invalidates cached diagonal artwork");
+            Check(!ReferenceEquals(previous, WarmSlashCache(surface)), key + " redraws diagonal artwork without restarting");
+        }
         Check(surface.GetSetting("theme_accent")=="#12ABEF", "custom hex colors are normalized");
         Check(LogoPixel(surface,170,100)==new SkiaSharp.SKColor(0x12,0xAB,0xEF), "logo cross follows accent color");
         Check(LogoPixel(surface,300,100)==new SkiaSharp.SKColor(0xEE,0xEE,0xDD), "logo mark follows text color");
