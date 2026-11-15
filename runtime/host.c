@@ -970,6 +970,14 @@ static void pane_place(Cpu *c) {
         x0 = *x;
         if (screen_like(pane)) {
             *x = x0 * g;                              /* (a screen: parked one screen away stays one picture away) */
+            /* (a screen-sized fill - a pane that draws, with nothing under it - is stretched across the picture: the popup's
+             * dimming, system/popup's set_bg_00 (2000 x 1160), dimmed only the 16:9 middle behind "End the game?" (owner,
+             * 2026-11-15). Not a container: what is under it would stretch too. Not the yellow frame, hidden above) */
+            if (!sx && *P(u64, pane) != 0x7104f3f810ull && *P(u64, pane + 0x28) == pane + 0x20) {
+                sx = P(float, pane + 0x48);
+                sx0 = *sx;
+                *sx = sx0 * g;
+            }
         } else {
             float l = 0, r = 0;
             if (!pane_extent(pane, &l, &r, 0)) l = r = 0;   /* (nothing visible under it: left where it is) */
