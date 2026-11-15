@@ -1067,7 +1067,9 @@ static const char *capture_path(char *path, size_t size) {
         if (getenv("SSBU_CAPTURE_TO")) to = atoll(getenv("SSBU_CAPTURE_TO"));
     }
     if (!dir || !*dir || count >= most || rt_now_ns() - last < every) return NULL;
-    if ((from && test_fight_frame < from) || (to && test_fight_frame > to)) return NULL;
+    static long long fought;   /* (the fight's last frame: the span goes on after it ends - TIME!, GAME!) */
+    if (test_fight_frame) fought = test_fight_frame;
+    if ((from && fought < from) || (to && fought > to)) return NULL;
     last = rt_now_ns();
     snprintf(path, size, "%s/vk_frame_%03d.bmp", dir, count);
     if (test_fight_frame) fprintf(stderr, "[capture] vk_frame_%03d.bmp at fight frame %lld\n", count, test_fight_frame);

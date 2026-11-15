@@ -135,11 +135,16 @@ Rule for every row: once turned on it stays on; any change takes effect at the n
       fighters' line stopped; the finish after GAME! keeps the whole picture) until the next scene: the results
       stay in the middle 16:9, as menus do. Checked by a debug match run into the results at 21:9 on both back
       ends (`build\aspect_test\auto\vkres21b`, `d3res21b`; 16:9: `vkres169b`). The winner's pose was framed as
-      at 16:9 there (Donkey Kong); the owner's "zoomed in" not seen yet. Not checked: Sudden Death.
-- [ ] **A tag off its fighter right after a mid-fight shape change** (both back ends, so the HUD's side,
-      `host.c`): with `SSBU_TEST_ASPECT_CYCLE=7` (hybrid), a capture less than a second after 21:9 -> 32:9 has
-      P1 well away from Ganondorf (Vulkan fight frame 3836; Direct3D 11's e2_scycle frame 4041). With the
-      shape fixed from the start the tag is on him on both back ends. How long it stays off: to measure.
+      at 16:9 there (Donkey Kong); the owner's "zoomed in" not seen yet. Sudden Death: checked by the owner
+      (2026-11-14), the results fine; its TIME! was two words, fixed (ULTRAWIDE.md, HUD decisions).
+- [x] **A tag off its fighter right after a mid-fight shape change** (both back ends, so the HUD's side,
+      `host.c`): measured 2026-11-14 on the owner's 1-minute replay with the shape switched every 3 s: off in
+      the first capture after 21:9 -> 32:9 (at 0.66 of the fighter's distance from the middle, the two shapes'
+      ratio), on again 7 frames later. The HUD's world-to-screen took the shape asked for now, the camera's
+      projection the one it was built with. It now takes the projection's own shape (its y scale over its x
+      scale), so a tag follows the 3D it is drawn with; the owner watched the switches: right every time.
+- [x] **Yellow bars for a moment after a switch from 16:9** (owner, 2026-11-14): the yellow frame
+      (`set_parts_edge`) is hidden in fights at every shape now (ULTRAWIDE.md, HUD decisions).
 
 ## Clean-up
 

@@ -799,7 +799,16 @@ static void hud_call(int k, Cpu *c) {
         }
     }
     float *p = cam ? P(float, cam + 0x290) : NULL, *inv = cam ? P(float, cam + 0x2d0) : NULL;
+    /* The widening the projection was built with (its y scale over its x scale is its shape), not the shape asked
+     * for now: the renderer takes a new shape between two frames, and in the frame or two after it the camera's
+     * projection and display_aspect disagreed - a tag sat off its fighter by their ratio (owner, 2026-11-14:
+     * 21:9 -> 32:9 put it at 0.66 of the fighter's distance from the middle, for one capture). Training's
+     * orthographic camera (+0x150 = 1) is 16:9 whatever the shape (wide_copy widens only its drawing copy). */
     float wide = display_aspect() / (16.0f / 9);
+    if (p && hud_depth == 0 && *P(u32, cam + 0x150) != 1 && p[0] > 1e-6f) {   /* (an inner call sees the outer one's 16:9) */
+        float built = p[5] / p[0];
+        if (built > 1.7f && built < 3.7f) wide = built / (16.0f / 9);
+    }
     int swap = p && *P(float, cam + 0x168) == 1080.0f && InterlockedIncrement(&hud_depth) == 1;   /* (outermost only) */
     float p0 = 0, i0 = 0;
     if (swap) { p0 = p[0]; i0 = inv[0]; p[0] = p0 * wide; inv[0] = i0 / wide; }
@@ -917,10 +926,12 @@ static void pane_place(Cpu *c) {
         if (sx) *sx = sx0;
         return;
     }
-    if (on && g > 1.001f && !strcmp(name, "edge_y")) {
+    if (*P(u64, 0x71052b8f00ull) && !hud_over && !strcmp(name, "edge_y")) {
         /* The yellow frame of set_parts_edge (1990 x 1150), its border just past the screen's edges, where the
-         * console never shows it: hidden while the picture is wider (its drawing keeps its 16:9 shape whatever its
-         * size or scale says, so its border would stand in the picture at the 16:9 edges) */
+         * console never shows it: hidden in a fight's scene (its drawing keeps its 16:9 shape whatever its size or
+         * scale says, so on a wider picture its border would stand at the 16:9 edges). At every shape, 16:9 too,
+         * where it is off the screen anyway: hidden only while wider, the frames the game had placed before a
+         * switch from 16:9 showed it for a moment (owner, 2026-11-14) */
         sx = P(float, pane + 0x48);
         sx0 = *sx;
         *sx = 0;
@@ -940,7 +951,17 @@ static void pane_place(Cpu *c) {
         x0 = *x;
         if (fabsf(x0) > 960 * 0.5f) *x = x0 + (x0 < 0 ? -1 : 1) * 960 * (g - 1);
     }
-    if (parent && on && g > 1.001f && !meter && !tag && !arrows && screen_chain(parent) && strncmp(name, "set_parts_message_", 18) && !screen_group(pane)) {
+    /* (TIME!, the timeup layout: its two copies, timeup_anim_base_00 from the right and timeup_anim_add_00 from the left,
+     * slide in from x +-1500 and collide at 0 into one word. The side rules took each, its blur lines trailing on its
+     * side, for a panel against that edge and stopped it 960 x (widening - 1) short: two words (owner, 2026-11-14,
+     * every view). Their x is widened instead: they start past the picture's edges and still meet in the middle) */
+    int timeup = parent && !strcmp(P(char, parent + 0xb0), "timeup");
+    if (timeup && on && g > 1.001f) {
+        x = P(float, pane + 0x30);
+        x0 = *x;
+        *x = x0 * g;
+    }
+    if (parent && on && g > 1.001f && !meter && !tag && !arrows && !timeup && screen_chain(parent) && strncmp(name, "set_parts_message_", 18) && !screen_group(pane)) {
         x = P(float, pane + 0x30);
         x0 = *x;
         if (screen_like(pane)) {
@@ -952,20 +973,21 @@ static void pane_place(Cpu *c) {
             if (l >= 960 || r <= -960) *x = x0 * g;                        /* (parked off the screen: off the picture) */
             else if (right != left) *x = x0 + (right ? 1 : -1) * 960 * (g - 1);   /* (against one edge: against the picture's) */
         }
-        static int moved_log = -1;   /* SSBU_DEBUG_PANES_MOVED=1 (HUD research): each pane name the side rules move, once, with its parents */
-        if (moved_log < 0) moved_log = getenv("SSBU_DEBUG_PANES_MOVED") != NULL;
-        if (moved_log && *x != x0) {
-            static char seen[4096];
-            char key[40];
-            snprintf(key, sizeof key, "|%.30s|", name);
-            if (!strstr(seen, key) && strlen(seen) + strlen(key) < sizeof seen) {
-                strcat(seen, key);
-                char chain[200];
-                int n = 0;
-                for (u64 q = parent; q && n < (int)sizeof chain - 40; q = *P(u64, q + 0x18))
-                    n += snprintf(chain + n, sizeof chain - n, " < %.24s", P(char, q + 0xb0));
-                printf("[panes] moved %-24.24s x %g -> %g (vt %#llx)%s\n", name, x0, *x, (unsigned long long)*P(u64, pane), chain);
-            }
+    }
+    static int moved_log = -1;   /* SSBU_DEBUG_PANES_MOVED=1 (HUD research): each pane name the side, arrow or TIME! rules move, once, with its parents */
+    if (moved_log < 0) moved_log = getenv("SSBU_DEBUG_PANES_MOVED") != NULL;
+    if (moved_log && x && *x != x0) {
+        static char seen[4096];
+        char key[40];
+        snprintf(key, sizeof key, "|%.30s|", name);
+        if (!strstr(seen, key) && strlen(seen) + strlen(key) < sizeof seen) {
+            strcat(seen, key);
+            char chain[200];
+            int n = 0;
+            for (u64 q = parent; q && n < (int)sizeof chain - 40; q = *P(u64, q + 0x18))
+                n += snprintf(chain + n, sizeof chain - n, " < %.24s", P(char, q + 0xb0));
+            printf("[panes] moved %-24.24s x %g -> %g (vt %#llx)%s\n", name, x0, *x, (unsigned long long)*P(u64, pane), chain);
+            fflush(stdout);   /* (a test run is stopped, not ended: an unflushed line is lost) */
         }
     }
     if (getenv("SSBU_DEBUG_PANES")) {   /* SSBU_DEBUG_PANES=<text> (HUD research): the panes whose name, or a parent's, holds it */

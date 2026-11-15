@@ -6141,8 +6141,10 @@ static int capture_fight_window(void) {
         const char *f = getenv("SSBU_CAPTURE_FROM"), *t = getenv("SSBU_CAPTURE_TO");
         from = f ? atoll(f) : 0; to = t ? atoll(t) : 0;
     }
-    if (from && test_fight_frame < from) return 0;
-    if (to && test_fight_frame > to) return 0;
+    static long long last;   /* (the fight's last frame: the span goes on after it ends - TIME!, GAME!) */
+    if (test_fight_frame) last = test_fight_frame;
+    if (from && last < from) return 0;
+    if (to && last > to) return 0;
     return 1;
 }
 
@@ -6888,6 +6890,13 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
         extern volatile long long test_fight_frame;
         if (f4_at == -1) f4_at = getenv("SSBU_F4_AT") ? atoll(getenv("SSBU_F4_AT")) : 0;
         if (f4_at > 0 && test_fight_frame >= f4_at) { f4_at = 0; keys |= 8; }
+        /* SSBU_F4_AFTER_END=<frames shown>: F4 that many frames after the fight's last one (TIME!, GAME!) */
+        static long long after = -1, seen, since;
+        if (after == -1) after = getenv("SSBU_F4_AFTER_END") ? atoll(getenv("SSBU_F4_AFTER_END")) : 0;
+        if (after > 0) {
+            if (test_fight_frame) { seen = 1; since = 0; }
+            else if (seen && ++since == after) { after = 0; keys |= 8; }
+        }
     }
     static char f4_dir[160];   /* F4's render targets go here, once the logged frame is drawn */
     if (f4_dir[0] && !draw_logging) {
