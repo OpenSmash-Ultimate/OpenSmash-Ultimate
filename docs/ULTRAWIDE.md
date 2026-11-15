@@ -34,7 +34,7 @@ do is in [ULTRAWIDE-TODO.md](ULTRAWIDE-TODO.md).
 | Radar (the minimap square) | dynamic | its corner of the picture | same | same | done | 2026-11-12 (owner: "keep it in the corner"): it shows when a fighter is off-screen by the 16:9 rule, on that fighter's side; the side rule takes it to the picture's top-left or top-right corner (both seen). Its inner box stays the 16:9 view (owner: widening it may overlap). |
 | Pause menu, pause camera controls | dynamic | at the picture's sides | same | same | done | 2026-11-12 (owner): same size as at 16:9, never stretched, only moved: each panel goes to the side it is laid out against (the pause menu flush with the picture's right edge, PAUSE with its left, the camera controls' lists and buttons to their sides). The fight's layouts mark no anchors, so the side is read from where a panel sits against the screen (host.c, `pane_place`). |
 | Training mode elements | dynamic | at the picture's sides | same | same | done | 2026-11-12 (owner): as the pause menu: the damage panel at the right edge, the + menu (Quit Training, the settings list) at the left; the help line stays centred. The damage meters stay static (an exception by name). |
-| Battle Camera frame (camera controls) | dynamic | marks the whole picture | same | same | to do | 2026-11-12 (owner): the frame shows the shot, so it marks everything the picture shows. |
+| Battle Camera frame (the radar's inner box) | static | as the game draws it | same | same | done | 2026-11-12 (owner): left as the game draws it; widening it may overlap other things (ULTRAWIDE-TODO.md, HUD). |
 | Menus, loading screens | static | black side areas | same | same | done (first PR) | 2026-11-12 (owner): black for the first PR; a blurred fill after it. |
 
 ## Known limitations

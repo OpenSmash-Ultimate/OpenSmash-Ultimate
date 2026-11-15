@@ -16,7 +16,7 @@ Order agreed with the owner (2026-11-11): HUD work first, then the Vulkan port.
       shape. No bars in fullscreen inside those ranges; bars outside them are expected.
 - [x] **Window size and render scale change without a restart**: at once offline; in an online match,
       after it (as the picture shape). Window size: any renderer on Windows (Linux and macOS: next start).
-      Render scale: Direct3D 11 and Vulkan (2026-11-14, Vulkan's untested yet; Metal: next start); only the
+      Render scale: Direct3D 11 and Vulkan (Vulkan's checked by the owner, 2026-11-14; Metal: next start); only the
       targets whose size changes are made again.
 - [x] **Window size options fit the picture shape and the monitor**: the menu offers heights 720 to 2160
       whose width (height x shape) fits the monitor's work area; display.ini keeps width and height.
@@ -98,13 +98,6 @@ Rule for every row: once turned on it stays on; any change takes effect at the n
       every fight frame, stops in a pause, so the zoom fell to 1 the moment the game paused. The other
       cameras' copies leave the views alone now.
 
-- [ ] **An Assist Trophy that takes the camera** (owner, 2026-11-14: one zooms in on itself and pulls the blast
-      zones in; which one is not known). The fight should be the same in every view (nothing the fight reads is
-      written), but the zoomed view's shadow camera only moves on frames that run the game's normal framing: if the
-      trophy's camera skips it, the zoomed view keeps a stale offset and zoom. To be established with the owner
-      (a case of their own); the plan so far: log the fight frames that skip the normal framing, fall back to the
-      game's camera on them, CPU-only fights with Assist Trophies only on high, each view's hash against 16:9.
-
 ## Renderers
 
 - [x] **Vulkan port** (2026-11-14, owner: go ahead without waiting for upstream): the squeeze, 2D clip, bubble
@@ -114,14 +107,7 @@ Rule for every row: once turned on it stays on; any change takes effect at the n
       GAME! (frame 5153, as Direct3D 11); Vulkan with the shape switched every 7 s (21 switches) the same over
       the whole log; 32:9 zoomed and 32:9 hybrid captured at the same fight frames on both back ends: the same
       layout (HUD, bubbles, tags), the pictures a few game frames apart (each back end's capture lags
-      differently: mean difference 0.75-1.5 at hybrid). Vulkan's render scale changes without a restart since 2026-11-14 (untested yet).
-- [ ] **Linux** (Direct3D 11 through DXVK, and Vulkan): done 2026-11-14, **untested on Linux**. The views and the
-      HUD (`host.c`) are out of its Windows-only part (the camera hunt stays Windows only); `auto` and the
-      21:9 / 32:9 snapping read the monitor through SDL; the windowed SDL window takes the picture's shape.
-      Checked here only by compiling the touched files against DXVK's, the DirectX, Vulkan and SDL2 headers
-      and resolving their symbols (no Linux toolchain on this machine; the branch could not have linked on
-      Linux before). To tick: a Linux player runs 21:9 or 32:9, both renderers, windowed and fullscreen.
-
+      differently: mean difference 0.75-1.5 at hybrid). Vulkan's render scale changes without a restart since 2026-11-14 (checked by the owner).
 ## Bugs to reproduce (found 2026-11-14)
 
 - [x] **Tags off their fighters near the 16:9 edges** (owner, 2026-11-14, all three views, items' tags too): the
@@ -155,6 +141,21 @@ Rule for every row: once turned on it stays on; any change takes effect at the n
 - [x] `docs/PLAYING.md`: the settings text (aspect, view, timer) matches what ships.
 
 ## After the first PR (not blocking)
+
+- [ ] **Linux** (Direct3D 11 through DXVK, and Vulkan): done 2026-11-14, **untested on Linux**; ships untested in the
+      first PR (owner, 2026-11-14). The views and the
+      HUD (`host.c`) are out of its Windows-only part (the camera hunt stays Windows only); `auto` and the
+      21:9 / 32:9 snapping read the monitor through SDL; the windowed SDL window takes the picture's shape.
+      Checked here only by compiling the touched files against DXVK's, the DirectX, Vulkan and SDL2 headers
+      and resolving their symbols (no Linux toolchain on this machine; the branch could not have linked on
+      Linux before). To tick: a Linux player runs 21:9 or 32:9, both renderers, windowed and fullscreen.
+
+- [ ] **An Assist Trophy that takes the camera** (not blocking: no case to test it on yet; owner, 2026-11-14: one zooms in on itself and pulls the blast
+      zones in; which one is not known). The fight should be the same in every view (nothing the fight reads is
+      written), but the zoomed view's shadow camera only moves on frames that run the game's normal framing: if the
+      trophy's camera skips it, the zoomed view keeps a stale offset and zoom. To be established with the owner
+      (a case of their own); the plan so far: log the fight frames that skip the normal framing, fall back to the
+      game's camera on them, CPU-only fights with Assist Trophies only on high, each view's hash against 16:9.
 
 - [ ] **A fighter disappears past the 16:9 edge** (wide view; hybrid now and then): a known limitation (owner,
       2026-11-14), see ULTRAWIDE.md's "Known limitations". Needs a UX decision first (what the side area should
