@@ -942,7 +942,7 @@ static void build(void)
         snprintf(r->value, sizeof r->value, "%s%s", display_aspect_setting(), original ? " (original)" : "");
         if (locked && !original) snprintf(r->note, sizeof r->note, "not on macOS yet");
         note_env(r, "SSBU_ASPECT");
-        r = add(R_VIEW, original || locked ? K_INFO : K_CHOICE, W_NOW, "Views",
+        r = add(R_VIEW, original || locked ? K_INFO : K_CHOICE, W_NOW, "Viewtype",
                 "wide: the game's own camera with the sides added (it can show past the stage). zoomed: the fight framed for the wider "
                 "picture, closer and kept on the stage. hybrid: wide, zoomed in just enough to keep the picture on the stage.");
         {
