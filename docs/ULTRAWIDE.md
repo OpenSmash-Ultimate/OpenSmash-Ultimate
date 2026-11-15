@@ -12,14 +12,14 @@ the camera should feel like 16:9's (centred, pulling in, not showing much past t
 picture, the views or the HUD lands in Direct3D 11 and Vulkan together, and on Windows and Linux together.
 The decisions belong in shared code (`gpu_aspect.c` for the renderers, `host.c` for the game's side), and
 each back end only applies them. A change that one renderer or system can't carry yet is not done: it stays
-in [ULTRAWIDE-TODO.md](ULTRAWIDE-TODO.md) until it can. macOS (Metal) stays held at 16:9 until its port.
+under [What's next](#whats-next) until it can. macOS (Metal) stays held at 16:9 until its port.
 
 ## HUD decisions
 
 One row per HUD element: its kind (static, dynamic or custom), what it does in each view, and why. When
 an element shows is always the game's 16:9 rule; the kind is about where it is drawn. A custom row says
 what its rule depends on. The words are [ULTRAWIDE-CONTEXT.md](ULTRAWIDE-CONTEXT.md)'s; what is left to
-do is in [ULTRAWIDE-TODO.md](ULTRAWIDE-TODO.md).
+do is under [What's next](#whats-next).
 
 | Element | Kind | Wide | Zoomed | Hybrid | Status | Decided, and why |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -34,7 +34,7 @@ do is in [ULTRAWIDE-TODO.md](ULTRAWIDE-TODO.md).
 | Radar (the minimap square) | dynamic | its corner of the picture | same | same | done | 2026-11-12 (owner: "keep it in the corner"): it shows when a fighter is off-screen by the 16:9 rule, on that fighter's side; the side rule takes it to the picture's top-left or top-right corner (both seen). Its inner box stays the 16:9 view (owner: widening it may overlap). |
 | Pause menu, pause camera controls | dynamic | at the picture's sides | same | same | done | 2026-11-12 (owner): same size as at 16:9, never stretched, only moved: each panel goes to the side it is laid out against (the pause menu flush with the picture's right edge, PAUSE with its left, the camera controls' lists and buttons to their sides). The fight's layouts mark no anchors, so the side is read from where a panel sits against the screen (host.c, `pane_place`). |
 | Training mode elements | dynamic | at the picture's sides | same | same | done | 2026-11-12 (owner): as the pause menu: the damage panel at the right edge, the + menu (Quit Training, the settings list) at the left; the help line stays centred. The damage meters stay static (an exception by name). |
-| Battle Camera frame (the radar's inner box) | static | as the game draws it | same | same | done | 2026-11-12 (owner): left as the game draws it; widening it may overlap other things (ULTRAWIDE-TODO.md, HUD). |
+| Battle Camera frame (the radar's inner box) | static | as the game draws it | same | same | done | 2026-11-12 (owner): left as the game draws it; widening it may overlap other things. |
 | Menus, loading screens | static | black side areas | same | same | done (first PR) | 2026-11-12 (owner): black for the first PR; a blurred fill after it. |
 
 ## Known limitations
@@ -46,6 +46,32 @@ do is in [ULTRAWIDE-TODO.md](ULTRAWIDE-TODO.md).
   vanish from the side area while the bubble shows them. The zoomed view does not show past the 16:9 view, so
   it is not affected. Left as it is for now (owner, 2026-11-14): it needs a proper UX solution, not only a
   rendering change. What was tried is under "Tried and dropped".
+
+## What's next
+
+None of these blocked the first PR (#359).
+
+- **Test on Linux** (Direct3D 11 through DXVK, and Vulkan): ported 2026-11-14 and shipped untested (owner).
+  The views and the HUD (`host.c`) are out of its Windows-only part (the camera hunt stays Windows only);
+  `auto` and the 21:9 / 32:9 snapping read the monitor through SDL; the windowed SDL window takes the
+  picture's shape. Checked only by compiling the touched files against DXVK's, the DirectX, Vulkan and SDL2
+  headers and resolving their symbols. Done when a Linux player has run 21:9 or 32:9 on both renderers,
+  windowed and fullscreen.
+
+- **An Assist Trophy that takes the camera** (owner, 2026-11-14: one zooms in on itself and pulls the blast
+  zones in; which one is not known, and there is no case to test on yet). The fight should be the same in every view (nothing the fight reads is
+  written), but the zoomed view's shadow camera only moves on frames that run the game's normal framing: if the
+  trophy's camera skips it, the zoomed view keeps a stale offset and zoom. To be established with the owner
+  (a case of their own); the plan so far: log the fight frames that skip the normal framing, fall back to the
+  game's camera on them, CPU-only fights with Assist Trophies only on high, each view's hash against 16:9.
+
+- **A fighter disappears past the 16:9 edge** (wide view; hybrid now and then): see "Known limitations"
+  above. Needs a UX decision first (what the side area should
+  show for a fighter the game has put in a bubble), then the rendering.
+
+- **Menus and loading screens**: a blurred fill of the side areas instead of black.
+- **Metal** (macOS): the port; until then macOS stays at 16:9.
+- **Online unlocked by default**, by [ADR 0002](adr/0002-online-held-at-16-9.md)'s evidence.
 
 ## Settings and switches (Direct3D 11 and Vulkan, on Windows and Linux)
 
@@ -115,7 +141,7 @@ The words used here (picture shape, wide / zoomed / hybrid view, stage range, ..
     the picture's camera slid along the stage range and zoomed in only as needed (`wide_copy`). Nothing
     the fight reads is written.
   - `net_match_watch` (each frame's end, on the game's thread): caches `net_match_on()` for the renderer.
-  - Research: the hunts, the camera trace and dumps (behind their switches; see ULTRAWIDE-TODO.md, clean-up).
+  - Research: the hunts, the camera trace and dumps (behind their switches, kept as listed under "Settings and switches"; dropped: the cull hunt, `RCAM_WATCH`, `ASPECT_HYBRID`, `ASPECT_SCREEN`, `NO_2D_CLAMP`, `SHADOW_LOG`, `WIDE_FRAMING_STORED`, `FRAMING_SHADOW`).
 
 ## The game: render camera
 
@@ -339,7 +365,7 @@ few seconds into a fight (16:9 too).
 
 ## Done (history)
 
-What is left is in [ULTRAWIDE-TODO.md](ULTRAWIDE-TODO.md). Done, with what was learned:
+What is left is under [What's next](#whats-next). Done, with what was learned:
 
 1. **The hybrid view, fight-identical** (2026-11-11; first called the "stage" style, `SSBU_WIDE_STYLE=stage`):
    the game's camera widened, slid along the stage range and zoomed in only as far as needed to keep the
