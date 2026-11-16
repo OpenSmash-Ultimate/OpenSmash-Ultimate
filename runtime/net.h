@@ -37,6 +37,9 @@
 #define NET_PROTOCOL    2             /* a private room's relay speaks it, and a game falls back to it */
 #define NET_PROTOCOL_V3 3             /* the online lobby's version 3 (tools/ssbu_relay.py): version 2 and more */
 #define NET_PROTOCOL_DEFAULT NET_PROTOCOL   /* what a game asks for without SSBU_NET_PROTOCOL (3 once played with) */
+/* (OpenSmash 0.6) the game's online level, "CV" after its JOIN's mod set: the official lobby tells games below its
+ * minimum (tools/ssbu_relay.py --min-client-level) to update. Raise it when online play changes for every game. */
+#define NET_CLIENT_LEVEL 1
 #define NET_LDN_PORT    65511         /* local wireless's own messages (hle_net.c): always through the relay */
 
 int net_configured(void);            /* netplay asked for (host or join) */

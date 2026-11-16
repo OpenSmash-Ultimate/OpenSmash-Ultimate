@@ -288,7 +288,7 @@ static void net_save_server(void)
     {
         if (!net.code[0])
             snprintf(net.code, sizeof net.code, "friends");
-        snprintf(line, sizeof line, "%s %s", PUBLIC_LOBBY, net.code);
+        snprintf(line, sizeof line, "auto %s", net.code);   /* (OpenSmash 0.6: "auto" is the official lobby, net_relay.c) */
     }
     else
         snprintf(line, sizeof line, "%s%s%s", net.custom[0] ? net.custom : "127.0.0.1:39420", net.code[0] ? " " : "", net.code);

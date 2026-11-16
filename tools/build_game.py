@@ -1255,9 +1255,11 @@ def build(a):
         # made again when stale; without it Vulkan does not start and Direct3D 11 draws, so a failure is not fatal
         import glslang_lib
         glslang_lib.ensure(os.path.join(os.path.dirname(EXE), glslang_lib.DLL_NAME), log=log)
-        # Epic Online Services (runtime/net_eos.c): the online relay of last resort; without it, the lobby's relay
-        import eos_fetch
-        eos_fetch.ensure(os.path.dirname(EXE), log=log)
+        # Epic Online Services (runtime/net_eos.c): off since OpenSmash 0.6 (the official lobby relays everything and
+        # nothing goes to Epic); OPENSMASH_EOS=1 still fetches it, for a test with another lobby and SSBU_EOS=1
+        if os.environ.get("OPENSMASH_EOS") == "1":
+            import eos_fetch
+            eos_fetch.ensure(os.path.dirname(EXE), log=log)
     # Discord's Social SDK (runtime/net_discord.c) and the Discord application's id: sign-in with Discord and Rich
     # Presence; without them, neither (off Windows the id alone, for the web launcher's sign-in)
     import discord_fetch

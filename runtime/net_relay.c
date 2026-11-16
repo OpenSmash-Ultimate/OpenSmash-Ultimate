@@ -187,7 +187,7 @@ static void big_sends(SOCKET s) {
 static int configured = -1, hosting, logging;
 static char relay_text[256], room[NAME_LEN + 1] = "smash", name[NAME_LEN + 1] = "Player";
 static u16 port = NET_DEFAULT_PORT;
-static int direct_ok = 1, test_nat;   /* SSBU_NET_DIRECT; SSBU_NET_TEST_NAT (tests) */
+static int direct_ok = 0, test_nat;   /* SSBU_NET_DIRECT=1 (never with the official lobby: OpenSmash 0.6); SSBU_NET_TEST_NAT (tests) */
 static int learn_ok = 1;              /* SSBU_NET_TEST_LEARN=0 (tests): as before, no address learnt from a hello */
 static volatile LONG sim_upnp;        /* SSBU_NET_TEST_UPNP=1 (tests), or a port mapping made: the simulated router forwards the game's port */
 static int proto_wanted = NET_PROTOCOL;   /* SSBU_NET_PROTOCOL: the version asked for first (proto: spoken now) */
@@ -220,10 +220,52 @@ static u64 process_age_ms(void) { return rt_now_ns() / 1000000; }
  * (net_eos.c), near both of them, carry the match; the lobby's own relay is the last resort. The North American
  * lobby is gone: "na", "eu" and its address (with or without a lobby code, which is kept) mean this one; any other
  * server a player named is kept as it is. */
-#define PUBLIC_LOBBY "opensmash-lobby.duckdns.org:39421"
+/* (OpenSmash 0.6) "auto" is the official lobby: relay only (it never introduces games to each other, so no player's
+ * internet address reaches another game), a signed-in player's lobby ticket in every JOIN, no direct paths and no EOS
+ * with it. Its address: SSBU_OFFICIAL_LOBBY, else config/official_lobby.txt (the launcher writes the release's), else
+ * OFFICIAL_LOBBY_DEFAULT. The older public lobbies' names mean it too. */
+#define OFFICIAL_LOBBY_DEFAULT "eu.lobby.opensmashultimate.com:39010"
+static char official_lobby[256];
+static const char *public_lobby(void) {
+    if (official_lobby[0]) return official_lobby;
+    const char *e = getenv("SSBU_OFFICIAL_LOBBY");
+    char line[256], host[256] = "";
+    if (e && *e) snprintf(host, sizeof host, "%s", e);
+    else if (settings_line_read("config/official_lobby.txt", line, sizeof line)) sscanf(line, "%255s", host);
+    snprintf(official_lobby, sizeof official_lobby, "%s", host[0] ? host : OFFICIAL_LOBBY_DEFAULT);
+    return official_lobby;
+}
+#define PUBLIC_LOBBY public_lobby()
 static int means_public_lobby(const char *host) {
     return !_stricmp(host, "auto") || !_stricmp(host, "na") || !_stricmp(host, "eu") || !_strnicmp(host, "smash.recomps.wtf:", 18) ||
-           !_stricmp(host, "smash.recomps.wtf");
+           !_stricmp(host, "smash.recomps.wtf") || !_strnicmp(host, "opensmash-lobby.duckdns.org", 27) || !_stricmp(host, public_lobby());
+}
+static int official_relay(void) { return relay_text[0] && !_stricmp(relay_text, public_lobby()); }
+
+/* (OpenSmash 0.6) the signed-in player's lobby ticket for the official lobby ("<account id>|<name>|<expiry>.<signature>",
+ * made by the accounts database through the launcher): SSBU_ONLINE_TICKET, or the file SSBU_ONLINE_TICKET_FILE names
+ * (the launcher writes a new one before the old one expires: read again at most every 5 s). Its name is the online name. */
+static char ticket[320];
+static u64 ticket_read_at;
+static u64 now_ms(void);
+static void ticket_refresh(void) {
+    const char *t = getenv("SSBU_ONLINE_TICKET"), *f = getenv("SSBU_ONLINE_TICKET_FILE");
+    if (t && *t) snprintf(ticket, sizeof ticket, "%s", t);
+    else if (f && *f && (!ticket_read_at || now_ms() - ticket_read_at >= 5000)) {
+        ticket_read_at = now_ms();
+        FILE *fp = fopen(f, "rb");
+        if (fp) {
+            size_t n = fread(ticket, 1, sizeof ticket - 1, fp);
+            fclose(fp);
+            ticket[n] = 0;
+            while (n && (ticket[n - 1] == '\n' || ticket[n - 1] == '\r' || ticket[n - 1] == ' ')) ticket[--n] = 0;
+        }
+    }
+    const char *a = strchr(ticket, '|'), *b = a ? strchr(a + 1, '|') : NULL;
+    if (a && b && b - a - 1 > 0 && b - a - 1 <= NAME_LEN) {
+        memset(name, 0, sizeof name);
+        memcpy(name, a + 1, (size_t)(b - a - 1));
+    }
 }
 
 static void configure_from_files(void) {
@@ -241,7 +283,8 @@ static void configure_from_files(void) {
         }
         snprintf(name, sizeof name, "%s", line);
     }
-    if (!getenv("SSBU_NET_DIRECT") && settings_line_read(config_path(CONFIG_ONLINE_DIRECT), line, sizeof line) && !_strnicmp(line, "off", 3)) direct_ok = 0;
+    /* (OpenSmash 0.6: online_direct.txt is no longer read: direct paths show the player's address, so they are off unless
+     * SSBU_NET_DIRECT=1 asks for them with another lobby) */
 }
 
 /* A friend's "Join" in Discord for another lobby (net_discord.c): config/discord_join.txt, one line "<r|a> <lobby>
@@ -263,7 +306,10 @@ static void discord_join_at_start(void) {
     if (sscanf(text, "%3s %79s %32s %47s %lld", kind, relay, code, target, &at) != 5 || (strcmp(kind, "r") && strcmp(kind, "a"))) return;
     long long now = (long long)time(NULL);
     if (now < at || now - at > DISCORD_JOIN_FOR) return;
-    snprintf(relay_text, sizeof relay_text, "%s", means_public_lobby(relay) ? PUBLIC_LOBBY : relay);   /* (an older friend's North American lobby) */
+    /* (OpenSmash 0.6) only the official lobby: a Join secret is made by another player's game, and one made up could send
+     * this game, with its lobby ticket, to any server */
+    if (!means_public_lobby(relay)) { fprintf(stderr, "[net] a Discord join for another lobby was ignored (only the official one)\n"); return; }
+    snprintf(relay_text, sizeof relay_text, "%s", PUBLIC_LOBBY);
     if (strcmp(code, "-")) { snprintf(room, sizeof room, "%s", code); room_named = 1; }
     struct in_addr a;
     if (kind[0] == 'r' && inet_pton(AF_INET, target, &a) == 1) net_rooms_pick(ntohl(a.s_addr));
@@ -318,7 +364,7 @@ static void configure(void) {
     if ((v = getenv("SSBU_NET_ROOM")) && *v) { snprintf(room, sizeof room, "%s", v); room_named = 1; }
     if ((v = getenv("SSBU_NET_NAME")) && *v) snprintf(name, sizeof name, "%s", v);
     if ((v = getenv("SSBU_NET_LOG"))) logging = atoi(v) > 0 ? atoi(v) : 1;
-    if ((v = getenv("SSBU_NET_DIRECT")) && !strcmp(v, "0")) direct_ok = 0;
+    if ((v = getenv("SSBU_NET_DIRECT"))) direct_ok = !strcmp(v, "1");
     /* (tests) SSBU_NET_TEST_NAT=1..4: a router of one kind between this game and the others (sim_out
      * below); SSBU_NET_TEST_BLOCK=<seconds after the game started>: drop every direct packet
      * from then on, as if a firewall closed the path (0: from the start) */
@@ -353,6 +399,12 @@ static void configure(void) {
     else if (configured && !hosting) proto_wanted = protocol_from_file(proto_wanted);
     if (hosting || lan_mode) proto_wanted = NET_PROTOCOL;   /* (a private room's relay: version 2) */
     proto = proto_wanted;
+    if (official_relay()) {   /* (OpenSmash 0.6: relay only, and the account's name) */
+        if (direct_ok) fprintf(stderr, "[net] direct paths stay off with the official lobby\n");
+        direct_ok = 0;
+        ticket_refresh();
+        if (!ticket[0]) fprintf(stderr, "[net] no lobby ticket: sign in in the launcher to play online\n");
+    }
 }
 
 static void start(void);
@@ -2015,8 +2067,10 @@ static void mod_set_make(void) {
 }
 
 static void send_join(void) {
-    u8 p[JOIN_V3_MAX + 2] = {0};
+    u8 p[JOIN_V3_MAX + 2 + 4 + sizeof ticket + 4] = {0};
     mod_set_make();
+    int official = official_relay();
+    if (official) ticket_refresh();   /* (a renewed ticket, and its name) */
     header(p, T_JOIN);
     put64(p + 4, nonce);
     memcpy(p + 12, room, strlen(room));
@@ -2036,6 +2090,16 @@ static void send_join(void) {
         memcpy(p + JOIN_SIZE + 6, mod_set, (size_t)mod_set_len);
         len += 6 + mod_set_len;
     }
+    /* (OpenSmash 0.6) after the mod set: "TK" u16 length + the lobby ticket (the official lobby only: a ticket is never
+     * shown to another server), then "CV" u16 the online level (tools/ssbu_relay.py join_blocks; lobbies before it ignore them) */
+    int tl = official ? (int)strlen(ticket) : 0;
+    if (tl) {
+        p[len] = 'T'; p[len + 1] = 'K'; p[len + 2] = (u8)(tl >> 8); p[len + 3] = (u8)tl;
+        memcpy(p + len + 4, ticket, (size_t)tl);
+        len += 4 + tl;
+    }
+    p[len] = 'C'; p[len + 1] = 'V'; p[len + 2] = (u8)(NET_CLIENT_LEVEL >> 8); p[len + 3] = (u8)NET_CLIENT_LEVEL;
+    len += 4;
     send_udp(client_sock, p, len, &relay_at);
 }
 
@@ -2757,7 +2821,9 @@ static DWORD WINAPI client_thread(LPVOID unused) {
             if (!joined && lobby) fprintf(stderr, "[net] joined the lobby on %s as 10.13.%u.%u (lobby code %s)%s\n", relay_text, my_ip >> 8 & 255, my_ip & 255, room,
                                           proto == NET_PROTOCOL_V3 ? ", protocol 3" : "");
             else if (!joined) fprintf(stderr, "[net] joined room %s on %s as 10.13.%u.%u (%ld players)\n", room, relay_text, my_ip >> 8 & 255, my_ip & 255, (long)members);
-            if (lobby) eos_start();   /* (net_eos.c: the relay of last resort, when the SDK and eos.txt are beside the program) */
+            /* (net_eos.c: Epic's relays. OpenSmash 0.6: off by default and never with the official lobby, which relays
+             * everything; SSBU_EOS=1 with another lobby, when the SDK and eos.txt are beside the program) */
+            if (lobby && !official_relay() && getenv("SSBU_EOS") && !strcmp(getenv("SSBU_EOS"), "1")) eos_start();
             InterlockedExchange(&joined, 1);
             break;
         case T_REJECT:
