@@ -10,7 +10,7 @@ static class Tests
     static Control Find(Control c, string name) => c.Controls.Find(name, true).Single();
     static void Until(Func<bool> condition, string message)
     {
-        var until = DateTime.UtcNow.AddSeconds(10);
+        var until = DateTime.UtcNow.AddSeconds(60);   // (a cold PowerShell start on a CI runner can take over 10 s)
         while (!condition() && DateTime.UtcNow < until) { Application.DoEvents(); Thread.Sleep(20); }
         Check(condition(), message);
     }
