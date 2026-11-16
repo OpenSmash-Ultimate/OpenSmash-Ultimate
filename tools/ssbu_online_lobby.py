@@ -6,7 +6,8 @@ Players' games log in to it when they pick Online (runtime/hle_online.c sends NE
 lobby carries the datagrams to and from it like any other, and lets players the game server
 has put in one match talk to each other.
 
-The same TCP port answers HTTP: the GSP leaderboard (GET /leaderboard.json) and a player's own
+The same TCP port answers HTTP: the GSP leaderboard (GET /leaderboard.json), aggregate lobby counts
+(GET /status.json) and a player's own
 GSP and place (GET /gsp/me, POST /gsp/profile, signed), for the launchers, the game's Discord
 Rich Presence and the project's site (tools/nex/board.py).
 
