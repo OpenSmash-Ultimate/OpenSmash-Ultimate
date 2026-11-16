@@ -2930,6 +2930,7 @@ static int warm_listed(const WarmRecord *r) {
 }
 static void make_note_pipe(const Pipe *e, int made, double ms) {
     vk_play_wait_ms += ms;
+    { void perf_shader_wait(double ms); perf_shader_wait(ms); }   /* (debug_perf_session.c) */
     int listed = -1;
     if (made) {
         vk_stat_play_pipes++;

@@ -142,6 +142,7 @@ static void show(void) {
     double p0 = lat_tf ? lat_ms() : 0;
     present_frame(shown, shown_size);
     test_fight_presented();
+    { void perf_frame_shown(void); perf_frame_shown(); }   /* (debug_perf_session.c: the session's summary) */
     if (lat_tf) lat_line("S %.3f %.3f %llu %lld\n", p0, lat_ms(), (unsigned long long)queue.frames, test_fight_frame);
     kernel_signal_event(queue.buffer_event);
     WakeAllConditionVariable(&queue.freed);

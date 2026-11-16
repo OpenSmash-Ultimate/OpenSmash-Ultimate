@@ -175,6 +175,7 @@ __attribute__((constructor)) static void rb_init(void) {
 /* lib::Singleton<app::FighterManager>::instance_ -> FighterManager -> its impl; +0xd2 is set while a fight
  * runs (ready-go to game set), as ssbu-recomp's run-ahead reads it (ra_fight_on). */
 static int net_mode;   /* (the net mode: defined with its state below) */
+static long long net_desyncs;   /* (likewise) */
 /* (net mode) a match is set up for the players: armed by player 1's record built from the match set-up (0x710178f3b8),
  * not by the other screens that build records too - the controls screen (0x7103302aa0) with its test fight, which
  * waited for players and stayed black (10-31). A fight that starts unarmed is played here alone, as offline. */
@@ -285,6 +286,7 @@ static void safe_point(Cpu *c, uintptr_t sp) {
     if (!on) {
         if (S.in_fight) {
             summary("fight over"); S.in_fight = 0;
+            { void perf_rb_fight(int desyncs); perf_rb_fight(net_mode == 2 ? (int)net_desyncs : 0); }   /* (debug_perf_session.c) */
             online_restore();   /* (an Online match: the game's own set-up back for its results) */
             { void rb_state_map_fight(int on); rb_state_map_fight(0); }   /* (hle_rb_state.c: the alias area writable again) */
             ra_fight_over();   /* (before the catch-up's end below: run-ahead's hidden frame is not one) */
@@ -955,6 +957,7 @@ static void catch_done(u32 key, double ms) {
     if (slow < 0) { const char *e = getenv("SSBU_RB_CATCH_SLOW"); slow = e && *e ? atof(e) : 25; }
     int d = catch_depth < 15 ? catch_depth : 15;
     catch_d_n[d]++; catch_d_ms[d] += ms; catch_d_load[d] += catch_load_ms;
+    { void perf_rb_catch(int depth, double ms); perf_rb_catch(catch_depth, ms); }   /* (debug_perf_session.c: the session's summary) */
     if (catch_depth > 0 && ms > catch_load_ms) net_sp_cr += ((ms - catch_load_ms) / catch_depth - net_sp_cr) * 0.05;   /* (the saves' spacing) */
     if (ms > 1000.0 / 60) catch_over++;
     if (ms < slow || catch_lines >= 40) return;
