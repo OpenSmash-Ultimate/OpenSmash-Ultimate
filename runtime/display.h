@@ -70,3 +70,4 @@ void display_set_latency(int frames);
 int display_take_latency(void);           /* the renderer, at a present: a new latency, or 0 */
 void display_set_render_scale(float scale);   /* (shown by the menu; the renderer takes it at the next start) */
 void display_set_renderer(int renderer);      /* (the same: RENDERER_*, which back end draws from the next start) */
+void display_set_gpu(const char *gpu);          /* (the same: the graphics card, "auto" or its name, picked at the next start) */

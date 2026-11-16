@@ -379,7 +379,7 @@ class Pages(MenuTest):
                    'Render scale'] + (['Graphics card'] if os.name == 'nt' else []) + (['Renderer'] if sys.platform != 'darwin' else [])
         self.assertEqual(m.labels(), display)
         m.type('2')
-        self.assertEqual(m.labels(), ['Controllers', 'Rumble', 'Keyboard plays as', 'Keyboard keys...', 'Pads when not focused',
+        self.assertEqual(m.labels(), ['Controllers', 'Keyboard plays as', 'Keyboard keys...', 'Pads when not focused',
                                       'Open controllers.ini'])
         for _ in range(6):   # (the keyboard's page: Back, a row a binding, the defaults; Backspace back)
             if m.labels()[m.page()[2]] == 'Keyboard keys...':
@@ -387,9 +387,9 @@ class Pages(MenuTest):
             m.key('DOWN')
         m.key('ENTER')
         labels = m.labels()
-        self.assertEqual((labels[0], len(labels), labels[-1]), ('< Back', 27, 'Back to the defaults'))   # (26 bindings + WALK)
+        self.assertEqual((labels[0], len(labels), labels[-1]), ('< Back', 27, 'Reset keys to defaults'))   # (26 bindings + WALK)
         m.key('BKSP')
-        self.assertEqual(m.labels()[3], 'Keyboard keys...')
+        self.assertEqual(m.labels()[2], 'Keyboard keys...')
         m.type('3')
         self.assertEqual(m.labels(), ['Now', 'Play online in', 'Your name', 'Direct connections', 'Input delay'] + (['Rollback netcode'] if os.name == 'nt' else [])
                          + ['Netplay version'])   # (offline: no code)
@@ -632,7 +632,19 @@ class Pad(MenuTest):
         self.assertIn(labels[-1], drawn)
         self.assertNotIn(labels[0], drawn)   # (scrolled past)
         m.pad('B')
-        self.assertEqual(m.labels()[3], 'Keyboard keys...')
+        self.assertEqual(m.labels()[2], 'Keyboard keys...')
+
+    def test_reset_asks_first(self):
+        m = self.menu()
+        m.key('ESC')
+        m.pad('R')   # (Controllers)
+        m.go_to('Keyboard keys...')
+        m.pad('A')
+        m.go_to('Reset keys to defaults')
+        m.pad('A')
+        self.assertIn('Reset keyboard keys to defaults?', m.draw())   # (a question first, not the reset itself)
+        m.pad('B')
+        self.assertNotIn('Reset keyboard keys to defaults?', m.draw())
 
 
 class Keyboard(MenuTest):
@@ -765,7 +777,7 @@ class Version(MenuTest):
         self.assertEqual(m.net(), (2, 2, 0))
         m.open_lobby()
         self.assertEqual(m.row('Lobby')['value'], 'hosting a private room')
-        self.assertNotIn('Netplay version', m.labels())
+        self.assertIn('Netplay version', m.labels())   # (on this page too: version 3 can be set back to 2 from here)
         m.type('3')
         self.assertEqual(m.row('Netplay version')['note'], 'hosting: 2')
         guest = self.menu(f'127.0.0.1:{port}', protocol=3, name='Guest')   # (a private room's relay: version 2, after a REJECT)
@@ -782,11 +794,11 @@ class Version2(MenuTest):
         self.assertEqual(m.net(), (2, 2, 1))
         m.open_lobby()
         rows = m.rows()
-        self.assertEqual([(r['label'], r['value']) for r in rows], [('Lobby', 'needs netplay version 3'), ('Netplay version', '2')])
-        self.assertEqual(rows[0]['help'], "The lobby's room browser and matchmaking need netplay version 3, which is being tried out. To turn it "
-                                          "on, set Netplay version to 3 (below, or on the Online page) and restart the game, or start it with "
-                                          "SSBU_NET_PROTOCOL=3.")
-        self.assertIn('needs netplay version 3', m.draw())
+        self.assertEqual([(r['label'], r['value']) for r in rows], [('Room browser', 'off: set Netplay version to 3 below'), ('Netplay version', '2')])
+        self.assertEqual(rows[0]['help'], "The lobby's room browser and matchmaking are off, because they need Netplay version 3 (being tried out). To "
+                                          "turn them on, set Netplay version to 3 (the row below, or on the Online page) and restart the game, or "
+                                          "start it with SSBU_NET_PROTOCOL=3.")
+        self.assertIn('off: set Netplay version to 3 below', m.draw())
         m.key('ENTER', 3)
         self.assertNotIn(R.ROOMS, lobby.kinds())   # (no ROOMS and no MATCH in version 2)
         self.assertNotIn(R.MATCH, lobby.kinds(0.1))
@@ -797,7 +809,7 @@ class Version2(MenuTest):
         m = self.menu(f'127.0.0.1:{server.port}', protocol=3)
         self.assertEqual(m.net(), (3, 2, 1))
         m.open_lobby()
-        self.assertEqual(m.labels(), ['Lobby'])
+        self.assertEqual(m.labels(), ['Lobby', 'Netplay version'])
         self.assertEqual(m.row('Lobby')['value'], 'this lobby speaks version 2 only')
 
 

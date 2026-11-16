@@ -107,6 +107,7 @@ static void quad(float x, float y, float w, float h, int cell, unsigned color) {
     float u0 = (float)(cell % COLS * CELL_W) / ATLAS_W, v0 = (float)(cell / COLS * CELL_H) / ATLAS_H;
     float u1 = u0 + (float)CELL_W / ATLAS_W, v1 = v0 + (float)CELL_H / ATLAS_H;
     if (cell == 127 - 32) { u0 = u1 = u0 + 0.5f * CELL_W / ATLAS_W; v0 = v1 = v0 + 0.5f * CELL_H / ATLAS_H; }   /* solid: its middle */
+    else { u0 += 0.5f / ATLAS_W; u1 -= 0.5f / ATLAS_W; v0 += 0.5f / ATLAS_H; v1 -= 0.5f / ATLAS_H; }   /* a letter: half a texel in, so the linear filter never reads the next cell */
     Vertex a = {x, y, u0, v0, color}, b = {x + w, y, u1, v0, color}, c = {x, y + h, u0, v1, color}, d = {x + w, y + h, u1, v1, color};
     Vertex *o = &verts[nverts];
     o[0] = a; o[1] = b; o[2] = c; o[3] = c; o[4] = b; o[5] = d;
