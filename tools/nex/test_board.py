@@ -71,6 +71,14 @@ class Board(unittest.TestCase):
         self.assertEqual(set(d), {"updated", "online", "rooms", "arenas", "open_rooms", "playing", "ranked"})
         self.assertEqual(self.board.http("POST", "/status.json", {}, b"", 1000.0)[0], 405)
 
+    def test_status_counts_every_lobby_game(self):
+        class Lobby:   # (ssbu_online_lobby.py sets board.lobby: every connected game, its Local Wireless rooms)
+            by_addr, pending, listings = {1: 0, 2: 0, 3: 0, 4: 0}, 1, {"room": 0}
+        self.board.lobby = Lobby()
+        self.board.cache = None
+        code, d = self.get("/status.json")
+        self.assertEqual((d["online"], d["rooms"], d["open_rooms"]), (3, 1, 1))
+
     def test_leaderboard_positions(self):
         code, d = self.get("/leaderboard.json")
         self.assertEqual(code, 200)
