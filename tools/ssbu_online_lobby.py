@@ -100,12 +100,18 @@ class OnlineLobby(relay.Lobby):
         if getattr(self.nex, "board", None) is not None:
             self.nex.board.lobby = self   # (/status.json counts every connected game, tools/nex/board.py)
         self.nex.part_of = self.part_of
+        self.nex.account_of = self.account_of   # (OpenSmash 0.6: --ticket-secret-file, the player's account)
         self.streams = {}        # virtual address -> the player's open NEX streams (writers)
         self.handshakes = collections.Counter()   # address -> its TCP connections not known yet
 
     def part_of(self, ip):
         c = self.by_ip.get(ip_int(ip))
         return c.part if c is not None else None
+
+    def account_of(self, ip):
+        """(account id, name) of the player at a virtual address, from its lobby ticket; None without tickets."""
+        c = self.by_ip.get(ip_int(ip))
+        return (c.uid, c.name) if c is not None and getattr(c, "uid", None) else None
 
     def nex_send(self, addr, sport, data, src_ip=None):
         ip, port = addr

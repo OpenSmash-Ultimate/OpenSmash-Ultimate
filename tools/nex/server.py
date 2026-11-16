@@ -166,6 +166,9 @@ class NexServer:
         self.on_disconnect = []  # fn(conn) for services that keep per-player state
         self.talk_rules = []     # fn(conn, conn) -> whether these two may exchange game traffic
         self.part_of = lambda ip: None   # (the lobby's) who may meet whom: game build and lobby code
+        # (OpenSmash 0.6, the lobby's) the account of a virtual address: (account id, name) from its lobby ticket, or None
+        # (no tickets on this lobby). With one, the game's online identity is the account's, not its install's NSA id.
+        self.account_of = lambda ip: None
         self.register(10, 6, self.validate_and_request_ticket_with_param)
         self.register(10, 3, self.request_ticket)
         self.register(11, 1, self.register_urls)
@@ -464,6 +467,10 @@ class NexServer:
             raise rmc.NexError(rmc.RENDEZVOUS_INVALID_USERNAME, "not a port token")
         nsa = parts[2]
         name = "".join(ch for ch in parts[3][:MAX_NAME] if ch.isprintable())
+        acct = self.account_of(conn.addr[0])
+        if acct is not None:   # (a signed-in player: the same identity on every PC and install, the account's name)
+            nsa = hashlib.sha256(("opensmash-account\n" + acct[0]).encode()).hexdigest()[:16]
+            name = "".join(ch for ch in acct[1][:MAX_NAME] if ch.isprintable())
         pid = self.accounts.login(nsa, name, self.now)
         if pid is None:
             self.info(f"login refused from {conn.addr}: no new accounts now ({len(self.accounts.data['users'])} kept; "
