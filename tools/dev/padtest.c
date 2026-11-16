@@ -432,6 +432,26 @@ static void test_axes_switch(void) {
     CHECK(usb_ports[0].lt > 16000 && usb_ports[0].lt < 16800, "trigger 75 of 150 from rest: %d", usb_ports[0].lt);
 }
 
+/* A blank (all-zero) first report of a port just plugged in must not set the centres or the trigger rests. */
+static void test_blank_first_report(void) {
+    Device dev = {.kind = KIND_ADAPTER, .first = 0};
+    UCHAR r[37] = {0x21};
+    UCHAR *p4 = r + 1 + 27;   /* port 4 */
+    p4[0] = 0x10;             /* connected, every axis 0: the blank report */
+    adapter_report(&dev, r, sizeof r);
+    CHECK(!usb_ports[3].connected, "blank first report: not connected yet");
+    p4[3] = 133; p4[4] = 129; p4[5] = 134; p4[6] = 127; p4[7] = 34; p4[8] = 40;
+    for (int i = 0; i < 40; i++) adapter_report(&dev, r, sizeof r);
+    PadUsbAxes ua;
+    CHECK(usb_ports[3].connected && padusb_axes(3, &ua) && ua.centre[0] == 133 && ua.centre[2] == 134,
+          "centres measured from the real reports: %d %d", ua.centre[0], ua.centre[2]);
+    CHECK(dev.trigger_rest[3][0] == 34 && dev.trigger_rest[3][1] == 40 && usb_ports[3].lt == 0 && usb_ports[3].rt == 0,
+          "trigger rests 34 / 40 read 0: %d %d %d %d", dev.trigger_rest[3][0], dev.trigger_rest[3][1], usb_ports[3].lt, usb_ports[3].rt);
+    p4[3] = p4[4] = p4[5] = p4[6] = 0;   /* an already connected port sending zeros stays connected (only a new connection waits) */
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[3].connected, "a connected port stays connected on an all-zero report");
+}
+
 /* The keyboard ([keyboard]): the defaults are the keys of before, rebinding, several keys, the
  * sticks' directions, Alt+Enter, ssbu-recomp's spellings and bad names. */
 static int held_keys[8], nheld;
@@ -625,6 +645,7 @@ int main(void) {
     test_axes();
     padusb_set_switch(1);
     test_axes_switch();
+    test_blank_first_report();
     test_sticks();
     test_slots();
     test_rumble();

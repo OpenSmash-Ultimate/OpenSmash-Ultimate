@@ -321,6 +321,12 @@ static void adapter_report(Device *d, const UCHAR *p, int n) {
         int was = o->connected;
         o->connected = (s[0] & 0x30) != 0;   /* 0x10 a cable, 0x20 a WaveBird */
         if (!o->connected) { port_axes[d->first + i].connected = 0; continue; }
+        if (!was && !(s[3] | s[4] | s[5] | s[6])) {
+            /* the first report of a port just plugged in can be blank (a real stick never reads 0 on all four axes):
+             * calibrating from it leaves the centres at 128 and the trigger rests at 0. Wait for the next report. */
+            o->connected = 0; port_axes[d->first + i].connected = 0;
+            continue;
+        }
         if (!was || InterlockedExchange(&recal_want[d->first + i], 0)) {
             /* plugged in (or Recalibrate sticks, from the menu): the centres and rests as they are now */
             for (int k = 0; k < 4; k++) axis_begin(&d->axes[i][k], 128, 80);
