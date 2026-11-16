@@ -15,3 +15,8 @@ const struct GfxBackend *vk_backend_start(char *why, size_t size, int automatic)
 /* (gpu_backend.c's gfx_present_again) the last frame shown once more, overlay and menu on top: 1, or 0
  * before any frame (or with no Vulkan back end in this program). */
 int vk_present_again(void);
+/* (gpu_backend.c's gfx_match_want / gfx_match_wait, hle_fight_test.c) a match being set up: its fighters' and stage's
+ * pipelines made first (key: the ui_chara or ui_stage hash40; first: the match's first key), and its fight's first frame
+ * waits for them (the warm start's groups, gpu_vk.c). */
+void vk_match_want(unsigned long long key, int first);
+void vk_match_wait(void);

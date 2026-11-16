@@ -251,6 +251,9 @@ class NexServer:
         services = getattr(self, "services", None)
         if services is not None:
             services.powers.flush(now, force)
+        board = getattr(self, "board", None)
+        if board is not None:
+            board.flush(now, force)
 
     def servers(self):
         return (self.auth, self.secure, self.auth_lite, self.secure_lite)
@@ -571,6 +574,7 @@ class NexServer:
 def make_server(send, host="10.13.0.1", state_dir=None, log=print, verbose=1):
     """The game server with every service it has."""
     from .arenas import Arenas
+    from .board import Board
     from .matchmaking import Matchmaking
     from .ranked import Ranked
     from .services import Services
@@ -579,4 +583,5 @@ def make_server(send, host="10.13.0.1", state_dir=None, log=print, verbose=1):
     nex.matchmaking = Matchmaking(nex)
     nex.arenas = Arenas(nex, nex.matchmaking)
     nex.services = Services(nex)
+    nex.board = Board(nex)
     return nex

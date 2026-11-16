@@ -216,6 +216,18 @@ Once steps 1–5 are done, **`python tools\build_game.py`** can do steps 7 to 14
 
 When it's finished, go to [step 15](#step-15-play). Steps 6–14 below do the same by hand.
 
+### Rebuild the game and launcher
+
+In the Windows launcher, open **Settings → Update** and choose **Build game + launcher**. The status bar shows the build's live progress. The game build and launcher publish are incremental; only changed inputs are rebuilt. When publishing finishes, the launcher closes and the new `OpenSmash.exe` opens.
+
+To run the same process outside the launcher, use PowerShell in the repository folder:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\rebuild-all.ps1
+```
+
+This needs the .NET 8 SDK to publish `OpenSmash.exe`; the game build also needs the tools and folders described above.
+
 ### Step 6: Open PowerShell in the WindowSmash folder
 
 Open `C:\WindowSmash` in File Explorer, click the **address bar** at the top, type `powershell` and press <kbd>Enter</kbd>. A PowerShell window opens that is already in the right folder: its last line reads `PS C:\WindowSmash>`. Use this window for the rest of the guide.

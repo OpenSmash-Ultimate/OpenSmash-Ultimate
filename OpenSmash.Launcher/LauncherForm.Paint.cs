@@ -54,17 +54,19 @@ namespace OpenSmash.Launcher
             ["pacing"] = "Steady 60 on any monitor. G-Sync / FreeSync shows each frame as soon as it is ready.",
             ["render_scale"] = "How big the game draws. 2 is four times the pixels of 1.",
             ["gpu"] = "Auto picks the fastest card.",
-            ["renderer"] = "Direct3D 11 is the one the game is played with. Vulkan is in development: until it can draw the game, the game checks Vulkan at its start and draws with Direct3D 11.",
+            ["renderer"] = "Auto: Vulkan on AMD, NVIDIA and Intel cards, Direct3D 11 on others, and Direct3D 11 whenever Vulkan cannot start.",
             ["hide_cursor"] = "Hides the pointer over the game after 2 seconds without moving it.",
             ["overlay"] = "The frame rate in the corner. F1 shows or hides it while playing.",
+            ["ui_language"] = "The launcher and external menu share this language. The game language is set separately.",
             ["volume"] = "The game's whole sound (display.ini volume, the same setting as the in-game menu's Volume row). 100 is full. It applies the next time you press Play.",
             ["name"] = "What other players see. Leave it empty and the game picks one.",
-            ["lobby"] = "Public: everyone's rooms. Private: only players with the same code. Offline: no network.",
+            ["lobby"] = "Public: everyone's rooms on the one public lobby. Private: only players with the same code. LAN: players on this network. Offline: no network.",
             ["code"] = "A word your friends type too. Capital letters count.",
             ["server"] = "host:port of a lobby you run, for example 192.168.1.20:39420.",
             ["direct"] = "On is faster. Off sends everything through the lobby, so your address stays private.",
             ["keyboard_player"] = "The keyboard adds to that player's controller.",
             ["background"] = "Off: controllers work only while the game's window is in front.",
+            ["remap"] = "Pick a connected controller, then press the button you want for each of the game's buttons. Saved for that model of controller, on any port.",
             ["pads"] = "Pins and button layouts. Each controller is also set up in the game, under Controllers.",
         };
 
@@ -156,6 +158,7 @@ namespace OpenSmash.Launcher
                 case "nav:home": GoView("home"); return true;
                 case "nav:mods": GoView("mods"); return true;
                 case "nav:settings": GoView("settings"); return true;
+                case "nav:yuzu": OpenYuzuRoom(); return true;
                 case "nav:back": GoBack(); return true;
                 case "nav:play": if (!Busy) StartPlay(); return true;
                 case "nav:mode-prev": CycleLaunchMode(-1); return true;
@@ -234,7 +237,7 @@ namespace OpenSmash.Launcher
         // ---------------------------------------------------------------------------
         // Fonts and display-type outlines, cached per size
         readonly Dictionary<(int, int), Font> _fontCache = new();
-        readonly Dictionary<(string, int), GraphicsPath> _pathCache = new();
+        readonly Dictionary<(string, int, bool), GraphicsPath> _pathCache = new();
 
         Font Fnt(int kind, float px)
         {
@@ -247,6 +250,7 @@ namespace OpenSmash.Launcher
                     1 => Theme.Body(px),
                     2 => Theme.Body(px, true),
                     3 => Theme.Mono(px),
+                    5 => Theme.Display(px, localize: false),
                     _ => Theme.Mono(px, true),
                 };
                 _fontCache[key] = f;
@@ -257,13 +261,14 @@ namespace OpenSmash.Launcher
         Font FB(float px, bool bold = false) => Fnt(bold ? 2 : 1, px);
         Font FM(float px, bool bold = false) => Fnt(bold ? 4 : 3, px);
 
-        GraphicsPath TextPath(string text, float px)
+        GraphicsPath TextPath(string text, float px, bool localize = true)
         {
-            var key = (text, (int)MathF.Round(px * 4));
+            if (localize) text = UiLocale.Text(text);
+            var key = (text, (int)MathF.Round(px * 4), localize);
             if (!_pathCache.TryGetValue(key, out var p))
             {
                 p = new GraphicsPath();
-                p.AddString(text, FD(px).FontFamily, (int)FontStyle.Regular, px, PointF.Empty, Theme.Typo);
+                p.AddString(text, (localize ? FD(px) : Fnt(5, px)).FontFamily, (int)FontStyle.Regular, px, PointF.Empty, Theme.Typo);
                 _pathCache[key] = p;
             }
             return p;
@@ -280,7 +285,8 @@ namespace OpenSmash.Launcher
             _fieldSize = Size.Empty;
         }
 
-        float Advance(Graphics g, string text, float px) => g.MeasureString(text, FD(px), 100000, Theme.Typo).Width;
+        float Advance(Graphics g, string text, float px, bool localize = true) =>
+            g.MeasureString(localize ? UiLocale.Text(text) : text, localize ? FD(px) : Fnt(5, px), 100000, Theme.Typo).Width;
 
         // ---------------------------------------------------------------------------
         // Speed lines and sparks (the site's hero canvas), drifting along -14 degrees
@@ -522,10 +528,13 @@ namespace OpenSmash.Launcher
                 case "mods_browser": PaintModsBrowser(g, W, H); break;
                 case "setup_modding": PaintSetupModding(g, W, H); break;
                 case "settings": PaintSettings(g, W, H); break;
+                case "yuzu": PaintYuzuRoom(g, W, H); break;
+                case "remap": PaintRemap(g, W, H); break;
                 default: PaintHome(g, W, H); break;
             }
 
             PaintHeader(g, W, H);
+            PaintDiscordCard(g, W, H);
             if (_loadOn && _view != "mods") PaintLoad(g, W, H);
             PaintStatus(g, W, H);
             if (_view == "mods" && _showSetupPrompt) PaintSetupPrompt(g, W, H);
@@ -568,6 +577,7 @@ namespace OpenSmash.Launcher
             float ww = Theme.Label(g, "OPENSMASH", FD(21 * s), A(Theme.Text), wx, 0, HeaderH * s, 0.84f * s);
             float ww2 = Theme.Label(g, "-ULTIMATE", FD(21 * s), A(Theme.Dim), wx + ww + 0.84f * s, 0, HeaderH * s, 0.84f * s);
             AddHit("brand", mx, my, mark + 10 * s + ww + ww2, mark);
+            if (_view != "home") PaintDiscordHeader(g, wx + ww + 0.84f * s + ww2 + 36 * s, HeaderH * s / 2);   // (LauncherForm.Discord.cs; home: the right column's)
 
             // Window buttons
             float cx = W - 40 * s, cy = HeaderH * s / 2, a = 7 * s;
@@ -600,7 +610,7 @@ namespace OpenSmash.Launcher
             AddHit("nav:mode-next", nextX, cy - chh / 2, aw, chh);
 
             // Section links with the red skewed underline
-            string active = _view == "home" ? "nav:home" : _view == "settings" ? "nav:settings" : "nav:mods";
+            string active = _view == "home" ? "nav:home" : _view == "settings" || _view == "yuzu" || _view == "remap" ? "nav:settings" : "nav:mods";
             float lx = prevX - 8 * s;
             foreach (var (id, label) in new[] { ("nav:settings", "SETTINGS"), ("nav:mods", "MODS"), ("nav:home", "HOME") })
             {
@@ -632,6 +642,14 @@ namespace OpenSmash.Launcher
             using (var pen = new Pen(A(Theme.Line), Math.Max(1, s)))
                 g.DrawLine(pen, 0, y, W, y);
 
+            if (_maintenanceBuildUi)
+            {
+                PaintJobStrip(g, W, y, h, s,
+                    string.IsNullOrEmpty(_maintenanceDetail) ? "Building the game and launcher" : _maintenanceDetail,
+                    _maintenanceFrac, _maintenanceEta);
+                PopFade(g, st);
+                return;
+            }
             if (_shaderUi)
             {
                 PaintJobStrip(g, W, y, h, s,
@@ -684,6 +702,8 @@ namespace OpenSmash.Launcher
                 "home" => "\u2190 \u2192  SELECT     ENTER  CONFIRM",
                 "mods" => "\u2191 \u2193  SELECT     DEL  REMOVE     ESC  BACK",
                 "settings" => "\u2190 \u2192  TABS     ENTER  CHANGE     ESC  BACK",
+                "yuzu" => "TAB  NEXT FIELD     ENTER  CONNECT     ESC  BACK",
+                "remap" => "SET  THEN PRESS THE PAD'S BUTTON     ESC  BACK",
                 _ => "ESC  BACK",
             };
             Theme.Label(g, hint, FM(11 * s), A(Theme.Dim), 0, y, h, sp, StringAlignment.Far, W - 40 * s);
@@ -818,7 +838,7 @@ namespace OpenSmash.Launcher
                 bool lit = Now % 1.6 < 0.8;
                 using (var b = new SolidBrush(A(Color.FromArgb(lit ? 255 : 51, Theme.Accent))))
                     g.FillPolygon(b, new[] { new PointF(left + 3 * s, ky + 4 * s), new PointF(left + 11 * s, ky + 4 * s), new PointF(left + 8 * s, ky + 12 * s), new PointF(left, ky + 12 * s) });
-                string kicker = $"NATIVE RECOMPILATION  \u00B7  GAME {(_version != "" ? _version : "?")}  \u00B7  WINDOWS X64";
+                string kicker = UiLocale.Interpolate($"NATIVE RECOMPILATION  \u00B7  GAME {(_version != "" ? _version : "?")}  \u00B7  WINDOWS X64");
                 Theme.Label(g, kicker, FM(13 * s), A(Theme.Muted), left + 21 * s, ky, kh, 13 * s * 0.14f);
                 PopFade(g, st);
             }
@@ -844,7 +864,7 @@ namespace OpenSmash.Launcher
             {
                 var st = PushFade(g, Up(t, 1.05f), 24 * s);
                 float bx = left, by = 494 * s, bh = 52 * s, aw = bh, ag = 8 * s;
-                float[] widths = { 220, 150, 184, 128 };
+                float[] widths = { 190, 130, 160, 105 };
                 string playLabel = _launchMode == "vanilla" ? "VANILLA" : "PLAY";
                 bool playEnabled = _built && !Busy;
                 Theme.ButtonAnimated(g, "<", bx, by, aw, bh, s, primary: false, Hov("nav:mode-prev", _hover == "nav:mode-prev"), _built, 18 * s, _alpha, press: Press("nav:mode-prev"));
@@ -854,7 +874,7 @@ namespace OpenSmash.Launcher
                 {
                     string id = $"menu:{i}";
                     float bw = widths[i] * s;
-                    bool enabled = i != 0 || playEnabled;
+                    bool enabled = i == 0 ? playEnabled : true;
                     float hv = Hov(id, enabled && (_hover == id || (_keys && _sel == i)));
                     Theme.ButtonAnimated(g, i == 0 ? playLabel : _menuItems[i], bx, by, bw, bh, s, primary: i == 0, hv, enabled, 15 * s, _alpha,
                         i == 0 ? DrawArrow : null, press: Press(id));
@@ -878,7 +898,7 @@ namespace OpenSmash.Launcher
                 float cx = left, cy = 576 * s, chh = 28 * s;
                 var f = FM(12 * s);
                 float sp = 12 * s * 0.06f;
-                foreach (string chip in new[] { RendererChip(), $"{_mods.Count} MOD{(_mods.Count == 1 ? "" : "S")}", $"{_plugins} PLUGIN{(_plugins == 1 ? "" : "S")}", "F1  IN-GAME MENU" })
+                foreach (string chip in new[] { RendererChip(), UiLocale.Format(_mods.Count == 1 ? "{0} MOD" : "{0} MODS", _mods.Count), UiLocale.Format(_plugins == 1 ? "{0} PLUGIN" : "{0} PLUGINS", _plugins), "F1  IN-GAME MENU" })
                 {
                     float cw = Theme.TextWidth(g, chip, f, sp) + 26 * s;
                     using (var p = Theme.Para(cx, cy, cw, chh, 6 * s))
@@ -891,6 +911,8 @@ namespace OpenSmash.Launcher
                 }
                 PopFade(g, st);
             }
+
+            PaintCommunity(g, W, H);   // (LauncherForm.Community.cs)
         }
 
         // M5 12h12 M12 5l7 7-7 7, the arrow of the site's GET IT button
@@ -904,14 +926,14 @@ namespace OpenSmash.Launcher
 
         float DrawHeroWord(Graphics g, string word, float x, float capTop, float px, float t, float delay, Color color, bool outline)
         {
-            var path = TextPath(word, px);
+            var path = TextPath(word, px, localize: false);
             var b = path.GetBounds();
             float e = Theme.Ease(Clamp01((t - delay) / 1f));
             if (e > 0)
             {
                 float lineTop = capTop - 0.06f * px, lineH = b.Height + 0.12f * px;
                 var st = g.Save();
-                g.SetClip(new RectangleF(x - 10 * _s, lineTop, Advance(g, word, px) + 30 * _s, lineH), CombineMode.Intersect);
+                g.SetClip(new RectangleF(x - 10 * _s, lineTop, Advance(g, word, px, localize: false) + 30 * _s, lineH), CombineMode.Intersect);
                 g.TranslateTransform(x, capTop - b.Top + lineH * 1.05f * (1 - e));
                 if (e < 1) g.MultiplyTransform(new Matrix(1, MathF.Tan(6 * MathF.PI / 180) * (1 - e), 0, 1, 0, 0));
                 if (outline)
@@ -926,7 +948,7 @@ namespace OpenSmash.Launcher
                 }
                 g.Restore(st);
             }
-            return Advance(g, word, px);
+            return Advance(g, word, px, localize: false);
         }
 
         // Word-wrapped runs of differently styled text (the tagline's bold lead-in).
@@ -937,12 +959,15 @@ namespace OpenSmash.Launcher
             {
                 using var b = new SolidBrush(A(run.Color));
                 var (cap, top) = Theme.Caps(run.Font);
-                foreach (string word in run.Text.Split(' '))
+                // CJK paragraphs have no spaces: allow a break at each wide character.
+                foreach (System.Text.RegularExpressions.Match part in System.Text.RegularExpressions.Regex.Matches(
+                    UiLocale.Text(run.Text), @"\r?\n|[\u2e80-\u9fff\uac00-\ud7af]|[^\s\u2e80-\u9fff\uac00-\ud7af]+[ \t]*|[ \t]+"))
                 {
-                    if (word.Length == 0) continue;
-                    string piece = word + " ";
+                    string piece = part.Value;
+                    if (piece.Contains('\n')) { cx = x; cy += lineH; continue; }
                     float w = g.MeasureString(piece, run.Font, 100000, Theme.Typo).Width;
-                    if (cx + w - g.MeasureString(" ", run.Font, 100000, Theme.Typo).Width > x + maxW && cx > x) { cx = x; cy += lineH; }
+                    float ink = g.MeasureString(piece.TrimEnd(), run.Font, 100000, Theme.Typo).Width;
+                    if (cx + ink > x + maxW && cx > x) { cx = x; cy += lineH; }
                     g.DrawString(piece, run.Font, b, cx, cy + (lineH - cap) / 2 - top, Theme.Typo);
                     cx += w;
                 }
@@ -1225,11 +1250,11 @@ namespace OpenSmash.Launcher
                 bool detailed = m.HasChips || !string.IsNullOrEmpty(m.About) || !string.IsNullOrEmpty(m.Meta) || !string.IsNullOrEmpty(m.Sub);
                 float textW = Math.Max(40 * s, filesRight - tx - 108 * s);
                 if (!detailed)
-                    Theme.DrawText(g, m.Title, FB(15 * s, sel), A(m.Enabled || m.Mixed ? Theme.Text : Theme.Dim), tx, ry, textW, rowH);
+                    Theme.DrawText(g, m.Title, FB(15 * s, sel), A(m.Enabled || m.Mixed ? Theme.Text : Theme.Dim), tx, ry, textW, rowH, localize: false);
                 else
                 {
                     float ty = ry + 8 * s;
-                    Theme.DrawText(g, m.Title, FB(15 * s, sel), A(m.Enabled || m.Mixed ? Theme.Text : Theme.Dim), tx, ty, textW, 22 * s, StringAlignment.Near, StringAlignment.Near);
+                    Theme.DrawText(g, m.Title, FB(15 * s, sel), A(m.Enabled || m.Mixed ? Theme.Text : Theme.Dim), tx, ty, textW, 22 * s, StringAlignment.Near, StringAlignment.Near, localize: false);
                     ty += 24 * s;
                     if (!string.IsNullOrEmpty(m.Sub))
                     {
@@ -1675,6 +1700,14 @@ namespace OpenSmash.Launcher
                 }
             }
 
+            if (tab < _settingsTabs.Length && _settingsTabs[tab].Name == "Advanced")
+            {
+                _settingsMaxScroll = 0;
+                _settingsScroll = 0;
+                PaintAdvancedMultiplayer(g, x, cw, listTop);
+                return;
+            }
+
             if (tab < _settingsTabs.Length && string.Equals(_settingsTabs[tab].Name, "Storage", StringComparison.OrdinalIgnoreCase))
             {
                 _settingsMaxScroll = 0;
@@ -1842,8 +1875,8 @@ namespace OpenSmash.Launcher
             string names = string.Join(", ", _newMods.Take(4));
             if (count > 4) names += $" and {count - 4} more";
             string body = count == 1
-                ? $"{names} was dropped straight into the mods folder, so OpenSmash has not built its plugin yet."
-                : $"{names} were dropped straight into the mods folder, so OpenSmash has not built their plugins yet.";
+                ? UiLocale.Interpolate($"{names} was dropped straight into the mods folder, so OpenSmash has not built its plugin yet.")
+                : UiLocale.Interpolate($"{names} were dropped straight into the mods folder, so OpenSmash has not built their plugins yet.");
             body += " This must be done now: leaving it unbuilt breaks the rest of your mods.";
             if (build)
                 body += count == 1
@@ -1992,7 +2025,7 @@ namespace OpenSmash.Launcher
             {
                 case "checking": status = "CHECKING GITHUB\u2026"; color = Theme.Muted; break;
                 case "updating": status = "UPDATING OPENSMASH\u2026"; color = Theme.Accent; break;
-                case "available": status = _updateBehind == 1 ? "1 NEW COMMIT" : $"{_updateBehind} NEW COMMITS"; color = Theme.Accent; break;
+                case "available": status = _updateBehind == 1 ? "1 NEW COMMIT" : UiLocale.Interpolate($"{_updateBehind} NEW COMMITS"); color = Theme.Accent; break;
                 case "uptodate": status = "UP TO DATE"; color = Theme.Text; break;
                 case "error": status = "COULD NOT CHECK"; color = Theme.Muted; break;
                 default: status = "NOT CHECKED YET"; color = Theme.Dim; break;
@@ -2005,15 +2038,21 @@ namespace OpenSmash.Launcher
             if (_updateLocal.Length > 0 || _updateHead.Length > 0)
             {
                 Font vf = FM(12 * s);
-                string versions = $"THIS COPY  {(_updateLocal.Length > 0 ? ShortCommit(_updateLocal) : "?")}   \u00B7   GITHUB  {(_updateHead.Length > 0 ? ShortCommit(_updateHead) : "?")}";
+                string versions = UiLocale.Interpolate($"THIS COPY  {(_updateLocal.Length > 0 ? ShortCommit(_updateLocal) : "?")}   \u00B7   GITHUB  {(_updateHead.Length > 0 ? ShortCommit(_updateHead) : "?")}");
                 Theme.Label(g, versions, vf, A(Theme.Dim), x + pad, listTop + ch - 88 * s, 16 * s, 12 * s * 0.08f);
             }
             float bh = 44 * s, by = listTop + ch - bh - 28 * s;
-            float wApply = 150 * s, wCheck = 210 * s;
+            float wBuild = 220 * s, wApply = 150 * s, wCheck = 210 * s, gap = 12 * s;
             bool showApply = _updateState == "available" || _updateApplying;
             float xApply = x + cwIn - pad - wApply;
-            float xCheck = showApply ? xApply - 12 * s - wCheck : x + (cwIn - wCheck) / 2;
+            float xBuild = x + pad;
+            float xCheck = showApply ? xApply - gap - wCheck : xBuild + wBuild + gap;
+            bool canBuild = !Busy && !_updateChecking && !_updateApplying;
             bool canCheck = !_updateChecking && !_updateApplying;
+            Theme.ButtonAnimated(g, _maintenanceBuildUi ? "BUILDING\u2026" : "BUILD GAME + LAUNCHER",
+                xBuild, by, wBuild, bh, s, true, Hov("update:build", canBuild && _hover == "update:build"), canBuild, 11 * s, _alpha,
+                press: Press("update:build"));
+            if (canBuild) AddHit("update:build", xBuild, by, wBuild, bh);
             Theme.ButtonAnimated(g, _updateState == "checking" ? "CHECKING\u2026" : "CHECK FOR UPDATE", xCheck, by, wCheck, bh, s, false, Hov("update:check", canCheck && _hover == "update:check"), canCheck, 12 * s, _alpha, press: Press("update:check"));
             if (canCheck) AddHit("update:check", xCheck, by, wCheck, bh);
             bool canApply = _updateState == "available" && !_updateApplying && !_updateChecking;

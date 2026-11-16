@@ -323,6 +323,7 @@ def sync(tree, log=print, jobs=1):
             f.writelines(h + "\n" for h in missing)
     record = load_record(p)
     names = []
+    direct = set()
     skip = set()   # (dump/skyline/skip.txt: plugins left out, by module name or mod-relative file - one that does not run yet)
     if os.path.exists(os.path.join(p.skyline, "skip.txt")):
         skip = {l.split("#")[0].strip() for l in open(os.path.join(p.skyline, "skip.txt"), encoding="utf-8")} - {""}
@@ -334,6 +335,10 @@ def sync(tree, log=print, jobs=1):
             continue
         record[build_id] = {"module": name, "mod": mod, "file": os.path.relpath(source, tree)}
         generate(p, name, log, mod.startswith("(standard) "), jobs)
+        # ARCropolis discovers only a mod's plugin.nro. Other names (for example the
+        # original Training Modpack libraries) still need their entries run by Skyline.
+        if mod.startswith("(standard) ") or os.path.basename(source).lower() != "plugin.nro":
+            direct.add(name)
         if name not in names:
             names.append(name)
             log(f"{mod}: plugin {os.path.basename(source)} -> {name}")
@@ -366,11 +371,10 @@ def sync(tree, log=print, jobs=1):
         paramconfig.write(t, log)
     except Exception as e:
         log(f"paramconfig: not updated: {e}")
-    # With the real ARCropolis among the standard plugins, it loads the mods' plugins itself (its
-    # chainloader, from each mod's folder, as on the console): only the standard ones are listed
+    # Leave plugin.nro to ARCropolis so it is not initialized twice. Named libraries are
+    # not chainload candidates and must stay in the direct-load list, in dependency order.
     if any(m == "(standard) libarcropolis.nro" for m, _s in turned_on(tree)):
-        std = {module_of(p, s, record)[1] for m, s in turned_on(tree) if m.startswith("(standard) ")}
-        names = [n for n in names if n in std]
+        names = [n for n in names if n in direct]
     text = "".join(f"{n}\n" for n in names)
     old = open(p.list, encoding="utf-8").read() if os.path.exists(p.list) else ""
     if text != old:
@@ -599,6 +603,15 @@ def probe(tree, log=print):
     with open(p.list, encoding="utf-8") as listed:
         if not listed.read().strip():
             return False
+    # ARCropolis reads the mods itself. A checkout that previously applied them into
+    # data.arc must restore the original archive before the first discovery boot:
+    # the expanded native tables cannot be read by ARCropolis' share lookup builder.
+    if os.path.isfile(os.path.join(tree, "skyline", "plugins", "libarcropolis.nro")):
+        import mods
+        view = mods.Tree(tree)
+        if view.is_modded() and not (view.applied() or {}).get("arcropolis"):
+            log("preparing the original game archive for ARCropolis (keeping the enabled mods)")
+            mods.apply(view, log)
     path = os.path.join(p.skyline, "csk.json")
 
     def entries():   # (as data: a plugin's maps come out in a different order each start)
@@ -898,8 +911,14 @@ def game_link_reason(tree, mods=True):
         return missing
     listed = os.path.join(p.skyline, "plugins.txt")
     names = [l.split("#")[0].strip() for l in open(listed, encoding="utf-8")] if os.path.exists(listed) else []
+    dynamic = set()
+    if os.name == "nt":
+        dlls = os.path.join(p.skyline, "plugin_dlls.txt")
+        if os.path.isfile(dlls):
+            with open(dlls, encoding="utf-8") as listed:
+                dynamic = {os.path.splitext(os.path.basename(line.strip()))[0] for line in listed if line.strip()}
     for name in names:
-        if name and not built_in(tree, name):
+        if name and name not in dynamic and not built_in(tree, name):
             return f"the standard plugin {name} isn't in the game"
     if mods and stale_hooks(tree):
         return "a plugin hooks a function the game has no slot for"

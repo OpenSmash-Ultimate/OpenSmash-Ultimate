@@ -153,6 +153,8 @@ HANDLE CreateThread(void *security, SIZE_T stack, LPTHREAD_START_ROUTINE fn, LPV
 BOOL CloseHandle(HANDLE h) { (void)h; return 1; }
 static void (*sleep_tick)(void);
 void Sleep(DWORD ms) { (void)ms; if (sleep_tick) sleep_tick(); }
+void gfx_match_want(unsigned long long key, int first) { (void)key; (void)first; }   /* (gpu_backend.c: no renderer here) */
+void gfx_match_wait(void) {}
 void rt_upnp_remove(void) { fprintf(stderr, "(the relay's port mapping removed)\n"); }
 void ExitProcess(UINT code) { fflush(NULL); _exit((int)code); }
 

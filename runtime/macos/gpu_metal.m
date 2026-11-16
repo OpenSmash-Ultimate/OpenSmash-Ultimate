@@ -1326,6 +1326,8 @@ static void enqueue(Job *j, int q, int front) {
 static void enqueue_shader(Shader *s) { enqueue(&s->job, s->cached ? 0 : 1, s->cached && s->stage == SHADER_COMPUTE); }
 
 void gfx_status_lines(void) {}   /* (no lines of its own yet) */
+void gfx_match_want(unsigned long long key, int first) { (void)key; (void)first; }   /* (the Vulkan warm start's groups: none here) */
+void gfx_match_wait(void) {}
 int gfx_present_again(void) { return 0; }   /* (no frame shown again here: the software keyboard keeps its dialog) */
 void gfx_closing(void) {}   /* (no shaders to warm at the next start: Metal keeps its own cache) */
 

@@ -145,11 +145,15 @@ static void first_battle_frame(int entry) {
 
 
 /* ---- SSBU_DEBUG_FINAL ------------------------------------------------------------------- */
-/* SSBU_DEBUG_FINAL=<first>[,<every>]: at that fight frame of each fighter (and every <every> frames after), its
+/* SSBU_DEBUG_FINAL=<first>[,<every>]: one fighter at a time, in turn (the first fighter at fight frame <first>, the next
+ * <every> frames later - 600 without it - and so on, round again after the last), its
  * FIGHTER_INSTANCE_WORK_ID_FLAG_FINAL turned on (WorkModule::on_flag: what breaking a Smash Ball gives) and its status
  * asked to be FIGHTER_STATUS_KIND_FINAL (StatusModule::change_status_request_from_script): its Final Smash, as
  * ssbu-recomp's SSBU_FIGHTER_DEBUG "final" then "status". The flag alone left the next neutral special a neutral
- * special (measured). For the pipeline sweep (tools/dev/pipeline_sweep.py): every fighter's Final Smash drawn. */
+ * special (measured). For the pipeline sweep (tools/dev/pipeline_sweep.py): every fighter's Final Smash drawn. In turn,
+ * not all at once (2026-11-12): forced on every fighter at the same frame (which a normal match never does) the scripts
+ * broke - Dark Samus', Mega Man's and Isabelle's at the same frame stopped the game (svcBreak in a Mega Man status
+ * script, at the second round), the same match without them played to its end. */
 static long long final_first, final_every;
 static void give_final(Cpu *c, u64 boma, int entry, long long f) {
     static int state;   /* 0 not asked yet, 1 found, -1 not */
@@ -193,8 +197,10 @@ static void frame_line(Cpu *c) {
         if (k == 0) first_battle_frame(fighters[k].entry);
     }
     FightFrame fr = {++fighters[k].frame, fighters[k].entry};
-    if (final_first && fr.f >= final_first && (fr.f == final_first || (final_every && (fr.f - final_first) % final_every == 0)))
-        give_final(c, boma, fighters[k].entry, fr.f);
+    if (final_first && fr.f >= final_first) {   /* (one fighter at a time, in turn: SSBU_DEBUG_FINAL above) */
+        long long gap = final_every ? final_every : 600, t = fr.f - final_first - (long long)k * gap;
+        if (t >= 0 && t % (gap * fighter_count) == 0) give_final(c, boma, fighters[k].entry, fr.f);
+    }
     if (!hash_out) return;
     fr.st = (int)getter(c, FD("30StatusModule__status_kind_impl"), boma, 0, NULL);
     fr.mot = getter(c, FD("30MotionModule__motion_kind_impl"), boma, 0, NULL);
@@ -247,6 +253,10 @@ static int seq_steps(void) {
     if (!fighter_count) return 1;
     return (int)fight_steps(&steps, fighters[0].frame, ready_go());
 }
+
+/* The first fighter's fight frame, as SSBU_FIGHT_HASH's lines number it (0: no fight seen). For
+ * SSBU_DEBUG_CAM_TRACE (host.c), whose lines join the hash log's on it. */
+long long fight_test_frame0(void) { return fighter_count ? fighters[0].frame : 0; }
 
 /* ---- SSBU_FIXED_SEED -------------------------------------------------------------------- */
 static int fixed_on;
@@ -332,6 +342,7 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx) {
         fprintf(stderr, "[fight] debug match: the screens' stage choice: ui_stage %llx form %u, hazards %u; rule: stock %u, item appear %u\n",
                 (unsigned long long)ld64(sel), ld32(sel + 8), ld8(GAME_ADDR(STAGE_HAZARDS)), ld8(block + 0x4c), ld32(block + 0x54));
         dm_stage(&match, P(u8, sel), P(u8, GAME_ADDR(STAGE_HAZARDS)), P(u8, block + 0x54));
+        if (match.time > 0) st32(block + 0x48, (u32)match.time * 3600);   /* (the time limit, in frames: 25200 is 7 minutes) */
     }
     /* A human player 2 plays on controller slot 2 when something drives it: SSBU_SEQ2's sequence, else a pad
      * connected there (a remap test's scripted pad, tools/dev/fakexi.c). Set as a controller that joined the
@@ -402,6 +413,29 @@ void test_fight_presented(void) {
     if (end_limit && n >= end_limit && !end_fired) { end_count = n; end_fired = shown; }
 }
 
+/* ---- the match's GPU pipelines (gpu_vk.c's warm start groups) ------------------------------------ */
+/* As each player's record is built (always, not only in debug matches): its fighter's pipelines, and with the first
+ * player's the stage's, are made before every other group the warm start has left (gfx_match_want); at the next frame
+ * end, before the match loads, the game waits for them (gfx_match_wait) - on a first start, where the driver compiles each
+ * pipeline from nothing, a longer wait on the select screen instead of compiles during the fight. (Not at the fight's first
+ * frame line: the stage and the fighters' entrances are drawn before it.) After the debug match's own record hook (an
+ * inner order: its fighters and stage are the ones set). */
+void gfx_match_want(unsigned long long key, int first);   /* gpu_backend.c */
+void gfx_match_wait(void);
+static volatile LONG shaders_pending;
+static void shaders_record(Cpu *c, const u64 args[8], void *ctx) {
+    (void)c; (void)ctx;
+    int idx = (int)args[1];
+    u64 rec = args[3];
+    if (idx == 0) gfx_match_want(ld64(stage_choice()) & 0xFFFFFFFFFFull, 1);
+    if (rec && (i8)ld8(rec + 8) >= 0) gfx_match_want(ld64(rec) & 0xFFFFFFFFFFull, 0);
+    InterlockedExchange(&shaders_pending, 1);
+}
+static void shaders_end(Cpu *c, const u64 args[8], void *ctx) {
+    (void)c; (void)args; (void)ctx;
+    if (shaders_pending && InterlockedExchange(&shaders_pending, 0)) gfx_match_wait();
+}
+
 /* ---- start --------------------------------------------------------------------------------- */
 /* (main, before the game runs) */
 void test_fight_start(void) {
@@ -421,7 +455,7 @@ void test_fight_start(void) {
     if (fin && *fin && (final_first = strtoll(fin, NULL, 10)) > 0) {
         const char *comma = strchr(fin, ',');
         final_every = comma ? strtoll(comma + 1, NULL, 10) : 0;
-        fprintf(stderr, "[fight] SSBU_DEBUG_FINAL: each fighter's Final Smash at its fight frame %lld, then every %lld\n", final_first, final_every);
+        fprintf(stderr, "[fight] SSBU_DEBUG_FINAL: the fighters' Final Smashes in turn, the first at fight frame %lld, then one every %lld\n", final_first, final_every ? final_every : 600);
     } else final_first = 0;
     if (hash_on || det || final_first) {
         fprintf(stderr, "[fight] SSBU_FIGHT_HASH %s, SSBU_DETERMINISTIC %d (off mask %d): the fighters' frame line is watched\n",
@@ -430,6 +464,8 @@ void test_fight_start(void) {
     }
     if (det) frame_hook_add(FRAME_HOOK_END, FRAME_ORDER_FIGHT_TEST, NULL, frame_end_hook, NULL);
     frame_hook_add(FRAME_HOOK_END, FRAME_ORDER_FIGHT_TEST, NULL, fight_flag_hook, NULL);   /* (game_fight_on, always) */
+    frame_hook_add(FRAME_HOOK_RECORD, FRAME_ORDER_FIGHT_TEST + 50, NULL, shaders_record, NULL);   /* (the match's pipelines, always) */
+    frame_hook_add(FRAME_HOOK_END, FRAME_ORDER_FIGHT_TEST + 50, NULL, shaders_end, NULL);
     if (det && !(det_off & DET_OFF_STEPS)) input_seq_set_steps(seq_steps);
     if (fixed_seed_parse(getenv("SSBU_FIXED_SEED"), &n)) {
         fixed_on = 1;

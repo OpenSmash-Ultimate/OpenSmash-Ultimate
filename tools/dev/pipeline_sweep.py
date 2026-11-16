@@ -92,7 +92,7 @@ MOVES = """20:A/4 8:A/4 8:A/4
 40:UP/6 60:DOWN/6 60:LEFT/6 60:RIGHT/6
 30:SLEFT/40 10:SRIGHT/40
 """
-FINAL_AT = "600,900"   # SSBU_DEBUG_FINAL: each fighter's Final Smash at its fight frame 600, and every 900 after
+FINAL_AT = "600,900"   # SSBU_DEBUG_FINAL: the fighters' Final Smashes in turn, at fight frames 600, 1500, 2400, 3300
 
 WARM_HEAD = 32
 WARM_RECORD = 440
@@ -398,6 +398,191 @@ def cmd_count(a):
     print(f"{a.list}: {len(recs)} records ({kinds.get(1, 0)} pipelines, {kinds.get(2, 0)} compute programs), {len(progs)} programs")
 
 
+# ---- the groups: what each record is first needed for --------------------------------------------------
+GROUP_FIGHTER_OPP = "mario"   # (the other fighter of every fighter's and stage's run, and the base run's two)
+GROUP_STAGE = "end"           # (the stage of every fighter's run, and the base run's)
+
+
+def record_sums(path, boundary=None):
+    """The checksums of a per-device list's records (all, or those listed before `boundary` / from it on)."""
+    _h, recs = read_warm(path)
+    sums = [struct.unpack_from("<I", r, 4)[0] for r in recs]
+    if boundary is None:
+        return set(sums), set()
+    return set(sums[:boundary]), set(sums[boundary:])
+
+
+def groups_runs():
+    """(name, debug match or None for the menus, frames, items): the base run, the menus, a run for each fighter
+    (player 1 the fighter, the other Mario, on Final Destination) and for each stage (Mario against Mario)."""
+    o = GROUP_FIGHTER_OPP
+    runs = [("base", f"p1={o},p2={o},p2=cpu,cpu=9,stage={GROUP_STAGE},form=normal,stock=99,items=off,hazards=on", 900),
+            ("items", f"p1={o},p2={o},p2=cpu,cpu=9,stage={GROUP_STAGE},form=normal,stock=99,items=on,hazards=on", 2400),
+            ("menus", None, 0)]
+    runs += [(f"f_{f}", f"p1={f},p2={o},p2=cpu,cpu=9,stage={GROUP_STAGE},form=normal,stock=99,items=off,hazards=on", 1500) for f in FIGHTERS]
+    runs += [(f"s_{s}", f"p1={o},p2={o},p2=cpu,cpu=9,stage={s},form=normal,stock=99,items=off,hazards=on", 900) for s in STAGES]
+    # the fighter played by a CPU player too (its moves as the CPU uses them), the stages' Battlefield and Omega forms
+    # (the same stage's group: the record has the stage, the form apart), and more items on other stages
+    runs += [(f"fc_{f}", f"p1={f},p2={f},p2=cpu,cpu=9,stage={GROUP_STAGE},form=normal,stock=99,items=off,hazards=on", 1500) for f in FIGHTERS]
+    runs += [(f"s_{s}_{form[:2]}", f"p1={o},p2={o},p2=cpu,cpu=9,stage={s},form={form},stock=99,items=off,hazards=on", 300)
+             for form in ("battlefield", "omega") for s in STAGES if not s.startswith("battle_field") and s != "end"]
+    runs += [(f"items_{s}", f"p1={o},p2={o},p2=cpu,cpu=9,p3={o},p4={o},stage={s},form=normal,stock=99,items=on,hazards=on", 3000)
+             for s in ("battle_field", "fox_lylatcruise", "poke_kalos", "mario_galaxy")]
+    return runs
+
+
+def cmd_groups(a):
+    """Plays the group runs (each from an empty per-device list, in a shader cache of its own per job) and writes
+    media/vulkan_pipelines.groups (gpu_vk.c, "the warm start's groups"): boot - what the menus and every run before
+    its fight drew; common - what the base run's fight drew (Mario, Final Destination, the fight's interface), the
+    items run's, and what more than one fighter's or stage's run drew; fighter/stage <hash40> - what that run alone
+    drew. The hash40s are the ones the game's records hold (read from the runs' logs)."""
+    import re
+    exe, tree = os.path.abspath(a.exe), os.path.abspath(a.tree)
+    work = os.path.abspath(a.work)
+    os.makedirs(work, exist_ok=True)
+    base = os.path.join(work, "spv")
+    if not os.path.isdir(base):
+        names = [os.path.basename(f) for f in glob.glob(os.path.join(tree, "dump", "shadercache", "g*.*_*.spv"))]
+        newest = max((n.split("_")[0] for n in names), default=None, key=lambda v: tuple(int(x, 16) for x in v[1:].split(".")))
+        copy_files(os.path.join(tree, "dump", "shadercache"), base, f"{newest}_*.spv" if newest else "none")
+    caches = []
+    for j in range(a.jobs):
+        c = os.path.join(work, f"cache{j}")
+        if not os.path.isdir(c):
+            copy_files(base, c, "*.spv")
+        caches.append(c)
+    blocker = os.path.join(os.path.dirname(exe), "vulkan_pipelines.warm")
+    made_blocker = not os.path.exists(blocker)
+    if made_blocker:
+        open(blocker, "wb").write(b"NOT-READ")
+    dst, bak = swap_save(tree, os.path.abspath(a.save or os.path.join(tree, "..", "userdata_completo", "save", "save_data")))
+    runs = groups_runs()
+    if a.only:
+        runs = runs[:a.only]
+    out = {}
+    try:
+        import threading
+        lock = threading.Lock()
+        queue = [r for r in runs if a.redo or not os.path.exists(os.path.join(work, r[0] + ".warm"))]
+
+        def worker(slot):
+            while True:
+                with lock:
+                    if not queue:
+                        return
+                    name, dm, frames = queue.pop(0)
+                cache = caches[slot]
+                for w in glob.glob(os.path.join(cache, "vulkan_*.warm*")):
+                    os.remove(w)
+                log = os.path.join(work, f"{name}.log")
+                if dm is None:
+                    env, end = menus_env(cache), None
+                else:
+                    env = {"SSBU_HEADLESS": "1", "SSBU_VOLUME": "0", "SSBU_SPEED": "0", "SSBU_SKIP_MOVIES": "1",
+                           "SSBU_RENDERER": "vulkan", "SSBU_SHADER_CACHE": cache, "SSBU_SEQ": MENUS + MOVES * (frames // 900 + 1),
+                           "SSBU_DEBUG_MATCH": dm, "SSBU_DEBUG_END": str(frames), "SSBU_DEBUG_FINAL": "600", "SSBU_VK_MAKE_LOG": "0"}
+                    end = "fight frames at frame"
+                ok, secs = run_one(exe, tree, env, log, a.seconds if dm else 240, end_line=end)
+                lists = glob.glob(os.path.join(cache, "vulkan_*.warm"))
+                if lists:
+                    shutil.copy2(lists[0], os.path.join(work, name + ".warm"))
+                with lock:
+                    print(f"{name} {'ok' if ok else 'NOT FINISHED'} {secs:.0f}s", flush=True)
+
+        threads = [threading.Thread(target=worker, args=(s,)) for s in range(a.jobs)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        restore_save(dst, bak)
+        if made_blocker:
+            os.remove(blocker)
+    groups_write(work, runs, a.into or REPO)
+
+
+def groups_write(work, runs, into):
+    import re
+    boot, common, per = set(), set(), {}
+    for name, dm, _frames in runs:
+        lst, log = os.path.join(work, name + ".warm"), os.path.join(work, name + ".log")
+        if not os.path.exists(lst) or not os.path.exists(log):
+            print(f"{name}: no list or log: left out")
+            continue
+        text = open(log, "rb").read().decode("utf-8", "replace")
+        m = re.search(r"warm list: (\d+) records listed (?:at the fight's start|as the match was set up)", text)
+        if dm is None:
+            boot |= record_sums(lst)[0]
+            continue
+        if not m or "fight frames at frame" not in text:
+            print(f"{name}: its fight did not finish: left out")
+            continue
+        before, after = record_sums(lst, int(m.group(1)))
+        # (boot: the menus run's and what the base run drew before its match - the title, the menus, the select
+        # screens; another run's draws before its fight are its stage's or fighter's loading and entrance)
+        if name == "base":
+            boot |= before
+        else:
+            after |= before
+        if name == "base" or name.startswith("items"):
+            common |= after
+            continue
+        if name.startswith(("f_", "fc_")):
+            k = re.search(r"debug match: player 0: .*record: ui_chara ([0-9a-f]+)", text)
+        else:
+            k = re.search(r"fight 1 on .*ui_stage ([0-9a-f]+)", text)
+        if not k:
+            print(f"{name}: no hash40 in its log: left out")
+            continue
+        per.setdefault((name[0], int(k.group(1), 16) & 0xFFFFFFFFFF), set()).update(after)
+    common -= boot
+    for key in per:
+        per[key] -= boot
+    seen = {}
+    for key, s in per.items():
+        for x in s - boot - common:
+            seen[x] = seen.get(x, 0) + 1
+    common |= {x for x, n in seen.items() if n > 1}   # (drawn by two fighters' or stages' runs: any fight's)
+    path = os.path.join(into, "media", "vulkan_pipelines.groups")
+    _h, ship = read_warm(os.path.join(into, "media", "vulkan_pipelines.warm"))
+    shipped = {struct.unpack_from("<I", r, 4)[0] for r in ship}
+
+    def lines(tag, sums):
+        sums = sorted(sums)
+        return [tag + " " + " ".join(f"{x:x}" for x in sums[i:i + 16]) for i in range(0, len(sums), 16)] or [tag]
+    body = ["# The Vulkan warm start's groups (runtime/gpu_vk.c, \"the warm start's groups\"): what each record of",
+            "# vulkan_pipelines.warm is first needed for, by its checksum. Written by tools/dev/pipeline_sweep.py groups."]
+    body += lines("boot", boot) + lines("common", common)
+    counts = {"boot": len(boot & shipped), "common": len(common & shipped)}
+    for (kind, key), s in sorted(per.items()):
+        own = s - boot - common
+        body += [f"{'fighter' if kind == 'f' else 'stage'} {key:010x} " + " ".join(f"{x:x}" for x in sorted(own)[i:i + 16])
+                 for i in range(0, len(own), 16)] or [f"{'fighter' if kind == 'f' else 'stage'} {key:010x}"]
+        counts[kind] = counts.get(kind, 0) + len(own & shipped)
+    grouped = boot | common | {x for s in per.values() for x in s}
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(body) + "\n")
+    # Direct3D 11's prewarm: the programs of the boot records (the menus, the select screens), made before the played ones
+    # (gpu_d3d11.c; not common's too: those would take most of its memory budget)
+    recs = {struct.unpack_from("<I", r, 4)[0]: r for r in ship}
+    for name, _dm, _frames in runs:
+        for r in read_warm(os.path.join(work, name + ".warm"))[1]:
+            recs.setdefault(struct.unpack_from("<I", r, 4)[0], r)
+    first = []
+    for x in sorted(boot):
+        for k in record_programs(recs[x]) if x in recs else []:
+            if k not in first and not k.startswith("cs_"):
+                first.append(k)
+    first_path = os.path.join(into, "media", "shader_prewarm_first.txt")
+    with open(first_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write("# The programs the title, the menus and the select screens draw: Direct3D 11's prewarm makes them\n"
+                "# first (runtime/gpu_d3d11.c). Written by tools/dev/pipeline_sweep.py groups.\n" + "\n".join(first) + "\n")
+    print(f"{first_path}: {len(first)} programs")
+    print(f"{path}: of {len(shipped)} shipped records: boot {counts['boot']}, common {counts['common']}, fighters' {counts.get('f', 0)}, "
+          f"stages' {counts.get('s', 0)}, in no group {len(shipped - grouped)}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -420,10 +605,24 @@ def main():
     m = sub.add_parser("merge")
     m.add_argument("--work", default=os.path.join(REPO, "build", "pipeline_sweep"))
     m.add_argument("--into")
+    g = sub.add_parser("groups", help="play the group runs and write media/vulkan_pipelines.groups")
+    g.add_argument("--exe", required=True)
+    g.add_argument("--tree", default=os.path.join(REPO, "..", "OpenSmash-Ultimate"))
+    g.add_argument("--work", default=os.path.join(REPO, "build", "pipeline_groups"))
+    g.add_argument("--save")
+    g.add_argument("--jobs", type=int, default=3)
+    g.add_argument("--seconds", type=int, default=300)
+    g.add_argument("--only", type=int, default=0)
+    g.add_argument("--redo", action="store_true", help="play the runs whose lists the work folder has already, too")
+    g.add_argument("--write-only", action="store_true", help="only write the file from the work folder's runs")
+    g.add_argument("--into")
     c = sub.add_parser("count")
     c.add_argument("list")
     a = ap.parse_args()
-    {"run": cmd_run, "merge": cmd_merge, "count": cmd_count}[a.cmd](a)
+    if a.cmd == "groups" and a.write_only:
+        groups_write(os.path.abspath(a.work), groups_runs(), a.into or REPO)
+        return
+    {"run": cmd_run, "merge": cmd_merge, "count": cmd_count, "groups": cmd_groups}[a.cmd](a)
 
 
 if __name__ == "__main__":
