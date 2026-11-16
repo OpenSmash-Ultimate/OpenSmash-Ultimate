@@ -98,3 +98,9 @@ tools/modmanager/installed.json
 /tests/launcher_yuzu_ui/obj/
 /tests/launcher_settings/bin/
 /tests/launcher_settings/obj/
+
+# OpenSmash.Core and its checks (dotnet)
+OpenSmash.Core/bin/
+OpenSmash.Core/obj/
+tests/core/bin/
+tests/core/obj/

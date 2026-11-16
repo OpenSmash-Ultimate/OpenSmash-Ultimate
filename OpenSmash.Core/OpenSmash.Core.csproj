@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- OpenSmash.Core: the launcher's logic without a window (release channel and updates, Arena accounts and lobby tickets,
+       crash reports). No WinForms, no Avalonia: the Windows launcher uses it today and a cross-platform launcher (#345) can
+       use it as it is. Windows-only parts (DPAPI) are chosen at run time. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>OpenSmash.Core</RootNamespace>
+    <AssemblyName>OpenSmash.Core</AssemblyName>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- the accounts service (Supabase URL and its publishable key): empty in the repository, filled by the release
+         workflow from the repository's variables (tools/release/make_release.py); OPENSMASH_SUPABASE_URL/_KEY or
+         config/account_service.json override it -->
+    <EmbeddedResource Include="account_service.json" LogicalName="OpenSmash.Core.account_service.json" />
+  </ItemGroup>
+</Project>
