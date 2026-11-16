@@ -308,6 +308,10 @@ static void start(void) {
     InitializeConditionVariable(&queue.queued);
     queue.buffer_event = kernel_create_event();
     queue.vsync_event = kernel_create_event();
+    {   /* (the rollback bench's ticks end at the guest main thread's waits on these: kernel.c kernel_pace_hook) */
+        void kernel_pace_object(u32 handle);
+        kernel_pace_object(queue.buffer_event); kernel_pace_object(queue.vsync_event);
+    }
     double speed = display_speed();
     speed_mode = speed != 1;
     report_draws = input_seq_on();
