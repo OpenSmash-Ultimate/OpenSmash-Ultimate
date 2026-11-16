@@ -944,22 +944,25 @@ static int vblank_tick(void) {
 #endif
 
 static volatile LONG64 tick_stretch_us;   /* (display_tick_stretch: owed to the clock's schedule, us) */
-extern volatile LONG rb_vsync_skip;      /* (ipc_vi.c: refreshes the vsync thread leaves out) */
 static double tick_owed;   /* (display pacing: what is owed short of one of the monitor's refreshes, ms; the main thread's) */
-void display_tick_stretch(double ms) {
+/* Returns 1 when a whole 60 Hz refresh is owed on a 60 Hz monitor held to it: the caller leaves one out (ipc_vi.c's
+ * rb_vsync_skip, which this file does not link against). */
+int display_tick_stretch(double ms) {
     load();
-    if (ms <= 0) return;
+    if (ms <= 0) return 0;
     int hz = (int)vblank_hz;   /* (0: the clock paces the ticks - clock or vrr, or display pacing fallen back to it) */
     if (cfg.pacing == PACING_DISPLAY && hz) {   /* (held to the monitor: whole refreshes, the monitor's own where it is faster than 60 Hz) */
         double step = hz >= 118 ? 1000.0 / hz : 1000.0 / 60;
         tick_owed += ms;
         if (tick_owed >= step) {
             tick_owed -= step;
-            if (hz >= 118) InterlockedIncrement(&vblank_extra); else InterlockedIncrement(&rb_vsync_skip);
+            if (hz < 118) return 1;
+            InterlockedIncrement(&vblank_extra);
         }
-        return;
+        return 0;
     }
     InterlockedExchangeAdd64(&tick_stretch_us, (LONG64)(ms * 1000));
+    return 0;
 }
 void display_tick_stretch_reset(void) {   /* (a fight starts: nothing owed from the last one) */
     tick_owed = 0;

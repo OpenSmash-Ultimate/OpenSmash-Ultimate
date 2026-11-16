@@ -1000,7 +1000,7 @@ static u32 *net_peer_check[RBN_PLAYERS];   /* by frame - net_key0: each player's
 static long long net_checks, net_desyncs, net_msgs_in, net_msgs_out, net_sync_waits;
 static int net_ts_frames = -1;      /* (SSBU_RB_TS=frames: the time sync leaves whole refreshes out, as before 2026-11-16) */
 static long long net_ts_n; static double net_ts_ms;   /* (frames the time sync slowed, and by how much in all) */
-void display_tick_stretch(double ms);   /* (gpu_display.c) */
+int display_tick_stretch(double ms);   /* (gpu_display.c) */
 void display_tick_stretch_reset(void);
 static long long net_first_desync = -1;
 static long long net_link_base[3];   /* (the link's counts at the fight's start: the report is per fight) */
@@ -1853,7 +1853,7 @@ static void net_step(Cpu *c, u64 frame) {
             }
         } else {
             double ex = rbn_sync_extra_ms(key + 1, 1000.0 / 60);
-            if (ex > 0) { net_ts_n++; net_ts_ms += ex; display_tick_stretch(ex); }
+            if (ex > 0) { net_ts_n++; net_ts_ms += ex; if (display_tick_stretch(ex)) InterlockedIncrement(&rb_vsync_skip); }
         }
         if (S.frames % 60 == 0) {
             fprintf(stderr, "[rb] net sync, fight frame %lld (logic %u): frame advantage ours %d, the peer's %d; %lld holds (%lld refreshes left out), "
