@@ -756,6 +756,11 @@ static BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *c) {
                 name, ad.VendorId, (unsigned)(umd.HighPart >> 16), (unsigned)(umd.HighPart & 0xFFFF), (unsigned)((u32)umd.LowPart >> 16),
                 (unsigned)(umd.LowPart & 0xFFFF), fl >> 12 & 15, fl >> 8 & 15, th.DriverConcurrentCreates ? "yes" : "no",
                 th.DriverCommandLists ? "yes" : "no");
+        /* (Intel's Direct3D 11 driver draws the main menu's panels, tiles and art black - only the labels show - and the
+         * fight with red light and stretched shapes; its Vulkan driver draws both right: renderer = auto picks Vulkan there) */
+        if (ad.VendorId == 0x8086)
+            fprintf(stderr, "[gfx] WARNING: Direct3D 11 on Intel graphics: this driver draws the menus' backgrounds and the stages black or "
+                            "wrong (#333, #81); Vulkan draws them right - Settings > Display > Renderer: auto or vulkan, then restart\n");
     }
 #else
     {   /* (DXVK: which Vulkan device it chose) */
