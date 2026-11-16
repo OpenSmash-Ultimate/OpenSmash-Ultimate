@@ -332,10 +332,10 @@ namespace OpenSmash.Launcher
             SectionLabel(g, "WHAT HAPPENS", left, y + h + 18 * s);
             using (var f = Theme.Body(12.5f * s))
                 Theme.DrawWrapped(g,
-                    "1.  OpenSmash's files come from GitHub (the newest version of the main branch, about 20 MB).\n" +
-                    "2.  OpenSmash.exe is copied into the folder and the shortcuts are made.\n" +
-                    "3.  The launcher opens there and asks for your game files, keys and firmware, then builds the game (30 minutes to a few hours).\n\n" +
-                    "Nothing outside the folder is changed, apart from the shortcuts.",
+                    UiLocale.Text("1.  OpenSmash's files come from GitHub (the newest version of the main branch, about 20 MB).\n") +
+                    UiLocale.Text("2.  OpenSmash.exe is copied into the folder and the shortcuts are made.\n") +
+                    UiLocale.Text("3.  The launcher opens there and asks for your game files, keys and firmware, then builds the game (30 minutes to a few hours).\n\n") +
+                    UiLocale.Text("Nothing outside the folder is changed, apart from the shortcuts."),
                     f, Theme.Muted, left + 4 * s, y + h + 42 * s, leftW - 8 * s, 150 * s);
 
             SectionLabel(g, "OPTIONS", rx, 138 * s);
@@ -372,8 +372,8 @@ namespace OpenSmash.Launcher
                 using (var b = new SolidBrush(failed ? Color.FromArgb(255, 150, 60, 60) : Theme.Accent))
                     g.FillPath(b, p);
             string line = _phase == "extract" ? $"Unpacking  —  {_done:N0} / {_total:N0} files"
-                : _total > 0 ? $"Downloading from GitHub  —  {_done / 1048576.0:N1} / {_total / 1048576.0:N1} MB"
-                : $"Downloading from GitHub  —  {_done / 1048576.0:N1} MB";
+                : _total > 0 ? UiLocale.Interpolate($"Downloading from GitHub  —  {_done / 1048576.0:N1} / {_total / 1048576.0:N1} MB")
+                : UiLocale.Interpolate($"Downloading from GitHub  —  {_done / 1048576.0:N1} MB");
             using (var f = Theme.Body(13.5f * s, true))
                 Theme.DrawText(g, line, f, failed ? Theme.Bad : Theme.Text, left, 222 * s, rw, 26 * s);
 

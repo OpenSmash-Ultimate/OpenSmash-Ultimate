@@ -975,6 +975,8 @@
 <script>
 "use strict";
 
+window.addEventListener("opensmashlocalechange", () => renderPager());
+
 /* ------------------------------------------------------------------ *
  * Bridge to the WinForms host (no-ops when opened in a plain browser)
  * ------------------------------------------------------------------ */
@@ -1863,7 +1865,9 @@ function renderPager() {
   const totalPages = Math.max(1, Math.ceil(state.total / Math.max(1, state.perPage)));
   el.pageInfo.textContent = state.loading
     ? "Loading…"
-    : "Page " + (state.page + 1) + " / " + totalPages + "  ·  " + formatNumber(state.total) + " mods";
+    : window.__opensmashFormat
+      ? window.__opensmashFormat("Page {0} / {1} · {2} mods", state.page + 1, totalPages, formatNumber(state.total))
+      : "Page " + (state.page + 1) + " / " + totalPages + "  ·  " + formatNumber(state.total) + " mods";
   el.prev.disabled = state.loading || state.page <= 0;
   el.next.disabled = state.loading || state.page >= totalPages - 1;
 }

@@ -42,6 +42,7 @@ namespace OpenSmash.Launcher
 
             // Resolve repo root (where the .exe lives, or the repo above its build output folder)
             string repo = ProjectSetup.ExeRoot(AppContext.BaseDirectory);
+            UiLocale.Initialize(repo);
 
             // Extract embedded resources (PowerShell scripts, icon) to a temp folder
             string workDir = Path.Combine(Path.GetTempPath(), "OpenSmash_" + Guid.NewGuid().ToString("N")[..8]);
@@ -57,6 +58,7 @@ namespace OpenSmash.Launcher
                 if (found == null)
                 {
                     using var first = new FirstRunForm(workDir, ProjectSetup.DefaultFolder(repo));
+                    UiLocale.Attach(first);
                     Application.Run(first);
                     if (first.Folder == "") return;
                     found = first.Folder;
@@ -76,14 +78,19 @@ namespace OpenSmash.Launcher
                 repo = found;
             }
 
+            UiLocale.Initialize(repo);
+
             // No build yet (or --installer): Install WindowSmash comes first.
             if (!WindowSmash.IsBuilt(repo) || args.Contains("--installer", StringComparer.OrdinalIgnoreCase))
             {
                 using var installer = new InstallerForm(workDir, repo);
+                UiLocale.Attach(installer);
                 Application.Run(installer);
                 if (!installer.Installed || !WindowSmash.IsBuilt(repo)) return;
             }
-            Application.Run(new LauncherForm(workDir, repo, WindowSmash.BuildDir(repo)));
+            using var launcher = new LauncherForm(workDir, repo, WindowSmash.BuildDir(repo));
+            UiLocale.Attach(launcher);
+            Application.Run(launcher);
         }
 
         // ---------------------------------------------------------------------------
@@ -100,7 +107,7 @@ namespace OpenSmash.Launcher
             foreach (string name in asm.GetManifestResourceNames())
             {
                 // The marketplace UI is read straight out of the assembly on demand.
-                if (name.EndsWith(".html", StringComparison.OrdinalIgnoreCase)) continue;
+                if (name.EndsWith(".html", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".js", StringComparison.OrdinalIgnoreCase) || name.StartsWith("Locales.", StringComparison.Ordinal)) continue;
 
                 // Resources carry their file name as the logical name; fall back to
                 // the last two dot-separated segments for the default naming scheme.
