@@ -70,7 +70,7 @@ static void presence(void) {
     CHECK(!strcmp(d, "In the menus") && !s[0], "menus: \"%s\" / \"%s\"", d, s);
     CHECK(!discord_join_secret(&p, secret, sizeof secret) && !secret[0], "menus: nothing to join");
     p.where = DP_QUICKPLAY; p.fighter = 0; p.gsp = 8120000; p.rank = 12; p.players = 2; p.max_players = 2; p.in_match = 1;
-    strcpy(p.relay, "smash.recomps.wtf:39421"); strcpy(p.code, "smash");
+    strcpy(p.relay, "opensmash-lobby.duckdns.org:39421"); strcpy(p.code, "smash");
     discord_presence_text(&p, d, sizeof d, s, sizeof s);
     CHECK(!strcmp(d, "Quickplay - Mario - GSP 8,120,000 - #12") && !strcmp(s, "In a match"), "quickplay: \"%s\" / \"%s\"", d, s);
     strcpy(p.target, "x");
@@ -79,16 +79,16 @@ static void presence(void) {
     strcpy(p.code, "abc"); strcpy(p.target, "K7Q2M");
     discord_presence_text(&p, d, sizeof d, s, sizeof s);
     CHECK(!strcmp(d, "Battle Arena - Olimar") && !strcmp(s, "Arena K7Q2M - 5 free"), "arena: \"%s\" / \"%s\"", d, s);
-    CHECK(discord_join_secret(&p, secret, sizeof secret) && !strcmp(secret, "os2|a|smash.recomps.wtf:39421|abc|K7Q2M"), "arena secret: %s", secret);
+    CHECK(discord_join_secret(&p, secret, sizeof secret) && !strcmp(secret, "os2|a|opensmash-lobby.duckdns.org:39421|abc|K7Q2M"), "arena secret: %s", secret);
     p.players = 8;
     CHECK(!discord_join_secret(&p, secret, sizeof secret), "a full arena cannot be joined");
     p.where = DP_ROOM; p.players = 2; p.fighter = 200; strcpy(p.code, "smash"); strcpy(p.target, "10.13.0.7");
     discord_presence_text(&p, d, sizeof d, s, sizeof s);
     CHECK(!strcmp(d, "Local Wireless room") && !strcmp(s, "Waiting in the room - 6 free"), "room, unknown fighter: \"%s\" / \"%s\"", d, s);
-    CHECK(discord_join_secret(&p, secret, sizeof secret) && !strcmp(secret, "os2|r|smash.recomps.wtf:39421|smash|10.13.0.7"), "room secret: %s", secret);
+    CHECK(discord_join_secret(&p, secret, sizeof secret) && !strcmp(secret, "os2|r|opensmash-lobby.duckdns.org:39421|smash|10.13.0.7"), "room secret: %s", secret);
     p.relay[0] = 0;
     CHECK(!discord_join_secret(&p, secret, sizeof secret), "no lobby (a private room's relay): nothing to join");
-    strcpy(p.relay, "smash.recomps.wtf:39421");
+    strcpy(p.relay, "opensmash-lobby.duckdns.org:39421");
     strcpy(p.target, "a|b");
     CHECK(!discord_join_secret(&p, secret, sizeof secret), "a target with the separator is refused");
     char tiny[8];
@@ -96,7 +96,7 @@ static void presence(void) {
     CHECK(!discord_join_secret(&p, tiny, sizeof tiny) && !tiny[0], "a secret that does not fit");
 
     DiscordJoin j;
-    CHECK(discord_join_parse("os2|a|smash.recomps.wtf:39421|abc|K7Q2M", &j) && j.where == DP_ARENA && !strcmp(j.relay, "smash.recomps.wtf:39421")
+    CHECK(discord_join_parse("os2|a|opensmash-lobby.duckdns.org:39421|abc|K7Q2M", &j) && j.where == DP_ARENA && !strcmp(j.relay, "opensmash-lobby.duckdns.org:39421")
           && !strcmp(j.code, "abc") && !strcmp(j.target, "K7Q2M"), "parse arena");
     CHECK(discord_join_parse("os2|r|1.2.3.4:39421||10.13.0.7", &j) && j.where == DP_ROOM && !j.code[0] && !strcmp(j.target, "10.13.0.7"), "parse room, no code");
     CHECK(!discord_join_parse("os2|q|h:1|abc|x", &j), "quickplay is not joinable");

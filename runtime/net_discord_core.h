@@ -71,6 +71,6 @@ typedef struct DiscordMe {
     char arena[16];
 } DiscordMe;
 int discord_me_parse(const char *json, DiscordMe *m);                     /* 1: read */
-/* The player's position in leaderboard.json (the site's, merged from every lobby: Denkishi/opensmash-site): the "rank"
+/* The player's position in leaderboard.json (the one public lobby's: tools/nex/board.py): the "rank"
  * of the entry of "players" whose "id" is the one given; 0: not there. A tolerant reader, not a JSON parser. */
 int discord_rank_in_leaderboard(const char *json, const char *player_id);

@@ -215,78 +215,22 @@ static u64 process_age_ms(void) { return rt_now_ns() / 1000000; }
  * the files the settings menu and the launcher write, where no SSBU_NET_* variable says them.
  * online_server.txt: "host:port [lobby code]" or "off"; online_name.txt: the name (one is picked
  * and kept there when it is missing); online_direct.txt: "off" for no direct connections. */
-/* online_server.txt "auto": the public lobby this PC reaches fastest (a TCP connect to each, timed; their game
- * servers answer TCP on the same port). Lobbies are separate until federation (TODO): players on different ones
- * don't see each other. "auto" is the default (owner 2026-11-10: a player in Italy on the North American lobby saw
- * 124-217 ms where the European one answers in 21), and the North American lobby's line without a code, the old
- * default every install wrote, means "auto" too; "na"/"eu" (or the full address with a code) pin one. */
-static const struct { const char *where, *host; } PUBLIC_LOBBIES[] = {
-    {"North America", "smash.recomps.wtf:39421"},
-    {"Europe", "opensmash-lobby.duckdns.org:39421"},
-};
-static double connect_ms(const char *hostport) {
-    char host[256], *colon;
-    snprintf(host, sizeof host, "%s", hostport);
-    if (!(colon = strrchr(host, ':'))) return -1;
-    *colon = 0;
-    struct addrinfo hints = {0}, *res = NULL;
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host, colon + 1, &hints, &res) || !res) return -1;
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    double ms = -1;
-    if (s != INVALID_SOCKET) {
-#ifdef _WIN32
-        u_long nb = 1;
-        ioctlsocket(s, FIONBIO, &nb);
-#else
-        fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
-#endif
-        LARGE_INTEGER f, t0, t1;
-        QueryPerformanceFrequency(&f);
-        QueryPerformanceCounter(&t0);
-        connect(s, res->ai_addr, (int)res->ai_addrlen);
-        fd_set w, e;
-        FD_ZERO(&w); FD_ZERO(&e); FD_SET(s, &w); FD_SET(s, &e);
-        struct timeval tv = {1, 500000};
-        int err = 0;
-        socklen_t el = sizeof err;   /* (a refused connect is writable too on Linux/macOS: its error says) */
-        if (select((int)s + 1, NULL, &w, &e, &tv) >= 1 && FD_ISSET(s, &w) && !FD_ISSET(s, &e)
-            && !getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&err, &el) && !err) {
-            QueryPerformanceCounter(&t1);
-            ms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
-        }
-        closesocket(s);
-    }
-    freeaddrinfo(res);
-    return ms;
-}
-static void nearest_lobby(char *out, size_t n) {
-#ifdef _WIN32
-    WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa);
-#endif
-    double best = -1;
-    char said[512] = "";
-    size_t l = 0;
-    for (size_t i = 0; i < sizeof PUBLIC_LOBBIES / sizeof *PUBLIC_LOBBIES; i++) {
-        double ms = connect_ms(PUBLIC_LOBBIES[i].host);
-        int w = ms >= 0 ? snprintf(said + l, sizeof said - l, "%s%s %.0f ms", l ? ", " : "", PUBLIC_LOBBIES[i].where, ms)
-                        : snprintf(said + l, sizeof said - l, "%s%s no answer", l ? ", " : "", PUBLIC_LOBBIES[i].where);
-        if (w > 0 && (size_t)w < sizeof said - l) l += (size_t)w;
-        if (ms >= 0 && (best < 0 || ms < best)) { best = ms; snprintf(out, n, "%s", PUBLIC_LOBBIES[i].host); }
-    }
-    if (best < 0) snprintf(out, n, "%s", PUBLIC_LOBBIES[0].host);
-    fprintf(stderr, "[net] the nearest public lobby: %s (%s)\n", out, said);
+/* online_server.txt "auto" (the default): the one public lobby, in Europe, which every player shares: matchmaking,
+ * the game server and every GSP result (owner 2026-11-16). Where two players have no direct path, Epic's relays
+ * (net_eos.c), near both of them, carry the match; the lobby's own relay is the last resort. The North American
+ * lobby is gone: "na", "eu" and its address (with or without a lobby code, which is kept) mean this one; any other
+ * server a player named is kept as it is. */
+#define PUBLIC_LOBBY "opensmash-lobby.duckdns.org:39421"
+static int means_public_lobby(const char *host) {
+    return !_stricmp(host, "auto") || !_stricmp(host, "na") || !_stricmp(host, "eu") || !_strnicmp(host, "smash.recomps.wtf:", 18) ||
+           !_stricmp(host, "smash.recomps.wtf");
 }
 
 static void configure_from_files(void) {
     char line[256], host[256] = "", code[NAME_LEN + 1] = "";
     if (settings_line_read(config_path(CONFIG_ONLINE_SERVER), line, sizeof line)) sscanf(line, "%255s %32s", host, code);
     if (!host[0] || !_stricmp(host, "off")) return;
-    if (!_stricmp(host, "auto") || (!code[0] && !_stricmp(host, PUBLIC_LOBBIES[0].host))) nearest_lobby(host, sizeof host);
-    else if (!_stricmp(host, "na")) snprintf(host, sizeof host, "%s", PUBLIC_LOBBIES[0].host);
-    else if (!_stricmp(host, "eu")) snprintf(host, sizeof host, "%s", PUBLIC_LOBBIES[1].host);
+    if (means_public_lobby(host)) snprintf(host, sizeof host, "%s", PUBLIC_LOBBY);
     snprintf(relay_text, sizeof relay_text, "%s", host);
     if (code[0] && !getenv("SSBU_NET_ROOM")) { snprintf(room, sizeof room, "%s", code); room_named = 1; }
     if (!getenv("SSBU_NET_NAME")) {
@@ -319,7 +263,7 @@ static void discord_join_at_start(void) {
     if (sscanf(text, "%3s %79s %32s %47s %lld", kind, relay, code, target, &at) != 5 || (strcmp(kind, "r") && strcmp(kind, "a"))) return;
     long long now = (long long)time(NULL);
     if (now < at || now - at > DISCORD_JOIN_FOR) return;
-    snprintf(relay_text, sizeof relay_text, "%s", relay);
+    snprintf(relay_text, sizeof relay_text, "%s", means_public_lobby(relay) ? PUBLIC_LOBBY : relay);   /* (an older friend's North American lobby) */
     if (strcmp(code, "-")) { snprintf(room, sizeof room, "%s", code); room_named = 1; }
     struct in_addr a;
     if (kind[0] == 'r' && inet_pton(AF_INET, target, &a) == 1) net_rooms_pick(ntohl(a.s_addr));
@@ -385,6 +329,9 @@ static void configure(void) {
         u64 age = process_age_ms(), at = (u64)(atof(v) * 1000);
         test_block_at = now_ms() + (at > age ? at - age : 0);
     }
+    /* SSBU_EOS_RELAY=force (tests): no direct path from the start, so the match goes through EOS (net_eos.c) or, with
+     * EOS off (SSBU_EOS=0, no SDK), through the lobby's relay */
+    if ((v = getenv("SSBU_EOS_RELAY")) && !_stricmp(v, "force")) test_block_at = 0;
     /* LAN discovery (below): SSBU_NET_LAN=0, no beacons when hosting; (tests) SSBU_NET_LAN_PORT, the beacons' port, and
      * SSBU_NET_LAN_TEST=1, beacons to 127.0.0.1 only (unicast, where multicast loopback is not to be counted on) */
     if ((v = getenv("SSBU_NET_LAN")) && !strcmp(v, "0")) lan_announce = 0;
@@ -393,10 +340,8 @@ static void configure(void) {
     if (hosting) snprintf(relay_text, sizeof relay_text, "127.0.0.1:%u", port);
     else if (r && *r) {
         /* (the macOS and Linux launchers pass online_server.txt's first word as SSBU_NET_RELAY: "auto", "na" and "eu"
-         * are the public lobbies there too - issue #259, they were taken as host names and nothing was joined) */
-        if (!_stricmp(r, "auto")) nearest_lobby(relay_text, sizeof relay_text);
-        else if (!_stricmp(r, "na")) snprintf(relay_text, sizeof relay_text, "%s", PUBLIC_LOBBIES[0].host);
-        else if (!_stricmp(r, "eu")) snprintf(relay_text, sizeof relay_text, "%s", PUBLIC_LOBBIES[1].host);
+         * are the public lobby there too - issue #259, they were taken as host names and nothing was joined) */
+        if (means_public_lobby(r)) snprintf(relay_text, sizeof relay_text, "%s", PUBLIC_LOBBY);
         else if (_stricmp(r, "off")) snprintf(relay_text, sizeof relay_text, "%s", r);
     }
     else if (settings_online()) configure_from_files();

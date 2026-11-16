@@ -1542,10 +1542,11 @@ namespace OpenSmash.Launcher
             string[] words = server.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
             string host = words.Length > 0 ? words[0] : "";
             _iniValues["code"] = words.Length > 1 ? words[1] : "";
-            const string Public = "smash.recomps.wtf:39421";
+            const string Public = "opensmash-lobby.duckdns.org:39421";   // (the one public lobby: runtime/net_relay.c)
             if (host == "" || host.Equals("off", StringComparison.OrdinalIgnoreCase)) _iniValues["lobby"] = "offline";
-            else if (host.Equals("auto", StringComparison.OrdinalIgnoreCase) || host.Equals("na", StringComparison.OrdinalIgnoreCase) || host.Equals("eu", StringComparison.OrdinalIgnoreCase)) _iniValues["lobby"] = "public";   // (auto: the nearest public lobby, the default)
-            else if (host.Equals(Public, StringComparison.OrdinalIgnoreCase)) _iniValues["lobby"] = _iniValues["code"] == "" ? "public" : "private";
+            else if (host.Equals("auto", StringComparison.OrdinalIgnoreCase) || host.Equals("na", StringComparison.OrdinalIgnoreCase) || host.Equals("eu", StringComparison.OrdinalIgnoreCase)) _iniValues["lobby"] = "public";   // (auto, the default)
+            else if (host.Equals(Public, StringComparison.OrdinalIgnoreCase) || host.StartsWith("smash.recomps.wtf", StringComparison.OrdinalIgnoreCase))   // (the North American lobby is gone: the public one)
+                _iniValues["lobby"] = _iniValues["code"] == "" ? "public" : "private";
             else { _iniValues["lobby"] = "custom"; _iniValues["server"] = host; }
             if (!_iniValues.ContainsKey("server")) _iniValues["server"] = "";
             string launcherIni = WindowSmash.ConfigFile(_repo, "launcher.ini");
@@ -1675,13 +1676,13 @@ namespace OpenSmash.Launcher
             bool serverReady = lobby != "private" || code != "";
             if (lobby == "custom" && host != "" && !System.Text.RegularExpressions.Regex.IsMatch(host, @"^\S+:\d+$"))
                 serverReady = false;
-            const string Public = "smash.recomps.wtf:39421";
+            const string Public = "opensmash-lobby.duckdns.org:39421";
             string server = lobby switch
             {
                 "offline" => "off",
                 "private" => Public + " " + code,
                 "custom" => (host == "" ? "127.0.0.1:39420" : host) + (code == "" ? "" : " " + code),
-                _ => "auto"   // (the nearest public lobby: Europe or North America, runtime/net_relay.c)
+                _ => "auto"   // (the one public lobby, in Europe: runtime/net_relay.c)
             };
             // Only what was changed here since the files were read: the game's own settings menu (Esc)
             // writes these files too, while this window waits hidden for the game to close - writing

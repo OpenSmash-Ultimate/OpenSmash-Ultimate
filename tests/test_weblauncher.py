@@ -49,7 +49,7 @@ class Settings(unittest.TestCase):
         with open(os.path.join(self.root, "display.ini"), "w") as f:
             f.write("; the game's\nwindow = fullscreen   ; a comment\nwidth = 1920\nheight = 1080\nvolume=40\n")
         with open(os.path.join(self.root, "online_server.txt"), "w") as f:
-            f.write("# the lobby\nsmash.recomps.wtf:39421 friends\n")
+            f.write("# the lobby\nopensmash-lobby.duckdns.org:39421 friends\n")
         with open(os.path.join(self.root, "online_name.txt"), "w") as f:
             f.write("Mario\n")
         s = launcher.read_settings(self.root)
@@ -61,9 +61,17 @@ class Settings(unittest.TestCase):
             f.write("auto\n")
         self.assertEqual(launcher.read_settings(self.root)["lobby"], "public")
 
+    def test_the_north_american_lobby_is_the_public_one(self):
+        for line, want in (("smash.recomps.wtf:39421\n", ("public", "")), ("smash.recomps.wtf:39421 abc\n", ("private", "abc")),
+                           ("na\n", ("public", "")), ("smash.example:39421 abc\n", ("custom", "abc"))):
+            with open(os.path.join(self.root, "online_server.txt"), "w") as f:
+                f.write(line)
+            s = launcher.read_settings(self.root)
+            self.assertEqual((s["lobby"], s["code"]), want, line)
+
     def test_write_each_lobby(self):
         for lobby, extra, line in (("public", {}, "auto"), ("offline", {}, "off"),
-                                   ("private", {"code": "abc"}, "smash.recomps.wtf:39421 abc"),
+                                   ("private", {"code": "abc"}, "opensmash-lobby.duckdns.org:39421 abc"),
                                    ("custom", {"server": "10.0.0.2:39420", "code": ""}, "10.0.0.2:39420"),
                                    ("custom", {"server": "", "code": "x"}, "127.0.0.1:39420 x")):
             launcher.write_settings(self.root, {"lobby": lobby, **extra})

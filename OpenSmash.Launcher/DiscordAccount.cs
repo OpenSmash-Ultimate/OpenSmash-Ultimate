@@ -21,7 +21,7 @@ namespace OpenSmash.Launcher
     // which this listens on for the one request.
     // Also what the account card shows: the player's GSP per fighter, kept by the lobbies' own game server
     // (GET /gsp/me, tools/nex/board.py, signed with this install's NSA id from netplay_id.txt), and their global position
-    // (the site's leaderboard.json, made from every lobby's). A player may show their Discord name on the leaderboard
+    // (the one public lobby's leaderboard.json: every GSP result goes through its game server). A player may show their Discord name on the leaderboard
     // (POST /gsp/profile; config\discord_leaderboard.txt remembers the choice).
     public sealed class DiscordToken
     {
@@ -76,8 +76,8 @@ namespace OpenSmash.Launcher
     {
         public const string Redirect = "http://127.0.0.1/callback";
         const string Api = "https://discord.com/api";
-        public const string LeaderboardUrl = "https://denkishi.github.io/opensmash-site/leaderboard.json";
-        public static readonly string[] PublicLobbies = { "smash.recomps.wtf:39421", "opensmash-lobby.duckdns.org:39421" };
+        public const string LeaderboardUrl = "http://opensmash-lobby.duckdns.org:39421/leaderboard.json";
+        public static readonly string[] PublicLobbies = { "opensmash-lobby.duckdns.org:39421" };   // (the one public lobby; the North American one is gone)
         static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
 
         public static string TokenPath(string repo) => Path.Combine(repo, "config", "discord_token.txt");
@@ -305,7 +305,7 @@ namespace OpenSmash.Launcher
             }
             catch (IOException) { }
             string host = server.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
-            if (host != "" && !new[] { "auto", "na", "eu", "off", "lan" }.Contains(host.ToLowerInvariant()))
+            if (host != "" && !new[] { "auto", "na", "eu", "off", "lan" }.Contains(host.ToLowerInvariant()) && !host.StartsWith("smash.recomps.wtf", StringComparison.OrdinalIgnoreCase))
             {
                 if (!host.Contains(':')) host += ":39420";
                 if (!list.Contains(host, StringComparer.OrdinalIgnoreCase)) list.Add(host);

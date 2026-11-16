@@ -40,20 +40,24 @@ typedef struct Case {
 } Case;
 
 static const Case CASES[] = {
-    {"public lobby from the file", "# the lobby\nna\n", NULL, "--online", "smash.recomps.wtf:39421", "smash"},   /* (na pins North America: its address alone now means auto, which needs the network) */
-    {"eu pins Europe", "eu\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
-    {"lobby code from the file", "smash.recomps.wtf:39421 OurCode\n", NULL, "--online", "smash.recomps.wtf:39421", "OurCode"},
+    {"auto in the file: the one public lobby (Europe)", "# the lobby\nauto\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
+    {"na: the North American lobby is gone, the European one", "na\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
+    {"eu", "eu\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
+    {"the North American address alone: the European lobby", "smash.recomps.wtf:39421\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
+    {"the North American address with a code: the European lobby, the code kept", "smash.recomps.wtf:39421 OurCode\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "OurCode"},
+    {"lobby code from the file", "opensmash-lobby.duckdns.org:39421 OurCode\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "OurCode"},
+    {"a server of the player's own is kept", "smash.example:39421 friends\n", NULL, "--online", "smash.example:39421", "friends"},
     {"offline in the file", "off\n", NULL, "--online", NULL, "smash"},
     {"no file", NULL, NULL, "--online", NULL, "smash"},
-    {"no --online: the file is not read", "smash.recomps.wtf:39421\n", NULL, "", NULL, "smash"},
-    {"SSBU_NET_RELAY=na (the macOS / Linux launchers pass the file's word, #259)", "na\n", "SSBU_NET_RELAY=na", "--online", "smash.recomps.wtf:39421", "smash"},
-    {"SSBU_NET_RELAY=eu", "eu\n", "SSBU_NET_RELAY=eu", "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
-    {"SSBU_NET_RELAY wins", "smash.recomps.wtf:39421\n", "SSBU_NET_RELAY=127.0.0.1:39420", "--online", "127.0.0.1:39420", "smash"},
-    {"SSBU_NET_RELAY=off wins", "smash.recomps.wtf:39421\n", "SSBU_NET_RELAY=off", "--online", NULL, "smash"},
-    {"hosting a private room: no lobby", "smash.recomps.wtf:39421\n", "SSBU_NET_HOST=1", "--online", NULL, "smash"},
+    {"no --online: the file is not read", "auto\n", NULL, "", NULL, "smash"},
+    {"SSBU_NET_RELAY=na (the macOS / Linux launchers pass the file's word, #259)", "na\n", "SSBU_NET_RELAY=na", "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
+    {"SSBU_NET_RELAY=auto", "auto\n", "SSBU_NET_RELAY=auto", "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
+    {"SSBU_NET_RELAY wins", "auto\n", "SSBU_NET_RELAY=127.0.0.1:39420", "--online", "127.0.0.1:39420", "smash"},
+    {"SSBU_NET_RELAY=off wins", "auto\n", "SSBU_NET_RELAY=off", "--online", NULL, "smash"},
+    {"hosting a private room: no lobby", "auto\n", "SSBU_NET_HOST=1", "--online", NULL, "smash"},
     {"lan in the file: a private room found on this network, no lobby", "lan\n", NULL, "--online", NULL, "smash"},
     {"lan and a room code in the file", "lan ourroom\n", NULL, "--online", NULL, "ourroom"},
-    {"SSBU_NET_RELAY=lan", "smash.recomps.wtf:39421\n", "SSBU_NET_RELAY=lan", "--online", NULL, "smash"},
+    {"SSBU_NET_RELAY=lan", "auto\n", "SSBU_NET_RELAY=lan", "--online", NULL, "smash"},
 };
 
 /* The child: reads the settings as the game does and writes what it found to result.txt. */
