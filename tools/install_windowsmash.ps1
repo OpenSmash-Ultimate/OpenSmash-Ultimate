@@ -1574,6 +1574,12 @@ function Step-Build {
     if ($Answers.Firmware) { $build += @('--firmware', $Answers.Firmware) } else { $build += '--no-firmware' }   # (none: the open fonts)
     if ($Jobs) { $build += @('--jobs', "$Jobs") }
     if ($SkipBuild) { $build += '--prepare-only' }
+    # (OpenSmash 0.6) an install of a release (the launcher names its tag in OPENSMASH_RELEASE_TAG): the game as a library
+    # of its own (ssbu_game.dll) and the release's prebuilt runtime in place of the one built here (tools/runtime_fetch.py),
+    # so a runtime fix of a later release needs no compile of the game
+    $releaseTag = [string]$env:OPENSMASH_RELEASE_TAG
+    $gameDll = $releaseTag -match '^v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$'
+    if ($gameDll) { $build += '--game-dll' }
     if ($DryRun) { Write-Would ('run: ' + ($Script:Python -join ' ') + ' ' + ($build -join ' ')); return $false }
     # (an update of the mod manager or other tools only: the game is as it was, no build - its own check)
     if (-not $Rebuild -and -not $SkipBuild -and (Test-Path (Join-Path $Root 'build\ssbu.exe')) -and
@@ -1594,6 +1600,11 @@ function Step-Build {
     else { Write-Info 'the program, fonts, data, DLC and fighters, then the build: 30 minutes to a few hours' }
     if ((Invoke-Python $build) -ne 0) { throw 'The build stopped (the message above says why). Fix that, then run OpenSmash.exe again: it carries on where it stopped.' }
     if ($SkipBuild) { return $false }
+    if ($gameDll -and (Test-Path (Join-Path $Root 'build\ssbu_game.dll'))) {
+        if ((Invoke-Python @((Join-Path $Root 'tools\runtime_fetch.py'), $releaseTag)) -ne 0) {
+            Write-Warn "the prebuilt runtime of $releaseTag could not be put in place (see above): the runtime built here stays"
+        }
+    }
     # the community's Skyline plugins that mods need (ARCropolis, Smashline 2, One Slot Effects, nro_hook),
     # from their own releases (tools\std_plugins.py checks each), then built into the game with the mods' own
     Write-Info 'the standard Skyline plugins: fetched from their releases and built in (tools\std_plugins.py, tools\skyline.py)'

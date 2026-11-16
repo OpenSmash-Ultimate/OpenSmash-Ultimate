@@ -13,6 +13,26 @@ namespace OpenSmash.Launcher
     {
         Release? _release;
         static string? s_updateCommit;   // (RunPowerShellUpdate: the release's commit for the installer, null on main)
+        static string? s_releaseTag;     // (...and its tag: the installer builds the game DLL and takes the release's runtime)
+
+        /// <summary>(Program, before the installer's first build) OPENSMASH_RELEASE_TAG for the installer when this copy's
+        /// sources are a release's (its commit): the game DLL and the release's prebuilt runtime</summary>
+        public static void NameReleaseForInstaller(string repo)
+        {
+            try
+            {
+                if (Updater.Off || Directory.Exists(Path.Combine(repo, ".git"))) return;
+                string channel = File.Exists(Path.Combine(repo, "config", "update_channel.txt")) ? Updater.Channel(repo) : "stable";
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                var r = Releases.LatestAsync(channel, cts.Token).GetAwaiter().GetResult();
+                if (r != null && r.Commit == Updater.InstalledCommit(repo))
+                {
+                    Environment.SetEnvironmentVariable("OPENSMASH_RELEASE_TAG", r.Tag);
+                    Updater.WriteLobby(r, repo);
+                }
+            }
+            catch { }
+        }
 
         string ChannelSetting()
         {

@@ -1027,13 +1027,14 @@ namespace OpenSmash.Launcher
             string beforeLauncherFingerprint = "";
             try
             {
-                s_updateCommit = null;
+                s_updateCommit = s_releaseTag = null;
                 if (ReleaseMode)   // (OpenSmash 0.6: the launcher first, by itself; then the sources to the release's commit)
                 {
                     if (_release == null) await CheckReleaseAsync();
                     if (await SelfUpdateLauncherAsync()) { _updateApplying = false; Close(); return; }
                     if (_release == null) throw new InvalidOperationException("No release to update to.");
                     s_updateCommit = _release.Commit;
+                    s_releaseTag = _release.Tag;
                 }
                 beforeCommit = await Task.Run(FindLocalCommit);
                 if (beforeCommit.Length == 0) throw new InvalidOperationException("This copy does not identify its source version.");
@@ -1156,6 +1157,7 @@ namespace OpenSmash.Launcher
             psi.ArgumentList.Add(script);
             psi.ArgumentList.Add(only);
             if (s_updateCommit != null) psi.Environment["OPENSMASH_UPDATE_COMMIT"] = s_updateCommit;   // (a release's commit: LauncherForm.Release.cs)
+            if (s_releaseTag != null) psi.Environment["OPENSMASH_RELEASE_TAG"] = s_releaseTag;          // (its game DLL + prebuilt runtime)
             using var p = Process.Start(psi) ?? throw new InvalidOperationException("Could not start PowerShell.");
             var output = new StringBuilder();
             void Take(string? line)

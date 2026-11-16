@@ -102,6 +102,7 @@ namespace OpenSmash.Launcher
             // No build yet (or --installer): Install WindowSmash comes first.
             if (!WindowSmash.IsBuilt(repo) || args.Contains("--installer", StringComparer.OrdinalIgnoreCase))
             {
+                LauncherForm.NameReleaseForInstaller(repo);   // (OpenSmash 0.6: a release's install takes its prebuilt runtime)
                 using var installer = new InstallerForm(workDir, repo);
                 UiLocale.Attach(installer);
                 Application.Run(installer);
