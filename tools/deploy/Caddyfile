@@ -12,6 +12,17 @@ opensmash-lobby.duckdns.org {
 		max_size 64KB
 	}
 
+	# CORS: any page may read these (the lobby itself already sends it on /status.json; header_down replaces
+	# whatever it sent, so the header never appears twice). Preflight answers here, without bothering the lobby.
+	@preflight method OPTIONS
+	handle @preflight {
+		header Access-Control-Allow-Origin "*"
+		header Access-Control-Allow-Methods "GET, POST, OPTIONS"
+		header Access-Control-Allow-Headers "Content-Type, Authorization"
+		header Access-Control-Max-Age "86400"
+		respond 204
+	}
+
 	@lobby path /status.json /leaderboard.json /gsp/*
 	handle @lobby {
 		reverse_proxy 127.0.0.1:39421 {
@@ -20,6 +31,9 @@ opensmash-lobby.duckdns.org {
 				dial_timeout 3s
 				response_header_timeout 10s
 			}
+			header_down Access-Control-Allow-Origin "*"
+			header_down Access-Control-Allow-Methods "GET, POST, OPTIONS"
+			header_down Access-Control-Allow-Headers "Content-Type, Authorization"
 			# Caddy adds X-Forwarded-For with the real client address by itself
 		}
 	}

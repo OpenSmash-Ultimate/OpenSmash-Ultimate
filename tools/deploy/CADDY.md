@@ -48,12 +48,13 @@ connections. `uninstall` stops Caddy and closes 80/443 again.
 ## Switching the site over
 
 Once the URL answers over HTTPS, the site (repository Denkishi/opensmash-site) can read the lobby directly: in
-`js/snapshot.js` try `https://opensmash-lobby.duckdns.org/<file>` before the `data` branch copy, and the Actions updater
-can be switched off. Until then the site keeps working through the branch copy.
+`js/snapshot.js` tries `https://opensmash-lobby.duckdns.org/status.json` first and falls back to the `data` branch
+copy (the Actions updater keeps running as that fallback and for `leaderboard.json`, which the site builds from several
+lobbies).
 
 ## Notes
 
-- The lobby already sends `Access-Control-Allow-Origin: *` on `/status.json`; Caddy does not add or change CORS headers.
+- CORS: Caddy answers preflight (OPTIONS) itself and sets `Access-Control-Allow-Origin: *` on the three paths, replacing the lobby's own header so it is never doubled.
 - The lobby sees every proxied request as coming from 127.0.0.1 (Caddy adds `X-Forwarded-For` with the real address, but
   the lobby does not read it). The ban list therefore does not apply to requests that come through HTTPS; the game's own
   TCP/UDP connections are unaffected.
