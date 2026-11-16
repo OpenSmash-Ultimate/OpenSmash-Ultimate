@@ -312,6 +312,32 @@ def read_layers(path):
     return size, [(at, src, off) for at, off, src, _ in struct.iter_unpack("<QQII", data[24:24 + count * 24])]
 
 
+def resolve_romfs_path(cfg, path):
+    if not os.path.isabs(path):
+        return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(cfg)), path))
+    # Only relocate legacy paths inside this build's dump/modules, never external dumps.
+    normalized = path.replace("\\", "/")
+    marker = "/dump/modules/"
+    if marker in normalized.lower():
+        tail = normalized[normalized.lower().rfind(marker) + len(marker):]
+        candidate = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(cfg)), tail))
+        if os.path.isfile(candidate):
+            return candidate
+    return path
+
+
+def portable_romfs_path(cfg, path):
+    path = os.path.abspath(path)
+    folder = os.path.dirname(os.path.abspath(cfg))
+    root = os.path.dirname(os.path.dirname(folder))
+    try:
+        if os.path.commonpath([root, path]) == root:
+            return os.path.relpath(path, folder)
+    except ValueError:
+        pass
+    return path
+
+
 class RomfsImage:
     """The game's RomFS image, from the romfs.cfg the runtime reads (runtime/hle_fs.c):
       plain:   "<file>\\n<byte offset>\\n" - the image in place inside one file (the base NCA)
@@ -323,6 +349,9 @@ class RomfsImage:
     def __init__(self, cfg):
         with open(cfg, encoding="utf-8-sig") as f:
             lines = [l.strip() for l in f.read().splitlines() if l.strip()]
+        indices = range(1, len(lines)) if lines[:1] == ["layered"] else range(min(1, len(lines)))
+        for i in indices:
+            lines[i] = resolve_romfs_path(cfg, lines[i])
         if lines and lines[0] == "layered":
             self.size, self.entries = read_layers(lines[1])
             self.at = [e[0] for e in self.entries]
@@ -573,7 +602,7 @@ def main():
         os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
         at = getattr(nca, "base", 0) + sec.start + sec.data_off   # (base: where the NCA starts in its package)
         with open(a.out, "w") as f:
-            f.write(f"{os.path.abspath(a.nca)}\n{at}\n")
+            f.write(f"{portable_romfs_path(a.out, a.nca)}\n{at}\n")
         print(f"wrote {a.out}: RomFS at byte {at:#x} of {a.nca}")
     elif a.cmd == "romfs-get":
         sec = nca.section(0)

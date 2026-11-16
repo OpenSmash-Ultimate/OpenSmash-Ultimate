@@ -81,7 +81,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from arc import Arc, data_arc_offset  # noqa: E402
 from game_version import needs  # noqa: E402
-from nca import LAYER_ZERO, Nca, RomfsImage, copy_out, nsp_ncas, pfs0_entries, read_layers, romfs_entries, write_layers  # noqa: E402
+from nca import portable_romfs_path, LAYER_ZERO, Nca, RomfsImage, copy_out, nsp_ncas, pfs0_entries, read_layers, romfs_entries, write_layers  # noqa: E402
 
 ZERO = "zero"        # a piece of zeros
 DUMP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dump")
@@ -957,7 +957,7 @@ def apply_romfs(patch, base_cfg, keydir, dump):
     write_layers(map_path, patch.l6size, layers)
     cfg = os.path.join(modules, "romfs.cfg")
     with open(cfg, "w", newline="\n") as f:
-        f.write(f"layered\n{map_path}\n{b.base_path}\n{bin_path}\n")
+        f.write("layered\n" + "".join(portable_romfs_path(cfg, p) + "\n" for p in (map_path, b.base_path, bin_path)))
     log(f"wrote {cfg}; verifying the result as the runtime will read it:")
     bad = check_result(patch, cfg, os.path.join(modules, "romfs.unverified.txt"))
     log(f"done in {time.time() - t0:.0f}s")

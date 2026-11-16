@@ -152,7 +152,12 @@ class ContainerTests(unittest.TestCase):
         r = subprocess.run([sys.executable, str(ROOT / 'tools/nca.py'), 'romfs-cfg', copy, '--keys', str(keys), '--out', str(cfg)],
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(cfg.read_text().split('\n')[:2], [os.path.abspath(copy), str(0xC00)])
+        self.assertEqual(cfg.read_text().splitlines()[:2], ['base.nca', str(0xC00)])
+        image = nca.RomfsImage(str(cfg))
+        try:
+            self.assertEqual(image.read(0, len(payload)), payload)
+        finally:
+            image.close()
 
 
 if __name__ == '__main__':

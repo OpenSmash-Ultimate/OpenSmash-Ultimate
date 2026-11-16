@@ -38,6 +38,8 @@ char rt_romfs_warning[320];   /* (host.c's, not linked here) */
 /* ---- what hle_fs.c needs from the rest of the runtime --------------------------------- */
 /* (hle_skyline.c and host.c: no Skyline plugins here, no exported symbols to hook) */
 void skyline_load_plugins(Cpu *c) { (void)c; }
+static int texture_snapshots;
+void mod_refresh_file_opened(const char *path) { (void)path; texture_snapshots++; }
 void native_mods_load(void) {}   /* (hle_native_mods.c: no mods here) */
 void select_screen_install(void) {}   /* (hle_select_screen.c: no game here) */
 int skyline_provides(const char *path) { (void)path; return 0; }
@@ -275,6 +277,15 @@ static void checks_all(DWORD live_pid) {
     snprintf(path, sizeof path, "%s/cache/c.bin", folder);
     CHECK(h_get(path) && is(h_get(path), "cached"), "the cache is written directly: %s", h_get(path) ? h_get(path) : "(none)");
     CHECK(commit("cache") == 0 && commit("nothing") == R_NOT_MOUNTED, "Commit of the cache, and of no mount");
+
+    CHECK(t_write("cache:/loaded.nutexb", 0, "pixels", 1, NULL) == 0, "texture fixture");
+    u64 texture = 0;
+    CHECK(t_open("cache:/loaded.nutexb", OPEN_READ, &texture) == 0 && texture_snapshots == 0, "opening a texture is not loading pixels");
+    char pixels[6]; Handle *texture_handle = get_handle(texture);
+    CHECK(read_at(texture_handle, 0, pixels, 2) == 2 && texture_snapshots == 0, "header probe must not allocate a snapshot");
+    CHECK(read_at(texture_handle, 4, pixels, 2) == 2 && texture_snapshots == 0, "footer probe must not allocate a snapshot");
+    CHECK(read_at(texture_handle, 0, pixels, 6) == 6 && texture_snapshots == 1, "full texture load must allocate its snapshot");
+    t_close(texture);
 
     /* the save: writes are the session's until Commit */
     h_put("a.bin", "AAAA-old"); h_put("b.bin", "BBBB-old"); h_put("d1\\c.bin", "CCCC-old"); h_put("d2\\e.bin", "EEEE-old");

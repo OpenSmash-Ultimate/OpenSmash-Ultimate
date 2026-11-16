@@ -91,7 +91,7 @@ if "extra_at" in open(_arc.__file__, encoding="utf-8").read() and hasattr(_arc, 
 else:   # (an arc.py from before the mods' fix - the file table's extra entries counted wrong: the
     # mod manager's own copy, which an installed mod manager brings without changing the build's)
     from modmanager.arc_mods import Arc, LOW40, hash40, romfs_entries, unzstd  # noqa: E402
-from nca import RomfsImage, read_layers, write_layers  # noqa: E402
+from nca import portable_romfs_path, resolve_romfs_path, RomfsImage, read_layers, write_layers  # noqa: E402
 import msbt  # noqa: E402
 import prc  # noqa: E402
 import csk  # noqa: E402
@@ -2459,8 +2459,8 @@ def sync_plugins(tree, log):
 
 def _apply(tree, image, lines, state, on, log):
     t0 = time.time()
-    size, entries = read_layers(lines[1])
-    sources = lines[2:]
+    size, entries = read_layers(resolve_romfs_path(tree.vanilla_cfg, lines[1]))
+    sources = [resolve_romfs_path(tree.vanilla_cfg, p) for p in lines[2:]]
     if len(sources) >= 8:
         raise Error("romfs.cfg already has 8 sources")
     rhdr = list(struct.unpack("<10Q", image.read(0, 0x50)))
@@ -2775,7 +2775,8 @@ def _apply(tree, image, lines, state, on, log):
     log("checking the modded files read back right")
     check(cfg_text, {k: v for k, v in chosen.items() if k not in patches}, skipped, added, tree)
     with open(tree.cfg + ".tmp", "w", encoding="utf-8") as f:
-        f.write(cfg_text)
+        paths = [map_path, *sources, overlay_path]
+        f.write("layered" + chr(10) + "".join(portable_romfs_path(tree.cfg, p) + chr(10) for p in paths))
     replace_file(tree.cfg + ".tmp", tree.cfg)
     written = disk_size(overlay_path)
     summary = {"mods": on, "files": changed, "added": added, "merged": merged, "skipped": skipped, "kept_shared": kept_shared,

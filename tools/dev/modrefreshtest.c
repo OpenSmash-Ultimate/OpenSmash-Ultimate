@@ -1,6 +1,13 @@
 /* Exercise the real frame handlers with a synthetic game/controller, without game files. */
 #include "../../runtime/hle_mod_refresh.c"
+static u32 material_memory_queries;
+static SIZE_T material_query(LPCVOID address, MEMORY_BASIC_INFORMATION *info, SIZE_T length) {
+    material_memory_queries++;
+    return VirtualQuery(address, info, length);
+}
+#define VirtualQuery material_query
 #include "../../runtime/hle_mod_material.c"
+#undef VirtualQuery
 
 static char test_build_id[] = "21450C647B8C5940ED5B68218EA128FD3C5D597D";
 const RtModule rt_module_main = {.base = 0x7100000000ull, .build_id = test_build_id};
@@ -28,13 +35,17 @@ u64 rt_symbol(const char *name) {
 }
 void rt_call(Cpu *c, u64 addr) {
     if (addr == rt_module_main.base + 0x38a9ca0) {
+        /* A guest setter may yield to a fiber that needs the material lock. */
+        char reason[128];
+        if (mod_material_result(requests[0].id, 0, reason, sizeof reason) != MOD_MATERIAL_PENDING) abort();
         u64 node = c->x[1] - 0x10, object = c->x[0];
-        if (mm_u32(G2H(c->x[2])) != 5 || mm_u32((u8 *)G2H(node) + 0x20) != 5) abort();
+        u32 type = mm_u32(G2H(c->x[2]));
+        if ((type != 5 && type != 11) || mm_u32((u8 *)G2H(node) + 0x20) != type) abort();
         u32 id = mm_u32((u8 *)G2H(node) + 0x18);
         u64 target = node + 0x28;
         if (c->x[3] == 1 && id == 160 && mm_u64((u8 *)G2H(object) + 0x48))
             target = mm_u64((u8 *)G2H(object) + 0x48) + 8;
-        if (!setter_drops) memcpy(G2H(target), (u8 *)G2H(c->x[2]) + 8, 16);
+        if (!setter_drops) memcpy(G2H(target), (u8 *)G2H(c->x[2]) + 8, type == 11 ? 32 : 16);
         u64 *dirty = (u64 *)((u8 *)G2H(object) + 0xd8 + (id / 64) * 8);
         *dirty |= 1ull << (id & 63); material_calls++;
     } else {
@@ -143,6 +154,20 @@ static int material_index_checks(void) {
 static int material_checks(const char *old_path, const char *new_path) {
     u32 old_size, new_size; u8 *old = read_all(old_path, &old_size, NULL), *next = read_all(new_path, &new_size, NULL);
     CHECK(old && next);
+    char folder[PATH_MAX_]; snprintf(folder, sizeof folder, "%s", old_path);
+    char *slash = strrchr(folder, '/'), *backslash = strrchr(folder, 92);
+    if (!slash || (backslash && backslash > slash)) slash = backslash;
+    CHECK(slash != NULL); *slash = 0;
+    snap_budget = (u64)old_size + new_size;
+    walk(folder, 0, 1);
+    CHECK(snap_count == 2 && snap_bytes == snap_budget);
+    walk(folder, 0, 0);
+    CHECK(snap_count == 2 && snap_over == 1);
+    for (int i = 0; i < snap_count; i++) {
+        CHECK(ext_is(snaps[i].path, "numatb"));
+        free(snaps[i].path); free(snaps[i].bytes); memset(&snaps[i], 0, sizeof snaps[i]);
+    }
+    snap_count = 0; snap_bytes = 0; snap_over = 0; snap_budget = 512ull << 20;
     arena = VirtualAlloc(G2H(0x6000000000ull), 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);   /* (macOS: guest memory is 1 TiB up) */
     CHECK(arena == G2H(0x6000000000ull));
     CHECK(material_index_checks() == 0);
@@ -224,6 +249,14 @@ static int material_checks(const char *old_path, const char *new_path) {
     setter_original = setter_stub;
     u64 reset = rt_module_main.base + 0x36a8574;
     CHECK(override_count == 4);
+    material_memory_queries = 0;
+    for (u32 i = 0; i < 10000; i++) {
+        reset_setter(0x6000000600ull, 160, untouched, reset);
+        reset_setter(0x6000000200ull, 162, untouched, reset);
+        reset_setter(0x6000000200ull, 160, untouched, reset);
+    }
+    CHECK(material_memory_queries == 0);
+    CHECK(!memcmp(setter_seen, expected, 16));
     reset_setter(0x6000000200ull, 160, untouched, reset); CHECK(!memcmp(setter_seen, expected, 16));
     reset_setter(0x6000000200ull, 160, animated, reset); CHECK(!memcmp(setter_seen, animated, 16));
     reset_setter(0x6000000200ull, 160, untouched, 0); CHECK(!memcmp(setter_seen, untouched, 16));
@@ -290,7 +323,112 @@ static int material_checks(const char *old_path, const char *new_path) {
     VirtualFree(arena, 0, MEM_RELEASE); arena = NULL; free(old); free(next);
     puts("PASS live material updates, render queue, invalidation, lifetime, dirty state and guest context"); return 0;
 }
+static void texture_fixture(u32 index, u32 id) {
+    u8 *node = arena + 0x1000 + 0x80 * index;
+    u32 type = 11;
+    memset(node, 0, 0x50);
+    memcpy(node + 0x18, &id, 4); memcpy(node + 0x20, &type, 4);
+    u64 vptr = rt_module_main.base + 0x52302c0;
+    u64 pointer = 0x6000004000ull + index * 0x100, control = pointer + 0x40, stamp = index + 1;
+    memcpy(node + 0x28, &vptr, 8); memcpy(node + 0x30, &pointer, 8);
+    memcpy(node + 0x38, &control, 8); memcpy(node + 0x40, &stamp, 8);
+    memcpy(G2H(control), &stamp, 8);
+}
+static int texture_reference_checks(const char *old_path, const char *new_path) {
+    u32 old_size, next_size;
+    u8 *old = read_all(old_path, &old_size, NULL), *next = read_all(new_path, &next_size, NULL);
+    CHECK(old && next);
+    arena = VirtualAlloc(G2H(0x6000000000ull), 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    CHECK(arena == G2H(0x6000000000ull));
+    material_fixture(0, "goku_test"); material_fixture(1, "donor");
+    texture_fixture(0, 92); texture_fixture(1, 96);
+    tracking_ready = 1; material_render_original = render_original;
+    remember_material(0x6000000200ull); remember_material(0x6000000400ull);
+    memset(&cpu, 0x35, sizeof cpu); cpu.sp = 0x6000008000ull; saved = cpu;
+    render_tick(0x6000000200ull); render_tick(0x6000000400ull);
+    ModMaterialFile file = {old, old_size}; u32 updated; u64 request; char reason[256];
+    CHECK(mod_material_refresh(&cpu, &file, 1, 0, next, next_size, &updated, &request, reason, sizeof reason));
+    CHECK(updated == 1 && pending_count == 1 && pending[0].source == 0x6000000400ull);
+    u8 baseline[40]; memcpy(baseline, arena + 0x1020, 40);
+    render_tick(0x6000000200ull);
+    CHECK(material_calls == 1 && !memcmp(arena + 0x1020, arena + 0x10a0, 40));
+    CHECK(mod_material_result(request, 1, reason, sizeof reason) == MOD_MATERIAL_APPLIED);
+    u8 descriptor[16] = {0}; u32 id = 92; memcpy(descriptor + 8, &id, 4);
+    memcpy(arena + 0x6000, descriptor, 16); memcpy(arena + 0x6020, baseline, 40);
+    cpu.x[0] = 0x6000000200ull; cpu.x[1] = 0x6000006000ull; cpu.x[2] = 0x6000006020ull;
+    material_memory_queries = 0; apply_override(&cpu);
+    CHECK(!material_memory_queries && !memcmp(arena + 0x6020, arena + 0x10a0, 40));
+    u8 animated[40]; memcpy(animated, baseline, 40); animated[16] ^= 8;
+    memcpy(arena + 0x6020, animated, 40); apply_override(&cpu);
+    CHECK(!memcmp(arena + 0x6020, animated, 40));
+    forget_material(0x6000000400ull); CHECK(override_count == 0);
+    forget_material(0x6000000200ull);
+    material_fixture(0, "goku_test"); material_fixture(1, "donor");
+    texture_fixture(0, 92); texture_fixture(1, 96);
+    remember_material(0x6000000200ull); remember_material(0x6000000400ull);
+    cpu = saved; render_tick(0x6000000200ull); render_tick(0x6000000400ull);
+    CHECK(mod_material_refresh(&cpu, &file, 1, 0, next, next_size, &updated, &request, reason, sizeof reason));
+    forget_material(0x6000000400ull);
+    CHECK(!pending_count && mod_material_result(request, 1, reason, sizeof reason) == MOD_MATERIAL_FAILED);
+    CHECK(!mod_material_refresh(&cpu, &file, 1, 0, next, next_size, &updated, &request, reason, sizeof reason));
+    CHECK(strstr(reason, "replacement texture is not loaded"));
+    forget_material(0x6000000200ull);
+    VirtualFree(arena, 0, MEM_RELEASE); arena = NULL; free(old); free(next);
+    puts("PASS live texture references, animation precedence and source lifetime"); return 0;
+}
+static int loaded_texture_checks(const char *path) {
+    u32 size; u8 *old = read_all(path, &size, NULL); CHECK(old);
+    snap_budget = size * 4ull; texture_reserve = snap_budget / 2;
+    non_texture_bytes = snap_bytes = snap_budget / 2;
+    snap_count = SNAP_MAX - 1024;
+    for (int i = 0; i < snap_count; i++) snaps[i].path = "used.nuanmb";
+    int previous = snap_count;
+    watch_loaded_textures = 0; mod_refresh_file_opened(path); CHECK(snap_count == previous);
+    watch_loaded_textures = 1; snap_started = 0;
+    mod_refresh_file_opened(path); CHECK(snap_count == previous);
+    snap_started = 1; mod_refresh_file_opened(path); CHECK(snap_count == previous + 1);
+    CHECK(snaps[previous].size == size && !memcmp(snaps[previous].bytes, old, size));
+    mod_refresh_file_opened(path); CHECK(snap_count == previous + 1);
+    snaps[0] = snaps[previous]; snap_count = 1; snap_ready = 1;
+    refresh(&cpu);
+    mod_refresh_file_opened(path); CHECK(snap_count == 1);
+    free(snaps[0].path); free(snaps[0].bytes); free(old); snap_count = 0;
+    puts("PASS loaded textures retain snapshot capacity and duplicate opens are ignored"); return 0;
+}
+static int asset_checks(const char *old_path, const char *new_path, int texture) {
+    u32 old_size, next_size;
+    u8 *old = read_all(old_path, &old_size, NULL), *next = read_all(new_path, &next_size, NULL);
+    CHECK(old && next);
+    ModAssetPayload a, b;
+    CHECK(asset_pair(texture, old, old_size, next, next_size, &a, &b));
+    CHECK(a.size >= 16 && a.size < 0x8000 && memcmp(a.bytes, b.bytes, a.size));
+    const char *path = texture ? "test.nutexb" : "test.nuanmb";
+    snaps[0] = (Snap){.path = (char *)path, .bytes = old, .size = old_size};
+    snaps[1] = snaps[0]; snap_count = 2;
+    CHECK(asset_ambiguous(0, texture, a));
+    snaps[1].bytes = next; snaps[1].size = next_size;
+    CHECK(!asset_ambiguous(0, texture, a)); snap_count = 0;
+    arena = VirtualAlloc(G2H(0x6000000000ull), 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    CHECK(arena == G2H(0x6000000000ull));
+    memset(arena, 0xa7, 0x10000); memcpy(arena + 0x1000, a.bytes, a.size);
+    CHECK(splice_memory(a.bytes, a.size, b.bytes, b.size, a.size, 1) == 1);
+    CHECK(!memcmp(arena + 0x1000, b.bytes, b.size));
+    CHECK(arena[0xfff] == 0xa7 && arena[0x1000 + b.size] == 0xa7);
+    CHECK(splice_memory(b.bytes, b.size, b.bytes, b.size, b.size, 0) == 1);
+    CHECK(!asset_pair(texture, old, old_size, next, next_size - 1, &a, &b));
+    if (texture) next[next_size - 0xb0 + 0x84] ^= 1;
+    else next[24] ^= 1;
+    CHECK(!asset_pair(texture, old, old_size, next, next_size, &a, &b));
+    next[0] ^= 1;
+    CHECK(!asset_animation(next, next_size, &a));
+    VirtualFree(arena, 0, MEM_RELEASE); arena = NULL; free(old); free(next);
+    puts("PASS live asset payloads and layout guards"); return 0;
+}
 int main(int argc, char **argv) {
+    if (argc == 3 && !strcmp(argv[1], "--loaded")) return loaded_texture_checks(argv[2]);
+    if (argc == 4 && !strcmp(argv[1], "--refs")) return texture_reference_checks(argv[2], argv[3]);
+    if (argc == 4 && !strcmp(argv[1], "--animation")) return asset_checks(argv[2], argv[3], 0);
+    if (argc == 4 && !strcmp(argv[1], "--texture")) return asset_checks(argv[2], argv[3], 1);
     if (argc == 4 && !strcmp(argv[1], "--materials")) return material_checks(argv[2], argv[3]);
     /* Every requested format enters the same buffer refresh path. Validate replacement,
      * clearing a smaller export's tail, and rejecting an export that cannot fit. */

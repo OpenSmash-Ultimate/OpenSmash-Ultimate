@@ -8,7 +8,8 @@
  * export is what the press compares against. A file that still fits in the buffer the match
  * loaded is written over that buffer, and the leftover bytes are cleared. A file that grew past
  * that buffer cannot be swapped in place. A model or texture the graphics card already has does
- * not follow the copy in memory.
+ * not follow the copy in memory. Native texture pixel payloads are also replaced in their GPU
+ * backing memory; the renderer's existing write watch uploads them again on their next use.
  */
 #include "frame_hooks.h"
 #include "kernel_watch.h"
@@ -16,12 +17,14 @@
 #include "settings.h"
 #include "config_folder.h"
 #include "mod_material.h"
+#include "mod_asset.h"
+#include "mod_refresh.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-enum { SNAP_MAX = 4096, SNAP_FILE_MAX = 16 << 20, SCAN_MAX = 32, PATH_MAX_ = 600 };
+enum { SNAP_MAX = 16384, SNAP_FILE_MAX = 64 << 20, SCAN_MAX = 32, PATH_MAX_ = 600 };
 enum { KIND_ANIM = 0, KIND_MODEL = 1 };
 
 /* The console's A, L and R together: the same press as the training reset. */
@@ -85,24 +88,48 @@ static u8 *read_all(const char *path, u32 *size, FILETIME *mtime) {
  * files past it are not refreshed. */
 static u64 snap_budget = 512ull << 20, snap_bytes;
 static int snap_over;
+static SRWLOCK snapshot_lock = SRWLOCK_INIT;
+static u64 non_texture_bytes, texture_reserve;
+static int watch_loaded_textures;
 
 static void remember(const char *path, int kind) {
-    if (snap_count >= SNAP_MAX) return;
+    AcquireSRWLockExclusive(&snapshot_lock);
+    for (int i = 0; i < snap_count; i++) if (!_stricmp(snaps[i].path, path)) goto done;
     WIN32_FILE_ATTRIBUTE_DATA a;
-    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &a)) return;
-    if (snap_bytes + a.nFileSizeLow > snap_budget) { snap_over++; return; }
-    u32 size = 0;
-    FILETIME mtime;
-    u8 *b = read_all(path, &size, &mtime);
-    if (!b) return;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &a) || a.nFileSizeHigh || !a.nFileSizeLow ||
+        a.nFileSizeLow > SNAP_FILE_MAX) goto done;
+    int texture = ext_is(path, "nutexb");
+    if (snap_count == SNAP_MAX || snap_bytes + a.nFileSizeLow > snap_budget ||
+        (!texture && (snap_count >= SNAP_MAX - 1024 || non_texture_bytes + a.nFileSizeLow > snap_budget - texture_reserve))) {
+        snap_over++;
+        if (texture) fprintf(stderr, "[mods] loaded texture not watched: snapshot limit reached for %s; raise SSBU_MOD_REFRESH_MB%c", path, 10);
+        goto done;
+    }
+    u32 size = 0; FILETIME mtime;
+    u8 *bytes = read_all(path, &size, &mtime);
+    if (!bytes) goto done;
+    char *owned_path = _strdup(path);
+    if (!owned_path) { free(bytes); goto done; }
     snap_bytes += size;
-    snaps[snap_count++] = (Snap){ _strdup(path), b, size, size, mtime, kind };
-    if (getenv("SSBU_MOD_REFRESH_TRACE") && ext_is(path, "numatb"))
-        fprintf(stderr, "[mods] watching material %s (%u bytes)\n", path, size);
+    if (!texture) non_texture_bytes += size;
+    snaps[snap_count++] = (Snap){owned_path, bytes, size, size, mtime, kind};
+    if (texture) fprintf(stderr, "[mods] watching loaded texture %s (%u bytes)%c", path, size, 10);
+    else if (getenv("SSBU_MOD_REFRESH_TRACE") && ext_is(path, "numatb"))
+        fprintf(stderr, "[mods] watching material %s (%u bytes)%c", path, size, 10);
+done:
+    ReleaseSRWLockExclusive(&snapshot_lock);
+}
+void mod_refresh_file_opened(const char *path) {
+    if (!watch_loaded_textures || !snap_started || !ext_is(path, "nutexb")) return;
+    char full[PATH_MAX_];
+    DWORD n = GetFullPathNameA(path, sizeof full, full, NULL);
+    if (!n || n >= sizeof full) return;
+    for (char *p = full; *p; p++) if ((*p == '/' || *p == 92) && !_strnicmp(p + 1, "mods", 4) &&
+        (p[5] == '/' || p[5] == 92)) { remember(full, KIND_MODEL); return; }
 }
 
-static void walk(const char *dir, int depth) {
-    if (depth > 12 || snap_count >= SNAP_MAX) return;
+static void walk(const char *dir, int depth, int materials) {
+    if (depth > 12) return;
     char pattern[PATH_MAX_];
     if ((size_t)snprintf(pattern, sizeof pattern, "%s\\*", dir) >= sizeof pattern) return;
     WIN32_FIND_DATAA fd;
@@ -114,20 +141,19 @@ static void walk(const char *dir, int depth) {
         char child[PATH_MAX_];
         if ((size_t)snprintf(child, sizeof child, "%s\\%s", dir, fd.cFileName) >= sizeof child) continue;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            walk(child, depth + 1);
+            walk(child, depth + 1, materials);
             continue;
         }
         int kind = file_kind(fd.cFileName);
-        if (kind >= 0) remember(child, kind);
-    } while (FindNextFileA(h, &fd) && snap_count < SNAP_MAX);
+        int priority = ext_is(child, "numatb") ? 1 : ext_is(child, "nuanmb") ? 2 : 0;
+        if (kind >= 0 && priority == materials && !ext_is(child, "nutexb")) remember(child, kind);
+    } while (FindNextFileA(h, &fd));
     FindClose(h);
 }
 
 static DWORD WINAPI snap_main(void *unused) {
     (void)unused;
     char mods[PATH_MAX_], full[PATH_MAX_];
-    const char *mb = getenv("SSBU_MOD_REFRESH_MB");
-    if (mb) snap_budget = strtoull(mb, NULL, 10) << 20;
     if (!snap_budget) {
         fprintf(stderr, "[mods] mid-match refresh off (SSBU_MOD_REFRESH_MB=0)\n");
         return 0;   /* (snap_ready stays 0: a training reset says the folder is not read) */
@@ -136,7 +162,13 @@ static DWORD WINAPI snap_main(void *unused) {
     if (!GetFullPathNameA(mods, PATH_MAX_, full, NULL)) full[0] = 0;
     fprintf(stderr, "[mods] hot reload folder: %s\n", full[0] ? full : mods);
     DWORD attr = full[0] ? GetFileAttributesA(full) : INVALID_FILE_ATTRIBUTES;
-    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) walk(full, 0);
+    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        /* Reserve the bounded snapshot for editable materials before large meshes/textures. */
+        walk(full, 0, 1);
+        walk(full, 0, 2);
+        walk(full, 0, 0);
+    }
+    AcquireSRWLockExclusive(&snapshot_lock);
     int anims = 0, models = 0;
     for (int i = 0; i < snap_count; i++) {
         if (snaps[i].kind == KIND_ANIM) anims++;
@@ -145,8 +177,9 @@ static DWORD WINAPI snap_main(void *unused) {
     fprintf(stderr, "[mods] watching %d animation file%s and %d model file%s for a mid-match refresh on the training reset (L+R+A)\n",
             anims, anims == 1 ? "" : "s", models, models == 1 ? "" : "s");
     if (snap_over)
-        fprintf(stderr, "[mods] %d more not watched: their old bytes would pass SSBU_MOD_REFRESH_MB (%llu MB held)\n", snap_over,
+        fprintf(stderr, "[mods] %d more not watched: snapshot index or non-texture budget exhausted (%llu MB total; half reserved for loaded textures)\n", snap_over,
                 (unsigned long long)(snap_budget >> 20));
+    ReleaseSRWLockExclusive(&snapshot_lock);
     InterlockedExchange(&snap_ready, 1);
     return 0;
 }
@@ -248,6 +281,16 @@ static int material_complete(Snap *s, char *reason, u32 reason_size) {
     return result;
 }
 
+static int asset_ambiguous(int target, int texture, ModAssetPayload payload) {
+    for (int i = 0; i < snap_count; i++) {
+        if (i == target || !ext_is(snaps[i].path, texture ? "nutexb" : "nuanmb")) continue;
+        ModAssetPayload other;
+        int valid = texture ? asset_texture(snaps[i].bytes, snaps[i].size, &other) :
+                              asset_animation(snaps[i].bytes, snaps[i].size, &other);
+        if (valid && other.size == payload.size && !memcmp(other.bytes, payload.bytes, payload.size)) return 1;
+    }
+    return 0;
+}
 static void refresh(Cpu *c) {
     if (!snap_ready) {
         if (!snap_budget) return;   /* (off: the press is only the training reset) */
@@ -257,6 +300,7 @@ static void refresh(Cpu *c) {
     LARGE_INTEGER t0, t1, freq;
     QueryPerformanceCounter(&t0);
     QueryPerformanceFrequency(&freq);
+    AcquireSRWLockExclusive(&snapshot_lock);
     int refreshed = 0, models = 0, grown = 0, missing = 0, already = 0;
     int material_pending = 0;
     const char *names[3], *grown_names[3];
@@ -317,9 +361,24 @@ static void refresh(Cpu *c) {
             continue;
         }
         scanned++;
-        u32 hits = splice_memory(snaps[i].bytes, snaps[i].size, neu, size, snaps[i].capacity, 1);
+        ModAssetPayload old_payload = {snaps[i].bytes, snaps[i].size}, new_payload = {neu, size};
+        int texture = ext_is(snaps[i].path, "nutexb");
+        int payload = texture || ext_is(snaps[i].path, "nuanmb");
+        if (payload && !asset_pair(texture, snaps[i].bytes, snaps[i].size, neu, size, &old_payload, &new_payload)) {
+            fprintf(stderr, "[mods] %s: %s layout changed or file is invalid; reload the fighter (not applied)\n",
+                    short_name(snaps[i].path), texture ? "texture dimensions/format/mips" : "animation tracks/frame count");
+            free(neu);
+            continue;
+        }
+        if (payload && asset_ambiguous(i, texture, old_payload)) {
+            fprintf(stderr, "[mods] %s: another watched asset has identical payload bytes; reload the fighter (not applied)%c",
+                    short_name(snaps[i].path), 10);
+            free(neu); continue;
+        }
+        u32 capacity = payload ? old_payload.size : snaps[i].capacity;
+        u32 hits = splice_memory(old_payload.bytes, old_payload.size, new_payload.bytes, new_payload.size, capacity, 1);
         if (!hits) {
-            u32 has_new = splice_memory(neu, size, neu, size, size, 0);
+            u32 has_new = splice_memory(new_payload.bytes, new_payload.size, new_payload.bytes, new_payload.size, new_payload.size, 0);
             if (has_new) {
                 free(snaps[i].bytes);
                 snaps[i].bytes = neu;
@@ -338,13 +397,14 @@ static void refresh(Cpu *c) {
         snaps[i].size = size;
         snaps[i].mtime = mtime;
         refreshed++;
-        if (snaps[i].kind == KIND_MODEL) models++;
+        if (snaps[i].kind == KIND_MODEL && !texture) models++;
         if (name_n < 3) names[name_n++] = short_name(snaps[i].path);
     }
     QueryPerformanceCounter(&t1);
     double ms = freq.QuadPart ? (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart : 0;
     if (!refreshed && !grown && !missing && !already && !material_pending) {
-        fprintf(stderr, "[mods] training reset: no mod file has changed (%.0f ms)\n", ms);
+        fprintf(stderr, "[mods] training reset: no watched mod file has changed (%.0f ms)\n", ms);
+        ReleaseSRWLockExclusive(&snapshot_lock);
         return;
     }
     fprintf(stderr, "[mods] training reset: refreshed %d file%s in %.0f ms", refreshed, refreshed == 1 ? "" : "s", ms);
@@ -366,6 +426,7 @@ static void refresh(Cpu *c) {
     if (models)
         fprintf(stderr, "[mods] %d of those %s a model or texture; one the graphics card already has stays as it was until the fighter loads again\n",
                 models, models == 1 ? "is" : "are");
+    ReleaseSRWLockExclusive(&snapshot_lock);
 }
 
 static int mod_refresh_enabled(void) {
@@ -392,7 +453,11 @@ static int mod_refresh_training(Cpu *c) {
 }
 
 void mod_refresh_init(void) {
-    if (mod_refresh_enabled()) mod_material_init();
+    const char *mb = getenv("SSBU_MOD_REFRESH_MB");
+    if (mb) snap_budget = strtoull(mb, NULL, 10) << 20;
+    texture_reserve = snap_budget / 2;
+    watch_loaded_textures = mod_refresh_enabled() && snap_budget != 0;
+    if (watch_loaded_textures) mod_material_init();
 }
 
 static void mod_refresh_start(void) {

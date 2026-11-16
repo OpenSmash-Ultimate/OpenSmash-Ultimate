@@ -181,7 +181,8 @@ def romfs_cfg_ok(cfg):
     except OSError:
         return False
     files = lines[1:] if lines[:1] == ["layered"] else lines[:1]
-    return bool(files) and all(os.path.isfile(p) for p in files)
+    from nca import resolve_romfs_path
+    return bool(files) and all(os.path.isfile(resolve_romfs_path(cfg, p)) for p in files)
 
 
 def aoc_done(modules=None):

@@ -19,8 +19,8 @@ typedef struct Blob { const u8 *p; u32 n; } Blob;
 typedef struct Attr { u32 id, type; Blob value; } Attr;
 typedef struct Entry { const char *label, *shader; Attr attrs[ATTR_MAX]; u32 count; } Entry;
 typedef struct File { Blob blob; u32 entries, count; } File;
-typedef struct Update { u64 object, node; const u8 *value; } Update;
-typedef struct Pending { u64 object, node; u32 id, request; u8 old[16], value[16]; } Pending;
+typedef struct Update { u64 object, node; const u8 *value; u64 source, source_node; } Update;
+typedef struct Pending { u64 object, node; u32 id, request; u8 old[16], value[16]; u64 source; u8 texture_old[40], texture_value[40]; } Pending;
 static Pending pending[LIVE_MAX];
 static u32 pending_count;
 typedef struct Request { u64 id, started; u32 remaining, applied; int failed; } Request;
@@ -31,7 +31,7 @@ static u64 next_request = 1;
  * frame. Substitute the edited value only on that path and only while the
  * baseline still equals the value the edit replaced, so real animation keys win. */
 enum { OVERRIDE_MAX = 512, RESET_CALLER = 0x36a8574 };
-typedef struct Override { u64 object; u32 id; u8 baseline[16], value[16]; } Override;
+typedef struct Override { u64 object; u32 id; u8 baseline[16], value[16]; u64 source; u8 texture_old[40], texture_value[40]; } Override;
 static Override overrides[OVERRIDE_MAX];
 static volatile LONG override_count;
 
@@ -102,7 +102,7 @@ int mod_material_result(u64 id, int acknowledge, char *reason, u32 size) {
         if (r->remaining && GetTickCount64() - r->started > 5000) cancel_request(i);
         result = r->remaining ? MOD_MATERIAL_PENDING : r->failed ?
             (r->applied ? MOD_MATERIAL_PARTIAL : MOD_MATERIAL_FAILED) : MOD_MATERIAL_APPLIED;
-        snprintf(reason, size, "%s (%u vector%s applied)",
+        snprintf(reason, size, "%s (%u parameter%s applied)",
                  result == MOD_MATERIAL_PENDING ? "waiting for material render update" :
                  result == MOD_MATERIAL_APPLIED ? "material render update completed" :
                  result == MOD_MATERIAL_PARTIAL ? "material update partially applied; restart the game before retrying" :
@@ -140,10 +140,10 @@ static void forget_material(u64 object) {
         live_count--;
     }
     for (u32 i = 0; i < pending_count;) {
-        if (pending[i].object == object) { cancel_request(pending[i].request); i = 0; } else i++;
+        if (pending[i].object == object || pending[i].source == object) { cancel_request(pending[i].request); i = 0; } else i++;
     }
     for (LONG i = 0; i < override_count;) {
-        if (overrides[i].object == object) overrides[i] = overrides[--override_count]; else i++;
+        if (overrides[i].object == object || overrides[i].source == object) overrides[i] = overrides[--override_count]; else i++;
     }
     ReleaseSRWLockExclusive(&material_lock);
 }
@@ -259,11 +259,11 @@ static int shader_identity(const char *a, const char *b) {
            (shader_normal_variant(b, variant, sizeof variant) && !strcmp(variant, a));
 }
 static int changed_vectors_same(const Entry *old, const Entry *next, const Entry *other) {
-    for (u32 i = 0; i < old->count; i++) if (old->attrs[i].type == 5) {
+    for (u32 i = 0; i < old->count; i++) if (old->attrs[i].type == 5 || old->attrs[i].type == 11) {
         const Attr *n = attribute(next, old->attrs[i].id);
         if (same(old->attrs[i].value, n->value)) continue;
         const Attr *o = attribute(other, old->attrs[i].id);
-        if (!o || o->type != 5 || !same(old->attrs[i].value, o->value)) return 0;
+        if (!o || o->type != old->attrs[i].type || !same(old->attrs[i].value, o->value)) return 0;
     }
     return 1;
 }
@@ -318,6 +318,35 @@ static u64 effective_variant(u64 object, u64 node, u32 id) {
     }
     return readable(variant, 24) && mm_u32(G2H(variant)) == 5 ? variant : 0;
 }
+static int texture_handle_valid(const u8 *variant) {
+    if (mm_u32(variant) != 11) return 0;
+    u64 pointer = mm_u64(variant + 16), control = mm_u64(variant + 24);
+    return pointer && control && readable(pointer, 16) && readable(control, 8) &&
+           mm_u64(G2H(control)) == mm_u64(variant + 32);
+}
+static u64 live_texture(u64 object, u32 id) {
+    u64 node = node_for(object, id);
+    return node && readable(node + 0x20, 40) && texture_handle_valid((u8 *)G2H(node) + 0x20) ? node : 0;
+}
+static int texture_donor(File file, Blob name, u64 *object, u64 *node) {
+    for (u32 e = 0; e < file.count; e++) {
+        Entry entry;
+        if (!entry_read(file, e, &entry)) return 0;
+        for (u32 a = 0; a < entry.count; a++) if (entry.attrs[a].type == 11 && same(entry.attrs[a].value, name)) {
+            u64 key = label_key(entry.label, strlen(entry.label));
+            for (u32 i = 0; i < live_count; i++) {
+                if (material_deadline && GetTickCount64() > material_deadline) return 0;
+                if (live_keys[i] != key || !live_rendered[i]) continue;
+                u64 candidate = live_materials[i];
+                if (!readable(candidate, 0x138) || !guest_string(candidate + 0x108, entry.label) ||
+                    !guest_shader(candidate + 0x120, entry.shader)) continue;
+                u64 found = live_texture(candidate, entry.attrs[a].id);
+                if (found) { *object = candidate; *node = found; return 1; }
+            }
+        }
+    }
+    return 0;
+}
 static int matches(u64 object, const Entry *old, const Entry *next) {
     if (!readable(object, 0x138) || !guest_string(object + 0x108, old->label) ||
         !guest_shader(object + 0x120, old->shader)) return 0;
@@ -331,6 +360,12 @@ static int matches(u64 object, const Entry *old, const Entry *next) {
         if (!variant) return 0;
         const void *value = (const u8 *)G2H(variant) + 8;
         if (memcmp(value, old->attrs[i].value.p, 16)) return 0;
+        vectors++;
+    }
+    for (u32 i = 0; i < old->count; i++) if (old->attrs[i].type == 11) {
+        const Attr *n = attribute(next, old->attrs[i].id);
+        if (same(old->attrs[i].value, n->value)) continue;
+        if (!live_texture(object, old->attrs[i].id)) return 0;
         vectors++;
     }
     return vectors != 0;
@@ -363,22 +398,37 @@ static void remember_override(u64 object, u32 id, const u8 *baseline, const u8 *
     memcpy(overrides[i].value, value, 16);
     if (!memcmp(overrides[i].baseline, value, 16)) overrides[i] = overrides[--override_count];
 }
+static void remember_texture_override(const Pending *p) {
+    LONG i = 0;
+    while (i < override_count && (overrides[i].object != p->object || overrides[i].id != p->id)) i++;
+    if (i == override_count) {
+        if (i == OVERRIDE_MAX) return;
+        overrides[i] = (Override){.object = p->object, .id = p->id};
+        memcpy(overrides[i].texture_old, p->texture_old, 40);
+        override_count++;
+    }
+    overrides[i].source = p->source;
+    memcpy(overrides[i].texture_value, p->texture_value, 40);
+    if (!memcmp(overrides[i].texture_old + 8, p->texture_value + 8, 32)) overrides[i] = overrides[--override_count];
+}
 static void apply_override(Cpu *c) {
-    /* Only the baseline reset caller: material_render's own rt_call holds the
-     * lock exclusively and never returns to this address. */
     AcquireSRWLockShared(&material_lock);
-    if (readable(c->x[1] + 8, 4) && readable(c->x[2], 24) && mm_u32(G2H(c->x[2])) == 5) {
+    for (LONG i = 0; i < override_count; i++) {
+        if (overrides[i].object != c->x[0]) continue;
+        /* The original setter reads these live arguments too; never query mappings per frame. */
         u32 id = mm_u32((u8 *)G2H(c->x[1]) + 8);
-        u8 *value = (u8 *)G2H(c->x[2]) + 8;
-        for (LONG i = 0; i < override_count; i++) {
-            if (overrides[i].object == c->x[0] && overrides[i].id == id) {
-                if (!memcmp(value, overrides[i].baseline, 16)) memcpy(value, overrides[i].value, 16);
-                break;
-            }
-        }
+        if (overrides[i].id != id) continue;
+        u8 *variant = G2H(c->x[2]), *value = variant + 8;
+        if (overrides[i].source) {
+            if (mm_u32(variant) == 11 && !memcmp(variant + 8, overrides[i].texture_old + 8, 32))
+                memcpy(variant, overrides[i].texture_value, 40);
+        } else if (mm_u32(variant) == 5 && !memcmp(value, overrides[i].baseline, 16))
+            memcpy(value, overrides[i].value, 16);
+        break;
     }
     ReleaseSRWLockShared(&material_lock);
 }
+
 static void material_setter(Cpu *c) {
     if (__atomic_load_n(&override_count, __ATOMIC_ACQUIRE) && c->x[30] == rt_module_main.base + RESET_CALLER) apply_override(c);
     if (material_trace && trace_setter_remaining && c->x[0] == trace_followup.object &&
@@ -533,36 +583,52 @@ static void material_render(Cpu *c) {
         /* Resolve the node again: gameplay may have replaced its property list
          * after the request was queued. Never dereference a saved freed node. */
         u64 node = node_for(object, p->id);
-        u64 effective = node ? effective_variant(object, node, p->id) : 0;
-        if (!node || node != p->node || mm_u32((u8 *)G2H(node) + 0x20) != 5 ||
-            !effective || memcmp((u8 *)G2H(effective) + 8, p->old, 16)) {
-            fprintf(stderr, "[mods] queued material vector invalidated before render; reload the fighter\n");
+        u64 effective = node ? (p->source ? node + 0x20 : effective_variant(object, node, p->id)) : 0;
+        int valid;
+        if (p->source) {
+            valid = live_index(p->source) != ~0u && texture_handle_valid(p->texture_value) &&
+                    live_texture(object, p->id) == p->node && effective &&
+                    !memcmp((u8 *)G2H(effective) + 8, p->texture_old + 8, 32);
+        } else valid = effective && !memcmp((u8 *)G2H(effective) + 8, p->old, 16);
+        if (!node || node != p->node || !valid) {
+            fprintf(stderr, "[mods] queued material parameter invalidated before render; reload the fighter\n");
             cancel_request(p->request); i = 0; continue;
         }
-        u8 variant[24] = {5}; memcpy(variant + 8, p->value, 16);
+        u8 variant[40] = {5}; memcpy(variant + 8, p->value, 16);
+        if (p->source) memcpy(variant, p->texture_value, 40);
         memcpy(G2H(scratch), variant, sizeof variant);
         *c = saved; c->sp = scratch;
         c->x[0] = object; c->x[1] = node + 0x10; c->x[2] = scratch; c->x[3] = 1;
+        Pending applying = *p;
+        u64 request_id = requests[applying.request].id;
+        pending[i] = pending[--pending_count];
+        /* Guest setters can yield; another fiber must never wait on our host lock. */
+        ReleaseSRWLockExclusive(&material_lock);
         rt_call(c, rt_module_main.base + 0x38a9ca0);
-        if (material_trace && trace_count < LIVE_MAX) {
+        AcquireSRWLockExclusive(&material_lock);
+        p = &applying;
+        if (requests[p->request].id != request_id || requests[p->request].failed) { i = 0; continue; }
+        if (material_trace && !p->source && trace_count < LIVE_MAX) {
             trace_nodes[trace_count] = node; trace_ids[trace_count++] = p->id;
             trace_material_value("after setter", object, node, p->id);
         }
-        effective = effective_variant(object, node, p->id);
-        if (!effective || memcmp((u8 *)G2H(effective) + 8, p->value, 16)) {
-            fprintf(stderr, "[mods] material setter did not update the live vector; request canceled\n");
+        effective = p->source ? node + 0x20 : effective_variant(object, node, p->id);
+        if (!effective || (p->source ? memcmp((u8 *)G2H(effective) + 8, p->texture_value + 8, 32) :
+                                       memcmp((u8 *)G2H(effective) + 8, p->value, 16))) {
+            fprintf(stderr, "[mods] material setter did not update the live parameter; request canceled\n");
             cancel_request(p->request); i = 0; continue;
         }
-        remember_override(object, p->id, p->old, p->value);
+        if (p->source) remember_texture_override(p);
+        else remember_override(object, p->id, p->old, p->value);
         requests[p->request].applied++;
-        requests[p->request].remaining--;
-        if (material_trace) {
+        if (requests[p->request].remaining) requests[p->request].remaining--;
+        if (material_trace && !p->source) {
             trace_followup.object = object; trace_followup.node = node;
             trace_followup.id = p->id; trace_followup.remaining = 5;
             trace_setter_remaining = 10;
         }
-        fprintf(stderr, "[mods] applied queued material vector %u at render update\n", p->id);
-        pending[i] = pending[--pending_count];
+        fprintf(stderr, "[mods] applied queued material parameter %u at render update\n", p->id);
+        i = 0;
     }
     if (have_scratch) memcpy(G2H(scratch), scratch_was, sizeof scratch_was);
     *c = saved;
@@ -603,7 +669,7 @@ int mod_material_refresh(Cpu *c, const ModMaterialFile *files, u32 count, u32 ta
             const Attr *n = attribute(&next, old.attrs[a].id);
             if (!n || n->type != old.attrs[a].type) FAIL("material parameter structure changed; reload the fighter");
             if (!same(old.attrs[a].value, n->value)) {
-                if (n->type != 5) FAIL("live material refresh currently requires vector-only edits; reload the fighter");
+                if (n->type != 5 && n->type != 11) FAIL("live material refresh supports vector and texture-reference edits; reload the fighter");
                 changed++;
             }
         }
@@ -637,9 +703,12 @@ int mod_material_refresh(Cpu *c, const ModMaterialFile *files, u32 count, u32 ta
             found++;
             for (u32 a = 0; a < old.count; a++) {
                 const Attr *n = attribute(&next, old.attrs[a].id);
-                if (n->type != 5 || same(old.attrs[a].value, n->value)) continue;
+                if ((n->type != 5 && n->type != 11) || same(old.attrs[a].value, n->value)) continue;
                 if (used == LIVE_MAX) FAIL("too many live material parameters; reload the fighter");
-                plan[used++] = (Update){object, node_for(object, n->id), n->value.p};
+                Update update = {.object = object, .node = node_for(object, n->id), .value = n->value.p};
+                if (n->type == 11 && !texture_donor(old_file, n->value, &update.source, &update.source_node))
+                    FAIL("replacement texture is not loaded by this material file; reload the fighter");
+                plan[used++] = update;
             }
         }
         if (!found) {
@@ -690,16 +759,23 @@ int mod_material_refresh(Cpu *c, const ModMaterialFile *files, u32 count, u32 ta
     requests[slot] = (Request){.id = id, .started = GetTickCount64(), .remaining = used};
     for (u32 i = 0; i < used; i++) {
         Pending *p = &pending[pending_count++];
+        memset(p, 0, sizeof *p);
         p->object = plan[i].object; p->node = plan[i].node;
         p->id = mm_u32((u8 *)G2H(p->node) + 0x18);
         p->request = slot;
-        memcpy(p->old, (u8 *)G2H(effective_variant(p->object, p->node, p->id)) + 8, 16);
-        memcpy(p->value, plan[i].value, 16);
+        p->source = plan[i].source;
+        if (p->source) {
+            memcpy(p->texture_old, (u8 *)G2H(p->node) + 0x20, 40);
+            memcpy(p->texture_value, (u8 *)G2H(plan[i].source_node) + 0x20, 40);
+        } else {
+            memcpy(p->old, (u8 *)G2H(effective_variant(p->object, p->node, p->id)) + 8, 16);
+            memcpy(p->value, plan[i].value, 16);
+        }
     }
     (void)c;
     *updated = used;
     *request = id;
-    snprintf(reason, reason_size, "queued %u live material vector parameter%s for render update; %u inactive material%s load next use",
+    snprintf(reason, reason_size, "queued %u live material parameter%s for render update; %u inactive material%s load next use",
              used, used == 1 ? "" : "s", inactive, inactive == 1 ? "" : "s");
     material_deadline = 0; ReleaseSRWLockExclusive(&material_lock); free(plan); return 1;
 #undef FAIL
