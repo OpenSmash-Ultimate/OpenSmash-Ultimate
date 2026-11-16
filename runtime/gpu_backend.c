@@ -147,4 +147,9 @@ int gfx_present_again(void) {
     if (gfx_backend.present == d3d11_present) return d3d11_present_again();
     return vk_present_again();
 }
+/* (hle_fight_test.c, as a match is set up and at its fight's first frame) the Vulkan warm start's groups: the match's
+ * pipelines first, and waited for before the fight (gpu_vk.c). Nothing with Direct3D 11, whose prewarm has no groups. */
+static int vk_drawing(void) { return gfx_backend.present != start_present && gfx_backend.present != d3d11_present; }
+void gfx_match_want(unsigned long long key, int first) { if (vk_drawing()) vk_match_want(key, first); }
+void gfx_match_wait(void) { if (vk_drawing()) vk_match_wait(); }
 #endif
