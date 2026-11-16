@@ -223,7 +223,10 @@ static void hold_report(void *self) {
 }
 
 /* Every other guest thread parked, or 0 (released again) when not within the limit. */
+static void gdef_settle(void);
+static int gdef_hold_keeps;   /* (a load's hold: it decides about the newest save's GPU part itself, once it goes ahead) */
 static int hold(void *self, u32 *n) {
+    if (!gdef_hold_keeps) gdef_settle();
     if (!release_ev) {
         release_ev = CreateEventA(NULL, TRUE, FALSE, NULL);
         load_ev = CreateEventA(NULL, TRUE, FALSE, NULL);
@@ -1707,6 +1710,7 @@ static void sm_begin(u64 before) {
 }
 /* Every cold page writable again (any time: nothing is written while it is cold). */
 static void sm_end(void) {
+    gdef_settle();
     if (!sm_on) return;
     double t0 = now_ms();
     AcquireSRWLockExclusive(&sm_lock);
@@ -1804,6 +1808,50 @@ static int gpu_pages_again(u64 from, u64 *npages) {
 /* (the GPU log ran over: which pages it wrote during the copies is not known) Every present page compared with the
  * shadow, and those that differ copied with an undo entry (one a page a save: the first, made by the sync, stays). Some
  * hundreds of ms, and only then. */
+/* A SAVE THAT DOES NOT WAIT FOR THE GPU. The state is memory with the work queued before the save done; that work
+ * still runs when the copies are over (the frame before's drawing: 2-5.6 ms a save in fights, the largest part of a
+ * save). So the save goes on without it: its copies hold memory as the CPU left it, and the GPU thread, once the work
+ * queued before the save has run and before it starts the next submission (gpu_queue_after), puts every byte that
+ * work wrote since the save began (gpu_rb_bytes_*: its semaphores, reports, inline and copy-engine uploads,
+ * write-backs) into the shadow, with the undo entry of the state before. Bytes, not pages: the CPU may have written
+ * other bytes of those pages since the save, which belong to the next state. Anything that reads or frees the states
+ * (a hold, a load, a slot freed, the fight's end) first waits for it (gdef_settle): mostly done by then. The next
+ * submission cannot start before it, so the bytes are those of the work before the save alone.
+ * SSBU_RB_SAVE_GPU=wait: the save waits for that work and copies its pages again, as before. */
+static struct { volatile int on; u64 from; Undo *undo; u64 bytes, pages; int lost, overrun; } gdef;
+static int gdef_want = -1;
+long long rb_gdef_saves, rb_gdef_inline, rb_gdef_pages, rb_gdef_lost;
+double rb_gdef_wait_ms;
+static u32 undo_reserve_in(Undo *u, Chunk *ch, u32 k, u8 *cur) {   /* (undo_reserve, for record u: the GPU thread's) */
+    if (!u || (ch->pushed[k >> 6] >> (k & 63) & 1)) return NO_SLOT;
+    ch->pushed[k >> 6] |= 1ull << (k & 63);
+    if (u->n == u->cap && !undo_more(u)) return NO_SLOT - 1;
+    u->cur[u->n] = cur; u->how[u->n] = U_CONTENT;
+    return u->n++;
+}
+static void gdef_apply(void) {
+    u64 to = gpu_rb_bytes_count(), pages = 0, bytes = 0, last = 0;
+    for (u64 i = gdef.from; i < to; i++) {
+        u64 g, len;
+        if (!gpu_rb_bytes_at(i, &g, &len)) { gdef.overrun = 1; break; }
+        for (u64 a = g, end = g + len; a < end;) {
+            u64 pg = a & ~0xFFFull, e = end < pg + 0x1000 ? end : pg + 0x1000;
+            u8 *p = (u8 *)G2H(pg);
+            Chunk *c = is_skip_page(p) ? NULL : chunk_of(p, 0);
+            u32 k = c ? (u32)((p - c->base) >> 12) : 0;
+            if (c && is_present(c, k)) {
+                u32 slot = undo_reserve_in(gdef.undo, c, k, p);
+                if (slot == NO_SLOT - 1) gdef.lost = 1;
+                else if (slot != NO_SLOT) memcpy(gdef.undo->data + ((size_t)slot << 12), shadow_page(c, p), 0x1000);
+                memcpy(shadow_page(c, p) + (a - pg), (const u8 *)G2H(a), (size_t)(e - a));
+                bytes += e - a;
+                if (pg != last) { pages++; last = pg; }
+            }
+            a = e;
+        }
+    }
+    gdef.bytes = bytes; gdef.pages = pages;
+}
 static u64 gpu_pages_all(void) {
     u64 n = 0;
     for (u32 i = 0; i < nchunks; i++) {
@@ -1988,6 +2036,7 @@ static u64 undo_beside(int age, int phase) {
 }
 
 static void slot_free(Slot *s) {
+    gdef_settle();
     for (u32 i = 0; i < s->nthr; i++) free(s->thr[i].stack);
     free(s->thr); s->thr = NULL; s->nthr = 0;
     free(s->kernel); fiber_rb_free(s->fibers); setjmp_rb_free(s->setjmps); free(s->vi); free(s->audio); free(s->net); ipc_rb_free(s->ipc); free(s->main_stack); rb_map_free(s->map);
@@ -2066,6 +2115,22 @@ int rb_ring_find(u32 target, u32 *tag) {
  * copies only what changed since. A fight's states are of no use once it is over, and a state kept from before the
  * fight made the first save of the next one copy undo pages for all of memory (twopc14: 546 395 of them, 935 ms). */
 void rb_ring_drop(void) { while (ring_count) { slot_free(slot_at(ring_count - 1)); ring_count--; } }
+/* (guest threads held, or nothing of the states touched yet) The deferred part of the last save done. */
+static void gdef_settle(void) {
+    if (!gdef.on) return;
+    double t = now_ms();
+    gpu_queue_after_wait();
+    rb_gdef_wait_ms += now_ms() - t;
+    gdef.on = 0;
+    rb_gdef_pages += gdef.pages;
+    if (gdef.lost || gdef.overrun) {
+        /* (an undo entry it could not make, or its log ran over: the newest state may lack some of the GPU's bytes and
+         * the older ones their undo entries - all dropped, as when memory runs out for an undo record) */
+        rb_gdef_lost++;
+        if (rb_gdef_lost <= 5) fprintf(stderr, "[rb] save: the GPU's bytes after the save %s: the states kept are dropped\n", gdef.overrun ? "ran over their log" : "lacked undo room");
+        while (ring_count) { Slot *z = slot_at(ring_count - 1); ring_count--; slot_free(z); }
+    }
+}
 /* (M7) the logic frame of the state `age` saves back; 0: none */
 u32 rb_ring_tag(int age) { return age >= 0 && age < ring_count ? slot_at(age)->tag : 0; }
 /* (hle_rb_core.c) The guest threads held in that state but the saving one: a load needs as many (check) */
@@ -2169,6 +2234,7 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     int drain_now = drain_first || !gpu_threaded() || !shadow_ok || (sm_wanted_fight && !sm_on && sm_want > 0);
     double tp = now_ms();
     u64 gpu_mark = gpu_queue_mark(), gpu_log = gpu_rb_written_count();   /* (nothing more is queued: every guest thread is held) */
+    u64 gpu_bytes = gpu_rb_bytes_cut();   /* (the GPU's bytes from here on: what the save puts in later, gdef) */
     if (drain_now) gpu_queue_drain();
     double t1 = now_ms();
     rb_save_parts[0] += tp - t0; rb_save_parts[1] += t1 - tp;
@@ -2185,7 +2251,16 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     /* (the fight's state map with the GPU's memory left out, SSBU_RB_SKIP_GPU: the GPU writes nothing the state holds,
      * so the save neither waits for it nor copies anything again) */
     int gpu_free = 0;   /* (the GPU's written pages are in the state: waited for, as when every page was in) */
-    if (!drain_now && !gpu_free) {
+    if (gdef_want < 0) { const char *e = getenv("SSBU_RB_SAVE_GPU"); gdef_want = !(e && !strcmp(e, "wait")); }
+    if (prev) undo_window(prev->undo.n);   /* (before the GPU's bytes go in: their undo entries are the new state's) */
+    int reprot_now = sm_on && gpu_reprotect > 0 && fight_saves > 0 && fight_saves % gpu_reprotect == 0 && !drain_now;
+    if (!drain_now && !gpu_free && gdef_want && !reprot_now) {   /* (the GPU's bytes later, on its thread; not while the
+                                                                  * GPU's pages are protected again below) */
+        gdef.from = gpu_bytes; gdef.undo = undo_to; gdef.lost = gdef.overrun = 0; gdef.bytes = gdef.pages = 0;
+        rb_gdef_saves++;
+        if (gpu_queue_after(gpu_mark, gdef_apply)) gdef.on = 1;
+        else { gdef_apply(); rb_gdef_inline++; gdef.on = 1; gdef_settle(); }   /* (that work had run already) */
+    } else if (!drain_now && !gpu_free) {
         gpu_queue_wait(gpu_mark);
         double tg = now_ms();
         u64 again;
@@ -2197,8 +2272,7 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     }
     memory_check_after_save();
     rb_map_census_end();
-    if (prev) undo_window(prev->undo.n);
-    if (sm_on && gpu_reprotect > 0 && fight_saves > 0 && fight_saves % gpu_reprotect == 0 && !drain_now) gpu_reprotect_now();
+    if (reprot_now) gpu_reprotect_now();
     undo_to = NULL;
     if (barrier && ring_count) { ring_keep(0); barriers++; }   /* (s is not among them: it was free) */
     u64 fib_bytes, live[1025]; u32 suspended, jmps, in_use;
@@ -2316,7 +2390,7 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     u32 n;
     load_t0 = now_ms();
     if (held) { held = 0; n = held_n; }   /* (straight after a save that kept them held) */
-    else if (!hold(c->thread, &n)) { refused++; return; }
+    else { gdef_hold_keeps = 1; int ok = hold(c->thread, &n); gdef_hold_keeps = 0; if (!ok) { refused++; return; } }
     double lt_hold = now_ms();
     const char *why = check(c, frame, n, s);
     /* M7, 4 players (4P1: 29 loads refused on PC 2, every retry the next frame too, until the guess was past the
@@ -2340,7 +2414,8 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
             memory_untouched = 0;
             release();
             SwitchToThread();
-            if (!hold(c->thread, &n)) { refused++; rb_fiber_refused++; return; }
+            gdef_hold_keeps = 1; int ok = hold(c->thread, &n); gdef_hold_keeps = 0;
+            if (!ok) { refused++; rb_fiber_refused++; return; }
             why = check(c, frame, n, s);
         }
         if (!why) {
@@ -2353,6 +2428,9 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
         }
     }
     if (why) { refused++; fprintf(stderr, "[rb] LOAD refused: %s\n", why); release(); return; }
+    /* (the load goes ahead: the newest save's part the GPU thread still owes is waited for now - the load waits for that
+     * work anyway, see below. Not in its hold: a save that kept the threads held comes straight here.) */
+    if (gdef.on) { gdef_settle(); if (age >= ring_count) { refused++; release(); return; } }   /* (settling may drop the states) */
     /* every other thread onto its scratch stack */
     ResetEvent(copy_ev);
     on_scratch = 0;

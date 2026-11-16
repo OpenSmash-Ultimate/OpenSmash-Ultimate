@@ -265,7 +265,7 @@ static double fp_census_last, fp_hash_last, fp_in, fp_out, fp_sum[2][7];   /* (f
 static long long fp_n[2];
 static int fp_fast, fp_loaded;
 extern double rb_save_ms[3];
-extern double rb_save_parts[4]; extern long long rb_save_count; extern long long rb_save_gpu_pages, rb_save_gpu_overrun; extern double rb_load_parts[6]; extern long long rb_load_count;
+extern double rb_save_parts[4]; extern long long rb_save_count; extern long long rb_save_gpu_pages, rb_save_gpu_overrun; extern long long rb_gdef_saves, rb_gdef_inline, rb_gdef_pages, rb_gdef_lost; extern double rb_gdef_wait_ms; extern double rb_load_parts[6]; extern long long rb_load_count;
 extern long long rb_save_away_waits, rb_save_away_refused;   /* (hle_rb_state.c: parking, GPU drain, memory, in all) */
 void profile_start_gated(double seconds);
 static void tape_clear(void);
@@ -1993,9 +1993,11 @@ static void net_step(Cpu *c, u64 frame) {
             if (rb_save_count) {
                 double k = (double)rb_save_count;
                 fprintf(stderr, "[rb] net saves, the last second: %lld, a save %.2f ms on average: parking the threads %.2f, GPU drain %.2f, memory %.2f, the rest %.2f; "
-                        "%lld pages the GPU wrote meanwhile copied again (%lld log overruns)\n",
+                        "%lld pages the GPU wrote meanwhile copied again (%lld log overruns); not waited for: %lld saves (%lld whose GPU work had run), "
+                        "the GPU's bytes put in after them on %lld pages, %.2f ms waited for that later in all, %lld times the states dropped\n",
                         rb_save_count, rb_save_parts[3] / k, rb_save_parts[0] / k, rb_save_parts[1] / k, rb_save_parts[2] / k,
-                        (rb_save_parts[3] - rb_save_parts[0] - rb_save_parts[1] - rb_save_parts[2]) / k, rb_save_gpu_pages, rb_save_gpu_overrun);
+                        (rb_save_parts[3] - rb_save_parts[0] - rb_save_parts[1] - rb_save_parts[2]) / k, rb_save_gpu_pages, rb_save_gpu_overrun,
+                        rb_gdef_saves, rb_gdef_inline, rb_gdef_pages, rb_gdef_wait_ms, rb_gdef_lost);
             }
             if (rb_load_count) {
                 double k = (double)rb_load_count;
@@ -2004,7 +2006,7 @@ static void net_step(Cpu *c, u64 frame) {
                         rb_load_parts[2] / k, rb_load_parts[3] / k, rb_load_parts[4] / k);
                 memset(rb_load_parts, 0, sizeof rb_load_parts); rb_load_count = 0;
             }
-            memset(rb_save_parts, 0, sizeof rb_save_parts); rb_save_count = 0; rb_save_gpu_pages = rb_save_gpu_overrun = 0;
+            memset(rb_save_parts, 0, sizeof rb_save_parts); rb_save_count = 0; rb_save_gpu_pages = rb_save_gpu_overrun = 0; rb_gdef_saves = rb_gdef_inline = rb_gdef_pages = 0; rb_gdef_wait_ms = 0;
             memset(net_w_ms, 0, sizeof net_w_ms); memset(net_w_max, 0, sizeof net_w_max); memset(net_w_n, 0, sizeof net_w_n);
             rb_ff_get_ms = rb_rng_slow_ms = 0; rb_ff_get_n = rb_rng_slow_n = 0;
             net_rtt_min_s = 1e9;
