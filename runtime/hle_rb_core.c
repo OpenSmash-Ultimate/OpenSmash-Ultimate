@@ -924,12 +924,14 @@ static int catch_n, catch_depth;
 /* (2026-11-16) THE SAVES' SPACING, chosen each second (SSBU_RB_NET_SAVE_EVERY unset). Saves made only every K-th guessed
  * logic frame cost N/K saves a second (N: the guessed frames) and each rollback (R a second) runs about (K - 1) / 2 frames
  * more; with Cs a save's time and Cr a frame run again, the time a second is N Cs / K + R Cr (K - 1) / 2, least at
- * K = sqrt(2 N Cs / (R Cr)), kept within 2..4 (4: the most the ring was proven with; a deeper catch-up is a longer one).
+ * K = sqrt(2 N Cs / (R Cr)), kept within 2..4 (4: the most the ring was proven with; a deeper catch-up is a longer one), and 2 while a save costs
+ * under NET_SP_CHEAP_MS (it then fits in the frame, a longer catch-up does not).
  * Measured (pairs 60 ms one way, 1 %, 10 ms jitter, two games and a busy GPU on one PC): a save 17 ms, a frame run again
  * 3.5, some 56 guessed frames and 5 rollbacks a second: K = 2 spent ~480 ms a second in saves and their re-runs, K = 4
  * some 260; on the owner's PC (a save 10 ms, a frame 3) K = 4 too. With rollbacks very frequent and saves cheap it stays 2,
  * as before. Two games may space their saves differently: a save changes nothing the game sees. */
 static int net_save_every = 2;
+#define NET_SP_CHEAP_MS 8.0              /* (a save under this: the spacing stays 2) */
 static double net_sp_cr = 3.0;          /* (a frame run again, ms: the catch-ups' mean, kept from fight to fight) */
 static long long net_sp_saves, net_sp_sparse, net_sp_rb;   /* (the counts at the last choice) */
 static void net_save_spacing(double cs, long long saves_now, long long sparse_now, long long rollbacks_now, int new_fight) {
@@ -937,6 +939,10 @@ static void net_save_spacing(double cs, long long saves_now, long long sparse_no
     long long made = saves_now - net_sp_saves, sparse = sparse_now - net_sp_sparse, rb = rollbacks_now - net_sp_rb;
     net_sp_saves = saves_now; net_sp_sparse = sparse_now; net_sp_rb = rollbacks_now;
     if (made <= 0 || cs <= 0) return;
+    /* (a save that fits in a frame with the frame's own work - under half a frame - costs no frame shown late, while a
+     * catch-up a frame or two longer does: there the spacing stays 2. Pairs on a quiet PC, 60 ms one way: saves 6 ms, K = 4
+     * left 4.6 % of the frames late against 0.8 % with 2; with the GPU busy, saves 12-17 ms, K = 4 left 8 % against 16 %) */
+    if (cs < NET_SP_CHEAP_MS) { net_save_every = 2; return; }
     double n = (double)(made + sparse);   /* (the guessed frames: each one saved or covered by a state a frame or so before) */
     double r = rb > 0 ? (double)rb : 0.5;
     double k = sqrt(2 * n * cs / (r * net_sp_cr));
