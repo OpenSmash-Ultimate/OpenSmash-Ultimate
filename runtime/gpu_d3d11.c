@@ -1282,7 +1282,8 @@ static void prewarm_mark_write(const char *dir, u64 size, u64 time, u64 budget, 
  * player's cache keeps every program played before: thousands, gigabytes. The prewarm stops making
  * them once the process has grown this much since it began (newest first: the ones played last are
  * made); the rest load at first use as without a prewarm. The budget is an eighth of the PC's memory, 1 GB at least
- * and 1.5 GB at most (some 4,500 programs: a session draws 400-600, the newest played come first; 2.5 GB left the
+ * and 2 GB at most (1.5 until 2026-11-16: an RTX 2060's prewarm made 2,275 of 7,165 played programs; the menus' and
+ * the select screen's are now made first, shader_prewarm_first.txt) (some 4,500 programs: a session draws 400-600, the newest played come first; 2.5 GB left the
  * game at 4.9 GB): with every program of the shipped list made (a third of the memory
  * allowed it) the game went from 3.7 to 5.5 GB and every player found it slower (owner 2026-11-10, after #248);
  * under DXVK (Linux) a third of it, as its whole-cache prewarm needs (the whole 65,000-program cache measured
@@ -1313,7 +1314,7 @@ static void prewarm_budget_default(u64 ram) {
         return;
     }
     if (ram / 8 > prewarm_budget) prewarm_budget = ram / 8;
-    if (prewarm_budget > (1536ull << 20)) prewarm_budget = 1536ull << 20;
+    if (prewarm_budget > (2048ull << 20)) prewarm_budget = 2048ull << 20;
 }
 
 static u64 private_bytes(void) {
@@ -1668,21 +1669,28 @@ static int prewarm_queue_file(const char *fname, Shader **head, Shader **tail, P
  * game waits at its first present until the queue is made (prewarm_gate). SSBU_SHADER_PREWARM_LIST=0: not read; another
  * number caps the queue at that many programs. */
 #define PREWARM_LIST_TOTAL 6000
+static u32 prewarm_queue_named(const char *list, u32 total, Shader **head, Shader **tail, Prewarm ***order, u32 *cap, u32 *queued, u32 *listed);
 static u32 prewarm_queue_list(Shader **head, Shader **tail, Prewarm ***order, u32 *cap, u32 *queued, u32 *listed) {
     const char *set = getenv("SSBU_SHADER_PREWARM_LIST");
     u32 total = set && *set ? (u32)strtoul(set, NULL, 10) : PREWARM_LIST_TOTAL;
     if (set && *set && total < 2) total = total ? PREWARM_LIST_TOTAL : 0;   /* (=1 was "on" before the number meant a total) */
+    return prewarm_queue_named("shader_prewarm.txt", total, head, tail, order, cap, queued, listed);
+}
+/* (the same for any list: shader_prewarm.txt, shader_prewarm_first.txt) */
+static u32 prewarm_queue_named(const char *list, u32 total, Shader **head, Shader **tail, Prewarm ***order, u32 *cap, u32 *queued, u32 *listed) {
     if (*queued >= total) return 0;
     FILE *f = NULL;
+    char media[96];
+    snprintf(media, sizeof media, "media/%s", list);
 #ifdef _WIN32
     char path[MAX_PATH + 64] = "";
     DWORD k = GetModuleFileNameA(NULL, path, MAX_PATH);
     if (k && k < MAX_PATH) {
         char *slash = strrchr(path, '\\');
-        if (slash) { strcpy(slash + 1, "shader_prewarm.txt"); f = fopen(path, "r"); }
+        if (slash) { strcpy(slash + 1, list); f = fopen(path, "r"); }
     }
 #endif
-    if (!f) f = fopen("media/shader_prewarm.txt", "r");
+    if (!f) f = fopen(media, "r");
     if (!f) return 0;
     u32 added = 0;
     char line[160], fname[200], file[1300];
@@ -1858,6 +1866,17 @@ static DWORD WINAPI prewarm_main(void *unused) {
     Prewarm **order = malloc(sizeof *order * order_cap);   /* (the entries in queue order) */
     Shader *head = NULL, *tail = NULL;
     u32 queued = 0;
+    /* First the programs the title, the menus and the select screens draw (media/shader_prewarm_first.txt: the programs
+     * of the Vulkan warm start's boot group, tools/dev/pipeline_sweep.py groups), when Prepare
+     * Shaders or play put them in this cache. The played ones come newest first by the date a file was first written, so
+     * the menus' and the select screen's, played once long ago, came last and were the ones over the budget: the select
+     * screen at 38-52 fps on an RTX 2060 whose prewarm made 2,275 of its 7,165 played programs (2026-11-16). */
+    u32 first_listed = 0, first = table && order ? prewarm_queue_named("shader_prewarm_first.txt", PREWARM_SLOTS / 2, &head, &tail, &order, &order_cap, &queued, &first_listed) : 0;
+    if (order && queued + n > order_cap) {   /* (room for the played ones after them) */
+        Prewarm **more = realloc(order, sizeof *order * (queued + n + 1024));
+        if (more) { order = more; order_cap = queued + n + 1024; }
+        else n = order_cap - queued;
+    }
     /* The vertex programs first: they are the ones whose object the first draw waits for
      * (the pixel program's is made alongside and is usually ready by then). With all of the
      * cache, this lets the first match start after the vertex half is ready. */
@@ -1890,8 +1909,8 @@ static DWORD WINAPI prewarm_main(void *unused) {
     const char *mode = unplayed == UNPLAYED_ALL ? "every program"
                      : unplayed == UNPLAYED_VS ? "the played programs and the unused vertex ones"
                      : "the played programs";
-    fprintf(stderr, "[gfx] prewarm: %u shaders from the disk cache (%s), %u more from the shipped list (%u programs played), on %u threads, %ld during a fight after the first %d s\n",
-            queued - shipped, mode, shipped, listed, ncompilers - 1, (long)prewarm_after, PREWARM_FULL_MS / 1000);
+    fprintf(stderr, "[gfx] prewarm: %u shaders the menus draw first (%u listed), %u from the disk cache (%s), %u more from the shipped list (%u programs played), on %u threads, %ld during a fight after the first %d s\n",
+            first, first_listed, queued - shipped - first, mode, shipped, listed, ncompilers - 1, (long)prewarm_after, PREWARM_FULL_MS / 1000);
     if (warm_mode >= 2) warm_prewarmed(order, queued);
     free(order);
     return 0;

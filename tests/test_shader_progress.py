@@ -25,7 +25,9 @@ class ProgressTests(unittest.TestCase):
         # (OpenSmash.Launcher's ShadersDone asks for Prepare Shaders again when Vulkan may draw and "\nspirv " is missing)
         self.assertEqual(S.marker_text(10, None), 'version 10\n')
         self.assertIn('\nspirv g1001.01100600\n', S.marker_text(10, 'g1001.01100600'))
-        self.assertIn('"\\nspirv "', (ROOT / 'OpenSmash.Launcher' / 'LauncherForm.cs').read_text(encoding='utf-8'))
+        launcher = (ROOT / 'OpenSmash.Launcher' / 'LauncherForm.cs').read_text(encoding='utf-8')
+        self.assertIn('"\\nspirv "', launcher)
+        self.assertIn('SHADER_CACHE_SPV_VERSION', launcher)   # (this version's names: an older version's SPIR-V is not enough)
 
     def test_a_marker_for_other_spirv_names_is_removed(self):
         # (#330 changed g1001 to g1002; the launcher's "\nspirv " check let the stale cache count as prepared)

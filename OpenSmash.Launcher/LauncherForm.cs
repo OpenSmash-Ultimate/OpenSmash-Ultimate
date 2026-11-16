@@ -3594,14 +3594,20 @@ namespace OpenSmash.Launcher
         {
             string marker = Path.Combine(_repo, "dump", "shadercache", "complete.txt");
             if (!File.Exists(marker)) return false;
-            var ver = Regex.Match(File.ReadAllText(Path.Combine(_repo, "runtime", "gpu_shader_cache.h")), @"#define SHADER_CACHE_VERSION (\d+)");
+            string header = File.ReadAllText(Path.Combine(_repo, "runtime", "gpu_shader_cache.h"));
+            var ver = Regex.Match(header, @"#define SHADER_CACHE_VERSION (\d+)");
             if (!ver.Success) return false;
             string text = File.ReadAllText(marker);
             if (!text.Contains("version " + ver.Groups[1].Value)) return false;
             // Vulkan draws from SPIR-V, which a Prepare Shaders run without ssbu_glslang.dll (every run before
             // Vulkan was the default) did not make: without it each new shader and pipeline is made in play
-            // (a minute of waits in a first session). A newer glslang's file names are not checked: the game makes those in play.
-            return RendererAsked() == "direct3d11" || !File.Exists(Path.Combine(_repo, "build", "ssbu_glslang.dll")) || text.Contains("\nspirv ");
+            // (a minute of waits in a first session). Nor did a run before the SPIR-V version went up (#330: 1001 to 1002):
+            // its files have the old names, so the warm start found 321 programs of 13,663 pipelines on an RTX 5060 and the
+            // first match made 300 pipelines in play (2026-11-16). The names must be this version's ("spirv g<version>.");
+            // a newer glslang's library part is not checked: the game makes those in play.
+            var spv = Regex.Match(header, @"#define SHADER_CACHE_SPV_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)");
+            string want = spv.Success ? "\nspirv g" + (int.Parse(ver.Groups[1].Value) * 100 + int.Parse(spv.Groups[1].Value)) + "." : "\nspirv ";
+            return RendererAsked() == "direct3d11" || !File.Exists(Path.Combine(_repo, "build", "ssbu_glslang.dll")) || text.Contains(want);
         }
 
         void StartShaders(string priority)

@@ -6,6 +6,8 @@ choose to show a name (their Discord display name) on the leaderboard.
     GET  /leaderboard.json   every ranked player: an opaque id, position, best GSP and GSP per fighter with each
                              fighter's position; a name only for a player who chose to show one. No address, NSA id,
                              PID, in-game name or lobby code.
+    GET  /status.json        aggregate counts only: players online, rooms (gatherings with a player), arenas, rooms
+                             with room left, players ranked. No player data at all.
     GET  /gsp/me             the asking player's own: the same, plus where they play now (Quickplay or a Battle Arena:
                              its ID, players, room) for Discord's Rich Presence. Signed (below).
     POST /gsp/profile        {"player", "t", "name", "discord", "sig"}: the name to show ("" none) and a hash of the
@@ -177,6 +179,26 @@ class Board:
     def leaderboard(self, now):
         return self.ranks(now)[0]
 
+    # ---- the lobby's activity -----------------------------------------------------------------------
+    def status(self, now):
+        """Aggregate counts for the project's site: nothing about any player."""
+        mm, arenas = getattr(self.nex, "matchmaking", None), getattr(self.nex, "arenas", None)
+        rooms = arena_rooms = open_rooms = in_matches = 0
+        for ms in (mm.sessions.values() if mm is not None else ()):
+            n = len(ms.participants)
+            if n == 0:
+                continue
+            rooms += 1
+            if arenas is not None and arenas.id_of.get(ms.gid, ""):
+                arena_rooms += 1
+            if ms.open and n < ms.max_participants:
+                open_rooms += 1
+            if n >= 2:
+                in_matches += n
+        return {"updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "online": len(self.nex.by_pid),
+                "rooms": rooms, "arenas": arena_rooms, "open_rooms": open_rooms, "playing": in_matches,
+                "ranked": self.ranks(now)[2]}
+
     # ---- a player's own --------------------------------------------------------------------------
     def where(self, pid):
         """Where the player plays now, as the game server knows it: a gathering they are in (a Battle Arena when it
@@ -221,6 +243,8 @@ class Board:
         now = time.monotonic() if now is None else now
         if method == "GET" and path == "/leaderboard.json":
             return 200, self.leaderboard(now)
+        if method == "GET" and path == "/status.json":
+            return 200, json.dumps(self.status(now), separators=(",", ":")).encode()
         if method == "GET" and path == "/gsp/me":
             pid = self.verify(headers.get("x-opensmash-player"), headers.get("x-opensmash-time"),
                               headers.get("x-opensmash-sig"), "me")
@@ -241,7 +265,7 @@ class Board:
             if not self.set_profile(pid, name, discord):
                 return 503, b'{"error":"too many profiles"}'
             return 200, json.dumps({"ok": True, "name": shown_name(name)}).encode()
-        if path in ("/leaderboard.json", "/gsp/me", "/gsp/profile"):
+        if path in ("/leaderboard.json", "/status.json", "/gsp/me", "/gsp/profile"):
             return 405, b'{"error":"method not allowed"}'
         return 404, b'{"error":"not found"}'
 
