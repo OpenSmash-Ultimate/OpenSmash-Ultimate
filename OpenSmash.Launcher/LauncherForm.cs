@@ -99,6 +99,13 @@ namespace OpenSmash.Launcher
         string _setupStep = "";
         string _setupLog = "";
         string _setupMode = ""; // "scratch" or "import"
+        bool _maintenanceBuildUi;
+        bool _maintenanceRestartRequested;
+        float _maintenanceFrac = -1;
+        string _maintenanceDetail = "";
+        string _maintenanceEta = "";
+        readonly List<string> _maintenanceLog = new();
+        Process? _maintenanceProcess;
 
         // Play (mods) or Vanilla (the game's own data and no mods: mods.play_vanilla); both start build\ssbu.exe. Remembered in build\launch_mode.txt.
         string _launchMode = "mods";
@@ -123,7 +130,7 @@ namespace OpenSmash.Launcher
 
         // While any of these run, Play is greyed out so two jobs cannot overlap.
         bool Busy => _modsBusy || _setupModding || _pluginBuildUi || _loadOn || _startingPlay || _newModsBusy
-            || _updateApplying || _marketplaceInstalling.Count > 0;
+            || _updateApplying || _marketplaceInstalling.Count > 0 || _maintenanceBuildUi;
 
         bool _rebuildPrompt;
         bool _sharePrompt;
@@ -272,6 +279,10 @@ namespace OpenSmash.Launcher
                 if (_shaderProc != null && !_shaderProc.HasExited)
                 {
                     try { _shaderProc.Kill(entireProcessTree: true); } catch { }
+                }
+                if (!_maintenanceRestartRequested && _maintenanceProcess != null && !_maintenanceProcess.HasExited)
+                {
+                    try { _maintenanceProcess.Kill(entireProcessTree: true); } catch { }
                 }
             };
             Shown += async (s, e) =>
@@ -2248,6 +2259,7 @@ namespace OpenSmash.Launcher
             }
             else if (id == "update_prompt:block") { }
             else if (id == "update:check") _ = CheckForUpdatesAsync(false);
+            else if (id == "update:build") StartMaintenanceBuild();
             else if (id == "storage:refresh") _ = StorageStatusAsync();
             else if (id == "storage:move") _ = StorageMoveAsync();
             else if (id == "update:apply") _ = ApplyUpdateAsync();
@@ -3271,6 +3283,168 @@ namespace OpenSmash.Launcher
             PlayDone();
             Invalidate();
             if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
+        }
+
+        void StartMaintenanceBuild()
+        {
+            if (Busy) return;
+            if (_gameProcess != null && !_gameProcess.HasExited)
+            {
+                MessageBox.Show("Close the game before building again.", "OpenSmash");
+                return;
+            }
+
+            string script = Path.Combine(_repo, "tools", "rebuild-all.ps1");
+            if (!File.Exists(script))
+            {
+                MessageBox.Show($"Build script not found: {script}", "OpenSmash");
+                return;
+            }
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                WorkingDirectory = _repo,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (string arg in new[]
+            {
+                "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
+                "-LauncherPid", Environment.ProcessId.ToString()
+            })
+                psi.ArgumentList.Add(arg);
+
+            var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+            process.OutputDataReceived += (_, e) => QueueMaintenanceLine(e.Data);
+            process.ErrorDataReceived += (_, e) => QueueMaintenanceLine(e.Data);
+            process.Exited += (_, _) => FinishMaintenanceBuild(process);
+
+            _maintenanceBuildUi = true;
+            _maintenanceRestartRequested = false;
+            _maintenanceFrac = -1;
+            _maintenanceDetail = "Starting the incremental build";
+            _maintenanceEta = "";
+            _maintenanceLog.Clear();
+            _maintenanceProcess = process;
+            Invalidate();
+
+            try
+            {
+                process.Start();
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+            }
+            catch (Exception ex) when (ex is InvalidOperationException || ex is System.ComponentModel.Win32Exception)
+            {
+                _maintenanceBuildUi = false;
+                _maintenanceProcess = null;
+                process.Dispose();
+                Invalidate();
+                MessageBox.Show($"Could not start the build: {ex.Message}", "OpenSmash");
+            }
+        }
+
+        void QueueMaintenanceLine(string? line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    if (line == "__OPENSMASH_RESTART__")
+                    {
+                        _maintenanceRestartRequested = true;
+                        _maintenanceFrac = 1;
+                        _maintenanceDetail = "Restarting OpenSmash";
+                        Invalidate();
+                        Close();
+                        return;
+                    }
+                    NoteMaintenanceLine(line);
+                }));
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+        }
+
+        void NoteMaintenanceLine(string line)
+        {
+            if (line == "__OPENSMASH_PHASE__:game")
+            {
+                _maintenanceFrac = -1;
+                _maintenanceDetail = "Building the game";
+                _maintenanceEta = "";
+                Invalidate();
+                return;
+            }
+            if (line == "__OPENSMASH_PHASE__:launcher")
+            {
+                _maintenanceFrac = -1;
+                _maintenanceDetail = "Publishing the launcher";
+                _maintenanceEta = "";
+                Invalidate();
+                return;
+            }
+
+            _maintenanceLog.Add(line);
+            if (_maintenanceLog.Count > 20) _maintenanceLog.RemoveAt(0);
+            var percent = Regex.Match(line.Trim(), @"(?:^LOG percent (\d{1,3})$)|(?:\]\s+(\d{1,3})%)|(?: — (\d{1,3})%,)");
+            if (percent.Success)
+            {
+                string value = percent.Groups.Cast<Group>().Skip(1).First(g => g.Success).Value;
+                if (int.TryParse(value, out int pct))
+                {
+                    float frac = Math.Clamp(pct / 100f, 0f, 1f);
+                    if (frac >= _maintenanceFrac)
+                    {
+                        _maintenanceFrac = frac;
+                        _maintenanceDetail = "Building the game";
+                    }
+                }
+                Invalidate();
+                return;
+            }
+
+            if (line.StartsWith("LOG ", StringComparison.Ordinal)) line = line.Substring(4);
+            if (line.Length > 180) line = line.Substring(0, 180);
+            if (!string.IsNullOrWhiteSpace(line))
+            {
+                _maintenanceDetail = line.Trim();
+                Invalidate();
+            }
+        }
+
+        void FinishMaintenanceBuild(Process process)
+        {
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    if (_maintenanceRestartRequested) return;
+                    int exitCode;
+                    try { exitCode = process.ExitCode; }
+                    catch (InvalidOperationException) { exitCode = -1; }
+
+                    if (ReferenceEquals(_maintenanceProcess, process)) _maintenanceProcess = null;
+                    _maintenanceBuildUi = false;
+                    process.Dispose();
+                    RefreshInfo();
+                    Invalidate();
+                    if (exitCode == 0)
+                        MessageBox.Show("The game and launcher builds completed.", "OpenSmash");
+                    else
+                    {
+                        string log = string.Join(Environment.NewLine, _maintenanceLog);
+                        if (log.Length > 1800) log = log.Substring(log.Length - 1800);
+                        MessageBox.Show($"The build stopped (exit code {exitCode}).{Environment.NewLine}{Environment.NewLine}{log}", "OpenSmash");
+                    }
+                }));
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
         }
 
         async Task FetchPlugins(bool again)

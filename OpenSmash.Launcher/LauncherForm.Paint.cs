@@ -632,6 +632,14 @@ namespace OpenSmash.Launcher
             using (var pen = new Pen(A(Theme.Line), Math.Max(1, s)))
                 g.DrawLine(pen, 0, y, W, y);
 
+            if (_maintenanceBuildUi)
+            {
+                PaintJobStrip(g, W, y, h, s,
+                    string.IsNullOrEmpty(_maintenanceDetail) ? "Building the game and launcher" : _maintenanceDetail,
+                    _maintenanceFrac, _maintenanceEta);
+                PopFade(g, st);
+                return;
+            }
             if (_shaderUi)
             {
                 PaintJobStrip(g, W, y, h, s,
@@ -2009,11 +2017,17 @@ namespace OpenSmash.Launcher
                 Theme.Label(g, versions, vf, A(Theme.Dim), x + pad, listTop + ch - 88 * s, 16 * s, 12 * s * 0.08f);
             }
             float bh = 44 * s, by = listTop + ch - bh - 28 * s;
-            float wApply = 150 * s, wCheck = 210 * s;
+            float wBuild = 220 * s, wApply = 150 * s, wCheck = 210 * s, gap = 12 * s;
             bool showApply = _updateState == "available" || _updateApplying;
             float xApply = x + cwIn - pad - wApply;
-            float xCheck = showApply ? xApply - 12 * s - wCheck : x + (cwIn - wCheck) / 2;
+            float xBuild = x + pad;
+            float xCheck = showApply ? xApply - gap - wCheck : xBuild + wBuild + gap;
+            bool canBuild = !Busy && !_updateChecking && !_updateApplying;
             bool canCheck = !_updateChecking && !_updateApplying;
+            Theme.ButtonAnimated(g, _maintenanceBuildUi ? "BUILDING\u2026" : "BUILD GAME + LAUNCHER",
+                xBuild, by, wBuild, bh, s, true, Hov("update:build", canBuild && _hover == "update:build"), canBuild, 11 * s, _alpha,
+                press: Press("update:build"));
+            if (canBuild) AddHit("update:build", xBuild, by, wBuild, bh);
             Theme.ButtonAnimated(g, _updateState == "checking" ? "CHECKING\u2026" : "CHECK FOR UPDATE", xCheck, by, wCheck, bh, s, false, Hov("update:check", canCheck && _hover == "update:check"), canCheck, 12 * s, _alpha, press: Press("update:check"));
             if (canCheck) AddHit("update:check", xCheck, by, wCheck, bh);
             bool canApply = _updateState == "available" && !_updateApplying && !_updateChecking;
