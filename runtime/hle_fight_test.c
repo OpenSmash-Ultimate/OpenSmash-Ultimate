@@ -145,11 +145,15 @@ static void first_battle_frame(int entry) {
 
 
 /* ---- SSBU_DEBUG_FINAL ------------------------------------------------------------------- */
-/* SSBU_DEBUG_FINAL=<first>[,<every>]: at that fight frame of each fighter (and every <every> frames after), its
+/* SSBU_DEBUG_FINAL=<first>[,<every>]: one fighter at a time, in turn (the first fighter at fight frame <first>, the next
+ * <every> frames later - 600 without it - and so on, round again after the last), its
  * FIGHTER_INSTANCE_WORK_ID_FLAG_FINAL turned on (WorkModule::on_flag: what breaking a Smash Ball gives) and its status
  * asked to be FIGHTER_STATUS_KIND_FINAL (StatusModule::change_status_request_from_script): its Final Smash, as
  * ssbu-recomp's SSBU_FIGHTER_DEBUG "final" then "status". The flag alone left the next neutral special a neutral
- * special (measured). For the pipeline sweep (tools/dev/pipeline_sweep.py): every fighter's Final Smash drawn. */
+ * special (measured). For the pipeline sweep (tools/dev/pipeline_sweep.py): every fighter's Final Smash drawn. In turn,
+ * not all at once (2026-11-12): forced on every fighter at the same frame (which a normal match never does) the scripts
+ * broke - Dark Samus', Mega Man's and Isabelle's at the same frame stopped the game (svcBreak in a Mega Man status
+ * script, at the second round), the same match without them played to its end. */
 static long long final_first, final_every;
 static void give_final(Cpu *c, u64 boma, int entry, long long f) {
     static int state;   /* 0 not asked yet, 1 found, -1 not */
@@ -193,8 +197,10 @@ static void frame_line(Cpu *c) {
         if (k == 0) first_battle_frame(fighters[k].entry);
     }
     FightFrame fr = {++fighters[k].frame, fighters[k].entry};
-    if (final_first && fr.f >= final_first && (fr.f == final_first || (final_every && (fr.f - final_first) % final_every == 0)))
-        give_final(c, boma, fighters[k].entry, fr.f);
+    if (final_first && fr.f >= final_first) {   /* (one fighter at a time, in turn: SSBU_DEBUG_FINAL above) */
+        long long gap = final_every ? final_every : 600, t = fr.f - final_first - (long long)k * gap;
+        if (t >= 0 && t % (gap * fighter_count) == 0) give_final(c, boma, fighters[k].entry, fr.f);
+    }
     if (!hash_out) return;
     fr.st = (int)getter(c, FD("30StatusModule__status_kind_impl"), boma, 0, NULL);
     fr.mot = getter(c, FD("30MotionModule__motion_kind_impl"), boma, 0, NULL);
@@ -426,7 +432,7 @@ void test_fight_start(void) {
     if (fin && *fin && (final_first = strtoll(fin, NULL, 10)) > 0) {
         const char *comma = strchr(fin, ',');
         final_every = comma ? strtoll(comma + 1, NULL, 10) : 0;
-        fprintf(stderr, "[fight] SSBU_DEBUG_FINAL: each fighter's Final Smash at its fight frame %lld, then every %lld\n", final_first, final_every);
+        fprintf(stderr, "[fight] SSBU_DEBUG_FINAL: the fighters' Final Smashes in turn, the first at fight frame %lld, then one every %lld\n", final_first, final_every ? final_every : 600);
     } else final_first = 0;
     if (hash_on || det || final_first) {
         fprintf(stderr, "[fight] SSBU_FIGHT_HASH %s, SSBU_DETERMINISTIC %d (off mask %d): the fighters' frame line is watched\n",
