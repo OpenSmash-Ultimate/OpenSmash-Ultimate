@@ -4,8 +4,8 @@
  * One EOS lobby a gathering: its id "os1-<gid>" (the gid is drawn by the game that makes it: unique among games
  * with all but certainty, and the lobby id refuses a second one), its bucket "ssbu1g:<part>" (game build, lobby code,
  * simulation version, mods: net_part_key), its members the games whose players are in it. Public attributes: what a
- * search needs - GID, MODE, OPEN, ARENA (the Battle Arena ID, "-" none), RATING (the participants' average), NP,
- * MINP, MAXP, A0..A15 (the NEX attributes) - and the whole gathering, B0..Bn (BN pieces of base64, 60 characters
+ * search needs - GID, MODE, OPEN, ARENA (the Battle Arena ID, "-" none), RATING (the participants' average), UTC (the
+ * owner's clock offset: Quickplay prefers near gatherings, net_nex_match.c), NP, MINP, MAXP, A0..A15 (the NEX attributes) - and the whole gathering, B0..Bn (BN pieces of base64, 60 characters
  * each: an attribute holds 64), which the server needs to answer a join. Only the lobby's owner may write them.
  *
  * Every game keeps its own copy of the gatherings its player is in (the server reads and changes them as it did
@@ -42,7 +42,7 @@
 
 #define MAXG 128
 #define PIECE_CHARS 60
-#define MAX_PIECES 37
+#define MAX_PIECES 37   /* (9 named attributes + A0..A15 + BN + 37 pieces = 63 of EOS's 64 a lobby) */
 #define MSG_PIECE 1100
 #define N_PARTICIPANT_LEFT 3002
 #define N_PARTICIPANT_DISCONNECTED 3007
@@ -429,7 +429,7 @@ static void publish(L *l) {   /* (EOS thread) its attributes, if this game owns 
     EOS_HLobbyModification m = NULL;
     if (p_EOS_Lobby_UpdateLobbyModification(eos_lobby_interface(), &o, &m) != EOS_SUCCESS) return;
     add_int(m, "GID", p->gid); add_int(m, "MODE", p->mode); add_int(m, "OPEN", p->open); add_str(m, "ARENA", p->arena);
-    add_int(m, "RATING", p->rating); add_int(m, "NP", p->np); add_int(m, "MINP", p->minp); add_int(m, "MAXP", p->maxp);
+    add_int(m, "RATING", p->rating); add_int(m, "UTC", nex_local_utc_min()); add_int(m, "NP", p->np); add_int(m, "MINP", p->minp); add_int(m, "MAXP", p->maxp);
     for (uint32_t i = 0; i < p->nattribs; i++) { char k[8]; snprintf(k, sizeof k, "A%u", i); add_int(m, k, p->attribs[i]); }
     size_t len = strlen(p->pieces);
     int pieces = (int)((len + PIECE_CHARS - 1) / PIECE_CHARS);
@@ -550,7 +550,7 @@ static void do_stat(void *arg) {
 }
 
 /* ---- waiting for EOS (a search, a join): the game thread waits, the EOS thread answers ---- */
-typedef struct Found { uint8_t *blob; size_t n; } Found;
+typedef struct Found { uint8_t *blob; size_t n; int utc_known, utc_min; } Found;   /* (utc: the UTC attribute, its owner's clock offset) */
 typedef struct Req {
     volatile LONG refs;
     HANDLE done;
@@ -589,8 +589,17 @@ static void EOS_CALL search_done(const EosFindInfo *d) {
         if (p_EOS_LobbySearch_CopySearchResultByIndex(r->search, &io, &det) != EOS_SUCCESS) continue;
         size_t bn = 0;
         uint8_t *blob = details_blob(det, &bn);
+        if (blob) {
+            Found *f = &r->found[r->nfound++];
+            f->blob = blob; f->n = bn;
+            EosKeyOptions k = {1, "UTC"};
+            EosAttr *a = NULL;
+            if (p_EOS_LobbyDetails_CopyAttributeByKey(det, &k, &a) == EOS_SUCCESS && a) {
+                if (a->Data && a->Data->ValueType == EOS_AT_INT64) { f->utc_known = 1; f->utc_min = (int)a->Data->Value.AsInt64; }
+                p_EOS_Lobby_Attribute_Release(a);
+            }
+        }
         p_EOS_LobbyDetails_Release(det);
-        if (blob) { r->found[r->nfound].blob = blob; r->found[r->nfound++].n = bn; }
     }
     p_EOS_LobbySearch_Release(r->search);
     r->search = NULL;
@@ -841,6 +850,7 @@ static void st_refresh(void *ctx, const char *part, uint32_t rating, const char 
             int old = has(ms, my_pid);   /* (one this game left: the search's index is a moment behind) */
             for (int k = 0; k < 16 && !old; k++) old = gone[k] == ms->gid;
             if (old || entry(ms->gid)) { nex_session_free(ms); continue; }
+            ms->utc_known = r->found[i].utc_known; ms->utc_min = r->found[i].utc_min;
             insert(ms, 0, v, t);
             added++;
         }

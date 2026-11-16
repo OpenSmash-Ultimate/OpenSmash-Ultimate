@@ -64,7 +64,15 @@ typedef struct NexSession {
     NexBytes extra;                     /* MatchmakeSession fields after the codeword, sent back as they came */
     char *system_password;
     char arena_id[8];                   /* (Battle Arenas) its arena ID, "" until asked for */
+    int utc_known;                      /* (a search result) utc_min is its owner's clock offset */
+    int utc_min;                        /* minutes east of UTC on its owner's PC: a rough distance for Quickplay */
 } NexSession;
+
+/* This PC's clock offset from UTC in minutes (SSBU_QP_UTC_MIN overrides it, for tests). Quickplay prefers gatherings
+ * whose owner's offset is within NEX_NEAR_MIN of it: players that far apart are usually over 150 ms away. */
+#define NEX_NEAR_MIN 180
+int nex_local_utc_min(void);
+int nex_utc_far(int a_min, int b_min);
 
 /* A player's statistics for one category (Matchmake Referee). */
 #define NEX_STAT_FIELDS 12

@@ -3,6 +3,8 @@
  * NexStore (nex_store_local: this process). */
 #define _CRT_SECURE_NO_WARNINGS
 #include <math.h>
+#include <stdlib.h>
+#include <time.h>
 
 #include "net_nex_int.h"
 
@@ -332,6 +334,24 @@ static int param_head(NexIn *s, ParamHead *h) {
     return 1;
 }
 
+int nex_local_utc_min(void) {
+    static int cached = 100000;
+    if (cached != 100000) return cached;
+    const char *e = getenv("SSBU_QP_UTC_MIN");
+    if (e && *e) return cached = atoi(e);
+    time_t t = time(NULL);
+    struct tm g = *gmtime(&t), l = *localtime(&t);
+    int d = (l.tm_hour - g.tm_hour) * 60 + (l.tm_min - g.tm_min), days = l.tm_yday - g.tm_yday;
+    if (days == 1 || days < -1) d += 1440;        /* (local is a day ahead; < -1: across new year) */
+    else if (days == -1 || days > 1) d -= 1440;
+    return cached = d;
+}
+int nex_utc_far(int a, int b) {
+    int d = abs(a - b) % 1440;
+    if (d > 720) d = 1440 - d;
+    return d > NEX_NEAR_MIN;
+}
+
 static uint32_t mm_auto(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
     ParamHead h;
     if (!param_head(in, &h)) return NEX_EINVAL;
@@ -358,8 +378,13 @@ static uint32_t mm_auto(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
     if (s->store.refresh) s->store.refresh(s->store.ctx, part, (uint32_t)mine, NULL);
     uint32_t refused[8], nrefused = 0;   /* (gatherings the store could not enter: another game filled them first) */
 again:;
-    NexSession *best = NULL, *best_fb = NULL;
-    double best_d = 0, best_fb_d = 0;
+    /* The best gathering: the nearest tier first - 0 near and in the rating window, 1 near outside it, 2 far (by
+     * its owner's clock offset, nex_utc_far) in the window, 3 far outside it - then the closest rating. A far one
+     * is still taken when nothing nearer is open: a match is never refused for distance alone. */
+    NexSession *found_best = NULL;
+    int best_tier = 4, nfar = 0;
+    double best_d = 0;
+    int my_utc = nex_local_utc_min();
     int n = s->store.count(s->store.ctx);
     for (int i = 0; i < n; i++) {
         NexSession *ms = s->store.at(s->store.ctx, i);
@@ -389,11 +414,15 @@ again:;
             }
         }
         if (!fallback && diff > RATING_WINDOW + RATING_WIDENING * (s->now - ms->created)) fallback = 1;
+        int far = ms->utc_known && nex_utc_far(ms->utc_min, my_utc);
+        nfar += far;
+        int tier = far * 2 + fallback;
         /* (the closest; a tie: the oldest gathering - gids are in order) */
-        if (fallback) { if (!best_fb || diff < best_fb_d) { best_fb = ms; best_fb_d = diff; } }
-        else if (!best || diff < best_d) { best = ms; best_d = diff; }
+        if (tier < best_tier || (tier == best_tier && diff < best_d)) { found_best = ms; best_tier = tier; best_d = diff; }
     }
-    NexSession *found = best ? best : best_fb;
+    NexSession *found = found_best;
+    if (nfar) nex_log(s, 1, "Quickplay: %d far gathering(s) by clock offset (ours %+d min); taken: %s", nfar, my_utc,
+                      !found ? "none" : best_tier >= 2 ? "a far one (nothing nearer open)" : "a near one");
     if (found && s->store.claim && !s->store.claim(s->store.ctx, found)) {
         nex_log(s, 1, "gathering %u could not be entered: looking again", found->gid);
         if (nrefused < 8) { refused[nrefused++] = found->gid; goto again; }

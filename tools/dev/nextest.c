@@ -125,6 +125,11 @@ int main(void) {
             NexIo io = {NULL, stream_out, datagram_out, part_of, log_line, rng, clock_now};
             s = nex_server_new(&io, nex_store_local(), verbose);
             nex_server_set_round_base(s, round);
+        } else if (!strcmp(cmd, "utcfar")) {   /* "utcfar A B": 1 if two clock offsets (minutes) are far for Quickplay */
+            int x = 0, y = 0;
+            sscanf(rest, "%d %d", &x, &y);
+            printf("utcfar %d\n", nex_utc_far(x, y));
+            fflush(stdout);
         } else if (!strcmp(cmd, "now")) {
             nex_server_set_now(s, atof(rest));
         } else if (!strcmp(cmd, "part")) {
