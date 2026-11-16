@@ -43,27 +43,28 @@ static int failures, checks;
 typedef struct Case {
     const char *name, *server_file, *env, *args;   /* server_file NULL: none; env: NAME=value or NULL */
     const char *address, *room;                     /* what net_relay_address() and the room are; address NULL: none */
+    int eos;                                        /* net_eos_wanted(): 1 EOS first (the public lobby the fallback), 0 not */
 } Case;
 
 static const Case CASES[] = {
-    {"auto in the file: the one public lobby (Europe)", "# the lobby\nauto\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
-    {"na: the North American lobby is gone, the European one", "na\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
-    {"eu", "eu\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
-    {"the North American address alone: the European lobby", "smash.recomps.wtf:39421\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
-    {"the North American address with a code: the European lobby, the code kept", "smash.recomps.wtf:39421 OurCode\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "OurCode"},
-    {"lobby code from the file", "opensmash-lobby.duckdns.org:39421 OurCode\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "OurCode"},
-    {"a server of the player's own is kept", "smash.example:39421 friends\n", NULL, "--online", "smash.example:39421", "friends"},
-    {"offline in the file", "off\n", NULL, "--online", NULL, "smash"},
-    {"no file", NULL, NULL, "--online", NULL, "smash"},
-    {"no --online: the file is not read", "auto\n", NULL, "", NULL, "smash"},
-    {"SSBU_NET_RELAY=na (the macOS / Linux launchers pass the file's word, #259)", "na\n", "SSBU_NET_RELAY=na", "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
-    {"SSBU_NET_RELAY=auto", "auto\n", "SSBU_NET_RELAY=auto", "--online", "opensmash-lobby.duckdns.org:39421", "smash"},
-    {"SSBU_NET_RELAY wins", "auto\n", "SSBU_NET_RELAY=127.0.0.1:39420", "--online", "127.0.0.1:39420", "smash"},
-    {"SSBU_NET_RELAY=off wins", "auto\n", "SSBU_NET_RELAY=off", "--online", NULL, "smash"},
-    {"hosting a private room: no lobby", "auto\n", "SSBU_NET_HOST=1", "--online", NULL, "smash"},
-    {"lan in the file: a private room found on this network, no lobby", "lan\n", NULL, "--online", NULL, "smash"},
-    {"lan and a room code in the file", "lan ourroom\n", NULL, "--online", NULL, "ourroom"},
-    {"SSBU_NET_RELAY=lan", "auto\n", "SSBU_NET_RELAY=lan", "--online", NULL, "smash"},
+    {"auto in the file: the one public lobby (Europe)", "# the lobby\nauto\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "smash", 1},
+    {"na: the North American lobby is gone, the European one", "na\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "smash", 1},
+    {"eu", "eu\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "smash", 1},
+    {"the North American address alone: the European lobby", "smash.recomps.wtf:39421\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "smash", 1},
+    {"the North American address with a code: the European lobby, the code kept", "smash.recomps.wtf:39421 OurCode\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "OurCode", 1},
+    {"lobby code from the file", "opensmash-lobby.duckdns.org:39421 OurCode\n", NULL, "--online", "opensmash-lobby.duckdns.org:39421", "OurCode", 1},
+    {"a server of the player's own is kept", "smash.example:39421 friends\n", NULL, "--online", "smash.example:39421", "friends", 0},
+    {"offline in the file", "off\n", NULL, "--online", NULL, "smash", 0},
+    {"no file", NULL, NULL, "--online", NULL, "smash", 0},
+    {"no --online: the file is not read", "auto\n", NULL, "", NULL, "smash", 0},
+    {"SSBU_NET_RELAY=na (the macOS / Linux launchers pass the file's word, #259)", "na\n", "SSBU_NET_RELAY=na", "--online", "opensmash-lobby.duckdns.org:39421", "smash", 1},
+    {"SSBU_NET_RELAY=auto", "auto\n", "SSBU_NET_RELAY=auto", "--online", "opensmash-lobby.duckdns.org:39421", "smash", 1},
+    {"SSBU_NET_RELAY wins", "auto\n", "SSBU_NET_RELAY=127.0.0.1:39420", "--online", "127.0.0.1:39420", "smash", 0},
+    {"SSBU_NET_RELAY=off wins", "auto\n", "SSBU_NET_RELAY=off", "--online", NULL, "smash", 0},
+    {"hosting a private room: no lobby", "auto\n", "SSBU_NET_HOST=1", "--online", NULL, "smash", 0},
+    {"lan in the file: a private room found on this network, no lobby", "lan\n", NULL, "--online", NULL, "smash", 0},
+    {"lan and a room code in the file", "lan ourroom\n", NULL, "--online", NULL, "ourroom", 0},
+    {"SSBU_NET_RELAY=lan", "auto\n", "SSBU_NET_RELAY=lan", "--online", NULL, "smash", 0},
 };
 
 /* The child: reads the settings as the game does and writes what it found to result.txt. */
@@ -72,7 +73,7 @@ static int child(int argc, char **argv) {
     const char *a = net_relay_address();
     FILE *f = fopen("result.txt", "wb");
     if (!f) return 1;
-    fprintf(f, "%s\n%s\n", a ? a : "(none)", room);
+    fprintf(f, "%s\n%s\n%d\n", a ? a : "(none)", room, net_eos_wanted());
     fclose(f);
     return 0;
 }
@@ -80,7 +81,7 @@ static int child(int argc, char **argv) {
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++)
         if (!strcmp(argv[i], "--child")) return child(argc, argv);
-    static const char *const VARS[] = {"SSBU_NET_RELAY", "SSBU_NET_HOST", "SSBU_NET_ROOM", "SSBU_NET_NAME", "SSBU_NET_DIRECT"};
+    static const char *const VARS[] = {"SSBU_NET_RELAY", "SSBU_NET_HOST", "SSBU_NET_ROOM", "SSBU_NET_NAME", "SSBU_NET_DIRECT", "SSBU_EOS"};
     for (int v = 0; v < (int)(sizeof VARS / sizeof *VARS); v++) SetEnvironmentVariableA(VARS[v], NULL);
     char exe[MAX_PATH], base[MAX_PATH];
     GetModuleFileNameA(NULL, exe, sizeof exe);
@@ -109,18 +110,20 @@ int main(int argc, char **argv) {
             CloseHandle(pi.hThread);
         }
         if (t->env) SetEnvironmentVariableA(env, NULL);
-        char got_address[300] = "", got_room[64] = "";
+        char got_address[300] = "", got_room[64] = "", got_eos[16] = "";
         snprintf(file, sizeof file, "%s\\result.txt", dir);
         FILE *f = fopen(file, "rb");
         if (f) {
             if (fgets(got_address, sizeof got_address, f)) got_address[strcspn(got_address, "\r\n")] = 0;
             if (fgets(got_room, sizeof got_room, f)) got_room[strcspn(got_room, "\r\n")] = 0;
+            if (fgets(got_eos, sizeof got_eos, f)) got_eos[strcspn(got_eos, "\r\n")] = 0;
             fclose(f);
         }
         CHECK(code == 0 && f, "%s: the child did not run (exit %lu)", t->name, code);
         const char *want = t->address ? t->address : "(none)";
         CHECK(!strcmp(got_address, want), "%s: the lobby address is '%s', wanted '%s'", t->name, got_address, want);
         CHECK(!strcmp(got_room, t->room), "%s: the lobby code is '%s', wanted '%s'", t->name, got_room, t->room);
+        CHECK(atoi(got_eos) == t->eos, "%s: EOS wanted %s, wanted %d", t->name, got_eos, t->eos);
         DeleteFileA(file);
         snprintf(file, sizeof file, "%s\\online_server.txt", dir);
         DeleteFileA(file);

@@ -353,18 +353,53 @@ static void configure(void) {
     else if (configured && !hosting) proto_wanted = protocol_from_file(proto_wanted);
     if (hosting || lan_mode) proto_wanted = NET_PROTOCOL;   /* (a private room's relay: version 2) */
     proto = proto_wanted;
-    if (!hosting && !_stricmp(relay_text, "eos")) net_backend = &net_eos_backend;   /* (net_eos_net.c: no lobby server of ours) */
+    if (!hosting && relay_text[0] && (!_stricmp(relay_text, "eos") || net_eos_selected())) net_backend = &net_eos_backend;   /* (net_eos_net.c: no lobby server of ours) */
 }
 
-/* (net_eos_net.c) "eos" for the lobby: online through Epic Online Services alone */
-int net_eos_selected(void) {
-    const char *r = getenv("SSBU_NET_RELAY");
-    char line[256], host[64] = "";
-    if (r && *r) return !_stricmp(r, "eos");
-    if (!settings_online() || !settings_line_read(config_path(CONFIG_ONLINE_SERVER), line, sizeof line)) return 0;
-    sscanf(line, "%63s", host);
-    return !_stricmp(host, "eos");
+/* (net_eos_net.c) Online through Epic Online Services: the owner's design (2026-11-16) - Epic's services (lobbies,
+ * Quickplay, Battle Arenas, Local Wireless rooms) for everyone, everywhere; the one public lobby (Europe) only as the
+ * fallback and the collector of results (net_results.c). So the public lobby's words ("auto", the default, and the
+ * older "na" / "eu", or its own address, with or without a lobby code) mean EOS first: chosen when EOS logs in within
+ * EOS_FIRST_MS (SSBU_EOS_WAIT=<ms>), else the public lobby as before - no SDK or eos.txt beside the program, macOS /
+ * Linux, SSBU_EOS=0, Epic's services down. "eos" (or SSBU_NET_RELAY=eos): EOS alone. Another lobby's address, a
+ * private room's relay (SSBU_NET_HOST), "lan" or "off": never EOS. */
+#define EOS_FIRST_MS 8000
+static int eos_first(const char *host) {
+    if (!_stricmp(host, "eos")) return 2;
+    return means_public_lobby(host) || !_stricmp(host, PUBLIC_LOBBY);
 }
+int net_eos_wanted(void) {   /* 2 EOS alone, 1 EOS first, 0 not */
+    const char *r = getenv("SSBU_NET_RELAY"), *h = getenv("SSBU_NET_HOST");
+    char line[256], host[256] = "";
+    if (h && *h && strcmp(h, "0")) return 0;
+    if (r && *r) return eos_first(r);
+    if (!settings_online() || !settings_line_read(config_path(CONFIG_ONLINE_SERVER), line, sizeof line)) return 0;
+    sscanf(line, "%255s", host);
+    return host[0] ? eos_first(host) : 0;
+}
+/* Decided once (any thread; the others wait for it). The login started with the program (net_eos_prestart), so this
+ * waits at most until EOS_FIRST_MS after the start: about a second while the game loads when EOS answers, nothing when
+ * EOS is off here. */
+static int eos_choice;
+static BOOL CALLBACK eos_decide(PINIT_ONCE once, void *param, void **ctx) {
+    (void)once; (void)param; (void)ctx;
+    int want = net_eos_wanted();
+    if (want != 1) { eos_choice = want == 2; return TRUE; }
+    const char *w = getenv("SSBU_EOS_WAIT");
+    u64 limit = w && *w ? (u64)atoi(w) : EOS_FIRST_MS, age = process_age_ms(), t0 = now_ms();
+    eos_choice = eos_wait_ready((unsigned)(age < limit ? limit - age : 0));
+    fprintf(stderr, eos_choice ? "[net] online through Epic Online Services (waited %llu ms); the public lobby is the fallback\n"
+                               : "[net] Epic Online Services not available here (waited %llu ms): online through the public lobby\n",
+            (unsigned long long)(now_ms() - t0));
+    return TRUE;
+}
+int net_eos_selected(void) {
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    InitOnceExecuteOnce(&once, eos_decide, NULL, NULL);
+    return eos_choice;
+}
+/* (host.c, at the start) EOS logs in while the game loads, when online play may want it */
+void net_eos_prestart(void) { if (net_eos_wanted()) eos_start(); }
 void net_eos_names(char *code, size_t code_n, char *who, size_t who_n) {
     configure();
     snprintf(code, code_n, "%s", room);

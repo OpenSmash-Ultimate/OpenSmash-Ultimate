@@ -340,3 +340,10 @@ NexHandler nex_ranked_handler(uint32_t protocol, uint32_t method) {
     }
     return NULL;
 }
+
+/* pid's own statistics (net_results.c sends them to the public lobby): copies, at most max; the count */
+int nex_server_stats_of(NexServer *s, uint64_t pid, NexStats *out, int max) {
+    int n = 0;
+    for (int i = 0; i < s->nstats && n < max; i++) if (s->stats[i]->pid == pid) out[n++] = *s->stats[i];
+    return n;
+}

@@ -509,6 +509,17 @@ void eos_start(void) {
 }
 
 int eos_ready(void) { return eos_phase == 2 && eos_my_text[0]; }
+/* 1 once logged in, within ms; 0 at once when EOS is off here (no SDK or eos.txt beside the program, SSBU_EOS=0) or
+ * its start failed, or when the login did not come in time (Epic's services down or out of reach) */
+int eos_wait_ready(unsigned ms) {
+    eos_start();
+    u64 until = GetTickCount64() + ms;
+    while (eos_phase == 1 || (eos_phase == 2 && !eos_my_text[0])) {
+        if (GetTickCount64() >= until) return 0;
+        Sleep(10);
+    }
+    return eos_ready();
+}
 const char *eos_my_id(void) { return eos_ready() ? eos_my_text : NULL; }
 
 static int eos_send_on(const char *to, const void *data, u32 len, u8 channel) {
@@ -612,6 +623,7 @@ int eos_hub_member_ip(const char *id, u32 *ip) { (void)id; (void)ip; return 0; }
 int eos_hub_member_id(u32 ip, char id[NET_EOS_ID_LEN + 1]) { (void)ip; (void)id; return 0; }
 void eos_start(void) {}
 int eos_ready(void) { return 0; }
+int eos_wait_ready(unsigned ms) { (void)ms; return 0; }
 const char *eos_my_id(void) { return NULL; }
 int eos_send(const char *to, const void *data, u32 len) { (void)to; (void)data; (void)len; return 0; }
 void eos_counts(u64 *a, u64 *b, u64 *c) { *a = *b = *c = 0; }

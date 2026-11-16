@@ -388,7 +388,10 @@ static char *http_get(const wchar_t *host, INTERNET_PORT port, int secure, const
 /* GET /gsp/me on the lobby the game joined (its game server's port answers HTTP: tools/ssbu_online_lobby.py) */
 static int ask_me(const char *nsa, const char *player) {
     const char *relay = net_lobby() ? net_relay_address() : NULL;
-    if (!relay) return 0;
+    if (!relay) {   /* (online over EOS: the public lobby keeps the player's results - net_results.c) */
+        const char *r = getenv("SSBU_RESULTS_LOBBY");
+        relay = r && *r && _stricmp(r, "off") ? r : "opensmash-lobby.duckdns.org:39421";
+    }
     char host[256];
     snprintf(host, sizeof host, "%s", relay);
     char *colon = strrchr(host, ':');

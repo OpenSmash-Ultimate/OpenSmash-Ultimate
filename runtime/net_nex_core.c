@@ -930,6 +930,10 @@ int nex_station_url(NexServer *s, NexConn *c, char *out, size_t cap) {
     no_free(&o);
     return ok;
 }
+uint64_t nex_server_local_pid(NexServer *s) {   /* (no side effects, unlike nex_server_player) */
+    for (int i = 0; i < s->nconns[1]; i++) if (s->conns[1][i]->in_by_pid && s->conns[1][i]->pid) return s->conns[1][i]->pid;
+    return 0;
+}
 int nex_server_player(NexServer *s, uint64_t *pid, char *url, size_t cap, uint32_t *rating) {
     for (int i = 0; i < s->nconns[1]; i++) {
         NexConn *c = s->conns[1][i];

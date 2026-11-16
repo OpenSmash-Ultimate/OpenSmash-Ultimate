@@ -156,3 +156,5 @@ void nex_server_notify(NexServer *s, uint64_t pid, uint32_t kind, uint64_t sourc
 /* (part B) this server's player (the first logged in to the secure server): 1 and its PID, station URL ("" before it
  * registered one) and rating; 0: none */
 int nex_server_player(NexServer *s, uint64_t *pid, char *url, size_t cap, uint32_t *rating);
+uint64_t nex_server_local_pid(NexServer *s);                   /* the first logged-in player's PID, 0 none */
+int nex_server_stats_of(NexServer *s, uint64_t pid, NexStats *out, int max);   /* pid's ranked statistics (copies) */

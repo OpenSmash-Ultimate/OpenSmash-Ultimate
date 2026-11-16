@@ -9,6 +9,7 @@
 
 void eos_start(void);                                     /* (once) off without the SDK beside the program, eos.txt or with SSBU_EOS=0 */
 int eos_ready(void);                                      /* logged in */
+int eos_wait_ready(unsigned ms);                          /* logged in within ms (0 at once: EOS off here or failed) */
 const char *eos_my_id(void);                              /* this player's id, NULL until ready */
 int eos_send(const char *to, const void *data, u32 len);  /* queued; 0: not sent (not ready, too long, queue full) */
 int eos_send_reliable(const char *to, const void *data, u32 len);   /* the same on channel 1: reliable, in order */
@@ -30,7 +31,9 @@ void eos_hub_refresh_soon(void);
 /* The network over EOS alone (net_eos_net.c), and what net_relay.c gives it */
 struct NetBackend;
 extern const struct NetBackend net_eos_backend;
-int net_eos_selected(void);                                  /* online_server.txt "eos [code]" or SSBU_NET_RELAY=eos */
+int net_eos_selected(void);                                  /* online through EOS (net_relay.c: EOS first for the public lobby) */
+int net_eos_wanted(void);                                    /* 2 EOS alone, 1 EOS first (fallback: the public lobby), 0 not */
+void net_eos_prestart(void);                                 /* (host.c) EOS logs in while the game loads */
 void net_eos_names(char *code, size_t code_n, char *name, size_t name_n);
 void net_part_key(char *out, size_t n);                     /* who may meet whom: build, lobby code, sim version, mods */
 int net_rb_deliver(u32 src, const u8 *data, u32 len);        /* 1: rollback's sink took it */
