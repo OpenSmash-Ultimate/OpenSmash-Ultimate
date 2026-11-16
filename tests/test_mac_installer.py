@@ -1301,7 +1301,7 @@ class OpenTests(unittest.TestCase):
 class ScriptSyntaxTests(unittest.TestCase):
     def test_bash_syntax(self):
         scripts = SCRIPTS + sorted((ROOT / 'launchers').glob('*.command'))
-        self.assertEqual(len({s.name for s in scripts}), 13)
+        self.assertEqual(len({s.name for s in scripts}), 14)
         for s in scripts:
             with self.subTest(s.name):
                 r = subprocess.run([BASH, '-n', str(s)], capture_output=True, text=True)
@@ -1315,7 +1315,7 @@ class ScriptSyntaxTests(unittest.TestCase):
     def test_launchers_listed(self):
         # (the installer makes each runnable: every .command, and the scripts they run)
         commands = {p.relative_to(ROOT).as_posix() for p in [*ROOT.glob('*.command'), *(ROOT / 'launchers').glob('*.command')]}
-        self.assertEqual(commands | {'tools/mac/launch.sh'}, set(im.LAUNCHERS))
+        self.assertEqual(commands | {'tools/mac/launch.sh', 'tools/mac/rebuild-all.command'}, set(im.LAUNCHERS))
         self.assertTrue(all((ROOT / n).is_file() for n in im.LAUNCHERS))
 
     def test_install_body_is_one_block(self):
