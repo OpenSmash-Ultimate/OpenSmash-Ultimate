@@ -1761,9 +1761,15 @@ static void bn_catch(void) {
  * Windows moves the guest main thread between cores (and, on a Ryzen with two L3 caches, between them): each move loses
  * its caches. During a rollback fight: the main thread alone on one physical core (its SMT sibling left free), every
  * other thread of the game on the other cores, and the rollback's copy threads on the other L3 cache when the processor
- * has one (else with the others). Given back when the fight is over. Off with fewer than 4 cores, or SSBU_RB_PIN=0.
- * SSBU_RB_PIN=<main>,<copies>,<others>: hex masks (tests). Applied to the threads the process has at the fight's start
- * and again every 10 s (threads made since). */
+ * has one (else with the others). Given back when the fight is over. Never with fewer than 4 cores.
+ * OFF BY DEFAULT: SSBU_RB_PIN=1 turns it on, SSBU_RB_PIN=<main>,<copies>,<others> gives the masks (hex). Applied to the
+ * threads the process has at the fight's start and again every 10 s (threads made since).
+ * Measured on the bench (Ryzen 5 3600, 16/11): as written it is WORSE - Battlefield 45.0 ms against 34.8 (saves 11.3 ms
+ * against 8.5, loads 7.4 against 6.0, the normal tick 5.5 against 4.5), and in the next games a guest thread (24, the
+ * busy one at sdk+0x338930) no longer parked for the saves ("hold: 24 of 25 threads parked"), so no state was saved.
+ * It places EVERY thread of the process (the GPU's, the driver's, audio, the window) and the copy threads on the other
+ * L3 for the saves too; Arena places only its copy helpers, the task workers and the render threads, and moves the
+ * copies to the other L3 only for loads. To be redone that way before it is tried again. */
 #include <tlhelp32.h>
 void rb_copy_threads_mask(u64 mask);   /* (hle_rb_state.c) */
 static int pin_on; static u64 pin_m[3]; static DWORD pin_main;
@@ -1812,10 +1818,10 @@ static void pin_apply(u64 mm, u64 mc, u64 mo) {
 static void rb_pin(int on) {
     if (on) {
         const char *e = getenv("SSBU_RB_PIN");
-        if (e && e[0] == '0' && !e[1]) return;
+        if (!e || !*e || (e[0] == '0' && !e[1])) return;   /* (OFF unless asked for: see the note above) */
         if (!pin_on) {
-            if (e && *e) { if (sscanf(e, "%llx,%llx,%llx", &pin_m[0], &pin_m[1], &pin_m[2]) != 3) return; }
-            else if (!pin_topology(pin_m)) return;
+            if (e[0] == '1' && !e[1]) { if (!pin_topology(pin_m)) return; }
+            else if (sscanf(e, "%llx,%llx,%llx", &pin_m[0], &pin_m[1], &pin_m[2]) != 3) return;
             fprintf(stderr, "[rb] threads placed for the fight: main %llx, copy threads %llx, others %llx\n", pin_m[0], pin_m[1], pin_m[2]);
         }
         pin_main = GetCurrentThreadId();
