@@ -149,7 +149,8 @@ Terminal window that shows the game's log as it goes; closing that window leaves
 | `launchers/Host SSBU Netplay.command` | `Host SSBU Netplay.bat` | Hosts a private room, and shows the address to give the others. |
 | `launchers/Join SSBU Netplay.command` | `Join SSBU Netplay.bat` | Joins a host's private room. |
 | `launchers/Unlock All Fighters.command` | `Unlock All Fighters.bat` | Unlocks every base-game fighter on your save ([DLC and unlocks](DLC-AND-UNLOCKS.md)). Close the game first. |
-| `launchers/Build WindowSmash.command` | `python toolsuild_game.py` | Builds the game from your files, when the installer has set up the tools. |
+| `launchers/Build WindowSmash.command` | `python tools/build_game.py` | Builds the game from your files, when the installer has set up the tools. |
+| `tools/mac/rebuild-all.command` | — | Rebuilds the game incrementally and checks the Python launcher syntax. |
 
 - The first time you play online, it asks for the name other players see and keeps it in
   `online_name.txt`.
@@ -177,10 +178,12 @@ Keep the Terminal window open while you use it.
 | Tab | What it does |
 | :--- | :--- |
 | **Play** | *Play*, *Play offline*, *Play without mods* (`tools/mac/launch.sh`). The turned-on mods are applied first, and a plugin build is offered when the mods need one. |
-| **Setup** | Your game, keys and firmware folders and your online name, then `tools/mac/install_mac.py` with them (the same steps as `Install WindowSmash.command`, without its dialogs). *Build again* runs `tools/build_game.py`. |
+| **Setup** | Your game, keys and firmware folders and your online name, then `tools/mac/install_mac.py` with them (the same steps as `Install WindowSmash.command`, without its dialogs). *Build again* runs `tools/build_game.py`; *Build game + launcher* also checks the Python launcher's syntax. |
 | **Mods** | WindowSmash Mods in the same window, with *Back to the launcher*. |
 | **Settings** | Display, online and controllers: the same files `OpenSmash.exe` and the game's settings menu write. macOS has no renderer or graphics-card choice; the game draws with Metal. |
 | **Update** | Checks GitHub and installs the newer version (`install_mac.py --update-only`). |
+
+**Build game + launcher** shows the incremental build's live progress in the launcher. The macOS launcher is Python and has no separate binary to compile; the process checks its syntax after the game build. Outside the launcher, run `bash tools/mac/rebuild-all.command` (optionally followed by `--jobs N`).
 
 It needs Python 3.10 or newer. Run `Install WindowSmash.command` once if the Mac has none, since the
 installer gets one. A game pad works on the page too: the D-pad moves, A presses, B goes back, and
@@ -280,8 +283,9 @@ chip and macOS version ([Getting help](../README.md#getting-help)).
 
 ## Building it by hand
 
-`launchers/Build WindowSmash.command` builds the game with what the installer set up. By hand, in
-Terminal in the WindowSmash folder:
+`launchers/Build WindowSmash.command` builds only the game. To rebuild the game and check the launcher
+too, run `bash tools/mac/rebuild-all.command`; both processes are incremental. By hand, in Terminal in
+the WindowSmash folder:
 
 1. **The tools:** Apple's Command Line Tools 16 or newer (`xcode-select --install`), and a Python 3.10
    or newer, running as arm64, of WindowSmash's own. The `python3` that comes with the Command Line

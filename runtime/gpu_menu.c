@@ -129,23 +129,24 @@ enum
     P_GAME,
     P_LOBBY,
     P_MODS,
+    P_EXP,
     P_REMAP,
     P_KEYS,
     P_STICKS,
     PAGES = P_REMAP
 }; /* (the pad's buttons, the keyboard's keys, the pad's sticks: no key of their own) */
 #define SUB_PAGE(p) ((p) == P_REMAP || (p) == P_KEYS || (p) == P_STICKS) /* (a page of the Controllers page's) */
-static const char *const PAGE_NAMES[PAGES] = {"Display", "Controllers", "Online", "Game", "Lobby", "Mods"};
+static const char *const PAGE_NAMES[PAGES] = {"Display", "Controllers", "Online", "Game", "Lobby", "Mods", "Experimental"};
 enum { K_INFO, K_CHOICE, K_ACTION, K_TEXT };
 enum { W_NONE, W_NOW, W_RESTART };
 enum {
-    R_NONE, R_WINDOW, R_PACING, R_LATENCY, R_CURSOR, R_OVERLAY, R_SIZE, R_SCALE, R_GPU,
+    R_NONE, R_WINDOW, R_PACING, R_LATENCY, R_CURSOR, R_OVERLAY, R_SIZE, R_SCALE, R_ASPECT, R_VIEW, R_TIMER, R_GPU,
     R_PAD, R_PAD_PLAYER, R_PAD_LAYOUT, R_PAD_DEADZONE, R_PAD_RUMBLE, R_PAD_TRIGGER, R_PAD_DPAD, R_PAD_STICKTAUNT, R_PAD_REMAP, R_PAD_TEST, R_PAD_RESET,
     R_PAD_STICKS, R_PAD_RECAL, R_STICKS_BACK,
     R_RUMBLE, R_KEYBOARD, R_BACKGROUND, R_PADS_FILE,
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
-    R_LANGUAGE, R_VOLUME, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
+    R_LANGUAGE, R_VOLUME, R_UW_ONLINE, R_OPEN_LOGS, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
     R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE, R_RUNAHEAD, R_NET_ROLLBACK, R_NET_DELAY,
     R_ROOM_FIRST = 60,    /* + the room's place on the page of rooms shown (ROOM_PAGE at most) */
     R_REMAP_FIRST = 100,  /* + console button */
@@ -383,7 +384,9 @@ static void note_env(Row *r, const char *var)
         snprintf(r->note, sizeof r->note, "%s set", var);
 }
 
+#ifdef __APPLE__   /* (elsewhere a height, the width from the picture shape: change(), R_SIZE) */
 static const int SIZES[][2] = {{1280, 720}, {1600, 900}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
+#endif
 static const int REMAP_ORDER[16] = {0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 4, 5, 13, 15, 12, 14}; /* A B X Y L R ZL ZR + - sticks, d-pad */
 
 /* ---- the Lobby page: the online lobby's rooms and matchmaking (net.h, netplay version 3) ----
@@ -909,18 +912,53 @@ static void build(void)
         note_env(r, "SSBU_OVERLAY");
 #ifdef __APPLE__
         r = add(R_SIZE, K_CHOICE, W_RESTART, "Window size", "The size of the game's window when it is not full screen, in points (on a Retina display, a point is 2 x 2 pixels).");
-#else
-        r = add(R_SIZE, K_CHOICE, W_RESTART, "Window size", "The size of the game's window when it is not full screen (at 100% Windows scaling).");
-#endif
         snprintf(r->value, sizeof r->value, "%d x %d", ds.width, ds.height);
+#else
+        r = add(R_SIZE, ds.mode == DISPLAY_WINDOWED ? K_CHOICE : K_INFO, W_NOW, "Window size",
+                "The size of the game's window when it is not full screen, at 100% Windows scaling. The width follows the aspect ratio, "
+                "and sizes too big for your monitor are left out.");
+        snprintf(r->value, sizeof r->value, "%d x %d", (int)((float)ds.height * display_aspect() + 0.5f), ds.height);
+        if (ds.mode != DISPLAY_WINDOWED) snprintf(r->note, sizeof r->note, "windowed only");
+#endif
         note_env(r, "SSBU_WINDOW_SIZE");
-        r = add(R_SCALE, K_CHOICE, W_RESTART, "Render scale",
+#ifdef __APPLE__
+        int scale_when = W_RESTART;
+#else
+        int scale_when = W_NOW;   /* (Direct3D 11 and Vulkan take it at their next present) */
+#endif
+        r = add(R_SCALE, K_CHOICE, scale_when, "Render scale",
                 "How many times 1920x1080 the game draws at: sharper on a big screen, more work for the graphics card. Auto: as many pixels as the window has.");
         if (ds.render_scale <= 0)
             snprintf(r->value, sizeof r->value, "auto");
         else
-            snprintf(r->value, sizeof r->value, "%g", ds.render_scale);
+            snprintf(r->value, sizeof r->value, "%gx", ds.render_scale);
         note_env(r, "SSBU_RENDER_SCALE");
+        int original = !_stricmp(display_aspect_setting(), "16:9"), locked = display_shape_locked();
+        r = add(R_ASPECT, K_CHOICE, W_NOW, "Aspect ratio",
+                "16:9 (original) is the game as it was made. A wider aspect ratio shows more of the stage at the sides without stretching "
+                "anything, and fights play exactly as they do at 16:9. The damage meters stay in the middle; menus and panels move to the sides. 21:9 and 32:9 match your monitor "
+                "when it is close to that shape, and auto always matches your monitor. Online matches are played at 16:9. "
+                "Not on macOS yet.");
+        snprintf(r->value, sizeof r->value, "%s%s", display_aspect_setting(), original ? " (original)" : "");
+        if (locked && !original) snprintf(r->note, sizeof r->note, "not on macOS yet");
+        note_env(r, "SSBU_ASPECT");
+        r = add(R_VIEW, original || locked ? K_INFO : K_CHOICE, W_NOW, "Viewtype",
+                "wide: the game's own camera with the sides added (it can show past the stage). zoomed: the fight framed for the wider "
+                "picture, closer and kept on the stage. hybrid: wide, zoomed in just enough to keep the picture on the stage.");
+        {
+            int v = display_view();
+            snprintf(r->value, sizeof r->value, "%s", v == VIEW_WIDE ? "wide" : v == VIEW_ZOOMED ? "zoomed" : "hybrid");
+        }
+        if (original || locked) snprintf(r->note, sizeof r->note, "only wider than 16:9");
+        note_env(r, "SSBU_VIEW");
+        r = add(R_TIMER, K_CHOICE, W_NOW, "Timer position",
+                "Where the timer sits in a fight. Right is the game's own place, in the top-right corner of the picture. "
+                "Center and left move it along the top; hidden takes it away.");
+        {
+            static const char *const TIMERS[] = {"right", "center", "left", "hidden"};
+            snprintf(r->value, sizeof r->value, "%s", TIMERS[display_timer() & 3]);
+        }
+        note_env(r, "SSBU_TIMER");
 #ifdef _WIN32
         r = add(R_GPU, K_CHOICE, W_RESTART, "Graphics card", "Auto picks the fastest card (on a laptop, the NVIDIA or AMD one). Pick another to use it instead.");
         snprintf(r->value, sizeof r->value, "%s", ds.gpu);
@@ -1174,6 +1212,21 @@ static void build(void)
     case P_MODS:
         mods_rows(!same);
         break;
+    case P_EXP: /* (features still being tried: each is saved, and takes effect at the next start; docs/adr/0001) */
+        r = add(R_UW_ONLINE, display_shape_locked() ? K_INFO : K_CHOICE, W_RESTART, "Ultrawide online",
+                "Experimental. Keeps your aspect ratio in online matches instead of 16:9. A mistake in this feature changes "
+                "the fight for you and your opponent, and can make the match go out of sync. Takes effect when the game starts again.");
+        snprintf(r->value, sizeof r->value, "%s", on_off(display_uw_online_saved()));
+        if (display_shape_locked())
+            snprintf(r->note, sizeof r->note, "not on macOS yet");
+#ifdef _WIN32
+        add(R_OPEN_LOGS, K_ACTION, W_NONE, "Open log folder",
+            "Opens the folder with the game's log, play.log, so you can send it to the developers. play.prev.log is the one "
+            "from the time before. Rollback's desync reports are in the reports folder.");
+#endif
+        if (restart_pending)
+            add(R_RESTART, K_ACTION, W_NONE, "Restart now", "Starts the game again, with the changes. A match in progress is lost.");
+        break;
     case P_LOBBY:
         build_lobby(!same);
         if (was == R_NONE)
@@ -1356,6 +1409,33 @@ static void change(const Row *row, int dir)
         set_display("overlay", overlay_on && *overlay_on ? "1" : "0");
         break;
     case R_SIZE:
+#ifndef __APPLE__
+    { /* the height, among those that fit the monitor at the picture's shape; the width follows the shape */
+        static const int HEIGHTS[] = {720, 900, 1080, 1440, 2160};
+        int fit[5], n = 0, i = -1;
+        for (int k = 0; k < 5; k++)
+            if (display_window_height_fits(HEIGHTS[k]) || k == 0)
+                fit[n++] = HEIGHTS[k];
+        for (int k = 0; k < n; k++)
+            if (fit[k] == ds.height)
+                i = k;
+        if (i >= 0)
+            i = cycle(i, n, dir);
+        else
+        { /* (a size typed by hand: the next one up or down) */
+            i = 0;
+            while (i < n && fit[i] < ds.height)
+                i++;
+            i = cycle(dir < 0 ? i - 1 : i, n, 0);
+        }
+        display_set_window_height(fit[i]);
+        snprintf(v, sizeof v, "%d", (int)((float)fit[i] * display_aspect() + 0.5f));
+        set_display("width", v);
+        snprintf(v, sizeof v, "%d", fit[i]);
+        set_display("height", v);
+        break;
+    }
+#else
     {
         int n = sizeof SIZES / sizeof *SIZES, i = -1;
         for (int k = 0; k < n; k++)
@@ -1376,6 +1456,7 @@ static void change(const Row *row, int dir)
         set_display("height", v);
         break;
     }
+#endif
     case R_SCALE:
     {
         static const char *const SCALES[] = {"1", "auto", "1.5", "2", "3"};
@@ -1386,7 +1467,42 @@ static void change(const Row *row, int dir)
                 i = k;
         i = i < 0 ? (dir > 0 ? 0 : n - 1) : cycle(i, n, dir);
         set_display("render_scale", SCALES[i]);
-        display_set_render_scale(VALUES[i]); /* (shown now; the renderer takes it at the next start) */
+        display_set_render_scale(VALUES[i]); /* (Direct3D 11 and Vulkan take it at their next present; Metal at the next start) */
+        break;
+    }
+    case R_ASPECT:
+    {
+        static const char *const SHAPES[] = {"16:9", "auto", "21:9", "32:9"};   /* (21:9 covers 43:18 and 64:27: display_aspect) */
+        int n = sizeof SHAPES / sizeof *SHAPES, i = -1;
+        for (int k = 0; k < n; k++)
+            if (!_stricmp(SHAPES[k], display_aspect_setting()))
+                i = k;
+        i = i < 0 ? (dir > 0 ? 0 : n - 1) : cycle(i, n, dir);
+        set_display("aspect", SHAPES[i]);
+        display_set_aspect(SHAPES[i]);   /* (taken at the next frame) */
+        break;
+    }
+    case R_UW_ONLINE:
+    {
+        int on = !display_uw_online_saved();
+        display_set_uw_online(on);
+        set_display("experimental_ultrawide_online", on ? "1" : "0");
+        break;
+    }
+    case R_TIMER:
+    {
+        static const char *const TIMERS[] = {"right", "center", "left", "hidden"};
+        int i = cycle(display_timer(), 4, dir);
+        set_display("timer", TIMERS[i]);
+        display_set_timer(i);
+        break;
+    }
+    case R_VIEW:
+    {
+        static const char *const VIEWS[] = {"wide", "zoomed", "hybrid"};
+        int i = cycle(display_view(), 3, dir);
+        set_display("view", VIEWS[i]);
+        display_set_view(i);
         break;
     }
     case R_RENDERER:
@@ -1724,6 +1840,29 @@ static void action(const Row *row)
     case R_QUIT:
         confirm = row->id;
         break;
+#ifdef _WIN32
+    case R_OPEN_LOGS:
+    { /* Explorer on build\ with play.log selected (the launcher writes it; the game runs in the project's folder) */
+        wchar_t path[MAX_PATH], cmd[MAX_PATH + 32];
+        DWORD n = GetFullPathNameW(L"build\\play.log", MAX_PATH, path, NULL);
+        if (n && n < MAX_PATH && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES)
+            _snwprintf(cmd, MAX_PATH + 32, L"explorer.exe /select,\"%ls\"", path);
+        else if ((n = GetFullPathNameW(L"build", MAX_PATH, path, NULL)) && n < MAX_PATH)
+            _snwprintf(cmd, MAX_PATH + 32, L"explorer.exe \"%ls\"", path);
+        else
+            break;
+        cmd[MAX_PATH + 31] = 0;
+        STARTUPINFOW si = {sizeof si};
+        PROCESS_INFORMATION pi;
+        if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+        {
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            menu_toast("The log folder is open");
+        }
+        break;
+    }
+#endif
     case R_MODS_OFF:
         if (!mods_switch_set("--all", 0))
         {
