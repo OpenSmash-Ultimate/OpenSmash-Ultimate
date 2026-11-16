@@ -921,7 +921,7 @@ static int rerun_keep_back(void) {   /* (SSBU_RB_RERUN_KEEP_BACK: see the catch-
 static double catch_load_ms, catch_at[17], catch_d_ms[16], catch_d_load[16];
 static long long catch_d_n[16], catch_over, catch_lines;
 static int catch_n, catch_depth;
-/* (2026-11-16) THE SAVES' SPACING, chosen each second (SSBU_RB_NET_SAVE_EVERY unset). Saves made only every K-th guessed
+/* (2026-11-16) THE SAVES' SPACING, chosen each second (SSBU_RB_NET_SAVE_EVERY=auto, experimental). Saves made only every K-th guessed
  * logic frame cost N/K saves a second (N: the guessed frames) and each rollback (R a second) runs about (K - 1) / 2 frames
  * more; with Cs a save's time and Cr a frame run again, the time a second is N Cs / K + R Cr (K - 1) / 2, least at
  * K = sqrt(2 N Cs / (R Cr)), kept within 2..4 (4: the most the ring was proven with; a deeper catch-up is a longer one), and 2 while a save costs
@@ -1292,7 +1292,7 @@ static void net_report(void) {
     fprintf(stderr, "[rb] saves: %lld made, %lld left out (the other's next pad already there, or %lld of them: their logic frame's state already kept, %lld: "
             "a state a frame or so before kept, SSBU_RB_NET_SAVE_EVERY; %lld made all the same: "
             "a guest thread came or went)\n", net_saves_made, net_saves_skipped, net_saves_same, net_saves_sparse, net_saves_threads);
-    fprintf(stderr, "[rb] saves' spacing at the fight's end: every %d guessed logic frames (a frame run again %.1f ms)\n", net_save_every, net_sp_cr);
+    fprintf(stderr, "[rb] saves' spacing measured at the fight's end (used with SSBU_RB_NET_SAVE_EVERY=auto): every %d guessed logic frames (a frame run again %.1f ms)\n", net_save_every, net_sp_cr);
     fprintf(stderr, "[rb] resyncs: %lld (%lld DESYNCs at frames 30 or more after the last one's rollback), rollbacks impossible: %lld, saves left out while a wrong guess waited: %lld\n",
             net_resyncs, net_desyncs_at_resync, net_impossible, net_saves_pending);
     fprintf(stderr, "[rb] resyncs with no state in the frames hashed alike: %lld; saves refused (a thread stayed in a job): %lld\n", net_resync_impossible, net_saves_refused);
@@ -1745,9 +1745,15 @@ static void net_step(Cpu *c, u64 frame) {
      * 25 ms with the PC busy; a frame run again in a catch-up draws nothing). The ring then reaches n times as far back.
      * 1: a save at every guessed frame, as before. */
     static int save_every = -1;
-    if (save_every < 0) { const char *e = getenv("SSBU_RB_NET_SAVE_EVERY"); save_every = e && atoi(e) >= 1 ? atoi(e) : 0; if (save_every > 4) save_every = 4; }
-    /* (2026-11-16) Unset: the spacing is chosen each second from what this PC measured (net_save_spacing): the fewer saves
-     * the fewer frames that pay one, the more frames a rollback runs again. */
+    if (save_every < 0) {
+        const char *e = getenv("SSBU_RB_NET_SAVE_EVERY");
+        save_every = e && !strcmp(e, "auto") ? 0 : e && atoi(e) >= 1 ? atoi(e) : 2;
+        if (save_every > 4) save_every = 4;
+    }
+    /* (2026-11-16) SSBU_RB_NET_SAVE_EVERY=auto (experimental): the spacing is chosen each second from what this PC
+     * measured (net_save_spacing): the fewer saves the fewer frames that pay one, the more frames a rollback runs again.
+     * Not the default: back-to-back pairs with the GPU busy (60 ms one way, saves 12-14 ms) gave as many frames shown
+     * late with it as without, and more of them over 34 ms (121 against 34 in one pair, 35 against 111 in another). */
     int every = save_every ? save_every : net_save_every;
     if (!skip_save && lazy && every > 1 && rb_fast <= 0 && rb_ring_count() > 0 && rb_ring_tag(0) < key && key - rb_ring_tag(0) < (u32)every) {
         /* (not when a guest thread came or went since that state: a load is refused across it - "another number of
