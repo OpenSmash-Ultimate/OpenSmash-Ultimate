@@ -995,6 +995,7 @@ static long long net_checks, net_desyncs, net_msgs_in, net_msgs_out, net_sync_wa
 static int net_ts_frames = -1;      /* (SSBU_RB_TS=frames: the time sync leaves whole refreshes out, as before 2026-11-16) */
 static long long net_ts_n; static double net_ts_ms;   /* (frames the time sync slowed, and by how much in all) */
 void display_tick_stretch(double ms);   /* (gpu_display.c) */
+void display_tick_stretch_reset(void);
 static long long net_first_desync = -1;
 static long long net_link_base[3];   /* (the link's counts at the fight's start: the report is per fight) */
 /* M6, the false desyncs at KO launches (twopc18 frame 2100, twopc19 frame 4430): PC 1 held two different hashes for
@@ -1553,7 +1554,7 @@ static void net_step(Cpu *c, u64 frame) {
                     measured ? "" : " (no round trip measured)");
         }
         rbn_reset(net_mode == 2 ? net_n : 2, net_mode == 2 ? net_local : 0, net_delay);
-        rbn_sync_reset();
+        rbn_sync_reset(); display_tick_stretch_reset();
         /* (the first frame's local pad is taken before this fight's first read: without this it was the last fight's last
          * controls, a press nobody made - a lone up + B at the start sent Steve off the stage) */
         net_live_pad = (RbnPad){0};

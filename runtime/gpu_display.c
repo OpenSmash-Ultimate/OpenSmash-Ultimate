@@ -840,6 +840,8 @@ int display_take_window_size(int *w, int *h) {
 int display_window_height_fits(int height) { return height <= 1080; }   /* ponytail: the monitor's own size if Linux players ask */
 #endif
 
+static volatile LONG vblank_extra, vblank_hz;   /* (display_tick_stretch: monitor refreshes to add to the next ticks; the monitor's rate, 0: not paced by it) */
+
 /* ---- pacing ----------------------------------------------------------------------------- */
 static int tearing;
 
@@ -870,7 +872,7 @@ static int vblank_tick(void) {
     static IDXGIOutput *output;
     static int divisor, failed, hz_now;
     static LONGLONG last;   /* (the refresh the last tick returned at, performance counter; 0 none) */
-    if (failed) return 0;
+    if (failed) { InterlockedExchange(&vblank_hz, 0); return 0; }
     if (InterlockedExchange(&monitor_changed, 0) || !output) {
         if (output) IDXGIOutput_Release(output);
         output = (IDXGIOutput *)gfx_display_output();
@@ -884,7 +886,9 @@ static int vblank_tick(void) {
             fprintf(stderr, "[display] %d Hz monitor: %s\n", hz, divisor ? "display pacing" : "clock pacing (display pacing needs 60, 120 or 240 Hz)");
         }
     }
+    InterlockedExchange(&vblank_hz, output && divisor ? hz_now : 0);
     if (!output || !divisor) { last = 0; return 0; }
+    int extra = vblank_extra > 0 && InterlockedDecrement(&vblank_extra) >= 0;   /* (one refresh more this tick, at most: a 120 Hz monitor's 8 ms) */
     LARGE_INTEGER t0, t1, freq;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&t0);
@@ -898,11 +902,12 @@ static int vblank_tick(void) {
         if (FAILED(IDXGIOutput_WaitForVBlank(output))) { failed = 1; break; }
         QueryPerformanceCounter(&t1);
         if (!last || ++waits >= 2 * divisor + 2) break;   /* (the first tick; and never more than a few refreshes) */
-        if ((t1.QuadPart - last + period / 2) / period >= divisor) break;
+        if ((t1.QuadPart - last + period / 2) / period >= divisor + extra) break;
     }
     QueryPerformanceCounter(&t1);
     last = t1.QuadPart;
     if (!failed && (t1.QuadPart - t0.QuadPart) * 1000 / freq.QuadPart > 50 * divisor) failed = 1;
+    if (failed) InterlockedExchange(&vblank_hz, 0);
     if (failed) fprintf(stderr, "[display] waiting for the monitor's refresh failed: clock pacing from now on\n");
     return !failed;
 }
@@ -940,16 +945,26 @@ static int vblank_tick(void) {
 
 static volatile LONG64 tick_stretch_us;   /* (display_tick_stretch: owed to the clock's schedule, us) */
 extern volatile LONG rb_vsync_skip;      /* (ipc_vi.c: refreshes the vsync thread leaves out) */
+static double tick_owed;   /* (display pacing: what is owed short of one of the monitor's refreshes, ms; the main thread's) */
 void display_tick_stretch(double ms) {
     load();
     if (ms <= 0) return;
-    if (cfg.pacing == PACING_DISPLAY) {
-        static double owed;
-        owed += ms;
-        if (owed >= 1000.0 / 60) { owed -= 1000.0 / 60; InterlockedIncrement(&rb_vsync_skip); }
+    int hz = (int)vblank_hz;   /* (0: the clock paces the ticks - clock or vrr, or display pacing fallen back to it) */
+    if (cfg.pacing == PACING_DISPLAY && hz) {   /* (held to the monitor: whole refreshes, the monitor's own where it is faster than 60 Hz) */
+        double step = hz >= 118 ? 1000.0 / hz : 1000.0 / 60;
+        tick_owed += ms;
+        if (tick_owed >= step) {
+            tick_owed -= step;
+            if (hz >= 118) InterlockedIncrement(&vblank_extra); else InterlockedIncrement(&rb_vsync_skip);
+        }
         return;
     }
     InterlockedExchangeAdd64(&tick_stretch_us, (LONG64)(ms * 1000));
+}
+void display_tick_stretch_reset(void) {   /* (a fight starts: nothing owed from the last one) */
+    tick_owed = 0;
+    InterlockedExchange64(&tick_stretch_us, 0);
+    InterlockedExchange(&vblank_extra, 0);
 }
 
 void display_wait_tick(void) {

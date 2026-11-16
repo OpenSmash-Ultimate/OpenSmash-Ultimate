@@ -61,6 +61,7 @@ Pacing display_pacing(void);
  * add it to the next refreshes' schedule (a frame a little later, no refresh left out); display pacing, held to the
  * monitor, leaves a refresh out for each whole frame owed */
 void display_tick_stretch(double ms);
+void display_tick_stretch_reset(void);   /* (a fight starts) */
 const char *display_gpu(void);          /* the graphics card to use: "auto", or part of its name (SSBU_GPU) */
 /* render_scale: the game's pictures are drawn this many times its 1920x1080 in each direction
  * (0.5-4; SSBU_RENDER_SCALE). 0 = auto: as many as the picture has pixels in the window at the
