@@ -98,11 +98,13 @@ typedef int SOCKET;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "config_folder.h"
 #include "host.h"
 #include "mod_diff.h"
 #include "net.h"
+#include "net_discord_core.h"
 #include "room_code.h"
 #include "settings.h"
 #include "sim_version.h"
@@ -298,6 +300,32 @@ static void configure_from_files(void) {
     if (!getenv("SSBU_NET_DIRECT") && settings_line_read(config_path(CONFIG_ONLINE_DIRECT), line, sizeof line) && !_strnicmp(line, "off", 3)) direct_ok = 0;
 }
 
+/* A friend's "Join" in Discord for another lobby (net_discord.c): config/discord_join.txt, its join secret and when it
+ * came. Taken at the next start, within DISCORD_JOIN_FOR seconds: that lobby and lobby code for this start only (the
+ * settings stay as they are), and a room's host listed first in Local Wireless's Rooms List. */
+#define DISCORD_JOIN_FOR (15 * 60)
+static void discord_join_at_start(void) {
+    const char *path = "config/discord_join.txt";
+    char text[512];
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    size_t n = fread(text, 1, sizeof text - 1, f);
+    fclose(f);
+    remove(path);   /* (once: a later start plays as the settings say) */
+    text[n] = 0;
+    char secret[256] = "";
+    long long at = 0;
+    DiscordJoin j;
+    if (sscanf(text, "%255s %lld", secret, &at) != 2 || !discord_join_parse(secret, &j)) return;
+    long long now = (long long)time(NULL);
+    if (now < at || now - at > DISCORD_JOIN_FOR) return;
+    snprintf(relay_text, sizeof relay_text, "%s", j.relay);
+    if (j.code[0] && strlen(j.code) <= NAME_LEN) { snprintf(room, sizeof room, "%s", j.code); room_named = 1; }
+    struct in_addr a;
+    if (j.where == DP_ROOM && inet_pton(AF_INET, j.target, &a) == 1) net_rooms_pick(ntohl(a.s_addr));
+    fprintf(stderr, "[net] joining from Discord: lobby %s, %s %s\n", relay_text, j.where == DP_ROOM ? "the room of" : "Battle Arena", j.target);
+}
+
 int net_rollback_default(void) {
     static int v = -1;
     if (v >= 0) return v;
@@ -372,6 +400,7 @@ static void configure(void) {
         else if (_stricmp(r, "off")) snprintf(relay_text, sizeof relay_text, "%s", r);
     }
     else if (settings_online()) configure_from_files();
+    if (!hosting && relay_text[0] && _stricmp(relay_text, "lan")) discord_join_at_start();
     lan_mode = !hosting && !_stricmp(relay_text, "lan");
     configured = hosting || relay_text[0];
     proto_wanted = NET_PROTOCOL_DEFAULT;   /* SSBU_NET_PROTOCOL=2|3, else online_protocol.txt's; hosting: its own relay's, 2 */
@@ -386,6 +415,7 @@ int net_configured(void) { start(); return configured; }
 int net_log(void) { configure(); return logging; }
 const char *net_player_name(void) { configure(); return net_backend ? net_backend->name() : name; }
 const char *net_relay_address(void) { configure(); return !hosting && !lan_mode && relay_text[0] ? relay_text : NULL; }
+const char *net_lobby_code(void) { configure(); return room; }
 
 /* ---- the relay (host mode) ------------------------------------------------------------ */
 typedef struct Member { struct sockaddr_in at; u64 nonce, seen; u32 ip; char name[NAME_LEN + 1]; } Member;

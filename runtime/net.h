@@ -50,6 +50,7 @@ const char *net_player_name(void);
 /* The lobby or relay this game joins (host[:port]): SSBU_NET_RELAY's, else online_server.txt's
  * with --online; NULL when it hosts a private room or plays offline. */
 const char *net_relay_address(void);
+const char *net_lobby_code(void);    /* the lobby code it joins with ("smash": the public lobby) */
 int net_unreachable(void);           /* asked for, but the relay has not answered for a while: offline */
 /* Rollback netplay on by default (kernel.c's kernel_rb_switch when SSBU_RB is not set): started with
  * --online, with a lobby or a private room to play in (SSBU_NET_HOST, SSBU_NET_RELAY, else

@@ -45,6 +45,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.dirname(HERE)
 UI = os.path.join(HERE, "ui")
+sys.path.insert(0, HERE)
+import discord_account   # noqa: E402  (sign-in with Discord: the token the game and OpenSmash.exe share; the GSP)
 SHARED_UI = os.path.join(TOOLS, "modmanager", "ui")   # (gamepad.js, icon.svg: shared with WindowSmash Mods)
 HOST = "linux" if sys.platform.startswith("linux") else "macos" if sys.platform == "darwin" else "windows"
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -508,6 +510,8 @@ class App:
         self.last_ping = time.time()
         self.bye = None
         self.update_info = None
+        self.discord = discord_account.Account(self.root, os.path.dirname(game_program(self.root)),
+                                               lambda: first_line(config_file(self.root, "online_server.txt")))
 
     # the game
     def game_running(self):
@@ -695,6 +699,8 @@ class App:
             return list_dir(q.get("path") or "~")
         if path == "/api/update" and method == "GET":
             return self.check_update()
+        if path == "/api/discord" and method == "GET":
+            return self.discord.view()
         if method != "POST":
             raise Error(f"unknown {path}")
         if path == "/api/settings":
@@ -764,6 +770,14 @@ class App:
                                    [[py, "-u", os.path.join(self.root, "tools", "os_mods.py"), "build"]], self.root)
         if path == "/api/mods/open":
             return self.open_mods(body.get("back") or "")
+        if path == "/api/discord/signin":
+            self.discord.start_sign_in()
+            return {"ok": True}
+        if path == "/api/discord/signout":
+            self.discord.sign_out()
+            return {"ok": True}
+        if path == "/api/discord/shown":
+            return self.discord.set_shown(bool(body.get("shown")))
         if path == "/api/quit":
             threading.Timer(0.5, lambda: os._exit(0)).start()
             return {"ok": True}
