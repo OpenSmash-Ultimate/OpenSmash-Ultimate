@@ -971,8 +971,38 @@ namespace OpenSmash.Launcher
             string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
             if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_windowsmash.ps1 is missing.");
             SetLoad("REBUILDING THE GAME", -1);
-            try { return await Task.Run(() => RunPowerShellUpdate(script, "-BuildAfterUpdate")); }
+            try { return await Task.Run(() => RunPowerShellUpdate(script, "-BuildAfterUpdate", NoteGameBuildLine)); }
             finally { ClearLoad(); }
+        }
+
+        void NoteGameBuildLine(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            string detail = line.Trim();
+            float progress = -1;
+            var percent = Regex.Match(detail, @"(?:^LOG percent (\d{1,3})$)|(?:\]\s+(\d{1,3})%)|(?: — (\d{1,3})%,)");
+            if (percent.Success)
+            {
+                string value = percent.Groups.Cast<Group>().Skip(1).First(g => g.Success).Value;
+                if (int.TryParse(value, out int pct))
+                {
+                    progress = Math.Clamp(pct / 100f, 0f, 1f);
+                    detail = "Building the game — " + pct + "%";
+                }
+            }
+            if (detail.Length > 100) detail = detail.Substring(0, 100);
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    if (IsDisposed || Disposing) return;
+                    _loadLabel = detail.ToUpperInvariant();
+                    if (progress >= _loadProgress) _loadProgress = progress;
+                    Invalidate();
+                }));
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
         }
 
         async Task ApplyUpdateAsync()
@@ -1092,7 +1122,7 @@ namespace OpenSmash.Launcher
             Invalidate();
         }
 
-        static (int Code, string Output) RunPowerShellUpdate(string script, string only = "-UpdateOnly")
+        static (int Code, string Output) RunPowerShellUpdate(string script, string only = "-UpdateOnly", Action<string>? onLine = null)
         {
             string root = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(script)!, ".."));
             var psi = new ProcessStartInfo
@@ -1113,11 +1143,22 @@ namespace OpenSmash.Launcher
             psi.ArgumentList.Add(script);
             psi.ArgumentList.Add(only);
             using var p = Process.Start(psi) ?? throw new InvalidOperationException("Could not start PowerShell.");
-            var stdout = p.StandardOutput.ReadToEndAsync();
-            var stderr = p.StandardError.ReadToEndAsync();
+            var output = new StringBuilder();
+            void Take(string? line)
+            {
+                if (line == null) return;
+                lock (output) output.AppendLine(line);
+                onLine?.Invoke(line);
+            }
+            p.OutputDataReceived += (_, e) => Take(e.Data);
+            p.ErrorDataReceived += (_, e) => Take(e.Data);
+            p.BeginOutputReadLine();
+            p.BeginErrorReadLine();
             p.WaitForExit();
-            string output = (stdout.GetAwaiter().GetResult() + "\n" + stderr.GetAwaiter().GetResult()).Trim();
-            return (p.ExitCode, output);
+            p.WaitForExit();
+            string text;
+            lock (output) text = output.ToString().Trim();
+            return (p.ExitCode, text);
         }
 
          void ApplyModStatus(int code, string output, bool persist = true)
