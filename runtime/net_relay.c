@@ -353,6 +353,57 @@ static void configure(void) {
     else if (configured && !hosting) proto_wanted = protocol_from_file(proto_wanted);
     if (hosting || lan_mode) proto_wanted = NET_PROTOCOL;   /* (a private room's relay: version 2) */
     proto = proto_wanted;
+    if (!hosting && relay_text[0] && (!_stricmp(relay_text, "eos") || net_eos_selected())) net_backend = &net_eos_backend;   /* (net_eos_net.c: no lobby server of ours) */
+}
+
+/* (net_eos_net.c) Online through Epic Online Services: the owner's design (2026-11-16) - Epic's services (lobbies,
+ * Quickplay, Battle Arenas, Local Wireless rooms) for everyone, everywhere; the one public lobby (Europe) only as the
+ * fallback and the collector of results (net_results.c). So the public lobby's words ("auto", the default, and the
+ * older "na" / "eu", or its own address, with or without a lobby code) mean EOS first: chosen when EOS logs in within
+ * EOS_FIRST_MS (SSBU_EOS_WAIT=<ms>), else the public lobby as before - no SDK or eos.txt beside the program, macOS /
+ * Linux, SSBU_EOS=0, Epic's services down. "eos" (or SSBU_NET_RELAY=eos): EOS alone. Another lobby's address, a
+ * private room's relay (SSBU_NET_HOST), "lan" or "off": never EOS. */
+#define EOS_FIRST_MS 8000
+static int eos_first(const char *host) {
+    if (!_stricmp(host, "eos")) return 2;
+    return means_public_lobby(host) || !_stricmp(host, PUBLIC_LOBBY);
+}
+int net_eos_wanted(void) {   /* 2 EOS alone, 1 EOS first, 0 not */
+    const char *r = getenv("SSBU_NET_RELAY"), *h = getenv("SSBU_NET_HOST");
+    char line[256], host[256] = "";
+    if (h && *h && strcmp(h, "0")) return 0;
+    if (r && *r) return eos_first(r);
+    if (!settings_online() || !settings_line_read(config_path(CONFIG_ONLINE_SERVER), line, sizeof line)) return 0;
+    sscanf(line, "%255s", host);
+    return host[0] ? eos_first(host) : 0;
+}
+/* Decided once (any thread; the others wait for it). The login started with the program (net_eos_prestart), so this
+ * waits at most until EOS_FIRST_MS after the start: about a second while the game loads when EOS answers, nothing when
+ * EOS is off here. */
+static int eos_choice;
+static BOOL CALLBACK eos_decide(PINIT_ONCE once, void *param, void **ctx) {
+    (void)once; (void)param; (void)ctx;
+    int want = net_eos_wanted();
+    if (want != 1) { eos_choice = want == 2; return TRUE; }
+    const char *w = getenv("SSBU_EOS_WAIT");
+    u64 limit = w && *w ? (u64)atoi(w) : EOS_FIRST_MS, age = process_age_ms(), t0 = now_ms();
+    eos_choice = eos_wait_ready((unsigned)(age < limit ? limit - age : 0));
+    fprintf(stderr, eos_choice ? "[net] online through Epic Online Services (waited %llu ms); the public lobby is the fallback\n"
+                               : "[net] Epic Online Services not available here (waited %llu ms): online through the public lobby\n",
+            (unsigned long long)(now_ms() - t0));
+    return TRUE;
+}
+int net_eos_selected(void) {
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    InitOnceExecuteOnce(&once, eos_decide, NULL, NULL);
+    return eos_choice;
+}
+/* (host.c, at the start) EOS logs in while the game loads, when online play may want it */
+void net_eos_prestart(void) { if (net_eos_wanted()) eos_start(); }
+void net_eos_names(char *code, size_t code_n, char *who, size_t who_n) {
+    configure();
+    snprintf(code, code_n, "%s", room);
+    snprintf(who, who_n, "%s", name);
 }
 
 static void start(void);
@@ -829,6 +880,7 @@ static int rb_take(u32 src, u16 dport, const u8 *data, u32 len, volatile LONG64 
     if (len) s(src, data, len);
     return 1;
 }
+int net_rb_deliver(u32 src, const u8 *data, u32 len) { return rb_take(src, NET_RB_PORT, data, len, &rb_in_direct); }   /* (net_eos_net.c) */
 void net_rb_counts(NetRbCounts *out) {
     out->out_data = rb_out_data; out->out_lobby = rb_out_lobby;
     out->in_direct = rb_in_direct; out->in_relayed = rb_in_relayed; out->in_lobby = rb_in_lobby;
@@ -1251,6 +1303,7 @@ static void eos_told(u32 src, const u8 *p, u32 n) {   /* (client thread) a playe
 
 /* (net_eos.c, the EOS thread) A packet from another player through EOS: as a direct one, with the pair's secret. */
 void net_eos_packet(const char *from, const u8 *p, u32 n) {
+    if (n >= 2 && p[0] == 'E' && p[1] == 'B') { net_eos_net_packet(from, p, n); return; }   /* (net_eos_net.c's) */
     u64 t = now_ms();
     if (!lobby || !joined || n < DIRECT_HEAD + 12 || p[0] != MAGIC0 || p[1] != MAGIC1 || p[2] != proto || p[3] != T_DIRECT) return;
     u64 secret = get64(p + 4);
@@ -1442,6 +1495,11 @@ static int is_room_peer(u32 ip) {   /* (the lobby: a player of this player's Loc
 static void rb_lobby_send(u32 dst, const void *data, u32 len);
 static int lobby_has_rb(void);
 void net_rb_send(u32 dst, const void *data, u32 len) {
+    if (net_backend && len) {   /* (EOS alone: to that member, or every one) */
+        net_backend->send(net_local_ip(), NET_RB_PORT, dst ? dst : 0xFFFFFFFFu, NET_RB_PORT, data, len);
+        InterlockedIncrement64(&rb_out_data);
+        return;
+    }
     if (!joined || client_sock == INVALID_SOCKET || !len) return;
     u32 to = dst ? dst : NET_BROADCAST;
     if (!lobby) {   /* (a private room's relay: DATA to its members) */
@@ -1491,6 +1549,14 @@ int net_recent_peers(u32 *out, int max, u32 within_ms) {
 }
 int net_room_members(u32 *out, int max) {
     start();
+    if (net_backend == &net_eos_backend && max > 0) {   /* (EOS alone: the hub's members; rollback keeps those in the room's network) */
+        char ids[64][NET_EOS_ID_LEN + 1];
+        u32 ips[64];
+        int n = eos_hub_members(ids, ips, 64), k = 0;
+        for (int i = 0; i < n && k < max; i++) if (ips[i]) out[k++] = ips[i];
+        qsort(out, (size_t)k, sizeof out[0], u32_order);
+        return k;
+    }
     if (!joined || max <= 0) return 0;
     u32 all[ROOM_MEMBERS + PEERS_MAX];
     int n = 0;
@@ -2012,6 +2078,25 @@ static void mod_set_make(void) {
     fprintf(stderr, "[online] mods: %d applied (dump/mods/applied.json)%s: a mod set of %d entr%s\n", applied, code ? ", code patches on" : "",
            mod_set[0], mod_set[0] == 1 ? "y" : "ies");
     free(m);
+}
+
+/* (the in-game NEX server's gatherings in EOS Lobbies) who may meet whom, as one short key: the game build, the lobby
+ * code, the simulation version and the mods (their hashes, in any order: the lobby's mods_key) - "p1-" and 16 hex
+ * digits of their FNV-1a 64 hash, short enough for an EOS lobby's bucket */
+void net_part_key(char *out, size_t n) {
+    configure();
+    mod_set_make();
+    u32 h[MODS_MAX];
+    int k = 0, o = 1;
+    for (int i = 0; i < mod_set[0] && k < MODS_MAX; i++) { h[k++] = get32(mod_set + o); o += 5 + mod_set[o + 4]; }
+    qsort(h, (size_t)k, sizeof *h, u32_cmp);
+    u64 x = 0xcbf29ce484222325ull;
+    char text[256];
+    const char *build = rt_module_main.build_id ? rt_module_main.build_id : "";
+    snprintf(text, sizeof text, "%s|%s|%u|", build, room, (unsigned)SIM_VERSION);
+    for (char *p = text; *p; p++) { x ^= (u8)(*p >= 'a' && *p <= 'z' ? *p - 32 : *p); x *= 0x100000001b3ull; }
+    for (int i = 0; i < k; i++) for (int b = 0; b < 4; b++) { x ^= (u8)(h[i] >> (8 * b)); x *= 0x100000001b3ull; }
+    snprintf(out, n, "p1-%016llx", (unsigned long long)x);
 }
 
 static void send_join(void) {

@@ -42,6 +42,7 @@ void rb_guest_writing(void *p, u64 n) { (void)p; (void)n; }   /* (hle_rb_state.c
 int rb_page_cold(const void *p) { (void)p; return 0; }
 int net_match_on(void) { return 0; }
 void rb_shadow_note(u64 at, u64 size) { (void)at; (void)size; }
+int rb_online_match_now(void) { return 0; }   /* (hle_online_delay.c) */
 #else
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
@@ -3489,6 +3490,9 @@ static u64 fm_impl(void) {
     u64 mgr = inst ? ld64(inst) : 0;
     return mgr ? ld64(mgr) : 0;
 }
+/* (hle_online_delay.c) an Online match set up as rollback's now, every player local on both games (a Local Wireless
+ * room's too): its number of players, else 0 */
+int rb_online_match_now(void) { return net_mode == 2 && net_online && online_match ? net_n : 0; }
 static void online_fight_start(void) {
     if (!online_match) return;
     u64 impl = fm_impl();

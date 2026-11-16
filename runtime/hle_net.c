@@ -18,6 +18,7 @@
 #include "host.h"
 #include "net.h"
 #include "net_discord.h"
+#include "net_eos.h"
 #include "online.h"
 #include "input_seq.h"
 
@@ -393,7 +394,7 @@ static void ldn_backend_receive(u32 from,unsigned type,const void *data,u32 len)
         if(node<0 && L.net[NI_POLICY]!=1 && L.net[NI_NODE_COUNT]<L.net[NI_NODE_MAX])
             for(int i=1;i<8;i++) if(!L.net[NODE(i)+0xB]) { node=i; break; }
         if(node<=0) { net_backend->ldn_send(from,YLDN_DESTROY,NULL,0); break; }
-        if(!L.net[NODE(node)+0xB]) L.net[NI_NODE_COUNT]++;
+        if(!L.net[NODE(node)+0xB]) { L.net[NI_NODE_COUNT]++; input_seq_mark("ldn:station-joined"); }   /* (SSBU_SEQ: as LM_JOIN's) */
         memcpy(L.net+NODE(node),p,0x40); L.net[NODE(node)+0xA]=(u8)node; L.net[NODE(node)+0xB]=1;
         L.node_heard[node]=now_ms_(); ldn_send(net_broadcast_ip(),LM_ADVERTISE,L.net,NI_SIZE); ldn_signal();
         break;
@@ -1100,8 +1101,9 @@ static void do_sendto(Cpu *c, i32 fd, u64 buf, u64 len, i32 flags, u64 addr, u32
     if (dst == LOOPBACK) vsock_deliver(LOOPBACK, sport, LOOPBACK, dport, data, (u32)len);
     else {
         if (dst == me || broadcast) vsock_deliver(me, sport, dst, dport, data, (u32)len);   /* (a broadcast reaches this player's sockets too) */
-        if (!net_backend && dst != me && !broadcast) net_note_peer(dst);   /* (native Online rollback's match players) */
-        if (dst != me) net_send(me, sport, broadcast ? net_broadcast_ip() : dst, dport, data, (u32)len);
+        if ((!net_backend || net_backend == &net_eos_backend) && dst != me && !broadcast) net_note_peer(dst);   /* (native Online rollback's match players: the lobby's network or EOS's) */
+        if (dst != me && (broadcast || !online_nex_datagram(me, sport, dst, dport, data, (u32)len)))   /* (the game server in the game's) */
+            net_send(me, sport, broadcast ? net_broadcast_ip() : dst, dport, data, (u32)len);
     }
     c->x[0] = len;
 }

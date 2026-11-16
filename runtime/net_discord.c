@@ -388,7 +388,10 @@ static char *http_get(const wchar_t *host, INTERNET_PORT port, int secure, const
 /* GET /gsp/me on the lobby the game joined (its game server's port answers HTTP: tools/ssbu_online_lobby.py) */
 static int ask_me(const char *nsa, const char *player) {
     const char *relay = net_lobby() ? net_relay_address() : NULL;
-    if (!relay) return 0;
+    if (!relay) {   /* (online over EOS: the public lobby keeps the player's results - net_results.c) */
+        const char *r = getenv("SSBU_RESULTS_LOBBY");
+        relay = r && *r && _stricmp(r, "off") ? r : "opensmash-lobby.duckdns.org:39421";
+    }
     char host[256];
     snprintf(host, sizeof host, "%s", relay);
     char *colon = strrchr(host, ':');
@@ -425,7 +428,11 @@ static DWORD WINAPI web_thread(LPVOID unused) {
             ask_me(nsa, player);
             if (GetTickCount64() >= next_board) {
                 char *json = http_get(BOARD_HOST, BOARD_PORT, 0, BOARD_PATH, NULL, 16u << 20);
-                if (json) { InterlockedExchange(&rank, discord_rank_in_leaderboard(json, player)); free(json); next_board = GetTickCount64() + BOARD_EVERY_MS; }
+                DiscordToken t;   /* (the leaderboard's rows are Discord accounts: tools/nex/board.py) */
+                char who[17];
+                if (discord_token_load(TOKEN_PATH, &t) && t.user_id[0]) discord_account_hash(t.user_id, who);
+                else snprintf(who, sizeof who, "%s", player);
+                if (json) { InterlockedExchange(&rank, discord_rank_in_leaderboard(json, who)); free(json); next_board = GetTickCount64() + BOARD_EVERY_MS; }
                 else next_board = GetTickCount64() + 60 * 1000;
             }
         }

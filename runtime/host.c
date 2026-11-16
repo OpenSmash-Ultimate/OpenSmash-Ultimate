@@ -2482,6 +2482,10 @@ int main(int argc, char **argv) {
     mods_start(dir);
     void discord_start(void);   /* (net_discord.c: Discord's sign-in and Rich Presence, when its SDK is beside the program) */
     discord_start();
+#ifdef _WIN32
+    void net_eos_prestart(void);   /* (net_relay.c: Epic Online Services log in while the game loads, when online play wants them) */
+    net_eos_prestart();
+#endif
     kernel_init();
     load(dir);
     movie_test_start();

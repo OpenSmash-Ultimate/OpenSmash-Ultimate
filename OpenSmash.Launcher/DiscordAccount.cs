@@ -21,8 +21,9 @@ namespace OpenSmash.Launcher
     // which this listens on for the one request.
     // Also what the account card shows: the player's GSP per fighter, kept by the lobbies' own game server
     // (GET /gsp/me, tools/nex/board.py, signed with this install's NSA id from netplay_id.txt), and their global position
-    // (the one public lobby's leaderboard.json: every GSP result goes through its game server). A player may show their Discord name on the leaderboard
-    // (POST /gsp/profile; config\discord_leaderboard.txt remembers the choice).
+    // (the one public lobby's leaderboard.json: every GSP result goes through its game server). The GSP belongs to the Discord account: this install
+    // is linked to it with POST /gsp/link (the access token is sent once, the lobby verifies it with Discord and keeps
+    // nothing of it; show on/off is the choice config\discord_leaderboard.txt remembers).
     public sealed class DiscordToken
     {
         public string Access = "", Refresh = "", Scope = "", UserId = "", Username = "", DisplayName = "", Avatar = "";
@@ -356,12 +357,12 @@ namespace OpenSmash.Launcher
         }
 
         // leaderboard.json: the player's global position and each fighter's (0: not ranked)
-        public static async Task<(int Rank, Dictionary<int, int> Fighters)> Ranks(string repo, CancellationToken cancel)
+        public static async Task<(int Rank, Dictionary<int, int> Fighters)> Ranks(string repo, DiscordToken? t, CancellationToken cancel)
         {
-            string nsa = NsaId(repo);
-            if (nsa == "") return (0, new Dictionary<int, int>());
+            // (a row's id is the Discord account's hash: one row per account, however many installs are linked to it)
+            if (t == null || t.UserId == "") return (0, new Dictionary<int, int>());
             string text = await Http.GetStringAsync(LeaderboardUrl, cancel);
-            return RanksIn(text, PlayerId(nsa));
+            return RanksIn(text, AccountHash(t.UserId));
         }
 
         public static (int Rank, Dictionary<int, int> Fighters) RanksIn(string json, string playerId)
@@ -385,34 +386,76 @@ namespace OpenSmash.Launcher
         // ---- the player's Discord name on the leaderboard: their choice, sent to every lobby --------------------------
         public static bool ShowsName(string repo)
         {
-            try { return File.Exists(ShownPath(repo)) && File.ReadAllText(ShownPath(repo)).Trim().Equals("on", StringComparison.OrdinalIgnoreCase); }
-            catch (IOException) { return false; }
+            // (on unless the file says "off": a missing file is on)
+            try { return !File.Exists(ShownPath(repo)) || !File.ReadAllText(ShownPath(repo)).Trim().Equals("off", StringComparison.OrdinalIgnoreCase); }
+            catch (IOException) { return true; }
         }
 
-        // Remembers the choice and tells the lobbies (shown: the token's name; hidden: none). Returns how many lobbies took it.
+        // Remembers the choice and tells the lobbies: POST /gsp/link with the token's access token (the lobby verifies it with
+        // Discord), retried once with the NSA id as "key" when the lobby does not know this install yet. Without a token (or when
+        // the lobby refuses it) a hide goes as the old profile call. Returns how many lobbies took it.
         public static async Task<int> SetShown(string repo, DiscordToken? t, bool shown, CancellationToken cancel)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(ShownPath(repo))!);
             File.WriteAllText(ShownPath(repo), shown ? "on\n" : "off\n");
             string nsa = NsaId(repo);
             if (nsa == "") return 0;
-            string player = PlayerId(nsa), name = shown && t != null ? t.Shown : "", discord = shown && t != null && t.UserId != "" ? AccountHash(t.UserId) : "";
-            if (name.Length > 32) name = name.Substring(0, 32);
-            long now = Now;
-            string body = JsonSerializer.Serialize(new Dictionary<string, object> {
-                ["player"] = player, ["t"] = now, ["name"] = name, ["discord"] = discord, ["sig"] = Sign(nsa, "profile", player, now, name + "\n" + discord) });
+            string token = t?.Access ?? "";
             var posts = Lobbies(repo).Select(async lobby =>
             {
-                try
+                bool ok = false;
+                if (token != "")
                 {
-                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
-                    timeout.CancelAfter(TimeSpan.FromSeconds(8));
-                    using var r = await Http.PostAsync($"http://{lobby}/gsp/profile", new StringContent(body, Encoding.UTF8, "application/json"), timeout.Token);
-                    return r.IsSuccessStatusCode ? 1 : 0;
+                    var (code, error) = await PostJson($"http://{lobby}/gsp/link", LinkBody(nsa, token, shown, false), cancel);
+                    if (code == 403 && error == "unknown player")
+                        (code, error) = await PostJson($"http://{lobby}/gsp/link", LinkBody(nsa, token, shown, true), cancel);
+                    ok = code == 200;
                 }
-                catch (Exception e) when (e is HttpRequestException or TaskCanceledException or InvalidOperationException) { return 0; }
+                if (!ok && !shown) ok = (await PostJson($"http://{lobby}/gsp/profile", HideBody(nsa), cancel)).Code == 200;
+                return ok ? 1 : 0;
             }).ToList();
             return (await Task.WhenAll(posts)).Sum();
+        }
+
+        static string LinkBody(string nsa, string token, bool shown, bool withKey)
+        {
+            string player = PlayerId(nsa);
+            long now = Now;
+            var d = new Dictionary<string, object> {
+                ["player"] = player, ["t"] = now, ["token"] = token, ["show"] = shown,
+                ["sig"] = Sign(nsa, "link", player, now, token + "\n" + (shown ? "1" : "0")) };
+            if (withKey) d["key"] = nsa;
+            return JsonSerializer.Serialize(d);
+        }
+
+        // (the old /gsp/profile with no name: hides an already linked player, no Discord token needed)
+        static string HideBody(string nsa)
+        {
+            string player = PlayerId(nsa);
+            long now = Now;
+            return JsonSerializer.Serialize(new Dictionary<string, object> {
+                ["player"] = player, ["t"] = now, ["name"] = "", ["discord"] = "", ["sig"] = Sign(nsa, "profile", player, now, "\n") });
+        }
+
+        // POST JSON: (HTTP status, the answer's "error" text or ""); (0, "") when the lobby can not be reached.
+        static async Task<(int Code, string Error)> PostJson(string url, string body, CancellationToken cancel)
+        {
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+                timeout.CancelAfter(TimeSpan.FromSeconds(8));
+                using var r = await Http.PostAsync(url, new StringContent(body, Encoding.UTF8, "application/json"), timeout.Token);
+                string error = "";
+                try
+                {
+                    using var j = JsonDocument.Parse(await r.Content.ReadAsStringAsync(timeout.Token));
+                    if (j.RootElement.ValueKind == JsonValueKind.Object && j.RootElement.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String)
+                        error = e.GetString() ?? "";
+                }
+                catch (JsonException) { }
+                return ((int)r.StatusCode, error);
+            }
+            catch (Exception e) when (e is HttpRequestException or TaskCanceledException or InvalidOperationException) { return (0, ""); }
         }
 
         static readonly string?[] Names = {
