@@ -931,7 +931,7 @@ static int catch_n, catch_depth;
  * some 260; on the owner's PC (a save 10 ms, a frame 3) K = 4 too. With rollbacks very frequent and saves cheap it stays 2,
  * as before. Two games may space their saves differently: a save changes nothing the game sees. */
 static int net_save_every = 2;
-#define NET_SP_CHEAP_MS 8.0              /* (a save under this: the spacing stays 2) */
+#define NET_SP_CHEAP_MS 12.0             /* (a save under this: the spacing stays 2) */
 static double net_sp_cr = 3.0;          /* (a frame run again, ms: the catch-ups' mean, kept from fight to fight) */
 static long long net_sp_saves, net_sp_sparse, net_sp_rb;   /* (the counts at the last choice) */
 static void net_save_spacing(double cs, long long saves_now, long long sparse_now, long long rollbacks_now, int new_fight) {
