@@ -393,6 +393,45 @@ static void test_axes(void) {
     CHECK(dev.trigger_top[0][0] == 255, "four in a row: the top is relearned: %d", dev.trigger_top[0][0]);
 }
 
+/* gc_switch = 1 (the default): the sticks as a Switch console scales them: counts from the centre over 56 (the C-stick 44),
+ * no dead zone, no growing reach; the triggers over 150 counts from rest. */
+static void test_axes_switch(void) {
+    Device dev = {.kind = KIND_ADAPTER, .first = 0};
+    UCHAR r[37] = {0x21};
+    UCHAR *p1 = r + 1;
+    p1[0] = 0;   /* unplugged first, so the next report is a plug-in (the triggers' rest is measured then) */
+    adapter_report(&dev, r, sizeof r);
+    p1[0] = 0x10; p1[3] = p1[4] = p1[5] = p1[6] = 128; p1[7] = p1[8] = 30;
+    for (int i = 0; i < 40; i++) adapter_report(&dev, r, sizeof r);
+    PadUsbAxes ua;
+    CHECK(padusb_axes(0, &ua) && ua.lo[0] == 56 && ua.hi[0] == 56 && ua.lo[2] == 44, "reach 56 / 44: %d %d", ua.hi[0], ua.hi[2]);
+    CHECK(usb_ports[0].lx == 0 && usb_ports[0].ly == 0, "rest: zeroed");
+    CHECK(dev.trigger_rest[0][0] == 30 && usb_ports[0].lt == 0, "trigger rest 30 reads 0: %d %d", dev.trigger_rest[0][0], usb_ports[0].lt);
+    p1[3] = 130;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].lx > 1100 && usb_ports[0].lx < 1250, "2 counts: no dead zone: %d", usb_ports[0].lx);
+    p1[3] = 128 + 28;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].lx > 16000 && usb_ports[0].lx < 16800, "28 of 56: half: %d", usb_ports[0].lx);
+    p1[3] = 255;
+    for (int i = 0; i < 6; i++) adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].lx == 32767, "past the reach: saturated: %d", usb_ports[0].lx);
+    p1[3] = 128 + 28;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].lx > 16000 && usb_ports[0].lx < 16800, "and the reach did not grow: %d", usb_ports[0].lx);
+    p1[3] = 128; p1[5] = 128 + 22;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].rx > 16000 && usb_ports[0].rx < 16800, "C-stick 22 of 44: half: %d", usb_ports[0].rx);
+    p1[5] = 128;
+    p1[3] = 128 + 56; p1[4] = 128 - 56;   /* the corner: clamped to the circle */
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].lx > 23000 && usb_ports[0].lx < 23300 && usb_ports[0].ly > 23000 && usb_ports[0].ly < 23300,
+          "corner on the circle, +y up: %d %d", usb_ports[0].lx, usb_ports[0].ly);
+    p1[3] = p1[4] = 128; p1[7] = 30 + 75;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].lt > 16000 && usb_ports[0].lt < 16800, "trigger 75 of 150 from rest: %d", usb_ports[0].lt);
+}
+
 /* The keyboard ([keyboard]): the defaults are the keys of before, rebinding, several keys, the
  * sticks' directions, Alt+Enter, ssbu-recomp's spellings and bad names. */
 static int held_keys[8], nheld;
@@ -580,9 +619,12 @@ int main(void) {
     test_config();
     test_mapping();
     test_gamecube();
+    padusb_set_switch(0);   /* the two below test the earlier (calibrating) scaling; test_axes_switch the console's */
     test_usb();
     test_pipes();
     test_axes();
+    padusb_set_switch(1);
+    test_axes_switch();
     test_sticks();
     test_slots();
     test_rumble();
