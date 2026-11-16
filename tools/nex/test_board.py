@@ -51,6 +51,26 @@ class Board(unittest.TestCase):
         body = json.dumps({"player": p, "t": t, "name": name, "discord": discord, "sig": sig or s}).encode()
         return self.board.http("POST", "/gsp/profile", {}, body, 1000.0)
 
+    def test_status_counts_only(self):
+        from .matchmaking import Session
+        code, d = self.get("/status.json")
+        self.assertEqual(code, 200)
+        self.assertEqual((d["online"], d["rooms"], d["arenas"], d["open_rooms"], d["playing"], d["ranked"]),
+                         (0, 0, 0, 0, 0, 2))
+        mm = self.nex.matchmaking
+        full, half, empty = Session(), Session(), Session()
+        for gid, ms, who in ((1, full, ("a", "b")), (2, half, ("c",)), (3, empty, ())):
+            ms.gid, ms.max_participants = gid, 2
+            ms.participants = [self.pid[w] for w in who]
+            mm.sessions[gid] = ms
+        self.nex.arenas.id_of[2] = "ABCD"
+        self.nex.by_pid[self.pid["a"]] = object()
+        self.board.cache = None
+        code, d = self.get("/status.json")
+        self.assertEqual((d["online"], d["rooms"], d["arenas"], d["open_rooms"], d["playing"]), (1, 2, 1, 1, 2))
+        self.assertEqual(set(d), {"updated", "online", "rooms", "arenas", "open_rooms", "playing", "ranked"})
+        self.assertEqual(self.board.http("POST", "/status.json", {}, b"", 1000.0)[0], 405)
+
     def test_leaderboard_positions(self):
         code, d = self.get("/leaderboard.json")
         self.assertEqual(code, 200)
