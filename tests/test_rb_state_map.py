@@ -99,12 +99,22 @@ class Owners(unittest.TestCase):
 
     def test_with_the_state(self):
         state = src('hle_rb_state.c')
-        self.assertIn('s->map = rb_map_save();', state, 'each state keeps the left-out blocks')
+        self.assertIn('s->map = rb_map_save(ring_count ? slot_at(ring_count - 1)->map : NULL);', state, 'each state keeps the left-out blocks')
         self.assertIn('rb_map_load(s->map);', state, 'a load puts them back')
         self.assertIn('rb_map_free(s->map);', state)
         self.assertIn('if (rb_map_active()) map_pages = rb_map_skip_pages(sm_skip);', state, 'into the left-out set')
         self.assertIn('map_gen_seen == rb_map_gen', state, 'built again when they change')
         self.assertIn('if (out_) { left_out_diff++; continue; }', state, 'the replay check counts them apart')
+
+    def test_young_blocks_stay_in(self):
+        m = src('hle_rb_map.c')
+        # a block is left out only once every kept state was saved after it was made
+        self.assertIn('if (!b->p || b->born >= map_oldest) continue;   /* (young) */', m)
+        self.assertIn('old = oldest ? ((const MapSave *)oldest)->stamp : stamp;', m)
+        # a load builds the set again only when it differs
+        self.assertIn('if (after != before) InterlockedIncrement(&rb_map_gen);', m)
+        # the caller's frame record is read only where memory is committed
+        self.assertIn('&& readable8(fp + 8))', m)
 
 
 class RunAhead(unittest.TestCase):
