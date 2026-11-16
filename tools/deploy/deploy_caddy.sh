@@ -47,6 +47,8 @@ install -d -m 755 /etc/caddy /etc/caddy/conf.d
 main=/etc/caddy/Caddyfile
 [ -f \$main ] || printf '# managed by deploy_caddy.sh\n' > \$main
 cp -p \$main \$main.pre-opensmash
+# (deploy_lobby.sh's own Caddyfile served only the old /status for the same address: ours replaces it, kept as a backup)
+grep -q '^# written by deploy_lobby.sh' \$main && printf '# managed by deploy_caddy.sh (the old one: Caddyfile.pre-opensmash)\n' > \$main
 tr -d '\r' < $tmp/Caddyfile > /etc/caddy/conf.d/opensmash-lobby.caddy
 grep -q 'conf.d/\*.caddy' \$main || printf '\nimport /etc/caddy/conf.d/*.caddy\n' >> \$main
 if ! caddy validate --config \$main --adapter caddyfile; then
@@ -70,6 +72,7 @@ if command -v iptables > /dev/null && iptables -S INPUT 2> /dev/null | grep -q -
     command -v netfilter-persistent > /dev/null && netfilter-persistent save || echo "note: iptables rules are not saved across reboot (install iptables-persistent)"
 fi
 install -d -o caddy -g caddy /var/log/caddy 2> /dev/null || true
+chown -R caddy:caddy /var/log/caddy 2> /dev/null || true   # (caddy validate ran as root above and may have made the log file root's)
 systemctl enable caddy
 systemctl reload-or-restart caddy
 rm -rf $tmp
