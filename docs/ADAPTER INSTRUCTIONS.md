@@ -45,6 +45,11 @@ In the game, **Esc > Controllers > Sticks...** shows the selected controller's n
   confirm). Use it if the controller was plugged in with a stick held, or after an hour of play
   on a worn stick.
 
+By default (`gc_switch = 1` in `controllers.ini`, or *GameCube adapter sticks: like the Switch* in the settings menu) the
+adapter's sticks and triggers are scaled with the same numbers a Switch console uses: the left stick's full
+travel is 56 counts from the centre, the C-stick's 44, with no dead zone and no reach that grows. The
+reach text below is for `gc_switch = 0`.
+
 A dash needs a flick past about 80% of the stick's travel. If dashes feel hard: on the Sticks
 page, push the stick all the way left and right and see whether the axis reaches its full scale
 (±32767, 100%). If it stops short, use **Recalibrate sticks** with the stick let go, then push it

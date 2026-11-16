@@ -393,6 +393,65 @@ static void test_axes(void) {
     CHECK(dev.trigger_top[0][0] == 255, "four in a row: the top is relearned: %d", dev.trigger_top[0][0]);
 }
 
+/* gc_switch = 1 (the default): the sticks as a Switch console scales them: counts from the centre over 56 (the C-stick 44),
+ * no dead zone, no growing reach; the triggers over 150 counts from rest. */
+static void test_axes_switch(void) {
+    Device dev = {.kind = KIND_ADAPTER, .first = 0};
+    UCHAR r[37] = {0x21};
+    UCHAR *p1 = r + 1;
+    p1[0] = 0;   /* unplugged first, so the next report is a plug-in (the triggers' rest is measured then) */
+    adapter_report(&dev, r, sizeof r);
+    p1[0] = 0x10; p1[3] = p1[4] = p1[5] = p1[6] = 128; p1[7] = p1[8] = 30;
+    for (int i = 0; i < 40; i++) adapter_report(&dev, r, sizeof r);
+    PadUsbAxes ua;
+    CHECK(padusb_axes(0, &ua) && ua.lo[0] == 56 && ua.hi[0] == 56 && ua.lo[2] == 44, "reach 56 / 44: %d %d", ua.hi[0], ua.hi[2]);
+    CHECK(usb_ports[0].lx == 0 && usb_ports[0].ly == 0, "rest: zeroed");
+    CHECK(dev.trigger_rest[0][0] == 30 && usb_ports[0].lt == 0, "trigger rest 30 reads 0: %d %d", dev.trigger_rest[0][0], usb_ports[0].lt);
+    p1[3] = 130;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].lx > 1100 && usb_ports[0].lx < 1250, "2 counts: no dead zone: %d", usb_ports[0].lx);
+    p1[3] = 128 + 28;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].lx > 16000 && usb_ports[0].lx < 16800, "28 of 56: half: %d", usb_ports[0].lx);
+    p1[3] = 255;
+    for (int i = 0; i < 6; i++) adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].lx == 32767, "past the reach: saturated: %d", usb_ports[0].lx);
+    p1[3] = 128 + 28;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].lx > 16000 && usb_ports[0].lx < 16800, "and the reach did not grow: %d", usb_ports[0].lx);
+    p1[3] = 128; p1[5] = 128 + 22;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].rx > 16000 && usb_ports[0].rx < 16800, "C-stick 22 of 44: half: %d", usb_ports[0].rx);
+    p1[5] = 128;
+    p1[3] = 128 + 56; p1[4] = 128 - 56;   /* the corner: clamped to the circle */
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].lx > 23000 && usb_ports[0].lx < 23300 && usb_ports[0].ly > 23000 && usb_ports[0].ly < 23300,
+          "corner on the circle, +y up: %d %d", usb_ports[0].lx, usb_ports[0].ly);
+    p1[3] = p1[4] = 128; p1[7] = 30 + 75;
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[0].lt > 16000 && usb_ports[0].lt < 16800, "trigger 75 of 150 from rest: %d", usb_ports[0].lt);
+}
+
+/* A blank (all-zero) first report of a port just plugged in must not set the centres or the trigger rests. */
+static void test_blank_first_report(void) {
+    Device dev = {.kind = KIND_ADAPTER, .first = 0};
+    UCHAR r[37] = {0x21};
+    UCHAR *p4 = r + 1 + 27;   /* port 4 */
+    p4[0] = 0x10;             /* connected, every axis 0: the blank report */
+    adapter_report(&dev, r, sizeof r);
+    CHECK(!usb_ports[3].connected, "blank first report: not connected yet");
+    p4[3] = 133; p4[4] = 129; p4[5] = 134; p4[6] = 127; p4[7] = 34; p4[8] = 40;
+    for (int i = 0; i < 40; i++) adapter_report(&dev, r, sizeof r);
+    PadUsbAxes ua;
+    CHECK(usb_ports[3].connected && padusb_axes(3, &ua) && ua.centre[0] == 133 && ua.centre[2] == 134,
+          "centres measured from the real reports: %d %d", ua.centre[0], ua.centre[2]);
+    CHECK(dev.trigger_rest[3][0] == 34 && dev.trigger_rest[3][1] == 40 && usb_ports[3].lt == 0 && usb_ports[3].rt == 0,
+          "trigger rests 34 / 40 read 0: %d %d %d %d", dev.trigger_rest[3][0], dev.trigger_rest[3][1], usb_ports[3].lt, usb_ports[3].rt);
+    p4[3] = p4[4] = p4[5] = p4[6] = 0;   /* an already connected port sending zeros stays connected (only a new connection waits) */
+    adapter_report(&dev, r, sizeof r);
+    CHECK(usb_ports[3].connected, "a connected port stays connected on an all-zero report");
+}
+
 /* The keyboard ([keyboard]): the defaults are the keys of before, rebinding, several keys, the
  * sticks' directions, Alt+Enter, ssbu-recomp's spellings and bad names. */
 static int held_keys[8], nheld;
@@ -575,19 +634,54 @@ static void test_pipes(void) {
     CHECK(!in && !out, "no pipes: nothing found");
 }
 
+/* Issue #320: a pad named with a '#' ("XInput Controller #1"), whose section the comment rule cut at the '#'; and the
+ * sections that name a pad layered, type < name < GUID, each changing only what it has. */
+static void test_device_sections(void) {
+    load_text("[players]\n1 = XInput Controller #1\n"
+              "[device default]\ndpad_moves = off\nstick_taunts = off\n"
+              "[device XInput  Controller #1]   ; written by the menu\nstick_taunts = on\ndpad_moves = on\nA = leftshoulder\nB = leftshoulder\n");
+    CHECK(!strcmp(cfg.pin[0], "XInput Controller #1"), "pin with a '#' kept whole: '%s'", cfg.pin[0]);
+    CHECK(cfg.ndev == 1 && !strcmp(cfg.dev[0].match, "XInput Controller #1"), "section name with a '#': '%s'", cfg.ndev ? cfg.dev[0].match : "");
+    Dev d = make_dev("0300fa67c82d00000631000014017801", "", "", "XInput Controller #1", "xboxone");
+    int xbox_labels[4] = {N_A, N_B, N_X, N_Y};
+    dev_configure(&d, xbox_labels);
+    CHECK(!strcmp(d.section, "XInput Controller #1"), "the pad takes its section: '%s'", d.section);
+    CHECK(d.dpad_moves == 1 && d.stick_taunts == 1, "dpad_moves and stick_taunts from the pad's section");
+    CHECK(press(&d, 1u << RB_LEFT_SHOULDER, 0, 0) == (1ull << N_A | 1ull << N_B | 1ull << N_L), "A = leftshoulder, B = leftshoulder");
+    CHECK(press(&d, 1u << RB_EAST, 0, 0) == 0, "the right face button no longer A");
+    CHECK(dev_matches(&d, cfg.pin[0]), "[players] pin matches the pad");
+
+    load_text("[device xboxone]\nA = south\nrumble = 50\n[device XInput Controller #1]\nrumble = 70\nB = north\n"
+              "[device 0300fa67c82d00000631000014017801]\nX = west\ndeadzone = 20\n");
+    dev_configure(&d, xbox_labels);
+    CHECK(!strcmp(d.section, "0300fa67c82d00000631000014017801"), "the most exact section is the GUID's: '%s'", d.section);
+    CHECK(press(&d, 1u << RB_SOUTH, 0, 0) == 1ull << N_A, "type's remap kept under the name's and GUID's");
+    CHECK(press(&d, 1u << RB_NORTH, 0, 0) == 1ull << N_B, "name's remap kept under the GUID's");
+    CHECK(press(&d, 1u << RB_WEST, 0, 0) & 1ull << N_X, "GUID's remap (west presses X too)");
+    CHECK(d.rumble == 70 && d.deadzone == 20, "rumble from the name's, deadzone from the GUID's (%d, %d)", d.rumble, d.deadzone);
+    Dev two = make_dev("0300fa67c82d00000631000014017801", "", "", "XInput Controller #2", "xboxone");
+    dev_configure(&two, xbox_labels);
+    CHECK((press(&two, 1u << RB_WEST, 0, 0) & 1ull << N_X) && two.rumble == 50, "the same model on another port: GUID's and type's");
+}
+
 int main(void) {
     test_keyboard();
     test_config();
     test_mapping();
     test_gamecube();
+    padusb_set_switch(0);   /* the two below test the earlier (calibrating) scaling; test_axes_switch the console's */
     test_usb();
     test_pipes();
     test_axes();
+    padusb_set_switch(1);
+    test_axes_switch();
+    test_blank_first_report();
     test_sticks();
     test_slots();
     test_rumble();
     test_dpad_moves();
     test_stick_taunts();
+    test_device_sections();
     printf("%d of %d checks passed\n", checks - failures, checks);
     return failures != 0;
 }

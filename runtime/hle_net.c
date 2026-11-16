@@ -17,6 +17,7 @@
 
 #include "host.h"
 #include "net.h"
+#include "net_discord.h"
 #include "online.h"
 #include "input_seq.h"
 
@@ -247,7 +248,10 @@ static DWORD WINAPI ldn_agent(LPVOID unused) {   /* advertising, keeping in touc
             if (tick) ldn_send(get_u32(L.net + NODE(0)), LM_KEEP, L.net + NI_SESSION, 16);
             if (t - L.host_heard > 6000) lost_network(DR_SIGNAL_LOST);
         }
+        int in_room = L.state == LS_AP_CREATED || L.state == LS_CONNECTED, players = L.net[NI_NODE_COUNT], most = L.net[NI_NODE_MAX];
+        u32 host_ip = get_u32(L.net + NODE(0));
         ReleaseSRWLockExclusive(&L.lock);
+        if (tick) discord_note_room(in_room, players, most, in_room ? host_ip : 0);   /* (Discord's Rich Presence: net_discord.c) */
     }
 }
 

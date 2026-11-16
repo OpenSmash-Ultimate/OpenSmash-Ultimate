@@ -24,6 +24,7 @@ These switches make a scripted run of the game quicker and less dependent on the
 | `SSBU_FIXED_SEED=<n>` | The clock reads and random bytes the game seeds its generators from come from n. |
 | `SSBU_DEBUG_MATCH=<settings>` | The fighters, stage and rules of the match, whatever the menus chose. `SSBU_DEBUG_MATCH_LIST=<file>` takes one line per match. |
 | `SSBU_DEBUG_END=<n>s` | The run ends after n seconds of fight (`<n>` without `s`: n fight frames). |
+| `SSBU_DEBUG_FINAL=<first>[,<every>]` | The fighters get their Final Smash one at a time, in turn: the first at fight frame `<first>`, the next `<every>` frames later (600 without it), and round again after the last. Forced on all of them at the same frame, which a normal match never does, the scripts broke (a Mega Man status script stopped the game with Dark Samus and Isabelle in the match). Each one: its `FIGHTER_INSTANCE_WORK_ID_FLAG_FINAL` turned on (`WorkModule::on_flag`, what breaking a Smash Ball gives) and its status asked to be `FIGHTER_STATUS_KIND_FINAL` (`StatusModule::change_status_request_from_script`): the Final Smash starts there. For the [pipeline sweep](#the-pipeline-sweep). |
 | `SSBU_CHARACTERS=<folder>` | New fighters: each `<folder>\<name>\fighter.json` is a fighter of its own (kind 0x5E on), playable with `SSBU_DEBUG_MATCH=p1=<name>`. With `SSBU_FIGHTER_BIN` (its script libraries) and `SSBU_MODS` (the registry's components). Unset, nothing changes. |
 
 `SSBU_INPUT` (buttons on a timetable in seconds) is unchanged, and it still adds to player 1 when `SSBU_SEQ` is set.
@@ -54,7 +55,7 @@ Not yet checked in a run:
 
 ## `SSBU_SEQ`
 
-ssbu-recomp found that the game reads player 1's controller once per frame (`ssbu-recomp/runtime/nnhid.c`). That has not been checked in WindowSmash yet. Each read (a *poll*) moves the sequence on by one *tick*. A hook can change that: `input_seq_set_steps` in [`input_seq.h`](../runtime/input_seq.h), which [`SSBU_DETERMINISTIC`](#ssbu_deterministic) uses to count fight frames instead.
+ssbu-recomp found that the game reads player 1's controller once per frame (`ssbu-recomp/runtime/nnhid.c`). That has not been checked in WindowSmash yet. Each read (a *poll*) moves the sequence on by one *tick*. A hook can change that: `input_seq_set_steps` in [`input_seq.h`](../runtime/input_seq.h), which [`SSBU_DETERMINISTIC`](#ssbu_deterministic) uses to count fight frames instead. Fight frames stop while the game is paused, so after 30 polls of a pause the count goes back to one tick a poll, and a sequence can work the pause menu (and its camera controls) and resume.
 
 Steps are separated by spaces or new lines, and `#` starts a comment that runs to the end of the line. Keys are the names `SSBU_INPUT` takes, joined by `+`: `A B X Y L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN LSTICK RSTICK`, and `SLEFT SUP SRIGHT SDOWN` for the left stick.
 
@@ -184,7 +185,7 @@ Settings are separated by commas. A setting left out keeps what the menus chose.
 | `stock=<n>` | The stocks, in a stock match. |
 | `items=on`, `items=off` | The rule's item appearance (2 or 0). |
 | `hazards=on`, `hazards=off` | A flag byte that the stage's set-up takes. |
-| `time=<minutes>` | Read and not used, as in ssbu-recomp. |
+| `time=<minutes>` | The time limit (the match block's `+0x48`, in frames). |
 
 The ids are worked out from the names (the Hash40 of `ui_chara_<name>` or `ui_stage_<name>`), so no list of fighters or stages is kept here. What the game does with a name it doesn't have was not tried. ssbu-recomp's log also named the fighter kind numbers from a bindings file of the game's. That table is game data and is not ported, so the log gives the numbers the game wrote.
 
@@ -244,6 +245,8 @@ The Vulkan back end ([`gpu_vk.c`](../runtime/gpu_vk.c)) is chosen with `SSBU_REN
 | Variable | What it does |
 | :--- | :--- |
 | `SSBU_VK_WARM=0` | No warm start: nothing is made from the warm list when the game starts, so every pipeline is made at its first draw, as on a first run. The list is still kept up to date. |
+| `SSBU_VK_WARM_GROUPS=0` | The warm start without its groups (`media/vulkan_pipelines.groups`): the first frame waits for every listed pipeline, as before the groups. |
+| `SSBU_SHADER_MATCH_WAIT=<s>` | The longest a match being set up waits, before it loads, for its pipelines (the warm start's groups: its fighters', its stage's, any fight's, and the records in no group); default 120, `0`: no wait. |
 | `SSBU_SHADER_PREWARM_MB=<n>` | The warm start's memory budget, as Direct3D 11's prewarm has it: it stops once the process has grown by n MB (unset: a third of the PC's memory, 1 GB at least). |
 | `SSBU_VK_AUTO_VENDOR=<hex>` | The card maker `renderer=auto` takes for AMD, as a PCI vendor number (`10de` NVIDIA, `8086` Intel): the automatic choice, its trial and its fall back to Direct3D 11 tested on a PC without an AMD card. |
 | `SSBU_VK_WAIT=1` | A draw waits for its shaders and its pipeline instead of being left out while they are made: every draw of every frame is drawn. For comparing pictures (`SSBU_CAPTURE`), not for timing. |
@@ -260,9 +263,11 @@ The Vulkan back end ([`gpu_vk.c`](../runtime/gpu_vk.c)) is chosen with `SSBU_REN
 | `SSBU_VK_DRAWN_CLEARS=1` | Whole colour clears of floating-point targets are drawn as rectangles, as the masked ones are. |
 | `SSBU_CAPTURE=<folder>` | Frames shown written as pictures; `SSBU_CAPTURE_EVERY`, `SSBU_CAPTURE_FROM`, `SSBU_CAPTURE_TO` and `SSBU_CAPTURE_MAX` say which. |
 | `SSBU_F4_AT=<fight frame>` | Direct3D 11: F4 at that frame of a test fight (`SSBU_DEBUG_MATCH` or `SSBU_DEBUG_END`): every draw of the frame to the log, the render targets it samples and the textures to `screenshots/frame_<date>`. |
+| `SSBU_CAPTURE_AT=<fight frame>,...` | Direct3D 11: one capture at each of these fight frames (the first frame shown at or past it), instead of `SSBU_CAPTURE_EVERY`: the same moments in runs that differ only in what they draw. |
+| `SSBU_F4_AFTER_END=<frames>` | Direct3D 11: F4 that many frames shown after a test fight's last frame (TIME!, GAME!), as `SSBU_F4_AT`. |
 | `SSBU_VK_NO_D24=1` | Vulkan: 24-bit depth buffers made 32-bit float with stencil, as on a card without D24S8 (AMD's), to check AMD's depth on another card. Run it with its own `SSBU_SHADER_CACHE`: its pipelines are new ones. |
 | `SSBU_HITCH=<ms>` | Both renderers: a `[hitch] frame N: X ms` line for every frame that took longer, with what the threads spent it on. |
-| `SSBU_VK_GPU_TIME=<ms>` | Vulkan: GPU timestamps around each frame's work and after each rendering, launch, upload and draw. A `[gputime] frame N` line for each frame whose work on the GPU (or the renderer's wait for it) took longer, naming the stretch between two timestamps that took longest; every 512 frames, how many slow frames and others first drew with a pipeline, allocated memory or made a texture. Tells a GPU busy with our work from one held back. |
+| `SSBU_VK_GPU_TIME=<ms>` | Vulkan: GPU timestamps around each frame's work and after each rendering, launch, upload and draw. A `[gputime] frame N` line for each frame whose work on the GPU (or the renderer's wait for it) took longer, naming the stretch between two timestamps that took longest, then (`the draw:`) its rendering's size and targets, blend and depth state and first textures, and (`before it:`) the three stretches before it; every 512 frames, how many slow frames and others first drew with a pipeline, allocated memory or made a texture. Tells a GPU busy with our work from one held back. |
 | `SSBU_VK_MAKE_LOG=0` | Vulkan: no `[vulkan] made in play:` lines. Otherwise each pipeline made after the shader loading gets one (how long the draw waited for it, and whether the warm list already had it: `LISTED` means the warm start should have made it), and so does each new program that was not listed or took 2 ms or more; the first 300. The status lines count them all (`[status] vulkan made in play`). |
 | `SSBU_AOT_SPIRV=0` | Prepare Shaders (`tools/shader_aot.py`, also `--no-spirv`): the Vulkan renderer's SPIR-V files are not made. |
 
@@ -272,6 +277,30 @@ The Vulkan back end ([`gpu_vk.c`](../runtime/gpu_vk.c)) is chosen with `SSBU_REN
 - `vulkan_<vendor>_<device>.warm`: the warm list, one record for each pipeline and compute program the game used on this card. At the next start, threads below the game's priority load the listed programs' SPIR-V and make the pipelines again (from `vulkan_<vendor>_<device>.pipelines`, the driver's pipeline cache as Vulkan hands it over) before the game asks for them. The log says `[vulkan] warm start: N programs loaded and M pipelines made of K listed in S s`, and a `[status]` line repeats it. While those threads work there is a `vulkan_<vendor>_<device>.warm.warming` file beside the list: one found at a start means the last warm start did not finish (the driver crashed on a record, or the game was closed in those seconds), so the list is started again and nothing is warmed that once. The list only grows, to 16384 records at most; deleting it is safe.
 
 So after Prepare Shaders alone no program is translated during play, but each pipeline is still made by the driver at its first draw; from the second start on, the pipelines a player has already seen are made before the first frame. To measure it: normal speed (no `SSBU_SPEED`), no `SSBU_VK_WAIT`, `SSBU_HITCH=25`, and the frames over 50 ms counted in the log; `SSBU_SHADER_CACHE=<an empty folder>` gives a cold run without touching the player's cache.
+
+## The pipeline sweep
+
+[`tools/dev/pipeline_sweep.py`](../tools/dev/pipeline_sweep.py) completes the two shipped lists of what the GPU makes: `media/vulkan_pipelines.warm` (the Vulkan warm start's records: every pipeline drawn with and every compute program, by their programs' keys and the pipeline's state) and `media/shader_prewarm.txt` (Direct3D 11's prewarm: the programs, `<stage>_<hash>_<vs outputs>_<tables>`, the same keys as the cache files). Only keys go in, no game code or data. Run it for each release, and after any change to the shader translator or to `PipeKey`:
+
+```
+python tools/dev/pipeline_sweep.py run --exe <a test exe of this checkout> --tree <the folder the game runs in> --jobs 3 --forms
+python tools/dev/pipeline_sweep.py count media/vulkan_pipelines.warm
+```
+
+What it plays, headless, muted, `SSBU_SPEED=0`, Vulkan, the 100% save swapped in (and the tree's own put back after):
+
+- the main menus, walked through (`menus.log`);
+- one match per stage (every versus stage; with `--forms` also each one's Battlefield and Omega form, 900 fight frames), hazards on, items on, four fighters: player 1 is each fighter in turn, spamming every move through `SSBU_SEQ` (jabs, tilts, smash attacks, aerials, the four specials on the ground and in the air, charged, grabs and throws, shield, dodges, taunts), the other three level 9 CPU players a quarter of the list apart. `SSBU_DEBUG_FINAL=600,900` gives the four fighters their Final Smash in turn, at fight frames 600, 1500, 2400 and 3300; the run says for which fighters the hash log (`SSBU_FIGHT_HASH`) saw one start.
+
+Each job has a shader cache of its own (`--work`/`cache<n>`, `SSBU_SHADER_CACHE`) holding the newest SPIR-V files of the tree's cache and no per-device list, and the exe's folder gets a `vulkan_pipelines.warm` that is not a list while it runs, so the shipped list is not joined in: the per-device lists hold what the sweep drew. At the end they are merged into `media/` (`merge` does it again from `--work`): the shipped records first, then the new ones in the order they were first drawn, at most 16,384 (the renderer's limit). A shipped list of an older translator keeps its records under the new header when the record layout is the same. A run that stalls 60 s is killed; its log stays in `--work`, and the end lists the runs that did not reach the end of their fight: `--redo <file> --keep` plays such matches again (a line each: `<stage> <form> <f1>,<f2>,<f3>,<f4>`) into the same lists. The Mii Fighters are left out: a debug match with one crashes as it loads (their Mii is chosen on the select screen, which `SSBU_DEBUG_MATCH` does not walk).
+
+The first sweep (2026-11-12, this build, RTX 5000 Ada): 341 runs, 53 again with `--redo` (the Mii Fighters' matches); `media/vulkan_pipelines.warm` went from 8,090 records (8,011 programs) to 13,663 (12,311 programs), `media/shader_prewarm.txt` from 12,178 programs to 14,971; Final Smashes were seen start for 81 of the 83 fighters (not Samus' and Dark Samus', whose Final Smash may not pass through that status: not checked); and a start from a shader cache holding only the SPIR-V files (no pipeline cache, no per-device list) made every listed pipeline before the first frame and **none** during a fight of fighters never played there (Sora, Kazuya, Sephiroth, Steve on Pikmin Planet). The NVIDIA driver compiling them all from nothing took that start 241 s; its next starts take seconds.
+### The groups: what the first start makes first
+
+`python tools/dev/pipeline_sweep.py groups --exe <test exe> --tree <the folder the game runs in> --jobs 4` writes `media/vulkan_pipelines.groups` and `media/shader_prewarm_first.txt` (re-run it after a sweep). From an empty per-device list each time, it plays the menus, a base match (Mario against Mario on Final Destination), matches with items on, every fighter (player 1 spamming its moves, then the same fighter as a level 9 CPU) and every stage in each form, and sorts each record of the shipped list by what drew it: **boot** (the menus run and the base match before its set-up: title, menus, select screens), **common** (the base match's fight, the items matches, and what more than one fighter's or stage's run drew), **fighter `<ui_chara hash40>`** and **stage `<ui_stage hash40>`** (what that run alone drew, its forms together). The hash40s are the ones the game's records hold, read from the runs' logs.
+
+The Vulkan warm start (runtime/gpu_vk.c) then makes the boot group before the first frame, on every processor but two; the rest behind the menus on a quarter of them, none while a fight is on. As a match is set up (the player record builder) its fighters' and stage's groups go first, and the match waits for them, common and the records in no group before it loads (`SSBU_SHADER_MATCH_WAIT`); the other fighters' and stages' groups are made last, behind the menus. Direct3D 11's prewarm makes the boot group's programs (`shader_prewarm_first.txt`) before the played ones, which come newest first by the date a file was first written: the select screen's, played once long ago, used to be the ones over its budget.
+
 
 ## An example run
 

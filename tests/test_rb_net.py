@@ -275,6 +275,34 @@ class RelayLinkTests(unittest.TestCase):
             self.assertEqual(st['in_direct'], 0, st)
             self.assertLess(st['in_lobby'] + st['out_lobby'], 20, st)
 
+    @unittest.skipUnless(os.environ.get('SSBU_EOS_TEST_DIR'), 'EOS: SSBU_EOS_TEST_DIR names a folder with EOSSDK-Win64-Shipping.dll and eos.txt (never in the repository)')
+    def test_lobby_room_eos(self):
+        """With every direct packet dropped and EOS beside the program (runtime/net_eos.c): the players tell each other
+        their EOS ids through the lobby, and the room's traffic goes through EOS instead of the lobby's relay. The
+        guest makes a new Device ID (SSBU_EOS_NEWID): two EOS players on one PC."""
+        from test_ssbu_relay import Server
+        for f in ('EOSSDK-Win64-Shipping.dll', 'eos.txt'):
+            shutil.copy(os.path.join(os.environ['SSBU_EOS_TEST_DIR'], f), self.dir)
+        server = Server()
+        self.addCleanup(server.stop)
+        relay = f'127.0.0.1:{server.port}'
+        host = self.game(relay, protocol=3, room='rbroom', name='Host', SSBU_NET_TEST_BLOCK=0, SSBU_NET_TEST_NAT=1)
+        host.join()
+        guest = self.game(relay, protocol=3, room='rbroom', name='Guest', SSBU_NET_TEST_BLOCK=0, SSBU_NET_TEST_NAT=1, SSBU_EOS_NEWID=1)
+        guest.join()
+        self.lobby_room(server, host, guest)
+        self.play(host, guest, 'auto', 'auto', numbers=(0, 1))
+        import time
+        deadline = time.time() + 30
+        while time.time() < deadline and not all('through EOS' in ''.join(g.log) for g in (host, guest)):
+            time.sleep(0.5)
+        self.pads(host, guest)
+        for g in (host, guest):
+            st = self.stats(g)
+            self.assertIn('through EOS', ''.join(g.log), self.logs(host, guest))
+            self.assertGreater(st['in_direct'], 40, st)    # (EOS's packets count as direct ones: the lobby's relay and direct packets are out)
+            self.assertLess(st['in_relayed'], st['in_direct'], st)
+
     def test_lobby_code_no_room(self):
         """Players of one lobby code (version 3) in no room together: the host by hand, the joiner numbered
         by the host; the messages go as the lobby's RB."""

@@ -10,7 +10,7 @@
  * display.ini (gpu_display.c) sizes the window and picks its mode: windowed, or SDL's desktop
  * full screen for borderless and fullscreen alike (the monitor keeps its mode). F11 or Alt+Enter
  * switches between the two, as on Windows. The window's inside in pixels goes to the renderer,
- * whose swap chain follows it (the picture then 16:9 within); the pointer hides after 2 s
+ * whose swap chain follows it (the picture in its shape within); the pointer hides after 2 s
  * without moving (hide_cursor). */
 #define _GNU_SOURCE 1
 #include <SDL.h>
@@ -64,6 +64,29 @@ static void idle_pointer(Uint64 now) {
         SDL_ShowCursor(SDL_DISABLE);
         cursor_hidden = 1;
     }
+}
+
+/* (a new picture shape, or the menu's window size) the windowed window w x h, around the same centre, made
+ * smaller with the same shape if it would not fit its monitor's usable area */
+static void follow_shape(int w, int h) {
+    SDL_Rect a;
+    int x, y, ow, oh;
+    SDL_GetWindowPosition(window, &x, &y);
+    SDL_GetWindowSize(window, &ow, &oh);
+    if (!SDL_GetDisplayUsableBounds(SDL_GetWindowDisplayIndex(window), &a) && a.w > 0 && a.h > 0) {
+        if (w > a.w) { h = h * a.w / w; w = a.w; }
+        if (h > a.h) { w = w * a.h / h; h = a.h; }
+    }
+    SDL_SetWindowSize(window, w, h);
+    SDL_SetWindowPosition(window, x + (ow - w) / 2, y + (oh - h) / 2);
+}
+
+/* The window's monitor's shape, width over height (gpu_display.c: auto, and 21:9 and 32:9 snapping to it);
+ * 0 while SDL's video is not started. */
+float rt_monitor_shape(void) {
+    SDL_DisplayMode dm;
+    if (!SDL_WasInit(SDL_INIT_VIDEO) || SDL_GetDesktopDisplayMode(window ? SDL_GetWindowDisplayIndex(window) : 0, &dm) || dm.h <= 0) return 0;
+    return (float)dm.w / (float)dm.h;
 }
 
 /* ---- the keyboard ------------------------------------------------------------------- */
@@ -157,6 +180,7 @@ int rt_window_init(void) {
     SDL_JoystickEventState(SDL_IGNORE);
     int width, height;
     display_window_size(&width, &height);
+    width = (int)((float)height * display_aspect() + 0.5f);   /* (the picture's shape: no bars when windowed) */
     mode = display_window_mode();
     window = SDL_CreateWindow("Super Smash Bros. Ultimate (native)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height,
                               SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
@@ -222,7 +246,8 @@ void rt_window_loop(int every, void (*status)(void)) {
             case SDL_KEYDOWN:
                 menu_key_of(&e.key);
                 if (e.key.repeat) break;
-                if (e.key.keysym.scancode >= SDL_SCANCODE_F1 && e.key.keysym.scancode <= SDL_SCANCODE_F6)
+                if ((e.key.keysym.scancode >= SDL_SCANCODE_F1 && e.key.keysym.scancode <= SDL_SCANCODE_F6) ||
+                    e.key.keysym.scancode == SDL_SCANCODE_F9)   /* (F9: gpu_aspect.c's research picker) */
                     gfx_hotkey(e.key.keysym.scancode - SDL_SCANCODE_F1);
                 if (e.key.keysym.scancode == SDL_SCANCODE_F11 ||
                     (e.key.keysym.scancode == SDL_SCANCODE_RETURN && (e.key.keysym.mod & KMOD_ALT))) {
@@ -236,6 +261,8 @@ void rt_window_loop(int every, void (*status)(void)) {
         Uint64 now = SDL_GetTicks64();
         int asked = display_take_mode();   /* (the settings menu) */
         if (window && asked >= 0) set_mode(asked);
+        int ww, wh;
+        if (window && display_take_window_size(&ww, &wh) && mode == DISPLAY_WINDOWED) follow_shape(ww, wh);
         if (window) idle_pointer(now);
         if (every > 0 && status && now - last >= (Uint64)every * 1000) {
             last = now;
