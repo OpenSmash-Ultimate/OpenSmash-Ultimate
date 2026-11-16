@@ -29,6 +29,8 @@ int rb_vi_catchup(void) { return 0; }
 int rb_dequeue_pick(u64 freemask, int dflt) { (void)freemask; return dflt; }
 void rb_job_kick(Cpu *c, GuestFn *orig) { orig(c); }
 void rb_tree_node(Cpu *c, GuestFn *orig) { orig(c); }
+int rb_skipf(Cpu *c, int which) { (void)c; (void)which; return 0; }
+void rb_gc_step(Cpu *c, GuestFn *orig) { orig(c); }
 void rb_rand_draw(Cpu *c, GuestFn *orig, int which) { (void)which; orig(c); }
 int rb_slot_remote(u32 id) { (void)id; return 0; }
 int rb_slot_remote_gc(u32 id) { (void)id; return 0; }
@@ -277,13 +279,15 @@ static int rb_idle(void);   /* (below: nothing in this fight needs the savestate
 static void online_restore(void);   /* (SSBU_RB_NET=online, below) */
 static void online_fight_start(void);
 static void online_forget(const char *why);
+static void rb_pin(int on);   /* (thread placement: above net_step) */
+static void gc_skipf_summary(void);   /* (with rb_skipf, below) */
 static u32 pr_sp_lf;   /* (#181: the logic frame at the last fight safe point, rb_pad's census) */
 static void safe_point(Cpu *c, uintptr_t sp) {
     S.points++;
     int on = fight_on();
     if (!on) {
         if (S.in_fight) {
-            summary("fight over"); S.in_fight = 0;
+            summary("fight over"); S.in_fight = 0; rb_pin(0); gc_skipf_summary();
             online_restore();   /* (an Online match: the game's own set-up back for its results) */
             { void rb_state_map_fight(int on); rb_state_map_fight(0); }   /* (hle_rb_state.c: the alias area writable again) */
             ra_fight_over();   /* (before the catch-up's end below: run-ahead's hidden frame is not one) */
@@ -1753,6 +1757,78 @@ static void bn_catch(void) {
     if (catch_n >= 1) { bn_rr1 += catch_at[1] - catch_at[0]; bn_rrn += catch_at[catch_n] - catch_at[1]; }
 }
 
+/* ---- THREAD PLACEMENT (SSBU Arena's PIN, e5c915e, and COPYCCX, 6cecfbe) ------------------------------------------------
+ * Windows moves the guest main thread between cores (and, on a Ryzen with two L3 caches, between them): each move loses
+ * its caches. During a rollback fight: the main thread alone on one physical core (its SMT sibling left free), every
+ * other thread of the game on the other cores, and the rollback's copy threads on the other L3 cache when the processor
+ * has one (else with the others). Given back when the fight is over. Off with fewer than 4 cores, or SSBU_RB_PIN=0.
+ * SSBU_RB_PIN=<main>,<copies>,<others>: hex masks (tests). Applied to the threads the process has at the fight's start
+ * and again every 10 s (threads made since). */
+#include <tlhelp32.h>
+void rb_copy_threads_mask(u64 mask);   /* (hle_rb_state.c) */
+static int pin_on; static u64 pin_m[3]; static DWORD pin_main;
+static int pin_topology(u64 m[3]) {
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationAll, NULL, &len);
+    u8 *buf = malloc(len);
+    if (!buf || !GetLogicalProcessorInformationEx(RelationAll, (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)buf, &len)) { free(buf); return 0; }
+    u64 core[64], l3 = 0, all = 0; int nc = 0;
+    for (u8 *p = buf; p < buf + len; p += ((PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)p)->Size) {
+        PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX x = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)p;
+        if (x->Relationship == RelationProcessorCore && nc < 64 && x->Processor.GroupMask[0].Group == 0) core[nc++] = x->Processor.GroupMask[0].Mask;
+        else if (x->Relationship == RelationCache && x->Cache.Level == 3 && !l3 && x->Cache.GroupMask.Group == 0) l3 = x->Cache.GroupMask.Mask;
+    }
+    free(buf);
+    DWORD_PTR pa = 0, sa = 0;
+    GetProcessAffinityMask(GetCurrentProcess(), &pa, &sa);
+    if (nc < 4) return 0;
+    for (int i = 0; i < nc; i++) all |= core[i];
+    if (!l3) l3 = all;
+    if ((all & pa) != all) return 0;   /* (the process is already limited to some processors: left alone) */
+    int in = 0, last = -1;
+    for (int i = 0; i < nc; i++) if ((core[i] & l3) == core[i]) { in++; last = i; }
+    if (in < 3) return 0;
+    m[0] = core[last] & (~core[last] + 1);              /* main: one logical processor of the first L3's last core */
+    m[2] = all & ~core[last];                           /* the others: every other core */
+    m[1] = (all & ~l3) ? (all & ~l3) : m[2];            /* the copy threads: the other L3 cache */
+    return 1;
+}
+static void pin_apply(u64 mm, u64 mc, u64 mo) {
+    DWORD pid = GetCurrentProcessId();
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap != INVALID_HANDLE_VALUE) {
+        THREADENTRY32 te; te.dwSize = sizeof te;
+        for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+            if (te.th32OwnerProcessID != pid) continue;
+            HANDLE h = OpenThread(THREAD_SET_INFORMATION | THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
+            if (!h) continue;
+            SetThreadAffinityMask(h, (DWORD_PTR)(te.th32ThreadID == pin_main ? mm : mo));
+            CloseHandle(h);
+        }
+        CloseHandle(snap);
+    }
+    rb_copy_threads_mask(mc);
+}
+static void rb_pin(int on) {
+    if (on) {
+        const char *e = getenv("SSBU_RB_PIN");
+        if (e && e[0] == '0' && !e[1]) return;
+        if (!pin_on) {
+            if (e && *e) { if (sscanf(e, "%llx,%llx,%llx", &pin_m[0], &pin_m[1], &pin_m[2]) != 3) return; }
+            else if (!pin_topology(pin_m)) return;
+            fprintf(stderr, "[rb] threads placed for the fight: main %llx, copy threads %llx, others %llx\n", pin_m[0], pin_m[1], pin_m[2]);
+        }
+        pin_main = GetCurrentThreadId();
+        pin_apply(pin_m[0], pin_m[1], pin_m[2]);
+        pin_on = 1;
+    } else if (pin_on) {
+        DWORD_PTR pa = 0, sa = 0;
+        GetProcessAffinityMask(GetCurrentProcess(), &pa, &sa);
+        pin_on = 0;
+        pin_apply(pa, 0, pa);
+    }
+}
+
 static void net_step(Cpu *c, u64 frame) {
     int bn_was_real = rb_fast <= 0;
     u32 key = ld32(LOGIC_FRAME);
@@ -1808,6 +1884,7 @@ static void net_step(Cpu *c, u64 frame) {
         net_key0 = net_low = key; net_t0 = now_ms(); net_done = 0;
         fprintf(stderr, "[rb] loop mode: fight starts at logic frame %u\n", key);
         bn_fight_start();
+        rb_pin(1);
         if (net_mode == 2) fprintf(stderr, "[rb] net mode: the match seed %s (%016llx)\n", hs_agreed ? "was agreed" : "was NOT agreed: the start may differ", (unsigned long long)hs_seed);
         /* SSBU_RB_SEED=<n>: the 9 script random generators (4 state words and a call count each) set
          * from <n> now, so two fights can start alike (two runs differed from frame 0: loop2). A
@@ -1828,6 +1905,7 @@ static void net_step(Cpu *c, u64 frame) {
             fprintf(stderr, "[rb] loop mode: script random generators seeded from %s\n", sd);
         }
     }
+    if (bn_was_real && pin_on && S.frames % 600 == 599) rb_pin(1);   /* (threads made since) */
     if (bn_was_real && bn_on_ > 0) bn_real_point(key);   /* (the rollback bench: a real pass's safe point) */
     if (S.frames > 8 && S.frames <= 300) {   /* (then, to 5 s: each generator's calls whenever they change) */
         static u32 prev[9];
@@ -3423,6 +3501,40 @@ static int lite_skipped_now(Cpu *c, int grp) {
 }
 /* (hle_rb_wraps.c: the presentation callees' wraps ask this) */
 int rb_lite_skip(Cpu *c, int group) { return lite_skipped_now(c, group); }
+
+/* ---- SKIPF and the Lua collector (SSBU Arena's 4774203 / f9b673b and 0bde20e, ported as switches; both OFF by default
+ * until pairs of games stay in sync with them) ---------------------------------------------------------------------
+ * SSBU_RB_SKIPF=<bits>: hle_rb_wraps.c's six functions return at once in a frame run again (a catch-up's, the main
+ * thread's, in a fight). Bit n: the n-th of the list. The summary counts the calls left out.
+ * The collector: the main loop runs steps of the Lua garbage collector while its frame has time left (by the clock: how
+ * much it does is no part of the simulation). SSBU_RB_GC_RERUN=0: a frame run again runs none - the step returns at once
+ * with x20 = 0, the loop's limit (the function is an exact-callee in tools/hooks.txt, so the caller reads x20 back), and
+ * the loop ends at its next check. Either way the summary says how many steps ran and how long, in real frames and in
+ * frames run again: what the collector costs here. */
+static int skipf_bits = -1, gc_rerun = -1;
+static long long skipf_n[6], gc_n[2], gc_skipped;
+static double gc_ms[2];
+int rb_skipf(Cpu *c, int which) {
+    if (skipf_bits < 0) { const char *e = getenv("SSBU_RB_SKIPF"); skipf_bits = e && *e ? (int)strtol(e, NULL, 0) : 0; }
+    if (!(skipf_bits >> which & 1) || rb_fast <= 0 || !S.in_fight || c->thread != rb_main_kthread) return 0;
+    skipf_n[which]++;
+    return 1;
+}
+void rb_gc_step(Cpu *c, GuestFn *orig) {
+    if (!rb_on || !S.in_fight || c->thread != rb_main_kthread || c->x[30] != 0x71037480c0ull) { orig(c); return; }
+    if (gc_rerun < 0) { const char *e = getenv("SSBU_RB_GC_RERUN"); gc_rerun = !(e && *e == '0'); }
+    int again = rb_fast > 0;
+    if (again && !gc_rerun) { gc_skipped++; c->x[20] = 0; return; }
+    double t0 = now_ms();
+    orig(c);
+    gc_ms[again] += now_ms() - t0; gc_n[again]++;
+}
+static void gc_skipf_summary(void) {
+    fprintf(stderr, "[rb] Lua collector in the main loop: %lld steps in real frames (%.1f ms), %lld in frames run again (%.1f ms), %lld left out; "
+            "functions left out of frames run again (SSBU_RB_SKIPF %d): %lld %lld %lld %lld %lld %lld\n",
+            gc_n[0], gc_ms[0], gc_n[1], gc_ms[1], gc_skipped, skipf_bits < 0 ? 0 : skipf_bits, skipf_n[0], skipf_n[1], skipf_n[2], skipf_n[3], skipf_n[4], skipf_n[5]);
+    memset(gc_n, 0, sizeof gc_n); memset(gc_ms, 0, sizeof gc_ms); memset(skipf_n, 0, sizeof skipf_n); gc_skipped = 0;
+}
 
 /* ---- a catch-up's frames get the buffers their first pass got ----------------------------------
  * The game keeps data per display buffer (the camera's among it) and picks it by the slot DequeueBuffer

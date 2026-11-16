@@ -54,3 +54,7 @@
 # exact-callee 7100001000 16 words, sha256 0123456789abcdef example_hooked_function
 # exact-caller 7100002000 example_caller
 # hookable 7100003000 example_hookable_function
+
+# (rollback) the Lua collector step the main loop runs while its frame has time left: hle_rb_core.c rb_gc_step sets the
+# loop limit (x20) to end the loop in a frame run again (SSBU_RB_GC_RERUN=0)
+exact-callee 71038fec40 16 words, sha256 cf7b0b812eb864d3 lua_collector_step
