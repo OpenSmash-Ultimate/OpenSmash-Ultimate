@@ -52,6 +52,13 @@ HOST = "linux" if sys.platform.startswith("linux") else "macos" if sys.platform 
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"}
 PUBLIC_LOBBY = "opensmash-lobby.duckdns.org:39421"   # (OpenSmash.Launcher's Public: the one public lobby)
+OLD_LOBBY = "smash.recomps.wtf"   # (the North American lobby, gone: its address means the public lobby)
+
+
+def means_public_lobby(host):
+    """A server address that is the public lobby: its own (with or without the port) or the gone North American one's."""
+    h = (host or "").strip().lower()
+    return bool(h) and (h.startswith(OLD_LOBBY) or h in (PUBLIC_LOBBY, PUBLIC_LOBBY.split(":")[0]))
 REPO_API = "https://api.github.com/repos/OpenSmash-Ultimate/OpenSmash-Ultimate"
 
 
@@ -222,6 +229,10 @@ def read_settings(root):
         s["code"] = saved["code"]
     if (prefer_saved or not s["server"]) and saved["server"] is not None:
         s["server"] = saved["server"]
+    if means_public_lobby(s["server"]):   # (issue #389: an older launcher's "your own server" smash.recomps.wtf:39421)
+        s["server"] = ""
+        if s["lobby"] == "custom":
+            s["lobby"] = "private" if s["code"] else "public"
     s["direct"] = "off" if first_line(config_file(root, "online_direct.txt")).lower() == "off" else "on"
     s["name"] = first_line(config_file(root, "online_name.txt"))
     return s
@@ -245,6 +256,9 @@ def write_settings(root, values):
     except ValueError:
         raise Error("the volume is a number from 0 to 100") from None
     lobby, code, host = s["lobby"], s["code"].replace(" ", ""), s["server"].strip()
+    if lobby == "custom" and means_public_lobby(host):   # (the public lobby's address, or the gone NA one's: issue #389)
+        lobby, host = ("private" if code else "public"), ""
+        s["lobby"], s["server"] = lobby, host
     if lobby == "private" and not code:
         raise Error("Type a lobby code: a word your friends type too.")
     if lobby == "custom" and host and not re.fullmatch(r"\S+:\d+", host):

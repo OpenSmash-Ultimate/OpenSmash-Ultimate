@@ -66,7 +66,13 @@ void menu_toast(const char *text)
     ReleaseSRWLockExclusive(&toast_lock);
 }
 
-int menu_visible(void) { return open_ || (toast_until && (toast_until == 1 || GetTickCount64() < toast_until)); }
+const char *net_notice_take(void);   /* (net_relay.c: a message for the screen, once) */
+int menu_visible(void)
+{
+    const char *notice = net_notice_take();
+    if (notice)
+        menu_toast(notice);
+    return open_ || (toast_until && (toast_until == 1 || GetTickCount64() < toast_until)); }
 
 /* ---- keys from the window's thread ---------------------------------------------------- */
 static volatile LONG q[64], q_head, q_tail;
@@ -733,9 +739,13 @@ static void room_rows(void)
 }
 
 /* The Lobby page's rows (fresh: the page shows anew, so the rooms are asked for again). */
+/* The yuzu-compatible client (net_yuzu.c, SSBU_NET_BACKEND=yuzu): its backend is net_backend_candidate. Online through
+ * Epic Online Services net_backend is net_eos_backend (net_relay.c), which keeps every OpenSmash page: issue #389. */
+static int yuzu_client(void) { return net_backend && net_backend == net_backend_candidate; }
+
 static void build_lobby(int fresh)
 {
-    if (net_configured() && net_backend)
+    if (net_configured() && yuzu_client())
     {
         Row *r = add(R_LOBBY, K_INFO, W_NONE, "yuzu room",
                      "Play in Local Wireless > Create a Room or Rooms List. OpenSmash lobby matchmaking and Quickplay are unavailable in this mode.");
@@ -1239,7 +1249,7 @@ static void build(void)
         } /* (a refusal's what-differs, the room's players) */
         snprintf(r->value, sizeof r->value, "%.110s", status[0] ? status : net_configured() ? "connecting..."
                                                                                             : "offline");
-        if (net_backend)
+        if (yuzu_client())
         {
             r = add(R_NET_MODE, K_INFO, W_NONE, "Connection", "Change the room server and nickname using Join yuzu Room.bat.");
             snprintf(r->value, sizeof r->value, ui_text("yuzu compatible (client)"));

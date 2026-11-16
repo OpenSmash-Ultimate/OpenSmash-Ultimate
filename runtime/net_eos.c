@@ -136,12 +136,13 @@ static void EOS_CALL eos_connection_request(const EosRequestInfo *d) {   /* (any
 }
 
 static char eos_cred[5][128];
+static volatile LONG eos_missing;   /* (eos_files_missing: the SDK or eos.txt not beside the program) */
 static int eos_read_credentials(const char *dir) {
     static const char *const KEYS[5] = {"ProductId", "SandboxId", "DeploymentId", "ClientId", "ClientSecret"};
     char path[MAX_PATH + 16], line[256];
     snprintf(path, sizeof path, "%s\\eos.txt", dir);
     FILE *f = fopen(path, "r");
-    if (!f) return 0;
+    if (!f) { fprintf(stderr, "[eos] no eos.txt beside the program: off\n"); InterlockedExchange(&eos_missing, 1); return 0; }
     while (fgets(line, sizeof line, f)) {
         char *e = strchr(line, '=');
         if (line[0] == '#' || !e) continue;
@@ -150,7 +151,7 @@ static int eos_read_credentials(const char *dir) {
         for (int k = 0; k < 5; k++) if (!strcmp(line, KEYS[k])) snprintf(eos_cred[k], sizeof eos_cred[k], "%s", e);
     }
     fclose(f);
-    for (int k = 0; k < 5; k++) if (!eos_cred[k][0]) { fprintf(stderr, "[eos] eos.txt has no %s: off\n", KEYS[k]); return 0; }
+    for (int k = 0; k < 5; k++) if (!eos_cred[k][0]) { fprintf(stderr, "[eos] eos.txt has no %s: off\n", KEYS[k]); InterlockedExchange(&eos_missing, 1); return 0; }
     return 1;
 }
 
@@ -501,7 +502,7 @@ void eos_start(void) {
     if (!eos_read_credentials(dir)) return;
     snprintf(path, sizeof path, "%s\\EOSSDK-Win64-Shipping.dll", dir);
     HMODULE dll = LoadLibraryA(path);
-    if (!dll) { fprintf(stderr, "[eos] no EOSSDK-Win64-Shipping.dll beside the program: off\n"); return; }
+    if (!dll) { fprintf(stderr, "[eos] no EOSSDK-Win64-Shipping.dll beside the program: off\n"); InterlockedExchange(&eos_missing, 1); return; }
     eos_wake = CreateEventA(NULL, FALSE, FALSE, NULL);
     InterlockedExchange(&eos_phase, 1);
     HANDLE t = CreateThread(NULL, 0, eos_thread_, dll, 0, NULL);
@@ -509,6 +510,7 @@ void eos_start(void) {
 }
 
 int eos_ready(void) { return eos_phase == 2 && eos_my_text[0]; }
+int eos_files_missing(void) { eos_start(); return eos_missing != 0; }
 /* 1 once logged in, within ms; 0 at once when EOS is off here (no SDK or eos.txt beside the program, SSBU_EOS=0) or
  * its start failed, or when the login did not come in time (Epic's services down or out of reach) */
 int eos_wait_ready(unsigned ms) {
@@ -623,6 +625,7 @@ int eos_hub_member_ip(const char *id, u32 *ip) { (void)id; (void)ip; return 0; }
 int eos_hub_member_id(u32 ip, char id[NET_EOS_ID_LEN + 1]) { (void)ip; (void)id; return 0; }
 void eos_start(void) {}
 int eos_ready(void) { return 0; }
+int eos_files_missing(void) { return 0; }
 int eos_wait_ready(unsigned ms) { (void)ms; return 0; }
 const char *eos_my_id(void) { return NULL; }
 int eos_send(const char *to, const void *data, u32 len) { (void)to; (void)data; (void)len; return 0; }

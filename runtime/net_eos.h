@@ -9,6 +9,7 @@
 
 void eos_start(void);                                     /* (once) off without the SDK beside the program, eos.txt or with SSBU_EOS=0 */
 int eos_ready(void);                                      /* logged in */
+int eos_files_missing(void);   /* 1: off because the SDK's DLL or eos.txt is not beside the program (or eos.txt is incomplete) */
 int eos_wait_ready(unsigned ms);                          /* logged in within ms (0 at once: EOS off here or failed) */
 const char *eos_my_id(void);                              /* this player's id, NULL until ready */
 int eos_send(const char *to, const void *data, u32 len);  /* queued; 0: not sent (not ready, too long, queue full) */

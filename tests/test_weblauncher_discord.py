@@ -235,8 +235,17 @@ class Lobbies(unittest.TestCase):
         self.assertEqual(da.ranks_in(board_json, "42"), (2, {43: 1}))
         self.assertEqual(da.ranks_in(board_json, "7"), (0, {}))
         self.assertEqual(da.ranks_in(None, "42"), (0, {}))
-        self.assertEqual(da.fighter_name(43), "Olimar")
-        self.assertEqual(da.fighter_name(77), "Fighter 77")
+        self.assertEqual(da.fighter_name(43), "Lucario")
+        self.assertEqual(da.fighter_name(86), "Fighter 86")
+
+    def test_fighter_names_by_gsp_number(self):
+        # (a GSP record's fighter byte is the game's save_no in ui_chara_db, not the fighter kind: issue #389, 0x1d = G&W)
+        for number, name in ((0, "Mario"), (15, "Bowser"), (16, "Ice Climbers"), (17, "Sheik"), (29, "Mr. Game & Watch"),
+                             (30, "Meta Knight"), (37, "Pokemon Trainer"), (64, "Richter"), (65, "Inkling"),
+                             (74, "Piranha Plant"), (83, "Pyra & Mythra"), (85, "Sora")):
+            self.assertEqual(da.fighter_name(number), name)
+        self.assertEqual(len(da.NAMES), 86)
+        self.assertEqual(da.fighter_name(-1), "Fighter -1")
 
 
 if __name__ == '__main__':

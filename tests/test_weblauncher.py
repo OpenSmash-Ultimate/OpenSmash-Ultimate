@@ -69,6 +69,19 @@ class Settings(unittest.TestCase):
             s = launcher.read_settings(self.root)
             self.assertEqual((s["lobby"], s["code"]), want, line)
 
+    def test_an_old_saved_custom_lobby_is_not_written_back(self):
+        # (issue #389: launcher.ini's lobby = custom with the gone North American lobby put it back into online_server.txt)
+        with open(os.path.join(self.root, "online_server.txt"), "w") as f:
+            f.write("auto\n")
+        with open(os.path.join(self.root, "launcher.ini"), "w") as f:
+            f.write("[opensmash]\nlobby = custom\ncode =\nserver = smash.recomps.wtf:39421\n")
+        s = launcher.read_settings(self.root)
+        self.assertEqual((s["lobby"], s["server"]), ("public", ""))
+        launcher.write_settings(self.root, {})
+        self.assertEqual(launcher.first_line(os.path.join(self.root, "online_server.txt")), "auto")
+        launcher.write_settings(self.root, {"lobby": "custom", "server": "opensmash-lobby.duckdns.org:39421", "code": "abc"})
+        self.assertEqual(launcher.first_line(os.path.join(self.root, "online_server.txt")), "opensmash-lobby.duckdns.org:39421 abc")
+
     def test_write_each_lobby(self):
         for lobby, extra, line in (("public", {}, "auto"), ("offline", {}, "off"),
                                    ("private", {"code": "abc"}, "opensmash-lobby.duckdns.org:39421 abc"),
