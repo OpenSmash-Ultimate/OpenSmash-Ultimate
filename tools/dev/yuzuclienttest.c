@@ -18,6 +18,8 @@ const char *config_path(enum ConfigFile f){(void)f;return "none.txt";}
 u64 rt_now_ns(void){return GetTickCount64()*1000000ull;}
 void kernel_signal_event(u32 h){(void)h;}
 void rt_backtrace(void){}
+/* net_relay.c picks Epic Online Services when asked; this test never does. */
+const struct NetBackend net_eos_backend;
 void discord_note_room(int in_room, int players, int max_players, unsigned host_ip){(void)in_room;(void)players;(void)max_players;(void)host_ip;}
 u32 rt_attach_system_event(Cpu *c,u64 e,int a){(void)c;(void)e;(void)a;return 0;}
 u64 rt_guest_copy(const void *p,size_t n){(void)n;return (u64)p;}
