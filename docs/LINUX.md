@@ -58,10 +58,12 @@ or as a Flatpak). Without one, the launcher opens in your default browser.
 | Tab | What it does | What runs |
 | :--- | :--- | :--- |
 | **Play** | *Play* (online, the lobby in Settings), *Play offline*, *Play without mods*. Before the game starts, it applies the turned-on mods, and asks to build the mods' plugins into the game when they need it. It then shows the game's log while the game runs. | `play-ssbu.sh`, `launchers/play-ssbu-offline.sh`; `tools/os_mods.py apply`, `vanilla`, `build` |
-| **Setup** | The first-run setup: your game, keys and firmware folders (found by themselves when an emulator has them; *Browse…* picks another), your online name, then the whole install and build with its log. *Build again* builds what changed. | `tools/linux/install_linux.py` (the same steps as `install-windowsmash.sh`), `tools/build_game.py` |
+| **Setup** | The first-run setup: your game, keys and firmware folders (found by themselves when an emulator has them; *Browse…* picks another), your online name, then the whole install and build with its log. *Build again* builds what changed; *Build game + launcher* also checks the Python launcher's syntax. | `tools/linux/install_linux.py`, `tools/build_game.py`, `tools/linux/rebuild-all.sh` |
 | **Mods** | Opens WindowSmash Mods (GameBanana's mods: browse, install, turn on and off, modpacks) in the same window. *Back to the launcher* (or B) returns. *Build plugins into the game* compiles movesets' and new characters' code into the game. | `tools/modmanager/server.py`, `tools/os_mods.py build` |
 | **Settings** | Display, online (name, public or private lobby, lobby code, your own server, direct connections) and controllers. These are the same files and values `OpenSmash.exe` and the game's own settings menu write. | `display.ini`, `controllers.ini`, `online_*.txt`, `launcher.ini` |
 | **Update** | Checks GitHub for a newer OpenSmash and installs it (a `git pull`, or the newer files of a ZIP download). Your game files, save, settings and builds stay. | `install_linux.py --update-only` |
+
+**Build game + launcher** shows the incremental build's live progress in the launcher. The Linux launcher is Python and has no separate binary to compile; the process checks its syntax after the game build. Run the same process outside the launcher with `bash tools/linux/rebuild-all.sh` (optionally followed by `--jobs N`).
 
 The setup installs the build's packages with `sudo`. With no terminal, `sudo` asks for your password
 in a dialog (`tools/linux/askpass.sh`: zenity, kdialog or ssh-askpass). The notes in

@@ -12,11 +12,14 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "../../runtime/ui_catalog.generated.h"
+#include "../../runtime/ui_utf8.h"
+
 #define CELL_W 24
 #define CELL_H 48
-#define COLS 16
+#define COLS UI_FONT_COLS
 #define ATLAS_W (CELL_W * COLS)
-#define ATLAS_H (CELL_H * 6)
+#define ATLAS_H (CELL_H * UI_FONT_ROWS)
 #define SIZE 40   /* (CreateFontW(-40): a 40-pixel em) */
 
 /* The named font, only if that is what Core Text found (it stands in another for a name it does not know). */
@@ -70,6 +73,18 @@ int main(int argc, char **argv) {
             CGFloat x = (c - 32) % COLS * CELL_W, top = (c - 32) / COLS * CELL_H + 2;
             CGPoint at = CGPointMake(x, ATLAS_H - top - ascent);
             CTFontDrawGlyphs(font, &glyph, &at, 1, dc);
+        }
+        for (unsigned i = 0; i < UI_GLYPH_COUNT; i++) {
+            unsigned cp = ui_glyphs[i], cell = 96 + i * 2;
+            NSString *str = [[NSString alloc] initWithBytes:&cp length:4 encoding:NSUTF32LittleEndianStringEncoding];
+            CTFontRef fallback = CTFontCreateForString(font, (__bridge CFStringRef)str, CFRangeMake(0, str.length));
+            NSDictionary *attrs = @{(__bridge NSString *)kCTFontAttributeName: (__bridge id)fallback,
+                                    (__bridge NSString *)kCTForegroundColorFromContextAttributeName: @YES};
+            NSAttributedString *attributed = [[NSAttributedString alloc] initWithString:str attributes:attrs];
+            CTLineRef line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)attributed);
+            CGContextSetTextPosition(dc, cell % COLS * CELL_W, ATLAS_H - (cell / COLS * CELL_H + 2) - CTFontGetAscent(fallback));
+            CTLineDraw(line, dc);
+            CFRelease(line); CFRelease(fallback);
         }
         CGContextFlush(dc);
         CGContextRelease(dc);

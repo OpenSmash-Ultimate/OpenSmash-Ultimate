@@ -260,6 +260,13 @@ HLE(_ZN2nn7account16LoadProfileImageEPmPvmRKNS0_3UidE) { st64(c->x[0], 0); c->x[
  * configured the user has one, named by the netplay id, and its id token - which only the NEX
  * server of tools/nex reads - carries that id and the player's name. Offline there is none. */
 static u64 nsa_id(void) { u64 id = USER[0] ^ USER[1]; return id ? id : 1; }
+/* (net_discord.c: the key of its signed requests to the lobby's GSP pages, tools/nex/board.py) the NSA id as the token
+ * writes it; 0 offline */
+int account_nsa_hex(char out[17]) {
+    if (!net_configured()) { out[0] = 0; return 0; }
+    snprintf(out, 17, "%016llx", (unsigned long long)nsa_id());
+    return 1;
+}
 HLE(_ZN2nn7account32IsNetworkServiceAccountAvailableEPbRKNS0_10UserHandleE) { st8(c->x[0], net_configured() != 0); c->x[0] = 0; }
 HLE(_ZN2nn7account36EnsureNetworkServiceAccountAvailableERKNS0_10UserHandleE) { c->x[0] = net_configured() ? 0 : R_UNAVAILABLE; }
 HLE(_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERKNS0_10UserHandleE) {

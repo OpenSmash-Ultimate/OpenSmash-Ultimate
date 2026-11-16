@@ -246,4 +246,7 @@ if __name__ == "__main__":
     failed = test_hardening.run()
     print("---- Battle Arenas (nex/test_arenas.py)")
     from . import test_arenas
-    sys.exit(failed or test_arenas.run())
+    failed = test_arenas.run() or failed
+    print("---- the GSP leaderboard over HTTP (nex/test_board.py)")
+    from . import test_board
+    sys.exit(test_board.run() or failed)

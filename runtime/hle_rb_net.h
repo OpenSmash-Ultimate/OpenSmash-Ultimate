@@ -13,6 +13,7 @@
 #define RBN_RING 256          /* frames kept a player (a power of two) */
 #define RBN_MAX_BACK 7        /* the furthest a rollback goes: a game waits rather than run past it */
 #define RBN_REST 1600         /* a stick within this of the middle is the middle: noise is no reason to roll back */
+#define RBN_HYST 600         /* a stick off the middle moves less than this: the value sent before is kept (rbn_local) */
 #define RBN_MAX_PADS 64       /* pads in one message (the unacknowledged ones, newest last) */
 
 typedef struct RbnPad { uint64_t buttons; int16_t lx, ly, rx, ry, lt, rt; } RbnPad;
@@ -168,6 +169,15 @@ int rbn_choice_parse(const uint8_t *buf, size_t len, RbnChoice *c);
 void rbn_sync_reset(void);
 void rbn_sync_sample(int p, int32_t local_adv, int32_t remote_adv);   /* one per message received from player p */
 int rbn_sync_wait(uint32_t frame);                              /* frames to wait before this one (0 or 1) */
+/* (2026-11-16) The same samples, the game ahead slowed by a fraction of a frame instead of a whole refresh left out: every
+ * RBN_TS_EVERY frames each player's advantage is the mean of the middle third of its newest samples (GGPO's timesync.cpp
+ * averages over a window and only the side both agree is ahead acts; the middle third is SSBU Arena's rb_timesync.c, after
+ * Slippi), and the game furthest ahead gives back half its lead over the next RBN_TS_EVERY frames, at most RBN_TS_MAX_MS a
+ * frame. Returns this frame's extra time in ms (0: none). frame_ms: one frame's period. */
+#define RBN_TS_EVERY 30
+#define RBN_TS_MAX_MS 4.0
+double rbn_sync_extra_ms(uint32_t frame, double frame_ms);
+double rbn_sync_gap_ms(void);                                   /* (the newest estimate: > 0 this game is ahead) */
 int rbn_players(void);
 int rbn_local_player(void);
 

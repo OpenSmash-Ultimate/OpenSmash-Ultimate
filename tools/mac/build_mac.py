@@ -49,6 +49,7 @@ sys.path.insert(1, os.path.dirname(HERE))         # a script's folder off sys.pa
 from toolchain import (AR, CFLAGS, CLANG, CODESIGN, CXXFLAGS, MIN_MACOS, NM, REPO, RUNTIME, SDL3_DIR,  # noqa: E402
                        SDL3_FRAMEWORK, TARGET, compile_command, run, wrapped)
 import game_dll  # noqa: E402
+import localization  # noqa: E402
 import ladder  # noqa: E402
 import progress  # noqa: E402
 
@@ -395,11 +396,9 @@ def nro_table_text(nros):
             + f"const u32 rt_nro_count = {len(nros)};\n")
 
 
-# The glyph atlas's size in bytes: runtime/macos/gpu_metal_overlay.m's ATLAS_W * ATLAS_H (CELL_W 24 x
-# COLS 16 by CELL_H 48 x 6 rows), which it asserts overlay_font.h has. The fallback header below and
-# tools/build_game.py's check of the runtime write a blank one of this size.
-OVERLAY_FONT_SIZE = 24 * 16 * 48 * 6
-
+# Same catalog-derived geometry as the native overlay and the build-time font generators.
+_font_w, _font_h, _font_cols, _font_rows, _font_glyphs = localization.font_layout()
+OVERLAY_FONT_SIZE = _font_w * _font_h * _font_cols * _font_rows
 
 def overlay_font():
     """gen/overlay_font.h: the debug overlay's glyphs, drawn by Core Text (make_overlay_font.m)
@@ -407,7 +406,7 @@ def overlay_font():
     os.makedirs(GEN, exist_ok=True)
     header = os.path.join(GEN, "overlay_font.h")
     tool_src = os.path.join(HERE, "make_overlay_font.m")
-    if not needs(header, tool_src):
+    if not needs(header, tool_src, os.path.join(REPO, "runtime", "ui_catalog.generated.h")):
         return
     tool = os.path.join(GEN, "make_overlay_font")
     code, out = run([CLANG, *TARGET, "-O1", "-fobjc-arc", "-w", tool_src, "-o", tool,

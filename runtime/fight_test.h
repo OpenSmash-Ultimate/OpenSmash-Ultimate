@@ -131,10 +131,15 @@ static inline void fight_frame_end(FightDrops *d, uint8_t *count, uint8_t *resul
 
 /* SSBU_SEQ's ticks for one poll from the first fighter's fight frame and the game's ready-go
  * flag: the fight frames since the last poll while a fight runs; after it has ended (ready-go
- * cleared) one a poll again until the next one; a new fight's count starting lower is no step. */
-typedef struct FightSteps { long long last, hist[4]; int was_on, ended; } FightSteps;
+ * cleared) one a poll again until the next one; a new fight's count starting lower is no step.
+ * Paused (ready-go on, the fight frame still for FIGHT_PAUSE_POLLS polls), one a poll too, so a
+ * sequence can work the pause menu and camera. */
+enum { FIGHT_PAUSE_POLLS = 30 };
+typedef struct FightSteps { long long last, hist[4]; int was_on, ended, still; } FightSteps;
 static inline long fight_steps(FightSteps *s, long long frame, int on) {
     long long n = frame - s->last;
+    s->still = on && n == 0 ? s->still + 1 : 0;
+    if (s->still > FIGHT_PAUSE_POLLS) { s->hist[0]++; return 1; }
     if (on) { s->was_on = 1; s->ended = 0; }
     else if (s->was_on) s->ended = 1;
     if (n < 0 && s->was_on) { s->last = frame; return s->ended ? 1 : 0; }
@@ -176,8 +181,8 @@ static inline uint64_t fixed_entropy(uint64_t n, uint64_t sub) { return fixed_mi
 /* "p1=<fighter>,p2=<fighter>|cpu|human,p3=..,p4=..,c1=<colour>..c4=<colour>,stage=<name>,
  * form=omega|battlefield|normal,hazards=on|off,cpu=<level>,items=on|off,stock=<n>,time=<min>"
  * (ssbu-recomp's debug match; c1..c4: a player's costume, 0-7, as ssbu-recomp's c1..c8). A
- * key left out keeps what it was (a list's lines add up); -1: not set. time is read and, as
- * there, not used. */
+ * key left out keeps what it was (a list's lines add up); -1: not set. time: the time limit in
+ * minutes (the match block's +0x48, in frames). */
 typedef struct DebugMatch {
     char name[4][32], stage[48];
     int p2type, form, hazards, cpu, items, time, stock, colour[4];

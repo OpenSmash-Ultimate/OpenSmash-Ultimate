@@ -23,6 +23,8 @@ static struct Net {
     Remote remote[RBN_PLAYERS];
     int32_t diff[RBN_PLAYERS][SAMPLES];   /* (frame advantage over each player: local - remote, the newest SAMPLES) */
     int ndiff[RBN_PLAYERS], next_diff[RBN_PLAYERS], owed;
+    double ts_extra, ts_gap; int ts_left;   /* (rbn_sync_extra_ms) */
+    int16_t hyst[4];                        /* (rbn_local: the sticks' last values sent) */
 } N;
 void *rbn_state(size_t *size) { *size = sizeof N; return &N; }
 #define nplayers N.nplayers
@@ -44,6 +46,7 @@ void rbn_reset(int n, int local, int d) {
     local_player = local;
     delay = d < 0 ? 0 : d > 15 ? 15 : d;
     local_newest = mismatch = 0;
+    memset(N.hyst, 0, sizeof N.hyst);
 }
 int rbn_delay(void) { return delay; }
 int rbn_players(void) { return nplayers; }
@@ -63,7 +66,20 @@ RbnPad rbn_local(uint32_t frame, RbnPad now) {
     static const RbnPad none;
     uint32_t at = frame + (uint32_t)delay;
     for (uint32_t f = local_newest + 1; f < at; f++) { local_pad[f & MASK] = none; local_at[f & MASK] = f; }   /* the first frames: nothing held */
-    if (at > local_newest) { local_pad[at & MASK] = rbn_rest(now); local_at[at & MASK] = at; local_newest = at; }
+    if (at > local_newest) {
+        /* (a stick held off the middle wavers by a few units frame to frame; each change sent was a wrong guess on the other
+         * game - a rollback - though no move came of it. A stick value is kept until it moves more than RBN_HYST, as SSBU
+         * Arena's rb_net.c stick_hyst does (GPL-3.0-or-later); the middle and the rims are taken at once. Only this game's
+         * own pad: what it plays and what it sends are the same value) */
+        RbnPad p = rbn_rest(now);
+        int16_t *v[4] = {&p.lx, &p.ly, &p.rx, &p.ry};
+        for (int k = 0; k < 4; k++) {
+            int16_t x = *v[k];
+            if (!x || x >= 32767 || x <= -32767 || abs((int)x - (int)N.hyst[k]) > RBN_HYST) N.hyst[k] = x;
+            *v[k] = N.hyst[k];
+        }
+        local_pad[at & MASK] = p; local_at[at & MASK] = at; local_newest = at;
+    }
     return local_at[frame & MASK] == frame ? local_pad[frame & MASK] : none;
 }
 int rbn_local_get(uint32_t frame, RbnPad *out) {
@@ -328,7 +344,39 @@ int rbn_pre_parse(const uint8_t *b, size_t len, RbnPre *p) {
 
 /* ---- frame advantage ---- */
 static void sync_clear(void) { memset(ndiff, 0, sizeof ndiff); memset(next_diff, 0, sizeof next_diff); }
-void rbn_sync_reset(void) { sync_clear(); owed = 0; }
+void rbn_sync_reset(void) { sync_clear(); owed = 0; N.ts_extra = N.ts_gap = 0; N.ts_left = 0; }
+static int cmp_i32(const void *a, const void *b) { int32_t x = *(const int32_t *)a, y = *(const int32_t *)b; return (x > y) - (x < y); }
+/* Ported from SSBU Arena's runtime/rb_timesync.c and rb_net.c rbn_pace_extra (GPL-3.0-or-later; the robust mean, half the
+ * lead given back over 30 frames, at most 4 ms a frame) on GGPO's frame advantage (timesync.cpp, MIT: each side's
+ * advantage as both measure it, the difference halved). See hle_rb_net.h. */
+double rbn_sync_extra_ms(uint32_t frame, double frame_ms) {
+    if (frame % RBN_TS_EVERY == 0) {
+        int ready = 1, any = 0;
+        double gap = 0;
+        for (int p = 0; p < nplayers; p++) {
+            if (p == local_player || remote[p].gone) continue;
+            if (ndiff[p] < 8) { ready = 0; break; }
+            int32_t v[SAMPLES];
+            memcpy(v, diff[p], sizeof(int32_t) * (size_t)ndiff[p]);
+            qsort(v, (size_t)ndiff[p], sizeof v[0], cmp_i32);
+            int lo = ndiff[p] / 3, hi = ndiff[p] - ndiff[p] / 3;
+            double sum = 0;
+            for (int i = lo; i < hi; i++) sum += v[i];
+            double gp = sum / (hi - lo) / 2 * frame_ms;   /* (the samples are twice the gap: GGPO's split of the difference) */
+            if (!any || gp > gap) gap = gp;
+            any = 1;
+        }
+        if (ready && any) {
+            N.ts_gap = gap;
+            if (gap > 2.0) { N.ts_extra = gap / 2 / RBN_TS_EVERY; if (N.ts_extra > RBN_TS_MAX_MS) N.ts_extra = RBN_TS_MAX_MS; N.ts_left = RBN_TS_EVERY; }
+            else N.ts_left = 0;
+            sync_clear();   /* (the next decision on samples taken after this one) */
+        }
+    }
+    if (N.ts_left > 0) { N.ts_left--; return N.ts_extra; }
+    return 0;
+}
+double rbn_sync_gap_ms(void) { return N.ts_gap; }
 void rbn_sync_sample(int p, int32_t local_adv, int32_t remote_adv) {
     if (p < 0 || p >= RBN_PLAYERS || p == local_player) return;
     diff[p][next_diff[p]] = local_adv - remote_adv;
