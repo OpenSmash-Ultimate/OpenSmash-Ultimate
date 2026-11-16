@@ -252,6 +252,35 @@ int main(int argc, char **argv) {
         b[RBN_HEAD] = 0;
         if (rbn_parse(b, n, &g)) { fprintf(stderr, "FAIL: a run of 0 frames accepted%c", 10); return 1; }
     }
+    {   /* the time sync's fractional slowing (rbn_sync_extra_ms): a game 2 frames ahead gives back half its lead over the next
+         * RBN_TS_EVERY frames, a game behind does nothing, one within 2 ms does nothing, and the samples' outliers don't count */
+        static const struct { int32_t diff, outlier; double want; } cases[] = {
+            {4, 0, 2 * 1000.0 / 60 / 2 / RBN_TS_EVERY}, {-4, 0, 0}, {0, 0, 0}, {4, 60, 2 * 1000.0 / 60 / 2 / RBN_TS_EVERY}, {40, 0, RBN_TS_MAX_MS}};
+        for (size_t k = 0; k < sizeof cases / sizeof cases[0]; k++) {
+            rbn_reset(2, 0, 2); rbn_sync_reset();
+            for (int i = 0; i < 30; i++) rbn_sync_sample(1, cases[k].diff + (i == 7 ? cases[k].outlier : 0), 0);
+            double total = 0, first = rbn_sync_extra_ms(RBN_TS_EVERY, 1000.0 / 60);
+            total += first;
+            for (uint32_t f = RBN_TS_EVERY + 1; f < 2 * RBN_TS_EVERY; f++) total += rbn_sync_extra_ms(f, 1000.0 / 60);
+            if (first < cases[k].want - 1e-6 || first > cases[k].want + 1e-6 || (cases[k].want > 0 && total < first * (RBN_TS_EVERY - 1))) {
+                fprintf(stderr, "FAIL: time sync case %zu: %.4f ms a frame (want %.4f), %.2f ms in all%c", k, first, cases[k].want, total, 10); return 1;
+            }
+        }
+        printf("time sync: a game ahead slowed by fractions of a frame, one behind or level not at all\n");
+        rbn_reset(2, 0, 2); rbn_sync_reset();
+    }
+    {   /* the stick hysteresis (rbn_local): a stick wavering by less than RBN_HYST sends the same value; the middle at once */
+        rbn_reset(2, 0, 0);
+        int16_t in[] = {10000, 10200, 9800, 10500, 11000, 300, -20000, -19900, 32767};
+        int16_t want[] = {10000, 10000, 10000, 10000, 11000, 0, -20000, -20000, 32767};
+        for (int i = 0; i < (int)(sizeof in / sizeof in[0]); i++) {
+            RbnPad p = {0}; p.lx = in[i];
+            RbnPad got = rbn_local((uint32_t)i + 1, p);
+            if (got.lx != want[i]) { fprintf(stderr, "FAIL: stick hysteresis at %d: %d, want %d%c", i, got.lx, want[i], 10); return 1; }
+        }
+        printf("stick hysteresis: small wavers kept at the value sent\n");
+        rbn_reset(2, 0, 2);
+    }
     sabotage = argc > 2 && !strcmp(argv[2], "norollback");
     slow = argc > 2 && !strcmp(argv[2], "slow");
     leave = argc > 2 && !strcmp(argv[2], "leave");

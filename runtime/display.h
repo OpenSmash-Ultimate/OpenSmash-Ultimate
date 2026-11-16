@@ -57,6 +57,10 @@ void display_loading_note(const char *note);   /* (the text beside the loading a
 int display_runahead(void);             /* runahead: frames run ahead in fights (hle_rb_core.c), 0 off */
 void display_set_runahead(int frames);  /* (the settings menu: from now on) */
 Pacing display_pacing(void);
+/* (rollback's time sync, hle_rb_core.c) the game ahead of the other player runs this many ms slower: clock and vrr pacing
+ * add it to the next refreshes' schedule (a frame a little later, no refresh left out); display pacing, held to the
+ * monitor, leaves a refresh out for each whole frame owed */
+void display_tick_stretch(double ms);
 const char *display_gpu(void);          /* the graphics card to use: "auto", or part of its name (SSBU_GPU) */
 /* render_scale: the game's pictures are drawn this many times its 1920x1080 in each direction
  * (0.5-4; SSBU_RENDER_SCALE). 0 = auto: as many as the picture has pixels in the window at the

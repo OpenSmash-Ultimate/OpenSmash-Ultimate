@@ -938,6 +938,20 @@ static int vblank_tick(void) {
 }
 #endif
 
+static volatile LONG64 tick_stretch_us;   /* (display_tick_stretch: owed to the clock's schedule, us) */
+extern volatile LONG rb_vsync_skip;      /* (ipc_vi.c: refreshes the vsync thread leaves out) */
+void display_tick_stretch(double ms) {
+    load();
+    if (ms <= 0) return;
+    if (cfg.pacing == PACING_DISPLAY) {
+        static double owed;
+        owed += ms;
+        if (owed >= 1000.0 / 60) { owed -= 1000.0 / 60; InterlockedIncrement(&rb_vsync_skip); }
+        return;
+    }
+    InterlockedExchangeAdd64(&tick_stretch_us, (LONG64)(ms * 1000));
+}
+
 void display_wait_tick(void) {
     static LARGE_INTEGER freq, base;
     static long long ticks;
@@ -970,6 +984,8 @@ void display_wait_tick(void) {
         ticks = 0;
     }
     ticks++;
+    {   LONG64 st = InterlockedExchange64(&tick_stretch_us, 0);   /* (rollback's time sync: this refresh and the next ones later) */
+        if (st > 0) base.QuadPart += st * freq.QuadPart / 1000000; }
     long long due = base.QuadPart + ticks * freq.QuadPart / 60;
     for (;;) {
         QueryPerformanceCounter(&now);
