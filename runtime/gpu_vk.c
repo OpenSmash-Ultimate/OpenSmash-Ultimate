@@ -96,11 +96,17 @@ static volatile DWORD last_enter_thread;
 static char card[300];
 
 /* ---- device memory: images share big chunks of it (drivers allow few allocations: 4,096) ------- */
-static int memory_type(uint32_t bits, VkMemoryPropertyFlags want) {
-    for (uint32_t i = 0; i < memory_props.memoryTypeCount; i++)
-        if ((bits >> i & 1) && (memory_props.memoryTypes[i].propertyFlags & want) == want) return (int)i;
+/* (never a protected type, nor AMD's device-coherent / uncached ones: those need features this device is not given,
+ * and AMD's drivers list them beside the plain ones) */
+#define MEMORY_TYPE_NEVER (VK_MEMORY_PROPERTY_PROTECTED_BIT | 0x40u /* DEVICE_COHERENT_BIT_AMD */ | 0x80u /* DEVICE_UNCACHED_BIT_AMD */)
+static int memory_type_but(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags avoid) {
+    for (uint32_t i = 0; i < memory_props.memoryTypeCount; i++) {
+        VkMemoryPropertyFlags f = memory_props.memoryTypes[i].propertyFlags;
+        if ((bits >> i & 1) && (f & want) == want && !(f & (avoid | MEMORY_TYPE_NEVER))) return (int)i;
+    }
     return -1;
 }
+static int memory_type(uint32_t bits, VkMemoryPropertyFlags want) { return memory_type_but(bits, want, 0); }
 
 #define CHUNK_SIZE (64ull << 20)
 typedef struct Range { VkDeviceSize off, size; } Range;
@@ -435,6 +441,7 @@ static VkCommandBuffer cmd(void) {
 /* `size` bytes of the frame's upload memory, aligned: where the CPU writes them, and where the GPU
  * finds them (buffer, offset). NULL if there is no more. */
 static VkDeviceSize texel_align = 256, ubo_align = 256;
+static u32 limits_vendor, limits_device;   /* (the card's PCI vendor and device: set at the start) */
 static u8 *arena(VkDeviceSize size, VkDeviceSize align, VkBuffer *buf, VkDeviceSize *off) {
     cmd();
     Frame *f = &frames[frame_at];
@@ -456,12 +463,34 @@ static u8 *arena(VkDeviceSize size, VkDeviceSize align, VkBuffer *buf, VkDeviceS
     VkMemoryRequirements mr;
     vkGetBufferMemoryRequirements(device, b->buf, &mr);
     /* (the card's own memory the CPU can write, where it has some: the draws read it there rather than
-     * across the bus; else the system's. SSBU_VK_SYSMEM=1: the system's) */
+     * across the bus; else the system's. SSBU_VK_SYSMEM=1: the system's, =0: the card's. AMD cards: the system's
+     * by default - there the stages' vertex streams read from the card's CPU-visible memory came back empty, the
+     * stage and its background black while the fighters, whose vertices stay on the card, drew (#353; the old
+     * renderer's same fault and fix: ssbu-recomp#127, SSBU_VK_BUFMEM=0)) */
     static int sysmem = -1;
-    if (sysmem < 0) sysmem = getenv("SSBU_VK_SYSMEM") && atoi(getenv("SSBU_VK_SYSMEM")) != 0;
+    const char *sysmem_env = getenv("SSBU_VK_SYSMEM");
+    if (sysmem < 0) sysmem = sysmem_env && *sysmem_env ? atoi(sysmem_env) != 0 : limits_vendor == 0x1002;
     VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     int local = sysmem ? -1 : memory_type(mr.memoryTypeBits, host | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    int type = memory_type(mr.memoryTypeBits, host);
+    /* (system memory: a type that is not the card's, though a card's host-visible type may be listed first) */
+    int type = memory_type_but(mr.memoryTypeBits, host, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (type < 0) type = memory_type(mr.memoryTypeBits, host);   /* (one memory for both: integrated graphics) */
+    static int told;
+    if (!told++) {
+        int t = local >= 0 ? local : type;
+        VkDeviceSize heap = t >= 0 ? memory_props.memoryHeaps[memory_props.memoryTypes[t].heapIndex].size : 0;
+        if (local >= 0)
+            fprintf(stderr, "[vulkan] upload memory (vertex streams, constant buffers, textures on their way): the card's CPU-visible memory "
+                            "(type %d, heap of %llu MB; SSBU_VK_SYSMEM=1 for the system's if stages or backgrounds draw black)\n",
+                    t, (unsigned long long)(heap >> 20));
+        else
+            fprintf(stderr, "[vulkan] upload memory (vertex streams, constant buffers, textures on their way): %s (type %d, heap of %llu MB)%s\n",
+                    t >= 0 && (memory_props.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "the card's (no other here)" : "the system's",
+                    t, (unsigned long long)(heap >> 20),
+                    !sysmem ? "" : sysmem_env && *sysmem_env ? ": SSBU_VK_SYSMEM=1"
+                                 : ": AMD card, where draws read the stages' vertex data in the card's CPU-visible memory as nothing "
+                                   "(black stages and backgrounds, #353); SSBU_VK_SYSMEM=0 puts it there");
+    }
     VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, (uint32_t)local};
     if (local < 0 || vkAllocateMemory(device, &mai, NULL, &b->mem) != VK_SUCCESS) {
         mai.memoryTypeIndex = (uint32_t)type;
@@ -1274,7 +1303,6 @@ static VkDescriptorSetLayout gfx_set_layout, cs_set_layout;
 static VkPipelineLayout gfx_layout, cs_layout;
 static VkPipelineCache pipeline_cache;
 static char pipeline_cache_path[1024];
-static u32 limits_vendor, limits_device;
 static VkBuffer dummy_buffer;
 static VkBufferView dummy_texels;
 static Alloc dummy_buffer_mem;
@@ -1422,6 +1450,15 @@ static VkBufferView kept_cb(u64 va, u32 size) {
 static u64 vk_stat_cb_copies[2], vk_stat_cb_bytes[2];
 typedef struct Upload { u64 va, serial, batch, gen; u32 size; VkBufferView view; } Upload;   /* (gen: writes_over when made) */
 static Upload uploads[8192];
+/* Data a draw reads that upload() could not hand over (no upload memory left, no view): the draw reads zeros instead -
+ * geometry gone or black. Said in the log the first times, with why: the cause of a black picture where it happens. */
+static u64 vk_stat_upload_lost;
+static VkBufferView upload_lost(u32 size, const char *why) {
+    if (++vk_stat_upload_lost <= 5)
+        fprintf(stderr, "[vulkan] BLACK OR MISSING GEOMETRY: %u bytes of vertex or constant data not uploaded (%s): the draw reads zeros "
+                        "(%llu times so far)\n", size, why, vk_stat_upload_lost);
+    return dummy_texels;
+}
 static VkBufferView upload(u64 va, u32 size) {
     if (!va || !size) return dummy_texels;
     u32 padded = (size + 15) & ~15u;
@@ -1438,13 +1475,13 @@ static VkBufferView upload(u64 va, u32 size) {
     VkBuffer buf;
     VkDeviceSize off;
     u8 *dst = arena(padded, texel_align, &buf, &off);
-    if (!dst) return dummy_texels;
+    if (!dst) return upload_lost(padded, "no upload memory left this frame");
     if (src) memcpy(dst, src, size);
     else read_gpu(va, size, dst);
     if (padded > size) memset(dst + size, 0, padded - size);
     vk_stat_upload_bytes += padded;
     VkBufferView v = arena_view(buf, off, padded);
-    if (!v) return dummy_texels;
+    if (!v) return upload_lost(padded, "vkCreateBufferView failed");
     *u = (Upload){va, frames[frame_at].serial, gpu_stat_batches, src ? writes_over(g, size) : 0, size, src ? v : VK_NULL_HANDLE};
     return v;
 }
@@ -3789,7 +3826,11 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         u64 va = (u64)regs[M_CT(ct)] << 32 | regs[M_CT(ct) + 1];
         if (!va || !regs[M_CT(ct) + 4]) continue;
         Surface *sf = surface(gpu_va_to_guest(va), regs[M_CT(ct) + 2], regs[M_CT(ct) + 3], regs[M_CT(ct) + 4], 0);
-        if (!sf || !(features_of(sf->view) & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) continue;
+        if (sf && !(features_of(sf->view) & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) {   /* (left out: nothing drawn into it - say so) */
+            warn_format("render target (this card cannot draw into it: what is drawn there stays black)", sf->format);
+            continue;
+        }
+        if (!sf) continue;
         rts[i] = sf;
         if (!rt_w) { rt_w = sf->width; rt_h = sf->height; rt_sx = (float)sf->hw / sf->width; rt_sy = (float)sf->hh / sf->height; rt_wide = sf->wide; }
     }
