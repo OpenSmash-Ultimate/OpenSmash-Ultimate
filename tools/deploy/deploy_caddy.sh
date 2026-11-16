@@ -3,12 +3,14 @@
 # https://opensmash-lobby.duckdns.org/status.json, /leaderboard.json and /gsp/* work (the lobby itself only speaks
 # plain HTTP on TCP 39421, which an HTTPS web page may not read). Run from the repository root:
 #   sh tools/deploy/deploy_caddy.sh <ssh host> install     install Caddy (Debian/Ubuntu, the official apt repository),
-#                                                          copy the Caddyfile, allow 80/443 in ufw, start it
+#                                                          add /etc/caddy/conf.d/opensmash-lobby.caddy (imported by
+#                                                          the main Caddyfile), allow 80/443 in ufw, start it
 #   sh tools/deploy/deploy_caddy.sh <ssh host> update      copy a new Caddyfile, validate it, reload Caddy
 #   sh tools/deploy/deploy_caddy.sh <ssh host> status      Caddy's state, its last log lines and a local HTTPS check
 #   sh tools/deploy/deploy_caddy.sh <ssh host> uninstall   stop Caddy and close 80/443 again (the package stays)
 # The SSH login must be root (SSBU_SUDO=sudo for a user who can sudo).
 # BEFORE `install`: open TCP 80 and 443 (and UDP 443 for HTTP/3) in Oracle's security list - see tools/deploy/CADDY.md.
+# An existing Caddy is kept: its Caddyfile is backed up (Caddyfile.pre-opensmash) and only gets one import line.
 # Nothing in this script touches the lobby services.
 set -e
 host=$1
@@ -39,10 +41,21 @@ if ! command -v caddy > /dev/null; then
     apt-get update -qq
     apt-get install -y -qq caddy
 fi
-install -d -m 755 /etc/caddy
-tr -d '\r' < $tmp/Caddyfile > /etc/caddy/Caddyfile.new
-caddy validate --config /etc/caddy/Caddyfile.new --adapter caddyfile
-mv /etc/caddy/Caddyfile.new /etc/caddy/Caddyfile
+install -d -m 755 /etc/caddy /etc/caddy/conf.d
+# Caddy may already be here with other sites: never overwrite its Caddyfile. Our site goes to its own file, which the
+# main Caddyfile imports; a backup is kept, and any validation failure puts the old file back.
+main=/etc/caddy/Caddyfile
+[ -f \$main ] || printf '# managed by deploy_caddy.sh\n' > \$main
+cp -p \$main \$main.pre-opensmash
+tr -d '\r' < $tmp/Caddyfile > /etc/caddy/conf.d/opensmash-lobby.caddy
+grep -q 'conf.d/\*.caddy' \$main || printf '\nimport /etc/caddy/conf.d/*.caddy\n' >> \$main
+if ! caddy validate --config \$main --adapter caddyfile; then
+    cp -p \$main.pre-opensmash \$main
+    grep -rn 'opensmash-lobby' /etc/caddy/ 2> /dev/null | grep -v 'conf.d/opensmash-lobby.caddy' || true
+    rm -f /etc/caddy/conf.d/opensmash-lobby.caddy
+    echo "the Caddyfile did not validate (an existing site with the same address?): the old one is back, nothing changed"
+    exit 1
+fi
 if command -v ufw > /dev/null && ufw status | grep -q '^Status: active'; then
     ufw allow 80/tcp comment ssbu-caddy
     ufw allow 443/tcp comment ssbu-caddy
