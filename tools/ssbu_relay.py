@@ -238,6 +238,69 @@ def mods_block(raw):
     return bytes(raw[:o])
 
 
+# ---- Relay only and accounts (OpenSmash 0.6) -------------------------------------------------------
+# After a JOIN's mod set (SN 3; SN 2: after its 'W' 'S' block's mod set) a game may send tagged blocks, in this order:
+#   "TK" u16 length, the lobby ticket: "<account id>|<name>|<expiry, unix s>[|<issued>].<HMAC-SHA256 hex>", made by the
+#        accounts database (shared with SSBU Arena) and keyed by the secret of --ticket-secret-file;
+#   "CV" u16, the game's online level (runtime/net.h NET_CLIENT_LEVEL; a game without it is level 0);
+#   "GC" u16 length, its game code (text).
+# The same blocks, in the same order, that SSBU Arena's lobby reads after its JOIN's mod set.
+# With --relay-only no game is ever introduced to another (WELCOME without INTRODUCES, PEERS without addresses, no NAT
+# port): every datagram goes through the lobby and no game learns another player's internet address.
+REJECT_ACCOUNT, REJECT_OLD = 7, 8   # REJECT reasons: no valid lobby ticket; the game is too old for this lobby
+SIGN_IN = "sign in to OpenSmash (the launcher) to play online"
+UPDATE = "update OpenSmash (the launcher) to play online"
+
+
+def join_tail(p, v3):
+    """The bytes after a JOIN's mod set (b"" when there are none or the JOIN has no mod set)."""
+    if v3:
+        o = JOIN_SIZE + 4
+    elif p[JOIN_SIZE:JOIN_SIZE + 2] == b"WS":
+        o = JOIN_SIZE + 6
+    else:
+        return b""
+    mods = mods_block(p[o:])
+    return b"" if mods is None else bytes(p[o + len(mods):])
+
+
+def join_blocks(tail):
+    """A JOIN's tagged blocks: {"TK": bytes, "CV": int, "GC": bytes}, those present."""
+    out, o = {}, 0
+    for tag in (b"TK", b"CV", b"GC"):
+        if len(tail) < o + 4 or tail[o:o + 2] != tag:
+            continue
+        n = struct.unpack_from(">H", tail, o + 2)[0]
+        if tag == b"CV":
+            out["CV"], o = n, o + 4
+        elif len(tail) >= o + 4 + n:
+            out[tag.decode()], o = bytes(tail[o + 4:o + 4 + n]), o + 4 + n
+        else:
+            break
+    return out
+
+
+def ticket_check(secret, raw, now=None):
+    """(account id, name) of a valid, unexpired lobby ticket signed with secret (bytes), else None."""
+    import hashlib
+    import hmac
+    try:
+        t = raw.decode("ascii")
+    except (UnicodeDecodeError, AttributeError):
+        return None
+    body, dot, mac = t.rpartition(".")
+    parts = body.split("|")
+    if not dot or len(mac) != 64 or len(parts) not in (3, 4) or not secret:
+        return None
+    want = hmac.new(secret, body.encode("ascii"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(want, mac.lower()):
+        return None
+    uid, name, exp = parts[0], parts[1], parts[2]
+    if not exp.isdigit() or int(exp) < (time.time() if now is None else now) or not uid or not name:
+        return None
+    return uid, name[:NAME_LEN]
+
+
 def reject_detail(build, sim=0, mods=None):
     """A REJECT's detail: 'W' 'D', build[40], sim u32, flags u8 (1: sim and the mod set known), mod set."""
     known = mods is not None
@@ -383,6 +446,7 @@ class Client:
         # direct connections (from its extended PINGs)
         self.ext = False           # its game can connect directly
         self.direct_ok = False     # ...and its player allows it (it shows the player's address)
+        self.uid = None            # (--ticket-secret-file) its account id, from its lobby ticket
         self.lan = None            # (address, port) on its own network
         self.mapped = 0            # the outside port its router maps to its game's (PCP, NAT-PMP, UPnP; 0 none)
         self.probe_seen = 0        # the port its PROBE came from (0: none yet)
@@ -438,7 +502,8 @@ def options(**overrides):
                            packet_rate=600.0, byte_rate=400_000.0, max_data=1500, su_max_data=1500 + NI_SIZE,
                            client_timeout=10.0, pending_timeout=3.0, listed_for=3.5, listing_timeout=10.0,
                            search_for=120.0, match_for=180.0, status_port=None, status_bind="127.0.0.1",
-                           tick=1.0, stats=60.0, nat_port=None, su_nat_port=None)
+                           tick=1.0, stats=60.0, nat_port=None, su_nat_port=None,
+                           relay_only=False, ticket_secret=None, min_client=0)
     for k, v in overrides.items():
         setattr(o, k, v)
     return o
@@ -795,10 +860,33 @@ class Lobby:
                     self.reject(wire, at, nonce, 5, "the lobby cannot read your game's mod list")
                 return
             part = (wire.name, build.upper(), sim, mods_key(mods), room)
+        uid = None
+        if self.o.min_client or self.o.ticket_secret:   # (OpenSmash 0.6: the official lobby's own rules)
+            blocks = join_blocks(join_tail(p, wire is self.sn3))
+            why = None
+            if blocks.get("CV", 0) < self.o.min_client:
+                why, reason = UPDATE, REJECT_OLD
+                self.drops["old game"] += 1
+            elif self.o.ticket_secret:
+                who = ticket_check(self.o.ticket_secret, blocks.get("TK"))
+                if who is None:
+                    why, reason = SIGN_IN, REJECT_ACCOUNT
+                    self.drops["no ticket"] += 1
+                else:
+                    uid, name = who   # (the name listed is the account's)
+            if why is not None:
+                if not self.is_banned(at[0]) and self.gate(at, now):
+                    self.reject(wire, at, nonce, reason, why)
+                return
         c = self.join(wire, at, c, nonce, room, name, build, now, part)
         if c is None:
             return
-        flags = LOBBY | INTRODUCES
+        if uid is not None:
+            if c.uid not in (None, uid):   # (another account from the same game: a new player)
+                self.drop(c, "another account")
+                return
+            c.uid, c.name = uid, name
+        flags = LOBBY if self.o.relay_only else LOBBY | INTRODUCES
         if wire is self.sn3:
             c.sim, c.mods = sim, mods
             flags |= HAS_ROOMS | HAS_MATCH | HAS_RB
@@ -920,7 +1008,7 @@ class Lobby:
             return
         if p[SU_JOIN_SIZE:SU_JOIN_SIZE + 2] == b"MS":   # (an older game sends no mods)
             c.mods = mods_block(p[SU_JOIN_SIZE + 2:])
-        direct_ok, lan = bool(p[o + 6] & 1), ((lan_ip, lan_port) if lan_ip and lan_port else None)
+        direct_ok, lan = bool(p[o + 6] & 1) and not self.o.relay_only, ((lan_ip, lan_port) if lan_ip and lan_port else None)
         if not c.ext or direct_ok != c.direct_ok or lan != c.lan:   # (every SU game can connect directly)
             c.ext, c.direct_ok, c.lan = True, direct_ok, lan
             self.mark(c)
@@ -1281,7 +1369,7 @@ class Lobby:
     # address), and a player in INTRO_ROOMS rooms an hour at most.
     def on_ping_ext(self, c, p, now):
         have, lan_ip, lan_port, flags, ndirect = struct.unpack_from(">IIHBB", p, PING_SIZE)
-        direct_ok, lan = bool(flags & 1), ((lan_ip, lan_port) if lan_ip and lan_port else None)
+        direct_ok, lan = bool(flags & 1) and not self.o.relay_only, ((lan_ip, lan_port) if lan_ip and lan_port else None)
         o = PING_EXT_SIZE   # (then 'N' 'P' and the port its router maps to it)
         mapped = struct.unpack_from(">H", p, o + 2)[0] if p[o:o + 2] == b"NP" and len(p) >= o + 4 else 0
         if not c.ext or direct_ok != c.direct_ok or lan != c.lan or mapped != c.mapped:
@@ -1321,7 +1409,7 @@ class Lobby:
 
     def pair_secret(self, listing, a, b, now):
         """The secret of two players of a room, or 0 when they are not to be introduced."""
-        if not (a.direct_ok and b.direct_ok):
+        if self.o.relay_only or not (a.direct_ok and b.direct_ok):
             return 0
         key = frozenset((a, b))
         s = listing.pair_secrets.get(key)
@@ -1627,6 +1715,15 @@ def parse_args(argv=None, **defaults):
                    help="UDP port where games show their routers' second port, for direct paths through routers that hand out "
                         "ports in turn; open it in the firewall too (0: none; default: --port + 10)")
     a.add_argument("--su-nat-port", type=int, default=-1, help="the same for SU (0: none; default: --su-port + 10)")
+    a.add_argument("--relay-only", action="store_true",
+                   help="never introduce games to each other (no direct paths, no addresses in PEERS, no NAT port): "
+                        "every datagram goes through the lobby")
+    a.add_argument("--ticket-secret-file", metavar="FILE",
+                   help="let a new game in only with a valid lobby ticket (\"TK\" after its JOIN's mod set) signed with "
+                        "the secret in this file (the accounts database's); the name listed is the ticket's")
+    a.add_argument("--min-client-level", dest="min_client", type=int, default=d.min_client,
+                   help="games whose online level (\"CV\" after the JOIN's mod set; none: 0) is lower are told to update "
+                        "(default %(default)s: every game)")
     a.add_argument("--probe", metavar="HOST[:PORT]", help="instead of serving: check the lobby at this address")
     a.add_argument("--room", default="smash", help="(--probe) the lobby code (default: the public lobby)")
     a.add_argument("--build", default=REQUIRED_BUILD.decode(), help="(--probe) the game build id to join with "
@@ -1635,6 +1732,14 @@ def parse_args(argv=None, **defaults):
     for k, v in vars(args).items():
         setattr(d, k, v)
     d.su_port, d.status_port = d.su_port or None, d.status_port or None
+    if d.ticket_secret_file:
+        with open(d.ticket_secret_file, "rb") as f:
+            d.ticket_secret = f.read().strip()
+        if not d.ticket_secret:
+            a.error("--ticket-secret-file: the file is empty")
+    if d.relay_only:   # (no NAT ports: they are only for direct paths)
+        d.nat_port = 0 if d.nat_port < 0 else d.nat_port
+        d.su_nat_port = 0 if d.su_nat_port < 0 else d.su_nat_port
     d.nat_port = (d.port + NAT_PORT_OFFSET if d.port else None) if d.nat_port < 0 else d.nat_port or None
     d.su_nat_port = (d.su_port + NAT_PORT_OFFSET if d.su_port else None) if d.su_nat_port < 0 else d.su_nat_port or None
     return d
