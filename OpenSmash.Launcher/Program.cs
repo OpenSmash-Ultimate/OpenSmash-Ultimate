@@ -123,7 +123,7 @@ namespace OpenSmash.Launcher
     {
         static readonly string[] ClearedVars =
         {
-            "SSBU_DATA_ROOT", "SSBU_INPUT", "SSBU_RENDERER", "SSBU_DISPLAY", "SSBU_NET_HOST", "SSBU_NET_RELAY", "SSBU_NET_BIND",
+            "SSBU_NET_BACKEND", "SSBU_YUZU_PASSWORD", "SSBU_YUZU_TOKEN", "SSBU_DATA_ROOT", "SSBU_INPUT", "SSBU_RENDERER", "SSBU_DISPLAY", "SSBU_NET_HOST", "SSBU_NET_RELAY", "SSBU_NET_BIND",
             "SSBU_NET_ROOM", "SSBU_NET_NAME", "SSBU_NET_DIRECT", "SSBU_NET_PORT"
         };
 
