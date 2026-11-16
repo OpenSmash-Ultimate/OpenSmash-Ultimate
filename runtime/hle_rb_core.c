@@ -42,6 +42,7 @@ void rb_guest_writing(void *p, u64 n) { (void)p; (void)n; }   /* (hle_rb_state.c
 int rb_page_cold(const void *p) { (void)p; return 0; }
 int net_match_on(void) { return 0; }
 void rb_shadow_note(u64 at, u64 size) { (void)at; (void)size; }
+int rb_net_fixed_clock(void) { return 0; }
 #else
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
@@ -1117,6 +1118,15 @@ static int hs_agreed_by[RBN_PLAYERS];      /* (the host: which players have the 
 static u64 now_us(void) { return (u64)(now_ms() * 1000.0); }
 /* (hle_hid.c) the other PC's player's controller slot, in net mode: connected here as a Pro Controller always */
 int rb_slot_remote(u32 id) { return net_mode == 2 && net_local >= 0 && id < (u32)net_n && id != (u32)net_local; }
+/* (#181) FIXCLOCK (hle_env.c): while a networked match is set up or under way (net_match_on, below: an Online one, one
+ * agreed for rollback, a room's with other players), every game reads the same time of day; at the menus alone the
+ * real clock (the Spirit Board's timers, saves). SSBU_RB_FIXCLOCK=0: the real clock always. */
+int net_match_on(void);
+int rb_net_fixed_clock(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_RB_FIXCLOCK"); on = !(e && !strcmp(e, "0")); }
+    return on && net_match_on();
+}
 /* (hle_hid.c, Host/Join) which of this PC's controller slots the game's slot `id` reads: a joining game's controller and
  * keyboard are its player 1 here, as on every PC; once the host gives it player N, the game's slot N reads them, and
  * its slot 1 (the host's player: a remote slot) the empty slot N */
