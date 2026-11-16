@@ -216,6 +216,7 @@ $("#setup-run").onclick = async () => {
     jobs: $("#f-jobs").value || undefined, no_packages: $("#f-nopackages").checked });
 };
 $("#build-run").onclick = () => run("/api/build", { jobs: $("#f-jobs").value || undefined });
+$("#rebuild-all-run").onclick = () => run("/api/rebuild-all", { jobs: $("#f-jobs").value || undefined });
 
 /* the folder picker (a pad can't use the system's file dialogs, and a page can't learn a folder's path from them) */
 let pickFor = null, pickPath = "";

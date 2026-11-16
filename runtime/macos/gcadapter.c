@@ -82,6 +82,7 @@ int padusb_axes(int port, PadUsbAxes *out) {
     return 0;
 }
 
+void padusb_set_switch(int on) { (void)on; }   /* (the Switch scaling is the Windows adapter's) */
 void padusb_recalibrate(int port) { (void)port; }   /* (a replug is the recalibration here) */
 
 int padusb_rate(int port) { (void)port; return 0; }

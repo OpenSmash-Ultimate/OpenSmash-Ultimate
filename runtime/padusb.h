@@ -21,6 +21,7 @@ typedef struct PadUsbState {
     u32 buttons;
     i32 lx, ly, rx, ry;       /* the control stick and the C stick */
     i32 lt, rt;
+    int exact;                /* (adapter, SSBU_GC_SWITCH=1) the sticks are already the console's: no dead or outer zone on top */
     char name[48];            /* "Nintendo GameCube Controller" */
     char id[24];              /* for controllers.ini: "gcadapter-<port 1-4>", "gcswitch2" */
     char path[192];           /* the device, and the adapter's port */
@@ -42,5 +43,6 @@ typedef struct PadUsbAxes {
     int centre[4], lo[4], hi[4];
 } PadUsbAxes;
 int padusb_axes(int port, PadUsbAxes *out);   /* 0: nothing on the port */
+void padusb_set_switch(int on);               /* 1 (the default): the adapter's sticks and triggers as a Switch console scales them */
 void padusb_recalibrate(int port);            /* the centres are taken again (sticks at rest), the reach relearned */
 int padusb_rate(int port);                    /* input reports a second, measured over the last second (0: unknown) */

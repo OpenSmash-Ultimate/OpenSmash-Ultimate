@@ -1,5 +1,6 @@
 /* Real Windows overlay atlas and quads, without a device, window, or game. */
 #include <assert.h>
+#include <math.h>
 #include "../../runtime/gpu_overlay.c"
 
 int menu_visible(void) { return 0; }
@@ -37,7 +38,8 @@ int main(void) {
     assert(verts[19].x == 60); /* CJK occupies twice an ASCII letter's width. */
     nverts = 0;
     ovl_text(0, 0, 40, 0xffffffff, "A\342\200\246B");
-    assert(verts[19].u - verts[18].u == 1.0f / COLS); /* narrow Unicode samples one cell */
+    /* narrow Unicode samples one cell, less half a texel in from each side (gpu_overlay.c: the linear filter never reads the next cell) */
+    assert(fabsf((verts[19].u - verts[18].u) - (1.0f / COLS - 1.0f / ATLAS_W)) < 1e-6f);
     assert(verts[30].x == 40);
     puts("Windows UTF-8 overlay atlas and quads passed");
     return 0;

@@ -62,7 +62,7 @@ PY7ZR = "py7zr==1.1.4"   # (the Windows installer's pin)
 PYTHON_EXTRA = ["pillow"]   # (the overlay font: tools/linux/make_overlay_font.py)
 LAUNCHERS = ["install-windowsmash.sh", "play-ssbu.sh", "opensmash-launcher.sh", "tools/linux/askpass.sh",
              "launchers/play-ssbu-offline.sh", "launchers/host-ssbu-netplay.sh", "launchers/join-ssbu-netplay.sh",
-             "launchers/unlock-all-fighters.sh", "launchers/prepare-shaders.sh"]   # (made runnable: chmod 755)
+             "launchers/unlock-all-fighters.sh", "launchers/prepare-shaders.sh", "tools/linux/rebuild-all.sh"]   # (made runnable: chmod 755)
 # The third-party parts of the build (tools/linux/toolchain.py): (what, URL, SHA-256, file, where it goes,
 # the archive's folder whose contents go there)
 PARTS = [

@@ -20,6 +20,7 @@
 const char *padusb_start(void) { return NULL; }
 void padusb_poll(PadUsbState out[PADUSB_PORTS]) { memset(out, 0, sizeof(PadUsbState) * PADUSB_PORTS); }
 void padusb_rumble(int port, int on) { (void)port; (void)on; }
+void padusb_set_switch(int on) { (void)on; }
 #endif
 
 /* (gpu_display.c's, which is not built here: display.ini's defaults, made up) */
