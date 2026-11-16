@@ -34,7 +34,10 @@ install -d -m 755 /opt/ssbu-discord-bot
 tr -d '\r' < $tmp/discord_status_bot.py > /opt/ssbu-discord-bot/discord_status_bot.py
 tr -d '\r' < $tmp/ssbu-discord-bot.service > /etc/systemd/system/ssbu-discord-bot.service
 if [ ! -x /opt/ssbu-discord-bot/venv/bin/python ]; then
-    python3 -m venv /opt/ssbu-discord-bot/venv 2> /dev/null || { apt-get install -y -q python3-venv > /dev/null && python3 -m venv /opt/ssbu-discord-bot/venv; }
+    # (Ubuntu ships python3 without ensurepip: the venv package first, quietly, no questions)
+    python3 -c 'import ensurepip' 2> /dev/null || DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -q python3-venv > /dev/null 2>&1
+    rm -rf /opt/ssbu-discord-bot/venv
+    python3 -m venv /opt/ssbu-discord-bot/venv
 fi
 /opt/ssbu-discord-bot/venv/bin/pip install -q --upgrade 'discord.py>=2.4,<3'
 chmod -R a+rX /opt/ssbu-discord-bot
