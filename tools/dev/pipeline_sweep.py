@@ -92,7 +92,7 @@ MOVES = """20:A/4 8:A/4 8:A/4
 40:UP/6 60:DOWN/6 60:LEFT/6 60:RIGHT/6
 30:SLEFT/40 10:SRIGHT/40
 """
-FINAL_AT = "600,900"   # SSBU_DEBUG_FINAL: each fighter's Final Smash at its fight frame 600, and every 900 after
+FINAL_AT = "600,900"   # SSBU_DEBUG_FINAL: the fighters' Final Smashes in turn, at fight frames 600, 1500, 2400, 3300
 
 WARM_HEAD = 32
 WARM_RECORD = 440
