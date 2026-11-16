@@ -326,6 +326,36 @@ $("#update-run").onclick = async () => {
   }
 };
 
+/* ---- Discord: sign-in, the player's GSP and position, their name on the leaderboard (discord_account.py) ---- */
+let discordTimer = null;
+async function refreshDiscord() {
+  let d;
+  try { d = await api("/api/discord"); } catch (e) { $("#discord-box").innerHTML = `<p class="muted">${esc(e.message)}</p>`; return; }
+  $("#discord-card").hidden = !d.available;
+  if (!d.available) return;
+  const box = $("#discord-box");
+  const error = d.error ? `<p class="small" style="color:var(--bad)">${esc(d.error)}</p>` : "";
+  if (!d.signed_in) {
+    box.innerHTML = `<p class="muted">Sign in to show your Discord name, position and GSP.</p>${error}
+      <div class="buttons"><button id="discord-signin" class="primary"${d.busy ? " disabled" : ""}>${d.busy ? "Finish in the browser…" : "Sign in with Discord"}</button></div>`;
+    $("#discord-signin").onclick = async () => { await api("/api/discord/signin", {}).catch(() => {}); refreshDiscord(); };
+  } else {
+    const rows = (d.fighters || []).slice(0, 10).map(f =>
+      `<tr><td>${esc(f.name)}</td><td class="num">${f.rank ? "#" + f.rank + " · " : ""}${Number(f.gsp).toLocaleString("en-US")}</td></tr>`).join("");
+    box.innerHTML = `<div class="dc-head">${d.avatar ? `<img src="${esc(d.avatar)}" alt="">` : "<img alt=\"\">"}
+        <div><span class="dc-name">${esc(d.name)}</span>${d.rank ? `<span class="dc-rank">#${d.rank}</span>` : ""}
+        <div class="muted small">${d.rank ? "in the GSP leaderboard" : "not ranked yet"}</div></div></div>
+      ${rows ? `<table class="dc-gsp">${rows}</table>` : `<p class="muted small">No online matches yet: play Quickplay to get a GSP.</p>`}
+      <label class="dc-shown"><input type="checkbox" id="discord-shown"${d.shown ? " checked" : ""}> Show my name on the leaderboard</label>${error}
+      <div class="buttons"><button id="discord-signout" class="ghost">Sign out</button></div>`;
+    $("#discord-shown").onchange = async e => { await api("/api/discord/shown", { shown: e.target.checked }).catch(() => {}); refreshDiscord(); };
+    $("#discord-signout").onclick = async () => { await api("/api/discord/signout", {}).catch(() => {}); refreshDiscord(); };
+  }
+  clearTimeout(discordTimer);
+  discordTimer = setTimeout(refreshDiscord, d.busy ? 1500 : 60000);
+}
+refreshDiscord();
+
 /* ---- the window ---- */
 $("#quit").onclick = async () => {
   try { await api("/api/quit", {}); } catch (e) { /* */ }
