@@ -20,14 +20,16 @@
  * page wholly inside such a block is left out of the fight's saves and loads (hle_rb_state.c's sm_skip: not asked
  * about, not compared, not copied, not put back). The live blocks of those sites are host state that follows the
  * game's allocator, so each savestate keeps their list (rb_map_save / rb_map_load): after a load the left-out set is
- * that state's, as jemalloc's own bookkeeping (guest memory, in the state) is. A page that leaves the set (its block
- * freed) is copied into the shadow at the next save (hle_rb_state.c, as for SSBU_RB_SKIP's ranges).
+ * that state's, as jemalloc's own bookkeeping (guest memory, in the state) is. A block joins the set only once every
+ * state kept is younger than it (map_oldest below). A page that leaves the set (its block freed) is copied into the
+ * shadow at the next save (hle_rb_state.c, as for SSBU_RB_SKIP's ranges).
  * SSBU_RB_MAP=0: no hooks, nothing left out (the fallback: every page in, as before). */
 #ifdef _WIN32
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <windows.h>
 
 #include "host.h"
@@ -66,7 +68,7 @@ static u32 site_of(u64 lr, u64 lr2) {   /* its index, made if new; SITE_MAX - 1 
 }
 
 /* ---- block tables: address -> size and site (linear probing, deletion by backward shift) ---- */
-typedef struct Blk { u64 p; u64 size : 40, site : 24; } Blk;
+typedef struct Blk { u64 p; u64 size : 40, site : 24; long long born; } Blk;   /* born: rb_map_save's clock at the allocation */
 typedef struct Tab { Blk *b; u64 cap, n; SRWLOCK lock; long long full; } Tab;
 static u64 tab_slot(const Tab *t, u64 p) { return ((p >> 4) * 0x9e3779b97f4a7c15ull >> 20) & (t->cap - 1); }
 static int tab_init(Tab *t, u64 cap) {
@@ -74,11 +76,11 @@ static int tab_init(Tab *t, u64 cap) {
     t->cap = cap; t->n = 0; InitializeSRWLock(&t->lock);
     return t->b != NULL;
 }
-static void tab_put(Tab *t, u64 p, u64 size, u32 site) {   /* (lock held) */
+static void tab_put(Tab *t, u64 p, u64 size, u32 site, long long born) {   /* (lock held) */
     if (t->n * 4 >= t->cap * 3) { t->full++; return; }
     for (u64 k = tab_slot(t, p);; k = (k + 1) & (t->cap - 1)) {
-        if (t->b[k].p == p) { t->b[k].size = size; t->b[k].site = site; return; }
-        if (!t->b[k].p) { t->b[k].p = p; t->b[k].size = size; t->b[k].site = site; t->n++; return; }
+        if (t->b[k].p == p) { t->b[k].size = size; t->b[k].site = site; t->b[k].born = born; return; }
+        if (!t->b[k].p) { t->b[k].p = p; t->b[k].size = size; t->b[k].site = site; t->b[k].born = born; t->n++; return; }
     }
 }
 static int tab_take(Tab *t, u64 p, Blk *out) {   /* (lock held) removed; 1 if it was there */
@@ -101,7 +103,13 @@ static Tab all;                         /* census: every live block */
 static Tab out;                         /* the live blocks of the left-out sites */
 static u8 *site_out;                    /* per site: left out */
 static Site *want; static u32 nwant;    /* the list of sites to leave out (resolved to indices as they appear) */
-volatile long rb_map_gen;               /* (hle_rb_state.c) out's contents changed: the left-out set is built again */
+volatile long rb_map_gen;               /* (hle_rb_state.c) the left-out set changed: it is built again */
+/* A block is left out only once every state kept was saved after it was made (born < map_oldest, the clock of the
+ * oldest state kept): its pages are then the block's - presentation - in all of them, so a load to any of them may
+ * leave them as they are. A block made since (young) is saved and loaded as any page: else a rollback to a state from
+ * before it, when its pages may have been fight state (a block freed there and the range given to this one), would
+ * not put them back. A freed block leaves the set at once. */
+static long long map_clock, map_oldest, young_min = LLONG_MAX;   /* (out.lock) */
 static long long n_alloc, n_free, n_out_alloc, n_out_free;
 static u64 orig_pm, orig_aa, orig_ra, orig_fr;
 
@@ -119,10 +127,23 @@ static int listed(u64 lr, u64 lr2) {
     for (u32 i = 0; i < nwant; i++) if (want[i].lr == lr && (!want[i].lr2 || want[i].lr2 == lr2)) return 1;
     return 0;
 }
+/* fp + 8 readable: x29 is the caller's frame record only by convention (a function without one may hold anything
+ * there), so the committed region around it is asked once and kept per thread (a thread's stack: one region). */
+static __declspec(thread) u64 rd_lo, rd_hi;
+static int readable8(u64 a) {
+    if (a >= rd_lo && a + 8 <= rd_hi) return 1;
+    MEMORY_BASIC_INFORMATION mi;
+    if (!VirtualQuery(G2H(a), &mi, sizeof mi) || mi.State != MEM_COMMIT || !mi.Protect || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return 0;
+    u64 lo = (u64)(uintptr_t)mi.BaseAddress - (u64)(uintptr_t)G2H(0), hi = lo + mi.RegionSize;
+    if (a + 8 > hi) return 0;
+    rd_lo = lo; rd_hi = hi;
+    return 1;
+}
 static u32 site_now(Cpu *c) {
     u64 lr = c->x[30], fp = c->x[29], lr2 = 0;
     /* (a frame record on a guest stack: the stack area, or a stack the game made in its heap) */
-    if (!(fp & 7) && ((fp >= STACK_BASE && fp < KERNEL_BASE + 0x1000000) || (fp >= HEAP_BASE && fp < HEAP_BASE + HEAP_LIMIT))) lr2 = ld64(fp + 8);
+    if (!(fp & 7) && ((fp >= STACK_BASE && fp < KERNEL_BASE + 0x1000000) || (fp >= HEAP_BASE && fp < HEAP_BASE + HEAP_LIMIT)) && readable8(fp + 8))
+        lr2 = ld64(fp + 8);
     u32 s = site_of(lr, lr2);
     if (s < SITE_MAX - 1 && site_out[s] == 0) site_out[s] = listed(lr, lr2) ? 2 : 1;   /* (1 kept, 2 left out) */
     return s;
@@ -130,10 +151,13 @@ static u32 site_now(Cpu *c) {
 static void noted(u64 p, u64 size, u32 s) {
     if (!p) return;
     InterlockedIncrement64(&n_alloc);
-    if (census_on) { AcquireSRWLockExclusive(&all.lock); tab_put(&all, p, size, s); ReleaseSRWLockExclusive(&all.lock); }
-    if (site_out[s] == 2) {
-        AcquireSRWLockExclusive(&out.lock); tab_put(&out, p, size, s); ReleaseSRWLockExclusive(&out.lock);
-        InterlockedIncrement64(&n_out_alloc); InterlockedIncrement(&rb_map_gen);
+    if (census_on) { AcquireSRWLockExclusive(&all.lock); tab_put(&all, p, size, s, 0); ReleaseSRWLockExclusive(&all.lock); }
+    if (site_out[s] == 2) {   /* (young: not left out yet, the set is the same) */
+        AcquireSRWLockExclusive(&out.lock);
+        tab_put(&out, p, size, s, map_clock);
+        if (map_clock < young_min) young_min = map_clock;
+        ReleaseSRWLockExclusive(&out.lock);
+        InterlockedIncrement64(&n_out_alloc);
     }
 }
 static void gone(u64 p) {
@@ -141,10 +165,12 @@ static void gone(u64 p) {
     InterlockedIncrement64(&n_free);
     if (census_on) { AcquireSRWLockExclusive(&all.lock); tab_take(&all, p, NULL); ReleaseSRWLockExclusive(&all.lock); }
     if (out.n) {
+        Blk b;
         AcquireSRWLockExclusive(&out.lock);
-        int was = tab_take(&out, p, NULL);
+        int was = tab_take(&out, p, &b), left = was && b.born < map_oldest;
         ReleaseSRWLockExclusive(&out.lock);
-        if (was) { InterlockedIncrement64(&n_out_free); InterlockedIncrement(&rb_map_gen); }
+        if (was) InterlockedIncrement64(&n_out_free);
+        if (left) InterlockedIncrement(&rb_map_gen);
     }
 }
 static void hook_aa(Cpu *c) {   /* aligned_alloc(align, size) */
@@ -226,7 +252,7 @@ u64 rb_map_skip_pages(u64 *bits) {
     AcquireSRWLockShared(&out.lock);
     for (u64 i = 0; i < out.cap; i++) {
         const Blk *b = &out.b[i];
-        if (!b->p) continue;
+        if (!b->p || b->born >= map_oldest) continue;   /* (young) */
         u64 lo = (b->p + 0xFFF) & ~0xFFFull, hi = (b->p + b->size) & ~0xFFFull;
         if (lo < ALIAS_BASE || hi > ALIAS_BASE + ALIAS_SIZE) continue;
         for (u64 g = lo; g < hi; g += 0x1000) { u64 a = (g - ALIAS_BASE) >> 12; bits[a >> 6] |= 1ull << (a & 63); n++; }
@@ -236,24 +262,48 @@ u64 rb_map_skip_pages(u64 *bits) {
 }
 int rb_map_active(void) { return map_on > 0 && nwant > 0; }
 
-/* The left-out blocks' list, kept with each savestate (every guest thread held). */
-typedef struct MapSave { u64 n; Blk b[]; } MapSave;
-void *rb_map_save(void) {
+/* The left-out blocks' list, kept with each savestate (every guest thread held), with the save's clock. oldest: the
+ * oldest state kept besides this one (its list; NULL: none), whose clock says which blocks may be left out. */
+typedef struct MapSave { long long stamp; u64 n; Blk b[]; } MapSave;
+static u64 set_sum(void) {   /* (out.lock held) the left-out set's fingerprint: its old blocks */
+    u64 h = 0, k = 0;
+    for (u64 i = 0; i < out.cap; i++) {
+        const Blk *b = &out.b[i];
+        if (b->p && b->born < map_oldest) { h += (b->p * 0x9e3779b97f4a7c15ull) ^ ((u64)b->size * 0xc2b2ae3d27d4eb4full); k++; }
+    }
+    return h ^ (k << 48);
+}
+void *rb_map_save(const void *oldest) {
     if (map_on <= 0 || !nwant) return NULL;
-    AcquireSRWLockShared(&out.lock);
+    AcquireSRWLockExclusive(&out.lock);
+    long long stamp = ++map_clock, old = oldest ? ((const MapSave *)oldest)->stamp : stamp;
+    if (old > map_oldest) {
+        map_oldest = old;
+        if (young_min < map_oldest) {   /* blocks old enough now: the set grows */
+            young_min = LLONG_MAX;
+            for (u64 i = 0; i < out.cap; i++) if (out.b[i].p && out.b[i].born >= map_oldest && out.b[i].born < young_min) young_min = out.b[i].born;
+            InterlockedIncrement(&rb_map_gen);
+        }
+    }
     MapSave *s = malloc(sizeof *s + sizeof(Blk) * (out.n ? out.n : 1));
-    if (s) { s->n = 0; for (u64 i = 0; i < out.cap; i++) if (out.b[i].p) s->b[s->n++] = out.b[i]; }
-    ReleaseSRWLockShared(&out.lock);
+    if (s) { s->stamp = stamp; s->n = 0; for (u64 i = 0; i < out.cap; i++) if (out.b[i].p) s->b[s->n++] = out.b[i]; }
+    ReleaseSRWLockExclusive(&out.lock);
     return s;
 }
 void rb_map_load(const void *p) {
     const MapSave *s = p;
     if (map_on <= 0 || !nwant || !s) return;
     AcquireSRWLockExclusive(&out.lock);
+    u64 before = set_sum();
     memset(out.b, 0, sizeof(Blk) * out.cap); out.n = 0;
-    for (u64 i = 0; i < s->n; i++) tab_put(&out, s->b[i].p, s->b[i].size, (u32)s->b[i].site);
+    young_min = LLONG_MAX;
+    for (u64 i = 0; i < s->n; i++) {
+        tab_put(&out, s->b[i].p, s->b[i].size, (u32)s->b[i].site, s->b[i].born);
+        if (s->b[i].born >= map_oldest && s->b[i].born < young_min) young_min = s->b[i].born;
+    }
+    u64 after = set_sum();
     ReleaseSRWLockExclusive(&out.lock);
-    InterlockedIncrement(&rb_map_gen);
+    if (after != before) InterlockedIncrement(&rb_map_gen);   /* (most loads: the same set, nothing to build again) */
 }
 void rb_map_free(void *p) { free(p); }
 

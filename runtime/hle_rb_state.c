@@ -83,7 +83,7 @@ void audio_rb_load(const void *p);
 extern volatile long rb_map_gen;
 u64 rb_map_skip_pages(u64 *bits);
 int rb_map_active(void);
-void *rb_map_save(void);
+void *rb_map_save(const void *oldest);
 void rb_map_load(const void *p);
 void rb_map_free(void *p);
 int rb_map_census_want(long long fight_save);
@@ -2210,7 +2210,7 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     s->audio = audio_rb_save();
     s->net = net_rb_save();
     s->ipc = ipc_rb_save();
-    s->map = rb_map_save();
+    s->map = rb_map_save(ring_count ? slot_at(ring_count - 1)->map : NULL);   /* (the oldest state kept besides this one) */
     s->fs_mark = fs_rb_mark();
     u64 thread_bytes = 0;
     s->threads = 0;
