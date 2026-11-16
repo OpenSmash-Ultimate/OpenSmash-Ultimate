@@ -1276,6 +1276,7 @@ void skyline_note_sleep(void) {}
 int movie_preroll_skip(u64 ns) { (void)ns; return 0; }
 void rtld_module_loaded(u64 base, u64 size) { (void)base; (void)size; }
 void discord_init(void) {}
+void discord_start(void) {}
 void mods_start(const char *data_dir) { (void)data_dir; }
 
 #define MAIN 0x7100000000ull
