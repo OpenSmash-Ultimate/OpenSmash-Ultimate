@@ -89,8 +89,10 @@ namespace OpenSmash.Launcher
                     _pass?.Dispose();
                     if (_account == null) return;
                     bool on = true;
-                    try { string f = Path.Combine(_repo, "config", "crash_reports.txt"); on = !(File.Exists(f) && File.ReadAllText(f).Trim().StartsWith("off", StringComparison.OrdinalIgnoreCase)); } catch { }
+                    on = !FileSaysOff(Path.Combine(_repo, "config", "crash_reports.txt"));
                     _ = CrashReport.SendIfAnyAsync(_account, _repo, _gameStartedUtc, on, Updater.InstalledCommit(_repo), s => Updater.Log(_repo, s));
+                    // (the session's performance summary: aggregates only, signed in only; config\telemetry.txt "off" stops it)
+                    _ = PerfReport.SendIfAnyAsync(_account, _repo, _gameStartedUtc, Updater.InstalledCommit(_repo), s => Updater.Log(_repo, s));
                 };
             }
             catch { }
@@ -119,7 +121,7 @@ namespace OpenSmash.Launcher
             float s = _s;
             var f = FB(13 * s, true);
             float sp = 13 * s * 0.08f;
-            var me = _account?.Me;
+            var me = _account != null && _account.SignedIn ? _account.Me : null;   // (signed in = the profile is read)
             if (me == null)
             {
                 string label = _accountBusy ? "FINISH IN THE BROWSER  ×" : "SIGN IN WITH DISCORD";
@@ -142,7 +144,7 @@ namespace OpenSmash.Launcher
         // The account card under the header
         void PaintAccountCard(Graphics g, int W, int H)
         {
-            var me = _account?.Me;
+            var me = _account != null && _account.SignedIn ? _account.Me : null;   // (signed in = the profile is read)
             if (!_discordOpen || me == null) return;
             float s = _s, x = 40 * s, y = HeaderH * s + 8 * s, w = 400 * s, h = 200 * s;
             using (var p = Theme.Para(x, y, w, h, 10 * s))

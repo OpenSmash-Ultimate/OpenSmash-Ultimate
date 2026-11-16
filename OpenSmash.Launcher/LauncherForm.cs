@@ -326,7 +326,7 @@ namespace OpenSmash.Launcher
                 new SettingTab { Name = "Display", SettingKeys = new[] { "ui_language", "window", "window_size", "pacing" } },
                 new SettingTab { Name = "Graphics", SettingKeys = new[] { "render_scale", "gpu", "renderer", "overlay", "hide_cursor" } },
                 new SettingTab { Name = "Audio", SettingKeys = new[] { "volume" } },
-                new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "code", "server", "direct" } },
+                new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "code", "server", "reports", "telemetry" } },   // (OpenSmash 0.6: "direct" is gone - relay only)
                 new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "remap", "pads" } },
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
@@ -350,6 +350,10 @@ namespace OpenSmash.Launcher
                 new Setting { Key = "code", Label = "Lobby code", Text = true },
                 new Setting { Key = "server", Label = "Server", Text = true },
                 new Setting { Key = "direct", Label = "Direct connections", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
+                // (OpenSmash 0.6, signed-in players only) what the launcher sends after a game: a crash's report, and the
+                // session's performance summary (aggregates: OpenSmash.Core CrashReport.cs, PerfReport.cs)
+                new Setting { Key = "reports", Label = "Send crash reports", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
+                new Setting { Key = "telemetry", Label = "Send performance summaries", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
                 new Setting { Key = "keyboard_player", Label = "Keyboard plays as", Values = new[] { "1", "2", "3", "4", "5", "6", "7", "8", "0" }, Labels = new[] { "Player 1", "Player 2", "Player 3", "Player 4", "Player 5", "Player 6", "Player 7", "Player 8", "Nobody (no keyboard)" } },
                 new Setting { Key = "background", Label = "Controllers in the background", Values = new[] { "1", "0" }, Labels = new[] { "Work while another window is in front", "Only while the game is in front" } },
                 new Setting { Key = "remap", Label = "Remap a controller", Values = new[] { "open" }, Labels = new[] { "Press a button for each of the game's" } },
@@ -663,6 +667,12 @@ namespace OpenSmash.Launcher
                 PlayPopup();
                 Invalidate();
             }
+        }
+
+        static bool FileSaysOff(string f)
+        {
+            try { return File.Exists(f) && File.ReadAllText(f).Trim().StartsWith("off", StringComparison.OrdinalIgnoreCase); }
+            catch { return false; }
         }
 
         static string ShortCommit(string sha) => string.IsNullOrEmpty(sha) ? "?" : (sha.Length > 7 ? sha.Substring(0, 7) : sha);
@@ -1611,6 +1621,8 @@ namespace OpenSmash.Launcher
             string direct = File.Exists(directFile) ? FirstLine(directFile) : SettingDefaults.OfFile("online_direct.txt");
             _iniValues["direct"] = direct.StartsWith("off", StringComparison.OrdinalIgnoreCase) ? "off" : "on";
             _iniValues["name"] = FirstLine(WindowSmash.ConfigFile(_repo, "online_name.txt"));
+            _iniValues["reports"] = FileSaysOff(Path.Combine(_repo, "config", "crash_reports.txt")) ? "off" : "on";
+            _iniValues["telemetry"] = OpenSmash.Core.PerfReport.Enabled(_repo) ? "on" : "off";
             var gpu = _settings.First(s => s.Key == "gpu");
             if (!gpu.Values.Contains(_iniValues["gpu"]))
             {
@@ -1736,6 +1748,16 @@ namespace OpenSmash.Launcher
                 SetFirstLine(WindowSmash.ConfigFile(_repo, "online_name.txt"), _iniValues.GetValueOrDefault("name", "").Trim());
             if (_changed.Contains("direct"))
                 SetFirstLine(WindowSmash.ConfigFile(_repo, "online_direct.txt"), _iniValues.GetValueOrDefault("direct", "on"));
+            try
+            {
+                if (_changed.Contains("reports"))
+                {
+                    Directory.CreateDirectory(Path.Combine(_repo, "config"));
+                    File.WriteAllText(Path.Combine(_repo, "config", "crash_reports.txt"), _iniValues.GetValueOrDefault("reports", "on") == "off" ? "off" : "on");
+                }
+                if (_changed.Contains("telemetry")) OpenSmash.Core.PerfReport.SetEnabled(_repo, _iniValues.GetValueOrDefault("telemetry", "on") != "off");
+            }
+            catch { }
             _changed.Clear();   // (written: the game's later changes stay)
             if (serverChanged && !serverReady) { _changed.Add("lobby"); _changed.Add("code"); _changed.Add("server"); }
             // (only when changed here: written at every close, a stale copy once hid the lobby the game's menu had picked)

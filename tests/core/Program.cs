@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Checks of OpenSmash.Core (no network, no game): dotnet run --project tests/core. Exit code 0 when all pass.
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -103,6 +104,24 @@ static class Program
         string clean = CrashReport.Clean(dirty, "C:\\Games\\OpenSmash");
         Check(!clean.Contains(home) && !clean.Contains("93.184.216.34") && clean.Contains("10.13.0.5") && !clean.Contains("example.com") &&
               clean.Contains("<pass>") && clean.Contains("<install>\\build"), "report cleaned: " + clean);
+
+        // ---- the session's performance summary
+        string perf = "{\"schema\":1,\"clean_exit\":true,\"session_s\":300,\"frames\":18000,\"ft_p50\":16.62,\"ft_p99\":21.5,\"stutters\":3," +
+                      "\"hist\":{\"<8\":0,\"<12\":1,\">=100\":2},\"rb_rollbacks\":120,\"path\":\"C:/Users/someone\",\"name\":\"someone\"}";
+        var pp = PerfReport.Payload(perf, new Dictionary<string, object> { ["cpu"] = "Test CPU", ["ram_gb"] = 16.0 }, "[vulkan] device: Test GPU (driver 1)\nrenderer: vulkan\n", "0.6.0", "abc");
+        Check(pp != null && (double)pp["frames"] == 18000 && (string)pp["cpu"] == "Test CPU" && (string)pp["gpu"] == "Test GPU" && (string)pp["renderer"] == "vulkan" &&
+              (bool)pp["crashed"] == false && !pp.ContainsKey("path") && !pp.ContainsKey("name") && ((Dictionary<string, long>)pp["hist"])[">=100"] == 2, "performance summary payload");
+        Check(!System.Text.Json.JsonSerializer.Serialize(pp).Contains("someone"), "performance summary: unknown fields dropped");
+        Check(PerfReport.Payload(perf.Replace("\"session_s\":300", "\"session_s\":20"), null, null, "0.6.0", "abc") == null, "performance summary: short sessions are not sent");
+        Check(PerfReport.Payload("not json", null, null, "0.6.0", "abc") == null, "performance summary: not a summary");
+        var pc = PerfReport.Pc();
+        Check(pc.ContainsKey("cpu_threads") && !System.Text.Json.JsonSerializer.Serialize(pc).Contains(Environment.UserName, StringComparison.OrdinalIgnoreCase), "this PC's kind has no user name");
+        string troot = Path.Combine(Path.GetTempPath(), "os-core-perf-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(troot);
+        Check(PerfReport.Enabled(troot), "performance summaries: on by default");
+        PerfReport.SetEnabled(troot, false);
+        Check(!PerfReport.Enabled(troot), "performance summaries: off in the settings");
+        Directory.Delete(troot, true);
 
         Console.WriteLine($"{passed} passed, {failed} failed");
         return failed == 0 ? 0 : 1;
