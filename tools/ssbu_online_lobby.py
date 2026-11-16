@@ -314,10 +314,20 @@ class OnlineLobby(relay.Lobby):
             code, data = 413, b'{"error":"too large"}'
         elif method == "OPTIONS":
             code, data = 204, b""
+        elif method == "POST" and path == "/gsp/link":
+            # (Discord is asked off the event loop: the lobby's streams must not wait for it; the rest runs in the loop)
+            board = self.nex.board
+            job, refused = board.link_request(body, time.monotonic())
+            if refused:
+                code, data = refused
+            else:
+                me = await asyncio.get_running_loop().run_in_executor(None, board.link_ask, job[1])
+                code, data = board.link_finish(job, me)
         else:
             code, data = self.nex.board.http("GET" if method == "HEAD" else method, path, headers, body)
         reason = {200: "OK", 204: "No Content", 400: "Bad Request", 403: "Forbidden", 404: "Not Found",
-                  405: "Method Not Allowed", 413: "Payload Too Large", 503: "Service Unavailable"}.get(code, "Error")
+                  405: "Method Not Allowed", 413: "Payload Too Large", 429: "Too Many Requests", 502: "Bad Gateway",
+                  503: "Service Unavailable"}.get(code, "Error")
         out = (f"HTTP/1.0 {code} {reason}\r\nServer: ssbu-online\r\nContent-Type: application/json\r\n"
                f"Content-Length: {len(data)}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, OPTIONS\r\n"
                "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n").encode()

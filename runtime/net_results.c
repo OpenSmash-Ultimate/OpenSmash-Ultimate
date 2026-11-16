@@ -8,9 +8,10 @@
  * makes the player known there - as the NEX login does on the lobby's own game server), each time it changes, and at
  * the start takes the player's records back (GET /gsp/records): the GSP a player earned on another PC is the one this
  * game shows. Records still to be sent when the game closed (the marker file) go first, before anything is taken.
- * The Discord account a player signed in with (config/discord_token.txt) and their choice to be on the leaderboard
- * (config/discord_leaderboard.txt: only "off" hides them) go with it (POST /gsp/profile): only those players are on
- * the leaderboard; everyone else plays all the same.
+ * The Discord account a player signed in with (config/discord_token.txt) is linked on the lobby (POST /gsp/link, its
+ * access token, which the lobby checks with Discord once): GSP and place then belong to that account, merged from every
+ * PC it plays on (each fighter's best), and only linked accounts are on the leaderboard (config/discord_leaderboard.txt
+ * "off" hides one); everyone else plays all the same, unranked.
  *
  * SSBU_RESULTS_LOBBY=<host:port> sends them to another lobby (tests: a local one); =off sends nothing. */
 #define _CRT_SECURE_NO_WARNINGS
@@ -152,32 +153,35 @@ static int fetch_records(const char *nsa, const char *player) {
     return n;
 }
 
-/* POST /gsp/profile: the Discord account the player signed in with, on the leaderboard unless they said "off" */
-static void send_profile(const char *nsa, const char *player) {
+/* POST /gsp/link: the Discord account the player signed in with (config/discord_token.txt), proven to the lobby by its
+ * access token (the lobby asks Discord who it is, once): the player's GSP and place belong to that account on every PC.
+ * show: on the leaderboard unless config/discord_leaderboard.txt says "off". 1 linked (or nothing to link), 0 retry. */
+static int send_link(const char *nsa, const char *player) {
     DiscordToken tok;
-    if (!discord_token_load("config\\" DISCORD_TOKEN_FILE, &tok) || !tok.user_id[0]) return;
+    if (!discord_token_load("config\\" DISCORD_TOKEN_FILE, &tok) || !tok.user_id[0]) return 1;   /* (not signed in) */
+    if (!discord_token_fresh(&tok, (int64_t)time(NULL), 60)) return 0;   /* (net_discord.c refreshes it: later) */
     char choice[16] = "";
-    FILE *f = fopen("config\\discord_leaderboard.txt", "rb");
+    FILE *f = fopen("config\discord_leaderboard.txt", "rb");
     if (f) { size_t k = fread(choice, 1, sizeof choice - 1, f); choice[k] = 0; fclose(f); }
-    if (!_strnicmp(choice, "off", 3)) return;
-    char name[100], hash[17], payload[160], jn[220], body[1024], sig[65];
-    snprintf(name, 33, "%s", tok.display_name[0] ? tok.display_name : tok.username);
-    discord_account_hash(tok.user_id, hash);
-    snprintf(payload, sizeof payload, "%s\n%s", name, hash);
-    json_string(jn, sizeof jn, name);
+    int show = _strnicmp(choice, "off", 3) != 0;
+    static char payload[600], body[1400];
+    char sig[65], jt[600];
+    snprintf(payload, sizeof payload, "%s\n%d", tok.access, show);
+    json_string(jt, sizeof jt, tok.access);
     DWORD status = 0;
     for (int with_key = 0; with_key < 2; with_key++) {   /* (the NSA id only for a lobby that does not know the player) */
         long long t = (long long)time(NULL);
         char key[40] = "";
-        discord_sign(nsa, "profile", player, t, payload, sig);
+        discord_sign(nsa, "link", player, t, payload, sig);
         if (with_key) snprintf(key, sizeof key, ",\"key\":\"%s\"", nsa);
-        snprintf(body, sizeof body, "{\"player\":\"%s\",\"t\":%lld,\"name\":%s,\"discord\":\"%s\",\"sig\":\"%s\"%s}", player, t, jn, hash, sig, key);
-        char *answer = http(L"POST", L"/gsp/profile", "Content-Type: application/json\r\n", body, &status);
+        snprintf(body, sizeof body, "{\"player\":\"%s\",\"t\":%lld,\"token\":%s,\"show\":%s,\"sig\":\"%s\"%s}", player, t, jt, show ? "true" : "false", sig, key);
+        char *answer = http(L"POST", L"/gsp/link", "Content-Type: application/json\r\n", body, &status);
         int unknown = status == 403 && answer && strstr(answer, "unknown player");
         free(answer);
         if (!unknown) break;
     }
-    fprintf(stderr, "[results] Discord account on the leaderboard: %s\n", status == 200 ? "yes" : "not taken now");
+    fprintf(stderr, "[results] Discord account linked on the lobby: %s\n", status == 200 ? (show ? "yes, on the leaderboard" : "yes, hidden") : "not now");
+    return status == 200 || status == 403;   /* (403: a token Discord refused - not again until the next period) */
 }
 
 static DWORD WINAPI results_thread(LPVOID arg) {
@@ -200,11 +204,12 @@ static DWORD WINAPI results_thread(LPVOID arg) {
                 retry_at = t + RETRY_MS;
             }
         }
+        if (!dirty && t >= profile_at)   /* (before the records: a linked account's GSP is the account's, from every PC) */
+            profile_at = t + (send_link(nsa, player) ? PROFILE_EVERY_MS : RETRY_MS);
         if (!fetched && !dirty && t >= retry_at) {   /* (the lobby's records once ours are all there) */
             if (fetch_records(nsa, player) >= 0) fetched = 1;
             else retry_at = t + RETRY_MS;
         }
-        if (t >= profile_at) { profile_at = t + PROFILE_EVERY_MS; send_profile(nsa, player); }
         WaitForSingleObject(wake, dirty || !fetched ? 2000 : 60000);
     }
 }

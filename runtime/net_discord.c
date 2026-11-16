@@ -428,7 +428,11 @@ static DWORD WINAPI web_thread(LPVOID unused) {
             ask_me(nsa, player);
             if (GetTickCount64() >= next_board) {
                 char *json = http_get(BOARD_HOST, BOARD_PORT, 0, BOARD_PATH, NULL, 16u << 20);
-                if (json) { InterlockedExchange(&rank, discord_rank_in_leaderboard(json, player)); free(json); next_board = GetTickCount64() + BOARD_EVERY_MS; }
+                DiscordToken t;   /* (the leaderboard's rows are Discord accounts: tools/nex/board.py) */
+                char who[17];
+                if (discord_token_load(TOKEN_PATH, &t) && t.user_id[0]) discord_account_hash(t.user_id, who);
+                else snprintf(who, sizeof who, "%s", player);
+                if (json) { InterlockedExchange(&rank, discord_rank_in_leaderboard(json, who)); free(json); next_board = GetTickCount64() + BOARD_EVERY_MS; }
                 else next_board = GetTickCount64() + 60 * 1000;
             }
         }
