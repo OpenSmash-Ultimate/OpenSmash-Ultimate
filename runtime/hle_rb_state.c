@@ -79,6 +79,17 @@ void *audio_rb_save(void);
 void *net_rb_save(void);            /* (hle_net.c: the sockets' datagrams and NEX's streams) */
 void net_rb_load(const void *p);
 void audio_rb_load(const void *p);
+/* (hle_rb_map.c: the state map by owner - the allocations left out, and the census) */
+extern volatile long rb_map_gen;
+u64 rb_map_skip_pages(u64 *bits);
+int rb_map_active(void);
+void *rb_map_save(const void *oldest);
+void rb_map_load(const void *p);
+void rb_map_free(void *p);
+int rb_map_census_want(long long fight_save);
+void rb_map_census_page(u64 a, int steady, int written, int gpu, int left_out);
+void rb_map_census_end(void);
+void rb_map_report(void);
 
 extern volatile int rb_hold;          /* (kernel.c: guest threads park in kwait while it is set) */
 extern void (*kernel_rb_park)(void *kthread);
@@ -836,14 +847,68 @@ void rb_stamp_report(void) {
                     stamp_ms[m] / stamp_n[m], stamp_n[m], (double)stamp_calls[m] / stamp_n[m]);
 }
 
-/* (a save's sync, after its copies) Steady pages in and out (see SM_STEADY). */
-static void sm_streaks(void) {
+/* COOLING (SSBU_RB_SM_COOL=<n>, default 30; 0 off). A page a fight writes once is hot for the rest of the fight, and so
+ * is the rest of its 64 KB group: a fight's hot set grew to ~15,000 pages a save while ~1,500 of them were written in
+ * a save (the census, hle_rb_map.c) - each save asked the write watch about every one of them. A hot page that is not
+ * steady, not the GPU's, not left out, and that no save found written for <n> saves in a row is made read-only again
+ * (cold) at the end of a save's copies: memory is the shadow's there (nothing wrote it since the save before, and the
+ * guest threads are held). A write by a thread not held between this save's questions and the protection is caught by
+ * asking those pages once more (sm_cool_check): such a page is opened again, hot. Its next write faults it hot again. */
+static u64 gpu_word(u64 i);
+static u64 skip_word(u64 i);
+static int SM_COOL = -1;
+static u8 *sm_idle;                     /* a byte per alias page: saves in a row a hot page that is not steady was found unwritten */
+static long long sm_cooled_wr, sm_cool_back, sm_cooled;
+static void sm_cool_check(u64 lo, u64 hi, u64 save_clock) {   /* (alias pages [lo, hi): some of them cooled now) */
+    u64 glo = ALIAS_BASE + (lo << 12), ghi = ALIAS_BASE + (hi << 12);
+    watch_rb_take(glo, ghi);
+    for (u64 p = watch_rb_next(glo, ghi, save_clock); p < ghi; p = watch_rb_next(p + 0x1000, ghi, save_clock)) {
+        u64 k = sm_ap((void *)(uintptr_t)p);
+        AcquireSRWLockExclusive(&sm_lock);
+        if (sm_bit(sm_cold, k)) { sm_open_locked(k, k + 1); sm_cool_back++; }
+        ReleaseSRWLockExclusive(&sm_lock);
+    }
+}
+/* SSBU_RB_SM_COOL_CHECK=<n> (a test's): every n saves, each page cooling made cold that is still cold is compared with
+ * the shadow - a cold page is the shadow's by the state map's rule, so any difference is a write cooling missed. */
+static u64 *sm_cmap;   /* (a bit per alias page: made cold by cooling) */
+static int cool_check = -1;
+static long long cool_checks, cool_checked, cool_bad;
+static void sm_cool_verify(void) {
+    static long long n;
+    if (cool_check < 0) { const char *e = getenv("SSBU_RB_SM_COOL_CHECK"); cool_check = e && *e ? atoi(e) : 0; }
+    if (cool_check <= 0) return;
+    if (!sm_cmap) sm_cmap = VirtualAlloc(NULL, SM_PAGES / 8, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!sm_cmap || ++n % cool_check) return;
+    long long bad = 0, seen = 0;
     for (u32 i = 0; i < nchunks; i++) {
         Chunk *c = chunk_map[chunk_ids[i]];
         if (c->kind != K_ALIAS) continue;
         u64 b = sm_ap(c->base);
+        for (u32 w = 0; w < CH_PAGES / 64; w++)
+            for (u64 bits = sm_cmap[(b >> 6) + w] & sm_cold[(b >> 6) + w]; bits; bits &= bits - 1) {
+                unsigned long z;
+                _BitScanForward64(&z, bits);
+                u8 *p = c->base + ((u64)(w * 64 + z) << 12);
+                if (!is_present(c, w * 64 + z) || sm_ap_lazy(p)) continue;
+                seen++;
+                if (memcmp(p, c->copy + (p - c->base), 0x1000)) { if (bad++ < 3) fprintf(stderr, "[rb] cooling check: cold page %p differs from the shadow\n", (void *)p); }
+            }
+    }
+    cool_checks++; cool_checked += seen; cool_bad += bad;
+}
+/* (a save's sync, after its copies) Steady pages in and out (see SM_STEADY), and the cooling above. */
+static void sm_streaks(u64 save_clock) {
+    if (SM_COOL < 0) { const char *e = getenv("SSBU_RB_SM_COOL"); SM_COOL = e && *e ? atoi(e) : 30; if (SM_COOL > 250) SM_COOL = 250; }
+    if (SM_COOL > 0 && !sm_idle) sm_idle = VirtualAlloc(NULL, SM_PAGES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    int cool_on = SM_COOL > 0 && sm_idle && save_clock;
+    sm_cool_verify();
+    for (u32 i = 0; i < nchunks; i++) {
+        Chunk *c = chunk_map[chunk_ids[i]];
+        if (c->kind != K_ALIAS) continue;
+        u64 b = sm_ap(c->base), clo = ~0ull, chi = 0;
         for (u32 w = 0; w < CH_PAGES / 64; w++) {
-            u64 wi = (b >> 6) + w;
+            u64 wi = (b >> 6) + w, cool = 0;
             for (u64 bits = sm_hot[wi]; bits; bits &= bits - 1) {
                 unsigned long z;
                 _BitScanForward64(&z, bits);
@@ -851,12 +916,36 @@ static void sm_streaks(void) {
                 if (sm_steady[wi] & m) {
                     if (!sm_same[a]) sm_streak[a] = 0;
                     else if (++sm_streak[a] >= SM_IDLE) { sm_steady[wi] &= ~m; sm_streak[a] = 0; sm_demoted++; }
+                    if (cool_on) sm_idle[a] = 0;
                 } else if (sm_wr[wi] & m) {
                     if (++sm_streak[a] >= SM_STEADY) { sm_steady[wi] |= m; sm_streak[a] = 0; sm_promoted++; }
-                } else sm_streak[a] = 0;
+                    if (cool_on) sm_idle[a] = 0;
+                } else {
+                    sm_streak[a] = 0;
+                    if (cool_on && !((gpu_word(wi) | skip_word(wi)) & m) && ++sm_idle[a] >= SM_COOL && is_present(c, w * 64 + z)) cool |= m;
+                }
             }
             sm_wr[wi] = 0;
+            if (!cool) continue;
+            AcquireSRWLockExclusive(&sm_lock);
+            for (u64 left = cool; left;) {   /* (runs of a word at a time) */
+                unsigned long z;
+                _BitScanForward64(&z, left);
+                u32 e = z;
+                while (e < 64 && (left >> e & 1)) e++;
+                sm_protect(c->base + ((u64)(w * 64 + z) << 12), (u64)(e - z) << 12, PAGE_READONLY);
+                u64 m = (e == 64 ? ~0ull : (1ull << e) - 1) & ~((1ull << z) - 1);
+                sm_hot[wi] &= ~m; sm_cold[wi] |= m;
+                for (u32 k = z; k < e; k++) sm_idle[(wi << 6) + k] = 0;
+                sm_cooled_wr += e - z; sm_cooled += e - z;
+                if (sm_cmap) sm_cmap[wi] |= m;
+                if ((wi << 6) + z < clo) clo = (wi << 6) + z;
+                if ((wi << 6) + e > chi) chi = (wi << 6) + e;
+                left &= ~m;
+            }
+            ReleaseSRWLockExclusive(&sm_lock);
         }
+        if (chi) sm_cool_check(clo, chi, save_clock);
     }
 }
 
@@ -921,9 +1010,11 @@ static void gpu_set_refresh(int to_shadow) {
     if (want != skip_gpu) { skip_gpu = want; gpu_gen_seen = -1; }
     if (!to_shadow && gpu_rng) return;   /* (a load: the set as the last save left it) */
     int warm_now = skip_gpu == 2 && sm_on && fight_saves == gpu_warmup;
-    if (gpu_gen_seen == nv_rb_gen && gpu_rng && !al_dirty && !warm_now) return;
+    static long map_gen_seen = -1;
+    if (gpu_gen_seen == nv_rb_gen && gpu_rng && !al_dirty && !warm_now && map_gen_seen == rb_map_gen) return;
     InterlockedExchange(&al_dirty, 0);
     gpu_gen_seen = nv_rb_gen;
+    map_gen_seen = rb_map_gen;
     if (sm_skip && to_shadow) {
         if (!sm_skip_old) sm_skip_old = VirtualAlloc(NULL, SM_PAGES / 8, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         if (sm_skip_old) memcpy(sm_skip_old, sm_skip, SM_PAGES / 8);
@@ -989,6 +1080,9 @@ static void gpu_set_refresh(int to_shadow) {
         }
         r = *e == ',' ? e + 1 : NULL;
     }
+    /* the allocations of the sites left out (hle_rb_map.c): their live blocks' whole pages */
+    static u64 map_pages;
+    if (rb_map_active()) map_pages = rb_map_skip_pages(sm_skip);
     /* pages no longer left out: the shadow takes them now (the older states keep what it had: stale, once) */
     if (sm_skip_old && to_shadow && sm_on)
         for (u64 w = 0; w < SM_PAGES / 64; w++) {
@@ -1006,6 +1100,7 @@ static void gpu_set_refresh(int to_shadow) {
             }
         }
     static int told;
+    if (!told && rb_map_active()) fprintf(stderr, "[rb] state map: left out: the presentation sites' allocations (%llu pages now)\n", (unsigned long long)map_pages);
     if (!told++ && (skip_gpu > 0 || getenv("SSBU_RB_SKIP"))) fprintf(stderr, "[rb] state map: left out: %s%s%s\n", skip_gpu > 0 ? "GPU memory (nvmap allocations) " : "",
                                                                  getenv("SSBU_RB_SKIP") ? "ranges " : "", getenv("SSBU_RB_SKIP") ? getenv("SSBU_RB_SKIP") : "");
 }
@@ -1234,6 +1329,26 @@ static u32 wpend_run(void) {
     return same;
 }
 
+/* (SSBU_RB_MAP_CENSUS, a save's sync before the streaks) Every hot alias page with what this save found: steady, and
+ * written (a steady page found changed, another the write watch reported). */
+static void census_pages(void) {
+    for (u32 i = 0; i < nchunks; i++) {
+        Chunk *c = chunk_map[chunk_ids[i]];
+        if (c->kind != K_ALIAS) continue;
+        u64 b = sm_ap(c->base);
+        for (u32 w = 0; w < CH_PAGES / 64; w++) {
+            u64 wi = (b >> 6) + w;
+            for (u64 bits = sm_hot[wi]; bits; bits &= bits - 1) {
+                unsigned long z;
+                _BitScanForward64(&z, bits);
+                u64 a = (wi << 6) + z, m = 1ull << z;
+                int st = (sm_steady[wi] & m) != 0;
+                rb_map_census_page(a, st, st ? !sm_same[a] : (sm_wr[wi] & m) != 0, (gpu_word(wi) & m) != 0, (skip_word(wi) & m) != 0);
+            }
+        }
+    }
+}
+
 /* ---- the sync ---- */
 /* Brings memory and the shadow together: to_shadow (a save) copies memory into the shadow, else (a
  * load) the shadow into memory. The write watches then start again from here. */
@@ -1418,7 +1533,8 @@ static void sync(int to_shadow) {
     jobs_run();   /* (the copies of the pages listed above) */
     mstat.t[2] += now_ms() - t;
     t = now_ms();
-    if (sm_on && to_shadow) { if (sm_cmp > 0) sm_cool(); else sm_streaks(); }
+    if (sm_on && to_shadow && rb_map_census_want(fight_saves)) census_pages();
+    if (sm_on && to_shadow) { if (sm_cmp > 0) sm_cool(); else sm_streaks(clock); }
     mstat.t[7] = now_ms() - t;
     if (clock) shadow_seen = clock;   /* (a page a load writes back is stamped later: copied again next time, the same bytes) */
     rb_mem_nchanged = 0;
@@ -1616,12 +1732,17 @@ static void sm_end(void) {
             sm_hot[(b >> 6) + w] = sm_steady[(b >> 6) + w] = sm_wr[(b >> 6) + w] = 0;
         }
         memset(sm_streak + b, 0, CH_PAGES * 2); memset(sm_same + b, 0, CH_PAGES);
+        if (sm_idle) memset(sm_idle + b, 0, CH_PAGES);
     }
     ReleaseSRWLockExclusive(&sm_lock);
     sm_off_ms = now_ms() - t0;
     fprintf(stderr, "[rb] state map: off (the fight is over): %llu pages were hot at the end (%llu MB), %lld faults opened %lld pages, %lld opened for the system; "
             "%lld pages became steady, %lld steady again asked about; on in %.1f ms, off in %.1f ms\n", hot, hot >> 8, (long long)sm_faults, (long long)sm_opened, (long long)sm_sys_opened, sm_promoted, sm_demoted, sm_on_ms, sm_off_ms);
-    sm_faults = sm_opened = sm_sys_opened = 0; sm_promoted = sm_demoted = 0;
+    if (SM_COOL > 0) fprintf(stderr, "[rb] state map: cooling after %d saves unwritten: %lld pages made cold again, %lld of them opened again at once (written meanwhile)\n", SM_COOL, sm_cooled_wr, sm_cool_back);
+    if (cool_checks) fprintf(stderr, "[rb] state map: cooling check: %lld checks, %lld cold pages compared, %lld differed from the shadow\n", cool_checks, cool_checked, cool_bad);
+    if (sm_cmap) memset(sm_cmap, 0, SM_PAGES / 8);
+    sm_faults = sm_opened = sm_sys_opened = 0; sm_promoted = sm_demoted = 0; sm_cooled_wr = sm_cool_back = 0;
+    rb_map_report();
 }
 /* (hle_rb_core.c) A fight's savestates begin (1: the next save turns the state map on) or end (0: off now). */
 void rb_state_map_fight(int on) {
@@ -1822,7 +1943,7 @@ typedef struct Slot {
     int have;
     long long seq;                   /* the save's number */
     u32 tag;                         /* the caller's name for it (hle_rb_core.c: the logic frame) */
-    void *kernel, *fibers, *setjmps, *vi, *audio, *ipc, *net;
+    void *kernel, *fibers, *setjmps, *vi, *audio, *ipc, *net, *map;
     u64 fs_mark;                     /* (hle_fs.c) its count of file opens and closes at the save */
     u32 threads;                     /* other threads in the save */
     CONTEXT main;                    /* the main thread's registers in rb_save */
@@ -1869,8 +1990,8 @@ static u64 undo_beside(int age, int phase) {
 static void slot_free(Slot *s) {
     for (u32 i = 0; i < s->nthr; i++) free(s->thr[i].stack);
     free(s->thr); s->thr = NULL; s->nthr = 0;
-    free(s->kernel); fiber_rb_free(s->fibers); setjmp_rb_free(s->setjmps); free(s->vi); free(s->audio); free(s->net); ipc_rb_free(s->ipc); free(s->main_stack);
-    s->kernel = s->fibers = s->setjmps = s->vi = s->audio = s->ipc = NULL; s->main_stack = NULL;
+    free(s->kernel); fiber_rb_free(s->fibers); setjmp_rb_free(s->setjmps); free(s->vi); free(s->audio); free(s->net); ipc_rb_free(s->ipc); free(s->main_stack); rb_map_free(s->map);
+    s->kernel = s->fibers = s->setjmps = s->vi = s->audio = s->ipc = s->map = NULL; s->main_stack = NULL;
     s->undo.n = 0;   /* (its buffers stay, for the next state in this slot) */
     s->have = 0;
 }
@@ -2075,6 +2196,7 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
         mstat.ms += now_ms() - tg;
     }
     memory_check_after_save();
+    rb_map_census_end();
     if (prev) undo_window(prev->undo.n);
     if (sm_on && gpu_reprotect > 0 && fight_saves > 0 && fight_saves % gpu_reprotect == 0 && !drain_now) gpu_reprotect_now();
     undo_to = NULL;
@@ -2088,6 +2210,7 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     s->audio = audio_rb_save();
     s->net = net_rb_save();
     s->ipc = ipc_rb_save();
+    s->map = rb_map_save(ring_count ? slot_at(ring_count - 1)->map : NULL);   /* (the oldest state kept besides this one) */
     s->fs_mark = fs_rb_mark();
     u64 thread_bytes = 0;
     s->threads = 0;
@@ -2288,6 +2411,7 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     audio_rb_load(s->audio);
     net_rb_load(s->net);
     ipc_rb_load(s->ipc);
+    rb_map_load(s->map);
     step("threads' stacks, then this thread's");
     double lt_host = now_ms();
     rb_load_parts[0] += lt_hold - load_t0; rb_load_parts[1] += lt_scratch - lt_hold; rb_load_parts[2] += lt_drain - lt_scratch;
@@ -2401,7 +2525,7 @@ void rb_ref_compare(Cpu *c, long long round) {
     char path[64];
     snprintf(path, sizeof path, "build\\rb_verify_%lld.txt", round);
     FILE *f = fopen(path, "w");
-    u64 pages[6] = {0}, diff[6] = {0}, diff_prev[6] = {0}, bytes[6] = {0};
+    u64 pages[6] = {0}, diff[6] = {0}, diff_prev[6] = {0}, bytes[6] = {0}, left_out = 0, left_out_diff = 0;
     char first[6][160] = {{0}};
     pt_lo = pt_hi = NULL;
     for (u32 i = 0; i < nref; i++) {
@@ -2416,7 +2540,10 @@ void rb_ref_compare(Cpu *c, long long round) {
             if (!there) { if (was) diff[k]++; continue; }
             if (have_prev && prev[i] && memcmp(now, prev[i] + off, 0x1000)) diff_prev[k]++;
             if (prev[i]) memcpy(prev[i] + off, now, 0x1000);
+            int out_ = is_skip_page(now);   /* (left out of the states by the state map: counted apart) */
+            left_out += out_;
             if (!was || !memcmp(now, was_p, 0x1000)) continue;
+            if (out_) { left_out_diff++; continue; }
             u32 nb = 0, at = 0x1000;
             for (u32 b = 0; b < 0x1000; b++) if (now[b] != was_p[b]) { if (at == 0x1000) at = b; nb++; }
             bytes[k] += nb;
@@ -2441,6 +2568,7 @@ void rb_ref_compare(Cpu *c, long long round) {
     for (int k = 0; k < 6; k++)
         if (pages[k]) fprintf(stderr, "[rb]   %-24s %7llu of %7llu pages differ (%llu bytes)%s%s%s\n", names[k], diff[k], pages[k], bytes[k],
                               have_prev ? "" : "", diff[k] ? ", first: " : "", first[k]);
+    if (left_out) fprintf(stderr, "[rb]   left out of the states (the state map): %llu of %llu pages differ (not counted above)\n", left_out_diff, left_out);
     if (have_prev)
         for (int k = 0; k < 6; k++)
             if (diff_prev[k]) fprintf(stderr, "[rb]   vs the previous replay: %-24s %7llu pages\n", names[k], diff_prev[k]);
