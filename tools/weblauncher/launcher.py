@@ -51,7 +51,7 @@ SHARED_UI = os.path.join(TOOLS, "modmanager", "ui")   # (gamepad.js, icon.svg: s
 HOST = "linux" if sys.platform.startswith("linux") else "macos" if sys.platform == "darwin" else "windows"
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"}
-PUBLIC_LOBBY = "smash.recomps.wtf:39421"   # (OpenSmash.Launcher's Public)
+PUBLIC_LOBBY = "opensmash-lobby.duckdns.org:39421"   # (OpenSmash.Launcher's Public: the one public lobby)
 REPO_API = "https://api.github.com/repos/OpenSmash-Ultimate/OpenSmash-Ultimate"
 
 
@@ -207,7 +207,7 @@ def read_settings(root):
         s["lobby"] = "offline"
     elif host.lower() in ("auto", "na", "eu"):
         s["lobby"] = "public"
-    elif host.lower() == PUBLIC_LOBBY:
+    elif host.lower() == PUBLIC_LOBBY or host.lower().startswith("smash.recomps.wtf"):   # (the North American lobby is gone)
         s["lobby"] = "private" if s["code"] else "public"
     else:
         s["lobby"], s["server"] = "custom", host

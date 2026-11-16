@@ -47,7 +47,7 @@ void gfx_closing(void); /* (gpu_d3d11.c) the game is about to end */
 int gfx_adapter_names(char names[][64], int max); /* (gpu_d3d11.c) the graphics cards, fastest first */
 #endif
 
-#define PUBLIC_LOBBY "smash.recomps.wtf:39421" /* (the online_server.txt the port comes with) */
+#define PUBLIC_LOBBY "opensmash-lobby.duckdns.org:39421" /* (the one public lobby: net_relay.c) */
 
 static volatile int open_, releasing;
 int menu_is_open(void) { return open_; }
@@ -242,9 +242,9 @@ static char osk_title[160], osk_text[1024];
 static int osk_max = 32, osk_min, osk_scripted; /* (osk_scripted: SSBU_MENU_OSK's, nobody waits for it) */
 
 static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol, rollback; } net;
-enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_NEAREST, NET_PUBLIC_EU, NET_MODE_COUNT };
-static const char *const NET_MODES[NET_MODE_COUNT] = {"public lobby (North America)", "private lobby (a code)", "your own server", "offline",
-                                                      "this network (LAN)", "the nearest public lobby (Europe / North America)", "public lobby (Europe)"};
+enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_MODE_COUNT };
+static const char *const NET_MODES[NET_MODE_COUNT] = {"public lobby (Europe)", "private lobby (a code)", "your own server", "offline",
+                                                      "this network (LAN)"};
 
 static void net_load(void)
 {
@@ -257,14 +257,9 @@ static void net_load(void)
         net.mode = NET_OFFLINE;
     else if (!_stricmp(host, "lan"))
         net.mode = NET_LAN; /* (net_relay.c's LAN discovery) */
-    else if (!_stricmp(host, "auto") || (!code[0] && !_stricmp(host, PUBLIC_LOBBY)))
-        net.mode = NET_NEAREST; /* (net_relay.c: the public lobby with the shortest connect time; the old default line too) */
-    else if (!_stricmp(host, "na"))
-        net.mode = NET_PUBLIC;
-    else if (!_stricmp(host, "eu"))
-        net.mode = NET_PUBLIC_EU;
-    else if (!_stricmp(host, PUBLIC_LOBBY))
-        net.mode = NET_PRIVATE;
+    else if (!_stricmp(host, "auto") || !_stricmp(host, "na") || !_stricmp(host, "eu") || !_strnicmp(host, "smash.recomps.wtf", 17) ||
+             !_stricmp(host, PUBLIC_LOBBY))
+        net.mode = code[0] ? NET_PRIVATE : NET_PUBLIC; /* (the one public lobby; the North American one is gone: net_relay.c) */
     else
     {
         net.mode = NET_CUSTOM;
@@ -287,12 +282,8 @@ static void net_save_server(void)
         snprintf(line, sizeof line, "off");
     else if (net.mode == NET_LAN)
         snprintf(line, sizeof line, "lan");
-    else if (net.mode == NET_NEAREST)
-        snprintf(line, sizeof line, "auto");
     else if (net.mode == NET_PUBLIC)
-        snprintf(line, sizeof line, "na");
-    else if (net.mode == NET_PUBLIC_EU)
-        snprintf(line, sizeof line, "eu");   /* (the North American lobby itself: its address alone now means "auto") */
+        snprintf(line, sizeof line, "auto");
     else if (net.mode == NET_PRIVATE)
     {
         if (!net.code[0])

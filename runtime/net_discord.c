@@ -18,7 +18,7 @@
  * Where the player is and their GSP. The game's Online mode talks to the lobby's own game server (tools/nex), which
  * keeps each player's GSP (DataStore 82 / 84) and their gatherings: GET /gsp/me on the lobby (tools/nex/board.py),
  * signed with the install's NSA id, says where the player plays and with which fighter, every so often. The position
- * is the site's leaderboard.json (made from every lobby's), found by the player's id. Local Wireless rooms are this
+ * is the one public lobby's leaderboard.json (every GSP result goes through its game server), found by the player's id. Local Wireless rooms are this
  * game's own (hle_net.c notes them).
  *
  * Joining. The join secret is the lobby, its lobby code and the arena's ID or the room host's address
@@ -47,8 +47,9 @@ int account_nsa_hex(char out[17]);   /* (hle_env.c) */
 #define REDIRECT "http://127.0.0.1/callback"
 #define TOKEN_PATH "config\\" DISCORD_TOKEN_FILE
 #define JOIN_PATH "config\\discord_join.txt"
-#define BOARD_HOST L"denkishi.github.io"
-#define BOARD_PATH L"/opensmash-site/leaderboard.json"
+#define BOARD_HOST L"opensmash-lobby.duckdns.org"   /* (the one public lobby's game server: every GSP result is there) */
+#define BOARD_PORT 39421
+#define BOARD_PATH L"/leaderboard.json"
 #define ME_EVERY_MS (45 * 1000)
 #define BOARD_EVERY_MS (10 * 60 * 1000)
 #define ME_FRESH_MS (3 * 60 * 1000)
@@ -423,7 +424,7 @@ static DWORD WINAPI web_thread(LPVOID unused) {
             discord_player_id(nsa, player);
             ask_me(nsa, player);
             if (GetTickCount64() >= next_board) {
-                char *json = http_get(BOARD_HOST, INTERNET_DEFAULT_HTTPS_PORT, 1, BOARD_PATH, NULL, 16u << 20);
+                char *json = http_get(BOARD_HOST, BOARD_PORT, 0, BOARD_PATH, NULL, 16u << 20);
                 if (json) { InterlockedExchange(&rank, discord_rank_in_leaderboard(json, player)); free(json); next_board = GetTickCount64() + BOARD_EVERY_MS; }
                 else next_board = GetTickCount64() + 60 * 1000;
             }

@@ -9,8 +9,8 @@ Linux, where ports under 1024 need root, to http://127.0.0.1:53134/callback - a 
 list too.
 
 Also what the account box shows: the player's GSP per fighter, kept by the lobbies' own game server (GET /gsp/me,
-tools/nex/board.py, signed with this install's NSA id from netplay_id.txt), and their global position (the site's
-leaderboard.json, made from every lobby's). A player may show their Discord name on the leaderboard (POST
+tools/nex/board.py, signed with this install's NSA id from netplay_id.txt), and their global position (the one public
+lobby's leaderboard.json: every GSP result goes through its game server). A player may show their Discord name on the leaderboard (POST
 /gsp/profile; config/discord_leaderboard.txt remembers the choice). Standard library only."""
 import base64
 import hashlib
@@ -28,8 +28,8 @@ import webbrowser
 
 API = "https://discord.com/api"
 REDIRECTS = (("http://127.0.0.1/callback", 80), ("http://127.0.0.1:53134/callback", 53134))
-LEADERBOARD_URL = "https://denkishi.github.io/opensmash-site/leaderboard.json"
-PUBLIC_LOBBIES = ("smash.recomps.wtf:39421", "opensmash-lobby.duckdns.org:39421")
+LEADERBOARD_URL = "http://opensmash-lobby.duckdns.org:39421/leaderboard.json"   # (the one public lobby's: every GSP result)
+PUBLIC_LOBBIES = ("opensmash-lobby.duckdns.org:39421",)
 SCOPES = "identify openid sdk.social_layer_presence"
 KEYS = ("access_token", "refresh_token", "expires_at", "scope", "user_id", "username", "display_name", "avatar")
 UA = {"User-Agent": "OpenSmash-Launcher"}
@@ -288,7 +288,7 @@ def lobbies(server_line=""):
     out = list(PUBLIC_LOBBIES)
     words = (server_line or "").split()
     host = words[0] if words else ""
-    if host and host.lower() not in ("auto", "na", "eu", "off", "lan"):
+    if host and host.lower() not in ("auto", "na", "eu", "off", "lan") and not host.lower().startswith("smash.recomps.wtf"):
         if ":" not in host:
             host += ":39420"
         if host.lower() not in (x.lower() for x in out):
