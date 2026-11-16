@@ -97,6 +97,8 @@ class OnlineLobby(relay.Lobby):
     def __init__(self, o):
         super().__init__(o)
         self.nex = make_server(self.nex_send, host="10.13.0.1", state_dir=o.state, log=self.say, verbose=o.nex_log)
+        if getattr(self.nex, "board", None) is not None:
+            self.nex.board.lobby = self   # (/status.json counts every connected game, tools/nex/board.py)
         self.nex.part_of = self.part_of
         self.streams = {}        # virtual address -> the player's open NEX streams (writers)
         self.handshakes = collections.Counter()   # address -> its TCP connections not known yet

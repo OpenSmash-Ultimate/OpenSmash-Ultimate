@@ -195,7 +195,14 @@ class Board:
                 open_rooms += 1
             if n >= 2:
                 in_matches += n
-        return {"updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "online": len(self.nex.by_pid),
+        # (every game connected to the lobby, Local Wireless rooms and the relay too, not only the Online mode's
+        # signed-in players: the lobby sets self.lobby; its Local Wireless rooms count as rooms)
+        online, lobby = len(self.nex.by_pid), getattr(self, "lobby", None)
+        if lobby is not None:
+            online = max(online, len(lobby.by_addr) - lobby.pending)
+            rooms += len(lobby.listings)
+            open_rooms += len(lobby.listings)
+        return {"updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "online": online,
                 "rooms": rooms, "arenas": arena_rooms, "open_rooms": open_rooms, "playing": in_matches,
                 "ranked": self.ranks(now)[2]}
 
