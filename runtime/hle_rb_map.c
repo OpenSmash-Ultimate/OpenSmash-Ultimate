@@ -105,9 +105,14 @@ volatile long rb_map_gen;               /* (hle_rb_state.c) out's contents chang
 static long long n_alloc, n_free, n_out_alloc, n_out_free;
 static u64 orig_pm, orig_aa, orig_ra, orig_fr;
 
-/* The built-in list: allocation sites proven presentation only (empty until proven: the census lists candidates). */
+/* The built-in list: allocation sites proven presentation only. R4 (plan R4_state_map.md, 13.0.4, the marked ring:
+ * "rt_big3", IDENTICAL on 12 matches of 11 fighters) found them; here at their 13.0.5 addresses, with the census's
+ * pages and the pairs that passed with them left out (docs/TECHNICAL.md, "The fight's state map"). The GPU's memory
+ * pools (nvmap: NVN's sync objects and their semaphores live there) are NOT in it: left out, a rollback's main thread
+ * spun for good in nvnSyncWait (sdk+0x427010), as SSBU_RB_SKIP_GPU=1 did. */
 static const Site rb_map_sites[] = {
-    {0, 0}
+    {0x7103816ef4ull, 0},                 /* the graphics module's 16 MB buffers (posix_memalign; 13.0.4 0x7103816944) */
+    {0x710355a3b8ull, 0x71000a3fd8ull},   /* an 8 MB block (13.0.4 0x7103559e08 / 0x71000a3fd8) */
 };
 
 static int listed(u64 lr, u64 lr2) {

@@ -869,11 +869,40 @@ static void sm_cool_check(u64 lo, u64 hi, u64 save_clock) {   /* (alias pages [l
         ReleaseSRWLockExclusive(&sm_lock);
     }
 }
+/* SSBU_RB_SM_COOL_CHECK=<n> (a test's): every n saves, each page cooling made cold that is still cold is compared with
+ * the shadow - a cold page is the shadow's by the state map's rule, so any difference is a write cooling missed. */
+static u64 *sm_cmap;   /* (a bit per alias page: made cold by cooling) */
+static int cool_check = -1;
+static long long cool_checks, cool_checked, cool_bad;
+static void sm_cool_verify(void) {
+    static long long n;
+    if (cool_check < 0) { const char *e = getenv("SSBU_RB_SM_COOL_CHECK"); cool_check = e && *e ? atoi(e) : 0; }
+    if (cool_check <= 0) return;
+    if (!sm_cmap) sm_cmap = VirtualAlloc(NULL, SM_PAGES / 8, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!sm_cmap || ++n % cool_check) return;
+    long long bad = 0, seen = 0;
+    for (u32 i = 0; i < nchunks; i++) {
+        Chunk *c = chunk_map[chunk_ids[i]];
+        if (c->kind != K_ALIAS) continue;
+        u64 b = sm_ap(c->base);
+        for (u32 w = 0; w < CH_PAGES / 64; w++)
+            for (u64 bits = sm_cmap[(b >> 6) + w] & sm_cold[(b >> 6) + w]; bits; bits &= bits - 1) {
+                unsigned long z;
+                _BitScanForward64(&z, bits);
+                u8 *p = c->base + ((u64)(w * 64 + z) << 12);
+                if (!is_present(c, w * 64 + z) || sm_ap_lazy(p)) continue;
+                seen++;
+                if (memcmp(p, c->copy + (p - c->base), 0x1000)) { if (bad++ < 3) fprintf(stderr, "[rb] cooling check: cold page %p differs from the shadow\n", (void *)p); }
+            }
+    }
+    cool_checks++; cool_checked += seen; cool_bad += bad;
+}
 /* (a save's sync, after its copies) Steady pages in and out (see SM_STEADY), and the cooling above. */
 static void sm_streaks(u64 save_clock) {
     if (SM_COOL < 0) { const char *e = getenv("SSBU_RB_SM_COOL"); SM_COOL = e && *e ? atoi(e) : 30; if (SM_COOL > 250) SM_COOL = 250; }
     if (SM_COOL > 0 && !sm_idle) sm_idle = VirtualAlloc(NULL, SM_PAGES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     int cool_on = SM_COOL > 0 && sm_idle && save_clock;
+    sm_cool_verify();
     for (u32 i = 0; i < nchunks; i++) {
         Chunk *c = chunk_map[chunk_ids[i]];
         if (c->kind != K_ALIAS) continue;
@@ -909,6 +938,7 @@ static void sm_streaks(u64 save_clock) {
                 sm_hot[wi] &= ~m; sm_cold[wi] |= m;
                 for (u32 k = z; k < e; k++) sm_idle[(wi << 6) + k] = 0;
                 sm_cooled_wr += e - z; sm_cooled += e - z;
+                if (sm_cmap) sm_cmap[wi] |= m;
                 if ((wi << 6) + z < clo) clo = (wi << 6) + z;
                 if ((wi << 6) + e > chi) chi = (wi << 6) + e;
                 left &= ~m;
@@ -1709,6 +1739,8 @@ static void sm_end(void) {
     fprintf(stderr, "[rb] state map: off (the fight is over): %llu pages were hot at the end (%llu MB), %lld faults opened %lld pages, %lld opened for the system; "
             "%lld pages became steady, %lld steady again asked about; on in %.1f ms, off in %.1f ms\n", hot, hot >> 8, (long long)sm_faults, (long long)sm_opened, (long long)sm_sys_opened, sm_promoted, sm_demoted, sm_on_ms, sm_off_ms);
     if (SM_COOL > 0) fprintf(stderr, "[rb] state map: cooling after %d saves unwritten: %lld pages made cold again, %lld of them opened again at once (written meanwhile)\n", SM_COOL, sm_cooled_wr, sm_cool_back);
+    if (cool_checks) fprintf(stderr, "[rb] state map: cooling check: %lld checks, %lld cold pages compared, %lld differed from the shadow\n", cool_checks, cool_checked, cool_bad);
+    if (sm_cmap) memset(sm_cmap, 0, SM_PAGES / 8);
     sm_faults = sm_opened = sm_sys_opened = 0; sm_promoted = sm_demoted = 0; sm_cooled_wr = sm_cool_back = 0;
     rb_map_report();
 }
