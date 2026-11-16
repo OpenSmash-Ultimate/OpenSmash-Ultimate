@@ -355,8 +355,11 @@ static void changed(int when)
 
 static void set_display(const char *key, const char *value) { settings_ini_set(display_ini_path(), NULL, key, value); }
 
-/* The [device ...] a pad's settings go in: the one it takes them from now, else its name's. */
-static void pad_section(const PadInfo *p, char *out, int size) { snprintf(out, (size_t)size, "device %s", p->section[0] ? p->section : p->name); }
+/* The [device ...] a pad's settings go in: the most exact one it takes them from now, else its GUID's (that model of pad
+ * on any port: a name such as "XInput Controller #1" changes with the port, issue #320; the launcher writes the same). */
+static void pad_section(const PadInfo *p, char *out, int size) {
+    snprintf(out, (size_t)size, "device %s", p->section[0] ? p->section : p->guid[0] ? p->guid : p->name);
+}
 
 static void set_pad(const PadInfo *p, const char *key, const char *value)
 {

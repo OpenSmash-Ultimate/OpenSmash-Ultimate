@@ -634,6 +634,36 @@ static void test_pipes(void) {
     CHECK(!in && !out, "no pipes: nothing found");
 }
 
+/* Issue #320: a pad named with a '#' ("XInput Controller #1"), whose section the comment rule cut at the '#'; and the
+ * sections that name a pad layered, type < name < GUID, each changing only what it has. */
+static void test_device_sections(void) {
+    load_text("[players]\n1 = XInput Controller #1\n"
+              "[device default]\ndpad_moves = off\nstick_taunts = off\n"
+              "[device XInput  Controller #1]   ; written by the menu\nstick_taunts = on\ndpad_moves = on\nA = leftshoulder\nB = leftshoulder\n");
+    CHECK(!strcmp(cfg.pin[0], "XInput Controller #1"), "pin with a '#' kept whole: '%s'", cfg.pin[0]);
+    CHECK(cfg.ndev == 1 && !strcmp(cfg.dev[0].match, "XInput Controller #1"), "section name with a '#': '%s'", cfg.ndev ? cfg.dev[0].match : "");
+    Dev d = make_dev("0300fa67c82d00000631000014017801", "", "", "XInput Controller #1", "xboxone");
+    int xbox_labels[4] = {N_A, N_B, N_X, N_Y};
+    dev_configure(&d, xbox_labels);
+    CHECK(!strcmp(d.section, "XInput Controller #1"), "the pad takes its section: '%s'", d.section);
+    CHECK(d.dpad_moves == 1 && d.stick_taunts == 1, "dpad_moves and stick_taunts from the pad's section");
+    CHECK(press(&d, 1u << RB_LEFT_SHOULDER, 0, 0) == (1ull << N_A | 1ull << N_B | 1ull << N_L), "A = leftshoulder, B = leftshoulder");
+    CHECK(press(&d, 1u << RB_EAST, 0, 0) == 0, "the right face button no longer A");
+    CHECK(dev_matches(&d, cfg.pin[0]), "[players] pin matches the pad");
+
+    load_text("[device xboxone]\nA = south\nrumble = 50\n[device XInput Controller #1]\nrumble = 70\nB = north\n"
+              "[device 0300fa67c82d00000631000014017801]\nX = west\ndeadzone = 20\n");
+    dev_configure(&d, xbox_labels);
+    CHECK(!strcmp(d.section, "0300fa67c82d00000631000014017801"), "the most exact section is the GUID's: '%s'", d.section);
+    CHECK(press(&d, 1u << RB_SOUTH, 0, 0) == 1ull << N_A, "type's remap kept under the name's and GUID's");
+    CHECK(press(&d, 1u << RB_NORTH, 0, 0) == 1ull << N_B, "name's remap kept under the GUID's");
+    CHECK(press(&d, 1u << RB_WEST, 0, 0) & 1ull << N_X, "GUID's remap (west presses X too)");
+    CHECK(d.rumble == 70 && d.deadzone == 20, "rumble from the name's, deadzone from the GUID's (%d, %d)", d.rumble, d.deadzone);
+    Dev two = make_dev("0300fa67c82d00000631000014017801", "", "", "XInput Controller #2", "xboxone");
+    dev_configure(&two, xbox_labels);
+    CHECK((press(&two, 1u << RB_WEST, 0, 0) & 1ull << N_X) && two.rumble == 50, "the same model on another port: GUID's and type's");
+}
+
 int main(void) {
     test_keyboard();
     test_config();
@@ -651,6 +681,7 @@ int main(void) {
     test_rumble();
     test_dpad_moves();
     test_stick_taunts();
+    test_device_sections();
     printf("%d of %d checks passed\n", checks - failures, checks);
     return failures != 0;
 }

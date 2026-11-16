@@ -54,18 +54,19 @@ namespace OpenSmash.Launcher
             ["pacing"] = "Steady 60 on any monitor. G-Sync / FreeSync shows each frame as soon as it is ready.",
             ["render_scale"] = "How big the game draws. 2 is four times the pixels of 1.",
             ["gpu"] = "Auto picks the fastest card.",
-            ["renderer"] = "Direct3D 11 is the one the game is played with. Vulkan is in development: until it can draw the game, the game checks Vulkan at its start and draws with Direct3D 11.",
+            ["renderer"] = "Auto: Vulkan on AMD, NVIDIA and Intel cards, Direct3D 11 on others, and Direct3D 11 whenever Vulkan cannot start.",
             ["hide_cursor"] = "Hides the pointer over the game after 2 seconds without moving it.",
             ["overlay"] = "The frame rate in the corner. F1 shows or hides it while playing.",
             ["ui_language"] = "The launcher and external menu share this language. The game language is set separately.",
             ["volume"] = "The game's whole sound (display.ini volume, the same setting as the in-game menu's Volume row). 100 is full. It applies the next time you press Play.",
             ["name"] = "What other players see. Leave it empty and the game picks one.",
-            ["lobby"] = "Public: everyone's rooms. Private: only players with the same code. Offline: no network.",
+            ["lobby"] = "Public: everyone's rooms on the one public lobby. Private: only players with the same code. LAN: players on this network. Offline: no network.",
             ["code"] = "A word your friends type too. Capital letters count.",
             ["server"] = "host:port of a lobby you run, for example 192.168.1.20:39420.",
             ["direct"] = "On is faster. Off sends everything through the lobby, so your address stays private.",
             ["keyboard_player"] = "The keyboard adds to that player's controller.",
             ["background"] = "Off: controllers work only while the game's window is in front.",
+            ["remap"] = "Pick a connected controller, then press the button you want for each of the game's buttons. Saved for that model of controller, on any port.",
             ["pads"] = "Pins and button layouts. Each controller is also set up in the game, under Controllers.",
         };
 
@@ -528,6 +529,7 @@ namespace OpenSmash.Launcher
                 case "setup_modding": PaintSetupModding(g, W, H); break;
                 case "settings": PaintSettings(g, W, H); break;
                 case "yuzu": PaintYuzuRoom(g, W, H); break;
+                case "remap": PaintRemap(g, W, H); break;
                 default: PaintHome(g, W, H); break;
             }
 
@@ -575,7 +577,7 @@ namespace OpenSmash.Launcher
             float ww = Theme.Label(g, "OPENSMASH", FD(21 * s), A(Theme.Text), wx, 0, HeaderH * s, 0.84f * s);
             float ww2 = Theme.Label(g, "-ULTIMATE", FD(21 * s), A(Theme.Dim), wx + ww + 0.84f * s, 0, HeaderH * s, 0.84f * s);
             AddHit("brand", mx, my, mark + 10 * s + ww + ww2, mark);
-            PaintDiscordHeader(g, wx + ww + 0.84f * s + ww2 + 36 * s, HeaderH * s / 2);   // (LauncherForm.Discord.cs)
+            if (_view != "home") PaintDiscordHeader(g, wx + ww + 0.84f * s + ww2 + 36 * s, HeaderH * s / 2);   // (LauncherForm.Discord.cs; home: the right column's)
 
             // Window buttons
             float cx = W - 40 * s, cy = HeaderH * s / 2, a = 7 * s;
@@ -608,7 +610,7 @@ namespace OpenSmash.Launcher
             AddHit("nav:mode-next", nextX, cy - chh / 2, aw, chh);
 
             // Section links with the red skewed underline
-            string active = _view == "home" ? "nav:home" : _view == "settings" || _view == "yuzu" ? "nav:settings" : "nav:mods";
+            string active = _view == "home" ? "nav:home" : _view == "settings" || _view == "yuzu" || _view == "remap" ? "nav:settings" : "nav:mods";
             float lx = prevX - 8 * s;
             foreach (var (id, label) in new[] { ("nav:settings", "SETTINGS"), ("nav:mods", "MODS"), ("nav:home", "HOME") })
             {
@@ -701,6 +703,7 @@ namespace OpenSmash.Launcher
                 "mods" => "\u2191 \u2193  SELECT     DEL  REMOVE     ESC  BACK",
                 "settings" => "\u2190 \u2192  TABS     ENTER  CHANGE     ESC  BACK",
                 "yuzu" => "TAB  NEXT FIELD     ENTER  CONNECT     ESC  BACK",
+                "remap" => "SET  THEN PRESS THE PAD'S BUTTON     ESC  BACK",
                 _ => "ESC  BACK",
             };
             Theme.Label(g, hint, FM(11 * s), A(Theme.Dim), 0, y, h, sp, StringAlignment.Far, W - 40 * s);
@@ -908,6 +911,8 @@ namespace OpenSmash.Launcher
                 }
                 PopFade(g, st);
             }
+
+            PaintCommunity(g, W, H);   // (LauncherForm.Community.cs)
         }
 
         // M5 12h12 M12 5l7 7-7 7, the arrow of the site's GET IT button
