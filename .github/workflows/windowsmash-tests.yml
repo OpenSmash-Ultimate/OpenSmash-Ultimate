@@ -89,6 +89,11 @@ jobs:
         if: runner.os == 'Windows'
         run: dotnet run --project tests/launcher_yuzu_ui/LauncherYuzuUiTests.csproj -c Release
 
+      # The launcher's settings against the game's defaults, the remap page with simulated pads, the home page's lobby feed
+      - name: Launcher settings, remap and lobby feed
+        if: runner.os == 'Windows'
+        run: dotnet run --project tests/launcher_settings/LauncherSettingsTests.csproj -c Release
+
       # gfxtest (the Metal renderer) skips on the runner's paravirtual GPU, where it never finished; a manual run
       # (workflow_dispatch) runs it anyway and shows what it printed before its 300 s timeout
       - name: Unit tests

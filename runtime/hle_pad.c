@@ -29,6 +29,7 @@
  * GameController.framework (Xbox and MFi pads over Bluetooth) come and go through notifications
  * on the main thread, whose event loop runs for good. No XInput either. */
 #define _CRT_SECURE_NO_WARNINGS
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 
@@ -228,6 +229,9 @@ static const char DEFAULT_INI[] =
     "\n"
     "; Settings for one kind of pad, or one pad: [device <type, name or GUID>], with the keys above.\n"
     "; Types: xbox360 xboxone ps3 ps4 ps5 switchpro joyconpair gamecube ...\n"
+    "; A pad takes [device default], then its type's section, its name's, its GUID's: each later one\n"
+    "; changes only the keys it has. The GUID's is that one model of pad on any port (the launcher's\n"
+    "; Settings > Controllers > Remap writes it).\n"
     "; [device ps5]\n"
     "; rumble = 60\n"
     "\n"
@@ -472,12 +476,20 @@ static char (*read_lines(FILE *f, int *n))[512] {
 static int split_line(char *buf, char **key, char **value, char *section, int size) {
     char *s = trim(buf);
     if (*s == ';' || *s == '#' || !*s) return 0;
-    for (char *p = s; *p; p++)   /* a comment after a value */
-        if ((*p == ';' || *p == '#') && (p[-1] == ' ' || p[-1] == '\t')) { *p = 0; s = trim(s); break; }
+    /* A section's name first, up to its ']': pads' names carry a '#' ("XInput Controller #1", issue #320), which the
+     * comment rule below cut off, so the section never matched the pad and its settings were never used. */
+    if (*s != '[')
+        for (char *p = s; *p; p++)   /* a comment after a value: ';', or '#' with a space after it ("#1" is a name's) */
+            if ((*p == ';' || (*p == '#' && (p[1] == ' ' || p[1] == '\t' || !p[1]))) && (p[-1] == ' ' || p[-1] == '\t')) { *p = 0; s = trim(s); break; }
     if (*s == '[') {
         char *end = strchr(s, ']'), *name;
         if (end) *end = 0;
         name = trim(s + 1);
+        for (char *r = name, *w = name; ; r++) {   /* runs of spaces made one, as the settings writer does (hle_settings.c) */
+            if ((*r == ' ' || *r == '\t') && (w == name || w[-1] == ' ')) continue;
+            *w++ = *r == '\t' ? ' ' : *r;
+            if (!*r) break;
+        }
         if (!_strnicmp(name, "device", 6) && (name[6] == ' ' || name[6] == '\t')) snprintf(section, (size_t)size, "device %s", trim(name + 6));
         else if (!_strnicmp(name, "type", 4) && (name[4] == ' ' || name[4] == '\t')) snprintf(section, (size_t)size, "type %s", trim(name + 4));
         else snprintf(section, (size_t)size, "%s", name);
@@ -869,8 +881,21 @@ static Dev devs[16];
 static struct Known { char guid[40], serial[64], path[192]; int slot; } known[32];
 static int nknown;
 
+/* Two names alike but for case and runs of spaces (a section's name has its spaces made one). */
+static int name_eq(const char *a, const char *b) {
+    for (;;) {
+        int sa = 0, sb = 0;
+        while (*a == ' ' || *a == '	') { a++; sa = 1; }
+        while (*b == ' ' || *b == '	') { b++; sb = 1; }
+        if (!*a || !*b) return !*a && !*b;
+        if (sa != sb) return 0;
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return 0;
+        a++; b++;
+    }
+}
+
 static int dev_matches(const Dev *d, const char *what) {
-    return *what && (!_stricmp(what, d->guid) || !_stricmp(what, d->name) || !_stricmp(what, d->type));
+    return *what && (!_stricmp(what, d->guid) || name_eq(what, d->name) || !_stricmp(what, d->type));
 }
 
 /* controllers.ini's [general] ignore names this pad: it stays open as no player (so it is not opened
@@ -893,24 +918,27 @@ static int dev_is_gamecube(const Dev *d) {
     return 0;
 }
 
-/* The settings of one pad: built-in defaults, then [device default], then the [device ...] that
- * names it most exactly (GUID, then name, then type). `labels` gives the console button each face
- * button is printed with (N_A..N_Y), or -1 each when the pad has no such letters. */
+/* The settings of one pad: built-in defaults, then [device default], then each [device ...] that names it, from the
+ * least exact to the most: its type's, its name's, its GUID's. Each sets only what it names, so a remap made for every
+ * Xbox pad ([device xboxone]) stays when the menu gives this one pad a setting of its own (issue #320). `labels`
+ * gives the console button each face button is printed with (N_A..N_Y), or -1 each when the pad has no such letters. */
 static void dev_configure(Dev *d, const int labels[4]) {
     if (labels && labels != d->labels) { memcpy(d->labels, labels, sizeof d->labels); d->has_labels = 1; }
     else if (!labels) d->has_labels = 0;
-    const DevCfg *best = NULL;
-    for (int rank = 0; rank < 3 && !best; rank++)
-        for (int i = 0; i < cfg.ndev && !best; i++) {
-            const char *m = cfg.dev[i].match;
-            if ((rank == 0 && !_stricmp(m, d->guid)) || (rank == 1 && !_stricmp(m, d->name)) || (rank == 2 && !_stricmp(m, d->type)))
-                best = &cfg.dev[i];
-        }
-    const DevCfg *layers[2] = {&cfg.def, best};
+    const DevCfg *layers[4] = {&cfg.def, NULL, NULL, NULL}, *best = NULL;
+    for (int i = 0; i < cfg.ndev; i++) {
+        const char *m = cfg.dev[i].match;
+        if (!layers[1] && !_stricmp(m, d->type)) layers[1] = &cfg.dev[i];
+        if (!layers[2] && name_eq(m, d->name)) layers[2] = &cfg.dev[i];
+        if (!layers[3] && !_stricmp(m, d->guid)) layers[3] = &cfg.dev[i];
+    }
+    for (int l = 3; l >= 1 && !best; l--) best = layers[l];
+    int own_dz = 0, own_outer = 0;   /* (a pad's own section, not [device default], chose them) */
+    for (int l = 1; l < 4; l++) if (layers[l]) { own_dz |= layers[l]->deadzone >= 0; own_outer |= layers[l]->outer >= 0; }
     snprintf(d->section, sizeof d->section, "%s", best ? best->match : "");
     int layout = 0, style = 0, gamecube = dev_is_gamecube(d);
     d->deadzone = 0; d->rumble = 100; d->trigger = 25; d->outer = 100; d->invert = 0; d->dpad_moves = 0; d->stick_taunts = 0;
-    for (int l = 0; l < 2; l++) {
+    for (int l = 0; l < 4; l++) {
         if (!layers[l]) continue;
         if (layers[l]->outer >= 0) d->outer = layers[l]->outer;
         if (layers[l]->invert >= 0) d->invert = layers[l]->invert;
@@ -927,8 +955,8 @@ static void dev_configure(Dev *d, const int labels[4]) {
      * [general]'s 0 / 100 - the file's defaults - don't count as a choice for it) */
     if (gamecube) {
         d->dz_default = d->outer_default = 0;
-        if ((!best || best->deadzone < 0) && d->deadzone == 0) { d->deadzone = 10; d->dz_default = 1; }
-        if ((!best || best->outer < 0) && d->outer == 100) { d->outer = 98; d->outer_default = 1; }
+        if (!own_dz && d->deadzone == 0) { d->deadzone = 10; d->dz_default = 1; }
+        if (!own_outer && d->outer == 100) { d->outer = 98; d->outer_default = 1; }
     }
     /* positional: the console's A is the right face button, B the bottom, X the top, Y the left */
     static const struct { int npad; Source src; } POSITIONAL[16] = {
@@ -966,7 +994,7 @@ static void dev_configure(Dev *d, const int labels[4]) {
         d->map.n[N_L] = d->map.n[N_R] = d->map.n[N_ZR] = 2;
         d->map.n[N_ZL] = 0;
     }
-    for (int l = 0; l < 2; l++)
+    for (int l = 0; l < 4; l++)
         for (int b = 0; layers[l] && b < 16; b++)
             if (layers[l]->has_map[b]) {
                 memcpy(d->map.src[b], layers[l]->map[b], sizeof d->map.src[b]);
