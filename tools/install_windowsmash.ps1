@@ -730,6 +730,19 @@ function Step-Update {
         return $false
     }
     $short = $local.Substring(0, 7)
+    # (OpenSmash 0.6) the launcher follows a release channel: OPENSMASH_UPDATE_COMMIT names the release's commit, which
+    # this folder is brought to whether it is ahead or behind (a channel switch can go back), never the branch's tip
+    $release = [string]$env:OPENSMASH_UPDATE_COMMIT
+    if ($release -match '^[0-9a-fA-F]{40}$') {
+        $release = $release.ToLowerInvariant()
+        if ($release -eq $local) { Write-Info "at the release already ($short)"; return $false }
+        $rel = Invoke-Api "$RepoApi/commits/$release"
+        $relDate = (Get-Date).ToString('yyyy-MM-dd')
+        if ($rel.Ok) { $relDate = ([string]$rel.Data.commit.committer.date).Substring(0, 10) }
+        Write-Info "the release's sources: $short to $($release.Substring(0, 7)) ($relDate)"
+        if ($DryRun) { Write-Would "download them and replace this folder's files (your game files, settings, save and builds stay)"; return $false }
+        return (Update-FromZip $local $release $relDate)
+    }
     $head = Invoke-Api "$RepoApi/commits/$UpdateBranch"
     if (-not $head.Ok) { Write-Warn "could not ask GitHub for a newer version ($($head.Error)); going on with this one"; return $false }
     $headSha = [string]$head.Data.sha

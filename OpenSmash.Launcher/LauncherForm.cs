@@ -725,6 +725,7 @@ namespace OpenSmash.Launcher
             Invalidate();
             try
             {
+                if (ReleaseMode) { await CheckReleaseAsync(); return; }   // (OpenSmash 0.6: the release channel)
                 string local = await Task.Run(FindLocalCommit);
                 _updateLocal = local;
                 string headBody = await GitHubGetAsync($"{UpdateApi}/commits/main");
@@ -1026,6 +1027,14 @@ namespace OpenSmash.Launcher
             string beforeLauncherFingerprint = "";
             try
             {
+                s_updateCommit = null;
+                if (ReleaseMode)   // (OpenSmash 0.6: the launcher first, by itself; then the sources to the release's commit)
+                {
+                    if (_release == null) await CheckReleaseAsync();
+                    if (await SelfUpdateLauncherAsync()) { _updateApplying = false; Close(); return; }
+                    if (_release == null) throw new InvalidOperationException("No release to update to.");
+                    s_updateCommit = _release.Commit;
+                }
                 beforeCommit = await Task.Run(FindLocalCommit);
                 if (beforeCommit.Length == 0) throw new InvalidOperationException("This copy does not identify its source version.");
                 beforeLauncherFingerprint = await Task.Run(() => LauncherBuildInputsFingerprint(_repo));
@@ -1058,7 +1067,8 @@ namespace OpenSmash.Launcher
                     Directory.CreateDirectory(Path.Combine(_repo, "config"));
                     File.WriteAllText(GameBuildPendingPath, _updateLocal);
                     string afterFingerprint = await Task.Run(() => LauncherBuildInputsFingerprint(_repo));
-                    launcherChanged = !beforeLauncherFingerprint.Equals(afterFingerprint, StringComparison.Ordinal)
+                    launcherChanged = !ReleaseMode   // (a release's launcher comes built: SelfUpdateLauncherAsync)
+                        && !beforeLauncherFingerprint.Equals(afterFingerprint, StringComparison.Ordinal)
                         && await Task.Run(DotnetSdkAvailable);
                 }
                 catch (Exception ex)
@@ -1145,6 +1155,7 @@ namespace OpenSmash.Launcher
             psi.ArgumentList.Add("-File");
             psi.ArgumentList.Add(script);
             psi.ArgumentList.Add(only);
+            if (s_updateCommit != null) psi.Environment["OPENSMASH_UPDATE_COMMIT"] = s_updateCommit;   // (a release's commit: LauncherForm.Release.cs)
             using var p = Process.Start(psi) ?? throw new InvalidOperationException("Could not start PowerShell.");
             var output = new StringBuilder();
             void Take(string? line)
@@ -3931,7 +3942,9 @@ namespace OpenSmash.Launcher
                 }
                 SetLoad("STARTING THE GAME", -1);
                 // Same start as Play SSBU.bat: build\ssbu.exe dump\modules --status 30 --online
-                _gameProcess = WindowSmash.StartGame(_repo);
+                string? pass = await AccountPassForGame();   // (OpenSmash 0.6: the lobby ticket, LauncherForm.Account.cs)
+                _gameProcess = WindowSmash.StartGame(_repo, pass);
+                AccountWatchGame(_gameProcess);
                 _gameLaunched = true;
                 if (_gameProcess != null)
                 {

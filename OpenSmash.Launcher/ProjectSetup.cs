@@ -22,6 +22,20 @@ namespace OpenSmash.Launcher
     {
         public const string Repo = "OpenSmash-Ultimate/OpenSmash-Ultimate";
         public const string MainZipUrl = "https://codeload.github.com/" + Repo + "/zip/refs/heads/main";
+
+        /// <summary>(OpenSmash 0.6) what a first start downloads: the stable release's sources (its commit's archive, whose
+        /// tools/source_version.txt names the commit), or main's newest while there is no release yet</summary>
+        public static async Task<string> SourceUrlAsync()
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                var r = await OpenSmash.Core.Releases.LatestAsync("stable", cts.Token);
+                if (r != null) return r.SourceZipUrl;
+            }
+            catch { }
+            return MainZipUrl;
+        }
         const string WorkName = ".opensmash-download";   // inside the chosen folder while it is filled; removed after
 
         // Downloads can be hundreds of megabytes, so they get their own client with a
