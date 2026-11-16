@@ -9,12 +9,12 @@ import discord_status_bot as bot   # noqa: E402
 
 class StatusText(unittest.TestCase):
     def test_counts(self):
-        self.assertEqual(bot.status_text({"online": 21, "open_rooms": 0}), "21 players in the OpenSmash lobbies")
-        self.assertEqual(bot.status_text({"online": 1}), "1 player in the OpenSmash lobbies")
-        self.assertEqual(bot.status_text({"online": 24, "open_rooms": 3}), "24 players in the OpenSmash lobbies · 3 open rooms")
+        self.assertEqual(bot.status_text({"online": 21, "open_rooms": 0}), "🟢 21 players in the OpenSmash lobbies")
+        self.assertEqual(bot.status_text({"online": 1}), "🟢 1 player in the OpenSmash lobbies")
+        self.assertEqual(bot.status_text({"online": 24, "open_rooms": 3}), "🟢 24 players in the OpenSmash lobbies · 3 open rooms")
 
     def test_offline(self):
-        self.assertEqual(bot.status_text(None), "Lobby offline")
+        self.assertEqual(bot.status_text(None), "🔴 Lobby offline")
 
     def test_token_from_credentials(self):
         import tempfile

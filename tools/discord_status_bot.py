@@ -30,9 +30,9 @@ def read_token():
 def status_text(counts):
     """The line shown under the bot's name, from /status.json's counts (None: the lobby did not answer)."""
     if counts is None:
-        return "Lobby offline"
+        return "🔴 Lobby offline"
     n, rooms = int(counts.get("online", 0)), int(counts.get("open_rooms", 0))
-    line = f"{n} player{'' if n == 1 else 's'} in the OpenSmash lobbies"
+    line = f"🟢 {n} player{'' if n == 1 else 's'} in the OpenSmash lobbies"
     if rooms:
         line += f" · {rooms} open room{'' if rooms == 1 else 's'}"
     return line[:128]
