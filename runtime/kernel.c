@@ -79,7 +79,7 @@ typedef struct KThread {
 /* refs: handles open on it; waits: WaitSynchronization calls holding it; gen: how often its slot
  * was used, in the handle's upper bits (these three for recycling: see new_handle); first, last:
  * its queue of WaitSynchronization waiters */
-typedef struct KObject { int type, signaled; KThread *thread; void *session; u32 gen, refs, waits; KWaitNode *first, *last; int pace; } KObject;
+typedef struct KObject { int type, signaled; KThread *thread; void *session; u32 gen, refs, waits; KWaitNode *first, *last; } KObject;
 /* a WaitSynchronization's place in one object's queue (on the waiting thread's stack) */
 struct KWaitNode { KThread *thread; KObject *object; KWaitNode *prev, *next; u32 index; };
 typedef struct Region { u64 base, size; u32 state, perm; } Region;
@@ -1047,30 +1047,11 @@ static u32 get_info(Cpu *c, u32 id, u64 sub, u64 *out) {
 /* An object signalled ends the call (the first in the handles), otherwise a cancel, otherwise a
  * timeout of 0; else the thread waits in each object's queue until a signal of one of them
  * (notify), a cancel or the deadline wakes it, and looks again. */
-/* (SSBU_RB_STDBENCH, hle_rb_core.c's rollback bench: test only) The display's pacing objects - ipc_vi.c's buffer and vsync
- * events, kernel_pace_object - and a hook told when the guest main thread starts (0) and ends (1) a wait on one of them while
- * no catch-up runs: those waits are the ends of its ticks. Unset hook (the default): nothing is looked at. */
+/* (SSBU_RB_STDBENCH, hle_rb_core.c's rollback bench: test only) told when the display's buffer queue (ipc_vi.c) has no
+ * free buffer for the game (2) and when it next hands one out (3): between the two the guest main thread only waits
+ * for the display - the end of its tick. Unset (the default): nothing is called. */
 void (*kernel_pace_hook)(int phase);
-void kernel_pace_object(u32 handle) {
-    EnterCriticalSection(&klock);
-    u32 k = slot_of(handle);
-    if (k) objects[k].pace = 1;
-    LeaveCriticalSection(&klock);
-}
-static u32 wait_objects_(Cpu *c, u64 handles, u32 count, i64 timeout, u32 *index);
 static u32 wait_objects(Cpu *c, u64 handles, u32 count, i64 timeout, u32 *index) {
-    int pace = 0;
-    if (kernel_pace_hook && c->thread == rb_main_kthread && timeout != 0)
-        for (u32 i = 0; i < count && !pace && i < 64; i++) {
-            u32 k = recycle ? index_of(ld32(handles + 4 * i)) : slot_of(ld32(handles + 4 * i));
-            pace = k && k < 4096 && objects[k].pace;
-        }
-    if (pace) kernel_pace_hook(0);
-    u32 r = wait_objects_(c, handles, count, timeout, index);
-    if (pace) kernel_pace_hook(1);
-    return r;
-}
-static u32 wait_objects_(Cpu *c, u64 handles, u32 count, i64 timeout, u32 *index) {
     KThread *me = c->thread;
     u64 deadline = deadline_of(timeout);
     KWaitNode local[64], *nodes = count <= 64 ? local : malloc(count * sizeof *nodes);

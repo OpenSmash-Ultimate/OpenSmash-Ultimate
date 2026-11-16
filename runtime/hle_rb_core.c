@@ -1564,8 +1564,9 @@ static void net_send(u32 key) {
  * (net_arrival, a fixed lag) are drawn from the logic frame counted from the fight's start, so every run and every stage has
  * the same schedule. In every fight:
  *   - real frames 1..warm: warm-up, nothing counted;
- *   - the next <measured> real frames: the segment. A TICK is the guest main thread's work from the end of one wait on the
- *     display's pacing objects (ipc_vi.c's buffer and vsync events, kernel.c) to the start of the next, outside catch-ups:
+ *   - the next <measured> real frames: the segment. A TICK is the guest main thread's work from the end of one wait for
+ *     the display (ipc_vi.c's buffer queue: from its first "no free buffer" to the next buffer handed out - the game
+ *     asks again and again meanwhile, bn_pace) to the start of the next, outside catch-ups:
  *     the real pass with what its safe point did (the save, the load, the frames run again). A catch-up's last frame waits
  *     for the next refresh (rb_vi_catchup: it is shown there): that wait is idle and left out ("lastwait"). At the end ONE
  *     line "BENCH <n> <stage>": the rollback ticks' median / p99 / share over 16.7 ms, the normal ticks' (no rollback), and
@@ -1582,7 +1583,7 @@ static int bn_sp, bn_wkind;
 static double bn_save, bn_load, bn_rr1, bn_rrn, bn_hash; static int bn_k, bn_nrb;
 typedef struct { float work, save, load, rr1, rrn, hash, pwlast; unsigned char k, nrb; } BnTick;
 static BnTick *bn_t; static int bn_nt, bn_cap;
-static long long bn_waits[3]; static double bn_wait_ms[3];
+static long long bn_waits[3], bn_rounds, bn_rounds0; static double bn_wait_ms[3];
 static struct { double sp[4], lp[6]; long long sc, lc, rb, depth[16], waits[3]; double wait_ms[3]; } bn0;
 static double bn_rb_med[16], bn_norm_med[16]; static char bn_name[16][48];
 static void bn_pace(int phase);
@@ -1616,9 +1617,17 @@ static void bn_stage_name(int n, char *out, size_t size) {
     }
     if (f) fclose(f);
 }
-/* kernel.c: the guest main thread starts (0) or ends (1) a wait on a pacing object (under the kernel's lock: timing only) */
+/* ipc_vi.c's buffer queue: no free buffer for the game (2: its wait for the display begins, unless it is under way), a
+ * buffer handed out (3: the wait is over). Between the two the guest main thread asks again and again (it waits on the
+ * queue's buffer event, which stays signalled: thousands of rounds a frame, counted as "pacing waits"): idle time. Only
+ * the guest main thread's calls count (S.thread). Phases 0 and 1 below are that wait's start and end. */
 static void bn_tick_close(void);
+static int bn_waiting;
 static void bn_pace(int phase) {
+    if (GetCurrentThreadId() != S.thread) return;
+    if (phase == 2) { bn_rounds++; if (bn_waiting) return; bn_waiting = 1; phase = 0; }
+    else if (phase == 3) { if (!bn_waiting) return; bn_waiting = 0; phase = 1; }
+    else return;
     double now = now_ms();
     if (phase == 0) {
         bn_wkind = rb_fast <= 0 ? 0 : rb_fast == 1 ? 1 : 2;
@@ -1655,6 +1664,7 @@ static void bn_dist(int want_rb, double *med, double *p99, double *over, double 
 }
 static void bn_snap(void) {
     memcpy(bn0.sp, rb_save_parts, sizeof bn0.sp); memcpy(bn0.lp, rb_load_parts, sizeof bn0.lp); bn0.sc = rb_save_count; bn0.lc = rb_load_count;
+    bn_rounds0 = bn_rounds;
     bn0.rb = net_rollbacks; memcpy(bn0.depth, net_depth, sizeof bn0.depth); memcpy(bn0.waits, bn_waits, sizeof bn0.waits); memcpy(bn0.wait_ms, bn_wait_ms, sizeof bn0.wait_ms);
 }
 static DWORD WINAPI bn_exit(LPVOID unused) { (void)unused; Sleep(300); fflush(NULL); ExitProcess(0); return 0; }
@@ -1684,12 +1694,12 @@ static void bn_segment_end(u32 key) {
              "parts (ms per rollback tick) real %.3f save %.3f load %.3f first %.3f others %.3f (%.3f a frame) hash %.3f lastwait %.3f | "
              "rollbacks %lld (depth 1 %lld, 2 %lld, 3 %lld, 4+ %lld; ticks k1 %lld k2 %lld k3 %lld k4+ %lld) | "
              "saves %.0f: park %.3f gpu %.3f memory %.3f all %.3f | loads %.0f: hold %.3f stacks %.3f gpu %.3f memory %.3f host %.3f all %.3f | "
-             "pacing waits %lld (%.1f ms), in last re-run frames %lld (%.1f ms), in other re-run frames %lld (%.1f ms)",
+             "pacing waits %lld (%.1f ms; the buffer asked for %lld times), in last re-run frames %lld (%.1f ms), in other re-run frames %lld (%.1f ms)",
              s + 1, bn_name[s], key, med, p99, over, mean, n, nmed, np99, nover, nn,
              pr[0] / nr, pr[1] / nr, pr[2] / nr, pr[3] / nr, pr[4] / nr, rrn_frames ? pr[4] / (double)rrn_frames : 0.0, pr[5] / nr, pr[6] / nr,
              rb, d[1], d[2], d[3], rb - d[1] - d[2] - d[3], kc[1], kc[2], kc[3], kc[4],
              sc, sp[0], sp[1], sp[2], sp[3], lc, lp[0], lp[1], lp[2], lp[3], lp[4], lp[5],
-             bn_waits[0] - bn0.waits[0], bn_wait_ms[0] - bn0.wait_ms[0], bn_waits[1] - bn0.waits[1], bn_wait_ms[1] - bn0.wait_ms[1],
+             bn_waits[0] - bn0.waits[0], bn_wait_ms[0] - bn0.wait_ms[0], bn_rounds - bn_rounds0, bn_waits[1] - bn0.waits[1], bn_wait_ms[1] - bn0.wait_ms[1],
              bn_waits[2] - bn0.waits[2], bn_wait_ms[2] - bn0.wait_ms[2]);
     fprintf(stderr, "[rb] %s\n", line); printf("[bench] %s\n", line); fflush(stdout);
     {   const char *e = getenv("SSBU_RB_STDBENCH_TICKS"); FILE *tf; char fn[600];   /* "<tick> <work> <k> <save> <load> <first> <others> <hash> <lastwait>" */

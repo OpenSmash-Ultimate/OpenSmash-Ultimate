@@ -308,10 +308,6 @@ static void start(void) {
     InitializeConditionVariable(&queue.queued);
     queue.buffer_event = kernel_create_event();
     queue.vsync_event = kernel_create_event();
-    {   /* (the rollback bench's ticks end at the guest main thread's waits on these: kernel.c kernel_pace_hook) */
-        void kernel_pace_object(u32 handle);
-        kernel_pace_object(queue.buffer_event); kernel_pace_object(queue.vsync_event);
-    }
     double speed = display_speed();
     speed_mode = speed != 1;
     report_draws = input_seq_on();
@@ -417,6 +413,10 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
         for (int i = 0; i < SLOTS; i++)
             if (queue.slots[i].has_buffer && queue.slots[i].state == FREE) { freemask |= 1ull << i; if (slot < 0) slot = i; }
         if (slot >= 0) slot = rb_dequeue_pick(freemask, slot);   /* (a catch-up's frame: its first pass's slot) */
+        {   /* (the rollback bench: the game waits for a buffer from the first "would block" to the next buffer handed out) */
+            extern void (*kernel_pace_hook)(int phase);
+            if (kernel_pace_hook) kernel_pace_hook(slot < 0 ? 2 : 3);
+        }
         if (slot < 0) {
             w32(out, 0xFFFFFFFF);
             w32(out, 0);

@@ -2,27 +2,39 @@
 """The standard rollback bench (Windows; ported from SSBU Arena's rb8ms/bench.sh + benchsum.py, round 12).
 
 Usage:
-  python tools/dev/rb_bench.py run <tag> [--warm 1885] [--meas 1800] [--stages "battle_field ..."] [--lag 5] [--delay 2]
+  python tools/dev/rb_bench.py run <tag> [--warm 1500] [--meas 1800] [--stages "battle_field ..."] [--lag 3] [--delay 2]
                                          [--save <folder>] [--timeout <s>] [--exe <file in build>] [VAR=value ...]
   python tools/dev/rb_bench.py sum <tag> [<tag> ...]
   python tools/dev/rb_bench.py save <folder>      (makes the bench's save: see below)
 
 `run` starts ONE game (build\\ssbu.exe, this folder's) with no hands on the menus and waits for it to end by itself:
   - the six competitive stages chained (SSBU_DEBUG_MATCH_LIST: Battlefield, Small Battlefield, Final Destination,
-    Pokemon Stadium 2, Town and City, Smashville), Mario against a CPU Fox (level 9), 9 stocks;
+    Pokemon Stadium 2, Town and City, Smashville), Mario against Fox, 9 stocks. Player 2 is a human slot played by
+    the loop bot (--p2 human, the default; SSBU_SEQ2 connects its controller): this game's loop mode guesses a
+    human's pads only. With --p2 cpu (SSBU Arena's bench has a CPU Fox) nothing is guessed and nothing rolls back;
   - rollback on in its loop mode (SSBU_RB=1, SSBU_RB_NET=loop,<delay>,<lag>,<lag>,0,<frames>): player 1 is the loop bot
     (net_pad), player 2's pads arrive <lag> frames after they were read, so a changed pad is guessed wrong and rolled
-    back; pads and arrivals are drawn from the fight's frame, so every run has the same rollback schedule. The fight hash
-    runs every frame (as an online fight's);
+    back <lag> - <delay> + 1 frames (2 by default); pads and arrivals are drawn from the fight's frame, so every run
+    has the same rollback schedule. The fight hash runs every frame (as an online fight's);
   - in every fight a warm-up of --warm real frames, then a segment of --meas real frames measured: one "BENCH" line per
     stage, then "BENCH SUMMARY" (runtime/hle_rb_core.c, SSBU_RB_STDBENCH);
   - the menus are pressed through by an input sequence (SSBU_SEQ: A and + until the bench's mark rbb_fight<n>);
   - its save is a copy of --save (default build\\rb_bench\\save_snap), taken fresh every run: every run starts alike.
+ONE GAME PER STAGE by default: each stage's game ends by itself at its segment's end (BENCH SUMMARY, exit), so no
+results screen, no "challenge completed" board and no second trip through the menus is in the way; the script numbers
+the stages and makes the summary. --chain runs the stages in one game, one match after the other (SSBU Arena's way):
+there the match must end (one stock left and player 1 walks off: the match is the menus' rule, a stock one for that),
+both players' A closes the results, and a challenge completed opens the challenge board, which only B leaves - that
+way through the menus is NOT sorted out here (a save with no challenge left to complete would do).
 Output: build\\rb_bench\\<tag>\\ (game.log, bench.txt, ticks_<n>_<stage>.txt) and a line in build\\rb_bench\\progress.log.
 Nothing runs at the same time: it refuses while another ssbu.exe runs, and kills its game if it outlives --timeout.
 
 `save <folder>`: the save the bench starts from, made from this folder's save\\ (the game started once to its main menu):
 copied to <folder>\\save and every fighter unlocked there (tools/unlock_all.py), so no challenger interrupts the matches.
+A new save shows a notice for every DLC item and, after the unlock, for every fighter: start the game once more on
+<folder> (SSBU_DATA_ROOT=<folder>), press A through them until the menus, close it. The bench's menu sequence starts
+at the title with A alone (never +: it opens the main menu's side panel; and at once: the title's idle timeout opens
+the ARCropolis plugin's own menu) until the fighter select.
 
 `sum`: per stage the rollback tick median of each run, their mean and sd, the other columns' means; the six-stage
 average per run and its mean / sd (Arena's benchsum.py)."""
@@ -41,7 +53,11 @@ STAGES = "battle_field battle_field_s end poke_stadium2 animal_city animal_villa
 # both players are in) every 40 polls until the bench's mark says the fight began; after each match the same through
 # the results, character select and stage select.
 def menu_seq(stages):
-    steps = ["@movie"] + ["@untilmark:rbb_fight%d:A+PLUS/40/6" % (n + 1) for n in range(stages)]
+    # (the first fight, as tools/dev/pipeline_sweep.py's MENUS: A alone from the title - before its idle timeout, which
+    # opens ARCropolis's menu, and never +, which opens the main menu's side panel - until a screen with thousands of
+    # draw calls, the fighter select; a fighter picked, + for Ready to fight; then A and + until the mark)
+    first = ["@movie", "60", "@until:2500-9000/30:A/120", "60:SUP/30", "20:SLEFT/18", "30:A", "90:PLUS", "100:A"]
+    steps = first + ["@untilmark:rbb_fight%d:A+PLUS/40/6" % (n + 1) for n in range(stages)]
     return " ".join(steps)
 
 
@@ -55,12 +71,13 @@ def running_games():
 
 
 def run(tag, args):
-    warm, meas, stages, lag, delay, save, timeout, extra = 1885, 1800, STAGES, 5, 2, os.path.join(OUT, "save_snap"), 0, []
-    exe_name = "ssbu.exe"
+    warm, meas, stages, lag, delay, save, timeout, extra = 1500, 1800, STAGES, 3, 2, os.path.join(OUT, "save_snap"), 0, []
+    chain = False   # (--chain: the stages in one game, one match after the other: see the notes at the top)
+    exe_name, p2 = "ssbu.exe", "human"   # (player 2: the loop bot on a human slot - with a CPU fighter no pad is guessed, so nothing rolls back)
     i = 0
     while i < len(args):
         a = args[i]
-        if a in ("--warm", "--meas", "--stages", "--lag", "--delay", "--save", "--timeout", "--exe"):
+        if a in ("--warm", "--meas", "--stages", "--lag", "--delay", "--save", "--timeout", "--exe", "--p2"):
             v = args[i + 1]; i += 2
             if a == "--warm": warm = int(v)
             elif a == "--meas": meas = int(v)
@@ -69,8 +86,10 @@ def run(tag, args):
             elif a == "--delay": delay = int(v)
             elif a == "--save": save = v
             elif a == "--exe": exe_name = v
+            elif a == "--p2": p2 = v
             else: timeout = int(v)
             continue
+        if a == "--chain": chain = True; i += 1; continue
         if "=" in a: extra.append(a); i += 1; continue
         raise SystemExit("unknown argument: " + a)
     exe = os.path.join(ROOT, "build", exe_name)
@@ -81,42 +100,61 @@ def run(tag, args):
     if os.path.isdir(out): shutil.rmtree(out)
     os.makedirs(out)
     st_list = stages.split()
-    with open(os.path.join(out, "list.txt"), "w") as f:
-        for s in st_list: f.write("p1=mario,p2=fox,p2=cpu,cpu=9,stage=%s,stock=9,items=off,hazards=off\n" % s)
-    data = os.path.join(out, "data")
-    shutil.copytree(os.path.join(save, "save"), os.path.join(data, "save"))
-    env = dict(os.environ)
-    for k in list(env):
-        if k.startswith("SSBU_"): del env[k]
-    env.update({
-        "SSBU_RB": "1", "SSBU_RB_NET": "loop,%d,%d,%d,0,1000000" % (delay, lag, lag), "SSBU_RB_SEED": "1",
-        "SSBU_RB_STDBENCH": "%d,%d,%d" % (warm, meas, len(st_list)), "SSBU_RB_STDBENCH_TICKS": os.path.join(out, "ticks"),
-        "SSBU_DEBUG_MATCH_LIST": os.path.join(out, "list.txt"), "SSBU_SEQ": menu_seq(len(st_list)),
-        "SSBU_SKIP_MOVIES": "1", "SSBU_VOLUME": "0", "SSBU_DATA_ROOT": data,
-    })
-    for kv in extra:
-        k, v = kv.split("=", 1); env[k] = v
-    if not timeout: timeout = int(len(st_list) * ((warm + meas) / 60 + 150) + 240)
-    log = os.path.join(out, "game.log")
-    t0 = time.time()
-    with open(log, "w", encoding="utf-8", errors="replace") as lf:
-        p = subprocess.Popen([exe, "dump\\modules", "--status", "30"], cwd=ROOT, env=env, stdout=lf, stderr=subprocess.STDOUT)
-        try:
-            p.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            p.kill(); p.wait()
-            print("TIMEOUT: the game was stopped after %d s" % timeout)
+    groups = [st_list] if chain else [[x] for x in st_list]   # (one game per stage, unless --chain)
+    t0, lines, crash, n = time.time(), [], 0, 0
+    for g, group in enumerate(groups):
+        tagg = "" if chain else "_%d" % (g + 1)
+        listf = os.path.join(out, "list%s.txt" % tagg)
+        with open(listf, "w") as f:
+            for x in group: f.write("p1=mario,p2=fox,p2=%s,cpu=9,stage=%s,stock=9,items=off,hazards=off\n" % (p2, x))
+        data = os.path.join(out, "data")
+        shutil.rmtree(data, ignore_errors=True)
+        shutil.copytree(os.path.join(save, "save"), os.path.join(data, "save"))
+        env = dict(os.environ)
+        for k in list(env):
+            if k.startswith("SSBU_"): del env[k]
+        env.update({
+            "SSBU_RB": "1", "SSBU_RB_NET": "loop,%d,%d,%d,0,1000000" % (delay, lag, lag), "SSBU_RB_SEED": "1",
+            "SSBU_RB_STDBENCH": "%d,%d,%d" % (warm, meas, len(group)), "SSBU_RB_STDBENCH_TICKS": os.path.join(out, "ticks" + tagg),
+            "SSBU_DEBUG_MATCH_LIST": listf, "SSBU_SEQ": menu_seq(len(group)),
+            "SSBU_SKIP_MOVIES": "1", "SSBU_VOLUME": "0", "SSBU_DATA_ROOT": data,
+        })
+        # (player 2 connected, a Pro Controller: hands off until the first fight; in a fight the loop bot plays its slot;
+        # after it A, which each results screen waits for)
+        if p2 == "human": env["SSBU_SEQ2"] = "@rbb_fight1 @untilmark:rbb_never:A/45/6"
+        for kv in extra:
+            k, v = kv.split("=", 1); env[k] = v
+        limit = timeout or int(len(group) * ((warm + meas) / 60 + 150) + 120)
+        log = os.path.join(out, "game%s.log" % tagg)
+        with open(log, "w", encoding="utf-8", errors="replace") as lf:
+            p = subprocess.Popen([exe, os.path.join("dump", "modules"), "--status", "30"], cwd=ROOT, env=env, stdout=lf, stderr=subprocess.STDOUT)
+            try:
+                p.wait(timeout=limit)
+            except subprocess.TimeoutExpired:
+                p.kill(); p.wait()
+                print("TIMEOUT: the game was stopped after %d s (%s)" % (limit, " ".join(group)))
+        for l in open(log, encoding="utf-8", errors="replace"):
+            if "HOST EXCEPTION" in l or "GUEST TRAP" in l or "crash report" in l.lower(): crash += 1
+            m = re.match(r"\[bench\] BENCH (\d+) (.*)", l.rstrip("\n"))
+            if m:
+                n += 1
+                lines.append("BENCH %d %s" % (n, m.group(2)))
+        shutil.rmtree(data, ignore_errors=True)
+        time.sleep(2)
     el = time.time() - t0
-    lines = [l.rstrip("\n") for l in open(log, encoding="utf-8", errors="replace") if l.startswith("[bench] BENCH")]
+    meds = [(re.match(r"BENCH \d+ (\S+)", l).group(1), float(re.search(r"rbmed ([\d.]+)", l).group(1)), float(re.search(r"norm ([\d.]+)", l).group(1))) for l in lines]
+    if len(meds) == len(st_list):
+        summ = "BENCH SUMMARY %d stages: rollback tick mean of medians %.3f ms, normal %.3f ms | %s" % (
+            len(meds), st.mean(m[1] for m in meds), st.mean(m[2] for m in meds), ", ".join("%s %.2f" % (m[0], m[1]) for m in meds))
+        lines.append(summ)
+    else:
+        summ = "NO SUMMARY (%d of %d stages)" % (len(meds), len(st_list))
     with open(os.path.join(out, "bench.txt"), "w") as f:
-        for l in lines: f.write(l[8:] + "\n")
-    shutil.rmtree(data, ignore_errors=True)
-    crash = sum(1 for l in open(log, encoding="utf-8", errors="replace") if "HOST EXCEPTION" in l or "GUEST TRAP" in l or "crash report" in l.lower())
-    summ = next((l[8:] for l in lines if "BENCH SUMMARY" in l), "NO SUMMARY (%d stages)" % sum(1 for l in lines if re.match(r"\[bench\] BENCH \d", l)))
+        for l in lines: f.write(l + "\n")
     msg = "%s | BENCH %s | %s | %s | %.0f s | crash lines %d" % (time.strftime("%d/%m %H:%M"), tag, " ".join(extra) or "default", summ, el, crash)
     with open(os.path.join(OUT, "progress.log"), "a") as f: f.write(msg + "\n")
     print(msg)
-    for l in lines: print(l[8:][:400])
+    for l in lines: print(l[:400])
 
 
 COLS = ["rbmed", "p99", "over", "norm", "real", "save", "load", "first", "others", "hash", "lastwait"]
