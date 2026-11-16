@@ -241,6 +241,18 @@ def build_jobs():
     return max(4, min(cpus - 2, 12))
 
 
+def default_jobs():
+    """`build` without --jobs (the installer's and the launcher's way): what the first build uses for this PC's
+    memory (build_game.jobs_for_ram), and no more than build_jobs. It was 2: a plugin build that writes main's C
+    again then compiled its changed files (51 on a first install) two at a time on any PC."""
+    try:
+        import build_game
+        gb = build_game.installed_ram_gb()
+        return max(1, min(build_jobs(), build_game.jobs_for_ram(gb) if gb else 4))
+    except Exception:   # (never a reason to stop a build: the old number)
+        return 2
+
+
 def generate(p, name, log, own_exports=False, jobs=1):
     """The plugin's image and C, if missing or older than the plugin. own_exports: a standard plugin,
     whose exports stay its own (not the runtime's native versions of the same names)."""
@@ -1035,7 +1047,7 @@ if __name__ == "__main__":
     if sys.argv[1] == "sync":
         sync(tree)
     elif sys.argv[1] == "build":
-        sys.exit(build(tree, int(arg("--jobs", "2"))))
+        sys.exit(build(tree, int(arg("--jobs", str(default_jobs())))))
     elif sys.argv[1] == "status":
         status(tree)
     elif sys.argv[1] == "probe":   # (the plugins' select-screen entries again, and the mods applied if they changed)
