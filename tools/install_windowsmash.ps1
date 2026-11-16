@@ -157,6 +157,17 @@ $TomlCheck = 'import sys, importlib.util as u; sys.exit(0 if sys.version_info >=
 $RepoOwner = 'OpenSmash-Ultimate'
 $RepoName = 'OpenSmash-Ultimate'
 $UpdateBranch = 'main'
+# Update channel (issue #329): by default a copy follows the newest versioned release (releases/latest); following main
+# commit by commit is opt-in, for testers: OPENSMASH_UPDATE_CHANNEL=main or the word main in tools\update_channel.txt.
+# With no release published yet, main is followed as before.
+function Get-UpdateRef {
+    $ch = [string]$env:OPENSMASH_UPDATE_CHANNEL
+    if (-not $ch) { $f = Join-Path $Root 'tools\update_channel.txt'; if (Test-Path -LiteralPath $f) { $ch = (Get-Content -LiteralPath $f -Raw).Trim() } }
+    if ($ch -eq 'main') { return $UpdateBranch }
+    $rel = Invoke-Api "$RepoApi/releases/latest"
+    if ($rel.Ok -and $rel.Data.tag_name) { return [string]$rel.Data.tag_name }
+    return $UpdateBranch
+}
 $RepoApi = "https://api.github.com/repos/$RepoOwner/$RepoName"
 $SourceVersionFile = 'tools\source_version.txt'   # "<commit> <date>": GitHub's ZIP download fills it in
 
@@ -730,7 +741,7 @@ function Step-Update {
         return $false
     }
     $short = $local.Substring(0, 7)
-    $head = Invoke-Api "$RepoApi/commits/$UpdateBranch"
+    $head = Invoke-Api "$RepoApi/commits/$(Get-UpdateRef)"
     if (-not $head.Ok) { Write-Warn "could not ask GitHub for a newer version ($($head.Error)); going on with this one"; return $false }
     $headSha = [string]$head.Data.sha
     $headDate = ([string]$head.Data.commit.committer.date).Substring(0, 10)

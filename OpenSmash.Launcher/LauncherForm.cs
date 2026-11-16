@@ -715,6 +715,27 @@ namespace OpenSmash.Launcher
             if (!IsDisposed) await CheckForUpdatesAsync(true);
         }
 
+        // Update channel (issue #329): the newest versioned release by default; main commit by commit is opt-in for
+        // testers (OPENSMASH_UPDATE_CHANNEL=main, or "main" in tools\update_channel.txt). No release yet: main.
+        async Task<string> ResolveUpdateRefAsync()
+        {
+            try
+            {
+                string ch = Environment.GetEnvironmentVariable("OPENSMASH_UPDATE_CHANNEL") ?? "";
+                if (ch.Length == 0)
+                {
+                    string f = System.IO.Path.Combine(AppContext.BaseDirectory, "tools", "update_channel.txt");
+                    if (System.IO.File.Exists(f)) ch = System.IO.File.ReadAllText(f).Trim();
+                }
+                if (ch.Equals("main", StringComparison.OrdinalIgnoreCase)) return "main";
+                using var doc = JsonDocument.Parse(await GitHubGetAsync($"{UpdateApi}/releases/latest"));
+                string tag = GetString(doc.RootElement, "tag_name").Trim();
+                if (tag.Length > 0) return Uri.EscapeDataString(tag);
+            }
+            catch { }
+            return "main";
+        }
+
         async Task CheckForUpdatesAsync(bool atBoot, bool allowDuringUpdate = false)
         {
             if (_updateChecking || (_updateApplying && !allowDuringUpdate)) return;
@@ -727,7 +748,7 @@ namespace OpenSmash.Launcher
             {
                 string local = await Task.Run(FindLocalCommit);
                 _updateLocal = local;
-                string headBody = await GitHubGetAsync($"{UpdateApi}/commits/main");
+                string headBody = await GitHubGetAsync($"{UpdateApi}/commits/{await ResolveUpdateRefAsync()}");
                 using var headDoc = JsonDocument.Parse(headBody);
                 var head = headDoc.RootElement;
                 string sha = GetString(head, "sha").Trim();
