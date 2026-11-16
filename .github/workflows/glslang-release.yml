@@ -31,6 +31,7 @@ jobs:
           "tag=$tag" >> $env:GITHUB_OUTPUT
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
           "exists=$([int]($LASTEXITCODE -eq 0))" >> $env:GITHUB_OUTPUT
+          exit 0   # (gh release view fails when the release is missing: that is the "build it" answer, not a failed step)
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Build and publish
