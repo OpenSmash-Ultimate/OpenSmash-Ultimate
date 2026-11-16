@@ -633,9 +633,19 @@ namespace OpenSmash.Launcher
             if (why.Length > 0) UiLocale.Message(why, "OpenSmash");
         }
 
+        static bool s_afterSelfUpdate = Environment.GetCommandLineArgs().Contains("--updated", StringComparer.OrdinalIgnoreCase);
         void MaybeShowBootPrompts()
         {
             if (_shownAt < 0 || Now - _shownAt < 0.8) return;
+            if (_updatePromptPending && s_afterSelfUpdate && ReleaseMode && !_newModsPrompt && !_rebuildPrompt)
+            {   // (OpenSmash 0.6: this launcher just replaced the older one in the middle of an update the player asked
+                //  for: the game's part goes on by itself, once, before any other question)
+                s_afterSelfUpdate = false;
+                _updatePromptPending = false;
+                _shaderPrompt = false;
+                _ = ApplyUpdateAsync();
+                return;
+            }
             if (_newModsPrompt || _updatePrompt || _shaderPrompt || _pluginPrompt || _rebuildPrompt || _sharePrompt || _checkModsPrompt || _showSetupPrompt) return;
             if (_newModsPending)
             {
@@ -1038,7 +1048,7 @@ namespace OpenSmash.Launcher
                 }
                 beforeCommit = await Task.Run(FindLocalCommit);
                 if (beforeCommit.Length == 0) throw new InvalidOperationException("This copy does not identify its source version.");
-                beforeLauncherFingerprint = await Task.Run(() => LauncherBuildInputsFingerprint(_repo));
+                beforeLauncherFingerprint = ReleaseMode ? "" : await Task.Run(() => LauncherBuildInputsFingerprint(_repo));   // (a release brings its launcher built: no sources needed)
                 string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
                 if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_windowsmash.ps1 is missing.");
                 var result = await Task.Run(() => RunPowerShellUpdate(script));
@@ -1067,7 +1077,7 @@ namespace OpenSmash.Launcher
                 {
                     Directory.CreateDirectory(Path.Combine(_repo, "config"));
                     File.WriteAllText(GameBuildPendingPath, _updateLocal);
-                    string afterFingerprint = await Task.Run(() => LauncherBuildInputsFingerprint(_repo));
+                    string afterFingerprint = ReleaseMode ? "" : await Task.Run(() => LauncherBuildInputsFingerprint(_repo));
                     launcherChanged = !ReleaseMode   // (a release's launcher comes built: SelfUpdateLauncherAsync)
                         && !beforeLauncherFingerprint.Equals(afterFingerprint, StringComparison.Ordinal)
                         && await Task.Run(DotnetSdkAvailable);

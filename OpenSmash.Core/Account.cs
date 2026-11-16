@@ -82,7 +82,8 @@ namespace OpenSmash.Core
         string access, refresh;
         DateTime accessUntil;
         public Profile Me { get; private set; }
-        public bool SignedIn => Me != null;
+        /// <summary>signed in: a session AND its profile read (between the two, Me has an id but no username yet)</summary>
+        public bool SignedIn => Me != null && !string.IsNullOrEmpty(Me.Username);
         /// <summary>opens a URL in the player's browser (the launcher's own way; tests catch it)</summary>
         public Action<string> OpenBrowser = url => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
 

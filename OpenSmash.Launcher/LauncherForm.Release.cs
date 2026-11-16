@@ -73,7 +73,7 @@ namespace OpenSmash.Launcher
                 _updateState = "available";
                 _updateBehind = 1;
                 _updateMessage = UiLocale.Interpolate($"OpenSmash {_release.Version} is available.");
-                _updateDetail = (channel == "testing" ? "testing channel" : "stable channel") + (_release.Page != null ? "   Â·   " + _release.Page : "");
+                _updateDetail = (channel == "testing" ? "testing channel" : "stable channel") + (_release.Page != null ? "   ·   " + _release.Page : "");
             }
             else
             {
