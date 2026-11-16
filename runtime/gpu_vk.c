@@ -31,6 +31,7 @@
 #include <dxgi.h>
 
 #include "display.h"
+#include "gpu_aspect.h"
 #include "gpu_backend.h"
 #include "gpu_nvcache.h"
 #include "gpu_shader.h"
@@ -682,6 +683,7 @@ typedef struct Surface {
     u64 guest;
     u32 width, height, format, depth;   /* the game's size and format: what it is known by */
     u32 hw, hh;                         /* the host image's size (scaled) */
+    float wide;                         /* how much wider than the game's shape (gpu_aspect.c; 1: not widened) */
     VkFormat storage, view;
     int klass, srgb;
     VkImage image;
@@ -704,14 +706,39 @@ static void release_surface(Surface *s) {
     memset(s, 0, sizeof *s);
 }
 
-static void scaled_size(u32 w, u32 h, u32 *hw, u32 *hh) {
+int game_fight_on(void);   /* (hle_fight_test.c) */
+int net_match_now(void);   /* (host.c: an online match set up or under way) */
+/* The render scale display.ini asks for (auto: the picture's height in the window now over the game's
+ * 1080), as gpu_d3d11.c's scale_wanted: taken at the start and, when it changes (the menu, the window's
+ * size), at a present: the targets whose size changes are made again. */
+static float scale_wanted(void) {
+    float scale = display_render_scale();
+    if (scale == 0 && display_window_sizing() && render_scale > 0) return render_scale;   /* (auto: once the drag ends) */
+    if (scale == 0) {
+        scale = 1;
+        VkSurfaceCapabilitiesKHR caps;
+        if (vk_surface && vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, vk_surface, &caps) == VK_SUCCESS && caps.currentExtent.width != 0xFFFFFFFFu) {
+            unsigned fx, fy, fw, fh;
+            display_fit(caps.currentExtent.width, caps.currentExtent.height, &fx, &fy, &fw, &fh);
+            scale = (float)fh / 1080.0f;
+            if (scale < 1) scale = 1;
+            if (scale > 4) scale = 4;
+        }
+    }
+    if (scale < 0.5f || scale > 4) scale = 1;
+    return scale;
+}
+
+static float scaled_size(u32 w, u32 h, u32 *hw, u32 *hh) {   /* (returns the widening it applied, 1 for none) */
     *hw = w; *hh = h;
-    if (render_scale == 1.0f) return;
-    float x = (float)w * render_scale + 0.5f, y = (float)h * render_scale + 0.5f;
+    float wide = aspect_widening(w, h);   /* (a picture wider than 16:9: the 16:9 targets as much wider) */
+    if (render_scale == 1.0f && wide == 1.0f) return 1.0f;
+    float x = (float)w * render_scale * wide + 0.5f, y = (float)h * render_scale + 0.5f;
     if (x < 1) x = 1;
     if (y < 1) y = 1;
-    if (x > 16384 || y > 16384) return;
+    if (x > 16384 || y > 16384) return 1.0f;
     *hw = (u32)x; *hh = (u32)y;
+    return wide;
 }
 
 static VkImageAspectFlags aspect_of(const Surface *s) {
@@ -750,7 +777,7 @@ static Surface *surface(u64 guest, u32 width, u32 height, u32 format, int depth)
         }
     }
     u32 hw, hh;
-    scaled_size(width, height, &hw, &hh);
+    float wide = scaled_size(width, height, &hw, &hh);
     VkFormatFeatureFlags have = features_of(cf.storage);
     VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     if (depth && (have & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
@@ -764,7 +791,7 @@ static Surface *surface(u64 guest, u32 width, u32 height, u32 format, int depth)
     if (!image) return NULL;
     memset(s, 0, sizeof *s);
     s->guest = guest; s->width = width; s->height = height; s->format = format; s->depth = depth;
-    s->hw = hw; s->hh = hh;
+    s->hw = hw; s->hh = hh; s->wide = wide;
     s->storage = cf.storage; s->view = cf.view; s->klass = cf.klass; s->srgb = cf.srgb;
     s->image = image; s->alloc = mem;
     s->used = ++tick;
@@ -1040,7 +1067,9 @@ static const char *capture_path(char *path, size_t size) {
         if (getenv("SSBU_CAPTURE_TO")) to = atoll(getenv("SSBU_CAPTURE_TO"));
     }
     if (!dir || !*dir || count >= most || rt_now_ns() - last < every) return NULL;
-    if ((from && test_fight_frame < from) || (to && test_fight_frame > to)) return NULL;
+    static long long fought;   /* (the fight's last frame: the span goes on after it ends - TIME!, GAME!) */
+    if (test_fight_frame) fought = test_fight_frame;
+    if ((from && fought < from) || (to && fought > to)) return NULL;
     last = rt_now_ns();
     snprintf(path, size, "%s/vk_frame_%03d.bmp", dir, count);
     if (test_fight_frame) fprintf(stderr, "[capture] vk_frame_%03d.bmp at fight frame %lld\n", count, test_fight_frame);
@@ -1126,6 +1155,7 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
     if (profile_at == -1) profile_at = getenv("SSBU_PROFILE_AT") ? atof(getenv("SSBU_PROFILE_AT")) : -2;
     if (profile_at >= 0 && rt_now_ns() > (u64)(profile_at * 1e9)) { profile_at = -2; keys |= 32; }
     if (keys & 32) profile_start(10.0);   /* F6: the sampling profiler */
+    if (keys & 256) aspect_pick_next();   /* F9: the next kind of 2D draw left unsqueezed (gpu_aspect.c) */
     if (src && capture_path(path, sizeof path) && readback(src, &shot[nshots], path)) {
         nshots++;
         if (getenv("SSBU_CAPTURE_WINDOW")) {   /* (the window's picture too, overlay and menu included) */
@@ -1200,6 +1230,23 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
         for (int i = 0; i < nshots; i++) readback_save(&shot[i]);
     }
     frame_at = (frame_at + 1) % nframes;
+    /* A new picture shape (gpu_display.c, display_aspect_take): the 16:9-shaped targets made again at its width.
+     * A new render scale (menu, window size; never inside an online fight, where a hitch is both players'):
+     * every target made again. Only those whose size changes: one the game drew once keeps its picture. */
+    int new_shape = display_aspect_take();
+    float scale = scale_wanted();
+    int new_scale = scale != render_scale && !(game_fight_on() && net_match_now());
+    if (new_scale) {
+        fprintf(stderr, "[vulkan] render scale now %.3g%s (was %.3g)\n", scale, display_render_scale() == 0 ? " (auto)" : "", render_scale);
+        render_scale = scale;
+    }
+    if (new_shape || new_scale)
+        for (u32 i = 0; i < nsurfaces; i++) {
+            u32 w, h;
+            if (!surfaces[i].image) continue;
+            scaled_size(surfaces[i].width, surfaces[i].height, &w, &h);
+            if (w != surfaces[i].hw || h != surfaces[i].hh) release_surface(&surfaces[i]);
+        }
     residents_retire();
     pipeline_cache_tick();
     leave();
@@ -3504,7 +3551,7 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     /* render targets */
     Surface *rts[8] = {0}, *zs = NULL;
     u32 sel = regs[M_CT_SELECT], count = sel & 15, rt_w = 0, rt_h = 0, area_w = 16384, area_h = 16384;
-    float rt_sx = 1.0f, rt_sy = 1.0f;
+    float rt_sx = 1.0f, rt_sy = 1.0f, rt_wide = 1.0f;   /* (rt_wide: the first colour target's widening, gpu_aspect.c) */
     if (count > 8) count = 8;
     for (u32 i = 0; i < count; i++) {
         u32 ct = (sel >> (4 + 3 * i)) & 7;
@@ -3513,7 +3560,7 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         Surface *sf = surface(gpu_va_to_guest(va), regs[M_CT(ct) + 2], regs[M_CT(ct) + 3], regs[M_CT(ct) + 4], 0);
         if (!sf || !(features_of(sf->view) & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) continue;
         rts[i] = sf;
-        if (!rt_w) { rt_w = sf->width; rt_h = sf->height; rt_sx = (float)sf->hw / sf->width; rt_sy = (float)sf->hh / sf->height; }
+        if (!rt_w) { rt_w = sf->width; rt_h = sf->height; rt_sx = (float)sf->hw / sf->width; rt_sy = (float)sf->hh / sf->height; rt_wide = sf->wide; }
     }
     if (regs[M_ZT_SELECT] & 1) {
         u64 va = (u64)regs[M_ZT_A] << 32 | regs[M_ZT_A + 1];
@@ -3692,13 +3739,14 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
      * writes neither depth nor stencil (soft particles, the KO zooms' backgrounds: they fade by the scene
      * depth): it stays the attachment, read-only for the draw, in the GENERAL layout it always has here,
      * and is sampled too - after a rendering that wrote it has ended, so the writes are seen. */
-    int ends = 0, depth_read_only = !key.depth_write && !key.stencil_test, samples_own_depth = 0, samples_surface = 0;
+    int ends = 0, depth_read_only = !key.depth_write && !key.stencil_test, samples_own_depth = 0, samples_surface = 0, reads_wide = 0;
     for (int st = 0; st < 2; st++) {
         StageBinds *b = st ? &pb : &vb;
         u32 ntex = st ? (ps ? ps->info.ntex : 0) : vs->info.ntex;
         for (u32 k = 0; k < ntex && k < 32; k++) {
             Surface *s = b->sampled[k];
             if (!s) continue;
+            if (s->wide > 1.0f) reads_wide = 1;
             int own = s == zs && !depth_read_only;
             for (u32 i = 0; i < ncolor; i++) own |= rts[i] == s;
             if (s == zs && !own) {
@@ -3711,6 +3759,23 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
             if (own) { b->tex[k] = VK_NULL_HANDLE; continue; }
             samples_surface |= s->depth ? 2 : 1;
             for (u32 i = 0; rp.active && i < 9; i++) ends |= rp.images[i] == s->image;
+        }
+    }
+    {   /* A wider picture (gpu_aspect.c, as gpu_d3d11.c applies it): the squeeze, the 2D clip, a bubble's shift */
+        AspectDraw ad = {rt_wide, rt_w, rt_sx, (regs[M_DEPTH_TEST] & 1) && zs, compare_func(regs[M_DEPTH_FUNC]) == 8, reads_wide,
+                         regs[M_SCISSOR(0)], regs[M_SCISSOR(0) + 1], vs, ps, vs->name, ps ? ps->name : NULL,
+                         cb[STAGE_VERTEX][3].address, cb[STAGE_VERTEX][3].size, read_gpu};
+        AspectDecision ao;
+        aspect_draw(&ad, &ao);
+        params.fix[0] *= ao.fix0;
+        if (ao.clip) {
+            i32 l = ao.clip_l < 0 ? 0 : ao.clip_l, r = ao.clip_r > (i32)area_w ? (i32)area_w : ao.clip_r;
+            scissor.offset.x = l;
+            scissor.extent.width = r > l ? (u32)(r - l) : 0;
+        }
+        if (ao.shift) {
+            vx += ao.shift_by * vw / 2;
+            scissor = (VkRect2D){{0, 0}, {area_w, area_h}};
         }
     }
 
@@ -5104,22 +5169,7 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
     int bgra = 0;
     for (uint32_t i = 0; i < nsf; i++) bgra |= sf[i].format == VK_FORMAT_B8G8R8A8_UNORM;
     swap_format = bgra || !nsf ? VK_FORMAT_B8G8R8A8_UNORM : sf[0].format;
-    /* The render scale (display.ini render_scale; auto: the picture's height in the window now over
-     * the game's 1080), fixed from here on, as gpu_d3d11.c's */
-    float scale = display_render_scale();
-    if (scale == 0) {
-        scale = 1;
-        VkSurfaceCapabilitiesKHR caps;
-        if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, vk_surface, &caps) == VK_SUCCESS && caps.currentExtent.width != 0xFFFFFFFFu) {
-            unsigned fx, fy, fw, fh;
-            display_fit(caps.currentExtent.width, caps.currentExtent.height, &fx, &fy, &fw, &fh);
-            scale = (float)fh / 1080.0f;
-            if (scale < 1) scale = 1;
-            if (scale > 4) scale = 4;
-        }
-    }
-    if (scale < 0.5f || scale > 4) scale = 1;
-    render_scale = scale;
+    render_scale = scale_wanted();
     fprintf(stderr, "[vulkan] drawing with %s (Vulkan %u.%u.%u)%s: %u frames in flight, render scale %.3g, present modes%s%s\n",
             card, VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion), VK_API_VERSION_PATCH(props.apiVersion),
             float_controls ? ", float controls" : "", nframes, render_scale, have_immediate ? " immediate" : "", have_mailbox ? " mailbox" : "");

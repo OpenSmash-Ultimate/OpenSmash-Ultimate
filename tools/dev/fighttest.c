@@ -63,6 +63,12 @@ static void test_steps(void) {
         long got = fight_steps(&s, POLLS[i].frame, POLLS[i].on);
         CHECK(got == POLLS[i].want, "poll %u (frame %lld, ready-go %d): %ld ticks, wanted %ld", i + 1, POLLS[i].frame, POLLS[i].on, got, POLLS[i].want);
     }
+    FightSteps u = {0};   /* paused: the fight frame still with ready-go on: after FIGHT_PAUSE_POLLS polls, one a poll */
+    fight_steps(&u, 9, 1);
+    long sum = 0;
+    for (int i = 0; i < FIGHT_PAUSE_POLLS + 5; i++) sum += fight_steps(&u, 9, 1);
+    CHECK(sum == 5, "paused for %d polls: %ld ticks, wanted 5", FIGHT_PAUSE_POLLS + 5, sum);
+    CHECK(fight_steps(&u, 10, 1) == 1, "unpaused: fight frames again");
     FightSteps t = {0};
     fight_steps(&t, -2, 0);   /* (before any fight: a lower count is no tick, counted as 0) */
     CHECK(t.hist[0] == 1, "a poll with no new frame is counted");

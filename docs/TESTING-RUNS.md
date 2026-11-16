@@ -55,7 +55,7 @@ Not yet checked in a run:
 
 ## `SSBU_SEQ`
 
-ssbu-recomp found that the game reads player 1's controller once per frame (`ssbu-recomp/runtime/nnhid.c`). That has not been checked in WindowSmash yet. Each read (a *poll*) moves the sequence on by one *tick*. A hook can change that: `input_seq_set_steps` in [`input_seq.h`](../runtime/input_seq.h), which [`SSBU_DETERMINISTIC`](#ssbu_deterministic) uses to count fight frames instead.
+ssbu-recomp found that the game reads player 1's controller once per frame (`ssbu-recomp/runtime/nnhid.c`). That has not been checked in WindowSmash yet. Each read (a *poll*) moves the sequence on by one *tick*. A hook can change that: `input_seq_set_steps` in [`input_seq.h`](../runtime/input_seq.h), which [`SSBU_DETERMINISTIC`](#ssbu_deterministic) uses to count fight frames instead. Fight frames stop while the game is paused, so after 30 polls of a pause the count goes back to one tick a poll, and a sequence can work the pause menu (and its camera controls) and resume.
 
 Steps are separated by spaces or new lines, and `#` starts a comment that runs to the end of the line. Keys are the names `SSBU_INPUT` takes, joined by `+`: `A B X Y L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN LSTICK RSTICK`, and `SLEFT SUP SRIGHT SDOWN` for the left stick.
 
@@ -185,7 +185,7 @@ Settings are separated by commas. A setting left out keeps what the menus chose.
 | `stock=<n>` | The stocks, in a stock match. |
 | `items=on`, `items=off` | The rule's item appearance (2 or 0). |
 | `hazards=on`, `hazards=off` | A flag byte that the stage's set-up takes. |
-| `time=<minutes>` | Read and not used, as in ssbu-recomp. |
+| `time=<minutes>` | The time limit (the match block's `+0x48`, in frames). |
 
 The ids are worked out from the names (the Hash40 of `ui_chara_<name>` or `ui_stage_<name>`), so no list of fighters or stages is kept here. What the game does with a name it doesn't have was not tried. ssbu-recomp's log also named the fighter kind numbers from a bindings file of the game's. That table is game data and is not ported, so the log gives the numbers the game wrote.
 
@@ -261,6 +261,8 @@ The Vulkan back end ([`gpu_vk.c`](../runtime/gpu_vk.c)) is chosen with `SSBU_REN
 | `SSBU_VK_DRAWN_CLEARS=1` | Whole colour clears of floating-point targets are drawn as rectangles, as the masked ones are. |
 | `SSBU_CAPTURE=<folder>` | Frames shown written as pictures; `SSBU_CAPTURE_EVERY`, `SSBU_CAPTURE_FROM`, `SSBU_CAPTURE_TO` and `SSBU_CAPTURE_MAX` say which. |
 | `SSBU_F4_AT=<fight frame>` | Direct3D 11: F4 at that frame of a test fight (`SSBU_DEBUG_MATCH` or `SSBU_DEBUG_END`): every draw of the frame to the log, the render targets it samples and the textures to `screenshots/frame_<date>`. |
+| `SSBU_CAPTURE_AT=<fight frame>,...` | Direct3D 11: one capture at each of these fight frames (the first frame shown at or past it), instead of `SSBU_CAPTURE_EVERY`: the same moments in runs that differ only in what they draw. |
+| `SSBU_F4_AFTER_END=<frames>` | Direct3D 11: F4 that many frames shown after a test fight's last frame (TIME!, GAME!), as `SSBU_F4_AT`. |
 | `SSBU_VK_NO_D24=1` | Vulkan: 24-bit depth buffers made 32-bit float with stencil, as on a card without D24S8 (AMD's), to check AMD's depth on another card. Run it with its own `SSBU_SHADER_CACHE`: its pipelines are new ones. |
 | `SSBU_HITCH=<ms>` | Both renderers: a `[hitch] frame N: X ms` line for every frame that took longer, with what the threads spent it on. |
 | `SSBU_VK_GPU_TIME=<ms>` | Vulkan: GPU timestamps around each frame's work and after each rendering, launch, upload and draw. A `[gputime] frame N` line for each frame whose work on the GPU (or the renderer's wait for it) took longer, naming the stretch between two timestamps that took longest, then (`the draw:`) its rendering's size and targets, blend and depth state and first textures, and (`before it:`) the three stretches before it; every 512 frames, how many slow frames and others first drew with a pipeline, allocated memory or made a texture. Tells a GPU busy with our work from one held back. |

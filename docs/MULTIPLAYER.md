@@ -44,6 +44,8 @@ Whichever way you choose:
 3. **Every PC keeps its own save and its own `netplay_id.txt`.** Never copy `netplay_id.txt` to another PC: two PCs with the same one look like one player.
 4. **Check the game works offline first** with the launcher's Offline lobby setting, then close it.
 
+A wider picture shape (`display.ini`'s `aspect`, [Playing](PLAYING.md)) goes back to 16:9 for each online match and returns after it: a wider picture is not yet proven safe online ([why](adr/0002-online-held-at-16-9.md)).
+
 Each WindowSmash window is one player. A private room holds up to eight members, and the game's own room rules decide how many can play a match.
 
 ## Online lobby
