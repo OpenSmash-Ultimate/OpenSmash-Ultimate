@@ -1362,6 +1362,9 @@ static int sdl_start(void) {
     if (usb_ignore) p_SDL_SetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES, usb_ignore);
     p_SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");   /* we decide (background = ...) */
     p_SDL_SetHint(SDL_HINT_JOYSTICK_ENHANCED_REPORTS, "auto");       /* PlayStation pads change mode only for rumble */
+#ifdef __APPLE__
+    p_SDL_SetHint("SDL_JOYSTICK_HIDAPI_SWITCH", "0");   /* SDL 3.4: its HIDAPI Switch driver stalls under rumble over Bluetooth (libsdl-org/SDL#9441); Apple's GameController backend reads Pro Controllers fine. An SDL_JOYSTICK_HIDAPI_SWITCH set by the player still wins (#364) */
+#endif
     if (!p_SDL_Init(SDL_INIT_GAMEPAD)) {
         fprintf(stderr, "[input] SDL_Init failed (%s): XInput pads only\n", p_SDL_GetError());
         return 0;
