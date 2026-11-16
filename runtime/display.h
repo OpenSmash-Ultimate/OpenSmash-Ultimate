@@ -100,3 +100,4 @@ int display_uw_online(void);         /* this session's */
 int display_uw_online_saved(void);   /* the one saved for the next start */
 void display_set_uw_online(int on);
 void display_set_renderer(int renderer);      /* (the same: RENDERER_*, which back end draws from the next start) */
+void display_set_gpu(const char *gpu);          /* (the same: the graphics card, "auto" or its name, picked at the next start) */

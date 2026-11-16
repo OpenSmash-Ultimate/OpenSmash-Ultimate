@@ -101,6 +101,7 @@ void display_set_runahead(int frames) { (void)frames; }
 int kernel_rb_switch(void) { return 0; }
 void display_set_render_scale(float scale) { (void)scale; }
 void display_set_renderer(int renderer) { renderer_saved = renderer; }
+void display_set_gpu(const char *gpu) { (void)gpu; }
 int display_renderer(void) { return RENDERER_DEFAULT; }   /* (the setting this start began with: auto, which drew with Direct3D 11) */
 /* (gpu_display.c: the picture shape, view, timer and window size, as a fresh install has them) */
 float display_aspect(void) { return 16.0f / 9; }
@@ -145,6 +146,7 @@ const char *pad_key_label(int i) { (void)i; return "A"; }
 void pad_key_names(int i, char *out, int size) { (void)i; snprintf(out, (size_t)size, "Z"); }
 void pad_key_name(int vk, char *out, int size) { (void)vk; snprintf(out, (size_t)size, "Z"); }
 int pad_rumble_on(void) { return 1; }
+int pad_gc_switch(void) { return 1; }
 int pad_keyboard_slot(void) { return 0; }
 int pad_background(void) { return 0; }
 void vsock_deliver(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const void *data, u32 len) {

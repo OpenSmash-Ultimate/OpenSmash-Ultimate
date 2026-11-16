@@ -451,6 +451,8 @@ static int render_scale_saved;
 void display_set_render_scale(float scale) { load(); saved_render_scale = scale; render_scale_saved = 1; cfg.render_scale = scale; }
 static int saved_renderer = -1;   /* (the same for the renderer: -1 none saved) */
 void display_set_renderer(int renderer) { saved_renderer = renderer == RENDERER_VULKAN || renderer == RENDERER_D3D11 ? renderer : RENDERER_DEFAULT; }
+static char saved_gpu[64];   /* (and the graphics card: the menu shows its choice at once, the card is picked at the next start) */
+void display_set_gpu(const char *gpu) { snprintf(saved_gpu, sizeof saved_gpu, "%s", gpu && *gpu ? gpu : "auto"); }
 int display_overlay(void) { load(); return cfg.overlay; }
 float display_overlay_scale(void) { load(); return overlay_scale; }
 
@@ -464,7 +466,7 @@ void display_note_mode(int mode) { shown_mode = mode; }
 void display_settings(DisplaySettings *out) {
     load();
     *out = (DisplaySettings){shown_mode >= 0 ? shown_mode : cfg.mode, cfg.width, cfg.height, cfg.latency, cfg.hide_cursor, cfg.overlay, cfg.pacing, "", render_scale_saved ? saved_render_scale : cfg.render_scale};
-    snprintf(out->gpu, sizeof out->gpu, "%s", cfg.gpu);
+    snprintf(out->gpu, sizeof out->gpu, "%s", saved_gpu[0] ? saved_gpu : cfg.gpu);
     out->renderer = saved_renderer >= 0 ? saved_renderer : cfg.renderer;
 }
 
