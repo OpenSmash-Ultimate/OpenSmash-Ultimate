@@ -273,7 +273,7 @@ static void on_join(DStr secret, void *ud) {
         return;
     }
     FILE *f = fopen(JOIN_PATH, "wb");   /* (another lobby: taken at the next start, net_relay.c) */
-    if (f) { fprintf(f, "%s %lld\n", s, (long long)now_s()); fclose(f); }
+    if (f) { fprintf(f, "%c %s %s %s %lld\n", j.where == DP_ROOM ? 'r' : 'a', j.relay, j.code[0] ? j.code : "-", j.target, (long long)now_s()); fclose(f); }
     menu_toast("Discord: your friend plays on another lobby - restart the game to join them");
 }
 static void register_launch(void) {   /* (what Discord starts for a "Join" while the game is not running) */

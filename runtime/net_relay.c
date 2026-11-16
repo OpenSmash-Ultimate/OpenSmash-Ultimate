@@ -104,7 +104,6 @@ typedef int SOCKET;
 #include "host.h"
 #include "mod_diff.h"
 #include "net.h"
-#include "net_discord_core.h"
 #include "room_code.h"
 #include "settings.h"
 #include "sim_version.h"
@@ -300,9 +299,10 @@ static void configure_from_files(void) {
     if (!getenv("SSBU_NET_DIRECT") && settings_line_read(config_path(CONFIG_ONLINE_DIRECT), line, sizeof line) && !_strnicmp(line, "off", 3)) direct_ok = 0;
 }
 
-/* A friend's "Join" in Discord for another lobby (net_discord.c): config/discord_join.txt, its join secret and when it
- * came. Taken at the next start, within DISCORD_JOIN_FOR seconds: that lobby and lobby code for this start only (the
- * settings stay as they are), and a room's host listed first in Local Wireless's Rooms List. */
+/* A friend's "Join" in Discord for another lobby (net_discord.c): config/discord_join.txt, one line "<r|a> <lobby>
+ * <lobby code, - none> <room host's address or arena ID> <unix time>". Taken at the next start, within DISCORD_JOIN_FOR
+ * seconds: that lobby and lobby code for this start only (the settings stay as they are), and a room's host listed
+ * first in Local Wireless's Rooms List. */
 #define DISCORD_JOIN_FOR (15 * 60)
 static void discord_join_at_start(void) {
     const char *path = "config/discord_join.txt";
@@ -313,17 +313,16 @@ static void discord_join_at_start(void) {
     fclose(f);
     remove(path);   /* (once: a later start plays as the settings say) */
     text[n] = 0;
-    char secret[256] = "";
+    char kind[4], relay[80], code[NAME_LEN + 1], target[48];
     long long at = 0;
-    DiscordJoin j;
-    if (sscanf(text, "%255s %lld", secret, &at) != 2 || !discord_join_parse(secret, &j)) return;
+    if (sscanf(text, "%3s %79s %32s %47s %lld", kind, relay, code, target, &at) != 5 || (strcmp(kind, "r") && strcmp(kind, "a"))) return;
     long long now = (long long)time(NULL);
     if (now < at || now - at > DISCORD_JOIN_FOR) return;
-    snprintf(relay_text, sizeof relay_text, "%s", j.relay);
-    if (j.code[0] && strlen(j.code) <= NAME_LEN) { snprintf(room, sizeof room, "%s", j.code); room_named = 1; }
+    snprintf(relay_text, sizeof relay_text, "%s", relay);
+    if (strcmp(code, "-")) { snprintf(room, sizeof room, "%s", code); room_named = 1; }
     struct in_addr a;
-    if (j.where == DP_ROOM && inet_pton(AF_INET, j.target, &a) == 1) net_rooms_pick(ntohl(a.s_addr));
-    fprintf(stderr, "[net] joining from Discord: lobby %s, %s %s\n", relay_text, j.where == DP_ROOM ? "the room of" : "Battle Arena", j.target);
+    if (kind[0] == 'r' && inet_pton(AF_INET, target, &a) == 1) net_rooms_pick(ntohl(a.s_addr));
+    fprintf(stderr, "[net] joining from Discord: lobby %s, %s %s\n", relay_text, kind[0] == 'r' ? "the room of" : "Battle Arena", target);
 }
 
 int net_rollback_default(void) {
