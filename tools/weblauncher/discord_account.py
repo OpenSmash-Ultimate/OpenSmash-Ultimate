@@ -338,11 +338,12 @@ def shown_path(root):
 
 
 def shows_name(root):
+    """On unless config/discord_leaderboard.txt says "off" (a missing file is on)."""
     try:
         with open(shown_path(root), encoding="utf-8") as f:
-            return f.read().strip().lower() == "on"
+            return f.read().strip().lower() != "off"
     except OSError:
-        return False
+        return True
 
 
 def set_shown(root, t, shown, where, ask=_ask):

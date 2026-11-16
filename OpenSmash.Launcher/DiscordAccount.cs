@@ -385,8 +385,9 @@ namespace OpenSmash.Launcher
         // ---- the player's Discord name on the leaderboard: their choice, sent to every lobby --------------------------
         public static bool ShowsName(string repo)
         {
-            try { return File.Exists(ShownPath(repo)) && File.ReadAllText(ShownPath(repo)).Trim().Equals("on", StringComparison.OrdinalIgnoreCase); }
-            catch (IOException) { return false; }
+            // (on unless the file says "off": a missing file is on)
+            try { return !File.Exists(ShownPath(repo)) || !File.ReadAllText(ShownPath(repo)).Trim().Equals("off", StringComparison.OrdinalIgnoreCase); }
+            catch (IOException) { return true; }
         }
 
         // Remembers the choice and tells the lobbies (shown: the token's name; hidden: none). Returns how many lobbies took it.

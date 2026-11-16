@@ -170,6 +170,14 @@ class Lobbies(unittest.TestCase):
         self.assertFalse(da.shows_name(self.root))
         self.assertEqual(self.nex.board.profiles.of_pid, {})
 
+    def test_name_shown_by_default(self):
+        with tempfile.TemporaryDirectory() as empty:
+            self.assertTrue(da.shows_name(empty))      # (no choice made: on)
+            os.makedirs(os.path.join(empty, "config"))
+            with open(da.shown_path(empty), "w") as f:
+                f.write("off")
+            self.assertFalse(da.shows_name(empty))
+
     def test_lobbies(self):
         self.assertEqual(da.lobbies("auto"), list(da.PUBLIC_LOBBIES))
         self.assertEqual(da.lobbies("my.host mycode"), list(da.PUBLIC_LOBBIES) + ["my.host:39420"])
