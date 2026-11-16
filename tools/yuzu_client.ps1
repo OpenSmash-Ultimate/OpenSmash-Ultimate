@@ -6,6 +6,7 @@ param(
     [ValidateSet('eden','yuzu')][string]$ProxyProfile,
     [Security.SecureString]$Password,
     [switch]$NoPrompt,
+    [switch]$Gui,
     [switch]$CheckOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -13,6 +14,10 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $gameExe = Join-Path $repoRoot 'build\ssbu.exe'
 $configFile = Join-Path $repoRoot 'config\yuzu_client.json'
 try {
+    if ($Gui) { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); $OutputEncoding = [Console]::OutputEncoding }
+    # GUI passes the password in this child's environment, never in command arguments.
+    $guiPassword = if ($Gui) { [string]$env:SSBU_YUZU_PASSWORD } else { '' }
+    Remove-Item Env:SSBU_YUZU_PASSWORD -ErrorAction SilentlyContinue
     if (!(Test-Path -LiteralPath $gameExe)) { throw 'Build OpenSmash first (Build WindowSmash.bat).' }
     # Use the same clock settings for the feature check and the game process.
     $env:SSBU_RB='0'
@@ -59,7 +64,7 @@ try {
     } finally { Pop-Location }
     if ($CheckOnly) { Write-Output ('yuzu client ready: ' + $Server + ' / ' + $Nickname + ' / UDP profile: ' + $ProxyProfile); exit 0 }
     if (!$Password -and !$NoPrompt) { $Password = Read-Host 'Room password (Enter if none; not saved)' -AsSecureString }
-    $plainPassword = ''
+    $plainPassword = $guiPassword
     if ($Password) {
         $buffer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
         try { $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($buffer) }
@@ -84,8 +89,12 @@ try {
     try {
         $started = Start-Process -FilePath $gameExe -ArgumentList @('dump\modules','--status','30','--online') -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $repoRoot 'build\yuzu-client.stdout.log') -RedirectStandardError (Join-Path $repoRoot 'build\yuzu-client.log')
         Write-Output ('Started yuzu room client. Process: ' + $started.Id + '. Log: build\yuzu-client.log')
+        if ($Gui) { Write-Output ('YUZU_RESULT ' + (@{ pid=$started.Id } | ConvertTo-Json -Compress)) }
     } finally { Pop-Location }
 } catch {
     Write-Error $_ -ErrorAction Continue
     exit 1
+} finally {
+    Remove-Item Env:SSBU_YUZU_PASSWORD -ErrorAction SilentlyContinue
+    $guiPassword = $plainPassword = $null
 }
