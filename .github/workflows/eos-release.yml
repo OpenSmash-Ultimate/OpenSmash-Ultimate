@@ -34,4 +34,5 @@ jobs:
             [ -n "${!v}" ] || { echo "the secret $v is empty"; exit 1; }
           done
           sha256sum EOSSDK-Win64-Shipping.dll eos.txt > SHA256SUMS
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --latest=false   # never "latest"
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber eos.txt SHA256SUMS
