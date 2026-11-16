@@ -75,7 +75,7 @@ static void presence(void) {
     CHECK(!strcmp(d, "Quickplay - Mario - GSP 8,120,000 - #12") && !strcmp(s, "In a match"), "quickplay: \"%s\" / \"%s\"", d, s);
     strcpy(p.target, "x");
     CHECK(!discord_join_secret(&p, secret, sizeof secret), "quickplay cannot be joined");
-    p.where = DP_ARENA; p.fighter = 43; p.gsp = 0; p.rank = 0; p.in_match = 0; p.players = 3; p.max_players = 8;
+    p.where = DP_ARENA; p.fighter = 42; p.gsp = 0; p.rank = 0; p.in_match = 0; p.players = 3; p.max_players = 8;
     strcpy(p.code, "abc"); strcpy(p.target, "K7Q2M");
     discord_presence_text(&p, d, sizeof d, s, sizeof s);
     CHECK(!strcmp(d, "Battle Arena - Olimar") && !strcmp(s, "Arena K7Q2M - 5 free"), "arena: \"%s\" / \"%s\"", d, s);
@@ -108,9 +108,10 @@ static void presence(void) {
 
 static void names(void) {
     char g[24];
-    CHECK(!strcmp(discord_fighter_name(0), "Mario") && !strcmp(discord_fighter_name(43), "Olimar") && !strcmp(discord_fighter_name(93), "Sora"), "names");
-    CHECK(!strcmp(discord_fighter_name(75), "Ice Climbers") && !strcmp(discord_fighter_name(114), "Pokemon Trainer"), "names (2)");
-    CHECK(!discord_fighter_name(-1) && !discord_fighter_name(76) && !discord_fighter_name(94) && !discord_fighter_name(500), "not playable");
+    CHECK(!strcmp(discord_fighter_name(0), "Mario") && !strcmp(discord_fighter_name(42), "Olimar") && !strcmp(discord_fighter_name(85), "Sora"), "names");
+    CHECK(!strcmp(discord_fighter_name(16), "Ice Climbers") && !strcmp(discord_fighter_name(37), "Pokemon Trainer"), "names (2)");
+    CHECK(!strcmp(discord_fighter_name(29), "Mr. Game & Watch") && !strcmp(discord_fighter_name(30), "Meta Knight"), "names (GSP numbers: #389)");
+    CHECK(!discord_fighter_name(-1) && !discord_fighter_name(86) && !discord_fighter_name(114) && !discord_fighter_name(500), "not playable");
     discord_group_digits(0, g, sizeof g); CHECK(!strcmp(g, "0"), "0");
     discord_group_digits(999, g, sizeof g); CHECK(!strcmp(g, "999"), "999");
     discord_group_digits(1000, g, sizeof g); CHECK(!strcmp(g, "1,000"), "1,000: %s", g);

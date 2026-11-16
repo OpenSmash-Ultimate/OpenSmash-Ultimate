@@ -1604,7 +1604,15 @@ namespace OpenSmash.Launcher
             string launcherIni = WindowSmash.ConfigFile(_repo, "launcher.ini");
             _iniValues["lobby"] = lobby;
             _iniValues["code"] = code != "" ? code : IniValue(launcherIni, "opensmash", "code") ?? "";
-            _iniValues["server"] = server != "" ? server : IniValue(launcherIni, "opensmash", "server") ?? "";
+            string savedServer = IniValue(launcherIni, "opensmash", "server") ?? "";
+            if (SettingDefaults.MeansPublicLobby(savedServer)) savedServer = "";   // (issue #389: an old public lobby, not "your own server")
+            _iniValues["server"] = server != "" ? server : savedServer;
+            // (the gone North American lobby's address still in online_server.txt: written as what it means, the Public
+            // lobby's "auto" - or the lobby code's line - so no launcher puts it back; issue #389)
+            if (File.Exists(serverFile) && SettingDefaults.IsOldLobbyLine(line))
+            {
+                try { SetFirstLine(serverFile, SettingDefaults.LineFromLobby(lobby, code, server)); } catch { }
+            }
             string directFile = WindowSmash.ConfigFile(_repo, "online_direct.txt");
             string direct = File.Exists(directFile) ? FirstLine(directFile) : SettingDefaults.OfFile("online_direct.txt");
             _iniValues["direct"] = direct.StartsWith("off", StringComparison.OrdinalIgnoreCase) ? "off" : "on";
@@ -3941,6 +3949,20 @@ namespace OpenSmash.Launcher
             }
         }
 
+        // Epic Online Services' and Discord's files beside the program (tools\online_files.py: nothing downloaded when
+        // they are current). An update whose fetch failed left them out and the game went online through the public
+        // lobby alone, unseen by the players on Epic (issue #389); Play puts them back. Never stops the start.
+        void EnsureOnlineFiles()
+        {
+            try
+            {
+                string script = Path.Combine(_repo, "tools", "online_files.py");
+                if (string.IsNullOrEmpty(_pythonExe) || !File.Exists(script)) return;
+                RunPython(new[] { script, WindowSmash.BuildDir(_repo) }, out _);
+            }
+            catch { }
+        }
+
         async Task LaunchGameNow()
         {
             try
@@ -3951,6 +3973,7 @@ namespace OpenSmash.Launcher
                     return;
                 }
                 SetLoad("STARTING THE GAME", -1);
+                await Task.Run(EnsureOnlineFiles);
                 // Same start as Play SSBU.bat: build\ssbu.exe dump\modules --status 30 --online
                 _gameProcess = WindowSmash.StartGame(_repo);
                 _gameLaunched = true;

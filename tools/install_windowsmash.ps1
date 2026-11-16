@@ -1586,6 +1586,12 @@ function Step-Build {
                 Write-Warn 'the game folder could not be read again (see above): DLC added since the last build is not turned on yet; the game is as it was'
             }
         }
+        # (the online files beside the program - Epic Online Services, Discord - on every update, built or not: a fetch
+        # that failed at the last build was otherwise never tried again, and the game went online through the public
+        # lobby alone, unseen by the players on Epic: issue #389. Nothing is downloaded when they are current.)
+        if ((Invoke-Python @((Join-Path $Root 'tools\online_files.py'), (Join-Path $Root 'build'))) -ne 0) {
+            Write-Warn 'the Epic Online Services or Discord files could not be fetched (see above): the game goes online through the public lobby until they are; Play in the launcher tries again'
+        }
         return $true
     }
     if ($SkipBuild) { Write-Info 'the program, fonts, data, DLC and fighters; not the build itself (-SkipBuild)' }

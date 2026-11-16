@@ -100,18 +100,18 @@ int discord_token_fresh(const DiscordToken *t, int64_t now, int64_t margin) {
 /* ---- fighters ---------------------------------------------------------------------------- */
 static const char *const FIGHTERS[] = {
     "Mario", "Donkey Kong", "Link", "Samus", "Dark Samus", "Yoshi", "Kirby", "Fox", "Pikachu", "Luigi",
-    "Ness", "Captain Falcon", "Jigglypuff", "Peach", "Daisy", "Bowser", "Sheik", "Zelda", "Dr. Mario", "Pichu",
-    "Falco", "Marth", "Lucina", "Young Link", "Ganondorf", "Mewtwo", "Roy", "Chrom", "Mr. Game & Watch", "Meta Knight",
-    "Pit", "Dark Pit", "Zero Suit Samus", "Wario", "Snake", "Ike", "Squirtle", "Ivysaur", "Charizard", "Diddy Kong",
-    "Lucas", "Sonic", "King Dedede", "Olimar", "Lucario", "R.O.B.", "Toon Link", "Wolf", "Villager", "Mega Man",
-    "Wii Fit Trainer", "Rosalina & Luma", "Little Mac", "Greninja", "Palutena", "Pac-Man", "Robin", "Shulk", "Bowser Jr.", "Duck Hunt",
-    "Ryu", "Ken", "Cloud", "Corrin", "Bayonetta", "Inkling", "Ridley", "Simon", "Richter", "King K. Rool",
-    "Isabelle", "Incineroar", "Mii Brawler", "Mii Swordfighter", "Mii Gunner", "Ice Climbers", NULL, NULL, NULL, NULL,
-    NULL, "Piranha Plant", "Joker", "Hero", "Banjo & Kazooie", "Terry", "Byleth", "Min Min", "Steve", "Sephiroth",
-    "Pyra", "Mythra", "Kazuya", "Sora"};   /* (by fighter kind: tools/paramconfig_kinds.py; 76-80: Nana, bosses, Mii enemies) */
+    "Ness", "Captain Falcon", "Jigglypuff", "Peach", "Daisy", "Bowser", "Ice Climbers", "Sheik", "Zelda", "Dr. Mario",
+    "Pichu", "Falco", "Marth", "Lucina", "Young Link", "Ganondorf", "Mewtwo", "Roy", "Chrom", "Mr. Game & Watch",
+    "Meta Knight", "Pit", "Dark Pit", "Zero Suit Samus", "Wario", "Snake", "Ike", "Pokemon Trainer", "Diddy Kong", "Lucas",
+    "Sonic", "King Dedede", "Olimar", "Lucario", "R.O.B.", "Toon Link", "Wolf", "Villager", "Mega Man", "Wii Fit Trainer",
+    "Rosalina & Luma", "Little Mac", "Greninja", "Palutena", "Pac-Man", "Robin", "Shulk", "Bowser Jr.", "Duck Hunt", "Ryu",
+    "Ken", "Cloud", "Corrin", "Bayonetta", "Richter", "Inkling", "Ridley", "King K. Rool", "Simon", "Isabelle",
+    "Incineroar", "Mii Brawler", "Mii Swordfighter", "Mii Gunner", "Piranha Plant", "Joker", "Hero", "Banjo & Kazooie", "Terry", "Byleth",
+    "Min Min", "Steve", "Sephiroth", "Pyra & Mythra", "Kazuya", "Sora"};   /* (by the GSP records' fighter number - DataStore 82's u8 -
+ * which is the game's save_no in ui_chara_db, not the fighter kind: 16 Ice Climbers, 29 Mr. Game & Watch (issue #389),
+ * 37 Pokemon Trainer; the names the lobby's /gsp/me gives a number for) */
 
 const char *discord_fighter_name(int kind) {
-    if (kind == 114) return "Pokemon Trainer";
     return kind >= 0 && kind < (int)(sizeof FIGHTERS / sizeof *FIGHTERS) ? FIGHTERS[kind] : NULL;
 }
 

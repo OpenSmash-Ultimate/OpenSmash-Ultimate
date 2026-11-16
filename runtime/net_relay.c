@@ -381,6 +381,13 @@ int net_eos_wanted(void) {   /* 2 EOS alone, 1 EOS first, 0 not */
  * waits at most until EOS_FIRST_MS after the start: about a second while the game loads when EOS answers, nothing when
  * EOS is off here. */
 static int eos_choice;
+static volatile LONG eos_files_notice;
+/* (gpu_menu.c, as it draws) a message for the screen, once: NULL when there is none */
+const char *net_notice_take(void) {
+    if (!eos_files_notice || !InterlockedExchange(&eos_files_notice, 0)) return NULL;
+    return "Epic Online files missing: online through the EU lobby only, apart from the players on Epic. "
+           "Fix: press Play in the launcher, or run python tools\\online_files.py";
+}
 static BOOL CALLBACK eos_decide(PINIT_ONCE once, void *param, void **ctx) {
     (void)once; (void)param; (void)ctx;
     int want = net_eos_wanted();
@@ -388,9 +395,17 @@ static BOOL CALLBACK eos_decide(PINIT_ONCE once, void *param, void **ctx) {
     const char *w = getenv("SSBU_EOS_WAIT");
     u64 limit = w && *w ? (u64)atoi(w) : EOS_FIRST_MS, age = process_age_ms(), t0 = now_ms();
     eos_choice = eos_wait_ready((unsigned)(age < limit ? limit - age : 0));
-    fprintf(stderr, eos_choice ? "[net] online through Epic Online Services (waited %llu ms); the public lobby is the fallback\n"
-                               : "[net] Epic Online Services not available here (waited %llu ms): online through the public lobby\n",
-            (unsigned long long)(now_ms() - t0));
+    if (!eos_choice && eos_files_missing()) {
+        /* (issue #389: an update that left the files out put a player on the public lobby alone, unseen by the players
+         * on EOS, and nothing on screen said so) */
+        fprintf(stderr, "[net] Epic Online Services is off: EOSSDK-Win64-Shipping.dll or eos.txt is missing beside the program, so this "
+                        "game is online through the public lobby only and does not see the players on EOS. Fix: python tools\\online_files.py "
+                        "(the launcher's Play and Update run it too), then start the game again\n");
+        InterlockedExchange(&eos_files_notice, 1);   /* (on screen: net_notice_take) */
+    } else
+        fprintf(stderr, eos_choice ? "[net] online through Epic Online Services (waited %llu ms); the public lobby is the fallback\n"
+                                   : "[net] Epic Online Services not available here (waited %llu ms): online through the public lobby\n",
+                (unsigned long long)(now_ms() - t0));
     return TRUE;
 }
 int net_eos_selected(void) {

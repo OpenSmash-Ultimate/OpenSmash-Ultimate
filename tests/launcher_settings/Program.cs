@@ -93,6 +93,11 @@ static class Tests
             Check(SettingDefaults.Choices["lobby"].Contains(lobby), $"{lobby} is a choice of the page");
         }
         Check(SettingDefaults.LineFromLobby("private", "", "") == pub + " friends", "private lobby without a code: the game's 'friends'");
+        // (issue #389: an old launcher.ini's "Your own server" holding a public lobby's address is the Public lobby)
+        Check(SettingDefaults.LineFromLobby("custom", "", "smash.recomps.wtf:39421") == "auto", "custom smash.recomps.wtf: the public lobby's auto");
+        Check(SettingDefaults.LineFromLobby("custom", "abc", "smash.recomps.wtf:39421") == pub + " abc", "custom smash.recomps.wtf with a code: the private lobby");
+        Check(SettingDefaults.LineFromLobby("custom", "", pub) == "auto", "custom with the public lobby's address: auto");
+        Check(SettingDefaults.IsOldLobbyLine("smash.recomps.wtf:39421 x") && !SettingDefaults.IsOldLobbyLine("auto") && !SettingDefaults.IsOldLobbyLine(""), "old lobby lines");
         Check(SettingDefaults.Renderer("d3d11") == "auto" && SettingDefaults.Renderer("DX11") == "direct3d11" && SettingDefaults.Renderer("vk") == "vulkan", "renderer names as runtime/renderer.h");
     }
 
@@ -133,6 +138,16 @@ static class Tests
             call2("PersistSettings");
             Check(File.ReadAllText(Path.Combine(repo, "online_server.txt")) == "# comment\nauto\n" && Files(repo).Length == 1, "download's files left as they are");
         }
+        File.WriteAllText(Path.Combine(repo, "online_server.txt"), "# comment\nsmash.recomps.wtf:39421\n");   // (the gone NA lobby: issue #389)
+        var (form3, call3, values3) = Open(repo);
+        using (form3)
+        {
+            call3("ReadSettings");
+            Check(values3["lobby"] == "auto", "the North American lobby's line reads as the public lobby");
+            Check(File.ReadAllText(Path.Combine(repo, "online_server.txt")).Replace("\r\n", "\n") == "# comment\nauto\n", "the North American lobby's line written again as auto: "
+                  + File.ReadAllText(Path.Combine(repo, "online_server.txt")));
+        }
+        File.WriteAllText(Path.Combine(repo, "online_server.txt"), "# comment\nauto\n");
     }
 
     // The game's settings menu (Esc) writes while the launcher waits hidden: closing the launcher keeps those changes,
