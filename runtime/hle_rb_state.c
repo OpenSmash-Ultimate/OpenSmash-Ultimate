@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include <emmintrin.h>
 
 #include "host.h"
 #include "gpu.h"
@@ -577,7 +578,51 @@ static void undo_push(Chunk *ch, u32 k, u8 *cur, int how) {
  * jobs: s1 -> d1, then s2 -> d2; slot: d1 is that slot of undo_to, resolved when they run, as the
  * record may grow meanwhile), then copied by SSBU_RB_COPY_THREADS host threads (default 4) and this
  * one. Under 256 pages: here alone. A page is in one job at most within a batch. */
-typedef struct CopyJob { u8 *d1; const u8 *s1; u8 *d2; const u8 *s2; u32 slot; u8 *same; int cmp_only; } CopyJob;   /* same: compared first (the state map's steady pages): 1 written there if d2 already was s2 */
+/* THE STEADY PAGES BY HASH. A save compared each steady page (some 6,000-7,000 in a fight, written at every save, most
+ * of them with the same bytes) with its copy in the shadow: two pages read, 1.3-2 ms a save on the copy threads. Now
+ * each keeps the hash of its copy in the shadow (sm_hash; sm_hv: valid while it holds the epoch, sm_hepoch); a save
+ * reads the page alone, and an unchanged hash means unchanged bytes. 64 bits a page: two different pages alike by
+ * chance once in some 10^19 tries. Whatever else writes the shadow's copy makes it invalid: a load (the undo records:
+ * the epoch moves on), the GPU's pages copied again, a page settled, a page becoming steady; an invalid one is compared
+ * as before and gets its hash then. SSBU_RB_SM_HASH=0: compared as before. */
+static u64 *sm_hash;
+static u8 *sm_hv, sm_hepoch = 1;
+static int sm_hash_want = -1;
+static long long sm_hash_used, sm_hash_cmp;   /* (steady pages listed with a valid hash / without) */
+static void sm_hash_forget(u64 a) { if (sm_hv) sm_hv[a] = 0; }
+static void sm_hash_forget_all(void) { if (sm_hv && !++sm_hepoch) { memset(sm_hv, 0, SM_PAGES); sm_hepoch = 1; } }
+static __m128i mul64x32(__m128i x, __m128i prime) {   /* (each 64-bit lane times a 32-bit prime, mod 2^64) */
+    return _mm_add_epi64(_mm_mul_epu32(x, prime), _mm_slli_epi64(_mm_mul_epu32(_mm_srli_epi64(x, 32), prime), 32));
+}
+static u64 page_hash(const u8 *p) {   /* (xxh3's accumulate and scramble over a page, its key moving on with every 64 bytes) */
+    __m128i k0 = _mm_set_epi32(0x85ebca6b, 0xc2b2ae35, 0x27d4eb2f, 0x165667b1), k1 = _mm_set_epi32(0x9e3779b1, 0x7feb352d, 0x846ca68b, 0x2545f491);
+    __m128i k2 = _mm_set_epi32(0x61c88647, 0x3c6ef372, 0xbb67ae85, 0x6a09e667), k3 = _mm_set_epi32(0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab);
+    const __m128i step = _mm_set_epi32(0x9e3779b9, 0x7f4a7c15, 0xf39cc060, 0x5ced2a59), prime = _mm_set1_epi32((int)0x9e3779b1);
+    __m128i a0 = _mm_setzero_si128(), a1 = a0, a2 = a0, a3 = a0;
+    for (int i = 0; i < 4096; i += 64) {
+        __m128i d0 = _mm_loadu_si128((const __m128i *)(p + i)), d1 = _mm_loadu_si128((const __m128i *)(p + i + 16));
+        __m128i d2 = _mm_loadu_si128((const __m128i *)(p + i + 32)), d3 = _mm_loadu_si128((const __m128i *)(p + i + 48));
+        __m128i x0 = _mm_xor_si128(d0, k0), x1 = _mm_xor_si128(d1, k1), x2 = _mm_xor_si128(d2, k2), x3 = _mm_xor_si128(d3, k3);
+        a0 = _mm_add_epi64(a0, _mm_add_epi64(_mm_mul_epu32(x0, _mm_srli_epi64(x0, 32)), _mm_shuffle_epi32(d0, 0x4E)));
+        a1 = _mm_add_epi64(a1, _mm_add_epi64(_mm_mul_epu32(x1, _mm_srli_epi64(x1, 32)), _mm_shuffle_epi32(d1, 0x4E)));
+        a2 = _mm_add_epi64(a2, _mm_add_epi64(_mm_mul_epu32(x2, _mm_srli_epi64(x2, 32)), _mm_shuffle_epi32(d2, 0x4E)));
+        a3 = _mm_add_epi64(a3, _mm_add_epi64(_mm_mul_epu32(x3, _mm_srli_epi64(x3, 32)), _mm_shuffle_epi32(d3, 0x4E)));
+        k0 = _mm_add_epi32(k0, step); k1 = _mm_xor_si128(k1, k0); k2 = _mm_add_epi32(k2, k1); k3 = _mm_xor_si128(k3, k2);
+        if ((i & 1023) == 960) {   /* (every 1 KB: acc ^= acc >> 47, ^= key, *= prime) */
+            a0 = mul64x32(_mm_xor_si128(_mm_xor_si128(a0, _mm_srli_epi64(a0, 47)), k3), prime);
+            a1 = mul64x32(_mm_xor_si128(_mm_xor_si128(a1, _mm_srli_epi64(a1, 47)), k2), prime);
+            a2 = mul64x32(_mm_xor_si128(_mm_xor_si128(a2, _mm_srli_epi64(a2, 47)), k1), prime);
+            a3 = mul64x32(_mm_xor_si128(_mm_xor_si128(a3, _mm_srli_epi64(a3, 47)), k0), prime);
+        }
+    }
+    u64 l[8];
+    _mm_storeu_si128((__m128i *)l, a0); _mm_storeu_si128((__m128i *)(l + 2), a1); _mm_storeu_si128((__m128i *)(l + 4), a2); _mm_storeu_si128((__m128i *)(l + 6), a3);
+    u64 h = 0x9e3779b97f4a7c15ull;
+    for (int i = 0; i < 8; i++) { h ^= l[i] * 0xc2b2ae3d27d4eb4full; h = (h << 31 | h >> 33) * 0x9e3779b97f4a7c15ull; }
+    h ^= h >> 29; h *= 0xbf58476d1ce4e5b9ull; h ^= h >> 32;
+    return h;
+}
+typedef struct CopyJob { u8 *d1; const u8 *s1; u8 *d2; const u8 *s2; u32 slot; u8 *same; int cmp_only; u64 hpage; } CopyJob;   /* hpage: + 1, the alias page whose hash stands for the compare (sm_hash) */   /* same: compared first (the state map's steady pages): 1 written there if d2 already was s2 */
 static CopyJob *jobs;
 static u32 njobs, jobs_cap;
 static volatile LONG jobs_next, jobs_done;
@@ -587,7 +632,7 @@ static int nworkers = -1;
 static double jobs_ms;
 static void job_add(u8 *d1, const u8 *s1, u8 *d2, const u8 *s2, u32 slot) {
     if (njobs == jobs_cap) jobs = realloc(jobs, sizeof *jobs * (jobs_cap = jobs_cap ? jobs_cap * 2 : 8192));
-    jobs[njobs++] = (CopyJob){d1, s1, d2, s2, slot, NULL, 0};
+    jobs[njobs++] = (CopyJob){d1, s1, d2, s2, slot, NULL, 0, 0};
 }
 /* (a load beside the GPU's queue, memory_load) The GPU's pages a load writes back, held until the queue is done:
  * shadow s2 -> memory d2, compared first when `same` (a steady page). ld_defer: sync lists them here. */
@@ -596,7 +641,7 @@ static u32 ndjobs, djobs_cap;
 static int ld_defer;
 static void djob_add(u8 *d2, const u8 *s2, u8 *same) {
     if (ndjobs == djobs_cap) djobs = realloc(djobs, sizeof *djobs * (djobs_cap = djobs_cap ? djobs_cap * 2 : 4096));
-    djobs[ndjobs++] = (CopyJob){NULL, NULL, d2, s2, NO_SLOT, same, 0};
+    djobs[ndjobs++] = (CopyJob){NULL, NULL, d2, s2, NO_SLOT, same, 0, 0};
 }
 /* (SSBU_RB_STAMPS=3: the alias stamps' ranges, asked on the copy threads too; see sync) */
 void watch_rb_scan(u64 lo, u64 hi, u64 stamp, void **pages);
@@ -622,7 +667,13 @@ static void jobs_work(void) {
             CopyJob *q = &jobs[j];
             u8 *d1 = q->slot != NO_SLOT ? jobs_undo->data + ((size_t)q->slot << 12) : q->d1;
             if (d1) memcpy(d1, q->s1, 0x1000);
-            if (q->same) { *q->same = !memcmp(q->d2, q->s2, 0x1000); if (*q->same || q->cmp_only) continue; }
+            if (q->same && q->hpage) {   /* (a steady page: by its hash, d2 the shadow's copy, s2 memory) */
+                u64 a = q->hpage - 1, h = page_hash(q->s2);
+                if (sm_hv[a] == sm_hepoch) *q->same = h == sm_hash[a];
+                else { *q->same = !memcmp(q->d2, q->s2, 0x1000); sm_hv[a] = sm_hepoch; }
+                sm_hash[a] = h;   /* (unchanged, or memory's bytes, which the copy below or the undo pass puts in the shadow) */
+                if (*q->same || q->cmp_only) continue;
+            } else if (q->same) { *q->same = !memcmp(q->d2, q->s2, 0x1000); if (*q->same || q->cmp_only) continue; }
             if (q->d2) memcpy(q->d2, q->s2, 0x1000);
         }
     }
@@ -635,7 +686,11 @@ static void jobs_run(void) {
     double t = now_ms();
     if (nworkers < 0) {
         const char *e = getenv("SSBU_RB_COPY_THREADS");
-        nworkers = e && *e ? atoi(e) : 4;
+        /* (half the logical processors, 4 to 8: the guest threads are held while they copy. 8 against 4 on a 16-thread
+         * PC: the steady pages' comparison 0.9 ms a save instead of 1.4, the hashes then reading memory alone) */
+        SYSTEM_INFO si; GetSystemInfo(&si);
+        int half = (int)si.dwNumberOfProcessors / 2;
+        nworkers = e && *e ? atoi(e) : half < 4 ? 4 : half > 8 ? 8 : half;
         if (nworkers > 16) nworkers = 16;
         for (int i = 0; i < nworkers; i++) {
             jobs_go[i] = CreateEventA(NULL, FALSE, FALSE, NULL);
@@ -719,6 +774,7 @@ static void settle_page(u8 *p, int now, int to_shadow) {
     u32 k = c ? (u32)((p - c->base) >> 12) : 0;
     int was = is_present(c, k);
     if (!c && (to_shadow || !now)) return;
+    if (to_shadow && sm_alias(p)) sm_hash_forget(sm_ap(p));
     if (to_shadow) {
         if (now) {
             undo_push(c, k, p, was ? U_CONTENT : U_ABSENT);
@@ -921,7 +977,7 @@ static void sm_streaks(u64 save_clock) {
                     else if (++sm_streak[a] >= SM_IDLE) { sm_steady[wi] &= ~m; sm_streak[a] = 0; sm_demoted++; }
                     if (cool_on) sm_idle[a] = 0;
                 } else if (sm_wr[wi] & m) {
-                    if (++sm_streak[a] >= SM_STEADY) { sm_steady[wi] |= m; sm_streak[a] = 0; sm_promoted++; }
+                    if (++sm_streak[a] >= SM_STEADY) { sm_steady[wi] |= m; sm_streak[a] = 0; sm_promoted++; sm_hash_forget(a); }
                     if (cool_on) sm_idle[a] = 0;
                 } else {
                     sm_streak[a] = 0;
@@ -1446,6 +1502,7 @@ static void sync(int to_shadow) {
                     job_add(NULL, NULL, shadow_page(c, c->base + ((u64)k << 12)), c->base + ((u64)k << 12), NO_SLOT);
                     jobs[njobs - 1].same = &sm_same[b + k];
                     jobs[njobs - 1].cmp_only = 1;
+                    if (sm_hash_want > 0) { jobs[njobs - 1].hpage = b + k + 1; if (sm_hv[b + k] == sm_hepoch) sm_hash_used++; else sm_hash_cmp++; }
                 }
         }
         jobs_run();
@@ -1475,7 +1532,7 @@ static void sync(int to_shadow) {
                     if (undo_cmp) { if (!sm_same[b + k]) { job_add(NULL, sh, sh, cur, undo_reserve(c, k, cur, U_CONTENT)); n++; if (sm_gpu && sm_bit(sm_gpu, b + k)) mstat.g_copied++; } continue; }
                     n++;
                     if (!to_shadow && ld_defer && sm_gpu && sm_bit(sm_gpu, b + k)) { djob_add(cur, sh, &sm_same[b + k]); continue; }   /* (after the GPU's queue: see memory_load) */
-                    if (to_shadow) job_add(NULL, sh, sh, cur, NO_SLOT); else job_add(NULL, NULL, cur, sh, NO_SLOT);
+                    if (to_shadow) { job_add(NULL, sh, sh, cur, NO_SLOT); sm_hash_forget(b + k); } else job_add(NULL, NULL, cur, sh, NO_SLOT);
                     jobs[njobs - 1].same = &sm_same[b + k];
                 }
             for (u64 p = sm_cmp > 0 ? (u64)end : watch_rb_next((u64)c->base, (u64)end, shadow_seen); p < (u64)end; p = watch_rb_next(p + 0x1000, (u64)end, shadow_seen)) {
@@ -1601,6 +1658,12 @@ static void sm_begin(u64 before) {
         sm_dirty = VirtualAlloc(NULL, SM_PAGES / 8, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         sm_streak = VirtualAlloc(NULL, SM_PAGES * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         sm_same = VirtualAlloc(NULL, SM_PAGES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (sm_hash_want < 0) { const char *e = getenv("SSBU_RB_SM_HASH"); sm_hash_want = !(e && *e == '0'); }
+        if (sm_hash_want) {   /* (touched only where steady pages are: some MB of the 128 MB reserved) */
+            sm_hash = VirtualAlloc(NULL, SM_PAGES * 8, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+            sm_hv = sm_hash ? VirtualAlloc(NULL, SM_PAGES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE) : NULL;
+            if (!sm_hv) sm_hash_want = 0;
+        }
         if (!sm_cold || !sm_hot || !sm_steady || !sm_wr || !sm_dirty || !sm_streak || !sm_same) { sm_want = 0; return; }
         if (lazy_want < 0) { const char *lz = getenv("SSBU_RB_LAZY_SHADOW"); lazy_want = !(lz && *lz == '0'); }
         if (lazy_want) {
@@ -1712,6 +1775,9 @@ static void sm_begin(u64 before) {
 static void sm_end(void) {
     gdef_settle();
     if (!sm_on) return;
+    if (sm_hash_want > 0) fprintf(stderr, "[rb] state map: the steady pages by hash: %lld times by the hash alone, %lld compared (no hash yet, or a load since)\n", sm_hash_used, sm_hash_cmp);
+    sm_hash_used = sm_hash_cmp = 0;
+    sm_hash_forget_all();
     double t0 = now_ms();
     AcquireSRWLockExclusive(&sm_lock);
     sm_on = 0;
@@ -1800,6 +1866,7 @@ static int gpu_pages_again(u64 from, u64 *npages) {
             if (!is_present(c, k)) continue;   /* (not in the state: a page committed since is settled by the next save) */
             undo_push(c, k, p, U_CONTENT);
             memcpy(shadow_page(c, p), p, 0x1000);
+            if (sm_alias(p)) sm_hash_forget(sm_ap(p));
             (*npages)++;
         }
     }
@@ -1844,6 +1911,7 @@ static void gdef_apply(void) {
                 if (slot == NO_SLOT - 1) gdef.lost = 1;
                 else if (slot != NO_SLOT) memcpy(gdef.undo->data + ((size_t)slot << 12), shadow_page(c, p), 0x1000);
                 memcpy(shadow_page(c, p) + (a - pg), (const u8 *)G2H(a), (size_t)(e - a));
+                if (sm_alias(p)) sm_hash_forget(sm_ap(p));   /* (the shadow's page changed: its hash no longer stands for it) */
                 bytes += e - a;
                 if (pg != last) { pages++; last = pg; }
             }
@@ -1854,6 +1922,7 @@ static void gdef_apply(void) {
 }
 static u64 gpu_pages_all(void) {
     u64 n = 0;
+    sm_hash_forget_all();
     for (u32 i = 0; i < nchunks; i++) {
         Chunk *c = chunk_map[chunk_ids[i]];
         for (u32 k = 0; k < CH_PAGES; k++) {
@@ -1918,6 +1987,7 @@ static u64 load_compare_all(void) {
 static u64 undo_beside(int age, int phase);   /* (below the ring) */
 static double ld_undo_ms;
 static void memory_load(int beside, u64 gmark, u64 glog, int age) {
+    sm_hash_forget_all();   /* (the undo records write the shadow) */
     if (memory_untouched) {
         memset(mstat.t, 0, sizeof mstat.t);
         mstat.pages = mstat.whole_pages = 0; mstat.whole = 0; mstat.ms = 0;
