@@ -82,7 +82,7 @@ namespace OpenSmash.Core
                 if (first.Length > 300) first = first.Substring(0, 300);
                 var gpu = logText == null ? null : Regex.Match(logText, @"(?:Vulkan|D3D11|device)[^\r\n]{0,20}:\s*([^\r\n(]{4,80})");
                 string stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-                string folder = "o/" + account.Me.Id + "/" + stamp;
+                string folder = "r/" + account.Me.Id + "/" + stamp + "-os";   // (the bucket's policy: r/<own id>/...; the product is a column)
                 string reportPath = folder + "-" + kind + ".txt", logPath = logText == null ? null : folder + "-play.log";
                 if (Environment.GetEnvironmentVariable("OPENSMASH_CRASH_TEST") == "1")
                 {   // (test: what would be sent, beside the log; nothing goes out)

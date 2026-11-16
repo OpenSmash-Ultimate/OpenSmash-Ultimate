@@ -224,7 +224,7 @@ static u64 process_age_ms(void) { return rt_now_ns() / 1000000; }
  * internet address reaches another game), a signed-in player's lobby ticket in every JOIN, no direct paths and no EOS
  * with it. Its address: SSBU_OFFICIAL_LOBBY, else config/official_lobby.txt (the launcher writes the release's), else
  * OFFICIAL_LOBBY_DEFAULT. The older public lobbies' names mean it too. */
-#define OFFICIAL_LOBBY_DEFAULT "eu.lobby.opensmashultimate.com:39010"
+#define OFFICIAL_LOBBY_DEFAULT "eu.lobby.opensmashultimate.com:39421"   /* (the port of OpenSmash's lobbies: UDP, and TCP for the game server) */
 static char official_lobby[256];
 static const char *public_lobby(void) {
     if (official_lobby[0]) return official_lobby;
