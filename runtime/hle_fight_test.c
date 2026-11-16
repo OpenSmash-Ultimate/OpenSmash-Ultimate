@@ -413,6 +413,29 @@ void test_fight_presented(void) {
     if (end_limit && n >= end_limit && !end_fired) { end_count = n; end_fired = shown; }
 }
 
+/* ---- the match's GPU pipelines (gpu_vk.c's warm start groups) ------------------------------------ */
+/* As each player's record is built (always, not only in debug matches): its fighter's pipelines, and with the first
+ * player's the stage's, are made before every other group the warm start has left (gfx_match_want); at the next frame
+ * end, before the match loads, the game waits for them (gfx_match_wait) - on a first start, where the driver compiles each
+ * pipeline from nothing, a longer wait on the select screen instead of compiles during the fight. (Not at the fight's first
+ * frame line: the stage and the fighters' entrances are drawn before it.) After the debug match's own record hook (an
+ * inner order: its fighters and stage are the ones set). */
+void gfx_match_want(unsigned long long key, int first);   /* gpu_backend.c */
+void gfx_match_wait(void);
+static volatile LONG shaders_pending;
+static void shaders_record(Cpu *c, const u64 args[8], void *ctx) {
+    (void)c; (void)ctx;
+    int idx = (int)args[1];
+    u64 rec = args[3];
+    if (idx == 0) gfx_match_want(ld64(stage_choice()) & 0xFFFFFFFFFFull, 1);
+    if (rec && (i8)ld8(rec + 8) >= 0) gfx_match_want(ld64(rec) & 0xFFFFFFFFFFull, 0);
+    InterlockedExchange(&shaders_pending, 1);
+}
+static void shaders_end(Cpu *c, const u64 args[8], void *ctx) {
+    (void)c; (void)args; (void)ctx;
+    if (shaders_pending && InterlockedExchange(&shaders_pending, 0)) gfx_match_wait();
+}
+
 /* ---- start --------------------------------------------------------------------------------- */
 /* (main, before the game runs) */
 void test_fight_start(void) {
@@ -441,6 +464,8 @@ void test_fight_start(void) {
     }
     if (det) frame_hook_add(FRAME_HOOK_END, FRAME_ORDER_FIGHT_TEST, NULL, frame_end_hook, NULL);
     frame_hook_add(FRAME_HOOK_END, FRAME_ORDER_FIGHT_TEST, NULL, fight_flag_hook, NULL);   /* (game_fight_on, always) */
+    frame_hook_add(FRAME_HOOK_RECORD, FRAME_ORDER_FIGHT_TEST + 50, NULL, shaders_record, NULL);   /* (the match's pipelines, always) */
+    frame_hook_add(FRAME_HOOK_END, FRAME_ORDER_FIGHT_TEST + 50, NULL, shaders_end, NULL);
     if (det && !(det_off & DET_OFF_STEPS)) input_seq_set_steps(seq_steps);
     if (fixed_seed_parse(getenv("SSBU_FIXED_SEED"), &n)) {
         fixed_on = 1;
