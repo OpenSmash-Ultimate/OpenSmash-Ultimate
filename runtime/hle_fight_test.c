@@ -248,6 +248,10 @@ static int seq_steps(void) {
     return (int)fight_steps(&steps, fighters[0].frame, ready_go());
 }
 
+/* The first fighter's fight frame, as SSBU_FIGHT_HASH's lines number it (0: no fight seen). For
+ * SSBU_DEBUG_CAM_TRACE (host.c), whose lines join the hash log's on it. */
+long long fight_test_frame0(void) { return fighter_count ? fighters[0].frame : 0; }
+
 /* ---- SSBU_FIXED_SEED -------------------------------------------------------------------- */
 static int fixed_on;
 static u64 fixed_state;
@@ -332,6 +336,7 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx) {
         fprintf(stderr, "[fight] debug match: the screens' stage choice: ui_stage %llx form %u, hazards %u; rule: stock %u, item appear %u\n",
                 (unsigned long long)ld64(sel), ld32(sel + 8), ld8(GAME_ADDR(STAGE_HAZARDS)), ld8(block + 0x4c), ld32(block + 0x54));
         dm_stage(&match, P(u8, sel), P(u8, GAME_ADDR(STAGE_HAZARDS)), P(u8, block + 0x54));
+        if (match.time > 0) st32(block + 0x48, (u32)match.time * 3600);   /* (the time limit, in frames: 25200 is 7 minutes) */
     }
     /* A human player 2 plays on controller slot 2 when something drives it: SSBU_SEQ2's sequence, else a pad
      * connected there (a remap test's scripted pad, tools/dev/fakexi.c). Set as a controller that joined the

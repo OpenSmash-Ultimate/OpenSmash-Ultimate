@@ -35,6 +35,7 @@ from test_ssbu_relay_v3 import V3Player, mods, until  # noqa: E402
 D3D11_STAND_IN = ('typedef struct ID3D11Device ID3D11Device;\ntypedef struct ID3D11DeviceContext ID3D11DeviceContext;\n'
                   'typedef struct ID3D11RenderTargetView ID3D11RenderTargetView;\n')
 LOBBY_PAGE = 4   # (the Lobby page's number in the menu, less one)
+PAGES = 7        # (Display, Controllers, Online, Game, Lobby, Mods, Experimental)
 NO_ANSWER = 'no answer from the lobby (A: ask again)'
 
 
@@ -346,16 +347,17 @@ class Pages(MenuTest):
         m.key('TAB')
         self.assertEqual(m.page()[1], LOBBY_PAGE + 1)   # (after the Lobby: Mods)
         m.key('TAB')
+        self.assertEqual(m.page()[1], LOBBY_PAGE + 2)   # (then Experimental)
+        m.key('TAB')
         self.assertEqual(m.page()[1], 0)   # (then Display again)
-        m.key('SHTAB')
-        m.key('SHTAB')
+        m.key('SHTAB', 3)
         self.assertEqual(m.page()[1], LOBBY_PAGE)
         m.type('4')
         self.assertEqual(m.page()[1], 3)
         m.key('TAB')
         self.assertEqual(m.page()[1], LOBBY_PAGE)
         drawn = m.draw()
-        for i, name in enumerate(('Display', 'Controllers', 'Online', 'Game', 'Lobby', 'Mods')):
+        for i, name in enumerate(('Display', 'Controllers', 'Online', 'Game', 'Lobby', 'Mods', 'Experimental')):
             self.assertIn(f'{i + 1} {name}', drawn)
         self.assertIn('Up/Down: choose   Left/Right: change   A/Enter: select   L/R, Q/E or Tab: page   B/Esc: close', drawn)
         for icon in ('L', 'R', 'Restart game', 'Quit game'):   # (the tab bar's buttons, and under the rows)
@@ -376,7 +378,8 @@ class Pages(MenuTest):
         m = self.menu()
         m.key('ESC')
         display = ['Window', 'Frame pacing', 'Frames queued ahead'] + ['Hide the mouse pointer', 'Frame rate in the corner', 'Window size',
-                   'Render scale'] + (['Graphics card'] if os.name == 'nt' else []) + (['Renderer'] if sys.platform != 'darwin' else [])
+                   'Render scale', 'Aspect ratio', 'Viewtype', 'Timer position'] + (['Graphics card'] if os.name == 'nt' else []) \
+            + (['Renderer'] if sys.platform != 'darwin' else [])
         self.assertEqual(m.labels(), display)
         m.type('2')
         self.assertEqual(m.labels(), ['Controllers', 'Keyboard plays as', 'Keyboard keys...', 'Pads when not focused',
@@ -395,6 +398,8 @@ class Pages(MenuTest):
                          + ['Netplay version'])   # (offline: no code)
         m.type('6')
         self.assertEqual(m.labels(), ['Mods', 'ARCropolis code patches', 'No mod installed'])   # (the harness has no mods)
+        m.type('7')
+        self.assertEqual(m.labels(), ['Ultrawide online'] + (['Open log folder'] if os.name == 'nt' else []))   # (Explorer: Windows only)
         m.type('4')
         keys = (['F1, Cmd+1', 'F2, Cmd+2', 'F3, Cmd+3', 'Option+Return'] if sys.platform == 'darwin'
                 else ['F1', 'F2', 'F3', 'F11, Alt+Enter'])
@@ -411,7 +416,7 @@ class Pages(MenuTest):
         at = labels.index('Renderer')
         self.assertEqual(m.row('Renderer')['value'], own)
         self.assertIn('Vulkan on an AMD, NVIDIA or Intel card' if os.name == 'nt' else 'Vulkan: in development', m.row('Renderer')['help'])
-        m.key('DOWN', at)
+        m.key('DOWN', sum(1 for r in m.rows()[:at] if r['kind'] != 0))   # (read-only rows are passed over: Viewtype at 16:9)
         self.assertEqual(m.at()['label'], 'Renderer')
         if os.name == 'nt':
             m.key('RIGHT')
@@ -445,7 +450,7 @@ class Mouse(MenuTest):
 
     @staticmethod
     def tab(i):
-        return 342 + 247 * i, 185   # (the tabs across the top, between L and R)
+        return round(218.5 + 1482 / PAGES * (i + 0.5)), 185   # (the tabs across the top, sharing the bar between L and R)
 
     @staticmethod
     def row_y(j):
@@ -532,7 +537,7 @@ class Mouse(MenuTest):
         m = self.menu()
         m.key('ESC')
         self.click(m, 175, 185)   # (R's twin at the left: L)
-        self.assertEqual(m.page()[1], 5)
+        self.assertEqual(m.page()[1], PAGES - 1)
         self.click(m, 1745, 185)   # (R)
         self.assertEqual(m.page()[1], 0)
 
@@ -566,17 +571,17 @@ class Pad(MenuTest):
         self.assertEqual(m.page()[1], 1)
         m.pad('R', 4)
         self.assertEqual(m.page()[1], 5)
-        m.pad('R')
-        self.assertEqual(m.page()[1], 0)   # (round)
+        m.pad('R', 2)
+        self.assertEqual(m.page()[1], 0)   # (round, past Experimental)
         m.pad('L')
-        self.assertEqual(m.page()[1], 5)
-        m.pad('L', 2)
+        self.assertEqual(m.page()[1], PAGES - 1)
+        m.pad('L', 3)
         self.assertEqual(m.page()[1], 3)
 
     def test_every_row_reachable(self):
         m = self.menu()
         m.key('ESC')
-        for p in range(6):
+        for p in range(PAGES):
             _, page, _, rows = m.page()
             self.assertEqual(page, p)
             wanted = {i for i, r in enumerate(rows) if r['kind'] != 0}   # (K_INFO rows are read, not chosen)

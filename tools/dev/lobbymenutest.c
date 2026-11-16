@@ -103,6 +103,19 @@ void display_set_render_scale(float scale) { (void)scale; }
 void display_set_renderer(int renderer) { renderer_saved = renderer; }
 void display_set_gpu(const char *gpu) { (void)gpu; }
 int display_renderer(void) { return RENDERER_DEFAULT; }   /* (the setting this start began with: auto, which drew with Direct3D 11) */
+/* (gpu_display.c: the picture shape, view, timer and window size, as a fresh install has them) */
+float display_aspect(void) { return 16.0f / 9; }
+int display_shape_locked(void) { return 0; }
+const char *display_aspect_setting(void) { return "16:9"; }
+void display_set_aspect(const char *text) { (void)text; }
+int display_view(void) { return VIEW_HYBRID; }
+void display_set_view(int view) { (void)view; }
+int display_timer(void) { return TIMER_RIGHT; }
+void display_set_timer(int timer) { (void)timer; }
+int display_uw_online_saved(void) { return 0; }
+void display_set_uw_online(int on) { (void)on; }
+int display_window_height_fits(int height) { (void)height; return 1; }
+void display_set_window_height(int height) { (void)height; }
 int gfx_renderer(void) { return RENDERER_D3D11; }
 int audio_master_volume(void) { return 100; }                 /* (ipc_audio.c: the master volume) */
 void audio_set_master_volume(int percent) { (void)percent; }

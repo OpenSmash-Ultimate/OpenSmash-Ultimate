@@ -161,6 +161,9 @@ namespace OpenSmash.Launcher
             string exe = Path.Combine(BuildDir(repo), "ssbu.exe");
             if (!File.Exists(exe)) return null;
             string log = Path.Combine(BuildDir(repo), "play.log");
+            // The last session's log kept as play.prev.log: a player who starts again before sending it still has it
+            // (the settings' Experimental tab, "Open log folder"; docs/adr/0002).
+            try { if (File.Exists(log) && new FileInfo(log).Length > 0) File.Copy(log, Path.Combine(BuildDir(repo), "play.prev.log"), true); } catch { }
             try { File.WriteAllText(log, ""); } catch { }
             var psi = new ProcessStartInfo
             {
