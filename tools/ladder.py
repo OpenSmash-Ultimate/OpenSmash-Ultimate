@@ -68,14 +68,15 @@ from typing import NamedTuple
 LIMIT_ENV, OPTNONE_ENV, ORDER_ENV = "SSBU_COMPILE_LIMIT", "SSBU_OPTNONE_ABOVE", "SSBU_LONGEST_FIRST"
 # The memory budget (Memory): SSBU_COMPILE_MEMORY_MB=<MB> for the compilers running at once; 0: none, the files
 # start strictly in order, as before; unset: this PC's RAM less RESERVE_MB. A generated file is taken to need
-# what it held last time (compile_times.json's "mb"), else MEMORY_BASE_MB + MEMORY_PER_INSN_MB for each instruction
-# of its longest function: measured with clang-cl 23 on 13.0.5 (peak commit), a usual file (longest function a
-# few thousand instructions) holds 330 MB (490 at most), the fighters' files with one of 74,000 to 122,000
-# 0.8 to 1.2 GB, the items' one of 210,000 3.4 GB: the model stays above each. (The ladder's own way with such a
-# file, its long functions unoptimised, held 9.6 GB for the items' one: a reason for the budget.)
+# what it held last time (compile_times.json's "mb"), else memory_model's guess by its longest function. Measured
+# with clang-cl 23 on 13.0.5, all 1,607 files (peak commit): 300 MB on average and 550 at most for a file whose
+# longest function is under 40,000 instructions, up to 760 MB under 100,000, 0.8 to 1.1 GB for the four of 107,000
+# to 122,000, 3.3 GB for the items' one of 210,000; the model stays above each. (The ladder's own way with that
+# file, its long functions unoptimised, held 9.6 GB: a reason for the budget.)
 MEMORY_ENV = "SSBU_COMPILE_MEMORY_MB"
 RESERVE_MB = 3072
-MEMORY_BASE_MB, MEMORY_PER_INSN_MB = 500.0, 0.015
+MEMORY_BASE_MB, MEMORY_PER_INSN_MB = 560.0, 0.006
+MEMORY_LONG, MEMORY_PER_LONG_INSN_MB = 130000, 0.03   # (past this many instructions it grows faster)
 FLOOR = 600.0           # seconds: no generated file is stopped sooner (most take a few)
 TIMES = 4.0             # its estimate times this, at this PC's pace (the biggest files take up to 1.5 times theirs)
 PACE_UNKNOWN = 4.0      # this PC's pace taken to be this until it is measured
@@ -822,7 +823,7 @@ def memory_setting(env=None):
 
 def memory_model(biggest):
     """What compiling a generated file is taken to hold, in MB, by its longest function's instructions."""
-    return MEMORY_BASE_MB + MEMORY_PER_INSN_MB * biggest
+    return MEMORY_BASE_MB + MEMORY_PER_INSN_MB * biggest + MEMORY_PER_LONG_INSN_MB * max(0, biggest - MEMORY_LONG)
 
 
 class Ladder:

@@ -1137,7 +1137,11 @@ def plugins_first(jobs=None):
         if os.path.exists(PLUGINS_FIRST_STAMP):
             os.remove(PLUGINS_FIRST_STAMP)
         log("  the standard Skyline plugins first, so the game's C is written once with their hooks in it")
-        for cmd in ([sys.executable, os.path.join("tools", "std_plugins.py"), "fetch"],
+        # (first the game's own fighter modules get their addresses, dump/nro/bases.txt, as the build has always
+        # given them: before any plugin's. Listed after a plugin they would each sit one slot higher than in every
+        # install made the old way, and two players' games must lay their modules out alike.)
+        for cmd in ([sys.executable, os.path.join("tools", "recomp.py"), "check", os.path.join("dump", "exefs")],
+                    [sys.executable, os.path.join("tools", "std_plugins.py"), "fetch"],
                     [sys.executable, os.path.join("tools", "skyline.py"), "sync", *(["--jobs", str(jobs)] if jobs else [])]):
             if subprocess.run(cmd, cwd=ROOT).returncode:
                 log("  (that did not work: the plugins are fetched and built in after the game, as before)")
