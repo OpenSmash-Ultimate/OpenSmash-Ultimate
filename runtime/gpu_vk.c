@@ -3585,6 +3585,29 @@ static WarmShader *warm_ready(const WarmKey *k) {
  * again rather than given to the driver once more: one start without warmed pipelines, not a crash at each. */
 static char warm_marker[1200];
 #define WARM_RETRIES 3   /* (unfinished warm starts in a row before the list is started again) */
+static char warm_capped[1200];   /* "<list>.capped": this card's driver crashed in a warm start; its budget is WARM_CAPPED_MB */
+#define WARM_CAPPED_MB 320   /* (some four hundred pipelines, the menus' first) */
+static int warm_tries;   /* (what the marker says while the warm threads run) */
+extern void (*rt_crash_module_hook)(const char *module);   /* host.c: called with the faulting module's name */
+
+/* The crash handler's report thread, while the process dies: a crash inside a graphics driver's shader compiler during
+ * the warm start is written into the marker ("<n> driver <dll>"), so the next start does not warm the same list into
+ * the same crash (warm_start). Anything else - a mod's or the game's own crash - leaves the marker as it is. Only
+ * Win32 file calls: the faulting thread may hold the C runtime's locks. */
+static void warm_crash_note(const char *module) {
+    static const char *const compilers[] = {"nvgpucomp64.dll", "nvoglv64.dll", "amdvlk64.dll", "amdxc64.dll", "igvk64.dll", "igc64.dll"};
+    if (!warm_running || !warm_marker[0] || !module) return;
+    int match = 0;
+    for (u32 i = 0; i < sizeof compilers / sizeof *compilers && !match; i++) match = !_stricmp(module, compilers[i]);
+    if (!match) return;
+    char text[160];
+    int n = snprintf(text, sizeof text, "%d driver %.60s", warm_tries + 1, module);
+    HANDLE f = CreateFileA(warm_marker, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD put;
+    WriteFile(f, text, (DWORD)(n > 0 ? n : 0), &put, NULL);
+    CloseHandle(f);
+}
 
 static VkFormat warm_z24 = VK_FORMAT_D24_UNORM_S8_UINT;   /* (Z24S8 on this card: set by warm_start before its threads) */
 /* One record made (or left out, and counted). */
@@ -3785,12 +3808,27 @@ static void warm_start(void) {
      * killed during the shader loading, not a bad record: the list is warmed again; only after WARM_RETRIES unfinished
      * ones in a row is it started again - 2026-11-11: a single killed start used to throw the whole list away, and the
      * next start then compiled every pipeline at its first draw.) */
-    int tries = 0;
+    int tries = 0, skip = 0;
+    snprintf(warm_capped, sizeof warm_capped, "%s.capped", list);
     if (GetFileAttributesA(warm_marker) != INVALID_FILE_ATTRIBUTES) {
+        char driver[64] = "";
         FILE *mf = fopen(warm_marker, "rb");
-        if (mf) { if (fscanf(mf, "%d", &tries) != 1) tries = 1; fclose(mf); }
+        if (mf) { if (fscanf(mf, "%d driver %63s", &tries, driver) < 1) tries = 1; fclose(mf); }
         if (tries < 1) tries = 1;
-        if (tries < WARM_RETRIES)
+        if (driver[0]) {
+            /* (The crash handler wrote it: the last start died inside the graphics driver's shader compiler while this
+             * warm start ran - NVIDIA's nvgpucomp64.dll did, after 1,000-1,250 pipelines in one start on an RTX 5070
+             * laptop, #430. Warming again would crash again, so this start warms nothing (the list is kept), and from
+             * now on this card's warm starts stop at WARM_CAPPED_MB: "<list>.capped". A crash anywhere else - a mod's,
+             * the game's - is not this, and the list is warmed again as below.) */
+            fprintf(stderr, "[vulkan] warm start: the last one crashed inside the graphics driver's compiler (%s): not warmed this time; "
+                    "from now on this card's warm start stops at %d MB (%s; SSBU_SHADER_PREWARM_MB sets another budget)\n",
+                    driver, WARM_CAPPED_MB, warm_capped);
+            FILE *cf = fopen(warm_capped, "wb");
+            if (cf) { fprintf(cf, "%s\n", driver); fclose(cf); }
+            DeleteFileA(warm_marker);
+            skip = 1;   /* (the list opened and kept up to date below, as with SSBU_VK_WARM=0) */
+        } else if (tries < WARM_RETRIES)
             fprintf(stderr, "[vulkan] warm start: the last one did not finish (%s, %d in a row): warmed again\n", warm_marker, tries);
         else {
             fprintf(stderr, "[vulkan] warm start: %d in a row did not finish (%s): the list is started again, nothing is warmed this time\n", tries, warm_marker);
@@ -3806,6 +3844,10 @@ static void warm_start(void) {
         warm_shader_slots = 0;
         return;
     }
+    if (skip) {
+        warm_shader_slots = 0;   /* (no draw looks its programs up: each makes its own, as without a list) */
+        return;
+    }
     if (getenv("SSBU_VK_WARM") && !atoi(getenv("SSBU_VK_WARM"))) {
         fprintf(stderr, "[vulkan] warm start: off (SSBU_VK_WARM=0), %u pipelines and programs listed\n", warm_nrecords);
         warm_shader_slots = 0;   /* (no draw looks its programs up) */
@@ -3816,9 +3858,20 @@ static void warm_start(void) {
     warm_z24 = depth_format(0x14);
     if (warm_z24 != VK_FORMAT_D24_UNORM_S8_UINT) fprintf(stderr, "[vulkan] warm start: the list's D24S8 depth made as this card's D32S8\n");
     MEMORYSTATUSEX m = {sizeof m};
+    /* A start warms from the list until the process has grown by this much: the pipelines hold driver memory that only
+     * goes away with the process. A third of the PC's memory (1 GB at least); WARM_CAPPED_MB on a card whose driver's
+     * compiler crashed during a warm start before ("<list>.capped", above): on a 16 GB RTX 5070 laptop one start made
+     * 1,000-1,250 pipelines before nvgpucomp64.dll crashed the process (0xc0000005, from a driver thread; one pipeline
+     * at a time did not help, and 239, 443, 600 and 621 pipelines were fine, #430), while an RX 9070 XT made 13,433 and
+     * an RTX 5000 Ada 6,682 in one start. The rest are made at their first use. SSBU_SHADER_PREWARM_MB sets it. */
+    int capped = GetFileAttributesA(warm_capped) != INVALID_FILE_ATTRIBUTES;
     warm_budget = 1024ull << 20;
     if (GlobalMemoryStatusEx(&m) && m.ullTotalPhys / 3 > warm_budget) warm_budget = m.ullTotalPhys / 3;
+    if (capped) warm_budget = (u64)WARM_CAPPED_MB << 20;
     if (getenv("SSBU_SHADER_PREWARM_MB")) warm_budget = strtoull(getenv("SSBU_SHADER_PREWARM_MB"), NULL, 10) << 20;
+    if (capped) fprintf(stderr, "[vulkan] warm start: this card's driver crashed in a warm start before (%s): at most %llu MB of pipelines\n",
+                        warm_capped, (unsigned long long)(warm_budget >> 20));
+    rt_crash_module_hook = warm_crash_note;
     warm_bytes0 = private_bytes();
     warm_t0 = rt_clock_ns();
     /* every processor but two while the first frame (or a fight's) waits; a quarter of them behind the menus */
@@ -3837,6 +3890,7 @@ static void warm_start(void) {
     InterlockedExchange(&warm_urgent, 1);   /* (until the first frame's shader loading: vk_warm_gate) */
     InterlockedExchange(&warm_running, (LONG)warm_threads_all);
     FILE *mark = fopen(warm_marker, "wb");
+    warm_tries = tries;
     if (mark) { fprintf(mark, "%d", tries + 1); fclose(mark); }
     else fprintf(stderr, "[vulkan] warm start: no marker file (%s): one that does not finish will not be noticed\n", warm_marker);
     for (u32 i = 0; i < warm_threads_all; i++) {
