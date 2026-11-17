@@ -736,6 +736,18 @@ namespace OpenSmash.Launcher
             return "main";
         }
 
+        // Commits only the old WindowSmash repository has (its README saying it moved), each with the last commit both
+        // repositories share: GitHub does not know them here, so a copy on one is compared as the shared commit
+        // (tools\install_windowsmash.ps1 updates it the same way, $ForeignCommits).
+        static readonly Dictionary<string, string> ForeignCommits = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["598d05240fc146f7184b3450653e2eec2ee97312"] = "8025b483b0443adb5668395eca31f9250e8c8efb",
+            ["3d5ba9095bf4a2c0d146df31adec0d59b8337bbb"] = "8025b483b0443adb5668395eca31f9250e8c8efb",
+        };
+
+        internal static string ResolveForeignCommit(string commit) =>
+            ForeignCommits.TryGetValue(commit, out string? shared) ? shared : commit;
+
         async Task CheckForUpdatesAsync(bool atBoot, bool allowDuringUpdate = false)
         {
             if (_updateChecking || (_updateApplying && !allowDuringUpdate)) return;
@@ -775,7 +787,7 @@ namespace OpenSmash.Launcher
                 string cmpBody;
                 try
                 {
-                    cmpBody = await GitHubGetAsync($"{UpdateApi}/compare/{local}...{sha}");
+                    cmpBody = await GitHubGetAsync($"{UpdateApi}/compare/{ResolveForeignCommit(local)}...{sha}");
                 }
                 catch (Exception ex)
                 {
@@ -895,7 +907,7 @@ namespace OpenSmash.Launcher
             catch { }
         }
 
-        // The launcher is rebuilt only where the .NET 8 SDK is (toolsuild_launcher.ps1 needs it): most players have
+        // The launcher is rebuilt only where the .NET 8 SDK is (tools\build_launcher.ps1 needs it): most players have
         // the release's OpenSmash.exe and no SDK, and a rebuild that can never work would be offered at every start.
         static bool DotnetSdkAvailable()
         {
@@ -1045,6 +1057,7 @@ namespace OpenSmash.Launcher
             string output = "";
             string beforeCommit = "";
             string beforeLauncherFingerprint = "";
+            bool launcherSwapped = false;
             try
             {
                 beforeCommit = await Task.Run(FindLocalCommit);
@@ -1055,6 +1068,7 @@ namespace OpenSmash.Launcher
                 if (!InstallerTakesUpdateOnly(File.ReadAllText(script))) await RefreshOldInstallerAsync(script);
                 var result = await Task.Run(() => RunPowerShellUpdate(script));
                 output = result.Output;
+                launcherSwapped = output.Contains("The launcher was updated too");   // (the installer put the latest release's OpenSmash.exe here)
                 if (result.Code != 0) throw new InvalidOperationException(UiLocale.Text("The updater stopped (exit ") + result.Code + ").");
                 else await RunPythonStepAsync("UPDATING PYTHON PACKAGES");   // (an update can need a new package)
             }
@@ -1143,6 +1157,8 @@ namespace OpenSmash.Launcher
                     ? "OpenSmash was updated. The game was rebuilt if its inputs changed."
                     : "OpenSmash is already up to date. No rebuild was needed.", "OpenSmash");
             }
+            if (launcherSwapped)
+                UiLocale.Message("The launcher was updated too: close OpenSmash and open it again to use the new one.", "OpenSmash");
             PlayDone();
             Invalidate();
         }
@@ -1159,7 +1175,8 @@ namespace OpenSmash.Launcher
             string dotGit = Path.Combine(_repo, ".git");
             if (Directory.Exists(dotGit) || File.Exists(dotGit))   // (git refuses a checkout with a changed file: git updates it)
                 throw new InvalidOperationException("This folder is a git checkout from before WindowSmash became OpenSmash-Ultimate. Update it with git: "
-                    + "git remote set-url origin https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate.git, then git pull --ff-only origin main.");
+                    + "git remote set-url origin https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate.git, git fetch origin, then git reset --hard origin/main "
+                    + "(WindowSmash's last commits are not in OpenSmash-Ultimate, so git pull cannot fast-forward; files git does not track, such as your game files, builds and save, stay).");
             string at = Regex.IsMatch(_updateHead, "^[0-9a-fA-F]{40}$") ? _updateHead : "main";
             byte[] body = await _httpClient.GetByteArrayAsync($"https://raw.githubusercontent.com/{UpdateRepo}/{at}/tools/install_windowsmash.ps1");
             string text = Encoding.UTF8.GetString(body);
@@ -1190,6 +1207,9 @@ namespace OpenSmash.Launcher
             psi.ArgumentList.Add("-File");
             psi.ArgumentList.Add(script);
             psi.ArgumentList.Add(only);
+            // This launcher rebuilds OpenSmash.exe after an update where the .NET SDK is: the installer then leaves the
+            // exe alone instead of putting the release's in its place (Update-LauncherExe).
+            if (only == "-UpdateOnly" && DotnetSdkAvailable()) psi.Environment["OPENSMASH_LAUNCHER_REBUILDS"] = "1";
             using var p = Process.Start(psi) ?? throw new InvalidOperationException("Could not start PowerShell.");
             var output = new StringBuilder();
             void Take(string? line)

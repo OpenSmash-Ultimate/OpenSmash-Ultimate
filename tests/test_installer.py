@@ -526,6 +526,86 @@ class InstallerDecisionTests(unittest.TestCase):
         self.assertIn('tools/source_version.txt export-subst', attributes.splitlines())
         self.assertIn('$Format:%H', (ROOT / 'tools/source_version.txt').read_text())
 
+    def test_foreign_commit(self):
+        shared = '8025b483b0443adb5668395eca31f9250e8c8efb'
+        other = '9fdc8fd21b3fde86c3e58a1e634a7e76a87220c7'
+        got = ps("@{ ws = (Resolve-ForeignCommit '598d05240fc146f7184b3450653e2eec2ee97312'); "
+                 "upper = (Resolve-ForeignCommit '3D5BA9095BF4A2C0D146DF31ADEC0D59B8337BBB'); "
+                 f"other = (Resolve-ForeignCommit '{other}') }}")
+        self.assertEqual(got, {'ws': shared, 'upper': shared, 'other': other})
+
+    def test_published_sha256(self):
+        h = '100e41cb62feabba16563990abbea1e1112def73a8098fa604b9b3369165c218'
+        got = ps(f"@{{ a = (Read-PublishedSha256 '{h.upper()}  OpenSmash.exe'); b = (Read-PublishedSha256 '{h}'); "
+                 f"c = (Read-PublishedSha256 'Not Found'); d = (Read-PublishedSha256 '{h}0  x') }}")
+        self.assertEqual(got, {'a': h, 'b': h, 'c': None, 'd': None})
+
+    def test_launcher_exe_refresh(self):
+        # An OpenSmash.exe that is not the latest release's is swapped for it (the old one kept as .old); the release's
+        # own, a copy following main, and a git checkout are left alone. Downloads are made up.
+        new = b'MZ new launcher'
+        new_hash = __import__('hashlib').sha256(new).hexdigest()
+        with tempfile.TemporaryDirectory() as root:
+            def run(ref, exe, git=False, text=None, download=b'MZ new launcher', old_left=None, rebuilds=False):
+                for name in ('OpenSmash.exe', 'OpenSmash.exe.old', 'OpenSmash.exe.download'):
+                    if os.path.exists(os.path.join(root, name)):
+                        os.remove(os.path.join(root, name))
+                if exe is not None:
+                    Path(root, 'OpenSmash.exe').write_bytes(exe)
+                if old_left is not None:
+                    Path(root, 'OpenSmash.exe.old').write_bytes(old_left)
+                if git:
+                    os.makedirs(os.path.join(root, '.git'), exist_ok=True)
+                elif os.path.isdir(os.path.join(root, '.git')):
+                    os.rmdir(os.path.join(root, '.git'))
+                body = text if text is not None else f"'{new_hash}  OpenSmash.exe'"
+                mocks = (f"$Root = '{root}'; $Script:UpdateRef = '{ref}'; $env:OPENSMASH_LAUNCHER_REBUILDS = '{'1' if rebuilds else ''}'; "
+                         f"function Get-Text {{ param($Url) $Url | Out-File -Append -LiteralPath (Join-Path $Root 'urls.txt'); {body} }}; "
+                         f"function Invoke-Download {{ param($Url, $Dest, $What) [IO.File]::WriteAllText($Dest, '{download.decode()}') }}; ")
+                out = ps_text(mocks + "'swapped=' + (Update-LauncherExe)")
+                exe_path = Path(root, 'OpenSmash.exe')
+                self.assertFalse(os.path.exists(os.path.join(root, 'OpenSmash.exe.download')), out)   # never left behind
+                return (out, exe_path.read_bytes() if exe_path.exists() else None,
+                        os.path.exists(os.path.join(root, 'OpenSmash.exe.old')))
+            out, exe, old = run('v0.4.0', b'MZ old launcher')
+            self.assertIn('swapped=True', out)
+            self.assertIn("OpenSmash.exe is now v0.4.0's", out)
+            self.assertEqual(exe, new)
+            self.assertTrue(old)
+            self.assertIn('/releases/download/v0.4.0/OpenSmash.exe.sha256', Path(root, 'urls.txt').read_text('utf-16'))
+            out, exe, old = run('v0.4.0', new)
+            self.assertIn('swapped=False', out)
+            self.assertIn("OpenSmash.exe is v0.4.0's", out)
+            out, exe, _ = run('main', b'MZ old launcher')
+            self.assertIn('swapped=False', out)
+            self.assertEqual(exe, b'MZ old launcher')
+            out, exe, _ = run('v0.4.0', b'MZ old launcher', git=True)
+            self.assertIn('swapped=False', out)
+            self.assertEqual(exe, b'MZ old launcher')
+            out, exe, _ = run('v0.4.0', b'MZ old launcher', rebuilds=True)   # the new launcher rebuilds it itself
+            self.assertIn('swapped=False', out)
+            self.assertEqual(exe, b'MZ old launcher')
+            # a download that is not what the checksum says, no network, no checksum: the old one stays, untouched
+            for kwargs in ({'download': b'MZ tampered'}, {'text': "throw 'no network'"}, {'text': "'Not Found'"}):
+                out, exe, old = run('v0.4.0', b'MZ old launcher', **kwargs)
+                self.assertIn('swapped=False', out, kwargs)
+                self.assertEqual(exe, b'MZ old launcher', kwargs)
+                self.assertFalse(old, kwargs)
+            # last time's swap: the .old is removed; a swap that stopped half-way (no OpenSmash.exe) gets it back
+            out, exe, old = run('v0.4.0', new, old_left=b'MZ old launcher')
+            self.assertEqual((exe, old), (new, False))
+            out, exe, old = run('v0.4.0', None, old_left=b'MZ old launcher', text="throw 'no network'")
+            self.assertEqual((exe, old), (b'MZ old launcher', False))
+
+    def test_sha256(self):
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, 'f').write_bytes(b'abc')
+            want = __import__('hashlib').sha256(b'abc').hexdigest()
+            f = os.path.join(root, 'f')
+            got = ps(f"@{{ h = (Get-Sha256 '{f}'); ok = (Test-FileSha256 '{f}' '{want.upper()}'); "
+                     f"bad = (Test-FileSha256 '{f}' '{'0' * 64}') }}")
+            self.assertEqual(got, {'h': want, 'ok': True, 'bad': False})
+
     def test_update_decision(self):
         got = ps("@{ a = (Get-UpdateDecision 'ahead'); i = (Get-UpdateDecision 'identical'); b = (Get-UpdateDecision 'behind'); "
                  "d = (Get-UpdateDecision 'diverged'); x = (Get-UpdateDecision 'something') }")
