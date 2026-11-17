@@ -1,11 +1,21 @@
 /* The in-game NEX server's gatherings in EOS Lobbies (plan/EOS_MIGRATION.md, phase 2 part B): the NexStore that
  * makes Quickplay, rooms and Battle Arenas shared between games with no server of ours.
  *
+ * HUB: the EOS lobby id of the owner's hub (net_eos.c), and every search asks for this game's own. A lobby code can
+ * have more than one hub (two games made one each at the same moment, and both got other members before the one
+ * alone moved), and a game reaches only its own hub's members: their EOS ids, addresses and station URLs are the
+ * hub's member attributes. Without it a joiner found a gathering of another hub, joined its lobby, then had "no game
+ * for player" of its owner: the join call lost, 2618-0521 (2026-11-17, a test pair beside other games of code smash).
+ * A code's games move into one hub (net_eos.c); while a game sees more than one (a split not merged yet, or more
+ * than 64 players: full hubs), its searches cover them all (eos_hub_split), and every game writes its address,
+ * rating and station URL as member attributes of each gathering's lobby it is in too (set_member): net_eos.c counts
+ * those members as the hub's, so the players of one gathering reach each other whichever hub each is in.
+ *
  * One EOS lobby a gathering: its id "os1-<gid>" (the gid is drawn by the game that makes it: unique among games
  * with all but certainty, and the lobby id refuses a second one), its bucket "ssbu1g:<part>" (game build, lobby code,
  * simulation version, mods: net_part_key), its members the games whose players are in it. Public attributes: what a
- * search needs - GID, MODE, OPEN, ARENA (the Battle Arena ID, "-" none), RATING (the participants' average), NP,
- * MINP, MAXP, A0..A15 (the NEX attributes) - and the whole gathering, B0..Bn (BN pieces of base64, 60 characters
+ * search needs - GID, MODE, OPEN, ARENA (the Battle Arena ID, "-" none), RATING (the participants' average), UTC (the
+ * owner's clock offset: Quickplay prefers near gatherings, net_nex_match.c), NP, MINP, MAXP, A0..A15 (the NEX attributes) - and the whole gathering, B0..Bn (BN pieces of base64, 60 characters
  * each: an attribute holds 64), which the server needs to answer a join. Only the lobby's owner may write them.
  *
  * Every game keeps its own copy of the gatherings its player is in (the server reads and changes them as it did
@@ -42,7 +52,7 @@
 
 #define MAXG 128
 #define PIECE_CHARS 60
-#define MAX_PIECES 37
+#define MAX_PIECES 37   /* (10 named attributes + A0..A15 + BN + 37 pieces = 64, EOS's most a lobby) */
 #define MSG_PIECE 1100
 #define N_PARTICIPANT_LEFT 3002
 #define N_PARTICIPANT_DISCONNECTED 3007
@@ -422,14 +432,16 @@ static void add_str(EOS_HLobbyModification m, const char *key, const char *v) {
     EosAddAttrOptions o = {2, &a, EOS_LAT_PUBLIC};
     p_EOS_LobbyModification_AddAttribute(m, &o);
 }
+static char cur_hub[128];   /* (our hub's lobby id, the last one while moving to another: nexeos_tick) */
 static void publish(L *l) {   /* (EOS thread) its attributes, if this game owns the lobby */
     if (l->state != 2 || !l->pub || l->busy || !i_own(l->id)) { if (l->state == 2 && l->pub && !l->busy) l->dirty = 0; return; }
     Pub *p = l->pub;
     EosLobbyUserOptions o = {1, eos_me, l->id};
     EOS_HLobbyModification m = NULL;
     if (p_EOS_Lobby_UpdateLobbyModification(eos_lobby_interface(), &o, &m) != EOS_SUCCESS) return;
+    if (cur_hub[0]) add_str(m, "HUB", cur_hub);
     add_int(m, "GID", p->gid); add_int(m, "MODE", p->mode); add_int(m, "OPEN", p->open); add_str(m, "ARENA", p->arena);
-    add_int(m, "RATING", p->rating); add_int(m, "NP", p->np); add_int(m, "MINP", p->minp); add_int(m, "MAXP", p->maxp);
+    add_int(m, "RATING", p->rating); add_int(m, "UTC", nex_local_utc_min()); add_int(m, "NP", p->np); add_int(m, "MINP", p->minp); add_int(m, "MAXP", p->maxp);
     for (uint32_t i = 0; i < p->nattribs; i++) { char k[8]; snprintf(k, sizeof k, "A%u", i); add_int(m, k, p->attribs[i]); }
     size_t len = strlen(p->pieces);
     int pieces = (int)((len + PIECE_CHARS - 1) / PIECE_CHARS);
@@ -465,9 +477,15 @@ static void set_member(L *l) {   /* our player's PID as our member attribute */
     a.Value.AsInt64 = (int64_t)my_pid;
     EosAddAttrOptions ao = {2, &a, EOS_LAT_PUBLIC};
     p_EOS_LobbyModification_AddMemberAttribute(m, &ao);
+    eos_hub_member_attrs(m);   /* (our address, rating and station URL too: a player of another hub reaches us through them) */
     EosUpdateLobbyOptions u = {1, m};
     p_EOS_Lobby_UpdateLobby(eos_lobby_interface(), &u, NULL, member_set);
     p_EOS_LobbyModification_Release(m);
+}
+int nexeos_lobbies(char ids[][16], int max) {   /* (EOS thread) */
+    int n = 0;
+    for (int i = 0; i < nl && n < max; i++) if (ls[i].state == 2) memcpy(ids[n++], ls[i].id, 16);
+    return n;
 }
 static void EOS_CALL left(const EosLobbyResult *d) {
     if (d->ResultCode != EOS_SUCCESS && lg()) fprintf(stderr, "[eos] gatherings: leaving %s: %s\n", d->LobbyId ? d->LobbyId : "?", p_EOS_EResult_ToString(d->ResultCode));
@@ -550,7 +568,7 @@ static void do_stat(void *arg) {
 }
 
 /* ---- waiting for EOS (a search, a join): the game thread waits, the EOS thread answers ---- */
-typedef struct Found { uint8_t *blob; size_t n; } Found;
+typedef struct Found { uint8_t *blob; size_t n; int utc_known, utc_min; } Found;   /* (utc: the UTC attribute, its owner's clock offset) */
 typedef struct Req {
     volatile LONG refs;
     HANDLE done;
@@ -589,8 +607,17 @@ static void EOS_CALL search_done(const EosFindInfo *d) {
         if (p_EOS_LobbySearch_CopySearchResultByIndex(r->search, &io, &det) != EOS_SUCCESS) continue;
         size_t bn = 0;
         uint8_t *blob = details_blob(det, &bn);
+        if (blob) {
+            Found *f = &r->found[r->nfound++];
+            f->blob = blob; f->n = bn;
+            EosKeyOptions k = {1, "UTC"};
+            EosAttr *a = NULL;
+            if (p_EOS_LobbyDetails_CopyAttributeByKey(det, &k, &a) == EOS_SUCCESS && a) {
+                if (a->Data && a->Data->ValueType == EOS_AT_INT64) { f->utc_known = 1; f->utc_min = (int)a->Data->Value.AsInt64; }
+                p_EOS_Lobby_Attribute_Release(a);
+            }
+        }
         p_EOS_LobbyDetails_Release(det);
-        if (blob) { r->found[r->nfound].blob = blob; r->found[r->nfound++].n = bn; }
     }
     p_EOS_LobbySearch_Release(r->search);
     r->search = NULL;
@@ -608,6 +635,11 @@ static void do_search(void *arg) {
     b.Value.AsUtf8 = bucket;
     EosSetParameterOptions pb = {1, &b, EOS_CO_EQUAL};
     p_EOS_LobbySearch_SetParameter(r->search, &pb);
+    EosAttrData h = {1, "HUB", {0}, EOS_AT_STRING};   /* (only our hub's: see HUB above) */
+    h.Value.AsUtf8 = cur_hub[0] ? cur_hub : "-";   /* (in no hub yet: none) */
+    EosSetParameterOptions ph = {1, &h, EOS_CO_EQUAL};
+    if (!eos_hub_split()) p_EOS_LobbySearch_SetParameter(r->search, &ph);
+    else if (lg()) fprintf(stderr, "[eos] gatherings: more than one hub of this lobby code: searching them all\n");
     if (r->arena[0]) {
         EosAttrData a = {1, "ARENA", {0}, EOS_AT_STRING};
         a.Value.AsUtf8 = r->arena;
@@ -732,6 +764,15 @@ void nexeos_tick(void) {
         p_EOS_Lobby_AddNotifyLobbyUpdateReceived(eos_lobby_interface(), &v, NULL, lobby_update);
         notified = 1;
     }
+    if (eos_hub_lobby()[0] && strcmp(cur_hub, eos_hub_lobby())) {   /* (another hub: our lobbies say so) */
+        snprintf(cur_hub, sizeof cur_hub, "%s", eos_hub_lobby());
+        for (int i = 0; i < nl; i++) ls[i].dirty = 1;
+    }
+    static unsigned attrs;   /* (our address, rating or station URL changed: our member attributes again) */
+    if (attrs != eos_hub_attrs_version()) {
+        attrs = eos_hub_attrs_version();
+        for (int i = 0; i < nl; i++) if (ls[i].state == 2) set_member(&ls[i]);
+    }
     u64 t = GetTickCount64();
     for (int i = 0; i < nl; i++) if (ls[i].dirty && !ls[i].busy && t - ls[i].at >= 250) publish(&ls[i]);
     if (ev_waiting) online_nex_deliver();
@@ -841,6 +882,7 @@ static void st_refresh(void *ctx, const char *part, uint32_t rating, const char 
             int old = has(ms, my_pid);   /* (one this game left: the search's index is a moment behind) */
             for (int k = 0; k < 16 && !old; k++) old = gone[k] == ms->gid;
             if (old || entry(ms->gid)) { nex_session_free(ms); continue; }
+            ms->utc_known = r->found[i].utc_known; ms->utc_min = r->found[i].utc_min;
             insert(ms, 0, v, t);
             added++;
         }

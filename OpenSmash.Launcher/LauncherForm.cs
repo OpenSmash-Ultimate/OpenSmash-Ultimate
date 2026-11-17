@@ -301,6 +301,15 @@ namespace OpenSmash.Launcher
                     try { _maintenanceProcess.Kill(entireProcessTree: true); } catch { }
                 }
             };
+            // Back in front (after the game, whose settings menu writes the same files, or a text editor): the files are
+            // read again, so the page and the renderer chip show what the game will use.
+            Activated += (s, e) =>
+            {
+                if (_settingsLoaded) { ReloadSettingsIfChanged(); return; }
+                string before = _rendererIni;
+                ReadRendererIni();
+                if (before != _rendererIni) Invalidate();
+            };
             Shown += async (s, e) =>
             {
                 if (preview) return; // UI tests render without startup tasks or network access.
@@ -346,7 +355,7 @@ namespace OpenSmash.Launcher
                 new Setting { Key = "overlay", Label = "Frame rate", Values = new[] { "1", "0" }, Labels = new[] { "Show it in the corner", "Hidden" } },
                 new Setting { Key = "volume", Label = "Volume", Slider = true },
                 new Setting { Key = "name", Label = "Your name", Text = true },
-                new Setting { Key = "lobby", Label = "Lobby", Values = SettingDefaults.Choices["lobby"], Labels = new[] { "Public lobby (Europe)", "Private lobby (a code)", "Your own server", "This network (LAN)", "Offline" } },
+                new Setting { Key = "lobby", Label = "Lobby", Values = SettingDefaults.Choices["lobby"], Labels = new[] { "Public (worldwide, Epic)", "Private lobby (a code)", "Your own server", "This network (LAN)", "Offline" } },
                 new Setting { Key = "code", Label = "Lobby code", Text = true },
                 new Setting { Key = "server", Label = "Server", Text = true },
                 new Setting { Key = "direct", Label = "Direct connections", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
@@ -400,7 +409,17 @@ namespace OpenSmash.Launcher
             _plugins = 0;
             if (Directory.Exists(_pluginsDir))
                 _plugins = Directory.GetFiles(_pluginsDir, "*.nro").Length;
-            try { _rendererIni = IniValue(WindowSmash.ConfigFile(_repo, "display.ini"), "", "renderer") ?? ""; }
+            ReadRendererIni();
+        }
+
+        // The renderer the game will start with, for the chip before the Settings page has read the files.
+        void ReadRendererIni()
+        {
+            try
+            {
+                string display = WindowSmash.ConfigFile(_repo, "display.ini");
+                _rendererIni = SettingDefaults.RendererShown(IniValue(display, "", "renderer"), IniValue(display, "", "renderer_menu"));
+            }
             catch { _rendererIni = ""; }
         }
 
@@ -736,6 +755,18 @@ namespace OpenSmash.Launcher
             return "main";
         }
 
+        // Commits only the old WindowSmash repository has (its README saying it moved), each with the last commit both
+        // repositories share: GitHub does not know them here, so a copy on one is compared as the shared commit
+        // (tools\install_windowsmash.ps1 updates it the same way, $ForeignCommits).
+        static readonly Dictionary<string, string> ForeignCommits = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["598d05240fc146f7184b3450653e2eec2ee97312"] = "8025b483b0443adb5668395eca31f9250e8c8efb",
+            ["3d5ba9095bf4a2c0d146df31adec0d59b8337bbb"] = "8025b483b0443adb5668395eca31f9250e8c8efb",
+        };
+
+        internal static string ResolveForeignCommit(string commit) =>
+            ForeignCommits.TryGetValue(commit, out string? shared) ? shared : commit;
+
         async Task CheckForUpdatesAsync(bool atBoot, bool allowDuringUpdate = false)
         {
             if (_updateChecking || (_updateApplying && !allowDuringUpdate)) return;
@@ -775,7 +806,7 @@ namespace OpenSmash.Launcher
                 string cmpBody;
                 try
                 {
-                    cmpBody = await GitHubGetAsync($"{UpdateApi}/compare/{local}...{sha}");
+                    cmpBody = await GitHubGetAsync($"{UpdateApi}/compare/{ResolveForeignCommit(local)}...{sha}");
                 }
                 catch (Exception ex)
                 {
@@ -895,7 +926,7 @@ namespace OpenSmash.Launcher
             catch { }
         }
 
-        // The launcher is rebuilt only where the .NET 8 SDK is (toolsuild_launcher.ps1 needs it): most players have
+        // The launcher is rebuilt only where the .NET 8 SDK is (tools\build_launcher.ps1 needs it): most players have
         // the release's OpenSmash.exe and no SDK, and a rebuild that can never work would be offered at every start.
         static bool DotnetSdkAvailable()
         {
@@ -1045,6 +1076,7 @@ namespace OpenSmash.Launcher
             string output = "";
             string beforeCommit = "";
             string beforeLauncherFingerprint = "";
+            bool launcherSwapped = false;
             try
             {
                 beforeCommit = await Task.Run(FindLocalCommit);
@@ -1052,8 +1084,10 @@ namespace OpenSmash.Launcher
                 beforeLauncherFingerprint = await Task.Run(() => LauncherBuildInputsFingerprint(_repo));
                 string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
                 if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_windowsmash.ps1 is missing.");
+                if (!InstallerTakesUpdateOnly(File.ReadAllText(script))) await RefreshOldInstallerAsync(script);
                 var result = await Task.Run(() => RunPowerShellUpdate(script));
                 output = result.Output;
+                launcherSwapped = output.Contains("The launcher was updated too");   // (the installer put the latest release's OpenSmash.exe here)
                 if (result.Code != 0) throw new InvalidOperationException(UiLocale.Text("The updater stopped (exit ") + result.Code + ").");
                 else await RunPythonStepAsync("UPDATING PYTHON PACKAGES");   // (an update can need a new package)
             }
@@ -1142,8 +1176,34 @@ namespace OpenSmash.Launcher
                     ? "OpenSmash was updated. The game was rebuilt if its inputs changed."
                     : "OpenSmash is already up to date. No rebuild was needed.", "OpenSmash");
             }
+            if (launcherSwapped)
+                UiLocale.Message("The launcher was updated too: close OpenSmash and open it again to use the new one.", "OpenSmash");
             PlayDone();
             Invalidate();
+        }
+
+        // A copy from before WindowSmash became OpenSmash-Ultimate (2026-10-26) has an installer without -UpdateOnly, which
+        // PowerShell refuses before it runs a line ("The updater stopped (exit 1)", #418). Its installer is replaced first by
+        // the one of the commit the update goes to; that one then updates the rest of the folder as for any other copy (the
+        // game files, settings, saves and builds stay).
+        internal static bool InstallerTakesUpdateOnly(string text) =>
+            Regex.IsMatch(text, @"\[switch\]\s*\$UpdateOnly\b", RegexOptions.IgnoreCase);
+
+        async Task RefreshOldInstallerAsync(string script)
+        {
+            string dotGit = Path.Combine(_repo, ".git");
+            if (Directory.Exists(dotGit) || File.Exists(dotGit))   // (git refuses a checkout with a changed file: git updates it)
+                throw new InvalidOperationException("This folder is a git checkout from before WindowSmash became OpenSmash-Ultimate. Update it with git: "
+                    + "git remote set-url origin https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate.git, git fetch origin, then git reset --hard origin/main "
+                    + "(WindowSmash's last commits are not in OpenSmash-Ultimate, so git pull cannot fast-forward; files git does not track, such as your game files, builds and save, stay).");
+            string at = Regex.IsMatch(_updateHead, "^[0-9a-fA-F]{40}$") ? _updateHead : "main";
+            byte[] body = await _httpClient.GetByteArrayAsync($"https://raw.githubusercontent.com/{UpdateRepo}/{at}/tools/install_windowsmash.ps1");
+            string text = Encoding.UTF8.GetString(body);
+            if (!InstallerTakesUpdateOnly(text) || !text.Contains("$RepoName = 'OpenSmash-Ultimate'"))
+                throw new InvalidOperationException("The installer GitHub sent is not the one expected; nothing was changed.");
+            string tmp = script + ".new";
+            await File.WriteAllBytesAsync(tmp, body);
+            File.Move(tmp, script, true);
         }
 
         static (int Code, string Output) RunPowerShellUpdate(string script, string only = "-UpdateOnly", Action<string>? onLine = null)
@@ -1166,6 +1226,9 @@ namespace OpenSmash.Launcher
             psi.ArgumentList.Add("-File");
             psi.ArgumentList.Add(script);
             psi.ArgumentList.Add(only);
+            // This launcher rebuilds OpenSmash.exe after an update where the .NET SDK is: the installer then leaves the
+            // exe alone instead of putting the release's in its place (Update-LauncherExe).
+            if (only == "-UpdateOnly" && DotnetSdkAvailable()) psi.Environment["OPENSMASH_LAUNCHER_REBUILDS"] = "1";
             using var p = Process.Start(psi) ?? throw new InvalidOperationException("Could not start PowerShell.");
             var output = new StringBuilder();
             void Take(string? line)
@@ -1523,12 +1586,36 @@ namespace OpenSmash.Launcher
             return "";
         }
 
+        // The file's lines and its line end (CRLF or LF, kept as the game's writer keeps it: runtime/hle_settings.c).
+        static (List<string> Lines, string NewLine, string? Before) ReadForEdit(string path)
+        {
+            string text = File.Exists(path) ? File.ReadAllText(path) : "";
+            string nl = text.Contains("\r\n") ? "\r\n" : text.Contains('\n') ? "\n" : Environment.NewLine;
+            var lines = text.Replace("\r\n", "\n").Split('\n').ToList();
+            if (lines.Count > 0 && lines[^1] == "") lines.RemoveAt(lines.Count - 1);
+            return (lines, nl, File.Exists(path) ? string.Join("\n", lines) : null);
+        }
+
+        // Written only when it changed (the file's date then says who wrote last), through a .tmp file.
+        static void WriteForEdit(string path, List<string> lines, string nl, string? before)
+        {
+            if (before != null && string.Join("\n", lines) == before) return;
+            string text = lines.Count == 0 ? "" : string.Join(nl, lines) + nl;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            string tmp = path + ".tmp";
+            File.WriteAllText(tmp, text, new UTF8Encoding(false));
+            File.Move(tmp, path, true);
+        }
+
+        // key = value in the section ("": the keys before any section), as the game's settings menu writes it
+        // (runtime/hle_settings.c settings_ini_set): the line changed in place with its comment kept, every other line
+        // (comments, keys the launcher does not know) left as it is, nothing written when the value is already there.
         static void SetIni(string path, string section, string key, string value)
         {
-            var lines = File.Exists(path) ? File.ReadAllLines(path).ToList() : new List<string>();
+            var (lines, nl, before) = ReadForEdit(path);
             bool inSection = section == "";
             int sectionAt = section == "" ? 0 : -1;
-            int keyAt = -1;
+            int keyAt = -1, lastAt = -1;
             for (int i = 0; i < lines.Count; i++)
             {
                 string line = lines[i].Trim();
@@ -1537,36 +1624,49 @@ namespace OpenSmash.Launcher
                     int end = line.IndexOf(']');
                     string name = end > 1 ? line.Substring(1, end - 1).Trim() : "";
                     inSection = section != "" && name.Equals(section, StringComparison.OrdinalIgnoreCase);
-                    if (inSection) sectionAt = i;
+                    if (inSection) { sectionAt = i; lastAt = i; }
                     continue;
                 }
+                if (inSection && line.Length > 0) lastAt = i;
                 if (!inSection || line.Length == 0 || line[0] == ';' || line[0] == '#') continue;
                 int eq = line.IndexOf('=');
                 if (eq > 0 && line.Substring(0, eq).Trim().Equals(key, StringComparison.OrdinalIgnoreCase)) { keyAt = i; break; }
             }
             string row = key + " = " + value;
-            if (keyAt >= 0) lines[keyAt] = row;
+            if (keyAt >= 0)
+            {
+                // (as settings_ini_set: what is before the '=' kept, then " value", then the comment with its spaces)
+                string raw = lines[keyAt];
+                int eq = raw.IndexOf('=');
+                string rest = raw.Substring(eq + 1).TrimStart(' ', '\t');
+                int cut = rest.Length;
+                for (int i = 1; i < rest.Length; i++)
+                    if ((rest[i] == ';' || rest[i] == '#') && (rest[i - 1] == ' ' || rest[i - 1] == '\t')) { cut = i; break; }
+                int ws = cut;
+                if (cut < rest.Length) while (ws > 0 && (rest[ws - 1] == ' ' || rest[ws - 1] == '\t')) ws--;
+                lines[keyAt] = raw.Substring(0, eq + 1) + " " + value + rest.Substring(ws);
+            }
             else if (section == "")
             {
                 int insertAt = lines.Count;
                 for (int i = 0; i < lines.Count; i++)
                     if (lines[i].TrimStart().StartsWith("[")) { insertAt = i; break; }
+                while (insertAt > 0 && lines[insertAt - 1].Trim() == "" && insertAt < lines.Count) insertAt--;   // (before the blank line above a section)
                 lines.Insert(insertAt, row);
             }
-            else if (sectionAt >= 0 && sectionAt < lines.Count) lines.Insert(sectionAt + 1, row);
+            else if (sectionAt >= 0) lines.Insert(lastAt + 1, row);   // (after the section's last line, as the game adds)
             else
             {
                 if (lines.Count > 0 && lines[lines.Count - 1].Trim() != "") lines.Add("");
-                if (section != "") lines.Add("[" + section + "]");
+                lines.Add("[" + section + "]");
                 lines.Add(row);
             }
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllLines(path, lines, new UTF8Encoding(false));
+            WriteForEdit(path, lines, nl, before);
         }
 
         static void SetFirstLine(string path, string value)
         {
-            var lines = File.Exists(path) ? File.ReadAllLines(path).ToList() : new List<string>();
+            var (lines, nl, before) = ReadForEdit(path);
             int at = -1;
             for (int i = 0; i < lines.Count; i++)
             {
@@ -1576,8 +1676,7 @@ namespace OpenSmash.Launcher
             if (string.IsNullOrEmpty(value)) { if (at >= 0) lines.RemoveAt(at); }
             else if (at >= 0) lines[at] = value;
             else lines.Add(value);
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllLines(path, lines, new UTF8Encoding(false));
+            WriteForEdit(path, lines, nl, before);
         }
 
         void ReadSettings()
@@ -1593,7 +1692,7 @@ namespace OpenSmash.Launcher
             foreach (string key in new[] { "window", "width", "height", "pacing", "render_scale", "gpu", "hide_cursor", "overlay", "volume" })
                 _iniValues[key] = D(key);
             _iniValues["window_size"] = _iniValues["width"] + "x" + _iniValues["height"];
-            _iniValues["renderer"] = SettingDefaults.Renderer(D("renderer"));
+            _iniValues["renderer"] = SettingDefaults.RendererShown(D("renderer"), IniValue(display, "", "renderer_menu"));   // (#429)
             _iniValues["keyboard_player"] = IniValue(pads, "general", "keyboard_player") ?? SettingDefaults.Of("keyboard_player");
             _iniValues["background"] = IniValue(pads, "general", "background") ?? SettingDefaults.Of("background");
             // online_server.txt is the truth (the game's settings menu writes it too); launcher.ini only remembers the
@@ -1604,7 +1703,15 @@ namespace OpenSmash.Launcher
             string launcherIni = WindowSmash.ConfigFile(_repo, "launcher.ini");
             _iniValues["lobby"] = lobby;
             _iniValues["code"] = code != "" ? code : IniValue(launcherIni, "opensmash", "code") ?? "";
-            _iniValues["server"] = server != "" ? server : IniValue(launcherIni, "opensmash", "server") ?? "";
+            string savedServer = IniValue(launcherIni, "opensmash", "server") ?? "";
+            if (SettingDefaults.MeansPublicLobby(savedServer)) savedServer = "";   // (issue #389: an old public lobby, not "your own server")
+            _iniValues["server"] = server != "" ? server : savedServer;
+            // (the gone North American lobby's address still in online_server.txt: written as what it means, the Public
+            // lobby's "auto" - or the lobby code's line - so no launcher puts it back; issue #389)
+            if (File.Exists(serverFile) && SettingDefaults.IsOldLobbyLine(line))
+            {
+                try { SetFirstLine(serverFile, SettingDefaults.LineFromLobby(lobby, code, server)); } catch { }
+            }
             string directFile = WindowSmash.ConfigFile(_repo, "online_direct.txt");
             string direct = File.Exists(directFile) ? FirstLine(directFile) : SettingDefaults.OfFile("online_direct.txt");
             _iniValues["direct"] = direct.StartsWith("off", StringComparison.OrdinalIgnoreCase) ? "off" : "on";
@@ -1616,6 +1723,7 @@ namespace OpenSmash.Launcher
                 gpu.Labels = gpu.Labels.Append(_iniValues["gpu"]).ToArray();
             }
             _settingsLoaded = true;
+            _settingsStamp = SettingsFilesStamp();
             var size = _settings.First(s => s.Key == "window_size");
             if (!size.Values.Contains(_iniValues["window_size"]))
                 size.Values = new[] { _iniValues["window_size"] }.Concat(size.Values).ToArray();
@@ -1625,6 +1733,40 @@ namespace OpenSmash.Launcher
                 scale.Values = scale.Values.Append(_iniValues["render_scale"]).ToArray();
                 scale.Labels = scale.Labels.Append(_iniValues["render_scale"]).ToArray();
             }
+        }
+
+        // The files the Settings page shows, newest change first: the game's settings menu (Esc) writes the same ones.
+        static readonly string[] SettingsFiles = { "display.ini", "controllers.ini", "online_server.txt", "online_direct.txt", "online_name.txt", "launcher.ini" };
+        DateTime _settingsStamp;
+
+        DateTime SettingsFilesStamp()
+        {
+            var newest = DateTime.MinValue;
+            foreach (string name in SettingsFiles)
+            {
+                try
+                {
+                    string path = WindowSmash.ConfigFile(_repo, name);
+                    if (File.Exists(path) && File.GetLastWriteTimeUtc(path) > newest) newest = File.GetLastWriteTimeUtc(path);
+                }
+                catch { }
+            }
+            return newest;
+        }
+
+        // The files read again when they changed since the page read (or wrote) them: the game's settings menu, a text
+        // editor. A change made here and not yet written (a private lobby still without its code) stays as it is.
+        void ReloadSettingsIfChanged()
+        {
+            if (!_settingsLoaded || _editingKey != null || _persisting || _volDragging) return;
+            if (SettingsFilesStamp() == _settingsStamp) return;
+            var pending = _changed.ToDictionary(k => k, k => _iniValues.GetValueOrDefault(k, ""));
+            try { ReadSettings(); }
+            catch { return; }
+            foreach (var kv in pending) { _iniValues[kv.Key] = kv.Value; _changed.Add(kv.Key); }
+            if (pending.ContainsKey("window_size") && !_settings.First(s => s.Key == "window_size").Values.Contains(_iniValues["window_size"]))
+                _settings.First(s => s.Key == "window_size").Values = new[] { _iniValues["window_size"] }.Concat(_settings.First(s => s.Key == "window_size").Values).ToArray();
+            Invalidate();
         }
 
         bool SettingOn(Setting s)
@@ -1725,6 +1867,9 @@ namespace OpenSmash.Launcher
             string display = WindowSmash.ConfigFile(_repo, "display.ini"), pads = WindowSmash.ConfigFile(_repo, "controllers.ini");
             foreach (string key in new[] { "window", "width", "height", "pacing", "render_scale", "gpu", "renderer", "hide_cursor", "overlay", "volume" })
                 if (_changed.Contains(key)) SetIni(display, "", key, _iniValues.GetValueOrDefault(key, SettingDefaults.Of(key)));
+            // (the renderer as the in-game menu writes it: renderer_menu too, so an older launcher's "renderer = d3d11"
+            // later still means this choice: runtime/gpu_display.c, #429)
+            if (_changed.Contains("renderer")) SetIni(display, "", "renderer_menu", _iniValues.GetValueOrDefault("renderer", SettingDefaults.Of("renderer")));
             foreach (string key in new[] { "keyboard_player", "background" })
                 if (_changed.Contains(key)) SetIni(pads, "general", key, _iniValues.GetValueOrDefault(key, SettingDefaults.Of(key)));
             bool serverChanged = _changed.Contains("lobby") || _changed.Contains("code") || _changed.Contains("server");
@@ -1735,6 +1880,7 @@ namespace OpenSmash.Launcher
             if (_changed.Contains("direct"))
                 SetFirstLine(WindowSmash.ConfigFile(_repo, "online_direct.txt"), _iniValues.GetValueOrDefault("direct", "on"));
             _changed.Clear();   // (written: the game's later changes stay)
+            _settingsStamp = SettingsFilesStamp();   // (what was just written is what the page shows)
             if (serverChanged && !serverReady) { _changed.Add("lobby"); _changed.Add("code"); _changed.Add("server"); }
             // (only when changed here: written at every close, a stale copy once hid the lobby the game's menu had picked)
             if (serverChanged)
@@ -1749,6 +1895,7 @@ namespace OpenSmash.Launcher
         {
             if (!_settingsLoaded) ReadSettings();
             CommitEdit();
+            ReloadSettingsIfChanged();   // (Play checks and starts with what the files say now, plus what was changed here)
             string lobby = _iniValues.GetValueOrDefault("lobby", "offline");
             string code = _iniValues.GetValueOrDefault("code", "").Replace(" ", "");
             string host = _iniValues.GetValueOrDefault("server", "").Trim();
@@ -1791,7 +1938,7 @@ namespace OpenSmash.Launcher
             }
             
             if (name == "mods" || name == "setup_modding") UpdateMods();
-            if (name == "settings" && !_settingsLoaded) ReadSettings();
+            if (name == "settings") { if (!_settingsLoaded) ReadSettings(); else ReloadSettingsIfChanged(); }
 
             // The marketplace caches what is installed (plugins, loaders, mods) so its
             // requirement chips stay accurate; refresh it whenever it is opened.
@@ -2241,6 +2388,7 @@ namespace OpenSmash.Launcher
             if (_openDropdownKey != null && _openDropdownKey.StartsWith("modpick:") && !id.StartsWith("modpick:"))
                 _openDropdownKey = null;
             if (ActivateCommunityHit(id)) return;
+            if (ActivateReportHit(id)) return;
             if (ActivateDiscordHit(id)) return;
             if (ActivateNavHit(id)) return;
             if (id.StartsWith("menu:"))
@@ -3941,6 +4089,20 @@ namespace OpenSmash.Launcher
             }
         }
 
+        // Epic Online Services' and Discord's files beside the program (tools\online_files.py: nothing downloaded when
+        // they are current). An update whose fetch failed left them out and the game went online through the public
+        // lobby alone, unseen by the players on Epic (issue #389); Play puts them back. Never stops the start.
+        void EnsureOnlineFiles()
+        {
+            try
+            {
+                string script = Path.Combine(_repo, "tools", "online_files.py");
+                if (string.IsNullOrEmpty(_pythonExe) || !File.Exists(script)) return;
+                RunPython(new[] { script, WindowSmash.BuildDir(_repo) }, out _);
+            }
+            catch { }
+        }
+
         async Task LaunchGameNow()
         {
             try
@@ -3951,6 +4113,7 @@ namespace OpenSmash.Launcher
                     return;
                 }
                 SetLoad("STARTING THE GAME", -1);
+                await Task.Run(EnsureOnlineFiles);
                 // Same start as Play SSBU.bat: build\ssbu.exe dump\modules --status 30 --online
                 _gameProcess = WindowSmash.StartGame(_repo);
                 _gameLaunched = true;

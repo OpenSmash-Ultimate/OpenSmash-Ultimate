@@ -15,6 +15,7 @@ import unittest
 
 from . import reset_board
 from .board import LINK_EVERY, MAX_SKEW, account_hash, player_id, signature
+from .board import avatar_of as board_avatar_of, avatar_url as board_avatar_url
 from .server import make_server
 
 NSA = {"a": "00000000000000a1", "b": "00000000000000b2", "c": "00000000000000c3"}
@@ -111,7 +112,8 @@ class Board(unittest.TestCase):
         rows = d["players"]
         self.assertEqual([r["id"] for r in rows], [self.db, self.da])
         self.assertEqual(rows[1], {"id": self.da, "rank": 2, "gsp": 1500, "fighter": 43,
-                                   "name": "Ann", "discord": self.da, "fighters": {"0": {"gsp": 900, "rank": 1}, "43": {"gsp": 1500, "rank": 2}}})
+                                   "name": "Ann", "discord": self.da, "avatar": "https://cdn.discordapp.com/embed/avatars/0.png",
+                                   "fighters": {"0": {"gsp": 900, "rank": 1}, "43": {"gsp": 1500, "rank": 2}}})
 
     def test_no_personal_data_unless_shown(self):
         _, d = self.get("/leaderboard.json")
@@ -155,11 +157,43 @@ class Board(unittest.TestCase):
         self.assertEqual(asked, ["tok-c"])
         self.assertNotIn("tok-c", json.dumps(self.board.profiles.of_pid))      # (the token is not kept)
         mine = self.board.profiles.of_pid[str(self.pid["c"])]
-        self.assertEqual(mine, {"name": "Cee <3>", "discord": account_hash("1003"), "discord_id": "1003", "show": True, "at": mine["at"]})
+        self.assertEqual(mine, {"name": "Cee <3>", "discord": account_hash("1003"), "discord_id": "1003", "avatar": None,
+                                "discriminator": None, "show": True, "at": mine["at"]})
         _, board = self.get("/leaderboard.json", now=3000.0)
         self.assertEqual((board["ranked"], board["players"][1]["id"], board["players"][1]["gsp"]), (3, account_hash("1003"), 1700))
         _, me = self.get("/gsp/me", self.me_headers("c"), now=3000.0)
         self.assertEqual((me["id"], me["rank"], me["ranked"]), (account_hash("1003"), 2, 3))
+
+    def test_avatars(self):
+        h = "0123456789abcdef0123456789abcdef"
+        self.discord["tok-c"] = {"id": "1003", "username": "cee", "avatar": "a_" + h, "discriminator": "0"}
+        self.discord["tok-x"] = {"id": "1004", "username": "old", "avatar": "../../evil", "discriminator": "0007"}
+        self.nex.services.powers.put(self.pid["c"], record(5, 1700))
+        self.assertEqual(self.link("c", "tok-c")[0], 200)
+        _, board = self.get("/leaderboard.json", now=2000.0)
+        rows = {r["id"]: r for r in board["players"]}
+        self.assertEqual(rows[account_hash("1003")]["avatar"], f"https://cdn.discordapp.com/avatars/1003/a_{h}.png?size=64")
+        # (a profile from before avatars, linked without one: the default avatar, index (id >> 22) % 6)
+        self.assertEqual(rows[self.da]["avatar"], f"https://cdn.discordapp.com/embed/avatars/{(1001 >> 22) % 6}.png")
+        big = "175928847299117063"
+        self.assertEqual(board_avatar_url(big, None), f"https://cdn.discordapp.com/embed/avatars/{(int(big) >> 22) % 6}.png")
+        self.assertEqual(board_avatar_url("1004", "../../evil", "0007"), "https://cdn.discordapp.com/embed/avatars/2.png")
+        self.assertIsNone(board_avatar_of({"avatar": "../../evil"}))
+        self.assertIsNone(board_avatar_of({"avatar": None}))
+        # (the account's other pids get the new picture: a later show toggle there does not bring back the default one)
+        self.discord["tok-a2"] = {"id": "1001", "username": "ann", "avatar": h}
+        self.assertEqual(self.link("c", "tok-a2", now=1000.0 + LINK_EVERY + 1)[0], 200)
+        self.assertEqual(self.board.profiles.of_pid[str(self.pid["a"])]["avatar"], h)
+        self.board.set_profile(self.pid["a"], "Ann")
+        _, board = self.get("/leaderboard.json", now=2500.0)
+        self.assertEqual({r["id"]: r for r in board["players"]}[self.da]["avatar"], f"https://cdn.discordapp.com/avatars/1001/{h}.png?size=64")
+        self.board.discord_me = lambda token: self.discord.get(token)
+        self.discord["tok-c"] = {"id": "1003", "username": "cee", "avatar": "a_" + h}
+        self.board.link_at.clear()
+        # (a player who hides is not listed, so no avatar URL, which carries the Discord id, is published)
+        self.assertEqual(self.link("c", "tok-c", show=False, now=1000.0 + LINK_EVERY + 1)[0], 200)
+        _, board = self.get("/leaderboard.json", now=3000.0)
+        self.assertNotIn("1003", json.dumps(board))
 
     def test_link_with_show_false_hides(self):
         self.discord["tok-c"] = {"id": "1003", "username": "cee"}

@@ -243,17 +243,16 @@ namespace OpenSmash.Launcher
         }
 
         // ---------------------------------------------------------------------------
-        // Shortcuts: OpenSmash (the launcher, with its own icon) and Play SSBU (OpenSmash.exe --play: the game
-        // straight away, or the installer while it is not built; WindowSmash's icon, the game window's).
-        // Into the desktop and a Start menu folder named OpenSmash, each left out when its folder is "". Returns the files.
+        // Shortcuts, both with OpenSmash's icon: OpenSmash-Launcher (the launcher) and OpenSmash-Ultimate
+        // (OpenSmash.exe --play: the game straight away, or the installer while it is not built). Into the desktop
+        // and a Start menu folder named OpenSmash, each left out when its folder is "". An older installer's
+        // OpenSmash / Play SSBU shortcuts there that point at this folder's OpenSmash.exe are removed (Play SSBU
+        // had WindowSmash's icon). Returns the files made.
         public static List<string> MakeShortcuts(string folder, string desktop, string startMenu)
         {
             folder = Path.GetFullPath(folder).TrimEnd('\\');
             string launcher = Path.Combine(folder, "OpenSmash.exe");
-            string gameIcon = Path.Combine(folder, "docs", "assets", "windowsmash.ico");
             string appIcon = File.Exists(launcher) ? launcher + ",0" : Path.Combine(folder, "media", "opensmash.ico");
-            if (!File.Exists(gameIcon)) gameIcon = appIcon;
-            else gameIcon += ",0";
             var made = new List<string>();
             var places = new List<string>();
             if (desktop != "") places.Add(desktop);
@@ -263,10 +262,24 @@ namespace OpenSmash.Launcher
             foreach (string dir in places)
             {
                 Directory.CreateDirectory(dir);
-                foreach (var (name, args, icon, what) in new[]
+                foreach (string oldName in new[] { "Play SSBU.lnk", "OpenSmash.lnk" })
                 {
-                    ("OpenSmash.lnk", "", appIcon, "OpenSmash: play, settings and mods"),
-                    ("Play SSBU.lnk", "--play", gameIcon, "Super Smash Bros. Ultimate (OpenSmash)"),
+                    string old = Path.Combine(dir, oldName);
+                    try
+                    {
+                        if (File.Exists(old))
+                        {
+                            dynamic o = shell.CreateShortcut(old);
+                            if (string.Equals(Path.GetFullPath((string)o.TargetPath), launcher, StringComparison.OrdinalIgnoreCase))
+                                File.Delete(old);
+                        }
+                    }
+                    catch { }
+                }
+                foreach (var (name, args, what) in new[]
+                {
+                    ("OpenSmash-Launcher.lnk", "", "OpenSmash launcher: play, settings and mods"),
+                    ("OpenSmash-Ultimate.lnk", "--play", "Super Smash Bros. Ultimate (OpenSmash), without the launcher"),
                 })
                 {
                     string lnk = Path.Combine(dir, name);
@@ -274,7 +287,7 @@ namespace OpenSmash.Launcher
                     s.TargetPath = launcher;
                     s.Arguments = args;
                     s.WorkingDirectory = folder;
-                    s.IconLocation = icon;
+                    s.IconLocation = appIcon;
                     s.Description = what;
                     s.Save();
                     made.Add(lnk);

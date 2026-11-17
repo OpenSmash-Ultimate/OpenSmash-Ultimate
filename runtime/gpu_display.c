@@ -274,7 +274,7 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         if (w) { fputs(DEFAULT_INI, w); fclose(w); fprintf(stderr, "[display] wrote the default %s\n", path); }
         f = fopen(path, "r");
     }
-    char line[256];
+    char line[256], renderer_line[64] = "", renderer_menu[64] = "";
     while (f && fgets(line, sizeof line, f)) {
         char *s = trim(line), *eq;
         if (*s == ';' || *s == '#' || *s == '[' || !(eq = strchr(s, '='))) continue;
@@ -293,7 +293,8 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else if (!_stricmp(key, "overlay_scale")) parse_overlay_scale(value);
         else if (!_stricmp(key, "gpu")) snprintf(cfg.gpu, sizeof cfg.gpu, "%s", value);
         else if (!_stricmp(key, "render_scale")) parse_render_scale(value);
-        else if (!_stricmp(key, "renderer")) parse_renderer(value, path);
+        else if (!_stricmp(key, "renderer")) { parse_renderer(value, path); snprintf(renderer_line, sizeof renderer_line, "%s", value); }
+        else if (!_stricmp(key, "renderer_menu")) snprintf(renderer_menu, sizeof renderer_menu, "%s", value);
         else if (!_stricmp(key, "ui_language")) {}   /* (ui_locale.h reads it for the external menu) */
         else if (!_stricmp(key, "aspect")) snprintf(cfg.aspect, sizeof cfg.aspect, "%s", value);
         else if (!_stricmp(key, "view")) parse_view(value, path);
@@ -304,6 +305,18 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else fprintf(stderr, "[display] %s: unknown setting '%s'\n", path, key);
     }
     if (f) fclose(f);
+#ifdef _WIN32
+    /* (#429) renderer = d3d11 is the old spelling, auto since #245 (renderer.h). The launcher of the v0.3.0 alphas still
+     * writes it at every Play for its "Direct3D 11 (default)", which also put the settings menu's choice back to auto -
+     * Vulkan on an AMD card - at the next start. renderer_menu is the menu's last choice, a key that launcher never
+     * writes: under that old spelling the menu's choice stands. Any other renderer value (auto, direct3d11, vulkan:
+     * the menu's, today's launcher's, a hand-written one) is taken as it is, and a d3d11 never touched stays auto. */
+    if (renderer_menu[0] && !_stricmp(renderer_line, "d3d11") && renderer_parse(renderer_menu) >= 0) {
+        cfg.renderer = renderer_parse(renderer_menu);
+        fprintf(stderr, "[display] %s: renderer = d3d11 (written by an older launcher) and renderer_menu = %s (the settings menu's choice): %s\n",
+                path, renderer_menu, renderer_name(cfg.renderer));
+    }
+#endif
     if ((env = getenv("SSBU_GPU")) && *env) snprintf(cfg.gpu, sizeof cfg.gpu, "%s", env);
     if ((env = getenv("SSBU_WINDOW")) && *env) parse_window(env);
     if ((env = getenv("SSBU_PACING")) && *env) parse_pacing(env);
@@ -506,7 +519,10 @@ static int have_place;
 static POINT last_mouse;
 static ULONGLONG last_mouse_at;
 
-static const DWORD WINDOWED_STYLE = WS_OVERLAPPEDWINDOW | WS_VISIBLE, FULL_STYLE = WS_POPUP | WS_VISIBLE;
+/* (FULL_STYLE's WS_MINIMIZEBOX | WS_SYSMENU: without them the borderless or full-screen window does not minimise from
+ * its taskbar button or with Win+Down; with them it does, seen with the borderless window (the Alt+Space menu still
+ * has no Minimize entry). Nothing is drawn, a WS_POPUP window has no title bar) */
+static const DWORD WINDOWED_STYLE = WS_OVERLAPPEDWINDOW | WS_VISIBLE, FULL_STYLE = WS_POPUP | WS_VISIBLE | WS_MINIMIZEBOX | WS_SYSMENU;
 static HWND game_window;
 
 /* The frame's thickness around a client area at this DPI. */
@@ -724,6 +740,10 @@ int display_message(HWND h, UINT msg, WPARAM w, LPARAM l, LRESULT *result) {
     case WM_MENUCHAR:     /* (no "ding" for Alt+key) */
         *result = MAKELRESULT(0, MNC_CLOSE);
         return 1;
+    case WM_SYSCOMMAND:   /* (borderless / full screen have WS_SYSMENU, for minimising: a lone Alt press there must not
+                           * open the window's menu mode and swallow the next key, Alt being a key players bind) */
+        if (current_mode != MODE_WINDOWED && (w & 0xFFF0) == SC_KEYMENU && l == 0) { *result = 0; return 1; }
+        return 0;
     case WM_SIZING: {     /* a windowed frame keeps the picture's shape */
         if (current_mode != MODE_WINDOWED) return 0;
         RECT *r = (RECT *)l, f = frame_of((DWORD)GetWindowLongPtrW(h, GWL_STYLE), GetDpiForWindow(h));
@@ -853,6 +873,25 @@ unsigned display_present_flags(void) {
     return (cfg.pacing == PACING_VRR || cfg.speed != 1) && tearing ? 0x200u /* DXGI_PRESENT_ALLOW_TEARING */ : 0;
 }
 
+/* (vblank_tick: the monitor's refreshes cannot be waited for here, or its rate is no multiple of 60) */
+static volatile LONG vblank_failed_flag, vblank_odd_rate;
+int display_present_sync(void) {   /* (only while `display` pacing is chosen and the game runs at its speed: a pacing changed
+                                     * in the menu, or SSBU_SPEED's test runs, present as they did before - and only when the
+                                     * wait for the monitor's refreshes FAILED, so nothing else paces the frames. A monitor
+                                     * whose rate 60 does not divide (165 Hz) keeps mailbox/immediate on purpose: a blocking
+                                     * present adds a whole refresh to every frame that arrives a little late, and this PC's
+                                     * frames occasionally do (page faults, asset I/O), so a slight unevenness became 33 and
+                                     * 124 ms stutters where mailbox shows the newest frame at the next refresh instead -
+                                     * owner's log, 2026-11-17: avg 17.45 ms, worst 107 ms off a 60 Hz frame) */
+    load();
+    return cfg.pacing == PACING_DISPLAY && cfg.speed == 1 && vblank_failed_flag != 0;
+}
+
+int display_pacing_vrr(void) { load(); return cfg.pacing == PACING_VRR && cfg.speed == 1; }
+/* (`display` pacing on a monitor whose rate 60 does not divide: the renderer presents without blocking, but only where that
+ * is tear-free - mailbox. A card without mailbox gets FIFO there, as before, rather than immediate's tearing) */
+int display_present_odd_rate(void) { load(); return cfg.pacing == PACING_DISPLAY && cfg.speed == 1 && vblank_odd_rate != 0; }
+
 void *gfx_display_output(void);   /* gpu_d3d11.c: the swap chain's output (IDXGIOutput, referenced), or NULL */
 
 /* The refresh rate of the window's monitor, in Hz (0 unknown). */
@@ -884,8 +923,15 @@ static int vblank_tick(void) {
         if (hz != logged_hz && output) {
             logged_hz = hz;
             fprintf(stderr, "[display] %d Hz monitor: %s\n", hz, divisor ? "display pacing" : "clock pacing (display pacing needs 60, 120 or 240 Hz)");
+            /* (a rate the game's 60 frames do not divide: 165 Hz is 2.75 refreshes a frame, so a frame is shown for two
+             * refreshes and then three. The presents stay non-blocking, so a late frame costs no extra refresh) */
+            if (!divisor && hz > 61)
+                fprintf(stderr, "[display] %d Hz is not a multiple of 60 (%g refreshes a frame): paced 60 times a second and presented at the next "
+                                "refresh; a 60/120/240 Hz mode or VRR is evenly paced\n", hz, hz / 60.0);
         }
     }
+    /* (again at each monitor change: a window moved to a 60 Hz one. Kept for the log: it no longer changes the present mode.) */
+    InterlockedExchange(&vblank_odd_rate, !divisor && hz_now > 61 ? 1 : 0);
     InterlockedExchange(&vblank_hz, output && divisor ? hz_now : 0);
     if (!output || !divisor) { last = 0; return 0; }
     int extra = vblank_extra > 0 && InterlockedDecrement(&vblank_extra) >= 0;   /* (one refresh more this tick, at most: a 120 Hz monitor's 8 ms) */
@@ -898,17 +944,33 @@ static int vblank_tick(void) {
      * tick, 25 ms (a fight on a 120 Hz monitor: up to ~1 frame in 100 shown 1.5 frames late). Refreshes are counted
      * by their times, so a wait that returns at once or misses one is counted as what it was. */
     LONGLONG period = freq.QuadPart / hz_now;
-    for (int waits = 0;;) {
-        if (FAILED(IDXGIOutput_WaitForVBlank(output))) { failed = 1; break; }
+    /* (A wait that runs past what the refreshes say cannot resolve - the monitor changed rate under us, or the driver's
+     * vblank is not arriving - ends at a time bound and takes the clock path, instead of falling through the old
+     * "never more than a few refreshes" cap: at 120 Hz every tick then waited ~44.6 ms (five refreshes) and 295 frames
+     * in 80 s were 46 ms hitches, all of them inside this loop - owner's log, 2026-11-17.) */
+    LONGLONG budget = period * (divisor + extra + 2);
+    static int over_budget;
+    int over = 0;
+    for (;;) {
+        if (FAILED(IDXGIOutput_WaitForVBlank(output))) { failed = 1; InterlockedExchange(&vblank_failed_flag, 1); break; }
         QueryPerformanceCounter(&t1);
-        if (!last || ++waits >= 2 * divisor + 2) break;   /* (the first tick; and never more than a few refreshes) */
+        if (!last) break;   /* (the first tick: one refresh is the answer) */
         if ((t1.QuadPart - last + period / 2) / period >= divisor + extra) break;
+        if (t1.QuadPart - t0.QuadPart > budget) { over = 1; break; }   /* (the vblanks are not what the rate says) */
     }
+    /* (one wait past its bound is a stall - this tick returns late, as the old cap did; several in a row are a monitor
+     * whose vblanks do not match its rate: clock pacing from then on, below) */
+    over_budget = over ? over_budget + 1 : 0;
+    if (over_budget >= 3) failed = 1;
     QueryPerformanceCounter(&t1);
     last = t1.QuadPart;
+    /* (a wait that took too long - a stall, not a monitor that cannot be waited for - goes to clock pacing as before, without
+     * the renderer's sync: FIFO against a clock a little faster than the monitor would queue frames up) */
     if (!failed && (t1.QuadPart - t0.QuadPart) * 1000 / freq.QuadPart > 50 * divisor) failed = 1;
     if (failed) InterlockedExchange(&vblank_hz, 0);
-    if (failed) fprintf(stderr, "[display] waiting for the monitor's refresh failed: clock pacing from now on\n");
+    if (failed) fprintf(stderr, vblank_failed_flag ? "[display] waiting for the monitor's refresh failed (its panel is another card's?): "
+                                                     "the renderer's own sync paces the frames from now on\n"
+                                                   : "[display] waiting for the monitor's refresh took too long: clock pacing from now on\n");
     return !failed;
 }
 #elif defined __APPLE__
@@ -989,6 +1051,8 @@ void display_wait_tick(void) {
                 cfg.pacing == PACING_VRR ? "vrr" : cfg.pacing == PACING_DISPLAY ? "display" : "clock",
                 cfg.pacing == PACING_VRR && !tearing ? " (no tearing support: as clock)" : "");
     }
+    /* (`display` at a rate 60 does not divide - 165 Hz: vblank_tick notes it and returns 0 until the monitor changes, and
+     * this is the clock's own path, as clock pacing is, with the renderer presenting in sync instead of this wait) */
     if (cfg.pacing == PACING_DISPLAY && vblank_tick()) {   /* the clock restarts from here if it is needed later */
         QueryPerformanceCounter(&base);
         ticks = 0;
@@ -997,7 +1061,10 @@ void display_wait_tick(void) {
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     long long period = freq.QuadPart / 60;
-    if (now.QuadPart - (base.QuadPart + ticks * freq.QuadPart / 60) > 2 * period) {   /* late by two refreshes: skip, don't burst */
+    /* (late by two refreshes: skip, don't burst. With the renderer presenting in sync (display_present_sync) a present that
+     * waited for the monitor is what made it late: the clock starts again from here at once, so it neither sends refreshes
+     * back to back nor stays behind - rollback's time sync below, which moves the clock later, then still slows the game) */
+    if (now.QuadPart - (base.QuadPart + ticks * freq.QuadPart / 60) > (display_present_sync() ? period / 8 : 2 * period)) {
         base = now;
         ticks = 0;
     }

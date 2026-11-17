@@ -38,6 +38,8 @@ INCLUDE = os.path.join(DIR, "include")
 LIBDIR = os.path.join(DIR, "lib")
 LIBS = ("glslang.lib", "glslang-default-resource-limits.lib", "SPIRV-Tools-opt.lib", "SPIRV-Tools.lib")
 SHIM = os.path.join(TOOLS, "glslang_shim.c")
+STL_FALLBACK = os.path.join(TOOLS, "glslang_stl_fallback.c")
+STL_MISSING = "__std_find_first_of_trivial_pos_"
 HEADERS = [os.path.join(ROOT, "runtime", "gpu_spirv.h")]
 DLL_NAME = "ssbu_glslang.dll"
 # what the DLL links of the C runtime besides the static libraries the program uses (deps\msvc keeps
@@ -102,7 +104,7 @@ def dll_current(dll):
     if not os.path.isfile(dll):
         return False
     t = os.path.getmtime(dll)
-    return all(os.path.getmtime(p) < t for p in [SHIM, *HEADERS, *(os.path.join(LIBDIR, n) for n in LIBS)])
+    return all(os.path.getmtime(p) < t for p in [SHIM, STL_FALLBACK, *HEADERS, *(os.path.join(LIBDIR, n) for n in LIBS)])
 
 
 def build(dll, log=print):
@@ -118,6 +120,17 @@ def build(dll, log=print):
     new = dll[:-4] + ".new.dll"   # (made beside it, then put in its place: a failed link leaves the old one)
     cmd = [cc.CLANG, *flags, SHIM, "/Fe" + new, "/link", *cc.LINK_OPTIONS, "/LIBPATH:" + LIBDIR, *LIBS]
     r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode and any(n in (r.stdout + r.stderr) for n in DLL_CRT):
+        # (a deps\msvc set up before the DLL C runtime's libraries were kept: fetch them, then link again)
+        try:
+            import msvc_deps
+            if msvc_deps.repair_crt_libs(log):
+                r = subprocess.run(cmd, capture_output=True, text=True)
+        except Exception as e:
+            log(f"  (the DLL C runtime's libraries could not be fetched: {e})")
+    if r.returncode and STL_MISSING in r.stdout + r.stderr:
+        cmd.insert(cmd.index(SHIM) + 1, STL_FALLBACK)
+        r = subprocess.run(cmd, capture_output=True, text=True)
     if not r.returncode and os.path.isfile(new):
         try:
             os.replace(new, dll)
@@ -135,8 +148,8 @@ def build(dll, log=print):
         text = (r.stdout + r.stderr)[-2000:]
         hint = ""
         if any(n in text for n in DLL_CRT):
-            hint = ("\n(the DLL C runtime's libraries are missing: deps\\msvc from before they were kept. "
-                    "Run tools\\msvc_deps.py again, or build with Visual Studio's Build Tools.)")
+            hint = ("\n(the DLL C runtime's libraries are missing: deps\\msvc from before they were kept, and fetching them "
+                    "did not work either. Run python tools\\msvc_deps.py install, or build with Visual Studio's Build Tools.)")
         log(f"  ssbu_glslang.dll could not be built: Vulkan will have no shader translator.\n{text}{hint}")
         return False
     for leftover in (new[:-4] + ".lib", new[:-4] + ".exp", dll + ".old"):

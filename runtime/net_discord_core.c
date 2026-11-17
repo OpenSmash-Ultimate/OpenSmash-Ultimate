@@ -100,18 +100,18 @@ int discord_token_fresh(const DiscordToken *t, int64_t now, int64_t margin) {
 /* ---- fighters ---------------------------------------------------------------------------- */
 static const char *const FIGHTERS[] = {
     "Mario", "Donkey Kong", "Link", "Samus", "Dark Samus", "Yoshi", "Kirby", "Fox", "Pikachu", "Luigi",
-    "Ness", "Captain Falcon", "Jigglypuff", "Peach", "Daisy", "Bowser", "Sheik", "Zelda", "Dr. Mario", "Pichu",
-    "Falco", "Marth", "Lucina", "Young Link", "Ganondorf", "Mewtwo", "Roy", "Chrom", "Mr. Game & Watch", "Meta Knight",
-    "Pit", "Dark Pit", "Zero Suit Samus", "Wario", "Snake", "Ike", "Squirtle", "Ivysaur", "Charizard", "Diddy Kong",
-    "Lucas", "Sonic", "King Dedede", "Olimar", "Lucario", "R.O.B.", "Toon Link", "Wolf", "Villager", "Mega Man",
-    "Wii Fit Trainer", "Rosalina & Luma", "Little Mac", "Greninja", "Palutena", "Pac-Man", "Robin", "Shulk", "Bowser Jr.", "Duck Hunt",
-    "Ryu", "Ken", "Cloud", "Corrin", "Bayonetta", "Inkling", "Ridley", "Simon", "Richter", "King K. Rool",
-    "Isabelle", "Incineroar", "Mii Brawler", "Mii Swordfighter", "Mii Gunner", "Ice Climbers", NULL, NULL, NULL, NULL,
-    NULL, "Piranha Plant", "Joker", "Hero", "Banjo & Kazooie", "Terry", "Byleth", "Min Min", "Steve", "Sephiroth",
-    "Pyra", "Mythra", "Kazuya", "Sora"};   /* (by fighter kind: tools/paramconfig_kinds.py; 76-80: Nana, bosses, Mii enemies) */
+    "Ness", "Captain Falcon", "Jigglypuff", "Peach", "Daisy", "Bowser", "Ice Climbers", "Sheik", "Zelda", "Dr. Mario",
+    "Pichu", "Falco", "Marth", "Lucina", "Young Link", "Ganondorf", "Mewtwo", "Roy", "Chrom", "Mr. Game & Watch",
+    "Meta Knight", "Pit", "Dark Pit", "Zero Suit Samus", "Wario", "Snake", "Ike", "Pokemon Trainer", "Diddy Kong", "Lucas",
+    "Sonic", "King Dedede", "Olimar", "Lucario", "R.O.B.", "Toon Link", "Wolf", "Villager", "Mega Man", "Wii Fit Trainer",
+    "Rosalina & Luma", "Little Mac", "Greninja", "Palutena", "Pac-Man", "Robin", "Shulk", "Bowser Jr.", "Duck Hunt", "Ryu",
+    "Ken", "Cloud", "Corrin", "Bayonetta", "Richter", "Inkling", "Ridley", "King K. Rool", "Simon", "Isabelle",
+    "Incineroar", "Mii Brawler", "Mii Swordfighter", "Mii Gunner", "Piranha Plant", "Joker", "Hero", "Banjo & Kazooie", "Terry", "Byleth",
+    "Min Min", "Steve", "Sephiroth", "Pyra & Mythra", "Kazuya", "Sora"};   /* (by the GSP records' fighter number - DataStore 82's u8 -
+ * which is the game's save_no in ui_chara_db, not the fighter kind: 16 Ice Climbers, 29 Mr. Game & Watch (issue #389),
+ * 37 Pokemon Trainer; the names the lobby's /gsp/me gives a number for) */
 
 const char *discord_fighter_name(int kind) {
-    if (kind == 114) return "Pokemon Trainer";
     return kind >= 0 && kind < (int)(sizeof FIGHTERS / sizeof *FIGHTERS) ? FIGHTERS[kind] : NULL;
 }
 
@@ -240,6 +240,34 @@ int discord_join_parse(const char *secret, DiscordJoin *j) {
     }
     j->where = k[0] == 'a' ? DP_ARENA : DP_ROOM;
     return 1;
+}
+
+const char *discord_join_lobby(int eos, const char *lobby_relay) {
+    if (eos) return "eos";
+    return lobby_relay && lobby_relay[0] ? lobby_relay : NULL;
+}
+
+static int same_text_nocase(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        char x = *a >= 'A' && *a <= 'Z' ? (char)(*a + 32) : *a, y = *b >= 'A' && *b <= 'Z' ? (char)(*b + 32) : *b;
+        if (x != y) return 0;
+    }
+    return *a == *b;
+}
+
+int discord_join_same(const DiscordJoin *j, const char *my_lobby, const char *my_code) {
+    if (!j || !j->where || !my_lobby || !my_lobby[0] || !same_text_nocase(my_lobby, j->relay)) return 0;
+    return !strcmp(my_code ? my_code : "", j->code);
+}
+
+uint32_t discord_join_room_host(const DiscordJoin *j) {
+    unsigned v[4];
+    int used = 0;
+    if (!j || j->where != DP_ROOM) return 0;
+    if (sscanf(j->target, "%3u.%3u.%3u.%3u%n", &v[0], &v[1], &v[2], &v[3], &used) != 4 || j->target[used]) return 0;
+    for (const char *c = j->target; *c; c++) if (!(*c == '.' || (*c >= '0' && *c <= '9'))) return 0;   /* (no signs, spaces) */
+    if (v[0] > 255 || v[1] > 255 || v[2] > 255 || v[3] > 255) return 0;
+    return (uint32_t)v[0] << 24 | v[1] << 16 | v[2] << 8 | v[3];
 }
 
 /* ---- SHA-256 and HMAC (FIPS 180-4, RFC 2104) ------------------------------------------------ */

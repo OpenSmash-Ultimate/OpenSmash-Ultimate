@@ -57,10 +57,33 @@ static double clock_ms(void) {   /* (the performance counter's clock, as hle_rb_
 }
 static void ip_text(u32 ip, char *s, size_t n) { snprintf(s, n, "%u.%u.%u.%u", ip >> 24, ip >> 16 & 255, ip >> 8 & 255, ip & 255); }
 
+/* (an Online match's start, #389 follow-up) when each address last sent this game anything on rollback's port: its game
+ * runs rollback and is up, whether or not its match set-up has come yet. A HERE message (RBL_HERE_MSG, below) only says
+ * that and is not queued. */
+#define SEEN_N 16
+static struct { u32 ip; double at; } seen_ip[SEEN_N];
+static SRWLOCK seen_lock = SRWLOCK_INIT;
+static volatile int here_version = -1;
+static void seen_note(u32 ip, double at) {
+    AcquireSRWLockExclusive(&seen_lock);
+    int k = -1, old = 0;
+    for (int i = 0; i < SEEN_N; i++) {
+        if (seen_ip[i].ip == ip) { k = i; break; }
+        if (seen_ip[i].at < seen_ip[old].at) old = i;
+    }
+    if (k < 0) k = old;
+    seen_ip[k].ip = ip; seen_ip[k].at = at;
+    ReleaseSRWLockExclusive(&seen_lock);
+}
 /* (the netplay client's thread) a message from the room, kept with when it came, as hle_rb_link.c's receive thread */
 static void sink(u32 src, const void *data, u32 len) {
     if (!open_now || !len || len > QBYTES) return;
     double at = clock_ms();
+    if (len == RBL_HERE_BYTES && ((const u8 *)data)[0] == RBL_HERE_MSG && !memcmp((const u8 *)data + 1, "HERE", 4)) {
+        if (((const u8 *)data)[5] == here_version) seen_note(src, at);   /* (another rollback version: not one to wait for) */
+        return;
+    }
+    seen_note(src, at);
     AcquireSRWLockExclusive(&q_lock);
     if (q_tail - q_head < QN) {
         unsigned k = q_tail++ % QN;
@@ -253,5 +276,18 @@ void rbl_relay_online_end(void) {
     fprintf(stderr, "[rb] link: the Online match is over: its players forgotten\n");
 }
 void rbl_relay_report(void) { if (rbl_relay == &ops) rbr_report(); }
+void rbl_relay_here(u32 ip, int version) {
+    here_version = version;
+    if (rbl_relay != &ops || !online || !ip) return;
+    u8 here[RBL_HERE_BYTES] = {RBL_HERE_MSG, 'H', 'E', 'R', 'E', (u8)version};
+    net_rb_send(ip, here, RBL_HERE_BYTES);
+}
+double rbl_relay_heard_ago(u32 ip) {
+    double at = 0;
+    AcquireSRWLockShared(&seen_lock);
+    for (int i = 0; i < SEEN_N; i++) if (seen_ip[i].ip == ip && ip) at = seen_ip[i].at;
+    ReleaseSRWLockShared(&seen_lock);
+    return at > 0 ? clock_ms() - at : 1e12;
+}
 
 #endif   /* _WIN32 */

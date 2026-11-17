@@ -143,7 +143,8 @@ static const char DEFAULT_INI[] =
     "; rumble = 1: controllers rumble (each as strong as its own rumble below). 0: no controller rumbles.\n"
     "rumble = 1\n"
     "; gc_switch = 1: a GameCube adapter's sticks and triggers are scaled as a Switch console does (the same numbers, no dead\n"
-    "; zone). 0: the earlier scaling, with a dead zone and a reach that grows to fit the stick.\n"
+    "; zone). 0: the earlier scaling, with a dead zone and a reach that grows to fit the stick. An adapter in PC mode\n"
+    "; (Mayflash 0079:1844 and clones) scales each stick itself, so there the sticks are an estimate of the console's.\n"
     "gc_switch = 1\n"
     "; ignore = <GUID, name or type>: a pad that is never used (one line each), e.g. a wheel or a second driver\n"
     ";          of the same controller.\n"
@@ -152,6 +153,8 @@ static const char DEFAULT_INI[] =
     "[players]\n"
     "; Keep a player for one pad: <player> = <GUID, name or type of the pad>. Other pads leave it free.\n"
     "; 2 = DualSense Wireless Controller\n"
+    "; Two pads of one model share a GUID: the Switch player page then writes serial:<serial number> or path:<hash of the USB port>\n"
+    "; (the game's log line for each player shows both).\n"
     "\n"
     "[keyboard]\n"
     "; The keyboard's keys (it plays as keyboard_player above, while the game's window is focused; the settings\n"
@@ -236,7 +239,7 @@ static const char DEFAULT_INI[] =
     "; rumble = 60\n"
     "\n"
     "; GameCube adapters in PC mode (Mayflash USB 0079:1844, DragonRise-chip clones such\n"
-    "; as 0079:1846) need nothing here as of SDL 3.4: SDL reads them with its own GameCube\n"
+    "; as 0079:1846) need nothing here as of SDL 3.4 (their sticks follow gc_switch above): SDL reads them with its own GameCube\n"
     "; driver and already hands the C-stick over the right way up. With an older SDL (or a\n"
     "; Linux build without its HIDAPI GameCube driver) the C-stick comes up inverted; then\n"
     "; match the pad and flip it back, e.g.:\n"
@@ -894,8 +897,25 @@ static int name_eq(const char *a, const char *b) {
     }
 }
 
+/* A pad's own unit, for two that report the same GUID: `serial:<its serial number>`, else `path:<8 hex digits>`,
+ * a hash of its device path (the USB port it is plugged into). The settings menu writes one into [players] only when
+ * GUIDs repeat; dev_matches takes them too (also in [general] ignore). */
+static void dev_path_tag(const char *path, char out[12]) {
+    unsigned h = 2166136261u;   /* FNV-1a */
+    for (const unsigned char *c = (const unsigned char *)path; *c; c++) h = (h ^ *c) * 16777619u;
+    snprintf(out, 12, "%08x", h);
+}
+
 static int dev_matches(const Dev *d, const char *what) {
-    return *what && (!_stricmp(what, d->guid) || name_eq(what, d->name) || !_stricmp(what, d->type));
+    if (!*what) return 0;
+    if (!_strnicmp(what, "serial:", 7)) return *d->serial && !_stricmp(what + 7, d->serial);
+    if (!_strnicmp(what, "path:", 5)) {
+        char tag[12];
+        if (!*d->path) return 0;
+        dev_path_tag(d->path, tag);
+        return !_stricmp(what + 5, tag);
+    }
+    return !_stricmp(what, d->guid) || name_eq(what, d->name) || !_stricmp(what, d->type);
 }
 
 /* controllers.ini's [general] ignore names this pad: it stays open as no player (so it is not opened
@@ -1007,6 +1027,9 @@ static int dev_assign(const Dev *d) {
     int taken[PAD_SLOTS] = {0};
     for (int i = 0; i < (int)(sizeof devs / sizeof *devs); i++)
         if (devs[i].used && &devs[i] != d && devs[i].slot >= 0) taken[devs[i].slot] = 1;
+    /* (a pin naming this very unit wins over a GUID, name or type one that happens to match it too) */
+    for (int s = 0; s < PAD_SLOTS; s++)
+        if (!taken[s] && (!_strnicmp(cfg.pin[s], "serial:", 7) || !_strnicmp(cfg.pin[s], "path:", 5)) && dev_matches(d, cfg.pin[s])) return s;
     for (int s = 0; s < PAD_SLOTS; s++)
         if (!taken[s] && dev_matches(d, cfg.pin[s])) return s;
     for (int pass = 0; pass < 3; pass++)
@@ -1046,6 +1069,28 @@ static void stick(int deadzone, int outer, i32 x, i32 y_down, i32 *ox, i32 *oy) 
     if (r * scale > max) scale = max / r;   /* inside the circle, as the console reports */
     *ox = (i32)lround(fx * scale);
     *oy = (i32)lround(fy * scale);
+}
+
+/* GameCube adapters in PC mode (Mayflash 0079:1844 and clones, read by SDL as an ordinary joystick): the adapter scales each
+ * stick so that its own rim is the whole 0-255 range (notch test 11-16: about 1.3 times the Wii U mode's counts on the left
+ * stick, about 1.5 times on the C-stick, clipped at both ends), so the console's counts cannot be read back exactly. An
+ * estimate: the typical rim of a GameCube stick, 100 counts left and 87 for the C-stick, turned into counts and then
+ * scaled as the console does (56 and 44, see padusb_set_switch). The Wii U mode stays the exact one. */
+static int gc_switch_on(void) {
+    static int env = -2;
+    if (env == -2) { const char *e = getenv("SSBU_GC_SWITCH"); env = e && !strcmp(e, "0") ? 0 : e && !strcmp(e, "1") ? 1 : -1; }
+    return env >= 0 ? env : cfg.gc_switch;
+}
+static int dev_gc_pcmode(const Dev *d) {
+    /* (GUID bytes 4-5: vendor 0x0079, 6-7 reserved, 8-9 product, little endian: 0x1844 / 0x1846 are the Mayflash-style adapters) */
+    return !d->usb && d->gc && strlen(d->guid) >= 20 && !_strnicmp(d->guid + 8, "7900", 4) && (!_strnicmp(d->guid + 16, "4418", 4) || !_strnicmp(d->guid + 16, "4618", 4));
+}
+static void pcmode_stick(i32 x, i32 y_down, int rim, int n, i32 *ox, i32 *oy) {
+    long cx = lround(x * (double)rim / 32767.0), cy = lround(-(double)y_down * rim / 32767.0), r2 = cx * cx + cy * cy, v, w;
+    if (r2 <= (long)n * n) { v = cx * 32767L / n; w = cy * 32767L / n; }
+    else { double r = sqrt((double)r2); v = (long)(cx * 32767.0 / r); w = (long)(cy * 32767.0 / r); }
+    *ox = (i32)(v > 32767 ? 32767 : v < -32767 ? -32767 : v);
+    *oy = (i32)(w > 32767 ? 32767 : w < -32767 ? -32767 : w);
 }
 
 /* As a GameCube controller, L and R are analog: the furthest-pulled of their controls (a button
@@ -1095,9 +1140,16 @@ static void dev_state(Dev *d, const Raw *raw, PadState *o) {
     for (int a = 0; a < 4; a++)
         if (d->invert >> a & 1) ax[a] = ax[a] <= -32768 ? 32767 : -ax[a];
     /* (the console's own numbers need no zone of ours: the defaults of #153 stand aside for them, a zone the player set stays) */
+    /* (a dead zone or outer zone the player set stays, as for the Wii U mode: then the stick goes the earlier way) */
+    int pc = gc_switch_on() && dev_gc_pcmode(d) && d->dz_default && d->outer_default;
     int dz = d->exact && d->dz_default ? 0 : d->deadzone, outer = d->exact && d->outer_default ? 100 : d->outer;
-    stick(dz, outer, ax[0], ax[1], &o->lx, &o->ly);
-    stick(dz, outer, ax[2], ax[3], &o->rx, &o->ry);
+    if (pc) {
+        pcmode_stick(ax[0], ax[1], 100, 56, &o->lx, &o->ly);
+        pcmode_stick(ax[2], ax[3], 87, 44, &o->rx, &o->ry);
+    } else {
+        stick(dz, outer, ax[0], ax[1], &o->lx, &o->ly);
+        stick(dz, outer, ax[2], ax[3], &o->rx, &o->ry);
+    }
     u64 taunts = 0;
     if (d->stick_taunts) {   /* the left stick's directions as the D-pad's buttons (the taunts); past half way, the stick itself goes still */
         if (o->ly > 16383) taunts |= 1ull << N_UP;
@@ -1131,6 +1183,27 @@ static void dev_info(const Dev *d, const Raw *raw, PadInfo *o) {
     snprintf(o->name, sizeof o->name, "%s", d->name);
     snprintf(o->type, sizeof o->type, "%s", d->type);
     snprintf(o->guid, sizeof o->guid, "%s", d->guid);
+    {   /* what [players] should name it: its GUID, or its own unit when another pad reports the same GUID */
+        int twin = 0, same_serial = 0;
+        for (int i = 0; i < (int)(sizeof devs / sizeof *devs); i++) {
+            int t = devs[i].used && &devs[i] != d && devs[i].xinput < 0 && d->xinput < 0 && !strcmp(devs[i].guid, d->guid);
+            twin |= t;
+            same_serial |= t && !_stricmp(devs[i].serial, d->serial);   /* (cheap pads all report one serial) */
+        }
+        /* (a serial the ini cannot hold back as it was - spaces at its ends, ; or # - is no use either) */
+        size_t sl = strlen(d->serial);
+        int plain = sl && !strchr(" \t\r\n", d->serial[0]) && !strchr(" \t\r\n", d->serial[sl - 1]) && !strpbrk(d->serial, ";#");
+        for (const unsigned char *c = (const unsigned char *)d->serial; *c; c++) if (*c < 0x20) plain = 0;   /* (a control character would break the line) */
+        int serial_ok = plain && !same_serial;
+        char tag[12];
+        if (twin && serial_ok) snprintf(o->pin, sizeof o->pin, "serial:%s", d->serial);
+        else if (twin && *d->path) { dev_path_tag(d->path, tag); snprintf(o->pin, sizeof o->pin, "path:%s", tag); }
+        else snprintf(o->pin, sizeof o->pin, "%s", d->guid);
+        /* (its own unit whether or not a twin is connected now: the Switch player page counts a claim by it) */
+        if (*d->path) { dev_path_tag(d->path, tag); snprintf(o->unit, sizeof o->unit, "path:%s", tag); }   /* (unique, and the same with or without a twin) */
+        else if (plain) snprintf(o->unit, sizeof o->unit, "serial:%s", d->serial);
+        else snprintf(o->unit, sizeof o->unit, "%s", d->guid);
+    }
     snprintf(o->section, sizeof o->section, "%s", d->section);
     o->layout = d->layout; o->deadzone = d->deadzone; o->rumble = d->rumble; o->trigger = d->trigger; o->dpad_moves = d->dpad_moves; o->stick_taunts = d->stick_taunts;
     o->xinput = d->xinput >= 0;
@@ -1150,6 +1223,8 @@ static void dev_info(const Dev *d, const Raw *raw, PadInfo *o) {
     if (raw->axis[RA_RIGHT_TRIGGER] > 16384) o->raw |= PAD_RAW_RIGHT_TRIGGER;
     o->gc = d->gc;
     o->dz_default = d->dz_default;
+    o->pc_mode = dev_gc_pcmode(d);
+    o->pc_scaled = o->pc_mode && gc_switch_on() && d->dz_default && d->outer_default;
     o->usb_port = d->usb - 1;
     memcpy(o->axis, raw->axis, sizeof o->axis);
     memcpy(o->axis_lo, d->axis_lo, sizeof o->axis_lo);
@@ -1188,9 +1263,12 @@ static int rumble_due(Dev *d, ULONGLONG now, u16 *low, u16 *high) {
 }
 
 static void log_connect(const Dev *d) {
-    if (d->slot >= 0)
-        fprintf(stderr, "[input] player %d: \"%s\" (%s, GUID %s)%s\n", d->slot + 1, d->name, d->type, d->guid,
-                d->gc ? ", as a GameCube controller" : "");
+    if (d->slot >= 0) {
+        char tag[12] = "";
+        if (*d->path) dev_path_tag(d->path, tag);
+        fprintf(stderr, "[input] player %d: \"%s\" (%s, GUID %s%s%s%s%s)%s\n", d->slot + 1, d->name, d->type, d->guid,
+                *d->serial ? ", serial " : "", d->serial, *tag ? ", path " : "", tag, d->gc ? ", as a GameCube controller" : "");
+    }
     else fprintf(stderr, "[input] \"%s\" (%s) connected, but all 8 players are taken\n", d->name, d->type);
 }
 
@@ -1691,7 +1769,7 @@ int pad_get(u32 slot, PadState *out) {
 int pad_keyboard_slot(void) { pad_start(); return cfg.keyboard_slot; }
 int pad_background(void) { pad_start(); return cfg.background; }
 int pad_rumble_on(void) { pad_start(); return cfg.rumble; }
-int pad_gc_switch(void) { pad_start(); return cfg.gc_switch; }
+int pad_gc_switch(void) { pad_start(); return gc_switch_on(); }   /* (SSBU_GC_SWITCH wins over the file, as for the sticks) */
 
 void pad_rumble(u32 slot, int side, float amplitude) {
     if (slot >= PAD_SLOTS || side < 1 || side > 2) return;

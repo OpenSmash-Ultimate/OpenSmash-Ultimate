@@ -801,28 +801,43 @@ class Ladder:
         return lambda: max(FLOOR, TIMES * estimate * max(1.0, self.pace.value() or PACE_UNKNOWN))
 
     def compile(self, jobs, workers, argv, infos=None, progress=None, started=None, finished=None, compiled=None,
-                times=None):
+                times=None, failed=None, skip=None):
         """Compiles the jobs ((src, obj, level, ...), handed out in this order) `workers` at a time; returns
         [(src, error text)] for those that did not compile, in order. argv(job, level, header): the command
         that compiles a job at a level, with the optnone header file (or None). infos {obj: Info}: the
         generated files (a time limit and the ladder; the others have only the crash retry). progress (a
         progress.Build), or started(job) and finished(job, seconds), follow each file. compiled(job, level)
         is called as one compiles, compiled(job, level, step) when the ladder compiled it another way
-        (its key: check). times (Times) gets each generated file's seconds."""
+        (its key: check). times (Times) gets each generated file's seconds. failed(job) is called as one
+        does not compile; skip(job), asked before a job starts, true leaves it out (not compiled, not a
+        failure: tools/recomp.py compile_dirs, the folders after one whose failure ends the build)."""
         infos = infos or {}
         hooks = _Hooks(progress, started, finished)
         if times is not None and self.pace.known is None:
             self.pace.known = times.pace()
         self.stopping.clear()
+        skip = skip or (lambda job: False)
+
+        def first(job):
+            if skip(job):
+                return None
+            result = self._first(job, argv, infos.get(job[1]), hooks, compiled, times)
+            if failed and result is not None and result[0] == "fail":
+                failed(job)
+            return result
         pool = ThreadPoolExecutor(max(1, workers))
         try:
-            futures = [pool.submit(self._first, job, argv, infos.get(job[1]), hooks, compiled, times) for job in jobs]
+            futures = [pool.submit(first, job) for job in jobs]
             results = [f.result() for f in futures]
             pool.shutdown()
             failures = []
             for job, result in zip(jobs, results):   # (the crashes: each on its own, once the others are done)
                 if result is not None and result[0] == "crash":
+                    if skip(job):
+                        continue
                     result = self._after_crash(job, argv, infos.get(job[1]), *result[1:], hooks, compiled, times)
+                    if failed and result is not None:
+                        failed(job)
                 if result is not None:
                     failures.append(result[1])
             return failures

@@ -9,6 +9,7 @@
 
 void eos_start(void);                                     /* (once) off without the SDK beside the program, eos.txt or with SSBU_EOS=0 */
 int eos_ready(void);                                      /* logged in */
+int eos_files_missing(void);   /* 1: off because the SDK's DLL or eos.txt is not beside the program (or eos.txt is incomplete) */
 int eos_wait_ready(unsigned ms);                          /* logged in within ms (0 at once: EOS off here or failed) */
 const char *eos_my_id(void);                              /* this player's id, NULL until ready */
 int eos_send(const char *to, const void *data, u32 len);  /* queued; 0: not sent (not ready, too long, queue full) */
@@ -27,6 +28,8 @@ int eos_hub_member_id(u32 ip, char id[NET_EOS_ID_LEN + 1]);
 void eos_hub_set_player(u64 pid, const char *url, u32 rating);
 int eos_hub_player(u64 pid, char id[NET_EOS_ID_LEN + 1], char *url, size_t cap, u32 *rating);   /* 1: a member; url "" unknown yet */
 void eos_hub_refresh_soon(void);
+const char *eos_hub_lobby(void);   /* (EOS thread) the hub's EOS lobby id, "" while in none: gatherings are of one hub (net_eos_lobby.c) */
+void eos_hub_set_busy(int (*fn)(void));   /* (net_eos_net.c) fn() 1 while this game talks to a member: no move to another hub then */
 
 /* The network over EOS alone (net_eos_net.c), and what net_relay.c gives it */
 struct NetBackend;

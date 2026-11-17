@@ -8,13 +8,15 @@
 #   sh tools/deploy/deploy_discord_bot.sh <ssh host> update      copy the new script and restart
 #   sh tools/deploy/deploy_discord_bot.sh <ssh host> status      the service's state and its last log lines
 #   sh tools/deploy/deploy_discord_bot.sh <ssh host> uninstall   stop and remove it (the token is kept)
-# SSBU_SUDO=sudo for a login that is not root. The bot needs no open port and no privileged intent.
+# SSBU_SUDO=sudo for a login that is not root. The bot needs no open port. To see play.log attachments in the
+# feedback forums it needs the Message Content intent (Developer Portal, Bot tab); without it the status line
+# and the thread digest still work and the log replies stay off.
 set -e
 host=$1
 what=${2:-status}
 sudo=${SSBU_SUDO:-}
 here=$(dirname "$0")
-[ -n "$host" ] || { sed -n '2,12p' "$0"; exit 2; }
+[ -n "$host" ] || { sed -n '2,14p' "$0"; exit 2; }
 
 remote() { ssh "$host" "$sudo sh -s"; }
 
@@ -62,5 +64,5 @@ echo "the bot is removed (its token stays in /etc/ssbu-discord-bot/token)"
 EOF
     ;;
 *)
-    sed -n '2,12p' "$0"; exit 2 ;;
+    sed -n '2,14p' "$0"; exit 2 ;;
 esac

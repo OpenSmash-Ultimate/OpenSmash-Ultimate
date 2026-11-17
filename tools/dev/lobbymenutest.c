@@ -60,6 +60,7 @@ const NetBackend net_eos_backend;
 void net_eos_net_packet(const char *from, const u8 *p, u32 n) { (void)from; (void)p; (void)n; }
 void nexeos_tick(void) {}
 void nexeos_packet(const char *from, const u8 *data, u32 len) { (void)from; (void)data; (void)len; }
+int nexeos_lobbies(char ids[][16], int max) { (void)ids; (void)max; return 0; }
 uint64_t nex_pid_of(const char *key) { (void)key; return 0; }
 static const char *const FILES[CONFIG_FILES] = {"display.ini", "controllers.ini", "launcher.ini", "online_server.txt",
                                                 "online_name.txt", "online_direct.txt", "online_protocol.txt",
@@ -133,7 +134,17 @@ int mods_switch_set(const char *name, int on) { (void)name; (void)on; return 0; 
 int mods_switch_state(char *msg, size_t n) { if (msg && n) msg[0] = 0; return MODS_SWITCH_IDLE; }
 int mods_running_count(void) { return 0; }
 int rt_code_patches_on(void) { return 0; }
-int pad_info(u32 slot, PadInfo *out) { (void)slot; memset(out, 0, sizeof *out); return 0; }   /* (no controllers) */
+/* (no controllers; with LOBBYMENUTEST_PCPAD=1 (scaled) or 2 (a zone of its own), one GameCube adapter in PC mode as player 1) */
+int pad_info(u32 slot, PadInfo *out) {
+    memset(out, 0, sizeof *out);
+    const char *e = getenv("LOBBYMENUTEST_PCPAD");
+    if (slot || !e || !*e) return 0;
+    out->connected = 1; out->slot = 0; out->usb_port = -1; out->gc = 1; out->pc_mode = 1;
+    out->dz_default = *e == '1'; out->pc_scaled = *e == '1';
+    out->deadzone = *e == '1' ? 10 : 25;
+    snprintf(out->name, sizeof out->name, "PC mode adapter");
+    return 1;
+}
 static PadState fake_pad;   /* (pad: player 1's pad, its buttons held for a frame) */
 int pad_get(u32 slot, PadState *out) {
     memset(out, 0, sizeof *out);
@@ -203,14 +214,23 @@ static void frames(double secs) {
 
 static void cmd_rows(void) {
     frame();
-    say("rows %d %d %d %d %d", open_, page, sel[page], nrows, at_foot() ? foot : 0);
+    /* (the empty rows between choosable and other rows are left out, and the counts are without them) */
+    int spacers = 0, before = 0;
+    for (int i = 0; i < nrows; i++) {
+        spacers += rows[i].id == R_SPACER || rows[i].id == R_HEADER;
+        if (i < sel[page]) before += rows[i].id == R_SPACER || rows[i].id == R_HEADER;
+    }
+    say("rows %d %d %d %d %d", open_, page, sel[page] - before, nrows - spacers, at_foot() ? foot : 0);
+    float gaps = 0; /* (the empty rows and section names above this one: its place on the screen is its index plus these) */
     for (int i = 0; i < nrows; i++) {
         char label[120], value[240], note[140], help[900];
+        if (rows[i].id == R_SPACER) { gaps += 1; continue; }
+        if (rows[i].id == R_HEADER) { gaps += i == 0 ? 1.1f : 1.7f; continue; }
         one_line(rows[i].label, label, sizeof label);
         one_line(rows[i].value, value, sizeof value);
         one_line(rows[i].note, note, sizeof note);
         one_line(rows[i].help ? rows[i].help : "", help, sizeof help);
-        say("row %d %d|%s|%s|%s|%s", rows[i].id, rows[i].kind, label, value, note, help);
+        say("row %d %d %.2f|%s|%s|%s|%s", rows[i].id, rows[i].kind, gaps, label, value, note, help);
     }
 }
 

@@ -1,4 +1,21 @@
-# Real Skyline plugins and the character bench: report (2026-10-24, updated 2026-10-25)
+# Real Skyline plugins and the character bench: report (2026-10-24, updated 2026-10-25 and 2026-11-17)
+
+## Update, 2026-11-17: the CSK Collection 6.0.1
+
+The pinned CSK Collection is now 6.0.1 (GameBanana's file 1884395, "Version 6.0.1 (13.0.5)"), not 5.0.6. 6.0.1 is
+built for game 13.0.5 but for one address: the inline hook in `check_selection_type` still names its 13.0.4
+address, main+0x17939ec, which is main+0x179390c in 13.0.5. So its map, `tools/ports/the_csk_collection-6.0.1.txt`,
+has that one entry (the map's header says how the plugin's other addresses were checked), and 5.0.6's map,
+described in the update below, is removed. Without the port the plugin still loads and sets that hook at the
+13.0.4 address (seen in one run that had the unported file in `skyline/plugins`).
+
+Tested on 2026-11-17 (Windows, AMD Radeon RX 7900 GRE, the Vulkan back end, main at 2665ab2 with this pin and
+map): 21 mods turned on, 19 mod plugins loaded; the plugin's hook set at main+0x179390c; a select screen of 103
+tiles; 3 matches in a run of 7.5 minutes; no panic or exception line in the log, and the game closed normally.
+
+Known, cause not found: on 2026-11-11 the plugin panicked once, in the probe run of an update (an `unwrap` on
+`None` at the_csk_collection__+0x48684, called from main+0x3311d60). It was not seen in the 3 matches above. Not
+tested: Linux and macOS; Direct3D 11 with this main.
 
 ## Update, 2026-10-25: Sans, the Super HYPE Bros. pack, the real CSK Collection, more than 4 new characters
 
@@ -17,7 +34,8 @@ plugin's C again whenever the recompiler is newer than it.
 **The CSK Collection 5.0.6 runs for real**, ported to 13.0.5 (it only exists for 13.0.4). Main's code moved by
 different amounts in different places (0, -0x40, -0xe0, -0x1a0, +0x1bc, +0x450, +0x490, +0x5b0) and its data and
 read-only data by +0x1000. `tools/port_plugin.py` rewrites the 81 main addresses CSK's code builds, from
-`tools/ports/the_csk_collection-5.0.6.txt`: region shifts from address pairs of plugins released for both versions
+`tools/ports/the_csk_collection-5.0.6.txt` (removed since: the update of 2026-11-17 above): region shifts from
+address pairs of plugins released for both versions
 (Smashline's 13.0.5 commit, One Slot Effects' 13.0.4 and 13.0.5 builds, HewDraw Remix's 13.0.5 offsets), each address
 checked against 13.0.5's code (a function hook on a function start; an inline hook where its callback's registers fit,
 e.g. the "SLI" file in x20 right after it loads; a patch on the instruction it replaces). Its set-up runs to the end,
@@ -30,8 +48,8 @@ broke it (one column of tiles, or `abort` from main+0x19f1550, a lookup in that 
 community fix is a mod (CSS 91+ Layout Fix, GameBanana 468582). OpenSmash now makes its own (2026-11-04): past 4 new
 characters, `mods.py apply` makes the screen's layout and table again for 91 + their number of tiles
 ([`tools/css_layout.py`](../tools/css_layout.py): more tile panes, up to 13 rows, tile sizes smaller than the game's
-smallest), and [`runtime/hle_select_screen.c`](../runtime/hle_select_screen.c) sizes and hides the tiles past 91 that
-the game's code leaves alone. Checked with 143 fighters (16 x 9) and with 147 (17 x 9), a tile past 91 picked.
+smallest), and [`runtime/hle_select_screen.c`](../runtime/hle_select_screen.c) hides the unused tiles past 91 that
+the game's code leaves shown. Checked with 143 fighters (16 x 9) and with 147 (17 x 9), a tile past 91 picked.
 
 Also: a 13.0.4 plugin's function hook that misses a function start moves by its region's shift when that lands on one
 (Shadow Mewtwo's 3 hooks); a standard plugin keeps its own exports when its C is made again for hooks into it
@@ -224,7 +242,7 @@ GameBanana's Skyline category:
 | Smashline 2 `libsmashline_plugin.nro` | 1.6.8 (2026-09-16) | github.com/HDR-Development/smashline | none declared | inline hooks in `lua2cpp_*` found when they load (nn::ro hooks); native version in the runtime today |
 | lib_paramconfig `libparam_config.nro` | 6.5 | github.com/CSharpM7/lib_paramconfig | none declared | hooks on param getters; ARCropolis `is_mod_enabled` |
 | nro_hook `libnro_hook.nro` | 0.4.0 | github.com/ultimate-research/nro-hook-plugin | none declared | hooks nn::ro::LoadModule (the runtime tells plugins about loaded modules itself) |
-| The CSK Collection `libthe_csk_collection.nro` | 5.0.6 | gamebanana.com/mods/499008 | CC (no re-uploads) | ARCropolis file callbacks (rewrites ui_chara_db etc. as they load), inline hooks, code patches |
+| The CSK Collection `libthe_csk_collection.nro` | 6.0.1 | gamebanana.com/mods/499008 | CC (no re-uploads) | ARCropolis file callbacks (rewrites ui_chara_db etc. as they load), inline hooks, code patches |
 | One Slot Effects `libone_slot_eff.nro` | 13.0.5 build | gamebanana.com/mods/549058 | CC | ~30 inline hooks + 3 code patches at fixed 13.0.5 addresses |
 | Smashline 2 / One Slot Effects compatibility edit | 1.4.1 | gamebanana.com/mods/532968 | CC | (an older Smashline build that worked with older OSE; not needed with the 13.0.5 OSE) |
 | One Slot Victory Theme (SL2) | - | gamebanana.com/mods/38834 | CC | nn::ro LookupSymbol + one hook |

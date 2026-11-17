@@ -337,6 +337,9 @@ text stays in the downloaded folder.
   incomplete. Install "Build Tools" with the "MSVC C++ x64/x86 build tools" component and a Windows SDK. The script finds
   `vswhere.exe` at `%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\` and calls the batch file by its absolute path;
   a harmless "vswhere" notice from `vcvars64.bat` in `build/logs/link.log` can be ignored when the DLL is produced.
+  Without Visual Studio the same batch builds the DLL with the clang-cl of `deps\llvm` over `deps\msvc` (the toolchain the
+  rest of the build uses, so no Visual Studio install is needed) and takes the glslang release in `deps\glslang` when it is
+  there, so this error then means that neither toolchain is present (`SSBU_CLANG` names one).
 - `missing input: ...main.npdm`: the ExeFS dump lacks `main.npdm`; dump the whole ExeFS.
 - `main is not a build this port knows` / `sdk is not a build this port knows`: not 13.0.4 or 13.0.5 with the update applied.
 - `the list of SDK functions to lift was not found`: `tools/lifter/sdklift_roots.txt` is missing from your clone.

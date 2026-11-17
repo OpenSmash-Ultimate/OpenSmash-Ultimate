@@ -76,11 +76,29 @@ namespace OpenSmash.Launcher
             return ("custom", code, host);
         }
 
+        // A server address that is the public lobby (its own, or the gone North American one's, with or without the
+        // port): "Your own server" with it is the Public lobby (issue #389: an older launcher.ini's custom server
+        // smash.recomps.wtf:39421 was written back at Play).
+        public static bool MeansPublicLobby(string? host)
+        {
+            host = (host ?? "").Trim();
+            return host.StartsWith(OldLobby, StringComparison.OrdinalIgnoreCase) || host.Equals(PublicLobby, StringComparison.OrdinalIgnoreCase) ||
+                   host.Equals(PublicLobby.Split(':')[0], StringComparison.OrdinalIgnoreCase);
+        }
+
+        // online_server.txt's line names the gone North American lobby (smash.recomps.wtf): to be written again as "auto".
+        public static bool IsOldLobbyLine(string? line)
+        {
+            var words = (line ?? "").Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            return words.Length > 0 && words[0].StartsWith(OldLobby, StringComparison.OrdinalIgnoreCase);
+        }
+
         // The line the game's settings menu writes for a choice (runtime/gpu_menu.c net_save_server).
         public static string LineFromLobby(string lobby, string code, string server)
         {
             code = (code ?? "").Replace(" ", "");
             server = (server ?? "").Trim();
+            if (lobby == "custom" && MeansPublicLobby(server)) lobby = code == "" ? "auto" : "private";
             return lobby switch
             {
                 "offline" => "off",
@@ -98,5 +116,12 @@ namespace OpenSmash.Launcher
             "direct3d11" or "direct3d" or "dx11" => "direct3d11",
             _ => "auto",
         };
+
+        // The renderer the game starts with, from display.ini's renderer and renderer_menu lines (runtime/gpu_display.c,
+        // #429): "renderer = d3d11" is what the v0.3.0 alphas' launcher writes at every Play, so under it the in-game
+        // menu's last choice (renderer_menu) stands. Any other renderer value is taken as it is.
+        public static string RendererShown(string? renderer, string? rendererMenu) =>
+            (renderer ?? "").Trim().Equals("d3d11", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(rendererMenu)
+                ? Renderer(rendererMenu) : Renderer(renderer);
     }
 }

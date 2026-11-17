@@ -25,9 +25,9 @@ Play online from the launcher or the game's own menus. The **[website](https://d
 ## Install
 
 1. Download **[OpenSmash.exe](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/latest/download/OpenSmash.exe)** from the latest [release](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) and run it. It does the rest.
-2. Choose where OpenSmash goes (about 60 GB free; not the Desktop or Documents) and click **Download and set up**. It downloads the project from GitHub into that folder, makes the **OpenSmash** and **Play SSBU** shortcuts (desktop and Start menu), and opens the launcher there.
+2. Choose where OpenSmash goes (about 60 GB free; not the Desktop or Documents) and click **Download and set up**. It downloads the project from GitHub into that folder, makes the **OpenSmash-Launcher** and **OpenSmash-Ultimate** shortcuts (desktop and Start menu), and opens the launcher there.
 3. In the installer window, check that it found your game files (game plus its 13.0.5 update), keys and optionally firmware; fix any folder with **Browse**. Click **Set up and build** and wait: 30 minutes to a few hours.
-4. Press **Play** in the launcher, or use the **Play SSBU** shortcut.
+4. Press **Play** in the launcher, or use the **OpenSmash-Ultimate** shortcut (the game without the launcher).
 5. To update, open **Settings -> Update** in the launcher. Mods are in the launcher's **Mods** view; online is in **Settings -> Online**.
 
 The first start is faster than before.
@@ -70,7 +70,7 @@ UI language: the launcher and external menu offer English, Simplified Chinese, J
 
 - **Questions and finding players:** the OpenSmash-Ultimate Discord, **[discord.gg/pkgyYGf3YB](https://discord.gg/pkgyYGf3YB)**.
 - **Setup problems:** see [If something goes wrong](docs/BUILDING.md#if-something-goes-wrong) in the setup guide.
-- **Bugs:** open an [issue](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/issues) with your operating system, graphics card and driver version, what you did, what happened instead, and the end of the log (`build/play.log`, plus the `.txt` report from `reports/` after a crash).
+- **Bugs:** use the **Report a problem** button at the bottom of the launcher, or open the [bug form](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/issues/new?template=bug_report.yml). **`play.log` is required**: it is at `<OpenSmash folder>\build\play.log` (the button opens that folder with the file selected). Drag it into the form. After a crash, also add the `.txt` report from the `reports\` folder. The form also asks for your version, renderer, graphics card and driver, operating system, and the steps that cause the bug.
 - **Security problems:** report them privately, as [SECURITY.md](SECURITY.md) explains. Don't open a public issue.
 
 > [!WARNING]

@@ -102,13 +102,16 @@ async function refresh() {
   try { state = await api("/api/state"); } catch (e) { $("#play-state").textContent = e.message; return; }
   document.documentElement.className = (document.documentElement.className.replace(/host-\w+/g, "") + " host-" + state.host).trim();
   $("#version").textContent = state.commit ? `version ${state.commit}` : "";
+  const rl = $("#report-link");
+  if (rl) rl.href = "https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/issues/new?template=bug_report.yml" +
+    (state.commit ? "&version=" + encodeURIComponent(state.commit) : "");
   const built = state.built;
   $("#play-buttons").hidden = !built;
   $("#not-built").hidden = built;
   $("#play-state").textContent = !built ? (state.files_ready ? "Your game files are read; the game itself isn't built yet."
     : "Set the game up first.") : state.game_running ? "The game is running." : `Ready (${state.program}).`;
   const s = state.settings;
-  const lobby = { public: "the public lobby", private: `a private lobby (code ${s.code})`, custom: `your own server, ${s.server || "127.0.0.1:39420"}`, offline: "offline" }[s.lobby];
+  const lobby = { public: "the public lobby", private: `a private lobby (code ${s.code})`, custom: `your own server, ${s.server || "127.0.0.1:39420"}`, lan: "the players on this network (LAN)", offline: "offline" }[s.lobby];
   $("#play-online").textContent = s.lobby === "offline" ? "Offline: Play doesn't go online." :
     `Play joins ${lobby}${s.name ? ", as " + s.name : ""}. Local Wireless lists everyone's rooms.`;
   $("#game-box").hidden = !state.game_running;
@@ -264,22 +267,31 @@ $("#mods-open").onclick = async () => {
 $("#mods-build").onclick = () => run("/api/mods/build");
 
 /* ---- settings ---- */
-let settingsFilled = false;
-function fillSettings(s, choices) {
-  if (settingsFilled) return;
+/* The files are the truth: the game's settings menu (Esc) writes them too. The form is filled again from them at each
+   refresh (the window back in front, the game closed), except the fields changed here and not saved yet; Save sends
+   only those, so it never writes back a value the game changed meanwhile. */
+let filled = null;   // (the values the form was last filled with)
+const formValues = () => Object.fromEntries(new FormData($("#settings")).entries());
+function fillSettings(s, choices, all) {
   const form = $("#settings");
+  const now = filled ? formValues() : {};
+  const kept = new Set(all || !filled ? [] : Object.keys(now).filter(k => now[k] !== filled[k]));
   for (let [key, options] of Object.entries(choices)) {
     const sel = form.elements[key];
-    if (!sel) continue;
+    if (!sel || kept.has(key)) continue;
     const values = options.map(o => o[0]);
     if (!values.includes(s[key]) && s[key]) options = [[s[key], s[key]], ...options];
-    sel.innerHTML = options.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
-    sel.value = s[key];
+    const html = options.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
+    if (sel.dataset.options !== html) { sel.innerHTML = html; sel.dataset.options = html; }   // (an open list is not rebuilt)
+    if (sel.value !== s[key]) sel.value = s[key];
   }
-  for (const key of ["name", "code", "server", "volume"]) form.elements[key].value = s[key] || (key === "volume" ? 100 : "");
-  $("#volume-out").textContent = s.volume;
+  for (const key of ["name", "code", "server", "volume"])
+    if (!kept.has(key)) form.elements[key].value = s[key] || (key === "volume" ? 100 : "");
+  $("#volume-out").textContent = form.elements.volume.value;
   lobbyFields();
-  settingsFilled = true;
+  const after = formValues();
+  for (const k of kept) after[k] = filled[k];
+  filled = after;
 }
 function lobbyFields() {
   const lobby = $("#settings").elements.lobby.value;
@@ -290,19 +302,28 @@ $("#settings").elements.lobby.addEventListener("change", lobbyFields);
 $("#settings").elements.volume.addEventListener("input", e => $("#volume-out").textContent = e.target.value);
 $("#settings").addEventListener("submit", async e => {
   e.preventDefault();
-  const body = Object.fromEntries(new FormData($("#settings")).entries());
+  const now = formValues();
+  const body = Object.fromEntries(Object.entries(now).filter(([k, v]) => !filled || v !== filled[k]));
   try {
     const s = await api("/api/settings", body);
-    $("#settings-said").textContent = "Saved.";
+    $("#settings-said").textContent = Object.keys(body).length ? "Saved." : "Nothing changed.";
     $("#settings-said").className = "said ok";
-    settingsFilled = false;
-    fillSettings(s, state.choices);
+    fillSettings(s, state.choices, true);
     refresh();
   } catch (err) {
     $("#settings-said").textContent = err.message;
     $("#settings-said").className = "said bad";
   }
 });
+/* (back in front: the game's menu, or a text editor, may have changed the files) */
+let lastFront = 0;
+function backInFront() {
+  if (!state || Date.now() - lastFront < 2000) return;
+  lastFront = Date.now();
+  refresh();
+}
+window.addEventListener("focus", backInFront);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) backInFront(); });
 
 /* ---- update ---- */
 async function checkUpdate() {

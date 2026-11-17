@@ -171,7 +171,7 @@
     "Can't join %.32s's room: %s": "无法加入 %.32s 的房间：%s",
     "Can't join: %.*s (Online > Now)": "无法加入：%.*s（联机 > 当前状态）",
     "Cancel": "取消",
-    "Change the room server and nickname using Join yuzu Room.bat.": "通过 Join yuzu Room.bat 修改房间服务器和玩家名称。",
+    "Change the room server and nickname in the launcher: Settings > Yuzu room.": "在启动器的“设置 > Yuzu room”中修改房间服务器和玩家名称。",
     "Check GitHub for a newer version of OpenSmash. Play is paused while an update installs.": "检查 GitHub 上是否有新版本。安装更新期间无法开始游戏。",
     "Check for updates": "检查更新",
     "Check for updates first": "先检查更新",
@@ -242,7 +242,7 @@
     "Default": "默认",
     "Delete": "删除",
     "Delete \"{0}\"?": "删除“{0}”？",
-    "Desktop shortcuts: OpenSmash and Play SSBU": "桌面快捷方式：OpenSmash 和 Play SSBU",
+    "Desktop shortcuts: OpenSmash-Launcher and OpenSmash-Ultimate": "桌面快捷方式：OpenSmash-Launcher 和 OpenSmash-Ultimate",
     "Details": "详情",
     "Direct connections": "直连",
     "Direct3D 11 (default)": "Direct3D 11（默认）",
@@ -963,7 +963,7 @@
     "Play online in > this network: the game joins a private room hosted on your local network by itself, and keeps looking until one starts. Its players find each other's rooms in Local Wireless > Rooms List. The room browser and matchmaking are the online lobby's.": "联机位置设为此局域网：游戏会持续寻找并自动加入局域网中的私人房间。房间内玩家可在 本地无线联机 > 房间列表 找到彼此的房间。房间浏览和匹配功能属于联机大厅。",
     "The lobby's room browser and matchmaking need netplay version 3, which is being tried out. To turn it on, set Netplay version to 3 (below, or on the Online page) and restart the game, or start it with SSBU_NET_PROTOCOL=3.": "房间浏览和匹配功能需要联机协议版本 3，目前处于测试阶段。将下方或联机页面中的协议版本设为 3，再重新启动游戏；也可使用 SSBU_NET_PROTOCOL=3 启动。",
     "Clock: a steady 60 frames a second. VRR: for G-Sync / FreeSync monitors, smoothest with borderless (tears without VRR). Display: follow a 60/120/240 Hz monitor's own refresh.": "时钟：稳定每秒 60 帧。可变刷新率：适用于 G-Sync / FreeSync，无边框时最平稳（无 VRR 时可能撕裂）。显示器：跟随 60/120/240 Hz 显示器的刷新率。",
-    "Public lobby: everyone's rooms in Local Wireless. Private: only players with the same code. Your own server: host:port. Offline: no netplay. This network: a private room hosted on your local network, found by itself.": "公共大厅：本地无线联机中所有人的房间。私人：仅相同代码的玩家。自定义服务器：主机:端口。离线：禁用联机。此局域网：自动发现本地网络中的私人房间。",
+    "Public: everyone online through Epic Online Services, worldwide; matches connect straight to the opponent (the Europe lobby only if Epic can't be reached). Private: only players with the same code. Your own server: host:port. Offline: no netplay. This network: a private room hosted on your local network, found by itself.": "公开：所有人通过 Epic Online Services 在全球联机；对战直接连接对手（仅在无法连接 Epic 时使用欧洲大厅）。私人：仅相同代码的玩家。自定义服务器：主机:端口。离线：禁用联机。此局域网：自动发现本地网络中的私人房间。",
     "Direct3D 11: the renderer the game is played and tested with. Vulkan: in development; until it can draw the game, the game checks Vulkan at its start, says what it found in its log, and draws as before. Vulkan's shaders come from ssbu_glslang.dll beside the game (the build makes it: tools/glslang_lib.py); without it, or without the Visual C++ runtime it needs, Vulkan does not start and the log says why.": "Direct3D 11：目前使用并测试的渲染器。Vulkan 仍在开发中。在能够绘制游戏之前，游戏只会在启动时检查 Vulkan 并记录结果，仍按原方式绘制。Vulkan 的着色器来自游戏旁的 ssbu_glslang.dll（由 tools/glslang_lib.py 构建）；如果缺少该文件或所需的 Visual C++ 运行库，Vulkan 无法启动，日志会说明原因。",
     "DXVK: Direct3D 11 on Vulkan, the renderer the game is played and tested with. Vulkan: in development; until it can draw the game, the game checks Vulkan at its start, says what it found in its log, and draws as before. Vulkan's shaders come from ssbu_glslang.dll beside the game (the build makes it: tools/glslang_lib.py); without it, or without the Visual C++ runtime it needs, Vulkan does not start and the log says why.": "DXVK：通过 Vulkan 运行 Direct3D 11，目前使用并测试的渲染器。Vulkan 仍在开发中。在能够绘制游戏之前，游戏只会在启动时检查 Vulkan 并记录结果，仍按原方式绘制。Vulkan 的着色器来自游戏旁的 ssbu_glslang.dll（由 tools/glslang_lib.py 构建）；如果缺少该文件或所需的 Visual C++ 运行库，Vulkan 无法启动，日志会说明原因。",
     "D-pad moves": "十字键移动",
@@ -984,6 +984,7 @@
     "Shaders": "着色器",
     "Advanced": "高级",
     "Advanced multiplayer": "高级联机",
-    "Optional yuzu-compatible rooms": "可选的 yuzu 兼容房间"
+    "Optional yuzu-compatible rooms": "可选的 yuzu 兼容房间",
+    "Report a problem": "报告问题"
   }
 }

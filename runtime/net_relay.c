@@ -247,8 +247,11 @@ static void configure_from_files(void) {
 /* A friend's "Join" in Discord for another lobby (net_discord.c): config/discord_join.txt, one line "<r|a> <lobby>
  * <lobby code, - none> <room host's address or arena ID> <unix time>". Taken at the next start, within DISCORD_JOIN_FOR
  * seconds: that lobby and lobby code for this start only (the settings stay as they are), and a room's host listed
- * first in Local Wireless's Rooms List. */
+ * first in Local Wireless's Rooms List. A friend on Epic Online Services wrote "eos" as the lobby: EOS alone for this
+ * start; a friend on a lobby server: that server for this start, not EOS (whose players are not on it), whatever
+ * online_server.txt says (discord_join_server). */
 #define DISCORD_JOIN_FOR (15 * 60)
+static int discord_join_server;
 static void discord_join_at_start(void) {
     const char *path = "config/discord_join.txt";
     char text[512];
@@ -264,6 +267,7 @@ static void discord_join_at_start(void) {
     long long now = (long long)time(NULL);
     if (now < at || now - at > DISCORD_JOIN_FOR) return;
     snprintf(relay_text, sizeof relay_text, "%s", means_public_lobby(relay) ? PUBLIC_LOBBY : relay);   /* (an older friend's North American lobby) */
+    discord_join_server = _stricmp(relay_text, "eos") != 0;
     if (strcmp(code, "-")) { snprintf(room, sizeof room, "%s", code); room_named = 1; }
     struct in_addr a;
     if (kind[0] == 'r' && inet_pton(AF_INET, target, &a) == 1) net_rooms_pick(ntohl(a.s_addr));
@@ -353,7 +357,8 @@ static void configure(void) {
     else if (configured && !hosting) proto_wanted = protocol_from_file(proto_wanted);
     if (hosting || lan_mode) proto_wanted = NET_PROTOCOL;   /* (a private room's relay: version 2) */
     proto = proto_wanted;
-    if (!hosting && relay_text[0] && (!_stricmp(relay_text, "eos") || net_eos_selected())) net_backend = &net_eos_backend;   /* (net_eos_net.c: no lobby server of ours) */
+    if (!hosting && relay_text[0] && (!_stricmp(relay_text, "eos") || (!discord_join_server && net_eos_selected())))
+        net_backend = &net_eos_backend;   /* (net_eos_net.c: no lobby server of ours) */
 }
 
 /* (net_eos_net.c) Online through Epic Online Services: the owner's design (2026-11-16) - Epic's services (lobbies,
@@ -381,6 +386,13 @@ int net_eos_wanted(void) {   /* 2 EOS alone, 1 EOS first, 0 not */
  * waits at most until EOS_FIRST_MS after the start: about a second while the game loads when EOS answers, nothing when
  * EOS is off here. */
 static int eos_choice;
+static volatile LONG eos_files_notice;
+/* (gpu_menu.c, as it draws) a message for the screen, once: NULL when there is none */
+const char *net_notice_take(void) {
+    if (!eos_files_notice || !InterlockedExchange(&eos_files_notice, 0)) return NULL;
+    return "Epic Online files missing: online through the EU lobby only, apart from the players on Epic. "
+           "Fix: press Play in the launcher, or run python tools\\online_files.py";
+}
 static BOOL CALLBACK eos_decide(PINIT_ONCE once, void *param, void **ctx) {
     (void)once; (void)param; (void)ctx;
     int want = net_eos_wanted();
@@ -388,9 +400,17 @@ static BOOL CALLBACK eos_decide(PINIT_ONCE once, void *param, void **ctx) {
     const char *w = getenv("SSBU_EOS_WAIT");
     u64 limit = w && *w ? (u64)atoi(w) : EOS_FIRST_MS, age = process_age_ms(), t0 = now_ms();
     eos_choice = eos_wait_ready((unsigned)(age < limit ? limit - age : 0));
-    fprintf(stderr, eos_choice ? "[net] online through Epic Online Services (waited %llu ms); the public lobby is the fallback\n"
-                               : "[net] Epic Online Services not available here (waited %llu ms): online through the public lobby\n",
-            (unsigned long long)(now_ms() - t0));
+    if (!eos_choice && eos_files_missing()) {
+        /* (issue #389: an update that left the files out put a player on the public lobby alone, unseen by the players
+         * on EOS, and nothing on screen said so) */
+        fprintf(stderr, "[net] Epic Online Services is off: EOSSDK-Win64-Shipping.dll or eos.txt is missing beside the program, so this "
+                        "game is online through the public lobby only and does not see the players on EOS. Fix: python tools\\online_files.py "
+                        "(the launcher's Play and Update run it too), then start the game again\n");
+        InterlockedExchange(&eos_files_notice, 1);   /* (on screen: net_notice_take) */
+    } else
+        fprintf(stderr, eos_choice ? "[net] online through Epic Online Services (waited %llu ms); the public lobby is the fallback\n"
+                                   : "[net] Epic Online Services not available here (waited %llu ms): online through the public lobby\n",
+                (unsigned long long)(now_ms() - t0));
     return TRUE;
 }
 int net_eos_selected(void) {
@@ -412,6 +432,7 @@ int net_log(void) { configure(); return logging; }
 const char *net_player_name(void) { configure(); return net_backend ? net_backend->name() : name; }
 const char *net_relay_address(void) { configure(); return !hosting && !lan_mode && relay_text[0] ? relay_text : NULL; }
 const char *net_lobby_code(void) { configure(); return room; }
+int net_on_eos(void) { configure(); return net_backend == &net_eos_backend; }
 
 /* ---- the relay (host mode) ------------------------------------------------------------ */
 typedef struct Member { struct sockaddr_in at; u64 nonce, seen; u32 ip; char name[NAME_LEN + 1]; } Member;

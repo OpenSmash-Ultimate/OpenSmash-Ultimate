@@ -518,6 +518,20 @@ class Wiring(unittest.TestCase):
         self.assertIn('memcpy(st->buf + st->len, data, n);', online[start:start + 1500],
                       'the server\'s answers go into the stream\'s buffer, which a load rewinds')
 
+@unittest.skipUnless(HAVE_CLANG, 'no clang-cl')
+class QuickplayDistance(unittest.TestCase):
+    """nex_utc_far: Quickplay's rough distance by the owners' clock offsets (more than 3 hours apart: far)."""
+
+    def test_far(self):
+        cases = [(60, 60, 0), (60, 240, 0), (60, 241, 1), (60, 480, 1),   # Europe / Singapore: far
+                 (-300, 60, 1), (-300, -480, 0),                         # US east / Europe, US east / west
+                 (720, -660, 0), (720, -480, 1)]                         # across the date line: 2 h, 4 h
+        lines = ''.join(f'utcfar {a} {b}\n' for a, b, _ in cases)
+        out = subprocess.run([build()], input=lines, capture_output=True, text=True, timeout=60).stdout.splitlines()
+        got = [int(line.split()[1]) for line in out if line.startswith('utcfar ')]
+        self.assertEqual(got, [want for _, _, want in cases])
+
+
 
 if __name__ == '__main__':
     unittest.main()

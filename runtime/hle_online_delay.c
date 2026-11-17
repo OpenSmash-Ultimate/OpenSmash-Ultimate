@@ -72,6 +72,9 @@ HLE_WRAP(71016cc940) {
  * the step sees the game's own: with the players mapped here while the step ran, the step's pads and its checks told
  * the other game's step a station's players were not its own, and a Quickplay match was cut short, code 2, a few
  * frames after its state 4) */
+static int pads_switched;   /* (the controller put in its local mode for rollback's match now: online_pads_local) */
+/* (hle_rb_core.c's GO! line, #181) 1: the game's pad lockstep is switched off for rollback's Online match now */
+int online_pads_local_now(void) { return pads_switched; }
 static void online_pads_local(u64 self, int after) {
     int rb_online_match_now(void);   /* (hle_rb_core.c: the players of rollback's Online match now, else 0) */
     static int on = -1, switched;
@@ -86,7 +89,7 @@ static void online_pads_local(u64 self, int after) {
         for (u32 i = 0; i < 8; i++) st32(fc + 0x298 + 4 * i, map_was[i]);
     }
     if (switched && (n <= 0 || fc != fc_was)) {
-        switched = 0;
+        switched = 0; pads_switched = 0;
         fprintf(stderr, "[net] rollback's Online match over: the game's pad lockstep back (online mode %u)\n", mode_was);
         return;
     }
@@ -96,12 +99,23 @@ static void online_pads_local(u64 self, int after) {
         fc_was = fc; mode_was = ld32(fc + 8);
         char m[120]; size_t k = 0;
         for (u32 i = 0; i < 8; i++) { map_was[i] = ld32(fc + 0x298 + 4 * i); k += snprintf(m + k, sizeof m - k, " %d", (int)map_was[i]); }
-        switched = 1;
+        switched = 1; pads_switched = 1;
         fprintf(stderr, "[net] rollback's Online match: the game's pad lockstep off (online mode 1 -> local 0, mask %02x), "
                         "players 1-%d on controllers 1-%d (were%s)\n", ld8(fc + 0xD), n, n, m);
     }
     st32(fc + 8, 0);
     for (int i = 0; i < n && i < 8; i++) st32(fc + 0x298 + 4ull * i, (u32)i);
+}
+
+/* A sudden death's hold (hle_rb_core.c sd_hold_begin): the step's own end of its session, asked as the game asks it at
+ * a tie - kind 2 with code 0, from the Online melee scene's main+0x15693d0 - is not taken back but ended as the step's
+ * tail ends it (below), once per hold. */
+#define STEP_END 0x71016cced0ull   /* (the step's end of its session: (step, kind) - the scene's callback, state 6) */
+static int sd_ended;   /* (this hold's end done: no second one) */
+static int rb_sd_end_let(u64 self) {
+    int rb_sd_hold_now(void);
+    if (!rb_sd_hold_now()) { sd_ended = 0; return 0; }
+    return !sd_ended && ld8(self + 0x63) == 2 && ld16(self + 0x64) == 0;
 }
 
 /* FUN 0x71016d7730: the per-frame step of the same object (a state machine at this+0x62, 0..5;
@@ -149,7 +163,25 @@ HLE_WRAP(71016d7730) {
         static long undone;
         if (keep < 0) { const char *e = getenv("SSBU_RB_STEP_END"); keep = e && *e == '1'; }
         u8 asked = ld8(self + 0x63);
-        if (!keep && rb_online_match_now() > 0 && ld8(self + 0x62) == 4) {
+        if (!keep && rb_online_match_now() > 0 && ld8(self + 0x62) == 4 && rb_sd_end_let(self)) {
+            /* (the step stays left out; its count down to the end, and the end itself, as its tail does them: +0x66
+             * down by one a call, main+0x16cced0 when it reaches 0. The step's state 6 then runs on the next call.) */
+            u16 left = ld16(self + 0x66);
+            if (left > 1) st16(self + 0x66, (u16)(left - 1));
+            else if (left == 1) {
+                st16(self + 0x66, 0);
+                sd_ended = 1;
+                fprintf(stderr, "[net] rollback's Online match, a sudden death's hold: the step's session ended as the game ends it (kind %u, code %u; "
+                                "logic frame %u)\n", asked, ld16(self + 0x64), ld32(0x71052c5184ull));
+                static Cpu keep_c;
+                keep_c = *c;
+                c->x[0] = self; c->x[1] = asked;
+                rt_call(c, STEP_END);
+                *c = keep_c;
+                online_pads_local(self, 1);
+                return;
+            }
+        } else if (!keep && rb_online_match_now() > 0 && ld8(self + 0x62) == 4) {
             played = 1; played_self = self; since = 0;
             if (asked) {
                 if (++undone <= 5 || undone % 600 == 0)

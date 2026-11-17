@@ -69,6 +69,19 @@ class Settings(unittest.TestCase):
             s = launcher.read_settings(self.root)
             self.assertEqual((s["lobby"], s["code"]), want, line)
 
+    def test_an_old_saved_custom_lobby_is_not_written_back(self):
+        # (issue #389: launcher.ini's lobby = custom with the gone North American lobby put it back into online_server.txt)
+        with open(os.path.join(self.root, "online_server.txt"), "w") as f:
+            f.write("auto\n")
+        with open(os.path.join(self.root, "launcher.ini"), "w") as f:
+            f.write("[opensmash]\nlobby = custom\ncode =\nserver = smash.recomps.wtf:39421\n")
+        s = launcher.read_settings(self.root)
+        self.assertEqual((s["lobby"], s["server"]), ("public", ""))
+        launcher.write_settings(self.root, {})
+        self.assertEqual(launcher.first_line(os.path.join(self.root, "online_server.txt")), "auto")
+        launcher.write_settings(self.root, {"lobby": "custom", "server": "opensmash-lobby.duckdns.org:39421", "code": "abc"})
+        self.assertEqual(launcher.first_line(os.path.join(self.root, "online_server.txt")), "opensmash-lobby.duckdns.org:39421 abc")
+
     def test_write_each_lobby(self):
         for lobby, extra, line in (("public", {}, "auto"), ("offline", {}, "off"),
                                    ("private", {"code": "abc"}, "opensmash-lobby.duckdns.org:39421 abc"),
@@ -108,6 +121,46 @@ class Settings(unittest.TestCase):
             launcher.write_settings(self.root, {"window": "huge"})
         with self.assertRaises(launcher.Error):
             launcher.write_settings(self.root, {"window_size": "big"})
+
+    def test_writes_only_what_the_page_changed(self):
+        # (one source of truth with the game's settings menu, Esc: what it saved while the page was open stays)
+        launcher.write_settings(self.root, {})
+        self.assertEqual(os.listdir(self.root), [], "nothing changed: no file written")
+        display = os.path.join(self.root, "display.ini")
+        with open(display, "w", newline="") as f:
+            f.write("; the game's\r\nwindow = borderless   ; mine\r\nshow_advanced = 1\r\n")
+        launcher.write_settings(self.root, {"volume": "50"})
+        with open(display, newline="") as f:
+            self.assertEqual(f.read(), "; the game's\r\nwindow = borderless   ; mine\r\nshow_advanced = 1\r\nvolume = 50\r\n")
+        launcher.write_settings(self.root, {"window": "fullscreen"})
+        with open(display, newline="") as f:
+            self.assertEqual(f.read(), "; the game's\r\nwindow = fullscreen   ; mine\r\nshow_advanced = 1\r\nvolume = 50\r\n",
+                             "changed in place, its comment and line ends kept")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "online_server.txt")), "no lobby change: online_server.txt not written")
+        os.utime(display, (1000000, 1000000))
+        launcher.write_settings(self.root, {"window": "fullscreen"})
+        self.assertEqual(os.path.getmtime(display), 1000000, "the same value: the file is not written again")
+
+    def test_lobby_lines_as_the_game_reads_them(self):
+        # (runtime/gpu_menu.c net_load / net_save_server; the same table as tests/launcher_settings' Lobby)
+        pub = launcher.PUBLIC_LOBBY
+        for line, lobby, back in (("", "offline", "off"), ("off", "offline", "off"), ("auto", "public", "auto"),
+                                  ("na", "public", "auto"), ("lan", "lan", "lan"), (pub, "public", "auto"),
+                                  (pub + " friends", "private", pub + " friends"), ("auto abc", "private", pub + " abc"),
+                                  ("10.0.0.2:39420 abc", "custom", "10.0.0.2:39420 abc")):
+            with open(os.path.join(self.root, "online_server.txt"), "w") as f:
+                f.write(line + "\n")
+            s = launcher.read_settings(self.root)
+            self.assertEqual(s["lobby"], lobby, line)
+            launcher.write_settings(self.root, {"lobby": s["lobby"]})
+            self.assertEqual(launcher.first_line(os.path.join(self.root, "online_server.txt")), back, line)
+
+    def test_renderer_as_the_game_starts_it(self):
+        # (#429: an older launcher's renderer = d3d11 keeps the in-game menu's renderer_menu)
+        self.assertEqual(launcher.renderer_shown("d3d11", "vulkan"), "vulkan")
+        self.assertEqual(launcher.renderer_shown("d3d11", None), "auto")
+        self.assertEqual(launcher.renderer_shown("direct3d11", "vulkan"), "direct3d11")
+        self.assertEqual(launcher.renderer_shown("vk", ""), "vulkan")
 
     def test_config_folder_once_the_game_made_it(self):
         os.makedirs(os.path.join(self.root, "config"))

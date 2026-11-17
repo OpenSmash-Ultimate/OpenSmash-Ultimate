@@ -323,6 +323,7 @@ $serverWords = @(([string](Get-LineValue $serverFile)).Trim() -split '[ \t]+') +
 $lobbyHost = $serverWords[0]
 $lobbyCode = $serverWords[1]
 $netMode = if (-not $lobbyHost -or $lobbyHost -eq 'off') { 'offline' }
+           elseif ($lobbyHost -eq 'lan') { 'lan' }   # (the in-game menu's This network (LAN): runtime/gpu_menu.c net_load)
            elseif ($lobbyHost -eq $PublicLobby -or $lobbyHost -like 'smash.recomps.wtf*' -or @('auto', 'na', 'eu') -contains $lobbyHost) { if ($lobbyCode) { 'private' } else { 'public' } }
            else { 'custom' }
 
@@ -463,6 +464,7 @@ $modeBox = New-Choice @(
     @{ Value = 'public'; Text = 'Public lobby' },
     @{ Value = 'private'; Text = 'Private lobby (a code)' },
     @{ Value = 'custom'; Text = 'Your own server' },
+    @{ Value = 'lan'; Text = 'This network (LAN)' },
     @{ Value = 'offline'; Text = 'Offline' }) $netMode $RC 118 $RW `
     "Public lobby: everyone's rooms in Local Wireless, and Online.`nPrivate lobby: only the players with the same code.`nYour own server: the host:port of a lobby you run (docs\MULTIPLAYER.md)."
 [void](New-Text 'Lobby code' $R 155 120)
@@ -534,6 +536,7 @@ function Get-WindowValues {
     $code = $codeBox.Text -replace '\s', ''
     $server = switch ($modeBox.SelectedItem.Value) {
         'offline' { 'off' }
+        'lan' { 'lan' }
         'public' { 'auto' }
         'private' { "$PublicLobby $code" }
         'custom' { $s = $serverBox.Text.Trim(); if (-not $s) { $s = '127.0.0.1:39420' }; if ($code) { "$s $code" } else { $s } }
