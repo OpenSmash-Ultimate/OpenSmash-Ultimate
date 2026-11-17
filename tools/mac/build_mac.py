@@ -74,7 +74,7 @@ RUNTIME_INCLUDES = ["-I", os.path.join(RUNTIME, "macos", "include"), "-I", os.pa
 RUNTIME_DEFINES = ["-DSSBU_HAVE_OPUS", "-DSSBU_HAVE_VPX", "-DSSBU_HAVE_SDL3"]
 # runtime/*.c as on Linux, but for Direct3D 11 and its overlay: the Metal renderer (runtime/macos) instead
 # (its overlay draws the settings menu, gpu_menu.c, too)
-RUNTIME_PATTERN = r"(host|kernel|gpu\w*|hle\w*|ipc\w*|net\w*|debug_watchdog)\.c"
+RUNTIME_PATTERN = r"(host|kernel|gpu\w*|hle\w*|ipc\w*|net\w*|debug_watchdog|debug_perf_session)\.c"
 # The back ends' table, window and write watch stamps of Windows and Linux are left out too (gpu_metal.m
 # and window.m have their own).
 RUNTIME_LEFT_OUT = ("gpu_d3d11.c", "gpu_overlay.c", "gpu_backend.c", "gpu_window.c", "gpu_watch.c")
