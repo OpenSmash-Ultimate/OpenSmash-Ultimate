@@ -21,10 +21,12 @@
  * is the one public lobby's leaderboard.json (every GSP result goes through its game server), found by the player's id. Local Wireless rooms are this
  * game's own (hle_net.c notes them).
  *
- * Joining. The join secret is the lobby, its lobby code and the arena's ID or the room host's address
- * (net_discord_core.c). A friend's accepted "Join" on the same lobby lists the room first in Local Wireless's Rooms
- * List (net_rooms_pick) or shows the arena's ID; on another lobby it is kept in config/discord_join.txt, and the next
- * start joins that lobby (net_relay.c's discord_join_at_start). */
+ * Joining. The join secret is the lobby ("eos" online through Epic Online Services, else the lobby server's address),
+ * its lobby code and the arena's ID or the room host's (virtual) address (net_discord_core.c). A friend's accepted
+ * "Join" on the same lobby lists the room first in Local Wireless's Rooms List (net_rooms_pick; over EOS too: hle_net.c's
+ * scan) or shows the arena's ID; on another lobby it is kept in config/discord_join.txt, and the next start joins that
+ * lobby (net_relay.c's discord_join_at_start; "eos": EOS alone). Over EOS the lobby server's /gsp/me does not see the
+ * player's gatherings, so only Local Wireless rooms get a join secret there, not Battle Arenas. */
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdbool.h>
 #include <stdio.h>
@@ -250,10 +252,12 @@ static void sign_in(void) {   /* the SDK's authorization, PKCE (a Public Client:
 }
 
 /* ---- joining -------------------------------------------------------------------------------------------- */
-static int same_lobby(const DiscordJoin *j) {
-    const char *relay = net_relay_address(), *code = net_lobby_code();
-    return relay && !_stricmp(relay, j->relay) && code && !strcmp(code, j->code);
+/* where this game is online now, as a join secret names it ("eos", the lobby's address), or NULL */
+static const char *join_lobby(void) {
+    int eos = net_on_eos();
+    return discord_join_lobby(eos, !eos && net_lobby() ? net_relay_address() : NULL);
 }
+static int same_lobby(const DiscordJoin *j) { return discord_join_same(j, join_lobby(), net_lobby_code()); }
 static void on_join(DStr secret, void *ud) {
     (void)ud;
     char s[160], line[200];
@@ -263,9 +267,9 @@ static void on_join(DStr secret, void *ud) {
     if (!discord_join_parse(s, &j)) { fprintf(stderr, "[discord] a join that is not ours: ignored\n"); return; }
     fprintf(stderr, "[discord] join: %s %s on %s (lobby code \"%s\")\n", j.where == DP_ARENA ? "arena" : "the room of", j.target, j.relay, j.code);
     if (same_lobby(&j)) {
-        unsigned a, b, c, d;
-        if (j.where == DP_ROOM && sscanf(j.target, "%u.%u.%u.%u", &a, &b, &c, &d) == 4 && a < 256 && b < 256 && c < 256 && d < 256) {
-            net_rooms_pick(a << 24 | b << 16 | c << 8 | d);
+        uint32_t host = discord_join_room_host(&j);
+        if (host) {
+            net_rooms_pick(host);
             menu_toast("Discord: your friend's room is first in Local Wireless > Join a Room");
         } else if (j.where == DP_ARENA) {
             snprintf(line, sizeof line, "Discord: Battle Arena %s - Online > Battle Arenas > Find an Arena > by ID", j.target);
@@ -298,7 +302,7 @@ static void on_presence(DObj *r, void *ud) {
 static void presence_now(DiscordPresence *p) {
     memset(p, 0, sizeof *p);
     p->fighter = p->stage = -1;
-    const char *relay = net_lobby() ? net_relay_address() : NULL, *code = net_lobby_code();
+    const char *relay = join_lobby(), *code = net_lobby_code();
     if (relay) snprintf(p->relay, sizeof p->relay, "%s", relay);
     if (code) snprintf(p->code, sizeof p->code, "%s", code);
     AcquireSRWLockShared(&lock);
@@ -310,7 +314,10 @@ static void presence_now(DiscordPresence *p) {
     } else if (room.in) {
         p->where = DP_ROOM; p->players = room.players; p->max_players = room.max;
         snprintf(p->target, sizeof p->target, "%u.%u.%u.%u", room.host >> 24, room.host >> 16 & 255, room.host >> 8 & 255, room.host & 255);
-        snprintf(p->party, sizeof p->party, "os-r-%s-%.40s", p->target, p->relay);
+        if (!strcmp(p->relay, "eos"))   /* (EOS's virtual addresses are per lobby code: the code keeps two parties apart) */
+            snprintf(p->party, sizeof p->party, "os-r-%s-eos-%.32s", p->target, p->code);
+        else
+            snprintf(p->party, sizeof p->party, "os-r-%s-%.40s", p->target, p->relay);
     }
     if (fresh) { p->fighter = me.fighter; p->gsp = me.gsp; }
     ReleaseSRWLockShared(&lock);

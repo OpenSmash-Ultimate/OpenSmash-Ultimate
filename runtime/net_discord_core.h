@@ -47,6 +47,15 @@ void discord_presence_text(const DiscordPresence *p, char *details, size_t dn, c
 size_t discord_join_secret(const DiscordPresence *p, char *out, size_t cap);
 typedef struct DiscordJoin { int where; char relay[80], code[40], target[48]; } DiscordJoin;
 int discord_join_parse(const char *secret, DiscordJoin *j);             /* 1: one of ours, in *j */
+/* The "lobby" part of a join secret for where this game is online: "eos" over Epic Online Services (a room or arena is
+ * found among the games of the same lobby code there, whatever server address the settings name), else the address of
+ * the lobby server it joined, else NULL (offline, a private room's relay, LAN: nothing a friend can join). */
+const char *discord_join_lobby(int eos, const char *lobby_relay);
+/* 1 when j is where this game is online now (discord_join_lobby's answer, the lobby code it plays with): same network
+ * and lobby code, so the room or arena can be found without a restart. */
+int discord_join_same(const DiscordJoin *j, const char *my_lobby, const char *my_code);
+/* A room join's host address (the Local Wireless host's virtual address, 10.13.x.y), host order; 0: not one. */
+uint32_t discord_join_room_host(const DiscordJoin *j);
 
 const char *discord_fighter_name(int kind);                               /* "Mario"; NULL: not a playable kind */
 size_t discord_group_digits(uint32_t v, char *out, size_t cap);           /* 1460000 -> "1,460,000" */

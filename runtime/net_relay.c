@@ -247,8 +247,11 @@ static void configure_from_files(void) {
 /* A friend's "Join" in Discord for another lobby (net_discord.c): config/discord_join.txt, one line "<r|a> <lobby>
  * <lobby code, - none> <room host's address or arena ID> <unix time>". Taken at the next start, within DISCORD_JOIN_FOR
  * seconds: that lobby and lobby code for this start only (the settings stay as they are), and a room's host listed
- * first in Local Wireless's Rooms List. */
+ * first in Local Wireless's Rooms List. A friend on Epic Online Services wrote "eos" as the lobby: EOS alone for this
+ * start; a friend on a lobby server: that server for this start, not EOS (whose players are not on it), whatever
+ * online_server.txt says (discord_join_server). */
 #define DISCORD_JOIN_FOR (15 * 60)
+static int discord_join_server;
 static void discord_join_at_start(void) {
     const char *path = "config/discord_join.txt";
     char text[512];
@@ -264,6 +267,7 @@ static void discord_join_at_start(void) {
     long long now = (long long)time(NULL);
     if (now < at || now - at > DISCORD_JOIN_FOR) return;
     snprintf(relay_text, sizeof relay_text, "%s", means_public_lobby(relay) ? PUBLIC_LOBBY : relay);   /* (an older friend's North American lobby) */
+    discord_join_server = _stricmp(relay_text, "eos") != 0;
     if (strcmp(code, "-")) { snprintf(room, sizeof room, "%s", code); room_named = 1; }
     struct in_addr a;
     if (kind[0] == 'r' && inet_pton(AF_INET, target, &a) == 1) net_rooms_pick(ntohl(a.s_addr));
@@ -353,7 +357,8 @@ static void configure(void) {
     else if (configured && !hosting) proto_wanted = protocol_from_file(proto_wanted);
     if (hosting || lan_mode) proto_wanted = NET_PROTOCOL;   /* (a private room's relay: version 2) */
     proto = proto_wanted;
-    if (!hosting && relay_text[0] && (!_stricmp(relay_text, "eos") || net_eos_selected())) net_backend = &net_eos_backend;   /* (net_eos_net.c: no lobby server of ours) */
+    if (!hosting && relay_text[0] && (!_stricmp(relay_text, "eos") || (!discord_join_server && net_eos_selected())))
+        net_backend = &net_eos_backend;   /* (net_eos_net.c: no lobby server of ours) */
 }
 
 /* (net_eos_net.c) Online through Epic Online Services: the owner's design (2026-11-16) - Epic's services (lobbies,
@@ -427,6 +432,7 @@ int net_log(void) { configure(); return logging; }
 const char *net_player_name(void) { configure(); return net_backend ? net_backend->name() : name; }
 const char *net_relay_address(void) { configure(); return !hosting && !lan_mode && relay_text[0] ? relay_text : NULL; }
 const char *net_lobby_code(void) { configure(); return room; }
+int net_on_eos(void) { configure(); return net_backend == &net_eos_backend; }
 
 /* ---- the relay (host mode) ------------------------------------------------------------ */
 typedef struct Member { struct sockaddr_in at; u64 nonce, seen; u32 ip; char name[NAME_LEN + 1]; } Member;
