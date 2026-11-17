@@ -94,7 +94,9 @@ class Board(unittest.TestCase):
         self.board.cache = None
         code, d = self.get("/status.json")
         self.assertEqual((d["online"], d["rooms"], d["arenas"], d["open_rooms"], d["playing"]), (1, 2, 1, 1, 2))
-        self.assertEqual(set(d), {"updated", "online", "rooms", "arenas", "open_rooms", "playing", "ranked"})
+        self.assertEqual(set(d), {"updated", "online", "rooms", "arenas", "open_rooms", "playing", "ranked", "matches"})
+        self.assertEqual(d["matches"], {"total": 0, "today": 0, "by_mode": {"quickplay": 0, "arena": 0, "room": 0},
+                                        "estimated": 0, "since": None})
         self.assertEqual(self.board.http("POST", "/status.json", {}, b"", 1000.0)[0], 405)
 
     def test_status_counts_every_lobby_game(self):
@@ -508,6 +510,148 @@ class Board(unittest.TestCase):
         reset_board.reset(d, profiles=True, yes=True, now=5, say=said.append)
         self.assertEqual(read(os.path.join(d, "nex_profiles.json")), {})
         self.assertEqual(reset_board.main(["--state-dir", d]), 0)
+
+    # ---- online matches played (nex/matches.py) -----------------------------------------------------
+    def played(self, who, mode="quickplay", mid="00000000000000aa", exact=True, via="eos", players=2, data=None,
+               key=None, sig=None, at=None):
+        if at is not None:
+            self.board.matches.clock = lambda: at
+        if data is None:
+            data = json.dumps({"id": mid, "mode": mode, "players": players, "seconds": 95, "ranked": mode == "quickplay",
+                               "net": "rollback" if exact else "game", "via": via, "exact": exact})
+        p, t, s = self.signed(who, "match", data)
+        d = {"player": p, "t": t, "data": data, "sig": sig or s}
+        if key is not None:
+            d["key"] = key
+        code, body = self.board.http("POST", "/match/played", {}, json.dumps(d).encode(), 1000.0)
+        return code, json.loads(body)
+
+    def matches(self, at=None):
+        return self.board.matches.summary(at)
+
+    DAY = 1794940800.0   # (2026-11-17 18:40 UTC)
+
+    def test_match_both_games_count_once(self):
+        self.assertEqual(self.played("a", at=self.DAY), (200, {"ok": True, "counted": True}))
+        code, d = self.played("b", at=self.DAY + 3)
+        self.assertEqual((code, d["counted"]), (200, False))
+        code, d = self.played("a", mid="00000000000000bb", mode="arena", at=self.DAY + 100)   # (the next match)
+        self.assertTrue(d["counted"])
+        self.assertEqual(self.played("b", mid="00000000000000bb", mode="arena", at=self.DAY + 30000)[1]["counted"], False)
+        m = self.matches(self.DAY + 200)
+        self.assertEqual((m["total"], m["today"], m["by_mode"], m["estimated"], m["since"]),
+                         (2, 2, {"quickplay": 1, "arena": 1, "room": 0}, 0, "2026-11-17"))
+        self.board.matches.clock = lambda: self.DAY + 200
+        self.assertEqual(self.get("/status.json")[1]["matches"]["total"], 2)
+        self.assertEqual(self.matches(self.DAY + 86400)["today"], 0)   # (the next day, UTC)
+        self.assertEqual(self.matches(self.DAY + 86400)["total"], 2)
+
+    def test_match_without_a_shared_seed_counts_by_its_window(self):
+        mid = "0123456789abcdef"   # (the players' addresses and the mode: the same for their next match)
+        self.assertTrue(self.played("a", mid=mid, exact=False, mode="arena", at=self.DAY)[1]["counted"])
+        self.assertFalse(self.played("b", mid=mid, exact=False, mode="arena", at=self.DAY + 20)[1]["counted"])
+        self.assertTrue(self.played("a", mid=mid, exact=False, mode="arena", at=self.DAY + 200)[1]["counted"])
+        self.assertFalse(self.played("b", mid=mid, exact=False, mode="arena", at=self.DAY + 210)[1]["counted"])
+        self.assertEqual(self.matches()["by_mode"]["arena"], 2)
+        # (an exact id and a window id with the same digits are different matches)
+        self.assertTrue(self.played("c", mid=mid, exact=True, mode="room", at=self.DAY + 400)[1]["counted"])
+
+    def test_match_on_the_lobby_game_server_is_counted_there(self):
+        code, d = self.played("a", via="lobby", at=self.DAY)
+        self.assertEqual((code, d["counted"]), (200, False))
+        self.assertEqual(self.played("b", via="lobby", mode="arena", at=self.DAY)[1]["counted"], False)
+        self.assertTrue(self.played("c", via="lobby", mode="room", at=self.DAY)[1]["counted"])   # (a room: no NEX)
+        self.assertEqual(self.matches()["total"], 1)
+
+    def test_match_data_as_the_game_writes_it(self):   # (runtime/net_results.c results_match_data; tools/dev/pathtest.c)
+        from .matches import Matches
+        for data in ('{"id":"00000000000000ab","mode":"quickplay","players":2,"seconds":95,"ranked":true,"net":"rollback","via":"eos","exact":true}',
+                     '{"id":"ffffffffffffffff","mode":"room","players":2,"seconds":0,"ranked":false,"net":"game","via":"lobby","exact":false}'):
+            self.assertIsNotNone(Matches.parse(data), data)
+
+    def test_match_report_limits(self):
+        self.assertEqual(self.played("a", at=self.DAY)[0], 200)
+        self.assertEqual(self.played("a", mid="00000000000000ab", at=self.DAY + 5)[0], 429)
+        self.assertEqual(self.played("a", mid="00000000000000ab", at=self.DAY + 20)[0], 200)
+        for bad in ('{"id":"00000000000000AA","mode":"quickplay","players":2,"seconds":1,"ranked":true,"net":"rollback","via":"eos","exact":true}',
+                    '{"id":"00000000000000cc","mode":"brawl","players":2,"seconds":1,"ranked":true,"net":"rollback","via":"eos","exact":true}',
+                    '{"id":"00000000000000cc","mode":"room","players":1,"seconds":1,"ranked":false,"net":"rollback","via":"eos","exact":true}',
+                    '{"id":"00000000000000cc","mode":"room","players":2,"seconds":1,"ranked":false,"net":"x","via":"eos","exact":true}',
+                    '[1]', 'nope'):
+            self.assertEqual(self.played("b", data=bad, at=self.DAY + 1000)[0], 400, bad)
+        self.assertEqual(self.played("b", sig="00" * 32, at=self.DAY + 2000)[0], 403)
+        self.assertEqual(self.board.http("POST", "/match/played", {}, b"{", 1000.0)[0], 400)
+        self.assertEqual(self.board.http("GET", "/match/played", {}, b"", 1000.0)[0], 405)
+        self.assertEqual(self.matches()["total"], 2)
+
+    def test_match_report_registers_an_unknown_player(self):
+        nsa = "00000000000000d4"
+        data = json.dumps({"id": "00000000000000dd", "mode": "room", "players": 3, "seconds": 0, "ranked": False,
+                           "net": "rollback", "via": "lobby", "exact": True})
+        p, t = player_id(nsa), int(time.time())
+        d = {"player": p, "t": t, "data": data, "sig": signature(nsa, "match", p, t, data)}
+        self.assertEqual(self.board.http("POST", "/match/played", {}, json.dumps(d).encode(), 1000.0)[0], 403)
+        d["key"] = nsa
+        self.assertEqual(self.board.http("POST", "/match/played", {}, json.dumps(d).encode(), 1000.0)[0], 200)
+        self.assertEqual(self.matches()["by_mode"]["room"], 1)
+
+    def test_match_seen_by_the_lobby_game_server(self):
+        from .matchmaking import Session
+        from .streams import StreamIn, StreamOut
+        mm = self.nex.matchmaking
+        ms = Session()
+        ms.gid, ms.max_participants, ms.participants = 7, 2, [self.pid["a"], self.pid["b"]]
+        mm.sessions[7] = ms
+        clock = [self.DAY]
+        self.board.matches.clock = lambda: clock[0]
+
+        class Conn:
+            def __init__(self, pid):
+                self.pid = pid
+        self.nex.name = lambda conn: "x"
+        post = self.nex.services.datastore_post_meta_binary
+        param = StreamOut()
+        param.struct(lambda o: o.u32(0))
+        for who in ("a", "b"):      # (both games, as the match is set up)
+            post(Conn(self.pid[who]), StreamIn(param.get()))
+            clock[0] += 1
+        self.assertEqual(self.matches()["by_mode"], {"quickplay": 1, "arena": 0, "room": 0})
+        self.nex.arenas.id_of[7] = "ABCD"
+        clock[0] += 120             # (the arena's next match)
+        for who in ("b", "a"):
+            post(Conn(self.pid[who]), StreamIn(param.get()))
+        post(Conn(self.pid["c"]), StreamIn(param.get()))   # (a game in no gathering: its own)
+        self.assertEqual(self.matches()["by_mode"], {"quickplay": 2, "arena": 1, "room": 0})
+
+    def test_match_estimated_from_old_games_syncs(self):
+        clock = [self.DAY]
+        self.board.matches.clock = lambda: clock[0]
+        data = self.payload([record(43, 1600)])
+        for who in ("a", "b"):          # (both games' syncs as a match is set up: one match)
+            self.assertEqual(self.sync(who, data)[0], 200)
+        self.assertEqual(self.sync("a", data)[0], 200)   # (again within a minute: not counted)
+        m = self.matches()
+        self.assertEqual((m["total"], m["today"], m["estimated"], m["by_mode"]["quickplay"]), (1, 1, 1, 0))
+        clock[0] += 120
+        self.sync("a", self.payload())  # (no records: nothing)
+        p, t = player_id(NSA["b"]), int(time.time())   # (a new game says it reports its matches: "m")
+        d = {"player": p, "t": t, "data": data, "sig": signature(NSA["b"], "sync", p, t, data), "m": 1}
+        self.assertEqual(self.board.http("POST", "/gsp/sync", {}, json.dumps(d).encode(), 1000.0)[0], 200)
+        self.assertEqual(self.board.matches.data["estimated"], 2)
+
+    def test_matches_kept_and_not_reset(self):
+        self.played("a", at=self.DAY)
+        self.board.matches.legacy_sync(self.pid["c"], self.DAY)
+        self.nex.flush(0.0, force=True)
+        d = self.dir.name
+        self.assertTrue(os.path.exists(os.path.join(d, "nex_matches.json")))
+        before = read(os.path.join(d, "nex_matches.json"), raw=True)
+        reset_board.reset(d, profiles=True, yes=True, now=0, say=lambda *a: None)
+        self.assertEqual(read(os.path.join(d, "nex_matches.json"), raw=True), before)
+        again = make_server(lambda *a: None, state_dir=d, verbose=0, log=lambda *a: None)
+        m = again.board.matches.summary(self.DAY)
+        self.assertEqual((m["total"], m["by_mode"]["quickplay"], again.board.matches.data["estimated"]), (1, 1, 1))
+        self.assertNotIn(str(self.pid["a"]), json.dumps(read(os.path.join(d, "nex_matches.json"))))   # (no player in it)
 
     def test_unknown_paths(self):
         self.assertEqual(self.board.http("GET", "/nope", {}, b"", 0.0)[0], 404)

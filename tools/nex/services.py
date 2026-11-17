@@ -151,6 +151,9 @@ class Services:
     def datastore_post_meta_binary(self, conn, s):
         s.struct()
         self.nex.info(f"{self.nex.name(conn)}: DataStore.PostMetaBinary: data {conn.pid}, not kept")
+        board = getattr(self.nex, "board", None)
+        if board is not None:   # (every game of a match posts one as it is set up: the lobby's count of matches)
+            board.meta_posted(conn.pid)
         out = StreamOut()
         out.u64(conn.pid)
         return out.get()

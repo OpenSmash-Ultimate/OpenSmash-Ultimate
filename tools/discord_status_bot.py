@@ -82,6 +82,10 @@ def status_text(counts):
     line = f"🟢 {n} player{'' if n == 1 else 's'} in the OpenSmash lobbies"
     if rooms:
         line += f" · {rooms} open room{'' if rooms == 1 else 's'}"
+    played = counts.get("matches")   # (a lobby from before the count has none: nothing said)
+    total = played.get("total") if isinstance(played, dict) else None
+    if type(total) is int and total > 0:
+        line += f" · {total:,} match{'' if total == 1 else 'es'} played"
     return line[:128]
 
 
