@@ -3968,6 +3968,14 @@ namespace OpenSmash.Launcher
                 _shaderDetail = UiLocale.Interpolate($"Compiling shaders  {done:N0} / {total:N0}");
                 _shaderEta = count.Groups[3].Success ? count.Groups[3].Value.Trim() : "";
             }
+            else if (line.StartsWith("another shader preparation is running", StringComparison.OrdinalIgnoreCase))
+            {
+                // (tools/shader_aot.py PrepareLock: a game started first and is preparing the Vulkan shaders itself, with
+                // its own progress on its loading screen; this run goes on from what that one made)
+                _shaderFrac = 0;
+                _shaderDetail = "The game is preparing its shaders";
+                _shaderEta = "";
+            }
             else if (line.StartsWith("getting ready", StringComparison.OrdinalIgnoreCase))
             {
                 _shaderFrac = 0;
