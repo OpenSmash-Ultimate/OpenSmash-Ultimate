@@ -256,7 +256,7 @@ static int osk_max = 32, osk_min, osk_scripted; /* (osk_scripted: SSBU_MENU_OSK'
 
 static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol, rollback; } net;
 enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_MODE_COUNT };
-static const char *const NET_MODES[NET_MODE_COUNT] = {"public lobby (Europe)", "private lobby (a code)", "your own server", "offline",
+static const char *const NET_MODES[NET_MODE_COUNT] = {"public (worldwide, Epic)", "private lobby (a code)", "your own server", "offline",
                                                       "this network (LAN)"};
 
 static void net_load(void)
@@ -1023,7 +1023,7 @@ static void build(void)
 #ifdef _WIN32
                 "auto: Vulkan on an AMD, NVIDIA or Intel card (no first-use stutter there), Direct3D 11 on any other. direct3d11 or vulkan: that one on any card."
                 " If Vulkan cannot start (its shaders come from ssbu_glslang.dll beside the game, which needs the Visual C++ runtime), or"
-                " stopped the game in its first seconds twice in a row, Direct3D 11 draws and the log says why."
+                " stopped the game in its first seconds twice in a row, or lost the graphics device with this driver, Direct3D 11 draws and the log says why."
 #else
                 "DXVK: Direct3D 11 on Vulkan, the renderer the game is played and tested with. Vulkan: in development; until it can draw the game, "
                 "the game checks Vulkan at its start, says what it found in its log, and draws as before."
@@ -1287,7 +1287,8 @@ static void build(void)
             break;
         }
         r = add(R_NET_MODE, K_CHOICE, W_RESTART, "Play online in",
-                "Public lobby: everyone's rooms in Local Wireless. Private: only players with the same code. Your own server: host:port. "
+                "Public: everyone online through Epic Online Services, worldwide; matches connect straight to the opponent (the Europe lobby only if Epic can't be reached). "
+                "Private: only players with the same code. Your own server: host:port. "
                 "Offline: no netplay. This network: a private room hosted on your local network, found by itself.");
         snprintf(r->value, sizeof r->value, "%s", ui_text(NET_MODES[net.mode]));
         if (net.mode == NET_PRIVATE || net.mode == NET_CUSTOM)
