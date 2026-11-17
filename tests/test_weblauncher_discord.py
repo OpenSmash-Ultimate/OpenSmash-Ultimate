@@ -140,6 +140,8 @@ class Lobbies(unittest.TestCase):
         from nex.server import make_server
         import struct
         self.nex = make_server(lambda *a: None, state_dir=self.root, verbose=0, log=lambda *a: None)
+        self.nex.board.discord_me = lambda token: {"id": "80351110224678912", "username": "nelly", "global_name": "Nelly"} \
+            if token == "AT" else None
         pid = self.nex.accounts.login(self.nsa, "x", 0.0)
         self.nex.services.powers.put(pid, struct.pack("<BIIIQI", 43, 1500, 1, 1500, 0, 1))
         self.nex.services.powers.put(pid, struct.pack("<BIIIQI", 0, 900, 1, 900, 0, 1))
@@ -160,15 +162,67 @@ class Lobbies(unittest.TestCase):
         self.assertEqual(da.records(self.root, ["a:1", "b:2"], ask=self.ask), [(43, 1500), (0, 900)])
         self.assertEqual(da.records(self.root, ["a:1"], ask=lambda *a: None), [])
 
+    def send(self, url, body):   # (the lobby, without a network)
+        code, data = self.nex.board.http("POST", urllib.parse.urlsplit(url).path, {}, body, 1000.0 + len(self.sent))
+        self.sent.append((url, code))
+        return code, json.loads(data)
+
     def test_shown_name(self):
-        t = {"user_id": "80351110224678912", "display_name": "Nelly"}
-        self.assertEqual(da.set_shown(self.root, t, True, ["a:1"], ask=self.ask), 1)
+        self.sent = []
+        t = {"user_id": "80351110224678912", "display_name": "Nelly", "access_token": "AT"}
+        self.assertEqual(da.set_shown(self.root, t, True, ["a:1"], send=self.send), 1)
         self.assertTrue(da.shows_name(self.root))
-        shown = self.nex.board.profiles.of_pid[str(self.nex.accounts.data["users"][self.nsa]["pid"])]
-        self.assertEqual(shown, {"name": "Nelly", "discord": da.account_hash("80351110224678912")})
-        self.assertEqual(da.set_shown(self.root, t, False, ["a:1"], ask=self.ask), 1)
+        pid = self.nex.accounts.data["users"][self.nsa]["pid"]
+        shown = self.nex.board.profiles.of_pid[str(pid)]
+        self.assertEqual((shown["name"], shown["discord"], shown["discord_id"], shown["show"]),
+                         ("Nelly", da.account_hash("80351110224678912"), "80351110224678912", True))
+        self.assertEqual(self.sent, [("http://a:1/gsp/link", 200)])
+        self.assertEqual(da.set_shown(self.root, t, False, ["a:1"], send=self.send), 1)   # (link again: 429; hidden by the profile call)
         self.assertFalse(da.shows_name(self.root))
+        self.assertFalse(self.nex.board.profiles.of_pid[str(pid)]["show"])
+        self.assertEqual(self.sent[-1], ("http://a:1/gsp/profile", 200))
+
+    def test_unknown_install_is_registered_with_the_key_once(self):
+        self.sent = []
+        del self.nex.accounts.data["users"][self.nsa]       # (the lobby does not know this install)
+        self.nex.board.index(0.0, force=True)
+        t = {"user_id": "80351110224678912", "access_token": "AT"}
+        self.assertEqual(da.set_shown(self.root, t, True, ["a:1"], send=self.send), 1)
+        self.assertEqual([c for _u, c in self.sent], [403, 200])
+        self.assertEqual(self.nex.board.profiles.discord_id(self.nex.accounts.data["users"][self.nsa]["pid"]), "80351110224678912")
+
+    def test_refused_token_and_unreachable_lobby(self):
+        self.sent = []
+        self.assertEqual(da.set_shown(self.root, {"access_token": "bad"}, True, ["a:1"], send=self.send), 0)
+        self.assertEqual(da.set_shown(self.root, None, True, ["a:1"], send=self.send), 0)
+        self.assertEqual(da.set_shown(self.root, {"access_token": "AT"}, True, ["a:1"], send=lambda u, b: (0, {})), 0)
         self.assertEqual(self.nex.board.profiles.of_pid, {})
+
+    def test_link_body_is_signed_for_the_lobby(self):
+        d = json.loads(da.link_body(self.nsa, "AT", True, key=True))
+        self.assertEqual((d["token"], d["show"], d["key"]), ("AT", True, self.nsa))
+        self.assertEqual(d["sig"], board.signature(self.nsa, "link", d["player"], d["t"], "AT\n1"))
+        self.assertNotIn("key", json.loads(da.link_body(self.nsa, "AT", False)))
+
+    def test_send_reads_error_bodies(self):
+        import io
+        import urllib.error
+
+        def refuse(req, timeout):
+            raise urllib.error.HTTPError(req.full_url, 403, "no", {}, io.BytesIO(b'{"error":"unknown player"}'))
+        self.assertEqual(da._send("http://x/gsp/link", b"{}", opener=refuse), (403, {"error": "unknown player"}))
+
+        def down(req, timeout):
+            raise urllib.error.URLError("down")
+        self.assertEqual(da._send("http://x/gsp/link", b"{}", opener=down), (0, {}))
+
+    def test_name_shown_by_default(self):
+        with tempfile.TemporaryDirectory() as empty:
+            self.assertTrue(da.shows_name(empty))      # (no choice made: on)
+            os.makedirs(os.path.join(empty, "config"))
+            with open(da.shown_path(empty), "w") as f:
+                f.write("off")
+            self.assertFalse(da.shows_name(empty))
 
     def test_lobbies(self):
         self.assertEqual(da.lobbies("auto"), list(da.PUBLIC_LOBBIES))
@@ -206,8 +260,17 @@ class Lobbies(unittest.TestCase):
         self.assertEqual(da.ranks_in(board_json, "42"), (2, {43: 1}))
         self.assertEqual(da.ranks_in(board_json, "7"), (0, {}))
         self.assertEqual(da.ranks_in(None, "42"), (0, {}))
-        self.assertEqual(da.fighter_name(43), "Olimar")
-        self.assertEqual(da.fighter_name(77), "Fighter 77")
+        self.assertEqual(da.fighter_name(43), "Lucario")
+        self.assertEqual(da.fighter_name(86), "Fighter 86")
+
+    def test_fighter_names_by_gsp_number(self):
+        # (a GSP record's fighter byte is the game's save_no in ui_chara_db, not the fighter kind: issue #389, 0x1d = G&W)
+        for number, name in ((0, "Mario"), (15, "Bowser"), (16, "Ice Climbers"), (17, "Sheik"), (29, "Mr. Game & Watch"),
+                             (30, "Meta Knight"), (37, "Pokemon Trainer"), (64, "Richter"), (65, "Inkling"),
+                             (74, "Piranha Plant"), (83, "Pyra & Mythra"), (85, "Sora")):
+            self.assertEqual(da.fighter_name(number), name)
+        self.assertEqual(len(da.NAMES), 86)
+        self.assertEqual(da.fighter_name(-1), "Fighter -1")
 
 
 if __name__ == '__main__':

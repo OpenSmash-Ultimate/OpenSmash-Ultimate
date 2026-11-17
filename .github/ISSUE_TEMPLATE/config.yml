@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and finding players (Discord)
+    url: https://discord.gg/pkgyYGf3YB
+    about: Ask for help, find players and talk to the community.
+  - name: Security problem
+    url: https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/blob/main/SECURITY.md
+    about: Report security problems privately, as SECURITY.md explains. Do not open a public issue.

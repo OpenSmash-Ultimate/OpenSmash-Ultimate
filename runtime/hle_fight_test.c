@@ -323,6 +323,7 @@ static u64 stage_choice(void) {
  * registered while a debug match is on. Called on the game's main thread, one player at a time:
  * what the panel was is kept here between the two halves. */
 int input_seq2_on(void);   /* (hle_hid.c) */
+int net_match_on(void);    /* (hle_rb_core.c: a networked match is set up or under way) */
 static u64 record_was;
 static u32 record_type_was;
 static void record_before(Cpu *c, const u64 args[8], void *ctx) {
@@ -336,7 +337,18 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx) {
         fprintf(stderr, "[fight] SSBU_DEBUG_MATCH_LIST: match %d\n", match_fight);
     }
     if (idx == 0 && det && !(det_off & DET_OFF_RNG)) global_rng_fixed("the match set-up");
-    type_was = dm_player(&match, idx, P(u8, st), type_was, match_p2_ok ? match_p2 : NULL);
+    u32 tag_was = ld32(st + 0x214);
+    DebugMatch m = match;
+    /* (a networked match: every game plays each player with the tag agreed in the handshake, hle_rb_core.c's record hook
+     * just before this one; a tag of this PC's list set here would be this game's alone - the peers would differ) */
+    if (idx >= 0 && idx < 4 && m.tag[idx] >= 0 && net_match_on()) {
+        fprintf(stderr, "[fight] debug match: tag%d ignored in a networked match (its tags come from the handshake)\n", idx + 1);
+        m.tag[idx] = -1;
+    }
+    type_was = dm_player(&m, idx, P(u8, st), type_was, match_p2_ok ? match_p2 : NULL);
+    if (idx >= 0 && idx < 4 && m.tag[idx] >= 0)   /* (#152: the name tag the screens left, and the one played: + 0x214 its slot + 1) */
+        fprintf(stderr, "[fight] debug match: player %d: name tag %u from the screens, %u played (human panel %u)\n", idx, tag_was,
+                ld32(st + 0x214), (unsigned)ld8(st + 0x450));
     if (idx == 0) {
         u64 sel = stage_choice(), block = GAME_ADDR(MATCH_BLOCK);
         fprintf(stderr, "[fight] debug match: the screens' stage choice: ui_stage %llx form %u, hazards %u; rule: stock %u, item appear %u\n",

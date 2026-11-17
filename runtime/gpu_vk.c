@@ -39,6 +39,7 @@
 #include "gpu_spirv.h"
 #include "gpu_texture.h"
 #include "gpu_vulkan.h"
+#include "gpu_wait_budget.h"
 #include "gpu_watch.h"
 #include "gpu_window.h"
 #include "debug_profile.h"
@@ -96,11 +97,17 @@ static volatile DWORD last_enter_thread;
 static char card[300];
 
 /* ---- device memory: images share big chunks of it (drivers allow few allocations: 4,096) ------- */
-static int memory_type(uint32_t bits, VkMemoryPropertyFlags want) {
-    for (uint32_t i = 0; i < memory_props.memoryTypeCount; i++)
-        if ((bits >> i & 1) && (memory_props.memoryTypes[i].propertyFlags & want) == want) return (int)i;
+/* (never a protected type, nor AMD's device-coherent / uncached ones: those need features this device is not given,
+ * and AMD's drivers list them beside the plain ones) */
+#define MEMORY_TYPE_NEVER (VK_MEMORY_PROPERTY_PROTECTED_BIT | 0x40u /* DEVICE_COHERENT_BIT_AMD */ | 0x80u /* DEVICE_UNCACHED_BIT_AMD */)
+static int memory_type_but(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags avoid) {
+    for (uint32_t i = 0; i < memory_props.memoryTypeCount; i++) {
+        VkMemoryPropertyFlags f = memory_props.memoryTypes[i].propertyFlags;
+        if ((bits >> i & 1) && (f & want) == want && !(f & (avoid | MEMORY_TYPE_NEVER))) return (int)i;
+    }
     return -1;
 }
+static int memory_type(uint32_t bits, VkMemoryPropertyFlags want) { return memory_type_but(bits, want, 0); }
 
 #define CHUNK_SIZE (64ull << 20)
 typedef struct Range { VkDeviceSize off, size; } Range;
@@ -435,6 +442,8 @@ static VkCommandBuffer cmd(void) {
 /* `size` bytes of the frame's upload memory, aligned: where the CPU writes them, and where the GPU
  * finds them (buffer, offset). NULL if there is no more. */
 static VkDeviceSize texel_align = 256, ubo_align = 256;
+static u32 limits_vendor, limits_device;   /* (the card's PCI vendor and device: set at the start) */
+static int limits_integrated;   /* (the processor's own graphics: it shares the processor's power and memory) */
 static u8 *arena(VkDeviceSize size, VkDeviceSize align, VkBuffer *buf, VkDeviceSize *off) {
     cmd();
     Frame *f = &frames[frame_at];
@@ -456,12 +465,34 @@ static u8 *arena(VkDeviceSize size, VkDeviceSize align, VkBuffer *buf, VkDeviceS
     VkMemoryRequirements mr;
     vkGetBufferMemoryRequirements(device, b->buf, &mr);
     /* (the card's own memory the CPU can write, where it has some: the draws read it there rather than
-     * across the bus; else the system's. SSBU_VK_SYSMEM=1: the system's) */
+     * across the bus; else the system's. SSBU_VK_SYSMEM=1: the system's, =0: the card's. AMD cards: the system's
+     * by default - there the stages' vertex streams read from the card's CPU-visible memory came back empty, the
+     * stage and its background black while the fighters, whose vertices stay on the card, drew (#353; the old
+     * renderer's same fault and fix: ssbu-recomp#127, SSBU_VK_BUFMEM=0)) */
     static int sysmem = -1;
-    if (sysmem < 0) sysmem = getenv("SSBU_VK_SYSMEM") && atoi(getenv("SSBU_VK_SYSMEM")) != 0;
+    const char *sysmem_env = getenv("SSBU_VK_SYSMEM");
+    if (sysmem < 0) sysmem = sysmem_env && *sysmem_env ? atoi(sysmem_env) != 0 : limits_vendor == 0x1002;
     VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     int local = sysmem ? -1 : memory_type(mr.memoryTypeBits, host | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    int type = memory_type(mr.memoryTypeBits, host);
+    /* (system memory: a type that is not the card's, though a card's host-visible type may be listed first) */
+    int type = memory_type_but(mr.memoryTypeBits, host, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (type < 0) type = memory_type(mr.memoryTypeBits, host);   /* (one memory for both: integrated graphics) */
+    static int told;
+    if (!told++) {
+        int t = local >= 0 ? local : type;
+        VkDeviceSize heap = t >= 0 ? memory_props.memoryHeaps[memory_props.memoryTypes[t].heapIndex].size : 0;
+        if (local >= 0)
+            fprintf(stderr, "[vulkan] upload memory (vertex streams, constant buffers, textures on their way): the card's CPU-visible memory "
+                            "(type %d, heap of %llu MB; SSBU_VK_SYSMEM=1 for the system's if stages or backgrounds draw black)\n",
+                    t, (unsigned long long)(heap >> 20));
+        else
+            fprintf(stderr, "[vulkan] upload memory (vertex streams, constant buffers, textures on their way): %s (type %d, heap of %llu MB)%s\n",
+                    t >= 0 && (memory_props.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "the card's (no other here)" : "the system's",
+                    t, (unsigned long long)(heap >> 20),
+                    !sysmem ? "" : sysmem_env && *sysmem_env ? ": SSBU_VK_SYSMEM=1"
+                                 : ": AMD card, where draws read the stages' vertex data in the card's CPU-visible memory as nothing "
+                                   "(black stages and backgrounds, #353); SSBU_VK_SYSMEM=0 puts it there");
+    }
     VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, (uint32_t)local};
     if (local < 0 || vkAllocateMemory(device, &mai, NULL, &b->mem) != VK_SUCCESS) {
         mai.memoryTypeIndex = (uint32_t)type;
@@ -929,6 +960,9 @@ static VkFormat swap_format = VK_FORMAT_B8G8R8A8_UNORM;
 
 static VkPresentModeKHR wanted_mode(void) {
     if ((display_present_flags() & 0x200u) && have_immediate) return VK_PRESENT_MODE_IMMEDIATE_KHR;   /* vrr, SSBU_SPEED: at once */
+    /* (`display` pacing cannot see this monitor's refreshes - its panel is another card's - or its rate is no multiple
+     * of 60: the swap chain's own wait for the vblank, FIFO, paces the frames instead; tear-free either way) */
+    if (display_present_sync()) return VK_PRESENT_MODE_FIFO_KHR;
     if (have_mailbox) return VK_PRESENT_MODE_MAILBOX_KHR;   /* clock / display pacing: the newest frame at the next refresh */
     return have_immediate ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
 }
@@ -1274,7 +1308,6 @@ static VkDescriptorSetLayout gfx_set_layout, cs_set_layout;
 static VkPipelineLayout gfx_layout, cs_layout;
 static VkPipelineCache pipeline_cache;
 static char pipeline_cache_path[1024];
-static u32 limits_vendor, limits_device;
 static VkBuffer dummy_buffer;
 static VkBufferView dummy_texels;
 static Alloc dummy_buffer_mem;
@@ -1422,6 +1455,15 @@ static VkBufferView kept_cb(u64 va, u32 size) {
 static u64 vk_stat_cb_copies[2], vk_stat_cb_bytes[2];
 typedef struct Upload { u64 va, serial, batch, gen; u32 size; VkBufferView view; } Upload;   /* (gen: writes_over when made) */
 static Upload uploads[8192];
+/* Data a draw reads that upload() could not hand over (no upload memory left, no view): the draw reads zeros instead -
+ * geometry gone or black. Said in the log the first times, with why: the cause of a black picture where it happens. */
+static u64 vk_stat_upload_lost;
+static VkBufferView upload_lost(u32 size, const char *why) {
+    if (++vk_stat_upload_lost <= 5)
+        fprintf(stderr, "[vulkan] BLACK OR MISSING GEOMETRY: %u bytes of vertex or constant data not uploaded (%s): the draw reads zeros "
+                        "(%llu times so far)\n", size, why, vk_stat_upload_lost);
+    return dummy_texels;
+}
 static VkBufferView upload(u64 va, u32 size) {
     if (!va || !size) return dummy_texels;
     u32 padded = (size + 15) & ~15u;
@@ -1438,13 +1480,13 @@ static VkBufferView upload(u64 va, u32 size) {
     VkBuffer buf;
     VkDeviceSize off;
     u8 *dst = arena(padded, texel_align, &buf, &off);
-    if (!dst) return dummy_texels;
+    if (!dst) return upload_lost(padded, "no upload memory left this frame");
     if (src) memcpy(dst, src, size);
     else read_gpu(va, size, dst);
     if (padded > size) memset(dst + size, 0, padded - size);
     vk_stat_upload_bytes += padded;
     VkBufferView v = arena_view(buf, off, padded);
-    if (!v) return dummy_texels;
+    if (!v) return upload_lost(padded, "vkCreateBufferView failed");
     *u = (Upload){va, frames[frame_at].serial, gpu_stat_batches, src ? writes_over(g, size) : 0, size, src ? v : VK_NULL_HANDLE};
     return v;
 }
@@ -1712,6 +1754,18 @@ static int wait_makes(void) {
 }
 static void wait_for(volatile LONG *state) {
     while (!*state) SwitchToThread();
+}
+/* SSBU_VK_WAIT_BUDGET=<ms>: what a frame may spend waiting for new pipelines and graphics programs, all
+ * together (default 6; 0: never wait). Most are ready in a few ms; the rest were not ready after the 100 ms
+ * the wait used to last either, so each of those was a 100 ms hitch for a skipped draw (2026-11-13's log:
+ * 47 of 58). Past the budget the draw is skipped and the maker carries on: the effect draws from its next use. */
+static WaitBudget wait_budget = {~0ull, 0, ~0ull};
+static u64 budget_until(u32 cap_ms) {
+    if (wait_budget.budget_ns == ~0ull) {
+        const char *v = getenv("SSBU_VK_WAIT_BUDGET");
+        wait_budget.budget_ns = (v && *v ? (u64)atoi(v) : 6) * 1000000ull;
+    }
+    return wait_budget_until(&wait_budget, gfx_stat_presented, rt_clock_ns(), cap_ms * 1000000ull);
 }
 
 /* What each stage's constant buffer slot was given last in this frame, with a copy of the bytes (gpu_d3d11.c's
@@ -2166,8 +2220,12 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
      * owner's report 2026-11-09), a skipped launch leaves its outputs (skinned vertices) unwritten for a frame.
      * Compute programs were waited for already; every stage now. One compiled from scratch (fxc) is not waited for;
      * with glslang there is no fxc (its SPIR-V is made from the HLSL in milliseconds): every program is waited for. */
-    if (cached || stage == SHADER_COMPUTE)
-        for (u64 until = GetTickCount64() + 250; s->state == 0 && GetTickCount64() < until;) { if (s->adopt) warm_adopt(s); SwitchToThread(); }
+    if (cached || stage == SHADER_COMPUTE) {
+        /* (a compute program's whole wait: a skipped launch is a frame of unwritten vertices, not a missing effect) */
+        u64 t0 = rt_clock_ns(), until = stage == SHADER_COMPUTE ? t0 + 250000000ull : budget_until(250);
+        for (; s->state == 0 && rt_clock_ns() < until;) { if (s->adopt) warm_adopt(s); SwitchToThread(); }
+        wait_budget_spend(&wait_budget, rt_clock_ns() - t0);
+    }
     if (vk_gated) make_note_shader(s, w != NULL, (rt_clock_ns() - t_new) / 1e6);
     return s;
 }
@@ -2865,10 +2923,12 @@ static VkPipeline get_pipeline(const PipeKey *k, const VShader *vs, const VShade
     if (e->state == 0 && wait_makes()) wait_for(&e->state);
     /* a new pipeline is waited for a little (its shaders are ready: the driver makes it in milliseconds, less with the
      * pipeline cache warm), rather than its first draws skipped - an effect missing the first time (2026-11-09); so is
-     * one a warm thread is making now, once */
+     * one a warm thread is making now, once. Within the frame's budget (budget_until). */
     if (e->state == 0 && (made || !e->waited)) {
         e->waited = 1;
-        for (u64 until = GetTickCount64() + 100; e->state == 0 && GetTickCount64() < until;) SwitchToThread();
+        u64 t0 = rt_clock_ns();
+        for (u64 until = budget_until(100); e->state == 0 && rt_clock_ns() < until;) SwitchToThread();
+        wait_budget_spend(&wait_budget, rt_clock_ns() - t0);
     }
     if (vk_gated && (made || first_wait)) make_note_pipe(e, made, (rt_clock_ns() - t_wait) / 1e6);
     return e->state == 1 ? e->pipe : VK_NULL_HANDLE;
@@ -3233,8 +3293,261 @@ static u64 private_bytes(void) {   /* (as gpu_d3d11.c's) */
     return get && get(GetCurrentProcess(), &c, sizeof c) ? c.private_usage : 0;
 }
 
+/* ---- preparing the shader cache at a start: the SPIR-V this back end draws from ----------------------- */
+/* A cache with no SPIR-V for the game's programs (never prepared for Vulkan, or prepared for another version of
+ * the translator) makes every program and pipeline at its first use, and skips the draws that need them until they
+ * are ready: an effect or a fighter missing for a moment, in every mode, session after session. So a start like that
+ * translates the whole cache before the game draws: tools/shader_aot.py reads the game's own files and compiles them,
+ * exactly as the launcher's Prepare Shaders does, and its progress is shown beside the loading animation
+ * ("Preparing shaders 42%"). The work is kept in the disk cache, so this is a first start only; a run cut short
+ * leaves what it did and the next start goes on. SSBU_PREPARE_SHADERS=0: not done (as before: translated at first
+ * use, those draws skipped); =1: done even when the cache says it is prepared. */
+static volatile LONG prep_state;   /* 0 not started, 1 running, 2 done */
+static char prep_note[96];
+void watchdog_pause(int on);   /* (debug_watchdog.c) */
+
+/* The cache says SPIR-V for this translator is prepared (tools/shader_aot.py's "spirv g<version>.<library>" line). */
+static int shader_cache_prepared(void) {
+    char path[1200], want[48], line[256];
+    snprintf(path, sizeof path, "%s/complete.txt", cache_dir());
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    snprintf(want, sizeof want, "g%d.%08x", SHADER_CACHE_SPV_VERSION, spirv_glslang_version());
+    int ok = 0;
+    while (!ok && fgets(line, sizeof line, f)) ok = !strncmp(line, "spirv ", 6) && strstr(line + 6, want) != NULL;
+    fclose(f);
+    return ok;
+}
+
+/* "<root>\tools\shader_aot.py" for the folder the game runs in (the repository: the launcher and Play SSBU.bat
+ * both start it there), else beside the program's folder. Returns 1 and that folder when the tool is there. */
+static int prep_tool(char *root, size_t root_size) {
+    char path[1200];
+    snprintf(root, root_size, ".");
+    snprintf(path, sizeof path, "tools\\shader_aot.py");
+    if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return 1;
+    char exe[MAX_PATH] = "";
+    DWORD n = GetModuleFileNameA(NULL, exe, MAX_PATH);
+    if (!n || n >= MAX_PATH) return 0;
+    char *slash = strrchr(exe, '\\');
+    if (!slash) return 0;
+    *slash = 0;                                   /* ("...\OpenSmash-Ultimate-main\build") */
+    slash = strrchr(exe, '\\');
+    if (slash) *slash = 0;                        /* ("...\OpenSmash-Ultimate-main") */
+    snprintf(root, root_size, "%s", exe);
+    snprintf(path, sizeof path, "%s\\tools\\shader_aot.py", root);
+    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+/* The tool's output, as one 1..99 share: it lists the game's shader files first ("effect shader files: 30 of 726",
+ * the first tenth), then compiles with a bar ("[#####-----]  42%  1,234 of 2,905 shaders", the rest). The note only
+ * goes up, so a phase that ends below where the last one ended does not step back. */
+static volatile LONG prep_shown = -1;
+
+static void prep_share(int pct) {
+    if (pct < 1) pct = 1;
+    if (pct > 99) pct = 99;
+    LONG was = prep_shown;
+    if (was >= 0 && pct <= was) return;
+    if (InterlockedCompareExchange(&prep_shown, pct, was) != was) return;   /* (another line got there first) */
+    char note[96];
+    snprintf(note, sizeof note, "Preparing shaders %d%%", pct);
+    display_loading_note(note);
+    fprintf(stderr, "[vulkan] preparing shaders %d%%\n", pct);
+}
+
+/* A number with thousands' commas ("1,234"), read from *at, which moves past it. */
+static long long prep_count(const char **at) {
+    long long v = 0;
+    const char *p = *at;
+    while (*p == ' ') p++;
+    while ((*p >= '0' && *p <= '9') || *p == ',') {
+        if (*p != ',') v = v * 10 + (*p - '0');
+        p++;
+    }
+    *at = p;
+    return v;
+}
+
+static void prep_note_from(const char *line) {
+    const char *files = strstr(line, " shader files: ");
+    if (files) {   /* (listing the game's files: the first tenth of the preparation) */
+        const char *at = files + 15;
+        long long done = prep_count(&at), of = 0;
+        const char *sep = strstr(at, " of ");
+        if (sep) { const char *q = sep + 4; of = prep_count(&q); }
+        if (of > 0) prep_share((int)(done * 10 / of));
+        return;
+    }
+    if (strstr(line, "getting ready")) { prep_share(1); return; }
+    const char *pct = strchr(line, '%');
+    if (!pct || pct == line) return;
+    const char *d = pct;   /* (back to the first digit before the '%', then read forward: "42%" is 42) */
+    while (d > line && d[-1] >= '0' && d[-1] <= '9' && pct - d < 3) d--;
+    if (d == pct) return;
+    int v = 0;
+    for (const char *p = d; p < pct; p++) v = v * 10 + (*p - '0');
+    if (v > 100) v = 100;
+    prep_share(10 + v * 89 / 100);   /* (the compile: from the tenth on, to 99) */
+}
+
+/* Runs the tool with its output read line by line (the progress above), until it ends. 1 when the cache is
+ * complete afterwards. */
+static int prep_run(const char *root) {
+    char py[1200], cmd[2600], cwd[MAX_PATH * 2];
+    snprintf(py, sizeof py, "%s\\deps\\python\\python.exe", root);
+    int have_py = GetFileAttributesA(py) != INVALID_FILE_ATTRIBUTES;
+    /* (--by-game: the tool pauses while a game runs, and this one is the game, waiting for it) */
+    snprintf(cmd, sizeof cmd, "\"%s\" \"%s\\tools\\shader_aot.py\" --priority low --no-warm --by-game", have_py ? py : "python.exe", root);
+    if (!GetFullPathNameA(root, sizeof cwd, cwd, NULL)) snprintf(cwd, sizeof cwd, "%s", root);
+    SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
+    HANDLE rd = NULL, wr = NULL;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) return 0;
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);   /* (only the tool gets the pipe's write end) */
+    STARTUPINFOA si = {sizeof si};
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = wr;
+    si.hStdError = wr;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION pi;
+    fprintf(stderr, "[vulkan] preparing shaders: %s (in %s)\n", cmd, cwd);
+    /* (suspended until it is in the job: a worker it starts at once cannot get out of it) */
+    if (!CreateProcessA(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, cwd, &si, &pi)) {
+        fprintf(stderr, "[vulkan] preparing shaders: cannot run the tool (error %lu): the programs are translated at their first use\n",
+                (unsigned long)GetLastError());
+        CloseHandle(rd);
+        CloseHandle(wr);
+        return 0;
+    }
+    CloseHandle(wr);
+    /* (its workers go with the game: a window closed during the preparation does not leave a compiler running unseen) */
+    HANDLE job = CreateJobObjectA(NULL, NULL);
+    if (job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION li;
+        memset(&li, 0, sizeof li);
+        li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li) || !AssignProcessToJobObject(job, pi.hProcess)) {
+            CloseHandle(job);
+            job = NULL;
+        }
+    }
+    ResumeThread(pi.hThread);
+    /* Its output until it has ended and what it wrote is read: not until the pipe closes, which a worker of its still
+     * holding the write end would put off for ever (they go with the job, closed below). */
+    char chunk[4096], line[600];
+    size_t used = 0;
+    for (int ended = 0;;) {
+        DWORD avail = 0, got = 0;
+        if (!PeekNamedPipe(rd, NULL, 0, NULL, &avail, NULL)) break;   /* (every writer gone) */
+        if (!avail) {
+            if (ended) break;
+            ended = WaitForSingleObject(pi.hProcess, 50) == WAIT_OBJECT_0;
+            continue;
+        }
+        if (!ReadFile(rd, chunk, avail < sizeof chunk ? avail : (DWORD)sizeof chunk, &got, NULL) || !got) break;
+        for (DWORD i = 0; i < got; i++) {
+            char ch = chunk[i];
+            if (ch == '\n' || used + 1 >= sizeof line) {   /* (a line, or a longer one cut: then ch starts the next) */
+                line[used] = 0;
+                if (used && line[used - 1] == '\r') line[used - 1] = 0;
+                if (used) prep_note_from(line);
+                used = 0;
+            }
+            if (ch != '\n') line[used++] = ch;
+        }
+    }
+    if (used) { line[used] = 0; prep_note_from(line); }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(rd);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    if (job) CloseHandle(job);
+    int ready = shader_cache_prepared();
+    fprintf(stderr, "[vulkan] preparing shaders: the tool ended with code %lu: %s\n", (unsigned long)code,
+            ready ? "the cache is ready" : "the cache is still incomplete (the next start goes on, what is done stays done)");
+    return ready;
+}
+
+/* The preparation, on a thread of its own: the loading animation keeps drawing (the vsync thread) while the warm
+ * threads and the first frame wait for it (prepare_wait). */
+static int prep_tries(int add);
+static DWORD WINAPI prep_main(void *arg) {
+    char root[1200];
+    (void)arg;
+    watchdog_pause(1);
+    if (prep_tool(root, sizeof root)) {
+        prep_tries(1);
+        if (prep_run(root)) prep_tries(-1);
+    } else fprintf(stderr, "[vulkan] preparing shaders: tools\\shader_aot.py is not here, so the game translates each program at its first use\n");
+    display_loading_note(NULL);
+    InterlockedExchange(&prep_state, 2);
+    watchdog_pause(0);
+    return 0;
+}
+
+/* The starts that began a preparation for this translator and did not see it through (a closed window, a tool that
+ * fails each time: no clang to build shaderaot.exe, no Python): <cache>/prepare_tries.txt, "g<version>.<library> <n>".
+ * After PREP_TRIES the game stops trying and says so; the launcher's Prepare Shaders (or SSBU_PREPARE_SHADERS=1) still
+ * does it. n is written before the tool runs, and the file goes when the cache is ready. */
+#define PREP_TRIES 2
+static int prep_tries(int add) {
+    char path[1200], want[48], have[48] = "";
+    int n = 0;
+    snprintf(path, sizeof path, "%s/prepare_tries.txt", cache_dir());
+    snprintf(want, sizeof want, "g%d.%08x", SHADER_CACHE_SPV_VERSION, spirv_glslang_version());
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        if (fscanf(f, "%47s %d", have, &n) != 2 || strcmp(have, want)) n = 0;   /* (another translator's: from 0 again) */
+        fclose(f);
+    }
+    if (add > 0 && (f = fopen(path, "wb"))) { fprintf(f, "%s %d\n", want, n + add); fclose(f); }
+    if (add < 0) remove(path);
+    return n;
+}
+
+/* Starts the preparation (once), unless it is off or the cache says it is done. */
+static void prepare_begin(void) {
+    if (prep_state || InterlockedCompareExchange(&prep_state, 1, 0) != 0) return;   /* (already running or done) */
+    const char *set = getenv("SSBU_PREPARE_SHADERS");
+    int force = set && *set && atoi(set) != 0, off = set && *set && !atoi(set);
+    if (off || (!force && shader_cache_prepared())) {
+        InterlockedExchange(&prep_state, 2);
+        return;
+    }
+    /* (test runs, and a cache of its own: the tool prepares the repository's dump/shadercache, not that folder) */
+    const char *headless = getenv("SSBU_HEADLESS");
+    if (!force && ((headless && !strcmp(headless, "1")) || getenv("SSBU_SHADER_CACHE"))) {
+        InterlockedExchange(&prep_state, 2);
+        return;
+    }
+    if (!force && prep_tries(0) >= PREP_TRIES) {
+        fprintf(stderr, "[vulkan] preparing shaders: not done, %d starts did not finish it; the launcher's Prepare Shaders "
+                        "(or SSBU_PREPARE_SHADERS=1) does it, else each program is translated at its first use\n", PREP_TRIES);
+        InterlockedExchange(&prep_state, 2);
+        return;
+    }
+    if (!spirv_available()) {   /* (no translator: nothing could be prepared, and the tool would fail at each start) */
+        fprintf(stderr, "[vulkan] preparing shaders: not done, this build has no shader translator (ssbu_glslang.dll / vkd3d-shader)\n");
+        InterlockedExchange(&prep_state, 2);
+        return;
+    }
+    HANDLE t = CreateThread(NULL, 0, prep_main, NULL, 0, NULL);
+    if (!t) InterlockedExchange(&prep_state, 2);
+    else CloseHandle(t);
+}
+
+/* Waits for the preparation. Called by the warm threads before a program's file is looked for, and by the first
+ * frame: a program whose file the preparation is about to write is not counted as one without. */
+static void prepare_wait(void) {
+    prepare_begin();
+    while (prep_state == 1) Sleep(20);
+}
+
 static void warm_load(WarmShader *w) {
     char path[1200];
+    prepare_wait();   /* (a cache that is not prepared for this translator is prepared now, before a file is missed) */
     shader_cache_file_spv(path, sizeof path, cache_dir(), (int)w->k.stage, w->k.hash, w->k.vs_outputs, w->k.table_hash, spirv_glslang_version());
     size_t size;
     void *code = read_file(path, &size);
@@ -3273,8 +3586,32 @@ static WarmShader *warm_ready(const WarmKey *k) {
  * again rather than given to the driver once more: one start without warmed pipelines, not a crash at each. */
 static char warm_marker[1200];
 #define WARM_RETRIES 3   /* (unfinished warm starts in a row before the list is started again) */
+static char warm_capped[1200];   /* "<list>.capped": this card's driver crashed in a warm start; its budget is WARM_CAPPED_MB */
+#define WARM_CAPPED_MB 320   /* (some four hundred pipelines, the menus' first) */
+static int warm_tries;   /* (what the marker says while the warm threads run) */
+extern void (*rt_crash_module_hook)(const char *module);   /* host.c: called with the faulting module's name */
 
 static int vk_warm_only(void);   /* (SSBU_VK_WARM_ONLY: below, with the shader loading) */
+/* The crash handler's report thread, while the process dies: a crash inside a graphics driver's shader compiler during
+ * the warm start is written into the marker ("<n> driver <dll>"), so the next start does not warm the same list into
+ * the same crash (warm_start). Anything else - a mod's or the game's own crash - leaves the marker as it is. Only
+ * Win32 file calls: the faulting thread may hold the C runtime's locks. */
+static void warm_crash_note(const char *module) {
+    static const char *const compilers[] = {"nvgpucomp64.dll", "nvoglv64.dll", "amdvlk64.dll", "amdxc64.dll", "igvk64.dll", "igc64.dll"};
+    if (!warm_running || !warm_marker[0] || !module) return;
+    int match = 0;
+    for (u32 i = 0; i < sizeof compilers / sizeof *compilers && !match; i++) match = !_stricmp(module, compilers[i]);
+    if (!match) return;
+    char text[160];
+    int n = snprintf(text, sizeof text, "%d driver %.60s", warm_tries + 1, module);
+    HANDLE f = CreateFileA(warm_marker, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD put;
+    WriteFile(f, text, (DWORD)(n > 0 ? n : 0), &put, NULL);
+    CloseHandle(f);
+}
+
+static VkFormat warm_z24 = VK_FORMAT_D24_UNORM_S8_UINT;   /* (Z24S8 on this card: set by warm_start before its threads) */
 /* One record made (or left out, and counted). */
 static void warm_one(u32 i) {
     if (!warm_stopped && warm_budget && (i & 15) == 0 && private_bytes() > warm_bytes0 + warm_budget) InterlockedExchange(&warm_stopped, 1);
@@ -3285,6 +3622,10 @@ static void warm_one(u32 i) {
     if (!vs || (r->ps.stage != ~0u && !ps)) { InterlockedIncrement(&warm_left); return; }
     PipeKey key;
     memcpy(&key, &r->key, sizeof key);
+    /* (Z24S8 is drawn as D32S8 on a card without D24S8, AMD's: depth_format. The shipped list was made on NVIDIA,
+     * so its records name D24S8, and a pipeline warmed for that format was never the one a draw asked for - an
+     * RX 9070 XT's play.log (#262): 13,433 pipelines warmed, 18 drawn with, ~350 made in play every session) */
+    if (key.depth == VK_FORMAT_D24_UNORM_S8_UINT) key.depth = warm_z24;
     key.vs = vs->module;
     key.ps = ps ? ps->module : VK_NULL_HANDLE;
     u32 h = desc_hash(&key, sizeof key) & (PIPE_SLOTS - 1);
@@ -3334,8 +3675,11 @@ static LONG warm_next(u32 *group) {
         if ((i = warm_take(&warm_groups[best])) >= 0) { *group = best; return i; }
     }
     if ((i = warm_take(&warm_groups[WG_COMMON])) >= 0) { *group = WG_COMMON; return i; }
-    for (u32 g = 2; g < warm_ngroups; g++)   /* (the rest: a match waits for it too) */
-        if (warm_groups[g].kind == WG_REST && (i = warm_take(&warm_groups[g])) >= 0) { *group = g; return i; }
+    /* (The records in no group come next, with the other fighters' and stages': not while a fight is on, and no match
+     * waits for them. A match used to: on a Radeon 760M with the whole SPIR-V cache prepared that was 5,509 pipelines,
+     * the 120 s limit, the game frozen before the stage loaded - #428.) */
+    for (u32 g = 2; g < warm_ngroups; g++)
+        if (warm_groups[g].kind == WG_REST && !(!warm_urgent && game_fight_on()) && (i = warm_take(&warm_groups[g])) >= 0) { *group = g; return i; }
     int left = 0;
     for (u32 g = 2; g < warm_ngroups && !left; g++) left = warm_groups[g].next < (LONG)warm_groups[g].n;
     if (!left) return -2;
@@ -3425,6 +3769,7 @@ static void vk_warm_gate(void) {
     if (vk_warm_only()) vk_warm_only_run();
     const char *set = getenv("SSBU_SHADER_PREWARM_WAIT");
     double limit_s = set && *set ? atof(set) : 0;
+    prepare_wait();   /* (the loading screen shows "Preparing shaders N%" while a cold cache is made) */
     if ((set && *set && limit_s <= 0) || !warm_running || !warm_nrecords || !warm_ngroups) { InterlockedExchange(&warm_urgent, 0); return; }
     u64 t0 = GetTickCount64();
     watchdog_pause(1);
@@ -3466,7 +3811,8 @@ void vk_match_want(u64 key, int first) {
 }
 
 /* The frame end after the match was set up (the game's thread, before the match loads): the match's groups, the boot group
- * and common made first, every warm thread on them. SSBU_SHADER_MATCH_WAIT=<s>: at most that long (default 120; 0: no wait). */
+ * and common made first, every warm thread on them. SSBU_SHADER_MATCH_WAIT=<s>: at most that long (default 30; 0: no wait). The game's thread is held meanwhile, so
+ * the window shows no new frame: on a slow card the limit is what a player sees as a frozen game (#428). */
 void vk_match_wait(void) {
     AcquireSRWLockShared(&warm_list_lock);
     u32 listed = warm_nseen;
@@ -3475,7 +3821,7 @@ void vk_match_wait(void) {
     fprintf(stderr, "[vulkan] warm list: %u records listed as the match was set up\n", listed);
     if (!warm_ngroups || !warm_running) return;
     const char *set = getenv("SSBU_SHADER_MATCH_WAIT");
-    double limit_s = set && *set ? atof(set) : 120;
+    double limit_s = set && *set ? atof(set) : 30;
     if (limit_s <= 0) return;
     LONG mine = warm_match_seq;
     u64 t0 = GetTickCount64();
@@ -3485,7 +3831,7 @@ void vk_match_wait(void) {
         long left = 0;
         for (u32 g = 0; g < warm_ngroups; g++) {
             const WarmGroup *w = &warm_groups[g];
-            if (g == WG_BOOT || g == WG_COMMON || w->kind == WG_REST || (mine && w->wanted >= mine)) left += (long)w->n - w->done;
+            if (g == WG_BOOT || g == WG_COMMON || (mine && w->wanted >= mine)) left += (long)w->n - w->done;   /* (not those in no group: #428) */
         }
         if (!waited) before = left;
         if (!left || !warm_running || (GetTickCount64() - t0) / 1000.0 >= limit_s) break;
@@ -3495,7 +3841,7 @@ void vk_match_wait(void) {
     }
     if (waited) { InterlockedDecrement(&warm_urgent); watchdog_pause(0); }
     fprintf(stderr, "[vulkan] match shaders: the match waited %.1f s for %ld of its pipelines (the menus', any fight's, its fighters' "
-            "and stage's, and those in no group); %ld of %u listed made so far\n", (GetTickCount64() - t0) / 1000.0, before, (long)warm_ndone, warm_nrecords);
+            "and stage's); %ld of %u listed made so far\n", (GetTickCount64() - t0) / 1000.0, before, (long)warm_ndone, warm_nrecords);
 }
 
 /* The start's last step (the makers run): the list opened, and the warm threads started on it. */
@@ -3508,12 +3854,27 @@ static void warm_start(void) {
      * killed during the shader loading, not a bad record: the list is warmed again; only after WARM_RETRIES unfinished
      * ones in a row is it started again - 2026-11-11: a single killed start used to throw the whole list away, and the
      * next start then compiled every pipeline at its first draw.) */
-    int tries = 0;
+    int tries = 0, skip = 0;
+    snprintf(warm_capped, sizeof warm_capped, "%s.capped", list);
     if (GetFileAttributesA(warm_marker) != INVALID_FILE_ATTRIBUTES) {
+        char driver[64] = "";
         FILE *mf = fopen(warm_marker, "rb");
-        if (mf) { if (fscanf(mf, "%d", &tries) != 1) tries = 1; fclose(mf); }
+        if (mf) { if (fscanf(mf, "%d driver %63s", &tries, driver) < 1) tries = 1; fclose(mf); }
         if (tries < 1) tries = 1;
-        if (tries < WARM_RETRIES)
+        if (driver[0]) {
+            /* (The crash handler wrote it: the last start died inside the graphics driver's shader compiler while this
+             * warm start ran - NVIDIA's nvgpucomp64.dll did, after 1,000-1,250 pipelines in one start on an RTX 5070
+             * laptop, #430. Warming again would crash again, so this start warms nothing (the list is kept), and from
+             * now on this card's warm starts stop at WARM_CAPPED_MB: "<list>.capped". A crash anywhere else - a mod's,
+             * the game's - is not this, and the list is warmed again as below.) */
+            fprintf(stderr, "[vulkan] warm start: the last one crashed inside the graphics driver's compiler (%s): not warmed this time; "
+                    "from now on this card's warm start stops at %d MB (%s; SSBU_SHADER_PREWARM_MB sets another budget)\n",
+                    driver, WARM_CAPPED_MB, warm_capped);
+            FILE *cf = fopen(warm_capped, "wb");
+            if (cf) { fprintf(cf, "%s\n", driver); fclose(cf); }
+            DeleteFileA(warm_marker);
+            skip = 1;   /* (the list opened and kept up to date below, as with SSBU_VK_WARM=0) */
+        } else if (tries < WARM_RETRIES)
             fprintf(stderr, "[vulkan] warm start: the last one did not finish (%s, %d in a row): warmed again\n", warm_marker, tries);
         else {
             fprintf(stderr, "[vulkan] warm start: %d in a row did not finish (%s): the list is started again, nothing is warmed this time\n", tries, warm_marker);
@@ -3529,6 +3890,10 @@ static void warm_start(void) {
         warm_shader_slots = 0;
         return;
     }
+    if (skip) {
+        warm_shader_slots = 0;   /* (no draw looks its programs up: each makes its own, as without a list) */
+        return;
+    }
     if (getenv("SSBU_VK_WARM") && !atoi(getenv("SSBU_VK_WARM"))) {
         fprintf(stderr, "[vulkan] warm start: off (SSBU_VK_WARM=0), %u pipelines and programs listed\n", warm_nrecords);
         warm_shader_slots = 0;   /* (no draw looks its programs up) */
@@ -3536,10 +3901,23 @@ static void warm_start(void) {
     }
     warm_groups_open();
     if (!warm_ngroups) { warm_shader_slots = 0; return; }
+    warm_z24 = depth_format(0x14);
+    if (warm_z24 != VK_FORMAT_D24_UNORM_S8_UINT) fprintf(stderr, "[vulkan] warm start: the list's D24S8 depth made as this card's D32S8\n");
     MEMORYSTATUSEX m = {sizeof m};
+    /* A start warms from the list until the process has grown by this much: the pipelines hold driver memory that only
+     * goes away with the process. A third of the PC's memory (1 GB at least); WARM_CAPPED_MB on a card whose driver's
+     * compiler crashed during a warm start before ("<list>.capped", above): on a 16 GB RTX 5070 laptop one start made
+     * 1,000-1,250 pipelines before nvgpucomp64.dll crashed the process (0xc0000005, from a driver thread; one pipeline
+     * at a time did not help, and 239, 443, 600 and 621 pipelines were fine, #430), while an RX 9070 XT made 13,433 and
+     * an RTX 5000 Ada 6,682 in one start. The rest are made at their first use. SSBU_SHADER_PREWARM_MB sets it. */
+    int capped = GetFileAttributesA(warm_capped) != INVALID_FILE_ATTRIBUTES;
     warm_budget = 1024ull << 20;
     if (GlobalMemoryStatusEx(&m) && m.ullTotalPhys / 3 > warm_budget) warm_budget = m.ullTotalPhys / 3;
+    if (capped) warm_budget = (u64)WARM_CAPPED_MB << 20;
     if (getenv("SSBU_SHADER_PREWARM_MB")) warm_budget = strtoull(getenv("SSBU_SHADER_PREWARM_MB"), NULL, 10) << 20;
+    if (capped) fprintf(stderr, "[vulkan] warm start: this card's driver crashed in a warm start before (%s): at most %llu MB of pipelines\n",
+                        warm_capped, (unsigned long long)(warm_budget >> 20));
+    rt_crash_module_hook = warm_crash_note;
     if (vk_warm_only()) warm_budget = 0;   /* (its pipelines are given back as they are made: warm_one) */
     warm_bytes0 = private_bytes();
     warm_t0 = rt_clock_ns();
@@ -3550,10 +3928,16 @@ static void warm_start(void) {
     warm_threads_all = cpus > 3 ? cpus - 2 : 1;
     if (warm_threads_all > 32) warm_threads_all = 32;
     warm_threads_bg = cpus / 4 ? cpus / 4 : 1;
+    /* (Integrated graphics share the processor's power budget: the menus' compiles take the GPU's clocks with them. A
+     * Radeon 760M's character select ran at 30 fps with the whole list warming behind it, #428 (the likeliest cause, not
+     * yet confirmed): one thread there.) SSBU_VK_WARM_BG=<n>: that many threads behind the menus. */
+    if (limits_integrated) warm_threads_bg = 1;
+    if (getenv("SSBU_VK_WARM_BG") && atoi(getenv("SSBU_VK_WARM_BG")) > 0) warm_threads_bg = (u32)atoi(getenv("SSBU_VK_WARM_BG"));
     if (warm_threads_bg > warm_threads_all) warm_threads_bg = warm_threads_all;
     InterlockedExchange(&warm_urgent, 1);   /* (until the first frame's shader loading: vk_warm_gate) */
     InterlockedExchange(&warm_running, (LONG)warm_threads_all);
     FILE *mark = fopen(warm_marker, "wb");
+    warm_tries = tries;
     if (mark) { fprintf(mark, "%d", tries + 1); fclose(mark); }
     else fprintf(stderr, "[vulkan] warm start: no marker file (%s): one that does not finish will not be noticed\n", warm_marker);
     for (u32 i = 0; i < warm_threads_all; i++) {
@@ -3836,7 +4220,11 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         u64 va = (u64)regs[M_CT(ct)] << 32 | regs[M_CT(ct) + 1];
         if (!va || !regs[M_CT(ct) + 4]) continue;
         Surface *sf = surface(gpu_va_to_guest(va), regs[M_CT(ct) + 2], regs[M_CT(ct) + 3], regs[M_CT(ct) + 4], 0);
-        if (!sf || !(features_of(sf->view) & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) continue;
+        if (sf && !(features_of(sf->view) & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) {   /* (left out: nothing drawn into it - say so) */
+            warn_format("render target (this card cannot draw into it: what is drawn there stays black)", sf->format);
+            continue;
+        }
+        if (!sf) continue;
         rts[i] = sf;
         if (!rt_w) { rt_w = sf->width; rt_h = sf->height; rt_sx = (float)sf->hw / sf->width; rt_sy = (float)sf->hh / sf->height; rt_wide = sf->wide; }
     }
@@ -5415,6 +5803,7 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
     limits = props.limits;
     limits_vendor = props.vendorID;
     limits_device = props.deviceID;
+    limits_integrated = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
     texel_align = limits.minTexelBufferOffsetAlignment > 16 ? limits.minTexelBufferOffsetAlignment : 16;
     ubo_align = limits.minUniformBufferOffsetAlignment > 16 ? limits.minUniformBufferOffsetAlignment : 16;
     ssbo_align = limits.minStorageBufferOffsetAlignment > 16 ? limits.minStorageBufferOffsetAlignment : 16;

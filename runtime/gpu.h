@@ -37,6 +37,11 @@ u64 gpu_rb_sema_count(void);
 int gpu_rb_is_gpu_thread(void);                           /* (this thread is the GPU thread) */
 u64 gpu_rb_sema_at(u64 i);                                /* page i of that log (guest), 0: overwritten since */
 int gpu_rb_written_at(u64 i, u64 *lo, u64 *hi);           /* run i (guest pages [lo, hi)); 0: overwritten since */
+u64 gpu_rb_bytes_count(void);                             /* the same writes byte for byte: entries so far */
+u64 gpu_rb_bytes_cut(void);   /* (a save: the count; the writes after it go in new entries) */
+int gpu_rb_bytes_at(u64 i, u64 *guest, u64 *bytes);       /* entry i; 0: overwritten since (GPU thread, or it idle) */
+int gpu_queue_after(u64 mark, void (*fn)(void));          /* fn on the GPU thread once `mark` submissions ran; 0: ran already */
+void gpu_queue_after_wait(void);                          /* until that fn has returned */
 void gpu_memory_unmapping(u64 addr, u64 size);            /* guest memory about to be decommitted (hle_nv.c) */
 /* Until sync point `id` reaches `threshold` (or `timeout_ms` passes; ~0u: no limit): 1 reached. */
 int gpu_syncpt_wait(u32 id, u32 threshold, u32 timeout_ms);

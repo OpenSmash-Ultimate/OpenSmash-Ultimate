@@ -85,13 +85,16 @@ void aspect_draw(const AspectDraw *d, AspectDecision *o) {
      * still in the picture past the 16:9 edge, and a bubble at the picture's edge looks like the fighter
      * jumped there (owner, 2026-11-11). Fights only: menus draw replay thumbnails and selection frames with
      * the same programs, and the left tile sat where a bubble would - its frame was moved out to the
-     * picture's edge (owner, 2026-11-12). */
+     * picture's edge (owner, 2026-11-12). Training's + menu is open in a fight, and the selected row's left
+     * part draws with the portrait's vertex program too, at x -787: its half of the frame went out to the left
+     * (zoomed and hybrid views, owner, 2026-11-17). So the portrait's pixel program as well: a replay's 296
+     * bubble portraits all drew with ps_fa756623279bf8bb, the menu's highlight with ps_60e2f4000345ba4d. */
     static int bubble_left;
     static float bubble_t, anchor;
     if (!aspect_native() || display_view() == VIEW_WIDE || !game_fight_on() || !d->vcb3 || d->vcb3_size < 0x60) return;
     float row[8];
     d->read(d->vcb3 + 0x40, sizeof row, row);
-    int portrait = d->vs_name && !strncmp(d->vs_name, "vs_545fbedf170d65dd", 19);
+    int portrait = d->vs_name && !strncmp(d->vs_name, "vs_545fbedf170d65dd", 19) && d->ps_name && !strncmp(d->ps_name, "ps_fa756623279bf8bb", 19);
     if (portrait) {
         bubble_left = 0;
         float x = row[3], w = d->wide;

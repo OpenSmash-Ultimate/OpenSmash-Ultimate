@@ -8,12 +8,16 @@
  *     (clear_off, select_hl, name_line1, black_off, bg_set_*, compe_bg_*);
  *   - places tile k of 0..N-1 (pane by the same names: any k), the picture panes sized to the tile;
  *   - hides tiles N..90 (cmp #0x5a at 0x71019f043c / 0x71019f04cc).
- * A layout with more tiles (P > 91: tools/css_layout.py) has tiles 91..P-1 the game places but neither
- * sizes nor hides. Running the function twice is no way round it: a second run leaves every tile
- * invisible (tried). So, after the game's one run:
- *   - tiles 91.. of the rows, which show the tile layout as it is made (the size of window_size_08, the reset
- *     states), get the size of the row's tiles as a scale of the tile's part pane: 0.97 ** (size - 8) for
- *     tools/css_layout.py's sizes 09.. (its FACTOR), 1 for the game's own;
+ * A layout with more tiles (P > 91: tools/css_layout.py) has tiles 91..P-1 the game places but does not
+ * hide. Running the function twice is no way round it: a second run leaves every tile invisible (tried).
+ * So, after the game's one run:
+ *   - tiles 91.. of the rows are left as they are: they already have the row's size (seen on a 108-tile
+ *     screen, 14 x 8 at size 13, 2560 px wide, with the CSK Collection loaded: tiles 0..90 are 165 px
+ *     wide; a scale of 0.97 ** (size - 8) written here on the part pane of tiles 91.. made those about
+ *     143 px, the size applied twice). The game's walk above sizes them: the CSK Collection (5.0.6 and
+ *     6.0.1 write the same words) patches its three tile limits, cmp #0x5b at 0x71019edd30 to #255 and
+ *     cmp #0x5a at 0x71019f043c / 0x71019f04cc to #254 (dump/skyline/patches.txt). Without that plugin
+ *     the walk stops at tile 90 and nothing sizes tiles 91..: not tested;
  *   - the tiles past the rows' (their counts at screen + 0x1d4; Random's entry, the vector's last, is not
  *     one of them) from 91 on are hidden (the pane's +0x58 bit 0, as the game hides).
  * More fighters than the layout holds (no row in the table: the game would abort) are not given to it:
@@ -22,7 +26,6 @@
  * With the game's own layout and up to 91 tiles nothing changes: the function runs as it is.
  * SSBU_CSS_FIT=0 leaves the hook out; SSBU_CSS_LOG=1 logs each layout. */
 #define _CRT_SECURE_NO_WARNINGS
-#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,8 +43,6 @@
 #define FMT_CHR_BG  0x710436bc2eull   /* "set_parts_chr_bg_s_%02d" */
 #define GAME_TILES  91
 #define MAX_TILES   4000
-#define OUR_SIZES   9                 /* tools/css_layout.py: FIRST_SIZE, FACTOR */
-#define FACTOR      0.97
 
 static u64 orig_grid;
 
@@ -111,24 +112,14 @@ static void grid(Cpu *c) {
     u32 placed = 0;   /* (the rows' tiles: Random's entry is not one of them) */
     for (int r = 0; r < 13; r++) placed += ld32(screen + 0x1d4 + 4 * r);
     if (placed < n) n = placed;
-    u32 size = ld32(screen + 0x1d0);
-    float scale = size >= OUR_SIZES ? (float)pow(FACTOR, (double)size - (OUR_SIZES - 1)) : 1.0f;
-    for (u32 k = GAME_TILES; k < tiles; k++) {
+    for (u32 k = n > GAME_TILES ? (u32)n : GAME_TILES; k < tiles; k++) {
         u64 part = find_pane(c, layout, FMT_CHR, k), pic = find_pane(c, layout, FMT_CHR_BG, k);
-        if (k < n) {
-            if (part) {
-                st32(part + 0x48, *(u32 *)&scale);
-                st32(part + 0x4c, *(u32 *)&scale);
-                st8(part + 0x58, ld8(part + 0x58) | 0x10);
-            }
-        } else {
-            if (part) st8(part + 0x58, ld8(part + 0x58) & 0xFE);
-            if (pic) st8(pic + 0x58, ld8(pic + 0x58) & 0xFE);
-        }
+        if (part) st8(part + 0x58, ld8(part + 0x58) & 0xFE);
+        if (pic) st8(pic + 0x58, ld8(pic + 0x58) & 0xFE);
     }
     *c = after;
-    if (ss_log()) say("[css] grid: %llu tiles of %u, rows %u %u %u .., size %u (tiles past 91 scaled %.3f)\n", (unsigned long long)n,
-                      tiles, ld32(screen + 0x1d4), ld32(screen + 0x1d8), ld32(screen + 0x1dc), size, scale);
+    if (ss_log()) say("[css] grid: %llu tiles of %u, rows %u %u %u .., size %u\n", (unsigned long long)n,
+                      tiles, ld32(screen + 0x1d4), ld32(screen + 0x1d8), ld32(screen + 0x1dc), ld32(screen + 0x1d0));
 }
 
 /* (hle_fs.c, when the game mounts its data: before the mods' DLLs load) */

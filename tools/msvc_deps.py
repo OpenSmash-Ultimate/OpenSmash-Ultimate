@@ -428,6 +428,51 @@ def read_record(folder):
         return None
 
 
+def repair_crt_libs(log=log):
+    """The DLL C runtime's import libraries (msvcrt.lib, msvcprt.lib, vcruntime.lib) into deps\\msvc's
+    toolset when the folder was set up by a version of this script from before they were kept: the game
+    links without them, but ssbu_glslang.dll (tools/glslang_lib.py, /MD) does not. Only what is missing is
+    fetched, from the same Microsoft package the install used. Returns the libraries put there; [] when
+    there is nothing to do (or no deps\\msvc to repair). Raises Failed when Microsoft's packages cannot be
+    read."""
+    record = read_record(MSVC_DIR)
+    if not record or not record.get("msvc"):
+        return []
+    toolset = record["msvc"]                       # ("14.51.36231")
+    libs_dir = os.path.join(MSVC_DIR, "VC", "Tools", "MSVC", toolset, "lib", "x64")
+    want = [n for n in ("msvcrt.lib", "msvcprt.lib", "vcruntime.lib") if not os.path.isfile(os.path.join(libs_dir, n))]
+    if not want:
+        return []
+    log(f"  deps\\msvc has no {', '.join(want)} (it was set up before they were kept): fetching them")
+    channel = read_channel()
+    packages = index_packages(fetch_json(channel["manifest"]["url"]))
+    # (the Store package has the DLL C runtime's import libraries at lib/x64; the desktop one has the static runtime)
+    name = "Microsoft.VC.%s.CRT.x64.Store.base" % ".".join(toolset.split(".")[:2])
+    p = package(packages, name)
+    if not p or not p.get("payloads"):
+        raise Failed(f"Microsoft's manifest has no {name}.")
+    payload = p["payloads"][0]
+    work = tempfile.mkdtemp(prefix="windowsmash-crt-")
+    try:
+        archive = os.path.join(work, payload_name(payload))
+        download(payload["url"], archive, payload.get("sha256"), payload.get("size"), payload_name(payload))
+        got = []
+        with zipfile.ZipFile(archive) as z:
+            entries = {n.replace("\\", "/").lower(): n for n in z.namelist()}
+            for lib in want:
+                hit = [n for low, n in entries.items() if low.endswith("/lib/x64/" + lib)]
+                if not hit:
+                    raise Failed(f"the {name} package has no {lib}.")
+                os.makedirs(libs_dir, exist_ok=True)
+                with z.open(hit[0]) as src, open(os.path.join(libs_dir, lib), "wb") as f:
+                    shutil.copyfileobj(src, f, 1 << 20)
+                got.append(lib)
+        log(f"  deps\\msvc: {', '.join(got)}")
+        return got
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def write_record(folder, record):
     with open(os.path.join(folder, RECORD), "w", encoding="utf-8") as f:
         json.dump(record, f, indent=1)

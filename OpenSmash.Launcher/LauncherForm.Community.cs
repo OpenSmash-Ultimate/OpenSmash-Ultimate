@@ -25,6 +25,8 @@ namespace OpenSmash.Launcher
         System.Windows.Forms.Timer? _communityTimer, _presenceTimer;
         DiscordPresence? _presence;
         int _communityBusy;
+        // the leaderboard rows' Discord profile pictures by URL: null while asked or when it could not be had (initials)
+        readonly Dictionary<string, Image?> _boardAvatars = new();
 
         void CommunityInit()
         {
@@ -95,10 +97,31 @@ namespace OpenSmash.Launcher
                     _ranked = parsed.Ranked;
                     string nsa = await Task.Run(() => DiscordAccount.NsaId(_repo));
                     _mine = CommunityFeed.Mine(board, nsa == "" ? "" : DiscordAccount.PlayerId(nsa));
+                    _ = BoardAvatarsLoad(_top);
                 }
             }
             catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException) { }
             finally { Interlocked.Exchange(ref _communityBusy, 0); }
+            if (_view == "home") Invalidate();
+        }
+
+        // The top rows' profile pictures, each URL asked once (a failed one stays initials until the launcher restarts).
+        async Task BoardAvatarsLoad(List<BoardRow> rows)
+        {
+            foreach (var r in rows)
+            {
+                if (r.Avatar == "" || _boardAvatars.ContainsKey(r.Avatar)) continue;
+                _boardAvatars[r.Avatar] = null;
+                try
+                {
+                    var bytes = await _httpClient.GetByteArrayAsync(r.Avatar);
+                    using var ms = new System.IO.MemoryStream(bytes);
+                    using var img = Image.FromStream(ms);
+                    _boardAvatars[r.Avatar] = new Bitmap(img);
+                }
+                catch (Exception e) when (e is System.Net.Http.HttpRequestException or TaskCanceledException or ArgumentException
+                                          or System.IO.IOException or OutOfMemoryException) { }
+            }
             if (_view == "home") Invalidate();
         }
 
@@ -247,7 +270,22 @@ namespace OpenSmash.Launcher
                     bool me = _mine != null && r.Id == _mine.Id;
                     Color c = me ? Theme.Accent : Theme.Text;
                     Theme.Label(g, r.Rank.ToString(CultureInfo.InvariantCulture), FM(13 * s, true), A(r.Rank <= 3 ? Theme.Accent : Theme.Dim), ix, ry, rowH, 0, StringAlignment.Far, 22 * s);
-                    Theme.Label(g, CommunityFeed.Who(r), FB(13 * s, me), A(c), ix + 32 * s, ry, rowH, 0, StringAlignment.Near, iw - 110 * s);
+                    float av = rowH - 4 * s, ax = ix + 30 * s, ay = ry + 2 * s;
+                    using (var clip = new GraphicsPath())
+                    {
+                        clip.AddEllipse(ax, ay, av, av);
+                        if (r.Avatar != "" && _boardAvatars.TryGetValue(r.Avatar, out var pic) && pic != null)
+                        {
+                            var gs = g.Save(); g.SetClip(clip, CombineMode.Intersect); g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                            g.DrawImage(pic, ax, ay, av, av); g.Restore(gs);
+                        }
+                        else
+                        {
+                            using (var b = new SolidBrush(A(Theme.Bg3))) g.FillPath(b, clip);
+                            Theme.Label(g, CommunityFeed.Initials(CommunityFeed.Who(r)), FM(8 * s, true), A(Theme.Muted), ax, ay, av, 0, StringAlignment.Center, av);
+                        }
+                    }
+                    Theme.Label(g, CommunityFeed.Who(r), FB(13 * s, me), A(c), ax + av + 6 * s, ry, rowH, 0, StringAlignment.Near, iw - 110 * s - av - 4 * s);
                     Theme.Label(g, r.Gsp.ToString("N0", CultureInfo.InvariantCulture), FM(13 * s, true), A(me ? Theme.Accent : Theme.Muted), ix, ry, rowH, 0, StringAlignment.Far, iw);
                     ry += rowH;
                 }

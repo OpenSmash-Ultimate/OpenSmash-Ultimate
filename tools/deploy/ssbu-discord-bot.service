@@ -1,0 +1,32 @@
+# The Discord status bot (tools/discord_status_bot.py): its status line says how many players are on the online
+# lobby. Installed by tools/deploy/deploy_discord_bot.sh; the token comes from /etc/ssbu-discord-bot/token as a
+# systemd credential, readable by this service only.
+[Unit]
+Description=OpenSmash Discord status bot (players online)
+After=network-online.target ssbu-online.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/ssbu-discord-bot/venv/bin/python -I /opt/ssbu-discord-bot/discord_status_bot.py
+LoadCredential=token:/etc/ssbu-discord-bot/token
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryMax=128M
+TasksMax=16
+
+[Install]
+WantedBy=multi-user.target

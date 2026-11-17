@@ -67,7 +67,7 @@ namespace OpenSmash.Launcher
         {
             try { _discordRecords = await DiscordAccount.Records(_repo, CancellationToken.None); }
             catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { }
-            try { (_discordRank, _discordFighterRanks) = await DiscordAccount.Ranks(_repo, CancellationToken.None); }
+            try { (_discordRank, _discordFighterRanks) = await DiscordAccount.Ranks(_repo, _discord, CancellationToken.None); }
             catch (Exception e) when (e is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException) { }
             Invalidate();
         }

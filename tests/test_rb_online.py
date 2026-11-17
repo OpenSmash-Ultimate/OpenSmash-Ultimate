@@ -45,7 +45,9 @@ class OnlineMatch(unittest.TestCase):
         self.assertIn('peers = net_recent_peers(seen, 8, 30000);', core, 'the other game: the one Pia talks to')
         self.assertIn('if (peers != 1)', core, 'more than 2 players: the game\'s own netcode')
         self.assertIn('int own = ld32(st + 0x78) == 0 && !ld8(st + 0x451) ? 0 : 1;', core, 'player 1 is the network player or this game')
-        self.assertIn('while (!hs_agreed && now_ms() - t0 < ONLINE_WAIT_MS)', core, 'a bounded wait for the other side')
+        self.assertIn('if (waited >= ONLINE_WAIT_MS) {', core, 'a bounded wait for the other side')
+        self.assertIn('if (heard > ONLINE_HEARD_MS || waited >= ONLINE_WAIT_MAX_MS) break;', core,
+                      'longer only while the other game is heard, and never past ONLINE_WAIT_MAX_MS')
         self.assertIn('online_forget("no rollback on the other side");', core)
         # each panel: this game's own on its number's slot, the network player a local one
         self.assertIn('slot = type == 0 && !ld8(st + 0x451) ? (u32)net_local : (u32)idx;', core)

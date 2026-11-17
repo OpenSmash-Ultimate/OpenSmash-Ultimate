@@ -238,6 +238,59 @@ static void test_slots(void) {
     CHECK(devs[6].slot == 6 && devs[7].slot == 7 && devs[8].slot == -1, "eight players, then none: %d %d %d", devs[6].slot, devs[7].slot, devs[8].slot);
 }
 
+static void test_unit_pins(void) {
+    /* two pads that report one GUID (two PowerA GameCube controllers): each is claimed by its own unit */
+    char tag[12], pin[64];
+    Dev a = make_dev("pa", "", "\\\\?\\HID#A", "PowerA GC", "gamecube"), b = make_dev("pa", "", "\\\\?\\HID#B", "PowerA GC", "gamecube");
+    dev_path_tag(b.path, tag);
+    CHECK(strlen(tag) == 8, "a path tag is 8 hex digits: %s", tag);
+    dev_path_tag(a.path, pin);
+    CHECK(strcmp(tag, pin), "two paths, two tags");
+    snprintf(pin, sizeof pin, "path:%s", tag);
+    CHECK(dev_matches(&b, pin) && !dev_matches(&a, pin), "path:<tag> names one pad of two");
+    CHECK(!dev_matches(&b, "path:00000000") && !dev_matches(&b, "serial:x"), "other tokens do not match (no serial)");
+    Dev s1 = make_dev("pa", "SN1", "", "PowerA GC", "gamecube"), s2 = make_dev("pa", "SN2", "", "PowerA GC", "gamecube");
+    CHECK(dev_matches(&s1, "serial:sn1") && !dev_matches(&s2, "serial:SN1"), "serial:<serial> names one pad of two");
+    CHECK(!dev_matches(&a, "path:") && !dev_matches(&a, "serial:"), "empty tokens match nothing");
+    load_text("[players]\n1 = path:ffffffff\n");
+    CHECK(!dev_matches(&a, cfg.pin[0]), "a path nobody has");
+    snprintf(pin, sizeof pin, "[players]\n2 = path:%s\n", tag);
+    load_text(pin);
+    memset(devs, 0, sizeof devs);
+    nknown = 0;
+    CHECK(plug(0, a) == 0, "the unpinned twin: first free player");
+    CHECK(plug(1, b) == 1, "the pinned twin: its player");
+    devs[0].used = devs[1].used = 0;
+    CHECK(plug(0, b) == 1 && plug(1, a) == 0, "plugged in the other order: still each its own");
+    PadInfo info;
+    dev_info(&devs[0], &(Raw){0}, &info);
+    CHECK(!strncmp(info.pin, "path:", 5), "twins: the menu writes the unit: %s", info.pin);
+    devs[0].used = 0;
+    dev_info(&devs[1], &(Raw){0}, &info);
+    CHECK(!strcmp(info.pin, "pa"), "a lone pad: its GUID: %s", info.pin);
+    devs[0] = s1; devs[1] = s2;
+    dev_info(&devs[0], &(Raw){0}, &info);
+    CHECK(!strcmp(info.pin, "serial:SN1"), "twins with serials: the serial: %s", info.pin);
+    devs[0] = make_dev("pa", "0001", "\\\\?\\HID#A", "PowerA GC", "gamecube");
+    devs[1] = make_dev("pa", "0001", "\\\\?\\HID#B", "PowerA GC", "gamecube");
+    dev_info(&devs[0], &(Raw){0}, &info);
+    CHECK(!strncmp(info.pin, "path:", 5), "twins with one serial between them: the path: %s", info.pin);
+    { PadInfo i2; dev_info(&devs[1], &(Raw){0}, &i2);
+      CHECK(strcmp(info.unit, i2.unit) != 0, "twins with one serial: different units: %s / %s", info.unit, i2.unit); }
+    devs[0] = make_dev("pa", "A B;", "\\\\?\\HID#A", "PowerA GC", "gamecube");
+    devs[1] = make_dev("pa", "XY", "\\\\?\\HID#B", "PowerA GC", "gamecube");
+    dev_info(&devs[0], &(Raw){0}, &info);
+    CHECK(!strncmp(info.pin, "path:", 5), "a serial the ini cannot hold: the path: %s", info.pin);
+    /* a GUID pin for player 1 and a unit pin for player 2: the unit pin's pad is player 2 whichever is set up first */
+    dev_path_tag(b.path, tag);
+    snprintf(pin, sizeof pin, "[players]\n1 = pa\n2 = path:%s\n", tag);
+    load_text(pin);
+    memset(devs, 0, sizeof devs);
+    nknown = 0;
+    CHECK(plug(0, b) == 1, "the unit pin beats a GUID pin that also matches");
+    CHECK(plug(1, a) == 0, "and the other twin gets the GUID pin's player");
+}
+
 static void test_rumble(void) {
     load_text("[device default]\nrumble = 50\n");
     Dev d = make_dev("g", "", "", "Pad", "ps5");
@@ -664,11 +717,88 @@ static void test_device_sections(void) {
     CHECK((press(&two, 1u << RB_WEST, 0, 0) & 1ull << N_X) && two.rumble == 50, "the same model on another port: GUID's and type's");
 }
 
+/* A GameCube adapter in PC mode (GUID vendor 0x0079): the stick's travel taken as 100 counts (C-stick 87), then the console's 56 / 44. */
+static void test_gc_pcmode(void) {
+    load_text("");
+    cfg.gc_switch = 1; cfg.def.outer = -1;   /* (load_text starts from zeros; the file's defaults are 1 and -1) */
+    Dev pc = make_dev("03004271790000004418000000016800", "", "", "Nintendo GameCube Controller", "gamecube");
+    dev_configure(&pc, NULL);
+    CHECK(dev_gc_pcmode(&pc), "the Mayflash GUID is a PC mode adapter");
+    Raw raw = {0, {0, 0, 0, 0, 0, 0}};
+    PadState o;
+    dev_state(&pc, &raw, &o);
+    CHECK(o.lx == 0 && o.ly == 0 && o.rx == 0 && o.ry == 0, "rest: no dead zone needed");
+    raw.axis[RA_LEFTX] = 129;   /* (byte 128 at rest, in SDL's terms) */
+    dev_state(&pc, &raw, &o);
+    CHECK(o.lx == 0, "half a count is no count: %d", o.lx);
+    raw.axis[RA_LEFTX] = 32767; raw.axis[RA_LEFTY] = 0;
+    dev_state(&pc, &raw, &o);
+    CHECK(o.lx == 32767 && o.ly == 0, "full tilt right: %d %d", o.lx, o.ly);
+    raw.axis[RA_LEFTX] = 32767 * 56 / 100;   /* 56 counts of 100: the console's full scale */
+    dev_state(&pc, &raw, &o);
+    CHECK(o.lx >= 32700 && o.lx <= 32767, "56 of 100 counts is full: %d", o.lx);
+    raw.axis[RA_LEFTX] = 32767 * 28 / 100;   /* 28 counts: half way, on the console's grid */
+    dev_state(&pc, &raw, &o);
+    CHECK(o.lx == 28 * 32767L / 56, "28 counts: %d", o.lx);
+    raw.axis[RA_LEFTX] = 0; raw.axis[RA_RIGHTX] = 32767 * 44 / 87;
+    dev_state(&pc, &raw, &o);
+    CHECK(o.rx >= 32700 && o.rx <= 32767 && o.lx == 0, "the C-stick: 44 of 87 counts is full: %d", o.rx);
+    raw.axis[RA_RIGHTX] = 32767; raw.axis[RA_RIGHTY] = -32767;
+    dev_state(&pc, &raw, &o);
+    CHECK(o.rx * (long)o.rx + o.ry * (long)o.ry <= 32767L * 32767L + 40000, "inside the circle: %d %d", o.rx, o.ry);
+    raw.axis[RA_LEFTX] = -32768; raw.axis[RA_LEFTY] = 0; raw.axis[RA_RIGHTX] = 0; raw.axis[RA_RIGHTY] = 0;
+    dev_state(&pc, &raw, &o);
+    CHECK(o.lx == -32767 && o.ly == 0, "full tilt left (SDL's -32768): %d %d", o.lx, o.ly);
+    raw.axis[RA_LEFTX] = 0; raw.axis[RA_LEFTY] = 32767 * 28 / 100;   /* SDL's y grows downwards: the game's grows upwards */
+    dev_state(&pc, &raw, &o);
+    CHECK(o.ly == -(28 * 32767L / 56) && o.lx == 0, "left stick down: %d", o.ly);
+    raw.axis[RA_LEFTY] = 0; raw.axis[RA_RIGHTY] = -32767 * 22 / 87;
+    dev_state(&pc, &raw, &o);
+    CHECK(o.ry == (long)(22 * 32767L / 44) && o.rx == 0, "C-stick up, 22 counts of 44: %d", o.ry);
+    Dev other = make_dev("03004271790000000600000000016800", "", "", "Generic pad", "gamecube");   /* (0079:0006, not an adapter) */
+    CHECK(!dev_gc_pcmode(&other), "another 0079 pad is not taken for the adapter");
+    PadInfo info;
+    dev_info(&pc, &raw, &info);
+    CHECK(info.pc_mode && info.pc_scaled, "the menu knows: %d %d", info.pc_mode, info.pc_scaled);
+    pc.invert = 1;   /* (leftx) */
+    raw.axis[RA_LEFTX] = 32767 * 28 / 100; raw.axis[RA_RIGHTY] = 0;
+    dev_state(&pc, &raw, &o);
+    CHECK(o.lx == -(28 * 32767L / 56), "invert applies before the scaling: %d", o.lx);
+    pc.invert = 0;
+    load_text("[device default]\ndeadzone = 10\nouter_zone = 98\n");
+    cfg.gc_switch = 1;
+    dev_configure(&pc, NULL);
+    dev_state(&pc, &raw, &o);
+    CHECK(o.lx != 28 * 32767L / 56, "a zone set in [device default] is the player's choice: %d", o.lx);
+    dev_info(&pc, &raw, &info);
+    CHECK(info.pc_mode && !info.pc_scaled, "and the menu knows it is not scaled");
+    load_text("[device default]\nouter_zone = 90\n");
+    cfg.gc_switch = 1;
+    dev_configure(&pc, NULL);
+    dev_state(&pc, &raw, &o);
+    CHECK(o.lx != 28 * 32767L / 56, "an outer zone alone is a choice too: %d", o.lx);
+    load_text("[general]\ngc_switch = 0\n");
+    cfg.def.outer = -1;
+    dev_configure(&pc, NULL);
+    raw.axis[RA_LEFTX] = 32767 * 28 / 100; raw.axis[RA_RIGHTX] = raw.axis[RA_RIGHTY] = 0;
+    dev_state(&pc, &raw, &o);
+    CHECK(o.lx != 28 * 32767L / 56, "gc_switch = 0: the earlier scaling: %d", o.lx);
+    load_text("[device gamecube]\ndeadzone = 5\n");
+    cfg.gc_switch = 1; cfg.def.outer = -1;
+    dev_configure(&pc, NULL);
+    dev_state(&pc, &raw, &o);
+    CHECK(o.lx != 28 * 32767L / 56, "a dead zone the player set: the earlier way: %d", o.lx);
+    Dev nin = make_dev("030000007e0500003703000000016800", "", "", "Nintendo GameCube Controller", "gamecube");
+    CHECK(!dev_gc_pcmode(&nin), "Nintendo's own adapter is not a PC mode adapter");
+}
+
 int main(void) {
+    _putenv("SSBU_GC_SWITCH=");   /* (the file decides here, not an environment this was started in) */
     test_keyboard();
     test_config();
     test_mapping();
     test_gamecube();
+    test_gc_pcmode();
     padusb_set_switch(0);   /* the two below test the earlier (calibrating) scaling; test_axes_switch the console's */
     test_usb();
     test_pipes();
@@ -678,6 +808,7 @@ int main(void) {
     test_blank_first_report();
     test_sticks();
     test_slots();
+    test_unit_pins();
     test_rumble();
     test_dpad_moves();
     test_stick_taunts();

@@ -67,6 +67,7 @@ static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
 static int ready;
 
 u64 gfx_stat_clears, gfx_stat_presented;
+static u64 gfx_stat_standin_draws, gfx_stat_mixed_left;   /* (mixed_targets) */
 
 /* ---- surfaces: render targets on the host ------------------------------------------- */
 /* Render scale (display.ini render_scale): every render target is made this many times the
@@ -756,6 +757,11 @@ static BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *c) {
                 name, ad.VendorId, (unsigned)(umd.HighPart >> 16), (unsigned)(umd.HighPart & 0xFFFF), (unsigned)((u32)umd.LowPart >> 16),
                 (unsigned)(umd.LowPart & 0xFFFF), fl >> 12 & 15, fl >> 8 & 15, th.DriverConcurrentCreates ? "yes" : "no",
                 th.DriverCommandLists ? "yes" : "no");
+        /* (Intel's Direct3D 11 driver draws the main menu's panels, tiles and art black - only the labels show - and the
+         * fight with red light and stretched shapes; its Vulkan driver draws both right: renderer = auto picks Vulkan there) */
+        if (ad.VendorId == 0x8086)
+            fprintf(stderr, "[gfx] WARNING: Direct3D 11 on Intel graphics: this driver draws the menus' backgrounds and the stages black or "
+                            "wrong (#333, #81); Vulkan draws them right - Settings > Display > Renderer: auto or vulkan, then restart\n");
     }
 #else
     {   /* (DXVK: which Vulkan device it chose) */
@@ -3104,6 +3110,9 @@ void d3d11_status_lines(void) {
     fprintf(stderr, "[status] memory: %.0f MB private, graphics %.0f MB on the card + %.0f MB in RAM; %llu shaders made (%llu put away so far), prewarm %ld made / %ld taken by the game / %ld over its budget; %u textures, %u surfaces, %u GPU-resident buffers\n",
             private_bytes() / 1048576.0, vram / 1048576.0, shared / 1048576.0, gfx_stat_shaders, shaders_put_away, (long)prewarm_ready, (long)prewarm_taken,
             (long)prewarm_over, ntextures, nsurfaces, nresidents);
+    if (gfx_stat_standin_draws || gfx_stat_mixed_left)
+        fprintf(stderr, "[status] draws into targets of different sizes: %llu through stand-ins, %llu left as they were\n",
+                gfx_stat_standin_draws, gfx_stat_mixed_left);
     if (!gfx_stat_first_draws) return;
     EnterCriticalSection(&lock);
     fprintf(stderr, "[status] first draws with a shader: %llu, %llu of them over 4 ms (%.0f ms in all); longest %.1f ms (%s)\n",
@@ -5513,6 +5522,115 @@ static void gpu_times_frame(void) {
     free(t);
 }
 
+/* Targets of different sizes in one draw. The hardware draws where all of them are: the smallest's
+ * area (some Final Smashes draw a 480x270 colour target beside a 512x270 one). Direct3D 11 refuses
+ * such a set outright: OMSetRenderTargets leaves the targets bound before it, and the draws land in
+ * those instead - at render scale 2, a black box over the top-left quarter of the picture (#315,
+ * #76). So a colour target bigger than the smallest one draws into a stand-in of the smallest size
+ * and format: its part there is copied in before the draw and back after it (the part outside it
+ * the hardware would not draw either). What a stand-in cannot mend is left as it was, and said
+ * once: a depth target bigger than the smallest colour one (Direct3D copies depth only whole), and
+ * targets of different render scales (SSBU_ASPECT widens 16:9 targets only). */
+typedef struct Standin { DXGI_FORMAT storage, view; u32 w, h; ID3D11Texture2D *tex; ID3D11RenderTargetView *rtv; u64 used, taken; } Standin;
+static Standin standins[8];   /* (a draw takes at most 7: one target is the smallest) */
+
+static void mixed_note(const char *what, u32 w, u32 h) {
+    static u32 told;
+    if (told++ < 8) fprintf(stderr, "[gfx] a draw's targets differ in size (%ux%u the smallest): %s\n", w, h, what);
+}
+
+/* A stand-in of w x h for surface s, not yet taken by this draw (`draw`). */
+static Standin *standin_for(const Surface *s, u32 w, u32 h, u64 draw) {
+    static u64 clock;
+    Standin *lru = NULL;
+    for (u32 i = 0; i < 8; i++) {
+        Standin *t = &standins[i];
+        if (t->taken == draw) continue;   /* (another target of this draw has it) */
+        if (t->tex && t->storage == s->storage && t->view == s->view && t->w == w && t->h == h) { t->used = ++clock; t->taken = draw; return t; }
+        if (!lru || !t->tex || (lru->tex && t->used < lru->used)) lru = t;
+    }
+    if (!lru) return NULL;
+    if (lru->tex) { bury(lru->rtv); bury(lru->tex); memset(lru, 0, sizeof *lru); }   /* (may be bound still) */
+    D3D11_TEXTURE2D_DESC td = {w, h, 1, 1, s->storage, {1, 0}, D3D11_USAGE_DEFAULT, D3D11_BIND_RENDER_TARGET, 0, 0};
+    HRESULT hr = ID3D11Device_CreateTexture2D(dev, &td, NULL, &lru->tex);
+    if (SUCCEEDED(hr)) {
+        D3D11_RENDER_TARGET_VIEW_DESC rd;
+        memset(&rd, 0, sizeof rd);
+        rd.Format = s->view;
+        rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        hr = ID3D11Device_CreateRenderTargetView(dev, (ID3D11Resource *)lru->tex, &rd, &lru->rtv);
+        if (FAILED(hr)) ID3D11Texture2D_Release(lru->tex);
+    }
+    if (FAILED(hr)) {
+        memset(lru, 0, sizeof *lru);
+        static u32 told;
+        if (told++ < 4) fprintf(stderr, "[gfx] cannot make a %ux%u stand-in target (format %u): %#lx\n", w, h, (unsigned)s->view, (unsigned long)hr);
+        return NULL;
+    }
+    lru->storage = s->storage; lru->view = s->view; lru->w = w; lru->h = h; lru->used = ++clock; lru->taken = draw;
+    return lru;
+}
+
+/* Colour targets of one draw made one size: rtv[] and standin[] filled in for those drawn
+ * through stand-ins. Targets all of one size (nearly every draw), and the cases a stand-in
+ * cannot mend, are left as they are. */
+static void mixed_targets(Surface *const rts[8], const Surface *zsf, ID3D11RenderTargetView *rtv[8], Standin *standin[8]) {
+    u32 w = 0, h = 0, mixed = 0;
+    float sx = 0, sy = 0;
+    int scales = 0;
+    for (u32 i = 0; i < 8; i++) {
+        if (!rts[i]) continue;
+        if (w && (rts[i]->hw != w || rts[i]->hh != h)) mixed = 1;
+        if (sx && (rts[i]->sx != sx || rts[i]->sy != sy)) scales = 1;
+        if (!w || rts[i]->hw < w) w = rts[i]->hw;
+        if (!h || rts[i]->hh < h) h = rts[i]->hh;
+        sx = rts[i]->sx; sy = rts[i]->sy;
+    }
+    if (!w) return;   /* (depth only) */
+    if (zsf && (zsf->hw != w || zsf->hh != h)) {
+        if (zsf->hw > w || zsf->hh > h) {   /* (bigger in either direction: no stand-in fits both) */
+            gfx_stat_mixed_left++;
+            mixed_note("the depth target is bigger, left as it was", w, h);
+            return;
+        }
+        w = zsf->hw;   /* the depth target is the smallest: the colour ones come down to it */
+        h = zsf->hh;
+        mixed = 1;
+    }
+    if (!mixed) return;
+    if (scales) { gfx_stat_mixed_left++; mixed_note("their render scales differ too, left as it was", w, h); return; }
+    static u64 draws;
+    u64 draw = ++draws;
+    for (u32 i = 0; i < 8; i++) {
+        if (!rts[i] || (rts[i]->hw == w && rts[i]->hh == h)) continue;
+        if (!(standin[i] = standin_for(rts[i], w, h, draw))) {
+            memset(standin, 0, 8 * sizeof *standin);
+            gfx_stat_mixed_left++;
+            return;
+        }
+    }
+    D3D11_BOX box = {0, 0, 0, w, h, 1};
+    for (u32 i = 0; i < 8; i++) {
+        if (!standin[i]) continue;
+        ID3D11DeviceContext_CopySubresourceRegion(ctx, (ID3D11Resource *)standin[i]->tex, 0, 0, 0, 0, (ID3D11Resource *)rts[i]->tex, 0, &box);
+        rtv[i] = standin[i]->rtv;
+        static u32 told;
+        if (told++ < 4)
+            fprintf(stderr, "[gfx] colour target %u (%#llx, %ux%u) drawn through a %ux%u stand-in: the draw's targets differ in size\n", i,
+                    rts[i]->guest, rts[i]->width, rts[i]->height, w, h);
+    }
+    gfx_stat_standin_draws++;
+}
+
+/* After the draw: what it drew into each stand-in, into its target. */
+static void standins_back(Surface *const rts[8], Standin *const standin[8]) {
+    for (u32 i = 0; i < 8; i++) {
+        if (!standin[i]) continue;
+        D3D11_BOX box = {0, 0, 0, standin[i]->w, standin[i]->h, 1};
+        ID3D11DeviceContext_CopySubresourceRegion(ctx, (ID3D11Resource *)rts[i]->tex, 0, 0, 0, 0, (ID3D11Resource *)standin[i]->tex, 0, &box);
+    }
+}
+
 void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
     if (!enter()) return;
     kept_flush();
@@ -5563,12 +5681,13 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
     u32 sel = regs[M_CT_SELECT], count = sel & 15, rt_w = 0, rt_h = 0;
     float rt_sx = 1.0f, rt_sy = 1.0f;   /* the targets' render scale: host pixels per game pixel */
     float rt_wide = 1.0f;               /* (SSBU_ASPECT: the first colour target's widening) */
+    Surface *rts[8] = {0};
     for (u32 i = 0; i < count && i < 8; i++) {
         u32 ct = (sel >> (4 + 3 * i)) & 7;
         u64 va = (u64)regs[M_CT(ct)] << 32 | regs[M_CT(ct) + 1];
         if (!va || !regs[M_CT(ct) + 4]) continue;
         Surface *sf = surface(gpu_va_to_guest(va), regs[M_CT(ct) + 2], regs[M_CT(ct) + 3], regs[M_CT(ct) + 4], 0);
-        if (sf) { rtv[i] = sf->rtv; if (!rt_w) { rt_w = sf->width; rt_h = sf->height; rt_sx = sf->sx; rt_sy = sf->sy; rt_wide = sf->wide; } }
+        if (sf) { rts[i] = sf; rtv[i] = sf->rtv; if (!rt_w) { rt_w = sf->width; rt_h = sf->height; rt_sx = sf->sx; rt_sy = sf->sy; rt_wide = sf->wide; } }
     }
     Surface *zsf = NULL;
     /* a draw that writes neither depth nor stencil keeps its depth target read-only, so that it can
@@ -5584,6 +5703,9 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
         }
     }
     if (!rt_w) { gfx_stat_skipped++; gfx_skip_target++; leave(); return; }
+    /* targets of different sizes: the bigger colour ones drawn through stand-ins (see mixed_targets) */
+    Standin *standin[8] = {0};
+    mixed_targets(rts, zsf, rtv, standin);
     /* (a render target bound as a texture of the same draw is unbound by D3D: fine) */
     if (memcmp(cur.rtv, rtv, sizeof rtv) || cur.dsv != dsv) {
         ID3D11DeviceContext_OMSetRenderTargets(ctx, 8, rtv, dsv);
@@ -6016,6 +6138,7 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
          * draw for nothing. */
         if (on_dxvk() && prewarm_settling) pipeline_note(pipe_ms);
     }
+    standins_back(rts, standin);
     if (first) {
         first_draw_done(rt_clock_ns() - first_t0, first);
         if (!vs->drawn) first_used(vs);
@@ -7074,7 +7197,10 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
         if (!on_dxvk()) prewarm_gate();
     }
     display_before_present();   /* (gpu_display.c: the loading animation stops) */
-    hr = IDXGISwapChain1_Present(swapchain, 0, display_present_flags());   /* (blocks while the GPU is frames behind) */
+    /* (`display` pacing cannot wait for this monitor's refreshes - the panel is another card's - or its rate is no
+     * multiple of 60: sync interval 1 makes the present itself wait for the vblank; ALLOW_TEARING is only asked for with 0) */
+    UINT sync = display_present_sync() && !(display_present_flags() & 0x200u) ? 1 : 0;
+    hr = IDXGISwapChain1_Present(swapchain, sync, display_present_flags());   /* (blocks while the GPU is frames behind) */
 #ifdef _WIN32
     if (SUCCEEDED(hr)) display_show_window();
 #endif

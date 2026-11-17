@@ -48,12 +48,16 @@ enum { PAD_RAW_LEFT_TRIGGER_BIT = 30, PAD_RAW_RIGHT_TRIGGER_BIT = 31, PAD_RAW_GU
 typedef struct PadInfo {
     int connected, slot, xinput;
     char name[96], type[24], guid[40], section[96];
+    char unit[100];            /* its own unit (serial:/path:, else its GUID), the same whether a twin is plugged in or not */
+    char pin[100];             /* what [players] names it: its GUID, or serial:<serial> / path:<hash> when another pad has the same GUID */
     int layout, deadzone, rumble, trigger;    /* layout 0 positional, 1 labels */
     int stick_taunts;                         /* the left stick's directions press the D-pad's buttons */
     int dpad_moves;                           /* the D-pad drives the left stick */
     char map[16][40];
     u32 raw;
     int dz_default;            /* its dead zone is the unchosen default (a GameCube adapter in 1:1 mode uses none then) */
+    int pc_mode;               /* a GameCube adapter in PC mode (read by SDL): gc_switch estimates the console's sticks for it */
+    int pc_scaled;             /* ... and it does so now (no dead zone or outer zone of the player's own) */
     int gc;                    /* it plays as a GameCube controller (its L / R press point is the game's own)*/
     int usb_port;              /* the GameCube-adapter port it is read over (0-3), -1 not one */
     i32 axis[6];               /* the device's own stick/trigger values, as last read (lx, ly, rx, ry, lt, rt) */

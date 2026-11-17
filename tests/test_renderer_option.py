@@ -105,6 +105,25 @@ class RendererOption(unittest.TestCase):
             self.assertEqual(out, ['chosen auto', 'start auto'], ini)
             self.assertEqual([l for l in err if 'renderer' in l], [], ini)
 
+    def test_old_launchers_d3d11_keeps_the_menus_choice(self):
+        """(#429) The v0.3.0 alphas' launcher writes renderer = d3d11 (auto) at every Play: the settings menu's last choice,
+        renderer_menu, stands under that spelling only. Any other renderer value wins, and a d3d11 alone stays auto."""
+        cases = [
+            ('renderer = d3d11\n', 'chosen auto', 0),
+            ('renderer = d3d11\nrenderer_menu = direct3d11\n', 'chosen direct3d11', 1),
+            ('renderer_menu = direct3d11\nrenderer = d3d11\n', 'chosen direct3d11', 1),
+            ('renderer = D3D11\nrenderer_menu = vulkan\n', 'chosen vulkan', 1),
+            ('renderer = auto\nrenderer_menu = direct3d11\n', 'chosen auto', 0),
+            ('renderer = vulkan\nrenderer_menu = direct3d11\n', 'chosen vulkan', 0),
+            ('renderer = direct3d11\nrenderer_menu = vulkan\n', 'chosen direct3d11', 0),
+            ('renderer = d3d11\nrenderer_menu = opengl\n', 'chosen auto', 0),
+        ]
+        for ini, want, said in cases:
+            out, err = self.run_test('chosen', ini=ini)
+            self.assertEqual(out, [want], ini)
+            self.assertEqual(len([l for l in err if 'older launcher' in l]), said, ini)
+            self.assertEqual([l for l in err if 'unknown' in l], [], ini)
+
     def test_vulkan_asked(self):
         """Vulkan checked (whatever this PC has), one line about it, and Direct3D 11 draws."""
         out, err = self.run_test('chosen', 'start', ini='renderer = vulkan\n')

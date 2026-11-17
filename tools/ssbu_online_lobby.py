@@ -7,8 +7,9 @@ lobby carries the datagrams to and from it like any other, and lets players the 
 has put in one match talk to each other.
 
 The same TCP port answers HTTP: the GSP leaderboard (GET /leaderboard.json), aggregate lobby counts
-(GET /status.json) and a player's own
-GSP and place (GET /gsp/me, POST /gsp/profile, signed), for the launchers, the game's Discord
+(GET /status.json), a player's own
+GSP and place (GET /gsp/me, GET /gsp/records, POST /gsp/profile, signed), and the results a game with its own NEX
+server uploads (POST /gsp/sync, signed), for the launchers, the game's Discord
 Rich Presence and the project's site (tools/nex/board.py).
 
     python3 ssbu_online_lobby.py [the lobby's options] [--state DIR] [--nex-log 0|1|2]
@@ -52,7 +53,7 @@ WS_CONTROL = 125                 # largest WebSocket control frame (ping, pong, 
 WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 HTTP_METHODS = (b"GET ", b"HEAD", b"POST", b"OPTI")   # (a TCP connection that starts so is HTTP: tools/nex/board.py)
 HTTP_REQUEST = 8192              # bytes of an HTTP request's line and headers at most
-HTTP_BODY = 2048                 # bytes of its body at most
+HTTP_BODY = 65536                # bytes of its body at most (answered 413 beyond; /gsp/sync carries results)
 
 
 def ip_int(text):
@@ -305,21 +306,36 @@ class OnlineLobby(relay.Lobby):
             name, sep, value = line.partition(":")
             if sep:
                 headers[name.strip().lower()] = value.strip()
-        body = b""
+        body, too_big = b"", False
         if method == "POST":
             try:
                 n = int(headers.get("content-length", "0"))
             except ValueError:
                 return
-            if not 0 <= n <= HTTP_BODY:
+            if n < 0:
                 return
-            body = await asyncio.wait_for(reader.readexactly(n), HANDSHAKE_TIME)
-        if method == "OPTIONS":
+            if n > HTTP_BODY:
+                too_big = True
+            else:
+                body = await asyncio.wait_for(reader.readexactly(n), HANDSHAKE_TIME)
+        if too_big:
+            code, data = 413, b'{"error":"too large"}'
+        elif method == "OPTIONS":
             code, data = 204, b""
+        elif method == "POST" and path == "/gsp/link":
+            # (Discord is asked off the event loop: the lobby's streams must not wait for it; the rest runs in the loop)
+            board = self.nex.board
+            job, refused = board.link_request(body, time.monotonic())
+            if refused:
+                code, data = refused
+            else:
+                me = await asyncio.get_running_loop().run_in_executor(None, board.link_ask, job[1])
+                code, data = board.link_finish(job, me)
         else:
             code, data = self.nex.board.http("GET" if method == "HEAD" else method, path, headers, body)
         reason = {200: "OK", 204: "No Content", 400: "Bad Request", 403: "Forbidden", 404: "Not Found",
-                  405: "Method Not Allowed", 503: "Service Unavailable"}.get(code, "Error")
+                  405: "Method Not Allowed", 413: "Payload Too Large", 429: "Too Many Requests", 502: "Bad Gateway",
+                  503: "Service Unavailable"}.get(code, "Error")
         out = (f"HTTP/1.0 {code} {reason}\r\nServer: ssbu-online\r\nContent-Type: application/json\r\n"
                f"Content-Length: {len(data)}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, OPTIONS\r\n"
                "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n").encode()

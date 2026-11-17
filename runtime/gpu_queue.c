@@ -58,9 +58,32 @@ static void rbw_publish(void) {
     rbw_phi = 0;
 }
 extern int rb_on;   /* (hle_rb_core.c: rollback netplay or run-ahead, fixed at boot) */
+/* The same writes byte for byte (gpu_rb_bytes_*): what a save that does not wait for the GPU puts into its state once
+ * the work queued before it has run (gpu_queue_after). Read only on the GPU thread, or with it idle. */
+#define RBB 1048576
+static u64 rbb_g[RBB];
+static volatile u64 rbb_n;
+static u32 rbb_len[RBB];
+/* A save cuts the log (gpu_rb_bytes_cut): the writes after it start a new entry, never grow one from before - Dekker's
+ * way, rbb_cut raised by the save, rbb_in by the GPU thread while it logs. */
+static volatile LONG rbb_cut, rbb_in;
 void gpu_rb_wrote(u64 g, u64 n) {
     if (!rb_on) return;   /* (no savestates: nothing logged, nothing paid) */
     if (!rbw_mine || !g || !n) return;
+    {
+        InterlockedExchange(&rbb_in, 1);
+        int cut = rbb_cut && InterlockedExchange(&rbb_cut, 0);
+        u64 i = rbb_n;
+        u64 lg = i ? rbb_g[(i - 1) % RBB] : 0, le = i ? lg + rbb_len[(i - 1) % RBB] : 0;
+        if (i && !cut && g <= le && g + n >= lg && (g + n > le ? g + n : le) - (g < lg ? g : lg) < (1u << 30)) {
+            u64 lo = g < lg ? g : lg, hi = g + n > le ? g + n : le;   /* (overlapping or touching the last entry: one) */
+            rbb_g[(i - 1) % RBB] = lo; rbb_len[(i - 1) % RBB] = (u32)(hi - lo);
+        } else {
+            rbb_g[i % RBB] = g; rbb_len[i % RBB] = n < (1u << 30) ? (u32)n : (1u << 30);
+            __atomic_store_n(&rbb_n, i + 1, __ATOMIC_RELEASE);
+        }
+        InterlockedExchange(&rbb_in, 0);
+    }
     u64 lo = g & ~0xFFFull, hi = (g + n + 0xFFF) & ~0xFFFull;
     if (rbw_phi && lo <= rbw_phi && hi >= rbw_plo) { if (lo < rbw_plo) rbw_plo = lo; if (hi > rbw_phi) rbw_phi = hi; return; }
     rbw_publish();
@@ -80,6 +103,37 @@ void gpu_rb_semaphore(u64 g) {
 int gpu_rb_is_gpu_thread(void) { return rbw_mine; }
 u64 gpu_rb_sema_count(void) { return __atomic_load_n(&rbs_n, __ATOMIC_ACQUIRE); }
 u64 gpu_rb_sema_at(u64 i) { return gpu_rb_sema_count() - i > RBS ? 0 : rbs_page[i % RBS]; }
+u64 gpu_rb_bytes_count(void) { return rbb_n; }
+u64 gpu_rb_bytes_cut(void) {
+    InterlockedExchange(&rbb_cut, 1);
+    while (rbb_in) YieldProcessor();   /* (a write that logged before the cut: in the count read now) */
+    return rbb_n;
+}
+int gpu_rb_bytes_at(u64 i, u64 *g, u64 *n) {
+    if (rbb_n - i > RBB - 1) return 0;   /* (overwritten since; the newest entry may still grow: it is read by the writer) */
+    *g = rbb_g[i % RBB]; *n = rbb_len[i % RBB];
+    return 1;
+}
+
+/* (rollback) fn on the GPU thread once the first `mark` submissions have run, before the next one starts. */
+static void (*after_fn)(void);
+static u64 after_mark;
+static volatile LONG after_busy;
+int gpu_queue_after(u64 mark, void (*fn)(void)) {
+    if (enabled != 1) return 0;
+    AcquireSRWLockExclusive(&lock);
+    int later = (i64)(mark - done) > 0;
+    if (later) { after_fn = fn; after_mark = mark; after_busy = 1; }
+    ReleaseSRWLockExclusive(&lock);
+    return later;   /* 0: they have run already (the caller does it itself) */
+}
+void gpu_queue_after_wait(void) {
+    if (!after_busy) return;
+    AcquireSRWLockExclusive(&lock);
+    while (after_busy) SleepConditionVariableSRW(&progress, &lock, INFINITE, 0);
+    ReleaseSRWLockExclusive(&lock);
+}
+
 int gpu_rb_written_at(u64 i, u64 *lo, u64 *hi) {
     if (gpu_rb_written_count() - i > RBW) return 0;
     *lo = rbw_lo[i % RBW]; *hi = rbw_hi[i % RBW];
@@ -108,6 +162,15 @@ static DWORD WINAPI gpu_thread(LPVOID unused) {
         if (id < SYNCPT_MAX && (i32)(j->fence - gpu_syncpt_min[id]) > 0) gpu_syncpt_min[id] = j->fence;
         if (j->entries != j->inline_entries) free(j->entries);
         if (count_draws) drawn_by[done % JOBS] = gpu_stat_draws;
+        /* (the save's callback runs before this job counts as done: gpu_queue_wait/drain on its mark cover it too) */
+        void (*fn)(void) = after_fn && done + 1 == after_mark ? after_fn : NULL;
+        if (fn) {
+            after_fn = NULL;
+            ReleaseSRWLockExclusive(&lock);
+            fn();
+            AcquireSRWLockExclusive(&lock);
+            after_busy = 0;
+        }
         done++;
         WakeAllConditionVariable(&progress);
         ReleaseSRWLockExclusive(&lock);

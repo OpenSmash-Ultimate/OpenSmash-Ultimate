@@ -104,6 +104,7 @@ int net_region_save(int region);               /* -1 auto; written to NET_REGION
 const char *net_official_lobby(void);
 /* online_server.txt's first word means the official lobby: "auto", a region's lobby, or an older public lobby's. */
 int net_means_official_lobby(const char *host);
+int net_on_eos(void);                /* 1: online through Epic Online Services (net_eos_net.c), not a lobby server of ours */
 int net_unreachable(void);           /* asked for, but the relay has not answered for a while: offline */
 /* Rollback netplay on by default (kernel.c's kernel_rb_switch when SSBU_RB is not set): started with
  * --online, with a lobby or a private room to play in (SSBU_NET_HOST, SSBU_NET_RELAY, else

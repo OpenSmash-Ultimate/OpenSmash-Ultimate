@@ -72,6 +72,13 @@ int display_renderer(void);
 /* The renderer says whether the swap chain can tear (for VRR); the flags each Present gets. */
 void display_set_tearing(int supported);
 unsigned display_present_flags(void);
+/* `display` pacing cannot wait for the monitor's refreshes here (a laptop's panel is driven by the
+ * processor's graphics while the game draws on the discrete card: IDXGIOutput_WaitForVBlank then
+ * fails), or the monitor's rate is no multiple of the game's 60 frames a second (165 Hz: 2.75
+ * refreshes a frame). The renderers present in sync instead (Vulkan's FIFO, Direct3D 11's sync
+ * interval 1), so each frame is shown at a vblank: tear-free, and evenly patterned where the
+ * monitor's rate allows (the frames are paced by a vblank count, not by a drifting clock). */
+int display_present_sync(void);
 /* The vsync thread: returns when the next refresh the game sees is due. */
 void display_wait_tick(void);
 /* SSBU_SPEED (test runs): 1 = normal; else the vsync thread gives one refresh per frame shown,

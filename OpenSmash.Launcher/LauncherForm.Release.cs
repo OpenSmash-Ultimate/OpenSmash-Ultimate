@@ -13,6 +13,7 @@ namespace OpenSmash.Launcher
     {
         Release? _release;
         static string? s_updateCommit;   // (RunPowerShellUpdate: the release's commit for the installer, null on main)
+        static bool s_followMain;        // (the "main" channel: said to the installer too)
         static string? s_releaseTag;     // (...and its tag: the installer builds the game DLL and takes the release's runtime)
 
         /// <summary>(Program, before the installer's first build) OPENSMASH_RELEASE_TAG for the installer when this copy's
@@ -38,6 +39,11 @@ namespace OpenSmash.Launcher
         {
             try
             {
+                // (the creator's opt-in to main, issue #329: the variable, or "main" in tools\update_channel.txt)
+                string env = Environment.GetEnvironmentVariable("OPENSMASH_UPDATE_CHANNEL") ?? "";
+                string old = Path.Combine(_repo, "tools", "update_channel.txt");
+                if (env.Trim().Equals("main", StringComparison.OrdinalIgnoreCase)) return "main";
+                if (env.Length == 0 && File.Exists(old) && File.ReadAllText(old).Trim().Equals("main", StringComparison.OrdinalIgnoreCase)) return "main";
                 string f = Path.Combine(_repo, "config", "update_channel.txt");
                 string v = File.Exists(f) ? File.ReadAllText(f).Trim().ToLowerInvariant() : "";
                 return v == "testing" || v == "main" ? v : "stable";

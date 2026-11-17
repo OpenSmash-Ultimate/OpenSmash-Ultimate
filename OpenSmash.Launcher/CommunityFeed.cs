@@ -9,7 +9,7 @@ namespace OpenSmash.Launcher
 {
     // The lobby's public, read-only pages (tools/nex/board.py): /status.json (players online now, rooms, open rooms:
     // counts only) and /leaderboard.json (each ranked player's opaque id, position, best GSP and main fighter; a name
-    // only for a player who chose to show one). The home page's right column shows them, asked again every minute.
+    // and the Discord profile picture's URL, which carries the Discord id, only for a player who chose to show them). The home page's right column shows them, asked again every minute.
     sealed class LobbyStatus
     {
         public int Online, Rooms, Arenas, OpenRooms, Playing, Ranked;
@@ -19,7 +19,7 @@ namespace OpenSmash.Launcher
     {
         public int Rank, Fighter;
         public uint Gsp;
-        public string Id = "", Name = "";
+        public string Id = "", Name = "", Avatar = "";   // (Avatar: the Discord profile picture's URL, "" when none)
     }
 
     static class CommunityFeed
@@ -66,6 +66,7 @@ namespace OpenSmash.Launcher
                         Gsp = p.TryGetProperty("gsp", out var g) && g.TryGetUInt32(out uint gsp) ? gsp : 0,
                         Id = p.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String ? id.GetString() ?? "" : "",
                         Name = p.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? Clean(n.GetString() ?? "") : "",
+                        Avatar = p.TryGetProperty("avatar", out var av) && av.ValueKind == JsonValueKind.String ? AvatarUrl(av.GetString() ?? "") : "",
                     };
                     if (row.Rank > 0) rows.Add(row);
                 }
@@ -91,6 +92,26 @@ namespace OpenSmash.Launcher
             foreach (char c in name) if (!char.IsControl(c)) sb.Append(c);
             string s = sb.ToString().Trim();
             return s.Length > 32 ? s.Substring(0, 32) : s;
+        }
+
+        // A row's profile picture URL as the lobby gives it, only when it is Discord's CDN over HTTPS (else "": initials).
+        public const string AvatarCdn = "https://cdn.discordapp.com/";
+        public static string AvatarUrl(string url) =>
+            url.Length <= 200 && url.StartsWith(AvatarCdn, StringComparison.Ordinal) && Uri.TryCreate(url, UriKind.Absolute, out var u)
+            && u.Host == "cdn.discordapp.com" ? url : "";
+
+        // The one or two letters a row without a picture shows in its circle: the name's words' first letters, else "?".
+        public static string Initials(string name)
+        {
+            var words = name.Split(new[] { ' ', '_', '.', '-' }, StringSplitOptions.RemoveEmptyEntries);
+            var sb = new System.Text.StringBuilder();
+            foreach (var w in words)
+            {
+                var e = System.Globalization.StringInfo.GetTextElementEnumerator(w);
+                if (e.MoveNext() && char.IsLetterOrDigit(e.GetTextElement(), 0)) sb.Append(e.GetTextElement().ToUpperInvariant());
+                if (sb.Length >= 2) break;
+            }
+            return sb.Length > 0 ? sb.ToString() : "?";
         }
 
         // What a row shows: the player's chosen name, else their main fighter's.

@@ -4,10 +4,11 @@
 rewritten where the plugin's code builds them, from an address map made for that plugin's build
 (tools/ports/<module>-<version>.txt).
 
-The CSK Collection 5.0.6 is built for 13.0.4 and has no 13.0.5 release. Between the two, main's code
-moved by different amounts in different places (0, -0x40, -0x1A0, +0x1BC, +0x3D8, +0x450, +0x490,
-+0x5B0) and its read-only data and data by +0x1000, so no single shift works: the map gives each
-address the plugin uses its own 13.0.5 address, with the evidence for it (docs/PLUGINS-REPORT.md).
+The CSK Collection 5.0.6 was built for 13.0.4. Between the two, main's code moved by different amounts
+in different places (0, -0x40, -0x1A0, +0x1BC, +0x3D8, +0x450, +0x490, +0x5B0) and its read-only data
+and data by +0x1000, so no single shift works: a map gives each address the plugin uses its own 13.0.5
+address, with the evidence for it (docs/PLUGINS-REPORT.md). 6.0.1 is built for 13.0.5 but for one inline
+hook, left at its 13.0.4 address: its map has that one entry.
 
 Usage:
   port_plugin.py <plugin.nro> <map.txt> <out.nro>    rewrite; lists what it changed and what it couldn't

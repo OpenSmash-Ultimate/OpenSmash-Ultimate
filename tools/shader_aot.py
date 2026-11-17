@@ -491,7 +491,11 @@ def main():
                     "when ssbu_glslang.dll is there; SSBU_AOT_SPIRV=0 does the same)")
     ap.add_argument("--forget-stale", action="store_true", help="only remove complete.txt when its SPIR-V names are not "
                     "the ones the built game reads, so that the launcher asks for Prepare Shaders again")
+    ap.add_argument("--by-game", action="store_true", help="run by the game itself at its start (runtime/gpu_vk.c), which "
+                    "waits for this and needs the processors: the pause while a game runs is left out")
     a = ap.parse_args()
+    if a.by_game:
+        os.environ["SSBU_AOT_BY_GAME"] = "1"
     if a.forget_stale:
         forget_stale_marker()
         return 0
@@ -1035,7 +1039,10 @@ PAUSE_POLL = 1.0   # seconds between looks at whether the game still runs
 
 def game_running():
     """Whether the game runs (Windows: its mutex is there). The compile pauses meanwhile: its workers on
-    every core left the game nothing as it started."""
+    every core left the game nothing as it started. Not when the game itself started it (--by-game): then
+    the game waits for the compile, with its progress on the loading screen."""
+    if os.environ.get("SSBU_AOT_BY_GAME"):
+        return False
     if sys.platform != "win32":
         return False
     import ctypes

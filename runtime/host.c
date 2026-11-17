@@ -43,6 +43,9 @@ static u32 game_nro_count;
 #define rt_nro_modules game_nros
 #define rt_nro_count game_nro_count
 #endif
+/* Told the faulting host module's file name (no folder) when the process crashes, before the report: gpu_vk.c's warm start
+ * notes a crash inside the graphics driver's shader compiler (#430). Called from the report's thread; NULL: nobody. */
+void (*rt_crash_module_hook)(const char *module);
 #define BOOT_MODULES 3
 #define MAX_MODULES 1024
 /* Loaded modules in load (and symbol search) order: the three the process starts with, then
@@ -1007,8 +1010,9 @@ static void pane_place(Cpu *c) {
             fflush(stdout);   /* (a test run is stopped, not ended: an unflushed line is lost) */
         }
     }
-    if (getenv("SSBU_DEBUG_PANES")) {   /* SSBU_DEBUG_PANES=<text> (HUD research): the panes whose name, or a parent's, holds it */
-        const char *want = getenv("SSBU_DEBUG_PANES");
+    static const char *want = (const char *)-1;   /* SSBU_DEBUG_PANES=<text> (HUD research): the panes whose name, or a parent's, holds it */
+    if (want == (const char *)-1) want = getenv("SSBU_DEBUG_PANES");   /* (read once: this runs for every pane, every game, every frame) */
+    if (want) {
         u64 q = pane; int under = 0;
         for (int d = 0; q && d < 10; d++, q = *P(u64, q + 0x18)) if (strstr(P(char, q + 0xb0), want)) under = 1;
         static u64 t, burst;
@@ -1159,6 +1163,7 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
     if (thread && FAILED(GetThreadDescription(thread, &desc))) desc = NULL;
     out("host pc %#llx: %s +%#llx (thread %lu%s%ls)\n", pc, strrchr(modname, '\\') ? strrchr(modname, '\\') + 1 : modname,
         pc - (u64)mod, tid, desc && desc[0] ? ", " : "", desc && desc[0] ? desc : L"");
+    if (rt_crash_module_hook) rt_crash_module_hook(strrchr(modname, '\\') ? strrchr(modname, '\\') + 1 : modname);
     if (desc) LocalFree(desc);
     if (thread) CloseHandle(thread);
     {   /* (r22_1: the registers, and the stack's words either side of the stack pointer: a return through a wrong stack pointer shows there) */
@@ -2482,8 +2487,14 @@ int main(int argc, char **argv) {
     mods_start(dir);
     void discord_start(void);   /* (net_discord.c: Discord's sign-in and Rich Presence, when its SDK is beside the program) */
     discord_start();
+#ifdef _WIN32
+    void net_eos_prestart(void);   /* (net_relay.c: Epic Online Services log in while the game loads, when online play wants them) */
+    net_eos_prestart();
+#endif
     kernel_init();
     load(dir);
+    void mod_refresh_init(void);
+    mod_refresh_init();   /* material lifetime hooks, before guest threads start */
     movie_test_start();
     test_fight_start();
 #ifndef _WIN32

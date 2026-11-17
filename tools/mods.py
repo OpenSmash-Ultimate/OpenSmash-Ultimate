@@ -2302,8 +2302,8 @@ def select_screen(tree, on, table, folder, log):
     tiles and its own fighters fill 87, so past 4 new fighters its layout and table are made again for
     91 + their number of tiles, smaller tiles the more there are, into `folder` (the game's layout, or a
     turned-on mod's own copy of it, as the base; kept in dump/mods/select_screen and made again when
-    what it is made from changes). runtime/hle_select_screen.c sets up the tiles the game
-    leaves out. Nothing is made when a mod brings its own arrangement (it is used as it is) or the
+    what it is made from changes). runtime/hle_select_screen.c hides the tiles past 91 the rows
+    do not use. Nothing is made when a mod brings its own arrangement (it is used as it is) or the
     game's screen has room. [(data.arc path, file)] of the files made."""
     import css_layout
     extra, arranged = select_screen_count(tree, on)

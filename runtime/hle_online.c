@@ -11,7 +11,13 @@
  * matches run between the players' virtual addresses, as Local Wireless's do.
  *
  * SSBU_ONLINE_SERVER=host:port overrides the server (default 10.13.0.1:60000); "off" leaves
- * the game's own address (and Online fails, as offline). */
+ * the game's own address (and Online fails, as offline).
+ *
+ * Online over Epic Online Services (online_server.txt "eos", plan/EOS_MIGRATION.md phase 2) has no server of ours:
+ * the game server is in the game (net_nex*.c, tools/nex in C). Its streams to 10.13.0.1 go to that server instead of
+ * a TCP connection, and the datagrams of Pia's NAT check to 10.13.0.1 / 10.13.255.254 are answered here (every player
+ * "open", with its own virtual address and port: EOS does the real traversal). SSBU_NEX_LOCAL=1 does the same over
+ * any network (tests), =0 never. */
 #define _CRT_SECURE_NO_WARNINGS
 #ifdef _WIN32
 #include <winsock2.h>
@@ -37,16 +43,34 @@ typedef int SOCKET;
 
 #include "host.h"
 #include "net.h"
+#include "net_backend.h"
+#include "net_eos.h"
+#include "net_nex.h"
+#include "net_eos_lobby.h"
+#include "net_results.h"
 #include "online.h"
 
 #define DEFAULT_HOST "10.13.0.1"
 #define DEFAULT_PORT 60000
 
+/* The game server in the game: over EOS (no server of ours), or SSBU_NEX_LOCAL=1 */
+static int nex_local(void) {
+    const char *v = getenv("SSBU_NEX_LOCAL");
+    if (v && *v) return atoi(v) != 0;
+    return net_configured() && net_backend == &net_eos_backend;
+}
+
 /* The server to log in to: 0 when online play is off (it needs the online lobby: a private
- * room's relay in the host's game has no game server). */
+ * room's relay in the host's game has no game server - or the one in the game, over EOS). */
 static int online_server(char *host, size_t n, u16 *port) {
     const char *v = getenv("SSBU_ONLINE_SERVER");
     if (v && !strcmp(v, "off")) return 0;
+    if (nex_local()) {   /* (the server in the game answers as 10.13.0.1 and nncs2 as 10.13.255.254, whatever was asked) */
+        if (!net_configured()) return 0;
+        snprintf(host, n, "%s", DEFAULT_HOST);
+        *port = DEFAULT_PORT;
+        return 1;
+    }
     if (!v || !*v) {
         if (!net_configured() || !net_relay_address()) return 0;
         snprintf(host, n, "%s", DEFAULT_HOST);
@@ -208,6 +232,7 @@ typedef struct Stream {
     /* (rollback, online_rb_*) what the game read and sent, for a savestate's load: the last HIST bytes of each */
     u64 taken, sent, resend;   /* (resend < sent after a load: the game sends again what it had sent; left out while it matches) */
     u8 *hist, *shist;
+    int local;               /* to the game server in the game (nex_local) */
 } Stream;
 #define STREAMS 16
 static Stream streams[STREAMS];
@@ -239,6 +264,224 @@ static Stream *stream_of(i32 fd) {
 static void changed(void) {
     WakeAllConditionVariable(&stream_change);
     net_wake();
+}
+
+/* ---- the game server in the game (net_nex.h) ----------------------------------------------------------
+ * One server, its calls under nex_lock (taken before stream_lock, never inside it). What it sends to a stream goes
+ * into the stream's buffer, as the lobby's bytes would; its datagrams to this player's sockets. */
+static SRWLOCK nex_lock = SRWLOCK_INIT;
+static NexServer *nex_srv;
+static int nex_woke;
+static void nex_stream_out(void *ctx, u32 ip, u16 port, u16 sport, const u8 *data, size_t n) {
+    (void)ctx;
+    AcquireSRWLockExclusive(&stream_lock);
+    for (int i = 0; i < STREAMS; i++) {
+        Stream *st = &streams[i];
+        if (!st->fd || !st->local || st->vip != ip || st->vport != port || st->dport != sport || st->eof) continue;
+        if (st->len + n > (16u << 20)) { st->eof = 1; nex_woke = 1; break; }   /* (a game that does not read: the stream ends) */
+        if (st->len + n > st->cap) {
+            u32 cap = st->cap ? st->cap : 65536;
+            while (cap < st->len + n) cap *= 2;
+            u8 *b = realloc(st->buf, cap);
+            if (!b) { st->eof = 1; break; }
+            st->buf = b;
+            st->cap = cap;
+        }
+        memcpy(st->buf + st->len, data, n);
+        st->len += (u32)n;
+        nex_woke = 1;
+        break;
+    }
+    ReleaseSRWLockExclusive(&stream_lock);
+}
+static void nex_datagram_out(void *ctx, u32 ip, u16 port, u32 src_ip, u16 sport, const u8 *data, size_t n) {
+    (void)ctx;
+    vsock_deliver(src_ip, sport, ip, port, data, (u32)n);
+}
+static const char *nex_part_of(void *ctx, u32 ip) {   /* (who may meet: game build, lobby code, simulation version, mods) */
+    static char part[64];
+    (void)ctx; (void)ip;
+    if (!part[0]) net_part_key(part, sizeof part);
+    return part;
+}
+static int nex_on_eos;   /* (its gatherings in EOS Lobbies: net_eos_lobby.c) */
+/* The players' fighter records (their GSP, DataStore 82 / 84) in nex_powers.bin beside the save folder, as
+ * netplay_id.txt: the game asks for them at each login and shows the GSP they hold. */
+static void nex_powers_path(char *path, size_t n) {
+    const char *root = getenv("SSBU_DATA_ROOT");
+    if (root) snprintf(path, n, "%s/nex_powers.bin", root);
+    else snprintf(path, n, "%s/../../nex_powers.bin", rt_data_dir);
+}
+static void nex_powers_load(NexServer *ns) {
+    char path[1024];
+    nex_powers_path(path, sizeof path);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    static u8 buf[NEX_POWER_ENTRY * 4096];
+    size_t n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+    nex_server_set_powers(ns, buf, n);
+}
+static int results_applying;   /* (records from the lobby being put in: not sent back) */
+static void nex_powers_changed(void *ctx) {   /* (under nex_lock) */
+    (void)ctx;
+    if (!results_applying) results_changed();   /* (net_results.c: to the public lobby) */
+    size_t n;
+    const u8 *d = nex_server_powers(nex_srv, &n);
+    char path[1024], tmp[1040];
+    nex_powers_path(path, sizeof path);
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return;
+    int ok = fwrite(d, 1, n, f) == n;
+    ok &= fclose(f) == 0;
+    if (ok) MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING);
+}
+/* ---- the player's results and the public lobby (net_results.c) ----
+ * Over EOS the game server is this game's own: its player's fighter records and ranked statistics go to the public
+ * lobby, which keeps every player's (the leaderboard), and the lobby's records of the player come back at the start. */
+static u64 results_pid(void) {   /* (under nex_lock) this game's player, 0 not known yet */
+    const char *id = net_backend == &net_eos_backend ? eos_my_id() : NULL;
+    if (id) return nex_pid_of(id);
+    return nex_srv ? nex_server_local_pid(nex_srv) : 0;
+}
+static u8 fetched_recs[NEX_POWER_RECORD * 256];
+static int fetched_n = -1;   /* (-1 none to put in) */
+static void results_apply(void) {   /* (under nex_lock) the lobby's records of the player into the game server */
+    u64 pid;
+    if (fetched_n < 0 || !nex_srv || !(pid = results_pid())) return;
+    static u8 entries[NEX_POWER_ENTRY * 256];
+    for (int i = 0; i < fetched_n; i++) {
+        u8 *e = entries + (size_t)i * NEX_POWER_ENTRY;
+        for (int b = 0; b < 8; b++) e[b] = (u8)(pid >> (8 * b));
+        memcpy(e + 8, fetched_recs + (size_t)i * NEX_POWER_RECORD, NEX_POWER_RECORD);
+    }
+    nex_server_set_powers(nex_srv, entries, (size_t)fetched_n * NEX_POWER_ENTRY);
+    if (fetched_n) { results_applying = 1; nex_powers_changed(NULL); results_applying = 0; }
+    fetched_n = -1;
+}
+void online_results_fetched(const uint8_t *records, int n) {
+    AcquireSRWLockExclusive(&nex_lock);
+    if (n > 256) n = 256;
+    memcpy(fetched_recs, records, (size_t)n * NEX_POWER_RECORD);
+    fetched_n = n;
+    results_apply();
+    ReleaseSRWLockExclusive(&nex_lock);
+}
+size_t online_results_snapshot(char *out, size_t cap) {
+    size_t n = 0;
+    AcquireSRWLockExclusive(&nex_lock);
+    u64 pid = results_pid();
+    if (nex_srv && pid && cap > 64) {
+        size_t len;
+        const u8 *d = nex_server_powers(nex_srv, &len);
+        n += (size_t)snprintf(out + n, cap - n, "{\"records\":[");
+        int k = 0;
+        for (size_t at = 0; at + NEX_POWER_ENTRY <= len && n + 2 * NEX_POWER_RECORD + 256 < cap; at += NEX_POWER_ENTRY) {
+            u64 p = 0;
+            for (int b = 7; b >= 0; b--) p = p << 8 | d[at + b];
+            if (p != pid) continue;
+            n += (size_t)snprintf(out + n, cap - n, "%s\"", k++ ? "," : "");
+            for (int b = 0; b < NEX_POWER_RECORD; b++) n += (size_t)snprintf(out + n, cap - n, "%02x", d[at + 8 + b]);
+            n += (size_t)snprintf(out + n, cap - n, "\"");
+        }
+        static NexStats st[128];
+        int ns = nex_server_stats_of(nex_srv, pid, st, 128);
+        n += (size_t)snprintf(out + n, cap - n, "],\"ranked\":[");
+        for (int i = 0; i < ns && n + 200 < cap; i++)   /* (ranked.py's STAT_FIELDS: totalDisconnect 6, totalWin 9, totalLoss 10, totalDraw 11) */
+            n += (size_t)snprintf(out + n, cap - n, "%s{\"category\":%u,\"rating\":%u,\"win\":%u,\"loss\":%u,\"draw\":%u,\"disconnect\":%u}",
+                                  i ? "," : "", st[i].category, st[i].rating, st[i].f[9], st[i].f[10], st[i].f[11], st[i].f[6]);
+        n += (size_t)snprintf(out + n, cap - n, "]}");
+        if (!k && !ns) n = 0;   /* (nothing of the player yet) */
+    }
+    ReleaseSRWLockExclusive(&nex_lock);
+    return n < cap ? n : 0;
+}
+static u64 ranked_digest(void) {   /* (under nex_lock) the player's statistics, to see them change */
+    static NexStats st[128];
+    u64 pid = results_pid(), h = 1469598103934665603ull;
+    int ns = nex_srv && pid ? nex_server_stats_of(nex_srv, pid, st, 128) : 0;
+    for (int i = 0; i < ns; i++) {
+        h = (h ^ st[i].category) * 1099511628211ull;
+        h = (h ^ st[i].rating) * 1099511628211ull;
+        for (int f = 0; f < NEX_STAT_FIELDS; f++) h = (h ^ st[i].f[f]) * 1099511628211ull;
+    }
+    return h;
+}
+/* (net_eos_net.c's start, or the game server's first use) the results' thread, its marker beside nex_powers.bin */
+void online_results_begin(void) {
+    char path[1024];
+    nex_powers_path(path, sizeof path);
+    strncat(path, ".unsent", sizeof path - strlen(path) - 1);
+    results_start(path);
+}
+
+static void nex_log_line(void *ctx, int level, const char *line) { (void)ctx; (void)level; if (net_log()) fprintf(stderr, "[nex] %s\n", line); }
+/* the server, under nex_lock, its clock set (NULL: none could be made) */
+static NexServer *nex_enter(void) {
+    AcquireSRWLockExclusive(&nex_lock);
+    if (!nex_srv) {
+        NexIo io = {NULL, nex_stream_out, nex_datagram_out, nex_part_of, nex_log_line, NULL, NULL, nex_powers_changed};
+        nex_on_eos = net_backend == &net_eos_backend;
+        nex_srv = nex_server_new(&io, nex_on_eos ? nex_store_eos() : nex_store_local(), net_log());
+        /* No idle timeout: the only connections are this game's own, which end when it closes its stream
+         * (online_stream_close). The game paces its keep-alive pings on its own clock, which in a rollback fight is
+         * the fixed clock (kernel.c rt_ticks: one 60 Hz frame a logic frame, set back by every load): with a slow
+         * link it falls far behind the wall clock (2026-11-11, SSBU_NET_SIM=130,1,15 at 24 fps shown: 431 logic
+         * frames, 7 s of the game's time, in 40 s), and tools/nex's 40 s without a packet closed a live connection
+         * in the middle of a fight (error 2306-0332). */
+        if (nex_srv) nex_server_set_idle_timeout(nex_srv, 0);
+        if (nex_srv) nex_powers_load(nex_srv);
+        if (nex_srv && nex_on_eos) online_results_begin();   /* (over EOS only: SSBU_NEX_LOCAL tests send nothing) */
+        if (net_log()) fprintf(stderr, "[online] the game server is in the game (Online over %s)\n", net_backend == &net_eos_backend ? "EOS" : "SSBU_NEX_LOCAL");
+    }
+    if (nex_srv) {
+        static u64 ticked, identity_set;
+        u64 now = GetTickCount64();
+        nex_server_set_now(nex_srv, (double)now / 1000.0);
+        if (now - ticked >= 1000) {
+            static u64 ranked_was;
+            ticked = now;
+            nex_server_tick(nex_srv, (double)now / 1000.0);   /* (idle connections, old rounds) */
+            u64 r = ranked_digest();
+            if (ranked_was && r != ranked_was) results_changed();   /* (a ranked round's results: to the public lobby) */
+            ranked_was = r;
+            results_apply();
+        }
+        const char *id = !identity_set && net_backend == &net_eos_backend ? eos_my_id() : NULL;   /* (the PID: from the EOS id, else the token's) */
+        if (id) { nex_server_set_identity(nex_srv, id); identity_set = 1; }
+        if (nex_on_eos) nex_store_eos_sync(nex_srv);
+    }
+    nex_woke = 0;
+    return nex_srv;
+}
+static void nex_leave(void) {
+    int woke = nex_woke;
+    nex_woke = 0;
+    ReleaseSRWLockExclusive(&nex_lock);
+    if (woke) changed();
+}
+/* (net_eos_lobby.c, on the EOS thread) what EOS brought, to the server now if nothing holds it */
+int online_nex_deliver(void) {
+    if (!TryAcquireSRWLockExclusive(&nex_lock)) return 0;
+    nex_woke = 0;
+    if (nex_srv && nex_on_eos) {
+        nex_server_set_now(nex_srv, (double)GetTickCount64() / 1000.0);
+        nex_store_eos_sync(nex_srv);
+    }
+    nex_leave();
+    return 1;
+}
+
+/* (hle_net.c's sendto) A datagram for the game server's addresses while it is in the game: answered here. */
+int online_nex_datagram(u32 src_ip, u16 sport, u32 dst, u16 dport, const void *data, u32 len) {
+    if ((dst & 0xFFFF) != 0x0001 && (dst & 0xFFFF) != 0xFFFE) return 0;   /* (every datagram of the game comes here: the rest at once) */
+    u32 server = online_ip();
+    if (!server || (dst != server && dst != ((server & 0xFFFF0000u) | 0xFFFE)) || !nex_local()) return 0;
+    NexServer *s = nex_enter();
+    if (s) nex_datagram(s, src_ip, sport, dport, dst == server ? NEX_HOST : NEX_NAT_SECOND, data, len);
+    nex_leave();
+    return 1;
 }
 
 /* The lobby's real address: host[:port], from SSBU_NET_RELAY or online_server.txt (net_relay.c). */
@@ -354,16 +597,20 @@ int online_stream_connect(i32 fd, u32 ip, u16 port, u32 my_ip, u16 my_port, int 
     u32 server = online_ip();
     if (!server || ip != server) return E_CONNREFUSED_;   /* (no other stream reaches anything) */
     if (net_unreachable() || !my_ip) return E_CONNREFUSED_;   /* (the lobby is gone: Online is too) */
+    int local = nex_local();
+    NexServer *ns = local ? nex_enter() : NULL;   /* (before stream_lock: the lock order) */
+    if (local && !ns) { nex_leave(); return E_CONNREFUSED_; }
     AcquireSRWLockExclusive(&stream_lock);
     Stream *st = stream_of(fd);
     if (st) {
         int e = st->state == S_OPEN ? E_ISCONN_ : E_ALREADY_;
         ReleaseSRWLockExclusive(&stream_lock);
+        if (local) nex_leave();
         return e;
     }
     for (int i = 0; i < STREAMS && !st; i++)
         if (!streams[i].fd) st = &streams[i];
-    if (!st) { ReleaseSRWLockExclusive(&stream_lock); return E_MFILE_; }
+    if (!st) { ReleaseSRWLockExclusive(&stream_lock); if (local) nex_leave(); return E_MFILE_; }
     memset(st, 0, sizeof *st);
     st->fd = fd;
     st->gen = ++stream_gen;
@@ -372,6 +619,24 @@ int online_stream_connect(i32 fd, u32 ip, u16 port, u32 my_ip, u16 my_port, int 
     st->vip = my_ip;
     st->vport = my_port;
     st->dport = port;
+    if (local) {   /* (connected at once, to the server in the game; as with a socket that connects quickly, a
+                      non-blocking connect still says "in progress" and polls writable) */
+        st->local = 1;
+        st->state = S_OPEN;
+        ReleaseSRWLockExclusive(&stream_lock);
+        int ok = nex_stream_open(ns, my_ip, my_port, port);
+        nex_leave();
+        if (!ok) {   /* (one the server holds already: this slot goes, the other stays) */
+            AcquireSRWLockExclusive(&stream_lock);
+            if ((st = stream_of(fd)) != NULL) st->local = 0;
+            ReleaseSRWLockExclusive(&stream_lock);
+            online_stream_close(fd);
+            return E_CONNREFUSED_;
+        }
+        if (net_log()) fprintf(stderr, "[online] stream %d to port %u: the game server in the game\n", fd, port);
+        changed();
+        return nonblock ? E_INPROGRESS_ : 0;
+    }
     ReleaseSRWLockExclusive(&stream_lock);
     HANDLE t = CreateThread(NULL, 0, stream_thread, st, 0, NULL);
     if (!t) { online_stream_close(fd); return E_CONNREFUSED_; }
@@ -394,6 +659,9 @@ i64 online_stream_send(i32 fd, const void *data, u64 len, int nonblock) {
     }
     i64 r = !st ? -E_NOTCONN_ : st->state == S_CONNECTING ? -E_AGAIN_ : st->state != S_OPEN || st->eof ? -E_PIPE_ : 0;
     SOCKET s = st && !r ? st->s : INVALID_SOCKET;
+    int local = st && !r && st->local;
+    u32 vip = st ? st->vip : 0;
+    u16 vport = st ? st->vport : 0, dport = st ? st->dport : 0;
     const char *p = data;
     u64 left = len;
     if (!r && rb_keep) {   /* (after a load: what the game sends again) */
@@ -403,12 +671,29 @@ i64 online_stream_send(i32 fd, const void *data, u64 len, int nonblock) {
             if (rb_resend_differ <= 5) fprintf(stderr, "[online] stream %d: after a load the game sends other bytes than before (%llu of %llu again matched): the rest goes\n",
                                               fd, (unsigned long long)(st->resend), (unsigned long long)st->sent);
             st->resend = st->sent;
+            if (st->local) { p = data; left = len; }   /* (the server in the game takes this call's bytes whole again - a
+                                                          WebSocket frame, whose mask differs at once: a repeat it ignores,
+                                                          not the rest of a frame it cannot read) */
         }
         if (left) { hist_put(&st->shist, st->sent, (const u8 *)p, left); st->sent += left; st->resend = st->sent; }
     }
     ReleaseSRWLockExclusive(&stream_lock);
     if (r) return r;
     if (!left) return (i64)len;
+    if (local) {   /* (to the game server in the game: its answers are in the stream's buffer when this returns) */
+        NexServer *ns = nex_enter();
+        int ok = ns && nex_stream_bytes(ns, vip, vport, dport, (const u8 *)p, left);
+        if (!ok && ns) nex_stream_closed(ns, vip, vport, dport);   /* (not NEX: the lobby would close it too) */
+        nex_leave();
+        if (!ok) {
+            AcquireSRWLockExclusive(&stream_lock);
+            if ((st = stream_of(fd)) != NULL) st->eof = 1;
+            ReleaseSRWLockExclusive(&stream_lock);
+            changed();
+        }
+        if (net_log() > 1) fprintf(stderr, "[online] stream %d: sent %llu bytes to the game server in the game\n", fd, (unsigned long long)len);
+        return (i64)len;
+    }
     while (left) {   /* (the host socket blocks: everything goes, in order) */
         int n = send(s, p, left > 0x10000 ? 0x10000 : (int)left, 0);
         if (n <= 0) return len - left ? (i64)(len - left) : -E_CONNRESET_;
@@ -473,6 +758,9 @@ void online_stream_close(i32 fd) {
     AcquireSRWLockExclusive(&stream_lock);
     Stream *st = stream_of(fd);
     SOCKET s = INVALID_SOCKET;
+    int local = st && st->local;
+    u32 vip = st ? st->vip : 0;
+    u16 vport = st ? st->vport : 0, dport = st ? st->dport : 0;
     if (st) {
         s = st->s;
         free(st->buf); free(st->hist); free(st->shist);
@@ -480,6 +768,11 @@ void online_stream_close(i32 fd) {
     }
     ReleaseSRWLockExclusive(&stream_lock);
     if (s != INVALID_SOCKET) { shutdown(s, SD_BOTH); closesocket(s); }
+    if (local) {   /* (the server's connections from it go: the others of its gathering are told) */
+        NexServer *ns = nex_enter();
+        if (ns) nex_stream_closed(ns, vip, vport, dport);
+        nex_leave();
+    }
     if (st) changed();
 }
 

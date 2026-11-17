@@ -10,8 +10,9 @@ list too.
 
 Also what the account box shows: the player's GSP per fighter, kept by the lobbies' own game server (GET /gsp/me,
 tools/nex/board.py, signed with this install's NSA id from netplay_id.txt), and their global position (the one public
-lobby's leaderboard.json: every GSP result goes through its game server). A player may show their Discord name on the leaderboard (POST
-/gsp/profile; config/discord_leaderboard.txt remembers the choice). Standard library only."""
+lobby's leaderboard.json: every GSP result goes through its game server). The GSP belongs to the Discord account: this install is linked to it with
+POST /gsp/link (the token is sent once, the lobby verifies it with Discord and keeps nothing of it; show on/off is the
+choice config/discord_leaderboard.txt remembers). Standard library only."""
 import base64
 import hashlib
 import hmac
@@ -62,15 +63,16 @@ KEYS = ("access_token", "refresh_token", "expires_at", "scope", "user_id", "user
 UA = {"User-Agent": "OpenSmash-Launcher"}
 NAMES = [
     "Mario", "Donkey Kong", "Link", "Samus", "Dark Samus", "Yoshi", "Kirby", "Fox", "Pikachu", "Luigi",
-    "Ness", "Captain Falcon", "Jigglypuff", "Peach", "Daisy", "Bowser", "Sheik", "Zelda", "Dr. Mario", "Pichu",
-    "Falco", "Marth", "Lucina", "Young Link", "Ganondorf", "Mewtwo", "Roy", "Chrom", "Mr. Game & Watch", "Meta Knight",
-    "Pit", "Dark Pit", "Zero Suit Samus", "Wario", "Snake", "Ike", "Squirtle", "Ivysaur", "Charizard", "Diddy Kong",
-    "Lucas", "Sonic", "King Dedede", "Olimar", "Lucario", "R.O.B.", "Toon Link", "Wolf", "Villager", "Mega Man",
-    "Wii Fit Trainer", "Rosalina & Luma", "Little Mac", "Greninja", "Palutena", "Pac-Man", "Robin", "Shulk", "Bowser Jr.", "Duck Hunt",
-    "Ryu", "Ken", "Cloud", "Corrin", "Bayonetta", "Inkling", "Ridley", "Simon", "Richter", "King K. Rool",
-    "Isabelle", "Incineroar", "Mii Brawler", "Mii Swordfighter", "Mii Gunner", "Ice Climbers", None, None, None, None,
-    None, "Piranha Plant", "Joker", "Hero", "Banjo & Kazooie", "Terry", "Byleth", "Min Min", "Steve", "Sephiroth",
-    "Pyra", "Mythra", "Kazuya", "Sora"]   # (by fighter kind, as runtime/net_discord_core.c)
+    "Ness", "Captain Falcon", "Jigglypuff", "Peach", "Daisy", "Bowser", "Ice Climbers", "Sheik", "Zelda", "Dr. Mario",
+    "Pichu", "Falco", "Marth", "Lucina", "Young Link", "Ganondorf", "Mewtwo", "Roy", "Chrom", "Mr. Game & Watch",
+    "Meta Knight", "Pit", "Dark Pit", "Zero Suit Samus", "Wario", "Snake", "Ike", "Pokemon Trainer", "Diddy Kong", "Lucas",
+    "Sonic", "King Dedede", "Olimar", "Lucario", "R.O.B.", "Toon Link", "Wolf", "Villager", "Mega Man", "Wii Fit Trainer",
+    "Rosalina & Luma", "Little Mac", "Greninja", "Palutena", "Pac-Man", "Robin", "Shulk", "Bowser Jr.", "Duck Hunt", "Ryu",
+    "Ken", "Cloud", "Corrin", "Bayonetta", "Richter", "Inkling", "Ridley", "King K. Rool", "Simon", "Isabelle",
+    "Incineroar", "Mii Brawler", "Mii Swordfighter", "Mii Gunner", "Piranha Plant", "Joker", "Hero", "Banjo & Kazooie", "Terry", "Byleth",
+    "Min Min", "Steve", "Sephiroth", "Pyra & Mythra", "Kazuya", "Sora"]
+# (by the GSP records' fighter number - DataStore 82's u8, the game's save_no in ui_chara_db, not the fighter kind:
+# 29 is Mr. Game & Watch, issue #389; the same list as runtime/net_discord_core.c and OpenSmash.Launcher/DiscordAccount.cs)
 
 
 class SignInError(Exception):
@@ -78,8 +80,7 @@ class SignInError(Exception):
 
 
 def fighter_name(kind):
-    if kind == 114:
-        return "Pokemon Trainer"
+    """A GSP record's fighter number's name (NAMES above)."""
     return NAMES[kind] if 0 <= kind < len(NAMES) and NAMES[kind] else f"Fighter {kind}"
 
 
@@ -365,31 +366,71 @@ def shown_path(root):
 
 
 def shows_name(root):
+    """On unless config/discord_leaderboard.txt says "off" (a missing file is on)."""
     try:
         with open(shown_path(root), encoding="utf-8") as f:
-            return f.read().strip().lower() == "on"
+            return f.read().strip().lower() != "off"
     except OSError:
-        return False
+        return True
 
 
-def set_shown(root, t, shown, where, ask=_ask):
-    """Remembers the choice and tells the lobbies where (shown: the token's Discord name; hidden: none). How many took it."""
+def _send(url, body, opener=urllib.request.urlopen):
+    """POST body (JSON bytes): (HTTP status, JSON answer or {}); (0, {}) when the lobby can not be reached."""
+    req = urllib.request.Request(url, data=body, headers={**UA, "Content-Type": "application/json"})
+    try:
+        with opener(req, timeout=8) as r:
+            code, raw = r.status, r.read()
+    except urllib.error.HTTPError as e:
+        code, raw = e.code, e.read()
+        e.close()
+    except (urllib.error.URLError, OSError):
+        return 0, {}
+    try:
+        d = json.loads(raw.decode())
+    except ValueError:
+        return code, {}
+    return code, d if isinstance(d, dict) else {}
+
+
+def link_body(nsa, token, shown, key=False):
+    player, now = player_id(nsa), int(time.time())
+    d = {"player": player, "t": now, "token": token, "show": bool(shown),
+         "sig": sign(nsa, "link", player, now, token + "\n" + ("1" if shown else "0"))}
+    if key:
+        d["key"] = nsa
+    return json.dumps(d).encode()
+
+
+def hide_body(nsa):
+    """The old /gsp/profile with no name: hides an already linked player (no Discord token needed)."""
+    player, now = player_id(nsa), int(time.time())
+    return json.dumps({"player": player, "t": now, "name": "", "discord": "", "sig": sign(nsa, "profile", player, now, "\n")}).encode()
+
+
+def set_shown(root, t, shown, where, send=_send):
+    """Remembers the choice and tells the lobbies where: POST /gsp/link with the token's access token (the lobby verifies
+    it with Discord), retried once with the NSA id as "key" when the lobby does not know this install yet. Without a
+    token (or when the lobby refuses it) a hide is sent as the old profile call. How many lobbies took it."""
     os.makedirs(os.path.dirname(shown_path(root)), exist_ok=True)
     with open(shown_path(root), "w", encoding="utf-8") as f:
         f.write("on\n" if shown else "off\n")
     nsa = nsa_id(root)
     if not nsa:
         return 0
-    player = player_id(nsa)
-    name = ((t or {}).get("display_name") or (t or {}).get("username") or "")[:32] if shown else ""
-    discord = account_hash(t["user_id"]) if shown and t and t.get("user_id") else ""
-    now = int(time.time())
-    body = json.dumps({"player": player, "t": now, "name": name, "discord": discord,
-                       "sig": sign(nsa, "profile", player, now, f"{name}\n{discord}")}).encode()
+    token = (t or {}).get("access_token") or ""
     took = 0
     for lobby in where:
-        if (ask(f"http://{lobby}/gsp/profile", {"Content-Type": "application/json"}, body) or {}).get("ok"):
-            took += 1
+        ok = False
+        if token:
+            url = f"http://{lobby}/gsp/link"
+            code, answer = send(url, link_body(nsa, token, shown))
+            if code == 403 and answer.get("error") == "unknown player":
+                code, answer = send(url, link_body(nsa, token, shown, key=True))
+            ok = code == 200 and bool(answer.get("ok"))
+        if not ok and not shown:
+            code, answer = send(f"http://{lobby}/gsp/profile", hide_body(nsa))
+            ok = code == 200 and bool(answer.get("ok"))
+        took += ok
     return took
 
 
@@ -472,7 +513,7 @@ class Account:
             self.told = True
             threading.Thread(target=set_shown, args=(self.root, t, True, self.lobbies()), daemon=True).start()
         nsa = nsa_id(self.root)
-        rank, fighter_ranks = ranks_in(self._board(), player_id(nsa) if nsa else "")
+        rank, fighter_ranks = ranks_in(self._board(), account_hash(t["user_id"]) if t.get("user_id") else "")
         out.update({"name": t.get("display_name") or t.get("username") or "", "avatar": avatar_url(t), "rank": rank,
                     "shown": shows_name(self.root),
                     "fighters": [{"fighter": k, "name": fighter_name(k), "gsp": g, "rank": fighter_ranks.get(k, 0)}

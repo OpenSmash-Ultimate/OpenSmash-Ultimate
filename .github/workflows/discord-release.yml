@@ -28,4 +28,5 @@ jobs:
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern discord_partner_sdk.dll --pattern discord_partner_sdk_notices.txt
           printf '# OpenSmash: the Discord application (runtime/net_discord.c, the launchers)\nApplicationId=%s\n' "$DISCORD_APP_ID" > discord.txt
           sha256sum discord_partner_sdk.dll discord_partner_sdk_notices.txt discord.txt > SHA256SUMS
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --latest=false   # never "latest"
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber discord.txt SHA256SUMS

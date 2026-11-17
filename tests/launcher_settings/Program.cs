@@ -49,6 +49,7 @@ static class Tests
             Lobby();
             FreshFolder(Path.Combine(root, "fresh"));
             GameChangesKept(Path.Combine(root, "game"));
+            SameFilesAsTheGame(Path.Combine(root, "sync"));
             Profiles();
             Remap(Path.Combine(root, "remap"));
             Feed().GetAwaiter().GetResult();
@@ -94,6 +95,11 @@ static class Tests
             Check(SettingDefaults.Choices["lobby"].Contains(lobby), $"{lobby} is a choice of the page");
         }
         Check(SettingDefaults.LineFromLobby("private", "", "") == pub + " friends", "private lobby without a code: the game's 'friends'");
+        // (issue #389: an old launcher.ini's "Your own server" holding a public lobby's address is the Public lobby)
+        Check(SettingDefaults.LineFromLobby("custom", "", "smash.recomps.wtf:39421") == "auto", "custom smash.recomps.wtf: the public lobby's auto");
+        Check(SettingDefaults.LineFromLobby("custom", "abc", "smash.recomps.wtf:39421") == pub + " abc", "custom smash.recomps.wtf with a code: the private lobby");
+        Check(SettingDefaults.LineFromLobby("custom", "", pub) == "auto", "custom with the public lobby's address: auto");
+        Check(SettingDefaults.IsOldLobbyLine("smash.recomps.wtf:39421 x") && !SettingDefaults.IsOldLobbyLine("auto") && !SettingDefaults.IsOldLobbyLine(""), "old lobby lines");
         // the server region: any region's lobby in the file is "the official lobby" (the region setting says which one)
         foreach (var region in OpenSmash.Core.ServerRegion.All)
         {
@@ -154,6 +160,16 @@ static class Tests
             call2("PersistSettings");
             Check(File.ReadAllText(Path.Combine(repo, "online_server.txt")) == "# comment\nauto\n" && Files(repo).Length == 1, "download's files left as they are");
         }
+        File.WriteAllText(Path.Combine(repo, "online_server.txt"), "# comment\nsmash.recomps.wtf:39421\n");   // (the gone NA lobby: issue #389)
+        var (form3, call3, values3) = Open(repo);
+        using (form3)
+        {
+            call3("ReadSettings");
+            Check(values3["lobby"] == "auto", "the North American lobby's line reads as the public lobby");
+            Check(File.ReadAllText(Path.Combine(repo, "online_server.txt")).Replace("\r\n", "\n") == "# comment\nauto\n", "the North American lobby's line written again as auto: "
+                  + File.ReadAllText(Path.Combine(repo, "online_server.txt")));
+        }
+        File.WriteAllText(Path.Combine(repo, "online_server.txt"), "# comment\nauto\n");
     }
 
     // The game's settings menu (Esc) writes while the launcher waits hidden: closing the launcher keeps those changes,
@@ -189,6 +205,59 @@ static class Tests
             Check(File.ReadAllText(Path.Combine(config, "display.ini")) == "window = borderless\nrenderer = vulkan\n", "a lobby change leaves display.ini alone");
             typeof(LauncherForm).GetMethod("WriteSetting", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(form2, new object[] { "renderer", "auto" });
             Check(File.ReadAllText(Path.Combine(config, "display.ini")).Contains("renderer = auto"), "renderer back to auto");
+        }
+    }
+
+    // One source of truth with the game's settings menu (Esc): the launcher writes a key as runtime/hle_settings.c does
+    // (in place, comment and unknown keys kept, line ends kept, nothing written when unchanged), shows the renderer the
+    // game will start with (#429's renderer_menu), and reads the files again when the game (or anyone) changed them.
+    static void SameFilesAsTheGame(string repo)
+    {
+        string config = Path.Combine(repo, "config");
+        Directory.CreateDirectory(config);
+        File.WriteAllText(Path.Combine(config, "version.ini"), "version = 1\n");
+        string display = Path.Combine(config, "display.ini"), pads = Path.Combine(config, "controllers.ini");
+        File.WriteAllText(display, "; the game's\nwindow = windowed   ; mine\nrenderer = d3d11\nrenderer_menu = vulkan\nshow_advanced = 1\n");
+        File.WriteAllText(pads, "[general]\r\nkeyboard_player = 1\r\n\r\n[players]\r\n; 2 = a pad\r\n");
+        File.WriteAllText(Path.Combine(config, "online_server.txt"), "auto\n");
+        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var (form, call, values) = Open(repo);
+        using (form)
+        {
+            void Write(string key, string value) => typeof(LauncherForm).GetMethod("WriteSetting", flags)!.Invoke(form, new object[] { key, value });
+            call("ReadSettings");
+            Check(values["renderer"] == "vulkan", "an older launcher's renderer = d3d11 under the menu's renderer_menu = vulkan shows Vulkan, as the game starts");
+            Write("window", "borderless");
+            Check(File.ReadAllText(display) == "; the game's\nwindow = borderless   ; mine\nrenderer = d3d11\nrenderer_menu = vulkan\nshow_advanced = 1\n",
+                  "one key changed in place, its comment and the menu's own keys kept: " + File.ReadAllText(display));
+            Write("renderer", "direct3d11");
+            Check(File.ReadAllText(display).Contains("renderer = direct3d11\nrenderer_menu = direct3d11\n"), "the renderer written as the menu writes it (renderer_menu too)");
+            Write("background", "0");
+            Check(File.ReadAllText(pads) == "[general]\r\nkeyboard_player = 1\r\nbackground = 0\r\n\r\n[players]\r\n; 2 = a pad\r\n",
+                  "a new key at the end of its section, CRLF kept: " + File.ReadAllText(pads).Replace("\r", "\r").Replace("\n", "\n"));
+            var old = DateTime.UtcNow.AddMinutes(-10);
+            File.SetLastWriteTimeUtc(display, old);
+            Write("window", "borderless");
+            Check(File.GetLastWriteTimeUtc(display) == old, "the same value again: the file is not written");
+
+            // The files change while the launcher is open (the game's settings menu, a game started from a shortcut, the
+            // "Open the file" row's editor): back in front, the page shows them; a lobby change not yet written stays.
+            Write("lobby", "private");   // (no code yet: not written)
+            File.WriteAllText(display, File.ReadAllText(display).Replace("window = borderless", "window = fullscreen").Replace("renderer = direct3d11", "renderer = vulkan"));
+            File.WriteAllText(Path.Combine(config, "online_direct.txt"), "off\n");
+            File.SetLastWriteTimeUtc(display, DateTime.UtcNow.AddSeconds(5));
+            call("ReloadSettingsIfChanged");
+            Check(values["window"] == "fullscreen" && values["renderer"] == "vulkan" && values["direct"] == "off", "the menu's changes shown after it");
+            Check(values["lobby"] == "private", "a change made here and not written yet is kept");
+            Check(File.ReadAllText(Path.Combine(config, "online_server.txt")) == "auto\n", "the unwritten lobby still not written");
+            File.SetLastWriteTimeUtc(display, DateTime.UtcNow.AddSeconds(5));
+            File.WriteAllText(Path.Combine(config, "online_direct.txt"), "on\n");
+            File.SetLastWriteTimeUtc(Path.Combine(config, "online_direct.txt"), DateTime.UtcNow.AddSeconds(10));
+            values["direct"] = "off";   // (a stale copy: only a reload puts it right)
+            call("ReloadSettingsIfChanged");
+            Check(values["direct"] == "on", "read again on each change");
+            call("PersistSettings");
+            Check(File.ReadAllText(display).Contains("window = fullscreen") && File.ReadAllText(display).Contains("renderer = vulkan"), "closing keeps the menu's choices");
         }
     }
 
@@ -266,14 +335,18 @@ static class Tests
         const string status = "{\"updated\":\"2026-11-16T13:57:58Z\",\"online\":5,\"rooms\":1,\"arenas\":0,\"open_rooms\":1,\"playing\":0,\"ranked\":78}";
         const string board = "{\"updated\":\"x\",\"ranked\":3,\"players\":[" +
             "{\"id\":\"bbb\",\"rank\":2,\"gsp\":1603,\"fighter\":0,\"fighters\":{}}," +
-            "{\"id\":\"aaa\",\"rank\":1,\"gsp\":1658,\"fighter\":16,\"name\":\"Ann\\u0007ie\"}," +
-            "{\"id\":\"ccc\",\"rank\":3,\"gsp\":1500,\"fighter\":23}]}";
+            "{\"id\":\"aaa\",\"rank\":1,\"gsp\":1658,\"fighter\":16,\"name\":\"Ann\\u0007ie\",\"avatar\":\"https://cdn.discordapp.com/embed/avatars/3.png\"}," +
+            "{\"id\":\"ccc\",\"rank\":3,\"gsp\":1500,\"fighter\":23,\"avatar\":\"http://evil.example/x.png\"}]}";
         var s = CommunityFeed.ParseStatus(status)!;
         Check(s.Online == 5 && s.OpenRooms == 1 && s.Rooms == 1 && s.Ranked == 78, "status.json counts");
         Check(CommunityFeed.ParseStatus("<html>") == null && CommunityFeed.ParseStatus("[]") == null, "not a status: null");
         var b = CommunityFeed.ParseBoard(board, 2)!.Value;
         Check(b.Ranked == 3 && b.Top.Count == 2 && b.Top[0].Rank == 1 && b.Top[1].Id == "bbb", "top N by rank");
         Check(CommunityFeed.Who(b.Top[0]) == "Annie" && CommunityFeed.Who(b.Top[1]) == "Mario player", "a chosen name, else the main fighter");
+        Check(b.Top[0].Avatar == "https://cdn.discordapp.com/embed/avatars/3.png" && b.Top[1].Avatar == "", "a row's Discord avatar, none when absent");
+        Check(CommunityFeed.Mine(board, "ccc")?.Avatar == "" && CommunityFeed.AvatarUrl("https://cdn.discordapp.com.evil.example/a.png") == "", "an avatar not on Discord's CDN: initials");
+        Check(CommunityFeed.Initials("Ann Bee") == "AB" && CommunityFeed.Initials("mario player") == "MP" && CommunityFeed.Initials("x") == "X"
+              && CommunityFeed.Initials("  ") == "?", "initials when there is no picture");
         Check(CommunityFeed.Mine(board, "ccc")?.Gsp == 1500 && CommunityFeed.Mine(board, "zzz") == null, "the player's own row past the top");
         Check(CommunityFeed.ParseBoard("{\"players\":3}") == null, "not a leaderboard: null");
         var down = await CommunityFeed.Fetch(new HttpClient(new Refuse()), CancellationToken.None);
