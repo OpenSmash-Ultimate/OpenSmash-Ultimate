@@ -2472,7 +2472,7 @@ static VkImageView surface_attachment(Surface *s) {
  * through a 480x270 header; Direct3D 11 reads the header's top-left part, Vulkan's view of the whole image stretched
  * it): the header's part copied into an image of its own, taken again at each lookup (the target is written between
  * draws; render targets are not kept in tex_memo). SSBU_VK_NO_CROP=1: as before (a test). */
-typedef struct Crop { u64 guest; u32 w, h, srgb; VkImage src, image; Alloc alloc; VkImageView view; } Crop;
+typedef struct Crop { u64 guest; u32 w, h, srgb; VkFormat storage; VkImage src, image; Alloc alloc; VkImageView view; } Crop;
 static Crop crops[8];
 static VkImageView crop_view(Surface *rt, const TextureDesc *d, int srgb) {
     static int off = -1;
@@ -2486,7 +2486,7 @@ static VkImageView crop_view(Surface *rt, const TextureDesc *d, int srgb) {
     if (h > rt->hh) h = rt->hh;
     Crop *c = NULL, *free_c = NULL;
     for (u32 i = 0; i < 8; i++) {
-        if (crops[i].image && crops[i].guest == rt->guest && crops[i].w == w && crops[i].h == h && crops[i].srgb == (u32)srgb) { c = &crops[i]; break; }
+        if (crops[i].image && crops[i].guest == rt->guest && crops[i].w == w && crops[i].h == h && crops[i].srgb == (u32)srgb && crops[i].storage == rt->storage) { c = &crops[i]; break; }
         if (!crops[i].image && !free_c) free_c = &crops[i];
     }
     static u32 next_victim;
@@ -2513,7 +2513,7 @@ static VkImageView crop_view(Surface *rt, const TextureDesc *d, int srgb) {
         if (!v) { bury_grave((Grave){img, VK_NULL_HANDLE, VK_NULL_HANDLE, a}); return VK_NULL_HANDLE; }
         VkCommandBuffer cb = outside();
         image_layout(cb, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-        *free_c = (Crop){rt->guest, w, h, (u32)srgb, rt->image, img, a, v};
+        *free_c = (Crop){rt->guest, w, h, (u32)srgb, rt->storage, rt->image, img, a, v};
         c = free_c;
         tex_gen++;
         fprintf(stderr, "[vulkan] a render target (%ux%u) read through a smaller header (%ux%u): its top-left part is copied (%ux%u)\n",
