@@ -171,6 +171,19 @@ HLE_WRAP(71016d7730) {
             else if (left == 1) {
                 st16(self + 0x66, 0);
                 sd_ended = 1;
+                /* (+0x5e: the step's latch of the game's own "the match is over" - main+0x16d5e50 asks main+0x16acd30 while it
+                 * is 0 and keeps the answer there. At TIME! of a tie the game sometimes answers "over" before the sudden death
+                 * is set up (kind 1 asked at the fight's last logic frame, taken back above, the latch left at 1): the
+                 * session then ended with that latch set, the scene took the match as over - no new session, the game left
+                 * the gathering, the pad frame controller stayed in its online mode, both games stalled 10 s and split
+                 * (wsdB2, sdB1 2026-11-17; every passing tie had 0 there). The sudden death is the match going on: cleared.
+                 * SSBU_RB_SD_KEEP_LATCH=1: left set, as before) */
+                const char *keep_latch = getenv("SSBU_RB_SD_KEEP_LATCH");
+                if (ld8(self + 0x5E) && !(keep_latch && *keep_latch == '1')) {
+                    fprintf(stderr, "[net] rollback's Online match, a sudden death's hold: the step's \"match over\" latch (+0x5e = %u) cleared\n",
+                            ld8(self + 0x5E));
+                    st8(self + 0x5E, 0);
+                }
                 fprintf(stderr, "[net] rollback's Online match, a sudden death's hold: the step's session ended as the game ends it (kind %u, code %u; "
                                 "logic frame %u)\n", asked, ld16(self + 0x64), ld32(0x71052c5184ull));
                 static Cpu keep_c;
