@@ -66,6 +66,8 @@ The **Mods** page lists every installed mod with its own switch: the same switch
 
 **ARCropolis code patches** are the fixes ARCropolis makes to the game's code for costume slots that mods add (c08 and up). They have a switch of their own: **auto** (the default) turns them on while a mod runs and off otherwise, so the game with no mod runs its own code, as an unmodded game. They count when the game starts, and players online need the same setting. `SSBU_CODE_PATCHES=1` or `0` sets them for one start (tests).
 
+**Reloading a mod's files in training** (for mod makers) is off by default. Turn it on with `hot_reload_mod_assets = 1` in the `[opensmash]` section of `config\launcher.ini` before the game starts. In training mode, **L + R + A** (the training reset) then also copies the mod files you changed on disk into the match: animations, parameters and material values change at once. A file that grew past the size the match loaded, and a model or texture the graphics card already has, need a new match.
+
 The settings are kept in files: `display.ini`, `controllers.ini` and the `online_*.txt` files in the **`config`** folder inside the WindowSmash folder. (Older versions kept them in the WindowSmash folder itself; the first start of a newer one copies them into `config` once, and from then on the copies left in the WindowSmash folder are not read.) You can still edit those files by hand, and the settings keep your comments in them. Some things are only in the files, such as settings for a whole kind of controller ([below](#controllersini)).
 
 ## Controls
