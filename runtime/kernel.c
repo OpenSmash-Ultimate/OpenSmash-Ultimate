@@ -1224,6 +1224,12 @@ static void system_call(Cpu *c, u32 n) {
         void *s = kernel_session_of(h);
         if (!s) { x[0] = R_INVALID_HANDLE; return; }
         x[0] = ipc_request(c, s, n == 0x21 ? c->tpidrro : x[0], n == 0x21 ? 0x100 : x[1]);
+#ifdef _WIN32
+        {   /* (rollback: the display buffer was handed out or refused - hle_rb_core.c rb_wait_point; no lock is held here) */
+            extern volatile LONG rb_vi_point; void rb_wait_point(Cpu *c);
+            if (rb_vi_point) rb_wait_point(c);
+        }
+#endif
         return;
     }
     }

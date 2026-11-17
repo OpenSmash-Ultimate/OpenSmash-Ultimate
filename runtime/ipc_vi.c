@@ -113,11 +113,13 @@ void vi_lat_poll(u64 buttons) {
 
 /* Under the queue's lock: the oldest queued buffer becomes the one shown (copied to `shown`) and
  * the one shown before is free again. Returns its slot, or -1 if none is queued. */
+static int vi_reacq = -1;   /* (rollback: the slot on screen when a catch-up's load freed it - vi_rb_load) */
 static int take_oldest(void) {
     int oldest = -1;
     for (int i = 0; i < SLOTS; i++)
         if (queue.slots[i].state == QUEUED && (oldest < 0 || queue.slots[i].queued_at < queue.slots[oldest].queued_at)) oldest = i;
     if (oldest >= 0) {
+        vi_reacq = -1;   /* (another picture is on screen now) */
         for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == ACQUIRED) queue.slots[i].state = FREE;
         queue.slots[oldest].state = ACQUIRED;
         WakeAllConditionVariable(&queue.freed);   /* (a buffer came free: DEQUEUE_BUFFER's wait, SSBU_VI_DEQUEUE_WAIT_MS) */
@@ -334,6 +336,19 @@ void *vi_rb_save(void) {
 void vi_rb_load(const void *p) {
     const ViSlot *s = p;
     queue_lock();
+    /* (round 6) The slot on screen now. The catch-up needs every slot free, to give its frames the slots of their first
+     * pass (rb_dequeue_pick), so the one on screen is let go below with the queued ones. But it stayed free after the
+     * catch-up: the first real frame after a rollback found a buffer at once, did not wait for the display, and the
+     * frame after it ran straight on in the same refresh (its save too): a rollback's frame and the next one back to
+     * back, 28-31 ms of work with no wait in between, where the first pass had a wait. Now the first DequeueBuffer after
+     * the catch-up takes that slot as on screen again, if no picture was shown meanwhile and it is still free: the queue
+     * is then as on the first pass (one in the game's hands, the catch-up's last picture queued, one on screen), and the
+     * game waits for the refresh as in any frame. SSBU_RB_VI_REACQ=0: as before. */
+    static int reacq_on = -1;
+    if (reacq_on < 0) { const char *e = getenv("SSBU_RB_VI_REACQ"); reacq_on = e && *e ? atoi(e) : 0; }
+    int on_screen = -1;
+    for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == ACQUIRED) on_screen = i;
+    vi_reacq = reacq_on && rb_vi_catchup() ? on_screen : -1;
     for (int i = 0; i < SLOTS; i++) { queue.slots[i].state = s[i].state; queue.slots[i].queued_at = s[i].queued_at; queue.slots[i].gpu_mark = s[i].gpu_mark; queue.slots[i].keep = 0; }
     keep_pending = 0;
     /* (a rollback's load: the frames the save had queued, and the one shown, were shown on the first pass. Let
@@ -412,6 +427,10 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
     case DEQUEUE_BUFFER: {   /* never blocks: "would block" sends the client back to the event */
         int slot = -1;
         u64 freemask = 0;
+        if (vi_reacq >= 0 && rb_fast <= 0) {   /* (the first real frame after a catch-up: see vi_rb_load) */
+            if (queue.slots[vi_reacq].has_buffer && queue.slots[vi_reacq].state == FREE) queue.slots[vi_reacq].state = ACQUIRED;
+            vi_reacq = -1;
+        }
         for (int i = 0; i < SLOTS; i++)
             if (queue.slots[i].has_buffer && queue.slots[i].state == FREE) { freemask |= 1ull << i; if (slot < 0) slot = i; }
         /* (round 4, SSBU_VI_DEQUEUE_WAIT_MS=<ms>, off unless set: with no free buffer the answer was "would block" at
@@ -433,6 +452,10 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
             extern void (*kernel_pace_hook)(int phase);
             if (kernel_pace_hook) kernel_pace_hook(slot < 0 ? 2 : 3);
         }
+#ifdef _WIN32
+        {   extern volatile LONG rb_vi_point; extern volatile LONG rb_fast;   /* (hle_rb_core.c rb_wait_point, called once this request is answered) */
+            if (rb_fast <= 0) rb_vi_point = slot < 0 ? 2 : 1; }
+#endif
         if (slot < 0) {
             w32(out, 0xFFFFFFFF);
             w32(out, 0);

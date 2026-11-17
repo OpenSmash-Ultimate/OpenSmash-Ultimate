@@ -159,9 +159,14 @@ def run(tag, args):
         time.sleep(2)
     el = time.time() - t0
     meds = [(re.match(r"BENCH \d+ (\S+)", l).group(1), float(re.search(r"rbmed ([\d.]+)", l).group(1)), float(re.search(r"norm ([\d.]+)", l).group(1))) for l in lines]
+    # (round 6: the normal ticks without a save and with one, every tick's mean, the share of rollback ticks over 16.7 ms)
+    def col(name, l):
+        m = re.search(r"\b%s ([\d.]+)" % name, l)
+        return float(m.group(1)) if m else 0.0
     if len(meds) == len(st_list):
-        summ = "BENCH SUMMARY %d stages: rollback tick mean of medians %.3f ms, normal %.3f ms | %s" % (
-            len(meds), st.mean(m[1] for m in meds), st.mean(m[2] for m in meds), ", ".join("%s %.2f" % (m[0], m[1]) for m in meds))
+        summ = "BENCH SUMMARY %d stages: rollback tick mean of medians %.3f ms, normal %.3f ms (without a save %.3f, with one %.3f; every tick's mean %.3f; rollback ticks over 16.7 ms %.1f %%) | %s" % (
+            len(meds), st.mean(m[1] for m in meds), st.mean(m[2] for m in meds), st.mean(col("nosave", l) for l in lines), st.mean(col("withsave", l) for l in lines),
+            st.mean(col("allmean", l) for l in lines), st.mean(col("over", l) for l in lines), ", ".join("%s %.2f" % (m[0], m[1]) for m in meds))
         lines.append(summ)
     else:
         summ = "NO SUMMARY (%d of %d stages)" % (len(meds), len(st_list))
@@ -171,9 +176,12 @@ def run(tag, args):
     with open(os.path.join(OUT, "progress.log"), "a") as f: f.write(msg + "\n")
     print(msg)
     for l in lines: print(l[:400])
+    for l in lines:   # (the line's tail: the normal ticks apart, the collector)
+        m = re.search(r"\| (normal ticks apart: .*)$", l)
+        if m: print("   " + m.group(1)[:300])
 
 
-COLS = ["rbmed", "p99", "over", "norm", "real", "save", "load", "first", "others", "hash", "lastwait"]
+COLS = ["rbmed", "p99", "over", "norm", "real", "save", "load", "first", "others", "hash", "lastwait", "nosave", "withsave", "allmean"]
 def sum_(tags):
     runs, order = {}, []
     for t in tags:
