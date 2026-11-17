@@ -124,7 +124,8 @@ namespace OpenSmash.Launcher
             var me = _account != null && _account.SignedIn ? _account.Me : null;   // (signed in = the profile is read)
             if (me == null)
             {
-                string label = _accountBusy ? "FINISH IN THE BROWSER  ×" : "SIGN IN WITH DISCORD";
+                // (the accounts site offers Discord and e-mail; without it the browser goes straight to Discord)
+                string label = _accountBusy ? "FINISH IN THE BROWSER  ×" : _account?.Service.SignInPage != null ? "SIGN IN" : "SIGN IN WITH DISCORD";
                 float w = Theme.TextWidth(g, label, f, sp) + 32 * s, h = 32 * s;
                 string id = _accountBusy ? "discord:cancel" : "discord:signin";
                 Theme.ButtonAnimated(g, label, x, cy - h / 2, w, h, s, primary: false, Hov(id, _hover == id), true, 12 * s, _alpha, press: Press(id));

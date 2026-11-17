@@ -93,6 +93,30 @@ static class Program
         Check(Account.Callback.Parse("GET /callback/abc?error=access_denied&error_description=The+user+said+no HTTP/1.1", "abc").Error == "The user said no", "error shown");
         var svc = AccountService.Load(null);
         Check(!svc.Configured || Environment.GetEnvironmentVariable("OPENSMASH_SUPABASE_URL") != null, "the repository's build has no service set");
+        // the sign-in page: OpenSmash's accounts site by default, whose /launcher page answers /callback?state=..&refresh_token=..
+        if (!svc.Configured && Environment.GetEnvironmentVariable("OPENSMASH_SIGNIN_PAGE") == null)      // (the repository build: a release may name its own pages)
+        {
+            Check(svc.SignInPage == "https://account.opensmashultimate.com/launcher" && AccountService.DefaultSignInPage == svc.SignInPage, "default sign-in page: the accounts site (" + svc.SignInPage + ")");
+            Check(svc.AccountPage == "https://account.opensmashultimate.com/account", "default account page");
+            string sroot = Path.Combine(Path.GetTempPath(), "opensmash-svc-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path.Combine(sroot, "config"));
+            string sfile = Path.Combine(sroot, "config", "account_service.json");
+            try
+            {
+                File.WriteAllText(sfile, "{\"sign_in_page\":\"direct\"}");
+                Check(AccountService.Load(sroot).SignInPage == null, "\"direct\": no sign-in page, Discord straight from Supabase (PKCE)");
+                File.WriteAllText(sfile, "{\"url\":\"https://example.supabase.co\",\"publishable_key\":\"k\"}");
+                var own = AccountService.Load(sroot);
+                Check(own.Configured && own.SignInPage == null && own.AccountPage == null, "a service of one's own has no accounts site unless it names one");
+                File.WriteAllText(sfile, "{\"url\":\"https://example.supabase.co\",\"publishable_key\":\"k\",\"sign_in_page\":\"https://example.org/launcher\"}");
+                Check(AccountService.Load(sroot).SignInPage == "https://example.org/launcher", "a service's own sign-in page");
+                File.WriteAllText(sfile, "{\"sign_in_page\":\"http://example.org/launcher\"}");
+                Check(AccountService.Load(sroot).SignInPage == AccountService.DefaultSignInPage, "a sign-in page must be https: an http one is not used");
+                File.WriteAllText(sfile, "{\"sign_in_page\":\"http://127.0.0.1:3012/launcher\"}");
+                Check(AccountService.Load(sroot).SignInPage == "http://127.0.0.1:3012/launcher", "a sign-in page on this PC (tests)");
+            }
+            finally { try { Directory.Delete(sroot, true); } catch { } }
+        }
 
         // ---- online pass, reports
         Check(OnlinePass.Expiry("00000000-0000-4000-8000-000000000001|Alice|1800000000." + new string('f', 64)) == 1800000000, "ticket expiry");

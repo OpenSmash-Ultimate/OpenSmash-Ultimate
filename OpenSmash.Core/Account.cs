@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // OpenSmash accounts: the SSBU Arena accounts service (one Supabase project for both games), with Discord as the
 // identity. Sign-in in the player's browser (RFC 8252, a loopback redirect to http://127.0.0.1:<random port>):
-// - default: Supabase's own OAuth with PKCE (provider discord). The browser comes back with ?code=..., which only this
-//   launcher can turn into a session (it alone has the code verifier). Supabase must allow the redirect
-//   http://127.0.0.1:*/** (Auth > URL Configuration > Redirect URLs);
-// - or, with "sign_in_page" set (account_service.json): a sign-in page of the site that sends the browser back with
-//   ?state=..&refresh_token=.. (SSBU Arena's /launcher page does this).
+// - default: OpenSmash's accounts site (AccountService.DefaultSignInPage, https://account.opensmashultimate.com/launcher),
+//   where the player signs in with Discord or with e-mail and password; the page sends the browser back with
+//   ?state=..&refresh_token=.. ("sign_in_page" in account_service.json or OPENSMASH_SIGNIN_PAGE names another page);
+// - without a sign-in page ("sign_in_page": "direct", or a service of one's own set by the install's config or
+//   OPENSMASH_SUPABASE_URL): Supabase's own OAuth with PKCE (provider discord). The browser comes back with ?code=...,
+//   which only this launcher can turn into a session (it alone has the code verifier). Supabase must allow the redirect
+//   http://127.0.0.1:*/** (Auth > URL Configuration > Redirect URLs).
 // The session (the refresh token) is kept for this user only: DPAPI on Windows, a file only the user can read elsewhere.
 // The lobby ticket ("<user id>|<name>|<expiry>.<HMAC>", public.lobby_ticket) lets the game into the official lobby.
 // The publishable key is meant for clients: what it can do is decided by Row Level Security and the database functions.
@@ -41,6 +43,13 @@ namespace OpenSmash.Core
     {
         public string Url, Key, SignInPage, AccountPage;
         public bool Configured => !string.IsNullOrEmpty(Url) && !string.IsNullOrEmpty(Key);
+        /// <summary>OpenSmash's accounts site: the sign-in page the launcher opens (Discord, or e-mail and password) and the
+        /// player's account page. They belong to the accounts service built into the release.</summary>
+        public const string DefaultSignInPage = "https://account.opensmashultimate.com/launcher";
+        public const string DefaultAccountPage = "https://account.opensmashultimate.com/account";
+        /// <summary>"sign_in_page": "direct" = no sign-in page: Discord straight from Supabase (PKCE)</summary>
+        public const string Direct = "direct";
+        bool ownService;          // the service comes from the install's config or the environment, not from the build
 
         /// <summary>OPENSMASH_SUPABASE_URL / _KEY, else config/account_service.json of the install, else the one built in</summary>
         public static AccountService Load(string root)
@@ -55,20 +64,39 @@ namespace OpenSmash.Core
             try
             {
                 string f = root == null ? null : Path.Combine(root, "config", "account_service.json");
-                if (f != null && File.Exists(f)) s.Read(File.ReadAllText(f));
+                if (f != null && File.Exists(f)) s.Read(File.ReadAllText(f), true);
             }
             catch { }
-            s.Url = Environment.GetEnvironmentVariable("OPENSMASH_SUPABASE_URL") ?? s.Url;
+            string envUrl = Environment.GetEnvironmentVariable("OPENSMASH_SUPABASE_URL");
+            if (!string.IsNullOrEmpty(envUrl)) { s.Url = envUrl; s.ownService = true; s.SignInPage = s.AccountPage = null; }
             s.Key = Environment.GetEnvironmentVariable("OPENSMASH_SUPABASE_KEY") ?? s.Key;
             s.SignInPage = Environment.GetEnvironmentVariable("OPENSMASH_SIGNIN_PAGE") ?? s.SignInPage;
             s.Url = s.Url?.TrimEnd('/');
+            // the accounts site goes with the built-in service; a service of one's own (a test server) has no page
+            // unless it names one
+            s.SignInPage = Page(s.SignInPage, s.ownService ? null : DefaultSignInPage);
+            s.AccountPage = Page(s.AccountPage, s.ownService ? null : DefaultAccountPage);
             return s;
         }
 
-        void Read(string json)
+        /// <summary>a page as configured: "direct" = none; a real one must be https (or this PC, for tests), because the
+        /// sign-in page is trusted with the player's sign-in; anything else counts as not given</summary>
+        internal static string Page(string value, string fallback)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return fallback;
+            value = value.Trim();
+            if (string.Equals(value, Direct, StringComparison.OrdinalIgnoreCase)) return null;
+            if (!Uri.TryCreate(value, UriKind.Absolute, out var u) || u.Fragment.Length > 0) return fallback;
+            bool local = u.Scheme == Uri.UriSchemeHttp && (u.Host == "127.0.0.1" || u.Host == "localhost");
+            return u.Scheme == Uri.UriSchemeHttps || local ? value : fallback;
+        }
+
+        void Read(string json, bool install = false)
         {
             using var d = JsonDocument.Parse(json);
             string Get(string n) => d.RootElement.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String && v.GetString().Length > 0 ? v.GetString() : null;
+            // (the install's file naming a service: its pages are the ones it names, not the built-in service's)
+            if (install && Get("url") != null) { ownService = true; SignInPage = AccountPage = null; }
             Url = Get("url") ?? Url; Key = Get("publishable_key") ?? Key;
             SignInPage = Get("sign_in_page") ?? SignInPage; AccountPage = Get("account_page") ?? AccountPage;
         }
@@ -105,7 +133,8 @@ namespace OpenSmash.Core
             catch (Exception e) { error?.Invoke(e.Message); return false; }
         }
 
-        /// <summary>sign-in with Discord in the browser; throws AccountException with a message for the player</summary>
+        /// <summary>sign-in in the browser (the accounts site: Discord or e-mail; without a sign-in page, Discord straight
+        /// from Supabase); throws AccountException with a message for the player</summary>
         public async Task SignInWithBrowserAsync(CancellationToken cancel)
         {
             if (!Service.Configured) throw new AccountException("Online accounts are not set up in this build of OpenSmash.");
