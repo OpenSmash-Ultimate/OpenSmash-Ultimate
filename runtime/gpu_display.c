@@ -727,6 +727,10 @@ int display_message(HWND h, UINT msg, WPARAM w, LPARAM l, LRESULT *result) {
     case WM_MENUCHAR:     /* (no "ding" for Alt+key) */
         *result = MAKELRESULT(0, MNC_CLOSE);
         return 1;
+    case WM_SYSCOMMAND:   /* (borderless / full screen have WS_SYSMENU, for minimising: a lone Alt press there must not
+                           * open the window's menu mode and swallow the next key, Alt being a key players bind) */
+        if (current_mode != MODE_WINDOWED && (w & 0xFFF0) == SC_KEYMENU && l == 0) { *result = 0; return 1; }
+        return 0;
     case WM_SIZING: {     /* a windowed frame keeps the picture's shape */
         if (current_mode != MODE_WINDOWED) return 0;
         RECT *r = (RECT *)l, f = frame_of((DWORD)GetWindowLongPtrW(h, GWL_STYLE), GetDpiForWindow(h));
