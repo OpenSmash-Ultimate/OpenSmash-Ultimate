@@ -1761,6 +1761,7 @@ namespace OpenSmash.Launcher
             RegionView();
             _iniValues["reports"] = FileSaysOff(Path.Combine(_repo, "config", "crash_reports.txt")) ? "off" : "on";
             _iniValues["telemetry"] = OpenSmash.Core.PerfReport.Enabled(_repo) ? "on" : "off";
+            _saveDisk = OpenSmash.Core.DiskSpace.Saving(_repo);   // (Storage page: config\save_disk.txt)
             var gpu = _settings.First(s => s.Key == "gpu");
             if (!gpu.Values.Contains(_iniValues["gpu"]))
             {
@@ -1797,7 +1798,7 @@ namespace OpenSmash.Launcher
                 catch { }
             }
             // (the server region and Auto's pick - the game's menu writes them too - and the reports' switch: config's own)
-            foreach (string name in new[] { "server_region.txt", "server_region_auto.txt", "crash_reports.txt" })
+            foreach (string name in new[] { "server_region.txt", "server_region_auto.txt", "crash_reports.txt", OpenSmash.Core.DiskSpace.SettingFile })
             {
                 try
                 {
@@ -1901,6 +1902,23 @@ namespace OpenSmash.Launcher
         }
 
         bool _persisting;
+
+        // "Save disk space" (Settings > Storage): config\save_disk.txt, which the installer and tools\build_game.py read
+        // at every build (OpenSmash.Core DiskSpace.cs). Off by default; written at once, like the other switches.
+        bool _saveDisk;
+
+        void ToggleSaveDisk()
+        {
+            if (!_settingsLoaded) ReadSettings();
+            try
+            {
+                OpenSmash.Core.DiskSpace.SetSaving(_repo, !_saveDisk);
+                _saveDisk = !_saveDisk;
+                _settingsStamp = SettingsFilesStamp();   // (what was just written is what the page shows)
+            }
+            catch { }
+            Invalidate();
+        }
 
         void PersistSettings()
         {
@@ -2563,6 +2581,7 @@ namespace OpenSmash.Launcher
             else if (id == "update:check") _ = CheckForUpdatesAsync(false);
             else if (id == "update:build") StartMaintenanceBuild();
             else if (id == "storage:refresh") _ = StorageStatusAsync();
+            else if (id == "storage:save_disk") ToggleSaveDisk();
             else if (id == "storage:move") _ = StorageMoveAsync();
             else if (id == "update:apply") _ = ApplyUpdateAsync();
             else if (id == "rebuild_prompt:cancel") { _rebuildPrompt = false; Invalidate(); }

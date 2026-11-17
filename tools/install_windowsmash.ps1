@@ -144,6 +144,13 @@ $VsInstallerDir = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\In
 $NeedDiskGb = 60
 # (SSBU_DATA_IN_PLACE=1, tools\build_game.py: the game's data is read from the game's own file, so the 14.5 GB
 # decrypted copy is never written)
+# (the launcher's "Save disk space", config\save_disk.txt = on: the build as with SSBU_DATA_IN_PLACE=1 and
+# SSBU_TRIM=c,nsp,map, where neither is set by hand - tools\build_game.py save_disk_apply reads the same file)
+$SaveDiskFile = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'config') 'save_disk.txt'
+if ((Test-Path -LiteralPath $SaveDiskFile) -and ([string](Get-Content -LiteralPath $SaveDiskFile -TotalCount 1 -ErrorAction SilentlyContinue)).Trim() -match '^(?i)on') {
+    if ($null -eq $env:SSBU_DATA_IN_PLACE) { $env:SSBU_DATA_IN_PLACE = '1' }
+    if ($null -eq $env:SSBU_TRIM) { $env:SSBU_TRIM = 'c,nsp,map' }
+}
 if ([string]$env:SSBU_DATA_IN_PLACE -eq '1') { $NeedDiskGb = 45 }
 $MinRamGb = 4        # (below 8 GB the build runs one compile at a time and the game is told to use less memory)
 $LowRamGb = 8

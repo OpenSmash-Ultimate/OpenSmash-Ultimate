@@ -209,6 +209,8 @@
     "Player 8": "Jugador 8",
     "Report a problem": "Informar de un problema",
     "Preparing the graphics driver  {0:N0} / {1:N0}": "Preparando el controlador gráfico  {0:N0} / {1:N0}",
-    "The game is preparing its shaders": "El juego está preparando sus sombreadores"
+    "The game is preparing its shaders": "El juego está preparando sus sombreadores",
+    "Save disk space": "Ahorrar espacio en disco",
+    "About 14 GB less: the game data is read from your game files, which must stay where they are. Counts from the next set-up or update.": "Unos 14 GB menos: los datos del juego se leen de tus archivos del juego, que deben quedarse donde están. Se aplica desde la próxima configuración o actualización."
   }
 }

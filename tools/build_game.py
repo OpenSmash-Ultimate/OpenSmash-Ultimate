@@ -951,6 +951,33 @@ def write_romfs_cfg(game, keys, the_program):
                      "data there as romfs.bin: unencrypted, with the 13.0.5 update applied (setup guide part 2).")
 
 
+SAVE_DISK_FILE = os.path.join("config", "save_disk.txt")
+SAVE_DISK = {"SSBU_DATA_IN_PLACE": "1", "SSBU_TRIM": "c,nsp,map"}
+
+
+def save_disk_setting(root=ROOT):
+    """The launcher's "Save disk space" (Settings > Storage; OpenSmash.Core DiskSpace.cs): config/save_disk.txt
+    says "on". Off when the file is missing."""
+    try:
+        with open(os.path.join(root, SAVE_DISK_FILE), encoding="utf-8") as f:
+            return f.read().strip().lower().startswith("on")
+    except OSError:
+        return False
+
+
+def save_disk_apply(root=ROOT, env=None):
+    """With the setting on, the build runs as with SSBU_DATA_IN_PLACE=1 (the game's data read from the game's own
+    file: about 14 GB less, the game files must stay where they are) and SSBU_TRIM=c,nsp,map (the disk a finished
+    build no longer needs given back). A variable already set, to anything, is left as it is: by hand wins.
+    Returns what it set."""
+    env = os.environ if env is None else env
+    if not save_disk_setting(root):
+        return {}
+    made = {k: v for k, v in SAVE_DISK.items() if k not in env}
+    env.update(made)
+    return made
+
+
 def data_in_place():
     """SSBU_DATA_IN_PLACE=1 (off unless set; Windows and Linux on x86-64): the game's encrypted data is not
     decrypted into a copy in dump/modules (14 GB and over a minute of a first install) but read from the game's own
@@ -1434,6 +1461,9 @@ def main():
     ap.add_argument("--check-ready", action="store_true",
                     help="only say (exit status 0) whether steps 3 to 8 are done, so that no game files are needed")
     a = ap.parse_args()
+    saving = save_disk_apply()
+    if saving:
+        log("Save disk space is on (the launcher's Settings > Storage): " + ", ".join(f"{k}={v}" for k, v in sorted(saving.items())))
     if a.check_ready:
         return 0 if prepared() else 1
     try:

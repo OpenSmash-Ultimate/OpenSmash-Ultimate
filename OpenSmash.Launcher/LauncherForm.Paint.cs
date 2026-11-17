@@ -2000,7 +2000,8 @@ namespace OpenSmash.Launcher
             float s = _s;
             var st = PushFade(g, Up((float)(Now - _viewAt), 0.2f), 16 * s);
             float cwIn = Math.Min(cw, 720 * s);
-            float ch = Math.Min(viewH, 420 * s);
+            float saveH = 78 * s;   // (the Save disk space row, between the text and the buttons)
+            float ch = Math.Min(viewH, 420 * s + saveH);
             float pad = 30 * s;
             using (var p = Theme.CutCorners(x, listTop, cwIn, ch, 18 * s))
             {
@@ -2013,10 +2014,22 @@ namespace OpenSmash.Launcher
             float rule = x + pad + Theme.TextWidth(g, "STORAGE", hf, hsp) + 14 * s;
             if (rule < x + cwIn - pad) HLine(g, rule, x + cwIn - pad, listTop + 26 * s);
             string text = _storageText.Length > 0 ? _storageText : "The game's files (dump) and the compiled game (build) take tens of GB. They can live on another drive: the move leaves a link in their place.";
-            Theme.DrawWrapped(g, text, FB(14 * s), A(Theme.Muted), x + pad, listTop + 50 * s, cwIn - pad * 2, ch - 140 * s);
+            Theme.DrawWrapped(g, text, FB(14 * s), A(Theme.Muted), x + pad, listTop + 50 * s, cwIn - pad * 2, Math.Max(0, ch - 140 * s - saveH));
             float bh = 44 * s, by = listTop + ch - bh - 28 * s, wMove = 260 * s, wRef = 150 * s;
             float xMove = x + cwIn - pad - wMove, xRef = xMove - 12 * s - wRef;
             bool can = !_storageBusy;
+            {
+                // Save disk space: one switch (config\save_disk.txt, OpenSmash.Core DiskSpace.cs), read by the installer and
+                // every update's build. Off by default.
+                if (!_settingsLoaded) ReadSettings();
+                float sy = by - saveH, wSw = 110 * s, hSw = 38 * s, xSw = x + cwIn - pad - wSw;
+                HLine(g, x + pad, x + cwIn - pad, sy);
+                Theme.DrawText(g, "Save disk space", FB(15 * s), A(Theme.Text), x + pad, sy + 8 * s, xSw - x - pad - 16 * s, 22 * s, StringAlignment.Near, StringAlignment.Near);
+                Theme.DrawWrapped(g, "About 14 GB less: the game data is read from your game files, which must stay where they are. Counts from the next set-up or update.",
+                    FB(12 * s), A(Theme.Muted), x + pad, sy + 32 * s, xSw - x - pad - 16 * s, saveH - 36 * s);
+                Theme.ButtonAnimated(g, _saveDisk ? "ON" : "OFF", xSw, sy + (saveH - hSw) / 2, wSw, hSw, s, _saveDisk, Hov("storage:save_disk", _hover == "storage:save_disk"), true, 12 * s, _alpha, press: Press("storage:save_disk"));
+                AddHit("storage:save_disk", xSw, sy + (saveH - hSw) / 2, wSw, hSw);
+            }
             Theme.ButtonAnimated(g, "REFRESH", xRef, by, wRef, bh, s, false, Hov("storage:refresh", can && _hover == "storage:refresh"), can, 12 * s, _alpha, press: Press("storage:refresh"));
             if (can) AddHit("storage:refresh", xRef, by, wRef, bh);
             Theme.ButtonAnimated(g, _storageBusy ? "WORKING…" : "MOVE TO ANOTHER DRIVE", xMove, by, wMove, bh, s, true, Hov("storage:move", can && _hover == "storage:move"), can, 13 * s, _alpha, press: Press("storage:move"));

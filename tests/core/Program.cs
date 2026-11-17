@@ -353,6 +353,19 @@ static class Program
         Check(!PerfReport.Enabled(troot), "performance summaries: off in the settings");
         Directory.Delete(troot, true);
 
+        // "Save disk space" (DiskSpace.cs): config\save_disk.txt, off by default; tools/build_game.py reads the same file
+        string droot = Path.Combine(Path.GetTempPath(), "os-core-disk-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(droot);
+        Check(!DiskSpace.Saving(droot), "save disk space: off by default (no file)");
+        DiskSpace.SetSaving(droot, true);
+        Check(DiskSpace.Saving(droot) && File.ReadAllText(Path.Combine(droot, "config", "save_disk.txt")) == "on\n", "save disk space: on is written to config\\save_disk.txt");
+        DiskSpace.SetSaving(droot, false);
+        Check(!DiskSpace.Saving(droot) && File.ReadAllText(Path.Combine(droot, "config", "save_disk.txt")) == "off\n", "save disk space: off again");
+        File.WriteAllText(Path.Combine(droot, "config", "save_disk.txt"), "ON \r\n");
+        Check(DiskSpace.Saving(droot), "save disk space: read whatever the case and line ending");
+        Check(DiskSpace.DataInPlace == "SSBU_DATA_IN_PLACE" && DiskSpace.Trim == "SSBU_TRIM" && DiskSpace.TrimWhat == "c,nsp,map", "save disk space: the build's own switches");
+        Directory.Delete(droot, true);
+
         FileChecks();
 
         Console.WriteLine($"{passed} passed, {failed} failed");
