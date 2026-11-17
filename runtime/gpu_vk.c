@@ -994,6 +994,7 @@ static VkPresentModeKHR wanted_mode(void) {
      * of 60: the swap chain's own wait for the vblank, FIFO, paces the frames instead; tear-free either way) */
     if (display_present_sync()) return VK_PRESENT_MODE_FIFO_KHR;
     if (have_mailbox) return VK_PRESENT_MODE_MAILBOX_KHR;   /* clock / display pacing: the newest frame at the next refresh */
+    if (display_present_odd_rate()) return VK_PRESENT_MODE_FIFO_KHR;   /* (tear-free at 144/165 Hz without mailbox: gpu_display.c) */
     return have_immediate ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
 }
 

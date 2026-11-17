@@ -123,15 +123,6 @@ static const char DEFAULT_INI[] =
     ";   display: as clock (Linux has no wait for the monitor's refresh here).\n"
 #endif
     "pacing = clock\n"
-    "; refresh = keep | auto | 60 | 120 | 240\n"
-    ";   The game draws 60 frames a second. A monitor shows them evenly only if its rate is a multiple of 60 (60, 120,\n"
-    ";   240): at 165 Hz a frame gets 2 refreshes and then 3 (2.75 a frame), and a cursor moving across the screen\n"
-    ";   visibly steps. No setting of pacing can spread 60 frames evenly over 165 refreshes - that is what vrr is for:\n"
-    ";   the display follows the frames (a G-SYNC / FreeSync monitor, with VRR on for windowed and full screen mode in\n"
-    ";   the driver's control panel). keep (the default): the monitor is left alone. auto: switch it to 120 Hz where it\n"
-    ";   has such a mode, else 60 Hz, while the game runs and back afterwards (for a monitor whose VRR cannot engage).\n"
-    ";   60, 120, 240: that rate while the game runs.\n"
-    "refresh = keep\n"
     "; latency = 1-3: how many frames the graphics card may work ahead. Lower is more responsive.\n"
     ";   (the Vulkan renderer keeps 2 at least: with 1 the processor and the card wait for each other every frame)\n"
     "latency = 3\n"
@@ -207,9 +198,6 @@ static void parse_window(const char *v) {
     else if (!_stricmp(v, "fullscreen")) cfg.mode = MODE_FULLSCREEN;
     else fprintf(stderr, "[display] window is windowed, borderless or fullscreen, not '%s'\n", v);
 }
-
-static void parse_refresh(const char *v);   /* (the monitor's rate while the game runs: below) */
-static int monitor_hz(void);                 /* (the window's monitor, in Hz; 0 unknown) */
 
 static void parse_pacing(const char *v) {
     if (!_stricmp(v, "clock")) cfg.pacing = PACING_CLOCK;
@@ -297,7 +285,6 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else if (!_stricmp(key, "width")) cfg.width = atoi(value);
         else if (!_stricmp(key, "height")) cfg.height = atoi(value);
         else if (!_stricmp(key, "pacing")) parse_pacing(value);
-        else if (!_stricmp(key, "refresh")) parse_refresh(value);
         else if (!_stricmp(key, "latency")) cfg.latency = atoi(value);
         else if (!_stricmp(key, "low_latency")) cfg.low_latency = atoi(value) != 0;
         else if (!_stricmp(key, "runahead")) (void)value;   /* (ignored: run-ahead is off for everyone, issue #250; SSBU_RUNAHEAD only) */
@@ -678,79 +665,6 @@ void display_show_window(void) {
     if (InterlockedCompareExchange(&shown, 1, 0) != 0) return;
     PostMessageW(game_window, WM_DISPLAY_SHOW, 0, 0);
 }
-/* ---- the monitor's refresh rate while the game runs ---------------------------------------- */
-/* The game draws 60 frames a second, and a monitor shows them evenly only at a rate 60 divides (60, 120, 240). At
- * 165 Hz - the common 1920x1200 laptop panel - a frame gets 2 refreshes and then 3, so a cursor crossing the screen
- * steps. VRR is the answer (the display follows the frames); this is the fallback for a monitor where it cannot
- * engage, and it is off unless asked for: `refresh = auto` switches to 120 Hz where the monitor has such a mode, else
- * to 60 Hz, while the game runs, and puts the mode back when it ends. */
-static char refresh_want[8] = "keep";
-static int refresh_switched;
-#ifdef _WIN32
-static DEVMODEW refresh_saved;
-
-static void parse_refresh(const char *v) {
-    if (!_stricmp(v, "keep") || !_stricmp(v, "off") || !_stricmp(v, "0")) snprintf(refresh_want, sizeof refresh_want, "keep");
-    else if (!_stricmp(v, "auto")) snprintf(refresh_want, sizeof refresh_want, "auto");
-    else {
-        int hz = atoi(v);
-        if (hz >= 24 && hz <= 500) snprintf(refresh_want, sizeof refresh_want, "%d", hz);
-        else fprintf(stderr, "[display] refresh is auto, keep or a rate (60, 120, 240), not '%s': keep it is\n", v);
-    }
-}
-
-/* A mode of the same size at `hz` Hz: 1 when the monitor was switched (the old mode is kept for display_refresh_restore). */
-static int refresh_set(int hz) {
-    DEVMODEW cur;
-    ZeroMemory(&cur, sizeof cur);
-    cur.dmSize = sizeof cur;
-    if (!EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS, &cur) || (int)cur.dmDisplayFrequency == hz) return 0;
-    DEVMODEW dm = cur;
-    dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | DM_DISPLAYFREQUENCY;
-    dm.dmDisplayFrequency = hz;
-    if (ChangeDisplaySettingsExW(NULL, &dm, NULL, CDS_FULLSCREEN, NULL) != DISP_CHANGE_SUCCESSFUL) return 0;
-    refresh_saved = cur;
-    refresh_switched = 1;
-    InterlockedExchange(&monitor_changed, 1);   /* (the pacing reads the rate again) */
-    return 1;
-}
-
-/* Called once the window's monitor is known. 1 when the monitor was switched. */
-static int refresh_begin(void) {
-    if (refresh_switched) return 1;
-    if (!_stricmp(refresh_want, "keep") || cfg.speed != 1) return 0;
-    if (cfg.pacing == PACING_VRR) return 0;   /* (VRR is the way to a 165 Hz monitor: the display follows the frames) */
-    int hz = monitor_hz();
-    if (hz <= 61) return 0;                   /* (unknown, or already one refresh a frame) */
-    int want = _stricmp(refresh_want, "auto") ? atoi(refresh_want) : (hz > 121 ? 120 : 60);
-    if (want != hz && want > 0 && refresh_set(want)) {
-        fprintf(stderr, "[display] the monitor's %d Hz cannot show 60 frames evenly (%g refreshes a frame): switched to %d Hz while the game runs "
-                "(refresh = %s)\n", hz, hz / 60.0, want, refresh_want);
-        return 1;
-    }
-    if (want != 60 && refresh_set(60)) {
-        fprintf(stderr, "[display] the monitor's %d Hz cannot show 60 frames evenly (%g refreshes a frame): switched to 60 Hz while the game runs "
-                "(it has no %d Hz mode)\n", hz, hz / 60.0, want);
-        return 1;
-    }
-    fprintf(stderr, "[display] the monitor's %d Hz cannot show 60 frames evenly, and no mode 60 divides could be set: paced as before\n", hz);
-    return 0;
-}
-
-/* The mode the game found, back: at the end of the run (window closed). */
-void display_refresh_restore(void) {
-    if (!refresh_switched) return;
-    refresh_switched = 0;
-    if (ChangeDisplaySettingsExW(NULL, &refresh_saved, NULL, CDS_FULLSCREEN, NULL) != DISP_CHANGE_SUCCESSFUL)
-        fprintf(stderr, "[display] the monitor's %lu Hz could not be put back: set it in Windows' display settings\n",
-                (unsigned long)refresh_saved.dmDisplayFrequency);
-}
-#else
-static void parse_refresh(const char *v) { (void)v; }
-static int refresh_begin(void) { return 0; }
-void display_refresh_restore(void) {}
-#endif
-
 #endif
 
 int display_take_size(unsigned *w, unsigned *h) {
@@ -974,6 +888,9 @@ int display_present_sync(void) {   /* (only while `display` pacing is chosen and
 }
 
 int display_pacing_vrr(void) { load(); return cfg.pacing == PACING_VRR && cfg.speed == 1; }
+/* (`display` pacing on a monitor whose rate 60 does not divide: the renderer presents without blocking, but only where that
+ * is tear-free - mailbox. A card without mailbox gets FIFO there, as before, rather than immediate's tearing) */
+int display_present_odd_rate(void) { load(); return cfg.pacing == PACING_DISPLAY && cfg.speed == 1 && vblank_odd_rate != 0; }
 
 void *gfx_display_output(void);   /* gpu_d3d11.c: the swap chain's output (IDXGIOutput, referenced), or NULL */
 
@@ -1010,7 +927,7 @@ static int vblank_tick(void) {
              * refreshes and then three. The presents stay non-blocking, so a late frame costs no extra refresh) */
             if (!divisor && hz > 61)
                 fprintf(stderr, "[display] %d Hz is not a multiple of 60 (%g refreshes a frame): paced 60 times a second and presented at the next "
-                                "refresh; a 60/120/240 Hz mode, `refresh = auto`, or VRR is evenly paced\n", hz, hz / 60.0);
+                                "refresh; a 60/120/240 Hz mode or VRR is evenly paced\n", hz, hz / 60.0);
         }
     }
     /* (again at each monitor change: a window moved to a 60 Hz one. Kept for the log: it no longer changes the present mode.) */
@@ -1032,14 +949,19 @@ static int vblank_tick(void) {
      * "never more than a few refreshes" cap: at 120 Hz every tick then waited ~44.6 ms (five refreshes) and 295 frames
      * in 80 s were 46 ms hitches, all of them inside this loop - owner's log, 2026-11-17.) */
     LONGLONG budget = period * (divisor + extra + 2);
-    for (int waits = 0;;) {
+    static int over_budget;
+    int over = 0;
+    for (;;) {
         if (FAILED(IDXGIOutput_WaitForVBlank(output))) { failed = 1; InterlockedExchange(&vblank_failed_flag, 1); break; }
         QueryPerformanceCounter(&t1);
         if (!last) break;   /* (the first tick: one refresh is the answer) */
         if ((t1.QuadPart - last + period / 2) / period >= divisor + extra) break;
-        if (t1.QuadPart - t0.QuadPart > budget) { failed = 1; break; }   /* (the vblanks are not what the rate says) */
-        (void)waits;
+        if (t1.QuadPart - t0.QuadPart > budget) { over = 1; break; }   /* (the vblanks are not what the rate says) */
     }
+    /* (one wait past its bound is a stall - this tick returns late, as the old cap did; several in a row are a monitor
+     * whose vblanks do not match its rate: clock pacing from then on, below) */
+    over_budget = over ? over_budget + 1 : 0;
+    if (over_budget >= 3) failed = 1;
     QueryPerformanceCounter(&t1);
     last = t1.QuadPart;
     /* (a wait that took too long - a stall, not a monitor that cannot be waited for - goes to clock pacing as before, without
