@@ -143,7 +143,9 @@ def main(argv):
         rb = re.findall(r"(\d+) rollbacks", text)
         direct = len(re.findall(r"\[net\].*(direct path|punched|introduc)", text, re.I))
         eos = len(re.findall(r"\[eos\]", text, re.I))
-        crash = len(re.findall(r"HOST EXCEPTION|GUEST TRAP", text))
+        # (the runtime writes "*** host exception ..." and "guest trap at ...": runtime/host.c - in lower case, which the
+        # older pattern did not match, so the one crash of the v0.4.0 pairs was not counted)
+        crash = len(re.findall(r"\*\*\* host exception|guest trap at|HOST EXCEPTION|GUEST TRAP", text))
         fights = len(re.findall(r"fight starts at logic frame", text))
         lines.append("game %d: fights %d, DESYNC lines %d, net check %s, compared %s, rollbacks %s, direct-path lines %d, EOS lines %d, crash lines %d"
                      % (g + 1, fights, des, again[-1] if again else "-", checked[-1] if checked else "-", rb[-1] if rb else "-", direct, eos, crash))
