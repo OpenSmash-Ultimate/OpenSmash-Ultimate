@@ -1132,21 +1132,23 @@ static void build(void)
         snprintf(r->value, sizeof r->value, "Customize controller");
         PadUsbAxes ua;
         int have_ua = pad && pad->usb_port >= 0 && padusb_axes(pad->usb_port, &ua);
-        if (have_ua) /* (a GameCube adapter: Windows' own reader, hle_padusb.c) */
+        if (have_ua || (pad && pad->pc_mode)) /* (a GameCube adapter: Windows' own reader, hle_padusb.c; or in PC mode, read by SDL) */
         {
             r = add(R_GC_SWITCH, K_CHOICE, W_NOW, "GameCube stick scaling",
-                    "1:1 Switch: the same numbers a Switch console uses for this adapter, no dead zone. OpenSmash original: the earlier scaling, with a dead zone and a reach that adjusts to your stick. Applies to all GameCube adapters.");
+                    have_ua ? "1:1 Switch: the same numbers a Switch console uses for this adapter, no dead zone. OpenSmash original: the earlier scaling, with a dead zone and a reach that adjusts to your stick. Applies to all GameCube adapters."
+                            : "1:1 Switch: an estimate of the numbers a Switch console uses (this adapter in PC mode scales the sticks itself; the Wii U mode is exact), no dead zone. OpenSmash original: the earlier scaling, with a dead zone. Applies to all GameCube adapters.");
             snprintf(r->value, sizeof r->value, "%s", pad_gc_switch() ? "1:1 Switch" : "OpenSmash original");
             note_env(r, "SSBU_GC_SWITCH");
-            add(R_PAD_RECAL, K_ACTION, W_NOW, "Recalibrate sticks",
-                "Measures the sticks' centre and reach again: let go of the sticks and triggers, then A or Enter. "
-                "(They are measured as the controller is plugged in, too.)");
+            if (have_ua)
+                add(R_PAD_RECAL, K_ACTION, W_NOW, "Recalibrate sticks",
+                    "Measures the sticks' centre and reach again: let go of the sticks and triggers, then A or Enter. "
+                    "(They are measured as the controller is plugged in, too.)");
         }
         if (pad)
         {
             r = add(R_PAD_DEADZONE, K_CHOICE, W_NOW, "Stick dead zone", "How much of the sticks' travel around the centre is ignored: raise it if a worn stick drifts.");
             snprintf(r->value, sizeof r->value, "%d%%", pad->deadzone);
-            if (pad->usb_port >= 0 && pad_gc_switch() && pad->dz_default)
+            if ((pad->usb_port >= 0 && pad_gc_switch() && pad->dz_default) || pad->pc_scaled)
                 snprintf(r->value, sizeof r->value, "none (1:1 Switch)"); /* (the default 10 stands aside there; another value counts) */
             r = add(R_PAD_STICKTAUNT, K_CHOICE, W_NOW, "Stick taunts", "On: the left stick's four directions press the taunt buttons and the stick no longer moves (use with D-pad moves). Off: the stick is the stick.");
             snprintf(r->value, sizeof r->value, "%s", on_off(pad->stick_taunts));

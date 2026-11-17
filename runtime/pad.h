@@ -54,6 +54,8 @@ typedef struct PadInfo {
     char map[16][40];
     u32 raw;
     int dz_default;            /* its dead zone is the unchosen default (a GameCube adapter in 1:1 mode uses none then) */
+    int pc_mode;               /* a GameCube adapter in PC mode (read by SDL): gc_switch estimates the console's sticks for it */
+    int pc_scaled;             /* ... and it does so now (no dead zone or outer zone of the player's own) */
     int gc;                    /* it plays as a GameCube controller (its L / R press point is the game's own)*/
     int usb_port;              /* the GameCube-adapter port it is read over (0-3), -1 not one */
     i32 axis[6];               /* the device's own stick/trigger values, as last read (lx, ly, rx, ry, lt, rt) */
