@@ -38,13 +38,16 @@ public sealed class Project
     public bool IsBuilt => File.Exists(GameExecutable);
 
     // Mirrors runtime/config_folder.h, including the lobby file's migration exception.
-    public string ConfigFile(string name)
+    public string ConfigFile(string name) => ConfigFile(Root, name);
+    public static string ConfigFile(string root, string name)
     {
         if (!ConfigNames.Contains(name)) throw new ArgumentException("Unknown configuration file.");
-        string migrated = PathIn("config", name);
-        return File.Exists(PathIn("config", "version.ini"))
-            && (name != "online_server.txt" || File.Exists(migrated)) ? migrated : PathIn(name);
+        string migrated = Path.Combine(root, "config", name);
+        return File.Exists(Path.Combine(root, "config", "version.ini"))
+            && (name != "online_server.txt" || File.Exists(migrated)) ? migrated : Path.Combine(root, name);
     }
+    // The folder of the game program, where the online files (discord.txt, the Discord SDK) are put beside it.
+    public static string GameDirectory(string root) => Path.GetDirectoryName(new Project(root, CurrentPlatform).GameExecutable)!;
 
     public static readonly string[] ConfigNames =
         ["display.ini", "controllers.ini", "online_name.txt", "online_server.txt", "online_direct.txt", "launcher.ini"];

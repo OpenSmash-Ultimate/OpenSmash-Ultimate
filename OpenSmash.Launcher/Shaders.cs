@@ -9,10 +9,14 @@ public sealed partial class MainWindow
     {
         var p=RequireProject();string marker=p.PathIn("dump","shadercache","complete.txt"),header=p.PathIn("runtime","gpu_shader_cache.h");
         if(!File.Exists(marker)||!File.Exists(header))return false;
-        var version=Regex.Match(File.ReadAllText(header),@"#define SHADER_CACHE_VERSION (\d+)");
-        if(!version.Success||!Regex.IsMatch(File.ReadAllText(marker),@"\bversion "+version.Groups[1].Value+@"\b"))return false;
+        string source=File.ReadAllText(header),text=File.ReadAllText(marker);
+        var version=Regex.Match(source,@"#define SHADER_CACHE_VERSION (\d+)");
+        if(!version.Success||!Regex.IsMatch(text,@"\bversion "+version.Groups[1].Value+@"\b"))return false;
+        // An older SPIR-V version's files have other names (#330), so only this version's "spirv g<version>." counts.
+        var spv=Regex.Match(source,@"#define SHADER_CACHE_SPV_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)");
+        string want=spv.Success?"\nspirv g"+(int.Parse(version.Groups[1].Value)*100+int.Parse(spv.Groups[1].Value))+".":"\nspirv ";
         string renderer=Surface.GetSetting("renderer");
-        return renderer=="direct3d11"||!File.Exists(p.PathIn("build","ssbu_glslang.dll"))||File.ReadAllText(marker).Contains("\nspirv ");
+        return renderer=="direct3d11"||!File.Exists(p.PathIn("build","ssbu_glslang.dll"))||text.Contains(want);
     }
     async Task AskShaders()
     {

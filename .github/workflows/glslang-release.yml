@@ -31,6 +31,7 @@ jobs:
           "tag=$tag" >> $env:GITHUB_OUTPUT
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
           "exists=$([int]($LASTEXITCODE -eq 0))" >> $env:GITHUB_OUTPUT
+          exit 0   # (gh release view fails when the release is missing: that is the "build it" answer, not a failed step)
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Build and publish
@@ -46,6 +47,6 @@ jobs:
           $hash = (Get-FileHash ssbu_glslang.dll -Algorithm SHA256).Hash.ToLower()
           Set-Content SHA256SUMS "$hash  ssbu_glslang.dll" -NoNewline
           Pop-Location
-          gh release create "${{ steps.tag.outputs.tag }}" --repo $env:GITHUB_REPOSITORY --title "glslang ${{ steps.tag.outputs.tag }}" `
+          gh release create "${{ steps.tag.outputs.tag }}" --repo $env:GITHUB_REPOSITORY --title "glslang ${{ steps.tag.outputs.tag }}" --prerelease --latest=false `
             --notes "ssbu_glslang.dll, the Vulkan renderer's shader translator (glslang 16.6.0, Khronos: BSD-3-Clause and others; SPIRV-Tools: Apache-2.0), built from commit ${{ github.sha }}. tools/build_game.py fetches it." `
             dist\ssbu_glslang.dll dist\SHA256SUMS

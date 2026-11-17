@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import cc
 import skyline
+import mods
 
 
 class ProbeTests(unittest.TestCase):
@@ -32,6 +33,68 @@ class ProbeTests(unittest.TestCase):
         (self.sky / "plugins.txt").write_text("", encoding="utf-8")
         with mock.patch.object(subprocess, "run") as run:
             self.assertFalse(self.probe())
+        run.assert_not_called()
+
+    def legacy_mod_view(self, arcropolis=True):
+        modules = self.tree / "dump/modules"
+        modules.mkdir()
+        (modules / "romfs.cfg").write_text("layered\nromfs_mods.layers\nbase.nca\n", encoding="utf-8")
+        (modules / "romfs_vanilla.cfg").write_text("layered\nromfs.layers\nbase.nca\n", encoding="utf-8")
+        (self.tree / "dump/mods").mkdir()
+        (self.tree / "dump/mods/applied.json").write_text(json.dumps({"mods": ["Enabled"], "files": 1}))
+        for name in ("Enabled", "Disabled"):
+            (self.tree / "mods" / name).mkdir(parents=True)
+        view = mods.Tree(str(self.tree))
+        state = view.load()
+        state["mods"]["Enabled"]["enabled"] = True
+        view.save(state)
+        if arcropolis:
+            plugin = self.tree / "skyline/plugins/libarcropolis.nro"
+            plugin.parent.mkdir(parents=True)
+            plugin.write_bytes(b"synthetic standard plugin")
+        return view
+
+    def test_legacy_archive_is_migrated_before_the_real_arcropolis_probe(self):
+        view = self.legacy_mod_view()
+        before = view.load()
+        # The actual apply path restores the archive and records ARCropolis mode;
+        # character/resource preparation is independent of this migration.
+        for name in ("characters_mod", "hide_shadowed_sources", "missing_shares",
+                     "select_screen_arcropolis", "sync_plugins"):
+            self.enterContext(mock.patch.object(mods, name))
+        def boot(command, **kwargs):
+            self.assertEqual(Path(view.cfg).read_bytes(), Path(view.vanilla_cfg).read_bytes())
+            self.assertTrue(view.applied()["arcropolis"])
+            self.assertEqual(view.load(), before)
+            return subprocess.CompletedProcess(command, 0)
+        with mock.patch.object(subprocess, "run", side_effect=boot) as run:
+            self.assertFalse(self.probe())
+        run.assert_called_once()
+
+    def test_native_mod_archive_is_kept_without_arcropolis(self):
+        view = self.legacy_mod_view(arcropolis=False)
+        before = Path(view.cfg).read_bytes()
+        with mock.patch.object(mods, "apply") as apply, \
+             mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)):
+            self.assertFalse(self.probe())
+        apply.assert_not_called()
+        self.assertEqual(Path(view.cfg).read_bytes(), before)
+
+    def test_already_migrated_archive_is_not_applied_again(self):
+        view = self.legacy_mod_view()
+        shutil.copyfile(view.vanilla_cfg, view.cfg)
+        (self.tree / "dump/mods/applied.json").write_text(json.dumps({"mods": ["Enabled"], "arcropolis": True}))
+        with mock.patch.object(mods, "apply") as apply, \
+             mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)):
+            self.assertFalse(self.probe())
+        apply.assert_not_called()
+
+    def test_failed_archive_migration_does_not_start_the_game(self):
+        self.legacy_mod_view()
+        with mock.patch.object(mods, "apply", side_effect=RuntimeError("synthetic preparation failure")), \
+             mock.patch.object(subprocess, "run") as run, \
+             self.assertRaisesRegex(RuntimeError, "synthetic preparation failure"):
+            self.probe()
         run.assert_not_called()
 
     def test_data_is_fresh_plugin_free_and_removed_after_each_boot(self):

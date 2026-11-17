@@ -1,5 +1,7 @@
 """tools/shader_aot.py's scan of data.arc for GPU programs. Made-up containers; no game files."""
 import os
+import importlib.util
+import runpy
 from pathlib import Path
 import sys
 import types
@@ -9,6 +11,21 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 import shader_aot  # noqa: E402
+
+
+@unittest.skipUnless(importlib.util.find_spec('zstandard'), 'needs the zstandard fallback package')
+class ZstdFallbackTests(unittest.TestCase):
+    def test_complete_and_every_truncated_frame(self):
+        import zstandard
+        # Force the pre-3.14 path even on CI's Python with compression.zstd.
+        with mock.patch.dict(sys.modules, {'compression': None, 'compression.zstd': None}):
+            decompress = runpy.run_path(str(ROOT / 'tools/shader_aot.py'))['zstd_decompress']
+        original = b'synthetic shader container, with no game data'
+        frame = zstandard.ZstdCompressor().compress(original)
+        self.assertEqual(decompress(frame), original)
+        for end in range(len(frame)):
+            with self.subTest(bytes=end), self.assertRaises(zstandard.ZstdError):
+                decompress(frame[:end])
 
 
 class EmptyFilesTests(unittest.TestCase):

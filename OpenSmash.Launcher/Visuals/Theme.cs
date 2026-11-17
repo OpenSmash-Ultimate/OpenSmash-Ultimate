@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using SkiaSharp;
+using OpenSmash.Launcher;
 
 
 using System.Linq;
@@ -48,9 +49,25 @@ namespace OpenSmash.Visuals
             return new FontFamily(SKTypeface.FromStream(stream));
         }
         readonly FontFamily InterRegular = LoadFont("Inter-Regular.ttf"), InterBold = LoadFont("Inter-Bold.ttf"), CascadiaMono = LoadFont("CascadiaMono.ttf");
-        public Font Display(float px) => new Font(Anton, px);
-        public Font Body(float px, bool bold = false) => new Font(bold ? InterBold : InterRegular, px, bold ? FontStyle.Bold : FontStyle.Regular);
-        public Font Mono(float px, bool bold = false) => new Font(CascadiaMono, px, bold ? FontStyle.Bold : FontStyle.Regular);
+        // Anton, Inter and Cascadia have no CJK glyphs: those languages draw with a system face that has them.
+        static readonly Dictionary<(string, bool), FontFamily?> LocalFaces = new();
+        static FontFamily? UiFontFamily(bool bold)
+        {
+            string sample = UiLocale.Language switch { "zh-CN" => "中", "ja" => "あ", "ko" => "한", _ => "" };
+            if (sample == "") return null;
+            lock (LocalFaces)
+            {
+                if (!LocalFaces.TryGetValue((UiLocale.Language, bold), out var family))
+                {
+                    var face = SKFontManager.Default.MatchCharacter(null, bold ? SKFontStyle.Bold : SKFontStyle.Normal, [UiLocale.Language], char.ConvertToUtf32(sample, 0));
+                    LocalFaces[(UiLocale.Language, bold)] = family = face == null ? null : new FontFamily(face);
+                }
+                return family;
+            }
+        }
+        public Font Display(float px, bool localize = true) => new Font(localize && UiFontFamily(false) is { } family ? family : Anton, px);
+        public Font Body(float px, bool bold = false) => new Font(UiFontFamily(bold) ?? (bold ? InterBold : InterRegular), px, bold ? FontStyle.Bold : FontStyle.Regular);
+        public Font Mono(float px, bool bold = false) => new Font(UiFontFamily(bold) ?? CascadiaMono, px, bold ? FontStyle.Bold : FontStyle.Regular);
 
         // cubic-bezier(.2, .8, .2, 1): the site's --ease
         public float Ease(float t)
@@ -79,8 +96,9 @@ namespace OpenSmash.Visuals
         // ---------------------------------------------------------------------------
         // Text
         public void DrawText(Graphics g, string text, Font font, Color color, float x, float y, float w, float h,
-            StringAlignment align = StringAlignment.Near, StringAlignment valign = StringAlignment.Center)
+            StringAlignment align = StringAlignment.Near, StringAlignment valign = StringAlignment.Center, bool localize = true)
         {
+            if (localize) text = UiLocale.Text(text);
             if (string.IsNullOrEmpty(text)) return;
             using var sf = new StringFormat { Alignment = align, LineAlignment = valign, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
             using var b = new SolidBrush(color);
@@ -90,6 +108,7 @@ namespace OpenSmash.Visuals
         // Wrapped paragraph, clipped to the box (last visible line gets an ellipsis).
         public void DrawWrapped(Graphics g, string text, Font font, Color color, float x, float y, float w, float h)
         {
+            text = UiLocale.Text(text);
             if (string.IsNullOrEmpty(text)) return;
             using var sf = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Near, Trimming = StringTrimming.EllipsisWord, FormatFlags = StringFormatFlags.LineLimit };
             using var b = new SolidBrush(color);
@@ -132,8 +151,9 @@ namespace OpenSmash.Visuals
             return w;
         }
 
-        public float TextWidth(Graphics g, string text, Font f, float spacing = 0)
+        public float TextWidth(Graphics g, string text, Font f, float spacing = 0, bool localize = true)
         {
+            if (localize) text = UiLocale.Text(text);
             if (string.IsNullOrEmpty(text)) return 0;
             if (spacing == 0) return g.MeasureString(text, f, 100000, Typo).Width;
             float w = 0;
@@ -143,6 +163,7 @@ namespace OpenSmash.Visuals
 
         public void DrawSpaced(Graphics g, string text, Font f, Brush b, float x, float y, float spacing)
         {
+            text = UiLocale.Text(text);
             if (string.IsNullOrEmpty(text)) return;
             if (spacing == 0) { g.DrawString(text, f, b, x, y, Typo); return; }
             float cx = x;

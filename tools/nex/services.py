@@ -38,6 +38,7 @@ class Powers(JsonStore):
     def __init__(self, state_dir):
         super().__init__(os.path.join(state_dir, "nex_powers.json") if state_dir else None)
         self.of_pid = self.load() or {}
+        self.last_of = {}    # pid -> the fighter of the record it posted last (since the server started)
 
     def content(self):
         return self.of_pid
@@ -49,6 +50,7 @@ class Powers(JsonStore):
                 return False
             mine = self.of_pid[str(pid)] = {}
         mine[str(record[0])] = record.hex()
+        self.last_of[pid] = record[0]
         self.dirty = True
         return True
 

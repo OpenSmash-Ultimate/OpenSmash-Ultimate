@@ -6,6 +6,12 @@ Players' games log in to it when they pick Online (runtime/hle_online.c sends NE
 lobby carries the datagrams to and from it like any other, and lets players the game server
 has put in one match talk to each other.
 
+The same TCP port answers HTTP: the GSP leaderboard (GET /leaderboard.json), aggregate lobby counts
+(GET /status.json), a player's own
+GSP and place (GET /gsp/me, GET /gsp/records, POST /gsp/profile, signed), and the results a game with its own NEX
+server uploads (POST /gsp/sync, signed), for the launchers, the game's Discord
+Rich Presence and the project's site (tools/nex/board.py).
+
     python3 ssbu_online_lobby.py [the lobby's options] [--state DIR] [--nex-log 0|1|2]
 
 ssbu-recomp's games are served only with --su-port (none by default: ssbu_relay.py's lobby on the
@@ -45,6 +51,9 @@ HANDSHAKES_PER_HOST = 8          # ...and from one address
 DRAIN_TIME = 30                  # seconds a stream's game may take to read what it has been sent
 WS_CONTROL = 125                 # largest WebSocket control frame (ping, pong, close: RFC 6455)
 WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+HTTP_METHODS = (b"GET ", b"HEAD", b"POST", b"OPTI")   # (a TCP connection that starts so is HTTP: tools/nex/board.py)
+HTTP_REQUEST = 8192              # bytes of an HTTP request's line and headers at most
+HTTP_BODY = 65536                # bytes of its body at most (answered 413 beyond; /gsp/sync carries results)
 
 
 def ip_int(text):
@@ -89,6 +98,8 @@ class OnlineLobby(relay.Lobby):
     def __init__(self, o):
         super().__init__(o)
         self.nex = make_server(self.nex_send, host="10.13.0.1", state_dir=o.state, log=self.say, verbose=o.nex_log)
+        if getattr(self.nex, "board", None) is not None:
+            self.nex.board.lobby = self   # (/status.json counts every connected game, tools/nex/board.py)
         self.nex.part_of = self.part_of
         self.streams = {}        # virtual address -> the player's open NEX streams (writers)
         self.handshakes = collections.Counter()   # address -> its TCP connections not known yet
@@ -183,6 +194,9 @@ class OnlineLobby(relay.Lobby):
                     del self.handshakes[peer[0]]
         try:
             head = await asyncio.wait_for(reader.readexactly(16), HANDSHAKE_TIME)
+            if head[:4] in HTTP_METHODS:
+                await self.http(head, reader, writer)
+                return
             if head[:8] != PREFACE:
                 return
             vip, vport, port = struct.unpack(">IHH", head[8:])
@@ -264,6 +278,63 @@ class OnlineLobby(relay.Lobby):
                 writer.transport.abort()
             else:
                 writer.close()
+
+    # ---- the GSP leaderboard over HTTP, on the same TCP port (tools/nex/board.py) -----------------
+    async def http(self, head, reader, writer):
+        """One HTTP request (no keep-alive): HTTP_REQUEST bytes of line and headers and HTTP_BODY of body at most, in
+        HANDSHAKE_TIME, under the stream handshakes' limits. Nothing is logged (it would hold the callers' addresses)."""
+        try:
+            rest = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), HANDSHAKE_TIME)
+        except asyncio.LimitOverrunError:
+            return
+        request = head + rest
+        if len(request) > HTTP_REQUEST:
+            return
+        lines = request.decode("latin-1").split("\r\n")
+        parts = lines[0].split(" ")
+        if len(parts) != 3:
+            return
+        method, path = parts[0], parts[1].split("?", 1)[0]
+        headers = {}
+        for line in lines[1:]:
+            name, sep, value = line.partition(":")
+            if sep:
+                headers[name.strip().lower()] = value.strip()
+        body, too_big = b"", False
+        if method == "POST":
+            try:
+                n = int(headers.get("content-length", "0"))
+            except ValueError:
+                return
+            if n < 0:
+                return
+            if n > HTTP_BODY:
+                too_big = True
+            else:
+                body = await asyncio.wait_for(reader.readexactly(n), HANDSHAKE_TIME)
+        if too_big:
+            code, data = 413, b'{"error":"too large"}'
+        elif method == "OPTIONS":
+            code, data = 204, b""
+        elif method == "POST" and path == "/gsp/link":
+            # (Discord is asked off the event loop: the lobby's streams must not wait for it; the rest runs in the loop)
+            board = self.nex.board
+            job, refused = board.link_request(body, time.monotonic())
+            if refused:
+                code, data = refused
+            else:
+                me = await asyncio.get_running_loop().run_in_executor(None, board.link_ask, job[1])
+                code, data = board.link_finish(job, me)
+        else:
+            code, data = self.nex.board.http("GET" if method == "HEAD" else method, path, headers, body)
+        reason = {200: "OK", 204: "No Content", 400: "Bad Request", 403: "Forbidden", 404: "Not Found",
+                  405: "Method Not Allowed", 413: "Payload Too Large", 429: "Too Many Requests", 502: "Bad Gateway",
+                  503: "Service Unavailable"}.get(code, "Error")
+        out = (f"HTTP/1.0 {code} {reason}\r\nServer: ssbu-online\r\nContent-Type: application/json\r\n"
+               f"Content-Length: {len(data)}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, OPTIONS\r\n"
+               "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n").encode()
+        writer.write(out + (b"" if method == "HEAD" else data))
+        await asyncio.wait_for(writer.drain(), HANDSHAKE_TIME)
 
     async def run(self):
         async def nex_ticks():

@@ -149,7 +149,8 @@ Terminal window that shows the game's log as it goes; closing that window leaves
 | `launchers/Host SSBU Netplay.command` | `Host SSBU Netplay.bat` | Hosts a private room, and shows the address to give the others. |
 | `launchers/Join SSBU Netplay.command` | `Join SSBU Netplay.bat` | Joins a host's private room. |
 | `launchers/Unlock All Fighters.command` | `Unlock All Fighters.bat` | Unlocks every base-game fighter on your save ([DLC and unlocks](DLC-AND-UNLOCKS.md)). Close the game first. |
-| `launchers/Build WindowSmash.command` | `python toolsuild_game.py` | Builds the game from your files, when the installer has set up the tools. |
+| `launchers/Build WindowSmash.command` | `python tools/build_game.py` | Builds the game from your files, when the installer has set up the tools. |
+| `tools/mac/rebuild-all.command` | — | Rebuilds the game incrementally and checks the Python launcher syntax. |
 
 - The first time you play online, it asks for the name other players see and keeps it in
   `online_name.txt`.
@@ -267,8 +268,9 @@ chip and macOS version ([Getting help](../README.md#getting-help)).
 
 ## Building it by hand
 
-`launchers/Build WindowSmash.command` builds the game with what the installer set up. By hand, in
-Terminal in the WindowSmash folder:
+`launchers/Build WindowSmash.command` builds only the game. To rebuild the game and check the launcher
+too, run `bash tools/mac/rebuild-all.command`; both processes are incremental. By hand, in Terminal in
+the WindowSmash folder:
 
 1. **The tools:** Apple's Command Line Tools 16 or newer (`xcode-select --install`), and a Python 3.10
    or newer, running as arm64, of WindowSmash's own. The `python3` that comes with the Command Line

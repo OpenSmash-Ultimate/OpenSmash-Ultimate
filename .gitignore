@@ -101,3 +101,10 @@ tools/modmanager/installed.json
 /OpenSmash.app/
 /.OpenSmash-build-*
 /.OpenSmash-backup-*
+
+/tests/launcher_localization/bin/
+/tests/launcher_localization/obj/
+/tests/launcher_yuzu_ui/bin/
+/tests/launcher_yuzu_ui/obj/
+/tests/launcher_settings/bin/
+/tests/launcher_settings/obj/

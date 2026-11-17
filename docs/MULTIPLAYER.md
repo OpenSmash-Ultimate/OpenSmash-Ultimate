@@ -44,6 +44,8 @@ Whichever way you choose:
 3. **Every PC keeps its own save and its own `netplay_id.txt`.** Never copy `netplay_id.txt` to another PC: two PCs with the same one look like one player.
 4. **Check the game works offline first** with the launcher's Offline lobby setting, then close it.
 
+A wider picture shape (`display.ini`'s `aspect`, [Playing](PLAYING.md)) goes back to 16:9 for each online match and returns after it: a wider picture is not yet proven safe online ([why](adr/0002-online-held-at-16-9.md)).
+
 Each WindowSmash window is one player. A private room holds up to eight members, and the game's own room rules decide how many can play a match.
 
 ## Online lobby
@@ -57,7 +59,9 @@ This is what `OpenSmash.exe` does by default. Every Local Wireless room that any
    - **To join:** open **Rooms List** and pick a room. Open rooms come first, fuller ones before emptier ones. The list shows up to 24 rooms (the game on its own stops at 10); scroll down for the rest. With more rooms than that in the lobby, any of them can be reached from the settings' **Lobby** page (version 3, below): pick a room there and it comes first in your Rooms List, or page the Rooms List 24 rooms at a time.
 4. Press <kbd>F1</kbd> to see the connection, for example `Online: 37 players, 4 rooms - you are Alpha, ping 48 ms`. A second line lists the other players in your room and how each one is reached ([see below](#direct-connections-and-your-internet-address)).
 
-`online_server.txt`, in the WindowSmash folder, names the lobby. Its first line that doesn't start with `#` is the lobby's address. The default, `auto`, joins the public lobby this PC reaches fastest: Europe (`opensmash-lobby.duckdns.org:39421`) or North America (`smash.recomps.wtf:39421`), timed by a connect to each at start; `eu` or `na` pins one. The two lobbies don't share rooms or Quickplay yet, but a room code reaches its host from either. The North American address alone, the old default, now means `auto` too. Port 39421 is the lobby with the game server for [Online mode](#online-mode-quickplay); port 39420 is the older lobby without it, which older WindowSmash versions use. Rooms on one don't show up on the other, so everyone in a group should use the same one.
+**Online is Epic Online Services first.** With the default settings (`auto`), a Windows build with `EOSSDK-Win64-Shipping.dll` and `eos.txt` beside the program plays online through **Epic Online Services (EOS)**, for everyone, everywhere: the Local Wireless rooms, Quickplay and Battle Arenas live in EOS Lobbies (the game server runs inside each game), and the games' traffic goes straight between the two PCs where the routers allow it, else through Epic's relays near both players ([how a pair's path is chosen](#direct-connections-and-your-internet-address)). No server of ours is on the play path. The one public lobby, in Europe, has two jobs left: it is the **fallback** when EOS isn't there (no SDK or `eos.txt` beside the program, macOS and Linux for now, `SSBU_EOS=0`, or Epic's services not answering within 8 seconds of the start), and it **collects every player's results**: after each match a game sends its player's GSP per fighter and ranked results to it, and takes them back at the start, so a player's GSP is the same on every PC; its `/leaderboard.json` and `/status.json` cover every player. The leaderboard lists players who signed in with Discord (in OpenSmash.exe or the web launcher) and didn't turn **Show my name on the leaderboard** off; everyone else plays all the same, without a place on it. `eos` in `online_server.txt` means EOS alone (no fallback); another lobby's address, `lan` or `off` never use EOS.
+
+`online_server.txt`, in the WindowSmash folder, names the lobby. Its first line that doesn't start with `#` is the lobby's address. The default, `auto`, means EOS first and, as the fallback, the one public lobby, `opensmash-lobby.duckdns.org:39421` in Europe, which every player shares: matchmaking, the game server and every GSP result are there, and the GSP leaderboard is its `/leaderboard.json`. The North American lobby (`smash.recomps.wtf`) is gone: `na`, `eu` and its address (a lobby code after it is kept) all mean the European one now. Port 39421 is the lobby with the game server for [Online mode](#online-mode-quickplay); port 39420 is the older lobby without it, which older WindowSmash versions use. Rooms on one don't show up on the other, so everyone in a group should use the same one.
 
 ### Friends only: a lobby code
 
@@ -74,7 +78,7 @@ Capital letters count: `OurCode` and `ourcode` are two different lobbies.
 Or, with the game closed, add a space and your code after the address in `online_server.txt`, for example:
 
 ```text
-smash.recomps.wtf:39421 ourcode
+opensmash-lobby.duckdns.org:39421 ourcode
 ```
 
 The overlay shows the code after `Online`. A lobby code is not a password: anyone who knows it can join.
@@ -105,7 +109,7 @@ The game's own **Online** menu works with WindowSmash's game server, which runs 
 > [!WARNING]
 > Online mode is new. Tested on one PC (two games, a lobby of their own): logging in, the Online menus, Quickplay's search, two players matched, the whole match with the game's own netcode and with [rollback](#rollback-in-online-mode), the results with GSP, and both games back in Quickplay for the next search. Not tested yet: two PCs, more than two players. The Linux version has Online mode built in, but it hasn't been tried there.
 
-1. Start the game with **`OpenSmash.exe`**. `online_server.txt` must name a lobby with the game server: `smash.recomps.wtf:39421`, the default, has one.
+1. Start the game with **`OpenSmash.exe`**. `online_server.txt` must name a lobby with the game server: `auto`, the default (`opensmash-lobby.duckdns.org:39421`), has one.
 2. In the main menu, choose **Online**, then **Smash**, then **Quickplay**.
 3. Choose your rules and fighter, then **Ready to fight**. The game waits in its practice room until it finds another player.
 
@@ -161,16 +165,18 @@ Two games on one PC against a lobby of your own, for a test (each game in a fold
 ```powershell
 python tools/ssbu_online_lobby.py --bind 127.0.0.1 --port 39421 --state online-state --verbose
 # both games: started with --online, online_server.txt (or SSBU_NET_RELAY) naming 127.0.0.1:39421: rollback is on by default
-# tests only: SSBU_RB_NET_BOT=calm (a bot plays each game's player and stays on the stage; without it, the controllers play), SSBU_RB_DELAY_RULE=online (the Online mode's delay rule on the direct link: a pair under SSBU_NET_SIM chooses its own delay), SSBU_RB_NET_BOT_CSTICK=<player 1-8> (that player's bot jumps and pushes the C-stick in the air, its magnitude changing every frame: #181's case), SSBU_NET_SIM=<ms>[,<loss %>[,<jitter ms>]] (each game holds what it receives that long)
+# tests only: SSBU_RB_NET_BOT=calm (a bot plays each game's player and stays on the stage; without it, the controllers play), SSBU_RB_DELAY_RULE=online (the Online mode's delay rule on the direct link: a pair under SSBU_NET_SIM chooses its own delay), SSBU_RB_NET_BOT_CSTICK=<player 1-8> (that player's bot jumps and pushes the C-stick in the air, its magnitude changing every frame: #181's case), SSBU_NET_SIM=<ms>[,<loss %>[,<jitter ms>]] (each game holds what it receives that long), SSBU_RB_ONLINE_MODE=<n> (the fight set up with melee mode n: 1 gives a Local Wireless room's fight the room's own mode back, as before #181's fix)
 ```
 
 Rollback's catch-up switches (each restores the older behaviour, for comparisons): `SSBU_RB_NET_HIDE=0` draws every frame run again (by default only a catch-up's last frame is drawn); `SSBU_RB_RERUN_LAZY=0` saves every frame run again (by default a catch-up keeps one state, at the newest frame whose pads are all real, and the next normal frame saves); `SSBU_RB_RERUN_KEEP_BACK=<n>` (8) keeps a state anyway once the newest would be more than n frames back; `SSBU_RB_LOAD_BESIDE_GPU=0` copies a load's memory only after the GPU's queue is drained (by default the pages the GPU cannot touch are copied while it drains).
 
 ## Direct connections and your internet address
 
-Online, the games in a room send their traffic **straight to each other** whenever the players' routers allow it. The lobby introduces them, and the games open a path through their routers themselves (UDP hole punching), so nobody forwards a port for this either. Where that doesn't work, the traffic keeps going through the lobby. A direct path that goes quiet falls back to the lobby within about a second; a relayed one keeps being tried during the match and switches to direct as soon as it opens.
+**Over EOS** (the default on Windows), each game opens a UDP port of its own and tells the other players its addresses (its PC's and the one a STUN server sees outside the router) through Epic; the two games then ping each other on both paths all the time: straight to each other, and through Epic's P2P (which punches through routers itself and otherwise relays near both players). A pair plays **straight** as soon as that answers; it moves to **Epic's path** only when the direct one stops answering for 1.5 s, or when Epic's round trip is clearly lower (15 % and 5 ms, for 3 seconds on end), and comes back the same way. It never moves in the middle of a fight unless the path in use has died. The log says which path each pair uses and both round trips (`[eos] path to ...`, every 10 s with `SSBU_NET_LOG=1`).
 
-Through the lobby, the delay between two players is roughly both players' pings to the lobby added together: the traffic goes from one player to the lobby and on to the other. The public lobbies run in Europe (Milan), so two players in North America who end up relayed cross the Atlantic twice, about 100 ms or more. Directly, it's just the delay between the two PCs.
+**Through the public lobby** (the fallback), the games in a room send their traffic **straight to each other** whenever the players' routers allow it. The lobby introduces them, and the games open a path through their routers themselves (UDP hole punching), so nobody forwards a port for this either. Where that doesn't work, the traffic goes through **Epic Online Services' P2P** (Epic's relays, near both players, in every region; no Epic account is needed: the game signs in with a Device ID). Only where EOS isn't there either (macOS and Linux for now, a build without `EOSSDK-Win64-Shipping.dll` and `eos.txt` beside the program, or `SSBU_EOS=0`) does the traffic go through the lobby itself. The order is always: direct, then EOS, then the lobby's relay. A direct path that goes quiet falls back to the lobby within about a second; a relayed one keeps being tried during the match and switches to direct as soon as it opens.
+
+Through the lobby, the delay between two players is roughly both players' pings to the lobby added together: the traffic goes from one player to the lobby and on to the other. The public lobby runs in Europe (Milan), so two players in North America who end up relayed by it cross the Atlantic twice, about 100 ms or more; through EOS they don't, since Epic relays near both players. Directly, it's just the delay between the two PCs.
 
 **Routers that change ports.** Some routers give every destination a port of their own (a *symmetric NAT*: some providers' routers, many mobile networks, providers that share one address between many customers). The lobby then sees one port and the other player's game another. The game works around it on its own:
 

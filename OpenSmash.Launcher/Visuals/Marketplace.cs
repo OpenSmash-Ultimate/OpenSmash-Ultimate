@@ -22,8 +22,15 @@ public sealed partial class ClassicSurface
         using var reader = new StreamReader(stream);
         return reader.ReadToEnd().Replace("const wv = window.chrome && window.chrome.webview;",
             "const wv = { postMessage: value => invokeCSharpAction(JSON.stringify(value)) };")
-            .Replace("/*@osm-fonts*/", MarketplaceFonts.Value);
+            .Replace("/*@osm-fonts*/", MarketplaceFonts.Value)
+            .Replace("<head>", "<head><script>" + Launcher.UiLocale.WebScript + LocaleScript.Value + "</script>");
     }
+    static readonly Lazy<string> LocaleScript = new(() =>
+    {
+        using var stream = typeof(ClassicSurface).Assembly.GetManifestResourceStream("UiLocale.Web.js")!;
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
+    });
 
     // The page is loaded from a string, so it cannot reach avares:// assets: the launcher's own fonts go in as data URIs.
     // Cascadia Mono stays out to keep the page under WebView2's 2 MB NavigateToString limit; the CSS falls back to Consolas.
