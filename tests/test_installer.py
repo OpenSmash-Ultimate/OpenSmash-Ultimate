@@ -526,6 +526,56 @@ class InstallerDecisionTests(unittest.TestCase):
         self.assertIn('tools/source_version.txt export-subst', attributes.splitlines())
         self.assertIn('$Format:%H', (ROOT / 'tools/source_version.txt').read_text())
 
+    def test_foreign_commit(self):
+        shared = '8025b483b0443adb5668395eca31f9250e8c8efb'
+        other = '9fdc8fd21b3fde86c3e58a1e634a7e76a87220c7'
+        got = ps("@{ ws = (Resolve-ForeignCommit '598d05240fc146f7184b3450653e2eec2ee97312'); "
+                 "upper = (Resolve-ForeignCommit '3D5BA9095BF4A2C0D146DF31ADEC0D59B8337BBB'); "
+                 f"other = (Resolve-ForeignCommit '{other}') }}")
+        self.assertEqual(got, {'ws': shared, 'upper': shared, 'other': other})
+
+    def test_published_sha256(self):
+        h = '100e41cb62feabba16563990abbea1e1112def73a8098fa604b9b3369165c218'
+        got = ps(f"@{{ a = (Read-PublishedSha256 '{h.upper()}  OpenSmash.exe'); b = (Read-PublishedSha256 '{h}'); "
+                 f"c = (Read-PublishedSha256 'Not Found'); d = (Read-PublishedSha256 '{h}0  x') }}")
+        self.assertEqual(got, {'a': h, 'b': h, 'c': None, 'd': None})
+
+    def test_launcher_exe_refresh(self):
+        # An OpenSmash.exe that is not the latest release's is swapped for it (the old one kept as .old); the release's
+        # own, a copy following main, and a git checkout are left alone. Downloads are made up.
+        new = b'MZ new launcher'
+        new_hash = __import__('hashlib').sha256(new).hexdigest()
+        with tempfile.TemporaryDirectory() as root:
+            def run(ref, exe, git=False):
+                for name in ('OpenSmash.exe', 'OpenSmash.exe.old'):
+                    if os.path.exists(os.path.join(root, name)):
+                        os.remove(os.path.join(root, name))
+                Path(root, 'OpenSmash.exe').write_bytes(exe)
+                if git:
+                    os.makedirs(os.path.join(root, '.git'), exist_ok=True)
+                elif os.path.isdir(os.path.join(root, '.git')):
+                    os.rmdir(os.path.join(root, '.git'))
+                mocks = (f"$Root = '{root}'; $Script:UpdateRef = '{ref}'; "
+                         f"function Get-Text {{ param($Url) $Url | Out-File -Append -LiteralPath (Join-Path $Root 'urls.txt'); '{new_hash}  OpenSmash.exe' }}; "
+                         "function Invoke-Download { param($Url, $Dest, $What) [IO.File]::WriteAllText($Dest, 'MZ new launcher') }; ")
+                out = ps_text(mocks + "'swapped=' + (Update-LauncherExe)")
+                return out, Path(root, 'OpenSmash.exe').read_bytes(), os.path.exists(os.path.join(root, 'OpenSmash.exe.old'))
+            out, exe, old = run('v0.4.0', b'MZ old launcher')
+            self.assertIn('swapped=True', out)
+            self.assertIn("OpenSmash.exe is now v0.4.0's", out)
+            self.assertEqual(exe, new)
+            self.assertTrue(old)
+            self.assertIn('/releases/download/v0.4.0/OpenSmash.exe.sha256', Path(root, 'urls.txt').read_text('utf-16'))
+            out, exe, old = run('v0.4.0', new)
+            self.assertIn('swapped=False', out)
+            self.assertIn("OpenSmash.exe is v0.4.0's", out)
+            out, exe, _ = run('main', b'MZ old launcher')
+            self.assertIn('swapped=False', out)
+            self.assertEqual(exe, b'MZ old launcher')
+            out, exe, _ = run('v0.4.0', b'MZ old launcher', git=True)
+            self.assertIn('swapped=False', out)
+            self.assertEqual(exe, b'MZ old launcher')
+
     def test_update_decision(self):
         got = ps("@{ a = (Get-UpdateDecision 'ahead'); i = (Get-UpdateDecision 'identical'); b = (Get-UpdateDecision 'behind'); "
                  "d = (Get-UpdateDecision 'diverged'); x = (Get-UpdateDecision 'something') }")

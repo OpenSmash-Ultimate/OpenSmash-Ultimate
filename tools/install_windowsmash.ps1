@@ -164,9 +164,19 @@ function Get-UpdateRef {
     $ch = [string]$env:OPENSMASH_UPDATE_CHANNEL
     if (-not $ch) { $f = Join-Path $Root 'tools\update_channel.txt'; if (Test-Path -LiteralPath $f) { $ch = (Get-Content -LiteralPath $f -Raw).Trim() } }
     if ($ch -eq 'main') { return $UpdateBranch }
+    if ($Script:UpdateRef) { return $Script:UpdateRef }   # (asked once a run: the launcher's refresh asks again)
+    $Script:UpdateRef = $UpdateBranch
     $rel = Invoke-Api "$RepoApi/releases/latest"
-    if ($rel.Ok -and $rel.Data.tag_name) { return [string]$rel.Data.tag_name }
-    return $UpdateBranch
+    if ($rel.Ok -and $rel.Data.tag_name) { $Script:UpdateRef = [string]$rel.Data.tag_name }
+    return $Script:UpdateRef
+}
+$Script:UpdateRef = $null
+# Commits only the old WindowSmash repository has (its last two: the README saying it moved, 2026-11-03), each with the
+# last commit both repositories share. A WindowSmash copy updated to one of them is that shared commit plus a README, so
+# it updates from there; without this GitHub does not know the commit here and the copy never updates (#418).
+$ForeignCommits = @{
+    '598d05240fc146f7184b3450653e2eec2ee97312' = '8025b483b0443adb5668395eca31f9250e8c8efb'
+    '3d5ba9095bf4a2c0d146df31adec0d59b8337bbb' = '8025b483b0443adb5668395eca31f9250e8c8efb'
 }
 $RepoApi = "https://api.github.com/repos/$RepoOwner/$RepoName"
 $SourceVersionFile = 'tools\source_version.txt'   # "<commit> <date>": GitHub's ZIP download fills it in
@@ -178,6 +188,22 @@ function Read-SourceVersion {
     param([string]$Text)
     if (-not $Text) { return $null }
     $m = [regex]::Match($Text, '(?<![0-9a-fA-F])([0-9a-fA-F]{40})(?![0-9a-fA-F])')
+    if ($m.Success) { return $m.Groups[1].Value.ToLower() }
+    return $null
+}
+
+function Resolve-ForeignCommit {
+    <# The commit to update from: a WindowSmash-only commit ($ForeignCommits) as the shared one it stands for, else itself. #>
+    param([string]$Commit)
+    if ($Commit -and $ForeignCommits.ContainsKey($Commit.ToLower())) { return $ForeignCommits[$Commit.ToLower()] }
+    return $Commit
+}
+
+function Read-PublishedSha256 {
+    <# The SHA-256 a release's "<hash>  OpenSmash.exe" file names, in lower case, or $null. #>
+    param([string]$Text)
+    if (-not $Text) { return $null }
+    $m = [regex]::Match($Text, '^\s*([0-9a-fA-F]{64})(?![0-9a-fA-F])')
     if ($m.Success) { return $m.Groups[1].Value.ToLower() }
     return $null
 }
@@ -539,7 +565,10 @@ function Get-Json {
 
 function Get-Text {
     param([string]$Url)
-    return (Invoke-WebRequest -Uri $Url -UseBasicParsing -Headers @{ 'User-Agent' = $UserAgent }).Content
+    $c = (Invoke-WebRequest -Uri $Url -UseBasicParsing -Headers @{ 'User-Agent' = $UserAgent }).Content
+    # (Windows PowerShell hands a file GitHub serves as application/octet-stream, such as a release's .sha256, as bytes)
+    if ($c -is [byte[]]) { return [Text.Encoding]::UTF8.GetString($c) }
+    return [string]$c
 }
 
 function Test-FileSha256 {
@@ -740,6 +769,9 @@ function Step-Update {
         Write-Warn "To get the newest, download the ZIP again from https://github.com/$RepoOwner/$RepoName"
         return $false
     }
+    $mapped = Resolve-ForeignCommit $local
+    if ($mapped -ne $local) { Write-Info "this copy ($($local.Substring(0, 7))) is the old WindowSmash repository's; it updates as $($mapped.Substring(0, 7)), the commit both share" }
+    $local = $mapped
     $short = $local.Substring(0, 7)
     $head = Invoke-Api "$RepoApi/commits/$(Get-UpdateRef)"
     if (-not $head.Ok) { Write-Warn "could not ask GitHub for a newer version ($($head.Error)); going on with this one"; return $false }
@@ -754,8 +786,8 @@ function Step-Update {
     }
     switch (Get-UpdateDecision $cmp.Data.status) {
         'current' { Write-Info "up to date ($short)"; return $false }
-        'newer' { Write-Info "this copy ($short) is newer than GitHub's $($UpdateBranch): not updating"; return $false }
-        'diverged' { Write-Info "this copy ($short) comes from another branch than $($UpdateBranch): not updating"; return $false }
+        'newer' { Write-Info "this copy ($short) is newer than GitHub's $(Get-UpdateRef): not updating"; return $false }
+        'diverged' { Write-Info "this copy ($short) comes from another branch than $(Get-UpdateRef): not updating"; return $false }
         'update' { }
         default { Write-Warn "GitHub's answer ($($cmp.Data.status)) was not understood: not updating"; return $false }
     }
@@ -1634,12 +1666,49 @@ function Invoke-UpdateGameBuild {
 }
 
 # ---- step 10: shaders --------------------------------------------------------------------------------------------
+function Update-LauncherExe {
+    <# OpenSmash.exe never replaced itself: v0.3.0-alpha.1 and alpha.2 have no updater, alpha.3 and later fetch the
+       source only, and only a PC with the .NET SDK rebuilds one. So, on a copy that follows the versioned releases,
+       an OpenSmash.exe that is not the latest release's is swapped for it here, checked against the SHA-256 published
+       beside it. A running exe can be renamed but not overwritten: the old one becomes OpenSmash.exe.old (deleted on
+       the next run) and the new one is used from the next start. $true when it was swapped. #>
+    $exe = Join-Path $Root 'OpenSmash.exe'
+    $old = "$exe.old"
+    if (Test-Path -LiteralPath $old) { try { Remove-Item -LiteralPath $old -Force } catch { } }
+    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { return $false }
+    if (Test-Path -LiteralPath (Join-Path $Root '.git')) { return $false }   # (a checkout builds its own: tools\build_launcher.ps1)
+    $tag = Get-UpdateRef
+    if ($tag -eq $UpdateBranch) { return $false }   # following main, or no release yet: nothing published to compare with
+    $base = "https://github.com/$RepoOwner/$RepoName/releases/download/$([uri]::EscapeDataString($tag))"
+    $tmp = "$exe.download"
+    try {
+        $sum = Read-PublishedSha256 (Get-Text "$base/OpenSmash.exe.sha256")
+        if (-not $sum) { Write-Warn "launcher: $tag publishes no OpenSmash.exe checksum; this one stays"; return $false }
+        if ((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLower() -eq $sum) { Write-Info "launcher: OpenSmash.exe is $($tag)'s"; return $false }
+        if ($DryRun) { Write-Would "replace OpenSmash.exe with $($tag)'s"; return $false }
+        Invoke-Download "$base/OpenSmash.exe" $tmp "the OpenSmash launcher of $tag"
+        if (-not (Test-FileSha256 $tmp $sum)) { throw 'its SHA-256 differs from the published one' }
+        Move-Item -LiteralPath $exe -Destination $old -Force
+        try { Move-Item -LiteralPath $tmp -Destination $exe -Force }
+        catch { Move-Item -LiteralPath $old -Destination $exe -Force; throw }
+        Write-Info "launcher: OpenSmash.exe is now $($tag)'s. Close OpenSmash and open it again to use it."
+        return $true
+    } catch {
+        Write-Warn "launcher: OpenSmash.exe could not be updated ($($_.Exception.Message)); the one here stays"
+        if (Test-Path -LiteralPath $tmp) { try { Remove-Item -LiteralPath $tmp -Force } catch { } }
+        return $false
+    }
+}
+
 function Step-Launcher {
     # The OpenSmash launcher (OpenSmash.exe): the one window for playing, settings and mods. Built here when the
     # .NET 8 SDK is on this PC (tools\build_launcher.ps1); otherwise taken from the organisation's latest release,
     # checked against the SHA-256 published beside it. Without either, OpenSmash.exe keeps its own window.
     $exe = Join-Path $Root 'OpenSmash.exe'
-    if (Test-Path -LiteralPath $exe) { Write-Info 'launcher: OpenSmash.exe is here'; return }
+    if (Test-Path -LiteralPath $exe) {
+        if (-not (Update-LauncherExe)) { Write-Info 'launcher: OpenSmash.exe is here' }
+        return
+    }
     if ($DryRun) { Write-Would 'build or download OpenSmash.exe (the launcher)'; return }
     if (Get-Command dotnet -ErrorAction SilentlyContinue) {
         try { & (Join-Path $Root 'tools\build_launcher.ps1'); if (Test-Path -LiteralPath $exe) { Write-Info 'launcher: OpenSmash.exe built'; return } }
@@ -1656,7 +1725,7 @@ function Step-Launcher {
         Move-Item -LiteralPath $tmp -Destination $exe -Force
         Write-Info 'launcher: OpenSmash.exe downloaded and checked'
     } catch {
-        Write-Warn "launcher: not available ($($_.Exception.Message)); OpenSmash.exe opens its own window instead (toolsuild_launcher.ps1 builds OpenSmash.exe with the .NET 8 SDK)"
+        Write-Warn "launcher: not available ($($_.Exception.Message)); OpenSmash.exe opens its own window instead (tools\build_launcher.ps1 builds OpenSmash.exe with the .NET 8 SDK)"
     }
 }
 
@@ -1699,8 +1768,10 @@ function Main {
         $updated = Step-Update
         if ($UpdateOnly) {
             # the launcher only asked for the files: do not run the rest of setup.
+            $swapped = Update-LauncherExe
             if ($updated) { Write-Host 'Updated.' -ForegroundColor Green }
-            else { Write-Host 'Nothing to update.' }
+            elseif (-not $swapped) { Write-Host 'Nothing to update.' }
+            if ($swapped) { Write-Host 'The launcher was updated too: close OpenSmash and open it again.' -ForegroundColor Green }
             return 0
         }
         if ($updated) {
