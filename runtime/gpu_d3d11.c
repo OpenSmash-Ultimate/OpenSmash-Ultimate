@@ -7078,9 +7078,9 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
         if (!on_dxvk()) prewarm_gate();
     }
     display_before_present();   /* (gpu_display.c: the loading animation stops) */
-    /* (`display` pacing cannot wait for this monitor's refreshes - the panel is another card's: sync interval 1
-     * makes the present itself wait for the vblank; ALLOW_TEARING is only asked for with 0) */
-    UINT sync = display_vblank_failed() && !(display_present_flags() & 0x200u) ? 1 : 0;
+    /* (`display` pacing cannot wait for this monitor's refreshes - the panel is another card's - or its rate is no
+     * multiple of 60: sync interval 1 makes the present itself wait for the vblank; ALLOW_TEARING is only asked for with 0) */
+    UINT sync = display_present_sync() && !(display_present_flags() & 0x200u) ? 1 : 0;
     hr = IDXGISwapChain1_Present(swapchain, sync, display_present_flags());   /* (blocks while the GPU is frames behind) */
 #ifdef _WIN32
     if (SUCCEEDED(hr)) display_show_window();

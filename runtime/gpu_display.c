@@ -853,9 +853,9 @@ unsigned display_present_flags(void) {
     return (cfg.pacing == PACING_VRR || cfg.speed != 1) && tearing ? 0x200u /* DXGI_PRESENT_ALLOW_TEARING */ : 0;
 }
 
-/* (vblank_tick: the monitor's refreshes cannot be waited for here) */
-static volatile LONG vblank_failed_flag;
-int display_vblank_failed(void) { return vblank_failed_flag != 0; }
+/* (vblank_tick: the monitor's refreshes cannot be waited for here, or its rate is no multiple of 60) */
+static volatile LONG vblank_failed_flag, vblank_odd_rate;
+int display_present_sync(void) { return vblank_failed_flag != 0 || vblank_odd_rate != 0; }
 
 void *gfx_display_output(void);   /* gpu_d3d11.c: the swap chain's output (IDXGIOutput, referenced), or NULL */
 
@@ -888,8 +888,14 @@ static int vblank_tick(void) {
         if (hz != logged_hz && output) {
             logged_hz = hz;
             fprintf(stderr, "[display] %d Hz monitor: %s\n", hz, divisor ? "display pacing" : "clock pacing (display pacing needs 60, 120 or 240 Hz)");
+            /* (a rate the game's 60 frames do not divide: 165 Hz is 2.75 refreshes a frame, so each frame is shown for
+             * two refreshes and then three. In sync is still the best of it: tear-free, and the pattern stays put) */
+            if (!divisor && hz)
+                fprintf(stderr, "[display] %d Hz is not a multiple of 60 (%g refreshes a frame): the frames are shown in sync, tear-free; "
+                                "60 Hz, a custom 120 Hz mode or VRR is evenly paced\n", hz, hz / 60.0);
         }
     }
+    if (!divisor && hz_now) InterlockedExchange(&vblank_odd_rate, 1);
     InterlockedExchange(&vblank_hz, output && divisor ? hz_now : 0);
     if (!output || !divisor) { last = 0; return 0; }
     int extra = vblank_extra > 0 && InterlockedDecrement(&vblank_extra) >= 0;   /* (one refresh more this tick, at most: a 120 Hz monitor's 8 ms) */

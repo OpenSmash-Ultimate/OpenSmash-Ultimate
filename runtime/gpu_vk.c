@@ -959,9 +959,9 @@ static VkFormat swap_format = VK_FORMAT_B8G8R8A8_UNORM;
 
 static VkPresentModeKHR wanted_mode(void) {
     if ((display_present_flags() & 0x200u) && have_immediate) return VK_PRESENT_MODE_IMMEDIATE_KHR;   /* vrr, SSBU_SPEED: at once */
-    /* (`display` pacing cannot see this monitor's refreshes - its panel is another card's: the swap chain's
-     * own wait for the vblank, FIFO, paces the frames instead) */
-    if (display_vblank_failed()) return VK_PRESENT_MODE_FIFO_KHR;
+    /* (`display` pacing cannot see this monitor's refreshes - its panel is another card's - or its rate is no multiple
+     * of 60: the swap chain's own wait for the vblank, FIFO, paces the frames instead; tear-free either way) */
+    if (display_present_sync()) return VK_PRESENT_MODE_FIFO_KHR;
     if (have_mailbox) return VK_PRESENT_MODE_MAILBOX_KHR;   /* clock / display pacing: the newest frame at the next refresh */
     return have_immediate ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
 }
