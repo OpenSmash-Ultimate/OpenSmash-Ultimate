@@ -2247,6 +2247,11 @@ static void net_step(Cpu *c, u64 frame) {
                     net_w_n[0], net_w_ms[0], net_w_max[0], net_w_n[1], net_w_ms[1], net_w_max[1], net_w_n[2], net_w_ms[2], net_w_max[2],
                     rb_ff_get_n, rb_ff_get_ms, rb_rng_slow_n, rb_rng_slow_ms);
             if (S.frames % 600 == 0) { char m[768]; rb_ring_memory(m, sizeof m); fprintf(stderr, "[rb] ring memory, fight frame %lld: %s\n", S.frames, m); }
+            if (S.frames % 600 == 0) {
+                extern long long rb_we_n[4];
+                fprintf(stderr, "[rb] rollbacks from the wait for the display, fight frame %lld: %lld when the buffer came, %lld inside the wait, of %lld rollbacks; %lld points looked at, %lld loads refused there\n",
+                        S.frames, rb_we_n[0], rb_we_n[1], net_rollbacks, rb_we_n[2], rb_we_n[3]);
+            }
             net_save_spacing(rb_save_count ? rb_save_parts[3] / (double)rb_save_count : 0, net_saves_made, net_saves_sparse, net_rollbacks, 0);
             if (rb_save_count) {
                 double k = (double)rb_save_count;
@@ -2356,19 +2361,19 @@ static void net_rollback(Cpu *c, u64 frame, u32 key, u32 m) {
  * safe point's rollback makes: the same state loaded, the same frames run again up to safe point K, where the game goes
  * on. The load does not ask where the main thread's stack is (rb_load_anyframe): the thread moves onto its scratch stack
  * and its whole stack is put back, wherever it was.
- * SSBU_RB_WAITEND=0: off (safe points only, as before).
+ * SSBU_RB_WAITEND=0: off (safe points only, as before). On by default since v0.4.0 (round 7).
  * SSBU_RB_WAITRB=1 (net mode): also while the game waits for the buffer, each time it is told "would block" (at most
  * once every SSBU_RB_WAITRB_US, 250): the load and the frames run again then fall in the frame's idle time. In loop mode
  * (the bench) only with SSBU_RB_WAITRB=2: its pads "come" by frame, and a rollback in the wait would leave the bench's
  * tick (wait's end to next wait's start) with nothing of it. */
 volatile LONG rb_vi_point;   /* (ipc_vi.c: 1 the buffer was handed out, 2 "would block") */
-static long long we_n[4];    /* rollbacks from the buffer's arrival, from inside the wait; points looked at; loads refused there */
+long long rb_we_n[4];    /* rollbacks from the buffer's arrival, from inside the wait; points looked at; loads refused there */
 void rb_wait_point(Cpu *c) {
     static int on = -1, inwait = -1; static double gap_ms = 0.25;
     LONG kind = InterlockedExchange(&rb_vi_point, 0);
     if (on < 0) {
         const char *e = getenv("SSBU_RB_WAITEND"), *w = getenv("SSBU_RB_WAITRB"), *u = getenv("SSBU_RB_WAITRB_US");
-        on = e && *e ? atoi(e) : 0; inwait = w && *w ? atoi(w) : 0;
+        on = e && *e ? atoi(e) : 1; inwait = w && *w ? atoi(w) : 0;   /* (on by default since v0.4.0, round 7) */
         if (u && atof(u) > 0) gap_ms = atof(u) / 1000.0;
         if (getenv("SSBU_RB_TEST_IGNORE") || getenv("SSBU_RB_TEST_REFUSE") || getenv("SSBU_RB_TEST_DROP")) on = 0;   /* (those count safe points) */
     }
@@ -2383,17 +2388,17 @@ void rb_wait_point(Cpu *c) {
     }
     u32 key = we_sp_key + 1, lf = ld32(LOGIC_FRAME);
     if (lf != key && lf != we_sp_key) return;   /* (the logic frame stands still or jumped: left to the safe point) */
-    we_n[2]++;
+    rb_we_n[2]++;
     if (net_mode == 2) net_receive(we_sp_key); else net_deliver(key, 0);
     u32 m = rbn_peek_mismatch();
     if (!m || m > we_sp_key || net_resync_pending) return;   /* (only a guess a frame already ran on) */
     m = rbn_take_mismatch();
     if (bn_on_ > 0) { bn_mark(kind == 2 ? "inwait" : "waitend-rb", key); if (kind != 2) bn_real_point(key); }
-    we_n[kind == 2]++;
+    rb_we_n[kind == 2]++;
     rb_load_anyframe = 1;
     net_rollback(c, 0, key, m);   /* (returns only if no state was loaded: the wrong guess is then the safe point's) */
     rb_load_anyframe = 0;
-    we_n[kind == 2]--; we_n[3]++;
+    rb_we_n[kind == 2]--; rb_we_n[3]++;
 }
 
 /* (rb_pad, in loop mode: both players' pads by logic frame) */
@@ -3732,8 +3737,9 @@ static int lite_skipped_now(Cpu *c, int grp) {
 /* (hle_rb_wraps.c: the presentation callees' wraps ask this) */
 int rb_lite_skip(Cpu *c, int group) { return lite_skipped_now(c, group); }
 
-/* ---- SKIPF and the Lua collector (SSBU Arena's 4774203 / f9b673b and 0bde20e, ported as switches; both OFF by default
- * until pairs of games stay in sync with them) ---------------------------------------------------------------------
+/* ---- SKIPF and the Lua collector (SSBU Arena's 4774203 / f9b673b and 0bde20e, ported as switches; ON by default since
+ * v0.4.0, round 7: SSBU_RB_SKIPF=63, SSBU_RB_GC_RERUN=0, SSBU_RB_GC_CATCH=0 - pairs of games stayed identical with them;
+ * SSBU_RB_SKIPF=0, SSBU_RB_GC_RERUN=1, SSBU_RB_GC_CATCH=1: as before) ---------------------------------------------------------------------
  * SSBU_RB_SKIPF=<bits>: hle_rb_wraps.c's six functions return at once in a frame run again (a catch-up's, the main
  * thread's, in a fight). Bit n: the n-th of the list. The summary counts the calls left out.
  * The collector: the main loop runs steps of the Lua garbage collector while its frame has time left (by the clock: how
@@ -3749,17 +3755,17 @@ static long long skipf_n[6];
  * it run it as always). SSBU_RB_GC_MS=<ms>: at most that much of it in any real frame of a fight (SSBU Arena's GC_MS). */
 static int gc_catch = -1; static double gc_cap_ms = -1;
 int rb_skipf(Cpu *c, int which) {
-    if (skipf_bits < 0) { const char *e = getenv("SSBU_RB_SKIPF"); skipf_bits = e && *e ? (int)strtol(e, NULL, 0) : 0; }
+    if (skipf_bits < 0) { const char *e = getenv("SSBU_RB_SKIPF"); skipf_bits = e && *e ? (int)strtol(e, NULL, 0) : 63; }   /* (all six by default since v0.4.0, round 7; 0: none) */
     if (!(skipf_bits >> which & 1) || rb_fast <= 0 || !S.in_fight || c->thread != rb_main_kthread) return 0;
     skipf_n[which]++;
     return 1;
 }
 void rb_gc_step(Cpu *c, GuestFn *orig) {
     if (!rb_on || !S.in_fight || c->thread != rb_main_kthread || c->x[30] != 0x71037480c0ull) { orig(c); return; }
-    if (gc_rerun < 0) { const char *e = getenv("SSBU_RB_GC_RERUN"); gc_rerun = !(e && *e == '0'); }
+    if (gc_rerun < 0) { const char *e = getenv("SSBU_RB_GC_RERUN"); gc_rerun = e && *e && *e != '0'; }   /* (none by default since v0.4.0, round 7; 1: as before) */
     int again = rb_fast > 0;
     if (again && !gc_rerun) { gc_skipped++; c->x[20] = 0; return; }
-    if (gc_catch < 0) { const char *e = getenv("SSBU_RB_GC_CATCH"), *m = getenv("SSBU_RB_GC_MS"); gc_catch = !(e && *e == '0'); gc_cap_ms = m && atof(m) > 0 ? atof(m) : 0; }
+    if (gc_catch < 0) { const char *e = getenv("SSBU_RB_GC_CATCH"), *m = getenv("SSBU_RB_GC_MS"); gc_catch = e && *e && *e != '0'; gc_cap_ms = m && atof(m) > 0 ? atof(m) : 0; }
     if (!again && ((!gc_catch && gc_catch_tick) || (gc_cap_ms > 0 && gc_frame_ms >= gc_cap_ms))) { gc_skipped++; c->x[20] = 0; return; }
     double t0 = now_ms();
     orig(c);

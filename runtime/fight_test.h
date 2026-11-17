@@ -179,7 +179,8 @@ static inline uint64_t fixed_entropy(uint64_t n, uint64_t sub) { return fixed_mi
 
 /* ---- SSBU_DEBUG_MATCH ------------------------------------------------------------------- */
 /* "p1=<fighter>,p2=<fighter>|cpu|human,p3=..,p4=..,c1=<colour>..c4=<colour>,stage=<name>,
- * form=omega|battlefield|normal,hazards=on|off,cpu=<level>,items=on|off,stock=<n>,time=<min>"
+ * form=omega|battlefield|normal,hazards=on|off,cpu=<level>,items=on|off|low|high|<0-4>,stock=<n>,time=<min>"
+ * (items: the match block's item appearance word, 0 none, on = 2 as before, high = 3; round 7)
  * (ssbu-recomp's debug match; c1..c4: a player's costume, 0-7, as ssbu-recomp's c1..c8). A
  * key left out keeps what it was (a list's lines add up); -1: not set. time: the time limit in
  * minutes (the match block's +0x48, in frames). */
@@ -209,7 +210,7 @@ static inline void dm_parse(DebugMatch *m, const char *text) {
         else if (!strcmp(k, "form")) m->form = !strcmp(v, "omega") ? 2 : !strcmp(v, "battlefield") ? 1 : 0;
         else if (!strcmp(k, "hazards")) m->hazards = !strcmp(v, "on");
         else if (!strcmp(k, "cpu")) m->cpu = atoi(v);
-        else if (!strcmp(k, "items")) m->items = !strcmp(v, "on");
+        else if (!strcmp(k, "items")) m->items = !strcmp(v, "on") ? 2 : !strcmp(v, "low") ? 1 : !strcmp(v, "high") ? 3 : v[0] >= '0' && v[0] <= '4' && !v[1] ? v[0] - '0' : 0;
         else if (!strcmp(k, "time")) m->time = atoi(v);
         else if (!strcmp(k, "stock")) m->stock = atoi(v);
     }
@@ -264,7 +265,7 @@ static inline void dm_stage(const DebugMatch *m, uint8_t *sel, uint8_t *hazards,
     }
     if (m->form >= 0) fight_put32(sel + 8, (uint32_t)m->form);
     if (m->hazards >= 0) *hazards = (uint8_t)m->hazards;
-    if (m->items >= 0) fight_put32(items, m->items ? 2u : 0u);
+    if (m->items >= 0) fight_put32(items, (uint32_t)m->items);
 }
 
 /* The next line of SSBU_DEBUG_MATCH_LIST at a new match set-up: a blank line keeps the match

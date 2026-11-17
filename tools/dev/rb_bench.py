@@ -3,7 +3,8 @@
 
 Usage:
   python tools/dev/rb_bench.py run <tag> [--warm 1500] [--meas 1800] [--stages "battle_field ..."] [--lag 3] [--delay 2]
-                                         [--save <folder>] [--timeout <s>] [--exe <file in build>] [VAR=value ...]
+                                         [--save <folder>] [--timeout <s>] [--exe <file in build>] [--items on] [--hazards on]
+                                         [VAR=value ...]   (--items on: the match's items on, the save's item switch as it is)
   python tools/dev/rb_bench.py sum <tag> [<tag> ...]
   python tools/dev/rb_bench.py save <folder>      (makes the bench's save: see below)
 
@@ -73,11 +74,12 @@ def running_games():
 def run(tag, args):
     warm, meas, stages, lag, delay, save, timeout, extra = 1500, 1800, STAGES, 3, 2, os.path.join(OUT, "save_snap"), 0, []
     chain = False   # (--chain: the stages in one game, one match after the other: see the notes at the top)
+    items, hazards = "off", "off"
     exe_name, p2 = "ssbu.exe", "human"   # (player 2: the loop bot on a human slot - with a CPU fighter no pad is guessed, so nothing rolls back)
     i = 0
     while i < len(args):
         a = args[i]
-        if a in ("--warm", "--meas", "--stages", "--lag", "--delay", "--save", "--timeout", "--exe", "--p2"):
+        if a in ("--warm", "--meas", "--stages", "--lag", "--delay", "--save", "--timeout", "--exe", "--p2", "--items", "--hazards"):
             v = args[i + 1]; i += 2
             if a == "--warm": warm = int(v)
             elif a == "--meas": meas = int(v)
@@ -87,6 +89,8 @@ def run(tag, args):
             elif a == "--save": save = v
             elif a == "--exe": exe_name = v
             elif a == "--p2": p2 = v
+            elif a == "--items": items = v
+            elif a == "--hazards": hazards = v
             else: timeout = int(v)
             continue
         if a == "--chain": chain = True; i += 1; continue
@@ -110,7 +114,7 @@ def run(tag, args):
         tagg = "" if chain else "_%d" % (g + 1)
         listf = os.path.join(out, "list%s.txt" % tagg)
         with open(listf, "w") as f:
-            for x in group: f.write("p1=mario,p2=fox,p2=%s,cpu=9,stage=%s,stock=9,items=off,hazards=off\n" % (p2, x))
+            for x in group: f.write("p1=mario,p2=fox,p2=%s,cpu=9,stage=%s,stock=9,items=%s,hazards=%s\n" % (p2, x, items, hazards))
         data = os.path.join(out, "data")
         shutil.rmtree(data, ignore_errors=True)
         shutil.copytree(os.path.join(save, "save"), os.path.join(data, "save"))

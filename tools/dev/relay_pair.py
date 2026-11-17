@@ -3,7 +3,8 @@
 
 Usage:
   python tools/dev/relay_pair.py <tag> [--stage battle_field] [--seconds 150] [--tz1 <TZ>] [--tz2 <TZ>]
-                                 [--no-ticket] [--exe <file in build>] [VAR=value ...]   (VAR=value: both games)
+                                 [--no-ticket] [--exe <file in build>] [--items on] [--hazards on]
+                                 [VAR=value ...]                                         (VAR=value: both games)
                                  [1:VAR=value] [2:VAR=value]                             (one game only)
 
 What it starts, all on 127.0.0.1 and all stopped at the end (nothing is left running):
@@ -56,10 +57,12 @@ def main(argv):
     tag, args = argv[1], argv[2:]
     stage, seconds, tz, exe_name, no_ticket, save = "battle_field", 150, [None, None], "ssbu.exe", False, os.path.join(ROOT, "save")
     extra = [{}, {}]
+    rules = {"items": "off", "hazards": "off"}
     plain = False
     i = 0
     while i < len(args):
         a = args[i]
+        if a in ("--items", "--hazards"): rules[a[2:]] = args[i + 1]; i += 2; continue
         if a in ("--stage", "--seconds", "--tz1", "--tz2", "--exe", "--save"):
             v = args[i + 1]; i += 2
             if a == "--stage": stage = v
@@ -91,7 +94,7 @@ def main(argv):
                               *([] if plain else ["--relay-only", "--ticket-secret-file", os.path.join(out, "secret.txt"), "--min-client-level", "1"])],
                              cwd=out, stdout=lobby_log, stderr=subprocess.STDOUT)
     time.sleep(1.0)
-    match = "p1=mario,p2=fox,p2=human,stage=%s,items=off,hazards=off" % stage
+    match = "p1=mario,p2=fox,p2=human,stage=%s,items=%s,hazards=%s" % (stage, rules["items"], rules["hazards"])
     games = []
     try:
         if lobby.poll() is not None: raise SystemExit("the lobby did not start: see " + os.path.join(out, "lobby.log"))
