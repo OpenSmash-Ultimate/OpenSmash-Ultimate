@@ -46,6 +46,27 @@ class GlslangTests(unittest.TestCase):
         self.assertGreaterEqual(version >> 24, 1)
         self.assertNotEqual(version & 0xFFFFFF, 0)
 
+    def test_stl_fallback(self):
+        # Older Visual Studio toolsets lack these; glslang 16.6.0 calls the byte version.
+        exe = os.path.join(self.folder, 'stlfallback.exe')
+        main = os.path.join(self.folder, 'stlfallback_main.c')
+        Path(main).write_text('''#include <stddef.h>
+#include <stdint.h>
+size_t __stdcall __std_find_first_of_trivial_pos_1(const void *, size_t, const void *, size_t);
+size_t __stdcall __std_find_first_of_trivial_pos_4(const void *, size_t, const void *, size_t);
+int main(void) {
+    const uint32_t wide[] = {7, 8, 9};
+    return !(__std_find_first_of_trivial_pos_1("hello world", 11, " w", 2) == 5 &&
+             __std_find_first_of_trivial_pos_1("hello", 5, "xyz", 3) == SIZE_MAX &&
+             __std_find_first_of_trivial_pos_1("", 0, "a", 1) == SIZE_MAX &&
+             __std_find_first_of_trivial_pos_4(wide, 3, wide + 2, 1) == 2);
+}
+''')
+        r = subprocess.run([cc.CLANG, '/nologo', *cc.LINK_FLAGS, main, glslang_lib.STL_FALLBACK, '/Fe' + exe,
+                            '/Fo' + self.folder + os.sep, '/link', *cc.LINK_OPTIONS], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(subprocess.run([exe]).returncode, 0)
+
     @unittest.skipUnless(PACK.exists(), 'no dump/aot/programs.pack (tools/shader_aot.py --dry makes it)')
     def test_pack_sample(self):
         r = subprocess.run([self.exe, str(PACK), '-every', '500'], capture_output=True, text=True, timeout=1200)
@@ -55,3 +76,58 @@ class GlslangTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@unittest.skipUnless(os.name == 'nt', 'Windows compiler driver only')
+class OlderToolsetFallback(unittest.TestCase):
+    def test_missing_stl_symbol_retries_with_fallback(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            dll = str(Path(temporary) / 'translator.dll')
+            commands = []
+
+            def link(command, **kwargs):
+                commands.append(command[:])
+                if len(commands) == 1:
+                    return subprocess.CompletedProcess(command, 1, '', '__std_find_first_of_trivial_pos_1')
+                output = next(arg[3:] for arg in command if arg.startswith('/Fe'))
+                Path(output).write_bytes(b'new translator')
+                return subprocess.CompletedProcess(command, 0, '', '')
+
+            with patch.object(glslang_lib, 'have', return_value=True), patch.object(glslang_lib, 'dll_current', return_value=False), patch.object(glslang_lib.subprocess, 'run', side_effect=link):
+                self.assertTrue(glslang_lib.build(dll, log=lambda _: None))
+            self.assertNotIn(glslang_lib.STL_FALLBACK, commands[0])
+            self.assertIn(glslang_lib.STL_FALLBACK, commands[1])
+            self.assertEqual(Path(dll).read_bytes(), b'new translator')
+
+    def test_crt_repair_still_runs_before_stl_fallback(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        with tempfile.TemporaryDirectory() as temporary:
+            dll = str(Path(temporary) / 'translator.dll')
+            commands = []
+            repair = Mock(return_value=True)
+
+            def link(command, **kwargs):
+                commands.append(command[:])
+                if len(commands) < 3:
+                    message = glslang_lib.DLL_CRT[0] if len(commands) == 1 else '__std_find_first_of_trivial_pos_1'
+                    return subprocess.CompletedProcess(command, 1, '', message)
+                Path(next(arg[3:] for arg in command if arg.startswith('/Fe'))).write_bytes(b'new translator')
+                return subprocess.CompletedProcess(command, 0, '', '')
+
+            with patch.object(glslang_lib, 'have', return_value=True), patch.object(glslang_lib, 'dll_current', return_value=False), patch.object(glslang_lib.subprocess, 'run', side_effect=link), patch.dict(sys.modules, {'msvc_deps': SimpleNamespace(repair_crt_libs=repair)}):
+                self.assertTrue(glslang_lib.build(dll, log=lambda _: None))
+            repair.assert_called_once()
+            self.assertNotIn(glslang_lib.STL_FALLBACK, commands[1])
+            self.assertIn(glslang_lib.STL_FALLBACK, commands[2])
+
+    def test_failed_fallback_keeps_existing_translator(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            dll = Path(temporary) / 'translator.dll'
+            dll.write_bytes(b'existing translator')
+            failure = subprocess.CompletedProcess([], 1, '', '__std_find_first_of_trivial_pos_1')
+            with patch.object(glslang_lib, 'have', return_value=True), patch.object(glslang_lib, 'dll_current', return_value=False), patch.object(glslang_lib.subprocess, 'run', return_value=failure):
+                self.assertFalse(glslang_lib.build(str(dll), log=lambda _: None))
+            self.assertEqual(dll.read_bytes(), b'existing translator')
