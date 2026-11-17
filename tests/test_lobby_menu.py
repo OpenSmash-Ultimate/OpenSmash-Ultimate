@@ -699,12 +699,13 @@ class PcModeSticks(MenuTest):
         m = self.menu(LOBBYMENUTEST_PCPAD=mode)
         m.key('ESC')
         m.type('2')   # (Controllers)
-        for want in ('    Customize controller...', 'Sticks...'):
+        # (Controllers > Customize controllers... > the controller's row > Sticks...: #402's list of controllers)
+        for want in (('Customize controllers...',), ('Player 1', 'No player'), ('Sticks...',)):
             for _ in range(20):
-                if m.labels()[m.page()[2]] == want:
+                if m.labels()[m.page()[2]] in want:
                     break
                 m.key('DOWN')
-            self.assertEqual(m.labels()[m.page()[2]], want)
+            self.assertIn(m.labels()[m.page()[2]], want)
             m.key('ENTER')
         return m
 
