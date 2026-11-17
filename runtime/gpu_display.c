@@ -853,6 +853,10 @@ unsigned display_present_flags(void) {
     return (cfg.pacing == PACING_VRR || cfg.speed != 1) && tearing ? 0x200u /* DXGI_PRESENT_ALLOW_TEARING */ : 0;
 }
 
+/* (vblank_tick: the monitor's refreshes cannot be waited for here) */
+static volatile LONG vblank_failed_flag;
+int display_vblank_failed(void) { return vblank_failed_flag != 0; }
+
 void *gfx_display_output(void);   /* gpu_d3d11.c: the swap chain's output (IDXGIOutput, referenced), or NULL */
 
 /* The refresh rate of the window's monitor, in Hz (0 unknown). */
@@ -899,16 +903,17 @@ static int vblank_tick(void) {
      * by their times, so a wait that returns at once or misses one is counted as what it was. */
     LONGLONG period = freq.QuadPart / hz_now;
     for (int waits = 0;;) {
-        if (FAILED(IDXGIOutput_WaitForVBlank(output))) { failed = 1; break; }
+        if (FAILED(IDXGIOutput_WaitForVBlank(output))) { failed = 1; InterlockedExchange(&vblank_failed_flag, 1); break; }
         QueryPerformanceCounter(&t1);
         if (!last || ++waits >= 2 * divisor + 2) break;   /* (the first tick; and never more than a few refreshes) */
         if ((t1.QuadPart - last + period / 2) / period >= divisor + extra) break;
     }
     QueryPerformanceCounter(&t1);
     last = t1.QuadPart;
-    if (!failed && (t1.QuadPart - t0.QuadPart) * 1000 / freq.QuadPart > 50 * divisor) failed = 1;
+    if (!failed && (t1.QuadPart - t0.QuadPart) * 1000 / freq.QuadPart > 50 * divisor) { failed = 1; InterlockedExchange(&vblank_failed_flag, 1); }
     if (failed) InterlockedExchange(&vblank_hz, 0);
-    if (failed) fprintf(stderr, "[display] waiting for the monitor's refresh failed: clock pacing from now on\n");
+    if (failed) fprintf(stderr, "[display] waiting for the monitor's refresh failed (its panel is another card's?): "
+                                 "the renderer's own sync paces the frames from now on\n");
     return !failed;
 }
 #elif defined __APPLE__
