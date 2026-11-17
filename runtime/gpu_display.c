@@ -1000,7 +1000,9 @@ void display_wait_tick(void) {
                 cfg.pacing == PACING_VRR ? "vrr" : cfg.pacing == PACING_DISPLAY ? "display" : "clock",
                 cfg.pacing == PACING_VRR && !tearing ? " (no tearing support: as clock)" : "");
     }
-    if (cfg.pacing == PACING_DISPLAY && vblank_tick()) {   /* the clock restarts from here if it is needed later */
+    /* (`display` at a rate 60 does not divide - 165 Hz: vblank_tick notes it once and returns 0 from then on, and this
+     * is the clock's own path, as clock pacing is, with the renderer presenting in sync instead of this wait) */
+    if (cfg.pacing == PACING_DISPLAY && !vblank_odd_rate && vblank_tick()) {   /* the clock restarts from here if it is needed later */
         QueryPerformanceCounter(&base);
         ticks = 0;
         return;
