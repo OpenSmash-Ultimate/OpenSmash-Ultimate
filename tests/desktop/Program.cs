@@ -320,6 +320,7 @@ try
     ThemeChecks.Run(root);
     ThemePresetChecks.Run(root);
     ThemePersistenceChecks.Run(root);
+    RemapChecks.Run(root);
     Console.WriteLine("All desktop launcher checks passed.");
 }
 finally
