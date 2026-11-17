@@ -21,13 +21,13 @@ static class Program
     static async Task<int> Main()
     {
         // ---- versions
-        Check(SemVer.Parse("0.6.0") > SemVer.Parse("0.6.0-rc.2"), "release newer than its rc");
-        Check(SemVer.Parse("0.6.0-rc.10") > SemVer.Parse("0.6.0-rc.2"), "numeric pre-release parts");
-        Check(SemVer.Parse("v0.6.0") > SemVer.Parse("0.3.0-alpha.3"), "0.6.0 newer than the alphas");
-        Check(SemVer.Parse("0.6.1") > SemVer.Parse("0.6.0"), "patch");
-        Check(SemVer.Parse("0.6.0.0").ToString() == "0.6.0", "assembly version form");
+        Check(SemVer.Parse("0.4.0") > SemVer.Parse("0.4.0-rc.2"), "release newer than its rc");
+        Check(SemVer.Parse("0.4.0-rc.10") > SemVer.Parse("0.4.0-rc.2"), "numeric pre-release parts");
+        Check(SemVer.Parse("v0.4.0") > SemVer.Parse("0.3.0-alpha.3"), "0.4.0 newer than the alphas");
+        Check(SemVer.Parse("0.4.1") > SemVer.Parse("0.4.0"), "patch");
+        Check(SemVer.Parse("0.4.0.0").ToString() == "0.4.0", "assembly version form");
         Check(!SemVer.TryParse("main", out _), "a branch is no version");
-        Check(Updater.Current.ToString() == "0.6.0-test", "Current from the informational version: " + Updater.Current);
+        Check(Updater.Current.ToString() == "0.4.0-test", "Current from the informational version: " + Updater.Current);
 
         // ---- a release in a folder (OPENSMASH_RELEASE_DIR)
         string dir = Path.Combine(Path.GetTempPath(), "opensmash-core-test-" + Guid.NewGuid().ToString("n"));
@@ -37,15 +37,15 @@ static class Program
             byte[] exe = Encoding.ASCII.GetBytes("not really a launcher");
             File.WriteAllBytes(Path.Combine(dir, "OpenSmash.exe"), exe);
             string commit = new string('a', 40);
-            string manifest = "{\"schema\":1,\"version\":\"0.6.0\",\"commit\":\"" + commit + "\",\"channel\":\"stable\",\"lobby\":\"lobby.example:1\",\"min_client_level\":1," +
+            string manifest = "{\"schema\":1,\"version\":\"0.4.0\",\"commit\":\"" + commit + "\",\"channel\":\"stable\",\"lobby\":\"lobby.example:1\",\"min_client_level\":1," +
                               "\"launcher\":{\"" + Releases.Platform + "\":{\"file\":\"OpenSmash.exe\",\"sha256\":\"" + Releases.Sha256(exe) + "\"}," +
                               "\"evil\":{\"file\":\"../x.exe\",\"sha256\":\"00\"}}}";
             File.WriteAllText(Path.Combine(dir, Releases.ManifestName), manifest);
             Environment.SetEnvironmentVariable("OPENSMASH_RELEASE_DIR", dir);
             var r = await Releases.LatestAsync("stable");
-            Check(r != null && r.Version.ToString() == "0.6.0" && r.Commit == commit && r.Lobby == "lobby.example:1" && r.MinClientLevel == 1, "manifest read");
+            Check(r != null && r.Version.ToString() == "0.4.0" && r.Commit == commit && r.Lobby == "lobby.example:1" && r.MinClientLevel == 1, "manifest read");
             Check(r != null && !r.Launcher.ContainsKey("evil"), "a file with a path is not listed");
-            Check(Updater.LauncherOutdated(r), "0.6.0 is newer than 0.6.0-test");
+            Check(Updater.LauncherOutdated(r), "0.4.0 is newer than 0.4.0-test");
             byte[] got = await Releases.DownloadCheckedAsync(r.Launcher[Releases.Platform]);
             Check(got.SequenceEqual(exe), "checked download");
             r.Launcher[Releases.Platform].Sha256 = new string('0', 64);
@@ -108,12 +108,12 @@ static class Program
         // ---- the session's performance summary
         string perf = "{\"schema\":1,\"clean_exit\":true,\"session_s\":300,\"frames\":18000,\"ft_p50\":16.62,\"ft_p99\":21.5,\"stutters\":3," +
                       "\"hist\":{\"<8\":0,\"<12\":1,\">=100\":2},\"rb_rollbacks\":120,\"path\":\"C:/Users/someone\",\"name\":\"someone\"}";
-        var pp = PerfReport.Payload(perf, new Dictionary<string, object> { ["cpu"] = "Test CPU", ["ram_gb"] = 16.0 }, "[vulkan] device: Test GPU (driver 1)\nrenderer: vulkan\n", "0.6.0", "abc");
+        var pp = PerfReport.Payload(perf, new Dictionary<string, object> { ["cpu"] = "Test CPU", ["ram_gb"] = 16.0 }, "[vulkan] device: Test GPU (driver 1)\nrenderer: vulkan\n", "0.4.0", "abc");
         Check(pp != null && (double)pp["frames"] == 18000 && (string)pp["cpu"] == "Test CPU" && (string)pp["gpu"] == "Test GPU" && (string)pp["renderer"] == "vulkan" &&
               (bool)pp["crashed"] == false && !pp.ContainsKey("path") && !pp.ContainsKey("name") && ((Dictionary<string, long>)pp["hist"])[">=100"] == 2, "performance summary payload");
         Check(!System.Text.Json.JsonSerializer.Serialize(pp).Contains("someone"), "performance summary: unknown fields dropped");
-        Check(PerfReport.Payload(perf.Replace("\"session_s\":300", "\"session_s\":20"), null, null, "0.6.0", "abc") == null, "performance summary: short sessions are not sent");
-        Check(PerfReport.Payload("not json", null, null, "0.6.0", "abc") == null, "performance summary: not a summary");
+        Check(PerfReport.Payload(perf.Replace("\"session_s\":300", "\"session_s\":20"), null, null, "0.4.0", "abc") == null, "performance summary: short sessions are not sent");
+        Check(PerfReport.Payload("not json", null, null, "0.4.0", "abc") == null, "performance summary: not a summary");
         var pc = PerfReport.Pc();
         Check(pc.ContainsKey("cpu_threads") && !System.Text.Json.JsonSerializer.Serialize(pc).Contains(Environment.UserName, StringComparison.OrdinalIgnoreCase), "this PC's kind has no user name");
         string troot = Path.Combine(Path.GetTempPath(), "os-core-perf-" + Guid.NewGuid().ToString("N"));

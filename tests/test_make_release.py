@@ -34,17 +34,17 @@ class Release(unittest.TestCase):
                 z.writestr(n, data)
 
     def test_versions(self):
-        self.assertEqual(M.version("v0.6.0"), "0.6.0")
-        self.assertEqual(M.version("v0.6.1-rc.1"), "0.6.1-rc.1")
-        for bad in ("main", "v0.6", "v06.0.0", "0.6.0.1"):
+        self.assertEqual(M.version("v0.4.0"), "0.4.0")
+        self.assertEqual(M.version("v0.4.1-rc.1"), "0.4.1-rc.1")
+        for bad in ("main", "v0.4", "v04.0.0", "0.4.0.1"):
             with self.assertRaises(SystemExit):
                 M.version(bad)
 
     def test_manifest(self):
-        m = M.manifest(self.dist, "v0.6.0", COMMIT, lobby="lobby.example.org:39010", min_level=1)
+        m = M.manifest(self.dist, "v0.4.0", COMMIT, lobby="lobby.example.org:39010", min_level=1)
         with open(os.path.join(self.dist, M.MANIFEST)) as f:
             self.assertEqual(json.load(f), m)
-        self.assertEqual(m["version"], "0.6.0")
+        self.assertEqual(m["version"], "0.4.0")
         self.assertEqual(m["launcher"]["windows-x64"]["file"], "OpenSmash.exe")
         self.assertEqual(m["runtime"]["windows-avx2"]["sha256"], M.sha256(os.path.join(self.dist, "opensmash-runtime-windows-avx2.zip")))
         self.assertEqual((m["lobby"], m["min_client_level"]), ("lobby.example.org:39010", 1))
@@ -53,14 +53,14 @@ class Release(unittest.TestCase):
 
     def test_prerelease_only_testing(self):
         with self.assertRaises(SystemExit):
-            M.manifest(self.dist, "v0.6.0-rc.1", COMMIT)
-        self.assertEqual(M.manifest(self.dist, "v0.6.0-rc.1", COMMIT, channel="testing")["channel"], "testing")
+            M.manifest(self.dist, "v0.4.0-rc.1", COMMIT)
+        self.assertEqual(M.manifest(self.dist, "v0.4.0-rc.1", COMMIT, channel="testing")["channel"], "testing")
 
     def test_unknown_file_refused(self):
         with open(os.path.join(self.dist, "notes.txt"), "w") as f:
             f.write("x")
         with self.assertRaises(SystemExit):
-            M.manifest(self.dist, "v0.6.0", COMMIT)
+            M.manifest(self.dist, "v0.4.0", COMMIT)
 
     def test_audit_finds_game_data(self):
         self.zip("opensmash-runtime-windows-x86-64-v2.zip", {"main.nso": b"NSO0", "keys/prod.keys": b"x",
@@ -68,7 +68,7 @@ class Release(unittest.TestCase):
         bad = M.audit([os.path.join(self.dist, "opensmash-runtime-windows-x86-64-v2.zip")])
         self.assertEqual(len(bad), 3, bad)
         with self.assertRaises(SystemExit):
-            M.manifest(self.dist, "v0.6.0", COMMIT)
+            M.manifest(self.dist, "v0.4.0", COMMIT)
 
     def test_service(self):
         out = os.path.join(self.dist, "svc.json")
