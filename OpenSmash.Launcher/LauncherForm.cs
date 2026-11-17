@@ -301,9 +301,15 @@ namespace OpenSmash.Launcher
                     try { _maintenanceProcess.Kill(entireProcessTree: true); } catch { }
                 }
             };
-            // Back in front (after the game, whose settings menu writes the same files, or an editor): the files are read
-            // again, so the page and the renderer chip show what the game will use.
-            Activated += (s, e) => ReloadSettingsIfChanged();
+            // Back in front (after the game, whose settings menu writes the same files, or a text editor): the files are
+            // read again, so the page and the renderer chip show what the game will use.
+            Activated += (s, e) =>
+            {
+                if (_settingsLoaded) { ReloadSettingsIfChanged(); return; }
+                string before = _rendererIni;
+                ReadRendererIni();
+                if (before != _rendererIni) Invalidate();
+            };
             Shown += async (s, e) =>
             {
                 if (preview) return; // UI tests render without startup tasks or network access.
@@ -403,6 +409,12 @@ namespace OpenSmash.Launcher
             _plugins = 0;
             if (Directory.Exists(_pluginsDir))
                 _plugins = Directory.GetFiles(_pluginsDir, "*.nro").Length;
+            ReadRendererIni();
+        }
+
+        // The renderer the game will start with, for the chip before the Settings page has read the files.
+        void ReadRendererIni()
+        {
             try
             {
                 string display = WindowSmash.ConfigFile(_repo, "display.ini");

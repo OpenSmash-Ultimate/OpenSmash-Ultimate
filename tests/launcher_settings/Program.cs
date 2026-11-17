@@ -219,8 +219,8 @@ static class Tests
             Write("window", "borderless");
             Check(File.GetLastWriteTimeUtc(display) == old, "the same value again: the file is not written");
 
-            // The game's settings menu changes the files while the launcher is open (the game started without the mods
-            // keeps it on screen): back in front, the page shows them; a lobby change not yet written stays.
+            // The files change while the launcher is open (the game's settings menu, a game started from a shortcut, the
+            // "Open the file" row's editor): back in front, the page shows them; a lobby change not yet written stays.
             Write("lobby", "private");   // (no code yet: not written)
             File.WriteAllText(display, File.ReadAllText(display).Replace("window = borderless", "window = fullscreen").Replace("renderer = direct3d11", "renderer = vulkan"));
             File.WriteAllText(Path.Combine(config, "online_direct.txt"), "off\n");

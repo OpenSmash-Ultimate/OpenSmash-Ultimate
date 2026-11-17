@@ -281,8 +281,9 @@ function fillSettings(s, choices, all) {
     if (!sel || kept.has(key)) continue;
     const values = options.map(o => o[0]);
     if (!values.includes(s[key]) && s[key]) options = [[s[key], s[key]], ...options];
-    sel.innerHTML = options.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
-    sel.value = s[key];
+    const html = options.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
+    if (sel.dataset.options !== html) { sel.innerHTML = html; sel.dataset.options = html; }   // (an open list is not rebuilt)
+    if (sel.value !== s[key]) sel.value = s[key];
   }
   for (const key of ["name", "code", "server", "volume"])
     if (!kept.has(key)) form.elements[key].value = s[key] || (key === "volume" ? 100 : "");
