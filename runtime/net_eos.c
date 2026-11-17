@@ -469,7 +469,7 @@ static void EOS_CALL hub_found(const EosFindInfo *d) {
         LONG multi = hubs > 1;
         if (multi != hub_multi) {
             InterlockedExchange(&hub_multi, multi);
-            if (multi) fprintf(stderr, "[eos] hub: %d hubs of this lobby code: gathering searches cover them all%s\n", hubs, best[0] && strcmp(best, hub_id) < 0 ? "" : " (ours is the first with room)");
+            if (multi) fprintf(stderr, "[eos] hub: %d hubs of this lobby code: gathering searches cover them all%s\n", hubs, best[0] && strcmp(best, hub_id) < 0 ? "" : " (none before ours with room: staying)");
             else fprintf(stderr, "[eos] hub: one hub of this lobby code again\n");
         }
         if (best[0] && strcmp(best, hub_id) < 0) {
