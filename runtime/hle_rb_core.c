@@ -43,6 +43,7 @@ int rb_page_cold(const void *p) { (void)p; return 0; }
 int net_match_on(void) { return 0; }
 void rb_shadow_note(u64 at, u64 size) { (void)at; (void)size; }
 int rb_online_match_now(void) { return 0; }   /* (hle_online_delay.c) */
+int rb_sd_hold_now(void) { return 0; }        /* (hle_online_delay.c) */
 #else
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
@@ -3033,74 +3034,49 @@ static int net_result_mode(Cpu *c, u64 mgr) { return (int)(fm_ask(c, mgr, "_ZN3a
  * ~1980), the Online step at its end state (6) while they fought, and no results on either.
  * So when the flag goes off with more than one player at the top of the ranking (the game's own
  * FighterManager::get_top_rank_player_num, the same on both games: the fight's state), the match is held as it is -
- * rollback's set-up, the players kept, their pads held to nothing, the Online step left out, the Online scene told the
- * fight is over as the step would tell it (sd_scene_over, below) - and the frames to the
- * next fight are stepped together as a match's loading is (net_countdown: the GO! freeze, net_pre_step). The sudden
- * death is then the match's next fight, rollback's as the first was (net_step starts every fight afresh), and its end
- * is the match's: the results follow as after any fight. If no fight comes within SD_WAIT_LF logic frames (a rule
- * without sudden death), the match ends there, as before. NOT WORKING YET, so off unless SSBU_RB_SUDDEN_DEATH=1: the Online scene stays at TIME! (logic frame
- * still) while the step is left out, and asking the step "over" ends the online match; the scene needs something of
- * the step's state 4 (station results?) to go on to the sudden death. Off: the flag going off ends the
- * match, as before). */
+ * rollback's set-up, the players kept, their pads held to nothing - and the frames to the next fight are stepped
+ * together as a match's loading is (net_countdown: the GO! freeze, net_pre_step). The Online step does what it does at
+ * a tie without rollback (13.0.5, two games with the step run as the game runs it, SSBU_RB_STEP_RUN=1): some 30 logic
+ * frames after TIME! the Online melee scene (main+0x15693d0) asks the step to end its session, kind 2 with code 0; the
+ * step (its state 5, the other game told) ends it in a few frames (state 6, main+0x16cced0), and the scene starts a new
+ * session for the sudden death (main+0x1569010 -> main+0x16d9090: states 1-3, every game's station in it, then 4). With
+ * the step left out while rollback plays the match (hle_online_delay.c), that end was taken back as any other: the
+ * scene stood at TIME! for good, its logic frame still; telling the scene the match was over instead (its +0x53, as the
+ * step's "over" callback does: #410) did not move it on, and running the left-out step let its stale pad frames end the
+ * session as "over" (+0x53 again, one game alone restarting). So through the hold (rb_sd_hold_now) that end is done as
+ * the step's tail does it - its +0x66 counted down, then main+0x16cced0 (step, kind): the scene's cut-short callback,
+ * state 6 - on each game at the same logic frame, and the step's new session (states 1-3) runs as the game runs it; it is
+ * left out again from there. The sudden death is then the match's next fight, rollback's as the first was (net_step
+ * starts every fight afresh), and its end is the match's: the results follow as after any fight. If no fight comes
+ * within SD_WAIT_LF logic frames (a rule without sudden death), the match ends there, as before.
+ * SSBU_RB_SUDDEN_DEATH=0: off (the flag going off ends the match, as before #410). */
 #define SD_WAIT_LF 600        /* (logic frames from the flag going off: the sudden death's came ~200 on) */
 #define SD_WAIT_POINTS 3600   /* (safe points: in case the logic frame stands still) */
+#define RANK_TEAMS 0x71052cc5ddull      /* (13.0.5: 1 when the ranking is by teams) */
+#define RANK_TOP_TEAMS 0x71052cc5f7ull  /* (the teams at the top; the players at the top at +0x5f6, get_top_rank_player_num's) */
 static u32 sd_lf0;
 static long long sd_points;
 static int sd_hold_begin(Cpu *c) {
     static int on = -1;
-    if (on < 0) { const char *e = getenv("SSBU_RB_SUDDEN_DEATH"); on = e && *e == '1'; }
+    if (on < 0) { const char *e = getenv("SSBU_RB_SUDDEN_DEATH"); on = !(e && *e == '0'); }
     if (net_mode != 2 || !net_armed || !on) return 0;
     static u64 inst = 1;
     if (inst == 1) inst = rt_symbol("_ZN3lib9SingletonIN3app14FighterManagerEE9instance_E");
     u64 mgr = inst ? ld64(inst) : 0;
     if (!mgr || !ld64(mgr)) return 0;
     int top = (int)(fm_ask(c, mgr, "_ZN3app8lua_bind44FighterManager__get_top_rank_player_num_implEPNS_14FighterManagerE") & 0xff);
+    /* (that is the players at the top in a rule without teams, left as it was in a team rule: the ranking's maker,
+     * main+0x15164f0, counts the teams at the top there instead, next to it) */
+    if (ld8(RANK_TEAMS) == 1) top = ld8(RANK_TOP_TEAMS);
     sd_lf0 = ld32(LOGIC_FRAME);
     fprintf(stderr, "[rb] the fight is over at logic frame %u: %d player%s at the top of the ranking%s\n", sd_lf0, top, top == 1 ? "" : "s",
             top >= 2 ? ": a tie - the match is held for a sudden death (rollback's set-up kept, the pads held to nothing)" : "");
     return top >= 2;
 }
-/* (13.0.5) The Online melee scene (the global at 0x71052c3918), at TIME! of a tie: some 30 frames on it waits for the
- * Online step's "match over" (main+0x156a570: its +0x53, or +0x5e, while +0x51 says the match is an online one) before
- * it goes on to the sudden death, and on entering that wait it starts from +0x53 clear. The step tells it through its
- * +0x68 callback, main+0x156b860(station, code) -> the scene's main+0x15695a0, which sets +0x53 when the station is
- * the scene's own (+0x60); once the scene has seen it, it clears +0x50/+0x51, so the sudden death's end waits for
- * nothing more. With the step left out while rollback plays the match (hle_online_delay.c) nothing tells it: the
- * scene stood at TIME! for good, its logic frame still (a Quickplay tie, 32 frames after TIME!). Asking the step
- * "over" instead ended the match for the step (state 5, 6: the gathering left, the other game's scene waiting ~30 s
- * for it), not only the fight. So through the hold the scene is told as the step's callback would tell it, every
- * frame while it is an online one not yet told (the callback does nothing once it is); the step stays left out, to be
- * asked "over" at the match's real end, when its callback then finds +0x51 clear. Both games tell it on the same
- * logic frames (the hold's frames are stepped together, net_pre_step). */
-#define ONLINE_SCENE 0x71052c3918ull
-#define SCENE_OVER_CB 0x710156b860ull
-#define SD_STILL 30
-static u32 sd_still_lf;
-static int sd_still;
-static void sd_scene_over(Cpu *c) {
-    /* (only once the scene stands waiting - its logic frame still for SD_STILL hold frames: told at the drop, its +0x53
-     * stayed set and the scene stood at TIME! all the same; the step's own callback comes ~30 frames on, as it waits.
-     * The logic frame stands still all through the wait, so every game tells it at the same logic frame) */
-    u32 lf = ld32(LOGIC_FRAME);
-    if (lf != sd_still_lf) { sd_still_lf = lf; sd_still = 0; return; }
-    if (++sd_still < SD_STILL) return;
-    if (!online_match || !readable(ONLINE_SCENE, 8)) return;
-    u64 sc = ld64(ONLINE_SCENE);
-    if (!sc || !readable(sc, 0x68) || !ld8(sc + 0x51) || ld8(sc + 0x53)) return;
-    static Cpu keep;
-    keep = *c;
-    c->x[0] = ld8(sc + 0x60); c->x[1] = 0;
-    rt_call(c, SCENE_OVER_CB);
-    *c = keep;
-    static long long told_fight = -1;
-    if (told_fight != S.fights) {
-        told_fight = S.fights;
-        fprintf(stderr, "[rb] sudden death: the Online scene told the fight is over, as the step would (logic frame %u, %lld frames into the hold; +0x53 now %u)\n",
-                ld32(LOGIC_FRAME), sd_points, ld8(sc + 0x53));
-    }
-}
+/* (hle_online_delay.c: a sudden death's hold is on - the Online step's own end of its session is done then) */
+int rb_sd_hold_now(void) { return sd_holding; }
 static void sd_hold_arm(Cpu *c) {
-    sd_holding = 1; sd_points = 0; sd_left = 0; sd_still_lf = ld32(LOGIC_FRAME); sd_still = 0;
+    sd_holding = 1; sd_points = 0; sd_left = 0;
     net_countdown = 1;
     net_pre_reset();   /* (the frames to the next fight stepped with the other games, as a loading) */
     (void)c;
@@ -3119,7 +3095,6 @@ static void sd_hold_frame(Cpu *c) {
     if (sd_left) { sd_hold_end("another game ended the match (it left)"); return; }
     if (lf >= sd_lf0 && lf - sd_lf0 >= SD_WAIT_LF) { sd_hold_end("no fight came within the wait"); return; }
     if (sd_points >= SD_WAIT_POINTS) { sd_hold_end("no fight came (the logic frame stood still)"); return; }
-    sd_scene_over(c);
     if (sd_points % 10 == 0) {   /* (the results came instead: no sudden death in these rules) */
         static u64 inst = 1;
         if (inst == 1) inst = rt_symbol("_ZN3lib9SingletonIN3app14FighterManagerEE9instance_E");
