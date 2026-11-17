@@ -3585,6 +3585,7 @@ static WarmShader *warm_ready(const WarmKey *k) {
 static char warm_marker[1200];
 #define WARM_RETRIES 3   /* (unfinished warm starts in a row before the list is started again) */
 
+static VkFormat warm_z24 = VK_FORMAT_D24_UNORM_S8_UINT;   /* (Z24S8 on this card: set by warm_start before its threads) */
 /* One record made (or left out, and counted). */
 static void warm_one(u32 i) {
     if (!warm_stopped && warm_budget && (i & 15) == 0 && private_bytes() > warm_bytes0 + warm_budget) InterlockedExchange(&warm_stopped, 1);
@@ -3595,6 +3596,10 @@ static void warm_one(u32 i) {
     if (!vs || (r->ps.stage != ~0u && !ps)) { InterlockedIncrement(&warm_left); return; }
     PipeKey key;
     memcpy(&key, &r->key, sizeof key);
+    /* (Z24S8 is drawn as D32S8 on a card without D24S8, AMD's: depth_format. The shipped list was made on NVIDIA,
+     * so its records name D24S8, and a pipeline warmed for that format was never the one a draw asked for - an
+     * RX 9070 XT's play.log (#262): 13,433 pipelines warmed, 18 drawn with, ~350 made in play every session) */
+    if (key.depth == VK_FORMAT_D24_UNORM_S8_UINT) key.depth = warm_z24;
     key.vs = vs->module;
     key.ps = ps ? ps->module : VK_NULL_HANDLE;
     u32 h = desc_hash(&key, sizeof key) & (PIPE_SLOTS - 1);
@@ -3803,6 +3808,8 @@ static void warm_start(void) {
     }
     warm_groups_open();
     if (!warm_ngroups) { warm_shader_slots = 0; return; }
+    warm_z24 = depth_format(0x14);
+    if (warm_z24 != VK_FORMAT_D24_UNORM_S8_UINT) fprintf(stderr, "[vulkan] warm start: the list's D24S8 depth made as this card's D32S8\n");
     MEMORYSTATUSEX m = {sizeof m};
     warm_budget = 1024ull << 20;
     if (GlobalMemoryStatusEx(&m) && m.ullTotalPhys / 3 > warm_budget) warm_budget = m.ullTotalPhys / 3;
