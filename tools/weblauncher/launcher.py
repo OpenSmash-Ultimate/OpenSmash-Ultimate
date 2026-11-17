@@ -240,7 +240,7 @@ def lobby_from_line(line):
         return "offline", code, ""
     if h == "lan":
         return "lan", code, ""
-    if h in ("auto", "na", "eu", PUBLIC_LOBBY) or h.startswith(OLD_LOBBY):   # (the North American lobby is gone)
+    if h in ("auto", "eos", "na", "eu", PUBLIC_LOBBY) or h.startswith(OLD_LOBBY):   # (the North American lobby is gone; "eos": EOS alone)
         return ("private" if code else "public"), code, ""
     return "custom", code, host
 

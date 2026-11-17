@@ -145,7 +145,7 @@ class Settings(unittest.TestCase):
         # (runtime/gpu_menu.c net_load / net_save_server; the same table as tests/launcher_settings' Lobby)
         pub = launcher.PUBLIC_LOBBY
         for line, lobby, back in (("", "offline", "off"), ("off", "offline", "off"), ("auto", "public", "auto"),
-                                  ("na", "public", "auto"), ("lan", "lan", "lan"), (pub, "public", "auto"),
+                                  ("na", "public", "auto"), ("eos", "public", "auto"), ("lan", "lan", "lan"), (pub, "public", "auto"),
                                   (pub + " friends", "private", pub + " friends"), ("auto abc", "private", pub + " abc"),
                                   ("10.0.0.2:39420 abc", "custom", "10.0.0.2:39420 abc")):
             with open(os.path.join(self.root, "online_server.txt"), "w") as f:
