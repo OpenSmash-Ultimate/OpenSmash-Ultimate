@@ -853,6 +853,14 @@ unsigned display_present_flags(void) {
     return (cfg.pacing == PACING_VRR || cfg.speed != 1) && tearing ? 0x200u /* DXGI_PRESENT_ALLOW_TEARING */ : 0;
 }
 
+/* (vblank_tick: the monitor's refreshes cannot be waited for here, or its rate is no multiple of 60) */
+static volatile LONG vblank_failed_flag, vblank_odd_rate;
+int display_present_sync(void) {   /* (only while `display` pacing is chosen and the game runs at its speed: a pacing changed
+                                     * in the menu, or SSBU_SPEED's test runs, present as they did before) */
+    load();
+    return cfg.pacing == PACING_DISPLAY && cfg.speed == 1 && (vblank_failed_flag != 0 || vblank_odd_rate != 0);
+}
+
 void *gfx_display_output(void);   /* gpu_d3d11.c: the swap chain's output (IDXGIOutput, referenced), or NULL */
 
 /* The refresh rate of the window's monitor, in Hz (0 unknown). */
@@ -884,8 +892,16 @@ static int vblank_tick(void) {
         if (hz != logged_hz && output) {
             logged_hz = hz;
             fprintf(stderr, "[display] %d Hz monitor: %s\n", hz, divisor ? "display pacing" : "clock pacing (display pacing needs 60, 120 or 240 Hz)");
+            /* (a rate the game's 60 frames do not divide: 165 Hz is 2.75 refreshes a frame, so each frame is shown for
+             * two refreshes and then three. In sync is still the best of it: tear-free, and the pattern stays put) */
+            if (!divisor && hz > 61)
+                fprintf(stderr, "[display] %d Hz is not a multiple of 60 (%g refreshes a frame): the frames are shown in sync, tear-free; "
+                                "60 Hz, a custom 120 Hz mode or VRR is evenly paced\n", hz, hz / 60.0);
         }
     }
+    /* (again at each monitor change: a window moved to a 60 Hz one. Only above 61 Hz: a slower panel - 50 Hz, 30 Hz - in sync
+     * would slow the game itself down to its rate, so it keeps clock pacing as before) */
+    InterlockedExchange(&vblank_odd_rate, !divisor && hz_now > 61 ? 1 : 0);
     InterlockedExchange(&vblank_hz, output && divisor ? hz_now : 0);
     if (!output || !divisor) { last = 0; return 0; }
     int extra = vblank_extra > 0 && InterlockedDecrement(&vblank_extra) >= 0;   /* (one refresh more this tick, at most: a 120 Hz monitor's 8 ms) */
@@ -899,16 +915,20 @@ static int vblank_tick(void) {
      * by their times, so a wait that returns at once or misses one is counted as what it was. */
     LONGLONG period = freq.QuadPart / hz_now;
     for (int waits = 0;;) {
-        if (FAILED(IDXGIOutput_WaitForVBlank(output))) { failed = 1; break; }
+        if (FAILED(IDXGIOutput_WaitForVBlank(output))) { failed = 1; InterlockedExchange(&vblank_failed_flag, 1); break; }
         QueryPerformanceCounter(&t1);
         if (!last || ++waits >= 2 * divisor + 2) break;   /* (the first tick; and never more than a few refreshes) */
         if ((t1.QuadPart - last + period / 2) / period >= divisor + extra) break;
     }
     QueryPerformanceCounter(&t1);
     last = t1.QuadPart;
+    /* (a wait that took too long - a stall, not a monitor that cannot be waited for - goes to clock pacing as before, without
+     * the renderer's sync: FIFO against a clock a little faster than the monitor would queue frames up) */
     if (!failed && (t1.QuadPart - t0.QuadPart) * 1000 / freq.QuadPart > 50 * divisor) failed = 1;
     if (failed) InterlockedExchange(&vblank_hz, 0);
-    if (failed) fprintf(stderr, "[display] waiting for the monitor's refresh failed: clock pacing from now on\n");
+    if (failed) fprintf(stderr, vblank_failed_flag ? "[display] waiting for the monitor's refresh failed (its panel is another card's?): "
+                                                     "the renderer's own sync paces the frames from now on\n"
+                                                   : "[display] waiting for the monitor's refresh took too long: clock pacing from now on\n");
     return !failed;
 }
 #elif defined __APPLE__
@@ -989,6 +1009,8 @@ void display_wait_tick(void) {
                 cfg.pacing == PACING_VRR ? "vrr" : cfg.pacing == PACING_DISPLAY ? "display" : "clock",
                 cfg.pacing == PACING_VRR && !tearing ? " (no tearing support: as clock)" : "");
     }
+    /* (`display` at a rate 60 does not divide - 165 Hz: vblank_tick notes it and returns 0 until the monitor changes, and
+     * this is the clock's own path, as clock pacing is, with the renderer presenting in sync instead of this wait) */
     if (cfg.pacing == PACING_DISPLAY && vblank_tick()) {   /* the clock restarts from here if it is needed later */
         QueryPerformanceCounter(&base);
         ticks = 0;
@@ -997,7 +1019,10 @@ void display_wait_tick(void) {
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     long long period = freq.QuadPart / 60;
-    if (now.QuadPart - (base.QuadPart + ticks * freq.QuadPart / 60) > 2 * period) {   /* late by two refreshes: skip, don't burst */
+    /* (late by two refreshes: skip, don't burst. With the renderer presenting in sync (display_present_sync) a present that
+     * waited for the monitor is what made it late: the clock starts again from here at once, so it neither sends refreshes
+     * back to back nor stays behind - rollback's time sync below, which moves the clock later, then still slows the game) */
+    if (now.QuadPart - (base.QuadPart + ticks * freq.QuadPart / 60) > (display_present_sync() ? period / 8 : 2 * period)) {
         base = now;
         ticks = 0;
     }
