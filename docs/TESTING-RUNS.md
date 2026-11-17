@@ -238,7 +238,7 @@ The game's select screen has 91 tiles (13 x 7) and its own fighters fill 87. Whe
 (OpenSmash's new fighters, `config.json`'s `new-fighters`; Skyline plugins' select-screen entries, `dump/skyline/csk.json`),
 `tools/mods.py apply` makes the screen's layout and table for 91 + that many tiles ([`tools/css_layout.py`](../tools/css_layout.py),
 kept in `dump/mods/select_screen`; `python tools/css_layout.py plan <n>` shows the rows and tile size for n tiles) and
-[`runtime/hle_select_screen.c`](../runtime/hle_select_screen.c) sizes and hides the tiles past 91. A mod with its own
+[`runtime/hle_select_screen.c`](../runtime/hle_select_screen.c) hides the tiles past 91 that the rows do not use. A mod with its own
 `chara_icon_arrangement.prc` is used as it is. `SSBU_CSS_LOG=1` logs the layout's tiles and each grid (`[css] grid: 143 tiles
 of 147, rows 16 16 16 .., size 17`); more fighters than the layout holds are left off with a `[css] WARNING` instead of the
 game's abort. `SSBU_CSS_FIT=0` leaves the hook out. For a test with many tiles without as many fighters: the roster
