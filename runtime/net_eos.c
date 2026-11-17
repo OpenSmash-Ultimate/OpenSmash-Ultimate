@@ -320,7 +320,7 @@ static void hub_refresh(void) {   /* (EOS thread) the members and their addresse
     if (clash) { hub_salt++; InterlockedExchange(&hub_ip, 0); hub_claim(); return; }
     if (confirmed && (u32)hub_ip != hub_set) {
         InterlockedExchange(&hub_ip, (LONG)hub_set);
-        fprintf(stderr, "[eos] in hub %s as 10.13.%u.%u (%d players there)\n", hub_bucket, hub_set >> 8 & 255, hub_set & 255, k);
+        fprintf(stderr, "[eos] in hub %s (lobby %s) as 10.13.%u.%u (%d players there)\n", hub_bucket, hub_id, hub_set >> 8 & 255, hub_set & 255, k);
     }
 }
 static void EOS_CALL hub_entered(const EosLobbyResult *d) {
@@ -613,6 +613,7 @@ void eos_hub_set_player(u64 pid, const char *url, u32 rating) {
     ReleaseSRWLockExclusive(&hub_lock);
 }
 void eos_hub_refresh_soon(void) { hub_refresh_at = 0; }
+const char *eos_hub_lobby(void) { return hub_state == 3 ? hub_id : ""; }
 int eos_hub_player(u64 pid, char id[NET_EOS_ID_LEN + 1], char *url, size_t cap, u32 *rating) {
     int found = 0;
     AcquireSRWLockShared(&hub_lock);
@@ -639,6 +640,7 @@ int eos_hub_member_id(u32 ip, char id[NET_EOS_ID_LEN + 1]) {   /* 1: the member 
 #else   /* (Linux, macOS: not yet) */
 void eos_hub_set_player(u64 pid, const char *url, u32 rating) { (void)pid; (void)url; (void)rating; }
 void eos_hub_refresh_soon(void) {}
+const char *eos_hub_lobby(void) { return ""; }
 int eos_hub_player(u64 pid, char id[NET_EOS_ID_LEN + 1], char *url, size_t cap, u32 *rating) { (void)pid; (void)id; (void)url; (void)cap; (void)rating; return 0; }
 int eos_send_reliable(const char *to, const void *data, u32 len) { (void)to; (void)data; (void)len; return 0; }
 int eos_post(void (*fn)(void *), void *arg) { (void)fn; (void)arg; return 0; }
