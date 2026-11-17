@@ -1,4 +1,21 @@
-# Real Skyline plugins and the character bench: report (2026-10-24, updated 2026-10-25)
+# Real Skyline plugins and the character bench: report (2026-10-24, updated 2026-10-25 and 2026-11-17)
+
+## Update, 2026-11-17: the CSK Collection 6.0.1
+
+The pinned CSK Collection is now 6.0.1 (GameBanana's file 1884395, "Version 6.0.1 (13.0.5)"), not 5.0.6. 6.0.1 is
+built for game 13.0.5 but for one address: the inline hook in `check_selection_type` still names its 13.0.4
+address, main+0x17939ec, which is main+0x179390c in 13.0.5. So its map, `tools/ports/the_csk_collection-6.0.1.txt`,
+has that one entry (the map's header says how the plugin's other addresses were checked), and 5.0.6's map,
+described in the update below, is removed. Without the port the plugin still loads and sets that hook at the
+13.0.4 address (seen in one run that had the unported file in `skyline/plugins`).
+
+Tested on 2026-11-17 (Windows, AMD Radeon RX 7900 GRE, the Vulkan back end, main at 2665ab2 with this pin and
+map): 21 mods turned on, 19 mod plugins loaded; the plugin's hook set at main+0x179390c; a select screen of 103
+tiles; 3 matches in a run of 7.5 minutes; no panic or exception line in the log, and the game closed normally.
+
+Known, cause not found: on 2026-11-11 the plugin panicked once, in the probe run of an update (an `unwrap` on
+`None` at the_csk_collection__+0x48684, called from main+0x3311d60). It was not seen in the 3 matches above. Not
+tested: Linux and macOS; Direct3D 11 with this main.
 
 ## Update, 2026-10-25: Sans, the Super HYPE Bros. pack, the real CSK Collection, more than 4 new characters
 
@@ -17,7 +34,8 @@ plugin's C again whenever the recompiler is newer than it.
 **The CSK Collection 5.0.6 runs for real**, ported to 13.0.5 (it only exists for 13.0.4). Main's code moved by
 different amounts in different places (0, -0x40, -0xe0, -0x1a0, +0x1bc, +0x450, +0x490, +0x5b0) and its data and
 read-only data by +0x1000. `tools/port_plugin.py` rewrites the 81 main addresses CSK's code builds, from
-`tools/ports/the_csk_collection-5.0.6.txt`: region shifts from address pairs of plugins released for both versions
+`tools/ports/the_csk_collection-5.0.6.txt` (removed since: the update of 2026-11-17 above): region shifts from
+address pairs of plugins released for both versions
 (Smashline's 13.0.5 commit, One Slot Effects' 13.0.4 and 13.0.5 builds, HewDraw Remix's 13.0.5 offsets), each address
 checked against 13.0.5's code (a function hook on a function start; an inline hook where its callback's registers fit,
 e.g. the "SLI" file in x20 right after it loads; a patch on the instruction it replaces). Its set-up runs to the end,

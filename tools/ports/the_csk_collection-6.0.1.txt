@@ -1,6 +1,6 @@
 # The CSK Collection 6.0.1 (built for game 13.0.5, but for one address): that address, 13.0.4 -> 13.0.5 (tools/port_plugin.py).
 # Evidence: of the 111 addresses in main its hook and patch calls name, 38 are 13.0.5 values of 5.0.6's map
-# (tools/ports/the_csk_collection-5.0.6.txt in the commit before this one), 72 are in neither column of it and one
+# (tools/ports/the_csk_collection-5.0.6.txt, removed with this change), 72 are in neither column of it and one
 # is a 13.0.4 value: check_selection_type's inline hook. All 26 function hooks are on function starts in 13.0.5's
 # main. The pair below is the one 5.0.6's map had: r = the region's shift (0x1792c60-0x1798ac8 -0xe0, from address
 # pairs of plugins released for both versions); c = the code there fits what the plugin does with it (13.0.5's
