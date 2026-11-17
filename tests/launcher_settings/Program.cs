@@ -54,6 +54,7 @@ static class Tests
             Remap(Path.Combine(root, "remap"));
             Feed().GetAwaiter().GetResult();
             Presence(Path.Combine(root, "presence"));
+            ShaderRebuild(Path.Combine(root, "shaders"));
             // (a real SDL3.dll, when one is given: it loads and lists the pads, none needed)
             string? sdl = Environment.GetEnvironmentVariable("LAUNCHER_TEST_SDL_DIR");
             if (!string.IsNullOrEmpty(sdl))
@@ -73,6 +74,52 @@ static class Tests
         }
         catch (Exception e) { Console.WriteLine(e); return 1; }
         finally { try { Directory.Delete(root, true); } catch (IOException) { } }
+    }
+
+    // Settings > Storage > REBUILD SHADERS: which files of dump\shadercache go (ShaderCache.RebuildTargets), and that the
+    // game's other files, a file the list does not know and drawn_keys.txt stay.
+    static void ShaderRebuild(string repo)
+    {
+        Check(ShaderCache.RebuildTargets(repo).Count == 0, "no shader cache: nothing to delete");
+        string dir = Path.Combine(repo, "dump", "shadercache");
+        Directory.CreateDirectory(Path.Combine(dir, "nvidia", "GLCache", "38af177a636d64eb6428bd306291f7a8"));
+        File.WriteAllText(Path.Combine(dir, "nvidia", "GLCache", "38af177a636d64eb6428bd306291f7a8", "x.bin"), "x");
+        string[] gone =
+        {
+            "complete.txt", "prepare_tries.txt", "warm.done", "prewarm-all.done", "warm.log", "warm.lock",
+            "v10_vs_0123456789abcdef_000003ff_0000000000000000.dxbc",
+            "v9_PS_0123456789abcdef_0000003f_0000000000000000.dxbc",
+            "g1002.01100600_ps_4e9c6d74942d892b_00000007_0000000000000000.spv",
+            "g1001_cs_4e9c6d74942d892b_00000000_0000000000000000.spv",
+            "m1003_vs_4e9c6d74942d892b_000000ff_0000000000000000.metal",
+            "vulkan_10de_2d05.pipelines", "vulkan_10de_2d05.warm", "vulkan_10de_2d05.warm.warming", "vulkan_10de_2d05.warm.capped",
+            "vulkan_10de_2d05.pipelines.1234.tmp", "vulkan_10de_2d05.pipelines.vk99.tmp",
+        };
+        string[] kept = { "drawn_keys.txt", "notes.txt", "vulkan_pipelines.warm", "v10_vs_readme.txt", "g1002.spv" };
+        foreach (var f in gone.Concat(kept)) File.WriteAllText(Path.Combine(dir, f), "x");
+        string[] outside =
+        {
+            Path.Combine(repo, "dump", "save", "system.bin"), Path.Combine(repo, "dump", "data", "warm.done"),
+            Path.Combine(repo, "dump", "modules", "complete.txt"), Path.Combine(repo, "mods", "a", "v10_vs_0123456789abcdef_000003ff_0000000000000000.dxbc"),
+        };
+        foreach (var f in outside) { Directory.CreateDirectory(Path.GetDirectoryName(f)!); File.WriteAllText(f, "x"); }
+
+        var targets = ShaderCache.RebuildTargets(repo);
+        string full = Path.GetFullPath(dir) + Path.DirectorySeparatorChar;
+        Check(targets.All(t => Path.GetFullPath(t).StartsWith(full, StringComparison.OrdinalIgnoreCase)), "rebuild: only inside dump/shadercache");
+        Check(targets.Count > 0 && Path.GetFileName(targets[0]) == "complete.txt", "rebuild: complete.txt goes first");
+        var names = targets.Select(Path.GetFileName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var f in gone) Check(names.Contains(f), "rebuild deletes " + f);
+        Check(names.Contains("nvidia"), "rebuild deletes the game's nvidia folder");
+        foreach (var f in kept) Check(!names.Contains(f), "rebuild keeps " + f);
+        Check(targets.Count == gone.Length + 1, "rebuild: nothing else");
+
+        Check(ShaderCache.Clear(repo).Count == 0, "rebuild: everything deleted");
+        foreach (var f in gone) Check(!File.Exists(Path.Combine(dir, f)), "deleted " + f);
+        Check(!Directory.Exists(Path.Combine(dir, "nvidia")), "deleted nvidia folder");
+        foreach (var f in kept) Check(File.Exists(Path.Combine(dir, f)), "kept " + f);
+        foreach (var f in outside) Check(File.Exists(f), "kept outside the cache: " + f);
+        Check(ShaderCache.RebuildTargets(repo).Count == 0, "rebuild: a second run finds nothing");
     }
 
     // online_server.txt's lines as the game's settings menu reads and writes them (runtime/gpu_menu.c net_load / net_save_server)
