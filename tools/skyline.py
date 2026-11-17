@@ -3,7 +3,7 @@
 game (docs/SKYLINE.md).
 
 Usage:
-  skyline.py sync  [--tree <dir>]               the turned-on mods' plugins: recompiled, listed to load
+  skyline.py sync  [--tree <dir>] [--jobs N]    the turned-on mods' plugins: recompiled, listed to load
   skyline.py build [--tree <dir>] [--jobs N]    translate each mod plugin once; link the game only when it must
   skyline.py status [--tree <dir>]              what is listed, and whether the game has it built in
   skyline.py probe [--tree <dir>]               start the game once for the plugins' select-screen entries; apply the mods again if they changed
@@ -1045,7 +1045,7 @@ if __name__ == "__main__":
         sys.exit(__doc__)
     tree = os.path.abspath(arg("--tree", ROOT))
     if sys.argv[1] == "sync":
-        sync(tree)
+        sync(tree, jobs=int(arg("--jobs", str(default_jobs()))))
     elif sys.argv[1] == "build":
         sys.exit(build(tree, int(arg("--jobs", str(default_jobs())))))
     elif sys.argv[1] == "status":

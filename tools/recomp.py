@@ -1172,6 +1172,8 @@ def _build(mod, found, funcs, path, outdir, jobs, per_file, imports):
     name, base = module_key(path), base_of(path)
     os.makedirs(outdir, exist_ok=True)
     modcache.clear_stamp(outdir)   # (until generated and compiled again)
+    if os.path.exists(os.path.join(outdir, objcache.TRIMMED)):   # (its C is all there again from here on: tools/trim.py)
+        os.remove(os.path.join(outdir, objcache.TRIMMED))
     own = os.environ.get("SSBU_OWN_EXPORTS") == "1" or name in standard_plugins()
     if own:
         # a standard plugin keeps its own exports (the real Smashline, the CSK Collection)
@@ -1313,6 +1315,19 @@ def game_key(record, src, compiler, headers):
                                   header), compiler, headers)
 
 
+def c_needed(outdir):
+    """Whether a module folder whose C was removed after it compiled (tools/trim.py --c, objcache.TRIMMED)
+    needs it back: an object of it is to be compiled (a flag, a header or the compiler changed) and its
+    source is gone, or the record no longer knows a source. build_all then writes the module's C again
+    (the same C: the objects whose source and command did not change stay)."""
+    if not os.path.exists(os.path.join(outdir, objcache.TRIMMED)):
+        return False
+    try:
+        return any(not os.path.isfile(src) for src, _obj, _opt, _cost in plan(outdir)[0])
+    except (FileNotFoundError, KeyError, ValueError):
+        return True
+
+
 def stale_files(outdir):
     """What compile_dir compiles, in order (plan's): (source, object, optimisation level,
     estimated seconds: what it took last time, else progress.file_cost) of each file whose object is
@@ -1346,7 +1361,7 @@ def compile_dir(outdir, jobs, shown=None, steps=None):
         key, key_for = keys[job[1]]
         record.compiled(job[1], key if step is None else key_for(step))
     own = steps is None
-    steps = steps or ladder.Ladder(progress.level_cost, "clang-cl")
+    steps = steps or ladder.Ladder(progress.level_cost, "clang-cl", memory=ladder.memory_setting())
     failures = cc.compile_each([t[:3] for t in todo], jobs, *((shown.started, shown.finished) if shown else ()),
                                compiled=compiled, flags=cc.GAME_CFLAGS, shown=shown, infos=infos, steps=steps, times=times)
     if shown:
@@ -1435,7 +1450,7 @@ def compile_all(outdirs, jobs, shown=None, steps=None):
         key, key_for = keys[job[1]]
         record_of[job[1]].compiled(job[1], key if step is None else key_for(step))
     own = steps is None
-    steps = steps or ladder.Ladder(progress.level_cost, "clang-cl")
+    steps = steps or ladder.Ladder(progress.level_cost, "clang-cl", memory=ladder.memory_setting())
     failures = cc.compile_each([t[:3] for t in todo], jobs, *((shown.started, shown.finished) if shown else ()),
                                compiled=compiled, flags=cc.GAME_CFLAGS, shown=shown, infos=infos, steps=steps, times=times)
     if shown:
@@ -1553,7 +1568,7 @@ def link(dirs, exe, rt_dir=None, steps=None):
         if os.path.exists(obj):
             os.remove(obj)
     failures, own = [], steps is None
-    steps = steps or ladder.Ladder(progress.level_cost, "clang-cl")
+    steps = steps or ladder.Ladder(progress.level_cost, "clang-cl", memory=ladder.memory_setting())
     try:
         for flags, group in jobs.items():
             failures += cc.compile_each(group, 4, compiled=lambda job, _level: record.compiled(job[1], keys[job[1]]),
@@ -1643,10 +1658,13 @@ def check(exefs, mods=None):
     return modcache.report_imports(mods, hle_names(), os.path.join(ROOT, "build", "imports.unresolved.txt"))
 
 
-def build_all(exefs, out, jobs, compile_c=True):
+def build_all(exefs, out, jobs, compile_c=True, gen_jobs=None):
     """Every module's C first, then each module's compile, then the link: once the C is there,
     what is left to compile is known, and the progress bar's time left (progress.Build) can say
-    how long it takes. compile_c False (--generate-only): the C only."""
+    how long it takes. compile_c False (--generate-only): the C only. gen_jobs (--gen-jobs): how many
+    processes write the C when that is fewer than `jobs` (a writer holds more memory than a compiler
+    of a usual file: tools/build_game.py gives the compilers more, within tools/ladder.py's budget)."""
+    gen = max(1, min(jobs, gen_jobs or jobs))
     ladder.settings()   # (SSBU_COMPILE_LIMIT, SSBU_OPTNONE_ABOVE, SSBU_LONGEST_FIRST: one that is not a number stops the build now)
     paths = module_paths(exefs)
     mods = {name: Module(path) for name, path in paths.items()}
@@ -1661,7 +1679,8 @@ def build_all(exefs, out, jobs, compile_c=True):
         return [(t[0], t[3]) for t in stale_files(target)] if compile_c else []
     generate = False
     for name, mod in mods.items():
-        current = modcache.build_info(targets[name]) == (mod.build_id, MODULES[name], name, fps[name])
+        current = (modcache.build_info(targets[name]) == (mod.build_id, MODULES[name], name, fps[name])
+                   and not (compile_c and c_needed(targets[name])))
         generate |= not current
         shown.module(name, (mod.text.end - mod.text.mem) // 4, stale(targets[name]) if current else None)
     build_ids = {name: mod.build_id for name, mod in mods.items()}
@@ -1688,18 +1707,18 @@ def build_all(exefs, out, jobs, compile_c=True):
             img = os.path.join(ROOT, "dump", "modules", name + ".reloc.bin")
             if not os.path.exists(img) or os.path.getmtime(img) < os.path.getmtime(nso):
                 image(nso, img)
-            current = modcache.build_info(target) == (build_id, base, name, fps[name])
+            current = modcache.build_info(target) == (build_id, base, name, fps[name]) and not (compile_c and c_needed(target))
             # An up-to-date fighter is not named on the bar. A plugin build links every module, but
             # only the ones whose hooks changed (main, the shared lua, the mod's own plugin) are rewritten.
             if not current:
-                if parallel_gen() and jobs >= 4 and os.path.dirname(nso) == NRO_DIR and name not in own_way:
+                if parallel_gen() and gen >= 4 and os.path.dirname(nso) == NRO_DIR and name not in own_way:
                     if pool is None:
                         from concurrent.futures import ProcessPoolExecutor
-                        pool = ProcessPoolExecutor(max(2, min(jobs, 16) // 2))
+                        pool = ProcessPoolExecutor(max(2, min(gen, 16) // 2))
                     waiting[name] = pool.submit(_generate, (nso, target, 2, 40000, imports))
                     continue
                 shown.begin("gen", name)
-                build(nso, target, jobs, 40000, imports)
+                build(nso, target, gen, 40000, imports)
             else:
                 print(f"{name}: C up to date (build id {build_id[:16]}, same tools)")
                 reused += 1
@@ -1717,7 +1736,7 @@ def build_all(exefs, out, jobs, compile_c=True):
             print(f"the C of {len(paths)} modules is in {out} (--generate-only: not compiled here)")
             return True
         plugins, left_out = plugin_modules(), []
-        steps = ladder.Ladder(progress.level_cost, "clang-cl")   # (one pace and one report for the whole build)
+        steps = ladder.Ladder(progress.level_cost, "clang-cl", memory=ladder.memory_setting())   # (one pace and one report for the whole build)
         try:
             # (every module's stale files as one queue, unless SSBU_ONE_QUEUE=0; a module's result is then known already)
             done = compile_all([targets[name] for name in paths], min(jobs, 16), shown, steps) if one_queue() else {}
@@ -1774,7 +1793,8 @@ if __name__ == "__main__":
     elif cmd == "all":
         # (on macOS the C is compiled by tools/mac/build_mac.py, the compiling and linking here being clang-cl's)
         compile_c = "--generate-only" not in sys.argv and sys.platform != "darwin"
-        sys.exit(0 if build_all(nso, arg("--out"), int(arg("--jobs", "20")), compile_c) else 1)
+        sys.exit(0 if build_all(nso, arg("--out"), int(arg("--jobs", "20")), compile_c,
+                                int(arg("--gen-jobs", "0")) or None) else 1)
     elif cmd == "check":
         check(nso)
     elif cmd == "wrap-sig":   # (an address, or for HLE_WRAP_EXPORT the exported name)

@@ -38,6 +38,10 @@ import threading
 import time
 
 RECORD = "objcache.json"
+# A build folder whose generated C was removed after it compiled (tools/trim.py --c, to save disk: 6 GB of a
+# Windows install): the record's digest of a source that is gone stands for it (Record.source), so its object
+# stays current; tools/recomp.py writes a module's C again when a build needs to compile from it (c_needed).
+TRIMMED = "c_trimmed.txt"
 VERSION = 1
 # A source written this recently is read again next time: a disk that keeps times to the second or
 # two (FAT, exFAT, some shares) would give a file changed in the same second the same time.
@@ -169,6 +173,7 @@ class Record:
         self.objects, self.sources = {}, {}
         self.seen_objects, self.seen_sources, self.recent = set(), set(), set()
         self.unrecorded = UNRECORDED
+        self.trimmed = os.path.exists(os.path.join(folder, TRIMMED))
         self.adopt_ns, self.adopt_found, self.adopted, self.inputs = None, {}, 0, {}
         try:
             with _retried(lambda: open(self.path, encoding="utf-8")) as f:
@@ -196,7 +201,17 @@ class Record:
         """(SHA-256 of a source's content, which of `scan` it holds); read again only when its size
         or time changed."""
         path = os.path.abspath(path)
-        st = os.stat(path)
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            # (a trimmed folder, TRIMMED: the digest recorded before the source was removed; anywhere else, and
+            # for a source the record does not know, the error it always was)
+            with self.lock:
+                was = self.sources.get(path) if self.trimmed else None
+                if was and isinstance(was[3], dict) and all(s.decode() in was[3] for s in self.scan):
+                    self.seen_sources.add(path)
+                    return was[2], {s for s in self.scan if was[3][s.decode()]}
+            raise
         with self.lock:
             self.seen_sources.add(path)
             was = self.sources.get(path)
@@ -283,6 +298,13 @@ class Record:
                 self._save()
             except OSError as e:   # (not worth stopping the build for: the object is compiled again next time)
                 self.log(f"could not write {self.path} ({e}): its objects may be compiled again next time")
+
+    def keep_all(self):
+        """Every object and source of the record counts as looked at (save keeps them): tools/trim.py, which
+        looks at the sources only."""
+        with self.lock:
+            self.seen_objects |= set(self.objects)
+            self.seen_sources |= set(self.sources)
 
     def save(self):
         with self.lock:

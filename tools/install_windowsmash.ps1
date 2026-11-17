@@ -1574,6 +1574,11 @@ function Step-Build {
     if ($Answers.Firmware) { $build += @('--firmware', $Answers.Firmware) } else { $build += '--no-firmware' }   # (none: the open fonts)
     if ($Jobs) { $build += @('--jobs', "$Jobs") }
     if ($SkipBuild) { $build += '--prepare-only' }
+    # the standard Skyline plugins are fetched and listed BEFORE the game is built (build_game.py plugins_first), so main's
+    # C is written once with their hooks in it: about 1 minute of plugin build after the game instead of 16.
+    # SSBU_PLUGINS_FIRST=0: after the build, as before.
+    $build += '--std-plugins'
+    $buildStart = Get-Date
     # (OpenSmash 0.6) an install of a release (the launcher names its tag in OPENSMASH_RELEASE_TAG): the game as a library
     # of its own (ssbu_game.dll) and the release's prebuilt runtime in place of the one built here (tools/runtime_fetch.py),
     # so a runtime fix of a later release needs no compile of the game
@@ -1609,7 +1614,10 @@ function Step-Build {
     # from their own releases (tools\std_plugins.py checks each), then built into the game with the mods' own
     Write-Info 'the standard Skyline plugins: fetched from their releases and built in (tools\std_plugins.py, tools\skyline.py)'
     Write-Warn 'building the plugins into the game can take a while: do not start the game until this window says Done'
-    if ((Invoke-Python @((Join-Path $Root 'tools\std_plugins.py'), 'fetch')) -ne 0) {
+    $stamp = Join-Path $Root 'dump\skyline\plugins_first.txt'
+    $fetched = (Test-Path -LiteralPath $stamp) -and ((Get-Item -LiteralPath $stamp).LastWriteTime -ge $buildStart)
+    if ($fetched) { Write-Info 'the plugins were fetched before the build: only their check in the game is left' }
+    if (-not $fetched -and (Invoke-Python @((Join-Path $Root 'tools\std_plugins.py'), 'fetch')) -ne 0) {
         Write-Warn 'the plugins could not be fetched (see above): mods that need them will not work until this runs again'
     } else {
         $sky = @((Join-Path $Root 'tools\skyline.py'), 'build')
@@ -1729,8 +1737,18 @@ function Main {
         Step-Extras $answers
         $built = Step-Build $answers
         if ($built) { Step-StaleShaders }
+        # the launcher before the shaders (an hour or more on some PCs): the game can be played while they compile,
+        # and the launcher can go on with them later (Prepare Shaders). OPENSMASH_SHADERS_FIRST=1: the old order.
+        $shadersFirst = [string]$env:OPENSMASH_SHADERS_FIRST -eq '1'
+        if (-not $shadersFirst) {
+            Step-Launcher
+            if ($built -and $answers.Shaders -and -not $DryRun) {
+                Write-Host ''
+                Write-Host 'The game is ready: it can be played from now on (OpenSmash.exe). The shaders below only make its first matches smoother; closing this window keeps what is compiled.' -ForegroundColor Green
+            }
+        }
         Step-Shaders $answers $built
-        Step-Launcher
+        if ($shadersFirst) { Step-Launcher }
         Write-Host ''
         if ($built) {
             Write-Host 'Done. Start the game with OpenSmash.exe, or the shortcut on the desktop.' -ForegroundColor Green

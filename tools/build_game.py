@@ -172,6 +172,19 @@ def jobs_for_ram(gb):
     return 16 if gb >= 32 else 8 if gb >= 16 else 4
 
 
+def jobs_for_pc(gb, cpus, budget=True):
+    """(compilers at a time, processes writing the C at a time) for this much RAM and this many processor
+    threads. The writers are jobs_for_ram's, as before. The compilers too without tools/ladder.py's memory
+    budget (SSBU_COMPILE_MEMORY_MB=0); with it they are as many as the processor has threads, up to 16 and to
+    what the RAM less 3 GB holds of usual files (0.6 GB each): the budget keeps the few files with very long
+    functions from being compiled all at once, which is what the old numbers left room for. Measured on 6
+    cores / 12 threads, 16 GB: 12 compilers finish the same files 17 % sooner than 8."""
+    old = jobs_for_ram(gb)
+    if not budget:
+        return old, old
+    return max(old, min(cpus or old, 16, int((gb * 1024 - 3072) // 600))), old
+
+
 def romfs_cfg_ok(cfg):
     """romfs.cfg is there, and so are the files it reads (plain: the file, then the offset;
     layered: the layer map, then its sources - nca.RomfsImage)."""
@@ -899,6 +912,12 @@ def write_romfs_cfg(game, keys, the_program):
         run([sys.executable, os.path.join("tools", "nca.py"), "romfs-cfg", *nca_ref(program), "--keys", keys, "--out", cfg],
             f"The game data inside {gamefiles.where(program)} can't be read in place (see above). Put the game's data in "
             f"{game} as romfs.bin: unencrypted, with the 13.0.5 update applied (setup guide part 2).")
+    elif state == "encrypted" and data_in_place():   # (no decrypted copy: read where it is, decrypted as read)
+        log(f"  {gamefiles.where(program)}: the game's data read in place, decrypted as it is read (SSBU_DATA_IN_PLACE=1: "
+            "no copy; the file must stay where it is)")
+        run([sys.executable, os.path.join("tools", "nca.py"), "romfs-cfg", *nca_ref(program), "--keys", keys, "--out", cfg, "--in-place"],
+            f"The game data inside {gamefiles.where(program)} can't be read in place (see above); without SSBU_DATA_IN_PLACE a "
+            "decrypted copy is made instead.")
     elif state == "encrypted":   # the game (or a release with its update merged in), as the Switch stores it
         plain = decrypt_once(program, keys)
         run([sys.executable, os.path.join("tools", "nca.py"), "romfs-cfg", plain, "--keys", keys, "--out", cfg],
@@ -909,7 +928,12 @@ def write_romfs_cfg(game, keys, the_program):
             raise Failed(f"{gamefiles.where(program)} is the game's update, whose data is a patch over the game's own: "
                          f"WindowSmash also needs the game itself (its program .nca, or its .nsp) in {game}, next to it.")
         base_cfg = os.path.join("dump", "modules", "romfs_base.cfg")
-        base_ref = nca_ref(base) if base["romfs"] == "plain" else [decrypt_once(base, keys)]
+        if base["romfs"] != "plain" and data_in_place():   # (the base read where it is: no decrypted copy of it)
+            log(f"  {gamefiles.where(base)}: the game's own data read in place, decrypted as it is read (SSBU_DATA_IN_PLACE=1: "
+                "no copy; the file must stay where it is)")
+            base_ref = [*nca_ref(base), "--in-place"]
+        else:
+            base_ref = nca_ref(base) if base["romfs"] == "plain" else [decrypt_once(base, keys)]
         run([sys.executable, os.path.join("tools", "nca.py"), "romfs-cfg", *base_ref, "--keys", keys, "--out", base_cfg],
             f"The game data inside {gamefiles.where(base)} can't be read (see above).")
         log("  applying the update over the game's data (a few minutes; every block of the result is checked)")
@@ -925,6 +949,15 @@ def write_romfs_cfg(game, keys, the_program):
     else:
         raise Failed(f"There is no romfs.bin in {game}, and {gamefiles.where(program)} holds no game data. Put the game's "
                      "data there as romfs.bin: unencrypted, with the 13.0.5 update applied (setup guide part 2).")
+
+
+def data_in_place():
+    """SSBU_DATA_IN_PLACE=1 (off unless set; Windows and Linux on x86-64): the game's encrypted data is not
+    decrypted into a copy in dump/modules (14 GB and over a minute of a first install) but read from the game's own
+    file, decrypted as it is read (tools/nca.py romfs.crypt, runtime/hle_fs.c). The price: the game's file must
+    stay where it was at install (as a romfs.bin read in place must), and each read costs its decryption (AES
+    instructions: measured per GB in the handoff)."""
+    return os.environ.get("SSBU_DATA_IN_PLACE", "").strip() == "1" and not MACOS
 
 
 def unverified_warning(report):
@@ -1087,6 +1120,37 @@ def in_use(path):
         return e.errno == errno.ETXTBSY
 
 
+PLUGINS_FIRST_STAMP = os.path.join(DUMP, "skyline", "plugins_first.txt")
+
+
+def plugins_first(jobs=None):
+    """(--std-plugins, the installer's way; SSBU_PLUGINS_FIRST=0: not here, after the build as before) The
+    standard Skyline plugins fetched and listed BEFORE the game is built (tools/std_plugins.py fetch, tools/skyline.py
+    sync), so the build writes main, the SDK and the shared scripts once, with the plugins' hook points and code
+    patches in them (tools/skyline_seed). Fetched after it, as the installer did, the first build wrote and compiled
+    them without, and the plugin build wrote them all again: 16 minutes of a first install, about 1 this way. A stamp
+    (dump/skyline/plugins_first.txt) tells the installer the fetch is done. Never a reason to stop the build: on
+    any failure the plugins are fetched after it, as before."""
+    if os.environ.get("SSBU_PLUGINS_FIRST", "1").strip() == "0":
+        return False
+    try:
+        if os.path.exists(PLUGINS_FIRST_STAMP):
+            os.remove(PLUGINS_FIRST_STAMP)
+        log("  the standard Skyline plugins first, so the game's C is written once with their hooks in it")
+        for cmd in ([sys.executable, os.path.join("tools", "std_plugins.py"), "fetch"],
+                    [sys.executable, os.path.join("tools", "skyline.py"), "sync", *(["--jobs", str(jobs)] if jobs else [])]):
+            if subprocess.run(cmd, cwd=ROOT).returncode:
+                log("  (that did not work: the plugins are fetched and built in after the game, as before)")
+                return False
+        os.makedirs(os.path.dirname(PLUGINS_FIRST_STAMP), exist_ok=True)
+        with open(PLUGINS_FIRST_STAMP, "w", newline="\n") as f:
+            f.write("the standard plugins were fetched and listed before the build\n")
+        return True
+    except OSError as e:
+        log(f"  (the plugins could not be fetched first: {e}; after the game, as before)")
+        return False
+
+
 def build(a):
     log("[1/9] Check the tools")
     compiler = check_tools()   # (a CompilerDownload when there is no compiler yet: it downloads during steps 3-8)
@@ -1229,13 +1293,17 @@ def build(a):
     else:
         if in_use(EXE):
             raise Failed(f"The game is running from {exe}: close it, then run this again.")
+        if getattr(a, "std_plugins", False) and not LINUX and not MACOS:
+            plugins_first(a.jobs)
         if not MACOS:
             log("  for {}: {}".format(*instruction_set()))
-        jobs = a.jobs
+        jobs = gen_jobs = a.jobs
         if not jobs:
             gb = installed_ram_gb()
-            jobs = jobs_for_ram(gb) if gb else 4
-            log(f"  {jobs} jobs at a time, for {gb:.0f} GB of RAM" if gb else f"  {jobs} jobs at a time (the RAM size is unknown)")
+            budget = os.environ.get("SSBU_COMPILE_MEMORY_MB", "").strip() != "0" and not LINUX and not MACOS
+            jobs, gen_jobs = jobs_for_pc(gb, os.cpu_count(), budget) if gb else (4, 4)
+            log(f"  {jobs} jobs at a time, for {gb:.0f} GB of RAM" + (f" and {os.cpu_count()} processor threads" if jobs != gen_jobs else "")
+                if gb else f"  {jobs} jobs at a time (the RAM size is unknown)")
         if LINUX:
             build_linux_program(jobs, dll)
         elif MACOS:
@@ -1247,7 +1315,8 @@ def build(a):
             log("  the first build takes from 30 minutes to a few hours, later ones minutes unless the compiler, its flags or "
                 "runtime/recomp.h changed; if it stops, run this again to carry on")
             run([sys.executable, os.path.join("tools", "recomp.py"), "all", os.path.join("dump", "exefs"),
-                 "--out", "build", "--jobs", str(jobs), *(["--game-dll"] if dll else [])],
+                 "--out", "build", "--jobs", str(jobs), *(["--gen-jobs", str(gen_jobs)] if gen_jobs != jobs else []),
+                 *(["--game-dll"] if dll else [])],
                 "The build failed (see above). If the PC ran out of memory, build with fewer jobs at a time: open "
                 "OpenSmash.exe, set Compiler jobs to 4, and press Set up and build again.")
     if not LINUX and not MACOS:
@@ -1260,6 +1329,19 @@ def build(a):
         if os.environ.get("OPENSMASH_EOS") == "1":
             import eos_fetch
             eos_fetch.ensure(os.path.dirname(EXE), log=log)
+    if not LINUX and not MACOS and os.environ.get("SSBU_TRIM", "").strip():
+        # (SSBU_TRIM=c,nsp,map - the installer's -Slim: the disk a finished build no longer needs, tools/trim.py;
+        # never a reason to fail a build that worked)
+        try:
+            import trim
+            what = {w for w in os.environ["SSBU_TRIM"].replace(",", " ").split()}
+            what = set(trim.WHAT) if "all" in what else what & set(trim.WHAT)
+            if what and os.path.isfile(EXE):
+                log("  giving back the disk the build no longer needs (SSBU_TRIM: " + ", ".join(sorted(what)) + ")")
+                freed = trim.trim(ROOT, what, log=log)
+                log(f"  {freed / 2**30:.1f} GB freed")
+        except Exception as e:
+            log(f"  (nothing trimmed: {e})")
     # Discord's Social SDK (runtime/net_discord.c) and the Discord application's id: sign-in with Discord and Rich
     # Presence; without them, neither (off Windows the id alone, for the web launcher's sign-in)
     import discord_fetch
@@ -1339,6 +1421,9 @@ def main():
     ap.add_argument("--game-dll", action="store_true",
                     help="link the game's modules into a library of their own beside the program, which the program "
                          "loads at start, rather than into the program (tools/game_dll.py)")
+    ap.add_argument("--std-plugins", action="store_true",
+                    help="fetch and list the standard Skyline plugins before the build, so the game's C is written once "
+                         "(the installer's way; SSBU_PLUGINS_FIRST=0 turns it off)")
     ap.add_argument("--check-ready", action="store_true",
                     help="only say (exit status 0) whether steps 3 to 8 are done, so that no game files are needed")
     a = ap.parse_args()

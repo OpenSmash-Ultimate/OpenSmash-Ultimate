@@ -66,6 +66,16 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import NamedTuple
 
 LIMIT_ENV, OPTNONE_ENV, ORDER_ENV = "SSBU_COMPILE_LIMIT", "SSBU_OPTNONE_ABOVE", "SSBU_LONGEST_FIRST"
+# The memory budget (Memory): SSBU_COMPILE_MEMORY_MB=<MB> for the compilers running at once; 0: none, the files
+# start strictly in order, as before; unset: this PC's RAM less RESERVE_MB. A generated file is taken to need
+# what it held last time (compile_times.json's "mb"), else MEMORY_BASE_MB + MEMORY_PER_INSN_MB for each instruction
+# of its longest function: measured with clang-cl 23 on 13.0.5 (peak commit), a usual file (longest function a
+# few thousand instructions) holds 330 MB (490 at most), the fighters' files with one of 74,000 to 122,000
+# 0.8 to 1.2 GB, the items' one of 210,000 3.4 GB: the model stays above each. (The ladder's own way with such a
+# file, its long functions unoptimised, held 9.6 GB for the items' one: a reason for the budget.)
+MEMORY_ENV = "SSBU_COMPILE_MEMORY_MB"
+RESERVE_MB = 3072
+MEMORY_BASE_MB, MEMORY_PER_INSN_MB = 500.0, 0.015
 FLOOR = 600.0           # seconds: no generated file is stopped sooner (most take a few)
 TIMES = 4.0             # its estimate times this, at this PC's pace (the biggest files take up to 1.5 times theirs)
 PACE_UNKNOWN = 4.0      # this PC's pace taken to be this until it is measured
@@ -195,6 +205,30 @@ class Run(NamedTuple):
     out: str
     seconds: float
     timed_out: bool = False
+    mb: float = 0.0   # the most memory the compiler held, in MB (Windows; 0 where it is not asked)
+
+
+def peak_mb(proc):
+    """The most memory a finished compiler held (its peak commit, MB), on Windows; 0 elsewhere or when it
+    cannot be asked. For the memory budget (Memory): each file's goes into compile_times.json."""
+    if os.name != "nt":
+        return 0.0
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class Counters(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("faults", wintypes.DWORD)] + [(n, ctypes.c_size_t) for n in (
+                "peak_ws", "ws", "peak_paged", "paged", "peak_nonpaged", "nonpaged", "pagefile", "peak_pagefile")]
+        c = Counters()
+        c.cb = ctypes.sizeof(c)
+        get = ctypes.WinDLL("psapi").GetProcessMemoryInfo
+        get.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+        if not get(int(proc._handle), ctypes.byref(c), c.cb):
+            return 0.0
+        return max(c.peak_pagefile, c.peak_ws) / 1048576
+    except Exception:
+        return 0.0
 
 
 class Stopped(Exception):
@@ -311,13 +345,13 @@ def run(argv, limit=None, stop=None, **popen):
                 raise Stopped
             if limit is None and stop is None:
                 out, err = proc.communicate()
-                return Run(proc.returncode, out + err, clock() - t0)
+                return Run(proc.returncode, out + err, clock() - t0, False, peak_mb(proc))
             wait = POLL if allowed is None else min(POLL, allowed - spent)
             try:
                 out, err = proc.communicate(timeout=wait)
             except subprocess.TimeoutExpired:
                 continue
-            return Run(proc.returncode, out + err, look())
+            return Run(proc.returncode, out + err, look(), False, peak_mb(proc))
     except BaseException:
         kill_tree(proc)
         _drain(proc)
@@ -635,10 +669,10 @@ class Times:
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             pass
 
-    def put(self, name, seconds, level, model, source, how=""):
+    def put(self, name, seconds, level, model, source, how="", mb=0.0):
         with self.lock:
             self.files[name] = {"seconds": round(seconds, 1), "level": level, "model": round(model, 3),
-                                "source": source, **({"how": how} if how else {})}
+                                "source": source, **({"how": how} if how else {}), **({"mb": round(mb)} if mb else {})}
             self.changed, self._pace = True, None
 
     def pace(self):
@@ -759,15 +793,48 @@ class _Hooks:
             self.started(job)
 
 
+def installed_mb():
+    """This PC's RAM in MB, or 0 when it cannot be asked."""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class Status(ctypes.Structure):
+                _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong)] + [(n, ctypes.c_ulonglong) for n in (
+                    "total", "avail", "total_page", "avail_page", "total_virtual", "avail_virtual", "extended")]
+            s = Status()
+            s.length = ctypes.sizeof(s)
+            return s.total / 1048576 if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(s)) else 0.0
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1048576
+    except (OSError, ValueError, AttributeError):
+        return 0.0
+
+
+def memory_setting(env=None):
+    """The compilers' memory budget in MB (MEMORY_ENV), or None for none."""
+    env = os.environ if env is None else env
+    v = _setting(env, MEMORY_ENV, "a number of MB")
+    if v is not None:
+        return v or None
+    ram = installed_mb()
+    return max(2048.0, ram - RESERVE_MB) if ram else None
+
+
+def memory_model(biggest):
+    """What compiling a generated file is taken to hold, in MB, by its longest function's instructions."""
+    return MEMORY_BASE_MB + MEMORY_PER_INSN_MB * biggest
+
+
 class Ladder:
     """A build's ladder: its pace, its report. cost(insns, biggest, level, cxx): the cost model's seconds
     for a file at a level; compiler: its name for the log; popen: how its compilers are started (their
-    priority)."""
+    priority); memory: the memory budget in MB (_budgeted), None for none (the files start strictly in order)."""
 
-    def __init__(self, cost, compiler, log=print, popen=None, env=None):
+    def __init__(self, cost, compiler, log=print, popen=None, env=None, memory=None):
         env = os.environ if env is None else env
         self.cost, self.compiler, self.log, self.popen = cost, compiler, log, dict(popen or {})
         self.setting, self.above, self.longest = limit_setting(env), optnone_setting(env), longest_first_setting(env)
+        self.memory = memory   # (MB for the compilers running at once, memory_setting's: the Windows build's; None: none)
         self.pace, self.report = Pace(), Report()
         self.stopping = threading.Event()
 
@@ -816,8 +883,14 @@ class Ladder:
         self.stopping.clear()
         pool = ThreadPoolExecutor(max(1, workers))
         try:
-            futures = [pool.submit(self._first, job, argv, infos.get(job[1]), hooks, compiled, times) for job in jobs]
-            results = [f.result() for f in futures]
+            # (the memory budget matters only when the `workers` hungriest jobs together do not fit it: then the
+            # next file in order that fits, _budgeted; else strictly in order, as without a budget)
+            hungriest = sorted((self.need(infos.get(job[1]), times) for job in jobs), reverse=True)[:max(1, workers)]
+            if self.memory and sum(hungriest) > self.memory:
+                results = self._budgeted(jobs, max(1, workers), argv, infos, hooks, compiled, times)
+            else:
+                futures = [pool.submit(self._first, job, argv, infos.get(job[1]), hooks, compiled, times) for job in jobs]
+                results = [f.result() for f in futures]
             pool.shutdown()
             failures = []
             for job, result in zip(jobs, results):   # (the crashes: each on its own, once the others are done)
@@ -834,6 +907,70 @@ class Ladder:
         finally:
             if times is not None:
                 times.save()
+
+    def need(self, info, times=None):
+        """The memory a job is taken to hold while it compiles, in MB: what it held last time when it is the
+        same source (compile_times.json), else memory_model; MEMORY_BASE_MB for a file that is not generated."""
+        if info is None:
+            return MEMORY_BASE_MB
+        if times is not None:
+            with times.lock:
+                e = times.files.get(info.name)
+            if e and e.get("source") == info.source and isinstance(e.get("mb"), (int, float)) and e["mb"] > 0:
+                return float(e["mb"]) * 1.1
+        return memory_model(info.biggest)
+
+    def _budgeted(self, jobs, workers, argv, infos, hooks, compiled, times):
+        """compile's results for the jobs, `workers` compilers at a time and no more than fit the memory budget:
+        each free worker takes the first job left, in order, whose need fits what is left of the budget (a job
+        that fits nowhere runs once nothing else does, alone or with what fits beside it). So the build's few
+        very long functions (GBs each) are not all compiled at once, as starting strictly in order did, while
+        the other workers go on with the files that fit beside them. Each job is compiled exactly as without a
+        budget (_first)."""
+        need = [self.need(infos.get(job[1]), times) for job in jobs]
+        left, results = list(range(len(jobs))), [None] * len(jobs)
+        cv, state, errors = threading.Condition(), {"used": 0.0, "running": 0}, []
+
+        def take():
+            with cv:
+                while True:
+                    if not left or errors or self.stopping.is_set():
+                        return None
+                    room = self.memory - state["used"]
+                    k = next((k for k in left if need[k] <= room), None)
+                    if k is None and not state["running"]:
+                        k = left[0]
+                    if k is not None:
+                        left.remove(k)
+                        state["used"] += need[k]
+                        state["running"] += 1
+                        return k
+                    cv.wait(1.0)
+
+        def work():
+            while True:
+                k = take()
+                if k is None:
+                    return
+                try:
+                    results[k] = self._first(jobs[k], argv, infos.get(jobs[k][1]), hooks, compiled, times)
+                except BaseException as e:   # (handed to compile's thread, which stops the build as it always did)
+                    with cv:
+                        errors.append(e)
+                finally:
+                    with cv:
+                        state["used"] -= need[k]
+                        state["running"] -= 1
+                        cv.notify_all()
+        threads = [threading.Thread(target=work, daemon=True) for _ in range(min(workers, len(jobs)))]
+        for t in threads:
+            t.start()
+        while any(t.is_alive() for t in threads):   # (short waits: a Ctrl+C reaches this thread)
+            for t in threads:
+                t.join(0.2)
+        if errors:
+            raise errors[0]
+        return results
 
     def _attempt(self, job, argv, step, info, first=False):
         """One try at a job, the step's way: Run. Stopped when the build is interrupted; NoHeader when its
@@ -901,7 +1038,7 @@ class Ladder:
             if step is own:
                 if info:
                     self.pace.add(r.seconds, info.model)
-                self._settled(job, info, None, r.seconds, "", hooks, compiled, times)
+                self._settled(job, info, None, r.seconds, "", hooks, compiled, times, mb=r.mb)
             else:   # (recorded as the ladder's way, under its own key: ladder.check)
                 self._settled(job, info, step, r.seconds, f"its optnone header could not be written: compiled {step.describe()}",
                               hooks, compiled, times, level=step.level)
@@ -994,7 +1131,7 @@ class Ladder:
             f"build again (it carries on where it stopped), with {LIMIT_ENV}=<seconds> to give each file that long "
             "(0: no limit)."))
 
-    def _settled(self, job, info, step, seconds, how, hooks, compiled, times, level=None):
+    def _settled(self, job, info, step, seconds, how, hooks, compiled, times, level=None, mb=0.0):
         hooks.finished(job, seconds)
         if compiled:
             if step is None:
@@ -1002,6 +1139,6 @@ class Ladder:
             else:
                 compiled(job, step.level, step)
         if info is not None and times is not None:
-            times.put(info.name, seconds, job[2], info.model, info.source, how)
+            times.put(info.name, seconds, job[2], info.model, info.source, how, mb)
         if how:
             self.report.add(self._label(job, info), how, level or job[2], seconds)

@@ -231,7 +231,12 @@ class Builder:
         if img.entries is not None:
             raise SystemExit("the base's romfs.cfg is layered: give the base release's own romfs.cfg")
         self.base_path = os.path.abspath(img.f.name)
-        self.bf = open(self.base_path, "rb")
+        # (the base read in place from the game's own encrypted file: decrypted as read, and the NCA where
+        # romfs.crypt says it starts in that file - nca.py --in-place)
+        import nca as nca_py
+        regions = img.crypt.get(nca_py._same(self.base_path))
+        self.base_nca = regions[0][2] if regions else 0
+        self.bf = nca_py.open_source(self.base_path, img.crypt)
         self.base_l6 = img.base                              # the base's RomFS image in its file
         self.base_arc = img.base + data_arc_offset(img)      # data.arc in the base's file
         self.l6 = patch.l6
@@ -250,7 +255,9 @@ class Builder:
         if not self.keydir:
             return None
         try:
-            nca = Nca(self.base_path, self.keydir)
+            import nca as nca_py
+            nca = Nca(self.base_path, self.keydir, self.base_nca,
+                      nca_py.nsp_title_keys(self.base_path) if self.base_nca else None)
         except (SystemExit, OSError, ValueError):
             return None
         sec = nca.section(0)
