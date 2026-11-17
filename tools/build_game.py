@@ -1369,7 +1369,7 @@ def build(a):
                 log(f"  {freed / 2**30:.1f} GB freed")
         except Exception as e:
             log(f"  (nothing trimmed: {e})")
-    # (Epic Online Services' files only where EOS is asked for - OpenSmash 0.4: the official lobby relays everything and
+    # (Epic Online Services' files only where EOS is asked for - OpenSmash 0.4.1: the official lobby relays everything and
     # nothing goes to Epic; Discord's always: tools/online_files.py)
     online_files(log)
     if LINUX:

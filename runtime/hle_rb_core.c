@@ -2533,7 +2533,7 @@ static void net_rollback(Cpu *c, u64 frame, u32 key, u32 m) {
  * safe point's rollback makes: the same state loaded, the same frames run again up to safe point K, where the game goes
  * on. The load does not ask where the main thread's stack is (rb_load_anyframe): the thread moves onto its scratch stack
  * and its whole stack is put back, wherever it was.
- * SSBU_RB_WAITEND=0: off (safe points only, as before). On by default since v0.4.0 (round 7).
+ * SSBU_RB_WAITEND=0: off (safe points only, as before). On by default since v0.4.1 (round 7).
  * SSBU_RB_WAITRB=1 (net mode): also while the game waits for the buffer, each time it is told "would block" (at most
  * once every SSBU_RB_WAITRB_US, 250): the load and the frames run again then fall in the frame's idle time. In loop mode
  * (the bench) only with SSBU_RB_WAITRB=2: its pads "come" by frame, and a rollback in the wait would leave the bench's
@@ -2545,7 +2545,7 @@ void rb_wait_point(Cpu *c) {
     LONG kind = InterlockedExchange(&rb_vi_point, 0);
     if (on < 0) {
         const char *e = getenv("SSBU_RB_WAITEND"), *w = getenv("SSBU_RB_WAITRB"), *u = getenv("SSBU_RB_WAITRB_US");
-        on = e && *e ? atoi(e) : 1; inwait = w && *w ? atoi(w) : 0;   /* (on by default since v0.4.0, round 7) */
+        on = e && *e ? atoi(e) : 1; inwait = w && *w ? atoi(w) : 0;   /* (on by default since v0.4.1, round 7) */
         if (u && atof(u) > 0) gap_ms = atof(u) / 1000.0;
         if (getenv("SSBU_RB_TEST_IGNORE") || getenv("SSBU_RB_TEST_REFUSE") || getenv("SSBU_RB_TEST_DROP")) on = 0;   /* (those count safe points) */
     }
@@ -4103,7 +4103,7 @@ static int lite_skipped_now(Cpu *c, int grp) {
 int rb_lite_skip(Cpu *c, int group) { return lite_skipped_now(c, group); }
 
 /* ---- SKIPF and the Lua collector (SSBU Arena's 4774203 / f9b673b and 0bde20e, ported as switches; ON by default since
- * v0.4.0, round 7: SSBU_RB_SKIPF=63, SSBU_RB_GC_RERUN=0, SSBU_RB_GC_CATCH=0 - pairs of games stayed identical with them;
+ * v0.4.1, round 7: SSBU_RB_SKIPF=63, SSBU_RB_GC_RERUN=0, SSBU_RB_GC_CATCH=0 - pairs of games stayed identical with them;
  * SSBU_RB_SKIPF=0, SSBU_RB_GC_RERUN=1, SSBU_RB_GC_CATCH=1: as before) ---------------------------------------------------------------------
  * SSBU_RB_SKIPF=<bits>: hle_rb_wraps.c's six functions return at once in a frame run again (a catch-up's, the main
  * thread's, in a fight). Bit n: the n-th of the list. The summary counts the calls left out.
@@ -4120,14 +4120,14 @@ static long long skipf_n[6];
  * it run it as always). SSBU_RB_GC_MS=<ms>: at most that much of it in any real frame of a fight (SSBU Arena's GC_MS). */
 static int gc_catch = -1; static double gc_cap_ms = -1;
 int rb_skipf(Cpu *c, int which) {
-    if (skipf_bits < 0) { const char *e = getenv("SSBU_RB_SKIPF"); skipf_bits = e && *e ? (int)strtol(e, NULL, 0) : 63; }   /* (all six by default since v0.4.0, round 7; 0: none) */
+    if (skipf_bits < 0) { const char *e = getenv("SSBU_RB_SKIPF"); skipf_bits = e && *e ? (int)strtol(e, NULL, 0) : 63; }   /* (all six by default since v0.4.1, round 7; 0: none) */
     if (!(skipf_bits >> which & 1) || rb_fast <= 0 || !S.in_fight || c->thread != rb_main_kthread) return 0;
     skipf_n[which]++;
     return 1;
 }
 void rb_gc_step(Cpu *c, GuestFn *orig) {
     if (!rb_on || !S.in_fight || c->thread != rb_main_kthread || c->x[30] != 0x71037480c0ull) { orig(c); return; }
-    if (gc_rerun < 0) { const char *e = getenv("SSBU_RB_GC_RERUN"); gc_rerun = e && *e && *e != '0'; }   /* (none by default since v0.4.0, round 7; 1: as before) */
+    if (gc_rerun < 0) { const char *e = getenv("SSBU_RB_GC_RERUN"); gc_rerun = e && *e && *e != '0'; }   /* (none by default since v0.4.1, round 7; 1: as before) */
     int again = rb_fast > 0;
     if (again && !gc_rerun) { gc_skipped++; c->x[20] = 0; return; }
     if (gc_catch < 0) { const char *e = getenv("SSBU_RB_GC_CATCH"), *m = getenv("SSBU_RB_GC_MS"); gc_catch = e && *e && *e != '0'; gc_cap_ms = m && atof(m) > 0 ? atof(m) : 0; }

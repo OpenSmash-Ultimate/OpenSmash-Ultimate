@@ -12,7 +12,7 @@ This is the game's own Local Wireless mode, played over a network. You only open
 Smash (versus) always stays a local fight (friends, CPUs), with rollback on or off.
 The game's own Online menu (Quickplay, Battle Arenas) on our servers is in progress.
 
-Online play is experimental. **There is no public lobby for this runtime any more** (since OpenSmash 0.4): the one
+Online play is experimental. **There is no public lobby for this runtime any more** (since OpenSmash 0.4.1): the one
 it joined at every start, `opensmash-lobby.duckdns.org:39500`, is gone, and OpenSmash's official lobbies do not serve
 this runtime's protocol. So a game that names no server starts offline. To play: pick a mode in F1 -> Experimental
 (a lobby server of your own, Same network (LAN), Host a room, Join with a code), or set `online_server = <host:port>`

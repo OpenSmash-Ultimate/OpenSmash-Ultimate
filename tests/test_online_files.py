@@ -16,7 +16,7 @@ class OnlineFilesTests(unittest.TestCase):
         names = ('SSBU_EOS', 'SSBU_DISCORD', 'OPENSMASH_EOS', 'SSBU_EOS_FIRST', 'SSBU_NET_RELAY')
         self.env = {k: os.environ.pop(k) for k in names if k in os.environ}
         self.addCleanup(os.environ.update, self.env)
-        os.environ['OPENSMASH_EOS'] = '1'   # (OpenSmash 0.4: Epic's files only where EOS is asked for; these tests ask)
+        os.environ['OPENSMASH_EOS'] = '1'   # (OpenSmash 0.4.1: Epic's files only where EOS is asked for; these tests ask)
         self.addCleanup(os.environ.pop, 'OPENSMASH_EOS', None)
         self.calls = []
 

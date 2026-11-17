@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // OpenSmash releases: the launcher is the only download, and it follows a release channel instead of the main branch.
 // Every release (tools/release/make_release.py, .github/workflows/release.yml) carries the asset opensmash-release.json:
-//   {"schema": 1, "version": "0.4.0", "commit": "<40 hex>", "channel": "stable",
+//   {"schema": 1, "version": "0.4.1", "commit": "<40 hex>", "channel": "stable",
 //    "launcher": {"windows-x64": {"file": "OpenSmash.exe", "sha256": "..."}},
 //    "runtime": {"windows-avx2": {"file": "opensmash-runtime-windows-avx2.zip", "sha256": "..."}, ...},
 //    "lobby": "<official lobby host:port>", "min_client_level": 1}

@@ -224,7 +224,7 @@ static u64 process_age_ms(void) { return rt_now_ns() / 1000000; }
 /* (OpenSmash 0.6) "auto" is the official lobby: relay only (it never introduces games to each other, so no player's
  * internet address reaches another game), a signed-in player's lobby ticket in every JOIN, no direct paths and no EOS
  * with it. Its address: net_region.c's (the server region, or an override). The older public lobbies' names mean it too. */
-/* (OpenSmash 0.4) one official lobby a region (net_region.c): the one config/server_region.txt names, or with "auto"
+/* (OpenSmash 0.4.1) one official lobby a region (net_region.c): the one config/server_region.txt names, or with "auto"
  * the one that answers soonest; an override (the variable, the file) is that server and nothing else. Any region's
  * lobby in online_server.txt means "the official lobby": which one is the region setting's to say. */
 static const char *public_lobby(void) { return net_region_lobby(); }
@@ -416,7 +416,7 @@ static void configure(void) {
      * So there direct paths are on as before unless SSBU_NET_DIRECT=0; with a lobby server they are asked for
      * (SSBU_NET_DIRECT=1), and with the official lobby never taken) */
     /* (the Direct connections setting, online_direct.txt, is this case's switch: "off" there and a private room goes
-     * through its host's game alone and is not announced, as before 0.4 - the menu's row and its "Not announced: Direct
+     * through its host's game alone and is not announced, as before 0.4.1 - the menu's row and its "Not announced: Direct
      * connections are off" say exactly that. It changes nothing with a lobby server.) */
     if (!getenv("SSBU_NET_DIRECT") && (hosting || lan_mode)) {
         char off[16];
@@ -447,7 +447,7 @@ static void configure(void) {
  * Linux, SSBU_EOS=0, Epic's services down. "eos" (or SSBU_NET_RELAY=eos): EOS alone. Another lobby's address, a
  * private room's relay (SSBU_NET_HOST), "lan" or "off": never EOS. */
 #define EOS_FIRST_MS 8000
-/* (OpenSmash 0.4, merged with #378) The official lobbies are relay only: a signed-in player's lobby ticket, no direct
+/* (OpenSmash 0.4.1, merged with #378) The official lobbies are relay only: a signed-in player's lobby ticket, no direct
  * paths, no address of a player given to another game, nothing sent to Epic. So the official lobby's words ("auto",
  * a region's lobby, the older public lobbies') do NOT mean EOS first here: they mean that lobby and nothing else, and
  * EOS is not started for them. "eos" (online_server.txt, or SSBU_NET_RELAY=eos) is still EOS alone, as #378 made it:

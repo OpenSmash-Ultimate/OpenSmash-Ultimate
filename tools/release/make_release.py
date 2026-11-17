@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OpenSmash releases (v0.4.0 on): the pieces .github/workflows/release.yml puts together. Nothing here comes from
+"""OpenSmash releases (v0.4.1 on): the pieces .github/workflows/release.yml puts together. Nothing here comes from
 the game, and the audit checks that every file of a release holds none of it either.
 
     python tools/release/make_release.py version vX.Y.Z[-pre]       the tag's version, checked (prints it; exit 1 if not one)

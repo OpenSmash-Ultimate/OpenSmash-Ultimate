@@ -11,7 +11,7 @@ written once both fetches succeeded) nothing is downloaded, so a start of the ga
 the fetches run (each never fatal). Exit code 0: every file is in place; 1: one could not be had (the game still runs,
 without Discord, or without Epic Online Services where they were asked for). Only the standard library is used.
 
-(OpenSmash 0.4) Epic's files are fetched only where EOS is asked for (eos_asked): by default the game plays through the
+(OpenSmash 0.4.1) Epic's files are fetched only where EOS is asked for (eos_asked): by default the game plays through the
 official lobby, which relays everything, and nothing of Epic's is downloaded or started.
 """
 import hashlib
@@ -28,7 +28,7 @@ STAMP = "online_files.txt"
 
 
 def eos_asked(root=ROOT):
-    """True where this copy plays through Epic Online Services (OpenSmash 0.4: off by default - the official lobbies
+    """True where this copy plays through Epic Online Services (OpenSmash 0.4.1: off by default - the official lobbies
     relay everything and nothing goes to Epic, runtime/net_relay.c's eos_first): OPENSMASH_EOS=1, SSBU_EOS=1 (Epic's
     relays with a lobby of the player's own), SSBU_EOS_FIRST=1, SSBU_NET_RELAY=eos, or "eos" as online_server.txt's
     lobby. SSBU_EOS=0: never."""

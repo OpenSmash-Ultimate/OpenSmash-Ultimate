@@ -1,7 +1,7 @@
 # HTTPS for the online lobby (Caddy)
 
 > **Which server this is for.** These files (`Caddyfile`, `deploy_caddy.sh`) name `opensmash-lobby.duckdns.org`, the
-> older public lobby. OpenSmash's official lobbies since 0.4 (`eu.` / `na.lobby.opensmashultimate.com`) do not run
+> older public lobby. OpenSmash's official lobbies since 0.4.1 (`eu.` / `na.lobby.opensmashultimate.com`) do not run
 > Caddy or this script, and no game or launcher reads the duckdns name any more (it only means "the official lobby"
 > where an old settings file still has it). They are kept as a deploy option for a lobby of your own: put your own
 > name in place of `opensmash-lobby.duckdns.org` in `Caddyfile` (and in `deploy_caddy.sh`'s status check) before

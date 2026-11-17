@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Release versions: "0.4.0", "v0.4.0", "0.4.1-rc.1" (Semantic Versioning 2.0 precedence; build metadata after '+' ignored).
+// Release versions: "0.4.1", "v0.4.1", "0.4.2-rc.1" (Semantic Versioning 2.0 precedence; build metadata after '+' ignored).
 using System;
 using System.Linq;
 
@@ -24,7 +24,7 @@ namespace OpenSmash.Core
             int dash = s.IndexOf('-');
             if (dash >= 0) { pre = s.Substring(dash + 1); s = s.Substring(0, dash); if (pre.Length == 0) return false; }
             var p = s.Split('.');
-            if (p.Length < 2 || p.Length > 4) return false;     // (4: a .NET assembly version "0.4.0.0")
+            if (p.Length < 2 || p.Length > 4) return false;     // (4: a .NET assembly version "0.4.1.0")
             var n = new int[3];
             for (int i = 0; i < p.Length; i++)
             {

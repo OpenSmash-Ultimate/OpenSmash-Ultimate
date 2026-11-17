@@ -14,7 +14,7 @@
  * "off" hides one); everyone else plays all the same, unranked.
  *
  * SSBU_RESULTS_LOBBY=<host:port> names the lobby they are sent to (tests: a local one); without it, or =off, nothing
- * is sent (OpenSmash 0.4: the official lobbies are relay only and rank the matches they carry themselves; before, the
+ * is sent (OpenSmash 0.4.1: the official lobbies are relay only and rank the matches they carry themselves; before, the
  * one public lobby was the default here). */
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
@@ -220,7 +220,7 @@ void results_start(const char *marker) {
     if (InterlockedExchange(&once, 1)) return;
     const char *v = getenv("SSBU_RESULTS_LOBBY");
     char where[256];
-    /* (OpenSmash 0.4: no lobby by default. The official lobbies keep the results of the matches they relay, under the
+    /* (OpenSmash 0.4.1: no lobby by default. The official lobbies keep the results of the matches they relay, under the
      * player's account; what a game played over EOS says of itself is sent only to a lobby named here) */
     if (!v || !*v || !_stricmp(v, "off")) return;
     snprintf(where, sizeof where, "%s", v);

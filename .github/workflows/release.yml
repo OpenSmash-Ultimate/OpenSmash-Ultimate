@@ -1,4 +1,4 @@
-# An OpenSmash release (v0.4.0 on): a tag vX.Y.Z (or vX.Y.Z-pre for the testing channel) makes a DRAFT release with
+# An OpenSmash release (v0.4.1 on): a tag vX.Y.Z (or vX.Y.Z-pre for the testing channel) makes a DRAFT release with
 #   OpenSmash.exe                          the launcher, built with the tag's version and the accounts service
 #   opensmash-runtime-windows-<isa>.zip    the prebuilt runtime (runtime-release.yml, the same commit)
 #   opensmash-release.json, SHA256SUMS     what the launcher reads (tools/release/make_release.py): versions, SHA-256s,

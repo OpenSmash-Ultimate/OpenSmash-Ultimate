@@ -704,7 +704,7 @@ static int ph_init(void) {
         const char *e = getenv("SSBU_RB_PHASH");
         int info[4];
         __cpuid(info, 1);
-        int want = !e || !*e ? 2 : *e == '1' || *e == '2' ? *e - '0' : 0;   /* (2 by default since v0.4.0, round 7; 0: off) */
+        int want = !e || !*e ? 2 : *e == '1' || *e == '2' ? *e - '0' : 0;   /* (2 by default since v0.4.1, round 7; 0: off) */
         ph_on = (info[2] >> 25 & 1) && (info[2] >> 19 & 1) ? want : 0;   /* (AES, SSE4.1) */
         if (ph_on) {
             ph_hash = VirtualAlloc(NULL, (ALIAS_SIZE >> 12) * sizeof *ph_hash, MEM_RESERVE, PAGE_READWRITE);
@@ -1370,7 +1370,7 @@ static void gpu_reprotect_now(void) {
     }
     ReleaseSRWLockExclusive(&sm_lock);
 }
-/* SSBU_RB_SM_CMP (ON by default since v0.4.0, round 7: six stages, the tick with a rollback 10.9 -> 9.9 ms with
+/* SSBU_RB_SM_CMP (ON by default since v0.4.1, round 7: six stages, the tick with a rollback 10.9 -> 9.9 ms with
  * SSBU_RB_PHASH=2 and SSBU_RB_SM_COOL_GPU, a save's memory part 5.35 -> 3.8 ms, a load's 3.7 -> 2.6, and the frames between saves faster - no
  * write watch bit is reset, so the frame's first write to a page no longer goes through the system; =0: the write watch
  * asked, as before. It was experimental and off: tried only with the GPU's memory left out, where a save cost about the
@@ -1568,10 +1568,10 @@ static void sync(int to_shadow) {
     if (ph_init()) ph_seq++;
     if (sm_cmp < 0) {
         const char *e = getenv("SSBU_RB_SM_CMP"), *k = getenv("SSBU_RB_SM_COLD");
-        sm_cmp = !(e && *e == '0');   /* (on by default since v0.4.0, round 7; 0: the write watch asked, as before) */
+        sm_cmp = !(e && *e == '0');   /* (on by default since v0.4.1, round 7; 0: the write watch asked, as before) */
         if (k && atoi(k) > 0) sm_cold_after = atoi(k);
         const char *g = getenv("SSBU_RB_SM_COOL_GPU");
-        sm_cool_gpu = !(g && *g == '0');   /* (on by default since v0.4.0, round 7) */
+        sm_cool_gpu = !(g && *g == '0');   /* (on by default since v0.4.1, round 7) */
     }
     if (to_shadow) for (u32 i = 0; i < nchunks; i++) memset(chunk_map[chunk_ids[i]]->pushed, 0, sizeof chunk_map[chunk_ids[i]]->pushed);
     if (to_shadow && sm_on) fight_saves++;
