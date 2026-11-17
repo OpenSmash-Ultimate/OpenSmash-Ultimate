@@ -12,6 +12,7 @@
 #   ssbu_admin.sh update-threads <commit>   tools/deploy/discord_threads.py into /opt/ssbu-discord-tools
 #   ssbu_admin.sh restore-online <backup>   put a backup of /opt/ssbu-online back (names: ls /var/backups/ssbu)
 #   ssbu_admin.sh reset-board --yes         back up and empty the leaderboard (nex/reset_board.py), Discord links kept
+#   ssbu_admin.sh digest [now]              the bot's feedback-thread digest (JSON); "now": have the bot remake it first
 # <commit> is a full 40-character commit id, or "main" for main's newest commit.
 set -eu
 REPO=OpenSmash-Ultimate/OpenSmash-Ultimate
@@ -21,7 +22,7 @@ umask 022
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,17p' "$0"; exit 2; }
+usage() { sed -n '2,16p' "$0"; exit 2; }
 svc_ok() { for s in $SERVICES; do [ "$1" = "$s" ] && return 0; done; return 1; }
 
 # a commit id on main -> $SRC holds that commit's tools/ (removed on exit)
@@ -128,6 +129,16 @@ restore-online)
     [ -f "$BK/$f" ] || die "no $BK/$f"
     rm -rf /opt/ssbu-online && tar -xzf "$BK/$f" -C / && systemctl daemon-reload && systemctl restart ssbu-online
     health ssbu-online 4 && echo "ssbu-online active ($f)"
+    ;;
+digest)
+    f=/var/lib/ssbu-discord-bot/threads_digest.json
+    if [ "${2:-}" = now ]; then
+        old=$(stat -c %Y "$f" 2>/dev/null || echo 0)
+        systemctl kill -s USR1 ssbu-discord-bot
+        i=0; while [ $i -lt 120 ] && [ "$(stat -c %Y "$f" 2>/dev/null || echo 0)" = "$old" ]; do sleep 1; i=$((i+1)); done
+    fi
+    [ -f "$f" ] || die "no digest yet (the bot writes it ~20 s after it starts)"
+    cat "$f"
     ;;
 reset-board)
     [ "${2:-}" = --yes ] || die "reset-board empties the leaderboard: add --yes"
