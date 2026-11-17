@@ -43,6 +43,9 @@ static u32 game_nro_count;
 #define rt_nro_modules game_nros
 #define rt_nro_count game_nro_count
 #endif
+/* Told the faulting host module's file name (no folder) when the process crashes, before the report: gpu_vk.c's warm start
+ * notes a crash inside the graphics driver's shader compiler (#430). Called from the report's thread; NULL: nobody. */
+void (*rt_crash_module_hook)(const char *module);
 #define BOOT_MODULES 3
 #define MAX_MODULES 1024
 /* Loaded modules in load (and symbol search) order: the three the process starts with, then
@@ -1160,6 +1163,7 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
     if (thread && FAILED(GetThreadDescription(thread, &desc))) desc = NULL;
     out("host pc %#llx: %s +%#llx (thread %lu%s%ls)\n", pc, strrchr(modname, '\\') ? strrchr(modname, '\\') + 1 : modname,
         pc - (u64)mod, tid, desc && desc[0] ? ", " : "", desc && desc[0] ? desc : L"");
+    if (rt_crash_module_hook) rt_crash_module_hook(strrchr(modname, '\\') ? strrchr(modname, '\\') + 1 : modname);
     if (desc) LocalFree(desc);
     if (thread) CloseHandle(thread);
     {   /* (r22_1: the registers, and the stack's words either side of the stack pointer: a return through a wrong stack pointer shows there) */
