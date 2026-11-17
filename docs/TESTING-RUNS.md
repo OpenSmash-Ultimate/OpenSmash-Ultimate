@@ -254,6 +254,7 @@ The Vulkan back end ([`gpu_vk.c`](../runtime/gpu_vk.c)) is chosen with `SSBU_REN
 | `SSBU_VK_WARM=0` | No warm start: nothing is made from the warm list when the game starts, so every pipeline is made at its first draw, as on a first run. The list is still kept up to date. |
 | `SSBU_VK_WARM_GROUPS=0` | The warm start without its groups (`media/vulkan_pipelines.groups`): the first frame waits for every listed pipeline, as before the groups. |
 | `SSBU_SHADER_MATCH_WAIT=<s>` | The longest a match being set up waits, before it loads, for its pipelines (the warm start's groups: its fighters', its stage's, any fight's; not the records in no group, made behind the menus); default 30, `0`: no wait. |
+| `SSBU_VK_WARM_BG=<n>` | How many warm threads work behind the menus (default: a quarter of the processors; 1 on integrated graphics, which share the processor's power budget, #428). |
 | `SSBU_SHADER_PREWARM_MB=<n>` | The warm start's memory budget, as Direct3D 11's prewarm has it: it stops once the process has grown by n MB (unset: a third of the PC's memory, 1 GB at least). |
 | `SSBU_VK_AUTO_VENDOR=<hex>` | The card maker `renderer=auto` takes for AMD, as a PCI vendor number (`10de` NVIDIA, `8086` Intel): the automatic choice, its trial and its fall back to Direct3D 11 tested on a PC without an AMD card. |
 | `SSBU_VK_WAIT=1` | A draw waits for its shaders and its pipeline instead of being left out while they are made: every draw of every frame is drawn. For comparing pictures (`SSBU_CAPTURE`), not for timing. |

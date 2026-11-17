@@ -443,6 +443,7 @@ static VkCommandBuffer cmd(void) {
  * finds them (buffer, offset). NULL if there is no more. */
 static VkDeviceSize texel_align = 256, ubo_align = 256;
 static u32 limits_vendor, limits_device;   /* (the card's PCI vendor and device: set at the start) */
+static int limits_integrated;   /* (the processor's own graphics: it shares the processor's power and memory) */
 static u8 *arena(VkDeviceSize size, VkDeviceSize align, VkBuffer *buf, VkDeviceSize *off) {
     cmd();
     Frame *f = &frames[frame_at];
@@ -3827,6 +3828,11 @@ static void warm_start(void) {
     warm_threads_all = cpus > 3 ? cpus - 2 : 1;
     if (warm_threads_all > 32) warm_threads_all = 32;
     warm_threads_bg = cpus / 4 ? cpus / 4 : 1;
+    /* (Integrated graphics share the processor's power budget: the menus' compiles take the GPU's clocks with them. A
+     * Radeon 760M's character select ran at 30 fps with the whole list warming behind it, #428 (the likeliest cause, not
+     * yet confirmed): one thread there.) SSBU_VK_WARM_BG=<n>: that many threads behind the menus. */
+    if (limits_integrated) warm_threads_bg = 1;
+    if (getenv("SSBU_VK_WARM_BG") && atoi(getenv("SSBU_VK_WARM_BG")) > 0) warm_threads_bg = (u32)atoi(getenv("SSBU_VK_WARM_BG"));
     if (warm_threads_bg > warm_threads_all) warm_threads_bg = warm_threads_all;
     InterlockedExchange(&warm_urgent, 1);   /* (until the first frame's shader loading: vk_warm_gate) */
     InterlockedExchange(&warm_running, (LONG)warm_threads_all);
@@ -5677,6 +5683,7 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
     limits = props.limits;
     limits_vendor = props.vendorID;
     limits_device = props.deviceID;
+    limits_integrated = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
     texel_align = limits.minTexelBufferOffsetAlignment > 16 ? limits.minTexelBufferOffsetAlignment : 16;
     ubo_align = limits.minUniformBufferOffsetAlignment > 16 ? limits.minUniformBufferOffsetAlignment : 16;
     ssbo_align = limits.minStorageBufferOffsetAlignment > 16 ? limits.minStorageBufferOffsetAlignment : 16;
