@@ -18,7 +18,7 @@ This guide takes you from a fresh download to playing. No programming knowledge 
 2. Download **`OpenSmash.exe`** from the [latest release](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/latest) into that folder and double-click it (the first start opens the installer; `tools\install_windowsmash.ps1` is what it runs). Windows asks whether to run it (**The publisher could not be verified**): click **Run**. On some PCs a blue **Windows protected your PC** box comes up instead: click **More info**, then **Run anyway**. Windows asks this about anything downloaded that isn't signed; the installer takes that mark off WindowSmash's other files, so it asks only this once.
 3. A window opens with the folders it found for your game files, keys and firmware, and a line under each saying what is in it. Change a folder with **Browse…** if it is wrong or empty. If the game isn't version 13.0.5, the line under it says so in red: put the 13.0.5 update `.nsp` in the game folder and click **Check files**. Type the online name other players will see, and click **Set up and build**.
 4. Wait. The installer gets what is missing (Python, a compiler, SDL3), prepares your game files, and builds the game: **30 minutes to a few hours**, depending on your PC. You can keep using the PC meanwhile. If it stops, run `OpenSmash.exe` again: it carries on where it stopped.
-5. Play: double-click **`OpenSmash.exe`**, or the **Play SSBU** shortcut it put on the desktop.
+5. Play: double-click **`OpenSmash.exe`** (or the **OpenSmash** shortcut it put on the desktop) and press **Play**.
 
 <details>
 <summary><strong>What the installer does</strong></summary>

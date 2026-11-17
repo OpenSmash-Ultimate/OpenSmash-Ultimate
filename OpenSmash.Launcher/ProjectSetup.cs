@@ -243,17 +243,15 @@ namespace OpenSmash.Launcher
         }
 
         // ---------------------------------------------------------------------------
-        // Shortcuts: OpenSmash (the launcher, with its own icon) and Play SSBU (OpenSmash.exe --play: the game
-        // straight away, or the installer while it is not built; WindowSmash's icon, the game window's).
-        // Into the desktop and a Start menu folder named OpenSmash, each left out when its folder is "". Returns the files.
+        // The shortcut: OpenSmash (the launcher, with its own icon; Play starts the game from there). Into the
+        // desktop and a Start menu folder named OpenSmash, each left out when its folder is "". An older
+        // installer's Play SSBU shortcut to this folder's OpenSmash.exe (--play, WindowSmash's icon) is removed
+        // from those places; OpenSmash.exe --play itself still works. Returns the files made.
         public static List<string> MakeShortcuts(string folder, string desktop, string startMenu)
         {
             folder = Path.GetFullPath(folder).TrimEnd('\\');
             string launcher = Path.Combine(folder, "OpenSmash.exe");
-            string gameIcon = Path.Combine(folder, "docs", "assets", "windowsmash.ico");
             string appIcon = File.Exists(launcher) ? launcher + ",0" : Path.Combine(folder, "media", "opensmash.ico");
-            if (!File.Exists(gameIcon)) gameIcon = appIcon;
-            else gameIcon += ",0";
             var made = new List<string>();
             var places = new List<string>();
             if (desktop != "") places.Add(desktop);
@@ -263,10 +261,20 @@ namespace OpenSmash.Launcher
             foreach (string dir in places)
             {
                 Directory.CreateDirectory(dir);
+                string old = Path.Combine(dir, "Play SSBU.lnk");
+                try
+                {
+                    if (File.Exists(old))
+                    {
+                        dynamic o = shell.CreateShortcut(old);
+                        if (string.Equals(Path.GetFullPath((string)o.TargetPath), launcher, StringComparison.OrdinalIgnoreCase))
+                            File.Delete(old);
+                    }
+                }
+                catch { }
                 foreach (var (name, args, icon, what) in new[]
                 {
                     ("OpenSmash.lnk", "", appIcon, "OpenSmash: play, settings and mods"),
-                    ("Play SSBU.lnk", "--play", gameIcon, "Super Smash Bros. Ultimate (OpenSmash)"),
                 })
                 {
                     string lnk = Path.Combine(dir, name);
