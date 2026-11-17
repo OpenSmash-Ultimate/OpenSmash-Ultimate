@@ -428,13 +428,14 @@ static void add_str(EOS_HLobbyModification m, const char *key, const char *v) {
     EosAddAttrOptions o = {2, &a, EOS_LAT_PUBLIC};
     p_EOS_LobbyModification_AddAttribute(m, &o);
 }
+static char cur_hub[128];   /* (our hub's lobby id, the last one while moving to another: nexeos_tick) */
 static void publish(L *l) {   /* (EOS thread) its attributes, if this game owns the lobby */
     if (l->state != 2 || !l->pub || l->busy || !i_own(l->id)) { if (l->state == 2 && l->pub && !l->busy) l->dirty = 0; return; }
     Pub *p = l->pub;
     EosLobbyUserOptions o = {1, eos_me, l->id};
     EOS_HLobbyModification m = NULL;
     if (p_EOS_Lobby_UpdateLobbyModification(eos_lobby_interface(), &o, &m) != EOS_SUCCESS) return;
-    add_str(m, "HUB", eos_hub_lobby());
+    if (cur_hub[0]) add_str(m, "HUB", cur_hub);
     add_int(m, "GID", p->gid); add_int(m, "MODE", p->mode); add_int(m, "OPEN", p->open); add_str(m, "ARENA", p->arena);
     add_int(m, "RATING", p->rating); add_int(m, "UTC", nex_local_utc_min()); add_int(m, "NP", p->np); add_int(m, "MINP", p->minp); add_int(m, "MAXP", p->maxp);
     for (uint32_t i = 0; i < p->nattribs; i++) { char k[8]; snprintf(k, sizeof k, "A%u", i); add_int(m, k, p->attribs[i]); }
@@ -625,7 +626,7 @@ static void do_search(void *arg) {
     EosSetParameterOptions pb = {1, &b, EOS_CO_EQUAL};
     p_EOS_LobbySearch_SetParameter(r->search, &pb);
     EosAttrData h = {1, "HUB", {0}, EOS_AT_STRING};   /* (only our hub's: see HUB above) */
-    h.Value.AsUtf8 = eos_hub_lobby();
+    h.Value.AsUtf8 = cur_hub[0] ? cur_hub : "-";   /* (in no hub yet: none) */
     EosSetParameterOptions ph = {1, &h, EOS_CO_EQUAL};
     p_EOS_LobbySearch_SetParameter(r->search, &ph);
     if (r->arena[0]) {
@@ -752,9 +753,8 @@ void nexeos_tick(void) {
         p_EOS_Lobby_AddNotifyLobbyUpdateReceived(eos_lobby_interface(), &v, NULL, lobby_update);
         notified = 1;
     }
-    static char hub[128];
-    if (strcmp(hub, eos_hub_lobby())) {   /* (another hub: our lobbies say so) */
-        snprintf(hub, sizeof hub, "%s", eos_hub_lobby());
+    if (eos_hub_lobby()[0] && strcmp(cur_hub, eos_hub_lobby())) {   /* (another hub: our lobbies say so) */
+        snprintf(cur_hub, sizeof cur_hub, "%s", eos_hub_lobby());
         for (int i = 0; i < nl; i++) ls[i].dirty = 1;
     }
     u64 t = GetTickCount64();

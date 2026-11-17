@@ -135,7 +135,11 @@ static void eos_store_take(void) {
     eos_store_lock = CreateMutexA(NULL, FALSE, "Local\\OpenSmashEosDeviceIdStore");
     if (!eos_store_lock) return;
     DWORD w = WaitForSingleObject(eos_store_lock, 20000);   /* (WAIT_ABANDONED: its holder was killed - ours now) */
-    if (w != WAIT_OBJECT_0 && w != WAIT_ABANDONED) { CloseHandle(eos_store_lock); eos_store_lock = NULL; }
+    if (w != WAIT_OBJECT_0 && w != WAIT_ABANDONED) {
+        fprintf(stderr, "[eos] another game of this PC kept the Device ID store 20 s (its login hangs?): logging in without waiting\n");
+        CloseHandle(eos_store_lock);
+        eos_store_lock = NULL;
+    }
 }
 static void eos_store_give(void) {
     if (!eos_store_lock) return;
@@ -508,6 +512,7 @@ static DWORD WINAPI eos_thread_(LPVOID dll) {
             eos_same_player_check();
             told = 1;
         }
+        if (ph == 1 && GetTickCount64() - t0 > 15000) eos_store_give();   /* (a login that hangs keeps no other game waiting; once) */
         if (ph < 0) { eos_store_give(); fprintf(stderr, "[eos] off: the lobby's relay stays the last resort\n"); return 0; }
         if (ph == 2) { eos_pump(); hub_tick(); nexeos_tick(); }
         WaitForSingleObject(eos_wake, 1);
