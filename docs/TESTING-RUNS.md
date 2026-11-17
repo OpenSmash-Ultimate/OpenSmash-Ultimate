@@ -193,6 +193,7 @@ Settings are separated by commas. A setting left out keeps what the menus chose.
 | `items=on`, `items=off` | The rule's item appearance (2 or 0). |
 | `hazards=on`, `hazards=off` | A flag byte that the stage's set-up takes. |
 | `time=<minutes>` | The time limit (the match block's `+0x48`, in frames). |
+| `tag1=<n>` ... `tag4=<n>` | The player plays with the save's name tag n (1: the list's first slot, 0: none; out of 0-60: none), as if picked on the select screen: the panel's `+0x214` (slot + 1) and, on a human's panel, `+0x450`. The tag brings its own controls (#152). The log line `name tag <a> from the screens, <b> played` gives both. Ignored in a networked match, whose tags come from the rollback handshake. |
 
 The ids are worked out from the names (the Hash40 of `ui_chara_<name>` or `ui_stage_<name>`), so no list of fighters or stages is kept here. What the game does with a name it doesn't have was not tried. ssbu-recomp's log also named the fighter kind numbers from a bindings file of the game's. That table is game data and is not ported, so the log gives the numbers the game wrote.
 

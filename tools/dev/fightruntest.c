@@ -140,6 +140,7 @@ static SeqStepsFn *steps_fn;
 static int steps_set;
 void input_seq_set_steps(SeqStepsFn *fn) { steps_fn = fn; steps_set++; }
 int rb_ra_predicting(void) { return 0; }   /* (hle_rb_core.c: run-ahead, off here) */
+int net_match_on(void) { return 0; }       /* (hle_rb_core.c: no networked match here) */
 int input_seq2_on(void) { return 0; }      /* (hle_hid.c: player 2's sequence, SSBU_SEQ2: off here) */
 int pad_get(u32 slot, PadState *out) { (void)slot; (void)out; return 0; }   /* (hle_pad.c: no pad on any slot here) */
 static LPTHREAD_START_ROUTINE thread_fn;
