@@ -134,7 +134,17 @@ int mods_switch_set(const char *name, int on) { (void)name; (void)on; return 0; 
 int mods_switch_state(char *msg, size_t n) { if (msg && n) msg[0] = 0; return MODS_SWITCH_IDLE; }
 int mods_running_count(void) { return 0; }
 int rt_code_patches_on(void) { return 0; }
-int pad_info(u32 slot, PadInfo *out) { (void)slot; memset(out, 0, sizeof *out); return 0; }   /* (no controllers) */
+/* (no controllers; with LOBBYMENUTEST_PCPAD=1 (scaled) or 2 (a zone of its own), one GameCube adapter in PC mode as player 1) */
+int pad_info(u32 slot, PadInfo *out) {
+    memset(out, 0, sizeof *out);
+    const char *e = getenv("LOBBYMENUTEST_PCPAD");
+    if (slot || !e || !*e) return 0;
+    out->connected = 1; out->slot = 0; out->usb_port = -1; out->gc = 1; out->pc_mode = 1;
+    out->dz_default = *e == '1'; out->pc_scaled = *e == '1';
+    out->deadzone = *e == '1' ? 10 : 25;
+    snprintf(out->name, sizeof out->name, "PC mode adapter");
+    return 1;
+}
 static PadState fake_pad;   /* (pad: player 1's pad, its buttons held for a frame) */
 int pad_get(u32 slot, PadState *out) {
     memset(out, 0, sizeof *out);
