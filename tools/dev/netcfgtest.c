@@ -29,6 +29,7 @@ const struct NetBackend net_eos_backend;
 void net_eos_net_packet(const char *from, const u8 *p, u32 n) { (void)from; (void)p; (void)n; }
 void nexeos_tick(void) {}
 void nexeos_packet(const char *from, const u8 *data, u32 len) { (void)from; (void)data; (void)len; }
+int nexeos_lobbies(char ids[][16], int max) { (void)ids; (void)max; return 0; }
 uint64_t nex_pid_of(const char *key) { (void)key; return 0; }
 void vsock_deliver(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const void *data, u32 len) {}
 int ldn_in_network(u32 ip) { return 0; }

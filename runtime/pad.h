@@ -48,6 +48,8 @@ enum { PAD_RAW_LEFT_TRIGGER_BIT = 30, PAD_RAW_RIGHT_TRIGGER_BIT = 31, PAD_RAW_GU
 typedef struct PadInfo {
     int connected, slot, xinput;
     char name[96], type[24], guid[40], section[96];
+    char unit[100];            /* its own unit (serial:/path:, else its GUID), the same whether a twin is plugged in or not */
+    char pin[100];             /* what [players] names it: its GUID, or serial:<serial> / path:<hash> when another pad has the same GUID */
     int layout, deadzone, rumble, trigger;    /* layout 0 positional, 1 labels */
     int stick_taunts;                         /* the left stick's directions press the D-pad's buttons */
     int dpad_moves;                           /* the D-pad drives the left stick */

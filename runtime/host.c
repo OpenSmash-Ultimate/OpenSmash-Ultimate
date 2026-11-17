@@ -1007,8 +1007,9 @@ static void pane_place(Cpu *c) {
             fflush(stdout);   /* (a test run is stopped, not ended: an unflushed line is lost) */
         }
     }
-    if (getenv("SSBU_DEBUG_PANES")) {   /* SSBU_DEBUG_PANES=<text> (HUD research): the panes whose name, or a parent's, holds it */
-        const char *want = getenv("SSBU_DEBUG_PANES");
+    static const char *want = (const char *)-1;   /* SSBU_DEBUG_PANES=<text> (HUD research): the panes whose name, or a parent's, holds it */
+    if (want == (const char *)-1) want = getenv("SSBU_DEBUG_PANES");   /* (read once: this runs for every pane, every game, every frame) */
+    if (want) {
         u64 q = pane; int under = 0;
         for (int d = 0; q && d < 10; d++, q = *P(u64, q + 0x18)) if (strstr(P(char, q + 0xb0), want)) under = 1;
         static u64 t, burst;
@@ -2488,6 +2489,8 @@ int main(int argc, char **argv) {
 #endif
     kernel_init();
     load(dir);
+    void mod_refresh_init(void);
+    mod_refresh_init();   /* material lifetime hooks, before guest threads start */
     movie_test_start();
     test_fight_start();
 #ifndef _WIN32

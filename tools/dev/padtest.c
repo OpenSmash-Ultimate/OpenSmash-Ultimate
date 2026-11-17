@@ -238,6 +238,59 @@ static void test_slots(void) {
     CHECK(devs[6].slot == 6 && devs[7].slot == 7 && devs[8].slot == -1, "eight players, then none: %d %d %d", devs[6].slot, devs[7].slot, devs[8].slot);
 }
 
+static void test_unit_pins(void) {
+    /* two pads that report one GUID (two PowerA GameCube controllers): each is claimed by its own unit */
+    char tag[12], pin[64];
+    Dev a = make_dev("pa", "", "\\\\?\\HID#A", "PowerA GC", "gamecube"), b = make_dev("pa", "", "\\\\?\\HID#B", "PowerA GC", "gamecube");
+    dev_path_tag(b.path, tag);
+    CHECK(strlen(tag) == 8, "a path tag is 8 hex digits: %s", tag);
+    dev_path_tag(a.path, pin);
+    CHECK(strcmp(tag, pin), "two paths, two tags");
+    snprintf(pin, sizeof pin, "path:%s", tag);
+    CHECK(dev_matches(&b, pin) && !dev_matches(&a, pin), "path:<tag> names one pad of two");
+    CHECK(!dev_matches(&b, "path:00000000") && !dev_matches(&b, "serial:x"), "other tokens do not match (no serial)");
+    Dev s1 = make_dev("pa", "SN1", "", "PowerA GC", "gamecube"), s2 = make_dev("pa", "SN2", "", "PowerA GC", "gamecube");
+    CHECK(dev_matches(&s1, "serial:sn1") && !dev_matches(&s2, "serial:SN1"), "serial:<serial> names one pad of two");
+    CHECK(!dev_matches(&a, "path:") && !dev_matches(&a, "serial:"), "empty tokens match nothing");
+    load_text("[players]\n1 = path:ffffffff\n");
+    CHECK(!dev_matches(&a, cfg.pin[0]), "a path nobody has");
+    snprintf(pin, sizeof pin, "[players]\n2 = path:%s\n", tag);
+    load_text(pin);
+    memset(devs, 0, sizeof devs);
+    nknown = 0;
+    CHECK(plug(0, a) == 0, "the unpinned twin: first free player");
+    CHECK(plug(1, b) == 1, "the pinned twin: its player");
+    devs[0].used = devs[1].used = 0;
+    CHECK(plug(0, b) == 1 && plug(1, a) == 0, "plugged in the other order: still each its own");
+    PadInfo info;
+    dev_info(&devs[0], &(Raw){0}, &info);
+    CHECK(!strncmp(info.pin, "path:", 5), "twins: the menu writes the unit: %s", info.pin);
+    devs[0].used = 0;
+    dev_info(&devs[1], &(Raw){0}, &info);
+    CHECK(!strcmp(info.pin, "pa"), "a lone pad: its GUID: %s", info.pin);
+    devs[0] = s1; devs[1] = s2;
+    dev_info(&devs[0], &(Raw){0}, &info);
+    CHECK(!strcmp(info.pin, "serial:SN1"), "twins with serials: the serial: %s", info.pin);
+    devs[0] = make_dev("pa", "0001", "\\\\?\\HID#A", "PowerA GC", "gamecube");
+    devs[1] = make_dev("pa", "0001", "\\\\?\\HID#B", "PowerA GC", "gamecube");
+    dev_info(&devs[0], &(Raw){0}, &info);
+    CHECK(!strncmp(info.pin, "path:", 5), "twins with one serial between them: the path: %s", info.pin);
+    { PadInfo i2; dev_info(&devs[1], &(Raw){0}, &i2);
+      CHECK(strcmp(info.unit, i2.unit) != 0, "twins with one serial: different units: %s / %s", info.unit, i2.unit); }
+    devs[0] = make_dev("pa", "A B;", "\\\\?\\HID#A", "PowerA GC", "gamecube");
+    devs[1] = make_dev("pa", "XY", "\\\\?\\HID#B", "PowerA GC", "gamecube");
+    dev_info(&devs[0], &(Raw){0}, &info);
+    CHECK(!strncmp(info.pin, "path:", 5), "a serial the ini cannot hold: the path: %s", info.pin);
+    /* a GUID pin for player 1 and a unit pin for player 2: the unit pin's pad is player 2 whichever is set up first */
+    dev_path_tag(b.path, tag);
+    snprintf(pin, sizeof pin, "[players]\n1 = pa\n2 = path:%s\n", tag);
+    load_text(pin);
+    memset(devs, 0, sizeof devs);
+    nknown = 0;
+    CHECK(plug(0, b) == 1, "the unit pin beats a GUID pin that also matches");
+    CHECK(plug(1, a) == 0, "and the other twin gets the GUID pin's player");
+}
+
 static void test_rumble(void) {
     load_text("[device default]\nrumble = 50\n");
     Dev d = make_dev("g", "", "", "Pad", "ps5");
@@ -755,6 +808,7 @@ int main(void) {
     test_blank_first_report();
     test_sticks();
     test_slots();
+    test_unit_pins();
     test_rumble();
     test_dpad_moves();
     test_stick_taunts();

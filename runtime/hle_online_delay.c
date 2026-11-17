@@ -104,6 +104,17 @@ static void online_pads_local(u64 self, int after) {
     for (int i = 0; i < n && i < 8; i++) st32(fc + 0x298 + 4ull * i, (u32)i);
 }
 
+/* A sudden death's hold (hle_rb_core.c sd_hold_begin): the step's own end of its session, asked as the game asks it at
+ * a tie - kind 2 with code 0, from the Online melee scene's main+0x15693d0 - is not taken back but ended as the step's
+ * tail ends it (below), once per hold. */
+#define STEP_END 0x71016cced0ull   /* (the step's end of its session: (step, kind) - the scene's callback, state 6) */
+static int sd_ended;   /* (this hold's end done: no second one) */
+static int rb_sd_end_let(u64 self) {
+    int rb_sd_hold_now(void);
+    if (!rb_sd_hold_now()) { sd_ended = 0; return 0; }
+    return !sd_ended && ld8(self + 0x63) == 2 && ld16(self + 0x64) == 0;
+}
+
 /* FUN 0x71016d7730: the per-frame step of the same object (a state machine at this+0x62, 0..5;
  * it calls 0x71016cc940 itself in one state) that reads the delay at this+0x41 to decide how far
  * the local inputs run ahead of the remote ones. With our servers the setter was never seen to
@@ -149,7 +160,25 @@ HLE_WRAP(71016d7730) {
         static long undone;
         if (keep < 0) { const char *e = getenv("SSBU_RB_STEP_END"); keep = e && *e == '1'; }
         u8 asked = ld8(self + 0x63);
-        if (!keep && rb_online_match_now() > 0 && ld8(self + 0x62) == 4) {
+        if (!keep && rb_online_match_now() > 0 && ld8(self + 0x62) == 4 && rb_sd_end_let(self)) {
+            /* (the step stays left out; its count down to the end, and the end itself, as its tail does them: +0x66
+             * down by one a call, main+0x16cced0 when it reaches 0. The step's state 6 then runs on the next call.) */
+            u16 left = ld16(self + 0x66);
+            if (left > 1) st16(self + 0x66, (u16)(left - 1));
+            else if (left == 1) {
+                st16(self + 0x66, 0);
+                sd_ended = 1;
+                fprintf(stderr, "[net] rollback's Online match, a sudden death's hold: the step's session ended as the game ends it (kind %u, code %u; "
+                                "logic frame %u)\n", asked, ld16(self + 0x64), ld32(0x71052c5184ull));
+                static Cpu keep_c;
+                keep_c = *c;
+                c->x[0] = self; c->x[1] = asked;
+                rt_call(c, STEP_END);
+                *c = keep_c;
+                online_pads_local(self, 1);
+                return;
+            }
+        } else if (!keep && rb_online_match_now() > 0 && ld8(self + 0x62) == 4) {
             played = 1; played_self = self; since = 0;
             if (asked) {
                 if (++undone <= 5 || undone % 600 == 0)
