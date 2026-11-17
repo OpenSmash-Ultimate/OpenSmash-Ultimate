@@ -126,11 +126,12 @@ namespace OpenSmash.Launcher
         string _updateDetail = "";
         string _updateLocal = "";
         string _updateHead = "";
+        string _updateRefName = "main";   // what the check compared with: the latest release's tag, or main
         int _updateBehind;
 
         // While any of these run, Play is greyed out so two jobs cannot overlap.
         bool Busy => _yuzuPage?.IsBusy == true || _modsBusy || _setupModding || _pluginBuildUi || _loadOn || _startingPlay || _newModsBusy
-            || _updateApplying || _marketplaceInstalling.Count > 0 || _maintenanceBuildUi;
+            || _updateApplying || _marketplaceInstalling.Count > 0 || _maintenanceBuildUi || _shaderClearing;
 
         bool _rebuildPrompt;
         bool _sharePrompt;
@@ -355,7 +356,8 @@ namespace OpenSmash.Launcher
                 new Setting { Key = "overlay", Label = "Frame rate", Values = new[] { "1", "0" }, Labels = new[] { "Show it in the corner", "Hidden" } },
                 new Setting { Key = "volume", Label = "Volume", Slider = true },
                 new Setting { Key = "name", Label = "Your name", Text = true },
-                new Setting { Key = "lobby", Label = "Lobby", Values = SettingDefaults.Choices["lobby"], Labels = new[] { "Public lobby", "Private lobby (a code)", "Your own server", "This network (LAN)", "Offline" } },
+                // (the official lobby is relay only, one server a region; Epic Online Services - #378, #448 - is a choice, not the default)
+                new Setting { Key = "lobby", Label = "Lobby", Values = SettingDefaults.Choices["lobby"], Labels = new[] { "Official lobby (relay only, EU / NA East)", "Private lobby (a code)", "Your own server", "This network (LAN)", "Offline", "Epic Online Services (worldwide, direct)" } },
                 // (the official lobbies, one a region: OpenSmash.Core.ServerRegion; config\server_region.txt, the game's menu writes it too)
                 new Setting { Key = "region", Label = "Server region", Values = SettingDefaults.Choices["region"], Labels = SettingDefaults.RegionLabels },
                 new Setting { Key = "code", Label = "Lobby code", Text = true },
@@ -769,10 +771,11 @@ namespace OpenSmash.Launcher
                     string f = System.IO.Path.Combine(AppContext.BaseDirectory, "tools", "update_channel.txt");
                     if (System.IO.File.Exists(f)) ch = System.IO.File.ReadAllText(f).Trim();
                 }
+                _updateRefName = "main";
                 if (ch.Equals("main", StringComparison.OrdinalIgnoreCase)) return "main";
                 using var doc = JsonDocument.Parse(await GitHubGetAsync($"{UpdateApi}/releases/latest"));
                 string tag = GetString(doc.RootElement, "tag_name").Trim();
-                if (tag.Length > 0) return Uri.EscapeDataString(tag);
+                if (tag.Length > 0) { _updateRefName = tag; return Uri.EscapeDataString(tag); }
             }
             catch { }
             return "main";
@@ -862,7 +865,15 @@ namespace OpenSmash.Launcher
                     _updateDetail = titles.Count > 0 ? string.Join("   \u00B7   ", titles.Take(3)) + (titles.Count > 3 ? "   \u00B7   \u2026" : "") : title;
                 }
                 else if (status == "identical") { _updateState = "uptodate"; _updateBehind = 0; _updateMessage = UiLocale.Interpolate($"OpenSmash is up to date ({ShortCommit(local)})."); _updateDetail = title; }
-                else if (status == "behind") { _updateState = "uptodate"; _updateBehind = 0; _updateMessage = UiLocale.Interpolate($"This copy ({ShortCommit(local)}) is newer than GitHub's main branch."); _updateDetail = ""; }
+                else if (status == "behind")
+                {
+                    // (on the release channel: a copy made from main after the release, or updated before it; the next
+                    // release brings it forward)
+                    _updateState = "uptodate"; _updateBehind = 0; _updateDetail = "";
+                    _updateMessage = _updateRefName == "main"
+                        ? UiLocale.Interpolate($"This copy ({ShortCommit(local)}) is newer than GitHub's main branch.")
+                        : UiLocale.Interpolate($"This copy ({ShortCommit(local)}) is newer than the latest release ({_updateRefName}): it updates with the next release.");
+                }
                 else if (status == "diverged") { _updateState = "error"; _updateMessage = "This copy comes from a different branch than GitHub's main, so it can't be updated automatically."; _updateDetail = ""; }
                 else { _updateState = "error"; _updateMessage = "GitHub's answer was not understood."; _updateDetail = status; }
             }
@@ -968,13 +979,14 @@ namespace OpenSmash.Launcher
             catch { return false; }
         }
 
-        static string LauncherBuildInputsFingerprint(string repo)
+        // "" when the folder has no launcher project or no build script: a WindowSmash copy (from before the launcher
+        // was in the repository) has neither, and updates like any other; nothing is rebuilt for it.
+        internal static string LauncherBuildInputsFingerprint(string repo)
         {
             string project = Path.Combine(repo, "OpenSmash.Launcher");
             string projectFile = Path.Combine(project, "OpenSmash.Launcher.csproj");
             string buildScript = Path.Combine(repo, "tools", "build_launcher.ps1");
-            if (!File.Exists(projectFile) || !File.Exists(buildScript))
-                throw new FileNotFoundException("The launcher project or its build script is missing.");
+            if (!File.Exists(projectFile) || !File.Exists(buildScript)) return "";
 
             var files = Directory.EnumerateFiles(project, "*", SearchOption.AllDirectories)
                 .Where(path => !Path.GetRelativePath(project, path).Split(Path.DirectorySeparatorChar)
@@ -1147,7 +1159,9 @@ namespace OpenSmash.Launcher
                     Directory.CreateDirectory(Path.Combine(_repo, "config"));
                     File.WriteAllText(GameBuildPendingPath, _updateLocal);
                     string afterFingerprint = ReleaseMode ? "" : await Task.Run(() => LauncherBuildInputsFingerprint(_repo));
-                    launcherChanged = !ReleaseMode   // (a release's launcher comes built: SelfUpdateLauncherAsync)
+                    // (a release's launcher comes built: SelfUpdateLauncherAsync. No project before or after - a
+                    // WindowSmash copy: nothing to compare, nothing rebuilt; this exe stays)
+                    launcherChanged = !ReleaseMode && beforeLauncherFingerprint.Length > 0 && afterFingerprint.Length > 0
                         && !beforeLauncherFingerprint.Equals(afterFingerprint, StringComparison.Ordinal)
                         && await Task.Run(DotnetSdkAvailable);
                 }
@@ -1556,6 +1570,40 @@ namespace OpenSmash.Launcher
             _storageBusy = false;
             _storageText = (code == 0 ? "Moved.\n" : "The move stopped (what was moved was put back):\n") + output.Trim();
             Invalidate();
+        }
+
+        bool _shaderClearing;
+
+        // Settings > Storage > REBUILD SHADERS: this install's compiled shader caches removed (ShaderCache), then
+        // Prepare Shaders again with its bar.
+        async Task RebuildShadersAsync()
+        {
+            if (_shaderClearing) return;
+            string why = "";
+            if (_shaderProc != null && !_shaderProc.HasExited) why = "Prepare Shaders is running. Wait for it to finish.";
+            else if ((_gameProcess != null && !_gameProcess.HasExited) || YuzuGameRunning() || _waitingForGame) why = "Close the game before rebuilding the shaders.";
+            else if (Busy || _storageBusy) why = "Wait for the current job to finish.";
+            if (why.Length > 0) { UiLocale.Message(this, UiLocale.Text(why), "OpenSmash", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+            if (UiLocale.Message(this, UiLocale.Text("Rebuild the shaders?\n\nThis install's compiled shaders and graphics caches are deleted and Prepare Shaders compiles them all again. That takes a while, and the first start after it is slower while the graphics driver fills its cache again. Game files, saves and mods are not touched."),
+                                 "OpenSmash", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+            _shaderClearing = true;
+            _shaderUi = true;
+            _shaderFrac = 0;
+            _shaderDetail = "Deleting the old shaders";
+            _shaderEta = "";
+            Invalidate();
+            List<string> failed;
+            try { failed = await Task.Run(() => ShaderCache.Clear(_repo)); }
+            finally { _shaderClearing = false; }
+            if (failed.Count > 0)
+            {
+                _shaderUi = false;
+                Invalidate();
+                UiLocale.Message(this, UiLocale.Text("Some shader files could not be deleted (is the game running?). Close the game and try again.") + "\n\n" + string.Join("\n", failed.Take(8)),
+                                 "OpenSmash", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            StartShaders("medium");
         }
 
         int OsMods(string[] args, Action<string> onLine = null)
@@ -2583,6 +2631,7 @@ namespace OpenSmash.Launcher
             else if (id == "storage:refresh") _ = StorageStatusAsync();
             else if (id == "storage:save_disk") ToggleSaveDisk();
             else if (id == "storage:move") _ = StorageMoveAsync();
+            else if (id == "storage:shaders") _ = RebuildShadersAsync();
             else if (id == "update:apply") _ = ApplyUpdateAsync();
             else if (id == "rebuild_prompt:cancel") { _rebuildPrompt = false; Invalidate(); }
             else if (id == "rebuild_prompt:refresh") { _rebuildPrompt = false; Invalidate(); _ = RefreshPlugins(); }

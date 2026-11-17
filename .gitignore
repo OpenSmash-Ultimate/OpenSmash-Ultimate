@@ -104,3 +104,10 @@ OpenSmash.Core/bin/
 OpenSmash.Core/obj/
 tests/core/bin/
 tests/core/obj/
+
+/OpenSmash.Avalonia/bin/
+/OpenSmash.Avalonia/obj/
+/tests/desktop/bin/
+/tests/desktop/obj/
+/tests/desktop-native/bin/
+/tests/desktop-native/obj/

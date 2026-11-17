@@ -42,7 +42,7 @@ namespace OpenSmash.Launcher
             ["pacing"] = new[] { "clock", "vrr", "display" },
             ["render_scale"] = new[] { "1", "auto", "1.5", "2", "3" },
             ["renderer"] = new[] { "auto", "direct3d11", "vulkan" },
-            ["lobby"] = new[] { "auto", "private", "custom", "lan", "offline" },
+            ["lobby"] = new[] { "auto", "private", "custom", "lan", "offline", "eos" },   // ("eos": Epic Online Services alone, a choice and not the default - runtime/gpu_menu.c NET_EOS)
             ["region"] = new[] { OpenSmash.Core.ServerRegion.Auto }.Concat(OpenSmash.Core.ServerRegion.All.Select(r => r.Id)).ToArray(),
         };
 
@@ -85,6 +85,7 @@ namespace OpenSmash.Launcher
             string host = words.Length > 0 ? words[0] : "", code = words.Length > 1 ? words[1] : "";
             if (host == "" || host.Equals("off", StringComparison.OrdinalIgnoreCase)) return ("offline", code, "");
             if (host.Equals("lan", StringComparison.OrdinalIgnoreCase)) return ("lan", code, "");
+            if (host.Equals("eos", StringComparison.OrdinalIgnoreCase)) return ("eos", "", "");
             if (OpenSmash.Core.OfficialLobby.Means(host))
                 return (code == "" ? "auto" : "private", code, "");
             return ("custom", code, host);
@@ -119,6 +120,7 @@ namespace OpenSmash.Launcher
             {
                 "offline" => "off",
                 "lan" => "lan",
+                "eos" => "eos",
                 "private" => PublicLobby + " " + (code == "" ? "friends" : code),
                 "custom" => (server == "" ? "127.0.0.1:39420" : server) + (code == "" ? "" : " " + code),
                 _ => "auto",   // (the official lobby, the server region's: runtime/net_relay.c, net_region.c)

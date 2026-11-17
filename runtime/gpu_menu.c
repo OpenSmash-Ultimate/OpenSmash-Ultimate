@@ -254,9 +254,12 @@ static char osk_title[160], osk_text[1024];
 static int osk_max = 32, osk_min, osk_scripted; /* (osk_scripted: SSBU_MENU_OSK's, nobody waits for it) */
 
 static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol, rollback; } net;
-enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_MODE_COUNT };
-static const char *const NET_MODES[NET_MODE_COUNT] = {"public lobby", "private lobby (a code)", "your own server", "offline",
-                                                      "this network (LAN)"};
+enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_EOS, NET_MODE_COUNT };
+/* (the first choice is the official lobby: relay only, one server a region - net_region.c. Epic Online Services (#378;
+ * #448 named it as the default it was on main) is a choice of the player's own here, "eos" in online_server.txt:
+ * net_relay.c's eos_first) */
+static const char *const NET_MODES[NET_MODE_COUNT] = {"official lobby (relay only, EU / NA East)", "private lobby (a code)", "your own server", "offline",
+                                                      "this network (LAN)", "Epic Online Services (worldwide, direct)"};
 
 static void net_load(void)
 {
@@ -269,6 +272,8 @@ static void net_load(void)
         net.mode = NET_OFFLINE;
     else if (!_stricmp(host, "lan"))
         net.mode = NET_LAN; /* (net_relay.c's LAN discovery) */
+    else if (!_stricmp(host, "eos"))
+        net.mode = NET_EOS; /* (Epic Online Services alone, no lobby server of ours: net_relay.c, net_eos_net.c) */
     else if (net_means_official_lobby(host)) /* ("auto", the official lobby's name, an older public lobby's: net_relay.c) */
         net.mode = code[0] ? NET_PRIVATE : NET_PUBLIC; /* (the official lobby; which region's: net_region.c) */
     else
@@ -293,6 +298,8 @@ static void net_save_server(void)
         snprintf(line, sizeof line, "off");
     else if (net.mode == NET_LAN)
         snprintf(line, sizeof line, "lan");
+    else if (net.mode == NET_EOS)
+        snprintf(line, sizeof line, "eos");
     else if (net.mode == NET_PUBLIC)
         snprintf(line, sizeof line, "auto");
     else if (net.mode == NET_PRIVATE)
@@ -1021,7 +1028,7 @@ static void build(void)
 #ifdef _WIN32
                 "auto: Vulkan on an AMD, NVIDIA or Intel card (no first-use stutter there), Direct3D 11 on any other. direct3d11 or vulkan: that one on any card."
                 " If Vulkan cannot start (its shaders come from ssbu_glslang.dll beside the game, which needs the Visual C++ runtime), or"
-                " stopped the game in its first seconds twice in a row, Direct3D 11 draws and the log says why."
+                " stopped the game in its first seconds twice in a row, or lost the graphics device with this driver, Direct3D 11 draws and the log says why."
 #else
                 "DXVK: Direct3D 11 on Vulkan, the renderer the game is played and tested with. Vulkan: in development; until it can draw the game, "
                 "the game checks Vulkan at its start, says what it found in its log, and draws as before."
@@ -1285,8 +1292,10 @@ static void build(void)
             break;
         }
         r = add(R_NET_MODE, K_CHOICE, W_RESTART, "Play online in",
-                "Public lobby: everyone's rooms in Local Wireless. Private: only players with the same code. Your own server: host:port. "
-                "Offline: no netplay. This network: a private room hosted on your local network, found by itself.");
+                "Official lobby: everyone's rooms on your region's server (EU / NA East); every match is relayed, so no player's address reaches another. "
+                "Private: only players with the same code. Your own server: host:port. "
+                "Offline: no netplay. This network: a private room hosted on your local network, found by itself. "
+                "Epic Online Services: worldwide, no server of ours; matches connect straight to the opponent (Windows only).");
         snprintf(r->value, sizeof r->value, "%s", ui_text(NET_MODES[net.mode]));
         if (net.mode == NET_PRIVATE || net.mode == NET_CUSTOM)
         {
@@ -1863,6 +1872,10 @@ static void change(const Row *row, int dir)
         break;
     case R_NET_MODE:
         net.mode = cycle(net.mode, NET_MODE_COUNT, dir);
+#ifndef _WIN32
+        if (net.mode == NET_EOS) /* (no Epic Online Services off Windows: net_eos.c) */
+            net.mode = cycle(net.mode, NET_MODE_COUNT, dir);
+#endif
         net_save_server();
         break;
     case R_NET_REGION: /* Auto, then each region */

@@ -234,7 +234,7 @@ class LauncherDefaultsTests(unittest.TestCase):
         save = self.menu_c[self.menu_c.index('static void net_save_server(void)'):]
         save = save[:save.index('\n}\n')]
         written = set(re.findall(r'snprintf\(line, sizeof line, "(\w+)"\)', save))
-        self.assertEqual(written, {'off', 'lan', 'auto'})
+        self.assertEqual(written, {'off', 'lan', 'auto', 'eos'})   # ('eos': Epic Online Services, a choice and not the default)
         as_choice = {'off': 'offline'}
         self.assertEqual({as_choice.get(w, w) for w in written} | {'private', 'custom'}, set(self.choices['lobby']))
         modes = re.search(r'enum \{ NET_PUBLIC, (.*?), NET_MODE_COUNT \}', self.menu_c).group(1)

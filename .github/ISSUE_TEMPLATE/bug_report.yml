@@ -14,8 +14,8 @@ body:
     id: playlog
     attributes:
       label: play.log
-      description: "Drag build\play.log into this box, or paste its contents (the end of it is enough for a long log). For a crash, add the .txt report from reports\ too."
-      placeholder: "Drag build\play.log here"
+      description: 'Drag build\play.log into this box, or paste its contents (the end of it is enough for a long log). For a crash, add the .txt report from reports\ too.'
+      placeholder: 'Drag build\play.log here'
     validations:
       required: true
   - type: input

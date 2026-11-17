@@ -60,7 +60,7 @@ namespace OpenSmash.Launcher
             ["ui_language"] = "The launcher and external menu share this language. The game language is set separately.",
             ["volume"] = "The game's whole sound (display.ini volume, the same setting as the in-game menu's Volume row). 100 is full. It applies the next time you press Play.",
             ["name"] = "What other players see. Leave it empty and the game picks one.",
-            ["lobby"] = "Public: everyone's rooms on the public lobby. Private: only players with the same code. LAN: players on this network. Offline: no network.",
+            ["lobby"] = "Official lobby: your region's server, every match relayed. Private: only players with the same code. LAN: players on this network. Epic: worldwide, straight to the opponent. Offline: no network.",
             ["region"] = "Players on another region are not listed.",   // (one line fits: Auto is said by its own label, "Auto (the closest)")
             ["code"] = "A word your friends type too. Capital letters count.",
             ["server"] = "host:port of a lobby you run, for example 192.168.1.20:39420.",
@@ -2034,6 +2034,14 @@ namespace OpenSmash.Launcher
             if (can) AddHit("storage:refresh", xRef, by, wRef, bh);
             Theme.ButtonAnimated(g, _storageBusy ? "WORKING…" : "MOVE TO ANOTHER DRIVE", xMove, by, wMove, bh, s, true, Hov("storage:move", can && _hover == "storage:move"), can, 13 * s, _alpha, press: Press("storage:move"));
             if (can) AddHit("storage:move", xMove, by, wMove, bh);
+            float xShaders = x + pad, wShaders = Math.Min(230 * s, xRef - 12 * s - xShaders);
+            bool shadersRunning = _shaderClearing || (_shaderProc != null && !_shaderProc.HasExited);
+            bool canShaders = !_storageBusy && !Busy && !shadersRunning;
+            if (wShaders >= 150 * s)   // (a narrow window: no room beside the other two)
+            {
+                Theme.ButtonAnimated(g, shadersRunning ? "PREPARING SHADERS…" : "REBUILD SHADERS", xShaders, by, wShaders, bh, s, false, Hov("storage:shaders", canShaders && _hover == "storage:shaders"), canShaders, 12 * s, _alpha, press: Press("storage:shaders"));
+                if (canShaders) AddHit("storage:shaders", xShaders, by, wShaders, bh);
+            }
             PopFade(g, st);
         }
 
