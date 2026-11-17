@@ -120,6 +120,7 @@ static int take_oldest(void) {
     if (oldest >= 0) {
         for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == ACQUIRED) queue.slots[i].state = FREE;
         queue.slots[oldest].state = ACQUIRED;
+        WakeAllConditionVariable(&queue.freed);   /* (a buffer came free: DEQUEUE_BUFFER's wait, SSBU_VI_DEQUEUE_WAIT_MS) */
         if (queue.slots[oldest].keep) { queue.slots[oldest].keep = 0; keep_pending = 0; }
         queue.frames++;
         shown_size = queue.slots[oldest].buffer_size;
@@ -413,6 +414,20 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
         u64 freemask = 0;
         for (int i = 0; i < SLOTS; i++)
             if (queue.slots[i].has_buffer && queue.slots[i].state == FREE) { freemask |= 1ull << i; if (slot < 0) slot = i; }
+        /* (round 4, SSBU_VI_DEQUEUE_WAIT_MS=<ms>, off unless set: with no free buffer the answer was "would block" at
+         * once, and the buffer event stays signalled, so the game's main thread asked again some 3200 times a frame -
+         * 8-9 ms of every frame at full speed on one core, measured by the rollback bench. With a wait, the call sleeps
+         * here until a buffer comes free, at most that long, and only then says "would block": the same buffer at the
+         * same moment, the core left to the workers and the GPU's threads meanwhile.) */
+        static int wait_ms = -1;
+        if (wait_ms < 0) { const char *e = getenv("SSBU_VI_DEQUEUE_WAIT_MS"); wait_ms = e && atoi(e) > 0 ? atoi(e) : 0; if (wait_ms > 20) wait_ms = 20; }
+        if (slot < 0 && wait_ms > 0) {
+            extern void (*kernel_pace_hook)(int phase);
+            if (kernel_pace_hook) kernel_pace_hook(2);   /* (the bench: the wait for the display begins here) */
+            SleepConditionVariableSRW(&queue.freed, &queue.lock, (DWORD)wait_ms, 0);
+            for (int i = 0; i < SLOTS; i++)
+                if (queue.slots[i].has_buffer && queue.slots[i].state == FREE) { freemask |= 1ull << i; if (slot < 0) slot = i; }
+        }
         if (slot >= 0) slot = rb_dequeue_pick(freemask, slot);   /* (a catch-up's frame: its first pass's slot) */
         {   /* (the rollback bench: the game waits for a buffer from the first "would block" to the next buffer handed out) */
             extern void (*kernel_pace_hook)(int phase);

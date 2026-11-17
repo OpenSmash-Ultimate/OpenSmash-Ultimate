@@ -594,12 +594,13 @@ static u64 *scan_dirty;   /* (a load's questions: the pages found written set he
 void watch_rb_dirty_scan(u64 lo, u64 hi, u64 *bits, void **pages);
 /* (SSBU Arena's LOADNT, b1e8629) A load's page copies with non-temporal stores: the pages a load writes back (some MB)
  * are not read again at once, and a plain copy first reads every destination line into the cache (and pushes the
- * game's own data out of it). The bytes written are the same. SSBU_RB_LOADNT=0: plain copies, as before. */
+ * game's own data out of it). The bytes written are the same. Off unless SSBU_RB_LOADNT=1 (round 4, 17/11: alternated six-stage runs
+ * gave the load's memory part 4.06 against 4.24 ms and no gain on the tick, 38.0 against 37.5 ms: not kept on). */
 #include <emmintrin.h>
 static int jobs_nt;   /* (set around a load's memory_load) */
 static int loadnt_on(void) {
     static int on = -1;
-    if (on < 0) { const char *e = getenv("SSBU_RB_LOADNT"); on = !(e && !strcmp(e, "0")); }
+    if (on < 0) { const char *e = getenv("SSBU_RB_LOADNT"); on = e && !strcmp(e, "1"); }
     return on;
 }
 static void page_copy(u8 *d, const u8 *s) {
