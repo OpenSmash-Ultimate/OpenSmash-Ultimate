@@ -2273,6 +2273,7 @@ namespace OpenSmash.Launcher
             if (_openDropdownKey != null && _openDropdownKey.StartsWith("modpick:") && !id.StartsWith("modpick:"))
                 _openDropdownKey = null;
             if (ActivateCommunityHit(id)) return;
+            if (ActivateReportHit(id)) return;
             if (ActivateDiscordHit(id)) return;
             if (ActivateNavHit(id)) return;
             if (id.StartsWith("menu:"))

@@ -708,6 +708,17 @@ namespace OpenSmash.Launcher
             };
             Theme.Label(g, hint, FM(11 * s), A(Theme.Dim), 0, y, h, sp, StringAlignment.Far, W - 40 * s);
 
+            // "Report a problem": opens build\play.log in Explorer and the bug form (LauncherForm.Report.cs).
+            {
+                var rf = FM(11 * s);
+                string rl = UiLocale.Text("REPORT A PROBLEM");
+                float rw = Theme.TextWidth(g, rl, rf, sp), hw = Theme.TextWidth(g, hint, rf, sp);
+                float rx = W - 40 * s - hw - 32 * s - rw;
+                float rh = Hov("report", _hover == "report");
+                Theme.Label(g, rl, rf, A(Theme.Mix(Theme.Muted, Theme.Text, rh)), rx, y, h, sp);
+                AddHit("report", rx - 6 * s, y, rw + 12 * s, h);
+            }
+
             PopFade(g, st);
         }
 

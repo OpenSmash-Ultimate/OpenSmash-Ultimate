@@ -1,0 +1,64 @@
+name: Bug report
+description: Something does not work. A play.log is required.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Reports without a `play.log` cannot be investigated and will be closed until one is added.
+
+        **Where is it?** In your OpenSmash folder: `<OpenSmash folder>\build\play.log`. After a crash there is also a `.txt` report in the `reports\` folder. The launcher's **Report a problem** button (bottom bar) opens that folder with `play.log` selected and brings you here.
+
+        Never post game files, keys or saves. Logs can contain folder names, player names and internet addresses: read them before posting. Do not attach a crash `.dmp` here.
+  - type: textarea
+    id: playlog
+    attributes:
+      label: play.log
+      description: "Drag build\play.log into this box, or paste its contents (the end of it is enough for a long log). For a crash, add the .txt report from reports\ too."
+      placeholder: "Drag build\play.log here"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: OpenSmash version
+      description: Shown in the launcher's bottom bar (GAME ...), or the release name.
+    validations:
+      required: true
+  - type: dropdown
+    id: renderer
+    attributes:
+      label: Renderer
+      description: The renderer chip on the launcher's home page.
+      options:
+        - Auto
+        - Vulkan
+        - Direct3D 11
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: Graphics card and driver version
+      placeholder: NVIDIA GeForce RTX 3060, driver 560.94
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Windows 11 23H2, Linux (Steam Deck), macOS 14
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What you did, what happened, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Mods installed, controller, online or offline, screenshots.

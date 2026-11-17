@@ -102,6 +102,9 @@ async function refresh() {
   try { state = await api("/api/state"); } catch (e) { $("#play-state").textContent = e.message; return; }
   document.documentElement.className = (document.documentElement.className.replace(/host-\w+/g, "") + " host-" + state.host).trim();
   $("#version").textContent = state.commit ? `version ${state.commit}` : "";
+  const rl = $("#report-link");
+  if (rl) rl.href = "https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/issues/new?template=bug_report.yml" +
+    (state.commit ? "&version=" + encodeURIComponent(state.commit) : "");
   const built = state.built;
   $("#play-buttons").hidden = !built;
   $("#not-built").hidden = built;
