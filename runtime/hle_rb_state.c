@@ -568,8 +568,9 @@ static CopyJob *jobs;
 static u32 njobs, jobs_cap;
 static volatile LONG jobs_next, jobs_done;
 static Undo *jobs_undo;
-static HANDLE jobs_go[16];
+static HANDLE jobs_go[16], jobs_th[16];
 static int nworkers = -1;
+static DWORD_PTR jobs_mask;   /* (rb_copy_threads_mask: where the copy threads run; 0: anywhere) */
 static double jobs_ms;
 static void job_add(u8 *d1, const u8 *s1, u8 *d2, const u8 *s2, u32 slot) {
     if (njobs == jobs_cap) jobs = realloc(jobs, sizeof *jobs * (jobs_cap = jobs_cap ? jobs_cap * 2 : 8192));
@@ -591,6 +592,25 @@ static u32 nscan, scan_cap;
 static u64 scan_stamp;
 static u64 *scan_dirty;   /* (a load's questions: the pages found written set here, nothing reset - watch_rb_dirty_scan) */
 void watch_rb_dirty_scan(u64 lo, u64 hi, u64 *bits, void **pages);
+/* (SSBU Arena's LOADNT, b1e8629) A load's page copies with non-temporal stores: the pages a load writes back (some MB)
+ * are not read again at once, and a plain copy first reads every destination line into the cache (and pushes the
+ * game's own data out of it). The bytes written are the same. SSBU_RB_LOADNT=0: plain copies, as before. */
+#include <emmintrin.h>
+static int jobs_nt;   /* (set around a load's memory_load) */
+static int loadnt_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_RB_LOADNT"); on = !(e && !strcmp(e, "0")); }
+    return on;
+}
+static void page_copy(u8 *d, const u8 *s) {
+    if (!jobs_nt || ((uintptr_t)d & 15)) { memcpy(d, s, 0x1000); return; }
+    for (int i = 0; i < 0x1000; i += 64) {
+        __m128i a = _mm_loadu_si128((const __m128i *)(s + i)), b = _mm_loadu_si128((const __m128i *)(s + i + 16));
+        __m128i c = _mm_loadu_si128((const __m128i *)(s + i + 32)), e = _mm_loadu_si128((const __m128i *)(s + i + 48));
+        _mm_stream_si128((__m128i *)(d + i), a); _mm_stream_si128((__m128i *)(d + i + 16), b);
+        _mm_stream_si128((__m128i *)(d + i + 32), c); _mm_stream_si128((__m128i *)(d + i + 48), e);
+    }
+}
 static void jobs_work(void) {
     if (nscan) {
         static __declspec(thread) void **buf;
@@ -607,10 +627,11 @@ static void jobs_work(void) {
         for (; j < e; j++) {
             CopyJob *q = &jobs[j];
             u8 *d1 = q->slot != NO_SLOT ? jobs_undo->data + ((size_t)q->slot << 12) : q->d1;
-            if (d1) memcpy(d1, q->s1, 0x1000);
+            if (d1) page_copy(d1, q->s1);
             if (q->same) { *q->same = !memcmp(q->d2, q->s2, 0x1000); if (*q->same || q->cmp_only) continue; }
-            if (q->d2) memcpy(q->d2, q->s2, 0x1000);
+            if (q->d2) page_copy(q->d2, q->s2);
         }
+        if (jobs_nt) _mm_sfence();
     }
 }
 static DWORD WINAPI jobs_worker(void *p) {
@@ -626,7 +647,7 @@ static void jobs_run(void) {
         for (int i = 0; i < nworkers; i++) {
             jobs_go[i] = CreateEventA(NULL, FALSE, FALSE, NULL);
             HANDLE h = CreateThread(NULL, 0, jobs_worker, jobs_go[i], 0, NULL);
-            if (h) { SetThreadDescription(h, L"rollback copies"); CloseHandle(h); }
+            if (h) { SetThreadDescription(h, L"rollback copies"); jobs_th[i] = h; if (jobs_mask) SetThreadAffinityMask(h, jobs_mask); }
         }
     }
     jobs_undo = undo_to;
@@ -637,6 +658,13 @@ static void jobs_run(void) {
     while (jobs_done < helpers) YieldProcessor();
     njobs = 0;
     jobs_ms += now_ms() - t;
+}
+/* (hle_rb_core.c rb_pin) the copy threads' processors; 0: every processor of the process again */
+void rb_copy_threads_mask(u64 mask) {
+    DWORD_PTR pa = 0, sa = 0;
+    if (!mask) GetProcessAffinityMask(GetCurrentProcess(), &pa, &sa);
+    jobs_mask = (DWORD_PTR)mask;
+    for (int i = 0; i < 16; i++) if (jobs_th[i]) SetThreadAffinityMask(jobs_th[i], mask ? (DWORD_PTR)mask : pa);
 }
 /* The scan ranges listed (scan_ranges, nscan) on this thread and the copy threads at once. */
 static void scan_run(void) {
@@ -2255,7 +2283,9 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     double lt_drain = now_ms();
     step("memory");
     rb_loading_mem = 1;
+    jobs_nt = loadnt_on();
     memory_load(beside, gmark, glog, age);
+    jobs_nt = 0;
     double lt_mem = now_ms();
     if (beside) {   /* (its wait counted as the GPU drain's part, its undo records as theirs, the rest as memory's) */
         lt_drain += ld_gpu_wait_ms; lt_mem -= ld_undo_ms; mstat.undo_ms = ld_undo_ms;

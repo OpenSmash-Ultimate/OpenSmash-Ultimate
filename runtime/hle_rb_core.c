@@ -29,6 +29,8 @@ int rb_vi_catchup(void) { return 0; }
 int rb_dequeue_pick(u64 freemask, int dflt) { (void)freemask; return dflt; }
 void rb_job_kick(Cpu *c, GuestFn *orig) { orig(c); }
 void rb_tree_node(Cpu *c, GuestFn *orig) { orig(c); }
+int rb_skipf(Cpu *c, int which) { (void)c; (void)which; return 0; }
+void rb_gc_step(Cpu *c, GuestFn *orig) { orig(c); }
 void rb_rand_draw(Cpu *c, GuestFn *orig, int which) { (void)which; orig(c); }
 int rb_slot_remote(u32 id) { (void)id; return 0; }
 int rb_slot_remote_gc(u32 id) { (void)id; return 0; }
@@ -279,13 +281,15 @@ static int rb_idle(void);   /* (below: nothing in this fight needs the savestate
 static void online_restore(void);   /* (SSBU_RB_NET=online, below) */
 static void online_fight_start(void);
 static void online_forget(const char *why);
+static void rb_pin(int on);   /* (thread placement: above net_step) */
+static void gc_skipf_summary(void);   /* (with rb_skipf, below) */
 static u32 pr_sp_lf;   /* (#181: the logic frame at the last fight safe point, rb_pad's census) */
 static void safe_point(Cpu *c, uintptr_t sp) {
     S.points++;
     int on = fight_on();
     if (!on) {
         if (S.in_fight) {
-            summary("fight over"); S.in_fight = 0;
+            summary("fight over"); S.in_fight = 0; rb_pin(0); gc_skipf_summary();
             { void perf_rb_fight(int desyncs); perf_rb_fight(net_mode == 2 ? (int)net_desyncs : 0); }   /* (debug_perf_session.c) */
             online_restore();   /* (an Online match: the game's own set-up back for its results) */
             { void rb_state_map_fight(int on); rb_state_map_fight(0); }   /* (hle_rb_state.c: the alias area writable again) */
@@ -952,9 +956,15 @@ static void net_save_spacing(double cs, long long saves_now, long long sparse_no
     int kk = (int)(k + 0.5);
     net_save_every = kk < 2 ? 2 : kk > 4 ? 4 : kk;
 }
+/* (the rollback bench, SSBU_RB_STDBENCH: its block is above net_step) */
+static int bn_on_ = -1;              /* (on: 1) */
+static long long bn_walk_from = -1;  /* (the fight frame from which player 1 walks off the stage) */
+static void bn_catch(void);
+void input_seq_mark(const char *what);   /* (hle_hid.c) */
 static void catch_done(u32 key, double ms) {
     static double slow = -1;
     if (slow < 0) { const char *e = getenv("SSBU_RB_CATCH_SLOW"); slow = e && *e ? atof(e) : 25; }
+    bn_catch();
     int d = catch_depth < 15 ? catch_depth : 15;
     catch_d_n[d]++; catch_d_ms[d] += ms; catch_d_load[d] += catch_load_ms;
     { void perf_rb_catch(int depth, double ms); perf_rb_catch(catch_depth, ms); }   /* (debug_perf_session.c: the session's summary) */
@@ -1236,6 +1246,10 @@ static int net_menu_take(const u8 *buf, int len);
 static u64 net_mix(u64 h, u64 v) { h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2); return h * 0xff51afd7ed558ccdull; }
 /* the bots: a stick direction and a button held a few frames at a time, as a frame's own function */
 static RbnPad net_pad(int who, u32 f) {
+    if (bn_on_ > 0) {   /* (the rollback bench: the same pads at the same fight frame in every fight; player 1 walks off the stage at the end) */
+        f -= net_key0;
+        if (who == 0 && bn_walk_from >= 0 && (long long)f >= bn_walk_from) { RbnPad w = {0}; w.lx = -32767; return rbn_rest(w); }
+    }
     u64 h = net_mix((u64)who * 7919 + 1, f / (u32)(5 + who * 4));
     RbnPad p = {0};
     static const u64 press[8] = {0, 0, 1ull << 0, 1ull << 1, 1ull << 2, 0, 1ull << 0, 1ull << 7};   /* -, -, A, B, X (jump), -, A, R (shield) */
@@ -1269,7 +1283,7 @@ static RbnPad net_pad(int who, u32 f) {
  * early and nothing was ever guessed: loop1.) */
 static double net_arrival(u32 f) {
     if (net_lag_hi < 0) return -1e18;
-    u64 h = net_mix(0xa11, f);
+    u64 h = net_mix(0xa11, bn_on_ > 0 ? f - net_key0 : f);
     int lag = net_lag_lo + (int)(h % (u64)(net_lag_hi - net_lag_lo + 1));
     if ((int)((h >> 20) % 100) < net_loss) lag += 1 + (int)((h >> 28) % 3);
     return (double)f - net_delay + lag;
@@ -1557,7 +1571,285 @@ static void net_send(u32 key) {
     size_t len = rbn_build(buf, sizeof buf, &m);
     if (len) { rbl_send(buf, (int)len); net_msgs_out++; net_bytes_s += (long long)len; net_msgs_s++; if ((long long)len > net_bytes_max_s) net_bytes_max_s = (long long)len; }
 }
+/* ---- SSBU_RB_STDBENCH: THE STANDARD ROLLBACK BENCH (test only; SSBU Arena's rb_bench.c, round 12, ported) --------------
+ * SSBU_RB_STDBENCH=<warm>,<measured>,<stages>, with SSBU_RB=1, the loop mode (SSBU_RB_NET=loop,<delay>,<lag>,<lag>,0,<frames>)
+ * and SSBU_DEBUG_MATCH_LIST (one stage per line, Mario against a CPU Fox): tools/dev/rb_bench.py sets it all up. Nothing in
+ * this block runs without SSBU_RB_STDBENCH: the hooks it adds (kernel.c kernel_pace_hook, the walk-off in net_pad, the
+ * schedule by fight frame) are all behind it.
+ * One process, no hands on the menus (an input sequence presses through them; the marks rbb_fight<n> say each fight began).
+ * The rollbacks are a pure function of the fight's frame: player 2's pads (net_pad, the loop bot) and when each gets here
+ * (net_arrival, a fixed lag) are drawn from the logic frame counted from the fight's start, so every run and every stage has
+ * the same schedule. In every fight:
+ *   - real frames 1..warm: warm-up, nothing counted;
+ *   - the next <measured> real frames: the segment. A TICK is the guest main thread's work from the end of one wait for
+ *     the display (ipc_vi.c's buffer queue: from its first "no free buffer" to the next buffer handed out - the game
+ *     asks again and again meanwhile, bn_pace) to the start of the next, outside catch-ups:
+ *     the real pass with what its safe point did (the save, the load, the frames run again). A catch-up's last frame waits
+ *     for the next refresh (rb_vi_catchup: it is shown there): that wait is idle and left out ("lastwait"). At the end ONE
+ *     line "BENCH <n> <stage>": the rollback ticks' median / p99 / share over 16.7 ms, the normal ticks' (no rollback), and
+ *     the rollback ticks' parts (real pass, save, load, first frame run again, the others, the fight hash), the saves' and
+ *     loads' own parts (hle_rb_state.c), the k counts;
+ *   - then one stock left for both fighters and player 1 walks off the stage: the match ends, the sequence goes through the
+ *     results to the next match;
+ *   - after <stages> segments: "BENCH SUMMARY" (the mean of the stages' medians) and the game exits by itself.
+ * SSBU_RB_STDBENCH_TICKS=<prefix>: every tick of each segment to <prefix>_<n>_<stage>.txt. */
+static int bn_warm, bn_meas, bn_n, bn_done, bn_state;
+static long long bn_fight = -1, bn_real;
+static double bn_t_end, bn_acc, bn_w0, bn_pw_last;
+static int bn_sp, bn_wkind;
+static double bn_save, bn_load, bn_rr1, bn_rrn, bn_hash; static int bn_k, bn_nrb;
+typedef struct { float work, save, load, rr1, rrn, hash, pwlast; unsigned char k, nrb; } BnTick;
+static BnTick *bn_t; static int bn_nt, bn_cap;
+static long long bn_waits[3], bn_rounds, bn_rounds0; static double bn_wait_ms[3];
+static struct { double sp[4], lp[6]; long long sc, lc, rb, depth[16], waits[3]; double wait_ms[3]; } bn0;
+static double bn_rb_med[16], bn_norm_med[16]; static char bn_name[16][48];
+static void bn_pace(int phase);
+static int bn_on(void) {
+    if (bn_on_ < 0) {
+        const char *e = getenv("SSBU_RB_STDBENCH");
+        bn_on_ = 0;
+        if (e && *e && sscanf(e, "%d,%d,%d", &bn_warm, &bn_meas, &bn_n) == 3 && bn_meas > 0 && bn_n > 0) {
+            bn_on_ = 1;
+            if (bn_n > 16) bn_n = 16;
+            bn_cap = bn_meas * 2 + 64;
+            bn_t = calloc((size_t)bn_cap, sizeof *bn_t);
+            extern void (*kernel_pace_hook)(int phase);
+            kernel_pace_hook = bn_pace;
+            fprintf(stderr, "[rb] BENCH on: warm-up %d real frames, segment %d real frames, %d stages\n", bn_warm, bn_meas, bn_n);
+            printf("[bench] on: warm-up %d, segment %d real frames, %d stages\n", bn_warm, bn_meas, bn_n); fflush(stdout);
+        }
+    }
+    return bn_on_;
+}
+/* the stage of the n-th line (1-based) of SSBU_DEBUG_MATCH_LIST */
+static void bn_stage_name(int n, char *out, size_t size) {
+    snprintf(out, size, "stage%d", n);
+    const char *l = getenv("SSBU_DEBUG_MATCH_LIST"); FILE *f = l ? fopen(l, "r") : NULL; char line[512]; int i = 0;
+    while (f && fgets(line, sizeof line, f)) {
+        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+        if (++i != n) continue;
+        char *s = strstr(line, "stage=");
+        if (s) { s += 6; size_t k = strcspn(s, ",\r\n"); snprintf(out, size, "%.*s", (int)(k < 47 ? k : 47), s); }
+        break;
+    }
+    if (f) fclose(f);
+}
+/* ipc_vi.c's buffer queue: no free buffer for the game (2: its wait for the display begins, unless it is under way), a
+ * buffer handed out (3: the wait is over). Between the two the guest main thread asks again and again (it waits on the
+ * queue's buffer event, which stays signalled: thousands of rounds a frame, counted as "pacing waits"): idle time. Only
+ * the guest main thread's calls count (S.thread). Phases 0 and 1 below are that wait's start and end. */
+static void bn_tick_close(void);
+static int bn_waiting;
+static void bn_pace(int phase) {
+    if (GetCurrentThreadId() != S.thread) return;
+    if (phase == 2) { bn_rounds++; if (bn_waiting) return; bn_waiting = 1; phase = 0; }
+    else if (phase == 3) { if (!bn_waiting) return; bn_waiting = 0; phase = 1; }
+    else return;
+    double now = now_ms();
+    if (phase == 0) {
+        bn_wkind = rb_fast <= 0 ? 0 : rb_fast == 1 ? 1 : 2;
+        bn_w0 = now;
+        if (bn_wkind == 0) {
+            if (bn_t_end > 0) bn_acc += now - bn_t_end;
+            if (bn_sp) bn_tick_close();
+            bn_t_end = 0;
+        }
+        return;
+    }
+    double w = now - bn_w0;
+    bn_waits[bn_wkind]++; bn_wait_ms[bn_wkind] += w;
+    if (bn_wkind == 0) bn_t_end = now;
+    else if (bn_wkind == 1) bn_pw_last += w;
+}
+static void bn_tick_close(void) {
+    if (bn_state == 1 && bn_fight == S.fights && bn_nt < bn_cap) {
+        BnTick *t = &bn_t[bn_nt++];
+        double rr1 = bn_rr1, rrn = bn_rrn;
+        if (bn_k >= 2) rrn -= bn_pw_last; else rr1 -= bn_pw_last;   /* (the last frame's wait for the refresh: idle) */
+        t->work = (float)(bn_acc - bn_pw_last); t->save = (float)bn_save; t->load = (float)bn_load; t->rr1 = (float)rr1; t->rrn = (float)rrn;
+        t->hash = (float)bn_hash; t->pwlast = (float)bn_pw_last; t->k = (unsigned char)(bn_k < 255 ? bn_k : 255); t->nrb = (unsigned char)bn_nrb;
+    }
+    bn_acc = 0; bn_sp = 0; bn_save = bn_load = bn_rr1 = bn_rrn = bn_hash = bn_pw_last = 0; bn_k = bn_nrb = 0;
+}
+static int bn_cmpf(const void *a, const void *b) { float x = *(const float *)a, y = *(const float *)b; return (x > y) - (x < y); }
+static void bn_dist(int want_rb, double *med, double *p99, double *over, double *mean, int *n) {
+    float *w = malloc((size_t)(bn_nt + 1) * sizeof *w); int m = 0; double s = 0, o = 0;
+    for (int j = 0; w && j < bn_nt; j++) if ((bn_t[j].k > 0) == want_rb) { w[m++] = bn_t[j].work; s += bn_t[j].work; o += bn_t[j].work > 1000.0 / 60.0; }
+    *n = m; *med = *p99 = *over = *mean = 0;
+    if (m) { qsort(w, (size_t)m, sizeof *w, bn_cmpf); *med = w[m / 2]; *p99 = w[m * 99 / 100]; *over = 100.0 * o / m; *mean = s / m; }
+    free(w);
+}
+static void bn_snap(void) {
+    memcpy(bn0.sp, rb_save_parts, sizeof bn0.sp); memcpy(bn0.lp, rb_load_parts, sizeof bn0.lp); bn0.sc = rb_save_count; bn0.lc = rb_load_count;
+    bn_rounds0 = bn_rounds;
+    bn0.rb = net_rollbacks; memcpy(bn0.depth, net_depth, sizeof bn0.depth); memcpy(bn0.waits, bn_waits, sizeof bn0.waits); memcpy(bn0.wait_ms, bn_wait_ms, sizeof bn0.wait_ms);
+}
+static DWORD WINAPI bn_exit(LPVOID unused) { (void)unused; Sleep(300); fflush(NULL); ExitProcess(0); return 0; }
+static void bn_segment_end(u32 key) {
+    double med, p99, over, mean, nmed, np99, nover, nmean; int n, nn;
+    bn_dist(1, &med, &p99, &over, &mean, &n);
+    bn_dist(0, &nmed, &np99, &nover, &nmean, &nn);
+    double pr[7] = {0}; long long kc[5] = {0};   /* real, save, load, first, others, hash, lastwait: means over the rollback ticks */
+    long long rrn_frames = 0;
+    for (int j = 0; j < bn_nt; j++) {
+        const BnTick *t = &bn_t[j];
+        if (!t->k) continue;
+        pr[0] += t->work - t->save - t->load - t->rr1 - t->rrn; pr[1] += t->save; pr[2] += t->load; pr[3] += t->rr1; pr[4] += t->rrn; pr[5] += t->hash; pr[6] += t->pwlast;
+        kc[t->k < 4 ? t->k : 4]++;
+        if (t->k > t->nrb) rrn_frames += t->k - t->nrb;
+    }
+    double nr = n ? n : 1;
+    double sc = (double)(rb_save_count - bn0.sc), lc = (double)(rb_load_count - bn0.lc);
+    double sp[4], lp[6];
+    for (int i = 0; i < 4; i++) sp[i] = sc > 0 ? (rb_save_parts[i] - bn0.sp[i]) / sc : 0;
+    for (int i = 0; i < 6; i++) lp[i] = lc > 0 ? (rb_load_parts[i] - bn0.lp[i]) / lc : 0;
+    long long rb = net_rollbacks - bn0.rb, d[16]; for (int i = 0; i < 16; i++) d[i] = net_depth[i] - bn0.depth[i];
+    int s = bn_done; bn_stage_name(s + 1, bn_name[s], sizeof bn_name[s]);
+    bn_rb_med[s] = med; bn_norm_med[s] = nmed;
+    char line[1600];
+    snprintf(line, sizeof line, "BENCH %d %s | logic frames to %u | rbmed %.2f p99 %.2f over %.2f mean %.2f n %d | norm %.2f p99 %.2f over %.2f n %d | "
+             "parts (ms per rollback tick) real %.3f save %.3f load %.3f first %.3f others %.3f (%.3f a frame) hash %.3f lastwait %.3f | "
+             "rollbacks %lld (depth 1 %lld, 2 %lld, 3 %lld, 4+ %lld; ticks k1 %lld k2 %lld k3 %lld k4+ %lld) | "
+             "saves %.0f: park %.3f gpu %.3f memory %.3f all %.3f | loads %.0f: hold %.3f stacks %.3f gpu %.3f memory %.3f host %.3f all %.3f | "
+             "pacing waits %lld (%.1f ms; the buffer asked for %lld times), in last re-run frames %lld (%.1f ms), in other re-run frames %lld (%.1f ms)",
+             s + 1, bn_name[s], key, med, p99, over, mean, n, nmed, np99, nover, nn,
+             pr[0] / nr, pr[1] / nr, pr[2] / nr, pr[3] / nr, pr[4] / nr, rrn_frames ? pr[4] / (double)rrn_frames : 0.0, pr[5] / nr, pr[6] / nr,
+             rb, d[1], d[2], d[3], rb - d[1] - d[2] - d[3], kc[1], kc[2], kc[3], kc[4],
+             sc, sp[0], sp[1], sp[2], sp[3], lc, lp[0], lp[1], lp[2], lp[3], lp[4], lp[5],
+             bn_waits[0] - bn0.waits[0], bn_wait_ms[0] - bn0.wait_ms[0], bn_rounds - bn_rounds0, bn_waits[1] - bn0.waits[1], bn_wait_ms[1] - bn0.wait_ms[1],
+             bn_waits[2] - bn0.waits[2], bn_wait_ms[2] - bn0.wait_ms[2]);
+    fprintf(stderr, "[rb] %s\n", line); printf("[bench] %s\n", line); fflush(stdout);
+    {   const char *e = getenv("SSBU_RB_STDBENCH_TICKS"); FILE *tf; char fn[600];   /* "<tick> <work> <k> <save> <load> <first> <others> <hash> <lastwait>" */
+        if (e && *e) {
+            snprintf(fn, sizeof fn, "%s_%d_%s.txt", e, s + 1, bn_name[s]);
+            if ((tf = fopen(fn, "w"))) {
+                for (int j = 0; j < bn_nt; j++)
+                    fprintf(tf, "%d %.3f %d %.3f %.3f %.3f %.3f %.3f %.3f\n", j, bn_t[j].work, bn_t[j].k, bn_t[j].save, bn_t[j].load, bn_t[j].rr1, bn_t[j].rrn, bn_t[j].hash, bn_t[j].pwlast);
+                fclose(tf);
+            }
+        }
+    }
+    bn_done++;
+    if (bn_done >= bn_n) {
+        double a = 0, b = 0; char lst[600]; int at = 0; lst[0] = 0;
+        for (int k = 0; k < bn_done; k++) { a += bn_rb_med[k]; b += bn_norm_med[k]; at += snprintf(lst + at, sizeof lst - at > 0 ? sizeof lst - at : 0, "%s%s %.2f", k ? ", " : "", bn_name[k], bn_rb_med[k]); }
+        snprintf(line, sizeof line, "BENCH SUMMARY %d stages: rollback tick mean of medians %.3f ms, normal %.3f ms | %s", bn_done, a / bn_done, b / bn_done, lst);
+        fprintf(stderr, "[rb] %s\n", line); printf("[bench] %s\n", line); fflush(NULL);
+        CloseHandle(CreateThread(NULL, 0, bn_exit, NULL, 0, NULL));
+    }
+}
+/* one stock left for both fighters (FighterInformation record + 0xd8, as Arena's debug_mode.c): the walk-off ends the match */
+static void bn_last_stock(void) {
+    static u64 inst = 1;
+    if (inst == 1) inst = rt_symbol("_ZN3lib9SingletonIN3app14FighterManagerEE9instance_E");
+    u64 mgr = inst ? ld64(inst) : 0, impl = mgr ? ld64(mgr) : 0;
+    for (int id = 0; impl && id < 2; id++) {
+        u64 entry = ld64(impl + 0x20 + 8ull * (u64)id), rec = entry ? ld64(entry + 0xf0 + 8) : 0;
+        if (rec && ld32(rec + 0xd8) > 1 && ld32(rec + 0xd8) < 100) st32(rec + 0xd8, 1);
+    }
+}
+static void bn_fight_start(void) {
+    if (!bn_on()) return;
+    char m[32]; snprintf(m, sizeof m, "rbb_fight%lld", S.fights); input_seq_mark(m);
+    bn_fight = S.fights; bn_state = bn_done < bn_n ? 0 : 3; bn_real = 0; bn_walk_from = -1; bn_nt = 0;
+    bn_acc = 0; bn_t_end = 0; bn_sp = 0; bn_save = bn_load = bn_rr1 = bn_rrn = bn_hash = bn_pw_last = 0; bn_k = bn_nrb = 0;
+    fprintf(stderr, "[rb] BENCH: fight %lld begins (stage %d of %d)\n", S.fights, bn_done + 1, bn_n);
+}
+/* net_step, at a real pass's safe point (frame `key`), before its save */
+static void bn_real_point(u32 key) {
+    if (!bn_on() || bn_fight != S.fights) return;
+    bn_sp = 1; bn_real++;
+    if (bn_state == 0 && bn_real > bn_warm) { bn_state = 1; bn_nt = 0; bn_snap(); fprintf(stderr, "[rb] BENCH segment %d starts at logic frame %u\n", bn_done + 1, key); }
+    else if (bn_state == 1 && bn_real > (long long)bn_warm + bn_meas) { bn_state = 2; bn_segment_end(key - 1); bn_walk_from = (long long)(key - net_key0) + 10; }
+    if (bn_state == 2) bn_last_stock();   /* (again each frame: a load may bring the old count back) */
+}
+/* catch_done: a catch-up ended in this tick (its load's and frames' times: catch_at) */
+static void bn_catch(void) {
+    if (bn_on_ <= 0 || bn_fight != S.fights) return;
+    bn_nrb++; bn_k += catch_depth;
+    if (catch_n >= 1) { bn_rr1 += catch_at[1] - catch_at[0]; bn_rrn += catch_at[catch_n] - catch_at[1]; }
+}
+
+/* ---- THREAD PLACEMENT (SSBU Arena's PIN, e5c915e, and COPYCCX, 6cecfbe) ------------------------------------------------
+ * Windows moves the guest main thread between cores (and, on a Ryzen with two L3 caches, between them): each move loses
+ * its caches. During a rollback fight: the main thread alone on one physical core (its SMT sibling left free), every
+ * other thread of the game on the other cores, and the rollback's copy threads on the other L3 cache when the processor
+ * has one (else with the others). Given back when the fight is over. Never with fewer than 4 cores.
+ * OFF BY DEFAULT: SSBU_RB_PIN=1 turns it on, SSBU_RB_PIN=<main>,<copies>,<others> gives the masks (hex). Applied to the
+ * threads the process has at the fight's start and again every 10 s (threads made since).
+ * Measured on the bench (Ryzen 5 3600, 16/11): as written it is WORSE - Battlefield 45.0 ms against 34.8 (saves 11.3 ms
+ * against 8.5, loads 7.4 against 6.0, the normal tick 5.5 against 4.5), and in the next games a guest thread (24, the
+ * busy one at sdk+0x338930) no longer parked for the saves ("hold: 24 of 25 threads parked"), so no state was saved.
+ * It places EVERY thread of the process (the GPU's, the driver's, audio, the window) and the copy threads on the other
+ * L3 for the saves too; Arena places only its copy helpers, the task workers and the render threads, and moves the
+ * copies to the other L3 only for loads. To be redone that way before it is tried again. */
+#include <tlhelp32.h>
+void rb_copy_threads_mask(u64 mask);   /* (hle_rb_state.c) */
+static int pin_on; static u64 pin_m[3]; static DWORD pin_main;
+static int pin_topology(u64 m[3]) {
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationAll, NULL, &len);
+    u8 *buf = malloc(len);
+    if (!buf || !GetLogicalProcessorInformationEx(RelationAll, (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)buf, &len)) { free(buf); return 0; }
+    u64 core[64], l3 = 0, all = 0; int nc = 0;
+    for (u8 *p = buf; p < buf + len; p += ((PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)p)->Size) {
+        PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX x = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)p;
+        if (x->Relationship == RelationProcessorCore && nc < 64 && x->Processor.GroupMask[0].Group == 0) core[nc++] = x->Processor.GroupMask[0].Mask;
+        else if (x->Relationship == RelationCache && x->Cache.Level == 3 && !l3 && x->Cache.GroupMask.Group == 0) l3 = x->Cache.GroupMask.Mask;
+    }
+    free(buf);
+    DWORD_PTR pa = 0, sa = 0;
+    GetProcessAffinityMask(GetCurrentProcess(), &pa, &sa);
+    if (nc < 4) return 0;
+    for (int i = 0; i < nc; i++) all |= core[i];
+    if (!l3) l3 = all;
+    if ((all & pa) != all) return 0;   /* (the process is already limited to some processors: left alone) */
+    int in = 0, last = -1;
+    for (int i = 0; i < nc; i++) if ((core[i] & l3) == core[i]) { in++; last = i; }
+    if (in < 3) return 0;
+    m[0] = core[last] & (~core[last] + 1);              /* main: one logical processor of the first L3's last core */
+    m[2] = all & ~core[last];                           /* the others: every other core */
+    m[1] = (all & ~l3) ? (all & ~l3) : m[2];            /* the copy threads: the other L3 cache */
+    return 1;
+}
+static void pin_apply(u64 mm, u64 mc, u64 mo) {
+    DWORD pid = GetCurrentProcessId();
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap != INVALID_HANDLE_VALUE) {
+        THREADENTRY32 te; te.dwSize = sizeof te;
+        for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+            if (te.th32OwnerProcessID != pid) continue;
+            HANDLE h = OpenThread(THREAD_SET_INFORMATION | THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
+            if (!h) continue;
+            SetThreadAffinityMask(h, (DWORD_PTR)(te.th32ThreadID == pin_main ? mm : mo));
+            CloseHandle(h);
+        }
+        CloseHandle(snap);
+    }
+    rb_copy_threads_mask(mc);
+}
+static void rb_pin(int on) {
+    if (on) {
+        const char *e = getenv("SSBU_RB_PIN");
+        if (!e || !*e || (e[0] == '0' && !e[1])) return;   /* (OFF unless asked for: see the note above) */
+        if (!pin_on) {
+            if (e[0] == '1' && !e[1]) { if (!pin_topology(pin_m)) return; }
+            else if (sscanf(e, "%llx,%llx,%llx", &pin_m[0], &pin_m[1], &pin_m[2]) != 3) return;
+            fprintf(stderr, "[rb] threads placed for the fight: main %llx, copy threads %llx, others %llx\n", pin_m[0], pin_m[1], pin_m[2]);
+        }
+        pin_main = GetCurrentThreadId();
+        pin_apply(pin_m[0], pin_m[1], pin_m[2]);
+        pin_on = 1;
+    } else if (pin_on) {
+        DWORD_PTR pa = 0, sa = 0;
+        GetProcessAffinityMask(GetCurrentProcess(), &pa, &sa);
+        pin_on = 0;
+        pin_apply(pa, 0, pa);
+    }
+}
+
 static void net_step(Cpu *c, u64 frame) {
+    int bn_was_real = rb_fast <= 0;
     u32 key = ld32(LOGIC_FRAME);
     int lf_new = logic_frame_new(key);
     static long long net_fight = -1;
@@ -1610,6 +1902,8 @@ static void net_step(Cpu *c, u64 frame) {
         rbl_stats(&net_link_base[0], &net_link_base[1], &net_link_base[2]);
         net_key0 = net_low = key; net_t0 = now_ms(); net_done = 0;
         fprintf(stderr, "[rb] loop mode: fight starts at logic frame %u\n", key);
+        bn_fight_start();
+        rb_pin(1);
         if (net_mode == 2) fprintf(stderr, "[rb] net mode: the match seed %s (%016llx)\n", hs_agreed ? "was agreed" : "was NOT agreed: the start may differ", (unsigned long long)hs_seed);
         /* SSBU_RB_SEED=<n>: the 9 script random generators (4 state words and a call count each) set
          * from <n> now, so two fights can start alike (two runs differed from frame 0: loop2). A
@@ -1630,6 +1924,8 @@ static void net_step(Cpu *c, u64 frame) {
             fprintf(stderr, "[rb] loop mode: script random generators seeded from %s\n", sd);
         }
     }
+    if (bn_was_real && pin_on && S.frames % 600 == 599) rb_pin(1);   /* (threads made since) */
+    if (bn_was_real && bn_on_ > 0) bn_real_point(key);   /* (the rollback bench: a real pass's safe point) */
     if (S.frames > 8 && S.frames <= 300) {   /* (then, to 5 s: each generator's calls whenever they change) */
         static u32 prev[9];
         u64 rb = rng_base();
@@ -1670,6 +1966,7 @@ static void net_step(Cpu *c, u64 frame) {
             for (int q = 0; q < 9 && rb; q++) if (q != 1) { u32 w[5]; for (int k = 0; k < 5; k++) w[k] = ld32(rb + 20ull * q + 4ull * k); h = hfnv(h, w, sizeof w); }
             net_final[i] = h ? h : 1;
             net_work(0, t0);
+            if (bn_on_ > 0) bn_hash += now_ms() - t0;
             check_again(key, &f, net_final[i]);
         }
         else if (lf_new && !(rb_fast > 0 && key < catch_hash_from)) net_final[i] = 0;   /* (run again in the middle of a catch-up: not hashed, but for the frames before the wrong guess; a later frame of the same logic frame keeps its first's) */
@@ -1822,9 +2119,10 @@ static void net_step(Cpu *c, u64 frame) {
         if (r == 2) {
             logic_frame_loaded(); catch_total = pending_fast; rb_fast = pending_fast; catch_from = ld32(LOGIC_FRAME);
             catch_depth = (int)pending_fast; catch_n = 0; catch_at[0] = now_ms(); catch_load_ms = catch_at[0] - ring_load_t0;
+            if (bn_on_ > 0) bn_load += catch_load_ms;
             return;
         }
-        if (rb_fast <= 0) net_work(1, t0);
+        if (rb_fast <= 0) { net_work(1, t0); if (bn_on_ > 0) bn_save += now_ms() - t0; }
         if (r == 1) net_saves_made++; else net_saves_refused++;
     }
     if (rb_fast > 0) return;
@@ -3222,6 +3520,40 @@ static int lite_skipped_now(Cpu *c, int grp) {
 }
 /* (hle_rb_wraps.c: the presentation callees' wraps ask this) */
 int rb_lite_skip(Cpu *c, int group) { return lite_skipped_now(c, group); }
+
+/* ---- SKIPF and the Lua collector (SSBU Arena's 4774203 / f9b673b and 0bde20e, ported as switches; both OFF by default
+ * until pairs of games stay in sync with them) ---------------------------------------------------------------------
+ * SSBU_RB_SKIPF=<bits>: hle_rb_wraps.c's six functions return at once in a frame run again (a catch-up's, the main
+ * thread's, in a fight). Bit n: the n-th of the list. The summary counts the calls left out.
+ * The collector: the main loop runs steps of the Lua garbage collector while its frame has time left (by the clock: how
+ * much it does is no part of the simulation). SSBU_RB_GC_RERUN=0: a frame run again runs none - the step returns at once
+ * with x20 = 0, the loop's limit (the function is an exact-callee in tools/hooks.txt, so the caller reads x20 back), and
+ * the loop ends at its next check. Either way the summary says how many steps ran and how long, in real frames and in
+ * frames run again: what the collector costs here. */
+static int skipf_bits = -1, gc_rerun = -1;
+static long long skipf_n[6], gc_n[2], gc_skipped;
+static double gc_ms[2];
+int rb_skipf(Cpu *c, int which) {
+    if (skipf_bits < 0) { const char *e = getenv("SSBU_RB_SKIPF"); skipf_bits = e && *e ? (int)strtol(e, NULL, 0) : 0; }
+    if (!(skipf_bits >> which & 1) || rb_fast <= 0 || !S.in_fight || c->thread != rb_main_kthread) return 0;
+    skipf_n[which]++;
+    return 1;
+}
+void rb_gc_step(Cpu *c, GuestFn *orig) {
+    if (!rb_on || !S.in_fight || c->thread != rb_main_kthread || c->x[30] != 0x71037480c0ull) { orig(c); return; }
+    if (gc_rerun < 0) { const char *e = getenv("SSBU_RB_GC_RERUN"); gc_rerun = !(e && *e == '0'); }
+    int again = rb_fast > 0;
+    if (again && !gc_rerun) { gc_skipped++; c->x[20] = 0; return; }
+    double t0 = now_ms();
+    orig(c);
+    gc_ms[again] += now_ms() - t0; gc_n[again]++;
+}
+static void gc_skipf_summary(void) {
+    fprintf(stderr, "[rb] Lua collector in the main loop: %lld steps in real frames (%.1f ms), %lld in frames run again (%.1f ms), %lld left out; "
+            "functions left out of frames run again (SSBU_RB_SKIPF %d): %lld %lld %lld %lld %lld %lld\n",
+            gc_n[0], gc_ms[0], gc_n[1], gc_ms[1], gc_skipped, skipf_bits < 0 ? 0 : skipf_bits, skipf_n[0], skipf_n[1], skipf_n[2], skipf_n[3], skipf_n[4], skipf_n[5]);
+    memset(gc_n, 0, sizeof gc_n); memset(gc_ms, 0, sizeof gc_ms); memset(skipf_n, 0, sizeof skipf_n); gc_skipped = 0;
+}
 
 /* ---- a catch-up's frames get the buffers their first pass got ----------------------------------
  * The game keeps data per display buffer (the camera's among it) and picks it by the slot DequeueBuffer
