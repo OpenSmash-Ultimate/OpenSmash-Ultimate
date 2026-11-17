@@ -126,6 +126,7 @@ namespace OpenSmash.Launcher
         string _updateDetail = "";
         string _updateLocal = "";
         string _updateHead = "";
+        string _updateRefName = "main";   // what the check compared with: the latest release's tag, or main
         int _updateBehind;
 
         // While any of these run, Play is greyed out so two jobs cannot overlap.
@@ -746,10 +747,11 @@ namespace OpenSmash.Launcher
                     string f = System.IO.Path.Combine(AppContext.BaseDirectory, "tools", "update_channel.txt");
                     if (System.IO.File.Exists(f)) ch = System.IO.File.ReadAllText(f).Trim();
                 }
+                _updateRefName = "main";
                 if (ch.Equals("main", StringComparison.OrdinalIgnoreCase)) return "main";
                 using var doc = JsonDocument.Parse(await GitHubGetAsync($"{UpdateApi}/releases/latest"));
                 string tag = GetString(doc.RootElement, "tag_name").Trim();
-                if (tag.Length > 0) return Uri.EscapeDataString(tag);
+                if (tag.Length > 0) { _updateRefName = tag; return Uri.EscapeDataString(tag); }
             }
             catch { }
             return "main";
@@ -838,7 +840,15 @@ namespace OpenSmash.Launcher
                     _updateDetail = titles.Count > 0 ? string.Join("   \u00B7   ", titles.Take(3)) + (titles.Count > 3 ? "   \u00B7   \u2026" : "") : title;
                 }
                 else if (status == "identical") { _updateState = "uptodate"; _updateBehind = 0; _updateMessage = UiLocale.Interpolate($"OpenSmash is up to date ({ShortCommit(local)})."); _updateDetail = title; }
-                else if (status == "behind") { _updateState = "uptodate"; _updateBehind = 0; _updateMessage = UiLocale.Interpolate($"This copy ({ShortCommit(local)}) is newer than GitHub's main branch."); _updateDetail = ""; }
+                else if (status == "behind")
+                {
+                    // (on the release channel: a copy made from main after the release, or updated before it; the next
+                    // release brings it forward)
+                    _updateState = "uptodate"; _updateBehind = 0; _updateDetail = "";
+                    _updateMessage = _updateRefName == "main"
+                        ? UiLocale.Interpolate($"This copy ({ShortCommit(local)}) is newer than GitHub's main branch.")
+                        : UiLocale.Interpolate($"This copy ({ShortCommit(local)}) is newer than the latest release ({_updateRefName}): it updates with the next release.");
+                }
                 else if (status == "diverged") { _updateState = "error"; _updateMessage = "This copy comes from a different branch than GitHub's main, so it can't be updated automatically."; _updateDetail = ""; }
                 else { _updateState = "error"; _updateMessage = "GitHub's answer was not understood."; _updateDetail = status; }
             }
@@ -944,13 +954,14 @@ namespace OpenSmash.Launcher
             catch { return false; }
         }
 
-        static string LauncherBuildInputsFingerprint(string repo)
+        // "" when the folder has no launcher project or no build script: a WindowSmash copy (from before the launcher
+        // was in the repository) has neither, and updates like any other; nothing is rebuilt for it.
+        internal static string LauncherBuildInputsFingerprint(string repo)
         {
             string project = Path.Combine(repo, "OpenSmash.Launcher");
             string projectFile = Path.Combine(project, "OpenSmash.Launcher.csproj");
             string buildScript = Path.Combine(repo, "tools", "build_launcher.ps1");
-            if (!File.Exists(projectFile) || !File.Exists(buildScript))
-                throw new FileNotFoundException("The launcher project or its build script is missing.");
+            if (!File.Exists(projectFile) || !File.Exists(buildScript)) return "";
 
             var files = Directory.EnumerateFiles(project, "*", SearchOption.AllDirectories)
                 .Where(path => !Path.GetRelativePath(project, path).Split(Path.DirectorySeparatorChar)
@@ -1113,7 +1124,9 @@ namespace OpenSmash.Launcher
                     Directory.CreateDirectory(Path.Combine(_repo, "config"));
                     File.WriteAllText(GameBuildPendingPath, _updateLocal);
                     string afterFingerprint = await Task.Run(() => LauncherBuildInputsFingerprint(_repo));
-                    launcherChanged = !beforeLauncherFingerprint.Equals(afterFingerprint, StringComparison.Ordinal)
+                    // (no project before or after: nothing to compare, nothing rebuilt; this exe stays)
+                    launcherChanged = beforeLauncherFingerprint.Length > 0 && afterFingerprint.Length > 0
+                        && !beforeLauncherFingerprint.Equals(afterFingerprint, StringComparison.Ordinal)
                         && await Task.Run(DotnetSdkAvailable);
                 }
                 catch (Exception ex)
