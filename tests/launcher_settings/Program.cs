@@ -94,6 +94,26 @@ static class Tests
             Check(SettingDefaults.Choices["lobby"].Contains(lobby), $"{lobby} is a choice of the page");
         }
         Check(SettingDefaults.LineFromLobby("private", "", "") == pub + " friends", "private lobby without a code: the game's 'friends'");
+        // the server region: any region's lobby in the file is "the official lobby" (the region setting says which one)
+        foreach (var region in OpenSmash.Core.ServerRegion.All)
+        {
+            Check(SettingDefaults.LobbyFromLine(region.Lobby).Lobby == "auto" && SettingDefaults.LobbyFromLine(region.Lobby + " mine").Lobby == "private", $"{region.Lobby} reads as the official lobby");
+            Check(SettingDefaults.Choices["region"].Contains(region.Id) && SettingDefaults.RegionLabels.Contains(region.Label), $"{region.Id} is a choice of the page");
+        }
+        Check(SettingDefaults.Choices["region"][0] == "auto" && SettingDefaults.Choices["region"].Length == SettingDefaults.RegionLabels.Length && SettingDefaults.OfFile("server_region.txt") == "auto", "Auto first, and the default");
+        string install = Path.Combine(Path.GetTempPath(), "opensmash-region-" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(Path.Combine(install, "config"));
+        try
+        {
+            Check(SettingDefaults.RegionShown(install, "auto") == null && SettingDefaults.RegionShown(install, "eu") == null, "Auto not measured, a region chosen: the list's own label");
+            File.WriteAllText(Path.Combine(install, "config", "server_region_auto.txt"), "na-east 23 1700000000\n");
+            Check(SettingDefaults.RegionShown(install, "auto") == "Auto (NA East, 23 ms)" && SettingDefaults.RegionShown(install, "eu") == null, "Auto shown with its pick and ping");
+            File.WriteAllText(Path.Combine(install, "config", "server_region_auto.txt"), "eu\n");
+            Check(SettingDefaults.RegionShown(install, "auto") == "Auto (EU)", "Auto's pick without a time");
+            File.WriteAllText(Path.Combine(install, "config", "official_lobby.txt"), "lobby.example:39421\n");
+            Check(SettingDefaults.RegionShown(install, "auto") == "lobby.example:39421" && SettingDefaults.RegionShown(install, "eu") == "lobby.example:39421", "an install's own official server is shown instead");
+        }
+        finally { try { Directory.Delete(install, true); } catch (IOException) { } }
         Check(SettingDefaults.Renderer("d3d11") == "auto" && SettingDefaults.Renderer("DX11") == "direct3d11" && SettingDefaults.Renderer("vk") == "vulkan", "renderer names as runtime/renderer.h");
     }
 
@@ -292,7 +312,16 @@ static class Tests
             using var bmp = new System.Drawing.Bitmap(1280, 720); form.DrawToBitmap(bmp, new System.Drawing.Rectangle(0, 0, 1280, 720));
             bmp.Save(Path.Combine(outDir, name));
         }
+        // (the server region: Auto with a pick kept, as after a start; the home page says whose numbers these are)
+        Directory.CreateDirectory(Path.Combine(repo, "config"));
+        File.WriteAllText(Path.Combine(repo, "config", "server_region_auto.txt"), "eu 24 1700000000\n");
+        File.WriteAllText(Path.Combine(repo, "online_server.txt"), "auto\n");
+        type.GetMethod("RegionView", flags)!.Invoke(form, null);
         Shot("home.png", "home");
+        type.GetMethod("ReadSettings", flags)!.Invoke(form, null);
+        Set("_view", "settings");
+        Set("_settingsTab", Array.FindIndex((Array.ConvertAll((object[])type.GetField("_settingsTabs", flags)!.GetValue(form)!, t => (string)t.GetType().GetField("Name")!.GetValue(t)!)), n => n == "Online"));
+        Shot("settings-online.png", "settings");
         form.Close();
     }
 

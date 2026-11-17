@@ -17,7 +17,6 @@ import hashlib
 import hmac
 import json
 import os
-import re
 import secrets
 import socket
 import threading
@@ -29,35 +28,29 @@ import webbrowser
 
 API = "https://discord.com/api"
 REDIRECTS = (("http://127.0.0.1/callback", 80), ("http://127.0.0.1:53134/callback", 53134))
-# The official lobby, by its DNS name (runtime/net.h's NET_OFFICIAL_LOBBY; never an address in numbers). Its read-only
-# pages are plain HTTP on the same port: the lobby serves no TLS, and they are public.
+import server_region   # noqa: E402  (beside this file: the official lobbies, one a region, and which one is played on)
+
+# The official lobby, by its DNS name (runtime/net.h's NET_OFFICIAL_LOBBY; never an address in numbers): the first
+# region's, where nothing says another (server_region.py). Its read-only pages are plain HTTP on the same port: the
+# lobby serves no TLS, and they are public.
 OFFICIAL_LOBBY = "eu.lobby.opensmashultimate.com:39421"
 OLDER_LOBBIES = ("opensmash-lobby.duckdns.org", "smash.recomps.wtf")   # (gone: their lines mean the official one)
 
 
 def official_lobby(root=None):
-    """As the game reads it (runtime/net_relay.c): SSBU_OFFICIAL_LOBBY, else config/official_lobby.txt, else the name."""
-    words = [os.environ.get("SSBU_OFFICIAL_LOBBY", "").strip()]
-    if root:
-        try:
-            with open(os.path.join(root, "config", "official_lobby.txt"), encoding="utf-8") as f:
-                lines = [x.strip() for x in f if x.strip() and not x.strip().startswith("#")]
-            words.append(lines[0].split()[0] if lines else "")
-        except OSError:
-            pass
-    for w in words:
-        if re.fullmatch(r"[A-Za-z0-9.-]{1,190}:\d{1,5}", w) and 0 < int(w.rsplit(":", 1)[1]) < 65536:
-            return w
-    return OFFICIAL_LOBBY
+    """As the game reads it (runtime/net_region.c): SSBU_OFFICIAL_LOBBY, else config/official_lobby.txt (an override:
+    that server, no regions), else the server region's lobby (the one chosen, or Auto's pick)."""
+    return server_region.official_lobby(root)
 
 
 def means_official(host, root=None):
     h = (host or "").lower()
-    return h in ("auto", "na", "eu", OFFICIAL_LOBBY, OFFICIAL_LOBBY.split(":")[0], official_lobby(root).lower()) or h.startswith(OLDER_LOBBIES)
+    return (h in ("auto", "na", "eu", (server_region.override(root) or "").lower()) and h != "" or server_region.of_lobby(h) is not None
+            or h.startswith(OLDER_LOBBIES))
 
 
 LEADERBOARD_URL = "http://" + OFFICIAL_LOBBY + "/leaderboard.json"   # (the default; leaderboard_url(root) is the install's)
-PUBLIC_LOBBIES = (OFFICIAL_LOBBY,)
+PUBLIC_LOBBIES = tuple(r[2] for r in server_region.REGIONS)   # (every region's: a player's records are asked of each)
 
 
 def leaderboard_url(root=None):
@@ -319,7 +312,7 @@ def sign(nsa, what, player, t, payload=""):
 
 def lobbies(server_line="", root=None):
     """The lobbies to ask: the public ones, and online_server.txt's own (its first line given) when it names another."""
-    out = [official_lobby(root)]
+    out = server_region.official_lobbies(root)   # (the one played on first, then the other regions')
     words = (server_line or "").split()
     host = words[0] if words else ""
     if host and host.lower() not in ("off", "lan") and not means_official(host, root):

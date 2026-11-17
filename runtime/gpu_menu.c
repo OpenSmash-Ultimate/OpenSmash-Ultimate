@@ -154,7 +154,7 @@ enum {
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
     R_UI_LANGUAGE, R_LANGUAGE, R_VOLUME, R_UW_ONLINE, R_OPEN_LOGS, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
-    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE, R_RUNAHEAD, R_NET_ROLLBACK, R_NET_DELAY,
+    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE, R_RUNAHEAD, R_NET_ROLLBACK, R_NET_DELAY, R_NET_REGION,
     R_PADSEL_FIRST = 300, /* + the controller's place (PAD_SLOTS at most): opens its settings */
     R_REMAP_FIRST = 100,  /* + console button */
     R_MOD_FIRST = 200,    /* + the mod's place in mods.json (MENU_MODS at most) */
@@ -164,7 +164,7 @@ enum {
     R_ASSIGN, R_ASSIGN_BACK, R_ASSIGN_WAIT, R_REMAP_RESET, R_STICKS_RESET, R_RUMBLE_RESET,
     R_ROOM_FIRST = 600    /* + the room's place on the page of rooms shown (ROOM_PAGE at most); the plain ids before R_REMAP_FIRST (100) stay under it */
 };
-_Static_assert(R_NET_DELAY < R_REMAP_FIRST, "the plain row ids must stay under R_REMAP_FIRST");
+_Static_assert(R_NET_REGION < R_REMAP_FIRST, "the plain row ids must stay under R_REMAP_FIRST");
 #define IS_KEY(id) ((id) >= R_KEY_FIRST && (id) < R_KEY_FIRST + PAD_KEYS)
 #define IS_REMAP(id) ((id) >= R_REMAP_FIRST && (id) < R_REMAP_FIRST + 16)
 
@@ -242,7 +242,7 @@ static int osk_max = 32, osk_min, osk_scripted; /* (osk_scripted: SSBU_MENU_OSK'
 
 static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol, rollback; } net;
 enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_MODE_COUNT };
-static const char *const NET_MODES[NET_MODE_COUNT] = {"public lobby (Europe)", "private lobby (a code)", "your own server", "offline",
+static const char *const NET_MODES[NET_MODE_COUNT] = {"public lobby", "private lobby (a code)", "your own server", "offline",
                                                       "this network (LAN)"};
 
 static void net_load(void)
@@ -257,7 +257,7 @@ static void net_load(void)
     else if (!_stricmp(host, "lan"))
         net.mode = NET_LAN; /* (net_relay.c's LAN discovery) */
     else if (net_means_official_lobby(host)) /* ("auto", the official lobby's name, an older public lobby's: net_relay.c) */
-        net.mode = code[0] ? NET_PRIVATE : NET_PUBLIC; /* (the one public lobby; the North American one is gone: net_relay.c) */
+        net.mode = code[0] ? NET_PRIVATE : NET_PUBLIC; /* (the official lobby; which region's: net_region.c) */
     else
     {
         net.mode = NET_CUSTOM;
@@ -1261,6 +1261,23 @@ static void build(void)
             r = add(R_NET_SERVER, K_TEXT, W_RESTART, "Server", "The lobby server's address and port, e.g. 192.168.1.20:39420.");
             snprintf(r->value, sizeof r->value, "%s", net.custom[0] ? net.custom : "(none)");
         }
+        if (net.mode == NET_PUBLIC || net.mode == NET_PRIVATE)
+        { /* (the official lobbies, one a region: net_region.c; config/server_region.txt, the launcher's too) */
+            int other = 0, region = net_region_setting(&other), ms = -1, pick = other || region >= 0 ? -1 : net_region_auto(&ms);
+            r = add(R_NET_REGION, other ? K_INFO : K_CHOICE, other ? W_NONE : W_RESTART, "Server region",
+                    other ? "This install names its own official server (config/official_lobby.txt or SSBU_OFFICIAL_LOBBY): no regions."
+                          : "The official server you play on. Auto: the closest one (the lowest ping). Players on another region are not listed.");
+            if (other)
+                snprintf(r->value, sizeof r->value, "%.60s", net_official_lobby());
+            else if (region >= 0)
+                snprintf(r->value, sizeof r->value, "%s", NET_REGIONS[region].label);
+            else if (pick >= 0 && ms >= 0)
+                snprintf(r->value, sizeof r->value, "Auto (%s, %d ms)", NET_REGIONS[pick].label, ms);
+            else if (pick >= 0)
+                snprintf(r->value, sizeof r->value, "Auto (%s)", NET_REGIONS[pick].label);
+            else
+                snprintf(r->value, sizeof r->value, "%s", ui_text("Auto"));
+        }
         r = add(R_NET_NAME, K_TEXT, W_RESTART, "Your name", "What other players see (up to 32 letters).");
         snprintf(r->value, sizeof r->value, "%s", net.name[0] ? net.name : "(picked at the first online start)");
         r = add(R_NET_DIRECT, K_CHOICE, W_RESTART, "Direct connections",
@@ -1703,6 +1720,12 @@ static void change(const Row *row, int dir)
         net.mode = cycle(net.mode, NET_MODE_COUNT, dir);
         net_save_server();
         break;
+    case R_NET_REGION: /* Auto, then each region */
+    {
+        int v = net_region_setting(NULL) + 1; /* (0 auto, 1.. the regions) */
+        net_region_save(cycle(v, NET_REGION_COUNT + 1, dir) - 1);
+        break;
+    }
     case R_NET_DIRECT:
         net.direct = !net.direct;
         settings_line_write(config_path(CONFIG_ONLINE_DIRECT), net.direct ? "on" : "off");

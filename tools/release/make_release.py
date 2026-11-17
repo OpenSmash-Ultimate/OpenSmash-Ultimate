@@ -9,6 +9,9 @@ the game, and the audit checks that every file of a release holds none of it eit
     python tools/release/make_release.py audit FILE...              no Switch game file, key or key line in any file or zip entry
     python tools/release/make_release.py manifest DIST --version V --commit SHA [--channel stable|testing]
                                         [--lobby HOST:PORT] [--min-client-level N]
+                                                                    (--lobby: an override, every install of the release
+                                                                    plays on that one server; without it the players'
+                                                                    server region decides, runtime/net_region.c)
                                                                     DIST/opensmash-release.json and DIST/SHA256SUMS from the
                                                                     files in DIST (OpenSmash.exe, opensmash-runtime-*.zip)
 

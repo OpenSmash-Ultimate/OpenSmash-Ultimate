@@ -47,6 +47,7 @@ TOOLS = os.path.dirname(HERE)
 UI = os.path.join(HERE, "ui")
 sys.path.insert(0, HERE)
 import discord_account   # noqa: E402  (sign-in with Discord: the token the game and OpenSmash.exe share; the GSP)
+import server_region     # noqa: E402  (the official lobbies, one a region: config/server_region.txt)
 SHARED_UI = os.path.join(TOOLS, "modmanager", "ui")   # (gamepad.js, icon.svg: shared with WindowSmash Mods)
 HOST = "linux" if sys.platform.startswith("linux") else "macos" if sys.platform == "darwin" else "windows"
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -176,6 +177,7 @@ CHOICES = {
     "overlay": [("1", "Show it in the corner"), ("0", "Hidden")],
     "hide_cursor": [("1", "When it stops moving"), ("0", "Keep it shown")],
     "lobby": [("public", "Public lobby"), ("private", "Private lobby (a code)"), ("custom", "Your own server"), ("offline", "Offline")],
+    "region": [(server_region.AUTO, "Auto (the closest)")] + [(r[0], r[1]) for r in server_region.REGIONS],
     "direct": [("on", "On"), ("off", "Off")],
     "keyboard_player": [(str(n), f"Player {n}") for n in range(1, 9)] + [("0", "Nobody (no keyboard)")],
     "background": [("1", "Work while another window is in front"), ("0", "Only while the game is in front")],
@@ -208,7 +210,7 @@ def read_settings(root):
         s["lobby"] = "offline"
     elif host.lower() in ("auto", "na", "eu"):
         s["lobby"] = "public"
-    elif host.lower() == PUBLIC_LOBBY or host.lower().startswith(OLDER_LOBBIES):
+    elif server_region.of_lobby(host) or host.lower().startswith(OLDER_LOBBIES):   # (any region's lobby: the region says which)
         s["lobby"] = "private" if s["code"] else "public"
     else:
         s["lobby"], s["server"] = "custom", host
@@ -225,6 +227,9 @@ def read_settings(root):
         s["server"] = saved["server"]
     s["direct"] = "off" if first_line(config_file(root, "online_direct.txt")).lower() == "off" else "on"
     s["name"] = first_line(config_file(root, "online_name.txt"))
+    # the official lobby's region; region_shown: Auto with its pick and ping ("Auto (EU, 24 ms)"), or an override's server
+    s["region"] = server_region.setting(root)
+    s["region_shown"] = server_region.shown(root)
     return s
 
 
@@ -264,6 +269,8 @@ def write_settings(root, values):
     set_first_line(config_file(root, "online_server.txt"), server)
     set_first_line(config_file(root, "online_name.txt"), s["name"].strip())
     set_first_line(config_file(root, "online_direct.txt"), s["direct"])
+    if "region" in values and s["region"] != server_region.setting(root):
+        server_region.set_setting(root, s["region"])
     launcher_ini = config_file(root, "launcher.ini")
     set_ini(launcher_ini, "opensmash", "lobby", lobby)
     set_ini(launcher_ini, "opensmash", "code", code)
@@ -921,6 +928,9 @@ def main(argv=None):
     if HOST == "linux":
         install_desktop_entry(root)
     app = App(root, secrets.token_urlsafe(18))
+    if server_region.setting(root) == server_region.AUTO and not server_region.override(root):
+        # (Auto: every region's lobby asked now, in the background; the pick is kept for the game to start from)
+        threading.Thread(target=server_region.measure, args=(root,), daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(app))
     url = f"http://127.0.0.1:{srv.server_address[1]}/?key={app.key}"
     print(json.dumps({"url": url}), flush=True)

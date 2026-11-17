@@ -326,7 +326,7 @@ namespace OpenSmash.Launcher
                 new SettingTab { Name = "Display", SettingKeys = new[] { "ui_language", "window", "window_size", "pacing" } },
                 new SettingTab { Name = "Graphics", SettingKeys = new[] { "render_scale", "gpu", "renderer", "overlay", "hide_cursor" } },
                 new SettingTab { Name = "Audio", SettingKeys = new[] { "volume" } },
-                new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "code", "server", "reports", "telemetry" } },   // (OpenSmash 0.6: "direct" is gone - relay only)
+                new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "region", "code", "server", "reports", "telemetry" } },   // (OpenSmash 0.6: "direct" is gone - relay only)
                 new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "remap", "pads" } },
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
@@ -346,7 +346,9 @@ namespace OpenSmash.Launcher
                 new Setting { Key = "overlay", Label = "Frame rate", Values = new[] { "1", "0" }, Labels = new[] { "Show it in the corner", "Hidden" } },
                 new Setting { Key = "volume", Label = "Volume", Slider = true },
                 new Setting { Key = "name", Label = "Your name", Text = true },
-                new Setting { Key = "lobby", Label = "Lobby", Values = SettingDefaults.Choices["lobby"], Labels = new[] { "Public lobby (Europe)", "Private lobby (a code)", "Your own server", "This network (LAN)", "Offline" } },
+                new Setting { Key = "lobby", Label = "Lobby", Values = SettingDefaults.Choices["lobby"], Labels = new[] { "Public lobby", "Private lobby (a code)", "Your own server", "This network (LAN)", "Offline" } },
+                // (the official lobbies, one a region: OpenSmash.Core.ServerRegion; config\server_region.txt, the game's menu writes it too)
+                new Setting { Key = "region", Label = "Server region", Values = SettingDefaults.Choices["region"], Labels = SettingDefaults.RegionLabels },
                 new Setting { Key = "code", Label = "Lobby code", Text = true },
                 new Setting { Key = "server", Label = "Server", Text = true },
                 new Setting { Key = "direct", Label = "Direct connections", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
@@ -1621,6 +1623,8 @@ namespace OpenSmash.Launcher
             string direct = File.Exists(directFile) ? FirstLine(directFile) : SettingDefaults.OfFile("online_direct.txt");
             _iniValues["direct"] = direct.StartsWith("off", StringComparison.OrdinalIgnoreCase) ? "off" : "on";
             _iniValues["name"] = FirstLine(WindowSmash.ConfigFile(_repo, "online_name.txt"));
+            _iniValues["region"] = OpenSmash.Core.ServerRegion.Setting(_repo);
+            RegionView();
             _iniValues["reports"] = FileSaysOff(Path.Combine(_repo, "config", "crash_reports.txt")) ? "off" : "on";
             _iniValues["telemetry"] = OpenSmash.Core.PerfReport.Enabled(_repo) ? "on" : "off";
             var gpu = _settings.First(s => s.Key == "gpu");
@@ -1647,6 +1651,8 @@ namespace OpenSmash.Launcher
             if (s.Key is "name" or "direct") return lobby != "offline";
             if (s.Key == "code") return lobby is "private" or "custom";
             if (s.Key == "server") return lobby == "custom";
+            // (the official lobby's region; an install that names its own official server has none)
+            if (s.Key == "region") return lobby is "auto" or "private" && !_regionOverride;
             return true;
         }
 
@@ -1655,6 +1661,7 @@ namespace OpenSmash.Launcher
             string v = _iniValues.GetValueOrDefault(s.Key, s.Text || s.Slider || s.Values.Length == 0 ? "" : s.Values[0]);
             if (s.Slider) return v;
             if (s.Text) return v == "" ? "type here" : v;
+            if (s.Key == "region" && (_regionOverride || v == "auto") && _regionShown != null) return _regionShown;   // ("Auto (EU, 24 ms)")
             if (s.Labels != null)
             {
                 int i = Array.IndexOf(s.Values, v);
@@ -1756,6 +1763,11 @@ namespace OpenSmash.Launcher
                     File.WriteAllText(Path.Combine(_repo, "config", "crash_reports.txt"), _iniValues.GetValueOrDefault("reports", "on") == "off" ? "off" : "on");
                 }
                 if (_changed.Contains("telemetry")) OpenSmash.Core.PerfReport.SetEnabled(_repo, _iniValues.GetValueOrDefault("telemetry", "on") != "off");
+                if (_changed.Contains("region"))
+                {
+                    OpenSmash.Core.ServerRegion.SetSetting(_repo, _iniValues.GetValueOrDefault("region", "auto"));
+                    _ = RegionChanged();   // (LauncherForm.Community.cs: the players online and the leaderboard are that region's)
+                }
             }
             catch { }
             _changed.Clear();   // (written: the game's later changes stay)

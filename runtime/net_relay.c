@@ -215,35 +215,33 @@ static u64 process_age_ms(void) { return rt_now_ns() / 1000000; }
  * the files the settings menu and the launcher write, where no SSBU_NET_* variable says them.
  * online_server.txt: "host:port [lobby code]" or "off"; online_name.txt: the name (one is picked
  * and kept there when it is missing); online_direct.txt: "off" for no direct connections. */
-/* online_server.txt "auto" (the default): the one public lobby, in Europe, which every player shares: matchmaking,
+/* (before the server regions, net_region.c: one lobby for every player)
+ * online_server.txt "auto" (the default): the one public lobby, in Europe, which every player shares: matchmaking,
  * the game server and every GSP result (owner 2026-11-16). Where two players have no direct path, Epic's relays
  * (net_eos.c), near both of them, carry the match; the lobby's own relay is the last resort. The North American
  * lobby is gone: "na", "eu" and its address (with or without a lobby code, which is kept) mean this one; any other
  * server a player named is kept as it is. */
 /* (OpenSmash 0.6) "auto" is the official lobby: relay only (it never introduces games to each other, so no player's
  * internet address reaches another game), a signed-in player's lobby ticket in every JOIN, no direct paths and no EOS
- * with it. Its address: SSBU_OFFICIAL_LOBBY, else config/official_lobby.txt (the launcher writes the release's), else
- * OFFICIAL_LOBBY_DEFAULT. The older public lobbies' names mean it too. */
-#define OFFICIAL_LOBBY_DEFAULT NET_OFFICIAL_LOBBY   /* (net.h: a DNS name; UDP, and TCP for the game server) */
-static char official_lobby[256];
-static const char *public_lobby(void) {
-    if (official_lobby[0]) return official_lobby;
-    const char *e = getenv("SSBU_OFFICIAL_LOBBY");
-    char line[256], host[256] = "";
-    if (e && *e) snprintf(host, sizeof host, "%s", e);
-    else if (settings_line_read("config/official_lobby.txt", line, sizeof line)) sscanf(line, "%255s", host);
-    snprintf(official_lobby, sizeof official_lobby, "%s", host[0] ? host : OFFICIAL_LOBBY_DEFAULT);
-    return official_lobby;
-}
+ * with it. Its address: net_region.c's (the server region, or an override). The older public lobbies' names mean it too. */
+/* (OpenSmash 0.4) one official lobby a region (net_region.c): the one config/server_region.txt names, or with "auto"
+ * the one that answers soonest; an override (the variable, the file) is that server and nothing else. Any region's
+ * lobby in online_server.txt means "the official lobby": which one is the region setting's to say. */
+static const char *public_lobby(void) { return net_region_lobby(); }
 #define PUBLIC_LOBBY public_lobby()
 static int means_public_lobby(const char *host) {
+    char other[256];   /* (an override's server; read, not decided: nothing is measured for a server of the player's own) */
     return !_stricmp(host, "auto") || !_stricmp(host, "na") || !_stricmp(host, "eu") || !_strnicmp(host, "smash.recomps.wtf:", 18) ||
            !_stricmp(host, "smash.recomps.wtf") || !_strnicmp(host, "opensmash-lobby.duckdns.org", 27) ||   /* (the older public lobbies, gone) */
-           !_stricmp(host, OFFICIAL_LOBBY_DEFAULT) || !_stricmp(host, NET_OFFICIAL_LOBBY_HOST) || !_stricmp(host, public_lobby());
+           net_region_of_lobby(host) >= 0 || (net_region_override(other, sizeof other) && !_stricmp(host, other));
 }
 const char *net_official_lobby(void) { return public_lobby(); }
 int net_means_official_lobby(const char *host) { return host && means_public_lobby(host); }
-static int official_relay(void) { return relay_text[0] && !_stricmp(relay_text, public_lobby()); }
+static int official_relay(void) {
+    char other[256];   /* (a relay that is no official lobby's: said without deciding the region, which may measure) */
+    if (!relay_text[0] || (net_region_of_lobby(relay_text) < 0 && !(net_region_override(other, sizeof other) && !_stricmp(relay_text, other)))) return 0;
+    return !_stricmp(relay_text, public_lobby());
+}
 
 /* (OpenSmash 0.6) the signed-in player's lobby ticket for the official lobby ("<account id>|<name>|<expiry>.<signature>",
  * made by the accounts database through the launcher): SSBU_ONLINE_TICKET, or the file SSBU_ONLINE_TICKET_FILE names
@@ -312,6 +310,9 @@ static void discord_join_at_start(void) {
     /* (OpenSmash 0.6) only the official lobby: a Join secret is made by another player's game, and one made up could send
      * this game, with its lobby ticket, to any server */
     if (!means_public_lobby(relay)) { fprintf(stderr, "[net] a Discord join for another lobby was ignored (only the official one)\n"); return; }
+    /* (the friend's region: rooms and arenas are a lobby's own, so this start plays on theirs; the saved choice stays.
+     * With an override there are no regions: net_region_use changes nothing) */
+    net_region_use(net_region_of_lobby(relay));
     snprintf(relay_text, sizeof relay_text, "%s", PUBLIC_LOBBY);
     if (strcmp(code, "-")) { snprintf(room, sizeof room, "%s", code); room_named = 1; }
     struct in_addr a;

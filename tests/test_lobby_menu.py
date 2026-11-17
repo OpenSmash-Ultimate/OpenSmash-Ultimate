@@ -40,7 +40,7 @@ NO_ANSWER = 'no answer from the lobby (A: ask again)'
 
 
 def build(folder, yuzu=False):
-    src = ['tools/dev/lobbymenutest.c', 'runtime/net_relay.c', 'runtime/net_eos.c', 'runtime/hle_settings.c']
+    src = ['tools/dev/lobbymenutest.c', 'runtime/net_relay.c', 'runtime/net_region.c', 'runtime/net_eos.c', 'runtime/hle_settings.c']
     if yuzu:
         src += ['runtime/net_yuzu.c', 'runtime/net_yuzu_wire.c']
     if os.name == 'nt':   # (as tests/test_net_client_v3.py builds netv3test.c)
@@ -71,6 +71,7 @@ class Menu:
         env.update({k: str(v) for k, v in more.items()})
         self.dir = Path(tempfile.mkdtemp(prefix='menu ', dir=top))
         for f, text in (files or {}).items():
+            (self.dir / f).parent.mkdir(parents=True, exist_ok=True)   # (config/server_region.txt)
             (self.dir / f).write_text(text, encoding='utf-8')
         self.name = name
         self.p = subprocess.Popen([exe, *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", env=env,
@@ -789,6 +790,58 @@ class Version(MenuTest):
         self.assertEqual(guest.net(), (3, 2, 0))
         guest.open_lobby()
         self.assertEqual(guest.row('Lobby')['value'], 'in a private room')
+
+
+class Region(MenuTest):
+    """Online > Server region (config/server_region.txt, runtime/net_region.c): Auto with its pick and the pick's ping,
+    or a region; shown with the official lobby only; an install's own official server instead. Nothing is sent to a
+    lobby: the answer times are SSBU_REGION_TEST_PINGS's."""
+    def online(self, server='auto', files=None, **more):
+        m = self.menu(None, files={'online_server.txt': server + '\n', **(files or {})}, SSBU_REGION_TEST_PINGS='eu=24,na-east=120', **more)
+        m.key('ESC')
+        m.type('3')
+        return m
+
+    def test_auto_then_each_region(self):
+        m = self.online(files={'config/server_region_auto.txt': 'eu 24 1700000000\n'})
+        r = m.row('Server region')
+        self.assertEqual((r['value'], r['kind']), ('Auto (EU, 24 ms)', 1))
+        self.assertIn('Players on another region are not listed.', r['help'])
+        self.assertEqual(m.labels().index('Server region'), m.labels().index('Play online in') + 1)
+        m.go_to('Server region')
+        for value, saved in (('EU', 'eu'), ('NA East', 'na-east'), ('Auto (EU, 24 ms)', 'auto')):
+            m.key('RIGHT')
+            self.assertEqual((m.row('Server region')['value'], m.file('config/server_region.txt')), (value, saved))
+        m.key('LEFT')
+        self.assertEqual((m.row('Server region')['value'], m.file('config/server_region.txt')), ('NA East', 'na-east'))
+        self.assertIn('Restart now', m.labels())   # (the next start plays there)
+        m.key('ESC')
+        m.key('ESC')   # (opened again: read from the file)
+        self.assertEqual(m.row('Server region')['value'], 'NA East')
+
+    def test_the_file_as_it_is_read(self):
+        for text, value in (('NA-East\n', 'NA East'), ('# mine\neu\n', 'EU'), ('moon\n', 'Auto (NA East, 31 ms)'), ('auto\n', 'Auto (NA East, 31 ms)')):
+            m = self.online(files={'config/server_region.txt': text, 'config/server_region_auto.txt': 'na-east 31 1700000000\n'})
+            self.assertEqual(m.row('Server region')['value'], value, text)
+
+    def test_auto_not_measured_yet(self):
+        m = self.online(files={'config/keep.txt': ''})   # (the folder, no pick kept: asked in the background, shown when known)
+        self.assertIn(m.row('Server region')['value'], ('Auto', 'Auto (EU, 24 ms)'))
+        self.assertTrue(until(lambda: (m.file('config/server_region_auto.txt') or '').startswith('eu 24 '), 5))   # (kept for the next start)
+
+    def test_only_with_the_official_lobby(self):
+        for server, shown in (('auto', True), ('auto friends', True), ('eu.lobby.opensmashultimate.com:39421 friends', True),
+                              ('na.lobby.opensmashultimate.com:39421', True), ('off', False), ('lan', False), ('10.0.0.2:39420', False)):
+            m = self.online(server)
+            self.assertEqual('Server region' in m.labels(), shown, server)
+
+    def test_an_install_with_its_own_official_server(self):
+        m = self.online(files={'config/server_region.txt': 'na-east\n'}, SSBU_OFFICIAL_LOBBY='lobby.example:39421')
+        r = m.row('Server region')
+        self.assertEqual((r['value'], r['kind']), ('lobby.example:39421', 0))   # (said, not a choice)
+        self.assertIn('no regions', r['help'])
+        m = self.online(files={'config/official_lobby.txt': 'lobby.example:39421\n'})
+        self.assertEqual(m.row('Server region')['value'], 'lobby.example:39421')
 
 
 class Version2(MenuTest):

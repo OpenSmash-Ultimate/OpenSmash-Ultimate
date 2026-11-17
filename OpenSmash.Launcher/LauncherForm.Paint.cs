@@ -60,7 +60,8 @@ namespace OpenSmash.Launcher
             ["ui_language"] = "The launcher and external menu share this language. The game language is set separately.",
             ["volume"] = "The game's whole sound (display.ini volume, the same setting as the in-game menu's Volume row). 100 is full. It applies the next time you press Play.",
             ["name"] = "What other players see. Leave it empty and the game picks one.",
-            ["lobby"] = "Public: everyone's rooms on the one public lobby. Private: only players with the same code. LAN: players on this network. Offline: no network.",
+            ["lobby"] = "Public: everyone's rooms on the public lobby. Private: only players with the same code. LAN: players on this network. Offline: no network.",
+            ["region"] = "Players on another region are not listed.",   // (one line fits: Auto is said by its own label, "Auto (the closest)")
             ["code"] = "A word your friends type too. Capital letters count.",
             ["server"] = "host:port of a lobby you run, for example 192.168.1.20:39420.",
             ["direct"] = "On is faster. Off sends everything through the lobby, so your address stays private.",

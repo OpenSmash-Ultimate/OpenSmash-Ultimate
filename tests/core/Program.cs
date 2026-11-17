@@ -18,6 +18,102 @@ static class Program
         if (ok) passed++; else { failed++; Console.WriteLine("FAIL " + what); }
     }
 
+    // ---- the server region (ServerRegion.cs): the table, the choice, Auto's pick with made-up answer times (no network)
+    static async Task Regions(string dir)
+    {
+        string was = Environment.GetEnvironmentVariable("SSBU_OFFICIAL_LOBBY");
+        Environment.SetEnvironmentVariable("SSBU_OFFICIAL_LOBBY", null);
+        var asker = ServerRegion.Asker;
+        try
+        {
+            ServerRegion eu = ServerRegion.ById("eu"), na = ServerRegion.ById("na-east");
+            const string naLobby = "na.lobby.opensmashultimate.com:39421";
+            Check(ServerRegion.All.Length == 2 && ServerRegion.All[0] == eu && eu.Lobby == OfficialLobby.Default && eu.Label == "EU", "the first region: EU, the official lobby's default");
+            Check(na != null && na.Lobby == naLobby && na.Label == "NA East" && na.Host == "na.lobby.opensmashultimate.com" && na.Port == 39421, "NA East and its lobby");
+            Check(ServerRegion.All.All(r => OfficialLobby.Valid(r.Lobby) && !System.Net.IPAddress.TryParse(r.Host, out _) && r.Host.Any(char.IsLetter)), "every region's lobby is a name, never an address in numbers");
+            Check(ServerRegion.ById("NA-East") == na && ServerRegion.ById(" eu ") == eu && ServerRegion.ById("auto") == null && ServerRegion.ById("na") == null && ServerRegion.ById(null) == null, "a region by its id");
+            Check(ServerRegion.OfLobby(naLobby) == na && ServerRegion.OfLobby("NA.lobby.opensmashultimate.com") == na && ServerRegion.OfLobby(OfficialLobby.Host) == eu && ServerRegion.OfLobby("na.lobby.opensmashultimate.com:1") == null
+                  && ServerRegion.OfLobby("") == null && ServerRegion.OfLobby("na.lobby.opensmashultimate.com.evil.example:39421") == null, "a region by its lobby");
+            // the median of a few answers, and the pick
+            Check(ServerRegion.Median(new[] { 30, 10, 20 }) == 20 && ServerRegion.Median(new[] { 40, 10 }) == 25 && ServerRegion.Median(new[] { -1, 12, -1 }) == 12
+                  && ServerRegion.Median(new int[0]) == -1 && ServerRegion.Median(new[] { -1, -1 }) == -1, "the median of the answers that came");
+            Check(ServerRegion.Pick(new[] { 20, 90 }) == eu && ServerRegion.Pick(new[] { 90, 20 }) == na, "Auto: the lowest time");
+            Check(ServerRegion.Pick(new[] { -1, 140 }) == na && ServerRegion.Pick(new[] { 35, -1 }) == eu, "Auto: the only one that answers");
+            Check(ServerRegion.Pick(new[] { -1, -1 }) == null && ServerRegion.Pick(new int[0]) == null, "Auto: none answers, no pick");
+            Check(ServerRegion.Pick(new[] { 40, 40 }) == eu, "Auto: the same time, the first region");
+            Check(ServerRegion.Pick(new[] { 52, 60 }, na) == na && ServerRegion.Pick(new[] { 60, 52 }, eu) == eu, "Auto: the last pick stays when the other is only a little sooner");
+            Check(ServerRegion.Pick(new[] { 20, 90 }, na) == eu && ServerRegion.Pick(new[] { 50, 60 }, na) == eu, "Auto: the last pick gives way to one clearly sooner");
+            Check(ServerRegion.Pick(new[] { 20, -1 }, na) == eu, "Auto: a last pick that does not answer gives way");
+            Check(ServerRegion.ParseKept("na-east 31 1700000000") == (na, 31) && ServerRegion.ParseKept("eu") == (eu, -1) && ServerRegion.ParseKept("mars 5 1").Region == null
+                  && ServerRegion.ParseKept("").Region == null && ServerRegion.ParseKept("eu -4 1") == (eu, -1) && ServerRegion.ParseKept(null).Region == null, "Auto's kept pick, read");
+
+            // an install: no file is Auto, and Auto with nothing measured is the first region
+            string root = Path.Combine(dir, "regions");
+            Directory.CreateDirectory(Path.Combine(root, "config"));
+            string setting = Path.Combine(root, "config", "server_region.txt"), kept = Path.Combine(root, "config", "server_region_auto.txt");
+            Check(ServerRegion.Setting(root) == "auto" && ServerRegion.Setting(null) == "auto" && ServerRegion.Current(root) == eu && OfficialLobby.Current(root) == OfficialLobby.Default, "no file: Auto, and Europe until something is measured");
+            Check(ServerRegion.Shown(root) == "Auto" && ServerRegion.AutoPick(root).Region == null, "Auto, not measured: shown as Auto");
+            // Auto measured with made-up times: North America sooner
+            int asked = 0;
+            ServerRegion.Asker = (r, n) => { System.Threading.Interlocked.Increment(ref asked); return r == na ? new[] { 21, 25, 23 } : new[] { 95, 90, 99 }; };
+            var got = await ServerRegion.Measure(root);
+            Check(got == (na, 23) && asked == 2, "Auto measured: NA East, the median of its answers");
+            Check(File.ReadAllText(kept).StartsWith("na-east 23 ") && ServerRegion.Kept(root) == (na, 23), "Auto's pick kept for the game (config/server_region_auto.txt)");
+            Check(OfficialLobby.Current(root) == naLobby && ServerRegion.Current(root) == na && ServerRegion.Shown(root) == "Auto (NA East, 23 ms)", "Auto: the lobby is the pick's, shown with its ping");
+            Check(OfficialLobby.Page("/status.json", root) == "http://" + naLobby + "/status.json", "the players online and the leaderboard are that region's");
+            Check(OfficialLobby.All(root).SequenceEqual(new[] { naLobby, OfficialLobby.Default }), "every official lobby, the one played on first");
+            // a little sooner in Europe now: it stays; clearly sooner: it moves
+            ServerRegion.Asker = (r, n) => r == na ? new[] { 60 } : new[] { 55 };
+            Check(await ServerRegion.Measure(root) == (na, 60), "measured again, Europe a little sooner: the pick stays");
+            ServerRegion.Asker = (r, n) => r == na ? new[] { 120, 130 } : new[] { 30, 34 };
+            Check(await ServerRegion.Measure(root) == (eu, 32) && OfficialLobby.Current(root) == OfficialLobby.Default, "measured again, Europe clearly sooner: Europe");
+            // no lobby answers: the pick kept before stays, nothing is written over it
+            ServerRegion.Asker = (r, n) => new int[0];
+            Check(await ServerRegion.Measure(root) == ((ServerRegion)null, -1) && ServerRegion.Kept(root) == (eu, 32), "no lobby answers: the pick kept before stays");
+            ServerRegion.Asker = (r, n) => r == eu ? throw new InvalidOperationException("no network") : new[] { 140 };
+            Check(await ServerRegion.Measure(root) == (na, 140), "a region that cannot be asked counts as no answer");
+            // a lobby that never answers is not waited for past the limit
+            ServerRegion.Asker = (r, n) => { if (r == eu) System.Threading.Thread.Sleep(3000); return new[] { 50 }; };
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            int[] ms = await ServerRegion.MeasureAll(200);
+            Check(ms.SequenceEqual(new[] { -1, 50 }) && clock.ElapsedMilliseconds < 2000, "a slow lobby is not waited for: " + clock.ElapsedMilliseconds + " ms");
+            // nothing kept and no install: this process remembers what it measured
+            string none = Path.Combine(dir, "no-install");
+            ServerRegion.Asker = (r, n) => r == na ? new[] { 20 } : new[] { 90 };
+            Check(await ServerRegion.Measure(none) == (na, 20) && !Directory.Exists(none) && OfficialLobby.Current(none) == naLobby, "no install folder: the pick is remembered, no folder made");
+
+            // the region chosen: that one, whatever Auto measured
+            ServerRegion.SetSetting(root, "eu");
+            Check(File.ReadAllText(setting).Trim() == "eu" && ServerRegion.Setting(root) == "eu" && OfficialLobby.Current(root) == OfficialLobby.Default && ServerRegion.Shown(root) == "EU", "EU chosen");
+            File.WriteAllText(setting, "# the server region\nNA-East   # mine\n");
+            Check(ServerRegion.Setting(root) == "na-east" && OfficialLobby.Current(root) == naLobby && ServerRegion.Shown(root) == "NA East", "NA East chosen (as the game reads the file)");
+            ServerRegion.SetSetting(root, "auto");
+            Check(File.ReadAllText(setting).Replace("\r", "") == "# the server region\nauto\n" && ServerRegion.Setting(root) == "auto", "back to Auto: the file's comment kept");
+            ServerRegion.SetSetting(root, "moon");
+            Check(ServerRegion.Setting(root) == "auto", "a region that is none is Auto");
+            File.WriteAllText(setting, "moon\n");
+            Check(ServerRegion.Setting(root) == "auto" && ServerRegion.Current(root) == na, "a file that names no region: Auto (the kept pick)");
+
+            // an override is that server: no regions, nothing of Auto
+            File.WriteAllText(setting, "na-east\n");
+            File.WriteAllText(Path.Combine(root, "config", "official_lobby.txt"), "lobby.example:1\n");
+            Check(OfficialLobby.Override(root) == "lobby.example:1" && OfficialLobby.Current(root) == "lobby.example:1" && ServerRegion.Current(root) == null && ServerRegion.Shown(root) == "lobby.example:1", "the release's lobby wins over the region chosen");
+            Check(OfficialLobby.All(root).SequenceEqual(new[] { "lobby.example:1" }), "an override: that server alone");
+            Environment.SetEnvironmentVariable("SSBU_OFFICIAL_LOBBY", naLobby);
+            Check(OfficialLobby.Current(root) == naLobby && ServerRegion.Current(root) == null, "SSBU_OFFICIAL_LOBBY first, a region's lobby too: that server, no Auto");
+            Environment.SetEnvironmentVariable("SSBU_OFFICIAL_LOBBY", null);
+            File.Delete(Path.Combine(root, "config", "official_lobby.txt"));
+            Check(OfficialLobby.Override(root) == null && OfficialLobby.Override() == null && OfficialLobby.Current(root) == naLobby, "no override: the regions decide");
+            // any region's lobby in online_server.txt means the official lobby
+            Check(OfficialLobby.Means(naLobby) && OfficialLobby.Means("na.lobby.opensmashultimate.com") && !OfficialLobby.Means("na.lobby.opensmashultimate.com.evil.example:39421"), "a region's lobby means the official lobby");
+        }
+        finally
+        {
+            ServerRegion.Asker = asker;
+            Environment.SetEnvironmentVariable("SSBU_OFFICIAL_LOBBY", was);
+        }
+    }
+
     static async Task<int> Main()
     {
         // ---- versions
@@ -89,6 +185,7 @@ static class Program
             foreach (string h in new[] { "", "off", "lan", "my.host:39420", "eu.lobby.opensmashultimate.com.evil.example:39421" })
                 Check(!OfficialLobby.Means(h), "does not mean the official lobby: '" + h + "'");
             Check(OfficialLobby.Means("lobby.example:1", root) && !OfficialLobby.Means("lobby.example:1"), "the install's own official lobby means it");
+            await Regions(dir);
 
             // ---- unpacking a source archive
             string unpack = Path.Combine(dir, "unpack");

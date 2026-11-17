@@ -79,7 +79,9 @@ namespace OpenSmash.Launcher
         // The official lobby's leaderboard and the lobbies asked, by DNS name (OpenSmash.Core.OfficialLobby); plain HTTP:
         // the lobby serves no TLS, and the page is public.
         public static string LeaderboardUrl(string? repo = null) => OpenSmash.Core.OfficialLobby.Page("/leaderboard.json", repo);
-        public static string[] PublicLobbies(string? repo = null) => new[] { OpenSmash.Core.OfficialLobby.Current(repo) };
+        // (every region's lobby, the one played on first: a player's GSP records are merged from all of them and the shown
+        // name goes to each; an override's server alone)
+        public static string[] PublicLobbies(string? repo = null) => OpenSmash.Core.OfficialLobby.All(repo);
         static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
 
         public static string TokenPath(string repo) => Path.Combine(repo, "config", "discord_token.txt");

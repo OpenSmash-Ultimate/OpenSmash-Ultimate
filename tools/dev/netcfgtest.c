@@ -9,6 +9,7 @@
  *
  * (tests/test_settings.py builds and runs it.) Exit code 0 when every check passes. */
 #include "../../runtime/net_relay.c"
+#include "../../runtime/net_region.c"
 #include "../../runtime/net_eos.c"
 #include "../../runtime/hle_settings.c"
 #include "../../runtime/hle_config.c"
@@ -37,14 +38,20 @@ static int failures, checks;
 typedef struct Case {
     const char *name, *server_file, *env, *args;   /* server_file NULL: none; env: NAME=value or NULL */
     const char *address, *room;                     /* what net_relay_address() and the room are; address NULL: none */
+    /* the server region (net_region.c): the lobbies' answer times instead of asking them (NULL: PINGS, below),
+     * config/server_region.txt, config/server_region_auto.txt (Auto's last pick) and that file's first word afterwards,
+     * a friend's Join from Discord ("<r|a> <lobby> <code> <target>", config/discord_join.txt) */
+    const char *pings, *region, *kept, *kept_after, *join;
 } Case;
+#define PINGS "eu=20,na-east=90"   /* (every case: nothing is sent to a lobby by this test) */
+#define NA_LOBBY "na.lobby.opensmashultimate.com:39421"
 
 static const Case CASES[] = {
-    {"auto in the file: the one public lobby (Europe)", "# the lobby\nauto\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash"},
-    {"na: the North American lobby is gone, the European one", "na\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash"},
+    {"auto in the file: the official lobby (Auto: Europe answers sooner)", "# the lobby\nauto\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash"},
+    {"na (the older North American lobby's word): the official lobby", "na\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash"},
     {"eu", "eu\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash"},
-    {"the North American address alone: the European lobby", "smash.recomps.wtf:39421\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash"},
-    {"the North American address with a code: the European lobby, the code kept", "smash.recomps.wtf:39421 OurCode\n", NULL, "--online", NET_OFFICIAL_LOBBY, "OurCode"},
+    {"the older North American lobby's address alone: the official lobby", "smash.recomps.wtf:39421\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash"},
+    {"the older North American lobby's address with a code: the official lobby, the code kept", "smash.recomps.wtf:39421 OurCode\n", NULL, "--online", NET_OFFICIAL_LOBBY, "OurCode"},
     {"an older public lobby's address with a code: the official lobby, the code kept", "opensmash-lobby.duckdns.org:39421 OurCode\n", NULL, "--online", NET_OFFICIAL_LOBBY, "OurCode"},
     {"the official lobby's name with a code", NET_OFFICIAL_LOBBY " OurCode\n", NULL, "--online", NET_OFFICIAL_LOBBY, "OurCode"},
     {"SSBU_OFFICIAL_LOBBY: another official lobby, the default name still means it", NET_OFFICIAL_LOBBY " OurCode\n", "SSBU_OFFICIAL_LOBBY=lobby.example:39421", "--online", "lobby.example:39421", "OurCode"},
@@ -60,6 +67,26 @@ static const Case CASES[] = {
     {"lan in the file: a private room found on this network, no lobby", "lan\n", NULL, "--online", NULL, "smash"},
     {"lan and a room code in the file", "lan ourroom\n", NULL, "--online", NULL, "ourroom"},
     {"SSBU_NET_RELAY=lan", "auto\n", "SSBU_NET_RELAY=lan", "--online", NULL, "smash"},
+    /* ---- the server region */
+    {"Auto: North America answers sooner", "auto\n", NULL, "--online", NA_LOBBY, "smash", "eu=90,na-east=20", NULL, NULL, "na-east"},
+    {"Auto: only North America answers", "auto\n", NULL, "--online", NA_LOBBY, "smash", "eu=-1,na-east=140", NULL, NULL, "na-east"},
+    {"Auto: no lobby answers: the first region, and no pick kept", "auto\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash", "eu=-1,na-east=-1", NULL, NULL, ""},
+    {"Auto: the same time: the first region", "auto\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash", "eu=40,na-east=40", NULL, NULL, "eu"},
+    {"Auto with the last pick kept: played there at once, measured again for the next start", "auto\n", NULL, "--online", NA_LOBBY, "smash", NULL, "auto\n", "na-east 31 1700000000\n", "eu"},
+    {"Auto with the last pick kept and the other region a little sooner: it stays (no hopping between two close ones)", "auto\n", NULL, "--online", NA_LOBBY, "smash", "eu=52,na-east=60", NULL, "na-east 31 1700000000\n", "na-east"},
+    {"Auto with a kept pick that is no region: measured", "auto\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash", NULL, NULL, "mars 5 1\n", "eu"},
+    {"the region chosen: NA East, though Europe answers sooner", "auto\n", NULL, "--online", NA_LOBBY, "smash", NULL, "na-east\n", NULL, ""},
+    {"the region chosen: EU, though North America answers sooner", "auto OurCode\n", NULL, "--online", NET_OFFICIAL_LOBBY, "OurCode", "eu=90,na-east=20", "# the region\nEU\n", NULL, ""},
+    {"a region that is none: Auto", "auto\n", NULL, "--online", NA_LOBBY, "smash", "eu=90,na-east=20", "moon\n", NULL, "na-east"},
+    {"a region's lobby in online_server.txt means the official lobby: the region setting says which", NA_LOBBY " OurCode\n", NULL, "--online", NET_OFFICIAL_LOBBY, "OurCode", NULL, "eu\n"},
+    {"SSBU_NET_RELAY=auto follows the region", "off\n", "SSBU_NET_RELAY=auto", "--online", NA_LOBBY, "smash", NULL, "na-east\n"},
+    {"an override wins over the region chosen", "auto\n", "SSBU_OFFICIAL_LOBBY=lobby.example:39421", "--online", "lobby.example:39421", "smash", "eu=90,na-east=20", "na-east\n", NULL, ""},
+    {"an override that is a region's lobby: that server, no Auto", "auto\n", "SSBU_OFFICIAL_LOBBY=" NA_LOBBY, "--online", NA_LOBBY, "smash", NULL, "auto\n", NULL, ""},
+    {"a server of the player's own: no lobby is asked, nothing kept", "smash.example:39421\n", NULL, "--online", "smash.example:39421", "smash", NULL, NULL, NULL, ""},
+    {"a friend's Join from Discord on the other region: this start plays there", "auto\n", NULL, "--online", NA_LOBBY, "smash", NULL, "eu\n", NULL, "", "r " NA_LOBBY " - 10.13.0.7"},
+    {"a friend's Join on the other region, a lobby code", "auto\n", NULL, "--online", NET_OFFICIAL_LOBBY, "abc", NULL, "na-east\n", NULL, "", "a " NET_OFFICIAL_LOBBY " abc K7Q2M"},
+    {"a friend's Join with an override: the override's server", "auto\n", "SSBU_OFFICIAL_LOBBY=lobby.example:39421", "--online", "lobby.example:39421", "smash", NULL, NULL, NULL, "", "r " NA_LOBBY " - 10.13.0.7"},
+    {"a Join for a lobby that is not official is ignored", "auto\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash", NULL, NULL, NULL, "eu", "r evil.example:39421 - 10.13.0.7"},
 };
 
 /* The child: reads the settings as the game does and writes what it found to result.txt. */
@@ -70,13 +97,14 @@ static int child(int argc, char **argv) {
     if (!f) return 1;
     fprintf(f, "%s\n%s\n", a ? a : "(none)", room);
     fclose(f);
+    for (int i = 0; region_remeasuring && i < 1000; i++) Sleep(5);   /* (net_region.c: Auto's pick for the next start, being kept) */
     return 0;
 }
 
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++)
         if (!strcmp(argv[i], "--child")) return child(argc, argv);
-    static const char *const VARS[] = {"SSBU_NET_RELAY", "SSBU_NET_HOST", "SSBU_NET_ROOM", "SSBU_NET_NAME", "SSBU_NET_DIRECT"};
+    static const char *const VARS[] = {"SSBU_NET_RELAY", "SSBU_NET_HOST", "SSBU_NET_ROOM", "SSBU_NET_NAME", "SSBU_NET_DIRECT", "SSBU_OFFICIAL_LOBBY"};
     for (int v = 0; v < (int)(sizeof VARS / sizeof *VARS); v++) SetEnvironmentVariableA(VARS[v], NULL);
     char exe[MAX_PATH], base[MAX_PATH];
     GetModuleFileNameA(NULL, exe, sizeof exe);
@@ -92,6 +120,19 @@ int main(int argc, char **argv) {
             fputs(t->server_file, f);
             fclose(f);
         }
+        static const char *const REGION_FILES[] = {"server_region.txt", "server_region_auto.txt", "discord_join.txt"};
+        const char *region_text[] = {t->region, t->kept, t->join};
+        snprintf(file, sizeof file, "%s\\config", dir);
+        CreateDirectoryA(file, NULL);
+        for (int r = 0; r < 3; r++)
+            if (region_text[r]) {
+                snprintf(file, sizeof file, "%s\\config\\%s", dir, REGION_FILES[r]);
+                FILE *f = fopen(file, "wb");
+                fputs(region_text[r], f);
+                if (r == 2) fprintf(f, " %lld\n", (long long)time(NULL));
+                fclose(f);
+            }
+        SetEnvironmentVariableA("SSBU_REGION_TEST_PINGS", t->pings ? t->pings : PINGS);
         char *eq = NULL;
         if (t->env) { snprintf(env, sizeof env, "%s", t->env); eq = strchr(env, '='); *eq = 0; SetEnvironmentVariableA(env, eq + 1); }
         snprintf(cmd, sizeof cmd, "\"%s\" --child %s", exe, t->args);
@@ -117,6 +158,18 @@ int main(int argc, char **argv) {
         const char *want = t->address ? t->address : "(none)";
         CHECK(!strcmp(got_address, want), "%s: the lobby address is '%s', wanted '%s'", t->name, got_address, want);
         CHECK(!strcmp(got_room, t->room), "%s: the lobby code is '%s', wanted '%s'", t->name, got_room, t->room);
+        if (t->kept_after) {   /* (Auto's pick kept for the next start: its region; "": no file) */
+            char kept[64] = "", word[32] = "";
+            snprintf(file, sizeof file, "%s\\config\\server_region_auto.txt", dir);
+            FILE *k = fopen(file, "rb");
+            if (k) { if (fgets(kept, sizeof kept, k)) sscanf(kept, "%31s", word); fclose(k); }
+            CHECK(!strcmp(word, t->kept_after), "%s: the pick kept is '%s', wanted '%s'", t->name, word, t->kept_after);
+        }
+        for (int r = 0; r < 3; r++) {
+            snprintf(file, sizeof file, "%s\\config\\%s", dir, REGION_FILES[r]);
+            DeleteFileA(file);
+        }
+        snprintf(file, sizeof file, "%s\\result.txt", dir);
         DeleteFileA(file);
         snprintf(file, sizeof file, "%s\\online_server.txt", dir);
         DeleteFileA(file);

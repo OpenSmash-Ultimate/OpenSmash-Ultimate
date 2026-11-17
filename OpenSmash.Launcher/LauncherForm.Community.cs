@@ -28,11 +28,56 @@ namespace OpenSmash.Launcher
 
         void CommunityInit()
         {
+            RegionView();
+            _ = RegionMeasure();   // (in the background: the launcher does not wait for it)
             _ = CommunityRefresh();
             _communityTimer = new System.Windows.Forms.Timer { Interval = (int)CommunityFeed.Every.TotalMilliseconds };
             _communityTimer.Tick += (_, _) => _ = CommunityRefresh();
             _communityTimer.Start();
             PresenceStart();
+        }
+
+        // The server region (OpenSmash.Core.ServerRegion). With Auto, every region's lobby is asked at each launcher start
+        // and the closest is kept in config\server_region_auto.txt, which the game starts from; the players online and
+        // the leaderboard are then that region's.
+        async Task RegionMeasure()
+        {
+            if (OpenSmash.Core.OfficialLobby.Override(_repo) != null || OpenSmash.Core.ServerRegion.Setting(_repo) != OpenSmash.Core.ServerRegion.Auto) return;
+            string before = OpenSmash.Core.OfficialLobby.Current(_repo);
+            try { await OpenSmash.Core.ServerRegion.Measure(_repo); }
+            catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException or InvalidOperationException) { return; }
+            RegionView();
+            if (OpenSmash.Core.OfficialLobby.Current(_repo) != before) await CommunityAgain();
+            Invalidate();
+        }
+
+        // What the pages show of the region, read when it changes (not at every paint): Auto's pick and its ping, an
+        // install's own official server, the region the home page's numbers are of.
+        string? _regionShown;
+        string _regionLabel = "";
+        bool _regionOverride;
+
+        void RegionView()
+        {
+            _regionOverride = OpenSmash.Core.OfficialLobby.Override(_repo) != null;
+            _regionShown = SettingDefaults.RegionShown(_repo, OpenSmash.Core.ServerRegion.Auto);
+            _regionLabel = OpenSmash.Core.ServerRegion.Current(_repo)?.Label.ToUpperInvariant() ?? "";
+        }
+
+        // The region was changed in the settings: measured when it is Auto, and the home page asks the new lobby.
+        async Task RegionChanged()
+        {
+            await RegionMeasure();
+            RegionView();
+            await CommunityAgain();
+        }
+
+        async Task CommunityAgain()
+        {
+            for (int i = 0; i < 100 && Volatile.Read(ref _communityBusy) == 1; i++) await Task.Delay(100);   // (an answer on its way is the old lobby's)
+            _lobby = null;
+            _lobbyAsked = false;
+            await CommunityRefresh();
         }
 
         async Task CommunityRefresh()
@@ -171,7 +216,9 @@ namespace OpenSmash.Launcher
                 Color dot = !_lobbyAsked ? Theme.Dim : up ? Theme.Ready : Theme.Bad;
                 using (var b = new SolidBrush(A(dot))) g.FillEllipse(b, ix, y + 16 * s, 8 * s, 8 * s);
                 string head = !_lobbyAsked ? "ASKING THE LOBBY..." : !up ? "LOBBY OFFLINE" : "ONLINE NOW";
-                Theme.Label(g, head, FM(11 * s, true), A(Theme.Dim), ix + 16 * s, y + 12 * s, 16 * s, 11 * s * 0.12f);
+                // (which region's lobby these numbers are: players on another region are not counted)
+                string where = _regionLabel;
+                Theme.Label(g, where == "" ? UiLocale.Text(head) : UiLocale.Text(head) + "  ·  " + where, FM(11 * s, true), A(Theme.Dim), ix + 16 * s, y + 12 * s, 16 * s, 11 * s * 0.12f);
                 if (_lobby != null)
                 {
                     string players = UiLocale.Format(_lobby.Online == 1 ? "{0} PLAYER" : "{0} PLAYERS", _lobby.Online.ToString(CultureInfo.InvariantCulture));

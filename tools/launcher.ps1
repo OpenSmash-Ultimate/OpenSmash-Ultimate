@@ -39,6 +39,12 @@ if (-not $Root) { $Root = Split-Path -Parent $PSScriptRoot }
 $Root = (Resolve-Path -LiteralPath $Root).Path   # (.NET's file calls want it whole)
 
 $PublicLobby = 'eu.lobby.opensmashultimate.com:39421'   # (the official lobby's DNS name: runtime/net.h's NET_OFFICIAL_LOBBY)
+# The official lobbies, one a region (runtime/net.h's NET_REGION_TABLE): id, the name shown, the lobby. Which one the
+# game plays on is config\server_region.txt's to say ("auto", the default: the closest; or an id), set in the game's
+# own settings menu (Esc > Online > Server region) or in OpenSmash.exe. Players on another region are not listed.
+$ServerRegions = @(
+    @{ Id = 'eu'; Label = 'EU'; Lobby = 'eu.lobby.opensmashultimate.com:39421' },
+    @{ Id = 'na-east'; Label = 'NA East'; Lobby = 'na.lobby.opensmashultimate.com:39421' })
 # The game's own values when a file or key is missing (runtime/gpu_display.c, hle_pad.c).
 $Defaults = @{
     window = 'windowed'; width = '1280'; height = '720'; pacing = 'clock'; latency = '3'
@@ -323,7 +329,7 @@ $serverWords = @(([string](Get-LineValue $serverFile)).Trim() -split '[ \t]+') +
 $lobbyHost = $serverWords[0]
 $lobbyCode = $serverWords[1]
 $netMode = if (-not $lobbyHost -or $lobbyHost -eq 'off') { 'offline' }
-           elseif ($lobbyHost -eq $PublicLobby -or $lobbyHost -like 'smash.recomps.wtf*' -or $lobbyHost -like 'opensmash-lobby.duckdns.org*' -or @('auto', 'na', 'eu') -contains $lobbyHost) { if ($lobbyCode) { 'private' } else { 'public' } }
+           elseif (@($ServerRegions | ForEach-Object { $_.Lobby }) -contains $lobbyHost -or $lobbyHost -like 'smash.recomps.wtf*' -or $lobbyHost -like 'opensmash-lobby.duckdns.org*' -or @('auto', 'na', 'eu') -contains $lobbyHost) { if ($lobbyCode) { 'private' } else { 'public' } }
            else { 'custom' }
 
 try {
@@ -472,6 +478,9 @@ $serverBox = New-TextBox $(if ($netMode -eq 'custom') { $lobbyHost } else { '' }
 $directBox = New-Check 'Direct connections' (-not ((Get-LineValue $directFile) -match '^(?i)off')) $R 222 344 `
     "The players in your rooms connect to you directly, which is faster.`nOff: everything goes through the lobby, and they don't learn your internet address."
 $netNote = New-Text '' $R 250 344 34 -Dim
+# (config\server_region.txt as the game reads it: a region's id, anything else auto)
+$regionWord = ([string](Get-LineValue (Join-Path (Join-Path $Root 'config') 'server_region.txt'))).Trim() -split '[ \t]+' | Select-Object -First 1
+$regionNow = @($ServerRegions | Where-Object { $_.Id -eq $regionWord } | ForEach-Object { $_.Label }) + @('Auto: the closest') | Select-Object -First 1
 $updateNet = {
     $m = $modeBox.SelectedItem.Value
     $codeBox.Enabled = $m -eq 'private' -or $m -eq 'custom'
@@ -479,7 +488,7 @@ $updateNet = {
     $nameBox.Enabled = $m -ne 'offline'
     $directBox.Enabled = $m -ne 'offline'
     $netNote.Text = switch ($m) {
-        'public' { "The game joins $PublicLobby." }
+        'public' { "The game joins the official lobby of your server region ($regionNow)." }
         'private' { 'Only the players with the same code (same capitals too) see your rooms.' }
         'custom' { 'Your own lobby server; the code is optional.' }
         'offline' { 'The game does not go online.' }

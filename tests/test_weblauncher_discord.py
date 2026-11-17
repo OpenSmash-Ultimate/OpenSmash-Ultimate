@@ -174,7 +174,9 @@ class Lobbies(unittest.TestCase):
         self.assertEqual(da.lobbies("auto"), list(da.PUBLIC_LOBBIES))
         self.assertEqual(da.lobbies("my.host mycode"), list(da.PUBLIC_LOBBIES) + ["my.host:39420"])
         self.assertEqual(da.lobbies(""), list(da.PUBLIC_LOBBIES))
-        self.assertEqual(da.PUBLIC_LOBBIES, ("eu.lobby.opensmashultimate.com:39421",))
+        # (every region's lobby is asked: a player's records are merged from all of them; the one played on first)
+        self.assertEqual(da.PUBLIC_LOBBIES, ("eu.lobby.opensmashultimate.com:39421", "na.lobby.opensmashultimate.com:39421"))
+        self.assertEqual(da.lobbies("na.lobby.opensmashultimate.com:39421 code"), list(da.PUBLIC_LOBBIES))   # (a region's lobby means the official one)
         self.assertEqual(da.LEADERBOARD_URL, "http://eu.lobby.opensmashultimate.com:39421/leaderboard.json")
         for older in ("opensmash-lobby.duckdns.org:39421 code", "smash.recomps.wtf:39421", "na", "eu", da.OFFICIAL_LOBBY):
             self.assertEqual(da.lobbies(older), list(da.PUBLIC_LOBBIES), older)   # (the older public lobbies mean the official one)
@@ -186,6 +188,17 @@ class Lobbies(unittest.TestCase):
             self.assertEqual(da.leaderboard_url(self.root), "http://lobby.example:39421/leaderboard.json")
         finally:
             os.remove(os.path.join(self.root, "config", "official_lobby.txt"))
+        # the server region chosen: its lobby first, its leaderboard
+        region = os.path.join(self.root, "config", "server_region.txt")
+        with open(region, "w") as f:
+            f.write("na-east" + chr(10))
+        try:
+            self.assertEqual(da.lobbies("auto", self.root), list(reversed(da.PUBLIC_LOBBIES)))
+            self.assertEqual(da.official_lobby(self.root), "na.lobby.opensmashultimate.com:39421")
+            self.assertEqual(da.leaderboard_url(self.root), "http://na.lobby.opensmashultimate.com:39421/leaderboard.json")
+        finally:
+            os.remove(region)
+        self.assertEqual(da.official_lobby(self.root), da.OFFICIAL_LOBBY)
 
     def test_ranks(self):
         board_json = {"players": [{"rank": 1, "id": "1", "fighters": {"0": {"rank": 3}}},

@@ -31,6 +31,7 @@ namespace OpenSmash.Launcher
             ("online_server.txt", "", "", "off"),      // (no file: offline; the download comes with "auto")
             ("online_direct.txt", "", "", "on"),
             ("online_name.txt", "", "", ""),
+            ("server_region.txt", "", "", "auto"),     // (runtime/net_region.c: the official lobby that answers soonest)
         };
 
         // The values each list offers, as the game's settings menu (Esc) cycles through them.
@@ -42,7 +43,21 @@ namespace OpenSmash.Launcher
             ["render_scale"] = new[] { "1", "auto", "1.5", "2", "3" },
             ["renderer"] = new[] { "auto", "direct3d11", "vulkan" },
             ["lobby"] = new[] { "auto", "private", "custom", "lan", "offline" },
+            ["region"] = new[] { OpenSmash.Core.ServerRegion.Auto }.Concat(OpenSmash.Core.ServerRegion.All.Select(r => r.Id)).ToArray(),
         };
+
+        // The server regions as the list shows them (OpenSmash.Core.ServerRegion: runtime/net.h's NET_REGION_TABLE).
+        public static readonly string[] RegionLabels = new[] { "Auto (the closest)" }.Concat(OpenSmash.Core.ServerRegion.All.Select(r => r.Label)).ToArray();
+
+        // The region row's value: Auto with its pick and the pick's ping once measured ("Auto (EU, 24 ms)"), an install's
+        // own official server when it names one; null: the list's own label.
+        public static string? RegionShown(string? repo, string value)
+        {
+            if (OpenSmash.Core.OfficialLobby.Override(repo) is { } other) return other;
+            if (value != OpenSmash.Core.ServerRegion.Auto) return null;
+            var (region, ms) = OpenSmash.Core.ServerRegion.AutoPick(repo);
+            return region == null ? null : ms >= 0 ? $"Auto ({region.Label}, {ms} ms)" : $"Auto ({region.Label})";
+        }
 
         public static string Of(string key)
         {
@@ -86,7 +101,7 @@ namespace OpenSmash.Launcher
                 "lan" => "lan",
                 "private" => PublicLobby + " " + (code == "" ? "friends" : code),
                 "custom" => (server == "" ? "127.0.0.1:39420" : server) + (code == "" ? "" : " " + code),
-                _ => "auto",   // (the one public lobby, in Europe: runtime/net_relay.c)
+                _ => "auto",   // (the official lobby, the server region's: runtime/net_relay.c, net_region.c)
             };
         }
 

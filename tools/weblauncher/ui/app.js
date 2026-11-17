@@ -108,7 +108,7 @@ async function refresh() {
   $("#play-state").textContent = !built ? (state.files_ready ? "Your game files are read; the game itself isn't built yet."
     : "Set the game up first.") : state.game_running ? "The game is running." : `Ready (${state.program}).`;
   const s = state.settings;
-  const lobby = { public: "the public lobby", private: `a private lobby (code ${s.code})`, custom: `your own server, ${s.server || "127.0.0.1:39420"}`, offline: "offline" }[s.lobby];
+  const lobby = { public: "the public lobby" + (s.region_shown ? ` (${s.region_shown})` : ""), private: `a private lobby (code ${s.code})`, custom: `your own server, ${s.server || "127.0.0.1:39420"}`, offline: "offline" }[s.lobby];
   $("#play-online").textContent = s.lobby === "offline" ? "Offline: Play doesn't go online." :
     `Play joins ${lobby}${s.name ? ", as " + s.name : ""}. Local Wireless lists everyone's rooms.`;
   $("#game-box").hidden = !state.game_running;
@@ -273,6 +273,9 @@ function fillSettings(s, choices) {
     if (!sel) continue;
     const values = options.map(o => o[0]);
     if (!values.includes(s[key]) && s[key]) options = [[s[key], s[key]], ...options];
+    // (Auto with its pick and the pick's ping, once measured: "Auto (EU, 24 ms)")
+    if (key === "region" && s.region_shown && s.region_shown.startsWith("Auto ("))
+      options = options.map(([v, l]) => v === "auto" ? [v, s.region_shown] : [v, l]);
     sel.innerHTML = options.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
     sel.value = s[key];
   }
@@ -285,6 +288,7 @@ function lobbyFields() {
   const lobby = $("#settings").elements.lobby.value;
   $(".lobby-code").hidden = !(lobby === "private" || lobby === "custom");
   $(".lobby-server").hidden = lobby !== "custom";
+  $(".lobby-region").hidden = !(lobby === "public" || lobby === "private");   // (the official lobby's region)
 }
 $("#settings").elements.lobby.addEventListener("change", lobbyFields);
 $("#settings").elements.volume.addEventListener("input", e => $("#volume-out").textContent = e.target.value);

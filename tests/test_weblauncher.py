@@ -69,6 +69,29 @@ class Settings(unittest.TestCase):
             s = launcher.read_settings(self.root)
             self.assertEqual((s["lobby"], s["code"]), want, line)
 
+    def test_server_region(self):
+        import server_region
+        for line in ("na.lobby.opensmashultimate.com:39421\n", "eu.lobby.opensmashultimate.com:39421 abc\n"):   # (a region's lobby: the official one)
+            with open(os.path.join(self.root, "online_server.txt"), "w") as f:
+                f.write(line)
+            self.assertEqual(launcher.read_settings(self.root)["lobby"], "private" if "abc" in line else "public", line)
+        os.remove(os.path.join(self.root, "online_server.txt"))
+        s = launcher.read_settings(self.root)
+        self.assertEqual((s["region"], s["region_shown"]), ("auto", "Auto"))   # (no file: Auto, nothing measured yet)
+        self.assertEqual([v for v, _ in launcher.CHOICES["region"]], ["auto", "eu", "na-east"])
+        s = launcher.write_settings(self.root, {"region": "na-east"})
+        self.assertEqual((s["region"], s["region_shown"]), ("na-east", "NA East"))
+        self.assertEqual(launcher.first_line(os.path.join(self.root, "config", "server_region.txt")), "na-east")
+        self.assertEqual(server_region.official_lobby(self.root), "na.lobby.opensmashultimate.com:39421")
+        launcher.write_settings(self.root, {"window": "borderless"})   # (another setting: the region stays)
+        self.assertEqual(launcher.read_settings(self.root)["region"], "na-east")
+        with self.assertRaises(launcher.Error):
+            launcher.write_settings(self.root, {"region": "moon"})
+        s = launcher.write_settings(self.root, {"region": "auto"})
+        with open(os.path.join(self.root, "config", "server_region_auto.txt"), "w") as f:
+            f.write("eu 24 1700000000\n")
+        self.assertEqual(launcher.read_settings(self.root)["region_shown"], "Auto (EU, 24 ms)")
+
     def test_write_each_lobby(self):
         for lobby, extra, line in (("public", {}, "auto"), ("offline", {}, "off"),
                                    ("private", {"code": "abc"}, "eu.lobby.opensmashultimate.com:39421 abc"),
