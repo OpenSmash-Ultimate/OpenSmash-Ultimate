@@ -10,19 +10,19 @@ namespace OpenSmash.Launcher
     // The lobby's public, read-only pages (tools/nex/board.py): /status.json (players online now, rooms, open rooms:
     // counts only) and /leaderboard.json (each ranked player's opaque id, position, best GSP and main fighter; a name
     // only for a player who chose to show one). The home page's right column shows them, asked again every minute.
-    sealed class LobbyStatus
+    public sealed class LobbyStatus
     {
         public int Online, Rooms, Arenas, OpenRooms, Playing, Ranked;
     }
 
-    sealed class BoardRow
+    public sealed class BoardRow
     {
         public int Rank, Fighter;
         public uint Gsp;
         public string Id = "", Name = "";
     }
 
-    static class CommunityFeed
+    public static class CommunityFeed
     {
         public const string Lobby = "opensmash-lobby.duckdns.org:39421";
         public const string SitePage = "https://denkishi.github.io/opensmash-site/leaderboard/";

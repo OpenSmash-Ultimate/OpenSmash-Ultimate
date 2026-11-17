@@ -131,13 +131,16 @@ namespace OpenSmash.Launcher
 
         static string B64Url(byte[] b) => Convert.ToBase64String(b).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
+        // PKCE S256 (RFC 7636): the challenge sent to Discord for the verifier kept here.
+        public static string Challenge(string verifier) => B64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
+
         // The browser's sign-in, start to end: a token (saved) or an exception with a message for the player.
         public static async Task<DiscordToken> SignIn(string repo, CancellationToken cancel)
         {
             string appId = AppId(repo);
             if (appId == "") throw new InvalidOperationException("This build has no Discord application (build\\discord.txt): update OpenSmash.");
             string verifier = B64Url(RandomNumberGenerator.GetBytes(48));
-            string challenge = B64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
+            string challenge = Challenge(verifier);
             string state = B64Url(RandomNumberGenerator.GetBytes(16));
             TcpListener listener;
             try { listener = new TcpListener(IPAddress.Loopback, 80); listener.Start(); }
@@ -151,7 +154,7 @@ namespace OpenSmash.Launcher
                              "&scope=" + Uri.EscapeDataString("identify openid sdk.social_layer_presence") +
                              "&redirect_uri=" + Uri.EscapeDataString(Redirect) +
                              "&code_challenge=" + challenge + "&code_challenge_method=S256&state=" + state + "&prompt=consent";
-                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                OpenSmash.Core.Commands.OpenPath(url);   // (the default browser: xdg-open / open off Windows)
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
                 timeout.CancelAfter(TimeSpan.FromMinutes(5));
                 for (;;)

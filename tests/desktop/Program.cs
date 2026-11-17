@@ -322,6 +322,8 @@ try
     ThemePersistenceChecks.Run(root);
     SettingsChecks.Run(root);
     RemapChecks.Run(root);
+    CommunityChecks.Run(root);
+    CommunityChecks.Render(root,screenshot==null?null:Path.GetDirectoryName(screenshot));
     Console.WriteLine("All desktop launcher checks passed.");
 }
 finally
