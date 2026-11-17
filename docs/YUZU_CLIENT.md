@@ -21,7 +21,7 @@ Both the updated launcher and tools/yuzu_client.ps1 are required. The runtime's 
 
 1. Build this checkout normally so that build/ssbu.exe includes the new runtime. Updating only the launch script is insufficient. The launcher rejects older executables.
 2. Run: `python tools/yuzu_client_deps.py`. This downloads checksum-pinned ENet 1.3.18 and Zstd 1.5.7 sources and builds the optional client DLLs into build/yuzu/. The ordinary OpenSmash mode does not load them.
-3. Double-click **launchers/Join yuzu Room.bat**. Enter an existing room server's address and optional UDP port (default 24872), and the room password if needed. Game UDP defaults to the Eden 0.2.0 wire format.
+3. Open the launcher's **Settings > Yuzu room** page (or run `tools/yuzu_client.ps1` as shown below). Enter an existing room server's address and optional UDP port (default 24872), and the room password if needed. Game UDP defaults to the Eden 0.2.0 wire format.
 4. In the game, use **Local Wireless**. To join an existing game, open **Rooms List**. To let another client join your game, choose **Create a Room**. Creating this game session does not run a yuzu room server on your PC.
 
 The server address and nickname are kept in config/yuzu_client.json. The password is not saved or written to logs. The initial nickname has a random suffix to reduce name collisions. Change it by running the PowerShell launcher with -Nickname.
