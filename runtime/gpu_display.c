@@ -855,7 +855,11 @@ unsigned display_present_flags(void) {
 
 /* (vblank_tick: the monitor's refreshes cannot be waited for here, or its rate is no multiple of 60) */
 static volatile LONG vblank_failed_flag, vblank_odd_rate;
-int display_present_sync(void) { return vblank_failed_flag != 0 || vblank_odd_rate != 0; }
+int display_present_sync(void) {   /* (only while `display` pacing is chosen and the game runs at its speed: a pacing changed
+                                     * in the menu, or SSBU_SPEED's test runs, present as they did before) */
+    load();
+    return cfg.pacing == PACING_DISPLAY && cfg.speed == 1 && (vblank_failed_flag != 0 || vblank_odd_rate != 0);
+}
 
 void *gfx_display_output(void);   /* gpu_d3d11.c: the swap chain's output (IDXGIOutput, referenced), or NULL */
 
@@ -895,7 +899,7 @@ static int vblank_tick(void) {
                                 "60 Hz, a custom 120 Hz mode or VRR is evenly paced\n", hz, hz / 60.0);
         }
     }
-    if (!divisor && hz_now) InterlockedExchange(&vblank_odd_rate, 1);
+    InterlockedExchange(&vblank_odd_rate, !divisor && hz_now ? 1 : 0);   /* (again at each monitor change: a window moved to a 60 Hz one) */
     InterlockedExchange(&vblank_hz, output && divisor ? hz_now : 0);
     if (!output || !divisor) { last = 0; return 0; }
     int extra = vblank_extra > 0 && InterlockedDecrement(&vblank_extra) >= 0;   /* (one refresh more this tick, at most: a 120 Hz monitor's 8 ms) */
@@ -916,10 +920,13 @@ static int vblank_tick(void) {
     }
     QueryPerformanceCounter(&t1);
     last = t1.QuadPart;
-    if (!failed && (t1.QuadPart - t0.QuadPart) * 1000 / freq.QuadPart > 50 * divisor) { failed = 1; InterlockedExchange(&vblank_failed_flag, 1); }
+    /* (a wait that took too long - a stall, not a monitor that cannot be waited for - goes to clock pacing as before, without
+     * the renderer's sync: FIFO against a clock a little faster than the monitor would queue frames up) */
+    if (!failed && (t1.QuadPart - t0.QuadPart) * 1000 / freq.QuadPart > 50 * divisor) failed = 1;
     if (failed) InterlockedExchange(&vblank_hz, 0);
-    if (failed) fprintf(stderr, "[display] waiting for the monitor's refresh failed (its panel is another card's?): "
-                                 "the renderer's own sync paces the frames from now on\n");
+    if (failed) fprintf(stderr, vblank_failed_flag ? "[display] waiting for the monitor's refresh failed (its panel is another card's?): "
+                                                     "the renderer's own sync paces the frames from now on\n"
+                                                   : "[display] waiting for the monitor's refresh took too long: clock pacing from now on\n");
     return !failed;
 }
 #elif defined __APPLE__
@@ -1000,9 +1007,9 @@ void display_wait_tick(void) {
                 cfg.pacing == PACING_VRR ? "vrr" : cfg.pacing == PACING_DISPLAY ? "display" : "clock",
                 cfg.pacing == PACING_VRR && !tearing ? " (no tearing support: as clock)" : "");
     }
-    /* (`display` at a rate 60 does not divide - 165 Hz: vblank_tick notes it once and returns 0 from then on, and this
-     * is the clock's own path, as clock pacing is, with the renderer presenting in sync instead of this wait) */
-    if (cfg.pacing == PACING_DISPLAY && !vblank_odd_rate && vblank_tick()) {   /* the clock restarts from here if it is needed later */
+    /* (`display` at a rate 60 does not divide - 165 Hz: vblank_tick notes it and returns 0 until the monitor changes, and
+     * this is the clock's own path, as clock pacing is, with the renderer presenting in sync instead of this wait) */
+    if (cfg.pacing == PACING_DISPLAY && vblank_tick()) {   /* the clock restarts from here if it is needed later */
         QueryPerformanceCounter(&base);
         ticks = 0;
         return;
