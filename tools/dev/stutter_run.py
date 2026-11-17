@@ -8,9 +8,10 @@ Usage:
 
 What it starts: build\\ssbu.exe with a copy of --save (default build\\rb_bench\\save_snap, tools/dev/rb_bench.py's),
 SSBU_DEBUG_MATCH_LIST with one match (player 1 and a CPU, 9 stocks, no items), the menus pressed through by SSBU_SEQ
-until the game's "fight" mark, then --seconds of the fight; then the game is closed.
+until the match loads (the mark of player 2's script module), then --seconds of its loading and fight; then the game is
+closed.
 Output: build\\stutter\\<tag>\\ (game.log, frames.txt) and one line in build\\stutter\\progress.log:
-  - boot: seconds from the start to the fight, and what the log says the shader loading waited before the first
+  - boot: seconds from the start to the match's loading, and what the log says the shader loading waited before the first
     frame and before the match ("shader loading", "match shaders");
   - menus / fight: frames, and how many took over 25 ms, over 50 ms, over 100 ms, the longest, the 99th percentile;
   - "made in play": the pipelines and programs the renderer had to make during play (each a wait), and their total.
@@ -25,7 +26,8 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUT = os.path.join(ROOT, "build", "stutter")
 MENUS = ["@movie", "60", "@until:2500-9000/30:A/120", "60:SUP/30", "20:SLEFT/18", "30:A", "90:PLUS", "100:A",
-         "@untilmark:fight:A+PLUS/40/6"]   # (tools/dev/rb_bench.py's way to the first fight, to the game's own mark)
+         "@untilmark:module:lua2cpp_%s:A+PLUS/40/6"]   # (tools/dev/rb_bench.py's way to the first fight: until the match
+                                                      # loads player 2's scripts, then hands off - a + in the fight pauses it)
 
 
 def running_games():
@@ -85,7 +87,7 @@ def main():
     shutil.copytree(os.path.join(save, "save"), os.path.join(data, "save"))
     frames = os.path.join(out, "frames.txt")
     env = {k: v for k, v in os.environ.items() if not k.startswith("SSBU_")}
-    env.update({"SSBU_DEBUG_MATCH_LIST": listf, "SSBU_SEQ": " ".join(MENUS), "SSBU_SKIP_MOVIES": "1", "SSBU_VOLUME": "0",
+    env.update({"SSBU_DEBUG_MATCH_LIST": listf, "SSBU_SEQ": " ".join(MENUS) % p2, "SSBU_SKIP_MOVIES": "1", "SSBU_VOLUME": "0",
                 "SSBU_DATA_ROOT": data, "SSBU_PERF_FRAMES": frames})
     for kv in extra:
         k, v = kv.split("=", 1)
@@ -100,7 +102,7 @@ def main():
                 time.sleep(0.5)
                 if fight_at is None:
                     with open(log, encoding="utf-8", errors="replace") as r:
-                        if "[seq] mark fight" in r.read():
+                        if "[seq] mark module:lua2cpp_%s" % p2 in r.read():
                             fight_at = time.time()
                             try:
                                 with open(frames) as fr:
