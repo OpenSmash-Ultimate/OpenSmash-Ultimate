@@ -235,6 +235,9 @@ static LONG64 ll_delay(void) {   /* ticks to hold the signal past the refresh */
         if (display_low_latency()) fprintf(stderr, "[display] low_latency: the game starts each frame as late as it can (margin %.1f ms)\n", (double)ll_margin * 1000 / ll_freq);
     }
     if (!display_low_latency() || speed_mode || ll_count < 16) return 0;
+    /* (vrr: the present IS the refresh, so a start moved by a varying amount - which is what this delay is - shows as a
+     * varying refresh interval. Frames start at the refresh instead, evenly spaced, which is what the display needs.) */
+    if (display_pacing_vrr()) return 0;
     if (ll_backoff > 0) { ll_backoff--; return 0; }
     LONG64 most = 0;
     for (int i = 0; i < ll_count; i++) if (ll_spans[i] > most) most = ll_spans[i];

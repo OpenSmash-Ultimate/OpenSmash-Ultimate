@@ -955,6 +955,36 @@ static VkImage swap_images[8];
 static VkSemaphore swap_ready[8];   /* (per image: its frame's work is done, it may be shown) */
 static u32 nswap, swap_w, swap_h;
 static VkPresentModeKHR present_mode;
+
+/* ---- how evenly the frames reach the display ------------------------------------------------- */
+/* Judder that no setting removes is usually frames handed over unevenly: the display can only follow what it is
+ * given. Each present's distance from the one before is collected and the status line reports the range and the worst
+ * miss from 16.67 ms, so a log says whether the game's delivery is even before the driver or the panel is blamed. */
+static u64 pres_last, pres_n, pres_min, pres_max, pres_sum, pres_worst;
+static void present_spacing(void) {
+    LARGE_INTEGER t, f;
+    QueryPerformanceCounter(&t);
+    QueryPerformanceFrequency(&f);
+    u64 at = (u64)t.QuadPart;
+    if (pres_last) {
+        u64 t10u = (at - pres_last) * 100000 / (u64)f.QuadPart;   /* (10-microsecond units: 1667 = one 60 Hz frame) */
+        if (t10u >= 500 && t10u <= 20000) {                        /* (5 to 200 ms: a running game, not a loading screen) */
+            if (!pres_n || t10u < pres_min) pres_min = t10u;
+            if (t10u > pres_max) pres_max = t10u;
+            u64 dev = t10u > 1667 ? t10u - 1667 : 1667 - t10u;
+            if (dev > pres_worst) pres_worst = dev;
+            pres_sum += t10u;
+            pres_n++;
+        }
+    }
+    pres_last = at;
+}
+static void present_spacing_report(void) {
+    if (!pres_n) return;
+    fprintf(stderr, "[status] vulkan presents: %.2f ms apart on average over %llu frames, %.2f..%.2f ms, worst %.2f ms off a 60 Hz frame\n",
+            (double)pres_sum / pres_n / 100.0, (unsigned long long)pres_n, pres_min / 100.0, pres_max / 100.0, pres_worst / 100.0);
+    pres_n = pres_sum = pres_min = pres_max = pres_worst = 0;
+}
 static int have_immediate, have_mailbox, recreate = 1, shown;
 static VkFormat swap_format = VK_FORMAT_B8G8R8A8_UNORM;
 
@@ -964,6 +994,7 @@ static VkPresentModeKHR wanted_mode(void) {
      * of 60: the swap chain's own wait for the vblank, FIFO, paces the frames instead; tear-free either way) */
     if (display_present_sync()) return VK_PRESENT_MODE_FIFO_KHR;
     if (have_mailbox) return VK_PRESENT_MODE_MAILBOX_KHR;   /* clock / display pacing: the newest frame at the next refresh */
+    if (display_present_odd_rate()) return VK_PRESENT_MODE_FIFO_KHR;   /* (tear-free at 144/165 Hz without mailbox: gpu_display.c) */
     return have_immediate ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
 }
 
@@ -1251,6 +1282,7 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
         }
         display_before_present();   /* (gpu_display.c: the loading animation stops) */
         VkResult pr = vkQueuePresentKHR(queue, &pi);
+        present_spacing();
         if (pr == VK_SUBOPTIMAL_KHR || pr == VK_ERROR_OUT_OF_DATE_KHR) recreate = 1;
         else check(pr, "showing a frame");
         if ((pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR) && !shown++) display_show_window();
@@ -5248,6 +5280,7 @@ static void vk_status_lines(void) {
             vk_stat_residents_made, vk_stat_resident_refills, vk_stat_residents_retired, vk_stat_resident_copies, vk_stat_resident_flushed,
             vk_stat_learned, vk_stat_flushes, vk_ns_draw / 1e9, vk_ns_dispatch / 1e9, vk_ns_present / 1e9, vk_ns_wait / 1e9,
             vk_stat_local_blocks);
+    present_spacing_report();
     fprintf(stderr, "[status] vulkan launches' parts (s): program %.2f, constant buffers %.2f, storage buffers %.2f, set %.2f, recording %.2f, "
                     "learning's read-back %.2f; compute inputs taken again %llu (%llu MB)\n",
             vk_ns_launch[0] / 1e9, vk_ns_launch[1] / 1e9, vk_ns_launch[2] / 1e9, vk_ns_launch[3] / 1e9, vk_ns_launch[4] / 1e9, vk_ns_launch[5] / 1e9,
