@@ -40,10 +40,10 @@ This is the short path from nothing to playing, on Windows 10 or 11. The game is
 
 OpenSmash is updated from GitHub's `main` branch, not from release files.
 
-- The launcher checks when it opens. Open **Settings**, then the **Update** tab, to check again. If a newer version exists it says how many new commits there are; apply it from there.
-- Applying runs the repository's installer in update mode: changed files are replaced, and your game files, settings, save and builds are left as they are. Then press **Play**, which rebuilds what changed (minutes, not hours).
+- The launcher checks when it opens. Open **Settings**, then the **Update** tab, to check again. If a newer version exists it says how many new commits there are; apply it from the startup prompt or Settings. Both use the same rebuild flow.
+- Applying updates changed repository files and Python packages, then checks the game build and rebuilds only if its inputs changed. Your game files, settings and save are preserved. If the launcher code changed too, OpenSmash closes briefly after the game build and reopens with the new launcher.
 - A copy with local changes is not updated automatically; update it with `git`, or use a clean download. A development checkout whose commit is not on `main` cannot be checked.
-- Running `OpenSmash.exe` again also brings the folder up to date and builds again.
+- If a game rebuild is interrupted, **Play** offers to retry before starting the game. If the launcher rebuild is interrupted, OpenSmash offers to retry on the next start.
 - To replace an old `OpenSmash.exe`, take the one from the newest release (compare its SHA-256 with `OpenSmash.exe.sha256`), or run `toolsuild_launcher.ps1` with the .NET 8 SDK installed.
 
 ## Mods

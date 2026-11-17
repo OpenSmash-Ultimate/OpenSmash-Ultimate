@@ -1222,6 +1222,7 @@ def build(a):
         compiler.finish()
     if a.prepare_only:
         log("  not now (--prepare-only): everything the build needs is ready")
+        online_files(log)   # (issue #389: a prepare-only run, an update's, left them out)
         return
     dll = getattr(a, "game_dll", False)
     if build_is_current(dll):
@@ -1255,12 +1256,21 @@ def build(a):
         # made again when stale; without it Vulkan does not start and Direct3D 11 draws, so a failure is not fatal
         import glslang_lib
         glslang_lib.ensure(os.path.join(os.path.dirname(EXE), glslang_lib.DLL_NAME), log=log)
+    online_files(log)
     if LINUX:
         log(f"\nDone: {exe} is ready. Start the game with ./play-ssbu.sh, or WindowSmash in your applications menu.")
     elif MACOS:
         log(f"\nDone: {exe} is ready. Start the game with Play SSBU.command, or Play SSBU in ~/Applications (Spotlight finds it).")
     else:
         log("\nDone: build\\ssbu.exe is ready. Start the game with OpenSmash.exe.")
+
+
+def online_files(log):
+    """Epic Online Services' files (runtime/net_eos.c, Windows: online through Epic; without them, the public lobby alone)
+    and Discord's (runtime/net_discord.c: sign-in and Rich Presence; off Windows the id alone, for the web launcher's
+    sign-in), beside the program: tools/online_files.py, which the updates and the launchers' Play run too. Never fatal."""
+    import online_files as of
+    of.ensure(os.path.dirname(EXE), log=log)
 
 
 def build_linux_program(jobs, dll=False):

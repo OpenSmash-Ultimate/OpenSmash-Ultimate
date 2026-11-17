@@ -97,7 +97,7 @@ static LRESULT CALLBACK window_proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
     LRESULT result;
     if (display_message(h, msg, w, l, &result)) return result;   /* size, full screen, pointer (gpu_display.c) */
     if (msg == WM_CLOSE) { fprintf(stderr, "[gfx] window closed\n"); gfx_closing(); rbl_upnp_close(); fflush(stderr); ExitProcess(0); }
-    if (msg == WM_KEYDOWN && w >= VK_F1 && w <= VK_F6 && !(l & (1 << 30))) InterlockedOr(&hotkeys, 1 << (w - VK_F1));
+    if (msg == WM_KEYDOWN && ((w >= VK_F1 && w <= VK_F6) || w == VK_F9) && !(l & (1 << 30))) InterlockedOr(&hotkeys, 1 << (w - VK_F1));
     if (menu_keys(msg, w, l)) return 0;
     if (msg == WM_MOUSEACTIVATE && LOWORD(l) == HTCLIENT && menu_is_open()) return MA_ACTIVATEANDEAT;   /* (the click that brings the window back isn't a press in the menu) */
     if (menu_mouse(h, msg, w, l)) return 0;

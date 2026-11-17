@@ -8,6 +8,7 @@ using System.Drawing.Text;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -55,6 +56,8 @@ namespace OpenSmash.Launcher
         readonly string _statePath;
         readonly string _pluginsPath;
         string _pythonExe;
+        string GameBuildPendingPath => Path.Combine(_repo, "config", "update-game-build.pending");
+        string LauncherBuildPendingPath => Path.Combine(_repo, "config", "update-launcher-build.pending");
 
         readonly ResolutionSetting _resolutionSetting = new ResolutionSetting();
 
@@ -96,6 +99,13 @@ namespace OpenSmash.Launcher
         string _setupStep = "";
         string _setupLog = "";
         string _setupMode = ""; // "scratch" or "import"
+        bool _maintenanceBuildUi;
+        bool _maintenanceRestartRequested;
+        float _maintenanceFrac = -1;
+        string _maintenanceDetail = "";
+        string _maintenanceEta = "";
+        readonly List<string> _maintenanceLog = new();
+        Process? _maintenanceProcess;
 
         // Play (mods) or Vanilla (the game's own data and no mods: mods.play_vanilla); both start build\ssbu.exe. Remembered in build\launch_mode.txt.
         string _launchMode = "mods";
@@ -119,8 +129,8 @@ namespace OpenSmash.Launcher
         int _updateBehind;
 
         // While any of these run, Play is greyed out so two jobs cannot overlap.
-        bool Busy => _modsBusy || _setupModding || _pluginBuildUi || _loadOn || _startingPlay || _newModsBusy
-            || _updateApplying || _marketplaceInstalling.Count > 0;
+        bool Busy => _yuzuPage?.IsBusy == true || _modsBusy || _setupModding || _pluginBuildUi || _loadOn || _startingPlay || _newModsBusy
+            || _updateApplying || _marketplaceInstalling.Count > 0 || _maintenanceBuildUi;
 
         bool _rebuildPrompt;
         bool _sharePrompt;
@@ -176,14 +186,28 @@ namespace OpenSmash.Launcher
         Font _fDisplay, _fMenu, _fUI, _fSmall, _fMono;
         Image _logo;
 
+        async void OnUiLanguageChanged()
+        {
+            ClearScaleCaches();
+            Invalidate(true);
+            if (_marketplaceWebView?.CoreWebView2 is { } core)
+            {
+                try { await core.ExecuteScriptAsync(UiLocale.WebScript + "window.__opensmashSetLocale && window.__opensmashSetLocale(window.__opensmashLocale);"); }
+                catch (InvalidOperationException) { } // The pane may be closing while its script completes.
+            }
+        }
+
         // Hit-testing
         List<Hit> _hits = new();
 
         // ---------------------------------------------------------------------------
-        public LauncherForm(string workDir, string repo, string buildDir)
+        public LauncherForm(string workDir, string repo, string buildDir, bool preview = false)
         {
             _workDir = workDir;
             _repo = repo;
+            UiLocale.Initialize(repo);
+            UiLocale.Changed += OnUiLanguageChanged;
+            Disposed += (_, _) => UiLocale.Changed -= OnUiLanguageChanged;
             _buildDir = buildDir;
             _modsDir = Path.Combine(repo, "mods");
             LoadInstantMods();
@@ -258,8 +282,10 @@ namespace OpenSmash.Launcher
             KeyDown += OnKeyDown;
             FormClosing += (s, e) => 
             { 
+                if (_yuzuPage?.IsBusy == true) { e.Cancel = true; return; }
                 CommitEdit();
                 PersistSettings();
+                CommunityStop();
                 // Only kill the game if the launcher is closing without having
                 // launched it (Play sets _waitingForGame and lets it run on).
                 if (!_waitingForGame && _gameProcess != null && !_gameProcess.HasExited)
@@ -270,14 +296,22 @@ namespace OpenSmash.Launcher
                 {
                     try { _shaderProc.Kill(entireProcessTree: true); } catch { }
                 }
+                if (!_maintenanceRestartRequested && _maintenanceProcess != null && !_maintenanceProcess.HasExited)
+                {
+                    try { _maintenanceProcess.Kill(entireProcessTree: true); } catch { }
+                }
             };
             Shown += async (s, e) =>
             {
+                if (preview) return; // UI tests render without startup tasks or network access.
+                if (TryResumePendingLauncherBuild()) return;
                 AskShadersIfNeeded();
                 _ = EnsureOwnPythonAsync();   // (not awaited: the launcher does not wait for pip, nor stop if it fails)
                 UpdateMods();
                 ScanForNewMods();
                 _ = CheckUpdatesAtBootAsync();
+                DiscordInit();   // (LauncherForm.Discord.cs: the account, refreshed if it expired)
+                CommunityInit();   // (LauncherForm.Community.cs: the home page's right column, and Rich Presence)
                 // The marketplace browser is heavy. Let the boot animation finish before it starts.
                 await Task.Delay(1100);
                 await InitializeMarketplaceWebView();
@@ -289,33 +323,36 @@ namespace OpenSmash.Launcher
 
             _settingsTabs = new[]
             {
-                new SettingTab { Name = "Display", SettingKeys = new[] { "window", "window_size", "pacing" } },
+                new SettingTab { Name = "Display", SettingKeys = new[] { "ui_language", "window", "window_size", "pacing" } },
                 new SettingTab { Name = "Graphics", SettingKeys = new[] { "render_scale", "gpu", "renderer", "overlay", "hide_cursor" } },
                 new SettingTab { Name = "Audio", SettingKeys = new[] { "volume" } },
                 new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "code", "server", "direct" } },
-                new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "pads" } },
+                new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "remap", "pads" } },
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
+                new SettingTab { Name = "Advanced", SettingKeys = Array.Empty<string>() },
             };
 
             _settings = new[]
             {
-                new Setting { Key = "window", Label = "Window", Values = new[] { "windowed", "borderless", "fullscreen" }, Labels = new[] { "A window", "Borderless (whole monitor)", "Full screen" } },
-                new Setting { Key = "window_size", Label = "Window size", Values = new[] { "1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160" } },
-                new Setting { Key = "pacing", Label = "Frame pacing", Values = new[] { "clock", "vrr", "display" }, Labels = new[] { "Steady 60 (any monitor)", "G-Sync / FreeSync monitor", "Follow the monitor's refresh" } },
-                new Setting { Key = "render_scale", Label = "Render scale", Values = new[] { "1", "auto", "1.5", "2", "3" }, Labels = new[] { "1: 1920x1080 (the game's own)", "Auto: as big as the window", "1.5: 2880x1620", "2: 3840x2160 (4K)", "3: 5760x3240" } },
+                new Setting { Key = "ui_language", Label = "Interface language", Values = UiLocale.Codes, Labels = UiLocale.Names },
+                new Setting { Key = "window", Label = "Window", Values = SettingDefaults.Choices["window"], Labels = new[] { "A window", "Borderless (whole monitor)", "Full screen" } },
+                new Setting { Key = "window_size", Label = "Window size", Values = SettingDefaults.Choices["window_size"] },
+                new Setting { Key = "pacing", Label = "Frame pacing", Values = SettingDefaults.Choices["pacing"], Labels = new[] { "Steady 60 (any monitor)", "G-Sync / FreeSync monitor", "Follow the monitor's refresh" } },
+                new Setting { Key = "render_scale", Label = "Render scale", Values = SettingDefaults.Choices["render_scale"], Labels = new[] { "1: 1920x1080 (the game's own)", "Auto: as big as the window", "1.5: 2880x1620", "2: 3840x2160 (4K)", "3: 5760x3240" } },
                 new Setting { Key = "gpu", Label = "Graphics card", Values = new[] { "auto", "warp" }, Labels = new[] { "The fastest (auto)", "WARP (Windows itself, no card: slow)" } },
-                new Setting { Key = "renderer", Label = "Renderer", Values = new[] { "auto", "direct3d11", "vulkan" }, Labels = new[] { "Auto: Vulkan on AMD cards, Direct3D 11 on others", "Direct3D 11", "Vulkan" } },
+                new Setting { Key = "renderer", Label = "Renderer", Values = SettingDefaults.Choices["renderer"], Labels = new[] { "Auto: Vulkan on AMD, NVIDIA and Intel cards, Direct3D 11 on others", "Direct3D 11", "Vulkan" } },
                 new Setting { Key = "hide_cursor", Label = "Hide the mouse pointer", Values = new[] { "1", "0" }, Labels = new[] { "When it stops moving", "Keep it shown" } },
                 new Setting { Key = "overlay", Label = "Frame rate", Values = new[] { "1", "0" }, Labels = new[] { "Show it in the corner", "Hidden" } },
                 new Setting { Key = "volume", Label = "Volume", Slider = true },
                 new Setting { Key = "name", Label = "Your name", Text = true },
-                new Setting { Key = "lobby", Label = "Lobby", Values = new[] { "public", "private", "custom", "offline" }, Labels = new[] { "Public lobby", "Private lobby (a code)", "Your own server", "Offline" } },
+                new Setting { Key = "lobby", Label = "Lobby", Values = SettingDefaults.Choices["lobby"], Labels = new[] { "Public lobby (Europe)", "Private lobby (a code)", "Your own server", "This network (LAN)", "Offline" } },
                 new Setting { Key = "code", Label = "Lobby code", Text = true },
                 new Setting { Key = "server", Label = "Server", Text = true },
                 new Setting { Key = "direct", Label = "Direct connections", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
                 new Setting { Key = "keyboard_player", Label = "Keyboard plays as", Values = new[] { "1", "2", "3", "4", "5", "6", "7", "8", "0" }, Labels = new[] { "Player 1", "Player 2", "Player 3", "Player 4", "Player 5", "Player 6", "Player 7", "Player 8", "Nobody (no keyboard)" } },
                 new Setting { Key = "background", Label = "Controllers in the background", Values = new[] { "1", "0" }, Labels = new[] { "Work while another window is in front", "Only while the game is in front" } },
+                new Setting { Key = "remap", Label = "Remap a controller", Values = new[] { "open" }, Labels = new[] { "Press a button for each of the game's" } },
                 new Setting { Key = "pads", Label = "controllers.ini", Values = new[] { "open" }, Labels = new[] { "Open the file" } },
             };
             _settingEdit = new TextBox
@@ -367,14 +404,11 @@ namespace OpenSmash.Launcher
             catch { _rendererIni = ""; }
         }
 
-        // The renderer the game starts with, as runtime/renderer.h reads it: SSBU_RENDERER, else
-        // display.ini's renderer (vulkan or vk: Vulkan; direct3d11, direct3d or dx11: Direct3D 11;
-        // anything else, d3d11 included: auto, Vulkan on an AMD card and Direct3D 11 on others).
+        // The renderer the launcher starts with, from display.ini (the child clears environment overrides).
         string RendererAsked()
         {
-            string v = Environment.GetEnvironmentVariable("SSBU_RENDERER") ?? "";
-            if (v.Trim() == "") v = _settingsLoaded ? _iniValues.GetValueOrDefault("renderer", "") : _rendererIni;
-            return v.Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
+            string v = _settingsLoaded ? _iniValues.GetValueOrDefault("renderer", "") : _rendererIni;
+            return SettingDefaults.Renderer(v);
         }
 
         string RendererChip() => RendererAsked() switch { "vulkan" => "VULKAN RENDERER", "direct3d11" => "D3D11 RENDERER", _ => "AUTO RENDERER" };
@@ -596,7 +630,7 @@ namespace OpenSmash.Launcher
                 Invalidate();
                 PlayDone();
             }
-            if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
+            if (why.Length > 0) UiLocale.Message(why, "OpenSmash");
         }
 
         void MaybeShowBootPrompts()
@@ -648,14 +682,13 @@ namespace OpenSmash.Launcher
         async Task RunPythonStepAsync(string label)
         {
             string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
-            if (!File.Exists(script)) return;
+            if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_windowsmash.ps1 is missing.");
             SetLoad(label, -1);
             try
             {
                 var r = await Task.Run(() => RunPowerShellUpdate(script, "-PythonOnly"));
-                if (r.Code != 0) try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "os_update.log"), r.Output + "\n---\n"); } catch { }
+                if (r.Code != 0) throw new InvalidOperationException("Updating Python packages stopped (exit " + r.Code + "). " + Tail(r.Output));
             }
-            catch { }
             finally { ClearLoad(); }
             _pythonExe = ModManagerProcess.FindPython(_repo, _buildDir);
         }
@@ -682,9 +715,30 @@ namespace OpenSmash.Launcher
             if (!IsDisposed) await CheckForUpdatesAsync(true);
         }
 
-        async Task CheckForUpdatesAsync(bool atBoot)
+        // Update channel (issue #329): the newest versioned release by default; main commit by commit is opt-in for
+        // testers (OPENSMASH_UPDATE_CHANNEL=main, or "main" in tools\update_channel.txt). No release yet: main.
+        async Task<string> ResolveUpdateRefAsync()
         {
-            if (_updateChecking || _updateApplying) return;
+            try
+            {
+                string ch = Environment.GetEnvironmentVariable("OPENSMASH_UPDATE_CHANNEL") ?? "";
+                if (ch.Length == 0)
+                {
+                    string f = System.IO.Path.Combine(AppContext.BaseDirectory, "tools", "update_channel.txt");
+                    if (System.IO.File.Exists(f)) ch = System.IO.File.ReadAllText(f).Trim();
+                }
+                if (ch.Equals("main", StringComparison.OrdinalIgnoreCase)) return "main";
+                using var doc = JsonDocument.Parse(await GitHubGetAsync($"{UpdateApi}/releases/latest"));
+                string tag = GetString(doc.RootElement, "tag_name").Trim();
+                if (tag.Length > 0) return Uri.EscapeDataString(tag);
+            }
+            catch { }
+            return "main";
+        }
+
+        async Task CheckForUpdatesAsync(bool atBoot, bool allowDuringUpdate = false)
+        {
+            if (_updateChecking || (_updateApplying && !allowDuringUpdate)) return;
             _updateChecking = true;
             _updateState = "checking";
             _updateMessage = "Checking GitHub for a newer version\u2026";
@@ -694,7 +748,7 @@ namespace OpenSmash.Launcher
             {
                 string local = await Task.Run(FindLocalCommit);
                 _updateLocal = local;
-                string headBody = await GitHubGetAsync($"{UpdateApi}/commits/main");
+                string headBody = await GitHubGetAsync($"{UpdateApi}/commits/{await ResolveUpdateRefAsync()}");
                 using var headDoc = JsonDocument.Parse(headBody);
                 var head = headDoc.RootElement;
                 string sha = GetString(head, "sha").Trim();
@@ -714,7 +768,7 @@ namespace OpenSmash.Launcher
                 {
                     _updateState = "uptodate";
                     _updateBehind = 0;
-                    _updateMessage = $"OpenSmash is up to date ({ShortCommit(local)}).";
+                    _updateMessage = UiLocale.Interpolate($"OpenSmash is up to date ({ShortCommit(local)}).");
                     _updateDetail = title;
                     return;
                 }
@@ -738,7 +792,7 @@ namespace OpenSmash.Launcher
                 {
                     _updateState = "available";
                     _updateBehind = ahead;
-                    _updateMessage = ahead == 1 ? "A newer version is on GitHub: 1 new commit." : $"A newer version is on GitHub: {ahead} new commits.";
+                    _updateMessage = ahead == 1 ? "A newer version is on GitHub: 1 new commit." : UiLocale.Interpolate($"A newer version is on GitHub: {ahead} new commits.");
                     var titles = new List<string>();
                     if (cmp.TryGetProperty("commits", out var commits) && commits.ValueKind == JsonValueKind.Array)
                     {
@@ -752,12 +806,12 @@ namespace OpenSmash.Launcher
                     }
                     _updateDetail = titles.Count > 0 ? string.Join("   \u00B7   ", titles.Take(3)) + (titles.Count > 3 ? "   \u00B7   \u2026" : "") : title;
                 }
-                else if (status == "identical") { _updateState = "uptodate"; _updateBehind = 0; _updateMessage = $"OpenSmash is up to date ({ShortCommit(local)})."; _updateDetail = title; }
-                else if (status == "behind") { _updateState = "uptodate"; _updateBehind = 0; _updateMessage = $"This copy ({ShortCommit(local)}) is newer than GitHub's main branch."; _updateDetail = ""; }
+                else if (status == "identical") { _updateState = "uptodate"; _updateBehind = 0; _updateMessage = UiLocale.Interpolate($"OpenSmash is up to date ({ShortCommit(local)})."); _updateDetail = title; }
+                else if (status == "behind") { _updateState = "uptodate"; _updateBehind = 0; _updateMessage = UiLocale.Interpolate($"This copy ({ShortCommit(local)}) is newer than GitHub's main branch."); _updateDetail = ""; }
                 else if (status == "diverged") { _updateState = "error"; _updateMessage = "This copy comes from a different branch than GitHub's main, so it can't be updated automatically."; _updateDetail = ""; }
                 else { _updateState = "error"; _updateMessage = "GitHub's answer was not understood."; _updateDetail = status; }
             }
-            catch (Exception ex) { _updateState = "error"; _updateMessage = "Could not check for updates: " + ShortError(ex.Message); _updateDetail = ""; try { System.IO.File.AppendAllText(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "os_update.log"), ex.ToString() + "\n---\n"); } catch { } }
+            catch (Exception ex) { _updateState = "error"; _updateMessage = UiLocale.Text("Could not check for updates: ") + ShortError(ex.Message); _updateDetail = ""; try { System.IO.File.AppendAllText(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "os_update.log"), ex.ToString() + "\n---\n"); } catch { } }
             finally
             {
                 _updateChecking = false;
@@ -772,7 +826,7 @@ namespace OpenSmash.Launcher
             request.Headers.Accept.ParseAdd("application/vnd.github+json");
             using var response = await _httpClient.SendAsync(request);
             string body = await response.Content.ReadAsStringAsync();
-            if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"GitHub answered {(int)response.StatusCode} ({response.ReasonPhrase}) for {url}.");
+            if (!response.IsSuccessStatusCode) throw new InvalidOperationException(UiLocale.Interpolate($"GitHub answered {(int)response.StatusCode} ({response.ReasonPhrase}) for {url}."));
             return body;
         }
 
@@ -841,6 +895,140 @@ namespace OpenSmash.Launcher
             catch { }
         }
 
+        // The launcher is rebuilt only where the .NET 8 SDK is (toolsuild_launcher.ps1 needs it): most players have
+        // the release's OpenSmash.exe and no SDK, and a rebuild that can never work would be offered at every start.
+        static bool DotnetSdkAvailable()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo { FileName = "dotnet", UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                psi.ArgumentList.Add("--list-sdks");
+                using var p = Process.Start(psi);
+                if (p == null) return false;
+                var output = p.StandardOutput.ReadToEndAsync();
+                _ = p.StandardError.ReadToEndAsync();
+                if (!p.WaitForExit(10000)) { try { p.Kill(); } catch { } return false; }
+                return p.ExitCode == 0 && Regex.IsMatch(output.GetAwaiter().GetResult(), @"(?m)^\s*\d+\.");
+            }
+            catch { return false; }
+        }
+
+        static string LauncherBuildInputsFingerprint(string repo)
+        {
+            string project = Path.Combine(repo, "OpenSmash.Launcher");
+            string projectFile = Path.Combine(project, "OpenSmash.Launcher.csproj");
+            string buildScript = Path.Combine(repo, "tools", "build_launcher.ps1");
+            if (!File.Exists(projectFile) || !File.Exists(buildScript))
+                throw new FileNotFoundException("The launcher project or its build script is missing.");
+
+            var files = Directory.EnumerateFiles(project, "*", SearchOption.AllDirectories)
+                .Where(path => !Path.GetRelativePath(project, path).Split(Path.DirectorySeparatorChar)
+                    .Any(part => part.Equals("bin", StringComparison.OrdinalIgnoreCase)
+                        || part.Equals("obj", StringComparison.OrdinalIgnoreCase)))
+                .Append(projectFile)
+                .Append(buildScript)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => Path.GetRelativePath(repo, path), StringComparer.OrdinalIgnoreCase);
+
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            foreach (string path in files)
+            {
+                string relative = Path.GetRelativePath(repo, path).Replace('\\', '/') + "\0";
+                hash.AppendData(Encoding.UTF8.GetBytes(relative));
+                using var stream = File.OpenRead(path);
+                byte[] buffer = new byte[81920];
+                int read;
+                while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                    hash.AppendData(buffer, 0, read);
+            }
+            return Convert.ToHexString(hash.GetHashAndReset());
+        }
+
+        void ScheduleLauncherBuildAndRestart()
+        {
+            string helper = Path.Combine(_repo, "tools", "rebuild_launcher_after_update.ps1");
+            if (!File.Exists(helper)) throw new FileNotFoundException("tools\\rebuild_launcher_after_update.ps1 is missing.");
+            Directory.CreateDirectory(Path.Combine(_repo, "config"));
+            File.WriteAllText(LauncherBuildPendingPath, DateTime.UtcNow.ToString("O"));
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                WorkingDirectory = _repo,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            foreach (string arg in new[] {
+                "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", helper,
+                "-WaitForProcessId", Environment.ProcessId.ToString(),
+                "-Repo", _repo, "-LauncherPath", Path.Combine(_repo, "OpenSmash.exe"),
+                "-PendingMarker", LauncherBuildPendingPath
+            })
+                psi.ArgumentList.Add(arg);
+            _ = Process.Start(psi) ?? throw new InvalidOperationException("Could not start the launcher update helper.");
+        }
+
+        bool TryResumePendingLauncherBuild()
+        {
+            if (!File.Exists(LauncherBuildPendingPath) || File.Exists(GameBuildPendingPath)) return false;
+            if (!DotnetSdkAvailable()) { try { File.Delete(LauncherBuildPendingPath); } catch { } return false; }
+            var choice = MessageBox.Show(this,
+                "The launcher update could not be completed last time. Rebuild and restart OpenSmash now?",
+                "OpenSmash update", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (choice != DialogResult.Yes) return false;
+            try
+            {
+                ScheduleLauncherBuildAndRestart();
+                Close();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Could not restart the launcher update.\n\n" + ex.Message, "OpenSmash update",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+        }
+
+        async Task<(int Code, string Output)> BuildGameAfterUpdateAsync()
+        {
+            string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
+            if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_windowsmash.ps1 is missing.");
+            SetLoad("REBUILDING THE GAME", -1);
+            try { return await Task.Run(() => RunPowerShellUpdate(script, "-BuildAfterUpdate", NoteGameBuildLine)); }
+            finally { ClearLoad(); }
+        }
+
+        void NoteGameBuildLine(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            string detail = line.Trim();
+            float progress = -1;
+            var percent = Regex.Match(detail, @"(?:^LOG percent (\d{1,3})$)|(?:\]\s+(\d{1,3})%)|(?: — (\d{1,3})%,)");
+            if (percent.Success)
+            {
+                string value = percent.Groups.Cast<Group>().Skip(1).First(g => g.Success).Value;
+                if (int.TryParse(value, out int pct))
+                {
+                    progress = Math.Clamp(pct / 100f, 0f, 1f);
+                    detail = "Building the game — " + pct + "%";
+                }
+            }
+            if (detail.Length > 100) detail = detail.Substring(0, 100);
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    if (IsDisposed || Disposing) return;
+                    _loadLabel = detail.ToUpperInvariant();
+                    if (progress >= _loadProgress) _loadProgress = progress;
+                    Invalidate();
+                }));
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+        }
+
         async Task ApplyUpdateAsync()
         {
             if (_updateApplying || _updateChecking) return;
@@ -855,47 +1043,110 @@ namespace OpenSmash.Launcher
             Invalidate();
             string why = "";
             string output = "";
+            string beforeCommit = "";
+            string beforeLauncherFingerprint = "";
             try
             {
+                beforeCommit = await Task.Run(FindLocalCommit);
+                if (beforeCommit.Length == 0) throw new InvalidOperationException("This copy does not identify its source version.");
+                beforeLauncherFingerprint = await Task.Run(() => LauncherBuildInputsFingerprint(_repo));
                 string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
                 if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_windowsmash.ps1 is missing.");
                 var result = await Task.Run(() => RunPowerShellUpdate(script));
                 output = result.Output;
-                if (result.Code != 0) why = "The updater stopped (exit " + result.Code + ").";
+                if (result.Code != 0) throw new InvalidOperationException(UiLocale.Text("The updater stopped (exit ") + result.Code + ").");
                 else await RunPythonStepAsync("UPDATING PYTHON PACKAGES");   // (an update can need a new package)
             }
             catch (Exception ex) { why = ex.Message; }
             finally
             {
-                _updateApplying = false;
                 ClearLoad();
                 Invalidate();
             }
             _updateState = "checking";
             _updateMessage = "Checking the update\u2026";
             Invalidate();
-            await CheckForUpdatesAsync(false);
-            if (why.Length == 0 && _updateState != "uptodate") why = "The update did not finish. " + Tail(output);
+            await CheckForUpdatesAsync(false, allowDuringUpdate: true);
+            if (why.Length == 0 && _updateState != "uptodate") why = UiLocale.Text("The update did not finish. ") + Tail(output);
+
+            bool sourceChanged = beforeCommit.Length > 0
+                && !beforeCommit.Equals(_updateLocal, StringComparison.OrdinalIgnoreCase);
+            bool launcherChanged = false;
+            if (sourceChanged)
+            {
+                try
+                {
+                    Directory.CreateDirectory(Path.Combine(_repo, "config"));
+                    File.WriteAllText(GameBuildPendingPath, _updateLocal);
+                    string afterFingerprint = await Task.Run(() => LauncherBuildInputsFingerprint(_repo));
+                    launcherChanged = !beforeLauncherFingerprint.Equals(afterFingerprint, StringComparison.Ordinal)
+                        && await Task.Run(DotnetSdkAvailable);
+                }
+                catch (Exception ex)
+                {
+                    launcherChanged = true;
+                    if (why.Length == 0) why = "Could not verify the updated launcher sources: " + ex.Message;
+                }
+                if (launcherChanged)
+                {
+                    try { File.WriteAllText(LauncherBuildPendingPath, _updateLocal); }
+                    catch (Exception ex) { if (why.Length == 0) why = "Could not save the pending launcher rebuild: " + ex.Message; }
+                }
+            }
+
+            if (why.Length == 0 && (sourceChanged || File.Exists(GameBuildPendingPath)))
+            {
+                _updateState = "updating";
+                _updateMessage = "Rebuilding the game after the update\u2026";
+                Invalidate();
+                try
+                {
+                    var result = await BuildGameAfterUpdateAsync();
+                    output = result.Output;
+                    if (result.Code != 0)
+                        throw new InvalidOperationException("The game rebuild stopped (exit " + result.Code + "). " + Tail(output));
+                    if (File.Exists(GameBuildPendingPath)) File.Delete(GameBuildPendingPath);
+                    if (File.Exists(LauncherBuildPendingPath))
+                    {
+                        ScheduleLauncherBuildAndRestart();
+                        MessageBox.Show(this, "The game is current. OpenSmash will close briefly to rebuild the launcher, then reopen.",
+                            "OpenSmash update", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        Close();
+                        return;
+                    }
+                }
+                catch (Exception ex) { why = ex.Message; }
+                finally
+                {
+                    _updateApplying = false;
+                    ClearLoad();
+                    Invalidate();
+                }
+            }
+
+            _updateApplying = false;
             if (why.Length > 0)
             {
                 if (output.Contains("changes of its own")) why = "This copy has local changes, so it cannot be updated automatically. Update it with git, or use a clean download.";
                 _updateState = "error";
-                _updateMessage = "Update failed: " + ShortError(why);
+                _updateMessage = UiLocale.Text("Update failed: ") + ShortError(why);
                 _updateDetail = "";
-                MessageBox.Show("The update could not be installed.\n\n" + why, "OpenSmash");
+                UiLocale.Message(UiLocale.Text("The update or rebuild could not be completed.\n\n") + why, "OpenSmash");
             }
             else
             {
                 _updateState = "uptodate";
-                _updateMessage = "Update installed. Press Play to rebuild what changed.";
+                _updateMessage = sourceChanged ? "Update installed and the game is current." : "OpenSmash is already up to date.";
                 _updateDetail = "";
-                MessageBox.Show("OpenSmash was updated. Your game files, settings, save and builds were left as they were.\n\nPress Play to rebuild what changed.", "OpenSmash");
+                UiLocale.Message(sourceChanged
+                    ? "OpenSmash was updated. The game was rebuilt if its inputs changed."
+                    : "OpenSmash is already up to date. No rebuild was needed.", "OpenSmash");
             }
             PlayDone();
             Invalidate();
         }
 
-        static (int Code, string Output) RunPowerShellUpdate(string script, string only = "-UpdateOnly")
+        static (int Code, string Output) RunPowerShellUpdate(string script, string only = "-UpdateOnly", Action<string>? onLine = null)
         {
             string root = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(script)!, ".."));
             var psi = new ProcessStartInfo
@@ -916,11 +1167,22 @@ namespace OpenSmash.Launcher
             psi.ArgumentList.Add(script);
             psi.ArgumentList.Add(only);
             using var p = Process.Start(psi) ?? throw new InvalidOperationException("Could not start PowerShell.");
-            var stdout = p.StandardOutput.ReadToEndAsync();
-            var stderr = p.StandardError.ReadToEndAsync();
+            var output = new StringBuilder();
+            void Take(string? line)
+            {
+                if (line == null) return;
+                lock (output) output.AppendLine(line);
+                onLine?.Invoke(line);
+            }
+            p.OutputDataReceived += (_, e) => Take(e.Data);
+            p.ErrorDataReceived += (_, e) => Take(e.Data);
+            p.BeginOutputReadLine();
+            p.BeginErrorReadLine();
             p.WaitForExit();
-            string output = (stdout.GetAwaiter().GetResult() + "\n" + stderr.GetAwaiter().GetResult()).Trim();
-            return (p.ExitCode, output);
+            p.WaitForExit();
+            string text;
+            lock (output) text = output.ToString().Trim();
+            return (p.ExitCode, text);
         }
 
          void ApplyModStatus(int code, string output, bool persist = true)
@@ -1170,7 +1432,7 @@ namespace OpenSmash.Launcher
             _storageBusy = true; _storageText = "Looking…"; Invalidate();
             string output = "";
             int code = await Task.Run(() => RunPython(new[] { Path.Combine(_repo, "tools", "data_location.py") }, out output));
-            _storageText = code == 0 ? output.Trim() : "Could not read where the folders are:\n" + output.Trim();
+            _storageText = code == 0 ? output.Trim() : UiLocale.Text("Could not read where the folders are:\n") + output.Trim();
             _storageBusy = false; Invalidate();
         }
         async Task StorageMoveAsync()
@@ -1182,9 +1444,9 @@ namespace OpenSmash.Launcher
                 if (dlg.ShowDialog(this) != DialogResult.OK || string.IsNullOrEmpty(dlg.SelectedPath)) return;
                 target = dlg.SelectedPath;
             }
-            if (MessageBox.Show(this, $"Move dump\\ and build\\ into {target}?\n\nClose the game first. A link is left in their place, so everything finds them where they were. This can take a while.",
+            if (UiLocale.Message(this, UiLocale.Interpolate($"Move dump\\ and build\\ into {target}?\n\nClose the game first. A link is left in their place, so everything finds them where they were. This can take a while."),
                                 "OpenSmash", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
-            _storageBusy = true; _storageText = "Moving the folders to " + target + "… (don't start the game)"; Invalidate();
+            _storageBusy = true; _storageText = UiLocale.Text("Moving the folders to ") + target + UiLocale.Text("… (don't start the game)"); Invalidate();
             string output = "";
             int code = await Task.Run(() => RunPython(new[] { Path.Combine(_repo, "tools", "data_location.py"), "--move", target }, out output));
             _storageBusy = false;
@@ -1324,51 +1586,36 @@ namespace OpenSmash.Launcher
             _changed.Clear();
             string display = WindowSmash.ConfigFile(_repo, "display.ini");
             string pads = WindowSmash.ConfigFile(_repo, "controllers.ini");
-            string D(string key, string fallback) => IniValue(display, "", key) ?? fallback;
-            _iniValues["window"] = D("window", "windowed");
-            _iniValues["width"] = D("width", "1280");
-            _iniValues["height"] = D("height", "720");
+            // A value the files don't have is the game's own default (SettingDefaults.cs, checked against the runtime).
+            string D(string key) => IniValue(display, "", key) ?? SettingDefaults.Of(key);
+            _iniValues["ui_language"] = D("ui_language");
+            UiLocale.Select(_iniValues["ui_language"]);
+            foreach (string key in new[] { "window", "width", "height", "pacing", "render_scale", "gpu", "hide_cursor", "overlay", "volume" })
+                _iniValues[key] = D(key);
             _iniValues["window_size"] = _iniValues["width"] + "x" + _iniValues["height"];
-            _iniValues["pacing"] = D("pacing", "clock");
-            _iniValues["render_scale"] = D("render_scale", "1");
-            _iniValues["gpu"] = D("gpu", "auto");
-            // (runtime/renderer.h's names: d3d11, which older display.ini files carry, is auto)
-            _iniValues["renderer"] = D("renderer", "auto").Trim().ToLowerInvariant() switch { "vulkan" or "vk" => "vulkan", "direct3d11" or "direct3d" or "dx11" => "direct3d11", _ => "auto" };
-            _iniValues["hide_cursor"] = D("hide_cursor", "1");
-            _iniValues["overlay"] = D("overlay", "1");
-            _iniValues["volume"] = D("volume", "100");
-            _iniValues["keyboard_player"] = IniValue(pads, "general", "keyboard_player") ?? "1";
-            _iniValues["background"] = IniValue(pads, "general", "background") ?? "1";
-            string server = FirstLine(WindowSmash.ConfigFile(_repo, "online_server.txt"));
-            string[] words = server.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-            string host = words.Length > 0 ? words[0] : "";
-            _iniValues["code"] = words.Length > 1 ? words[1] : "";
-            const string Public = "smash.recomps.wtf:39421";
-            if (host == "" || host.Equals("off", StringComparison.OrdinalIgnoreCase)) _iniValues["lobby"] = "offline";
-            else if (host.Equals("auto", StringComparison.OrdinalIgnoreCase) || host.Equals("na", StringComparison.OrdinalIgnoreCase) || host.Equals("eu", StringComparison.OrdinalIgnoreCase)) _iniValues["lobby"] = "public";   // (auto: the nearest public lobby, the default)
-            else if (host.Equals(Public, StringComparison.OrdinalIgnoreCase)) _iniValues["lobby"] = _iniValues["code"] == "" ? "public" : "private";
-            else { _iniValues["lobby"] = "custom"; _iniValues["server"] = host; }
-            if (!_iniValues.ContainsKey("server")) _iniValues["server"] = "";
+            _iniValues["renderer"] = SettingDefaults.Renderer(D("renderer"));
+            _iniValues["keyboard_player"] = IniValue(pads, "general", "keyboard_player") ?? SettingDefaults.Of("keyboard_player");
+            _iniValues["background"] = IniValue(pads, "general", "background") ?? SettingDefaults.Of("background");
+            // online_server.txt is the truth (the game's settings menu writes it too); launcher.ini only remembers the
+            // code and the server typed here, for when that choice is picked again.
+            string serverFile = WindowSmash.ConfigFile(_repo, "online_server.txt");
+            string line = File.Exists(serverFile) ? FirstLine(serverFile) : SettingDefaults.OfFile("online_server.txt");
+            var (lobby, code, server) = SettingDefaults.LobbyFromLine(line);
             string launcherIni = WindowSmash.ConfigFile(_repo, "launcher.ini");
-            string savedLobby = IniValue(launcherIni, "opensmash", "lobby");
-            string savedCode = IniValue(launcherIni, "opensmash", "code");
-            string savedServer = IniValue(launcherIni, "opensmash", "server");
-            bool preferSavedLobby = false;
-            if (File.Exists(launcherIni))
+            _iniValues["lobby"] = lobby;
+            _iniValues["code"] = code != "" ? code : IniValue(launcherIni, "opensmash", "code") ?? "";
+            string savedServer = IniValue(launcherIni, "opensmash", "server") ?? "";
+            if (SettingDefaults.MeansPublicLobby(savedServer)) savedServer = "";   // (issue #389: an old public lobby, not "your own server")
+            _iniValues["server"] = server != "" ? server : savedServer;
+            // (the gone North American lobby's address still in online_server.txt: written as what it means, the Public
+            // lobby's "auto" - or the lobby code's line - so no launcher puts it back; issue #389)
+            if (File.Exists(serverFile) && SettingDefaults.IsOldLobbyLine(line))
             {
-                DateTime savedAt = File.GetLastWriteTimeUtc(launcherIni);
-                string serverFile = WindowSmash.ConfigFile(_repo, "online_server.txt");
-                DateTime serverAt = File.Exists(serverFile) ? File.GetLastWriteTimeUtc(serverFile) : DateTime.MinValue;
-                preferSavedLobby = savedAt >= serverAt;
+                try { SetFirstLine(serverFile, SettingDefaults.LineFromLobby(lobby, code, server)); } catch { }
             }
-            if (preferSavedLobby && savedLobby is "public" or "private" or "custom" or "offline")
-                _iniValues["lobby"] = savedLobby;
-            if (string.IsNullOrEmpty(_iniValues["code"]) && savedCode != null)
-                _iniValues["code"] = savedCode;
-            if ((preferSavedLobby || string.IsNullOrEmpty(_iniValues["server"])) && savedServer != null)
-                _iniValues["server"] = savedServer;
-            string direct = FirstLine(WindowSmash.ConfigFile(_repo, "online_direct.txt"));
-            _iniValues["direct"] = direct.Equals("off", StringComparison.OrdinalIgnoreCase) ? "off" : "on";
+            string directFile = WindowSmash.ConfigFile(_repo, "online_direct.txt");
+            string direct = File.Exists(directFile) ? FirstLine(directFile) : SettingDefaults.OfFile("online_direct.txt");
+            _iniValues["direct"] = direct.StartsWith("off", StringComparison.OrdinalIgnoreCase) ? "off" : "on";
             _iniValues["name"] = FirstLine(WindowSmash.ConfigFile(_repo, "online_name.txt"));
             var gpu = _settings.First(s => s.Key == "gpu");
             if (!gpu.Values.Contains(_iniValues["gpu"]))
@@ -1390,8 +1637,10 @@ namespace OpenSmash.Launcher
 
         bool SettingOn(Setting s)
         {
-            string lobby = _iniValues.GetValueOrDefault("lobby", "public");
+            string lobby = _iniValues.GetValueOrDefault("lobby", "offline");
             if (s.Key is "name" or "direct") return lobby != "offline";
+            if (s.Key == "code") return lobby is "private" or "custom";
+            if (s.Key == "server") return lobby == "custom";
             return true;
         }
 
@@ -1437,6 +1686,13 @@ namespace OpenSmash.Launcher
         // A change is written as soon as it is made, and again when the window closes.
         void WriteSetting(string key, string value)
         {
+            // Write only on a user change: closing after a game must not overwrite its language choice.
+            if (key == "ui_language")
+            {
+                try { SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", key, value); }
+                catch (Exception ex) { UiLocale.Message(UiLocale.Format("Could not save interface language: {0}", ex.Message), "OpenSmash"); return; }
+                UiLocale.Select(value);
+            }
             _iniValues[key] = value;
             _changed.Add(key);
             if (key == "window_size" && value.Contains('x'))
@@ -1463,31 +1719,22 @@ namespace OpenSmash.Launcher
 
         void WriteSettingsFiles()
         {
-            string lobby = _iniValues.GetValueOrDefault("lobby", "public");
+            string lobby = _iniValues.GetValueOrDefault("lobby", "offline");
             string code = _iniValues.GetValueOrDefault("code", "").Replace(" ", "");
             string host = _iniValues.GetValueOrDefault("server", "").Trim();
             bool serverReady = lobby != "private" || code != "";
             if (lobby == "custom" && host != "" && !System.Text.RegularExpressions.Regex.IsMatch(host, @"^\S+:\d+$"))
                 serverReady = false;
-            const string Public = "smash.recomps.wtf:39421";
-            string server = lobby switch
-            {
-                "offline" => "off",
-                "private" => Public + " " + code,
-                "custom" => (host == "" ? "127.0.0.1:39420" : host) + (code == "" ? "" : " " + code),
-                _ => "auto"   // (the nearest public lobby: Europe or North America, runtime/net_relay.c)
-            };
+            string server = SettingDefaults.LineFromLobby(lobby, code, host);
             // Only what was changed here since the files were read: the game's own settings menu (Esc)
             // writes these files too, while this window waits hidden for the game to close - writing
             // every value back when it closed put the game's changes (the renderer, the window...) back
             // to what they were before the game started.
             string display = WindowSmash.ConfigFile(_repo, "display.ini"), pads = WindowSmash.ConfigFile(_repo, "controllers.ini");
-            foreach (var (key, fallback) in new[] { ("window", "windowed"), ("width", "1280"), ("height", "720"), ("pacing", "clock"),
-                                                    ("render_scale", "1"), ("gpu", "auto"), ("renderer", "auto"), ("hide_cursor", "1"),
-                                                    ("overlay", "1"), ("volume", "100") })
-                if (_changed.Contains(key)) SetIni(display, "", key, _iniValues.GetValueOrDefault(key, fallback));
-            foreach (var (key, fallback) in new[] { ("keyboard_player", "1"), ("background", "1") })
-                if (_changed.Contains(key)) SetIni(pads, "general", key, _iniValues.GetValueOrDefault(key, fallback));
+            foreach (string key in new[] { "window", "width", "height", "pacing", "render_scale", "gpu", "renderer", "hide_cursor", "overlay", "volume" })
+                if (_changed.Contains(key)) SetIni(display, "", key, _iniValues.GetValueOrDefault(key, SettingDefaults.Of(key)));
+            foreach (string key in new[] { "keyboard_player", "background" })
+                if (_changed.Contains(key)) SetIni(pads, "general", key, _iniValues.GetValueOrDefault(key, SettingDefaults.Of(key)));
             bool serverChanged = _changed.Contains("lobby") || _changed.Contains("code") || _changed.Contains("server");
             if (serverReady && serverChanged)
                 SetFirstLine(WindowSmash.ConfigFile(_repo, "online_server.txt"), server);
@@ -1497,30 +1744,34 @@ namespace OpenSmash.Launcher
                 SetFirstLine(WindowSmash.ConfigFile(_repo, "online_direct.txt"), _iniValues.GetValueOrDefault("direct", "on"));
             _changed.Clear();   // (written: the game's later changes stay)
             if (serverChanged && !serverReady) { _changed.Add("lobby"); _changed.Add("code"); _changed.Add("server"); }
-            string launcherIni = WindowSmash.ConfigFile(_repo, "launcher.ini");
-            SetIni(launcherIni, "opensmash", "lobby", lobby);
-            SetIni(launcherIni, "opensmash", "code", code);
-            SetIni(launcherIni, "opensmash", "server", host);
+            // (only when changed here: written at every close, a stale copy once hid the lobby the game's menu had picked)
+            if (serverChanged)
+            {
+                string launcherIni = WindowSmash.ConfigFile(_repo, "launcher.ini");
+                if (code != "") SetIni(launcherIni, "opensmash", "code", code);
+                if (host != "") SetIni(launcherIni, "opensmash", "server", host);
+            }
         }
 
         bool SaveGameSettings()
         {
             if (!_settingsLoaded) ReadSettings();
             CommitEdit();
-            string lobby = _iniValues.GetValueOrDefault("lobby", "public");
+            string lobby = _iniValues.GetValueOrDefault("lobby", "offline");
             string code = _iniValues.GetValueOrDefault("code", "").Replace(" ", "");
             string host = _iniValues.GetValueOrDefault("server", "").Trim();
             if (lobby == "private" && code == "")
             {
-                MessageBox.Show("Type a lobby code: a word your friends type too.", "OpenSmash");
+                UiLocale.Message("Type a lobby code: a word your friends type too.", "OpenSmash");
                 return false;
             }
             if (lobby == "custom" && host != "" && !System.Text.RegularExpressions.Regex.IsMatch(host, @"^\S+:\d+$"))
             {
-                MessageBox.Show("Your own server is host:port, for example 192.168.1.20:39420.", "OpenSmash");
+                UiLocale.Message("Your own server is host:port, for example 192.168.1.20:39420.", "OpenSmash");
                 return false;
             }
             WriteSettingsFiles();
+            PresenceStop();   // (the game starts next: its own Rich Presence takes over from the launcher's)
             return true;
         }
 
@@ -1534,7 +1785,10 @@ namespace OpenSmash.Launcher
                 else _navBack.Push(_view);
             }
             if (_view == "settings" && name != "settings") CommitEdit();
+            if (_yuzuPage != null && name != "yuzu") _yuzuPage.Visible = false;
+            if (name != "remap") LeaveRemap();
             _view = name;
+            KeyPreview = name == "yuzu";
             _sel = 0;
             _hover = "";
             // Hide the WebView when leaving the marketplace. Entering is handled by
@@ -1877,6 +2131,11 @@ namespace OpenSmash.Launcher
                 return;
             }
 
+            if (_view == "yuzu" || _view == "remap")
+            {
+                if (e.KeyCode == Keys.Escape) { GoBack(); e.SuppressKeyPress = true; }
+                return;
+            }
             if (_view == "home")
             {
                 if (e.KeyCode == Keys.Up) { _sel = (_sel + _menuItems.Length - 1) % _menuItems.Length; Invalidate(); }
@@ -1947,9 +2206,12 @@ namespace OpenSmash.Launcher
                     else if (_sel < GetVisibleSettingsCount())
                     {
                         var set = GetVisibleSetting(_sel);
-                        if (set != null && set.Text) BeginEdit(set);
+                        if (set != null && set.Key == "remap") OpenRemap();
+                        else if (set != null && set.Text) BeginEdit(set);
                         else if (set == null || !set.Slider) ToggleDropdown(_sel);
                     }
+                    else if (_settingsTab < _settingsTabs.Length && _settingsTabs[_settingsTab].Name == "Advanced")
+                        OpenYuzuRoom();
                     else if (_settingsTab < _settingsTabs.Length
                         && string.Equals(_settingsTabs[_settingsTab].Name, "Update", StringComparison.OrdinalIgnoreCase)
                         && !_updateChecking && !_updateApplying)
@@ -1986,6 +2248,8 @@ namespace OpenSmash.Launcher
         {
             if (_openDropdownKey != null && _openDropdownKey.StartsWith("modpick:") && !id.StartsWith("modpick:"))
                 _openDropdownKey = null;
+            if (ActivateCommunityHit(id)) return;
+            if (ActivateDiscordHit(id)) return;
             if (ActivateNavHit(id)) return;
             if (id.StartsWith("menu:"))
             {
@@ -2043,7 +2307,7 @@ namespace OpenSmash.Launcher
                 foreach (var src in d.FileNames)
                 {
                     try { File.Copy(src, Path.Combine(folder, Path.GetFileName(src)), true); }
-                    catch (Exception ex) { MessageBox.Show($"Could not copy {Path.GetFileName(src)}: {ex.Message}", "OpenSmash"); }
+                    catch (Exception ex) { UiLocale.Message(UiLocale.Interpolate($"Could not copy {Path.GetFileName(src)}: {ex.Message}"), "OpenSmash"); }
                 }
                 UpdateMods();
                 _ = PushInstalledState();
@@ -2081,6 +2345,7 @@ namespace OpenSmash.Launcher
             }
             else if (id == "update_prompt:block") { }
             else if (id == "update:check") _ = CheckForUpdatesAsync(false);
+            else if (id == "update:build") StartMaintenanceBuild();
             else if (id == "storage:refresh") _ = StorageStatusAsync();
             else if (id == "storage:move") _ = StorageMoveAsync();
             else if (id == "update:apply") _ = ApplyUpdateAsync();
@@ -2201,6 +2466,7 @@ namespace OpenSmash.Launcher
                     int idx = int.Parse(rest.Substring(0, rest.Length - 3));
                     var set = _settings[idx];
                     if (set.Text) { BeginEdit(set); return; }
+                    if (set.Key == "remap") { OpenRemap(); return; }
                     if (set.Slider || set.Key == "pads" || !SettingOn(set)) return;
                     var visibleIdx = GetVisibleSettings().ToList().FindIndex(s => Array.IndexOf(_settings, s) == idx);
                     ToggleDropdown(visibleIdx);
@@ -2210,11 +2476,12 @@ namespace OpenSmash.Launcher
                     int idx = int.Parse(rest);
                     var set = _settings[idx];
                     if (!SettingOn(set)) return;
+                    if (set.Key == "remap") { OpenRemap(); return; }
                     if (set.Key == "pads")
                     {
                         string pads = WindowSmash.ConfigFile(_repo, "controllers.ini");
                         if (File.Exists(pads)) Process.Start(new ProcessStartInfo("notepad.exe", "\"" + pads + "\"") { UseShellExecute = true });
-                        else MessageBox.Show("controllers.ini is written the first time the game starts.", "OpenSmash");
+                        else UiLocale.Message("controllers.ini is written the first time the game starts.", "OpenSmash");
                         return;
                     }
                     if (set.Slider) return;
@@ -2374,7 +2641,7 @@ namespace OpenSmash.Launcher
                 else
                 {
                     var skyline = Pinned("skyline");
-                    _setupStep = $"Downloading Skyline {skyline.Version}...";
+                    _setupStep = UiLocale.Interpolate($"Downloading Skyline {skyline.Version}...");
                     _setupLog += "[2/3] Installing Skyline\n";
                     _setupLog += $"      Skyline {skyline.Version}\n";
                     await DownloadPinnedAndExtract(skyline, _skylineDir);
@@ -2394,7 +2661,7 @@ namespace OpenSmash.Launcher
                 else
                 {
                     var arcropolis = Pinned("arcropolis");
-                    _setupStep = $"Downloading ARCropolis {arcropolis.Version}...";
+                    _setupStep = UiLocale.Interpolate($"Downloading ARCropolis {arcropolis.Version}...");
                     _setupLog += "[3/3] Installing ARCropolis\n";
                     _setupLog += $"      ARCropolis {arcropolis.Version}\n";
                     await DownloadPinnedAndExtract(arcropolis, arcDir);
@@ -2483,7 +2750,7 @@ namespace OpenSmash.Launcher
             }
             catch (Exception ex)
             {
-                _setupLog += $"      plugin import failed: {ex.Message}\n";
+                _setupLog += UiLocale.Interpolate($"      plugin import failed: {ex.Message}\n");
             }
             return imported;
         }
@@ -2646,7 +2913,7 @@ namespace OpenSmash.Launcher
         async Task DownloadPinnedAndExtract(PinnedDownload pin, string destDir)
         {
             if (string.IsNullOrWhiteSpace(pin.Sha256))
-                throw new InvalidOperationException($"{pin.Name} {pin.Version} has no SHA-256 recorded yet; refusing to install it.");
+                throw new InvalidOperationException(UiLocale.Interpolate($"{pin.Name} {pin.Version} has no SHA-256 recorded yet; refusing to install it."));
 
             byte[] bytes;
             using (var request = new HttpRequestMessage(HttpMethod.Get, pin.Url))
@@ -2655,7 +2922,7 @@ namespace OpenSmash.Launcher
                 using var response = await _downloadClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
                 response.EnsureSuccessStatusCode();
                 if (response.Content.Headers.ContentLength is long declared && declared > pin.MaxBytes)
-                    throw new InvalidDataException($"{pin.Name} download is {declared} bytes, over its {pin.MaxBytes}-byte cap.");
+                    throw new InvalidDataException(UiLocale.Interpolate($"{pin.Name} download is {declared} bytes, over its {pin.MaxBytes}-byte cap."));
 
                 using var stream = await response.Content.ReadAsStreamAsync();
                 using var buffer = new MemoryStream();
@@ -2664,7 +2931,7 @@ namespace OpenSmash.Launcher
                 while ((read = await stream.ReadAsync(chunk, 0, chunk.Length)) > 0)
                 {
                     if (buffer.Length + read > pin.MaxBytes)
-                        throw new InvalidDataException($"{pin.Name} download is over its {pin.MaxBytes}-byte cap.");
+                        throw new InvalidDataException(UiLocale.Interpolate($"{pin.Name} download is over its {pin.MaxBytes}-byte cap."));
                     buffer.Write(chunk, 0, read);
                 }
                 bytes = buffer.ToArray();
@@ -2673,7 +2940,7 @@ namespace OpenSmash.Launcher
             string got = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
             if (!got.Equals(pin.Sha256, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException(
-                    $"{pin.Name} {pin.Version} is not the release checked here (SHA-256 {got[..16].ToLowerInvariant()}..., expected {pin.Sha256[..16]}...); not installed.");
+                    UiLocale.Interpolate($"{pin.Name} {pin.Version} is not the release checked here (SHA-256 {got[..16].ToLowerInvariant()}..., expected {pin.Sha256[..16]}...); not installed."));
 
             Directory.CreateDirectory(destDir);
             string fileName = Path.GetFileName(new Uri(pin.Url).AbsolutePath);
@@ -2707,7 +2974,7 @@ namespace OpenSmash.Launcher
             string dst = Path.Combine(_modsDir, name);
             if (Directory.Exists(dst) || File.Exists(dst))
             {
-                MessageBox.Show($"A mod called \"{name}\" is already installed.", "OpenSmash");
+                UiLocale.Message(UiLocale.Interpolate($"A mod called \"{name}\" is already installed."), "OpenSmash");
                 return;
             }
             _modsBusy = true;
@@ -2722,7 +2989,7 @@ namespace OpenSmash.Launcher
             {
                 _modsBusy = false;
                 Invalidate();
-                MessageBox.Show(asLink ? $"Could not add the link: {ex.Message}" : $"Could not copy: {ex.Message}", "OpenSmash-Ultimate");
+                UiLocale.Message(asLink ? UiLocale.Interpolate($"Could not add the link: {ex.Message}") : UiLocale.Interpolate($"Could not copy: {ex.Message}"), "OpenSmash-Ultimate");
                 return;
             }
             _pluginBuildUi = true;
@@ -2748,7 +3015,7 @@ namespace OpenSmash.Launcher
             await PushInstalledState();
             PlayDone();
             Invalidate();
-            if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
+            if (why.Length > 0) UiLocale.Message(why, "OpenSmash");
         }
 
         void RemoveMod()
@@ -2758,7 +3025,7 @@ namespace OpenSmash.Launcher
             if (index < 0 || index >= _modLines.Count || _modsBusy) return;
             var line = _modLines[index];
             string label = line.Header || line.Pick ? line.Title + (line.Pick ? " and its colors" : " and its parts") : line.Title;
-            var r = MessageBox.Show($"Delete \"{label}\"?", "OpenSmash", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            var r = UiLocale.Message(UiLocale.Format("Delete \"{0}\"?", label), "OpenSmash", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
             if (r != DialogResult.Yes) return;
             var args = new List<string> { "remove" };
             args.AddRange(line.Names);
@@ -2777,7 +3044,7 @@ namespace OpenSmash.Launcher
                     UpdateMods();
                     _ = PushInstalledState();
                     Invalidate();
-                    if (why.Length > 0) MessageBox.Show($"Could not remove: {why}", "OpenSmash");
+                    if (why.Length > 0) UiLocale.Message(UiLocale.Interpolate($"Could not remove: {why}"), "OpenSmash");
                 });
             });
         }
@@ -2811,14 +3078,14 @@ namespace OpenSmash.Launcher
             _modsBusy = false;
             ClearLoad();
             Invalidate();
-            if (why.Length > 0) { MessageBox.Show($"Could not check the mods: {why}", "OpenSmash"); return; }
+            if (why.Length > 0) { UiLocale.Message(UiLocale.Interpolate($"Could not check the mods: {why}"), "OpenSmash"); return; }
             var text = new System.Text.StringBuilder();
             var c = OsModsResult(conflictsOut);
             if (c is JsonElement cr && cr.TryGetProperty("conflicts", out var list) && list.ValueKind == JsonValueKind.Array)
             {
                 int nc = list.GetArrayLength();
                 text.AppendLine(nc == 0 ? "No file is changed by two turned-on mods."
-                                        : $"{nc} file(s) changed by more than one turned-on mod (the game reads the last one's):");
+                                        : UiLocale.Interpolate($"{nc} file(s) changed by more than one turned-on mod (the game reads the last one's):"));
                 int shown = 0;
                 foreach (var x in list.EnumerateArray())
                 {
@@ -2835,7 +3102,7 @@ namespace OpenSmash.Launcher
             {
                 foreach (var x in ul.EnumerateArray())
                     updates.Add((GetString(x, "gamebanana"), GetString(x, "file_id"), GetString(x, "title")));
-                text.AppendLine(updates.Count == 0 ? "Every GameBanana mod is up to date." : $"{updates.Count} mod(s) with a newer file on GameBanana:");
+                text.AppendLine(updates.Count == 0 ? "Every GameBanana mod is up to date." : UiLocale.Interpolate($"{updates.Count} mod(s) with a newer file on GameBanana:"));
                 foreach (var x in updates) text.AppendLine($"  {x.title}");
             }
             else text.AppendLine("Updates: GameBanana could not be reached.");
@@ -2907,13 +3174,13 @@ namespace OpenSmash.Launcher
                     var r = OsModsResult(output);
                     if (why.Length == 0 && r is JsonElement e && e.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.False)
                         why = GetString(e, "error");
-                    if (why.Length > 0) { MessageBox.Show($"Could not {(export ? "save" : "install")} the list: {why}", "OpenSmash"); return; }
-                    if (export) { MessageBox.Show($"Saved: {path}", "OpenSmash - mod list"); return; }
+                    if (why.Length > 0) { UiLocale.Message(UiLocale.Interpolate($"Could not {(export ? "save" : "install")} the list: {why}"), "OpenSmash"); return; }
+                    if (export) { UiLocale.Message(UiLocale.Format("Saved: {0}", path), "OpenSmash - mod list"); return; }
                     int Count(string key) => r is JsonElement j && j.TryGetProperty(key, out var a) && a.ValueKind == JsonValueKind.Array ? a.GetArrayLength() : 0;
                     string missing = r is JsonElement j2 && j2.TryGetProperty("missing", out var m) && m.ValueKind == JsonValueKind.Array
                         ? string.Join(", ", m.EnumerateArray().Select(x => x.GetString())) : "";
-                    MessageBox.Show($"{Count("installed")} installed, {Count("already")} already here" +
-                                    (missing.Length > 0 ? $", not on GameBanana (ask your friend for them): {missing}" : "."), "OpenSmash - mod list");
+                    UiLocale.Message(UiLocale.Interpolate($"{Count("installed")} installed, {Count("already")} already here") +
+                                    (missing.Length > 0 ? UiLocale.Interpolate($", not on GameBanana (ask your friend for them): {missing}") : "."), "OpenSmash - mod list");
                 });
             });
         }
@@ -2987,7 +3254,7 @@ namespace OpenSmash.Launcher
             }
             catch (Exception ex)
             {
-                MessageBox.Show(ex.Message, "OpenSmash");
+                UiLocale.Message(ex.Message, "OpenSmash");
                 return false;
             }
             finally { ClearLoad(); }
@@ -3045,7 +3312,7 @@ namespace OpenSmash.Launcher
                     ClearLoad();
                     UpdateMods();
                     Invalidate();
-                    if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
+                    if (why.Length > 0) UiLocale.Message(why, "OpenSmash");
                 });
             });
         }
@@ -3075,7 +3342,7 @@ namespace OpenSmash.Launcher
             UpdateMods();
             PlayDone();
             Invalidate();
-            if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
+            if (why.Length > 0) UiLocale.Message(why, "OpenSmash");
         }
 
         async Task BuildPlugins()
@@ -3103,7 +3370,169 @@ namespace OpenSmash.Launcher
             UpdateMods();
             PlayDone();
             Invalidate();
-            if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
+            if (why.Length > 0) UiLocale.Message(why, "OpenSmash");
+        }
+
+        void StartMaintenanceBuild()
+        {
+            if (Busy) return;
+            if (_gameProcess != null && !_gameProcess.HasExited)
+            {
+                MessageBox.Show("Close the game before building again.", "OpenSmash");
+                return;
+            }
+
+            string script = Path.Combine(_repo, "tools", "rebuild-all.ps1");
+            if (!File.Exists(script))
+            {
+                MessageBox.Show($"Build script not found: {script}", "OpenSmash");
+                return;
+            }
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                WorkingDirectory = _repo,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (string arg in new[]
+            {
+                "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
+                "-LauncherPid", Environment.ProcessId.ToString()
+            })
+                psi.ArgumentList.Add(arg);
+
+            var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+            process.OutputDataReceived += (_, e) => QueueMaintenanceLine(e.Data);
+            process.ErrorDataReceived += (_, e) => QueueMaintenanceLine(e.Data);
+            process.Exited += (_, _) => FinishMaintenanceBuild(process);
+
+            _maintenanceBuildUi = true;
+            _maintenanceRestartRequested = false;
+            _maintenanceFrac = -1;
+            _maintenanceDetail = "Starting the incremental build";
+            _maintenanceEta = "";
+            _maintenanceLog.Clear();
+            _maintenanceProcess = process;
+            Invalidate();
+
+            try
+            {
+                process.Start();
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+            }
+            catch (Exception ex) when (ex is InvalidOperationException || ex is System.ComponentModel.Win32Exception)
+            {
+                _maintenanceBuildUi = false;
+                _maintenanceProcess = null;
+                process.Dispose();
+                Invalidate();
+                MessageBox.Show($"Could not start the build: {ex.Message}", "OpenSmash");
+            }
+        }
+
+        void QueueMaintenanceLine(string? line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    if (line == "__OPENSMASH_RESTART__")
+                    {
+                        _maintenanceRestartRequested = true;
+                        _maintenanceFrac = 1;
+                        _maintenanceDetail = "Restarting OpenSmash";
+                        Invalidate();
+                        Close();
+                        return;
+                    }
+                    NoteMaintenanceLine(line);
+                }));
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+        }
+
+        void NoteMaintenanceLine(string line)
+        {
+            if (line == "__OPENSMASH_PHASE__:game")
+            {
+                _maintenanceFrac = -1;
+                _maintenanceDetail = "Building the game";
+                _maintenanceEta = "";
+                Invalidate();
+                return;
+            }
+            if (line == "__OPENSMASH_PHASE__:launcher")
+            {
+                _maintenanceFrac = -1;
+                _maintenanceDetail = "Publishing the launcher";
+                _maintenanceEta = "";
+                Invalidate();
+                return;
+            }
+
+            _maintenanceLog.Add(line);
+            if (_maintenanceLog.Count > 20) _maintenanceLog.RemoveAt(0);
+            var percent = Regex.Match(line.Trim(), @"(?:^LOG percent (\d{1,3})$)|(?:\]\s+(\d{1,3})%)|(?: — (\d{1,3})%,)");
+            if (percent.Success)
+            {
+                string value = percent.Groups.Cast<Group>().Skip(1).First(g => g.Success).Value;
+                if (int.TryParse(value, out int pct))
+                {
+                    float frac = Math.Clamp(pct / 100f, 0f, 1f);
+                    if (frac >= _maintenanceFrac)
+                    {
+                        _maintenanceFrac = frac;
+                        _maintenanceDetail = "Building the game";
+                    }
+                }
+                Invalidate();
+                return;
+            }
+
+            if (line.StartsWith("LOG ", StringComparison.Ordinal)) line = line.Substring(4);
+            if (line.Length > 180) line = line.Substring(0, 180);
+            if (!string.IsNullOrWhiteSpace(line))
+            {
+                _maintenanceDetail = line.Trim();
+                Invalidate();
+            }
+        }
+
+        void FinishMaintenanceBuild(Process process)
+        {
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    if (_maintenanceRestartRequested) return;
+                    int exitCode;
+                    try { exitCode = process.ExitCode; }
+                    catch (InvalidOperationException) { exitCode = -1; }
+
+                    if (ReferenceEquals(_maintenanceProcess, process)) _maintenanceProcess = null;
+                    _maintenanceBuildUi = false;
+                    process.Dispose();
+                    RefreshInfo();
+                    Invalidate();
+                    if (exitCode == 0)
+                        MessageBox.Show("The game and launcher builds completed.", "OpenSmash");
+                    else
+                    {
+                        string log = string.Join(Environment.NewLine, _maintenanceLog);
+                        if (log.Length > 1800) log = log.Substring(log.Length - 1800);
+                        MessageBox.Show($"The build stopped (exit code {exitCode}).{Environment.NewLine}{Environment.NewLine}{log}", "OpenSmash");
+                    }
+                }));
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
         }
 
         async Task FetchPlugins(bool again)
@@ -3129,7 +3558,7 @@ namespace OpenSmash.Launcher
             UpdateMods();
             PlayDone();
             Invalidate();
-            if (why.Length > 0) MessageBox.Show(why, "OpenSmash");
+            if (why.Length > 0) UiLocale.Message(why, "OpenSmash");
         }
 
         async Task<string> UnbuiltPluginChoice()
@@ -3163,9 +3592,9 @@ namespace OpenSmash.Launcher
         static string PluginRefreshWhy(List<string> waiting, string reason)
         {
             if (waiting.Count == 1)
-                return waiting[0] + " has a new plugin file. Refreshing rebuilds its DLL. The game program stays as it is.";
+                return waiting[0] + UiLocale.Text(" has a new plugin file. Refreshing rebuilds its DLL. The game program stays as it is.");
             if (waiting.Count > 1)
-                return "These mods have new plugin files. Refreshing rebuilds their DLLs. The game program stays as it is.\n\n" +
+                return UiLocale.Text("These mods have new plugin files. Refreshing rebuilds their DLLs. The game program stays as it is.\n\n") +
                     string.Join("\n", waiting.Take(8));
             if (!string.IsNullOrEmpty(reason))
                 return "A moveset plugin has to be turned into a DLL again. The game program stays as it is.";
@@ -3176,9 +3605,9 @@ namespace OpenSmash.Launcher
         {
             var parts = new List<string>();
             if (waiting.Count == 1)
-                parts.Add(waiting[0] + " has a plugin that isn't ready yet. A match loads the vanilla fighter until it is updated.");
+                parts.Add(waiting[0] + UiLocale.Text(" has a plugin that isn't ready yet. A match loads the vanilla fighter until it is updated."));
             else if (waiting.Count > 1)
-                parts.Add("These mods have plugins that aren't ready yet. A match loads the vanilla fighter until they are updated.\n\n" +
+                parts.Add(UiLocale.Text("These mods have plugins that aren't ready yet. A match loads the vanilla fighter until they are updated.\n\n") +
                     string.Join("\n", waiting.Take(8)));
             bool sameAsWaiting = reason.Contains("isn't translated") || reason.Contains("isn't recompiled");
             if (!string.IsNullOrEmpty(reason) && !(waiting.Count > 0 && sameAsWaiting))
@@ -3186,7 +3615,7 @@ namespace OpenSmash.Launcher
                 if (reason.Contains("hooks a function"))
                     parts.Add("A mod hooks the middle of a function. The game has to be updated once so that hook can run.");
                 else if (reason.StartsWith("the plugin "))
-                    parts.Add(reason.Substring("the plugin ".Length).Replace(" isn't in the game", "") + " was added. The game has to be updated once so that plugin can run.");
+                    parts.Add(reason.Substring("the plugin ".Length).Replace(" isn't in the game", "") + UiLocale.Text(" was added. The game has to be updated once so that plugin can run."));
                 else if (reason.Contains("isn't in the game") || reason.Contains("isn't fetched"))
                     parts.Add("A community plugin the mods rely on isn't in the game yet.");
                 else if (reason.Contains("patches.txt"))
@@ -3215,9 +3644,20 @@ namespace OpenSmash.Launcher
         {
             string marker = Path.Combine(_repo, "dump", "shadercache", "complete.txt");
             if (!File.Exists(marker)) return false;
-            var ver = Regex.Match(File.ReadAllText(Path.Combine(_repo, "runtime", "gpu_shader_cache.h")), @"#define SHADER_CACHE_VERSION (\d+)");
+            string header = File.ReadAllText(Path.Combine(_repo, "runtime", "gpu_shader_cache.h"));
+            var ver = Regex.Match(header, @"#define SHADER_CACHE_VERSION (\d+)");
             if (!ver.Success) return false;
-            return File.ReadAllText(marker).Contains("version " + ver.Groups[1].Value);
+            string text = File.ReadAllText(marker);
+            if (!text.Contains("version " + ver.Groups[1].Value)) return false;
+            // Vulkan draws from SPIR-V, which a Prepare Shaders run without ssbu_glslang.dll (every run before
+            // Vulkan was the default) did not make: without it each new shader and pipeline is made in play
+            // (a minute of waits in a first session). Nor did a run before the SPIR-V version went up (#330: 1001 to 1002):
+            // its files have the old names, so the warm start found 321 programs of 13,663 pipelines on an RTX 5060 and the
+            // first match made 300 pipelines in play (2026-11-16). The names must be this version's ("spirv g<version>.");
+            // a newer glslang's library part is not checked: the game makes those in play.
+            var spv = Regex.Match(header, @"#define SHADER_CACHE_SPV_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)");
+            string want = spv.Success ? "\nspirv g" + (int.Parse(ver.Groups[1].Value) * 100 + int.Parse(spv.Groups[1].Value)) + "." : "\nspirv ";
+            return RendererAsked() == "direct3d11" || !File.Exists(Path.Combine(_repo, "build", "ssbu_glslang.dll")) || text.Contains(want);
         }
 
         void StartShaders(string priority)
@@ -3262,7 +3702,7 @@ namespace OpenSmash.Launcher
             {
                 _shaderUi = true;
                 _shaderFrac = 0;
-                _shaderDetail = "Could not start the shader compile: " + ex.Message;
+                _shaderDetail = UiLocale.Text("Could not start the shader compile: ") + ex.Message;
             }
             Invalidate();
         }
@@ -3290,7 +3730,7 @@ namespace OpenSmash.Launcher
                 && total > 0)
             {
                 _shaderFrac = (float)(done / total);
-                _shaderDetail = $"Compiling shaders  {done:N0} / {total:N0}";
+                _shaderDetail = UiLocale.Interpolate($"Compiling shaders  {done:N0} / {total:N0}");
                 _shaderEta = count.Groups[3].Success ? count.Groups[3].Value.Trim() : "";
             }
             else if (line.StartsWith("getting ready", StringComparison.OrdinalIgnoreCase))
@@ -3311,6 +3751,7 @@ namespace OpenSmash.Launcher
         async void StartPlay()
         {
             if (Busy) return;
+            if (YuzuGameRunning()) { OpenYuzuRoom(); return; }
             _startingPlay = true;
             Invalidate();
             try { await StartPlayCore(); }
@@ -3332,9 +3773,38 @@ namespace OpenSmash.Launcher
                 if (!ready) return;
             }
             else if (_loadOn) return;
+            if (File.Exists(GameBuildPendingPath))
+            {
+                var retry = MessageBox.Show(this,
+                    "The game rebuild after the update did not finish. Retry it before starting the game?",
+                    "OpenSmash update", MessageBoxButtons.RetryCancel, MessageBoxIcon.Warning);
+                if (retry != DialogResult.Retry) return;
+                try
+                {
+                    var result = await BuildGameAfterUpdateAsync();
+                    if (result.Code != 0)
+                        throw new InvalidOperationException("The game rebuild stopped (exit " + result.Code + "). " + Tail(result.Output));
+                    File.Delete(GameBuildPendingPath);
+                    RefreshInfo();
+                    if (File.Exists(LauncherBuildPendingPath))
+                    {
+                        ScheduleLauncherBuildAndRestart();
+                        MessageBox.Show(this, "The game is current. OpenSmash will close briefly to rebuild the launcher, then reopen.",
+                            "OpenSmash update", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        Close();
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, "The game is still out of date and cannot be started.\n\n" + ex.Message,
+                        "OpenSmash update", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+            }
             if (!_built)
             {
-                MessageBox.Show("The game is not built yet. Run the installer first.", "OpenSmash");
+                UiLocale.Message("The game is not built yet. Run the installer first.", "OpenSmash");
                 return;
             }
             string unbuilt = await UnbuiltPluginChoice();
@@ -3356,7 +3826,7 @@ namespace OpenSmash.Launcher
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Could not save the settings.\n\n" + ex.Message, "OpenSmash");
+                UiLocale.Message(UiLocale.Text("Could not save the settings.\n\n") + ex.Message, "OpenSmash");
                 return;
             }
 
@@ -3388,12 +3858,12 @@ namespace OpenSmash.Launcher
             {
                 string log = Path.Combine(_buildDir, "play.log");
                 string why = File.Exists(log) ? Tail(File.ReadAllText(log)) : "The game exited before its window opened.";
-                MessageBox.Show("The game stopped as it was starting.\n\n" + why, "OpenSmash");
+                UiLocale.Message(UiLocale.Text("The game stopped as it was starting.\n\n") + why, "OpenSmash");
                 return;
             }
             if (!shown)
             {
-                MessageBox.Show("Could not start the game. build\\ssbu.exe was not found.", "OpenSmash");
+                UiLocale.Message("Could not start the game. build\\ssbu.exe was not found.", "OpenSmash");
                 return;
             }
             _waitingForGame = true;
@@ -3479,16 +3949,31 @@ namespace OpenSmash.Launcher
             }
         }
 
+        // Epic Online Services' and Discord's files beside the program (tools\online_files.py: nothing downloaded when
+        // they are current). An update whose fetch failed left them out and the game went online through the public
+        // lobby alone, unseen by the players on Epic (issue #389); Play puts them back. Never stops the start.
+        void EnsureOnlineFiles()
+        {
+            try
+            {
+                string script = Path.Combine(_repo, "tools", "online_files.py");
+                if (string.IsNullOrEmpty(_pythonExe) || !File.Exists(script)) return;
+                RunPython(new[] { script, WindowSmash.BuildDir(_repo) }, out _);
+            }
+            catch { }
+        }
+
         async Task LaunchGameNow()
         {
             try
             {
                 if (!WindowSmash.IsBuilt(_repo))
                 {
-                    MessageBox.Show("The game isn't built here yet.", "OpenSmash");
+                    UiLocale.Message("The game isn't built here yet.", "OpenSmash");
                     return;
                 }
                 SetLoad("STARTING THE GAME", -1);
+                await Task.Run(EnsureOnlineFiles);
                 // Same start as Play SSBU.bat: build\ssbu.exe dump\modules --status 30 --online
                 _gameProcess = WindowSmash.StartGame(_repo);
                 _gameLaunched = true;
@@ -3510,7 +3995,7 @@ namespace OpenSmash.Launcher
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Could not start the game.\n\n" + ex.Message, "OpenSmash-Ultimate");
+                UiLocale.Message(UiLocale.Text("Could not start the game.\n\n") + ex.Message, "OpenSmash-Ultimate");
             }
             finally
             {
@@ -3547,7 +4032,7 @@ namespace OpenSmash.Launcher
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Bring to front failed: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine(UiLocale.Interpolate($"Bring to front failed: {ex.Message}"));
             }
         }
 
@@ -3674,8 +4159,8 @@ namespace OpenSmash.Launcher
             }
             catch (Exception ex)
             {
-                _marketplaceError = "Mod browser unavailable: " + ex.Message +
-                                    "\nInstall the Microsoft Edge WebView2 Runtime, then restart OpenSmash.";
+                _marketplaceError = UiLocale.Text("Mod browser unavailable: ") + ex.Message +
+                                    UiLocale.Text("\nInstall the Microsoft Edge WebView2 Runtime, then restart OpenSmash.");
                 try { Controls.Remove(view); view.Dispose(); } catch { }
                 _marketplaceWebView = null;
             }
@@ -3784,13 +4269,13 @@ namespace OpenSmash.Launcher
 
             if (!_marketplaceInstalling.Add(modId))
             {
-                await SendStatus(modId, "downloading", "Already installing " + name + "…", 0);
+                await SendStatus(modId, "downloading", UiLocale.Text("Already installing ") + name + "…", 0);
                 return;
             }
 
             try
             {
-                await SendStatus(modId, "downloading", "Installing " + name, 0);
+                await SendStatus(modId, "downloading", UiLocale.Text("Installing ") + name, 0);
                 string why = "";
                 await Task.Run(() =>
                 {
@@ -3803,7 +4288,7 @@ namespace OpenSmash.Launcher
                             string msg = line.Substring(4).Trim();
                             var pct = Regex.Match(msg, @"^percent (\d+)$");
                             if (pct.Success && int.TryParse(pct.Groups[1].Value, out int n))
-                                _ = SendStatus(modId, n >= 100 ? "installing" : "downloading", "Installing " + name, Math.Clamp(n, 0, 100));
+                                _ = SendStatus(modId, n >= 100 ? "installing" : "downloading", UiLocale.Text("Installing ") + name, Math.Clamp(n, 0, 100));
                             else if (msg.Length > 0 && msg.Length < 180)
                                 _ = SendStatus(modId, "installing", msg, 92);
                         });
@@ -3820,7 +4305,7 @@ namespace OpenSmash.Launcher
             }
             catch (Exception ex)
             {
-                await SendStatus(modId, "error", "Install failed: " + ex.Message, 0);
+                await SendStatus(modId, "error", UiLocale.Text("Install failed: ") + ex.Message, 0);
             }
             finally
             {
@@ -3877,7 +4362,7 @@ namespace OpenSmash.Launcher
 
             try
             {
-                await SendStatus(id, "downloading", "Fetching " + name + "…", 0);
+                await SendStatus(id, "downloading", UiLocale.Text("Fetching ") + name + "…", 0);
 
                 // Only the plugins pinned in PinnedDownloads are downloaded; the page's
                 // URL only tells which one it means. Anything else opens in the user's
@@ -3888,7 +4373,7 @@ namespace OpenSmash.Launcher
 
                 if (RuntimeProvidedPluginRepos.Any(r => r.Equals(repo, StringComparison.OrdinalIgnoreCase)))
                 {
-                    await SendStatus(id, "done", name + " is built into OpenSmash; nothing to install.", 100);
+                    await SendStatus(id, "done", name + UiLocale.Text(" is built into OpenSmash; nothing to install."), 100);
                     return;
                 }
 
@@ -3896,7 +4381,7 @@ namespace OpenSmash.Launcher
                 if (pin == null || pin.Key == "skyline" || pin.Key == "arcropolis")
                 {
                     OpenExternal(url);
-                    await SendStatus(id, "error", name + " is not one of the plugins OpenSmash installs; opened its page.", 0);
+                    await SendStatus(id, "error", name + UiLocale.Text(" is not one of the plugins OpenSmash installs; opened its page."), 0);
                     return;
                 }
 
@@ -3937,7 +4422,7 @@ namespace OpenSmash.Launcher
             }
             catch (Exception ex)
             {
-                await SendStatus(modId, "error", "Remove failed: " + ex.Message, 0);
+                await SendStatus(modId, "error", UiLocale.Text("Remove failed: ") + ex.Message, 0);
             }
         }
 
@@ -4081,7 +4566,7 @@ namespace OpenSmash.Launcher
             };
 
             using var process = Process.Start(psi)
-                ?? throw new InvalidOperationException($"Could not start {fileName}.");
+                ?? throw new InvalidOperationException(UiLocale.Interpolate($"Could not start {fileName}."));
 
             string stderr = await process.StandardError.ReadToEndAsync();
             await process.WaitForExitAsync();
@@ -4355,7 +4840,10 @@ namespace OpenSmash.Launcher
             }
 
             using var reader = new StreamReader(stream, Encoding.UTF8);
-            return reader.ReadToEnd();
+            string html = reader.ReadToEnd();
+            using var scriptStream = assembly.GetManifestResourceStream("UiLocale.Web.js")!;
+            using var scriptReader = new StreamReader(scriptStream, Encoding.UTF8);
+            return html.Replace("<head>", "<head><script>" + UiLocale.WebScript + scriptReader.ReadToEnd() + "</script>");
         }
     }
 

@@ -32,6 +32,8 @@
 #include "gpu_overlay.h"
 #include "gpu_renderer.h"
 #include "language.h"
+#include "ui_locale.h"
+#include "ui_utf8.h"
 #include "mod_switch.h"
 #include "net.h"
 #include "pad.h"
@@ -45,7 +47,7 @@ void gfx_closing(void); /* (gpu_d3d11.c) the game is about to end */
 int gfx_adapter_names(char names[][64], int max); /* (gpu_d3d11.c) the graphics cards, fastest first */
 #endif
 
-#define PUBLIC_LOBBY "smash.recomps.wtf:39421" /* (the online_server.txt the port comes with) */
+#define PUBLIC_LOBBY "opensmash-lobby.duckdns.org:39421" /* (the one public lobby: net_relay.c) */
 
 static volatile int open_, releasing;
 int menu_is_open(void) { return open_; }
@@ -53,7 +55,7 @@ int menu_blocks_input(void) { return open_ || releasing; }
 
 /* ---- messages ------------------------------------------------------------------------- */
 static SRWLOCK toast_lock = SRWLOCK_INIT;
-static char toast[160];
+static char toast[480];
 static ULONGLONG toast_until; /* 1: not shown yet (its time starts at the first draw) */
 
 void menu_toast(const char *text)
@@ -64,7 +66,13 @@ void menu_toast(const char *text)
     ReleaseSRWLockExclusive(&toast_lock);
 }
 
-int menu_visible(void) { return open_ || (toast_until && (toast_until == 1 || GetTickCount64() < toast_until)); }
+const char *net_notice_take(void);   /* (net_relay.c: a message for the screen, once) */
+int menu_visible(void)
+{
+    const char *notice = net_notice_take();
+    if (notice)
+        menu_toast(notice);
+    return open_ || (toast_until && (toast_until == 1 || GetTickCount64() < toast_until)); }
 
 /* ---- keys from the window's thread ---------------------------------------------------- */
 static volatile LONG q[64], q_head, q_tail;
@@ -129,37 +137,48 @@ enum
     P_GAME,
     P_LOBBY,
     P_MODS,
+    P_EXP,
     P_REMAP,
     P_KEYS,
     P_STICKS,
+    P_RUMBLE,
+    P_INPUTS,
+    P_CUSTOM,
+    P_ASSIGN,
     PAGES = P_REMAP
 }; /* (the pad's buttons, the keyboard's keys, the pad's sticks: no key of their own) */
-#define SUB_PAGE(p) ((p) == P_REMAP || (p) == P_KEYS || (p) == P_STICKS) /* (a page of the Controllers page's) */
-static const char *const PAGE_NAMES[PAGES] = {"Display", "Controllers", "Online", "Game", "Lobby", "Mods"};
+#define SUB_PAGE(p) ((p) == P_REMAP || (p) == P_KEYS || (p) == P_STICKS || (p) == P_RUMBLE || (p) == P_INPUTS || (p) == P_CUSTOM || (p) == P_ASSIGN) /* (a page of the Controllers page's) */
+/* Where B / Backspace and the Back rows go from a page of the Controllers page's: Buttons, Sticks and Rumble are inside Customize controller. */
+#define PARENT_PAGE(p) ((p) == P_REMAP || (p) == P_STICKS || (p) == P_RUMBLE || (p) == P_INPUTS ? P_CUSTOM : P_PADS)
+static const char *const PAGE_NAMES[PAGES] = {"Display", "Controllers", "Online", "Game", "Lobby", "Mods", "Experimental"};
 enum { K_INFO, K_CHOICE, K_ACTION, K_TEXT };
 enum { W_NONE, W_NOW, W_RESTART };
 enum {
-    R_NONE, R_WINDOW, R_PACING, R_LATENCY, R_CURSOR, R_OVERLAY, R_SIZE, R_SCALE, R_GPU,
-    R_PAD, R_PAD_PLAYER, R_PAD_LAYOUT, R_PAD_DEADZONE, R_PAD_RUMBLE, R_PAD_TRIGGER, R_PAD_DPAD, R_PAD_STICKTAUNT, R_PAD_REMAP, R_PAD_TEST, R_PAD_RESET,
-    R_PAD_STICKS, R_PAD_RECAL, R_STICKS_BACK,
-    R_RUMBLE, R_KEYBOARD, R_BACKGROUND, R_PADS_FILE,
+    R_NONE, R_WINDOW, R_PACING, R_LATENCY, R_CURSOR, R_OVERLAY, R_SIZE, R_SCALE, R_ASPECT, R_VIEW, R_TIMER, R_GPU,
+    R_PAD_LAYOUT, R_PAD_DEADZONE, R_PAD_RUMBLE, R_PAD_TRIGGER, R_PAD_DPAD, R_PAD_STICKTAUNT, R_PAD_REMAP, R_PAD_TEST, R_PAD_RESET,
+    R_PAD_STICKS, R_PAD_RECAL, R_STICKS_BACK, R_PAD_RUMBLEPAGE, R_PAD_INPUTS, R_RUMBLE_BACK, R_INPUTS_BACK, R_CUSTOM_BACK,
+    R_RUMBLE, R_GC_SWITCH, R_KEYBOARD, R_BACKGROUND, R_PADS_FILE,
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
-    R_LANGUAGE, R_VOLUME, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
+    R_UI_LANGUAGE, R_LANGUAGE, R_VOLUME, R_UW_ONLINE, R_OPEN_LOGS, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
     R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE, R_RUNAHEAD, R_NET_ROLLBACK, R_NET_DELAY,
-    R_ROOM_FIRST = 60,    /* + the room's place on the page of rooms shown (ROOM_PAGE at most) */
+    R_PADSEL_FIRST = 300, /* + the controller's place (PAD_SLOTS at most): opens its settings */
     R_REMAP_FIRST = 100,  /* + console button */
     R_MOD_FIRST = 200,    /* + the mod's place in mods.json (MENU_MODS at most) */
     R_KEY_FIRST = 400,    /* + the keyboard binding (PAD_KEYS) */
-    R_OSK = 500           /* the game's own text box (menu_osk_run) */
+    R_OSK = 500,          /* the game's own text box (menu_osk_run) */
+    /* (after the ranges above) */
+    R_ASSIGN, R_ASSIGN_BACK, R_ASSIGN_WAIT, R_REMAP_RESET, R_STICKS_RESET, R_RUMBLE_RESET,
+    R_ROOM_FIRST = 600    /* + the room's place on the page of rooms shown (ROOM_PAGE at most); the plain ids before R_REMAP_FIRST (100) stay under it */
 };
+_Static_assert(R_NET_DELAY < R_REMAP_FIRST, "the plain row ids must stay under R_REMAP_FIRST");
 #define IS_KEY(id) ((id) >= R_KEY_FIRST && (id) < R_KEY_FIRST + PAD_KEYS)
 #define IS_REMAP(id) ((id) >= R_REMAP_FIRST && (id) < R_REMAP_FIRST + 16)
 
 typedef struct Row
 {
     int id, kind, when;
-    char label[48], value[112], note[64];
+    char label[144], value[336], note[192];
     const char *help;
     int warn;
 } Row;
@@ -178,13 +197,13 @@ static Row *add(int id, int kind, int when, const char *label, const char *help)
     r->id = id;
     r->kind = kind;
     r->when = when;
-    r->help = help;
-    snprintf(r->label, sizeof r->label, "%s", label);
+    r->help = ui_text(help);
+    snprintf(r->label, sizeof r->label, "%s", id >= R_MOD_FIRST && id < R_KEY_FIRST ? label : ui_text(label));
     return r;
 }
 
 /* ---- state ---------------------------------------------------------------------------- */
-static int page, sel[P_STICKS + 1], top[P_STICKS + 1];
+static int page, sel[P_ASSIGN + 1], top[P_ASSIGN + 1];
 static int pad_slot = -1;           /* the pad the Controllers page sets up */
 static int confirm;                 /* a row asking yes or no */
 static int foot, foot_page;         /* the cursor on Restart game (1) or Quit game (2), under foot_page's rows */
@@ -198,6 +217,23 @@ static int capture_key_held = 1; /* (keys still held from before: they must go f
 static ULONGLONG capture_quiet;  /* until then the window's queued keys are passed over (the key just bound) */
 static int restart_pending;
 static int *overlay_on;           /* the frame-rate overlay's switch (gpu_d3d11.c) */
+/* Switch player: the controllers claimed so far, in player order */
+static int assign_n = 1, assign_dirty, assign_wait;
+static char assign_guid[PAD_SLOTS][100]; /* (each claimed pad's own unit) */
+static char assign_name[PAD_SLOTS][96];
+static int assign_free(const PadInfo *p); /* (below) */
+static int assign_has(const char *guid)
+{
+    for (int k = 0; k < assign_n - 1; k++)
+        if (!strcmp(assign_guid[k], guid))
+            return 1;
+    return 0;
+}
+/* an XInput pad is always the player its XInput index names: the page does not offer it */
+static int assign_free(const PadInfo *p) { return p->connected && !p->xinput && !assign_has(p->unit); }
+#define GC_TRIGGER_DEFAULT 31 /* the game counts a GameCube controller's L / R as pressed past 0x27FF: about 31% */
+static int pad_is_gc(const PadInfo *p) { return p->gc || p->usb_port >= 0; }
+static int trigger_default(const PadInfo *p) { return pad_is_gc(p) ? GC_TRIGGER_DEFAULT : 25; }
 static char pins[PAD_SLOTS][128]; /* controllers.ini's [players], read at the menu's opening and changes */
 static int rumble_slot = -1;
 static ULONGLONG rumble_stop;
@@ -212,9 +248,9 @@ static char osk_title[160], osk_text[1024];
 static int osk_max = 32, osk_min, osk_scripted; /* (osk_scripted: SSBU_MENU_OSK's, nobody waits for it) */
 
 static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol, rollback; } net;
-enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_NEAREST, NET_PUBLIC_EU, NET_MODE_COUNT };
-static const char *const NET_MODES[NET_MODE_COUNT] = {"public lobby (North America)", "private lobby (a code)", "your own server", "offline",
-                                                      "this network (LAN)", "the nearest public lobby (Europe / North America)", "public lobby (Europe)"};
+enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_MODE_COUNT };
+static const char *const NET_MODES[NET_MODE_COUNT] = {"public lobby (Europe)", "private lobby (a code)", "your own server", "offline",
+                                                      "this network (LAN)"};
 
 static void net_load(void)
 {
@@ -227,14 +263,9 @@ static void net_load(void)
         net.mode = NET_OFFLINE;
     else if (!_stricmp(host, "lan"))
         net.mode = NET_LAN; /* (net_relay.c's LAN discovery) */
-    else if (!_stricmp(host, "auto") || (!code[0] && !_stricmp(host, PUBLIC_LOBBY)))
-        net.mode = NET_NEAREST; /* (net_relay.c: the public lobby with the shortest connect time; the old default line too) */
-    else if (!_stricmp(host, "na"))
-        net.mode = NET_PUBLIC;
-    else if (!_stricmp(host, "eu"))
-        net.mode = NET_PUBLIC_EU;
-    else if (!_stricmp(host, PUBLIC_LOBBY))
-        net.mode = NET_PRIVATE;
+    else if (!_stricmp(host, "auto") || !_stricmp(host, "na") || !_stricmp(host, "eu") || !_strnicmp(host, "smash.recomps.wtf", 17) ||
+             !_stricmp(host, PUBLIC_LOBBY))
+        net.mode = code[0] ? NET_PRIVATE : NET_PUBLIC; /* (the one public lobby; the North American one is gone: net_relay.c) */
     else
     {
         net.mode = NET_CUSTOM;
@@ -257,12 +288,8 @@ static void net_save_server(void)
         snprintf(line, sizeof line, "off");
     else if (net.mode == NET_LAN)
         snprintf(line, sizeof line, "lan");
-    else if (net.mode == NET_NEAREST)
-        snprintf(line, sizeof line, "auto");
     else if (net.mode == NET_PUBLIC)
-        snprintf(line, sizeof line, "na");
-    else if (net.mode == NET_PUBLIC_EU)
-        snprintf(line, sizeof line, "eu");   /* (the North American lobby itself: its address alone now means "auto") */
+        snprintf(line, sizeof line, "auto");
     else if (net.mode == NET_PRIVATE)
     {
         if (!net.code[0])
@@ -334,8 +361,11 @@ static void changed(int when)
 
 static void set_display(const char *key, const char *value) { settings_ini_set(display_ini_path(), NULL, key, value); }
 
-/* The [device ...] a pad's settings go in: the one it takes them from now, else its name's. */
-static void pad_section(const PadInfo *p, char *out, int size) { snprintf(out, (size_t)size, "device %s", p->section[0] ? p->section : p->name); }
+/* The [device ...] a pad's settings go in: the most exact one it takes them from now, else its GUID's (that model of pad
+ * on any port: a name such as "XInput Controller #1" changes with the port, issue #320; the launcher writes the same). */
+static void pad_section(const PadInfo *p, char *out, int size) {
+    snprintf(out, (size_t)size, "device %s", p->section[0] ? p->section : p->guid[0] ? p->guid : p->name);
+}
 
 static void set_pad(const PadInfo *p, const char *key, const char *value)
 {
@@ -343,11 +373,6 @@ static void set_pad(const PadInfo *p, const char *key, const char *value)
     pad_section(p, section, sizeof section);
     settings_ini_set(pad_ini_path(), section, key, value);
     pad_reload();
-}
-
-static int pad_matches(const PadInfo *p, const char *what)
-{
-    return *what && (!_stricmp(what, p->guid) || !_stricmp(what, p->name) || !_stricmp(what, p->type));
 }
 
 static void load_pins(void)
@@ -361,20 +386,11 @@ static void load_pins(void)
     }
 }
 
-/* The player controllers.ini keeps for this pad ([players]), 0 none. */
-static int pad_pin(const PadInfo *p)
-{
-    for (int k = 1; k <= PAD_SLOTS; k++)
-        if (pad_matches(p, pins[k - 1]))
-            return k;
-    return 0;
-}
-
 /* ---- the pages -------------------------------------------------------------------------- */
 static PadInfo pads[PAD_SLOTS];
 static int npads_connected;
 
-static const char *on_off(int v) { return v ? "on" : "off"; }
+static const char *on_off(int v) { return ui_text(v ? "on" : "off"); }
 
 static void note_env(Row *r, const char *var)
 {
@@ -383,7 +399,9 @@ static void note_env(Row *r, const char *var)
         snprintf(r->note, sizeof r->note, "%s set", var);
 }
 
+#ifdef __APPLE__   /* (elsewhere a height, the width from the picture shape: change(), R_SIZE) */
 static const int SIZES[][2] = {{1280, 720}, {1600, 900}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
+#endif
 static const int REMAP_ORDER[16] = {0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 4, 5, 13, 15, 12, 14}; /* A B X Y L R ZL ZR + - sticks, d-pad */
 
 /* ---- the Lobby page: the online lobby's rooms and matchmaking (net.h, netplay version 3) ----
@@ -403,14 +421,14 @@ static int nlobby_rooms, rooms_state, room_view, game_pages = 1; /* room_view: t
 static NetMatch match;
 static ULONGLONG match_started;                         /* when the menu's search started (the time it shows) */
 static int match_followed, match_said, match_said_open; /* that search, followed while the menu is closed too */
-static char helps[MENU_ROWS][900];                      /* help made for a row (help_set) */
+static char helps[MENU_ROWS][2700];                      /* help made for a row (help_set) */
 
 static void help_set(Row *r, const char *fmt, ...)
 {
     char *h = helps[r - rows];
     va_list a;
     va_start(a, fmt);
-    vsnprintf(h, sizeof helps[0], fmt, a);
+    vsnprintf(h, sizeof helps[0], ui_text(fmt), a);
     va_end(a);
     r->help = h;
 }
@@ -434,7 +452,7 @@ static void lan_row(int looking)
     {
         snprintf(r->value, sizeof r->value, "%d", ours);
         if (others)
-            snprintf(r->value + strlen(r->value), sizeof r->value - strlen(r->value), " (and %d of another version)", others);
+            snprintf(r->value + strlen(r->value), sizeof r->value - strlen(r->value), ui_text(" (and %d of another version)"), others);
         help_set(r, "Private rooms hosted on this network by games of your version, heard now. The game joins the first one by itself "
                     "(Online > Now says which), and the next one if that host leaves.%s",
                  others ? "\nThe others are of another game or WindowSmash version, or of another room code: they can't be joined." : "");
@@ -588,7 +606,7 @@ static void mods_rows(int fresh)
     if (st == MODS_SWITCH_WORKING || st == MODS_SWITCH_FAILED)
         snprintf(r->value, sizeof r->value, "%s", msg);
     else
-        snprintf(r->value, sizeof r->value, "%d installed, %d on; %d running now", nmenu_mods, on, running);
+        snprintf(r->value, sizeof r->value, ui_text("%d installed, %d on; %d running now"), nmenu_mods, on, running);
     int code = mod_switch_code_patches(menu_mods_code, running);
     r = add(R_MOD_CODE, K_CHOICE, W_RESTART, MOD_SWITCH_CODE_TITLE,
             "ARCropolis' fixes to the game's code for costume slots a mod adds (c08 and up). Off: the game's own code, as with no "
@@ -661,11 +679,11 @@ static void room_rows(void)
     if (rooms_state == NET_ROOMS_ASKING)
         snprintf(r->value, sizeof r->value, "asking the lobby...");
     else if (rooms_state == NET_ROOMS_NO_ANSWER)
-        snprintf(r->value, sizeof r->value, "no answer from the lobby (A: ask again)");
+        snprintf(r->value, sizeof r->value, ui_text("no answer from the lobby (A: ask again)"));
     else if (!nlobby_rooms)
         snprintf(r->value, sizeof r->value, "none");
     else
-        snprintf(r->value, sizeof r->value, "%d, %d you can join", nlobby_rooms, can);
+        snprintf(r->value, sizeof r->value, ui_text("%d, %d you can join"), nlobby_rooms, can);
     if (room_view >= nlobby_rooms)
         room_view = 0;
     int end = room_view + ROOM_PAGE < nlobby_rooms ? room_view + ROOM_PAGE : nlobby_rooms;
@@ -684,13 +702,13 @@ static void room_rows(void)
         /* (the help, with the cursor on it: why not, then its game and mods against yours: net_relay.c room_details) */
         if (!x->joinable)
         {
-            snprintf(r->value, sizeof r->value, "can't join: %s", room_short(x));
+            snprintf(r->value, sizeof r->value, ui_text("can't join: %s"), room_short(x));
             help_set(r, "%s%s\n%s", x->why, x->why_kind != NET_WHY_SIM ? "" : x->sim > SIM_VERSION ? "\nYours is the older one: update WindowSmash to join."
                                                                                                    : "\nTheirs is the older one: the host needs to update.",
                      x->details);
             continue;
         }
-        snprintf(r->value, sizeof r->value, "%d/%d players, %s%s", x->players, x->most, x->open ? "open" : "full or closed",
+        snprintf(r->value, sizeof r->value, ui_text("%d/%d players, %s%s"), x->players, x->most, x->open ? "open" : "full or closed",
                  picked && x->host == picked && !x->mine ? " - picked: first in your Rooms List" : x->open && !x->mine ? " - A: join"
                                                                                                                        : "");
         if (x->mine)
@@ -716,18 +734,22 @@ static void room_rows(void)
         game_pages = pages;
         r = add(R_ROOMS_GAME_PAGE, K_ACTION, W_NONE, "Game's Rooms List shows", "The game's own Rooms List (Local Wireless) holds 24 rooms: "
                                                                                 "A shows the next 24 of the ones you can join there (the room you picked always comes first).");
-        snprintf(r->value, sizeof r->value, "rooms %d-%d of %d (A: next)", pg * GAME_LIST + 1, pg * GAME_LIST + GAME_LIST < others ? pg * GAME_LIST + GAME_LIST : others, others);
+        snprintf(r->value, sizeof r->value, ui_text("rooms %d-%d of %d (A: next)"), pg * GAME_LIST + 1, pg * GAME_LIST + GAME_LIST < others ? pg * GAME_LIST + GAME_LIST : others, others);
     }
 }
 
 /* The Lobby page's rows (fresh: the page shows anew, so the rooms are asked for again). */
+/* The yuzu-compatible client (net_yuzu.c, SSBU_NET_BACKEND=yuzu): its backend is net_backend_candidate. Online through
+ * Epic Online Services net_backend is net_eos_backend (net_relay.c), which keeps every OpenSmash page: issue #389. */
+static int yuzu_client(void) { return net_backend && net_backend == net_backend_candidate; }
+
 static void build_lobby(int fresh)
 {
-    if (net_configured() && net_backend)
+    if (net_configured() && yuzu_client())
     {
         Row *r = add(R_LOBBY, K_INFO, W_NONE, "yuzu room",
                      "Play in Local Wireless > Create a Room or Rooms List. OpenSmash lobby matchmaking and Quickplay are unavailable in this mode.");
-        snprintf(r->value, sizeof r->value, "Use Local Wireless");
+        snprintf(r->value, sizeof r->value, ui_text("Use Local Wireless"));
         return;
     }
     nlobby_rooms = net_rooms_get(lobby_rooms, LOBBY_ROOMS, &rooms_state);
@@ -765,33 +787,35 @@ static void build_lobby(int fresh)
         break;
     }
     case LB_NEEDS_V3:
-        snprintf(r->value, sizeof r->value, "needs netplay version 3");
-        r->help = "The lobby's room browser and matchmaking need netplay version 3, which is being tried out. To turn it on, set "
-                  "Netplay version to 3 (below, or on the Online page) and restart the game, or start it with SSBU_NET_PROTOCOL=3.";
+        snprintf(r->label, sizeof r->label, "Room browser");
+        snprintf(r->value, sizeof r->value, "off: set Netplay version to 3 below");
+        r->help = "The lobby's room browser and matchmaking are off, because they need Netplay version 3 (being tried out). To turn "
+                  "them on, set Netplay version to 3 (the row below, or on the Online page) and restart the game, or start it with "
+                  "SSBU_NET_PROTOCOL=3.";
         break;
     case LB_CONNECTING:
         snprintf(r->value, sizeof r->value, "%s", net_unreachable() ? "no answer from the lobby" : "connecting...");
         r->help = "Waiting for the lobby (Online > Now says more).";
         break;
     case LB_PRIVATE:
-        snprintf(r->value, sizeof r->value, "in a private room");
+        snprintf(r->value, sizeof r->value, ui_text("in a private room"));
         r->help = "You're in a host player's private room: its players find each other's rooms in Local Wireless > Rooms List. The "
                   "room browser and matchmaking are the online lobby's.";
         break;
     case LB_V2_LOBBY:
-        snprintf(r->value, sizeof r->value, "this lobby speaks version 2 only");
+        snprintf(r->value, sizeof r->value, ui_text("this lobby speaks version 2 only"));
         r->help = "This lobby speaks netplay version 2 only, so it has no room browser or matchmaking. Its rooms are in Local "
                   "Wireless > Rooms List, as before.";
         break;
     case LB_NONE:
-        snprintf(r->value, sizeof r->value, "no room browser in this lobby");
+        snprintf(r->value, sizeof r->value, ui_text("no room browser in this lobby"));
         r->help = "This lobby speaks netplay version 3, but without a room browser or matchmaking.";
         break;
     default:
         if (match.players >= 0 && match.searching >= 0)
-            snprintf(r->value, sizeof r->value, "%d player%s, %d searching", match.players, match.players == 1 ? "" : "s", match.searching);
+            snprintf(r->value, sizeof r->value, ui_text(match.players == 1 ? "%d player, %d searching" : "%d players, %d searching"), match.players, match.searching);
         else
-            snprintf(r->value, sizeof r->value, "version 3");
+            snprintf(r->value, sizeof r->value, ui_text("version 3"));
         r->help = "The players of your lobby code who can play with you (the same game, WindowSmash and mods), and how many of them "
                   "are searching for a match.";
     }
@@ -806,6 +830,8 @@ static void build_lobby(int fresh)
         add_protocol_row();
     else if (st == LB_LAN || st == LB_HOSTING)
         lan_row(st == LB_LAN);
+    if (st != LB_OFFLINE && st != LB_NEEDS_V3)
+        add_protocol_row(); /* (always here, so a player who set version 3 can set 2 again from this page) */
     if (restart_pending)
         add(R_RESTART, K_ACTION, W_NONE, "Restart now", "Starts the game again, with the changes. A match in progress is lost.");
 }
@@ -826,29 +852,29 @@ static void match_follow(void)
         {
         case NET_MATCH_MATCHED:
             if (m.role == NET_MATCH_HOST)
-                snprintf(t, sizeof t, "Matched with %.32s: you host (Local Wireless > Create a Room)", other);
+                snprintf(t, sizeof t, ui_text("Matched with %.32s: you host (Local Wireless > Create a Room)"), other);
             else if (m.room_open)
-                snprintf(t, sizeof t, "Matched with %.32s: their room is open (Local Wireless > Rooms List)", other);
+                snprintf(t, sizeof t, ui_text("Matched with %.32s: their room is open (Local Wireless > Rooms List)"), other);
             else
-                snprintf(t, sizeof t, "Matched with %.32s: they host (their room comes first in Rooms List)", other);
+                snprintf(t, sizeof t, ui_text("Matched with %.32s: they host (their room comes first in Rooms List)"), other);
             break;
         case NET_MATCH_TIMEOUT:
-            snprintf(t, sizeof t, "Matchmaking: no opponent found in time");
+            snprintf(t, sizeof t, ui_text("Matchmaking: no opponent found in time"));
             break;
         case NET_MATCH_LEFT:
-            snprintf(t, sizeof t, "Matchmaking: %.32s cancelled or left", other);
+            snprintf(t, sizeof t, ui_text("Matchmaking: %.32s cancelled or left"), other);
             break;
         case NET_MATCH_TOGETHER:
-            snprintf(t, sizeof t, "Matchmaking: you and %.32s are in one room", other);
+            snprintf(t, sizeof t, ui_text("Matchmaking: you and %.32s are in one room"), other);
             break;
         case NET_MATCH_EXPIRED:
-            snprintf(t, sizeof t, "Matchmaking: the match expired (not in one room in time)");
+            snprintf(t, sizeof t, ui_text("Matchmaking: the match expired (not in one room in time)"));
             break;
         }
         match_said = m.state;
     }
     else if (m.state == NET_MATCH_MATCHED && m.role == NET_MATCH_JOIN && m.room_open && !match_said_open)
-        snprintf(t, sizeof t, "%.32s's room is open (Local Wireless > Rooms List)", other);
+        snprintf(t, sizeof t, ui_text("%.32s's room is open (Local Wireless > Rooms List)"), other);
     if (t[0])
         menu_toast(t);
     match_said_open = m.state == NET_MATCH_MATCHED && m.room_open;
@@ -856,8 +882,19 @@ static void match_follow(void)
         match_followed = 0;
 }
 
+/* The per-controller rows (the ones that write this pad's [section] of controllers.ini) say which section: "[...]" in the note. */
+static void set_pad_notes(const PadInfo *pad)
+{
+    char section[128];
+    pad_section(pad, section, sizeof section);
+    for (int i = 0; i < nrows; i++)
+        if (rows[i].id >= R_PAD_LAYOUT && rows[i].id <= R_PAD_RESET && rows[i].id != R_PAD_TEST)
+            snprintf(rows[i].note, sizeof rows[i].note, "[%.40s]", section);
+}
+
 static void build(void)
 {
+    if (!ui_locale_initialized) ui_locale_load(display_ini_path());
     /* (the Lobby page: the row under the cursor, by what it is, so the cursor stays on it when the
      * rooms or the search change around it) */
     int same = built_page == page, was = same && sel[page] < nrows ? rows[sel[page]].id : R_NONE;
@@ -896,7 +933,7 @@ static void build(void)
                     "Less input delay in fights: each frame is shown 1 or 2 frames ahead. 1 shows the real frame a frame sooner; "
                     "2 also guesses one frame on the controls held now. Each frame ahead costs a frame of the game's work more: off on a slow PC.");
             if (n)
-                snprintf(r->value, sizeof r->value, "%d frame%s", n, n > 1 ? "s" : "");
+                snprintf(r->value, sizeof r->value, ui_text(n == 1 ? "%d frame" : "%d frames"), n);
             else
                 snprintf(r->value, sizeof r->value, "off");
             note_env(r, "SSBU_RUNAHEAD");
@@ -909,18 +946,53 @@ static void build(void)
         note_env(r, "SSBU_OVERLAY");
 #ifdef __APPLE__
         r = add(R_SIZE, K_CHOICE, W_RESTART, "Window size", "The size of the game's window when it is not full screen, in points (on a Retina display, a point is 2 x 2 pixels).");
-#else
-        r = add(R_SIZE, K_CHOICE, W_RESTART, "Window size", "The size of the game's window when it is not full screen (at 100% Windows scaling).");
-#endif
         snprintf(r->value, sizeof r->value, "%d x %d", ds.width, ds.height);
+#else
+        r = add(R_SIZE, ds.mode == DISPLAY_WINDOWED ? K_CHOICE : K_INFO, W_NOW, "Window size",
+                "The size of the game's window when it is not full screen, at 100% Windows scaling. The width follows the aspect ratio, "
+                "and sizes too big for your monitor are left out.");
+        snprintf(r->value, sizeof r->value, "%d x %d", (int)((float)ds.height * display_aspect() + 0.5f), ds.height);
+        if (ds.mode != DISPLAY_WINDOWED) snprintf(r->note, sizeof r->note, "windowed only");
+#endif
         note_env(r, "SSBU_WINDOW_SIZE");
-        r = add(R_SCALE, K_CHOICE, W_RESTART, "Render scale",
+#ifdef __APPLE__
+        int scale_when = W_RESTART;
+#else
+        int scale_when = W_NOW;   /* (Direct3D 11 and Vulkan take it at their next present) */
+#endif
+        r = add(R_SCALE, K_CHOICE, scale_when, "Render scale",
                 "How many times 1920x1080 the game draws at: sharper on a big screen, more work for the graphics card. Auto: as many pixels as the window has.");
         if (ds.render_scale <= 0)
             snprintf(r->value, sizeof r->value, "auto");
         else
-            snprintf(r->value, sizeof r->value, "%g", ds.render_scale);
+            snprintf(r->value, sizeof r->value, "%gx", ds.render_scale);
         note_env(r, "SSBU_RENDER_SCALE");
+        int original = !_stricmp(display_aspect_setting(), "16:9"), locked = display_shape_locked();
+        r = add(R_ASPECT, K_CHOICE, W_NOW, "Aspect ratio",
+                "16:9 (original) is the game as it was made. A wider aspect ratio shows more of the stage at the sides without stretching "
+                "anything, and fights play exactly as they do at 16:9. The damage meters stay in the middle; menus and panels move to the sides. 21:9 and 32:9 match your monitor "
+                "when it is close to that shape, and auto always matches your monitor. Online matches are played at 16:9. "
+                "Not on macOS yet.");
+        snprintf(r->value, sizeof r->value, "%s%s", display_aspect_setting(), original ? " (original)" : "");
+        if (locked && !original) snprintf(r->note, sizeof r->note, "not on macOS yet");
+        note_env(r, "SSBU_ASPECT");
+        r = add(R_VIEW, original || locked ? K_INFO : K_CHOICE, W_NOW, "Viewtype",
+                "wide: the game's own camera with the sides added (it can show past the stage). zoomed: the fight framed for the wider "
+                "picture, closer and kept on the stage. hybrid: wide, zoomed in just enough to keep the picture on the stage.");
+        {
+            int v = display_view();
+            snprintf(r->value, sizeof r->value, "%s", v == VIEW_WIDE ? "wide" : v == VIEW_ZOOMED ? "zoomed" : "hybrid");
+        }
+        if (original || locked) snprintf(r->note, sizeof r->note, "only wider than 16:9");
+        note_env(r, "SSBU_VIEW");
+        r = add(R_TIMER, K_CHOICE, W_NOW, "Timer position",
+                "Where the timer sits in a fight. Right is the game's own place, in the top-right corner of the picture. "
+                "Center and left move it along the top; hidden takes it away.");
+        {
+            static const char *const TIMERS[] = {"right", "center", "left", "hidden"};
+            snprintf(r->value, sizeof r->value, "%s", TIMERS[display_timer() & 3]);
+        }
+        note_env(r, "SSBU_TIMER");
 #ifdef _WIN32
         r = add(R_GPU, K_CHOICE, W_RESTART, "Graphics card", "Auto picks the fastest card (on a laptop, the NVIDIA or AMD one). Pick another to use it instead.");
         snprintf(r->value, sizeof r->value, "%s", ds.gpu);
@@ -951,65 +1023,87 @@ static void build(void)
         if (!npads_connected)
         {
             r = add(R_NONE, K_INFO, W_NONE, "Controllers", "Plug in or pair a controller: it shows here as it connects. The keyboard works too (see below).");
-            snprintf(r->value, sizeof r->value, "none connected");
+            snprintf(r->value, sizeof r->value, ui_text("none connected"));
         }
         else
         {
-            r = add(R_PAD, K_CHOICE, W_NONE, "Controller", "Which controller to set up (left / right to pick another).");
-            if (pad && pad->slot >= 0)
-                snprintf(r->value, sizeof r->value, "player %d: %.80s", pad->slot + 1, pad->name);
-            else if (pad)
-                snprintf(r->value, sizeof r->value, "no player: %.80s", pad->name);
-            if (pad)
+            for (int s = 0; s < PAD_SLOTS; s++) /* a row a connected controller; A / Enter opens its settings */
             {
-                int pin = pad_pin(pad);
-                r = add(R_PAD_PLAYER, K_CHOICE, W_NOW, "Player", "Auto: the lowest free player. A number keeps that player for this controller, every time it connects.");
-                if (pin)
-                    snprintf(r->value, sizeof r->value, "%d (kept)", pin);
+                if (!pads[s].connected)
+                    continue;
+                char label[24];
+                if (pads[s].slot >= 0)
+                    snprintf(label, sizeof label, "Player %d", pads[s].slot + 1);
                 else
-                    snprintf(r->value, sizeof r->value, "auto (now %d)", pad->slot + 1);
-                r = add(R_PAD_LAYOUT, K_CHOICE, W_NOW, "Face buttons",
-                        "By position: as on a Switch pad, the right button is A. By label: the letter printed on the pad (an Xbox pad's A is A; PlayStation pads stay by position).");
-                snprintf(r->value, sizeof r->value, "%s", pad->layout ? "by label" : "by position");
-                r = add(R_PAD_DEADZONE, K_CHOICE, W_NOW, "Stick dead zone", "How much of the sticks' travel around the centre is ignored: raise it if a worn stick drifts.");
-                snprintf(r->value, sizeof r->value, "%d%%", pad->deadzone);
-                r = add(R_PAD_RUMBLE, K_CHOICE, W_NOW, "Rumble", "The strength of the rumble; 0 is off.");
-                snprintf(r->value, sizeof r->value, "%d%%", pad->rumble);
-                r = add(R_PAD_TRIGGER, K_CHOICE, W_NOW, "Trigger press point", "How far a trigger is pulled before it counts as ZL / ZR.");
-                snprintf(r->value, sizeof r->value, "%d%%", pad->trigger);
-                r = add(R_PAD_DPAD, K_CHOICE, W_NOW, "D-pad moves", "On: the D-pad drives the left stick (tap to walk, double-tap to dash) and no longer presses the taunt buttons. Off: the D-pad is the D-pad.");
-                snprintf(r->value, sizeof r->value, "%s", on_off(pad->dpad_moves));
-                r = add(R_PAD_STICKTAUNT, K_CHOICE, W_NOW, "Stick taunts", "On: the left stick's four directions press the taunt buttons and the stick no longer moves (use with D-pad moves). Off: the stick is the stick.");
-                snprintf(r->value, sizeof r->value, "%s", on_off(pad->stick_taunts));
-                add(R_PAD_REMAP, K_ACTION, W_NOW, "Buttons...", "Which control on this pad is each of the game's buttons.");
-                add(R_PAD_STICKS, K_ACTION, W_NOW, "Sticks...", "The sticks' numbers live: their centre, how far they reach, and the adapter's speed.");
-                add(R_PAD_TEST, K_ACTION, W_NONE, "Test rumble", "Rumbles this pad for half a second.");
-                add(R_PAD_RESET, K_ACTION, W_NOW, "Back to the defaults", "This pad's buttons, dead zone, rumble and trigger as they were.");
-                char section[128];
-                pad_section(pad, section, sizeof section);
-                for (int i = 0; i < nrows; i++)
-                    if (rows[i].id >= R_PAD_LAYOUT && rows[i].id <= R_PAD_RESET && rows[i].id != R_PAD_TEST)
-                        snprintf(rows[i].note, sizeof rows[i].note, "[%.40s]", section);
+                    snprintf(label, sizeof label, "No player");
+                r = add(R_NONE, K_INFO, W_NONE, label, "A controller that is connected. Choose Customize controller... under it to set it up.");
+                snprintf(r->value, sizeof r->value, "%.80s", pads[s].name);
+                add(R_PADSEL_FIRST + s, K_ACTION, W_NONE, "    Customize controller...", "This controller's buttons, sticks and rumble.");
             }
         }
-        r = add(R_RUMBLE, K_CHOICE, W_NOW, "Rumble", "On: controllers rumble, each as strong as its own Rumble setting. Off: no controller rumbles.");
-        snprintf(r->value, sizeof r->value, "%s", on_off(pad_rumble_on()));
+        if (npads_connected >= 2) /* (one controller has nothing to switch) */
+            add(R_ASSIGN, K_ACTION, W_NONE, "Switch player...", "Choose which controller is player 1, 2, 3 ...: press A on each, in order.");
         r = add(R_KEYBOARD, K_CHOICE, W_NOW, "Keyboard plays as",
                 "The keyboard adds to this player. Its keys: Keyboard keys... (by default arrows move, Z X C V are A B X Y, A S are L R, Q W are ZL ZR, Enter is +, I J K L the right stick).");
         if (pad_keyboard_slot() < 0)
-            snprintf(r->value, sizeof r->value, "nobody");
+            snprintf(r->value, sizeof r->value, ui_text("nobody"));
         else
-            snprintf(r->value, sizeof r->value, "player %d", pad_keyboard_slot() + 1);
+            snprintf(r->value, sizeof r->value, ui_text("player %d"), pad_keyboard_slot() + 1);
         add(R_KEYS, K_ACTION, W_NONE, "Keyboard keys...", "Which key is each of the game's buttons and stick directions ([keyboard] in controllers.ini).");
         r = add(R_BACKGROUND, K_CHOICE, W_NOW, "Pads when not focused", "On: controllers work while another window is in front. Off: only while the game's window is.");
         snprintf(r->value, sizeof r->value, "%s", on_off(pad_background()));
         r = add(R_PADS_FILE, K_ACTION, W_NONE, "Open controllers.ini", "Everything else, by hand: settings per kind of pad, more remaps. Changes there count at the next start.");
         snprintf(r->value, sizeof r->value, "%s", pad_ini_path());
         break;
-    case P_REMAP:
-        r = add(R_REMAP_BACK, K_ACTION, W_NONE, "< Back", "Back to the controller's settings.");
+    case P_CUSTOM:
+    {
+        r = add(R_CUSTOM_BACK, K_ACTION, W_NONE, "< Back", "Back to the controllers.");
+        snprintf(r->value, sizeof r->value, "Controllers");
         if (pad)
-            snprintf(r->value, sizeof r->value, "%.80s", pad->name);
+        {
+            r = add(R_PAD_LAYOUT, K_CHOICE, W_NOW, "Face buttons",
+                    "By position: as on a Switch pad, the right button is A. By label: the letter printed on the pad (an Xbox pad's A is A; PlayStation pads stay by position).");
+            snprintf(r->value, sizeof r->value, "%s", pad->layout ? "by label" : "by position");
+            add(R_PAD_REMAP, K_ACTION, W_NOW, "Buttons...", "Which control on this pad is each of the game's buttons.");
+            add(R_PAD_STICKS, K_ACTION, W_NONE, "Sticks...", "Stick scaling and calibration, the dead zone and stick taunts.");
+            add(R_PAD_RUMBLEPAGE, K_ACTION, W_NONE, "Rumble...", "Rumble on or off, its strength for this controller, and a test.");
+            add(R_PAD_INPUTS, K_ACTION, W_NONE, "Test inputs...", "The sticks' and triggers' numbers live: what the game gets, what the pad reports, the adapter's centre, reach and speed. Moving a stick does not move the menu there.");
+            r = add(R_PAD_DPAD, K_CHOICE, W_NOW, "D-pad moves", "On: the D-pad drives the left stick (tap to walk, double-tap to dash) and no longer presses the taunt buttons. Off: the D-pad is the D-pad.");
+            snprintf(r->value, sizeof r->value, "%s", on_off(pad->dpad_moves));
+            r = add(R_PAD_TRIGGER, K_CHOICE, W_NOW, "Trigger press point",
+                    pad_is_gc(pad) ? "How far L / R are pulled before the game counts them as pressed. (1:1 w/ Switch) is the game's own press point."
+                                   : "How far a trigger is pulled before it counts as ZL / ZR. (default) marks the value the game starts with.");
+            snprintf(r->value, sizeof r->value, "%d%%%s", pad->trigger, pad->trigger != trigger_default(pad) ? "" : pad_is_gc(pad) ? " (1:1 w/ Switch)" : " (default)");
+            add(R_PAD_RESET, K_ACTION, W_NOW, "Reset controller to defaults", "Everything set for this controller on these pages (face buttons, buttons, dead zone, stick taunts, rumble strength, D-pad moves, trigger press point) goes back to the defaults. Asks first.");
+            set_pad_notes(pad);
+        }
+        break;
+    }
+    case P_ASSIGN:
+    {
+        r = add(R_ASSIGN_BACK, K_ACTION, W_NONE, "< Back", "Back to the controllers.");
+        snprintf(r->value, sizeof r->value, "Controllers");
+        for (int k = 1; k < assign_n; k++)
+        {
+            char label[24];
+            snprintf(label, sizeof label, "Player %d", k);
+            r = add(R_NONE, K_INFO, W_NONE, label, "This controller is this player.");
+            snprintf(r->value, sizeof r->value, "%.80s", assign_name[k - 1]);
+        }
+        int free_pad = 0;
+        for (int i = 0; i < PAD_SLOTS; i++)
+            free_pad |= assign_free(&pads[i]);
+        if (assign_n <= PAD_SLOTS && free_pad)
+        {
+            char label[40];
+            snprintf(label, sizeof label, "Press A for player %d", assign_n);
+            add(R_ASSIGN_WAIT, K_ACTION, W_NONE, label, "Press A on the controller that should be this player.");
+        }
+        break;
+    }
+    case P_REMAP:
+        r = add(R_REMAP_BACK, K_ACTION, W_NONE, "< Back", "Back to Customize controller.");
+        snprintf(r->value, sizeof r->value, "Customize controller");
         for (int i = 0; pad && i < 16; i++)
         {
             int b = REMAP_ORDER[i];
@@ -1018,22 +1112,71 @@ static void build(void)
             r = add(R_REMAP_FIRST + b, K_ACTION, W_NOW, label, "A or Enter: then press the control for this button. Y or Delete: its default again.");
             snprintf(r->value, sizeof r->value, "%s", pad->map[b]);
         }
+        if (pad)
+            add(R_REMAP_RESET, K_ACTION, W_NOW, "Reset buttons to defaults", "Every button of this controller back to its default control. Asks first.");
         break;
     case P_KEYS:
         r = add(R_KEYS_BACK, K_ACTION, W_NONE, "< Back", "Back to the controllers' settings.");
+        snprintf(r->value, sizeof r->value, "Controllers");
         for (int i = 0; i < PAD_KEYS; i++)
         {
             int b = i < 16 ? REMAP_ORDER[i] : i;
             r = add(R_KEY_FIRST + b, K_ACTION, W_NOW, pad_key_label(b), "A or Enter: then press the key for this. Y or Delete: its default again.");
             pad_key_names(b, r->value, sizeof r->value);
         }
-        add(R_KEYS_RESET, K_ACTION, W_NOW, "Back to the defaults", "Every key as it was: arrows, Z X C V, A S, Q W, Enter, Backspace, I J K L, Shift to walk.");
+        add(R_KEYS_RESET, K_ACTION, W_NOW, "Reset keys to defaults", "Every key back to its default: arrows, Z X C V, A S, Q W, Enter, Backspace, I J K L, Shift to walk. Asks first.");
         break;
     case P_STICKS:
     {
-        r = add(R_STICKS_BACK, K_ACTION, W_NONE, "< Back", "Back to the controller's settings.");
+        r = add(R_STICKS_BACK, K_ACTION, W_NONE, "< Back", "Back to Customize controller.");
+        snprintf(r->value, sizeof r->value, "Customize controller");
+        PadUsbAxes ua;
+        int have_ua = pad && pad->usb_port >= 0 && padusb_axes(pad->usb_port, &ua);
+        if (have_ua) /* (a GameCube adapter: Windows' own reader, hle_padusb.c) */
+        {
+            r = add(R_GC_SWITCH, K_CHOICE, W_NOW, "GameCube stick scaling",
+                    "1:1 Switch: the same numbers a Switch console uses for this adapter, no dead zone. OpenSmash original: the earlier scaling, with a dead zone and a reach that adjusts to your stick. Applies to all GameCube adapters.");
+            snprintf(r->value, sizeof r->value, "%s", pad_gc_switch() ? "1:1 Switch" : "OpenSmash original");
+            note_env(r, "SSBU_GC_SWITCH");
+            add(R_PAD_RECAL, K_ACTION, W_NOW, "Recalibrate sticks",
+                "Measures the sticks' centre and reach again: let go of the sticks and triggers, then A or Enter. "
+                "(They are measured as the controller is plugged in, too.)");
+        }
         if (pad)
-            snprintf(r->value, sizeof r->value, "%.80s", pad->name);
+        {
+            r = add(R_PAD_DEADZONE, K_CHOICE, W_NOW, "Stick dead zone", "How much of the sticks' travel around the centre is ignored: raise it if a worn stick drifts.");
+            snprintf(r->value, sizeof r->value, "%d%%", pad->deadzone);
+            if (pad->usb_port >= 0 && pad_gc_switch() && pad->dz_default)
+                snprintf(r->value, sizeof r->value, "none (1:1 Switch)"); /* (the default 10 stands aside there; another value counts) */
+            r = add(R_PAD_STICKTAUNT, K_CHOICE, W_NOW, "Stick taunts", "On: the left stick's four directions press the taunt buttons and the stick no longer moves (use with D-pad moves). Off: the stick is the stick.");
+            snprintf(r->value, sizeof r->value, "%s", on_off(pad->stick_taunts));
+            add(R_STICKS_RESET, K_ACTION, W_NOW, "Reset sticks to defaults", "The dead zone and stick taunts of this controller back to their defaults (and, for a GameCube adapter, the stick scaling). Asks first.");
+            set_pad_notes(pad);
+        }
+        break;
+    }
+    case P_RUMBLE:
+    {
+        r = add(R_RUMBLE_BACK, K_ACTION, W_NONE, "< Back", "Back to Customize controller.");
+        snprintf(r->value, sizeof r->value, "Customize controller");
+        r = add(R_RUMBLE, K_CHOICE, W_NOW, "Rumble", "On: controllers rumble, each as strong as its own strength below. Off: no controller rumbles.");
+        snprintf(r->value, sizeof r->value, "%s", on_off(pad_rumble_on()));
+        if (pad)
+        {
+            r = add(R_PAD_RUMBLE, K_CHOICE, W_NOW, "Rumble strength", "The strength of the rumble on this controller; 0 is off.");
+            snprintf(r->value, sizeof r->value, "%d%%", pad->rumble);
+            add(R_PAD_TEST, K_ACTION, W_NONE, "Test rumble", "Rumbles this controller for half a second.");
+            set_pad_notes(pad);
+        }
+        add(R_RUMBLE_RESET, K_ACTION, W_NOW, "Reset rumble to defaults", "Rumble on, and this controller's strength back to its default. Asks first.");
+        break;
+    }
+    case P_INPUTS:
+    {
+        r = add(R_INPUTS_BACK, K_ACTION, W_NONE, "< Back", "Back to Customize controller.");
+        snprintf(r->value, sizeof r->value, "Customize controller");
+        PadUsbAxes ua;
+        int have_ua = pad && pad->usb_port >= 0 && padusb_axes(pad->usb_port, &ua);
         if (pad && pad->slot >= 0)
         {
             PadState st;
@@ -1043,28 +1186,22 @@ static void build(void)
             {
                 i32 x = k ? st.rx : st.lx, y = k ? st.ry : st.ly;
                 int mag = (int)(hypot((double)x, (double)y) * 100 / 32767);
-                r = add(R_NONE, K_INFO, W_NONE, STICKS[k], "The stick as the game gets it, after the calibration and the dead zone.");
-                snprintf(r->value, sizeof r->value, "x %d, y %d (%d%%)", x, y, mag > 100 ? 100 : mag);
-                for (int a = 0; a < 2; a++)
-                {
-                    int i = k * 2 + a; /* (PadInfo's axis order: lx ly rx ry lt rt) */
-                    char label[24];
-                    snprintf(label, sizeof label, "%s %c", STICKS[k], a ? 'y' : 'x');
-                    r = add(R_NONE, K_INFO, W_NONE, label,
-                            "The axis as this pad reports it, and the least and most seen since it was plugged in (or the recalibration below).");
-                    snprintf(r->value, sizeof r->value, "%d (seen %d to %d)", pad->axis[i], pad->axis_lo[i], pad->axis_hi[i]);
-                }
-            }
-            for (int t = 0; t < 2; t++)
-            {
-                char label[24];
-                snprintf(label, sizeof label, "%c trigger", t ? 'R' : 'L');
+                char label[32];
+                snprintf(label, sizeof label, "%s x / y", STICKS[k]);
+                r = add(R_NONE, K_INFO, W_NONE, label, "The stick as the game gets it (x / y, and how far it is pushed), after the calibration and the dead zone.");
+                snprintf(r->value, sizeof r->value, "%d / %d (%d%%)", x, y, mag > 100 ? 100 : mag);
+                int i = k * 2; /* (PadInfo's axis order: lx ly rx ry lt rt) */
+                snprintf(label, sizeof label, "%s x / y seen", STICKS[k]);
                 r = add(R_NONE, K_INFO, W_NONE, label,
-                        "The trigger as this pad reports it, and the least and most seen since it was plugged in (or the recalibration below).");
-                snprintf(r->value, sizeof r->value, "%d (seen %d to %d)", pad->axis[4 + t], pad->axis_lo[4 + t], pad->axis_hi[4 + t]);
+                        "The axes (x / y) as this pad reports them, and the least and most seen since it was plugged in (or the recalibration under Sticks).");
+                snprintf(r->value, sizeof r->value, "%d / %d (seen %d to %d / %d to %d)", pad->axis[i], pad->axis[i + 1], pad->axis_lo[i], pad->axis_hi[i],
+                         pad->axis_lo[i + 1], pad->axis_hi[i + 1]);
             }
-            PadUsbAxes ua;
-            if (pad->usb_port >= 0 && padusb_axes(pad->usb_port, &ua))
+            r = add(R_NONE, K_INFO, W_NONE, "L / R trigger",
+                    "The triggers (L / R) as this pad reports them, and the least and most seen since it was plugged in (or the recalibration under Sticks).");
+            snprintf(r->value, sizeof r->value, "%d / %d (seen %d to %d / %d to %d)", pad->axis[4], pad->axis[5], pad->axis_lo[4], pad->axis_hi[4],
+                     pad->axis_lo[5], pad->axis_hi[5]);
+            if (have_ua)
             {
                 int hz = padusb_rate(pad->usb_port);
                 int adapter = !strncmp(pad->guid, "gcadapter", 9); /* (the Wii U adapter: 125 Hz is its full speed) */
@@ -1077,25 +1214,23 @@ static void build(void)
                 if (hz)
                     snprintf(r->value, sizeof r->value, "%d Hz%s", hz, slow ? " (can be 125, plug it into a faster USB port)" : "");
                 else
-                    snprintf(r->value, sizeof r->value, "measuring...");
+                    snprintf(r->value, sizeof r->value, ui_text("measuring..."));
                 r->warn = slow;
-                static const char *const AXES[4] = {"Adapter stick x", "Adapter stick y", "Adapter C-stick x", "Adapter C-stick y"};
-                for (int a = 0; a < 4; a++)
+                static const char *const AXES[2] = {"Adapter stick x / y", "Adapter C-stick x / y"};
+                for (int k = 0; k < 2; k++)
                 {
-                    r = add(R_NONE, K_INFO, W_NONE, AXES[a],
-                            "The adapter's own number for this axis (0-255), the centre measured for it, and how far each way reads as fully pushed.");
-                    snprintf(r->value, sizeof r->value, "%d (centre %d, -%d/+%d)", ua.raw[a], ua.centre[a], ua.lo[a], ua.hi[a]);
+                    int a = k * 2, b = a + 1;
+                    r = add(R_NONE, K_INFO, W_NONE, AXES[k],
+                            "The adapter's own numbers for x / y (0-255), the centre measured for each, and how far each way reads as fully pushed (x / y).");
+                    snprintf(r->value, sizeof r->value, "%d / %d (centre %d / %d, reach -%d..+%d / -%d..+%d)", ua.raw[a], ua.raw[b], ua.centre[a], ua.centre[b],
+                             ua.lo[a], ua.hi[a], ua.lo[b], ua.hi[b]);
                 }
-                add(R_PAD_RECAL, K_ACTION, W_NOW, "Recalibrate sticks",
-                    "Measures the sticks' centre and reach again: let go of the sticks and triggers, then A or Enter. "
-                    "(They are measured as the controller is plugged in, too.)");
             }
             else
             {
                 add(R_NONE, K_INFO, W_NONE, "Its calibration",
                     "This pad's own driver's: it measures the sticks as the pad is plugged in (replug it to measure them again).");
             }
-            add(R_NONE, K_INFO, W_NONE, "A dash", "A dash needs a flick past about 80% strength: a stick that cannot reach it dashes late, or only walks.");
         }
         break;
     }
@@ -1114,20 +1249,20 @@ static void build(void)
         } /* (a refusal's what-differs, the room's players) */
         snprintf(r->value, sizeof r->value, "%.110s", status[0] ? status : net_configured() ? "connecting..."
                                                                                             : "offline");
-        if (net_backend)
+        if (yuzu_client())
         {
             r = add(R_NET_MODE, K_INFO, W_NONE, "Connection", "Change the room server and nickname using Join yuzu Room.bat.");
-            snprintf(r->value, sizeof r->value, "yuzu compatible (client)");
+            snprintf(r->value, sizeof r->value, ui_text("yuzu compatible (client)"));
             r = add(R_NET_NAME, K_INFO, W_NONE, "Your name", "The nickname used to join this existing room server.");
             snprintf(r->value, sizeof r->value, "%s", net_player_name());
             r = add(R_NET_PROTOCOL, K_INFO, W_NONE, "Room protocol", "Game traffic uses the room server. OpenSmash P2P, matchmaking and rollback are unavailable.");
-            snprintf(r->value, sizeof r->value, "yuzu version 1");
+            snprintf(r->value, sizeof r->value, ui_text("yuzu version 1"));
             break;
         }
         r = add(R_NET_MODE, K_CHOICE, W_RESTART, "Play online in",
                 "Public lobby: everyone's rooms in Local Wireless. Private: only players with the same code. Your own server: host:port. "
                 "Offline: no netplay. This network: a private room hosted on your local network, found by itself.");
-        snprintf(r->value, sizeof r->value, "%s", NET_MODES[net.mode]);
+        snprintf(r->value, sizeof r->value, "%s", ui_text(NET_MODES[net.mode]));
         if (net.mode == NET_PRIVATE || net.mode == NET_CUSTOM)
         {
             r = add(R_NET_CODE, K_TEXT, W_RESTART, "Lobby code", "Players with the same code see each other's rooms (letters and digits, no spaces).");
@@ -1148,11 +1283,11 @@ static void build(void)
         {
             int d = online_delay_setting(), a = online_delay_last_auto();
             if (d >= 0)
-                snprintf(r->value, sizeof r->value, "%d frame%s", d, d == 1 ? "" : "s");
+                snprintf(r->value, sizeof r->value, ui_text(d == 1 ? "%d frame" : "%d frames"), d);
             else if (a >= 0)
-                snprintf(r->value, sizeof r->value, "Auto (%d last match)", a);
+                snprintf(r->value, sizeof r->value, ui_text("Auto (%d last match)"), a);
             else
-                snprintf(r->value, sizeof r->value, "Auto");
+                snprintf(r->value, sizeof r->value, ui_text("Auto"));
         }
 #ifdef _WIN32   /* (rollback netplay is Windows' only: hle_rb_core.c) */
         r = add(R_NET_ROLLBACK, K_CHOICE, W_RESTART, "Rollback netcode",
@@ -1164,7 +1299,7 @@ static void build(void)
             if (launcher)
                 snprintf(rows[i].note, sizeof rows[i].note, "%s", launcher);
             else if (!settings_online())
-                snprintf(rows[i].note, sizeof rows[i].note, "for Play SSBU");
+                snprintf(rows[i].note, sizeof rows[i].note, ui_text("for Play SSBU"));
         }
         add_protocol_row(); /* (read with any lobby: no launcher's note) */
         if (restart_pending)
@@ -1173,6 +1308,21 @@ static void build(void)
     }
     case P_MODS:
         mods_rows(!same);
+        break;
+    case P_EXP: /* (features still being tried: each is saved, and takes effect at the next start; docs/adr/0001) */
+        r = add(R_UW_ONLINE, display_shape_locked() ? K_INFO : K_CHOICE, W_RESTART, "Ultrawide online",
+                "Experimental. Keeps your aspect ratio in online matches instead of 16:9. A mistake in this feature changes "
+                "the fight for you and your opponent, and can make the match go out of sync. Takes effect when the game starts again.");
+        snprintf(r->value, sizeof r->value, "%s", on_off(display_uw_online_saved()));
+        if (display_shape_locked())
+            snprintf(r->note, sizeof r->note, "not on macOS yet");
+#ifdef _WIN32
+        add(R_OPEN_LOGS, K_ACTION, W_NONE, "Open log folder",
+            "Opens the folder with the game's log, play.log, so you can send it to the developers. play.prev.log is the one "
+            "from the time before. Rollback's desync reports are in the reports folder.");
+#endif
+        if (restart_pending)
+            add(R_RESTART, K_ACTION, W_NONE, "Restart now", "Starts the game again, with the changes. A match in progress is lost.");
         break;
     case P_LOBBY:
         build_lobby(!same);
@@ -1188,6 +1338,10 @@ static void build(void)
     case P_GAME:
     {
         char lang[32] = "";
+        r = add(R_UI_LANGUAGE, K_CHOICE, W_NOW, "Interface language",
+                "The launcher and external menu share this language. The game language is set separately.");
+        snprintf(r->value, sizeof r->value, "%s", ui_locale_match(ui_locale_preference, "auto") ? ui_text("System language") : ui_catalogs[ui_locale_pick(ui_locale_preference)].name);
+        note_env(r, "SSBU_UI_LANGUAGE");
         r = add(R_LANGUAGE, K_CHOICE, W_RESTART, "Game language",
                 "Auto: the language Windows shows its menus in. Chinese, Japanese and Korean text needs your console's firmware fonts.");
         if (!settings_ini_get(display_ini_path(), NULL, "language", lang, sizeof lang) || !lang[0])
@@ -1334,6 +1488,15 @@ static void change(const Row *row, int dir)
         set_display("volume", v);
         break;
     }
+    case R_UI_LANGUAGE:
+    {
+        int i = ui_locale_match(ui_locale_preference, "auto") ? 0 : ui_locale_pick(ui_locale_preference) + 1;
+        i = cycle(i, (int)UI_CATALOG_COUNT + 1, dir);
+        const char *code = i ? ui_catalogs[i - 1].code : "auto";
+        if (settings_ini_set(display_ini_path(), NULL, "ui_language", code)) ui_locale_select(code);
+        else menu_toast(ui_text("Could not save interface language"));
+        break;
+    }
     case R_LANGUAGE:
     { /* auto, then the game's codes */
         char lang[32] = "";
@@ -1356,6 +1519,33 @@ static void change(const Row *row, int dir)
         set_display("overlay", overlay_on && *overlay_on ? "1" : "0");
         break;
     case R_SIZE:
+#ifndef __APPLE__
+    { /* the height, among those that fit the monitor at the picture's shape; the width follows the shape */
+        static const int HEIGHTS[] = {720, 900, 1080, 1440, 2160};
+        int fit[5], n = 0, i = -1;
+        for (int k = 0; k < 5; k++)
+            if (display_window_height_fits(HEIGHTS[k]) || k == 0)
+                fit[n++] = HEIGHTS[k];
+        for (int k = 0; k < n; k++)
+            if (fit[k] == ds.height)
+                i = k;
+        if (i >= 0)
+            i = cycle(i, n, dir);
+        else
+        { /* (a size typed by hand: the next one up or down) */
+            i = 0;
+            while (i < n && fit[i] < ds.height)
+                i++;
+            i = cycle(dir < 0 ? i - 1 : i, n, 0);
+        }
+        display_set_window_height(fit[i]);
+        snprintf(v, sizeof v, "%d", (int)((float)fit[i] * display_aspect() + 0.5f));
+        set_display("width", v);
+        snprintf(v, sizeof v, "%d", fit[i]);
+        set_display("height", v);
+        break;
+    }
+#else
     {
         int n = sizeof SIZES / sizeof *SIZES, i = -1;
         for (int k = 0; k < n; k++)
@@ -1376,6 +1566,7 @@ static void change(const Row *row, int dir)
         set_display("height", v);
         break;
     }
+#endif
     case R_SCALE:
     {
         static const char *const SCALES[] = {"1", "auto", "1.5", "2", "3"};
@@ -1386,7 +1577,42 @@ static void change(const Row *row, int dir)
                 i = k;
         i = i < 0 ? (dir > 0 ? 0 : n - 1) : cycle(i, n, dir);
         set_display("render_scale", SCALES[i]);
-        display_set_render_scale(VALUES[i]); /* (shown now; the renderer takes it at the next start) */
+        display_set_render_scale(VALUES[i]); /* (Direct3D 11 and Vulkan take it at their next present; Metal at the next start) */
+        break;
+    }
+    case R_ASPECT:
+    {
+        static const char *const SHAPES[] = {"16:9", "auto", "21:9", "32:9"};   /* (21:9 covers 43:18 and 64:27: display_aspect) */
+        int n = sizeof SHAPES / sizeof *SHAPES, i = -1;
+        for (int k = 0; k < n; k++)
+            if (!_stricmp(SHAPES[k], display_aspect_setting()))
+                i = k;
+        i = i < 0 ? (dir > 0 ? 0 : n - 1) : cycle(i, n, dir);
+        set_display("aspect", SHAPES[i]);
+        display_set_aspect(SHAPES[i]);   /* (taken at the next frame) */
+        break;
+    }
+    case R_UW_ONLINE:
+    {
+        int on = !display_uw_online_saved();
+        display_set_uw_online(on);
+        set_display("experimental_ultrawide_online", on ? "1" : "0");
+        break;
+    }
+    case R_TIMER:
+    {
+        static const char *const TIMERS[] = {"right", "center", "left", "hidden"};
+        int i = cycle(display_timer(), 4, dir);
+        set_display("timer", TIMERS[i]);
+        display_set_timer(i);
+        break;
+    }
+    case R_VIEW:
+    {
+        static const char *const VIEWS[] = {"wide", "zoomed", "hybrid"};
+        int i = cycle(display_view(), 3, dir);
+        set_display("view", VIEWS[i]);
+        display_set_view(i);
         break;
     }
     case R_RENDERER:
@@ -1413,43 +1639,10 @@ static void change(const Row *row, int dir)
             i = ngpus; /* (something typed by hand: next is auto) */
         i = cycle(i + 1, ngpus + 1, dir) - 1;
         set_display("gpu", i < 0 ? "auto" : gpus[i]);
+        display_set_gpu(i < 0 ? "auto" : gpus[i]); /* (shown now; the card is picked at the next start) */
         break;
     }
 #endif
-    case R_PAD:
-    {
-        int start = pad_slot < 0 ? 0 : pad_slot;
-        for (int k = 1; k <= PAD_SLOTS; k++)
-        {
-            int s = cycle(start, PAD_SLOTS, dir * k);
-            if (pads[s].connected)
-            {
-                pad_slot = s;
-                break;
-            }
-        }
-        return;
-    }
-    case R_PAD_PLAYER:
-    {
-        if (!pad)
-            return;
-        int pin = cycle(pad_pin(pad), PAD_SLOTS + 1, dir);
-        for (int k = 1; k <= PAD_SLOTS; k++)
-        { /* any old pin of this pad goes */
-            snprintf(v, sizeof v, "%d", k);
-            if (pad_matches(pad, pins[k - 1]))
-                settings_ini_set(pad_ini_path(), "players", v, NULL);
-        }
-        if (pin)
-        {
-            snprintf(v, sizeof v, "%d", pin);
-            settings_ini_set(pad_ini_path(), "players", v, pad->guid);
-        }
-        load_pins();
-        pad_reload();
-        break;
-    }
     case R_PAD_LAYOUT:
         if (pad)
             set_pad(pad, "layout", pad->layout ? "positional" : "labels");
@@ -1471,7 +1664,25 @@ static void change(const Row *row, int dir)
     case R_PAD_TRIGGER:
         if (pad)
         {
-            snprintf(v, sizeof v, "%d", cycle(pad->trigger / 5 - 1, 19, dir) * 5 + 5);
+            int opt[20], n = 0, at = -1, def = trigger_default(pad); /* 5, 10 ... 95, and the default among them */
+            for (int t = 5; t <= 95; t += 5)
+            {
+                if (t == 25 && def != 25)
+                    continue; /* (a GameCube controller's file value 25 is read as no choice, 31) */
+                if (def < t && def > t - 5)
+                    opt[n++] = def;
+                opt[n++] = t;
+            }
+            for (int k = 0; k < n; k++)
+                if (opt[k] == pad->trigger)
+                    at = k;
+            if (at < 0) /* (a value typed by hand: the next one up or down) */
+                for (int k = 0; k < n; k++)
+                    if (opt[k] < pad->trigger)
+                        at = dir > 0 ? k : k + 1;
+            if (at < 0)
+                at = dir > 0 ? n - 1 : 0;
+            snprintf(v, sizeof v, "%d", opt[cycle(at, n, dir)]);
             set_pad(pad, "trigger_threshold", v);
         }
         break;
@@ -1494,6 +1705,10 @@ static void change(const Row *row, int dir)
         break;
     case R_RUMBLE:
         settings_ini_set(pad_ini_path(), "general", "rumble", pad_rumble_on() ? "0" : "1");
+        pad_reload();
+        break;
+    case R_GC_SWITCH:
+        settings_ini_set(pad_ini_path(), "general", "gc_switch", pad_gc_switch() ? "0" : "1");
         pad_reload();
         break;
     case R_NET_MODE:
@@ -1530,6 +1745,62 @@ static void change(const Row *row, int dir)
     changed(row->when);
 }
 
+/* The Controllers pages' resets, run after the player has said yes (the question: the confirm box). */
+static void do_reset(int what)
+{
+    PadInfo *pad = pad_slot >= 0 && pads[pad_slot].connected ? &pads[pad_slot] : NULL;
+    char section[128] = "";
+    if (pad)
+        pad_section(pad, section, sizeof section);
+    const char *done = "";
+    switch (what)
+    {
+    case R_KEYS_RESET:
+        for (int i = 0; i < PAD_KEYS; i++)
+            settings_ini_set(pad_ini_path(), "keyboard", pad_key_label(i), NULL);
+        done = "Keyboard keys reset to defaults";
+        break;
+    case R_REMAP_RESET:
+        if (!pad)
+            return;
+        for (int b = 0; b < 16; b++)
+            settings_ini_set(pad_ini_path(), section, pad_button_name(b), NULL);
+        done = "Buttons reset to defaults";
+        break;
+    case R_STICKS_RESET:
+        if (!pad)
+            return;
+        settings_ini_set(pad_ini_path(), section, "deadzone", NULL);
+        settings_ini_set(pad_ini_path(), section, "stick_taunts", NULL);
+        if (pad->usb_port >= 0)
+            settings_ini_set(pad_ini_path(), "general", "gc_switch", NULL);
+        done = "Sticks reset to defaults";
+        break;
+    case R_RUMBLE_RESET:
+        if (pad)
+            settings_ini_set(pad_ini_path(), section, "rumble", NULL);
+        settings_ini_set(pad_ini_path(), "general", "rumble", NULL);
+        done = "Rumble reset to defaults";
+        break;
+    case R_PAD_RESET:
+    {
+        if (!pad)
+            return;
+        static const char *const KEYS[] = {"layout", "deadzone", "rumble", "trigger_threshold", "dpad_moves", "stick_taunts"};
+        for (u32 i = 0; i < sizeof KEYS / sizeof *KEYS; i++)
+            settings_ini_set(pad_ini_path(), section, KEYS[i], NULL);
+        for (int b = 0; b < 16; b++)
+            settings_ini_set(pad_ini_path(), section, pad_button_name(b), NULL);
+        done = "Controller reset to defaults";
+        break;
+    }
+    default:
+        return;
+    }
+    pad_reload();
+    menu_toast(done);
+}
+
 static void action(const Row *row)
 {
     PadInfo *pad = pad_slot >= 0 && pads[pad_slot].connected ? &pads[pad_slot] : NULL;
@@ -1549,6 +1820,18 @@ static void action(const Row *row)
         capture_until = GetTickCount64() + 6000;
         return;
     }
+    if (row->id >= R_PADSEL_FIRST && row->id < R_PADSEL_FIRST + PAD_SLOTS)
+    { /* a controller's row: set that one up */
+        int s = row->id - R_PADSEL_FIRST;
+        if (pads[s].connected)
+        {
+            pad_slot = s;
+            page = P_CUSTOM;
+            sel[P_CUSTOM] = 0;
+            top[P_CUSTOM] = 0;
+        }
+        return;
+    }
     if (IS_REMAP(row->id) && pad)
     {
         capture_button = row->id - R_REMAP_FIRST;
@@ -1560,17 +1843,17 @@ static void action(const Row *row)
     { /* a room: put it first in the game's own Rooms List, where it is joined */
         const NetRoom *x = ROOM_AT(row->id);
         const char *host = x->name[0] ? x->name : "(no name)";
-        char t[160];
+        char t[480];
         if (x->mine)
-            snprintf(t, sizeof t, "This is your own room");
+            snprintf(t, sizeof t, ui_text("This is your own room"));
         else if (!x->joinable)
-            snprintf(t, sizeof t, "Can't join %.32s's room: %s", host, room_short(x));
+            snprintf(t, sizeof t, ui_text("Can't join %.32s's room: %s"), host, room_short(x));
         else if (!x->open)
-            snprintf(t, sizeof t, "%.32s's room is full or closed for now", host);
+            snprintf(t, sizeof t, ui_text("%.32s's room is full or closed for now"), host);
         else
         {
             net_rooms_pick(x->host);
-            snprintf(t, sizeof t, "%.32s's room comes first now: close this menu, then Local Wireless > Rooms List", host);
+            snprintf(t, sizeof t, ui_text("%.32s's room comes first now: close this menu, then Local Wireless > Rooms List"), host);
             changed(W_NONE);
         }
         menu_toast(t);
@@ -1583,7 +1866,7 @@ static void action(const Row *row)
             menu_toast("Searching already");
         else if (match.state == NET_MATCH_MATCHED)
         {
-            char t[160];
+            char t[480];
             snprintf(t, sizeof t, match.role == NET_MATCH_HOST ? "You host: Local Wireless > Create a Room (%.32s joins it)" : "%.32s hosts: their room comes first in Local Wireless > Rooms List", who(match.peer_name));
             menu_toast(t);
         }
@@ -1647,6 +1930,22 @@ static void action(const Row *row)
             top[P_STICKS] = 0;
         }
         break;
+    case R_PAD_RUMBLEPAGE:
+        if (pad)
+        {
+            page = P_RUMBLE;
+            sel[P_RUMBLE] = 0;
+            top[P_RUMBLE] = 0;
+        }
+        break;
+    case R_PAD_INPUTS:
+        if (pad)
+        {
+            page = P_INPUTS;
+            sel[P_INPUTS] = 0;
+            top[P_INPUTS] = 0;
+        }
+        break;
     case R_PAD_RECAL:
         if (pad && pad->usb_port >= 0)
         {
@@ -1656,8 +1955,28 @@ static void action(const Row *row)
         }
         break;
     case R_REMAP_BACK:
-    case R_KEYS_BACK:
     case R_STICKS_BACK:
+    case R_RUMBLE_BACK:
+        page = P_CUSTOM;
+        break;
+    case R_INPUTS_BACK:
+        page = P_CUSTOM;
+        break;
+    case R_ASSIGN_WAIT:
+        break;
+    case R_ASSIGN_BACK:
+        page = P_PADS;
+        break;
+    case R_ASSIGN:
+        assign_n = 1;
+        assign_dirty = 0;
+        assign_wait = 1; /* (an A held now is not a claim) */
+        page = P_ASSIGN;
+        sel[P_ASSIGN] = 1; /* the prompt row */
+        top[P_ASSIGN] = 0;
+        break;
+    case R_KEYS_BACK:
+    case R_CUSTOM_BACK:
         page = P_PADS;
         break;
     case R_KEYS:
@@ -1666,10 +1985,11 @@ static void action(const Row *row)
         top[P_KEYS] = 0;
         break;
     case R_KEYS_RESET:
-        for (int i = 0; i < PAD_KEYS; i++)
-            settings_ini_set(pad_ini_path(), "keyboard", pad_key_label(i), NULL);
-        pad_reload();
-        menu_toast("The keyboard's keys are back to the defaults");
+    case R_REMAP_RESET:
+    case R_STICKS_RESET:
+    case R_RUMBLE_RESET:
+    case R_PAD_RESET:
+        confirm = row->id; /* (asks first: do_reset runs on a yes) */
         break;
     case R_PAD_TEST:
         if (pad && pad->slot >= 0)
@@ -1678,20 +1998,6 @@ static void action(const Row *row)
             pad_rumble((u32)pad->slot, 2, 0.8f);
             rumble_slot = pad->slot;
             rumble_stop = GetTickCount64() + 500;
-        }
-        break;
-    case R_PAD_RESET:
-        if (pad)
-        {
-            static const char *const KEYS[] = {"layout", "deadzone", "rumble", "trigger_threshold", "dpad_moves", "stick_taunts"};
-            char section[128];
-            pad_section(pad, section, sizeof section);
-            for (u32 i = 0; i < sizeof KEYS / sizeof *KEYS; i++)
-                settings_ini_set(pad_ini_path(), section, KEYS[i], NULL);
-            for (int b = 0; b < 16; b++)
-                settings_ini_set(pad_ini_path(), section, pad_button_name(b), NULL);
-            pad_reload();
-            menu_toast("This controller is back to the defaults");
         }
         break;
     case R_PADS_FILE:
@@ -1724,6 +2030,29 @@ static void action(const Row *row)
     case R_QUIT:
         confirm = row->id;
         break;
+#ifdef _WIN32
+    case R_OPEN_LOGS:
+    { /* Explorer on build\ with play.log selected (the launcher writes it; the game runs in the project's folder) */
+        wchar_t path[MAX_PATH], cmd[MAX_PATH + 32];
+        DWORD n = GetFullPathNameW(L"build\\play.log", MAX_PATH, path, NULL);
+        if (n && n < MAX_PATH && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES)
+            _snwprintf(cmd, MAX_PATH + 32, L"explorer.exe /select,\"%ls\"", path);
+        else if ((n = GetFullPathNameW(L"build", MAX_PATH, path, NULL)) && n < MAX_PATH)
+            _snwprintf(cmd, MAX_PATH + 32, L"explorer.exe \"%ls\"", path);
+        else
+            break;
+        cmd[MAX_PATH + 31] = 0;
+        STARTUPINFOW si = {sizeof si};
+        PROCESS_INFORMATION pi;
+        if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+        {
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            menu_toast("The log folder is open");
+        }
+        break;
+    }
+#endif
     case R_MODS_OFF:
         if (!mods_switch_set("--all", 0))
         {
@@ -1796,6 +2125,10 @@ static u64 pad_nav(int *combo, u32 *guide)
         if (pads[s].connected && pads[s].raw & 1u << PAD_RAW_GUIDE_BIT)
             *guide = 1;
     }
+    if (open_ && page == P_INPUTS)
+        nb &= ~(NB_UP | NB_DOWN | NB_LEFT | NB_RIGHT); /* (the sticks are being tested: they must not move the menu; B goes back) */
+    if (open_ && page == P_ASSIGN && !(sel[page] < nrows && rows[sel[page]].id == R_ASSIGN_BACK))
+        nb &= ~(u64)NB_A; /* (A claims a player there; on the Back row it is the menu's again) */
     return nb;
 }
 
@@ -1898,6 +2231,39 @@ static void edit_event(int ev, unsigned ch)
     }
 }
 
+static int view_fit; /* how many rows the page shows at once (set when it is drawn) */
+
+/* The mouse wheel on a page with a scroll bar scrolls the list, three rows a notch, and the cursor only moves when
+ * its row leaves the view (to the nearest row that can be chosen); a page that fits has no bar: the wheel moves the cursor. */
+static void wheel_scroll(int dir)
+{
+    int *t = &top[page];
+    int nt = *t + dir * 3;
+    if (nt > nrows - view_fit)
+        nt = nrows - view_fit;
+    if (nt < 0)
+        nt = 0;
+    if (nt == *t)
+        return;
+    int c = sel[page];
+    if (c < nt)
+    {
+        c = nt;
+        while (c < nt + view_fit && c < nrows && !selectable(&rows[c]))
+            c++;
+    }
+    else if (c >= nt + view_fit)
+    {
+        c = nt + view_fit - 1;
+        while (c >= nt && !selectable(&rows[c]))
+            c--;
+    }
+    if (c < nt || c >= nt + view_fit || c >= nrows)
+        return; /* nothing in view can be chosen: stay */
+    *t = nt;
+    sel[page] = c;
+}
+
 static void move_sel(int dir)
 {
     int *s = &sel[page];
@@ -1952,7 +2318,7 @@ typedef struct Hit
 {
     float x0, y0, x1, y1, value_x, value_mid;
     int kind, a, b;
-    char label[48];
+    char label[144];
 } Hit;
 enum { MENU_HITS = 96 };
 static Hit hits[MENU_HITS];
@@ -2033,6 +2399,8 @@ static void event(int ev, unsigned ch)
             confirm = 0;
             if (what == R_RESTART)
                 settings_restart();
+            else if (what != R_QUIT)
+                do_reset(what);
             else
             {
                 fprintf(stderr, "[menu] quit\n");
@@ -2118,7 +2486,7 @@ static void event(int ev, unsigned ch)
     case EV_B:
     case EV_BKSP:
         if (SUB_PAGE(page))
-            page = P_PADS;
+            page = PARENT_PAGE(page);
         else
             close_menu();
         break;
@@ -2145,7 +2513,12 @@ static void mouse_press(int v)
     if (v == MENU_WHEEL_UP || v == MENU_WHEEL_DOWN)
     {
         if (!confirm && !editing && !capturing)
-            move_sel(v == MENU_WHEEL_UP ? -1 : 1);
+        {
+            if (view_fit > 0 && nrows > view_fit && !at_foot())
+                wheel_scroll(v == MENU_WHEEL_UP ? -1 : 1);
+            else
+                move_sel(v == MENU_WHEEL_UP ? -1 : 1);
+        }
         return;
     }
     if (v == MENU_MOUSE_RIGHT)
@@ -2297,6 +2670,7 @@ static int script_events(void)
 
 int menu_frame(int *overlay, int f3)
 {
+    if (!ui_locale_initialized) ui_locale_load(display_ini_path());
     ULONGLONG now = GetTickCount64();
     overlay_on = overlay;
     for (u32 s = 0; s < PAD_SLOTS; s++)
@@ -2474,6 +2848,54 @@ int menu_frame(int *overlay, int f3)
                 build();
             }
     }
+    if (open_ && page == P_ASSIGN)
+    { /* Switch player: A on a controller claims the next player for it, one claim per press (the pads are set up again once A is let go) */
+        int any = 0, who = -1;
+        for (int i = 0; i < PAD_SLOTS; i++)
+        {
+            PadState ps;
+            if (pads[i].connected && pad_get((u32)i, &ps) && (ps.buttons & 1ull))
+            {
+                any = 1;
+                if (who < 0 && assign_free(&pads[i]) && !(sel[page] < nrows && rows[sel[page]].id == R_ASSIGN_BACK))
+                    who = i;
+            }
+        }
+        if (!any)
+        {
+            assign_wait = 0;
+            if (assign_dirty)
+            {
+                assign_dirty = 0;
+                pad_reload();
+            }
+        }
+        else if (!assign_wait && who >= 0 && assign_n <= PAD_SLOTS)
+        {
+            char key[4];
+            if (assign_n == 1)
+                for (int k = 1; k <= PAD_SLOTS; k++)
+                { /* the first claim starts afresh: the old assignment goes, controllers.ini's [players] (leaving the page unused keeps it) */
+                    snprintf(key, sizeof key, "%d", k);
+                    settings_ini_set(pad_ini_path(), "players", key, NULL);
+                }
+            snprintf(key, sizeof key, "%d", assign_n);
+            settings_ini_set(pad_ini_path(), "players", key, pads[who].pin);
+            snprintf(assign_name[assign_n - 1], sizeof assign_name[0], "%s", pads[who].name);
+            snprintf(assign_guid[assign_n - 1], sizeof assign_guid[0], "%s", pads[who].unit);
+            assign_n++;
+            assign_dirty = 1;
+            assign_wait = 1;
+            load_pins();
+            nav_wait_release = 1; /* (this A is not also a press on Back) */
+            {
+                int free_pad = 0;
+                for (int i = 0; i < PAD_SLOTS; i++)
+                    free_pad |= assign_free(&pads[i]);
+                sel[P_ASSIGN] = assign_n <= PAD_SLOTS && free_pad ? assign_n : 0; /* the next prompt row, or Back */
+            }
+        }
+    }
     if (!open_)
     {
         nav_held = nb;
@@ -2505,32 +2927,10 @@ int menu_frame(int *overlay, int f3)
 }
 
 /* ---- drawing ------------------------------------------------------------------------- */
-static float text_w(const char *s, float size) { return (float)strlen(s) * size / 2; }
+static float text_w(const char *s, float size) { return (float)ui_text_columns(ui_text(s)) * size / 2; }
 
-/* s wrapped to lines of at most `cols` characters, into out (a line s starts itself wrapped on its own). */
-static void wrap(const char *s, int cols, char *out, size_t size)
-{
-    size_t o = 0;
-    while (*s && o + 2 < size)
-    {
-        int n = (int)strcspn(s, "\n");
-        if (n <= cols)
-        {
-            o += (size_t)snprintf(out + o, size - o, "%.*s%s", n, s, s[n] ? "\n" : "");
-            s += n + (s[n] != 0);
-            continue;
-        }
-        int cut = cols;
-        while (cut > 0 && s[cut] != ' ')
-            cut--;
-        if (!cut)
-            cut = cols;
-        o += (size_t)snprintf(out + o, size - o, "%.*s\n", cut, s);
-        s += cut;
-        while (*s == ' ')
-            s++;
-    }
-    out[o < size ? o : size - 1] = 0;
+static void wrap(const char *s, int cols, char *out, size_t size) {
+    ui_wrap(ui_text(s), cols, out, size);
 }
 
 static void box(float x, float y, float w, float h, float s)
@@ -2547,7 +2947,7 @@ static int toast_now(char *t, size_t size)
     if (toast_until == 1)
         toast_until = now + 4000;
     int show = toast_until && now < toast_until;
-    snprintf(t, size, "%s", toast);
+    snprintf(t, size, "%s", ui_text(toast));
     ReleaseSRWLockExclusive(&toast_lock);
     return show;
 }
@@ -2563,7 +2963,7 @@ static void modal_box(float w, float h, float x, float y, float bw, float bh, fl
 
 static void draw_toast(float w, float h, float s)
 {
-    char t[160];
+    char t[480];
     if (!toast_now(t, sizeof t))
         return;
     float size = 28 * s, tw = text_w(t, size) + 48 * s, th = size + 28 * s;
@@ -2576,7 +2976,7 @@ static void mouse_button(float x, float y, float bw, float bh, float size, float
 {
     const Hit *t = hit_add(x, y, bw, bh, kind, 0, 0);
     ovl_rect(x, y, bw, bh, hit_at(NULL) == t ? OVL_RGBA(55, 62, 90, 255) : OVL_RGBA(40, 45, 62, 255));
-    ovl_text(x + 12 * s, y + (bh - size) / 2, size, color, text);
+    ovl_text(x + 12 * s, y + (bh - size) / 2, size, color, ui_text(text));
 }
 
 /* A pad button's picture (L, R beside the tabs: they switch the pages), and the pointer's too. */
@@ -2614,20 +3014,20 @@ void menu_draw(float w, float h)
     ovl_rect(0, 0, w, h, OVL_RGBA(0, 0, 0, 150));
     float px = w * 0.06f, py = h * 0.06f, pw = w * 0.88f, ph = h * 0.88f;
     box(px, py, pw, ph, s);
-    ovl_text(px + 32 * s, py + 22 * s, 44 * s, WHITE, "Settings");
-    char banner[200] = "";
+    ovl_text(px + 32 * s, py + 22 * s, 44 * s, WHITE, ui_text("Settings"));
+    char banner[600] = "";
     char status[512];
     net_status(status, sizeof status);
     if (strstr(status, "Room:"))
-        snprintf(banner, sizeof banner, "You are in a netplay room: the game keeps running while this menu is open.");
+        snprintf(banner, sizeof banner, ui_text("You are in a netplay room: the game keeps running while this menu is open."));
     else if (!strncmp(status, "Netplay: ", 9) && strchr(status, '\n'))
     { /* (refused, with what differs: its first line) */
         const char *nl = strchr(status, '\n') + 1;
-        snprintf(banner, sizeof banner, "Can't join: %.*s (Online > Now)", (int)strcspn(nl, "\n"), nl);
+        snprintf(banner, sizeof banner, ui_text("Can't join: %.*s (Online > Now)"), (int)strcspn(nl, "\n"), nl);
     }
     else if (restart_pending)
-        snprintf(banner, sizeof banner, "Some changes take effect when the game starts again: Game > Restart the game.");
-    char t[160];
+        snprintf(banner, sizeof banner, ui_text("Some changes take effect when the game starts again: Game > Restart the game."));
+    char t[480];
     if (toast_now(t, sizeof t))
         ovl_text(px + 300 * s, py + 34 * s, 24 * s, WHITE, t); /* (a message, in the menu: here) */
     else if (banner[0])
@@ -2651,7 +3051,7 @@ void menu_draw(float w, float h)
         else if (hit_at(NULL) == t)
             ovl_rect(x + 2 * s, tab_y, tab_w - 4 * s, tab_h, OVL_RGBA(40, 45, 62, 255));
         char name[32];
-        snprintf(name, sizeof name, "%d %s", i + 1, PAGE_NAMES[i]);
+        snprintf(name, sizeof name, "%d %s", i + 1, ui_text(PAGE_NAMES[i]));
         ovl_text(x + (tab_w - text_w(name, 30 * s)) / 2, tab_y + 12 * s, 30 * s, on ? WHITE : GREY, name);
     }
     ovl_rect(px + 20 * s, tab_y + tab_h + 10 * s, pw - 40 * s, 2 * s, OVL_RGBA(60, 66, 90, 255));
@@ -2665,6 +3065,7 @@ void menu_draw(float w, float h)
     int fit = (int)((help_y - 16 * s - ry) / rh);
     if (fit < 1)
         fit = 1;
+    view_fit = fit;
     int *t0 = &top[page];
     if (sel[page] < *t0)
         *t0 = sel[page];
@@ -2672,35 +3073,61 @@ void menu_draw(float w, float h)
         *t0 = sel[page] - fit + 1;
     if (*t0 > nrows - fit)
         *t0 = nrows - fit > 0 ? nrows - fit : 0;
+    { /* the cursor cannot go onto a row that cannot be chosen: when only such rows are above the view, show the top of the page */
+        int above = 0;
+        for (int k = 0; k < *t0; k++)
+            above |= rows[k].kind != K_INFO;
+        if (!above && sel[page] < fit)
+            *t0 = 0;
+    }
     float vx = rx + rw * 0.40f;
     for (int i = *t0; i < nrows && i < *t0 + fit; i++)
     {
         const Row *r = &rows[i];
         float y = ry + (float)(i - *t0) * rh;
         int on = i == sel[page] && !at_foot();
+        int pick = r->kind != K_INFO; /* a row that cannot be chosen is dimmed, with a line where the two kinds meet */
+        float lx = rx + 16 * s;
+        if (i & 1) /* every other row a little paler: the eye follows a row from the label to its value */
+            ovl_rect(rx, y - 6 * s, rw, rh - 4 * s, OVL_RGBA(27, 31, 45, 255));
+        if (i > *t0 && pick != (rows[i - 1].kind != K_INFO))
+        { /* a line across the row, where the rows that can be chosen meet those that cannot */
+            ovl_rect(rx, y - (pick ? 14 : 8) * s, rw, 2 * s, OVL_RGBA(95, 103, 138, 255)); /* above a choosable row: up, clear of its outline; above one that cannot be chosen: down, in the gap */
+        }
         if (on)
-            ovl_rect(rx, y - 6 * s, rw, rh - 4 * s, OVL_RGBA(55, 62, 90, 255));
-        ovl_text(rx + 16 * s, y, size, r->kind == K_INFO ? GREY : WHITE, r->label);
-        char v[160];
+        { /* the row under the cursor: a rectangle round it, the row itself left as it is */
+            /* whole pixels: a line on a fraction of a pixel is 2 pixels thick here and 3 there */
+            float bx = floorf(rx + 0.5f), by = floorf(y - 6 * s + 0.5f), bw = floorf(rx + rw + 0.5f) - bx, bh = floorf(y - 6 * s + rh - 4 * s + 0.5f) - by;
+            float t = floorf(2 * s + 0.5f);
+            if (t < 1)
+                t = 1;
+            u32 c = OVL_RGBA(200, 55, 55, 255); /* the menu's red, a little dimmer than the tab's underline */
+            ovl_rect(bx, by, bw, t, c);
+            ovl_rect(bx, by + bh - t, bw, t, c);
+            ovl_rect(bx, by, t, bh, c);
+            ovl_rect(bx + bw - t, by, t, bh, c);
+        }
+        ovl_text(lx, y, size, !pick ? DIM : WHITE, r->label);
+        char v[480];
         if (r->kind == K_CHOICE && on)
-            snprintf(v, sizeof v, "< %s >", r->value);
+            snprintf(v, sizeof v, "< %s >", (r->kind == K_TEXT || r->id == R_NET_NAME || r->id == R_NET_STATUS || r->id == R_MOD_CODE ? r->value : ui_text(r->value)));
         else
-            snprintf(v, sizeof v, "%s", r->value);
-        const char *tag = r->note[0] ? r->note : r->when == W_NOW   ? "now"
-                                             : r->when == W_RESTART ? "next start"
+            snprintf(v, sizeof v, "%s", (r->kind == K_TEXT || r->id == R_NET_NAME || r->id == R_NET_STATUS || r->id == R_MOD_CODE ? r->value : ui_text(r->value)));
+        const char *tag = r->note[0] ? r->note : r->when == W_NOW   ? ui_text("now")
+                                             : r->when == W_RESTART ? ui_text("next start")
                                                                     : "";
         float tag_size = 22 * s, tag_w = text_w(tag, tag_size);
         int room = (int)((rx + rw - 24 * s - tag_w - vx) / (size / 2)) - 1;
-        if (room > 0 && (int)strlen(v) > room)
+        if (room > 0 && ui_text_columns(v) > room)
         {
-            v[room > 3 ? room - 3 : 0] = 0;
+            v[ui_prefix_bytes(v, room > 3 ? room - 3 : 0)] = 0;
             strcat(v, "...");
         }
         Hit *t = hit_add(rx, y - 6 * s, rw, rh, HIT_ROW, r->id, 0);
         snprintf(t->label, sizeof t->label, "%s", r->label);
         t->value_x = vx;
         t->value_mid = vx + text_w(v, size) / 2; /* (a choice: its left half steps back, the rest forward) */
-        ovl_text(vx, y, size, r->warn ? ACCENT : r->kind == K_INFO ? WHITE
+        ovl_text(vx, y, size, r->warn ? ACCENT : r->kind == K_INFO ? GREY
                                              : on                  ? WHITE
                                                                    : OVL_RGBA(200, 205, 220, 255),
                  v);
@@ -2708,10 +3135,16 @@ void menu_draw(float w, float h)
                                                                                                     : AMBER,
                  tag);
     }
-    if (*t0 > 0)
-        ovl_text(rx + rw - 40 * s, ry - 40 * s, 26 * s, GREY, "^");
-    if (*t0 + fit < nrows)
-        ovl_text(rx + rw - 40 * s, help_y - 34 * s, 26 * s, GREY, "v");
+    if (nrows > fit)
+    { /* a scroll bar at the right, outside the rows: the track the height of the visible rows, the thumb how much of the page shows and where */
+        float tx = rx + rw + 12 * s, tw = 8 * s, ty = ry - 6 * s, th = (float)fit * rh - 4 * s;
+        float thumb = th * (float)fit / (float)nrows;
+        if (thumb < 30 * s)
+            thumb = 30 * s;
+        float at = ty + (th - thumb) * (float)*t0 / (float)(nrows - fit);
+        ovl_rect(tx, ty, tw, th, OVL_RGBA(27, 31, 45, 255));
+        ovl_rect(tx, at, tw, thumb, OVL_RGBA(110, 118, 150, 255));
+    }
     /* the selected row's help, and the keys */
     ovl_rect(px + 20 * s, help_y - 8 * s, pw - 40 * s, 2 * s, OVL_RGBA(60, 66, 90, 255));
     const char *help = at_foot() ? (foot == 1 ? "Starts the game again (for the settings marked 'next start'). A match in progress is lost."
@@ -2719,32 +3152,56 @@ void menu_draw(float w, float h)
                        : sel[page] < nrows ? rows[sel[page]].help : NULL;
     if (help)
     {
-        char wrapped[600];
+        char wrapped[1800];
         wrap(help, (int)((pw - 80 * s) / (13 * s)), wrapped, sizeof wrapped);
         ovl_text(px + 36 * s, help_y + 4 * s, 26 * s, OVL_RGBA(200, 210, 230, 255), wrapped);
     }
-    ovl_text(px + 36 * s, py + ph - 44 * s, 22 * s, DIM,
+    ovl_text(px + 36 * s, py + ph - 44 * s, 22 * s, DIM, ui_text(
              page == P_REMAP    ? "Up/Down: choose   A/Enter: press a new control   Y/Delete: default   B/Backspace: back   Esc: close"
              : page == P_KEYS   ? "Up/Down: choose   A/Enter: press a new key   Y/Delete: default   B/Backspace: back   Esc: close"
-             : page == P_STICKS ? "The numbers update live   B/Backspace: back   Esc: close"
-                                : "Up/Down: choose   Left/Right: change   A/Enter: select   L/R, Q/E or Tab: page   B/Esc: close");
+             : page == P_INPUTS ? "The numbers update live   B/Backspace: back   Esc: close"
+             : page == P_ASSIGN ? "A on a controller: its player (not on Back)   B/Backspace or A on Back: done   Esc: close"
+             : page == P_STICKS || page == P_RUMBLE || page == P_CUSTOM ? "Up/Down: choose   Left/Right: change   A/Enter: select   B/Backspace: back   Esc: close"
+                                : "Up/Down: choose   Left/Right: change   A/Enter: select   L/R, Q/E or Tab: page   B/Esc: close"));
     /* on top: a question, the text being typed, or a control being waited for */
     if (confirm)
     {
-        float bw = 820 * s, bh = 200 * s, bx = (w - bw) / 2, by = (h - bh) / 2;
+        float bw = 820 * s;
+        const char *q = confirm == R_RESTART        ? "Start the game again?"
+                        : confirm == R_QUIT         ? "Quit the game?"
+                        : confirm == R_REMAP_RESET  ? "Reset buttons to defaults?"
+                        : confirm == R_STICKS_RESET ? "Reset sticks to defaults?"
+                        : confirm == R_RUMBLE_RESET ? "Reset rumble to defaults?"
+                        : confirm == R_KEYS_RESET   ? "Reset keyboard keys to defaults?"
+                                                    : "Reset controller to defaults?";
+        const char *q2 = confirm == R_RESTART || confirm == R_QUIT ? "A match in progress is lost."
+                         : confirm == R_REMAP_RESET  ? "Every button of this controller goes back to its default control."
+                         : confirm == R_STICKS_RESET ? "Dead zone and stick taunts (and a GameCube adapter's scaling) go back to the defaults."
+                         : confirm == R_RUMBLE_RESET ? "Rumble goes back on, at this controller's default strength."
+                         : confirm == R_KEYS_RESET   ? "Every keyboard key goes back to its default."
+                                                     : "This controller's face buttons, buttons, sticks, rumble, D-pad and triggers go back to the defaults.";
+        float want = text_w(q2, 26 * s) + 72 * s; /* (as wide as the line, or the picture, then wrapped) */
+        if (want > bw)
+            bw = want < w - 40 * s ? want : w - 40 * s;
+        char wrapped2[400];
+        wrap(q2, (int)((bw - 72 * s) / (13 * s)), wrapped2, sizeof wrapped2);
+        int lines2 = 1;
+        for (const char *c = wrapped2; *c; c++)
+            lines2 += *c == '\n';
+        float extra = (float)(lines2 - 1) * 30 * s, bh = 200 * s + extra, bx = (w - bw) / 2, by = (h - bh) / 2;
         modal_box(w, h, bx, by, bw, bh, s);
-        ovl_text(bx + 36 * s, by + 34 * s, 34 * s, WHITE, confirm == R_RESTART ? "Start the game again?" : "Quit the game?");
-        ovl_text(bx + 36 * s, by + 84 * s, 26 * s, GREY, "A match in progress is lost.");
-        mouse_button(bx + 24 * s, by + 128 * s, text_w("A / Enter: yes", 26 * s) + 24 * s, 50 * s, 26 * s, s, HIT_YES, AMBER, "A / Enter: yes");
-        mouse_button(bx + 300 * s, by + 128 * s, text_w("B / Esc: no", 26 * s) + 24 * s, 50 * s, 26 * s, s, HIT_NO, AMBER, "B / Esc: no");
+        ovl_text(bx + 36 * s, by + 34 * s, 34 * s, WHITE, ui_text(q));
+        ovl_text(bx + 36 * s, by + 84 * s, 26 * s, GREY, wrapped2);
+        mouse_button(bx + 24 * s, by + 128 * s + extra, text_w("A / Enter: yes", 26 * s) + 24 * s, 50 * s, 26 * s, s, HIT_YES, AMBER, "A / Enter: yes");
+        mouse_button(bx + 300 * s, by + 128 * s + extra, text_w("B / Esc: no", 26 * s) + 24 * s, 50 * s, 26 * s, s, HIT_NO, AMBER, "B / Esc: no");
     }
     else if (editing)
     {
         float bw = 900 * s, bh = 600 * s, bx = (w - bw) / 2, by = (h - bh) / 2, cs = 56 * s;
         modal_box(w, h, bx, by, bw, bh, s);
-        ovl_text(bx + 36 * s, by + 28 * s, 30 * s, GREY, editing == R_OSK ? osk_title : editing == R_NET_NAME ? "Your name"
+        ovl_text(bx + 36 * s, by + 28 * s, 30 * s, GREY, editing == R_OSK ? osk_title : ui_text(editing == R_NET_NAME ? "Your name"
                                                                                     : editing == R_NET_CODE   ? "Lobby code"
-                                                                                                              : "Server (host:port)");
+                                                                                                              : "Server (host:port)"));
         char t[80];
         snprintf(t, sizeof t, "%s_", edit_buf);
         ovl_rect(bx + 30 * s, by + 72 * s, bw - 60 * s, 56 * s, OVL_RGBA(16, 18, 26, 255));
@@ -2761,7 +3218,7 @@ void menu_draw(float w, float h)
                     snprintf(cell, sizeof cell, ":");
                 else
                 {
-                    snprintf(cell, sizeof cell, "%s", GRID_KEYS[c - 1]);
+                    snprintf(cell, sizeof cell, "%s", ui_text(GRID_KEYS[c - 1]));
                     cx = gx + cs + (c - 1) * 2.75f * cs;
                     cw = 2.75f * cs - 6 * s;
                 }
@@ -2770,32 +3227,32 @@ void menu_draw(float w, float h)
                 ovl_rect(cx, gy + r * cs, cw, cs - 6 * s, on ? OVL_RGBA(225, 60, 60, 255) : OVL_RGBA(40, 45, 62, 255));
                 ovl_text(cx + (cw - text_w(cell, 30 * s)) / 2, gy + r * cs + 10 * s, 30 * s, WHITE, cell);
             }
-        ovl_text(bx + 36 * s, by + bh - 52 * s, 22 * s, DIM, "Type, then Enter (Esc: cancel). Pad: A types, B deletes, + done, L cancels.");
+        ovl_text(bx + 36 * s, by + bh - 52 * s, 22 * s, DIM, ui_text("Type, then Enter (Esc: cancel). Pad: A types, B deletes, + done, L cancels."));
     }
     else if (capture_key >= 0)
     {
         float bw = 900 * s, bh = 200 * s, bx = (w - bw) / 2, by = (h - bh) / 2;
         modal_box(w, h, bx, by, bw, bh, s);
-        char t[160];
-        snprintf(t, sizeof t, "Press the key for %s", pad_key_label(capture_key));
+        char t[480];
+        snprintf(t, sizeof t, ui_text("Press the key for %s"), pad_key_label(capture_key));
         ovl_text(bx + 36 * s, by + 34 * s, 34 * s, WHITE, t);
-        ovl_text(bx + 36 * s, by + 84 * s, 26 * s, GREY, "a letter, digit, arrow, Enter, Space, Shift, Ctrl, Alt, Tab or the number pad");
+        ovl_text(bx + 36 * s, by + 84 * s, 26 * s, GREY, ui_text("a letter, digit, arrow, Enter, Space, Shift, Ctrl, Alt, Tab or the number pad"));
         ULONGLONG now = GetTickCount64();
-        snprintf(t, sizeof t, "Esc: cancel   (%d s)", capture_until > now ? (int)((capture_until - now + 999) / 1000) : 0);
+        snprintf(t, sizeof t, ui_text("Esc: cancel   (%d s)"), capture_until > now ? (int)((capture_until - now + 999) / 1000) : 0);
         ovl_text(bx + 36 * s, by + 140 * s, 26 * s, AMBER, t);
     }
     else if (capture_button >= 0)
     {
         float bw = 900 * s, bh = 200 * s, bx = (w - bw) / 2, by = (h - bh) / 2;
         modal_box(w, h, bx, by, bw, bh, s);
-        char t[160];
+        char t[480];
         PadInfo *pad = pad_slot >= 0 ? &pads[pad_slot] : NULL;
-        snprintf(t, sizeof t, "Press the control for %s", pad_button_name(capture_button));
+        snprintf(t, sizeof t, ui_text("Press the control for %s"), pad_button_name(capture_button));
         ovl_text(bx + 36 * s, by + 34 * s, 34 * s, WHITE, t);
         snprintf(t, sizeof t, "on %.60s", pad ? pad->name : "the controller");
         ovl_text(bx + 36 * s, by + 84 * s, 26 * s, GREY, t);
         ULONGLONG now = GetTickCount64();
-        snprintf(t, sizeof t, "Esc: cancel   (%d s)", capture_until > now ? (int)((capture_until - now + 999) / 1000) : 0);
+        snprintf(t, sizeof t, ui_text("Esc: cancel   (%d s)"), capture_until > now ? (int)((capture_until - now + 999) / 1000) : 0);
         ovl_text(bx + 36 * s, by + 140 * s, 26 * s, AMBER, t);
     }
 }

@@ -83,6 +83,9 @@ setup steps (compiler, game files, build) are not run again.
 .PARAMETER PythonOnly
 Only step 3: WindowSmash's own Python (deps\venv) and its packages, then stop. The launcher uses this
 for an install from before deps\venv, one whose venv no longer runs, and after an update.
+.PARAMETER BuildAfterUpdate
+Check build prerequisites and incrementally rebuild the game from the folders saved by the last build.
+Does not update source files, open the setup wizard, or rebuild the launcher.
 .PARAMETER BuildTools
 For the compiler, install the Visual Studio Build Tools rather than download it into deps\.
 .PARAMETER Rebuild
@@ -109,6 +112,7 @@ param(
     [switch]$NoUpdate,
     [switch]$UpdateOnly,
     [switch]$PythonOnly,
+    [switch]$BuildAfterUpdate,
     [switch]$BuildTools,
     [switch]$Rebuild,
     [switch]$AcceptLicense
@@ -153,6 +157,17 @@ $TomlCheck = 'import sys, importlib.util as u; sys.exit(0 if sys.version_info >=
 $RepoOwner = 'OpenSmash-Ultimate'
 $RepoName = 'OpenSmash-Ultimate'
 $UpdateBranch = 'main'
+# Update channel (issue #329): by default a copy follows the newest versioned release (releases/latest); following main
+# commit by commit is opt-in, for testers: OPENSMASH_UPDATE_CHANNEL=main or the word main in tools\update_channel.txt.
+# With no release published yet, main is followed as before.
+function Get-UpdateRef {
+    $ch = [string]$env:OPENSMASH_UPDATE_CHANNEL
+    if (-not $ch) { $f = Join-Path $Root 'tools\update_channel.txt'; if (Test-Path -LiteralPath $f) { $ch = (Get-Content -LiteralPath $f -Raw).Trim() } }
+    if ($ch -eq 'main') { return $UpdateBranch }
+    $rel = Invoke-Api "$RepoApi/releases/latest"
+    if ($rel.Ok -and $rel.Data.tag_name) { return [string]$rel.Data.tag_name }
+    return $UpdateBranch
+}
 $RepoApi = "https://api.github.com/repos/$RepoOwner/$RepoName"
 $SourceVersionFile = 'tools\source_version.txt'   # "<commit> <date>": GitHub's ZIP download fills it in
 
@@ -726,7 +741,7 @@ function Step-Update {
         return $false
     }
     $short = $local.Substring(0, 7)
-    $head = Invoke-Api "$RepoApi/commits/$UpdateBranch"
+    $head = Invoke-Api "$RepoApi/commits/$(Get-UpdateRef)"
     if (-not $head.Ok) { Write-Warn "could not ask GitHub for a newer version ($($head.Error)); going on with this one"; return $false }
     $headSha = [string]$head.Data.sha
     $headDate = ([string]$head.Data.commit.committer.date).Substring(0, 10)
@@ -1202,6 +1217,15 @@ function Get-DetectedFolders {
     return @{ Game = $game; Keys = $keys; Firmware = $firmware }
 }
 
+function Get-UpdateBuildAnswers {
+    <# The last build's folders, for the build after an update. One that is not there any more is left out: a game
+       already set up needs none of them, and build_game.py names the folder itself when a step still needs it.
+       (It used to stop the update with "Open Setup", which the launcher has no way to open: issue #340.) #>
+    $folders = Get-DetectedFolders
+    $there = { param($p) if ($p -and (Test-Path -LiteralPath $p -PathType Container)) { $p } else { $null } }
+    return @{ Game = (& $there $folders.Game); Keys = (& $there $folders.Keys); Firmware = (& $there $folders.Firmware) }
+}
+
 function Test-KeysFolder {
     param([string]$Folder)
     if (-not $Folder -or -not (Test-Path -LiteralPath $Folder -PathType Container)) { return @{ Ok = $false; Text = 'Choose the folder with prod.keys and title.keys.' } }
@@ -1542,7 +1566,9 @@ function Step-Extras {
 function Step-Build {
     param([hashtable]$Answers)
     Write-Step '[9/10] Build the game'
-    $build = @((Join-Path $Root 'tools\build_game.py'), '--game', $Answers.Game, '--keys', $Answers.Keys)
+    $build = @((Join-Path $Root 'tools\build_game.py'))
+    if ($Answers.Game) { $build += @('--game', $Answers.Game) }   # (none: the update's build, whose saved folder is gone)
+    if ($Answers.Keys) { $build += @('--keys', $Answers.Keys) }
     if ($Answers.Firmware) { $build += @('--firmware', $Answers.Firmware) } else { $build += '--no-firmware' }   # (none: the open fonts)
     if ($Jobs) { $build += @('--jobs', "$Jobs") }
     if ($SkipBuild) { $build += '--prepare-only' }
@@ -1550,7 +1576,22 @@ function Step-Build {
     # (an update of the mod manager or other tools only: the game is as it was, no build - its own check)
     if (-not $Rebuild -and -not $SkipBuild -and (Test-Path (Join-Path $Root 'build\ssbu.exe')) -and
         (Invoke-Python @((Join-Path $Root 'tools\skyline.py'), 'uptodate')) -eq 0) {
-        Write-Info 'nothing that goes into the game changed: no build (run OpenSmash.exe again to build it anyway)'
+        Write-Info 'nothing that goes into the game changed: no build'
+        # (DLC put in the game folder since the last build: build_game.py's step 7 reads it, quickly and without a
+        # build, since the game reads its DLC list when it starts. Once a build had found none, nothing ran step 7
+        # again: issue #340. Not being able to read it leaves the game as it was.)
+        if ($Answers.Game) {
+            Write-Info 'the game folder is read again, for DLC added since the last build'
+            if ((Invoke-Python ($build + '--prepare-only')) -ne 0) {
+                Write-Warn 'the game folder could not be read again (see above): DLC added since the last build is not turned on yet; the game is as it was'
+            }
+        }
+        # (the online files beside the program - Epic Online Services, Discord - on every update, built or not: a fetch
+        # that failed at the last build was otherwise never tried again, and the game went online through the public
+        # lobby alone, unseen by the players on Epic: issue #389. Nothing is downloaded when they are current.)
+        if ((Invoke-Python @((Join-Path $Root 'tools\online_files.py'), (Join-Path $Root 'build'))) -ne 0) {
+            Write-Warn 'the Epic Online Services or Discord files could not be fetched (see above): the game goes online through the public lobby until they are; Play in the launcher tries again'
+        }
         return $true
     }
     if ($SkipBuild) { Write-Info 'the program, fonts, data, DLC and fighters; not the build itself (-SkipBuild)' }
@@ -1569,6 +1610,27 @@ function Step-Build {
         if ((Invoke-Python $sky) -ne 0) { Write-Warn 'building the plugins in stopped (see above); the game itself is built' }
     }
     return $true
+}
+
+function Step-StaleShaders {
+    <# After a build, or none needed: prepared shaders under other SPIR-V names than the built game reads (a change
+       of SHADER_CACHE_SPV_VERSION or of glslang, in this update or one before) lose dump\shadercache\complete.txt,
+       so the launcher offers Prepare Shaders again (tools\shader_aot.py forget_stale_marker). #>
+    Invoke-Python @((Join-Path $Root 'tools\shader_aot.py'), '--forget-stale') | Out-Null
+}
+
+function Invoke-UpdateGameBuild {
+    Write-Info 'Checking the game build after the source update'
+    Step-CheckPc
+    Step-Python
+    $compiler = Test-Compiler
+    if (-not $compiler.Ok) {
+        throw ("The game compiler is not ready. Open Setup to repair the compiler, then retry the update.`n" + $compiler.Output)
+    }
+    Step-Sdl3
+    Step-Codecs
+    if (Step-Build (Get-UpdateBuildAnswers)) { Step-StaleShaders }
+    Write-Host 'The game is current.' -ForegroundColor Green
 }
 
 # ---- step 10: shaders --------------------------------------------------------------------------------------------
@@ -1630,6 +1692,10 @@ function Main {
             Step-Python
             return 0
         }
+        if ($BuildAfterUpdate) {
+            Invoke-UpdateGameBuild
+            return 0
+        }
         $updated = Step-Update
         if ($UpdateOnly) {
             # the launcher only asked for the files: do not run the rest of setup.
@@ -1655,6 +1721,7 @@ function Main {
         $answers = Step-GameFiles
         Step-Extras $answers
         $built = Step-Build $answers
+        if ($built) { Step-StaleShaders }
         Step-Shaders $answers $built
         Step-Launcher
         Write-Host ''

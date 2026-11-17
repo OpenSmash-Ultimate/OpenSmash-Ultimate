@@ -1,0 +1,51 @@
+# HTTPS front for the online lobby's HTTP side (tools/ssbu_online_lobby.py, TCP 39421), so the website
+# (https://denkishi.github.io/opensmash-site/) and other HTTPS pages can read it without mixed-content blocking.
+# Installed by tools/deploy/deploy_caddy.sh; see tools/deploy/CADDY.md. Caddy gets and renews the Let's Encrypt
+# certificate by itself, which needs TCP 80 and 443 reachable from the internet.
+#
+# Only these three paths are public over HTTPS; the game itself keeps using the plain TCP/UDP port.
+opensmash-lobby.duckdns.org {
+	encode zstd gzip
+
+	# the signed POST /gsp/profile is tiny; refuse anything big before it reaches Python
+	request_body {
+		max_size 64KB
+	}
+
+	# CORS: any page may read these (the lobby itself already sends it on /status.json; header_down replaces
+	# whatever it sent, so the header never appears twice). Preflight answers here, without bothering the lobby.
+	@preflight method OPTIONS
+	handle @preflight {
+		header Access-Control-Allow-Origin "*"
+		header Access-Control-Allow-Methods "GET, POST, OPTIONS"
+		header Access-Control-Allow-Headers "Content-Type, Authorization"
+		header Access-Control-Max-Age "86400"
+		respond 204
+	}
+
+	@lobby path /status.json /leaderboard.json /gsp/*
+	handle @lobby {
+		reverse_proxy 127.0.0.1:39421 {
+			# the lobby answers "Connection: close"; a short timeout keeps a stuck request from piling up
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 10s
+			}
+			header_down Access-Control-Allow-Origin "*"
+			header_down Access-Control-Allow-Methods "GET, POST, OPTIONS"
+			header_down Access-Control-Allow-Headers "Content-Type, Authorization"
+			# Caddy adds X-Forwarded-For with the real client address by itself
+		}
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+
+	log {
+		output file /var/log/caddy/opensmash-lobby.log {
+			roll_size 5MiB
+			roll_keep 3
+		}
+	}
+}

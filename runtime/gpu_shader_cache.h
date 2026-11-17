@@ -59,7 +59,7 @@ static inline void shader_cache_file(char *out, size_t n, const char *dir, int s
  * alone). `library` is what made the SPIR-V (gpu_spirv.h's spirv_glslang_version: the shim's
  * revision and glslang's version, in hex), so that another ssbu_glslang.dll - a newer glslang, a
  * changed shim - never reads this one's files: it makes its own. */
-#define SHADER_CACHE_SPV_VERSION (SHADER_CACHE_VERSION * 100 + 1)
+#define SHADER_CACHE_SPV_VERSION (SHADER_CACHE_VERSION * 100 + 2)
 static inline void shader_cache_file_spv(char *out, size_t n, const char *dir, int stage, u64 hash, u32 vs_outputs, u64 table_hash,
                                          unsigned library) {
     snprintf(out, n, "%s/g%u.%08x_%s_%016llx_%08x_%016llx.spv", dir, SHADER_CACHE_SPV_VERSION, library,

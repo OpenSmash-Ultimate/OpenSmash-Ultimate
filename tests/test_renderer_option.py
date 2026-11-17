@@ -63,10 +63,44 @@ class RendererOption(unittest.TestCase):
                                'parse DXVK -> 0 auto', 'parse metal -> 0 auto', 'parse auto -> 0 auto', 'parse direct3d11 -> 2 direct3d11',
                                'parse DX11 -> 2 direct3d11', 'parse opengl -> -1 -', 'parse  -> -1 -'])
 
+    def test_every_display_value_the_menu_writes_reads_back(self):
+        """Each Display row's values, written as runtime/gpu_menu.c's change() writes them, are read back by the game:
+        a setting changed in the menu is still there at the next start. No warning about any of them."""
+        rows = [  # (written to display.ini, what the game then has)
+            ('window = windowed\nwidth = 2580\nheight = 1080\n', 'window 0 size 2580x1080'),
+            ('window = borderless\n', 'window 1 '), ('window = fullscreen\n', 'window 2 '),
+            ('pacing = clock\n', 'pacing 0 '), ('pacing = vrr\n', 'pacing 1 '), ('pacing = display\n', 'pacing 2 '),
+            ('latency = 1\n', 'latency 1 '), ('latency = 3\n', 'latency 3 '),
+            ('hide_cursor = 0\n', 'cursor 0 '), ('hide_cursor = 1\n', 'cursor 1 '),
+            ('overlay = 0\n', 'overlay 0 '), ('overlay = 1\n', 'overlay 1 '),
+            ('render_scale = 1\n', 'scale 1 '), ('render_scale = auto\n', 'scale 0 '), ('render_scale = 1.5\n', 'scale 1.5 '),
+            ('render_scale = 2\n', 'scale 2 '), ('render_scale = 3\n', 'scale 3 '),
+            ('renderer = auto\n', 'renderer auto '), ('renderer = direct3d11\n', 'renderer direct3d11 '), ('renderer = vulkan\n', 'renderer vulkan '),
+            ('aspect = 16:9\n', 'aspect 16:9 '), ('aspect = auto\n', 'aspect auto '), ('aspect = 21:9\n', 'aspect 21:9 '), ('aspect = 32:9\n', 'aspect 32:9 '),
+            ('view = wide\n', 'view 0 '), ('view = zoomed\n', 'view 1 '), ('view = hybrid\n', 'view 2 '),
+            ('experimental_ultrawide_online = 0\n', 'uw_online 0 '), ('experimental_ultrawide_online = 1\n', 'uw_online 1 '),
+            ('timer = right\n', 'timer 0 '), ('timer = center\n', 'timer 1 '), ('timer = left\n', 'timer 2 '), ('timer = hidden\n', 'timer 3 '),
+            ('gpu = nvidia\n', 'gpu nvidia'), ('language = en_us\nvolume = 80\nrunahead = 0\n', 'settings '),
+        ]
+        for ini, want in rows:
+            out, err = self.run_test('settings', ini=ini)
+            self.assertIn(want, out[0] + ' ', ini)
+            self.assertEqual([l for l in err if l.startswith('[display]') and 'not' in l or 'unknown' in l], [], ini)
+
+    def test_shape_takes_the_monitors_in_its_range(self):
+        """21:9 and 43:18 are the monitor's shape on any 21:9-class monitor (2.22-2.45), 32:9 on a 32:9-class one;
+        outside the range the setting's own shape (bars); never past 32:9, never below 16:9."""
+        out, _ = self.run_test('shape', '21:9', '2.3889', 'shape', '43:18', '2.3704', 'shape', '21:9', '1.7778',
+                               'shape', '32:9', '2.3889', 'shape', '32:9', '3.6', 'shape', 'auto', '2.3889', 'shape', '16:9', '2.3889',
+                               'shape', '21:9', '3.7')
+        self.assertEqual(out, ['shape 21:9 2.3889 -> 2.389', 'shape 43:18 2.3704 -> 2.370', 'shape 21:9 1.7778 -> 2.333',
+                               'shape 32:9 2.3889 -> 3.556', 'shape 32:9 3.6 -> 3.556', 'shape auto 2.3889 -> 2.389',
+                               'shape 16:9 2.3889 -> 1.778', 'shape 21:9 3.7 -> 2.333'])
+
     def test_default_is_unchanged(self):
         """No renderer key, or the default's name: auto (gpu_backend.c's choice, not made here: Direct3D 11 starts),
         and the start says nothing."""
-        for ini in ('window = windowed\n', 'renderer = d3d11\n', 'renderer = auto   ; the default\n'):
+        for ini in ('window = windowed\n', 'renderer = auto   ; the default\n'):
             out, err = self.run_test('chosen', 'start', ini=ini)
             self.assertEqual(out, ['chosen auto', 'start auto'], ini)
             self.assertEqual([l for l in err if 'renderer' in l], [], ini)
