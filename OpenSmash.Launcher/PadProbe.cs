@@ -16,7 +16,44 @@ namespace OpenSmash.Launcher
         ISet<string> Pressed(uint id);          // the controls held now, as PadProfile.Sources names them
     }
 
-    // The game's own SDL3.dll (build\SDL3.dll), loaded from the build folder, read the way the game reads it.
+    // The pad source for this platform, through the game's own SDL: Windows build\SDL3.dll; macOS the app's
+    // Contents/Frameworks/SDL3.framework (tools/mac/build_mac.py copy_sdl3), else deps/SDL3's; Linux SDL2 from
+    // build-linux/lib (the program's rpath $ORIGIN/lib, tools/linux/build_linux.py), else the system's.
+    internal static class PadSources
+    {
+        public static IPadSource ForProject(string repo)
+        {
+            string game = OpenSmash.Core.Project.GameDirectory(repo);
+            if (OperatingSystem.IsWindows()) return new SdlPadSource(Path.Combine(game, "SDL3.dll"), repo);
+            if (OperatingSystem.IsMacOS())
+            {
+                string app = Path.GetFullPath(Path.Combine(game, "..", "Frameworks", "SDL3.framework", "SDL3"));
+                string deps = Path.Combine(repo, "deps", "SDL3", "SDL3.framework", "SDL3");
+                return new SdlPadSource(File.Exists(app) ? app : deps, repo);
+            }
+            string own = Path.Combine(game, "lib", "libSDL2-2.0.so.0");
+            return new Sdl2PadSource(File.Exists(own) ? own : "libSDL2-2.0.so.0", repo);
+        }
+
+        // SDL_GUIDToString's (SDL2: SDL_JoystickGetGUIDString's) text: the 16 bytes in order, two hex digits each.
+        internal static string GuidText(ulong lo, ulong hi)
+        {
+            var b = new byte[16];
+            BitConverter.TryWriteBytes(b.AsSpan(0, 8), lo);
+            BitConverter.TryWriteBytes(b.AsSpan(8, 8), hi);
+            return Convert.ToHexString(b).ToLowerInvariant();
+        }
+
+        // A library by path, or (a bare name) as the system's loader finds it.
+        internal static bool Load(string library, out IntPtr lib)
+        {
+            lib = IntPtr.Zero;
+            if (Path.IsPathRooted(library)) return File.Exists(library) && NativeLibrary.TryLoad(library, out lib);
+            return NativeLibrary.TryLoad(library, out lib);
+        }
+    }
+
+    // The game's own SDL3 (build\SDL3.dll; macOS SDL3.framework), read the way the game reads it (hle_pad.c's SDL3 path).
     internal sealed class SdlPadSource : IPadSource
     {
         const uint SDL_INIT_GAMEPAD = 0x2000;
@@ -46,12 +83,11 @@ namespace OpenSmash.Launcher
         bool started;
         public string Problem { get; } = "";
 
-        public SdlPadSource(string buildDir, string repo)
+        public SdlPadSource(string library, string repo)
         {
-            string dll = Path.Combine(buildDir, "SDL3.dll");
-            if (!File.Exists(dll) || !NativeLibrary.TryLoad(dll, out lib))
+            if (!PadSources.Load(library, out lib))
             {
-                Problem = "The game reads controllers with SDL3.dll, which is not in the build folder yet: install or update the game first.";
+                Problem = "The game reads controllers with " + Path.GetFileName(library) + ", which is not in the build folder yet: install or update the game first.";
                 return;
             }
             T? F<T>(string fn) where T : Delegate => NativeLibrary.TryGetExport(lib, fn, out var p) ? Marshal.GetDelegateForFunctionPointer<T>(p) : null;
@@ -66,7 +102,7 @@ namespace OpenSmash.Launcher
             if (init == null || quit == null || list == null || open == null || close == null || free == null || name == null || guid == null ||
                 type == null || typeName == null || update == null || button == null || axis == null)
             {
-                Problem = "build\\SDL3.dll is not the SDL 3 the game uses.";
+                Problem = Path.GetFileName(library) + " is not the SDL 3 the game uses.";
                 return;
             }
             hint?.Invoke("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
@@ -79,13 +115,7 @@ namespace OpenSmash.Launcher
         }
 
         // SDL_GUIDToString's text: the 16 bytes in order, two hex digits each.
-        static string GuidText(Guid16 g)
-        {
-            var b = new byte[16];
-            BitConverter.TryWriteBytes(b.AsSpan(0, 8), g.Lo);
-            BitConverter.TryWriteBytes(b.AsSpan(8, 8), g.Hi);
-            return Convert.ToHexString(b).ToLowerInvariant();
-        }
+        static string GuidText(Guid16 g) => PadSources.GuidText(g.Lo, g.Hi);
 
         public IReadOnlyList<PadDevice> Pads()
         {

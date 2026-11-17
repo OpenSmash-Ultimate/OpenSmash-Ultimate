@@ -182,6 +182,7 @@ public sealed partial class MainWindow : Window
                 case "act:rebuild":
                     string rebuild=await Surface.ShowRebuildPrompt();
                     if(rebuild is "build" or "refresh")await ModCommand(rebuild);break;
+                case "settings:remap":Surface.Navigate("remap");break;   // the remap page (Visuals/RemapArtwork.cs)
                 case "settings:pads":
                     string pads=RequireProject().ConfigFile("controllers.ini");if(!File.Exists(pads))File.WriteAllText(pads,"[general]\nkeyboard_player = 1\nbackground = 1\n");Commands.OpenPath(pads);break;
                 case "update:check":await CheckUpdates();break;

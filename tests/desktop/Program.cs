@@ -321,6 +321,7 @@ try
     ThemePresetChecks.Run(root);
     ThemePersistenceChecks.Run(root);
     SettingsChecks.Run(root);
+    RemapChecks.Run(root);
     Console.WriteLine("All desktop launcher checks passed.");
 }
 finally

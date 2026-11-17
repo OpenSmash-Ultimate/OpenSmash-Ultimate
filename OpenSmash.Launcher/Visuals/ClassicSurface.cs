@@ -212,6 +212,7 @@ public sealed partial class ClassicSurface : Control
     public void Navigate(string view)
     {
         CommitEdit();
+        LeaveRemap();if(view=="remap")EnterRemap(); // remap page (RemapArtwork.cs)
         if(view=="setup") { IsInstaller=true; _view="setup"; }
         else { IsInstaller=false; _view=view; }
         _viewAt=Now; if(view=="home") _heroAt=Now;
@@ -302,6 +303,7 @@ public sealed partial class ClassicSurface : Control
             {
                 EnsureField(W,H);DrawField(g,W,H,home?1:.55f);
                 if(home) { DrawSlashes(g,W,H,(float)(Now-_shownAt));PaintHome(g,W,H); }
+                else if(_view=="remap")PaintRemap(g,W,H); // remap page (RemapArtwork.cs)
                 else PaintDetails(g,W,H);
                 PaintHeader(g,W,H);if(_loadOn&&_view!="mods")PaintLoad(g,W,H);PaintStatus(g,W,H);
             }
@@ -384,6 +386,7 @@ public sealed partial class ClassicSurface : Control
         }
         if(IsFirstRun&&e.Key==Key.Escape&&_modal==null) { ActionRequested?.Invoke(_bootstrapBusy?"bootstrap:cancel":"close");e.Handled=true;return; }
         if(e.Key==Key.Escape&&(_sharePrompt||_checkModsPrompt)){_sharePrompt=_checkModsPrompt=false;InvalidateVisual();e.Handled=true;return;}
+        if(!IsInstaller&&_view=="remap"&&_modal==null&&HandleRemapKey(e.Key)){e.Handled=true;InvalidateVisual();return;} // remap page (RemapArtwork.cs)
         if(!IsInstaller&&_view=="settings"&&_modal==null&&HandleSettingsKey(e.Key)){e.Handled=true;InvalidateVisual();return;}
         if(e.Key==Key.Escape) { if(_modal!=null){var dismissed=_modal;_modal=null;dismissed.OnNo?.Invoke();}else if(!IsInstaller)Navigate("home");e.Handled=true; }
         if(_modal!=null){e.Handled=true;return;}
@@ -396,6 +399,7 @@ public sealed partial class ClassicSurface : Control
         if(StartingGame&&id is not ("close" or "min")&&!id.StartsWith("modal:"))return;
         if(_modal==null&&ActivateChangePrompt(id))return;
         if(_modal==null&&ActivateModDialog(id))return;
+        if(!IsInstaller&&_view=="remap"&&_modal==null&&ActivateRemap(id)) { InvalidateVisual();return; } // remap page (RemapArtwork.cs)
         if(ActivateDetails(id)) { InvalidateVisual();return; }
         if(id.StartsWith("modal:")) { var prompt=_modal;_modal=null;switch(id){case "modal:yes":prompt?.OnYes?.Invoke();break;case "modal:mid":prompt?.OnMid?.Invoke();break;case "modal:no":prompt?.OnNo?.Invoke();break;} }
         else if(id.StartsWith("opt:")) { switch(id){case "opt:shortcuts":_optShortcuts=!_optShortcuts;break;case "opt:firewall":_optFirewall=!_optFirewall;break;case "opt:shaders":_optShaders=!_optShaders;break;case "opt:updates":_optUpdates=!_optUpdates;break;case "opt:license":_optLicense=!_optLicense;break;} }
