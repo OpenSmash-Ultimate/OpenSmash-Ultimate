@@ -1207,6 +1207,9 @@ namespace OpenSmash.Launcher
             psi.ArgumentList.Add("-File");
             psi.ArgumentList.Add(script);
             psi.ArgumentList.Add(only);
+            // This launcher rebuilds OpenSmash.exe after an update where the .NET SDK is: the installer then leaves the
+            // exe alone instead of putting the release's in its place (Update-LauncherExe).
+            if (only == "-UpdateOnly" && DotnetSdkAvailable()) psi.Environment["OPENSMASH_LAUNCHER_REBUILDS"] = "1";
             using var p = Process.Start(psi) ?? throw new InvalidOperationException("Could not start PowerShell.");
             var output = new StringBuilder();
             void Take(string? line)

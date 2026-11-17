@@ -586,13 +586,6 @@ function Test-FileSha256 {
     return ((Get-Sha256 $File) -eq $Expected.ToLower())
 }
 
-function Test-DotnetSdk {
-    <# $true when a .NET SDK is on this PC (dotnet --list-sdks names one): there the launcher is built from the source. #>
-    if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) { return $false }
-    try { $o = @(& dotnet --list-sdks 2>$null) } catch { return $false }
-    return ($LASTEXITCODE -eq 0 -and [bool]($o -match '^\s*\d+\.'))
-}
-
 function Invoke-Python {
     <# Runs the chosen Python with these arguments, output to this window; returns its exit code. #>
     param([string[]]$Arguments)
@@ -1699,7 +1692,9 @@ function Update-LauncherExe {
     }
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { return $false }
     if (Test-Path -LiteralPath (Join-Path $Root '.git')) { return $false }   # (a checkout builds its own: tools\build_launcher.ps1)
-    if (Test-DotnetSdk) { return $false }   # (so does a PC with the SDK: the launcher rebuilds it after an update)
+    # A launcher that rebuilds itself after an update (this one, on a PC with the .NET SDK) says so: it is left to that.
+    # Older launchers never rebuild, so without the word the release's is put here, SDK or not.
+    if ($env:OPENSMASH_LAUNCHER_REBUILDS -eq '1') { return $false }
     $tag = Get-UpdateRef
     if ($tag -eq $UpdateBranch) { return $false }   # following main, or no release yet: nothing published to compare with
     $base = "https://github.com/$RepoOwner/$RepoName/releases/download/$([uri]::EscapeDataString($tag))"

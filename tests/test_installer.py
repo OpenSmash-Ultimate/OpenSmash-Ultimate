@@ -546,7 +546,7 @@ class InstallerDecisionTests(unittest.TestCase):
         new = b'MZ new launcher'
         new_hash = __import__('hashlib').sha256(new).hexdigest()
         with tempfile.TemporaryDirectory() as root:
-            def run(ref, exe, git=False, text=None, download=b'MZ new launcher', old_left=None):
+            def run(ref, exe, git=False, text=None, download=b'MZ new launcher', old_left=None, rebuilds=False):
                 for name in ('OpenSmash.exe', 'OpenSmash.exe.old', 'OpenSmash.exe.download'):
                     if os.path.exists(os.path.join(root, name)):
                         os.remove(os.path.join(root, name))
@@ -559,7 +559,7 @@ class InstallerDecisionTests(unittest.TestCase):
                 elif os.path.isdir(os.path.join(root, '.git')):
                     os.rmdir(os.path.join(root, '.git'))
                 body = text if text is not None else f"'{new_hash}  OpenSmash.exe'"
-                mocks = (f"$Root = '{root}'; $Script:UpdateRef = '{ref}'; function Test-DotnetSdk {{ $false }}; "
+                mocks = (f"$Root = '{root}'; $Script:UpdateRef = '{ref}'; $env:OPENSMASH_LAUNCHER_REBUILDS = '{'1' if rebuilds else ''}'; "
                          f"function Get-Text {{ param($Url) $Url | Out-File -Append -LiteralPath (Join-Path $Root 'urls.txt'); {body} }}; "
                          f"function Invoke-Download {{ param($Url, $Dest, $What) [IO.File]::WriteAllText($Dest, '{download.decode()}') }}; ")
                 out = ps_text(mocks + "'swapped=' + (Update-LauncherExe)")
@@ -580,6 +580,9 @@ class InstallerDecisionTests(unittest.TestCase):
             self.assertIn('swapped=False', out)
             self.assertEqual(exe, b'MZ old launcher')
             out, exe, _ = run('v0.4.0', b'MZ old launcher', git=True)
+            self.assertIn('swapped=False', out)
+            self.assertEqual(exe, b'MZ old launcher')
+            out, exe, _ = run('v0.4.0', b'MZ old launcher', rebuilds=True)   # the new launcher rebuilds it itself
             self.assertIn('swapped=False', out)
             self.assertEqual(exe, b'MZ old launcher')
             # a download that is not what the checksum says, no network, no checksum: the old one stays, untouched
