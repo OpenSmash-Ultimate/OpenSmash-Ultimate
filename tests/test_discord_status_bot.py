@@ -12,6 +12,11 @@ class StatusText(unittest.TestCase):
         self.assertEqual(bot.status_text({"online": 21, "open_rooms": 0}), "🟢 21 players in the OpenSmash lobbies")
         self.assertEqual(bot.status_text({"online": 1}), "🟢 1 player in the OpenSmash lobbies")
         self.assertEqual(bot.status_text({"online": 24, "open_rooms": 3}), "🟢 24 players in the OpenSmash lobbies · 3 open rooms")
+        self.assertEqual(bot.status_text({"online": 2, "open_rooms": 1, "matches": {"total": 12345, "today": 9}}),
+                         "🟢 2 players in the OpenSmash lobbies · 1 open room · 12,345 matches played")
+        self.assertEqual(bot.status_text({"online": 2, "matches": {"total": 1}}), "🟢 2 players in the OpenSmash lobbies · 1 match played")
+        self.assertEqual(bot.status_text({"online": 2, "matches": {"total": 0}}), "🟢 2 players in the OpenSmash lobbies")
+        self.assertEqual(bot.status_text({"online": 2, "matches": "x"}), "🟢 2 players in the OpenSmash lobbies")
 
     def test_offline(self):
         self.assertEqual(bot.status_text(None), "🔴 Lobby offline")

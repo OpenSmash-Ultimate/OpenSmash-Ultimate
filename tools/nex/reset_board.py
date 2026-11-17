@@ -2,7 +2,8 @@
 """Empties the leaderboard for a release: the fighter records (nex_powers.json) and the ratings (nex_ratings.json) of the
 online lobby's state directory, after a copy of them in DIR/backup-board-<UTC YYYYmmdd-HHMMSS>/. The Discord links
 (nex_profiles.json) are kept, so registered players stay registered, unless --profiles; the accounts
-(nex_accounts.json) are never touched. Without --yes it only says what it would do.
+(nex_accounts.json) and the count of online matches played
+(nex_matches.json) are never touched. Without --yes it only says what it would do.
 
 Run it while the lobby is STOPPED: the lobby keeps all of this in memory and writes it back.
 

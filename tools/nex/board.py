@@ -19,7 +19,8 @@ to show; the id is the account hash (sha256("opensmash-discord\\n" + Discord id)
                              GSP and GSP per fighter with each fighter's position. No address, NSA id, PID, in-game
                              name or lobby code.
     GET  /status.json        aggregate counts only: players online, rooms (gatherings with a player), arenas, rooms
-                             with room left, registered players ranked. No player data at all.
+                             with room left, registered players ranked, and "matches": online matches played
+                             {"total", "today", "by_mode", "estimated", "since"} (nex/matches.py). No player data at all.
     GET  /gsp/me             the asking player's own: the same, plus where they play now (Quickplay or a Battle Arena:
                              its ID, players, room) for Discord's Rich Presence. Signed (below). A linked player gets
                              the identity's merged GSP and position; an unlinked one their own GSP and position 0.
@@ -37,7 +38,11 @@ to show; the id is the account hash (sha256("opensmash-discord\\n" + Discord id)
                              a JSON string {"records": [hex of a fighter record, ...] (128 at most), "ranked":
                              [{"category", "rating", "win", "loss", "draw", "disconnect"}, ...] (128 at most)}, signed
                              as is. Stored under the pid. 200 {"ok", "records", "ranked"}; 400 for a bad body; 413 for
-                             a body over 64 KiB.
+                             a body over 64 KiB. "m": 1 beside "data" says the game reports its matches (below), so
+                             its syncs are not counted as an old game's matches.
+    POST /match/played       {"player", "t", "data", "sig", "key"?}: a match this game played online (nex/matches.py
+                             says what data holds and how a match is counted once). Signed (what "match"). 200 {"ok",
+                             "counted"}; 400 for bad data; 429 when the player reported less than REPORT_EVERY s ago.
 
 A player the lobby does not know is refused (403 {"error":"unknown player"}) unless the request carries "key": the
 NSA id (16 lowercase hex digits, whose player_id is the player), with which the account is made first (503 when no
@@ -46,8 +51,8 @@ new one may be made now); the signature is checked as usual.
 A player is named by player_id(nsa): a hash of their install's NSA id (runtime/hle_env.c), which only their own
 game and launchers know. A signed request proves it without sending it: X-OpenSmash-Player (the id),
 X-OpenSmash-Time (unix seconds) and X-OpenSmash-Sig, hex HMAC-SHA256 with the NSA id (its 16 hex digits, as text)
-as the key over "opensmash1\\n<what>\\n<player>\\n<time>\\n<payload>" (what: "me", "records", "profile", "link" or
-"sync"; payload: "", "", "<name>\\n<discord>", "<token>\\n<1|0>" or the data string). A time more than MAX_SKEW seconds off is refused."""
+as the key over "opensmash1\\n<what>\\n<player>\\n<time>\\n<payload>" (what: "me", "records", "profile", "link",
+"sync" or "match"; payload: "", "", "<name>\\n<discord>", "<token>\\n<1|0>" or the data string). A time more than MAX_SKEW seconds off is refused."""
 import hashlib
 import hmac
 import json
@@ -57,6 +62,7 @@ import time
 import urllib.error
 import urllib.request
 
+from .matches import Matches
 from .ranked import clamp_rating
 from .server import JsonStore
 from .services import POWER_RECORD
@@ -212,6 +218,7 @@ class Board:
         self.discord_me = discord_me     # fn(token) -> account JSON | None | raises OSError (tests inject their own)
         self.link_at = {}                # pid -> when it last had a token verified
         self.profiles = Profiles(getattr(nex, "state_dir", None))
+        self.matches = Matches(getattr(nex, "state_dir", None))
         self.by_player = {}      # player id -> (pid, NSA id)
         self.player_of = {}      # pid -> player id
         self.indexed_users = -1
@@ -349,7 +356,17 @@ class Board:
             open_rooms += len(lobby.listings)
         return {"updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "online": online,
                 "rooms": rooms, "arenas": arena_rooms, "open_rooms": open_rooms, "playing": in_matches,
-                "ranked": self.ranks(now)[2]}
+                "ranked": self.ranks(now)[2], "matches": self.matches.summary()}
+
+    def meta_posted(self, pid):
+        """(services: DataStore 21, posted by every game of a Quickplay or Battle Arena match on this game server as it
+        is set up) counted once a gathering a match (nex/matches.py)."""
+        mm, arenas = getattr(self.nex, "matchmaking", None), getattr(self.nex, "arenas", None)
+        for ms in (mm.sessions.values() if mm is not None else ()):
+            if pid in ms.participants:
+                arena = arenas is not None and bool(arenas.id_of.get(ms.gid, ""))
+                return self.matches.lobby_post(("g", ms.gid), "arena" if arena else "quickplay")
+        return self.matches.lobby_post(("p", pid), "quickplay")
 
     # ---- a player's own --------------------------------------------------------------------------
     def where(self, pid):
@@ -527,6 +544,7 @@ class Board:
 
     def flush(self, now, force=False):
         self.profiles.flush(now, force)
+        self.matches.flush(now, force)
 
     # ---- HTTP (tools/ssbu_online_lobby.py hands each request here) --------------------------------
     def http(self, method, path, headers, body, now=None):
@@ -568,7 +586,25 @@ class Board:
             if got is None:
                 return 400, b'{"error":"bad data"}'
             stored, kept = self.sync(pid, *got)
+            if got[0] and not d.get("m"):   # (an old game, which reports no matches: its syncs estimate them)
+                self.matches.legacy_sync(pid)
             return 200, json.dumps({"ok": True, "records": stored, "ranked": kept}).encode()
+        if method == "POST" and path == "/match/played":
+            if len(body) > MAX_LINK_BODY:
+                return 413, b'{"error":"too large"}'
+            try:
+                d = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                return 400, b'{"error":"not JSON"}'
+            if not isinstance(d, dict) or not isinstance(d.get("data"), str):
+                return 400, b'{"error":"not a match"}'
+            refused = self.refusal(d.get("player"), d.get("key"), now)
+            if refused:
+                return refused
+            pid = self.verify(d.get("player"), d.get("t"), d.get("sig"), "match", d["data"])
+            if pid is None:
+                return 403, b'{"error":"not signed by a player this server knows"}'
+            return self.matches.report(pid, d["data"])
         if method == "POST" and path == "/gsp/profile":
             try:
                 d = json.loads(body.decode("utf-8"))
@@ -590,7 +626,8 @@ class Board:
             if refused:
                 return refused
             return self.link_finish(job, self.link_ask(job[1]))
-        if path in ("/leaderboard.json", "/status.json", "/gsp/me", "/gsp/records", "/gsp/profile", "/gsp/link", "/gsp/sync"):
+        if path in ("/leaderboard.json", "/status.json", "/gsp/me", "/gsp/records", "/gsp/profile", "/gsp/link", "/gsp/sync",
+                    "/match/played"):
             return 405, b'{"error":"method not allowed"}'
         return 404, b'{"error":"not found"}'
 
