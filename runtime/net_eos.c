@@ -74,11 +74,6 @@ static void eos_login(void) {
     p_EOS_Connect_Login(eos_con, &o, NULL, eos_logged_in);
 }
 static void EOS_CALL eos_device_id(const EosDeviceIdInfo *d) { (void)d; eos_login(); }   /* (made, or there already) */
-static void EOS_CALL eos_device_id_gone(const EosDeviceIdInfo *d) {
-    (void)d;
-    EosCreateDeviceIdOptions o = {1, "PC"};
-    p_EOS_Connect_CreateDeviceId(eos_con, &o, NULL, eos_device_id);
-}
 /* SSBU_EOS_IDFILE=<file> (tests: two players on one PC that keep who they are from one run to the next, each with its
  * own data root): the SDK keeps the Device ID's credentials per Windows user, in the Windows credential store
  * (generic credentials "eos-sdk:<ProductId>:<n>"). With the file there, its copy goes back into the store before the
@@ -129,6 +124,33 @@ static void eos_id_save(const char *path) {   /* (after a login with a new Devic
     fprintf(stderr, "[eos] SSBU_EOS_IDFILE: the new Device ID kept in %s (%d piece%s)\n", path, n, n == 1 ? "" : "s");
 }
 static int eos_id_new;   /* (a new Device ID was made: eos_id_save once logged in) */
+/* The store is one per Windows user, shared by every game on this PC: each game holds this lock from before it reads
+ * or changes the store (SSBU_EOS_NEWID, SSBU_EOS_IDFILE) until its login is over, so two games starting together never
+ * log in with each other's Device ID. Two games logged in as the same EOS player at once are not two players: EOS
+ * hands each P2P connection to that player to one of them only (2026-11-17: in 3 test pairs of 11 the host had taken
+ * the store's Device ID while the other test's guest that had made it was still running; the joiner's messages went
+ * to that other game and it showed 2618-0521). eos_same_player_check says so in the log. */
+static HANDLE eos_store_lock;
+static void eos_store_take(void) {
+    eos_store_lock = CreateMutexA(NULL, FALSE, "Local\\OpenSmashEosDeviceIdStore");
+    if (!eos_store_lock) return;
+    DWORD w = WaitForSingleObject(eos_store_lock, 20000);   /* (WAIT_ABANDONED: its holder was killed - ours now) */
+    if (w != WAIT_OBJECT_0 && w != WAIT_ABANDONED) { CloseHandle(eos_store_lock); eos_store_lock = NULL; }
+}
+static void eos_store_give(void) {
+    if (!eos_store_lock) return;
+    ReleaseMutex(eos_store_lock);
+    CloseHandle(eos_store_lock);
+    eos_store_lock = NULL;
+}
+static void eos_same_player_check(void) {   /* (once logged in; the handle stays open while this game runs) */
+    char name[96];
+    snprintf(name, sizeof name, "Local\\OpenSmashEosPlayer_%s", eos_my_text);
+    HANDLE h = CreateMutexA(NULL, FALSE, name);
+    if (h && GetLastError() == ERROR_ALREADY_EXISTS)
+        fprintf(stderr, "[eos] another game on this PC is logged in as the same EOS player (%s): EOS gives what is sent to this player to one of "
+                        "the two only. Two players on one PC need a Device ID each (SSBU_EOS_NEWID=1 or SSBU_EOS_IDFILE)\n", eos_my_text);
+}
 
 static void EOS_CALL eos_connection_request(const EosRequestInfo *d) {   /* (any player may open one: what it sends must still carry the pair's secret, net_relay.c) */
     EosAcceptOptions o = {1, eos_me, d->RemoteUserId, &eos_sock};
@@ -455,13 +477,14 @@ static DWORD WINAPI eos_thread_(LPVOID dll) {
     eos_con = p_EOS_Platform_GetConnectInterface(eos_plat);
     eos_p2p = p_EOS_Platform_GetP2PInterface(eos_plat);
     const char *nid = getenv("SSBU_EOS_NEWID");
+    eos_store_take();
     if (eos_id_file() && !(nid && *nid == '1') && !eos_id_restore(eos_id_file())) eos_id_new = 1;
-    if (eos_id_new) {   /* (only the store's copy is removed, not with EOS_Connect_DeleteDeviceId: seen, a Device ID that
-                           call had replaced, put back from its file later, no longer led to its player - a new one was made) */
+    if (eos_id_new || (nid && *nid == '1')) {   /* (only the store's copy is removed, not with EOS_Connect_DeleteDeviceId: seen, a Device ID
+                                                   that call had replaced, put back from its file later, no longer led to its player - a new
+                                                   one was made; and another game of this PC may still be logged in with it) */
         for (int piece = 1; piece <= ID_PIECES; piece++) { wchar_t t[96]; eos_id_target(t, 96, piece); CredDeleteW(t, CRED_TYPE_GENERIC, 0); }
         EosCreateDeviceIdOptions o = {1, "PC"}; p_EOS_Connect_CreateDeviceId(eos_con, &o, NULL, eos_device_id);
-    } else if (nid && *nid == '1') { EosDeleteDeviceIdOptions o = {1}; p_EOS_Connect_DeleteDeviceId(eos_con, &o, NULL, eos_device_id_gone); }
-    else { EosCreateDeviceIdOptions o = {1, "PC"}; p_EOS_Connect_CreateDeviceId(eos_con, &o, NULL, eos_device_id); }
+    } else { EosCreateDeviceIdOptions o = {1, "PC"}; p_EOS_Connect_CreateDeviceId(eos_con, &o, NULL, eos_device_id); }
     timeBeginPeriod(1);
     u64 t0 = GetTickCount64();
     int told = 0;
@@ -481,9 +504,11 @@ static DWORD WINAPI eos_thread_(LPVOID dll) {
             }
             fprintf(stderr, "[eos] ready in %llu ms: the relay of last resort is Epic's (player %s)\n", (unsigned long long)(GetTickCount64() - t0), eos_my_text);
             if (eos_id_new) eos_id_save(eos_id_file());
+            eos_store_give();
+            eos_same_player_check();
             told = 1;
         }
-        if (ph < 0) { fprintf(stderr, "[eos] off: the lobby's relay stays the last resort\n"); return 0; }
+        if (ph < 0) { eos_store_give(); fprintf(stderr, "[eos] off: the lobby's relay stays the last resort\n"); return 0; }
         if (ph == 2) { eos_pump(); hub_tick(); nexeos_tick(); }
         WaitForSingleObject(eos_wake, 1);
     }
