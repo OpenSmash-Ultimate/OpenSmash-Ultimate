@@ -155,6 +155,26 @@ static void test_player(void) {
     fight_put32(none + 0x78, 3);
     dm_player(&col, 0, none, 3, NULL);
     CHECK(none[0x90] == 0 && get64(none + 0x88) == 0, "a player with no panel: no colour either");
+    DebugMatch tag;   /* tag1..tag4: a player's name tag (#152) */
+    dm_init(&tag);
+    dm_parse(&tag, "tag1=1,tag2=0,tag3=99");
+    CHECK(tag.tag[0] == 1 && tag.tag[1] == 0 && tag.tag[2] == 0 && tag.tag[3] == -1, "tag1..tag4 parsed, out of the list: none, tag4 not set");
+    uint8_t panel[DM_PANEL];
+    memset(panel, 0, sizeof panel);
+    fight_put32(panel + 0x214, 7);
+    dm_player(&tag, 0, panel, 0, NULL);
+    CHECK(fight_get32(panel + 0x214) == 1 && panel[0x450] == 1, "player 1: tag 1 (slot + 1), a human's panel");
+    dm_player(&tag, 1, panel, 0, NULL);
+    CHECK(fight_get32(panel + 0x214) == 0 && panel[0x450] == 1, "player 2: no tag, the panel flag left as it was");
+    panel[0x450] = 0; fight_put32(panel + 0x78, 1);
+    dm_player(&tag, 0, panel, 1, NULL);
+    CHECK(fight_get32(panel + 0x214) == 1 && panel[0x450] == 0, "a CPU's panel: the tag, but no human flag");
+    fight_put32(panel + 0x78, 0);
+    fight_put32(panel + 0x214, 5);
+    dm_player(&tag, 3, panel, 0, NULL);
+    CHECK(fight_get32(panel + 0x214) == 5, "player 4: tag not set, left alone");
+    dm_player(&tag, 0, panel, 3, NULL);
+    CHECK(fight_get32(panel + 0x214) == 5, "a player with no panel: no tag either");
 }
 
 static void test_stage(void) {
