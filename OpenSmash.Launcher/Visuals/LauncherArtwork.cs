@@ -98,6 +98,8 @@ public sealed partial class ClassicSurface
                 }
                 PopFade(g, st);
             }
+
+            PaintCommunity(g, W, H);   // the right column (CommunityArtwork.cs)
         }
 
         void DrawArrow(Graphics g, Color c, float x, float cy)

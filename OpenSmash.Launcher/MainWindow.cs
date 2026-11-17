@@ -54,7 +54,7 @@ public sealed partial class MainWindow : Window
         {
             Surface.StartEntrance();
             _opened=true;
-            if(enableBackgroundActions)_=CheckExternalChanges(atBoot:true);
+            if(enableBackgroundActions){_=CheckExternalChanges(atBoot:true);CommunityStart();}
             Surface.Focus();
             if(Screens.Primary is { } screen)
             {
@@ -64,7 +64,7 @@ public sealed partial class MainWindow : Window
                 Position=new PixelPoint(screen.WorkingArea.X+(screen.WorkingArea.Width-w)/2,screen.WorkingArea.Y+(screen.WorkingArea.Height-h)/2);
             }
         };
-        Closed+=(_,_)=>{_closed=true;Surface.CancelChangePrompt();_shaderCancel?.Cancel();};
+        Closed+=(_,_)=>{_closed=true;CommunityStop();Surface.CancelChangePrompt();_shaderCancel?.Cancel();};
         if(enableBackgroundActions)Activated+=(_,_)=>{if(_opened)_=CheckExternalChanges();};
         string? root=null;int at=Array.IndexOf(args,"--project");if(at>=0&&at+1<args.Length)root=args[at+1];
         try
@@ -125,7 +125,7 @@ public sealed partial class MainWindow : Window
     void SetProject(string root,bool forceInstaller=false)
     {
         _project=new Project(root,Project.CurrentPlatform);ProjectLayout.Normalize(_project.Root);Surface.SetProject(_project,forceInstaller);
-        if(_opened&&_backgroundActions)_=CheckExternalChanges(atBoot:true);
+        if(_opened&&_backgroundActions){_=CheckExternalChanges(atBoot:true);CommunityStart();}   // (CommunityStart: MainWindow.Discord.cs)
     }
     Project RequireProject()=>_project??throw new InvalidOperationException("Choose an OpenSmash project folder first.");
     async Task ChooseProject()
@@ -142,6 +142,7 @@ public sealed partial class MainWindow : Window
             switch(id)
             {
                 case "close":Close();break;
+                case var community when community.StartsWith("community:"):await CommunityAction(community);break;   // (MainWindow.Discord.cs)
                 case "min":MinimizeWindow();break;
                 case "project:ready":await CheckExternalChanges(atBoot:true);break;
                 case "project:choose":await ChooseProject();break;
@@ -257,6 +258,7 @@ public sealed partial class MainWindow : Window
             if(Directory.Exists(p.PathIn("mods"))&&File.Exists(p.PathIn("mods","mods.json")))await ModCommand(Surface.LaunchMode=="vanilla"?"vanilla":"apply",refresh:false);
             Directory.CreateDirectory(p.PathIn("build"));
             string log=p.PathIn("build","opensmash-play.log");
+            PresenceStop();   // (the game's own Rich Presence takes over; MainWindow.Discord.cs)
             int exit=await GameLaunch.Monitor(Commands.Play(p,true),log,()=>{Surface.StartingGame=false;Hide();},
                 nativeLog:p.Platform==DesktopPlatform.MacOS?p.PathIn("build","play.log"):null);
             RestoreAfterGame(exit,log,p.PathIn("build"));
@@ -266,7 +268,7 @@ public sealed partial class MainWindow : Window
             Surface.ShowGameFailure("The game could not start or could not be monitored. "+error.Message,()=>Commands.OpenPath(p.PathIn("build")));
             Show();WindowState=WindowState.Normal;Activate();
         }
-        finally{Surface.GameRunning=false;Surface.StartingGame=false;Surface.InvalidateVisual();}
+        finally{Surface.GameRunning=false;Surface.StartingGame=false;Surface.InvalidateVisual();PresenceStart();}
     }
     void RestoreAfterGame(int exit,string log,string logsDirectory)
     {

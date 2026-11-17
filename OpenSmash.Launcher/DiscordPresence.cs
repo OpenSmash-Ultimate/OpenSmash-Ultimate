@@ -10,7 +10,7 @@ namespace OpenSmash.Launcher
     // discord-1 (tools/discord_fetch.py). Without them, with SSBU_DISCORD=0, or when anything in the SDK is missing,
     // Start returns null and nothing else happens. Shown through the Discord app while it runs; it goes before the game
     // starts, so the game's own presence takes over. Every call is made on the UI thread (Tick runs the SDK's callbacks).
-    sealed class DiscordPresence : IDisposable
+    public sealed class DiscordPresence : IDisposable
     {
         [StructLayout(LayoutKind.Sequential)] struct DStr { public IntPtr Ptr; public UIntPtr Size; }
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate void VoidFn();
@@ -41,7 +41,8 @@ namespace OpenSmash.Launcher
         // The files beside the game, or null when the game runs without Discord (or Discord is turned off).
         public static string? SdkPath(string buildDir)
         {
-            if (Environment.GetEnvironmentVariable("SSBU_DISCORD") == "0") return null;
+            // (Windows only: tools/online_files.py fetches the SDK library there alone, discord.txt everywhere)
+            if (!OperatingSystem.IsWindows() || Environment.GetEnvironmentVariable("SSBU_DISCORD") == "0") return null;
             string dll = Path.Combine(buildDir, "discord_partner_sdk.dll");
             return File.Exists(dll) ? dll : null;
         }
