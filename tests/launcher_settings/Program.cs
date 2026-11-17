@@ -260,14 +260,18 @@ static class Tests
         const string status = "{\"updated\":\"2026-11-16T13:57:58Z\",\"online\":5,\"rooms\":1,\"arenas\":0,\"open_rooms\":1,\"playing\":0,\"ranked\":78}";
         const string board = "{\"updated\":\"x\",\"ranked\":3,\"players\":[" +
             "{\"id\":\"bbb\",\"rank\":2,\"gsp\":1603,\"fighter\":0,\"fighters\":{}}," +
-            "{\"id\":\"aaa\",\"rank\":1,\"gsp\":1658,\"fighter\":16,\"name\":\"Ann\\u0007ie\"}," +
-            "{\"id\":\"ccc\",\"rank\":3,\"gsp\":1500,\"fighter\":23}]}";
+            "{\"id\":\"aaa\",\"rank\":1,\"gsp\":1658,\"fighter\":16,\"name\":\"Ann\\u0007ie\",\"avatar\":\"https://cdn.discordapp.com/embed/avatars/3.png\"}," +
+            "{\"id\":\"ccc\",\"rank\":3,\"gsp\":1500,\"fighter\":23,\"avatar\":\"http://evil.example/x.png\"}]}";
         var s = CommunityFeed.ParseStatus(status)!;
         Check(s.Online == 5 && s.OpenRooms == 1 && s.Rooms == 1 && s.Ranked == 78, "status.json counts");
         Check(CommunityFeed.ParseStatus("<html>") == null && CommunityFeed.ParseStatus("[]") == null, "not a status: null");
         var b = CommunityFeed.ParseBoard(board, 2)!.Value;
         Check(b.Ranked == 3 && b.Top.Count == 2 && b.Top[0].Rank == 1 && b.Top[1].Id == "bbb", "top N by rank");
         Check(CommunityFeed.Who(b.Top[0]) == "Annie" && CommunityFeed.Who(b.Top[1]) == "Mario player", "a chosen name, else the main fighter");
+        Check(b.Top[0].Avatar == "https://cdn.discordapp.com/embed/avatars/3.png" && b.Top[1].Avatar == "", "a row's Discord avatar, none when absent");
+        Check(CommunityFeed.Mine(board, "ccc")?.Avatar == "" && CommunityFeed.AvatarUrl("https://cdn.discordapp.com.evil.example/a.png") == "", "an avatar not on Discord's CDN: initials");
+        Check(CommunityFeed.Initials("Ann Bee") == "AB" && CommunityFeed.Initials("mario player") == "MP" && CommunityFeed.Initials("x") == "X"
+              && CommunityFeed.Initials("  ") == "?", "initials when there is no picture");
         Check(CommunityFeed.Mine(board, "ccc")?.Gsp == 1500 && CommunityFeed.Mine(board, "zzz") == null, "the player's own row past the top");
         Check(CommunityFeed.ParseBoard("{\"players\":3}") == null, "not a leaderboard: null");
         var down = await CommunityFeed.Fetch(new HttpClient(new Refuse()), CancellationToken.None);
