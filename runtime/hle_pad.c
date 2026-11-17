@@ -152,6 +152,8 @@ static const char DEFAULT_INI[] =
     "[players]\n"
     "; Keep a player for one pad: <player> = <GUID, name or type of the pad>. Other pads leave it free.\n"
     "; 2 = DualSense Wireless Controller\n"
+    "; Two pads of one model share a GUID: the Switch player page then writes serial:<serial number> or path:<hash of the USB port>\n"
+    "; (the game's log line for each player shows both).\n"
     "\n"
     "[keyboard]\n"
     "; The keyboard's keys (it plays as keyboard_player above, while the game's window is focused; the settings\n"
@@ -894,8 +896,25 @@ static int name_eq(const char *a, const char *b) {
     }
 }
 
+/* A pad's own unit, for two that report the same GUID: `serial:<its serial number>`, else `path:<8 hex digits>`,
+ * a hash of its device path (the USB port it is plugged into). The settings menu writes one into [players] only when
+ * GUIDs repeat; dev_matches takes them too (also in [general] ignore). */
+static void dev_path_tag(const char *path, char out[12]) {
+    unsigned h = 2166136261u;   /* FNV-1a */
+    for (const unsigned char *c = (const unsigned char *)path; *c; c++) h = (h ^ *c) * 16777619u;
+    snprintf(out, 12, "%08x", h);
+}
+
 static int dev_matches(const Dev *d, const char *what) {
-    return *what && (!_stricmp(what, d->guid) || name_eq(what, d->name) || !_stricmp(what, d->type));
+    if (!*what) return 0;
+    if (!_strnicmp(what, "serial:", 7)) return *d->serial && !_stricmp(what + 7, d->serial);
+    if (!_strnicmp(what, "path:", 5)) {
+        char tag[12];
+        if (!*d->path) return 0;
+        dev_path_tag(d->path, tag);
+        return !_stricmp(what + 5, tag);
+    }
+    return !_stricmp(what, d->guid) || name_eq(what, d->name) || !_stricmp(what, d->type);
 }
 
 /* controllers.ini's [general] ignore names this pad: it stays open as no player (so it is not opened
@@ -1007,6 +1026,9 @@ static int dev_assign(const Dev *d) {
     int taken[PAD_SLOTS] = {0};
     for (int i = 0; i < (int)(sizeof devs / sizeof *devs); i++)
         if (devs[i].used && &devs[i] != d && devs[i].slot >= 0) taken[devs[i].slot] = 1;
+    /* (a pin naming this very unit wins over a GUID, name or type one that happens to match it too) */
+    for (int s = 0; s < PAD_SLOTS; s++)
+        if (!taken[s] && (!_strnicmp(cfg.pin[s], "serial:", 7) || !_strnicmp(cfg.pin[s], "path:", 5)) && dev_matches(d, cfg.pin[s])) return s;
     for (int s = 0; s < PAD_SLOTS; s++)
         if (!taken[s] && dev_matches(d, cfg.pin[s])) return s;
     for (int pass = 0; pass < 3; pass++)
@@ -1131,6 +1153,27 @@ static void dev_info(const Dev *d, const Raw *raw, PadInfo *o) {
     snprintf(o->name, sizeof o->name, "%s", d->name);
     snprintf(o->type, sizeof o->type, "%s", d->type);
     snprintf(o->guid, sizeof o->guid, "%s", d->guid);
+    {   /* what [players] should name it: its GUID, or its own unit when another pad reports the same GUID */
+        int twin = 0, same_serial = 0;
+        for (int i = 0; i < (int)(sizeof devs / sizeof *devs); i++) {
+            int t = devs[i].used && &devs[i] != d && devs[i].xinput < 0 && d->xinput < 0 && !strcmp(devs[i].guid, d->guid);
+            twin |= t;
+            same_serial |= t && !_stricmp(devs[i].serial, d->serial);   /* (cheap pads all report one serial) */
+        }
+        /* (a serial the ini cannot hold back as it was - spaces at its ends, ; or # - is no use either) */
+        size_t sl = strlen(d->serial);
+        int plain = sl && !strchr(" \t\r\n", d->serial[0]) && !strchr(" \t\r\n", d->serial[sl - 1]) && !strpbrk(d->serial, ";#");
+        for (const unsigned char *c = (const unsigned char *)d->serial; *c; c++) if (*c < 0x20) plain = 0;   /* (a control character would break the line) */
+        int serial_ok = plain && !same_serial;
+        char tag[12];
+        if (twin && serial_ok) snprintf(o->pin, sizeof o->pin, "serial:%s", d->serial);
+        else if (twin && *d->path) { dev_path_tag(d->path, tag); snprintf(o->pin, sizeof o->pin, "path:%s", tag); }
+        else snprintf(o->pin, sizeof o->pin, "%s", d->guid);
+        /* (its own unit whether or not a twin is connected now: the Switch player page counts a claim by it) */
+        if (*d->path) { dev_path_tag(d->path, tag); snprintf(o->unit, sizeof o->unit, "path:%s", tag); }   /* (unique, and the same with or without a twin) */
+        else if (plain) snprintf(o->unit, sizeof o->unit, "serial:%s", d->serial);
+        else snprintf(o->unit, sizeof o->unit, "%s", d->guid);
+    }
     snprintf(o->section, sizeof o->section, "%s", d->section);
     o->layout = d->layout; o->deadzone = d->deadzone; o->rumble = d->rumble; o->trigger = d->trigger; o->dpad_moves = d->dpad_moves; o->stick_taunts = d->stick_taunts;
     o->xinput = d->xinput >= 0;
@@ -1188,9 +1231,12 @@ static int rumble_due(Dev *d, ULONGLONG now, u16 *low, u16 *high) {
 }
 
 static void log_connect(const Dev *d) {
-    if (d->slot >= 0)
-        fprintf(stderr, "[input] player %d: \"%s\" (%s, GUID %s)%s\n", d->slot + 1, d->name, d->type, d->guid,
-                d->gc ? ", as a GameCube controller" : "");
+    if (d->slot >= 0) {
+        char tag[12] = "";
+        if (*d->path) dev_path_tag(d->path, tag);
+        fprintf(stderr, "[input] player %d: \"%s\" (%s, GUID %s%s%s%s%s)%s\n", d->slot + 1, d->name, d->type, d->guid,
+                *d->serial ? ", serial " : "", d->serial, *tag ? ", path " : "", tag, d->gc ? ", as a GameCube controller" : "");
+    }
     else fprintf(stderr, "[input] \"%s\" (%s) connected, but all 8 players are taken\n", d->name, d->type);
 }
 
