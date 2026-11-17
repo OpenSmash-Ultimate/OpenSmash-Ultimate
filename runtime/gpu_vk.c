@@ -3446,6 +3446,7 @@ void vk_match_wait(void) {
         if (!waited) before = left;
         if (!left || !warm_running || (GetTickCount64() - t0) / 1000.0 >= limit_s) break;
         if (!waited++) { watchdog_pause(1); InterlockedIncrement(&warm_urgent); }
+        { extern void (*gfx_wait_hook)(void); if (gfx_wait_hook) gfx_wait_hook(); }   /* (online: the other games hear this one is still loading) */
         Sleep(10);
     }
     if (waited) { InterlockedDecrement(&warm_urgent); watchdog_pause(0); }

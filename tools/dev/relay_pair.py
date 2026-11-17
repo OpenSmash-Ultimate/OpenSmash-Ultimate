@@ -136,7 +136,7 @@ def main(argv):
         text = open(os.path.join(out, "game%d.log" % (g + 1)), encoding="utf-8", errors="replace").read()
         des = len(re.findall(r"net mode: DESYNC", text))
         again = re.findall(r"net check: (\d+) frames hashed again after a rollback with their pads all real, (\d+) of them DIFFERENT", text)
-        checked = re.findall(r"(\d+) final frames compared", text)
+        checked = re.findall(r"(\d+) final frames compared with the other games so far \(to logic frame \d+\), (\d+) of them", text)
         rb = re.findall(r"(\d+) rollbacks", text)
         direct = len(re.findall(r"\[net\].*(direct path|punched|introduc)", text, re.I))
         eos = len(re.findall(r"\[eos\]", text, re.I))
@@ -144,7 +144,7 @@ def main(argv):
         fights = len(re.findall(r"fight starts at logic frame", text))
         lines.append("game %d: fights %d, DESYNC lines %d, net check %s, compared %s, rollbacks %s, direct-path lines %d, EOS lines %d, crash lines %d"
                      % (g + 1, fights, des, again[-1] if again else "-", checked[-1] if checked else "-", rb[-1] if rb else "-", direct, eos, crash))
-        if des or crash or not fights or (again and int(again[-1][1])): ok = False
+        if des or crash or not fights or (again and int(again[-1][1])) or not checked or int(checked[-1][0]) < 600 or int(checked[-1][1]): ok = False
     lt = open(os.path.join(out, "lobby.log"), errors="replace").read()
     lines.append("lobby: %d lines; joins %d, refused %d, INTRODUCE %d" % (lt.count("\n"), len(re.findall(r"join", lt, re.I)), len(re.findall(r"refus|reject", lt, re.I)), len(re.findall(r"introduc", lt, re.I))))
     lines.append("VERDICT: " + ("OK (paired, no DESYNC)" if ok else "NOT OK"))

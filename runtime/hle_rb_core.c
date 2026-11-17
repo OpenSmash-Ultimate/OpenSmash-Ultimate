@@ -2048,6 +2048,14 @@ static void net_step(Cpu *c, u64 frame) {
      * 0.2 frame after this safe point, just too late to leave the save out - 24 of 1080 left out - though no guess
      * was ever wrong) */
     if (lazy && rb_fast <= 0 && net_mode == 2) net_receive(key);
+    /* (round 4, the loop mode - the bench's: its pads were "received" only after the save below, so the safe point that
+     * finds a wrong guess first saved the state built on it, 8 ms, and loaded an older one at once: two saves in every
+     * tick with a rollback where a networked fight, which receives first (the line above), pays one. Now the loop
+     * mode's arrivals come first too. SSBU_RB_LOOP_EARLY=0: as before, for the numbers up to round 3) */
+    {   static int loop_early = -1;
+        if (loop_early < 0) { const char *e = getenv("SSBU_RB_LOOP_EARLY"); loop_early = !(e && *e == '0'); }
+        if (loop_early && lazy && rb_fast <= 0 && net_mode == 1) net_deliver(key, 0);
+    }
     int skip_save = lazy && rb_fast <= 0 && net_remote_low() >= key + 1;   /* (every other player's: M7) */
     /* SSBU_RB_NET_SAVE_EVERY=<n> (default 2): a state at least every n-th logic frame while pads are guessed, not every
      * one. A wrong guess at m then loads the newest state at m - 1 or before (rb_ring_find): at most n - 1 frames more
@@ -2173,6 +2181,9 @@ static void net_step(Cpu *c, u64 frame) {
                     net_rtt_min_s < 1e9 ? net_rtt_min_s : -1.0, net_rtt_n ? net_rtt_sum / net_rtt_n : -1.0,
                     net_msgs_s, net_msgs_s ? (double)net_bytes_s / net_msgs_s : 0.0, net_bytes_max_s);
             net_bytes_s = net_msgs_s = net_bytes_max_s = 0;
+            /* (round 4: said each second, so a pair test stopped before the fight's end has its count too) */
+            fprintf(stderr, "[rb] net compare, fight frame %lld: %u final frames compared with the other games so far (to logic frame %u), %lld of them DIFFERENT\n",
+                    S.frames, net_checked >= net_key0 ? net_checked - net_key0 : 0, net_checked, (long long)net_desyncs);
             fprintf(stderr, "[rb] net work, the last second: hashes %lld (%.1f ms, worst %.1f), saves %lld (%.1f ms, worst %.1f), fighter line %lld (%.1f ms, worst %.1f); "
                     "of them the game's getters %lld (%.1f ms), generator look-ups that asked Windows %lld (%.1f ms)\n",
                     net_w_n[0], net_w_ms[0], net_w_max[0], net_w_n[1], net_w_ms[1], net_w_max[1], net_w_n[2], net_w_ms[2], net_w_max[2],
@@ -2798,6 +2809,30 @@ static int ready_from[RBN_PLAYERS], all_ready;
  * all come to GO! together. PRE_SYNC_MAX_MS of waiting in all at most, then each goes on as before. */
 #define PRE_SLACK 1
 #define PRE_SYNC_MAX_MS 20000.0
+/* (round 4, 17/11: two games through the relay, one of them 120 s in its match's shader wait (gpu_vk.c vk_match_wait: the
+ * game's thread asleep, nothing sent). The other stopped waiting for it after PRE_STALL_MS, began its fight alone, gave
+ * up on the silent player after NET_SILENT_MS - and the late game then began ITS fight not knowing: "DESYNC at logic
+ * frame 8, the games did not start the same match" on every frame from there. A player whose PC makes its shaders, or
+ * loads from a slow disk, is that late game. Now (SSBU_RB_PRE_HOLD=0: as before):
+ *  - a game in a long wait of its own before the fight keeps saying it is there (gfx_wait_hook -> net_load_keepalive),
+ *    so it is waited for;
+ *  - a game heard from is waited for up to PRE_HOLD_MAX_MS (SSBU_RB_PRE_MAX_MS), "Waiting for the other player" beside
+ *    the loading animation meanwhile, instead of 20 s;
+ *  - a game that gives up on another before that one's fight began tells it (LEFT with frame 1, kept until the fight
+ *    begins there): the late game starts with that player gone ("Lost player N"), not with a desync.) */
+#define PRE_HOLD_MAX_MS 150000.0
+static int pre_hold = -1;
+static double pre_hold_max_ms = PRE_SYNC_MAX_MS;
+static int pre_left[RBN_PLAYERS];   /* (LEFT with frame <= 1 heard before this game's fight: that player gave up on this game) */
+static int pre_hold_on(void) {
+    if (pre_hold < 0) {
+        const char *e = getenv("SSBU_RB_PRE_HOLD"), *m = getenv("SSBU_RB_PRE_MAX_MS");
+        pre_hold = !(e && *e == '0');
+        pre_hold_max_ms = pre_hold ? PRE_HOLD_MAX_MS : PRE_SYNC_MAX_MS;
+        if (m && atof(m) > 0) pre_hold_max_ms = atof(m);
+    }
+    return pre_hold;
+}
 /* (pre1, one PC: GO! came at frame 449 on the host and 467 on the joiner - not the same count after all. The host went
  * into its fight and said no more, so the joiner waited on it the whole PRE_SYNC_MAX_MS, while the host waited at GO! for
  * its pads. Now a game at GO! says so (PRE_AT_GO) and nobody waits for it after; a player whose count stands still
@@ -2818,6 +2853,7 @@ static void net_pre_reset(void) {
     pre_done = 0; pre_quiet = 0; pre_frames = 0; memset(ready_from, 0, sizeof ready_from); all_ready = 0;
     for (int p = 0; p < RBN_PLAYERS; p++) { pre_peer[p] = -1; pre_peer_ms[p] = 0; }
     pre_waited_ms = 0; pre_waits = 0;
+    memset(pre_left, 0, sizeof pre_left);
     sm_pre_reset();
 }
 static void net_pre_send_n(u32 frames) {
@@ -2827,6 +2863,17 @@ static void net_pre_send_n(u32 frames) {
     if (k) rbl_send(out, (int)k);
 }
 static void net_pre_send(void) { net_pre_send_n(pre_logic_last - pre_logic0); }   /* (pre3: the logic frames, not the frames) */
+static void net_hello(int force);
+/* (gfx_wait_hook: this game's thread is in a long wait before the fight - every few ms of it) */
+static void net_load_keepalive(void) {
+    static double last;
+    if (net_mode != 2 || S.in_fight || !net_countdown || net_local < 0 || !pre_hold_on()) return;
+    double now = now_ms();
+    if (now - last < 16) return;
+    last = now;
+    net_hello(0);
+    net_pre_send_n(pre_frames ? pre_logic_last - pre_logic0 : 0);   /* (before the first frame since the set-up: the count of a game that loads) */
+}
 static int net_pre_take(const u8 *buf, int len) {
     RbnPre r;
     if (!rbn_pre_parse(buf, (size_t)len, &r)) return 0;
@@ -2849,17 +2896,33 @@ static void net_pre_step(void) {
                 pre_frames, pre_logic_last - pre_logic0, other, pre_waited_ms);
     }
     net_pre_send();
+    {   /* TEST ONLY, SSBU_RB_TEST_PRE_STALL=<s>[,quiet]: this game's thread held that long at the 5th frame since the set-up,
+         * as the match's shader wait holds it; quiet: with nothing sent meanwhile (as that wait was before round 4) */
+        static int stall = -1, quiet;
+        if (stall < 0) { const char *e = getenv("SSBU_RB_TEST_PRE_STALL"); stall = e ? atoi(e) : 0; quiet = e && strstr(e, "quiet"); }
+        if (stall > 0 && pre_frames == 5) {
+            fprintf(stderr, "[rb] TEST: this game's thread held %d s before the fight (%s)\n", stall, quiet ? "nothing sent" : "saying it is there");
+            for (double s0 = now_ms(); now_ms() - s0 < stall * 1000.0;) { if (!quiet) net_load_keepalive(); Sleep(10); watchdog_present(); }
+        }
+    }
+    int hold_on = pre_hold_on(), noted = 0;
     double t0 = now_ms(), last = t0;
     for (;;) {
         long long low = -1;
         double now = now_ms();
         for (int p = 0; p < net_n && p < RBN_PLAYERS; p++)
             if (p != net_local && pre_peer[p] >= 0 && now - pre_peer_ms[p] < PRE_STALL_MS && (low < 0 || pre_peer[p] < low)) low = pre_peer[p];
-        if (low < 0 || (long long)(pre_logic_last - pre_logic0) <= low + PRE_SLACK + net_delay || pre_waited_ms + (now_ms() - t0) > PRE_SYNC_MAX_MS) break;
+        if (low < 0 || (long long)(pre_logic_last - pre_logic0) <= low + PRE_SLACK + net_delay || pre_waited_ms + (now_ms() - t0) > pre_hold_max_ms) break;
         Sleep(1);
         net_hello(0);
         if (now_ms() - last > 16) { net_pre_send(); last = now_ms(); watchdog_present(); }
+        if (hold_on && !noted && now_ms() - t0 > 1000) {   /* (a second in: said, the player sees why the game stands still) */
+            void display_loading_note(const char *note);
+            noted = 1; display_loading_note("Waiting for the other player's game");
+            fprintf(stderr, "[rb] before the fight: waiting for the other game's loading (logic frames %u here, %lld there)\n", pre_logic_last - pre_logic0, low);
+        }
     }
+    if (noted) { void display_loading_note(const char *note); display_loading_note(NULL); }
     double w = now_ms() - t0;
     if (w > 0.5) { pre_waited_ms += w; pre_waits++; }
 }
@@ -3014,6 +3077,7 @@ static void net_left_send(void) {
     for (int i = 0; k && i < 3; i++) rbl_send(out, (int)k);
 }
 static double net_fight_t0;   /* (v0.9.3: when this fight began here: a player never heard from in it is gone after NET_SILENT_MS) */
+static int net_pre_left_pending;
 static void net_gone_reset(void) {
     net_fight_t0 = now_ms();
     rb_hist_n = 0;
@@ -3032,6 +3096,7 @@ static void net_gone_reset(void) {
     memset(net_pads_heard_ms, 0, sizeof net_pads_heard_ms);
     memset(net_gone_shown, 0, sizeof net_gone_shown);
     memset(net_gone_why, 0, sizeof net_gone_why);
+    net_pre_left_pending = 1;   /* (applied by the fight's first check of who is gone: net_gone_check) */
 }
 static DWORD WINAPI net_gone_box(LPVOID text) {   /* (its own thread: the game goes on behind it) */
     /* (as hle_env.c's error_dialog: never in test runs - SSBU_HEADLESS=1, SSBU_SEQ - or with SSBU_ERROR_DIALOG=0: the log
@@ -3086,7 +3151,13 @@ static int net_left_take(const u8 *buf, int len) {
     if (!rbn_left_parse(buf, (size_t)len, &l)) return 0;
     if (l.player >= net_n || (l.player != net_local && rbl_accept(l.player) < 0)) return 1;
     if (net_local == 0) for (int k = 1; k < net_n; k++) if (k != l.player) rbl_send_to(k, buf, len);   /* (the host passes it on) */
-    if (!S.in_fight) return 1;
+    if (!S.in_fight) {   /* (round 4: given up on before this game's fight began - kept for its start) */
+        if (net_countdown && l.frame <= 1 && pre_hold_on()) {
+            if (!pre_left[l.player]) fprintf(stderr, "[rb] before the fight: player %d's game stopped waiting (it began the fight without this game)\n", l.player + 1);
+            pre_left[l.player] = 1;
+        }
+        return 1;
+    }
     if (l.player == net_local) net_all_gone("the host stopped waiting for this game");   /* (it gave up on us: we are out) */
     else net_gone_mark(l.player, l.frame, "they left the fight or lost their connection");
     return 1;
@@ -3107,6 +3178,16 @@ static void net_gone_check(u32 key, double waited_ms) {
         fprintf(stderr, "[rb] net mode: this game stalled %.1f s between two checks: not counted as the others' silence\n", gap / 1000);
     }
     last_check = now;
+    if (net_pre_left_pending) {   /* (round 4: who gave up on this game while it loaded) */
+        net_pre_left_pending = 0;
+        if (net_local >= 0 && pre_left[net_local]) net_all_gone("the host began the fight without this game (it loaded too long)");
+        else for (int p = 0; p < net_n && p < RBN_PLAYERS; p++)
+            if (p != net_local && pre_left[p]) {
+                if (p == 0) net_all_gone("the host began the fight without this game (it loaded too long)");
+                else net_gone_mark(p, 1, "their game began the fight without this one (it loaded too long)");
+            }
+        memset(pre_left, 0, sizeof pre_left);
+    }
     for (int p = 0; p < net_n && p < RBN_PLAYERS; p++) {
         if (p == net_local) continue;
         int quiet = !net_gone_after[p] && (net_pads_heard_ms[p] > 0 ? now - net_pads_heard_ms[p] > NET_GONE_MS
@@ -3114,7 +3195,15 @@ static void net_gone_check(u32 key, double waited_ms) {
         if (quiet && net_local == 0) {
             net_gone_mark(p, rbn_remote_newest(p), net_pads_heard_ms[p] > 0 ? "nothing came from their game for 8 seconds" : "their game never started this fight");
             net_left_for(p, net_gone_after[p]);
-        } else if (quiet && p == 0) net_all_gone(net_pads_heard_ms[0] > 0 ? "nothing came from the host for 8 seconds" : "the host's game never started this fight");
+        } else if (quiet && p == 0) {
+            net_all_gone(net_pads_heard_ms[0] > 0 ? "nothing came from the host for 8 seconds" : "the host's game never started this fight");
+            if (net_pads_heard_ms[0] <= 0 && pre_hold_on()) {   /* (round 4: the host, still loading, is told: its fight starts without this player) */
+                RbnLeft l = {net_local, 1};
+                u8 out[RBN_LEFT_BYTES];
+                size_t k = rbn_left_build(out, sizeof out, &l);
+                for (int i = 0; k && i < 3; i++) rbl_send(out, (int)k);
+            }
+        }
         if (net_gone_after[p] && waited_ms > 3000 && rbn_remote_newest(p) < net_gone_after[p]) {
             fprintf(stderr, "[rb] net mode: player %d's last pads before its cutoff (%u) never came: cut at %u instead\n",
                     p + 1, net_gone_after[p], rbn_remote_newest(p));
@@ -3927,6 +4016,7 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx) {
         net_rules_setup(st);   /* (streamlining 2: the host's rules on every game) */
         net_countdown = 1;
         net_pre_reset();       /* (the GO! freeze: a new set-up's loading watched again) */
+        { extern void (*gfx_wait_hook)(void); gfx_wait_hook = net_load_keepalive; }   /* (round 4: heard through the match's shader wait) */
         if (net_results) { InterlockedExchange(&net_results, 0); fprintf(stderr, "[rb] results: a new match set up: A and B no longer passed\n"); }
     }
     if (net_mode == 2 && idx == 0) net_panel0 = st;   /* (the results' research: character select's panel, watched after the fight) */

@@ -102,7 +102,11 @@ def run(tag, args):
     st_list = stages.split()
     groups = [st_list] if chain else [[x] for x in st_list]   # (one game per stage, unless --chain)
     t0, lines, crash, n = time.time(), [], 0, 0
-    for g, group in enumerate(groups):
+    tries = {}
+    g = -1
+    while g + 1 < len(groups):
+        g += 1
+        group = groups[g]
         tagg = "" if chain else "_%d" % (g + 1)
         listf = os.path.join(out, "list%s.txt" % tagg)
         with open(listf, "w") as f:
@@ -133,12 +137,24 @@ def run(tag, args):
             except subprocess.TimeoutExpired:
                 p.kill(); p.wait()
                 print("TIMEOUT: the game was stopped after %d s (%s)" % (limit, " ".join(group)))
+        got = []
         for l in open(log, encoding="utf-8", errors="replace"):
             if "HOST EXCEPTION" in l or "GUEST TRAP" in l or "crash report" in l.lower(): crash += 1
             m = re.match(r"\[bench\] BENCH (\d+) (.*)", l.rstrip("\n"))
-            if m:
-                n += 1
-                lines.append("BENCH %d %s" % (n, m.group(2)))
+            if m: got.append(m.group(2))
+        # (a stage that measured no rollback is run once more: the menus' A and + can land on the fight's first frames
+        # and pause it - the logic frame then stands still, "rollbacks 0" - one start in some tens; and a game that
+        # ended without its line)
+        if not chain and tries.get(g, 0) < 1 and (not got or any(re.search(r"rollbacks 0 ", x) for x in got)):
+            tries[g] = 1
+            print("stage %s measured no rollback: once more" % " ".join(group))
+            shutil.rmtree(data, ignore_errors=True)
+            time.sleep(2)
+            g -= 1
+            continue
+        for x in got:
+            n += 1
+            lines.append("BENCH %d %s" % (n, x))
         shutil.rmtree(data, ignore_errors=True)
         time.sleep(2)
     el = time.time() - t0
