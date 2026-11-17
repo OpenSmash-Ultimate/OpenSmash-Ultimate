@@ -79,6 +79,13 @@ unsigned display_present_flags(void);
  * interval 1), so each frame is shown at a vblank: tear-free, and evenly patterned where the
  * monitor's rate allows (the frames are paced by a vblank count, not by a drifting clock). */
 int display_present_sync(void);
+/* pacing = vrr: the renderer presents each frame at once (immediate) and the display follows it. Then the moment a
+ * frame is presented IS the refresh, so a frame started at a varying moment - low_latency's, which moves each start
+ * by up to its margin - comes out as a varying refresh interval: the picture judders even at 60 frames a second
+ * (owner, 2026-11-17: a character select cursor on a 165 Hz panel). ipc_vi.c leaves low_latency out then. */
+int display_pacing_vrr(void);
+/* The monitor's own mode back, when `refresh = auto` or a rate switched it for the run. Called as the game ends. */
+void display_refresh_restore(void);
 /* The vsync thread: returns when the next refresh the game sees is due. */
 void display_wait_tick(void);
 /* SSBU_SPEED (test runs): 1 = normal; else the vsync thread gives one refresh per frame shown,
