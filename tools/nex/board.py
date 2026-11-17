@@ -14,8 +14,10 @@ are no anonymous rows. The row's name is the latest-linked (or latest show-toggl
 to show; the id is the account hash (sha256("opensmash-discord\\n" + Discord id), first 16 hex).
 
     GET  /leaderboard.json   every registered ranked player: the account hash as id, Discord name, the same hash as
-                             "discord", position, best GSP and GSP per fighter with each fighter's position. No
-                             address, NSA id, PID, in-game name or lobby code.
+                             "discord", the Discord profile picture's URL as "avatar" (cdn.discordapp.com; it carries
+                             the Discord id, so only players who show their name are listed with it), position, best
+                             GSP and GSP per fighter with each fighter's position. No address, NSA id, PID, in-game
+                             name or lobby code.
     GET  /status.json        aggregate counts only: players online, rooms (gatherings with a player), arenas, rooms
                              with room left, registered players ranked. No player data at all.
     GET  /gsp/me             the asking player's own: the same, plus where they play now (Quickplay or a Battle Arena:
@@ -50,6 +52,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -99,6 +102,30 @@ def account_hash(discord_id):
     return hashlib.sha256(("opensmash-discord\n" + discord_id).encode()).hexdigest()[:16]
 
 
+AVATAR_HASH = re.compile(r"(a_)?[0-9a-f]{32}")
+DISCORD_CDN = "https://cdn.discordapp.com/"
+
+
+def avatar_of(me):
+    """What the profile keeps of the profile picture in a /users/@me answer: its hash (lowercase hex, "a_" for an
+    animated one) when it has one, else None (Discord's default avatar)."""
+    a = me.get("avatar") if isinstance(me, dict) else None
+    return a if isinstance(a, str) and AVATAR_HASH.fullmatch(a) else None
+
+
+def avatar_url(discord_id, avatar, discriminator=None):
+    """The URL of a Discord account's profile picture, 64 px: the uploaded one (PNG, also for an animated one) when
+    avatar is its hash, else the default avatar Discord shows (index (id >> 22) % 6; discriminator % 5 for a legacy
+    account with a discriminator other than "0")."""
+    if isinstance(avatar, str) and AVATAR_HASH.fullmatch(avatar):
+        return f"{DISCORD_CDN}avatars/{discord_id}/{avatar}.png?size=64"
+    if isinstance(discriminator, str) and discriminator.isdigit() and int(discriminator) != 0:
+        n = int(discriminator) % 5
+    else:
+        n = (int(discord_id) >> 22) % 6
+    return f"{DISCORD_CDN}embed/avatars/{n}.png"
+
+
 def discord_lookup(token):
     """GET /users/@me with an access token: the account's JSON, None when Discord does not accept the token, OSError
     when it can not be asked (unreachable, rate limited, down)."""
@@ -116,8 +143,10 @@ def discord_lookup(token):
 
 
 class Profiles(JsonStore):
-    """pid -> {"name": Discord name, "discord": account hash, "discord_id": verified Discord id, "show": bool, "at":
-    unix time of the last link or toggle}: what a player linked and chose to show. An entry without discord_id (older
+    """pid -> {"name": Discord name, "discord": account hash, "discord_id": verified Discord id, "avatar": profile
+    picture hash or None, "discriminator": legacy discriminator or None, "show": bool, "at": unix time of the last link
+    or toggle}: what a player linked and chose to show (a profile from before avatars has neither key: the default
+    avatar until the player links again). An entry without discord_id (older
     versions kept a client-sent name and hash) is unverified: not registered."""
 
     def __init__(self, state_dir):
@@ -144,7 +173,7 @@ class Profiles(JsonStore):
         did = self.discord_id(pid)
         return [int(k) for k in self.pids_of.get(did, ())] if did else [pid]
 
-    def link(self, pid, discord_id, name, show, at):
+    def link(self, pid, discord_id, name, show, at, avatar=None, discriminator=None):
         key = str(pid)
         if key not in self.of_pid and len(self.of_pid) >= MAX_PROFILES:
             return False
@@ -152,8 +181,10 @@ class Profiles(JsonStore):
         if old and old != discord_id and key in self.pids_of.get(old, []):
             self.pids_of[old].remove(key)
         self.of_pid[key] = {"name": name, "discord": account_hash(discord_id), "discord_id": discord_id,
-                            "show": bool(show), "at": at}
+                            "avatar": avatar, "discriminator": discriminator, "show": bool(show), "at": at}
         self.index(key)
+        for other in self.pids_of.get(discord_id, ()):   # (the account's picture is the newest on every pid of it)
+            self.of_pid[other]["avatar"], self.of_pid[other]["discriminator"] = avatar, discriminator
         self.dirty = True
         return True
 
@@ -283,6 +314,7 @@ class Board:
             row = {"id": account_hash(did), "rank": i + 1, "gsp": recs[best], "fighter": best,
                    "fighters": {str(f): {"gsp": g, "rank": mine[f]} for f, g in sorted(recs.items())}}
             row["name"], row["discord"] = shown["name"], shown["discord"]
+            row["avatar"] = avatar_url(did, shown.get("avatar"), shown.get("discriminator"))
             players.append(row)
         body = json.dumps({"updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "ranked": len(overall),
                            "players": players}, separators=(",", ":")).encode()
@@ -393,7 +425,9 @@ class Board:
         if not isinstance(did, str) or not did.isdigit() or len(did) > 32:
             return 403, b'{"error":"discord did not accept the token"}'
         name = shown_name(me.get("global_name") or me.get("username") or "") or "Player"
-        if not self.profiles.link(pid, did, name, show, time.time()):
+        disc = me.get("discriminator")
+        disc = disc if isinstance(disc, str) and disc.isdigit() and len(disc) <= 4 else None
+        if not self.profiles.link(pid, did, name, show, time.time(), avatar_of(me), disc):
             return 503, b'{"error":"too many profiles"}'
         self.cache = None
         self.nex.info(f"{self.nex.accounts.name(pid)} linked a Discord account")
