@@ -1,6 +1,12 @@
 /* The in-game NEX server's gatherings in EOS Lobbies (plan/EOS_MIGRATION.md, phase 2 part B): the NexStore that
  * makes Quickplay, rooms and Battle Arenas shared between games with no server of ours.
  *
+ * HUB: the EOS lobby id of the owner's hub (net_eos.c), and every search asks for this game's own. A lobby code can
+ * have more than one hub (two games made one each at the same moment, and both got other members before the one
+ * alone moved), and a game reaches only its own hub's members: their EOS ids, addresses and station URLs are the
+ * hub's member attributes. Without it a joiner found a gathering of another hub, joined its lobby, then had "no game
+ * for player" of its owner: the join call lost, 2618-0521 (2026-11-17, a test pair beside other games of code smash).
+ *
  * One EOS lobby a gathering: its id "os1-<gid>" (the gid is drawn by the game that makes it: unique among games
  * with all but certainty, and the lobby id refuses a second one), its bucket "ssbu1g:<part>" (game build, lobby code,
  * simulation version, mods: net_part_key), its members the games whose players are in it. Public attributes: what a
@@ -42,7 +48,7 @@
 
 #define MAXG 128
 #define PIECE_CHARS 60
-#define MAX_PIECES 37   /* (9 named attributes + A0..A15 + BN + 37 pieces = 63 of EOS's 64 a lobby) */
+#define MAX_PIECES 37   /* (10 named attributes + A0..A15 + BN + 37 pieces = 64, EOS's most a lobby) */
 #define MSG_PIECE 1100
 #define N_PARTICIPANT_LEFT 3002
 #define N_PARTICIPANT_DISCONNECTED 3007
@@ -422,12 +428,14 @@ static void add_str(EOS_HLobbyModification m, const char *key, const char *v) {
     EosAddAttrOptions o = {2, &a, EOS_LAT_PUBLIC};
     p_EOS_LobbyModification_AddAttribute(m, &o);
 }
+static char cur_hub[128];   /* (our hub's lobby id, the last one while moving to another: nexeos_tick) */
 static void publish(L *l) {   /* (EOS thread) its attributes, if this game owns the lobby */
     if (l->state != 2 || !l->pub || l->busy || !i_own(l->id)) { if (l->state == 2 && l->pub && !l->busy) l->dirty = 0; return; }
     Pub *p = l->pub;
     EosLobbyUserOptions o = {1, eos_me, l->id};
     EOS_HLobbyModification m = NULL;
     if (p_EOS_Lobby_UpdateLobbyModification(eos_lobby_interface(), &o, &m) != EOS_SUCCESS) return;
+    if (cur_hub[0]) add_str(m, "HUB", cur_hub);
     add_int(m, "GID", p->gid); add_int(m, "MODE", p->mode); add_int(m, "OPEN", p->open); add_str(m, "ARENA", p->arena);
     add_int(m, "RATING", p->rating); add_int(m, "UTC", nex_local_utc_min()); add_int(m, "NP", p->np); add_int(m, "MINP", p->minp); add_int(m, "MAXP", p->maxp);
     for (uint32_t i = 0; i < p->nattribs; i++) { char k[8]; snprintf(k, sizeof k, "A%u", i); add_int(m, k, p->attribs[i]); }
@@ -617,6 +625,10 @@ static void do_search(void *arg) {
     b.Value.AsUtf8 = bucket;
     EosSetParameterOptions pb = {1, &b, EOS_CO_EQUAL};
     p_EOS_LobbySearch_SetParameter(r->search, &pb);
+    EosAttrData h = {1, "HUB", {0}, EOS_AT_STRING};   /* (only our hub's: see HUB above) */
+    h.Value.AsUtf8 = cur_hub[0] ? cur_hub : "-";   /* (in no hub yet: none) */
+    EosSetParameterOptions ph = {1, &h, EOS_CO_EQUAL};
+    p_EOS_LobbySearch_SetParameter(r->search, &ph);
     if (r->arena[0]) {
         EosAttrData a = {1, "ARENA", {0}, EOS_AT_STRING};
         a.Value.AsUtf8 = r->arena;
@@ -740,6 +752,10 @@ void nexeos_tick(void) {
         p_EOS_Lobby_AddNotifyLobbyMemberStatusReceived(eos_lobby_interface(), &v, NULL, member_status);
         p_EOS_Lobby_AddNotifyLobbyUpdateReceived(eos_lobby_interface(), &v, NULL, lobby_update);
         notified = 1;
+    }
+    if (eos_hub_lobby()[0] && strcmp(cur_hub, eos_hub_lobby())) {   /* (another hub: our lobbies say so) */
+        snprintf(cur_hub, sizeof cur_hub, "%s", eos_hub_lobby());
+        for (int i = 0; i < nl; i++) ls[i].dirty = 1;
     }
     u64 t = GetTickCount64();
     for (int i = 0; i < nl; i++) if (ls[i].dirty && !ls[i].busy && t - ls[i].at >= 250) publish(&ls[i]);
