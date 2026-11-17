@@ -3151,10 +3151,21 @@ void menu_draw(float w, float h)
     else if (restart_pending)
         snprintf(banner, sizeof banner, ui_text("Some changes take effect when the game starts again: Game > Restart the game."));
     char t[480];
-    if (toast_now(t, sizeof t))
+    int have_toast = toast_now(t, sizeof t);
+    if (have_toast)
         ovl_text(px + 300 * s, py + 34 * s, 24 * s, WHITE, t); /* (a message, in the menu: here) */
     else if (banner[0])
         ovl_text(px + 300 * s, py + 34 * s, 24 * s, strstr(status, "Room:") ? ACCENT : AMBER, banner);
+    { /* a legend in the top right corner: what the amber square on a row means (left out when a message would run into it) */
+        const char *key = "Takes effect on next start";
+        float ls = 22 * s, lw = text_w(key, ls), sq = 14 * s, lx0 = px + pw - 32 * s - lw - sq - 10 * s;
+        const char *msg = have_toast ? t : banner;
+        if (!msg[0] || px + 300 * s + text_w(msg, 24 * s) + 24 * s < lx0)
+        {
+            ovl_rect(lx0, py + 40 * s, sq, sq, AMBER);
+            ovl_text(lx0 + sq + 10 * s, py + 36 * s, ls, GREY, key);
+        }
+    }
     /* the pages: tabs across the top, between the L and R buttons that switch them */
     float tab_y = py + 92 * s, tab_h = 56 * s, icon = 56 * s;
     float lx = px + 32 * s, rx_icon = px + pw - 32 * s - icon;
