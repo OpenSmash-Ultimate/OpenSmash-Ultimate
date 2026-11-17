@@ -13,6 +13,7 @@ runtime/hle_settings.c beside it; off Windows with a stand-in d3d11.h (gpu_overl
 its types). Skipped where that test is."""
 from pathlib import Path
 import os
+import re
 import queue
 import shutil
 import socket
@@ -136,8 +137,9 @@ class Menu:
         out = []
         for _ in range(n):
             ids, label, value, note, helptext = self.answer().split('|')
-            rid, kind = map(int, ids.split()[1:])
-            out.append(dict(id=rid, kind=kind, label=label, value=value, note=note, help=helptext))
+            rid, kind = map(int, ids.split()[1:3])
+            gaps = float(ids.split()[3])
+            out.append(dict(id=rid, kind=kind, gaps=gaps, label=label, value=value, note=note, help=helptext))
         return is_open, page, sel, out
 
     def rows(self):
@@ -377,10 +379,17 @@ class Pages(MenuTest):
     def test_other_pages_as_before(self):
         m = self.menu()
         m.key('ESC')
-        display = ['Window', 'Frame pacing', 'Frames queued ahead'] + ['Hide the mouse pointer', 'Frame rate in the corner', 'Window size',
-                   'Render scale', 'Aspect ratio', 'Viewtype', 'Timer position'] + (['Graphics card'] if os.name == 'nt' else []) \
-            + (['Renderer'] if sys.platform != 'darwin' else [])
-        self.assertEqual(m.labels(), display)
+        display = ['Window', 'Window size', 'Render scale', 'Aspect ratio', 'Viewtype', 'Frame pacing', 'Show advanced settings']
+        self.assertEqual(m.labels(), display)   # (the everyday rows; the rest are behind the switch)
+        m.key('DOWN', sum(1 for r in m.rows()[:m.labels().index('Frame pacing')] if r['kind'] != 0))   # (read-only rows are passed over)
+        self.assertEqual(m.at()['label'], 'Frame pacing')   # (Viewtype is passed over at 16:9)
+        m.key('DOWN')
+        self.assertEqual(m.at()['label'], 'Show advanced settings')
+        m.key('RIGHT')
+        display = ['Window', 'Window size', 'Render scale', 'Aspect ratio', 'Viewtype', 'Frame pacing', 'Show advanced settings',
+                   'Hide the mouse pointer', 'Timer position', 'Frames queued ahead', 'Frame rate in the corner'] + (['Graphics card'] if os.name == 'nt' else [])             + (['Renderer'] if sys.platform != 'darwin' else [])   # (the advanced rows under the switch)
+        self.assertEqual(m.labels(), display)   # (in sections: Window, Picture, Smoothness, Graphics)
+        self.assertIn('show_advanced = 1', (m.dir / 'display.ini').read_text())
         m.type('2')
         self.assertEqual(m.labels(), ['Controllers', 'Keyboard plays as', 'Keyboard keys...', 'Pads when not focused',
                                       'Open controllers.ini'])
@@ -410,7 +419,7 @@ class Pages(MenuTest):
         """Display > Renderer: the system's own renderer (Windows: auto, then direct3d11), then Vulkan,
         saved in display.ini for the next start (runtime/renderer.h's names)."""
         own = 'auto (Direct3D 11)' if os.name == 'nt' else 'dxvk'   # (auto says which one this start drew with)
-        m = self.menu()
+        m = self.menu(files={'display.ini': 'show_advanced = 1\n'})   # (Renderer is behind the advanced switch)
         m.key('ESC')
         labels = m.labels()
         at = labels.index('Renderer')
@@ -454,11 +463,13 @@ class Mouse(MenuTest):
 
     @staticmethod
     def row_y(j):
-        assert j < 12   # (the rows that fit: the first ones, with nothing scrolled)
-        return 262 + 50 * j
+        assert j < 14   # (the rows that fit: the first ones, with nothing scrolled)
+        return int(262 + 50 * j)
 
     def index(self, m, label):
-        return [r['label'] for r in m.rows()].index(label)
+        rows = m.rows()   # (its place on the screen: the empty rows above it count)
+        i = [r['label'] for r in rows].index(label)
+        return i + rows[i]['gaps']
 
     def test_page_tab(self):
         m = self.menu()
@@ -469,21 +480,22 @@ class Mouse(MenuTest):
     def test_hover_selects_and_a_still_pointer_leaves_the_keys_alone(self):
         m = self.menu()
         m.key('ESC')
-        j = self.index(m, 'Frames queued ahead')
+        j = self.index(m, 'Frame pacing')
         m.ok(f'mouse 500 {self.row_y(j)}')
-        self.assertEqual(m.at()['label'], 'Frames queued ahead')
+        self.assertEqual(m.at()['label'], 'Frame pacing')
         m.key('DOWN')
         m.ok(f'mouse 500 {self.row_y(j)}')   # (the same place again: not a move)
-        self.assertNotEqual(m.at()['label'], 'Frames queued ahead')
+        self.assertNotEqual(m.at()['label'], 'Frame pacing')
 
     def test_choice_steps_by_side(self):
         m = self.menu()
         m.key('ESC')
-        y = self.row_y(self.index(m, 'Frames queued ahead'))
-        self.click(m, 1500, y)   # (right of the value: forward from the stand-in's 1)
-        self.assertRegex(m.file('display.ini'), r'latency\s*=\s*2')
-        self.click(m, 805, y)    # (the value's left half: back, round to 3)
-        self.assertRegex(m.file('display.ini'), r'latency\s*=\s*3')
+        y = self.row_y(self.index(m, 'Frame pacing'))
+        self.click(m, 1500, y)   # (right of the value: forward)
+        forward = re.search(r'pacing\s*=\s*(\w+)', m.file('display.ini')).group(1)
+        self.click(m, 805, y)    # (the value's left half: back)
+        back = re.search(r'pacing\s*=\s*(\w+)', m.file('display.ini')).group(1)
+        self.assertNotEqual(forward, back)
 
     def test_bars_are_left_out_of_the_place(self):
         m = self.menu()
@@ -554,10 +566,17 @@ class Mouse(MenuTest):
     def test_wheel(self):
         m = self.menu()
         m.key('ESC')
+        m.type('7')   # (Experimental: a page that fits; the wheel never moves the cursor, here it does nothing at all)
         before = m.at()['label']
         m.ok('wheel D')
-        self.assertNotEqual(m.at()['label'], before)
+        self.assertEqual(m.at()['label'], before)
         m.ok('wheel U')
+        self.assertEqual(m.at()['label'], before)
+        m.key('ESC')
+        m.type('1')   # (Display: a scroll bar; the wheel scrolls the view, the cursor stays on its row)
+        before = m.at()['label']
+        for _ in range(3):
+            m.ok('wheel D')
         self.assertEqual(m.at()['label'], before)
 
 
@@ -723,7 +742,7 @@ class Version(MenuTest):
         self.assertEqual(m.row('Netplay version')['value'], '3 (being tried out)')
         self.assertEqual(m.file('online_protocol.txt'), '3')
         self.assertIn('Restart now', m.labels())   # (next start)
-        self.assertIn('next start', m.draw())
+        self.assertIn('Takes effect when the game starts again', ' '.join(m.draw()))
         m.type('3')
         r = m.row('Netplay version')
         self.assertEqual((r['value'], r['note'], r['kind']), ('3 (being tried out)', '', 1))

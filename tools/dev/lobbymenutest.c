@@ -203,14 +203,23 @@ static void frames(double secs) {
 
 static void cmd_rows(void) {
     frame();
-    say("rows %d %d %d %d %d", open_, page, sel[page], nrows, at_foot() ? foot : 0);
+    /* (the empty rows between choosable and other rows are left out, and the counts are without them) */
+    int spacers = 0, before = 0;
+    for (int i = 0; i < nrows; i++) {
+        spacers += rows[i].id == R_SPACER || rows[i].id == R_HEADER;
+        if (i < sel[page]) before += rows[i].id == R_SPACER || rows[i].id == R_HEADER;
+    }
+    say("rows %d %d %d %d %d", open_, page, sel[page] - before, nrows - spacers, at_foot() ? foot : 0);
+    float gaps = 0; /* (the empty rows and section names above this one: its place on the screen is its index plus these) */
     for (int i = 0; i < nrows; i++) {
         char label[120], value[240], note[140], help[900];
+        if (rows[i].id == R_SPACER) { gaps += 1; continue; }
+        if (rows[i].id == R_HEADER) { gaps += i == 0 ? 1.1f : 1.7f; continue; }
         one_line(rows[i].label, label, sizeof label);
         one_line(rows[i].value, value, sizeof value);
         one_line(rows[i].note, note, sizeof note);
         one_line(rows[i].help ? rows[i].help : "", help, sizeof help);
-        say("row %d %d|%s|%s|%s|%s", rows[i].id, rows[i].kind, label, value, note, help);
+        say("row %d %d %.2f|%s|%s|%s|%s", rows[i].id, rows[i].kind, gaps, label, value, note, help);
     }
 }
 

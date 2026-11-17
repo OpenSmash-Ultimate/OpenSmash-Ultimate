@@ -145,11 +145,12 @@ enum
     P_INPUTS,
     P_CUSTOM,
     P_ASSIGN,
+    P_CTRLS,
     PAGES = P_REMAP
 }; /* (the pad's buttons, the keyboard's keys, the pad's sticks: no key of their own) */
-#define SUB_PAGE(p) ((p) == P_REMAP || (p) == P_KEYS || (p) == P_STICKS || (p) == P_RUMBLE || (p) == P_INPUTS || (p) == P_CUSTOM || (p) == P_ASSIGN) /* (a page of the Controllers page's) */
+#define SUB_PAGE(p) ((p) == P_REMAP || (p) == P_KEYS || (p) == P_STICKS || (p) == P_RUMBLE || (p) == P_INPUTS || (p) == P_CUSTOM || (p) == P_ASSIGN || (p) == P_CTRLS) /* (a page of the Controllers page's) */
 /* Where B / Backspace and the Back rows go from a page of the Controllers page's: Buttons, Sticks and Rumble are inside Customize controller. */
-#define PARENT_PAGE(p) ((p) == P_REMAP || (p) == P_STICKS || (p) == P_RUMBLE || (p) == P_INPUTS ? P_CUSTOM : P_PADS)
+#define PARENT_PAGE(p) ((p) == P_REMAP || (p) == P_STICKS || (p) == P_RUMBLE || (p) == P_INPUTS ? P_CUSTOM : (p) == P_CUSTOM ? P_CTRLS : P_PADS)
 static const char *const PAGE_NAMES[PAGES] = {"Display", "Controllers", "Online", "Game", "Lobby", "Mods", "Experimental"};
 enum { K_INFO, K_CHOICE, K_ACTION, K_TEXT };
 enum { W_NONE, W_NOW, W_RESTART };
@@ -168,7 +169,7 @@ enum {
     R_KEY_FIRST = 400,    /* + the keyboard binding (PAD_KEYS) */
     R_OSK = 500,          /* the game's own text box (menu_osk_run) */
     /* (after the ranges above) */
-    R_ASSIGN, R_ASSIGN_BACK, R_ASSIGN_WAIT, R_REMAP_RESET, R_STICKS_RESET, R_RUMBLE_RESET,
+    R_ASSIGN, R_ASSIGN_BACK, R_ASSIGN_WAIT, R_REMAP_RESET, R_STICKS_RESET, R_RUMBLE_RESET, R_CTRLS, R_CTRLS_BACK,
     R_ROOM_FIRST = 600    /* + the room's place on the page of rooms shown (ROOM_PAGE at most); the plain ids before R_REMAP_FIRST (100) stay under it */
 };
 _Static_assert(R_NET_DELAY < R_REMAP_FIRST, "the plain row ids must stay under R_REMAP_FIRST");
@@ -189,6 +190,10 @@ enum
 }; /* (the Mods page: a row a mod, MENU_MODS at most) */
 static Row rows[MENU_ROWS];
 static int nrows;
+#define R_ADVANCED (-9) /* the Display page's switch: the rows few people touch, shown or not */
+static int show_advanced;
+#define R_HEADER (-8) /* a slim row naming a section of the page (a line beside its name); not a row to choose */
+#define R_SPACER (-7) /* an empty row between the rows that can be chosen and those that cannot (a line across it) */
 
 static Row *add(int id, int kind, int when, const char *label, const char *help)
 {
@@ -203,7 +208,7 @@ static Row *add(int id, int kind, int when, const char *label, const char *help)
 }
 
 /* ---- state ---------------------------------------------------------------------------- */
-static int page, sel[P_ASSIGN + 1], top[P_ASSIGN + 1];
+static int page, sel[P_CTRLS + 1], top[P_CTRLS + 1];
 static int pad_slot = -1;           /* the pad the Controllers page sets up */
 static int confirm;                 /* a row asking yes or no */
 static int foot, foot_page;         /* the cursor on Restart game (1) or Quit game (2), under foot_page's rows */
@@ -900,6 +905,12 @@ static void build(void)
     int same = built_page == page, was = same && sel[page] < nrows ? rows[sel[page]].id : R_NONE;
     u32 was_host = IS_ROOM(was) ? ROOM_AT(was)->host : 0;
     built_page = page;
+    { /* the cursor's index without the empty rows build() adds under the page (at its end) between choosable and other rows */
+        int before = 0;
+        for (int k = 0; same && k < sel[page] && k < nrows; k++)
+            before += rows[k].id == R_SPACER || rows[k].id == R_HEADER;
+        sel[page] -= before;
+    }
     nrows = 0;
     Row *r;
     DisplaySettings ds;
@@ -1027,19 +1038,8 @@ static void build(void)
         }
         else
         {
-            for (int s = 0; s < PAD_SLOTS; s++) /* a row a connected controller; A / Enter opens its settings */
-            {
-                if (!pads[s].connected)
-                    continue;
-                char label[24];
-                if (pads[s].slot >= 0)
-                    snprintf(label, sizeof label, "Player %d", pads[s].slot + 1);
-                else
-                    snprintf(label, sizeof label, "No player");
-                r = add(R_NONE, K_INFO, W_NONE, label, "A controller that is connected. Choose Customize controller... under it to set it up.");
-                snprintf(r->value, sizeof r->value, "%.80s", pads[s].name);
-                add(R_PADSEL_FIRST + s, K_ACTION, W_NONE, "    Customize controller...", "This controller's buttons, sticks and rumble.");
-            }
+            r = add(R_CTRLS, K_ACTION, W_NONE, "Customize controllers...", "Each connected controller's buttons, sticks and rumble: one row a controller.");
+            snprintf(r->value, sizeof r->value, "%d connected", npads_connected);
         }
         if (npads_connected >= 2) /* (one controller has nothing to switch) */
             add(R_ASSIGN, K_ACTION, W_NONE, "Switch player...", "Choose which controller is player 1, 2, 3 ...: press A on each, in order.");
@@ -1054,6 +1054,22 @@ static void build(void)
         snprintf(r->value, sizeof r->value, "%s", on_off(pad_background()));
         r = add(R_PADS_FILE, K_ACTION, W_NONE, "Open controllers.ini", "Everything else, by hand: settings per kind of pad, more remaps. Changes there count at the next start.");
         snprintf(r->value, sizeof r->value, "%s", pad_ini_path());
+        break;
+    case P_CTRLS:
+        r = add(R_CTRLS_BACK, K_ACTION, W_NONE, "< Back", "Back to the controllers.");
+        snprintf(r->value, sizeof r->value, "Controllers");
+        for (int s = 0; s < PAD_SLOTS; s++) /* a row a connected controller; A / Enter opens its settings */
+        {
+            if (!pads[s].connected)
+                continue;
+            char label[24];
+            if (pads[s].slot >= 0)
+                snprintf(label, sizeof label, "Player %d", pads[s].slot + 1);
+            else
+                snprintf(label, sizeof label, "No player");
+            r = add(R_PADSEL_FIRST + s, K_ACTION, W_NONE, label, "This controller's buttons, sticks and rumble.");
+            snprintf(r->value, sizeof r->value, "%.80s", pads[s].name);
+        }
         break;
     case P_CUSTOM:
     {
@@ -1352,7 +1368,7 @@ static void build(void)
         snprintf(r->value, sizeof r->value, "%d%%", audio_master_volume());
         note_env(r, "SSBU_VOLUME");
     }
-        add(R_RESTART, K_ACTION, W_NONE, "Restart the game", "Starts the game again (for the settings marked 'next start'). A match in progress is lost.");
+        add(R_RESTART, K_ACTION, W_NONE, "Restart the game", "Starts the game again (for the settings with an amber square). A match in progress is lost.");
         add(R_QUIT, K_ACTION, W_NONE, "Quit the game", "Closes the game. A match in progress is lost.");
 #ifdef __APPLE__
         static const char *const KEYS[][2] = {{"Esc / Home button", "this menu (or hold - and + for a second)"}, {"F1, Cmd+1", "frame rate on / off"}, {"F2, Cmd+2", "details"}, {"F3, Cmd+3", "screenshot (screenshots folder)"}, {"Option+Return", "full screen (or Ctrl+Cmd+F)"}};
@@ -1368,6 +1384,108 @@ static void build(void)
         snprintf(r->value, sizeof r->value, "%s", version[0] ? version : "unknown (no version.txt)");
         break;
     }
+    static Row packed[MENU_ROWS];
+    int n = 0, cur = sel[page];
+    if (page == P_DISPLAY)
+    { /* the rows in sections, each under a slim name (the page has 12 rows: they are easier to find in groups) */
+        enum { H = 0 };
+        static const struct { int id; const char *name; } ORDER[] = {
+            {H, "Window"}, {R_WINDOW, 0}, {R_SIZE, 0},
+            {H, "Picture"}, {R_SCALE, 0}, {R_ASPECT, 0}, {R_VIEW, 0},
+            {H, "Smoothness"}, {R_PACING, 0},
+            {H, "Advanced"}, {R_ADVANCED, 0}, /* (the switch, and under it the rows it shows) */
+            {R_CURSOR, 0}, {R_TIMER, 0}, {R_LATENCY, 0}, {R_RUNAHEAD, 0}, {R_OVERLAY, 0}, {R_GPU, 0}, {R_RENDERER, 0}};
+        static unsigned char used[MENU_ROWS];
+        static int adv_loaded;
+        if (!adv_loaded)
+        {
+            char sa[16] = "";
+            adv_loaded = 1;
+            show_advanced = settings_ini_get(display_ini_path(), NULL, "show_advanced", sa, sizeof sa) && atoi(sa) == 1;
+        }
+        memset(used, 0, sizeof used);
+        int pending = -1; /* the section name not yet put down: it goes before the section's first row that exists */
+        for (u32 k = 0; k < sizeof ORDER / sizeof *ORDER; k++)
+        {
+            if (ORDER[k].id == H)
+            {
+                pending = (int)k;
+                continue;
+            }
+            int rare = ORDER[k].id == R_CURSOR || ORDER[k].id == R_TIMER || ORDER[k].id == R_LATENCY || ORDER[k].id == R_RUNAHEAD ||
+                       ORDER[k].id == R_OVERLAY || ORDER[k].id == R_GPU || ORDER[k].id == R_RENDERER; /* (the rows few people touch: behind the switch) */
+            if (ORDER[k].id == R_ADVANCED && n < MENU_ROWS - 3)
+            { /* the switch */
+                if (pending >= 0)
+                {
+                    memset(&packed[n], 0, sizeof packed[n]);
+                    packed[n].id = R_HEADER;
+                    packed[n].kind = K_INFO;
+                    snprintf(packed[n].label, sizeof packed[n].label, "%s", ui_text(ORDER[pending].name));
+                    n++;
+                    pending = -1;
+                }
+                Row *a = &packed[n++];
+                memset(a, 0, sizeof *a);
+                a->id = R_ADVANCED;
+                a->kind = K_CHOICE;
+                a->when = W_NONE;
+                snprintf(a->label, sizeof a->label, "%s", ui_text("Show advanced settings"));
+                a->help = ui_text("On: shows more rows under this one (the mouse pointer, the timer, frames queued ahead, the frame rate in the corner, the graphics card and the renderer). Off: only the everyday ones.");
+                snprintf(a->value, sizeof a->value, "%s", on_off(show_advanced));
+                continue;
+            }
+            for (int i = 0; i < nrows && n < MENU_ROWS - 2 && (show_advanced || !rare); i++)
+                if (!used[i] && rows[i].id == ORDER[k].id)
+                {
+                    used[i] = 1;
+                    if (pending >= 0)
+                    {
+                        memset(&packed[n], 0, sizeof packed[n]);
+                        packed[n].id = R_HEADER;
+                        packed[n].kind = K_INFO;
+                        snprintf(packed[n].label, sizeof packed[n].label, "%s", ui_text(ORDER[pending].name));
+                        n++;
+                        pending = -1;
+                    }
+                    packed[n++] = rows[i];
+                    break;
+                }
+        }
+        for (int i = 0; i < nrows && n < MENU_ROWS - 2; i++) /* (any row not in the list: at the end) */
+            if (!used[i])
+            {
+                int rare = rows[i].id == R_CURSOR || rows[i].id == R_TIMER || rows[i].id == R_LATENCY || rows[i].id == R_RUNAHEAD ||
+                           rows[i].id == R_OVERLAY || rows[i].id == R_GPU || rows[i].id == R_RENDERER;
+                if (show_advanced || !rare)
+                    packed[n++] = rows[i];
+            }
+        memcpy(rows, packed, (size_t)n * sizeof *rows);
+        nrows = n;
+        if (same && was != R_NONE)
+            for (int i = 0; i < nrows; i++)
+                if (rows[i].id == was)
+                {
+                    sel[page] = i;
+                    break;
+                }
+        return;
+    }
+    /* an empty row, with a line across it, wherever the rows that can be chosen meet those that cannot */
+    for (int i = 0; i < nrows && n < MENU_ROWS; i++)
+    {
+        if (i > 0 && (rows[i].kind != K_INFO) != (rows[i - 1].kind != K_INFO) && n < MENU_ROWS - 2)
+        {
+            memset(&packed[n], 0, sizeof packed[n]);
+            packed[n].id = R_SPACER;
+            packed[n++].kind = K_INFO;
+            if (i <= cur)
+                sel[page]++;
+        }
+        packed[n++] = rows[i];
+    }
+    memcpy(rows, packed, (size_t)n * sizeof *rows);
+    nrows = n;
 }
 
 static int selectable(const Row *r) { return r->kind != K_INFO; }
@@ -1509,6 +1627,10 @@ static void change(const Row *row, int dir)
         set_display("language", i < 0 ? "auto" : LANGUAGE_CODES[i]);
         break;
     }
+    case R_ADVANCED:
+        show_advanced = !show_advanced;
+        set_display("show_advanced", show_advanced ? "1" : "0"); /* (remembered) */
+        break;
     case R_CURSOR:
         display_set_hide_cursor(!ds.hide_cursor);
         set_display("hide_cursor", ds.hide_cursor ? "0" : "1");
@@ -1976,8 +2098,16 @@ static void action(const Row *row)
         top[P_ASSIGN] = 0;
         break;
     case R_KEYS_BACK:
-    case R_CUSTOM_BACK:
+    case R_CTRLS_BACK:
         page = P_PADS;
+        break;
+    case R_CUSTOM_BACK:
+        page = P_CTRLS;
+        break;
+    case R_CTRLS:
+        page = P_CTRLS;
+        sel[P_CTRLS] = 1; /* the first controller */
+        top[P_CTRLS] = 0;
         break;
     case R_KEYS:
         page = P_KEYS;
@@ -2232,9 +2362,11 @@ static void edit_event(int ev, unsigned ch)
 }
 
 static int view_fit; /* how many rows the page shows at once (set when it is drawn) */
+static void move_sel(int dir);
 
 /* The mouse wheel on a page with a scroll bar scrolls the list, three rows a notch, and the cursor only moves when
  * its row leaves the view (to the nearest row that can be chosen); a page that fits has no bar: the wheel moves the cursor. */
+static int wheel_free_sel = -1, wheel_free_page = -1; /* the wheel moved the view off the cursor: the row it left, so drawing does not pull the view back */
 static void wheel_scroll(int dir)
 {
     int *t = &top[page];
@@ -2243,25 +2375,9 @@ static void wheel_scroll(int dir)
         nt = nrows - view_fit;
     if (nt < 0)
         nt = 0;
-    if (nt == *t)
-        return;
-    int c = sel[page];
-    if (c < nt)
-    {
-        c = nt;
-        while (c < nt + view_fit && c < nrows && !selectable(&rows[c]))
-            c++;
-    }
-    else if (c >= nt + view_fit)
-    {
-        c = nt + view_fit - 1;
-        while (c >= nt && !selectable(&rows[c]))
-            c--;
-    }
-    if (c < nt || c >= nt + view_fit || c >= nrows)
-        return; /* nothing in view can be chosen: stay */
-    *t = nt;
-    sel[page] = c;
+    *t = nt; /* the view only; the cursor stays on its row (even when that row is out of view) */
+    wheel_free_sel = sel[page];
+    wheel_free_page = page;
 }
 
 static void move_sel(int dir)
@@ -2516,8 +2632,7 @@ static void mouse_press(int v)
         {
             if (view_fit > 0 && nrows > view_fit && !at_foot())
                 wheel_scroll(v == MENU_WHEEL_UP ? -1 : 1);
-            else
-                move_sel(v == MENU_WHEEL_UP ? -1 : 1);
+            /* (a page that fits has no bar to move: the wheel does nothing) */
         }
         return;
     }
@@ -3062,50 +3177,75 @@ void menu_draw(float w, float h)
     float fb_w = 220 * s, fb_h = 46 * s, fb_y = py + ph - 62 * s, quit_x = px + pw - 32 * s - fb_w, restart_x = quit_x - 16 * s - fb_w;
     foot_button(restart_x, fb_y, fb_w, fb_h, s, HIT_RESTART, at_foot() && foot == 1, "Restart game");
     foot_button(quit_x, fb_y, fb_w, fb_h, s, HIT_QUIT, at_foot() && foot == 2, "Quit game");
-    int fit = (int)((help_y - 16 * s - ry) / rh);
+    float avail = help_y - 16 * s - ry;
+    /* (how many rows fit from row a: a section's name is slimmer than a row) */
+#define FIT_FROM(a, out)                                                      do                                                                        {                                                                             float used_ = 0;                                                          (out) = 0;                                                                for (int q_ = (a); q_ < nrows; q_++)                                      {                                                                             used_ += rows[q_].id == R_HEADER ? (q_ == 0 ? rh * 1.1f : rh * 1.7f) : rh;                       if (used_ > avail + 0.01f)                                                    break;                                                                (out)++;                                                              }                                                                     } while (0)
+    int fit;
+    int *t0 = &top[page];
+    if (*t0 < 0 || *t0 >= (nrows ? nrows : 1))
+        *t0 = 0;
+    FIT_FROM(*t0, fit);
+    if (fit < 1)
+        fit = 1;
+    int free_view = wheel_free_page == page && wheel_free_sel == sel[page]; /* the wheel scrolled; the cursor has not moved since */
+    if (!free_view && sel[page] < *t0)
+        *t0 = sel[page];
+    while (!free_view && sel[page] >= *t0 + fit && *t0 < nrows - 1)
+    {
+        (*t0)++;
+        FIT_FROM(*t0, fit);
+        if (fit < 1)
+            fit = 1;
+    }
+    while (*t0 > 0)
+    { /* not further down than the last row at the bottom of the view */
+        int f2;
+        FIT_FROM(*t0 - 1, f2);
+        if (*t0 - 1 + f2 < nrows)
+            break;
+        (*t0)--;
+    }
+    FIT_FROM(*t0, fit);
     if (fit < 1)
         fit = 1;
     view_fit = fit;
-    int *t0 = &top[page];
-    if (sel[page] < *t0)
-        *t0 = sel[page];
-    if (sel[page] >= *t0 + fit)
-        *t0 = sel[page] - fit + 1;
-    if (*t0 > nrows - fit)
-        *t0 = nrows - fit > 0 ? nrows - fit : 0;
     { /* the cursor cannot go onto a row that cannot be chosen: when only such rows are above the view, show the top of the page */
         int above = 0;
         for (int k = 0; k < *t0; k++)
             above |= rows[k].kind != K_INFO;
-        if (!above && sel[page] < fit)
+        if (!free_view && !above && sel[page] < fit)
             *t0 = 0;
     }
-    float vx = rx + rw * 0.40f;
+    float vx = rx + rw * 0.40f, ycur = ry;
+    int stripe = 0; /* (the row's place in its section: every other one is paler) */
     for (int i = *t0; i < nrows && i < *t0 + fit; i++)
     {
         const Row *r = &rows[i];
-        float y = ry + (float)(i - *t0) * rh;
+        float y = ycur;
+        ycur += r->id == R_HEADER ? (i == 0 ? rh * 1.1f : rh * 1.7f) : rh; /* (a section's name: space above it, but not at the top of the page) */
         int on = i == sel[page] && !at_foot();
         int pick = r->kind != K_INFO; /* a row that cannot be chosen is dimmed, with a line where the two kinds meet */
         float lx = rx + 16 * s;
-        if (i & 1) /* every other row a little paler: the eye follows a row from the label to its value */
-            ovl_rect(rx, y - 6 * s, rw, rh - 4 * s, OVL_RGBA(27, 31, 45, 255));
-        if (i > *t0 && pick != (rows[i - 1].kind != K_INFO))
-        { /* a line across the row, where the rows that can be chosen meet those that cannot */
-            ovl_rect(rx, y - (pick ? 14 : 8) * s, rw, 2 * s, OVL_RGBA(95, 103, 138, 255)); /* above a choosable row: up, clear of its outline; above one that cannot be chosen: down, in the gap */
+        if (r->id == R_SPACER)
+        { /* an empty row, a line across its middle: the rows that can be chosen meet those that cannot */
+            ovl_rect(rx, y - 6 * s + (rh - 4 * s) / 2 - s, rw, 2 * s, OVL_RGBA(95, 103, 138, 255));
+            continue;
         }
+        if (r->id == R_HEADER)
+        { /* a section's name: larger, with space above it (not at the top of the page) */
+            ovl_text(lx, y + (i == 0 ? 0 : 25 * s), 34 * s, OVL_RGBA(215, 220, 235, 255), r->label);
+            stripe = 0;
+            continue;
+        }
+        stripe++;
+        if (!on) /* a hairline under the row, in place of stripes: the eye follows a row from the label to its value */
+            ovl_rect(rx + 8 * s, floorf(y - 6 * s + rh - 3 * s), rw - 16 * s, s < 1 ? 1 : floorf(s), OVL_RGBA(40, 46, 66, 255));
         if (on)
         { /* the row under the cursor: a rectangle round it, the row itself left as it is */
             /* whole pixels: a line on a fraction of a pixel is 2 pixels thick here and 3 there */
             float bx = floorf(rx + 0.5f), by = floorf(y - 6 * s + 0.5f), bw = floorf(rx + rw + 0.5f) - bx, bh = floorf(y - 6 * s + rh - 4 * s + 0.5f) - by;
-            float t = floorf(2 * s + 0.5f);
-            if (t < 1)
-                t = 1;
-            u32 c = OVL_RGBA(200, 55, 55, 255); /* the menu's red, a little dimmer than the tab's underline */
-            ovl_rect(bx, by, bw, t, c);
-            ovl_rect(bx, by + bh - t, bw, t, c);
-            ovl_rect(bx, by, t, bh, c);
-            ovl_rect(bx + bw - t, by, t, bh, c);
+            ovl_rect(bx, by, bw, bh, OVL_RGBA(225, 60, 60, 150)); /* the whole row filled with the menu's red (the bars' colour), translucent */
+            ovl_rect(bx, by, floorf(6 * s + 0.5f), bh, ACCENT);   /* and a solid bar at its left edge */
         }
         ovl_text(lx, y, size, !pick ? DIM : WHITE, r->label);
         char v[480];
@@ -3113,10 +3253,10 @@ void menu_draw(float w, float h)
             snprintf(v, sizeof v, "< %s >", (r->kind == K_TEXT || r->id == R_NET_NAME || r->id == R_NET_STATUS || r->id == R_MOD_CODE ? r->value : ui_text(r->value)));
         else
             snprintf(v, sizeof v, "%s", (r->kind == K_TEXT || r->id == R_NET_NAME || r->id == R_NET_STATUS || r->id == R_MOD_CODE ? r->value : ui_text(r->value)));
-        const char *tag = r->note[0] ? r->note : r->when == W_NOW   ? ui_text("now")
-                                             : r->when == W_RESTART ? ui_text("next start")
-                                                                    : "";
-        float tag_size = 22 * s, tag_w = text_w(tag, tag_size);
+        /* the right edge: a note in words; otherwise nothing for "now" (most rows) and a small amber square for "next start"
+         * (the help line says so in words) */
+        const char *tag = r->note[0] ? r->note : "";
+        float tag_size = 22 * s, tag_w = tag[0] ? text_w(tag, tag_size) : r->when == W_RESTART ? 14 * s : 0;
         int room = (int)((rx + rw - 24 * s - tag_w - vx) / (size / 2)) - 1;
         if (room > 0 && ui_text_columns(v) > room)
         {
@@ -3131,9 +3271,10 @@ void menu_draw(float w, float h)
                                              : on                  ? WHITE
                                                                    : OVL_RGBA(200, 205, 220, 255),
                  v);
-        ovl_text(rx + rw - 16 * s - tag_w, y + 5 * s, tag_size, r->note[0] ? DIM : r->when == W_NOW ? GREEN
-                                                                                                    : AMBER,
-                 tag);
+        if (tag[0])
+            ovl_text(rx + rw - 16 * s - tag_w, y + 5 * s, tag_size, on ? OVL_RGBA(255, 225, 225, 255) : DIM, tag);
+        else if (r->when == W_RESTART)
+            ovl_rect(rx + rw - 16 * s - tag_w, y + 8 * s, 14 * s, 14 * s, on ? OVL_RGBA(255, 225, 225, 255) : AMBER);
     }
     if (nrows > fit)
     { /* a scroll bar at the right, outside the rows: the track the height of the visible rows, the thumb how much of the page shows and where */
@@ -3147,12 +3288,17 @@ void menu_draw(float w, float h)
     }
     /* the selected row's help, and the keys */
     ovl_rect(px + 20 * s, help_y - 8 * s, pw - 40 * s, 2 * s, OVL_RGBA(60, 66, 90, 255));
-    const char *help = at_foot() ? (foot == 1 ? "Starts the game again (for the settings marked 'next start'). A match in progress is lost."
+    const char *help = at_foot() ? (foot == 1 ? "Starts the game again (for the settings with an amber square). A match in progress is lost."
                                                : "Closes the game. A match in progress is lost.")
                        : sel[page] < nrows ? rows[sel[page]].help : NULL;
     if (help)
     {
-        char wrapped[1800];
+        char wrapped[1800], full[1700];
+        if (!at_foot() && sel[page] < nrows && rows[sel[page]].when == W_RESTART && !rows[sel[page]].note[0])
+        { /* (the amber square at the row's right edge, in words) */
+            snprintf(full, sizeof full, "%s %s", help, ui_text("Takes effect when the game starts again."));
+            help = full;
+        }
         wrap(help, (int)((pw - 80 * s) / (13 * s)), wrapped, sizeof wrapped);
         ovl_text(px + 36 * s, help_y + 4 * s, 26 * s, OVL_RGBA(200, 210, 230, 255), wrapped);
     }
@@ -3161,7 +3307,7 @@ void menu_draw(float w, float h)
              : page == P_KEYS   ? "Up/Down: choose   A/Enter: press a new key   Y/Delete: default   B/Backspace: back   Esc: close"
              : page == P_INPUTS ? "The numbers update live   B/Backspace: back   Esc: close"
              : page == P_ASSIGN ? "A on a controller: its player (not on Back)   B/Backspace or A on Back: done   Esc: close"
-             : page == P_STICKS || page == P_RUMBLE || page == P_CUSTOM ? "Up/Down: choose   Left/Right: change   A/Enter: select   B/Backspace: back   Esc: close"
+             : page == P_STICKS || page == P_RUMBLE || page == P_CUSTOM || page == P_CTRLS ? "Up/Down: choose   Left/Right: change   A/Enter: select   B/Backspace: back   Esc: close"
                                 : "Up/Down: choose   Left/Right: change   A/Enter: select   L/R, Q/E or Tab: page   B/Esc: close"));
     /* on top: a question, the text being typed, or a control being waited for */
     if (confirm)
