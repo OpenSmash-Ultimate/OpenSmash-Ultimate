@@ -312,12 +312,12 @@ int rbn_ready_parse(const uint8_t *b, size_t len, RbnReady *r) {
 
 size_t rbn_menu_build(uint8_t *b, size_t cap, const RbnMenu *m) {
     if (cap < RBN_MENU_BYTES || m->player < 0 || m->player >= RBN_PLAYERS) return 0;
-    b[0] = RBN_MSG_MENU; b[1] = (uint8_t)m->player; b[2] = (uint8_t)(m->buttons & 3); b[3] = 0;
+    b[0] = RBN_MSG_MENU; b[1] = (uint8_t)m->player; b[2] = (uint8_t)(m->buttons & 3); b[3] = (uint8_t)(m->done & 1);
     return RBN_MENU_BYTES;
 }
 int rbn_menu_parse(const uint8_t *b, size_t len, RbnMenu *m) {
     if (len != RBN_MENU_BYTES || b[0] != RBN_MSG_MENU || b[1] >= RBN_PLAYERS) return 0;
-    m->player = b[1]; m->buttons = b[2] & 3;
+    m->player = b[1]; m->buttons = b[2] & 3; m->done = b[3] & 1;
     return 1;
 }
 
