@@ -187,7 +187,7 @@ static void big_sends(SOCKET s) {
 static int configured = -1, hosting, logging;
 static char relay_text[256], room[NAME_LEN + 1] = "smash", name[NAME_LEN + 1] = "Player";
 static u16 port = NET_DEFAULT_PORT;
-static int direct_ok = 0, test_nat;   /* SSBU_NET_DIRECT=1 (never with the official lobby: OpenSmash 0.6); SSBU_NET_TEST_NAT (tests) */
+static int direct_ok = 0, test_nat;   /* SSBU_NET_DIRECT=1 (never with the official lobby: OpenSmash 0.6; on in a private room: configure); SSBU_NET_TEST_NAT (tests) */
 static int learn_ok = 1;              /* SSBU_NET_TEST_LEARN=0 (tests): as before, no address learnt from a hello */
 static volatile LONG sim_upnp;        /* SSBU_NET_TEST_UPNP=1 (tests), or a port mapping made: the simulated router forwards the game's port */
 static int proto_wanted = NET_PROTOCOL;   /* SSBU_NET_PROTOCOL: the version asked for first (proto: spoken now) */
@@ -410,6 +410,11 @@ static void configure(void) {
     else if (settings_online()) configure_from_files();
     if (!hosting && relay_text[0] && _stricmp(relay_text, "lan")) discord_join_at_start();
     lan_mode = !hosting && !_stricmp(relay_text, "lan");
+    /* (a private room: the host's own game is the relay, on the players' own network or at an address the host gave out
+     * by hand, and This network (LAN) finds it by the host's beacons, which are only sent with direct connections on.
+     * So there direct paths are on as before unless SSBU_NET_DIRECT=0; with a lobby server they are asked for
+     * (SSBU_NET_DIRECT=1), and with the official lobby never taken) */
+    if (!getenv("SSBU_NET_DIRECT") && (hosting || lan_mode)) direct_ok = 1;
     configured = hosting || relay_text[0];
     proto_wanted = NET_PROTOCOL_DEFAULT;   /* SSBU_NET_PROTOCOL=2|3, else online_protocol.txt's; hosting: its own relay's, 2 */
     if ((v = getenv("SSBU_NET_PROTOCOL")) && (atoi(v) == NET_PROTOCOL || atoi(v) == NET_PROTOCOL_V3)) proto_wanted = atoi(v);

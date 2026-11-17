@@ -21,6 +21,8 @@ import sys
 import urllib.request
 import zipfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (msvc_deps, glslang_lib: also under python -P)
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = "OpenSmash-Ultimate/OpenSmash-Ultimate"
 URL = "https://github.com/" + REPO + "/releases/download/{tag}/{name}"

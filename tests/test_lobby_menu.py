@@ -819,11 +819,11 @@ class Version(MenuTest):
 
     def test_file_asks_for_3(self):
         join, m = self.join_of(files={'online_protocol.txt': '# netplay version\n3\n'})
-        self.assertEqual((join[2], len(join)), (3, R.V3_JOIN_SIZE))
+        self.assertEqual((join[2], len(join)), (3, R.V3_JOIN_SIZE + 4))   # (+ 'C' 'V' and the online level: net_relay.c send_join)
         self.assertEqual(m.net(0)[0], 3)
 
     def test_no_file_as_before(self):
-        tail = 2 + 4 + 1   # (version 2's JOIN ends with 'W' 'S', the simulation version and a mod set: net_relay.c send_join)
+        tail = 2 + 4 + 1 + 4   # (version 2's JOIN ends with 'W' 'S', the simulation version and a mod set, then 'C' 'V' and the online level: net_relay.c send_join)
         join, _ = self.join_of()
         self.assertEqual((join[2], len(join), join[R.JOIN_SIZE:R.JOIN_SIZE + 2]), (2, R.JOIN_SIZE + tail, b'WS'))
         join, _ = self.join_of(files={'online_protocol.txt': '4\n'})   # (not a version: the default)

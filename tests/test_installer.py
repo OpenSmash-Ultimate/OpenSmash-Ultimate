@@ -227,7 +227,8 @@ class InstallerDecisionTests(unittest.TestCase):
             out = ps_text(run + "$global:prep = 0; "
                           "$r = Step-Build @{ Game = 'D:\\Game'; Keys = 'D:\\Keys'; Firmware = '' }; "
                           "'RESULT: ' + $r; 'CALLS: ' + ($global:calls -join '|')")
-            self.assertIn('build_game.py --game D:\\Game --keys D:\\Keys --no-firmware --prepare-only', out)
+            # (--std-plugins: the standard plugins are listed before the build, SSBU_PLUGINS_FIRST)
+            self.assertIn('build_game.py --game D:\\Game --keys D:\\Keys --no-firmware --std-plugins --prepare-only', out)
             self.assertIn('RESULT: True', out)
             self.assertNotIn('run OpenSmash.exe again', out)
 

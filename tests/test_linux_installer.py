@@ -601,6 +601,8 @@ class GenerateOnlyTests(unittest.TestCase):
                 check=lambda e, mods=None: 0, tools_fingerprint=lambda: 'fp', image=lambda nso, img: done.append(('image', nso)),
                 Module=lambda nso: types.SimpleNamespace(build_id='b' * 64, text=types.SimpleNamespace(mem=0, end=4000)),
                 MODULES={'main': 1, 'sdk': 2}, stale_files=lambda target: [],
+                hook_imports=lambda mods, graphs=None: {},   # (tools/hooks.txt's exact callees: not this test's, and it lists one now)
+                one_queue=lambda: False,   # (a compile per module, as this test counts them; the one queue is compile_all's)
                 build=lambda nso, target, jobs, per_file, imports=None: done.append(('build', os.path.basename(target))),
                 compile_dir=lambda target, jobs, shown=None, steps=None: done.append(('compile', target)) or True,
                 link=lambda dirs, exe, steps=None: done.append(('link', exe)) or True,
