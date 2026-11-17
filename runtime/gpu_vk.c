@@ -288,10 +288,40 @@ static void bury_grave(Grave g) {
 }
 static void bury_view(VkImageView v) { if (v) bury_grave((Grave){VK_NULL_HANDLE, VK_NULL_HANDLE, v, {0}}); }
 
+/* "<shader cache>/vulkan_<vendor>_<device>.lost": this card lost its device under renderer = auto (a GPU hang: an RTX 5080's
+ * NVIDIA driver did, 38 s into a match, while the fight's first effects were drawn), or its driver's compiler crashed the
+ * process with no warm start running (one still running takes #430's cap instead: warm_crash_note). The next auto start
+ * draws with Direct3D 11 on this card while the same driver is installed (the file holds its version): a new driver,
+ * renderer = vulkan, or deleting the file tries Vulkan again (start_backend). */
+static char lost_path[1100];
+static int lost_auto;              /* (renderer = auto started Vulkan: a loss is written down) */
+static uint32_t lost_driver;       /* (the driver's version, VkPhysicalDeviceProperties.driverVersion) */
+static volatile LONG lost_noted, lost_written;
+/* Win32 file calls only: also called from the crash handler's thread (warm_crash_note). A file cut short (the process
+ * ended while it was written) reads as no driver, which start_backend takes as another one: Vulkan is tried again. */
+static void lost_note(const char *what) {
+    if (!lost_auto || !lost_path[0] || InterlockedExchange(&lost_noted, 1)) return;
+    char text[400];
+    int n = snprintf(text, sizeof text, "driver %u\n%s.\nrenderer = auto draws with Direct3D 11 on this card until its driver changes. "
+                     "Delete this file, or set Renderer = vulkan (Esc > Settings > Display), to try Vulkan again.\n", lost_driver, what);
+    HANDLE f = CreateFileA(lost_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD put = 0, len = (DWORD)(n > 0 ? (n < (int)sizeof text ? n : (int)sizeof text - 1) : 0);
+    if (WriteFile(f, text, len, &put, NULL) && put == len) InterlockedExchange(&lost_written, 1);
+    CloseHandle(f);
+}
+
 static void check(VkResult r, const char *doing) {
     if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR || r == VK_ERROR_OUT_OF_DATE_KHR) return;
-    if (r == VK_ERROR_DEVICE_LOST)
-        rt_fatal("the graphics device was lost while %s (Vulkan, VK_ERROR_DEVICE_LOST). Nothing can be drawn after that: start the game again.", doing);
+    if (r == VK_ERROR_DEVICE_LOST) {
+        lost_note("The graphics device was lost (VK_ERROR_DEVICE_LOST)");
+        if (lost_written)   /* (another thread may still be writing it: then the plain message below) */
+            rt_fatal("the graphics device was lost while %s (Vulkan, VK_ERROR_DEVICE_LOST). Nothing can be drawn after that: start the game "
+                     "again. The next start draws with Direct3D 11 on this card (Esc > Settings > Display > Renderer = vulkan tries "
+                     "Vulkan again; %s).", doing, lost_path);
+        rt_fatal("the graphics device was lost while %s (Vulkan, VK_ERROR_DEVICE_LOST). Nothing can be drawn after that: start the game "
+                 "again. If it happens again, Esc > Settings > Display > Renderer = direct3d11 draws with Direct3D 11 instead.", doing);
+    }
     fprintf(stderr, "[vulkan] %s failed (%d)\n", doing, (int)r);
 }
 
@@ -3624,14 +3654,21 @@ extern void (*rt_crash_module_hook)(const char *module);   /* host.c: called wit
 
 /* The crash handler's report thread, while the process dies: a crash inside a graphics driver's shader compiler during
  * the warm start is written into the marker ("<n> driver <dll>"), so the next start does not warm the same list into
- * the same crash (warm_start). Anything else - a mod's or the game's own crash - leaves the marker as it is. Only
- * Win32 file calls: the faulting thread may hold the C runtime's locks. */
+ * the same crash (warm_start). The same driver crash with no warm start running is written down as a lost device
+ * (lost_note: renderer = auto takes Direct3D 11 on this card next time). Anything else - a mod's or the game's own
+ * crash - leaves both as they are. Only Win32 file calls: the faulting thread may hold the C runtime's locks. */
 static void warm_crash_note(const char *module) {
     static const char *const compilers[] = {"nvgpucomp64.dll", "nvoglv64.dll", "amdvlk64.dll", "amdxc64.dll", "igvk64.dll", "igc64.dll"};
-    if (!warm_running || !warm_marker[0] || !module) return;
+    if (!module) return;
     int match = 0;
     for (u32 i = 0; i < sizeof compilers / sizeof *compilers && !match; i++) match = !_stricmp(module, compilers[i]);
     if (!match) return;
+    if (!warm_running || !warm_marker[0]) {   /* (outside the warm start: renderer = auto takes Direct3D 11 next time, lost_note) */
+        char what[160];
+        snprintf(what, sizeof what, "The graphics driver (%.60s) crashed the game outside the warm start", module);
+        lost_note(what);
+        return;
+    }
     char text[160];
     int n = snprintf(text, sizeof text, "%d driver %.60s", warm_tries + 1, module);
     HANDLE f = CreateFileA(warm_marker, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -5690,6 +5727,27 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
         snprintf(why, size, "%s is not an AMD, NVIDIA or Intel card, Direct3D 11 is the default for it (renderer = vulkan to draw with Vulkan)", card);
         return start_undo();
     }
+    /* (a device lost on this card under auto before, with this driver: Direct3D 11 - lost_note) */
+    snprintf(lost_path, sizeof lost_path, "%s/vulkan_%04x_%04x.lost", cache_dir(), props.vendorID, props.deviceID);
+    lost_driver = props.driverVersion;
+    lost_auto = automatic;
+    if (GetFileAttributesA(lost_path) != INVALID_FILE_ATTRIBUTES) {
+        unsigned was = 0;
+        FILE *lf = fopen(lost_path, "rb");
+        if (lf) { if (fscanf(lf, "driver %u", &was) != 1) was = 0; fclose(lf); }
+        if (!automatic) {
+            fprintf(stderr, "[vulkan] renderer = vulkan: %s taken away (Vulkan lost its device on this card before; asked for by name, it is tried again)\n", lost_path);
+            DeleteFileA(lost_path);
+        } else if (was != props.driverVersion) {   /* (a new driver; or a file cut short or unreadable: no driver, tried again) */
+            fprintf(stderr, "[vulkan] renderer = auto: %s lost its device with another driver (%u, now %u): Vulkan is tried again\n", card, was, props.driverVersion);
+            DeleteFileA(lost_path);
+        } else {
+            snprintf(why, size, "Vulkan lost its device on %s with this driver before: Direct3D 11. Esc > Settings > Display > "
+                     "Renderer = vulkan, a new driver, or deleting %s tries Vulkan again", card, lost_path);
+            lost_auto = 0;
+            return start_undo();
+        }
+    }
     if (props.apiVersion < VK_API_VERSION_1_1) { snprintf(why, size, "%s has Vulkan %u.%u: 1.1 is needed", card, VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion)); return start_undo(); }
     vkGetPhysicalDeviceMemoryProperties(physical, &memory_props);
 
@@ -5823,9 +5881,15 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
     for (uint32_t i = 0; i < nsf; i++) bgra |= sf[i].format == VK_FORMAT_B8G8R8A8_UNORM;
     swap_format = bgra || !nsf ? VK_FORMAT_B8G8R8A8_UNORM : sf[0].format;
     render_scale = scale_wanted();
-    fprintf(stderr, "[vulkan] drawing with %s (Vulkan %u.%u.%u)%s: %u frames in flight, render scale %.3g, present modes%s%s\n",
+    char driver[48];   /* (NVIDIA's own numbering, 10 bits then 8: 610.88; the others' as Vulkan's) */
+    if (props.vendorID == 0x10de) snprintf(driver, sizeof driver, "%u.%02u", props.driverVersion >> 22, (props.driverVersion >> 14) & 0xff);
+    else snprintf(driver, sizeof driver, "%u.%u.%u", VK_API_VERSION_MAJOR(props.driverVersion), VK_API_VERSION_MINOR(props.driverVersion),
+                  VK_API_VERSION_PATCH(props.driverVersion));
+    fprintf(stderr, "[vulkan] drawing with %s (Vulkan %u.%u.%u, driver %s, %#x)%s: %u frames in flight, render scale %.3g, present modes%s%s\n",
             card, VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion), VK_API_VERSION_PATCH(props.apiVersion),
-            float_controls ? ", float controls" : "", nframes, render_scale, have_immediate ? " immediate" : "", have_mailbox ? " mailbox" : "");
+            driver, props.driverVersion, float_controls ? ", float controls" : "", nframes, render_scale, have_immediate ? " immediate" : "",
+            have_mailbox ? " mailbox" : "");
+    rt_crash_module_hook = warm_crash_note;   /* (a driver crash: the warm start's marker, or lost_note outside it) */
     makers_start();
     warm_start();
     if (limits_vendor == 0x10de) nv_cache_check(1);
