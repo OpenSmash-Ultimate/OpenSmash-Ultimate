@@ -75,7 +75,7 @@ extern u64 gfx_stat_clears, gfx_stat_presented, gfx_stat_blits;   /* (gpu_d3d11.
     X(CmdSetBlendConstants) X(CmdSetStencilReference) X(CmdSetStencilCompareMask) X(CmdSetStencilWriteMask) \
     X(CmdCopyBufferToImage) X(CmdBeginRenderingKHR) X(CmdEndRenderingKHR) X(GetPipelineCacheData) \
     X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyBuffer) X(CreateDescriptorUpdateTemplate) X(UpdateDescriptorSetWithTemplate) \
-    X(DestroyDevice) X(DestroyCommandPool) X(DestroyFence) X(DestroySampler) X(DestroyPipelineCache) X(DestroyPipelineLayout) \
+    X(DestroyDevice) X(DestroyCommandPool) X(DestroyFence) X(DestroySampler) X(DestroyPipelineCache) X(DestroyPipelineLayout) X(DestroyPipeline) \
     X(DestroyDescriptorSetLayout) X(CreateQueryPool) X(DestroyQueryPool) X(CmdResetQueryPool) X(CmdWriteTimestamp) X(GetQueryPoolResults)
 #define DECLARE(name) static PFN_vk##name vk##name;
 VK_INSTANCE_FUNCS(DECLARE)
@@ -3274,6 +3274,7 @@ static WarmShader *warm_ready(const WarmKey *k) {
 static char warm_marker[1200];
 #define WARM_RETRIES 3   /* (unfinished warm starts in a row before the list is started again) */
 
+static int vk_warm_only(void);   /* (SSBU_VK_WARM_ONLY: below, with the shader loading) */
 /* One record made (or left out, and counted). */
 static void warm_one(u32 i) {
     if (!warm_stopped && warm_budget && (i & 15) == 0 && private_bytes() > warm_bytes0 + warm_budget) InterlockedExchange(&warm_stopped, 1);
@@ -3301,8 +3302,13 @@ static void warm_one(u32 i) {
         put = 1;
     }
     ReleaseSRWLockExclusive(&pipes_lock);
-    if (put) pipe_make(e);
-    else {
+    if (put) {
+        pipe_make(e);
+        if (vk_warm_only() && e->state == 1 && e->pipe) {   /* (only for the driver's cache: given back, no memory budget) */
+            vkDestroyPipeline(device, e->pipe, NULL);
+            e->pipe = VK_NULL_HANDLE;
+        }
+    } else {
         free(e);
         if (found) InterlockedIncrement(&warm_found);   /* (the game drew with it first: made by a draw) */
         else { InterlockedIncrement(&warm_left); InterlockedIncrement(&warm_left_full); }
@@ -3378,7 +3384,45 @@ static DWORD WINAPI warm_main(void *arg) {
  * wait; N: N seconds at most (as Direct3D 11's). */
 void watchdog_pause(int on);   /* debug_watchdog.c */
 static int warm_group_left(const WarmGroup *g) { return g->done < (LONG)g->n; }
+static void pipeline_cache_save(void);
+/* SSBU_VK_WARM_ONLY=1 (tools/shader_aot.py, after Prepare Shaders has every SPIR-V file; with SSBU_HEADLESS=1): this
+ * start only fills the graphics driver's own pipeline cache, then ends. The driver keeps its compiled pipelines by the
+ * program's path (gpu_nvcache.c), so a new install's first starts compiled them while the player waited: 18 s before the
+ * first frame, up to 120 s before each of the first matches, and whatever the memory budget left out at its first draw
+ * (measured 2026-11-17, RTX 2080 SUPER: 7,900 pipelines in 150 s on 10 threads, 5,600 never made). Here every listed
+ * pipeline is made once, no memory budget (each is given back at once: the driver's cache has it), all threads; a game
+ * started meanwhile ends this at once (it holds GAME_RUNNING), and what was made stays made. The same exe at the same
+ * path then finds them in milliseconds. */
+#define GAME_RUNNING "Local\\ssbu-game-running"   /* (gpu_d3d11.c's WARM_GAME; tools/shader_aot.py pauses for it) */
+static int vk_warm_only(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("SSBU_VK_WARM_ONLY"); v = e && *e == '1'; }
+    return v;
+}
+static void vk_warm_only_run(void) {
+    u64 t0 = GetTickCount64();
+    int stopped = 0;
+    watchdog_pause(1);
+    while (warm_running && !stopped) {
+        HANDLE g = OpenMutexA(SYNCHRONIZE, FALSE, GAME_RUNNING);
+        if (g) { CloseHandle(g); stopped = 1; break; }
+        static u64 said;
+        if (GetTickCount64() - said >= 2000) {   /* (tools/shader_aot.py's bar reads these) */
+            said = GetTickCount64();
+            fprintf(stderr, "[vulkan] warm only: %ld of %u\n", (long)warm_ndone, warm_nrecords);
+            fflush(stderr);
+        }
+        Sleep(100);
+    }
+    if (!stopped) pipeline_cache_save();
+    fprintf(stderr, "[vulkan] warm only: %lld pipelines made and %lld programs loaded of %u listed in %.1f s (%lld the driver could not make)%s\n",
+            (long long)vk_stat_warm_pipelines, (long long)vk_stat_warm_loaded, warm_nrecords, (GetTickCount64() - t0) / 1000.0,
+            (long long)vk_stat_pipeline_failures, stopped ? "; stopped: the game was started" : "");
+    fflush(stderr);
+    ExitProcess(stopped ? 3 : 0);
+}
 static void vk_warm_gate(void) {
+    if (vk_warm_only()) vk_warm_only_run();
     const char *set = getenv("SSBU_SHADER_PREWARM_WAIT");
     double limit_s = set && *set ? atof(set) : 0;
     if ((set && *set && limit_s <= 0) || !warm_running || !warm_nrecords || !warm_ngroups) { InterlockedExchange(&warm_urgent, 0); return; }
@@ -3496,6 +3540,7 @@ static void warm_start(void) {
     warm_budget = 1024ull << 20;
     if (GlobalMemoryStatusEx(&m) && m.ullTotalPhys / 3 > warm_budget) warm_budget = m.ullTotalPhys / 3;
     if (getenv("SSBU_SHADER_PREWARM_MB")) warm_budget = strtoull(getenv("SSBU_SHADER_PREWARM_MB"), NULL, 10) << 20;
+    if (vk_warm_only()) warm_budget = 0;   /* (its pipelines are given back as they are made: warm_one) */
     warm_bytes0 = private_bytes();
     warm_t0 = rt_clock_ns();
     /* every processor but two while the first frame (or a fight's) waits; a quarter of them behind the menus */
@@ -5244,6 +5289,13 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
     InitializeCriticalSection(&lock);
     window = (HWND)gfx_window_open();
     if (!window) { snprintf(why, size, "the game's window could not be made"); return NULL; }
+#ifdef _WIN32
+    /* (as Direct3D's start does, gpu_d3d11.c WARM_GAME: Prepare Shaders (tools/shader_aot.py) pauses its compile while a
+     * game holds this. The Vulkan start never made it, so with Vulkan drawing - the default - the compile went on at
+     * full pace on every core through the player's matches. Kept for the process's life. SSBU_VK_GAME_MUTEX=0: as before.
+     * Not the warm-only pass: it is no game, and ends when one starts.) */
+    { const char *off = getenv("SSBU_VK_GAME_MUTEX"); if (!(off && *off == '0') && !vk_warm_only()) CreateMutexA(NULL, FALSE, GAME_RUNNING); }
+#endif
     vkCreateInstance_ = (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
     if (!vkCreateInstance_) { snprintf(why, size, "the Vulkan loader lacks vkCreateInstance"); return NULL; }
     const char *iext[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME};

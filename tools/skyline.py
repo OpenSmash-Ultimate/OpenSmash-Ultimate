@@ -553,7 +553,15 @@ def _stale_hooks(tree):
         if patches.get(mod, "") != (open(rec, encoding="utf-8").read() if os.path.exists(rec) else ""):
             out.append(mod)
             continue
-        if inline.get(mod):   # (the C files: is each point's rt_inline_hook in one?)
+        listed = os.path.join(folder, "inline_hooks.txt")   # (tools/recomp.py: the points its C was written with)
+        if inline.get(mod) and os.path.exists(listed):
+            with open(listed, encoding="utf-8") as f:
+                have = {base + int(h, 16) for h in f.read().split()}
+            if any(base + o not in have for o in inline[mod]):
+                out.append(mod)
+        elif inline.get(mod) and os.path.exists(os.path.join(folder, "c_trimmed.txt")):
+            pass   # (no list and its C removed, tools/trim.py: the module's stamp has its hook points - recomp.py module_fingerprint)
+        elif inline.get(mod):   # (a folder from before that list - the C files: is each point's rt_inline_hook in one?)
             have = set()
             for n in os.listdir(folder):
                 if n.startswith("g") and n.endswith(".c") and n != "g_module.c":

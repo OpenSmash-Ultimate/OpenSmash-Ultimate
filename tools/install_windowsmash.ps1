@@ -142,6 +142,9 @@ $VsBuildToolsId = 'Microsoft.VisualStudio.BuildTools'   # Visual Studio 2026's; 
 $VsBuildToolsUrl = 'https://visualstudio.microsoft.com/visual-cpp-build-tools/'
 $VsInstallerDir = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
 $NeedDiskGb = 60
+# (SSBU_DATA_IN_PLACE=1, tools\build_game.py: the game's data is read from the game's own file, so the 14.5 GB
+# decrypted copy is never written)
+if ([string]$env:SSBU_DATA_IN_PLACE -eq '1') { $NeedDiskGb = 45 }
 $MinRamGb = 4        # (below 8 GB the build runs one compile at a time and the game is told to use less memory)
 $LowRamGb = 8
 $FirewallRuleName = 'WindowSmash (ssbu.exe)'

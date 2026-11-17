@@ -102,8 +102,24 @@ void perf_session_write(int clean) {
 #endif
 }
 
+/* SSBU_PERF_FRAMES=<file> (tests: tools/dev/stutter_run.py): every frame's time since the one before, in ms, a line
+ * each, whatever the telemetry setting - the hitches a player sees, frame by frame. */
+static void perf_frame_log(void) {
+    static FILE *f;
+    static int asked;
+    static double last;
+    static unsigned n;
+    if (!asked) { asked = 1; const char *p = getenv("SSBU_PERF_FRAMES"); if (p && *p) f = fopen(p, "w"); }
+    if (!f) return;
+    double now = now_ms();
+    if (n) fprintf(f, "%.2f\n", now - last);
+    last = now;
+    if (++n % 30 == 0) fflush(f);
+}
+
 /* ipc_vi.c: a frame was shown */
 void perf_frame_shown(void) {
+    perf_frame_log();
     if (!is_on()) return;
     double now = now_ms();
     if (frames) {

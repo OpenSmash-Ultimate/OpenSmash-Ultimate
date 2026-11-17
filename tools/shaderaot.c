@@ -23,6 +23,10 @@
  *   "existing" when both its files are there. --spirv-version prints the start of those names
  *   ("g<version>.<library>", what tools/shader_aot.py looks for in the cache) and nothing else;
  *   exit code 3 without the library.
+ *   --spirv-only (serve mode, with --spirv): a key's SPIR-V alone, without compiling its DXBC first (fxc's
+ *   compile is nearly all of a key's time, and the Vulkan back end never reads the DXBC): what
+ *   tools/shader_aot.py does first, so a PC that draws with Vulkan has its shaders in minutes; the
+ *   DXBC follows in a second pass. The same keys are left out (not translated, jump tables).
  *
  * Pack: "SAOT", u32 count; then per program u32 stage (0 vertex, 1 pixel), u32 length, u32 pairs,
  * u32 pair[pairs] (the vertex programs found before it in its containers), then its bytes
@@ -173,6 +177,7 @@ static int compile_to(const char *hlsl, const char *name, int stage, const char 
 
 /* ---- --spirv: the Vulkan back end's file of a key ------------------------------------------------- */
 static int spirv_on;   /* --spirv, and glslang's library is there */
+static int spirv_only; /* --spirv-only: no DXBC is compiled (serve mode) */
 enum { SPV_OFF, SPV_EXISTING, SPV_MADE, SPV_TABLES, SPV_FAILED };
 
 #ifdef _WIN32
@@ -313,6 +318,7 @@ static int serve_keys(Program *prog, u32 total, const char *dir) {
                 char *hlsl = alpha ? shader_hlsl_alpha_tested(p->bytes, p->size, vs_outputs, &info, zero_cbuf, NULL) : translate(p, vs_outputs, &info);
                 if (!hlsl) { count.translate_failed++; outcome = "untranslated"; }
                 else if (info.ntables) { count.tables++; outcome = "tables"; }
+                else if (spirv_only) outcome = "existing";   /* (its DXBC is the second pass's: only the SPIR-V below) */
                 else outcome = compile_to(hlsl, name, stage, path) ? "compiled" : "failed";
                 free(hlsl);
             }
@@ -352,6 +358,7 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[a], "--dry")) dry = 1;
         else if (!strcmp(argv[a], "--serve")) serve = 1;
         else if (!strcmp(argv[a], "--spirv")) spirv = 1;
+        else if (!strcmp(argv[a], "--spirv-only")) spirv = spirv_only = 1;
         else if (argv[a][0] != '-' && positional < 2) {   /* <part> <parts> */
             if (positional++ == 0) part = (u32)atoi(argv[a]); else parts = (u32)atoi(argv[a]);
         }

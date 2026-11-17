@@ -3651,6 +3651,15 @@ namespace OpenSmash.Launcher
         void AskShadersIfNeeded()
         {
             if (!_built || ShadersDone()) return;
+            // The shaders are always prepared, in the background at low priority (tools/shader_aot.py: the Vulkan
+            // renderer's first, then the graphics driver's pipelines, then Direct3D 11's; it pauses while the game
+            // runs and carries on where it stopped), so no first match compiles them: asking let a player answer
+            // "later" and play with every shader made at its first draw. OPENSMASH_SHADERS_AUTO=0: asked, as before.
+            if (Environment.GetEnvironmentVariable("OPENSMASH_SHADERS_AUTO") != "0")
+            {
+                StartShaders("low");
+                return;
+            }
             _shaderPrompt = true;
             _shaderPromptAt = Now;
             Invalidate();
@@ -3735,6 +3744,18 @@ namespace OpenSmash.Launcher
                 string phase = files.Groups[1].Value.Equals("listing", StringComparison.OrdinalIgnoreCase)
                     ? "Listing shader files" : "Reading shader files";
                 _shaderDetail = $"{phase}  {read:N0} / {filesTotal:N0}";
+                _shaderEta = "";
+                Invalidate();
+                return;
+            }
+            var pipes = Regex.Match(line, @"^([\d,]+)\s+of\s+([\d,]+)\s+pipelines$", RegexOptions.IgnoreCase);
+            if (pipes.Success
+                && double.TryParse(pipes.Groups[1].Value.Replace(",", ""), out double pipesDone)
+                && double.TryParse(pipes.Groups[2].Value.Replace(",", ""), out double pipesTotal)
+                && pipesTotal > 0)
+            {
+                _shaderFrac = (float)(pipesDone / pipesTotal);
+                _shaderDetail = UiLocale.Interpolate($"Preparing the graphics driver  {pipesDone:N0} / {pipesTotal:N0}");
                 _shaderEta = "";
                 Invalidate();
                 return;

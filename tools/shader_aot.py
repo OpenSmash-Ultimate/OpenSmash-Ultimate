@@ -639,6 +639,125 @@ def run_parts(exe, pack, cache, jobs):
     return all(p.returncode == 0 for p in procs)
 
 
+def spirv_first():
+    """SSBU_SHADER_SPIRV_FIRST (on unless 0; Windows, when the SPIR-V is made at all): Prepare Shaders in two passes.
+    First every key's SPIR-V alone (shaderaot --spirv-only: no fxc), which is all the Vulkan renderer reads - the
+    renderer of AMD, NVIDIA and Intel cards - then the graphics driver's own pipelines (pipeline_warm), then the DXBC
+    of every key, as before, for Direct3D 11. One pass made both files of a key together, the DXBC first: fxc is
+    nearly all of the time (71 min here, its two longest compiles 29 and 20 min), so a Vulkan player waited for
+    files the game never read."""
+    return bool(SPIRV) and not LINUX and os.environ.get("SSBU_SHADER_SPIRV_FIRST", "1").strip() != "0"
+
+
+def spirv_keys(cache, spirv):
+    """The keys whose SPIR-V file is in the cache folder."""
+    have = set()
+    for name in os.listdir(cache):
+        k = parse_spirv_file_name(name, spirv)
+        if k:
+            have.add(k)
+    return have
+
+
+def run_spirv_pass(exe, pack, cache, keys, jobs):
+    """The first pass (spirv_first): the keys without a SPIR-V file yet, through the same queue and workers, each
+    making only that file. True unless a worker died."""
+    have = spirv_keys(cache, SPIRV)
+    todo = [k for k in keys if not cached(k, have)]
+    print(f"the Vulkan renderer's shaders first: {len(keys) - len(todo):,} of {len(keys):,} are there, {len(todo):,} to make "
+          "(the game can be played once these are done; Direct3D 11's follow)", flush=True)
+    if not todo:
+        return True
+    jobs = max(1, min(jobs, len(todo)))
+    # (the order of the keys' sizes: none is timed for this pass, and glslang's time goes by the size)
+    todo = sorted(todo, key=lambda k: -k.size)
+    popen = lambda: subprocess.Popen(tool_command(exe, pack, cache, "--serve", "--spirv-only"), stdin=subprocess.PIPE,   # noqa: E731
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, **low_priority())
+    t0 = time.time()
+    totals = serve(exe, pack, cache, todo, jobs, {}, Progress(sys.stdout, window=None), popen=popen, paused=game_running)
+    print(f"the Vulkan renderer's shaders: {totals['compiled']:,} made in {time.time() - t0:.0f} s"
+          + (f", {totals['failed']:,} glslang could not make" if totals["failed"] else ""), flush=True)
+    return not totals["died"]
+
+
+PIPELINE_DONE = "vulkan_pipelines.done"   # (in the cache folder: the exe path whose driver cache pipeline_warm filled)
+
+
+def pipeline_warm(cache, game=None, limit=3600.0):
+    """The graphics driver's own pipelines, made before the first play (Windows, Vulkan): the game started once with
+    no window (SSBU_HEADLESS=1) and SSBU_VK_WARM_ONLY=1, where it makes every pipeline of its list from the SPIR-V
+    just made and ends (runtime/gpu_vk.c vk_warm_only_run). The driver keeps what it compiled by the exe's path, so
+    it must be the exe the game runs as, build\\ssbu.exe. Without this a new install compiled them while the player
+    waited: 18 s before the first frame and up to 120 s before each of the first matches (measured 2026-11-17).
+    At idle priority; it ends by itself when a game starts (and is started again here once that game has closed),
+    and after `limit` seconds whatever happens (a PC whose game does not draw with Vulkan ends at once). Done once
+    for an exe path (PIPELINE_DONE). SSBU_SHADER_WARM=0: not at all. True when it finished."""
+    if LINUX or os.environ.get("SSBU_SHADER_WARM") == "0":
+        return False
+    game = os.path.abspath(game or os.path.join(ROOT, "build", "ssbu.exe"))
+    marker = os.path.join(cache, PIPELINE_DONE)
+    if not os.path.exists(game):
+        return False
+    try:
+        with open(marker, encoding="utf-8") as f:
+            if f.read().strip() == os.path.normcase(game):
+                print("the graphics driver's pipelines: made before for this folder", flush=True)
+                return True
+    except OSError:
+        pass
+    data = os.path.join(ROOT, "dump", "aot", "warm_data")   # (a save of its own: the player's is not opened)
+    os.makedirs(data, exist_ok=True)
+    env = dict(os.environ, SSBU_VK_WARM_ONLY="1", SSBU_HEADLESS="1", SSBU_ERROR_DIALOG="0", SDL_AUDIO_DRIVER="dummy",
+               SSBU_VOLUME="0", SSBU_SKIP_MOVIES="1", SSBU_DATA_ROOT=data, SSBU_CWD=ROOT)
+    flags = getattr(subprocess, "IDLE_PRIORITY_CLASS", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    print("the graphics driver's pipelines: made now, in the background, so the first matches do not wait for them "
+          "(some minutes; it stops while the game runs)", flush=True)
+    t0 = time.time()
+    said = -1
+    while time.time() - t0 < limit:
+        while game_running():
+            time.sleep(2.0)
+        try:
+            p = subprocess.Popen([game, os.path.join("dump", "modules")], cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors="replace", creationflags=flags)
+        except OSError as e:
+            print(f"the graphics driver's pipelines: not made ({e})", flush=True)
+            return False
+        result = {}
+
+        def read(p=p, result=result):
+            nonlocal said
+            for line in p.stderr:
+                m = re.match(r"\[vulkan\] warm only: (\d+) of (\d+)$", line.strip())
+                if m and int(m.group(2)):
+                    pct = int(m.group(1)) * 100 // int(m.group(2))
+                    if pct != said:
+                        said = pct
+                        print(f"{int(m.group(1)):,} of {int(m.group(2)):,} pipelines", flush=True)
+                elif line.startswith("[vulkan] warm only:"):
+                    result["line"] = line.strip()
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        try:
+            p.wait(timeout=max(1.0, limit - (time.time() - t0)))
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+        reader.join(5.0)
+        if p.returncode == 0 and "line" in result:
+            print(result["line"].replace("[vulkan] warm only: ", "the graphics driver's pipelines: "), flush=True)
+            with open(marker, "w", encoding="utf-8", newline="\n") as f:
+                f.write(os.path.normcase(game) + "\n")
+            return True
+        if p.returncode == 0:   # (it ended without making any: the game does not draw with Vulkan here, or has no list)
+            print("the graphics driver's pipelines: nothing to make here (the game does not draw with Vulkan on this PC)", flush=True)
+            return False
+        if p.returncode != 3:   # (3: a game was started - once it has closed, again)
+            print(f"the graphics driver's pipelines: the pass stopped (code {p.returncode}); the game makes them as it runs", flush=True)
+            return False
+    return False
+
+
 def run_queue(exe, pack, cache, jobs, dry):
     """Discovery once, then the keys not cached yet through N workers pulling from one queue."""
     print("getting ready: listing the shaders (translating the vertex programs)...", flush=True)
@@ -648,6 +767,12 @@ def run_queue(exe, pack, cache, jobs, dry):
     if drawn:
         print(f"{len(drawn):,} more keys the game compiled at a first draw ({DRAWN_KEYS})", flush=True)
     keys = keys + drawn
+    if spirv_first() and not dry:
+        if run_spirv_pass(exe, pack, cache, keys, jobs):
+            pipeline_warm(cache)
+        if os.environ.get("SSBU_SHADER_VULKAN_ONLY") == "1":   # (for measuring the first pass alone: no DXBC pass)
+            print("the Direct3D 11 pass is left out (SSBU_SHADER_VULKAN_ONLY=1)", flush=True)
+            return False
     have = cached_keys(cache, spirv=SPIRV)
     todo = [k for k in keys if not cached(k, have)]
     if dry:

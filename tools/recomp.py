@@ -1208,6 +1208,9 @@ def _build(mod, found, funcs, path, outdir, jobs, per_file, imports):
     defined = {a for a, _ in funcs}
     missing, manifest, bad, unresolved, problems = set(), [], 0, [], []
     inline = set(inline_points(name)) & {pc for a, size in funcs for pc in range(a, a + size, 4)}
+    # (the inline hook points this C is written with: tools/skyline.py stale_hooks reads them here rather than in
+    # every generated file, which may be gone - tools/trim.py)
+    write_if_changed(os.path.join(outdir, "inline_hooks.txt"), "".join(f"{o:x}\n" for o in sorted(inline)))
     with Pool(jobs, _init, (image_file(mod), set(found), base, forward, setjmp, pads, exact_callees, exact_callers,
                             slots, patches, inline)) as pool:
         tasks = [(i, c, outdir) for i, c in enumerate(chunks)]
@@ -1250,6 +1253,21 @@ def build_folder(outdir):
     return os.path.dirname(out) if os.path.basename(out) == "nro" else out
 
 
+def scripts_level(outdir):
+    """SSBU_SCRIPTS_OPT=/Od (off unless set; a test of SSBU Arena's "code that is not hot, unoptimised"): the level
+    the fighters' script modules (build/nro/lua2cpp_*: three quarters of the compile) are compiled at instead of
+    their own, or None. Measured (handoff, round 5): a script file compiles 1.65 times faster at /Od and its object
+    is 3.7 times the size. The level is in each object's key, so setting or clearing it compiles those modules
+    again; every install with the same setting compiles the same code, and no floating-point result depends on
+    the level (no contraction, no fast-math at any level)."""
+    level = os.environ.get("SSBU_SCRIPTS_OPT", "").strip()
+    if level not in ("/Od", "/O1", "/O2"):
+        return None
+    folder = os.path.normpath(outdir)
+    in_nro = os.path.basename(os.path.dirname(folder)) == "nro"
+    return level if in_nro and os.path.basename(folder).startswith("lua2cpp_") else None
+
+
 def plan(outdir, times=None):
     """(stale_files, the folder's objcache.Record, {object: (its key, key_for(step): its key compiled a
     ladder step's way)}, Counter of why each stale one is, {object: its ladder.Info}). A generated file
@@ -1272,6 +1290,7 @@ def plan(outdir, times=None):
     headers = {h: objcache.digest_files(objcache.header_files(cc.RUNTIME, *h)) for h in objcache.GAME_HEADERS}
     times = times or ladder.Times(build_folder(outdir))
     above = ladder.optnone_setting()
+    scripts = scripts_level(outdir)
     todo, keys, infos, why = [], {}, {}, Counter()
     for name, insns, biggest in rows + [["g_module.c", "0", "0"]]:
         src = os.path.join(outdir, name)
@@ -1281,6 +1300,8 @@ def plan(outdir, times=None):
         left = own.left if own else biggest
         # very large functions make the optimiser superlinear; build those at a lower level
         opt = "/O1" if left > 20000 or name == "g_module.c" else "/O2"
+        if scripts and name != "g_module.c":
+            opt = scripts
         key = game_key(record, src, compiler, headers[objcache.game_headers(name, record.source(src)[1])])
         start = own.above if own else 0
         keys[obj] = (key(opt, own.header if own else None),
