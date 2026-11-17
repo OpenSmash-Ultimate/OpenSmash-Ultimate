@@ -69,7 +69,10 @@ namespace OpenSmash.Launcher
             string host = words.Length > 0 ? words[0] : "", code = words.Length > 1 ? words[1] : "";
             if (host == "" || host.Equals("off", StringComparison.OrdinalIgnoreCase)) return ("offline", code, "");
             if (host.Equals("lan", StringComparison.OrdinalIgnoreCase)) return ("lan", code, "");
-            if (host.Equals("auto", StringComparison.OrdinalIgnoreCase) || host.Equals("na", StringComparison.OrdinalIgnoreCase) ||
+            // ("eos", the shipped online_server.txt's "Epic Online Services alone", is the public choice too: read as
+            // "your own server", it stopped Play with "Your own server is host:port")
+            if (host.Equals("auto", StringComparison.OrdinalIgnoreCase) || host.Equals("eos", StringComparison.OrdinalIgnoreCase) ||
+                host.Equals("na", StringComparison.OrdinalIgnoreCase) ||
                 host.Equals("eu", StringComparison.OrdinalIgnoreCase) || host.StartsWith(OldLobby, StringComparison.OrdinalIgnoreCase) ||
                 host.Equals(PublicLobby, StringComparison.OrdinalIgnoreCase))
                 return (code == "" ? "auto" : "private", code, "");

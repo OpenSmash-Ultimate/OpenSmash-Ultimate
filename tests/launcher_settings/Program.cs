@@ -128,7 +128,7 @@ static class Tests
         string pub = SettingDefaults.PublicLobby;
         var cases = new (string Line, string Lobby, string Back)[]
         {
-            ("", "offline", "off"), ("off", "offline", "off"), ("auto", "auto", "auto"), ("na", "auto", "auto"), ("eu", "auto", "auto"),
+            ("", "offline", "off"), ("off", "offline", "off"), ("auto", "auto", "auto"), ("eos", "auto", "auto"), ("na", "auto", "auto"), ("eu", "auto", "auto"),
             ("smash.recomps.wtf:39421", "auto", "auto"), ("smash.recomps.wtf:39421 mine", "private", pub + " mine"),
             ("lan", "lan", "lan"), (pub, "auto", "auto"), (pub + " friends", "private", pub + " friends"),
             ("10.0.0.2:39420", "custom", "10.0.0.2:39420"), ("10.0.0.2:39420 abc", "custom", "10.0.0.2:39420 abc"),
