@@ -118,6 +118,14 @@ def build(dll, log=print):
     new = dll[:-4] + ".new.dll"   # (made beside it, then put in its place: a failed link leaves the old one)
     cmd = [cc.CLANG, *flags, SHIM, "/Fe" + new, "/link", *cc.LINK_OPTIONS, "/LIBPATH:" + LIBDIR, *LIBS]
     r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode and any(n in (r.stdout + r.stderr) for n in DLL_CRT):
+        # (a deps\msvc set up before the DLL C runtime's libraries were kept: fetch them, then link again)
+        try:
+            import msvc_deps
+            if msvc_deps.repair_crt_libs(log):
+                r = subprocess.run(cmd, capture_output=True, text=True)
+        except Exception as e:
+            log(f"  (the DLL C runtime's libraries could not be fetched: {e})")
     if not r.returncode and os.path.isfile(new):
         try:
             os.replace(new, dll)
@@ -135,8 +143,8 @@ def build(dll, log=print):
         text = (r.stdout + r.stderr)[-2000:]
         hint = ""
         if any(n in text for n in DLL_CRT):
-            hint = ("\n(the DLL C runtime's libraries are missing: deps\\msvc from before they were kept. "
-                    "Run tools\\msvc_deps.py again, or build with Visual Studio's Build Tools.)")
+            hint = ("\n(the DLL C runtime's libraries are missing: deps\\msvc from before they were kept, and fetching them "
+                    "did not work either. Run python tools\\msvc_deps.py install, or build with Visual Studio's Build Tools.)")
         log(f"  ssbu_glslang.dll could not be built: Vulkan will have no shader translator.\n{text}{hint}")
         return False
     for leftover in (new[:-4] + ".lib", new[:-4] + ".exp", dll + ".old"):
