@@ -1052,6 +1052,7 @@ namespace OpenSmash.Launcher
                 beforeLauncherFingerprint = await Task.Run(() => LauncherBuildInputsFingerprint(_repo));
                 string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
                 if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_windowsmash.ps1 is missing.");
+                if (!InstallerTakesUpdateOnly(File.ReadAllText(script))) await RefreshOldInstallerAsync(script);
                 var result = await Task.Run(() => RunPowerShellUpdate(script));
                 output = result.Output;
                 if (result.Code != 0) throw new InvalidOperationException(UiLocale.Text("The updater stopped (exit ") + result.Code + ").");
@@ -1144,6 +1145,29 @@ namespace OpenSmash.Launcher
             }
             PlayDone();
             Invalidate();
+        }
+
+        // A copy from before WindowSmash became OpenSmash-Ultimate (2026-10-26) has an installer without -UpdateOnly, which
+        // PowerShell refuses before it runs a line ("The updater stopped (exit 1)", #418). Its installer is replaced first by
+        // the one of the commit the update goes to; that one then updates the rest of the folder as for any other copy (the
+        // game files, settings, saves and builds stay).
+        internal static bool InstallerTakesUpdateOnly(string text) =>
+            Regex.IsMatch(text, @"\[switch\]\s*\$UpdateOnly\b", RegexOptions.IgnoreCase);
+
+        async Task RefreshOldInstallerAsync(string script)
+        {
+            string dotGit = Path.Combine(_repo, ".git");
+            if (Directory.Exists(dotGit) || File.Exists(dotGit))   // (git refuses a checkout with a changed file: git updates it)
+                throw new InvalidOperationException("This folder is a git checkout from before WindowSmash became OpenSmash-Ultimate. Update it with git: "
+                    + "git remote set-url origin https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate.git, then git pull --ff-only origin main.");
+            string at = Regex.IsMatch(_updateHead, "^[0-9a-fA-F]{40}$") ? _updateHead : "main";
+            byte[] body = await _httpClient.GetByteArrayAsync($"https://raw.githubusercontent.com/{UpdateRepo}/{at}/tools/install_windowsmash.ps1");
+            string text = Encoding.UTF8.GetString(body);
+            if (!InstallerTakesUpdateOnly(text) || !text.Contains("$RepoName = 'OpenSmash-Ultimate'"))
+                throw new InvalidOperationException("The installer GitHub sent is not the one expected; nothing was changed.");
+            string tmp = script + ".new";
+            await File.WriteAllBytesAsync(tmp, body);
+            File.Move(tmp, script, true);
         }
 
         static (int Code, string Output) RunPowerShellUpdate(string script, string only = "-UpdateOnly", Action<string>? onLine = null)
