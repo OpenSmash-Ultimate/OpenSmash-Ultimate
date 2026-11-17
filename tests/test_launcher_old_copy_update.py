@@ -26,6 +26,27 @@ class OldCopyUpdate(unittest.TestCase):
         self.assertIn('RefreshOldInstallerAsync(script)', apply)
         self.assertIn(r'\[switch\]\s*\$UpdateOnly\b', text)
 
+    def test_a_folder_without_the_launcher_project_still_updates(self):
+        # A WindowSmash copy has no OpenSmash.Launcher: the fingerprint Update takes before and after is then "", not
+        # an exception that stopped the update before the installer ran; and "" on either side rebuilds nothing.
+        text = LAUNCHER.read_text(encoding='utf-8-sig')
+        fp = text[text.index('static string LauncherBuildInputsFingerprint('):]
+        fp = fp[:fp.index('IncrementalHash')]
+        self.assertNotIn('throw', fp)
+        self.assertIn('return "";', fp)
+        apply = text[text.index('async Task ApplyUpdateAsync()'):]
+        apply = apply[:apply.index('ScheduleLauncherBuildAndRestart')]
+        self.assertIn('beforeLauncherFingerprint.Length > 0 && afterFingerprint.Length > 0', apply)
+
+    def test_a_new_folder_is_the_latest_release(self):
+        # The first start's download is the latest release's ZIP (main only without a release), the ref Update follows.
+        setup = (ROOT / 'OpenSmash.Launcher' / 'ProjectSetup.cs').read_text(encoding='utf-8-sig')
+        first = (ROOT / 'OpenSmash.Launcher' / 'FirstRunForm.cs').read_text(encoding='utf-8-sig')
+        self.assertIn('ProjectSetup.ProjectZipUrlAsync(', first)
+        self.assertNotIn('ProjectSetup.MainZipUrl', first)
+        self.assertIn('/releases/latest', setup)
+        self.assertIn('/zip/refs/tags/', setup)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,7 +16,7 @@ namespace OpenSmash.Launcher
     // ProjectSetup: what OpenSmash.exe needs when it runs on its own (the release
     // download) instead of from a copy of the project. It finds the project folder
     // (the exe's own, or the one remembered from the first start) and gets a new
-    // one: GitHub's ZIP of main, the download the Update button's installer step
+    // one: GitHub's ZIP of the latest release (main while there is none), as the Update button's installer step
     // makes (tools\install_windowsmash.ps1, Update-FromZip), checked the same way,
     // unpacked into an empty folder. Its download is the one the mod browser uses.
     // ============================================================================
@@ -22,6 +24,55 @@ namespace OpenSmash.Launcher
     {
         public const string Repo = "OpenSmash-Ultimate/OpenSmash-Ultimate";
         public const string MainZipUrl = "https://codeload.github.com/" + Repo + "/zip/refs/heads/main";
+
+        // The ZIP a new folder is made from: the latest release's (what Update follows on the release channel), or
+        // main's while there is none or when OPENSMASH_UPDATE_CHANNEL=main asks for it. Before this, a new player got
+        // main, newer than the release, and Update then had nothing to offer until the next release.
+        public static string ReleaseZipUrl(string tag) => "https://codeload.github.com/" + Repo + "/zip/refs/tags/" + Uri.EscapeDataString(tag);
+
+        public static async Task<string> ProjectZipUrlAsync(CancellationToken ct = default)
+        {
+            if (string.Equals(Environment.GetEnvironmentVariable("OPENSMASH_UPDATE_CHANNEL"), "main", StringComparison.OrdinalIgnoreCase)) return MainZipUrl;
+            string? tag = await LatestReleaseTagAsync(ct);
+            return tag == null ? MainZipUrl : ReleaseZipUrl(tag);
+        }
+
+        // The latest release's tag, or null when there is none. The API first; when it does not answer (no network
+        // to it, its hourly limit), github.com's own releases/latest page, which redirects to the release's tag.
+        public static async Task<string?> LatestReleaseTagAsync(CancellationToken outer = default)
+        {
+            using var limit = CancellationTokenSource.CreateLinkedTokenSource(outer);
+            limit.CancelAfter(TimeSpan.FromSeconds(20));   // (the download client waits up to 30 minutes: not for this)
+            var ct = limit.Token;
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.github.com/repos/" + Repo + "/releases/latest");
+                request.Headers.Add("User-Agent", "OpenSmash-Launcher/1.0");
+                request.Headers.Accept.ParseAdd("application/vnd.github+json");
+                using var response = await DownloadClient.SendAsync(request, ct);
+                if (response.StatusCode == HttpStatusCode.NotFound) return null;   // no release yet
+                if (response.IsSuccessStatusCode)
+                {
+                    using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+                    if (doc.RootElement.TryGetProperty("tag_name", out var t) && t.GetString() is string tag && tag.Trim().Length > 0) return tag.Trim();
+                }
+            }
+            catch (OperationCanceledException) when (outer.IsCancellationRequested) { throw; }
+            catch { }
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Head, "https://github.com/" + Repo + "/releases/latest");
+                request.Headers.Add("User-Agent", "OpenSmash-Launcher/1.0");
+                using var response = await DownloadClient.SendAsync(request, ct);
+                string path = response.RequestMessage?.RequestUri?.AbsolutePath ?? "";
+                const string marker = "/releases/tag/";
+                int at = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                if (at >= 0 && path.Length > at + marker.Length) return Uri.UnescapeDataString(path[(at + marker.Length)..]);
+            }
+            catch (OperationCanceledException) when (outer.IsCancellationRequested) { throw; }
+            catch { }
+            return null;   // (no release, or GitHub not reachable: main, whose download then says what is wrong)
+        }
         const string WorkName = ".opensmash-download";   // inside the chosen folder while it is filled; removed after
 
         // Downloads can be hundreds of megabytes, so they get their own client with a
@@ -168,7 +219,7 @@ namespace OpenSmash.Launcher
                 string zip = source;
                 if (!File.Exists(source))
                 {
-                    zip = Path.Combine(work, "OpenSmash-Ultimate-main.zip");
+                    zip = Path.Combine(work, "OpenSmash-Ultimate.zip");
                     string partial = zip + ".partial";
                     await DownloadAsync(source, partial, (got, total) => { onProgress("download", got, total); return Task.CompletedTask; }, ct);
                     File.Move(partial, zip);
@@ -301,12 +352,14 @@ namespace OpenSmash.Launcher
 
         // ---------------------------------------------------------------------------
         // OpenSmash.exe --fetch-project <folder> [--from <zip or url>]: InstallAsync without a window, for tests.
+        // Without --from it downloads what the first start does (ProjectZipUrlAsync) and says which first ("from <url>").
         // Prints "ok <folder>" (exit 0), "refused <why>" (exit 2) or "error <why>" (exit 1).
         // OpenSmash.exe --find-project: prints the folder Program would use, or nothing.
+        // OpenSmash.exe --launcher-fingerprint <folder>: "fingerprint <hex>", or "none" without a launcher project.
         // OpenSmash.exe --make-shortcuts <folder> --desktop <dir> [--start-menu <dir>]: prints each shortcut made.
         public static bool IsHeadless(string[] args) =>
             args.Any(a => a.Equals("--fetch-project", StringComparison.OrdinalIgnoreCase) || a.Equals("--find-project", StringComparison.OrdinalIgnoreCase)
-                       || a.Equals("--make-shortcuts", StringComparison.OrdinalIgnoreCase));
+                       || a.Equals("--make-shortcuts", StringComparison.OrdinalIgnoreCase) || a.Equals("--launcher-fingerprint", StringComparison.OrdinalIgnoreCase));
 
         public static int RunHeadless(string[] args)
         {
@@ -319,6 +372,13 @@ namespace OpenSmash.Launcher
             {
                 Console.Out.WriteLine(FindProject(AppContext.BaseDirectory) ?? "");
                 return 0;
+            }
+            if (After(args, "--launcher-fingerprint") is string fpFolder)
+            {
+                // what Update compares before and after (LauncherForm.LauncherBuildInputsFingerprint): "none" for a folder
+                // without the launcher's project, such as a WindowSmash copy
+                try { string fp = LauncherForm.LauncherBuildInputsFingerprint(fpFolder); Console.Out.WriteLine(fp.Length == 0 ? "none" : "fingerprint " + fp); return 0; }
+                catch (Exception ex) { Console.Out.WriteLine("error " + ex.Message); return 1; }
             }
             if (After(args, "--make-shortcuts") is string target)
             {
@@ -338,7 +398,9 @@ namespace OpenSmash.Launcher
             try
             {
                 string last = "";
-                InstallAsync(folder, After(args, "--from") ?? MainZipUrl, (phase, done, total) =>
+                string source = After(args, "--from") ?? ProjectZipUrlAsync().GetAwaiter().GetResult();
+                if (!File.Exists(source)) Console.Out.WriteLine("from " + source);
+                InstallAsync(folder, source, (phase, done, total) =>
                 {
                     string line = phase + (total > 0 ? $" {done * 100 / total}%" : $" {done / 1048576} MB");
                     if (line != last) { last = line; Console.Out.WriteLine(line); }

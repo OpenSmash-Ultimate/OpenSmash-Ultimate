@@ -138,6 +138,23 @@ class StandaloneLauncherTests(unittest.TestCase):
             self.assertEqual(got['OpenSmash-Launcher.lnk'], [str(target / 'OpenSmash.exe'), '', str(target), icon])
             self.assertEqual(got['OpenSmash-Ultimate.lnk'], [str(target / 'OpenSmash.exe'), '--play', str(target), icon])
 
+    def test_a_windowsmash_folder_has_no_launcher_fingerprint(self):
+        # A WindowSmash copy (no OpenSmash.Launcher, no tools/build_launcher.ps1) with the release's OpenSmash.exe put
+        # in it: Update compares this before and after, and an error here stopped the update before it ran.
+        ws = self.dir / 'WindowSmash'
+        (ws / 'tools').mkdir(parents=True)
+        (ws / 'tools' / 'install_windowsmash.ps1').write_text("$RepoName = 'WindowSmash'")
+        (ws / 'tools' / 'source_version.txt').write_text('598d05240fc146f7184b3450653e2eec2ee97312 2026-11-03')
+        (ws / 'Install WindowSmash.bat').write_text('@echo off')
+        code, out = self.run_exe('--launcher-fingerprint', str(ws))
+        self.assertEqual((code, out), (0, ['none']))
+        (ws / 'OpenSmash.Launcher').mkdir()
+        (ws / 'OpenSmash.Launcher' / 'OpenSmash.Launcher.csproj').write_text('<Project />')
+        (ws / 'tools' / 'build_launcher.ps1').write_text('# build')
+        code, out = self.run_exe('--launcher-fingerprint', str(ws))
+        self.assertEqual(code, 0, out)
+        self.assertRegex(out[0], r'^fingerprint [0-9A-F]{64}$')
+
     def test_shortcuts_need_a_desktop_folder(self):
         code, out = self.run_exe('--make-shortcuts', str(self.dir))
         self.assertEqual(code, 1, out)
