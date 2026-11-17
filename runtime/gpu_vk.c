@@ -2468,6 +2468,65 @@ static VkImageView surface_attachment(Surface *s) {
     return s->att = make_view(s->image, VK_IMAGE_VIEW_TYPE_2D, s->view, aspect_of(s), 1, 1, NULL);
 }
 
+/* A render target read through a header smaller than it (M73: the team outline's mask is written as 512x270 and read
+ * through a 480x270 header; Direct3D 11 reads the header's top-left part, Vulkan's view of the whole image stretched
+ * it): the header's part copied into an image of its own, taken again at each lookup (the target is written between
+ * draws; render targets are not kept in tex_memo). SSBU_VK_NO_CROP=1: as before (a test). */
+typedef struct Crop { u64 guest; u32 w, h, srgb; VkImage src, image; Alloc alloc; VkImageView view; } Crop;
+static Crop crops[8];
+static VkImageView crop_view(Surface *rt, const TextureDesc *d, int srgb) {
+    static int off = -1;
+    if (off < 0) off = getenv("SSBU_VK_NO_CROP") && atoi(getenv("SSBU_VK_NO_CROP"));
+    if (off || rt->depth || !d->width || !d->height || d->width > rt->width || d->height > rt->height) return VK_NULL_HANDLE;
+    if (d->width == rt->width && d->height == rt->height) return VK_NULL_HANDLE;
+    u32 w = (u32)((u64)d->width * rt->hw / rt->width), h = (u32)((u64)d->height * rt->hh / rt->height);
+    if (!w) w = 1;
+    if (!h) h = 1;
+    if (w > rt->hw) w = rt->hw;
+    if (h > rt->hh) h = rt->hh;
+    Crop *c = NULL, *free_c = NULL;
+    for (u32 i = 0; i < 8; i++) {
+        if (crops[i].image && crops[i].guest == rt->guest && crops[i].w == w && crops[i].h == h && crops[i].srgb == (u32)srgb) { c = &crops[i]; break; }
+        if (!crops[i].image && !free_c) free_c = &crops[i];
+    }
+    static u32 next_victim;
+    if (c && c->src != rt->image) {   /* (the target was made again) */
+        bury_view(c->view);
+        bury_grave((Grave){c->image, VK_NULL_HANDLE, VK_NULL_HANDLE, c->alloc});
+        memset(c, 0, sizeof *c);
+        free_c = c; c = NULL;
+    }
+    if (!c) {
+        if (!free_c) {
+            free_c = &crops[next_victim++ & 7];
+            bury_view(free_c->view);
+            bury_grave((Grave){free_c->image, VK_NULL_HANDLE, VK_NULL_HANDLE, free_c->alloc});
+            memset(free_c, 0, sizeof *free_c);
+        }
+        VkImageCreateInfo ici = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, VK_IMAGE_TYPE_2D, rt->storage, {w, h, 1}, 1, 1,
+                                 VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                 VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
+        Alloc a;
+        VkImage img = make_image(&ici, &a);
+        if (!img) return VK_NULL_HANDLE;
+        VkImageView v = make_view(img, VK_IMAGE_VIEW_TYPE_2D, other_gamma(rt->storage, srgb), VK_IMAGE_ASPECT_COLOR_BIT, 1, 1, NULL);
+        if (!v) { bury_grave((Grave){img, VK_NULL_HANDLE, VK_NULL_HANDLE, a}); return VK_NULL_HANDLE; }
+        VkCommandBuffer cb = outside();
+        image_layout(cb, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+        *free_c = (Crop){rt->guest, w, h, (u32)srgb, rt->image, img, a, v};
+        c = free_c;
+        tex_gen++;
+        fprintf(stderr, "[vulkan] a render target (%ux%u) read through a smaller header (%ux%u): its top-left part is copied (%ux%u)\n",
+                rt->width, rt->height, d->width, d->height, w, h);
+    }
+    VkCommandBuffer cb = outside();
+    sync_all(cb);
+    VkImageCopy ic = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {w, h, 1}};
+    vkCmdCopyImage(cb, rt->image, VK_IMAGE_LAYOUT_GENERAL, c->image, VK_IMAGE_LAYOUT_GENERAL, 1, &ic);
+    sync_all(cb);
+    return c->view;
+}
+
 /* The texture a header describes, as a draw reads it (gpu_d3d11.c's get_texture): a render target at
  * its address, else the texture cache's (made from guest memory, again when the write watch or a
  * sample of its bytes says it changed). *rt: the render target it is, if one. */
@@ -2492,6 +2551,7 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
     if (rt) {
         *scale = (float)rt->hw / (float)rt->width;
         *rt_out = rt;
+        if (ok && (shader_type & 7) == TEX_2D) { VkImageView cv = crop_view(rt, &d, (int)d.srgb); if (cv) return cv; }
         return surface_sampled(rt, (int)d.srgb, shader_type & 7);
     }
     if (!ok || d.type == TIC_1D_BUFFER || d.bytes == 0) { warn_texture(&d); return VK_NULL_HANDLE; }
