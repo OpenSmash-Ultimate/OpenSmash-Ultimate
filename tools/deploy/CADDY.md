@@ -1,5 +1,12 @@
 # HTTPS for the online lobby (Caddy)
 
+> **Which server this is for.** These files (`Caddyfile`, `deploy_caddy.sh`) name `opensmash-lobby.duckdns.org`, the
+> older public lobby. OpenSmash's official lobbies since 0.4 (`eu.` / `na.lobby.opensmashultimate.com`) do not run
+> Caddy or this script, and no game or launcher reads the duckdns name any more (it only means "the official lobby"
+> where an old settings file still has it). They are kept as a deploy option for a lobby of your own: put your own
+> name in place of `opensmash-lobby.duckdns.org` in `Caddyfile` (and in `deploy_caddy.sh`'s status check) before
+> running it.
+
 The online lobby (`tools/ssbu_online_lobby.py`) answers plain HTTP on TCP 39421. A web page served over HTTPS (the
 site, https://denkishi.github.io/opensmash-site/) cannot read it: the browser blocks the mixed content. Today the site
 works around that with a GitHub Actions job that copies `/status.json` and `/leaderboard.json` to a branch. This is the

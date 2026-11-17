@@ -872,7 +872,12 @@ static void sec_controls(void) {
  * The online code reads its graphics.ini keys once at the start (nnldn_register replaces the game's nn::ldn imports at boot
  * only when online play is on), so every control here is [restart]; "Restart the game now" starts this exe again with the
  * same command line and ends this copy (net_start of the new copy waits for the old one to be gone). */
-#define ONLINE_DEFAULT_LOBBY "opensmash-lobby.duckdns.org:39500"      /* the project's public lobby server (host:port); a domain name can replace it */
+/* the public lobby server (host:port) filled in when the file names none: none by default (net_relay.c NET_PUBLIC_LOBBY
+ * says why); a build for a lobby of its own defines both */
+#ifndef NET_PUBLIC_LOBBY
+#define NET_PUBLIC_LOBBY ""
+#endif
+#define ONLINE_DEFAULT_LOBBY NET_PUBLIC_LOBBY
 static const char *const k_online_mode[] = {"off", "lan", "host", "join", "lobby"};
 static const char *const k_online_name[] = {"Off", "Same network (LAN)", "Host a room (room code)", "Join with a code", "Lobby server (recommended)"};
 static struct { int mode, last_mode; bool upnp, relay_only; char join[64], server[128]; } O, O0;
@@ -947,7 +952,7 @@ static void online_init(void) {
         else if (!_strnicmp(v, "join", 4)) { O.mode = 3; if (v[4] == ':') snprintf(O.join, sizeof O.join, "%s", v + 5); }
         else if (!_stricmp(v, "1") || !_stricmp(v, "on") || !_stricmp(v, "auto")) O.mode = ini_read("online_server", v, sizeof v) && !off_word(v) ? 4 : 1;
         else O.mode = 4;
-    } else if (!ini_read("online_server", v, sizeof v) || !off_word(v)) O.mode = 4;   /* nothing in the file: ON with the public lobby (2026-10-20) */
+    } else if (ini_read("online_server", v, sizeof v) ? !off_word(v) : ONLINE_DEFAULT_LOBBY[0] != 0) O.mode = 4;   /* nothing in the file: ON with the public lobby where the build has one (2026-10-20), else off */
     if (!O.join[0]) ini_read("online_join", O.join, sizeof O.join);
     if (!ini_read("online_server", O.server, sizeof O.server) || off_word(O.server)) snprintf(O.server, sizeof O.server, "%s", ONLINE_DEFAULT_LOBBY);
     if (ini_read("online_upnp", v, sizeof v)) O.upnp = !off_word(v);
@@ -1232,7 +1237,7 @@ static void sec_online(void) {
         ImGui::InputTextWithHint("Lobby server", "host:port", O.server, sizeof O.server);
         if (ImGui::IsItemDeactivatedAfterEdit()) changed = 1;
         tag(1, strcmp(O.server, O0.server) != 0);
-        if (strcmp(O.server, ONLINE_DEFAULT_LOBBY) && ImGui::SmallButton("Use the public lobby")) { snprintf(O.server, sizeof O.server, "%s", ONLINE_DEFAULT_LOBBY); changed = 1; }
+        if (ONLINE_DEFAULT_LOBBY[0] && strcmp(O.server, ONLINE_DEFAULT_LOBBY) && ImGui::SmallButton("Use the public lobby")) { snprintf(O.server, sizeof O.server, "%s", ONLINE_DEFAULT_LOBBY); changed = 1; }
         help("Everyone using the same lobby sees each other's rooms. Your own lobby: tools/net/ssbu_lobby.py.");
         if (ImGui::Checkbox("Relay only (everything through the lobby, no direct connection)", &O.relay_only)) changed = 1;
         tag(1, O.relay_only != O0.relay_only);
