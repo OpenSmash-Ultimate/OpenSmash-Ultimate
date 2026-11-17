@@ -366,6 +366,23 @@ static class Program
         Check(DiskSpace.DataInPlace == "SSBU_DATA_IN_PLACE" && DiskSpace.Trim == "SSBU_TRIM" && DiskSpace.TrimWhat == "c,nsp,map", "save disk space: the build's own switches");
         Directory.Delete(droot, true);
 
+        // the players online of a region (OnlineCount.cs): the accounts service's lobby_status row, fresh rows only
+        var at = new DateTimeOffset(2026, 11, 17, 12, 0, 0, TimeSpan.Zero);
+        Check(OnlineCount.Path("na-east") == "/rest/v1/lobby_status?select=players,rooms,updated_at&product=eq.opensmash&region=eq.na-east&limit=1", "online count: the region's row of this product is asked");
+        Check(OnlineCount.Parse("[{\"players\":12,\"rooms\":3,\"updated_at\":\"2026-11-17T11:58:30.123456+00:00\"}]", at) == (12, 3), "online count: a fresh row's players and rooms");
+        Check(OnlineCount.Parse("[{\"players\":0,\"rooms\":0,\"updated_at\":\"2026-11-17T12:00:20+00:00\"}]", at) == (0, 0), "online count: nobody online is a count too (and a clock a little behind)");
+        Check(OnlineCount.Parse("[{\"players\":12,\"rooms\":3,\"updated_at\":\"2026-11-17T11:44:59+00:00\"}]", at) == null, "online count: a row older than 15 minutes is unknown");
+        Check(OnlineCount.Parse("[{\"players\":12,\"rooms\":3,\"updated_at\":\"2026-11-17T13:58:30+02:00\"}]", at) == (12, 3), "online count: the time in another zone");
+        Check(OnlineCount.Parse("[]", at) == null, "online count: no row for the region (the older single row only): none, the lobby's own page is shown");
+        Check(OnlineCount.Parse("{\"message\":\"column lobby_status.region does not exist\"}", at) == null && OnlineCount.Parse("<html>", at) == null
+              && OnlineCount.Parse("[{\"players\":\"many\",\"updated_at\":\"2026-11-17T12:00:00Z\"}]", at) == null && OnlineCount.Parse("[{\"players\":5}]", at) == null, "online count: anything else is none");
+        Check(OnlineCount.Parse("[{\"players\":-4,\"updated_at\":\"2026-11-17T12:00:00Z\"}]", at) == (0, 0), "online count: never below zero, rooms optional");
+        Environment.SetEnvironmentVariable("OPENSMASH_ONLINE_COUNT", "lobby");
+        bool lobbyOnly = !OnlineCount.Wanted;
+        Environment.SetEnvironmentVariable("OPENSMASH_ONLINE_COUNT", null);
+        Check(lobbyOnly && OnlineCount.Wanted, "online count: OPENSMASH_ONLINE_COUNT=lobby asks the lobby's own page only");
+        Check(Array.TrueForAll(ServerRegion.All, r => r.Id == "eu" || r.Id == "na-east"), "online count: the regions' ids are the table's");
+
         FileChecks();
 
         Console.WriteLine($"{passed} passed, {failed} failed");

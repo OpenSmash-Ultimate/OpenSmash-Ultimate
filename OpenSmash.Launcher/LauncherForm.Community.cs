@@ -82,15 +82,48 @@ namespace OpenSmash.Launcher
             await CommunityRefresh();
         }
 
+        // The selected (or Auto's) region's players online from the accounts service (OpenSmash.Core.OnlineCount), or
+        // null: no accounts service in this build, an official server of the install's own (no region), no fresh row
+        // for the region, or the service not reached. Then the lobby's own status page is what is shown, as before.
+        async Task<(int Players, int Rooms)?> RegionCount()
+        {
+            try
+            {
+                var account = _account;
+                if (account == null || !account.Service.Configured || !OpenSmash.Core.OnlineCount.Wanted) return null;
+                if (OpenSmash.Core.OfficialLobby.Override(_repo) != null) return null;
+                string? region = OpenSmash.Core.ServerRegion.Current(_repo)?.Id;
+                if (string.IsNullOrEmpty(region)) return null;
+                var asked = account.AnonAsync(OpenSmash.Core.OnlineCount.Path(region));
+                if (await Task.WhenAny(asked, Task.Delay(TimeSpan.FromSeconds(8))) != asked)
+                {
+                    _ = asked.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);   // (a late failure is nobody's)
+                    return null;
+                }
+                return OpenSmash.Core.OnlineCount.Parse(await asked, DateTimeOffset.UtcNow);
+            }
+            catch (Exception e) when (e is OpenSmash.Core.AccountException or System.Net.Http.HttpRequestException or TaskCanceledException or InvalidOperationException or System.IO.IOException) { return null; }
+        }
+
         async Task CommunityRefresh()
         {
             if (Interlocked.Exchange(ref _communityBusy, 1) == 1) return;
             try
             {
+                var counted = RegionCount();   // (asked together with the lobby's own pages)
                 var (status, board) = await CommunityFeed.Fetch(_httpClient, CancellationToken.None, _repo);
+                var count = await counted;
                 _lobbyAsked = true;
-                _lobbyDown = status == null && board == null;
+                _lobbyDown = status == null && board == null && count == null;
                 if (status != null) _lobby = status;
+                // (the region's row of the accounts service's lobby_status, when it has one that is fresh: its players
+                // are the count shown; the open rooms stay the lobby's own when it answered. No row: as before.)
+                if (count is { } c)
+                    _lobby = new LobbyStatus
+                    {
+                        Online = c.Players, OpenRooms = status?.OpenRooms ?? c.Rooms, Rooms = status?.Rooms ?? c.Rooms,
+                        Arenas = status?.Arenas ?? 0, Playing = status?.Playing ?? 0, Ranked = status?.Ranked ?? 0,
+                    };
                 if (board != null && CommunityFeed.ParseBoard(board) is { } parsed)
                 {
                     _top = parsed.Top;
