@@ -98,3 +98,10 @@ tools/modmanager/installed.json
 /tests/launcher_yuzu_ui/obj/
 /tests/launcher_settings/bin/
 /tests/launcher_settings/obj/
+
+/OpenSmash.Avalonia/bin/
+/OpenSmash.Avalonia/obj/
+/tests/desktop/bin/
+/tests/desktop/obj/
+/tests/desktop-native/bin/
+/tests/desktop-native/obj/
