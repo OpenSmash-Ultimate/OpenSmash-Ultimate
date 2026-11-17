@@ -284,8 +284,9 @@ static void configure_from_files(void) {
         }
         snprintf(name, sizeof name, "%s", line);
     }
-    /* (OpenSmash 0.6: online_direct.txt is no longer read: direct paths show the player's address, so they are off unless
-     * SSBU_NET_DIRECT=1 asks for them with another lobby) */
+    /* (OpenSmash 0.6: online_direct.txt does not turn direct paths on with a lobby server: they show the player's
+     * address, so they are off there unless SSBU_NET_DIRECT=1 asks for them with another lobby. It is read for private
+     * rooms, where they are on by default: net_start's "a private room") */
 }
 
 /* A friend's "Join" in Discord for another lobby (net_discord.c): config/discord_join.txt, one line "<r|a> <lobby>
@@ -414,7 +415,13 @@ static void configure(void) {
      * by hand, and This network (LAN) finds it by the host's beacons, which are only sent with direct connections on.
      * So there direct paths are on as before unless SSBU_NET_DIRECT=0; with a lobby server they are asked for
      * (SSBU_NET_DIRECT=1), and with the official lobby never taken) */
-    if (!getenv("SSBU_NET_DIRECT") && (hosting || lan_mode)) direct_ok = 1;
+    /* (the Direct connections setting, online_direct.txt, is this case's switch: "off" there and a private room goes
+     * through its host's game alone and is not announced, as before 0.4 - the menu's row and its "Not announced: Direct
+     * connections are off" say exactly that. It changes nothing with a lobby server.) */
+    if (!getenv("SSBU_NET_DIRECT") && (hosting || lan_mode)) {
+        char off[16];
+        direct_ok = !(settings_line_read(config_path(CONFIG_ONLINE_DIRECT), off, sizeof off) && !_strnicmp(off, "off", 3));
+    }
     configured = hosting || relay_text[0];
     proto_wanted = NET_PROTOCOL_DEFAULT;   /* SSBU_NET_PROTOCOL=2|3, else online_protocol.txt's; hosting: its own relay's, 2 */
     if ((v = getenv("SSBU_NET_PROTOCOL")) && (atoi(v) == NET_PROTOCOL || atoi(v) == NET_PROTOCOL_V3)) proto_wanted = atoi(v);

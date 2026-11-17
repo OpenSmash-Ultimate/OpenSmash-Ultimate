@@ -4521,15 +4521,19 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
             if (s->wide > 1.0f) reads_wide = 1;
             int own = s == zs && !depth_read_only;
             for (u32 i = 0; i < ncolor; i++) own |= rts[i] == s;
-            /* (#353) AMD's drivers (RDNA1/RDNA2 seen) draw stages black when a draw samples the depth attachment it is
-             * bound to: there it reads as nothing, as before #289 (soft particles do not fade by the scene's depth).
-             * SSBU_VK_AMD_DEPTH_SELF=1 samples it as on the other GPUs. The full fix copies the depth for sampling
-             * (SSBU Arena f552147's way), still to do. */
+            /* (#353, black stages on AMD) Two fixes were written for the one report. #390 found the cause in the upload
+             * memory (the stages' vertex streams in the card's CPU-visible memory: SSBU_VK_SYSMEM, on by default on
+             * AMD), with the same fault and fix known from ssbu-recomp#127. This one was a guess made before it, never
+             * run on an AMD card: that the driver draws black when a draw samples the depth attachment it is bound to,
+             * so there it read as nothing, as before #289 - which costs soft particles their fade by the scene's
+             * depth. It is the same case, so it is off by default now and AMD samples its own depth as the other
+             * GPUs do; SSBU_VK_AMD_DEPTH_SELF=0 puts the workaround back (to try if a stage is still black with
+             * SSBU_VK_SYSMEM on). */
             static int amd_self = -1;
-            if (amd_self < 0) amd_self = limits_vendor != 0x1002 || (getenv("SSBU_VK_AMD_DEPTH_SELF") && !strcmp(getenv("SSBU_VK_AMD_DEPTH_SELF"), "1"));
+            if (amd_self < 0) amd_self = limits_vendor != 0x1002 || !(getenv("SSBU_VK_AMD_DEPTH_SELF") && !strcmp(getenv("SSBU_VK_AMD_DEPTH_SELF"), "0"));
             if (s == zs && !own && !amd_self) {
                 static int told_amd;
-                if (!told_amd++) fprintf(stderr, "[gfx] vulkan: AMD: a draw's own depth target reads as nothing (SSBU_VK_AMD_DEPTH_SELF=1 samples it)\n");
+                if (!told_amd++) fprintf(stderr, "[gfx] vulkan: AMD: a draw's own depth target reads as nothing (SSBU_VK_AMD_DEPTH_SELF=0)\n");
                 b->tex[k] = VK_NULL_HANDLE;
                 continue;
             }

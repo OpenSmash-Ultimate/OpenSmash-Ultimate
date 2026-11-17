@@ -1318,7 +1318,7 @@ static void build(void)
         r = add(R_NET_NAME, K_TEXT, W_RESTART, "Your name", "What other players see (up to 32 letters).");
         snprintf(r->value, sizeof r->value, "%s", net.name[0] ? net.name : "(picked at the first online start)");
         r = add(R_NET_DIRECT, K_CHOICE, W_RESTART, "Direct connections",
-                "On: rooms connect players directly when they can (less lag). Off: everything goes through the lobby, so other players never learn your internet address.");
+                "Private rooms and This network (LAN) only. On: players connect to each other directly (less lag), and a room on this network is announced. Off: everything goes through the host's game. The official lobbies never use direct connections.");
         snprintf(r->value, sizeof r->value, "%s", on_off(net.direct));
         r = add(R_NET_DELAY, K_CHOICE, W_NOW, "Input delay",
                 "The frames the game's own netcode waits before your inputs count online (Auto: its own choice, from the connection). Fewer frames answer sooner but stutter on a slow connection. Counts from the next match.");

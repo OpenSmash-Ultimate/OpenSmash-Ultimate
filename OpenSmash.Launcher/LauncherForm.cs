@@ -335,7 +335,7 @@ namespace OpenSmash.Launcher
                 new SettingTab { Name = "Display", SettingKeys = new[] { "ui_language", "window", "window_size", "pacing" } },
                 new SettingTab { Name = "Graphics", SettingKeys = new[] { "render_scale", "gpu", "renderer", "overlay", "hide_cursor" } },
                 new SettingTab { Name = "Audio", SettingKeys = new[] { "volume" } },
-                new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "region", "code", "server", "reports", "telemetry" } },   // (OpenSmash 0.6: "direct" is gone - relay only)
+                new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "region", "code", "server", "direct", "reports", "telemetry" } },   // ("direct": This network (LAN) only - the official lobbies are relay only)
                 new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "remap", "pads" } },
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
@@ -1827,7 +1827,9 @@ namespace OpenSmash.Launcher
         bool SettingOn(Setting s)
         {
             string lobby = _iniValues.GetValueOrDefault("lobby", "offline");
-            if (s.Key is "name" or "direct") return lobby != "offline";
+            if (s.Key == "name") return lobby != "offline";
+            // (online_direct.txt is read for private rooms only, runtime/net_relay.c: of this page's lobbies that is LAN)
+            if (s.Key == "direct") return lobby == "lan";
             if (s.Key == "code") return lobby is "private" or "custom";
             if (s.Key == "server") return lobby == "custom";
             // (the official lobby's region; an install that names its own official server has none)

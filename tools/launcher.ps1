@@ -478,7 +478,7 @@ $codeBox = New-TextBox $lobbyCode 32 $RC 152 $RW 'A word your friends type too, 
 [void](New-Text 'Server' $R 189 120)
 $serverBox = New-TextBox $(if ($netMode -eq 'custom') { $lobbyHost } else { '' }) 0 $RC 186 $RW 'host:port, e.g. 192.168.1.20:39420'
 $directBox = New-Check 'Direct connections' (-not ((Get-LineValue $directFile) -match '^(?i)off')) $R 222 344 `
-    "The players in your rooms connect to you directly, which is faster.`nOff: everything goes through the lobby, and they don't learn your internet address."
+    "Private rooms and This network (LAN) only: the players connect to each other directly, which is faster, and a room on this network is announced.`nThe official lobbies never connect players directly, whatever this says."
 $netNote = New-Text '' $R 250 344 34 -Dim
 # (config\server_region.txt as the game reads it: a region's id, anything else auto)
 $regionWord = ([string](Get-LineValue (Join-Path (Join-Path $Root 'config') 'server_region.txt'))).Trim() -split '[ \t]+' | Select-Object -First 1

@@ -985,6 +985,10 @@
     "Advanced": "高级",
     "Advanced multiplayer": "高级联机",
     "Optional yuzu-compatible rooms": "可选的 yuzu 兼容房间",
-    "Report a problem": "报告问题"
+    "Report a problem": "报告问题",
+    "Preparing the graphics driver  {0:N0} / {1:N0}": "正在准备显卡驱动 {0:N0} / {1:N0}",
+    "The game is preparing its shaders": "游戏正在准备着色器",
+    "Private rooms and This network (LAN) only. On: players connect to each other directly (less lag), and a room on this network is announced. Off: everything goes through the host's game. The official lobbies never use direct connections.": "仅用于私人房间和本地网络（LAN）。开：玩家之间直接连接（延迟更低），本地网络上的房间会被广播。关：一切都经由房主的游戏转发。官方大厅从不使用直连。",
+    "Rooms on this network and private rooms only. On is faster and announces your room. The official lobbies never connect players directly.": "仅用于本地网络上的房间和私人房间。开启更快，并会广播你的房间。官方大厅从不让玩家直接连接。"
   }
 }

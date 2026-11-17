@@ -52,6 +52,10 @@ typedef struct Case {
     /* net_eos_wanted(): 2 EOS alone ("eos"), 1 EOS first (only with SSBU_EOS_FIRST=1: the official lobby the fallback),
      * 0 not - the official lobbies are relay only (last, so the cases above it name it only where it is not 0) */
     int eos;
+    /* direct paths (net_relay.c direct_ok): never with a lobby server unless SSBU_NET_DIRECT=1; in a private room
+     * (hosting, This network) on unless the Direct connections setting, online_direct.txt, says off */
+    int direct;
+    const char *direct_file;
 } Case;
 #define PINGS "eu=20,na-east=90"   /* (every case: nothing is sent to a lobby by this test) */
 #define NA_LOBBY "na.lobby.opensmashultimate.com:39421"
@@ -73,10 +77,15 @@ static const Case CASES[] = {
     {"SSBU_NET_RELAY=auto", "auto\n", "SSBU_NET_RELAY=auto", "--online", NET_OFFICIAL_LOBBY, "smash"},
     {"SSBU_NET_RELAY wins", "auto\n", "SSBU_NET_RELAY=127.0.0.1:39420", "--online", "127.0.0.1:39420", "smash"},
     {"SSBU_NET_RELAY=off wins", "auto\n", "SSBU_NET_RELAY=off", "--online", NULL, "smash"},
-    {"hosting a private room: no lobby", "auto\n", "SSBU_NET_HOST=1", "--online", NULL, "smash"},
-    {"lan in the file: a private room found on this network, no lobby", "lan\n", NULL, "--online", NULL, "smash"},
-    {"lan and a room code in the file", "lan ourroom\n", NULL, "--online", NULL, "ourroom"},
-    {"SSBU_NET_RELAY=lan", "auto\n", "SSBU_NET_RELAY=lan", "--online", NULL, "smash"},
+    {"hosting a private room: no lobby", "auto\n", "SSBU_NET_HOST=1", "--online", NULL, "smash", .direct = 1},
+    {"lan in the file: a private room found on this network, no lobby", "lan\n", NULL, "--online", NULL, "smash", .direct = 1},
+    {"hosting a private room, Direct connections off: through the host's game alone", "auto\n", "SSBU_NET_HOST=1", "--online", NULL, "smash", .direct = 0, .direct_file = "off\n"},
+    {"lan, Direct connections off", "lan\n", NULL, "--online", NULL, "smash", .direct = 0, .direct_file = "off\n"},
+    {"lan, Direct connections on", "lan\n", NULL, "--online", NULL, "smash", .direct = 1, .direct_file = "on\n"},
+    {"the official lobby, Direct connections on in the file: relay only all the same", "auto\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash", .direct = 0, .direct_file = "on\n"},
+    {"a server of the player's own, Direct connections on in the file: not asked for by the file", "smash.example:39421 friends\n", NULL, "--online", "smash.example:39421", "friends", .direct = 0, .direct_file = "on\n"},
+    {"lan and a room code in the file", "lan ourroom\n", NULL, "--online", NULL, "ourroom", .direct = 1},
+    {"SSBU_NET_RELAY=lan", "auto\n", "SSBU_NET_RELAY=lan", "--online", NULL, "smash", .direct = 1},
     /* ---- the server region */
     {"Auto: North America answers sooner", "auto\n", NULL, "--online", NA_LOBBY, "smash", "eu=90,na-east=20", NULL, NULL, "na-east"},
     {"Auto: only North America answers", "auto\n", NULL, "--online", NA_LOBBY, "smash", "eu=-1,na-east=140", NULL, NULL, "na-east"},
@@ -103,7 +112,7 @@ static const Case CASES[] = {
     {"SSBU_NET_RELAY=eos", "auto\n", "SSBU_NET_RELAY=eos", "--online", "eos", "smash", NULL, NULL, NULL, NULL, NULL, 2},
     {"SSBU_EOS_FIRST=1: auto means EOS first again, the official lobby the fallback", "auto\n", "SSBU_EOS_FIRST=1", "--online", NET_OFFICIAL_LOBBY, "smash", NULL, NULL, NULL, NULL, NULL, 1},
     {"SSBU_EOS_FIRST=1 and a server of the player's own: not EOS", "smash.example:39421\n", "SSBU_EOS_FIRST=1", "--online", "smash.example:39421", "smash", NULL, NULL, NULL, NULL, NULL, 0},
-    {"hosting a private room: never EOS", "eos\n", "SSBU_NET_HOST=1", "--online", NULL, "smash", NULL, NULL, NULL, NULL, NULL, 0},
+    {"hosting a private room: never EOS", "eos\n", "SSBU_NET_HOST=1", "--online", NULL, "smash", NULL, NULL, NULL, NULL, NULL, 0, .direct = 1},
     {"a friend's Join over EOS, this game on the official lobby: ignored", "auto\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash", NULL, NULL, NULL, NULL, "r eos abc 10.13.0.7", 0},
     {"a friend's Join over EOS, this game on EOS: its lobby code", "eos\n", NULL, "--online", "eos", "abc", NULL, NULL, NULL, NULL, "r eos abc 10.13.0.7", 2},
 };
@@ -114,7 +123,7 @@ static int child(int argc, char **argv) {
     const char *a = net_relay_address();
     FILE *f = fopen("result.txt", "wb");
     if (!f) return 1;
-    fprintf(f, "%s\n%s\n%d\n", a ? a : "(none)", room, net_eos_wanted());
+    fprintf(f, "%s\n%s\n%d\n%d\n", a ? a : "(none)", room, net_eos_wanted(), direct_ok);
     fclose(f);
     for (int i = 0; region_remeasuring && i < 1000; i++) Sleep(5);   /* (net_region.c: Auto's pick for the next start, being kept) */
     return 0;
@@ -151,6 +160,12 @@ int main(int argc, char **argv) {
                 if (r == 2) fprintf(f, " %lld\n", (long long)time(NULL));
                 fclose(f);
             }
+        if (t->direct_file) {
+            snprintf(file, sizeof file, "%s\\config\\online_direct.txt", dir);
+            FILE *f = fopen(file, "wb");
+            fputs(t->direct_file, f);
+            fclose(f);
+        }
         SetEnvironmentVariableA("SSBU_REGION_TEST_PINGS", t->pings ? t->pings : PINGS);
         char *eq = NULL;
         if (t->env) { snprintf(env, sizeof env, "%s", t->env); eq = strchr(env, '='); *eq = 0; SetEnvironmentVariableA(env, eq + 1); }
@@ -165,13 +180,14 @@ int main(int argc, char **argv) {
             CloseHandle(pi.hThread);
         }
         if (t->env) SetEnvironmentVariableA(env, NULL);
-        char got_address[300] = "", got_room[64] = "", got_eos[16] = "";
+        char got_address[300] = "", got_room[64] = "", got_eos[16] = "", got_direct[16] = "";
         snprintf(file, sizeof file, "%s\\result.txt", dir);
         FILE *f = fopen(file, "rb");
         if (f) {
             if (fgets(got_address, sizeof got_address, f)) got_address[strcspn(got_address, "\r\n")] = 0;
             if (fgets(got_room, sizeof got_room, f)) got_room[strcspn(got_room, "\r\n")] = 0;
             if (fgets(got_eos, sizeof got_eos, f)) got_eos[strcspn(got_eos, "\r\n")] = 0;
+            if (fgets(got_direct, sizeof got_direct, f)) got_direct[strcspn(got_direct, "\r\n")] = 0;
             fclose(f);
         }
         CHECK(code == 0 && f, "%s: the child did not run (exit %lu)", t->name, code);
@@ -179,6 +195,7 @@ int main(int argc, char **argv) {
         CHECK(!strcmp(got_address, want), "%s: the lobby address is '%s', wanted '%s'", t->name, got_address, want);
         CHECK(!strcmp(got_room, t->room), "%s: the lobby code is '%s', wanted '%s'", t->name, got_room, t->room);
         CHECK(atoi(got_eos) == t->eos, "%s: EOS wanted %s, wanted %d", t->name, got_eos, t->eos);
+        CHECK(atoi(got_direct) == t->direct, "%s: direct paths %s, wanted %d", t->name, got_direct, t->direct);
         if (t->kept_after) {   /* (Auto's pick kept for the next start: its region; "": no file) */
             char kept[64] = "", word[32] = "";
             snprintf(file, sizeof file, "%s\\config\\server_region_auto.txt", dir);
@@ -193,6 +210,8 @@ int main(int argc, char **argv) {
         snprintf(file, sizeof file, "%s\\result.txt", dir);
         DeleteFileA(file);
         snprintf(file, sizeof file, "%s\\online_server.txt", dir);
+        DeleteFileA(file);
+        snprintf(file, sizeof file, "%s\\config\\online_direct.txt", dir);
         DeleteFileA(file);
         snprintf(file, sizeof file, "%s\\config\\online_name.txt", dir);   /* (picked by the game when online) */
         DeleteFileA(file);

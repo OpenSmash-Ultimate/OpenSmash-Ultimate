@@ -207,6 +207,8 @@
     "Player 6": "Joueur 6",
     "Player 7": "Joueur 7",
     "Player 8": "Joueur 8",
-    "Report a problem": "Signaler un problème"
+    "Report a problem": "Signaler un problème",
+    "Preparing the graphics driver  {0:N0} / {1:N0}": "Préparation du pilote graphique  {0:N0} / {1:N0}",
+    "The game is preparing its shaders": "Le jeu prépare ses shaders"
   }
 }

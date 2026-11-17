@@ -64,7 +64,7 @@ namespace OpenSmash.Launcher
             ["region"] = "Players on another region are not listed.",   // (one line fits: Auto is said by its own label, "Auto (the closest)")
             ["code"] = "A word your friends type too. Capital letters count.",
             ["server"] = "host:port of a lobby you run, for example 192.168.1.20:39420.",
-            ["direct"] = "On is faster. Off sends everything through the lobby, so your address stays private.",
+            ["direct"] = "Rooms on this network and private rooms only. On is faster and announces your room. The official lobbies never connect players directly.",
             ["keyboard_player"] = "The keyboard adds to that player's controller.",
             ["background"] = "Off: controllers work only while the game's window is in front.",
             ["remap"] = "Pick a connected controller, then press the button you want for each of the game's buttons. Saved for that model of controller, on any port.",
