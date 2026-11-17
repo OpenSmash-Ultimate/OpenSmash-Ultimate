@@ -228,26 +228,53 @@ static void eos_pump(void) {   /* (EOS thread) what arrived, then what is queued
  * Every game of a lobby code joins a hub, an EOS lobby found by its bucket ("ssbu1:<build>:<code>") or made when
  * none has room, and gives itself a virtual address (10.13.x.y, from its EOS id) as a member attribute "IP". Two
  * members with the same address: the one whose id sorts later picks another. The hub's members and their
- * addresses are what net_eos_net.c sends to - no lobby server of ours (plan/EOS_MIGRATION.md, phase 1). */
+ * addresses are what net_eos_net.c sends to - no lobby server of ours (plan/EOS_MIGRATION.md, phase 1).
+ *
+ * One hub per lobby code. Two games that look at the same moment and find none each make one, and a game reaches
+ * only its own hub's members, so the two halves would never meet. Every hub of a code is therefore one of a row,
+ * in the order of their lobby ids, and each game belongs in the first with room: on joining it takes the lowest
+ * id with room, and it looks at all of them again 3 s after entering, then every 10 s while there is more than one
+ * or it is alone, else every 60 s (hub_check). A hub with a lower id and room: it joins that one first and leaves
+ * its own 15 s later (hub_old), so that a game that found it there a moment ago still reaches it - but not while
+ * it is talking to a member (a match, a room: net_eos_net.c's eos_hub_set_busy), which finishes first. The order
+ * does not depend on who owns a hub, so a hub whose owner left (EOS makes another member the owner) changes
+ * nothing. A hub holds 64 members at most (EOS_LOBBY_MAX_LOBBY_MEMBERS): more players fill the first, then the
+ * next, so at most one has room. While a look finds more than one hub, gathering searches cover every hub of the
+ * code (eos_hub_split, net_eos_lobby.c), and the members of the gatherings' lobbies this game is in count as
+ * members (hub_refresh): each game writes its address, rating and station URL into those lobbies too, so the
+ * players of one gathering reach each other whichever hub each is in.
+ * Tests: SSBU_EOS_HUB_SPLIT=1 makes a hub of its own on joining (no search: two such games start split);
+ * SSBU_EOS_HUB_MAX=<1..64> the most members of a hub this game makes (1: every game of the code alone in one). */
 static EOS_HLobby eos_lobby;
 static char hub_bucket[128], hub_id[128];
 static volatile LONG hub_state;   /* 0 none asked, 1 searching, 2 joining/creating, 3 in, -1 failed */
 static u32 hub_salt, hub_mine, hub_set;   /* (the address asked for, the one the hub has for us) */
 static volatile LONG hub_ip;      /* ours once the hub agrees (no other member has it) */
-static u64 hub_refresh_at, hub_retry_at, hub_merge_at;
-static int hub_merging;   /* (alone in our hub: another of the same bucket, whose owner sorts first, is joined instead) */
+static u64 hub_refresh_at, hub_retry_at, hub_check_at;
+static int hub_checking;          /* (the search is a look at every hub of the code: hub_found) */
+static int hub_moving;            /* (joining the code's first hub: hub_moved) */
+static volatile LONG hub_multi;   /* the last look found more than one hub of this code */
+static char hub_old[128];         /* the hub we moved from, left at hub_old_until */
+static u64 hub_old_until;
+static int hub_busy_said;
+static int (*hub_busy)(void);     /* (net_eos_net.c) 1: talking to a member now */
+static volatile LONG hub_attrs_ver;
 static EOS_HLobbySearch hub_search;
 static SRWLOCK hub_lock = SRWLOCK_INIT;
 #define HUB_URL 256
+#define EOS_NOT_FOUND 13
+#define HUB_MEMBERS 128   /* (the hub's 64, the gatherings' and the old hub's) */
 typedef struct HubMember { char id[NET_EOS_ID_LEN + 1]; u32 ip, rating; u64 pid; char url[HUB_URL]; } HubMember;
-static HubMember hub_members[64];
-static int hub_count;
+static HubMember hub_members[HUB_MEMBERS];
+static int hub_count, hub_own_count;   /* (all of them; the hub's own) */
 /* this game's player as the other games see it (net_eos_lobby.c: its NEX PID, station URL and rating, member
  * attributes PID, RT and U0..U3, the URL in pieces of 60 characters: an attribute holds 64) */
-static struct { u64 pid; u32 rating; char url[HUB_URL]; } hub_me, hub_me_set;
+typedef struct HubMe { u64 pid; u32 rating; char url[HUB_URL]; } HubMe;
+static HubMe hub_me, hub_me_set;
 static int hub_me_dirty;
 static u64 hub_me_at;
 
+static int hub_env(const char *name) { const char *e = getenv(name); return e && *e ? atoi(e) : 0; }
 static u32 hub_address(const char *id, u32 salt) {   /* 10.13.x.y, never .0/.255, 10.13.0.1 or 10.13.255.254 */
     u32 h = 2166136261u ^ salt * 16777619u;
     for (const char *p = id; *p; p++) h = (h ^ (u8)*p) * 16777619u;
@@ -273,22 +300,26 @@ static void hub_claim(void) {   /* (EOS thread) our address as our member attrib
     EosUpdateLobbyOptions u = {1, m};
     p_EOS_Lobby_UpdateLobby(eos_lobby, &u, NULL, hub_updated);
     p_EOS_LobbyModification_Release(m);
+    if (hub_set != hub_mine) InterlockedIncrement(&hub_attrs_ver);
     hub_set = hub_mine;
 }
-static void hub_refresh(void) {   /* (EOS thread) the members and their addresses, from the lobby's details */
-    EosCopyDetailsOptions o = {1, hub_id, eos_me};
+/* (hub_refresh) the members of one lobby added to got[0..k), but those there already: the hub's own (own: clashes
+ * with our address noted, *n its member count), a gathering's or the old hub's (only with an address no one there has) */
+static int hub_read(const char *lobby, HubMember *got, int k, int own, u32 *clash, int *count) {
+    EosCopyDetailsOptions o = {1, lobby, eos_me};
     EOS_HLobbyDetails det = NULL;
-    if (p_EOS_Lobby_CopyLobbyDetailsHandle(eos_lobby, &o, &det) != EOS_SUCCESS) return;
+    if (p_EOS_Lobby_CopyLobbyDetailsHandle(eos_lobby, &o, &det) != EOS_SUCCESS) return k;
     EosVersionOnly v = {1};
-    u32 n = p_EOS_LobbyDetails_GetMemberCount(det, &v), clash = 0;
-    static HubMember got[64];
-    int k = 0;
-    for (u32 i = 0; i < n && k < 64; i++) {
+    u32 n = p_EOS_LobbyDetails_GetMemberCount(det, &v);
+    if (count) *count = (int)n;
+    for (u32 i = 0; i < n && k < HUB_MEMBERS; i++) {
         EosIndexOptions io = {1, i};
         EOS_ProductUserId who = p_EOS_LobbyDetails_GetMemberByIndex(det, &io);
         char id[NET_EOS_ID_LEN + 8];
         int32_t idn = sizeof id;
         if (!who || p_EOS_ProductUserId_ToString(who, id, &idn) != EOS_SUCCESS) continue;
+        int me = !strcmp(id, eos_my_text), there = 0;
+        if (!own && me) continue;   /* (ours: the hub's own entry) */
         EosCopyMemberAttrOptions ao = {1, who, "IP"};
         EosAttr *at = NULL;
         u32 ip = 0;
@@ -296,7 +327,14 @@ static void hub_refresh(void) {   /* (EOS thread) the members and their addresse
             if (at->Data && at->Data->ValueType == EOS_AT_INT64) ip = (u32)at->Data->Value.AsInt64;
             p_EOS_Lobby_Attribute_Release(at);
         }
-        if (strcmp(id, eos_my_text) && ip && ip == hub_set && strcmp(id, eos_my_text) < 0) clash = 1;   /* (theirs first: we move) */
+        if (own && !me && ip && ip == hub_set && strcmp(id, eos_my_text) < 0) *clash = 1;   /* (theirs first: we move) */
+        for (int j = 0; j < k && !there; j++) there = !strcmp(got[j].id, id);
+        if (there) continue;
+        if (!own) {   /* (another hub's player: its address is unique in its hub only) */
+            int taken = !ip || ip == hub_set || ip == (u32)hub_ip;
+            for (int j = 0; j < k && !taken; j++) taken = got[j].ip == ip;
+            if (taken) continue;
+        }
         HubMember *g = &got[k++];
         memset(g, 0, sizeof *g);
         snprintf(g->id, sizeof g->id, "%s", id);
@@ -304,27 +342,40 @@ static void hub_refresh(void) {   /* (EOS thread) the members and their addresse
         static const char *const KEYS[6] = {"PID", "RT", "U0", "U1", "U2", "U3"};
         for (int a = 0; a < 6; a++) {
             EosCopyMemberAttrOptions ko = {1, who, KEYS[a]};
-            EosAttr *v = NULL;
-            if (p_EOS_LobbyDetails_CopyMemberAttributeByKey(det, &ko, &v) != EOS_SUCCESS || !v) continue;
-            if (v->Data && a < 2 && v->Data->ValueType == EOS_AT_INT64) { if (a == 0) g->pid = (u64)v->Data->Value.AsInt64; else g->rating = (u32)v->Data->Value.AsInt64; }
-            else if (v->Data && a >= 2 && v->Data->ValueType == EOS_AT_STRING && v->Data->Value.AsUtf8) {
-                size_t at = strlen(g->url);
-                snprintf(g->url + at, sizeof g->url - at, "%s", v->Data->Value.AsUtf8);
+            EosAttr *val = NULL;
+            if (p_EOS_LobbyDetails_CopyMemberAttributeByKey(det, &ko, &val) != EOS_SUCCESS || !val) continue;
+            if (val->Data && a < 2 && val->Data->ValueType == EOS_AT_INT64) { if (a == 0) g->pid = (u64)val->Data->Value.AsInt64; else g->rating = (u32)val->Data->Value.AsInt64; }
+            else if (val->Data && a >= 2 && val->Data->ValueType == EOS_AT_STRING && val->Data->Value.AsUtf8) {
+                size_t len = strlen(g->url);
+                snprintf(g->url + len, sizeof g->url - len, "%s", val->Data->Value.AsUtf8);
             }
-            p_EOS_Lobby_Attribute_Release(v);
+            p_EOS_Lobby_Attribute_Release(val);
         }
     }
     p_EOS_LobbyDetails_Release(det);
+    return k;
+}
+static void hub_refresh(void) {   /* (EOS thread) the members and their addresses, from the lobbies' details */
+    static HubMember got[HUB_MEMBERS];
+    u32 clash = 0;
+    int k = 0, own = 0;
+    char lob[16][16];   /* (the gatherings' players first: the ones played with stay among the first 64 the network reads) */
+    int nl = nexeos_lobbies(lob, 16);
+    for (int i = 0; i < nl; i++) k = hub_read(lob[i], got, k, 0, &clash, NULL);
+    k = hub_read(hub_id, got, k, 1, &clash, &own);
+    if (hub_old[0]) k = hub_read(hub_old, got, k, 0, &clash, NULL);
     AcquireSRWLockExclusive(&hub_lock);
     memcpy(hub_members, got, sizeof got[0] * (size_t)k);
     hub_count = k;
+    hub_own_count = own;
     ReleaseSRWLockExclusive(&hub_lock);
     int confirmed = 0;
     for (int i = 0; i < k; i++) if (!strcmp(got[i].id, eos_my_text) && got[i].ip == hub_set && hub_set) confirmed = 1;
     if (clash) { hub_salt++; InterlockedExchange(&hub_ip, 0); hub_claim(); return; }
     if (confirmed && (u32)hub_ip != hub_set) {
         InterlockedExchange(&hub_ip, (LONG)hub_set);
-        fprintf(stderr, "[eos] in hub %s (lobby %s) as 10.13.%u.%u (%d players there)\n", hub_bucket, hub_id, hub_set >> 8 & 255, hub_set & 255, k);
+        InterlockedIncrement(&hub_attrs_ver);
+        fprintf(stderr, "[eos] in hub %s (lobby %s) as 10.13.%u.%u (%d players there)\n", hub_bucket, hub_id, hub_set >> 8 & 255, hub_set & 255, own);
     }
 }
 static void EOS_CALL hub_entered(const EosLobbyResult *d) {
@@ -339,76 +390,134 @@ static void EOS_CALL hub_entered(const EosLobbyResult *d) {
     if (hub_me.pid) hub_me_dirty = 1;   /* (a hub joined again: our player there too) */
     hub_claim();
     hub_refresh_at = 0;
+    hub_check_at = GetTickCount64() + 3000;
 }
 static void hub_create(void) {
+    int most = hub_env("SSBU_EOS_HUB_MAX");
     EosCreateLobbyOptions o;
     memset(&o, 0, sizeof o);
-    o.ApiVersion = 10; o.LocalUserId = eos_me; o.MaxLobbyMembers = 64; o.PermissionLevel = EOS_LPL_PUBLICADVERTISED;
+    o.ApiVersion = 10; o.LocalUserId = eos_me; o.MaxLobbyMembers = most >= 1 && most <= 64 ? (u32)most : 64; o.PermissionLevel = EOS_LPL_PUBLICADVERTISED;
     o.BucketId = hub_bucket; o.bAllowInvites = 1; o.bCrossplayOptOut = 0;
+    if (o.MaxLobbyMembers != 64) fprintf(stderr, "[eos] hub: SSBU_EOS_HUB_MAX: a hub of %u members at most\n", o.MaxLobbyMembers);
     p_EOS_Lobby_CreateLobby(eos_lobby, &o, NULL, hub_entered);
 }
 static void EOS_CALL hub_left(const EosLobbyResult *d) { (void)d; }
+static void hub_leave_old(void) {
+    EosLobbyUserOptions lo = {1, eos_me, hub_old};
+    p_EOS_Lobby_LeaveLobby(eos_lobby, &lo, NULL, hub_left);
+    fprintf(stderr, "[eos] hub: left the old hub %s\n", hub_old);
+    hub_old[0] = 0;
+    hub_refresh_at = 0;
+}
+static void EOS_CALL hub_moved(const EosLobbyResult *d) {
+    hub_moving = 0;
+    if (d->ResultCode != EOS_SUCCESS || !d->LobbyId) {
+        fprintf(stderr, "[eos] hub: moving to the lobby code's first hub: %s; staying in %s\n", p_EOS_EResult_ToString(d->ResultCode), hub_id);
+        return;
+    }
+    if (hub_old[0]) hub_leave_old();   /* (one move after another: the older one goes now) */
+    snprintf(hub_old, sizeof hub_old, "%s", hub_id);
+    hub_old_until = GetTickCount64() + 15000;
+    snprintf(hub_id, sizeof hub_id, "%s", d->LobbyId);
+    fprintf(stderr, "[eos] hub: moved to the lobby code's first hub %s; the old one %s is left in 15 s\n", hub_id, hub_old);
+    if (hub_me.pid) hub_me_dirty = 1;
+    hub_claim();   /* (our address there: the same one but for a clash; the old one works until it is confirmed) */
+    hub_refresh_at = 0;
+    hub_check_at = GetTickCount64() + 3000;
+}
+static int hub_info(EOS_HLobbyDetails det, char *id, size_t cap, u32 *slots) {   /* 1: its lobby id and free places */
+    EosVersionOnly v = {1};
+    EosLobbyInfo *in = NULL;
+    if (p_EOS_LobbyDetails_CopyInfo(det, &v, &in) != EOS_SUCCESS || !in) return 0;
+    snprintf(id, cap, "%s", in->LobbyId ? in->LobbyId : "");
+    *slots = in->AvailableSlots;
+    p_EOS_LobbyDetails_Info_Release(in);
+    return id[0] != 0;
+}
+static void hub_join_result(u32 i, LobbyCb cb) {   /* (the search's result i) */
+    EosIndexOptions io = {1, i};
+    EOS_HLobbyDetails det = NULL;
+    if (p_EOS_LobbySearch_CopySearchResultByIndex(hub_search, &io, &det) != EOS_SUCCESS) { EosLobbyResult r = {EOS_NOT_FOUND, NULL, NULL}; cb(&r); return; }
+    EosJoinLobbyOptions j = {5, det, eos_me, 0, NULL, 0, 0};
+    p_EOS_Lobby_JoinLobby(eos_lobby, &j, NULL, cb);
+    p_EOS_LobbyDetails_Release(det);
+}
 static void EOS_CALL hub_found(const EosFindInfo *d) {
     EosVersionOnly v = {1};
     u32 n = d->ResultCode == EOS_SUCCESS ? p_EOS_LobbySearch_GetSearchResultCount(hub_search, &v) : 0;
-    if (hub_merging) {   /* (two games made a hub each at the same moment: the one whose owner sorts later moves) */
-        hub_merging = 0;
-        for (u32 i = 0; i < n; i++) {
-            EosIndexOptions io = {1, i};
-            EOS_HLobbyDetails det = NULL;
-            if (p_EOS_LobbySearch_CopySearchResultByIndex(hub_search, &io, &det) != EOS_SUCCESS) continue;
-            EOS_ProductUserId owner = p_EOS_LobbyDetails_GetLobbyOwner(det, &v);
-            char id[NET_EOS_ID_LEN + 8];
-            int32_t idn = sizeof id;
-            if (owner && p_EOS_ProductUserId_ToString(owner, id, &idn) == EOS_SUCCESS && strcmp(id, eos_my_text) < 0) {
-                fprintf(stderr, "[eos] hub: another one of this lobby code (made at the same moment): moving there\n");
-                EosLobbyUserOptions lo = {1, eos_me, hub_id};
-                p_EOS_Lobby_LeaveLobby(eos_lobby, &lo, NULL, hub_left);
-                InterlockedExchange(&hub_ip, 0);
-                hub_set = 0;
-                AcquireSRWLockExclusive(&hub_lock); hub_count = 0; ReleaseSRWLockExclusive(&hub_lock);
-                InterlockedExchange(&hub_state, 2);
-                EosJoinLobbyOptions j = {5, det, eos_me, 0, NULL, 0, 0};
-                p_EOS_Lobby_JoinLobby(eos_lobby, &j, NULL, hub_entered);
-                p_EOS_LobbyDetails_Release(det);
-                break;
+    int checking = hub_checking, hubs = 0, ours_seen = 0;
+    hub_checking = 0;
+    char best[128] = "", id[128];
+    u32 best_i = 0, slots = 0;
+    for (u32 i = 0; i < n; i++) {   /* (the lowest lobby id with room, ours apart) */
+        EosIndexOptions io = {1, i};
+        EOS_HLobbyDetails det = NULL;
+        if (p_EOS_LobbySearch_CopySearchResultByIndex(hub_search, &io, &det) != EOS_SUCCESS) continue;
+        if (hub_info(det, id, sizeof id, &slots)) {
+            int ours = checking && !strcmp(id, hub_id);
+            hubs++;
+            ours_seen |= ours;
+            if (!ours && slots >= 1 && (!best[0] || strcmp(id, best) < 0)) { snprintf(best, sizeof best, "%s", id); best_i = i; }
+        }
+        p_EOS_LobbyDetails_Release(det);
+    }
+    if (checking) {
+        if (d->ResultCode != EOS_SUCCESS && d->ResultCode != EOS_NOT_FOUND) {
+            fprintf(stderr, "[eos] hub: looking at the lobby code's hubs: %s\n", p_EOS_EResult_ToString(d->ResultCode));
+            hubs = (int)hub_multi + 1;   /* (as at the last look) */
+        } else if (!ours_seen) hubs++;   /* (ours, if the search leaves it out) */
+        LONG multi = hubs > 1;
+        if (multi != hub_multi) {
+            InterlockedExchange(&hub_multi, multi);
+            if (multi) fprintf(stderr, "[eos] hub: %d hubs of this lobby code: gathering searches cover them all%s\n", hubs, best[0] && strcmp(best, hub_id) < 0 ? "" : " (none before ours with room: staying)");
+            else fprintf(stderr, "[eos] hub: one hub of this lobby code again\n");
+        }
+        if (best[0] && strcmp(best, hub_id) < 0) {
+            if (hub_busy && hub_busy()) {
+                if (!hub_busy_said) fprintf(stderr, "[eos] hub: the lobby code's first hub with room is %s: moving there once no member is talked to\n", best);
+                hub_busy_said = 1;
+            } else {
+                hub_busy_said = 0;
+                hub_moving = 1;
+                fprintf(stderr, "[eos] hub: moving from %s to the lobby code's first hub with room %s (%d hubs)\n", hub_id, best, hubs);
+                hub_join_result(best_i, hub_moved);
             }
-            p_EOS_LobbyDetails_Release(det);
         }
         p_EOS_LobbySearch_Release(hub_search);
         hub_search = NULL;
         return;
     }
     InterlockedExchange(&hub_state, 2);
-    if (n) {
-        EosIndexOptions io = {1, 0};
-        EOS_HLobbyDetails det = NULL;
-        if (p_EOS_LobbySearch_CopySearchResultByIndex(hub_search, &io, &det) == EOS_SUCCESS) {
-            EosJoinLobbyOptions j = {5, det, eos_me, 0, NULL, 0, 0};
-            p_EOS_Lobby_JoinLobby(eos_lobby, &j, NULL, hub_entered);
-            p_EOS_LobbyDetails_Release(det);
-            p_EOS_LobbySearch_Release(hub_search);
-            hub_search = NULL;
-            return;
-        }
+    if (best[0]) {
+        hub_join_result(best_i, hub_entered);
+        p_EOS_LobbySearch_Release(hub_search);
+        hub_search = NULL;
+        return;
     }
     p_EOS_LobbySearch_Release(hub_search);
     hub_search = NULL;
     hub_create();   /* (none with room: a new one) */
 }
-static void hub_find(void) {
-    EosCreateSearchOptions so = {1, 10};
-    if (p_EOS_Lobby_CreateLobbySearch(eos_lobby, &so, &hub_search) != EOS_SUCCESS) { hub_retry_at = GetTickCount64() + 2000; return; }
+static void hub_find(void) {   /* (hub_checking: every hub of the code, full ones too) */
+    EosCreateSearchOptions so = {1, hub_checking ? 100 : 20};
+    if (p_EOS_Lobby_CreateLobbySearch(eos_lobby, &so, &hub_search) != EOS_SUCCESS) {
+        hub_search = NULL;
+        if (hub_checking) hub_checking = 0;
+        else hub_retry_at = GetTickCount64() + 2000;
+        return;
+    }
     EosAttrData b = {1, "bucket", {0}, EOS_AT_STRING};
     b.Value.AsUtf8 = hub_bucket;
     EosSetParameterOptions p = {1, &b, EOS_CO_EQUAL};
     p_EOS_LobbySearch_SetParameter(hub_search, &p);
-    EosAttrData s = {1, "minslotsavailable", {0}, EOS_AT_INT64};
-    s.Value.AsInt64 = 1;
-    EosSetParameterOptions ps = {1, &s, EOS_CO_GREATERTHANOREQUAL};
-    p_EOS_LobbySearch_SetParameter(hub_search, &ps);
+    if (!hub_checking) {
+        EosAttrData s = {1, "minslotsavailable", {0}, EOS_AT_INT64};
+        s.Value.AsInt64 = 1;
+        EosSetParameterOptions ps = {1, &s, EOS_CO_GREATERTHANOREQUAL};
+        p_EOS_LobbySearch_SetParameter(hub_search, &ps);
+        InterlockedExchange(&hub_state, 1);
+    }
     EosFindOptions f = {1, eos_me};
-    if (!hub_merging) InterlockedExchange(&hub_state, 1);
     p_EOS_LobbySearch_Find(hub_search, &f, NULL, hub_found);
 }
 static void EOS_CALL hub_member_status(const EosMemberStatusInfo *d) { (void)d; hub_refresh_at = 0; }
@@ -416,6 +525,27 @@ static void EOS_CALL hub_member_update(const EosMemberUpdateInfo *d) { (void)d; 
 static void EOS_CALL hub_player_set(const EosLobbyResult *d) {
     if (d->ResultCode != EOS_SUCCESS) { fprintf(stderr, "[eos] hub: our player not set (%s)\n", p_EOS_EResult_ToString(d->ResultCode)); hub_me_dirty = 1; }
     hub_refresh_at = 0;
+}
+static void hub_attrs(EOS_HLobbyModification m, const HubMe *me, int pid, u32 ip) {   /* (EOS thread) our player's member attributes */
+    EosAttrData a = {1, "PID", {0}, EOS_AT_INT64};
+    EosAddAttrOptions ao = {2, &a, EOS_LAT_PUBLIC};
+    if (pid) { a.Value.AsInt64 = (int64_t)me->pid; p_EOS_LobbyModification_AddMemberAttribute(m, &ao); }
+    if (ip) { a.Key = "IP"; a.Value.AsInt64 = ip; p_EOS_LobbyModification_AddMemberAttribute(m, &ao); }
+    a.Key = "RT";
+    a.Value.AsInt64 = me->rating;
+    p_EOS_LobbyModification_AddMemberAttribute(m, &ao);
+    static const char *const U[4] = {"U0", "U1", "U2", "U3"};
+    char piece[4][61];
+    size_t len = strlen(me->url);
+    for (int i = 0; i < 4; i++) {
+        size_t at = (size_t)i * 60, n = at < len ? (len - at < 60 ? len - at : 60) : 0;
+        memcpy(piece[i], me->url + (at < len ? at : len), n);
+        piece[i][n] = 0;
+        EosAttrData u = {1, U[i], {0}, EOS_AT_STRING};
+        u.Value.AsUtf8 = piece[i];
+        EosAddAttrOptions uo = {2, &u, EOS_LAT_PUBLIC};
+        p_EOS_LobbyModification_AddMemberAttribute(m, &uo);
+    }
 }
 static void hub_player(void) {   /* (EOS thread) our player's PID, rating and station URL as member attributes */
     AcquireSRWLockExclusive(&hub_lock);
@@ -425,29 +555,21 @@ static void hub_player(void) {   /* (EOS thread) our player's PID, rating and st
     EosLobbyUserOptions o = {1, eos_me, hub_id};
     EOS_HLobbyModification m = NULL;
     if (p_EOS_Lobby_UpdateLobbyModification(eos_lobby, &o, &m) != EOS_SUCCESS) { hub_me_dirty = 1; return; }
-    EosAttrData a = {1, "PID", {0}, EOS_AT_INT64};
-    a.Value.AsInt64 = (int64_t)hub_me_set.pid;
-    EosAddAttrOptions ao = {2, &a, EOS_LAT_PUBLIC};
-    p_EOS_LobbyModification_AddMemberAttribute(m, &ao);
-    a.Key = "RT";
-    a.Value.AsInt64 = hub_me_set.rating;
-    p_EOS_LobbyModification_AddMemberAttribute(m, &ao);
-    static const char *const U[4] = {"U0", "U1", "U2", "U3"};
-    char piece[4][61];
-    size_t len = strlen(hub_me_set.url);
-    for (int i = 0; i < 4; i++) {
-        size_t at = (size_t)i * 60, n = at < len ? (len - at < 60 ? len - at : 60) : 0;
-        memcpy(piece[i], hub_me_set.url + (at < len ? at : len), n);
-        piece[i][n] = 0;
-        EosAttrData u = {1, U[i], {0}, EOS_AT_STRING};
-        u.Value.AsUtf8 = piece[i];
-        EosAddAttrOptions uo = {2, &u, EOS_LAT_PUBLIC};
-        p_EOS_LobbyModification_AddMemberAttribute(m, &uo);
-    }
+    hub_attrs(m, &hub_me_set, 1, 0);
     EosUpdateLobbyOptions up = {1, m};
     p_EOS_Lobby_UpdateLobby(eos_lobby, &up, NULL, hub_player_set);
     p_EOS_LobbyModification_Release(m);
 }
+void eos_hub_member_attrs(EOS_HLobbyModification m) {   /* (a gathering's lobby: its PID is net_eos_lobby.c's) */
+    HubMe me;
+    AcquireSRWLockShared(&hub_lock);
+    me = hub_me;
+    ReleaseSRWLockShared(&hub_lock);
+    hub_attrs(m, &me, 0, (u32)hub_ip);
+}
+void eos_hub_set_busy(int (*fn)(void)) { hub_busy = fn; }
+unsigned eos_hub_attrs_version(void) { return (unsigned)hub_attrs_ver; }
+int eos_hub_split(void) { return hub_multi != 0; }
 static void hub_tick(void) {   /* (EOS thread) */
     static int notified;
     u64 t = GetTickCount64();
@@ -458,11 +580,21 @@ static void hub_tick(void) {   /* (EOS thread) */
         p_EOS_Lobby_AddNotifyLobbyMemberStatusReceived(eos_lobby, &v, NULL, hub_member_status);
         p_EOS_Lobby_AddNotifyLobbyMemberUpdateReceived(eos_lobby, &v, NULL, hub_member_update);
         notified = 1;
+        if (hub_env("SSBU_EOS_HUB_SPLIT") == 1) {   /* (tests: a hub of our own, as if another game had made its own at the same moment) */
+            fprintf(stderr, "[eos] hub: SSBU_EOS_HUB_SPLIT: a hub of our own, no search\n");
+            InterlockedExchange(&hub_state, 2);
+            hub_create();
+        }
     }
     if (hub_state == 0 && t >= hub_retry_at) hub_find();
     if (hub_state == 3 && t >= hub_refresh_at) { hub_refresh_at = t + 2000; hub_refresh(); }
     if (hub_state == 3 && hub_me_dirty && t >= hub_me_at) { hub_me_at = t + 300; hub_player(); }
-    if (hub_state == 3 && hub_count <= 1 && !hub_search && t >= hub_merge_at) { hub_merge_at = t + 5000; hub_merging = 1; hub_find(); }
+    if (hub_state == 3 && hub_old[0] && t >= hub_old_until && !(hub_busy && hub_busy())) hub_leave_old();
+    if (hub_state == 3 && !hub_search && !hub_moving && t >= hub_check_at) {
+        hub_check_at = t + (hub_multi || hub_own_count <= 1 ? 10000 : 60000);
+        hub_checking = 1;
+        hub_find();
+    }
 }
 
 static DWORD WINAPI eos_thread_(LPVOID dll) {
@@ -614,6 +746,7 @@ void eos_hub_set_player(u64 pid, const char *url, u32 rating) {
         hub_me.rating = rating;
         snprintf(hub_me.url, sizeof hub_me.url, "%s", url ? url : "");
         hub_me_dirty = 1;
+        InterlockedIncrement(&hub_attrs_ver);
     }
     ReleaseSRWLockExclusive(&hub_lock);
 }
@@ -643,6 +776,7 @@ int eos_hub_member_id(u32 ip, char id[NET_EOS_ID_LEN + 1]) {   /* 1: the member 
 }
 
 #else   /* (Linux, macOS: not yet) */
+void eos_hub_set_busy(int (*fn)(void)) { (void)fn; }
 void eos_hub_set_player(u64 pid, const char *url, u32 rating) { (void)pid; (void)url; (void)rating; }
 void eos_hub_refresh_soon(void) {}
 const char *eos_hub_lobby(void) { return ""; }

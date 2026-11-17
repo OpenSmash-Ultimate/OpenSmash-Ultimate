@@ -78,6 +78,8 @@ typedef struct { int32_t ApiVersion; const char *LobbyId; EOS_ProductUserId Loca
                  EOS_Bool bCrossplayOptOut; int32_t RTCRoomJoinActionType; } EosJoinByIdOptions;   /* (API 3) */
 typedef struct { int32_t ApiVersion; const char *AttrKey; } EosKeyOptions;                                     /* (API 1) */
 typedef struct { void *ClientData; const char *LobbyId; } EosLobbyUpdateInfo;
+/* EOS_LobbyDetails_Info (API 3): only its first fields are read, the SDK owns the rest */
+typedef struct { int32_t ApiVersion; const char *LobbyId; EOS_ProductUserId LobbyOwnerUserId; int32_t PermissionLevel; uint32_t AvailableSlots, MaxMembers; } EosLobbyInfo;
 typedef void (EOS_CALL *LobbyCb)(const EosLobbyResult *);
 typedef void (EOS_CALL *LobbyUpdateCb)(const EosLobbyUpdateInfo *);
 /* Stats (eos_stats_types.h) */
@@ -142,7 +144,9 @@ typedef void (EOS_CALL *RequestCb)(const EosRequestInfo *);
     X(EOS_NotificationId, EOS_Lobby_AddNotifyLobbyUpdateReceived, (EOS_HLobby, const EosVersionOnly *, void *, LobbyUpdateCb)) \
     X(EOS_HStats, EOS_Platform_GetStatsInterface, (EOS_HPlatform)) \
     X(void, EOS_Stats_IngestStat, (EOS_HStats, const EosIngestOptions *, void *, IngestCb)) \
-    X(EOS_EResult, EOS_P2P_SetRelayControl, (EOS_HP2P, const EosRelayControlOptions *))
+    X(EOS_EResult, EOS_P2P_SetRelayControl, (EOS_HP2P, const EosRelayControlOptions *)) \
+    X(EOS_EResult, EOS_LobbyDetails_CopyInfo, (EOS_HLobbyDetails, const EosVersionOnly *, EosLobbyInfo **)) \
+    X(void, EOS_LobbyDetails_Info_Release, (EosLobbyInfo *))
 #define EOS_DECLARE_EXTERN(ret, name, args) extern ret (EOS_CALL *p_##name) args;
 EOS_FUNCS(EOS_DECLARE_EXTERN)
 
@@ -153,5 +157,11 @@ EOS_HLobby eos_lobby_interface(void);
 /* (net_eos.c, the EOS thread) net_eos_lobby.c's share of every tick, and its P2P messages (channel 1) */
 void nexeos_tick(void);
 void nexeos_packet(const char *from, const u8 *data, u32 len);
+int nexeos_lobbies(char ids[][16], int max);   /* the gatherings' lobbies this game is in: their members count as the hub's (net_eos.c) */
+/* (net_eos.c, for net_eos_lobby.c on the EOS thread) this game's address, rating and station URL as member attributes of a
+ * gathering's lobby too, and a number that changes when they do (then they are set again) */
+void eos_hub_member_attrs(EOS_HLobbyModification m);
+unsigned eos_hub_attrs_version(void);
+int eos_hub_split(void);   /* 1: the last look found more than one hub of this lobby code: gathering searches cover them all */
 #endif
 #endif
