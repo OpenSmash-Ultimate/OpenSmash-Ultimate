@@ -546,20 +546,27 @@ class InstallerDecisionTests(unittest.TestCase):
         new = b'MZ new launcher'
         new_hash = __import__('hashlib').sha256(new).hexdigest()
         with tempfile.TemporaryDirectory() as root:
-            def run(ref, exe, git=False):
-                for name in ('OpenSmash.exe', 'OpenSmash.exe.old'):
+            def run(ref, exe, git=False, text=None, download=b'MZ new launcher', old_left=None):
+                for name in ('OpenSmash.exe', 'OpenSmash.exe.old', 'OpenSmash.exe.download'):
                     if os.path.exists(os.path.join(root, name)):
                         os.remove(os.path.join(root, name))
-                Path(root, 'OpenSmash.exe').write_bytes(exe)
+                if exe is not None:
+                    Path(root, 'OpenSmash.exe').write_bytes(exe)
+                if old_left is not None:
+                    Path(root, 'OpenSmash.exe.old').write_bytes(old_left)
                 if git:
                     os.makedirs(os.path.join(root, '.git'), exist_ok=True)
                 elif os.path.isdir(os.path.join(root, '.git')):
                     os.rmdir(os.path.join(root, '.git'))
-                mocks = (f"$Root = '{root}'; $Script:UpdateRef = '{ref}'; "
-                         f"function Get-Text {{ param($Url) $Url | Out-File -Append -LiteralPath (Join-Path $Root 'urls.txt'); '{new_hash}  OpenSmash.exe' }}; "
-                         "function Invoke-Download { param($Url, $Dest, $What) [IO.File]::WriteAllText($Dest, 'MZ new launcher') }; ")
+                body = text if text is not None else f"'{new_hash}  OpenSmash.exe'"
+                mocks = (f"$Root = '{root}'; $Script:UpdateRef = '{ref}'; function Test-DotnetSdk {{ $false }}; "
+                         f"function Get-Text {{ param($Url) $Url | Out-File -Append -LiteralPath (Join-Path $Root 'urls.txt'); {body} }}; "
+                         f"function Invoke-Download {{ param($Url, $Dest, $What) [IO.File]::WriteAllText($Dest, '{download.decode()}') }}; ")
                 out = ps_text(mocks + "'swapped=' + (Update-LauncherExe)")
-                return out, Path(root, 'OpenSmash.exe').read_bytes(), os.path.exists(os.path.join(root, 'OpenSmash.exe.old'))
+                exe_path = Path(root, 'OpenSmash.exe')
+                self.assertFalse(os.path.exists(os.path.join(root, 'OpenSmash.exe.download')), out)   # never left behind
+                return (out, exe_path.read_bytes() if exe_path.exists() else None,
+                        os.path.exists(os.path.join(root, 'OpenSmash.exe.old')))
             out, exe, old = run('v0.4.0', b'MZ old launcher')
             self.assertIn('swapped=True', out)
             self.assertIn("OpenSmash.exe is now v0.4.0's", out)
@@ -575,6 +582,26 @@ class InstallerDecisionTests(unittest.TestCase):
             out, exe, _ = run('v0.4.0', b'MZ old launcher', git=True)
             self.assertIn('swapped=False', out)
             self.assertEqual(exe, b'MZ old launcher')
+            # a download that is not what the checksum says, no network, no checksum: the old one stays, untouched
+            for kwargs in ({'download': b'MZ tampered'}, {'text': "throw 'no network'"}, {'text': "'Not Found'"}):
+                out, exe, old = run('v0.4.0', b'MZ old launcher', **kwargs)
+                self.assertIn('swapped=False', out, kwargs)
+                self.assertEqual(exe, b'MZ old launcher', kwargs)
+                self.assertFalse(old, kwargs)
+            # last time's swap: the .old is removed; a swap that stopped half-way (no OpenSmash.exe) gets it back
+            out, exe, old = run('v0.4.0', new, old_left=b'MZ old launcher')
+            self.assertEqual((exe, old), (new, False))
+            out, exe, old = run('v0.4.0', None, old_left=b'MZ old launcher', text="throw 'no network'")
+            self.assertEqual((exe, old), (b'MZ old launcher', False))
+
+    def test_sha256(self):
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, 'f').write_bytes(b'abc')
+            want = __import__('hashlib').sha256(b'abc').hexdigest()
+            f = os.path.join(root, 'f')
+            got = ps(f"@{{ h = (Get-Sha256 '{f}'); ok = (Test-FileSha256 '{f}' '{want.upper()}'); "
+                     f"bad = (Test-FileSha256 '{f}' '{'0' * 64}') }}")
+            self.assertEqual(got, {'h': want, 'ok': True, 'bad': False})
 
     def test_update_decision(self):
         got = ps("@{ a = (Get-UpdateDecision 'ahead'); i = (Get-UpdateDecision 'identical'); b = (Get-UpdateDecision 'behind'); "

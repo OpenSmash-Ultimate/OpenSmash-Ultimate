@@ -571,10 +571,26 @@ function Get-Text {
     return [string]$c
 }
 
+function Get-Sha256 {
+    <# A file's SHA-256 in lower case. .NET's, not Get-FileHash: Windows PowerShell started from PowerShell 7 (a pwsh
+       terminal, GitHub's runners) inherits a module path where Get-FileHash is not found. #>
+    param([string]$File)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($File)
+    try { return ([BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLower() }
+    finally { $stream.Dispose(); $sha.Dispose() }
+}
+
 function Test-FileSha256 {
     param([string]$File, [string]$Expected)
-    $actual = (Get-FileHash -LiteralPath $File -Algorithm SHA256).Hash.ToLower()
-    return ($actual -eq $Expected.ToLower())
+    return ((Get-Sha256 $File) -eq $Expected.ToLower())
+}
+
+function Test-DotnetSdk {
+    <# $true when a .NET SDK is on this PC (dotnet --list-sdks names one): there the launcher is built from the source. #>
+    if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) { return $false }
+    try { $o = @(& dotnet --list-sdks 2>$null) } catch { return $false }
+    return ($LASTEXITCODE -eq 0 -and [bool]($o -match '^\s*\d+\.'))
 }
 
 function Invoke-Python {
@@ -736,7 +752,7 @@ function Update-FromZip {
                 if ($merged -ne $mine) { [IO.File]::WriteAllText($to, $merged); $changed++ }
                 continue
             }
-            if ((Test-Path -LiteralPath $to -PathType Leaf) -and (Get-FileHash -LiteralPath $to).Hash -eq (Get-FileHash -LiteralPath $from).Hash) { continue }
+            if ((Test-Path -LiteralPath $to -PathType Leaf) -and (Get-Sha256 $to) -eq (Get-Sha256 $from)) { continue }
             $dir = Split-Path -Parent $to
             if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
             Copy-Item -LiteralPath $from -Destination $to -Force
@@ -1674,9 +1690,16 @@ function Update-LauncherExe {
        the next run) and the new one is used from the next start. $true when it was swapped. #>
     $exe = Join-Path $Root 'OpenSmash.exe'
     $old = "$exe.old"
-    if (Test-Path -LiteralPath $old) { try { Remove-Item -LiteralPath $old -Force } catch { } }
+    if (Test-Path -LiteralPath $old) {
+        # the one swapped out last time: deleted once it no longer runs; put back if a swap stopped half-way
+        try {
+            if (Test-Path -LiteralPath $exe -PathType Leaf) { Remove-Item -LiteralPath $old -Force }
+            else { Move-Item -LiteralPath $old -Destination $exe }
+        } catch { }
+    }
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { return $false }
     if (Test-Path -LiteralPath (Join-Path $Root '.git')) { return $false }   # (a checkout builds its own: tools\build_launcher.ps1)
+    if (Test-DotnetSdk) { return $false }   # (so does a PC with the SDK: the launcher rebuilds it after an update)
     $tag = Get-UpdateRef
     if ($tag -eq $UpdateBranch) { return $false }   # following main, or no release yet: nothing published to compare with
     $base = "https://github.com/$RepoOwner/$RepoName/releases/download/$([uri]::EscapeDataString($tag))"
@@ -1684,7 +1707,7 @@ function Update-LauncherExe {
     try {
         $sum = Read-PublishedSha256 (Get-Text "$base/OpenSmash.exe.sha256")
         if (-not $sum) { Write-Warn "launcher: $tag publishes no OpenSmash.exe checksum; this one stays"; return $false }
-        if ((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLower() -eq $sum) { Write-Info "launcher: OpenSmash.exe is $($tag)'s"; return $false }
+        if ((Get-Sha256 $exe) -eq $sum) { Write-Info "launcher: OpenSmash.exe is $($tag)'s"; return $false }
         if ($DryRun) { Write-Would "replace OpenSmash.exe with $($tag)'s"; return $false }
         Invoke-Download "$base/OpenSmash.exe" $tmp "the OpenSmash launcher of $tag"
         if (-not (Test-FileSha256 $tmp $sum)) { throw 'its SHA-256 differs from the published one' }
@@ -1720,8 +1743,7 @@ function Step-Launcher {
         if ($sum -notmatch '^[0-9a-f]{64}$') { throw 'no checksum published' }
         $tmp = "$exe.download"
         Invoke-Download "$base/OpenSmash.exe" $tmp 'the OpenSmash launcher'
-        $got = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash.ToLower()
-        if ($got -ne $sum) { Remove-Item -LiteralPath $tmp -Force; throw "its SHA-256 differs from the published one" }
+        if (-not (Test-FileSha256 $tmp $sum)) { Remove-Item -LiteralPath $tmp -Force; throw "its SHA-256 differs from the published one" }
         Move-Item -LiteralPath $tmp -Destination $exe -Force
         Write-Info 'launcher: OpenSmash.exe downloaded and checked'
     } catch {

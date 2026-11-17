@@ -1175,7 +1175,8 @@ namespace OpenSmash.Launcher
             string dotGit = Path.Combine(_repo, ".git");
             if (Directory.Exists(dotGit) || File.Exists(dotGit))   // (git refuses a checkout with a changed file: git updates it)
                 throw new InvalidOperationException("This folder is a git checkout from before WindowSmash became OpenSmash-Ultimate. Update it with git: "
-                    + "git remote set-url origin https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate.git, then git pull --ff-only origin main.");
+                    + "git remote set-url origin https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate.git, git fetch origin, then git reset --hard origin/main "
+                    + "(WindowSmash's last commits are not in OpenSmash-Ultimate, so git pull cannot fast-forward; files git does not track, such as your game files, builds and save, stay).");
             string at = Regex.IsMatch(_updateHead, "^[0-9a-fA-F]{40}$") ? _updateHead : "main";
             byte[] body = await _httpClient.GetByteArrayAsync($"https://raw.githubusercontent.com/{UpdateRepo}/{at}/tools/install_windowsmash.ps1");
             string text = Encoding.UTF8.GetString(body);
