@@ -3,6 +3,7 @@ on:
   pull_request:
     paths: ['OpenSmash.Avalonia/**', 'OpenSmash.Launcher/SettingDefaults.cs', 'tests/desktop/**', 'tests/test_avalonia_side_by_side.py', 'tools/*avalonia*', '.github/workflows/avalonia-launcher.yml']
   push:
+    branches: [main]
     paths: ['OpenSmash.Avalonia/**', 'OpenSmash.Launcher/SettingDefaults.cs', 'tests/desktop/**', 'tests/test_avalonia_side_by_side.py', 'tools/*avalonia*', '.github/workflows/avalonia-launcher.yml']
   workflow_dispatch:
 permissions:
@@ -37,3 +38,4 @@ jobs:
           path: |
             dist/avalonia/*.zip
             dist/avalonia/*.tar.gz
+          retention-days: 14
