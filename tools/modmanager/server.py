@@ -277,7 +277,7 @@ def install_url(tree, url, log, progress, meta=None):
 
 def game_running():
     try:
-        if sys.platform == "darwin":
+        if sys.platform == "darwin" or sys.platform.startswith("linux"):   # (build-mac's and build-linux's program: ssbu)
             return subprocess.run(["pgrep", "-x", "ssbu"], capture_output=True).returncode == 0
         if os.name == "nt":
             r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq ssbu.exe", "/NH"], capture_output=True, text=True)
@@ -613,8 +613,7 @@ def make_handler(app):
                     return self.send(200, page, TYPES[".html"],
                                      {"Set-Cookie": f"wsk={app.key}; Path=/; SameSite=Strict; HttpOnly"})
             if path.startswith("/ui/"):
-                rel = os.path.normpath(path[4:]).lstrip(os.sep)
-                full = os.path.join(UI, rel)
+                full = os.path.normpath(os.path.join(UI, path[4:].lstrip("/\\")))   # (normalised: a ../ can't leave ui/)
                 if not full.startswith(UI + os.sep) or not os.path.isfile(full):
                     return self.send(404, {"error": "not found"})
                 with open(full, "rb") as f:
@@ -682,6 +681,8 @@ def reveal(path):
             subprocess.Popen(["open", "-R", path])
         elif os.name == "nt":
             subprocess.Popen(["explorer", "/select,", path])
+        elif shutil.which("xdg-open"):   # (Linux: its folder, in the file manager)
+            subprocess.Popen(["xdg-open", os.path.dirname(path)], start_new_session=True)
     except OSError:
         pass
 
@@ -697,10 +698,11 @@ def open_window(url):
                     subprocess.Popen([p, f"--app={url}", f"--user-data-dir={profile}", "--window-size=1280,820"])
                     return
     elif sys.platform.startswith("linux"):
-        for exe in ("google-chrome", "chromium", "chromium-browser", "microsoft-edge"):
-            if shutil.which(exe):
-                subprocess.Popen([exe, f"--app={url}", "--window-size=1280,820"])
-                return
+        import app_window   # (a Chromium-family browser's app mode: installed, or a Flatpak)
+        cmd = app_window.command(url, "linux")
+        if cmd:
+            subprocess.Popen(cmd, start_new_session=True)
+            return
     webbrowser.open(url)
 
 

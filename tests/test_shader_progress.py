@@ -21,6 +21,34 @@ class Out(io.StringIO):
 
 
 class ProgressTests(unittest.TestCase):
+    def test_marker_says_when_spirv_was_made(self):
+        # (OpenSmash.Launcher's ShadersDone asks for Prepare Shaders again when Vulkan may draw and "\nspirv " is missing)
+        self.assertEqual(S.marker_text(10, None), 'version 10\n')
+        self.assertIn('\nspirv g1001.01100600\n', S.marker_text(10, 'g1001.01100600'))
+        launcher = (ROOT / 'OpenSmash.Launcher' / 'LauncherForm.cs').read_text(encoding='utf-8')
+        self.assertIn('"\\nspirv "', launcher)
+        self.assertIn('SHADER_CACHE_SPV_VERSION', launcher)   # (this version's names: an older version's SPIR-V is not enough)
+
+    def test_a_marker_for_other_spirv_names_is_removed(self):
+        # (#330 changed g1001 to g1002; the launcher's "\nspirv " check let the stale cache count as prepared)
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            marker = Path(root, 'dump', 'shadercache', 'complete.txt')
+            marker.parent.mkdir(parents=True)
+            said = []
+            for text, expected, removed in (('version 10\nspirv g1002.01100600\n', 'g1002.01100600', False),
+                                            ('version 10\n', 'g1002.01100600', False),   # (no SPIR-V made: #326's check asks)
+                                            ('version 10\nspirv g1001.01100600\n', 'g1002.01100600', True),
+                                            ('version 10\nspirv g1002.01100600\n', 'g1002.01110000', True)):   # (a newer glslang)
+                marker.write_text(text, encoding='utf-8')
+                self.assertEqual(S.forget_stale_marker(root, expected, log=said.append), removed, text)
+                self.assertEqual(marker.exists(), not removed)
+            self.assertFalse(S.forget_stale_marker(root, 'g1002.01100600', log=said.append))   # (no marker at all)
+            self.assertIn('g1001.01100600', said[0])
+        # (the header's SPIR-V version is read as the game's file name has it)
+        header = (ROOT / 'runtime' / 'gpu_shader_cache.h').read_text(encoding='utf-8')
+        self.assertIsNotNone(S.SPV_VERSION.search(header))
+
     def test_parse(self):
         self.assertEqual(S.parse_progress('progress 16 11601\n'), (16, 11601))
         self.assertIsNone(S.parse_progress('part 0/4: 11596 keys; ...'))
@@ -104,6 +132,37 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(S.summary({'keys': 3, 'compiled': 1, 'missing': 1, 'died': 1}),
                          '3 shaders: 1 compiled, 0 already there, 0 left out (jump tables), 0 that fxc could not compile, '
                          '0 not translated (1 not in the pack, 1 lost when a worker stopped)')
+
+    def test_a_log_line_while_the_first_percent_of_work_is_done(self):
+        # 2026-11-11: "stuck at 0/65189". The queue starts with its longest compiles, and by work
+        # its first percent took a 4-core PC many minutes: no line came after "0 of 65,189", so
+        # the launcher's bar (which reads the count) never moved. A line now comes at least every
+        # LOG_EVERY seconds the count has moved, still at 0 % of the work.
+        out = Out(tty=False)
+        show = S.Progress(out, window=None)
+        of, work_of = 65189, 28_000_000.0
+        for t in range(0, 61):                         # one shader done a second, a minute: 0.2 % of the work
+            show([(t, of)], now=t, work=(t * 1000.0, work_of))
+        lines = out.getvalue().splitlines()
+        self.assertEqual(lines[0], '[------------------------------]   0%  0 of 65,189 shaders')
+        self.assertEqual(len(lines), 1 + 60 // int(S.Progress.LOG_EVERY))
+        self.assertTrue(lines[1].endswith('0%  5 of 65,189 shaders'), lines[1])
+        self.assertIn('60 of 65,189 shaders', lines[-1])
+        show([(60, of)], now=200, work=(60_000.0, work_of))   # (nothing done meanwhile: no line)
+        self.assertEqual(len(out.getvalue().splitlines()), len(lines))
+
+    def test_the_launchers_pattern_reads_every_line(self):
+        # OpenSmash.Launcher/LauncherForm.cs NoteShaderLine: ([\d,]+)\s+of\s+([\d,]+)\s+shaders(?:,\s*(.+))?$
+        import re
+        pattern = re.compile(r'([\d,]+)\s+of\s+([\d,]+)\s+shaders(?:,\s*(.+))?$', re.I)
+        out = Out(tty=False)
+        show = S.Progress(out, window=None)
+        for t in range(0, 40):
+            show([(3 * t, 65189)], now=t, work=(3000.0 * t, 28_000_000.0))
+        counts = [int(pattern.search(l).group(1).replace(',', '')) for l in out.getvalue().splitlines()]
+        self.assertEqual(counts[0], 0)
+        self.assertGreater(counts[-1], 100)
+        self.assertEqual(counts, sorted(counts))
 
     def test_follow(self):
         def proc(lines):

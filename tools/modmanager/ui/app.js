@@ -724,3 +724,16 @@ api("/api/ping").catch(() => {});
 // the window closing: the server ends (a reload pings again before it does)
 addEventListener("pagehide", () => { try { navigator.sendBeacon("/api/bye", "{}"); } catch (e) {} });
 loadLibrary();
+
+// ---- opened from the OpenSmash Launcher (Linux, macOS): a way back to it (B on a game pad, Escape) ------------
+(function () {
+  const back = new URLSearchParams(location.search).get("back") || "";
+  if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+\//.test(back)) return;   // (only a page on this computer)
+  const go = () => { location.href = back; };
+  $("#back-launcher").hidden = false;
+  $("#back-launcher").addEventListener("click", go);
+  window.gpBack = () => {
+    if (!$("#drawer").classList.contains("hidden") || !$("#dialog").classList.contains("hidden")) { closeOverlays(); return; }
+    go();
+  };
+})();

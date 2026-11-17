@@ -1,6 +1,7 @@
 /* Library applets - the system's own full-screen programs a game can call up: web pages
  * (the electronic manual, news), the software keyboard, the shop. The keyboard is a text box
- * here (Windows' dialog, an alert on macOS, zenity's on Linux); the others don't exist, so each
+ * here (on Windows the settings menu's on-screen keyboard over the game, typed with a pad or the
+ * keyboard; an alert on macOS, zenity's on Linux); the others don't exist, so each
  * behaves as if the player opened it and immediately backed out. */
 #define _CRT_SECURE_NO_WARNINGS
 #include "host.h"
@@ -8,7 +9,7 @@
 #include <stdio.h>
 
 void watchdog_pause(int on);   /* debug_watchdog.c */
-int menu_osk_run(const char *title, const char *initial, int max_len, char *out, size_t cap);   /* gpu_menu.c */
+int menu_osk_run(const char *title, const char *guide, const char *initial, int min_len, int max_len, char *out, size_t cap);   /* gpu_menu.c */
 
 #define R_CANCELED RESULT(162, 1)         /* "the user closed the applet" */
 #define R_SWKBD_CANCELED RESULT(159, 1)   /* nn::swkbd's own: what ShowKeyboard returns for "back" */
@@ -132,8 +133,9 @@ HLE(_ZN2nn5swkbd12ShowKeyboardEPNS0_6StringERKNS0_15ShowKeyboardArgE) {
     u64 work = ld64(arg + 0x4D0);
     u32 offset = ld32(arg + 0x3C0), length = ld32(arg + 0x3C4);
     if (work && length) guest_text(k.text, 1024, work + offset, length < 1000 ? length : 1000);
-    /* the menu's text grid over the game (pad or keyboard, as the console's own keyboard), unless
-     * SSBU_SWKBD=dialog or the renderer can't show a frame again; letters, digits and - _ . : only */
+    /* the menu's on-screen keyboard over the game (pad or keyboard, as the console's own keyboard; the
+     * header as its title, the guide greyed in the empty box), unless SSBU_SWKBD=dialog or the renderer
+     * can't show a frame again (none shown yet). Several lines allowed: typed on one. */
     int ok = -1;
     const char *how = getenv("SSBU_SWKBD");
     if (how && !_strnicmp(how, "text:", 5)) {
@@ -144,14 +146,19 @@ HLE(_ZN2nn5swkbd12ShowKeyboardEPNS0_6StringERKNS0_15ShowKeyboardArgE) {
         fprintf(stderr, "[swkbd] \"%s\" (%d to %d characters%s) answered with SSBU_SWKBD's text (%d characters)\n", asked,
                 k.min_len, k.max_len, k.multiline ? ", several lines" : "", (int)wcslen(k.text));
         ok = 1;
-    } else if (!(how && !_stricmp(how, "dialog")) && !k.multiline) {
-        char title[200], initial[64], typed[64];
-        WideCharToMultiByte(CP_UTF8, 0, k.header[0] ? k.header : k.guide, -1, title, sizeof title, NULL, NULL);
+    } else if (!(how && !_stricmp(how, "dialog"))) {
+        static char title[400], guide[800], initial[4096], typed[4096];
+        WCHAR head[200] = L"";   /* the header, then the sub text */
+        _snwprintf(head, 199, L"%ls%ls%ls", k.header, k.header[0] && k.sub[0] ? L": " : L"", k.sub);
+        WideCharToMultiByte(CP_UTF8, 0, head, -1, title, sizeof title, NULL, NULL);
+        WideCharToMultiByte(CP_UTF8, 0, k.guide, -1, guide, sizeof guide, NULL, NULL);
         WideCharToMultiByte(CP_UTF8, 0, k.text, -1, initial, sizeof initial, NULL, NULL);
         watchdog_pause(1);
-        ok = menu_osk_run(title, initial, k.max_len, typed, sizeof typed);
+        ok = menu_osk_run(title, guide, initial, k.min_len, k.max_len, typed, sizeof typed);
         watchdog_pause(0);
         if (ok == 1) MultiByteToWideChar(CP_UTF8, 0, typed, -1, k.text, 1024);
+        fprintf(stderr, "[swkbd] \"%s\" (%d to %d characters): %s\n", title[0] ? title : guide, k.min_len, k.max_len,
+                ok == 1 ? "typed on the on-screen keyboard" : ok == 0 ? "cancelled" : "no frame to draw it over: the dialog");
     }
     if (ok < 0) ok = ask_text(&k);
     /* the text (also on Cancel: what the box held, as the console's keyboard reports it) */

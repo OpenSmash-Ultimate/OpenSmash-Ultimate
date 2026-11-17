@@ -29,6 +29,7 @@
  * Exit code 0 when every check passes. tests/test_kernel_map_memory.py builds and runs both. */
 #include <stdarg.h>
 #include "../../runtime/kernel.c"
+void rb_shadow_note(u64 at, u64 size) { (void)at; (void)size; }   /* (hle_rb_state.c: the rollback shadow's shared pages) */
 #include "../../runtime/clock.h"
 #ifndef _WIN32
 #include <setjmp.h>

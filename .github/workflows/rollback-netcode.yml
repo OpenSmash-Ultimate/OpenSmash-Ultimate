@@ -49,8 +49,10 @@ jobs:
       - name: Linux packages
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang
+          # (the runners' Azure apt mirror stopped resolving, 2026-11-11: fall back to archive.ubuntu.com and retry)
+          sudo sed -i 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+          for i in 1 2 3; do sudo apt-get update -qq -o Acquire::Retries=3 && break; sleep 20; done
+          sudo apt-get install -y -qq -o Acquire::Retries=3 clang
 
       # RB_TEST_NEED_CLANG: no compiler is a failure here, not a skip
       - name: rb_test

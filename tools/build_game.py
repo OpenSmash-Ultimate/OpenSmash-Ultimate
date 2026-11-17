@@ -919,9 +919,35 @@ def write_romfs_cfg(game, keys, the_program):
             "the update is incomplete: a copy cut short, a download in parts not joined into one file, or an archive "
             "not unpacked to the end. Compare each file's size with the original's, copy or dump it again, and run "
             "this again.")
+        warning = unverified_warning(os.path.join(MODULES, "romfs.unverified.txt"))
+        if warning:
+            log(warning)
     else:
         raise Failed(f"There is no romfs.bin in {game}, and {gamefiles.where(program)} holds no game data. Put the game's "
                      "data there as romfs.bin: unencrypted, with the 13.0.5 update applied (setup guide part 2).")
+
+
+def unverified_warning(report):
+    """The build's warning when update.py left 16 KB blocks of the game's data unconfirmed (its
+    romfs.unverified.txt: a "<block> <image offset>" line each, what each holds indented below,
+    and a "# N blocks, M inside files the game loads" note), or None. Not an error: a base with an
+    earlier update merged in is what most players have (a console dumps the game updated)."""
+    try:
+        with open(report, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    blocks = sum(1 for line in lines if line[:1].isdigit())
+    if not blocks:
+        return None
+    loaded = next((line.split(", ")[1].split()[0] for line in lines
+                   if line.startswith("# ") and line.endswith("inside files the game loads")), "?")
+    return (f"  WARNING: {blocks} blocks of 16 KB of the game's data ({loaded} of them inside files the game loads) "
+            "could not be confirmed against the update's hashes: the game given as the base has an earlier update "
+            f"merged in. {shown(report)} lists them and what each holds. The game is installed all the same; if it "
+            "crashes while loading the game's data, the crash may come from these blocks (every crash report says "
+            "so). The game's original release (1.0.0) with the 13.0.5 update next to it, or a dump with 13.0.5 "
+            "merged in, gives data with every block confirmed.")
 
 
 def decrypt_once(record, keys):
@@ -1196,6 +1222,7 @@ def build(a):
         compiler.finish()
     if a.prepare_only:
         log("  not now (--prepare-only): everything the build needs is ready")
+        online_files(log)   # (issue #389: a prepare-only run, an update's, left them out)
         return
     dll = getattr(a, "game_dll", False)
     if build_is_current(dll):
@@ -1229,12 +1256,21 @@ def build(a):
         # made again when stale; without it Vulkan does not start and Direct3D 11 draws, so a failure is not fatal
         import glslang_lib
         glslang_lib.ensure(os.path.join(os.path.dirname(EXE), glslang_lib.DLL_NAME), log=log)
+    online_files(log)
     if LINUX:
         log(f"\nDone: {exe} is ready. Start the game with ./play-ssbu.sh, or WindowSmash in your applications menu.")
     elif MACOS:
         log(f"\nDone: {exe} is ready. Start the game with Play SSBU.command, or Play SSBU in ~/Applications (Spotlight finds it).")
     else:
         log("\nDone: build\\ssbu.exe is ready. Start the game with OpenSmash.exe.")
+
+
+def online_files(log):
+    """Epic Online Services' files (runtime/net_eos.c, Windows: online through Epic; without them, the public lobby alone)
+    and Discord's (runtime/net_discord.c: sign-in and Rich Presence; off Windows the id alone, for the web launcher's
+    sign-in), beside the program: tools/online_files.py, which the updates and the launchers' Play run too. Never fatal."""
+    import online_files as of
+    of.ensure(os.path.dirname(EXE), log=log)
 
 
 def build_linux_program(jobs, dll=False):

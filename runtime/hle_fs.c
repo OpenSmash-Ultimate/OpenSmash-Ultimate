@@ -17,6 +17,7 @@
 #include <stdlib.h>
 
 #include "host.h"
+#include "mod_refresh.h"
 
 #ifndef _WIN32   /* (the save journal's few calls Windows has no stand-in for in runtime/linux) */
 #include <fcntl.h>
@@ -118,6 +119,29 @@ static HANDLE rom_file_open(const char *path) {
     return h;
 }
 
+/* romfs.unverified.txt beside romfs.cfg (tools/update.py): 16 KB blocks of the updated RomFS whose
+ * bytes could not be confirmed against the update's hashes, one "<block> <image offset>" line each
+ * (what each holds indented below it). A player's merged base left LoupeSubstance's model files
+ * wrong there, and the game crashed at boot with nothing to say why: every crash report now
+ * carries this line (host.c). Empty when there is no such file. */
+/* (rt_romfs_warning: host.c's, which every build links - a crash report reads it) */
+
+static void rom_unverified_note(void) {
+    char path[1100], line[512];
+    snprintf(path, sizeof path, "%s/romfs.unverified.txt", rt_data_dir);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    unsigned blocks = 0;
+    while (fgets(line, sizeof line, f))
+        if (line[0] >= '0' && line[0] <= '9') blocks++;   /* (not "#" notes, nor the indented lines under a block) */
+    fclose(f);
+    if (!blocks) return;
+    snprintf(rt_romfs_warning, sizeof rt_romfs_warning,
+             "game data: %u blocks of 16 KB unconfirmed (dump/modules/romfs.unverified.txt) - the base had an update "
+             "merged in; a crash may come from them", blocks);
+    fprintf(stderr, "[fs] warning: %s\n", rt_romfs_warning);
+}
+
 /* romfs.cfg: "<file>\n<byte offset>\n" (the image in place in one file), or "layered\n<layer
  * map>\n<source 0>\n<source 1>...\n" (tools/update.py). */
 static void rom_open(void) {
@@ -152,6 +176,7 @@ static void rom_open(void) {
         rom.file = rom_file_open(path);
     }
     fclose(f);
+    rom_unverified_note();
     u64 h[10];
     if (!rom_read(0, h, sizeof h) || h[0] != 0x50) rt_fatal("%s: no RomFS image there", cfg);
     rom.dirs = malloc(h[4]);
@@ -202,6 +227,7 @@ typedef struct Handle {
     int used, kind, mode;
     u32 mount;                /* the mount's id */
     HANDLE host;              /* host file */
+    char texture_path[600];
     u64 offset, size;         /* rom file: data offset in the RomFS image and length */
     char **names; u8 *types; u64 *sizes; i64 count, next;   /* directory listing */
 } Handle;
@@ -1103,11 +1129,16 @@ void fs_mount_sd(void) {
 }
 int skyline_provides(const char *path);
 void select_screen_install(void);   /* (hle_select_screen.c) */
+#ifdef _WIN32
+void rb_map_install(void);   /* (hle_rb_map.c) */
+#else
+static void rb_map_install(void) {}
+#endif
 /* (once the RomFS is there, Skyline's plugins load, as on the console) */
 HLE(_ZN2nn2fs8MountRomEPKcPvm) {
     ready();
     u32 r = add_mount(P(char, c->x[0]), M_ROM, "", NULL);
-    if (!r) { select_screen_install(); skyline_load_plugins(c); native_mods_load(); }   /* (more select-screen tiles: hle_select_screen.c; the fighter SDK's hook.h mods: hle_native_mods.c) */
+    if (!r) { select_screen_install(); skyline_load_plugins(c); native_mods_load(); rb_map_install(); }   /* (rb_map_install: hle_rb_map.c, the rollback state map's allocator hooks) */   /* (more select-screen tiles: hle_select_screen.c; the fighter SDK's hook.h mods: hle_native_mods.c) */
     c->x[0] = r;
 }
 HLE(_ZN2nn2fs17MountCacheStorageEPKc) {
@@ -1221,6 +1252,9 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
         host_path(path, sizeof path, m, rest);
         h.host = CreateFileA(path, GENERIC_READ | (mode & OPEN_WRITE ? GENERIC_WRITE : 0), SHARE_ALL, NULL, OPEN_EXISTING, 0, NULL);
         if (h.host == INVALID_HANDLE_VALUE) { c->x[0] = R_PATH_NOT_FOUND; return; }
+        const char *extension = strrchr(path, '.');
+        if (!(mode & OPEN_WRITE) && extension && !_stricmp(extension, ".nutexb"))
+            snprintf(h.texture_path, sizeof h.texture_path, "%s", path);
     }
     u64 v = new_handle(h);
     if (!v) { if (h.host) CloseHandle(h.host); c->x[0] = R_TOO_MANY_HANDLES; return; }
@@ -1242,6 +1276,8 @@ static u64 read_at(Handle *h, i64 offset, void *buf, u64 size) {
     if (size > total - (u64)offset) size = total - (u64)offset;
     if (!size) return 0;
     int ok = h->host ? pread_all(h->host, (u64)offset, buf, size) : rom_read(h->offset + (u64)offset, buf, size);
+    /* Costume inference reads headers, not pixels: only a full load needs a snapshot. */
+    if (ok && offset == 0 && size == total && h->texture_path[0]) mod_refresh_file_opened(h->texture_path);
     return ok ? size : ~0ull;
 }
 

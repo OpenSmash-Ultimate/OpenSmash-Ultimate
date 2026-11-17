@@ -93,6 +93,6 @@ jobs:
         run: |
           cd dist
           for f in *.sha256; do cat "$f"; echo; done > SHA256SUMS
-          gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "Runtime ${GITHUB_REF_NAME#runtime-v}" \
+          gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "Runtime ${GITHUB_REF_NAME#runtime-v}" --prerelease --latest=false \
             --notes "The runtime prebuilt for a --game-dll build (commit ${GITHUB_SHA}). Put it in place with: python tools/runtime_fetch.py ${GITHUB_REF_NAME}" \
             *.zip SHA256SUMS

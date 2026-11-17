@@ -275,6 +275,7 @@ static void npad_state(u64 out, u32 id, u32 style) {
             buttons = 0; lx = ly = rx = ry = 0;   /* (the menu, or the shader preparation, has them; still connected) */
         }
         rb_pad(id, &buttons, &lx, &ly, &rx, &ry, &lt, &rt);
+        if (id == NPAD_NO1) { void vi_lat_poll(u64 b); vi_lat_poll(buttons); }   /* (SSBU_LAT_TRACE: ipc_vi.c) */
         {
             /* the stick directions also exist as buttons */
             if (lx < -16384) buttons |= 1ull << B_SL_LEFT;

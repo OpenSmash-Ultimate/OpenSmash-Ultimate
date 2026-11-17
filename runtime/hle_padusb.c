@@ -22,6 +22,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <wchar.h>
 
 #include "padusb.h"
@@ -32,6 +33,7 @@ void padusb_poll(PadUsbState out[PADUSB_PORTS]) { memset(out, 0, sizeof(PadUsbSt
 void padusb_rumble(int port, int on) { (void)port; (void)on; }
 int padusb_axes(int port, PadUsbAxes *out) { (void)port; memset(out, 0, sizeof *out); return 0; }
 void padusb_recalibrate(int port) { (void)port; }
+void padusb_set_switch(int on) { (void)on; }
 int padusb_rate(int port) { (void)port; return 0; }
 #elif defined _WIN32
 #include <setupapi.h>
@@ -192,7 +194,8 @@ static void axis_begin(Axis *a, int centre, int reach0) {
     a->taking = 1;
 }
 
-static i32 stick_value(Axis *a, int v, int centre, int reach0) {
+/* The calibrating part of stick_value: the centre taken as the first reports come, then v - centre. */
+static int stick_delta(Axis *a, int v, int centre, int reach0) {
     if (!a->hi) axis_begin(a, centre, reach0);   /* (a zeroed axis: first use) */
     if (a->taking) {
         int done = 0;
@@ -212,7 +215,11 @@ static i32 stick_value(Axis *a, int v, int centre, int reach0) {
             }
         }
     }
-    int dv = v - a->centre;
+    return v - a->centre;
+}
+
+static i32 stick_value(Axis *a, int v, int centre, int reach0) {
+    int dv = stick_delta(a, v, centre, reach0);
     if (dv > a->hi) { if (++a->over_hi >= GROW_N) a->hi = dv > reach0 * 5 / 4 ? reach0 * 5 / 4 : dv; }
     else a->over_hi = 0;
     if (-dv > a->lo) { if (++a->over_lo >= GROW_N) a->lo = -dv > reach0 * 5 / 4 ? reach0 * 5 / 4 : -dv; }
@@ -221,6 +228,30 @@ static i32 stick_value(Axis *a, int v, int centre, int reach0) {
     if (dv >= -snap && dv <= snap) return 0;
     long r = (long)dv * 32767 / (dv >= 0 ? a->hi : a->lo);
     return (i32)(r > 32767 ? 32767 : r < -32767 ? -32767 : r);
+}
+
+/* The adapter's sticks as the Switch console scales them (on unless controllers.ini's gc_switch = 0, which the settings
+ * menu's Controllers page writes, or SSBU_GC_SWITCH=0 / 1, which wins over the file): counts from the centre over 56 for
+ * the left stick, 44 for the C-stick (the circle's radius, the pair together), no dead zone, no growing reach; the
+ * triggers over 150 counts from rest. These are the numbers a real console shows for the same adapter. */
+static volatile int switch_cfg = 1;
+void padusb_set_switch(int on) {
+    if ((on != 0) != switch_cfg)
+        fprintf(stderr, "[input] GameCube adapter sticks: %s\n", on ? "as the console scales them (56 / 44 counts, no dead zone)" : "the earlier scaling");
+    switch_cfg = on != 0;
+}
+static int gc_switch(void) {
+    static int env = -2;   /* (read once: another thread's putenv would not be safe against a getenv here) */
+    if (env == -2) { const char *e = getenv("SSBU_GC_SWITCH"); env = e && !strcmp(e, "0") ? 0 : e && !strcmp(e, "1") ? 1 : -1; }
+    return env >= 0 ? env : switch_cfg;
+}
+
+static void switch_stick(int dx, int dy, int n, i32 *ox, i32 *oy) {
+    long x, y;
+    if ((long)dx * dx + (long)dy * dy <= (long)n * n) { x = dx * 32767L / n; y = dy * 32767L / n; }
+    else { double r = sqrt((double)dx * dx + (double)dy * dy); x = (long)(dx * 32767.0 / r); y = (long)(dy * 32767.0 / r); }
+    *ox = (i32)(x > 32767 ? 32767 : x < -32767 ? -32767 : x);
+    *oy = (i32)(y > 32767 ? 32767 : y < -32767 ? -32767 : y);
 }
 
 /* ---- the adapter ---------------------------------------------------------------------------- */
@@ -260,8 +291,23 @@ static int hid_write(Device *d, const UCHAR *data, int n) {
     return ok;
 }
 
+/* The adapter's pipes from its interface's descriptors, whatever their addresses (the official one:
+ * 0x81 in, 0x02 out; HandHeldLegend's GC Pocket+ and RP2040 adapters: 0x82 / 0x01). The first
+ * interrupt (or, failing that, bulk) pipe each way; *in_len is what a read asks for: the packet size
+ * when it holds a report (37..64), else 37. The output pipe may be missing: it is only the start command and rumble. */
+static void padusb_pick_pipes(const UCHAR *ids, const UCHAR *types, const USHORT *sizes, int n, UCHAR *in, UCHAR *out, USHORT *in_len) {
+    *in = *out = 0; *in_len = 37;
+    for (int want = 3; want >= 2; want--)   /* interrupt first, then bulk */
+        for (int i = 0; i < n; i++) {
+            if (types[i] != want) continue;
+            if ((ids[i] & 0x80) && !*in) { *in = ids[i]; if (sizes[i] >= 37 && sizes[i] <= 64) *in_len = sizes[i]; }
+            else if (!(ids[i] & 0x80) && !*out) *out = ids[i];
+        }
+}
+
 static int dev_write(Device *d, const UCHAR *data, int n) {
     if (!d->usb) return hid_write(d, data, n);
+    if (!d->out) return 0;
     ULONG put = 0;
     return api.UsbWrite(d->usb, d->out, (UCHAR *)data, (ULONG)n, &put, NULL) && put == (ULONG)n;
 }
@@ -275,6 +321,12 @@ static void adapter_report(Device *d, const UCHAR *p, int n) {
         int was = o->connected;
         o->connected = (s[0] & 0x30) != 0;   /* 0x10 a cable, 0x20 a WaveBird */
         if (!o->connected) { port_axes[d->first + i].connected = 0; continue; }
+        if (!was && !(s[3] | s[4] | s[5] | s[6])) {
+            /* the first report of a port just plugged in can be blank (a real stick never reads 0 on all four axes):
+             * calibrating from it leaves the centres at 128 and the trigger rests at 0. Wait for the next report. */
+            o->connected = 0; port_axes[d->first + i].connected = 0;
+            continue;
+        }
         if (!was || InterlockedExchange(&recal_want[d->first + i], 0)) {
             /* plugged in (or Recalibrate sticks, from the menu): the centres and rests as they are now */
             for (int k = 0; k < 4; k++) axis_begin(&d->axes[i][k], 128, 80);
@@ -291,23 +343,33 @@ static void adapter_report(Device *d, const UCHAR *p, int n) {
         o->buttons = 0;
         for (int b = 0; b < (int)(sizeof BUTTONS / sizeof *BUTTONS); b++)
             if (s[BUTTONS[b].off] & BUTTONS[b].bit) o->buttons |= BUTTONS[b].pu;
-        o->lx = stick_value(&d->axes[i][0], s[3], 128, 80);
-        o->ly = -stick_value(&d->axes[i][1], s[4], 128, 80);
-        o->rx = stick_value(&d->axes[i][2], s[5], 128, 80);
-        o->ry = -stick_value(&d->axes[i][3], s[6], 128, 80);
+        int exact = gc_switch();
+        o->exact = exact;
+        if (exact) {
+            i32 y;
+            switch_stick(stick_delta(&d->axes[i][0], s[3], 128, 80), stick_delta(&d->axes[i][1], s[4], 128, 80), 56, &o->lx, &y);
+            o->ly = -y;
+            switch_stick(stick_delta(&d->axes[i][2], s[5], 128, 80), stick_delta(&d->axes[i][3], s[6], 128, 80), 44, &o->rx, &y);
+            o->ry = -y;
+        } else {
+            o->lx = stick_value(&d->axes[i][0], s[3], 128, 80);
+            o->ly = -stick_value(&d->axes[i][1], s[4], 128, 80);
+            o->rx = stick_value(&d->axes[i][2], s[5], 128, 80);
+            o->ry = -stick_value(&d->axes[i][3], s[6], 128, 80);
+        }
         PadUsbAxes *pa = &port_axes[d->first + i];
         pa->connected = 1;
         for (int k = 0; k < 4; k++) {
             pa->raw[k] = s[3 + k];
             pa->centre[k] = d->axes[i][k].centre;
-            pa->lo[k] = d->axes[i][k].lo;
-            pa->hi[k] = d->axes[i][k].hi;
+            pa->lo[k] = exact ? (k < 2 ? 56 : 44) : d->axes[i][k].lo;
+            pa->hi[k] = exact ? (k < 2 ? 56 : 44) : d->axes[i][k].hi;
         }
         for (int t = 0; t < 2; t++) {
             int v = s[7 + t], rest = d->trigger_rest[i][t];
             if (v > d->trigger_top[i][t] && ++d->trigger_over[i][t] >= GROW_N) d->trigger_top[i][t] = v;
             else if (v <= d->trigger_top[i][t]) d->trigger_over[i][t] = 0;
-            int val = v <= rest ? 0 : (v - rest) * 32767 / (d->trigger_top[i][t] - rest);
+            int val = v <= rest ? 0 : exact ? (v - rest) * 32767 / 150 : (v - rest) * 32767 / (d->trigger_top[i][t] - rest);
             *(t ? &o->rt : &o->lt) = val > 32767 ? 32767 : val;
         }
     }
@@ -498,7 +560,7 @@ static DWORD WINAPI device_thread(LPVOID param) {
         int n = -1;
         if (d->usb) {   /* the adapter through WinUSB */
             ULONG got = 0;
-            if (api.UsbRead(d->usb, d->in, buf, 37, &got, NULL)) n = (int)got;
+            if (api.UsbRead(d->usb, d->in, buf, d->in_len, &got, NULL)) n = (int)got;
             else if (GetLastError() == ERROR_SEM_TIMEOUT) n = 0;
         } else {        /* a HID interface */
             DWORD got = 0;
@@ -600,17 +662,21 @@ static int open_device(Device *d, const Found *f, const wchar_t *bulk_path) {
             return 0;
         }
         UsbInterfaceDescriptor desc;
+        UCHAR ids[16], types[16];
+        USHORT sizes[16];
+        int np = 0;
         if (api.UsbInterface(d->usb, 0, &desc))
-            for (UCHAR e = 0; e < desc.endpoints; e++) {
+            for (UCHAR e = 0; e < desc.endpoints && np < 16; e++) {
                 WinUsbPipe p;
-                if (!api.UsbPipe(d->usb, 0, e, &p) || p.type != 3) continue;
-                if (p.id & 0x80) d->in = p.id;
-                else d->out = p.id;
+                if (!api.UsbPipe(d->usb, 0, e, &p)) continue;
+                ids[np] = p.id; types[np] = (UCHAR)p.type; sizes[np++] = p.max_packet;
             }
-        if (!d->in || !d->out) { fprintf(stderr, "[input] GameCube adapter: no interrupt pipes\n"); close_device(d); return 0; }
+        padusb_pick_pipes(ids, types, sizes, np, &d->in, &d->out, &d->in_len);
+        if (!d->in) { fprintf(stderr, "[input] GameCube adapter: no input pipe\n"); close_device(d); return 0; }
+        if (!d->out) fprintf(stderr, "[input] GameCube adapter: no output pipe: no start command and no rumble, reading as it streams\n");
         ULONG timeout = 100;
         api.UsbPolicy(d->usb, d->in, PIPE_TIMEOUT_POLICY, sizeof timeout, &timeout);
-        api.UsbPolicy(d->usb, d->out, PIPE_TIMEOUT_POLICY, sizeof timeout, &timeout);
+        if (d->out) api.UsbPolicy(d->usb, d->out, PIPE_TIMEOUT_POLICY, sizeof timeout, &timeout);
         WinUsbSetup protocol = {0x21, 11, 1, 0, 0};   /* (HID SET_PROTOCOL: other brands' adapters need it) */
         ULONG got = 0;
         api.UsbControl(d->usb, protocol, NULL, 0, &got, NULL);

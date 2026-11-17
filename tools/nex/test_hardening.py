@@ -553,6 +553,36 @@ class Ranked(Case):
         self.assertEqual(self.ranked.rounds, {})
 
 
+def power_record(fighter, gsp, b=123, d=1):
+    return struct.pack("<BIIIQI", fighter, gsp, b, gsp, 0, d)
+
+
+class Powers(Case):
+    """DataStore 82 (a fighter record: the GSP the game computes) kept per player, given back by 84."""
+
+    def records(self, c):
+        r = self.ok(call(c, 115, 84))
+        out = {}
+        for _ in range(r.u32()):
+            fighter = r.u8()
+            out[fighter] = r.struct()[1]
+        r.struct()
+        return out
+
+    def test_posted_records_come_back_by_fighter(self):
+        a, b = self.player(2, "Alpha"), self.player(3, "Bravo")
+        self.assertEqual(self.records(a), {})
+        post = lambda c, rec: self.ok(call(c, 115, 82, b"\0" + struct.pack("<I", len(rec)) + rec))
+        post(a, power_record(0x2b, 1460))
+        post(a, power_record(0x05, 2000))
+        post(a, power_record(0x2b, 1540))          # (after the match: replaces the fighter's record)
+        post(b, power_record(0x2b, 900))
+        self.assertEqual(self.records(a), {0x05: power_record(0x05, 2000), 0x2b: power_record(0x2b, 1540)})
+        self.assertEqual(self.records(b), {0x2b: power_record(0x2b, 900)})
+        rec = power_record(1, 1)[:-1]
+        self.refused(call(a, 115, 82, b"\0" + struct.pack("<I", len(rec)) + rec), rmc.CORE_INVALID_ARGUMENT)
+
+
 class Logs(Case):
     """The log holds no NSA id or token at any --nex-log level (the online lobby's service runs at
     1, where the login line had both the id and the user name - in nex.selftest's logins, the id

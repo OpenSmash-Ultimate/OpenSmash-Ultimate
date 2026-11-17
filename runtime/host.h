@@ -59,6 +59,7 @@ void kernel_dump_threads(void);
 _Noreturn void rt_fatal(const char *fmt, ...);         /* message + guest backtrace, then exit */
 extern int rt_trace;
 extern const char *rt_data_dir;                        /* where the module images (and romfs.cfg) live */
+extern char rt_romfs_warning[320];                     /* (hle_fs.c) unconfirmed game data: a line for crash reports, or "" */
 /* The game's three boot modules. The game's C defines them const; a --game-dll build
  * (SSBU_GAME_DLL) has them in a library of its own, and host.c holds copies of its tables,
  * filled in at load. */

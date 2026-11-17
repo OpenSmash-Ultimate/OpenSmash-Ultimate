@@ -34,7 +34,8 @@ class LooseNca:
         self.title_id = struct.unpack('<Q', h[0x210:0x218])[0]
         self.content_type = h[0x205]
         gen = max(max(h[0x206], h[0x220]) - 1, 0)
-        kaek = rx.KEYS.get('key_area_key_%s_%02x' % (KAEK[h[0x207]], gen))
+        self.key_name = 'key_area_key_%s_%02x' % (KAEK[h[0x207]] if h[0x207] < len(KAEK) else 'application', gen)
+        kaek = rx.KEYS.get(self.key_name)
         self.key = AES.new(kaek, AES.MODE_ECB).decrypt(h[0x300:0x340])[0x20:0x30] if kaek else None
         self.sections = []
         for i in range(4):
@@ -75,12 +76,27 @@ def decode_bfttf(data):
     return out[:size] if size <= len(out) else b''
 
 
-def main():
-    fw, out_dir = sys.argv[1], sys.argv[2]
+def extract(fw, out_dir, say=print):
+    opened = []
+    try:
+        return _extract(fw, out_dir, say, opened)
+    finally:
+        for f in opened:
+            f.close()
+
+
+def _extract(fw, out_dir, say, opened):
+    """Write the fonts of the firmware folder fw to out_dir. -> (fonts written, problems), problems being sentences
+    that name the font title (and the key) that could not be opened: the usual cause is a prod.keys older than the
+    firmware (a newer console update needs the newer key generation), never a missing file."""
     os.makedirs(out_dir, exist_ok=True)
     found = 0
+    problems = []
+    seen = set()                              # font titles read (the same title may have several NCAs: old and new)
+    if 'header_key' not in rx.KEYS:
+        return 0, ['prod.keys not found or without header_key: the firmware cannot be opened']
     for name in sorted(os.listdir(fw)):
-        if not name.endswith('.nca') or name.endswith('.cnmt.nca'):
+        if not name.lower().endswith('.nca') or name.lower().endswith('.cnmt.nca'):
             continue
         path = os.path.join(fw, name)
         if os.path.isdir(path):              # Ryujinx (bis\system\Contents\registered): each .nca is a folder; a small
@@ -91,9 +107,15 @@ def main():
         try:
             nca = LooseNca(path)
         except (OSError, ValueError, struct.error) as e:
-            print('%s: skipped (%s)' % (name, e))
+            say('%s: skipped (%s)' % (name, e))
             continue
-        if not nca.ok or nca.title_id not in FONT_TITLES or nca.key is None:
+        opened.append(nca.f)
+        if not nca.ok or nca.title_id not in FONT_TITLES:
+            continue
+        if nca.key is None:
+            problems.append('font title %016x (%s): prod.keys has no %s, so this firmware is newer than your keys; '
+                            'dump prod.keys again from the console after its update (Lockpick_RCM)'
+                            % (nca.title_id, name, nca.key_name))
             continue
         sec = next((s for s in nca.sections if s['type'] == 0), None)
         if sec is None:
@@ -109,9 +131,24 @@ def main():
             if ok:
                 open(target, 'wb').write(decoded)
                 found += 1
-            print('%016x  %-40s %9d bytes  %s' % (nca.title_id, path, size,
-                  'decoded OK (%s)' % decoded[:4].hex() if ok else 'NOT a valid font after decoding: %s' % decoded[:8].hex()))
+                seen.add(nca.title_id)
+            say('%016x  %-40s %9d bytes  %s' % (nca.title_id, path, size,
+                'decoded OK (%s)' % decoded[:4].hex() if ok else 'NOT a valid font after decoding: %s' % decoded[:8].hex()))
+    missing = sorted(FONT_TITLES - seen)
+    if not found and not problems:
+        problems.append('no font title (%s) found among the NCA files of %s: is this the firmware folder? (it has the '
+                        '.nca files Goldleaf or NXDumpTool wrote)' % (', '.join('%016x' % t for t in missing), fw))
+    return found, problems
+
+
+def main():
+    fw, out_dir = sys.argv[1], sys.argv[2]
+    found, problems = extract(fw, out_dir)
+    for p in problems:
+        print('note: ' + p)
     print('%d fonts written to %s' % (found, out_dir))
+    if not found:
+        sys.exit(2)
 
 
 if __name__ == '__main__':

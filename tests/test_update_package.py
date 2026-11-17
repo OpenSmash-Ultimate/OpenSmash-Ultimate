@@ -85,6 +85,35 @@ class BuildPassesTheChoiceTests(unittest.TestCase):
         call = self.apply_call(program, base)
         self.assertNotIn('--inner', call)
 
+    def test_unconfirmed_blocks_warn(self):
+        """update.py leaving blocks unconfirmed (a base with an earlier update merged in, what most
+        players have): the build goes on and says so in a WARNING line, with the count."""
+        logged = []
+        self.g['log'] = logged.append
+
+        def run(args, failure):
+            self.calls.append([str(a) for a in args])
+            if 'update.py' in ' '.join(map(str, args)):
+                (self.modules / 'romfs.unverified.txt').write_text(
+                    '# 16 KB blocks ...\n# 3 blocks, 2 inside files the game loads\n'
+                    '613780 0x257650000\n  loaded file data.arc+0x100\n613781 0x257654000\n  loaded file data.arc+0x100\n'
+                    '9 0x24000\n  listed no file: padding between files\n')
+        self.g['run'] = run
+        program = self.record('update.nca', 'update', 'patch', None)
+        base = self.record('base.nca', 'base', 'plain', None)
+        self.apply_call(program, base)
+        warning = [line for line in logged if 'WARNING' in line]
+        self.assertEqual(len(warning), 1)
+        self.assertIn('WARNING: 3 blocks of 16 KB of the game\'s data (2 of them inside files the game loads)', warning[0])
+        self.assertIn('romfs.unverified.txt', warning[0])
+        self.assertIn('the crash may come from these blocks', warning[0])
+
+    def test_no_report_no_warning(self):
+        logged = []
+        self.g['log'] = logged.append
+        self.apply_call(self.record('update.nca', 'update', 'patch', None), self.record('base.nca', 'base', 'plain', None))
+        self.assertFalse([line for line in logged if 'WARNING' in line])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -311,6 +311,14 @@ def extract(archive, into):
             if os.path.exists(seven):
                 r = subprocess.run([seven, "x", "-y", f"-o{into}", archive], capture_output=True, text=True)
                 break
+    if r.returncode and os.name != "nt":   # (Linux's GNU tar reads neither .7z nor .rar: the unpackers it may have)
+        for cmd in unpack_commands(archive, into):
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True)
+            except OSError:
+                continue
+            if not r.returncode:
+                break
     if r.returncode and archive.lower().endswith(".7z"):   # (no 7-Zip: py7zr, which the installer adds)
         try:
             import py7zr
@@ -325,8 +333,33 @@ def extract(archive, into):
                 z.extractall(into)
             return
     if r.returncode:
-        hint = " (install 7-Zip, from 7-zip.org, to open .7z and .rar files)" if os.name == "nt" else ""
+        if os.name == "nt":
+            hint = " (install 7-Zip, from 7-zip.org, to open .7z and .rar files)"
+        elif sys.platform == "darwin":
+            hint = ""
+        else:
+            hint = (" (install 7-Zip or bsdtar from your distribution - the 7zip, p7zip or libarchive-tools package - to "
+                    "open .7z and .rar files)")
         raise Error(f"cannot unpack {os.path.basename(archive)}{hint}: {(r.stderr or r.stdout).strip()[-400:]}")
+
+
+# (unpacker, its arguments) for .7z, .rar and the rest where tar can't: libarchive's bsdtar, 7-Zip (7zz: 7-Zip's own
+# Linux build, 7z / 7za: p7zip's), unrar, The Unarchiver's unar
+UNPACKERS = (("bsdtar", ["-xf", "{archive}", "-C", "{into}"]), ("7zz", ["x", "-y", "-o{into}", "{archive}"]),
+             ("7z", ["x", "-y", "-o{into}", "{archive}"]), ("7za", ["x", "-y", "-o{into}", "{archive}"]),
+             ("unrar", ["x", "-o+", "-y", "{archive}", "{into}/"]), ("unar", ["-f", "-q", "-o", "{into}", "{archive}"]))
+
+
+def unpack_commands(archive, into, which=shutil.which):
+    """The commands that may unpack `archive` into `into`, of the unpackers installed (unrar only for a .rar)."""
+    out = []
+    for name, args in UNPACKERS:
+        if name == "unrar" and not archive.lower().endswith(".rar"):
+            continue
+        exe = which(name)
+        if exe:
+            out.append([exe] + [a.format(archive=archive, into=into) for a in args])
+    return out
 
 
 def safe_name(name):

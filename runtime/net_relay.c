@@ -98,11 +98,13 @@ typedef int SOCKET;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "config_folder.h"
 #include "host.h"
 #include "mod_diff.h"
 #include "net.h"
+#include "net_eos.h"
 #include "room_code.h"
 #include "settings.h"
 #include "sim_version.h"
@@ -213,78 +215,22 @@ static u64 process_age_ms(void) { return rt_now_ns() / 1000000; }
  * the files the settings menu and the launcher write, where no SSBU_NET_* variable says them.
  * online_server.txt: "host:port [lobby code]" or "off"; online_name.txt: the name (one is picked
  * and kept there when it is missing); online_direct.txt: "off" for no direct connections. */
-/* online_server.txt "auto": the public lobby this PC reaches fastest (a TCP connect to each, timed; their game
- * servers answer TCP on the same port). Lobbies are separate until federation (TODO): players on different ones
- * don't see each other. "auto" is the default (owner 2026-11-10: a player in Italy on the North American lobby saw
- * 124-217 ms where the European one answers in 21), and the North American lobby's line without a code, the old
- * default every install wrote, means "auto" too; "na"/"eu" (or the full address with a code) pin one. */
-static const struct { const char *where, *host; } PUBLIC_LOBBIES[] = {
-    {"North America", "smash.recomps.wtf:39421"},
-    {"Europe", "opensmash-lobby.duckdns.org:39421"},
-};
-static double connect_ms(const char *hostport) {
-    char host[256], *colon;
-    snprintf(host, sizeof host, "%s", hostport);
-    if (!(colon = strrchr(host, ':'))) return -1;
-    *colon = 0;
-    struct addrinfo hints = {0}, *res = NULL;
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host, colon + 1, &hints, &res) || !res) return -1;
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    double ms = -1;
-    if (s != INVALID_SOCKET) {
-#ifdef _WIN32
-        u_long nb = 1;
-        ioctlsocket(s, FIONBIO, &nb);
-#else
-        fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
-#endif
-        LARGE_INTEGER f, t0, t1;
-        QueryPerformanceFrequency(&f);
-        QueryPerformanceCounter(&t0);
-        connect(s, res->ai_addr, (int)res->ai_addrlen);
-        fd_set w, e;
-        FD_ZERO(&w); FD_ZERO(&e); FD_SET(s, &w); FD_SET(s, &e);
-        struct timeval tv = {1, 500000};
-        int err = 0;
-        socklen_t el = sizeof err;   /* (a refused connect is writable too on Linux/macOS: its error says) */
-        if (select((int)s + 1, NULL, &w, &e, &tv) >= 1 && FD_ISSET(s, &w) && !FD_ISSET(s, &e)
-            && !getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&err, &el) && !err) {
-            QueryPerformanceCounter(&t1);
-            ms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
-        }
-        closesocket(s);
-    }
-    freeaddrinfo(res);
-    return ms;
-}
-static void nearest_lobby(char *out, size_t n) {
-#ifdef _WIN32
-    WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa);
-#endif
-    double best = -1;
-    char said[512] = "";
-    size_t l = 0;
-    for (size_t i = 0; i < sizeof PUBLIC_LOBBIES / sizeof *PUBLIC_LOBBIES; i++) {
-        double ms = connect_ms(PUBLIC_LOBBIES[i].host);
-        int w = ms >= 0 ? snprintf(said + l, sizeof said - l, "%s%s %.0f ms", l ? ", " : "", PUBLIC_LOBBIES[i].where, ms)
-                        : snprintf(said + l, sizeof said - l, "%s%s no answer", l ? ", " : "", PUBLIC_LOBBIES[i].where);
-        if (w > 0 && (size_t)w < sizeof said - l) l += (size_t)w;
-        if (ms >= 0 && (best < 0 || ms < best)) { best = ms; snprintf(out, n, "%s", PUBLIC_LOBBIES[i].host); }
-    }
-    if (best < 0) snprintf(out, n, "%s", PUBLIC_LOBBIES[0].host);
-    fprintf(stderr, "[net] the nearest public lobby: %s (%s)\n", out, said);
+/* online_server.txt "auto" (the default): the one public lobby, in Europe, which every player shares: matchmaking,
+ * the game server and every GSP result (owner 2026-11-16). Where two players have no direct path, Epic's relays
+ * (net_eos.c), near both of them, carry the match; the lobby's own relay is the last resort. The North American
+ * lobby is gone: "na", "eu" and its address (with or without a lobby code, which is kept) mean this one; any other
+ * server a player named is kept as it is. */
+#define PUBLIC_LOBBY "opensmash-lobby.duckdns.org:39421"
+static int means_public_lobby(const char *host) {
+    return !_stricmp(host, "auto") || !_stricmp(host, "na") || !_stricmp(host, "eu") || !_strnicmp(host, "smash.recomps.wtf:", 18) ||
+           !_stricmp(host, "smash.recomps.wtf");
 }
 
 static void configure_from_files(void) {
     char line[256], host[256] = "", code[NAME_LEN + 1] = "";
     if (settings_line_read(config_path(CONFIG_ONLINE_SERVER), line, sizeof line)) sscanf(line, "%255s %32s", host, code);
     if (!host[0] || !_stricmp(host, "off")) return;
-    if (!_stricmp(host, "auto") || (!code[0] && !_stricmp(host, PUBLIC_LOBBIES[0].host))) nearest_lobby(host, sizeof host);
-    else if (!_stricmp(host, "na")) snprintf(host, sizeof host, "%s", PUBLIC_LOBBIES[0].host);
-    else if (!_stricmp(host, "eu")) snprintf(host, sizeof host, "%s", PUBLIC_LOBBIES[1].host);
+    if (means_public_lobby(host)) snprintf(host, sizeof host, "%s", PUBLIC_LOBBY);
     snprintf(relay_text, sizeof relay_text, "%s", host);
     if (code[0] && !getenv("SSBU_NET_ROOM")) { snprintf(room, sizeof room, "%s", code); room_named = 1; }
     if (!getenv("SSBU_NET_NAME")) {
@@ -296,6 +242,32 @@ static void configure_from_files(void) {
         snprintf(name, sizeof name, "%s", line);
     }
     if (!getenv("SSBU_NET_DIRECT") && settings_line_read(config_path(CONFIG_ONLINE_DIRECT), line, sizeof line) && !_strnicmp(line, "off", 3)) direct_ok = 0;
+}
+
+/* A friend's "Join" in Discord for another lobby (net_discord.c): config/discord_join.txt, one line "<r|a> <lobby>
+ * <lobby code, - none> <room host's address or arena ID> <unix time>". Taken at the next start, within DISCORD_JOIN_FOR
+ * seconds: that lobby and lobby code for this start only (the settings stay as they are), and a room's host listed
+ * first in Local Wireless's Rooms List. */
+#define DISCORD_JOIN_FOR (15 * 60)
+static void discord_join_at_start(void) {
+    const char *path = "config/discord_join.txt";
+    char text[512];
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    size_t n = fread(text, 1, sizeof text - 1, f);
+    fclose(f);
+    remove(path);   /* (once: a later start plays as the settings say) */
+    text[n] = 0;
+    char kind[4], relay[80], code[NAME_LEN + 1], target[48];
+    long long at = 0;
+    if (sscanf(text, "%3s %79s %32s %47s %lld", kind, relay, code, target, &at) != 5 || (strcmp(kind, "r") && strcmp(kind, "a"))) return;
+    long long now = (long long)time(NULL);
+    if (now < at || now - at > DISCORD_JOIN_FOR) return;
+    snprintf(relay_text, sizeof relay_text, "%s", means_public_lobby(relay) ? PUBLIC_LOBBY : relay);   /* (an older friend's North American lobby) */
+    if (strcmp(code, "-")) { snprintf(room, sizeof room, "%s", code); room_named = 1; }
+    struct in_addr a;
+    if (kind[0] == 'r' && inet_pton(AF_INET, target, &a) == 1) net_rooms_pick(ntohl(a.s_addr));
+    fprintf(stderr, "[net] joining from Discord: lobby %s, %s %s\n", relay_text, kind[0] == 'r' ? "the room of" : "Battle Arena", target);
 }
 
 int net_rollback_default(void) {
@@ -357,6 +329,9 @@ static void configure(void) {
         u64 age = process_age_ms(), at = (u64)(atof(v) * 1000);
         test_block_at = now_ms() + (at > age ? at - age : 0);
     }
+    /* SSBU_EOS_RELAY=force (tests): no direct path from the start, so the match goes through EOS (net_eos.c) or, with
+     * EOS off (SSBU_EOS=0, no SDK), through the lobby's relay */
+    if ((v = getenv("SSBU_EOS_RELAY")) && !_stricmp(v, "force")) test_block_at = 0;
     /* LAN discovery (below): SSBU_NET_LAN=0, no beacons when hosting; (tests) SSBU_NET_LAN_PORT, the beacons' port, and
      * SSBU_NET_LAN_TEST=1, beacons to 127.0.0.1 only (unicast, where multicast loopback is not to be counted on) */
     if ((v = getenv("SSBU_NET_LAN")) && !strcmp(v, "0")) lan_announce = 0;
@@ -365,13 +340,12 @@ static void configure(void) {
     if (hosting) snprintf(relay_text, sizeof relay_text, "127.0.0.1:%u", port);
     else if (r && *r) {
         /* (the macOS and Linux launchers pass online_server.txt's first word as SSBU_NET_RELAY: "auto", "na" and "eu"
-         * are the public lobbies there too - issue #259, they were taken as host names and nothing was joined) */
-        if (!_stricmp(r, "auto")) nearest_lobby(relay_text, sizeof relay_text);
-        else if (!_stricmp(r, "na")) snprintf(relay_text, sizeof relay_text, "%s", PUBLIC_LOBBIES[0].host);
-        else if (!_stricmp(r, "eu")) snprintf(relay_text, sizeof relay_text, "%s", PUBLIC_LOBBIES[1].host);
+         * are the public lobby there too - issue #259, they were taken as host names and nothing was joined) */
+        if (means_public_lobby(r)) snprintf(relay_text, sizeof relay_text, "%s", PUBLIC_LOBBY);
         else if (_stricmp(r, "off")) snprintf(relay_text, sizeof relay_text, "%s", r);
     }
     else if (settings_online()) configure_from_files();
+    if (!hosting && relay_text[0] && _stricmp(relay_text, "lan")) discord_join_at_start();
     lan_mode = !hosting && !_stricmp(relay_text, "lan");
     configured = hosting || relay_text[0];
     proto_wanted = NET_PROTOCOL_DEFAULT;   /* SSBU_NET_PROTOCOL=2|3, else online_protocol.txt's; hosting: its own relay's, 2 */
@@ -379,6 +353,72 @@ static void configure(void) {
     else if (configured && !hosting) proto_wanted = protocol_from_file(proto_wanted);
     if (hosting || lan_mode) proto_wanted = NET_PROTOCOL;   /* (a private room's relay: version 2) */
     proto = proto_wanted;
+    if (!hosting && relay_text[0] && (!_stricmp(relay_text, "eos") || net_eos_selected())) net_backend = &net_eos_backend;   /* (net_eos_net.c: no lobby server of ours) */
+}
+
+/* (net_eos_net.c) Online through Epic Online Services: the owner's design (2026-11-16) - Epic's services (lobbies,
+ * Quickplay, Battle Arenas, Local Wireless rooms) for everyone, everywhere; the one public lobby (Europe) only as the
+ * fallback and the collector of results (net_results.c). So the public lobby's words ("auto", the default, and the
+ * older "na" / "eu", or its own address, with or without a lobby code) mean EOS first: chosen when EOS logs in within
+ * EOS_FIRST_MS (SSBU_EOS_WAIT=<ms>), else the public lobby as before - no SDK or eos.txt beside the program, macOS /
+ * Linux, SSBU_EOS=0, Epic's services down. "eos" (or SSBU_NET_RELAY=eos): EOS alone. Another lobby's address, a
+ * private room's relay (SSBU_NET_HOST), "lan" or "off": never EOS. */
+#define EOS_FIRST_MS 8000
+static int eos_first(const char *host) {
+    if (!_stricmp(host, "eos")) return 2;
+    return means_public_lobby(host) || !_stricmp(host, PUBLIC_LOBBY);
+}
+int net_eos_wanted(void) {   /* 2 EOS alone, 1 EOS first, 0 not */
+    const char *r = getenv("SSBU_NET_RELAY"), *h = getenv("SSBU_NET_HOST");
+    char line[256], host[256] = "";
+    if (h && *h && strcmp(h, "0")) return 0;
+    if (r && *r) return eos_first(r);
+    if (!settings_online() || !settings_line_read(config_path(CONFIG_ONLINE_SERVER), line, sizeof line)) return 0;
+    sscanf(line, "%255s", host);
+    return host[0] ? eos_first(host) : 0;
+}
+/* Decided once (any thread; the others wait for it). The login started with the program (net_eos_prestart), so this
+ * waits at most until EOS_FIRST_MS after the start: about a second while the game loads when EOS answers, nothing when
+ * EOS is off here. */
+static int eos_choice;
+static volatile LONG eos_files_notice;
+/* (gpu_menu.c, as it draws) a message for the screen, once: NULL when there is none */
+const char *net_notice_take(void) {
+    if (!eos_files_notice || !InterlockedExchange(&eos_files_notice, 0)) return NULL;
+    return "Epic Online files missing: online through the EU lobby only, apart from the players on Epic. "
+           "Fix: press Play in the launcher, or run python tools\\online_files.py";
+}
+static BOOL CALLBACK eos_decide(PINIT_ONCE once, void *param, void **ctx) {
+    (void)once; (void)param; (void)ctx;
+    int want = net_eos_wanted();
+    if (want != 1) { eos_choice = want == 2; return TRUE; }
+    const char *w = getenv("SSBU_EOS_WAIT");
+    u64 limit = w && *w ? (u64)atoi(w) : EOS_FIRST_MS, age = process_age_ms(), t0 = now_ms();
+    eos_choice = eos_wait_ready((unsigned)(age < limit ? limit - age : 0));
+    if (!eos_choice && eos_files_missing()) {
+        /* (issue #389: an update that left the files out put a player on the public lobby alone, unseen by the players
+         * on EOS, and nothing on screen said so) */
+        fprintf(stderr, "[net] Epic Online Services is off: EOSSDK-Win64-Shipping.dll or eos.txt is missing beside the program, so this "
+                        "game is online through the public lobby only and does not see the players on EOS. Fix: python tools\\online_files.py "
+                        "(the launcher's Play and Update run it too), then start the game again\n");
+        InterlockedExchange(&eos_files_notice, 1);   /* (on screen: net_notice_take) */
+    } else
+        fprintf(stderr, eos_choice ? "[net] online through Epic Online Services (waited %llu ms); the public lobby is the fallback\n"
+                                   : "[net] Epic Online Services not available here (waited %llu ms): online through the public lobby\n",
+                (unsigned long long)(now_ms() - t0));
+    return TRUE;
+}
+int net_eos_selected(void) {
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    InitOnceExecuteOnce(&once, eos_decide, NULL, NULL);
+    return eos_choice;
+}
+/* (host.c, at the start) EOS logs in while the game loads, when online play may want it */
+void net_eos_prestart(void) { if (net_eos_wanted()) eos_start(); }
+void net_eos_names(char *code, size_t code_n, char *who, size_t who_n) {
+    configure();
+    snprintf(code, code_n, "%s", room);
+    snprintf(who, who_n, "%s", name);
 }
 
 static void start(void);
@@ -386,6 +426,7 @@ int net_configured(void) { start(); return configured; }
 int net_log(void) { configure(); return logging; }
 const char *net_player_name(void) { configure(); return net_backend ? net_backend->name() : name; }
 const char *net_relay_address(void) { configure(); return !hosting && !lan_mode && relay_text[0] ? relay_text : NULL; }
+const char *net_lobby_code(void) { configure(); return room; }
 
 /* ---- the relay (host mode) ------------------------------------------------------------ */
 typedef struct Member { struct sockaddr_in at; u64 nonce, seen; u32 ip; char name[NAME_LEN + 1]; } Member;
@@ -854,6 +895,7 @@ static int rb_take(u32 src, u16 dport, const u8 *data, u32 len, volatile LONG64 
     if (len) s(src, data, len);
     return 1;
 }
+int net_rb_deliver(u32 src, const u8 *data, u32 len) { return rb_take(src, NET_RB_PORT, data, len, &rb_in_direct); }   /* (net_eos_net.c) */
 void net_rb_counts(NetRbCounts *out) {
     out->out_data = rb_out_data; out->out_lobby = rb_out_lobby;
     out->in_direct = rb_in_direct; out->in_relayed = rb_in_relayed; out->in_lobby = rb_in_lobby;
@@ -912,6 +954,10 @@ typedef struct Peer {
     LONG rtt;
     Candidate cand[CANDS];                            /* the lobby's, its guessed ports, then the one learnt */
     volatile LONG in_direct, in_relayed, out_direct, out_relayed, dropped;
+    char eos[NET_EOS_ID_LEN + 1];                     /* (net_eos.c) its EOS id, told through the lobby; "" unknown */
+    volatile LONG64 eos_in_at;                        /* the last packet from it through EOS (ms) */
+    u64 eos_told_at, eos_hello_at;
+    volatile LONG in_eos, out_eos;
 } Peer;
 static SRWLOCK peers_lock = SRWLOCK_INIT;   /* (never held while calling hle_net, or printing) */
 static Peer peers[PEERS_MAX];
@@ -968,6 +1014,12 @@ static const char *addr_text(const struct sockaddr_in *a, char *buf) {   /* (buf
 static u64 random64(void) { unsigned int a, b; rand_s(&a); rand_s(&b); return (u64)a << 32 | b; }
 
 static int usable(const Peer *q, u64 t) { return q->state == P_DIRECT && t - q->last_ack < USABLE_MS && t < test_block_at; }
+/* EOS (net_eos.c), where no direct path works: each player tells the other its EOS id through the lobby
+ * (DATA to NET_EOS_PORT), then both send EOS hellos (DIRECT packets with the pair's secret, to NET_EOS_PORT)
+ * every 300 ms; while hellos come back, the game's traffic to that player goes through EOS - which punches
+ * through routers itself and, where it can't, relays near both players - instead of the lobby's relay. */
+#define NET_EOS_PORT 7702
+static int usable_eos(const Peer *q, u64 t) { return q->eos[0] && t - (u64)q->eos_in_at < USABLE_MS && eos_ready(); }
 
 static const char *peer_state(const Peer *q, u64 t, char *buf) {   /* (buf: 48 bytes) */
     if (usable(q, t)) { snprintf(buf, 48, "direct %ld ms", (long)q->rtt); return buf; }
@@ -1129,6 +1181,8 @@ static void read_peers(const u8 *p, int n) {
         if (old) {
             q->in_direct = old->in_direct; q->in_relayed = old->in_relayed; q->dropped = old->dropped;
             q->out_direct = old->out_direct; q->out_relayed = old->out_relayed; q->rtt = old->rtt;
+            memcpy(q->eos, old->eos, sizeof q->eos); q->eos_in_at = old->eos_in_at; q->eos_told_at = old->eos_told_at;
+            q->eos_hello_at = old->eos_hello_at; q->in_eos = old->in_eos; q->out_eos = old->out_eos;
         }
         if (same) {   /* (the same player at the same addresses: its path kept; a new PROBE port only changes the guesses) */
             q->state = old->state; q->via = old->via; q->t0 = old->t0; q->last_ack = old->last_ack;
@@ -1170,10 +1224,23 @@ static void read_peers(const u8 *p, int n) {
 static void peers_tick(u64 t) {
     static u64 last_report;
     Notes ns = {0};
+    const char *my_eos = eos_my_id();
+    u32 tell[PEERS_MAX];   /* (sent after the lock: net_send takes it) */
+    struct { char id[NET_EOS_ID_LEN + 1]; u64 secret; u32 ip; } eos_hi[PEERS_MAX];
+    int ntell = 0, nhi = 0;
     AcquireSRWLockExclusive(&peers_lock);
     for (int i = 0; i < npeers; i++) {
         Peer *q = &peers[i];
         if (!q->introduced) continue;
+        if (my_eos && !usable(q, t)) {   /* (EOS: our id through the lobby until its hellos come, and hellos while it is known) */
+            if (!usable_eos(q, t) && t - q->eos_told_at >= 1000) { q->eos_told_at = t; tell[ntell++] = q->ip; }
+            if (q->eos[0] && t - q->eos_hello_at >= 300) {
+                q->eos_hello_at = t;
+                memcpy(eos_hi[nhi].id, q->eos, sizeof q->eos);
+                eos_hi[nhi].secret = q->secret;
+                eos_hi[nhi++].ip = q->ip;
+            }
+        }
         if (q->state == P_DIRECT && t - q->last_ack >= USABLE_MS) {
             q->state = P_RELAYED;
             q->t0 = t;   /* (and hellos every 400 ms for a while: it may come back) */
@@ -1208,12 +1275,77 @@ static void peers_tick(u64 t) {
         for (int i = 0; i < npeers; i++) {
             char st[48];
             const Peer *q = &peers[i];
-            note(&ns, "peer %s: %s; in %ld direct + %ld relayed, out %ld direct + %ld relayed, %ld dropped", q->name,
-                 peer_state(q, t, st), (long)q->in_direct, (long)q->in_relayed, (long)q->out_direct, (long)q->out_relayed, (long)q->dropped);
+            note(&ns, "peer %s: %s; in %ld direct + %ld EOS + %ld relayed, out %ld direct + %ld EOS + %ld relayed, %ld dropped", q->name,
+                 peer_state(q, t, st), (long)q->in_direct, (long)q->in_eos, (long)q->in_relayed, (long)q->out_direct, (long)q->out_eos,
+                 (long)q->out_relayed, (long)q->dropped);
         }
     }
     ReleaseSRWLockExclusive(&peers_lock);
     print_notes(&ns);
+    for (int i = 0; i < ntell; i++) net_send(my_ip, NET_EOS_PORT, tell[i], NET_EOS_PORT, my_eos, NET_EOS_ID_LEN);
+    for (int i = 0; i < nhi; i++) {
+        u8 b[DIRECT_HEAD + 12 + NET_EOS_ID_LEN];
+        header(b, T_DIRECT);
+        put64(b + 4, eos_hi[i].secret);
+        put32(b + DIRECT_HEAD, my_ip);
+        put32(b + DIRECT_HEAD + 4, eos_hi[i].ip);
+        put16(b + DIRECT_HEAD + 8, NET_EOS_PORT);
+        put16(b + DIRECT_HEAD + 10, NET_EOS_PORT);
+        memcpy(b + DIRECT_HEAD + 12, my_eos, NET_EOS_ID_LEN);
+        eos_send(eos_hi[i].id, b, sizeof b);
+    }
+}
+
+static int eos_id_ok(const u8 *p, u32 n) {   /* 32 hex digits */
+    if (n < NET_EOS_ID_LEN) return 0;
+    for (int i = 0; i < NET_EOS_ID_LEN; i++) if (!((p[i] >= '0' && p[i] <= '9') || (p[i] >= 'a' && p[i] <= 'f'))) return 0;
+    return 1;
+}
+static void eos_told(u32 src, const u8 *p, u32 n) {   /* (client thread) a player's EOS id, through the lobby */
+    if (!eos_id_ok(p, n)) return;
+    Notes ns = {0};
+    AcquireSRWLockExclusive(&peers_lock);
+    for (int i = 0; i < npeers; i++)
+        if (peers[i].ip == src && memcmp(peers[i].eos, p, NET_EOS_ID_LEN)) {
+            memcpy(peers[i].eos, p, NET_EOS_ID_LEN);
+            peers[i].eos[NET_EOS_ID_LEN] = 0;
+            peers[i].eos_hello_at = 0;
+            note(&ns, "%s: EOS player %s", peers[i].name, peers[i].eos);
+        }
+    ReleaseSRWLockExclusive(&peers_lock);
+    print_notes(&ns);
+}
+
+/* (net_eos.c, the EOS thread) A packet from another player through EOS: as a direct one, with the pair's secret. */
+void net_eos_packet(const char *from, const u8 *p, u32 n) {
+    if (n >= 2 && p[0] == 'E' && p[1] == 'B') { net_eos_net_packet(from, p, n); return; }   /* (net_eos_net.c's) */
+    u64 t = now_ms();
+    if (!lobby || !joined || n < DIRECT_HEAD + 12 || p[0] != MAGIC0 || p[1] != MAGIC1 || p[2] != proto || p[3] != T_DIRECT) return;
+    u64 secret = get64(p + 4);
+    const u8 *b = p + DIRECT_HEAD;
+    u32 src = get32(b), dst = get32(b + 4);
+    u16 sport = get16(b + 8), dport = get16(b + 10);
+    int ok = 0, first = 0;
+    Notes ns = {0};
+    AcquireSRWLockShared(&peers_lock);
+    for (int i = 0; i < npeers; i++) {
+        Peer *q = &peers[i];
+        if (!q->introduced || q->secret != secret || q->ip != src) continue;
+        ok = (dst == my_ip || dst == NET_BROADCAST || dst == 0xFFFFFFFFu) && sport != NET_LDN_PORT && dport != NET_LDN_PORT &&
+             !strncmp(q->eos, from, NET_EOS_ID_LEN);
+        if (ok) {
+            first = t - (u64)InterlockedExchange64(&q->eos_in_at, (LONG64)t) >= USABLE_MS;
+            if (first) note(&ns, "%s: through EOS (Epic's P2P) rather than the lobby's relay", q->name);
+            InterlockedIncrement(&q->in_eos);
+        } else InterlockedIncrement(&q->dropped);
+        break;
+    }
+    ReleaseSRWLockShared(&peers_lock);
+    print_notes(&ns);
+    if (!ok || dport == NET_EOS_PORT) return;   /* (a hello: the path works) */
+    u32 len = n - DIRECT_HEAD - 12;
+    if (rb_take(src, dport, b + 12, len, &rb_in_direct)) return;
+    if (ldn_in_network(src)) vsock_deliver(src, sport, dst, dport, b + 12, len);
 }
 
 /* A packet from another player, straight (not from the relay). */
@@ -1235,6 +1367,7 @@ static void direct_packet(const u8 *p, int n, const struct sockaddr_in *from) {
             InterlockedIncrement(ok ? &q->in_direct : &q->dropped);
         }
         ReleaseSRWLockShared(&peers_lock);
+        if (ok && dport == NET_EOS_PORT) { if (eos_id_ok(b + 12, (u32)(n - DIRECT_HEAD - 12))) eos_told(src, b + 12, (u32)(n - DIRECT_HEAD - 12)); return; }
         if (ok && rb_take(src, dport, b + 12, (u32)(n - DIRECT_HEAD - 12), &rb_in_direct)) return;   /* (rollback's: the pair's secret is the proof) */
         if (ok && ldn_in_network(src)) vsock_deliver(src, sport, dst, dport, b + 12, (u32)(n - DIRECT_HEAD - 12));
         else if (ok) InterlockedIncrement(&direct_not_in_room);
@@ -1313,6 +1446,8 @@ void net_send(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const void *da
     memcpy(body + 12, data, len);
     int n = 12 + (int)len, broadcast = dst_ip == NET_BROADCAST || dst_ip == 0xFFFFFFFFu, nd = 0, relayed = 0;
     struct { struct sockaddr_in at; u64 secret; u32 ip; } direct[PEERS_MAX];
+    struct { char id[NET_EOS_ID_LEN + 1]; u64 secret; u32 ip; } viaeos[PEERS_MAX];
+    int ne = 0;
     if (src_port != NET_LDN_PORT && dst_port != NET_LDN_PORT) {   /* (local wireless's own: always through the lobby) */
         u64 t = now_ms();
         AcquireSRWLockShared(&peers_lock);
@@ -1324,6 +1459,11 @@ void net_send(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const void *da
                 direct[nd].secret = q->secret;
                 direct[nd++].ip = q->ip;
                 InterlockedIncrement(&q->out_direct);
+            } else if (n + DIRECT_HEAD <= NET_EOS_MAX && usable_eos(q, t)) {
+                memcpy(viaeos[ne].id, q->eos, sizeof q->eos);
+                viaeos[ne].secret = q->secret;
+                viaeos[ne++].ip = q->ip;
+                InterlockedIncrement(&q->out_eos);
             } else {
                 relayed++;
                 InterlockedIncrement(&q->out_relayed);
@@ -1337,12 +1477,19 @@ void net_send(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const void *da
         put64(h + 4, direct[i].secret);
         send_udp(client_sock, h, n + DIRECT_HEAD, &direct[i].at);
     }
-    if (!nd || (broadcast && relayed)) {
-        if (nd) {   /* (a broadcast some players got directly: the lobby leaves those out) */
-            h = body - (5 + 4 * nd);
+    for (int i = 0; i < ne; i++) {
+        h = body - DIRECT_HEAD;
+        header(h, T_DIRECT);
+        put64(h + 4, viaeos[i].secret);
+        eos_send(viaeos[i].id, h, (u32)(n + DIRECT_HEAD));
+    }
+    if (!(nd + ne) || (broadcast && relayed)) {
+        if (nd + ne) {   /* (a broadcast some players got directly or through EOS: the lobby leaves those out) */
+            h = body - (5 + 4 * (nd + ne));
             header(h, T_BCAST);
-            h[4] = (u8)nd;
+            h[4] = (u8)(nd + ne);
             for (int i = 0; i < nd; i++) put32(h + 5 + 4 * i, direct[i].ip);
+            for (int i = 0; i < ne; i++) put32(h + 5 + 4 * (nd + i), viaeos[i].ip);
         } else {
             h = body - 4;
             header(h, T_DATA);
@@ -1363,6 +1510,11 @@ static int is_room_peer(u32 ip) {   /* (the lobby: a player of this player's Loc
 static void rb_lobby_send(u32 dst, const void *data, u32 len);
 static int lobby_has_rb(void);
 void net_rb_send(u32 dst, const void *data, u32 len) {
+    if (net_backend && len) {   /* (EOS alone: to that member, or every one) */
+        net_backend->send(net_local_ip(), NET_RB_PORT, dst ? dst : 0xFFFFFFFFu, NET_RB_PORT, data, len);
+        InterlockedIncrement64(&rb_out_data);
+        return;
+    }
     if (!joined || client_sock == INVALID_SOCKET || !len) return;
     u32 to = dst ? dst : NET_BROADCAST;
     if (!lobby) {   /* (a private room's relay: DATA to its members) */
@@ -1412,6 +1564,14 @@ int net_recent_peers(u32 *out, int max, u32 within_ms) {
 }
 int net_room_members(u32 *out, int max) {
     start();
+    if (net_backend == &net_eos_backend && max > 0) {   /* (EOS alone: the hub's members; rollback keeps those in the room's network) */
+        char ids[64][NET_EOS_ID_LEN + 1];
+        u32 ips[64];
+        int n = eos_hub_members(ids, ips, 64), k = 0;
+        for (int i = 0; i < n && k < max; i++) if (ips[i]) out[k++] = ips[i];
+        qsort(out, (size_t)k, sizeof out[0], u32_order);
+        return k;
+    }
     if (!joined || max <= 0) return 0;
     u32 all[ROOM_MEMBERS + PEERS_MAX];
     int n = 0;
@@ -1933,6 +2093,25 @@ static void mod_set_make(void) {
     fprintf(stderr, "[online] mods: %d applied (dump/mods/applied.json)%s: a mod set of %d entr%s\n", applied, code ? ", code patches on" : "",
            mod_set[0], mod_set[0] == 1 ? "y" : "ies");
     free(m);
+}
+
+/* (the in-game NEX server's gatherings in EOS Lobbies) who may meet whom, as one short key: the game build, the lobby
+ * code, the simulation version and the mods (their hashes, in any order: the lobby's mods_key) - "p1-" and 16 hex
+ * digits of their FNV-1a 64 hash, short enough for an EOS lobby's bucket */
+void net_part_key(char *out, size_t n) {
+    configure();
+    mod_set_make();
+    u32 h[MODS_MAX];
+    int k = 0, o = 1;
+    for (int i = 0; i < mod_set[0] && k < MODS_MAX; i++) { h[k++] = get32(mod_set + o); o += 5 + mod_set[o + 4]; }
+    qsort(h, (size_t)k, sizeof *h, u32_cmp);
+    u64 x = 0xcbf29ce484222325ull;
+    char text[256];
+    const char *build = rt_module_main.build_id ? rt_module_main.build_id : "";
+    snprintf(text, sizeof text, "%s|%s|%u|", build, room, (unsigned)SIM_VERSION);
+    for (char *p = text; *p; p++) { x ^= (u8)(*p >= 'a' && *p <= 'z' ? *p - 32 : *p); x *= 0x100000001b3ull; }
+    for (int i = 0; i < k; i++) for (int b = 0; b < 4; b++) { x ^= (u8)(h[i] >> (8 * b)); x *= 0x100000001b3ull; }
+    snprintf(out, n, "p1-%016llx", (unsigned long long)x);
 }
 
 static void send_join(void) {
@@ -2658,6 +2837,7 @@ static DWORD WINAPI client_thread(LPVOID unused) {
         switch (buf[3]) {
         case T_DATA:
             if (n >= 16 && joined) {
+                if (get16(buf + 14) == NET_EOS_PORT) { eos_told(get32(buf + 4), buf + 16, (u32)(n - 16)); break; }
                 if (get16(buf + 12) != NET_LDN_PORT) count_relayed_in(get32(buf + 4));
                 if (!rb_take(get32(buf + 4), get16(buf + 14), buf + 16, (u32)(n - 16), &rb_in_relayed))
                     vsock_deliver(get32(buf + 4), get16(buf + 12), get32(buf + 8), get16(buf + 14), buf + 16, (u32)(n - 16));
@@ -2677,6 +2857,7 @@ static DWORD WINAPI client_thread(LPVOID unused) {
             if (!joined && lobby) fprintf(stderr, "[net] joined the lobby on %s as 10.13.%u.%u (lobby code %s)%s\n", relay_text, my_ip >> 8 & 255, my_ip & 255, room,
                                           proto == NET_PROTOCOL_V3 ? ", protocol 3" : "");
             else if (!joined) fprintf(stderr, "[net] joined room %s on %s as 10.13.%u.%u (%ld players)\n", room, relay_text, my_ip >> 8 & 255, my_ip & 255, (long)members);
+            if (lobby) eos_start();   /* (net_eos.c: the relay of last resort, when the SDK and eos.txt are beside the program) */
             InterlockedExchange(&joined, 1);
             break;
         case T_REJECT:

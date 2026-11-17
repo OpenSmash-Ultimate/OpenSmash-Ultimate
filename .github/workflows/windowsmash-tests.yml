@@ -40,6 +40,13 @@ jobs:
         with:
           python-version: '3.14'
 
+      - name: Launcher localization behavior
+        if: runner.os == 'Windows'
+        run: dotnet run --project tests/launcher_localization/LauncherLocalizationTests.csproj -c Release
+
+      - name: Shared UI catalogs
+        run: python tools/localization.py --check
+
       # pycryptodomex (requirements.txt), capstone and unicorn (tests/requirements-dev.txt); zstandard for
       # test_arc_zstd's fallback-package test (requirements.txt asks for it only before Python 3.14)
       - name: Python packages
@@ -51,8 +58,10 @@ jobs:
       - name: Linux packages
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang lld llvm
+          # (the runners' Azure apt mirror stopped resolving, 2026-11-11: fall back to archive.ubuntu.com and retry)
+          sudo sed -i 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+          for i in 1 2 3; do sudo apt-get update -qq -o Acquire::Retries=3 && break; sleep 20; done
+          sudo apt-get install -y -qq -o Acquire::Retries=3 clang lld llvm
 
       # bash 5 for the Linux launchers' tests (macOS's own bash is 3.2); an LLVM for tools/linux/toolchain.py
       # (SSBU_LLVM_BIN: it searches for one only on Linux and Windows); 127.0.0.2 for test_ssbu_relay's second
@@ -75,6 +84,15 @@ jobs:
       - name: yuzu client libraries
         if: runner.os == 'Windows'
         run: python tools/yuzu_client_deps.py
+
+      - name: Embedded room UI behavior
+        if: runner.os == 'Windows'
+        run: dotnet run --project tests/launcher_yuzu_ui/LauncherYuzuUiTests.csproj -c Release
+
+      # The launcher's settings against the game's defaults, the remap page with simulated pads, the home page's lobby feed
+      - name: Launcher settings, remap and lobby feed
+        if: runner.os == 'Windows'
+        run: dotnet run --project tests/launcher_settings/LauncherSettingsTests.csproj -c Release
 
       # gfxtest (the Metal renderer) skips on the runner's paravirtual GPU, where it never finished; a manual run
       # (workflow_dispatch) runs it anyway and shows what it printed before its 300 s timeout

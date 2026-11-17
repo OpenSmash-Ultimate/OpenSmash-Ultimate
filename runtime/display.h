@@ -29,7 +29,26 @@ void display_note_refresh(int hz);                /* the window's monitor refres
 #endif
 /* The renderer, at a present: the window's client size, when it changed since the last call. */
 int display_take_size(unsigned *w, unsigned *h);
-/* The 16:9 picture centred in a w x h back buffer. */
+/* The picture's shape, width over height, as drawn now: 16:9 unless display.ini's aspect (SSBU_ASPECT)
+ * says otherwise, at most 32:9; 16:9 for online matches (gpu_display.c, display_aspect_take). */
+float display_aspect(void);
+/* 1: always 16:9 this session (macOS: Metal not ported yet). */
+int display_shape_locked(void);
+/* (the renderer, between two frames) 1 when a new shape is taken now (never in an online fight). */
+int display_aspect_take(void);
+/* The view (docs/ULTRAWIDE-CONTEXT.md): display.ini view, SSBU_VIEW over it. */
+enum { VIEW_WIDE, VIEW_ZOOMED, VIEW_HYBRID };
+int display_view(void);
+/* (the settings menu) the picture shape as set, and a change to it; both are taken at once (the shape
+ * at the next frame, the view now). */
+const char *display_aspect_setting(void);
+void display_set_aspect(const char *text);
+void display_set_view(int view);
+/* Where a fight's timer is drawn (display.ini timer; the settings menu changes it at once). */
+enum { TIMER_RIGHT, TIMER_CENTER, TIMER_LEFT, TIMER_HIDDEN };
+int display_timer(void);
+void display_set_timer(int timer);
+/* The picture (display_aspect's shape) centred in a w x h back buffer. */
 void display_fit(unsigned w, unsigned h, unsigned *x, unsigned *y, unsigned *fw, unsigned *fh);
 int display_latency(void);              /* frames the GPU may queue ahead: 1-3 */
 int display_low_latency(void);          /* low_latency: the game released late in the frame (ipc_vi.c) */
@@ -38,6 +57,11 @@ void display_loading_note(const char *note);   /* (the text beside the loading a
 int display_runahead(void);             /* runahead: frames run ahead in fights (hle_rb_core.c), 0 off */
 void display_set_runahead(int frames);  /* (the settings menu: from now on) */
 Pacing display_pacing(void);
+/* (rollback's time sync, hle_rb_core.c) the game ahead of the other player runs this many ms slower: clock and vrr pacing
+ * add it to the next refreshes' schedule (a frame a little later, no refresh left out); display pacing, held to the
+ * monitor, leaves a refresh out for each whole frame owed */
+int display_tick_stretch(double ms);
+void display_tick_stretch_reset(void);   /* (a fight starts) */
 const char *display_gpu(void);          /* the graphics card to use: "auto", or part of its name (SSBU_GPU) */
 /* render_scale: the game's pictures are drawn this many times its 1920x1080 in each direction
  * (0.5-4; SSBU_RENDER_SCALE). 0 = auto: as many as the picture has pixels in the window at the
@@ -68,5 +92,17 @@ void display_set_pacing(Pacing pacing);
 void display_set_hide_cursor(int on);
 void display_set_latency(int frames);
 int display_take_latency(void);           /* the renderer, at a present: a new latency, or 0 */
-void display_set_render_scale(float scale);   /* (shown by the menu; the renderer takes it at the next start) */
+void display_set_render_scale(float scale);   /* (Direct3D 11 and Vulkan take it at their next present; Metal at the next start) */
+void display_set_window_height(int height);   /* the windowed height; the width follows the picture shape (Windows: now) */
+int display_window_height_fits(int height);   /* whether that windowed height fits the game window's monitor at the shape now */
+#ifndef _WIN32
+int display_take_window_size(int *w, int *h);   /* (linux/window.c's loop) 1: the windowed window takes this size now */
+#endif
+int display_window_sizing(void);   /* whether the window or its edge is being dragged now (Windows) */
+/* The settings' Experimental tab: the picture shape kept in online matches (display.ini
+ * experimental_ultrawide_online, read at the start; docs/adr/0001, 0002). */
+int display_uw_online(void);         /* this session's */
+int display_uw_online_saved(void);   /* the one saved for the next start */
+void display_set_uw_online(int on);
 void display_set_renderer(int renderer);      /* (the same: RENDERER_*, which back end draws from the next start) */
+void display_set_gpu(const char *gpu);          /* (the same: the graphics card, "auto" or its name, picked at the next start) */

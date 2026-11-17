@@ -3,11 +3,21 @@
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/pkgyYGf3YB)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 
-**[Website](https://denkishi.github.io/opensmash-site/) · [Discord](https://discord.gg/pkgyYGf3YB) · [Releases](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) · [Installation guide](docs/INSTALL.md) · [Issues](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/issues)**
+**[Website: live players, rooms and leaderboard](https://denkishi.github.io/opensmash-site/) · [Discord](https://discord.gg/pkgyYGf3YB) · [Releases](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases) · [Installation guide](docs/INSTALL.md) · [Issues](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/issues)**
 
 OpenSmash-Ultimate turns *Super Smash Bros. Ultimate* into a native PC program by static recompilation. It translates the game's ARM64 code into C once, ahead of time, compiles it, and links it with a runtime that stands in for the Nintendo Switch. The game's code and data come from a copy you dumped from your own console.
 
-It is the merge of two projects, [WindowSmash](https://github.com/OpenSmash-Ultimate/WindowSmash) and [ssbu-recomp](https://github.com/OpenSmash-Ultimate/ssbu-recomp): one repository, one runtime (WindowSmash's, at game version 13.0.5) and one community. New work, issues and pull requests go here; the two old repositories are kept for their history.
+It is the merge of [WindowSmash](https://github.com/OpenSmash-Ultimate/WindowSmash) and [ssbu-recomp](https://github.com/OpenSmash-Ultimate/ssbu-recomp); new work, issues and pull requests go here.
+
+## Online
+
+Play online from the launcher or the game's own menus. The **[website](https://denkishi.github.io/opensmash-site/)** shows who is playing right now, the open rooms and arenas, and the GSP leaderboard, overall and per fighter.
+
+- **One server, every region.** A single lobby server in Europe; Epic Online Services relays are the fallback for players in every region (being added).
+- **Rollback netplay** for fights, with no router setup.
+- **GSP ranked** matches and a public leaderboard. Sign in with Discord on the website to see your own GSP and rank and to choose whether your name is shown.
+- **Discord Rich Presence** with Join: friends can see what you play and join your room.
+- Details and troubleshooting: [Multiplayer guide](docs/MULTIPLAYER.md).
 
 > [!IMPORTANT]
 > **This repository does not contain the game.** It holds no game files, keys, firmware or saves, and never will. You need your own copy of the game, dumped from your own Switch.
@@ -20,6 +30,8 @@ It is the merge of two projects, [WindowSmash](https://github.com/OpenSmash-Ulti
 4. Press **Play** in the launcher, or use the **Play SSBU** shortcut.
 5. To update, open **Settings -> Update** in the launcher. Mods are in the launcher's **Mods** view; online is in **Settings -> Online**.
 
+The first start is faster than before.
+
 You need your own copy of the game, version 13.0.5, dumped from your own Switch, and a 64-bit Windows 10 or 11 PC; AVX2 is recommended, SSE4.2 works too. Linux and macOS (Apple silicon) are experimental. The [installation guide](docs/INSTALL.md) explains each step; [docs/BUILDING.md](docs/BUILDING.md) is the step-by-step setup and building from source.
 
 ## What's in it
@@ -27,14 +39,12 @@ You need your own copy of the game, version 13.0.5, dumped from your own Switch,
 | Area | What you get | Where |
 | :--- | :--- | :--- |
 | The game | The whole game recompiled for x86-64: menus, every mode, DLC fighters and stages, movies (VP9), music. | here |
-| Online | Rooms with a code (`XXXXX-XXXXX`), LAN rooms, a lobby, relay and direct paths; rollback netplay for fights (`SSBU_RB`, from WindowSmash #103 and ssbu-recomp #116). | [#55](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/55), [#59](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/59), [#63](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/63) |
+| Online | One EU lobby server with Epic Online Services relays as the fallback, rollback netplay, GSP ranked and a leaderboard on the website, Discord sign-in and Rich Presence, room codes (`XXXXX-XXXXX`) and LAN rooms. | [Online](#online) |
 | Mods | The OpenSmash launcher and mod manager, Skyline plugins, ARCropolis mods, a switch for every mod in the game's settings and in the launcher; native mods written against `hook.h`. | [#62](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/62), [#63](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/63), [#67](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/67) |
 | New fighters | Fighters with a kind and files of their own (up to 16), all eight colours; fighters written as C++ source. | [#67](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/67), [#68](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/68) |
-| Graphics | Direct3D 11 by default; Vulkan as a choice in `display.ini` and the settings menu; Metal on macOS; shader prewarm and Prepare Shaders. | [#64](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/64), [#26](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/26) |
+| Graphics | Vulkan by default (Direct3D 11 stays a choice in `display.ini` and the settings menu); Metal on macOS; shader prewarm and Prepare Shaders; a faster first start. | [#64](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/64), [#26](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/26) |
 | Settings | Game language, master volume, controllers (dead zones, invert, ignore), GameCube adapters, keyboard keys, low-latency display mode, the album. | [#56](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/56), [#57](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/57), [#60](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/60), [#3](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/3) |
 | Memory | Caps on the shader prewarm and on the copy kept for mod reloads; a memory line in the log. | [#66](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/66) |
-
-Rows that link to pull requests are being reviewed and land in `main` as they are merged.
 
 ## Guides
 
@@ -43,12 +53,14 @@ Rows that link to pull requests are being reviewed and land in `main` as they ar
 | [Installation guide](docs/INSTALL.md) | install, update, add mods and go online. |
 | [Setup guide](docs/BUILDING.md) | do every setup step by hand, and build from source. |
 | [Playing](docs/PLAYING.md) | change the controls or the window, and find saves, screenshots and problem reports. |
-| [Multiplayer](docs/MULTIPLAYER.md) | play with other people online or in a private room. |
+| [Multiplayer](docs/MULTIPLAYER.md) | play online, in a private room, or on a LAN. |
 | [Mods and Skyline plugins](docs/SKYLINE.md) | install mods and plugins and turn them on or off. |
 | [DLC and unlocks](docs/DLC-AND-UNLOCKS.md) | use your DLC, or unlock every base-game fighter on your save. |
 | [The 13.0.5 update](docs/UPDATES.md) | see which copies of the game count as 13.0.5 and how the update is applied. |
-| [Linux](docs/LINUX.md) · [macOS](docs/MACOS.md) | install, build and run the experimental versions. |
+| [Linux](docs/LINUX.md) · [macOS](docs/MACOS.md) | install, build and run the experimental versions. The OpenSmash Launcher (`opensmash-launcher.sh`, `OpenSmash Launcher.command`) does setup, updates, Play, settings and mods in a window, with a game pad too (Steam Deck Game Mode). |
 | [How it works](docs/TECHNICAL.md) | understand the recompiler, the runtime and every tool. |
+
+UI language: the launcher and external menu offer English, Simplified Chinese, Japanese, Korean, Spanish, French and German, with a shared **Interface language** setting. See [UI languages and translation guide](docs/LOCALIZATION.md) for adding a language or translating new UI text.
 
 ## `ssbu-recomp/`
 
@@ -56,7 +68,7 @@ Rows that link to pull requests are being reviewed and land in `main` as they ar
 
 ## Getting help
 
-- **Questions and finding players:** the OpenSmash-Ultimate Discord, **[discord.gg/pkgyYGf3YB](https://discord.gg/pkgyYGf3YB)** (WindowSmash's and ssbu-recomp's communities in one server).
+- **Questions and finding players:** the OpenSmash-Ultimate Discord, **[discord.gg/pkgyYGf3YB](https://discord.gg/pkgyYGf3YB)**.
 - **Setup problems:** see [If something goes wrong](docs/BUILDING.md#if-something-goes-wrong) in the setup guide.
 - **Bugs:** open an [issue](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/issues) with your operating system, graphics card and driver version, what you did, what happened instead, and the end of the log (`build/play.log`, plus the `.txt` report from `reports/` after a crash).
 - **Security problems:** report them privately, as [SECURITY.md](SECURITY.md) explains. Don't open a public issue.

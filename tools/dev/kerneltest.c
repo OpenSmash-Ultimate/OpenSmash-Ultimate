@@ -31,6 +31,7 @@
  * Exit code 0 when every check passes. tests/test_kernel_threads.py builds and runs both. */
 #include <stdarg.h>
 #include "../../runtime/kernel.c"
+void rb_shadow_note(u64 at, u64 size) { (void)at; (void)size; }   /* (hle_rb_state.c: the rollback shadow's shared pages) */
 #include "../../runtime/clock.h"
 
 /* ---- what kernel.c needs from the rest of the runtime ---------------------------------- */

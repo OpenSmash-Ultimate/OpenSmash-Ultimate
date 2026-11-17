@@ -41,8 +41,11 @@ class YuzuMenuTests(unittest.TestCase):
         self.assertIn('yuzu room:', menu.row('Now')['value'])
         self.assertEqual(menu.row('Your name')['value'], 'OpenSmash')
         self.assertTrue(all(row['kind'] == menu.row('Now')['kind'] for row in menu.rows()))
-        for _ in range(8):
-            menu.key('DOWN'); menu.key('RIGHT'); menu.key('ENTER')
+        for _ in range(8):   # (Restart game / Quit game under the rows ask to end the game: not this page's settings)
+            if not menu.cursor()[2]:
+                menu.key('RIGHT'); menu.key('ENTER')
+            menu.key('DOWN')
+        self.assertEqual(menu.cursor()[2], 1)   # (nothing to choose here: the cursor goes to Restart game)
         self.assertEqual(menu.labels(), ['Now', 'Connection', 'Your name', 'Room protocol'])
         menu.type('5')
         self.assertEqual(menu.labels(), ['yuzu room'])

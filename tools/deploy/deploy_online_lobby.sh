@@ -5,6 +5,9 @@
 #   sh tools/deploy/deploy_online_lobby.sh <ssh host> install     copy it, install the service,
 #                                                                 allow its UDP and TCP port in ufw, start it
 #   sh tools/deploy/deploy_online_lobby.sh <ssh host> update      copy new files (the service file too) and restart
+#   sh tools/deploy/deploy_online_lobby.sh <ssh host> reset-board  empty the leaderboard for a release: stop the service, back up
+#                                                                 and empty the fighter records and ratings (the Discord links
+#                                                                 stay; nex/reset_board.py), start it again, print the backup folder
 #   sh tools/deploy/deploy_online_lobby.sh <ssh host> status      the service's state and its last log lines
 #   sh tools/deploy/deploy_online_lobby.sh <ssh host> uninstall   stop and remove it, close the port again
 # The SSH login must be root (SSBU_SUDO=sudo for a user who can sudo). SSBU_ONLINE_PORT: 39421.
@@ -17,7 +20,7 @@ what=${2:-status}
 port=${SSBU_ONLINE_PORT:-39421}
 sudo=${SSBU_SUDO:-}
 here=$(dirname "$0")
-[ -n "$host" ] || { sed -n '2,14p' "$0"; exit 2; }
+[ -n "$host" ] || { sed -n '2,16p' "$0"; exit 2; }
 
 remote() {   # a script for the server's sh, from stdin
     ssh "$host" "$sudo sh -s"
@@ -58,6 +61,17 @@ systemctl --no-pager --lines=0 status ssbu-online | head -5
 journalctl -u ssbu-online --no-pager -n 5
 EOF
     ;;
+reset-board)
+    remote <<EOF
+set -e
+[ -f /opt/ssbu-online/nex/reset_board.py ] || { echo "reset_board.py is not on the server: run update first"; exit 1; }
+systemctl stop ssbu-online
+python3 -I /opt/ssbu-online/nex/reset_board.py --state-dir /var/lib/ssbu-online --yes || { systemctl start ssbu-online; exit 1; }
+systemctl start ssbu-online
+sleep 2
+systemctl --no-pager --lines=0 status ssbu-online | head -5
+EOF
+    ;;
 status)
     remote <<EOF
 systemctl --no-pager --lines=0 status ssbu-online | head -6
@@ -79,7 +93,7 @@ echo "removed (the players and ratings in /var/lib/ssbu-online and the banlist a
 EOF
     ;;
 *)
-    sed -n '2,14p' "$0"
+    sed -n '2,16p' "$0"
     exit 2
     ;;
 esac

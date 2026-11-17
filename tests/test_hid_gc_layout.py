@@ -62,6 +62,7 @@ static int rb_pad_sampling(u64*s) { (void)s; return 0; }
 static int bench_on(void) { return 0; }
 static int bench_pads(void) { return 0; }
 static u64 bench_buttons(i32*x,i32*y) { (void)x;(void)y;return 0; }
+void vi_lat_poll(u64 b) { (void)b; }   /* (ipc_vi.c's SSBU_LAT_TRACE: off) */
 '''
         harness += source[begin:end]
         harness += r'''

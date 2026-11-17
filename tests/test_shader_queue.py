@@ -250,6 +250,55 @@ class ServeTests(unittest.TestCase):
         self.assertTrue(all(w[1] == 21000.0 for w in works))
         self.assertEqual(works, sorted(works))                           # (only ever up)
 
+    def test_no_key_is_sent_while_the_game_runs(self):
+        # The game started while Prepare Shaders ran: its workers on every core left the game's
+        # start nothing (2026-11-11, a 4-core laptop's log stopped after "drawing with"). No new
+        # key goes out while the game runs; the compile goes on once it has closed.
+        running = [True]
+        S_poll = S.PAUSE_POLL
+        S.PAUSE_POLL = 0.02
+        try:
+            import threading as th
+            import time
+            th.Timer(0.6, lambda: running.__setitem__(0, False)).start()
+            t0 = time.monotonic()
+            shown = []
+            self.out = io.StringIO()
+            totals = S.serve('exe', 'pack', 'cache', keys(6), 2, {},
+                             lambda state, final=False, work=None: shown.append((time.monotonic() - t0, state[0][0])),
+                             every=0.01, popen=fake_popen_factory(), out=self.out, paused=lambda: running[0])
+        finally:
+            S.PAUSE_POLL = S_poll
+        self.assertEqual(totals, {'compiled': 6})
+        self.assertTrue(all(done == 0 for at, done in shown if at < 0.5), shown[:5])   # (nothing done while it ran)
+        said = self.out.getvalue().splitlines()
+        self.assertEqual(said[:2], ['paused: the game is running; the compile goes on when it closes',
+                                    'the game has closed: the compile goes on'])
+
+    def test_no_worker_is_above_normal_priority(self):
+        # "high" was Windows' high priority class on every core: the launcher's window (its bar
+        # stayed at 0) and a game started meanwhile got nothing. Never above normal now.
+        for name, (cls, nice) in S._PRIORITY.items():
+            self.assertIn(cls, (0x00004000, 0x00000020), name)   # (below normal, normal)
+            self.assertGreaterEqual(nice, 0, name)
+        self.assertGreaterEqual(S.jobs_for('high', 0), S.jobs_for('medium', 0))
+
+    @unittest.skipUnless(sys.platform == 'win32', 'the game mutex is Windows')
+    def test_game_running_sees_the_games_mutex(self):
+        import ctypes
+        k = ctypes.WinDLL('kernel32')
+        k.CreateMutexW.restype = ctypes.c_void_p
+        k.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p)
+        k.CloseHandle.argtypes = (ctypes.c_void_p,)
+        if S.game_running():
+            self.skipTest('the game is running on this PC')
+        h = k.CreateMutexW(None, 0, S.GAME_RUNNING)
+        try:
+            self.assertTrue(S.game_running())
+        finally:
+            k.CloseHandle(h)
+        self.assertFalse(S.game_running())
+
     def test_a_slow_worker_does_not_hold_the_others(self):
         todo = [S.Key('vs', 's1' + 'a' * 14, None, 100)] + keys(20)
         totals, times, _shown = self.serve(todo, 2)

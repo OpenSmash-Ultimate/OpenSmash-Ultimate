@@ -323,6 +323,7 @@ def sync(tree, log=print, jobs=1):
             f.writelines(h + "\n" for h in missing)
     record = load_record(p)
     names = []
+    direct = set()
     skip = set()   # (dump/skyline/skip.txt: plugins left out, by module name or mod-relative file - one that does not run yet)
     if os.path.exists(os.path.join(p.skyline, "skip.txt")):
         skip = {l.split("#")[0].strip() for l in open(os.path.join(p.skyline, "skip.txt"), encoding="utf-8")} - {""}
@@ -334,6 +335,10 @@ def sync(tree, log=print, jobs=1):
             continue
         record[build_id] = {"module": name, "mod": mod, "file": os.path.relpath(source, tree)}
         generate(p, name, log, mod.startswith("(standard) "), jobs)
+        # ARCropolis discovers only a mod's plugin.nro. Other names (for example the
+        # original Training Modpack libraries) still need their entries run by Skyline.
+        if mod.startswith("(standard) ") or os.path.basename(source).lower() != "plugin.nro":
+            direct.add(name)
         if name not in names:
             names.append(name)
             log(f"{mod}: plugin {os.path.basename(source)} -> {name}")
@@ -366,11 +371,10 @@ def sync(tree, log=print, jobs=1):
         paramconfig.write(t, log)
     except Exception as e:
         log(f"paramconfig: not updated: {e}")
-    # With the real ARCropolis among the standard plugins, it loads the mods' plugins itself (its
-    # chainloader, from each mod's folder, as on the console): only the standard ones are listed
+    # Leave plugin.nro to ARCropolis so it is not initialized twice. Named libraries are
+    # not chainload candidates and must stay in the direct-load list, in dependency order.
     if any(m == "(standard) libarcropolis.nro" for m, _s in turned_on(tree)):
-        std = {module_of(p, s, record)[1] for m, s in turned_on(tree) if m.startswith("(standard) ")}
-        names = [n for n in names if n in std]
+        names = [n for n in names if n in direct]
     text = "".join(f"{n}\n" for n in names)
     old = open(p.list, encoding="utf-8").read() if os.path.exists(p.list) else ""
     if text != old:
@@ -547,12 +551,47 @@ def _stale_hooks(tree):
     return out
 
 
+def programs(tree, platform=None):
+    """The game's programs a tree can hold, this system's first (a folder can hold another system's
+    build too: a Windows build cross-compiled for Linux keeps build/ssbu.exe beside build-linux/ssbu)."""
+    platform = platform or sys.platform
+    mac = os.path.join(tree, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu")
+    win = os.path.join(tree, "build", "ssbu.exe")
+    linux = os.path.join(tree, "build-linux", "ssbu")
+    if platform.startswith("linux"):
+        return [linux, win, mac]
+    if platform == "darwin":
+        return [mac, win, linux]
+    return [win, mac, linux]
+
+
 def program(tree):
-    for exe in (os.path.join(tree, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu"),
-                os.path.join(tree, "build", "ssbu.exe"), os.path.join(tree, "build-linux", "ssbu")):
+    for exe in programs(tree):
         if os.path.exists(exe):
             return exe
     return None
+
+
+def link_commands(tree, jobs, platform=None):
+    """The commands that link the game again with the turned-on mods' plugins, on this system: macOS's
+    build_mac.py; on Linux the C written into build/ (recomp.py all --generate-only: recomp.py's own
+    compile is the Windows one, clang-cl and the MSVC libraries, which a Linux PC does not have), then
+    compiled and linked into build-linux/ssbu by build_linux.py, as tools/build_game.py's build does;
+    on Windows recomp.py all, which compiles and links build/ssbu.exe."""
+    platform = platform or sys.platform
+    exefs = os.path.join(tree, "dump", "exefs")
+    if platform == "darwin":
+        return [[sys.executable, os.path.join(HERE, "mac", "build_mac.py"), "--port", tree, "--jobs", str(jobs)]]
+    if platform.startswith("linux"):
+        out = os.path.join(tree, "build-linux")
+        import game_dll
+        dll = ["--game-dll"] if os.path.exists(os.path.join(out, game_dll.SO)) else []   # (built that way before: kept)
+        return [[sys.executable, os.path.join(HERE, "recomp.py"), "all", exefs, "--out", os.path.join(tree, "build"),
+                 "--jobs", str(jobs), "--tree", tree, "--generate-only"],
+                [sys.executable, os.path.join(HERE, "linux", "build_linux.py"), "--port", tree, "--out", out,
+                 "--jobs", str(jobs), *dll]]
+    return [[sys.executable, os.path.join(HERE, "recomp.py"), "all", exefs, "--out", os.path.join(tree, "build"),
+             "--jobs", str(jobs), "--tree", tree]]
 
 
 def probe(tree, log=print):
@@ -564,6 +603,15 @@ def probe(tree, log=print):
     with open(p.list, encoding="utf-8") as listed:
         if not listed.read().strip():
             return False
+    # ARCropolis reads the mods itself. A checkout that previously applied them into
+    # data.arc must restore the original archive before the first discovery boot:
+    # the expanded native tables cannot be read by ARCropolis' share lookup builder.
+    if os.path.isfile(os.path.join(tree, "skyline", "plugins", "libarcropolis.nro")):
+        import mods
+        view = mods.Tree(tree)
+        if view.is_modded() and not (view.applied() or {}).get("arcropolis"):
+            log("preparing the original game archive for ARCropolis (keeping the enabled mods)")
+            mods.apply(view, log)
     path = os.path.join(p.skyline, "csk.json")
 
     def entries():   # (as data: a plugin's maps come out in a different order each start)
@@ -863,8 +911,14 @@ def game_link_reason(tree, mods=True):
         return missing
     listed = os.path.join(p.skyline, "plugins.txt")
     names = [l.split("#")[0].strip() for l in open(listed, encoding="utf-8")] if os.path.exists(listed) else []
+    dynamic = set()
+    if os.name == "nt":
+        dlls = os.path.join(p.skyline, "plugin_dlls.txt")
+        if os.path.isfile(dlls):
+            with open(dlls, encoding="utf-8") as listed:
+                dynamic = {os.path.splitext(os.path.basename(line.strip()))[0] for line in listed if line.strip()}
     for name in names:
-        if name and not built_in(tree, name):
+        if name and name not in dynamic and not built_in(tree, name):
             return f"the standard plugin {name} isn't in the game"
     if mods and stale_hooks(tree):
         return "a plugin hooks a function the game has no slot for"
@@ -894,15 +948,11 @@ def build(tree, jobs, log=print, again=True):
             out = os.path.join(tree, "build", mod) if mod in ("main", "subsdk0", "sdk") else os.path.join(tree, "build", "nro", mod)
             recomp_stream(Paths(tree), log, "build", src, "--out", out, "--jobs", str(jobs))
         log(f"linking the game once ({reason})")
-        if sys.platform == "darwin":
-            cmd = [sys.executable, os.path.join(HERE, "mac", "build_mac.py"), "--port", tree, "--jobs", str(jobs)]
-        else:
-            cmd = [sys.executable, os.path.join(HERE, "recomp.py"), "all", exefs, "--out", os.path.join(tree, "build"),
-                   "--jobs", str(jobs), "--tree", tree]
-        log(" ".join(cmd))
-        rc = run_logged(cmd, log, later=PROBE)
-        if rc:
-            return rc
+        for cmd in link_commands(tree, jobs):
+            log(" ".join(cmd))
+            rc = run_logged(cmd, log, later=PROBE)
+            if rc:
+                return rc
     else:
         log("the mod plugins are translated; the game itself was left as it is")
     probe_and_apply(tree, log)
@@ -914,10 +964,11 @@ def build(tree, jobs, log=print, again=True):
 
 # What isn't part of the game's program: an update that changes only these needs no build (the Mods
 # app's files are read as it runs; the tools here run as they are)
-NOT_BUILT = ("tools/modmanager/", "tools/dev/", "tools/mods.py", "tools/os_mods.py", "tools/progress.py", "tools/std_plugins.py", "tools/csk.py", "tools/miis.py",
-             "tools/unlock_all.py", "tools/install_windowsmash.ps1", "tools/update.py", "tools/arc.py", "tools/prc.py",
-             "tools/msbt.py", "tools/ssbu_online_lobby.py", "tools/ssbu_relay.py", "tools/skyline.py",
-             "tools/shader_aot.py", "tools/find_python.bat")
+NOT_BUILT = ("tools/modmanager/", "tools/weblauncher/", "tools/app_window.py", "tools/linux/askpass.sh",
+             "tools/dev/", "tools/mods.py", "tools/os_mods.py", "tools/progress.py", "tools/std_plugins.py",
+             "tools/csk.py", "tools/miis.py", "tools/unlock_all.py", "tools/install_windowsmash.ps1",
+             "tools/update.py", "tools/arc.py", "tools/prc.py", "tools/msbt.py", "tools/ssbu_online_lobby.py",
+             "tools/ssbu_relay.py", "tools/skyline.py", "tools/shader_aot.py", "tools/find_python.bat")
 
 
 def plugin_refresh_reason(tree):

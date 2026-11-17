@@ -149,13 +149,72 @@ def build(dll, log=print):
     return True
 
 
-def ensure(dll, zip_path=None, log=print):
-    """fetch() and build(), for tools/build_game.py: False (said) when either fails."""
+def prebuilt_key():
+    """What a prebuilt DLL must have been made from: glslang's version, the shim and the binding map."""
+    h = hashlib.sha256(VERSION.encode())
+    for p in (SHIM, *HEADERS):
+        with open(p, "rb") as f:
+            h.update(f.read().replace(b"\r\n", b"\n"))
+    return h.hexdigest()[:12]
+
+
+def prebuilt_tag():
+    return f"glslang-{VERSION}-{prebuilt_key()}"
+
+
+def fetch_prebuilt(dll, get=None, log=print):
+    """ssbu_glslang.dll from OpenSmash-Ultimate's release prebuilt_tag() (.github/workflows/glslang-release.yml),
+    checked against its SHA256SUMS; a stamp beside it (ssbu_glslang.key) says which. True when it is there."""
+    import runtime_fetch
+    get = get or runtime_fetch.download
+    stamp = dll[:-4] + ".key"
+    key = prebuilt_key()
+    try:
+        with open(stamp, encoding="ascii") as f:
+            if f.read().strip() == key and os.path.isfile(dll):
+                return True
+    except OSError:
+        pass
+    tag = prebuilt_tag()
+    url = runtime_fetch.URL
+    want = runtime_fetch.sums(get(url.format(tag=tag, name="SHA256SUMS")).decode("utf-8", "replace"))
+    if DLL_NAME not in want:
+        raise runtime_fetch.Error(f"the release {tag} has no {DLL_NAME}")
+    data = get(url.format(tag=tag, name=DLL_NAME))
+    if hashlib.sha256(data).hexdigest() != want[DLL_NAME]:
+        raise runtime_fetch.Error(f"{DLL_NAME} of {tag} does not match its SHA-256")
+    os.makedirs(os.path.dirname(os.path.abspath(dll)), exist_ok=True)
+    new = dll + ".part"
+    with open(new, "wb") as f:
+        f.write(data)
+    try:
+        os.replace(new, dll)
+    except OSError:   # (a running game holds it open: renamed aside, which Windows allows)
+        old = dll + ".old"
+        if os.path.isfile(old):
+            os.remove(old)
+        os.replace(dll, old)
+        os.replace(new, dll)
+    with open(stamp, "w", encoding="ascii") as f:
+        f.write(key)
+    log(f"  {DLL_NAME}: the prebuilt one of {tag}")
+    return True
+
+
+def ensure(dll, zip_path=None, log=print, get=None):
+    """For tools/build_game.py: the prebuilt DLL of this source (no compiler needed), else fetch() and build();
+    False (said) when both fail."""
+    try:
+        if fetch_prebuilt(dll, get=get, log=log):
+            return True
+    except Exception as e:   # (offline, or no release for this source yet: built here instead)
+        log(f"  (no prebuilt {DLL_NAME}: {e}; building it here)")
     try:
         fetch(zip_path, log)
         return build(dll, log)
     except (SystemExit, Exception) as e:   # (never fatal to the game's build: Direct3D 11 draws without it)
-        log(f"  glslang could not be set up ({e}): Vulkan will have no shader translator")
+        log(f"  glslang could not be set up ({e}): Vulkan will have no shader translator, so Direct3D 11 draws. "
+            "Run python tools\\glslang_lib.py to see why.")
         return False
 
 
@@ -164,7 +223,11 @@ def main():
     ap.add_argument("--zip", help="a copy of " + ASSET + " already on this PC")
     ap.add_argument("--out", default=os.path.join(ROOT, "build", DLL_NAME), help="the DLL to make")
     ap.add_argument("--status", action="store_true")
+    ap.add_argument("--key", action="store_true", help="the prebuilt release's tag for this source")
     a = ap.parse_args()
+    if a.key:
+        print(prebuilt_tag())
+        return 0
     if a.status:
         print(f"glslang {VERSION} in {DIR}: {'there' if have() else 'missing'}")
         print(f"{a.out}: {'current' if have() and dll_current(a.out) else 'missing or stale'}")

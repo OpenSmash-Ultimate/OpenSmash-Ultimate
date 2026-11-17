@@ -28,6 +28,7 @@ int main(int argc,char **argv) {
     snprintf(path,sizeof path,"%s/calls.txt",root);
     FILE *f=fopen(path,"ab"); if(!f) return 91;
     fprintf(f,"%s\n",kind); fclose(f);
+    if(strcmp(kind,"game") && getenv("SSBU_YUZU_PASSWORD")) return 93;
     if(!strcmp(kind,"feature")) {
         puts(getenv("YUZU_TEST_OLD_EXE")?"old-runtime":"yuzu-room-client protocol=1"); return 0;
     }
@@ -86,7 +87,7 @@ class YuzuLauncherTests(unittest.TestCase):
         self.config = self.tree / 'config/yuzu_client.json'
         self.config.write_text(json.dumps({'server': 'saved.example:24872', 'nickname': 'SavedName'}))
 
-    def run_launcher(self, *args, prepare_exit=None, old_exe=False):
+    def run_launcher(self, *args, prepare_exit=None, old_exe=False, secret=None):
         env = {k: v for k, v in os.environ.items() if not k.upper().startswith(('SSBU_', 'YUZU_TEST_'))}
         env.update(YUZU_TEST_ROOT=str(self.tree), SSBU_NET_HOST='1', SSBU_NET_RELAY='native.example:39420',
                    SSBU_RB_NET='online', SSBU_DATA_ROOT='old-root', SSBU_INPUT='old-input')
@@ -94,6 +95,8 @@ class YuzuLauncherTests(unittest.TestCase):
             env['YUZU_TEST_PREPARE_EXIT'] = str(prepare_exit)
         if old_exe:
             env['YUZU_TEST_OLD_EXE'] = '1'
+        if secret is not None:
+            env['SSBU_YUZU_PASSWORD'] = secret
         return subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
                                str(self.tree / 'tools/yuzu_client.ps1'), '-NoPrompt', *args],
                               env=env, cwd=ROOT, capture_output=True, text=True, timeout=30)
@@ -101,6 +104,20 @@ class YuzuLauncherTests(unittest.TestCase):
     def calls(self):
         path = self.tree / 'calls.txt'
         return path.read_text().splitlines() if path.exists() else []
+
+    def test_gui_password_is_not_in_arguments_configuration_or_logs(self):
+        secret = 'test-Password-42'
+        ran = self.run_launcher('-Gui', secret=secret)
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertIn('YUZU_RESULT ', ran.stdout)
+        observed = self.tree / 'observed.txt'
+        end = time.monotonic() + 5
+        while not observed.exists() and time.monotonic() < end:
+            time.sleep(.02)
+        self.assertIn('SSBU_YUZU_PASSWORD=' + secret, observed.read_text())
+        self.assertNotIn(secret, self.config.read_text())
+        self.assertNotIn(secret, ran.stdout + ran.stderr)
+        self.assertNotIn('arg=' + secret, observed.read_text())
 
     def test_check_only_prepares_plugins_and_preserves_saved_settings(self):
         before = self.config.read_bytes()
