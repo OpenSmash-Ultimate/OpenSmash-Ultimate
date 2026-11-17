@@ -507,7 +507,8 @@ static POINT last_mouse;
 static ULONGLONG last_mouse_at;
 
 /* (FULL_STYLE's WS_MINIMIZEBOX | WS_SYSMENU: without them the borderless or full-screen window does not minimise from
- * its taskbar button, Win+Down or the Alt+Space menu; nothing is drawn, a WS_POPUP window has no title bar) */
+ * its taskbar button or with Win+Down; with them it does, seen with the borderless window (the Alt+Space menu still
+ * has no Minimize entry). Nothing is drawn, a WS_POPUP window has no title bar) */
 static const DWORD WINDOWED_STYLE = WS_OVERLAPPEDWINDOW | WS_VISIBLE, FULL_STYLE = WS_POPUP | WS_VISIBLE | WS_MINIMIZEBOX | WS_SYSMENU;
 static HWND game_window;
 
