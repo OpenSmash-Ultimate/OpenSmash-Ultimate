@@ -574,6 +574,17 @@ class Mouse(MenuTest):
             m.type('3')
             self.assertEqual(m.at()['label'], before)
 
+    def test_display_cursor_stays_when_the_page_is_shown_again(self):
+        m = self.menu()
+        m.key('ESC')
+        m.type('1')
+        m.key('DOWN', 4)
+        before = m.at()['label']
+        for _ in range(3):
+            m.type('3')
+            m.type('1')
+            self.assertEqual(m.at()['label'], before)
+
     def test_wheel(self):
         m = self.menu()
         m.key('ESC')

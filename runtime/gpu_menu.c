@@ -913,7 +913,7 @@ static void build(void)
         if (rows_page >= 0)
         {
             for (int k = 0; k < sel[rows_page] && k < nrows; k++)
-                before += rows[k].id == R_SPACER || rows[k].id == R_HEADER;
+                before += rows[k].id == R_SPACER; /* (the Display page's headings are rows of its own, kept in the index) */
             sel[rows_page] -= before;
         }
         rows_page = page;
@@ -3157,7 +3157,7 @@ void menu_draw(float w, float h)
     else if (banner[0])
         ovl_text(px + 300 * s, py + 34 * s, 24 * s, strstr(status, "Room:") ? ACCENT : AMBER, banner);
     { /* a legend in the top right corner: what the amber square on a row means (left out when a message would run into it) */
-        const char *key = "Takes effect on next start";
+        const char *key = ui_text("Takes effect on next start");
         float ls = 22 * s, lw = text_w(key, ls), sq = 14 * s, lx0 = px + pw - 32 * s - lw - sq - 10 * s;
         const char *msg = have_toast ? t : banner;
         if (!msg[0] || px + 300 * s + text_w(msg, 24 * s) + 24 * s < lx0)
