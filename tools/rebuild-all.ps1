@@ -1,5 +1,10 @@
+# Incremental game build, then the Avalonia launcher (tools/build_launcher.ps1 -> build_launcher.py, .NET 8 SDK).
+#   -GameOnly      the game alone: the launcher's BUILD GAME + LAUNCHER button runs this, then rebuilds and restarts
+#                  itself through tools/rebuild_launcher_after_update.ps1 when the SDK is there.
+#   -LauncherPid   the running OpenSmash to wait for (it is closed) before its OpenSmash.exe is replaced.
 param(
     [int]$LauncherPid = 0,
+    [switch]$GameOnly,
     [string]$Configuration = "Release",
     [int]$Jobs = 0
 )
@@ -12,8 +17,8 @@ $Exe = Join-Path $Root "OpenSmash.exe"
 
 if (-not (Test-Path -LiteralPath $GameBuild)) { throw "Game build script not found: $GameBuild" }
 if (-not (Test-Path -LiteralPath $LauncherBuild)) { throw "Launcher build script not found: $LauncherBuild" }
-if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
-    throw "dotnet was not found. Install the .NET 8 SDK before rebuilding the launcher."
+if (-not $GameOnly -and -not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+    throw "dotnet was not found. Install the .NET 8 SDK before rebuilding the launcher (or pass -GameOnly)."
 }
 
 $python = @(
@@ -38,7 +43,7 @@ if ($LauncherPid -gt 0) {
         throw "The launcher process to restart was not found."
     }
 }
-elseif (Get-Process -Name OpenSmash -ErrorAction SilentlyContinue) {
+elseif (-not $GameOnly -and (Get-Process -Name OpenSmash -ErrorAction SilentlyContinue)) {
     throw "OpenSmash is still running. Close it before using this script."
 }
 
@@ -48,13 +53,14 @@ if ($Jobs -gt 0) { $buildArgs += @("--jobs", $Jobs.ToString()) }
 & $python @buildArgs
 if ($LASTEXITCODE -ne 0) { throw "The game build failed ($LASTEXITCODE)." }
 
+if ($GameOnly) { Write-Output "Game build complete."; exit 0 }
+
 Write-Output "__OPENSMASH_PHASE__:launcher"
 if ($LauncherPid -gt 0) {
-    & $LauncherBuild -Configuration $Configuration -LauncherPid $LauncherPid
+    Write-Output "Waiting for OpenSmash ($LauncherPid) to close..."
+    while (Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 250 }
 }
-else {
-    & $LauncherBuild -Configuration $Configuration
-}
+& $LauncherBuild -Configuration $Configuration
 if (-not $?) { throw "The launcher build failed." }
 
 if (-not (Test-Path -LiteralPath $Exe)) { throw "The launcher build finished but $Exe is missing." }

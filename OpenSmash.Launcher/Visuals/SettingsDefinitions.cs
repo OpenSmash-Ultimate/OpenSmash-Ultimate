@@ -87,6 +87,7 @@ void InitializeSettings() {
                 new SettingTab { Name = "Game", SettingKeys = new[] { "game_files" } },
                 new SettingTab { Name = "Theme", SettingKeys = new[] { "theme_preset", "theme_accent", "theme_background", "theme_text", "theme_save", "theme_reset" } },
             };
+            if (RoomsSupported) _settingsTabs = [.. _settingsTabs, new SettingTab { Name = "Advanced", SettingKeys = Array.Empty<string>() }];   // rooms: RoomsArtwork.cs
 
             _settings = new[]
             {

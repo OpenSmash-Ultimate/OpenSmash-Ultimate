@@ -22,6 +22,10 @@ static class ReferenceImages
             if(reference=="build"&&((x>=470&&x<530&&y>=188&&y<450)||(x>=1060&&x<1333&&y>=248&&y<279)))continue;
             // The appended Developer and Game tabs are new. Keep comparing every existing tab and row.
             if(reference.StartsWith("settings")&&x>=828&&x<1024&&y>=202&&y<246)continue;
+            // Update adds BUILD GAME + LAUNCHER at the left of the button row, moving CHECK FOR UPDATE beside it.
+            if(reference=="settings-update"&&x>=136&&x<660&&y>=650&&y<712)continue;
+            // Windows appends the Advanced tab (rooms: RoomsArtwork.cs) after them.
+            if(reference.StartsWith("settings")&&x>=1024&&x<1340&&y>=202&&y<246)continue;
             // Display now appends Preload shaders below the original three rows.
             // Preserve the original comparison everywhere outside that new row.
             if((reference=="settings"||reference=="settings-dropdown")&&x>=100&&x<1340&&y>=553&&y<639)continue;

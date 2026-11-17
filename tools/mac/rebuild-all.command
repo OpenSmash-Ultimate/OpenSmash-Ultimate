@@ -19,8 +19,13 @@ if [ -z "$py" ]; then
 fi
 
 "$py" -u tools/build_game.py "$@"
-echo "Checking the Python launcher syntax..."
-"$py" -c 'import pathlib, sys; p = pathlib.Path(sys.argv[1]); compile(p.read_text(encoding="utf-8"), str(p), "exec")' \
-    tools/weblauncher/launcher.py
-echo "Game build and launcher syntax check complete."
+# The desktop launcher (Avalonia) needs the .NET 8 SDK, which players need not have: they keep the release
+# launcher, so without dotnet only the game is rebuilt. Close OpenSmash before its binary is replaced.
+if command -v dotnet >/dev/null 2>&1; then
+    echo "Building the OpenSmash launcher..."
+    "$py" -u tools/build_launcher.py --rid osx-arm64
+    echo "Game and launcher build complete."
+else
+    echo "dotnet (.NET 8 SDK) was not found: the launcher was not rebuilt. Game build complete."
+fi
 read -r -p "Press Return to close this window. " _

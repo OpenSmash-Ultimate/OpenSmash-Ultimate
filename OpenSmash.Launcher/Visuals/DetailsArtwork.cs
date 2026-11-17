@@ -100,6 +100,13 @@ public sealed partial class ClassicSurface
                 }
             }
 
+            if (tab < _settingsTabs.Length && _settingsTabs[tab].Name == "Advanced")   // rooms: RoomsArtwork.cs
+            {
+                _settingsMaxScroll = 0;
+                _settingsScroll = 0;
+                PaintAdvancedMultiplayer(g, x, cw, listTop);
+                return;
+            }
             if (tab < _settingsTabs.Length && string.Equals(_settingsTabs[tab].Name, "Storage", StringComparison.OrdinalIgnoreCase))
             {
                 _settingsMaxScroll = 0;
@@ -419,11 +426,15 @@ public sealed partial class ClassicSurface
                 ArtworkTheme.Label(g, versions, vf, A(ArtworkTheme.Dim), x + pad, listTop + ch - 88 * s, 16 * s, 12 * s * 0.08f);
             }
             float bh = 44 * s, by = listTop + ch - bh - 28 * s;
-            float wApply = 150 * s, wCheck = 210 * s;
+            float wApply = 150 * s, wCheck = 210 * s, wBuild = 220 * s;
             bool showApply = _updateState == "available" || _updateApplying;
-            float xApply = x + cwIn - pad - wApply;
-            float xCheck = showApply ? xApply - 12 * s - wCheck : x + (cwIn - wCheck) / 2;
+            float xApply = x + cwIn - pad - wApply, xBuild = x + pad;
+            float xCheck = showApply ? xApply - 12 * s - wCheck : xBuild + wBuild + 12 * s;
             bool canCheck = !_updateChecking && !_updateApplying;
+            // Rebuild action (main's update:build, tools/rebuild-all.ps1): MainWindow.RebuildAll.
+            bool canBuild = !Busy && canCheck;
+            ArtworkTheme.ButtonAnimated(g, "BUILD GAME + LAUNCHER", xBuild, by, wBuild, bh, s, true, Hov("update:build", canBuild && _hover == "update:build"), canBuild, 11 * s, _alpha, press: Press("update:build"));
+            if (canBuild) AddHit("update:build", xBuild, by, wBuild, bh);
             ArtworkTheme.ButtonAnimated(g, _updateState == "checking" ? "CHECKING\u2026" : "CHECK FOR UPDATE", xCheck, by, wCheck, bh, s, false, Hov("update:check", canCheck && _hover == "update:check"), canCheck, 12 * s, _alpha, press: Press("update:check"));
             if (canCheck) AddHit("update:check", xCheck, by, wCheck, bh);
             bool canApply = _updateState == "available" && !_updateApplying && !_updateChecking;

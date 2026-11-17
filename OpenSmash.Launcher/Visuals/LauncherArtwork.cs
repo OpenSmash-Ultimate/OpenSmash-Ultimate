@@ -212,7 +212,7 @@ public sealed partial class ClassicSurface
             AddHit("nav:mode-next", nextX, cy - chh / 2, aw, chh);
 
             // Section links with the red skewed underline
-            string active = _view == "home" ? "nav:home" : _view == "settings" ? "nav:settings" : "nav:mods";
+            string active = _view == "home" ? "nav:home" : _view is "settings" or "rooms" ? "nav:settings" : "nav:mods";
             float lx = prevX - 8 * s;
             foreach (var (id, label) in new[] { ("nav:settings", "SETTINGS"), ("nav:mods", "MODS"), ("nav:home", "HOME") })
             {
