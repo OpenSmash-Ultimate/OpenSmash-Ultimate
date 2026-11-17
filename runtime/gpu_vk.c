@@ -3785,9 +3785,18 @@ static void warm_start(void) {
         FILE *mf = fopen(warm_marker, "rb");
         if (mf) { if (fscanf(mf, "%d", &tries) != 1) tries = 1; fclose(mf); }
         if (tries < 1) tries = 1;
-        if (tries < WARM_RETRIES)
-            fprintf(stderr, "[vulkan] warm start: the last one did not finish (%s, %d in a row): warmed again\n", warm_marker, tries);
-        else {
+        if (tries < WARM_RETRIES) {
+            /* (A warm start that did not finish usually means the game was closed during it, but it is also what a
+             * driver crashing on a pipeline leaves behind - NVIDIA's did, after 1,200-odd pipelines (see the budget
+             * below). Warming the same list again would then kill the process again at every start, so this start
+             * warms nothing: the game draws as it is, and the next start begins the list afresh.) */
+            fprintf(stderr, "[vulkan] warm start: the last one did not finish (%s, %d in a row): not warmed this time, the game draws as it is\n",
+                    warm_marker, tries);
+            if (DeleteFileA(list) || GetLastError() == ERROR_FILE_NOT_FOUND) DeleteFileA(warm_marker);
+            warm_shader_slots = 0;   /* (no draw looks its programs up: each makes its own, as without a list) */
+            return;
+        }
+        {
             fprintf(stderr, "[vulkan] warm start: %d in a row did not finish (%s): the list is started again, nothing is warmed this time\n", tries, warm_marker);
             /* (A list that can't be removed - read-only, held open - keeps its marker, and no start warms from it.) */
             if (DeleteFileA(list) || GetLastError() == ERROR_FILE_NOT_FOUND) { DeleteFileA(warm_marker); tries = 0; }
@@ -3811,8 +3820,14 @@ static void warm_start(void) {
     warm_z24 = depth_format(0x14);
     if (warm_z24 != VK_FORMAT_D24_UNORM_S8_UINT) fprintf(stderr, "[vulkan] warm start: the list's D24S8 depth made as this card's D32S8\n");
     MEMORYSTATUSEX m = {sizeof m};
-    warm_budget = 1024ull << 20;
-    if (GlobalMemoryStatusEx(&m) && m.ullTotalPhys / 3 > warm_budget) warm_budget = m.ullTotalPhys / 3;
+    (void)m;
+    /* A start warms from the list until the process has grown by this much: the pipelines hold driver memory that only
+     * goes away with the process. A third of the PC's memory was the limit, and on a 16 GB laptop one start then made
+     * 1,200-odd pipelines before NVIDIA's GPU compiler crashed the process inside its own code (0xc0000005 in
+     * nvgpucomp64.dll, from a driver thread; one pipeline at a time did not help, and 239, 443, 600 and 621 pipelines
+     * were fine). So the default is 320 MB - some four hundred pipelines, the menus' first - and the rest are made at
+     * their first use, as before; SSBU_SHADER_PREWARM_MB sets another budget where the driver takes more. */
+    warm_budget = 320ull << 20;
     if (getenv("SSBU_SHADER_PREWARM_MB")) warm_budget = strtoull(getenv("SSBU_SHADER_PREWARM_MB"), NULL, 10) << 20;
     warm_bytes0 = private_bytes();
     warm_t0 = rt_clock_ns();
