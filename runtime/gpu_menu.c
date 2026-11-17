@@ -245,6 +245,8 @@ static ULONGLONG rumble_stop;
 static char version[64];
 static char gpus[8][64];
 static int ngpus;
+static int wheel_free_sel = -1, wheel_free_page = -1; /* the wheel moved the view off the cursor: the row it left, so drawing does not pull the view back */
+static int rows_page = -1; /* the page the rows[] are of (the cursor of that page counts the empty rows in them) */
 static int built_page = -1; /* the page build() made last (-1: none since the menu opened) */
 /* The game's software keyboard (nn::swkbd, hle_applet.c) typed on the text grid: asked from the game's
  * thread (menu_osk_run), opened and answered here. 0 none, 1 asked, 2 open, 3 done, 4 cancelled. */
@@ -905,12 +907,19 @@ static void build(void)
     int same = built_page == page, was = same && sel[page] < nrows ? rows[sel[page]].id : R_NONE;
     u32 was_host = IS_ROOM(was) ? ROOM_AT(was)->host : 0;
     built_page = page;
-    { /* the cursor's index without the empty rows build() adds under the page (at its end) between choosable and other rows */
+    { /* the cursor's index without the empty rows build() adds under the page (at its end) between choosable and other rows:
+       * taken off the page the rows are of (the one built last), also when the page has changed or the menu was closed since */
         int before = 0;
-        for (int k = 0; same && k < sel[page] && k < nrows; k++)
-            before += rows[k].id == R_SPACER || rows[k].id == R_HEADER;
-        sel[page] -= before;
+        if (rows_page >= 0)
+        {
+            for (int k = 0; k < sel[rows_page] && k < nrows; k++)
+                before += rows[k].id == R_SPACER || rows[k].id == R_HEADER;
+            sel[rows_page] -= before;
+        }
+        rows_page = page;
     }
+    if (!same)
+        wheel_free_page = -1; /* (a page shown again, or the menu opened again: the view follows the cursor) */
     nrows = 0;
     Row *r;
     DisplaySettings ds;
@@ -2364,9 +2373,8 @@ static void edit_event(int ev, unsigned ch)
 static int view_fit; /* how many rows the page shows at once (set when it is drawn) */
 static void move_sel(int dir);
 
-/* The mouse wheel on a page with a scroll bar scrolls the list, three rows a notch, and the cursor only moves when
- * its row leaves the view (to the nearest row that can be chosen); a page that fits has no bar: the wheel moves the cursor. */
-static int wheel_free_sel = -1, wheel_free_page = -1; /* the wheel moved the view off the cursor: the row it left, so drawing does not pull the view back */
+/* The mouse wheel on a page with a scroll bar scrolls the list, three rows a notch, and
+ * the cursor stays on its row, even out of view; a page that fits has no bar: the wheel does nothing. */
 static void wheel_scroll(int dir)
 {
     int *t = &top[page];
@@ -3125,7 +3133,7 @@ void menu_draw(float w, float h)
     draw_w = w;
     draw_h = h;
     const unsigned WHITE = OVL_RGBA(240, 240, 245, 255), GREY = OVL_RGBA(150, 155, 170, 255), DIM = OVL_RGBA(110, 115, 130, 255),
-                   GREEN = OVL_RGBA(120, 220, 140, 255), AMBER = OVL_RGBA(245, 190, 90, 255), ACCENT = OVL_RGBA(225, 60, 60, 255);
+                   AMBER = OVL_RGBA(245, 190, 90, 255), ACCENT = OVL_RGBA(225, 60, 60, 255);
     ovl_rect(0, 0, w, h, OVL_RGBA(0, 0, 0, 150));
     float px = w * 0.06f, py = h * 0.06f, pw = w * 0.88f, ph = h * 0.88f;
     box(px, py, pw, ph, s);
@@ -3187,6 +3195,8 @@ void menu_draw(float w, float h)
     FIT_FROM(*t0, fit);
     if (fit < 1)
         fit = 1;
+    if (wheel_free_page == page && wheel_free_sel != sel[page])
+        wheel_free_page = -1; /* (the cursor moved: the view follows it again) */
     int free_view = wheel_free_page == page && wheel_free_sel == sel[page]; /* the wheel scrolled; the cursor has not moved since */
     if (!free_view && sel[page] < *t0)
         *t0 = sel[page];
@@ -3217,7 +3227,6 @@ void menu_draw(float w, float h)
             *t0 = 0;
     }
     float vx = rx + rw * 0.40f, ycur = ry;
-    int stripe = 0; /* (the row's place in its section: every other one is paler) */
     for (int i = *t0; i < nrows && i < *t0 + fit; i++)
     {
         const Row *r = &rows[i];
@@ -3234,10 +3243,8 @@ void menu_draw(float w, float h)
         if (r->id == R_HEADER)
         { /* a section's name: larger, with space above it (not at the top of the page) */
             ovl_text(lx, y + (i == 0 ? 0 : 25 * s), 34 * s, OVL_RGBA(215, 220, 235, 255), r->label);
-            stripe = 0;
             continue;
         }
-        stripe++;
         if (!on) /* a hairline under the row, in place of stripes: the eye follows a row from the label to its value */
             ovl_rect(rx + 8 * s, floorf(y - 6 * s + rh - 3 * s), rw - 16 * s, s < 1 ? 1 : floorf(s), OVL_RGBA(40, 46, 66, 255));
         if (on)

@@ -563,6 +563,17 @@ class Mouse(MenuTest):
         self.click(m, 1000, 700)   # (done)
         self.assertEqual(m.file('online_name.txt'), 'AlA')
 
+    def test_cursor_stays_on_its_row_when_a_page_is_shown_again(self):
+        m = self.menu()
+        m.key('ESC')
+        m.type('3')   # (Online: rows with empty rows between them)
+        m.key('DOWN')
+        before = m.at()['label']
+        for _ in range(3):
+            m.type('2')
+            m.type('3')
+            self.assertEqual(m.at()['label'], before)
+
     def test_wheel(self):
         m = self.menu()
         m.key('ESC')
