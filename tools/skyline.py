@@ -179,9 +179,14 @@ def identity(m, prefer, p):
             row = line.split()
             if len(row) == 4 and row[3] != m.build_id:
                 taken.add(row[0])
-    name = prefer
-    while name in taken:
-        name += "_"
+    # (the copy's name slot holds no more than the template's name: cut before choosing, so two long
+    # names stay two names; with_module_name would otherwise cut them back to the same one)
+    limit = max(1, len(m.module_name().encode("ascii", "ignore")))
+    base = prefer.encode("ascii", "ignore").decode("ascii")[:limit] or prefer[:limit]
+    name, n = base, 0
+    while name in taken and n < limit:
+        n += 1
+        name = base[:limit - n] + "_" * n
     return name
 
 
@@ -584,6 +589,23 @@ def copied_hooks(tree):
     return _hooks_state(tree)["copied"]
 
 
+_ASK_ONLY = threading.local()
+
+
+@contextlib.contextmanager
+def cached_inlining_only():
+    """For a page that only asks (os_mods.status): inlined_functions answers from build/work/inlined.json
+    and compiles nothing, so opening the mods page never waits on the compiler. A file it has no answer
+    for counts as not copied, and that answer is not kept: the next build (the probe's check) compiles it.
+    Per thread: the Mods app builds in the same process."""
+    old = getattr(_ASK_ONLY, "on", False)
+    _ASK_ONLY.on, _ASK_ONLY.missed = True, False
+    try:
+        yield
+    finally:
+        _ASK_ONLY.on = old
+
+
 def _hooks_state(tree):
     cache = os.path.join(tree, "build", "work", "stale_hooks.json")
     sig = _hooks_sig(tree)
@@ -594,8 +616,11 @@ def _hooks_state(tree):
             return saved
     except (OSError, ValueError, AttributeError):
         pass
+    _ASK_ONLY.missed = False
     mods, copied = _stale_hooks(tree)
     out = {"sig": sig, "mods": mods, "copied": copied}
+    if getattr(_ASK_ONLY, "missed", False):   # (an answer without the compiler's: not kept)
+        return out
     try:
         os.makedirs(os.path.dirname(cache), exist_ok=True)
         with open(cache, "w", encoding="utf-8") as f:
@@ -658,7 +683,13 @@ def inlined_functions(tree, src):
         entry = saved.get(rel)
         if isinstance(entry, dict) and entry.get("key") == key and isinstance(entry.get("copied"), list):
             return {int(a, 16) for a in entry["copied"]}
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        if getattr(_ASK_ONLY, "on", False):   # (cached_inlining_only: not compiled here)
+            _ASK_ONLY.missed = True
+            return set()
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True)
+        except OSError:   # (no compiler: the hook stays patched at the function's start, as before)
+            return set()
     if r.returncode:
         return None
     found = sorted({int(a, 16) for a in INLINED_REMARK.findall(r.stdout + r.stderr)})

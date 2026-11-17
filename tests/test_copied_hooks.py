@@ -83,10 +83,36 @@ class CopiedHooks(unittest.TestCase):
         cache.write_text(json.dumps({'sig': sig, 'mods': ['main'], 'copied': ['main']}))
         self.assertEqual(skyline.stale_hooks(self.tree), [])
 
+    def test_page_asks_without_compiling(self):
+        # (os_mods.status: the mods page never waits on the compiler; the build's check still finds it)
+        self.hooks(0x10)
+        with skyline.cached_inlining_only():
+            self.assertEqual(skyline.stale_hooks(self.tree), [])
+        self.assertFalse(Path(self.tree, 'build', 'work', 'inlined.json').exists())
+        self.assertEqual(skyline.stale_hooks(self.tree), ['main'])
+        with skyline.cached_inlining_only():   # (now the compiler's answer is kept: the page has it too)
+            self.assertEqual(skyline.copied_hooks(self.tree), ['main'])
+
     def test_dispatcher_already_there_needs_none(self):
         self.hooks(0x10)
         self.table('GuestFn f_7100000010_orig;\n')
         self.assertEqual(skyline.stale_hooks(self.tree), [])
+
+
+class LongIdentity(unittest.TestCase):
+    def test_long_names_cut_before_choosing(self):
+        class M:
+            build_id = 'b2'
+            def module_name(self):
+                return 'smashline_test'
+        with tempfile.TemporaryDirectory() as tree:
+            p = skyline.Paths(tree)
+            os.makedirs(p.nro, exist_ok=True)
+            Path(p.nro, 'bases.txt').write_text('a_very_long_ch 7200000000 1000 b1\n')
+            name = skyline.identity(M(), 'a_very_long_character', p)
+            self.assertLessEqual(len(name), len('smashline_test'))
+            self.assertEqual(name, 'a_very_long_c_')
+            self.assertEqual(skyline.identity(M(), 'gogeta', p), 'gogeta')
 
 
 if __name__ == '__main__':
