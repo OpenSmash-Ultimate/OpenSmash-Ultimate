@@ -18,6 +18,95 @@ static class Program
         if (ok) passed++; else { failed++; Console.WriteLine("FAIL " + what); }
     }
 
+    // ---- "Verify game files" (FileCheck.cs) on a made-up install: whole, then each kind of damage and its repair
+    static void FileChecks()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "os-core-check-" + Guid.NewGuid().ToString("N"));
+        string outside = Path.Combine(Path.GetTempPath(), "os-core-game-" + Guid.NewGuid().ToString("N"));
+        void Put(string rel, string text = "data") { string f = Path.Combine(root, rel); Directory.CreateDirectory(Path.GetDirectoryName(f)); File.WriteAllText(f, text); }
+        try
+        {
+            Directory.CreateDirectory(outside);
+            string xci = Path.Combine(outside, "game.xci");
+            File.WriteAllText(xci, "the game's own file");
+            Check(FileCheck.Check(root).Any(p => p.Repair == FileRepair.Setup), "file check: an empty folder is sent to the set-up");
+            Put("dump/build_folders.txt", "game=" + outside + "\nkeys=k\n");
+            foreach (string n in new[] { "main", "main.npdm", "rtld", "sdk", "subsdk0" }) Put("dump/exefs/" + n);
+            Put("dump/nro/lua2cpp_mario.nro", "a fighter's module");
+            Put("dump/fonts/a.bfttf");
+            Put("dump/modules/romfs_patch.bin", "patch data");
+            Put("dump/modules/romfs.layers", "layers");
+            Put("dump/modules/arcropolis.reloc.bin");
+            Put("dump/modules/romfs.cfg", "layered\n" + Path.Combine(root, "dump", "modules", "romfs.layers") + "\n" + xci + "\n" + Path.Combine(root, "dump", "modules", "romfs_patch.bin") + "\n");
+            Put("dump/skyline/plugins.txt", "arcropolis\n");
+            Put("dump/shadercache/complete.txt", "version 10\nspirv g1\n");
+            Put("build/ssbu.exe", "MZ");
+            Put("build/ssbu_glslang.dll", "MZ");
+            var bad = FileCheck.Check(root);
+            Check(bad.Count == 0, "file check: a whole install has no problem: " + FileCheck.Report(bad));
+            Check(!FileCheck.HasList(root) && FileCheck.WriteList(root) == 11 && FileCheck.HasList(root), "file check: the list of the installer's files");
+            Check(FileCheck.Check(root).Count == 0 && FileCheck.Report(FileCheck.Check(root)).StartsWith("The install is whole"), "file check: whole against its list");
+            string before = File.ReadAllText(FileCheck.ListPath(root));
+            // a file gone
+            File.Delete(Path.Combine(root, "dump", "nro", "lua2cpp_mario.nro"));
+            bad = FileCheck.Check(root);
+            Check(bad.Count == 2 && bad.All(p => p.Repair == FileRepair.Build) && bad.Any(p => p.Path == "dump/nro/lua2cpp_mario.nro" && !p.Remove), "file check: a fighter's file gone: " + FileCheck.Report(bad));
+            Check(FileCheck.Repairs(bad).SequenceEqual(new[] { FileRepair.Build }) && FileCheck.RemoveBroken(root, bad) == 0, "file check: the build step repairs it, nothing to remove");
+            Put("dump/nro/lua2cpp_mario.nro", "a fighter's module");
+            Check(FileCheck.Check(root).Count == 0, "file check: made again with the same size: whole");
+            // a file cut short without being newer than the list: broken, removed before the repair
+            string patch = Path.Combine(root, "dump", "modules", "romfs_patch.bin");
+            File.WriteAllText(patch, "cut");
+            File.SetLastWriteTimeUtc(patch, File.GetLastWriteTimeUtc(FileCheck.ListPath(root)).AddMinutes(-5));
+            bad = FileCheck.Check(root);
+            Check(bad.Count == 1 && bad[0].Remove && bad[0].Area == "Game data" && bad[0].Repair == FileRepair.Build, "file check: a file of another size: " + FileCheck.Report(bad));
+            Check(FileCheck.RemoveBroken(root, bad) == 1 && !File.Exists(patch), "file check: the broken file is removed for the repair");
+            Check(FileCheck.Check(root).Count(p => p.Path == "dump/modules/romfs_patch.bin") == 1, "file check: then it is missing, said once");
+            // made again by a build (newer than the list, another size): not a problem
+            File.WriteAllText(patch, "patch data of a newer build");
+            File.SetLastWriteTimeUtc(patch, DateTime.UtcNow.AddMinutes(5));
+            Check(FileCheck.Check(root).Count == 0, "file check: a file a later build made again is not a problem");
+            // an empty file
+            File.WriteAllText(Path.Combine(root, "dump", "fonts", "a.bfttf"), "");
+            bad = FileCheck.Check(root);
+            Check(bad.Count == 1 && bad[0].Area == "Fonts" && bad[0].Remove, "file check: an empty file: " + FileCheck.Report(bad));
+            Put("dump/fonts/a.bfttf");
+            // the game's own file moved (data read in place): the set-up, and nothing of the player's is ever removed
+            File.Move(xci, xci + ".moved");
+            bad = FileCheck.Check(root);
+            Check(bad.Count == 1 && bad[0].Repair == FileRepair.Setup && !bad[0].Remove && FileCheck.RemoveBroken(root, bad) == 0, "file check: the game's own file moved: " + FileCheck.Report(bad));
+            File.Move(xci + ".moved", xci);
+            var fake = new[] { new FileProblem { Area = "x", What = "y", Path = Path.GetRelativePath(root, xci), Repair = FileRepair.Build, Remove = true } };
+            Check(FileCheck.RemoveBroken(root, fake) == 0 && File.Exists(xci), "file check: a file outside dump is never removed");
+            // the build, a plugin, the shaders
+            File.Delete(Path.Combine(root, "build", "ssbu.exe"));
+            bad = FileCheck.Check(root);
+            Check(bad.Count == 1 && bad[0].Area == "Build" && bad[0].Repair == FileRepair.Build, "file check: no game program built: " + FileCheck.Report(bad));
+            Put("build/ssbu.exe", "MZ");
+            File.Delete(Path.Combine(root, "dump", "modules", "arcropolis.reloc.bin"));
+            File.Delete(Path.Combine(root, "dump", "shadercache", "complete.txt"));
+            bad = FileCheck.Check(root);
+            Check(bad.Any(p => p.Repair == FileRepair.Plugins) && bad.Any(p => p.Repair == FileRepair.Shaders), "file check: a plugin not built in, shaders not prepared: " + FileCheck.Report(bad));
+            Check(FileCheck.Repairs(bad).SequenceEqual(new[] { FileRepair.Build, FileRepair.Plugins, FileRepair.Shaders }), "file check: the repairs in their order");
+            Check(File.ReadAllText(FileCheck.ListPath(root)) == before, "file check: a check writes nothing");
+            // a repair's files with the game folder gone: said too
+            Directory.Move(outside, outside + "x");
+            bad = FileCheck.Check(root);
+            Check(bad.Any(p => p.Area == "Set-up" && p.Repair == FileRepair.Setup), "file check: the game folder gone: the repair needs the set-up");
+            Directory.Move(outside + "x", outside);
+            string was = Environment.GetEnvironmentVariable("OPENSMASH_FILE_CHECK");
+            Environment.SetEnvironmentVariable("OPENSMASH_FILE_CHECK", "0");
+            Check(!FileCheck.Shown, "file check: OPENSMASH_FILE_CHECK=0 hides the button");
+            Environment.SetEnvironmentVariable("OPENSMASH_FILE_CHECK", was);
+            Check(FileCheck.Shown || was == "0", "file check: shown by default");
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch (IOException) { }
+            try { Directory.Delete(outside, true); } catch (IOException) { }
+        }
+    }
+
     // ---- the server region (ServerRegion.cs): the table, the choice, Auto's pick with made-up answer times (no network)
     static async Task Regions(string dir)
     {
@@ -263,6 +352,8 @@ static class Program
         PerfReport.SetEnabled(troot, false);
         Check(!PerfReport.Enabled(troot), "performance summaries: off in the settings");
         Directory.Delete(troot, true);
+
+        FileChecks();
 
         Console.WriteLine($"{passed} passed, {failed} failed");
         return failed == 0 ? 0 : 1;

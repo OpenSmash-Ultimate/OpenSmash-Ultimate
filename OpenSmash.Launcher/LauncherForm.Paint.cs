@@ -718,6 +718,15 @@ namespace OpenSmash.Launcher
                 float rh = Hov("report", _hover == "report");
                 Theme.Label(g, rl, rf, A(Theme.Mix(Theme.Muted, Theme.Text, rh)), rx, y, h, sp);
                 AddHit("report", rx - 6 * s, y, rw + 12 * s, h);
+                // "Verify game files": the install checked, a repair offered (LauncherForm.FileCheck.cs).
+                if (OpenSmash.Core.FileCheck.Shown)
+                {
+                    string vl = UiLocale.Text("VERIFY GAME FILES");
+                    float vw = Theme.TextWidth(g, vl, rf, sp), vx = rx - 28 * s - vw;
+                    float vh = Hov("verify", _hover == "verify");
+                    Theme.Label(g, vl, rf, A(Theme.Mix(Theme.Muted, Theme.Text, vh)), vx, y, h, sp);
+                    AddHit("verify", vx - 6 * s, y, vw + 12 * s, h);
+                }
             }
 
             PopFade(g, st);

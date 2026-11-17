@@ -2462,6 +2462,7 @@ namespace OpenSmash.Launcher
                 _openDropdownKey = null;
             if (ActivateCommunityHit(id)) return;
             if (ActivateReportHit(id)) return;
+            if (ActivateVerifyHit(id)) return;
             if (ActivateDiscordHit(id)) return;
             if (ActivateNavHit(id)) return;
             if (id.StartsWith("menu:"))
