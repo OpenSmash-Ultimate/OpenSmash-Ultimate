@@ -12,6 +12,7 @@
 
 #include "debug_profile.h"
 #include "display.h"
+#include "gpu_aspect.h"
 #include "gpu_d3d11.h"
 #include "gpu_menu.h"
 #include "gpu_nvcache.h"
@@ -79,6 +80,7 @@ typedef struct Surface {
     u32 width, height, format, depth;     /* the game's size: what the surface is known and matched by */
     u32 hw, hh;                           /* the host texture's size (the game's, scaled) */
     float sx, sy;                         /* hw / width, hh / height */
+    float wide;                           /* SSBU_ASPECT: how much wider than the game's shape (1: not widened) */
     DXGI_FORMAT storage, view;            /* the texture's format, and how it is rendered to and sampled */
     ID3D11Texture2D *tex;
     ID3D11RenderTargetView *rtv;
@@ -280,17 +282,41 @@ static int scale_skipped(u32 w, u32 h) {
     return 0;
 }
 
+/* The render scale display.ini asks for (auto: the picture's height in the window as it is now, over
+ * the game's 1080). Taken at the start and, when it changes (the menu, the window's size, the picture's
+ * shape), at a present: render targets are made again at it. */
+static float scale_wanted(void) {
+    float scale = display_render_scale();
+    DXGI_SWAP_CHAIN_DESC1 scd;
+    if (scale == 0 && display_window_sizing() && render_scale > 0) return render_scale;   /* (auto: once the drag ends) */
+    if (scale == 0) {
+        scale = 1;
+        if (swapchain && SUCCEEDED(IDXGISwapChain1_GetDesc1(swapchain, &scd))) {
+            unsigned fx, fy, fw, fh;
+            display_fit(scd.Width, scd.Height, &fx, &fy, &fw, &fh);
+            scale = (float)fh / 1080.0f;
+            if (scale < 1) scale = 1;
+            if (scale > 4) scale = 4;
+        }
+    }
+    if (scale < 0.5f || scale > 4) scale = 1;
+    return scale;
+}
+
 /* The host size of a w x h render target. It depends on the game's size only (never the format
  * or depth), so a colour target and the depth target drawn with it always match, as Direct3D
  * requires. A target too big to scale stays at the game's size. */
-static void scaled_size(u32 w, u32 h, u32 *hw, u32 *hh) {
+static float scaled_size(u32 w, u32 h, u32 *hw, u32 *hh) {   /* (returns the widening it applied, 1 for none) */
     *hw = w; *hh = h;
-    if (render_scale == 1.0f || scale_skipped(w, h)) return;
-    float x = (float)w * render_scale + 0.5f, y = (float)h * render_scale + 0.5f;
+    /* SSBU_ASPECT: every target this much wider than tall, as the camera's projection now is */
+    float wide = aspect_widening(w, h);   /* (16:9 targets only: not shadow maps) */
+    if ((render_scale == 1.0f && wide == 1.0f) || scale_skipped(w, h)) return 1.0f;
+    float x = (float)w * render_scale * wide + 0.5f, y = (float)h * render_scale + 0.5f;
     if (x < 1) x = 1;
     if (y < 1) y = 1;
-    if (x > 16384 || y > 16384) return;
+    if (x > 16384 || y > 16384) return 1.0f;
     *hw = (u32)x; *hh = (u32)y;
+    return wide;
 }
 
 /* The host texture standing for the render target at `guest`, created on first use. */
@@ -330,7 +356,7 @@ static Surface *surface(u64 guest, u32 width, u32 height, u32 format, int depth)
         }
     }
     u32 hw, hh;
-    scaled_size(width, height, &hw, &hh);
+    float wide = scaled_size(width, height, &hw, &hh);
     D3D11_TEXTURE2D_DESC td = {hw, hh, 1, 1, storage, {1, 0}, D3D11_USAGE_DEFAULT,
                                D3D11_BIND_SHADER_RESOURCE | (depth ? D3D11_BIND_DEPTH_STENCIL : D3D11_BIND_RENDER_TARGET), 0, 0};
     if (FAILED(ID3D11Device_CreateTexture2D(dev, &td, NULL, &s->tex))) { s->tex = NULL; return NULL; }
@@ -340,6 +366,7 @@ static Surface *surface(u64 guest, u32 width, u32 height, u32 format, int depth)
     s->guest = guest; s->width = width; s->height = height; s->format = format;
     s->hw = hw; s->hh = hh;
     s->sx = (float)hw / (float)width; s->sy = (float)hh / (float)height;
+    s->wide = wide;
     s->used = ++tick;
     return s;
 }
@@ -729,6 +756,11 @@ static BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *c) {
                 name, ad.VendorId, (unsigned)(umd.HighPart >> 16), (unsigned)(umd.HighPart & 0xFFFF), (unsigned)((u32)umd.LowPart >> 16),
                 (unsigned)(umd.LowPart & 0xFFFF), fl >> 12 & 15, fl >> 8 & 15, th.DriverConcurrentCreates ? "yes" : "no",
                 th.DriverCommandLists ? "yes" : "no");
+        /* (Intel's Direct3D 11 driver draws the main menu's panels, tiles and art black - only the labels show - and the
+         * fight with red light and stretched shapes; its Vulkan driver draws both right: renderer = auto picks Vulkan there) */
+        if (ad.VendorId == 0x8086)
+            fprintf(stderr, "[gfx] WARNING: Direct3D 11 on Intel graphics: this driver draws the menus' backgrounds and the stages black or "
+                            "wrong (#333, #81); Vulkan draws them right - Settings > Display > Renderer: auto or vulkan, then restart\n");
     }
 #else
     {   /* (DXVK: which Vulkan device it chose) */
@@ -811,29 +843,14 @@ static BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *c) {
     }
     D3D11_BUFFER_DESC dcb = {32, D3D11_USAGE_DYNAMIC, D3D11_BIND_CONSTANT_BUFFER, D3D11_CPU_ACCESS_WRITE, 0, 0};
     ID3D11Device_CreateBuffer(dev, &dcb, NULL, &down_cb);
-    /* The render scale (display.ini render_scale; auto: the picture's height in the window as it
-     * is now, over the game's 1080), fixed from here on: render targets are made at it. */
-    float scale = display_render_scale();
-    DXGI_SWAP_CHAIN_DESC1 scd;
-    if (scale == 0) {
-        scale = 1;
-        if (SUCCEEDED(IDXGISwapChain1_GetDesc1(swapchain, &scd))) {
-            unsigned fx, fy, fw, fh;
-            display_fit(scd.Width, scd.Height, &fx, &fy, &fw, &fh);
-            scale = (float)fh / 1080.0f;
-            if (scale < 1) scale = 1;
-            if (scale > 4) scale = 4;
-        }
-    }
-    if (scale < 0.5f || scale > 4) scale = 1;
-    render_scale = scale;
+    render_scale = scale_wanted();
     u32 pw, ph;
     scaled_size(1920, 1080, &pw, &ph);
     if (!make_final(pw, ph)) {
         fprintf(stderr, "[gfx] cannot create the picture's texture\n");
         return TRUE;
     }
-    if (render_scale != 1.0f)
+    if (pw != 1920 || ph != 1080)
         fprintf(stderr, "[gfx] render scale %.3g%s: the game's 1920x1080 drawn at %ux%u\n", render_scale,
                 display_render_scale() == 0 ? " (auto)" : "", pw, ph);
     start_compilers();
@@ -1270,7 +1287,8 @@ static void prewarm_mark_write(const char *dir, u64 size, u64 time, u64 budget, 
  * player's cache keeps every program played before: thousands, gigabytes. The prewarm stops making
  * them once the process has grown this much since it began (newest first: the ones played last are
  * made); the rest load at first use as without a prewarm. The budget is an eighth of the PC's memory, 1 GB at least
- * and 1.5 GB at most (some 4,500 programs: a session draws 400-600, the newest played come first; 2.5 GB left the
+ * and 2 GB at most (1.5 until 2026-11-16: an RTX 2060's prewarm made 2,275 of 7,165 played programs; the menus' and
+ * the select screen's are now made first, shader_prewarm_first.txt) (some 4,500 programs: a session draws 400-600, the newest played come first; 2.5 GB left the
  * game at 4.9 GB): with every program of the shipped list made (a third of the memory
  * allowed it) the game went from 3.7 to 5.5 GB and every player found it slower (owner 2026-11-10, after #248);
  * under DXVK (Linux) a third of it, as its whole-cache prewarm needs (the whole 65,000-program cache measured
@@ -1301,7 +1319,7 @@ static void prewarm_budget_default(u64 ram) {
         return;
     }
     if (ram / 8 > prewarm_budget) prewarm_budget = ram / 8;
-    if (prewarm_budget > (1536ull << 20)) prewarm_budget = 1536ull << 20;
+    if (prewarm_budget > (2048ull << 20)) prewarm_budget = 2048ull << 20;
 }
 
 static u64 private_bytes(void) {
@@ -1359,6 +1377,7 @@ static void *prewarm_take(const Shader *s) {
  * first use). */
 #define PREWARM_FULL_MS 30000
 int game_fight_on(void);   /* (hle_fight_test.c) */
+int net_match_now(void);   /* (host.c: an online match set up or under way) */
 static LONG prewarm_after = 1;
 static LONG prewarm_running;   /* (under jobs_lock) */
 static volatile LONG prewarm_waiting;   /* (prewarm_gate: the first present waits for the prewarm) */
@@ -1655,21 +1674,28 @@ static int prewarm_queue_file(const char *fname, Shader **head, Shader **tail, P
  * game waits at its first present until the queue is made (prewarm_gate). SSBU_SHADER_PREWARM_LIST=0: not read; another
  * number caps the queue at that many programs. */
 #define PREWARM_LIST_TOTAL 6000
+static u32 prewarm_queue_named(const char *list, u32 total, Shader **head, Shader **tail, Prewarm ***order, u32 *cap, u32 *queued, u32 *listed);
 static u32 prewarm_queue_list(Shader **head, Shader **tail, Prewarm ***order, u32 *cap, u32 *queued, u32 *listed) {
     const char *set = getenv("SSBU_SHADER_PREWARM_LIST");
     u32 total = set && *set ? (u32)strtoul(set, NULL, 10) : PREWARM_LIST_TOTAL;
     if (set && *set && total < 2) total = total ? PREWARM_LIST_TOTAL : 0;   /* (=1 was "on" before the number meant a total) */
+    return prewarm_queue_named("shader_prewarm.txt", total, head, tail, order, cap, queued, listed);
+}
+/* (the same for any list: shader_prewarm.txt, shader_prewarm_first.txt) */
+static u32 prewarm_queue_named(const char *list, u32 total, Shader **head, Shader **tail, Prewarm ***order, u32 *cap, u32 *queued, u32 *listed) {
     if (*queued >= total) return 0;
     FILE *f = NULL;
+    char media[96];
+    snprintf(media, sizeof media, "media/%s", list);
 #ifdef _WIN32
     char path[MAX_PATH + 64] = "";
     DWORD k = GetModuleFileNameA(NULL, path, MAX_PATH);
     if (k && k < MAX_PATH) {
         char *slash = strrchr(path, '\\');
-        if (slash) { strcpy(slash + 1, "shader_prewarm.txt"); f = fopen(path, "r"); }
+        if (slash) { strcpy(slash + 1, list); f = fopen(path, "r"); }
     }
 #endif
-    if (!f) f = fopen("media/shader_prewarm.txt", "r");
+    if (!f) f = fopen(media, "r");
     if (!f) return 0;
     u32 added = 0;
     char line[160], fname[200], file[1300];
@@ -1845,6 +1871,17 @@ static DWORD WINAPI prewarm_main(void *unused) {
     Prewarm **order = malloc(sizeof *order * order_cap);   /* (the entries in queue order) */
     Shader *head = NULL, *tail = NULL;
     u32 queued = 0;
+    /* First the programs the title, the menus and the select screens draw (media/shader_prewarm_first.txt: the programs
+     * of the Vulkan warm start's boot group, tools/dev/pipeline_sweep.py groups), when Prepare
+     * Shaders or play put them in this cache. The played ones come newest first by the date a file was first written, so
+     * the menus' and the select screen's, played once long ago, came last and were the ones over the budget: the select
+     * screen at 38-52 fps on an RTX 2060 whose prewarm made 2,275 of its 7,165 played programs (2026-11-16). */
+    u32 first_listed = 0, first = table && order ? prewarm_queue_named("shader_prewarm_first.txt", PREWARM_SLOTS / 2, &head, &tail, &order, &order_cap, &queued, &first_listed) : 0;
+    if (order && queued + n > order_cap) {   /* (room for the played ones after them) */
+        Prewarm **more = realloc(order, sizeof *order * (queued + n + 1024));
+        if (more) { order = more; order_cap = queued + n + 1024; }
+        else n = order_cap - queued;
+    }
     /* The vertex programs first: they are the ones whose object the first draw waits for
      * (the pixel program's is made alongside and is usually ready by then). With all of the
      * cache, this lets the first match start after the vertex half is ready. */
@@ -1877,8 +1914,8 @@ static DWORD WINAPI prewarm_main(void *unused) {
     const char *mode = unplayed == UNPLAYED_ALL ? "every program"
                      : unplayed == UNPLAYED_VS ? "the played programs and the unused vertex ones"
                      : "the played programs";
-    fprintf(stderr, "[gfx] prewarm: %u shaders from the disk cache (%s), %u more from the shipped list (%u programs played), on %u threads, %ld during a fight after the first %d s\n",
-            queued - shipped, mode, shipped, listed, ncompilers - 1, (long)prewarm_after, PREWARM_FULL_MS / 1000);
+    fprintf(stderr, "[gfx] prewarm: %u shaders the menus draw first (%u listed), %u from the disk cache (%s), %u more from the shipped list (%u programs played), on %u threads, %ld during a fight after the first %d s\n",
+            first, first_listed, queued - shipped - first, mode, shipped, listed, ncompilers - 1, (long)prewarm_after, PREWARM_FULL_MS / 1000);
     if (warm_mode >= 2) warm_prewarmed(order, queued);
     free(order);
     return 0;
@@ -4551,6 +4588,7 @@ static ID3D11Texture2D *unpack_texture(ID3D11Texture2D *bc, const TextureDesc *d
     return out;
 }
 
+static int draw_reads_wide;   /* (SSBU_ASPECT: the draw being bound samples a widened target) */
 static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, float *scale) {
     TextureDesc d;
     *scale = 1.0f;
@@ -4570,6 +4608,7 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
         if (!rt || s->used > rt->used) rt = s;
     }
     if (rt && draw_logging) note_sampled(rt);
+    if (rt && rt->wide > 1.0f) draw_reads_wide = 1;
     if (rt && rt->depth) depth_sampled_now = rt;
     if (rt) { *scale = rt->sx; return surface_srv(rt, (int)d.srgb); }
     if (!ok || d.type == TIC_1D_BUFFER || d.bytes == 0) { warn_texture(&d); return NULL; }
@@ -5218,6 +5257,41 @@ static void set_samplers(int stage, u32 count, ID3D11SamplerState *const *v) {
     else ID3D11DeviceContext_PSSetSamplers(ctx, lo, hi - lo, v + lo);
 }
 
+/* SSBU_DEBUG_CAMERA_HUNT (research): a 3D draw's vertex constant buffers searched for a
+ * camera matrix: rows (or columns) for x and y whose first three entries' lengths differ by 16:9,
+ * true of a projection however the view turns it. Each new one is logged with its guest address,
+ * which host.c's hunt then watches for the game code writing it. */
+static int cam_hunt_draw;
+void camera_hunt_watch(u64 guest);   /* (host.c) */
+static void cam_hunt_cb(const Shader *s, u32 b, u64 va, u32 size) {
+    static float m[1024];
+    static u64 seen[128];
+    static int nseen;
+    if (size > sizeof m) size = sizeof m;
+    read_gpu(va, size, m);
+    for (u32 o = 0; o + 64 <= size; o += 16) {
+        const float *f = m + o / 4;
+        for (int t = 0; t < 2; t++) {
+#define E(r, c) (t ? f[(c) * 4 + (r)] : f[(r) * 4 + (c)])
+            float n0 = sqrtf(E(0, 0) * E(0, 0) + E(0, 1) * E(0, 1) + E(0, 2) * E(0, 2));
+            float n1 = sqrtf(E(1, 0) * E(1, 0) + E(1, 1) * E(1, 1) + E(1, 2) * E(1, 2));
+            float n3 = sqrtf(E(3, 0) * E(3, 0) + E(3, 1) * E(3, 1) + E(3, 2) * E(3, 2));
+            float dot = E(0, 0) * E(1, 0) + E(0, 1) * E(1, 1) + E(0, 2) * E(1, 2);
+#undef E
+            if (!(n0 > 1e-4f && n3 > 1e-4f) || fabsf(n1 / n0 - 16.0f / 9) > 2e-3f || fabsf(dot) > 1e-3f * n0 * n1) continue;
+            u64 key = (u64)b << 56 ^ (u64)o << 40 ^ s->hash;
+            int dup = 0;
+            for (int i = 0; i < nseen; i++) dup |= seen[i] == key;
+            if (dup || nseen >= 128) continue;
+            seen[nseen++] = key;
+            u64 g = gpu_va_to_guest(va) + o;
+            fprintf(stderr, "[hunt] %s cb%u +%#x (%s) guest %#llx: x %g y %g w %g\n", s->name, b, o, t ? "columns" : "rows",
+                    (unsigned long long)g, n0, n1, n3);
+            camera_hunt_watch(g);
+        }
+    }
+}
+
 /* Bind a stage's constant buffers and textures. */
 /* A 24-bit depth buffer read as a texture: the hardware gives the depth in green and the stencil in
  * red (S8Z24), the view here the depth in red - the texture header's swizzle has its red and green
@@ -5243,6 +5317,7 @@ static void bind_resources(const u32 *regs, const CbBinding cb[STAGES][18], int 
         u32 size = cb[mstage][b].size;
         if (size > 0x10000) size = 0x10000;
         if (size > s->info.cbuf_extent[b]) size = s->info.cbuf_extent[b];   /* only what the program can read */
+        if (cam_hunt_draw && stage == SHADER_VERTEX && cb[mstage][b].address && size >= 64) cam_hunt_cb(s, b, cb[mstage][b].address, size);
         if (size >= 0x1000 && cb[mstage][b].address && !draw_logging && (srv[b] = kept_cb(cb[mstage][b].address, size)))
             continue;   /* big ones stay on the GPU */
         if (size > gfx_stat_biggest_cb.size) {   /* (for the statistics: the largest one lately) */
@@ -5261,7 +5336,7 @@ static void bind_resources(const u32 *regs, const CbBinding cb[STAGES][18], int 
                     stage == SHADER_VERTEX ? "vs" : "ps", b, cb[mstage][b].address, cb[mstage][b].size,
                     gpu_va_to_guest(cb[mstage][b].address), f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
             const char *more = getenv("SSBU_GFX_LOG_CB");   /* this bank in full (first 64 words) */
-            if (more && strtoul(more, NULL, 0) == b) {
+            if (more && (!strcmp(more, "all") || strtoul(more, NULL, 0) == b)) {   /* ("all": every bank) */
                 u32 before[64];
                 read_gpu(cb[mstage][b].address - 0x100, 0x100, before);
                 for (u32 i = 0; i < 64; i += 8)
@@ -5491,12 +5566,13 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
     ID3D11DepthStencilView *dsv = NULL;
     u32 sel = regs[M_CT_SELECT], count = sel & 15, rt_w = 0, rt_h = 0;
     float rt_sx = 1.0f, rt_sy = 1.0f;   /* the targets' render scale: host pixels per game pixel */
+    float rt_wide = 1.0f;               /* (SSBU_ASPECT: the first colour target's widening) */
     for (u32 i = 0; i < count && i < 8; i++) {
         u32 ct = (sel >> (4 + 3 * i)) & 7;
         u64 va = (u64)regs[M_CT(ct)] << 32 | regs[M_CT(ct) + 1];
         if (!va || !regs[M_CT(ct) + 4]) continue;
         Surface *sf = surface(gpu_va_to_guest(va), regs[M_CT(ct) + 2], regs[M_CT(ct) + 3], regs[M_CT(ct) + 4], 0);
-        if (sf) { rtv[i] = sf->rtv; if (!rt_w) { rt_w = sf->width; rt_h = sf->height; rt_sx = sf->sx; rt_sy = sf->sy; } }
+        if (sf) { rtv[i] = sf->rtv; if (!rt_w) { rt_w = sf->width; rt_h = sf->height; rt_sx = sf->sx; rt_sy = sf->sy; rt_wide = sf->wide; } }
     }
     Surface *zsf = NULL;
     /* a draw that writes neither depth nor stencil keeps its depth target read-only, so that it can
@@ -5735,9 +5811,18 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
     params.base[0] = regs[M_GLOBAL_BASE_VERTEX];
     params.base[1] = regs[M_GLOBAL_BASE_INSTANCE] + instance_counter;
 
+    draw_reads_wide = 0;
     depth_sampled_now = NULL;
+    if (ps) bind_resources(regs, cb, SHADER_PIXEL, ps, &params);   /* (first: whether it reads the scene decides the vertex stage's) */
+    {   /* (SSBU_DEBUG_CAMERA_HUNT: 3D draws on a widened target, 300 of them every 10 s) */
+        static int hunting = -1, budget;
+        static u64 next;
+        if (hunting < 0) hunting = getenv("SSBU_DEBUG_CAMERA_HUNT") != NULL;
+        if (hunting && rt_now_ns() > next) { budget = 300; next = rt_now_ns() + 10000000000ull; }
+        cam_hunt_draw = hunting && budget > 0 && rt_wide > 1.0f && dd.DepthEnable && dd.DepthFunc != D3D11_COMPARISON_ALWAYS;
+        if (cam_hunt_draw) budget--;
+    }
     bind_resources(regs, cb, SHADER_VERTEX, vs, &params);
-    if (ps) bind_resources(regs, cb, SHADER_PIXEL, ps, &params);
     if (zsf && depth_sampled_now == zsf && dsv == zsf->dsv && depth_read_only && zsf->dsv_ro) {
         /* the first such draw: its depth texture was refused while the target was writable */
         zsf->sampled_bound = 1;
@@ -5745,9 +5830,28 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
         ID3D11DeviceContext_OMSetRenderTargets(ctx, 8, rtv, dsv);
         cur.dsv = dsv;
         forget_resource_bindings();
-        bind_resources(regs, cb, SHADER_VERTEX, vs, &params);
         if (ps) bind_resources(regs, cb, SHADER_PIXEL, ps, &params);
+        bind_resources(regs, cb, SHADER_VERTEX, vs, &params);
     }
+    {   /* A wider picture (gpu_aspect.c): the squeeze, the 2D clip, a bubble's shift */
+        AspectDraw ad = {rt_wide, rt_w, rt_sx, (regs[M_DEPTH_TEST] & 1) && dsv, dd.DepthFunc == D3D11_COMPARISON_ALWAYS, draw_reads_wide,
+                         regs[M_SCISSOR(0)], regs[M_SCISSOR(0) + 1], vs, ps, vs ? vs->name : NULL, ps ? ps->name : NULL,
+                         cb[STAGE_VERTEX][3].address, cb[STAGE_VERTEX][3].size, read_gpu};
+        AspectDecision ao;
+        aspect_draw(&ad, &ao);
+        params.fix[0] *= ao.fix0;
+        D3D11_RECT sr = cur.scissor;
+        if (ao.clip) { sr.left = ao.clip_l; sr.right = ao.clip_r; }
+        if (ao.shift) {
+            D3D11_VIEWPORT bv = cur.vp;
+            bv.TopLeftX += ao.shift_by * bv.Width / 2;
+            ID3D11DeviceContext_RSSetViewports(ctx, 1, &bv);
+            cur.vp = bv;
+            sr = (D3D11_RECT){0, 0, 16384, 16384};
+        }
+        if (memcmp(&cur.scissor, &sr, sizeof sr)) { ID3D11DeviceContext_RSSetScissorRects(ctx, 1, &sr); cur.scissor = sr; }
+    }
+    if (draw_logging && rt_wide > 1.0f) fprintf(stderr, "[draw]   aspect: x %g (reads wide %d, depth %d)\n", params.fix[0], draw_reads_wide, (int)((regs[M_DEPTH_TEST] & 1) && dsv));
 
     /* per-draw parameters */
     if (!params_buffer) {
@@ -6061,8 +6165,10 @@ static int capture_fight_window(void) {
         const char *f = getenv("SSBU_CAPTURE_FROM"), *t = getenv("SSBU_CAPTURE_TO");
         from = f ? atoll(f) : 0; to = t ? atoll(t) : 0;
     }
-    if (from && test_fight_frame < from) return 0;
-    if (to && test_fight_frame > to) return 0;
+    static long long last;   /* (the fight's last frame: the span goes on after it ends - TIME!, GAME!) */
+    if (test_fight_frame) last = test_fight_frame;
+    if (from && last < from) return 0;
+    if (to && last > to) return 0;
     return 1;
 }
 
@@ -6077,8 +6183,26 @@ static void capture(ID3D11Texture2D *back, ID3D11Texture2D *window) {
         if (getenv("SSBU_CAPTURE_MAX")) most = atoi(getenv("SSBU_CAPTURE_MAX"));
         if (getenv("SSBU_CAPTURE_EVERY")) every = (u64)(atof(getenv("SSBU_CAPTURE_EVERY")) * 1e9);
     }
-    if (!dir || count >= most || rt_now_ns() - last < every) return;
-    if (!capture_fight_window()) return;
+    /* SSBU_CAPTURE_AT=<fight frame>,<fight frame>,...: one capture at each of these frames of a test fight
+     * (the first frame shown at or past it), whatever SSBU_CAPTURE_EVERY says: the same moments in runs that
+     * differ only in what they draw (the same replay at other shapes) */
+    static long long at[32];
+    static int nat = -1, next_at;
+    if (nat < 0) {
+        nat = 0;
+        for (const char *e = getenv("SSBU_CAPTURE_AT"); e && *e && nat < 32; ) {
+            at[nat++] = atoll(e);
+            e = strchr(e, ',');
+            if (e) e++;
+        }
+    }
+    if (nat > 0) {
+        if (!dir || next_at >= nat || !test_fight_frame || test_fight_frame < at[next_at]) return;
+        while (next_at < nat && at[next_at] <= test_fight_frame) next_at++;
+    } else {
+        if (!dir || count >= most || rt_now_ns() - last < every) return;
+        if (!capture_fight_window()) return;
+    }
     last = rt_now_ns();
     char path[1024];
     snprintf(path, sizeof path, "%s/frame_%03d.bmp", dir, count);
@@ -6632,6 +6756,24 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
     forget_draw_state();
     gfx_stat_presented++;
     release_graves();
+    /* A new picture shape: the 16:9-shaped targets made again at its width. A new render scale (menu, window
+     * size, shape; never inside an online fight, where a hitch is both players'): every target made again. */
+    int new_shape = display_aspect_take();
+    float scale = scale_wanted();
+    int new_scale = scale != render_scale && !(game_fight_on() && net_match_now());
+    if (new_scale) {
+        fprintf(stderr, "[gfx] render scale now %.3g%s (was %.3g)\n", scale, display_render_scale() == 0 ? " (auto)" : "", render_scale);
+        render_scale = scale;
+    }
+    if (new_shape || new_scale) {   /* (only the targets whose size changes: one the game drew once keeps its picture) */
+        ID3D11DeviceContext_OMSetRenderTargets(ctx, 0, NULL, NULL);
+        for (u32 i = 0; i < nsurfaces; i++) {
+            u32 w, h;
+            if (!surfaces[i].tex) continue;
+            scaled_size(surfaces[i].width, surfaces[i].height, &w, &h);
+            if (w != surfaces[i].hw || h != surfaces[i].hh) release_surface(&surfaces[i]);
+        }
+    }
     note_writes();
     evict_shaders();
     debug_messages();
@@ -6790,6 +6932,13 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
         extern volatile long long test_fight_frame;
         if (f4_at == -1) f4_at = getenv("SSBU_F4_AT") ? atoll(getenv("SSBU_F4_AT")) : 0;
         if (f4_at > 0 && test_fight_frame >= f4_at) { f4_at = 0; keys |= 8; }
+        /* SSBU_F4_AFTER_END=<frames shown>: F4 that many frames after the fight's last one (TIME!, GAME!) */
+        static long long after = -1, seen, since;
+        if (after == -1) after = getenv("SSBU_F4_AFTER_END") ? atoll(getenv("SSBU_F4_AFTER_END")) : 0;
+        if (after > 0) {
+            if (test_fight_frame) { seen = 1; since = 0; }
+            else if (seen && ++since == after) { after = 0; keys |= 8; }
+        }
     }
     static char f4_dir[160];   /* F4's render targets go here, once the logged frame is drawn */
     if (f4_dir[0] && !draw_logging) {
@@ -6826,6 +6975,7 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
     if (profile_at == -1) profile_at = getenv("SSBU_PROFILE_AT") ? atof(getenv("SSBU_PROFILE_AT")) : -2;
     if (profile_at >= 0 && rt_now_ns() > (u64)(profile_at * 1e9)) { profile_at = -2; keys |= 32; }
     if (keys & 32) profile_start(10.0);   /* F6 */
+    if (keys & 256) aspect_pick_next();   /* F9: the next kind of 2D draw left unsqueezed (gpu_aspect.c) */
     static char detail[1800], hint[640];
     static u64 last_ns, last_presented, last_drawn, last_dispatched, last_skipped, last_watch, last_busy, last_upload, last_waits, last_composed, last_reused, last_kind[4];
     u64 now = rt_now_ns();

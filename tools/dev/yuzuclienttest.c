@@ -18,6 +18,14 @@ const char *config_path(enum ConfigFile f){(void)f;return "none.txt";}
 u64 rt_now_ns(void){return GetTickCount64()*1000000ull;}
 void kernel_signal_event(u32 h){(void)h;}
 void rt_backtrace(void){}
+/* net_relay.c picks Epic Online Services when asked; this test never does. */
+const struct NetBackend net_eos_backend;
+void net_eos_net_packet(const char *from, const u8 *p, u32 n) { (void)from; (void)p; (void)n; }
+void nexeos_tick(void) {}
+void nexeos_packet(const char *from, const u8 *data, u32 len) { (void)from; (void)data; (void)len; }
+uint64_t nex_pid_of(const char *key) { (void)key; return 0; }
+int online_nex_datagram(u32 s, u16 sp, u32 d, u16 dp, const void *p, u32 n) { (void)s; (void)sp; (void)d; (void)dp; (void)p; (void)n; return 0; }
+void discord_note_room(int in_room, int players, int max_players, unsigned host_ip){(void)in_room;(void)players;(void)max_players;(void)host_ip;}
 u32 rt_attach_system_event(Cpu *c,u64 e,int a){(void)c;(void)e;(void)a;return 0;}
 u64 rt_guest_copy(const void *p,size_t n){(void)n;return (u64)p;}
 void f_7109199790_orig(Cpu *c){(void)c;}

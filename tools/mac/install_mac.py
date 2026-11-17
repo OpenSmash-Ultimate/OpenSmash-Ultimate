@@ -81,7 +81,8 @@ LAUNCHERS = ["Install WindowSmash.command", "Play SSBU.command", "launchers/Play
              "launchers/Host SSBU Netplay.command", "launchers/Join SSBU Netplay.command",
              "launchers/Unlock All Fighters.command", "launchers/Build WindowSmash.command",
              "Mods.command", "launchers/WindowSmash Mods.command", "launchers/Uninstall WindowSmash Mods.command",
-             "launchers/Import Miis.command", "OpenSmash Launcher.command", "tools/mac/launch.sh"]
+             "launchers/Import Miis.command", "OpenSmash Launcher.command", "tools/mac/launch.sh",
+             "tools/mac/rebuild-all.command"]
 EMULATORS = ("yuzu", "eden", "sudachi", "citron", "suyu", "torzu")   # yuzu and the forks with its layout
 SSBU_TITLES = "01006a800016"   # (Super Smash Bros. Ultimate's title ids: the game's, its update's and DLC's)
 NAME_MAX = 32   # (as the Windows setup window's box)

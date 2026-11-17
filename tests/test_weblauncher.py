@@ -12,6 +12,7 @@ import threading
 import time
 import unittest
 from http.server import ThreadingHTTPServer
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
@@ -48,7 +49,7 @@ class Settings(unittest.TestCase):
         with open(os.path.join(self.root, "display.ini"), "w") as f:
             f.write("; the game's\nwindow = fullscreen   ; a comment\nwidth = 1920\nheight = 1080\nvolume=40\n")
         with open(os.path.join(self.root, "online_server.txt"), "w") as f:
-            f.write("# the lobby\nsmash.recomps.wtf:39421 friends\n")
+            f.write("# the lobby\nopensmash-lobby.duckdns.org:39421 friends\n")
         with open(os.path.join(self.root, "online_name.txt"), "w") as f:
             f.write("Mario\n")
         s = launcher.read_settings(self.root)
@@ -60,9 +61,30 @@ class Settings(unittest.TestCase):
             f.write("auto\n")
         self.assertEqual(launcher.read_settings(self.root)["lobby"], "public")
 
+    def test_the_north_american_lobby_is_the_public_one(self):
+        for line, want in (("smash.recomps.wtf:39421\n", ("public", "")), ("smash.recomps.wtf:39421 abc\n", ("private", "abc")),
+                           ("na\n", ("public", "")), ("smash.example:39421 abc\n", ("custom", "abc"))):
+            with open(os.path.join(self.root, "online_server.txt"), "w") as f:
+                f.write(line)
+            s = launcher.read_settings(self.root)
+            self.assertEqual((s["lobby"], s["code"]), want, line)
+
+    def test_an_old_saved_custom_lobby_is_not_written_back(self):
+        # (issue #389: launcher.ini's lobby = custom with the gone North American lobby put it back into online_server.txt)
+        with open(os.path.join(self.root, "online_server.txt"), "w") as f:
+            f.write("auto\n")
+        with open(os.path.join(self.root, "launcher.ini"), "w") as f:
+            f.write("[opensmash]\nlobby = custom\ncode =\nserver = smash.recomps.wtf:39421\n")
+        s = launcher.read_settings(self.root)
+        self.assertEqual((s["lobby"], s["server"]), ("public", ""))
+        launcher.write_settings(self.root, {})
+        self.assertEqual(launcher.first_line(os.path.join(self.root, "online_server.txt")), "auto")
+        launcher.write_settings(self.root, {"lobby": "custom", "server": "opensmash-lobby.duckdns.org:39421", "code": "abc"})
+        self.assertEqual(launcher.first_line(os.path.join(self.root, "online_server.txt")), "opensmash-lobby.duckdns.org:39421 abc")
+
     def test_write_each_lobby(self):
         for lobby, extra, line in (("public", {}, "auto"), ("offline", {}, "off"),
-                                   ("private", {"code": "abc"}, "smash.recomps.wtf:39421 abc"),
+                                   ("private", {"code": "abc"}, "opensmash-lobby.duckdns.org:39421 abc"),
                                    ("custom", {"server": "10.0.0.2:39420", "code": ""}, "10.0.0.2:39420"),
                                    ("custom", {"server": "", "code": "x"}, "127.0.0.1:39420 x")):
             launcher.write_settings(self.root, {"lobby": lobby, **extra})
@@ -305,6 +327,51 @@ class Server(unittest.TestCase):
         status, r = self.call("POST", "/api/setup/check", {"game": self.root, "keys": "", "firmware": ""})
         self.assertEqual(status, 200)
         self.assertFalse(r["checks"]["keys"]["ok"])
+
+    def test_rebuild_all_runs_the_platform_script(self):
+        original_host = launcher.HOST
+        launcher.HOST = "linux"
+        try:
+            with mock.patch.object(launcher, "venv_python", return_value=sys.executable), \
+             mock.patch.object(self.app, "game_running", return_value=False), \
+             mock.patch.object(self.app.jobs, "start", return_value={"id": "build"}) as start:
+                status, result = self.call("POST", "/api/rebuild-all", {"jobs": "4"})
+        finally:
+            launcher.HOST = original_host
+        self.assertEqual((status, result), (200, {"id": "build"}))
+        title, commands, cwd = start.call_args.args[:3]
+        self.assertEqual(title, "Building the game and launcher")
+        self.assertEqual(cwd, self.root)
+        self.assertEqual(commands, [["bash", os.path.join(self.root, "tools", "linux", "rebuild-all.sh"), "--jobs", "4"]])
+
+    def test_rebuild_all_uses_the_macos_script(self):
+        original_host = launcher.HOST
+        launcher.HOST = "macos"
+        try:
+            with mock.patch.object(launcher, "venv_python", return_value=sys.executable), \
+                 mock.patch.object(self.app, "game_running", return_value=False), \
+                 mock.patch.object(self.app.jobs, "start", return_value={"id": "build"}) as start:
+                status, _result = self.call("POST", "/api/rebuild-all", {})
+        finally:
+            launcher.HOST = original_host
+        self.assertEqual(status, 200)
+        self.assertEqual(start.call_args.args[1],
+                         [["bash", os.path.join(self.root, "tools", "mac", "rebuild-all.command")]])
+
+    def test_rebuild_all_uses_the_windows_script(self):
+        original_host = launcher.HOST
+        launcher.HOST = "windows"
+        try:
+            with mock.patch.object(launcher, "venv_python", return_value=sys.executable), \
+                 mock.patch.object(self.app, "game_running", return_value=False), \
+                 mock.patch.object(self.app.jobs, "start", return_value={"id": "build"}) as start:
+                status, _result = self.call("POST", "/api/rebuild-all", {"jobs": "8"})
+        finally:
+            launcher.HOST = original_host
+        self.assertEqual(status, 200)
+        self.assertEqual(start.call_args.args[1],
+                         [["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                           os.path.join(self.root, "tools", "rebuild-all.ps1"), "-Jobs", "8"]])
 
     def test_play_before_the_build(self):
         status, err = self.call("POST", "/api/play", {"mode": "online"})

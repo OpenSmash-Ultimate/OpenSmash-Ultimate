@@ -328,6 +328,768 @@ static int unwind(CONTEXT ctx, void **frames, int max) {
     return n;
 }
 
+/* SSBU_DEBUG_CAMERA_HUNT (ultrawide research): at frame ends, every 10 s, the heap and the
+ * alias area are searched for perspective matrices of the game's 16:9 shape (the y scale 16/9 of
+ * the x scale, no rotation terms, -1 or 1 in w), logged, and their pages made read-only for 2 s:
+ * each game function that writes one is logged once with its callers, then the write goes on
+ * (the page opened for one instruction, single-stepped, and closed again). Which code builds the
+ * camera's projection, so its shape can be widened where the game makes it.
+ * ponytail: page-protection tracer, one thread's write at a time; research only */
+#define HUNT_MAX 16
+static struct { u64 at; u8 *page; DWORD old; int armed; } hunt[HUNT_MAX];
+static int nhunt;
+static u64 hunt_until;
+static volatile LONG hunt_logged;
+static __declspec(thread) u8 *hunt_rearm;
+static u64 hunt_seen[64];
+static int nseen;
+
+static volatile LONG64 hunt_wanted[HUNT_MAX];   /* (from the renderer's thread: gpu_d3d11.c cam_hunt_cb) */
+static volatile LONG hunt_nwanted;
+void camera_hunt_watch(u64 guest) {
+    LONG k = InterlockedIncrement(&hunt_nwanted) - 1;
+    if (k < HUNT_MAX) InterlockedExchange64(&hunt_wanted[k], (LONG64)guest);
+}
+
+/* (the game's thread, at frame ends: what to watch for 2 s - the renderer's camera matrices) */
+static void hunt_scan(Cpu *c, const u64 args[8], void *ctx) {
+    (void)c; (void)args; (void)ctx;
+    static u64 last;
+    if (rt_now_ns() - last < 3000000000ull) return;
+    last = rt_now_ns();
+    for (int i = 0; i < nhunt; i++)
+        if (hunt[i].armed) { DWORD o; hunt[i].armed = 0; VirtualProtect(hunt[i].page, 4096, hunt[i].old, &o); }
+    nhunt = 0;
+    LONG n = InterlockedExchange(&hunt_nwanted, 0);
+    if (n > HUNT_MAX) n = HUNT_MAX;
+    for (LONG k = 0; k < n; k++) {
+        u64 g = (u64)hunt_wanted[k];
+        u8 *page = (u8 *)((uintptr_t)G2H(g) & ~(uintptr_t)4095);
+        int dup = 0;
+        for (int i = 0; i < nhunt; i++) dup |= hunt[i].page == page;
+        if (!dup) { hunt[nhunt].at = g; hunt[nhunt].page = page; nhunt++; }
+    }
+    if (!nhunt) { fflush(stdout); return; }
+    printf("[hunt] watching %d pages for 2 s\n", nhunt);
+    fflush(stdout);
+    hunt_until = rt_now_ns() + 2000000000ull;
+    for (int i = 0; i < nhunt; i++) hunt[i].armed = VirtualProtect(hunt[i].page, 4096, PAGE_READONLY, &hunt[i].old) != 0;
+}
+
+#else
+void camera_hunt_watch(u64 guest) { (void)guest; }   /* (SSBU_DEBUG_CAMERA_HUNT: Windows only, a research tool) */
+#endif
+
+/* ---- ultrawide (docs/ULTRAWIDE.md): the views and the HUD for a picture wider than 16:9, on Windows and
+ * Linux (macOS is held at 16:9: display_shape_locked) ---------------------------------------------- */
+#ifndef __APPLE__
+#include <math.h>
+#include "frame_hooks.h"
+
+/* SSBU_DEBUG_CAM_TRACE=<n> (research): every n fight frames, both cameras on one line, to see how the 16:9
+ * camera behaves (docs/ULTRAWIDE.md). The fight frame is SSBU_FIGHT_HASH's (hle_fight_test.c), so its
+ * lines - the fighters' positions - join on it; it counts only with SSBU_FIGHT_HASH (or
+ * SSBU_DETERMINISTIC) set. Render camera: position (its inverse view, +0x280), field of view (+0x15c),
+ * width (+0x164). Game camera manager M (main+0x52b8f00): the stage's camera range (+0xc20: left,
+ * right, top, bottom), the blast zones (+0xc30), the visible range's centre (+0xeb0) and half height
+ * (+0xf38 x +0xf68), its width / height (+0xf58). */
+long long fight_test_frame0(void);   /* (hle_fight_test.c) */
+static int wide_style_stage(void);   /* (below) */
+static void cam_trace(Cpu *c, const u64 args[8], void *ctx) {
+    (void)c; (void)args; (void)ctx;
+    static long long last = -1;
+    static int every = -1;
+    if (every < 0) { every = atoi(getenv("SSBU_DEBUG_CAM_TRACE")); if (every < 1) every = 10; }
+    long long f = fight_test_frame0();
+    if (f <= 0 || f == last || f % every) return;
+    last = f;
+    u64 a = *P(u64, 0x7105337ce8ull), m = *P(u64, 0x71052b8f00ull);
+    if (!a || !(a = *P(u64, a + 0x490)) || !m || !(m = *P(u64, m))) return;
+    u64 cam = *P(u64, a + 0xd8) ? *P(u64, a + 0xe0) : 0x7105334060ull;
+    const float *pos = P(float, cam + 0x280), *rg = P(float, m + 0xc20), *dz = P(float, m + 0xc30), *vc = P(float, m + 0xeb0);
+    printf("[camtrace] F %lld | render pos %.2f %.2f %.2f fov %.2f width %.0f | range %.1f %.1f %.1f %.1f | dead %.1f %.1f %.1f %.1f"
+           " | visible centre %.2f %.2f half-height %.2f aspect %.4f\n",
+           f, pos[0], pos[1], pos[2], *P(float, cam + 0x15c), *P(float, cam + 0x164), rg[0], rg[1], rg[2], rg[3], dz[0], dz[1], dz[2], dz[3],
+           vc[0], vc[1], *P(float, m + 0xf38) * *P(float, m + 0xf68), *P(float, m + 0xf58));
+    {   /* (the views: the offset the picture's camera has from the game's, and its zoom) */
+        extern float wide_now_x, wide_now_y, wide_now_z;
+        extern volatile float shadow_k_out, stage_out_k, stage_out_l, stage_out_r;
+        printf("[camwide] F %lld | offset %.2f %.2f %.2f k %.4f view %.1f %.1f\n", f, wide_now_x, wide_now_y, wide_now_z, wide_style_stage() ? stage_out_k : shadow_k_out,
+               stage_out_l, stage_out_r);
+    }
+    {
+        extern volatile long hud_calls[12];
+        char line[200];
+        int n = snprintf(line, sizeof line, "[hudcalls] F %lld |", f);
+        for (int k = 0; k < 12; k++) n += snprintf(line + n, sizeof line - n, " %ld", InterlockedExchange(&hud_calls[k], 0));
+        printf("%s\n", line);
+    }
+    if (getenv("SSBU_DEBUG_CAM_TRACE_OBJ"))   /* (the render camera's start: its inputs) */
+        for (u32 o = 0; o < 0x140; o += 0x20) {
+            const float *v = P(float, cam + o);
+            printf("[camobj] F %lld +%03x: %g %g %g %g  %g %g %g %g\n", f, o, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+        }
+    fflush(stdout);
+}
+
+/* SSBU_DEBUG_FRAMING_DUMP=<n> (research, reads only): every n fight frames, the game camera that frames the
+ * fight as f_71004fe4f0 gets it (x0), +0x40..+0x240, and the object at its +0x8 (where it takes its
+ * aspect from, +0x128), +0x60..+0x140: where it keeps the fighters' box it frames. */
+static int view_on(void);   /* (below) */
+static GuestFn *fdump_orig;
+static volatile float wide_goal_offset[3];   /* (the view's goal: its look-at minus the game's - zoomed: the shadow camera's; hybrid: the slide along the stage) */
+static void framing_dump(Cpu *c) {
+    static long long last = -1;
+    static int every = -1;
+    if (every < 0) { const char *e = getenv("SSBU_DEBUG_FRAMING_DUMP"); every = e ? atoi(e) : 0; if (e && every < 1) every = 30; }
+    long long f = fight_test_frame0();
+    if (every > 0 && f > 0 && f != last && f % every == 0) {
+        last = f;
+        u64 cam = c->x[0], src = *P(u64, cam + 0x8);
+        printf("[framing] F %lld camera %#llx (source %#llx), s0 %g\n", f, (unsigned long long)cam, (unsigned long long)src, c->v[0].f[0]);
+        for (u32 o = 0x40; o < 0x240; o += 0x20) {
+            const float *v = P(float, cam + o);
+            printf("[framing] cam+%03x: %g %g %g %g  %g %g %g %g\n", o, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+        }
+        if (src)
+            for (u32 o = 0x60; o < 0x140; o += 0x20) {
+                const float *v = P(float, src + o);
+                printf("[framing] src+%03x: %g %g %g %g  %g %g %g %g\n", o, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+            }
+        fflush(stdout);
+    }
+    static int game_wide = -1;   /* (SSBU_DEBUG_REFERENCE_VIEW: the game's own framing widened - changes the fight) */
+    if (game_wide < 0) game_wide = getenv("SSBU_DEBUG_REFERENCE_VIEW") != NULL;
+    if (game_wide) {
+        u64 cam = c->x[0], src = *P(u64, cam + 0x8);
+        float a = display_aspect(), *own = P(float, cam + 0x134), *from = src ? P(float, src + 0x128) : NULL;
+        if (from && fabsf(*from - 16.0f / 9) < 1e-3f) *from = a;
+        if (fabsf(*own - 16.0f / 9) < 1e-3f) *own = a;
+        if (fabsf(c->v[0].f[0] - 16.0f / 9) < 1e-3f) c->v[0].f[0] = a;
+    }
+    fdump_orig(c);
+}
+/* The views (wide, zoomed, hybrid): the render camera's matrices are copied for drawing, culling and the HUD
+ * by f_7103555140 (dst x0 = the camera + 0x1d0, src x1 = its own); after that copy, that block is moved by the
+ * view's offset and zoom: position (inverse view, +0xb0 of the block), look-at (+0x100) and the view's
+ * translation (+0x30, minus the offset turned by the view). The wide view moves nothing (the game's own camera);
+ * the zoomed view follows its shadow camera, the hybrid view slides and zooms within the stage. The game's
+ * camera is not touched: the fight is the same. */
+static int wide_style_stage(void), wide_style_shadow(void);   /* (below) */
+static GuestFn *copy_orig;
+static float wide_now[3];
+float wide_now_x, wide_now_y, wide_now_z;   /* (a copy for SSBU_DEBUG_CAM_TRACE) */
+static u64 render_camera(void);   /* (below) */
+/* In a fight: the fighters' frame line ran in the last quarter second (a frame hook of its own). */
+static volatile u64 fight_line_at;
+static void fight_line(Cpu *c, const u64 args[8], void *ctx) { (void)c; (void)args; (void)ctx; fight_line_at = rt_now_ns(); }
+static int line_on(void) { return fight_line_at && rt_now_ns() - fight_line_at < 250000000ull; }
+/* A pause is still the fight: the line stops, the ready-go flag stays on (dropping the views there made
+ * the picture jump to the game's own camera, most near the stage's edge, and the next frames start the
+ * zoomed view's shadow camera afresh). */
+int game_fight_on(void);   /* (hle_fight_test.c) */
+static int in_fight(void) { return line_on() || (fight_line_at && game_fight_on()); }
+/* The offset is on the block only while the frame is prepared for drawing (from this copy until the
+ * scene set-up, f_7103747820, returns): game logic may ask where things are on screen (scripts have
+ * sv_camera_manager::world_to_screen), and a moved camera changed a fighter's end-of-game pose. */
+static struct { u64 block; float t[3], eye[3], at[3]; int on; } wide_applied;
+static volatile float shadow_k = 1;
+volatile float shadow_k_out = 1;   /* (for SSBU_DEBUG_CAM_TRACE) */   /* (stage style: the shadow's distance over the game's; d is then the look-at's shift) */
+static void wide_apply(u64 block, const float d[3]) {
+    float *v = P(float, block), *eye = P(float, block + 0xb0), *at = P(float, block + 0x100);
+    wide_applied.block = block;
+    memcpy(wide_applied.t, v + 12, 12); memcpy(wide_applied.eye, eye, 12); memcpy(wide_applied.at, at, 12);
+    if (wide_style_stage() || wide_style_shadow()) {
+        float k = shadow_k;
+        for (int j = 0; j < 3; j++) {
+            eye[j] = at[j] + (eye[j] - at[j]) * k + d[j];
+            at[j] += d[j];
+        }
+        for (int j = 0; j < 3; j++) v[12 + j] = -(eye[0] * v[j] + eye[1] * v[4 + j] + eye[2] * v[8 + j]);   /* (row-vector view: t = -eye R) */
+    } else
+        for (int j = 0; j < 3; j++) {
+            v[12 + j] -= d[0] * v[j] + d[1] * v[4 + j] + d[2] * v[8 + j];   /* (row-vector view: t' = t - d R) */
+            eye[j] += d[j];
+            at[j] += d[j];
+        }
+    wide_applied.on = 1;
+}
+static void wide_restore(void) {
+    if (!wide_applied.on) return;
+    u64 b = wide_applied.block;
+    memcpy(P(float, b) + 12, wide_applied.t, 12); memcpy(P(float, b + 0xb0), wide_applied.eye, 12); memcpy(P(float, b + 0x100), wide_applied.at, 12);
+    wide_applied.on = 0;
+}
+/* The hybrid view: the game's own camera, its view only widened, as long as that view stays inside
+ * the stage's camera range (the camera manager's +0xc20: left, right); past it, the view first slides
+ * along the stage and then zooms in, only as far as it must. The middle 16:9 - what the game framed -
+ * always stays in view (zoom at most to the 16:9 width, slide at most the extra width). On the
+ * fighters' plane (z = 0): half height = the eye's distance x tan(fov / 2). */
+volatile float stage_out_k = 1, stage_out_dx, stage_out_l, stage_out_r;   /* (for SSBU_DEBUG_CAM_TRACE) */
+static void stage_fit(u64 block) {
+    u64 m = *P(u64, 0x71052b8f00ull), cam = render_camera();
+    m = m ? *P(u64, m) : 0;
+    float k = 1, dx = 0;
+    if (m && cam) {
+        const float *eye = P(float, block + 0xb0), *at = P(float, block + 0x100), *range = P(float, m + 0xc20);
+        float fov = *P(float, cam + 0x15c) * 3.14159265f / 180, L = range[0], R = range[1];
+        float a = display_aspect(), dir[3] = {at[0] - eye[0], at[1] - eye[1], at[2] - eye[2]};
+        float dl = sqrtf(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+        float t = dir[2] < -1e-3f ? -eye[2] / dir[2] : 0;   /* (the ray through the look-at, down to the fighters' plane z = 0) */
+        float dist = t * dl;
+        if (t > 0 && dist > 1 && fov > 0.01f && R - L > 1) {
+            float hh = dist * tanf(fov / 2), hw = hh * a, hw169 = hh * (16.0f / 9), cx = eye[0] + dir[0] * t;
+            if (hw > (R - L) / 2) k = (R - L) / 2 / hw;           /* (wider than the stage: zoom in) */
+            if (k < hw169 / hw) k = hw169 / hw;                  /* (never less than what 16:9 shows) */
+            float w = hw * k, room = w - hw169;   /* (how far the view may slide and keep the 16:9 middle) */
+            if (room < 0) room = 0;
+            if (cx - w < L) dx = L - (cx - w);
+            else if (cx + w > R) dx = R - (cx + w);
+            if (dx > room) dx = room;
+            if (dx < -room) dx = -room;
+            stage_out_l = cx + dx - w; stage_out_r = cx + dx + w;
+        }
+    }
+    wide_goal_offset[0] = dx; wide_goal_offset[1] = 0; wide_goal_offset[2] = 0;
+    shadow_k = k;
+    stage_out_k = k; stage_out_dx = dx;
+}
+
+static void wide_copy(Cpu *c) {
+    u64 dst = c->x[0];
+    copy_orig(c);
+    u64 cam = render_camera();
+    /* Training's camera is orthographic (+0x150 = 1; its box at +0x140: left, right, top, bottom), and the
+     * game builds that projection (+0x290, inverse +0x2d0) from the box, 16:9 whatever +0x164 says: the
+     * 3D was drawn stretched across a wider picture. Widened here for drawing, after the copy; only the
+     * game's own 16:9 matrix is changed (the check), so a second copy in one frame leaves it alone. */
+    if (cam && dst == cam + 0x1d0 && view_on() && *P(u32, cam + 0x150) == 1) {
+        const float *box = P(float, cam + 0x140);
+        float *pr = P(float, cam + 0x290), *inv = P(float, cam + 0x2d0), w = box[1] - box[0];
+        if (w > 1e-3f && fabsf(pr[0] * w - 2) < 1e-3f) {
+            pr[0] = 2 / (w * display_aspect() / (16.0f / 9));
+            inv[0] = 1 / pr[0];
+        }
+    }
+    if (!cam || dst != cam + 0x1d0) return;   /* (another camera's copy: the views' state is left alone, or the zoom
+                                                * was cleared each frame and a pause, which stops the shadow camera, kept 1) */
+    if (!in_fight() || !view_on()) { wide_now[0] = wide_now[1] = wide_now[2] = 0; shadow_k = 1; return; }
+    static int cycle = -1;   /* SSBU_TEST_VIEW_CYCLE=<n> (test): the next view every n fight frames, as the menu would */
+    if (cycle < 0) { const char *e = getenv("SSBU_TEST_VIEW_CYCLE"); cycle = e ? atoi(e) : 0; }
+    if (cycle > 0) { long long f = fight_test_frame0(); if (f > 0) display_set_view((int)(f / cycle % 3)); }
+    if (wide_style_stage()) stage_fit(dst);   /* (sets wide_goal_offset and shadow_k) */
+    else if (!wide_style_shadow()) {   /* the wide view: the game's own camera, the side areas added */
+        shadow_k = 1;
+        wide_goal_offset[0] = wide_goal_offset[1] = wide_goal_offset[2] = 0;
+    }
+    for (int i = 0; i < 3; i++) wide_now[i] = wide_goal_offset[i];
+    {   /* Paused: the pause shot starts from the picture's view, whose offset fades out as the player
+         * moves the pause camera from where it started (gone a quarter of the camera's distance away):
+         * kept whole, it would push a zoomed-in pause shot off what it shows. */
+        static int paused; static float eye0[3], dist0, now0[3], k0;
+        const float *eye = P(float, dst + 0xb0), *at = P(float, dst + 0x100);
+        if (!line_on()) {
+            if (!paused) {
+                paused = 1;
+                memcpy(eye0, eye, 12); memcpy(now0, wide_now, 12); k0 = shadow_k;
+                dist0 = sqrtf((eye[0] - at[0]) * (eye[0] - at[0]) + (eye[1] - at[1]) * (eye[1] - at[1]) + (eye[2] - at[2]) * (eye[2] - at[2]));
+            }
+            float moved = sqrtf((eye[0] - eye0[0]) * (eye[0] - eye0[0]) + (eye[1] - eye0[1]) * (eye[1] - eye0[1]) + (eye[2] - eye0[2]) * (eye[2] - eye0[2]));
+            float fade = dist0 > 1 ? 1 - moved / (dist0 / 4) : 1;
+            if (fade < 0) fade = 0;
+            for (int i = 0; i < 3; i++) wide_now[i] = now0[i] * fade;
+            shadow_k = 1 + (k0 - 1) * fade;
+        } else paused = 0;
+    }
+    wide_now_x = wide_now[0]; wide_now_y = wide_now[1]; wide_now_z = wide_now[2];
+    wide_applied.on = 0;   /* (the copy wrote fresh values: nothing of the last frame to put back) */
+    wide_apply(dst, wide_now);
+}
+/* The zoomed view: a shadow camera. The game camera's update
+ * (f_71004fdc10, x0 the camera) frames with f_71004fe4f0 (goal into the block at +0x70: look now +0x0,
+ * goal +0x10, position now +0x20, goal +0x30) and moves it with f_71004fec80 (x3 = +0x110). Right after
+ * it, both run again with the picture's aspect on a block of this file's own (kept from frame to frame,
+ * so the game's easing, zoom limits and stage clamping act on it as on the real one); only the picture
+ * follows it (wide_copy). The one write outside the block (camera manager +0xc80) is put back. */
+static GuestFn *upd_orig;
+static u8 shadow_block[0xa0], shadow_x3[8];
+/* The two calls as the game made them this frame (every register, and x1's buffer, which the caller
+ * fills), for the block at camera + 0x70: replayed on the shadow with only the block and the aspect
+ * changed. */
+typedef struct { Cpu c; u8 x1buf[0x80]; int valid; } CallRec;
+static CallRec rec_frame, rec_move;
+static GuestFn *frame_fn_orig, *move_fn_orig;
+static u64 rec_cam;
+static void rec_call(CallRec *r, Cpu *c, GuestFn *orig) {
+    if (rec_cam && c->x[0] == rec_cam && c->x[2] == rec_cam + 0x70) {
+        r->c = *c;
+        memcpy(r->x1buf, G2H(c->x[1]), sizeof r->x1buf);
+        r->valid = 1;
+    }
+    orig(c);
+}
+static void rec_frame_call(Cpu *c) { rec_call(&rec_frame, c, frame_fn_orig); }
+static void rec_move_call(Cpu *c) { rec_call(&rec_move, c, move_fn_orig); }
+static void replay_call(const CallRec *r, Cpu *base_c, u64 base, u64 blk, u64 x3, GuestFn *fn) {
+    Cpu s = r->c;
+    u64 out = base + 0x100;
+    memcpy(G2H(out), r->x1buf, sizeof r->x1buf);
+    s.x[1] = out;
+    s.x[2] = blk;
+    if (fn == move_fn_orig) s.x[3] = x3;
+    s.v[0].f[0] = display_aspect();
+    s.sp = base - 0x10;
+    s.x[30] = 0;
+    (void)base_c;
+    fn(&s);
+}
+static u64 shadow_cam;
+static int shadow_ready;
+static void shadow_update(Cpu *c) {
+    if (!view_on() || !wide_style_shadow()) { shadow_ready = 0; upd_orig(c); return; }   /* (another view now: the next zoomed one starts afresh) */
+    u64 cam = c->x[0];
+    rec_cam = cam;
+    rec_frame.valid = rec_move.valid = 0;
+    upd_orig(c);
+    rec_cam = 0;
+    if (!in_fight() || !rec_frame.valid || !rec_move.valid) { if (!in_fight()) shadow_ready = 0; return; }
+    if (!shadow_ready || cam != shadow_cam) {   /* (a new fight: start from the game's camera) */
+        memcpy(shadow_block, G2H(cam + 0x70), sizeof shadow_block);
+        memcpy(shadow_x3, G2H(cam + 0x110), sizeof shadow_x3);
+        shadow_cam = cam;
+        shadow_ready = 1;
+    }
+    u64 base = (c->sp - 0x800) & ~0xFull, blk = base, x3 = base + 0xc0, out = base + 0x100;
+    u64 m = *P(u64, 0x71052b8f00ull);
+    m = m ? *P(u64, m) : 0;
+    float keep_c80 = m ? *P(float, m + 0xc80) : 0;
+    memcpy(G2H(blk), shadow_block, sizeof shadow_block);
+    memcpy(G2H(x3), shadow_x3, sizeof shadow_x3);
+    (void)out;
+    replay_call(&rec_frame, c, base, blk, x3, frame_fn_orig);
+    replay_call(&rec_move, c, base, blk, x3, move_fn_orig);
+    memcpy(shadow_block, G2H(blk), sizeof shadow_block);
+    memcpy(shadow_x3, G2H(x3), sizeof shadow_x3);
+    if (m) *P(float, m + 0xc80) = keep_c80;
+    /* the picture's change: the shadow's look-at minus the game's, and its distance over the game's */
+    const float *sl = (const float *)shadow_block, *gl = P(float, cam + 0x70);
+    const float *sp = (const float *)(shadow_block + 0x20), *gp = P(float, cam + 0x90);
+    float d[3] = {sl[0] - gl[0], sl[1] - gl[1], sl[2] - gl[2]};
+    float ds = sqrtf((sp[0] - sl[0]) * (sp[0] - sl[0]) + (sp[1] - sl[1]) * (sp[1] - sl[1]) + (sp[2] - sl[2]) * (sp[2] - sl[2]));
+    float dg = sqrtf((gp[0] - gl[0]) * (gp[0] - gl[0]) + (gp[1] - gl[1]) * (gp[1] - gl[1]) + (gp[2] - gl[2]) * (gp[2] - gl[2]));
+    if (dg > 1e-3f && ds == ds && ds / dg > 0.05f && ds / dg < 20) shadow_k = ds / dg;
+    shadow_k_out = wide_style_shadow() ? shadow_k : 1;
+    if (d[0] == d[0] && d[1] == d[1] && d[2] == d[2] && fabsf(d[0]) < 2000 && fabsf(d[1]) < 2000 && fabsf(d[2]) < 2000)
+        memcpy((void *)wide_goal_offset, d, sizeof d);
+}
+/* (the view as set now: the settings menu changes it during a fight) */
+static int wide_style_shadow(void) { return display_view() == VIEW_ZOOMED; }
+static int wide_style_stage(void) { return display_view() == VIEW_HYBRID; }
+/* The game's framing (f_71004fe4f0), one hook for every view: recorded for the zoomed view's shadow
+ * camera, left alone for the wide and hybrid views. (The wide view once ran it again for the picture's
+ * shape and eased toward that; the renderer's copies for other cameras cleared it every frame, so it
+ * sat at 12% of it: owner, 2026-11-12, the game's own framing instead.) */
+static void framing_hook(Cpu *c) {
+    static int dump = -1;
+    if (dump < 0) dump = getenv("SSBU_DEBUG_FRAMING_DUMP") != NULL;
+    if (rec_cam) rec_call(&rec_frame, c, frame_fn_orig);
+    else if (dump) framing_dump(c);
+    else frame_fn_orig(c);
+}
+
+static GuestFn *prep_orig;
+static void wide_prep(Cpu *c) { prep_orig(c); wide_restore(); }
+
+static void hook_framing_dump(void) {
+    u64 orig = rt_hook_function(0x71004fe4f0ull, rt_native(framing_dump, "framing dump"));
+    if (orig) fdump_orig = rt_lookup(orig);
+    printf("[framing] dump %s (main+0x4fe4f0)\n", orig ? "on" : "NOT hooked");
+}
+
+/* A wider picture: the fight camera told the picture's shape, so the game builds a
+ * wide projection itself and culls, frames and checks the screen with it. The camera object (as
+ * cam_dump finds it): +0x164 width, +0x168 height, +0x16c width / height, +0x178 1 / width - the
+ * game's 1920, 1080, 16:9. Written at every frame end, before the next frame's camera update. */
+int aspect_native(void);
+/* A view (wide, zoomed, hybrid) frames the picture: whenever it is wider than 16:9, except with
+ * SSBU_DEBUG_REFERENCE_VIEW, the reference view, which tells the game itself the picture's shape. */
+static int view_on(void) {
+    static int ref = -1;
+    if (ref < 0) ref = getenv("SSBU_DEBUG_REFERENCE_VIEW") != NULL;
+    return aspect_native() && !ref;
+}
+/* (the shape as drawn now: it changes between fights, display_aspect_take) */
+int aspect_native(void) { return display_aspect() != 16.0f / 9; }   /* (the game draws the 3D wide whenever the picture is wider) */
+/* Online play stays 16:9 (owner, 2026-11-11, until the views are checked online): whether a networked match is set
+ * up or under way, asked on the game's thread at each frame end (net_match_on reads the lobby's room) and kept for
+ * the renderer, which takes 16:9 for it between fights (display_aspect_take). */
+static volatile int net_match_seen;
+int net_match_on(void);   /* (hle_rb_core.c) */
+static volatile int hud_wide_seen;
+static int hud_wide_now(void);   /* (below) */
+static int hud_fought, hud_over;   /* (hud_wide_now's latch: this scene had its fight, and the fight is over) */
+static void net_match_watch(Cpu *c, const u64 args[8], void *ctx) {
+    (void)c; (void)args; (void)ctx;
+    net_match_seen = net_match_on();
+    hud_wide_seen = hud_wide_now();   /* (first: a new scene clears the latch) */
+    if (game_fight_on()) hud_fought = 1;
+    else if (hud_fought && !line_on()) hud_over = 1;   /* (the KO's finish after GAME! is still the fight: the fighters' line runs) */
+}
+/* (for the renderer: the HUD's panels reach the picture's edges, so its 2D may too - gpu_d3d11.c's 2D clip) */
+int hud_wide_on(void) { return hud_wide_seen; }
+int net_match_now(void) { return net_match_seen; }
+static void wide_camera(Cpu *c, const u64 args[8], void *ctx) {
+    (void)c; (void)args; (void)ctx;
+    u64 a = *P(u64, 0x7105337ce8ull);
+    if (!a || !(a = *P(u64, a + 0x490))) return;
+    u64 cam = *P(u64, a + 0xd8) ? *P(u64, a + 0xe0) : 0x7105334060ull;
+    float *f = P(float, cam + 0x164);
+    if (f[1] != 1080.0f) return;   /* (not the camera this was measured on) */
+    static float written;   /* (the shape last written: at 16:9 nothing, once 16:9's own values are back) */
+    float shape = display_aspect(), w = 1080.0f * shape;
+    if (shape == 16.0f / 9 && written == 0) return;
+    f[0] = w;                                        /* +0x164 */
+    f[2] = shape;                                    /* +0x16c */
+    written = shape == 16.0f / 9 ? 0 : shape;
+}
+
+/* A wider picture: the HUD's world-to-screen code - P1/CPU tags, magnifying glasses - given the
+ * render camera's projection as 16:9 has it (+0x290, its inverse at +0x2d0: the x scale times the
+ * widening, the inverse's divided), while it runs. The renderer squeezes the HUD into the middle
+ * 16:9, so what it places lands on its fighter again; the 3D and its culling keep the wide one.
+ * The game's own camera framing is left alone: widening it changed the fight (off-screen damage),
+ * where this changes nothing a fight's hash sees.
+ * ponytail: the 12 functions that read the projection in main+0x134..-0x143 (the HUD's, by place);
+ * which of them place the tags is what this run shows */
+static const u64 hud_proj_fns[] = {0x7101341670ull, 0x710134c690ull, 0x710135ccb0ull, 0x71013955d0ull, 0x71013a3f50ull, 0x71013a53d0ull,
+                                   0x71013a67c0ull, 0x71013adb10ull, 0x71013c8460ull, 0x71013ca580ull, 0x71013e29d0ull, 0x710142aed0ull};
+#define NHUD (sizeof hud_proj_fns / sizeof *hud_proj_fns)
+static GuestFn *hud_orig[NHUD];
+static volatile LONG hud_depth;
+static u64 render_camera(void) {
+    u64 a = *P(u64, 0x7105337ce8ull);
+    if (!a || !(a = *P(u64, a + 0x490))) return 0;
+    return *P(u64, a + 0xd8) ? *P(u64, a + 0xe0) : 0x7105334060ull;
+}
+volatile long hud_calls[12];   /* (SSBU_DEBUG_CAM_TRACE: calls of each HUD world-to-screen function) */
+static void hud_call(int k, Cpu *c) {
+    InterlockedIncrement(&hud_calls[k]);
+    if (!aspect_native()) { hud_orig[k](c); return; }   /* (16:9: the game's own, untouched) */
+    u64 cam = render_camera();
+    int wide_here = 0;   /* (the views: the HUD places things where the picture shows them) */
+    if (cam && copy_orig && !wide_applied.on && in_fight() && (wide_now[0] != 0 || wide_now[1] != 0 || wide_now[2] != 0 || shadow_k != 1)) {
+        float d[3] = {wide_now[0], wide_now[1], wide_now[2]};
+        wide_apply(cam + 0x1d0, d);
+        wide_here = 1;
+    }
+    /* The HUD's world-to-screen functions take the view from the camera's own matrix (+0x0), not
+     * from the drawing block (+0x1d0) the views move: while one runs, the moved translation is put
+     * there too (the rotation is the same; checked, so a different layout is left alone). */
+    float view_t[3];
+    int view_here = 0;
+    if (cam && wide_applied.on && wide_applied.block == cam + 0x1d0 && !memcmp(P(float, cam), P(float, cam + 0x1d0), 48)) {
+        memcpy(view_t, P(float, cam) + 12, 12);
+        memcpy(P(float, cam) + 12, P(float, cam + 0x1d0) + 12, 12);
+        view_here = 1;
+    } else if (cam && wide_applied.on && wide_applied.block == cam + 0x1d0) {
+        static int told;
+        if (!told++) {
+            const float *a = P(float, cam), *b = P(float, cam + 0x1d0);
+            printf("[aspect] HUD view: the camera's +0x0 is not the block's view, left alone: %g %g %g / %g %g %g\n", a[0], a[1], a[2], b[0], b[1], b[2]);
+        }
+    }
+    float *p = cam ? P(float, cam + 0x290) : NULL, *inv = cam ? P(float, cam + 0x2d0) : NULL;
+    /* The widening the projection was built with (its y scale over its x scale is its shape), not the shape asked
+     * for now: the renderer takes a new shape between two frames, and in the frame or two after it the camera's
+     * projection and display_aspect disagreed - a tag sat off its fighter by their ratio (owner, 2026-11-14:
+     * 21:9 -> 32:9 put it at 0.66 of the fighter's distance from the middle, for one capture). Training's
+     * orthographic camera (+0x150 = 1) is 16:9 whatever the shape (wide_copy widens only its drawing copy). */
+    float wide = display_aspect() / (16.0f / 9);
+    if (p && hud_depth == 0 && *P(u32, cam + 0x150) != 1 && p[0] > 1e-6f) {   /* (an inner call sees the outer one's 16:9) */
+        float built = p[5] / p[0];
+        if (built > 1.7f && built < 3.7f) wide = built / (16.0f / 9);
+    }
+    int swap = p && *P(float, cam + 0x168) == 1080.0f && InterlockedIncrement(&hud_depth) == 1;   /* (outermost only) */
+    float p0 = 0, i0 = 0;
+    if (swap) { p0 = p[0]; i0 = inv[0]; p[0] = p0 * wide; inv[0] = i0 / wide; }
+    hud_orig[k](c);
+    if (view_here) memcpy(P(float, cam) + 12, view_t, 12);
+    if (wide_here) wide_restore();
+    if (swap) { p[0] = p0; inv[0] = i0; }
+    if (p && *P(float, cam + 0x168) == 1080.0f) InterlockedDecrement(&hud_depth);
+}
+#define HUDW(k) static void hud_w##k(Cpu *c) { hud_call(k, c); }
+HUDW(0) HUDW(1) HUDW(2) HUDW(3) HUDW(4) HUDW(5) HUDW(6) HUDW(7) HUDW(8) HUDW(9) HUDW(10) HUDW(11)
+static GuestFn *const hud_wrappers[NHUD] = {hud_w0, hud_w1, hud_w2, hud_w3, hud_w4, hud_w5, hud_w6, hud_w7, hud_w8, hud_w9, hud_w10, hud_w11};
+/* The HUD's panels where their layouts put them against the screen's edges (owner, 2026-11-12). The
+ * game lays its 2D out with nn::ui2d; f_71000589a0 (Pane::CalculateGlobalMatrixSelf, x0 the pane) works
+ * out a pane's place from its position (+0x30), its size (+0x50) and scale (+0x48) about its own
+ * origin (+0x5b, bits 0-1: 1 left edge, 2 right edge, else the centre), under its parent (+0x18). The
+ * fight's layouts mark no anchors (the parent-anchor bits, +0x5b bits 4-5, are 0), so the anchor is read
+ * from where the pane is: a pane whose parents up to the layout's root are all the screen (1920 x 1080)
+ * and whose right edge is within 120 px of the screen's right edge (the timer, the pause menu,
+ * Training's damage panel) is moved right by the picture's extra width on that side, whole and at its
+ * own size; the left edge likewise (P1 PAUSE, the camera controls list); a pane reaching both, or
+ * neither, stays. The renderer's 2D squeeze maps the wider range back onto the picture. The tags (set_cursor_*,
+ * in the 720p layer) are left alone by name: the game places them on what they mark (hud_call). In fights only:
+ * menus keep 16:9 (black sides, owner). */
+static int screen_like(u64 p) {   /* (the screen's size, 1920 x 1080, or a little more: a frame just past its edges) */
+    float w = *P(float, p + 0x50), h = *P(float, p + 0x54);
+    return w >= 1919.5f && w <= 2100 && h >= 1079.5f && h <= 1200;
+}
+static int pane_extent(u64 p, float *l, float *r, int depth);   /* (below) */
+/* A plain grouping pane at the screen's origin reaching both of its edges stands for the screen too: what is
+ * under it is placed one by one (Training's menu_L holds its settings menu at the left and more at the right). */
+static int screen_group(u64 p) {
+    float l, r;
+    return *P(u64, p) == 0x7104f3f810ull && fabsf(*P(float, p + 0x30)) < 0.5f && fabsf(*P(float, p + 0x48) - 1) < 1e-3f &&
+           pane_extent(p, &l, &r, 0) && l <= -960 + 120 && r >= 960 - 120;
+}
+static int screen_chain(u64 p) {   /* (the pane and every parent up to the layout's root: the screen) */
+    for (int depth = 0; p && depth < 16; depth++, p = *P(u64, p + 0x18))
+        if (!screen_like(p) && !(*P(u64, p + 0x18) && screen_group(p))) return 0;
+    return p == 0;
+}
+/* Where a pane reaches across, in its parent's units: its own box about its origin (+0x5b bits 0-1: 1 left
+ * edge, 2 right edge, else the centre), or, for a plain grouping pane (nn::ui2d::Pane's own vtable, which
+ * draws nothing) with panes under it, what its visible ones (+0x58 bit 0) reach. Returns 0 for nothing. */
+static int pane_extent(u64 p, float *l, float *r, int depth) {
+    float x = *P(float, p + 0x30), s = fabsf(*P(float, p + 0x48));
+    if (*P(u64, p) == 0x7104f3f810ull && *P(u64, p + 0x28) != p + 0x20 && depth < 8) {
+        float lo = 1e9f, hi = -1e9f;
+        int any = 0, n = 0;
+        for (u64 node = *P(u64, p + 0x28); node != p + 0x20 && n < 256; node = *P(u64, node + 8), n++) {
+            float cl, cr;
+            if ((*P(u8, node - 8 + 0x58) & 1) && pane_extent(node - 8, &cl, &cr, depth + 1)) { any = 1; lo = fminf(lo, cl); hi = fmaxf(hi, cr); }
+        }
+        if (!any) return 0;
+        *l = x + s * lo; *r = x + s * hi;
+        return 1;
+    }
+    float w = *P(float, p + 0x50) * s;
+    int origin = *P(u8, p + 0x5b) & 3;
+    *l = origin == 1 ? x : origin == 2 ? x - w : x - w / 2;
+    *r = *l + w;
+    return 1;
+}
+/* A fight's scene, from its loading on (the game's camera manager, main+0x52b8f00, exists only there): the
+ * HUD's layouts are placed once when they load, before GO!, and again only when they change. Until the fight
+ * is over: the results screens (the winner's pose, the cards) come in the same scene, the camera manager still
+ * there, and are a menu - they stay in the middle 16:9 (owner, 2026-11-14: the cards were pushed apart to the
+ * picture's sides). Over: the ready-go flag went off after it was on (a pause keeps it on), and the fighters' frame
+ * line stopped (the finish after GAME! runs it: cut there, its effect lost the side areas). */
+static u64 hud_scene;
+static int hud_wide_now(void) {
+    u64 m = *P(u64, 0x71052b8f00ull);
+    if (m != hud_scene) { hud_scene = m; hud_fought = hud_over = 0; }
+    return aspect_native() && m && !hud_over;
+}
+static GuestFn *pane_place_orig, *pane_calc_orig;
+/* When the picture's shape changes inside a fight's scene, every layout is placed again for half a second
+ * (Pane::Calculate, f_7100058700, with x3 = 1 at a root: its whole tree recomputed), so a panel that never
+ * changes takes the new shape at once. Only then: a fight's loading places everything fresh anyway. */
+static volatile u64 hud_again_until;
+static void pane_calc(Cpu *c) {
+    if (!*P(u64, c->x[0] + 0x18)) {
+        static float placed_for;   /* (0: no fight's scene) */
+        float now = *P(u64, 0x71052b8f00ull) ? display_aspect() : 0;
+        if (now != placed_for) {
+            if (now && placed_for) hud_again_until = rt_now_ns() + 500000000ull;
+            placed_for = now;
+        }
+        if (rt_now_ns() < hud_again_until) c->x[3] |= 1;
+    }
+    pane_calc_orig(c);
+}
+static void pane_place(Cpu *c) {
+    u64 pane = c->x[0], parent = *P(u64, pane + 0x18);
+    float *x = NULL, x0 = 0, *sx = NULL, sx0 = 0, g = display_aspect() / (16.0f / 9);
+    int on = hud_wide_now();
+    const char *name = P(char, pane + 0xb0);
+    if (parent && !*P(u64, parent + 0x18) && !strcmp(name, "time") && *P(u64, 0x71052b8f00ull)) {
+        /* The fight's timer (display.ini timer, the Display page's "Timer position"; any shape): placed by its own box
+         * (256 px, its right edge its origin), which holds a two-digit minute too, so no time is ever cut off. Right is
+         * the game's place, at the picture's corner; left keeps the same margin from the picture's left edge; center
+         * centres the box; hidden folds it away. */
+        int where = display_timer();
+        float gw = on ? g : 1, half = 960 * gw, w = *P(float, pane + 0x50) * fabsf(*P(float, pane + 0x48)), l0, r0;
+        pane_extent(pane, &l0, &r0, 99);   /* (depth 99: its own box, not its digits) */
+        x = P(float, pane + 0x30);
+        x0 = *x;
+        if (where == TIMER_HIDDEN) { sx = P(float, pane + 0x48); sx0 = *sx; *sx = 0; }
+        else if (where == TIMER_CENTER) *x = x0 - (l0 + r0) / 2;
+        else if (where == TIMER_LEFT) *x = x0 + (-half + (960 - r0)) - l0;
+        else *x = x0 + 960 * (gw - 1);
+        (void)w;
+        pane_place_orig(c);
+        *x = x0;
+        if (sx) *sx = sx0;
+        return;
+    }
+    if (*P(u64, 0x71052b8f00ull) && !hud_over && !strcmp(name, "edge_y")) {
+        /* The yellow frame of set_parts_edge (1990 x 1150), its border just past the screen's edges, where the
+         * console never shows it: hidden in a fight's scene (its drawing keeps its 16:9 shape whatever its size or
+         * scale says, so on a wider picture its border would stand at the 16:9 edges). At every shape, 16:9 too,
+         * where it is off the screen anyway: hidden only while wider, the frames the game had placed before a
+         * switch from 16:9 showed it for a moment (owner, 2026-11-14) */
+        sx = P(float, pane + 0x48);
+        sx0 = *sx;
+        *sx = 0;
+    }
+    /* (the damage meters: static, owner. info_melee's p1..p4 for up to 4 fighters, p1_2 p2_2 p3_2 p4_2 p5..p8 for 5 to 8 - by the side
+     * rules only the row's ends moved, P1 to the picture's edge (owner, 2026-11-15, 8 fighters); and the online waiting room's
+     * row of player slots, info_waiting's trans_players: player_00 and _03 went to the picture's edges, the middle two stayed) */
+    int meter = (name[0] == 'p' && name[1] >= '1' && name[1] <= '8' && (!name[2] || !strcmp(name + 2, "_2"))) ||
+                (parent && !strcmp(P(char, parent + 0xb0), "trans_players"));
+    /* (the tags - P1/CPU set_cursor_p1.., items' set_cursor_00.. - and their layer, 720p: placed by the game's world-to-screen
+     * (hud_call), they follow what they mark. Moved by the side rules they jumped 330 px near the 16:9 edges, every tag of the
+     * layer at once when one of them made the layer reach an edge: owner, 2026-11-14, all three views) */
+    int tag = !strncmp(name, "set_cursor_", 11) || !strcmp(name, "720p");
+    /* (the triple arrows, set_parts_arrow_l_00.. (and the right side's, whatever their name: set_parts_arrow_*) under the HUD's
+     * root: three arrows the game puts a fixed way inside the 16:9 edge, on the off-screen fighter's side, x -752 or so. Dynamic
+     * (owner, 2026-11-14): as far from the picture's edge as they were from the 16:9 one, in every view - they only say "a
+     * fighter is off this side", where the bubble marks a place (and is custom: by view, gpu_aspect.c)) */
+    int arrows = !strncmp(name, "set_parts_arrow_", 16) && parent && !*P(u64, parent + 0x18);   /* (not the menus' set_parts_arrow_l/_r, under anim_POP_00) */
+    if (arrows && on && g > 1.001f) {
+        x = P(float, pane + 0x30);
+        x0 = *x;
+        if (fabsf(x0) > 960 * 0.5f) *x = x0 + (x0 < 0 ? -1 : 1) * 960 * (g - 1);
+    }
+    /* (TIME!, the timeup layout: its two copies, timeup_anim_base_00 from the right and timeup_anim_add_00 from the left,
+     * slide in from x +-1500 and collide at 0 into one word. The side rules took each, its blur lines trailing on its
+     * side, for a panel against that edge and stopped it 960 x (widening - 1) short: two words (owner, 2026-11-14,
+     * every view). Their x is widened instead: they start past the picture's edges and still meet in the middle) */
+    int timeup = parent && !strcmp(P(char, parent + 0xb0), "timeup");
+    /* (the vs screen before a fight, system/matchup: each fighter's background, set_panel_bg_00.. (960 x 1080 at x +-480
+     * with two fighters), stays in the 16:9 view, the side areas open. Moved by the side rules they left a gap in the
+     * middle; widened, they stretched (owner, 2026-11-15: open ends until there is a better idea) */
+    int vs_bg = parent && !strncmp(name, "set_panel_bg_", 13);
+    if (timeup && on && g > 1.001f) {
+        x = P(float, pane + 0x30);
+        x0 = *x;
+        *x = x0 * g;
+    }
+    if (parent && on && g > 1.001f && !meter && !tag && !arrows && !timeup && !vs_bg && screen_chain(parent) && strncmp(name, "set_parts_message_", 18) && !screen_group(pane)) {
+        x = P(float, pane + 0x30);
+        x0 = *x;
+        if (screen_like(pane)) {
+            *x = x0 * g;                              /* (a screen: parked one screen away stays one picture away) */
+            /* (the popup's dimming, system/popup's set_bg_00 (2000 x 1160) under anim_BG_00, is stretched across the picture:
+             * it dimmed only the 16:9 middle behind "End the game?" (owner, 2026-11-15). By name: every screen-sized fill
+             * stretched the results wipe's still of the fight's last frame too, which already fills the picture (it reads the
+             * wide picture, so the renderer does not squeeze it) - the damage meters spread out for a few frames after GAME!) */
+            if (!sx && !strcmp(name, "set_bg_00") && !strcmp(P(char, parent + 0xb0), "anim_BG_00")) {
+                sx = P(float, pane + 0x48);
+                sx0 = *sx;
+                *sx = sx0 * g;
+            }
+        } else {
+            float l = 0, r = 0;
+            if (!pane_extent(pane, &l, &r, 0)) l = r = 0;   /* (nothing visible under it: left where it is) */
+            int right = r >= 960 - 120, left = l <= -960 + 120;
+            if (l >= 960 || r <= -960) *x = x0 * g;                        /* (parked off the screen: off the picture) */
+            else if (right != left) *x = x0 + (right ? 1 : -1) * 960 * (g - 1);   /* (against one edge: against the picture's) */
+        }
+    }
+    static int moved_log = -1;   /* SSBU_DEBUG_PANES_MOVED=1 (HUD research): each pane name the side, arrow or TIME! rules move, once, with its parents */
+    if (moved_log < 0) moved_log = getenv("SSBU_DEBUG_PANES_MOVED") != NULL;
+    if (moved_log && x && *x != x0) {
+        static char seen[4096];
+        char key[40];
+        snprintf(key, sizeof key, "|%.30s|", name);
+        if (!strstr(seen, key) && strlen(seen) + strlen(key) < sizeof seen) {
+            strcat(seen, key);
+            char chain[200];
+            int n = 0;
+            for (u64 q = parent; q && n < (int)sizeof chain - 40; q = *P(u64, q + 0x18))
+                n += snprintf(chain + n, sizeof chain - n, " < %.24s", P(char, q + 0xb0));
+            printf("[panes] moved %-24.24s x %g -> %g (vt %#llx)%s\n", name, x0, *x, (unsigned long long)*P(u64, pane), chain);
+            fflush(stdout);   /* (a test run is stopped, not ended: an unflushed line is lost) */
+        }
+    }
+    if (getenv("SSBU_DEBUG_PANES")) {   /* SSBU_DEBUG_PANES=<text> (HUD research): the panes whose name, or a parent's, holds it */
+        const char *want = getenv("SSBU_DEBUG_PANES");
+        u64 q = pane; int under = 0;
+        for (int d = 0; q && d < 10; d++, q = *P(u64, q + 0x18)) if (strstr(P(char, q + 0xb0), want)) under = 1;
+        static u64 t, burst;
+        if (under && rt_now_ns() - t > 3000000000ull) { t = rt_now_ns(); burst = t; }
+        if (under && rt_now_ns() - burst < 50000000ull)
+            printf("[panes] %-22.22s < %-18.18s vt %#llx vis %d a %u origin %u pos %g %g size %g %g scale %g\n", name, P(char, parent + 0xb0), (unsigned long long)*P(u64, pane),
+                   *P(u8, pane + 0x58) & 1, *P(u8, pane + 0x59), *P(u8, pane + 0x5b) & 3, *P(float, pane + 0x30), *P(float, pane + 0x34), *P(float, pane + 0x50), *P(float, pane + 0x54), *P(float, pane + 0x48));
+    }
+    pane_place_orig(c);
+    if (x) *x = x0;
+    if (sx) *sx = sx0;
+}
+static void hook_hud_anchors(void) {
+    u64 orig = rt_hook_function(0x71000589a0ull, rt_native(pane_place, "ultrawide HUD anchors"));
+    if (orig) pane_place_orig = rt_lookup(orig);
+    u64 calc = rt_hook_function(0x7100058700ull, rt_native(pane_calc, "ultrawide HUD placed again"));
+    if (calc) pane_calc_orig = rt_lookup(calc);
+    if (!calc) orig = 0;
+    printf("[aspect] the HUD's panels at the picture's edges: %s (main+0x589a0)\n", orig ? "on" : "NOT hooked");
+}
+static void hook_hud_projection(void) {
+    int n = 0;
+    for (u32 k = 0; k < NHUD; k++) {
+        u64 orig = rt_hook_function(hud_proj_fns[k], rt_native(hud_wrappers[k], "ultrawide HUD projection"));
+        if (orig) { hud_orig[k] = rt_lookup(orig); n++; }
+    }
+    printf("[aspect] the HUD's world-to-screen given 16:9: %d of %d functions\n", n, (int)NHUD);
+}
+
+#else
+int net_match_now(void) { return 0; }   /* (macOS: held at 16:9) */
+#endif   /* (ultrawide) */
+
+#ifdef _WIN32
+static LONG CALLBACK hunt_fault(EXCEPTION_POINTERS *e) {
+    DWORD code = e->ExceptionRecord->ExceptionCode;
+    if (code == EXCEPTION_SINGLE_STEP && hunt_rearm) {
+        DWORD o;
+        for (int i = 0; i < nhunt; i++)
+            if (hunt[i].page == hunt_rearm && hunt[i].armed && !VirtualProtect(hunt_rearm, 4096, PAGE_READONLY, &o)) hunt[i].armed = 0;
+        hunt_rearm = NULL;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (code != EXCEPTION_ACCESS_VIOLATION || e->ExceptionRecord->ExceptionInformation[0] != 1) return EXCEPTION_CONTINUE_SEARCH;
+    u8 *a = (u8 *)e->ExceptionRecord->ExceptionInformation[1];
+    for (int i = 0; i < nhunt; i++) {
+        if (!hunt[i].armed || a < hunt[i].page || a >= hunt[i].page + 4096) continue;
+        DWORD o;
+        VirtualProtect(hunt[i].page, 4096, hunt[i].old, &o);
+        u8 *m = (u8 *)G2H(hunt[i].at);
+        if (a >= m && a < m + 96 && hunt_logged < 400) {
+            void *frames[16];
+            int n = unwind(*e->ContextRecord, frames, 16);
+            u64 key = 0;
+            char line[1024];
+            int l = snprintf(line, sizeof line, "[hunt] write to %#llx +%#x:", (unsigned long long)hunt[i].at, (unsigned)(a - m));
+            for (int k = 0, shown = 0; k < n && shown < 8 && l < (int)sizeof line - 64; k++) {
+                char d[64];
+                u64 gfn = guest_of_frame((u64)frames[k], k == 0);
+                if (!gfn) continue;
+                key = key * 1099511628211ull ^ gfn;
+                l += snprintf(line + l, sizeof line - l, " %s", rt_describe(gfn, d, sizeof d));
+                shown++;
+            }
+            int seen = 0;
+            for (int s = 0; s < nseen; s++) seen |= hunt_seen[s] == key;
+            if (!seen && nseen < 64) {
+                hunt_seen[nseen++] = key;
+                InterlockedIncrement(&hunt_logged);
+                printf("%s\n", line);
+                fflush(stdout);
+            }
+        }
+        if (rt_now_ns() > hunt_until) { hunt[i].armed = 0; return EXCEPTION_CONTINUE_EXECUTION; }
+        hunt_rearm = hunt[i].page;
+        e->ContextRecord->EFlags |= 0x100;   /* (one instruction, then the page closes again) */
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 void rt_backtrace_thread(HANDLE thread, int max_frames) {
     void *frames[96];
     char name[96];
@@ -1340,6 +2102,30 @@ static DWORD WINAPI guest_main(LPVOID unused) {
     c->x[1] = 0;
     c->x[2] = rt_native(exception_handler_ready, "exception_handler_ready");
     c->x[3] = rt_native(call_initializers, "call_initializers");
+#ifndef __APPLE__   /* (ultrawide: Windows and Linux) */
+    if (!display_shape_locked()) hook_hud_projection();
+    hook_hud_anchors();   /* (the timer's place is a setting at any shape; the widening parts wait for a wider picture) */   /* (the shape can change between fights: in from the start, passing through at 16:9) */
+    int views = !display_shape_locked() && !getenv("SSBU_DEBUG_REFERENCE_VIEW");   /* (every view's hooks: view and shape can change) */
+    if (!views && (getenv("SSBU_DEBUG_FRAMING_DUMP") || getenv("SSBU_DEBUG_REFERENCE_VIEW"))) hook_framing_dump();
+    if (views) {
+        u64 orig = rt_hook_function(0x71004fdc10ull, rt_native(shadow_update, "ultrawide shadow camera"));
+        if (orig) upd_orig = rt_lookup(orig);
+        u64 f1 = rt_hook_function(0x71004fe4f0ull, rt_native(framing_hook, "ultrawide framing"));
+        u64 f2 = rt_hook_function(0x71004fec80ull, rt_native(rec_move_call, "ultrawide move recorder"));
+        if (f1) frame_fn_orig = fdump_orig = rt_lookup(f1);
+        if (f2) move_fn_orig = rt_lookup(f2);
+        if (!f1 || !f2) orig = 0;
+        printf("[aspect] the views' game camera hooks: %s (main+0x4fdc10)\n", orig ? "on" : "NOT hooked");
+    }
+    if (views) {
+        u64 orig = rt_hook_function(0x7103555140ull, rt_native(wide_copy, "ultrawide framing for the picture"));
+        if (orig) copy_orig = rt_lookup(orig);
+        frame_hook_add(FRAME_HOOK_LINE, 300, fight_line, NULL, NULL);
+        u64 prep = rt_hook_function(0x7103747820ull, rt_native(wide_prep, "ultrawide framing put back"));
+        if (prep) prep_orig = rt_lookup(prep);
+        printf("[aspect] wide framing for the picture: %s (main+0x3555140)\n", orig ? "on" : "NOT hooked");
+    }
+#endif
     phase = "SDK initialisation (nn::init::Start)";
     printf("[boot] nn::init::Start\n");
     fflush(stdout);
@@ -1683,6 +2469,7 @@ int main(int argc, char **argv) {
 #ifdef _WIN32
     crash_reporter_start();
     AddVectoredExceptionHandler(1, on_fault);
+    if (getenv("SSBU_DEBUG_CAMERA_HUNT")) { AddVectoredExceptionHandler(1, hunt_fault); frame_hook_add(FRAME_HOOK_END, 300, NULL, hunt_scan, NULL); }
     dump_helper_start();
 #else
     install_signals();
@@ -1693,12 +2480,28 @@ int main(int argc, char **argv) {
     rt_data_dir = dir;
     void mods_start(const char *data_dir);   /* (hle_mod_switch.c: a pending apply of the mods, the code patches' switch) */
     mods_start(dir);
+    void discord_start(void);   /* (net_discord.c: Discord's sign-in and Rich Presence, when its SDK is beside the program) */
+    discord_start();
+#ifdef _WIN32
+    void net_eos_prestart(void);   /* (net_relay.c: Epic Online Services log in while the game loads, when online play wants them) */
+    net_eos_prestart();
+#endif
     kernel_init();
     load(dir);
+    void mod_refresh_init(void);
+    mod_refresh_init();   /* material lifetime hooks, before guest threads start */
     movie_test_start();
     test_fight_start();
 #ifndef _WIN32
     rt_window_init();   /* (SDL wants its window and events on the main thread, which then runs them) */
+#endif
+#ifndef __APPLE__   /* (ultrawide: Windows and Linux; on Linux after the window, so "auto" knows the monitor) */
+    if (!display_shape_locked()) {
+        frame_hook_add(FRAME_HOOK_END, 300, NULL, wide_camera, NULL);
+        frame_hook_add(FRAME_HOOK_END, 300, NULL, net_match_watch, NULL);
+        printf("[aspect] native: the fight camera and its framing told %.4g\n", display_aspect());
+    }
+    if (getenv("SSBU_DEBUG_CAM_TRACE")) frame_hook_add(FRAME_HOOK_END, 300, NULL, cam_trace, NULL);
 #endif
     /* Guest call depth becomes host call depth, so the guest runs on a thread with a large stack. */
     HANDLE t = CreateThread(NULL, 512ull << 20, guest_main, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);

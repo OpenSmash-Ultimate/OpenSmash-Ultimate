@@ -7,13 +7,17 @@ Usage: make_overlay_font.py <output header> [font file]
 
 Without a font file: fontconfig's "monospace:bold" (DejaVu Sans Mono Bold on most systems), else
 one of the usual monospace fonts, else Pillow's own font."""
+from pathlib import Path
 import os
 import shutil
 import subprocess
 import sys
+import unicodedata
 
-CELL_W, CELL_H, COLS = 24, 48, 16
-ATLAS_W, ATLAS_H = CELL_W * COLS, CELL_H * 6
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from localization import font_layout
+CELL_W, CELL_H, COLS, ROWS, GLYPHS = font_layout()
+ATLAS_W, ATLAS_H = CELL_W * COLS, CELL_H * ROWS
 SIZE = 40   # (CreateFontW(-40): a 40-pixel em)
 KNOWN = ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",        # Debian, Ubuntu
          "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono-Bold.ttf",  # Fedora
@@ -39,6 +43,23 @@ def atlas(font):
     for c in range(32, 127):
         x, y = (c - 32) % COLS * CELL_W, (c - 32) // COLS * CELL_H + 2
         draw.text((x, y), chr(c), fill=255, font=font, anchor="la")   # (the top of the line, as GDI's TextOut)
+    from PIL import ImageFont
+    fallbacks = {}
+    def glyph_font(cp):
+        if unicodedata.east_asian_width(chr(cp)) not in ("W", "F"):
+            return font
+        language = "ko" if 0xac00 <= cp <= 0xd7af else "ja" if 0x3040 <= cp <= 0x30ff else "zh-cn"
+        if language not in fallbacks:
+            fallback = font
+            if shutil.which("fc-match"):
+                result = subprocess.run(["fc-match", "-f", "%{file}", "sans-serif:lang=" + language], capture_output=True, text=True)
+                if result.returncode == 0 and os.path.isfile(result.stdout.strip()):
+                    fallback = ImageFont.truetype(result.stdout.strip(), 38)
+            fallbacks[language] = fallback
+        return fallbacks[language]
+    for i, cp in enumerate(GLYPHS):
+        cell = 96 + i * 2
+        draw.text((cell % COLS * CELL_W, cell // COLS * CELL_H + 2), chr(cp), fill=255, font=glyph_font(cp), anchor="la")
     return img.tobytes()
 
 

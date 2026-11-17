@@ -45,11 +45,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.dirname(HERE)
 UI = os.path.join(HERE, "ui")
+sys.path.insert(0, HERE)
+import discord_account   # noqa: E402  (sign-in with Discord: the token the game and OpenSmash.exe share; the GSP)
 SHARED_UI = os.path.join(TOOLS, "modmanager", "ui")   # (gamepad.js, icon.svg: shared with WindowSmash Mods)
 HOST = "linux" if sys.platform.startswith("linux") else "macos" if sys.platform == "darwin" else "windows"
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"}
-PUBLIC_LOBBY = "smash.recomps.wtf:39421"   # (OpenSmash.Launcher's Public)
+PUBLIC_LOBBY = "opensmash-lobby.duckdns.org:39421"   # (OpenSmash.Launcher's Public: the one public lobby)
+OLD_LOBBY = "smash.recomps.wtf"   # (the North American lobby, gone: its address means the public lobby)
+
+
+def means_public_lobby(host):
+    """A server address that is the public lobby: its own (with or without the port) or the gone North American one's."""
+    h = (host or "").strip().lower()
+    return bool(h) and (h.startswith(OLD_LOBBY) or h in (PUBLIC_LOBBY, PUBLIC_LOBBY.split(":")[0]))
 REPO_API = "https://api.github.com/repos/OpenSmash-Ultimate/OpenSmash-Ultimate"
 
 
@@ -205,7 +214,7 @@ def read_settings(root):
         s["lobby"] = "offline"
     elif host.lower() in ("auto", "na", "eu"):
         s["lobby"] = "public"
-    elif host.lower() == PUBLIC_LOBBY:
+    elif host.lower() == PUBLIC_LOBBY or host.lower().startswith("smash.recomps.wtf"):   # (the North American lobby is gone)
         s["lobby"] = "private" if s["code"] else "public"
     else:
         s["lobby"], s["server"] = "custom", host
@@ -220,6 +229,10 @@ def read_settings(root):
         s["code"] = saved["code"]
     if (prefer_saved or not s["server"]) and saved["server"] is not None:
         s["server"] = saved["server"]
+    if means_public_lobby(s["server"]):   # (issue #389: an older launcher's "your own server" smash.recomps.wtf:39421)
+        s["server"] = ""
+        if s["lobby"] == "custom":
+            s["lobby"] = "private" if s["code"] else "public"
     s["direct"] = "off" if first_line(config_file(root, "online_direct.txt")).lower() == "off" else "on"
     s["name"] = first_line(config_file(root, "online_name.txt"))
     return s
@@ -243,6 +256,9 @@ def write_settings(root, values):
     except ValueError:
         raise Error("the volume is a number from 0 to 100") from None
     lobby, code, host = s["lobby"], s["code"].replace(" ", ""), s["server"].strip()
+    if lobby == "custom" and means_public_lobby(host):   # (the public lobby's address, or the gone NA one's: issue #389)
+        lobby, host = ("private" if code else "public"), ""
+        s["lobby"], s["server"] = lobby, host
     if lobby == "private" and not code:
         raise Error("Type a lobby code: a word your friends type too.")
     if lobby == "custom" and host and not re.fullmatch(r"\S+:\d+", host):
@@ -508,6 +524,8 @@ class App:
         self.last_ping = time.time()
         self.bye = None
         self.update_info = None
+        self.discord = discord_account.Account(self.root, os.path.dirname(game_program(self.root)),
+                                               lambda: first_line(config_file(self.root, "online_server.txt")))
 
     # the game
     def game_running(self):
@@ -695,6 +713,8 @@ class App:
             return list_dir(q.get("path") or "~")
         if path == "/api/update" and method == "GET":
             return self.check_update()
+        if path == "/api/discord" and method == "GET":
+            return self.discord.view()
         if method != "POST":
             raise Error(f"unknown {path}")
         if path == "/api/settings":
@@ -719,6 +739,27 @@ class App:
             if body.get("jobs"):
                 cmd += ["--jobs", str(int(body["jobs"]))]
             return self.jobs.start("Building the game", [cmd], self.root, {**os.environ, "PYTHONUNBUFFERED": "1"})
+        if path == "/api/rebuild-all":
+            if self.game_running():
+                raise Error("Close the game first")
+            if not venv_python(self.root):
+                raise Error("Run the setup first")
+            if HOST == "windows":
+                script = os.path.join(self.root, "tools", "rebuild-all.ps1")
+                cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script]
+                if body.get("jobs"):
+                    cmd += ["-Jobs", str(int(body["jobs"]))]
+            else:
+                if HOST == "linux":
+                    script = os.path.join(self.root, "tools", "linux", "rebuild-all.sh")
+                else:
+                    script = os.path.join(self.root, "tools", "mac", "rebuild-all.command")
+                cmd = ["bash", script]
+                if body.get("jobs"):
+                    cmd.append("--jobs")
+                    cmd.append(str(int(body["jobs"])))
+            return self.jobs.start("Building the game and launcher", [cmd], self.root,
+                                   {**os.environ, "PYTHONUNBUFFERED": "1"})
         if path == "/api/update":
             if self.game_running():
                 raise Error("Close the game first")
@@ -743,6 +784,14 @@ class App:
                                    [[py, "-u", os.path.join(self.root, "tools", "os_mods.py"), "build"]], self.root)
         if path == "/api/mods/open":
             return self.open_mods(body.get("back") or "")
+        if path == "/api/discord/signin":
+            self.discord.start_sign_in()
+            return {"ok": True}
+        if path == "/api/discord/signout":
+            self.discord.sign_out()
+            return {"ok": True}
+        if path == "/api/discord/shown":
+            return self.discord.set_shown(bool(body.get("shown")))
         if path == "/api/quit":
             threading.Timer(0.5, lambda: os._exit(0)).start()
             return {"ok": True}

@@ -66,6 +66,57 @@ class StateMap(unittest.TestCase):
         self.assertIn('DWORD wf = to_shadow || !sm_on ? WRITE_WATCH_FLAG_RESET : 0;', state)
 
 
+class Cooling(unittest.TestCase):
+    """A hot page left unwritten for SSBU_RB_SM_COOL saves (30) goes cold again: the hot set is what a fight writes
+    lately, not everything it ever wrote (a mario-donkey fight: ~15,500 hot pages a save, ~1,500 written)."""
+    def test_cooling(self):
+        state = src('hle_rb_state.c')
+        self.assertIn('getenv("SSBU_RB_SM_COOL")', state)
+        self.assertIn('else sm_streaks(clock); }', state, "after the copies, with the save's clock")
+        # never the GPU's pages (its thread is not held) nor the left-out ones (the shadow does not follow them)
+        self.assertIn('if (cool_on && !((gpu_word(wi) | skip_word(wi)) & m) && ++sm_idle[a] >= SM_COOL && is_present(c, w * 64 + z)) cool |= m;', state)
+        # a write by a thread not held between the questions and the protection: asked again, opened again
+        self.assertIn('if (chi) sm_cool_check(clo, chi, save_clock);', state)
+        self.assertIn('if (sm_bit(sm_cold, k)) { sm_open_locked(k, k + 1); sm_cool_back++; }', state)
+        self.assertIn('getenv("SSBU_RB_SM_COOL_CHECK")', state, 'the test switch comparing cooled pages with the shadow')
+
+
+class Owners(unittest.TestCase):
+    """The state map by owner (runtime/hle_rb_map.c): jemalloc's entry points hooked, the census, the sites left out
+    and their live blocks kept with each state."""
+    def test_hooks_and_list(self):
+        m, fs = src('hle_rb_map.c'), src('hle_fs.c')
+        for a in ('0x710392e1f0', '0x710392e290', '0x710392e330', '0x710392eb40'):
+            self.assertIn(a, m, 'a jemalloc entry point (13.0.5)')
+        self.assertIn('rb_map_install();', fs, 'hooked once the RomFS is mounted')
+        self.assertIn('getenv("SSBU_RB_MAP")', m, 'SSBU_RB_MAP=0: no hooks, every page in')
+        self.assertIn('getenv("SSBU_RB_MAP_SKIP")', m)
+        self.assertIn('getenv("SSBU_RB_MAP_CENSUS")', m)
+        self.assertIn('{0x7103816ef4ull, 0},', m, "the graphics module's 16 MB buffers")
+        self.assertIn('{0x710355a3b8ull, 0x71000a3fd8ull},', m, 'the 8 MB block')
+        # only whole pages of a block are left out
+        self.assertIn('u64 lo = (b->p + 0xFFF) & ~0xFFFull, hi = (b->p + b->size) & ~0xFFFull;', m)
+
+    def test_with_the_state(self):
+        state = src('hle_rb_state.c')
+        self.assertIn('s->map = rb_map_save(ring_count ? slot_at(ring_count - 1)->map : NULL);', state, 'each state keeps the left-out blocks')
+        self.assertIn('rb_map_load(s->map);', state, 'a load puts them back')
+        self.assertIn('rb_map_free(s->map);', state)
+        self.assertIn('if (rb_map_active()) map_pages = rb_map_skip_pages(sm_skip);', state, 'into the left-out set')
+        self.assertIn('map_gen_seen == rb_map_gen', state, 'built again when they change')
+        self.assertIn('if (out_) { left_out_diff++; continue; }', state, 'the replay check counts them apart')
+
+    def test_young_blocks_stay_in(self):
+        m = src('hle_rb_map.c')
+        # a block is left out only once every kept state was saved after it was made
+        self.assertIn('if (!b->p || b->born >= map_oldest) continue;   /* (young) */', m)
+        self.assertIn('old = oldest ? ((const MapSave *)oldest)->stamp : stamp;', m)
+        # a load builds the set again only when it differs
+        self.assertIn('if (after != before) InterlockedIncrement(&rb_map_gen);', m)
+        # the caller's frame record is read only where memory is committed
+        self.assertIn('&& readable8(fp + 8))', m)
+
+
 class RunAhead(unittest.TestCase):
     def test_hidden_frames_draw_nothing(self):
         gpu, queue, core = src('gpu.c'), src('gpu_queue.c'), src('hle_rb_core.c')

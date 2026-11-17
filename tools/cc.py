@@ -12,7 +12,10 @@ import ladder
 import progress
 from ladder import CRASH_SIGNS, RETRY, crash_cause, crash_report, crashed  # noqa: F401 (the crash retry's, here before)
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# The folder as Windows spells it on disk (realpath there): the compile commands name it (runtime/, deps/), and
+# objcache.py keys each object on its command, so a build started from a folder typed in other capitals
+# (C:\users\... for C:\Users\..., as a WSL shell or a typed cd gives) compiled the whole game again.
+ROOT = os.path.dirname(os.path.dirname((os.path.realpath if os.name == "nt" else os.path.abspath)(__file__)))
 RUNTIME = os.path.join(ROOT, "runtime")
 DEPS_LLVM = os.path.join(ROOT, "deps", "llvm")   # tools/msvc_deps.py sets these two up
 DEPS_MSVC = os.path.join(ROOT, "deps", "msvc")

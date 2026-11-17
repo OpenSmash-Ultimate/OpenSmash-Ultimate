@@ -1,7 +1,8 @@
 # The OpenSmash launcher (OpenSmash.Launcher, OpenSmash.exe), built here so players need no .NET SDK: the
 # installer (tools/install_windowsmash.ps1, Step-Launcher) downloads releases/latest/download/OpenSmash.exe and
 # checks it against OpenSmash.exe.sha256 beside it. Nothing in it comes from the game. A tag v<n> or
-# launcher-v<n> publishes both to that tag's release; a manual run keeps them as the run's artifact.
+# launcher-v<n> publishes both to that tag's release (a plain v<major>.<minor>.<patch> tag is the real release that becomes
+# "latest"; a tag with a suffix such as -alpha.1 is a prerelease and never takes "latest", so the download URL above keeps working); a manual run keeps them as the run's artifact.
 # This one exe is what players download and what old installs self-update from (one asset, one name). Alone, it gets the project from GitHub into a folder, makes the
 # shortcuts and opens the launcher there (OpenSmash.Launcher\FirstRunForm.cs).
 name: Launcher release
@@ -47,5 +48,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = '${{ github.ref_name }}'
-          gh release view $tag 2>$null; if ($LASTEXITCODE -ne 0) { gh release create $tag --title $tag --notes "OpenSmash $tag" }
+          gh release view $tag 2>$null; if ($LASTEXITCODE -ne 0) { if ($tag -match '^v\d+\.\d+\.\d+$') { gh release create $tag --title $tag --notes "OpenSmash $tag" --latest } else { gh release create $tag --title $tag --notes "OpenSmash $tag" --prerelease --latest=false } }
           gh release upload $tag OpenSmash.exe OpenSmash.exe.sha256 --clobber
