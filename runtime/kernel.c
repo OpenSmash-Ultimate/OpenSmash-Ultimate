@@ -1713,7 +1713,7 @@ void kernel_init(void) {
     for (u32 i = 0; i < sizeof areas / sizeof *areas; i++) {
         DWORD watch = areas[i].renderer || ring || rb_switch ? MEM_WRITE_WATCH : 0;
         if (VirtualAlloc(G2H(areas[i].base), areas[i].size, MEM_RESERVE | watch, PAGE_READWRITE) != G2H(areas[i].base))
-            rt_fatal("kernel: cannot reserve the %s area at %#llx", areas[i].what, areas[i].base);
+            rt_fatal("kernel: cannot reserve the %s area at %#llx (Windows error %lu)", areas[i].what, areas[i].base, GetLastError());
         if (ring) watch_add(areas[i].base, areas[i].size, (areas[i].renderer ? 1u << WATCH_RENDERER : 0) | 1u << WATCH_RING);
     }
     if (ring)

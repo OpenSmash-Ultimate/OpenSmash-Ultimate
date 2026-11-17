@@ -3644,8 +3644,11 @@ static LONG warm_next(u32 *group) {
         if ((i = warm_take(&warm_groups[best])) >= 0) { *group = best; return i; }
     }
     if ((i = warm_take(&warm_groups[WG_COMMON])) >= 0) { *group = WG_COMMON; return i; }
-    for (u32 g = 2; g < warm_ngroups; g++)   /* (the rest: a match waits for it too) */
-        if (warm_groups[g].kind == WG_REST && (i = warm_take(&warm_groups[g])) >= 0) { *group = g; return i; }
+    /* (The records in no group come next, with the other fighters' and stages': not while a fight is on, and no match
+     * waits for them. A match used to: on a Radeon 760M with the whole SPIR-V cache prepared that was 5,509 pipelines,
+     * the 120 s limit, the game frozen before the stage loaded - #428.) */
+    for (u32 g = 2; g < warm_ngroups; g++)
+        if (warm_groups[g].kind == WG_REST && !(!warm_urgent && game_fight_on()) && (i = warm_take(&warm_groups[g])) >= 0) { *group = g; return i; }
     int left = 0;
     for (u32 g = 2; g < warm_ngroups && !left; g++) left = warm_groups[g].next < (LONG)warm_groups[g].n;
     if (!left) return -2;
@@ -3739,7 +3742,8 @@ void vk_match_want(u64 key, int first) {
 }
 
 /* The frame end after the match was set up (the game's thread, before the match loads): the match's groups, the boot group
- * and common made first, every warm thread on them. SSBU_SHADER_MATCH_WAIT=<s>: at most that long (default 120; 0: no wait). */
+ * and common made first, every warm thread on them. SSBU_SHADER_MATCH_WAIT=<s>: at most that long (default 30; 0: no wait). The game's thread is held meanwhile, so
+ * the window shows no new frame: on a slow card the limit is what a player sees as a frozen game (#428). */
 void vk_match_wait(void) {
     AcquireSRWLockShared(&warm_list_lock);
     u32 listed = warm_nseen;
@@ -3748,7 +3752,7 @@ void vk_match_wait(void) {
     fprintf(stderr, "[vulkan] warm list: %u records listed as the match was set up\n", listed);
     if (!warm_ngroups || !warm_running) return;
     const char *set = getenv("SSBU_SHADER_MATCH_WAIT");
-    double limit_s = set && *set ? atof(set) : 120;
+    double limit_s = set && *set ? atof(set) : 30;
     if (limit_s <= 0) return;
     LONG mine = warm_match_seq;
     u64 t0 = GetTickCount64();
@@ -3758,7 +3762,7 @@ void vk_match_wait(void) {
         long left = 0;
         for (u32 g = 0; g < warm_ngroups; g++) {
             const WarmGroup *w = &warm_groups[g];
-            if (g == WG_BOOT || g == WG_COMMON || w->kind == WG_REST || (mine && w->wanted >= mine)) left += (long)w->n - w->done;
+            if (g == WG_BOOT || g == WG_COMMON || (mine && w->wanted >= mine)) left += (long)w->n - w->done;   /* (not those in no group: #428) */
         }
         if (!waited) before = left;
         if (!left || !warm_running || (GetTickCount64() - t0) / 1000.0 >= limit_s) break;
@@ -3767,7 +3771,7 @@ void vk_match_wait(void) {
     }
     if (waited) { InterlockedDecrement(&warm_urgent); watchdog_pause(0); }
     fprintf(stderr, "[vulkan] match shaders: the match waited %.1f s for %ld of its pipelines (the menus', any fight's, its fighters' "
-            "and stage's, and those in no group); %ld of %u listed made so far\n", (GetTickCount64() - t0) / 1000.0, before, (long)warm_ndone, warm_nrecords);
+            "and stage's); %ld of %u listed made so far\n", (GetTickCount64() - t0) / 1000.0, before, (long)warm_ndone, warm_nrecords);
 }
 
 /* The start's last step (the makers run): the list opened, and the warm threads started on it. */
