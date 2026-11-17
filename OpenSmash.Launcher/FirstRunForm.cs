@@ -340,7 +340,7 @@ namespace OpenSmash.Launcher
 
             SectionLabel(g, "OPTIONS", rx, 138 * s);
             Theme.Card(g, rx, 158 * s, rightW, 120 * s, 10 * s, s);
-            PaintOption(g, "opt:desktop", "Desktop shortcut: OpenSmash", _optDesktop, rx, 168 * s, rightW, 44 * s);
+            PaintOption(g, "opt:desktop", "Desktop shortcuts: OpenSmash-Launcher and OpenSmash-Ultimate", _optDesktop, rx, 168 * s, rightW, 44 * s);
             PaintOption(g, "opt:start", "Start menu entries (an OpenSmash folder)", _optStartMenu, rx, 212 * s, rightW, 44 * s);
 
             float ay = 574 * s;

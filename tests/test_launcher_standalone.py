@@ -121,19 +121,22 @@ class StandaloneLauncherTests(unittest.TestCase):
         desk, start = self.dir / 'desk', self.dir / 'start'
         code, out = self.run_exe('--make-shortcuts', str(target), '--desktop', str(desk), '--start-menu', str(start))
         self.assertEqual(code, 0, out)
-        self.assertEqual(len(out), 2, out)
+        self.assertEqual(len(out), 4, out)
         read = ('$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:LNK); '
                 '"$($s.TargetPath)|$($s.Arguments)|$($s.WorkingDirectory)|$($s.IconLocation)"')
         for folder in (desk, start / 'OpenSmash'):
             got = {}
             self.assertFalse((folder / 'Play SSBU.lnk').exists(), folder)
-            for name in ('OpenSmash.lnk',):
+            self.assertFalse((folder / 'OpenSmash.lnk').exists(), folder)
+            for name in ('OpenSmash-Launcher.lnk', 'OpenSmash-Ultimate.lnk'):
                 lnk = folder / name
                 self.assertTrue(lnk.is_file(), lnk)
                 r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', read],
                                    capture_output=True, text=True, timeout=60, env=dict(os.environ, LNK=str(lnk)))
                 got[name] = r.stdout.strip().split('|')
-            self.assertEqual(got['OpenSmash.lnk'], [str(target / 'OpenSmash.exe'), '', str(target), str(target / 'OpenSmash.exe') + ',0'])
+            icon = str(target / 'OpenSmash.exe') + ',0'
+            self.assertEqual(got['OpenSmash-Launcher.lnk'], [str(target / 'OpenSmash.exe'), '', str(target), icon])
+            self.assertEqual(got['OpenSmash-Ultimate.lnk'], [str(target / 'OpenSmash.exe'), '--play', str(target), icon])
 
     def test_shortcuts_need_a_desktop_folder(self):
         code, out = self.run_exe('--make-shortcuts', str(self.dir))
