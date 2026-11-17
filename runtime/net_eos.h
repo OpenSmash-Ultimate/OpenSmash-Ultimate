@@ -28,6 +28,7 @@ int eos_hub_member_id(u32 ip, char id[NET_EOS_ID_LEN + 1]);
 void eos_hub_set_player(u64 pid, const char *url, u32 rating);
 int eos_hub_player(u64 pid, char id[NET_EOS_ID_LEN + 1], char *url, size_t cap, u32 *rating);   /* 1: a member; url "" unknown yet */
 void eos_hub_refresh_soon(void);
+const char *eos_hub_lobby(void);   /* (EOS thread) the hub's EOS lobby id, "" while in none: gatherings are of one hub (net_eos_lobby.c) */
 
 /* The network over EOS alone (net_eos_net.c), and what net_relay.c gives it */
 struct NetBackend;
