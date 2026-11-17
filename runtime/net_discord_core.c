@@ -242,6 +242,34 @@ int discord_join_parse(const char *secret, DiscordJoin *j) {
     return 1;
 }
 
+const char *discord_join_lobby(int eos, const char *lobby_relay) {
+    if (eos) return "eos";
+    return lobby_relay && lobby_relay[0] ? lobby_relay : NULL;
+}
+
+static int same_text_nocase(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        char x = *a >= 'A' && *a <= 'Z' ? (char)(*a + 32) : *a, y = *b >= 'A' && *b <= 'Z' ? (char)(*b + 32) : *b;
+        if (x != y) return 0;
+    }
+    return *a == *b;
+}
+
+int discord_join_same(const DiscordJoin *j, const char *my_lobby, const char *my_code) {
+    if (!j || !j->where || !my_lobby || !my_lobby[0] || !same_text_nocase(my_lobby, j->relay)) return 0;
+    return !strcmp(my_code ? my_code : "", j->code);
+}
+
+uint32_t discord_join_room_host(const DiscordJoin *j) {
+    unsigned v[4];
+    int used = 0;
+    if (!j || j->where != DP_ROOM) return 0;
+    if (sscanf(j->target, "%3u.%3u.%3u.%3u%n", &v[0], &v[1], &v[2], &v[3], &used) != 4 || j->target[used]) return 0;
+    for (const char *c = j->target; *c; c++) if (!(*c == '.' || (*c >= '0' && *c <= '9'))) return 0;   /* (no signs, spaces) */
+    if (v[0] > 255 || v[1] > 255 || v[2] > 255 || v[3] > 255) return 0;
+    return (uint32_t)v[0] << 24 | v[1] << 16 | v[2] << 8 | v[3];
+}
+
 /* ---- SHA-256 and HMAC (FIPS 180-4, RFC 2104) ------------------------------------------------ */
 static const uint32_t K256[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01,
