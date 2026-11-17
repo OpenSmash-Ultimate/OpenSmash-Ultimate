@@ -15,6 +15,9 @@
 #include "host.h"
 #include "config_folder.h"
 #include "settings.h"
+#include "net_backend.h"
+#include "net_eos.h"       /* (net_eos_backend) */
+#include "net_results.h"   /* (the lobby's count of matches played) */
 
 #define DELAY_MAX 25
 
@@ -118,6 +121,30 @@ static int rb_sd_end_let(u64 self) {
     return !sd_ended && ld8(self + 0x63) == 2 && ld16(self + 0x64) == 0;
 }
 
+/* The Online step's "over" (a match's end, not a cut short): a match played with the game's own netcode goes to the
+ * public lobby's count of matches played (net_results.c). It has no seed both games share, so its id is its players'
+ * virtual addresses and the mode, the same on every game of it (and for the same players' next match: the lobby takes
+ * reports of one id a minute apart as one match). A match rollback played was reported as its fight ended, with its
+ * seed (hle_rb_core.c online_report_match), and is not reported again here. */
+int net_recent_peers(u32 *out, int max, u32 within_ms);   /* (net.h) */
+u32 net_local_ip(void);
+static void online_match_over(void) {
+    int rb_online_match_reported(void);
+    if (rb_online_match_reported()) return;
+    u32 ips[9];
+    int n = net_recent_peers(ips, 8, 30000);
+    if (n <= 0) return;   /* (no other game heard: nothing to count) */
+    ips[n] = net_local_ip();
+    MatchPlayed m = {0};
+    m.mode = ld8(0x71052C51B0ull);   /* (the match block's melee mode: 14 Quickplay, 20 Battle Arena) */
+    m.id = results_match_id_addresses(ips, n + 1, m.mode);
+    m.players = n + 1;
+    m.seconds = (int)(ld32(0x71052c5184ull) / 60);   /* (the logic frame) */
+    m.eos = net_backend == &net_eos_backend;
+    results_match_played(&m);
+    fprintf(stderr, "[net] online step: the match goes to the lobby's count of matches played (%d players, the game's own netcode)\n", n + 1);
+}
+
 /* FUN 0x71016d7730: the per-frame step of the same object (a state machine at this+0x62, 0..5;
  * it calls 0x71016cc940 itself in one state) that reads the delay at this+0x41 to decide how far
  * the local inputs run ahead of the remote ones. With our servers the setter was never seen to
@@ -211,6 +238,7 @@ HLE_WRAP(71016d7730) {
         u8 end = ld8(self + 0x63);
         if (end != end_was) {
             end_was = end;
+            if (end == 1) online_match_over();
             if (end) fprintf(stderr, "[net] online step: the match's end asked (kind %u: %s, code %u, in %u frames; state %u, logic frame %u; "
                              "relay role %u, heard %u, quiet check %u/%u, last heard %llu, stations apart %u)\n",
                              end, end == 1 ? "over" : end == 2 ? "cut short" : "?", ld16(self + 0x64), ld16(self + 0x66), state, ld32(0x71052c5184ull),

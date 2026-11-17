@@ -44,6 +44,7 @@ int net_match_on(void) { return 0; }
 void rb_shadow_note(u64 at, u64 size) { (void)at; (void)size; }
 int rb_online_match_now(void) { return 0; }   /* (hle_online_delay.c) */
 int rb_sd_hold_now(void) { return 0; }        /* (hle_online_delay.c) */
+int rb_online_match_reported(void) { return 0; }   /* (hle_online_delay.c) */
 #else
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
@@ -60,6 +61,9 @@ int rb_sd_hold_now(void) { return 0; }        /* (hle_online_delay.c) */
 #include "frame_hooks.h"
 #include "kernel_watch.h"   /* (kernel_rb_switch) */
 #include "runahead.h"
+#include "net_backend.h"
+#include "net_eos.h"       /* (net_eos_backend: a match over Epic Online Services) */
+#include "net_results.h"   /* (the lobby's count of matches played: online_report_match) */
 
 void kernel_rb_census(const void *self, u32 *alive, u32 *waiting, u32 *sleeping, u64 *busy, u32 max, u32 *nbusy);
 void fiber_rb_census(u32 *live, u32 *running);
@@ -3718,6 +3722,8 @@ int net_recent_peers(u32 *out, int max, u32 within_ms);   /* (net.h) */
 #define ONLINE_HEARD_MS 3000.0
 static int online_match;   /* (the match set up now is an Online one played with rollback) */
 static int online_lw;      /* (... and a Local Wireless room's, not a Quickplay one: online_restore) */
+static double online_agreed_ms;   /* (when its handshake agreed: the match's length for the lobby's count) */
+static int online_reported;       /* (reported to the lobby: the Online step's "over" that follows is not reported again) */
 /* (what the game set up, put back as the fight ends: its own results and what follows them - the GSP, the next
  * search - run on the Online match, melee mode 14 and the other player a network player, as without rollback) */
 #define ONLINE_HDR 0x580   /* (the match block's rule header: the records follow, 0x260 bytes each) */
@@ -3760,8 +3766,32 @@ static void online_fight_start(void) {
                 display_uw_online() ? " (experimental: ultrawide online)" : "");
     }
 }
+/* (the fight over, no sudden death to follow) the match to the public lobby's count of matches played (net_results.c,
+ * tools/nex/matches.py): its id from the handshake's match seed, the same on every game of this match alone, so the
+ * lobby counts it once whichever game's report comes first. Quickplay, Battle Arenas and Local Wireless rooms alike. */
+static void online_report_match(void) {
+    if (!hs_seed) return;
+    MatchPlayed m = {0};
+    m.id = results_match_id_seed(hs_seed);
+    m.exact = 1;
+    m.mode = online_hdr[0];
+    m.players = net_n;
+    m.seconds = online_agreed_ms > 0 ? (int)((now_ms() - online_agreed_ms) / 1000.0) : 0;
+    m.rollback = 1;
+    m.eos = net_backend == &net_eos_backend;
+    results_match_played(&m);
+    online_reported = 1;
+    fprintf(stderr, "[rb] online: the match goes to the lobby's count of matches played (id %016llx)\n", (unsigned long long)m.id);
+}
+/* (hle_online_delay.c, at the Online step's "over") 1: this match was reported here already; asked once */
+int rb_online_match_reported(void) {
+    int r = online_reported;
+    online_reported = 0;
+    return r;
+}
 static void online_restore(void) {
     if (!online_match) return;
+    online_report_match();
     /* A Local Wireless room's match (#180): its results go on rollback's own set-up, every player local as in the fight.
      * With the room's set-up back (the other player a network player again) the results no longer matched the fight's
      * fighters, built from rollback's: the room's results sync left the other game's player out (the host's first
@@ -3801,7 +3831,7 @@ static void online_forget(const char *why) {
     if (!net_online) return;
     if (net_local >= 0 || online_match) fprintf(stderr, "[rb] online: %s: this game's number and players forgotten\n", why);
     rbl_relay_online_end();
-    online_match = 0;
+    online_match = 0; online_reported = 0; online_agreed_ms = 0;
     net_local = -1; net_pending = 1;
     hs_agreed = 0; hs_seed = 0; hs_delay_ready = 0; net_delay = online_delay_set;
     memset(hs_agreed_by, 0, sizeof hs_agreed_by); memset(hs_peer_t, 0, sizeof hs_peer_t); memset(hs_peer_t_at, 0, sizeof hs_peer_t_at);
@@ -3931,6 +3961,7 @@ static int online_setup_try(u64 st) {
         return 0;
     }
     for (int k = 0; k < 5; k++) { net_hello_send(); Sleep(20); }   /* (the other's answer, again) */
+    online_agreed_ms = now_ms();
     fprintf(stderr, "[rb] online: agreed after %.1f s (input delay %d): %s is played with rollback, both players local on both games (the set-up's melee mode %u)\n",
             (now_ms() - t0) / 1000, net_delay, what, mode);
     memcpy(online_hdr, P(u8, MELEE_INFO), ONLINE_HDR);

@@ -102,6 +102,29 @@ int main(void) {
     CHECK(results_parse_records("{\"records\":[]}", recs, 25, 4) == 0, "none");
     CHECK(results_parse_records("{\"error\":\"x\"}", recs, 25, 4) == 0, "not an answer");
 
+    /* a match played, for the lobby's count (tools/nex/matches.py parses what results_match_data writes) */
+    {
+        uint32_t one[3] = {0x0a0d0005u, 0x0a0d0002u, 0x0a0d0009u}, other[3] = {0x0a0d0009u, 0x0a0d0005u, 0x0a0d0002u};
+        CHECK(results_match_id_addresses(one, 3, 20) == results_match_id_addresses(other, 3, 20), "the same players in any order: one id");
+        CHECK(results_match_id_addresses(one, 3, 20) != results_match_id_addresses(one, 3, 14), "another mode: another id");
+        CHECK(results_match_id_addresses(one, 2, 20) != results_match_id_addresses(one, 3, 20), "other players: another id");
+        CHECK(results_match_id_seed(0x1234) == results_match_id_seed(0x1234) && results_match_id_seed(0x1234) != results_match_id_seed(0x1235),
+              "the seed's id");
+        char data[512];
+        MatchPlayed m = {0x00000000000000abull, 1, 14, 2, 95, 1, 1};
+        size_t n = results_match_data(&m, data, sizeof data);
+        CHECK(n && !strcmp(data, "{\"id\":\"00000000000000ab\",\"mode\":\"quickplay\",\"players\":2,\"seconds\":95,\"ranked\":true,"
+                                 "\"net\":\"rollback\",\"via\":\"eos\",\"exact\":true}"), "a Quickplay match's data: %s", data);
+        MatchPlayed r = {0xffffffffffffffffull, 0, 1, 1, -5, 0, 0};
+        results_match_data(&r, data, sizeof data);
+        CHECK(!strcmp(data, "{\"id\":\"ffffffffffffffff\",\"mode\":\"room\",\"players\":2,\"seconds\":0,\"ranked\":false,"
+                            "\"net\":\"game\",\"via\":\"lobby\",\"exact\":false}"), "a room's, clamped: %s", data);
+        m.mode = 20;
+        results_match_data(&m, data, sizeof data);
+        CHECK(strstr(data, "\"mode\":\"arena\"") && strstr(data, "\"ranked\":false"), "an arena's: %s", data);
+        CHECK(results_match_data(&m, data, 20) == 0, "too small: nothing");
+    }
+
     printf("%d checks, %d failed\n", checks, failures);
     return failures != 0;
 }

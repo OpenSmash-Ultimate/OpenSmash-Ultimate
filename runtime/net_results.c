@@ -13,6 +13,11 @@
  * PC it plays on (each fighter's best), and only linked accounts are on the leaderboard (config/discord_leaderboard.txt
  * "off" hides one); everyone else plays all the same, unranked.
  *
+ * The same thread reports each match the game plays online (POST /match/played: Quickplay, Battle Arenas and Local
+ * Wireless rooms, over EOS or the public lobby), for the lobby's count of matches played (tools/nex/matches.py); it is
+ * started for that alone when the game plays over the public lobby, without the results above. A report the lobby
+ * does not take (an older lobby: 404) is dropped; one it can not be asked now is tried again a few times.
+ *
  * SSBU_RESULTS_LOBBY=<host:port> sends them to another lobby (tests: a local one); =off sends nothing. */
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
@@ -47,6 +52,38 @@ int results_parse_records(const char *json, uint8_t *out, int size, int max) {
     return n;
 }
 
+static uint64_t mix64(uint64_t z) {
+    z += 0x9e3779b97f4a7c15ull;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+    return z ^ (z >> 31);
+}
+uint64_t results_match_id_seed(uint64_t seed) { return mix64(seed ^ 0x6d61746368736564ull); }
+uint64_t results_match_id_addresses(const uint32_t *ips, int n, int mode) {
+    uint32_t s[16];
+    if (n > 16) n = 16;
+    for (int i = 0; i < n; i++) {   /* (sorted: every game lists them in its own order) */
+        uint32_t v = ips[i];
+        int j = i;
+        for (; j > 0 && s[j - 1] > v; j--) s[j] = s[j - 1];
+        s[j] = v;
+    }
+    uint64_t h = mix64(0x6164647265737365ull ^ (uint8_t)mode);
+    for (int i = 0; i < n; i++)
+        if (!i || s[i] != s[i - 1]) h = mix64(h ^ s[i]);
+    return h;
+}
+size_t results_match_data(const MatchPlayed *m, char *out, size_t cap) {
+    int players = m->players < 2 ? 2 : m->players > 8 ? 8 : m->players;
+    int seconds = m->seconds < 0 ? 0 : m->seconds > 3600 ? 3600 : m->seconds;
+    const char *mode = m->mode == 14 ? "quickplay" : m->mode == 20 ? "arena" : "room";
+    int n = snprintf(out, cap, "{\"id\":\"%016llx\",\"mode\":\"%s\",\"players\":%d,\"seconds\":%d,\"ranked\":%s,\"net\":\"%s\","
+                               "\"via\":\"%s\",\"exact\":%s}",
+                     (unsigned long long)m->id, mode, players, seconds, m->mode == 14 ? "true" : "false",
+                     m->rollback ? "rollback" : "game", m->eos ? "eos" : "lobby", m->exact ? "true" : "false");
+    return n > 0 && (size_t)n < cap ? (size_t)n : 0;
+}
+
 #ifdef _WIN32
 #include <windows.h>
 #include <winhttp.h>
@@ -58,12 +95,19 @@ int account_nsa_hex(char out[17]);   /* (hle_env.c) */
 #define LOBBY "opensmash-lobby.duckdns.org:39421"   /* (the one public lobby: net_relay.c) */
 #define RETRY_MS (30 * 1000)
 #define PROFILE_EVERY_MS (30 * 60 * 1000)
+#define MATCH_QUEUE 16
+#define MATCH_RETRY_MS (10 * 1000)
+#define MATCH_TRIES 6
 
 static char marker_path[1024];
 static HANDLE wake;
 static volatile LONG dirty;
 static wchar_t lobby_host[256];
 static INTERNET_PORT lobby_port;
+static volatile LONG sync_on;   /* (results_start: the player's results too, not only the matches) */
+static SRWLOCK match_lock = SRWLOCK_INIT;
+static MatchPlayed match_q[MATCH_QUEUE];
+static int match_n;
 
 static char *http(const wchar_t *verb, const wchar_t *path, const char *headers, const char *body, DWORD *status) {
     HINTERNET s = WinHttpOpen(L"OpenSmash", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0), c = NULL, r = NULL;
@@ -118,7 +162,7 @@ static int send_results(const char *nsa, const char *player) {
         discord_sign(nsa, "sync", player, t, data, sig);
         if (with_key) snprintf(key, sizeof key, ",\"key\":\"%s\"", nsa);
         char *at = body;
-        at += snprintf(body, sizeof body, "{\"player\":\"%s\",\"t\":%lld,\"sig\":\"%s\"%s,\"data\":", player, t, sig, key);
+        at += snprintf(body, sizeof body, "{\"player\":\"%s\",\"t\":%lld,\"sig\":\"%s\"%s,\"m\":1,\"data\":", player, t, sig, key);
         json_string(at, sizeof body - (size_t)(at - body) - 2, data);
         strcat(body, "}");
         DWORD status;
@@ -161,7 +205,7 @@ static int send_link(const char *nsa, const char *player) {
     if (!discord_token_load("config\\" DISCORD_TOKEN_FILE, &tok) || !tok.user_id[0]) return 1;   /* (not signed in) */
     if (!discord_token_fresh(&tok, (int64_t)time(NULL), 60)) return 0;   /* (net_discord.c refreshes it: later) */
     char choice[16] = "";
-    FILE *f = fopen("config\discord_leaderboard.txt", "rb");
+    FILE *f = fopen("config\\discord_leaderboard.txt", "rb");   /* (was "config\d...": never read, "off" ignored) */
     if (f) { size_t k = fread(choice, 1, sizeof choice - 1, f); choice[k] = 0; fclose(f); }
     int show = _strnicmp(choice, "off", 3) != 0;
     static char payload[600], body[1400];
@@ -184,16 +228,64 @@ static int send_link(const char *nsa, const char *player) {
     return status == 200 || status == 403;   /* (403: a token Discord refused - not again until the next period) */
 }
 
+/* POST /match/played: 1 done with it (taken, or not to be sent again), 0 not now */
+static int send_match(const char *nsa, const char *player, const MatchPlayed *m) {
+    char data[512], body[1400];
+    if (!results_match_data(m, data, sizeof data)) return 1;
+    for (int with_key = 0; with_key < 2; with_key++) {
+        long long t = (long long)time(NULL);
+        char sig[65], key[40] = "", *at = body;
+        discord_sign(nsa, "match", player, t, data, sig);
+        if (with_key) snprintf(key, sizeof key, ",\"key\":\"%s\"", nsa);
+        at += snprintf(body, sizeof body, "{\"player\":\"%s\",\"t\":%lld,\"sig\":\"%s\"%s,\"data\":", player, t, sig, key);
+        json_string(at, sizeof body - (size_t)(at - body) - 2, data);
+        strcat(body, "}");
+        DWORD status;
+        char *answer = http(L"POST", L"/match/played", "Content-Type: application/json\r\n", body, &status);
+        int unknown = status == 403 && answer && strstr(answer, "unknown player");
+        fprintf(stderr, "[results] match played (%s): the lobby answered HTTP %lu%s%s\n", data, status, answer ? ": " : "", answer ? answer : "");
+        free(answer);
+        if (unknown) continue;   /* (once more, with the NSA id that makes the player known there) */
+        return status != 0 && status < 500;   /* (taken, already counted, refused, or a lobby without the count: 404) */
+    }
+    return 1;
+}
+
+/* the queued reports, oldest first, until one can not be sent now (tried again MATCH_RETRY_MS on, MATCH_TRIES times) */
+static void send_matches(const char *nsa, const char *player, uint64_t now, uint64_t *match_at, int *tries) {
+    for (;;) {
+        MatchPlayed m;
+        AcquireSRWLockExclusive(&match_lock);
+        int have = match_n > 0;
+        if (have) m = match_q[0];
+        ReleaseSRWLockExclusive(&match_lock);
+        if (!have || now < *match_at) return;
+        int done = send_match(nsa, player, &m) || ++*tries >= MATCH_TRIES;
+        if (!done) { *match_at = now + MATCH_RETRY_MS; return; }
+        *tries = 0;
+        AcquireSRWLockExclusive(&match_lock);
+        if (match_n > 0) memmove(match_q, match_q + 1, (size_t)--match_n * sizeof *match_q);
+        ReleaseSRWLockExclusive(&match_lock);
+    }
+}
+
 static DWORD WINAPI results_thread(LPVOID arg) {
     (void)arg;
     char nsa[17], player[17];
     while (!account_nsa_hex(nsa)) Sleep(2000);
     discord_player_id(nsa, player);
-    int fetched = 0;
-    uint64_t profile_at = 0, retry_at = 0;
-    if (GetFileAttributesA(marker_path) != INVALID_FILE_ATTRIBUTES) InterlockedExchange(&dirty, 1);   /* (left from the last start) */
+    int fetched = 0, match_tries = 0;
+    uint64_t profile_at = 0, retry_at = 0, match_at = 0;
     for (;;) {
         uint64_t t = GetTickCount64();
+        send_matches(nsa, player, t, &match_at, &match_tries);
+        if (!sync_on) {   /* (over the public lobby: the matches alone) */
+            AcquireSRWLockExclusive(&match_lock);
+            int waiting = match_n;
+            ReleaseSRWLockExclusive(&match_lock);
+            WaitForSingleObject(wake, waiting ? 2000 : 60000);
+            continue;
+        }
         if (dirty && t >= retry_at) {
             InterlockedExchange(&dirty, 0);
             DeleteFileA(marker_path);   /* (before: a change while sending makes it again) */
@@ -210,32 +302,62 @@ static DWORD WINAPI results_thread(LPVOID arg) {
             if (fetch_records(nsa, player) >= 0) fetched = 1;
             else retry_at = t + RETRY_MS;
         }
-        WaitForSingleObject(wake, dirty || !fetched ? 2000 : 60000);
+        AcquireSRWLockExclusive(&match_lock);
+        int waiting = match_n;
+        ReleaseSRWLockExclusive(&match_lock);
+        WaitForSingleObject(wake, dirty || !fetched || waiting ? 2000 : 60000);
     }
+}
+
+/* (once) the lobby and the thread: 1 running, 0 none (SSBU_RESULTS_LOBBY=off or not host:port) */
+static int thread_start(void) {
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    static int running;
+    BOOL pending;
+    if (!InitOnceBeginInitialize(&once, 0, &pending, NULL)) return 0;
+    if (!pending) return running;
+    const char *v = getenv("SSBU_RESULTS_LOBBY");
+    char where[256];
+    snprintf(where, sizeof where, "%s", v && *v ? v : LOBBY);
+    char *colon = strrchr(where, ':');
+    int port = colon ? atoi(colon + 1) : 0;
+    if (!_stricmp(where, "off")) {}
+    else if (!colon || port <= 0 || port > 65535) fprintf(stderr, "[results] SSBU_RESULTS_LOBBY=%s: not host:port\n", where);
+    else {
+        *colon = 0;
+        MultiByteToWideChar(CP_UTF8, 0, where, -1, lobby_host, 256);
+        lobby_port = (INTERNET_PORT)port;
+        wake = CreateEventA(NULL, FALSE, FALSE, NULL);
+        HANDLE th = wake ? CreateThread(NULL, 0, results_thread, NULL, 0, NULL) : NULL;
+        if (th) { CloseHandle(th); running = 1; }
+        fprintf(stderr, "[results] the lobby %s:%d hears of this game's matches%s\n", where, port, running ? "" : " (no thread: nothing sent)");
+    }
+    InitOnceComplete(&once, 0, NULL);
+    return running;
 }
 
 void results_start(const char *marker) {
     static LONG once;
     if (InterlockedExchange(&once, 1)) return;
-    const char *v = getenv("SSBU_RESULTS_LOBBY");
-    char where[256];
-    snprintf(where, sizeof where, "%s", v && *v ? v : LOBBY);
-    if (!_stricmp(where, "off")) return;
-    char *colon = strrchr(where, ':');
-    int port = colon ? atoi(colon + 1) : 0;
-    if (!colon || port <= 0 || port > 65535) { fprintf(stderr, "[results] SSBU_RESULTS_LOBBY=%s: not host:port\n", where); return; }
-    *colon = 0;
-    MultiByteToWideChar(CP_UTF8, 0, where, -1, lobby_host, 256);
-    lobby_port = (INTERNET_PORT)port;
+    if (!thread_start()) return;
     snprintf(marker_path, sizeof marker_path, "%s", marker);
-    wake = CreateEventA(NULL, FALSE, FALSE, NULL);
-    HANDLE th = CreateThread(NULL, 0, results_thread, NULL, 0, NULL);
-    if (th) CloseHandle(th);
-    fprintf(stderr, "[results] the player's results go to the lobby %s:%d\n", where, port);
+    if (GetFileAttributesA(marker_path) != INVALID_FILE_ATTRIBUTES) InterlockedExchange(&dirty, 1);   /* (left from the last start) */
+    InterlockedExchange(&sync_on, 1);
+    SetEvent(wake);
+    fprintf(stderr, "[results] the player's results go to the lobby too\n");
+}
+
+void results_match_played(const MatchPlayed *m) {
+    if (!thread_start()) return;
+    AcquireSRWLockExclusive(&match_lock);
+    if (match_n == MATCH_QUEUE) memmove(match_q, match_q + 1, (size_t)--match_n * sizeof *match_q);   /* (the oldest out) */
+    match_q[match_n++] = *m;
+    ReleaseSRWLockExclusive(&match_lock);
+    SetEvent(wake);
 }
 
 void results_changed(void) {
-    if (!wake) return;
+    if (!wake || !sync_on) return;
     if (!InterlockedExchange(&dirty, 1)) {
         FILE *f = fopen(marker_path, "wb");   /* (sent at the next start if not now) */
         if (f) fclose(f);
@@ -245,4 +367,5 @@ void results_changed(void) {
 #else
 void results_start(const char *marker) { (void)marker; }
 void results_changed(void) {}
+void results_match_played(const MatchPlayed *m) { (void)m; }
 #endif
