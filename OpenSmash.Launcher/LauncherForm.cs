@@ -130,7 +130,7 @@ namespace OpenSmash.Launcher
 
         // While any of these run, Play is greyed out so two jobs cannot overlap.
         bool Busy => _yuzuPage?.IsBusy == true || _modsBusy || _setupModding || _pluginBuildUi || _loadOn || _startingPlay || _newModsBusy
-            || _updateApplying || _marketplaceInstalling.Count > 0 || _maintenanceBuildUi;
+            || _updateApplying || _marketplaceInstalling.Count > 0 || _maintenanceBuildUi || _shaderClearing;
 
         bool _rebuildPrompt;
         bool _sharePrompt;
@@ -1517,6 +1517,40 @@ namespace OpenSmash.Launcher
             Invalidate();
         }
 
+        bool _shaderClearing;
+
+        // Settings > Storage > REBUILD SHADERS: this install's compiled shader caches removed (ShaderCache), then
+        // Prepare Shaders again with its bar.
+        async Task RebuildShadersAsync()
+        {
+            if (_shaderClearing) return;
+            string why = "";
+            if (_shaderProc != null && !_shaderProc.HasExited) why = "Prepare Shaders is running. Wait for it to finish.";
+            else if ((_gameProcess != null && !_gameProcess.HasExited) || YuzuGameRunning() || _waitingForGame) why = "Close the game before rebuilding the shaders.";
+            else if (Busy || _storageBusy) why = "Wait for the current job to finish.";
+            if (why.Length > 0) { UiLocale.Message(this, UiLocale.Text(why), "OpenSmash", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+            if (UiLocale.Message(this, UiLocale.Text("Rebuild the shaders?\n\nThis install's compiled shaders and graphics caches are deleted and Prepare Shaders compiles them all again. That takes a while, and the first start after it is slower while the graphics driver fills its cache again. Game files, saves and mods are not touched."),
+                                 "OpenSmash", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+            _shaderClearing = true;
+            _shaderUi = true;
+            _shaderFrac = 0;
+            _shaderDetail = "Deleting the old shaders";
+            _shaderEta = "";
+            Invalidate();
+            List<string> failed;
+            try { failed = await Task.Run(() => ShaderCache.Clear(_repo)); }
+            finally { _shaderClearing = false; }
+            if (failed.Count > 0)
+            {
+                _shaderUi = false;
+                Invalidate();
+                UiLocale.Message(this, UiLocale.Text("Some shader files could not be deleted (is the game running?). Close the game and try again.") + "\n\n" + string.Join("\n", failed.Take(8)),
+                                 "OpenSmash", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            StartShaders("medium");
+        }
+
         int OsMods(string[] args, Action<string> onLine = null)
         {
             var all = new List<string> { Path.Combine(_repo, "tools", "os_mods.py") };
@@ -2488,6 +2522,7 @@ namespace OpenSmash.Launcher
             else if (id == "update:build") StartMaintenanceBuild();
             else if (id == "storage:refresh") _ = StorageStatusAsync();
             else if (id == "storage:move") _ = StorageMoveAsync();
+            else if (id == "storage:shaders") _ = RebuildShadersAsync();
             else if (id == "update:apply") _ = ApplyUpdateAsync();
             else if (id == "rebuild_prompt:cancel") { _rebuildPrompt = false; Invalidate(); }
             else if (id == "rebuild_prompt:refresh") { _rebuildPrompt = false; Invalidate(); _ = RefreshPlugins(); }

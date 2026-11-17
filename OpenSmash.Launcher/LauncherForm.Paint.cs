@@ -2011,6 +2011,14 @@ namespace OpenSmash.Launcher
             if (can) AddHit("storage:refresh", xRef, by, wRef, bh);
             Theme.ButtonAnimated(g, _storageBusy ? "WORKING…" : "MOVE TO ANOTHER DRIVE", xMove, by, wMove, bh, s, true, Hov("storage:move", can && _hover == "storage:move"), can, 13 * s, _alpha, press: Press("storage:move"));
             if (can) AddHit("storage:move", xMove, by, wMove, bh);
+            float xShaders = x + pad, wShaders = Math.Min(230 * s, xRef - 12 * s - xShaders);
+            bool shadersRunning = _shaderClearing || (_shaderProc != null && !_shaderProc.HasExited);
+            bool canShaders = !_storageBusy && !Busy && !shadersRunning;
+            if (wShaders >= 150 * s)   // (a narrow window: no room beside the other two)
+            {
+                Theme.ButtonAnimated(g, shadersRunning ? "PREPARING SHADERS…" : "REBUILD SHADERS", xShaders, by, wShaders, bh, s, false, Hov("storage:shaders", canShaders && _hover == "storage:shaders"), canShaders, 12 * s, _alpha, press: Press("storage:shaders"));
+                if (canShaders) AddHit("storage:shaders", xShaders, by, wShaders, bh);
+            }
             PopFade(g, st);
         }
 

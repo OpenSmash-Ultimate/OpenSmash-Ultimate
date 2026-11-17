@@ -985,6 +985,14 @@
     "Advanced": "高级",
     "Advanced multiplayer": "高级联机",
     "Optional yuzu-compatible rooms": "可选的 yuzu 兼容房间",
-    "Report a problem": "报告问题"
+    "Report a problem": "报告问题",
+    "REBUILD SHADERS": "重新生成着色器",
+    "PREPARING SHADERS…": "正在准备着色器…",
+    "Deleting the old shaders": "正在删除旧着色器",
+    "Prepare Shaders is running. Wait for it to finish.": "正在准备着色器，请等待完成。",
+    "Close the game before rebuilding the shaders.": "重新生成着色器前请先关闭游戏。",
+    "Wait for the current job to finish.": "请等待当前任务完成。",
+    "Rebuild the shaders?\n\nThis install's compiled shaders and graphics caches are deleted and Prepare Shaders compiles them all again. That takes a while, and the first start after it is slower while the graphics driver fills its cache again. Game files, saves and mods are not touched.": "重新生成着色器？\n\n将删除此安装中已编译的着色器和图形缓存，并由“准备着色器”全部重新编译。这需要一段时间，之后第一次启动时显卡驱动需要重新填充缓存，因此会较慢。游戏文件、存档和模组不会受到影响。",
+    "Some shader files could not be deleted (is the game running?). Close the game and try again.": "部分着色器文件无法删除（游戏是否正在运行？）。请关闭游戏后重试。"
   }
 }
