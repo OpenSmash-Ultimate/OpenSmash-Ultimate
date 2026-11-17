@@ -439,6 +439,44 @@ class CompileReportTests(unittest.TestCase):
             self.assertEqual(len(b.samples), 2)
             self.assertEqual(recomp.stale_files(d), [])
 
+    def compile_three(self, fatal=None):
+        """compile_dirs over folders a, b, c (b's g0001.c does not compile), one compiler: (what it
+        returned, the folders done, the folders in the order their files started, the bar)."""
+        def run(args, *a, **kw):
+            src = next(x for x in args if x.endswith('.c'))
+            if Path(src).read_text() == 'bad\n':
+                return ladder.Run(1, 'error: x', 0.1)
+            Path(next(x for x in args if x.startswith('/Fo'))[3:]).write_text('')
+            return ladder.Run(0, '', 0.1)
+        with tempfile.TemporaryDirectory() as t:
+            dirs = [os.path.join(t, 'build', n) for n in 'abc']
+            b = P.Build(1)
+            for d in dirs:
+                os.makedirs(d)
+                for n in ('g0000.c', 'g0001.c', 'g_module.c'):
+                    Path(d, n).write_text('bad\n' if d == dirs[1] and n == 'g0001.c' else 'int x;\n')
+                Path(d, 'manifest.tsv').write_text('g0000.c\t40000\t5000\ng0001.c\t40000\t5000\n')
+                b.module(os.path.basename(d), 80000, [(s, c) for s, _o, _l, c in recomp.stale_files(d)])
+            done, order = [], []
+            with mock.patch.object(ladder, 'run', side_effect=run), mock.patch('sys.stdout', io.StringIO()):
+                b.started = lambda job: order.append(os.path.basename(os.path.dirname(job[0])))
+                failed = recomp.compile_dirs(dirs, 1, b, fatal=fatal and (lambda d: fatal(os.path.basename(d))),
+                                             done=lambda d: done.append(os.path.basename(d)))
+            return [os.path.basename(d) for d in failed], done, order, b
+
+    def test_compile_dirs_a_failure_ends_the_build_as_before(self):
+        # b is a module the game needs: c is not started, as when each folder was compiled on its own
+        failed, done, order, b = self.compile_three()
+        self.assertEqual((failed, done), (['b'], ['a']))
+        self.assertEqual(order, ['a'] * 3 + ['b'] * 3)
+        self.assertEqual(b.done, {('compile', None)})
+        self.assertNotIn(('compile', 'c'), b.cost)   # (the modules' own steps: one for the pool instead)
+
+    def test_compile_dirs_a_plugin_that_fails_is_left_out(self):
+        failed, done, order, _b = self.compile_three(fatal=lambda name: name != 'b')
+        self.assertEqual((failed, done), (['b'], ['a', 'c']))
+        self.assertEqual(order, ['a'] * 3 + ['b'] * 3 + ['c'] * 3)
+
 
 if __name__ == '__main__':
     unittest.main()
