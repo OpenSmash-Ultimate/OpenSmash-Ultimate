@@ -70,6 +70,7 @@ static int unreachable(void) { return !eos_hub_ip() && (eos_hub_failed() || GetT
 static int has_peer(u32 ip) { char id[NET_EOS_ID_LEN + 1]; return eos_hub_member_id(ip, id); }
 
 static int sim_on(void);
+static int talking(void);
 static void start(void) {
     static LONG once;
     if (InterlockedExchange(&once, 1)) return;
@@ -79,6 +80,7 @@ static void start(void) {
     char bucket[128];
     snprintf(bucket, sizeof bucket, "ssbu1:%s", room_code);   /* (the build and mods join it in phase 2's gatherings) */
     eos_start();
+    eos_hub_set_busy(talking);
     eos_hub_join(bucket);
     path_start();
     online_results_begin();   /* (hle_online.c / net_results.c: the player's results to the public lobby, theirs back) */
@@ -242,6 +244,17 @@ static void path_used(const char *id) {
     PathPeer *q = path_peer(id, 1);
     if (q) q->used_at = now_ms_();
     ReleaseSRWLockExclusive(&path_lock);
+}
+
+/* (net_eos.c, the EOS thread) 1 while this game talks to a member (a packet to or from it alone in the last 5 s: a
+ * match, a room): its hub then stays the one it is in */
+static int talking(void) {
+    u64 t = now_ms_();
+    int on = 0;
+    AcquireSRWLockShared(&path_lock);
+    for (int i = 0; i < npath && !on; i++) on = path_peers[i].used_at && t - path_peers[i].used_at < 5000;
+    ReleaseSRWLockShared(&path_lock);
+    return on;
 }
 
 /* (send_to) 1 and the address when the pair's packets go direct now; rollback's mark a fight on */

@@ -6,6 +6,10 @@
  * alone moved), and a game reaches only its own hub's members: their EOS ids, addresses and station URLs are the
  * hub's member attributes. Without it a joiner found a gathering of another hub, joined its lobby, then had "no game
  * for player" of its owner: the join call lost, 2618-0521 (2026-11-17, a test pair beside other games of code smash).
+ * A code's games move into one hub (net_eos.c); while a game sees more than one (a split not merged yet, or more
+ * than 64 players: full hubs), its searches cover them all (eos_hub_split), and every game writes its address,
+ * rating and station URL as member attributes of each gathering's lobby it is in too (set_member): net_eos.c counts
+ * those members as the hub's, so the players of one gathering reach each other whichever hub each is in.
  *
  * One EOS lobby a gathering: its id "os1-<gid>" (the gid is drawn by the game that makes it: unique among games
  * with all but certainty, and the lobby id refuses a second one), its bucket "ssbu1g:<part>" (game build, lobby code,
@@ -473,9 +477,15 @@ static void set_member(L *l) {   /* our player's PID as our member attribute */
     a.Value.AsInt64 = (int64_t)my_pid;
     EosAddAttrOptions ao = {2, &a, EOS_LAT_PUBLIC};
     p_EOS_LobbyModification_AddMemberAttribute(m, &ao);
+    eos_hub_member_attrs(m);   /* (our address, rating and station URL too: a player of another hub reaches us through them) */
     EosUpdateLobbyOptions u = {1, m};
     p_EOS_Lobby_UpdateLobby(eos_lobby_interface(), &u, NULL, member_set);
     p_EOS_LobbyModification_Release(m);
+}
+int nexeos_lobbies(char ids[][16], int max) {   /* (EOS thread) */
+    int n = 0;
+    for (int i = 0; i < nl && n < max; i++) if (ls[i].state == 2) memcpy(ids[n++], ls[i].id, 16);
+    return n;
 }
 static void EOS_CALL left(const EosLobbyResult *d) {
     if (d->ResultCode != EOS_SUCCESS && lg()) fprintf(stderr, "[eos] gatherings: leaving %s: %s\n", d->LobbyId ? d->LobbyId : "?", p_EOS_EResult_ToString(d->ResultCode));
@@ -628,7 +638,8 @@ static void do_search(void *arg) {
     EosAttrData h = {1, "HUB", {0}, EOS_AT_STRING};   /* (only our hub's: see HUB above) */
     h.Value.AsUtf8 = cur_hub[0] ? cur_hub : "-";   /* (in no hub yet: none) */
     EosSetParameterOptions ph = {1, &h, EOS_CO_EQUAL};
-    p_EOS_LobbySearch_SetParameter(r->search, &ph);
+    if (!eos_hub_split()) p_EOS_LobbySearch_SetParameter(r->search, &ph);
+    else if (lg()) fprintf(stderr, "[eos] gatherings: more than one hub of this lobby code: searching them all\n");
     if (r->arena[0]) {
         EosAttrData a = {1, "ARENA", {0}, EOS_AT_STRING};
         a.Value.AsUtf8 = r->arena;
@@ -756,6 +767,11 @@ void nexeos_tick(void) {
     if (eos_hub_lobby()[0] && strcmp(cur_hub, eos_hub_lobby())) {   /* (another hub: our lobbies say so) */
         snprintf(cur_hub, sizeof cur_hub, "%s", eos_hub_lobby());
         for (int i = 0; i < nl; i++) ls[i].dirty = 1;
+    }
+    static unsigned attrs;   /* (our address, rating or station URL changed: our member attributes again) */
+    if (attrs != eos_hub_attrs_version()) {
+        attrs = eos_hub_attrs_version();
+        for (int i = 0; i < nl; i++) if (ls[i].state == 2) set_member(&ls[i]);
     }
     u64 t = GetTickCount64();
     for (int i = 0; i < nl; i++) if (ls[i].dirty && !ls[i].busy && t - ls[i].at >= 250) publish(&ls[i]);

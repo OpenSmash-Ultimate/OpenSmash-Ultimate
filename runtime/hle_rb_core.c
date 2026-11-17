@@ -495,6 +495,9 @@ static int net_local;                 /* (this game's player: defined with the n
 volatile LONG net_results;            /* (the results screen: see net_results_frame) */
 volatile LONG net_menu_mine;          /* (this game's player's A and B there, as rb_pad read them) */
 volatile LONG net_menu_remote[8];     /* (each other player's, from its game) */
+static volatile LONG net_results_a;    /* (#389: each player's A pressed on the results, a bit a player) */
+static double net_results_t0;         /* (when this game's results began, now_ms) */
+#define RESULTS_A_AFTER_MS 500.0      /* (an A counts from half a second into the results: not one held from the fight) */
 /* (offline) Is the game paused: the logic frame the same as at the last fight frame, outside a load's re-run frames?
  * Worked out once a fight frame; pz_extra counts paused frames, to keep the pads' sampling number moving. */
 static u32 pz_logic = 0xffffffffu; static long long pz_frames = -1; static int pz_paused; static volatile LONG64 pz_extra;
@@ -2857,7 +2860,12 @@ static int net_menu_take(const u8 *buf, int len) {
         LONG was = net_menu_remote[m.player];
         InterlockedExchange(&net_menu_remote[m.player], m.buttons);
         menu_heard_ms[m.player] = now_ms();
-        if (m.buttons & ~was & 1) fprintf(stderr, "[rb] results: player %d pressed A\n", m.player + 1);
+        if (m.buttons & ~was & 1) {
+            fprintf(stderr, "[rb] results: player %d pressed A\n", m.player + 1);
+            if (now_ms() - net_results_t0 >= RESULTS_A_AFTER_MS) InterlockedOr(&net_results_a, 1L << m.player);
+        }
+        if (m.done) InterlockedOr(&net_results_a, 1L << m.player);   /* (its own game counted that A: sent every frame since, as
+                                                                      * one game's results can begin past another's half second) */
     }
     return 1;
 }
@@ -2999,6 +3007,82 @@ static int net_result_mode(Cpu *c, u64 mgr) { return (int)(fm_ask(c, mgr, "_ZN3a
  * result mode, is_ready_go, the stage choice and the last set-up's first panel (a hash, every 30 frames) are logged
  * whenever one changes, to see character select come.) */
 u64 net_panel0;   /* (the first panel state at the last set-up: the record builder's x0) */
+/* #389: A on an Online match's results did nothing; the screen ran its countdown out (some 22 s) on both games, every
+ * "pressed A" in the log all the same. The game ends those results on its own countdown alone: a layout part (its
+ * state functions 0x7101d66860 / 66980 / 66aa0 / 66bc0 / 66d40, counting frames down at +0xf0, "count_%d" shown from
+ * 5 s) whose last state, entered with a second left, sets its "done" byte at +0xf4; the scene goes on some 30 frames
+ * after that. With the game's own lockstep closed at the fight's end (the step at its state 6), nothing else ends it.
+ * So once every player has pressed A (this game's own, and the others' from MENU: each counted from
+ * RESULTS_A_AFTER_MS into its own game's results, MENU's done byte saying so from then on), the countdown is put where
+ * the game puts it with a second left: count 60, its last state asked - as if the time had run out, on each game as
+ * soon as it has seen every A and the countdown is running (it starts some seconds into the results, after the
+ * winner's scene). The part is found once by its state functions in guest memory (some 60 ms; looked for again 60
+ * frames on if not there yet, up to 5 times), then only read. Nothing in a fight is touched: the results come after
+ * rollback's fight is over. SSBU_RB_RESULTS_SKIP=0: off. */
+#define CD_S1 0x7101d66860ull   /* (its states: counting, "count_5" at 5 s, "count_%d", the last second) */
+#define CD_S2 0x7101d66980ull
+#define CD_S3 0x7101d66aa0ull
+#define CD_S4 0x7101d66bc0ull
+#define CD_S5 0x7101d66d40ull
+static int cd_part_is(u64 o) {
+    return readable(o, 0xf8) && ld64(o + 0x40) == CD_S1 && ld64(o + 0x50) == CD_S2 && ld64(o + 0x60) == CD_S3 && ld64(o + 0x70) == CD_S4 &&
+           ld64(o + 0x80) == CD_S5 && ld32(o + 0xdc) <= 0x12;
+}
+static u64 results_countdown_find(void) {
+    static const u64 rg[][2] = {{ALIAS_BASE, ALIAS_SIZE}, {HEAP_BASE, HEAP_LIMIT}};
+    for (int r = 0; r < 2; r++) {
+        u64 g = rg[r][0], end = rg[r][0] + rg[r][1];
+        while (g < end) {
+            MEMORY_BASIC_INFORMATION mi;
+            if (!VirtualQuery(G2H(g), &mi, sizeof mi)) break;
+            u64 rs = (u64)(uintptr_t)mi.BaseAddress - (u64)(uintptr_t)G2H(0), re = rs + mi.RegionSize;
+            if (re > end) re = end;
+            if (mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) && (mi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE))) {
+                u64 b0 = rs < g ? g : rs;
+                const u64 *w = (const u64 *)G2H(b0);
+                size_t nw = (size_t)((re - b0) / 8);
+                for (size_t i = 16; i + 16 < nw; i++)   /* (the part, 0xf8 bytes: its state functions at +0x40 .. +0x80, 16 bytes apart) */
+                    if (w[i] == CD_S5 && w[i - 2] == CD_S4 && w[i - 4] == CD_S3 && w[i - 6] == CD_S2 && w[i - 8] == CD_S1) {
+                        u64 o = b0 + 8 * (u64)(i - 16);
+                        if (!ld8(o + 0xf4) && cd_part_is(o)) return o;   /* (not one done already: a past match's, left in memory) */
+                    }
+            }
+            g = re > g ? re : g + 0x1000;
+        }
+    }
+    return 0;
+}
+static void results_skip(long long frames) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_RB_RESULTS_SKIP"); on = !(e && *e == '0'); }
+    static long long fight = -1, next; static int done, tries; static u64 part;
+    if (fight != S.fights) { fight = S.fights; done = 0; tries = 0; next = 0; part = 0; }
+    if (!on || done || net_n <= 0 || net_n > 8) return;
+    LONG all = (LONG)((1u << net_n) - 1);
+    if ((net_results_a & all) != all) return;
+    if (part && !cd_part_is(part)) part = 0;
+    if (!part) {
+        if (frames < next) return;
+        double t0 = now_ms();
+        part = results_countdown_find();
+        if (!part) {
+            fprintf(stderr, "[rb] results: every player pressed A, but no countdown found (looked for in %.0f ms)%s\n", now_ms() - t0,
+                    ++tries >= 5 ? ": left to run out" : "");
+            if (tries >= 5) done = 1; else next = frames + 60;
+            return;
+        }
+        fprintf(stderr, "[rb] results: every player pressed A: the results' countdown found at %#llx (in %.0f ms)\n", (unsigned long long)part, now_ms() - t0);
+    }
+    u64 cur = ld64(part + 0x10);
+    u32 count = ld32(part + 0xf0), ix = ld32(part + 0xdc);
+    if (ld8(part + 0xf4) || cur == CD_S5) { done = 1; return; }   /* (its last second already) */
+    if (cur != CD_S1 && cur != CD_S2 && cur != CD_S3 && cur != CD_S4) return;   /* (not counting yet: the winner's scene) */
+    if (count <= 60 || count > 60 * 600) return;
+    st32(part + 0xf0, 60);
+    st32(part + 0x90 + 4ull * ix, 5);   /* (its last state, as 0x7101d66bc0 asks it at count 60) */
+    fprintf(stderr, "[rb] results: every player pressed A: the countdown ended (%u frames left -> 60, its last state asked)\n", count);
+    done = 1;
+}
 static void net_results_frame(Cpu *c) {
     static long long fight_seen = -1, frames;
     static u64 mgr0;
@@ -3012,7 +3096,7 @@ static void net_results_frame(Cpu *c) {
     if (fight_seen != S.fights) {   /* a fight just ended */
         fight_seen = S.fights; mgr0 = mgr; t0 = now_ms(); frames = 0; ended = 0; rm_last = -1; memset(seen, 0xff, sizeof seen);
         memset((void *)net_menu_remote, 0, sizeof net_menu_remote); InterlockedExchange(&net_menu_mine, 0);
-        InterlockedExchange(&net_results, 0);
+        InterlockedExchange(&net_results, 0); InterlockedExchange(&net_results_a, 0);
     }
     frames++;
     if (net_online && (mgr != mgr0 || now_ms() - t0 > 120000)) {   /* (an Online match's results: the scene gone, or 2 minutes on) */
@@ -3034,6 +3118,7 @@ static void net_results_frame(Cpu *c) {
     rm_last = rm;
     if (!net_results) {
         if (!ended && rm) {
+            net_results_t0 = now_ms(); InterlockedExchange(&net_results_a, 0);
             InterlockedExchange(&net_results, 1); cnt0 = cnt; num0 = num;
             fprintf(stderr, "[rb] results: this game's A and B pressed on every player's card too (entry count %llu, fighters %llu)\n", cnt, num);
         }
@@ -3050,13 +3135,17 @@ static void net_results_frame(Cpu *c) {
     }
     for (int p = 0; p < net_n; p++)
         if (p != net_local && net_menu_remote[p] && now_ms() - menu_heard_ms[p] > 500) InterlockedExchange(&net_menu_remote[p], 0);
-    RbnMenu m = {net_local < 0 ? 0 : net_local, (int)net_menu_mine};
+    RbnMenu m = {net_local < 0 ? 0 : net_local, (int)net_menu_mine, net_local >= 0 && (net_results_a & (1L << net_local)) ? 1 : 0};
     u8 out[RBN_MENU_BYTES];
     size_t k = rbn_menu_build(out, sizeof out, &m);
     if (k && net_local >= 0) rbl_send(out, (int)k);
     static LONG mine_was;
-    if (m.buttons & ~mine_was & 1) fprintf(stderr, "[rb] results: this game's player pressed A\n");
+    if (m.buttons & ~mine_was & 1) {
+        fprintf(stderr, "[rb] results: this game's player pressed A\n");
+        if (net_local >= 0 && now_ms() - net_results_t0 >= RESULTS_A_AFTER_MS) InterlockedOr(&net_results_a, 1L << net_local);
+    }
     mine_was = m.buttons;
+    results_skip(frames);
 }
 
 static void net_hello_wait(void) {

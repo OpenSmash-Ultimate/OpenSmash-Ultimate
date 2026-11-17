@@ -51,6 +51,7 @@ const struct NetBackend net_eos_backend;
 void net_eos_net_packet(const char *from, const u8 *p, u32 n) { (void)from; (void)p; (void)n; }
 void nexeos_tick(void) {}
 void nexeos_packet(const char *from, const u8 *data, u32 len) { (void)from; (void)data; (void)len; }
+int nexeos_lobbies(char ids[][16], int max) { (void)ids; (void)max; return 0; }
 uint64_t nex_pid_of(const char *key) { (void)key; return 0; }
 int settings_online(void) { return 0; }   /* (no --online: the files are not read) */
 int settings_line_read(const char *path, char *out, int size) { (void)path; (void)out; (void)size; return 0; }
