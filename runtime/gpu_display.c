@@ -894,12 +894,14 @@ static int vblank_tick(void) {
             fprintf(stderr, "[display] %d Hz monitor: %s\n", hz, divisor ? "display pacing" : "clock pacing (display pacing needs 60, 120 or 240 Hz)");
             /* (a rate the game's 60 frames do not divide: 165 Hz is 2.75 refreshes a frame, so each frame is shown for
              * two refreshes and then three. In sync is still the best of it: tear-free, and the pattern stays put) */
-            if (!divisor && hz)
+            if (!divisor && hz > 61)
                 fprintf(stderr, "[display] %d Hz is not a multiple of 60 (%g refreshes a frame): the frames are shown in sync, tear-free; "
                                 "60 Hz, a custom 120 Hz mode or VRR is evenly paced\n", hz, hz / 60.0);
         }
     }
-    InterlockedExchange(&vblank_odd_rate, !divisor && hz_now ? 1 : 0);   /* (again at each monitor change: a window moved to a 60 Hz one) */
+    /* (again at each monitor change: a window moved to a 60 Hz one. Only above 61 Hz: a slower panel - 50 Hz, 30 Hz - in sync
+     * would slow the game itself down to its rate, so it keeps clock pacing as before) */
+    InterlockedExchange(&vblank_odd_rate, !divisor && hz_now > 61 ? 1 : 0);
     InterlockedExchange(&vblank_hz, output && divisor ? hz_now : 0);
     if (!output || !divisor) { last = 0; return 0; }
     int extra = vblank_extra > 0 && InterlockedDecrement(&vblank_extra) >= 0;   /* (one refresh more this tick, at most: a 120 Hz monitor's 8 ms) */
@@ -1017,7 +1019,10 @@ void display_wait_tick(void) {
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     long long period = freq.QuadPart / 60;
-    if (now.QuadPart - (base.QuadPart + ticks * freq.QuadPart / 60) > 2 * period) {   /* late by two refreshes: skip, don't burst */
+    /* (late by two refreshes: skip, don't burst. With the renderer presenting in sync (display_present_sync) a present that
+     * waited for the monitor is what made it late: the clock starts again from here at once, so it neither sends refreshes
+     * back to back nor stays behind - rollback's time sync below, which moves the clock later, then still slows the game) */
+    if (now.QuadPart - (base.QuadPart + ticks * freq.QuadPart / 60) > (display_present_sync() ? period / 8 : 2 * period)) {
         base = now;
         ticks = 0;
     }
