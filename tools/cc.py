@@ -195,7 +195,7 @@ def compile_command(src, obj, opt, flags=None, header=None):
 
 
 def compile_each(jobs_list, jobs=16, started=None, finished=None, log=print, compiled=None, flags=None, shown=None,
-                 infos=None, steps=None, times=None):
+                 infos=None, steps=None, times=None, failed=None, skip=None):
     """Compile (src, obj, opt) triples in parallel, in order, with flags (CFLAGS unless given); returns
     [(src, error text)] for failures. started(job) and finished(job, seconds), if given, are called
     (from the worker threads) as each one starts and ends (shown: a progress.Build, which also hears
@@ -203,10 +203,10 @@ def compile_each(jobs_list, jobs=16, started=None, finished=None, log=print, com
     it compiled at. A file the compiler crashed on is compiled again once the others are done, on its
     own (RETRY); log() says so. infos {obj: ladder.Info}: the generated files, which have a time limit
     and the rest of the ladder (steps: the build's ladder.Ladder, else one of its own); times: the
-    build folder's ladder.Times."""
+    build folder's ladder.Times. failed(job) and skip(job): ladder.Ladder.compile's."""
     steps = steps or ladder.Ladder(progress.level_cost, "clang-cl", log)
     return steps.compile(jobs_list, jobs, lambda job, level, header: compile_command(job[0], job[1], level, flags, header),
-                         infos, shown, started, finished, compiled, times)
+                         infos, shown, started, finished, compiled, times, failed, skip)
 
 
 def link_map(out):

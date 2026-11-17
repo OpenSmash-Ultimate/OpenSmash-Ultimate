@@ -1276,7 +1276,7 @@ static void build(void)
                                                                                             : "offline");
         if (yuzu_client())
         {
-            r = add(R_NET_MODE, K_INFO, W_NONE, "Connection", "Change the room server and nickname using Join yuzu Room.bat.");
+            r = add(R_NET_MODE, K_INFO, W_NONE, "Connection", "Change the room server and nickname in the launcher: Settings > Yuzu room.");
             snprintf(r->value, sizeof r->value, ui_text("yuzu compatible (client)"));
             r = add(R_NET_NAME, K_INFO, W_NONE, "Your name", "The nickname used to join this existing room server.");
             snprintf(r->value, sizeof r->value, "%s", net_player_name());

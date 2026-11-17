@@ -21,7 +21,7 @@ This is the short path from nothing to playing, on Windows 10 or 11. The game is
 2. The setup asks where OpenSmash goes. The default is an `OpenSmash` folder next to the setup file (or the setup's own folder, when the file is alone in a folder of its own); **Browse** picks another. Choose a drive with about 60 GB free, not the Desktop or Documents (cloud sync and long paths cause trouble). A folder that already has other files in it is never filled without asking: the setup offers a new folder inside it instead. **Download and set up** then:
    - downloads the project from GitHub (the newest `main`, about 20 MB) and unpacks it into the folder;
    - copies the launcher into it as `OpenSmash.exe`;
-   - makes the shortcuts, if their boxes are ticked: **OpenSmash** (the launcher) and **Play SSBU** (the game straight away once it is built) on the desktop and in a Start menu folder named OpenSmash;
+   - makes the shortcuts, if their boxes are ticked: **OpenSmash-Launcher** (the launcher) and **OpenSmash-Ultimate** (the game straight away once it is built), on the desktop and in a Start menu folder named OpenSmash; an older installer's **OpenSmash** and **Play SSBU** shortcuts there are replaced;
    - opens the launcher from the folder, which shows the installer window below while no game is built.
 
    Already have a copy (a ZIP from the **Code** button, extracted, or a `git clone`)? Press **I already have it** and choose its folder, or run `OpenSmash.exe` in it. The setup remembers the folder, so running the setup file again later opens the launcher there.
@@ -34,7 +34,7 @@ This is the short path from nothing to playing, on Windows 10 or 11. The game is
    **Check files** re-reads the folders. If the game is not 13.0.5, the line turns red and tells you what to add; **Set up and build** will not go on until it is fixed.
 4. Choose the options on the right: a desktop shortcut, the Windows Firewall rule (asks for administrator rights once; needed to play online), preparing shaders after the build (you pick low, medium or high; it stops the first-time stutter), checking for updates first, accepting Microsoft's license terms for the compiler download (about 570 MB), and the number of compiler jobs (fewer keeps the PC usable). Click **Set up and build**.
 5. Wait: **30 minutes to a few hours**. You can keep using the PC. If it stops or you close it, run the installer again: finished steps are skipped and it carries on. Everything it prints goes to `install.log`.
-6. When it finishes, the launcher opens. Press **Play**, or later use the **OpenSmash** or **Play SSBU** shortcut, `OpenSmash.exe`, or `OpenSmash.exe`.
+6. When it finishes, the launcher opens. Press **Play**, or later use the **OpenSmash-Launcher** or **OpenSmash-Ultimate** shortcut, or `OpenSmash.exe`.
 
 ## Update
 

@@ -1359,43 +1359,107 @@ def stale_files(outdir):
 def compile_dir(outdir, jobs, shown=None, steps=None):
     """Compile a module's stale files; `shown`, a progress.Build, follows them. steps: the build's
     ladder.Ladder (tools/ladder.py), else one of its own, whose report is said at the end."""
+    return not compile_dirs([outdir], jobs, shown, steps)
+
+
+def compile_dirs(outdirs, jobs, shown=None, steps=None, fatal=None, done=None, longest=False):
+    """Compile the stale files of these module folders (of one build folder) in one pool, folder after
+    folder: the next folder's files start as soon as a compiler is free. (Compiled one folder at a time,
+    each waited for its slowest file: most fighters have 8 to 10 files, so most of the 12 to 16
+    compilers sat idle at the end of every folder.) Returns the folders that did not compile.
+
+    A folder whose failure ends the build (fatal(outdir); default: every one) ends it as when each
+    folder was compiled on its own: its files and the folders' before it are compiled, the folders
+    after it are not started (the files already compiling finish). done(outdir) is called (from a
+    compiler's thread) as soon as a folder's files have all compiled, at once for one with none:
+    a build stopped later keeps it. `shown` (a progress.Build) follows them as one step, the module's
+    own when there is one folder.
+
+    longest (build_all's): the pool's files start the longest first, by what each took last time or the
+    cost model's estimate, rather than folder after folder: the longest file of the whole build (minutes)
+    starts at once instead of when its module's turn comes, so the build ends when the last of them does.
+    Each file is compiled exactly as in the other order (the same command, level, ladder and record): the
+    objects are the same. The compilers stay within tools/ladder.py's memory budget (SSBU_COMPILE_MEMORY)
+    either way."""
     import cc
+    import threading
     ladder.settings()
-    times = ladder.Times(build_folder(outdir))
-    todo, record, keys, why, infos = plan(outdir, times)
+    fatal = fatal or (lambda d: True)
+    times = ladder.Times(build_folder(outdirs[0]))   # (the build folder's: the same for all of them)
+    todo, keys, infos, owner, records = [], {}, {}, {}, {}   # (owner: source -> its folder)
+    for d in outdirs:
+        files, records[d], k, why, i = plan(d, times)
+        if files and objcache.summary(why):
+            print(f"{os.path.basename(d)}: {objcache.summary(why)}")
+        records[d].forget([obj for _src, obj, _opt, _cost in files])
+        for src, obj, _opt, _cost in files:   # a new file, not one written through (it may be a hard link: modcache.replace_file)
+            if os.path.exists(obj):
+                os.remove(obj)
+            owner[src] = d
+        todo += files
+        keys.update(k)
+        infos.update(i)
+    stale = Counter(owner.values())
+    left = Counter(stale)   # (each folder's files not compiled yet)
+    for d in outdirs:
+        if not stale[d] and done:
+            done(d)
     if not todo:
-        return True
-    if objcache.summary(why):
-        print(f"{os.path.basename(outdir)}: {objcache.summary(why)}")
-    record.forget([obj for _src, obj, _opt, _cost in todo])
-    for _src, obj, _opt, _cost in todo:   # a new file, not one written through (it may be a hard link: modcache.replace_file)
-        if os.path.exists(obj):
-            os.remove(obj)
+        return []
+    # (SSBU_LONGEST_FIRST=1, for benchmarking: plan sorts each folder; the pool goes by all of them)
+    todo = ladder.longest_first(todo, infos) or todo
+    if longest and not ladder.longest_first_setting():   # (stable: equal ones keep the build's order)
+        todo = sorted(todo, key=lambda job: job[3], reverse=True)
     t0 = time.time()
+    label = os.path.basename(outdirs[0]) if len(outdirs) == 1 else None   # (the bar's step: one pool for several)
     if shown:
-        shown.begin("compile", os.path.basename(outdir), [(src, cost) for src, _obj, _opt, cost in todo])
+        shown.begin("compile", label, [(src, cost) for src, _obj, _opt, cost in todo])
+    index = {d: n for n, d in enumerate(outdirs)}
+    lock, stop = threading.Lock(), [len(outdirs)]   # (stop: the first folder whose failure ended the build)
 
     def compiled(job, _level, step=None):
         # under the key of its own level even when a crash had it compiled at /O1 instead (cc.RETRY): kept until what
         # it is built from changes, rather than compiled again at every build in case the compiler no longer crashes;
         # one the ladder compiled another way, under the key of that way (ladder.check)
+        d = owner[job[0]]
         key, key_for = keys[job[1]]
-        record.compiled(job[1], key if step is None else key_for(step))
+        records[d].compiled(job[1], key if step is None else key_for(step))
+        with lock:
+            left[d] -= 1
+            last = not left[d]
+        if last and done:
+            done(d)
+
+    def failed(job):
+        d = owner[job[0]]
+        if fatal(d):
+            with lock:
+                stop[0] = min(stop[0], index[d])
     own = steps is None
     steps = steps or ladder.Ladder(progress.level_cost, "clang-cl", memory=ladder.memory_setting())
     failures = cc.compile_each([t[:3] for t in todo], jobs, *((shown.started, shown.finished) if shown else ()),
-                               compiled=compiled, flags=cc.GAME_CFLAGS, shown=shown, infos=infos, steps=steps, times=times)
+                               compiled=compiled, flags=cc.GAME_CFLAGS, shown=shown, infos=infos, steps=steps, times=times,
+                               failed=failed, skip=lambda job: index[owner[job[0]]] > stop[0])
     if shown:
-        shown.end("compile", os.path.basename(outdir))
-    objs = [n for n in os.listdir(outdir) if n.endswith(".obj")]
-    total = sum(os.path.getsize(os.path.join(outdir, n)) for n in objs)
-    print(f"{os.path.basename(outdir)}: compiled {len(todo) - len(failures)} of {len(todo)} stale files in "
-          f"{time.time() - t0:,.0f}s; {len(objs)} objects, {total / 1048576:,.0f} MB")
-    for src, err in failures[:5]:
-        print(f"FAILED {os.path.basename(src)}:\n{err[:1500]}")
+        shown.end("compile", label)
+    bad = {}
+    for src, err in failures:
+        bad.setdefault(owner[src], []).append((src, err))
+    for d in outdirs:
+        if not stale[d] or index[d] > stop[0]:
+            continue
+        objs = [n for n in os.listdir(d) if n.endswith(".obj")]
+        total = sum(os.path.getsize(os.path.join(d, n)) for n in objs)
+        print(f"{os.path.basename(d)}: compiled {stale[d] - left[d]} of {stale[d]} stale files; "
+              f"{len(objs)} objects, {total / 1048576:,.0f} MB")
+        for src, err in bad.get(d, [])[:5]:
+            print(f"FAILED {os.path.basename(src)}:\n{err[:1500]}")
+    if stop[0] < len(outdirs) - 1:
+        print(f"{os.path.basename(outdirs[stop[0]])} did not compile: the modules after it were not compiled")
+    print(f"compiled {len(todo) - sum(left.values())} of {len(todo)} stale files in {time.time() - t0:,.0f}s")
     if own:
-        steps.end(build_folder(outdir))
-    return not failures
+        steps.end(build_folder(outdirs[0]))
+    return [d for d in outdirs if d in bad]
 
 
 def parallel_gen():
@@ -1416,84 +1480,9 @@ def _generate(args):
 
 
 def one_queue():
-    """SSBU_ONE_QUEUE: every module's stale files compiled as ONE queue, the longest first (compile_all),
-    instead of module after module (compile_dir). On by default; 0: module after module, as before."""
+    """SSBU_ONE_QUEUE: every module's stale files compiled in ONE pool, the longest first (compile_dirs),
+    instead of module after module. On by default; 0: module after module, as before."""
     return os.environ.get("SSBU_ONE_QUEUE", "1").strip() != "0"
-
-
-def compile_all(outdirs, jobs, shown=None, steps=None):
-    """compile_dir for several module folders at once, as one queue: {folder: True | False (a file of it
-    did not compile)}. Module after module, a module with fewer stale files than compilers leaves
-    compilers idle (most fighters have 8 or 9 files, and the last files of each module run alone), and
-    the longest file of the whole build (minutes) starts whenever its module's turn comes; here every
-    compiler has work until the queue is empty and the longest files start first, so the build ends
-    when the last of them does. Each file is compiled exactly as compile_dir compiles it (the same
-    command, level, ladder and record, by its own folder's): the objects are the same."""
-    import cc
-    ladder.settings()
-    folders = {build_folder(d) for d in outdirs}
-    if len(folders) != 1:   # (never the case in build_all; module after module then)
-        return {d: compile_dir(d, jobs, shown, steps) for d in outdirs}
-    times = ladder.Times(folders.pop())
-    plans, todo, keys, infos, record_of = {}, [], {}, {}, {}
-    for d in outdirs:
-        t, record, k, why, i = plan(d, times)
-        plans[d] = (t, record)
-        if not t:
-            continue
-        if objcache.summary(why):
-            print(f"{os.path.basename(d)}: {objcache.summary(why)}")
-        record.forget([obj for _src, obj, _opt, _cost in t])
-        for _src, obj, _opt, _cost in t:   # (a new file, not one written through: see compile_dir)
-            if os.path.exists(obj):
-                os.remove(obj)
-            record_of[obj] = record
-        todo += t
-        keys.update(k)
-        infos.update(i)
-    result = {d: True for d in outdirs}
-    if not todo:
-        return result
-    # the longest first, by what each took last time or the cost model's estimate (stable: equal ones keep the build's order)
-    todo.sort(key=lambda job: job[3], reverse=True)
-    t0 = time.time()
-    label = "the game"
-    if shown:
-        with shown.lock:   # (one step for all of it: the modules' own compile steps are in it)
-            if label not in shown.names:
-                shown.names.append(label)
-            for d in outdirs:
-                shown.cost[("compile", os.path.basename(d))] = 0.0
-                shown.done.add(("compile", os.path.basename(d)))
-        shown.begin("compile", label, [(src, cost) for src, _obj, _opt, cost in todo])
-
-    def compiled(job, _level, step=None):   # (as compile_dir's)
-        key, key_for = keys[job[1]]
-        record_of[job[1]].compiled(job[1], key if step is None else key_for(step))
-    own = steps is None
-    steps = steps or ladder.Ladder(progress.level_cost, "clang-cl", memory=ladder.memory_setting())
-    failures = cc.compile_each([t[:3] for t in todo], jobs, *((shown.started, shown.finished) if shown else ()),
-                               compiled=compiled, flags=cc.GAME_CFLAGS, shown=shown, infos=infos, steps=steps, times=times)
-    if shown:
-        shown.end("compile", label)
-    print(f"compiled {len(todo) - len(failures)} of {len(todo)} stale files of {sum(1 for d in outdirs if plans[d][0])} "
-          f"modules as one queue in {time.time() - t0:,.0f}s")
-    failed_in = {}
-    for src, err in failures:
-        failed_in.setdefault(os.path.dirname(os.path.abspath(src)), []).append((src, err))
-    for d in outdirs:
-        errs = failed_in.get(os.path.abspath(d), [])
-        if plans[d][0]:
-            objs = [n for n in os.listdir(d) if n.endswith(".obj")]
-            total = sum(os.path.getsize(os.path.join(d, n)) for n in objs)
-            print(f"{os.path.basename(d)}: compiled {len(plans[d][0]) - len(errs)} of {len(plans[d][0])} stale files; "
-                  f"{len(objs)} objects, {total / 1048576:,.0f} MB")
-        for src, err in errs[:5]:
-            print(f"FAILED {os.path.basename(src)}:\n{err[:1500]}")
-        result[d] = not errs
-    if own:
-        steps.end(build_folder(outdirs[0]))
-    return result
 
 
 def main_kind_room(dirs):
@@ -1680,7 +1669,7 @@ def check(exefs, mods=None):
 
 
 def build_all(exefs, out, jobs, compile_c=True, gen_jobs=None):
-    """Every module's C first, then each module's compile, then the link: once the C is there,
+    """Every module's C first, then every module's files in one pool (compile_dirs), then the link: once the C is there,
     what is left to compile is known, and the progress bar's time left (progress.Build) can say
     how long it takes. compile_c False (--generate-only): the C only. gen_jobs (--gen-jobs): how many
     processes write the C when that is fewer than `jobs` (a writer holds more memory than a compiler
@@ -1759,18 +1748,30 @@ def build_all(exefs, out, jobs, compile_c=True, gen_jobs=None):
         plugins, left_out = plugin_modules(), []
         steps = ladder.Ladder(progress.level_cost, "clang-cl", memory=ladder.memory_setting())   # (one pace and one report for the whole build)
         try:
-            # (every module's stale files as one queue, unless SSBU_ONE_QUEUE=0; a module's result is then known already)
-            done = compile_all([targets[name] for name in paths], min(jobs, 16), shown, steps) if one_queue() else {}
-            for name in paths:
-                if not (done[targets[name]] if done else compile_dir(targets[name], min(jobs, 16), shown, steps)):
-                    if name not in plugins:
-                        return False
-                    # (a mod's plugin that doesn't compile: the game is built without it, not stopped)
-                    print(f"{name}: this plugin did not compile (above): the game is built without it, so its mod's "
-                          "moves or character won't work - send the message above to WindowSmash")
-                    left_out.append(name)
-                    continue
-                modcache.write_stamp(targets[name], build_ids[name], MODULES[name], name, fps[name])
+            # every module's files in one pool, the longest first (module after module with SSBU_ONE_QUEUE=0);
+            # each module's stamp as soon as its files are compiled
+            names = {targets[name]: name for name in paths}
+
+            def fatal(d):
+                return names[d] not in plugins
+
+            def stamp(d):
+                modcache.write_stamp(d, build_ids[names[d]], MODULES[names[d]], names[d], fps[names[d]])
+            if one_queue():
+                failed = compile_dirs(list(names), min(jobs, 16), shown, steps, fatal=fatal, done=stamp, longest=True)
+            else:
+                failed = []
+                for d in names:
+                    failed += compile_dirs([d], min(jobs, 16), shown, steps, fatal=fatal, done=stamp)
+                    if failed and fatal(failed[-1]):
+                        break
+            for d in failed:
+                if names[d] not in plugins:
+                    return False
+                # (a mod's plugin that doesn't compile: the game is built without it, not stopped)
+                print(f"{names[d]}: this plugin did not compile (above): the game is built without it, so its mod's "
+                      "moves or character won't work - send the message above to WindowSmash")
+                left_out.append(names[d])
             shown.begin("link")
             ok = link([t for n, t in targets.items() if n not in left_out], exe, steps=steps)
             shown.end("link")

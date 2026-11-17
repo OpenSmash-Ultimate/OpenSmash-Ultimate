@@ -250,7 +250,7 @@ To prepare them all before playing, double-click **`python tools\shader_aot.py`*
 
 ## Playing with yuzu-compatible clients (Windows)
 
-The optional client connects to an existing yuzu-compatible room server, then uses the game's **Local Wireless** mode. Start it with **launchers/Join yuzu Room.bat**. Eden 0.2.0 and another unnamed compatible client have been reported working in multiple complete matches. Game UDP defaults to Eden's format; historical yuzu peers can use the separate format option. See [the client guide](YUZU_CLIENT.md) for dependencies, configuration, validation and logs.
+The optional client connects to an existing yuzu-compatible room server, then uses the game's **Local Wireless** mode. Start it from the launcher: **Settings > Yuzu room**. Eden 0.2.0 and another unnamed compatible client have been reported working in multiple complete matches. Game UDP defaults to Eden's format; historical yuzu peers can use the separate format option. See [the client guide](YUZU_CLIENT.md) for dependencies, configuration, validation and logs.
 
 ## Low frame rate
 

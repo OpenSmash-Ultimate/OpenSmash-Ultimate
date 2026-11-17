@@ -181,7 +181,13 @@ class Build:
         return c
 
     def begin(self, kind, name=None, files=None):
+        """A step starts: ("compile", None) compiles every module's files in one pool (tools/recomp.py
+        compile_dirs), in place of the modules' own compile steps."""
         with self.lock:
+            if kind == "compile" and name is None:
+                for n in self.names:
+                    if ("compile", n) not in self.done:
+                        self.cost.pop(("compile", n), None)
             if files is not None:
                 self._set_files(name, files)
             self.step, self.since = (kind, name), self.clock()
@@ -235,7 +241,7 @@ class Build:
         if kind == "gen":
             return f"writing the C code: {name}, {self.names.index(name) + 1} of {len(self.names)} modules"
         if kind == "compile":
-            return f"compiling {name}: {self.compiled:,} of {len(self.files[name]):,} files"
+            return f"compiling {name or 'the game'}: {self.compiled:,} of {len(self.files[name]):,} files"
         return "linking"
 
     def pace(self, now):

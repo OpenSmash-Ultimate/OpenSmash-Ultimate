@@ -1582,23 +1582,38 @@ function Test-FirewallRule {
 function Step-Extras {
     param([hashtable]$Answers)
     Write-Step '[8/10] Shortcut and firewall'
-    $lnk = Join-Path (Get-DesktopFolder) 'OpenSmash.lnk'
+    # OpenSmash-Launcher (the launcher) and OpenSmash-Ultimate (--play: the game without the launcher), both with
+    # OpenSmash's icon; an older OpenSmash / Play SSBU shortcut on the desktop to this folder's exe is replaced.
+    $desk = Get-DesktopFolder
     $launcher = Join-Path $Root 'OpenSmash.exe'
+    $shortcuts = @(
+        @{ Name = 'OpenSmash-Launcher.lnk'; Args = ''; What = 'OpenSmash launcher: play, settings and mods' },
+        @{ Name = 'OpenSmash-Ultimate.lnk'; Args = '--play'; What = 'Super Smash Bros. Ultimate (OpenSmash), without the launcher' }
+    )
     if (-not $Answers.Shortcut) {
         Write-Info 'shortcut: not wanted'
-    } elseif (Test-Path -LiteralPath $lnk) {
-        Write-Info "shortcut: already on the desktop"
     } elseif ($DryRun) {
-        Write-Would "put $lnk on the desktop, pointing at OpenSmash.exe"
+        Write-Would "put OpenSmash-Launcher and OpenSmash-Ultimate on the desktop, pointing at OpenSmash.exe"
     } else {
         $ws = New-Object -ComObject WScript.Shell
-        $s = $ws.CreateShortcut($lnk)
-        $s.TargetPath = $launcher
-        $s.WorkingDirectory = $Root
-        $s.IconLocation = $launcher + ',0'
-        $s.Description = 'OpenSmash'
-        $s.Save()
-        Write-Info "shortcut: $lnk"
+        foreach ($old in @('OpenSmash.lnk', 'Play SSBU.lnk')) {
+            $p = Join-Path $desk $old
+            try {
+                if ((Test-Path -LiteralPath $p) -and ($ws.CreateShortcut($p).TargetPath -ieq $launcher)) { Remove-Item -LiteralPath $p -Force }
+            } catch { }
+        }
+        foreach ($sc in $shortcuts) {
+            $lnk = Join-Path $desk $sc.Name
+            if (Test-Path -LiteralPath $lnk) { Write-Info "shortcut: already on the desktop ($($sc.Name))"; continue }
+            $s = $ws.CreateShortcut($lnk)
+            $s.TargetPath = $launcher
+            $s.Arguments = $sc.Args
+            $s.WorkingDirectory = $Root
+            $s.IconLocation = $launcher + ',0'
+            $s.Description = $sc.What
+            $s.Save()
+            Write-Info "shortcut: $lnk"
+        }
     }
     $exe = Join-Path $Root 'build\ssbu.exe'
     if (-not $Answers.Firewall) {

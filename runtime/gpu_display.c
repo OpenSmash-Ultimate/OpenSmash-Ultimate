@@ -876,10 +876,21 @@ unsigned display_present_flags(void) {
 /* (vblank_tick: the monitor's refreshes cannot be waited for here, or its rate is no multiple of 60) */
 static volatile LONG vblank_failed_flag, vblank_odd_rate;
 int display_present_sync(void) {   /* (only while `display` pacing is chosen and the game runs at its speed: a pacing changed
-                                     * in the menu, or SSBU_SPEED's test runs, present as they did before) */
+                                     * in the menu, or SSBU_SPEED's test runs, present as they did before - and only when the
+                                     * wait for the monitor's refreshes FAILED, so nothing else paces the frames. A monitor
+                                     * whose rate 60 does not divide (165 Hz) keeps mailbox/immediate on purpose: a blocking
+                                     * present adds a whole refresh to every frame that arrives a little late, and this PC's
+                                     * frames occasionally do (page faults, asset I/O), so a slight unevenness became 33 and
+                                     * 124 ms stutters where mailbox shows the newest frame at the next refresh instead -
+                                     * owner's log, 2026-11-17: avg 17.45 ms, worst 107 ms off a 60 Hz frame) */
     load();
-    return cfg.pacing == PACING_DISPLAY && cfg.speed == 1 && (vblank_failed_flag != 0 || vblank_odd_rate != 0);
+    return cfg.pacing == PACING_DISPLAY && cfg.speed == 1 && vblank_failed_flag != 0;
 }
+
+int display_pacing_vrr(void) { load(); return cfg.pacing == PACING_VRR && cfg.speed == 1; }
+/* (`display` pacing on a monitor whose rate 60 does not divide: the renderer presents without blocking, but only where that
+ * is tear-free - mailbox. A card without mailbox gets FIFO there, as before, rather than immediate's tearing) */
+int display_present_odd_rate(void) { load(); return cfg.pacing == PACING_DISPLAY && cfg.speed == 1 && vblank_odd_rate != 0; }
 
 void *gfx_display_output(void);   /* gpu_d3d11.c: the swap chain's output (IDXGIOutput, referenced), or NULL */
 
@@ -912,15 +923,14 @@ static int vblank_tick(void) {
         if (hz != logged_hz && output) {
             logged_hz = hz;
             fprintf(stderr, "[display] %d Hz monitor: %s\n", hz, divisor ? "display pacing" : "clock pacing (display pacing needs 60, 120 or 240 Hz)");
-            /* (a rate the game's 60 frames do not divide: 165 Hz is 2.75 refreshes a frame, so each frame is shown for
-             * two refreshes and then three. In sync is still the best of it: tear-free, and the pattern stays put) */
+            /* (a rate the game's 60 frames do not divide: 165 Hz is 2.75 refreshes a frame, so a frame is shown for two
+             * refreshes and then three. The presents stay non-blocking, so a late frame costs no extra refresh) */
             if (!divisor && hz > 61)
-                fprintf(stderr, "[display] %d Hz is not a multiple of 60 (%g refreshes a frame): the frames are shown in sync, tear-free; "
-                                "60 Hz, a custom 120 Hz mode or VRR is evenly paced\n", hz, hz / 60.0);
+                fprintf(stderr, "[display] %d Hz is not a multiple of 60 (%g refreshes a frame): paced 60 times a second and presented at the next "
+                                "refresh; a 60/120/240 Hz mode or VRR is evenly paced\n", hz, hz / 60.0);
         }
     }
-    /* (again at each monitor change: a window moved to a 60 Hz one. Only above 61 Hz: a slower panel - 50 Hz, 30 Hz - in sync
-     * would slow the game itself down to its rate, so it keeps clock pacing as before) */
+    /* (again at each monitor change: a window moved to a 60 Hz one. Kept for the log: it no longer changes the present mode.) */
     InterlockedExchange(&vblank_odd_rate, !divisor && hz_now > 61 ? 1 : 0);
     InterlockedExchange(&vblank_hz, output && divisor ? hz_now : 0);
     if (!output || !divisor) { last = 0; return 0; }
@@ -934,12 +944,24 @@ static int vblank_tick(void) {
      * tick, 25 ms (a fight on a 120 Hz monitor: up to ~1 frame in 100 shown 1.5 frames late). Refreshes are counted
      * by their times, so a wait that returns at once or misses one is counted as what it was. */
     LONGLONG period = freq.QuadPart / hz_now;
-    for (int waits = 0;;) {
+    /* (A wait that runs past what the refreshes say cannot resolve - the monitor changed rate under us, or the driver's
+     * vblank is not arriving - ends at a time bound and takes the clock path, instead of falling through the old
+     * "never more than a few refreshes" cap: at 120 Hz every tick then waited ~44.6 ms (five refreshes) and 295 frames
+     * in 80 s were 46 ms hitches, all of them inside this loop - owner's log, 2026-11-17.) */
+    LONGLONG budget = period * (divisor + extra + 2);
+    static int over_budget;
+    int over = 0;
+    for (;;) {
         if (FAILED(IDXGIOutput_WaitForVBlank(output))) { failed = 1; InterlockedExchange(&vblank_failed_flag, 1); break; }
         QueryPerformanceCounter(&t1);
-        if (!last || ++waits >= 2 * divisor + 2) break;   /* (the first tick; and never more than a few refreshes) */
+        if (!last) break;   /* (the first tick: one refresh is the answer) */
         if ((t1.QuadPart - last + period / 2) / period >= divisor + extra) break;
+        if (t1.QuadPart - t0.QuadPart > budget) { over = 1; break; }   /* (the vblanks are not what the rate says) */
     }
+    /* (one wait past its bound is a stall - this tick returns late, as the old cap did; several in a row are a monitor
+     * whose vblanks do not match its rate: clock pacing from then on, below) */
+    over_budget = over ? over_budget + 1 : 0;
+    if (over_budget >= 3) failed = 1;
     QueryPerformanceCounter(&t1);
     last = t1.QuadPart;
     /* (a wait that took too long - a stall, not a monitor that cannot be waited for - goes to clock pacing as before, without
