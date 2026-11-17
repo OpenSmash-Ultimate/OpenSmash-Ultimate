@@ -3380,9 +3380,12 @@ static void prep_note_from(const char *line) {
     if (strstr(line, "getting ready")) { prep_share(1); return; }
     const char *pct = strchr(line, '%');
     if (!pct || pct == line) return;
-    int v = 0, digits = 0;
-    for (const char *p = pct; p > line && p[-1] >= '0' && p[-1] <= '9' && digits < 4; p--, digits++) v = (p[-1] - '0') + v * 10;
-    if (!digits) return;
+    const char *d = pct;   /* (back to the first digit before the '%', then read forward: "42%" is 42) */
+    while (d > line && d[-1] >= '0' && d[-1] <= '9' && pct - d < 3) d--;
+    if (d == pct) return;
+    int v = 0;
+    for (const char *p = d; p < pct; p++) v = v * 10 + (*p - '0');
+    if (v > 100) v = 100;
     prep_share(10 + v * 89 / 100);   /* (the compile: from the tenth on, to 99) */
 }
 
@@ -3398,6 +3401,7 @@ static int prep_run(const char *root) {
     SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
     HANDLE rd = NULL, wr = NULL;
     if (!CreatePipe(&rd, &wr, &sa, 0)) return 0;
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);   /* (only the tool gets the pipe's write end) */
     STARTUPINFOA si = {sizeof si};
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdOutput = wr;
@@ -3405,7 +3409,8 @@ static int prep_run(const char *root) {
     si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     PROCESS_INFORMATION pi;
     fprintf(stderr, "[vulkan] preparing shaders: %s (in %s)\n", cmd, cwd);
-    if (!CreateProcessA(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, cwd, &si, &pi)) {
+    /* (suspended until it is in the job: a worker it starts at once cannot get out of it) */
+    if (!CreateProcessA(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, cwd, &si, &pi)) {
         fprintf(stderr, "[vulkan] preparing shaders: cannot run the tool (error %lu): the programs are translated at their first use\n",
                 (unsigned long)GetLastError());
         CloseHandle(rd);
@@ -3424,18 +3429,29 @@ static int prep_run(const char *root) {
             job = NULL;
         }
     }
+    ResumeThread(pi.hThread);
+    /* Its output until it has ended and what it wrote is read: not until the pipe closes, which a worker of its still
+     * holding the write end would put off for ever (they go with the job, closed below). */
     char chunk[4096], line[600];
     size_t used = 0;
-    DWORD got = 0;
-    while (ReadFile(rd, chunk, sizeof chunk, &got, NULL) && got) {
+    for (int ended = 0;;) {
+        DWORD avail = 0, got = 0;
+        if (!PeekNamedPipe(rd, NULL, 0, NULL, &avail, NULL)) break;   /* (every writer gone) */
+        if (!avail) {
+            if (ended) break;
+            ended = WaitForSingleObject(pi.hProcess, 50) == WAIT_OBJECT_0;
+            continue;
+        }
+        if (!ReadFile(rd, chunk, avail < sizeof chunk ? avail : (DWORD)sizeof chunk, &got, NULL) || !got) break;
         for (DWORD i = 0; i < got; i++) {
-            if (chunk[i] == '\n' || used + 1 >= sizeof line) {
+            char ch = chunk[i];
+            if (ch == '\n' || used + 1 >= sizeof line) {   /* (a line, or a longer one cut: then ch starts the next) */
                 line[used] = 0;
                 if (used && line[used - 1] == '\r') line[used - 1] = 0;
                 if (used) prep_note_from(line);
                 used = 0;
-            } else
-                line[used++] = chunk[i];
+            }
+            if (ch != '\n') line[used++] = ch;
         }
     }
     if (used) { line[used] = 0; prep_note_from(line); }
@@ -3454,16 +3470,39 @@ static int prep_run(const char *root) {
 
 /* The preparation, on a thread of its own: the loading animation keeps drawing (the vsync thread) while the warm
  * threads and the first frame wait for it (prepare_wait). */
+static int prep_tries(int add);
 static DWORD WINAPI prep_main(void *arg) {
     char root[1200];
     (void)arg;
     watchdog_pause(1);
-    if (prep_tool(root, sizeof root)) prep_run(root);
-    else fprintf(stderr, "[vulkan] preparing shaders: tools\\shader_aot.py is not here, so the game translates each program at its first use\n");
+    if (prep_tool(root, sizeof root)) {
+        prep_tries(1);
+        if (prep_run(root)) prep_tries(-1);
+    } else fprintf(stderr, "[vulkan] preparing shaders: tools\\shader_aot.py is not here, so the game translates each program at its first use\n");
     display_loading_note(NULL);
     InterlockedExchange(&prep_state, 2);
     watchdog_pause(0);
     return 0;
+}
+
+/* The starts that began a preparation for this translator and did not see it through (a closed window, a tool that
+ * fails each time: no clang to build shaderaot.exe, no Python): <cache>/prepare_tries.txt, "g<version>.<library> <n>".
+ * After PREP_TRIES the game stops trying and says so; the launcher's Prepare Shaders (or SSBU_PREPARE_SHADERS=1) still
+ * does it. n is written before the tool runs, and the file goes when the cache is ready. */
+#define PREP_TRIES 2
+static int prep_tries(int add) {
+    char path[1200], want[48], have[48] = "";
+    int n = 0;
+    snprintf(path, sizeof path, "%s/prepare_tries.txt", cache_dir());
+    snprintf(want, sizeof want, "g%d.%08x", SHADER_CACHE_SPV_VERSION, spirv_glslang_version());
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        if (fscanf(f, "%47s %d", have, &n) != 2 || strcmp(have, want)) n = 0;   /* (another translator's: from 0 again) */
+        fclose(f);
+    }
+    if (add > 0 && (f = fopen(path, "wb"))) { fprintf(f, "%s %d\n", want, n + add); fclose(f); }
+    if (add < 0) remove(path);
+    return n;
 }
 
 /* Starts the preparation (once), unless it is off or the cache says it is done. */
@@ -3472,6 +3511,18 @@ static void prepare_begin(void) {
     const char *set = getenv("SSBU_PREPARE_SHADERS");
     int force = set && *set && atoi(set) != 0, off = set && *set && !atoi(set);
     if (off || (!force && shader_cache_prepared())) {
+        InterlockedExchange(&prep_state, 2);
+        return;
+    }
+    /* (test runs, and a cache of its own: the tool prepares the repository's dump/shadercache, not that folder) */
+    const char *headless = getenv("SSBU_HEADLESS");
+    if (!force && ((headless && !strcmp(headless, "1")) || getenv("SSBU_SHADER_CACHE"))) {
+        InterlockedExchange(&prep_state, 2);
+        return;
+    }
+    if (!force && prep_tries(0) >= PREP_TRIES) {
+        fprintf(stderr, "[vulkan] preparing shaders: not done, %d starts did not finish it; the launcher's Prepare Shaders "
+                        "(or SSBU_PREPARE_SHADERS=1) does it, else each program is translated at its first use\n", PREP_TRIES);
         InterlockedExchange(&prep_state, 2);
         return;
     }
