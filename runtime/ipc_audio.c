@@ -13,7 +13,16 @@
  * silence until half the lead is back: one longer gap instead of a stutter.
  *
  * SSBU_AUDIO_LATENCY_MS sets the lead (default 20), SSBU_AUDIO=waveout picks the older Windows
- * output, SSBU_AUDIO_LOG=1 logs every buffer the game appends. */
+ * output, SSBU_AUDIO_LOG=1 logs every buffer the game appends.
+ *
+ * No output device at all (a PC with nothing plugged in, a monitor's HDMI audio asleep): the sound
+ * is still taken, and dropped, at the device's pace (the null clock below), and on Windows a
+ * device that turns up later starts playing. Handing every buffer straight back instead - what
+ * this did before - left the game's sound thread mixing flat out: one core busy for nothing, and
+ * the thread never waited, so it never parked for a rollback savestate: no state was saved and
+ * every wrong guess online ended in "ROLLBACK IMPOSSIBLE". SSBU_AUDIO_NULLCLOCK=0: as before.
+ * TEST ONLY: SSBU_AUDIO=none plays as a PC with no device; SSBU_AUDIO_TEST_DROP=<from>,<to> makes
+ * the WASAPI device vanish between those seconds of the game's run and come back after. */
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <stdlib.h>
@@ -118,6 +127,26 @@ static void feed(u8 *out, u32 len) {
                 rt_now_ns() / 1e9, (unsigned long long)dry, audio.lead / (RATE / 1000 * FRAME) / 2);
 }
 
+/* ---- the null clock: no device, the sound taken in real time and dropped */
+static DWORD WINAPI null_thread(void *arg) {
+    (void)arg;
+    SetThreadDescription(GetCurrentThread(), L"audio output (no device)");
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    static u8 scratch[RATE / 50 * FRAME];   /* 20 ms */
+    u64 last = rt_now_ns();
+    for (;;) {
+        Sleep(5);
+        u64 now = rt_now_ns(), frames = (now - last) * RATE / 1000000000ull;
+        if (frames > RATE / 50) { frames = RATE / 50; last = now - frames * 1000000000ull / RATE; }   /* (held up: no burst after) */
+        if (frames) { feed(scratch, (u32)frames * FRAME); last += frames * 1000000000ull / RATE; }
+    }
+}
+
+static int null_clock_wanted(void) {
+    const char *e = getenv("SSBU_AUDIO_NULLCLOCK");
+    return !(e && *e == '0');
+}
+
 static DWORD WINAPI reaper(void *arg) {
     (void)arg;
     SetThreadDescription(GetCurrentThread(), L"audio reaper");
@@ -145,7 +174,22 @@ typedef struct {
     WCHAR *id;
     HANDLE ready;
     UINT32 frames;
+    HRESULT failed;   /* the last error reported (said once, not twice a second while there is no device) */
 } Wasapi;
+
+/* TEST ONLY, SSBU_AUDIO_TEST_DROP=<from>,<to>: whether the device is "unplugged" now */
+static int test_dropped(void) {
+    static double from = -1, to;
+    if (from < 0) {
+        const char *e = getenv("SSBU_AUDIO_TEST_DROP");
+        double a = 0, b = 0;
+        if (e && *e) sscanf(e, "%lf,%lf", &a, &b);
+        to = b; from = a;
+    }
+    if (to <= from) return 0;
+    double s = rt_now_ns() / 1e9;
+    return s >= from && s < to;
+}
 
 static void wasapi_close(Wasapi *w) {
     if (w->client) IAudioClient_Stop(w->client);
@@ -158,7 +202,7 @@ static void wasapi_close(Wasapi *w) {
 
 static int wasapi_open(Wasapi *w) {
     WAVEFORMATEX fmt = {WAVE_FORMAT_PCM, CHANNELS, RATE, RATE * FRAME, FRAME, 16, 0}, *mix = NULL;
-    HRESULT hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(w->devices, eRender, eConsole, &w->dev);
+    HRESULT hr = test_dropped() ? (HRESULT)0x80070490 : IMMDeviceEnumerator_GetDefaultAudioEndpoint(w->devices, eRender, eConsole, &w->dev);
     if (SUCCEEDED(hr)) hr = IMMDevice_GetId(w->dev, &w->id);
     if (SUCCEEDED(hr)) hr = IMMDevice_Activate(w->dev, &IID_IAudioClient_, CLSCTX_ALL, NULL, (void **)&w->client);
     if (SUCCEEDED(hr)) hr = IAudioClient_Initialize(w->client, AUDCLNT_SHAREMODE_SHARED,
@@ -169,10 +213,12 @@ static int wasapi_open(Wasapi *w) {
     if (SUCCEEDED(hr)) hr = IAudioClient_GetService(w->client, &IID_IAudioRenderClient_, (void **)&w->render);
     if (SUCCEEDED(hr)) hr = IAudioClient_Start(w->client);
     if (FAILED(hr)) {
-        fprintf(stderr, "[audio] WASAPI could not start (error %08lx)\n", (unsigned long)hr);
+        if (hr != w->failed) fprintf(stderr, "[audio] WASAPI could not start (error %08lx)\n", (unsigned long)hr);
+        w->failed = hr;
         wasapi_close(w);
         return 0;
     }
+    w->failed = 0;
     if (FAILED(IAudioClient_GetMixFormat(w->client, &mix))) mix = NULL;
     fprintf(stderr, "[audio] WASAPI output: the device mixes at %lu Hz, %u-frame buffer, the game %u ms ahead\n",
             mix ? (unsigned long)mix->nSamplesPerSec : 0ul, w->frames, audio.lead / (RATE / 1000 * FRAME));
@@ -192,6 +238,7 @@ static int wasapi_default_changed(Wasapi *w) {
 }
 
 static volatile LONG wasapi_ok;
+static volatile LONG wasapi_stay;   /* (the second try: no device anywhere - stay, on the null clock, until one turns up) */
 
 static DWORD WINAPI wasapi_thread(void *arg) {
     HANDLE opened = arg;
@@ -201,7 +248,7 @@ static DWORD WINAPI wasapi_thread(void *arg) {
     Wasapi w = {0};
     w.ready = CreateEventA(NULL, FALSE, FALSE, NULL);
     int ok = SUCCEEDED(CoCreateInstance(&CLSID_MMDeviceEnumerator_, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator_, (void **)&w.devices)) &&
-             wasapi_open(&w);
+             (wasapi_open(&w) || wasapi_stay);
     InterlockedExchange(&wasapi_ok, ok);
     SetEvent(opened);
     if (!ok) {
@@ -218,7 +265,7 @@ static DWORD WINAPI wasapi_thread(void *arg) {
             Sleep(5);
             now = rt_now_ns();
             u64 frames = (now - last) * RATE / 1000000000ull;
-            if (frames > RATE / 50) frames = RATE / 50;
+            if (frames > RATE / 50) { frames = RATE / 50; last = now - frames * 1000000000ull / RATE; }   /* (held up: no burst after) */
             if (frames) { feed(scratch, (u32)frames * FRAME); last += frames * 1000000000ull / RATE; }
             if (now - checked >= 500000000ull) {
                 checked = now;
@@ -229,7 +276,7 @@ static DWORD WINAPI wasapi_thread(void *arg) {
         WaitForSingleObject(w.ready, 100);
         UINT32 padding, n;
         BYTE *data;
-        HRESULT hr = IAudioClient_GetCurrentPadding(w.client, &padding);
+        HRESULT hr = test_dropped() ? (HRESULT)0x88890004 /* AUDCLNT_E_DEVICE_INVALIDATED */ : IAudioClient_GetCurrentPadding(w.client, &padding);
         if (SUCCEEDED(hr) && (n = w.frames - padding) > 0) {
             hr = IAudioRenderClient_GetBuffer(w.render, n, &data);
             if (SUCCEEDED(hr)) {
@@ -239,7 +286,7 @@ static DWORD WINAPI wasapi_thread(void *arg) {
         }
         now = rt_now_ns();
         if (FAILED(hr)) {   /* unplugged, or taken over */
-            fprintf(stderr, "[audio] the output device stopped (error %08lx)\n", (unsigned long)hr);
+            fprintf(stderr, "[audio] the output device stopped (error %08lx): the sound is dropped until there is one again\n", (unsigned long)hr);
             wasapi_close(&w);
             checked = last = now;
         } else if (now - checked >= 1000000000ull) {   /* headphones plugged in, another output chosen */
@@ -288,11 +335,23 @@ static DWORD WINAPI waveout_thread(void *arg) {
 static int start_output(void) {
     const char *want = getenv("SSBU_AUDIO");
     HANDLE opened = CreateEventA(NULL, FALSE, FALSE, NULL);
-    int ok = 0;
-    for (int waveout = want && !_stricmp(want, "waveout"); waveout < 2 && !ok; waveout++) {
+    int ok = 0, none = want && !_stricmp(want, "none");   /* (none: TEST ONLY, as a PC with no device) */
+    for (int waveout = want && !_stricmp(want, "waveout"); waveout < 2 && !ok && !none; waveout++) {
         CloseHandle(CreateThread(NULL, 0, waveout ? waveout_thread : wasapi_thread, opened, 0, NULL));
         WaitForSingleObject(opened, INFINITE);
         ok = (int)wasapi_ok;
+    }
+    if (!ok && null_clock_wanted()) {
+        /* no device: the null clock. WASAPI's thread stays on it and starts the device that turns up
+         * (headphones plugged in, the monitor awake again); where even that cannot start, the plain one. */
+        if (!none) {
+            InterlockedExchange(&wasapi_stay, 1);
+            CloseHandle(CreateThread(NULL, 0, wasapi_thread, opened, 0, NULL));
+            WaitForSingleObject(opened, INFINITE);
+            ok = (int)wasapi_ok;
+        }
+        if (!ok) { CloseHandle(CreateThread(NULL, 0, null_thread, NULL, 0, NULL)); ok = 1; }
+        fprintf(stderr, "[audio] no audio device: the sound is dropped at the device's pace%s\n", none ? "" : " until there is one");
     }
     CloseHandle(opened);
     return ok;
@@ -368,6 +427,13 @@ static void open_device(void) {
         fprintf(stderr, "[audio] plugin probe: sound is off\n");
     else {
         audio.output = start_output();
+#ifndef _WIN32
+        if (!audio.output && null_clock_wanted()) {
+            CloseHandle(CreateThread(NULL, 0, null_thread, NULL, 0, NULL));
+            audio.output = 1;
+            fprintf(stderr, "[audio] no audio device: the sound is dropped at the device's pace\n");
+        }
+#endif
         if (!audio.output) fprintf(stderr, "[audio] no audio device; sound is dropped\n");
     }
 }
