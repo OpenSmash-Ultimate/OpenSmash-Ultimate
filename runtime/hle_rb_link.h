@@ -34,5 +34,13 @@ int rbl_relay_number(void);    /* (RBL_AUTO) this game's number once the room ha
 int rbl_relay_online(int local, int players, const unsigned *ips);
 void rbl_relay_online_end(void);
 void rbl_relay_report(void);   /* (the fight's report) which way the messages went */
+/* (RBL_ONLINE) A HERE message to a game this one plays with (a Pia peer, before any match set-up): "this game runs
+ * rollback and is up", so a game whose set-up came first waits for this one's (hle_rb_core.c online_setup). Not queued
+ * by the receiver; older builds drop it as an unknown message. rbl_relay_heard_ago: ms since that address last sent
+ * anything on rollback's port (1e12: never). */
+#define RBL_HERE_MSG 9
+#define RBL_HERE_BYTES 6   /* (type | "HERE" | rollback's message version, RBN_VERSION) */
+void rbl_relay_here(unsigned ip, int version);
+double rbl_relay_heard_ago(unsigned ip);
 
 #endif
