@@ -224,7 +224,7 @@ static u64 process_age_ms(void) { return rt_now_ns() / 1000000; }
  * internet address reaches another game), a signed-in player's lobby ticket in every JOIN, no direct paths and no EOS
  * with it. Its address: SSBU_OFFICIAL_LOBBY, else config/official_lobby.txt (the launcher writes the release's), else
  * OFFICIAL_LOBBY_DEFAULT. The older public lobbies' names mean it too. */
-#define OFFICIAL_LOBBY_DEFAULT "eu.lobby.opensmashultimate.com:39421"   /* (the port of OpenSmash's lobbies: UDP, and TCP for the game server) */
+#define OFFICIAL_LOBBY_DEFAULT NET_OFFICIAL_LOBBY   /* (net.h: a DNS name; UDP, and TCP for the game server) */
 static char official_lobby[256];
 static const char *public_lobby(void) {
     if (official_lobby[0]) return official_lobby;
@@ -238,8 +238,11 @@ static const char *public_lobby(void) {
 #define PUBLIC_LOBBY public_lobby()
 static int means_public_lobby(const char *host) {
     return !_stricmp(host, "auto") || !_stricmp(host, "na") || !_stricmp(host, "eu") || !_strnicmp(host, "smash.recomps.wtf:", 18) ||
-           !_stricmp(host, "smash.recomps.wtf") || !_strnicmp(host, "opensmash-lobby.duckdns.org", 27) || !_stricmp(host, public_lobby());
+           !_stricmp(host, "smash.recomps.wtf") || !_strnicmp(host, "opensmash-lobby.duckdns.org", 27) ||   /* (the older public lobbies, gone) */
+           !_stricmp(host, OFFICIAL_LOBBY_DEFAULT) || !_stricmp(host, NET_OFFICIAL_LOBBY_HOST) || !_stricmp(host, public_lobby());
 }
+const char *net_official_lobby(void) { return public_lobby(); }
+int net_means_official_lobby(const char *host) { return host && means_public_lobby(host); }
 static int official_relay(void) { return relay_text[0] && !_stricmp(relay_text, public_lobby()); }
 
 /* (OpenSmash 0.6) the signed-in player's lobby ticket for the official lobby ("<account id>|<name>|<expiry>.<signature>",

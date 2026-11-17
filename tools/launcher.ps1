@@ -38,7 +38,7 @@ param([switch]$Auto, [switch]$DryRun, [switch]$NoWindow, [string]$Root)
 if (-not $Root) { $Root = Split-Path -Parent $PSScriptRoot }
 $Root = (Resolve-Path -LiteralPath $Root).Path   # (.NET's file calls want it whole)
 
-$PublicLobby = 'opensmash-lobby.duckdns.org:39421'   # (the one public lobby: runtime/net_relay.c)
+$PublicLobby = 'eu.lobby.opensmashultimate.com:39421'   # (the official lobby's DNS name: runtime/net.h's NET_OFFICIAL_LOBBY)
 # The game's own values when a file or key is missing (runtime/gpu_display.c, hle_pad.c).
 $Defaults = @{
     window = 'windowed'; width = '1280'; height = '720'; pacing = 'clock'; latency = '3'
@@ -323,7 +323,7 @@ $serverWords = @(([string](Get-LineValue $serverFile)).Trim() -split '[ \t]+') +
 $lobbyHost = $serverWords[0]
 $lobbyCode = $serverWords[1]
 $netMode = if (-not $lobbyHost -or $lobbyHost -eq 'off') { 'offline' }
-           elseif ($lobbyHost -eq $PublicLobby -or $lobbyHost -like 'smash.recomps.wtf*' -or @('auto', 'na', 'eu') -contains $lobbyHost) { if ($lobbyCode) { 'private' } else { 'public' } }
+           elseif ($lobbyHost -eq $PublicLobby -or $lobbyHost -like 'smash.recomps.wtf*' -or $lobbyHost -like 'opensmash-lobby.duckdns.org*' -or @('auto', 'na', 'eu') -contains $lobbyHost) { if ($lobbyCode) { 'private' } else { 'public' } }
            else { 'custom' }
 
 try {

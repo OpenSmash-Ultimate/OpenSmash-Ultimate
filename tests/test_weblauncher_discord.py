@@ -174,6 +174,18 @@ class Lobbies(unittest.TestCase):
         self.assertEqual(da.lobbies("auto"), list(da.PUBLIC_LOBBIES))
         self.assertEqual(da.lobbies("my.host mycode"), list(da.PUBLIC_LOBBIES) + ["my.host:39420"])
         self.assertEqual(da.lobbies(""), list(da.PUBLIC_LOBBIES))
+        self.assertEqual(da.PUBLIC_LOBBIES, ("eu.lobby.opensmashultimate.com:39421",))
+        self.assertEqual(da.LEADERBOARD_URL, "http://eu.lobby.opensmashultimate.com:39421/leaderboard.json")
+        for older in ("opensmash-lobby.duckdns.org:39421 code", "smash.recomps.wtf:39421", "na", "eu", da.OFFICIAL_LOBBY):
+            self.assertEqual(da.lobbies(older), list(da.PUBLIC_LOBBIES), older)   # (the older public lobbies mean the official one)
+        os.makedirs(os.path.join(self.root, "config"), exist_ok=True)
+        with open(os.path.join(self.root, "config", "official_lobby.txt"), "w") as f:
+            f.write("lobby.example:39421" + chr(10))
+        try:
+            self.assertEqual(da.lobbies("auto", self.root), ["lobby.example:39421"])   # (the release's lobby)
+            self.assertEqual(da.leaderboard_url(self.root), "http://lobby.example:39421/leaderboard.json")
+        finally:
+            os.remove(os.path.join(self.root, "config", "official_lobby.txt"))
 
     def test_ranks(self):
         board_json = {"players": [{"rank": 1, "id": "1", "fighters": {"0": {"rank": 3}}},

@@ -161,8 +161,24 @@ class LauncherDefaultsTests(unittest.TestCase):
         self.assertRegex(load, r'net\.direct = !\(settings_line_read\(config_path\(CONFIG_ONLINE_DIRECT\).*!_strnicmp\(direct, "off", 3\)\)')
         self.assertEqual(self.table[('online_direct.txt', '')], 'on')
         self.assertEqual(self.table[('online_name.txt', '')], '')
-        public = re.search(r'#define PUBLIC_LOBBY "([^"]+)"', self.menu_c).group(1)
-        self.assertIn(f'PublicLobby = "{public}"', read(LAUNCHER / 'SettingDefaults.cs'))
+        # the official lobby: one DNS name (never an address in numbers), the same in the game and in every launcher
+        net_h = read(RUNTIME / 'net.h')
+        host = re.search(r'#define NET_OFFICIAL_LOBBY_HOST "([^"]+)"', net_h).group(1)
+        port = re.search(r'#define NET_OFFICIAL_LOBBY_PORT (\d+)', net_h).group(1)
+        self.assertIn(f'#define NET_OFFICIAL_LOBBY NET_OFFICIAL_LOBBY_HOST ":{port}"', net_h)
+        self.assertRegex(host, r'^(?=.*[a-z])[a-z0-9.-]+\.[a-z]{2,}$')
+        public = f'{host}:{port}'
+        core = read(ROOT / 'OpenSmash.Core' / 'OfficialLobby.cs')
+        self.assertIn(f'Host = "{host}"', core)
+        self.assertIn(f'Port = {port};', core)
+        self.assertIn(f'Default = Host + ":{port}"', core)
+        self.assertIn('PublicLobby = OpenSmash.Core.OfficialLobby.Default', read(LAUNCHER / 'SettingDefaults.cs'))
+        self.assertIn(f'PUBLIC_LOBBY = "{public}"', read(ROOT / 'tools' / 'weblauncher' / 'launcher.py'))
+        self.assertIn(f'OFFICIAL_LOBBY = "{public}"', read(ROOT / 'tools' / 'weblauncher' / 'discord_account.py'))
+        self.assertIn(f"$PublicLobby = '{public}'", read(ROOT / 'tools' / 'launcher.ps1'))
+        self.assertIn('#define OFFICIAL_LOBBY_DEFAULT NET_OFFICIAL_LOBBY', read(RUNTIME / 'net_relay.c'))
+        for name in ('gpu_menu.c', 'net_discord.c', 'net_relay.c'):   # (no other lobby name is a default in the game)
+            self.assertNotRegex(read(RUNTIME / name), r'#define \w+ L?"[^"]*(duckdns|recomps\.wtf)')
 
     def test_lobby_choices(self):
         """The lobby lines the game's menu writes are exactly the launcher's choices (private and custom carry an address)."""

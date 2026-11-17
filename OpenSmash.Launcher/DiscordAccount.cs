@@ -76,8 +76,10 @@ namespace OpenSmash.Launcher
     {
         public const string Redirect = "http://127.0.0.1/callback";
         const string Api = "https://discord.com/api";
-        public const string LeaderboardUrl = "http://opensmash-lobby.duckdns.org:39421/leaderboard.json";
-        public static readonly string[] PublicLobbies = { "opensmash-lobby.duckdns.org:39421" };   // (the one public lobby; the North American one is gone)
+        // The official lobby's leaderboard and the lobbies asked, by DNS name (OpenSmash.Core.OfficialLobby); plain HTTP:
+        // the lobby serves no TLS, and the page is public.
+        public static string LeaderboardUrl(string? repo = null) => OpenSmash.Core.OfficialLobby.Page("/leaderboard.json", repo);
+        public static string[] PublicLobbies(string? repo = null) => new[] { OpenSmash.Core.OfficialLobby.Current(repo) };
         static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
 
         public static string TokenPath(string repo) => Path.Combine(repo, "config", "discord_token.txt");
@@ -296,7 +298,7 @@ namespace OpenSmash.Launcher
         // The lobbies to ask: the public ones, and online_server.txt's own when it names another.
         public static List<string> Lobbies(string repo)
         {
-            var list = new List<string>(PublicLobbies);
+            var list = new List<string>(PublicLobbies(repo));
             string server = "";
             try
             {
@@ -305,7 +307,7 @@ namespace OpenSmash.Launcher
             }
             catch (IOException) { }
             string host = server.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
-            if (host != "" && !new[] { "auto", "na", "eu", "off", "lan" }.Contains(host.ToLowerInvariant()) && !host.StartsWith("smash.recomps.wtf", StringComparison.OrdinalIgnoreCase))
+            if (host != "" && !new[] { "off", "lan" }.Contains(host.ToLowerInvariant()) && !OpenSmash.Core.OfficialLobby.Means(host, repo))
             {
                 if (!host.Contains(':')) host += ":39420";
                 if (!list.Contains(host, StringComparer.OrdinalIgnoreCase)) list.Add(host);
@@ -360,7 +362,7 @@ namespace OpenSmash.Launcher
         {
             string nsa = NsaId(repo);
             if (nsa == "") return (0, new Dictionary<int, int>());
-            string text = await Http.GetStringAsync(LeaderboardUrl, cancel);
+            string text = await Http.GetStringAsync(LeaderboardUrl(repo), cancel);
             return RanksIn(text, PlayerId(nsa));
         }
 

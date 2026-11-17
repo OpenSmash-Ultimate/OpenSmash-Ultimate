@@ -69,6 +69,26 @@ static class Program
             Check(Updater.Channel(root) == "testing", "testing kept");
             Updater.WriteLobby(r, root);
             Check(File.ReadAllText(Path.Combine(root, "config", "official_lobby.txt")).Trim() == "lobby.example:1", "official lobby written");
+            // ---- the official lobby: a DNS name, the release's or the variable's when there is one
+            string was = Environment.GetEnvironmentVariable("SSBU_OFFICIAL_LOBBY");
+            Environment.SetEnvironmentVariable("SSBU_OFFICIAL_LOBBY", null);
+            Check(OfficialLobby.Default == "eu.lobby.opensmashultimate.com:39421" && OfficialLobby.Default == OfficialLobby.Host + ":" + OfficialLobby.Port, "official lobby: its name and port");
+            Check(!System.Net.IPAddress.TryParse(OfficialLobby.Host, out _) && OfficialLobby.Host.Any(char.IsLetter), "official lobby: a name, never an address in numbers");
+            Check(OfficialLobby.Current() == OfficialLobby.Default && OfficialLobby.Current(Path.Combine(dir, "none")) == OfficialLobby.Default, "no install, no file: the built-in name");
+            Check(OfficialLobby.Current(root) == "lobby.example:1", "the release's lobby (config/official_lobby.txt)");
+            Check(OfficialLobby.Page("/status.json", root) == "http://lobby.example:1/status.json" && OfficialLobby.Page("/leaderboard.json") == "http://eu.lobby.opensmashultimate.com:39421/leaderboard.json", "the lobby's read-only pages");
+            Environment.SetEnvironmentVariable("SSBU_OFFICIAL_LOBBY", "other.example:39421");
+            Check(OfficialLobby.Current(root) == "other.example:39421", "SSBU_OFFICIAL_LOBBY first");
+            Environment.SetEnvironmentVariable("SSBU_OFFICIAL_LOBBY", "http://x/ y");
+            Check(OfficialLobby.Current(root) == "lobby.example:1", "a variable that is not host:port is not used");
+            Environment.SetEnvironmentVariable("SSBU_OFFICIAL_LOBBY", was);
+            foreach (string bad in new[] { "", "host", "host:0", "host:70000", "host:39421/x", "user@host:1", "a b:1", ":39421", "host:39421:2x" })
+                Check(!OfficialLobby.Valid(bad), "not a lobby: '" + bad + "'");
+            foreach (string h in new[] { "auto", "na", "eu", "AUTO", OfficialLobby.Default, OfficialLobby.Host, "opensmash-lobby.duckdns.org:39421", "smash.recomps.wtf:39421", "smash.recomps.wtf" })
+                Check(OfficialLobby.Means(h), "means the official lobby: " + h);
+            foreach (string h in new[] { "", "off", "lan", "my.host:39420", "eu.lobby.opensmashultimate.com.evil.example:39421" })
+                Check(!OfficialLobby.Means(h), "does not mean the official lobby: '" + h + "'");
+            Check(OfficialLobby.Means("lobby.example:1", root) && !OfficialLobby.Means("lobby.example:1"), "the install's own official lobby means it");
 
             // ---- unpacking a source archive
             string unpack = Path.Combine(dir, "unpack");

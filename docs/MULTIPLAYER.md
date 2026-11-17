@@ -59,7 +59,7 @@ This is what `OpenSmash.exe` does by default. Every Local Wireless room that any
    - **To join:** open **Rooms List** and pick a room. Open rooms come first, fuller ones before emptier ones. The list shows up to 24 rooms (the game on its own stops at 10); scroll down for the rest. With more rooms than that in the lobby, any of them can be reached from the settings' **Lobby** page (version 3, below): pick a room there and it comes first in your Rooms List, or page the Rooms List 24 rooms at a time.
 4. Press <kbd>F1</kbd> to see the connection, for example `Online: 37 players, 4 rooms - you are Alpha, ping 48 ms`. A second line lists the other players in your room and how each one is reached ([see below](#direct-connections-and-your-internet-address)).
 
-`online_server.txt`, in the WindowSmash folder, names the lobby. Its first line that doesn't start with `#` is the lobby's address. The default, `auto`, joins the one public lobby, `opensmash-lobby.duckdns.org:39421` in Europe, which every player shares: matchmaking, the game server and every GSP result are there, and the GSP leaderboard is its `/leaderboard.json`. The North American lobby (`smash.recomps.wtf`) is gone: `na`, `eu` and its address (a lobby code after it is kept) all mean the European one now. Port 39421 is the lobby with the game server for [Online mode](#online-mode-quickplay); port 39420 is the older lobby without it, which older WindowSmash versions use. Rooms on one don't show up on the other, so everyone in a group should use the same one.
+`online_server.txt`, in the WindowSmash folder, names the lobby. Its first line that doesn't start with `#` is the lobby's address. The default, `auto`, joins the one public lobby, `eu.lobby.opensmashultimate.com:39421` in Europe, which every player shares: matchmaking, the game server and every GSP result are there, and the GSP leaderboard is its `/leaderboard.json`. The North American lobby (`smash.recomps.wtf`) is gone: `na`, `eu` and its address (a lobby code after it is kept) all mean the European one now. Port 39421 is the lobby with the game server for [Online mode](#online-mode-quickplay); port 39420 is the older lobby without it, which older WindowSmash versions use. Rooms on one don't show up on the other, so everyone in a group should use the same one.
 
 ### Friends only: a lobby code
 
@@ -76,7 +76,7 @@ Capital letters count: `OurCode` and `ourcode` are two different lobbies.
 Or, with the game closed, add a space and your code after the address in `online_server.txt`, for example:
 
 ```text
-opensmash-lobby.duckdns.org:39421 ourcode
+eu.lobby.opensmashultimate.com:39421 ourcode
 ```
 
 The overlay shows the code after `Online`. A lobby code is not a password: anyone who knows it can join.
@@ -107,7 +107,7 @@ The game's own **Online** menu works with WindowSmash's game server, which runs 
 > [!WARNING]
 > Online mode is new. Tested on one PC (two games, a lobby of their own): logging in, the Online menus, Quickplay's search, two players matched, the whole match with the game's own netcode and with [rollback](#rollback-in-online-mode), the results with GSP, and both games back in Quickplay for the next search. Not tested yet: two PCs, more than two players. The Linux version has Online mode built in, but it hasn't been tried there.
 
-1. Start the game with **`OpenSmash.exe`**. `online_server.txt` must name a lobby with the game server: `auto`, the default (`opensmash-lobby.duckdns.org:39421`), has one.
+1. Start the game with **`OpenSmash.exe`**. `online_server.txt` must name a lobby with the game server: `auto`, the default (`eu.lobby.opensmashultimate.com:39421`), has one.
 2. In the main menu, choose **Online**, then **Smash**, then **Quickplay**.
 3. Choose your rules and fighter, then **Ready to fight**. The game waits in its practice room until it finds another player.
 

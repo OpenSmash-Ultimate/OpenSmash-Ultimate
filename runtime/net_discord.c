@@ -47,8 +47,6 @@ int account_nsa_hex(char out[17]);   /* (hle_env.c) */
 #define REDIRECT "http://127.0.0.1/callback"
 #define TOKEN_PATH "config\\" DISCORD_TOKEN_FILE
 #define JOIN_PATH "config\\discord_join.txt"
-#define BOARD_HOST L"opensmash-lobby.duckdns.org"   /* (the one public lobby's game server: every GSP result is there) */
-#define BOARD_PORT 39421
 #define BOARD_PATH L"/leaderboard.json"
 #define ME_EVERY_MS (45 * 1000)
 #define BOARD_EVERY_MS (10 * 60 * 1000)
@@ -385,22 +383,28 @@ static char *http_get(const wchar_t *host, INTERNET_PORT port, int secure, const
     WinHttpCloseHandle(s);
     return buf;
 }
+/* "host:port" as WinHTTP wants it: the host in `whost` (256), the port returned; 0 when it is not one */
+static int lobby_host(const char *lobby, wchar_t *whost) {
+    char host[256];
+    snprintf(host, sizeof host, "%s", lobby);
+    char *colon = strrchr(host, ':');
+    int port = colon ? atoi(colon + 1) : 0;
+    if (!colon || colon == host || port <= 0 || port > 65535) return 0;
+    *colon = 0;
+    return MultiByteToWideChar(CP_UTF8, 0, host, -1, whost, 256) ? port : 0;
+}
 /* GET /gsp/me on the lobby the game joined (its game server's port answers HTTP: tools/ssbu_online_lobby.py) */
 static int ask_me(const char *nsa, const char *player) {
     const char *relay = net_lobby() ? net_relay_address() : NULL;
     if (!relay) return 0;
-    char host[256];
-    snprintf(host, sizeof host, "%s", relay);
-    char *colon = strrchr(host, ':');
-    int port = colon ? atoi(colon + 1) : 0;
-    if (!colon || port <= 0 || port > 65535) return 0;
-    *colon = 0;
+    wchar_t whost[256];
+    int port = lobby_host(relay, whost);
+    if (!port) return 0;
     int64_t t = now_s();
     char sig[65], head[512];
     discord_sign(nsa, "me", player, t, "", sig);
     snprintf(head, sizeof head, "X-OpenSmash-Player: %s\r\nX-OpenSmash-Time: %lld\r\nX-OpenSmash-Sig: %s\r\n", player, (long long)t, sig);
-    wchar_t whost[256], whead[512];
-    MultiByteToWideChar(CP_UTF8, 0, host, -1, whost, 256);
+    wchar_t whead[512];
     MultiByteToWideChar(CP_UTF8, 0, head, -1, whead, 512);
     char *json = http_get(whost, (INTERNET_PORT)port, 0, L"/gsp/me", whead, 64 * 1024);
     if (!json) return 0;
@@ -424,7 +428,10 @@ static DWORD WINAPI web_thread(LPVOID unused) {
             discord_player_id(nsa, player);
             ask_me(nsa, player);
             if (GetTickCount64() >= next_board) {
-                char *json = http_get(BOARD_HOST, BOARD_PORT, 0, BOARD_PATH, NULL, 16u << 20);
+                /* (the official lobby's read-only page, by its DNS name: net.h. Plain HTTP: the lobby serves no TLS) */
+                wchar_t board_host[256];
+                int board_port = lobby_host(net_official_lobby(), board_host);
+                char *json = board_port ? http_get(board_host, (INTERNET_PORT)board_port, 0, BOARD_PATH, NULL, 16u << 20) : NULL;
                 if (json) { InterlockedExchange(&rank, discord_rank_in_leaderboard(json, player)); free(json); next_board = GetTickCount64() + BOARD_EVERY_MS; }
                 else next_board = GetTickCount64() + 60 * 1000;
             }

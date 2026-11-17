@@ -47,7 +47,6 @@ void gfx_closing(void); /* (gpu_d3d11.c) the game is about to end */
 int gfx_adapter_names(char names[][64], int max); /* (gpu_d3d11.c) the graphics cards, fastest first */
 #endif
 
-#define PUBLIC_LOBBY "opensmash-lobby.duckdns.org:39421" /* (the one public lobby: net_relay.c) */
 
 static volatile int open_, releasing;
 int menu_is_open(void) { return open_; }
@@ -257,8 +256,7 @@ static void net_load(void)
         net.mode = NET_OFFLINE;
     else if (!_stricmp(host, "lan"))
         net.mode = NET_LAN; /* (net_relay.c's LAN discovery) */
-    else if (!_stricmp(host, "auto") || !_stricmp(host, "na") || !_stricmp(host, "eu") || !_strnicmp(host, "smash.recomps.wtf", 17) ||
-             !_stricmp(host, PUBLIC_LOBBY))
+    else if (net_means_official_lobby(host)) /* ("auto", the official lobby's name, an older public lobby's: net_relay.c) */
         net.mode = code[0] ? NET_PRIVATE : NET_PUBLIC; /* (the one public lobby; the North American one is gone: net_relay.c) */
     else
     {

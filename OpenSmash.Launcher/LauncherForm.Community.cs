@@ -40,7 +40,7 @@ namespace OpenSmash.Launcher
             if (Interlocked.Exchange(ref _communityBusy, 1) == 1) return;
             try
             {
-                var (status, board) = await CommunityFeed.Fetch(_httpClient, CancellationToken.None);
+                var (status, board) = await CommunityFeed.Fetch(_httpClient, CancellationToken.None, _repo);
                 _lobbyAsked = true;
                 _lobbyDown = status == null && board == null;
                 if (status != null) _lobby = status;

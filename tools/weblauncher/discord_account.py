@@ -17,6 +17,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import socket
 import threading
@@ -28,8 +29,41 @@ import webbrowser
 
 API = "https://discord.com/api"
 REDIRECTS = (("http://127.0.0.1/callback", 80), ("http://127.0.0.1:53134/callback", 53134))
-LEADERBOARD_URL = "http://opensmash-lobby.duckdns.org:39421/leaderboard.json"   # (the one public lobby's: every GSP result)
-PUBLIC_LOBBIES = ("opensmash-lobby.duckdns.org:39421",)
+# The official lobby, by its DNS name (runtime/net.h's NET_OFFICIAL_LOBBY; never an address in numbers). Its read-only
+# pages are plain HTTP on the same port: the lobby serves no TLS, and they are public.
+OFFICIAL_LOBBY = "eu.lobby.opensmashultimate.com:39421"
+OLDER_LOBBIES = ("opensmash-lobby.duckdns.org", "smash.recomps.wtf")   # (gone: their lines mean the official one)
+
+
+def official_lobby(root=None):
+    """As the game reads it (runtime/net_relay.c): SSBU_OFFICIAL_LOBBY, else config/official_lobby.txt, else the name."""
+    words = [os.environ.get("SSBU_OFFICIAL_LOBBY", "").strip()]
+    if root:
+        try:
+            with open(os.path.join(root, "config", "official_lobby.txt"), encoding="utf-8") as f:
+                lines = [x.strip() for x in f if x.strip() and not x.strip().startswith("#")]
+            words.append(lines[0].split()[0] if lines else "")
+        except OSError:
+            pass
+    for w in words:
+        if re.fullmatch(r"[A-Za-z0-9.-]{1,190}:\d{1,5}", w) and 0 < int(w.rsplit(":", 1)[1]) < 65536:
+            return w
+    return OFFICIAL_LOBBY
+
+
+def means_official(host, root=None):
+    h = (host or "").lower()
+    return h in ("auto", "na", "eu", OFFICIAL_LOBBY, OFFICIAL_LOBBY.split(":")[0], official_lobby(root).lower()) or h.startswith(OLDER_LOBBIES)
+
+
+LEADERBOARD_URL = "http://" + OFFICIAL_LOBBY + "/leaderboard.json"   # (the default; leaderboard_url(root) is the install's)
+PUBLIC_LOBBIES = (OFFICIAL_LOBBY,)
+
+
+def leaderboard_url(root=None):
+    return "http://" + official_lobby(root) + "/leaderboard.json"
+
+
 SCOPES = "identify openid sdk.social_layer_presence"
 KEYS = ("access_token", "refresh_token", "expires_at", "scope", "user_id", "username", "display_name", "avatar")
 UA = {"User-Agent": "OpenSmash-Launcher"}
@@ -283,12 +317,12 @@ def sign(nsa, what, player, t, payload=""):
     return hmac.new(nsa.encode(), f"opensmash1\n{what}\n{player}\n{int(t)}\n{payload}".encode(), hashlib.sha256).hexdigest()
 
 
-def lobbies(server_line=""):
+def lobbies(server_line="", root=None):
     """The lobbies to ask: the public ones, and online_server.txt's own (its first line given) when it names another."""
-    out = list(PUBLIC_LOBBIES)
+    out = [official_lobby(root)]
     words = (server_line or "").split()
     host = words[0] if words else ""
-    if host and host.lower() not in ("auto", "na", "eu", "off", "lan") and not host.lower().startswith("smash.recomps.wtf"):
+    if host and host.lower() not in ("off", "lan") and not means_official(host, root):
         if ":" not in host:
             host += ":39420"
         if host.lower() not in (x.lower() for x in out):
@@ -395,7 +429,7 @@ class Account:
         return app_id(self.program_dir)
 
     def lobbies(self):
-        return lobbies(self.server_line())
+        return lobbies(self.server_line(), self.root)
 
     def start_sign_in(self):
         with self.lock:
@@ -426,7 +460,7 @@ class Account:
     def _board(self):
         if time.time() - self.board_at > 600:
             self.board_at = time.time()
-            self.board = _ask(LEADERBOARD_URL) or self.board
+            self.board = _ask(leaderboard_url(self.root)) or self.board
         return self.board
 
     def _mine(self):

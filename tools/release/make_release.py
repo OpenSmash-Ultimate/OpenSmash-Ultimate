@@ -94,6 +94,8 @@ def manifest(dist, ver, commit, channel="stable", lobby=None, min_level=0):
         raise SystemExit(f"{ver} is a pre-release: it can only go to the testing channel")
     if lobby is not None and not re.fullmatch(r"[A-Za-z0-9.-]{1,200}:\d{1,5}", lobby):
         raise SystemExit("--lobby: HOST:PORT")
+    if lobby is not None and (re.fullmatch(r"[0-9.]+", lobby.rsplit(":", 1)[0]) or "." not in lobby):
+        raise SystemExit("--lobby: a DNS name, not an address in numbers (the server behind the name can move)")
     m = {"schema": 1, "version": ver, "commit": commit, "channel": channel, "launcher": {}, "runtime": {}}
     if lobby:
         m["lobby"] = lobby

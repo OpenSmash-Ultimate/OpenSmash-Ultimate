@@ -49,7 +49,7 @@ class Settings(unittest.TestCase):
         with open(os.path.join(self.root, "display.ini"), "w") as f:
             f.write("; the game's\nwindow = fullscreen   ; a comment\nwidth = 1920\nheight = 1080\nvolume=40\n")
         with open(os.path.join(self.root, "online_server.txt"), "w") as f:
-            f.write("# the lobby\nopensmash-lobby.duckdns.org:39421 friends\n")
+            f.write("# the lobby\neu.lobby.opensmashultimate.com:39421 friends\n")
         with open(os.path.join(self.root, "online_name.txt"), "w") as f:
             f.write("Mario\n")
         s = launcher.read_settings(self.root)
@@ -71,7 +71,7 @@ class Settings(unittest.TestCase):
 
     def test_write_each_lobby(self):
         for lobby, extra, line in (("public", {}, "auto"), ("offline", {}, "off"),
-                                   ("private", {"code": "abc"}, "opensmash-lobby.duckdns.org:39421 abc"),
+                                   ("private", {"code": "abc"}, "eu.lobby.opensmashultimate.com:39421 abc"),
                                    ("custom", {"server": "10.0.0.2:39420", "code": ""}, "10.0.0.2:39420"),
                                    ("custom", {"server": "", "code": "x"}, "127.0.0.1:39420 x")):
             launcher.write_settings(self.root, {"lobby": lobby, **extra})

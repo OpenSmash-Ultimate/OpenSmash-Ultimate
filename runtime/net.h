@@ -54,6 +54,19 @@ const char *net_player_name(void);
  * with --online; NULL when it hosts a private room or plays offline. */
 const char *net_relay_address(void);
 const char *net_lobby_code(void);    /* the lobby code it joins with ("smash": the public lobby) */
+/* OpenSmash's official lobby (relay only, a signed-in player's ticket in every JOIN): always a DNS name, never an
+ * address in numbers, so the server behind it can move. One port: UDP for play, TCP for the read-only pages
+ * (/status.json, /leaderboard.json, /gsp/me: plain HTTP, the lobby has no TLS). The launchers' copy of the name:
+ * OpenSmash.Core/OfficialLobby.cs, tools/weblauncher/launcher.py, tools/launcher.ps1 (tests/test_launcher_defaults.py
+ * compares them). */
+#define NET_OFFICIAL_LOBBY_HOST "eu.lobby.opensmashultimate.com"
+#define NET_OFFICIAL_LOBBY_PORT 39421
+#define NET_OFFICIAL_LOBBY NET_OFFICIAL_LOBBY_HOST ":39421"
+/* The official lobby this game uses: SSBU_OFFICIAL_LOBBY, else config/official_lobby.txt (the launcher writes the
+ * release's), else NET_OFFICIAL_LOBBY. */
+const char *net_official_lobby(void);
+/* online_server.txt's first word means the official lobby: "auto", its name, or an older public lobby's. */
+int net_means_official_lobby(const char *host);
 int net_unreachable(void);           /* asked for, but the relay has not answered for a while: offline */
 /* Rollback netplay on by default (kernel.c's kernel_rb_switch when SSBU_RB is not set): started with
  * --online, with a lobby or a private room to play in (SSBU_NET_HOST, SSBU_NET_RELAY, else

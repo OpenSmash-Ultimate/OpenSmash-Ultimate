@@ -58,8 +58,9 @@ namespace OpenSmash.Launcher
             throw new KeyNotFoundException(file);
         }
 
-        public const string PublicLobby = "opensmash-lobby.duckdns.org:39421";   // (runtime/gpu_menu.c's PUBLIC_LOBBY: the one public lobby)
-        const string OldLobby = "smash.recomps.wtf";   // (the North American lobby, gone: its lines mean the public one)
+        // The official lobby's DNS name (OpenSmash.Core.OfficialLobby, runtime/net.h's NET_OFFICIAL_LOBBY). The older public
+        // lobbies are gone: their lines mean it (OfficialLobby.Means, as runtime/net_relay.c reads them).
+        public const string PublicLobby = OpenSmash.Core.OfficialLobby.Default;
 
         // online_server.txt's line read as the game's settings menu reads it (runtime/gpu_menu.c net_load):
         // the lobby choice, the lobby code and a server of your own.
@@ -69,9 +70,7 @@ namespace OpenSmash.Launcher
             string host = words.Length > 0 ? words[0] : "", code = words.Length > 1 ? words[1] : "";
             if (host == "" || host.Equals("off", StringComparison.OrdinalIgnoreCase)) return ("offline", code, "");
             if (host.Equals("lan", StringComparison.OrdinalIgnoreCase)) return ("lan", code, "");
-            if (host.Equals("auto", StringComparison.OrdinalIgnoreCase) || host.Equals("na", StringComparison.OrdinalIgnoreCase) ||
-                host.Equals("eu", StringComparison.OrdinalIgnoreCase) || host.StartsWith(OldLobby, StringComparison.OrdinalIgnoreCase) ||
-                host.Equals(PublicLobby, StringComparison.OrdinalIgnoreCase))
+            if (OpenSmash.Core.OfficialLobby.Means(host))
                 return (code == "" ? "auto" : "private", code, "");
             return ("custom", code, host);
         }

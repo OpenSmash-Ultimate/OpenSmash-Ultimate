@@ -82,6 +82,7 @@ static class Tests
         {
             ("", "offline", "off"), ("off", "offline", "off"), ("auto", "auto", "auto"), ("na", "auto", "auto"), ("eu", "auto", "auto"),
             ("smash.recomps.wtf:39421", "auto", "auto"), ("smash.recomps.wtf:39421 mine", "private", pub + " mine"),
+            ("opensmash-lobby.duckdns.org:39421", "auto", "auto"), ("opensmash-lobby.duckdns.org:39421 mine", "private", pub + " mine"),
             ("lan", "lan", "lan"), (pub, "auto", "auto"), (pub + " friends", "private", pub + " friends"),
             ("10.0.0.2:39420", "custom", "10.0.0.2:39420"), ("10.0.0.2:39420 abc", "custom", "10.0.0.2:39420 abc"),
         };
