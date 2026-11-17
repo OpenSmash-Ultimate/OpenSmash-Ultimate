@@ -88,6 +88,7 @@ class CopiedHooks(unittest.TestCase):
         self.hooks(0x10)
         with skyline.cached_inlining_only():
             self.assertEqual(skyline.stale_hooks(self.tree), [])
+            self.assertEqual(skyline.stale_hooks(self.tree), [])   # (kept for the page: no second scan needed)
         self.assertFalse(Path(self.tree, 'build', 'work', 'inlined.json').exists())
         self.assertEqual(skyline.stale_hooks(self.tree), ['main'])
         with skyline.cached_inlining_only():   # (now the compiler's answer is kept: the page has it too)

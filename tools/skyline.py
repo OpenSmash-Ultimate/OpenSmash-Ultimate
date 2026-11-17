@@ -590,13 +590,14 @@ def copied_hooks(tree):
 
 
 _ASK_ONLY = threading.local()
+ASK_ONLY_SIG = "|ask-only"
 
 
 @contextlib.contextmanager
 def cached_inlining_only():
     """For a page that only asks (os_mods.status): inlined_functions answers from build/work/inlined.json
     and compiles nothing, so opening the mods page never waits on the compiler. A file it has no answer
-    for counts as not copied, and that answer is not kept: the next build (the probe's check) compiles it.
+    for counts as not copied; that answer is kept for the page only: the next build (the probe's check) compiles it.
     Per thread: the Mods app builds in the same process."""
     old = getattr(_ASK_ONLY, "on", False)
     _ASK_ONLY.on, _ASK_ONLY.missed = True, False
@@ -612,15 +613,15 @@ def _hooks_state(tree):
     try:
         with open(cache, encoding="utf-8") as f:
             saved = json.load(f)
-        if saved.get("sig") == sig and isinstance(saved.get("mods"), list) and isinstance(saved.get("copied"), list):
+        # (an answer made without the compiler (cached_inlining_only) serves only another such ask)
+        ok = saved.get("sig") == sig or (getattr(_ASK_ONLY, "on", False) and saved.get("sig") == sig + ASK_ONLY_SIG)
+        if ok and isinstance(saved.get("mods"), list) and isinstance(saved.get("copied"), list):
             return saved
     except (OSError, ValueError, AttributeError):
         pass
     _ASK_ONLY.missed = False
     mods, copied = _stale_hooks(tree)
-    out = {"sig": sig, "mods": mods, "copied": copied}
-    if getattr(_ASK_ONLY, "missed", False):   # (an answer without the compiler's: not kept)
-        return out
+    out = {"sig": sig + (ASK_ONLY_SIG if getattr(_ASK_ONLY, "missed", False) else ""), "mods": mods, "copied": copied}
     try:
         os.makedirs(os.path.dirname(cache), exist_ok=True)
         with open(cache, "w", encoding="utf-8") as f:
