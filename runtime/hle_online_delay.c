@@ -72,6 +72,9 @@ HLE_WRAP(71016cc940) {
  * the step sees the game's own: with the players mapped here while the step ran, the step's pads and its checks told
  * the other game's step a station's players were not its own, and a Quickplay match was cut short, code 2, a few
  * frames after its state 4) */
+static int pads_switched;   /* (the controller put in its local mode for rollback's match now: online_pads_local) */
+/* (hle_rb_core.c's GO! line, #181) 1: the game's pad lockstep is switched off for rollback's Online match now */
+int online_pads_local_now(void) { return pads_switched; }
 static void online_pads_local(u64 self, int after) {
     int rb_online_match_now(void);   /* (hle_rb_core.c: the players of rollback's Online match now, else 0) */
     static int on = -1, switched;
@@ -86,7 +89,7 @@ static void online_pads_local(u64 self, int after) {
         for (u32 i = 0; i < 8; i++) st32(fc + 0x298 + 4 * i, map_was[i]);
     }
     if (switched && (n <= 0 || fc != fc_was)) {
-        switched = 0;
+        switched = 0; pads_switched = 0;
         fprintf(stderr, "[net] rollback's Online match over: the game's pad lockstep back (online mode %u)\n", mode_was);
         return;
     }
@@ -96,7 +99,7 @@ static void online_pads_local(u64 self, int after) {
         fc_was = fc; mode_was = ld32(fc + 8);
         char m[120]; size_t k = 0;
         for (u32 i = 0; i < 8; i++) { map_was[i] = ld32(fc + 0x298 + 4 * i); k += snprintf(m + k, sizeof m - k, " %d", (int)map_was[i]); }
-        switched = 1;
+        switched = 1; pads_switched = 1;
         fprintf(stderr, "[net] rollback's Online match: the game's pad lockstep off (online mode 1 -> local 0, mask %02x), "
                         "players 1-%d on controllers 1-%d (were%s)\n", ld8(fc + 0xD), n, n, m);
     }

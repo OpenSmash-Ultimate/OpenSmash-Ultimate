@@ -3710,6 +3710,7 @@ static void panel_dump(const char *when, int idx, u64 st) {
 int net_recent_peers(u32 *out, int max, u32 within_ms);   /* (net.h) */
 #define ONLINE_MELEE 14
 #define LOCAL_MELEE 0      /* (a local melee: what a Local Wireless room's rollback fight is set up as, #181) */
+#define PAD_FRAME_CTRL 0x71052C50F0ull   /* (13.0.5: the pad frame controller's pointer; +0x8 its mode: hle_online_delay.c PAD_CTRL) */
 #define ARENA_MELEE 20     /* (a Battle Arena's match: set up by the ring's players' games as a Quickplay one is, its other
                             * players' games the Pia peers of the arena's gathering; its results go back to the arena) */
 #define ONLINE_WAIT_MS 15000.0
@@ -3738,6 +3739,21 @@ static void online_fight_start(void) {
     if (!online_match) return;
     u64 impl = fm_impl();
     fprintf(stderr, "[rb] online: GO!: melee mode %u in the match block, the fighter manager's +0xc0 %08x\n", ld8(MELEE_INFO), impl ? ld32(impl + 0xc0) : 0);
+    {   /* (#181: where the fight's pads come from. The pad frame controller (+0x8) in its local mode (0) reads each player's
+         * pad from its controller, as rollback feeds it; in its online mode (1) from the game's own lockstep queues,
+         * which two games hold differently: a desync with the same pads. hle_online_delay.c puts it in the local mode
+         * between the Online step's runs from the step's match state on (online_pads_local); a local melee's is local
+         * already. Said once here, read only, so a desync report shows which one the fight started with) */
+        int online_pads_local_now(void);
+        u64 fc = ld64(PAD_FRAME_CTRL);   /* (main's data: always mapped) */
+        if (!fc || !readable(fc + 8, 4)) fprintf(stderr, "[rb] online: GO!: the pad frame controller not readable (%#llx)\n", (unsigned long long)fc);
+        else if (ld32(fc + 8) == 0)
+            fprintf(stderr, "[rb] online: GO!: the pad frame controller in its local mode (rollback's pads%s)\n",
+                    online_pads_local_now() ? "; the game's lockstep switched off for rollback's match" : "");
+        else fprintf(stderr, "[rb] online: GO!: the pad frame controller in mode %u (%s): if it stays so, the fight reads the game's own "
+                             "lockstep pads, not rollback's (#181)\n", ld32(fc + 8),
+                     online_pads_local_now() ? "switched off between the Online step's runs" : "not switched off yet");
+    }
     {   /* (this player's picture, in the desync report too: a desync traced to ultrawide or ruled out, docs/adr/0002) */
         float display_aspect(void); int display_view(void), display_uw_online(void);
         fprintf(stderr, "[rb] online: GO!: this player's picture shape %.4g, view %d%s\n", display_aspect(), display_view(),
@@ -3934,7 +3950,15 @@ static int online_setup_try(u64 st) {
      * character select builds the match block anew: every set-up after a mode-0 fight in these runs logged melee mode 1
      * again (nothing here puts it back: online_restore leaves a room's match as it is). Only byte 0 is written; whether
      * a local melee's byte 1 differs from a room's was not checked. SSBU_RB_ONLINE_MODE=1: the room's own mode, as
-     * before) */
+     * before.
+     * The cause, found later (2026-11-17): with the room's mode the pad frame controller (main+0x52c50f0) is in its
+     * online mode (+0x8 = 1), and the fight read each player's pads from the game's own lockstep queues, filled by the
+     * Online step from what the other game's step sent over Pia, not from rollback's pads (a local melee's controller
+     * is in its local mode, so mode 0 never had it). hle_online_delay.c (online_pads_local, the step left out) has put
+     * that controller in its local mode during any rollback Online match since 99f74818; with it, the room's own mode
+     * stays in sync too (bot pairs as above, 2 matches, 1424/1303 and 2063/1962 hashes compared, 0 DIFFERENT), and
+     * with the old path back (SSBU_RB_FC_LOCAL=0 SSBU_RB_STEP_RUN=1) the same pair split at logic frame 1614. Mode 0
+     * stays the default: the room's results already run as a local melee's.) */
     {   const char *e = getenv("SSBU_RB_ONLINE_MODE");
         if (e && *e) st8(MELEE_INFO, (u8)atoi(e));
         else if (online_lw) st8(MELEE_INFO, LOCAL_MELEE);
