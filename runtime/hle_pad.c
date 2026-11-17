@@ -1060,7 +1060,8 @@ static int gc_switch_on(void) {
     return env >= 0 ? env : cfg.gc_switch;
 }
 static int dev_gc_pcmode(const Dev *d) {
-    return !d->usb && d->gc && !_strnicmp(d->guid + 8, "7900", 4);   /* (GUID bytes 4-5: vendor 0x0079, little endian) */
+    /* (GUID bytes 4-5: vendor 0x0079, 6-7 reserved, 8-9 product, little endian: 0x1844 / 0x1846 are the Mayflash-style adapters) */
+    return !d->usb && d->gc && strlen(d->guid) >= 20 && !_strnicmp(d->guid + 8, "7900", 4) && (!_strnicmp(d->guid + 16, "4418", 4) || !_strnicmp(d->guid + 16, "4618", 4));
 }
 static void pcmode_stick(i32 x, i32 y_down, int rim, int n, i32 *ox, i32 *oy) {
     long cx = lround(x * (double)rim / 32767.0), cy = lround(-(double)y_down * rim / 32767.0), r2 = cx * cx + cy * cy, v, w;
@@ -1722,7 +1723,7 @@ int pad_get(u32 slot, PadState *out) {
 int pad_keyboard_slot(void) { pad_start(); return cfg.keyboard_slot; }
 int pad_background(void) { pad_start(); return cfg.background; }
 int pad_rumble_on(void) { pad_start(); return cfg.rumble; }
-int pad_gc_switch(void) { pad_start(); return cfg.gc_switch; }
+int pad_gc_switch(void) { pad_start(); return gc_switch_on(); }   /* (SSBU_GC_SWITCH wins over the file, as for the sticks) */
 
 void pad_rumble(u32 slot, int side, float amplitude) {
     if (slot >= PAD_SLOTS || side < 1 || side > 2) return;

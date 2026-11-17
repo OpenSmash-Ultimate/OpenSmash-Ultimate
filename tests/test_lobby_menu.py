@@ -652,6 +652,34 @@ class Pad(MenuTest):
         self.assertNotIn('Reset keyboard keys to defaults?', m.draw())
 
 
+class PcModeSticks(MenuTest):
+    """A GameCube adapter in PC mode on the Sticks page (a stub pad_info, LOBBYMENUTEST_PCPAD)."""
+    def sticks_page(self, mode):
+        m = self.menu(LOBBYMENUTEST_PCPAD=mode)
+        m.key('ESC')
+        m.type('2')   # (Controllers)
+        for want in ('    Customize controller...', 'Sticks...'):
+            for _ in range(20):
+                if m.labels()[m.page()[2]] == want:
+                    break
+                m.key('DOWN')
+            self.assertEqual(m.labels()[m.page()[2]], want)
+            m.key('ENTER')
+        return m
+
+    def test_scaled(self):
+        m = self.sticks_page('1')
+        self.assertIn('GameCube stick scaling', m.labels())
+        self.assertEqual(m.row('GameCube stick scaling')['value'], '1:1 Switch')
+        self.assertNotIn('Recalibrate sticks', m.labels())   # (the adapter's own scaling: nothing to measure)
+        self.assertEqual(m.row('Stick dead zone')['value'], 'none (1:1 Switch)')
+
+    def test_zone_of_its_own(self):
+        m = self.sticks_page('2')
+        self.assertIn('GameCube stick scaling', m.labels())
+        self.assertEqual(m.row('Stick dead zone')['value'], '25%')
+
+
 class Keyboard(MenuTest):
     """The game's software keyboard (an arena's name...) on the menu's text grid, the one its own names use:
     a pad or the keyboard types, the game's limits kept, the game waits for the answer."""

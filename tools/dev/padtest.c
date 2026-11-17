@@ -702,6 +702,8 @@ static void test_gc_pcmode(void) {
     raw.axis[RA_LEFTY] = 0; raw.axis[RA_RIGHTY] = -32767 * 22 / 87;
     dev_state(&pc, &raw, &o);
     CHECK(o.ry == (long)(22 * 32767L / 44) && o.rx == 0, "C-stick up, 22 counts of 44: %d", o.ry);
+    Dev other = make_dev("03004271790000000600000000016800", "", "", "Generic pad", "gamecube");   /* (0079:0006, not an adapter) */
+    CHECK(!dev_gc_pcmode(&other), "another 0079 pad is not taken for the adapter");
     PadInfo info;
     dev_info(&pc, &raw, &info);
     CHECK(info.pc_mode && info.pc_scaled, "the menu knows: %d %d", info.pc_mode, info.pc_scaled);
@@ -738,6 +740,7 @@ static void test_gc_pcmode(void) {
 }
 
 int main(void) {
+    _putenv("SSBU_GC_SWITCH=");   /* (the file decides here, not an environment this was started in) */
     test_keyboard();
     test_config();
     test_mapping();
