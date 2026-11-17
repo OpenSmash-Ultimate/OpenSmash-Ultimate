@@ -219,7 +219,7 @@ static int restart_pending;
 static int *overlay_on;           /* the frame-rate overlay's switch (gpu_d3d11.c) */
 /* Switch player: the controllers claimed so far, in player order */
 static int assign_n = 1, assign_dirty, assign_wait;
-static char assign_guid[PAD_SLOTS][40];
+static char assign_guid[PAD_SLOTS][100]; /* (each claimed pad's own unit) */
 static char assign_name[PAD_SLOTS][96];
 static int assign_free(const PadInfo *p); /* (below) */
 static int assign_has(const char *guid)
@@ -230,7 +230,7 @@ static int assign_has(const char *guid)
     return 0;
 }
 /* an XInput pad is always the player its XInput index names: the page does not offer it */
-static int assign_free(const PadInfo *p) { return p->connected && !p->xinput && !assign_has(p->guid); }
+static int assign_free(const PadInfo *p) { return p->connected && !p->xinput && !assign_has(p->unit); }
 #define GC_TRIGGER_DEFAULT 31 /* the game counts a GameCube controller's L / R as pressed past 0x27FF: about 31% */
 static int pad_is_gc(const PadInfo *p) { return p->gc || p->usb_port >= 0; }
 static int trigger_default(const PadInfo *p) { return pad_is_gc(p) ? GC_TRIGGER_DEFAULT : 25; }
@@ -2880,9 +2880,9 @@ int menu_frame(int *overlay, int f3)
                     settings_ini_set(pad_ini_path(), "players", key, NULL);
                 }
             snprintf(key, sizeof key, "%d", assign_n);
-            settings_ini_set(pad_ini_path(), "players", key, pads[who].guid);
+            settings_ini_set(pad_ini_path(), "players", key, pads[who].pin);
             snprintf(assign_name[assign_n - 1], sizeof assign_name[0], "%s", pads[who].name);
-            snprintf(assign_guid[assign_n - 1], sizeof assign_guid[0], "%s", pads[who].guid);
+            snprintf(assign_guid[assign_n - 1], sizeof assign_guid[0], "%s", pads[who].unit);
             assign_n++;
             assign_dirty = 1;
             assign_wait = 1;
