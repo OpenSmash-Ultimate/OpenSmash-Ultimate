@@ -259,6 +259,7 @@ public sealed partial class ClassicSurface : Control
         UpdateMarketplace();
         _username.IsVisible=IsInstaller&&_view=="setup"&&!HasPrompt;
         if(IsInstaller||_view!="settings"||HasPrompt)_settingEdit.IsVisible=false;
+        UpdateRoomControls();   // rooms: RoomsArtwork.cs
         float s=(float)(Bounds.Height>0?Bounds.Height/720:1);
         double scale=TopLevel.GetTopLevel(this)?.RenderScaling??1;
         _username.FontSize=15*s;
@@ -276,7 +277,7 @@ public sealed partial class ClassicSurface : Control
     {
         float s=(float)final.Height/720;double scale=TopLevel.GetTopLevel(this)?.RenderScaling??1;
         _usernameRect=new Rect(Math.Floor(214*s*scale)/scale,Math.Floor(502*s*scale)/scale,Math.Max(1,Math.Floor((final.Width-738*s)*scale)/scale),UsernameHeight((float)(s*scale))/scale);
-        _username.Arrange(_usernameRect);_settingEdit.Arrange(_settingRect);ArrangeMarketplace(final);return final;
+        _username.Arrange(_usernameRect);_settingEdit.Arrange(_settingRect);ArrangeMarketplace(final);ArrangeRooms();return final;
     }
 
     public override void Render(Avalonia.Media.DrawingContext context)
@@ -388,6 +389,7 @@ public sealed partial class ClassicSurface : Control
         if(e.Key==Key.Escape&&(_sharePrompt||_checkModsPrompt)){_sharePrompt=_checkModsPrompt=false;InvalidateVisual();e.Handled=true;return;}
         if(!IsInstaller&&_view=="remap"&&_modal==null&&HandleRemapKey(e.Key)){e.Handled=true;InvalidateVisual();return;} // remap page (RemapArtwork.cs)
         if(!IsInstaller&&_view=="settings"&&_modal==null&&HandleSettingsKey(e.Key)){e.Handled=true;InvalidateVisual();return;}
+        if(_view=="rooms"&&e.Key==Key.Escape&&_modal==null){Navigate("settings");e.Handled=true;return;}   // rooms: back to Settings > Advanced
         if(e.Key==Key.Escape) { if(_modal!=null){var dismissed=_modal;_modal=null;dismissed.OnNo?.Invoke();}else if(!IsInstaller)Navigate("home");e.Handled=true; }
         if(_modal!=null){e.Handled=true;return;}
         if(!IsInstaller&&_view=="mods"&&HandleModsKey(e.Key)){e.Handled=true;InvalidateVisual();return;}
@@ -400,6 +402,7 @@ public sealed partial class ClassicSurface : Control
         if(_modal==null&&ActivateChangePrompt(id))return;
         if(_modal==null&&ActivateModDialog(id))return;
         if(!IsInstaller&&_view=="remap"&&_modal==null&&ActivateRemap(id)) { InvalidateVisual();return; } // remap page (RemapArtwork.cs)
+        if(_modal==null&&ActivateRooms(id)) { UpdateNativeControls();InvalidateVisual();return; }   // rooms: RoomsArtwork.cs
         if(ActivateDetails(id)) { InvalidateVisual();return; }
         if(id.StartsWith("modal:")) { var prompt=_modal;_modal=null;switch(id){case "modal:yes":prompt?.OnYes?.Invoke();break;case "modal:mid":prompt?.OnMid?.Invoke();break;case "modal:no":prompt?.OnNo?.Invoke();break;} }
         else if(id.StartsWith("opt:")) { switch(id){case "opt:shortcuts":_optShortcuts=!_optShortcuts;break;case "opt:firewall":_optFirewall=!_optFirewall;break;case "opt:shaders":_optShaders=!_optShaders;break;case "opt:updates":_optUpdates=!_optUpdates;break;case "opt:license":_optLicense=!_optLicense;break;} }

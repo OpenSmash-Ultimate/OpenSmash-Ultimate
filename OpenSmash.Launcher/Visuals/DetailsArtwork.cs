@@ -31,9 +31,7 @@ public sealed partial class ClassicSurface
             ["background"] = "Off: controllers work only while the game's window is in front.",
             ["ui_language"] = "The launcher's and the game's menus. System language follows your computer's.",
             ["remap"] = "Press a button for each of the game's buttons, one controller at a time.",
-            ["yuzu_room"] = "Optional yuzu-compatible rooms.",
             ["pads"] = "Pins and button layouts. Each controller is also set up in the game, under Controllers.",
-            ["hot_reload_mod_assets"] = "Applies next game launch. Refreshes changed files that fit loaded buffers. Larger files and GPU textures/models need a new match.",
         };
 
         void PaintSettings(Graphics g, int W, int H)
@@ -42,8 +40,7 @@ public sealed partial class ClassicSurface
             PaintSectionHead(g, "03 / SETTINGS", "SETTINGS");
 
             var vis = GetVisibleSettings();
-            bool developer = _settingsTabs[Math.Clamp(_settingsTab, 0, _settingsTabs.Length - 1)].Name == "Developer";
-            float headerH = 34 * s, rowH = (developer ? 150 : 74) * s;
+            float headerH = 34 * s, rowH = 74 * s;
             _settingsRowH = rowH;
             int tab = _settingsTabs.Length == 0 ? 0 : Math.Clamp(_settingsTab, 0, _settingsTabs.Length - 1);
             _settingsTab = tab;
@@ -103,6 +100,13 @@ public sealed partial class ClassicSurface
                 }
             }
 
+            if (tab < _settingsTabs.Length && _settingsTabs[tab].Name == "Advanced")   // rooms: RoomsArtwork.cs
+            {
+                _settingsMaxScroll = 0;
+                _settingsScroll = 0;
+                PaintAdvancedMultiplayer(g, x, cw, listTop);
+                return;
+            }
             if (tab < _settingsTabs.Length && string.Equals(_settingsTabs[tab].Name, "Storage", StringComparison.OrdinalIgnoreCase))
             {
                 _settingsMaxScroll = 0;
@@ -136,7 +140,6 @@ public sealed partial class ClassicSurface
                 }
             }
             float ctlW = Math.Clamp(longestValue + 72 * s, 260 * s, Math.Max(260 * s, cw - 340 * s));
-            if (developer) ctlW = 260 * s;
             float ctlX = x + cw - ctlW, ctlH = 40 * s;
             var clip = g.Save();
             g.SetClip(new RectangleF(x - 8 * s, listTop, cw + 36 * s, viewH));
@@ -180,14 +183,8 @@ public sealed partial class ClassicSurface
                     g.Restore(ns);
 
                     float lx = x + 76 * s + shift;
-                    if (developer)
-                        ArtworkTheme.DrawWrapped(g, set.Label.ToUpperInvariant(), FD(24 * s), A(ArtworkTheme.Text), lx, ry + 14 * s, ctlX - lx - 24 * s, 68 * s);
-                    else
-                        ArtworkTheme.Label(g, set.Label.ToUpperInvariant(), FD(24 * s), A(enabled ? ArtworkTheme.Text : ArtworkTheme.Dim), lx, ry + 14 * s, 22 * s, 0.24f * s);
-                    if (developer)
-                        ArtworkTheme.DrawWrapped(g, SettingInfo[set.Key], FB(13.5f * s), A(ArtworkTheme.Muted), lx, ry + 86 * s, ctlX - lx - 24 * s, 52 * s);
-                    else
-                        ArtworkTheme.DrawText(g, SettingInfo.GetValueOrDefault(set.Key, ""), FB(13.5f * s), A(enabled ? ArtworkTheme.Muted : ArtworkTheme.Dim), lx, ry + 42 * s, ctlX - lx - 24 * s, 20 * s);
+                    ArtworkTheme.Label(g, set.Label.ToUpperInvariant(), FD(24 * s), A(enabled ? ArtworkTheme.Text : ArtworkTheme.Dim), lx, ry + 14 * s, 22 * s, 0.24f * s);
+                    ArtworkTheme.DrawText(g, SettingInfo.GetValueOrDefault(set.Key, ""), FB(13.5f * s), A(enabled ? ArtworkTheme.Muted : ArtworkTheme.Dim), lx, ry + 42 * s, ctlX - lx - 24 * s, 20 * s);
 
                     float cy = ry + (rowH - ctlH) / 2;
                     string val = ShownValue(set);
@@ -422,11 +419,15 @@ public sealed partial class ClassicSurface
                 ArtworkTheme.Label(g, versions, vf, A(ArtworkTheme.Dim), x + pad, listTop + ch - 88 * s, 16 * s, 12 * s * 0.08f);
             }
             float bh = 44 * s, by = listTop + ch - bh - 28 * s;
-            float wApply = 150 * s, wCheck = 210 * s;
+            float wApply = 150 * s, wCheck = 210 * s, wBuild = 220 * s;
             bool showApply = _updateState == "available" || _updateApplying;
-            float xApply = x + cwIn - pad - wApply;
-            float xCheck = showApply ? xApply - 12 * s - wCheck : x + (cwIn - wCheck) / 2;
+            float xApply = x + cwIn - pad - wApply, xBuild = x + pad;
+            float xCheck = showApply ? xApply - 12 * s - wCheck : xBuild + wBuild + 12 * s;
             bool canCheck = !_updateChecking && !_updateApplying;
+            // Rebuild action (main's update:build, tools/rebuild-all.ps1): MainWindow.RebuildAll.
+            bool canBuild = !Busy && canCheck;
+            ArtworkTheme.ButtonAnimated(g, "BUILD GAME + LAUNCHER", xBuild, by, wBuild, bh, s, true, Hov("update:build", canBuild && _hover == "update:build"), canBuild, 11 * s, _alpha, press: Press("update:build"));
+            if (canBuild) AddHit("update:build", xBuild, by, wBuild, bh);
             ArtworkTheme.ButtonAnimated(g, _updateState == "checking" ? "CHECKING\u2026" : "CHECK FOR UPDATE", xCheck, by, wCheck, bh, s, false, Hov("update:check", canCheck && _hover == "update:check"), canCheck, 12 * s, _alpha, press: Press("update:check"));
             if (canCheck) AddHit("update:check", xCheck, by, wCheck, bh);
             bool canApply = _updateState == "available" && !_updateApplying && !_updateChecking;

@@ -1221,7 +1221,7 @@ def spirv_expected(root=ROOT):
 def forget_stale_marker(root=ROOT, expected=None, log=print):
     """complete.txt says the SPIR-V was made, under other names than the built game reads (SHADER_CACHE_SPV_VERSION or
     glslang changed since): it is removed, so the launcher offers Prepare Shaders again, which makes only the files
-    missing. The launcher only looks for a "spirv" line (LauncherForm.cs ShadersDone): after #330's g1001 -> g1002
+    missing. The launcher only looks for a "spirv" line (OpenSmash.Launcher/Shaders.cs ShadersDone): after #330's g1001 -> g1002
     every prepared cache still counted, and every shader was made in play. install_windowsmash.ps1 runs this after
     each build, and when no build was needed. True when it was removed."""
     marker = os.path.join(root, "dump", "shadercache", "complete.txt")

@@ -324,6 +324,7 @@ try
     RemapChecks.Run(root);
     CommunityChecks.Run(root);
     CommunityChecks.Render(root,screenshot==null?null:Path.GetDirectoryName(screenshot));
+    RoomsChecks.Run(root);
     Console.WriteLine("All desktop launcher checks passed.");
 }
 finally

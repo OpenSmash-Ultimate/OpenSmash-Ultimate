@@ -152,7 +152,7 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(len(out.getvalue().splitlines()), len(lines))
 
     def test_the_launchers_pattern_reads_every_line(self):
-        # OpenSmash.Launcher/LauncherForm.cs NoteShaderLine: ([\d,]+)\s+of\s+([\d,]+)\s+shaders(?:,\s*(.+))?$
+        # OpenSmash.Launcher/Visuals/BackgroundJobs.cs NoteShaderLine: ([\d,]+)\s+of\s+([\d,]+)\s+shaders(?:,\s*(.+))?$
         import re
         pattern = re.compile(r'([\d,]+)\s+of\s+([\d,]+)\s+shaders(?:,\s*(.+))?$', re.I)
         out = Out(tty=False)

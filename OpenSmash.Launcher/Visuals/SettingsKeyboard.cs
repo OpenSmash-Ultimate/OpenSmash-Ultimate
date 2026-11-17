@@ -44,6 +44,7 @@ public sealed partial class ClassicSurface
         if(key==Key.Enter)
         {
             if(_settingsTabs[_settingsTab].Name.Equals("Update",StringComparison.OrdinalIgnoreCase))ActionRequested?.Invoke(_updateState=="available"?"update:apply":"update:check");
+            else if(_settingsTabs[_settingsTab].Name=="Advanced")Activate("nav:rooms");   // rooms: RoomsArtwork.cs
             else if(selected!=null&&!selected.Slider)Activate("set:"+Array.IndexOf(_settings,selected));
             return true;
         }

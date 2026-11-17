@@ -84,11 +84,10 @@ void InitializeSettings() {
                 new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "pads", "remap" } },
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
-                new SettingTab { Name = "Advanced", SettingKeys = new[] { "yuzu_room" } },
-                new SettingTab { Name = "Developer", SettingKeys = new[] { "hot_reload_mod_assets" } },
                 new SettingTab { Name = "Game", SettingKeys = new[] { "game_files" } },
                 new SettingTab { Name = "Theme", SettingKeys = new[] { "theme_preset", "theme_accent", "theme_background", "theme_text", "theme_save", "theme_reset" } },
             };
+            if (RoomsSupported) _settingsTabs = [.. _settingsTabs, new SettingTab { Name = "Advanced", SettingKeys = Array.Empty<string>() }];   // rooms: RoomsArtwork.cs
 
             _settings = new[]
             {
@@ -118,9 +117,7 @@ void InitializeSettings() {
                 new Setting { Key = "keyboard_player", Label = "Keyboard plays as", Values = new[] { "1", "2", "3", "4", "5", "6", "7", "8", "0" }, Labels = new[] { "Player 1", "Player 2", "Player 3", "Player 4", "Player 5", "Player 6", "Player 7", "Player 8", "Nobody (no keyboard)" } },
                 new Setting { Key = "background", Label = "Controllers in the background", Values = new[] { "1", "0" }, Labels = new[] { "Work while another window is in front", "Only while the game is in front" } },
                 new Setting { Key = "remap", Label = "Remap a controller", Action = "settings:remap" },
-                new Setting { Key = "yuzu_room", Label = "Advanced multiplayer", Action = "settings:yuzu" },
                 new Setting { Key = "pads", Label = "controllers.ini", Values = new[] { "open" }, Labels = new[] { "Open the file" } },
-                new Setting { Key = "hot_reload_mod_assets", Label = "Hot reload mod assets in training mode by doing L + R + A", Values = new[] { "0", "1" }, Labels = new[] { "Disabled", "Enabled" } },
             };
 }
         public Func<bool> ShadersPending {get;set;}=()=>false;
@@ -143,7 +140,6 @@ void InitializeSettings() {
             if (s.Key == "game_files") return "Open setup";
             if (s.Key == "theme_reset") return "Reset colors";
             if (s.Key == "remap") return "Press a button for each of the game's";
-            if (s.Key == "yuzu_room") return "Yuzu room";
             string v = _iniValues.GetValueOrDefault(s.Key, s.Text || s.Slider || s.Values.Length == 0 ? "" : s.Values[0]);
             if (s.Slider) return v;
             if (s.Text) return v == "" ? "type here" : v;
@@ -304,7 +300,6 @@ void InitializeSettings() {
             string direct = File.Exists(directFile) ? FirstLine(directFile) : SettingDefaults.OfFile("online_direct.txt");
             _iniValues["direct"] = direct.StartsWith("off", StringComparison.OrdinalIgnoreCase) ? "off" : "on";
             _iniValues["name"] = FirstLine(Project.ConfigFile("online_name.txt"));
-            _iniValues["hot_reload_mod_assets"] = IniValue(launcherIni, "opensmash", "hot_reload_mod_assets") == "1" ? "1" : "0";
             var gpu = _settings.First(s => s.Key == "gpu");
             if (!gpu.Values.Contains(_iniValues["gpu"]))
             {
@@ -350,7 +345,6 @@ void InitializeSettings() {
             if (_changedSettings.Contains("name")) SetFirstLine(Project.ConfigFile("online_name.txt"), _iniValues.GetValueOrDefault("name", "").Trim());
             if (_changedSettings.Contains("direct")) SetFirstLine(Project.ConfigFile("online_direct.txt"), _iniValues.GetValueOrDefault("direct", SettingDefaults.OfFile("online_direct.txt")));
             string launcherIni = Project.ConfigFile("launcher.ini");
-            if (_changedSettings.Contains("hot_reload_mod_assets")) SetIni(launcherIni, "opensmash", "hot_reload_mod_assets", _iniValues.GetValueOrDefault("hot_reload_mod_assets", "0"));
             _changedSettings.Clear();   // (written: the game's later changes stay)
             if (serverChanged && !serverReady) _changedSettings.UnionWith(["lobby", "code", "server"]);
             // (only when changed here: a stale copy once hid the lobby the game's menu had picked)

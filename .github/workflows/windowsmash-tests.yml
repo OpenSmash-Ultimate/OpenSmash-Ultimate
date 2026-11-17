@@ -29,20 +29,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The launcher's process tests compile the production C# helper without opening a window.
-      - uses: actions/setup-dotnet@v4
-        if: runner.os == 'Windows'
-        with:
-          dotnet-version: '8.0.x'
-
+      # (the launcher's own checks, settings, remap, lobby feed, rooms and languages, run in desktop-launcher.yml)
       # 3.14: the Python the Windows installer puts in deps/python
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
-
-      - name: Launcher localization behavior
-        if: runner.os == 'Windows'
-        run: dotnet run --project tests/launcher_localization/LauncherLocalizationTests.csproj -c Release
 
       - name: Shared UI catalogs
         run: python tools/localization.py --check
@@ -84,15 +75,6 @@ jobs:
       - name: yuzu client libraries
         if: runner.os == 'Windows'
         run: python tools/yuzu_client_deps.py
-
-      - name: Embedded room UI behavior
-        if: runner.os == 'Windows'
-        run: dotnet run --project tests/launcher_yuzu_ui/LauncherYuzuUiTests.csproj -c Release
-
-      # The launcher's settings against the game's defaults, the remap page with simulated pads, the home page's lobby feed
-      - name: Launcher settings, remap and lobby feed
-        if: runner.os == 'Windows'
-        run: dotnet run --project tests/launcher_settings/LauncherSettingsTests.csproj -c Release
 
       # gfxtest (the Metal renderer) skips on the runner's paravirtual GPU, where it never finished; a manual run
       # (workflow_dispatch) runs it anyway and shows what it printed before its 300 s timeout

@@ -96,7 +96,12 @@ class OnlineFilesTests(unittest.TestCase):
         build = read('tools', 'build_game.py')
         prep = build[build.index('if a.prepare_only:'):]
         self.assertLess(prep.index('online_files(log)'), prep.index('return'))
-        self.assertIn('online_files.py', read('OpenSmash.Launcher', 'LauncherForm.cs'))
+        self.assertIn('online_files.py', read('OpenSmash.Launcher', 'OnlineFiles.cs'))
+        play = read('OpenSmash.Launcher', 'MainWindow.cs')
+        play = play[play.index('async Task Play()'):]
+        self.assertLess(play.index('EnsureOnlineFiles()'), play.index('Commands.Play('))
+        update = read('OpenSmash.Launcher', 'Updates.cs')
+        self.assertIn('EnsureOnlineFiles()', update[update.index('async Task ApplyUpdate()'):])
 
 
 if __name__ == '__main__':

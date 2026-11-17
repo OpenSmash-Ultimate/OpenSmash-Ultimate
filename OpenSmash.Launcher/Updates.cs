@@ -24,7 +24,7 @@ public sealed partial class MainWindow
         {
             local=await LocalSourceCommit();
             if(!Regex.IsMatch(local,@"^[0-9a-fA-F]{40}$"))throw new InvalidOperationException("This copy does not name its source commit. Updates cannot be checked.");
-            using var latest=await GitHub("/commits/main");head=latest.RootElement.GetProperty("sha").GetString()??"";
+            using var latest=await GitHub("/commits/"+await UpdateRef());head=latest.RootElement.GetProperty("sha").GetString()??"";
             if(local.Equals(head,StringComparison.OrdinalIgnoreCase)){_updateStatus="uptodate";message="OpenSmash is up to date.";}
             else
             {
@@ -42,6 +42,17 @@ public sealed partial class MainWindow
             string choice=await Surface.ShowUpdatePrompt();
             if(choice=="update"&&!_closed)await ApplyUpdate();
         }
+    }
+    // Update channel (issue #329, as tools/install_windowsmash.ps1): the newest versioned release by default; main commit
+    // by commit is opt-in for testers (OPENSMASH_UPDATE_CHANNEL=main, or "main" in tools/update_channel.txt). No release yet: main.
+    async Task<string> UpdateRef()
+    {
+        string channel=Environment.GetEnvironmentVariable("OPENSMASH_UPDATE_CHANNEL")??"",file=RequireProject().PathIn("tools","update_channel.txt");
+        if(channel.Length==0&&File.Exists(file))channel=File.ReadAllText(file).Trim();
+        if(channel.Equals("main",StringComparison.OrdinalIgnoreCase))return "main";
+        try{using var release=await GitHub("/releases/latest");string tag=release.RootElement.TryGetProperty("tag_name",out var name)?name.GetString()?.Trim()??"":"";if(tag.Length>0)return Uri.EscapeDataString(tag);}
+        catch(Exception error) when(error is HttpRequestException or JsonException or TaskCanceledException){}
+        return "main";
     }
     async Task<string> LocalSourceCommit()
     {
@@ -73,6 +84,7 @@ public sealed partial class MainWindow
             if(p.Platform==DesktopPlatform.Windows)await EnsureToolsPython(force:true);
             else await RunUpdateStep(new Command(p.Python,[p.PathIn("tools","desktop_update.py"),"--python-only"],p.Root),"python_setup.log");
             await RebuildUpdatedGame();
+            await EnsureOnlineFiles();   // #394: OnlineFiles.cs
             restart=File.Exists(UpdateState.LauncherMarker(p))&&await DotnetSdkAvailable();
         }
         catch(Exception error){failure=error.Message;}

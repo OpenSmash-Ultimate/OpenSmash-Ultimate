@@ -188,6 +188,7 @@ public sealed partial class MainWindow : Window
                     string pads=RequireProject().ConfigFile("controllers.ini");if(!File.Exists(pads))File.WriteAllText(pads,"[general]\nkeyboard_player = 1\nbackground = 1\n");Commands.OpenPath(pads);break;
                 case "update:check":await CheckUpdates();break;
                 case "update:apply":await ApplyUpdate();break;
+                case "update:build":await RebuildAll();break;   // Maintenance.cs
                 case "storage:refresh":Surface.SetStorageResult(await Python("data_location.py"));break;
                 case "storage:move":
                     var targets=await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions{Title="Choose a destination for dump and build",AllowMultiple=false});
@@ -242,6 +243,7 @@ public sealed partial class MainWindow : Window
     }
     async Task Play()
     {
+        if(Surface.RoomGameRunning){Surface.Navigate("rooms");return;}   // rooms: the room session owns the game
         var p=RequireProject();if(!p.IsBuilt||Surface.GameRunning||Surface.IsInstalling||Surface.ModsRunning||Surface.OperationRunning)return;
         if(_playPreflight||_checkingChanges||Surface.HasPrompt)return;
         _playPreflight=true;
@@ -258,6 +260,7 @@ public sealed partial class MainWindow : Window
             await Task.Delay(150); // Give the starting state its first frame before preparing mods.
             if(Directory.Exists(p.PathIn("mods"))&&File.Exists(p.PathIn("mods","mods.json")))await ModCommand(Surface.LaunchMode=="vanilla"?"vanilla":"apply",refresh:false);
             Directory.CreateDirectory(p.PathIn("build"));
+            await EnsureOnlineFiles();   // #394: OnlineFiles.cs
             string log=p.PathIn("build","opensmash-play.log");
             PresenceStop();   // (the game's own Rich Presence takes over; MainWindow.Discord.cs)
             int exit=await GameLaunch.Monitor(Commands.Play(p,true),log,()=>{Surface.StartingGame=false;Hide();},

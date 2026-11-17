@@ -119,13 +119,6 @@ renderer on Windows for development checks.
 The Home, Settings, Mods and Plugins layouts and the mod-list/conflict dialogs use
 the original drawing methods. The marketplace embeds the original
 `MarketplaceHtml.html` with its existing CSS and a portable message transport.
-Settings -> Developer offers mod asset hot reload, disabled by default. Enable it
-before launching the game, then press L + R + A in training mode to refresh changed
-mod data in loaded buffers. Files that outgrow those buffers and models/textures
-already uploaded to the GPU still need a new match. The preference is stored as
-`hot_reload_mod_assets = 1` (enabled) or `0` (disabled) in `launcher.ini`'s
-`[opensmash]` section, under `config/` once migrated. A game built before this
-setting was added must be rebuilt; updating the launcher alone cannot change its runtime.
 Settings -> Display -> Preload all shaders is a Compile shaders button, not a
 saved preference. It runs the installer's `tools/shader_aot.py --priority medium`
 step, reusing completed work. The bottom progress bar shows listing/compilation
