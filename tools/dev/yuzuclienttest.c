@@ -23,6 +23,7 @@ const struct NetBackend net_eos_backend;
 void net_eos_net_packet(const char *from, const u8 *p, u32 n) { (void)from; (void)p; (void)n; }
 void nexeos_tick(void) {}
 void nexeos_packet(const char *from, const u8 *data, u32 len) { (void)from; (void)data; (void)len; }
+int nexeos_lobbies(char ids[][16], int max) { (void)ids; (void)max; return 0; }
 uint64_t nex_pid_of(const char *key) { (void)key; return 0; }
 int online_nex_datagram(u32 s, u16 sp, u32 d, u16 dp, const void *p, u32 n) { (void)s; (void)sp; (void)d; (void)dp; (void)p; (void)n; return 0; }
 void discord_note_room(int in_room, int players, int max_players, unsigned host_ip){(void)in_room;(void)players;(void)max_players;(void)host_ip;}
