@@ -1027,11 +1027,18 @@ static int vblank_tick(void) {
      * tick, 25 ms (a fight on a 120 Hz monitor: up to ~1 frame in 100 shown 1.5 frames late). Refreshes are counted
      * by their times, so a wait that returns at once or misses one is counted as what it was. */
     LONGLONG period = freq.QuadPart / hz_now;
+    /* (A wait that runs past what the refreshes say cannot resolve - the monitor changed rate under us, or the driver's
+     * vblank is not arriving - ends at a time bound and takes the clock path, instead of falling through the old
+     * "never more than a few refreshes" cap: at 120 Hz every tick then waited ~44.6 ms (five refreshes) and 295 frames
+     * in 80 s were 46 ms hitches, all of them inside this loop - owner's log, 2026-11-17.) */
+    LONGLONG budget = period * (divisor + extra + 2);
     for (int waits = 0;;) {
         if (FAILED(IDXGIOutput_WaitForVBlank(output))) { failed = 1; InterlockedExchange(&vblank_failed_flag, 1); break; }
         QueryPerformanceCounter(&t1);
-        if (!last || ++waits >= 2 * divisor + 2) break;   /* (the first tick; and never more than a few refreshes) */
+        if (!last) break;   /* (the first tick: one refresh is the answer) */
         if ((t1.QuadPart - last + period / 2) / period >= divisor + extra) break;
+        if (t1.QuadPart - t0.QuadPart > budget) { failed = 1; break; }   /* (the vblanks are not what the rate says) */
+        (void)waits;
     }
     QueryPerformanceCounter(&t1);
     last = t1.QuadPart;
