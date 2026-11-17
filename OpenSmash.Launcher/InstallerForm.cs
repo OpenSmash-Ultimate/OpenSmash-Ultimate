@@ -1407,7 +1407,7 @@ namespace OpenSmash.Launcher
         {
             if (File.Exists(Path.Combine(folder, "romfs.bin")))
                 return (true, "romfs.bin found (the game data, used as it is).");
-            string? py = PythonExe();
+            var (py, pyArgs) = PythonExe();
             string script = Path.Combine(_repo, "tools", "gamefiles.py");
             if (py == null || !File.Exists(script))
                 return (true, "This folder will be read after Python is installed.");
@@ -1416,9 +1416,7 @@ namespace OpenSmash.Launcher
                 var psi = new ProcessStartInfo
                 {
                     FileName = py,
-                    Arguments = py.EndsWith("py.exe", StringComparison.OrdinalIgnoreCase) || Path.GetFileName(py).Equals("py", StringComparison.OrdinalIgnoreCase)
-                        ? "-3 \"" + script + "\" \"" + folder + "\" --keys \"" + keys + "\" --json"
-                        : "\"" + script + "\" \"" + folder + "\" --keys \"" + keys + "\" --json",
+                    Arguments = pyArgs + "\"" + script + "\" \"" + folder + "\" --keys \"" + keys + "\" --json",
                     WorkingDirectory = _repo,
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
@@ -1458,24 +1456,57 @@ namespace OpenSmash.Launcher
             }
         }
 
-        string? PythonExe()
+        // The Python that reads the game folder, and the arguments before the script: the installer's own (deps/venv,
+        // deps/python), else a Python 3.10 or newer on the PATH or from the py launcher - the versions the installer
+        // accepts (tools/install_windowsmash.ps1). (#424: an older python.exe on the PATH - a 2.7, a 3.6 - read the tools'
+        // newer syntax as "SyntaxError: invalid syntax" and the folder was reported unreadable.)
+        (string? Exe, string Args) PythonExe()
         {
-            string emb = Path.Combine(_repo, "deps", "python", "python.exe");
-            if (File.Exists(emb)) return emb;
+            foreach (string own in new[] { Path.Combine(_repo, "deps", "venv", "Scripts", "python.exe"), Path.Combine(_repo, "deps", "python", "python.exe") })
+                if (File.Exists(own) && PythonIsNewEnough(own, "")) return (own, "");
             string? path = Environment.GetEnvironmentVariable("PATH");
-            if (path == null) return null;
-            foreach (string dir in path.Split(Path.PathSeparator))
+            if (path != null)
+                foreach (string dir in path.Split(Path.PathSeparator))
+                {
+                    if (dir.Length == 0) continue;
+                    // (WindowsApps' python.exe is the Microsoft Store's shortcut: with no Python installed it only prints
+                    // "Python was not found...", the game folder was reported unreadable, and the install would not start.
+                    // The installer sets up its own Python; the folder is read after that.)
+                    if (dir.Contains(@"\WindowsApps", StringComparison.OrdinalIgnoreCase)) continue;
+                    string python;
+                    try { python = Path.Combine(dir.Trim('"'), "python.exe"); } catch { continue; }
+                    if (File.Exists(python) && PythonIsNewEnough(python, "")) return (python, "");
+                    string py = Path.Combine(dir.Trim('"'), "py.exe");
+                    if (File.Exists(py) && PythonIsNewEnough(py, "-3 ")) return (py, "-3 ");
+                }
+            // (#173) a Python installed without "Add python.exe to PATH" (only 3.10 or newer are picked)
+            string? installed = ModManagerProcess.FindInstalledPython();
+            if (installed != null && PythonIsNewEnough(installed, "")) return (installed, "");
+            return (null, "");
+        }
+
+        // Whether this Python runs and is 3.10 or newer.
+        static bool PythonIsNewEnough(string exe, string args)
+        {
+            try
             {
-                // (WindowsApps' python.exe is the Microsoft Store's shortcut: with no Python installed it only prints
-                // "Python was not found...", the game folder was reported unreadable, and the install would not start.
-                // The installer sets up its own Python; the folder is read after that.)
-                if (dir.Contains(@"\WindowsApps", StringComparison.OrdinalIgnoreCase)) continue;
-                string py = Path.Combine(dir, "py.exe");
-                if (File.Exists(py)) return py;
-                string python = Path.Combine(dir, "python.exe");
-                if (File.Exists(python)) return python;
+                var psi = new ProcessStartInfo
+                {
+                    FileName = exe,
+                    Arguments = args + "-c \"import sys; print(sys.version_info[0] * 100 + sys.version_info[1])\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                };
+                using var p = Process.Start(psi);
+                if (p == null) return false;
+                var outTask = p.StandardOutput.ReadToEndAsync();
+                _ = p.StandardError.ReadToEndAsync();
+                if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } return false; }
+                return outTask.Wait(2000) && int.TryParse(outTask.Result.Trim(), out int v) && v >= 310 && v < 400;
             }
-            return null;
+            catch { return false; }
         }
 
         void PickFolder(string which)

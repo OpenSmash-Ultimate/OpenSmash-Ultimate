@@ -274,7 +274,7 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         if (w) { fputs(DEFAULT_INI, w); fclose(w); fprintf(stderr, "[display] wrote the default %s\n", path); }
         f = fopen(path, "r");
     }
-    char line[256];
+    char line[256], renderer_line[64] = "", renderer_menu[64] = "";
     while (f && fgets(line, sizeof line, f)) {
         char *s = trim(line), *eq;
         if (*s == ';' || *s == '#' || *s == '[' || !(eq = strchr(s, '='))) continue;
@@ -293,7 +293,8 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else if (!_stricmp(key, "overlay_scale")) parse_overlay_scale(value);
         else if (!_stricmp(key, "gpu")) snprintf(cfg.gpu, sizeof cfg.gpu, "%s", value);
         else if (!_stricmp(key, "render_scale")) parse_render_scale(value);
-        else if (!_stricmp(key, "renderer")) parse_renderer(value, path);
+        else if (!_stricmp(key, "renderer")) { parse_renderer(value, path); snprintf(renderer_line, sizeof renderer_line, "%s", value); }
+        else if (!_stricmp(key, "renderer_menu")) snprintf(renderer_menu, sizeof renderer_menu, "%s", value);
         else if (!_stricmp(key, "ui_language")) {}   /* (ui_locale.h reads it for the external menu) */
         else if (!_stricmp(key, "aspect")) snprintf(cfg.aspect, sizeof cfg.aspect, "%s", value);
         else if (!_stricmp(key, "view")) parse_view(value, path);
@@ -304,6 +305,18 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else fprintf(stderr, "[display] %s: unknown setting '%s'\n", path, key);
     }
     if (f) fclose(f);
+#ifdef _WIN32
+    /* (#429) renderer = d3d11 is the old spelling, auto since #245 (renderer.h). The launcher of the v0.3.0 alphas still
+     * writes it at every Play for its "Direct3D 11 (default)", which also put the settings menu's choice back to auto -
+     * Vulkan on an AMD card - at the next start. renderer_menu is the menu's last choice, a key that launcher never
+     * writes: under that old spelling the menu's choice stands. Any other renderer value (auto, direct3d11, vulkan:
+     * the menu's, today's launcher's, a hand-written one) is taken as it is, and a d3d11 never touched stays auto. */
+    if (renderer_menu[0] && !_stricmp(renderer_line, "d3d11") && renderer_parse(renderer_menu) >= 0) {
+        cfg.renderer = renderer_parse(renderer_menu);
+        fprintf(stderr, "[display] %s: renderer = d3d11 (written by an older launcher) and renderer_menu = %s (the settings menu's choice): %s\n",
+                path, renderer_menu, renderer_name(cfg.renderer));
+    }
+#endif
     if ((env = getenv("SSBU_GPU")) && *env) snprintf(cfg.gpu, sizeof cfg.gpu, "%s", env);
     if ((env = getenv("SSBU_WINDOW")) && *env) parse_window(env);
     if ((env = getenv("SSBU_PACING")) && *env) parse_pacing(env);

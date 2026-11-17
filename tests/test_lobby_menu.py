@@ -379,15 +379,16 @@ class Pages(MenuTest):
     def test_other_pages_as_before(self):
         m = self.menu()
         m.key('ESC')
-        display = ['Window', 'Window size', 'Render scale', 'Aspect ratio', 'Viewtype', 'Frame pacing', 'Show advanced settings']
+        renderer = ['Renderer'] if sys.platform != 'darwin' else []   # (#429: in sight, under Picture)
+        display = ['Window', 'Window size', 'Render scale', 'Aspect ratio', 'Viewtype', *renderer, 'Frame pacing', 'Show advanced settings']
         self.assertEqual(m.labels(), display)   # (the everyday rows; the rest are behind the switch)
         m.key('DOWN', sum(1 for r in m.rows()[:m.labels().index('Frame pacing')] if r['kind'] != 0))   # (read-only rows are passed over)
         self.assertEqual(m.at()['label'], 'Frame pacing')   # (Viewtype is passed over at 16:9)
         m.key('DOWN')
         self.assertEqual(m.at()['label'], 'Show advanced settings')
         m.key('RIGHT')
-        display = ['Window', 'Window size', 'Render scale', 'Aspect ratio', 'Viewtype', 'Frame pacing', 'Show advanced settings',
-                   'Hide the mouse pointer', 'Timer position', 'Frames queued ahead', 'Frame rate in the corner'] + (['Graphics card'] if os.name == 'nt' else [])             + (['Renderer'] if sys.platform != 'darwin' else [])   # (the advanced rows under the switch)
+        display = ['Window', 'Window size', 'Render scale', 'Aspect ratio', 'Viewtype', *renderer, 'Frame pacing', 'Show advanced settings',
+                   'Hide the mouse pointer', 'Timer position', 'Frames queued ahead', 'Frame rate in the corner'] + (['Graphics card'] if os.name == 'nt' else [])   # (the advanced rows under the switch)
         self.assertEqual(m.labels(), display)   # (in sections: Window, Picture, Smoothness, Graphics)
         self.assertIn('show_advanced = 1', (m.dir / 'display.ini').read_text())
         m.type('2')
@@ -419,7 +420,7 @@ class Pages(MenuTest):
         """Display > Renderer: the system's own renderer (Windows: auto, then direct3d11), then Vulkan,
         saved in display.ini for the next start (runtime/renderer.h's names)."""
         own = 'auto (Direct3D 11)' if os.name == 'nt' else 'dxvk'   # (auto says which one this start drew with)
-        m = self.menu(files={'display.ini': 'show_advanced = 1\n'})   # (Renderer is behind the advanced switch)
+        m = self.menu()   # (#429: the row shows without the advanced switch)
         m.key('ESC')
         labels = m.labels()
         at = labels.index('Renderer')
@@ -431,6 +432,7 @@ class Pages(MenuTest):
             m.key('RIGHT')
             self.assertEqual(m.row('Renderer')['value'], 'direct3d11')
             self.assertIn('renderer = direct3d11', (m.dir / 'display.ini').read_text())
+            self.assertIn('renderer_menu = direct3d11', (m.dir / 'display.ini').read_text())   # (kept over an older launcher's d3d11)
         m.key('RIGHT')
         self.assertEqual(m.row('Renderer')['value'], 'vulkan')
         self.assertIn('renderer = vulkan', (m.dir / 'display.ini').read_text())

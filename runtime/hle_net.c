@@ -639,10 +639,15 @@ static void scan(Cpu *c, u64 out, u64 count_p, i32 room, u64 filter) {
     }
     u64 t = now_ms_();
     i32 found = 0;
+    /* (the room picked in F1's browser or by a Discord "Join", net_rooms_pick, first: over EOS the hub's rooms answer in
+     * any order and nothing else puts it there; a lobby's LIST already has it first) */
+    u32 picked = net_backend ? net_rooms_picked() : 0;
     AcquireSRWLockShared(&L.lock);
+    for (int pass = picked ? 0 : 1; pass < 2; pass++)
     for (int i = 0; i < SEEN_NETWORKS && found < room; i++) {
         const u8 *n = L.seen[i].info;
         if (!L.seen[i].at || t - L.seen[i].at > 3500) continue;
+        if (picked && (get_u32(n + NODE(0)) == picked) != (pass == 0)) continue;
         if (L.state == LS_AP_CREATED && !memcmp(n + NI_SESSION, L.net + NI_SESSION, 16)) continue;
         if ((flags & 1) && memcmp(n + NI_LCID, P(void, filter), 8)) continue;
         if ((flags & 2) && memcmp(n + NI_SESSION, P(void, filter + 0x10), 16)) continue;

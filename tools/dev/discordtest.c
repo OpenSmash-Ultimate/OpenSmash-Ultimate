@@ -17,6 +17,7 @@ int net_lobby(void) { return 0; }
 int net_configured(void) { return 0; }
 const char *net_relay_address(void) { return NULL; }
 const char *net_lobby_code(void) { return "smash"; }
+int net_on_eos(void) { return 0; }
 void net_rooms_pick(unsigned host) { (void)host; }
 void menu_toast(const char *text) { (void)text; }
 int account_nsa_hex(char out[17]) { out[0] = 0; return 0; }
@@ -104,6 +105,25 @@ static void presence(void) {
     CHECK(!discord_join_parse("os2|a||abc|x", &j), "no lobby");
     CHECK(!discord_join_parse("os2|a|h:1|abc|x|y", &j) && !discord_join_parse("os2|a|h:1|ab c|x", &j) && !discord_join_parse(NULL, &j), "extra separator, spaces, NULL");
     CHECK(!discord_join_parse("os2|a|h:1|abcdefghijklmnopqrstuvwxyzabcdefghijklmnop|x", &j) && !j.where, "a code too long");
+
+    /* where this game is online, as a secret names it, and whether a friend's join is there (EOS for everyone, 99f74818) */
+    CHECK(!strcmp(discord_join_lobby(1, NULL), "eos") && !strcmp(discord_join_lobby(1, "opensmash-lobby.duckdns.org:39421"), "eos"),
+          "over EOS the secret's lobby is \"eos\", whatever server the settings name");
+    CHECK(!strcmp(discord_join_lobby(0, "h:1"), "h:1") && !discord_join_lobby(0, NULL) && !discord_join_lobby(0, ""), "a lobby server's address, else nothing");
+    memset(&p, 0, sizeof p);
+    p.where = DP_ROOM; p.players = 2; p.max_players = 8;
+    strcpy(p.relay, discord_join_lobby(1, "opensmash-lobby.duckdns.org:39421")); strcpy(p.code, "smash"); strcpy(p.target, "10.13.4.9");
+    CHECK(discord_join_secret(&p, secret, sizeof secret) && !strcmp(secret, "os2|r|eos|smash|10.13.4.9"), "EOS room secret: %s", secret);
+    CHECK(discord_join_parse(secret, &j) && discord_join_same(&j, "eos", "smash") && discord_join_same(&j, "EOS", "smash"), "an EOS friend, me on EOS, same code: same");
+    CHECK(!discord_join_same(&j, "opensmash-lobby.duckdns.org:39421", "smash"), "an EOS friend, me on the public lobby: not the same (its players are not on EOS)");
+    CHECK(!discord_join_same(&j, "eos", "other") && !discord_join_same(&j, NULL, "smash") && !discord_join_same(&j, "", "smash"), "another code, offline");
+    CHECK(discord_join_room_host(&j) == (10u << 24 | 13u << 16 | 4u << 8 | 9u), "the room host's address, host order");
+    CHECK(discord_join_parse("os2|r|h:1|smash|10.13.0.7", &j) && discord_join_same(&j, "h:1", "smash") && !discord_join_same(&j, "eos", "smash"),
+          "a public-lobby friend, me on EOS: not the same");
+    CHECK(discord_join_parse("os2|r|h:1||10.13.0.7", &j) && discord_join_same(&j, "h:1", NULL) && discord_join_same(&j, "h:1", ""), "no code on either side");
+    const char *bad[] = {"os2|r|h:1|c|10.13.0", "os2|r|h:1|c|10.13.0.256", "os2|r|h:1|c|10.13.0.7x", "os2|r|h:1|c|+1.2.3.4", "os2|r|h:1|c|1.2.3.4.5", "os2|r|h:1|c|1234.1.1.1"};
+    for (int i = 0; i < 6; i++) CHECK(discord_join_parse(bad[i], &j) && !discord_join_room_host(&j), "not a room host address: %s", bad[i]);
+    CHECK(discord_join_parse("os2|a|h:1|c|10.13.0.7", &j) && !discord_join_room_host(&j), "an arena's target is not a room host");
 }
 
 static void names(void) {
