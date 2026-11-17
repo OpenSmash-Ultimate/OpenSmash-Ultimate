@@ -4,6 +4,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using OpenSmash.Core;
+using OpenSmash.Launcher;
 
 namespace OpenSmash.Visuals;
 
@@ -46,6 +47,7 @@ public sealed partial class ClassicSurface
     {
         InitializeSettings();LogicalChildren.Add(_settingEdit);VisualChildren.Add(_settingEdit);
         AttachedToVisualTree+=(_,_)=>ApplyWindowIcon();
+        AttachedToVisualTree+=(_,_)=>UiLocale.Changed+=OnUiLanguageChanged;DetachedFromVisualTree+=(_,_)=>UiLocale.Changed-=OnUiLanguageChanged;
         _settingEdit.LostFocus+=(_,_)=>CommitEdit();
         _settingEdit.KeyDown+=(_,e)=> { if(e.Key is Key.Enter or Key.Escape){CommitEdit();Focus();e.Handled=true;} };
     }
@@ -58,6 +60,12 @@ public sealed partial class ClassicSurface
     {
         _settingEdit.FontSize=15*_s/_pixelScale;_settingEdit.Width=Math.Max(1,(rect.Width-24*_s)/_pixelScale);_settingEdit.Height=Math.Max(1,(rect.Height-8*_s)/_pixelScale);
         var r=new Rect((rect.X+12*_s)/_pixelScale,(rect.Y+4*_s)/_pixelScale,_settingEdit.Width,_settingEdit.Height);if(r!=_settingRect){_settingRect=r;InvalidateArrange();}
+    }
+    // A new language: fonts (CJK faces) and text outlines are rebuilt, and the mod browser gets the same catalog.
+    void OnUiLanguageChanged()
+    {
+        _fontCache.Clear();foreach(var path in _pathCache.Values)path.Dispose();_pathCache.Clear();InvalidateVisual();
+        _ = MarketplaceScript(UiLocale.WebScript+"window.__opensmashSetLocale && window.__opensmashSetLocale(window.__opensmashLocale);");
     }
     void LoadSettings() { if(Project!=null)ReadSettings(); }
     public string GetSetting(string key)=>_iniValues.GetValueOrDefault(key,"");
@@ -76,6 +84,12 @@ public sealed partial class ClassicSurface
         if(key=="theme_preset") { ApplyThemePreset(value); return; }
         if(key.StartsWith("theme_")) { ChangeThemeColor(key,value); return; }
         if(GameRunning) { Alert("CLOSE THE GAME","Close the game before changing its settings.");return; }
+        // (written at once and only on a choice here: closing after a game keeps the game's own language choice)
+        if(key=="ui_language")
+        {
+            try{SetIni(Project.ConfigFile("display.ini"),"",key,value);}catch(Exception error) when(error is IOException or UnauthorizedAccessException){Alert("COULD NOT SAVE",UiLocale.Format("Could not save interface language: {0}",error.Message));return;}
+            _iniValues[key]=value;UiLocale.Select(value);InvalidateVisual();return;
+        }
         _changedSettings.Add(key);
         _iniValues[key]=value;
         if(key=="window_size"&&value.Split('x') is {Length:2} parts) {_iniValues["width"]=parts[0];_iniValues["height"]=parts[1];_changedSettings.UnionWith(["width","height"]);}

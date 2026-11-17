@@ -199,6 +199,7 @@ public sealed partial class ClassicSurface : Control
         else if(IsInstaller && _view=="setup" && _built && !forceInstaller) { IsInstaller=false; _view="home"; _viewAt=_heroAt=Now; }
         if(project!=null)
         {
+            if(changed)Launcher.UiLocale.Initialize(project.Root);
             string version=project.PathIn("version.txt");
             _version=File.Exists(version)?File.ReadLines(version).FirstOrDefault(l=>l.Trim().Length>0 && !l.StartsWith('#') && !l.StartsWith(';'))?.Trim()??"":"";
             string launch=project.PathIn("build","launch_mode.txt");

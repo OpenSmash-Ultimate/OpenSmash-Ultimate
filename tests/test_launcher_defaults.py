@@ -190,14 +190,16 @@ class LauncherDefaultsTests(unittest.TestCase):
         self.assertEqual(set(re.findall(r'"(\w+)"', names)) | {self.renderer_default}, set(self.choices['renderer']))
 
     def test_launcher_reads_through_the_table(self):
-        """ReadSettings and WriteSettingsFiles take a missing value from SettingDefaults, not literals of their own."""
-        form = read(LAUNCHER / 'LauncherForm.cs')
-        read_block = form[form.index('        void ReadSettings()'):form.index('        bool SettingOn(')]
-        write_block = form[form.index('        void WriteSettingsFiles()'):form.index('        bool SaveGameSettings()')]
+        """ReadSettings and WriteSettingsFiles (Visuals/SettingsDefinitions.cs) take a missing value from SettingDefaults, not literals of their own."""
+        form = read(LAUNCHER / 'Visuals' / 'SettingsDefinitions.cs')
+        read_block = form[form.index('        void ReadSettings()'):form.index('        void WriteSettingsFiles()')]
+        write_block = form[form.index('        void WriteSettingsFiles()'):]
         for block in (read_block, write_block):
             self.assertNotRegex(block, r'\?\? "(?:windowed|1280|720|clock|1|auto|100)"')
             self.assertNotRegex(block, r'\("(?:window|pacing|volume|renderer)", "[^"]+"\)')
         self.assertIn('SettingDefaults.Of(', read_block)
+        for key in ('window', 'window_size', 'pacing', 'render_scale', 'renderer', 'lobby'):
+            self.assertIn(f'Values = SettingDefaults.Choices["{key}"]', form, f'{key} lists the game menu choices')
 
     def test_pad_names(self):
         prof = read(LAUNCHER / 'PadProfile.cs')

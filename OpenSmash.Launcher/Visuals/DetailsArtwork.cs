@@ -29,6 +29,9 @@ public sealed partial class ClassicSurface
             ["direct"] = "On is faster. Off sends everything through the lobby, so your address stays private.",
             ["keyboard_player"] = "The keyboard adds to that player's controller.",
             ["background"] = "Off: controllers work only while the game's window is in front.",
+            ["ui_language"] = "The launcher's and the game's menus. System language follows your computer's.",
+            ["remap"] = "Press a button for each of the game's buttons, one controller at a time.",
+            ["yuzu_room"] = "Optional yuzu-compatible rooms.",
             ["pads"] = "Pins and button layouts. Each controller is also set up in the game, under Controllers.",
             ["hot_reload_mod_assets"] = "Applies next game launch. Refreshes changed files that fit loaded buffers. Larger files and GPU textures/models need a new match.",
         };

@@ -10,7 +10,7 @@ namespace OpenSmash.Launcher
     // tests/test_launcher_defaults.py reads this table and the runtime's own defaults (runtime/gpu_display.c's
     // default display.ini, runtime/hle_pad.c's controllers.ini, runtime/gpu_menu.c's lists, runtime/ipc_audio.c) and
     // fails when they differ: change both together.
-    static class SettingDefaults
+    public static class SettingDefaults
     {
         // (file under config\, its [section] ("" none), key ("" the file's first line), the game's default)
         public static readonly (string File, string Section, string Key, string Default)[] Table =

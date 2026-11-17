@@ -21,8 +21,9 @@ static class UpstreamChecks
         File.WriteAllText(project.ConfigFile("display.ini"),"renderer = auto\nwindow = windowed\nvolume = 100\n");
         string defaultsRoot=Path.Combine(temporary,"display-defaults");Directory.CreateDirectory(Path.Combine(defaultsRoot,"tools"));Directory.CreateDirectory(Path.Combine(defaultsRoot,"runtime"));File.WriteAllText(Path.Combine(defaultsRoot,"tools","os_mods.py"),"");
         var defaults=new MainWindow([],defaultsRoot,enableBackgroundActions:false);
-        Check(defaults.Surface.GetSetting("window")=="borderless"&&defaults.Surface.GetSetting("window_size")=="1920x1080"&&defaults.Surface.GetSetting("pacing")=="display"&&defaults.Surface.GetSetting("render_scale")=="1"&&defaults.Surface.GetSetting("gpu")=="auto","fresh launcher uses the requested portable display and graphics defaults");
-        if(OperatingSystem.IsWindows())Check(defaults.Surface.GetSetting("renderer")=="vulkan","fresh Windows launcher defaults to Vulkan");
+        string Game(string key)=>OpenSmash.Launcher.SettingDefaults.Of(key);
+        Check(defaults.Surface.GetSetting("window")==Game("window")&&defaults.Surface.GetSetting("window_size")==Game("width")+"x"+Game("height")&&defaults.Surface.GetSetting("pacing")==Game("pacing")&&defaults.Surface.GetSetting("render_scale")==Game("render_scale")&&defaults.Surface.GetSetting("gpu")==Game("gpu"),"fresh launcher shows the game's own display and graphics defaults");
+        Check(defaults.Surface.GetSetting("renderer")==OpenSmash.Launcher.SettingDefaults.Renderer(Game("renderer")),"fresh launcher shows the game's renderer default");
         defaults.Close();
         var window=new MainWindow([],root,enableBackgroundActions:false);var surface=window.Surface;
         var settingDefinitions=(Array)typeof(OpenSmash.Visuals.ClassicSurface).GetField("_settings",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(surface)!;

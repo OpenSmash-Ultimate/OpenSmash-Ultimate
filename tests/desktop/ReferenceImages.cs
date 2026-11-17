@@ -21,13 +21,20 @@ static class ReferenceImages
             // Elapsed build-clock text is intentionally live; animation time is frozen.
             if(reference=="build"&&((x>=470&&x<530&&y>=188&&y<450)||(x>=1060&&x<1333&&y>=248&&y<279)))continue;
             // The appended Developer and Game tabs are new. Keep comparing every existing tab and row.
-            if(reference.StartsWith("settings")&&x>=828&&x<1024&&y>=202&&y<246)continue;
+            // (and Advanced, upstream's tab for yuzu-compatible rooms)
+            if(reference.StartsWith("settings")&&x>=828&&x<1240&&y>=202&&y<246)continue;
             // Display now appends Preload shaders below the original three rows.
             // Preserve the original comparison everywhere outside that new row.
             if((reference=="settings"||reference=="settings-dropdown")&&x>=100&&x<1340&&y>=553&&y<639)continue;
+            // Upstream's Interface language row comes after it.
+            if((reference=="settings"||reference=="settings-dropdown")&&x>=100&&x<1340&&y>=639)continue;
             // Upstream changed only the renderer wording. Preserve the original
             // geometry baseline while checking the new wording in regression tests.
             if(reference=="settings-graphics"&&((x>=815&&x<1282&&y>=498&&y<526)||(x>=192&&x<765&&y>=517&&y<543)))continue;
+            // Upstream greys out Lobby code and Server unless the lobby uses them (offline here).
+            if(reference=="settings-online"&&x>=100&&x<1340&&y>=470&&y<640)continue;
+            // Upstream's Remap a controller row comes after controllers.ini.
+            if(reference=="settings-controllers"&&x>=100&&x<1340&&y>=553)continue;
             if(!a.Slice(y*expected.RowBytes+x*4,4).SequenceEqual(b.Slice(y*actual.RowBytes+x*4,4)))differences++;
         }
         if(differences!=0)throw new Exception($"{name}: {differences} pixels differ from the original Windows launcher.");
