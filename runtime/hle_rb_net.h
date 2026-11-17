@@ -134,10 +134,10 @@ typedef struct RbnReady { int player, all; } RbnReady;
 size_t rbn_ready_build(uint8_t *buf, size_t cap, const RbnReady *r);
 /* MENU (the results screen): a player's A and B as they are now, from its game, every frame while the results show; the
  * other games press them for that player, so its card shows ready on every PC. type 6 | player u8 | buttons u8 (1 A,
- * 2 B) | 0 u8. */
+ * 2 B) | done u8 (1: its A counted for the skip, #389 - sent on from then on; older builds send 0 and ignore it). */
 enum { RBN_MSG_MENU = 6 };
 #define RBN_MENU_BYTES 4
-typedef struct RbnMenu { int player, buttons; } RbnMenu;
+typedef struct RbnMenu { int player, buttons, done; } RbnMenu;
 size_t rbn_menu_build(uint8_t *buf, size_t cap, const RbnMenu *m);
 int rbn_menu_parse(const uint8_t *buf, size_t len, RbnMenu *m);
 /* LEFT (v0.9): a game's fight is over (or it gave up on it): its last logic frame, so the others stop waiting for pads
