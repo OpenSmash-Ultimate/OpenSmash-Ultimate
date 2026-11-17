@@ -78,17 +78,30 @@ def config_file(root, name):
 
 def read_lines(path):
     try:
-        with open(path, encoding="utf-8-sig", errors="replace") as f:
+        with open(path, encoding="utf-8-sig", errors="replace", newline="") as f:
             return f.read().splitlines()
     except OSError:
         return []
 
 
+def line_end(path):
+    """The file's line end, kept when it is written again (as runtime/hle_settings.c keeps it)."""
+    try:
+        with open(path, "rb") as f:
+            return "\r\n" if b"\r\n" in f.read() else "\n"
+    except OSError:
+        return "\n"
+
+
 def write_lines(path, lines):
+    """Writes the file only when its lines changed (its date then says who wrote last), through a .tmp file."""
+    if os.path.isfile(path) and read_lines(path) == lines:
+        return
+    nl = line_end(path)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines) + ("\n" if lines else ""))
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        f.write(nl.join(lines) + (nl if lines else ""))
     os.replace(tmp, path)
 
 
@@ -119,7 +132,7 @@ def set_ini(path, section, key, value):
     lines = read_lines(path)
     in_section = section == ""
     section_at = 0 if section == "" else -1
-    key_at = -1
+    key_at = last_at = -1
     for i, raw in enumerate(lines):
         line = raw.strip()
         if line.startswith("["):
@@ -127,8 +140,10 @@ def set_ini(path, section, key, value):
             name = line[1:end].strip() if end > 1 else ""
             in_section = section != "" and name.lower() == section.lower()
             if in_section:
-                section_at = i
+                section_at = last_at = i
             continue
+        if in_section and line:
+            last_at = i
         if not in_section or not line or line[0] in ";#":
             continue
         eq = line.find("=")
@@ -137,12 +152,25 @@ def set_ini(path, section, key, value):
             break
     row = f"{key} = {value}"
     if key_at >= 0:
-        lines[key_at] = row
+        # (as settings_ini_set: what is before the '=' kept, then " value", then the comment with the spaces before it)
+        raw = lines[key_at]
+        eq = raw.find("=")
+        rest = raw[eq + 1:].lstrip(" \t")
+        m = re.search(r"[ \t][;#]", rest)
+        comment = ""
+        if m:
+            ws = m.start()
+            while ws > 0 and rest[ws - 1] in " \t":
+                ws -= 1
+            comment = rest[ws:]
+        lines[key_at] = f"{raw[:eq + 1]} {value}{comment}"
     elif section == "":
         at = next((i for i, l in enumerate(lines) if l.lstrip().startswith("[")), len(lines))
+        while 0 < at < len(lines) and not lines[at - 1].strip():
+            at -= 1   # (before the blank line above a section)
         lines.insert(at, row)
     elif 0 <= section_at < len(lines):
-        lines.insert(section_at + 1, row)
+        lines.insert(last_at + 1, row)   # (after the section's last line, as the game adds)
     else:
         if lines and lines[-1].strip():
             lines.append("")
@@ -181,7 +209,8 @@ CHOICES = {
                      ("2", "2: 3840x2160 (4K)"), ("3", "3: 5760x3240")],
     "overlay": [("1", "Show it in the corner"), ("0", "Hidden")],
     "hide_cursor": [("1", "When it stops moving"), ("0", "Keep it shown")],
-    "lobby": [("public", "Public lobby"), ("private", "Private lobby (a code)"), ("custom", "Your own server"), ("offline", "Offline")],
+    "lobby": [("public", "Public lobby"), ("private", "Private lobby (a code)"), ("custom", "Your own server"), ("lan", "This network (LAN)"),
+              ("offline", "Offline")],
     "direct": [("on", "On"), ("off", "Off")],
     "keyboard_player": [(str(n), f"Player {n}") for n in range(1, 9)] + [("0", "Nobody (no keyboard)")],
     "background": [("1", "Work while another window is in front"), ("0", "Only while the game is in front")],
@@ -190,8 +219,36 @@ if HOST == "windows":
     CHOICES["renderer"] = [("auto", "Auto"), ("direct3d11", "Direct3D 11"), ("vulkan", "Vulkan")]
 
 
+def renderer_shown(renderer, renderer_menu):
+    """The renderer the game starts with (runtime/gpu_display.c, #429): under "renderer = d3d11", what the v0.3.0
+    alphas' launcher writes at every Play, the in-game menu's last choice (renderer_menu) stands."""
+    def name(v):
+        v = (v or "").strip().lower()
+        return "vulkan" if v in ("vulkan", "vk") else "direct3d11" if v in ("direct3d11", "direct3d", "dx11") else "auto"
+    if (renderer or "").strip().lower() == "d3d11" and (renderer_menu or "").strip():
+        return name(renderer_menu)
+    return name(renderer)
+
+
+def lobby_from_line(line):
+    """online_server.txt's line as the game's settings menu reads it (runtime/gpu_menu.c net_load; OpenSmash.Launcher's
+    SettingDefaults.LobbyFromLine): (lobby, code, server)."""
+    words = (line or "").split()
+    host, code = (words[0] if words else ""), (words[1] if len(words) > 1 else "")
+    h = host.lower()
+    if not h or h == "off":
+        return "offline", code, ""
+    if h == "lan":
+        return "lan", code, ""
+    if h in ("auto", "na", "eu", PUBLIC_LOBBY) or h.startswith(OLD_LOBBY):   # (the North American lobby is gone)
+        return ("private" if code else "public"), code, ""
+    return "custom", code, host
+
+
 def read_settings(root):
-    """The settings as OpenSmash.Launcher's ReadSettings reads them."""
+    """The settings as OpenSmash.Launcher's ReadSettings reads them: the files the game's settings menu (Esc) writes
+    are the truth; launcher.ini only remembers the lobby code and the server typed here, for when that choice is
+    picked again."""
     display, pads = config_file(root, "display.ini"), config_file(root, "controllers.ini")
 
     def d(key, fallback):
@@ -204,83 +261,75 @@ def read_settings(root):
          "background": ini_value(pads, "general", "background") or "1"}
     s["window_size"] = f"{s['width']}x{s['height']}"
     if HOST == "windows":
-        r = d("renderer", "auto").strip().lower()
-        s["renderer"] = "vulkan" if r in ("vulkan", "vk") else "direct3d11" if r in ("direct3d11", "direct3d", "dx11") else "auto"
-    words = first_line(config_file(root, "online_server.txt")).split()
-    host = words[0] if words else ""
-    s["code"] = words[1] if len(words) > 1 else ""
-    s["server"] = ""
-    if not host or host.lower() == "off":
-        s["lobby"] = "offline"
-    elif host.lower() in ("auto", "na", "eu"):
-        s["lobby"] = "public"
-    elif host.lower() == PUBLIC_LOBBY or host.lower().startswith("smash.recomps.wtf"):   # (the North American lobby is gone)
-        s["lobby"] = "private" if s["code"] else "public"
-    else:
-        s["lobby"], s["server"] = "custom", host
+        s["renderer"] = renderer_shown(d("renderer", "auto"), ini_value(display, "", "renderer_menu"))
+    s["lobby"], s["code"], s["server"] = lobby_from_line(first_line(config_file(root, "online_server.txt")))
     launcher_ini = config_file(root, "launcher.ini")
-    saved = {k: ini_value(launcher_ini, "opensmash", k) for k in ("lobby", "code", "server")}
-    server_file = config_file(root, "online_server.txt")
-    prefer_saved = os.path.isfile(launcher_ini) and os.path.getmtime(launcher_ini) >= (
-        os.path.getmtime(server_file) if os.path.isfile(server_file) else 0)
-    if prefer_saved and saved["lobby"] in ("public", "private", "custom", "offline"):
-        s["lobby"] = saved["lobby"]
-    if not s["code"] and saved["code"] is not None:
+    saved = {k: ini_value(launcher_ini, "opensmash", k) for k in ("code", "server")}
+    if not s["code"] and saved["code"]:
         s["code"] = saved["code"]
-    if (prefer_saved or not s["server"]) and saved["server"] is not None:
+    if not s["server"] and saved["server"] and not means_public_lobby(saved["server"]):   # (issue #389)
         s["server"] = saved["server"]
-    if means_public_lobby(s["server"]):   # (issue #389: an older launcher's "your own server" smash.recomps.wtf:39421)
-        s["server"] = ""
-        if s["lobby"] == "custom":
-            s["lobby"] = "private" if s["code"] else "public"
-    s["direct"] = "off" if first_line(config_file(root, "online_direct.txt")).lower() == "off" else "on"
+    s["direct"] = "off" if first_line(config_file(root, "online_direct.txt")).lower().startswith("off") else "on"
     s["name"] = first_line(config_file(root, "online_name.txt"))
     return s
 
 
 def write_settings(root, values):
-    """Check and write the settings (OpenSmash.Launcher's SaveGameSettings and WriteSettingsFiles); returns them as read
+    """Check and write the settings the page changed (OpenSmash.Launcher's WriteSettingsFiles): only the keys given are
+    written, each in place, so what the game's settings menu (Esc) saved meanwhile stays. Returns the settings as read
     back. Raises Error for a private lobby with no code, or a server that isn't host:port."""
     s = read_settings(root)
-    for k, v in values.items():
-        if k in s or k in CHOICES:
-            s[k] = str(v).strip()
+    given = {k: str(v).strip() for k, v in values.items() if k in s or k in CHOICES}
+    s.update(given)
     for k, options in CHOICES.items():
-        if k in values and s[k] not in [v for v, _ in options] and k != "window_size":
+        if k in given and s[k] not in [v for v, _ in options] and k != "window_size":
             raise Error(f"{k}: {s[k]} is not one of the choices")
-    if not re.fullmatch(r"\d{3,5}x\d{3,5}", s["window_size"]):
-        raise Error("the window size is width x height, for example 1280x720")
-    s["width"], s["height"] = s["window_size"].split("x")
-    try:
-        s["volume"] = str(max(0, min(100, int(float(s["volume"])))))
-    except ValueError:
-        raise Error("the volume is a number from 0 to 100") from None
+    if "window_size" in given:
+        if not re.fullmatch(r"\d{3,5}x\d{3,5}", s["window_size"]):
+            raise Error("the window size is width x height, for example 1280x720")
+        s["width"], s["height"] = s["window_size"].split("x")
+        given["width"], given["height"] = s["width"], s["height"]
+    if "volume" in given:
+        try:
+            s["volume"] = given["volume"] = str(max(0, min(100, int(float(s["volume"])))))
+        except ValueError:
+            raise Error("the volume is a number from 0 to 100") from None
+    lobby_changed = any(k in given for k in ("lobby", "code", "server"))
     lobby, code, host = s["lobby"], s["code"].replace(" ", ""), s["server"].strip()
     if lobby == "custom" and means_public_lobby(host):   # (the public lobby's address, or the gone NA one's: issue #389)
         lobby, host = ("private" if code else "public"), ""
         s["lobby"], s["server"] = lobby, host
-    if lobby == "private" and not code:
+    if lobby_changed and lobby == "private" and not code:
         raise Error("Type a lobby code: a word your friends type too.")
-    if lobby == "custom" and host and not re.fullmatch(r"\S+:\d+", host):
+    if lobby_changed and lobby == "custom" and host and not re.fullmatch(r"\S+:\d+", host):
         raise Error("Your own server is host:port, for example 192.168.1.20:39420.")
-    if len(s["name"]) > 64:
+    if "name" in given and len(s["name"]) > 64:
         raise Error("The name is 64 letters at most.")
-    server = {"offline": "off", "private": f"{PUBLIC_LOBBY} {code}",
-              "custom": (host or "127.0.0.1:39420") + (f" {code}" if code else "")}.get(lobby, "auto")
     display = config_file(root, "display.ini")
     for key in ("window", "width", "height", "pacing", "render_scale", "hide_cursor", "overlay", "volume") + (
             ("renderer",) if HOST == "windows" else ()):
-        set_ini(display, "", key, s[key])
+        if key in given:
+            set_ini(display, "", key, s[key])
+    if HOST == "windows" and "renderer" in given:
+        set_ini(display, "", "renderer_menu", s["renderer"])   # (as the in-game menu writes it: #429)
     pads = config_file(root, "controllers.ini")
-    set_ini(pads, "general", "keyboard_player", s["keyboard_player"])
-    set_ini(pads, "general", "background", s["background"])
-    set_first_line(config_file(root, "online_server.txt"), server)
-    set_first_line(config_file(root, "online_name.txt"), s["name"].strip())
-    set_first_line(config_file(root, "online_direct.txt"), s["direct"])
-    launcher_ini = config_file(root, "launcher.ini")
-    set_ini(launcher_ini, "opensmash", "lobby", lobby)
-    set_ini(launcher_ini, "opensmash", "code", code)
-    set_ini(launcher_ini, "opensmash", "server", host)
+    for key in ("keyboard_player", "background"):
+        if key in given:
+            set_ini(pads, "general", key, s[key])
+    if lobby_changed:
+        server = {"offline": "off", "lan": "lan", "private": f"{PUBLIC_LOBBY} {code}",
+                  "custom": (host or "127.0.0.1:39420") + (f" {code}" if code else "")}.get(lobby, "auto")
+        set_first_line(config_file(root, "online_server.txt"), server)
+        launcher_ini = config_file(root, "launcher.ini")
+        set_ini(launcher_ini, "opensmash", "lobby", lobby)
+        if code:
+            set_ini(launcher_ini, "opensmash", "code", code)
+        if host:
+            set_ini(launcher_ini, "opensmash", "server", host)
+    if "name" in given:
+        set_first_line(config_file(root, "online_name.txt"), s["name"].strip())
+    if "direct" in given:
+        set_first_line(config_file(root, "online_direct.txt"), s["direct"])
     return read_settings(root)
 
 

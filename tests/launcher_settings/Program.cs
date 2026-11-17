@@ -49,6 +49,7 @@ static class Tests
             Lobby();
             FreshFolder(Path.Combine(root, "fresh"));
             GameChangesKept(Path.Combine(root, "game"));
+            SameFilesAsTheGame(Path.Combine(root, "sync"));
             Profiles();
             Remap(Path.Combine(root, "remap"));
             Feed().GetAwaiter().GetResult();
@@ -183,6 +184,59 @@ static class Tests
             Check(File.ReadAllText(Path.Combine(config, "display.ini")) == "window = borderless\nrenderer = vulkan\n", "a lobby change leaves display.ini alone");
             typeof(LauncherForm).GetMethod("WriteSetting", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(form2, new object[] { "renderer", "auto" });
             Check(File.ReadAllText(Path.Combine(config, "display.ini")).Contains("renderer = auto"), "renderer back to auto");
+        }
+    }
+
+    // One source of truth with the game's settings menu (Esc): the launcher writes a key as runtime/hle_settings.c does
+    // (in place, comment and unknown keys kept, line ends kept, nothing written when unchanged), shows the renderer the
+    // game will start with (#429's renderer_menu), and reads the files again when the game (or anyone) changed them.
+    static void SameFilesAsTheGame(string repo)
+    {
+        string config = Path.Combine(repo, "config");
+        Directory.CreateDirectory(config);
+        File.WriteAllText(Path.Combine(config, "version.ini"), "version = 1\n");
+        string display = Path.Combine(config, "display.ini"), pads = Path.Combine(config, "controllers.ini");
+        File.WriteAllText(display, "; the game's\nwindow = windowed   ; mine\nrenderer = d3d11\nrenderer_menu = vulkan\nshow_advanced = 1\n");
+        File.WriteAllText(pads, "[general]\r\nkeyboard_player = 1\r\n\r\n[players]\r\n; 2 = a pad\r\n");
+        File.WriteAllText(Path.Combine(config, "online_server.txt"), "auto\n");
+        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var (form, call, values) = Open(repo);
+        using (form)
+        {
+            void Write(string key, string value) => typeof(LauncherForm).GetMethod("WriteSetting", flags)!.Invoke(form, new object[] { key, value });
+            call("ReadSettings");
+            Check(values["renderer"] == "vulkan", "an older launcher's renderer = d3d11 under the menu's renderer_menu = vulkan shows Vulkan, as the game starts");
+            Write("window", "borderless");
+            Check(File.ReadAllText(display) == "; the game's\nwindow = borderless   ; mine\nrenderer = d3d11\nrenderer_menu = vulkan\nshow_advanced = 1\n",
+                  "one key changed in place, its comment and the menu's own keys kept: " + File.ReadAllText(display));
+            Write("renderer", "direct3d11");
+            Check(File.ReadAllText(display).Contains("renderer = direct3d11\nrenderer_menu = direct3d11\n"), "the renderer written as the menu writes it (renderer_menu too)");
+            Write("background", "0");
+            Check(File.ReadAllText(pads) == "[general]\r\nkeyboard_player = 1\r\nbackground = 0\r\n\r\n[players]\r\n; 2 = a pad\r\n",
+                  "a new key at the end of its section, CRLF kept: " + File.ReadAllText(pads).Replace("\r", "\r").Replace("\n", "\n"));
+            var old = DateTime.UtcNow.AddMinutes(-10);
+            File.SetLastWriteTimeUtc(display, old);
+            Write("window", "borderless");
+            Check(File.GetLastWriteTimeUtc(display) == old, "the same value again: the file is not written");
+
+            // The files change while the launcher is open (the game's settings menu, a game started from a shortcut, the
+            // "Open the file" row's editor): back in front, the page shows them; a lobby change not yet written stays.
+            Write("lobby", "private");   // (no code yet: not written)
+            File.WriteAllText(display, File.ReadAllText(display).Replace("window = borderless", "window = fullscreen").Replace("renderer = direct3d11", "renderer = vulkan"));
+            File.WriteAllText(Path.Combine(config, "online_direct.txt"), "off\n");
+            File.SetLastWriteTimeUtc(display, DateTime.UtcNow.AddSeconds(5));
+            call("ReloadSettingsIfChanged");
+            Check(values["window"] == "fullscreen" && values["renderer"] == "vulkan" && values["direct"] == "off", "the menu's changes shown after it");
+            Check(values["lobby"] == "private", "a change made here and not written yet is kept");
+            Check(File.ReadAllText(Path.Combine(config, "online_server.txt")) == "auto\n", "the unwritten lobby still not written");
+            File.SetLastWriteTimeUtc(display, DateTime.UtcNow.AddSeconds(5));
+            File.WriteAllText(Path.Combine(config, "online_direct.txt"), "on\n");
+            File.SetLastWriteTimeUtc(Path.Combine(config, "online_direct.txt"), DateTime.UtcNow.AddSeconds(10));
+            values["direct"] = "off";   // (a stale copy: only a reload puts it right)
+            call("ReloadSettingsIfChanged");
+            Check(values["direct"] == "on", "read again on each change");
+            call("PersistSettings");
+            Check(File.ReadAllText(display).Contains("window = fullscreen") && File.ReadAllText(display).Contains("renderer = vulkan"), "closing keeps the menu's choices");
         }
     }
 

@@ -116,5 +116,12 @@ namespace OpenSmash.Launcher
             "direct3d11" or "direct3d" or "dx11" => "direct3d11",
             _ => "auto",
         };
+
+        // The renderer the game starts with, from display.ini's renderer and renderer_menu lines (runtime/gpu_display.c,
+        // #429): "renderer = d3d11" is what the v0.3.0 alphas' launcher writes at every Play, so under it the in-game
+        // menu's last choice (renderer_menu) stands. Any other renderer value is taken as it is.
+        public static string RendererShown(string? renderer, string? rendererMenu) =>
+            (renderer ?? "").Trim().Equals("d3d11", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(rendererMenu)
+                ? Renderer(rendererMenu) : Renderer(renderer);
     }
 }
