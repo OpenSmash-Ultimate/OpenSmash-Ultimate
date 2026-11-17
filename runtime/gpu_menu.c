@@ -1402,10 +1402,11 @@ static void build(void)
         enum { H = 0 };
         static const struct { int id; const char *name; } ORDER[] = {
             {H, "Window"}, {R_WINDOW, 0}, {R_SIZE, 0},
-            {H, "Picture"}, {R_SCALE, 0}, {R_ASPECT, 0}, {R_VIEW, 0},
+            {H, "Picture"}, {R_SCALE, 0}, {R_ASPECT, 0}, {R_VIEW, 0}, {R_RENDERER, 0}, /* (#429: the renderer in sight, not behind the switch -
+                                                                          * Direct3D 11 is the way out when Vulkan draws wrong on a card) */
             {H, "Smoothness"}, {R_PACING, 0},
             {H, "Advanced"}, {R_ADVANCED, 0}, /* (the switch, and under it the rows it shows) */
-            {R_CURSOR, 0}, {R_TIMER, 0}, {R_LATENCY, 0}, {R_RUNAHEAD, 0}, {R_OVERLAY, 0}, {R_GPU, 0}, {R_RENDERER, 0}};
+            {R_CURSOR, 0}, {R_TIMER, 0}, {R_LATENCY, 0}, {R_RUNAHEAD, 0}, {R_OVERLAY, 0}, {R_GPU, 0}};
         static unsigned char used[MENU_ROWS];
         static int adv_loaded;
         if (!adv_loaded)
@@ -1424,7 +1425,7 @@ static void build(void)
                 continue;
             }
             int rare = ORDER[k].id == R_CURSOR || ORDER[k].id == R_TIMER || ORDER[k].id == R_LATENCY || ORDER[k].id == R_RUNAHEAD ||
-                       ORDER[k].id == R_OVERLAY || ORDER[k].id == R_GPU || ORDER[k].id == R_RENDERER; /* (the rows few people touch: behind the switch) */
+                       ORDER[k].id == R_OVERLAY || ORDER[k].id == R_GPU; /* (the rows few people touch: behind the switch) */
             if (ORDER[k].id == R_ADVANCED && n < MENU_ROWS - 3)
             { /* the switch */
                 if (pending >= 0)
@@ -1442,7 +1443,7 @@ static void build(void)
                 a->kind = K_CHOICE;
                 a->when = W_NONE;
                 snprintf(a->label, sizeof a->label, "%s", ui_text("Show advanced settings"));
-                a->help = ui_text("On: shows more rows under this one (the mouse pointer, the timer, frames queued ahead, the frame rate in the corner, the graphics card and the renderer). Off: only the everyday ones.");
+                a->help = ui_text("On: shows more rows under this one (the mouse pointer, the timer, frames queued ahead, the frame rate in the corner and the graphics card). Off: only the everyday ones.");
                 snprintf(a->value, sizeof a->value, "%s", on_off(show_advanced));
                 continue;
             }
@@ -1467,7 +1468,7 @@ static void build(void)
             if (!used[i])
             {
                 int rare = rows[i].id == R_CURSOR || rows[i].id == R_TIMER || rows[i].id == R_LATENCY || rows[i].id == R_RUNAHEAD ||
-                           rows[i].id == R_OVERLAY || rows[i].id == R_GPU || rows[i].id == R_RENDERER;
+                           rows[i].id == R_OVERLAY || rows[i].id == R_GPU;
                 if (show_advanced || !rare)
                     packed[n++] = rows[i];
             }
@@ -1758,6 +1759,7 @@ static void change(const Row *row, int dir)
         int next = cycle(ds.renderer == RENDERER_VULKAN, 2, dir) ? RENDERER_VULKAN : RENDERER_DEFAULT;
 #endif
         set_display("renderer", renderer_name(next));
+        set_display("renderer_menu", renderer_name(next)); /* (#429: kept over an older launcher's renderer = d3d11: gpu_display.c) */
         display_set_renderer(next); /* (shown now; the renderer is chosen at the next start) */
         break;
     }
