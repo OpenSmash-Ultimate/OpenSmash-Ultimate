@@ -70,7 +70,7 @@ UI language: the launcher and external menu offer English, Simplified Chinese, J
 
 - **Questions and finding players:** the OpenSmash-Ultimate Discord, **[discord.gg/pkgyYGf3YB](https://discord.gg/pkgyYGf3YB)**.
 - **Setup problems:** see [If something goes wrong](docs/BUILDING.md#if-something-goes-wrong) in the setup guide.
-- **Bugs:** use the **Report a problem** button at the bottom of the launcher, or open the [bug form](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/issues/new?template=bug_report.yml). **`play.log` is required**: it is at `<OpenSmash folder>uild\play.log` (the button opens that folder with the file selected). Drag it into the form. After a crash, also add the `.txt` report from the `reports\` folder. The form also asks for your version, renderer, graphics card and driver, operating system, and the steps that cause the bug.
+- **Bugs:** use the **Report a problem** button at the bottom of the launcher, or open the [bug form](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/issues/new?template=bug_report.yml). **`play.log` is required**: it is at `<OpenSmash folder>\build\play.log` (the button opens that folder with the file selected). Drag it into the form. After a crash, also add the `.txt` report from the `reports\` folder. The form also asks for your version, renderer, graphics card and driver, operating system, and the steps that cause the bug.
 - **Security problems:** report them privately, as [SECURITY.md](SECURITY.md) explains. Don't open a public issue.
 
 > [!WARNING]
