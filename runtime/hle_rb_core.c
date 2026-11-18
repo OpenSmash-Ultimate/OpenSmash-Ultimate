@@ -1278,13 +1278,31 @@ static int hs_agreed_by[RBN_PLAYERS];      /* (the host: which players have the 
 static u64 now_us(void) { return (u64)(now_ms() * 1000.0); }
 /* (hle_hid.c) the other PC's player's controller slot, in net mode: connected here as a Pro Controller always */
 int rb_slot_remote(u32 id) { return net_mode == 2 && net_local >= 0 && id < (u32)net_n && id != (u32)net_local; }
-/* (hle_hid.c, Host/Join) which of this PC's controller slots the game's slot `id` reads: a joining game's controller and
- * keyboard are its player 1 here, as on every PC; once the host gives it player N, the game's slot N reads them, and
- * its slot 1 (the host's player: a remote slot) the empty slot N */
+/* (an Online match: Quickplay, a Local Wireless room's) this PC's controller slot its own player picked its fighter
+ * with - its panel's + 0x210 as the select screen left it, the game's own choice (a pad on player 2, the keyboard
+ * on player 3...) - kept from the match's set-up until online_forget; -1: none yet */
+static volatile int online_own_pad = -1;
+/* (hle_hid.c) which of this PC's controller slots the game's slot `id` reads. Host/Join: a joining game's controller
+ * and keyboard are its player 1 here, as on every PC; once the host gives it player N, the game's slot N reads them,
+ * and its slot 1 (the host's player: a remote slot) the empty slot N. An Online match: the game's slot of this game's
+ * number reads the slot its player picked with (online_own_pad; until it is known, every slot its own, as on the
+ * select screen). That slot, if it is another player's of the match (a remote one: its reads are rollback's, rb_pad),
+ * reads this game's number's slot in turn, so no pad plays two of the match's slots; past the match's players it
+ * stays its own, connected (the player's own slot, which the results the game sets up from its records use).
+ * Only this PC's own reading: the pads the games exchange are the game slots'. */
 u32 rb_slot_phys(u32 id) {
-    if (net_mode != 2 || net_local <= 0) return id;
-    if (id == (u32)net_local) return 0;
-    if (id == 0) return (u32)net_local;
+    int nl = net_local;   /* (once: online_forget may set it to -1 meanwhile, on the game's thread) */
+    if (net_mode != 2 || nl < 0) return id;
+    if (net_online) {
+        int own = online_own_pad;
+        if (own < 0) return id;
+        if (id == (u32)nl) return (u32)own;
+        if (id == (u32)own && own < net_n) return (u32)nl;
+        return id;
+    }
+    if (nl == 0) return id;
+    if (id == (u32)nl) return 0;
+    if (id == 0) return (u32)nl;
     return id;
 }
 /* M7, Host/Join: a joining game starts with no number (net_local -1) and a random join id; it says hello with player
@@ -2096,8 +2114,9 @@ static void net_step(Cpu *c, u64 frame) {
                     net_msgs_s, net_msgs_s ? (double)net_bytes_s / net_msgs_s : 0.0, net_bytes_max_s);
             net_bytes_s = net_msgs_s = net_bytes_max_s = 0;
             if (S.frames % 600 == 0)
-                fprintf(stderr, "[rb] this game's player %d so far: %lld pad reads in this fight, %lld with input (the first at logic frame %u)\n",
-                        net_local + 1, (long long)own_reads, (long long)own_live, own_live ? own_first : 0);
+                fprintf(stderr, "[rb] this game's player %d so far: %lld pad reads in this fight, %lld with input (the first at logic frame %u); "
+                        "%lld hashes compared with the other games', %lld DIFFERENT\n",
+                        net_local + 1, (long long)own_reads, (long long)own_live, own_live ? own_first : 0, net_checks, net_desyncs);
             fprintf(stderr, "[rb] net work, the last second: hashes %lld (%.1f ms, worst %.1f), saves %lld (%.1f ms, worst %.1f), fighter line %lld (%.1f ms, worst %.1f); "
                     "of them the game's getters %lld (%.1f ms), generator look-ups that asked Windows %lld (%.1f ms)\n",
                     net_w_n[0], net_w_ms[0], net_w_max[0], net_w_n[1], net_w_ms[1], net_w_max[1], net_w_n[2], net_w_ms[2], net_w_max[2],
@@ -4004,7 +4023,7 @@ static void online_forget(const char *why) {
     if (net_local >= 0 || online_match) fprintf(stderr, "[rb] online: %s: this game's number and players forgotten\n", why);
     rbl_relay_online_end();
     online_match = 0; online_reported = 0; online_agreed_ms = 0;
-    net_local = -1; net_pending = 1;
+    net_local = -1; net_pending = 1; online_own_pad = -1;
     hs_agreed = 0; hs_seed = 0; hs_delay_ready = 0; net_delay = online_delay_set;
     memset(hs_agreed_by, 0, sizeof hs_agreed_by); memset(hs_peer_t, 0, sizeof hs_peer_t); memset(hs_peer_t_at, 0, sizeof hs_peer_t_at);
     memset(hs_rtt_min, 0, sizeof hs_rtt_min); memset(hs_rtt_t0, 0, sizeof hs_rtt_t0); memset(hs_rtt_n, 0, sizeof hs_rtt_n);
@@ -4261,6 +4280,11 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx) {
         if (idx == 0) ch_have_spare = 0;
         if (net_online) memcpy(online_panel[idx], P(u8, st), 0x460);   /* (as the game left it: record_after builds its own record too) */
         if (net_online) {   /* (an Online match: this game's own panel is the one not a network player's; it plays on its number's slot) */
+            if (type == 0 && !ld8(st + 0x451) && idx == net_local && online_own_pad < 0 && slot < 8) {
+                online_own_pad = (int)slot;   /* (before hid_slot_is_gc below: the pad's own style goes to the peer) */
+                fprintf(stderr, "[rb] online: this game's player %d picked with this PC's controller slot %u: it plays the match with it\n",
+                        net_local + 1, slot + 1);
+            }
             slot = type == 0 && !ld8(st + 0x451) ? (u32)net_local : (u32)idx;
             st32(st + 0x210, slot); st8(st + 0x451, 0);
         }
