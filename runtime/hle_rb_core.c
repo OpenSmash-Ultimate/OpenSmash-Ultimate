@@ -626,10 +626,19 @@ typedef struct FRec { int entry, st, sit, lr; u64 mot; float mf, x, y, sx, sy, d
 typedef struct FFrame { u32 n; u32 rng_calls; u64 rng; u64 h; FRec f[8]; } FFrame;
 #define LB(s) "_ZN3app8lua_bind" s "EPNS_26BattleObjectModuleAccessorE"
 static u64 hfnv(u64 h, const void *p, size_t n) { const u8 *b = p; while (n--) { h ^= *b++; h *= 0x100000001b3ull; } return h; }
+/* [a, a + n) committed and readable, region by region: a region ends where the protection changes, and in a fight
+ * the state map keeps cold pages read-only next to hot read-write ones, so a span across a page boundary can be two
+ * regions. (Asked as one, the generators at ...f80 - 180 bytes over two pages, one hot, one cold - read as not there
+ * for a fight's first frames: that game hashed no generators, and the pair saw DESYNCs at logic frames 1-4, ar2.) */
 static int readable(u64 a, u64 n) {
-    MEMORY_BASIC_INFORMATION mi;
-    return a && VirtualQuery((void *)(uintptr_t)G2H(a), &mi, sizeof mi) && mi.State == MEM_COMMIT &&
-           !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) && (uintptr_t)G2H(a) + n <= (uintptr_t)mi.BaseAddress + mi.RegionSize;
+    if (!a) return 0;
+    uintptr_t p = (uintptr_t)G2H(a), end = p + n;
+    do {
+        MEMORY_BASIC_INFORMATION mi;
+        if (!VirtualQuery((void *)p, &mi, sizeof mi) || mi.State != MEM_COMMIT || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return 0;
+        p = (uintptr_t)mi.BaseAddress + mi.RegionSize;
+    } while (p < end);
+    return 1;
 }
 /* (M6: the chain is found once a fight, then only followed: each VirtualQuery costs PC 2 some 5 ms over this
  * build's write-watched areas, and a fight hash asked 8 of them, 40 ms a hash there against 4 here (twopc19).
