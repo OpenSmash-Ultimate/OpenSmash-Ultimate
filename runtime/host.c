@@ -421,10 +421,10 @@ static void cam_trace(Cpu *c, const u64 args[8], void *ctx) {
                stage_out_l, stage_out_r);
     }
     {
-        extern volatile long hud_calls[12];
+        extern volatile LONG hud_calls[12];
         char line[200];
         int n = snprintf(line, sizeof line, "[hudcalls] F %lld |", f);
-        for (int k = 0; k < 12; k++) n += snprintf(line + n, sizeof line - n, " %ld", InterlockedExchange(&hud_calls[k], 0));
+        for (int k = 0; k < 12; k++) n += snprintf(line + n, sizeof line - n, " %ld", (long)InterlockedExchange(&hud_calls[k], 0));
         printf("%s\n", line);
     }
     if (getenv("SSBU_DEBUG_CAM_TRACE_OBJ"))   /* (the render camera's start: its inputs) */
@@ -774,7 +774,7 @@ static u64 render_camera(void) {
     if (!a || !(a = *P(u64, a + 0x490))) return 0;
     return *P(u64, a + 0xd8) ? *P(u64, a + 0xe0) : 0x7105334060ull;
 }
-volatile long hud_calls[12];   /* (SSBU_DEBUG_CAM_TRACE: calls of each HUD world-to-screen function) */
+volatile LONG hud_calls[12];   /* (SSBU_DEBUG_CAM_TRACE: calls of each HUD world-to-screen function) */
 static void hud_call(int k, Cpu *c) {
     InterlockedIncrement(&hud_calls[k]);
     if (!aspect_native()) { hud_orig[k](c); return; }   /* (16:9: the game's own, untouched) */
