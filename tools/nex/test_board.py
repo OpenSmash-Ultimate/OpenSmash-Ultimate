@@ -437,7 +437,7 @@ class Board(unittest.TestCase):
         finally:
             del NSA["e"]
 
-    def test_made_up_keys_never_fill_the_accounts(self):
+    def test_keys_alone_make_no_accounts(self):
         from .server import MAX_ACCOUNTS
         users = len(self.nex.accounts.data["users"])
         data = json.dumps({"id": "00000000000000dd", "mode": "room", "players": 2, "seconds": 0, "ranked": False,
@@ -644,7 +644,7 @@ class Board(unittest.TestCase):
             d["key"] = key
         return self.board.http("POST", "/match/played", {}, json.dumps(d).encode(), now, peer=peer)[0]
 
-    def test_forged_gsp_is_clamped(self):
+    def test_sync_gsp_bounds(self):
         a = self.pid["a"]
         self.assertEqual(self.sync_new("a", [record(43, 900000), record(7, 2000000)])[0], 200)
         self.assertEqual(self.board.records(a), {0: 900, 7: 1600, 43: 1500})   # (no credit: no rise; a first record 1600)
@@ -667,9 +667,12 @@ class Board(unittest.TestCase):
         self.assertEqual(self.board.records(a)[43], 1600)            # (what was left of that credit: 20)
         for i in range(30):                                            # (one credit a minute at most, MAX_CREDITS held)
             mid = "%016x" % (0x2000 + i)
+            self.board.matches.report_at.clear()
             self.report("a", mid, 1200.0 + 20 * i, "198.51.100.1")
             self.report("b", mid, 1201.0 + 20 * i, "203.0.113.9")
-        self.assertLessEqual(self.board.records(a)[43], 1580 + 11 * 100)
+        got = self.board.records(a)[43]
+        self.assertGreater(got, 1600)
+        self.assertLessEqual(got, 1600 + 10 * 100)                    # (580 s: ten credits at most)
 
     def test_a_newer_record_drops_the_waiting_one(self):
         a = self.pid["a"]
@@ -678,6 +681,37 @@ class Board(unittest.TestCase):
         self.report("a", "4444444444444444", 1020.0, "198.51.100.1")
         self.report("b", "4444444444444444", 1021.0, "203.0.113.9")
         self.assertEqual(self.board.records(a)[43], 1450)
+
+    def test_sent_record_kept_and_handed_back(self):
+        a = self.pid["a"]
+        self.sync_new("a", [record(43, 1700)], now=1000.0)
+        self.assertEqual(self.board.records(a)[43], 1500)                       # (counted: no credit yet)
+        self.assertIn((43, record(43, 1700)), self.nex.services.powers.records(a))   # (kept as sent)
+        code, mine = self.get("/gsp/records", self.records_headers("a"))
+        self.assertIn(record(43, 1700).hex(), mine["records"])                  # (the game gets back what it sent)
+        self.nex.flush(0.0, force=True)
+        again = make_server(lambda *a: None, state_dir=self.dir.name, verbose=0, log=lambda *a: None)
+        self.assertEqual(again.board.records(a)[43], 1500)                      # (what it counts for: kept)
+        for i, mid in enumerate(("5555555555555555", "6666666666666666")):
+            self.board.matches.report_at.clear()
+            self.report("a", mid, 1100.0 + 100 * i, "198.51.100.1")
+            self.report("b", mid, 1101.0 + 100 * i, "203.0.113.9")
+        self.assertEqual(self.board.records(a)[43], 1700)
+        self.assertNotIn(str(a), self.board.allowed.of_pid)
+
+    def test_rematch_with_an_id_that_is_not_exact(self):
+        a = self.pid["a"]
+        self.sync_new("a", [record(43, 1700)], now=1000.0)
+        for i in range(2):   # (the same players' next match: the same id, not exact)
+            for who, peer, dt in (("a", "198.51.100.1", 0), ("b", "203.0.113.9", 1)):
+                data = json.dumps({"id": "7777777777777777", "mode": "room", "players": 2, "seconds": 95,
+                                   "ranked": False, "net": "game", "via": "eos", "exact": False})
+                p, t = player_id(NSA[who]), int(time.time())
+                d = {"player": p, "t": t, "data": data, "sig": signature(NSA[who], "match", p, t, data)}
+                self.board.matches.report_at.clear()
+                self.assertEqual(self.board.http("POST", "/match/played", {}, json.dumps(d).encode(),
+                                                 1100.0 + 100 * i + dt, peer=peer)[0], 200)
+        self.assertEqual(self.board.records(a)[43], 1700)
 
     def test_unknown_reporters_pair_but_make_nothing(self):
         users = len(self.nex.accounts.data["users"])

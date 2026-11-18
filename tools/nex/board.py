@@ -50,13 +50,13 @@ own login on this game server (nex/server.py) does. With a key that is the playe
 report is counted all the same (nothing is kept of the player) and a sync is answered 200 with nothing kept
 ("kept": false), so the game does not send it again and again; everything else stays refused.
 
-What /gsp/sync keeps is checked (sync_check): a fighter record's GSP (seen 1307..1750 on the live board, +80 for a
-win) above RECORD_GSP_MAX is not the game's; a fighter's first record may say NEW_RECORD_GSP at most; a rise above
-what the player's identity already has needs credits, one match's worth (RISE_PER_MATCH) each, earned when the lobby
-hears of a match the player played from two different games (two players, two addresses: pair_report) or, for an old
-game that sends no reports, one every LEGACY_CREDIT_EVERY seconds. What a sync wants above its credits waits
-(pending) and is kept when credits come. Every signed request also takes from its address's bucket (IP_RATE,
-IP_BURST: 429 beyond).
+What a /gsp/sync record counts for on the leaderboard is checked (sync_check); the record itself is kept as sent, so
+the game gets back what it sent. A fighter record's GSP (seen 1307..1750 on the live board, +80 for a win) counts up to
+RECORD_GSP_MAX; a fighter's first record up to NEW_RECORD_GSP (or the identity's best fighter); a rise above what the
+player's identity already has needs credits, one match's worth (RISE_PER_MATCH) each, earned when the lobby hears of a
+match the player played from two different games (two players, two addresses: pair_report) or, for an old game that
+sends no reports, one every LEGACY_CREDIT_EVERY seconds. What a record may count for is kept (nex_gsp_allowed.json) and
+rises as credits come. Every signed request also takes from its address's bucket (IP_RATE, IP_BURST: 429 beyond).
 
 A player is named by player_id(nsa): a hash of their install's NSA id (runtime/hle_env.c), which only their own
 game and launchers know. A signed request proves it without sending it: X-OpenSmash-Player (the id),
@@ -100,6 +100,7 @@ CREDIT_EVERY = 60.0       # seconds: one credit at most this often to one player
 LEGACY_CREDIT_EVERY = 600.0   # seconds: a game that sends no reports earns one credit this often at most
 PAIR_WINDOW = 900.0       # seconds the reports of one match are matched up
 MAX_PAIRS = 20000         # matches whose reports are kept to match up (in memory)
+ALLOWED_FILE = "nex_gsp_allowed.json"
 
 
 def player_id(nsa):
@@ -233,6 +234,38 @@ class Profiles(JsonStore):
         return best
 
 
+class Allowed(JsonStore):
+    """pid -> {fighter: the most GSP that fighter's record counts for}, for records a sync sent above what its credits
+    allowed (nothing kept for a record that counts as sent): the record is kept as sent, the leaderboard counts this."""
+
+    def __init__(self, state_dir):
+        super().__init__(os.path.join(state_dir, ALLOWED_FILE) if state_dir else None)
+        self.of_pid = self.load() or {}
+
+    def content(self):
+        return self.of_pid
+
+    def cap(self, pid, fighter):
+        v = (self.of_pid.get(str(pid)) or {}).get(str(fighter))
+        return v if isinstance(v, int) else RECORD_GSP_MAX
+
+    def set(self, pid, fighter, value):
+        """value None: the record counts as sent."""
+        key, f = str(pid), str(fighter)
+        mine = self.of_pid.get(key)
+        if value is None:
+            if mine is not None and mine.pop(f, None) is not None:
+                if not mine:
+                    del self.of_pid[key]
+                self.dirty = True
+            return
+        if mine is None:
+            mine = self.of_pid[key] = {}
+        if mine.get(f) != value:
+            mine[f] = int(value)
+            self.dirty = True
+
+
 class Board:
     def __init__(self, nex, discord_me=discord_lookup):
         self.nex = nex
@@ -247,7 +280,7 @@ class Board:
         self.cache = None        # (when, leaderboard bytes, {pid: (rank, {fighter: rank})}, ranked)
         self.ip_buckets = {}     # address -> Bucket of its signed requests (memory only, never logged)
         self.credits = {}        # pid -> [credits, when one was last given]
-        self.pending = {}        # pid -> {fighter: record a sync wanted above its credits}
+        self.allowed = Allowed(getattr(nex, "state_dir", None))
         self.legacy_credit_at = {}   # pid -> when its last no-report sync gave a credit
         self.pairs = {}          # match key -> {"at", "by": {player id: (address, pid or None)}, "paid": set}
 
@@ -292,19 +325,25 @@ class Board:
         return pid if hmac.compare_digest(signature(nsa, what, player, t, payload), sig.lower()) else None
 
     # ---- the leaderboard ------------------------------------------------------------------------
-    def merged(self, pid):
-        """{fighter: raw record} of pid's identity: per fighter the record with the highest GSP among the pids linked to
-        the same Discord account (pid's own when unlinked). Computed each time; nothing is copied between pids."""
+    def gsp(self, pid, raw):
+        """A record's GSP as the leaderboard counts it: what a sync sent, but no more than it was allowed (Allowed)."""
+        return min(record_gsp(raw), self.allowed.cap(pid, raw[0]))
+
+    def merged(self, pid, sent=False):
+        """{fighter: (GSP, raw record)} of pid's identity: per fighter the record with the highest GSP among the pids
+        linked to the same Discord account (pid's own when unlinked); the GSP as counted (sent: as the games sent it).
+        Computed each time; nothing is copied between pids."""
         out = {}
         for p in sorted(self.profiles.linked_pids(pid), key=lambda p: p != pid):   # (on a tie the asking pid's own)
             for fighter, raw in self.nex.services.powers.records(p):
-                if fighter not in out or record_gsp(raw) > record_gsp(out[fighter]):
-                    out[fighter] = raw
+                g = record_gsp(raw) if sent else self.gsp(p, raw)
+                if fighter not in out or g > out[fighter][0]:
+                    out[fighter] = (g, raw)
         return out
 
     def records(self, pid):
-        """{fighter: GSP} of a player's (merged) records (GSP 0 left out)."""
-        return {f: g for f, g in ((f, record_gsp(raw)) for f, raw in self.merged(pid).items()) if g > 0}
+        """{fighter: GSP} of a player's (merged) records as counted (GSP 0 left out)."""
+        return {f: g for f, (g, _raw) in self.merged(pid).items() if g > 0}
 
     def registered(self, pid):
         """A player whose install is linked to a Discord account and who shows their name."""
@@ -547,45 +586,50 @@ class Board:
 
     # ---- what a sync may keep: credits from matches heard of ---------------------------------------------
     def credit(self, pid, now, every=CREDIT_EVERY):
-        """One more match's credit to pid (at most one every `every` seconds), then what it had pending."""
+        """One more match's credit to pid (at most one every `every` seconds), spent at once on what its records still
+        wait for."""
         c = self.credits.setdefault(pid, [0.0, None])
         if c[1] is not None and now - c[1] < every:
             return False
         c[0], c[1] = min(MAX_CREDITS, c[0] + 1.0), now
         if len(self.credits) > 50000:
-            self.credits = {p: v for p, v in self.credits.items() if v[0] > 0 or p in self.pending}
-        wanted = self.pending.pop(pid, None)
-        if wanted:
-            self.sync(pid, list(wanted.values()), [], now)
+            self.credits = {p: v for p, v in self.credits.items() if v[0] > 0 or str(p) in self.allowed.of_pid}
+        waiting = self.allowed.of_pid.get(str(pid))
+        if waiting:
+            sent = dict(self.nex.services.powers.records(pid))
+            for fighter in [int(f) for f in waiting]:
+                raw, cap = sent.get(fighter), self.allowed.cap(pid, fighter)
+                if raw is None:
+                    self.allowed.set(pid, fighter, None)
+                elif c[0] > 0 and min(record_gsp(raw), RECORD_GSP_MAX) > cap:
+                    self.raise_cap(pid, fighter, min(record_gsp(raw), RECORD_GSP_MAX), cap, c)
+            self.cache = None
         return True
 
+    def raise_cap(self, pid, fighter, want, base, c):
+        """Spends pid's credits c on raising fighter's counted GSP from base toward want."""
+        need = (want - base) / RISE_PER_MATCH
+        if c[0] >= need:
+            c[0] -= need
+            self.allowed.set(pid, fighter, None)
+        else:
+            self.allowed.set(pid, fighter, max(base + int(c[0] * RISE_PER_MATCH + 1e-6), 0))
+            c[0] = 0.0
+
     def sync_check(self, pid, raw, merged, now):
-        """The record of a sync as it may be kept: its GSP within RECORD_GSP_MAX and above the identity's own only by
-        pid's credits (spent), the rest kept pending for later credits. merged: the identity's records."""
-        fighter, gsp = raw[0], record_gsp(raw)
+        """What fighter record raw of a sync may count for (the record itself is kept as sent, so the game that sent it
+        gets it back unchanged): within RECORD_GSP_MAX, and above what the identity has (merged: as counted) only by
+        pid's credits, spent; a record above them waits for later credits. A fighter the identity has no record of starts
+        from NEW_RECORD_GSP or its best fighter's GSP."""
+        fighter, want = raw[0], min(record_gsp(raw), RECORD_GSP_MAX)
         have = merged.get(fighter)
-        base = record_gsp(have) if have is not None else NEW_RECORD_GSP
-        want, waiting = min(gsp, RECORD_GSP_MAX), False
-        if want > base:
-            c = self.credits.setdefault(pid, [0.0, None])
-            need = (want - base) / RISE_PER_MATCH
-            if c[0] >= need:
-                c[0] -= need
-            else:
-                want = min(want, max(base + int(c[0] * RISE_PER_MATCH + 1e-6), 0))
-                c[0], waiting = 0.0, want < gsp
-        mine = self.pending.get(pid)
-        if waiting:
-            if mine is None:
-                if len(self.pending) >= 50000:
-                    self.pending.pop(next(iter(self.pending)))
-                mine = self.pending[pid] = {}
-            mine[fighter] = raw
-        elif mine is not None and mine.pop(fighter, None) is not None and not mine:   # (a newer one than it waited)
-            del self.pending[pid]
-        if want == gsp:
-            return raw
-        return raw[:1] + want.to_bytes(4, "little") + raw[5:]
+        base = have[0] if have is not None else max([NEW_RECORD_GSP] + [g for g, _r in merged.values()])
+        if want <= base:
+            self.allowed.set(pid, fighter, None if want == record_gsp(raw) else want)
+            return
+        self.raise_cap(pid, fighter, want, base, self.credits.setdefault(pid, [0.0, None]))
+        if want < record_gsp(raw) and self.allowed.cap(pid, fighter) > want:
+            self.allowed.set(pid, fighter, want)
 
     def pair_report(self, key, player, peer, pid, now):
         """A report of match key from player (pid None: unknown here) at address peer: credits every reporter of it
@@ -595,7 +639,8 @@ class Board:
             while len(self.pairs) >= MAX_PAIRS:
                 self.pairs.pop(next(iter(self.pairs)))
         e = self.pairs.get(key)
-        if e is None or now - e["at"] >= PAIR_WINDOW:
+        if e is None or now - e["at"] >= PAIR_WINDOW or player in e["by"]:
+            # (a player who reported it already: the next match of the same players, whose id is not exact)
             e = self.pairs[key] = {"at": now, "by": {}, "paid": set()}
         if player not in e["by"] and len(e["by"]) < 8:
             e["by"][player] = (peer, pid)
@@ -643,15 +688,17 @@ class Board:
         return out_recs, out_ranked
 
     def sync(self, pid, recs, ranked, now):
-        """Keeps uploaded results, each record as sync_check lets it: (records stored, ranked entries stored)."""
+        """Keeps uploaded results as sent, each record counting as sync_check lets it: (records stored, ranked entries
+        stored)."""
         merged = self.merged(pid) if recs else {}
         stored = 0
         for raw in recs:
-            raw = self.sync_check(pid, raw, merged, now)
+            self.sync_check(pid, raw, merged, now)
             if self.nex.services.powers.put(pid, raw):
                 stored += 1
-                if record_gsp(raw) > record_gsp(merged.get(raw[0], b"")):
-                    merged[raw[0]] = raw
+                g = self.gsp(pid, raw)
+                if raw[0] not in merged or g > merged[raw[0]][0]:
+                    merged[raw[0]] = (g, raw)
         stats, kept = self.nex.ranked, 0
         for category, rating, win, loss, draw, disconnect in ranked:
             e = stats.entry(pid, category)
@@ -667,6 +714,7 @@ class Board:
 
     def flush(self, now, force=False):
         self.profiles.flush(now, force)
+        self.allowed.flush(now, force)
         self.matches.flush(now, force)
 
     # ---- HTTP (tools/ssbu_online_lobby.py hands each request here) --------------------------------
@@ -693,7 +741,7 @@ class Board:
                               headers.get("x-opensmash-sig"), "records")
             if pid is None:
                 return 403, b'{"error":"not signed by a player this server knows"}'
-            return 200, json.dumps({"records": [raw.hex() for _f, raw in sorted(self.merged(pid).items())]},
+            return 200, json.dumps({"records": [raw.hex() for _f, (_g, raw) in sorted(self.merged(pid, sent=True).items())]},
                                    separators=(",", ":")).encode()
         if method == "POST" and path == "/gsp/sync":
             if len(body) > MAX_SYNC_BODY:
