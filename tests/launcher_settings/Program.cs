@@ -55,6 +55,7 @@ static class Tests
             Feed().GetAwaiter().GetResult();
             Presence(Path.Combine(root, "presence"));
             ShaderRebuild(Path.Combine(root, "shaders"));
+            UpdateChannel().GetAwaiter().GetResult();
             // (a real SDL3.dll, when one is given: it loads and lists the pads, none needed)
             string? sdl = Environment.GetEnvironmentVariable("LAUNCHER_TEST_SDL_DIR");
             if (!string.IsNullOrEmpty(sdl))
@@ -354,6 +355,77 @@ static class Tests
         using var none = new RemapPage(repo, () => new FakePads { Problem = "no SDL3.dll" });
         none.Start();
         Check(none.StatusText == "no SDL3.dll" && none.Selected == null, "without SDL3.dll the page says why");
+    }
+
+    // GitHub's latest release, made up: the API's answer (a status, or no network) and github.com's releases/latest page,
+    // whose redirect lands on the release's tag (or the release list when there is none).
+    sealed class Releases : HttpMessageHandler
+    {
+        public HttpStatusCode Api = HttpStatusCode.OK;
+        public string? ApiTag = "v0.4.1";
+        public bool ApiDown, PageDown;
+        public string PageLands = "/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/tag/v0.4.1";
+        public int PageAsked;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.Host == "api.github.com")
+            {
+                if (ApiDown) throw new HttpRequestException("no network in tests");
+                var answer = new HttpResponseMessage(Api);
+                if (Api == HttpStatusCode.OK) answer.Content = new StringContent(ApiTag == null ? "{}" : "{\"tag_name\":\"" + ApiTag + "\"}");
+                return Task.FromResult(answer);
+            }
+            PageAsked++;
+            if (PageDown) throw new HttpRequestException("no network in tests");
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = new HttpRequestMessage(request.Method, new Uri("https://github.com" + PageLands)),
+            });
+        }
+    }
+
+    // The update check's release channel and the verdict after an update (Discord "Can't update", 2026-11-18): GitHub not
+    // answering is "not known", never main, and a finished update is not called unfinished for it.
+    static async Task UpdateChannel()
+    {
+        async Task<ProjectSetup.LatestRelease> Ask(Releases r) { using var c = new HttpClient(r); return await ProjectSetup.LatestReleaseAsync(c); }
+        var r = new Releases();
+        var got = await Ask(r);
+        Check(got.Tag == "v0.4.1" && got.Known && r.PageAsked == 0, "release channel: the API's tag");
+        r = new Releases { Api = HttpStatusCode.NotFound };
+        got = await Ask(r);
+        Check(got.Tag == null && got.NoRelease && got.Known, "no release yet (the API's 404): main");
+        r = new Releases { Api = HttpStatusCode.Forbidden };
+        got = await Ask(r);
+        Check(got.Tag == "v0.4.1" && r.PageAsked == 1, "the API's hourly limit: github.com's releases/latest page gives the tag");
+        r = new Releases { ApiDown = true, PageLands = "/OpenSmash-Ultimate/OpenSmash-Ultimate/releases" };
+        got = await Ask(r);
+        Check(got.Tag == null && got.NoRelease, "no network to the API, the page lands on the release list: no release");
+        r = new Releases { Api = HttpStatusCode.Forbidden, PageDown = true };
+        got = await Ask(r);
+        Check(!got.Known && got.Problem.Contains("403"), "neither answers: not known, with the API's reason (" + got.Problem + ")");
+        r = new Releases { ApiTag = null, PageLands = "/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/tag/v0.4.2" };
+        got = await Ask(r);
+        Check(got.Tag == "v0.4.2", "an API answer naming no release: the page");
+        Check(ProjectSetup.ReleaseTagFromPath("/O/R/releases/tag/v1.0%2Bx") == "v1.0+x" && ProjectSetup.ReleaseTagFromPath("/O/R/releases") == null,
+            "the tag of a releases/tag/ address");
+
+        Check(LauncherForm.UpdateRefFor(new ProjectSetup.LatestRelease("v0.4.1", false, ""), out string name) == "v0.4.1" && name == "v0.4.1", "a tag is compared with");
+        Check(LauncherForm.UpdateRefFor(new ProjectSetup.LatestRelease(null, true, ""), out name) == "main" && name == "main", "no release: main");
+        bool threw = false;
+        try { LauncherForm.UpdateRefFor(new ProjectSetup.LatestRelease(null, false, "GitHub answered 403"), out name); }
+        catch (Exception e) { threw = LauncherForm.IsUnavailable(e) && e.Message.Contains("403"); }
+        Check(threw, "not known: the check says it could not check, it never compares with main");
+
+        string sha = new string('e', 40), other = new string('f', 40);
+        string output = "launcher: OpenSmash.exe is now v0.4.1's.\r\n__OPENSMASH_SOURCE__ " + sha + "\r\nThe launcher was updated too: close OpenSmash and open it again.";
+        Check(LauncherForm.InstalledCommit(output) == sha && LauncherForm.InstalledCommit("Nothing to update.") == "", "the updater's proof line");
+        Check(LauncherForm.AfterUpdateVerdict("uptodate", false, "", sha) == LauncherForm.UpdateVerdict.Done, "checked up to date: done");
+        Check(LauncherForm.AfterUpdateVerdict("error", true, output, sha) == LauncherForm.UpdateVerdict.Done, "GitHub not answering, the updater's proof matches the copy: done");
+        Check(LauncherForm.AfterUpdateVerdict("available", false, output, sha) == LauncherForm.UpdateVerdict.Done, "the copy is what the updater installed: done");
+        Check(LauncherForm.AfterUpdateVerdict("error", true, "Updated.", sha) == LauncherForm.UpdateVerdict.Unverified, "GitHub not answering, no proof: not known, not a failure");
+        Check(LauncherForm.AfterUpdateVerdict("error", true, output, other) == LauncherForm.UpdateVerdict.Unverified, "proof of another commit, GitHub not answering: not known");
+        Check(LauncherForm.AfterUpdateVerdict("available", false, "Updated.", sha) == LauncherForm.UpdateVerdict.NotFinished, "GitHub says there is still a newer one: did not finish");
     }
 
     static async Task Feed()

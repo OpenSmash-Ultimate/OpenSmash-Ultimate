@@ -1,4 +1,5 @@
 from pathlib import Path
+import io
 import os
 import runpy
 import shutil
@@ -509,6 +510,7 @@ class FirmwareQuestionTests(unittest.TestCase):
         self.top = Path(self.temp.name)
         self.ns = runpy.run_path(str(ROOT / 'tools/build_game.py'), run_name='build_game_firmware')['build'].__globals__
         self.ns.update(SAVED=str(self.top / 'build_folders.txt'), log=lambda msg='': None)
+        self.ns['can_ask'] = lambda: True   # (a terminal: these tests type the answers)
         self.firmware = self.top / 'My Firmware'
         self.firmware.mkdir()
         (self.firmware / 'a.nca').write_bytes(b'')
@@ -555,6 +557,63 @@ class FirmwareQuestionTests(unittest.TestCase):
             with mock.patch.object(sys, 'argv', ['build_game.py', *argv]):
                 self.assertEqual(self.ns['main'](), 0)
             self.assertEqual(given[-1].firmware, firmware)
+
+
+class UnattendedFolderTests(unittest.TestCase):
+    """Nobody to answer (the launcher's build, --no-input, no terminal): never input(), which waited forever at
+    "Press Enter to keep the folder in [brackets]"; last time's folders are used, and one missing stops the build."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='unattended-folder-test-')
+        self.addCleanup(self.temp.cleanup)
+        self.top = Path(self.temp.name)
+        self.ns = runpy.run_path(str(ROOT / 'tools/build_game.py'), run_name='build_game_unattended')['build'].__globals__
+        self.ns.update(SAVED=str(self.top / 'build_folders.txt'), log=lambda msg='': None)
+        self.game = self.top / 'My Dump'
+        self.game.mkdir()
+
+    def ask(self, key, saved, given=None):
+        def never(prompt=''):
+            raise AssertionError('input() called with nobody to answer: ' + prompt)
+        with mock.patch('builtins.input', never):
+            return self.ns['ask_folder'](key, given, dict(saved))
+
+    def test_no_input_flag(self):
+        self.ns['NO_INPUT'] = True
+        self.assertFalse(self.ns['can_ask']())
+        self.assertEqual(self.ask('game', {'game': str(self.game)}), str(self.game))   # (last time's folder)
+        with self.assertRaises(self.ns['Failed']) as stop:   # (none saved: stops, naming the folder and the way out)
+            self.ask('keys', {})
+        self.assertIn('Folder with your keys', str(stop.exception))
+        self.assertIn('--keys', str(stop.exception))
+        self.assertIsNone(self.ask('firmware', {}))   # (optional: none, the open fonts)
+        self.ns['FOLDERS'] = dict(self.ns['FOLDERS'], game=(self.ns['FOLDERS']['game'][0], str(self.game), self.ns['FOLDERS']['game'][2]))
+        self.assertEqual(self.ask('game', {}), str(self.game))   # (nothing saved, the default is a folder: as Enter takes it)
+        self.assertEqual(self.ask('game', {}, given=str(self.game)), str(self.game))   # (a folder given still works)
+        gone = str(self.top / 'gone')
+        with self.assertRaises(self.ns['Failed']) as stop:   # (last time's folder is not there any more)
+            self.ask('game', {'game': gone})
+        self.assertIn('Nobody can answer here', str(stop.exception))
+
+    def test_no_terminal(self):
+        # (no --no-input, but stdin is not a terminal (a pipe, as the launcher's), or there is none at all)
+        for stdin in (None, io.StringIO('')):
+            with mock.patch.object(sys, 'stdin', stdin):
+                self.assertFalse(self.ns['can_ask']())
+                with self.assertRaises(self.ns['Failed']):
+                    self.ask('game', {})
+
+    def test_flag_parsed_and_passed_by_the_launcher_build(self):
+        given = []
+        self.ns['build'] = given.append
+        with mock.patch.object(sys, 'argv', ['build_game.py', '--no-input']):
+            self.assertEqual(self.ns['main'](), 0)
+        self.assertTrue(self.ns['NO_INPUT'])
+        script = (ROOT / 'tools/rebuild-all.ps1').read_text(encoding='utf-8')
+        self.assertIn('"--no-input"', script)
+        launcher = (ROOT / 'OpenSmash.Launcher/LauncherForm.cs').read_text(encoding='utf-8')
+        start = launcher.index('void StartMaintenanceBuild()')
+        self.assertIn('RedirectStandardInput = true', launcher[start:start + 3000])
 
 
 class CompilerDownloadTests(unittest.TestCase):

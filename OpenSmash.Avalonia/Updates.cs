@@ -50,9 +50,24 @@ public sealed partial class MainWindow
         string channel=Environment.GetEnvironmentVariable("OPENSMASH_UPDATE_CHANNEL")??"",file=RequireProject().PathIn("tools","update_channel.txt");
         if(channel.Length==0&&File.Exists(file))channel=File.ReadAllText(file).Trim();
         if(channel.Equals("main",StringComparison.OrdinalIgnoreCase))return "main";
+        string problem="its answer names no release";
         try{using var release=await GitHub("/releases/latest");string tag=release.RootElement.TryGetProperty("tag_name",out var name)?name.GetString()?.Trim()??"":"";if(tag.Length>0)return Uri.EscapeDataString(tag);}
-        catch(Exception error) when(error is HttpRequestException or JsonException or TaskCanceledException){}
-        return "main";
+        catch(HttpRequestException error) when(error.StatusCode==System.Net.HttpStatusCode.NotFound){return "main";}   // (no release yet)
+        catch(Exception error) when(error is HttpRequestException or JsonException or TaskCanceledException){problem=error.Message;}
+        // GitHub's API not answering (no network, its hourly limit) is not main, which a release copy must never be compared
+        // with (Discord "Can't update", 2026-11-18): github.com's releases/latest page, whose redirect names the tag; else unknown.
+        try
+        {
+            using var request=new HttpRequestMessage(HttpMethod.Head,"https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/latest");
+            request.Headers.UserAgent.ParseAdd("OpenSmash-Launcher/1.0");
+            using var response=await Http.SendAsync(request);
+            string path=response.IsSuccessStatusCode?response.RequestMessage?.RequestUri?.AbsolutePath??"":"";
+            int at=path.IndexOf("/releases/tag/",StringComparison.OrdinalIgnoreCase);
+            if(at>=0&&path.Length>at+14)return Uri.EscapeDataString(Uri.UnescapeDataString(path[(at+14)..]).Trim('/'));
+            if(path.TrimEnd('/').EndsWith("/releases",StringComparison.OrdinalIgnoreCase))return "main";   // (no release: the list)
+        }
+        catch(Exception error) when(error is HttpRequestException or TaskCanceledException){}
+        throw new InvalidOperationException("Could not check for updates: GitHub did not say which release is the latest ("+problem+").");
     }
     async Task<string> LocalSourceCommit()
     {

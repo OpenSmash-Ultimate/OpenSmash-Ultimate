@@ -603,11 +603,41 @@ def typed_folder(text):
     return text.strip('"')
 
 
+NO_INPUT = False   # --no-input: nobody is there to answer a question (the launcher's build)
+
+
+def can_ask():
+    """Whether a question can be answered here: not with --no-input, and only from a terminal. The launcher runs this
+    build with its output read and no window to type in; input() there waited forever at "Press Enter to keep the
+    folder in [brackets]" (Discord, 2026-11-18)."""
+    if NO_INPUT:
+        return False
+    try:
+        return bool(sys.stdin) and sys.stdin.isatty()
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def unattended_hint(key):
+    setup = ("the setup (tools/install_windowsmash.ps1)" if HOST == "windows" else
+             "the setup (install-windowsmash.sh)" if LINUX else "the setup (Install WindowSmash.command)")
+    return (f" Nobody can answer here, so the build stops: run {setup} once, or tools/build_game.py in a terminal, "
+            f"and give the folder (it is remembered in dump/build_folders.txt); or pass --{key} FOLDER.")
+
+
 def ask_folder(key, given, saved):
     """A folder from the command line, or asked, with last time's answer as the default. The
-    firmware's may be "none": None, no firmware."""
+    firmware's may be "none": None, no firmware. With nobody to answer (can_ask), last time's
+    answer is taken as given (the firmware: none), and without one the build stops, naming the folder."""
     label, default, check = FOLDERS[key]
     default = saved.get(key, default)
+    unattended = not given and not can_ask()
+    if unattended:
+        # (as an Enter would: last time's folder, else the default when it is one - the firmware's "none" always is)
+        problem = None if key == "firmware" or key in saved else check(os.path.expanduser(default))
+        if problem:
+            raise Failed(f"{label}: none was given and none is saved from last time ({problem})" + unattended_hint(key))
+        given = default
     while True:
         if given:
             answer = given
@@ -630,7 +660,7 @@ def ask_folder(key, given, saved):
                 f.writelines(f"{k}={v}\n" for k, v in saved.items() if k in FOLDERS)
             return saved[key]
         if given:
-            raise Failed(problem)
+            raise Failed(problem + (unattended_hint(key) if unattended else ""))
         log(f"  {problem} Try again, or close this window to stop.")
 
 
@@ -1340,9 +1370,14 @@ def main():
     ap.add_argument("--game-dll", action="store_true",
                     help="link the game's modules into a library of their own beside the program, which the program "
                          "loads at start, rather than into the program (tools/game_dll.py)")
+    ap.add_argument("--no-input", action="store_true",
+                    help="never ask (the launcher's build): last time's folders (dump/build_folders.txt) are used, and "
+                         "a folder still needed and not saved stops the build with a message instead of a question")
     ap.add_argument("--check-ready", action="store_true",
                     help="only say (exit status 0) whether steps 3 to 8 are done, so that no game files are needed")
     a = ap.parse_args()
+    global NO_INPUT
+    NO_INPUT = a.no_input
     if a.check_ready:
         return 0 if prepared() else 1
     try:
