@@ -307,10 +307,11 @@ static void vp9_decode(Vp9Job *j, int show) {
  * 0x10C + i / 0x11D + i surface i's luma / chroma. Seen in Sephiroth's Final Smash (a 1280x720
  * High profile movie with B pictures), which was black before.
  *
- * The decoder gives its pictures in display order, each once the pictures it waits for (B
- * pictures decoded after it) are decoded: each job's surface is kept under a tag, and a picture
- * goes to the surface of the job it came from. The game asks VIC for them in display order too,
- * several jobs behind its decoding. */
+ * Each job's surface is kept under a tag, and a picture goes to the surface of the job it came
+ * from: the decoder gives each picture as its job is decoded (gpu_h264.c: the SPS asks for no
+ * reordering), as the engine does, and the game asks VIC for them in display order itself,
+ * several jobs later. A decoder that held pictures back would still put them in the right
+ * surfaces, only later: VIC says so when it is asked for one too early. */
 static struct { u64 tag, luma; u32 w, h; } h264_jobs[64];
 static u64 h264_tag;
 
@@ -461,6 +462,13 @@ static void vic_execute(Engine *e) {
 #ifdef SSBU_HAVE_VPX
     u64 in = (u64)e->regs[0x100] << 8;
     if (pending.valid && pending.current == in) vp9_decode(&pending, 1);   /* shown, then */
+    for (u32 i = 0; i < 64; i++)
+        if (h264_jobs[i].luma == in) {   /* an H.264 picture the decoder still holds back: this shows what the surface had */
+            static u32 early;
+            if (++early <= 10) fprintf(stderr, "[vic] H.264: the picture of job %llu asked for before the decoder gave it (%u so far)\n",
+                                       (unsigned long long)h264_jobs[i].tag, early);
+            break;
+        }
     Picture *p = picture(in);
     u64 cg = to_guest(((u64)e->regs[0x1C2] << 8) + 0x20, NULL);
     if (!p || !cg) return;

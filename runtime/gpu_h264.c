@@ -107,10 +107,12 @@ uint32_t h264_write_headers(const uint8_t *s, uint8_t *out, uint32_t cap, const 
     put_ue(&b, 1);          /* max_bits_per_mb_denom */
     put_ue(&b, 16);         /* log2_max_mv_length_horizontal */
     put_ue(&b, 16);         /* log2_max_mv_length_vertical */
-    /* How far display order can run behind decoding order is not in the setup either. Two
-     * pictures covers B pictures, references among them too (x264's pyramid); a decoder then
-     * holds back no more than that, where it would otherwise hold back the whole buffer. */
-    put_ue(&b, 2 < refs ? 2 : refs);   /* max_num_reorder_frames */
+    /* No picture held back for display order: the engine puts each picture in its surface as it
+     * is decoded, and the game shows them in display order itself. Media Foundation's decoder
+     * (low latency mode) then gives every picture at once, B pictures too, in decoding order
+     * (all 184 of Sephiroth's movie, each bit for bit as FFmpeg decodes it). With 2 here it held
+     * pictures back up to 7 jobs, and the movie's last 2 were never given before VIC asked. */
+    put_ue(&b, 0);          /* max_num_reorder_frames */
     put_ue(&b, refs);       /* max_dec_frame_buffering */
     trailing(&b);
     start(&b, 0x68);   /* PPS */

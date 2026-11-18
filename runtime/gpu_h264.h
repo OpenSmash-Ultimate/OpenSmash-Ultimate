@@ -47,8 +47,9 @@ int h264_starts_idr(const uint8_t *data, uint32_t size);
 uint32_t h264_strip_end_units(const uint8_t *data, uint32_t size);
 
 /* A software decoder (Windows: Media Foundation's H.264 decoder, which every Windows but the N
- * editions has; elsewhere none yet). Pictures come out in display order, each with the tag of
- * the access unit it was decoded from, as NV12 (`pitch` bytes a row, the chroma plane `uv`). */
+ * editions has; elsewhere none yet). Pictures come out each with the tag of the access unit it
+ * was decoded from, as NV12 (`pitch` bytes a row, the chroma plane `uv`): with the SPS above
+ * (no reordering), Media Foundation's as each unit is decoded. */
 typedef void (*H264Picture)(void *user, uint64_t tag, uint32_t width, uint32_t height, const uint8_t *y, const uint8_t *uv,
                             uint32_t pitch);
 /* One access unit (headers included when it starts a sequence). 1 decoded (pictures, if any,
