@@ -33,45 +33,73 @@ namespace OpenSmash.Launcher
         public static async Task<string> ProjectZipUrlAsync(CancellationToken ct = default)
         {
             if (string.Equals(Environment.GetEnvironmentVariable("OPENSMASH_UPDATE_CHANNEL"), "main", StringComparison.OrdinalIgnoreCase)) return MainZipUrl;
-            string? tag = await LatestReleaseTagAsync(ct);
+            string? tag = (await LatestReleaseAsync(null, ct)).Tag;   // (none, or GitHub not reachable: main, whose download then says what is wrong)
             return tag == null ? MainZipUrl : ReleaseZipUrl(tag);
         }
 
         // The latest release's tag, or null when there is none. The API first; when it does not answer (no network
         // to it, its hourly limit), github.com's own releases/latest page, which redirects to the release's tag.
-        public static async Task<string?> LatestReleaseTagAsync(CancellationToken outer = default)
+        // What GitHub says the latest release is. Three answers, not two: its tag; no release at all (the API's 404, or the
+        // releases/latest page landing on the release list), the only answer that means "follow main"; or unknown (no
+        // network, the API's hourly limit and the page not answering either), which must never be read as main: a copy of
+        // the release compared with main was told its finished update "did not finish" (Discord, 2026-11-18).
+        public readonly record struct LatestRelease(string? Tag, bool NoRelease, string Problem)
         {
+            public bool Known => Tag != null || NoRelease;
+        }
+
+        public static async Task<LatestRelease> LatestReleaseAsync(HttpClient? client = null, CancellationToken outer = default)
+        {
+            client ??= DownloadClient;
             using var limit = CancellationTokenSource.CreateLinkedTokenSource(outer);
             limit.CancelAfter(TimeSpan.FromSeconds(20));   // (the download client waits up to 30 minutes: not for this)
             var ct = limit.Token;
+            string problem = "";
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.github.com/repos/" + Repo + "/releases/latest");
                 request.Headers.Add("User-Agent", "OpenSmash-Launcher/1.0");
                 request.Headers.Accept.ParseAdd("application/vnd.github+json");
-                using var response = await DownloadClient.SendAsync(request, ct);
-                if (response.StatusCode == HttpStatusCode.NotFound) return null;   // no release yet
+                using var response = await client.SendAsync(request, ct);
+                if (response.StatusCode == HttpStatusCode.NotFound) return new LatestRelease(null, true, "");   // no release yet
                 if (response.IsSuccessStatusCode)
                 {
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-                    if (doc.RootElement.TryGetProperty("tag_name", out var t) && t.GetString() is string tag && tag.Trim().Length > 0) return tag.Trim();
+                    if (doc.RootElement.TryGetProperty("tag_name", out var t) && t.GetString() is string tag && tag.Trim().Length > 0)
+                        return new LatestRelease(tag.Trim(), false, "");
+                    problem = "GitHub's answer names no release";
+                }
+                else problem = "GitHub answered " + (int)response.StatusCode + " (" + response.ReasonPhrase + ")";
+            }
+            catch (OperationCanceledException) when (outer.IsCancellationRequested) { throw; }
+            catch (Exception ex) { problem = ex is OperationCanceledException ? "GitHub did not answer in time" : ex.Message; }
+            try
+            {
+                // (github.com's own page, outside the API's limit: it redirects to the release's tag)
+                using var request = new HttpRequestMessage(HttpMethod.Head, "https://github.com/" + Repo + "/releases/latest");
+                request.Headers.Add("User-Agent", "OpenSmash-Launcher/1.0");
+                using var response = await client.SendAsync(request, ct);
+                if (response.IsSuccessStatusCode)
+                {
+                    string path = response.RequestMessage?.RequestUri?.AbsolutePath ?? "";
+                    if (ReleaseTagFromPath(path) is string tag) return new LatestRelease(tag, false, "");
+                    if (path.TrimEnd('/').EndsWith("/" + Repo + "/releases", StringComparison.OrdinalIgnoreCase))
+                        return new LatestRelease(null, true, "");   // (no release: GitHub shows the empty list instead)
                 }
             }
             catch (OperationCanceledException) when (outer.IsCancellationRequested) { throw; }
             catch { }
-            try
-            {
-                using var request = new HttpRequestMessage(HttpMethod.Head, "https://github.com/" + Repo + "/releases/latest");
-                request.Headers.Add("User-Agent", "OpenSmash-Launcher/1.0");
-                using var response = await DownloadClient.SendAsync(request, ct);
-                string path = response.RequestMessage?.RequestUri?.AbsolutePath ?? "";
-                const string marker = "/releases/tag/";
-                int at = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-                if (at >= 0 && path.Length > at + marker.Length) return Uri.UnescapeDataString(path[(at + marker.Length)..]);
-            }
-            catch (OperationCanceledException) when (outer.IsCancellationRequested) { throw; }
-            catch { }
-            return null;   // (no release, or GitHub not reachable: main, whose download then says what is wrong)
+            return new LatestRelease(null, false, problem.Length > 0 ? problem : "GitHub could not be reached");
+        }
+
+        // The tag of a github.com/<repo>/releases/tag/<tag> address, or null.
+        internal static string? ReleaseTagFromPath(string path)
+        {
+            const string marker = "/releases/tag/";
+            int at = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (at < 0 || path.Length <= at + marker.Length) return null;
+            string tag = Uri.UnescapeDataString(path[(at + marker.Length)..]).Trim('/').Trim();
+            return tag.Length > 0 ? tag : null;
         }
         const string WorkName = ".opensmash-download";   // inside the chosen folder while it is filled; removed after
 

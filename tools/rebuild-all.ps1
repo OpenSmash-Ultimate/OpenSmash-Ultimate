@@ -12,9 +12,8 @@ $Exe = Join-Path $Root "OpenSmash.exe"
 
 if (-not (Test-Path -LiteralPath $GameBuild)) { throw "Game build script not found: $GameBuild" }
 if (-not (Test-Path -LiteralPath $LauncherBuild)) { throw "Launcher build script not found: $LauncherBuild" }
-if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
-    throw "dotnet was not found. Install the .NET 8 SDK before rebuilding the launcher."
-}
+# (no .NET SDK: the game is still rebuilt; the launcher is then the latest release's, as after a failed rebuild)
+$HaveDotnet = [bool](Get-Command dotnet -ErrorAction SilentlyContinue)
 
 $python = @(
     (Join-Path $Root "deps\venv\Scripts\python.exe"),
@@ -43,19 +42,50 @@ elseif (Get-Process -Name OpenSmash -ErrorAction SilentlyContinue) {
 }
 
 Write-Output "__OPENSMASH_PHASE__:game"
-$buildArgs = @("-u", $GameBuild)
+# --no-input: nobody can answer a question here (the launcher reads this script's output, it has no window to type
+# in): a folder build_game.py still needs and dump\build_folders.txt does not name stops it with a message saying so,
+# instead of waiting forever at "Press Enter to keep the folder in [brackets]" (Discord, 2026-11-18).
+$buildArgs = @("-u", $GameBuild, "--no-input")
 if ($Jobs -gt 0) { $buildArgs += @("--jobs", $Jobs.ToString()) }
 & $python @buildArgs
 if ($LASTEXITCODE -ne 0) { throw "The game build failed ($LASTEXITCODE)." }
 
+function Invoke-ReleaseLauncher {
+    <# The latest release's OpenSmash.exe, checked against its published SHA-256 (install_windowsmash.ps1 -LauncherOnly):
+       $true when OpenSmash.exe is the release's now. A running exe is renamed, not overwritten, so this works with the
+       launcher still open. #>
+    $installer = Join-Path $PSScriptRoot "install_windowsmash.ps1"
+    if (-not (Test-Path -LiteralPath $installer)) { return $false }
+    $p = Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -Wait -PassThru -ArgumentList @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$installer`"", "-LauncherOnly")
+    return ($p.ExitCode -eq 0)
+}
+
 Write-Output "__OPENSMASH_PHASE__:launcher"
-if ($LauncherPid -gt 0) {
-    & $LauncherBuild -Configuration $Configuration -LauncherPid $LauncherPid
+$launcherProblem = $null
+if ($HaveDotnet) {
+    try {
+        if ($LauncherPid -gt 0) {
+            & $LauncherBuild -Configuration $Configuration -LauncherPid $LauncherPid
+        }
+        else {
+            & $LauncherBuild -Configuration $Configuration
+        }
+        if (-not $?) { $launcherProblem = "The launcher build failed." }
+    }
+    catch { $launcherProblem = $_.Exception.Message }
 }
-else {
-    & $LauncherBuild -Configuration $Configuration
+else { $launcherProblem = "dotnet was not found (the .NET 8 SDK builds the launcher)." }
+if ($launcherProblem) {
+    Write-Output "The launcher was not rebuilt: $launcherProblem Using the latest release's OpenSmash.exe instead."
+    if (-not (Invoke-ReleaseLauncher)) {
+        throw "$launcherProblem The latest release's OpenSmash.exe could not be put here either; the game is built, the launcher is the one you had."
+    }
+    if ($LauncherPid -gt 0) {
+        Write-Output "__OPENSMASH_RESTART__"
+        while (Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 200 }
+    }
 }
-if (-not $?) { throw "The launcher build failed." }
 
 if (-not (Test-Path -LiteralPath $Exe)) { throw "The launcher build finished but $Exe is missing." }
 Write-Output "Build complete."
