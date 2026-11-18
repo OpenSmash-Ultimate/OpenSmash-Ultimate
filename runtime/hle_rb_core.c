@@ -938,6 +938,9 @@ static void net_cmp_seen(u32 f) { if (net_last_cmp && f > net_last_cmp && f - ne
 static u32 net_resync_last, net_resync_key, net_last_good, net_resync_seen; static int net_resync_pending;
 static u32 net_alike_from, net_last_bad, net_resync_min;   /* (the first frame of the newest run hashed alike; the last found different; a resync's oldest usable state) */
 static long long net_saves_refused, net_resync_impossible;   /* (net_resync_key: the frame this game was at when the resync's rollback ran) */
+/* (a resync that joined nothing: net_last_good when the last one was asked, how many asked since it last moved, the
+ * fight's resyncs given up, the ones left out as too deep) */
+static u32 net_resync_good_at; static int net_resync_same, net_resync_off; static long long net_resync_too_deep;
 static long long net_older;   /* (M7: rollbacks done from an older state, the newest refused) */
 static double net_catch_ms, net_catch_max, net_wait_ms;
 static long long net_saves_real;   /* (catch-up saves at the newest all-real frame, SSBU_RB_RERUN_REAL) */
@@ -1446,6 +1449,7 @@ static void net_report(void) {
     fprintf(stderr, "[rb] resyncs: %lld (%lld DESYNCs at frames 30 or more after the last one's rollback), rollbacks impossible: %lld, saves left out while a wrong guess waited: %lld; at most %u logic frames between two compared\n",
             net_resyncs, net_desyncs_at_resync, net_impossible, net_saves_pending, net_gap_max);
     fprintf(stderr, "[rb] resyncs with no state in the frames hashed alike: %lld; saves refused (a thread stayed in a job): %lld\n", net_resync_impossible, net_saves_refused);
+    fprintf(stderr, "[rb] resyncs given up (no frame hashed alike after them): %s; left out as too deep: %lld\n", net_resync_off ? "yes" : "no", net_resync_too_deep);
     fprintf(stderr, "[rb] saves held up by a thread in a job: %lld waited for it, %lld not made (SSBU_RB_SAVE_HOME)\n", rb_save_away_waits, rb_save_away_refused);
     fprintf(stderr, "[rb] loads held up by a thread on another fiber: %lld went ahead after a wait, %lld refused; %lld rollbacks from an older state instead\n",
             rb_fiber_retried_ok, rb_fiber_refused, net_older);
@@ -1553,9 +1557,16 @@ static void net_desync_pads(u32 f) {
 /* A DESYNC (a final frame's hash differs from the other game's) rolls this game back to the state before that frame
  * and runs the frames again with the pads both games have: what a wrong guess left uncorrected (a load refused, a
  * rollback too deep, SSBU_RB_TEST_IGNORE) is corrected so, in both games, as each sees the other's hash differ. At most
- * one a 30 logic frames (by the frame found different), 30 a fight; SSBU_RB_RESYNC=0: off (the DESYNC said, and play on). */
-static void net_resync(u32 f) {
-    static int on = -1;
+ * one a 30 logic frames (by the frame found different), 30 a fight; SSBU_RB_RESYNC=0: off (the DESYNC said, and play on).
+ * A resync sends no state: it only runs this game's frames again. A cause the pads do not carry (#482: the name-tag
+ * controls read from a different list in one game) splits the games again in every run, nothing hashes alike after it,
+ * the target stays at the frame after the last one alike, and each resync went back further (a player's Quickplay:
+ * 30 resyncs, all to logic frame 130, rollbacks of 100 and more frames, 7.5 logic frames/s). So: SSBU_RB_RESYNC_TRIES
+ * (3) resyncs while no frame hashes alike, then none more this fight - the games play on apart at full speed, as with
+ * SSBU_RB_RESYNC=0; and none further back than SSBU_RB_RESYNC_DEPTH (90) logic frames from this game's frame. */
+static void net_resync(u32 f, u32 key) {
+    static int on = -1, tries = -1, deep = -1;
+    if (net_resync_off) return;
     /* (back to the frame after the last one both games hashed alike: the frames between, run on a wrong guess, had
      * their hashes cleared and are not compared, so the first one found different can lie after the wrong guess) */
     u32 seen = f;
@@ -1563,6 +1574,24 @@ static void net_resync(u32 f) {
     if (on < 0) { const char *e = getenv("SSBU_RB_RESYNC"); on = !(e && *e == '0'); }
     /* (counted by the frame found different: the target stays at the last frame alike until the games agree again) */
     if (!on || net_resyncs >= 30 || (net_resync_seen && seen < net_resync_seen + 30)) return;
+    if (tries < 0) { const char *e = getenv("SSBU_RB_RESYNC_TRIES"); tries = e && *e ? atoi(e) : 3; if (tries < 1) tries = 1; }
+    if (deep < 0) { const char *e = getenv("SSBU_RB_RESYNC_DEPTH"); deep = e && *e ? atoi(e) : 90; if (deep < 10) deep = 10; }
+    if (!net_resyncs || net_last_good != net_resync_good_at) net_resync_same = 0;   /* (a frame hashed alike since: the last one joined them) */
+    if (net_resync_same >= tries) {
+        net_resync_off = 1; net_resync_pending = 0;
+        fprintf(stderr, "[rb] net mode: RESYNC GIVEN UP: %d resyncs ran the frames from logic frame %u again with the pads both games have, "
+                "and no frame hashed alike after them: what differs is not in the pads; no more resyncs this fight, the games play on apart\n",
+                net_resync_same, f);
+        return;
+    }
+    if (key > f && key - f > (u32)deep) {   /* (a run again that long stalls the match, and the next is longer) */
+        net_resync_seen = seen;
+        if (++net_resync_too_deep <= 3)
+            fprintf(stderr, "[rb] net mode: RESYNC LEFT OUT: the games differ from logic frame %u, %u frames before this game's %u (at most %d, SSBU_RB_RESYNC_DEPTH)\n",
+                    f, key - f, key, deep);
+        return;
+    }
+    net_resync_same++; net_resync_good_at = net_last_good;
     net_resyncs++; net_resync_last = f; net_resync_seen = seen; net_resync_key = 0; net_resync_pending = 1;
     net_resync_min = net_alike_from && net_alike_from <= f ? net_alike_from : 0;   /* (a state from before that run may already differ) */
     rbn_put_mismatch(f);
@@ -1601,7 +1630,7 @@ static void net_compare(u32 key) {
                     if (net_desyncs == 1) { net_desync_pads(f); net_desync_dump(); rb_keep_dump("a desync"); }
                 }
                 if (net_resync_key && f > net_resync_key + 30) net_desyncs_at_resync++;
-                net_resync(f);
+                net_resync(f, key);
             }
         }
     }
@@ -1658,7 +1687,7 @@ static void net_receive(u32 key) {
                         if (net_desyncs == 1) { net_desync_pads(m.check_frame); net_desync_dump(); rb_keep_dump("a desync"); }
                     }
                     if (net_resync_key && m.check_frame > net_resync_key + 30) net_desyncs_at_resync++;
-                    net_resync(m.check_frame);
+                    net_resync(m.check_frame, key);
                 }
                 net_peer_check[p][i] = 0;
             }
@@ -1749,6 +1778,7 @@ static void net_step(Cpu *c, u64 frame) {
         net_rollbacks = net_rerun = net_waits = net_too_deep = net_saves_made = net_saves_skipped = net_saves_same = net_saves_sparse = net_saves_threads = net_saves_pending = net_older = 0;
         net_resyncs = net_impossible = 0; net_resync_last = net_resync_key = net_last_good = net_resync_seen = 0; net_resync_pending = 0;
         net_alike_from = net_last_bad = net_resync_min = 0; net_saves_refused = net_resync_impossible = 0; net_desyncs_at_resync = 0;
+        net_resync_good_at = 0; net_resync_same = net_resync_off = 0; net_resync_too_deep = 0;
         rb_fiber_refused = rb_fiber_retried_ok = 0;
         memset(net_depth, 0, sizeof net_depth);
         net_save_spacing(0, 0, 0, 0, 1);
@@ -2170,10 +2200,13 @@ static int net_pad_for(u32 id, u32 key, u64 *buttons, i32 *lx, i32 *ly, i32 *rx,
     RbnPad p = net_mode == 2 ? rbn_get((int)id, key, NULL) : id == 0 ? net_pad(0, key) : rbn_get(1, key, NULL);
     {   /* (tests, #389: SSBU_RB_TEST_SPLIT=<logic frame>[,<frames>]: on player 1's game, those frames
          * play player 1 with the stick full right, a pad the other game never gets, in every run until the first resync:
-         * the games split there for real, and that resync's run again, with the pads both games have, joins them) */
-        static long split_at = -2, split_n = 12;
-        if (split_at == -2) { const char *e = getenv("SSBU_RB_TEST_SPLIT"); split_at = e && *e ? strtol(e, NULL, 0) : -1; if (e && strchr(e, ',')) split_n = strtol(strchr(e, ',') + 1, NULL, 0); }
-        if (split_at >= 0 && net_mode == 2 && net_local == 0 && id == 0 && !net_resyncs && (long)key >= split_at && (long)key < split_at + split_n) {
+         * the games split there for real, and that resync's run again, with the pads both games have, joins them.
+         * SSBU_RB_TEST_SPLIT_KEEP=1: in every run, resyncs' too - a cause no run again removes, as a name-tag list
+         * read differently in one game was: the games split for good, and resyncs cannot join them) */
+        static long split_at = -2, split_n = 12; static int split_keep;
+        if (split_at == -2) { const char *e = getenv("SSBU_RB_TEST_SPLIT"); split_at = e && *e ? strtol(e, NULL, 0) : -1; if (e && strchr(e, ',')) split_n = strtol(strchr(e, ',') + 1, NULL, 0);
+                              e = getenv("SSBU_RB_TEST_SPLIT_KEEP"); split_keep = e && *e == '1'; }
+        if (split_at >= 0 && net_mode == 2 && net_local == 0 && id == 0 && (!net_resyncs || split_keep) && (long)key >= split_at && (long)key < split_at + split_n) {
             static int told; if (!told++) fprintf(stderr, "[rb] TEST: player 1 played with the stick right here alone, logic frames %ld to %ld\n", split_at, split_at + split_n - 1);
             p.lx = 32767;
         }
