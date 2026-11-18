@@ -950,7 +950,8 @@ class BuildGameMacTests(unittest.TestCase):
             self.assertEqual(typed('~/MyDump'), '~/MyDump')
             self.assertEqual(typed(''), '')
             saved = {'hinted': True}
-            self.g.update(SAVED=os.path.join(tmp, 'build_folders.txt'), log=lambda m='': None)
+            self.g.update(SAVED=os.path.join(tmp, 'build_folders.txt'), log=lambda m='': None,
+                          can_ask=lambda: True)   # (a terminal: this test types the answer)
             with mock.patch('builtins.input', lambda prompt: str(dump).replace(' ', '\\ ') + ' '):
                 self.assertEqual(self.g['ask_folder']('game', None, saved), str(dump))
             self.g.update(MACOS=False, LINUX=True)

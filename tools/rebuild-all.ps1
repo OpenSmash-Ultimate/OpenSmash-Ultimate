@@ -79,9 +79,11 @@ else { $launcherProblem = "dotnet was not found (the .NET 8 SDK builds the launc
 if ($launcherProblem) {
     Write-Output "The launcher was not rebuilt: $launcherProblem Using the latest release's OpenSmash.exe instead."
     if (-not (Invoke-ReleaseLauncher)) {
-        throw "$launcherProblem The latest release's OpenSmash.exe could not be put here either; the game is built, the launcher is the one you had."
+        # (a git checkout, a copy following main, or no download: the game is built all the same; the open launcher stays)
+        Write-Output "The latest release's OpenSmash.exe could not be put here either: the game is built, the launcher is the one you had."
+        if ($LauncherPid -gt 0) { Write-Output "Build complete."; exit 0 }
     }
-    if ($LauncherPid -gt 0) {
+    elseif ($LauncherPid -gt 0) {
         Write-Output "__OPENSMASH_RESTART__"
         while (Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 200 }
     }

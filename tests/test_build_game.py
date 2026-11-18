@@ -587,6 +587,8 @@ class UnattendedFolderTests(unittest.TestCase):
         self.assertIn('Folder with your keys', str(stop.exception))
         self.assertIn('--keys', str(stop.exception))
         self.assertIsNone(self.ask('firmware', {}))   # (optional: none, the open fonts)
+        self.ns['FOLDERS'] = dict(self.ns['FOLDERS'], game=(self.ns['FOLDERS']['game'][0], str(self.game), self.ns['FOLDERS']['game'][2]))
+        self.assertEqual(self.ask('game', {}), str(self.game))   # (nothing saved, the default is a folder: as Enter takes it)
         self.assertEqual(self.ask('game', {}, given=str(self.game)), str(self.game))   # (a folder given still works)
         gone = str(self.top / 'gone')
         with self.assertRaises(self.ns['Failed']) as stop:   # (last time's folder is not there any more)

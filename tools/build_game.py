@@ -633,8 +633,10 @@ def ask_folder(key, given, saved):
     default = saved.get(key, default)
     unattended = not given and not can_ask()
     if unattended:
-        if key not in saved and key != "firmware":
-            raise Failed(f"{label}: none was given and none is saved from last time." + unattended_hint(key))
+        # (as an Enter would: last time's folder, else the default when it is one - the firmware's "none" always is)
+        problem = None if key == "firmware" or key in saved else check(os.path.expanduser(default))
+        if problem:
+            raise Failed(f"{label}: none was given and none is saved from last time ({problem})" + unattended_hint(key))
         given = default
     while True:
         if given:
