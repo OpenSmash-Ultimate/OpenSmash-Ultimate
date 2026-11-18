@@ -1285,17 +1285,15 @@ static volatile int online_own_pad = -1;
 /* (hle_hid.c) which of this PC's controller slots the game's slot `id` reads. Host/Join: a joining game's controller
  * and keyboard are its player 1 here, as on every PC; once the host gives it player N, the game's slot N reads them,
  * and its slot 1 (the host's player: a remote slot) the empty slot N. An Online match: the game's slot of this game's
- * number reads the slot its player picked with (online_own_pad; until it is known, every slot its own, as on the
- * select screen). That slot, if it is another player's of the match (a remote one: its reads are rollback's, rb_pad),
+ * number reads the slot its player picked with (online_own_pad; until it is known, as in a Host/Join room). That slot, if it is another player's of the match (a remote one: its reads are rollback's, rb_pad),
  * reads this game's number's slot in turn, so no pad plays two of the match's slots; past the match's players it
  * stays its own, connected (the player's own slot, which the results the game sets up from its records use).
  * Only this PC's own reading: the pads the games exchange are the game slots'. */
 u32 rb_slot_phys(u32 id) {
     int nl = net_local;   /* (once: online_forget may set it to -1 meanwhile, on the game's thread) */
     if (net_mode != 2 || nl < 0) return id;
-    if (net_online) {
-        int own = online_own_pad;
-        if (own < 0) return id;
+    int own = net_online ? online_own_pad : -1;
+    if (own >= 0) {
         if (id == (u32)nl) return (u32)own;
         if (id == (u32)own && own < net_n) return (u32)nl;
         return id;
@@ -4248,6 +4246,7 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx) {
     }
     if (net_mode == 2 && idx == 0 && net_armed) {
         fprintf(stderr, "[rb] net mode: player 1's record is built (a match set-up): the %d players hold nothing until the fight\n", net_n);
+        InterlockedExchange64(&own_reads, 0); InterlockedExchange64(&own_live, 0); own_first = 0;   /* (this match's own input counted anew) */
         tag_restore("a new set-up");
         memset(tag_given, 0, sizeof tag_given);
         net_hello_wait();
@@ -4280,10 +4279,13 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx) {
         if (idx == 0) ch_have_spare = 0;
         if (net_online) memcpy(online_panel[idx], P(u8, st), 0x460);   /* (as the game left it: record_after builds its own record too) */
         if (net_online) {   /* (an Online match: this game's own panel is the one not a network player's; it plays on its number's slot) */
-            if (type == 0 && !ld8(st + 0x451) && idx == net_local && online_own_pad < 0 && slot < 8) {
-                online_own_pad = (int)slot;   /* (before hid_slot_is_gc below: the pad's own style goes to the peer) */
-                fprintf(stderr, "[rb] online: this game's player %d picked with this PC's controller slot %u: it plays the match with it\n",
-                        net_local + 1, slot + 1);
+            if (idx == net_local && online_own_pad < 0) {
+                if (type == 0 && !ld8(st + 0x451) && slot < 8) {   /* (PAD_SLOTS) */
+                    online_own_pad = (int)slot;   /* (before hid_slot_is_gc below: the pad's own style goes to the peer) */
+                    fprintf(stderr, "[rb] online: this game's player %d picked with this PC's controller slot %u: it plays the match with it\n",
+                            net_local + 1, slot + 1);
+                } else fprintf(stderr, "[rb] online: this game's player %d: its panel (type %u, network %u, controller slot %d) names no "
+                               "controller slot here: it plays with slot 1\n", net_local + 1, type, ld8(st + 0x451), (int)slot);
             }
             slot = type == 0 && !ld8(st + 0x451) ? (u32)net_local : (u32)idx;
             st32(st + 0x210, slot); st8(st + 0x451, 0);
