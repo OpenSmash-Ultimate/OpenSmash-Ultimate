@@ -45,6 +45,7 @@ void rb_shadow_note(u64 at, u64 size) { (void)at; (void)size; }
 int rb_online_match_now(void) { return 0; }   /* (hle_online_delay.c) */
 int rb_sd_hold_now(void) { return 0; }        /* (hle_online_delay.c) */
 int rb_online_match_reported(void) { return 0; }   /* (hle_online_delay.c) */
+int rb_online_self_cut(void) { return 0; }    /* (hle_online_delay.c) */
 #else
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
@@ -285,6 +286,7 @@ static void online_restore(void);   /* (SSBU_RB_NET=online, below) */
 static void online_fight_start(void);
 static void online_forget(const char *why);
 static u32 pr_sp_lf;   /* (#181: the logic frame at the last fight safe point, rb_pad's census) */
+static int net_self_cut;           /* (this game cut off from the others in the fight: net_all_gone, below) */
 static int sd_holding;              /* (a sudden death may follow the fight just over: sd_hold_begin, below) */
 static volatile int sd_left;        /* (... and another game said it left meanwhile) */
 static int sd_hold_begin(Cpu *c);
@@ -2998,6 +3000,7 @@ static void net_gone_reset(void) {
                 pre_frames, pre_logic_last - pre_logic0, pre_waited_ms, pre_waits);
     }
     memset(net_gone_after, 0, sizeof net_gone_after);
+    net_self_cut = 0;
     memset(net_pads_heard_ms, 0, sizeof net_pads_heard_ms);
     memset(net_gone_shown, 0, sizeof net_gone_shown);
     memset(net_gone_why, 0, sizeof net_gone_why);
@@ -3047,7 +3050,11 @@ static void net_gone_show(int p) {   /* (once this game's fight runs on past the
     HANDLE h = CreateThread(NULL, 0, net_gone_box, text, 0, NULL);
     if (h) CloseHandle(h);
 }
+/* (this game cut off from the others in the fight - the host gone, or the host gave up on it: the game's own penalty
+ * record for a disconnection is left as it is at the match's end, hle_online_delay.c penalty_settle) */
+int rb_online_self_cut(void) { return net_self_cut; }
 static void net_all_gone(const char *why) {   /* (a joiner without the host: every other player's pads came through it) */
+    net_self_cut = 1;
     for (int p = 0; p < net_n && p < RBN_PLAYERS; p++) if (p != net_local) net_gone_mark(p, rbn_remote_newest(p), why);
 }
 static int net_left_take(const u8 *buf, int len) {
@@ -3478,6 +3485,7 @@ static void savestates(Cpu *c, u64 frame) {
     if (net_mode == 2 && !S.in_fight) net_hello(0);
     if (net_mode == 2 && !S.in_fight && net_online && !online_match) online_here();
     if (net_mode == 2 && !S.in_fight) net_seed_global("menus");
+    if (net_mode == 2 && !S.in_fight && frame % 30 == 0) { void online_penalty_watch(const char *where); online_penalty_watch("menus"); }   /* (hle_online_delay.c) */
     /* (net mode, from a match set-up until the fight: each frame waits for the game's other threads to be at a
      * wait - loading done - up to SSBU_RB_NET_SETTLE_MS (default 500). The fighters' entrances begin once their
      * files are loaded, checked each frame, so the frame they began on followed each PC's disk: the slower PC
