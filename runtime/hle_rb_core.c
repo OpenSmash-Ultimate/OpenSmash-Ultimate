@@ -2368,30 +2368,84 @@ static int tag_slot_ok(u64 a) {
     (void)hash;
     return used <= 1 && len <= 10;
 }
-/* A slot that holds a real tag: used, named. */
+/* A slot that holds a real tag: used, named. (Used is the slot's first byte, as the game reads it - main+0x18c2310:
+ * ld8, not the word: the word's other bytes are not the flag.) */
 static int tag_slot_named(u64 a) {
-    if (!tag_slot_ok(a) || ld32(a) != 1) return 0;
+    if (!readable(a, RBN_TAG_BYTES) || ld8(a) != 1) return 0;
     u32 len = ld32(a + 8);
+    if (len > 10) return 0;
     if (len < 1) return 0;
     for (u32 k = 0; k < len; k++) if (!ld8(a + 12 + 2 * k)) return 0;
     return 1;
 }
-/* (both copies, from any empty slot's head: back to the first slot, then counted; some 200 ms) */
+/* The list the game itself reads (13.0.5): P = **0x7105314510, the list = ***(P + 0x58), a slot k at list + k * 0xF7D8
+ * for k up to 60 - k 0 the no-name controls, k n the tag a panel names as + 0x214 = n (main+0x18c2b00, +0x19655f0;
+ * P's first byte set, the game plays everyone with the fixed set at 0x7105314518 instead: logged). 0 if the chain isn't
+ * there or its no-name slot holds no control layout; the other slots are only counted for the log (a save whose
+ * slots look odd is what this is for). The search below guessed where the list starts from the slots'
+ * looks, and a save whose slots looked otherwise put the start a few slots off (v0.4.1, a player's 56 slots): his own
+ * no-name controls weren't sent and the others' tags went into slots the game doesn't read for them - the same pads
+ * played with other controls on each PC, a desync at the first input they map differently. */
+#define TAG_ROOT 0x7105314510ull
+static int tag_from_game;   /* (tag_list[0] is the game's own list, slot 1) */
+static u64 tag_game_list(int *layouts, int *flags) {
+    if (!readable(TAG_ROOT, 8)) return 0;
+    u64 p = ld64(TAG_ROOT);
+    if (!readable(p, 8) || !readable((p = ld64(p)) + 0x58, 8)) return 0;
+    *flags = ld8(p) | ld8(p + 1) << 8;
+    u64 q = ld64(p + 0x58);
+    if (!readable(q, 8) || !readable((q = ld64(q)), 8)) return 0;
+    q = ld64(q);
+    if (q < 0x40 || !readable(q - 0x40, 0x40 + TAG_STRIDE * (TAG_SLOTS + 1))) return 0;
+    *layouts = 0;   /* (every slot holds a control layout, the default one when empty: blank memory doesn't) */
+    int first = 0;
+    for (int k = 0; k <= TAG_SLOTS; k++) {
+        int controls = 0;
+        for (u32 b = 0x24; b < 0x34; b++) controls |= ld8(q + TAG_STRIDE * (u64)k + b);
+        *layouts += controls != 0;
+        if (!k) first = controls;
+    }
+    return first ? q : 0;
+}
+/* The other copy, found by the search at s (any slot of it), lined up with the game's list g: the shift that makes
+ * the 0x40 bytes before the no-name slot and all 61 slots' heads the same as g's, if exactly one does; else 0. */
+static u64 tag_line_up(u64 s, u64 g) {
+    u64 found = 0;
+    for (int d = -TAG_SLOTS - 1; d <= TAG_SLOTS + 1; d++) {
+        u64 t = s + (u64)((i64)d * (i64)TAG_STRIDE) - TAG_STRIDE;   /* (its no-name slot) */
+        if (t + TAG_STRIDE * (TAG_SLOTS + 1) > g - 0x40 && t - 0x40 < g + TAG_STRIDE * (TAG_SLOTS + 1)) continue;   /* (g itself) */
+        /* (the cheap look first: the whole span's readable() can be many regions between fights) */
+        if (t < 0x40 || !readable(t - 0x40, 0x40 + RBN_TAG_BYTES) || memcmp(G2H(t - 0x40), G2H(g - 0x40), 0x40 + RBN_TAG_BYTES)) continue;
+        if (!readable(t - 0x40, 0x40 + TAG_STRIDE * (TAG_SLOTS + 1))) continue;
+        int k = 0;
+        while (k <= TAG_SLOTS && !memcmp(G2H(t + TAG_STRIDE * (u64)k), G2H(g + TAG_STRIDE * (u64)k), RBN_TAG_BYTES)) k++;
+        if (k <= TAG_SLOTS) continue;
+        if (found) return 0;   /* (two shifts fit: unsure) */
+        found = t + TAG_STRIDE;
+    }
+    return found;
+}
+/* (both copies: the game's own (tag_game_list), and the other from any empty slot's head: back to the first slot, then
+ * counted, some 200 ms; without the game's list, both from the search) */
 static void tag_find(void) {
     if (tag_lists) return;
+    int layouts = 0, flags = 0;
+    u64 game = tag_game_list(&layouts, &flags);
+    if (game) { tag_list[0] = game + TAG_STRIDE; tag_slots = TAG_SLOTS; tag_from_game = 1; }
+    u64 seen[2] = {0, 0}; int nseen = 0, seen_slots = 0;
     static u64 reg[16384][2];
     u32 nr = kernel_rb_regions(reg, 16384); if (nr > 16384) nr = 16384;
     static const u8 head[12] = {0, 0, 0, 0, 0xc5, 0x9d, 0x1c, 0x81, 0, 0, 0, 0};
     double t0 = now_ms();
-    for (u32 r = 0; r < nr && tag_lists < 2; r++)
-        for (u64 a = reg[r][0], end = reg[r][0] + reg[r][1]; a < end && tag_lists < 2;) {
+    for (u32 r = 0; r < nr && nseen < 2; r++)
+        for (u64 a = reg[r][0], end = reg[r][0] + reg[r][1]; a < end && nseen < 2;) {
             MEMORY_BASIC_INFORMATION mi;
             if (!VirtualQuery(G2H(a), &mi, sizeof mi)) break;
             u64 run_end = H2G((u8 *)mi.BaseAddress + mi.RegionSize);
             if (run_end > end) run_end = end;
             int ok = mi.State == MEM_COMMIT && (mi.Protect & (PAGE_READWRITE | PAGE_READONLY)) && !(mi.Protect & PAGE_GUARD);   /* (read-only too: the state map's cold pages, kept so between fights; only read here) */
             const u8 *lo = (const u8 *)G2H(a), *he = (const u8 *)G2H(run_end);
-            for (const u8 *q = lo + 4; ok && q + 8 <= he && tag_lists < 2; q++) {
+            for (const u8 *q = lo + 4; ok && q + 8 <= he && nseen < 2; q++) {
                 q = memchr(q, 0xc5, (size_t)(he - q));
                 if (!q || q + 8 > he) break;
                 if (memcmp(q - 4, head, 12)) continue;
@@ -2403,16 +2457,30 @@ static void tag_find(void) {
                 /* (always 60 slots, and the list's end is sure: the no-name slot just before it can pass for an empty one - its
                  * first word is whatever the save holds - which would put every tag's number one off) */
                 if (n > TAG_SLOTS) { s += TAG_STRIDE * (u64)(n - TAG_SLOTS); n = TAG_SLOTS; }
-                if (n < 40 || (tag_lists && s == tag_list[0])) { q = (const u8 *)G2H(s + TAG_STRIDE * (u64)n) - 1; if (q < lo + 4 || q >= he) break; continue; }
-                tag_list[tag_lists++] = s;
-                if (!tag_slots || n < tag_slots) tag_slots = n;
+                if (n < 40 || (nseen && s == seen[0])) { q = (const u8 *)G2H(s + TAG_STRIDE * (u64)n) - 1; if (q < lo + 4 || q >= he) break; continue; }
+                seen[nseen++] = s;
+                if (!seen_slots || n < seen_slots) seen_slots = n;
                 q = (const u8 *)G2H(s + TAG_STRIDE * (u64)n) - 1;
                 if (q < lo + 4 || q >= he) break;
             }
             a = run_end;
         }
-    fprintf(stderr, "[rb] name tags: %d copies of the list found (%#llx, %#llx), %d slots, in %.0f ms\n", tag_lists,
-            (unsigned long long)tag_list[0], (unsigned long long)tag_list[1], tag_slots, now_ms() - t0);
+    if (game) {
+        tag_lists = 1;
+        for (int i = 0; i < nseen && tag_lists < 2; i++) {
+            u64 other = tag_line_up(seen[i], game);
+            if (other) tag_list[tag_lists++] = other;
+        }
+        fprintf(stderr, "[rb] name tags: the game's list at %#llx (%d slots after its no-name controls, %d of the 61 with a control layout; "
+                "its flags %04x); the search found %d (%#llx, %#llx, %d slots): %d copies used (%#llx, %#llx), in %.0f ms\n",
+                (unsigned long long)game, TAG_SLOTS, layouts, flags, nseen, (unsigned long long)seen[0],
+                (unsigned long long)seen[1], seen_slots, tag_lists, (unsigned long long)tag_list[0], (unsigned long long)tag_list[1], now_ms() - t0);
+    } else {
+        for (int i = 0; i < nseen; i++) tag_list[i] = seen[i];
+        tag_lists = nseen; tag_slots = seen_slots;
+        fprintf(stderr, "[rb] name tags: %d copies of the list found (%#llx, %#llx), %d slots, in %.0f ms (the game's own list not readable)\n", tag_lists,
+                (unsigned long long)tag_list[0], (unsigned long long)tag_list[1], tag_slots, now_ms() - t0);
+    }
     for (int k = 0; k < 3 && tag_lists > 0; k++) {   /* (the first slots' heads: if a slot ever looks odd again) */
         u64 s = tag_list[0] + TAG_STRIDE * (u64)k;
         fprintf(stderr, "[rb] name tags: slot %d: used %u, hash %08x, length %u, controls %02x %02x %02x %02x\n", k, ld32(s), ld32(s + 4), ld32(s + 8),
@@ -2439,7 +2507,8 @@ static int tag_noname(u8 *head) {
     /* (told by the empty name and its controls: the slot's first word is no flag here - 0xaa000301 in one save - so not tag_slot_ok) */
     int controls = 0;
     if (readable(nn, RBN_TAG_BYTES)) for (u32 k = 0x24; k < 0x34; k++) controls |= ld8(nn + k);
-    if (!controls || ld32(nn + 4) != TAG_EMPTY_HASH || ld32(nn + 8) != 0) { fprintf(stderr, "[rb] name tags: the no-name controls aren't before the list here: not sent\n"); return 0; }
+    /* (the game's own list: its slot 0 is the no-name set whatever its name fields hold) */
+    if (!controls || (!tag_from_game && (ld32(nn + 4) != TAG_EMPTY_HASH || ld32(nn + 8) != 0))) { fprintf(stderr, "[rb] name tags: the no-name controls aren't before the list here: not sent\n"); return 0; }
     static int test = -1;
     if (test < 0) { const char *e = getenv("SSBU_RB_TEST_NONAME_DEFAULT"); test = e && *e == '1'; }
     if (test) {   /* (from an empty slot's controls, the defaults; the no-name slots kept to be put back after the match) */
