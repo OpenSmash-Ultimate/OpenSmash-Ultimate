@@ -1563,7 +1563,7 @@ static void net_desync_pads(u32 f) {
  * the target stays at the frame after the last one alike, and each resync went back further (a player's Quickplay:
  * 30 resyncs, all to logic frame 130, rollbacks of 100 and more frames, 7.5 logic frames/s). So: SSBU_RB_RESYNC_TRIES
  * (3) resyncs while no frame hashes alike, then none more this fight - the games play on apart at full speed, as with
- * SSBU_RB_RESYNC=0; and none further back than SSBU_RB_RESYNC_DEPTH (90) logic frames from this game's frame. */
+ * SSBU_RB_RESYNC=0; and no try after the first further back than SSBU_RB_RESYNC_DEPTH (90) logic frames. */
 static void net_resync(u32 f, u32 key) {
     static int on = -1, tries = -1;
     if (net_resync_off) return;
@@ -1584,11 +1584,16 @@ static void net_resync(u32 f, u32 key) {
                 net_resync_same, f);
         return;
     }
-    if (key > f && key - f > (u32)net_resync_deep) {   /* (a run again that long stalls the match, and the next is longer) */
+    /* (a try after the first: no further back than SSBU_RB_RESYNC_DEPTH from the state its rollback would load, which
+     * can be far older than the frame - saves are left out while the pads come in time. The first goes as far as the
+     * states kept: a wrong guess left uncorrected is joined by one run again, however long. Checked here, before the
+     * mismatch is put: in net_step it would have taken the place of a wrong guess's own, never rolled back then) */
+    u32 found = 0;
+    if (net_resync_same > 0 && f > 0 && key > f && rb_ring_find(f - 1, &found) >= 0 && key - found > (u32)net_resync_deep) {
         net_resync_seen = seen;
         if (++net_resync_too_deep <= 3)
-            fprintf(stderr, "[rb] net mode: RESYNC LEFT OUT: the games differ from logic frame %u, %u frames before this game's %u (at most %d, SSBU_RB_RESYNC_DEPTH)\n",
-                    f, key - f, key, net_resync_deep);
+            fprintf(stderr, "[rb] net mode: RESYNC LEFT OUT: the games differ from logic frame %u, the newest state before it is %u, %u frames before this game's %u (at most %d, SSBU_RB_RESYNC_DEPTH)\n",
+                    f, found, key - found, key, net_resync_deep);
         return;
     }
     net_resync_same++; net_resync_good_at = net_last_good;
@@ -2138,14 +2143,6 @@ static void net_step(Cpu *c, u64 frame) {
         if (net_resync_impossible <= 5)
             fprintf(stderr, "[rb] net mode: RESYNC IMPOSSIBLE: no state kept from logic frame %u to %u, the frames both games last hashed alike (the newest before %u is %u): "
                     "the games go on apart\n", net_resync_min, m - 1, m, found);
-        rb_release_held(); return;
-    }
-    if (net_resync_pending && m == net_resync_last && net_resync_deep > 0 && key - found > (u32)net_resync_deep) {
-        /* (the state kept before the frame can be far older than it: saves are left out while the pads come in time) */
-        net_resync_pending = 0; net_resync_too_deep++; if (net_resync_same > 0) net_resync_same--;
-        if (net_resync_too_deep <= 3)
-            fprintf(stderr, "[rb] net mode: RESYNC LEFT OUT: the newest state before logic frame %u is %u, %u frames before this game's %u (at most %d, SSBU_RB_RESYNC_DEPTH)\n",
-                    m, found, key - found, key, net_resync_deep);
         rb_release_held(); return;
     }
     int depth = (int)(key - found);
