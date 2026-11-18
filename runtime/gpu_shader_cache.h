@@ -19,6 +19,8 @@
 
 /* Bump when the translator changes what it generates: older files are then ignored. */
 #define SHADER_CACHE_VERSION 10
+/* Preparation receipt revision only; does not invalidate unaffected cache filenames. */
+#define SHADER_CACHE_DXBC_REVISION 1
 /* MSL files' version: the translator's, and the MSL dialect's own revision (bump the last
  * digits for a change to MSL alone). */
 #define SHADER_CACHE_MSL_VERSION (SHADER_CACHE_VERSION * 100 + 3)
@@ -47,6 +49,15 @@ static inline u64 shader_cache_hash(u64 hash, const u8 *program, u32 size, int s
     return hash;
 }
 
+/* FXC dispatch loops now leave through one return after the loop. Keep the glslang and
+ * Metal keys unchanged, and retain every DXBC program whose translation has no dispatcher. */
+#define SHADER_DXBC_DISPATCH_SALT 0x6478657830303031ull   /* "dxex0001" */
+static inline u64 shader_cache_hash_dxbc(u64 hash, const u8 *program, u32 size, int stage) {
+    hash = shader_cache_hash(hash, program, size, stage);
+    if (shader_uses_dispatch(program, size)) hash = (hash ^ SHADER_DXBC_DISPATCH_SALT) * 1099511628211ull;
+    return hash;
+}
+
 static inline void shader_cache_file(char *out, size_t n, const char *dir, int stage, u64 hash, u32 vs_outputs, u64 table_hash) {
     snprintf(out, n, "%s/v%u_%s_%016llx_%08x_%016llx.dxbc", dir, SHADER_CACHE_VERSION,
              stage == SHADER_VERTEX ? "vs" : stage == SHADER_PIXEL ? "ps" : "cs", (unsigned long long)hash, vs_outputs,
@@ -54,7 +65,7 @@ static inline void shader_cache_file(char *out, size_t n, const char *dir, int s
 }
 
 /* The Vulkan back end's SPIR-V made by glslang from the HLSL (gpu_spirv.h's spirv_from_hlsl), under
- * the same key: "<dir>/g<version>.<library>_<vs|ps|cs>_<...the same...>.spv". Its version: the
+ * shader_cache_hash (without DXBC-only revisions): "<dir>/g<version>.<library>_<vs|ps|cs>_<...>.spv". Its version: the
  * translator's, and the glslang dialect's own revision (bump the last digits for a change to it
  * alone). `library` is what made the SPIR-V (gpu_spirv.h's spirv_glslang_version: the shim's
  * revision and glslang's version, in hex), so that another ssbu_glslang.dll - a newer glslang, a

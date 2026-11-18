@@ -245,6 +245,40 @@ static VkImage make_image(const VkImageCreateInfo *ici, Alloc *a) {
 #define MAX_POOLS 64
 typedef struct Grave { VkImage image; VkBuffer buffer; VkImageView view; Alloc alloc; VkBufferView bview; } Grave;
 typedef struct Block { VkBuffer buf; VkDeviceMemory mem; u8 *map; VkDeviceSize size, used; } Block;
+/* A small CPU-visible VRAM heap can fill long before the card's main heap (notably
+ * without resizable BAR). Try every compatible coherent type once, then system RAM.
+ * Map before binding: a failed map must not leave the buffer bound to freed memory. */
+static int upload_memory(Block *b, const VkMemoryRequirements *mr, int prefer_local, int *is_local) {
+    VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    *is_local = 0;
+    b->mem = VK_NULL_HANDLE;
+    b->map = NULL;
+    for (int pass = 0; pass < 2; pass++) {
+        for (u32 type = 0; type < memory_props.memoryTypeCount; type++) {
+            VkMemoryPropertyFlags flags = memory_props.memoryTypes[type].propertyFlags;
+            int local = (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+            if (!(mr->memoryTypeBits >> type & 1) || (flags & host) != host || local != (pass ? !prefer_local : !!prefer_local)) continue;
+            VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr->size, type};
+            VkDeviceMemory mem = VK_NULL_HANDLE;
+            u8 *map = NULL;
+            if (vkAllocateMemory(device, &mai, NULL, &mem) != VK_SUCCESS) continue;
+            if (vkMapMemory(device, mem, 0, VK_WHOLE_SIZE, 0, (void **)&map) != VK_SUCCESS) {
+                vkFreeMemory(device, mem, NULL);
+                continue;
+            }
+            if (vkBindBufferMemory(device, b->buf, mem, 0) != VK_SUCCESS) {
+                vkUnmapMemory(device, mem);
+                vkFreeMemory(device, mem, NULL);
+                return 0;
+            }
+            b->mem = mem;
+            b->map = map;
+            *is_local = local;
+            return 1;
+        }
+    }
+    return 0;
+}
 typedef struct Frame {
     VkCommandBuffer cmd;
     VkFence done;
@@ -502,38 +536,13 @@ static u8 *arena(VkDeviceSize size, VkDeviceSize align, VkBuffer *buf, VkDeviceS
     static int sysmem = -1;
     const char *sysmem_env = getenv("SSBU_VK_SYSMEM");
     if (sysmem < 0) sysmem = sysmem_env && *sysmem_env ? atoi(sysmem_env) != 0 : limits_vendor == 0x1002;
-    VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    int local = sysmem ? -1 : memory_type(mr.memoryTypeBits, host | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    /* (system memory: a type that is not the card's, though a card's host-visible type may be listed first) */
-    int type = memory_type_but(mr.memoryTypeBits, host, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (type < 0) type = memory_type(mr.memoryTypeBits, host);   /* (one memory for both: integrated graphics) */
-    static int told;
-    if (!told++) {
-        int t = local >= 0 ? local : type;
-        VkDeviceSize heap = t >= 0 ? memory_props.memoryHeaps[memory_props.memoryTypes[t].heapIndex].size : 0;
-        if (local >= 0)
-            fprintf(stderr, "[vulkan] upload memory (vertex streams, constant buffers, textures on their way): the card's CPU-visible memory "
-                            "(type %d, heap of %llu MB; SSBU_VK_SYSMEM=1 for the system's if stages or backgrounds draw black)\n",
-                    t, (unsigned long long)(heap >> 20));
-        else
-            fprintf(stderr, "[vulkan] upload memory (vertex streams, constant buffers, textures on their way): %s (type %d, heap of %llu MB)%s\n",
-                    t >= 0 && (memory_props.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "the card's (no other here)" : "the system's",
-                    t, (unsigned long long)(heap >> 20),
-                    !sysmem ? "" : sysmem_env && *sysmem_env ? ": SSBU_VK_SYSMEM=1"
-                                 : ": AMD card, where draws read the stages' vertex data in the card's CPU-visible memory as nothing "
-                                   "(black stages and backgrounds, #353); SSBU_VK_SYSMEM=0 puts it there");
-    }
-    VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, (uint32_t)local};
-    if (local < 0 || vkAllocateMemory(device, &mai, NULL, &b->mem) != VK_SUCCESS) {
-        mai.memoryTypeIndex = (uint32_t)type;
-        if (type < 0 || vkAllocateMemory(device, &mai, NULL, &b->mem) != VK_SUCCESS) { vkDestroyBuffer(device, b->buf, NULL); return NULL; }
-    } else vk_stat_local_blocks++;
-    vkBindBufferMemory(device, b->buf, b->mem, 0);
-    if (vkMapMemory(device, b->mem, 0, VK_WHOLE_SIZE, 0, (void **)&b->map) != VK_SUCCESS) {
+    int local;
+    if (!upload_memory(b, &mr, !sysmem, &local)) {
         vkDestroyBuffer(device, b->buf, NULL);
-        vkFreeMemory(device, b->mem, NULL);
+        b->buf = VK_NULL_HANDLE;
         return NULL;
     }
+    if (local) vk_stat_local_blocks++;
     b->size = bs;
     b->used = size;
     f->nblocks++;
@@ -545,6 +554,9 @@ static u8 *arena(VkDeviceSize size, VkDeviceSize align, VkBuffer *buf, VkDeviceS
 /* A view of upload memory as the shaders' raw buffers (ByteAddressBuffer: a uniform texel buffer of
  * 32-bit words in SPIR-V), destroyed with the frame. */
 static VkBufferView texel_view(VkBuffer buf, VkDeviceSize off, VkDeviceSize size) {
+    /* Start the slot before adding this view: cmd() retires its previous views. A resident
+     * vertex stream may be the first resource of a frame, before any arena upload does this. */
+    cmd();
     Frame *f = &frames[frame_at];
     if (f->nviews == f->views_cap) {
         u32 cap = f->views_cap * 2 + 1024;
@@ -565,29 +577,38 @@ static VkBufferView texel_view(VkBuffer buf, VkDeviceSize off, VkDeviceSize size
  * order), so a view made once is used again instead of made per draw. A view pushed out of its slot is
  * destroyed with this frame (frames before it that used it are done by then: the queue runs in order). */
 #define ARENA_VIEWS (1u << 16)
-static struct { VkBuffer buf; VkDeviceSize off, size; VkBufferView view; } arena_views[ARENA_VIEWS];
+#define ARENA_VIEW_WAYS 4
+static struct { VkBuffer buf; VkDeviceSize off, size; VkBufferView view; u64 used; } arena_views[ARENA_VIEWS];
+static u64 arena_view_use;
 static u64 vk_stat_views_made, vk_stat_views_kept;
 static VkBufferView arena_view(VkBuffer buf, VkDeviceSize off, VkDeviceSize size) {
     u64 h = ((u64)(uintptr_t)buf * 0x9E3779B97F4A7C15ull) ^ (off * 0xC2B2AE3D27D4EB4Full) ^ (size * 0x165667B19E3779F9ull);
-    u32 k = (u32)(h >> 48) & (ARENA_VIEWS - 1);
-    if (arena_views[k].view && arena_views[k].buf == buf && arena_views[k].off == off && arena_views[k].size == size) {
-        vk_stat_views_kept++;
-        return arena_views[k].view;
+    /* Four choices per bucket prevent two frequently used views from continually evicting
+     * each other. Keep the same total capacity, and replace the least recently used choice. */
+    u32 base = (u32)(h >> 48) & (ARENA_VIEWS - ARENA_VIEW_WAYS), k = base;
+    for (u32 i = base; i < base + ARENA_VIEW_WAYS; i++) {
+        if (arena_views[i].view && arena_views[i].buf == buf && arena_views[i].off == off && arena_views[i].size == size) {
+            arena_views[i].used = ++arena_view_use;
+            vk_stat_views_kept++;
+            return arena_views[i].view;
+        }
+        if (arena_views[i].used < arena_views[k].used) k = i;
+    }
+    Frame *f = &frames[frame_at];
+    if (arena_views[k].view && f->nviews == f->views_cap) {
+        u32 cap = f->views_cap * 2 + 1024;
+        VkBufferView *n = realloc(f->views, sizeof *n * cap);
+        if (!n) return VK_NULL_HANDLE;   /* keep the old view; no untracked replacement to leak */
+        f->views = n;
+        f->views_cap = cap;
     }
     VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, buf, VK_FORMAT_R32_UINT, off, size};
     VkBufferView v;
     if (vkCreateBufferView(device, &ci, NULL, &v) != VK_SUCCESS) return VK_NULL_HANDLE;
     vk_stat_views_made++;
-    if (arena_views[k].view) {   /* (the old one: destroyed with this frame, as texel_view's are) */
-        Frame *f = &frames[frame_at];
-        if (f->nviews == f->views_cap) {
-            u32 cap = f->views_cap * 2 + 1024;
-            VkBufferView *n = realloc(f->views, sizeof *n * cap);
-            if (n) { f->views = n; f->views_cap = cap; }
-        }
-        if (f->nviews < f->views_cap) f->views[f->nviews++] = arena_views[k].view;   /* (else leaked, never freed in use) */
-    }
+    if (arena_views[k].view) f->views[f->nviews++] = arena_views[k].view;
     arena_views[k].buf = buf; arena_views[k].off = off; arena_views[k].size = size; arena_views[k].view = v;
+    arena_views[k].used = ++arena_view_use;
     return v;
 }
 
@@ -1370,6 +1391,25 @@ static VkDescriptorSetLayout gfx_set_layout, cs_set_layout;
 static VkPipelineLayout gfx_layout, cs_layout;
 static VkPipelineCache pipeline_cache;
 static char pipeline_cache_path[1024];
+/* A driver crash was observed while exporting the cache alongside pipeline creation. Keep
+ * compilation parallel, but take an exclusive snapshot for export (a compatibility defense,
+ * not a requirement to serialize Vulkan's internally synchronized pipeline creation). */
+static SRWLOCK pipeline_cache_lock = SRWLOCK_INIT;
+static volatile LONG64 pipeline_cache_generation;
+static VkResult cached_compute_pipeline(const VkComputePipelineCreateInfo *info, VkPipeline *out) {
+    AcquireSRWLockShared(&pipeline_cache_lock);
+    VkResult r = vkCreateComputePipelines(device, pipeline_cache, 1, info, NULL, out);
+    if (r == VK_SUCCESS) InterlockedIncrement64(&pipeline_cache_generation);
+    ReleaseSRWLockShared(&pipeline_cache_lock);
+    return r;
+}
+static VkResult cached_graphics_pipeline(const VkGraphicsPipelineCreateInfo *info, VkPipeline *out) {
+    AcquireSRWLockShared(&pipeline_cache_lock);
+    VkResult r = vkCreateGraphicsPipelines(device, pipeline_cache, 1, info, NULL, out);
+    if (r == VK_SUCCESS) InterlockedIncrement64(&pipeline_cache_generation);
+    ReleaseSRWLockShared(&pipeline_cache_lock);
+    return r;
+}
 static VkBuffer dummy_buffer;
 static VkBufferView dummy_texels;
 static Alloc dummy_buffer_mem;
@@ -1758,12 +1798,34 @@ static void residents_unmapped(u64 lo, u64 hi, int guest) {
 }
 
 /* ---- the makers: threads that make shaders and pipelines (gpu_d3d11.c's compiler threads) ------------- */
-/* A draw whose shaders or pipeline are not made yet is skipped, as Direct3D 11's are while its shaders
- * compile: the game's frame does not wait for a driver's compiler (vkd3d-shader's SPIR-V of the bigger
- * programs takes the driver a second or more). Big stacks: drivers' compilers recurse. */
+/* Vulkan's ordinary first use waits briefly, then skips an unfinished shader/pipeline;
+ * SSBU_VK_WAIT diagnoses complete rendering by waiting to completion instead. Stage
+ * preparation overlaps and waits sleep, but a new driver pipeline can still be costly.
+ * Big stacks: drivers' compilers recurse. */
 typedef struct Job { struct Job *next; void (*run)(struct Job *job); } Job;
 static SRWLOCK jobs_lock = SRWLOCK_INIT;
 static CONDITION_VARIABLE jobs_cv = CONDITION_VARIABLE_INIT;
+/* Shared by normal makers and warm-start workers. Publishing and checking under
+ * one lock prevents a completion just before sleeping from losing its wakeup. */
+static SRWLOCK makes_lock = SRWLOCK_INIT;
+static CONDITION_VARIABLE makes_cv = CONDITION_VARIABLE_INIT;
+static void make_publish(volatile LONG *state, LONG value) {
+    AcquireSRWLockExclusive(&makes_lock);
+    InterlockedExchange(state, value);
+    WakeAllConditionVariable(&makes_cv);
+    ReleaseSRWLockExclusive(&makes_lock);
+}
+/* until == 0 means the explicit, unlimited SSBU_VK_WAIT diagnostic mode. */
+static void make_wait(volatile LONG *state, LONG pending, u64 until) {
+    AcquireSRWLockExclusive(&makes_lock);
+    while (*state == pending) {
+        u64 now = GetTickCount64();
+        if (until && now >= until) break;
+        DWORD timeout = until ? (DWORD)(until - now) : INFINITE;
+        SleepConditionVariableSRW(&makes_cv, &makes_lock, timeout, 0);
+    }
+    ReleaseSRWLockExclusive(&makes_lock);
+}
 static Job *jobs_head, *jobs_tail;
 static volatile LONG jobs_pending;
 static u32 nmakers;
@@ -1783,6 +1845,8 @@ static DWORD WINAPI maker_main(void *unused) {
 }
 
 static void job_add(Job *j) {
+    /* Thread creation can fail under memory pressure. Do not leave jobs queued forever. */
+    if (!nmakers) { j->run(j); return; }
     j->next = NULL;
     InterlockedIncrement(&jobs_pending);
     AcquireSRWLockExclusive(&jobs_lock);
@@ -1793,29 +1857,50 @@ static void job_add(Job *j) {
     WakeConditionVariable(&jobs_cv);
 }
 
+/* A draw reaches this only after its shader modules are ready. Put the requested
+ * graphics pipeline ahead of unrelated shader/cache work already queued: the
+ * drawing thread has a bounded wait for this exact job, while the other jobs can
+ * continue on the remaining workers. This avoids a burst of new fighter shaders
+ * turning every first pipeline into a full 100 ms queue timeout. */
+static void job_add_front(Job *j) {
+    /* Thread creation can fail under memory pressure. Do not leave jobs queued forever. */
+    if (!nmakers) { j->run(j); return; }
+    j->next = NULL;
+    InterlockedIncrement(&jobs_pending);
+    AcquireSRWLockExclusive(&jobs_lock);
+    j->next = jobs_head;
+    jobs_head = j;
+    if (!jobs_tail) jobs_tail = j;
+    ReleaseSRWLockExclusive(&jobs_lock);
+    WakeConditionVariable(&jobs_cv);
+}
+
 static void makers_start(void) {
     SYSTEM_INFO si;
     GetSystemInfo(&si);
-    nmakers = si.dwNumberOfProcessors / 2;
-    if (nmakers < 1) nmakers = 1;
-    if (nmakers > 6) nmakers = 6;
-    for (u32 i = 0; i < nmakers; i++) {
+    u32 want = si.dwNumberOfProcessors / 2;
+    if (want < 1) want = 1;
+    if (want > 6) want = 6;
+    nmakers = 0;
+    for (u32 i = 0; i < want; i++) {
         HANDLE t = CreateThread(NULL, 64ull << 20, maker_main, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
         if (!t) continue;
+        nmakers++;
         SetThreadPriority(t, THREAD_PRIORITY_BELOW_NORMAL);
         CloseHandle(t);
     }
+    if (!nmakers) fprintf(stderr, "[vulkan] no compiler workers could start; compiling synchronously\n");
 }
 
-/* SSBU_VK_WAIT=1: draws wait for their shaders and pipelines instead (every draw drawn: pictures to
- * compare with Direct3D 11's, which waits the same way with SSBU_SHADER_WAIT... when it has it). */
+/* SSBU_VK_WAIT=1: diagnostics wait for shader/pipeline completion without the ordinary
+ * first-use deadlines. Failed creation still returns to the normal error path. */
 static int wait_makes(void) {
     static int v = -1;
     if (v < 0) v = getenv("SSBU_VK_WAIT") && atoi(getenv("SSBU_VK_WAIT")) != 0;
     return v;
 }
 static void wait_for(volatile LONG *state) {
-    while (!*state) SwitchToThread();
+    make_wait(state, 0, 0);
 }
 /* SSBU_VK_WAIT_BUDGET=<ms>: what a frame may spend waiting for new pipelines and graphics programs, all
  * together (default 6; 0: never wait). Most are ready in a few ms; the rest were not ready after the 100 ms
@@ -1884,6 +1969,9 @@ static VkBufferView upload_window(u64 va, u32 size) {
 #define BIG_CBS 1024
 static LastCb big_cb[BIG_CBS];
 static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
+    /* The slot still has its previous serial until cmd() begins it. Do not reuse a view
+     * against that old serial just before cmd() destroys the previous frame's views. */
+    cmd();
     LastCb *l = size >= 0x1000 ? &big_cb[((va >> 4) * 0x9E3779B97F4A7C15ull ^ size) >> 54 & (BIG_CBS - 1)]
                                : &last_cb[stage == SHADER_VERTEX ? 0 : 1][slot];
     /* (found the same in this submission and unwritten since: as below, without looking through its pages first -
@@ -1905,7 +1993,6 @@ static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
             if (gpu_va_to_guest(va + o)) run = 0;   /* (mapped elsewhere: not compared) */
     }
     const u8 *src = run ? P(const u8, g) : NULL;
-    cmd();
     u64 gen = src ? writes_over(g, run) : 0;
     if (src && l->view && l->va == va && l->size == size && l->run == run && l->serial == frames[frame_at].serial) {
         /* (in the submission it was found the same in, unwritten by the GPU's commands since: the same bytes,
@@ -1950,6 +2037,8 @@ typedef struct VShader {
     VkDescriptorUpdateTemplate tmpl;   /* (stage_set's writes for this program, made at its first set; 0 with tmpl_failed: none) */
     int tmpl_failed;
     int glslang;        /* its SPIR-V is glslang's: SV_VertexID is the vertex index itself (see vk_draw) */
+    int first_wait, wait_eligible, was_listed; /* render thread: first-use waits happen after all stages are queued */
+    u64 asked_ns;
     struct WarmShader *adopt, *publish;   /* the warm start's (below): its module taken once loaded; ours given to it */
     char name[64];
     ShaderInfo info;
@@ -2105,7 +2194,7 @@ static int spirv_vkd3d(VShader *s, const char *hlsl, SpirvCode *spv);
 static void shader_make(VShader *s, const char *hlsl) {
     SpirvCode spv;
     if (!(glslang_for(s->stage) ? spirv_glslang(s, hlsl, &spv) : spirv_vkd3d(s, hlsl, &spv))) {
-        InterlockedExchange(&s->state, 2);
+        make_publish(&s->state, 2);
         return;
     }
     VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, spv.size, spv.code};
@@ -2117,10 +2206,10 @@ static void shader_make(VShader *s, const char *hlsl) {
         VkComputePipelineCreateInfo cpi = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0,
                                            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, module, "main", NULL},
                                            cs_layout, VK_NULL_HANDLE, -1};
-        made = vkCreateComputePipelines(device, pipeline_cache, 1, &cpi, NULL, &s->compute) == VK_SUCCESS;
+        made = cached_compute_pipeline(&cpi, &s->compute) == VK_SUCCESS;
         if (!made) fprintf(stderr, "[vulkan] %s: cannot make its pipeline\n", s->name);
     }
-    InterlockedExchange(&s->state, made ? 1 : 2);   /* (the module written before: a full barrier) */
+    make_publish(&s->state, made ? 1 : 2);
 }
 
 static int spirv_vkd3d(VShader *s, const char *hlsl, SpirvCode *spv) {
@@ -2160,7 +2249,7 @@ static void shader_job(Job *j) {
     if (s->publish) {   /* (a listed program the game asked for before the warm threads came to it: they use this one) */
         s->publish->module = s->module;
         s->publish->compute = s->compute;
-        InterlockedExchange(&s->publish->state, s->state == 1 ? WARM_READY : WARM_NONE);
+        make_publish(&s->publish->state, s->state == 1 ? WARM_READY : WARM_NONE);
     }
     if (s->state == 1 && s->stage == SHADER_COMPUTE && s->glslang) warm_list_compute(&(WarmKey){s->hash, s->table_hash, s->vs_outputs, SHADER_COMPUTE});
 }
@@ -2180,7 +2269,7 @@ static void warm_adopt(VShader *s) {
     s->hlsl = NULL;
     vk_stat_warm_taken++;
     InterlockedIncrement64((volatile LONG64 *)&vk_stat_shaders);
-    InterlockedExchange(&s->state, 1);
+    make_publish(&s->state, 1);
 }
 
 static int make_log_left(void);
@@ -2193,6 +2282,28 @@ static void make_note_shader(const VShader *s, int listed, double ms) {   /* (a 
     if ((listed && ms < 2.0) || !make_log_left()) return;
     fprintf(stderr, "[vulkan] made in play: program %s %016llx took %.1f ms (%s; %s) at %.2f s\n", s->name, (unsigned long long)s->hash, ms,
             !s->glslang ? "not listable" : listed ? "LISTED" : "not listed", s->state == 1 ? "ready" : s->state == 2 ? "failed" : "not ready", rt_now_ns() / 1e9);
+}
+
+/* Called only after every stage needed by the draw has been queued. Keep each
+ * program's former 250 ms first-use allowance; overlap preparation rather than
+ * reducing the allowance and losing more of a short-lived effect. */
+static void wait_shader_ready(VShader *s) {
+    if (!s || !s->first_wait) return;
+    s->first_wait = 0;
+    int strict = wait_makes();
+    if (strict || s->wait_eligible) {
+        u64 t0 = rt_clock_ns();
+        u64 until_ns = strict ? 0 : budget_until(250);
+        u64 now_ns = rt_clock_ns();
+        u64 until = strict ? 0 : GetTickCount64() + (until_ns > now_ns ? (until_ns - now_ns + 999999) / 1000000 : 0);
+        if (s->adopt) {
+            make_wait(&s->adopt->state, WARM_LOADING, until);
+            warm_adopt(s);   /* missing warm file: enqueue the regular maker, outside makes_lock */
+        }
+        if (!s->adopt) make_wait(&s->state, 0, until);
+        if (!strict) wait_budget_spend(&wait_budget, rt_clock_ns() - t0);
+    }
+    if (vk_gated) make_note_shader(s, s->was_listed, (rt_clock_ns() - s->asked_ns) / 1e6);
 }
 
 /* The shader for the program at guest address g (as gpu_d3d11.c's find_shader_ex), made by a maker if it
@@ -2221,7 +2332,8 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
     u64 h = shader_program_hash(p + skip, size - skip);
     if (stage == SHADER_COMPUTE) h = (h ^ ((u64)local[0] | (u64)local[1] << 16 | (u64)local[2] << 32 | (u64)shared << 40)) * 1099511628211ull;
     u64 program_hash = h;
-    h = shader_cache_hash(h, p, size, stage);
+    int glslang = glslang_for(stage);
+    h = glslang ? shader_cache_hash(h, p, size, stage) : shader_cache_hash_dxbc(h, p, size, stage);
     if (alpha_tested) h = (h ^ 0x616C706861743032ull) * 1099511628211ull;
     CbufSource src = {stage_cb};
     for (u32 i = 0; i < nvshaders; i++) {
@@ -2244,8 +2356,8 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
     *slot = (VSlot){g, key, fingerprint(p + skip, size - skip), size, s, 0};
     snprintf(s->name, sizeof s->name, "%s_%016llx%s", stage == SHADER_VERTEX ? "vs" : stage == SHADER_PIXEL ? "ps" : "cs", program_hash,
              alpha_tested ? "_alphatest" : "");
-    u64 t_new = rt_clock_ns();
-    int glslang = glslang_for(stage);   /* (its own dialect of the HLSL: gpu_shader.h) */
+    s->asked_ns = rt_clock_ns();
+    /* glslang has its own dialect and keeps its existing SPIR-V cache keys. */
     s->glslang = glslang;
     char *hlsl = glslang ? (alpha_tested ? shader_translate_alpha_tested(SHADER_HLSL_GLSLANG, p, size, vs_outputs, &s->info, read_cbuf_word, &src)
                                          : shader_translate(SHADER_HLSL_GLSLANG, p, size, stage, vs_outputs, local, shared, &s->info, read_cbuf_word, &src))
@@ -2269,26 +2381,16 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
     char cached_path[1200];
     shader_cache_file(cached_path, sizeof cached_path, cache_dir(), s->stage, s->hash, s->vs_outputs, s->table_hash);
     int cached = glslang || GetFileAttributesA(cached_path) != INVALID_FILE_ATTRIBUTES;
+    s->first_wait = 1;
+    s->wait_eligible = cached || stage == SHADER_COMPUTE;
     /* (a program of the warm list: a warm thread's module, or ours given to the warm threads) */
     WarmShader *w = glslang ? warm_find(&(WarmKey){s->hash, s->table_hash, s->vs_outputs, (u32)s->stage}) : NULL;
+    s->was_listed = w != NULL;
     if (w && InterlockedCompareExchange(&w->state, WARM_GAME, WARM_LISTED) == WARM_LISTED) s->publish = w;
     else if (w && (w->state == WARM_LOADING || w->state == WARM_READY)) s->adopt = w;
     if (s->adopt) warm_adopt(s);
     else job_add(&s->job);
-    if (wait_makes())
-        while (!s->state) { if (s->adopt) warm_adopt(s); SwitchToThread(); }
-    /* a program compiled before (its DXBC in the disk cache: only the SPIR-V and the module to make, milliseconds) is
-     * waited for a little, as gpu_d3d11.c does: a skipped draw is an effect missing the first time it is used (the
-     * owner's report 2026-11-09), a skipped launch leaves its outputs (skinned vertices) unwritten for a frame.
-     * Compute programs were waited for already; every stage now. One compiled from scratch (fxc) is not waited for;
-     * with glslang there is no fxc (its SPIR-V is made from the HLSL in milliseconds): every program is waited for. */
-    if (cached || stage == SHADER_COMPUTE) {
-        /* (a compute program's whole wait: a skipped launch is a frame of unwritten vertices, not a missing effect) */
-        u64 t0 = rt_clock_ns(), until = stage == SHADER_COMPUTE ? t0 + 250000000ull : budget_until(250);
-        for (; s->state == 0 && rt_clock_ns() < until;) { if (s->adopt) warm_adopt(s); SwitchToThread(); }
-        wait_budget_spend(&wait_budget, rt_clock_ns() - t0);
-    }
-    if (vk_gated) make_note_shader(s, w != NULL, (rt_clock_ns() - t_new) / 1e6);
+    /* No wait here: VS outputs are already known, so PS/alpha can start while VS is made. */
     return s;
 }
 static VShader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding *stage_cb, int alpha_tested, const u32 *local, u32 shared) {
@@ -2981,18 +3083,18 @@ static void pipe_make(Pipe *e) {
                                         &ds, &cb, &dy, gfx_layout, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, -1};
     VkPipeline p;
     u64 t0 = rt_clock_ns();
-    VkResult r = vkCreateGraphicsPipelines(device, pipeline_cache, 1, &pci, NULL, &p);
+    VkResult r = cached_graphics_pipeline(&pci, &p);
     InterlockedAdd64(&pipeline_ns, (LONG64)(rt_clock_ns() - t0));
     if (r != VK_SUCCESS) {
         static volatile LONG told;
         if (InterlockedIncrement(&told) <= 20) fprintf(stderr, "[vulkan] cannot make a pipeline (%d)\n", (int)r);
         InterlockedIncrement64((volatile LONG64 *)&vk_stat_pipeline_failures);
-        InterlockedExchange(&e->state, 2);
+        make_publish(&e->state, 2);
         return;
     }
     e->pipe = p;
     InterlockedIncrement64(e->warm ? &vk_stat_warm_pipelines : (volatile LONG64 *)&vk_stat_pipelines);
-    InterlockedExchange(&e->state, 1);
+    make_publish(&e->state, 1);
     if (e->listable) warm_list_pipe(e);
 }
 static void pipe_job(Job *j) { pipe_make((Pipe *)j); }
@@ -3038,7 +3140,7 @@ static VkPipeline get_pipeline(const PipeKey *k, const VShader *vs, const VShade
     }
     ReleaseSRWLockExclusive(&pipes_lock);
     if (!e) return VK_NULL_HANDLE;
-    if (made) { job_add(&e->job); vk_first_uses++; }
+    if (made) { job_add_front(&e->job); vk_first_uses++; }
     else if (e->warm && !e->used) { e->used = 1; vk_stat_warm_used++; vk_first_uses++; }
     u64 t_wait = rt_clock_ns();
     int first_wait = e->state == 0 && (made || !e->waited);
@@ -3048,8 +3150,10 @@ static VkPipeline get_pipeline(const PipeKey *k, const VShader *vs, const VShade
      * one a warm thread is making now, once. Within the frame's budget (budget_until). */
     if (e->state == 0 && (made || !e->waited)) {
         e->waited = 1;
-        u64 t0 = rt_clock_ns();
-        for (u64 until = budget_until(100); e->state == 0 && rt_clock_ns() < until;) SwitchToThread();
+        u64 t0 = rt_clock_ns(), until = budget_until(100);
+        u64 now = rt_clock_ns();
+        u64 ms = until > now ? (until - now + 999999) / 1000000 : 0;
+        make_wait(&e->state, 0, GetTickCount64() + ms);
         wait_budget_spend(&wait_budget, rt_clock_ns() - t0);
     }
     if (vk_gated && (made || first_wait)) make_note_pipe(e, made, (rt_clock_ns() - t_wait) / 1e6);
@@ -3171,6 +3275,19 @@ static int warm_record_ok(const WarmRecord *r) {
     return r->kind == 1 && r->vs.stage == SHADER_VERTEX && (r->ps.stage == SHADER_PIXEL || r->ps.stage == ~0u) && r->key.ncolor <= 8;
 }
 
+/* The shipped list contains host formats from the card that recorded it. Match the depth
+ * format this card's draws will use before hashing/deduplicating records: on cards without
+ * D24S8 (and in the no-D24 diagnostic), Z24S8 surfaces use D32S8. Explicit D32S8 records stay
+ * D32S8. Only the per-card list is rewritten; the shipped list remains portable. */
+static int warm_record_native(WarmRecord *r) {
+    if (r->kind != 1 || r->key.depth != VK_FORMAT_D24_UNORM_S8_UINT) return 0;
+    VkFormat depth = depth_format(0x14);
+    if (r->key.depth == depth) return 0;
+    r->key.depth = depth;
+    r->sum = desc_hash(&r->vs, sizeof *r - offsetof(WarmRecord, vs));
+    return 1;
+}
+
 static void warm_shader_put(const WarmKey *k) {
     for (u32 h = desc_hash(k, sizeof *k) & (warm_shader_slots - 1);; h = (h + 1) & (warm_shader_slots - 1)) {
         WarmShader *w = &warm_shaders[h];
@@ -3234,13 +3351,17 @@ static void warm_list_open(void) {
     if (data && (size < sizeof head || memcmp(data, &head, sizeof head))) { size = 0; rewrite = 1; }
     else if (data) {
         u32 listed = (u32)((size - sizeof head) / sizeof(WarmRecord));
-        /* (A card's first list - the shipped one alone - is written out whole: left unwritten, the file "ab" opens below
-         * was made empty, the pipelines it then gained had no header, and the next start threw them away.) */
-        rewrite = fresh || (size - sizeof head) % sizeof(WarmRecord) != 0;
+        /* A first shipped list and any malformed tail are rewritten before appending learned records. */
+        rewrite |= fresh || (size - sizeof head) % sizeof(WarmRecord) != 0;
         WarmRecord *rec = (WarmRecord *)(void *)(data + sizeof head);   /* (malloc's alignment, and a header of 32 bytes) */
-        for (u32 i = 0; i < listed; i++)
-            if (warm_record_ok(&rec[i]) && warm_see(&rec[i])) rec[n++] = rec[i];
+        for (u32 i = 0; i < listed; i++) {
+            /* Validate the original checksum before adapting it; an invalid record must not
+             * become valid merely because its depth format needs a fallback. */
+            if (!warm_record_ok(&rec[i])) { rewrite = 1; continue; }
+            rewrite |= warm_record_native(&rec[i]);
+            if (warm_see(&rec[i])) rec[n++] = rec[i];
             else rewrite = 1;
+        }
         if (joined && n != listed) rewrite = 1;   /* (the card's list written again with the shipped records it lacked) */
         warm_records = rec;
         warm_nrecords = n;
@@ -3754,14 +3875,14 @@ static void warm_load(WarmShader *w) {
             VkComputePipelineCreateInfo cpi = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0,
                                                {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, module, "main", NULL},
                                                cs_layout, VK_NULL_HANDLE, -1};
-            made = vkCreateComputePipelines(device, pipeline_cache, 1, &cpi, NULL, &w->compute) == VK_SUCCESS;
+            made = cached_compute_pipeline(&cpi, &w->compute) == VK_SUCCESS;
             if (!made) { vkDestroyShaderModule(device, module, NULL); w->compute = VK_NULL_HANDLE; }
         }
         if (made) w->module = module;
     }
     free(code);
     if (made) InterlockedIncrement64(&vk_stat_warm_loaded);
-    InterlockedExchange(&w->state, made ? WARM_READY : WARM_NONE);   /* (the module written before: a full barrier) */
+    make_publish(&w->state, made ? WARM_READY : WARM_NONE);
 }
 
 /* The record's program, loaded: by this thread, by another, or by the game (waited for, a little). */
@@ -4573,6 +4694,9 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     u32 alpha_func = regs[M_ALPHA_TEST] & 1 && !(vk_debug() & 64) ? compare_func(regs[M_ALPHA_FUNC]) : a2c ? 7 : 8;
     VShader *pa_e = alpha_func != 8 && ps_e && ps_e->state != 2 && (ps_e->info.color_mask & 1)
                   ? find_shader(ps_g, SHADER_PIXEL, vs->info.outputs, cb[STAGE_FRAGMENT], 1) : NULL;
+    wait_shader_ready(vs);
+    wait_shader_ready(ps_e);
+    wait_shader_ready(pa_e);
     VShader *ps = pa_e && pa_e->state == 1 ? pa_e : ps_e && ps_e->state == 1 ? ps_e : NULL;
     if (!vs || vs->state != 1 || (ps_g && !ps) || topo < 0) {
         if (topo < 0) vk_stat_skip_topology++; else vk_stat_skip_shader++;
@@ -5078,6 +5202,7 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
     u64 tp = rt_clock_ns(), tn;
 #define LAUNCH_PART(i) (tn = rt_clock_ns(), vk_ns_launch[i] += tn - tp, tp = tn)
     VShader *cs = find_shader_ex(g, SHADER_COMPUTE, 0, cb, 0, local, shared);
+    wait_shader_ready(cs);
     LAUNCH_PART(0);
     if (!cs || cs->state != 1 || !cs->compute) { vk_stat_skip_compute++; leave(); return; }
 
@@ -5285,7 +5410,7 @@ static VkPipeline clear_pipeline(VkFormat format, u32 mask) {
     VkGraphicsPipelineCreateInfo pci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, &ri, 0, 2, st, &vi, &ia, NULL, &vp, &rs, &ms,
                                         &ds, &cb, &dy, gfx_layout, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, -1};
     VkPipeline p;
-    if (vkCreateGraphicsPipelines(device, pipeline_cache, 1, &pci, NULL, &p) != VK_SUCCESS) return VK_NULL_HANDLE;
+    if (cached_graphics_pipeline(&pci, &p) != VK_SUCCESS) return VK_NULL_HANDLE;
     clear_pipes[nclear_pipes].format = format;
     clear_pipes[nclear_pipes].mask = mask;
     clear_pipes[nclear_pipes++].pipe = p;
@@ -5394,7 +5519,7 @@ static VkPipeline small_pipeline(VkShaderModule vs, VkShaderModule ps, VkFormat 
     VkGraphicsPipelineCreateInfo pci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, &ri, 0, 2, st, &vi, &ia, NULL, &vp, &rs, &ms,
                                         &ds, &cb, &dy, gfx_layout, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, -1};
     VkPipeline p;
-    return vkCreateGraphicsPipelines(device, pipeline_cache, 1, &pci, NULL, &p) == VK_SUCCESS ? p : VK_NULL_HANDLE;
+    return cached_graphics_pipeline(&pci, &p) == VK_SUCCESS ? p : VK_NULL_HANDLE;
 }
 
 /* The programs, pipelines and glyph atlas, once (recorded into the frame's commands: the atlas upload). */
@@ -5708,43 +5833,74 @@ static void *vk_display_output(void) {
     return found;
 }
 
-/* The pipeline cache to its file (written aside, then put in place): by a maker at most once a minute while
- * new pipelines are made, and at the end. */
-static void pipeline_cache_save(void) {
+/* Only one export/file replacement at a time, including a close while a save is queued or
+ * running. Closing saves directly: it must not wait for a queued job or a missing worker. */
+static SRWLOCK pipeline_cache_io_lock = SRWLOCK_INIT;
+static volatile LONG64 pipeline_cache_saved, pipeline_cache_next = 60000000000ll;
+static volatile LONG pipeline_cache_saving;
+int game_fight_on(void);   /* (hle_fight_test.c) */
+static int pipeline_cache_save(int closing) {
     u64 t0 = rt_clock_ns();
+    if (closing) AcquireSRWLockExclusive(&pipeline_cache_io_lock);
+    else if (!TryAcquireSRWLockExclusive(&pipeline_cache_io_lock)) return 0;
+    if (closing) AcquireSRWLockExclusive(&pipeline_cache_lock);
+    else if (!TryAcquireSRWLockExclusive(&pipeline_cache_lock)) {
+        ReleaseSRWLockExclusive(&pipeline_cache_io_lock);
+        return 0;   /* busy compiling: retry later, without delaying another compiler */
+    }
     size_t size = 0;
-    if (!pipeline_cache || vkGetPipelineCacheData(device, pipeline_cache, &size, NULL) != VK_SUCCESS || !size) return;
-    void *data = malloc(size);
-    if (!data) return;
-    if (vkGetPipelineCacheData(device, pipeline_cache, &size, data) == VK_SUCCESS) {
+    void *data = NULL;
+    u64 made = 0;
+    int ok = 0;
+    /* Check again when the worker runs: a menu can have become a fight since enqueueing. */
+    if ((closing || !game_fight_on()) && pipeline_cache &&
+        vkGetPipelineCacheData(device, pipeline_cache, &size, NULL) == VK_SUCCESS && size && (data = malloc(size)) != NULL) {
+        ok = vkGetPipelineCacheData(device, pipeline_cache, &size, data) == VK_SUCCESS && size;
+        made = (u64)InterlockedCompareExchange64(&pipeline_cache_generation, 0, 0);
+    }
+    ReleaseSRWLockExclusive(&pipeline_cache_lock);   /* compilation resumes before any disk I/O */
+    if (ok) {
+        ok = 0;
         char tmp[1100];
         snprintf(tmp, sizeof tmp, "%s.%lu.tmp", pipeline_cache_path, GetCurrentProcessId());
         FILE *f = fopen(tmp, "wb");
         if (f) {
-            int ok = fwrite(data, 1, size, f) == size;
-            if (fclose(f) || !ok || !MoveFileExA(tmp, pipeline_cache_path, MOVEFILE_REPLACE_EXISTING)) DeleteFileA(tmp);
+            int wrote = fwrite(data, 1, size, f) == size;
+            int closed = fclose(f) == 0;
+            ok = wrote && closed && MoveFileExA(tmp, pipeline_cache_path, MOVEFILE_REPLACE_EXISTING);
+            if (!ok) DeleteFileA(tmp);
         }
     }
     free(data);
-    fprintf(stderr, "[vulkan] pipeline cache saved: %.1f MB in %.0f ms (at %.1f s)\n", size / 1048576.0, (rt_clock_ns() - t0) / 1e6, rt_now_ns() / 1e9);
+    if (ok) {
+        InterlockedExchange64(&pipeline_cache_saved, (LONG64)made);
+        fprintf(stderr, "[vulkan] pipeline cache saved: %.1f MB in %.0f ms (at %.1f s)\n", size / 1048576.0, (rt_clock_ns() - t0) / 1e6, rt_now_ns() / 1e9);
+    }
+    ReleaseSRWLockExclusive(&pipeline_cache_io_lock);
+    return ok;
 }
-static volatile LONG saving;
-static void save_job(Job *j) { (void)j; pipeline_cache_save(); InterlockedExchange(&saving, 0); }
+static void save_job(Job *j) {
+    (void)j;
+    int ok = pipeline_cache_save(0);
+    InterlockedExchange64(&pipeline_cache_next, (LONG64)(rt_now_ns() + (ok ? 60000000000ull : 5000000000ull)));
+    InterlockedExchange(&pipeline_cache_saving, 0);
+}
 static void pipeline_cache_tick(void) {
-    static u64 saved, last;
     static Job job = {NULL, save_job};
-    u64 made = vk_stat_pipelines + (u64)vk_stat_warm_pipelines, now = rt_now_ns();   /* (the warm threads' too: a lost cache file made again) */
-    if (made == saved || now - last < 60000000000ull || saving) return;   /* (a minute apart: the file is 100 MB and more) */
-    saved = made;
-    last = now;
-    InterlockedExchange(&saving, 1);
+    if (game_fight_on() || InterlockedCompareExchange(&pipeline_cache_saving, 1, 0)) return;
+    u64 made = (u64)InterlockedCompareExchange64(&pipeline_cache_generation, 0, 0), now = rt_now_ns();
+    if (made == (u64)InterlockedCompareExchange64(&pipeline_cache_saved, 0, 0) ||
+        now < (u64)InterlockedCompareExchange64(&pipeline_cache_next, 0, 0)) {
+        InterlockedExchange(&pipeline_cache_saving, 0);
+        return;
+    }
     job_add(&job);
 }
 
 static void vk_closing(void) {
     /* (Closed while it warms: the threads make no more, and the marker goes - a close is not a warm start that died.) */
     if (warm_running) { InterlockedExchange(&warm_stopped, 1); DeleteFileA(warm_marker); }
-    if (!saving) pipeline_cache_save();
+    pipeline_cache_save(1);
 }
 
 static const GfxBackend VULKAN = {

@@ -931,6 +931,7 @@ static __thread jmp_buf *exit_point;
 #endif
 
 static _Noreturn void exit_thread(KThread *t) {
+    sleep_thread_cleanup();
     EnterCriticalSection(&klock);
     t->exited = 1;
     objects[index_of(t->handle)].signaled = 1;

@@ -20,6 +20,8 @@ void d3d11_guest_unmapped(u64 addr, u64 size);
 int d3d11_draw_logging(void);
 void d3d11_status_lines(void);
 void d3d11_closing(void);
+void d3d11_prepare_fighter_begin(const char *name, unsigned slot);
+void d3d11_prepare_fighter_end(void);
 DWORD d3d11_lock_owner(void);
 DWORD d3d11_last_enter_thread(void);
 void d3d11_report_compiles(void (*line)(const char *text));

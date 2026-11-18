@@ -210,7 +210,7 @@ typedef struct Ctx {
     int lod_long;                 /* TMML from the coordinates' derivatives (vkd3d-shader) */
     int sb_words;                 /* compute storage buffers as structured buffers of words (vkd3d-shader) */
     int texel_bufs;               /* buffers only read as Buffer<uint>, indexed by word (glslang) */
-    int exit_flag;                /* (glslang, in the dispatch loop) an exit leaves the loop and returns after it: emit_body */
+    int exit_flag;                /* HLSL dispatch exits leave the loop before returning: emit_body */
     u32 tex_counter;              /* MSL: texture results' names (HLSL's count on across programs) */
 } Ctx;
 
@@ -1691,11 +1691,12 @@ static void emit_body(Ctx *c) {
     resolve_stacks(c, ssy_target, pbk_target);
     if (c->stack_to) line(c, "uint pc_ = 0x%xu;", c->ins[0].addr);
     else line(c, "uint pc_ = 0x%xu; uint ssy_[16], pbk_[16]; uint ssp_ = 0u, psp_ = 0u;", c->ins[0].addr);
-    /* An exit inside the loop, for glslang's SPIR-V: a flag and a break out of the switch, then out of the loop, and
-     * the one return after it. A return from inside the switch was a loop that never ended on NVIDIA's Vulkan driver
-     * for the vertices that took it - each ran the loop's 1,000,000 turns: 35-40 ms of GPU time for every draw of
-     * some effects (their particles' early exit), whatever its size (2026-11-12, docs/TECHNICAL.md). */
-    c->exit_flag = c->texel_bufs;
+    /* Return once, after the HLSL dispatch loop. Returning inside its switch caused
+     * non-terminating lanes on NVIDIA Vulkan and incorrect vertex lighting on D3D11.
+     * A captured water draw reproduces the latter with immutable inputs: hardware
+     * differs from WARP by 0.5; this exit form matches WARP, including positive lights.
+     * Keep the Metal translation unchanged. DXBC dispatch cache keys are revised. */
+    c->exit_flag = !c->msl;
     if (c->exit_flag) line(c, "bool exit_ = false;");
     line(c, "%sfor (uint guard_ = 0u; guard_ < 1000000u; guard_++) {", c->msl ? "" : "[loop] ");
     c->indent++;
@@ -2474,6 +2475,17 @@ int shader_uses_stacks(const u8 *program, u32 size) {
     decode_program(&c, program, size);
     int uses = 0;
     for (u32 i = 0; i < c.n && !uses; i++) uses = c.ins[i].op == OP_SSY || c.ins[i].op == OP_PBK;
+    free(c.ins);
+    return uses;
+}
+
+/* Match emit_body's dispatch decision, including BRA/BRX without SSY/PBK. */
+int shader_uses_dispatch(const u8 *program, u32 size) {
+    init_table();
+    Ctx c = {0};
+    decode_program(&c, program, size);
+    int uses = 0;
+    for (u32 i = 0; i < c.n && !uses; i++) uses = is_branchy(c.ins[i].op);
     free(c.ins);
     return uses;
 }

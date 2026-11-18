@@ -288,9 +288,12 @@ static DWORD WINAPI waveout_thread(void *arg) {
 static int start_output(void) {
     const char *want = getenv("SSBU_AUDIO");
     HANDLE opened = CreateEventA(NULL, FALSE, FALSE, NULL);
+    if (!opened) return 0;
     int ok = 0;
     for (int waveout = want && !_stricmp(want, "waveout"); waveout < 2 && !ok; waveout++) {
-        CloseHandle(CreateThread(NULL, 0, waveout ? waveout_thread : wasapi_thread, opened, 0, NULL));
+        HANDLE thread = CreateThread(NULL, 0, waveout ? waveout_thread : wasapi_thread, opened, 0, NULL);
+        if (!thread) continue;   /* nobody can signal opened: do not wait forever */
+        CloseHandle(thread);
         WaitForSingleObject(opened, INFINITE);
         ok = (int)wasapi_ok;
     }
@@ -359,17 +362,24 @@ static void open_device(void) {
     audio.dry = 1;   /* (the device starts once half the lead is there) */
     audio_log = (v = getenv("SSBU_AUDIO_LOG")) && *v && *v != '0';
     audio.event = kernel_create_event();
-    played_event = CreateEventA(NULL, FALSE, FALSE, NULL);
-    CloseHandle(CreateThread(NULL, 0, reaper, NULL, 0, NULL));
     /* Build plugins starts the game once, with no window, to read the select screen. That start
      * sets SSBU_SKYLINE_PROBE. Windows plays through WASAPI, so SDL_AUDIO_DRIVER=dummy never
      * reaches it: leave the device closed and the buffers go straight back. */
-    if (getenv("SSBU_SKYLINE_PROBE"))
+    if (getenv("SSBU_SKYLINE_PROBE")) {
         fprintf(stderr, "[audio] plugin probe: sound is off\n");
-    else {
-        audio.output = start_output();
-        if (!audio.output) fprintf(stderr, "[audio] no audio device; sound is dropped\n");
+        return;
     }
+    played_event = CreateEventA(NULL, FALSE, FALSE, NULL);
+    HANDLE thread = played_event ? CreateThread(NULL, 0, reaper, NULL, 0, NULL) : NULL;
+    if (!thread) {
+        if (played_event) CloseHandle(played_event);
+        played_event = NULL;
+        fprintf(stderr, "[audio] could not start buffer notifications; sound is dropped\n");
+        return;   /* without a reaper the game's mixer would never get its buffers back */
+    }
+    CloseHandle(thread);
+    audio.output = start_output();
+    if (!audio.output) fprintf(stderr, "[audio] no audio device; sound is dropped\n");
 }
 
 /* TEST ONLY (ported from ssbu-recomp's nnaudio.c), nothing without the variables; both see the game's

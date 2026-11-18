@@ -38,7 +38,7 @@ typedef struct ClockScale { uint64_t tsc0, ns0, mul; } ClockScale;   /* ns = ns0
 static const ClockScale *volatile clock_scale;   /* NULL: the system timer */
 static INIT_ONCE clock_once = INIT_ONCE_STATIC_INIT;
 static volatile LONG clock_ready;
-static uint64_t qpc_hz, clock_start_ns;
+static uint64_t qpc_hz, qpc_mul, clock_start_ns;
 /* clock_steady: the CPU has a counter of its own that may stand in for the system timer (never
  * on arm64, where the system timer is that counter) */
 static int clock_refines, clock_steady;
@@ -67,6 +67,10 @@ static uint64_t qpc_ns(void) {
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
     uint64_t q = (uint64_t)t.QuadPart;
+    /* Windows normally exposes 10 MHz, Linux 1 GHz. An integral ns/tick ratio is exact
+     * with one multiply; avoid two variable divisions on every guest clock read. Other
+     * frequencies (including Apple's 24 MHz) retain the quotient/remainder conversion. */
+    if (qpc_mul) return q * qpc_mul;
     return q / qpc_hz * 1000000000ull + q % qpc_hz * 1000000000ull / qpc_hz;
 }
 
@@ -117,6 +121,7 @@ static BOOL CALLBACK clock_setup(PINIT_ONCE once, PVOID param, PVOID *context) {
     LARGE_INTEGER f, a, b, t;
     QueryPerformanceFrequency(&f);
     qpc_hz = (uint64_t)f.QuadPart;
+    qpc_mul = 1000000000ull % qpc_hz ? 0 : 1000000000ull / qpc_hz;
     QueryPerformanceCounter(&a);
     for (int i = 0; i < 256; i++) QueryPerformanceCounter(&t);
     QueryPerformanceCounter(&b);
@@ -134,7 +139,7 @@ static BOOL CALLBACK clock_setup(PINIT_ONCE once, PVOID param, PVOID *context) {
         clock_pair(&cal_tsc, &cal_ns);
         while (qpc_ns() - cal_ns < 20000000) {}
         clock_rescale();
-        next_refine = cal_tsc + (uint64_t)((double)(clock_tsc() - cal_tsc) * 100);   /* after some 2 s */
+        __atomic_store_n(&next_refine, cal_tsc + (uint64_t)((double)(clock_tsc() - cal_tsc) * 100), __ATOMIC_RELAXED);   /* after some 2 s */
     }
 #endif
 #ifdef _WIN32
@@ -167,12 +172,17 @@ static uint64_t clock_now_ns(void) {
     const ClockScale *s = __atomic_load_n(&clock_scale, __ATOMIC_ACQUIRE);
     if (!s) return qpc_ns();
     uint64_t tsc = clock_tsc();
-    /* the scale again over a longer time: after 2 s, 30 s and 10 min */
-    if (tsc >= next_refine && clock_refines < 3 && !InterlockedExchange(&clock_refining, 1)) {
-        if (tsc >= next_refine && clock_refines < 3) {
+    /* The schedule is read outside the calibration lock: those reads and its updates
+     * must be atomic too. Recheck under the lock, so a stale fast-path read is harmless.
+     * The scale again over a longer time: after 2 s, 30 s and 10 min. */
+    if (tsc >= __atomic_load_n(&next_refine, __ATOMIC_RELAXED) &&
+        __atomic_load_n(&clock_refines, __ATOMIC_RELAXED) < 3 && !InterlockedExchange(&clock_refining, 1)) {
+        int refined = __atomic_load_n(&clock_refines, __ATOMIC_RELAXED);
+        if (tsc >= __atomic_load_n(&next_refine, __ATOMIC_RELAXED) && refined < 3) {
             clock_rescale();
             static const uint32_t factor[3] = {15, 20, 0};
-            next_refine = cal_tsc + (tsc - cal_tsc) * factor[clock_refines++];
+            __atomic_store_n(&next_refine, cal_tsc + (tsc - cal_tsc) * factor[refined], __ATOMIC_RELAXED);
+            __atomic_store_n(&clock_refines, refined + 1, __ATOMIC_RELAXED);
         }
         InterlockedExchange(&clock_refining, 0);
         s = __atomic_load_n(&clock_scale, __ATOMIC_ACQUIRE);

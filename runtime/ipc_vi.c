@@ -34,7 +34,47 @@ enum {   /* IGraphicBufferProducer transactions */
     ALLOCATE_BUFFERS = 13, SET_PREALLOCATED_BUFFER = 14, GET_BUFFER_HISTORY = 17
 };
 
-typedef struct Slot { int state, has_buffer; u8 buffer[0x400]; u32 buffer_size; u64 queued_at, gpu_mark; int keep; } Slot;
+/* libnx's flattened BqBufferInput is {size=84, fd_count=0, input[84]};
+ * its NvMultiFence starts at input offset 48. Read only the validated bytes.
+ * The fence may name GPU work submitted AFTER QueueBuffer returns, so a queue
+ * mark alone cannot establish that this image is ready for presentation. */
+typedef struct ViFence { u32 count; struct { u32 id, value; } entries[4]; } ViFence;
+static int vi_acquire_fence = 1;   /* SSBU_VI_ACQUIRE_FENCE=0: diagnostic A/B only */
+static int vi_fence_parse(ViFence *out, const u8 *tail, u32 bytes) {
+    memset(out, 0, sizeof *out);
+    if (!tail || bytes < 92) return 0;
+    u32 size, fds;
+    memcpy(&size, tail, 4); memcpy(&fds, tail + 4, 4);
+    if (size != 84 || fds) return 0;
+    ViFence parsed;
+    memcpy(&parsed, tail + 56, sizeof parsed);
+    if (parsed.count > 4) return 0;
+    for (u32 i = 0; i < parsed.count; i++) if (parsed.entries[i].id >= SYNCPT_MAX) return 0;
+    *out = parsed;
+    return 1;
+}
+static int vi_fence_ready(const ViFence *fence) {
+    if (!vi_acquire_fence) return 1;
+    for (u32 i = 0; i < fence->count; i++)
+        if (!gpu_syncpt_reached(gpu_syncpt_read(fence->entries[i].id), fence->entries[i].value)) return 0;
+    return 1;
+}
+static void vi_fence_wait(const ViFence *fence, u64 mark) {
+    if (!vi_acquire_fence) return;
+    for (u32 i = 0; i < fence->count; i++) {
+        u32 id = fence->entries[i].id, target = fence->entries[i].value, seconds = 0;
+        while (!gpu_syncpt_wait(id, target, 1000)) {
+            if (++seconds == 1 || seconds % 5 == 0)
+                fprintf(stderr, "[vi] acquire fence waiting %u s: id=%u target=%u current=%u max=%u mark=%llu submitted=%llu thread=%lu\n",
+                        seconds, id, target, gpu_syncpt_read(id), gpu_syncpt_load(&gpu_syncpt_max[id]),
+                        (unsigned long long)mark, (unsigned long long)gpu_queue_mark(), (unsigned long)GetCurrentThreadId());
+            /* Report a stalled producer, but never fabricate completion or display its old image. */
+        }
+    }
+}
+/* End of acquire fence helpers. */
+
+typedef struct Slot { int state, has_buffer; u8 buffer[0x400]; u32 buffer_size; u64 queued_at, gpu_mark; int keep; ViFence fence; } Slot;
 static struct {
     Slot slots[SLOTS];
     u32 buffer_event, vsync_event;
@@ -43,6 +83,17 @@ static struct {
     int started;
     u64 frames;
 } queue = {.lock = SRWLOCK_INIT};
+
+/* Called with the VI queue lock held; never wait in the producer's IPC. */
+static int vi_fast_release_ready(u32 slot) {
+    if (!vi_fence_ready(&queue.slots[slot].fence)) return 0;
+    /* Only this slot's fence was checked. Another ACQUIRED slot belongs to
+     * the consumer, which may still be waiting for its different fence. */
+    queue.slots[slot].state = FREE;
+    queue.frames++;
+    return 1;
+}
+/* End of fast acquire-fence release. */
 
 u64 present_frames(void) { return queue.frames; }
 
@@ -79,6 +130,7 @@ static volatile int keep_pending;
 static u8 shown[sizeof queue.slots[0].buffer];
 static u32 shown_size;
 static u64 shown_mark;
+static ViFence shown_fence;
 static int speed_mode, report_draws;   /* SSBU_SPEED (not 1), SSBU_SEQ: decided at start */
 
 /* SSBU_LAT_TRACE=<file> (tests: tools/latency_trace.py): the times, in ms, of each refresh signalled to
@@ -117,6 +169,25 @@ static int take_oldest(void) {
     int oldest = -1;
     for (int i = 0; i < SLOTS; i++)
         if (queue.slots[i].state == QUEUED && (oldest < 0 || queue.slots[i].queued_at < queue.slots[oldest].queued_at)) oldest = i;
+    if (oldest >= 0 && !vi_fence_ready(&queue.slots[oldest].fence)) {
+        /* The display clock must keep ticking while a producer finishes its image.
+         * It may need the next vsync to submit that work. Keep FIFO ordering and
+         * ownership intact: neither acquire this image nor free the previous one. */
+        Slot *pending = &queue.slots[oldest];
+        static u64 reported_stamp, since, last_report;
+        u64 now = GetTickCount64();
+        if (reported_stamp != pending->queued_at) { reported_stamp = pending->queued_at; since = last_report = now; }
+        if (now - last_report >= 1000) {
+            last_report = now;
+            for (u32 i = 0; i < pending->fence.count; i++) {
+                u32 id = pending->fence.entries[i].id, target = pending->fence.entries[i].value;
+                fprintf(stderr, "[vi] queued fence pending %llu ms: slot=%d id=%u target=%u current=%u max=%u mark=%llu submitted=%llu\n",
+                        (unsigned long long)(now - since), oldest, id, target, gpu_syncpt_read(id), gpu_syncpt_load(&gpu_syncpt_max[id]),
+                        (unsigned long long)pending->gpu_mark, (unsigned long long)gpu_queue_mark());
+            }
+        }
+        return -1;
+    }
     if (oldest >= 0) {
         for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == ACQUIRED) queue.slots[i].state = FREE;
         queue.slots[oldest].state = ACQUIRED;
@@ -125,6 +196,7 @@ static int take_oldest(void) {
         shown_size = queue.slots[oldest].buffer_size;
         memcpy(shown, queue.slots[oldest].buffer, shown_size);
         shown_mark = queue.slots[oldest].gpu_mark;
+        shown_fence = queue.slots[oldest].fence;
     }
     return oldest;
 }
@@ -136,6 +208,7 @@ static void show(void) {
     LARGE_INTEGER w0, w1;
     QueryPerformanceCounter(&w0);
     gpu_queue_wait(shown_mark);   /* the frame drawn: what was submitted before it was queued has run */
+    vi_fence_wait(&shown_fence, shown_mark);   /* includes any producer work submitted after QueueBuffer */
     QueryPerformanceCounter(&w1);
     show_waited = w1.QuadPart - w0.QuadPart;
     if (report_draws) input_seq_presented(gpu_queue_draws(shown_mark));
@@ -178,6 +251,17 @@ static void speed_loop(void) {
                 show();
                 frames++;
                 kernel_signal_event(queue.vsync_event);   /* the frame's one refresh */
+            } else {
+                /* A queued image whose fence is still pending needs producer progress,
+                 * even in speed mode. This is a refresh without presenting an old image.
+                 * Bound uncapped polling with the same short queue wait as fast mode. */
+                kernel_signal_event(queue.vsync_event);
+                queue_lock();
+                queue_holder = 0;
+                SleepConditionVariableSRW(&queue.queued, &queue.lock, 2, 0);
+                queue_held_since = GetTickCount64();
+                queue_holder = GetCurrentThreadId();
+                queue_unlock();
             }
         }
         u64 now = GetTickCount64();
@@ -196,6 +280,7 @@ static void show_fast(void) {
     LARGE_INTEGER g0, g1;
     QueryPerformanceCounter(&g0);
     gpu_queue_wait(shown_mark);
+    vi_fence_wait(&shown_fence, shown_mark);
     QueryPerformanceCounter(&g1);
     rb_vsync_gpu_wait_qpc += (u64)(g1.QuadPart - g0.QuadPart);
     rb_vsync_gpu_waits++;
@@ -315,6 +400,9 @@ static void start(void) {
     speed_mode = speed != 1;
     report_draws = input_seq_on();
     lat_open();
+    const char *acquire = getenv("SSBU_VI_ACQUIRE_FENCE");
+    vi_acquire_fence = !(acquire && !strcmp(acquire, "0"));
+    if (!vi_acquire_fence) fprintf(stderr, "[vi] acquire fence waits disabled for diagnostic comparison\n");
     if (speed_mode) fprintf(stderr, "[display] SSBU_SPEED=%g: one refresh per frame shown and none without one, %s\n", speed, speed > 0 ? "paced at n x 60 a second" : "uncapped");
     CreateThread(NULL, 0, vsync_thread, NULL, 0, NULL);
 }
@@ -323,11 +411,11 @@ static void start(void) {
  * buffers it has dequeued and queued; after a load the queue must say the same, or the buffers it
  * forgot stay dequeued (two loads left none free: DEQUEUE_BUFFER said "would block" for good) and
  * stale queued ones are shown between new frames. The registered buffers themselves don't change. */
-typedef struct ViSlot { int state; u64 queued_at, gpu_mark; } ViSlot;
+typedef struct ViSlot { int state; u64 queued_at, gpu_mark; ViFence fence; } ViSlot;
 void *vi_rb_save(void) {
     ViSlot *s = malloc(sizeof *s * SLOTS);
     queue_lock();
-    for (int i = 0; i < SLOTS; i++) { s[i].state = queue.slots[i].state; s[i].queued_at = queue.slots[i].queued_at; s[i].gpu_mark = queue.slots[i].gpu_mark; }
+    for (int i = 0; i < SLOTS; i++) { s[i].state = queue.slots[i].state; s[i].queued_at = queue.slots[i].queued_at; s[i].gpu_mark = queue.slots[i].gpu_mark; s[i].fence = queue.slots[i].fence; }
     queue_unlock();
     return s;
 }
@@ -335,7 +423,7 @@ void *vi_rb_save(void) {
 void vi_rb_load(const void *p) {
     const ViSlot *s = p;
     queue_lock();
-    for (int i = 0; i < SLOTS; i++) { queue.slots[i].state = s[i].state; queue.slots[i].queued_at = s[i].queued_at; queue.slots[i].gpu_mark = s[i].gpu_mark; queue.slots[i].keep = 0; }
+    for (int i = 0; i < SLOTS; i++) { queue.slots[i].state = s[i].state; queue.slots[i].queued_at = s[i].queued_at; queue.slots[i].gpu_mark = s[i].gpu_mark; queue.slots[i].fence = s[i].fence; queue.slots[i].keep = 0; }
     keep_pending = 0;
     /* (a rollback's load: the frames the save had queued, and the one shown, were shown on the first pass. Let
      * go now - a catch-up presents nothing - rather than left queued: their slots were free again for the
@@ -349,7 +437,7 @@ void vi_rb_load(const void *p) {
 
 /* ---- parcels --------------------------------------------------------------------- */
 /* A flattened parcel: { u32 data size, data offset, objects size, objects offset } + data. */
-typedef struct In { const u8 *d; u32 size, pos; } In;
+typedef struct In { const u8 *d; u32 size, pos, available_size; } In;
 typedef struct Out { u8 d[0x800]; u32 size; } Out;
 
 static u32 rd32(In *p) { u32 v = 0; if (p->pos + 4 <= p->size) memcpy(&v, p->d + p->pos, 4); p->pos += 4; return v; }
@@ -434,6 +522,13 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
     case QUEUE_BUFFER: {
         u32 slot = rd32(in);
         if (slot < SLOTS) {
+            u32 claimed = in->pos <= in->size ? in->size - in->pos : 0;
+            u32 available = in->pos <= in->available_size ? in->available_size - in->pos : 0;
+            if (available > claimed) available = claimed;
+            if (!vi_fence_parse(&queue.slots[slot].fence, available ? in->d + in->pos : NULL, available)) {
+                static int warned;
+                if (!warned++) fprintf(stderr, "[vi] unsupported QueueBuffer acquire fence payload (%u bytes); using submission mark only\n", available);
+            }
             queue.slots[slot].state = QUEUED;
             queue.slots[slot].queued_at = rt_now_ns();
             ll_queued();
@@ -449,12 +544,14 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
                 queue.slots[slot].keep = 1;
                 keep_pending = 1;
                 WakeConditionVariable(&queue.queued);
-            } else if (qfree && rb_fast > 0) {
-                for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == ACQUIRED) queue.slots[i].state = FREE;
-                queue.slots[slot].state = FREE;
-                queue.frames++;
+            } else if (qfree && rb_fast > 0 && vi_fast_release_ready(slot)) {
                 fast_freed = 1;
-            } else if (speed_mode || rb_fast > 0) WakeConditionVariable(&queue.queued);
+            } else if (speed_mode || rb_fast > 0) {
+                /* Never wait inside QueueBuffer: the same producer may submit the fence's
+                 * work only after this IPC returns. An unready qfree frame uses the existing
+                 * fast consumer, which waits outside the queue lock before releasing it. */
+                WakeConditionVariable(&queue.queued);
+            }
         }
         queue_output(out);
         w32(out, 0);
@@ -508,6 +605,11 @@ static void binder(IpcObject *self, Ipc *ipc) {
             const u32 *h = P(u32, in_addr);
             in.d = P(u8, in_addr + h[1]);
             in.size = h[0];
+            /* Do not read outside the IPC input even if its parcel header claims more data. */
+            if (h[1] <= in_size) {
+                u64 available = in_size - h[1];
+                in.available_size = available < in.size ? (u32)available : in.size;
+            }
         }
         Out out = {0};
         transact(code, &in, &out, ipc->cpu);

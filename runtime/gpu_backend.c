@@ -37,6 +37,8 @@ static const GfxBackend D3D11 = {
     .draw_logging = d3d11_draw_logging,
     .status_lines = d3d11_status_lines,
     .closing = d3d11_closing,
+    .prepare_fighter = d3d11_prepare_fighter_begin,
+    .prepare_fighter_end = d3d11_prepare_fighter_end,
     .lock_owner = d3d11_lock_owner,
     .last_enter_thread = d3d11_last_enter_thread,
     .report_compiles = d3d11_report_compiles,
@@ -135,6 +137,18 @@ GfxBackend gfx_backend = {
 
 void gfx_status_lines(void) { gfx_backend.status_lines(); }
 void gfx_closing(void) { gfx_backend.closing(); }
+/* Fighter setup can run before a renderer is selected.  The active back end may
+ * replace this with its queueing implementation; the default is intentionally a
+ * no-op so the hook is harmless on unsupported renderers. */
+void gfx_prepare_fighter_begin(const char *name, unsigned slot) {
+    if (!name || !*name) return;
+    start();
+    if (gfx_backend.prepare_fighter) gfx_backend.prepare_fighter(name, slot);
+}
+void gfx_prepare_fighter_end(void) {
+    start();
+    if (gfx_backend.prepare_fighter_end) gfx_backend.prepare_fighter_end();
+}
 DWORD gfx_lock_owner(void) { return gfx_backend.lock_owner(); }
 DWORD gfx_last_enter_thread(void) { return gfx_backend.last_enter_thread(); }
 void gfx_report_compiles(void (*line)(const char *text)) { gfx_backend.report_compiles(line); }
