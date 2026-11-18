@@ -164,7 +164,8 @@ u64 bench_buttons(i32 *lx, i32 *ly);
 int rb_slot_remote(u32 id);
 int rb_slot_remote_gc(u32 id);   /* (version 12: a remote player's GameCube controller, from its choice) */
 /* (Host/Join: which of this PC's own controller slots the game's slot `id` reads. A joining PC's controller and keyboard
- * are its player 1, as on any PC; once the host gives the game player N, the game's slot N reads them: hle_rb_core.c) */
+ * are its player 1, as on any PC; once the host gives the game player N, the game's slot N reads them. An Online
+ * match's: the game's slot of this game's number reads the slot its player picked its fighter with: hle_rb_core.c) */
 u32 rb_slot_phys(u32 id);
 
 /* A player is connected while a pad drives it, while it is the keyboard's, and (player 1) during
