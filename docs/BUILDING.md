@@ -558,7 +558,7 @@ python tools/nca.py romfs-get "D:\MyFirmware\font-archive.nca" --keys "D:\MyKeys
 
 ### Audio and video codecs
 
-The game's music is Opus, and its movies are VP9. Their decoders, libopus and libvpx's VP9 decoder, come with WindowSmash as source in `third_party/` and are compiled into the game by the build (`tools/codec_libs.py`, a few seconds the first time): nothing to install. [`third_party/README.md`](../third_party/README.md) says which upstream versions and files they are.
+The game's music is Opus, and its movies are VP9. Their decoders, libopus and libvpx's VP9 decoder, come with WindowSmash as source in `third_party/` and are compiled into the game by the build (`tools/codec_libs.py`, a few seconds the first time): nothing to install. [`third_party/README.md`](../third_party/README.md) says which upstream versions and files they are. A few movies are H.264 instead (Sephiroth's Final Smash): on Windows, Windows' own H.264 decoder (Media Foundation) plays them, so nothing is added to the build; on Linux and macOS they stay black for now.
 
 To link your own builds of them instead, set these before the build command, in the same PowerShell window:
 
