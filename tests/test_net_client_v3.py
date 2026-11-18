@@ -48,6 +48,7 @@ else:
 
 SIM = int(re.search(r'#define SIM_VERSION (\d+)u', (ROOT / 'runtime' / 'sim_version.h').read_text()).group(1))
 V2_TAIL = b'WS' + struct.pack('>I', SIM) + b'\0'   # (a JOIN of version 2's end: this game's simulation version, a mod set of none)
+CV = b'CV' + struct.pack('>H', 1)   # (every JOIN's last block: the online level, runtime/net.h NET_CLIENT_LEVEL; lobbies before it ignore it)
 LDN = R.LDN_PORT
 GAME = 12345
 BCAST = R.BROADCASTS[0]
@@ -86,6 +87,9 @@ class Game:
     def __init__(self, exe, relay=None, protocol=None, room='v3client', name='P', **more):
         env = {k: v for k, v in os.environ.items() if not k.upper().startswith('SSBU_NET_') and k.upper() != 'NETV3TEST_BUILD'}
         env.update(SSBU_NET_ROOM=room, SSBU_NET_NAME=name, SSBU_NET_UPNP='0', NETV3TEST_BUILD=BUILD)
+        # (OpenSmash 0.5.0: direct paths are asked for - SSBU_NET_DIRECT=1 - and never taken with the official lobby; these
+        # tests are of the direct paths with a lobby of the player's own, so they ask)
+        env['SSBU_NET_DIRECT'] = '1'
         if relay is not None:
             env['SSBU_NET_RELAY'] = relay
         if protocol is not None:
@@ -292,6 +296,7 @@ class Bytes(ClientTest):
             want += struct.pack('>I', SIM) + b'\0'   # (the simulation version, a mod set of none)
         else:   # (version 2's tail: 'W' 'S', the same two, which a private room's relay compares; others ignore it)
             want += V2_TAIL
+        want += CV   # (no ticket before it: not the official lobby)
         self.assertEqual(join, want)
         flags = 3 if version == R.PROTOCOL else 31
         lobby.s.sendto(head(R.WELCOME) + nonce + struct.pack('>IQB', FAKE_IP, FAKE_COOKIE, flags) + b'\0', at)
@@ -356,7 +361,7 @@ class Bytes(ClientTest):
         g = self.game(lobby.address, protocol=2)
         g.send('join 1')
         join, _ = lobby.next(R.JOIN)
-        self.assertEqual((join[:4], len(join), join[R.JOIN_SIZE:]), (b'SN\x02\x01', R.JOIN_SIZE + len(V2_TAIL), V2_TAIL))
+        self.assertEqual((join[:4], len(join), join[R.JOIN_SIZE:]), (b'SN\x02\x01', R.JOIN_SIZE + len(V2_TAIL + CV), V2_TAIL + CV))
 
     def test_version_3(self):
         """SSBU_NET_PROTOCOL=3: the same in version 3's header, its JOIN with the simulation version and
@@ -398,7 +403,7 @@ class Bytes(ClientTest):
         reject = b'SN\x03' + bytes((R.REJECT,)) + join[4:12] + b'\2' + b'different netplay version (lobby 2, you 3)'.ljust(64, b'\0')
         lobby.s.sendto(reject, at)
         again, _ = lobby.next(R.JOIN, wait=1.0)   # (no 2 s pause, as after any other REJECT)
-        self.assertEqual(again, b'SN\x02\x01' + join[4:R.JOIN_SIZE] + V2_TAIL)
+        self.assertEqual(again, b'SN\x02\x01' + join[4:R.JOIN_SIZE] + V2_TAIL + CV)
         lobby.s.sendto(reject, at)   # (late)
         self.assertTrue(until(lambda: 'connecting' in g.status()))   # (not refused)
         lobby.s.sendto(b'SN\x02' + bytes((R.WELCOME,)) + join[4:12] + struct.pack('>IQB', FAKE_IP, FAKE_COOKIE, 3) + b'\0', at)

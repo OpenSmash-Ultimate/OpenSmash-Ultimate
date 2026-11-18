@@ -175,8 +175,8 @@ class LauncherIniTests(unittest.TestCase):
         self.assertEqual(int(path.stat().st_mtime), 1_000_000_000)
 
     def test_online_server_first_line(self):
-        got = self.edit(SERVER, [('line', 'opensmash-lobby.duckdns.org:39421 abc')], 'online_server.txt')
-        self.assertEqual(got, SERVER.replace(b'smash.example:39421 friends', b'opensmash-lobby.duckdns.org:39421 abc'))
+        got = self.edit(SERVER, [('line', 'eu.lobby.opensmashultimate.com:39421 abc')], 'online_server.txt')
+        self.assertEqual(got, SERVER.replace(b'smash.example:39421 friends', b'eu.lobby.opensmashultimate.com:39421 abc'))
         got = self.edit(SERVER, [('line', 'off')], 'shipped.txt')
         want = SERVER.replace(b'smash.example:39421 friends', b'off')
         self.assertEqual(got, want)

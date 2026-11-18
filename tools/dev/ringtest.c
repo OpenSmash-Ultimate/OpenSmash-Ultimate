@@ -61,6 +61,8 @@ u32 ipc_request(Cpu *c, void *session, u64 message, u64 size) { (void)c; (void)s
 void ipc_close(void *session) { (void)session; }
 void gpu_memory_unmapping(u64 addr, u64 size) { (void)addr; (void)size; }
 void rb_shadow_note(u64 at, u64 size) { (void)at; (void)size; }   /* (hle_rb_state.c: the rollback shadow's shared pages) */
+volatile LONG rb_vi_point;                    /* (hle_rb_core.c: the display buffer was handed out; kernel.c asks) */
+void rb_wait_point(Cpu *c) { (void)c; }
 #ifdef __APPLE__
 void rt_upnp_remove(void) {}
 #endif

@@ -146,6 +146,16 @@ $VsBuildToolsId = 'Microsoft.VisualStudio.BuildTools'   # Visual Studio 2026's; 
 $VsBuildToolsUrl = 'https://visualstudio.microsoft.com/visual-cpp-build-tools/'
 $VsInstallerDir = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
 $NeedDiskGb = 60
+# (SSBU_DATA_IN_PLACE=1, tools\build_game.py: the game's data is read from the game's own file, so the 14.5 GB
+# decrypted copy is never written)
+# (the launcher's "Save disk space", config\save_disk.txt = on: the build as with SSBU_DATA_IN_PLACE=1 and
+# SSBU_TRIM=c,nsp,map, where neither is set by hand - tools\build_game.py save_disk_apply reads the same file)
+$SaveDiskFile = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'config') 'save_disk.txt'
+if ((Test-Path -LiteralPath $SaveDiskFile) -and ([string](Get-Content -LiteralPath $SaveDiskFile -TotalCount 1 -ErrorAction SilentlyContinue)).Trim() -match '^(?i)on') {
+    if ($null -eq $env:SSBU_DATA_IN_PLACE) { $env:SSBU_DATA_IN_PLACE = '1' }
+    if ($null -eq $env:SSBU_TRIM) { $env:SSBU_TRIM = 'c,nsp,map' }
+}
+if ([string]$env:SSBU_DATA_IN_PLACE -eq '1') { $NeedDiskGb = 45 }
 $MinRamGb = 4        # (below 8 GB the build runs one compile at a time and the game is told to use less memory)
 $LowRamGb = 8
 $FirewallRuleName = 'WindowSmash (ssbu.exe)'
@@ -827,6 +837,19 @@ function Step-Update {
     if ($mapped -ne $local) { Write-Info "this copy ($($local.Substring(0, 7))) is the old WindowSmash repository's; it updates as $($mapped.Substring(0, 7)), the commit both share" }
     $local = $mapped
     $short = $local.Substring(0, 7)
+    # (v0.5.0) the launcher follows a release channel: OPENSMASH_UPDATE_COMMIT names the release's commit, which
+    # this folder is brought to whether it is ahead or behind (a channel switch can go back), never the branch's tip
+    $release = [string]$env:OPENSMASH_UPDATE_COMMIT
+    if ($release -match '^[0-9a-fA-F]{40}$') {
+        $release = $release.ToLowerInvariant()
+        if ($release -eq $local) { Write-Info "at the release already ($short)"; return $false }
+        $rel = Invoke-Api "$RepoApi/commits/$release"
+        $relDate = (Get-Date).ToString('yyyy-MM-dd')
+        if ($rel.Ok) { $relDate = ([string]$rel.Data.commit.committer.date).Substring(0, 10) }
+        Write-Info "the release's sources: $short to $($release.Substring(0, 7)) ($relDate)"
+        if ($DryRun) { Write-Would "download them and replace this folder's files (your game files, settings, save and builds stay)"; return $false }
+        return (Update-FromZip $local $release $relDate)
+    }
     $ref = Get-UpdateRef
     if (-not $ref) { Write-Warn "could not ask GitHub which release is the latest ($($Script:UpdateRefProblem)); going on with this one"; return $false }
     $head = Invoke-Api "$RepoApi/commits/$ref"
@@ -1676,6 +1699,17 @@ function Step-Build {
     if ($Answers.Firmware) { $build += @('--firmware', $Answers.Firmware) } else { $build += '--no-firmware' }   # (none: the open fonts)
     if ($Jobs) { $build += @('--jobs', "$Jobs") }
     if ($SkipBuild) { $build += '--prepare-only' }
+    # the standard Skyline plugins are fetched and listed BEFORE the game is built (build_game.py plugins_first), so main's
+    # C is written once with their hooks in it: about 1 minute of plugin build after the game instead of 16.
+    # SSBU_PLUGINS_FIRST=0: after the build, as before.
+    $build += '--std-plugins'
+    $buildStart = Get-Date
+    # (v0.5.0) an install of a release (the launcher names its tag in OPENSMASH_RELEASE_TAG): the game as a library
+    # of its own (ssbu_game.dll) and the release's prebuilt runtime in place of the one built here (tools/runtime_fetch.py),
+    # so a runtime fix of a later release needs no compile of the game
+    $releaseTag = [string]$env:OPENSMASH_RELEASE_TAG
+    $gameDll = $releaseTag -match '^v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$'
+    if ($gameDll) { $build += '--game-dll' }
     if ($BuildAfterUpdate) { $build += '--no-input' }   # (the launcher's: nobody to answer a folder question there)
     if ($DryRun) { Write-Would ('run: ' + ($Script:Python -join ' ') + ' ' + ($build -join ' ')); return $false }
     # (an update of the mod manager or other tools only: the game is as it was, no build - its own check)
@@ -1691,11 +1725,11 @@ function Step-Build {
                 Write-Warn 'the game folder could not be read again (see above): DLC added since the last build is not turned on yet; the game is as it was'
             }
         }
-        # (the online files beside the program - Epic Online Services, Discord - on every update, built or not: a fetch
-        # that failed at the last build was otherwise never tried again, and the game went online through the public
-        # lobby alone, unseen by the players on Epic: issue #389. Nothing is downloaded when they are current.)
+        # (the online files beside the program - Discord's; Epic Online Services' too before 0.5.0 - on every update,
+        # built or not: a fetch that failed at the last build was otherwise never tried again, issue #389. Nothing is
+        # downloaded when they are current.)
         if ((Invoke-Python @((Join-Path $Root 'tools\online_files.py'), (Join-Path $Root 'build'))) -ne 0) {
-            Write-Warn 'the Epic Online Services or Discord files could not be fetched (see above): the game goes online through the public lobby until they are; Play in the launcher tries again'
+            Write-Warn 'the Discord files could not be fetched (see above): no Discord sign-in in the game until they are; Play in the launcher tries again'
         }
         return $true
     }
@@ -1703,11 +1737,19 @@ function Step-Build {
     else { Write-Info 'the program, fonts, data, DLC and fighters, then the build: 30 minutes to a few hours' }
     if ((Invoke-Python $build) -ne 0) { throw 'The build stopped (the message above says why). Fix that, then run OpenSmash.exe again: it carries on where it stopped.' }
     if ($SkipBuild) { return $false }
+    if ($gameDll -and (Test-Path (Join-Path $Root 'build\ssbu_game.dll'))) {
+        if ((Invoke-Python @((Join-Path $Root 'tools\runtime_fetch.py'), $releaseTag)) -ne 0) {
+            Write-Warn "the prebuilt runtime of $releaseTag could not be put in place (see above): the runtime built here stays"
+        }
+    }
     # the community's Skyline plugins that mods need (ARCropolis, Smashline 2, One Slot Effects, nro_hook),
     # from their own releases (tools\std_plugins.py checks each), then built into the game with the mods' own
     Write-Info 'the standard Skyline plugins: fetched from their releases and built in (tools\std_plugins.py, tools\skyline.py)'
     Write-Warn 'building the plugins into the game can take a while: do not start the game until this window says Done'
-    if ((Invoke-Python @((Join-Path $Root 'tools\std_plugins.py'), 'fetch')) -ne 0) {
+    $stamp = Join-Path $Root 'dump\skyline\plugins_first.txt'
+    $fetched = (Test-Path -LiteralPath $stamp) -and ((Get-Item -LiteralPath $stamp).LastWriteTime -ge $buildStart)
+    if ($fetched) { Write-Info 'the plugins were fetched before the build: only their check in the game is left' }
+    if (-not $fetched -and (Invoke-Python @((Join-Path $Root 'tools\std_plugins.py'), 'fetch')) -ne 0) {
         Write-Warn 'the plugins could not be fetched (see above): mods that need them will not work until this runs again'
     } else {
         $sky = @((Join-Path $Root 'tools\skyline.py'), 'build')
@@ -1886,8 +1928,18 @@ function Main {
         Step-Extras $answers
         $built = Step-Build $answers
         if ($built) { Step-StaleShaders }
+        # the launcher before the shaders (an hour or more on some PCs): the game can be played while they compile,
+        # and the launcher can go on with them later (Prepare Shaders). OPENSMASH_SHADERS_FIRST=1: the old order.
+        $shadersFirst = [string]$env:OPENSMASH_SHADERS_FIRST -eq '1'
+        if (-not $shadersFirst) {
+            Step-Launcher
+            if ($built -and $answers.Shaders -and -not $DryRun) {
+                Write-Host ''
+                Write-Host 'The game is ready: it can be played from now on (OpenSmash.exe). The shaders below only make its first matches smoother; closing this window keeps what is compiled.' -ForegroundColor Green
+            }
+        }
         Step-Shaders $answers $built
-        Step-Launcher
+        if ($shadersFirst) { Step-Launcher }
         Write-Host ''
         if ($built) {
             Write-Host 'Done. Start the game with OpenSmash.exe, or the shortcut on the desktop.' -ForegroundColor Green

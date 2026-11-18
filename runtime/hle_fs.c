@@ -80,9 +80,167 @@ static int pread_all(HANDLE h, u64 offset, void *buf, u64 size) {
     return 1;
 }
 
+
+/* ---- a source that is the game's own encrypted file, read in place (romfs.crypt) -----------------------------
+ * The game as the Switch stores it has its RomFS section encrypted (AES-128-CTR); the installer used to decrypt
+ * it into a copy (14 GB) for the reads above. With SSBU_DATA_IN_PLACE=1 at install (tools/build_game.py,
+ * tools/nca.py --in-place) there is no copy: romfs.cfg names the game's own file and romfs.crypt, beside it,
+ * lists that file's encrypted bytes: "<file>\t<from>\t<to>\t<nca>\t<key>\t<counter>" for file bytes [from, to),
+ * the counter block of a byte being <counter> (8 bytes) then (offset - <nca>) / 16, big-endian. What is read of
+ * those bytes is decrypted here, with the processor's AES instructions (every x86-64 processor since 2011 has
+ * them; without them the game says so at start and the installer's decrypted copy is the way). Without a
+ * romfs.crypt nothing here runs. */
+typedef struct { u64 from, to, nca; u8 rk[11][16]; u8 ctr[8]; } RomCrypt;
+static struct { RomCrypt *v; u32 n; } rom_crypt[ROM_SOURCES + 1];   /* by source; the last: the plain image's file */
+static char rom_paths[ROM_SOURCES + 1][1024];
+
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#ifdef _WIN32
+#include <intrin.h>
+#else
+#include <cpuid.h>
+#endif
+#define ROM_AES __attribute__((target("aes,sse4.1")))
+static int rom_aes_ok(void) {
+#ifdef _WIN32
+    int r[4];
+    __cpuid(r, 1);
+    return (r[2] >> 25) & 1;
+#else
+    unsigned a, b, c, d;
+    return __get_cpuid(1, &a, &b, &c, &d) && ((c >> 25) & 1);
+#endif
+}
+ROM_AES static __m128i rom_aes_next(__m128i k, __m128i g) {
+    g = _mm_shuffle_epi32(g, 0xFF);
+    k = _mm_xor_si128(k, _mm_slli_si128(k, 4));
+    k = _mm_xor_si128(k, _mm_slli_si128(k, 4));
+    k = _mm_xor_si128(k, _mm_slli_si128(k, 4));
+    return _mm_xor_si128(k, g);
+}
+ROM_AES static void rom_aes_key(const u8 *key, u8 rk[11][16]) {
+    __m128i k = _mm_loadu_si128((const __m128i *)key);
+    _mm_storeu_si128((__m128i *)rk[0], k);
+#define ROM_AES_STEP(i, rcon) k = rom_aes_next(k, _mm_aeskeygenassist_si128(k, rcon)); _mm_storeu_si128((__m128i *)rk[i], k);
+    ROM_AES_STEP(1, 0x01) ROM_AES_STEP(2, 0x02) ROM_AES_STEP(3, 0x04) ROM_AES_STEP(4, 0x08) ROM_AES_STEP(5, 0x10)
+    ROM_AES_STEP(6, 0x20) ROM_AES_STEP(7, 0x40) ROM_AES_STEP(8, 0x80) ROM_AES_STEP(9, 0x1B) ROM_AES_STEP(10, 0x36)
+#undef ROM_AES_STEP
+}
+ROM_AES static __m128i rom_aes_counter(const RomCrypt *c, u64 block) {
+    u8 iv[16];
+    memcpy(iv, c->ctr, 8);
+    for (int i = 0; i < 8; i++) iv[8 + i] = (u8)(block >> (56 - 8 * i));
+    return _mm_loadu_si128((const __m128i *)iv);
+}
+/* p[0..n): the bytes at offset pos of the NCA, decrypted in place (CTR: the same for encrypting). */
+ROM_AES static void rom_aes_ctr(const RomCrypt *c, u64 pos, u8 *p, u64 n) {
+    __m128i rk[11];
+    for (int i = 0; i < 11; i++) rk[i] = _mm_loadu_si128((const __m128i *)c->rk[i]);
+    u64 block = pos >> 4;
+    u32 skip = (u32)(pos & 15);
+    while (n) {
+        if (!skip && n >= 64) {   /* four blocks at a time: the processor runs their rounds side by side */
+            __m128i s0 = _mm_xor_si128(rom_aes_counter(c, block), rk[0]), s1 = _mm_xor_si128(rom_aes_counter(c, block + 1), rk[0]);
+            __m128i s2 = _mm_xor_si128(rom_aes_counter(c, block + 2), rk[0]), s3 = _mm_xor_si128(rom_aes_counter(c, block + 3), rk[0]);
+            for (int i = 1; i < 10; i++) {
+                s0 = _mm_aesenc_si128(s0, rk[i]); s1 = _mm_aesenc_si128(s1, rk[i]);
+                s2 = _mm_aesenc_si128(s2, rk[i]); s3 = _mm_aesenc_si128(s3, rk[i]);
+            }
+            s0 = _mm_aesenclast_si128(s0, rk[10]); s1 = _mm_aesenclast_si128(s1, rk[10]);
+            s2 = _mm_aesenclast_si128(s2, rk[10]); s3 = _mm_aesenclast_si128(s3, rk[10]);
+            __m128i *q = (__m128i *)p;
+            _mm_storeu_si128(q, _mm_xor_si128(_mm_loadu_si128(q), s0));
+            _mm_storeu_si128(q + 1, _mm_xor_si128(_mm_loadu_si128(q + 1), s1));
+            _mm_storeu_si128(q + 2, _mm_xor_si128(_mm_loadu_si128(q + 2), s2));
+            _mm_storeu_si128(q + 3, _mm_xor_si128(_mm_loadu_si128(q + 3), s3));
+            p += 64; n -= 64; block += 4;
+            continue;
+        }
+        __m128i s = _mm_xor_si128(rom_aes_counter(c, block), rk[0]);
+        for (int i = 1; i < 10; i++) s = _mm_aesenc_si128(s, rk[i]);
+        s = _mm_aesenclast_si128(s, rk[10]);
+        u8 ks[16];
+        _mm_storeu_si128((__m128i *)ks, s);
+        u32 m = 16 - skip < n ? 16 - skip : (u32)n;
+        for (u32 i = 0; i < m; i++) p[i] ^= ks[skip + i];
+        p += m; n -= m; skip = 0; block++;
+    }
+}
+#else
+static int rom_aes_ok(void) { return 0; }
+static void rom_aes_key(const u8 *key, u8 rk[11][16]) { (void)key; (void)rk; }
+static void rom_aes_ctr(const RomCrypt *c, u64 pos, u8 *p, u64 n) { (void)c; (void)pos; (void)p; (void)n; }
+#endif
+
+/* pread_all of a RomFS source, with what romfs.crypt says is encrypted of it decrypted. */
+static int rom_src_read(u32 src, HANDLE h, u64 offset, void *buf, u64 size) {
+    if (!pread_all(h, offset, buf, size)) return 0;
+    for (u32 k = 0; k < rom_crypt[src].n; k++) {
+        const RomCrypt *c = &rom_crypt[src].v[k];
+        u64 lo = offset > c->from ? offset : c->from, hi = offset + size < c->to ? offset + size : c->to;
+        if (lo < hi) rom_aes_ctr(c, lo - c->nca, (u8 *)buf + (lo - offset), hi - lo);
+    }
+    return 1;
+}
+
+static int rom_same_path(const char *a, const char *b) {
+    for (;; a++, b++) {
+        char x = *a == '/' ? '\\' : *a, y = *b == '/' ? '\\' : *b;
+        if (x >= 'A' && x <= 'Z') x += 32;
+        if (y >= 'A' && y <= 'Z') y += 32;
+        if (x != y) return 0;
+        if (!x) return 1;
+    }
+}
+
+static int rom_hex(const char *s, u8 *out, u32 n) {
+    for (u32 i = 0; i < n; i++) {
+        unsigned v;
+        if (sscanf(s + 2 * i, "%2x", &v) != 1) return 0;
+        out[i] = (u8)v;
+    }
+    return 1;
+}
+
+/* romfs.crypt beside romfs.cfg, once the sources are open (rom_paths: their names as romfs.cfg has them). */
+static void rom_crypt_open(void) {
+    char path[1100], line[2048];
+    snprintf(path, sizeof path, "%s/romfs.crypt", rt_data_dir);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    u32 found = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *tab = strchr(line, '\t');
+        if (!tab) continue;
+        *tab = 0;
+        unsigned long long from, to, nca;
+        char key[40], ctr[24];
+        if (sscanf(tab + 1, "%llu\t%llu\t%llu\t%32s\t%16s", &from, &to, &nca, key, ctr) != 5 || strlen(key) != 32 || strlen(ctr) != 16) continue;
+        for (u32 s = 0; s <= ROM_SOURCES; s++) {
+            if (!rom_paths[s][0] || !rom_same_path(rom_paths[s], line)) continue;
+            RomCrypt *c;
+            u8 k[16];
+            rom_crypt[s].v = realloc(rom_crypt[s].v, sizeof *c * (rom_crypt[s].n + 1));
+            c = &rom_crypt[s].v[rom_crypt[s].n];
+            c->from = from; c->to = to; c->nca = nca;
+            if (!rom_hex(key, k, 16) || !rom_hex(ctr, c->ctr, 8)) rt_fatal("%s: a line's key cannot be read", path);
+            rom_aes_key(k, c->rk);
+            rom_crypt[s].n++;
+            found++;
+        }
+    }
+    fclose(f);
+    if (!found) return;
+    if (!rom_aes_ok())
+        rt_fatal("the game's data is read in place from the game's own encrypted file (%s), which needs a processor with AES "
+                 "instructions: this one has none. Run the installer again without SSBU_DATA_IN_PLACE (it makes a decrypted copy).", path);
+    fprintf(stderr, "[fs] RomFS: %u encrypted region%s of the game's own file read in place, decrypted as read (%s)\n", found, found == 1 ? "" : "s", path);
+}
+
 /* Read image bytes [at, at + size). */
 static int rom_read(u64 at, void *buf, u64 size) {
-    if (!rom.layers) return pread_all(rom.file, rom.base + at, buf, size);
+    if (!rom.layers) return rom_src_read(ROM_SOURCES, rom.file, rom.base + at, buf, size);
     if (at + size > rom.size) return 0;
     u32 lo = 0, hi = rom.nlayers;   /* the last layer starting at or before `at` */
     while (hi - lo > 1) {
@@ -95,7 +253,7 @@ static int rom_read(u64 at, void *buf, u64 size) {
         u64 end = k + 1 < rom.nlayers ? rom.layers[k + 1].at : rom.size;
         u64 n = end - at < size ? end - at : size;
         if (l->src == LAYER_ZERO) memset(p, 0, n);
-        else if (!pread_all(rom.sources[l->src], l->off + (at - l->at), p, n)) return 0;
+        else if (!rom_src_read(l->src, rom.sources[l->src], l->off + (at - l->at), p, n)) return 0;
         p += n; at += n; size -= n;
     }
     return 1;
@@ -158,8 +316,9 @@ static void rom_open(void) {
         u32 n = 0;
         while (n < ROM_SOURCES && fgets(path, sizeof path, f)) {
             path[strcspn(path, "\r\n")] = 0;
-            if (path[0]) rom.sources[n++] = rom_file_open(path);
+            if (path[0]) { snprintf(rom_paths[n], sizeof rom_paths[n], "%s", path); rom.sources[n++] = rom_file_open(path); }
         }
+        rom_crypt_open();
         HANDLE m = rom_file_open(map);
         u8 head[24];
         if (!pread_all(m, 0, head, sizeof head) || memcmp(head, "SSBUROM1", 8)) rt_fatal("%s: not a layer map", map);
@@ -175,6 +334,8 @@ static void rom_open(void) {
     } else {
         if (fscanf(f, "%llu", &rom.base) != 1) rt_fatal("cannot read %s", cfg);
         rom.file = rom_file_open(path);
+        snprintf(rom_paths[ROM_SOURCES], sizeof rom_paths[ROM_SOURCES], "%s", path);
+        rom_crypt_open();
     }
     fclose(f);
     rom_unverified_note();

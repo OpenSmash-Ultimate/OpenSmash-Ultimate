@@ -30,6 +30,8 @@ namespace OpenSmash.Launcher
 
         void CommunityInit()
         {
+            RegionView();
+            _ = RegionMeasure();   // (in the background: the launcher does not wait for it)
             _ = CommunityRefresh();
             _communityTimer = new System.Windows.Forms.Timer { Interval = (int)CommunityFeed.Every.TotalMilliseconds };
             _communityTimer.Tick += (_, _) => _ = CommunityRefresh();
@@ -37,21 +39,98 @@ namespace OpenSmash.Launcher
             PresenceStart();
         }
 
+        // The server region (OpenSmash.Core.ServerRegion). With Auto, every region's lobby is asked at each launcher start
+        // and the closest is kept in config\server_region_auto.txt, which the game starts from; the players online and
+        // the leaderboard are then that region's.
+        async Task RegionMeasure()
+        {
+            if (OpenSmash.Core.OfficialLobby.Override(_repo) != null || OpenSmash.Core.ServerRegion.Setting(_repo) != OpenSmash.Core.ServerRegion.Auto) return;
+            string before = OpenSmash.Core.OfficialLobby.Current(_repo);
+            try { await OpenSmash.Core.ServerRegion.Measure(_repo); }
+            catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException or InvalidOperationException) { return; }
+            RegionView();
+            if (OpenSmash.Core.OfficialLobby.Current(_repo) != before) await CommunityAgain();
+            Invalidate();
+        }
+
+        // What the pages show of the region, read when it changes (not at every paint): Auto's pick and its ping, an
+        // install's own official server, the region the home page's numbers are of.
+        string? _regionShown;
+        string _regionLabel = "";
+        bool _regionOverride;
+
+        void RegionView()
+        {
+            _regionOverride = OpenSmash.Core.OfficialLobby.Override(_repo) != null;
+            _regionShown = SettingDefaults.RegionShown(_repo, OpenSmash.Core.ServerRegion.Auto);
+            _regionLabel = OpenSmash.Core.ServerRegion.Current(_repo)?.Label.ToUpperInvariant() ?? "";
+        }
+
+        // The region was changed in the settings: measured when it is Auto, and the home page asks the new lobby.
+        async Task RegionChanged()
+        {
+            await RegionMeasure();
+            RegionView();
+            await CommunityAgain();
+        }
+
+        async Task CommunityAgain()
+        {
+            for (int i = 0; i < 100 && Volatile.Read(ref _communityBusy) == 1; i++) await Task.Delay(100);   // (an answer on its way is the old lobby's)
+            _lobby = null;
+            _lobbyAsked = false;
+            await CommunityRefresh();
+        }
+
+        // The selected (or Auto's) region's players online from the accounts service (OpenSmash.Core.OnlineCount), or
+        // null: no accounts service in this build, an official server of the install's own (no region), no fresh row
+        // for the region, or the service not reached. Then the lobby's own status page is what is shown, as before.
+        async Task<(int Players, int Rooms)?> RegionCount()
+        {
+            try
+            {
+                var account = _account;
+                if (account == null || !account.Service.Configured || !OpenSmash.Core.OnlineCount.Wanted) return null;
+                if (OpenSmash.Core.OfficialLobby.Override(_repo) != null) return null;
+                string? region = OpenSmash.Core.ServerRegion.Current(_repo)?.Id;
+                if (string.IsNullOrEmpty(region)) return null;
+                var asked = account.AnonAsync(OpenSmash.Core.OnlineCount.Path(region));
+                if (await Task.WhenAny(asked, Task.Delay(TimeSpan.FromSeconds(8))) != asked)
+                {
+                    _ = asked.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);   // (a late failure is nobody's)
+                    return null;
+                }
+                return OpenSmash.Core.OnlineCount.Parse(await asked, DateTimeOffset.UtcNow);
+            }
+            catch (Exception e) when (e is OpenSmash.Core.AccountException or System.Net.Http.HttpRequestException or TaskCanceledException or InvalidOperationException or System.IO.IOException) { return null; }
+        }
+
         async Task CommunityRefresh()
         {
             if (Interlocked.Exchange(ref _communityBusy, 1) == 1) return;
             try
             {
-                var (status, board) = await CommunityFeed.Fetch(_httpClient, CancellationToken.None);
+                var counted = RegionCount();   // (asked together with the lobby's own pages)
+                var (status, board) = await CommunityFeed.Fetch(_httpClient, CancellationToken.None, _repo);
+                var count = await counted;
                 _lobbyAsked = true;
-                _lobbyDown = status == null && board == null;
+                _lobbyDown = status == null && board == null && count == null;
                 if (status != null) _lobby = status;
+                // (the region's row of the accounts service's lobby_status, when it has one that is fresh: its players
+                // are the count shown; the open rooms stay the lobby's own when it answered. No row: as before.)
+                if (count is { } c)
+                    _lobby = new LobbyStatus
+                    {
+                        Online = c.Players, OpenRooms = status?.OpenRooms ?? c.Rooms, Rooms = status?.Rooms ?? c.Rooms,
+                        Arenas = status?.Arenas ?? 0, Playing = status?.Playing ?? 0, Ranked = status?.Ranked ?? 0,
+                    };
                 if (board != null && CommunityFeed.ParseBoard(board) is { } parsed)
                 {
                     _top = parsed.Top;
                     _ranked = parsed.Ranked;
                     string nsa = await Task.Run(() => DiscordAccount.NsaId(_repo));
-                    _mine = CommunityFeed.Mine(board, nsa == "" ? "" : DiscordAccount.PlayerId(nsa));
+                    // (signed in: the account's row, as /gsp/me named it; else the install's)
+                    _mine = CommunityFeed.Mine(board, _boardMeId ?? (nsa == "" ? "" : DiscordAccount.PlayerId(nsa)));
                     _ = BoardAvatarsLoad(_top);
                 }
             }
@@ -148,7 +227,7 @@ namespace OpenSmash.Launcher
             float pad = 16 * s, ix = x + pad, iw = w - 2 * pad;
 
             // the account
-            if (_discordHasApp || _mine != null)
+            if (_discordHasApp || _mine != null || _boardMeId != null)
             {
                 float ph = 72 * s;
                 Panel(y, ph);
@@ -170,7 +249,7 @@ namespace OpenSmash.Launcher
                         else using (var b = new SolidBrush(A(_discord != null ? Color.FromArgb(255, 88, 101, 242) : Theme.Bg3))) g.FillPath(b, clip);
                     }
                     float tx = ix + a + 12 * s, tw = iw - a - 12 * s;
-                    string who = _discord?.Shown ?? "You";
+                    string who = _discord?.Shown ?? (AccountMode && _account?.SignedIn == true ? _account.Me?.Username : null) ?? "You";
                     Theme.Label(g, who, FB(17 * s, true), A(Theme.Text), tx, ay - 1 * s, 24 * s, 0, StringAlignment.Near, tw);
                     int rank = _mine?.Rank > 0 ? _mine.Rank : _discordRank;
                     uint best = _mine?.Gsp ?? (_discordRecords.Count > 0 ? _discordRecords[0].Gsp : 0u);
@@ -194,7 +273,9 @@ namespace OpenSmash.Launcher
                 Color dot = !_lobbyAsked ? Theme.Dim : up ? Theme.Ready : Theme.Bad;
                 using (var b = new SolidBrush(A(dot))) g.FillEllipse(b, ix, y + 16 * s, 8 * s, 8 * s);
                 string head = !_lobbyAsked ? "ASKING THE LOBBY..." : !up ? "LOBBY OFFLINE" : "ONLINE NOW";
-                Theme.Label(g, head, FM(11 * s, true), A(Theme.Dim), ix + 16 * s, y + 12 * s, 16 * s, 11 * s * 0.12f);
+                // (which region's lobby these numbers are: players on another region are not counted)
+                string where = _regionLabel;
+                Theme.Label(g, where == "" ? UiLocale.Text(head) : UiLocale.Text(head) + "  ·  " + where, FM(11 * s, true), A(Theme.Dim), ix + 16 * s, y + 12 * s, 16 * s, 11 * s * 0.12f);
                 if (_lobby != null)
                 {
                     string players = UiLocale.Format(_lobby.Online == 1 ? "{0} PLAYER" : "{0} PLAYERS", _lobby.Online.ToString(CultureInfo.InvariantCulture));

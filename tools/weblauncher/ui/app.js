@@ -111,9 +111,12 @@ async function refresh() {
   $("#play-state").textContent = !built ? (state.files_ready ? "Your game files are read; the game itself isn't built yet."
     : "Set the game up first.") : state.game_running ? "The game is running." : `Ready (${state.program}).`;
   const s = state.settings;
-  const lobby = { public: "the public lobby", private: `a private lobby (code ${s.code})`, custom: `your own server, ${s.server || "127.0.0.1:39420"}`, lan: "the players on this network (LAN)", offline: "offline" }[s.lobby];
+  const lobby = { public: "the public lobby" + (s.region_shown ? ` (${s.region_shown})` : ""), private: `a private lobby (code ${s.code})`, custom: `your own server, ${s.server || "127.0.0.1:39420"}`, lan: "the players on this network (LAN)", offline: "offline" }[s.lobby];
   $("#play-online").textContent = s.lobby === "offline" ? "Offline: Play doesn't go online." :
     `Play joins ${lobby}${s.name ? ", as " + s.name : ""}. Local Wireless lists everyone's rooms.`;
+  // (v0.5.0: the official lobbies need a signed-in launcher's lobby ticket; this page cannot sign in)
+  const acc = $("#play-account");
+  if (acc) { acc.textContent = state.account_say || ""; acc.hidden = !state.account_say; }
   $("#game-box").hidden = !state.game_running;
   ["play", "play-offline", "play-vanilla"].forEach(id => $("#" + id).disabled = state.game_running || !!state.job);
   fillSettings(s, state.choices);
@@ -281,6 +284,9 @@ function fillSettings(s, choices, all) {
     if (!sel || kept.has(key)) continue;
     const values = options.map(o => o[0]);
     if (!values.includes(s[key]) && s[key]) options = [[s[key], s[key]], ...options];
+    // (Auto with its pick and the pick's ping, once measured: "Auto (EU, 24 ms)")
+    if (key === "region" && s.region_shown && s.region_shown.startsWith("Auto ("))
+      options = options.map(([v, l]) => v === "auto" ? [v, s.region_shown] : [v, l]);
     const html = options.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
     if (sel.dataset.options !== html) { sel.innerHTML = html; sel.dataset.options = html; }   // (an open list is not rebuilt)
     if (sel.value !== s[key]) sel.value = s[key];
@@ -297,6 +303,7 @@ function lobbyFields() {
   const lobby = $("#settings").elements.lobby.value;
   $(".lobby-code").hidden = !(lobby === "private" || lobby === "custom");
   $(".lobby-server").hidden = lobby !== "custom";
+  $(".lobby-region").hidden = !(lobby === "public" || lobby === "private");   // (the official lobby's region)
 }
 $("#settings").elements.lobby.addEventListener("change", lobbyFields);
 $("#settings").elements.volume.addEventListener("input", e => $("#volume-out").textContent = e.target.value);

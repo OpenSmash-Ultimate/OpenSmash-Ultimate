@@ -3,7 +3,7 @@
 game (docs/SKYLINE.md).
 
 Usage:
-  skyline.py sync  [--tree <dir>]               the turned-on mods' plugins: recompiled, listed to load
+  skyline.py sync  [--tree <dir>] [--jobs N]    the turned-on mods' plugins: recompiled, listed to load
   skyline.py build [--tree <dir>] [--jobs N]    translate each mod plugin once; link the game only when it must
   skyline.py status [--tree <dir>]              what is listed, and whether the game has it built in
   skyline.py probe [--tree <dir>]               start the game once for the plugins' select-screen entries; apply the mods again if they changed
@@ -239,6 +239,18 @@ def build_jobs():
     fits in memory."""
     cpus = os.cpu_count() or 4
     return max(4, min(cpus - 2, 12))
+
+
+def default_jobs():
+    """`build` without --jobs (the installer's and the launcher's way): what the first build uses for this PC's
+    memory (build_game.jobs_for_ram), and no more than build_jobs. It was 2: a plugin build that writes main's C
+    again then compiled its changed files (51 on a first install) two at a time on any PC."""
+    try:
+        import build_game
+        gb = build_game.installed_ram_gb()
+        return max(1, min(build_jobs(), build_game.jobs_for_ram(gb) if gb else 4))
+    except Exception:   # (never a reason to stop a build: the old number)
+        return 2
 
 
 def generate(p, name, log, own_exports=False, jobs=1):
@@ -541,7 +553,15 @@ def _stale_hooks(tree):
         if patches.get(mod, "") != (open(rec, encoding="utf-8").read() if os.path.exists(rec) else ""):
             out.append(mod)
             continue
-        if inline.get(mod):   # (the C files: is each point's rt_inline_hook in one?)
+        listed = os.path.join(folder, "inline_hooks.txt")   # (tools/recomp.py: the points its C was written with)
+        if inline.get(mod) and os.path.exists(listed):
+            with open(listed, encoding="utf-8") as f:
+                have = {base + int(h, 16) for h in f.read().split()}
+            if any(base + o not in have for o in inline[mod]):
+                out.append(mod)
+        elif inline.get(mod) and os.path.exists(os.path.join(folder, "c_trimmed.txt")):
+            pass   # (no list and its C removed, tools/trim.py: the module's stamp has its hook points - recomp.py module_fingerprint)
+        elif inline.get(mod):   # (a folder from before that list - the C files: is each point's rt_inline_hook in one?)
             have = set()
             for n in os.listdir(folder):
                 if n.startswith("g") and n.endswith(".c") and n != "g_module.c":
@@ -1033,9 +1053,9 @@ if __name__ == "__main__":
         sys.exit(__doc__)
     tree = os.path.abspath(arg("--tree", ROOT))
     if sys.argv[1] == "sync":
-        sync(tree)
+        sync(tree, jobs=int(arg("--jobs", str(default_jobs()))))
     elif sys.argv[1] == "build":
-        sys.exit(build(tree, int(arg("--jobs", "2"))))
+        sys.exit(build(tree, int(arg("--jobs", str(default_jobs())))))
     elif sys.argv[1] == "status":
         status(tree)
     elif sys.argv[1] == "probe":   # (the plugins' select-screen entries again, and the mods applied if they changed)

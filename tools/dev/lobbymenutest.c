@@ -53,15 +53,7 @@
 static char build_text[41];
 const char *rt_data_dir = ".";
 const RtModule rt_module_main = {.build_id = build_text};
-/* (net_eos_net.c, net_eos_lobby.c and the NEX server's: Online over EOS; never reached here) */
 #include "../../runtime/net_backend.h"
-#include "../../runtime/net_eos.h"
-const NetBackend net_eos_backend;
-void net_eos_net_packet(const char *from, const u8 *p, u32 n) { (void)from; (void)p; (void)n; }
-void nexeos_tick(void) {}
-void nexeos_packet(const char *from, const u8 *data, u32 len) { (void)from; (void)data; (void)len; }
-int nexeos_lobbies(char ids[][16], int max) { (void)ids; (void)max; return 0; }
-uint64_t nex_pid_of(const char *key) { (void)key; return 0; }
 static const char *const FILES[CONFIG_FILES] = {"display.ini", "controllers.ini", "launcher.ini", "online_server.txt",
                                                 "online_name.txt", "online_direct.txt", "online_protocol.txt",
                                                 "online_rollback.txt", "online_delay.txt"};

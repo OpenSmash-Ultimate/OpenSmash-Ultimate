@@ -242,8 +242,7 @@ int discord_join_parse(const char *secret, DiscordJoin *j) {
     return 1;
 }
 
-const char *discord_join_lobby(int eos, const char *lobby_relay) {
-    if (eos) return "eos";
+const char *discord_join_lobby(const char *lobby_relay) {
     return lobby_relay && lobby_relay[0] ? lobby_relay : NULL;
 }
 

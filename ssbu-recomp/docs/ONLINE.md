@@ -12,9 +12,12 @@ This is the game's own Local Wireless mode, played over a network. You only open
 Smash (versus) always stays a local fight (friends, CPUs), with rollback on or off.
 The game's own Online menu (Quickplay, Battle Arenas) on our servers is in progress.
 
-Online play is experimental and ON by default: the game joins the project's public lobby
-(`opensmash-lobby.duckdns.org:39500`) when it starts. To turn it off: F1 -> Experimental -> Online play: OFF
-(or `online_mode = off` in `config\graphics.ini`).
+Online play is experimental. **There is no public lobby for this runtime any more** (since OpenSmash 0.5.0): the one
+it joined at every start, `opensmash-lobby.duckdns.org:39500`, is gone, and OpenSmash's official lobbies do not serve
+this runtime's protocol. So a game that names no server starts offline. To play: pick a mode in F1 -> Experimental
+(a lobby server of your own, Same network (LAN), Host a room, Join with a code), or set `online_server = <host:port>`
+in `config\graphics.ini`. A build made for a lobby of its own can name it (`NET_PUBLIC_LOBBY` in
+`runtime/net_relay.c`), and `SSBU_ONLINE_PUBLIC_LOBBY=<host:port>` does the same for one start.
 
 **Your name:** F1 -> Experimental -> **Your name** (keyboard, or "Type with the controller"). It is the name the
 game and the other players see (`player_name` in `config\graphics.ini`); empty = your Windows user name.
@@ -26,8 +29,8 @@ if one runs (`sudo firewall-cmd --add-port=39500-39501/udp`, `sudo ufw allow 395
 
 ## The easy way: the F1 menu
 
-Press **F1** (or the controller's Home button) -> **Experimental**. Online play is already ON; you can pick another mode:
-**Lobby server** (recommended: the project's public lobby, `opensmash-lobby.duckdns.org:39500`, already filled in),
+Press **F1** (or the controller's Home button) -> **Experimental** and pick a mode:
+**Lobby server** (the `host:port` of a lobby you or a friend run: `tools/net/ssbu_lobby.py`),
 **Same network (LAN)**, **Host a room** (shows a ROOM CODE with a Copy button) or **Join with a code**.
 Press **Restart the game now**, then use the game's own Local Wireless: Create Room / Rooms List.
 

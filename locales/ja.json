@@ -207,6 +207,10 @@
     "Player 6": "6P",
     "Player 7": "7P",
     "Player 8": "8P",
-    "Report a problem": "問題を報告"
+    "Report a problem": "問題を報告",
+    "Preparing the graphics driver  {0:N0} / {1:N0}": "グラフィックドライバーを準備中  {0:N0} / {1:N0}",
+    "The game is preparing its shaders": "ゲームがシェーダーを準備中です",
+    "Save disk space": "ディスク容量を節約",
+    "About 14 GB less: the game data is read from your game files, which must stay where they are. Counts from the next set-up or update.": "約14 GB節約：ゲームデータはお持ちのゲームファイルから直接読み込まれるため、ファイルを移動しないでください。次回のセットアップまたはアップデートから適用されます。"
   }
 }

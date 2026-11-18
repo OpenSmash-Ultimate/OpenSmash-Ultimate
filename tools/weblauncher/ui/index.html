@@ -41,7 +41,7 @@
         <button id="go-setup" class="big primary">Set up and build</button>
       </div>
       <div class="cards">
-        <div class="card"><h3>Online</h3><p id="play-online"></p></div>
+        <div class="card"><h3>Online</h3><p id="play-online"></p><p id="play-account" class="said bad" hidden></p></div>
         <div class="card"><h3>Mods</h3><p id="play-mods">…</p></div>
         <div class="card"><h3>Help</h3><p>Something wrong? <a id="report-link" href="https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/issues/new?template=bug_report.yml" target="_blank" rel="noopener">Report a problem</a>
           and drag <code>build/play.log</code> (in the OpenSmash folder; crash reports are in <code>reports/</code>) into the form.</p></div>
@@ -127,9 +127,11 @@
         <div class="grid">
           <label>Your name<input name="name" type="text" maxlength="64"></label>
           <label>Lobby<select name="lobby"></select></label>
+          <label class="lobby-region">Server region<select name="region"></select>
+            <small>The official server you play on. Auto picks the closest one. Players on another region are not listed.</small></label>
           <label class="lobby-code">Lobby code<input name="code" type="text" maxlength="40"></label>
           <label class="lobby-server">Server (host:port)<input name="server" type="text" maxlength="120"></label>
-          <label>Direct connections<select name="direct"></select></label>
+          <label title="Private rooms and This network (LAN) only. The official lobbies never connect players directly.">Direct connections<select name="direct"></select></label>
         </div>
         <h2>Controllers</h2>
         <div class="grid">

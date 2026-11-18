@@ -6,7 +6,7 @@ Usage:
   nca.py exefs     <file.nca> --keys <dir> --out <dir>
   nca.py romfs-ls  <file.nca> --keys <dir>
   nca.py romfs-get <file.nca> --keys <dir> --out <dir> [--match <substr>] [--flat]
-  nca.py romfs-cfg <file.nca> --keys <dir> --out <romfs.cfg>
+  nca.py romfs-cfg <file.nca> --keys <dir> --out <romfs.cfg> [--in-place]
   nca.py aoc-cfg   <dir> --keys <dir> --out <aoc.cfg> [--app <title id>]
 
 aoc-cfg lists the add-on content (DLC) in a folder, from the metadata of each package, for the
@@ -312,6 +312,93 @@ def read_layers(path):
     return size, [(at, src, off) for at, off, src, _ in struct.iter_unpack("<QQII", data[24:24 + count * 24])]
 
 
+# ---- an encrypted NCA read in place: romfs.crypt ---------------------------------------
+# The game as the Switch stores it has its RomFS section encrypted (AES-128-CTR). It was always decrypted into a
+# copy in dump/modules (14 GB, over a minute) for the runtime and the tools to read in place. With
+# `romfs-cfg --in-place` (tools/build_game.py: SSBU_DATA_IN_PLACE=1) no copy is made: romfs.cfg names the game's
+# own file (the .nca, or the .xci/.nsp it is in), and romfs.crypt, beside romfs.cfg, says which bytes of that file
+# are encrypted and how: a line "<file>\t<from>\t<to>\t<nca>\t<key>\t<counter>" for file bytes [from, to),
+# AES-128-CTR under <key> (32 hex digits) with the counter <counter> (16 hex digits, the upper half) and
+# (offset - <nca>) / 16 (the lower half; <nca>: where the NCA starts in the file). The runtime (hle_fs.c) and
+# RomfsImage decrypt what they read of those bytes. The key is the game's own content key, as the decrypted copy
+# was the game's own data: it stays in the player's folder, and is never printed.
+CRYPT_FILE = "romfs.crypt"
+
+
+def _same(path):
+    return os.path.normcase(os.path.abspath(path))
+
+
+def crypt_file(cfg):
+    return os.path.join(os.path.dirname(os.path.abspath(cfg)), CRYPT_FILE)
+
+
+def read_crypt(cfg):
+    """{file (normalised): [(from, to, nca, key, counter)]} of the romfs.crypt beside a romfs.cfg; {} without one."""
+    out = {}
+    try:
+        with open(crypt_file(cfg), encoding="utf-8") as f:
+            for line in f.read().splitlines():
+                p = line.split("\t")
+                if len(p) == 6:
+                    out.setdefault(_same(p[0]), []).append((int(p[1]), int(p[2]), int(p[3]), bytes.fromhex(p[4]), bytes.fromhex(p[5])))
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def add_crypt(cfg, path, start, end, nca, key, counter):
+    """romfs.crypt beside `cfg` with this region of `path` (its earlier lines for the same file replaced)."""
+    name = crypt_file(cfg)
+    keep = []
+    try:
+        with open(name, encoding="utf-8") as f:
+            keep = [l for l in f.read().splitlines() if l.strip() and _same(l.split("\t")[0]) != _same(path)]
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(name), exist_ok=True)
+    with open(name, "w", encoding="utf-8", newline="\n") as f:
+        f.writelines(l + "\n" for l in keep + [f"{os.path.abspath(path)}\t{start}\t{end}\t{nca}\t{key.hex()}\t{counter.hex()}"])
+
+
+class CryptFile:
+    """A file read with its encrypted regions (read_crypt's) decrypted: seek, tell, read, close, name."""
+    def __init__(self, path, regions):
+        self.f, self.name, self.regions = open(path, "rb"), path, sorted(regions)
+
+    def seek(self, off, whence=0):
+        return self.f.seek(off, whence)
+
+    def tell(self):
+        return self.f.tell()
+
+    def close(self):
+        self.f.close()
+
+    def read(self, size=-1):
+        at = self.f.tell()
+        data = self.f.read(size)
+        out = None
+        for start, end, nca, key, counter in self.regions:
+            lo, hi = max(at, start), min(at + len(data), end)
+            if lo >= hi:
+                continue
+            if out is None:
+                out = bytearray(data)
+            rel = lo - nca
+            pad = rel & 0xF
+            iv = counter + ((rel - pad) >> 4).to_bytes(8, "big")
+            cipher = AES.new(key, AES.MODE_CTR, nonce=b"", initial_value=int.from_bytes(iv, "big"))
+            out[lo - at:hi - at] = cipher.decrypt(bytes(pad) + bytes(out[lo - at:hi - at]))[pad:]
+        return data if out is None else bytes(out)
+
+
+def open_source(path, crypt):
+    """A romfs.cfg's source file opened for reading: decrypting when romfs.crypt (crypt: read_crypt's) lists it."""
+    regions = crypt.get(_same(path))
+    return CryptFile(path, regions) if regions else open(path, "rb")
+
+
 class RomfsImage:
     """The game's RomFS image, from the romfs.cfg the runtime reads (runtime/hle_fs.c):
       plain:   "<file>\\n<byte offset>\\n" - the image in place inside one file (the base NCA)
@@ -323,15 +410,16 @@ class RomfsImage:
     def __init__(self, cfg):
         with open(cfg, encoding="utf-8-sig") as f:
             lines = [l.strip() for l in f.read().splitlines() if l.strip()]
+        self.crypt = read_crypt(cfg)   # (sources that are the game's own encrypted file, read in place: romfs.crypt)
         if lines and lines[0] == "layered":
             self.size, self.entries = read_layers(lines[1])
             self.at = [e[0] for e in self.entries]
             self.paths = lines[2:]
-            self.sources = [open(p, "rb") for p in self.paths]
+            self.sources = [open_source(p, self.crypt) for p in self.paths]
         else:
             self.entries = None
             self.paths = lines[:1]
-            self.f = open(lines[0], "rb")
+            self.f = open_source(lines[0], self.crypt)
             self.base = int(lines[1])
 
     def close(self):
@@ -526,6 +614,8 @@ def main():
     ap.add_argument("--flat", action="store_true", help="romfs-get: every file straight into --out, without its folders")
     ap.add_argument("--app", type=lambda s: int(s, 16), help="aoc-cfg: the application whose add-on content to list")
     ap.add_argument("--inner", help="the NCA of that name inside the package (an .nsp or .xci) given in place of an NCA")
+    ap.add_argument("--in-place", action="store_true",
+                    help="romfs-cfg: an encrypted RomFS is read where it is, decrypted as it is read (romfs.crypt), instead of refused")
     a = ap.parse_args()
 
     if a.cmd == "aoc-cfg":
@@ -568,10 +658,14 @@ def main():
         print(f"total {total} bytes")
     elif a.cmd == "romfs-cfg":   # where the runtime finds the RomFS: "<nca path>\n<byte offset>\n"
         sec = nca.section(0)
-        if sec.enc_type != 1 and not nca.plaintext:
-            raise SystemExit("the RomFS section is encrypted; the runtime reads it in place only when it is not")
+        encrypted = sec.enc_type != 1 and not nca.plaintext
+        if encrypted and not (a.in_place and sec.enc_type == 3):
+            raise SystemExit("the RomFS section is encrypted; the runtime reads it in place only when it is not"
+                             + (" or, with --in-place, when it is AES-CTR" if a.in_place else ""))
         os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
         at = getattr(nca, "base", 0) + sec.start + sec.data_off   # (base: where the NCA starts in its package)
+        if encrypted:   # (read in place, decrypted as it is read: romfs.crypt)
+            add_crypt(a.out, a.nca, nca.base + sec.start, nca.base + sec.end, nca.base, nca.body_key, sec.ctr_hi)
         with open(a.out, "w") as f:
             f.write(f"{os.path.abspath(a.nca)}\n{at}\n")
         print(f"wrote {a.out}: RomFS at byte {at:#x} of {a.nca}")

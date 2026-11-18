@@ -21,12 +21,11 @@
  * is the one public lobby's leaderboard.json (every GSP result goes through its game server), found by the player's id. Local Wireless rooms are this
  * game's own (hle_net.c notes them).
  *
- * Joining. The join secret is the lobby ("eos" online through Epic Online Services, else the lobby server's address),
- * its lobby code and the arena's ID or the room host's (virtual) address (net_discord_core.c). A friend's accepted
- * "Join" on the same lobby lists the room first in Local Wireless's Rooms List (net_rooms_pick; over EOS too: hle_net.c's
- * scan) or shows the arena's ID; on another lobby it is kept in config/discord_join.txt, and the next start joins that
- * lobby (net_relay.c's discord_join_at_start; "eos": EOS alone). Over EOS the lobby server's /gsp/me does not see the
- * player's gatherings, so only Local Wireless rooms get a join secret there, not Battle Arenas. */
+ * Joining. The join secret is the lobby (the lobby server's address), its lobby code and the arena's ID or the room
+ * host's (virtual) address (net_discord_core.c). A friend's accepted "Join" on the same lobby lists the room first in
+ * Local Wireless's Rooms List (net_rooms_pick) or shows the arena's ID; on another lobby it is kept in
+ * config/discord_join.txt, and the next start joins that lobby (net_relay.c's discord_join_at_start: the official one
+ * only; an older game's "eos" secret means it too). */
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdbool.h>
 #include <stdio.h>
@@ -49,8 +48,6 @@ int account_nsa_hex(char out[17]);   /* (hle_env.c) */
 #define REDIRECT "http://127.0.0.1/callback"
 #define TOKEN_PATH "config\\" DISCORD_TOKEN_FILE
 #define JOIN_PATH "config\\discord_join.txt"
-#define BOARD_HOST L"opensmash-lobby.duckdns.org"   /* (the one public lobby's game server: every GSP result is there) */
-#define BOARD_PORT 39421
 #define BOARD_PATH L"/leaderboard.json"
 #define ME_EVERY_MS (45 * 1000)
 #define BOARD_EVERY_MS (10 * 60 * 1000)
@@ -252,10 +249,9 @@ static void sign_in(void) {   /* the SDK's authorization, PKCE (a Public Client:
 }
 
 /* ---- joining -------------------------------------------------------------------------------------------- */
-/* where this game is online now, as a join secret names it ("eos", the lobby's address), or NULL */
+/* where this game is online now, as a join secret names it (the lobby's address), or NULL */
 static const char *join_lobby(void) {
-    int eos = net_on_eos();
-    return discord_join_lobby(eos, !eos && net_lobby() ? net_relay_address() : NULL);
+    return discord_join_lobby(net_lobby() ? net_relay_address() : NULL);
 }
 static int same_lobby(const DiscordJoin *j) { return discord_join_same(j, join_lobby(), net_lobby_code()); }
 static void on_join(DStr secret, void *ud) {
@@ -314,14 +310,14 @@ static void presence_now(DiscordPresence *p) {
     } else if (room.in) {
         p->where = DP_ROOM; p->players = room.players; p->max_players = room.max;
         snprintf(p->target, sizeof p->target, "%u.%u.%u.%u", room.host >> 24, room.host >> 16 & 255, room.host >> 8 & 255, room.host & 255);
-        if (!strcmp(p->relay, "eos"))   /* (EOS's virtual addresses are per lobby code: the code keeps two parties apart) */
-            snprintf(p->party, sizeof p->party, "os-r-%s-eos-%.32s", p->target, p->code);
-        else
-            snprintf(p->party, sizeof p->party, "os-r-%s-%.40s", p->target, p->relay);
+        snprintf(p->party, sizeof p->party, "os-r-%s-%.40s", p->target, p->relay);
     }
     if (fresh) { p->fighter = me.fighter; p->gsp = me.gsp; }
+    /* (v0.5.0: /gsp/me's own place - by the ticket, the account's, whose row may be no Discord token's or install's -
+     * else the place found in leaderboard.json) */
+    int own = fresh ? me.rank : 0;
     ReleaseSRWLockShared(&lock);
-    p->rank = (int)rank;
+    p->rank = own > 0 ? own : (int)rank;
 }
 static void presence_push(void) {
     static char last[512];
@@ -392,27 +388,66 @@ static char *http_get(const wchar_t *host, INTERNET_PORT port, int secure, const
     WinHttpCloseHandle(s);
     return buf;
 }
-/* GET /gsp/me on the lobby the game joined (its game server's port answers HTTP: tools/ssbu_online_lobby.py) */
-static int ask_me(const char *nsa, const char *player) {
-    const char *relay = net_lobby() ? net_relay_address() : NULL;
-    if (!relay) {   /* (online over EOS: the public lobby keeps the player's results - net_results.c) */
-        const char *r = getenv("SSBU_RESULTS_LOBBY");
-        relay = r && *r && _stricmp(r, "off") ? r : "opensmash-lobby.duckdns.org:39421";
-    }
+/* "host:port" as WinHTTP wants it: the host in `whost` (256), the port returned; 0 when it is not one */
+static int lobby_host(const char *lobby, wchar_t *whost) {
     char host[256];
-    snprintf(host, sizeof host, "%s", relay);
+    snprintf(host, sizeof host, "%s", lobby);
     char *colon = strrchr(host, ':');
     int port = colon ? atoi(colon + 1) : 0;
-    if (!colon || port <= 0 || port > 65535) return 0;
+    if (!colon || colon == host || port <= 0 || port > 65535) return 0;
     *colon = 0;
-    int64_t t = now_s();
-    char sig[65], head[512];
-    discord_sign(nsa, "me", player, t, "", sig);
-    snprintf(head, sizeof head, "X-OpenSmash-Player: %s\r\nX-OpenSmash-Time: %lld\r\nX-OpenSmash-Sig: %s\r\n", player, (long long)t, sig);
-    wchar_t whost[256], whead[512];
-    MultiByteToWideChar(CP_UTF8, 0, host, -1, whost, 256);
-    MultiByteToWideChar(CP_UTF8, 0, head, -1, whead, 512);
-    char *json = http_get(whost, (INTERNET_PORT)port, 0, L"/gsp/me", whead, 64 * 1024);
+    return MultiByteToWideChar(CP_UTF8, 0, host, -1, whost, 256) ? port : 0;
+}
+/* (v0.5.0) the signed-in account's lobby ticket, read here on this thread into its own buffer (net_relay.c keeps its
+ * copy on the network thread): SSBU_ONLINE_TICKET, else the file SSBU_ONLINE_TICKET_FILE names, which the launcher
+ * renews while the game runs. 1 when there is one that can go in a header (printable ASCII, no control character). */
+static int lobby_ticket(char *out, size_t cap) {
+    const char *t = getenv("SSBU_ONLINE_TICKET"), *f = getenv("SSBU_ONLINE_TICKET_FILE");
+    size_t n = 0;
+    out[0] = 0;
+    if (t && *t) snprintf(out, cap, "%s", t);
+    else if (f && *f) {
+        FILE *fp = fopen(f, "rb");
+        if (!fp) return 0;
+        n = fread(out, 1, cap - 1, fp);
+        fclose(fp);
+        out[n] = 0;
+    }
+    n = strlen(out);
+    while (n && (out[n - 1] == '\n' || out[n - 1] == '\r' || out[n - 1] == ' ')) out[--n] = 0;
+    for (size_t i = 0; i < n; i++)
+        if ((unsigned char)out[i] < 0x20 || (unsigned char)out[i] > 0x7e) { out[0] = 0; return 0; }   /* (a space may be in the name) */
+    return n > 0;
+}
+
+/* GET /gsp/me on the lobby the game joined (its game server's port answers HTTP: tools/ssbu_online_lobby.py). On an
+ * official lobby a signed-in player's records are the account's (tools/nex/board.py): asked with the lobby ticket as the
+ * proof (X-OpenSmash-Ticket alone), so Rich Presence shows the account's GSP; elsewhere, or with no ticket, signed with
+ * the install's NSA id as before. The ticket goes to an official lobby only: it is a credential. */
+static int ask_me(const char *nsa, const char *player) {
+    const char *relay = net_lobby() ? net_relay_address() : NULL;
+    if (!relay) return 0;   /* (no lobby: no GSP to show) */
+    wchar_t whost[256];
+    int port = lobby_host(relay, whost);
+    if (!port) return 0;
+    char ticket[400], head[640];
+    wchar_t whead[640];
+    char *json = NULL;
+    /* (a ticket the lobby refuses - expired, or a server of the install's own with no ticket secret - falls back to the
+     * install's signature at once, so Rich Presence keeps its GSP) */
+    if (net_means_official_lobby(relay) && lobby_ticket(ticket, sizeof ticket)) {
+        snprintf(head, sizeof head, "X-OpenSmash-Ticket: %s\r\n", ticket);
+        if (MultiByteToWideChar(CP_UTF8, 0, head, -1, whead, 640))
+            json = http_get(whost, (INTERNET_PORT)port, 0, L"/gsp/me", whead, 64 * 1024);
+    }
+    if (!json) {
+        int64_t t = now_s();
+        char sig[65];
+        discord_sign(nsa, "me", player, t, "", sig);
+        snprintf(head, sizeof head, "X-OpenSmash-Player: %s\r\nX-OpenSmash-Time: %lld\r\nX-OpenSmash-Sig: %s\r\n", player, (long long)t, sig);
+        if (!MultiByteToWideChar(CP_UTF8, 0, head, -1, whead, 640)) return 0;
+        json = http_get(whost, (INTERNET_PORT)port, 0, L"/gsp/me", whead, 64 * 1024);
+    }
     if (!json) return 0;
     DiscordMe m;
     int ok = discord_me_parse(json, &m);
@@ -434,12 +469,22 @@ static DWORD WINAPI web_thread(LPVOID unused) {
             discord_player_id(nsa, player);
             ask_me(nsa, player);
             if (GetTickCount64() >= next_board) {
-                char *json = http_get(BOARD_HOST, BOARD_PORT, 0, BOARD_PATH, NULL, 16u << 20);
-                DiscordToken t;   /* (the leaderboard's rows are Discord accounts: tools/nex/board.py) */
-                char who[17];
+                /* (the official lobby's read-only page, by its DNS name: net.h. Plain HTTP: the lobby serves no TLS) */
+                wchar_t board_host[256];
+                int board_port = lobby_host(net_official_lobby(), board_host);
+                char *json = board_port ? http_get(board_host, (INTERNET_PORT)board_port, 0, BOARD_PATH, NULL, 16u << 20) : NULL;
+                /* (the leaderboard's rows are Discord accounts: tools/nex/board.py; a lobby before that keeps a row per
+                 * install, so that id is looked for when the account's is not there) */
+                DiscordToken t;
+                char who[17] = "";
                 if (discord_token_load(TOKEN_PATH, &t) && t.user_id[0]) discord_account_hash(t.user_id, who);
-                else snprintf(who, sizeof who, "%s", player);
-                if (json) { InterlockedExchange(&rank, discord_rank_in_leaderboard(json, who)); free(json); next_board = GetTickCount64() + BOARD_EVERY_MS; }
+                if (json) {
+                    int place = who[0] ? discord_rank_in_leaderboard(json, who) : 0;
+                    if (!place) place = discord_rank_in_leaderboard(json, player);
+                    InterlockedExchange(&rank, place);
+                    free(json);
+                    next_board = GetTickCount64() + BOARD_EVERY_MS;
+                }
                 else next_board = GetTickCount64() + 60 * 1000;
             }
         }

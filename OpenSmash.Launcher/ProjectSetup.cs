@@ -33,6 +33,17 @@ namespace OpenSmash.Launcher
         public static async Task<string> ProjectZipUrlAsync(CancellationToken ct = default)
         {
             if (string.Equals(Environment.GetEnvironmentVariable("OPENSMASH_UPDATE_CHANNEL"), "main", StringComparison.OrdinalIgnoreCase)) return MainZipUrl;
+            // (v0.5.0) the stable channel's release first: its manifest names the commit whose archive this is
+            // (tools/source_version.txt in it), the one Update compares with (OpenSmash.Core.Releases)
+            try
+            {
+                using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                limit.CancelAfter(TimeSpan.FromSeconds(20));
+                var r = await OpenSmash.Core.Releases.LatestAsync("stable", limit.Token);
+                if (r != null && !string.IsNullOrEmpty(r.SourceZipUrl)) return r.SourceZipUrl;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch { }
             string? tag = (await LatestReleaseAsync(null, ct)).Tag;   // (none, or GitHub not reachable: main, whose download then says what is wrong)
             return tag == null ? MainZipUrl : ReleaseZipUrl(tag);
         }

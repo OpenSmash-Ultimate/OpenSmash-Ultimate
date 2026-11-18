@@ -170,6 +170,17 @@ Terminal window that shows the game's log as it goes; closing that window leaves
 
 ### The OpenSmash Launcher
 
+**Since v0.5.0** the launcher on a Mac is the same program as Windows': `OpenSmash.Avalonia.app` in the
+WindowSmash folder, with the account sign-in the official lobbies need (they let in only a signed-in
+player's game). The setup puts it there (`tools/launcher_fetch.py`: built with the .NET 8 SDK when it is
+installed - `Build Launcher macOS.command` does that too - else the newest release's
+`OpenSmash-macos-arm64.tar.gz` or `-x64`, checked against the SHA-256 the release names). Double-click it,
+or `OpenSmash Launcher.command`, which opens it when it is there. Press **SIGN IN**: the sign-in opens in
+your browser and comes back to the launcher. At Play it gives the game a lobby ticket
+(`build/cache/online_pass.txt`, readable by you alone) and renews it while the game runs; Play SSBU started
+on its own uses the ticket the launcher wrote last while it is still good. The web launcher below stays as the
+fallback (`OpenSmash Launcher.command --web`, or when the app is not there); it cannot sign in.
+
 `OpenSmash Launcher.command` gives a Mac the Windows launcher's features in one window. Double-click
 it in Finder; it runs `tools/weblauncher/launcher.py`, a small server on this Mac only. Its page opens
 as an app window of Chrome, Edge or Brave if one is in `/Applications`, else in your default browser.

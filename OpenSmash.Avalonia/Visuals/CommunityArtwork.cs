@@ -13,6 +13,12 @@ public sealed class CommunityView
     public bool Enabled, HasApp, Busy, Open, Shown, Asked, Down;
     public string Error = "";
     public DiscordToken? Account;
+    // (v0.5.0) the account (MainWindow.Account.cs): with a service in the build it replaces the Discord token above
+    public bool AccountMode, AccountPage;
+    public OpenSmash.Core.Profile? Me;
+    public string? BoardId;   // the account's row on the leaderboard, as the lobby's /gsp/me gave it
+    public bool SignedIn => AccountMode ? Me != null : Account != null;
+    public string? ShownName => AccountMode ? Me?.Display : Account?.Shown;
     public byte[]? Avatar;
     public int Rank, Ranked;
     public Dictionary<int, int> FighterRanks = new();
@@ -74,20 +80,27 @@ public sealed partial class ClassicSurface
             using var clip = new GraphicsPath();
             clip.AddEllipse(new RectangleF(ax, ay, a, a));
             if (AvatarImage() is { } img) { var gs = g.Save(); g.SetClip(clip, CombineMode.Intersect); g.DrawImage(img, ax, ay, a, a); g.Restore(gs); }
-            else using (var b = new SolidBrush(A(c.Account != null ? Color.FromArgb(255, 88, 101, 242) : ArtworkTheme.Bg3))) g.FillPath(b, clip);
+            else
+            {
+                using (var b = new SolidBrush(A(c.SignedIn ? Color.FromArgb(255, 88, 101, 242) : ArtworkTheme.Bg3))) g.FillPath(b, clip);
+                // (an account has no picture here: its name's first letter, as the WinForms launcher's header)
+                if (c.AccountMode && c.Me?.Username is { Length: > 0 } un)
+                    ArtworkTheme.Label(g, un[..1].ToUpperInvariant(), FB(a * .45f, true), A(Color.White), ax, ay + a * .22f, a * .56f, 0, StringAlignment.Center, a);
+            }
         }
         string N(long v) => v.ToString("N0", CultureInfo.InvariantCulture);
         float pad = 14 * s, ix = x + pad, iw = w - 2 * pad;
 
         // the account
-        if (c.HasApp || c.Mine != null)
+        if (c.AccountMode || c.HasApp || c.Mine != null)
         {
             float ph = 64 * s;
             Panel(y, ph);
-            if (c.Account == null && c.HasApp)
+            if (!c.SignedIn && (c.HasApp || c.AccountMode))
             {
-                ArtworkTheme.Label(g, c.Error != "" ? c.Error : "PLAY ONLINE AS YOURSELF", FM(10 * s, true), A(c.Error != "" ? ArtworkTheme.Bad : ArtworkTheme.Dim), ix, y + 9 * s, 14 * s, 10 * s * 0.12f);
-                string label = c.Busy ? "FINISH IN THE BROWSER  \u00D7" : "SIGN IN WITH DISCORD";
+                ArtworkTheme.Label(g, c.Error != "" ? c.Error : c.AccountMode ? "SIGN IN TO PLAY ONLINE" : "PLAY ONLINE AS YOURSELF", FM(10 * s, true), A(c.Error != "" ? ArtworkTheme.Bad : ArtworkTheme.Dim), ix, y + 9 * s, 14 * s, 10 * s * 0.12f);
+                // (v0.5.0: the accounts site offers Discord and e-mail; the official lobbies let in signed-in players only)
+                string label = c.Busy ? "FINISH IN THE BROWSER  \u00D7" : c.AccountMode ? "SIGN IN" : "SIGN IN WITH DISCORD";
                 string bid = c.Busy ? "community:cancel" : "community:signin";
                 ArtworkTheme.ButtonAnimated(g, label, ix, y + 27 * s, iw, 28 * s, s, primary: true, Hov(bid, _hover == bid), true, 11 * s, _alpha, press: Press(bid));
                 AddHit(bid, ix, y + 27 * s, iw, 28 * s);
@@ -100,23 +113,24 @@ public sealed partial class ClassicSurface
                 int rank = c.Mine?.Rank > 0 ? c.Mine.Rank : c.Rank;
                 string rankText = rank > 0 ? "#" + rank.ToString(CultureInfo.InvariantCulture) : "";
                 float rw = rankText != "" ? ArtworkTheme.TextWidth(g, rankText, FD(22 * s), 0, false) + 8 * s : 0;
-                float hv = Hov("community:me", c.Account != null && _hover == "community:me");
-                ArtworkTheme.Label(g, Fit(g, c.Account?.Shown ?? "You", FB(15 * s, true), tw - rw), FB(15 * s, true), A(ArtworkTheme.Mix(ArtworkTheme.Text, ArtworkTheme.Accent, hv * .5f)), tx, ay, 20 * s);
+                float hv = Hov("community:me", c.SignedIn && _hover == "community:me");
+                ArtworkTheme.Label(g, Fit(g, c.ShownName ?? "You", FB(15 * s, true), tw - rw), FB(15 * s, true), A(ArtworkTheme.Mix(ArtworkTheme.Text, ArtworkTheme.Accent, hv * .5f)), tx, ay, 20 * s);
                 uint best = c.Mine?.Gsp ?? (c.Records.Count > 0 ? c.Records[0].Gsp : 0u);
                 int fighter = c.Mine?.Fighter ?? (c.Records.Count > 0 ? c.Records[0].Fighter : -1);
                 string line = best > 0 ? $"{N(best)} GSP  \u00B7  {DiscordAccount.FighterName(fighter)}" : "No GSP yet: play Quickplay online";
                 ArtworkTheme.Label(g, Fit(g, line, FB(11 * s), tw - rw), FB(11 * s), A(ArtworkTheme.Muted), tx, ay + 21 * s, 16 * s);
                 if (rankText != "") ArtworkTheme.Label(g, rankText, FD(22 * s), A(ArtworkTheme.Accent), x, y + 12 * s, 36 * s, 0, StringAlignment.Far, w - pad);
-                if (c.Account != null) AddHit("community:me", x, y, w, ph);
+                if (c.SignedIn) AddHit("community:me", x, y, w, ph);
             }
             y += ph + 8 * s;
         }
 
         // the account card (in place of the lobby panels while open)
-        if (c.Open && c.Account != null)
+        if (c.Open && c.SignedIn)
         {
             var rows = c.Records.Take(10).ToList();
-            float rowH = 19 * s, ph = 30 * s + Math.Max(1, rows.Count) * rowH + 14 * s + 30 * s + 8 * s + 30 * s + (c.Error != "" ? 20 * s : 0) + 14 * s;
+            bool manage = c.AccountMode && c.AccountPage;   // (v0.5.0: the account page, where the name and sign-ins are changed)
+            float rowH = 19 * s, ph = 30 * s + Math.Max(1, rows.Count) * rowH + 14 * s + 30 * s + 8 * s + 30 * s + (manage ? 38 * s : 0) + (c.Error != "" ? 20 * s : 0) + 14 * s;
             Panel(y, ph);
             ArtworkTheme.Label(g, "GSP PER FIGHTER", FM(10 * s, true), A(ArtworkTheme.Dim), ix, y + 9 * s, 14 * s, 10 * s * 0.12f);
             float ry = y + 30 * s;
@@ -134,6 +148,12 @@ public sealed partial class ClassicSurface
             ArtworkTheme.ButtonAnimated(g, shown, ix, ry, iw, 30 * s, s, primary: !c.Shown, Hov("community:shown", _hover == "community:shown"), true, 10 * s, _alpha, press: Press("community:shown"));
             AddHit("community:shown", ix, ry, iw, 30 * s);
             ry += 38 * s;
+            if (manage)
+            {
+                ArtworkTheme.ButtonAnimated(g, "MANAGE ACCOUNT", ix, ry, iw, 30 * s, s, primary: false, Hov("community:manage", _hover == "community:manage"), true, 11 * s, _alpha, press: Press("community:manage"));
+                AddHit("community:manage", ix, ry, iw, 30 * s);
+                ry += 38 * s;
+            }
             ArtworkTheme.ButtonAnimated(g, "SIGN OUT", ix, ry, iw, 30 * s, s, primary: false, Hov("community:signout", _hover == "community:signout"), true, 11 * s, _alpha, press: Press("community:signout"));
             AddHit("community:signout", ix, ry, iw, 30 * s);
             if (c.Error != "") ArtworkTheme.Label(g, c.Error, FB(11 * s), A(ArtworkTheme.Bad), ix, ry + 34 * s, 16 * s);

@@ -227,7 +227,8 @@ class InstallerDecisionTests(unittest.TestCase):
             out = ps_text(run + "$global:prep = 0; "
                           "$r = Step-Build @{ Game = 'D:\\Game'; Keys = 'D:\\Keys'; Firmware = '' }; "
                           "'RESULT: ' + $r; 'CALLS: ' + ($global:calls -join '|')")
-            self.assertIn('build_game.py --game D:\\Game --keys D:\\Keys --no-firmware --prepare-only', out)
+            # (--std-plugins: the standard plugins are listed before the build, SSBU_PLUGINS_FIRST)
+            self.assertIn('build_game.py --game D:\\Game --keys D:\\Keys --no-firmware --std-plugins --prepare-only', out)
             self.assertIn('RESULT: True', out)
             self.assertNotIn('run OpenSmash.exe again', out)
 
@@ -567,34 +568,34 @@ class InstallerDecisionTests(unittest.TestCase):
                 self.assertFalse(os.path.exists(os.path.join(root, 'OpenSmash.exe.download')), out)   # never left behind
                 return (out, exe_path.read_bytes() if exe_path.exists() else None,
                         os.path.exists(os.path.join(root, 'OpenSmash.exe.old')))
-            out, exe, old = run('v0.4.0', b'MZ old launcher')
+            out, exe, old = run('v0.5.0', b'MZ old launcher')
             self.assertIn('swapped=True', out)
-            self.assertIn("OpenSmash.exe is now v0.4.0's", out)
+            self.assertIn("OpenSmash.exe is now v0.5.0's", out)
             self.assertEqual(exe, new)
             self.assertTrue(old)
-            self.assertIn('/releases/download/v0.4.0/OpenSmash.exe.sha256', Path(root, 'urls.txt').read_text('utf-16'))
-            out, exe, old = run('v0.4.0', new)
+            self.assertIn('/releases/download/v0.5.0/OpenSmash.exe.sha256', Path(root, 'urls.txt').read_text('utf-16'))
+            out, exe, old = run('v0.5.0', new)
             self.assertIn('swapped=False', out)
-            self.assertIn("OpenSmash.exe is v0.4.0's", out)
+            self.assertIn("OpenSmash.exe is v0.5.0's", out)
             out, exe, _ = run('main', b'MZ old launcher')
             self.assertIn('swapped=False', out)
             self.assertEqual(exe, b'MZ old launcher')
-            out, exe, _ = run('v0.4.0', b'MZ old launcher', git=True)
+            out, exe, _ = run('v0.5.0', b'MZ old launcher', git=True)
             self.assertIn('swapped=False', out)
             self.assertEqual(exe, b'MZ old launcher')
-            out, exe, _ = run('v0.4.0', b'MZ old launcher', rebuilds=True)   # the new launcher rebuilds it itself
+            out, exe, _ = run('v0.5.0', b'MZ old launcher', rebuilds=True)   # the new launcher rebuilds it itself
             self.assertIn('swapped=False', out)
             self.assertEqual(exe, b'MZ old launcher')
             # a download that is not what the checksum says, no network, no checksum: the old one stays, untouched
             for kwargs in ({'download': b'MZ tampered'}, {'text': "throw 'no network'"}, {'text': "'Not Found'"}):
-                out, exe, old = run('v0.4.0', b'MZ old launcher', **kwargs)
+                out, exe, old = run('v0.5.0', b'MZ old launcher', **kwargs)
                 self.assertIn('swapped=False', out, kwargs)
                 self.assertEqual(exe, b'MZ old launcher', kwargs)
                 self.assertFalse(old, kwargs)
             # last time's swap: the .old is removed; a swap that stopped half-way (no OpenSmash.exe) gets it back
-            out, exe, old = run('v0.4.0', new, old_left=b'MZ old launcher')
+            out, exe, old = run('v0.5.0', new, old_left=b'MZ old launcher')
             self.assertEqual((exe, old), (new, False))
-            out, exe, old = run('v0.4.0', None, old_left=b'MZ old launcher', text="throw 'no network'")
+            out, exe, old = run('v0.5.0', None, old_left=b'MZ old launcher', text="throw 'no network'")
             self.assertEqual((exe, old), (b'MZ old launcher', False))
 
     def test_update_ref_never_main_by_mistake(self):

@@ -9,7 +9,7 @@ name: Launcher release
 
 on:
   push:
-    tags: ['v*', 'launcher-v*']
+    tags: ['launcher-v*']   # (v* tags: release.yml, v0.5.0)
   workflow_dispatch:
 
 permissions:

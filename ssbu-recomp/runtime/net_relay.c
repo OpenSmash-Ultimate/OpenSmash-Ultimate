@@ -98,7 +98,16 @@ enum { T_MATCH = 20, T_MATCH_STATE };                 /* O2 matchmaking */
 #define HELLO_KEEP 16
 #define FRESH_MS 1200              /* a direct path is used while its last answer is younger than this */
 #define NET_BUILD_DEFAULT "ssbu-recomp-ldn1"
-#define NET_PUBLIC_LOBBY "opensmash-lobby.duckdns.org:39500"     /* the project's public lobby (menu.cpp ONLINE_DEFAULT_LOBBY): the default without online_mode / online_server */
+/* The public lobby a game with no online_mode / online_server joins at its start (menu.cpp ONLINE_DEFAULT_LOBBY is the
+ * same name). None by default since OpenSmash 0.5.0: the name it had, opensmash-lobby.duckdns.org:39500, is a free
+ * dynamic-DNS name whose lobby is gone, and OpenSmash's official lobbies (relay only, signed-in accounts) do not serve
+ * this runtime's protocol - so every start sent a JOIN, and asked for direct paths, to whoever holds that name. With
+ * none, a game that names no server is offline; online_server / SSBU_ONLINE=<host:port> work as before, LAN, host and
+ * join too. A build for a lobby of its own: /DNET_PUBLIC_LOBBY="\"host:port\"" (here and for menu.cpp), or
+ * SSBU_ONLINE_PUBLIC_LOBBY=<host:port> at a start. */
+#ifndef NET_PUBLIC_LOBBY
+#define NET_PUBLIC_LOBBY ""
+#endif
 
 static uint16_t g16(const uint8_t *p) { return (uint16_t)(p[0] << 8 | p[1]); }
 static uint32_t g32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
@@ -305,7 +314,10 @@ static void configure(void) {
             /* scripted test runs (key script, debug match, deterministic mode) stay offline unless they ask */
             if (getenv("SSBU_SEQ") || getenv("SSBU_DEBUG_MATCH") || getenv("SSBU_DETERMINISTIC") || getenv("SSBU_SDK_SELFTEST") ||
                 getenv("SSBU_PAD_SELFTEST") || getenv("SSBU_CXXRT_SELFTEST")) return;     /* (self-tests: their socket checks hung on the lobby) */
-            snprintf(g_server, sizeof g_server, "%s", NET_PUBLIC_LOBBY);
+            const char *pub = getenv("SSBU_ONLINE_PUBLIC_LOBBY");
+            if (!pub || !*pub) pub = NET_PUBLIC_LOBBY;
+            if (!*pub || is_off(pub)) return;                      /* (no public lobby: offline until a server is named) */
+            snprintf(g_server, sizeof g_server, "%s", pub);
         }
         snprintf(mode, sizeof mode, "lobby");
     }

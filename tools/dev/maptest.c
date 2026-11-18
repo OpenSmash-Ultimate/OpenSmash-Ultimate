@@ -30,6 +30,8 @@
 #include <stdarg.h>
 #include "../../runtime/kernel.c"
 void rb_shadow_note(u64 at, u64 size) { (void)at; (void)size; }   /* (hle_rb_state.c: the rollback shadow's shared pages) */
+volatile LONG rb_vi_point;                    /* (hle_rb_core.c: the display buffer was handed out; kernel.c asks) */
+void rb_wait_point(Cpu *c) { (void)c; }
 #include "../../runtime/clock.h"
 #ifndef _WIN32
 #include <setjmp.h>

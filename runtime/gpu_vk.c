@@ -76,7 +76,7 @@ extern u64 gfx_stat_clears, gfx_stat_presented, gfx_stat_blits;   /* (gpu_d3d11.
     X(CmdSetBlendConstants) X(CmdSetStencilReference) X(CmdSetStencilCompareMask) X(CmdSetStencilWriteMask) \
     X(CmdCopyBufferToImage) X(CmdBeginRenderingKHR) X(CmdEndRenderingKHR) X(GetPipelineCacheData) \
     X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyBuffer) X(CreateDescriptorUpdateTemplate) X(UpdateDescriptorSetWithTemplate) \
-    X(DestroyDevice) X(DestroyCommandPool) X(DestroyFence) X(DestroySampler) X(DestroyPipelineCache) X(DestroyPipelineLayout) \
+    X(DestroyDevice) X(DestroyCommandPool) X(DestroyFence) X(DestroySampler) X(DestroyPipelineCache) X(DestroyPipelineLayout) X(DestroyPipeline) \
     X(DestroyDescriptorSetLayout) X(CreateQueryPool) X(DestroyQueryPool) X(CmdResetQueryPool) X(CmdWriteTimestamp) X(GetQueryPoolResults)
 #define DECLARE(name) static PFN_vk##name vk##name;
 VK_INSTANCE_FUNCS(DECLARE)
@@ -3113,6 +3113,7 @@ static int warm_listed(const WarmRecord *r) {
 }
 static void make_note_pipe(const Pipe *e, int made, double ms) {
     vk_play_wait_ms += ms;
+    { void perf_shader_wait(double ms); perf_shader_wait(ms); }   /* (debug_perf_session.c) */
     int listed = -1;
     u32 sum = 0;
     if (made) {
@@ -3499,17 +3500,84 @@ static volatile LONG prep_state;   /* 0 not started, 1 running, 2 done */
 static char prep_note[96];
 void watchdog_pause(int on);   /* (debug_watchdog.c) */
 
-/* The cache says SPIR-V for this translator is prepared (tools/shader_aot.py's "spirv g<version>.<library>" line). */
-static int shader_cache_prepared(void) {
-    char path[1200], want[48], line[256];
-    snprintf(path, sizeof path, "%s/complete.txt", cache_dir());
+/* One preparation for the launcher and the game (SSBU_SHADER_SHARE=0: each by itself, as before). The launcher runs
+ * the same tool in the background, and it wrote complete.txt only after Direct3D 11's shaders, an hour after the
+ * SPIR-V this back end reads: a game started meanwhile began a second run of the tool on the same cache and waited
+ * for all of it. Now (tools/shader_aot.py, "one preparation at a time"):
+ * - vulkan_ready.txt is written as soon as the SPIR-V is made, and counts here as complete.txt's spirv line does;
+ * - while a run of the tool holds prepare.lock and is still making the SPIR-V, this start waits for that run and
+ *   shows its progress (the lock's "list N" / "vulkan N" line) instead of starting its own; it holds
+ *   game_waits.lock meanwhile, which tells that run not to pause for this game;
+ * - a run this game starts makes the SPIR-V only; the driver's pipelines and Direct3D 11's are the launcher's. */
+static int prep_shared(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("SSBU_SHADER_SHARE"); v = !(e && *e == '0'); }
+    return v;
+}
+
+static int prep_marker_says(const char *name, const char *want) {
+    char path[1200], line[256];
+    snprintf(path, sizeof path, "%s/%s", cache_dir(), name);
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
-    snprintf(want, sizeof want, "g%d.%08x", SHADER_CACHE_SPV_VERSION, spirv_glslang_version());
     int ok = 0;
     while (!ok && fgets(line, sizeof line, f)) ok = !strncmp(line, "spirv ", 6) && strstr(line + 6, want) != NULL;
     fclose(f);
     return ok;
+}
+
+/* The cache says SPIR-V for this translator is prepared (tools/shader_aot.py's "spirv g<version>.<library>" line,
+ * in complete.txt, or in vulkan_ready.txt: the SPIR-V is all there, Direct3D 11's shaders may still be being made). */
+static int shader_cache_prepared(void) {
+    char want[48];
+    snprintf(want, sizeof want, "g%d.%08x", SHADER_CACHE_SPV_VERSION, spirv_glslang_version());
+    if (prep_marker_says("complete.txt", want)) return 1;
+    return prep_shared() && prep_marker_says("vulkan_ready.txt", want);
+}
+
+/* Another run of the tool holds prepare.lock (the launcher's background one, or another game's): 1 and its line.
+ * The holder shares reading only, so the file can be removed exactly when nobody holds it (one left by a power cut). */
+static int prep_other(char *rec, size_t size) {
+    char path[1200];
+    snprintf(path, sizeof path, "%s/prepare.lock", cache_dir());
+    rec[0] = 0;
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_SHARING_VIOLATION;
+    DWORD got = 0;
+    if (!ReadFile(h, rec, (DWORD)size - 1, &got, NULL)) got = 0;
+    rec[got] = 0;
+    CloseHandle(h);
+    return !DeleteFileA(path);
+}
+
+/* game_waits.lock, held while this start waits for the shaders (it goes with the handle, or with the process). */
+static HANDLE prep_waits_open(void) {
+    char path[1200];
+    snprintf(path, sizeof path, "%s/game_waits.lock", cache_dir());
+    return CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+}
+
+static void prep_share(int pct);
+/* Waits for the run that holds prepare.lock while it makes the SPIR-V, with its progress on the loading screen.
+ * 1: the cache is prepared; 0: no run holds the lock (this start runs the tool itself); -1: a run holds it and makes
+ * no SPIR-V (or has failed to): not waited for, and no second run beside it. */
+static int prep_follow(HANDLE *waits) {
+    char rec[80];
+    int said = 0, pct;
+    for (;;) {
+        if (shader_cache_prepared()) return 1;
+        if (!prep_other(rec, sizeof rec)) return shader_cache_prepared() ? 1 : 0;
+        if (*waits == INVALID_HANDLE_VALUE) *waits = prep_waits_open();   /* (another waiting game may hold it: asked again) */
+        if (!said) {
+            said = 1;
+            fprintf(stderr, "[vulkan] preparing shaders: a preparation is already running (the launcher's): waiting for its "
+                            "Vulkan part instead of starting a second one\n");
+        }
+        if (sscanf(rec, "list %d", &pct) == 1) prep_share(pct / 10);
+        else if (sscanf(rec, "vulkan %d", &pct) == 1) prep_share(10 + pct * 89 / 100);
+        else if (!strncmp(rec, "rest", 4)) return shader_cache_prepared() ? 1 : -1;
+        Sleep(250);
+    }
 }
 
 /* "<root>\tools\shader_aot.py" for the folder the game runs in (the repository: the launcher and Play SSBU.bat
@@ -3670,10 +3738,17 @@ static DWORD WINAPI prep_main(void *arg) {
     char root[1200];
     (void)arg;
     watchdog_pause(1);
-    if (prep_tool(root, sizeof root)) {
+    HANDLE waits = INVALID_HANDLE_VALUE;
+    int other = prep_shared() ? prep_follow(&waits) : 0;
+    if (other > 0) fprintf(stderr, "[vulkan] preparing shaders: the cache is ready (prepared by the run that was going on)\n");
+    else if (other < 0) fprintf(stderr, "[vulkan] preparing shaders: the preparation that is running makes no Vulkan shaders; "
+                                        "the game translates each program at its first use\n");
+    else if (prep_tool(root, sizeof root)) {
+        if (prep_shared() && waits == INVALID_HANDLE_VALUE) waits = prep_waits_open();
         prep_tries(1);
         if (prep_run(root)) prep_tries(-1);
     } else fprintf(stderr, "[vulkan] preparing shaders: tools\\shader_aot.py is not here, so the game translates each program at its first use\n");
+    if (waits != INVALID_HANDLE_VALUE) CloseHandle(waits);
     display_loading_note(NULL);
     InterlockedExchange(&prep_state, 2);
     watchdog_pause(0);
@@ -3784,6 +3859,7 @@ static char warm_capped[1200];   /* "<list>.capped": this card's driver crashed 
 static int warm_tries;   /* (what the marker says while the warm threads run) */
 extern void (*rt_crash_module_hook)(const char *module);   /* host.c: called with the faulting module's name */
 
+static int vk_warm_only(void);   /* (SSBU_VK_WARM_ONLY: below, with the shader loading) */
 /* The crash handler's report thread, while the process dies: a crash inside a graphics driver's shader compiler during
  * the warm start is written into the marker ("<n> driver <dll>"), so the next start does not warm the same list into
  * the same crash (warm_start). The same driver crash with no warm start running is written down as a lost device
@@ -3842,8 +3918,13 @@ static void warm_one(u32 i) {
         put = 1;
     }
     ReleaseSRWLockExclusive(&pipes_lock);
-    if (put) pipe_make(e);
-    else {
+    if (put) {
+        pipe_make(e);
+        if (vk_warm_only() && e->state == 1 && e->pipe) {   /* (only for the driver's cache: given back, no memory budget) */
+            vkDestroyPipeline(device, e->pipe, NULL);
+            e->pipe = VK_NULL_HANDLE;
+        }
+    } else {
         free(e);
         if (found) InterlockedIncrement(&warm_found);   /* (the game drew with it first: made by a draw) */
         else { InterlockedIncrement(&warm_left); InterlockedIncrement(&warm_left_full); }
@@ -4006,7 +4087,45 @@ static void warm_wake(void) {
  * wait; N: N seconds at most (as Direct3D 11's). */
 void watchdog_pause(int on);   /* debug_watchdog.c */
 static int warm_group_left(const WarmGroup *g) { return g->done < (LONG)g->n; }
+static void pipeline_cache_save(void);
+/* SSBU_VK_WARM_ONLY=1 (tools/shader_aot.py, after Prepare Shaders has every SPIR-V file; with SSBU_HEADLESS=1): this
+ * start only fills the graphics driver's own pipeline cache, then ends. The driver keeps its compiled pipelines by the
+ * program's path (gpu_nvcache.c), so a new install's first starts compiled them while the player waited: 18 s before the
+ * first frame, up to 120 s before each of the first matches, and whatever the memory budget left out at its first draw
+ * (measured 2026-11-17, RTX 2080 SUPER: 7,900 pipelines in 150 s on 10 threads, 5,600 never made). Here every listed
+ * pipeline is made once, no memory budget (each is given back at once: the driver's cache has it), all threads; a game
+ * started meanwhile ends this at once (it holds GAME_RUNNING), and what was made stays made. The same exe at the same
+ * path then finds them in milliseconds. */
+#define GAME_RUNNING "Local\\ssbu-game-running"   /* (gpu_d3d11.c's WARM_GAME; tools/shader_aot.py pauses for it) */
+static int vk_warm_only(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("SSBU_VK_WARM_ONLY"); v = e && *e == '1'; }
+    return v;
+}
+static void vk_warm_only_run(void) {
+    u64 t0 = GetTickCount64();
+    int stopped = 0;
+    watchdog_pause(1);
+    while (warm_running && !stopped) {
+        HANDLE g = OpenMutexA(SYNCHRONIZE, FALSE, GAME_RUNNING);
+        if (g) { CloseHandle(g); stopped = 1; break; }
+        static u64 said;
+        if (GetTickCount64() - said >= 2000) {   /* (tools/shader_aot.py's bar reads these) */
+            said = GetTickCount64();
+            fprintf(stderr, "[vulkan] warm only: %ld of %u\n", (long)warm_ndone, warm_nrecords);
+            fflush(stderr);
+        }
+        Sleep(100);
+    }
+    if (!stopped) pipeline_cache_save();
+    fprintf(stderr, "[vulkan] warm only: %lld pipelines made and %lld programs loaded of %u listed in %.1f s (%lld the driver could not make)%s\n",
+            (long long)vk_stat_warm_pipelines, (long long)vk_stat_warm_loaded, warm_nrecords, (GetTickCount64() - t0) / 1000.0,
+            (long long)vk_stat_pipeline_failures, stopped ? "; stopped: the game was started" : "");
+    fflush(stderr);
+    ExitProcess(stopped ? 3 : 0);
+}
 static void vk_warm_gate(void) {
+    if (vk_warm_only()) vk_warm_only_run();
     const char *set = getenv("SSBU_SHADER_PREWARM_WAIT");
     double limit_s = set && *set ? atof(set) : 0;
     prepare_wait();   /* (the loading screen shows "Preparing shaders N%" while a cold cache is made) */
@@ -4213,6 +4332,7 @@ void vk_match_wait(void) {
         if (!waited) before = left;
         if (!left || !warm_running || (GetTickCount64() - t0) / 1000.0 >= limit_s) break;
         if (!waited++) { watchdog_pause(1); InterlockedIncrement(&warm_urgent); }
+        { extern void (*gfx_wait_hook)(void); if (gfx_wait_hook) gfx_wait_hook(); }   /* (online: the other games hear this one is still loading) */
         Sleep(10);
     }
     if (waited) { InterlockedDecrement(&warm_urgent); watchdog_pause(0); }
@@ -4294,6 +4414,7 @@ static void warm_start(void) {
     if (capped) fprintf(stderr, "[vulkan] warm start: this card's driver crashed in a warm start before (%s): at most %llu MB of pipelines\n",
                         warm_capped, (unsigned long long)(warm_budget >> 20));
     rt_crash_module_hook = warm_crash_note;
+    if (vk_warm_only()) warm_budget = 0;   /* (its pipelines are given back as they are made: warm_one) */
     warm_bytes0 = private_bytes();
     warm_t0 = rt_clock_ns();
     /* every processor but two while the first frame (or a fight's) waits; a quarter of them behind the menus */
@@ -4786,6 +4907,22 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
             if (s->wide > 1.0f) reads_wide = 1;
             int own = s == zs && !depth_read_only;
             for (u32 i = 0; i < ncolor; i++) own |= rts[i] == s;
+            /* (#353, black stages on AMD) Two fixes were written for the one report. #390 found the cause in the upload
+             * memory (the stages' vertex streams in the card's CPU-visible memory: SSBU_VK_SYSMEM, on by default on
+             * AMD), with the same fault and fix known from ssbu-recomp#127. This one was a guess made before it, never
+             * run on an AMD card: that the driver draws black when a draw samples the depth attachment it is bound to,
+             * so there it read as nothing, as before #289 - which costs soft particles their fade by the scene's
+             * depth. It is the same case, so it is off by default now and AMD samples its own depth as the other
+             * GPUs do; SSBU_VK_AMD_DEPTH_SELF=0 puts the workaround back (to try if a stage is still black with
+             * SSBU_VK_SYSMEM on). */
+            static int amd_self = -1;
+            if (amd_self < 0) amd_self = limits_vendor != 0x1002 || !(getenv("SSBU_VK_AMD_DEPTH_SELF") && !strcmp(getenv("SSBU_VK_AMD_DEPTH_SELF"), "0"));
+            if (s == zs && !own && !amd_self) {
+                static int told_amd;
+                if (!told_amd++) fprintf(stderr, "[gfx] vulkan: AMD: a draw's own depth target reads as nothing (SSBU_VK_AMD_DEPTH_SELF=0)\n");
+                b->tex[k] = VK_NULL_HANDLE;
+                continue;
+            }
             if (s == zs && !own) {
                 static int told;
                 if (!told++) fprintf(stderr, "[gfx] vulkan: a draw samples its own depth target, read-only (soft particles)\n");
@@ -6037,6 +6174,13 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
     InitializeCriticalSection(&lock);
     window = (HWND)gfx_window_open();
     if (!window) { snprintf(why, size, "the game's window could not be made"); return NULL; }
+#ifdef _WIN32
+    /* (as Direct3D's start does, gpu_d3d11.c WARM_GAME: Prepare Shaders (tools/shader_aot.py) pauses its compile while a
+     * game holds this. The Vulkan start never made it, so with Vulkan drawing - the default - the compile went on at
+     * full pace on every core through the player's matches. Kept for the process's life. SSBU_VK_GAME_MUTEX=0: as before.
+     * Not the warm-only pass: it is no game, and ends when one starts.) */
+    { const char *off = getenv("SSBU_VK_GAME_MUTEX"); if (!(off && *off == '0') && !vk_warm_only()) CreateMutexA(NULL, FALSE, GAME_RUNNING); }
+#endif
     vkCreateInstance_ = (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
     if (!vkCreateInstance_) { snprintf(why, size, "the Vulkan loader lacks vkCreateInstance"); return NULL; }
     const char *iext[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME};

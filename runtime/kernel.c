@@ -1047,6 +1047,10 @@ static u32 get_info(Cpu *c, u32 id, u64 sub, u64 *out) {
 /* An object signalled ends the call (the first in the handles), otherwise a cancel, otherwise a
  * timeout of 0; else the thread waits in each object's queue until a signal of one of them
  * (notify), a cancel or the deadline wakes it, and looks again. */
+/* (SSBU_RB_STDBENCH, hle_rb_core.c's rollback bench: test only) told when the display's buffer queue (ipc_vi.c) has no
+ * free buffer for the game (2) and when it next hands one out (3): between the two the guest main thread only waits
+ * for the display - the end of its tick. Unset (the default): nothing is called. */
+void (*kernel_pace_hook)(int phase);
 static u32 wait_objects(Cpu *c, u64 handles, u32 count, i64 timeout, u32 *index) {
     KThread *me = c->thread;
     u64 deadline = deadline_of(timeout);
@@ -1220,6 +1224,12 @@ static void system_call(Cpu *c, u32 n) {
         void *s = kernel_session_of(h);
         if (!s) { x[0] = R_INVALID_HANDLE; return; }
         x[0] = ipc_request(c, s, n == 0x21 ? c->tpidrro : x[0], n == 0x21 ? 0x100 : x[1]);
+#ifdef _WIN32
+        {   /* (rollback: the display buffer was handed out or refused - hle_rb_core.c rb_wait_point; no lock is held here) */
+            extern volatile LONG rb_vi_point; void rb_wait_point(Cpu *c);
+            if (rb_vi_point) rb_wait_point(c);
+        }
+#endif
         return;
     }
     }

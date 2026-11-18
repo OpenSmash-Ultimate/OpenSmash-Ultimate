@@ -1172,6 +1172,8 @@ def _build(mod, found, funcs, path, outdir, jobs, per_file, imports):
     name, base = module_key(path), base_of(path)
     os.makedirs(outdir, exist_ok=True)
     modcache.clear_stamp(outdir)   # (until generated and compiled again)
+    if os.path.exists(os.path.join(outdir, objcache.TRIMMED)):   # (its C is all there again from here on: tools/trim.py)
+        os.remove(os.path.join(outdir, objcache.TRIMMED))
     own = os.environ.get("SSBU_OWN_EXPORTS") == "1" or name in standard_plugins()
     if own:
         # a standard plugin keeps its own exports (the real Smashline, the CSK Collection)
@@ -1206,6 +1208,9 @@ def _build(mod, found, funcs, path, outdir, jobs, per_file, imports):
     defined = {a for a, _ in funcs}
     missing, manifest, bad, unresolved, problems = set(), [], 0, [], []
     inline = set(inline_points(name)) & {pc for a, size in funcs for pc in range(a, a + size, 4)}
+    # (the inline hook points this C is written with: tools/skyline.py stale_hooks reads them here rather than in
+    # every generated file, which may be gone - tools/trim.py)
+    write_if_changed(os.path.join(outdir, "inline_hooks.txt"), "".join(f"{o:x}\n" for o in sorted(inline)))
     with Pool(jobs, _init, (image_file(mod), set(found), base, forward, setjmp, pads, exact_callees, exact_callers,
                             slots, patches, inline)) as pool:
         tasks = [(i, c, outdir) for i, c in enumerate(chunks)]
@@ -1248,6 +1253,21 @@ def build_folder(outdir):
     return os.path.dirname(out) if os.path.basename(out) == "nro" else out
 
 
+def scripts_level(outdir):
+    """SSBU_SCRIPTS_OPT=/Od (off unless set; a test of SSBU Arena's "code that is not hot, unoptimised"): the level
+    the fighters' script modules (build/nro/lua2cpp_*: three quarters of the compile) are compiled at instead of
+    their own, or None. Measured (handoff, round 5): a script file compiles 1.65 times faster at /Od and its object
+    is 3.7 times the size. The level is in each object's key, so setting or clearing it compiles those modules
+    again; every install with the same setting compiles the same code, and no floating-point result depends on
+    the level (no contraction, no fast-math at any level)."""
+    level = os.environ.get("SSBU_SCRIPTS_OPT", "").strip()
+    if level not in ("/Od", "/O1", "/O2"):
+        return None
+    folder = os.path.normpath(outdir)
+    in_nro = os.path.basename(os.path.dirname(folder)) == "nro"
+    return level if in_nro and os.path.basename(folder).startswith("lua2cpp_") else None
+
+
 def plan(outdir, times=None):
     """(stale_files, the folder's objcache.Record, {object: (its key, key_for(step): its key compiled a
     ladder step's way)}, Counter of why each stale one is, {object: its ladder.Info}). A generated file
@@ -1270,6 +1290,7 @@ def plan(outdir, times=None):
     headers = {h: objcache.digest_files(objcache.header_files(cc.RUNTIME, *h)) for h in objcache.GAME_HEADERS}
     times = times or ladder.Times(build_folder(outdir))
     above = ladder.optnone_setting()
+    scripts = scripts_level(outdir)
     todo, keys, infos, why = [], {}, {}, Counter()
     for name, insns, biggest in rows + [["g_module.c", "0", "0"]]:
         src = os.path.join(outdir, name)
@@ -1279,6 +1300,8 @@ def plan(outdir, times=None):
         left = own.left if own else biggest
         # very large functions make the optimiser superlinear; build those at a lower level
         opt = "/O1" if left > 20000 or name == "g_module.c" else "/O2"
+        if scripts and name != "g_module.c":
+            opt = scripts
         key = game_key(record, src, compiler, headers[objcache.game_headers(name, record.source(src)[1])])
         start = own.above if own else 0
         keys[obj] = (key(opt, own.header if own else None),
@@ -1313,6 +1336,19 @@ def game_key(record, src, compiler, headers):
                                   header), compiler, headers)
 
 
+def c_needed(outdir):
+    """Whether a module folder whose C was removed after it compiled (tools/trim.py --c, objcache.TRIMMED)
+    needs it back: an object of it is to be compiled (a flag, a header or the compiler changed) and its
+    source is gone, or the record no longer knows a source. build_all then writes the module's C again
+    (the same C: the objects whose source and command did not change stay)."""
+    if not os.path.exists(os.path.join(outdir, objcache.TRIMMED)):
+        return False
+    try:
+        return any(not os.path.isfile(src) for src, _obj, _opt, _cost in plan(outdir)[0])
+    except (FileNotFoundError, KeyError, ValueError):
+        return True
+
+
 def stale_files(outdir):
     """What compile_dir compiles, in order (plan's): (source, object, optimisation level,
     estimated seconds: what it took last time, else progress.file_cost) of each file whose object is
@@ -1326,7 +1362,7 @@ def compile_dir(outdir, jobs, shown=None, steps=None):
     return not compile_dirs([outdir], jobs, shown, steps)
 
 
-def compile_dirs(outdirs, jobs, shown=None, steps=None, fatal=None, done=None):
+def compile_dirs(outdirs, jobs, shown=None, steps=None, fatal=None, done=None, longest=False):
     """Compile the stale files of these module folders (of one build folder) in one pool, folder after
     folder: the next folder's files start as soon as a compiler is free. (Compiled one folder at a time,
     each waited for its slowest file: most fighters have 8 to 10 files, so most of the 12 to 16
@@ -1337,7 +1373,14 @@ def compile_dirs(outdirs, jobs, shown=None, steps=None, fatal=None, done=None):
     after it are not started (the files already compiling finish). done(outdir) is called (from a
     compiler's thread) as soon as a folder's files have all compiled, at once for one with none:
     a build stopped later keeps it. `shown` (a progress.Build) follows them as one step, the module's
-    own when there is one folder."""
+    own when there is one folder.
+
+    longest (build_all's): the pool's files start the longest first, by what each took last time or the
+    cost model's estimate, rather than folder after folder: the longest file of the whole build (minutes)
+    starts at once instead of when its module's turn comes, so the build ends when the last of them does.
+    Each file is compiled exactly as in the other order (the same command, level, ladder and record): the
+    objects are the same. The compilers stay within tools/ladder.py's memory budget (SSBU_COMPILE_MEMORY)
+    either way."""
     import cc
     import threading
     ladder.settings()
@@ -1365,6 +1408,8 @@ def compile_dirs(outdirs, jobs, shown=None, steps=None, fatal=None, done=None):
         return []
     # (SSBU_LONGEST_FIRST=1, for benchmarking: plan sorts each folder; the pool goes by all of them)
     todo = ladder.longest_first(todo, infos) or todo
+    if longest and not ladder.longest_first_setting():   # (stable: equal ones keep the build's order)
+        todo = sorted(todo, key=lambda job: job[3], reverse=True)
     t0 = time.time()
     label = os.path.basename(outdirs[0]) if len(outdirs) == 1 else None   # (the bar's step: one pool for several)
     if shown:
@@ -1391,7 +1436,7 @@ def compile_dirs(outdirs, jobs, shown=None, steps=None, fatal=None, done=None):
             with lock:
                 stop[0] = min(stop[0], index[d])
     own = steps is None
-    steps = steps or ladder.Ladder(progress.level_cost, "clang-cl")
+    steps = steps or ladder.Ladder(progress.level_cost, "clang-cl", memory=ladder.memory_setting())
     failures = cc.compile_each([t[:3] for t in todo], jobs, *((shown.started, shown.finished) if shown else ()),
                                compiled=compiled, flags=cc.GAME_CFLAGS, shown=shown, infos=infos, steps=steps, times=times,
                                failed=failed, skip=lambda job: index[owner[job[0]]] > stop[0])
@@ -1415,6 +1460,29 @@ def compile_dirs(outdirs, jobs, shown=None, steps=None, fatal=None, done=None):
     if own:
         steps.end(build_folder(outdirs[0]))
     return [d for d in outdirs if d in bad]
+
+
+def parallel_gen():
+    """SSBU_PARALLEL_GEN: the fighters' modules' C written several modules at a time (build_all). On by
+    default; 0: one module after the other, as before."""
+    return os.environ.get("SSBU_PARALLEL_GEN", "1").strip() != "0"
+
+
+def _generate(args):
+    """(a process of build_all's module pool) build() for one module; what it printed but its progress lines."""
+    import contextlib
+    import io
+    nso, target, jobs, per_file, imports = args
+    text = io.StringIO()
+    with contextlib.redirect_stdout(text):
+        build(nso, target, jobs, per_file, imports)
+    return "".join(line + "\n" for line in text.getvalue().splitlines() if line and not line.lstrip().startswith("["))
+
+
+def one_queue():
+    """SSBU_ONE_QUEUE: every module's stale files compiled in ONE pool, the longest first (compile_dirs),
+    instead of module after module. On by default; 0: module after module, as before."""
+    return os.environ.get("SSBU_ONE_QUEUE", "1").strip() != "0"
 
 
 def main_kind_room(dirs):
@@ -1510,7 +1578,7 @@ def link(dirs, exe, rt_dir=None, steps=None):
         if os.path.exists(obj):
             os.remove(obj)
     failures, own = [], steps is None
-    steps = steps or ladder.Ladder(progress.level_cost, "clang-cl")
+    steps = steps or ladder.Ladder(progress.level_cost, "clang-cl", memory=ladder.memory_setting())
     try:
         for flags, group in jobs.items():
             failures += cc.compile_each(group, 4, compiled=lambda job, _level: record.compiled(job[1], keys[job[1]]),
@@ -1600,10 +1668,13 @@ def check(exefs, mods=None):
     return modcache.report_imports(mods, hle_names(), os.path.join(ROOT, "build", "imports.unresolved.txt"))
 
 
-def build_all(exefs, out, jobs, compile_c=True):
+def build_all(exefs, out, jobs, compile_c=True, gen_jobs=None):
     """Every module's C first, then every module's files in one pool (compile_dirs), then the link: once the C is there,
     what is left to compile is known, and the progress bar's time left (progress.Build) can say
-    how long it takes. compile_c False (--generate-only): the C only."""
+    how long it takes. compile_c False (--generate-only): the C only. gen_jobs (--gen-jobs): how many
+    processes write the C when that is fewer than `jobs` (a writer holds more memory than a compiler
+    of a usual file: tools/build_game.py gives the compilers more, within tools/ladder.py's budget)."""
+    gen = max(1, min(jobs, gen_jobs or jobs))
     ladder.settings()   # (SSBU_COMPILE_LIMIT, SSBU_OPTNONE_ABOVE, SSBU_LONGEST_FIRST: one that is not a number stops the build now)
     paths = module_paths(exefs)
     mods = {name: Module(path) for name, path in paths.items()}
@@ -1618,7 +1689,8 @@ def build_all(exefs, out, jobs, compile_c=True):
         return [(t[0], t[3]) for t in stale_files(target)] if compile_c else []
     generate = False
     for name, mod in mods.items():
-        current = modcache.build_info(targets[name]) == (mod.build_id, MODULES[name], name, fps[name])
+        current = (modcache.build_info(targets[name]) == (mod.build_id, MODULES[name], name, fps[name])
+                   and not (compile_c and c_needed(targets[name])))
         generate |= not current
         shown.module(name, (mod.text.end - mod.text.mem) // 4, stale(targets[name]) if current else None)
     build_ids = {name: mod.build_id for name, mod in mods.items()}
@@ -1629,36 +1701,70 @@ def build_all(exefs, out, jobs, compile_c=True):
     exe = os.path.join(out, "ssbu.exe")
     with progress.Line(shown.status, title=f"building {os.path.basename(exe)}" if compile_c else "writing the game's C"):
         reused = 0
+
+        def written(name):
+            if not compile_c:
+                modcache.write_stamp(targets[name], build_ids[name], MODULES[name], name, fps[name])
+            shown.written(name, stale(targets[name]))
+            shown.end("gen", name)
+        # (SSBU_PARALLEL_GEN, on unless 0) The fighters' modules (dump/nro: ~100 small ones, and a few with one very long
+        # function, which one process writes for minutes) are written several at a time, each by a process of its own
+        # with 2 workers, instead of one after the other with every worker waiting for the slowest file. The C written
+        # is the same: each module's is made from that module alone, by the same code.
+        pool, waiting, own_way = None, {}, plugin_modules()   # (a plugin is written its own way: one at a time, as before)
         for name, nso in paths.items():
             target, build_id, base = targets[name], build_ids[name], MODULES[name]
             img = os.path.join(ROOT, "dump", "modules", name + ".reloc.bin")
             if not os.path.exists(img) or os.path.getmtime(img) < os.path.getmtime(nso):
                 image(nso, img)
-            current = modcache.build_info(target) == (build_id, base, name, fps[name])
+            current = modcache.build_info(target) == (build_id, base, name, fps[name]) and not (compile_c and c_needed(target))
             # An up-to-date fighter is not named on the bar. A plugin build links every module, but
             # only the ones whose hooks changed (main, the shared lua, the mod's own plugin) are rewritten.
             if not current:
+                if parallel_gen() and gen >= 4 and os.path.dirname(nso) == NRO_DIR and name not in own_way:
+                    if pool is None:
+                        from concurrent.futures import ProcessPoolExecutor
+                        pool = ProcessPoolExecutor(max(2, min(gen, 16) // 2))
+                    waiting[name] = pool.submit(_generate, (nso, target, 2, 40000, imports))
+                    continue
                 shown.begin("gen", name)
-                build(nso, target, jobs, 40000, imports)
+                build(nso, target, gen, 40000, imports)
             else:
                 print(f"{name}: C up to date (build id {build_id[:16]}, same tools)")
                 reused += 1
-            if not compile_c:
-                modcache.write_stamp(target, build_id, base, name, fps[name])
-            shown.written(name, stale(target))
-            shown.end("gen", name)
+            written(name)
+        try:
+            for name, job in waiting.items():   # (in the build's order: the bar names each as it is waited for)
+                shown.begin("gen", name)
+                sys.stdout.write(job.result())
+                written(name)
+        finally:
+            if pool is not None:
+                pool.shutdown(wait=True, cancel_futures=True)
         print(f"{reused} of {len(paths)} modules reused without generating their C again")
         if not compile_c:
             print(f"the C of {len(paths)} modules is in {out} (--generate-only: not compiled here)")
             return True
         plugins, left_out = plugin_modules(), []
-        steps = ladder.Ladder(progress.level_cost, "clang-cl")   # (one pace and one report for the whole build)
+        steps = ladder.Ladder(progress.level_cost, "clang-cl", memory=ladder.memory_setting())   # (one pace and one report for the whole build)
         try:
-            # every module's files in one pool; each module's stamp as soon as its files are compiled
+            # every module's files in one pool, the longest first (module after module with SSBU_ONE_QUEUE=0);
+            # each module's stamp as soon as its files are compiled
             names = {targets[name]: name for name in paths}
-            failed = compile_dirs(list(names), min(jobs, 16), shown, steps, fatal=lambda d: names[d] not in plugins,
-                                  done=lambda d: modcache.write_stamp(d, build_ids[names[d]], MODULES[names[d]], names[d],
-                                                                      fps[names[d]]))
+
+            def fatal(d):
+                return names[d] not in plugins
+
+            def stamp(d):
+                modcache.write_stamp(d, build_ids[names[d]], MODULES[names[d]], names[d], fps[names[d]])
+            if one_queue():
+                failed = compile_dirs(list(names), min(jobs, 16), shown, steps, fatal=fatal, done=stamp, longest=True)
+            else:
+                failed = []
+                for d in names:
+                    failed += compile_dirs([d], min(jobs, 16), shown, steps, fatal=fatal, done=stamp)
+                    if failed and fatal(failed[-1]):
+                        break
             for d in failed:
                 if names[d] not in plugins:
                     return False
@@ -1709,7 +1815,8 @@ if __name__ == "__main__":
     elif cmd == "all":
         # (on macOS the C is compiled by tools/mac/build_mac.py, the compiling and linking here being clang-cl's)
         compile_c = "--generate-only" not in sys.argv and sys.platform != "darwin"
-        sys.exit(0 if build_all(nso, arg("--out"), int(arg("--jobs", "20")), compile_c) else 1)
+        sys.exit(0 if build_all(nso, arg("--out"), int(arg("--jobs", "20")), compile_c,
+                                int(arg("--gen-jobs", "0")) or None) else 1)
     elif cmd == "check":
         check(nso)
     elif cmd == "wrap-sig":   # (an address, or for HLE_WRAP_EXPORT the exported name)

@@ -16,7 +16,6 @@
 #include "config_folder.h"
 #include "settings.h"
 #include "net_backend.h"
-#include "net_eos.h"       /* (net_eos_backend) */
 #include "net_results.h"   /* (the lobby's count of matches played) */
 
 #define DELAY_MAX 25
@@ -140,7 +139,6 @@ static void online_match_over(void) {
     m.id = results_match_id_addresses(ips, n + 1, m.mode);
     m.players = n + 1;
     m.seconds = (int)(ld32(0x71052c5184ull) / 60);   /* (the logic frame) */
-    m.eos = net_backend == &net_eos_backend;
     results_match_played(&m);
     fprintf(stderr, "[net] online step: the match goes to the lobby's count of matches played (%d players, the game's own netcode)\n", n + 1);
 }

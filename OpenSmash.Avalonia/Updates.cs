@@ -77,12 +77,19 @@ public sealed partial class MainWindow
         {var lines=new List<string>();if(await ProcessRunner.Run(new Command("git",["rev-parse","HEAD"],p.Root),lines.Add,CancellationToken.None)==0)local=lines.FirstOrDefault()??local;}
         return local;
     }
+    /// <summary>this launcher's program file as it is on disk now (size and time): the update step may replace it</summary>
+    static string LauncherStamp()
+    {
+        try{string? path=Environment.ProcessPath;if(path==null)return "";var f=new FileInfo(path);return f.Exists?f.Length+" "+f.LastWriteTimeUtc.Ticks:"";}
+        catch(Exception error) when(error is IOException or UnauthorizedAccessException){return "";}
+    }
     async Task ApplyUpdate()
     {
         if(_closed||_updateBusy||Surface.OperationRunning||Surface.GameRunning)return;
         _updateBusy=true;Surface.SetOperationLabel("UPDATING OPENSMASH");Surface.OperationRunning=true;Surface.SetUpdateResult("updating","Updating OpenSmash...");
-        string failure="";bool restart=false;
+        string failure="";bool restart=false,launcherReplaced=false;
         var p=RequireProject();
+        string launcherBefore=LauncherStamp();
         try
         {
             string before=await LocalSourceCommit(),fingerprint=UpdateState.LauncherFingerprint(p);
@@ -94,7 +101,10 @@ public sealed partial class MainWindow
             ProjectLayout.Normalize(p.Root);
             string after=await LocalSourceCommit();
             if(!before.Equals(after,StringComparison.OrdinalIgnoreCase))UpdateState.Mark(UpdateState.GameMarker(p),after);
-            if(fingerprint!=UpdateState.LauncherFingerprint(p)&&CanBuildSharedLauncher())UpdateState.Mark(UpdateState.LauncherMarker(p),after);
+            // (v0.5.0: off Windows the update step itself puts the new launcher in place - tools/launcher_fetch.py, built
+            // with the SDK or the newest release's - so it is not built a second time; it is used from the next start)
+            if(p.Platform==DesktopPlatform.Windows&&fingerprint!=UpdateState.LauncherFingerprint(p)&&CanBuildSharedLauncher())UpdateState.Mark(UpdateState.LauncherMarker(p),after);
+            launcherReplaced=p.Platform!=DesktopPlatform.Windows&&LauncherStamp()!=launcherBefore;
             Surface.SetOperationLabel("UPDATING PYTHON PACKAGES");
             if(p.Platform==DesktopPlatform.Windows)await EnsureToolsPython(force:true);
             else await RunUpdateStep(Commands.PythonSetup(p),"python_setup.log");
@@ -108,6 +118,8 @@ public sealed partial class MainWindow
         if(failure.Length>0){Surface.SetUpdateResult("error","Update did not finish: "+failure);Surface.Alert("UPDATE DID NOT FINISH",failure+"\n\nCompleted work is kept. Pending rebuilds will be retried.");return;}
         if(restart){try{ScheduleLauncherBuildAndRestart();return;}catch(Exception error){Surface.Alert("LAUNCHER UPDATE PENDING",error.Message);return;}}
         await CheckUpdates();
-        if(!_closed)Surface.Alert("OPENSMASH UPDATED","Your game files, settings and save were kept. The game rebuild completed. If launcher sources changed, install its new release asset or rebuild it with the .NET SDK.");
+        if(!_closed)Surface.Alert("OPENSMASH UPDATED",launcherReplaced
+            ?"Your game files, settings and save were kept. The game rebuild completed. The launcher was updated too: close it and open it again to use the new one."
+            :"Your game files, settings and save were kept. The game rebuild completed. If launcher sources changed, install its new release asset or rebuild it with the .NET SDK.");
     }
 }

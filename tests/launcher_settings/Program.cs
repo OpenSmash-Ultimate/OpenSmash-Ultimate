@@ -129,8 +129,10 @@ static class Tests
         string pub = SettingDefaults.PublicLobby;
         var cases = new (string Line, string Lobby, string Back)[]
         {
-            ("", "offline", "off"), ("off", "offline", "off"), ("auto", "auto", "auto"), ("eos", "auto", "auto"), ("na", "auto", "auto"), ("eu", "auto", "auto"),
+            ("", "offline", "off"), ("off", "offline", "off"), ("auto", "auto", "auto"), ("na", "auto", "auto"), ("eu", "auto", "auto"),
             ("smash.recomps.wtf:39421", "auto", "auto"), ("smash.recomps.wtf:39421 mine", "private", pub + " mine"),
+            ("opensmash-lobby.duckdns.org:39421", "auto", "auto"), ("opensmash-lobby.duckdns.org:39421 mine", "private", pub + " mine"),
+            ("eos", "auto", "auto"), ("EOS", "auto", "auto"), ("eos mine", "private", pub + " mine"),   // (Epic Online Services, gone in 0.5.0: the official lobby)
             ("lan", "lan", "lan"), (pub, "auto", "auto"), (pub + " friends", "private", pub + " friends"),
             ("10.0.0.2:39420", "custom", "10.0.0.2:39420"), ("10.0.0.2:39420 abc", "custom", "10.0.0.2:39420 abc"),
         };
@@ -147,6 +149,26 @@ static class Tests
         Check(SettingDefaults.LineFromLobby("custom", "abc", "smash.recomps.wtf:39421") == pub + " abc", "custom smash.recomps.wtf with a code: the private lobby");
         Check(SettingDefaults.LineFromLobby("custom", "", pub) == "auto", "custom with the public lobby's address: auto");
         Check(SettingDefaults.IsOldLobbyLine("smash.recomps.wtf:39421 x") && !SettingDefaults.IsOldLobbyLine("auto") && !SettingDefaults.IsOldLobbyLine(""), "old lobby lines");
+        // the server region: any region's lobby in the file is "the official lobby" (the region setting says which one)
+        foreach (var region in OpenSmash.Core.ServerRegion.All)
+        {
+            Check(SettingDefaults.LobbyFromLine(region.Lobby).Lobby == "auto" && SettingDefaults.LobbyFromLine(region.Lobby + " mine").Lobby == "private", $"{region.Lobby} reads as the official lobby");
+            Check(SettingDefaults.Choices["region"].Contains(region.Id) && SettingDefaults.RegionLabels.Contains(region.Label), $"{region.Id} is a choice of the page");
+        }
+        Check(SettingDefaults.Choices["region"][0] == "auto" && SettingDefaults.Choices["region"].Length == SettingDefaults.RegionLabels.Length && SettingDefaults.OfFile("server_region.txt") == "auto", "Auto first, and the default");
+        string install = Path.Combine(Path.GetTempPath(), "opensmash-region-" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(Path.Combine(install, "config"));
+        try
+        {
+            Check(SettingDefaults.RegionShown(install, "auto") == null && SettingDefaults.RegionShown(install, "eu") == null, "Auto not measured, a region chosen: the list's own label");
+            File.WriteAllText(Path.Combine(install, "config", "server_region_auto.txt"), "na-east 23 1700000000\n");
+            Check(SettingDefaults.RegionShown(install, "auto") == "Auto (NA East, 23 ms)" && SettingDefaults.RegionShown(install, "eu") == null, "Auto shown with its pick and ping");
+            File.WriteAllText(Path.Combine(install, "config", "server_region_auto.txt"), "eu\n");
+            Check(SettingDefaults.RegionShown(install, "auto") == "Auto (EU)", "Auto's pick without a time");
+            File.WriteAllText(Path.Combine(install, "config", "official_lobby.txt"), "lobby.example:39421\n");
+            Check(SettingDefaults.RegionShown(install, "auto") == "lobby.example:39421" && SettingDefaults.RegionShown(install, "eu") == "lobby.example:39421", "an install's own official server is shown instead");
+        }
+        finally { try { Directory.Delete(install, true); } catch (IOException) { } }
         Check(SettingDefaults.Renderer("d3d11") == "auto" && SettingDefaults.Renderer("DX11") == "direct3d11" && SettingDefaults.Renderer("vk") == "vulkan", "renderer names as runtime/renderer.h");
     }
 
@@ -483,7 +505,32 @@ static class Tests
             using var bmp = new System.Drawing.Bitmap(1280, 720); form.DrawToBitmap(bmp, new System.Drawing.Rectangle(0, 0, 1280, 720));
             bmp.Save(Path.Combine(outDir, name));
         }
+        // (the server region: Auto with a pick kept, as after a start; the home page says whose numbers these are)
+        Directory.CreateDirectory(Path.Combine(repo, "config"));
+        File.WriteAllText(Path.Combine(repo, "config", "server_region_auto.txt"), "eu 24 1700000000\n");
+        File.WriteAllText(Path.Combine(repo, "online_server.txt"), "auto\n");
+        type.GetMethod("RegionView", flags)!.Invoke(form, null);
         Shot("home.png", "home");
+        type.GetMethod("ReadSettings", flags)!.Invoke(form, null);
+        Set("_view", "settings");
+        Set("_settingsTab", Array.FindIndex((Array.ConvertAll((object[])type.GetField("_settingsTabs", flags)!.GetValue(form)!, t => (string)t.GetType().GetField("Name")!.GetValue(t)!)), n => n == "Online"));
+        Shot("settings-online.png", "settings");
+        // (Settings > Storage: the Save disk space row above the buttons, REBUILD SHADERS (#449) beside REFRESH - no two hit
+        // areas may cross; the window keeps 16:9 and draws by its height, so one size says it for all)
+        Set("_settingsTab", Array.FindIndex((Array.ConvertAll((object[])type.GetField("_settingsTabs", flags)!.GetValue(form)!, t => (string)t.GetType().GetField("Name")!.GetValue(t)!)), n => n == "Storage"));
+        Set("_storageText", "dump: 17.2 GB on C:\\OpenSmash\\dump. build: 30.4 GB on C:\\OpenSmash\\build. A long status line, as the real one can be, wraps here.");
+        Shot("settings-storage.png", "settings");
+        var hits = ((System.Collections.IList)type.GetField("_hits", flags)!.GetValue(form)!).Cast<object>().Select(h =>
+        {
+            var ht = h.GetType();
+            float F(string n) => (float)(ht.GetField(n)?.GetValue(h) ?? ht.GetProperty(n)!.GetValue(h)!);
+            return (Id: (string)(ht.GetField("Id")?.GetValue(h) ?? ht.GetProperty("Id")!.GetValue(h)!), R: new System.Drawing.RectangleF(F("X"), F("Y"), F("W"), F("H")));
+        }).Where(h => h.Id.StartsWith("storage:")).ToList();
+        Console.WriteLine("Storage hits: " + string.Join("; ", hits.Select(h => $"{h.Id} {h.R.X:0},{h.R.Y:0} {h.R.Width:0}x{h.R.Height:0}")));
+        Check(hits.Any(h => h.Id == "storage:save_disk") && hits.Any(h => h.Id == "storage:shaders"), "Storage: Save disk space and REBUILD SHADERS both drawn");
+        for (int i = 0; i < hits.Count; i++)
+            for (int j = i + 1; j < hits.Count; j++)
+                Check(!hits[i].R.IntersectsWith(hits[j].R), $"Storage: {hits[i].Id} and {hits[j].Id} do not overlap");
         form.Close();
     }
 

@@ -426,7 +426,7 @@ class BuildMacTests(unittest.TestCase):
     def test_runtime_sources(self):
         rt = self.top / 'runtime'
         for n in ('host.c', 'kernel.c', 'gpu.c', 'gpu_d3d11.c', 'gpu_overlay.c', 'gpu_menu.c', 'gpu_texture.c', 'hle_fs.c', 'ipc_audio.c',
-                  'net_relay.c', 'debug_watchdog.c', 'debug_profile.c', 'smoke.c', 'difftest.c', '._host.c', 'recomp.h',
+                  'net_relay.c', 'debug_watchdog.c', 'debug_perf_session.c', 'debug_profile.c', 'smoke.c', 'difftest.c', '._host.c', 'recomp.h',
                   'linux/win32.c', 'linux/upnp.c', 'linux/eh.cpp', 'linux/window.c', 'linux/profile.c',
                   'linux/d3dcompile_vkd3d.c', 'linux/include/windows.h', 'macos/window.m', 'macos/memory.c',
                   'macos/fiber_arm64.S', 'macos/gpu_metal.m', 'macos/gpu_metal.h', 'macos/._window.m',
@@ -434,7 +434,7 @@ class BuildMacTests(unittest.TestCase):
             write(rt / n)
         ns = load_build_mac(['--port', str(self.tree)], stub_toolchain(runtime=rt))
         got = {os.path.relpath(s, rt): os.path.relpath(o, ns['OBJ']) for s, o in ns['runtime_sources']()}
-        want = ['debug_watchdog.c', 'gpu.c', 'gpu_menu.c', 'gpu_texture.c', 'hle_fs.c', 'host.c', 'ipc_audio.c', 'kernel.c', 'net_relay.c',
+        want = ['debug_perf_session.c', 'debug_watchdog.c', 'gpu.c', 'gpu_menu.c', 'gpu_texture.c', 'hle_fs.c', 'host.c', 'ipc_audio.c', 'kernel.c', 'net_relay.c',
                 'linux/win32.c', 'linux/upnp.c', 'linux/eh.cpp', 'macos/fiber_arm64.S', 'macos/gpu_metal.m',
                 'macos/memory.c', 'macos/window.m']
         self.assertEqual(sorted(got), sorted(n.replace('/', os.sep) for n in want))

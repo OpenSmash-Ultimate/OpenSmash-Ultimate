@@ -207,6 +207,10 @@
     "Player 6": "플레이어 6",
     "Player 7": "플레이어 7",
     "Player 8": "플레이어 8",
-    "Report a problem": "문제 신고"
+    "Report a problem": "문제 신고",
+    "Preparing the graphics driver  {0:N0} / {1:N0}": "그래픽 드라이버 준비 중  {0:N0} / {1:N0}",
+    "The game is preparing its shaders": "게임이 셰이더를 준비하는 중입니다",
+    "Save disk space": "디스크 공간 절약",
+    "About 14 GB less: the game data is read from your game files, which must stay where they are. Counts from the next set-up or update.": "약 14GB 절약: 게임 데이터를 게임 파일에서 직접 읽으므로 파일을 원래 위치에 두어야 합니다. 다음 설정 또는 업데이트부터 적용됩니다."
   }
 }

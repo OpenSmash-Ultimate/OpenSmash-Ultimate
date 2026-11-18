@@ -29,8 +29,35 @@ import webbrowser
 
 API = "https://discord.com/api"
 REDIRECTS = (("http://127.0.0.1/callback", 80), ("http://127.0.0.1:53134/callback", 53134))
-LEADERBOARD_URL = "http://opensmash-lobby.duckdns.org:39421/leaderboard.json"   # (the one public lobby's: every GSP result)
-PUBLIC_LOBBIES = ("opensmash-lobby.duckdns.org:39421",)
+import server_region   # noqa: E402  (beside this file: the official lobbies, one a region, and which one is played on)
+
+# The official lobby, by its DNS name (runtime/net.h's NET_OFFICIAL_LOBBY; never an address in numbers): the first
+# region's, where nothing says another (server_region.py). Its read-only pages are plain HTTP on the same port: the
+# lobby serves no TLS, and they are public.
+OFFICIAL_LOBBY = "eu.lobby.opensmashultimate.com:39421"
+OLDER_LOBBIES = ("opensmash-lobby.duckdns.org", "smash.recomps.wtf")   # (replaced by it: their lines mean the official one)
+
+
+def official_lobby(root=None):
+    """As the game reads it (runtime/net_region.c): SSBU_OFFICIAL_LOBBY, else config/official_lobby.txt (an override:
+    that server, no regions), else the server region's lobby (the one chosen, or Auto's pick)."""
+    return server_region.official_lobby(root)
+
+
+def means_official(host, root=None):
+    h = (host or "").lower()
+    return (h in ("auto", "eos", "na", "eu", (server_region.override(root) or "").lower()) and h != "" or server_region.of_lobby(h) is not None
+            or h.startswith(OLDER_LOBBIES))
+
+
+LEADERBOARD_URL = "http://" + OFFICIAL_LOBBY + "/leaderboard.json"   # (the default; leaderboard_url(root) is the install's)
+PUBLIC_LOBBIES = tuple(r[2] for r in server_region.REGIONS)   # (every region's: a player's records are asked of each)
+
+
+def leaderboard_url(root=None):
+    return "http://" + official_lobby(root) + "/leaderboard.json"
+
+
 SCOPES = "identify openid sdk.social_layer_presence"
 KEYS = ("access_token", "refresh_token", "expires_at", "scope", "user_id", "username", "display_name", "avatar")
 UA = {"User-Agent": "OpenSmash-Launcher"}
@@ -284,12 +311,12 @@ def sign(nsa, what, player, t, payload=""):
     return hmac.new(nsa.encode(), f"opensmash1\n{what}\n{player}\n{int(t)}\n{payload}".encode(), hashlib.sha256).hexdigest()
 
 
-def lobbies(server_line=""):
+def lobbies(server_line="", root=None):
     """The lobbies to ask: the public ones, and online_server.txt's own (its first line given) when it names another."""
-    out = list(PUBLIC_LOBBIES)
+    out = server_region.official_lobbies(root)   # (the one played on first, then the other regions')
     words = (server_line or "").split()
     host = words[0] if words else ""
-    if host and host.lower() not in ("auto", "na", "eu", "off", "lan") and not host.lower().startswith("smash.recomps.wtf"):
+    if host and host.lower() not in ("off", "lan") and not means_official(host, root):
         if ":" not in host:
             host += ":39420"
         if host.lower() not in (x.lower() for x in out):
@@ -306,16 +333,42 @@ def _ask(url, headers=None, body=None, opener=urllib.request.urlopen):
         return None
 
 
+def ticket_expiry(ticket):
+    """A lobby ticket's expiry ("<id>|<name>|<expiry>[|...].<mac>", unix seconds); 0 when it is not one."""
+    parts = (ticket or "").rpartition(".")[0].split("|")
+    return int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 0
+
+
+def stored_ticket(root, margin=60, now=None):
+    """(v0.5.0) The lobby ticket a signed-in launcher last wrote for the game (build/cache/online_pass.txt,
+    OpenSmash.Core/OnlinePass.cs) while it has margin seconds left, else None: with it the official lobbies give the
+    account's GSP (its records are the account's there, not the install's)."""
+    try:
+        with open(os.path.join(root, "build", "cache", "online_pass.txt"), encoding="ascii") as f:
+            t = f.read().strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return t if ticket_expiry(t) > (time.time() if now is None else now) + margin else None
+
+
 def records(root, where, ask=_ask):
-    """GET /gsp/me on the lobbies where, merged: [(fighter kind, GSP)], the highest GSP of each fighter, highest first."""
-    nsa = nsa_id(root)
-    if not nsa:
+    """GET /gsp/me on the lobbies where, merged: [(fighter kind, GSP)], the highest GSP of each fighter, highest first.
+    The official lobbies are asked with the stored lobby ticket when there is one (never another server: it is a
+    credential), the others signed with the install's NSA id."""
+    nsa, ticket = nsa_id(root), stored_ticket(root)
+    official = {x.lower() for x in server_region.official_lobbies(root)} if ticket else set()
+    if not nsa and not ticket:
         return []
-    player, best = player_id(nsa), {}
+    player, best = player_id(nsa) if nsa else "", {}
     for lobby in where:
         t = int(time.time())
-        me = ask(f"http://{lobby}/gsp/me", {"X-OpenSmash-Player": player, "X-OpenSmash-Time": str(t),
-                                             "X-OpenSmash-Sig": sign(nsa, "me", player, t)})
+        if lobby.lower() in official:
+            headers = {"X-OpenSmash-Ticket": ticket}
+        elif nsa:
+            headers = {"X-OpenSmash-Player": player, "X-OpenSmash-Time": str(t), "X-OpenSmash-Sig": sign(nsa, "me", player, t)}
+        else:
+            continue
+        me = ask(f"http://{lobby}/gsp/me", headers)
         for f in (me or {}).get("fighters") or []:
             if isinstance(f, dict) and isinstance(f.get("fighter"), int) and isinstance(f.get("gsp"), int):
                 best[f["fighter"]] = max(best.get(f["fighter"], 0), f["gsp"])
@@ -436,7 +489,7 @@ class Account:
         return app_id(self.program_dir)
 
     def lobbies(self):
-        return lobbies(self.server_line())
+        return lobbies(self.server_line(), self.root)
 
     def start_sign_in(self):
         with self.lock:
@@ -467,7 +520,7 @@ class Account:
     def _board(self):
         if time.time() - self.board_at > 600:
             self.board_at = time.time()
-            self.board = _ask(LEADERBOARD_URL) or self.board
+            self.board = _ask(leaderboard_url(self.root)) or self.board
         return self.board
 
     def _mine(self):

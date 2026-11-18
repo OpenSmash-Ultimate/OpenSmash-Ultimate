@@ -596,7 +596,7 @@ class GenerateOnlyTests(unittest.TestCase):
                 open(os.path.join(exefs, n), 'wb').close()
             stamps = []
 
-            def compile_dirs(targets, jobs, shown=None, steps=None, fatal=None, done=None):   # (one pool: every module)
+            def compile_dirs(targets, jobs, shown=None, steps=None, fatal=None, done=None, longest=False):   # (one pool: every module)
                 for t in targets:
                     done(t)   # (build_all's stamp writer, not the list above)
                 compiled.append([os.path.basename(t) for t in targets])
@@ -608,6 +608,7 @@ class GenerateOnlyTests(unittest.TestCase):
                 check=lambda e, mods=None: 0, tools_fingerprint=lambda: 'fp', image=lambda nso, img: done.append(('image', nso)),
                 Module=lambda nso: types.SimpleNamespace(build_id='b' * 64, text=types.SimpleNamespace(mem=0, end=4000)),
                 MODULES={'main': 1, 'sdk': 2}, stale_files=lambda target: [],
+                hook_imports=lambda mods, graphs=None: {},   # (tools/hooks.txt's exact callees: not this test's, and it lists one now)
                 build=lambda nso, target, jobs, per_file, imports=None: done.append(('build', os.path.basename(target))),
                 compile_dirs=compile_dirs,
                 link=lambda dirs, exe, steps=None: done.append(('link', exe)) or True,
@@ -624,6 +625,11 @@ class GenerateOnlyTests(unittest.TestCase):
                 self.assertTrue(g['build_all'](exefs, os.path.join(tmp, 'build'), 4))   # (the Windows build: both)
             self.assertEqual(compiled, [['main', 'sdk']])   # (both modules in one pool)
             self.assertEqual([d[0] for d in done if d[0] == 'link'], ['link'])
+            compiled.clear()   # (SSBU_ONE_QUEUE=0: module after module, as before)
+            g['one_queue'] = lambda: False
+            with contextlib.redirect_stdout(io.StringIO()), no_title:
+                self.assertTrue(g['build_all'](exefs, os.path.join(tmp, 'build'), 4))
+            self.assertEqual(compiled, [['main'], ['sdk']])
 
 
 def find_bash():

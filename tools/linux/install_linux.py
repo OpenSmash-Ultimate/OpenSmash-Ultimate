@@ -1070,8 +1070,20 @@ def step_files(a):
 
 
 # ---- step 7: launchers ----------------------------------------------------------------------------------
+def step_opensmash_launcher(a):
+    """(v0.5.0) the OpenSmash launcher (OpenSmash.Avalonia: Windows' launcher, with the account sign-in the official
+    lobbies need) into this folder: built here with the .NET SDK, else the newest release's (tools/launcher_fetch.py).
+    Not needed to play: when neither works the web launcher stays, and nothing stops."""
+    import launcher_fetch
+    try:
+        launcher_fetch.ensure(ROOT, log=info, dry_run=a.dry_run)
+    except Exception as e:   # (never the setup's end: the web launcher is there)
+        info(f"the OpenSmash launcher: not now ({type(e).__name__}: {e}); the web launcher stays")
+
+
 def step_launchers(a):
     step("[7/8] Launchers")
+    step_opensmash_launcher(a)
     for name in LAUNCHERS:
         path = os.path.join(ROOT, name)
         if os.path.isfile(path) and not a.dry_run:
@@ -1159,6 +1171,7 @@ def main(argv=None):
             os.execv(sys.executable, [sys.executable, "-u", os.path.join(ROOT, "tools", "linux", "install_linux.py"),
                                       *args, "--no-update"])
         if a.update_only:
+            step_opensmash_launcher(a)   # (the launcher's Update: a launcher of the updated sources, or a newer release's)
             print("Update done." if not a.dry_run else "")
             return 0
         step_check_pc()

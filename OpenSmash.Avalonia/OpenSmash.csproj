@@ -12,6 +12,8 @@
   <ItemGroup>
     <InternalsVisibleTo Include="OpenSmash.Tests" />
     <Compile Include="../OpenSmash.Launcher/SettingDefaults.cs" Link="SettingDefaults.cs" />
+    <!-- (SettingDefaults.cs reads the official lobby and its regions from OpenSmash.Core: no window code, net8.0 on every OS) -->
+    <ProjectReference Include="../OpenSmash.Core/OpenSmash.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia.Desktop" Version="12.1.6" />

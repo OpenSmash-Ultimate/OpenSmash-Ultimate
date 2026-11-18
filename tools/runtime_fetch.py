@@ -13,12 +13,15 @@ one is put back. Only the standard library is used.
 """
 import hashlib
 import io
+import re
 import os
 import shutil
 import subprocess
 import sys
 import urllib.request
 import zipfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (msvc_deps, glslang_lib: also under python -P)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = "OpenSmash-Ultimate/OpenSmash-Ultimate"
@@ -73,8 +76,9 @@ def check(exe):
 
 
 def fetch(tag, build=os.path.join(ROOT, "build"), get=download, run_check=check, log=print):
-    if not tag.startswith("runtime-v"):
-        raise Error(f"{tag}: a release tag is runtime-v<n>")
+    # (v0.5.0: an OpenSmash release vX.Y.Z carries the runtime of its commit too, .github/workflows/release.yml)
+    if not (tag.startswith("runtime-v") or re.fullmatch(r"v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?", tag)):
+        raise Error(f"{tag}: a release tag is runtime-v<n> or vX.Y.Z")
     if os.name != "nt":
         raise Error("the prebuilt runtime is for Windows")
     if not os.path.isfile(os.path.join(build, "ssbu_game.dll")):

@@ -3342,6 +3342,7 @@ static WaitSample wait_samples[64];
 static u32 wait_samples_n;
 
 static void wait_logged(u64 waited_ms, int stage, const char *name) {
+    { void perf_shader_wait(double ms); perf_shader_wait((double)waited_ms); }   /* (debug_perf_session.c) */
     if (waited_ms > 4)
         fprintf(stderr, "[gfx] waited %llu ms for cached %s %s\n", (unsigned long long)waited_ms,
                 stage == SHADER_COMPUTE ? "cs" : stage == SHADER_VERTEX ? "vs" : "ps", name);

@@ -36,6 +36,8 @@ static class ReferenceImages
             if(reference=="settings-graphics"&&((x>=815&&x<1282&&y>=498&&y<526)||(x>=192&&x<765&&y>=517&&y<543)))continue;
             // Upstream greys out Lobby code and Server unless the lobby uses them (offline here).
             if(reference=="settings-online"&&x>=100&&x<1340&&y>=470&&y<640)continue;
+            // (v0.5.0) Online appends the Server region row after Direct connections: its top edge and the page's scroll bar.
+            if(reference=="settings-online"&&((x>=100&&x<1340&&y>=718&&y<760)||(x>=1340&&x<1360&&y>=246&&y<760)))continue;
             // Upstream's Remap a controller row comes after controllers.ini.
             if(reference=="settings-controllers"&&x>=100&&x<1340&&y>=553)continue;
             if(!a.Slice(y*expected.RowBytes+x*4,4).SequenceEqual(b.Slice(y*actual.RowBytes+x*4,4)))differences++;

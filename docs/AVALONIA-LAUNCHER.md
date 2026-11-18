@@ -1,5 +1,12 @@
 # Experimental Avalonia launcher (step a)
 
+**v0.5.0:** on Linux and macOS this is now the launcher that ships (release.yml publishes
+`OpenSmash-linux-x64.tar.gz`, `OpenSmash-macos-arm64.tar.gz`, `OpenSmash-macos-x64.tar.gz`, listed in
+`opensmash-release.json`; `tools/launcher_fetch.py` installs it; `opensmash-launcher.sh` and
+`OpenSmash Launcher.command` start it, the web launcher is the fallback). It signs in with the same
+`OpenSmash.Core.Account` as `OpenSmash.exe` (`MainWindow.Account.cs`) and gives the game the lobby ticket.
+On Windows `OpenSmash.exe` (WinForms) stays the shipping launcher. The notes below are the prototype's.
+
 An opt-in app alongside the shipping Windows and web launchers, not a replacement.
 Existing release workflows, installers, shortcuts and frontend tests are unchanged.
 

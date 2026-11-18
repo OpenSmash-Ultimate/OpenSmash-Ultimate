@@ -47,10 +47,10 @@ void discord_presence_text(const DiscordPresence *p, char *details, size_t dn, c
 size_t discord_join_secret(const DiscordPresence *p, char *out, size_t cap);
 typedef struct DiscordJoin { int where; char relay[80], code[40], target[48]; } DiscordJoin;
 int discord_join_parse(const char *secret, DiscordJoin *j);             /* 1: one of ours, in *j */
-/* The "lobby" part of a join secret for where this game is online: "eos" over Epic Online Services (a room or arena is
- * found among the games of the same lobby code there, whatever server address the settings name), else the address of
- * the lobby server it joined, else NULL (offline, a private room's relay, LAN: nothing a friend can join). */
-const char *discord_join_lobby(int eos, const char *lobby_relay);
+/* The "lobby" part of a join secret for where this game is online: the address of the lobby server it joined, else
+ * NULL (offline, a private room's relay, LAN: nothing a friend can join). An older game's secret may name "eos" (Epic
+ * Online Services, gone in 0.5.0): never where this game is, and the official lobby at the next start (net_relay.c). */
+const char *discord_join_lobby(const char *lobby_relay);
 /* 1 when j is where this game is online now (discord_join_lobby's answer, the lobby code it plays with): same network
  * and lobby code, so the room or arena can be found without a restart. */
 int discord_join_same(const DiscordJoin *j, const char *my_lobby, const char *my_code);

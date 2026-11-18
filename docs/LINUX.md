@@ -44,6 +44,19 @@ As on Windows, the game must be version 13.0.5, its last update
 
 ## The OpenSmash Launcher
 
+**Since v0.5.0** the launcher on Linux is the same program as Windows': `OpenSmash.Avalonia` in the
+WindowSmash folder, with the account sign-in the official lobbies need (they let in only a signed-in
+player's game). The setup puts it there (`tools/launcher_fetch.py`: built from the folder with the .NET 8
+SDK when it is installed, else the newest release's `OpenSmash-linux-x64.tar.gz`, checked against the
+SHA-256 the release names), and `OpenSmash Launcher` / `opensmash-launcher.sh` start it. Press **SIGN IN**
+on its home page: the sign-in opens in your browser and comes back to the launcher. At Play it gives the
+game a lobby ticket (`build/cache/online_pass.txt`, readable by you alone) and renews it while the game runs.
+`play-ssbu.sh` started on its own uses the ticket the launcher wrote last while it is still good.
+
+The web launcher below stays as the fallback: `bash opensmash-launcher.sh --web`, or automatically when
+`OpenSmash.Avalonia` is not there or stops at once (its reason goes to `build/launcher.log`). It cannot sign
+in: on the official lobbies it uses a ticket a signed-in launcher left, and says to sign in when there is none.
+
 `OpenSmash.exe` is Windows-only. On Linux the same features run in a browser window instead. The
 launcher is a small server on your own computer (`tools/weblauncher/launcher.py`, Python's standard
 library only, reachable from this computer alone and only with the key it opens the page with).

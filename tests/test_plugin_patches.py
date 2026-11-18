@@ -46,7 +46,7 @@ class PrunePatches(unittest.TestCase):
         self.assertIn('smashline_ (1)', self.log[0])
 
     def test_an_unnamed_line_is_kept_only_if_the_seed_has_it(self):
-        self.write([SEED[0], 'main 3db774 38686928 d503201f'])
+        self.write([SEED[0], 'main 123458 38686928 d503201f'])   # (a line the seed does not have)
         skyline.prune_patches(self.p, {'smashline'}, self.log.append)
         self.assertEqual(self.read(), [SEED[0]])
         self.assertIn('no plugin named (1)', self.log[0])

@@ -77,8 +77,12 @@ namespace OpenSmash.Launcher
     {
         public const string Redirect = "http://127.0.0.1/callback";
         const string Api = "https://discord.com/api";
-        public const string LeaderboardUrl = "http://opensmash-lobby.duckdns.org:39421/leaderboard.json";
-        public static readonly string[] PublicLobbies = { "opensmash-lobby.duckdns.org:39421" };   // (the one public lobby; the North American one is gone)
+        // The official lobby's leaderboard and the lobbies asked, by DNS name (OpenSmash.Core.OfficialLobby); plain HTTP:
+        // the lobby serves no TLS, and the page is public.
+        public static string LeaderboardUrl(string? repo = null) => OpenSmash.Core.OfficialLobby.Page("/leaderboard.json", repo);
+        // (every region's lobby, the one played on first: a player's GSP records are merged from all of them and the shown
+        // name goes to each; an override's server alone)
+        public static string[] PublicLobbies(string? repo = null) => OpenSmash.Core.OfficialLobby.All(repo);
         static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
 
         public static string TokenPath(string repo) => Path.Combine(repo, "config", "discord_token.txt");
@@ -297,7 +301,7 @@ namespace OpenSmash.Launcher
         // The lobbies to ask: the public ones, and online_server.txt's own when it names another.
         public static List<string> Lobbies(string repo)
         {
-            var list = new List<string>(PublicLobbies);
+            var list = new List<string>(PublicLobbies(repo));
             string server = "";
             try
             {
@@ -306,7 +310,7 @@ namespace OpenSmash.Launcher
             }
             catch (IOException) { }
             string host = server.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
-            if (host != "" && !new[] { "auto", "na", "eu", "off", "lan" }.Contains(host.ToLowerInvariant()) && !host.StartsWith("smash.recomps.wtf", StringComparison.OrdinalIgnoreCase))
+            if (host != "" && !new[] { "off", "lan" }.Contains(host.ToLowerInvariant()) && !OpenSmash.Core.OfficialLobby.Means(host, repo))
             {
                 if (!host.Contains(':')) host += ":39420";
                 if (!list.Contains(host, StringComparer.OrdinalIgnoreCase)) list.Add(host);
@@ -359,10 +363,15 @@ namespace OpenSmash.Launcher
         // leaderboard.json: the player's global position and each fighter's (0: not ranked)
         public static async Task<(int Rank, Dictionary<int, int> Fighters)> Ranks(string repo, DiscordToken? t, CancellationToken cancel)
         {
-            // (a row's id is the Discord account's hash: one row per account, however many installs are linked to it)
-            if (t == null || t.UserId == "") return (0, new Dictionary<int, int>());
-            string text = await Http.GetStringAsync(LeaderboardUrl, cancel);
-            return RanksIn(text, AccountHash(t.UserId));
+            // (a row's id is the Discord account's hash: one row per account, however many installs are linked to it;
+            // a lobby before that keeps a row per install, so that id is looked for when the account's is not there)
+            string nsa = NsaId(repo);
+            bool account = t != null && t.UserId != "";
+            if (!account && nsa == "") return (0, new Dictionary<int, int>());
+            string text = await Http.GetStringAsync(LeaderboardUrl(repo), cancel);
+            var mine = account ? RanksIn(text, AccountHash(t!.UserId)) : (0, new Dictionary<int, int>());
+            if (mine.Item1 == 0 && mine.Item2.Count == 0 && nsa != "") mine = RanksIn(text, PlayerId(nsa));
+            return mine;
         }
 
         public static (int Rank, Dictionary<int, int> Fighters) RanksIn(string json, string playerId)
