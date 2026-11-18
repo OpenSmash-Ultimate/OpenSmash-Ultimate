@@ -89,15 +89,13 @@ WindowSmash's source-only tests use made-up data and need no game files. Run the
 ```
 python -m pip install -r tests/requirements-dev.txt
 python -m unittest discover -s tests -v
-cd tools
-python -m nex.selftest
 ```
 
 CI runs these workflows from [`.github/workflows/`](.github/workflows/):
 
 | Workflow | Runs on | What it checks |
 | :--- | :--- | :--- |
-| WindowSmash tests | Windows, Linux, macOS | The unit tests and the NEX server self-test. |
+| WindowSmash tests | Windows, Linux, macOS | The unit tests. |
 | Runtime compile | Windows, Linux, macOS | The whole runtime, with its platform layer, compiles and links into the game's program as a player's build makes it, on a made-up game (`tools/dev/runtime_compile_check.py`); on Windows and Linux for both instruction sets. Every runtime source is in the program unless the script lists it as left out on purpose, and none is in a subfolder no build looks in. |
 | ssbu-recomp Linux runtime | Linux | ssbu-recomp's host runtime compiles; its synthetic differential test, platform self-test and compile-scheduler test pass; `setup.py --tools-only` finds every tool and library the build needs; its log collector leaves game files out of a report. Its installer script, `install_deps.sh`, is only checked for syntax: the workflow installs the packages itself. |
 | ssbu-recomp macOS runtime | macOS (Apple silicon) | The same on macOS, where `install_mac.sh` does run. It also builds the glslang shim, checks that `setup.py` stops at the dump check when given an empty dump, and reports what MoltenVK offers on the runner. |

@@ -3,7 +3,7 @@
 # (no router change, no firewall prompt) - for menu-only checks of the netplay path.
 # Usage: tools/dev/netpair.sh <out prefix> [seconds]
 #   SSBU_INPUT_HOST, SSBU_INPUT_JOIN: each game's scripted input (see tools/dev/menurun.sh)
-#   SSBU_PAIR_RELAY=addr:port: both games join that relay (e.g. tools/ssbu_relay.py) instead of
+#   SSBU_PAIR_RELAY=addr:port: both games join that relay (e.g. a local lobby: tools/dev/netlobby.sh) instead of
 #     the first hosting one
 #   SSBU_JOIN_DELAY: seconds before the joining game starts (default 2) - two games booting at
 #     once run slower than one, enough to throw off scripted menu timings

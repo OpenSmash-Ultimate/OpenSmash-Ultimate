@@ -12,7 +12,7 @@
 #   host     the game as the host of a private room: it runs the relay the others join (UDP port
 #            39420, opened on the router with UPnP when the router allows it); the address to give
 #            them shows here, from netplay_address.txt, and in the overlay (F2)
-#   join     the game joining a host's room (or a standalone relay, tools/ssbu_relay.py)
+#   join     the game joining a host's room (or an online lobby)
 #   unlock   tools/unlock_all.py on the game's save, with the game closed
 #   miis     tools/miis.py import: your own Miis into miis/ (launchers/Import Miis.command)
 #   build    tools/build_game.py with WindowSmash's Python (launchers\Build WindowSmash.bat)

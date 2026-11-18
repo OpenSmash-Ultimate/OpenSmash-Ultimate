@@ -16,7 +16,7 @@ WindowSmash plays the game's **Local Wireless** mode over the internet. To the g
 - [Direct connections and your internet address](#direct-connections-and-your-internet-address)
 - [Private room](#private-room)
 - [If a room doesn't appear](#if-a-room-doesnt-appear)
-- [Run your own lobby](#run-your-own-lobby)
+- [A lobby of your own](#a-lobby-of-your-own)
 - [Rollback netplay through the lobby or a private room](#rollback-netplay-through-the-lobby-or-a-private-room)
 - [Logs and privacy](#logs-and-privacy)
 - [Reference: environment variables](#reference-environment-variables)
@@ -29,7 +29,7 @@ WindowSmash plays the game's **Local Wireless** mode over the internet. To the g
 | [**Lobby code**](#friends-only-a-lobby-code) | Friends only, through the lobby | None | `OpenSmash.exe` |
 | [**Online mode**](#online-mode-quickplay) | Quickplay with anyone searching (new) | None | `OpenSmash.exe` |
 | [**Private room**](#private-room) | A group with one host | The host may need to open a port | `launchers\Host SSBU Netplay.bat` and `launchers\Join SSBU Netplay.bat` |
-| [**Your own lobby**](#run-your-own-lobby) | Communities with a server | The server's port | `OpenSmash.exe` |
+| [**Your own lobby**](#a-lobby-of-your-own) | Communities with a server | The server's port | `OpenSmash.exe` |
 
 The online lobby is the easiest: nobody hosts anything outside the game, and nobody touches their router.
 
@@ -120,7 +120,7 @@ The game's own **Online** menu works with WindowSmash's game server, which runs 
 | What you see | What to check |
 | :--- | :--- |
 | An error as soon as you choose **Online** | Start the game with `OpenSmash.exe`, not the launcher's Offline lobby setting, and check that the overlay (<kbd>F1</kbd>) says `Online`. |
-| An error code starting with **2306** | The game can't reach the game server. The lobby in `online_server.txt` has none (port 39420, or a lobby of your own run with `ssbu_relay.py`), or something blocks TCP to it. |
+| An error code starting with **2306** | The game can't reach the game server. The lobby in `online_server.txt` has none (port 39420, or a lobby that runs without one), or something blocks TCP to it. |
 | Quickplay keeps waiting | Nobody with your lobby code is searching right now. Find players on the [OpenSmash-Ultimate Discord](https://discord.gg/pkgyYGf3YB). |
 | "The connection was interrupted due to excessive inactivity" or "... self-destructs" | The game's own Online rules: a player who stands still or falls off too often is sent back to the menu. |
 
@@ -160,10 +160,9 @@ How it behaves at a given round trip (two games on one PC, normal speed, the rou
 
 A re-run under 16.7 ms is not seen; one over it shows as a frame late. That is why the delay is the one-way trip in frames less one (1 only under 15 ms round trip, a home network; otherwise at least 2, up to ~115 ms 2, up to ~150 ms 3), and from 100 ms one way the whole trip in frames, at most 9: there a frame less made rollbacks of 4-6 frames, a fifth of them over the frame (120 ms one way: delay 6, 25 % of catch-ups over 16.7 ms; delay 7, under 5 %): with less, the re-runs get longer than a frame; with more, every press waits longer. The floor of 2 comes from a live two-PC match at a 40 ms round trip, with people playing: delay 1 made 1263 rollbacks in one fight, ran at about 50 frames a second and desynced; delay 2 made 15 rollbacks in two fights, 60 frames a second, in sync. The table above is from before it. The bots of these tests press something every few frames, far more changes than a person makes, so a real match rolls back less. "Fight hashes at the end": every frame's hash, as each game kept it once both players' inputs were known, compared over the whole match.
 
-Two games on one PC against a lobby of your own, for a test (each game in a folder of its own, with its own save and `netplay_id.txt`):
+Two games on one PC against a local lobby on 127.0.0.1:39421, for a test (each game in a folder of its own, with its own save and `netplay_id.txt`):
 
 ```powershell
-python tools/ssbu_online_lobby.py --bind 127.0.0.1 --port 39421 --state online-state --verbose
 # both games: started with --online, online_server.txt (or SSBU_NET_RELAY) naming 127.0.0.1:39421: rollback is on by default
 # tests only: SSBU_RB_NET_BOT=calm (a bot plays each game's player and stays on the stage; without it, the controllers play), SSBU_RB_DELAY_RULE=online (the Online mode's delay rule on the direct link: a pair under SSBU_NET_SIM chooses its own delay), SSBU_RB_NET_BOT_CSTICK=<player 1-8> (that player's bot jumps and pushes the C-stick in the air, its magnitude changing every frame: #181's case), SSBU_NET_SIM=<ms>[,<loss %>[,<jitter ms>]] (each game holds what it receives that long), SSBU_RB_ONLINE_MODE=<n> (the fight set up with melee mode n: 1 gives a Local Wireless room's fight the room's own mode back, as before #181's fix), SSBU_RB_TEST_TIME=<s> (the host's time limit set to that many seconds: with idle players, a tie and its sudden death), SSBU_RB_SUDDEN_DEATH=0 (a tie ends the match at TIME! instead of the sudden death played under rollback)
 ```
@@ -199,7 +198,7 @@ The overlay's second line shows each player in your room, for example `Room: Bra
 | `relayed (direct off here)` | You turned them off. |
 | `relayed (older game)` | That player's WindowSmash is too old for direct connections. |
 
-Direct connections need a lobby running this version of `tools/ssbu_relay.py`. With an older lobby, or a player with an older WindowSmash, play goes through the lobby as before.
+Direct connections need a lobby of this version (the public lobby is). With an older lobby, or a player with an older WindowSmash, play goes through the lobby as before.
 
 > [!NOTE]
 > **Your internet address.** The players in a room with you learn your internet (IP) address, as they would when playing online on a console. The lobby introduces only players whose games are already playing together in a room, and introduces each player in at most 20 rooms an hour.
@@ -272,7 +271,7 @@ If your internet provider uses carrier-grade NAT, or your router sits behind ano
 | :--- | :--- |
 | The overlay stays on `connecting` | The host's address and port, that the host's game is still running, the host's firewall rule for incoming UDP, the router's port mapping, and whether the relay can be reached. |
 | `Netplay: no room on this network yet (still looking)` | Set to this network, the game hasn't heard a host of its version yet. Check that the host's game is hosting, that both PCs are on the same network (not a guest Wi-Fi that keeps devices apart), and that the host's **Direct connections** is on. With `SSBU_NET_LOG=1` the log names every room heard. |
-| `no answer from … - playing offline` | The lobby in `online_server.txt` hasn't answered for five seconds. Check the address with `python tools/ssbu_relay.py --probe <address>`. |
+| `no answer from … - playing offline` | The lobby in `online_server.txt` hasn't answered for five seconds. Check the address, and that the lobby is running. |
 | `Netplay: WindowSmash needs game 13.0.5: run the installer again` | Your game was built from another version of the game, by an older WindowSmash. Put the game's 13.0.5 update in your game folder and run `OpenSmash.exe` again: it sets the folder up again as 13.0.5, keeping your save and settings ([how](UPDATES.md#a-folder-built-from-another-version)). |
 | `Netplay: the host runs other mods` (or `another game version`, `another WindowSmash version`) | The lines under it say what differs: the mods only the room has, the ones you have in another copy, the ones only you have, or the code patches on one side only. Turn mods on or off on the settings' **Mods** page (or in the launcher) to match, and restart. |
 | Online, a room is missing from the list | Both players need the same lobby code (or none), and both overlays must say `Online`. The list refreshes every few seconds. |
@@ -286,34 +285,11 @@ If your internet provider uses carrier-grade NAT, or your router sits behind ano
 
 In a private room, the host has no relay hop to itself; each joining player's traffic goes through the host's relay, including traffic between two joining players. Local Wireless was designed for players in the same room, so internet delay can change how the game behaves.
 
-## Run your own lobby
+## A lobby of your own
 
-`tools/ssbu_relay.py` is the online lobby. It needs **Python 3.8 or newer**, a UDP port others can reach, and no game files:
+The lobby server is not part of this repository. A community that runs a lobby gives its players an address: put it in `online_server.txt` (or the launcher's **Lobby** setting, **Your own server**, as `host:port`) and start the game with `OpenSmash.exe`. A lobby with Online mode needs **TCP as well as UDP** on its port.
 
-```powershell
-python tools/ssbu_relay.py --port 39420 --verbose
-```
-
-1. Let incoming UDP 39420 through that machine's firewall, and any network firewall in front of it, and UDP 39430 too: the lobby's NAT port (`--nat-port`, the lobby's port + 10 unless given; `0` for none), where games compare their routers' ports for direct paths. ssbu-recomp's games on `--su-port` 39500 use 39510 (`--su-nat-port`).
-2. Every player puts the lobby's address in `online_server.txt` and starts the game with `OpenSmash.exe`.
-3. One player creates a Local Wireless room; the others pick it.
-
-`launchers\Join SSBU Netplay.bat` with the lobby's address works too; the room name then acts as the lobby code.
-
-| Task | How |
-| :--- | :--- |
-| Check that a lobby answers | `python tools/ssbu_relay.py --probe <address>` |
-| Install it on a Linux server | `tools/deploy/deploy_lobby.sh <ssh host> install` sets it up as a sandboxed systemd service, `ssbu-lobby`. |
-| Turn addresses away | `--banlist FILE` refuses the addresses or networks listed in that file, and re-reads it when it changes. |
-| Watch it | It logs a line of statistics every minute. |
-
-To offer [Online mode](#online-mode-quickplay) too, run `tools/ssbu_online_lobby.py` in place of `ssbu_relay.py`. It takes the same options, plus `--state <folder>` for the players' accounts and ratings, and it needs **TCP as well as UDP** on its port:
-
-```powershell
-python tools/ssbu_online_lobby.py --port 39421 --state online-state --verbose
-```
-
-`tools/deploy/deploy_online_lobby.sh <ssh host> install` sets it up on a Linux server as the service `ssbu-online`, next to `ssbu-lobby`. Its game server lets each player act only on their own account and on matches they're in, and limits how much each connection can ask of it.
+To play with a group without any server, use a [private room](#private-room): the host's game is the relay. Players on one network can also pick **This network (LAN)**: the game finds a private room hosted on the network by itself.
 
 The lobby checks where messages come from, limits how fast each player can send, and carries each room's traffic only between that room's players. A game accepts direct packets only from addresses the lobby gave it, carrying that pair's secret, and only from players in its own room. Even so, it's a transport for players you trust: lobby codes and room names aren't passwords, and the traffic isn't encrypted or authenticated.
 
@@ -328,10 +304,9 @@ Rollback netplay (`SSBU_RB=1`, being tried out: [technical guide](TECHNICAL.md#r
 - **Who is player 1:** with `SSBU_RB_NET=relay` (or `relay,auto`), the players are numbered by their address in the room, lowest first, once the room has `SSBU_RB_NET_PLAYERS` players (2 by default; set the same on every PC). In a private room the host's game is player 1.
 - **A lobby code without a room:** players of one lobby code (not `smash`) who aren't in a Local Wireless room together give their numbers instead: `relay,0` for the host, `relay,1` (or `relay,-1`: the host gives one) for the others, with `SSBU_NET_PROTOCOL=3`.
 
-Two games on one PC through your own lobby, for a test:
+Two games on one PC through a local lobby on 127.0.0.1:39420, for a test:
 
 ```powershell
-python tools/ssbu_relay.py --bind 127.0.0.1
 # host:   SSBU_RB=1 SSBU_NET_RELAY=127.0.0.1:39420 SSBU_NET_PROTOCOL=3 SSBU_NET_ROOM=rbtest SSBU_RB_NET=relay,0
 # joiner: SSBU_RB=1 SSBU_NET_RELAY=127.0.0.1:39420 SSBU_NET_PROTOCOL=3 SSBU_NET_ROOM=rbtest SSBU_RB_NET=relay,1
 ```
@@ -340,7 +315,7 @@ python tools/ssbu_relay.py --bind 127.0.0.1
 
 The launchers write `build\play.log`. For more network detail, set `SSBU_NET_LOG=1` before starting the game (`2` logs every call). Logs and the overlay can show player names, folder names and internet addresses, so read any excerpt before you share it. With Online mode, the lobby's game server also keeps your player name and ratings.
 
-The game server's log (`--nex-log`: `0` quiet, `1` each call, `2` every packet, `3` also a copy of each call's parameters in `<state>/requests`, never a login's; `ssbu-online` runs at `1`) names players by name, player ID and account tag: the first 8 hex digits of a SHA-256 of their account id. At no level does it hold the account id itself or the login token. The account id is what logs a player in, so anyone who has it can play as them. The accounts file in the `--state` folder does hold every player's account id, so keep that folder private. Game server logs from before this change hold each player's account id in full: delete them.
+The public lobby's game server log names players by name, player ID and account tag: the first 8 hex digits of a SHA-256 of their account id. It never holds the account id itself or the login token. The account id is what logs a player in, so anyone who has it can play as them: keep `netplay_id.txt` to yourself.
 
 ## Reference: environment variables
 

@@ -1,5 +1,5 @@
 """Direct paths through routers that change ports (runtime/net_relay.c, "direct connections"; the lobby's
-side in tools/ssbu_relay.py): two games' netplay clients (tools/dev/netv3test.c) in one room of the real
+side in the lobby server): two games' netplay clients (tools/dev/netv3test.c) in one room of the real
 lobby on 127.0.0.1, each behind a router simulated in the client (SSBU_NET_TEST_NAT):
   1 cone, port-restricted   2 symmetric, random ports   3 symmetric, ports in turn   4 cone, address-restricted
 The case players reported (a router that gives the lobby one port and the other player another, so
@@ -22,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_net_client_v3 import BCAST, ClientTest, HAVE_CLANG, R, Server, build, info_of, until  # noqa: E402
+from netproto import HAVE_LOBBY, NO_LOBBY  # noqa: E402
 
 
 class FakeGateway:
@@ -55,6 +56,7 @@ class FakeGateway:
 
 
 @unittest.skipUnless(HAVE_CLANG, "needs clang on x86-64 Linux or an Apple silicon Mac, or clang-cl on Windows (deps\\llvm)")
+@unittest.skipUnless(HAVE_LOBBY, NO_LOBBY)
 class Routers(ClientTest):
     @classmethod
     def setUpClass(cls):   # (a netv3test of its own: test_net_client_v3's goes when that module ends)
