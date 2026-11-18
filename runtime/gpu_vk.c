@@ -3922,10 +3922,10 @@ again:
         if (!InterlockedCompareExchange(&warm_taken[i], 1, 0)) {
             warm_one((u32)i);
             InterlockedExchange(&warm_taken[i], 2);
+            InterlockedIncrement(&warm_ndone);   /* (records, once each) */
         } else
             while (warm_taken[i] == 1) Sleep(1);
         InterlockedIncrement(&warm_groups[g].done);
-        InterlockedIncrement(&warm_ndone);
     }
     if (worker) { InterlockedDecrement(&warm_workers); worker = 0; }
     if (!InterlockedDecrement(&warm_running)) {
