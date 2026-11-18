@@ -190,6 +190,22 @@ HLE_WRAP(71016d7730) {
         static long undone;
         if (keep < 0) { const char *e = getenv("SSBU_RB_STEP_END"); keep = e && *e == '1'; }
         u8 asked = ld8(self + 0x63);
+        {   /* (the sudden death's new session, states 1-3, before the step's match state: the game's check answers "over"
+             * again there at once - the first fight's result - and asks it, kind 1, in 30 frames: latch 1 at state 1 in a
+             * pair whose states 1-3 took a few calls (wF1). Taken back, the latch with it, as at state 4 below: with more
+             * calls in states 1-3 (a slow link) the new session would end there, the sudden death never played. The latch
+             * stays set: cleared, the step would ask the game again at every call, main+0x16b9520 with it) */
+            int rb_sd_hold_now(void);
+            u8 st = ld8(self + 0x62);
+            if (!keep && sd_ended && rb_sd_hold_now() && rb_online_match_now() > 0 && st >= 1 && st <= 3 && asked == 1) {
+                static long sd_undone;
+                if (++sd_undone <= 5)
+                    fprintf(stderr, "[net] rollback's Online match, a sudden death's hold: the game's own \"over\" in the new session taken back "
+                                    "(state %u, latch %u; %ld so far)\n", st, ld8(self + 0x5E), sd_undone);
+                st8(self + 0x63, 0); st16(self + 0x64, 0); st16(self + 0x66, 0);
+                asked = 0;
+            }
+        }
         if (!keep && rb_online_match_now() > 0 && ld8(self + 0x62) == 4 && rb_sd_end_let(self)) {
             /* (the step stays left out; its count down to the end, and the end itself, as its tail does them: +0x66
              * down by one a call, main+0x16cced0 when it reaches 0. The step's state 6 then runs on the next call.) */
@@ -198,6 +214,19 @@ HLE_WRAP(71016d7730) {
             else if (left == 1) {
                 st16(self + 0x66, 0);
                 sd_ended = 1;
+                /* (+0x5e: the step's latch of the game's own "the match is over" - main+0x16d5e50 asks main+0x16acd30 while it
+                 * is 0 and keeps the answer there. At TIME! of a tie the game sometimes answers "over" before the sudden death
+                 * is set up (kind 1 asked at the fight's last logic frame, taken back above, the latch left at 1): the
+                 * session then ended with that latch set, the scene took the match as over - no new session, the game left
+                 * the gathering, the pad frame controller stayed in its online mode, both games stalled 10 s and split
+                 * (wsdB2, sdB1 2026-11-17; every passing tie had 0 there). The sudden death is the match going on: cleared.
+                 * SSBU_RB_SD_KEEP_LATCH=1: left set, as before) */
+                const char *keep_latch = getenv("SSBU_RB_SD_KEEP_LATCH");
+                if (ld8(self + 0x5E) && !(keep_latch && *keep_latch == '1')) {
+                    fprintf(stderr, "[net] rollback's Online match, a sudden death's hold: the step's \"match over\" latch (+0x5e = %u) cleared\n",
+                            ld8(self + 0x5E));
+                    st8(self + 0x5E, 0);
+                }
                 fprintf(stderr, "[net] rollback's Online match, a sudden death's hold: the step's session ended as the game ends it (kind %u, code %u; "
                                 "logic frame %u)\n", asked, ld16(self + 0x64), ld32(0x71052c5184ull));
                 static Cpu keep_c;

@@ -59,7 +59,9 @@ class OnlineMatch(unittest.TestCase):
         self.assertIn('f_71017880c0_orig(c);', core, 'the game\'s own record built again from its panel')
         self.assertIn('memcpy(online_rec[idx], P(u8, rec), ONLINE_REC); online_rec_have[idx] = 1;', core)
         self.assertIn('online_restore();   /* (an Online match: the game\'s own set-up back for its results) */', core)
-        self.assertIn('memcpy(P(u8, MELEE_INFO), online_hdr, ONLINE_HDR);', core)
+        self.assertIn('if (all || (k != 9 && k != 0xa) || now == online_hdr_rb[k]) { st8(MELEE_INFO + k, online_hdr[k]); undone++; continue; }', core,
+                      'the header put back but for a sudden death: + 9 and + 0xa kept (Wuhu Island crashed at the results with + 0xa back to 0)')
+        self.assertIn('memcpy(online_hdr_rb, P(u8, MELEE_INFO), ONLINE_HDR); online_hdr_rb_have = 1;', core)
         # a Local Wireless room's match: its results on rollback's set-up, every player local (#180)
         self.assertIn('online_match = 1; online_lw = mode != ONLINE_MELEE && mode != ARENA_MELEE;', core,
                       'Quickplay and Battle Arena matches get the game set-up back; Local Wireless room matches do not')
