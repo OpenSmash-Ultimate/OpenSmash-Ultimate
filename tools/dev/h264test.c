@@ -99,6 +99,7 @@ int main(int argc, char **argv) {
         size = h264_strip_end_units(bits, size);
         u32 at = 0;
         if (h264_starts_idr(bits, size)) {
+            if (jobs) h264_drain(got, NULL);   /* (as gpu_host1x.c: what the decoder held back, before a new sequence) */
             const char *why = NULL;
             at = h264_write_headers(setup, buf, sizeof buf, &why);
             if (!at) { printf("job %u: headers not written: %s\n", jobs, why ? why : "no room"); unload(&j); jobs++; continue; }

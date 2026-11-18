@@ -70,13 +70,13 @@ uint32_t h264_write_headers(const uint8_t *s, uint8_t *out, uint32_t cap, const 
      * change the default reference lists of B pictures (8.2.4.2.3). */
     uint32_t refs = (l0 > l1 ? l0 : l1) + 1;
     uint32_t mbs = width * height * (frames_only ? 1 : 2);
-    /* the smallest level whose decoded picture buffer holds them (A.3.1, table A-1), so that a
-     * decoder holds back as few pictures as it can */
-    static const struct { uint8_t level; uint32_t dpb_mbs; } levels[] = {
-        {30, 8100}, {31, 18000}, {32, 20480}, {40, 32768}, {42, 34816}, {50, 110400}, {51, 184320}};
+    /* the smallest level that takes the frame size and whose decoded picture buffer holds them
+     * (A.3.1, table A-1), so that a decoder holds back as few pictures as it can */
+    static const struct { uint8_t level; uint32_t frame_mbs, dpb_mbs; } levels[] = {
+        {30, 1620, 8100}, {31, 3600, 18000}, {32, 5120, 20480}, {40, 8192, 32768}, {42, 8704, 34816}, {50, 22080, 110400}, {51, 36864, 184320}};
     uint32_t level = 52;
     for (uint32_t i = 0; i < sizeof levels / sizeof *levels; i++)
-        if (levels[i].dpb_mbs / mbs >= refs) { level = levels[i].level; break; }
+        if (levels[i].frame_mbs >= mbs && levels[i].dpb_mbs / mbs >= refs) { level = levels[i].level; break; }
     Bits b = {out, cap, 0, 0, 0, 0, 0};
     start(&b, 0x67);   /* SPS */
     put_bits(&b, 8, 100);   /* profile_idc: High */
@@ -182,7 +182,6 @@ uint32_t h264_strip_end_units(const uint8_t *d, uint32_t size) {
 /* (defined here: mfplat.dll is loaded when a movie first needs it, and these come from no import library) */
 DEFINE_GUID(H264_CLSID_DECODER, 0x62CE7E72, 0x4C71, 0x4D20, 0xB1, 0x5D, 0x45, 0x28, 0x31, 0xA8, 0x7D, 0x9D);   /* CLSID_CMSH264DecoderMFT */
 DEFINE_GUID(H264_IID_TRANSFORM, 0xBF94C121, 0x5B05, 0x4E6F, 0x80, 0x00, 0xBA, 0x59, 0x89, 0x61, 0x41, 0x4D);   /* IID_IMFTransform */
-DEFINE_GUID(H264_IID_2DBUFFER, 0x7DC9D5F9, 0x9ED9, 0x44EC, 0x9B, 0xBF, 0x06, 0x00, 0xBB, 0x58, 0x9F, 0xBB);    /* IID_IMF2DBuffer */
 DEFINE_GUID(H264_LOW_LATENCY, 0x9C27891A, 0xED7A, 0x40E1, 0x88, 0xE8, 0xB2, 0x27, 0x27, 0xA0, 0x24, 0xEE);     /* CODECAPI_AVLowLatencyMode */
 
 static struct {
@@ -203,7 +202,7 @@ static int pick_output(void) {
                  SUCCEEDED(IMFTransform_SetOutputType(mf.t, 0, type, 0));
         if (ok) {
             UINT64 size = 0;
-            IMFMediaType_GetUINT64(type, &MF_MT_FRAME_SIZE, &size);
+            if (FAILED(IMFMediaType_GetUINT64(type, &MF_MT_FRAME_SIZE, &size))) size = 0;   /* (0: pictures are skipped) */
             mf.width = (uint32_t)(size >> 32);
             mf.height = (uint32_t)size;
         }
@@ -255,7 +254,7 @@ static int mf_start(void) {
 
 /* Every picture the decoder has ready, to `got`. */
 static void take_pictures(H264Picture got, void *user) {
-    for (;;) {
+    for (int changes = 0;;) {
         MFT_OUTPUT_STREAM_INFO info;
         memset(&info, 0, sizeof info);
         if (FAILED(IMFTransform_GetOutputStreamInfo(mf.t, 0, &info))) return;
@@ -277,7 +276,7 @@ static void take_pictures(H264Picture got, void *user) {
         if (hr == MF_E_TRANSFORM_STREAM_CHANGE) {   /* the first picture's size: the output type again */
             if (ob.pSample && ob.pSample != sample) IMFSample_Release(ob.pSample);
             if (sample) IMFSample_Release(sample);
-            if (!pick_output()) return;
+            if (++changes > 3 || !pick_output()) return;
             continue;
         }
         if (FAILED(hr)) {   /* (MF_E_TRANSFORM_NEED_MORE_INPUT: nothing ready) */
@@ -286,22 +285,23 @@ static void take_pictures(H264Picture got, void *user) {
             return;
         }
         IMFSample *out = ob.pSample;
+        if (!out) {   /* (no picture after all) */
+            if (sample) IMFSample_Release(sample);
+            return;
+        }
         LONGLONG tag = 0;
         IMFSample_GetSampleTime(out, &tag);
         if (SUCCEEDED(IMFSample_ConvertToContiguousBuffer(out, &buf))) {
+            /* Locked whole, a frame is contiguous (a 2D buffer gives a packed copy): its rows' pitch is
+             * what the length says, the chroma rows after the luma ones. */
             BYTE *data = NULL;
-            LONG pitch = (LONG)mf.width;
-            IMF2DBuffer *two = NULL;
-            int locked2d = 0;
-            if (SUCCEEDED(IMFMediaBuffer_QueryInterface(buf, &H264_IID_2DBUFFER, (void **)&two)) &&
-                SUCCEEDED(IMF2DBuffer_Lock2D(two, &data, &pitch)))
-                locked2d = 1;
             DWORD length = 0;
-            if (!locked2d && FAILED(IMFMediaBuffer_Lock(buf, &data, NULL, &length))) data = NULL;
-            if (data && pitch > 0) got(user, (uint64_t)tag, mf.width, mf.height, data, data + (size_t)pitch * mf.height, (uint32_t)pitch);
-            if (locked2d) IMF2DBuffer_Unlock2D(two);
-            else if (data) IMFMediaBuffer_Unlock(buf);
-            if (two) IMF2DBuffer_Release(two);
+            if (SUCCEEDED(IMFMediaBuffer_Lock(buf, &data, NULL, &length))) {
+                uint32_t pitch = mf.height ? (uint32_t)((uint64_t)length * 2 / (3ull * mf.height)) : 0;
+                if (data && mf.width && pitch >= mf.width)
+                    got(user, (uint64_t)tag, mf.width, mf.height, data, data + (size_t)pitch * mf.height, pitch);
+                IMFMediaBuffer_Unlock(buf);
+            }
             IMFMediaBuffer_Release(buf);
         }
         IMFSample_Release(out);

@@ -326,7 +326,7 @@ static void h264_picture(void *user, u64 tag, u32 w, u32 h, const u8 *y, const u
 }
 
 static void h264_execute(Engine *e) {
-    static int off;   /* 1: no decoder here, or a stream whose headers are not written */
+    static int off;   /* 1: no decoder here */
     if (off) return;
     u64 left, bits_left;
     u64 pg = to_guest((u64)e->regs[0x101] << 8, &left);
@@ -345,15 +345,22 @@ static void h264_execute(Engine *e) {
         unit = grown;
         cap = need;
     }
-    if (h264_starts_idr(P(u8, bg), size)) {   /* a new sequence: the parameter sets first */
+    static int skipping, fed;   /* skipping: a sequence whose headers could not be written, up to its end */
+    if (h264_starts_idr(P(u8, bg), size)) {   /* a new sequence (or a new movie): the parameter sets first */
+        /* The decoder holds back the last pictures of what came before (a movie that ended: the
+         * game appends end units to every frame, so nothing says so sooner): out with them first. */
+        if (fed) h264_drain(h264_picture, NULL);
+        fed = 0;
         const char *why = NULL;
         head = h264_write_headers(P(u8, pg), unit, cap, &why);
+        skipping = !head;
         if (!head) {
-            fprintf(stderr, "[nvdec] H.264: the stream has %s, which is not written here: H.264 movies stay black\n", why ? why : "a setup too large");
-            off = 1;
-            return;
+            static int complaints;
+            if (complaints++ < 10)
+                fprintf(stderr, "[nvdec] H.264: a stream with %s, which is not written here: it stays black\n", why ? why : "a setup too large");
         }
     }
+    if (skipping) return;
     memcpy(unit + head, P(u8, bg), size);
     u32 slot = (u32)(h264_tag % 64);
     h264_jobs[slot].tag = h264_tag;
@@ -361,6 +368,7 @@ static void h264_execute(Engine *e) {
     h264_jobs[slot].w = ld32(pg + 0x64) * 16;
     h264_jobs[slot].h = ld32(pg + 0x68) * 16 * (ld32(pg + 0x60) & 1 ? 1 : 2);
     int r = h264_decode(unit, head + size, h264_tag++, h264_picture, NULL);
+    fed = 1;
     if (r < 0) off = 1;
     else if (!r) {
         static int complaints;
