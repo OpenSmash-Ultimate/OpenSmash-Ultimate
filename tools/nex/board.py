@@ -359,13 +359,15 @@ class Board:
                 "ranked": self.ranks(now)[2], "matches": self.matches.summary()}
 
     def meta_posted(self, pid):
-        """(services: DataStore 21, posted by every game of a Quickplay or Battle Arena match on this game server as it
-        is set up) counted once a gathering a match (nex/matches.py)."""
+        """(services: DataStore 21, posted by every game of a Quickplay match on this game server as it is set up)
+        counted once a gathering a match (nex/matches.py). Not in a Battle Arena's gathering: arenas are counted from
+        the games' reports (POST /match/played), and a post there too would count its match twice."""
         mm, arenas = getattr(self.nex, "matchmaking", None), getattr(self.nex, "arenas", None)
         for ms in (mm.sessions.values() if mm is not None else ()):
             if pid in ms.participants:
-                arena = arenas is not None and bool(arenas.id_of.get(ms.gid, ""))
-                return self.matches.lobby_post(("g", ms.gid), "arena" if arena else "quickplay")
+                if arenas is not None and arenas.id_of.get(ms.gid, ""):
+                    return False
+                return self.matches.lobby_post(("g", ms.gid), "quickplay")
         return self.matches.lobby_post(("p", pid), "quickplay")
 
     # ---- a player's own --------------------------------------------------------------------------

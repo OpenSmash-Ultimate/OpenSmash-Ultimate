@@ -9,11 +9,14 @@ Where a match is learnt, one source a match:
     game of that one match: counted once, whoever sends it first. Not exact (the game's own netcode, no seed): the id is
     the players' addresses and the mode, the same for the next match of the same players, so a report of it within
     WINDOW seconds of the first is the same match.
-    A report of a Quickplay or Battle Arena match played on the lobby's own game server ("via": "lobby") is not
-    counted: that match is counted below, for every version of the game.
-  - The lobby's own game server: DataStore method 21 (PostMetaBinary) is posted by every game of a Quickplay or Battle
-    Arena match as it is set up (seen on both games of every match of the v0.4.0 regression runs); the posts of one
-    gathering within LOBBY_WINDOW seconds are one match.
+    A report of a Quickplay match played on the lobby's own game server ("via": "lobby") is not counted: that match
+    is counted below, for every version of the game. A Battle Arena match is counted from the reports alone, over
+    the lobby as over EOS: its games post no DataStore 21 (none in the v0.4.1 and #458 arena pairs, two in every
+    Quickplay pair), so refusing them left the arenas' count at 0.
+  - The lobby's own game server: DataStore method 21 (PostMetaBinary) is posted by every game of a Quickplay match
+    as it is set up (seen on both games of every Quickplay match of the v0.4.0 regression runs); the posts of one
+    gathering within LOBBY_WINDOW seconds are one match. One in an arena's gathering is not counted (the reports
+    count the arenas: one source a match).
   - Estimated, v0.4.0 over EOS (which sends no report): a /gsp/sync from a game that sends no reports (its body has no
     "m") follows each fighter record the game posts - one of every player as a match is set up, and after the fight
     from some of them - so every second such sync (one a player at most every LEGACY_EVERY seconds) is counted as a
@@ -114,7 +117,7 @@ class Matches(JsonStore):
         if last is not None and when - last < REPORT_EVERY:
             return 429, b'{"error":"too many reports"}'
         self.report_at[pid] = when
-        if d["via"] == "lobby" and d["mode"] in ("quickplay", "arena"):
+        if d["via"] == "lobby" and d["mode"] == "quickplay":   # (DataStore 21 counts it; an arena posts none)
             return 200, b'{"ok":true,"counted":false,"why":"the lobby counts it"}'
         key = ("x" if d["exact"] else "w") + d["id"]
         seen = self.data["seen"].get(key)
