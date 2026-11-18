@@ -166,4 +166,5 @@ int gfx_present_again(void) {
 static int vk_drawing(void) { return gfx_backend.present != start_present && gfx_backend.present != d3d11_present; }
 void gfx_match_want(unsigned long long key, int first) { if (vk_drawing()) vk_match_want(key, first); }
 void gfx_match_wait(void) { if (vk_drawing()) vk_match_wait(); }
+void gfx_warm_hint(unsigned long long key, int pick) { if (vk_drawing()) vk_warm_hint(key, pick); }
 #endif

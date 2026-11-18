@@ -156,6 +156,7 @@ static void (*sleep_tick)(void);
 void Sleep(DWORD ms) { (void)ms; if (sleep_tick) sleep_tick(); }
 void gfx_match_want(unsigned long long key, int first) { (void)key; (void)first; }   /* (gpu_backend.c: no renderer here) */
 void gfx_match_wait(void) {}
+void gfx_warm_hint(unsigned long long key, int pick) { (void)key; (void)pick; }
 void rt_upnp_remove(void) { fprintf(stderr, "(the relay's port mapping removed)\n"); }
 void ExitProcess(UINT code) { fflush(NULL); _exit((int)code); }
 
