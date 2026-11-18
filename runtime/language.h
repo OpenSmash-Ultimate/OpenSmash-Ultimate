@@ -43,3 +43,27 @@ static const char *language_pick(const char *name) {
         if (language_eq(n, LANGUAGE_CODES[i], 2) && !LANGUAGE_CODES[i][2]) return LANGUAGE_CODES[i];
     return "en-US";
 }
+
+/* The text language the game keeps in its system save (system_data.bin, the byte at
+ * LANGUAGE_SAVE_OFFSET): written once, when the save is made, from the language the game was
+ * given then; from then on the game shows its text in that language, whatever it is given. It
+ * is the language without the region: the game's table at main+0x4742e80 (13.0.5) gives it
+ * for each of its 14 languages, and new saves made with each code here agreed. -1: none. */
+enum { LANGUAGE_SAVE_OFFSET = 0x3C6098, LANGUAGE_SAVE_FILE_SIZE = 5982968 };
+static inline int language_save_value(const char *code) {
+    static const struct { const char *code; int value; } SAVE[] = {
+        {"ja", 0}, {"en-US", 1}, {"en-GB", 1}, {"fr", 2}, {"fr-CA", 2}, {"es", 3}, {"es-419", 3},
+        {"de", 4}, {"it", 5}, {"nl", 6}, {"ru", 7}, {"zh-Hans", 8}, {"zh-Hant", 9}, {"ko", 10}};
+    for (size_t i = 0; code && i < sizeof SAVE / sizeof *SAVE; i++)
+        if (!strcmp(code, SAVE[i].code)) return SAVE[i].value;
+    return -1;
+}
+
+/* Whether a name is a language the game has (language_pick's en-US is then not its fallback). */
+static inline int language_known(const char *name) {
+    static const char *const HAS[] = {"ja", "en", "fr", "de", "it", "es", "zh", "ko", "nl", "ru"};
+    if (!name || !name[0] || !name[1] || (name[2] && name[2] != '-' && name[2] != '_')) return 0;
+    for (size_t i = 0; i < sizeof HAS / sizeof *HAS; i++)
+        if (language_eq(name, HAS[i], 2)) return 1;
+    return 0;
+}
