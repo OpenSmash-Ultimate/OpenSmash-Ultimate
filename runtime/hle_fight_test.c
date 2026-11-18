@@ -431,21 +431,41 @@ void test_fight_presented(void) {
  * end, before the match loads, the game waits for them (gfx_match_wait) - on a first start, where the driver compiles each
  * pipeline from nothing, a longer wait on the select screen instead of compiles during the fight. (Not at the fight's first
  * frame line: the stage and the fighters' entrances are drawn before it.) After the debug match's own record hook (an
- * inner order: its fighters and stage are the ones set). */
+ * inner order: its fighters and stage are the ones set). The human players' fighters and the stage are also counted for the
+ * next starts, whose warm start makes the most played ones first (gfx_warm_hint pick 1: record + 0xa, the type, 0 a human);
+ * and outside fights each frame end looks at the stage screen's choice (STAGE_CHOICES' entry in use, 0x69 << 56 | hash40
+ * once one is chosen): a new one has its pipelines made next (gfx_warm_hint pick 0), before the match is set up. */
 void gfx_match_want(unsigned long long key, int first);   /* gpu_backend.c */
 void gfx_match_wait(void);
+void gfx_warm_hint(unsigned long long key, int pick);
 static volatile LONG shaders_pending;
+static u64 shaders_stage_seen;
 static void shaders_record(Cpu *c, const u64 args[8], void *ctx) {
     (void)c; (void)ctx;
     int idx = (int)args[1];
     u64 rec = args[3];
-    if (idx == 0) gfx_match_want(ld64(stage_choice()) & 0xFFFFFFFFFFull, 1);
-    if (rec && (i8)ld8(rec + 8) >= 0) gfx_match_want(ld64(rec) & 0xFFFFFFFFFFull, 0);
+    if (idx == 0) {
+        u64 stage = ld64(stage_choice()) & 0xFFFFFFFFFFull;
+        gfx_match_want(stage, 1);
+        gfx_warm_hint(stage, 1);
+        shaders_stage_seen = stage;
+    }
+    if (rec && (i8)ld8(rec + 8) >= 0) {
+        gfx_match_want(ld64(rec) & 0xFFFFFFFFFFull, 0);
+        if (ld8(rec + 0xa) == 0) gfx_warm_hint(ld64(rec) & 0xFFFFFFFFFFull, 1);
+    }
     InterlockedExchange(&shaders_pending, 1);
 }
 static void shaders_end(Cpu *c, const u64 args[8], void *ctx) {
     (void)c; (void)args; (void)ctx;
     if (shaders_pending && InterlockedExchange(&shaders_pending, 0)) gfx_match_wait();
+    else if (!fight_flag) {
+        u64 choice = ld64(stage_choice());
+        if (choice >> 56 == 0x69 && (choice & 0xFFFFFFFFFFull) != shaders_stage_seen) {
+            shaders_stage_seen = choice & 0xFFFFFFFFFFull;
+            gfx_warm_hint(shaders_stage_seen, 0);
+        }
+    }
 }
 
 /* ---- start --------------------------------------------------------------------------------- */

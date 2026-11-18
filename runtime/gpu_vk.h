@@ -20,3 +20,6 @@ int vk_present_again(void);
  * waits for them (the warm start's groups, gpu_vk.c). */
 void vk_match_want(unsigned long long key, int first);
 void vk_match_wait(void);
+/* (gpu_backend.c's gfx_warm_hint, hle_fight_test.c) pick 1: a human player's fighter or the stage of the match being set up,
+ * counted for the next starts (warm_picks.txt); pick 0: the stage the stage screen chose, its pipelines made next. */
+void vk_warm_hint(unsigned long long key, int pick);
