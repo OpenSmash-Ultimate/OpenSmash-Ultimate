@@ -3203,7 +3203,7 @@ static void warm_list_open(void) {
     if (slash) { strcpy(slash + 1, "vulkan_pipelines.warm"); ship = read_file(shipped, &ship_size); }
     if (!ship) ship = read_file("media/vulkan_pipelines.warm", &ship_size);
     if (ship && (ship_size < sizeof head || memcmp(ship, &head, sizeof head))) { free(ship); ship = NULL; }
-    int joined = 0;
+    int joined = 0, fresh = 0;
     if (ship) {
         if (data && size >= sizeof head && !memcmp(data, &head, sizeof head)) {
             size_t extra = (ship_size - sizeof head) / sizeof(WarmRecord) * sizeof(WarmRecord);
@@ -3223,6 +3223,7 @@ static void warm_list_open(void) {
             data = ship;
             size = ship_size;
             joined = 1;
+            fresh = 1;   /* (no list of this card's yet, or not one of this translator: written below, header first) */
             fprintf(stderr, "[vulkan] warm start: the shipped list of pipelines, %u records (none for this card yet)\n", (u32)((size - sizeof head) / sizeof(WarmRecord)));
         }
     }
@@ -3231,7 +3232,9 @@ static void warm_list_open(void) {
     if (data && (size < sizeof head || memcmp(data, &head, sizeof head))) { size = 0; rewrite = 1; }
     else if (data) {
         u32 listed = (u32)((size - sizeof head) / sizeof(WarmRecord));
-        rewrite = (size - sizeof head) % sizeof(WarmRecord) != 0;
+        /* (A card's first list - the shipped one alone - is written out whole: left unwritten, the file "ab" opens below
+         * was made empty, the pipelines it then gained had no header, and the next start threw them away.) */
+        rewrite = fresh || (size - sizeof head) % sizeof(WarmRecord) != 0;
         WarmRecord *rec = (WarmRecord *)(void *)(data + sizeof head);   /* (malloc's alignment, and a header of 32 bytes) */
         for (u32 i = 0; i < listed; i++)
             if (warm_record_ok(&rec[i]) && warm_see(&rec[i])) rec[n++] = rec[i];
@@ -3252,6 +3255,8 @@ static void warm_list_open(void) {
     }
     if (!n) { free(data); warm_records = NULL; }
     warm_file = fopen(path, "ab");
+    /* (an empty file - the write above failed: disk full, the file held - gets its header before any record) */
+    if (warm_file && !fseek(warm_file, 0, SEEK_END) && ftell(warm_file) == 0) { fwrite(&head, sizeof head, 1, warm_file); fflush(warm_file); }
     warm_listing = warm_file != NULL;
     if (!n) return;
     /* the programs the records name */

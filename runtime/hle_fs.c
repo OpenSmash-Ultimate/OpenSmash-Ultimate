@@ -17,6 +17,7 @@
 #include <stdlib.h>
 
 #include "host.h"
+#include "language.h"     /* (the save's text language) */
 #include "mod_refresh.h"
 
 #ifndef _WIN32   /* (the save journal's few calls Windows has no stand-in for in runtime/linux) */
@@ -389,6 +390,7 @@ typedef struct Handle {
     u32 mount;                /* the mount's id */
     HANDLE host;              /* host file */
     char texture_path[600];
+    int system_save;          /* the game's system save (system_data.bin): its text language is the chosen one */
     u64 offset, size;         /* rom file: data offset in the RomFS image and length */
     char **names; u8 *types; u64 *sizes; i64 count, next;   /* directory listing */
 } Handle;
@@ -1399,6 +1401,9 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
             h.size = rom_file(f)->size;
         }
     } else if (m->kind == M_SAVE) {
+        const char *leaf = rest;
+        for (const char *s = rest; *s; s++) if (*s == '/' || *s == '\\' || *s == ':') leaf = s + 1;
+        h.system_save = !(mode & OPEN_WRITE) && !_stricmp(leaf, "system_data.bin");
         EnterCriticalSection(&jlock);   /* (held until the handle is in the table: Commit looks for writers there) */
         u32 r = save_open(m, rest, &h);
         u64 v = r ? 0 : new_handle(h);
@@ -1430,6 +1435,27 @@ static u64 file_size(Handle *h) {
     return (u64)s.QuadPart;
 }
 
+/* The game keeps its text language in its system save, written once when the save is made
+ * (language.h), and shows its text in that one whatever language it is given: a save made in
+ * another language (a downloaded one) kept the game in that language (#362). When the player
+ * chose a language, the save is read with that one; the game writes it back at its next save. */
+int save_language_wanted(const char **code);   /* (hle_env.c) */
+static void system_save_language(u64 total, i64 offset, u8 *buf, u64 size) {
+    if (total != LANGUAGE_SAVE_FILE_SIZE || (u64)offset > LANGUAGE_SAVE_OFFSET || LANGUAGE_SAVE_OFFSET - (u64)offset >= size) return;
+    const char *code = NULL;
+    int want = save_language_wanted(&code);
+    u8 *at = buf + (LANGUAGE_SAVE_OFFSET - (u64)offset);
+    static volatile LONG logged;
+    if (want < 0 || *at == (u8)want) {
+        if (!InterlockedExchange(&logged, 1))
+            fprintf(stderr, "[fs] the save's text language: %u%s\n", *at, want < 0 ? " (no language chosen: the save's stays)" : ", the chosen one");
+        return;
+    }
+    if (!InterlockedExchange(&logged, 1))
+        fprintf(stderr, "[fs] the save's text language: %u; read as %d, the chosen language's (%s)\n", *at, want, code);
+    *at = (u8)want;
+}
+
 /* Read up to `size` bytes at `offset`; returns the count, or ~0 on a host error. */
 static u64 read_at(Handle *h, i64 offset, void *buf, u64 size) {
     u64 total = file_size(h);
@@ -1437,6 +1463,7 @@ static u64 read_at(Handle *h, i64 offset, void *buf, u64 size) {
     if (size > total - (u64)offset) size = total - (u64)offset;
     if (!size) return 0;
     int ok = h->host ? pread_all(h->host, (u64)offset, buf, size) : rom_read(h->offset + (u64)offset, buf, size);
+    if (ok && h->system_save) system_save_language(total, offset, buf, size);
     /* Costume inference reads headers, not pixels: only a full load needs a snapshot. */
     if (ok && offset == 0 && size == total && h->texture_path[0]) mod_refresh_file_opened(h->texture_path);
     return ok ? size : ~0ull;

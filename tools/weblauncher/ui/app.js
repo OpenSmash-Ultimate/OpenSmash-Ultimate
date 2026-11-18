@@ -111,7 +111,7 @@ async function refresh() {
   $("#play-state").textContent = !built ? (state.files_ready ? "Your game files are read; the game itself isn't built yet."
     : "Set the game up first.") : state.game_running ? "The game is running." : `Ready (${state.program}).`;
   const s = state.settings;
-  const lobby = { public: "the public lobby" + (s.region_shown ? ` (${s.region_shown})` : ""), private: `a private lobby (code ${s.code})`, custom: `your own server, ${s.server || "127.0.0.1:39420"}`, lan: "the players on this network (LAN)", offline: "offline" }[s.lobby];
+  const lobby = { public: "the public lobby" + (s.region_shown ? ` (${s.region_shown})` : ""), private: `a private lobby (code ${s.code})`, custom: `your own server, ${s.server || "127.0.0.1:39420"}`, lan: "the players on this network (LAN)", eos: "Epic Online Services", offline: "offline" }[s.lobby];
   $("#play-online").textContent = s.lobby === "offline" ? "Offline: Play doesn't go online." :
     `Play joins ${lobby}${s.name ? ", as " + s.name : ""}. Local Wireless lists everyone's rooms.`;
   $("#game-box").hidden = !state.game_running;

@@ -62,6 +62,7 @@ void rt_fatal(const char *fmt, ...) {
     exit(3);
 }
 void account_save_id(u64 uid[2]) { (void)uid; }
+int save_language_wanted(const char **code) { if (code) *code = NULL; return -1; }   /* (hle_env.c: no language chosen) */
 
 static int failures, checks;
 static int is(const char *text, const char *want) { return text && !strcmp(text, want); }   /* (NULL: not there) */

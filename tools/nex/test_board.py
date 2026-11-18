@@ -558,10 +558,25 @@ class Board(unittest.TestCase):
 
     def test_match_on_the_lobby_game_server_is_counted_there(self):
         code, d = self.played("a", via="lobby", at=self.DAY)
-        self.assertEqual((code, d["counted"]), (200, False))
-        self.assertEqual(self.played("b", via="lobby", mode="arena", at=self.DAY)[1]["counted"], False)
+        self.assertEqual((code, d["counted"], d["why"]), (200, False, "the lobby counts it"))   # (Quickplay: DataStore 21)
         self.assertTrue(self.played("c", via="lobby", mode="room", at=self.DAY)[1]["counted"])   # (a room: no NEX)
-        self.assertEqual(self.matches()["total"], 1)
+        self.assertEqual(self.matches()["by_mode"], {"quickplay": 0, "arena": 0, "room": 1})
+
+    def test_arena_match_over_the_lobby_counts_once(self):
+        # (v0.4.1, 2026-11-18: an arena's games post no DataStore 21, so its reports are what counts it - they were
+        # refused as "the lobby counts it" and the arenas' count stayed 0)
+        mid = "6cc0c097eb271cfb"
+        self.assertEqual(self.played("a", via="lobby", mode="arena", mid=mid, at=self.DAY), (200, {"ok": True, "counted": True}))
+        code, d = self.played("b", via="lobby", mode="arena", mid=mid, at=self.DAY + 2)
+        self.assertEqual((code, d["counted"], d["why"]), (200, False, "already counted"))
+        self.assertEqual(self.played("a", via="lobby", mode="arena", mid=mid, at=self.DAY + 600)[1]["counted"], False)
+        m = self.matches(self.DAY + 10)
+        self.assertEqual((m["total"], m["today"], m["by_mode"]), (1, 1, {"quickplay": 0, "arena": 1, "room": 0}))
+        # (the game's own netcode: no seed, the window id)
+        w = "0123456789abcdef"
+        self.assertTrue(self.played("a", via="lobby", mode="arena", mid=w, exact=False, at=self.DAY + 1000)[1]["counted"])
+        self.assertFalse(self.played("b", via="lobby", mode="arena", mid=w, exact=False, at=self.DAY + 1010)[1]["counted"])
+        self.assertEqual(self.matches()["by_mode"]["arena"], 2)
 
     def test_match_data_as_the_game_writes_it(self):   # (runtime/net_results.c results_match_data; tools/dev/pathtest.c)
         from .matches import Matches
@@ -617,10 +632,15 @@ class Board(unittest.TestCase):
             clock[0] += 1
         self.assertEqual(self.matches()["by_mode"], {"quickplay": 1, "arena": 0, "room": 0})
         self.nex.arenas.id_of[7] = "ABCD"
-        clock[0] += 120             # (the arena's next match)
+        clock[0] += 120             # (an arena's match: counted from the games' reports, not here)
         for who in ("b", "a"):
             post(Conn(self.pid[who]), StreamIn(param.get()))
+        self.assertEqual(self.matches()["by_mode"], {"quickplay": 1, "arena": 0, "room": 0})
         post(Conn(self.pid["c"]), StreamIn(param.get()))   # (a game in no gathering: its own)
+        self.assertEqual(self.matches()["by_mode"], {"quickplay": 2, "arena": 0, "room": 0})
+        self.board.matches.report_at.clear()
+        self.assertTrue(self.played("a", via="lobby", mode="arena", mid="00000000000000ee", at=clock[0])[1]["counted"])
+        self.assertFalse(self.played("b", via="lobby", mode="arena", mid="00000000000000ee", at=clock[0] + 1)[1]["counted"])
         self.assertEqual(self.matches()["by_mode"], {"quickplay": 2, "arena": 1, "room": 0})
 
     def test_match_estimated_from_old_games_syncs(self):

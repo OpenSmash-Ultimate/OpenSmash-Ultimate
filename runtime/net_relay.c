@@ -369,12 +369,18 @@ static int protocol_from_file(int otherwise) {
 const NetBackend *net_backend_candidate, *net_backend;
 NetLdnSink net_backend_ldn_sink;
 
-static void configure(void) {
-    if (configured >= 0) return;
+/* Once, whichever thread asks first; the others wait for it (InitOnce). It was a plain "configured >= 0" check
+ * that set configured before the EOS choice below, which waits up to EOS_FIRST_MS: a second thread (Discord's
+ * presence asking net_on_eos since #433, the game's nifm asking net_log) found it configured with no backend yet,
+ * so start() joined the public lobby's relay and never started EOS's (net_eos_net.c) - v0.4.0's "online through
+ * Epic Online Services" with no hub, every Quickplay or room search 2124-0300. The EOS choice is apart
+ * (configure_backend): net_log and the lobby code don't wait for EOS's login. */
+static BOOL CALLBACK configure_once(PINIT_ONCE once, void *param, void **ctx) {
+    (void)once; (void)param; (void)ctx;
     if (net_backend_candidate && net_backend_candidate->selected()) {
         net_backend=net_backend_candidate; configured=1;
         const char *log=getenv("SSBU_NET_LOG"); if(log) logging=atoi(log);
-        return;
+        return TRUE;
     }
     const char *h = getenv("SSBU_NET_HOST"), *r = getenv("SSBU_NET_RELAY"), *v;
     hosting = h && *h && strcmp(h, "0");
@@ -434,8 +440,25 @@ static void configure(void) {
         ticket_refresh();
         if (!ticket[0]) fprintf(stderr, "[net] no lobby ticket: sign in in the launcher to play online\n");
     }
-    if (!hosting && relay_text[0] && (!_stricmp(relay_text, "eos") || (!discord_join_server && net_eos_selected())))
+    return TRUE;
+}
+static void configure(void) {
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    InitOnceExecuteOnce(&once, configure_once, NULL, NULL);
+}
+/* configure, and the backend chosen: EOS's when online_server.txt (or SSBU_NET_RELAY) says EOS and EOS logged in
+ * (net_eos_selected waits for that once, at most EOS_FIRST_MS after the start). Every caller that reads net_backend
+ * or starts the network comes through here, so none sees "configured" before the choice is made. */
+static BOOL CALLBACK backend_once(PINIT_ONCE once, void *param, void **ctx) {
+    (void)once; (void)param; (void)ctx;
+    if (!net_backend && !hosting && relay_text[0] && (!_stricmp(relay_text, "eos") || (!discord_join_server && net_eos_selected())))
         net_backend = &net_eos_backend;   /* (net_eos_net.c: no lobby server of ours) */
+    return TRUE;
+}
+static void configure_backend(void) {
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    configure();
+    InitOnceExecuteOnce(&once, backend_once, NULL, NULL);
 }
 
 /* (net_eos_net.c) Online through Epic Online Services: the owner's design (2026-11-16) - Epic's services (lobbies,
@@ -514,10 +537,10 @@ void net_eos_names(char *code, size_t code_n, char *who, size_t who_n) {
 static void start(void);
 int net_configured(void) { start(); return configured; }
 int net_log(void) { configure(); return logging; }
-const char *net_player_name(void) { configure(); return net_backend ? net_backend->name() : name; }
+const char *net_player_name(void) { configure_backend(); return net_backend ? net_backend->name() : name; }
 const char *net_relay_address(void) { configure(); return !hosting && !lan_mode && relay_text[0] ? relay_text : NULL; }
 const char *net_lobby_code(void) { configure(); return room; }
-int net_on_eos(void) { configure(); return net_backend == &net_eos_backend; }
+int net_on_eos(void) { configure_backend(); return net_backend == &net_eos_backend; }
 
 /* ---- the relay (host mode) ------------------------------------------------------------ */
 typedef struct Member { struct sockaddr_in at; u64 nonce, seen; u32 ip; char name[NAME_LEN + 1]; } Member;
@@ -961,7 +984,7 @@ static int member_count;
 static SRWLOCK members_lock = SRWLOCK_INIT;
 
 u32 net_local_ip(void) { start(); return net_backend ? net_backend->ip() : joined ? my_ip : 0; }
-int net_protocol_wanted(void) { configure(); return net_backend ? 0 : proto_wanted; }
+int net_protocol_wanted(void) { configure_backend(); return net_backend ? 0 : proto_wanted; }
 int net_protocol_spoken(void) { start(); return joined ? (int)proto : 0; }
 int net_unreachable(void) { start(); return net_backend ? net_backend->unreachable() : configured && !joined && now_ms() - unjoined_since > UNREACHABLE_MS; }
 int net_lobby(void) { start(); return joined && lobby; }
@@ -3055,7 +3078,7 @@ static void start(void) {
     BOOL pending;
     InitOnceBeginInitialize(&once, 0, &pending, NULL);
     if (!pending) return;
-    configure();
+    configure_backend();
     if (net_backend) { net_backend->start(); InitOnceComplete(&once,0,NULL); return; }
     if (configured) {
 #ifdef _WIN32

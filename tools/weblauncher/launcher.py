@@ -212,7 +212,7 @@ CHOICES = {
     "overlay": [("1", "Show it in the corner"), ("0", "Hidden")],
     "hide_cursor": [("1", "When it stops moving"), ("0", "Keep it shown")],
     "lobby": [("public", "Public lobby"), ("private", "Private lobby (a code)"), ("custom", "Your own server"), ("lan", "This network (LAN)"),
-              ("offline", "Offline")],
+              ("offline", "Offline"), ("eos", "Epic Online Services (worldwide, direct)")],   # ("eos": a choice, not the default)
     "region": [(server_region.AUTO, "Auto (the closest)")] + [(r[0], r[1]) for r in server_region.REGIONS],
     "direct": [("on", "On"), ("off", "Off")],
     "keyboard_player": [(str(n), f"Player {n}") for n in range(1, 9)] + [("0", "Nobody (no keyboard)")],
@@ -243,6 +243,8 @@ def lobby_from_line(line):
         return "offline", code, ""
     if h == "lan":
         return "lan", code, ""
+    if h == "eos":   # (Epic Online Services alone: a choice of its own, not the official lobby and not "your own server" - #460)
+        return "eos", "", ""
     if h in ("auto", "na", "eu") or means_public_lobby(h):   # (any region's lobby: the region says which; the older ones are gone)
         return ("private" if code else "public"), code, ""
     return "custom", code, host
@@ -323,7 +325,7 @@ def write_settings(root, values):
         if key in given:
             set_ini(pads, "general", key, s[key])
     if lobby_changed:
-        server = {"offline": "off", "lan": "lan", "private": f"{PUBLIC_LOBBY} {code}",
+        server = {"offline": "off", "lan": "lan", "eos": "eos", "private": f"{PUBLIC_LOBBY} {code}",
                   "custom": (host or "127.0.0.1:39420") + (f" {code}" if code else "")}.get(lobby, "auto")
         set_first_line(config_file(root, "online_server.txt"), server)
         launcher_ini = config_file(root, "launcher.ini")

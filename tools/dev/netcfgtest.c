@@ -123,7 +123,10 @@ static int child(int argc, char **argv) {
     const char *a = net_relay_address();
     FILE *f = fopen("result.txt", "wb");
     if (!f) return 1;
-    fprintf(f, "%s\n%s\n%d\n%d\n", a ? a : "(none)", room, net_eos_wanted(), direct_ok);
+    /* (the backend as start() takes it, #460's configure_backend: EOS's with "eos" alone, never with the official lobby.
+     * Not asked with EOS first, SSBU_EOS_FIRST=1, which waits for Epic's login) */
+    int wanted = net_eos_wanted();
+    fprintf(f, "%s\n%s\n%d\n%d\n%d\n", a ? a : "(none)", room, wanted, direct_ok, wanted == 1 ? -1 : net_on_eos());
     fclose(f);
     for (int i = 0; region_remeasuring && i < 1000; i++) Sleep(5);   /* (net_region.c: Auto's pick for the next start, being kept) */
     return 0;
@@ -180,7 +183,7 @@ int main(int argc, char **argv) {
             CloseHandle(pi.hThread);
         }
         if (t->env) SetEnvironmentVariableA(env, NULL);
-        char got_address[300] = "", got_room[64] = "", got_eos[16] = "", got_direct[16] = "";
+        char got_address[300] = "", got_room[64] = "", got_eos[16] = "", got_direct[16] = "", got_backend[16] = "";
         snprintf(file, sizeof file, "%s\\result.txt", dir);
         FILE *f = fopen(file, "rb");
         if (f) {
@@ -188,6 +191,7 @@ int main(int argc, char **argv) {
             if (fgets(got_room, sizeof got_room, f)) got_room[strcspn(got_room, "\r\n")] = 0;
             if (fgets(got_eos, sizeof got_eos, f)) got_eos[strcspn(got_eos, "\r\n")] = 0;
             if (fgets(got_direct, sizeof got_direct, f)) got_direct[strcspn(got_direct, "\r\n")] = 0;
+            if (fgets(got_backend, sizeof got_backend, f)) got_backend[strcspn(got_backend, "\r\n")] = 0;
             fclose(f);
         }
         CHECK(code == 0 && f, "%s: the child did not run (exit %lu)", t->name, code);
@@ -196,6 +200,7 @@ int main(int argc, char **argv) {
         CHECK(!strcmp(got_room, t->room), "%s: the lobby code is '%s', wanted '%s'", t->name, got_room, t->room);
         CHECK(atoi(got_eos) == t->eos, "%s: EOS wanted %s, wanted %d", t->name, got_eos, t->eos);
         CHECK(atoi(got_direct) == t->direct, "%s: direct paths %s, wanted %d", t->name, got_direct, t->direct);
+        if (t->eos != 1) CHECK(atoi(got_backend) == (t->eos == 2), "%s: the EOS backend chosen %s, wanted %d", t->name, got_backend, t->eos == 2);
         if (t->kept_after) {   /* (Auto's pick kept for the next start: its region; "": no file) */
             char kept[64] = "", word[32] = "";
             snprintf(file, sizeof file, "%s\\config\\server_region_auto.txt", dir);

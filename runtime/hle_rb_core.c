@@ -4300,6 +4300,16 @@ static int online_reported;       /* (reported to the lobby: the Online step's "
 #define ONLINE_HDR 0x580   /* (the match block's rule header: the records follow, 0x260 bytes each) */
 #define ONLINE_REC 0x260
 static u8 online_hdr[ONLINE_HDR];
+/* (... and the header as rollback's set-up left it (its rules from the host, SSBU_RB_TEST_TIME), taken once that set-up is
+ * done: online_restore keeps the sudden death's own bytes (+ 9 and + 0xa) where the game changed them in the match. A tie's
+ * sudden death is set up with the header's + 0xa at 1 (0 at the first fight's GO!, 1 at the sudden death's, every tie run
+ * 2026-11-17; main+0x14ffeb8 stores it). Put back to 0 for the results, it broke the stage f1 crashed on (Wuhu Island, the
+ * only Wuhu tie of those runs): the stage object's per-frame update (vtable main+0x51607f0, slot 24, main+0x300da20)
+ * takes main+0x300df70 when + 0xa is 0 (or + 9 is set), which reads the list at its + 0xd88 + 0x30 without checking it,
+ * and its slot 21 (main+0x300cae8) fills that list only on the same condition: set up with + 0xa 1, updated with + 0xa 0,
+ * both games read address 0x48 there at the results' first frame) */
+static u8 online_hdr_rb[ONLINE_HDR];
+static int online_hdr_rb_have;
 static u8 online_panel[RBN_PLAYERS][0x460];
 static u8 online_rec[RBN_PLAYERS][ONLINE_REC];
 static int online_rec_have[RBN_PLAYERS];
@@ -4315,7 +4325,8 @@ int rb_online_match_now(void) { return net_mode == 2 && net_online && online_mat
 static void online_fight_start(void) {
     if (!online_match) return;
     u64 impl = fm_impl();
-    fprintf(stderr, "[rb] online: GO!: melee mode %u in the match block, the fighter manager's +0xc0 %08x\n", ld8(MELEE_INFO), impl ? ld32(impl + 0xc0) : 0);
+    fprintf(stderr, "[rb] online: GO!: melee mode %u in the match block (+9 %u, +0xa %u, stage id %#x), the fighter manager's +0xc0 %08x\n", ld8(MELEE_INFO),
+            ld8(MELEE_INFO + 9), ld8(MELEE_INFO + 0xa), ld32(MELEE_INFO + 0x420), impl ? ld32(impl + 0xc0) : 0);
     {   /* (#181: where the fight's pads come from. The pad frame controller (+0x8) in its local mode (0) reads each player's
          * pad from its controller, as rollback feeds it; in its online mode (1) from the game's own lockstep queues,
          * which two games hold differently: a desync with the same pads. hle_online_delay.c puts it in the local mode
@@ -4381,7 +4392,25 @@ static void online_restore(void) {
             return;
         }
     }
-    memcpy(P(u8, MELEE_INFO), online_hdr, ONLINE_HDR);
+    {   /* (the header put back, but for + 9 and + 0xa where the game changed them in the match - a sudden death's: the results
+         * run as without rollback. Only those: the rest - the stage the game picked for a "random" one, the time limit of
+         * SSBU_RB_TEST_TIME - goes back to the set-up's, the next search's as before. SSBU_RB_RESTORE_ALL=1: all of it, as before) */
+        const char *e = getenv("SSBU_RB_RESTORE_ALL");
+        int all = (e && *e == '1') || !online_hdr_rb_have;
+        int undone = 0, kept = 0;
+        char said[200]; size_t n = 0;
+        said[0] = 0;
+        for (u32 k = 0; k < ONLINE_HDR; k++) {
+            u8 now = ld8(MELEE_INFO + k);
+            if (now == online_hdr[k]) continue;
+            if (all || (k != 9 && k != 0xa) || now == online_hdr_rb[k]) { st8(MELEE_INFO + k, online_hdr[k]); undone++; continue; }
+            if (kept++ < 8 && n < sizeof said - 40)
+                n += (size_t)snprintf(said + n, sizeof said - n, " +%#x %u (before the match %u)", k, now, online_hdr[k]);
+        }
+        fprintf(stderr, "[rb] online: the match block's header back: %d byte%s put back, %d of the sudden death's kept%s%s\n",
+                undone, undone == 1 ? "" : "s", kept, kept ? ":" : "", said);
+        online_hdr_rb_have = 0;
+    }
     {   /* (and the fighter manager's copy of the melee mode, which it took at the match's start: + 0xc0; only
          * another with SSBU_RB_ONLINE_MODE, or after a Local Wireless room's fight, a local melee: #181) */
         u64 impl = fm_impl();
@@ -4536,6 +4565,7 @@ static int online_setup_try(u64 st) {
     fprintf(stderr, "[rb] online: agreed after %.1f s (input delay %d): %s is played with rollback, both players local on both games (the set-up's melee mode %u)\n",
             (now_ms() - t0) / 1000, net_delay, what, mode);
     memcpy(online_hdr, P(u8, MELEE_INFO), ONLINE_HDR);
+    online_hdr_rb_have = 0;   /* (taken once rollback's set-up is done: record_before) */
     memset(online_rec_have, 0, sizeof online_rec_have);
     /* (Quickplay and Battle Arenas: the melee mode stays the game's, 14 or 20: the scene loads as an Online match - its
      * results, the GSP and the next search run as without rollback, and so do its rules for the players, as the kick for
@@ -4632,6 +4662,7 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx) {
         net_hello_wait();
         net_seed_global("match set-up");
         net_rules_setup(st);   /* (streamlining 2: the host's rules on every game) */
+        if (online_match) { memcpy(online_hdr_rb, P(u8, MELEE_INFO), ONLINE_HDR); online_hdr_rb_have = 1; }   /* (online_restore) */
         net_countdown = 1;
         net_pre_reset();       /* (the GO! freeze: a new set-up's loading watched again) */
         { extern void (*gfx_wait_hook)(void); gfx_wait_hook = net_load_keepalive; }   /* (round 4: heard through the match's shader wait) */

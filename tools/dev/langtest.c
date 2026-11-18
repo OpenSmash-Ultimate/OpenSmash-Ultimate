@@ -22,6 +22,24 @@ int main(void) {
     }
     checks++;
     if (strcmp(language_pick(NULL), "en-US")) { failed++; printf("FAIL NULL\n"); }
+    /* the save's text language: one for every code (the values new saves got: issue #362) */
+    for (int i = 0; i < LANGUAGE_COUNT; i++) {
+        checks++;
+        if (language_save_value(LANGUAGE_CODES[i]) < 0) { failed++; printf("FAIL no save value for %s\n", LANGUAGE_CODES[i]); }
+    }
+    static const struct { const char *code; int value; } saved[] = {
+        {"ja", 0}, {"en-US", 1}, {"en-GB", 1}, {"fr", 2}, {"fr-CA", 2}, {"es", 3}, {"es-419", 3}, {"it", 5}, {"auto", -1}};
+    static const struct { const char *name; int known; } knowns[] = {
+        {"it-IT", 1}, {"es-419", 1}, {"zh-Hant", 1}, {"de_DE.UTF-8", 1}, {"pt-BR", 0}, {"xx", 0}, {"auto", 0}, {"", 0}, {"itt", 0}};
+    for (size_t i = 0; i < sizeof knowns / sizeof *knowns; i++) {
+        checks++;
+        if (language_known(knowns[i].name) != knowns[i].known) { failed++; printf("FAIL known \"%s\"\n", knowns[i].name); }
+    }
+    for (size_t i = 0; i < sizeof saved / sizeof *saved; i++) {
+        checks++;
+        if (language_save_value(saved[i].code) != saved[i].value)
+            { failed++; printf("FAIL save value of %s: %d (wanted %d)\n", saved[i].code, language_save_value(saved[i].code), saved[i].value); }
+    }
     printf("%d checks, %d failed\n", checks, failed);
     return failed ? 1 : 0;
 }

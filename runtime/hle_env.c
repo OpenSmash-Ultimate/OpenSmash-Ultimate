@@ -34,15 +34,18 @@ HLE(_ZN2nn2oe25TryPopNotificationMessageEPj) { c->x[0] = 0; }       /* no messag
 /* The game's language: SSBU_LANGUAGE, else display.ini's language (the settings menu writes it;
  * auto or missing: the system's), else the system's display language - Windows' user interface
  * language (not its regional format), or LANG / LC_ALL elsewhere. Asked once; logged once. */
-static u64 desired_language(void) {
-    static u64 code;
-    if (code) return code;
+static u64 desired_code;
+static const char *chosen_language;   /* the pick when SSBU_LANGUAGE or display.ini named a language the game has */
+static BOOL CALLBACK find_language(PINIT_ONCE once, PVOID param, PVOID *ctx) {
+    (void)once; (void)param; (void)ctx;
     char name[96] = "", from[32] = "SSBU_LANGUAGE";
     const char *env = getenv("SSBU_LANGUAGE");
-    if (env && *env) snprintf(name, sizeof name, "%s", env);
+    int chosen = 1;
+    if (env && *env && _stricmp(env, "auto")) snprintf(name, sizeof name, "%s", env);
     else if (settings_ini_get(display_ini_path(), NULL, "language", name, sizeof name) && name[0] && _stricmp(name, "auto"))
         snprintf(from, sizeof from, "display.ini");
     else {
+        chosen = 0;
         name[0] = 0;
         snprintf(from, sizeof from, "the system");
 #ifdef _WIN32
@@ -60,8 +63,23 @@ static u64 desired_language(void) {
     u64 v = 0;
     memcpy(&v, pick, strlen(pick));
     fprintf(stderr, "[env] the game's language: %s (from %s, \"%s\")\n", pick, from, name);
-    code = v;
-    return v;
+    if (chosen && language_known(name)) chosen_language = pick;   /* (a typo is not a choice: the save keeps its own) */
+    desired_code = v;
+    return TRUE;
+}
+/* (asked by the game's thread and by the save's reader: worked out once, InitOnce) */
+static u64 desired_language(void) {
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    InitOnceExecuteOnce(&once, find_language, NULL, NULL);
+    return desired_code;
+}
+/* (hle_fs.c) The text language the game's system save should hold: the one the player chose
+ * (SSBU_LANGUAGE, or display.ini's language when it is not auto), as the save keeps it
+ * (language.h); -1 when none was chosen, and the save's own stays (as on the console). */
+int save_language_wanted(const char **code) {
+    desired_language();
+    if (code) *code = chosen_language;
+    return chosen_language ? language_save_value(chosen_language) : -1;
 }
 HLE(_ZN2nn2oe18GetDesiredLanguageEv) { c->x[0] = desired_language(); }   /* a LanguageCode, by value */
 HLE(_ZN2nn2oe25GetProgramTotalActiveTimeEv) { c->x[0] = rt_now_ns(); }
