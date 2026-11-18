@@ -2,10 +2,12 @@
 import os
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools", "deploy"))
+sys.modules.setdefault("pwd", types.ModuleType("pwd"))   # (Unix only; reply does not use it)
 import discord_threads as D  # noqa: E402
 
 
