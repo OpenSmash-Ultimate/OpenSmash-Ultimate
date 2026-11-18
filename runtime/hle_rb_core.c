@@ -633,6 +633,7 @@ static u64 hfnv(u64 h, const void *p, size_t n) { const u8 *b = p; while (n--) {
 static int readable(u64 a, u64 n) {
     if (!a) return 0;
     uintptr_t p = (uintptr_t)G2H(a), end = p + n;
+    if (end < p) return 0;
     do {
         MEMORY_BASIC_INFORMATION mi;
         if (!VirtualQuery((void *)p, &mi, sizeof mi) || mi.State != MEM_COMMIT || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return 0;
