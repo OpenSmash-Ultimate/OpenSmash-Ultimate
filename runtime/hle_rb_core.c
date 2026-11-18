@@ -505,7 +505,7 @@ static int net_pad_for(u32 id, u32 key, u64 *buttons, i32 *lx, i32 *ly, i32 *rx,
 static volatile LONG net_countdown;
 /* (net mode) this game's own player's pad reads in this fight, and those with a button or the left stick pushed, and
  * the logic frame of the first such read: net_report says them, with this PC's controller slot they came from */
-static long long own_reads, own_live; static u32 own_first;
+static volatile LONG64 own_reads, own_live; static volatile u32 own_first;   /* (pads are read on several threads) */
 static int net_n;   /* (players in net mode: defined with the net mode's state below) */
 /* SSBU_RB_NET_EARLY=1: the extras made while two PCs' fights started apart for another reason (twopc2-5, the
  * lobbies wired differently): dropped refreshes cleared outside fights too, and the fixed clock from the match
@@ -548,10 +548,9 @@ void rb_pad(u32 id, u64 *buttons, i32 *lx, i32 *ly, i32 *rx, i32 *ry, i32 *lt, i
     if (net_mode == 2 && net_armed) *buttons &= ~(1ull << 10);
     else if (rb_paused()) return;
     if (net_mode == 2 && net_armed && (int)id == net_local) {   /* (this game's own player's pad, as read here: net_report) */
-        own_reads++;
-        if ((*buttons & 0xfff) || *lx < -8192 || *lx > 8192 || *ly < -8192 || *ly > 8192) {
-            if (!own_live++) own_first = ld32(LOGIC_FRAME);
-        }
+        InterlockedIncrement64(&own_reads);
+        if (((*buttons & 0xfff) || *lx < -8192 || *lx > 8192 || *ly < -8192 || *ly > 8192) && InterlockedIncrement64(&own_live) == 1)
+            own_first = ld32(LOGIC_FRAME);
     }
     if (id == 0 && !seg_poll) seg_poll = now_ms();
     if (ntin < 0) test_input_parse();
@@ -1505,7 +1504,7 @@ static void net_report(void) {
                 net_ts_n, net_ts_ms, net_ts_n ? net_ts_ms / net_ts_n : 0.0, rbn_sync_gap_ms());
         {   u32 rb_slot_phys(u32 id);
             fprintf(stderr, "[rb] this game's player %d: %lld pad reads in this fight, %lld with input (the first at logic frame %u); "
-                    "its pad is this PC's controller slot %u\n", net_local + 1, own_reads, own_live, own_live ? own_first : 0,
+                    "its pad is this PC's controller slot %u\n", net_local + 1, (long long)own_reads, (long long)own_live, own_live ? own_first : 0,
                     net_local >= 0 ? rb_slot_phys((u32)net_local) + 1 : 0);
             own_reads = own_live = 0; own_first = 0;
         }
@@ -2096,6 +2095,9 @@ static void net_step(Cpu *c, u64 frame) {
                     net_rtt_min_s < 1e9 ? net_rtt_min_s : -1.0, net_rtt_n ? net_rtt_sum / net_rtt_n : -1.0,
                     net_msgs_s, net_msgs_s ? (double)net_bytes_s / net_msgs_s : 0.0, net_bytes_max_s);
             net_bytes_s = net_msgs_s = net_bytes_max_s = 0;
+            if (S.frames % 600 == 0)
+                fprintf(stderr, "[rb] this game's player %d so far: %lld pad reads in this fight, %lld with input (the first at logic frame %u)\n",
+                        net_local + 1, (long long)own_reads, (long long)own_live, own_live ? own_first : 0);
             fprintf(stderr, "[rb] net work, the last second: hashes %lld (%.1f ms, worst %.1f), saves %lld (%.1f ms, worst %.1f), fighter line %lld (%.1f ms, worst %.1f); "
                     "of them the game's getters %lld (%.1f ms), generator look-ups that asked Windows %lld (%.1f ms)\n",
                     net_w_n[0], net_w_ms[0], net_w_max[0], net_w_n[1], net_w_ms[1], net_w_max[1], net_w_n[2], net_w_ms[2], net_w_max[2],
