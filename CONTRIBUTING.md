@@ -67,8 +67,6 @@ The base's source-only tests use made-up data, need no game files and run in CI 
 ```
 python -m pip install -r tests/requirements-dev.txt
 python -m unittest discover -s tests -v
-cd tools
-python -m nex.selftest
 ```
 
 Tests that start the game should be scripted, not played by hand. The base presses buttons on a timetable (`SSBU_INPUT`) or in sequences counted in frames (`SSBU_SEQ`), saves frames (`SSBU_CAPTURE`), runs fast-forward (`SSBU_SPEED`), cuts movies short (`SSBU_SKIP_MOVIES`), logs a hash of every fight frame (`SSBU_FIGHT_HASH`), makes the fight repeat (`SSBU_DETERMINISTIC`, `SSBU_FIXED_SEED`), picks the fighters and stage (`SSBU_DEBUG_MATCH`) and ends after a number of fight frames (`SSBU_DEBUG_END`): see [Test runs](docs/TESTING-RUNS.md). It has run scripts in `tools/dev/` such as `autobattle.sh` and `menurun.sh` (see the [tool reference](docs/TECHNICAL.md#7-tool-reference)). Frame-time measurements run at normal speed.

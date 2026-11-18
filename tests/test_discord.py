@@ -2,7 +2,7 @@
 with no discord_partner_sdk.dll beside the program): tools/dev/discordtest.c checks the token file the game and the
 launchers share, the application id file, the presence's text, the join secret, the fighters' names, SHA-256 / HMAC,
 reading the lobby's GET /gsp/me and the site's leaderboard.json, and that nothing changes without the SDK; its signed
-request must be the one tools/nex/board.py accepts. And tools/discord_fetch.py: the SDK's DLL from the release, checked
+request must be the one the lobby's board.py accepts. And tools/discord_fetch.py: the SDK's DLL from the release, checked
 by SHA-256, never fatal. The C part is skipped where there is no clang-cl."""
 from pathlib import Path
 import hashlib
@@ -15,9 +15,14 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
+sys.path.insert(0, str(ROOT / 'tests'))
 import cc  # noqa: E402
 import discord_fetch  # noqa: E402
-from nex import board  # noqa: E402
+from netproto import HAVE_LOBBY  # noqa: E402
+if HAVE_LOBBY:   # (the game server's own checks, from the lobby server's checkout: tests/netproto.py)
+    from nex import board  # noqa: E402
+else:
+    board = None
 
 HAVE_CLANG = os.name == 'nt' and (os.path.exists(cc.CLANG) or shutil.which(cc.CLANG) is not None)
 SOURCES = ['tools/dev/discordtest.c', 'runtime/net_discord_core.c', 'runtime/net_discord.c']
@@ -42,8 +47,9 @@ class DiscordCore(unittest.TestCase):
         line = next(x for x in r.stdout.splitlines() if x.startswith('sign '))
         _, player, sig, account = line.split()
         nsa = '00000000000000a1'
-        self.assertEqual(player, board.player_id(nsa))
-        self.assertEqual(sig, board.signature(nsa, 'profile', player, 1763300000, 'Nelly\nab12'))
+        if board is not None:
+            self.assertEqual(player, board.player_id(nsa))
+            self.assertEqual(sig, board.signature(nsa, 'profile', player, 1763300000, 'Nelly\nab12'))
         self.assertEqual(account, hashlib.sha256(b'opensmash-discord\n80351110224678912').hexdigest()[:16])
 
 

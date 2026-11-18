@@ -201,7 +201,7 @@ def main():
         copy(os.path.join(REPO, "docs", doc), os.path.join(BUNDLE, "docs", doc))
     if os.path.exists(os.path.join(REPO, "online_server.txt")):
         copy(os.path.join(REPO, "online_server.txt"), os.path.join(BUNDLE, "online_server.txt"))
-    for tool in ("unlock_all.py", "ssbu_relay.py"):
+    for tool in ("unlock_all.py",):
         copy(os.path.join(REPO, "tools", tool), os.path.join(BUNDLE, "tools", tool))
     total = sum(os.path.getsize(os.path.join(r, f)) for r, _d, fs in os.walk(BUNDLE) for f in fs)
     print(f"{BUNDLE}: {PORT}'s game, {total / 2**30:.2f} GB ({copied / 2**20:,.0f} MB copied now); the game data "

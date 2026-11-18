@@ -9,7 +9,7 @@ Linux, where ports under 1024 need root, to http://127.0.0.1:53134/callback - a 
 list too.
 
 Also what the account box shows: the player's GSP per fighter, kept by the lobbies' own game server (GET /gsp/me,
-tools/nex/board.py, signed with this install's NSA id from netplay_id.txt), and their global position (the one public
+the lobby's board.py, signed with this install's NSA id from netplay_id.txt), and their global position (the one public
 lobby's leaderboard.json: every GSP result goes through its game server). The GSP belongs to the Discord account: this install is linked to it with
 POST /gsp/link (the token is sent once, the lobby verifies it with Discord and keeps nothing of it; show on/off is the
 choice config/discord_leaderboard.txt remembers). Standard library only."""
@@ -257,7 +257,7 @@ def sign_in(root, client_id, open_url=webbrowser.open, post=_post, user=_user, t
         server.close()
 
 
-# ---- the player on the lobbies' game server (tools/nex/board.py) ------------------------------------------------
+# ---- the player on the lobbies' game server (its board.py) ------------------------------------------------------
 def nsa_id(root):
     """The install's NSA id as the game's token writes it (runtime/hle_env.c): netplay_id.txt's two numbers XORed, 16
     hex digits; "" before the game has played online."""

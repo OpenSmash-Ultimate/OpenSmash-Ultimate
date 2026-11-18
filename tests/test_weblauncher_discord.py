@@ -1,7 +1,7 @@
 """tools/weblauncher/discord_account.py: the Discord sign-in the web launcher shares with the game and OpenSmash.exe
 (config/discord_token.txt), checked without Discord: the token file, the application id file, the PKCE sign-in
 against a made-up browser and token endpoint, a refresh, the GSP from the lobbies' game server (signed as
-tools/nex/board.py checks), the choice to show the name on the leaderboard, and the position read from
+the lobby's board.py checks), the choice to show the name on the leaderboard, and the position read from
 leaderboard.json."""
 import base64
 import hashlib
@@ -19,8 +19,11 @@ import urllib.request
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'tools', 'weblauncher'))
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
+sys.path.insert(0, os.path.join(ROOT, 'tests'))
 import discord_account as da  # noqa: E402
-from nex import board  # noqa: E402
+from netproto import HAVE_LOBBY, NO_LOBBY  # noqa: E402
+if HAVE_LOBBY:   # (the game server's own checks, from the lobby server's checkout)
+    from nex import board  # noqa: E402
 
 APP = "123456789012345678"
 
@@ -127,8 +130,9 @@ class SignIn(unittest.TestCase):
             self.assertIsNone(da.current(root, APP, post=refused, user=lambda t: None))
 
 
+@unittest.skipUnless(HAVE_LOBBY, NO_LOBBY)
 class Lobbies(unittest.TestCase):
-    """The GSP and the shown name, against the game server's own checks (tools/nex/board.py)."""
+    """The GSP and the shown name, against the game server's own checks (the lobby server's nex/board.py)."""
 
     def setUp(self):
         d = tempfile.TemporaryDirectory()

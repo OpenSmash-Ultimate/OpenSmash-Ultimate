@@ -1,10 +1,11 @@
 #!/bin/sh
-# Three games on this PC in the online lobby (tools/ssbu_relay.py, run here on loopback): Alpha
+# Three games on this PC in the online lobby (the lobby server's ssbu_relay.py, run here on loopback): Alpha
 # and Bravo each create a Local Wireless room, Charlie opens the Rooms List - which must show
 # both - and joins the first. Menus only (no battle), no router or firewall change.
 # Usage: tools/dev/netlobby.sh <out prefix> [seconds]
 #   SSBU_EXE (default build/ssbu.exe), SSBU_LOBBY_PORT (39510), SSBU_CAPTURE_MAX (80, Charlie's frames)
 #   SSBU_LOBBY=host:port: use that lobby (e.g. the online one) instead of starting one here
+#   OPENSMASH_SERVER_DIR: a checkout of the lobby server (default ../opensmash-server), to start one here
 #   SSBU_INPUT_HOST, SSBU_INPUT_JOIN: the scripted input of the hosts and of Charlie (defaults:
 #     11.0.0's menus - Local Wireless, create a room; Rooms List, first room)
 #   SSBU_KEEP=1: keep Charlie's frames (<out>-charlie/) instead of deleting them at the end
@@ -39,7 +40,9 @@ if [ -n "$SSBU_LOBBY" ]; then
     : > "$out-lobby.log"
 else
     where=127.0.0.1:$port
-    python -I tools/ssbu_relay.py --bind 127.0.0.1 --port "$port" --verbose --stats 10 > "$out-lobby.log" 2>&1 &
+    relay=${OPENSMASH_SERVER_DIR:-../opensmash-server}/tools/ssbu_relay.py
+    [ -f "$relay" ] || { echo "no lobby server at $relay: set OPENSMASH_SERVER_DIR, or SSBU_LOBBY=host:port"; exit 2; }
+    python -I "$relay" --bind 127.0.0.1 --port "$port" --verbose --stats 10 > "$out-lobby.log" 2>&1 &
     lobby=$!
     sleep 1
 fi

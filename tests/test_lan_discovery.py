@@ -24,8 +24,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tests'))
 from test_net_client_v3 import HAVE_CLANG, SIM, Game, build, free_udp_port  # noqa: E402
-from test_ssbu_relay import BUILD, OTHER_BUILD  # noqa: E402
-from test_ssbu_relay_v3 import until  # noqa: E402
+from netproto import BUILD, OTHER_BUILD, until  # noqa: E402
 
 LAN_OFF, LAN_LOOKING, LAN_NONE, LAN_FOUND, LAN_ANNOUNCING, LAN_QUIET = range(6)   # (net.h's NET_LAN_*)
 BEACON_SIZE = 4 + 2 + 8 + 2 + 4 + 1 + 40 + 32 + 32

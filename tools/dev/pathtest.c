@@ -102,7 +102,7 @@ int main(void) {
     CHECK(results_parse_records("{\"records\":[]}", recs, 25, 4) == 0, "none");
     CHECK(results_parse_records("{\"error\":\"x\"}", recs, 25, 4) == 0, "not an answer");
 
-    /* a match played, for the lobby's count (tools/nex/matches.py parses what results_match_data writes) */
+    /* a match played, for the lobby's count (the lobby's matches.py parses what results_match_data writes) */
     {
         uint32_t one[3] = {0x0a0d0005u, 0x0a0d0002u, 0x0a0d0009u}, other[3] = {0x0a0d0009u, 0x0a0d0005u, 0x0a0d0002u};
         CHECK(results_match_id_addresses(one, 3, 20) == results_match_id_addresses(other, 3, 20), "the same players in any order: one id");
