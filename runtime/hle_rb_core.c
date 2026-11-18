@@ -45,6 +45,7 @@ void rb_shadow_note(u64 at, u64 size) { (void)at; (void)size; }
 int rb_online_match_now(void) { return 0; }   /* (hle_online_delay.c) */
 int rb_sd_hold_now(void) { return 0; }        /* (hle_online_delay.c) */
 int rb_online_match_reported(void) { return 0; }   /* (hle_online_delay.c) */
+int rb_online_self_cut(void) { return 0; }    /* (hle_online_delay.c) */
 #else
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
