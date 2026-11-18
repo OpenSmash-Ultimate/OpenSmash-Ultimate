@@ -3901,6 +3901,7 @@ static int warm_work_left(void) {
 /* (the threads that work behind the menus too, not only while something waits for the list: an id below warm_threads_bg,
  * or a resting one that took over when none of those was left, so a pair wanted later is made without a wait) */
 static volatile LONG warm_workers;
+static SRWLOCK warm_marker_lock = SRWLOCK_INIT;   /* (the last thread out deletes the marker, a restart writes it: one at a time) */
 
 static DWORD WINAPI warm_main(void *arg) {
     u32 id = (u32)(uintptr_t)arg;
@@ -3939,7 +3940,11 @@ again:
             }
             return 0;
         }
-        DeleteFileA(warm_marker);
+        AcquireSRWLockExclusive(&warm_marker_lock);   /* (not after warm_wake has written it again for its threads) */
+        int restarted = warm_running != 0;
+        if (!restarted) DeleteFileA(warm_marker);
+        ReleaseSRWLockExclusive(&warm_marker_lock);
+        if (restarted) return 0;
         fprintf(stderr, "[vulkan] warm start: %lld programs loaded and %lld pipelines made of %u listed in %.1f s (%ld left out%s; at %.1f s)\n",
                 (long long)vk_stat_warm_loaded, (long long)vk_stat_warm_pipelines, warm_nrecords, (rt_clock_ns() - warm_t0) / 1e9, (long)warm_left,
                 warm_stopped ? ": the memory budget, SSBU_SHADER_PREWARM_MB" : "", rt_now_ns() / 1e9);
@@ -3954,9 +3959,11 @@ again:
 /* The warm threads started: warm_running set to n by the caller (from 0), the marker written (a driver crash in them is
  * noted there: warm_crash_note). Below the makers' priority. */
 static void warm_threads_go(u32 n, int first) {
+    AcquireSRWLockExclusive(&warm_marker_lock);
     FILE *mark = fopen(warm_marker, "wb");
     if (mark) { fprintf(mark, "%d", warm_tries + 1); fclose(mark); }
-    else fprintf(stderr, "[vulkan] warm start: no marker file (%s): one that does not finish will not be noticed\n", warm_marker);
+    ReleaseSRWLockExclusive(&warm_marker_lock);
+    if (!mark) fprintf(stderr, "[vulkan] warm start: no marker file (%s): one that does not finish will not be noticed\n", warm_marker);
     for (u32 i = 0; i < n; i++) {
         if (i < warm_threads_bg) InterlockedIncrement(&warm_workers);
         HANDLE t = CreateThread(NULL, 64ull << 20, warm_main, (void *)(uintptr_t)i, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
