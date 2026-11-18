@@ -3287,6 +3287,7 @@ static void warm_list_open(void) {
  *   pair <ui_stage hash40> <ui_chara hash40, or 0> <sum> ...   made only when that stage (with that fighter) is played
  *                                         or picked: Fountain of Dreams' water draws each fighter again, 3,348
  *                                         pipelines no other stage needs (#395), not made behind the menus for everyone.
+ *                                         (with a fighter: probable, not waited for, as a maybe group)
  * Records in no group (a card's own, what the runs that wrote the file did not draw: 5,662 of the 13,663 in the first
  * file, many of them drawn in the four-player matches of the sweep) are the rest: any match may need them. The first frame
  * waits for the boot group alone; the other groups are made behind the menus, in this order: a match being set up first
@@ -3326,6 +3327,14 @@ static u32 warm_group_add(u32 kind, u64 key, u64 key2) {
 }
 
 /* A group the warm threads take records from: one with records left; a pair only once its stage is played or picked. */
+/* A group the match does not wait for: a fighter's "maybe" one, and a stage pair's with a fighter (Fountain of Dreams' water
+ * drawing each fighter again: 474 records for Mario alone, attributed by the sweep's four-fighter matches; waited for, a
+ * first Fountain match waited 18.0 s instead of 8.4 s on a 32-thread PC and reached the 30 s limit on a slower start).
+ * Made right after the match's groups and common, not during a fight; the stage's own pair (fighter 0) is waited for. */
+static int warm_group_probable(const WarmGroup *g) {
+    return g->kind == WG_MAYBE || (g->kind == WG_PAIR && g->key2);
+}
+
 static int warm_group_open(const WarmGroup *g) {
     return g->next < (LONG)g->n && (g->kind != WG_PAIR || g->wanted || g->likely);
 }
@@ -3861,7 +3870,7 @@ static LONG warm_next(u32 *group) {
             u32 best = 0;
             LONG bw = 0;
             for (u32 g = 2; g < warm_ngroups; g++)
-                if ((warm_groups[g].kind == WG_MAYBE) == maybe && warm_groups[g].wanted > bw && warm_groups[g].next < (LONG)warm_groups[g].n) {
+                if (warm_group_probable(&warm_groups[g]) == maybe && warm_groups[g].wanted > bw && warm_groups[g].next < (LONG)warm_groups[g].n) {
                     best = g;
                     bw = warm_groups[g].wanted;
                 }
@@ -4115,8 +4124,9 @@ static void warm_pair_want(WarmGroup *g, u64 key, LONG seq, LONG mine) {
     if (g->key2 && key == g->key2) InterlockedExchange(&g->want_b, seq);
     if (g->want_a >= mine && (!g->key2 || g->want_b >= mine) && g->wanted < mine) {
         InterlockedExchange(&g->wanted, seq);
-        fprintf(stderr, "[vulkan] warm start: the match's stage %010llx with %s %010llx: %ld of its %u pipelines left, made first\n",
-                (unsigned long long)g->key, g->key2 ? "fighter" : "no fighter", (unsigned long long)g->key2, (long)(g->n - g->done), g->n);
+        fprintf(stderr, "[vulkan] warm start: the match's stage %010llx with %s %010llx: %ld of its %u pipelines left, made %s\n",
+                (unsigned long long)g->key, g->key2 ? "fighter" : "no fighter", (unsigned long long)g->key2, (long)(g->n - g->done), g->n,
+                g->key2 ? "after any fight's, not waited for" : "first");
     }
 }
 
@@ -4197,7 +4207,7 @@ void vk_match_wait(void) {
         long left = 0;
         for (u32 g = 0; g < warm_ngroups; g++) {
             const WarmGroup *w = &warm_groups[g];
-            if (g == WG_BOOT || g == WG_COMMON || (mine && w->wanted >= mine && w->kind != WG_MAYBE))   /* (not those in no group: #428) */
+            if (g == WG_BOOT || g == WG_COMMON || (mine && w->wanted >= mine && !warm_group_probable(w)))   /* (not those in no group: #428) */
                 left += (long)w->n - w->done;
         }
         if (!waited) before = left;
