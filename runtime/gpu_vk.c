@@ -3176,6 +3176,45 @@ typedef struct WarmRecord { u32 kind, sum; WarmKey vs, ps; PipeKey key; } WarmRe
 static SRWLOCK warm_list_lock = SRWLOCK_INIT;
 static FILE *warm_file;
 static u64 warm_seen[WARM_RECORDS * 4];   /* (the records listed, by their hashes: none twice) */
+static u32 warm_nseen;
+static WarmRecord *warm_records;          /* (the list as read at the start) */
+static u32 warm_nrecords;
+static int warm_listing = -1;
+
+static int warm_list_on(void) { return warm_listing > 0; }
+
+/* (1: the record is new, and now seen; warm_list_lock held, or no other thread yet) */
+static int warm_see(const WarmRecord *r) {
+    const u8 *p = (const u8 *)r;
+    u64 h = 1469598103934665603ull;
+    for (size_t i = 0; i < sizeof *r; i++) h = (h ^ p[i]) * 1099511628211ull;
+    if (!h) h = 1;
+    u32 slots = sizeof warm_seen / sizeof *warm_seen;
+    for (u32 at = (u32)(h >> 20) & (slots - 1);; at = (at + 1) & (slots - 1)) {
+        if (warm_seen[at] == h) return 0;
+        if (!warm_seen[at]) {
+            if (warm_nseen >= WARM_RECORDS) return 0;   /* (the list is full) */
+            warm_seen[at] = h;
+            warm_nseen++;
+            return 1;
+        }
+    }
+}
+
+/* (1: the record was listed - read at the start, or added since; the hash as warm_see's) */
+static int warm_listed(const WarmRecord *r) {
+    const u8 *p = (const u8 *)r;
+    u64 h = 1469598103934665603ull;
+    for (size_t i = 0; i < sizeof *r; i++) h = (h ^ p[i]) * 1099511628211ull;
+    if (!h) h = 1;
+    u32 slots = sizeof warm_seen / sizeof *warm_seen;
+    int found = 0;
+    AcquireSRWLockShared(&warm_list_lock);
+    for (u32 at = (u32)(h >> 20) & (slots - 1); warm_seen[at]; at = (at + 1) & (slots - 1))
+        if (warm_seen[at] == h) { found = 1; break; }
+    ReleaseSRWLockShared(&warm_list_lock);
+    return found;
+}
 static void make_note_pipe(const Pipe *e, int made, double ms) {
     vk_play_wait_ms += ms;
     int listed = -1;
