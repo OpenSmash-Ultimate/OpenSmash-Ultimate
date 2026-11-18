@@ -182,14 +182,14 @@ class Lobbies(unittest.TestCase):
         self.assertFalse(self.nex.board.profiles.of_pid[str(pid)]["show"])
         self.assertEqual(self.sent[-1], ("http://a:1/gsp/profile", 200))
 
-    def test_unknown_install_is_registered_with_the_key_once(self):
+    def test_unknown_install_is_not_registered_by_its_key(self):
         self.sent = []
-        del self.nex.accounts.data["users"][self.nsa]       # (the lobby does not know this install)
-        self.nex.board.index(0.0, force=True)
+        del self.nex.accounts.data["users"][self.nsa]       # (the lobby does not know this install: only the game's
+        self.nex.board.index(0.0, force=True)               # own login on its game server makes it known there)
         t = {"user_id": "80351110224678912", "access_token": "AT"}
-        self.assertEqual(da.set_shown(self.root, t, True, ["a:1"], send=self.send), 1)
-        self.assertEqual([c for _u, c in self.sent], [403, 200])
-        self.assertEqual(self.nex.board.profiles.discord_id(self.nex.accounts.data["users"][self.nsa]["pid"]), "80351110224678912")
+        self.assertEqual(da.set_shown(self.root, t, True, ["a:1"], send=self.send), 0)
+        self.assertEqual([c for _u, c in self.sent], [403, 403])
+        self.assertNotIn(self.nsa, self.nex.accounts.data["users"])
 
     def test_refused_token_and_unreachable_lobby(self):
         self.sent = []

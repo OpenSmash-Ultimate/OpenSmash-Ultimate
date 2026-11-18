@@ -241,16 +241,17 @@ class Board(unittest.TestCase):
         self.assertEqual(self.board.http("GET", "/gsp/link", {}, b"", 0.0)[0], 405)
         self.assertNotIn(str(self.pid["c"]), self.board.profiles.of_pid)
 
-    def test_link_registers_an_unknown_player_with_a_key(self):
+    def test_link_with_a_key_makes_no_account(self):
         new = "00000000000000e5"
         NSA["e"] = new
         try:
             self.discord["tok-e"] = {"id": "1005", "username": "eee"}
             self.assertEqual(self.link("e", "tok-e")[0], 403)
             self.assertEqual(self.link("e", "tok-e", key="00000000000000e6")[0], 403)
+            self.assertEqual(self.link("e", "tok-e", key=new)[0], 403)
             self.assertNotIn(new, self.nex.accounts.data["users"])
-            self.assertEqual(self.link("e", "tok-e", key=new)[0], 200)
-            pid = self.nex.accounts.data["users"][new]["pid"]
+            pid = self.nex.accounts.login(new, "E", 0.0)     # (the game's own login on the game server)
+            self.assertEqual(self.link("e", "tok-e", now=2000.0)[0], 200)
             self.assertEqual(self.board.profiles.discord_id(pid), "1005")
         finally:
             del NSA["e"]
@@ -380,12 +381,13 @@ class Board(unittest.TestCase):
         return json.dumps({"records": [r.hex() for r in records], "ranked": list(ranked)})
 
     def test_sync_stores_records_and_ratings(self):
-        data = self.payload([record(5, 1700), record(43, 2500)],
+        self.board.credits[self.pid["a"]] = [5.0, None]   # (five matches heard of: 43 may rise 400, 5 start at 1700)
+        data = self.payload([record(5, 1700), record(43, 1900)],
                             [{"category": 7, "rating": 1650, "win": 3, "loss": 2, "draw": 1, "disconnect": 0},
                              {"category": 8, "rating": 99999999, "win": 1, "loss": 0, "draw": 0, "disconnect": 4}])
         code, d = self.sync("a", data)
         self.assertEqual((code, d), (200, {"ok": True, "records": 2, "ranked": 2}))
-        self.assertEqual(self.board.records(self.pid["a"]), {0: 900, 5: 1700, 43: 2500})   # (newest wins per fighter)
+        self.assertEqual(self.board.records(self.pid["a"]), {0: 900, 5: 1700, 43: 1900})   # (newest wins per fighter)
         e = self.nex.ranked.entry(self.pid["a"], 7)
         self.assertEqual((e["ratingValue"], e["totalWin"], e["totalLoss"], e["totalDraw"], e["totalDisconnect"]),
                          (1650, 3, 2, 1, 0))
@@ -393,10 +395,10 @@ class Board(unittest.TestCase):
         from .ranked import MAX_RATING
         self.assertEqual(self.nex.ranked.entry(self.pid["a"], 8)["ratingValue"], MAX_RATING)
         _, board = self.get("/leaderboard.json", now=5000.0)    # (the board cache was dropped)
-        self.assertEqual(board["players"][0]["gsp"], 2500)
+        self.assertEqual([r["gsp"] for r in board["players"] if r["id"] == self.da], [1900])
         code, mine = self.get("/gsp/records", self.records_headers("a"))
         self.assertEqual(code, 200)
-        self.assertEqual(sorted(mine["records"]), sorted(r.hex() for r in (record(0, 900), record(5, 1700), record(43, 2500))))
+        self.assertEqual(sorted(mine["records"]), sorted(r.hex() for r in (record(0, 900), record(5, 1700), record(43, 1900))))
 
     def records_headers(self, who):
         p, t, sig = self.signed(who, "records")
@@ -409,37 +411,51 @@ class Board(unittest.TestCase):
         self.assertEqual(self.board.http("POST", "/gsp/records", {}, b"", 0.0)[0], 405)
         self.assertEqual(self.board.http("GET", "/gsp/sync", {}, b"", 0.0)[0], 405)
 
-    def test_sync_unknown_player_and_registration(self):
+    def test_sync_unknown_player_makes_no_account(self):
         new = "00000000000000e5"
         NSA["e"] = new
+        users = len(self.nex.accounts.data["users"])
         try:
-            data = self.payload([record(9, 1800)])
+            data = self.payload([record(9, 1500)])
             code, d = self.sync("e", data)
             self.assertEqual((code, d), (403, {"error": "unknown player"}))
             code, d = self.sync("e", data, key=new.upper())      # (not lowercase)
             self.assertEqual(code, 403)
             code, d = self.sync("e", data, key="00000000000000e6")   # (not that player's key)
             self.assertEqual(code, 403)
-            self.assertNotIn(new, self.nex.accounts.data["users"])
             code, d = self.sync("e", data, key=new, sig="0" * 64)    # (bad signature)
             self.assertEqual(code, 403)
-            code, d = self.sync("e", data, key=new, now=2000.0)
+            code, d = self.sync("e", data, key=new, now=2000.0)   # (its own key: answered, nothing kept)
+            self.assertEqual((code, d), (200, {"ok": True, "records": 0, "ranked": 0, "kept": False}))
+            self.assertNotIn(new, self.nex.accounts.data["users"])
+            self.assertEqual(len(self.nex.accounts.data["users"]), users)
+            self.assertNotIn(player_id(new), self.board.by_player)
+            pid = self.nex.accounts.login(new, "E", 0.0)       # (the game's own login: now it is known)
+            code, d = self.sync("e", data)
             self.assertEqual((code, d["records"]), (200, 1))
-            pid = self.nex.accounts.data["users"][new]["pid"]
-            self.assertEqual(self.board.records(pid), {9: 1800})
-            self.assertEqual(self.sync("e", self.payload())[0], 200)   # (now known: no key needed)
+            self.assertEqual(self.board.records(pid), {9: 1500})
         finally:
             del NSA["e"]
 
-    def test_sync_registration_rate_limit(self):
-        self.nex.accounts.new_accounts.take = lambda now: False
-        new = "00000000000000f7"
-        NSA["f"] = new
-        try:
-            code, d = self.sync("f", self.payload(), key=new)
-            self.assertEqual(code, 503)
-        finally:
-            del NSA["f"]
+    def test_made_up_keys_never_fill_the_accounts(self):
+        from .server import MAX_ACCOUNTS
+        users = len(self.nex.accounts.data["users"])
+        data = json.dumps({"id": "00000000000000dd", "mode": "room", "players": 2, "seconds": 0, "ranked": False,
+                           "net": "rollback", "via": "eos", "exact": True})
+        for i in range(300):
+            key = os.urandom(8).hex()
+            p, t = player_id(key), int(time.time())
+            for path, what, payload, extra in (("/gsp/sync", "sync", self.payload([record(1, 1500)]), {}),
+                                               ("/gsp/profile", "profile", "X\n", {"name": "X", "discord": ""}),
+                                               ("/match/played", "match", data, {})):
+                d = dict(extra, player=p, t=t, key=key, sig=signature(key, what, p, t, payload))
+                if path != "/gsp/profile":
+                    d["data"] = payload
+                self.board.http("POST", path, {}, json.dumps(d).encode(), 1000.0 + i)
+            self.link("a", "tok-x", key=key, nsa=key, now=1000.0 + i)
+        self.assertEqual(len(self.nex.accounts.data["users"]), users)
+        self.assertLess(users, MAX_ACCOUNTS)
+        self.assertIsNotNone(self.nex.accounts.login("00000000000000e9", "Real", 2000.0))   # (a real login gets in)
 
     def test_sync_refuses_bad_data(self):
         good = record(1, 1000).hex()
@@ -468,16 +484,14 @@ class Board(unittest.TestCase):
         self.assertEqual(self.sync("a", self.payload(), t=t - MAX_SKEW - 5)[0], 403)
         self.assertEqual(self.sync("b", self.payload(), sig=signature(NSA["a"], "sync", player_id(NSA["b"]), t, self.payload()), t=t)[0], 403)
 
-    def test_profile_with_a_key_makes_an_account_but_no_registration(self):
+    def test_profile_with_a_key_makes_no_account(self):
         new = "00000000000000e5"
         p, t = player_id(new), int(time.time())
         d = {"player": p, "t": t, "name": "New", "discord": "ee55", "sig": signature(new, "profile", p, t, "New\nee55")}
         self.assertEqual(self.board.http("POST", "/gsp/profile", {}, json.dumps(d).encode(), 0.0)[0], 403)
         d["key"] = new
-        self.assertEqual(self.board.http("POST", "/gsp/profile", {}, json.dumps(d).encode(), 0.0)[0], 200)
-        pid = self.nex.accounts.data["users"][new]["pid"]
-        self.assertFalse(self.board.registered(pid))
-        self.assertNotIn(str(pid), self.board.profiles.of_pid)
+        self.assertEqual(self.board.http("POST", "/gsp/profile", {}, json.dumps(d).encode(), 0.0)[0], 403)
+        self.assertNotIn(new, self.nex.accounts.data["users"])
 
     def test_links_kept(self):
         self.link("c", "tok-a")
@@ -599,7 +613,7 @@ class Board(unittest.TestCase):
         self.assertEqual(self.board.http("GET", "/match/played", {}, b"", 1000.0)[0], 405)
         self.assertEqual(self.matches()["total"], 2)
 
-    def test_match_report_registers_an_unknown_player(self):
+    def test_match_report_of_an_unknown_player_counts_without_an_account(self):
         nsa = "00000000000000d4"
         data = json.dumps({"id": "00000000000000dd", "mode": "room", "players": 3, "seconds": 0, "ranked": False,
                            "net": "rollback", "via": "lobby", "exact": True})
@@ -609,6 +623,99 @@ class Board(unittest.TestCase):
         d["key"] = nsa
         self.assertEqual(self.board.http("POST", "/match/played", {}, json.dumps(d).encode(), 1000.0)[0], 200)
         self.assertEqual(self.matches()["by_mode"]["room"], 1)
+        self.assertNotIn(nsa, self.nex.accounts.data["users"])
+
+    # ---- what a sync may keep, and the addresses' buckets ---------------------------------------------------
+    def sync_new(self, who, records, now=1000.0, peer=None):
+        """A sync as a game that reports its matches sends it ("m": 1)."""
+        data = self.payload(records)
+        p, t = player_id(NSA[who]), int(time.time())
+        d = {"player": p, "t": t, "sig": signature(NSA[who], "sync", p, t, data), "m": 1, "data": data}
+        code, body = self.board.http("POST", "/gsp/sync", {}, json.dumps(d).encode(), now, peer=peer)
+        return code, json.loads(body)
+
+    def report(self, who, mid, now, peer, nsa=None, key=None):
+        nsa = nsa or NSA[who]
+        data = json.dumps({"id": mid, "mode": "quickplay", "players": 2, "seconds": 95, "ranked": True,
+                           "net": "rollback", "via": "eos", "exact": True})
+        p, t = player_id(nsa), int(time.time())
+        d = {"player": p, "t": t, "data": data, "sig": signature(nsa, "match", p, t, data)}
+        if key is not None:
+            d["key"] = key
+        return self.board.http("POST", "/match/played", {}, json.dumps(d).encode(), now, peer=peer)[0]
+
+    def test_forged_gsp_is_clamped(self):
+        a = self.pid["a"]
+        self.assertEqual(self.sync_new("a", [record(43, 900000), record(7, 2000000)])[0], 200)
+        self.assertEqual(self.board.records(a), {0: 900, 7: 1600, 43: 1500})   # (no credit: no rise; a first record 1600)
+        _, board = self.get("/leaderboard.json", now=5000.0)
+        self.assertEqual(board["players"][0]["id"], self.db)       # (b stays first)
+        self.assertEqual(self.sync_new("a", [record(43, 1400)])[0], 200)      # (a fall is always kept)
+        self.assertEqual(self.board.records(a)[43], 1400)
+
+    def test_rise_needs_matches_heard_from_two_games(self):
+        a = self.pid["a"]
+        self.sync_new("a", [record(43, 1580)], now=1000.0)
+        self.assertEqual(self.board.records(a)[43], 1500)            # (kept pending)
+        self.assertEqual(self.report("a", "1111111111111111", 1001.0, "198.51.100.1"), 200)
+        self.assertEqual(self.board.records(a)[43], 1500)            # (one game's word alone: no credit)
+        self.assertEqual(self.report("b", "1111111111111111", 1002.0, "198.51.100.1"), 200)
+        self.assertEqual(self.board.records(a)[43], 1500)            # (the same address: no credit)
+        self.assertEqual(self.report("c", "1111111111111111", 1003.0, "203.0.113.9"), 200)
+        self.assertEqual(self.board.records(a)[43], 1580)            # (two players, two addresses: the pending rise)
+        self.sync_new("a", [record(43, 9999)], now=1100.0)
+        self.assertEqual(self.board.records(a)[43], 1600)            # (what was left of that credit: 20)
+        for i in range(30):                                            # (one credit a minute at most, MAX_CREDITS held)
+            mid = "%016x" % (0x2000 + i)
+            self.report("a", mid, 1200.0 + 20 * i, "198.51.100.1")
+            self.report("b", mid, 1201.0 + 20 * i, "203.0.113.9")
+        self.assertLessEqual(self.board.records(a)[43], 1580 + 11 * 100)
+
+    def test_a_newer_record_drops_the_waiting_one(self):
+        a = self.pid["a"]
+        self.sync_new("a", [record(43, 1590)], now=1000.0)      # (a win: waits for the match's reports)
+        self.sync_new("a", [record(43, 1450)], now=1010.0)      # (then a loss: the newer record)
+        self.report("a", "4444444444444444", 1020.0, "198.51.100.1")
+        self.report("b", "4444444444444444", 1021.0, "203.0.113.9")
+        self.assertEqual(self.board.records(a)[43], 1450)
+
+    def test_unknown_reporters_pair_but_make_nothing(self):
+        users = len(self.nex.accounts.data["users"])
+        other = "00000000000000f8"
+        self.sync_new("a", [record(43, 1550)], now=1000.0)
+        self.assertEqual(self.report("a", "3333333333333333", 1001.0, "198.51.100.1"), 200)
+        self.assertEqual(self.report(None, "3333333333333333", 1002.0, "203.0.113.9", nsa=other, key=other), 200)
+        self.assertEqual(self.board.records(self.pid["a"])[43], 1550)
+        self.assertEqual(len(self.nex.accounts.data["users"]), users)
+
+    def test_old_game_rises_slowly(self):
+        a = self.pid["a"]
+        clock = [self.DAY]
+        self.board.matches.clock = lambda: clock[0]
+        for i in range(10):   # (no "m": an old game, one credit every LEGACY_CREDIT_EVERY seconds at most)
+            self.assertEqual(self.sync("a", self.payload([record(43, 3000)]), now=1000.0 + 30 * i)[0], 200)
+        self.assertEqual(self.board.records(a)[43], 1600)
+        self.sync("a", self.payload([record(43, 3000)]), now=1000.0 + 600)
+        self.assertEqual(self.board.records(a)[43], 1700)
+
+    def test_new_pc_takes_its_records_back(self):
+        NSA["d"] = "00000000000000d4"
+        try:
+            pid_d = self.nex.accounts.login(NSA["d"], "D", 0.0)
+            self.board.profiles.link(pid_d, "1001", "Ann", True, 3.0)      # (a's Discord account on a second PC)
+            self.sync_new("d", [record(43, 1500)])                         # (what it took back: kept as it is)
+            self.assertEqual(self.board.records(pid_d)[43], 1500)
+            self.assertEqual(self.nex.services.powers.records(pid_d), [(43, record(43, 1500))])
+        finally:
+            del NSA["d"]
+
+    def test_address_bucket(self):
+        from .board import IP_BURST
+        codes = [self.sync_new("a", [], now=1000.0, peer="198.51.100.7")[0] for _ in range(int(IP_BURST) + 5)]
+        self.assertEqual(codes.count(429), 5)
+        self.assertEqual(self.sync_new("a", [], now=1000.0, peer="198.51.100.8")[0], 200)     # (another address)
+        self.assertEqual(self.sync_new("a", [], now=1010.0, peer="198.51.100.7")[0], 200)     # (refilled)
+        self.assertEqual(self.get("/leaderboard.json")[0], 200)                               # (the reads: never)
 
     def test_match_seen_by_the_lobby_game_server(self):
         from .matchmaking import Session

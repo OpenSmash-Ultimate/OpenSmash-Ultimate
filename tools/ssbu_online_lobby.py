@@ -300,6 +300,10 @@ class OnlineLobby(relay.Lobby):
             name, sep, value = line.partition(":")
             if sep:
                 headers[name.strip().lower()] = value.strip()
+        peer = (writer.get_extra_info("peername") or ("", 0))[0]
+        if peer in ("127.0.0.1", "::1") and headers.get("x-forwarded-for"):
+            # (the HTTPS front, Caddy, on this host: it sets the caller's address as the list's last entry)
+            peer = headers["x-forwarded-for"].split(",")[-1].strip()
         body, too_big = b"", False
         if method == "POST":
             try:
@@ -319,14 +323,14 @@ class OnlineLobby(relay.Lobby):
         elif method == "POST" and path == "/gsp/link":
             # (Discord is asked off the event loop: the lobby's streams must not wait for it; the rest runs in the loop)
             board = self.nex.board
-            job, refused = board.link_request(body, time.monotonic())
+            job, refused = board.link_request(body, time.monotonic(), peer)
             if refused:
                 code, data = refused
             else:
                 me = await asyncio.get_running_loop().run_in_executor(None, board.link_ask, job[1])
                 code, data = board.link_finish(job, me)
         else:
-            code, data = self.nex.board.http("GET" if method == "HEAD" else method, path, headers, body)
+            code, data = self.nex.board.http("GET" if method == "HEAD" else method, path, headers, body, peer=peer)
         reason = {200: "OK", 204: "No Content", 400: "Bad Request", 403: "Forbidden", 404: "Not Found",
                   405: "Method Not Allowed", 413: "Payload Too Large", 429: "Too Many Requests", 502: "Bad Gateway",
                   503: "Service Unavailable"}.get(code, "Error")

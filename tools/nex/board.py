@@ -45,8 +45,18 @@ to show; the id is the account hash (sha256("opensmash-discord\\n" + Discord id)
                              "counted"}; 400 for bad data; 429 when the player reported less than REPORT_EVERY s ago.
 
 A player the lobby does not know is refused (403 {"error":"unknown player"}) unless the request carries "key": the
-NSA id (16 lowercase hex digits, whose player_id is the player), with which the account is made first (503 when no
-new one may be made now); the signature is checked as usual.
+NSA id (16 lowercase hex digits, whose player_id is the player). That key never makes an account: only the game's
+own login on this game server (nex/server.py) does. With a key that is the player's and a good signature, a match
+report is counted all the same (nothing is kept of the player) and a sync is answered 200 with nothing kept
+("kept": false), so the game does not send it again and again; everything else stays refused.
+
+What /gsp/sync keeps is checked (sync_check): a fighter record's GSP (seen 1307..1750 on the live board, +80 for a
+win) above RECORD_GSP_MAX is not the game's; a fighter's first record may say NEW_RECORD_GSP at most; a rise above
+what the player's identity already has needs credits, one match's worth (RISE_PER_MATCH) each, earned when the lobby
+hears of a match the player played from two different games (two players, two addresses: pair_report) or, for an old
+game that sends no reports, one every LEGACY_CREDIT_EVERY seconds. What a sync wants above its credits waits
+(pending) and is kept when credits come. Every signed request also takes from its address's bucket (IP_RATE,
+IP_BURST: 429 beyond).
 
 A player is named by player_id(nsa): a hash of their install's NSA id (runtime/hle_env.c), which only their own
 game and launchers know. A signed request proves it without sending it: X-OpenSmash-Player (the id),
@@ -55,6 +65,7 @@ as the key over "opensmash1\\n<what>\\n<player>\\n<time>\\n<payload>" (what: "me
 "sync" or "match"; payload: "", "", "<name>\\n<discord>", "<token>\\n<1|0>" or the data string). A time more than MAX_SKEW seconds off is refused."""
 import hashlib
 import hmac
+import itertools
 import json
 import os
 import re
@@ -64,7 +75,7 @@ import urllib.request
 
 from .matches import Matches
 from .ranked import clamp_rating
-from .server import JsonStore
+from .server import Bucket, JsonStore
 from .services import POWER_RECORD
 
 MAX_SKEW = 300            # seconds a signed request's time may be off
@@ -79,6 +90,16 @@ MAX_LINK_BODY = 4096
 DISCORD_ME = "https://discord.com/api/v10/users/@me"
 DISCORD_TIMEOUT = 5       # seconds the lobby waits for Discord
 INDEX_EVERY = 10.0        # seconds between two rebuilds of the player id index (a lookup that misses asks for one)
+IP_RATE, IP_BURST = 1.0, 30.0   # signed requests a second from one address, and at once (429 beyond)
+MAX_IPS = 8192            # addresses whose buckets are kept (in memory only; full ones are dropped first)
+RECORD_GSP_MAX = 9999     # a fighter record's GSP above this is not the game's
+NEW_RECORD_GSP = 1600     # the most a fighter's first record may say (the game starts a fighter near 1460)
+RISE_PER_MATCH = 100      # GSP one fighter may rise per match credited
+MAX_CREDITS = 5           # matches' credits a player may hold
+CREDIT_EVERY = 60.0       # seconds: one credit at most this often to one player
+LEGACY_CREDIT_EVERY = 600.0   # seconds: a game that sends no reports earns one credit this often at most
+PAIR_WINDOW = 900.0       # seconds the reports of one match are matched up
+MAX_PAIRS = 20000         # matches whose reports are kept to match up (in memory)
 
 
 def player_id(nsa):
@@ -224,11 +245,25 @@ class Board:
         self.indexed_users = -1
         self.indexed_at = None
         self.cache = None        # (when, leaderboard bytes, {pid: (rank, {fighter: rank})}, ranked)
+        self.ip_buckets = {}     # address -> Bucket of its signed requests (memory only, never logged)
+        self.credits = {}        # pid -> [credits, when one was last given]
+        self.pending = {}        # pid -> {fighter: record a sync wanted above its credits}
+        self.legacy_credit_at = {}   # pid -> when its last no-report sync gave a credit
+        self.pairs = {}          # match key -> {"at", "by": {player id: (address, pid or None)}, "paid": set}
 
     # ---- who is who -----------------------------------------------------------------------------
     def index(self, now, force=False):
         users = self.nex.accounts.data["users"]
         if not force and len(users) == self.indexed_users:
+            return
+        if not force and 0 <= self.indexed_users < len(users):
+            # (accounts are only added, at the end: index the new ones at once, so a game that has just logged in is
+            # known to its next request)
+            for nsa, u in itertools.islice(users.items(), self.indexed_users, None):
+                p = player_id(nsa)
+                self.by_player[p] = (u["pid"], nsa)
+                self.player_of[u["pid"]] = p
+            self.indexed_users = len(users)
             return
         if not force and self.indexed_at is not None and now - self.indexed_at < INDEX_EVERY:
             return
@@ -413,7 +448,7 @@ class Board:
         if (not isinstance(token, str) or not 0 < len(token) <= 512 or not token.isprintable()
                 or any(c.isspace() for c in token) or not isinstance(show, bool)):
             return None, (400, b'{"error":"not a link"}')
-        refused = self.refusal(d.get("player"), d.get("key"), now)
+        refused = self.refusal(d.get("player"))
         if refused:
             return None, refused
         pid = self.verify(d.get("player"), d.get("t"), d.get("sig"), "link", token + "\n" + ("1" if show else "0"))
@@ -452,8 +487,10 @@ class Board:
         self.nex.info(f"{self.nex.accounts.name(pid)} linked a Discord account")
         return 200, json.dumps({"ok": True, "name": name, "discord": account_hash(did)}).encode()
 
-    def link_request(self, body, now):
+    def link_request(self, body, now, peer=None):
         """(job, None) or (None, (status, body)) for a raw /gsp/link request: the part before Discord is asked."""
+        if not self.ip_allowed(peer, now):
+            return None, (429, b'{"error":"too many requests"}')
         if len(body) > MAX_LINK_BODY:
             return None, (413, b'{"error":"too large"}')
         try:
@@ -465,34 +502,111 @@ class Board:
         return self.link_prepare(d, now)
 
     # ---- results uploaded by a game with its own NEX server --------------------------------------------
-    def register(self, player, key, now):
-        """Makes the account of NSA id key when it is player's: True when player is known after it, False when key is
-        not that id, None when no new account may be made now."""
+    @staticmethod
+    def key_signed(player, key, t, sig, what, payload="", now=None):
+        """True when key is the NSA id of player and signed this request: proves the game holds that id, makes
+        nothing (an unknown player's key never becomes an account here)."""
+        now = time.time() if now is None else now
         if not isinstance(key, str) or len(key) != 16 or any(c not in "0123456789abcdef" for c in key):
             return False
-        if player_id(key) != player:
+        if not isinstance(player, str) or player_id(key) != player or not isinstance(sig, str):
             return False
-        if self.nex.accounts.login(key, "", now) is None:
-            return None
-        self.index(now, force=True)
-        return True
+        try:
+            t = int(t)
+        except (TypeError, ValueError):
+            return False
+        if abs(now - t) > MAX_SKEW:
+            return False
+        return hmac.compare_digest(signature(key, what, player, t, payload), sig.lower())
 
-    def refusal(self, player, key, now):
-        """None when player is known (or has just been registered from key), else the (status, body) of the refusal."""
+    def refusal(self, player):
+        """None when player is known (its account made by the game's own login here), else the (status, body) of the
+        refusal. Nothing is made for an unknown player, whatever key it sends."""
         if not isinstance(player, str):
             return 403, b'{"error":"not signed by a player this server knows"}'
         if player not in self.by_player:
             self.index(time.monotonic())
         if player in self.by_player:
             return None
-        if key is None:
-            return 403, b'{"error":"unknown player"}'
-        got = self.register(player, key, now)
-        if got is None:
-            return 503, b'{"error":"too many new accounts"}'
-        if not got:
-            return 403, b'{"error":"unknown player"}'
-        return None
+        return 403, b'{"error":"unknown player"}'
+
+    def ip_allowed(self, peer, now):
+        """Whether the address peer may make one more signed request now (no address: a test, or a caller that has
+        none - allowed)."""
+        if not peer:
+            return True
+        b = self.ip_buckets.get(peer)
+        if b is None:
+            if len(self.ip_buckets) >= MAX_IPS:
+                self.ip_buckets = {a: k for a, k in self.ip_buckets.items()
+                                   if k.at is not None and now - k.at < IP_BURST / IP_RATE}
+                if len(self.ip_buckets) >= MAX_IPS:
+                    return False
+            b = self.ip_buckets[peer] = Bucket(IP_RATE, IP_BURST)
+        return b.take(now)
+
+    # ---- what a sync may keep: credits from matches heard of ---------------------------------------------
+    def credit(self, pid, now, every=CREDIT_EVERY):
+        """One more match's credit to pid (at most one every `every` seconds), then what it had pending."""
+        c = self.credits.setdefault(pid, [0.0, None])
+        if c[1] is not None and now - c[1] < every:
+            return False
+        c[0], c[1] = min(MAX_CREDITS, c[0] + 1.0), now
+        if len(self.credits) > 50000:
+            self.credits = {p: v for p, v in self.credits.items() if v[0] > 0 or p in self.pending}
+        wanted = self.pending.pop(pid, None)
+        if wanted:
+            self.sync(pid, list(wanted.values()), [], now)
+        return True
+
+    def sync_check(self, pid, raw, merged, now):
+        """The record of a sync as it may be kept: its GSP within RECORD_GSP_MAX and above the identity's own only by
+        pid's credits (spent), the rest kept pending for later credits. merged: the identity's records."""
+        fighter, gsp = raw[0], record_gsp(raw)
+        have = merged.get(fighter)
+        base = record_gsp(have) if have is not None else NEW_RECORD_GSP
+        want, waiting = min(gsp, RECORD_GSP_MAX), False
+        if want > base:
+            c = self.credits.setdefault(pid, [0.0, None])
+            need = (want - base) / RISE_PER_MATCH
+            if c[0] >= need:
+                c[0] -= need
+            else:
+                want = min(want, max(base + int(c[0] * RISE_PER_MATCH + 1e-6), 0))
+                c[0], waiting = 0.0, want < gsp
+        mine = self.pending.get(pid)
+        if waiting:
+            if mine is None:
+                if len(self.pending) >= 50000:
+                    self.pending.pop(next(iter(self.pending)))
+                mine = self.pending[pid] = {}
+            mine[fighter] = raw
+        elif mine is not None and mine.pop(fighter, None) is not None and not mine:   # (a newer one than it waited)
+            del self.pending[pid]
+        if want == gsp:
+            return raw
+        return raw[:1] + want.to_bytes(4, "little") + raw[5:]
+
+    def pair_report(self, key, player, peer, pid, now):
+        """A report of match key from player (pid None: unknown here) at address peer: credits every reporter of it
+        once two different players at two different addresses reported it."""
+        if len(self.pairs) >= MAX_PAIRS:
+            self.pairs = {k: v for k, v in self.pairs.items() if now - v["at"] < PAIR_WINDOW}
+            while len(self.pairs) >= MAX_PAIRS:
+                self.pairs.pop(next(iter(self.pairs)))
+        e = self.pairs.get(key)
+        if e is None or now - e["at"] >= PAIR_WINDOW:
+            e = self.pairs[key] = {"at": now, "by": {}, "paid": set()}
+        if player not in e["by"] and len(e["by"]) < 8:
+            e["by"][player] = (peer, pid)
+        by = e["by"]
+        for who, (addr, p) in by.items():
+            if who in e["paid"]:
+                continue
+            if any(o != who and a != addr for o, (a, _p) in by.items()):
+                e["paid"].add(who)
+                if p is not None:
+                    self.credit(p, now)
 
     @staticmethod
     def parse_sync(data):
@@ -528,9 +642,16 @@ class Board:
             out_ranked.append(tuple(vals))
         return out_recs, out_ranked
 
-    def sync(self, pid, recs, ranked):
-        """Keeps uploaded results: (records stored, ranked entries stored)."""
-        stored = sum(1 for raw in recs if self.nex.services.powers.put(pid, raw))
+    def sync(self, pid, recs, ranked, now):
+        """Keeps uploaded results, each record as sync_check lets it: (records stored, ranked entries stored)."""
+        merged = self.merged(pid) if recs else {}
+        stored = 0
+        for raw in recs:
+            raw = self.sync_check(pid, raw, merged, now)
+            if self.nex.services.powers.put(pid, raw):
+                stored += 1
+                if record_gsp(raw) > record_gsp(merged.get(raw[0], b"")):
+                    merged[raw[0]] = raw
         stats, kept = self.nex.ranked, 0
         for category, rating, win, loss, draw, disconnect in ranked:
             e = stats.entry(pid, category)
@@ -549,13 +670,18 @@ class Board:
         self.matches.flush(now, force)
 
     # ---- HTTP (tools/ssbu_online_lobby.py hands each request here) --------------------------------
-    def http(self, method, path, headers, body, now=None):
-        """(status, JSON bytes) for one request. headers: lower-case names."""
+    def http(self, method, path, headers, body, now=None, peer=None):
+        """(status, JSON bytes) for one request. headers: lower-case names; peer: the caller's address (for its
+        bucket: every signed request takes from it)."""
         now = time.monotonic() if now is None else now
         if method == "GET" and path == "/leaderboard.json":
             return 200, self.leaderboard(now)
         if method == "GET" and path == "/status.json":
             return 200, json.dumps(self.status(now), separators=(",", ":")).encode()
+        signed = (method == "GET" and path in ("/gsp/me", "/gsp/records")) or (
+            method == "POST" and path in ("/gsp/sync", "/match/played", "/gsp/profile", "/gsp/link"))
+        if signed and path != "/gsp/link" and not self.ip_allowed(peer, now):   # (link_request takes its own)
+            return 429, b'{"error":"too many requests"}'
         if method == "GET" and path == "/gsp/me":
             pid = self.verify(headers.get("x-opensmash-player"), headers.get("x-opensmash-time"),
                               headers.get("x-opensmash-sig"), "me")
@@ -578,8 +704,11 @@ class Board:
                 return 400, b'{"error":"not JSON"}'
             if not isinstance(d, dict) or not isinstance(d.get("data"), str):
                 return 400, b'{"error":"not a sync"}'
-            refused = self.refusal(d.get("player"), d.get("key"), now)
+            refused = self.refusal(d.get("player"))
             if refused:
+                if "key" in d and self.key_signed(d.get("player"), d["key"], d.get("t"), d.get("sig"), "sync", d["data"]):
+                    # (a game this server never saw log in: nothing kept, but answered so it does not send it again)
+                    return 200, b'{"ok":true,"records":0,"ranked":0,"kept":false}'
                 return refused
             pid = self.verify(d.get("player"), d.get("t"), d.get("sig"), "sync", d["data"])
             if pid is None:
@@ -587,9 +716,13 @@ class Board:
             got = self.parse_sync(d["data"])
             if got is None:
                 return 400, b'{"error":"bad data"}'
-            stored, kept = self.sync(pid, *got)
             if got[0] and not d.get("m"):   # (an old game, which reports no matches: its syncs estimate them)
                 self.matches.legacy_sync(pid)
+                last = self.legacy_credit_at.get(pid)
+                if last is None or now - last >= LEGACY_CREDIT_EVERY:
+                    self.legacy_credit_at[pid] = now
+                    self.credit(pid, now, LEGACY_CREDIT_EVERY)
+            stored, kept = self.sync(pid, *got, now)
             return 200, json.dumps({"ok": True, "records": stored, "ranked": kept}).encode()
         if method == "POST" and path == "/match/played":
             if len(body) > MAX_LINK_BODY:
@@ -600,13 +733,24 @@ class Board:
                 return 400, b'{"error":"not JSON"}'
             if not isinstance(d, dict) or not isinstance(d.get("data"), str):
                 return 400, b'{"error":"not a match"}'
-            refused = self.refusal(d.get("player"), d.get("key"), now)
-            if refused:
-                return refused
-            pid = self.verify(d.get("player"), d.get("t"), d.get("sig"), "match", d["data"])
-            if pid is None:
-                return 403, b'{"error":"not signed by a player this server knows"}'
-            return self.matches.report(pid, d["data"])
+            player = d.get("player")
+            if self.refusal(player):
+                # (a game this server never saw log in: its match counts when its own key signed it; nothing is made)
+                if "key" not in d:
+                    return 403, b'{"error":"unknown player"}'
+                if not self.key_signed(player, d["key"], d.get("t"), d.get("sig"), "match", d["data"]):
+                    return 403, b'{"error":"unknown player"}'
+                pid, who = None, "p" + player
+            else:
+                pid = self.verify(player, d.get("t"), d.get("sig"), "match", d["data"])
+                if pid is None:
+                    return 403, b'{"error":"not signed by a player this server knows"}'
+                who = pid
+            code, answer = self.matches.report(who, d["data"])
+            if code == 200:
+                m = Matches.parse(d["data"])
+                self.pair_report(("x" if m["exact"] else "w") + m["id"], player, peer, pid, now)
+            return code, answer
         if method == "POST" and path == "/gsp/profile":
             try:
                 d = json.loads(body.decode("utf-8"))
@@ -615,7 +759,7 @@ class Board:
             if not isinstance(d, dict) or not isinstance(d.get("name", ""), str) or not isinstance(d.get("discord", ""), str):
                 return 400, b'{"error":"not a profile"}'
             name, discord = d.get("name", ""), d.get("discord", "")
-            refused = self.refusal(d.get("player"), d.get("key"), now)
+            refused = self.refusal(d.get("player"))
             if refused:
                 return refused
             pid = self.verify(d.get("player"), d.get("t"), d.get("sig"), "profile", f"{name}\n{discord}")
@@ -624,7 +768,7 @@ class Board:
             self.set_profile(pid, name)
             return 200, json.dumps({"ok": True, "name": shown_name(name)}).encode()
         if method == "POST" and path == "/gsp/link":
-            job, refused = self.link_request(body, now)
+            job, refused = self.link_request(body, now, peer)
             if refused:
                 return refused
             return self.link_finish(job, self.link_ask(job[1]))
