@@ -12,7 +12,7 @@ elsewhere; skipped without one. Both from Piaka11's WindowSmash PR #103 (GPL-3.0
 R7, the link through the netplay relay (runtime/hle_rb_relay.c, SSBU_RB_NET=relay) through
 tools/dev/rbrelaytest.c (Windows): two of them, each the game's netplay client (runtime/net_relay.c)
 with the rollback link on it, trade real HELLO and PADS messages on loopback - in a private room
-(one hosting its relay), in the lobby (tools/ssbu_relay.py) in one Local Wireless room, straight once
+(one hosting its relay), in the lobby (the lobby server: tests/netproto.py) in one Local Wireless room, straight once
 punched and through the lobby with direct packets blocked (SSBU_NET_TEST_BLOCK), and in the lobby
 with no room shared (version 3's RB messages); players numbered by the room's order, by hand, or by
 the host."""
@@ -178,9 +178,8 @@ class RelayLinkTests(unittest.TestCase):
     def lobby_room(self, server, host, guest):
         """host makes a Local Wireless room, guest joins it (as test_net_client_v3's direct test)."""
         import secrets
-        import ssbu_relay as R
-        from test_ssbu_relay import info_of
-        from test_ssbu_relay_v3 import until
+        import netproto as R
+        from netproto import info_of, until
         session = secrets.token_bytes(16)
         host.ldn(R.BROADCASTS[0], R.LM_ADVERTISE, info_of(session, host.ip))
         self.assertTrue(until(lambda: session in server.lobby.listings))
@@ -190,6 +189,8 @@ class RelayLinkTests(unittest.TestCase):
         self.assertTrue(until(lambda: guest.ip in server.lobby.listings[session].nodes))
 
     def lobby_pair(self, **more):
+        from netproto import need_lobby
+        need_lobby()
         from test_ssbu_relay import Server
         server = Server()
         self.addCleanup(server.stop)

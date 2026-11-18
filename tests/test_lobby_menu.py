@@ -3,7 +3,7 @@ pad (Restart game and Quit game under each page's rows), the text grid the game'
 typed on (the one the menu's own names use: pad and keyboard), and its Lobby page: the online lobby's room browser and
 matchmaking in netplay version 3, and Online > Netplay version (online_protocol.txt), through
 tools/dev/lobbymenutest.c (the menu and the game's netplay client with no game around them, driven
-line by line), against fake lobbies that answer by hand and the real one (tools/ssbu_relay.py) on
+line by line), against fake lobbies that answer by hand and the real one (the lobby server: tests/netproto.py) on
 127.0.0.1. Checks what the page shows (the rooms, with why one can't be joined; matchmaking's states;
 version 2's "needs netplay version 3"), what its keys do and send, which version the game asks for,
 and that the other pages keep their rows. Made-up data only, loopback only; waits are for conditions.
@@ -28,10 +28,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(ROOT / 'tests'))
 import cc  # noqa: E402
-import ssbu_relay as R  # noqa: E402
-from test_net_client_v3 import FAKE_COOKIE, FAKE_IP, HAVE_CLANG, SIM, FakeLobby, V2OnlyLobby, free_udp_port  # noqa: E402
-from test_ssbu_relay import BUILD, OTHER_BUILD, Server  # noqa: E402
-from test_ssbu_relay_v3 import V3Player, mods, until  # noqa: E402
+import netproto as R  # noqa: E402
+from netproto import BUILD, HAVE_LOBBY, NO_LOBBY, OTHER_BUILD, mods, need_lobby, until  # noqa: E402
+from test_net_client_v3 import FAKE_COOKIE, FAKE_IP, HAVE_CLANG, SIM, FakeLobby, Server, V2OnlyLobby, V3Player, free_udp_port  # noqa: E402
 
 D3D11_STAND_IN = ('typedef struct ID3D11Device ID3D11Device;\ntypedef struct ID3D11DeviceContext ID3D11DeviceContext;\n'
                   'typedef struct ID3D11RenderTargetView ID3D11RenderTargetView;\n')
@@ -948,6 +947,7 @@ class Version2(MenuTest):
         self.assertNotIn(R.MATCH, lobby.kinds(0.1))
 
     def test_lobby_of_version_2(self):
+        need_lobby()
         server = Server(make=V2OnlyLobby)
         self.addCleanup(server.stop)
         m = self.menu(f'127.0.0.1:{server.port}', protocol=3)
@@ -1136,8 +1136,9 @@ class Matchmaking(MenuTest):
         self.assertEqual(m.labels()[:3], ['Lobby', 'Find a match', 'Rooms'])
 
 
+@unittest.skipUnless(HAVE_LOBBY, NO_LOBBY)
 class RealLobby(MenuTest):
-    """Menus against tools/ssbu_relay.py."""
+    """Menus against the real lobby."""
     def setUp(self):
         super().setUp()
         self.server = Server(search_for=30.0, match_for=30.0, listed_for=60.0)

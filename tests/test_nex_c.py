@@ -1,4 +1,4 @@
-"""The NEX game server inside the game (runtime/net_nex*.c, SSBU_NEX_LOCAL=1) against tools/nex: both are
+"""The NEX game server inside the game (runtime/net_nex*.c, SSBU_NEX_LOCAL=1) against tools/nex, the lobby server's (tests/netproto.py): both are
 fed the same requests and must answer byte for byte the same.
 
 tools/dev/nextest.c drives the C server from stdin. A Tee stands where tools/nex's tests expect their server: every
@@ -25,7 +25,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
+sys.path.insert(0, str(ROOT / 'tests'))
 import cc  # noqa: E402
+from netproto import need_lobby  # noqa: E402
+need_lobby()   # (tools/nex is the lobby server's: without a checkout of it this module is skipped)
 from nex import arenas as py_arenas, crypto as py_crypto, matchmaking as py_mm, prudp as py_prudp  # noqa: E402
 from nex import selftest, server as py_server, test_arenas, test_hardening  # noqa: E402
 from nex.prudp import lite_size  # noqa: E402

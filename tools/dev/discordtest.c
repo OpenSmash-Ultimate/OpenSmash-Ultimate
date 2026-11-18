@@ -2,7 +2,7 @@
  * and runtime/net_discord.c with no discord_partner_sdk.dll beside the program): the shared token file, the application
  * id file, the presence's text, the join secret, fighter names, SHA-256 / HMAC and the signed requests to the lobby's
  * GSP pages, reading GET /gsp/me's answer and the position in leaderboard.json, and that the game is untouched without
- * the SDK. tests/test_discord.py builds and runs it (and checks the "sign" lines it prints against tools/nex/board.py);
+ * the SDK. tests/test_discord.py builds and runs it (and checks the "sign" lines it prints against the lobby's game server, board.py);
  * exit code 0 when every check passes.
  *   discordtest.exe <a scratch folder> */
 #define _CRT_SECURE_NO_WARNINGS
@@ -157,7 +157,7 @@ static void hashing(void) {
     const char *big = "Test Using Larger Than Block-Size Key - Hash Key First";
     discord_hmac_sha256(key, sizeof key, big, strlen(big), h); tohex(h, 32, x);
     CHECK(!strcmp(x, "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"), "HMAC, a long key (case 6): %s", x);
-    /* (printed for tests/test_discord.py, which checks them against tools/nex/board.py) */
+    /* (printed for tests/test_discord.py, which checks them against the lobby's board.py) */
     char player[17], sig[65], acct[17];
     discord_player_id("00000000000000a1", player);
     discord_sign("00000000000000a1", "profile", player, 1763300000, "Nelly\nab12", sig);
