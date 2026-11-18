@@ -4379,14 +4379,15 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
          * descriptor records but not the rest of the page taken above: that region, up to its end, not guest memory, where
          * the skinned vertices are not (#342: Pikachu drawn glassy, his eyes and cheeks misplaced). Bytes past its end
          * read as 0, as anywhere outside a storage buffer. */
+        u32 in_region = size;
         if (!res && nresidents && va && desc[2] && desc[2] < size && (va & 3) == 0 && (res = resident_covering(va, desc[2])) != NULL)
-            size = (u32)(res->va + res->size - va);
+            in_region = (u32)(res->va + res->size - va);
         u32 skip;
         if (res) resident_check(res);
-        if (res && (b->gm[k] = resident_texels(res, va, size, &skip))) {   /* (the view may start a little before va) */
+        if (res && (b->gm[k] = resident_texels(res, va, in_region, &skip))) {   /* (the view may start a little before va) */
             params->sb[stage][k][0] = (u32)(va - skip);
             params->sb[stage][k][1] = (u32)((va - skip) >> 32);
-            params->sb[stage][k][2] = size + skip;
+            params->sb[stage][k][2] = in_region + skip;
             continue;
         }
         b->gm[k] = upload(va, size);
