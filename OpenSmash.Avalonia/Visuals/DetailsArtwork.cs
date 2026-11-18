@@ -27,6 +27,7 @@ public sealed partial class ClassicSurface
             ["code"] = "A word your friends type too. Capital letters count.",
             ["server"] = "host:port of a lobby you run, for example 192.168.1.20:39420.",
             ["direct"] = "On is faster. Off sends everything through the lobby, so your address stays private.",
+            ["region"] = "Players on another region are not listed.",
             ["keyboard_player"] = "The keyboard adds to that player's controller.",
             ["background"] = "Off: controllers work only while the game's window is in front.",
             ["ui_language"] = "The launcher's and the game's menus. System language follows your computer's.",

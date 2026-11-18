@@ -41,7 +41,7 @@ NO_ANSWER = 'no answer from the lobby (A: ask again)'
 
 
 def build(folder, yuzu=False):
-    src = ['tools/dev/lobbymenutest.c', 'runtime/net_relay.c', 'runtime/net_region.c', 'runtime/net_eos.c', 'runtime/hle_settings.c']
+    src = ['tools/dev/lobbymenutest.c', 'runtime/net_relay.c', 'runtime/net_region.c', 'runtime/hle_settings.c']
     if yuzu:
         src += ['runtime/net_yuzu.c', 'runtime/net_yuzu_wire.c']
     if os.name == 'nt':   # (as tests/test_net_client_v3.py builds netv3test.c)
@@ -874,22 +874,19 @@ class Region(MenuTest):
         m.type('3')
         return m
 
-    def test_official_lobby_is_the_default_and_epic_a_choice(self):
+    def test_official_lobby_is_the_default_and_eos_reads_as_it(self):
         """(#448 on main named the default 'public (worldwide, Epic)'. Here "auto" is the official lobby, relay only, and
-        its label says so; Epic Online Services is the last choice, "eos" in the file, with no region row.)"""
+        its label says so. Epic Online Services are gone (0.5.0): an "eos" line reads as the official lobby.)"""
         m = self.online()
         self.assertEqual(m.row('Play online in')['value'], 'official lobby (relay only, EU / NA East)')
         self.assertIn('Server region', m.labels())
         e = self.online('eos')
-        self.assertEqual(e.row('Play online in')['value'], 'Epic Online Services (worldwide, direct)')
-        self.assertNotIn('Server region', e.labels())
-        self.assertNotIn('Lobby code', e.labels())
+        self.assertEqual(e.row('Play online in')['value'], 'official lobby (relay only, EU / NA East)')
+        self.assertIn('Server region', e.labels())
+        self.assertNotIn('Epic', ' '.join(e.labels()))
         e.go_to('Play online in')
-        e.key('RIGHT')   # (the last choice: around to the first)
-        self.assertEqual((e.row('Play online in')['value'], e.file('online_server.txt')), ('official lobby (relay only, EU / NA East)', 'auto'))
-        if os.name == 'nt':   # (no Epic Online Services off Windows: the list leaves it out there)
-            e.key('LEFT')
-            self.assertEqual((e.row('Play online in')['value'], e.file('online_server.txt')), ('Epic Online Services (worldwide, direct)', 'eos'))
+        e.key('LEFT')   # (the first choice: around to the last, This network)
+        self.assertEqual((e.row('Play online in')['value'], e.file('online_server.txt')), ('this network (LAN)', 'lan'))
 
     def test_auto_then_each_region(self):
         m = self.online(files={'config/server_region_auto.txt': 'eu 24 1700000000\n'})

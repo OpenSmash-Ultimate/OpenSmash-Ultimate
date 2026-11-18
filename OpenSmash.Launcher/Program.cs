@@ -24,7 +24,7 @@ namespace OpenSmash.Launcher
             if (args.Contains("--play", StringComparer.OrdinalIgnoreCase) && ProjectSetup.FindProject(AppContext.BaseDirectory) is string built
                 && WindowSmash.IsBuilt(built))
             {
-                // (OpenSmash 0.6) the signed-in account's lobby ticket, kept fresh while the game runs
+                // (v0.5.0) the signed-in account's lobby ticket, kept fresh while the game runs
                 string? pass = null;
                 OpenSmash.Core.OnlinePass? keeper = null;
                 try
@@ -53,7 +53,7 @@ namespace OpenSmash.Launcher
             // Ensure single instance
             using var mutex = new Mutex(true, "Global\\OpenSmashLauncher", out bool createdNew);
             if (!createdNew && args.Contains("--updated", StringComparer.OrdinalIgnoreCase))
-            {   // (OpenSmash 0.6: the launcher that replaced itself is still closing: its successor waits for it)
+            {   // (v0.5.0: the launcher that replaced itself is still closing: its successor waits for it)
                 try { createdNew = mutex.WaitOne(TimeSpan.FromSeconds(20)); } catch (AbandonedMutexException) { createdNew = true; }
             }
             if (!createdNew) return;
@@ -102,7 +102,7 @@ namespace OpenSmash.Launcher
             // No build yet (or --installer): Install WindowSmash comes first.
             if (!WindowSmash.IsBuilt(repo) || args.Contains("--installer", StringComparer.OrdinalIgnoreCase))
             {
-                LauncherForm.NameReleaseForInstaller(repo);   // (OpenSmash 0.6: a release's install takes its prebuilt runtime)
+                LauncherForm.NameReleaseForInstaller(repo);   // (v0.5.0: a release's install takes its prebuilt runtime)
                 using var installer = new InstallerForm(workDir, repo);
                 UiLocale.Attach(installer);
                 Application.Run(installer);
@@ -203,7 +203,7 @@ namespace OpenSmash.Launcher
                 RedirectStandardError = true,
             };
             foreach (string v in ClearedVars) psi.EnvironmentVariables.Remove(v);
-            if (onlinePassFile != null) psi.EnvironmentVariables["SSBU_ONLINE_TICKET_FILE"] = onlinePassFile;   // (OpenSmash 0.6: the account's lobby ticket)
+            if (onlinePassFile != null) psi.EnvironmentVariables["SSBU_ONLINE_TICKET_FILE"] = onlinePassFile;   // (v0.5.0: the account's lobby ticket)
             var logLock = new object();
             var proc = Process.Start(psi);
             if (proc == null) return null;

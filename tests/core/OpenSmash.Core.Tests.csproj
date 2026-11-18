@@ -5,7 +5,7 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
-    <Version>0.4.1-test</Version>
+    <Version>0.5.0-test</Version>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\OpenSmash.Core\OpenSmash.Core.csproj" />

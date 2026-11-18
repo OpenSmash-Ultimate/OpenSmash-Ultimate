@@ -4,6 +4,10 @@ namespace OpenSmash.Core;
 
 public sealed record Command(string Executable, IReadOnlyList<string> Arguments, string WorkingDirectory)
 {
+    /// <summary>(v0.5.0) variables for this command alone, over the launcher's own (the game's lobby ticket file:
+    /// SSBU_ONLINE_TICKET_FILE). The game's start keeps them: GameLaunch starts from StartInfo().</summary>
+    public IReadOnlyDictionary<string, string>? Environment { get; init; }
+
     public ProcessStartInfo StartInfo(bool capture = false)
     {
         var info = new ProcessStartInfo(Executable) { WorkingDirectory = WorkingDirectory,
@@ -13,6 +17,7 @@ public sealed record Command(string Executable, IReadOnlyList<string> Arguments,
         foreach (string argument in Arguments) info.ArgumentList.Add(argument);
         info.Environment["PYTHONIOENCODING"] = "utf-8";
         info.Environment["PYTHONUNBUFFERED"] = "1";
+        if (Environment != null) foreach (var entry in Environment) info.Environment[entry.Key] = entry.Value;
         return info;
     }
 }

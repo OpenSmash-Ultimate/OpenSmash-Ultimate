@@ -42,7 +42,7 @@ namespace OpenSmash.Launcher
             ["pacing"] = new[] { "clock", "vrr", "display" },
             ["render_scale"] = new[] { "1", "auto", "1.5", "2", "3" },
             ["renderer"] = new[] { "auto", "direct3d11", "vulkan" },
-            ["lobby"] = new[] { "auto", "private", "custom", "lan", "offline", "eos" },   // ("eos": Epic Online Services alone, a choice and not the default - runtime/gpu_menu.c NET_EOS)
+            ["lobby"] = new[] { "auto", "private", "custom", "lan", "offline" },   // (an older "eos" - Epic Online Services, gone in 0.5.0 - reads as "auto": LineFromLobby)
             ["region"] = new[] { OpenSmash.Core.ServerRegion.Auto }.Concat(OpenSmash.Core.ServerRegion.All.Select(r => r.Id)).ToArray(),
         };
 
@@ -74,24 +74,24 @@ namespace OpenSmash.Launcher
         }
 
         // The official lobby's DNS name (OpenSmash.Core.OfficialLobby, runtime/net.h's NET_OFFICIAL_LOBBY). The older public
-        // lobbies are gone: their lines mean it (OfficialLobby.Means, as runtime/net_relay.c reads them).
+        // lobbies are replaced by it: their lines mean it (OfficialLobby.Means, as runtime/net_relay.c reads them).
         public const string PublicLobby = OpenSmash.Core.OfficialLobby.Default;
 
         // online_server.txt's line read as the game's settings menu reads it (runtime/gpu_menu.c net_load):
-        // the lobby choice, the lobby code and a server of your own.
+        // the lobby choice, the lobby code and a server of your own. An "eos" line (Epic Online Services, gone in 0.5.0)
+        // is the official lobby (OfficialLobby.Means).
         public static (string Lobby, string Code, string Server) LobbyFromLine(string line)
         {
             var words = (line ?? "").Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
             string host = words.Length > 0 ? words[0] : "", code = words.Length > 1 ? words[1] : "";
             if (host == "" || host.Equals("off", StringComparison.OrdinalIgnoreCase)) return ("offline", code, "");
             if (host.Equals("lan", StringComparison.OrdinalIgnoreCase)) return ("lan", code, "");
-            if (host.Equals("eos", StringComparison.OrdinalIgnoreCase)) return ("eos", "", "");
             if (OpenSmash.Core.OfficialLobby.Means(host))
                 return (code == "" ? "auto" : "private", code, "");
             return ("custom", code, host);
         }
 
-        // A server address that is the official lobby (a region's, or an older public lobby's - gone - with or without
+        // A server address that is the official lobby (a region's, or an older public lobby's - replaced - with or without
         // the port): "Your own server" with it is the Public lobby (issue #389: an older launcher.ini's custom server
         // smash.recomps.wtf:39421 was written back at Play).
         public static bool MeansPublicLobby(string? host)
@@ -102,7 +102,7 @@ namespace OpenSmash.Launcher
 
         static bool IsOldLobby(string host) => OpenSmash.Core.OfficialLobby.Older.Any(o => host.StartsWith(o, StringComparison.OrdinalIgnoreCase));
 
-        // online_server.txt's line names a public lobby that is gone (smash.recomps.wtf, opensmash-lobby.duckdns.org): to
+        // online_server.txt's line names a public lobby the official one replaced (smash.recomps.wtf, opensmash-lobby.duckdns.org): to
         // be written again as what it means, "auto" or the official lobby with its code.
         public static bool IsOldLobbyLine(string? line)
         {
@@ -120,7 +120,6 @@ namespace OpenSmash.Launcher
             {
                 "offline" => "off",
                 "lan" => "lan",
-                "eos" => "eos",
                 "private" => PublicLobby + " " + (code == "" ? "friends" : code),
                 "custom" => (server == "" ? "127.0.0.1:39420" : server) + (code == "" ? "" : " " + code),
                 _ => "auto",   // (the official lobby, the server region's: runtime/net_relay.c, net_region.c)

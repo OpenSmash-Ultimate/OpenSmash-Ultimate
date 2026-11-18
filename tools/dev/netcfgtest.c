@@ -10,7 +10,6 @@
  * (tests/test_settings.py builds and runs it.) Exit code 0 when every check passes. */
 #include "../../runtime/net_relay.c"
 #include "../../runtime/net_region.c"
-#include "../../runtime/net_eos.c"
 #include "../../runtime/hle_settings.c"
 #include "../../runtime/hle_config.c"
 
@@ -25,13 +24,6 @@
 const char *rt_data_dir = ".";
 int rt_code_patches_on(void) { const char *e = getenv("SSBU_CODE_PATCHES"); return e && *e == '1'; }   /* (hle_mod_switch.c: SSBU_CODE_PATCHES here) */
 const RtModule rt_module_main;
-/* (net_eos_net.c, net_eos_lobby.c and the NEX server's: the EOS hub alone, the game's NEX over EOS; never reached here) */
-const struct NetBackend net_eos_backend;
-void net_eos_net_packet(const char *from, const u8 *p, u32 n) { (void)from; (void)p; (void)n; }
-void nexeos_tick(void) {}
-void nexeos_packet(const char *from, const u8 *data, u32 len) { (void)from; (void)data; (void)len; }
-int nexeos_lobbies(char ids[][16], int max) { (void)ids; (void)max; return 0; }
-uint64_t nex_pid_of(const char *key) { (void)key; return 0; }
 void vsock_deliver(u32 src_ip, u16 src_port, u32 dst_ip, u16 dst_port, const void *data, u32 len) {}
 int ldn_in_network(u32 ip) { return 0; }
 void ldn_listing(u32 seq, u32 owner, const u8 *info) {}
@@ -49,9 +41,6 @@ typedef struct Case {
      * config/server_region.txt, config/server_region_auto.txt (Auto's last pick) and that file's first word afterwards,
      * a friend's Join from Discord ("<r|a> <lobby> <code> <target>", config/discord_join.txt) */
     const char *pings, *region, *kept, *kept_after, *join;
-    /* net_eos_wanted(): 2 EOS alone ("eos"), 1 EOS first (only with SSBU_EOS_FIRST=1: the official lobby the fallback),
-     * 0 not - the official lobbies are relay only (last, so the cases above it name it only where it is not 0) */
-    int eos;
     /* direct paths (net_relay.c direct_ok): never with a lobby server unless SSBU_NET_DIRECT=1; in a private room
      * (hosting, This network) on unless the Direct connections setting, online_direct.txt, says off */
     int direct;
@@ -106,15 +95,14 @@ static const Case CASES[] = {
     {"a friend's Join on the other region, a lobby code", "auto\n", NULL, "--online", NET_OFFICIAL_LOBBY, "abc", NULL, "na-east\n", NULL, "", "a " NET_OFFICIAL_LOBBY " abc K7Q2M"},
     {"a friend's Join with an override: the override's server", "auto\n", "SSBU_OFFICIAL_LOBBY=lobby.example:39421", "--online", "lobby.example:39421", "smash", NULL, NULL, NULL, "", "r " NA_LOBBY " - 10.13.0.7"},
     {"a Join for a lobby that is not official is ignored", "auto\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash", NULL, NULL, NULL, "eu", "r evil.example:39421 - 10.13.0.7"},
-    /* ---- Epic Online Services (#378): never with the official lobby unless asked for */
-    {"eos in the file: Epic Online Services alone", "eos\n", NULL, "--online", "eos", "smash", NULL, NULL, NULL, NULL, NULL, 2},
-    {"eos and a lobby code", "eos OurCode\n", NULL, "--online", "eos", "OurCode", NULL, NULL, NULL, NULL, NULL, 2},
-    {"SSBU_NET_RELAY=eos", "auto\n", "SSBU_NET_RELAY=eos", "--online", "eos", "smash", NULL, NULL, NULL, NULL, NULL, 2},
-    {"SSBU_EOS_FIRST=1: auto means EOS first again, the official lobby the fallback", "auto\n", "SSBU_EOS_FIRST=1", "--online", NET_OFFICIAL_LOBBY, "smash", NULL, NULL, NULL, NULL, NULL, 1},
-    {"SSBU_EOS_FIRST=1 and a server of the player's own: not EOS", "smash.example:39421\n", "SSBU_EOS_FIRST=1", "--online", "smash.example:39421", "smash", NULL, NULL, NULL, NULL, NULL, 0},
-    {"hosting a private room: never EOS", "eos\n", "SSBU_NET_HOST=1", "--online", NULL, "smash", NULL, NULL, NULL, NULL, NULL, 0, .direct = 1},
-    {"a friend's Join over EOS, this game on the official lobby: ignored", "auto\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash", NULL, NULL, NULL, NULL, "r eos abc 10.13.0.7", 0},
-    {"a friend's Join over EOS, this game on EOS: its lobby code", "eos\n", NULL, "--online", "eos", "abc", NULL, NULL, NULL, NULL, "r eos abc 10.13.0.7", 2},
+    /* ---- Epic Online Services, gone in 0.5.0: "eos" (the file, SSBU_NET_RELAY, an older game's Join) is the official lobby */
+    {"eos in the file: the official lobby", "eos\n", NULL, "--online", NET_OFFICIAL_LOBBY, "smash"},
+    {"eos and a lobby code: the official lobby, the code kept", "eos OurCode\n", NULL, "--online", NET_OFFICIAL_LOBBY, "OurCode"},
+    {"SSBU_NET_RELAY=eos: the official lobby", "auto\n", "SSBU_NET_RELAY=eos", "--online", NET_OFFICIAL_LOBBY, "smash"},
+    {"SSBU_EOS_FIRST=1 means nothing now: the official lobby", "auto\n", "SSBU_EOS_FIRST=1", "--online", NET_OFFICIAL_LOBBY, "smash"},
+    {"SSBU_EOS=1 and a server of the player's own: that server", "smash.example:39421\n", "SSBU_EOS=1", "--online", "smash.example:39421", "smash"},
+    {"hosting a private room, eos in the file: no lobby", "eos\n", "SSBU_NET_HOST=1", "--online", NULL, "smash", .direct = 1},
+    {"an older game's Join over EOS: the official lobby, its lobby code", "auto\n", NULL, "--online", NET_OFFICIAL_LOBBY, "abc", NULL, NULL, NULL, NULL, "r eos abc 10.13.0.7"},
 };
 
 /* The child: reads the settings as the game does and writes what it found to result.txt. */
@@ -123,10 +111,7 @@ static int child(int argc, char **argv) {
     const char *a = net_relay_address();
     FILE *f = fopen("result.txt", "wb");
     if (!f) return 1;
-    /* (the backend as start() takes it, #460's configure_backend: EOS's with "eos" alone, never with the official lobby.
-     * Not asked with EOS first, SSBU_EOS_FIRST=1, which waits for Epic's login) */
-    int wanted = net_eos_wanted();
-    fprintf(f, "%s\n%s\n%d\n%d\n%d\n", a ? a : "(none)", room, wanted, direct_ok, wanted == 1 ? -1 : net_on_eos());
+    fprintf(f, "%s\n%s\n%d\n", a ? a : "(none)", room, direct_ok);
     fclose(f);
     for (int i = 0; region_remeasuring && i < 1000; i++) Sleep(5);   /* (net_region.c: Auto's pick for the next start, being kept) */
     return 0;
@@ -135,7 +120,7 @@ static int child(int argc, char **argv) {
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++)
         if (!strcmp(argv[i], "--child")) return child(argc, argv);
-    static const char *const VARS[] = {"SSBU_NET_RELAY", "SSBU_NET_HOST", "SSBU_NET_ROOM", "SSBU_NET_NAME", "SSBU_NET_DIRECT", "SSBU_OFFICIAL_LOBBY", "SSBU_EOS", "SSBU_EOS_FIRST"};
+    static const char *const VARS[] = {"SSBU_NET_RELAY", "SSBU_NET_HOST", "SSBU_NET_ROOM", "SSBU_NET_NAME", "SSBU_NET_DIRECT", "SSBU_OFFICIAL_LOBBY", "SSBU_EOS", "SSBU_EOS_FIRST"};   /* (SSBU_EOS*: gone in 0.5.0, cleared all the same) */
     for (int v = 0; v < (int)(sizeof VARS / sizeof *VARS); v++) SetEnvironmentVariableA(VARS[v], NULL);
     char exe[MAX_PATH], base[MAX_PATH];
     GetModuleFileNameA(NULL, exe, sizeof exe);
@@ -183,24 +168,20 @@ int main(int argc, char **argv) {
             CloseHandle(pi.hThread);
         }
         if (t->env) SetEnvironmentVariableA(env, NULL);
-        char got_address[300] = "", got_room[64] = "", got_eos[16] = "", got_direct[16] = "", got_backend[16] = "";
+        char got_address[300] = "", got_room[64] = "", got_direct[16] = "";
         snprintf(file, sizeof file, "%s\\result.txt", dir);
         FILE *f = fopen(file, "rb");
         if (f) {
             if (fgets(got_address, sizeof got_address, f)) got_address[strcspn(got_address, "\r\n")] = 0;
             if (fgets(got_room, sizeof got_room, f)) got_room[strcspn(got_room, "\r\n")] = 0;
-            if (fgets(got_eos, sizeof got_eos, f)) got_eos[strcspn(got_eos, "\r\n")] = 0;
             if (fgets(got_direct, sizeof got_direct, f)) got_direct[strcspn(got_direct, "\r\n")] = 0;
-            if (fgets(got_backend, sizeof got_backend, f)) got_backend[strcspn(got_backend, "\r\n")] = 0;
             fclose(f);
         }
         CHECK(code == 0 && f, "%s: the child did not run (exit %lu)", t->name, code);
         const char *want = t->address ? t->address : "(none)";
         CHECK(!strcmp(got_address, want), "%s: the lobby address is '%s', wanted '%s'", t->name, got_address, want);
         CHECK(!strcmp(got_room, t->room), "%s: the lobby code is '%s', wanted '%s'", t->name, got_room, t->room);
-        CHECK(atoi(got_eos) == t->eos, "%s: EOS wanted %s, wanted %d", t->name, got_eos, t->eos);
         CHECK(atoi(got_direct) == t->direct, "%s: direct paths %s, wanted %d", t->name, got_direct, t->direct);
-        if (t->eos != 1) CHECK(atoi(got_backend) == (t->eos == 2), "%s: the EOS backend chosen %s, wanted %d", t->name, got_backend, t->eos == 2);
         if (t->kept_after) {   /* (Auto's pick kept for the next start: its region; "": no file) */
             char kept[64] = "", word[32] = "";
             snprintf(file, sizeof file, "%s\\config\\server_region_auto.txt", dir);

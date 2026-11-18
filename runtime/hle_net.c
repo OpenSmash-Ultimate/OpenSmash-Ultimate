@@ -18,7 +18,6 @@
 #include "host.h"
 #include "net.h"
 #include "net_discord.h"
-#include "net_eos.h"
 #include "online.h"
 #include "input_seq.h"
 
@@ -639,8 +638,8 @@ static void scan(Cpu *c, u64 out, u64 count_p, i32 room, u64 filter) {
     }
     u64 t = now_ms_();
     i32 found = 0;
-    /* (the room picked in F1's browser or by a Discord "Join", net_rooms_pick, first: over EOS the hub's rooms answer in
-     * any order and nothing else puts it there; a lobby's LIST already has it first) */
+    /* (the room picked in F1's browser or by a Discord "Join", net_rooms_pick, first: over another network (net_backend.h)
+     * the rooms answer in any order and nothing else puts it there; a lobby's LIST already has it first) */
     u32 picked = net_backend ? net_rooms_picked() : 0;
     AcquireSRWLockShared(&L.lock);
     for (int pass = picked ? 0 : 1; pass < 2; pass++)
@@ -1106,7 +1105,7 @@ static void do_sendto(Cpu *c, i32 fd, u64 buf, u64 len, i32 flags, u64 addr, u32
     if (dst == LOOPBACK) vsock_deliver(LOOPBACK, sport, LOOPBACK, dport, data, (u32)len);
     else {
         if (dst == me || broadcast) vsock_deliver(me, sport, dst, dport, data, (u32)len);   /* (a broadcast reaches this player's sockets too) */
-        if ((!net_backend || net_backend == &net_eos_backend) && dst != me && !broadcast) net_note_peer(dst);   /* (native Online rollback's match players: the lobby's network or EOS's) */
+        if (!net_backend && dst != me && !broadcast) net_note_peer(dst);   /* (native Online rollback's match players: the lobby's network) */
         if (dst != me && (broadcast || !online_nex_datagram(me, sport, dst, dport, data, (u32)len)))   /* (the game server in the game's) */
             net_send(me, sport, broadcast ? net_broadcast_ip() : dst, dport, data, (u32)len);
     }

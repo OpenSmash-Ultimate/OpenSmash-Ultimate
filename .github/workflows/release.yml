@@ -1,5 +1,8 @@
-# An OpenSmash release (v0.4.1 on): a tag vX.Y.Z (or vX.Y.Z-pre for the testing channel) makes a DRAFT release with
+# An OpenSmash release (v0.5.0 on): a tag vX.Y.Z (or vX.Y.Z-pre for the testing channel) makes a DRAFT release with
 #   OpenSmash.exe                          the launcher, built with the tag's version and the accounts service
+#   OpenSmash-linux-x64.tar.gz,            the launcher for Linux and macOS (OpenSmash.Avalonia, the same account sign-in;
+#   OpenSmash-macos-arm64.tar.gz,          tools/publish_avalonia.py), each built on its own system (a macOS program
+#   OpenSmash-macos-x64.tar.gz             must be signed there); tools/launcher_fetch.py installs it
 #   opensmash-runtime-windows-<isa>.zip    the prebuilt runtime (runtime-release.yml, the same commit)
 #   opensmash-release.json, SHA256SUMS     what the launcher reads (tools/release/make_release.py): versions, SHA-256s,
 #                                          the official lobby, the lowest online level it lets in
@@ -50,6 +53,8 @@ jobs:
   runtime:
     needs: check
     uses: ./.github/workflows/runtime-release.yml
+    with:
+      ref: ${{ needs.check.outputs.tag }}   # (workflow_dispatch: the tag's commit, not the branch the run started from)
 
   launcher:
     needs: check
@@ -86,8 +91,52 @@ jobs:
           name: release-launcher
           path: dist/OpenSmash.exe
 
+  launcher-unix:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            rid: linux-x64
+            asset: OpenSmash-linux-x64.tar.gz
+          - os: macos-15
+            rid: osx-arm64
+            asset: OpenSmash-macos-arm64.tar.gz
+          - os: macos-15
+            rid: osx-x64
+            asset: OpenSmash-macos-x64.tar.gz
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Accounts service for this build
+        env:
+          OPENSMASH_SUPABASE_URL: ${{ vars.OPENSMASH_SUPABASE_URL }}
+          OPENSMASH_SUPABASE_KEY: ${{ vars.OPENSMASH_SUPABASE_KEY }}
+          OPENSMASH_SIGNIN_PAGE: ${{ vars.OPENSMASH_SIGNIN_PAGE }}
+          OPENSMASH_ACCOUNT_PAGE: ${{ vars.OPENSMASH_ACCOUNT_PAGE }}
+        run: python tools/release/make_release.py service OpenSmash.Core/account_service.json
+      - name: Build the launcher (${{ matrix.rid }})
+        run: |
+          python tools/publish_avalonia.py --rid ${{ matrix.rid }} --version ${{ needs.check.outputs.version }} --output-root "$RUNNER_TEMP/avalonia"
+          mkdir -p dist
+          cp "$RUNNER_TEMP/avalonia/${{ matrix.rid }}.tar.gz" "dist/${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-launcher-${{ matrix.rid }}
+          path: dist/${{ matrix.asset }}
+
   draft:
-    needs: [check, runtime, launcher]
+    needs: [check, runtime, launcher, launcher-unix]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -116,5 +165,5 @@ jobs:
           pre=(); [ "$channel" = testing ] && pre=(--prerelease)
           gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft "${pre[@]}" --verify-tag \
             --title "OpenSmash ${{ needs.check.outputs.version }}" \
-            --notes "OpenSmash ${{ needs.check.outputs.version }}. Download OpenSmash.exe only: it installs and updates everything else." \
+            --notes "OpenSmash ${{ needs.check.outputs.version }}. Windows: download OpenSmash.exe only, it installs and updates everything else. Linux and macOS: the setup (install-windowsmash.sh, Install WindowSmash.command) fetches its OpenSmash launcher from here itself." \
             dist/*

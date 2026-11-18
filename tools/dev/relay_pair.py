@@ -12,13 +12,13 @@ What it starts, all on 127.0.0.1 and all stopped at the end (nothing is left run
     --min-client-level 1: the official lobby's rules (relay only, lobby tickets, the online level);
   - two games (build\\ssbu.exe), each with its own copy of the save (SSBU_DATA_ROOT), SSBU_OFFICIAL_LOBBY and
     SSBU_NET_RELAY both that lobby (so each game treats it as the official one: ticket + level in its JOIN, direct paths
-    and EOS off), a test ticket signed here with the test secret (two accounts), SSBU_NET_PROTOCOL=3, one lobby code,
+    off), a test ticket signed here with the test secret (two accounts), SSBU_NET_PROTOCOL=3, one lobby code,
     SSBU_RB=1 with SSBU_RB_NET=relay,0 and relay,1, a bot on the pads (SSBU_RB_NET_BOT=1), the same SSBU_DEBUG_MATCH
     and SSBU_RB_SEED, the menus pressed through by SSBU_SEQ.
 --tz1 / --tz2: each game's TZ (FIXCLOCK's check: other time zones on the two games, e.g. AAA-11 and BBB+11).
 Output: build\\relay_pair\\<tag>\\ (lobby.log, game1.log, game2.log, verdict.txt). The verdict reads the games' own
 checks: "net check" (frames hashed again after a rollback), DESYNC lines (a final frame's hash differs from the other
-game's), the frames checked, and what the lobby and the games said about tickets, direct paths and EOS.
+game's), the frames checked, and what the lobby and the games said about tickets and direct paths.
 Exit code 0: paired, frames compared and no DESYNC."""
 import hashlib
 import hmac
@@ -142,13 +142,12 @@ def main(argv):
         checked = re.findall(r"(\d+) final frames compared with the other games so far \(to logic frame \d+\), (\d+) of them", text)
         rb = re.findall(r"(\d+) rollbacks", text)
         direct = len(re.findall(r"\[net\].*(direct path|punched|introduc)", text, re.I))
-        eos = len(re.findall(r"\[eos\]", text, re.I))
         # (the runtime writes "*** host exception ..." and "guest trap at ...": runtime/host.c - in lower case, which the
         # older pattern did not match, so the one crash of this branch's pairs was not counted)
         crash = len(re.findall(r"\*\*\* host exception|guest trap at|HOST EXCEPTION|GUEST TRAP", text))
         fights = len(re.findall(r"fight starts at logic frame", text))
-        lines.append("game %d: fights %d, DESYNC lines %d, net check %s, compared %s, rollbacks %s, direct-path lines %d, EOS lines %d, crash lines %d"
-                     % (g + 1, fights, des, again[-1] if again else "-", checked[-1] if checked else "-", rb[-1] if rb else "-", direct, eos, crash))
+        lines.append("game %d: fights %d, DESYNC lines %d, net check %s, compared %s, rollbacks %s, direct-path lines %d, crash lines %d"
+                     % (g + 1, fights, des, again[-1] if again else "-", checked[-1] if checked else "-", rb[-1] if rb else "-", direct, crash))
         if des or crash or not fights or (again and int(again[-1][1])) or not checked or int(checked[-1][0]) < 600 or int(checked[-1][1]): ok = False
     lt = open(os.path.join(out, "lobby.log"), errors="replace").read()
     lines.append("lobby: %d lines; joins %d, refused %d, INTRODUCE %d" % (lt.count("\n"), len(re.findall(r"join", lt, re.I)), len(re.findall(r"refus|reject", lt, re.I)), len(re.findall(r"introduc", lt, re.I))))

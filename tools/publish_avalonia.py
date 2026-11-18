@@ -17,7 +17,7 @@ import re
 import platform
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-RIDS = ("win-x64", "linux-x64", "osx-arm64")
+RIDS = ("win-x64", "linux-x64", "osx-arm64", "osx-x64")
 
 
 def copy_notices(output):
@@ -57,11 +57,16 @@ def main():
     parser.add_argument("--output-root", type=pathlib.Path, default=ROOT / "dist" / "avalonia")
     parser.add_argument("--layout", choices=("single-file", "folder"), default="single-file",
                         help="single-file bundles/compresses the runtime and native libraries (default)")
+    parser.add_argument("--version", help="the release's version (X.Y.Z[-pre]): the program's and the macOS bundle's")
     parser.add_argument("--source-manifest", type=pathlib.Path,
                         help="embed a checksum-pinned release source manifest prepared by prepare_desktop_source.py")
     args = parser.parse_args()
+    if args.version is not None and not re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?", args.version):
+        parser.error("--version: X.Y.Z or X.Y.Z-pre")
     rid = args.rid
     source_properties = []
+    if args.version:
+        source_properties.append(f"-p:Version={args.version}")
     if args.source_manifest:
         manifest_path = args.source_manifest.resolve()
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -128,7 +133,7 @@ def main():
                 "CFBundleName": "OpenSmash.Avalonia", "CFBundleDisplayName": "OpenSmash.Avalonia",
                 "CFBundleIdentifier": "org.opensmash.launcher",
                 "CFBundleExecutable": "OpenSmash.Avalonia", "CFBundlePackageType": "APPL",
-                "CFBundleShortVersionString": "0.1.0", "CFBundleVersion": "1",
+                "CFBundleShortVersionString": (args.version or "0.1.0").split("-")[0], "CFBundleVersion": args.version or "1",
                 "LSMinimumSystemVersion": "14.0", "NSHighResolutionCapable": True,
             }, stream)
         # Cross-publishing on Windows cannot set the Unix executable bit; tar preserves it

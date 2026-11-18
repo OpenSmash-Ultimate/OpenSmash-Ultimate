@@ -34,9 +34,11 @@ public sealed partial class MainWindow
         {
             _communityRoot = _project.Root;
             c.HasApp = DiscordAccount.AppId(_communityRoot) != "";
-            c.Shown = DiscordAccount.ShowsName(_communityRoot);
             c.Account = null; c.Avatar = null; c.Rank = 0; c.Records = new(); c.FighterRanks = new(); c.Open = false; c.Error = "";
-            if (c.HasApp) _ = DiscordRefresh(_communityRoot);
+            AccountInit(_communityRoot);   // (v0.5.0: MainWindow.Account.cs; the account replaces the Discord token)
+            c.Shown = AccountMode || DiscordAccount.ShowsName(_communityRoot);   // (a signed-in account is listed by default)
+            if (c.HasApp && !AccountMode) _ = DiscordRefresh(_communityRoot);
+            if (_backgroundActions) _ = RegionMeasure(_communityRoot);
             PresenceStop();
         }
         _ = CommunityRefresh();
@@ -57,9 +59,11 @@ public sealed partial class MainWindow
         _communityBusy = true;
         try
         {
-            var (status, board) = await CommunityFeed.Fetch(Http, CancellationToken.None);
+            var (status, board) = await CommunityFeed.Fetch(Http, CancellationToken.None, _project?.Root);
             var account = Surface.Community.Account;
-            Surface.Community.Apply(status, board, account?.UserId is { Length: > 0 } id ? DiscordAccount.AccountHash(id) : "");
+            // (v0.5.0: an account's row is the id the lobby gave with the ticket; a Discord token's is its account hash)
+            string mine = AccountMode ? Surface.Community.BoardId ?? "" : account?.UserId is { Length: > 0 } id ? DiscordAccount.AccountHash(id) : "";
+            Surface.Community.Apply(status, board, mine);
         }
         finally { _communityBusy = false; }
         Surface.InvalidateVisual();
@@ -103,13 +107,18 @@ public sealed partial class MainWindow
     {
         var c = Surface.Community;
         string? root = _communityRoot;
+        if (AccountMode && root != null && id is "community:signin" or "community:shown" or "community:manage" or "community:signout")
+        {
+            await AccountAction(id, root);   // (MainWindow.Account.cs)
+            return;
+        }
         switch (id)
         {
             case "community:board": Commands.OpenPath(CommunityFeed.SitePage); break;
             case "community:cancel": _discordCancel?.Cancel(); break;
             case "community:me":
                 c.Open = !c.Open; c.Error = "";
-                if (c.Open && root != null) await DiscordLoadGsp(root);
+                if (c.Open && root != null) await (AccountMode ? AccountLoadGsp(root) : DiscordLoadGsp(root));
                 break;
             case "community:signin" when root != null && !c.Busy:
                 c.Busy = true; c.Error = "";
@@ -147,6 +156,28 @@ public sealed partial class MainWindow
                 break;
         }
         Surface.InvalidateVisual();
+    }
+
+    // (v0.5.0) The server region (OpenSmash.Core.ServerRegion, as the WinForms launcher's LauncherForm.Community.cs): with
+    // Auto, every region's lobby is asked at each start and the closest is kept in config/server_region_auto.txt, which
+    // the game starts from; the players online and the leaderboard are then that region's.
+    async Task RegionMeasure(string root)
+    {
+        if (OfficialLobby.Override(root) != null || ServerRegion.Setting(root) != ServerRegion.Auto) return;
+        try { await ServerRegion.Measure(root); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Net.Sockets.SocketException) { return; }
+        if (root != _communityRoot) return;
+        Surface.RegionMeasured();
+        await CommunityRefresh();
+    }
+
+    /// <summary>the region was changed in the settings: measured when Auto, and the lobby's numbers asked again</summary>
+    internal async Task RegionChanged()
+    {
+        if (_communityRoot == null || !_backgroundActions) return;
+        await RegionMeasure(_communityRoot);
+        await CommunityRefresh();
+        if (AccountMode) await AccountLoadGsp(_communityRoot);
     }
 
     // ---- Rich Presence: the launcher's, until the game starts -------------------------------------------------------

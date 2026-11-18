@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// (OpenSmash 0.6) The player's account: the accounts service shared with SSBU Arena (OpenSmash.Core.Account), signed in
+// (v0.5.0) The player's account: the accounts service shared with SSBU Arena (OpenSmash.Core.Account), signed in
 // with Discord in the browser. It is the online identity: at Play the launcher writes a lobby ticket for the game
 // (build\cache\online_pass.txt, SSBU_ONLINE_TICKET_FILE) and renews it while the game runs; the official lobby lets in
 // only signed-in players and lists them by their username. After a game, a crash/freeze/rollback report it wrote is sent
@@ -17,6 +17,9 @@ namespace OpenSmash.Launcher
         string _accountError = "";
         CancellationTokenSource? _accountCancel;
         DateTime _gameStartedUtc;
+        string? _boardMeId;   // (v0.5.0) the account's row on the official lobby's leaderboard, from /gsp/me (null: not asked yet)
+        bool _accountShown = true;   // (v0.5.0) its name shown on the leaderboard (/gsp/me "show"; listed by default)
+        bool _accountShownBusy;
 
         /// <summary>the account service is set up in this build: the account replaces #368's Discord token</summary>
         bool AccountMode => _account != null && _account.Service.Configured;
@@ -40,6 +43,42 @@ namespace OpenSmash.Launcher
             await _account.ResumeAsync(e => err = e);
             if (err != "") _accountError = "Offline: " + err;
             Invalidate();
+            await AccountLoadGsp();
+        }
+
+        /// <summary>(v0.5.0) the account's GSP and places, from the official lobbies with the lobby ticket as the proof
+        /// (OpenSmash.Core.LobbyBoard): the game's records are the account's there, not the install's</summary>
+        async Task AccountLoadGsp()
+        {
+            if (!AccountMode || _account == null || !_account.SignedIn) return;
+            string? ticket;
+            try { ticket = await _account.LobbyTicketAsync(); }
+            catch (Exception e) { Updater.Log(_repo, "leaderboard: no lobby ticket now: " + e.Message); ticket = LobbyBoard.StoredTicket(_repo); }
+            if (string.IsNullOrEmpty(ticket)) return;
+            var me = await LobbyBoard.MeAsync(_httpClient, OfficialLobby.All(_repo), ticket, CancellationToken.None);
+            if (me == null) return;
+            _discordRecords = me.Fighters.Where(f => f.Gsp > 0).Select(f => new FighterGsp { Fighter = f.Fighter, Gsp = f.Gsp, Rank = f.Rank }).ToList();
+            _discordRank = me.Rank;
+            _discordFighterRanks = me.Fighters.Where(f => f.Rank > 0).ToDictionary(f => f.Fighter, f => f.Rank);
+            _boardMeId = me.Id == "" ? null : me.Id;
+            _accountShown = me.Shown;
+            Invalidate();
+        }
+
+        /// <summary>(v0.5.0) the account's name shown on, or hidden from, the official lobbies' leaderboard, with the ticket
+        /// as the proof (OpenSmash.Core.LobbyBoard.SetShownAsync); put back when no lobby took it</summary>
+        async void AccountToggleShown()
+        {
+            if (!AccountMode || _account == null || !_account.SignedIn || _accountShownBusy) return;
+            _accountShownBusy = true; _accountShown = !_accountShown; _accountError = "";
+            Invalidate();
+            string? ticket;
+            try { ticket = await _account.LobbyTicketAsync(); }
+            catch (AccountException) { ticket = LobbyBoard.StoredTicket(_repo); }
+            int took = string.IsNullOrEmpty(ticket) ? 0 : await LobbyBoard.SetShownAsync(_httpClient, OfficialLobby.All(_repo), ticket, _accountShown, CancellationToken.None);
+            if (took == 0) { _accountShown = !_accountShown; _accountError = "The lobby did not answer: try again."; }
+            _accountShownBusy = false;
+            Invalidate();
         }
 
         async void AccountSignIn()
@@ -54,6 +93,7 @@ namespace OpenSmash.Launcher
             catch (Exception e) { _accountError = "The sign-in did not work: " + e.Message; Updater.Log(_repo, "sign-in: " + e); }
             _accountBusy = false;
             Invalidate();
+            await AccountLoadGsp();
         }
 
         async void AccountSignOut()
@@ -62,6 +102,7 @@ namespace OpenSmash.Launcher
             _discordOpen = false;
             await _account.SignOutAsync();
             new OnlinePass(_account, _repo).Remove();
+            _boardMeId = null; _discordRecords = new(); _discordRank = 0; _discordFighterRanks = new(); _accountShown = true;
             Invalidate();
         }
 
@@ -93,6 +134,7 @@ namespace OpenSmash.Launcher
                     _ = CrashReport.SendIfAnyAsync(_account, _repo, _gameStartedUtc, on, Updater.InstalledCommit(_repo), s => Updater.Log(_repo, s));
                     // (the session's performance summary: aggregates only, signed in only; config\telemetry.txt "off" stops it)
                     _ = PerfReport.SendIfAnyAsync(_account, _repo, _gameStartedUtc, Updater.InstalledCommit(_repo), s => Updater.Log(_repo, s));
+                    try { BeginInvoke(new Action(() => _ = AccountLoadGsp())); } catch (InvalidOperationException) { }   // (the GSP the game just earned)
                 };
             }
             catch { }
@@ -110,6 +152,7 @@ namespace OpenSmash.Launcher
                 case "discord:close": _discordOpen = false; return true;
                 case "discord:panel": return true;
                 case "account:page": if (_account?.Service.AccountPage != null) OpenUrl(_account.Service.AccountPage); return true;
+                case "account:shown": AccountToggleShown(); return true;
             }
             if (_discordOpen && !id.StartsWith("discord:")) _discordOpen = false;
             return false;
@@ -147,7 +190,7 @@ namespace OpenSmash.Launcher
         {
             var me = _account != null && _account.SignedIn ? _account.Me : null;   // (signed in = the profile is read)
             if (!_discordOpen || me == null) return;
-            float s = _s, x = 40 * s, y = HeaderH * s + 8 * s, w = 400 * s, h = 200 * s;
+            float s = _s, x = 40 * s, y = HeaderH * s + 8 * s, w = 400 * s, h = 244 * s;
             using (var p = Theme.Para(x, y, w, h, 10 * s))
             {
                 using (var b = new SolidBrush(A(Color.FromArgb(240, Theme.Bg)))) g.FillPath(b, p);
@@ -157,8 +200,16 @@ namespace OpenSmash.Launcher
             float ix = x + 24 * s, iy = y + 20 * s;
             Theme.Label(g, me.Display, FB(20 * s, true), A(Theme.Text), ix, iy, 24 * s);
             Theme.Label(g, me.DiscordId != null ? "Signed in with Discord" : "Signed in", FB(13 * s), A(Theme.Muted), ix, iy + 30 * s, 18 * s);
-            Theme.Label(g, "Online play uses this name. One account for OpenSmash and SSBU Arena.", FB(12 * s), A(Theme.Dim), ix, iy + 56 * s, 16 * s);
+            if (_accountError != "")   // (a show/hide no lobby took)
+                Theme.Label(g, _accountError, FB(12 * s), A(Theme.Bad), ix, iy + 56 * s, 16 * s);
+            else
+                Theme.Label(g, "Online play uses this name. One account for OpenSmash and SSBU Arena.", FB(12 * s), A(Theme.Dim), ix, iy + 56 * s, 16 * s);
             float bw = 130 * s, bh = 34 * s, bx = x + w - 24 * s - bw, by = y + h - 18 * s - bh;
+            // (v0.5.0) the leaderboard choice: the official lobbies list a signed-in account by its name unless it hides
+            string shownLabel = _accountShown ? "HIDE MY NAME ON THE LEADERBOARD" : "SHOW MY NAME ON THE LEADERBOARD";
+            float sw = w - 48 * s, sy = by - bh - 10 * s;
+            Theme.ButtonAnimated(g, shownLabel, ix, sy, sw, bh, s, primary: !_accountShown, Hov("account:shown", _hover == "account:shown"), true, 12 * s, _alpha, press: Press("account:shown"));
+            AddHit("account:shown", ix, sy, sw, bh);
             Theme.ButtonAnimated(g, "SIGN OUT", bx, by, bw, bh, s, primary: false, Hov("discord:signout", _hover == "discord:signout"), true, 12 * s, _alpha, press: Press("discord:signout"));
             AddHit("discord:signout", bx, by, bw, bh);
             if (_account?.Service.AccountPage != null)

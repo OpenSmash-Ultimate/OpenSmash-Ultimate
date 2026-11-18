@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OpenSmash releases (v0.4.1 on): the pieces .github/workflows/release.yml puts together. Nothing here comes from
+"""OpenSmash releases (v0.5.0 on): the pieces .github/workflows/release.yml puts together. Nothing here comes from
 the game, and the audit checks that every file of a release holds none of it either.
 
     python tools/release/make_release.py version vX.Y.Z[-pre]       the tag's version, checked (prints it; exit 1 if not one)
@@ -13,7 +13,9 @@ the game, and the audit checks that every file of a release holds none of it eit
                                                                     plays on that one server; without it the players'
                                                                     server region decides, runtime/net_region.c)
                                                                     DIST/opensmash-release.json and DIST/SHA256SUMS from the
-                                                                    files in DIST (OpenSmash.exe, opensmash-runtime-*.zip)
+                                                                    files in DIST (OpenSmash.exe, the Linux and macOS
+                                                                    launchers OpenSmash-<os>-<arch>.tar.gz,
+                                                                    opensmash-runtime-*.zip)
 
 The manifest is what the launcher reads (OpenSmash.Core/Releases.cs): the release's version and commit, every file
 with its SHA-256, the official lobby and the lowest online level it lets in (runtime/net.h NET_CLIENT_LEVEL).
@@ -25,14 +27,18 @@ import json
 import os
 import re
 import sys
+import tarfile
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 MANIFEST = "opensmash-release.json"
 SEMVER = re.compile(r"^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$")
-# what a release may hold, by its file name: the launcher, the runtime's zips (tools/runtime_fetch.py's names)
-LAUNCHERS = {"OpenSmash.exe": "windows-x64"}
+# what a release may hold, by its file name: the launchers, the runtime's zips (tools/runtime_fetch.py's names).
+# The launcher's key in the manifest: OpenSmash.Core/Releases.cs reads "windows-x64"; tools/launcher_fetch.py the others
+# (v0.5.0: OpenSmash.Avalonia for Linux and macOS, tools/publish_avalonia.py's archives).
+LAUNCHERS = {"OpenSmash.exe": "windows-x64", "OpenSmash-linux-x64.tar.gz": "linux-x64",
+             "OpenSmash-macos-arm64.tar.gz": "macos-arm64", "OpenSmash-macos-x64.tar.gz": "macos-x64"}
 RUNTIME = re.compile(r"^opensmash-runtime-(windows|linux|macos)-([a-z0-9-]+)\.zip$")
 
 
@@ -78,6 +84,20 @@ def audit(files):
                     if ".." in e.filename.replace("\\", "/").split("/") or e.filename.startswith(("/", "\\")):
                         bad.append(f"{f}!{e.filename}: an unsafe path")
                     look(f"{os.path.basename(f)}!{e.filename}", z.read(e) if e.file_size <= 64 << 20 else None)
+        elif f.endswith((".tar.gz", ".tgz")):   # (the Linux and macOS launchers)
+            try:
+                with tarfile.open(f, "r:gz") as t:
+                    for e in t.getmembers():
+                        name = e.name.replace("\\", "/")
+                        if name.startswith("/") or ".." in name.split("/"):
+                            bad.append(f"{f}!{e.name}: an unsafe path")
+                        if e.issym() or e.islnk() or not (e.isfile() or e.isdir()):
+                            bad.append(f"{f}!{e.name}: not a plain file")
+                        if e.isfile():
+                            with t.extractfile(e) as h:
+                                look(f"{os.path.basename(f)}!{e.name}", h.read() if e.size <= 64 << 20 else None)
+            except tarfile.TarError as err:
+                bad.append(f"{f}: not a readable .tar.gz ({err})")
     return bad
 
 
@@ -117,8 +137,8 @@ def manifest(dist, ver, commit, channel="stable", lobby=None, min_level=0):
             os_, isa = RUNTIME.match(name).groups()
             m["runtime"][f"{os_}-{isa}"] = {"file": name, "sha256": digest}
         else:
-            raise SystemExit(f"{name}: not a file a release holds (the launcher, the runtime's zips)")
-    if not m["launcher"]:
+            raise SystemExit(f"{name}: not a file a release holds (the launchers, the runtime's zips)")
+    if "windows-x64" not in m["launcher"]:
         raise SystemExit(f"{dist}: no launcher (OpenSmash.exe)")
     problems = audit([os.path.join(dist, n) for n in sorted(os.listdir(dist)) if os.path.isfile(os.path.join(dist, n))])
     if problems:
@@ -132,14 +152,24 @@ def manifest(dist, ver, commit, channel="stable", lobby=None, min_level=0):
 
 
 def service(out):
-    """The accounts service for the launcher's build (OpenSmash.Core/account_service.json), from the environment.
-    The publishable key is a client key (Row Level Security decides what it can do); still, it lives in the
-    repository's settings, not in the repository."""
-    s = {"url": os.environ.get("OPENSMASH_SUPABASE_URL", "").strip(),
-         "publishable_key": os.environ.get("OPENSMASH_SUPABASE_KEY", "").strip(),
-         "sign_in_page": os.environ.get("OPENSMASH_SIGNIN_PAGE", "").strip(),
-         "account_page": os.environ.get("OPENSMASH_ACCOUNT_PAGE", "").strip()}
-    if s["url"] and not re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d+)?/?", s["url"]):
+    """The accounts service for the launcher's build (OpenSmash.Core/account_service.json): the values committed in
+    that file (the shared OpenSmash / SSBU Arena accounts service; its publishable key is a client key, Row Level
+    Security decides what it can do, so every launcher built from source can sign in), each one replaced by its
+    OPENSMASH_SUPABASE_URL / _KEY / OPENSMASH_SIGNIN_PAGE / OPENSMASH_ACCOUNT_PAGE variable when that is set.
+    A release without an address and a key is refused: its launcher could not sign in."""
+    try:
+        with open(out, encoding="utf-8") as f:
+            s = json.load(f)
+    except (OSError, ValueError):
+        s = {}
+    for k, env in (("url", "OPENSMASH_SUPABASE_URL"), ("publishable_key", "OPENSMASH_SUPABASE_KEY"),
+                   ("sign_in_page", "OPENSMASH_SIGNIN_PAGE"), ("account_page", "OPENSMASH_ACCOUNT_PAGE")):
+        v = os.environ.get(env, "").strip()
+        s[k] = v or str(s.get(k) or "").strip()
+    s = {k: s[k] for k in ("url", "publishable_key", "sign_in_page", "account_page")}
+    if not s["url"] or not s["publishable_key"]:
+        raise SystemExit("accounts service: no address or no publishable key (account_service.json or the repository's variables)")
+    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d+)?/?", s["url"]):
         raise SystemExit("OPENSMASH_SUPABASE_URL: an https:// address")
     if s["publishable_key"].startswith(("sb_secret_", "eyJ")):   # (a secret key, or a legacy JWT key that may be service_role)
         raise SystemExit("OPENSMASH_SUPABASE_KEY: that is a secret key, never in a launcher")
@@ -170,7 +200,7 @@ def main(argv=None):
         print(version(o.tag))
     elif o.cmd == "service":
         s = service(o.out)
-        print(f"accounts service: {'set' if s['url'] and s['publishable_key'] else 'NOT set (sign-in off in this build)'}")
+        print("accounts service: set")
     elif o.cmd == "audit":
         bad = audit(o.files)
         for b in bad:

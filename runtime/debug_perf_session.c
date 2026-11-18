@@ -1,4 +1,4 @@
-/* The session's performance summary (OpenSmash 0.6): ONE small file a session, reports/perf_session.json, written
+/* The session's performance summary (v0.5.0): ONE small file a session, reports/perf_session.json, written
  * again every 30 s and when the game closes, for the launcher to send after the game (OpenSmash.Core PerfReport.cs,
  * only for a signed-in player who has not turned it off: config/telemetry.txt "off"). Aggregates only: counts,
  * percentiles and a fixed histogram of the times between frames shown, what held frames (shader waits), the rollback's

@@ -76,7 +76,7 @@ def check(exe):
 
 
 def fetch(tag, build=os.path.join(ROOT, "build"), get=download, run_check=check, log=print):
-    # (OpenSmash 0.6: an OpenSmash release vX.Y.Z carries the runtime of its commit too, .github/workflows/release.yml)
+    # (v0.5.0: an OpenSmash release vX.Y.Z carries the runtime of its commit too, .github/workflows/release.yml)
     if not (tag.startswith("runtime-v") or re.fullmatch(r"v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?", tag)):
         raise Error(f"{tag}: a release tag is runtime-v<n> or vX.Y.Z")
     if os.name != "nt":

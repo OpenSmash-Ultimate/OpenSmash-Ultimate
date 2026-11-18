@@ -65,12 +65,8 @@ void menu_toast(const char *text)
     ReleaseSRWLockExclusive(&toast_lock);
 }
 
-const char *net_notice_take(void);   /* (net_relay.c: a message for the screen, once) */
 int menu_visible(void)
 {
-    const char *notice = net_notice_take();
-    if (notice)
-        menu_toast(notice);
     return open_ || (toast_until && (toast_until == 1 || GetTickCount64() < toast_until)); }
 
 /* ---- keys from the window's thread ---------------------------------------------------- */
@@ -254,12 +250,11 @@ static char osk_title[160], osk_text[1024];
 static int osk_max = 32, osk_min, osk_scripted; /* (osk_scripted: SSBU_MENU_OSK's, nobody waits for it) */
 
 static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol, rollback; } net;
-enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_EOS, NET_MODE_COUNT };
-/* (the first choice is the official lobby: relay only, one server a region - net_region.c. Epic Online Services (#378;
- * #448 named it as the default it was on main) is a choice of the player's own here, "eos" in online_server.txt:
- * net_relay.c's eos_first) */
+enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_MODE_COUNT };
+/* (the first choice is the official lobby: relay only, one server a region - net_region.c. OpenSmash 0.5.0: Epic Online
+ * Services are gone, and an "eos" line in online_server.txt reads as the official lobby, net_relay.c) */
 static const char *const NET_MODES[NET_MODE_COUNT] = {"official lobby (relay only, EU / NA East)", "private lobby (a code)", "your own server", "offline",
-                                                      "this network (LAN)", "Epic Online Services (worldwide, direct)"};
+                                                      "this network (LAN)"};
 
 static void net_load(void)
 {
@@ -272,9 +267,7 @@ static void net_load(void)
         net.mode = NET_OFFLINE;
     else if (!_stricmp(host, "lan"))
         net.mode = NET_LAN; /* (net_relay.c's LAN discovery) */
-    else if (!_stricmp(host, "eos"))
-        net.mode = NET_EOS; /* (Epic Online Services alone, no lobby server of ours: net_relay.c, net_eos_net.c) */
-    else if (net_means_official_lobby(host)) /* ("auto", the official lobby's name, an older public lobby's: net_relay.c) */
+    else if (net_means_official_lobby(host)) /* ("auto", the official lobby's name, an older public lobby's, "eos": net_relay.c) */
         net.mode = code[0] ? NET_PRIVATE : NET_PUBLIC; /* (the official lobby; which region's: net_region.c) */
     else
     {
@@ -298,15 +291,13 @@ static void net_save_server(void)
         snprintf(line, sizeof line, "off");
     else if (net.mode == NET_LAN)
         snprintf(line, sizeof line, "lan");
-    else if (net.mode == NET_EOS)
-        snprintf(line, sizeof line, "eos");
     else if (net.mode == NET_PUBLIC)
         snprintf(line, sizeof line, "auto");
     else if (net.mode == NET_PRIVATE)
     {
         if (!net.code[0])
             snprintf(net.code, sizeof net.code, "friends");
-        snprintf(line, sizeof line, "auto %s", net.code);   /* (OpenSmash 0.6: "auto" is the official lobby, net_relay.c) */
+        snprintf(line, sizeof line, "auto %s", net.code);   /* (v0.5.0: "auto" is the official lobby, net_relay.c) */
     }
     else
         snprintf(line, sizeof line, "%s%s%s", net.custom[0] ? net.custom : "127.0.0.1:39420", net.code[0] ? " " : "", net.code);
@@ -751,8 +742,7 @@ static void room_rows(void)
 }
 
 /* The Lobby page's rows (fresh: the page shows anew, so the rooms are asked for again). */
-/* The yuzu-compatible client (net_yuzu.c, SSBU_NET_BACKEND=yuzu): its backend is net_backend_candidate. Online through
- * Epic Online Services net_backend is net_eos_backend (net_relay.c), which keeps every OpenSmash page: issue #389. */
+/* The yuzu-compatible client (net_yuzu.c, SSBU_NET_BACKEND=yuzu): its backend is net_backend_candidate. */
 static int yuzu_client(void) { return net_backend && net_backend == net_backend_candidate; }
 
 static void build_lobby(int fresh)
@@ -1294,8 +1284,7 @@ static void build(void)
         r = add(R_NET_MODE, K_CHOICE, W_RESTART, "Play online in",
                 "Official lobby: everyone's rooms on your region's server (EU / NA East); every match is relayed, so no player's address reaches another. "
                 "Private: only players with the same code. Your own server: host:port. "
-                "Offline: no netplay. This network: a private room hosted on your local network, found by itself. "
-                "Epic Online Services: worldwide, no server of ours; matches connect straight to the opponent (Windows only).");
+                "Offline: no netplay. This network: a private room hosted on your local network, found by itself.");
         snprintf(r->value, sizeof r->value, "%s", ui_text(NET_MODES[net.mode]));
         if (net.mode == NET_PRIVATE || net.mode == NET_CUSTOM)
         {
@@ -1872,10 +1861,6 @@ static void change(const Row *row, int dir)
         break;
     case R_NET_MODE:
         net.mode = cycle(net.mode, NET_MODE_COUNT, dir);
-#ifndef _WIN32
-        if (net.mode == NET_EOS) /* (no Epic Online Services off Windows: net_eos.c) */
-            net.mode = cycle(net.mode, NET_MODE_COUNT, dir);
-#endif
         net_save_server();
         break;
     case R_NET_REGION: /* Auto, then each region */

@@ -348,7 +348,7 @@ void vi_rb_load(const void *p) {
      * is then as on the first pass (one in the game's hands, the catch-up's last picture queued, one on screen), and the
      * game waits for the refresh as in any frame. SSBU_RB_VI_REACQ=0: as before. */
     static int reacq_on = -1;
-    if (reacq_on < 0) { const char *e = getenv("SSBU_RB_VI_REACQ"); reacq_on = e && *e ? atoi(e) : 1; }   /* (on by default since v0.4.1, round 7) */
+    if (reacq_on < 0) { const char *e = getenv("SSBU_RB_VI_REACQ"); reacq_on = e && *e ? atoi(e) : 1; }   /* (on by default since v0.5.0, round 7) */
     int on_screen = -1;
     for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == ACQUIRED) on_screen = i;
     vi_reacq = reacq_on && rb_vi_catchup() ? on_screen : -1;

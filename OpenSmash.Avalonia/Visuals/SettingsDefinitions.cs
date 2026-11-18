@@ -80,7 +80,7 @@ void InitializeSettings() {
                 new SettingTab { Name = "Display", SettingKeys = new[] { "window", "window_size", "pacing", "preload_shaders", "ui_language" } },
                 new SettingTab { Name = "Graphics", SettingKeys = new[] { "render_scale", "gpu", "renderer", "overlay", "hide_cursor" } },
                 new SettingTab { Name = "Audio", SettingKeys = new[] { "volume" } },
-                new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "code", "server", "direct" } },
+                new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "code", "server", "direct", "region" } },   // ("region": v0.5.0, after the original rows)
                 new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "pads", "remap" } },
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
@@ -110,10 +110,12 @@ void InitializeSettings() {
                 new Setting { Key = "overlay", Label = "Frame rate", Values = new[] { "1", "0" }, Labels = new[] { "Show it in the corner", "Hidden" } },
                 new Setting { Key = "volume", Label = "Volume", Slider = true },
                 new Setting { Key = "name", Label = "Your name", Text = true },
-                new Setting { Key = "lobby", Label = "Lobby", Values = SettingDefaults.Choices["lobby"], Labels = new[] { "Official lobby (relay only, EU / NA East)", "Private lobby (a code)", "Your own server", "This network (LAN)", "Offline", "Epic Online Services (worldwide, direct)" } },   // (one label a value of SettingDefaults.Choices["lobby"]; as OpenSmash.Launcher/LauncherForm.cs)
+                new Setting { Key = "lobby", Label = "Lobby", Values = SettingDefaults.Choices["lobby"], Labels = new[] { "Official lobby (relay only, EU / NA East)", "Private lobby (a code)", "Your own server", "This network (LAN)", "Offline" } },   // (one label a value of SettingDefaults.Choices["lobby"]; as OpenSmash.Launcher/LauncherForm.cs)
                 new Setting { Key = "code", Label = "Lobby code", Text = true },
                 new Setting { Key = "server", Label = "Server", Text = true },
                 new Setting { Key = "direct", Label = "Direct connections", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
+                // (v0.5.0: the official lobbies, one a region - OpenSmash.Core.ServerRegion; config/server_region.txt, the game's menu writes it too)
+                new Setting { Key = "region", Label = "Server region", Values = SettingDefaults.Choices["region"], Labels = SettingDefaults.RegionLabels },
                 new Setting { Key = "keyboard_player", Label = "Keyboard plays as", Values = new[] { "1", "2", "3", "4", "5", "6", "7", "8", "0" }, Labels = new[] { "Player 1", "Player 2", "Player 3", "Player 4", "Player 5", "Player 6", "Player 7", "Player 8", "Nobody (no keyboard)" } },
                 new Setting { Key = "background", Label = "Controllers in the background", Values = new[] { "1", "0" }, Labels = new[] { "Work while another window is in front", "Only while the game is in front" } },
                 new Setting { Key = "remap", Label = "Remap a controller", Action = "settings:remap" },
@@ -121,6 +123,10 @@ void InitializeSettings() {
             };
 }
         public Func<bool> ShadersPending {get;set;}=()=>false;
+        /// <summary>(v0.5.0) the server region was saved here</summary>
+        public event Action RegionChangedRequested;
+        /// <summary>(v0.5.0) Auto measured the regions: the row shows the pick ("Auto (EU, 24 ms)")</summary>
+        public void RegionMeasured() => InvalidateVisual();
         bool SettingVisible(string key)=>key!="preload_shaders"||_shaderUi||ShadersPending();
 
         bool SettingOn(Setting s)
@@ -131,6 +137,8 @@ void InitializeSettings() {
             if (s.Key is "name" or "direct") return lobby != "offline";
             if (s.Key == "code") return lobby is "private" or "custom";
             if (s.Key == "server") return lobby == "custom";
+            // (the official lobby's region; an install that names its own official server has none)
+            if (s.Key == "region") return lobby is "auto" or "private" && Project != null && OpenSmash.Core.OfficialLobby.Override(Project.Root) == null;
             return true;
         }
 
@@ -141,6 +149,7 @@ void InitializeSettings() {
             if (s.Key == "theme_reset") return "Reset colors";
             if (s.Key == "remap") return "Press a button for each of the game's";
             string v = _iniValues.GetValueOrDefault(s.Key, s.Text || s.Slider || s.Values.Length == 0 ? "" : s.Values[0]);
+            if (s.Key == "region" && Project != null && SettingDefaults.RegionShown(Project.Root, v) is { } region) return region;   // ("Auto (EU, 24 ms)")
             if (s.Slider) return v;
             if (s.Text) return v == "" ? "type here" : v;
             if (s.Labels != null)
@@ -300,6 +309,7 @@ void InitializeSettings() {
             string direct = File.Exists(directFile) ? FirstLine(directFile) : SettingDefaults.OfFile("online_direct.txt");
             _iniValues["direct"] = direct.StartsWith("off", StringComparison.OrdinalIgnoreCase) ? "off" : "on";
             _iniValues["name"] = FirstLine(Project.ConfigFile("online_name.txt"));
+            _iniValues["region"] = OpenSmash.Core.ServerRegion.Setting(Project.Root);
             var gpu = _settings.First(s => s.Key == "gpu");
             if (!gpu.Values.Contains(_iniValues["gpu"]))
             {
@@ -344,8 +354,11 @@ void InitializeSettings() {
             if (serverReady && serverChanged) SetFirstLine(Project.ConfigFile("online_server.txt"), SettingDefaults.LineFromLobby(lobby, code, host));
             if (_changedSettings.Contains("name")) SetFirstLine(Project.ConfigFile("online_name.txt"), _iniValues.GetValueOrDefault("name", "").Trim());
             if (_changedSettings.Contains("direct")) SetFirstLine(Project.ConfigFile("online_direct.txt"), _iniValues.GetValueOrDefault("direct", SettingDefaults.OfFile("online_direct.txt")));
+            bool regionChanged = _changedSettings.Contains("region");
+            if (regionChanged) OpenSmash.Core.ServerRegion.SetSetting(Project.Root, _iniValues.GetValueOrDefault("region", OpenSmash.Core.ServerRegion.Auto));
             string launcherIni = Project.ConfigFile("launcher.ini");
             _changedSettings.Clear();   // (written: the game's later changes stay)
+            if (regionChanged) RegionChangedRequested?.Invoke();   // (MainWindow.Discord.cs: measured when Auto, the lobby asked again)
             if (serverChanged && !serverReady) _changedSettings.UnionWith(["lobby", "code", "server"]);
             // (only when changed here: a stale copy once hid the lobby the game's menu had picked)
             if (serverChanged)

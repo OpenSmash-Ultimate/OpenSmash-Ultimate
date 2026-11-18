@@ -568,35 +568,107 @@ class InstallerDecisionTests(unittest.TestCase):
                 self.assertFalse(os.path.exists(os.path.join(root, 'OpenSmash.exe.download')), out)   # never left behind
                 return (out, exe_path.read_bytes() if exe_path.exists() else None,
                         os.path.exists(os.path.join(root, 'OpenSmash.exe.old')))
-            out, exe, old = run('v0.4.1', b'MZ old launcher')
+            out, exe, old = run('v0.5.0', b'MZ old launcher')
             self.assertIn('swapped=True', out)
-            self.assertIn("OpenSmash.exe is now v0.4.1's", out)
+            self.assertIn("OpenSmash.exe is now v0.5.0's", out)
             self.assertEqual(exe, new)
             self.assertTrue(old)
-            self.assertIn('/releases/download/v0.4.1/OpenSmash.exe.sha256', Path(root, 'urls.txt').read_text('utf-16'))
-            out, exe, old = run('v0.4.1', new)
+            self.assertIn('/releases/download/v0.5.0/OpenSmash.exe.sha256', Path(root, 'urls.txt').read_text('utf-16'))
+            out, exe, old = run('v0.5.0', new)
             self.assertIn('swapped=False', out)
-            self.assertIn("OpenSmash.exe is v0.4.1's", out)
+            self.assertIn("OpenSmash.exe is v0.5.0's", out)
             out, exe, _ = run('main', b'MZ old launcher')
             self.assertIn('swapped=False', out)
             self.assertEqual(exe, b'MZ old launcher')
-            out, exe, _ = run('v0.4.1', b'MZ old launcher', git=True)
+            out, exe, _ = run('v0.5.0', b'MZ old launcher', git=True)
             self.assertIn('swapped=False', out)
             self.assertEqual(exe, b'MZ old launcher')
-            out, exe, _ = run('v0.4.1', b'MZ old launcher', rebuilds=True)   # the new launcher rebuilds it itself
+            out, exe, _ = run('v0.5.0', b'MZ old launcher', rebuilds=True)   # the new launcher rebuilds it itself
             self.assertIn('swapped=False', out)
             self.assertEqual(exe, b'MZ old launcher')
             # a download that is not what the checksum says, no network, no checksum: the old one stays, untouched
             for kwargs in ({'download': b'MZ tampered'}, {'text': "throw 'no network'"}, {'text': "'Not Found'"}):
-                out, exe, old = run('v0.4.1', b'MZ old launcher', **kwargs)
+                out, exe, old = run('v0.5.0', b'MZ old launcher', **kwargs)
                 self.assertIn('swapped=False', out, kwargs)
                 self.assertEqual(exe, b'MZ old launcher', kwargs)
                 self.assertFalse(old, kwargs)
             # last time's swap: the .old is removed; a swap that stopped half-way (no OpenSmash.exe) gets it back
-            out, exe, old = run('v0.4.1', new, old_left=b'MZ old launcher')
+            out, exe, old = run('v0.5.0', new, old_left=b'MZ old launcher')
             self.assertEqual((exe, old), (new, False))
-            out, exe, old = run('v0.4.1', None, old_left=b'MZ old launcher', text="throw 'no network'")
+            out, exe, old = run('v0.5.0', None, old_left=b'MZ old launcher', text="throw 'no network'")
             self.assertEqual((exe, old), (b'MZ old launcher', False))
+
+    def test_update_ref_never_main_by_mistake(self):
+        # The release channel: the API's tag; its 404 (no release) is main; the API failing (no network, its hourly limit)
+        # asks github.com's releases/latest page, and with no answer at all the ref is unknown ($null), never main: a
+        # release copy was compared with main and its finished update called unfinished (Discord, 2026-11-18).
+        def ref(api, page):
+            return ps(f"$env:OPENSMASH_UPDATE_CHANNEL = 'release'; $Root = [IO.Path]::GetTempPath(); "
+                      f"function Invoke-Api {{ param($Url) {api} }}; function Get-LatestReleaseFromPage {{ {page} }}; "
+                      "@{ ref = (Get-UpdateRef); why = $Script:UpdateRefProblem }")
+        ok = "@{ Ok = $true; Data = [pscustomobject]@{ tag_name = 'v0.4.1' } }"
+        limit = "@{ Ok = $false; NotFound = $false; Error = 'HTTP 403' }"
+        none = "@{ Ok = $false; NotFound = $true; Error = 'HTTP 404' }"
+        silent = "@{ Tag = $null; NoRelease = $false }"
+        self.assertEqual(ref(ok, "throw 'not asked'")['ref'], 'v0.4.1')
+        self.assertEqual(ref(none, "throw 'not asked'")['ref'], 'main')
+        self.assertEqual(ref(limit, "@{ Tag = 'v0.4.1'; NoRelease = $false }")['ref'], 'v0.4.1')
+        self.assertEqual(ref(limit, "@{ Tag = $null; NoRelease = $true }")['ref'], 'main')
+        self.assertEqual(ref(limit, silent), {'ref': None, 'why': 'HTTP 403'})
+        got = ps("@{ a = (Read-ReleaseTagFromUrl 'https://github.com/O/R/releases/tag/v0.4.1'); "
+                 "b = (Read-ReleaseTagFromUrl 'https://github.com/O/R/releases/tag/v1.0%2Bx'); "
+                 "c = (Read-ReleaseTagFromUrl 'https://github.com/O/R/releases'); d = (Read-ReleaseTagFromUrl '') }")
+        self.assertEqual(got, {'a': 'v0.4.1', 'b': 'v1.0+x', 'c': None, 'd': None})
+
+    def test_update_with_the_release_unknown(self):
+        # Step-Update with GitHub not saying which release is the latest: no update (to main or anything), a warning; and
+        # the launcher's proof line (__OPENSMASH_SOURCE__) when the copy is checked to be the release's.
+        with tempfile.TemporaryDirectory() as root:
+            local = 'a' * 40
+            Path(root, 'tools').mkdir()
+            Path(root, 'tools', 'source_version.txt').write_text(f'{local} 2026-11-17')
+            base = (f"$env:OPENSMASH_UPDATE_CHANNEL = 'release'; $Root = '{root}'; "
+                    "function Get-LatestReleaseFromPage { @{ Tag = $null; NoRelease = $false } }; "
+                    "function Update-FromZip { 'ZIP ' + $args[1] }; ")
+            out = ps_text(base + "function Invoke-Api { param($Url) $Url | Out-Host; @{ Ok = $false; NotFound = $false; Error = 'HTTP 403' } }; "
+                          "'result=' + (Step-Update)")
+            self.assertIn('result=False', out)
+            self.assertIn('which release is the latest (HTTP 403)', out)
+            self.assertNotIn('/commits/main', out)
+            self.assertNotIn('ZIP', out)
+            current = ("function Invoke-Api { param($Url) if ($Url -like '*/releases/latest') { @{ Ok = $true; Data = [pscustomobject]@{ tag_name = 'v0.4.1' } } } "
+                       f"else {{ @{{ Ok = $true; Data = [pscustomobject]@{{ sha = '{local}'; commit = [pscustomobject]@{{ committer = [pscustomobject]@{{ date = '2026-11-17T00:00:00Z' }} }} }} }} }} }}; ")
+            out = ps_text(base + current + "'result=' + (Step-Update)")
+            self.assertIn('result=False', out)
+            self.assertIn('__OPENSMASH_SOURCE__ ' + local, out)
+
+    def test_launcher_only_fallback(self):
+        # -LauncherOnly (a launcher rebuild that failed): the release's OpenSmash.exe, whatever OPENSMASH_LAUNCHER_REBUILDS
+        # says; $Script:LauncherIsRelease tells the helper whether OpenSmash.exe is the release's afterwards.
+        new = b'MZ new launcher'
+        new_hash = __import__('hashlib').sha256(new).hexdigest()
+        with tempfile.TemporaryDirectory() as root:
+            def run(ref, exe):
+                Path(root, 'OpenSmash.exe').write_bytes(exe)
+                for name in ('OpenSmash.exe.old',):
+                    if os.path.exists(os.path.join(root, name)):
+                        os.remove(os.path.join(root, name))
+                mocks = (f"$Root = '{root}'; $Script:UpdateRef = {ref}; $env:OPENSMASH_LAUNCHER_REBUILDS = ''; "
+                         "function Get-LatestReleaseFromPage { @{ Tag = $null; NoRelease = $false } }; "
+                         "function Invoke-Api { @{ Ok = $false; NotFound = $false; Error = 'HTTP 403' } }; "
+                         f"function Get-Text {{ '{new_hash}  OpenSmash.exe' }}; "
+                         f"function Invoke-Download {{ param($Url, $Dest, $What) [IO.File]::WriteAllText($Dest, '{new.decode()}') }}; ")
+                return ps_text(mocks + "[void](Update-LauncherExe); 'release=' + $Script:LauncherIsRelease")
+            self.assertIn('release=True', run("'v0.4.1'", b'MZ old launcher'))   # swapped
+            self.assertIn('release=True', run("'v0.4.1'", new))                  # already the release's
+            self.assertIn('release=False', run("'main'", b'MZ old launcher'))    # following main: nothing to take
+            out = run('$null', b'MZ old launcher')                                 # GitHub not saying: nothing done
+            self.assertIn('release=False', out)
+            self.assertEqual(Path(root, 'OpenSmash.exe').read_bytes(), b'MZ old launcher')
+        text = SCRIPT.read_text(encoding='utf-8')
+        self.assertRegex(text, r"if \(\$LauncherOnly\) \{[^}]*OPENSMASH_LAUNCHER_REBUILDS = ''")
+        for helper in ('tools/rebuild_launcher_after_update.ps1', 'tools/rebuild-all.ps1'):
+            self.assertIn('-LauncherOnly', (ROOT / helper).read_text(encoding='utf-8'), helper)
 
     def test_sha256(self):
         with tempfile.TemporaryDirectory() as root:

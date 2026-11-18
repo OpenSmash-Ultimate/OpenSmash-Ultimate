@@ -129,7 +129,8 @@ namespace OpenSmash.Launcher
                     _top = parsed.Top;
                     _ranked = parsed.Ranked;
                     string nsa = await Task.Run(() => DiscordAccount.NsaId(_repo));
-                    _mine = CommunityFeed.Mine(board, nsa == "" ? "" : DiscordAccount.PlayerId(nsa));
+                    // (signed in: the account's row, as /gsp/me named it; else the install's)
+                    _mine = CommunityFeed.Mine(board, _boardMeId ?? (nsa == "" ? "" : DiscordAccount.PlayerId(nsa)));
                     _ = BoardAvatarsLoad(_top);
                 }
             }
@@ -226,7 +227,7 @@ namespace OpenSmash.Launcher
             float pad = 16 * s, ix = x + pad, iw = w - 2 * pad;
 
             // the account
-            if (_discordHasApp || _mine != null)
+            if (_discordHasApp || _mine != null || _boardMeId != null)
             {
                 float ph = 72 * s;
                 Panel(y, ph);
@@ -248,7 +249,7 @@ namespace OpenSmash.Launcher
                         else using (var b = new SolidBrush(A(_discord != null ? Color.FromArgb(255, 88, 101, 242) : Theme.Bg3))) g.FillPath(b, clip);
                     }
                     float tx = ix + a + 12 * s, tw = iw - a - 12 * s;
-                    string who = _discord?.Shown ?? "You";
+                    string who = _discord?.Shown ?? (AccountMode && _account?.SignedIn == true ? _account.Me?.Username : null) ?? "You";
                     Theme.Label(g, who, FB(17 * s, true), A(Theme.Text), tx, ay - 1 * s, 24 * s, 0, StringAlignment.Near, tw);
                     int rank = _mine?.Rank > 0 ? _mine.Rank : _discordRank;
                     uint best = _mine?.Gsp ?? (_discordRecords.Count > 0 ? _discordRecords[0].Gsp : 0u);

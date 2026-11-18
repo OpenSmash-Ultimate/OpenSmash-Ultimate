@@ -24,7 +24,9 @@ namespace OpenSmash.Launcher
 
     public static class CommunityFeed
     {
-        public const string Lobby = "opensmash-lobby.duckdns.org:39421";
+        // The official lobby, by its DNS name (OpenSmash.Core.OfficialLobby: the release's, else the built-in name), as
+        // the WinForms launcher reads it.
+        public static string Lobby(string? repo = null) => OpenSmash.Core.OfficialLobby.Current(repo);
         public const string SitePage = "https://denkishi.github.io/opensmash-site/leaderboard/";
         public static readonly TimeSpan Every = TimeSpan.FromSeconds(60);
 
@@ -95,7 +97,7 @@ namespace OpenSmash.Launcher
         // What a row shows: the player's chosen name, else their main fighter's.
         public static string Who(BoardRow row) => row.Name != "" ? row.Name : DiscordAccount.FighterName(row.Fighter) + " player";
 
-        public static async Task<(LobbyStatus? Status, string? Board)> Fetch(HttpClient http, CancellationToken cancel)
+        public static async Task<(LobbyStatus? Status, string? Board)> Fetch(HttpClient http, CancellationToken cancel, string? repo = null)
         {
             async Task<string?> Get(string path)
             {
@@ -103,7 +105,7 @@ namespace OpenSmash.Launcher
                 {
                     using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
                     timeout.CancelAfter(TimeSpan.FromSeconds(8));
-                    using var r = await http.GetAsync($"http://{Lobby}{path}", timeout.Token);
+                    using var r = await http.GetAsync(OpenSmash.Core.OfficialLobby.Page(path, repo), timeout.Token);   // (plain HTTP: the lobby serves no TLS)
                     return r.IsSuccessStatusCode ? await r.Content.ReadAsStringAsync(timeout.Token) : null;
                 }
                 catch (Exception e) when (e is HttpRequestException or TaskCanceledException or OperationCanceledException or InvalidOperationException) { return null; }

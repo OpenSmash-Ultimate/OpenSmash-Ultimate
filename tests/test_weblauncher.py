@@ -170,7 +170,7 @@ class Settings(unittest.TestCase):
         # (runtime/gpu_menu.c net_load / net_save_server; the same table as tests/launcher_settings' Lobby)
         pub = launcher.PUBLIC_LOBBY
         for line, lobby, back in (("", "offline", "off"), ("off", "offline", "off"), ("auto", "public", "auto"),
-                                  ("na", "public", "auto"), ("eos", "eos", "eos"), ("EOS", "eos", "eos"), ("lan", "lan", "lan"), (pub, "public", "auto"),
+                                  ("na", "public", "auto"), ("eos", "public", "auto"), ("lan", "lan", "lan"), (pub, "public", "auto"),
                                   (pub + " friends", "private", pub + " friends"), ("auto abc", "private", pub + " abc"),
                                   ("10.0.0.2:39420 abc", "custom", "10.0.0.2:39420 abc")):
             with open(os.path.join(self.root, "online_server.txt"), "w") as f:
@@ -246,6 +246,28 @@ class Commands(unittest.TestCase):
         self.assertEqual(launcher.play_command("/r", "offline", "macos")[-1], "offline")
         for path in ("play-ssbu.sh", os.path.join("launchers", "play-ssbu-offline.sh"), os.path.join("tools", "mac", "launch.sh")):
             self.assertTrue(os.path.isfile(os.path.join(ROOT, path)), path)
+
+    def test_online_pass(self):
+        """(v0.5.0) the official lobbies need a signed-in launcher's ticket: named to the game while it is good, else
+        a clear "sign in with the OpenSmash launcher"; other lobbies need none."""
+        now = 1700000000
+        self.assertEqual(launcher.online_pass(self.root, {"lobby": "lan"}, now), ({}, ""))
+        self.assertEqual(launcher.online_pass(self.root, {"lobby": "custom"}, now), ({}, ""))
+        env, say = launcher.online_pass(self.root, {"lobby": "public"}, now)
+        self.assertEqual(env, {})
+        self.assertIn("Sign in with the OpenSmash launcher", say)
+        path = os.path.join(self.root, "build", "cache", "online_pass.txt")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w", encoding="ascii") as f:
+            f.write("u|Ann|%d|%d.%s\n" % (now + 3600, now, "f" * 64))
+        for lobby in ("public", "private"):
+            self.assertEqual(launcher.online_pass(self.root, {"lobby": lobby}, now), ({"SSBU_ONLINE_TICKET_FILE": path}, ""))
+        env, say = launcher.online_pass(self.root, {"lobby": "public"}, now + 3600 - 30)   # (about to expire: not used)
+        self.assertEqual(env, {})
+        self.assertTrue(say)
+        with open(path, "w", encoding="ascii") as f:   # (a ticket of 10 minutes, as tools/dev/fake_accounts.py makes: used)
+            f.write("u|Ann|%d.%s\n" % (now + 600, "f" * 64))
+        self.assertEqual(launcher.online_pass(self.root, {"lobby": "public"}, now)[0], {"SSBU_ONLINE_TICKET_FILE": path})
 
     def test_programs(self):
         self.assertTrue(launcher.game_program("/r", "linux").endswith(os.path.join("build-linux", "ssbu")))

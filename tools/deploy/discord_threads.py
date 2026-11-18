@@ -13,6 +13,11 @@ user through sudoers (see deploy_discord_threads.sh).
   discord_threads.py archive   THREAD... [--lock]
   discord_threads.py unarchive THREAD...
   discord_threads.py delete    THREAD... --yes
+  discord_threads.py reply     THREAD (--text TEXT | --file FILE) [--reply-to MESSAGE]
+
+reply posts one message (at most 2000 characters, no pings: allowed_mentions is
+empty) as the bot, only in a thread of the OpenSmash-Ultimate server
+(REPLY_GUILD); any other server is refused.
 
 export writes DIR/<thread id>/thread.json, messages.json and every
 attachment, then hands DIR to $SUDO_USER.
@@ -29,6 +34,7 @@ import urllib.request
 
 API = "https://discord.com/api/v10"
 TOKEN_FILE = "/etc/ssbu-discord-bot/token"
+REPLY_GUILD = "1561342604698849280"   # (OpenSmash-Ultimate: the only server reply may post in)
 UA = "DiscordBot (https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate, 1.0)"
 
 
@@ -198,6 +204,38 @@ def cmd_delete(a):
         print(tid, "deleted")
 
 
+def reply_body(text, reply_to=None):
+    text = text.strip()
+    if not text:
+        raise SystemExit("reply: empty text")
+    if len(text) > 2000:
+        raise SystemExit(f"reply: {len(text)} characters, Discord's limit is 2000")
+    body = {"content": text, "allowed_mentions": {"parse": []}}
+    if reply_to:
+        body["message_reference"] = {"message_id": reply_to, "fail_if_not_exists": False}
+    return body
+
+
+def cmd_reply(a):
+    tid = a.threads[0]
+    if a.reply_to and not a.reply_to.isdigit():
+        raise SystemExit(f"not a message id: {a.reply_to}")
+    if (a.text is None) == (a.file is None):
+        raise SystemExit("reply: give --text or --file")
+    text = a.text
+    if a.file is not None:
+        with open(a.file, encoding="utf-8") as f:
+            text = f.read()
+    body = reply_body(text, a.reply_to)
+    ch = call("GET", f"/channels/{tid}")
+    if ch.get("type") not in (10, 11, 12):
+        raise SystemExit(f"{tid} is not a thread")
+    if ch.get("guild_id") != REPLY_GUILD:
+        raise SystemExit(f"{tid} is not in the OpenSmash-Ultimate server: refused")
+    m = call("POST", f"/channels/{tid}/messages", body)
+    print(tid, "replied", m.get("id", ""), ch.get("name", ""))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     s = p.add_subparsers(dest="cmd", required=True)
@@ -208,12 +246,15 @@ def main():
     ar = s.add_parser("archive"); ar.add_argument("threads", nargs="+"); ar.add_argument("--lock", action="store_true")
     u = s.add_parser("unarchive"); u.add_argument("threads", nargs="+")
     d = s.add_parser("delete"); d.add_argument("threads", nargs="+"); d.add_argument("--yes", action="store_true")
+    r = s.add_parser("reply"); r.add_argument("threads", nargs=1); r.add_argument("--text"); r.add_argument("--file")
+    r.add_argument("--reply-to")
     a = p.parse_args()
     for x in getattr(a, "threads", []) or []:
         if not x.isdigit():
             raise SystemExit(f"not a thread id: {x}")
     {"guilds": cmd_guilds, "channels": cmd_channels, "list": cmd_list, "export": cmd_export,
-     "archive": cmd_archive, "unarchive": lambda a: cmd_archive(a, False), "delete": cmd_delete}[a.cmd](a)
+     "archive": cmd_archive, "unarchive": lambda a: cmd_archive(a, False), "delete": cmd_delete,
+     "reply": cmd_reply}[a.cmd](a)
 
 
 if __name__ == "__main__":

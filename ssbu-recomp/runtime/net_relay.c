@@ -99,7 +99,7 @@ enum { T_MATCH = 20, T_MATCH_STATE };                 /* O2 matchmaking */
 #define FRESH_MS 1200              /* a direct path is used while its last answer is younger than this */
 #define NET_BUILD_DEFAULT "ssbu-recomp-ldn1"
 /* The public lobby a game with no online_mode / online_server joins at its start (menu.cpp ONLINE_DEFAULT_LOBBY is the
- * same name). None by default since OpenSmash 0.4.1: the name it had, opensmash-lobby.duckdns.org:39500, is a free
+ * same name). None by default since OpenSmash 0.5.0: the name it had, opensmash-lobby.duckdns.org:39500, is a free
  * dynamic-DNS name whose lobby is gone, and OpenSmash's official lobbies (relay only, signed-in accounts) do not serve
  * this runtime's protocol - so every start sent a JOIN, and asked for direct paths, to whoever holds that name. With
  * none, a game that names no server is offline; online_server / SSBU_ONLINE=<host:port> work as before, LAN, host and

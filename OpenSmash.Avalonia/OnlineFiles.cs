@@ -2,9 +2,8 @@ using OpenSmash.Core;
 namespace OpenSmash;
 public sealed partial class MainWindow
 {
-    // Epic Online Services' and Discord's files beside the program (tools/online_files.py: nothing downloaded when they
-    // are current). An update whose fetch failed left them out and the game went online through the public lobby alone,
-    // unseen by the players on Epic (issues #389, #394): every Play and every Update puts them back. Never stops either.
+    // Discord's files beside the program (tools/online_files.py: nothing downloaded when they are current; Epic Online
+    // Services' too before 0.5.0, issues #389, #394): every Play and every Update puts them back. Never stops either.
     async Task EnsureOnlineFiles()
     {
         try

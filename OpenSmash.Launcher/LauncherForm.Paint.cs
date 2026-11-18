@@ -60,7 +60,7 @@ namespace OpenSmash.Launcher
             ["ui_language"] = "The launcher and external menu share this language. The game language is set separately.",
             ["volume"] = "The game's whole sound (display.ini volume, the same setting as the in-game menu's Volume row). 100 is full. It applies the next time you press Play.",
             ["name"] = "What other players see. Leave it empty and the game picks one.",
-            ["lobby"] = "Official lobby: your region's server, every match relayed. Private: only players with the same code. LAN: players on this network. Epic: worldwide, straight to the opponent. Offline: no network.",
+            ["lobby"] = "Official lobby: your region's server, every match relayed. Private: only players with the same code. LAN: players on this network. Offline: no network.",
             ["region"] = "Players on another region are not listed.",   // (one line fits: Auto is said by its own label, "Auto (the closest)")
             ["code"] = "A word your friends type too. Capital letters count.",
             ["server"] = "host:port of a lobby you run, for example 192.168.1.20:39420.",
@@ -578,7 +578,7 @@ namespace OpenSmash.Launcher
             float ww = Theme.Label(g, "OPENSMASH", FD(21 * s), A(Theme.Text), wx, 0, HeaderH * s, 0.84f * s);
             float ww2 = Theme.Label(g, "-ULTIMATE", FD(21 * s), A(Theme.Dim), wx + ww + 0.84f * s, 0, HeaderH * s, 0.84f * s);
             AddHit("brand", mx, my, mark + 10 * s + ww + ww2, mark);
-            if (_view != "home" || AccountMode) PaintDiscordHeader(g, wx + ww + 0.84f * s + ww2 + 36 * s, HeaderH * s / 2);   // (LauncherForm.Discord.cs; home: the right column's; the 0.6 account: on every page)
+            if (_view != "home" || AccountMode) PaintDiscordHeader(g, wx + ww + 0.84f * s + ww2 + 36 * s, HeaderH * s / 2);   // (LauncherForm.Discord.cs; home: the right column's; the v0.5.0 account: on every page)
 
             // Window buttons
             float cx = W - 40 * s, cy = HeaderH * s / 2, a = 7 * s;

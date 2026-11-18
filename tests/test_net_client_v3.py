@@ -82,7 +82,7 @@ class Game:
     def __init__(self, exe, relay=None, protocol=None, room='v3client', name='P', **more):
         env = {k: v for k, v in os.environ.items() if not k.upper().startswith('SSBU_NET_') and k.upper() != 'NETV3TEST_BUILD'}
         env.update(SSBU_NET_ROOM=room, SSBU_NET_NAME=name, SSBU_NET_UPNP='0', NETV3TEST_BUILD=BUILD)
-        # (OpenSmash 0.4.1: direct paths are asked for - SSBU_NET_DIRECT=1 - and never taken with the official lobby; these
+        # (OpenSmash 0.5.0: direct paths are asked for - SSBU_NET_DIRECT=1 - and never taken with the official lobby; these
         # tests are of the direct paths with a lobby of the player's own, so they ask)
         env['SSBU_NET_DIRECT'] = '1'
         if relay is not None:

@@ -19,7 +19,7 @@ namespace OpenSmash.Core
         public const string Host = "eu.lobby.opensmashultimate.com";
         public const int Port = 39421;
         public const string Default = Host + ":39421";
-        /// <summary>the public lobbies before the official one, gone: their lines in online_server.txt mean it</summary>
+        /// <summary>the public lobbies before the official one (kept up only for installs that have not updated yet): their lines in online_server.txt mean it</summary>
         public static readonly string[] Older = { "opensmash-lobby.duckdns.org", "smash.recomps.wtf" };
 
         /// <summary>host:port and nothing else (what the release, the file or the variable may say)</summary>
@@ -71,7 +71,7 @@ namespace OpenSmash.Core
         public static bool Means(string host, string root = null)
         {
             if (string.IsNullOrEmpty(host)) return false;
-            if (new[] { "auto", "na", "eu", Override(root) }.Contains(host, StringComparer.OrdinalIgnoreCase)) return true;
+            if (new[] { "auto", "na", "eu", "eos", Override(root) }.Contains(host, StringComparer.OrdinalIgnoreCase)) return true;   // ("eos": Epic Online Services, gone in 0.5.0)
             if (ServerRegion.OfLobby(host) != null) return true;   // (any region's lobby: which one is played on is the region setting's to say)
             return Older.Any(o => host.StartsWith(o, StringComparison.OrdinalIgnoreCase));
         }

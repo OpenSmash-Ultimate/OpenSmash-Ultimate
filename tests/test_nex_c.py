@@ -1,4 +1,4 @@
-"""The NEX game server inside the game (runtime/net_nex*.c, plan/EOS_MIGRATION.md phase 2) against tools/nex: both are
+"""The NEX game server inside the game (runtime/net_nex*.c, SSBU_NEX_LOCAL=1) against tools/nex: both are
 fed the same requests and must answer byte for byte the same.
 
 tools/dev/nextest.c drives the C server from stdin. A Tee stands where tools/nex's tests expect their server: every
@@ -499,7 +499,7 @@ class Wiring(unittest.TestCase):
 
     def test_streams_and_datagrams(self):
         online, net = self.src('hle_online.c'), self.src('hle_net.c')
-        self.assertIn('return net_configured() && net_backend == &net_eos_backend;', online, 'over EOS, the server is in the game')
+        self.assertNotIn('net_eos', online, 'no Epic Online Services (0.5.0): the server is in the game with SSBU_NEX_LOCAL alone')
         self.assertIn('const char *v = getenv("SSBU_NEX_LOCAL");', online)
         self.assertIn('int ok = ns && nex_stream_bytes(ns, vip, vport, dport, (const u8 *)p, left);', online,
                       'a stream to 10.13.0.1 goes to the server in the game')

@@ -179,6 +179,11 @@ class LauncherDefaultsTests(unittest.TestCase):
         self.assertIn('static const char *public_lobby(void) { return net_region_lobby(); }', read(RUNTIME / 'net_relay.c'))
         for name in ('gpu_menu.c', 'net_discord.c', 'net_relay.c'):   # (no other lobby name is a default in the game)
             self.assertNotRegex(read(RUNTIME / name), r'#define \w+ L?"[^"]*(duckdns|recomps\.wtf)')
+        # (v0.5.0) the Avalonia launcher takes the official lobby from OpenSmash.Core.OfficialLobby too, no host of its own
+        for name in ('CommunityFeed.cs', 'DiscordAccount.cs'):
+            text = read(ROOT / 'OpenSmash.Avalonia' / name)
+            self.assertNotRegex(text, r'"[^"]*(duckdns|recomps\.wtf)[^"]*"', name)
+            self.assertIn('OpenSmash.Core.OfficialLobby.', text, name)
 
     def test_server_regions(self):
         """The official lobbies, one a region: the same table (id, name shown, lobby) in the game and in every launcher,
@@ -234,7 +239,7 @@ class LauncherDefaultsTests(unittest.TestCase):
         save = self.menu_c[self.menu_c.index('static void net_save_server(void)'):]
         save = save[:save.index('\n}\n')]
         written = set(re.findall(r'snprintf\(line, sizeof line, "(\w+)"\)', save))
-        self.assertEqual(written, {'off', 'lan', 'auto', 'eos'})   # ('eos': Epic Online Services, a choice and not the default)
+        self.assertEqual(written, {'off', 'lan', 'auto'})   # (no 'eos': Epic Online Services, gone in 0.5.0)
         as_choice = {'off': 'offline'}
         self.assertEqual({as_choice.get(w, w) for w in written} | {'private', 'custom'}, set(self.choices['lobby']))
         modes = re.search(r'enum \{ NET_PUBLIC, (.*?), NET_MODE_COUNT \}', self.menu_c).group(1)

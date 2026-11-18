@@ -45,7 +45,7 @@ def session():
     a, r = "access-%d-%s" % (state["n"], os.urandom(6).hex()), "refresh-%d-%s" % (state["n"], os.urandom(6).hex())
     state["access"].add(a); state["refresh"].add(r)
     return {"access_token": a, "refresh_token": r, "expires_in": 3600, "token_type": "bearer",
-            "user": {"id": UID, "email": "", "identities": [{"provider": "discord", "id": "123456789012345678"}]}}
+            "user": {"id": opts.uid, "email": "", "identities": [{"provider": "discord", "id": "123456789012345678"}]}}
 
 
 class H(BaseHTTPRequestHandler):
@@ -107,7 +107,7 @@ class H(BaseHTTPRequestHandler):
             log("logout"); return self.send(204, b"")
         if u.path == "/rest/v1/rpc/lobby_ticket":
             secret = open(opts.secret_file, "rb").read().strip() if opts.secret_file else b"test-secret-not-a-real-one"
-            body = "%s|%s|%d" % (UID, opts.name, int(time.time()) + 600)
+            body = "%s|%s|%d" % (opts.uid, opts.name, int(time.time()) + 600) + ("|d=" + opts.discord if opts.discord else "")
             log("lobby ticket given (10 min)")
             return self.send(200, body + "." + hmac.new(secret, body.encode(), hashlib.sha256).hexdigest())
         if u.path in ("/rest/v1/rpc/crash_report_add", "/rest/v1/rpc/perf_session_add"):
@@ -125,6 +125,8 @@ def main():
     ap.add_argument("--port", type=int, default=54321)
     ap.add_argument("--secret-file")
     ap.add_argument("--name", default="Tester")
+    ap.add_argument("--uid", default=UID, help="the test account's id (two instances: two accounts, e.g. a game pair)")
+    ap.add_argument("--discord", help="a Discord id put in the ticket as |d=<id> (the board links the account to it)")
     ap.add_argument("--log")
     opts = ap.parse_args()
     srv = ThreadingHTTPServer(("127.0.0.1", opts.port), H)

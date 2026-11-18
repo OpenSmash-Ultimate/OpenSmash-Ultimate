@@ -206,13 +206,13 @@ static class Program
     static async Task<int> Main()
     {
         // ---- versions
-        Check(SemVer.Parse("0.4.1") > SemVer.Parse("0.4.1-rc.2"), "release newer than its rc");
-        Check(SemVer.Parse("0.4.1-rc.10") > SemVer.Parse("0.4.1-rc.2"), "numeric pre-release parts");
-        Check(SemVer.Parse("v0.4.1") > SemVer.Parse("0.3.0-alpha.3"), "0.4.1 newer than the alphas");
-        Check(SemVer.Parse("0.4.2") > SemVer.Parse("0.4.1"), "patch");
-        Check(SemVer.Parse("0.4.1.0").ToString() == "0.4.1", "assembly version form");
+        Check(SemVer.Parse("0.5.0") > SemVer.Parse("0.5.0-rc.2"), "release newer than its rc");
+        Check(SemVer.Parse("0.5.0-rc.10") > SemVer.Parse("0.5.0-rc.2"), "numeric pre-release parts");
+        Check(SemVer.Parse("v0.5.0") > SemVer.Parse("0.3.0-alpha.3"), "0.5.0 newer than the alphas");
+        Check(SemVer.Parse("0.5.1") > SemVer.Parse("0.5.0"), "patch");
+        Check(SemVer.Parse("0.5.0.0").ToString() == "0.5.0", "assembly version form");
         Check(!SemVer.TryParse("main", out _), "a branch is no version");
-        Check(Updater.Current.ToString() == "0.4.1-test", "Current from the informational version: " + Updater.Current);
+        Check(Updater.Current.ToString() == "0.5.0-test", "Current from the informational version: " + Updater.Current);
 
         // ---- a release in a folder (OPENSMASH_RELEASE_DIR)
         string dir = Path.Combine(Path.GetTempPath(), "opensmash-core-test-" + Guid.NewGuid().ToString("n"));
@@ -222,15 +222,15 @@ static class Program
             byte[] exe = Encoding.ASCII.GetBytes("not really a launcher");
             File.WriteAllBytes(Path.Combine(dir, "OpenSmash.exe"), exe);
             string commit = new string('a', 40);
-            string manifest = "{\"schema\":1,\"version\":\"0.4.1\",\"commit\":\"" + commit + "\",\"channel\":\"stable\",\"lobby\":\"lobby.example:1\",\"min_client_level\":1," +
+            string manifest = "{\"schema\":1,\"version\":\"0.5.0\",\"commit\":\"" + commit + "\",\"channel\":\"stable\",\"lobby\":\"lobby.example:1\",\"min_client_level\":1," +
                               "\"launcher\":{\"" + Releases.Platform + "\":{\"file\":\"OpenSmash.exe\",\"sha256\":\"" + Releases.Sha256(exe) + "\"}," +
                               "\"evil\":{\"file\":\"../x.exe\",\"sha256\":\"00\"}}}";
             File.WriteAllText(Path.Combine(dir, Releases.ManifestName), manifest);
             Environment.SetEnvironmentVariable("OPENSMASH_RELEASE_DIR", dir);
             var r = await Releases.LatestAsync("stable");
-            Check(r != null && r.Version.ToString() == "0.4.1" && r.Commit == commit && r.Lobby == "lobby.example:1" && r.MinClientLevel == 1, "manifest read");
+            Check(r != null && r.Version.ToString() == "0.5.0" && r.Commit == commit && r.Lobby == "lobby.example:1" && r.MinClientLevel == 1, "manifest read");
             Check(r != null && !r.Launcher.ContainsKey("evil"), "a file with a path is not listed");
-            Check(Updater.LauncherOutdated(r), "0.4.1 is newer than 0.4.1-test");
+            Check(Updater.LauncherOutdated(r), "0.5.0 is newer than 0.5.0-test");
             byte[] got = await Releases.DownloadCheckedAsync(r.Launcher[Releases.Platform]);
             Check(got.SequenceEqual(exe), "checked download");
             r.Launcher[Releases.Platform].Sha256 = new string('0', 64);
@@ -298,7 +298,7 @@ static class Program
         Check(Account.Callback.Parse("GET /favicon.ico HTTP/1.1", "abc").Code == null, "stray request ignored");
         Check(Account.Callback.Parse("GET /callback/abc?error=access_denied&error_description=The+user+said+no HTTP/1.1", "abc").Error == "The user said no", "error shown");
         var svc = AccountService.Load(null);
-        Check(!svc.Configured || Environment.GetEnvironmentVariable("OPENSMASH_SUPABASE_URL") != null, "the repository's build has no service set");
+        Check(svc.Configured, "the repository's build has the accounts service (every launcher built from source can sign in)");
         // the sign-in page: OpenSmash's accounts site by default, whose /launcher page answers /callback?state=..&refresh_token=..
         if (!svc.Configured && Environment.GetEnvironmentVariable("OPENSMASH_SIGNIN_PAGE") == null)      // (the repository build: a release may name its own pages)
         {
@@ -328,6 +328,68 @@ static class Program
         Check(OnlinePass.Expiry("00000000-0000-4000-8000-000000000001|Alice|1800000000." + new string('f', 64)) == 1800000000, "ticket expiry");
         Check(OnlinePass.Expiry("u|n|1800000000|1700000000." + new string('f', 64)) == 1800000000, "ticket v2 expiry");
         Check(OnlinePass.Expiry("garbage") == 0, "not a ticket");
+        Check(OnlinePass.Expiry("u|n|1800000000|1700000000|d=1001." + new string('f', 64)) == 1800000000, "ticket with a Discord id: expiry");
+
+        // ---- the leaderboard by the lobby ticket (LobbyBoard.cs; tools/nex/board.py's /gsp/me)
+        var bme = LobbyBoard.ParseMe("{\"id\":\"abc\",\"rank\":3,\"ranked\":9,\"name\":\"Ann\",\"fighters\":[{\"fighter\":1,\"gsp\":900,\"rank\":4}," +
+                                     "{\"fighter\":43,\"gsp\":1500,\"rank\":2},{\"fighter\":\"x\",\"gsp\":1}],\"where\":null}");
+        Check(bme != null && bme.Id == "abc" && bme.Rank == 3 && bme.Ranked == 9 && bme.Name == "Ann" && bme.Fighters.Count == 2 &&
+              bme.Fighters[0].Fighter == 43 && bme.Fighters[0].Rank == 2, "board: /gsp/me read, highest GSP first");
+        Check(LobbyBoard.ParseMe("[1]") == null && LobbyBoard.ParseMe("not json") == null, "board: not an answer");
+        var other = LobbyBoard.ParseMe("{\"id\":\"zzz\",\"rank\":1,\"fighters\":[{\"fighter\":1,\"gsp\":1200,\"rank\":1},{\"fighter\":7,\"gsp\":100}]}");
+        var merged = LobbyBoard.Merge(new[] { bme, null, other });
+        Check(merged.Id == "abc" && merged.Rank == 3 && merged.Fighters.Count == 3 && merged.Fighters[0].Fighter == 43 &&
+              merged.Fighters.First(f => f.Fighter == 1).Gsp == 1200 && merged.Fighters.First(f => f.Fighter == 1).Rank == 1,
+              "board: lobbies merged, the first one's row and place, each fighter's best");
+        Check(await LobbyBoard.MeAsync(new System.Net.Http.HttpClient(), new[] { "127.0.0.1:1" }, "", default) == null, "board: no ticket, nothing asked");
+        Check(bme.Shown && LobbyBoard.ParseMe("{\"id\":\"a\",\"show\":false,\"fighters\":[]}")!.Shown == false &&
+              LobbyBoard.Merge(new[] { LobbyBoard.ParseMe("{\"show\":false}") }).Shown == false, "board: the shown choice read (none said: shown)");
+        {
+            // (the show/hide choice: POST /gsp/profile with the ticket header only, a name to show, "" to hide)
+            var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+            listener.Start();
+            int lport = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+            var seen = new List<string>();
+            var serve = Task.Run(async () =>
+            {
+                for (int i = 0; i < 2; i++)
+                {
+                    using var c = await listener.AcceptTcpClientAsync();
+                    using var st = c.GetStream();
+                    var buf = new byte[8192]; int n = 0, got;
+                    string text = "";
+                    while ((got = await st.ReadAsync(buf.AsMemory(n, buf.Length - n))) > 0)
+                    {
+                        n += got; text = System.Text.Encoding.UTF8.GetString(buf, 0, n);
+                        int he = text.IndexOf("\r\n\r\n");
+                        var m = System.Text.RegularExpressions.Regex.Match(text, @"Content-Length: (\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        if (he >= 0 && m.Success && n >= he + 4 + int.Parse(m.Groups[1].Value)) break;
+                    }
+                    lock (seen) seen.Add(text);
+                    byte[] ok = System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}");
+                    await st.WriteAsync(ok);
+                }
+            });
+            using var hc = new System.Net.Http.HttpClient();
+            int took = await LobbyBoard.SetShownAsync(hc, new[] { "127.0.0.1:" + lport }, "u|n|1800000000." + new string('f', 64), false, default);
+            int took2 = await LobbyBoard.SetShownAsync(hc, new[] { "127.0.0.1:" + lport }, "u|n|1800000000." + new string('f', 64), true, default);
+            await serve; listener.Stop();
+            Check(took == 1 && took2 == 1 && seen.Count == 2 && seen[0].StartsWith("POST /gsp/profile ") &&
+                  seen[0].Contains("X-OpenSmash-Ticket: u|n|1800000000.") && seen[0].Contains("\"name\":\"\"") &&
+                  !seen[0].Contains("X-OpenSmash-Player") && !seen[1].Contains("\"name\":\"\""),
+                  "board: show/hide sent with the ticket alone (\"\" hides, a name shows)");
+            Check(await LobbyBoard.SetShownAsync(hc, new[] { "127.0.0.1:1" }, "", true, default) == 0, "board: no ticket, no show/hide sent");
+        }
+        string tkroot = Path.Combine(Path.GetTempPath(), "os-core-ticket-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Check(LobbyBoard.StoredTicket(tkroot) == null, "board: no stored ticket");
+            Directory.CreateDirectory(Path.Combine(tkroot, "build", "cache"));
+            File.WriteAllText(Path.Combine(tkroot, "build", "cache", "online_pass.txt"), "u|n|1800000000." + new string('f', 64) + "\n");
+            Check(LobbyBoard.StoredTicket(tkroot, 60, 1700000000) == "u|n|1800000000." + new string('f', 64), "board: the stored ticket, still fresh");
+            Check(LobbyBoard.StoredTicket(tkroot, 60, 1799999990) == null, "board: a stored ticket about to expire is not used");
+        }
+        finally { try { Directory.Delete(tkroot, true); } catch { } }
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         string dirty = "at " + home + "\\x.txt by " + Environment.UserName + " from 93.184.216.34 room 10.13.0.5 mail a.b@example.com pass " +
                        "00000000-0000-4000-8000-000000000001|Alice|1800000000." + new string('f', 64) + " at C:\\Games\\OpenSmash\\build";
@@ -338,12 +400,12 @@ static class Program
         // ---- the session's performance summary
         string perf = "{\"schema\":1,\"clean_exit\":true,\"session_s\":300,\"frames\":18000,\"ft_p50\":16.62,\"ft_p99\":21.5,\"stutters\":3," +
                       "\"hist\":{\"<8\":0,\"<12\":1,\">=100\":2},\"rb_rollbacks\":120,\"path\":\"C:/Users/someone\",\"name\":\"someone\"}";
-        var pp = PerfReport.Payload(perf, new Dictionary<string, object> { ["cpu"] = "Test CPU", ["ram_gb"] = 16.0 }, "[vulkan] device: Test GPU (driver 1)\nrenderer: vulkan\n", "0.4.1", "abc");
+        var pp = PerfReport.Payload(perf, new Dictionary<string, object> { ["cpu"] = "Test CPU", ["ram_gb"] = 16.0 }, "[vulkan] device: Test GPU (driver 1)\nrenderer: vulkan\n", "0.5.0", "abc");
         Check(pp != null && (double)pp["frames"] == 18000 && (string)pp["cpu"] == "Test CPU" && (string)pp["gpu"] == "Test GPU" && (string)pp["renderer"] == "vulkan" &&
               (bool)pp["crashed"] == false && !pp.ContainsKey("path") && !pp.ContainsKey("name") && ((Dictionary<string, long>)pp["hist"])[">=100"] == 2, "performance summary payload");
         Check(!System.Text.Json.JsonSerializer.Serialize(pp).Contains("someone"), "performance summary: unknown fields dropped");
-        Check(PerfReport.Payload(perf.Replace("\"session_s\":300", "\"session_s\":20"), null, null, "0.4.1", "abc") == null, "performance summary: short sessions are not sent");
-        Check(PerfReport.Payload("not json", null, null, "0.4.1", "abc") == null, "performance summary: not a summary");
+        Check(PerfReport.Payload(perf.Replace("\"session_s\":300", "\"session_s\":20"), null, null, "0.5.0", "abc") == null, "performance summary: short sessions are not sent");
+        Check(PerfReport.Payload("not json", null, null, "0.5.0", "abc") == null, "performance summary: not a summary");
         var pc = PerfReport.Pc();
         Check(pc.ContainsKey("cpu_threads") && !System.Text.Json.JsonSerializer.Serialize(pc).Contains(Environment.UserName, StringComparison.OrdinalIgnoreCase), "this PC's kind has no user name");
         string troot = Path.Combine(Path.GetTempPath(), "os-core-perf-" + Guid.NewGuid().ToString("N"));

@@ -111,9 +111,12 @@ async function refresh() {
   $("#play-state").textContent = !built ? (state.files_ready ? "Your game files are read; the game itself isn't built yet."
     : "Set the game up first.") : state.game_running ? "The game is running." : `Ready (${state.program}).`;
   const s = state.settings;
-  const lobby = { public: "the public lobby" + (s.region_shown ? ` (${s.region_shown})` : ""), private: `a private lobby (code ${s.code})`, custom: `your own server, ${s.server || "127.0.0.1:39420"}`, lan: "the players on this network (LAN)", eos: "Epic Online Services", offline: "offline" }[s.lobby];
+  const lobby = { public: "the public lobby" + (s.region_shown ? ` (${s.region_shown})` : ""), private: `a private lobby (code ${s.code})`, custom: `your own server, ${s.server || "127.0.0.1:39420"}`, lan: "the players on this network (LAN)", offline: "offline" }[s.lobby];
   $("#play-online").textContent = s.lobby === "offline" ? "Offline: Play doesn't go online." :
     `Play joins ${lobby}${s.name ? ", as " + s.name : ""}. Local Wireless lists everyone's rooms.`;
+  // (v0.5.0: the official lobbies need a signed-in launcher's lobby ticket; this page cannot sign in)
+  const acc = $("#play-account");
+  if (acc) { acc.textContent = state.account_say || ""; acc.hidden = !state.account_say; }
   $("#game-box").hidden = !state.game_running;
   ["play", "play-offline", "play-vanilla"].forEach(id => $("#" + id).disabled = state.game_running || !!state.job);
   fillSettings(s, state.choices);

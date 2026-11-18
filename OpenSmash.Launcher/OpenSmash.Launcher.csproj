@@ -20,7 +20,7 @@
     <ApplicationIcon>..\media\opensmash.ico</ApplicationIcon>
     <AssemblyName>OpenSmash</AssemblyName>
     <RootNamespace>OpenSmash.Launcher</RootNamespace>
-    <!-- (OpenSmash 0.6) the release workflow builds with -p:Version=X.Y.Z; a local build is 0.0.0-dev (older than any
+    <!-- (v0.5.0) the release workflow builds with -p:Version=X.Y.Z; a local build is 0.0.0-dev (older than any
          release: OpenSmash.Core.Updater compares it with the release channel's) -->
     <Version Condition="'$(Version)' == '' or '$(Version)' == '1.0.0'">0.0.0-dev</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>

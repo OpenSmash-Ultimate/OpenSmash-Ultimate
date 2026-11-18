@@ -26,7 +26,7 @@ namespace OpenSmash.Launcher
 
         void DiscordInit()
         {
-            AccountInit();   // (OpenSmash 0.6: the account replaces the Discord token when the service is set up)
+            AccountInit();   // (v0.5.0: the account replaces the Discord token when the service is set up)
             if (AccountMode) return;
             _discordHasApp = DiscordAccount.AppId(_repo) != "";
             _discordShown = DiscordAccount.ShowsName(_repo);

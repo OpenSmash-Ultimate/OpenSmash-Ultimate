@@ -127,6 +127,7 @@ namespace OpenSmash.Launcher
         string _updateLocal = "";
         string _updateHead = "";
         string _updateRefName = "main";   // what the check compared with: the latest release's tag, or main
+        bool _updateCheckUnavailable;     // the last check could not ask GitHub (no network, its hourly limit): nothing known
         int _updateBehind;
 
         // While any of these run, Play is greyed out so two jobs cannot overlap.
@@ -356,14 +357,14 @@ namespace OpenSmash.Launcher
                 new Setting { Key = "overlay", Label = "Frame rate", Values = new[] { "1", "0" }, Labels = new[] { "Show it in the corner", "Hidden" } },
                 new Setting { Key = "volume", Label = "Volume", Slider = true },
                 new Setting { Key = "name", Label = "Your name", Text = true },
-                // (the official lobby is relay only, one server a region; Epic Online Services - #378, #448 - is a choice, not the default)
-                new Setting { Key = "lobby", Label = "Lobby", Values = SettingDefaults.Choices["lobby"], Labels = new[] { "Official lobby (relay only, EU / NA East)", "Private lobby (a code)", "Your own server", "This network (LAN)", "Offline", "Epic Online Services (worldwide, direct)" } },
+                // (the official lobby is relay only, one server a region)
+                new Setting { Key = "lobby", Label = "Lobby", Values = SettingDefaults.Choices["lobby"], Labels = new[] { "Official lobby (relay only, EU / NA East)", "Private lobby (a code)", "Your own server", "This network (LAN)", "Offline" } },
                 // (the official lobbies, one a region: OpenSmash.Core.ServerRegion; config\server_region.txt, the game's menu writes it too)
                 new Setting { Key = "region", Label = "Server region", Values = SettingDefaults.Choices["region"], Labels = SettingDefaults.RegionLabels },
                 new Setting { Key = "code", Label = "Lobby code", Text = true },
                 new Setting { Key = "server", Label = "Server", Text = true },
                 new Setting { Key = "direct", Label = "Direct connections", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
-                // (OpenSmash 0.6, signed-in players only) what the launcher sends after a game: a crash's report, and the
+                // (v0.5.0, signed-in players only) what the launcher sends after a game: a crash's report, and the
                 // session's performance summary (aggregates: OpenSmash.Core CrashReport.cs, PerfReport.cs)
                 new Setting { Key = "reports", Label = "Send crash reports", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
                 new Setting { Key = "telemetry", Label = "Send performance summaries", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
@@ -665,7 +666,7 @@ namespace OpenSmash.Launcher
         {
             if (_shownAt < 0 || Now - _shownAt < 0.8) return;
             if (_updatePromptPending && s_afterSelfUpdate && ReleaseMode && !_newModsPrompt && !_rebuildPrompt)
-            {   // (OpenSmash 0.6: this launcher just replaced the older one in the middle of an update the player asked
+            {   // (v0.5.0: this launcher just replaced the older one in the middle of an update the player asked
                 //  for: the game's part goes on by itself, once, before any other question)
                 s_afterSelfUpdate = false;
                 _updatePromptPending = false;
@@ -760,25 +761,71 @@ namespace OpenSmash.Launcher
 
         // Update channel (issue #329): the newest versioned release by default; main commit by commit is opt-in for
         // testers (OPENSMASH_UPDATE_CHANNEL=main, or "main" in tools\update_channel.txt). No release yet: main.
+        // On the release channel GitHub not answering is never main: the API, then github.com's releases/latest page, asked
+        // twice; still nothing, and the check says it could not check (UpdateCheckUnavailableException) instead of comparing
+        // a release copy with main and calling a finished update unfinished (Discord "Can't update", 2026-11-18).
         async Task<string> ResolveUpdateRefAsync()
         {
+            string ch = "";
             try
             {
                 if (ChannelSetting() == "main") return "main";   // (config\update_channel.txt too: LauncherForm.Release.cs)
-                string ch = Environment.GetEnvironmentVariable("OPENSMASH_UPDATE_CHANNEL") ?? "";
+                ch = Environment.GetEnvironmentVariable("OPENSMASH_UPDATE_CHANNEL") ?? "";
                 if (ch.Length == 0)
                 {
                     string f = System.IO.Path.Combine(AppContext.BaseDirectory, "tools", "update_channel.txt");
                     if (System.IO.File.Exists(f)) ch = System.IO.File.ReadAllText(f).Trim();
                 }
-                _updateRefName = "main";
-                if (ch.Equals("main", StringComparison.OrdinalIgnoreCase)) return "main";
-                using var doc = JsonDocument.Parse(await GitHubGetAsync($"{UpdateApi}/releases/latest"));
-                string tag = GetString(doc.RootElement, "tag_name").Trim();
-                if (tag.Length > 0) { _updateRefName = tag; return Uri.EscapeDataString(tag); }
             }
             catch { }
-            return "main";
+            _updateRefName = "main";
+            if (ch.Equals("main", StringComparison.OrdinalIgnoreCase)) return "main";
+            return UpdateRefFor(await LatestReleaseRetriedAsync(), out _updateRefName);
+        }
+
+        static async Task<ProjectSetup.LatestRelease> LatestReleaseRetriedAsync(HttpClient? client = null, int retryDelayMs = 2000)
+        {
+            var release = await ProjectSetup.LatestReleaseAsync(client);
+            if (release.Known) return release;
+            await Task.Delay(retryDelayMs);
+            return await ProjectSetup.LatestReleaseAsync(client);
+        }
+
+        // The ref the check compares with, on the release channel: the release's tag, main only when there is no release.
+        internal static string UpdateRefFor(ProjectSetup.LatestRelease release, out string name)
+        {
+            if (release.Tag != null) { name = release.Tag; return Uri.EscapeDataString(release.Tag); }
+            name = "main";
+            if (release.NoRelease) return "main";
+            throw new UpdateCheckUnavailableException(UiLocale.Text("GitHub did not say which release is the latest: ") + release.Problem);
+        }
+
+        // GitHub could not be asked (no network, the API's hourly limit, its own trouble): the version is not known, which
+        // is not a failed update.
+        internal sealed class UpdateCheckUnavailableException : InvalidOperationException
+        {
+            public UpdateCheckUnavailableException(string message) : base(message) { }
+        }
+
+        internal static bool IsUnavailable(Exception ex) =>
+            ex is UpdateCheckUnavailableException || ex is HttpRequestException || ex is TaskCanceledException || ex is TimeoutException;
+
+        // After the updater ran: what it says it installed (its "__OPENSMASH_SOURCE__ <commit>" line, from the copy itself, no
+        // network) or the check's answer. Unverified when neither can tell: the update is not called a failure then.
+        internal enum UpdateVerdict { Done, NotFinished, Unverified }
+
+        internal static UpdateVerdict AfterUpdateVerdict(string checkState, bool checkUnavailable, string updaterOutput, string localCommit)
+        {
+            if (checkState == "uptodate") return UpdateVerdict.Done;
+            string installed = InstalledCommit(updaterOutput);
+            if (installed.Length > 0 && installed.Equals(localCommit, StringComparison.OrdinalIgnoreCase)) return UpdateVerdict.Done;
+            return checkUnavailable ? UpdateVerdict.Unverified : UpdateVerdict.NotFinished;
+        }
+
+        internal static string InstalledCommit(string updaterOutput)
+        {
+            var all = Regex.Matches(updaterOutput ?? "", @"(?m)^__OPENSMASH_SOURCE__\s+([0-9a-fA-F]{40})\s*$");
+            return all.Count > 0 ? all[^1].Groups[1].Value.ToLowerInvariant() : "";
         }
 
         // Commits only the old WindowSmash repository has (its README saying it moved), each with the last commit both
@@ -797,13 +844,14 @@ namespace OpenSmash.Launcher
         {
             if (_updateChecking || (_updateApplying && !allowDuringUpdate)) return;
             _updateChecking = true;
+            _updateCheckUnavailable = false;
             _updateState = "checking";
             _updateMessage = "Checking GitHub for a newer version\u2026";
             _updateDetail = "";
             Invalidate();
             try
             {
-                if (ReleaseMode) { await CheckReleaseAsync(); return; }   // (OpenSmash 0.6: the release channel)
+                if (ReleaseMode) { await CheckReleaseAsync(); return; }   // (v0.5.0: the release channel)
                 string local = await Task.Run(FindLocalCommit);
                 _updateLocal = local;
                 string headBody = await GitHubGetAsync($"{UpdateApi}/commits/{await ResolveUpdateRefAsync()}");
@@ -835,7 +883,7 @@ namespace OpenSmash.Launcher
                 {
                     cmpBody = await GitHubGetAsync($"{UpdateApi}/compare/{ResolveForeignCommit(local)}...{sha}");
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (!IsUnavailable(ex) && ex is not GitHubUnavailableException)
                 {
                     _updateState = "error";
                     _updateMessage = "This copy's commit isn't on GitHub's main branch, so updates can't be checked. (Normal for a development checkout.)";
@@ -877,7 +925,7 @@ namespace OpenSmash.Launcher
                 else if (status == "diverged") { _updateState = "error"; _updateMessage = "This copy comes from a different branch than GitHub's main, so it can't be updated automatically."; _updateDetail = ""; }
                 else { _updateState = "error"; _updateMessage = "GitHub's answer was not understood."; _updateDetail = status; }
             }
-            catch (Exception ex) { _updateState = "error"; _updateMessage = UiLocale.Text("Could not check for updates: ") + ShortError(ex.Message); _updateDetail = ""; try { System.IO.File.AppendAllText(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "os_update.log"), ex.ToString() + "\n---\n"); } catch { } }
+            catch (Exception ex) { _updateCheckUnavailable = IsUnavailable(ex) || ex is GitHubUnavailableException; _updateState = "error"; _updateMessage = UiLocale.Text("Could not check for updates: ") + ShortError(ex.Message); _updateDetail = ""; try { System.IO.File.AppendAllText(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "os_update.log"), ex.ToString() + "\n---\n"); } catch { } }
             finally
             {
                 _updateChecking = false;
@@ -892,8 +940,20 @@ namespace OpenSmash.Launcher
             request.Headers.Accept.ParseAdd("application/vnd.github+json");
             using var response = await _httpClient.SendAsync(request);
             string body = await response.Content.ReadAsStringAsync();
-            if (!response.IsSuccessStatusCode) throw new InvalidOperationException(UiLocale.Interpolate($"GitHub answered {(int)response.StatusCode} ({response.ReasonPhrase}) for {url}."));
+            if (!response.IsSuccessStatusCode)
+            {
+                string text = UiLocale.Interpolate($"GitHub answered {(int)response.StatusCode} ({response.ReasonPhrase}) for {url}.");
+                // (403/429: the API's hourly limit for this address; 5xx: GitHub's own trouble. Neither says anything about this copy.)
+                int code = (int)response.StatusCode;
+                if (code == 403 || code == 429 || code >= 500) throw new GitHubUnavailableException(text);
+                throw new InvalidOperationException(text);
+            }
             return body;
+        }
+
+        sealed class GitHubUnavailableException : InvalidOperationException
+        {
+            public GitHubUnavailableException(string message) : base(message) { }
         }
 
         string FindLocalCommit()
@@ -1117,7 +1177,7 @@ namespace OpenSmash.Launcher
             {
                 s_updateCommit = s_releaseTag = null;
                 s_followMain = ChannelSetting() == "main";
-                if (ReleaseMode)   // (OpenSmash 0.6: the launcher first, by itself; then the sources to the release's commit)
+                if (ReleaseMode)   // (v0.5.0: the launcher first, by itself; then the sources to the release's commit)
                 {
                     if (_release == null) await CheckReleaseAsync();
                     if (await SelfUpdateLauncherAsync()) { _updateApplying = false; Close(); return; }
@@ -1147,7 +1207,18 @@ namespace OpenSmash.Launcher
             _updateMessage = "Checking the update\u2026";
             Invalidate();
             await CheckForUpdatesAsync(false, allowDuringUpdate: true);
-            if (why.Length == 0 && _updateState != "uptodate") why = UiLocale.Text("The update did not finish. ") + Tail(output);
+            string unverified = "";
+            if (why.Length == 0)
+            {
+                switch (AfterUpdateVerdict(_updateState, _updateCheckUnavailable, output, _updateLocal))
+                {
+                    case UpdateVerdict.NotFinished: why = UiLocale.Text("The update did not finish. ") + Tail(output); break;
+                    case UpdateVerdict.Unverified: unverified = _updateMessage; break;   // (the updater finished; GitHub could not confirm the version)
+                    case UpdateVerdict.Done:
+                        if (_updateState != "uptodate") { _updateState = "uptodate"; _updateBehind = 0; _updateDetail = ""; }
+                        break;
+                }
+            }
 
             bool sourceChanged = beforeCommit.Length > 0
                 && !beforeCommit.Equals(_updateLocal, StringComparison.OrdinalIgnoreCase);
@@ -1221,7 +1292,14 @@ namespace OpenSmash.Launcher
                 _updateState = "uptodate";
                 _updateMessage = sourceChanged ? "Update installed and the game is current." : "OpenSmash is already up to date.";
                 _updateDetail = "";
-                UiLocale.Message(sourceChanged
+                if (unverified.Length > 0)
+                {
+                    // (GitHub not answering is not a failed update: what the updater did stays, and the next check tells)
+                    _updateState = "error";
+                    _updateMessage = UiLocale.Text("The updater finished, but GitHub could not confirm the version just now. ") + unverified;
+                    UiLocale.Message(UiLocale.Text("The updater finished. GitHub could not be asked which version is the latest just now, so the update could not be confirmed; check again later.\n\n") + unverified, "OpenSmash");
+                }
+                else UiLocale.Message(sourceChanged
                     ? "OpenSmash was updated. The game was rebuilt if its inputs changed."
                     : "OpenSmash is already up to date. No rebuild was needed.", "OpenSmash");
             }
@@ -1266,6 +1344,7 @@ namespace OpenSmash.Launcher
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                RedirectStandardInput = true,   // (closed at once: nobody can answer a question here)
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8,
             };
@@ -1285,6 +1364,7 @@ namespace OpenSmash.Launcher
             // the installer must not put the latest stable release's exe over a testing one)
             if (s_updateCommit != null) psi.Environment["OPENSMASH_LAUNCHER_REBUILDS"] = "1";
             using var p = Process.Start(psi) ?? throw new InvalidOperationException("Could not start PowerShell.");
+            try { p.StandardInput.Close(); } catch (IOException) { }
             var output = new StringBuilder();
             void Take(string? line)
             {
@@ -3681,6 +3761,9 @@ namespace OpenSmash.Launcher
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                // (closed right after the start: a question the build asks reads end-of-input at once, instead of the
+                // hidden console's keyboard that nobody can type in; "Press Enter to keep the folder", Discord 2026-11-18)
+                RedirectStandardInput = true,
             };
             foreach (string arg in new[]
             {
@@ -3706,6 +3789,7 @@ namespace OpenSmash.Launcher
             try
             {
                 process.Start();
+                try { process.StandardInput.Close(); } catch (IOException) { }
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
             }
@@ -4262,9 +4346,8 @@ namespace OpenSmash.Launcher
             }
         }
 
-        // Epic Online Services' and Discord's files beside the program (tools\online_files.py: nothing downloaded when
-        // they are current). An update whose fetch failed left them out and the game went online through the public
-        // lobby alone, unseen by the players on Epic (issue #389); Play puts them back. Never stops the start.
+        // Discord's files beside the program (tools\online_files.py: nothing downloaded when
+        // they are current; Epic Online Services' too before 0.5.0, issue #389). Play puts them back. Never stops the start.
         void EnsureOnlineFiles()
         {
             try
@@ -4288,7 +4371,7 @@ namespace OpenSmash.Launcher
                 SetLoad("STARTING THE GAME", -1);
                 await Task.Run(EnsureOnlineFiles);
                 // Same start as Play SSBU.bat: build\ssbu.exe dump\modules --status 30 --online
-                string? pass = await AccountPassForGame();   // (OpenSmash 0.6: the lobby ticket, LauncherForm.Account.cs)
+                string? pass = await AccountPassForGame();   // (v0.5.0: the lobby ticket, LauncherForm.Account.cs)
                 _gameProcess = WindowSmash.StartGame(_repo, pass);
                 AccountWatchGame(_gameProcess);
                 _gameLaunched = true;

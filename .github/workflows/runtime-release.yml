@@ -11,6 +11,12 @@ on:
     tags: ['runtime-v*']
   workflow_dispatch:
   workflow_call:   # (release.yml: the runtime of an OpenSmash release, in its own run)
+    inputs:
+      ref:
+        description: 'The tag (or commit) to build: release.yml passes its release tag, so a workflow_dispatch run builds the tag, not the branch it was started from'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -28,6 +34,8 @@ jobs:
       SSBU_ISA: ${{ matrix.isa }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -67,7 +75,8 @@ jobs:
             if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination $out }
           }
           if (-not (Test-Path -LiteralPath (Join-Path $out 'ssbu.exe'))) { throw 'no ssbu.exe was built' }
-          Set-Content -LiteralPath (Join-Path $out 'commit.txt') -Value '${{ github.sha }}' -NoNewline
+          # (the commit checked out: with release.yml's ref, the tag's, not the run's github.sha)
+          Set-Content -LiteralPath (Join-Path $out 'commit.txt') -Value (git rev-parse HEAD).Trim() -NoNewline
           Compress-Archive -Path (Join-Path $out '*') -DestinationPath "$out.zip"
           $hash = (Get-FileHash -LiteralPath "$out.zip" -Algorithm SHA256).Hash.ToLower()
           Set-Content -LiteralPath "$out.zip.sha256" -Value "$hash  $name.zip" -NoNewline

@@ -1,5 +1,5 @@
 ﻿// SPDX-License-Identifier: GPL-3.0-or-later
-// (OpenSmash 0.6) Updates from the release channel (OpenSmash.Core.Releases) instead of main's newest commit:
+// (v0.5.0) Updates from the release channel (OpenSmash.Core.Releases) instead of main's newest commit:
 // a player's copy (not a git checkout) follows config/update_channel.txt: "stable" (default: GitHub's latest release,
 // never a pre-release), "testing" (pre-releases too) or "main" (the old way: every commit of main, rebuilding the
 // launcher with the .NET SDK). A newer launcher replaces this exe by itself (SHA-256 checked, no SDK needed); the game

@@ -37,7 +37,7 @@
 #define NET_PROTOCOL    2             /* a private room's relay speaks it, and a game falls back to it */
 #define NET_PROTOCOL_V3 3             /* the online lobby's version 3 (tools/ssbu_relay.py): version 2 and more */
 #define NET_PROTOCOL_DEFAULT NET_PROTOCOL   /* what a game asks for without SSBU_NET_PROTOCOL (3 once played with) */
-/* (OpenSmash 0.6) the game's online level, "CV" after its JOIN's mod set: the official lobby tells games below its
+/* (v0.5.0) the game's online level, "CV" after its JOIN's mod set: the official lobby tells games below its
  * minimum (tools/ssbu_relay.py --min-client-level) to update. Raise it when online play changes for every game. */
 #define NET_CLIENT_LEVEL 1
 #define NET_LDN_PORT    65511         /* local wireless's own messages (hle_net.c): always through the relay */
@@ -104,7 +104,7 @@ int net_region_save(int region);               /* -1 auto; written to NET_REGION
 const char *net_official_lobby(void);
 /* online_server.txt's first word means the official lobby: "auto", a region's lobby, or an older public lobby's. */
 int net_means_official_lobby(const char *host);
-int net_on_eos(void);                /* 1: online through Epic Online Services (net_eos_net.c), not a lobby server of ours */
+void net_part_key(char *out, size_t n);   /* who may meet whom: build, lobby code, sim version, mods (net_relay.c) */
 int net_unreachable(void);           /* asked for, but the relay has not answered for a while: offline */
 /* Rollback netplay on by default (kernel.c's kernel_rb_switch when SSBU_RB is not set): started with
  * --online, with a lobby or a private room to play in (SSBU_NET_HOST, SSBU_NET_RELAY, else

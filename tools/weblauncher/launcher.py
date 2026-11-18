@@ -53,7 +53,7 @@ HOST = "linux" if sys.platform.startswith("linux") else "macos" if sys.platform 
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"}
 PUBLIC_LOBBY = "eu.lobby.opensmashultimate.com:39421"   # (the official lobby's DNS name: runtime/net.h's NET_OFFICIAL_LOBBY)
-OLDER_LOBBIES = ("opensmash-lobby.duckdns.org", "smash.recomps.wtf")   # (the public lobbies before it, gone: they mean it)
+OLDER_LOBBIES = ("opensmash-lobby.duckdns.org", "smash.recomps.wtf")   # (the public lobbies before it, replaced by it: they mean it)
 
 
 def means_public_lobby(host):
@@ -212,7 +212,7 @@ CHOICES = {
     "overlay": [("1", "Show it in the corner"), ("0", "Hidden")],
     "hide_cursor": [("1", "When it stops moving"), ("0", "Keep it shown")],
     "lobby": [("public", "Public lobby"), ("private", "Private lobby (a code)"), ("custom", "Your own server"), ("lan", "This network (LAN)"),
-              ("offline", "Offline"), ("eos", "Epic Online Services (worldwide, direct)")],   # ("eos": a choice, not the default)
+              ("offline", "Offline")],
     "region": [(server_region.AUTO, "Auto (the closest)")] + [(r[0], r[1]) for r in server_region.REGIONS],
     "direct": [("on", "On"), ("off", "Off")],
     "keyboard_player": [(str(n), f"Player {n}") for n in range(1, 9)] + [("0", "Nobody (no keyboard)")],
@@ -243,9 +243,9 @@ def lobby_from_line(line):
         return "offline", code, ""
     if h == "lan":
         return "lan", code, ""
-    if h == "eos":   # (Epic Online Services alone: a choice of its own, not the official lobby and not "your own server" - #460)
-        return "eos", "", ""
-    if h in ("auto", "na", "eu") or means_public_lobby(h):   # (any region's lobby: the region says which; the older ones are gone)
+    # ("eos": Epic Online Services, gone in 0.5.0 - the official lobby, as the game reads it; #460: read as "your own
+    # server", it stopped Play with "Your own server is eos")
+    if h in ("auto", "eos", "na", "eu") or means_public_lobby(h):   # (any region's lobby: the region says which; the older ones mean it too)
         return ("private" if code else "public"), code, ""
     return "custom", code, host
 
@@ -325,7 +325,7 @@ def write_settings(root, values):
         if key in given:
             set_ini(pads, "general", key, s[key])
     if lobby_changed:
-        server = {"offline": "off", "lan": "lan", "eos": "eos", "private": f"{PUBLIC_LOBBY} {code}",
+        server = {"offline": "off", "lan": "lan", "private": f"{PUBLIC_LOBBY} {code}",
                   "custom": (host or "127.0.0.1:39420") + (f" {code}" if code else "")}.get(lobby, "auto")
         set_first_line(config_file(root, "online_server.txt"), server)
         launcher_ini = config_file(root, "launcher.ini")
@@ -430,6 +430,31 @@ def play_command(root, mode, host=HOST):
     if host == "macos":
         return ["/bin/bash", os.path.join(root, "tools", "mac", "launch.sh"), "offline" if mode == "offline" else "play"]
     raise Error("On Windows, use OpenSmash.exe")
+
+
+# (v0.5.0) The official lobbies let in only a game that sends a lobby ticket of a signed-in account. This page cannot
+# sign in: the OpenSmash launcher (OpenSmash.Avalonia on Linux and macOS, OpenSmash.exe on Windows) does, and writes
+# the ticket to build/cache/online_pass.txt (OpenSmash.Core/OnlinePass.cs). Play here names that file to the game while
+# the ticket it holds is still good for TICKET_MARGIN seconds (as the GSP reads: discord_account.stored_ticket); it
+# cannot renew it (the game rereads the file, so a signed-in launcher running beside it keeps it fresh). The tickets'
+# lifetime is the accounts service's (public.lobby_ticket), not known here.
+TICKET_MARGIN = 60
+SIGN_IN_SAY = ("Sign in with the OpenSmash launcher to play on the official lobbies: open it, press SIGN IN, then Play "
+               "(here or there). Without that the official lobby lets you in to nothing; LAN, your own server and "
+               "Offline still work.")
+
+
+def online_pass(root, settings, now=None):
+    """(the game's variables, what to say) for Play: SSBU_ONLINE_TICKET_FILE when the lobby is an official one and a
+    signed-in launcher left a ticket that is still good, else ({}, SIGN_IN_SAY); other lobbies: ({}, "")."""
+    if settings.get("lobby") not in ("public", "private"):
+        return {}, ""
+    if discord_account.stored_ticket(root, TICKET_MARGIN, now) is None:
+        if os.environ.get("OPENSMASH_LAUNCHER_FAILED"):   # (opensmash-launcher.sh: OpenSmash.Avalonia did not start here)
+            return {}, SIGN_IN_SAY + (" The OpenSmash launcher did not start on this computer: its reason is in "
+                                      "build/launcher.log (please report it).")
+        return {}, SIGN_IN_SAY
+    return {"SSBU_ONLINE_TICKET_FILE": os.path.join(root, "build", "cache", "online_pass.txt")}, ""
 
 
 def detect_folders(root):
@@ -636,6 +661,7 @@ class App:
                 "commit": local_commit(self.root)[:7], "game_running": self.game_running(),
                 "job": self.jobs.busy(), "settings": read_settings(self.root), "choices": CHOICES,
                 "name_set": bool(read_settings(self.root)["name"]), "update": self.update_info,
+                "account_say": online_pass(self.root, read_settings(self.root))[1],
                 "steam_game_mode": steam_game_mode()}
 
     def check_update(self):
@@ -680,10 +706,14 @@ class App:
         os.makedirs(os.path.join(self.root, "build"), exist_ok=True)
         out = open(os.path.join(self.root, "build", "launcher-play.log"), "w", encoding="utf-8")
         env = {**os.environ}
+        say = ""
+        if mode != "offline":
+            extra, say = online_pass(self.root, settings)
+            env.update(extra)
         self.game = subprocess.Popen(play_command(self.root, mode), cwd=self.root, stdin=subprocess.DEVNULL, stdout=out,
                                      stderr=subprocess.STDOUT, env=env)
         out.close()
-        return {"started": True, "pid": self.game.pid}
+        return {"started": True, "pid": self.game.pid, "account_say": say}
 
     def play(self, body):
         """Play as OpenSmash.exe's: the mods applied (or the game without them), a plugin build first when one is

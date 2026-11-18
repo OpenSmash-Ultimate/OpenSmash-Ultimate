@@ -218,6 +218,11 @@ launch() {
     opened="$tree/build/open.txt"
     mkdir -p "$tree/build"
     rm -f "$log" "$opened"
+    # (v0.5.0) the official lobbies let in only a signed-in account's game: started without the launcher, the lobby
+    # ticket the OpenSmash launcher wrote last (build/cache/online_pass.txt; good while it has not expired)
+    if [ -z "${SSBU_ONLINE_TICKET_FILE:-}" ] && [ -f "$root/build/cache/online_pass.txt" ]; then
+        export SSBU_ONLINE_TICKET_FILE="$root/build/cache/online_pass.txt"
+    fi
     args=(-n -W --env "SSBU_CWD=$root" --env "SSBU_LOG=$log")
     for name in $(compgen -e); do
         case "$name" in
