@@ -5,8 +5,8 @@
  * for it with timeBeginPeriod(1) (the vsync thread does; Windows 11 may not keep to that for a
  * hidden or minimised window), 15.6 ms otherwise. The guest asks in nanoseconds, and a span under
  * a millisecond took a whole tick. So on Windows the sleep is on a high-resolution waitable timer
- * (Windows 10 1803 and later), due in 100 ns units: one a thread, made at its first sleep and never
- * closed (the kernel makes 1024 threads at most); without one, Sleep() as before. Linux sleeps
+ * (Windows 10 1803 and later), due in 100 ns units: one a thread, made at its first sleep and
+ * closed when the guest thread exits; without one, Sleep() as before. Linux sleeps
  * with clock_nanosleep to a time on the monotonic clock, macOS on a critical kqueue timer
  * (macos/platform.c's rt_sleep_until_ns): what the shim's waitable timers use.
  *
@@ -48,6 +48,14 @@ static int sleep_whole_ms(void) {
 #endif
 static __declspec(thread) HANDLE sleep_timer;   /* this thread's high-resolution timer */
 static __declspec(thread) int sleep_untimed;    /* 1: it could not have one (before Windows 10 1803): Sleep() */
+
+/* Thread recycling removes the cap on the number of threads made over a session. Windows
+ * does not close a thread's waitable timer when that thread exits. Call on that thread only. */
+static void sleep_thread_cleanup(void) {
+    if (sleep_timer) CloseHandle(sleep_timer);
+    sleep_timer = NULL;
+    sleep_untimed = 0;
+}
 
 /* the old sleep: whole milliseconds, rounded up */
 static void sleep_ms(uint64_t ns) {
@@ -96,6 +104,10 @@ static void sleep_fine(uint64_t ns) {
     ts.tv_nsec = (long)(end % 1000000000ull);
     while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL) == EINTR) {}
 }
+#endif
+
+#ifndef _WIN32
+static void sleep_thread_cleanup(void) {}   /* POSIX sleeps own no Windows timer handle. */
 #endif
 
 static void sleep_ns(uint64_t ns) {

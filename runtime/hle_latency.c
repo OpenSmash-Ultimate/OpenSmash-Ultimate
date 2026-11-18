@@ -12,12 +12,16 @@
  * behind"). Here the wrap shifts the count the function reads for the time of the call and puts it
  * back after: the function itself only reads it.
  *
- * SSBU_FRAME_INDEX=1 (or unset): one behind, the default since 2026-11-11 - measured with
- * tools/latency_trace.py (Direct3D 11, same fight, 3 presses), a press reaches the screen 65 ms after
- * the game reads it instead of 82 (one frame less), the pictures the same, only a frame sooner;
- * 2: the game's own; 0: immediate (measured slower: 108 ms, the GPU waits on the texture it shows). */
+ * SSBU_FRAME_INDEX unset, empty, invalid, or 2 keeps the game's original selection.
+ * Explicit 0/1 retain the experimental less-lag modes for comparisons only. They can
+ * select a different window texture from the one acquired/presented and cause stale
+ * frames; an average FPS or input-latency improvement does not validate correctness.
+ * Restoring the original selection may add about one frame of input latency versus
+ * mode 1, in exchange for preserving the game's render/present ordering.
+ */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "host.h"
 
@@ -25,10 +29,9 @@ static int frame_index_shift(void) {
     static int v = -1;
     if (v < 0) {
         const char *e = getenv("SSBU_FRAME_INDEX");
-        int n = e && *e ? atoi(e) : 1;
-        if (n < 0 || n > 2) n = 1;
+        int n = e && !strcmp(e, "0") ? 0 : e && !strcmp(e, "1") ? 1 : 2;
         v = 2 - n;   /* (how far the count is moved back: the game adds 2) */
-        if (v) fprintf(stderr, "[latency] frame index: %d behind (the game's own: 2)\n", n);
+        if (v) fprintf(stderr, "[latency] experimental SSBU_FRAME_INDEX=%d changes the render target ring; it may present stale frames or flicker. Unset it or use 2 for the game's original selection.\n", n);
     }
     return v;
 }

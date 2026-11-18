@@ -165,3 +165,5 @@ u32 shader_size(const u8 *program, u32 max);
 int shader_uses_pixels(const u8 *program, u32 size, int stage);
 /* Does the program use the SSY/PBK stacks (translated without them since)? */
 int shader_uses_stacks(const u8 *program, u32 size);
+/* Does emit_body generate a dispatch loop (DXBC cache revision)? */
+int shader_uses_dispatch(const u8 *program, u32 size);

@@ -33,6 +33,8 @@ typedef struct GfxBackend {
     int (*draw_logging)(void);
     void (*status_lines)(void);
     void (*closing)(void);
+    void (*prepare_fighter)(const char *name, unsigned slot);
+    void (*prepare_fighter_end)(void);
     DWORD (*lock_owner)(void);
     DWORD (*last_enter_thread)(void);
     void (*report_compiles)(void (*line)(const char *text));
@@ -93,6 +95,14 @@ int gfx_draw_logging(void);   /* a frame's draws are being logged (debugging) */
 void *gfx_window_handle(void);   /* the game's window (an HWND), to own dialogs */
 void gfx_status_lines(void);   /* (host.c's [status]) the back end's own lines, if any */
 void gfx_closing(void);        /* the game is about to end (Direct3D: see gpu_d3d11.c's "first draws") */
+/* The fighter setup hook calls this after resolving the game's final fighter name.
+ * Back ends can enqueue that fighter's indexed shader records while the match loads. */
+#ifdef __APPLE__
+static inline void gfx_prepare_fighter_begin(const char *name, unsigned slot) { (void)name; (void)slot; }
+#else
+void gfx_prepare_fighter_begin(const char *name, unsigned slot);
+void gfx_prepare_fighter_end(void);
+#endif
 #ifdef __APPLE__
 /* (macOS, gpu.c's copy engine) the picture the GPU drew at guest address `guest`, which only the
  * host has: its pixels at the game's size (4 bytes each, as the format keeps them in memory; rows

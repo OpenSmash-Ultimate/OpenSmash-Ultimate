@@ -156,6 +156,28 @@ u64 texture_layer_size(const TextureDesc *d) {
     return (total + block - 1) / block * block;
 }
 
+/* One row of GOBs. Full 64-byte groups share their address calculation; the
+ * fixed 16-byte copies become unaligned vector loads/stores on the host. */
+static void texture_row(const u8 *src, u8 *out, u32 row, u32 y, u64 stride) {
+    u32 x = 0;
+    u64 within = gob_offset(0, y);
+    for (; x + 64 <= row; x += 64) {
+        const u8 *p = src + (u64)(x / 64) * stride + within;
+        memcpy(out + x, p, 16);
+        memcpy(out + x + 16, p + 32, 16);
+        memcpy(out + x + 32, p + 256, 16);
+        memcpy(out + x + 48, p + 288, 16);
+    }
+    for (; x + 16 <= row; x += 16) {
+        u64 off = (u64)(x / 64) * stride + gob_offset(x, y);
+        memcpy(out + x, src + off, 16);
+    }
+    if (x < row) {
+        u64 off = (u64)(x / 64) * stride + gob_offset(x, y);
+        memcpy(out + x, src + off, row - x);
+    }
+}
+
 /* Read level `level` of layer `layer` into linear rows (pitch = width in blocks * bytes). */
 void texture_read(const TextureDesc *d, u64 guest, u32 layer, u32 level, u8 *out) {
     u32 w = DIV_UP(d->width >> level ? d->width >> level : 1, d->bw), h = DIV_UP(d->height >> level ? d->height >> level : 1, d->bh);
@@ -176,11 +198,7 @@ void texture_read(const TextureDesc *d, u64 guest, u32 layer, u32 level, u8 *out
     for (u32 y = 0; y < h; y++) {
         u32 by = y / block_rows, yin = y % block_rows;
         u64 line = (u64)by * gobs_x * (512ull << bh) + (yin / 8) * 512ull;
-        for (u32 x = 0; x < row; x += 16) {   /* 16 contiguous bytes within a GOB */
-            u64 off = line + (u64)(x / 64) * (512ull << bh) + gob_offset(x, yin);
-            u32 n = row - x < 16 ? row - x : 16;
-            memcpy(out + (size_t)y * row + x, src + off, n);
-        }
+        texture_row(src + line, out + (size_t)y * row, row, yin, 512ull << bh);
     }
 }
 
@@ -201,9 +219,6 @@ void texture_read_3d(const TextureDesc *d, u64 guest, u8 *out) {
         for (u32 y = 0; y < h; y++) {
             u64 base = (z >> bd) * slab + ((u64)(z & ((1u << bd) - 1)) << (9 + bh)) + (u64)((y / 8) >> bh) * row +
                        ((u64)((y / 8) & ((1u << bh) - 1)) << 9);
-            for (u32 x = 0; x < rowb; x += 16) {
-                u32 n = rowb - x < 16 ? rowb - x : 16;
-                memcpy(out + ((size_t)z * h + y) * rowb + x, src + base + ((u64)(x / 64) << (9 + bh + bd)) + gob_offset(x, y % 8), n);
-            }
+            texture_row(src + base, out + ((size_t)z * h + y) * rowb, rowb, y, 1ull << (9 + bh + bd));
         }
 }
