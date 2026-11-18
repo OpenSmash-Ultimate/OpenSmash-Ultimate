@@ -503,6 +503,9 @@ static int net_pad_for(u32 id, u32 key, u64 *buttons, i32 *lx, i32 *ly, i32 *rx,
 /* (net mode: from a match set-up until the fight, players 1 and 2 hold nothing: in the entrance and countdown
  * each PC would read its own controllers in both slots - different devices, not exchanged.) */
 static volatile LONG net_countdown;
+/* (net mode) this game's own player's pad reads in this fight, and those with a button or the left stick pushed, and
+ * the logic frame of the first such read: net_report says them, with this PC's controller slot they came from */
+static long long own_reads, own_live; static u32 own_first;
 static int net_n;   /* (players in net mode: defined with the net mode's state below) */
 /* SSBU_RB_NET_EARLY=1: the extras made while two PCs' fights started apart for another reason (twopc2-5, the
  * lobbies wired differently): dropped refreshes cleared outside fights too, and the fixed clock from the match
@@ -544,6 +547,12 @@ void rb_pad(u32 id, u64 *buttons, i32 *lx, i32 *ly, i32 *rx, i32 *ry, i32 *lt, i
      * offline: + was taken there too, and Training has no other way out) */
     if (net_mode == 2 && net_armed) *buttons &= ~(1ull << 10);
     else if (rb_paused()) return;
+    if (net_mode == 2 && net_armed && (int)id == net_local) {   /* (this game's own player's pad, as read here: net_report) */
+        own_reads++;
+        if ((*buttons & 0xfff) || *lx < -8192 || *lx > 8192 || *ly < -8192 || *ly > 8192) {
+            if (!own_live++) own_first = ld32(LOGIC_FRAME);
+        }
+    }
     if (id == 0 && !seg_poll) seg_poll = now_ms();
     if (ntin < 0) test_input_parse();
     if (tape_on < 0) { const char *e = getenv("SSBU_RB_TAPE"); tape_on = !(e && *e == '0'); }
@@ -1494,6 +1503,12 @@ static void net_report(void) {
                 net_hold_sleep > 0 ? "slept" : "refreshes left out", net_rtt_n ? net_rtt_sum / net_rtt_n : -1.0);
         fprintf(stderr, "[rb] time sync: %lld frames slowed, %.1f ms in all (%.2f ms a frame slowed); the last lead measured %.1f ms\n",
                 net_ts_n, net_ts_ms, net_ts_n ? net_ts_ms / net_ts_n : 0.0, rbn_sync_gap_ms());
+        {   u32 rb_slot_phys(u32 id);
+            fprintf(stderr, "[rb] this game's player %d: %lld pad reads in this fight, %lld with input (the first at logic frame %u); "
+                    "its pad is this PC's controller slot %u\n", net_local + 1, own_reads, own_live, own_live ? own_first : 0,
+                    net_local >= 0 ? rb_slot_phys((u32)net_local) + 1 : 0);
+            own_reads = own_live = 0; own_first = 0;
+        }
         rbl_relay_report();   /* (R7, SSBU_RB_NET=relay: which way the messages went) */
     }
 }
