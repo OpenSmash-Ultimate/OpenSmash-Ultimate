@@ -14,7 +14,7 @@ import shutil
 import sys
 import time
 
-RESET = ("nex_powers.json", "nex_ratings.json")
+RESET = ("nex_powers.json", "nex_ratings.json", "nex_gsp_allowed.json")
 PROFILES = "nex_profiles.json"
 
 
