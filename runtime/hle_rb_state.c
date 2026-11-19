@@ -47,6 +47,7 @@ const char *rt_describe(u64 addr, char *buf, size_t n);   /* (host.c) */
 void *kernel_rb_save(void);
 const char *kernel_rb_check(const void *p);
 void kernel_rb_load(const void *p);
+void kernel_rb_load_done(void);   /* (kernel.c: SSBU_RB_LOAD_SIGNALS, signals during a load wake their waiters at its end) */
 u32 kernel_rb_regions(u64 (*out)[2], u32 max);
 void *fiber_rb_save(u64 *bytes, u32 *suspended, const u64 *live, u32 nlive, u32 *in_use);
 const char *fiber_rb_check(const void *p, const u64 *live, u32 nlive);
@@ -2755,6 +2756,7 @@ static void finish_load(void) {
     step("back in the save's frame");
     while ((u32)copied < loading->threads) SwitchToThread();
     ResetEvent(copy_ev);
+    kernel_rb_load_done();   /* (every stack the save's again: the signals that came during the load wake their waiters now) */
     loads++;
     release();
     double total = now_ms() - load_t0;

@@ -269,9 +269,47 @@ static void unqueue_objects(KThread *t) {
     t->wait_count = 0;
 }
 
-/* Object `o` became signalled: every thread waiting for it in WaitSynchronization is woken, first
- * come first (and leaves its other objects' queues: one signal wakes it once). */
+/* (rollback, 2026-11-21: the crash of the #498 review's delay-3 runs, "reading address 0x88" in kernel_signal_event
+ * under rb_load_age) A WaitSynchronization's queue nodes are on the waiting thread's host stack (wait_objects' local[]).
+ * kernel_rb_load puts the objects' queues back as at the save - pointers into the threads' stacks as they were then -
+ * but the stacks themselves are copied back only at the load's end (hle_rb_state.c: the other threads at copy_ev, the
+ * main thread in run_on_scratch). In between, a signal - vi_rb_load's and audio_rb_load's own, or a host thread's (the
+ * audio reaper, the vsync thread) - walked a queue into stack memory that holds whatever the thread has there now: a
+ * waiter held at another place than at the save left a node naming no thread, and notify read t->wait_count of NULL
+ * (shown with SSBU_RB_LOAD_SIGNALS=0: audio_rb_load's signal of audio.event, during the 2:00 resource load, more often
+ * with the barrier keeping threads elsewhere for longer). Now, from kernel_rb_load to kernel_rb_load_done
+ * (finish_load, every stack back), a signal only marks the object; its waiters are woken at the end, when the nodes are
+ * the save's again. (Every guest thread is held meanwhile, and each looks at its wait again once let go: nothing is
+ * lost.) SSBU_RB_LOAD_SIGNALS=0: as before. */
+static int rb_sig_defer = -1;        /* (the switch, read at the first load) */
+static int rb_sig_window;            /* (under the lock) from kernel_rb_load to kernel_rb_load_done */
+static u32 rb_sig_k[32], rb_sig_n;   /* (the objects signalled meanwhile; more than 32: every object looked at) */
+static long long rb_sig_deferred, rb_sig_stale, rb_sig_stale0, rb_sig_loads, rb_sig_bad_after;
+static int rb_sig_queue_bad(const KObject *o);
+static void notify_now(KObject *o);
 static void notify(KObject *o) {
+    if (rb_sig_window) {
+        int bad = 0;
+        if (o->first) {
+            rb_sig_deferred++;
+            if ((bad = rb_sig_queue_bad(o))) rb_sig_stale++;   /* (what the old code would have walked into) */
+        }
+        if (!rb_sig_defer) {   /* (SSBU_RB_LOAD_SIGNALS=0: walked at once, as before - said first when it will go wrong) */
+            if (bad && rb_sig_stale <= 20) {
+                fprintf(stderr, "[kernel] a signal in the middle of a load (object %u) walks a queue that disagrees with the stacks not yet put back (SSBU_RB_LOAD_SIGNALS=0)\n", (u32)(o - objects));
+                fflush(stderr);
+            }
+            notify_now(o);
+            return;
+        }
+        u32 k = (u32)(o - objects);
+        if (rb_sig_n < 32) { int seen = 0; for (u32 i = 0; i < rb_sig_n; i++) seen |= rb_sig_k[i] == k; if (!seen) rb_sig_k[rb_sig_n++] = k; }
+        else rb_sig_n = 33;
+        return;
+    }
+    notify_now(o);
+}
+static void notify_now(KObject *o) {
     while (o->first) {
         KThread *t = o->first->thread;
         unqueue_objects(t);
@@ -1683,7 +1721,53 @@ void kernel_rb_load(const void *p) {
     rb_clock_fixed = s->clock_fixed; rb_vtick = s->vtick; rb_clock_off = s->clock_off;
     rb_gpu_base = s->gpu_base; rb_vtick_base = s->vtick_base; rb_gpu_off = s->gpu_off;
     rb_clock_gen++;   /* (every thread's per-read count starts again, as after the save's safe point) */
+    /* (the queues now point into the stacks as at the save, which come back at the load's end: signals wait for it) */
+    if (rb_sig_defer < 0) {
+        const char *e = getenv("SSBU_RB_LOAD_SIGNALS");
+        rb_sig_defer = !(e && *e == '0');
+        if (!rb_sig_defer) fprintf(stderr, "[kernel] SSBU_RB_LOAD_SIGNALS=0: a signal in the middle of a load wakes its waiters at once, as before\n");
+    }
+    rb_sig_window = 1; rb_sig_n = 0; rb_sig_stale0 = rb_sig_stale;   /* (switched off: only looked at, notify walks at once) */
     LeaveCriticalSection(&klock);
+}
+
+/* (diagnostic, counted in kernel_rb_load_done's line) Whether a queue as the load put it back disagrees with the threads'
+ * records - also put back - and with what their stacks hold now: each node must lie in a waiting thread's nodes and name
+ * that thread and this object. Only memory inside a thread's own nodes (its stack, as in use at the save) is read. What
+ * notify would have walked in the old code: a node naming no thread was the crash, others wake a thread whose record does
+ * not say it waits, or loop. */
+static int rb_sig_queue_bad(const KObject *o) {
+    const KWaitNode *n = o->first, *prev = NULL;
+    for (int steps = 0; n; steps++) {
+        const KThread *t = NULL;
+        for (u32 i = 0; i < nthreads && !t; i++) {
+            const KThread *u = threads[i];
+            if (u->wait == WAIT_OBJECTS && u->nodes && n >= u->nodes && n < u->nodes + u->wait_count) t = u;
+        }
+        if (!t || steps > 1024 || n->thread != t || n->object != o || n->prev != prev) return 1;
+        prev = n; n = n->next;
+    }
+    return o->last != prev;
+}
+
+/* (hle_rb_state.c finish_load: every thread's stack and the main thread's are the save's again) The signals that came
+ * during the load wake their waiters now. */
+void kernel_rb_load_done(void) {
+    EnterCriticalSection(&klock);
+    if (!rb_sig_window) { LeaveCriticalSection(&klock); return; }
+    rb_sig_window = 0;
+    if (rb_sig_n <= 32) {
+        for (u32 i = 0; i < rb_sig_n; i++) if (objects[rb_sig_k[i]].first && rb_sig_queue_bad(&objects[rb_sig_k[i]])) rb_sig_bad_after++;   /* (should stay 0) */
+        for (u32 i = 0; i < rb_sig_n; i++) if (objects[rb_sig_k[i]].signaled) notify_now(&objects[rb_sig_k[i]]);
+    }
+    else for (u32 i = 1; i < 4096; i++) if (objects[i].signaled && objects[i].first) notify_now(&objects[i]);
+    int say = rb_sig_n && (++rb_sig_loads <= 5 || rb_sig_loads % 500 == 0 || (rb_sig_stale > rb_sig_stale0 && rb_sig_stale <= 20));
+    u32 n = rb_sig_n;
+    rb_sig_n = 0;
+    LeaveCriticalSection(&klock);
+    if (say)
+        fprintf(stderr, "[kernel] a load: %u object(s) signalled during it, their waiters woken at its end (so far %lld loads; %lld signals found waiters, "
+                "%lld of them a queue that disagreed with the stacks not yet put back - what crashed before; %lld disagreed still at its end)\n", n, rb_sig_loads, rb_sig_deferred, rb_sig_stale, rb_sig_bad_after);
 }
 
 void kernel_dump_threads(void) {
