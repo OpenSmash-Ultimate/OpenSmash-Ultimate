@@ -141,6 +141,9 @@ static void rb_park(KThread *me) {
 volatile LONG rb_fast;
 void *rb_main_kthread;
 volatile u64 rb_main_wait_ns, rb_main_waits;
+/* (rollback, hle_rb_core.c's barrier) when the main guest thread went into its current kernel wait, 0: not in one */
+static volatile u64 rb_main_wait_since;
+double kernel_rb_main_wait_ms(void) { u64 t = rb_main_wait_since; return t ? (now_ns() - t) / 1e6 : 0; }
 static int kwait(KThread *me, u64 deadline) {
     if (rb_hold) { rb_park(me); return 1; }
     DWORD ms = INFINITE;
@@ -150,10 +153,12 @@ static int kwait(KThread *me, u64 deadline) {
         ms = (DWORD)((deadline - now + 999999) / 1000000);
     }
     me->rb_state = 1;
+    if ((void *)me == rb_main_kthread) rb_main_wait_since = now_ns();
     u64 w0 = rb_fast > 0 && (void *)me == rb_main_kthread ? now_ns() : 0;
     SleepConditionVariableCS(&me->woken, &klock, ms);
     if (w0) { rb_main_wait_ns += now_ns() - w0; rb_main_waits++; }   /* (the profile of re-run frames: the main thread's waits) */
     me->rb_state = 0;
+    if ((void *)me == rb_main_kthread) rb_main_wait_since = 0;
     if (rb_hold) rb_park(me);
     return 1;
 }
@@ -1461,11 +1466,14 @@ void kernel_rb_nap(void *kthread, u32 ms) {
 }
 
 /* (rollback: hle_rb_core.c's barrier before an irreversible event, SSBU_RB_IO_BARRIER - set while a networked fight runs)
- * A guest thread made: asked before, done after; a thread ending asks in exit_thread. */
+ * A guest thread made or started: asked before, done after; a thread ending asks in exit_thread. */
 int (*kernel_rb_io_enter)(void *kthread, const char *what);
 void (*kernel_rb_io_leave)(int token);
 void rt_svc(Cpu *c, u32 n) {
-    int io = n == 0x08 && kernel_rb_io_enter ? kernel_rb_io_enter(c->thread, "a guest thread made") : 0;
+    /* (a thread made, 0x08, or started, 0x09: review of #498 - a start changes what a state holds of the threads too) */
+    static int start_on = -1;   /* (SSBU_RB_IO_START=0: a start not waited for, as before) */
+    if (start_on < 0 && kernel_rb_io_enter) { const char *e = getenv("SSBU_RB_IO_START"); start_on = !(e && *e == '0'); }
+    int io = (n == 0x08 || (n == 0x09 && start_on > 0)) && kernel_rb_io_enter ? kernel_rb_io_enter(c->thread, n == 0x08 ? "a guest thread made" : "a guest thread started") : 0;
     system_call(c, n);
     if (io && kernel_rb_io_leave) kernel_rb_io_leave(io);
     if (host_priorities) follow_priority(c->thread);   /* (a priority changed during the call, its own or by another thread) */
