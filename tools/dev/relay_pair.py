@@ -49,7 +49,9 @@ def ticket(secret, uid, name):
 
 def running_games():
     out = subprocess.run(["tasklist", "/NH"], capture_output=True, text=True).stdout
-    return sum(1 for l in out.splitlines() if l.lower().startswith("ssbu"))
+    # (the game's own executables only: ssbu.exe, ssbu_rb.exe, ...; not another program whose name starts so, such as
+    # SSBU Arena's launcher SSBU-Arena.exe, which made this refuse to start)
+    return sum(1 for l in out.splitlines() if re.match(r"ssbu([._]|$)", (l.split() or [""])[0].lower()))
 
 
 def main(argv):
