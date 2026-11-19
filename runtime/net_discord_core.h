@@ -35,6 +35,11 @@ typedef struct DiscordPresence {
     int in_match;                /* the match is on (else waiting / looking) */
     uint32_t gsp;                /* that fighter's GSP as the game posted it, 0: unknown */
     int rank;                    /* the player's position in the leaderboard, 0: none */
+    /* (OpenSmash mastery points) mastery_mode 1: the fighter's mastery instead of the GSP and the position
+     * ("Quickplay - Mario - Mastery 1,460"); 0 (SSBU_MASTERY_PRESENCE=0): the GSP and the position as before */
+    int mastery_mode;
+    int has_mastery;             /* the lobbies' GET /mastery/me answered: `mastery` is that fighter's */
+    uint32_t mastery;            /* points summed over the regions + the largest veteran bonus */
     char relay[80];              /* the lobby (host:port) the player is on, "" none */
     char code[40];               /* its lobby code */
     char target[48];             /* an arena's ID, or the Local Wireless room host's address (10.13.x.y); "" none */
@@ -58,6 +63,16 @@ int discord_join_same(const DiscordJoin *j, const char *my_lobby, const char *my
 uint32_t discord_join_room_host(const DiscordJoin *j);
 
 const char *discord_fighter_name(int kind);                               /* "Mario"; NULL: not a playable kind */
+/* A fighter's key (OpenSmash mastery points): its ui_chara_db name without "ui_chara_" - "mario", "ptrainer",
+ * "miifighter" - by the same number as discord_fighter_name (the GSP records' save_no); NULL: none. */
+const char *discord_fighter_key(int kind);
+/* Every key the game's ui_chara_db can hold for a playable fighter, i = 0, 1, ... until NULL: the select screen's
+ * (discord_fighter_key's) and then the ones a fighter's other parts have (popo / nana, pzenigame / pfushigisou /
+ * plizardon, eflame / elight ...). */
+const char *discord_fighter_key_at(int i);
+/* The fighter's number (discord_fighter_name's) a key belongs to, its other parts' too (pzenigame -> 37 Pokemon
+ * Trainer); -1: none. */
+int discord_fighter_of_key(const char *key);
 size_t discord_group_digits(uint32_t v, char *out, size_t cap);           /* 1460000 -> "1,460,000" */
 
 /* ---- the lobby's GSP pages (tools/nex/board.py) ------------------------------------------------------------- */
@@ -83,3 +98,22 @@ int discord_me_parse(const char *json, DiscordMe *m);                     /* 1: 
 /* The player's position in leaderboard.json (the one public lobby's: tools/nex/board.py): the "rank"
  * of the entry of "players" whose "id" is the one given; 0: not there. A tolerant reader, not a JSON parser. */
 int discord_rank_in_leaderboard(const char *json, const char *player_id);
+
+/* (v0.5.0) the signed-in account's lobby ticket: SSBU_ONLINE_TICKET, else the file SSBU_ONLINE_TICKET_FILE names (the
+ * launcher renews it while the game runs). 1 when there is one that can go in a header (printable ASCII, no control
+ * character). A credential: it goes to an official lobby only. */
+int discord_lobby_ticket(char *out, size_t cap);
+
+/* ---- OpenSmash mastery points: GET /mastery/me on each region's lobby (with the ticket) ----------------------- */
+#define DISCORD_MASTERY_MAX 160
+typedef struct DiscordMastery {
+    int answers;                         /* lobbies whose answer was read */
+    int n;
+    struct { char key[24]; long long points; int veteran; } f[DISCORD_MASTERY_MAX];
+} DiscordMastery;
+/* One lobby's answer, {"region", "account", "total", "fighters": [{"fighter", "points", "veteran", ...}]}, added to
+ * *m: the points summed over the answers, the veteran bonus the largest of them. 1: read (m->answers counted). */
+int discord_mastery_add(const char *json, DiscordMastery *m);
+/* A fighter's mastery (discord_fighter_name's number; its other parts' keys too): the points summed + the largest
+ * veteran bonus, into *out (0 for a fighter the answers do not list). 0: no answer read. */
+int discord_mastery_of(const DiscordMastery *m, int kind, long long *out);

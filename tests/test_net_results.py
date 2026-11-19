@@ -1,5 +1,5 @@
 """A match's report for a lobby's count of matches played, as runtime/net_results.c writes it (its id, the data
-tools/nex/matches.py parses). tools/dev/resultstest.c holds the cases. (Before OpenSmash 0.5.0 this was
+tools/nex/matches.py parses, the "mastery" object of OpenSmash mastery points and its switch). tools/dev/resultstest.c holds the cases. (Before OpenSmash 0.5.0 this was
 test_eos_paths.py, with Epic Online Services' path choice: gone with EOS.)"""
 from pathlib import Path
 import os
@@ -26,7 +26,12 @@ class MatchReport(unittest.TestCase):
                                 str(ROOT / 'runtime' / 'net_results.c'), str(ROOT / 'runtime' / 'net_discord_core.c'),
                                 '/Fe' + exe, '/Fo' + d + os.sep, '/link', *cc.LINK_OPTIONS], capture_output=True, text=True, cwd=d)
             self.assertEqual(r.returncode, 0, 'resultstest.c did not build:\n' + r.stdout + r.stderr)
-            r = subprocess.run([exe], capture_output=True, text=True, timeout=60, cwd=d)
+            env = {k: v for k, v in os.environ.items() if not k.startswith('SSBU_')}
+            r = subprocess.run([exe], capture_output=True, text=True, timeout=60, cwd=d, env=env)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn(' 0 failed', r.stdout)
+            # SSBU_MASTERY_REPORT=0: the report as before (OpenSmash mastery points off)
+            r = subprocess.run([exe, 'off'], capture_output=True, text=True, timeout=60, cwd=d, env={**env, 'SSBU_MASTERY_REPORT': '0'})
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn(' 0 failed', r.stdout)
         finally:
