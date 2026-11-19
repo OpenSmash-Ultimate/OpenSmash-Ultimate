@@ -4,7 +4,7 @@ sign-in the official lobbies need) put beside this folder's game:
 
     python3 tools/launcher_fetch.py [--release | --build] [--force] [--dry-run]
 
-Linux: ./OpenSmash.Avalonia (one program). macOS: ./OpenSmash.Avalonia.app. opensmash-launcher.sh and
+Linux: ./OpenSmash-Launcher (one program; not ./OpenSmash.Avalonia, the launcher's source folder). macOS: ./OpenSmash.Avalonia.app. opensmash-launcher.sh and
 "OpenSmash Launcher.command" start it when it is there, else the web launcher (tools/weblauncher).
 
 Where it comes from (default: the first that works):
@@ -33,7 +33,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = "OpenSmash-Ultimate/OpenSmash-Ultimate"
 LATEST = "https://github.com/" + REPO + "/releases/latest/download/opensmash-release.json"
 ASSET = "https://github.com/" + REPO + "/releases/download/v{version}/{name}"
-PROGRAM = "OpenSmash.Avalonia"
+PROGRAM = "OpenSmash-Launcher"
+ARCHIVED = "OpenSmash.Avalonia"
 APP = "OpenSmash.Avalonia.app"
 # the manifest's launcher keys (tools/release/make_release.py LAUNCHERS) and the dotnet runtime ids
 KEYS = {"linux-x64": "linux-x64", "macos-arm64": "osx-arm64", "macos-x64": "osx-x64"}
@@ -107,7 +108,7 @@ def unpack(data, key, root):
     """the program (Linux) or the .app (macOS) from the archive's bytes into root, replacing the one there in one
     step (a staging copy renamed); the path put in place"""
     target = installed(root, key)
-    prefix = os.path.basename(target)
+    prefix = APP if key.startswith("macos") else ARCHIVED
     stage = os.path.join(root, ".OpenSmash-fetch-" + uuid.uuid4().hex)
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
@@ -125,6 +126,8 @@ def unpack(data, key, root):
         built = os.path.join(stage, prefix)
         if not os.path.exists(built):
             raise Error(f"the archive has no {prefix}")
+        if not key.startswith("macos") and os.path.isdir(target) and not os.path.islink(target):
+            raise Error(f"{target} is a folder: the launcher is not put there")
         if os.path.isdir(target) and not os.path.islink(target):
             old = os.path.join(root, ".OpenSmash-old-" + uuid.uuid4().hex)
             os.rename(target, old)

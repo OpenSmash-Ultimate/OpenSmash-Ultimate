@@ -60,7 +60,7 @@ def main():
 
     rid = "osx-arm64" if sys.platform == "darwin" else "linux-x64"
 
-    command = ["open", "-n", str(root / "OpenSmash.Avalonia.app")] if sys.platform == "darwin" else [str(root / "OpenSmash.Avalonia")]
+    command = ["open", "-n", str(root / "OpenSmash.Avalonia.app")] if sys.platform == "darwin" else [str(root / "OpenSmash-Launcher")]
 
     with log.open("a", encoding="utf-8") as output:
 

@@ -433,7 +433,7 @@ def play_command(root, mode, host=HOST):
 
 
 # (v0.5.0) The official lobbies let in only a game that sends a lobby ticket of a signed-in account. This page cannot
-# sign in: the OpenSmash launcher (OpenSmash.Avalonia on Linux and macOS, OpenSmash.exe on Windows) does, and writes
+# sign in: the OpenSmash launcher (OpenSmash-Launcher on Linux, OpenSmash.Avalonia.app on macOS, OpenSmash.exe on Windows) does, and writes
 # the ticket to build/cache/online_pass.txt (OpenSmash.Core/OnlinePass.cs). Play here names that file to the game while
 # the ticket it holds is still good for TICKET_MARGIN seconds (as the GSP reads: discord_account.stored_ticket); it
 # cannot renew it (the game rereads the file, so a signed-in launcher running beside it keeps it fresh). The tickets'
@@ -450,7 +450,7 @@ def online_pass(root, settings, now=None):
     if settings.get("lobby") not in ("public", "private"):
         return {}, ""
     if discord_account.stored_ticket(root, TICKET_MARGIN, now) is None:
-        if os.environ.get("OPENSMASH_LAUNCHER_FAILED"):   # (opensmash-launcher.sh: OpenSmash.Avalonia did not start here)
+        if os.environ.get("OPENSMASH_LAUNCHER_FAILED"):   # (opensmash-launcher.sh: OpenSmash-Launcher did not start here)
             return {}, SIGN_IN_SAY + (" The OpenSmash launcher did not start on this computer: its reason is in "
                                       "build/launcher.log (please report it).")
         return {}, SIGN_IN_SAY
