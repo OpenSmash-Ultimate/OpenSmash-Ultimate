@@ -348,7 +348,7 @@ namespace OpenSmash.Core
         public static string N(long v) => v.ToString("N0", CultureInfo.InvariantCulture);
 
         // the fighter keys' names (the same list as tools/modmanager/describe.py)
-        static readonly Dictionary<string, string> Names = new Dictionary<string, string>
+        internal static readonly Dictionary<string, string> Names = new Dictionary<string, string>
         {
             ["mario"] = "Mario", ["donkey"] = "Donkey Kong", ["link"] = "Link", ["samus"] = "Samus", ["samusd"] = "Dark Samus",
             ["yoshi"] = "Yoshi", ["kirby"] = "Kirby", ["fox"] = "Fox", ["pikachu"] = "Pikachu", ["luigi"] = "Luigi", ["ness"] = "Ness",

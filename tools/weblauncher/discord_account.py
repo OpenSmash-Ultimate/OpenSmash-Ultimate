@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import socket
 import threading
@@ -447,7 +448,7 @@ def merge_mastery(answers):
     if not any_answer:
         return None
     rows = [{"fighter": k, "name": fighter_key_name(k), "points": v["points"] + v["veteran"], "veteran": v["veteran"],
-             "games": v["games"], "wins": v["wins"]} for k, v in best.items() if v["points"] + v["veteran"] or v["games"]]
+             "games": v["games"], "wins": v["wins"], "icon": fighter_icon(k)["icon"]} for k, v in best.items() if v["points"] + v["veteran"] or v["games"]]
     return sorted(rows, key=lambda r: (-r["points"], -r["games"], r["fighter"]))
 
 
@@ -521,6 +522,97 @@ def account_service(root=None):
     return url, key
 
 
+# ---- fighters by any spelling and their icons (OpenSmash.Core/Fighters.cs, opensmash-site's js/fighters.js) -------------
+def _squash(v):
+    return "".join(c for c in str(v or "").lower() if c.isascii() and c.isalnum())
+
+
+_ALIAS = {}
+for _k in FIGHTER_KEYS:
+    _ALIAS[_squash(_k)] = _k
+for _k, _n in FIGHTER_KEYS.items():
+    _ALIAS.setdefault(_squash(_n), _k)
+for _pair in ("joker:jack hero:brave banjo:buddy banjokazooie:buddy terry:dolly terrybogard:dolly byleth:master minmin:tantan steve:pickel "
+              "alex:pickel sephiroth:edge pyra:eflame mythra:elight pyramythra:element aegis:element kazuya:demon sora:trail "
+              "pt:ptrainer pokemontrainer:ptrainer pokmontrainer:ptrainer trainer:ptrainer squirtle:pzenigame ivysaur:pfushigisou charizard:plizardon "
+              "iceclimbers:ice_climber iceclimber:ice_climber ics:ice_climber icies:ice_climber "
+              "mii:miifighter miibrawler:miifighter brawler:miifighter miisword:miiswordsman miiswordfighter:miiswordsman swordfighter:miiswordsman "
+              "gunner:miigunner dk:donkey donkeykong:donkey diddykong:diddy kingkrool:krool kingdedede:dedede falcon:captain captainfalcon:captain "
+              "cf:captain jigglypuff:purin puff:purin bowser:koopa bowserjr:koopajr drmario:mariod doc:mariod yink:younglink tink:toonlink "
+              "ganondorf:ganon gameandwatch:gamewatch mrgameandwatch:gamewatch mrgamewatch:gamewatch gnw:gamewatch gw:gamewatch mk:metaknight "
+              "darkpit:pitb darksamus:samusd zss:szerosuit zerosuitsamus:szerosuit olimar:pikmin alph:pikmin rob:robot villager:murabito "
+              "megaman:rockman wiifittrainer:wiifit wft:wiifit rosalina:rosetta rosalinaluma:rosetta luma:rosetta mac:littlemac greninja:gekkouga "
+              "robin:reflet corrin:kamui isabelle:shizue incineroar:gaogaen piranhaplant:packun plant:packun dh:duckhunt belmont:simon").split():
+    _a, _b = _pair.split(":")
+    _ALIAS[_squash(_a)] = _b
+ICON_BASE = "https://www.ssbuarena.com/fighters/"
+_ICON_FOLDERS = set(("bayonetta brave buddy captain chrom cloud daisy dedede demon diddy dolly donkey duckhunt edge eflame elight falco fox "
+                     "gamewatch ganon gaogaen gekkouga ice_climber ike inkling jack kamui ken kirby koopa koopajr krool link littlemac lucario "
+                     "lucas lucina luigi mario mariod marth master metaknight mewtwo miifighter miigunner miiswordsman murabito ness packun "
+                     "pacman palutena peach pfushigisou pichu pickel pikachu pikmin pit pitb plizardon ptrainer purin pzenigame reflet richter "
+                     "ridley robot rockman rosetta roy ryu samus samusd sheik shizue shulk simon snake sonic szerosuit tantan toonlink trail "
+                     "wario wiifit wolf yoshi younglink zelda").split())
+_ICON_FOLDER_OF = {"popo": "ice_climber", "nana": "ice_climber", "ptrainer_low": "ptrainer", "element": "eflame", "eflame_first": "eflame",
+                   "eflame_only": "eflame", "elight_first": "elight", "elight_only": "elight"}
+_COSTUME = {"ridley": 5}   # (the site's .webp: Ridley has no costume 1 there)
+
+
+def fighter_key_any(v):
+    """The game key of a fighter given any spelling (a key, "ui_chara_" id, a name like "Joker", a nickname); None."""
+    s = str(v or "").strip()
+    if s.lower().startswith("ui_chara_"):
+        s = s[9:]
+    return _ALIAS.get(_squash(s)) or None
+
+
+def fighter_icon(v):
+    """{"name", "icon"} of a fighter (any spelling): its stock icon as SSBU Arena serves it, "" when there is none."""
+    k = fighter_key_any(v)
+    if not k:
+        return {"name": str(v or "").strip()[:40], "icon": ""}
+    folder = _ICON_FOLDER_OF.get(k, k)
+    icon = f"{ICON_BASE}{folder}/{_COSTUME.get(folder, 1)}.webp" if folder in _ICON_FOLDERS else ""
+    return {"name": fighter_key_name(k), "icon": icon}
+
+
+# ---- SSBU Arena's ranked board (OpenSmash.Core/RankedBoard.cs): public.ranked_board, the publishable key alone ----------
+RANKED_REGIONS = ("eu", "na-east")
+ARENA_LEADERBOARD = "https://www.ssbuarena.com/leaderboard"
+
+
+def ranked_board(root, region=None, take=10, ask=_ask):
+    """The board's first rows for a region (None: every region): [{"rank", "name", "tag", "rating", "wins", "losses",
+    "tier", "tier_color", "fighters": [{"name", "icon"}]}]; None when there is no service or it did not answer with a list."""
+    s = account_service(root)
+    if not s:
+        return None
+    url, key = s
+    region = region if region in RANKED_REGIONS else None
+    got = ask(url + "/rest/v1/rpc/ranked_board", {"apikey": key, "Authorization": "Bearer " + key, "Content-Type": "application/json"},
+              json.dumps({"p_region": region, "p_search": None, "p_fighter": None, "p_limit": take, "p_offset": 0}).encode())
+    if not isinstance(got, list):
+        return None
+    out = []
+    for r in got:
+        name = r.get("username") if isinstance(r, dict) and isinstance(r.get("username"), str) else ""
+        name = "".join(c for c in name if c.isprintable()).strip()[:32]
+        if not name:
+            continue
+        rating = r.get("rating")
+        try:
+            rating = round(float(rating))
+        except (TypeError, ValueError):
+            rating = 0
+        color = r.get("tier_color") if isinstance(r.get("tier_color"), str) and re.fullmatch(r"#[0-9A-Fa-f]{6}", r.get("tier_color")) else "#8C9AAD"
+        fighters = [fighter_icon(f.get("fighter")) for f in (r.get("fighters") if isinstance(r.get("fighters"), list) else [])
+                    if isinstance(f, dict) and isinstance(f.get("fighter"), str)][:3]
+        out.append({"rank": _num(r.get("rank")), "name": name, "tag": f"{_num(r.get('tag')):04d}", "rating": rating,
+                    "wins": _num(r.get("wins")), "losses": _num(r.get("losses")),
+                    "tier": (r.get("tier") if isinstance(r.get("tier"), str) else "")[:24] or "Unranked", "tier_color": color,
+                    "fighters": fighters})
+    return out[:take]
+
+
 def service_board(root, ask=_ask, take=5):
     """The top mastery from the accounts service: [{"id", "name", "points" (its total), "pos"}], in its order; None when
     there is no service or it did not answer with a list (then the lobbies are asked)."""
@@ -539,7 +631,7 @@ def service_board(root, ask=_ask, take=5):
             continue
         name = r.get("name") if isinstance(r.get("name"), str) else ""
         name = "".join(c for c in name if c.isprintable()).strip()[:32] or "Anonymous"
-        out.append({"id": r["id"], "name": name, "points": _num(r.get("total")), "pos": _num(r.get("pos"))})
+        out.append({"id": r["id"], "name": name, "points": _num(r.get("total")), "pos": _num(r.get("pos")), "fighter": fighter_icon(r.get("main_fighter")) if r.get("main_fighter") else None})
     return out[:take]
 
 
@@ -721,6 +813,21 @@ class Account:
                     "total": sum(f["points"] for f in mine or []), "games": sum(f["games"] for f in mine or []),
                     "wins": sum(f["wins"] for f in mine or []), "top": self.mastery_top})
         return out
+
+    def ranked_view(self, region=None, board=ranked_board):
+        """The Competitive page: SSBU Arena's ranked top 10 for a region (None: all), asked again at most every 30 s a region;
+        rows None while nothing answered (the last answer kept while the service is down)."""
+        region = region if region in RANKED_REGIONS else None
+        cache = self.__dict__.setdefault("ranked", {})
+        at, rows = cache.get(region, (0, None))
+        failed = False
+        if time.time() - at > 30:
+            got = board(self.root, region)
+            failed = got is None
+            rows = got if got is not None else rows
+            cache[region] = (time.time(), rows)
+        return {"region": region or "", "rows": rows, "failed": failed and rows is None, "arena_url": ARENA_DOWNLOAD,
+                "leaderboard_url": ARENA_LEADERBOARD}
 
     def view(self):
         out = {"available": bool(self.client_id()), "busy": self.busy, "error": self.error}

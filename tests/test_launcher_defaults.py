@@ -224,7 +224,9 @@ class LauncherDefaultsTests(unittest.TestCase):
         self.assertEqual(self.table[('server_region.txt', '')], 'auto')
         self.assertIn('return net_region_index(word);   /* ("auto", nothing, a word that is no region: auto) */', read(RUNTIME / 'net_region.c'))
         choices = read(LAUNCHER / 'SettingDefaults.cs')
-        self.assertIn('["region"] = new[] { OpenSmash.Core.ServerRegion.Auto }.Concat(OpenSmash.Core.ServerRegion.All.Select(r => r.Id)).ToArray()', choices)
+        # (the launchers' list: the regions themselves, Europe and North America East; "auto" stays the game's default in the file,
+        # shown as the region it plays on - OpenSmash.Core/OnlineSettings.cs RegionShown)
+        self.assertIn('["region"] = OpenSmash.Core.ServerRegion.All.Select(r => r.Id).ToArray()', choices)
         # players are told that regions do not see each other, where the region is chosen
         told = 'Players on another region are not listed.'
         self.assertIn(told, self.menu_c)

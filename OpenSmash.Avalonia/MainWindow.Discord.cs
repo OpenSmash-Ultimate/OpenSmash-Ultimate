@@ -24,6 +24,8 @@ public sealed partial class MainWindow
         _communityOn = true;
         var c = Surface.Community;
         c.Enabled = true;
+        // (the fighters' stock icons, downloaded once each: OpenSmash.Core.Fighters; the page is drawn again when one is there)
+        c.IconBytes ??= key => Fighters.Icon(Http, key, () => Dispatcher.UIThread.Post(() => Surface.InvalidateVisual()));
         if (_communityTimer == null)
         {
             _communityTimer = new DispatcherTimer { Interval = CommunityFeed.Every };
@@ -73,6 +75,30 @@ public sealed partial class MainWindow
         }
         finally { _communityBusy = false; }
         Surface.InvalidateVisual();
+        if (Surface.CurrentView == "competitive") await RankedRefresh();   // (asked again every minute while shown)
+    }
+
+    // The COMPETITIVE page's board (Visuals/CompetitiveArtwork.cs): SSBU Arena's ranked top 10 for the region picked there.
+    bool _rankedBusy;
+    DateTime _rankedAt = DateTime.MinValue;
+    async Task RankedRefresh(bool force = false)
+    {
+        var c = Surface.Community;
+        if (_rankedBusy || (!force && c.RankedAsked && DateTime.UtcNow - _rankedAt < TimeSpan.FromSeconds(55))) return;
+        _rankedBusy = true;
+        try
+        {
+            int region = c.RankedRegion;
+            c.ArenaExe = await Task.Run(() => ArenaEdition.Find());
+            var rows = await RankedBoard.TopAsync(_account, RankedBoard.Regions[Math.Clamp(region, 0, RankedBoard.Regions.Length - 1)], 10);
+            if (region != c.RankedRegion) return;   // (another region was picked meanwhile: its own answer follows)
+            c.RankedFailed = rows == null;
+            if (rows != null) c.RankedRows = rows;
+            c.RankedAsked = true;
+            _rankedAt = DateTime.UtcNow;
+        }
+        finally { _rankedBusy = false; }
+        Surface.InvalidateVisual();
     }
 
     async Task DiscordRefresh(string root)
@@ -121,6 +147,11 @@ public sealed partial class MainWindow
         switch (id)
         {
             case "community:board": Commands.OpenPath(CommunityFeed.SitePage); break;
+            case "community:competitive": await RankedRefresh(); break;   // (the COMPETITIVE page was opened)
+            case "community:arena-board": Commands.OpenPath(RankedBoard.LeaderboardPage); break;
+            case var region when region.StartsWith("community:region:") && int.TryParse(region["community:region:".Length..], out int r) && r >= 0 && r < RankedBoard.Regions.Length:
+                if (r != c.RankedRegion) { c.RankedRegion = r; c.RankedRows = null; c.RankedAsked = false; Surface.InvalidateVisual(); await RankedRefresh(force: true); }
+                break;
             case "community:arena":   // (mastery) SSBU Arena's launcher (Windows, installed), else its download page
                 if (root != null) Updater.Log(root, ArenaEdition.Open(Commands.OpenPath));
                 else ArenaEdition.Open(Commands.OpenPath);

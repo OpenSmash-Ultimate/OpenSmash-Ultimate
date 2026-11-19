@@ -390,7 +390,7 @@ class Mastery(unittest.TestCase):
                     {"pos": 2, "id": "b", "name": None, "total": 3100}, {"id": "", "total": 1}, "junk"]
         with tempfile.TemporaryDirectory() as root:
             top = da.service_board(root, ask, take=5)
-            self.assertEqual(top, [{"id": "a", "name": "Ann", "points": 5200, "pos": 1}, {"id": "b", "name": "Anonymous", "points": 3100, "pos": 2}])
+            self.assertEqual(top, [{"id": "a", "name": "Ann", "points": 5200, "pos": 1, "fighter": None}, {"id": "b", "name": "Anonymous", "points": 3100, "pos": 2, "fighter": None}])
             url, headers, body = asked[0]
             self.assertEqual(url, "http://127.0.0.1:5555/rest/v1/rpc/opensmash_mastery_board")
             self.assertEqual((headers["apikey"], headers["Authorization"]), ("test-key", "Bearer test-key"))
@@ -398,6 +398,32 @@ class Mastery(unittest.TestCase):
             self.assertIsNone(da.service_board(root, lambda url, headers=None, body=None: None))   # (404 / down: the lobbies)
             self.assertIsNone(da.service_board(root, lambda url, headers=None, body=None: {"message": "x"}))
 
+    def test_fighters_and_icons(self):
+        self.assertEqual([da.fighter_key_any(v) for v in ("Joker", "jack", "ui_chara_jack", "Pyra / Mythra", "R.O.B.", "PT", "nobody")],
+                         ["jack", "jack", "jack", "element", "robot", "ptrainer", None])
+        self.assertEqual(da.fighter_icon("Joker"), {"name": "Joker", "icon": "https://www.ssbuarena.com/fighters/jack/1.webp"})
+        self.assertEqual(da.fighter_icon("Ridley")["icon"], "https://www.ssbuarena.com/fighters/ridley/5.webp")
+        self.assertEqual(da.fighter_icon("element")["icon"], "https://www.ssbuarena.com/fighters/eflame/1.webp")
+        self.assertEqual(da.fighter_icon("nobody")["icon"], "")
+
+    def test_ranked_board(self):
+        self._env(OPENSMASH_SUPABASE_URL="http://127.0.0.1:5555", OPENSMASH_SUPABASE_KEY="test-key")
+        asked = []
+
+        def ask(url, headers=None, body=None):
+            asked.append((url, json.loads(body)))
+            return [{"rank": 1, "username": "Vex", "tag": 7, "rating": 2586.18, "wins": 9, "losses": 2, "tier": "Grandmaster", "tier_color": "#FF5A6A",
+                     "fighters": [{"fighter": "Joker", "games": 9}, {"fighter": "Fox"}, {"fighter": "Ike"}, {"fighter": "Wolf"}]},
+                    {"rank": 2, "username": "", "rating": "1500"}, {"rank": 3, "username": "Ann", "rating": "x", "tier_color": "red"}]
+        with tempfile.TemporaryDirectory() as root:
+            rows = da.ranked_board(root, "eu", 10, ask)
+            self.assertEqual(asked[0][0], "http://127.0.0.1:5555/rest/v1/rpc/ranked_board")
+            self.assertEqual(asked[0][1]["p_region"], "eu")
+            self.assertEqual((rows[0]["name"], rows[0]["tag"], rows[0]["rating"], len(rows[0]["fighters"]), rows[0]["fighters"][0]["name"]), ("Vex", "0007", 2586, 3, "Joker"))
+            self.assertEqual((len(rows), rows[1]["tier_color"], rows[1]["tier"], rows[1]["rating"]), (2, "#8C9AAD", "Unranked", 0))
+            da.ranked_board(root, "moon", 10, ask)
+            self.assertIsNone(asked[1][1]["p_region"])
+            self.assertIsNone(da.ranked_board(root, None, 10, lambda url, headers=None, body=None: None))
     def test_service_board_against_the_fake_service(self):
         """tools/dev/fake_accounts.py's board (anyone may read it), and its --no-mastery 404."""
         import socket as _s

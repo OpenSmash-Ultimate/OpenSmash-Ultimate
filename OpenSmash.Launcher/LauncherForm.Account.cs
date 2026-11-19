@@ -272,7 +272,9 @@ namespace OpenSmash.Launcher
             }
             foreach (var r in rows)
             {
-                Theme.Label(g, Mastery.FighterName(r.Fighter), FB(14 * s), A(Theme.Text), ix, y, rowH);
+                float isz = 18 * s;
+                DrawFighter(g, r.Fighter, ix, y + (rowH - isz) / 2, isz);   // (its stock icon: LauncherForm.Competitive.cs)
+                Theme.Label(g, Mastery.FighterName(r.Fighter), FB(14 * s), A(Theme.Text), ix + isz + 8 * s, y, rowH);
                 Theme.Label(g, Mastery.N(r.Total), FM(14 * s, true), A(Theme.Text), ix, y, rowH, 0, StringAlignment.Far, cPoints);
                 Theme.Label(g, Mastery.N(r.Games), FM(13 * s), A(Theme.Muted), ix, y, rowH, 0, StringAlignment.Far, cGames);
                 Theme.Label(g, Mastery.N(r.Wins), FM(13 * s), A(Theme.Muted), ix, y, rowH, 0, StringAlignment.Far, cWins);

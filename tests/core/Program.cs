@@ -533,6 +533,56 @@ static class Program
                 try { Directory.Delete(accDir, true); } catch { }
             }
         }
+        // ---- fighters by any spelling and their icons (Fighters); SSBU Arena's ranked board (RankedBoard)
+        {
+            Check(Fighters.Key("Joker") == "jack" && Fighters.Key("jack") == "jack" && Fighters.Key("ui_chara_jack") == "jack" && Fighters.Key("Pyra / Mythra") == "element"
+                  && Fighters.Key("R.O.B.") == "robot" && Fighters.Key("Mr. Game & Watch") == "gamewatch" && Fighters.Key("PT") == "ptrainer" && Fighters.Key("ics") == "ice_climber"
+                  && Fighters.Key("Pokémon Trainer") == "ptrainer" && Fighters.Key("nobody here") == null, "fighters: any spelling to the game key");
+            Check(Fighters.IconUrl("Joker") == "https://www.ssbuarena.com/fighters/jack/1.png" && Fighters.IconUrl("element") == "https://www.ssbuarena.com/fighters/eflame/1.png"
+                  && Fighters.IconUrl("popo") == "https://www.ssbuarena.com/fighters/ice_climber/1.png" && Fighters.IconUrl("Ridley") != null && Fighters.IconUrl("nobody") == null,
+                  "fighters: SSBU Arena's icon folders");
+            Check(Fighters.Name("jack") == "Joker" && Fighters.Name("Pyra / Mythra") == Mastery.FighterName("element") && Fighters.Name("??") == "??", "fighters: names");
+            var rb = RankedBoard.Parse("[{\"rank\":1,\"username\":\"Vex\",\"tag\":7,\"rating\":2586.18,\"games\":11,\"wins\":9,\"losses\":2,\"placed\":true,\"tier\":\"Grandmaster\"," +
+                                       "\"tier_family\":\"Grandmaster\",\"tier_division\":null,\"tier_color\":\"#ff5a6a\",\"region\":\"eu\",\"region_rank\":1,\"total\":2," +
+                                       "\"fighters\":[{\"fighter\":\"Joker\",\"games\":9,\"wins\":7},{\"fighter\":\"Fox\",\"games\":1},{\"fighter\":\"Ike\"},{\"fighter\":\"Wolf\"}]}," +
+                                       "{\"rank\":2,\"username\":\"\",\"rating\":\"1500.5\"},{\"rank\":3,\"username\":\"Ann\",\"rating\":\"1499.4\",\"tier_color\":\"red\",\"tier_division\":2}]");
+            Check(rb != null && rb.Count == 2 && rb[0].Shown == "Vex#0007" && RankedBoard.RatingShown(rb[0]) == "2,586" && rb[0].TierColor == "#FF5A6A" && rb[0].Fighters.Count == 3
+                  && rb[0].Fighters[0].Fighter == "Joker" && rb[0].Region == "eu" && rb[1].Rating > 1499 && rb[1].TierColor == null && rb[1].TierDivision == 2,
+                  "ranked board: rows read (no name skipped, 3 fighters at most, colours checked, numeric ratings)");
+            Check(RankedBoard.Parse("{\"message\":\"x\"}") == null && RankedBoard.Parse("[]")?.Count == 0, "ranked board: an error is no answer, an empty board is one");
+            Check(await RankedBoard.TopAsync(null, null) == null, "ranked board: no accounts service, no answer");
+        }
+        // ---- the Online rules (OnlineSettings): the same in every launcher
+        {
+            var v = new Dictionary<string, string> { ["lobby"] = "auto", ["code"] = "old", ["server"] = "my.host:1", ["direct"] = "on" };
+            var och = OnlineSettings.Normalize(v);
+            Check(v["code"] == "" && v["server"] == "" && v["direct"] == "off" && och.Count == 3, "online: the official lobby resets code, server and direct connections");
+            och = OnlineSettings.Choose(v, "custom");
+            Check(v["lobby"] == "custom" && v["direct"] == "on" && v["code"] == "" && och.Contains("lobby") && och.Contains("direct"), "online: a server of one's own, direct connections back on");
+            v["code"] = "abc"; v["server"] = "my.host:39420";
+            OnlineSettings.Choose(v, "private");
+            Check(v["code"] == "abc" && v["server"] == "" && v["direct"] == "off", "online: the private lobby keeps its code, no server of one's own, relay only");
+            OnlineSettings.Choose(v, "auto");
+            Check(v["code"] == "" && v["server"] == "", "online: back to the official lobby, the code reset");
+            OnlineSettings.Choose(v, "offline");
+            Check(v["direct"] == "off", "online: offline leaves direct connections as they were");
+            Check(OnlineSettings.Shown("region", "auto") && OnlineSettings.Shown("region", "private") && !OnlineSettings.Shown("region", "auto", true) && !OnlineSettings.Shown("region", "custom")
+                  && !OnlineSettings.Shown("code", "auto") && OnlineSettings.Shown("code", "private") && !OnlineSettings.Shown("direct", "auto") && !OnlineSettings.Shown("direct", "private")
+                  && OnlineSettings.Shown("direct", "lan") && OnlineSettings.Shown("server", "custom") && !OnlineSettings.Shown("name", "offline"), "online: the rows each choice shows");
+            Check(OnlineSettings.Missing("private", "", "") == "code" && OnlineSettings.Missing("custom", "", "") == "server" && OnlineSettings.Missing("custom", "", "host") == "server"
+                  && OnlineSettings.Missing("custom", "", "my.host:39420") == null && OnlineSettings.Missing("auto", "", "") == null, "online: what a choice still needs");
+            string reg = Path.Combine(Path.GetTempPath(), "os-core-online-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(Path.Combine(reg, "config"));
+                Check(OnlineSettings.RegionShown(reg) == "eu", "online: no region and nothing measured: Europe");
+                ServerRegion.SetSetting(reg, "na-east");
+                Check(OnlineSettings.RegionShown(reg) == "na-east" && OfficialLobby.Current(reg) == "na.lobby.opensmashultimate.com:39421", "online: North America East chosen, its lobby played on");
+                string sf = Path.Combine(reg, "config", "online_server.txt");
+                Check(OnlineSettings.EnsureLine(sf) && File.ReadAllText(sf).Trim() == "auto" && !OnlineSettings.EnsureLine(sf), "online: no lobby line, the official lobby, once");
+            }
+            finally { try { Directory.Delete(reg, true); } catch { } }
+        }
         // ---- SSBU Arena's launcher, from the install_path.txt it writes (ArenaEdition)
         {
             string ar = Path.Combine(Path.GetTempPath(), "os-core-arena-" + Guid.NewGuid().ToString("N"));

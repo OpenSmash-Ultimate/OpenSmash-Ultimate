@@ -124,7 +124,6 @@ namespace OpenSmash.Launcher
                 // (the top mastery: the accounts service's board, the lobbies' lists only when it fails)
                 var top = mastery && OpenSmash.Core.Mastery.TopOn
                     ? OpenSmash.Core.Mastery.TopAsync(_account, _httpClient, OpenSmash.Core.OfficialLobby.All(_repo), CancellationToken.None, 5) : null;
-                if (mastery && OpenSmash.Core.Mastery.ArenaCardOn) _arenaExe = await Task.Run(() => OpenSmash.Core.ArenaEdition.Find());
                 var (status, board) = await CommunityFeed.Fetch(_httpClient, CancellationToken.None, _repo);
                 var count = await counted;
                 if (top != null) { _topMastery = await top ?? _topMastery; _topMasteryAsked = true; }
@@ -152,6 +151,7 @@ namespace OpenSmash.Launcher
             catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException) { }
             finally { Interlocked.Exchange(ref _communityBusy, 0); }
             if (_view == "home") Invalidate();
+            if (_view == "competitive") _ = RankedRefresh();   // (the COMPETITIVE page's board, asked again every minute while shown)
         }
 
         // The top rows' profile pictures, each URL asked once (a failed one stays initials until the launcher restarts).
@@ -327,41 +327,36 @@ namespace OpenSmash.Launcher
                 y += ph + 10 * s;
             }
 
-            // (mastery) the SSBU Arena card and the top mastery, in place of the GSP leaderboard
+            // (mastery) the top mastery in place of the GSP leaderboard: each row with its main fighter's icon, and the site's
+            // full list below. SSBU Arena (its ranked, its launcher) has its own page: COMPETITIVE, LauncherForm.Competitive.cs.
             if (mastery)
             {
-                bool card = OpenSmash.Core.Mastery.ArenaCardOn, top = OpenSmash.Core.Mastery.TopOn;
-                if (card || top)
+                if (OpenSmash.Core.Mastery.TopOn)
                 {
-                    float rowH = 21 * s;
+                    float rowH = 26 * s, head = 34 * s, foot = 36 * s, isz = 20 * s;
                     var rows = _topMastery ?? new List<OpenSmash.Core.MasteryRow>();
-                    float ph = 12 * s + (card ? 100 * s : 0) + (top ? 24 * s + Math.Max(1, rows.Count) * rowH : 0) + 12 * s;
+                    float ph = head + Math.Max(1, rows.Count) * rowH + foot;
                     Panel(y, ph);
-                    float cy = y + 12 * s;
-                    if (card)
+                    Theme.Label(g, "TOP MASTERY", FM(11 * s, true), A(Theme.Dim), ix, y + 12 * s, 16 * s, 11 * s * 0.12f);
+                    float cy = y + head;
+                    if (rows.Count == 0)
+                        Theme.Label(g, !_topMasteryAsked ? "Loading..." : "Not available now.", FB(13 * s), A(Theme.Muted), ix, cy, rowH);
+                    for (int i = 0; i < rows.Count; i++)
                     {
-                        Theme.Label(g, "SSBU ARENA  ·  COMPETITIVE", FM(11 * s, true), A(Theme.Accent), ix, cy, 16 * s, 11 * s * 0.12f);
-                        Theme.Label(g, "Ranked 1v1, tournament rules. Same account.", FB(13 * s), A(Theme.Muted), ix, cy + 22 * s, 18 * s, 0, StringAlignment.Near, iw);
-                        string label = _arenaExe != null ? "PLAY SSBU ARENA" : "GET SSBU ARENA";
-                        Theme.ButtonAnimated(g, label, ix, cy + 50 * s, iw, 32 * s, s, primary: true, Hov("community:arena", _hover == "community:arena"), true, 12 * s, _alpha, press: Press("community:arena"));
-                        AddHit("community:arena", ix, cy + 50 * s, iw, 32 * s);
-                        cy += 100 * s;
+                        var r = rows[i];
+                        Theme.Label(g, (i + 1).ToString(CultureInfo.InvariantCulture), FM(13 * s, true), A(i < 3 ? Theme.Accent : Theme.Dim), ix, cy, rowH, 0, StringAlignment.Far, 18 * s);
+                        float nx = ix + 26 * s;
+                        if (r.MainFighter != "") { DrawFighter(g, r.MainFighter, nx, cy + (rowH - isz) / 2, isz); }
+                        nx += isz + 8 * s;
+                        Theme.Label(g, OpenSmash.Core.Mastery.Who(r), FB(13 * s), A(Theme.Text), nx, cy, rowH, 0, StringAlignment.Near, iw - (nx - ix) - 70 * s);
+                        Theme.Label(g, OpenSmash.Core.Mastery.N(r.Total), FM(13 * s, true), A(Theme.Muted), ix, cy, rowH, 0, StringAlignment.Far, iw);
+                        cy += rowH;
                     }
-                    if (top)
-                    {
-                        Theme.Label(g, "TOP MASTERY", FM(11 * s, true), A(Theme.Dim), ix, cy, 16 * s, 11 * s * 0.12f);
-                        cy += 24 * s;
-                        if (rows.Count == 0)
-                            Theme.Label(g, !_topMasteryAsked ? "Loading..." : "Not available now.", FB(13 * s), A(Theme.Muted), ix, cy, rowH);
-                        for (int i = 0; i < rows.Count; i++)
-                        {
-                            var r = rows[i];
-                            Theme.Label(g, (i + 1).ToString(CultureInfo.InvariantCulture), FM(13 * s, true), A(i < 3 ? Theme.Accent : Theme.Dim), ix, cy, rowH, 0, StringAlignment.Far, 22 * s);
-                            Theme.Label(g, OpenSmash.Core.Mastery.Who(r), FB(13 * s), A(Theme.Text), ix + 30 * s, cy, rowH, 0, StringAlignment.Near, iw - 110 * s);
-                            Theme.Label(g, OpenSmash.Core.Mastery.N(r.Total), FM(13 * s, true), A(Theme.Muted), ix, cy, rowH, 0, StringAlignment.Far, iw);
-                            cy += rowH;
-                        }
-                    }
+                    // the site's full mastery list
+                    float ly = y + ph - foot + 4 * s, lh = 26 * s;
+                    float hv = Hov("community:board", _hover == "community:board");
+                    Theme.Label(g, "FULL LEADERBOARD  →", FM(12 * s, true), A(Theme.Mix(Theme.Muted, Theme.Accent, hv)), ix, ly, lh, 12 * s * 0.08f);
+                    AddHit("community:board", ix, ly, iw, lh);
                 }
             }
             // the leaderboard's top 10

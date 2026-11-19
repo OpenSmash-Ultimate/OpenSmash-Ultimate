@@ -23,6 +23,7 @@ function show(view) {
   if (view === "mods") refreshMods();
   if (view === "setup") loadFolders();
   if (view === "update" && !(state && state.update)) checkUpdate();
+  if (view === "competitive") refreshRanked();
   try { localStorage.setItem("oslView", view); } catch (e) { /* (no storage: fine) */ }
 }
 $$(".tab").forEach(t => t.addEventListener("click", () => show(t.dataset.view)));
@@ -111,7 +112,8 @@ async function refresh() {
   $("#play-state").textContent = !built ? (state.files_ready ? "Your game files are read; the game itself isn't built yet."
     : "Set the game up first.") : state.game_running ? "The game is running." : `Ready (${state.program}).`;
   const s = state.settings;
-  const lobby = { public: "the public lobby" + (s.region_shown ? ` (${s.region_shown})` : ""), private: `a private lobby (code ${s.code})`, custom: `your own server, ${s.server || "127.0.0.1:39420"}`, lan: "the players on this network (LAN)", offline: "offline" }[s.lobby];
+  const where = s.region_shown || ({ eu: "Europe", "na-east": "North America East" })[s.region] || "";
+  const lobby = { public: "the official lobby" + (where ? ` (${where})` : ""), private: `a private lobby (code ${s.code})`, custom: `your own server, ${s.server || "127.0.0.1:39420"}`, lan: "the players on this network (LAN)", offline: "offline" }[s.lobby];
   $("#play-online").textContent = s.lobby === "offline" ? "Offline: Play doesn't go online." :
     `Play joins ${lobby}${s.name ? ", as " + s.name : ""}. Local Wireless lists everyone's rooms.`;
   // (v0.5.0: the official lobbies need a signed-in launcher's lobby ticket; this page cannot sign in)
@@ -284,9 +286,6 @@ function fillSettings(s, choices, all) {
     if (!sel || kept.has(key)) continue;
     const values = options.map(o => o[0]);
     if (!values.includes(s[key]) && s[key]) options = [[s[key], s[key]], ...options];
-    // (Auto with its pick and the pick's ping, once measured: "Auto (EU, 24 ms)")
-    if (key === "region" && s.region_shown && s.region_shown.startsWith("Auto ("))
-      options = options.map(([v, l]) => v === "auto" ? [v, s.region_shown] : [v, l]);
     const html = options.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
     if (sel.dataset.options !== html) { sel.innerHTML = html; sel.dataset.options = html; }   // (an open list is not rebuilt)
     if (sel.value !== s[key]) sel.value = s[key];
@@ -299,11 +298,22 @@ function fillSettings(s, choices, all) {
   for (const k of kept) after[k] = filled[k];
   filled = after;
 }
+/* The Online rows (OpenSmash.Core/OnlineSettings.cs, the same in every launcher): the official servers (the official lobby,
+   the private lobby) are relay only - no Direct connections; the official lobby has no code and no server of one's own,
+   the private lobby no server of one's own: hidden and emptied, so nothing stale is saved. Leaving them for a server of
+   one's own or the LAN shows those rows again, empty, with Direct connections back to "On". */
+const OFFICIAL_SERVERS = ["public", "private"];
+let shownLobby = null;
 function lobbyFields() {
-  const lobby = $("#settings").elements.lobby.value;
+  const f = $("#settings").elements, lobby = f.lobby.value;
   $(".lobby-code").hidden = !(lobby === "private" || lobby === "custom");
   $(".lobby-server").hidden = lobby !== "custom";
-  $(".lobby-region").hidden = !(lobby === "public" || lobby === "private");   // (the official lobby's region)
+  $(".lobby-region").hidden = !OFFICIAL_SERVERS.includes(lobby) || !!(state && state.settings.region_shown);   // (an override: no regions)
+  $(".lobby-direct").hidden = !(lobby === "custom" || lobby === "lan");
+  if (lobby === "public") f.code.value = "";
+  if (OFFICIAL_SERVERS.includes(lobby)) { f.server.value = ""; f.direct.value = "off"; }
+  else if (shownLobby && OFFICIAL_SERVERS.includes(shownLobby) && (lobby === "custom" || lobby === "lan")) f.direct.value = "on";
+  shownLobby = lobby;
 }
 $("#settings").elements.lobby.addEventListener("change", lobbyFields);
 $("#settings").elements.volume.addEventListener("input", e => $("#volume-out").textContent = e.target.value);
@@ -391,34 +401,62 @@ async function refreshDiscord() {
   discordTimer = setTimeout(refreshDiscord, d.busy ? 1500 : 60000);
 }
 
-/* ---- mastery points and the SSBU Arena card (discord_account.py mastery_view; OPENSMASH_MASTERY_UI=0: GSP as before) ---- */
+/* ---- mastery points (discord_account.py mastery_view; OPENSMASH_MASTERY_UI=0: GSP as before), each fighter with its stock
+   icon; the top mastery with the site's full list. SSBU Arena has its own Competitive page (refreshRanked). ---- */
 let masteryOn = false, masteryTimer = null;
 const num = n => Number(n || 0).toLocaleString("en-US");
+const SITE_MASTERY = "https://denkishi.github.io/opensmash-site/leaderboard/";
+/* a fighter's stock icon (as SSBU Arena serves it), or its initial when there is none or it fails to load */
+function ficon(f) {
+  if (!f) return "";
+  const initial = `<span class="ficon initial" title="${esc(f.name)}">${esc((f.name || "?").charAt(0).toUpperCase())}</span>`;
+  return f.icon ? `<img class="ficon" src="${esc(f.icon)}" alt="" title="${esc(f.name)}" loading="lazy" referrerpolicy="no-referrer"
+    onerror="this.outerHTML='${initial.replace(/'/g, "&#39;").replace(/"/g, "&quot;")}'">` : initial;
+}
 async function refreshMastery() {
   let m;
   try { m = await api("/api/mastery"); } catch (e) { return; }
   masteryOn = !!m.on;
   $("#mastery-card").hidden = !m.on;
-  $("#arena-card").hidden = !m.on || !(m.arena_card || m.top_on);
   if (!m.on) return;
   const rows = (m.fighters || []).slice(0, 10).map(f =>
-    `<tr><td>${esc(f.name)}</td><td class="num">${num(f.points)}</td><td class="num muted">${num(f.games)}</td><td class="num muted">${num(f.wins)}</td></tr>`).join("");
-  $("#mastery-box").innerHTML = !m.ticket && !m.available
+    `<tr><td>${ficon({ name: f.name, icon: f.icon })}${esc(f.name)}</td><td class="num">${num(f.points)}</td><td class="num muted">${num(f.games)}</td><td class="num muted">${num(f.wins)}</td></tr>`).join("");
+  const top = (m.top || []).map((r, i) => `<tr><td class="num muted ms-rank">${i + 1}</td><td>${ficon(r.fighter)}${esc(r.name)}</td><td class="num">${num(r.points)}</td></tr>`).join("");
+  $("#mastery-box").innerHTML = (!m.ticket && !m.available
     ? `<p class="muted small">Sign in to play online: your mastery points show here.</p>`
     : !m.available ? `<p class="muted small">Mastery points are not available on the lobby yet.</p>`
     : `<p><span class="ms-total">${num(m.total)}</span> <span class="muted small">points in all · ${num(m.games)} games · ${num(m.wins)} wins</span></p>
        ${rows ? `<table class="dc-gsp ms-table"><tr class="muted small"><th></th><th class="num">Points</th><th class="num">Games</th><th class="num">Wins</th></tr>${rows}</table>`
               : `<p class="muted small">No mastery points yet: play Quickplay or Battle Arena online.</p>`}
-       <p class="muted small">Points for playing, they only go up. Ranked lives in SSBU Arena.</p>`;
-  const top = (m.top || []).map((r, i) => `<tr><td class="num muted ms-rank">${i + 1}</td><td>${esc(r.name)}</td><td class="num">${num(r.points)}</td></tr>`).join("");
-  $("#arena-box").innerHTML = (m.arena_card ? `<p>Ranked 1v1, tournament rules. Same account.</p>
-      <p class="muted small">SSBU Arena runs on Windows only: this opens its site.</p>
-      <div class="buttons"><a class="button primary" href="${esc(m.arena_url)}" target="_blank" rel="noopener">SSBU Arena site</a></div>` : "")
-    + (m.top_on ? `<h4 class="ms-top">Top mastery</h4>${top ? `<table class="dc-gsp">${top}</table>` : `<p class="muted small">Not available now.</p>`}` : "");
+       <p class="muted small">Points for playing, they only go up. Ranked lives in SSBU Arena (Competitive).</p>`)
+    + (m.top_on ? `<h4 class="ms-top">Top mastery</h4>${top ? `<table class="dc-gsp">${top}</table>` : `<p class="muted small">Not available now.</p>`}
+       <a class="ms-full" href="${SITE_MASTERY}" target="_blank" rel="noopener">Full leaderboard →</a>` : "");
   clearTimeout(masteryTimer);
   masteryTimer = setTimeout(refreshMastery, 60000);
 }
-refreshMastery().then(refreshDiscord);
+/* ---- the Competitive page: SSBU Arena's ranked top 10 (discord_account.py ranked_view), All / EU / NA East ---- */
+let rankedRegion = "", rankedTimer = null;
+async function refreshRanked() {
+  let r;
+  try { r = await api("/api/ranked?region=" + encodeURIComponent(rankedRegion)); } catch (e) { r = { rows: null, failed: true }; }
+  if (r.arena_url) $("#arena-get").href = r.arena_url;
+  if (r.leaderboard_url) $("#arena-full").href = r.leaderboard_url;
+  const rows = r.rows || [];
+  $("#ranked-box").innerHTML = !r.rows
+    ? `<p class="muted">${r.failed ? "The ranked board could not be read. It is asked again in a minute." : "Loading…"}</p>`
+    : !rows.length ? `<p><b>No ranked results yet.</b></p><p class="muted small">Ranked 1v1 has just started. Players show here after their placement games in SSBU Arena.</p>`
+    : `<table class="ranked"><tr><th class="num">#</th><th>Fighters</th><th>Player</th><th>Tier</th><th class="num">W / L</th><th class="num">Rating</th></tr>${rows.map((x, i) =>
+        `<tr><td class="pos">${x.rank || i + 1}</td><td>${(x.fighters || []).map(ficon).join("")}</td><td><b>${esc(x.name)}</b><span class="tag">#${esc(x.tag)}</span></td>
+         <td><span class="tier" style="color:${esc(x.tier_color)}">${esc(x.tier)}</span></td><td class="num muted">${num(x.wins)} / ${num(x.losses)}</td><td class="num rating">${num(x.rating)}</td></tr>`).join("")}</table>`;
+  clearTimeout(rankedTimer);
+  if ($("#view-competitive").classList.contains("active")) rankedTimer = setTimeout(refreshRanked, 60000);
+}
+$$("#ranked-regions button").forEach(b => b.addEventListener("click", () => {
+  rankedRegion = b.dataset.region;
+  $$("#ranked-regions button").forEach(x => x.classList.toggle("active", x === b));
+  $("#ranked-box").innerHTML = `<p class="muted">Loading…</p>`;
+  refreshRanked();
+}));refreshMastery().then(refreshDiscord);
 
 /* ---- the window ---- */
 $("#quit").onclick = async () => {

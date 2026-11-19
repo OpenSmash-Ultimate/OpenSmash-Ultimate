@@ -71,8 +71,8 @@ static class CommunityChecks
             window.Width=w;window.Height=h;surface.InvalidateVisual();
             using var frame=window.CaptureRenderedFrame();
             if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,$"community-{w}.png"));
-            // (mastery: the SSBU Arena card's button in place of the GSP leaderboard's link)
-            var board=hits.FirstOrDefault(x=>x.Id=="community:arena");var signin=hits.FirstOrDefault(x=>x.Id=="community:signin");
+            // (mastery: the top mastery's full leaderboard link; SSBU Arena has its own COMPETITIVE page)
+            var board=hits.FirstOrDefault(x=>x.Id=="community:board");var signin=hits.FirstOrDefault(x=>x.Id=="community:signin");
             var play=hits.First(x=>x.Id=="menu:3");
             Check(board.Id!=null&&signin.Id!=null&&board.R.Right<=frame!.PixelSize.Width&&signin.R.Left>play.R.Right,$"home right column fits beside the buttons at {w}x{h}");
         }
@@ -87,7 +87,17 @@ static class CommunityChecks
         finally{Environment.SetEnvironmentVariable("OPENSMASH_MASTERY_UI",mastery);}
         c.TopMastery=[new OpenSmash.Core.MasteryRow{Id="x",Name="Xia",Points=1200,Veteran=1000}];c.TopMasteryAsked=true;
         surface.InvalidateVisual();using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"community-mastery.png"));}
-        Check(hits.Any(x=>x.Id=="community:arena")&&!hits.Any(x=>x.Id=="community:board"),"the SSBU Arena card in place of the GSP leaderboard");
+        Check(hits.Any(x=>x.Id=="community:board")&&!hits.Any(x=>x.Id=="community:arena")&&hits.Any(x=>x.Id=="nav:competitive"),"the top mastery and its full leaderboard on the home, SSBU Arena in the COMPETITIVE menu (no card on the home)");
+        // the COMPETITIVE page: SSBU Arena's ranked top 10 (fighter icons, name#tag, tier, rating), its button, the full leaderboard, the regions
+        c.RankedRows=OpenSmash.Core.RankedBoard.Parse("[{\"rank\":1,\"username\":\"Vex\",\"tag\":7,\"rating\":2586.2,\"wins\":9,\"losses\":2,\"tier\":\"Grandmaster\",\"tier_color\":\"#FF5A6A\",\"fighters\":[{\"fighter\":\"Joker\",\"games\":9},{\"fighter\":\"Pyra / Mythra\",\"games\":2}]}]");
+        c.RankedAsked=true;
+        surface.Navigate("competitive");surface.FrozenTime=10;
+        using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"competitive.png"));}
+        Check(surface.CurrentView=="competitive"&&hits.Any(x=>x.Id=="community:arena")&&hits.Any(x=>x.Id=="community:arena-board")&&hits.Count(x=>x.Id.StartsWith("community:region:"))==3,"the COMPETITIVE page: SSBU Arena's button, its full leaderboard and the region filter");
+        c.RankedRows=new();
+        surface.InvalidateVisual();using(window.CaptureRenderedFrame()){}
+        Check(hits.Any(x=>x.Id=="community:arena"),"an empty ranked board: the page still offers SSBU Arena");
+        surface.Navigate("home");
         c.Account=new DiscordToken{Access="x",UserId="1",DisplayName="Player"};c.Open=true;c.Records=[new FighterGsp{Fighter=29,Gsp=500000}];
         surface.InvalidateVisual();using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"community-card.png"));}
         Check(hits.Any(x=>x.Id=="community:signout")&&hits.Any(x=>x.Id=="community:shown"),"the account card offers the leaderboard name choice and sign out");
@@ -103,7 +113,7 @@ static class CommunityChecks
         Check(hits.Any(x=>x.Id=="community:signout")&&c.Mastery.FromService&&c.Mastery.Total==1900&&OpenSmash.Core.Mastery.Place(c.Mastery.Rank)=="#12","the account card with the service's mastery and place");
         c.Open=false;
         surface.InvalidateVisual();using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"community-mastery-service-home.png"));}
-        Check(hits.Any(x=>x.Id=="community:me")&&hits.Any(x=>x.Id=="community:arena"),"the home with the service's mastery and place");
+        Check(hits.Any(x=>x.Id=="community:me")&&hits.Any(x=>x.Id=="community:board"),"the home with the service's mastery and place");
         window.Close();
     }
 }

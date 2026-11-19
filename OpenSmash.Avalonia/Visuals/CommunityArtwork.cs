@@ -35,6 +35,13 @@ public sealed class CommunityView
     public bool MasteryAsked, TopMasteryAsked;
     public List<OpenSmash.Core.MasteryRow>? TopMastery;
     public string? ArenaExe;   // Arena's launcher when installed (Windows only)
+    // the COMPETITIVE page (CompetitiveArtwork.cs): SSBU Arena's ranked top 10 for a region (an index of
+    // OpenSmash.Core.RankedBoard.Regions), filled by MainWindow.Discord.cs; null with RankedAsked: no answer yet
+    public List<OpenSmash.Core.RankedRow>? RankedRows;
+    public bool RankedAsked, RankedFailed;
+    public int RankedRegion;
+    // a fighter's stock icon (PNG bytes, OpenSmash.Core.Fighters) once downloaded; null meanwhile or without one
+    public Func<string, byte[]?>? IconBytes;
 
     // One answer of CommunityFeed.Fetch: a lobby that answers nothing is offline, the last numbers kept.
     public void Apply(LobbyStatus? status, string? board, string accountHash)
@@ -163,7 +170,8 @@ public sealed partial class ClassicSurface
             // (mastery: a fighter's name gets the room left of its points and wraps to a second line rather than being cut)
             float lineH = 14 * s;
             float widestPoints = mrows.Count == 0 ? 0 : mrows.Max(r => ArtworkTheme.TextWidth(g, N(r.Total), FM(12 * s, true), 0, false));
-            float nameW = iw - 96 * s - widestPoints - 10 * s;
+            float iconW = 15 * s + 6 * s;   // (each fighter's stock icon before its name)
+            float nameW = iw - 96 * s - widestPoints - 10 * s - iconW;
             var names = mrows.Select(r => Wrap2(g, OpenSmash.Core.Mastery.FighterName(r.Fighter), FB(12 * s), nameW)).ToList();
             ph += names.Sum(n => n.Count - 1) * lineH;
             Panel(y, ph);
@@ -192,8 +200,10 @@ public sealed partial class ClassicSurface
                 for (int i = 0; i < mrows.Count; i++)
                 {
                     var r = mrows[i];
+                    // (its stock icon, CompetitiveArtwork.cs, then the name)
+                    DrawFighter(g, r.Fighter, ix, ry + (rowH - 15 * s) / 2, 15 * s);
                     for (int k = 0; k < names[i].Count; k++)
-                        ArtworkTheme.Label(g, names[i][k], FB(12 * s), A(ArtworkTheme.Text), ix, ry + k * lineH, rowH);
+                        ArtworkTheme.Label(g, names[i][k], FB(12 * s), A(ArtworkTheme.Text), ix + iconW, ry + k * lineH, rowH);
                     ArtworkTheme.Label(g, N(r.Total), FM(12 * s, true), A(ArtworkTheme.Text), ix, ry, rowH, 0, StringAlignment.Far, cPoints);
                     ArtworkTheme.Label(g, N(r.Games), FM(11 * s), A(ArtworkTheme.Muted), ix, ry, rowH, 0, StringAlignment.Far, cGames);
                     ArtworkTheme.Label(g, N(r.Wins), FM(11 * s), A(ArtworkTheme.Muted), ix, ry, rowH, 0, StringAlignment.Far, cWins);
@@ -254,53 +264,35 @@ public sealed partial class ClassicSurface
             y += ph + 8 * s;
         }
 
-        // (mastery) the SSBU Arena card and the top mastery, in place of the GSP leaderboard. Arena is Windows only: elsewhere
-        // the button opens its site and the card says so.
+        // (mastery) the top mastery in place of the GSP leaderboard: each row with its main fighter's icon, and the site's
+        // full list below. SSBU Arena (its ranked, its launcher) has its own page: COMPETITIVE, CompetitiveArtwork.cs.
         if (mastery)
         {
-            bool card = OpenSmash.Core.Mastery.ArenaCardOn, top = OpenSmash.Core.Mastery.TopOn;
-            if (card || top)
+            if (OpenSmash.Core.Mastery.TopOn)
             {
-                bool windows = OperatingSystem.IsWindows();
-                float rowH = 19 * s;
+                float rowH = 23 * s, head = 30 * s, foot = 32 * s, isz = 18 * s;
                 var rows = c.TopMastery ?? new List<OpenSmash.Core.MasteryRow>();
-                // (the card's sentence wraps to a second line in a narrow column instead of being cut)
-                var cardLines = Wrap2(g, UiLocale.Text("Ranked 1v1, tournament rules. Same account."), FB(11 * s), iw);
-                float cardExtra = (cardLines.Count - 1) * 14 * s;
-                float cardH = card ? (windows ? 92 * s : 108 * s) + cardExtra : 0;
-                float ph = 10 * s + cardH + (top ? 22 * s + Math.Max(1, rows.Count) * rowH : 0) + 10 * s;
+                float ph = head + Math.Max(1, rows.Count) * rowH + foot;
                 Panel(y, ph);
-                float cy = y + 10 * s;
-                if (card)
+                ArtworkTheme.Label(g, "TOP MASTERY", FM(10 * s, true), A(ArtworkTheme.Dim), ix, y + 9 * s, 14 * s, 10 * s * 0.12f);
+                float cy = y + head;
+                if (rows.Count == 0) ArtworkTheme.Label(g, !c.TopMasteryAsked ? "Loading..." : "Not available now.", FB(12 * s), A(ArtworkTheme.Muted), ix, cy, rowH);
+                for (int i = 0; i < rows.Count; i++)
                 {
-                    ArtworkTheme.Label(g, "SSBU ARENA  ·  COMPETITIVE", FM(10 * s, true), A(ArtworkTheme.Accent), ix, cy, 14 * s, 10 * s * 0.12f);
-                    for (int k = 0; k < cardLines.Count; k++)
-                        ArtworkTheme.Label(g, cardLines[k], FB(11 * s), A(ArtworkTheme.Muted), ix, cy + 19 * s + k * 14 * s, 16 * s);
-                    float by = cy + 42 * s + cardExtra;
-                    if (!windows)
-                    {
-                        ArtworkTheme.Label(g, Fit(g, UiLocale.Text("SSBU Arena runs on Windows only."), FB(10 * s), iw), FB(10 * s), A(ArtworkTheme.Dim), ix, cy + 36 * s + cardExtra, 14 * s);
-                        by += 16 * s;
-                    }
-                    string label = c.ArenaExe != null ? "PLAY SSBU ARENA" : windows ? "GET SSBU ARENA" : "SSBU ARENA SITE";
-                    ArtworkTheme.ButtonAnimated(g, label, ix, by, iw, 30 * s, s, primary: true, Hov("community:arena", _hover == "community:arena"), true, 11 * s, _alpha, press: Press("community:arena"));
-                    AddHit("community:arena", ix, by, iw, 30 * s);
-                    cy += cardH;
+                    var r = rows[i];
+                    ArtworkTheme.Label(g, (i + 1).ToString(CultureInfo.InvariantCulture), FM(12 * s, true), A(i < 3 ? ArtworkTheme.Accent : ArtworkTheme.Dim), ix, cy, rowH, 0, StringAlignment.Far, 16 * s);
+                    float nx = ix + 24 * s;
+                    if (r.MainFighter != "") DrawFighter(g, r.MainFighter, nx, cy + (rowH - isz) / 2, isz);
+                    nx += isz + 7 * s;
+                    ArtworkTheme.Label(g, Fit(g, OpenSmash.Core.Mastery.Who(r), FB(12 * s), iw - (nx - ix) - 64 * s), FB(12 * s), A(ArtworkTheme.Text), nx, cy, rowH);
+                    ArtworkTheme.Label(g, N(r.Total), FM(12 * s, true), A(ArtworkTheme.Muted), ix, cy, rowH, 0, StringAlignment.Far, iw);
+                    cy += rowH;
                 }
-                if (top)
-                {
-                    ArtworkTheme.Label(g, "TOP MASTERY", FM(10 * s, true), A(ArtworkTheme.Dim), ix, cy, 14 * s, 10 * s * 0.12f);
-                    cy += 22 * s;
-                    if (rows.Count == 0) ArtworkTheme.Label(g, !c.TopMasteryAsked ? "Loading..." : "Not available now.", FB(12 * s), A(ArtworkTheme.Muted), ix, cy, rowH);
-                    for (int i = 0; i < rows.Count; i++)
-                    {
-                        var r = rows[i];
-                        ArtworkTheme.Label(g, (i + 1).ToString(CultureInfo.InvariantCulture), FM(12 * s, true), A(i < 3 ? ArtworkTheme.Accent : ArtworkTheme.Dim), ix, cy, rowH, 0, StringAlignment.Far, 20 * s);
-                        ArtworkTheme.Label(g, Fit(g, OpenSmash.Core.Mastery.Who(r), FB(12 * s), iw - 96 * s), FB(12 * s), A(ArtworkTheme.Text), ix + 28 * s, cy, rowH);
-                        ArtworkTheme.Label(g, N(r.Total), FM(12 * s, true), A(ArtworkTheme.Muted), ix, cy, rowH, 0, StringAlignment.Far, iw);
-                        cy += rowH;
-                    }
-                }
+                // the site's full mastery list
+                float ly = y + ph - foot + 4 * s, lh = 24 * s;
+                float hv = Hov("community:board", _hover == "community:board");
+                ArtworkTheme.Label(g, "FULL LEADERBOARD  →", FM(11 * s, true), A(ArtworkTheme.Mix(ArtworkTheme.Muted, ArtworkTheme.Accent, hv)), ix, ly, lh, 11 * s * 0.08f);
+                AddHit("community:board", ix, ly, iw, lh);
             }
         }
         // the leaderboard's top 10
