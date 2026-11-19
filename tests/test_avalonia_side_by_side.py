@@ -8,22 +8,39 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SideBySideTests(unittest.TestCase):
-    def test_builder_preserves_production_launcher(self):
+    def setUp(self):
         spec = importlib.util.spec_from_file_location("build_avalonia", ROOT / "tools/build_avalonia.py")
-        builder = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(builder)
+        self.builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.builder)
+
+    def test_builder_preserves_production_launcher(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            builder.ROOT = root
+            self.builder.ROOT = root
             production = root / "OpenSmash.exe"
             production.write_bytes(b"production")
             package = root / "package"
             package.mkdir()
             (package / "OpenSmash.Avalonia.exe").write_bytes(b"experimental")
-            installed = builder.install(package, "win-x64")
+            installed = self.builder.install(package, "win-x64")
             self.assertEqual(installed.name, "OpenSmash.Avalonia.exe")
             self.assertEqual(installed.read_bytes(), b"experimental")
             self.assertEqual(production.read_bytes(), b"production")
+
+    def test_linux_builder_preserves_source_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.builder.ROOT = root
+            source = root / "OpenSmash.Avalonia" / "OpenSmash.csproj"
+            source.parent.mkdir()
+            source.write_bytes(b"source project")
+            package = root / "package"
+            package.mkdir()
+            (package / "OpenSmash.Avalonia").write_bytes(b"linux launcher")
+            installed = self.builder.install(package, "linux-x64")
+            self.assertEqual(installed, root / "OpenSmash.Avalonia.bin")
+            self.assertEqual(installed.read_bytes(), b"linux launcher")
+            self.assertEqual(source.read_bytes(), b"source project")
 
     def test_existing_frontends_and_tests_are_retained(self):
         for name in [

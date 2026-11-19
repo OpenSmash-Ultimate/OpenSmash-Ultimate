@@ -32,6 +32,10 @@ static class BootstrapChecks
         File.WriteAllText(Path.Combine(alongside,"OpenSmash.exe"),"production launcher");
         string experimental=deployment.CopyInto(alongside);
         check(Path.GetFileName(experimental)=="OpenSmash.Avalonia.exe"&&File.ReadAllText(Path.Combine(alongside,"OpenSmash.exe"))=="production launcher","experimental deployment preserves the shipping Windows launcher");
+        string sourceProject=Path.Combine(alongside,"OpenSmash.Avalonia","OpenSmash.csproj");
+        Directory.CreateDirectory(Path.GetDirectoryName(sourceProject)!);File.WriteAllText(sourceProject,"source project");
+        string linuxLauncher=new LauncherDeployment(launcher,DesktopPlatform.Linux).CopyInto(alongside);
+        check(Path.GetFileName(linuxLauncher)=="OpenSmash.Avalonia.bin"&&File.ReadAllText(linuxLauncher)=="synthetic launcher"&&File.ReadAllText(sourceProject)=="source project","Linux deployment preserves the launcher source directory");
         int index=0;
         string Parent()=>Path.Combine(root,"case "+(++index)+" ' & spaces");
         foreach(var (prefix,legacy) in new[]{("",false),("OpenSmash-test/",false),("Legacy-source/",true)})

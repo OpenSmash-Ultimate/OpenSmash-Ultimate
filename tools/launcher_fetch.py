@@ -4,7 +4,7 @@ sign-in the official lobbies need) put beside this folder's game:
 
     python3 tools/launcher_fetch.py [--release | --build] [--force] [--dry-run]
 
-Linux: ./OpenSmash.Avalonia (one program). macOS: ./OpenSmash.Avalonia.app. opensmash-launcher.sh and
+Linux: ./OpenSmash.Avalonia.bin (one program). macOS: ./OpenSmash.Avalonia.app. opensmash-launcher.sh and
 "OpenSmash Launcher.command" start it when it is there, else the web launcher (tools/weblauncher).
 
 Where it comes from (default: the first that works):
@@ -57,7 +57,7 @@ def platform_key(system=None, machine=None):
 
 def installed(root, key):
     """the launcher's path in root for key (it may not be there)"""
-    return os.path.join(root, APP if key.startswith("macos") else PROGRAM)
+    return os.path.join(root, APP if key.startswith("macos") else PROGRAM + ".bin")
 
 
 def download(url):
@@ -107,7 +107,7 @@ def unpack(data, key, root):
     """the program (Linux) or the .app (macOS) from the archive's bytes into root, replacing the one there in one
     step (a staging copy renamed); the path put in place"""
     target = installed(root, key)
-    prefix = os.path.basename(target)
+    prefix = APP if key.startswith("macos") else PROGRAM
     stage = os.path.join(root, ".OpenSmash-fetch-" + uuid.uuid4().hex)
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
@@ -123,9 +123,9 @@ def unpack(data, key, root):
                     shutil.copyfileobj(src, out)
                 os.chmod(dest, 0o755 if m.mode & 0o111 else 0o644)
         built = os.path.join(stage, prefix)
-        if not os.path.exists(built):
+        if not os.path.exists(built) or (prefix == PROGRAM and not os.path.isfile(built)):
             raise Error(f"the archive has no {prefix}")
-        if os.path.isdir(target) and not os.path.islink(target):
+        if prefix == APP and os.path.isdir(target) and not os.path.islink(target):
             old = os.path.join(root, ".OpenSmash-old-" + uuid.uuid4().hex)
             os.rename(target, old)
             try:
@@ -226,10 +226,17 @@ def ensure(root=ROOT, how="auto", force=False, log=print, dry_run=False, get=dow
     if key is None:
         log(f"no OpenSmash launcher is made for this computer ({platform.system()} {platform.machine()}): the web launcher stays")
         return False
+
+    def available():
+        legacy = os.path.join(root, PROGRAM)
+        return os.path.exists(installed(root, key)) or (
+            key == "linux-x64" and os.path.isfile(legacy) and os.access(legacy, os.X_OK)
+        )
+
     if dry_run:   # (nothing asked of the network, nothing built)
         log("would put the OpenSmash launcher here: " + ("built with the .NET SDK" if how != "release" and can_build(root)
                                                           else "the newest release's") + f" ({key})")
-        return os.path.exists(installed(root, key))
+        return available()
     errors = []
     if how in ("auto", "build") and can_build(root):
         try:
@@ -247,7 +254,7 @@ def ensure(root=ROOT, how="auto", force=False, log=print, dry_run=False, get=dow
             errors.append(str(e))
     for e in errors:
         log(f"the OpenSmash launcher: {e}")
-    there = os.path.exists(installed(root, key))
+    there = available()
     log("the one already here stays" if there else "the web launcher stays (tools/weblauncher): sign in there is not possible")
     return there
 
