@@ -92,10 +92,19 @@ public sealed partial class MainWindow
                     c.Me = _account.SignedIn ? _account.Me : null;
                 }
                 catch (OperationCanceledException) { c.Error = "Sign-in cancelled."; }
-                catch (AccountException e) { c.Error = e.Message; }
+                catch (AccountException e)
+                {
+                    c.Error = e.Message;
+                    Console.WriteLine($"[OpenSmash Account] Sign-in failed: {e.Message}");
+                    try { File.AppendAllText(Path.Combine(root, "build", "launcher.log"), $"[OpenSmash Account] Sign-in failed: {e.Message}\n"); } catch { }
+                    Updater.Log(root, "sign-in: " + e.Message);
+                }
                 catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or HttpRequestException or System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException or System.ComponentModel.Win32Exception)
                 {
-                    c.Error = "The sign-in did not work: " + e.Message; Updater.Log(root, "sign-in: " + e);
+                    c.Error = "The sign-in did not work: " + e.Message;
+                    Console.WriteLine($"[OpenSmash Account] Sign-in error: {e}");
+                    try { File.AppendAllText(Path.Combine(root, "build", "launcher.log"), $"[OpenSmash Account] Sign-in error: {e}\n"); } catch { }
+                    Updater.Log(root, "sign-in: " + e);
                 }
                 finally { c.Busy = false; _discordCancel?.Dispose(); _discordCancel = null; }
                 Surface.InvalidateVisual();

@@ -16,10 +16,16 @@
 root="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 cd "$root" || exit 1
 mkdir -p build
+launcher=""
+if [ -f "$root/OpenSmash.Avalonia" ] && [ -x "$root/OpenSmash.Avalonia" ]; then
+    launcher="$root/OpenSmash.Avalonia"
+elif [ -f "$root/build/OpenSmash.Avalonia" ] && [ -x "$root/build/OpenSmash.Avalonia" ]; then
+    launcher="$root/build/OpenSmash.Avalonia"
+fi
 if [ "${1:-}" = --web ]; then
     shift
-elif [ -x "$root/OpenSmash.Avalonia" ]; then
-    "$root/OpenSmash.Avalonia" --project "$root" "$@" >>build/launcher.log 2>&1 &
+elif [ -n "$launcher" ]; then
+    "$launcher" --project "$root" "$@" >>build/launcher.log 2>&1 &
     pid=$!
     for _ in 1 2 3 4 5 6; do
         sleep 1
@@ -32,7 +38,7 @@ elif [ -x "$root/OpenSmash.Avalonia" ]; then
     wait "$pid"
     rc=$?
     [ "$rc" = 0 ] && exit 0
-    echo "OpenSmash.Avalonia stopped at once (exit $rc): the web launcher instead" >>build/launcher.log
+    echo "$launcher stopped at once (exit $rc): the web launcher instead" >>build/launcher.log
     export OPENSMASH_LAUNCHER_FAILED="$rc"   # (the web page says so where it asks to sign in)
 fi
 py=""

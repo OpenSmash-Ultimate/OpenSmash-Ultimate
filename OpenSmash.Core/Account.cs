@@ -120,6 +120,7 @@ namespace OpenSmash.Core
             Service = service ?? AccountService.Load(root);
             string dir = Path.Combine(root ?? Path.GetDirectoryName(Updater.ExePath), "config");
             sessionFile = Path.Combine(dir, "session.dat");
+            try { http.DefaultRequestHeaders.UserAgent.ParseAdd("OpenSmash-Launcher/1.0"); } catch { }
         }
 
         /// <summary>the last session of this PC: refreshed and its profile read. false (no exception) when there is none or
@@ -302,11 +303,22 @@ namespace OpenSmash.Core
             if (body != null) rq.Content = new StringContent(body, Encoding.UTF8, "application/json");
             HttpResponseMessage rs;
             try { rs = await http.SendAsync(rq); }
-            catch (Exception e) when (e is HttpRequestException || e is TaskCanceledException) { throw new AccountException("Cannot reach the accounts server: " + e.Message); }
+            catch (Exception e) when (e is HttpRequestException || e is TaskCanceledException)
+            {
+                string detail = $"{e.GetType().Name}: {e.Message}" + (e.InnerException != null ? $" ({e.InnerException.Message})" : "");
+                Console.WriteLine($"[Account.RequestAsync] {method} {Service.Url + path} failed: {detail}");
+                try { File.AppendAllText("build/launcher.log", $"[Account.RequestAsync] {method} {Service.Url + path} failed: {detail}\n"); } catch { }
+                throw new AccountException("Cannot reach the accounts server: " + detail);
+            }
             using (rs)
             {
                 string text = await rs.Content.ReadAsStringAsync();
-                if (!rs.IsSuccessStatusCode) throw new AccountException("The accounts server answered " + (int)rs.StatusCode, (int)rs.StatusCode, text);
+                if (!rs.IsSuccessStatusCode)
+                {
+                    Console.WriteLine($"[Account.RequestAsync] Status {(int)rs.StatusCode} from {method} {Service.Url + path}: {text}");
+                    try { File.AppendAllText("build/launcher.log", $"[Account.RequestAsync] Status {(int)rs.StatusCode} from {method} {Service.Url + path}: {text}\n"); } catch { }
+                    throw new AccountException("The accounts server answered " + (int)rs.StatusCode, (int)rs.StatusCode, text);
+                }
                 return text;
             }
         }
