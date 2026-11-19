@@ -1208,9 +1208,13 @@ static void vk_present(u64 guest, u32 width, u32 height) {
     InterlockedAdd64((volatile LONG64 *)&vk_ns_present, (LONG64)(rt_clock_ns() - t0));
 }
 void hitch_present(void);   /* debug_profile.c (SSBU_HITCH's frame accounting, as gpu_d3d11.c's present) */
+void watchdog_present(void);   /* debug_watchdog.c (the freeze watchdog's "a frame was shown", as gpu_d3d11.c's present:
+                                * without it, once the rollback code had started the watchdog, a Vulkan game that kept
+                                * drawing wrote freeze reports and minidumps 5, 30 and 120 s into every online match) */
 static void vk_present_(u64 guest, u32 width, u32 height) {
     (void)width; (void)height;
     enter();
+    watchdog_present();
     hitch_present();
     gfx_stat_presented++;
     if (gfx_stat_presented == 600) trial_passed();   /* (renderer = auto: past its first seconds) */
