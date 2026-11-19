@@ -77,9 +77,12 @@ int main(void) {
             path = Path(directory)
             src, exe = path / 'cache.c', path / 'cache.exe'
             src.write_text(harness)
-            run = subprocess.run([cc.CLANG, '/nologo', *cc.LINK_FLAGS, str(src),
-                                  '/Fo' + directory + os.sep, '/Fe' + str(exe),
-                                  '/link', *cc.LINK_OPTIONS], capture_output=True, text=True)
+            run = subprocess.run(
+                [cc.CLANG, '/nologo', *cc.LINK_FLAGS, str(src),
+                 '/Fo' + directory + os.sep, '/Fe' + str(exe),
+                 '/link', *cc.LINK_OPTIONS] if os.name == 'nt' else
+                ['cc', '-std=c11', str(src), '-o', str(exe)],
+                capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             run = subprocess.run([str(exe)], cwd=directory, capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

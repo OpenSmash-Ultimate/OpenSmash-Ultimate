@@ -47,9 +47,12 @@ int main(void) {
             path = Path(directory)
             src, exe = path / 'warm.c', path / 'warm.exe'
             src.write_text(harness)
-            result = subprocess.run([cc.CLANG, '/nologo', *cc.LINK_FLAGS, str(src),
-                                     '/Fo' + directory + os.sep, '/Fe' + str(exe),
-                                     '/link', *cc.LINK_OPTIONS], capture_output=True, text=True)
+            result = subprocess.run(
+                [cc.CLANG, '/nologo', *cc.LINK_FLAGS, str(src),
+                 '/Fo' + directory + os.sep, '/Fe' + str(exe),
+                 '/link', *cc.LINK_OPTIONS] if os.name == 'nt' else
+                ['cc', '-std=c11', str(src), '-o', str(exe)],
+                capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             result = subprocess.run([str(exe)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -92,9 +95,12 @@ int main(void) { recover(); return result ? 0 : 1; }
             path = Path(directory)
             src, exe = path / 'recover.c', path / 'recover.exe'
             src.write_text(harness)
-            run = subprocess.run([cc.CLANG, '/nologo', *cc.LINK_FLAGS, str(src),
-                                  '/Fo' + directory + os.sep, '/Fe' + str(exe),
-                                  '/link', *cc.LINK_OPTIONS], capture_output=True, text=True)
+            run = subprocess.run(
+                [cc.CLANG, '/nologo', *cc.LINK_FLAGS, str(src),
+                 '/Fo' + directory + os.sep, '/Fe' + str(exe),
+                 '/link', *cc.LINK_OPTIONS] if os.name == 'nt' else
+                ['cc', '-std=c11', str(src), '-o', str(exe)],
+                capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             run = subprocess.run([str(exe)], cwd=directory, capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
