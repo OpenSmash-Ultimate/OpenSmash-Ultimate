@@ -54,7 +54,9 @@ void *ipc_rb_save(void);
 void ipc_rb_load(const void *p);
 void ipc_rb_free(void *p);
 u64 fs_rb_mark(void);
-int fs_rb_closed_since(u64 mark);
+int fs_rb_closed_since(u64 mark, const void *fs);
+void *fs_rb_save(void);
+int fs_rb_load(const void *fs, u64 mark);
 int kernel_rb_strict(void);
 void kernel_mem_event(char kind, u64 addr, u64 size);   /* (kernel.c: the memory map's changes, for a crash report) */
 /* (a load's decommits and recommits: one entry each a load, the range they fell in, so they don't push the game's own
@@ -2225,6 +2227,7 @@ typedef struct Slot {
     u32 tag;                         /* the caller's name for it (hle_rb_core.c: the logic frame) */
     void *kernel, *fibers, *setjmps, *vi, *audio, *ipc, *net, *map;
     u64 fs_mark;                     /* (hle_fs.c) its count of file opens and closes at the save */
+    void *fs;                        /* (hle_fs.c fs_rb_save) the RomFS handles open at the save, NULL: none */
     u32 threads;                     /* other threads in the save */
     CONTEXT main;                    /* the main thread's registers in rb_save */
     u64 main_base, main_frame;
@@ -2271,6 +2274,7 @@ static void slot_free(Slot *s) {
     gdef_settle();
     for (u32 i = 0; i < s->nthr; i++) free(s->thr[i].stack);
     free(s->thr); s->thr = NULL; s->nthr = 0;
+    free(s->fs); s->fs = NULL;
     free(s->kernel); fiber_rb_free(s->fibers); setjmp_rb_free(s->setjmps); free(s->vi); free(s->audio); free(s->net); ipc_rb_free(s->ipc); free(s->main_stack); rb_map_free(s->map);
     s->kernel = s->fibers = s->setjmps = s->vi = s->audio = s->ipc = s->map = NULL; s->main_stack = NULL;
     s->undo.n = 0;   /* (its buffers stay, for the next state in this slot) */
@@ -2518,6 +2522,7 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     s->ipc = ipc_rb_save();
     s->map = rb_map_save(ring_count ? slot_at(ring_count - 1)->map : NULL);   /* (the oldest state kept besides this one) */
     s->fs_mark = fs_rb_mark();
+    s->fs = fs_rb_save();
     u64 thread_bytes = 0;
     s->threads = 0;
     s->nthr = (u32)nrecs;
@@ -2604,7 +2609,7 @@ static const char *check(Cpu *c, u64 frame, u32 n, const Slot *s) {
     if (why) return why;
     /* a game file open at the save and closed since (hle_fs.c): its handle is gone after the load. Refused (an older
      * state is tried, as for a fiber); SSBU_RB_FS_LOAD=1: loaded anyway, counted and logged, as before */
-    if (fs_rb_closed_since(s->fs_mark)) {
+    if (fs_rb_closed_since(s->fs_mark, s->fs)) {
         static int loose = -1;
         if (loose < 0) { const char *e = getenv("SSBU_RB_FS_LOAD"); loose = e && *e == '1'; }
         ++rb_fs_closed_loads;
@@ -2711,6 +2716,7 @@ void rb_load_age(Cpu *c, u64 frame, int age) {
     s->undo.n = 0;
     step("kernel");
     kernel_rb_load(s->kernel);
+    fs_rb_load(s->fs, s->fs_mark);   /* (the RomFS handles as at the save: SSBU_RB_FS_ROM) */
     kmap_refresh();
     if (check_after && age) {   /* (memory and the shadow, after the undo records: contents and presence; after the kernel's map is that state's) */
         u64 first, lay, bad = shadow_mismatches(&first, &lay);
