@@ -1788,6 +1788,61 @@ static const char VERTEX_FETCH[] =
     "  return o;\n"
     "}\n";
 
+/* VERTEX_FETCH as the Direct3D 11 path compiles it: no array indexed at run time (the words picked by selects, the
+ * components written one by one) and the component loop kept a loop. With nine fetches unrolled, NVIDIA's shader
+ * compiler (Blackwell, driver 620.70 through DXVK 3; 615.78 hangs on the same programs) gave the largest effect vertex
+ * programs (vs_fc1d8ee9bdf9ee65 and vs_f8d99c028dd2f2d2) an instruction with its own "no opcode" value 0x38f and read
+ * its 911-record per-opcode tables one record past the end for it. Depending on what followed the tables, the
+ * compiler crashed (SIGSEGV in libnvidia-gpucomp.so) or made a program the GPU stopped on at its first draw (Xid 13
+ * illegal instruction, or Xid 109 CTX SWITCH TIMEOUT in the dispatch loop): the lost device of #80. This form is 22%
+ * smaller (DXBC 162 -> 126 KB) and no program of the shader cache gets that instruction any more (all 65,291 checked
+ * by counting the compiler's out-of-range lookups). For every format, alignment and component it reads the same words
+ * as VERTEX_FETCH. */
+static const char VERTEX_FETCH_COMPACT[] =
+    "uint4 decode_attr(%s b, uint addr, uint fmt) {\n"
+    "  uint size = (fmt >> 21) & 0x3Fu, type = (fmt >> 27) & 7u, n = 4u, bits = 32u;\n"
+    "  bool packed = false;\n"
+    "  switch (size) {\n"
+    "  case 0x01u: n = 4u; bits = 32u; break; case 0x02u: n = 3u; bits = 32u; break;\n"
+    "  case 0x03u: n = 4u; bits = 16u; break; case 0x04u: n = 2u; bits = 32u; break;\n"
+    "  case 0x05u: n = 3u; bits = 16u; break; case 0x0Au: n = 4u; bits = 8u; break;\n"
+    "  case 0x0Fu: n = 2u; bits = 16u; break; case 0x12u: n = 1u; bits = 32u; break;\n"
+    "  case 0x13u: n = 3u; bits = 8u; break; case 0x18u: n = 2u; bits = 8u; break;\n"
+    "  case 0x1Bu: n = 1u; bits = 16u; break; case 0x1Du: n = 1u; bits = 8u; break;\n"
+    "  case 0x32u: n = 2u; bits = 8u; break; case 0x33u: n = 4u; bits = 8u; break;\n"
+    "  case 0x34u: n = 1u; bits = 8u; break; case 0x30u: n = 4u; bits = 10u; packed = true; break;\n"
+    "  default: return uint4(0u, 0u, 0u, 0x3F800000u);\n"
+    "  }\n"
+    "  uint base = addr & ~3u, sh = (addr & 3u) * 8u;\n"
+    "  uint4 w = b.Load4(base); uint w4 = b.Load(base + 16u);\n"
+    "  bool is_float = type == 7u || type == 1u || type == 2u || type == 5u || type == 6u;\n"
+    "  uint4 o = uint4(0u, 0u, 0u, is_float ? 0x3F800000u : 1u);\n"
+    "  %sfor (uint i = 0u; i < 4u; i++) {\n"
+    "    if (i >= n) break;\n"
+    "    uint cb = packed && i == 3u ? 2u : bits;\n"
+    "    uint bo = sh + (packed ? i * 10u : i * bits), wi = bo >> 5, s = bo & 31u;\n"
+    "    uint wlo = wi == 0u ? w.x : wi == 1u ? w.y : wi == 2u ? w.z : w.w;\n"
+    "    uint whi = wi == 0u ? w.y : wi == 1u ? w.z : wi == 2u ? w.w : w4;\n"
+    "    uint v = wlo >> s;\n"
+    "    if (s + cb > 32u) v |= whi << (32u - s);\n"
+    "    if (cb < 32u) v &= (1u << cb) - 1u;\n"
+    "    int sv = cb < 32u ? ((int)(v << (32u - cb))) >> (32u - cb) : asint(v);\n"
+    "    float scale = cb < 32u ? (float)((1u << cb) - 1u) : 4294967295.0f;\n"
+    "    uint r = v;\n"
+    "    switch (type) {\n"
+    "    case 1u: r = asuint(max((float)sv / (scale * 0.5f - 0.5f), -1.0f)); break;\n"
+    "    case 2u: r = asuint((float)v / scale); break;\n"
+    "    case 3u: r = asuint(sv); break;\n"
+    "    case 5u: r = asuint((float)v); break;\n"
+    "    case 6u: r = asuint((float)sv); break;\n"
+    "    case 7u: r = cb == 16u ? asuint(f16tof32(v)) : v; break;\n"
+    "    }\n"
+    "    if (i == 0u) o.x = r; else if (i == 1u) o.y = r; else if (i == 2u) o.z = r; else o.w = r;\n"
+    "  }\n"
+    "  if ((fmt >> 31) != 0u) o = o.zyxw;\n"
+    "  return o;\n"
+    "}\n";
+
 /* Direct3D's float to integer conversions, saturating (NaN: 0), for glslang's SPIR-V, where a value out of range
  * converts to anything (MSL_PRELUDE's f2i_ and f2u_, in HLSL). */
 static const char F2I_HLSL[] =
@@ -2012,7 +2067,7 @@ static void hlsl_out(Ctx *c, Str *out) {
 
     if (stage == SHADER_VERTEX) {
         if (c->texel_bufs) put_vertex_fetch_words(out);
-        else put(out, VERTEX_FETCH, raw, "[unroll] ");
+        else put(out, VERTEX_FETCH_COMPACT, raw, "[loop] ");
         for (u32 n = 0; n < 32; n++) {
             if (!(info->inputs >> n & 1)) continue;
             put(out, "%s vb%u : register(t%u);\n", raw, n, 18 + n);

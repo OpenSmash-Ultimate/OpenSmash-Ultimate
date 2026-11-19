@@ -18,7 +18,7 @@
 #include "gpu_shader.h"
 
 /* Bump when the translator changes what it generates: older files are then ignored. */
-#define SHADER_CACHE_VERSION 10
+#define SHADER_CACHE_VERSION 11   /* (11: VERTEX_FETCH_COMPACT, gpu_shader.c) */
 /* MSL files' version: the translator's, and the MSL dialect's own revision (bump the last
  * digits for a change to MSL alone). */
 #define SHADER_CACHE_MSL_VERSION (SHADER_CACHE_VERSION * 100 + 3)

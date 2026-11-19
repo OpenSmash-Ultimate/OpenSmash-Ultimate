@@ -603,6 +603,9 @@ def write_if_changed(path, text):
 
 def _init(image_path, entries, base, forward, setjmp=None, pads=None, exact_callees=None, exact_callers=None,
           hookable=None, patches=None, inline=None):
+    import lift
+    lift.REGCACHE = os.environ.get("SSBU_REGCACHE", "1") != "0"
+    lift.DYNAMIC_JUMPS = os.environ.get("SSBU_DYNAMIC_JUMPS") == "1"
     f = open(image_path, "rb")
     _state["img"] = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
     _state["args"] = (entries, base, forward, setjmp, pads, exact_callees, exact_callers, hookable, patches, inline)
@@ -1153,6 +1156,9 @@ def build(path, outdir, jobs, per_file, imports=None):
         os.environ["SSBU_REGCACHE"] = "0"
         os.environ["SSBU_DYNAMIC_JUMPS"] = "1"
         os.environ["SSBU_FLAGS_XFER"] = "1"
+    import lift
+    lift.REGCACHE = os.environ.get("SSBU_REGCACHE", "1") != "0"
+    lift.DYNAMIC_JUMPS = os.environ.get("SSBU_DYNAMIC_JUMPS") == "1"
     try:
         _build(mod, found, funcs, path, outdir, jobs, per_file, imports)
     finally:
@@ -1163,6 +1169,8 @@ def build(path, outdir, jobs, per_file, imports=None):
                 del os.environ["SSBU_REGCACHE"]
             else:
                 os.environ["SSBU_REGCACHE"] = regcache_was
+        lift.REGCACHE = os.environ.get("SSBU_REGCACHE", "1") != "0"
+        lift.DYNAMIC_JUMPS = os.environ.get("SSBU_DYNAMIC_JUMPS") == "1"
 
 
 def plugin_modules():

@@ -326,6 +326,8 @@ HLE(sky_memcpy) {
 
 HLE(skyline_tcp_send_raw) {   /* (data, size): the plugin's println! */
     fwrite(G2H(c->x[0]), 1, c->x[1], stderr);
+    fflush(stderr);
+    c->x[0] = 0;
 }
 
 HLE(get_program_id) { c->x[0] = PROGRAM_ID; }
@@ -400,6 +402,21 @@ static void sha256_hash(Cpu *c) {   /* (out, out size, data, size) */
     memcpy(G2H(c->x[0]), digest, c->x[1] < 32 ? c->x[1] : 32);
 }
 static void unavailable(Cpu *c) { c->x[0] = RESULT(123, 1); }   /* (nn::ssl: no SSL here - update checks give up) */
+static u64 orig_unlock_mutex;
+static void safe_unlock_mutex(Cpu *c) {
+    if (!c->x[0]) return;
+    rt_call(c, orig_unlock_mutex);
+}
+static u64 orig_pthread_mutex_unlock;
+static void safe_pthread_mutex_unlock(Cpu *c) {
+    if (!c->x[0]) { c->x[0] = 0; return; }
+    rt_call(c, orig_pthread_mutex_unlock);
+}
+static u64 orig_pthread_mutex_lock;
+static void safe_pthread_mutex_lock(Cpu *c) {
+    if (!c->x[0]) { c->x[0] = 0; return; }
+    rt_call(c, orig_pthread_mutex_lock);
+}
 static void plugin_shims(void) {
     static const struct { const char *name; GuestFn *fn; } SHIMS[] = {
         {"_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE", display_version},
@@ -414,6 +431,17 @@ static void plugin_shims(void) {
         u64 at = rt_symbol(SHIMS[i].name);
         if (at) rt_hook_function(at, rt_native(SHIMS[i].fn, SHIMS[i].name));
     }
+    u64 unlock = rt_symbol("_ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE");
+    if (unlock && !orig_unlock_mutex)
+        orig_unlock_mutex = rt_hook_function(unlock, rt_native(safe_unlock_mutex, "safe nn::os::UnlockMutex"));
+    u64 p_unlock = rt_symbol("pthread_mutex_unlock");
+    if (p_unlock && !orig_pthread_mutex_unlock)
+        orig_pthread_mutex_unlock = rt_hook_function(p_unlock, rt_native(safe_pthread_mutex_unlock, "safe pthread_mutex_unlock"));
+    u64 p_lock = rt_symbol("pthread_mutex_lock");
+    if (p_lock && !orig_pthread_mutex_lock)
+        orig_pthread_mutex_lock = rt_hook_function(p_lock, rt_native(safe_pthread_mutex_lock, "safe pthread_mutex_lock"));
+    rt_wrap_symbol("pthread_mutex_unlock", safe_pthread_mutex_unlock);
+    rt_wrap_symbol("pthread_mutex_lock", safe_pthread_mutex_lock);
     void fs_plugin_shims(void), rtld_plugin_shims(void);   /* (hle_fs.c, hle_rtld.c) */
     fs_plugin_shims();
     rtld_plugin_shims();

@@ -9,7 +9,7 @@ import os
 import sys
 
 PLAYED = 1009843200   # (2002-01-01: runtime/gpu_shader_cache.h SHADER_CACHE_PLAYED_UNIX; Prepare Shaders dates its files before it)
-VERSION = 10          # (gpu_shader_cache.h SHADER_CACHE_VERSION)
+VERSION = 11          # (gpu_shader_cache.h SHADER_CACHE_VERSION)
 
 
 def main():
