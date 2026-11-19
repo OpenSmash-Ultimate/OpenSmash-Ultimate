@@ -39,7 +39,6 @@
 #include "gpu_spirv.h"
 #include "gpu_texture.h"
 #include "gpu_vulkan.h"
-#include "gpu_wait_budget.h"
 #include "gpu_watch.h"
 #include "gpu_window.h"
 #include "debug_profile.h"
@@ -1817,19 +1816,6 @@ static int wait_makes(void) {
 static void wait_for(volatile LONG *state) {
     while (!*state) SwitchToThread();
 }
-/* SSBU_VK_WAIT_BUDGET=<ms>: what a frame may spend waiting for new pipelines and graphics programs, all
- * together (default 6; 0: never wait). Most are ready in a few ms; the rest were not ready after the 100 ms
- * the wait used to last either, so each of those was a 100 ms hitch for a skipped draw (2026-11-13's log:
- * 47 of 58). Past the budget the draw is skipped and the maker carries on: the effect draws from its next use. */
-static WaitBudget wait_budget = {~0ull, 0, ~0ull};
-static u64 budget_until(u32 cap_ms) {
-    if (wait_budget.budget_ns == ~0ull) {
-        const char *v = getenv("SSBU_VK_WAIT_BUDGET");
-        wait_budget.budget_ns = (v && *v ? (u64)atoi(v) : 6) * 1000000ull;
-    }
-    return wait_budget_until(&wait_budget, gfx_stat_presented, rt_clock_ns(), cap_ms * 1000000ull);
-}
-
 /* What each stage's constant buffer slot was given last in this frame, with a copy of the bytes (gpu_d3d11.c's
  * last_upload): the same bytes from the same place again - most of a frame's 64 KB program constants, outside
  * the write-watched area, so not kept - get the same view, compared rather than copied again. */
@@ -1937,9 +1923,28 @@ static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
 }
 
 /* ---- shaders ---------------------------------------------------------------------------------------- */
+typedef struct TranslationInput {
+    u8 *program, *cb[18];
+    u32 size, cb_size[18], local[3], shared;
+    int alpha;
+} TranslationInput;
+static void translation_input_free(TranslationInput *in) {
+    if (!in) return;
+    free(in->program);
+    for (u32 i = 0; i < 18; i++) free(in->cb[i]);
+    free(in);
+}
+static u32 translation_input_read(void *user, u32 bank, u32 offset) {
+    const TranslationInput *in = user;
+    u32 v = 0;
+    if (bank < 18 && in->cb_size[bank] >= 4 && offset <= in->cb_size[bank] - 4)
+        memcpy(&v, in->cb[bank] + offset, 4);
+    return v;
+}
 typedef struct VShader {
     Job job;            /* (first: the job is the shader) */
-    char *hlsl;         /* (while it is made) */
+    TranslationInput *input;
+    volatile LONG translated;
     u64 hash, table_hash;
     u32 vs_outputs;
     int stage;
@@ -1950,7 +1955,7 @@ typedef struct VShader {
     VkDescriptorUpdateTemplate tmpl;   /* (stage_set's writes for this program, made at its first set; 0 with tmpl_failed: none) */
     int tmpl_failed;
     int glslang;        /* its SPIR-V is glslang's: SV_VertexID is the vertex index itself (see vk_draw) */
-    struct WarmShader *adopt, *publish;   /* the warm start's (below): its module taken once loaded; ours given to it */
+    struct WarmShader *publish;   /* our module given to the warm start */
     char name[64];
     ShaderInfo info;
 } VShader;
@@ -2076,6 +2081,80 @@ static WarmShader *warm_find(const WarmKey *k) {
 }
 static void warm_list_compute(const WarmKey *k);
 
+typedef struct TranslationHeader {
+    u32 magic, version, info_size, bytes, checksum;
+    ShaderInfo info;
+} TranslationHeader;
+
+static void translation_path(char *path, size_t size, const VShader *s) {
+    snprintf(path, size, "%s/translation1_g%u.%08x_%d_%016llx_%08x.bin", cache_dir(), SHADER_CACHE_SPV_VERSION,
+             spirv_glslang_version(), s->stage, (unsigned long long)s->hash, s->vs_outputs);
+}
+
+static int translation_info_ok(const ShaderInfo *info, int stage) {
+    if (info->stage != stage || info->ntables || info->ntex > 32 || info->sb_count > 16 ||
+        info->cbuf_mask >> 18 || !memchr(info->unsupported, 0, sizeof info->unsupported)) return 0;
+    for (u32 i = 0; i < info->ntex; i++)
+        if (info->tex[i].type > TEX_ARRAY_CUBE || info->tex[i].shadow > 1) return 0;
+    return 1;
+}
+
+static char *translation_load(VShader *s) {
+    char path[1200];
+    translation_path(path, sizeof path, s);
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    TranslationHeader head;
+    char *hlsl = NULL;
+    if (fread(&head, 1, sizeof head, f) == sizeof head && head.magic == 0x54564b4f && head.version == 1 &&
+        head.info_size == sizeof(ShaderInfo) && head.bytes > 1 && head.bytes <= 16 * 1024 * 1024 &&
+        translation_info_ok(&head.info, s->stage)) {
+        hlsl = malloc(head.bytes);
+        if (hlsl && (fread(hlsl, 1, head.bytes, f) != head.bytes || fgetc(f) != EOF ||
+                     hlsl[head.bytes - 1] || memchr(hlsl, 0, head.bytes - 1) ||
+                     (desc_hash(&head.info, sizeof head.info) ^ desc_hash(hlsl, head.bytes)) != head.checksum)) {
+            free(hlsl);
+            hlsl = NULL;
+        }
+        if (hlsl) s->info = head.info;
+    }
+    fclose(f);
+    return hlsl;
+}
+
+typedef struct TranslationSaveJob {
+    Job job;
+    char path[1200];
+    size_t size;
+    u8 data[];
+} TranslationSaveJob;
+
+static void translation_save_job(Job *job) {
+    TranslationSaveJob *save = (TranslationSaveJob *)job;
+    write_file(save->path, save->data, save->size);
+    free(save);
+}
+
+static void translation_save(const VShader *s, const char *hlsl) {
+    /* Jump-table translations depend on live constant buffers; never reuse those by program alone. */
+    if (!hlsl || !translation_info_ok(&s->info, s->stage)) return;
+    size_t bytes = strlen(hlsl) + 1;
+    if (bytes <= 1 || bytes > 16 * 1024 * 1024) return;
+    TranslationHeader head = {0};
+    head.magic = 0x54564b4f; head.version = 1; head.info_size = sizeof(ShaderInfo); head.bytes = (u32)bytes;
+    head.info = s->info;
+    head.checksum = desc_hash(&head.info, sizeof head.info) ^ desc_hash(hlsl, bytes);
+    TranslationSaveJob *save = malloc(sizeof *save + sizeof head + bytes);
+    if (!save) return;
+    save->job.run = translation_save_job;
+    save->size = sizeof head + bytes;
+    memcpy(save->data, &head, sizeof head);
+    memcpy(save->data + sizeof head, hlsl, bytes);
+    translation_path(save->path, sizeof save->path, s);
+    job_add(&save->job);
+}
+
+
 /* The program's SPIR-V by glslang: the disk cache's (shader_cache_file_spv), else made from the HLSL and kept there. */
 static int spirv_glslang(VShader *s, const char *hlsl, SpirvCode *spv) {
     char path[1200];
@@ -2153,46 +2232,71 @@ static int spirv_vkd3d(VShader *s, const char *hlsl, SpirvCode *spv) {
 
 static void shader_job(Job *j) {
     VShader *s = (VShader *)j;
-    shader_make(s, s->hlsl);
-    free(s->hlsl);
-    s->hlsl = NULL;
+    TranslationInput *in = s->input;
+    char *hlsl = s->glslang ? translation_load(s) : NULL;
+    int hit = hlsl != NULL;
+    if (!hlsl && s->glslang) hlsl = in->alpha
+        ? shader_translate_alpha_tested(SHADER_HLSL_GLSLANG, in->program, in->size, s->vs_outputs, &s->info, translation_input_read, in)
+        : shader_translate(SHADER_HLSL_GLSLANG, in->program, in->size, s->stage, s->vs_outputs, in->local, in->shared, &s->info, translation_input_read, in);
+    else if (!hlsl) hlsl = s->stage == SHADER_COMPUTE
+        ? shader_hlsl_cs(in->program, in->size, in->local, in->shared, &s->info, translation_input_read, in)
+        : in->alpha ? shader_hlsl_alpha_tested(in->program, in->size, s->vs_outputs, &s->info, translation_input_read, in)
+                    : shader_hlsl_ex(in->program, in->size, s->stage, s->vs_outputs, &s->info, translation_input_read, in);
+    for (u32 t = 0; t < s->info.ntables; t++)
+        for (u32 e = 0; e < s->info.table[t].count; e++)
+            s->table_hash = (s->table_hash ^ translation_input_read(in, s->info.table[t].bank, s->info.table[t].offset + 4 * e)) * 1099511628211ull;
+    translation_input_free(in);
+    s->input = NULL;
+    InterlockedExchange(&s->translated, 1);
+    if (s->info.unsupported[0]) fprintf(stderr, "[gfx] %s: %s\n", s->name, s->info.unsupported);
+    if (!hlsl) {
+        InterlockedExchange(&s->state, 2);
+        InterlockedIncrement64((volatile LONG64 *)&vk_stat_shader_failures);
+        return;
+    }
+    if (s->glslang && !hit) translation_save(s, hlsl);
+    const char *dump = getenv("SSBU_DUMP_HLSL");
+    if (dump) {
+        char path[1024];
+        snprintf(path, sizeof path, "%s/%s%s.hlsl", dump, s->name, s->glslang ? "_glslang" : "");
+        FILE *f = fopen(path, "w");
+        if (f) { fputs(hlsl, f); fclose(f); }
+    }
+    WarmShader *w = s->glslang ? warm_find(&(WarmKey){s->hash, s->table_hash, s->vs_outputs, (u32)s->stage}) : NULL;
+    if (w && InterlockedCompareExchange(&w->state, WARM_GAME, WARM_LISTED) == WARM_LISTED) s->publish = w;
+    else if (w) {
+        while (w->state == WARM_LOADING) SwitchToThread();
+        if (w->state == WARM_READY) {
+            s->module = w->module;
+            s->compute = w->compute;
+            InterlockedIncrement64((volatile LONG64 *)&vk_stat_warm_taken);
+            InterlockedExchange(&s->state, 1);
+        }
+    }
+    if (!s->state) shader_make(s, hlsl);
+    free(hlsl);
     InterlockedIncrement64((volatile LONG64 *)(s->state == 1 ? &vk_stat_shaders : &vk_stat_shader_failures));
-    if (s->publish) {   /* (a listed program the game asked for before the warm threads came to it: they use this one) */
+    if (s->publish) {
         s->publish->module = s->module;
         s->publish->compute = s->compute;
         InterlockedExchange(&s->publish->state, s->state == 1 ? WARM_READY : WARM_NONE);
     }
-    if (s->state == 1 && s->stage == SHADER_COMPUTE && s->glslang) warm_list_compute(&(WarmKey){s->hash, s->table_hash, s->vs_outputs, SHADER_COMPUTE});
-}
-
-/* A new program the warm start has listed: its module (and a compute program's pipeline) taken from the warm
- * table once a warm thread has loaded it - asked again at each draw until then (find_shader_ex); made by a
- * maker after all if the warm thread found no file for it. The drawing thread's. */
-static void warm_adopt(VShader *s) {
-    WarmShader *w = s->adopt;
-    LONG state = w->state;
-    if (state == WARM_LOADING) return;
-    s->adopt = NULL;
-    if (state != WARM_READY) { job_add(&s->job); return; }
-    s->module = w->module;
-    s->compute = w->compute;
-    free(s->hlsl);
-    s->hlsl = NULL;
-    vk_stat_warm_taken++;
-    InterlockedIncrement64((volatile LONG64 *)&vk_stat_shaders);
-    InterlockedExchange(&s->state, 1);
+    if (s->state == 1 && s->stage == SHADER_COMPUTE && s->glslang)
+        warm_list_compute(&(WarmKey){s->hash, s->table_hash, s->vs_outputs, SHADER_COMPUTE});
 }
 
 static int make_log_left(void);
 static u64 vk_stat_play_shaders, vk_stat_play_shaders_listed;
 static double vk_play_shader_ms;
-static void make_note_shader(const VShader *s, int listed, double ms) {   /* (a new program during play: make_note_pipe) */
+static void make_note_shader(const VShader *s, int listed, double ms, double translate_ms, double setup_ms, double wait_ms, int warm_state) {   /* (a new program during play: make_note_pipe) */
     vk_stat_play_shaders++;
     vk_stat_play_shaders_listed += listed != 0;
     vk_play_shader_ms += ms;
     if ((listed && ms < 2.0) || !make_log_left()) return;
     fprintf(stderr, "[vulkan] made in play: program %s %016llx took %.1f ms (%s; %s) at %.2f s\n", s->name, (unsigned long long)s->hash, ms,
             !s->glslang ? "not listable" : listed ? "LISTED" : "not listed", s->state == 1 ? "ready" : s->state == 2 ? "failed" : "not ready", rt_now_ns() / 1e9);
+    fprintf(stderr, "[vulkan] program cost: translate %.3f ms, setup %.3f ms, wait %.3f ms; warm state %d; frame %llu; clock %.3f ms\n",
+            translate_ms, setup_ms, wait_ms, warm_state, (unsigned long long)gfx_stat_presented, rt_clock_ns() / 1e6);
 }
 
 /* The shader for the program at guest address g (as gpu_d3d11.c's find_shader_ex), made by a maker if it
@@ -2211,7 +2315,7 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
         VShader *s = slot->s;
         slot->batch = gpu_stat_batches;
         slot->gen = gen;
-        if (!s->info.ntables) return s;
+        if (!s->translated || !s->info.ntables) return s;
         u64 place = tables_place(&s->info, stage_cb);
         if (place && slot->tables_at == place) return s;
         CbufSource src = {stage_cb};
@@ -2227,7 +2331,7 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
     for (u32 i = 0; i < nvshaders; i++) {
         VShader *s = vshaders[i];
         if (s->hash != h || s->stage != stage || (stage == SHADER_PIXEL && s->vs_outputs != vs_outputs)) continue;
-        if (s->info.ntables && s->table_hash != table_hash(&s->info, &src)) continue;
+        if (s->translated && s->info.ntables && s->table_hash != table_hash(&s->info, &src)) continue;
         *slot = (VSlot){g, key, fingerprint(p + skip, size - skip), size, s, 0};
         return s;
     }
@@ -2247,53 +2351,42 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
     u64 t_new = rt_clock_ns();
     int glslang = glslang_for(stage);   /* (its own dialect of the HLSL: gpu_shader.h) */
     s->glslang = glslang;
-    char *hlsl = glslang ? (alpha_tested ? shader_translate_alpha_tested(SHADER_HLSL_GLSLANG, p, size, vs_outputs, &s->info, read_cbuf_word, &src)
-                                         : shader_translate(SHADER_HLSL_GLSLANG, p, size, stage, vs_outputs, local, shared, &s->info, read_cbuf_word, &src))
-               : stage == SHADER_COMPUTE ? shader_hlsl_cs(p, size, local, shared, &s->info, read_cbuf_word, &src)
-               : alpha_tested            ? shader_hlsl_alpha_tested(p, size, vs_outputs, &s->info, read_cbuf_word, &src)
-                                         : shader_hlsl_ex(p, size, stage, vs_outputs, &s->info, read_cbuf_word, &src);
-    s->table_hash = table_hash(&s->info, &src);
-    if (s->info.unsupported[0]) fprintf(stderr, "[gfx] %s: %s\n", s->name, s->info.unsupported);
-    if (!hlsl) { s->state = 2; vk_stat_shader_failures++; return s; }
-    static const char *dump;   /* SSBU_DUMP_HLSL=<dir>: each program's HLSL, as gpu_d3d11.c writes it (debugging) */
-    static int dump_checked;
-    if (!dump_checked++) dump = getenv("SSBU_DUMP_HLSL");
-    if (dump) {
-        char path[1024];
-        snprintf(path, sizeof path, "%s/%s%s.hlsl", dump, s->name, glslang ? "_glslang" : "");
-        FILE *f = fopen(path, "w");
-        if (f) { fputs(hlsl, f); fclose(f); }
+    cache_dir();
+    TranslationInput *in = calloc(1, sizeof *in);
+    if (in) {
+        in->size = size; in->alpha = alpha_tested; in->shared = shared;
+        if (local) memcpy(in->local, local, sizeof in->local);
+        in->program = malloc(size);
+        if (!in->program) { translation_input_free(in); in = NULL; }
     }
-    s->hlsl = hlsl;
+    if (in) {
+        /* Compute has no header: never read before its allocation. */
+        memset(in->program, 0, skip);
+        memcpy(in->program + skip, p + skip, size - skip);
+        for (u32 i = 0; i < 18; i++) {
+            if (!stage_cb[i].address || !stage_cb[i].size) continue;
+            in->cb[i] = malloc(stage_cb[i].size);
+            if (!in->cb[i]) { translation_input_free(in); in = NULL; break; }
+            in->cb_size[i] = stage_cb[i].size;
+            read_gpu(stage_cb[i].address, stage_cb[i].size, in->cb[i]);
+        }
+    }
+    if (!in) { InterlockedExchange(&s->state, 2); vk_stat_shader_failures++; return s; }
+    s->input = in;
     s->job.run = shader_job;
-    char cached_path[1200];
-    shader_cache_file(cached_path, sizeof cached_path, cache_dir(), s->stage, s->hash, s->vs_outputs, s->table_hash);
-    int cached = glslang || GetFileAttributesA(cached_path) != INVALID_FILE_ATTRIBUTES;
-    /* (a program of the warm list: a warm thread's module, or ours given to the warm threads) */
-    WarmShader *w = glslang ? warm_find(&(WarmKey){s->hash, s->table_hash, s->vs_outputs, (u32)s->stage}) : NULL;
-    if (w && InterlockedCompareExchange(&w->state, WARM_GAME, WARM_LISTED) == WARM_LISTED) s->publish = w;
-    else if (w && (w->state == WARM_LOADING || w->state == WARM_READY)) s->adopt = w;
-    if (s->adopt) warm_adopt(s);
-    else job_add(&s->job);
-    if (wait_makes())
-        while (!s->state) { if (s->adopt) warm_adopt(s); SwitchToThread(); }
-    /* a program compiled before (its DXBC in the disk cache: only the SPIR-V and the module to make, milliseconds) is
-     * waited for a little, as gpu_d3d11.c does: a skipped draw is an effect missing the first time it is used (the
-     * owner's report 2026-11-09), a skipped launch leaves its outputs (skinned vertices) unwritten for a frame.
-     * Compute programs were waited for already; every stage now. One compiled from scratch (fxc) is not waited for;
-     * with glslang there is no fxc (its SPIR-V is made from the HLSL in milliseconds): every program is waited for. */
-    if (cached || stage == SHADER_COMPUTE) {
-        /* (a compute program's whole wait: a skipped launch is a frame of unwritten vertices, not a missing effect) */
-        u64 t0 = rt_clock_ns(), until = stage == SHADER_COMPUTE ? t0 + 250000000ull : budget_until(250);
-        for (; s->state == 0 && rt_clock_ns() < until;) { if (s->adopt) warm_adopt(s); SwitchToThread(); }
-        wait_budget_spend(&wait_budget, rt_clock_ns() - t0);
+    job_add(&s->job);
+    u64 t_translated = t_new, t_wait_start = rt_clock_ns();
+    int warm_state = -1;
+    if (wait_makes()) wait_for(&s->state);
+    if (vk_gated) {
+        u64 t_done = rt_clock_ns();
+        make_note_shader(s, 0, (t_done - t_new) / 1e6, (t_translated - t_new) / 1e6,
+                         (t_wait_start - t_translated) / 1e6, (t_done - t_wait_start) / 1e6, warm_state);
     }
-    if (vk_gated) make_note_shader(s, w != NULL, (rt_clock_ns() - t_new) / 1e6);
     return s;
 }
 static VShader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding *stage_cb, int alpha_tested, const u32 *local, u32 shared) {
     VShader *s = find_shader_new(g, stage, vs_outputs, stage_cb, alpha_tested, local, shared);
-    if (s && s->adopt && !s->state) warm_adopt(s);
     return s;
 }
 static VShader *find_shader(u64 g, int stage, u32 vs_outputs, const CbBinding *stage_cb, int alpha_tested) {
@@ -3043,15 +3136,6 @@ static VkPipeline get_pipeline(const PipeKey *k, const VShader *vs, const VShade
     u64 t_wait = rt_clock_ns();
     int first_wait = e->state == 0 && (made || !e->waited);
     if (e->state == 0 && wait_makes()) wait_for(&e->state);
-    /* a new pipeline is waited for a little (its shaders are ready: the driver makes it in milliseconds, less with the
-     * pipeline cache warm), rather than its first draws skipped - an effect missing the first time (2026-11-09); so is
-     * one a warm thread is making now, once. Within the frame's budget (budget_until). */
-    if (e->state == 0 && (made || !e->waited)) {
-        e->waited = 1;
-        u64 t0 = rt_clock_ns();
-        for (u64 until = budget_until(100); e->state == 0 && rt_clock_ns() < until;) SwitchToThread();
-        wait_budget_spend(&wait_budget, rt_clock_ns() - t0);
-    }
     if (vk_gated && (made || first_wait)) make_note_pipe(e, made, (rt_clock_ns() - t_wait) / 1e6);
     return e->state == 1 ? e->pipe : VK_NULL_HANDLE;
 }
@@ -3190,6 +3274,34 @@ static void warm_list_open(void) {
     WarmHeader head = {"OSVKWRM", sizeof(WarmRecord), sizeof(PipeKey), SHADER_CACHE_SPV_VERSION, spirv_glslang_version(), WARM_LIST_VERSION, 0};
     size_t size = 0;
     u8 *data = read_file(path, &size);
+    int recovered_header = 0;
+    /* Older builds appended records without a header: recover only complete, checksummed lists. */
+    if (data && size && size % sizeof(WarmRecord) == 0 && memcmp(data, head.magic, sizeof head.magic)) {
+        size_t count = size / sizeof(WarmRecord), valid = 0;
+        WarmRecord *records = (WarmRecord *)(void *)data;
+        while (valid < count && warm_record_ok(&records[valid])) valid++;
+        if (valid == count) {
+            char backup[1200];
+            snprintf(backup, sizeof backup, "%s.headerless.bak", path);
+            FILE *saved = fopen(backup, "wbx");
+            int backed_up = saved && fwrite(data, 1, size, saved) == size;
+            if (saved && fclose(saved)) backed_up = 0;
+            if (!backed_up) {
+                fprintf(stderr, "[vulkan] warm list: cannot back up headerless list; left unchanged\n");
+                free(data);
+                return;
+            }
+            u8 *recovered = malloc(sizeof head + size);
+            if (!recovered) { free(data); return; }
+            memcpy(recovered, &head, sizeof head);
+            memcpy(recovered + sizeof head, data, size);
+            free(data);
+            data = recovered;
+            size += sizeof head;
+            recovered_header = 1;
+            fprintf(stderr, "[vulkan] warm list: recovered %zu headerless records (backup: %s)\n", count, backup);
+        }
+    }
     /* The shipped list (beside the exe or media/: the pipelines of normal play, from runs over every stage and fighter)
      * is read every start and joined to this card's list: a card's list that was started again or cut short (a start
      * closed during the shader loading, tests) left most pipelines to their first draw - the owner's play.log 2026-11-11:
@@ -3230,14 +3342,12 @@ static void warm_list_open(void) {
             fprintf(stderr, "[vulkan] warm start: the shipped list of pipelines, %u records (none for this card yet)\n", (u32)((size - sizeof head) / sizeof(WarmRecord)));
         }
     }
-    int rewrite = !data || joined;
+    int rewrite = !data || joined || recovered_header;
     u32 n = 0;
     if (data && (size < sizeof head || memcmp(data, &head, sizeof head))) { size = 0; rewrite = 1; }
     else if (data) {
         u32 listed = (u32)((size - sizeof head) / sizeof(WarmRecord));
-        /* (A card's first list - the shipped one alone - is written out whole: left unwritten, the file "ab" opens below
-         * was made empty, the pipelines it then gained had no header, and the next start threw them away.) */
-        rewrite = fresh || (size - sizeof head) % sizeof(WarmRecord) != 0;
+        rewrite |= (size - sizeof head) % sizeof(WarmRecord) != 0;
         WarmRecord *rec = (WarmRecord *)(void *)(data + sizeof head);   /* (malloc's alignment, and a header of 32 bytes) */
         for (u32 i = 0; i < listed; i++)
             if (warm_record_ok(&rec[i]) && warm_see(&rec[i])) rec[n++] = rec[i];
@@ -4688,11 +4798,11 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     u64 ps_g = regs[M_PIPELINE(5)] & 1 ? gpu_va_to_guest(region + regs[M_PIPELINE(5) + 1]) : 0;
     VShader *vs = vs_g ? find_shader(vs_g, SHADER_VERTEX, 0, cb[STAGE_VERTEX], 0) : NULL;
     /* (the pixel shader asked for once the vertex shader is translated: both are made at the same time) */
-    VShader *ps_e = vs && vs->state != 2 && ps_g ? find_shader(ps_g, SHADER_PIXEL, vs->info.outputs, cb[STAGE_FRAGMENT], 0) : NULL;
+    VShader *ps_e = vs && vs->state == 1 && ps_g ? find_shader(ps_g, SHADER_PIXEL, vs->info.outputs, cb[STAGE_FRAGMENT], 0) : NULL;
     /* alpha to coverage on targets of one sample: the alpha test >= 0.5 (gpu_d3d11.c) */
     int a2c = (regs[M_ANTI_ALIAS_ALPHA_CONTROL] & 1) && !(regs[M_ALPHA_TEST] & 1) && !(vk_debug() & 64);
     u32 alpha_func = regs[M_ALPHA_TEST] & 1 && !(vk_debug() & 64) ? compare_func(regs[M_ALPHA_FUNC]) : a2c ? 7 : 8;
-    VShader *pa_e = alpha_func != 8 && ps_e && ps_e->state != 2 && (ps_e->info.color_mask & 1)
+    VShader *pa_e = alpha_func != 8 && ps_e && ps_e->state == 1 && (ps_e->info.color_mask & 1)
                   ? find_shader(ps_g, SHADER_PIXEL, vs->info.outputs, cb[STAGE_FRAGMENT], 1) : NULL;
     VShader *ps = pa_e && pa_e->state == 1 ? pa_e : ps_e && ps_e->state == 1 ? ps_e : NULL;
     if (!vs || vs->state != 1 || (ps_g && !ps) || topo < 0) {
