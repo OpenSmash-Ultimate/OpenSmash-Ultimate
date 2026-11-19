@@ -1681,6 +1681,9 @@ static void fighter_setup(Cpu *c) {
 }
 
 /* ---- loading ----------------------------------------------------------------------- */
+static volatile int plugin_patches_on;
+int rt_plugin_patches_on(void) { return __atomic_load_n(&plugin_patches_on, __ATOMIC_ACQUIRE); }
+
 void skyline_load_plugins(Cpu *c) {
     static int done;
     if (done++) return;
@@ -1767,6 +1770,7 @@ void skyline_load_plugins(Cpu *c) {
         fflush(stderr);
         ExitProcess(1);
     }
+    if (count > 0) __atomic_store_n(&plugin_patches_on, 1, __ATOMIC_RELEASE);
     for (int i = 0; i < count; i++) {
         u64 entry = rt_module_export(bases[i], "main");
         fprintf(stderr, "[skyline] plugin %s at %#llx: running main\n", names[i], (unsigned long long)bases[i]);
