@@ -208,6 +208,13 @@ namespace OpenSmash.Launcher
             var mrows = mastery && _mastery != null ? _mastery.Fighters.Take(8).ToList() : new List<MasteryFighter>();
             float mRowH = 22 * s, mH = mastery ? 26 * s + 18 * s + Math.Max(1, mrows.Count) * mRowH + 22 * s + 8 * s : 0;
             h += mH;
+            // the note under the name (or a show/hide no lobby took) wraps inside the card; the card grows for a second line
+            string note = _accountError != "" ? _accountError : "Online play uses this name. One account for OpenSmash and SSBU Arena.";
+            var noteFont = FB(12 * s);
+            float noteW = w - 48 * s;
+            float noteH = (float)Math.Ceiling(g.MeasureString(UiLocale.Text(note), noteFont, (int)Math.Max(1, noteW)).Height);
+            float noteExtra = Math.Max(0, noteH - 20 * s);
+            h += noteExtra;
             using (var p = Theme.Para(x, y, w, h, 10 * s))
             {
                 using (var b = new SolidBrush(A(Color.FromArgb(240, Theme.Bg)))) g.FillPath(b, p);
@@ -217,11 +224,8 @@ namespace OpenSmash.Launcher
             float ix = x + 24 * s, iy = y + 20 * s;
             Theme.Label(g, me.Display, FB(20 * s, true), A(Theme.Text), ix, iy, 24 * s);
             Theme.Label(g, me.DiscordId != null ? "Signed in with Discord" : "Signed in", FB(13 * s), A(Theme.Muted), ix, iy + 30 * s, 18 * s);
-            if (_accountError != "")   // (a show/hide no lobby took)
-                Theme.Label(g, _accountError, FB(12 * s), A(Theme.Bad), ix, iy + 56 * s, 16 * s);
-            else
-                Theme.Label(g, "Online play uses this name. One account for OpenSmash and SSBU Arena.", FB(12 * s), A(Theme.Dim), ix, iy + 56 * s, 16 * s);
-            if (mastery) PaintAccountMastery(g, ix, iy + 84 * s, w - 48 * s, mrows, mRowH);
+            Theme.DrawWrapped(g, note, noteFont, A(_accountError != "" ? Theme.Bad : Theme.Dim), ix, iy + 54 * s, noteW, noteH + 2 * s);
+            if (mastery) PaintAccountMastery(g, ix, iy + 84 * s + noteExtra, w - 48 * s, mrows, mRowH);
             float bw = 130 * s, bh = 34 * s, bx = x + w - 24 * s - bw, by = y + h - 18 * s - bh;
             // (v0.5.0) the leaderboard choice: the official lobbies list a signed-in account by its name unless it hides
             string shownLabel = _accountShown ? "HIDE MY NAME ON THE LEADERBOARD" : "SHOW MY NAME ON THE LEADERBOARD";

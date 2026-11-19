@@ -151,6 +151,12 @@ public sealed partial class ClassicSurface
             int count = showMastery ? mrows.Count : rows.Count;
             bool manage = c.AccountMode && c.AccountPage;   // (v0.5.0: the account page, where the name and sign-ins are changed)
             float rowH = 19 * s, ph = 30 * s + (showMastery ? 16 * s + 20 * s : 0) + Math.Max(1, count) * rowH + 14 * s + 30 * s + 8 * s + 30 * s + (manage ? 38 * s : 0) + (c.Error != "" ? 20 * s : 0) + 14 * s;
+            // (mastery: a fighter's name gets the room left of its points and wraps to a second line rather than being cut)
+            float lineH = 14 * s;
+            float widestPoints = mrows.Count == 0 ? 0 : mrows.Max(r => ArtworkTheme.TextWidth(g, N(r.Total), FM(12 * s, true), 0, false));
+            float nameW = iw - 96 * s - widestPoints - 10 * s;
+            var names = mrows.Select(r => Wrap2(g, OpenSmash.Core.Mastery.FighterName(r.Fighter), FB(12 * s), nameW)).ToList();
+            ph += names.Sum(n => n.Count - 1) * lineH;
             Panel(y, ph);
             float ry = y + 30 * s;
             if (showMastery)
@@ -167,13 +173,15 @@ public sealed partial class ClassicSurface
                 ry += 16 * s;
                 if (mrows.Count == 0)
                     ArtworkTheme.Label(g, !c.MasteryAsked ? "Loading..." : c.Mastery == null ? "Not available on the lobby yet." : "No mastery points yet.", FB(12 * s), A(ArtworkTheme.Muted), ix, ry, rowH);
-                foreach (var r in mrows)
+                for (int i = 0; i < mrows.Count; i++)
                 {
-                    ArtworkTheme.Label(g, Fit(g, OpenSmash.Core.Mastery.FighterName(r.Fighter), FB(12 * s), cPoints - 64 * s), FB(12 * s), A(ArtworkTheme.Text), ix, ry, rowH);
+                    var r = mrows[i];
+                    for (int k = 0; k < names[i].Count; k++)
+                        ArtworkTheme.Label(g, names[i][k], FB(12 * s), A(ArtworkTheme.Text), ix, ry + k * lineH, rowH);
                     ArtworkTheme.Label(g, N(r.Total), FM(12 * s, true), A(ArtworkTheme.Text), ix, ry, rowH, 0, StringAlignment.Far, cPoints);
                     ArtworkTheme.Label(g, N(r.Games), FM(11 * s), A(ArtworkTheme.Muted), ix, ry, rowH, 0, StringAlignment.Far, cGames);
                     ArtworkTheme.Label(g, N(r.Wins), FM(11 * s), A(ArtworkTheme.Muted), ix, ry, rowH, 0, StringAlignment.Far, cWins);
-                    ry += rowH;
+                    ry += rowH + (names[i].Count - 1) * lineH;
                 }
                 if (mrows.Count == 0) ry += rowH;
                 ArtworkTheme.Label(g, Fit(g, UiLocale.Text("Points for playing, they only go up."), FB(10 * s), iw), FB(10 * s), A(ArtworkTheme.Dim), ix, ry + 2 * s, 16 * s);
@@ -240,18 +248,22 @@ public sealed partial class ClassicSurface
                 bool windows = OperatingSystem.IsWindows();
                 float rowH = 19 * s;
                 var rows = c.TopMastery ?? new List<OpenSmash.Core.MasteryRow>();
-                float cardH = card ? (windows ? 92 * s : 108 * s) : 0;
+                // (the card's sentence wraps to a second line in a narrow column instead of being cut)
+                var cardLines = Wrap2(g, UiLocale.Text("Ranked 1v1, tournament rules. Same account."), FB(11 * s), iw);
+                float cardExtra = (cardLines.Count - 1) * 14 * s;
+                float cardH = card ? (windows ? 92 * s : 108 * s) + cardExtra : 0;
                 float ph = 10 * s + cardH + (top ? 22 * s + Math.Max(1, rows.Count) * rowH : 0) + 10 * s;
                 Panel(y, ph);
                 float cy = y + 10 * s;
                 if (card)
                 {
                     ArtworkTheme.Label(g, "SSBU ARENA  ·  COMPETITIVE", FM(10 * s, true), A(ArtworkTheme.Accent), ix, cy, 14 * s, 10 * s * 0.12f);
-                    ArtworkTheme.Label(g, Fit(g, UiLocale.Text("Ranked 1v1, tournament rules. Same account."), FB(11 * s), iw), FB(11 * s), A(ArtworkTheme.Muted), ix, cy + 19 * s, 16 * s);
-                    float by = cy + 42 * s;
+                    for (int k = 0; k < cardLines.Count; k++)
+                        ArtworkTheme.Label(g, cardLines[k], FB(11 * s), A(ArtworkTheme.Muted), ix, cy + 19 * s + k * 14 * s, 16 * s);
+                    float by = cy + 42 * s + cardExtra;
                     if (!windows)
                     {
-                        ArtworkTheme.Label(g, Fit(g, UiLocale.Text("SSBU Arena runs on Windows only."), FB(10 * s), iw), FB(10 * s), A(ArtworkTheme.Dim), ix, cy + 36 * s, 14 * s);
+                        ArtworkTheme.Label(g, Fit(g, UiLocale.Text("SSBU Arena runs on Windows only."), FB(10 * s), iw), FB(10 * s), A(ArtworkTheme.Dim), ix, cy + 36 * s + cardExtra, 14 * s);
                         by += 16 * s;
                     }
                     string label = c.ArenaExe != null ? "PLAY SSBU ARENA" : windows ? "GET SSBU ARENA" : "SSBU ARENA SITE";
@@ -302,6 +314,21 @@ public sealed partial class ClassicSurface
     }
 
     // A line cut with an ellipsis to fit (shown names are the players' own, up to 32 characters).
+    /// <summary>text in at most two lines of width max (broken at a space; the second line is fitted only when even two
+    /// lines are not enough), so a short sentence or name wraps instead of losing its end</summary>
+    List<string> Wrap2(Graphics g, string text, Font f, float max)
+    {
+        if (ArtworkTheme.TextWidth(g, text, f, 0, false) <= max) return new List<string> { text };
+        int cut = -1;
+        for (int i = text.IndexOf(' '); i > 0; i = text.IndexOf(' ', i + 1))
+        {
+            if (ArtworkTheme.TextWidth(g, text[..i], f, 0, false) > max) break;
+            cut = i;
+        }
+        if (cut < 0) return new List<string> { Fit(g, text, f, max) };
+        return new List<string> { text[..cut], Fit(g, text[(cut + 1)..].TrimStart(), f, max) };
+    }
+
     string Fit(Graphics g, string text, Font f, float max)
     {
         if (ArtworkTheme.TextWidth(g, text, f, 0, false) <= max) return text;

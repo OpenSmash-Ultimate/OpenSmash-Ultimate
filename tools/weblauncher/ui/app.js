@@ -410,7 +410,7 @@ async function refreshMastery() {
        ${rows ? `<table class="dc-gsp ms-table"><tr class="muted small"><th></th><th class="num">Points</th><th class="num">Games</th><th class="num">Wins</th></tr>${rows}</table>`
               : `<p class="muted small">No mastery points yet: play Quickplay or Battle Arena online.</p>`}
        <p class="muted small">Points for playing, they only go up. Ranked lives in SSBU Arena.</p>`;
-  const top = (m.top || []).map((r, i) => `<tr><td class="num muted">${i + 1}</td><td>${esc(r.name)}</td><td class="num">${num(r.points)}</td></tr>`).join("");
+  const top = (m.top || []).map((r, i) => `<tr><td class="num muted ms-rank">${i + 1}</td><td>${esc(r.name)}</td><td class="num">${num(r.points)}</td></tr>`).join("");
   $("#arena-box").innerHTML = (m.arena_card ? `<p>Ranked 1v1, tournament rules. Same account.</p>
       <p class="muted small">SSBU Arena runs on Windows only: this opens its site.</p>
       <div class="buttons"><a class="button primary" href="${esc(m.arena_url)}" target="_blank" rel="noopener">SSBU Arena site</a></div>` : "")

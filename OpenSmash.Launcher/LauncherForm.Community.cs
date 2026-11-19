@@ -264,14 +264,21 @@ namespace OpenSmash.Launcher
                 else
                 {
                     float a = 44 * s, ay = y + (ph - a) / 2;
+                    string? accountName = AccountMode && _account?.SignedIn == true ? _account.Me?.Username : null;
                     using (var clip = new GraphicsPath())
                     {
                         clip.AddEllipse(ix, ay, a, a);
                         if (_discordAvatar != null) { var gs = g.Save(); g.SetClip(clip); g.DrawImage(_discordAvatar, ix, ay, a, a); g.Restore(gs); }
-                        else using (var b = new SolidBrush(A(_discord != null ? Color.FromArgb(255, 88, 101, 242) : Theme.Bg3))) g.FillPath(b, clip);
+                        else
+                        {
+                            using (var b = new SolidBrush(A(_discord != null || accountName != null ? Color.FromArgb(255, 88, 101, 242) : Theme.Bg3))) g.FillPath(b, clip);
+                            // (the signed-in account without a picture: its initial, as the header shows it)
+                            if (_discord == null && !string.IsNullOrEmpty(accountName))
+                                Theme.Label(g, accountName.Substring(0, 1).ToUpperInvariant(), FB(19 * s, true), A(Color.White), ix, ay + 10 * s, 24 * s, 0, StringAlignment.Center, a);
+                        }
                     }
                     float tx = ix + a + 12 * s, tw = iw - a - 12 * s;
-                    string who = _discord?.Shown ?? (AccountMode && _account?.SignedIn == true ? _account.Me?.Username : null) ?? "You";
+                    string who = _discord?.Shown ?? accountName ?? "You";
                     Theme.Label(g, who, FB(17 * s, true), A(Theme.Text), tx, ay - 1 * s, 24 * s, 0, StringAlignment.Near, tw);
                     int rank = _mine?.Rank > 0 ? _mine.Rank : _discordRank;
                     uint best = _mine?.Gsp ?? (_discordRecords.Count > 0 ? _discordRecords[0].Gsp : 0u);
