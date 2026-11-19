@@ -64,11 +64,11 @@ public sealed partial class MainWindow
     {
         if (!AccountMode || _account == null || !_account.SignedIn) return;
         string? ticket = await AccountTicket(root);
-        if (string.IsNullOrEmpty(ticket)) return;
         var lobbies = OfficialLobby.All(root);
-        // (mastery: /mastery/me summed over the regions, asked together; OPENSMASH_MASTERY_UI=0 asks nothing)
-        var mastery = Mastery.UiOn ? Mastery.MeAsync(Http, lobbies, ticket, CancellationToken.None) : null;
-        var me = await LobbyBoard.MeAsync(Http, lobbies, ticket, CancellationToken.None);
+        // (mastery: the accounts service, the source, with the account's place; /mastery/me of the lobbies summed only when
+        // it fails. Asked together; OPENSMASH_MASTERY_UI=0 asks nothing)
+        var mastery = Mastery.UiOn ? Mastery.MineAsync(_account, Http, lobbies, ticket ?? "", CancellationToken.None) : null;
+        var me = string.IsNullOrEmpty(ticket) ? null : await LobbyBoard.MeAsync(Http, lobbies, ticket, CancellationToken.None);
         if (mastery != null)
         {
             var m = await mastery;

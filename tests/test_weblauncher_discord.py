@@ -327,15 +327,112 @@ class Mastery(unittest.TestCase):
                 os.environ["OPENSMASH_MASTERY_UI"] = "0"
                 self.assertEqual(acc.mastery_view(me=lambda r: self.fail("asked"))["on"], False)
                 os.environ.pop("OPENSMASH_MASTERY_UI")
-                v = acc.mastery_view(me=lambda r: None, board=lambda r: None)
+                v = acc.mastery_view(me=lambda r: None, board=lambda r: None, service=lambda r: None)
                 self.assertTrue(v["on"] and not v["available"] and v["top"] is None and v["arena_url"].startswith("https://www.ssbuarena.com"))
                 acc.mastery_at = 0
                 v = acc.mastery_view(me=lambda r: [{"fighter": "fox", "name": "Fox", "points": 50, "veteran": 0, "games": 1, "wins": 0}],
-                                     board=lambda r: [{"id": "x", "name": "Xia", "points": 5}])
+                                     board=lambda r: [{"id": "x", "name": "Xia", "points": 5}], service=lambda r: None)
                 self.assertTrue(v["available"] and v["total"] == 50 and v["top"][0]["name"] == "Xia")
                 acc.mastery_at = 0
-                v = acc.mastery_view(me=lambda r: None, board=lambda r: None)   # (lobbies down: the last answers kept)
+                v = acc.mastery_view(me=lambda r: None, board=lambda r: None, service=lambda r: None)   # (all down: the last answers kept)
                 self.assertEqual((v["total"], len(v["top"])), (50, 1))
+                # the accounts service's board first: the lobbies' list not asked when it answers
+                acc.mastery_at = 0
+                v = acc.mastery_view(me=lambda r: None, board=lambda r: self.fail("lobbies asked"),
+                                     service=lambda r: [{"id": "a", "name": "Ann", "points": 5200, "pos": 1}])
+                self.assertEqual(v["top"][0]["name"], "Ann")
+            finally:
+                if old is None:
+                    os.environ.pop("OPENSMASH_MASTERY_UI", None)
+                else:
+                    os.environ["OPENSMASH_MASTERY_UI"] = old
+
+    def _env(self, **values):
+        old = {k: os.environ.get(k) for k in values}
+
+        def back():
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(back)
+        for k, v in values.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_account_service_as_the_launchers_read_it(self):
+        self._env(OPENSMASH_SUPABASE_URL=None, OPENSMASH_SUPABASE_KEY=None)
+        with tempfile.TemporaryDirectory() as root:
+            self.assertIsNone(da.account_service(root))
+            os.makedirs(os.path.join(root, "OpenSmash.Core"))
+            with open(os.path.join(root, "OpenSmash.Core", "account_service.json"), "w", encoding="utf-8") as f:
+                json.dump({"url": "https://built.example/", "publishable_key": "pk-built"}, f)
+            self.assertEqual(da.account_service(root), ("https://built.example", "pk-built"))
+            os.makedirs(os.path.join(root, "config"))
+            with open(os.path.join(root, "config", "account_service.json"), "w", encoding="utf-8") as f:
+                json.dump({"url": "https://own.example"}, f)
+            self.assertEqual(da.account_service(root), ("https://own.example", "pk-built"))
+            self._env(OPENSMASH_SUPABASE_URL="http://127.0.0.1:5555", OPENSMASH_SUPABASE_KEY="test-key")
+            self.assertEqual(da.account_service(root), ("http://127.0.0.1:5555", "test-key"))
+            self._env(OPENSMASH_SUPABASE_URL="http://remote.example")   # (plain http elsewhere than this PC: none)
+            self.assertIsNone(da.account_service(root))
+
+    def test_service_board(self):
+        self._env(OPENSMASH_SUPABASE_URL="http://127.0.0.1:5555", OPENSMASH_SUPABASE_KEY="test-key")
+        asked = []
+
+        def ask(url, headers=None, body=None):
+            asked.append((url, dict(headers or {}), json.loads(body)))
+            return [{"pos": 1, "id": "a", "name": "Ann", "tag": 7, "total": 5200, "games": 40, "total_count": 3},
+                    {"pos": 2, "id": "b", "name": None, "total": 3100}, {"id": "", "total": 1}, "junk"]
+        with tempfile.TemporaryDirectory() as root:
+            top = da.service_board(root, ask, take=5)
+            self.assertEqual(top, [{"id": "a", "name": "Ann", "points": 5200, "pos": 1}, {"id": "b", "name": "Anonymous", "points": 3100, "pos": 2}])
+            url, headers, body = asked[0]
+            self.assertEqual(url, "http://127.0.0.1:5555/rest/v1/rpc/opensmash_mastery_board")
+            self.assertEqual((headers["apikey"], headers["Authorization"]), ("test-key", "Bearer test-key"))
+            self.assertEqual(body, {"p_fighter": None, "p_limit": 5, "p_offset": 0})
+            self.assertIsNone(da.service_board(root, lambda url, headers=None, body=None: None))   # (404 / down: the lobbies)
+            self.assertIsNone(da.service_board(root, lambda url, headers=None, body=None: {"message": "x"}))
+
+    def test_service_board_against_the_fake_service(self):
+        """tools/dev/fake_accounts.py's board (anyone may read it), and its --no-mastery 404."""
+        import socket as _s
+        import subprocess
+        here = os.path.dirname(os.path.abspath(__file__))
+        fake = os.path.join(here, "..", "tools", "dev", "fake_accounts.py")
+        for extra, want in (([], 4), (["--no-mastery"], None)):
+            with _s.socket() as s0:
+                s0.bind(("127.0.0.1", 0))
+                port = s0.getsockname()[1]
+            p = subprocess.Popen([sys.executable, "-I", fake, "--port", str(port), "--name", "Tester"] + extra,
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            try:
+                self.assertIn("fake accounts service on", p.stdout.readline())
+                self._env(OPENSMASH_SUPABASE_URL="http://127.0.0.1:%d" % port, OPENSMASH_SUPABASE_KEY="test-key")
+                with tempfile.TemporaryDirectory() as root:
+                    top = da.service_board(root, take=10)
+                if want is None:
+                    self.assertIsNone(top)
+                else:
+                    self.assertEqual(len(top), want)
+                    self.assertEqual((top[0]["name"], top[1]["name"], top[2]["name"], top[2]["points"]), ("Ann", "Anonymous", "Tester", 1420))
+            finally:
+                p.kill()
+                p.wait()
+                p.stdout.close()
+
+    def test_view_unchanged_below(self):
+        with tempfile.TemporaryDirectory() as root:
+            acc = da.Account(root, root)
+            old = os.environ.get("OPENSMASH_MASTERY_UI")
+            try:
+                os.environ.pop("OPENSMASH_MASTERY_UI", None)
+                v = acc.mastery_view(me=lambda r: None, board=lambda r: [{"id": "x", "name": "Xia", "points": 5}], service=lambda r: None)
+                self.assertEqual(v["top"][0]["name"], "Xia")   # (the service failing: the lobbies' list)
             finally:
                 if old is None:
                     os.environ.pop("OPENSMASH_MASTERY_UI", None)

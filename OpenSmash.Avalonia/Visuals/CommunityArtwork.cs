@@ -120,7 +120,8 @@ public sealed partial class ClassicSurface
                 float a = 40 * s, ay = y + (ph - a) / 2;
                 Avatar(ix, ay, a);
                 float tx = ix + a + 10 * s, tw = iw - a - 10 * s;
-                int rank = mastery && c.AccountMode ? 0 : c.Mine?.Rank > 0 ? c.Mine.Rank : c.Rank;
+                // (mastery: the account's place on the accounts service's board when it has one; GSP: the lobby's)
+                int rank = mastery && c.AccountMode ? (c.Mastery?.Rank is { Pos: > 0 and <= 99999 } mr ? (int)mr.Pos : 0) : c.Mine?.Rank > 0 ? c.Mine.Rank : c.Rank;
                 string rankText = rank > 0 ? "#" + rank.ToString(CultureInfo.InvariantCulture) : "";
                 float rw = rankText != "" ? ArtworkTheme.TextWidth(g, rankText, FD(22 * s), 0, false) + 8 * s : 0;
                 float hv = Hov("community:me", c.SignedIn && _hover == "community:me");
@@ -130,10 +131,18 @@ public sealed partial class ClassicSurface
                 string line = best > 0 ? $"{N(best)} GSP  \u00B7  {DiscordAccount.FighterName(fighter)}" : "No GSP yet: play Quickplay online";
                 if (mastery && c.AccountMode)
                 {
-                    // (mastery: the account's total and its most played fighter; no place: mastery is not a ranking)
+                    // (mastery: the account's total and its first fighter; with the place in the corner, the fighter is left
+                    // out when the line would not fit beside it: the total and the place matter more)
                     line =c.Mastery is { } m && m.Fighters.Count > 0
                         ? UiLocale.Format("{0} mastery points  \u00B7  {1}", N(m.Total), OpenSmash.Core.Mastery.FighterName(m.Fighters[0].Fighter))
                         : c.MasteryAsked && c.Mastery == null ? "Mastery points: not available yet" : "No mastery points yet: play online";
+                    if (rankText != "" && c.Mastery is { } m2 && m2.Fighters.Count > 0 && ArtworkTheme.TextWidth(g, line, FB(11 * s), 0, false) > tw - rw)
+                    {
+                        string tpl = UiLocale.Text("{0} mastery points  \u00B7  {1}");
+                        int cut = tpl.IndexOf("  \u00B7  ", StringComparison.Ordinal);
+                        if (cut > 0 && tpl.IndexOf("{0}", StringComparison.Ordinal) < cut && tpl.IndexOf("{1}", StringComparison.Ordinal) > cut)
+                            line = string.Format(CultureInfo.InvariantCulture, tpl[..cut], N(m2.Total));
+                    }
                 }
                 ArtworkTheme.Label(g, Fit(g, line, FB(11 * s), tw - rw), FB(11 * s), A(ArtworkTheme.Muted), tx, ay + 21 * s, 16 * s);
                 if (rankText != "") ArtworkTheme.Label(g, rankText, FD(22 * s), A(ArtworkTheme.Accent), x, y + 12 * s, 36 * s, 0, StringAlignment.Far, w - pad);
@@ -165,7 +174,14 @@ public sealed partial class ClassicSurface
                 // the account's total. Points only: no levels, no tiers)
                 ArtworkTheme.Label(g, "MASTERY", FM(10 * s, true), A(ArtworkTheme.Dim), ix, y + 9 * s, 14 * s, 10 * s * 0.12f);
                 if (c.Mastery != null)
-                    ArtworkTheme.Label(g, UiLocale.Format("{0} POINTS IN ALL", N(c.Mastery.Total)), FM(10 * s, true), A(ArtworkTheme.Accent), ix, y + 9 * s, 14 * s, 0, StringAlignment.Far, iw);
+                {
+                    // (the place among all the accounts, when the accounts service gave one and it fits)
+                    string total = UiLocale.Format("{0} POINTS IN ALL", N(c.Mastery.Total));
+                    string withPlace = c.Mastery.Rank != null ? OpenSmash.Core.Mastery.Place(c.Mastery.Rank) + "  ·  " + total : total;
+                    float headW = ArtworkTheme.TextWidth(g, UiLocale.Text("MASTERY"), FM(10 * s, true), 10 * s * 0.12f, false);
+                    if (ArtworkTheme.TextWidth(g, withPlace, FM(10 * s, true), 0, false) > iw - headW - 12 * s) withPlace = total;
+                    ArtworkTheme.Label(g, withPlace, FM(10 * s, true), A(ArtworkTheme.Accent), ix, y + 9 * s, 14 * s, 0, StringAlignment.Far, iw);
+                }
                 float cWins = iw, cGames = iw - 44 * s, cPoints = iw - 96 * s;
                 ArtworkTheme.Label(g, "POINTS", FM(9 * s, true), A(ArtworkTheme.Dim), ix, ry, 14 * s, 0, StringAlignment.Far, cPoints);
                 ArtworkTheme.Label(g, "GAMES", FM(9 * s, true), A(ArtworkTheme.Dim), ix, ry, 14 * s, 0, StringAlignment.Far, cGames);

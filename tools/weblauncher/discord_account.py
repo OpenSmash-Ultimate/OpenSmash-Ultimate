@@ -487,6 +487,62 @@ def mastery_board(root, ask=_ask, take=5):
     return merge_mastery_board(got, take) if got else None
 
 
+# The accounts service (Supabase) is the one source of mastery points: the lobbies push their counts to it every hour.
+# Its public board, public.opensmash_mastery_board(p_fighter, p_limit, p_offset) -> [{pos, id, name (null: "Anonymous"),
+# tag, avatar, main_fighter, total, games, total_count}], is asked first with the publishable key (anyone may call it); the
+# lobbies' /mastery.json is only the fallback. The player's own points and place (my_opensmash_mastery(),
+# my_opensmash_mastery_rank()) need the account's session, which only OpenSmash.exe / the Avalonia launcher keep: this page
+# shows the player's own points from the lobbies with the stored lobby ticket, as before.
+def _service_file(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def account_service(root=None):
+    """The accounts service as OpenSmash.Core/Account.cs reads it: OpenSmash.Core/account_service.json of the tree, the
+    install's config/account_service.json over it, OPENSMASH_SUPABASE_URL / _KEY over both. (url, key), or None when there
+    is none (an address that is not https, or not this PC, counts as none)."""
+    url = key = ""
+    for path in ([os.path.join(root, "OpenSmash.Core", "account_service.json"), os.path.join(root, "config", "account_service.json")] if root else []):
+        d = _service_file(path)
+        if isinstance(d.get("url"), str) and d["url"].strip():
+            url = d["url"]
+        if isinstance(d.get("publishable_key"), str) and d["publishable_key"].strip():
+            key = d["publishable_key"]
+    url = (os.environ.get("OPENSMASH_SUPABASE_URL") or url).strip().rstrip("/")
+    key = (os.environ.get("OPENSMASH_SUPABASE_KEY") or key).strip()
+    p = urllib.parse.urlparse(url)
+    if not key or not p.hostname or not (p.scheme == "https" or (p.scheme == "http" and p.hostname in ("127.0.0.1", "localhost"))):
+        return None
+    return url, key
+
+
+def service_board(root, ask=_ask, take=5):
+    """The top mastery from the accounts service: [{"id", "name", "points" (its total), "pos"}], in its order; None when
+    there is no service or it did not answer with a list (then the lobbies are asked)."""
+    s = account_service(root)
+    if not s:
+        return None
+    url, key = s
+    got = ask(url + "/rest/v1/rpc/opensmash_mastery_board",
+              {"apikey": key, "Authorization": "Bearer " + key, "Content-Type": "application/json"},
+              json.dumps({"p_fighter": None, "p_limit": take, "p_offset": 0}).encode())
+    if not isinstance(got, list):
+        return None
+    out = []
+    for r in got:
+        if not isinstance(r, dict) or not isinstance(r.get("id"), str) or not r["id"] or len(r["id"]) > 64:
+            continue
+        name = r.get("name") if isinstance(r.get("name"), str) else ""
+        name = "".join(c for c in name if c.isprintable()).strip()[:32] or "Anonymous"
+        out.append({"id": r["id"], "name": name, "points": _num(r.get("total")), "pos": _num(r.get("pos"))})
+    return out[:take]
+
+
 def ranks_in(board, pid):
     """The player's (global position, {fighter: position}) in leaderboard.json; (0, {}) when not there."""
     for p in (board or {}).get("players") or []:
@@ -644,8 +700,9 @@ class Account:
             self.mine = records(self.root, self.lobbies())
         return self.mine
 
-    def mastery_view(self, me=mastery_me, board=mastery_board):
-        """What the page shows of the mastery points and the SSBU Arena card (asked again at most once a minute)."""
+    def mastery_view(self, me=mastery_me, board=mastery_board, service=service_board):
+        """What the page shows of the mastery points and the SSBU Arena card (asked again at most once a minute). The top
+        list: the accounts service's board, the lobbies' lists only when it fails."""
         out = {"on": switch_on("OPENSMASH_MASTERY_UI"), "arena_card": switch_on("OPENSMASH_ARENA_CARD"),
                "top_on": switch_on("OPENSMASH_TOP_MASTERY"), "arena_url": ARENA_DOWNLOAD}
         if not out["on"]:
@@ -655,7 +712,9 @@ class Account:
             got = me(self.root)
             self.mastery_mine = got if got is not None else self.mastery_mine
             if out["top_on"]:
-                top = board(self.root)
+                top = service(self.root)
+                if top is None:
+                    top = board(self.root)
                 self.mastery_top = top if top is not None else self.mastery_top
         mine = self.mastery_mine
         out.update({"ticket": stored_ticket(self.root) is not None, "available": mine is not None, "fighters": mine or [],

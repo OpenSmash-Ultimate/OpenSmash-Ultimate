@@ -58,10 +58,10 @@ namespace OpenSmash.Launcher
             string? ticket;
             try { ticket = await _account.LobbyTicketAsync(); }
             catch (Exception e) { Updater.Log(_repo, "leaderboard: no lobby ticket now: " + e.Message); ticket = LobbyBoard.StoredTicket(_repo); }
-            if (string.IsNullOrEmpty(ticket)) return;
             var lobbies = OfficialLobby.All(_repo);
-            var mastery = Mastery.UiOn ? Mastery.MeAsync(_httpClient, lobbies, ticket, CancellationToken.None) : null;   // (asked together)
-            var me = await LobbyBoard.MeAsync(_httpClient, lobbies, ticket, CancellationToken.None);
+            // (mastery: the accounts service, the source; the lobbies with the ticket only when it fails. Asked together.)
+            var mastery = Mastery.UiOn ? Mastery.MineAsync(_account, _httpClient, lobbies, ticket ?? "", CancellationToken.None) : null;
+            var me = string.IsNullOrEmpty(ticket) ? null : await LobbyBoard.MeAsync(_httpClient, lobbies, ticket, CancellationToken.None);
             if (mastery != null)
             {
                 _mastery = await mastery ?? _mastery;   // (a lobby down for a while: the last answer kept)
@@ -249,7 +249,14 @@ namespace OpenSmash.Launcher
             float s = _s;
             Theme.Label(g, "MASTERY", FM(12 * s, true), A(Theme.Dim), ix, y, 16 * s, 12 * s * 0.12f);
             if (_mastery != null)
-                Theme.Label(g, UiLocale.Format("{0} POINTS IN ALL", Mastery.N(_mastery.Total)), FM(12 * s, true), A(Theme.Accent), ix, y, 16 * s, 0, StringAlignment.Far, iw);
+            {
+                // (the place among all the accounts, from the accounts service, when it has one and it fits)
+                string total = UiLocale.Format("{0} POINTS IN ALL", Mastery.N(_mastery.Total));
+                string withPlace = _mastery.Rank != null ? Mastery.Place(_mastery.Rank) + "  ·  " + total : total;
+                var hf = FM(12 * s, true);
+                if (Theme.TextWidth(g, withPlace, hf, 0, false) > iw - Theme.TextWidth(g, "MASTERY", hf, 12 * s * 0.12f) - 16 * s) withPlace = total;
+                Theme.Label(g, withPlace, hf, A(Theme.Accent), ix, y, 16 * s, 0, StringAlignment.Far, iw);
+            }
             y += 26 * s;
             float cWins = iw, cGames = iw - 60 * s, cPoints = iw - 124 * s;
             var head = FM(10 * s, true);

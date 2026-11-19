@@ -59,9 +59,10 @@ public sealed partial class MainWindow
         _communityBusy = true;
         try
         {
-            // (mastery: the official lobbies' top mastery, summed over the regions, and Arena's launcher when installed)
+            // (mastery: the top mastery from the accounts service's board, the official lobbies' lists only when it fails;
+            // and Arena's launcher when installed)
             var c0 = Surface.Community;
-            var top = Mastery.UiOn && Mastery.TopOn && _project != null ? Mastery.BoardAsync(Http, OfficialLobby.All(_project.Root), CancellationToken.None, 5) : null;
+            var top = Mastery.UiOn && Mastery.TopOn && _project != null ? Mastery.TopAsync(_account, Http, OfficialLobby.All(_project.Root), CancellationToken.None, 5) : null;
             if (Mastery.UiOn && Mastery.ArenaCardOn) c0.ArenaExe = await Task.Run(() => ArenaEdition.Find());
             var (status, board) = await CommunityFeed.Fetch(Http, CancellationToken.None, _project?.Root);
             if (top != null) { c0.TopMastery = await top ?? c0.TopMastery; c0.TopMasteryAsked = true; }

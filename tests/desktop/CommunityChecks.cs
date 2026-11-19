@@ -96,6 +96,14 @@ static class CommunityChecks
         c.Mastery=OpenSmash.Core.Mastery.Merge([OpenSmash.Core.Mastery.ParseMe("{\"fighters\":[{\"fighter\":\"pzenigame\",\"points\":500,\"veteran\":1000,\"games\":12,\"wins\":7}]}")]);
         surface.InvalidateVisual();using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"community-mastery-card.png"));}
         Check(hits.Any(x=>x.Id=="community:signout")&&hits.Any(x=>x.Id=="community:shown")&&c.Mastery.Total==1500,"the account card with mastery keeps the name choice and sign out");
+        // (the accounts service's answer: its own total, the place on the board, a long fighter name wrapped not cut)
+        c.Mastery=OpenSmash.Core.Mastery.ParseServiceMe("[{\"fighter\":\"gamewatch\",\"points\":800,\"veteran\":1000,\"total\":1900,\"games\":9,\"wins\":4}]")!;
+        c.Mastery.Rank=OpenSmash.Core.Mastery.ParseServiceRank("[{\"pos\":12,\"id\":\"me\",\"total\":1900,\"total_count\":340,\"main_fighter\":\"gamewatch\"}]");
+        surface.InvalidateVisual();using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"community-mastery-service-card.png"));}
+        Check(hits.Any(x=>x.Id=="community:signout")&&c.Mastery.FromService&&c.Mastery.Total==1900&&OpenSmash.Core.Mastery.Place(c.Mastery.Rank)=="#12","the account card with the service's mastery and place");
+        c.Open=false;
+        surface.InvalidateVisual();using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"community-mastery-service-home.png"));}
+        Check(hits.Any(x=>x.Id=="community:me")&&hits.Any(x=>x.Id=="community:arena"),"the home with the service's mastery and place");
         window.Close();
     }
 }

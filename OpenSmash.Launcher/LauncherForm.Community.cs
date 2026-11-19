@@ -121,8 +121,9 @@ namespace OpenSmash.Launcher
             {
                 var counted = RegionCount();   // (asked together with the lobby's own pages)
                 bool mastery = OpenSmash.Core.Mastery.UiOn;
+                // (the top mastery: the accounts service's board, the lobbies' lists only when it fails)
                 var top = mastery && OpenSmash.Core.Mastery.TopOn
-                    ? OpenSmash.Core.Mastery.BoardAsync(_httpClient, OpenSmash.Core.OfficialLobby.All(_repo), CancellationToken.None, 5) : null;
+                    ? OpenSmash.Core.Mastery.TopAsync(_account, _httpClient, OpenSmash.Core.OfficialLobby.All(_repo), CancellationToken.None, 5) : null;
                 if (mastery && OpenSmash.Core.Mastery.ArenaCardOn) _arenaExe = await Task.Run(() => OpenSmash.Core.ArenaEdition.Find());
                 var (status, board) = await CommunityFeed.Fetch(_httpClient, CancellationToken.None, _repo);
                 var count = await counted;
@@ -288,8 +289,9 @@ namespace OpenSmash.Launcher
                         : UiLocale.Text("No GSP yet: play Quickplay online");
                     if (mastery && AccountMode)
                     {
-                        // (mastery: the account's total and its most played fighter; no place: mastery is not a ranking)
-                        rank = 0;
+                        // (mastery: the account's total and its first fighter; its place on the accounts service's board
+                        // when it has one, in the corner as the GSP place was)
+                        rank = _mastery?.Rank is { Pos: > 0 and <= 99999 } mr ? (int)mr.Pos : 0;
                         line = _mastery is { } m && m.Fighters.Count > 0
                             ? UiLocale.Format("{0} mastery points  ·  {1}", OpenSmash.Core.Mastery.N(m.Total), OpenSmash.Core.Mastery.FighterName(m.Fighters[0].Fighter))
                             : UiLocale.Text(_masteryAsked && _mastery == null ? "Mastery points: not available yet" : "No mastery points yet: play online");

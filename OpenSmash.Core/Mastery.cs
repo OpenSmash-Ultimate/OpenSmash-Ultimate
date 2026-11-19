@@ -9,6 +9,14 @@
 //   GET /mastery.json  public -> {"region","updated","fighters":{"<key>":[{"id","name","points","veteran"}...]},"total":[...]}
 // A lobby without them (older) answers 404: nothing is shown ("not available"), the launcher never fails on it.
 // The ticket goes to the official lobbies only (OfficialLobby.All), as LobbyBoard's.
+// The accounts service (Supabase, the one source of mastery points: the lobbies push their counts to it every hour) is
+// asked FIRST, with the account's own session (Account, OPENSMASH_SUPABASE_URL / _KEY as for the sign-in):
+//   POST /rest/v1/rpc/my_opensmash_mastery()        signed in -> [{fighter, points, veteran, total, games, wins, updated_at,
+//                                                    points_opensmash, points_arena}]
+//   POST /rest/v1/rpc/my_opensmash_mastery_rank()   signed in -> [{pos, id, total, total_count, main_fighter}]
+//   POST /rest/v1/rpc/opensmash_mastery_board(p_fighter, p_limit, p_offset)   anyone (publishable key) ->
+//        [{pos, id, name (null: "Anonymous"), tag, avatar, main_fighter, total, games, total_count}]
+// The lobbies' pages are only the fallback when the service cannot be reached or does not have the functions yet.
 // Switches: OPENSMASH_MASTERY_UI=0 brings back the GSP views; OPENSMASH_ARENA_CARD=0 hides the SSBU Arena card;
 // OPENSMASH_TOP_MASTERY=0 hides the "Top mastery" list under it.
 using System;
@@ -30,12 +38,22 @@ namespace OpenSmash.Core
         public long Points;           // summed over the regions (without the veteran bonus)
         public int Veteran;           // the largest of the regions'
         public int Games, Wins;
-        public long Total => Points + Veteran;
+        public long? Given;           // the accounts service's own "total" (it may count more than points + veteran)
+        public long Total => Given ?? Points + Veteran;
+    }
+
+    /// <summary>the account's place among all the accounts with mastery points (my_opensmash_mastery_rank())</summary>
+    public sealed class MasteryRank
+    {
+        public long Pos, Total, TotalCount;
+        public string Id = "", MainFighter = "";
     }
 
     public sealed class MasteryMe
     {
-        public int Regions;   // how many lobbies answered
+        public int Regions;   // how many lobbies answered (0: the accounts service's answer)
+        public bool FromService;   // the accounts service (the source of mastery points), not a lobby's fallback
+        public MasteryRank Rank;   // null: not known (a lobby's answer, or no place yet)
         public List<MasteryFighter> Fighters = new List<MasteryFighter>();   // highest total first
         public long Total => Fighters.Sum(f => f.Total);
         public int Games => Fighters.Sum(f => f.Games);
@@ -44,10 +62,13 @@ namespace OpenSmash.Core
 
     public sealed class MasteryRow
     {
-        public string Id = "", Name = "";
+        public string Id = "", Name = "", MainFighter = "";
+        public long Pos;   // the board's place (the accounts service's; 0 from a lobby)
+        public int Tag;
         public long Points;
         public int Veteran;
-        public long Total => Points + Veteran;
+        public long? Given;   // the accounts service's total
+        public long Total => Given ?? Points + Veteran;
     }
 
     public static class Mastery
@@ -200,6 +221,117 @@ namespace OpenSmash.Core
                 .Select(async lobby => { string t = await Get(http, $"http://{lobby}/mastery.json", null, cancel); return t == null ? null : ParseBoard(t); }));
             return got.Any(b => b != null) ? MergeBoard(got, take) : null;
         }
+
+        // ---- the accounts service (the source; the lobbies above are the fallback) ------------------------------------
+
+        static IEnumerable<JsonElement> Rows(JsonElement r) =>
+            r.ValueKind == JsonValueKind.Array ? r.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.Object)
+            : r.ValueKind == JsonValueKind.Object ? new[] { r } : Enumerable.Empty<JsonElement>();
+
+        /// <summary>my_opensmash_mastery()'s rows as the account's mastery; null when the answer is not one</summary>
+        public static MasteryMe ParseServiceMe(string json)
+        {
+            try
+            {
+                using var d = JsonDocument.Parse(json);
+                if (d.RootElement.ValueKind != JsonValueKind.Array) return null;
+                var me = new MasteryMe { FromService = true };
+                foreach (var f in Rows(d.RootElement))
+                {
+                    string key = Key(Str(f, "fighter"));
+                    if (key == "") continue;
+                    var row = new MasteryFighter
+                    {
+                        Fighter = key, Points = Long(f, "points"), Veteran = Math.Min(1000, Int(f, "veteran")),
+                        Games = Int(f, "games"), Wins = Int(f, "wins"),
+                    };
+                    if (f.TryGetProperty("total", out var t) && t.ValueKind == JsonValueKind.Number) row.Given = Long(f, "total");
+                    if (row.Total > 0 || row.Games > 0) me.Fighters.Add(row);
+                }
+                me.Fighters = me.Fighters.OrderByDescending(f => f.Total).ThenByDescending(f => f.Games).ThenBy(f => f.Fighter, StringComparer.Ordinal).ToList();
+                return me;
+            }
+            catch (JsonException) { return null; }
+        }
+
+        /// <summary>my_opensmash_mastery_rank()'s row; null when there is none (no points yet) or the answer is not one</summary>
+        public static MasteryRank ParseServiceRank(string json)
+        {
+            try
+            {
+                using var d = JsonDocument.Parse(json);
+                var r = Rows(d.RootElement).FirstOrDefault();
+                if (r.ValueKind != JsonValueKind.Object || Long(r, "pos") <= 0) return null;
+                return new MasteryRank { Pos = Long(r, "pos"), Total = Long(r, "total"), TotalCount = Long(r, "total_count"), Id = Str(r, "id"), MainFighter = Key(Str(r, "main_fighter")) };
+            }
+            catch (JsonException) { return null; }
+        }
+
+        /// <summary>opensmash_mastery_board()'s rows, in its order; null when the answer is not one</summary>
+        public static List<MasteryRow> ParseServiceBoard(string json)
+        {
+            try
+            {
+                using var d = JsonDocument.Parse(json);
+                if (d.RootElement.ValueKind != JsonValueKind.Array) return null;
+                var list = new List<MasteryRow>();
+                foreach (var p in Rows(d.RootElement))
+                {
+                    string id = Str(p, "id");
+                    if (id == "" || id.Length > 64) continue;
+                    string name = Clean(Str(p, "name"));
+                    list.Add(new MasteryRow
+                    {
+                        Id = id, Name = name == "" ? "Anonymous" : name, Pos = Long(p, "pos"), Tag = Int(p, "tag"),
+                        MainFighter = Key(Str(p, "main_fighter")), Points = Long(p, "total"), Given = Long(p, "total"),
+                    });
+                }
+                return list;
+            }
+            catch (JsonException) { return null; }
+        }
+
+        static bool ServiceUp(Account account) => account != null && account.Service.Configured;
+
+        /// <summary>the signed-in account's mastery from the accounts service, with its place when it has one; null when
+        /// not signed in or the service did not answer with it (then the lobbies are asked)</summary>
+        public static async Task<MasteryMe> ServiceMeAsync(Account account)
+        {
+            if (!ServiceUp(account) || !account.SignedIn) return null;
+            try
+            {
+                var me = ParseServiceMe(await account.RestAsync("POST", "/rest/v1/rpc/my_opensmash_mastery", "{}"));
+                if (me == null) return null;
+                try { me.Rank = ParseServiceRank(await account.RestAsync("POST", "/rest/v1/rpc/my_opensmash_mastery_rank", "{}")); }
+                catch (Exception e) when (e is AccountException || e is HttpRequestException || e is TaskCanceledException) { }   // (the points without the place)
+                return me;
+            }
+            catch (Exception e) when (e is AccountException || e is HttpRequestException || e is TaskCanceledException || e is InvalidOperationException) { return null; }
+        }
+
+        /// <summary>the top of the board from the accounts service (anyone may read it); null when it did not answer</summary>
+        public static async Task<List<MasteryRow>> ServiceBoardAsync(Account account, int take = 5, string fighter = null)
+        {
+            if (!ServiceUp(account)) return null;
+            try
+            {
+                string body = JsonSerializer.Serialize(new Dictionary<string, object> { ["p_fighter"] = fighter, ["p_limit"] = Math.Max(1, take), ["p_offset"] = 0 });
+                var rows = ParseServiceBoard(await account.AnonRpcAsync("opensmash_mastery_board", body));
+                return rows?.Take(Math.Max(0, take)).ToList();
+            }
+            catch (Exception e) when (e is AccountException || e is HttpRequestException || e is TaskCanceledException || e is InvalidOperationException) { return null; }
+        }
+
+        /// <summary>the account's mastery: the accounts service, else (it failed) the official lobbies with the ticket</summary>
+        public static async Task<MasteryMe> MineAsync(Account account, HttpClient http, IEnumerable<string> lobbies, string ticket, CancellationToken cancel)
+            => await ServiceMeAsync(account) ?? await MeAsync(http, lobbies, ticket, cancel);
+
+        /// <summary>the top mastery: the accounts service, else (it failed) the official lobbies' lists merged</summary>
+        public static async Task<List<MasteryRow>> TopAsync(Account account, HttpClient http, IEnumerable<string> lobbies, CancellationToken cancel, int take = 5)
+            => await ServiceBoardAsync(account, take) ?? await BoardAsync(http, lobbies, cancel, take);
+
+        /// <summary>the place as the launchers show it ("#12"), "" when there is none</summary>
+        public static string Place(MasteryRank r) => r != null && r.Pos > 0 ? "#" + r.Pos.ToString(CultureInfo.InvariantCulture) : "";
 
         /// <summary>a shown name as one short line (the lobby limits it already)</summary>
         public static string Clean(string name)

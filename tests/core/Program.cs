@@ -448,6 +448,90 @@ static class Program
             var none = await Lobby("C", 1);
             Check(await Mastery.MeAsync(mh, new[] { "127.0.0.1:" + none.Port }, "t|n|1800000000." + new string('f', 64), default) == null, "mastery: only older lobbies: null (not available)");
             await none.Run; none.L.Stop();
+
+            // ---- the accounts service is the source (my_opensmash_mastery, my_opensmash_mastery_rank, opensmash_mastery_board);
+            // the lobbies are the fallback when it fails. Against tools/dev/fake_accounts.py (no real service).
+            var sm = Mastery.ParseServiceMe("[{\"fighter\":\"mario\",\"points\":300,\"veteran\":1000,\"total\":1450,\"games\":4,\"wins\":3,\"points_opensmash\":300,\"points_arena\":150}," +
+                                            "{\"fighter\":\"bad key!\",\"points\":5},{\"fighter\":\"ike\",\"points\":0,\"veteran\":0,\"total\":0,\"games\":0}]");
+            Check(sm != null && sm.FromService && sm.Fighters.Count == 1 && sm.Fighters[0].Total == 1450 && sm.Total == 1450,
+                  "mastery service: my_opensmash_mastery read (its own total kept, bad keys and empty rows skipped)");
+            Check(Mastery.ParseServiceMe("{\"error\":1}") == null && Mastery.ParseServiceMe("[]")?.Fighters.Count == 0, "mastery service: not an answer / no points yet");
+            var sr = Mastery.ParseServiceRank("[{\"pos\":12,\"id\":\"x\",\"total\":900,\"total_count\":340,\"main_fighter\":\"fox\"}]");
+            Check(sr != null && sr.Pos == 12 && sr.TotalCount == 340 && Mastery.Place(sr) == "#12" && Mastery.ParseServiceRank("[]") == null &&
+                  Mastery.ParseServiceRank("[{\"pos\":null}]") == null && Mastery.Place(null) == "", "mastery service: the place (none without points)");
+            var sb = Mastery.ParseServiceBoard("[{\"pos\":1,\"id\":\"a\",\"name\":\"Ann\",\"tag\":7,\"total\":5200,\"main_fighter\":\"fox\"},{\"pos\":2,\"id\":\"b\",\"name\":null,\"total\":3100},{\"id\":\"\",\"total\":9}]");
+            Check(sb != null && sb.Count == 2 && sb[0].Total == 5200 && sb[0].Tag == 7 && sb[0].MainFighter == "fox" && sb[1].Name == "Anonymous" && Mastery.Who(sb[1]) == "Anonymous",
+                  "mastery service: the board read (a hidden name is Anonymous)");
+
+            string repoDir = AppContext.BaseDirectory;
+            while (repoDir != null && !File.Exists(Path.Combine(repoDir, "tools", "dev", "fake_accounts.py"))) repoDir = Path.GetDirectoryName(repoDir.TrimEnd(Path.DirectorySeparatorChar));
+            if (repoDir == null) throw new Exception("tools/dev/fake_accounts.py not found");
+            async Task<(System.Diagnostics.Process P, AccountService S)> FakeService(params string[] extra)
+            {
+                var l0 = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0); l0.Start(); int port = ((System.Net.IPEndPoint)l0.LocalEndpoint).Port; l0.Stop();
+                var info = new System.Diagnostics.ProcessStartInfo(OperatingSystem.IsWindows() ? "python" : "python3") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+                foreach (var a in new[] { "-I", Path.Combine(repoDir, "tools", "dev", "fake_accounts.py"), "--port", port.ToString(), "--name", "Tester" }.Concat(extra)) info.ArgumentList.Add(a);
+                var p = System.Diagnostics.Process.Start(info)!;
+                string first = await p.StandardOutput.ReadLineAsync() ?? "";
+                if (!first.Contains("fake accounts service on")) throw new Exception("fake_accounts.py did not start: " + await p.StandardError.ReadToEndAsync());
+                _ = p.StandardOutput.ReadToEndAsync(); _ = p.StandardError.ReadToEndAsync();
+                return (p, new AccountService { Url = "http://127.0.0.1:" + port, Key = "test-key" });
+            }
+            async Task<Account> SignedIn(AccountService service, string dir)
+            {
+                var acc = new Account(dir, service)
+                {
+                    OpenBrowser = url => _ = Task.Run(async () =>
+                    {
+                        using var b = new System.Net.Http.HttpClient(new System.Net.Http.HttpClientHandler { AllowAutoRedirect = true }) { Timeout = TimeSpan.FromSeconds(20) };
+                        try { using var _r = await b.GetAsync(url); } catch (System.Net.Http.HttpRequestException) { } catch (TaskCanceledException) { }
+                    }),
+                };
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await acc.SignInWithBrowserAsync(cts.Token);
+                return acc;
+            }
+            string accDir = Path.Combine(Path.GetTempPath(), "os-core-mastery-" + Guid.NewGuid().ToString("N"));
+            var (fake, svcOk) = await FakeService();
+            var (fake404, svc404) = await FakeService("--no-mastery");
+            try
+            {
+                var anon = new Account(accDir, svcOk);
+                Check(await Mastery.ServiceMeAsync(anon) == null, "mastery service: signed out, my points not asked");
+                var board = await Mastery.ServiceBoardAsync(anon, 5);
+                Check(board != null && board.Count == 4 && board[0].Name == "Ann" && board[0].Pos == 1 && board[1].Name == "Anonymous" && board[2].Name == "Tester" && board[2].Total == 1420,
+                      "mastery service: the board read with the publishable key alone (anyone)");
+                Check((await Mastery.ServiceBoardAsync(anon, 2))?.Count == 2, "mastery service: p_limit sent");
+                var acc = await SignedIn(svcOk, Path.Combine(accDir, "a"));
+                var mine = await Mastery.ServiceMeAsync(acc);
+                Check(mine != null && mine.FromService && mine.Total == 1420 && mine.Fighters[0].Fighter == "mario" && mine.Rank?.Pos == 3 && mine.Rank.TotalCount == 4,
+                      "mastery service: my points and my place, signed in");
+                // the lobbies are not asked when the service answers
+                var unused = await Mastery.MineAsync(acc, mh, new[] { "127.0.0.1:1" }, "u|n|1800000000." + new string('f', 64), default);
+                Check(unused != null && unused.FromService && unused.Total == 1420, "mastery: the service first (the lobbies not needed)");
+
+                // a service without the functions (404): the lobbies with the ticket, as before
+                var acc404 = await SignedIn(svc404, Path.Combine(accDir, "b"));
+                Check(await Mastery.ServiceMeAsync(acc404) == null && await Mastery.ServiceBoardAsync(acc404, 5) == null, "mastery service: 404 (not applied yet) is no answer");
+                var fa = await Lobby("A", 2);
+                string[] one = { "127.0.0.1:" + fa.Port };
+                var fbMe = await Mastery.MineAsync(acc404, mh, one, "u|n|1800000000." + new string('f', 64), default);
+                var fbTop = await Mastery.TopAsync(acc404, mh, one, default, 5);
+                await fa.Run; fa.L.Stop();
+                Check(fbMe != null && !fbMe.FromService && fbMe.Total == 1120 && fbMe.Rank == null && fbTop?.Count == 1 && fbTop[0].Name == "Xia",
+                      "mastery: the service failing, the lobbies' /mastery/me and /mastery.json are the fallback");
+                // no service at all (a build without one): the lobbies
+                var fb = await Lobby("A", 1);
+                var noSvc = await Mastery.TopAsync(null, mh, new[] { "127.0.0.1:" + fb.Port }, default, 5);
+                await fb.Run; fb.L.Stop();
+                Check(noSvc?.Count == 1, "mastery: no accounts service, the lobbies' top list");
+            }
+            finally
+            {
+                try { fake.Kill(true); } catch (InvalidOperationException) { }
+                try { fake404.Kill(true); } catch (InvalidOperationException) { }
+                try { Directory.Delete(accDir, true); } catch { }
+            }
         }
         // ---- SSBU Arena's launcher, from the install_path.txt it writes (ArenaEdition)
         {
