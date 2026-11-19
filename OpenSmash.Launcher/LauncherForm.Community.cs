@@ -15,6 +15,9 @@ namespace OpenSmash.Launcher
     // the lobby's players online now and open rooms, and the GSP leaderboard's top 10 with a link to the site's page
     // (CommunityFeed.cs). Asked again every minute; a lobby that does not answer shows as offline, the last numbers
     // kept. And the launcher's own Discord Rich Presence, "In the launcher" (DiscordPresence.cs).
+    // (mastery, OpenSmash.Core/Mastery.cs) The GSP becomes mastery points: the account's total in place of its GSP and
+    // place, and a "SSBU Arena · Competitive" card (Arena's launcher when installed, else its download page) with the
+    // top mastery in place of the GSP leaderboard. OPENSMASH_MASTERY_UI=0: the GSP views as before.
     public partial class LauncherForm
     {
         LobbyStatus? _lobby;
@@ -27,6 +30,12 @@ namespace OpenSmash.Launcher
         int _communityBusy;
         // the leaderboard rows' Discord profile pictures by URL: null while asked or when it could not be had (initials)
         readonly Dictionary<string, Image?> _boardAvatars = new();
+        // (mastery) the home's "SSBU Arena · Competitive" card in place of the GSP leaderboard: Arena's launcher when it is
+        // installed (OpenSmash.Core.ArenaEdition, looked for at each refresh), and the official lobbies' top mastery
+        // (/mastery.json, summed over the regions; null with _topMasteryAsked: no lobby has it yet)
+        List<OpenSmash.Core.MasteryRow>? _topMastery;
+        bool _topMasteryAsked;
+        string? _arenaExe;
 
         void CommunityInit()
         {
@@ -111,8 +120,13 @@ namespace OpenSmash.Launcher
             try
             {
                 var counted = RegionCount();   // (asked together with the lobby's own pages)
+                bool mastery = OpenSmash.Core.Mastery.UiOn;
+                var top = mastery && OpenSmash.Core.Mastery.TopOn
+                    ? OpenSmash.Core.Mastery.BoardAsync(_httpClient, OpenSmash.Core.OfficialLobby.All(_repo), CancellationToken.None, 5) : null;
+                if (mastery && OpenSmash.Core.Mastery.ArenaCardOn) _arenaExe = await Task.Run(() => OpenSmash.Core.ArenaEdition.Find());
                 var (status, board) = await CommunityFeed.Fetch(_httpClient, CancellationToken.None, _repo);
                 var count = await counted;
+                if (top != null) { _topMastery = await top ?? _topMastery; _topMasteryAsked = true; }
                 _lobbyAsked = true;
                 _lobbyDown = status == null && board == null && count == null;
                 if (status != null) _lobby = status;
@@ -202,7 +216,13 @@ namespace OpenSmash.Launcher
             {
                 case "community:signin": DiscordSignIn(); return true;
                 case "community:cancel": _discordCancel?.Cancel(); return true;
-                case "community:me": _discordOpen = !_discordOpen; if (_discordOpen) _ = DiscordLoadGsp(); Invalidate(); return true;
+                case "community:me":
+                    _discordOpen = !_discordOpen;
+                    if (_discordOpen) _ = AccountMode ? AccountLoadGsp() : DiscordLoadGsp();
+                    Invalidate(); return true;
+                case "community:arena":   // (mastery) SSBU Arena's launcher, or its download page
+                    OpenSmash.Core.Updater.Log(_repo, OpenSmash.Core.ArenaEdition.Open(url => OpenUrl(url)));
+                    return true;
                 case "community:board":
                     try { Process.Start(new ProcessStartInfo(CommunityFeed.SitePage) { UseShellExecute = true }); }
                     catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException) { }
@@ -226,8 +246,10 @@ namespace OpenSmash.Launcher
             }
             float pad = 16 * s, ix = x + pad, iw = w - 2 * pad;
 
+            bool mastery = OpenSmash.Core.Mastery.UiOn;
+            bool accountIn = AccountMode && _account?.SignedIn == true;
             // the account
-            if (_discordHasApp || _mine != null || _boardMeId != null)
+            if (_discordHasApp || _mine != null || _boardMeId != null || (mastery && accountIn))
             {
                 float ph = 72 * s;
                 Panel(y, ph);
@@ -257,10 +279,18 @@ namespace OpenSmash.Launcher
                     string line = best > 0
                         ? UiLocale.Format("{0} GSP  ·  {1}", best.ToString("N0", CultureInfo.InvariantCulture), DiscordAccount.FighterName(fighter))
                         : UiLocale.Text("No GSP yet: play Quickplay online");
+                    if (mastery && AccountMode)
+                    {
+                        // (mastery: the account's total and its most played fighter; no place: mastery is not a ranking)
+                        rank = 0;
+                        line = _mastery is { } m && m.Fighters.Count > 0
+                            ? UiLocale.Format("{0} mastery points  ·  {1}", OpenSmash.Core.Mastery.N(m.Total), OpenSmash.Core.Mastery.FighterName(m.Fighters[0].Fighter))
+                            : UiLocale.Text(_masteryAsked && _mastery == null ? "Mastery points: not available yet" : "No mastery points yet: play online");
+                    }
                     Theme.Label(g, line, FB(13 * s), A(Theme.Muted), tx, ay + 24 * s, 18 * s, 0, StringAlignment.Near, tw - 60 * s);
                     if (rank > 0)
                         Theme.Label(g, "#" + rank.ToString(CultureInfo.InvariantCulture), FD(26 * s), A(Theme.Accent), x, y + 14 * s, 40 * s, 0, StringAlignment.Far, w - pad);
-                    if (_discord != null) AddHit("community:me", x, y, w, ph);
+                    if (_discord != null || (mastery && accountIn)) AddHit("community:me", x, y, w, ph);
                 }
                 y += ph + 10 * s;
             }
@@ -288,7 +318,45 @@ namespace OpenSmash.Launcher
                 y += ph + 10 * s;
             }
 
+            // (mastery) the SSBU Arena card and the top mastery, in place of the GSP leaderboard
+            if (mastery)
+            {
+                bool card = OpenSmash.Core.Mastery.ArenaCardOn, top = OpenSmash.Core.Mastery.TopOn;
+                if (card || top)
+                {
+                    float rowH = 21 * s;
+                    var rows = _topMastery ?? new List<OpenSmash.Core.MasteryRow>();
+                    float ph = 12 * s + (card ? 100 * s : 0) + (top ? 24 * s + Math.Max(1, rows.Count) * rowH : 0) + 12 * s;
+                    Panel(y, ph);
+                    float cy = y + 12 * s;
+                    if (card)
+                    {
+                        Theme.Label(g, "SSBU ARENA  ·  COMPETITIVE", FM(11 * s, true), A(Theme.Accent), ix, cy, 16 * s, 11 * s * 0.12f);
+                        Theme.Label(g, "Ranked 1v1, tournament rules. Same account.", FB(13 * s), A(Theme.Muted), ix, cy + 22 * s, 18 * s, 0, StringAlignment.Near, iw);
+                        string label = _arenaExe != null ? "PLAY SSBU ARENA" : "GET SSBU ARENA";
+                        Theme.ButtonAnimated(g, label, ix, cy + 50 * s, iw, 32 * s, s, primary: true, Hov("community:arena", _hover == "community:arena"), true, 12 * s, _alpha, press: Press("community:arena"));
+                        AddHit("community:arena", ix, cy + 50 * s, iw, 32 * s);
+                        cy += 100 * s;
+                    }
+                    if (top)
+                    {
+                        Theme.Label(g, "TOP MASTERY", FM(11 * s, true), A(Theme.Dim), ix, cy, 16 * s, 11 * s * 0.12f);
+                        cy += 24 * s;
+                        if (rows.Count == 0)
+                            Theme.Label(g, !_topMasteryAsked ? "Loading..." : "Not available now.", FB(13 * s), A(Theme.Muted), ix, cy, rowH);
+                        for (int i = 0; i < rows.Count; i++)
+                        {
+                            var r = rows[i];
+                            Theme.Label(g, (i + 1).ToString(CultureInfo.InvariantCulture), FM(13 * s, true), A(i < 3 ? Theme.Accent : Theme.Dim), ix, cy, rowH, 0, StringAlignment.Far, 22 * s);
+                            Theme.Label(g, OpenSmash.Core.Mastery.Who(r), FB(13 * s), A(Theme.Text), ix + 30 * s, cy, rowH, 0, StringAlignment.Near, iw - 110 * s);
+                            Theme.Label(g, OpenSmash.Core.Mastery.N(r.Total), FM(13 * s, true), A(Theme.Muted), ix, cy, rowH, 0, StringAlignment.Far, iw);
+                            cy += rowH;
+                        }
+                    }
+                }
+            }
             // the leaderboard's top 10
+            else
             {
                 float rowH = 21 * s, head = 34 * s, foot = 36 * s;
                 int n = Math.Max(1, _top.Count);

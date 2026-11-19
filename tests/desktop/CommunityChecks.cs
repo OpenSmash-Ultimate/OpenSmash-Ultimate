@@ -71,13 +71,31 @@ static class CommunityChecks
             window.Width=w;window.Height=h;surface.InvalidateVisual();
             using var frame=window.CaptureRenderedFrame();
             if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,$"community-{w}.png"));
-            var board=hits.FirstOrDefault(x=>x.Id=="community:board");var signin=hits.FirstOrDefault(x=>x.Id=="community:signin");
+            // (mastery: the SSBU Arena card's button in place of the GSP leaderboard's link)
+            var board=hits.FirstOrDefault(x=>x.Id=="community:arena");var signin=hits.FirstOrDefault(x=>x.Id=="community:signin");
             var play=hits.First(x=>x.Id=="menu:3");
             Check(board.Id!=null&&signin.Id!=null&&board.R.Right<=frame!.PixelSize.Width&&signin.R.Left>play.R.Right,$"home right column fits beside the buttons at {w}x{h}");
         }
+        // OPENSMASH_MASTERY_UI=0: the GSP leaderboard as before; mastery, the account's total on the card
+        string? mastery=Environment.GetEnvironmentVariable("OPENSMASH_MASTERY_UI");
+        try
+        {
+            Environment.SetEnvironmentVariable("OPENSMASH_MASTERY_UI","0");
+            surface.InvalidateVisual();using(window.CaptureRenderedFrame()){}
+            Check(hits.Any(x=>x.Id=="community:board")&&!hits.Any(x=>x.Id=="community:arena"),"OPENSMASH_MASTERY_UI=0 brings the GSP leaderboard back");
+        }
+        finally{Environment.SetEnvironmentVariable("OPENSMASH_MASTERY_UI",mastery);}
+        c.TopMastery=[new OpenSmash.Core.MasteryRow{Id="x",Name="Xia",Points=1200,Veteran=1000}];c.TopMasteryAsked=true;
+        surface.InvalidateVisual();using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"community-mastery.png"));}
+        Check(hits.Any(x=>x.Id=="community:arena")&&!hits.Any(x=>x.Id=="community:board"),"the SSBU Arena card in place of the GSP leaderboard");
         c.Account=new DiscordToken{Access="x",UserId="1",DisplayName="Player"};c.Open=true;c.Records=[new FighterGsp{Fighter=29,Gsp=500000}];
         surface.InvalidateVisual();using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"community-card.png"));}
         Check(hits.Any(x=>x.Id=="community:signout")&&hits.Any(x=>x.Id=="community:shown"),"the account card offers the leaderboard name choice and sign out");
+        // (an account: its card shows the mastery points, the show/hide choice stays)
+        c.Account=null;c.AccountMode=true;c.Me=new OpenSmash.Core.Profile{Username="Tester"};c.Open=true;c.MasteryAsked=true;
+        c.Mastery=OpenSmash.Core.Mastery.Merge([OpenSmash.Core.Mastery.ParseMe("{\"fighters\":[{\"fighter\":\"pzenigame\",\"points\":500,\"veteran\":1000,\"games\":12,\"wins\":7}]}")]);
+        surface.InvalidateVisual();using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"community-mastery-card.png"));}
+        Check(hits.Any(x=>x.Id=="community:signout")&&hits.Any(x=>x.Id=="community:shown")&&c.Mastery.Total==1500,"the account card with mastery keeps the name choice and sign out");
         window.Close();
     }
 }

@@ -59,7 +59,12 @@ public sealed partial class MainWindow
         _communityBusy = true;
         try
         {
+            // (mastery: the official lobbies' top mastery, summed over the regions, and Arena's launcher when installed)
+            var c0 = Surface.Community;
+            var top = Mastery.UiOn && Mastery.TopOn && _project != null ? Mastery.BoardAsync(Http, OfficialLobby.All(_project.Root), CancellationToken.None, 5) : null;
+            if (Mastery.UiOn && Mastery.ArenaCardOn) c0.ArenaExe = await Task.Run(() => ArenaEdition.Find());
             var (status, board) = await CommunityFeed.Fetch(Http, CancellationToken.None, _project?.Root);
+            if (top != null) { c0.TopMastery = await top ?? c0.TopMastery; c0.TopMasteryAsked = true; }
             var account = Surface.Community.Account;
             // (v0.5.0: an account's row is the id the lobby gave with the ticket; a Discord token's is its account hash)
             string mine = AccountMode ? Surface.Community.BoardId ?? "" : account?.UserId is { Length: > 0 } id ? DiscordAccount.AccountHash(id) : "";
@@ -115,6 +120,10 @@ public sealed partial class MainWindow
         switch (id)
         {
             case "community:board": Commands.OpenPath(CommunityFeed.SitePage); break;
+            case "community:arena":   // (mastery) SSBU Arena's launcher (Windows, installed), else its download page
+                if (root != null) Updater.Log(root, ArenaEdition.Open(Commands.OpenPath));
+                else ArenaEdition.Open(Commands.OpenPath);
+                break;
             case "community:cancel": _discordCancel?.Cancel(); break;
             case "community:me":
                 c.Open = !c.Open; c.Error = "";

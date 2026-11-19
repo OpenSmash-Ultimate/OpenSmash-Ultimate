@@ -380,6 +380,93 @@ static class Program
                   "board: show/hide sent with the ticket alone (\"\" hides, a name shows)");
             Check(await LobbyBoard.SetShownAsync(hc, new[] { "127.0.0.1:1" }, "", true, default) == 0, "board: no ticket, no show/hide sent");
         }
+        // ---- mastery points (Mastery.cs; the lobby's /mastery/me and /mastery.json): regions summed, the largest veteran
+        {
+            var eu = Mastery.ParseMe("{\"region\":\"eu\",\"total\":2300,\"fighters\":[{\"fighter\":\"mario\",\"points\":300,\"veteran\":1000,\"games\":4,\"wins\":3}," +
+                                     "{\"fighter\":\"ui_chara_pzenigame\",\"points\":1000,\"veteran\":0,\"games\":9,\"wins\":2},{\"fighter\":\"bad key!\",\"points\":5},{\"fighter\":7}]}");
+            var na = Mastery.ParseMe("{\"region\":\"na-east\",\"fighters\":[{\"fighter\":\"mario\",\"points\":200,\"veteran\":1000,\"games\":2,\"wins\":1}," +
+                                     "{\"fighter\":\"miigunner\",\"points\":50,\"veteran\":0,\"games\":1,\"wins\":0}]}");
+            Check(eu != null && eu.Fighters.Count == 2 && eu.Fighters[0].Fighter == "mario" && eu.Fighters[0].Total == 1300 &&
+                  eu.Fighters[1].Fighter == "pzenigame", "mastery: /mastery/me read (bad keys skipped, ui_chara_ cut)");
+            var sum = Mastery.Merge(new[] { eu, null, na });
+            var mario = sum.Fighters.First(f => f.Fighter == "mario");
+            Check(sum.Regions == 2 && mario.Points == 500 && mario.Veteran == 1000 && mario.Total == 1500 && mario.Games == 6 && mario.Wins == 4 &&
+                  sum.Fighters[0].Fighter == "mario" && sum.Total == 1500 + 1000 + 50, "mastery: regions summed, veteran the largest (not summed)");
+            Check(Mastery.ParseMe("{\"region\":\"eu\"}") == null && Mastery.ParseMe("[]") == null && Mastery.ParseMe("<html>") == null, "mastery: not an answer");
+            Check(Mastery.FighterName("pzenigame") == "Squirtle" && Mastery.FighterName("miiswordsman") == "Mii Swordfighter" &&
+                  Mastery.FighterName("newcomer_x") == "Newcomer x", "mastery: fighter keys' names");
+            var b1 = Mastery.ParseBoard("{\"region\":\"eu\",\"total\":[{\"id\":\"a1\",\"name\":\"Ann\",\"points\":900,\"veteran\":1000},{\"id\":\"b2\",\"name\":\"\",\"points\":1500,\"veteran\":0}]}");
+            var b2 = Mastery.ParseBoard("{\"region\":\"na-east\",\"total\":[{\"id\":\"b2\",\"points\":700,\"veteran\":1000},{\"id\":\"\",\"points\":9}]}");
+            var top = Mastery.MergeBoard(new[] { b1, null, b2 }, 5);
+            Check(top.Count == 2 && top[0].Id == "b2" && top[0].Total == 3200 && top[1].Total == 1900 && Mastery.Who(top[0]) == "Player" && Mastery.Who(top[1]) == "Ann",
+                  "mastery: top lists merged by id");
+            Check(await Mastery.MeAsync(new System.Net.Http.HttpClient(), new[] { "127.0.0.1:1" }, "", default) == null, "mastery: no ticket, nothing asked");
+
+            // two lobbies answer, an older one says 404: summed, the ticket header sent
+            var lobbyAnswers = new Dictionary<string, string>
+            {
+                ["A /mastery/me"] = "{\"region\":\"eu\",\"fighters\":[{\"fighter\":\"fox\",\"points\":120,\"veteran\":1000,\"games\":1,\"wins\":1}]}",
+                ["B /mastery/me"] = "{\"region\":\"na-east\",\"fighters\":[{\"fighter\":\"fox\",\"points\":80,\"veteran\":1000,\"games\":1,\"wins\":0}]}",
+                ["A /mastery.json"] = "{\"total\":[{\"id\":\"x\",\"name\":\"Xia\",\"points\":5,\"veteran\":0}]}",
+            };
+            var seenM = new List<string>();
+            async Task<(System.Net.Sockets.TcpListener L, int Port, Task Run)> Lobby(string tag, int requests)
+            {
+                var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+                l.Start();
+                int port = ((System.Net.IPEndPoint)l.LocalEndpoint).Port;
+                var run = Task.Run(async () =>
+                {
+                    for (int i = 0; i < requests; i++)
+                    {
+                        using var cl = await l.AcceptTcpClientAsync();
+                        using var st = cl.GetStream();
+                        var buf = new byte[8192]; int n = 0, got; string text = "";
+                        while ((got = await st.ReadAsync(buf.AsMemory(n, buf.Length - n))) > 0) { n += got; text = System.Text.Encoding.UTF8.GetString(buf, 0, n); if (text.Contains("\r\n\r\n")) break; }
+                        lock (seenM) seenM.Add(tag + " " + text);
+                        string path = text.Split(' ').ElementAtOrDefault(1) ?? "";
+                        byte[] body = lobbyAnswers.TryGetValue(tag + " " + path, out var ans) ? System.Text.Encoding.UTF8.GetBytes(ans) : System.Text.Encoding.UTF8.GetBytes("{\"error\":\"not found\"}");
+                        string status = ans != null ? "200 OK" : "404 Not Found";
+                        await st.WriteAsync(System.Text.Encoding.ASCII.GetBytes($"HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n"));
+                        await st.WriteAsync(body);
+                    }
+                });
+                await Task.Yield();
+                return (l, port, run);
+            }
+            var la = await Lobby("A", 2); var lb = await Lobby("B", 2); var lc = await Lobby("C", 2);
+            using var mh = new System.Net.Http.HttpClient();
+            string[] three = { "127.0.0.1:" + la.Port, "127.0.0.1:" + lb.Port, "127.0.0.1:" + lc.Port };
+            var mm = await Mastery.MeAsync(mh, three, "u|n|1800000000." + new string('f', 64), default);
+            var mt = await Mastery.BoardAsync(mh, three, default, 5);
+            await Task.WhenAll(la.Run, lb.Run, lc.Run); la.L.Stop(); lb.L.Stop(); lc.L.Stop();
+            Check(mm != null && mm.Regions == 2 && mm.Fighters.Count == 1 && mm.Fighters[0].Total == 1200 && mm.Games == 2 && mm.Wins == 1,
+                  "mastery: /mastery/me of two lobbies summed, the older one's 404 ignored");
+            Check(seenM.Where(t => t.Contains("GET /mastery/me ")).All(t => t.Contains("X-OpenSmash-Ticket: u|n|1800000000.")) &&
+                  seenM.Where(t => t.Contains("GET /mastery.json ")).All(t => !t.Contains("X-OpenSmash-Ticket")), "mastery: the ticket on /mastery/me only");
+            Check(mt != null && mt.Count == 1 && mt[0].Name == "Xia", "mastery: the top list from the lobby that has one");
+            var none = await Lobby("C", 1);
+            Check(await Mastery.MeAsync(mh, new[] { "127.0.0.1:" + none.Port }, "t|n|1800000000." + new string('f', 64), default) == null, "mastery: only older lobbies: null (not available)");
+            await none.Run; none.L.Stop();
+        }
+        // ---- SSBU Arena's launcher, from the install_path.txt it writes (ArenaEdition)
+        {
+            string ar = Path.Combine(Path.GetTempPath(), "os-core-arena-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                string file = Path.Combine(ar, "SSBU Arena", "install_path.txt"), game = Path.Combine(ar, "Arena Game");
+                Check(ArenaEdition.Find(file, true) == null, "arena: no file, not found");
+                Directory.CreateDirectory(Path.GetDirectoryName(file)!); Directory.CreateDirectory(game);
+                File.WriteAllText(file, game + "\r\n");
+                Check(ArenaEdition.Find(file, true) == null, "arena: the folder without SSBU-Arena.exe, not found");
+                File.WriteAllText(Path.Combine(game, "SSBU-Arena.exe"), "");
+                Check(ArenaEdition.Find(file, true) == Path.GetFullPath(Path.Combine(game, "SSBU-Arena.exe")), "arena: found by install_path.txt");
+                Check(ArenaEdition.Find(file, false) == null, "arena: not on Linux or macOS (link only)");
+                File.WriteAllText(file, "relative\\path\r\n");
+                Check(ArenaEdition.Find(file, true) == null, "arena: a relative path is not used");
+            }
+            finally { try { Directory.Delete(ar, true); } catch { } }
+        }
         string tkroot = Path.Combine(Path.GetTempPath(), "os-core-ticket-" + Guid.NewGuid().ToString("N"));
         try
         {
