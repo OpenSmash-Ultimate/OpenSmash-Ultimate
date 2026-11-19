@@ -2270,6 +2270,44 @@ static void rb_io_summary(void) {
             "timeouts: %lld asking thread, %lld main; unguarded %lld\n", io_on > 0 ? "on" : "off", (long long)io_req, io_inline, io_granted, io_wait_sum, io_wait_max,
             (long long)io_t_timeouts, io_m_timeouts, io_unguarded);
 }
+/* (2026-11-20) SSBU_RB_PERF=1 (off by default; off, one flag test a frame): a networked fight's costs in one line at its
+ * end, "[rb] perf: ...". A game frame: from the end of a normal safe point's net work to the moment the game asks for the
+ * next display buffer (rb_wait_point) - the game's own work for the frame, without the wait for the display, its save
+ * included; frames that follow a catch-up are not timed. A rollback: from its load to the end of its catch-up (the frames
+ * run again), with the frames run again a rollback. Logic frames a second over the fight (to its last normal frame). The
+ * barrier's waits (SSBU_RB_IO_BARRIER). */
+static int perf_on = -1, perf_n, perf_open;
+static float *perf_ms;
+static double perf_t0;
+#define PERF_CAP 65536
+static int perf_enabled(void) { if (perf_on < 0) { const char *e = getenv("SSBU_RB_PERF"); perf_on = e && *e == '1'; } return perf_on; }
+static void perf_frame_start(void) { if (perf_enabled()) { perf_open = 1; perf_t0 = now_ms(); } }
+static void perf_frame_point(void) {
+    if (!perf_open) return;
+    perf_open = 0;
+    if (!perf_ms) perf_ms = malloc(PERF_CAP * sizeof *perf_ms);
+    if (perf_ms && perf_n < PERF_CAP) perf_ms[perf_n++] = (float)(now_ms() - perf_t0);
+}
+static void perf_reset(void) { perf_n = 0; perf_open = 0; }
+static int perf_cmpf(const void *a, const void *b) { float x = *(const float *)a, y = *(const float *)b; return (x > y) - (x < y); }
+static void perf_summary(double sec, u32 logic) {
+    if (perf_on <= 0) return;
+    double avg = 0, p95 = 0, p99 = 0, mx = 0;
+    if (perf_n) {
+        for (int i = 0; i < perf_n; i++) avg += perf_ms[i];
+        avg /= perf_n;
+        qsort(perf_ms, (size_t)perf_n, sizeof *perf_ms, perf_cmpf);
+        p95 = perf_ms[(int)(0.95 * (perf_n - 1))]; p99 = perf_ms[(int)(0.99 * (perf_n - 1))]; mx = perf_ms[perf_n - 1];
+    }
+    double fps = sec > 0 ? logic / sec : 0;
+    fprintf(stderr, "[rb] perf: game frame %.2f ms on average, p95 %.2f, p99 %.2f, max %.2f (%d frames timed, without the wait for the display); "
+            "rollbacks %lld, %.2f frames run again each, %.2f ms each (load and frames run again; %.1f ms in all); "
+            "%.1f logic frames/s (%.0f%% of 60) over %.1f s; io barrier: %lld events, %lld waits at safe points, %.1f ms in all, %.1f ms at most, "
+            "timeouts %lld + %lld, unguarded %lld\n",
+            avg, p95, p99, mx, perf_n, net_rollbacks, net_rollbacks ? (double)net_rerun / net_rollbacks : 0.0,
+            net_rollbacks ? net_catch_ms / net_rollbacks : 0.0, net_catch_ms, fps, 100 * fps / 60, sec,
+            (long long)io_req, io_sp_waits, io_wait_sum, io_wait_max, (long long)io_t_timeouts, io_m_timeouts, io_unguarded);
+}
 static void rb_io_reset(void) { io_req = io_t_timeouts = 0; io_granted = io_m_timeouts = io_inline = io_unguarded = io_sp_waits = 0; io_wait_sum = io_wait_max = 0; }
 int rb_load_anyframe;        /* (hle_rb_state.c check: this load comes from the wait for the display, not from a safe point) */
 static void net_step(Cpu *c, u64 frame) {
@@ -2331,7 +2369,7 @@ static void net_step(Cpu *c, u64 frame) {
         net_alike_from = net_last_bad = net_resync_min = 0; net_saves_refused = net_resync_impossible = 0; net_desyncs_at_resync = 0;
         net_resync_good_at = 0; net_resync_same = net_resync_off = 0; net_resync_too_deep = 0;   /* (net_resync_deep: read once) */
         net_resync_hopeless = 0; net_resync_hopeless_skipped = 0;
-        rb_io_reset();
+        rb_io_reset(); perf_reset();
         rb_fiber_refused = rb_fiber_retried_ok = 0;
         memset(net_depth, 0, sizeof net_depth);
         net_save_spacing(0, 0, 0, 0, 1);
@@ -2693,6 +2731,7 @@ static void net_step(Cpu *c, u64 frame) {
         }
         if (pace_now.frames % 600 == 0) pace_line(key);
         pace_end_ms = now_ms();
+        perf_frame_start();   /* (SSBU_RB_PERF) */
     } else {
         /* the pads that came; the next frame waits while it would run too far ahead of them */
         net_deliver(key, 0);
@@ -2793,6 +2832,7 @@ long long rb_we_n[4];    /* rollbacks from the buffer's arrival, from inside the
 void rb_wait_point(Cpu *c) {
     static int on = -1, inwait = -1; static double gap_ms = 0.25;
     LONG kind = InterlockedExchange(&rb_vi_point, 0);
+    if (perf_on > 0 && rb_fast <= 0 && GetCurrentThreadId() == S.thread) perf_frame_point();   /* (SSBU_RB_PERF: the frame's own work ends here) */
     if (on < 0) {
         const char *e = getenv("SSBU_RB_WAITEND"), *w = getenv("SSBU_RB_WAITRB"), *u = getenv("SSBU_RB_WAITRB_US");
         on = e && *e ? atoi(e) : 1; inwait = w && *w ? atoi(w) : 0;   /* (on by default since v0.5.0, round 7) */
@@ -4228,7 +4268,7 @@ static void savestates(Cpu *c, u64 frame) {
     if (net_mode && S.in_fight && (net_mode != 2 || net_armed)) { net_step(c, frame); return; }
     /* (net mode: a fight that ended before <frames> still gets its report, and the whole fight is checked:
      * the launcher's 7200 is a floor, not a window - twopc8's report never came, its fight ending sooner) */
-    if (net_mode == 2 && !S.in_fight && net_got && pace_pending) { pace_pending = 0; pace_verdict(); rb_io_summary(); }   /* (the whole fight's, not the first <frames> of it that net_report covers) */
+    if (net_mode == 2 && !S.in_fight && net_got && pace_pending) { pace_pending = 0; pace_verdict(); rb_io_summary(); perf_summary((pace_end_ms - net_t0) / 1000, pace_now.key - net_key0); }   /* (the whole fight's, not the first <frames> of it that net_report covers) */
     if (net_mode == 2 && !S.in_fight && net_got && !net_done) {
         net_done = 1; net_report(); ch_have_mine = 0; memset(ch_have_peer, 0, sizeof ch_have_peer);
         rules_have = 0; rules_id = 0; rules_chunks = 0;   /* (the next set-up's rules again: the host's may change) */
