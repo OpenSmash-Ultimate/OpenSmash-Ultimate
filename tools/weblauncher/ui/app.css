@@ -97,3 +97,13 @@ html:not(.host-windows) .windows-only { display: none; }
 .dc-gsp td { padding: 3px 0; border-bottom: 1px solid var(--line); }
 .dc-gsp td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
 .dc-shown { display: flex; align-items: center; gap: 8px; margin: 4px 0 10px; font-size: 14px; }
+/* mastery points and the SSBU Arena card (app.js refreshMastery) */
+.ms-total { font-size: 22px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.ms-table th { font-weight: 600; padding: 2px 0; }
+.ms-table th.num { text-align: right; }
+.ms-table td.num:nth-child(2) { color: var(--text); }
+.ms-top { margin: 14px 0 4px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+a.button { display: inline-block; text-decoration: none; color: var(--text); background: var(--card); border: 2px solid var(--line);
+  border-radius: var(--radius); padding: 10px 18px; }
+a.button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+a.button.primary:hover { background: var(--accent-2); border-color: var(--accent-2); }

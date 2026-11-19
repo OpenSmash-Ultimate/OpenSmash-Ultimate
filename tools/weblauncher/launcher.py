@@ -804,6 +804,8 @@ class App:
             return self.check_update()
         if path == "/api/discord" and method == "GET":
             return self.discord.view()
+        if path == "/api/mastery" and method == "GET":   # (mastery points and the SSBU Arena card: discord_account.py)
+            return self.discord.mastery_view()
         if method != "POST":
             raise Error(f"unknown {path}")
         if path == "/api/settings":

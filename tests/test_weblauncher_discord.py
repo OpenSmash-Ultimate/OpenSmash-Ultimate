@@ -277,5 +277,71 @@ class Lobbies(unittest.TestCase):
         self.assertEqual(da.fighter_name(-1), "Fighter -1")
 
 
+class Mastery(unittest.TestCase):
+    """Mastery points (as OpenSmash.Core/Mastery.cs): the regions summed, the largest veteran bonus, 404 lobbies skipped."""
+    TICKET = "u|n|1800000000." + "f" * 64
+
+    def test_merge(self):
+        eu = {"region": "eu", "fighters": [{"fighter": "mario", "points": 300, "veteran": 1000, "games": 4, "wins": 3},
+                                           {"fighter": "ui_chara_pzenigame", "points": 1000, "games": 9, "wins": 2},
+                                           {"fighter": "bad key!", "points": 5}, {"fighter": 7}]}
+        na = {"region": "na-east", "fighters": [{"fighter": "mario", "points": 200, "veteran": 1000, "games": 2, "wins": 1}]}
+        rows = da.merge_mastery([eu, None, na])
+        self.assertEqual([r["fighter"] for r in rows], ["mario", "pzenigame"])
+        self.assertEqual((rows[0]["points"], rows[0]["veteran"], rows[0]["games"], rows[0]["wins"]), (1500, 1000, 6, 4))
+        self.assertEqual(rows[1]["name"], "Squirtle")
+        self.assertIsNone(da.merge_mastery([None, {"error": "not found"}]))
+        self.assertEqual(da.fighter_key_name("miiswordsman"), "Mii Swordfighter")
+
+    def test_board_merged_by_id(self):
+        top = da.merge_mastery_board([{"total": [{"id": "a", "name": "Ann", "points": 900, "veteran": 1000},
+                                                 {"id": "b", "name": "", "points": 1500, "veteran": 0}]},
+                                      {"total": [{"id": "b", "points": 700, "veteran": 1000}, {"id": "", "points": 9}]}, None])
+        self.assertEqual(top, [{"id": "b", "name": "Player", "points": 3200}, {"id": "a", "name": "Ann", "points": 1900}])
+
+    def test_asked_with_the_stored_ticket_official_lobbies_only(self):
+        with tempfile.TemporaryDirectory() as root:
+            asked = []
+
+            def ask(url, headers=None):
+                asked.append((url, dict(headers or {})))
+                if url.endswith("/mastery/me") and len(asked) == 1:
+                    return {"fighters": [{"fighter": "fox", "points": 120, "veteran": 1000, "games": 1, "wins": 1}]}
+                return None   # (the other lobby is older: 404)
+            self.assertIsNone(da.mastery_me(root, ask))   # (no stored ticket: nothing asked)
+            self.assertEqual(asked, [])
+            os.makedirs(os.path.join(root, "build", "cache"))
+            with open(os.path.join(root, "build", "cache", "online_pass.txt"), "w", encoding="ascii") as f:
+                f.write(self.TICKET)
+            rows = da.mastery_me(root, ask)
+            self.assertEqual(rows[0]["points"], 1120)
+            self.assertTrue(asked and all(h.get("X-OpenSmash-Ticket") == self.TICKET for _, h in asked))
+            self.assertEqual({u.split("/")[2] for u, _ in asked}, {x for x in da.server_region.official_lobbies(root)})
+            self.assertIsNone(da.mastery_board(root, lambda url, headers=None: None))
+
+    def test_view_and_switches(self):
+        with tempfile.TemporaryDirectory() as root:
+            acc = da.Account(root, root)
+            old = os.environ.get("OPENSMASH_MASTERY_UI")
+            try:
+                os.environ["OPENSMASH_MASTERY_UI"] = "0"
+                self.assertEqual(acc.mastery_view(me=lambda r: self.fail("asked"))["on"], False)
+                os.environ.pop("OPENSMASH_MASTERY_UI")
+                v = acc.mastery_view(me=lambda r: None, board=lambda r: None)
+                self.assertTrue(v["on"] and not v["available"] and v["top"] is None and v["arena_url"].startswith("https://www.ssbuarena.com"))
+                acc.mastery_at = 0
+                v = acc.mastery_view(me=lambda r: [{"fighter": "fox", "name": "Fox", "points": 50, "veteran": 0, "games": 1, "wins": 0}],
+                                     board=lambda r: [{"id": "x", "name": "Xia", "points": 5}])
+                self.assertTrue(v["available"] and v["total"] == 50 and v["top"][0]["name"] == "Xia")
+                acc.mastery_at = 0
+                v = acc.mastery_view(me=lambda r: None, board=lambda r: None)   # (lobbies down: the last answers kept)
+                self.assertEqual((v["total"], len(v["top"])), (50, 1))
+            finally:
+                if old is None:
+                    os.environ.pop("OPENSMASH_MASTERY_UI", None)
+                else:
+                    os.environ["OPENSMASH_MASTERY_UI"] = old
+
+
 if __name__ == '__main__':
     unittest.main()

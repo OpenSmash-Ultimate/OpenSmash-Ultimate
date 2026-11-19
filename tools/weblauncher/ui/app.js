@@ -367,6 +367,14 @@ async function refreshDiscord() {
     box.innerHTML = `<p class="muted">Sign in to show your Discord name, position and GSP.</p>${error}
       <div class="buttons"><button id="discord-signin" class="primary"${d.busy ? " disabled" : ""}>${d.busy ? "Finish in the browser…" : "Sign in with Discord"}</button></div>`;
     $("#discord-signin").onclick = async () => { await api("/api/discord/signin", {}).catch(() => {}); refreshDiscord(); };
+  } else if (masteryOn) {
+    /* (mastery: the points per fighter are in the Mastery card; no place, mastery is not a ranking) */
+    box.innerHTML = `<div class="dc-head">${d.avatar ? `<img src="${esc(d.avatar)}" alt="">` : "<img alt=\"\">"}
+        <div><span class="dc-name">${esc(d.name)}</span><div class="muted small">Signed in with Discord</div></div></div>
+      <label class="dc-shown"><input type="checkbox" id="discord-shown"${d.shown ? " checked" : ""}> Show my name on the leaderboard</label>${error}
+      <div class="buttons"><button id="discord-signout" class="ghost">Sign out</button></div>`;
+    $("#discord-shown").onchange = async e => { await api("/api/discord/shown", { shown: e.target.checked }).catch(() => {}); refreshDiscord(); };
+    $("#discord-signout").onclick = async () => { await api("/api/discord/signout", {}).catch(() => {}); refreshDiscord(); };
   } else {
     const rows = (d.fighters || []).slice(0, 10).map(f =>
       `<tr><td>${esc(f.name)}</td><td class="num">${f.rank ? "#" + f.rank + " · " : ""}${Number(f.gsp).toLocaleString("en-US")}</td></tr>`).join("");
@@ -382,7 +390,35 @@ async function refreshDiscord() {
   clearTimeout(discordTimer);
   discordTimer = setTimeout(refreshDiscord, d.busy ? 1500 : 60000);
 }
-refreshDiscord();
+
+/* ---- mastery points and the SSBU Arena card (discord_account.py mastery_view; OPENSMASH_MASTERY_UI=0: GSP as before) ---- */
+let masteryOn = false, masteryTimer = null;
+const num = n => Number(n || 0).toLocaleString("en-US");
+async function refreshMastery() {
+  let m;
+  try { m = await api("/api/mastery"); } catch (e) { return; }
+  masteryOn = !!m.on;
+  $("#mastery-card").hidden = !m.on;
+  $("#arena-card").hidden = !m.on || !(m.arena_card || m.top_on);
+  if (!m.on) return;
+  const rows = (m.fighters || []).slice(0, 10).map(f =>
+    `<tr><td>${esc(f.name)}</td><td class="num">${num(f.points)}</td><td class="num muted">${num(f.games)}</td><td class="num muted">${num(f.wins)}</td></tr>`).join("");
+  $("#mastery-box").innerHTML = !m.ticket && !m.available
+    ? `<p class="muted small">Sign in to play online: your mastery points show here.</p>`
+    : !m.available ? `<p class="muted small">Mastery points are not available on the lobby yet.</p>`
+    : `<p><span class="ms-total">${num(m.total)}</span> <span class="muted small">points in all · ${num(m.games)} games · ${num(m.wins)} wins</span></p>
+       ${rows ? `<table class="dc-gsp ms-table"><tr class="muted small"><th></th><th class="num">Points</th><th class="num">Games</th><th class="num">Wins</th></tr>${rows}</table>`
+              : `<p class="muted small">No mastery points yet: play Quickplay or Battle Arena online.</p>`}
+       <p class="muted small">Points for playing, they only go up. Ranked lives in SSBU Arena.</p>`;
+  const top = (m.top || []).map((r, i) => `<tr><td class="num muted">${i + 1}</td><td>${esc(r.name)}</td><td class="num">${num(r.points)}</td></tr>`).join("");
+  $("#arena-box").innerHTML = (m.arena_card ? `<p>Ranked 1v1, tournament rules. Same account.</p>
+      <p class="muted small">SSBU Arena runs on Windows only: this opens its site.</p>
+      <div class="buttons"><a class="button primary" href="${esc(m.arena_url)}" target="_blank" rel="noopener">SSBU Arena site</a></div>` : "")
+    + (m.top_on ? `<h4 class="ms-top">Top mastery</h4>${top ? `<table class="dc-gsp">${top}</table>` : `<p class="muted small">Not available now.</p>`}` : "");
+  clearTimeout(masteryTimer);
+  masteryTimer = setTimeout(refreshMastery, 60000);
+}
+refreshMastery().then(refreshDiscord);
 
 /* ---- the window ---- */
 $("#quit").onclick = async () => {

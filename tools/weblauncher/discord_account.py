@@ -375,6 +375,118 @@ def records(root, where, ask=_ask):
     return sorted(best.items(), key=lambda r: (-r[1], r[0]))
 
 
+# ---- mastery points (as OpenSmash.Core/Mastery.cs): per account and fighter, points that only go up; no levels, no
+# tiers. Each official lobby counts only its own matches, so the regions are SUMMED; the one-time veteran bonus is the
+# largest of the regions', not their sum. GET /mastery/me (with the stored lobby ticket, official lobbies only) and the
+# public GET /mastery.json; an older lobby answers 404 and is skipped. OPENSMASH_MASTERY_UI=0: the GSP view as before;
+# OPENSMASH_ARENA_CARD=0 hides the SSBU Arena card, OPENSMASH_TOP_MASTERY=0 its top list.
+ARENA_DOWNLOAD = "https://www.ssbuarena.com/download"   # (Arena is Windows only: on Linux and macOS a link, nothing to start)
+FIGHTER_KEYS = {
+    "mario": "Mario", "donkey": "Donkey Kong", "link": "Link", "samus": "Samus", "samusd": "Dark Samus",
+    "yoshi": "Yoshi", "kirby": "Kirby", "fox": "Fox", "pikachu": "Pikachu", "luigi": "Luigi", "ness": "Ness",
+    "captain": "Captain Falcon", "purin": "Jigglypuff", "peach": "Peach", "daisy": "Daisy", "koopa": "Bowser",
+    "ice_climber": "Ice Climbers", "popo": "Ice Climbers", "nana": "Ice Climbers", "sheik": "Sheik", "zelda": "Zelda",
+    "mariod": "Dr. Mario", "pichu": "Pichu", "falco": "Falco", "marth": "Marth", "lucina": "Lucina",
+    "younglink": "Young Link", "ganon": "Ganondorf", "mewtwo": "Mewtwo", "roy": "Roy", "chrom": "Chrom",
+    "gamewatch": "Mr. Game & Watch", "metaknight": "Meta Knight", "pit": "Pit", "pitb": "Dark Pit",
+    "szerosuit": "Zero Suit Samus", "wario": "Wario", "snake": "Snake", "ike": "Ike", "ptrainer": "Pokemon Trainer",
+    "pzenigame": "Squirtle", "pfushigisou": "Ivysaur", "plizardon": "Charizard", "diddy": "Diddy Kong",
+    "lucas": "Lucas", "sonic": "Sonic", "dedede": "King Dedede", "pikmin": "Olimar", "lucario": "Lucario",
+    "robot": "R.O.B.", "toonlink": "Toon Link", "wolf": "Wolf", "murabito": "Villager", "rockman": "Mega Man",
+    "wiifit": "Wii Fit Trainer", "rosetta": "Rosalina & Luma", "littlemac": "Little Mac", "gekkouga": "Greninja",
+    "palutena": "Palutena", "pacman": "Pac-Man", "reflet": "Robin", "shulk": "Shulk", "koopajr": "Bowser Jr.",
+    "duckhunt": "Duck Hunt", "ryu": "Ryu", "ken": "Ken", "cloud": "Cloud", "kamui": "Corrin", "bayonetta": "Bayonetta",
+    "inkling": "Inkling", "ridley": "Ridley", "simon": "Simon", "richter": "Richter", "krool": "King K. Rool",
+    "shizue": "Isabelle", "gaogaen": "Incineroar", "packun": "Piranha Plant", "jack": "Joker", "brave": "Hero",
+    "buddy": "Banjo & Kazooie", "dolly": "Terry", "master": "Byleth", "tantan": "Min Min", "pickel": "Steve",
+    "edge": "Sephiroth", "eflame": "Pyra", "elight": "Mythra", "element": "Pyra & Mythra",
+    "eflame_first": "Pyra", "elight_first": "Mythra", "eflame_only": "Pyra", "elight_only": "Mythra",
+    "demon": "Kazuya", "trail": "Sora",
+    "miifighter": "Mii Brawler", "miiswordsman": "Mii Swordfighter", "miigunner": "Mii Gunner"}
+
+
+def switch_on(name):
+    """A switch that is on unless the variable says 0 / off / false."""
+    return (os.environ.get(name) or "").strip().lower() not in ("0", "off", "false")
+
+
+def fighter_key(k):
+    """A fighter key as the lobby sends it ("ui_chara_" cut), or "" when it is not one."""
+    k = (k if isinstance(k, str) else "").strip().lower()
+    if k.startswith("ui_chara_"):
+        k = k[9:]
+    return k if 0 < len(k) <= 32 and all(c.isascii() and (c.isalnum() or c == "_") for c in k) else ""
+
+
+def fighter_key_name(k):
+    k = fighter_key(k)
+    return FIGHTER_KEYS.get(k) or (k[:1].upper() + k[1:].replace("_", " ") if k else "?")
+
+
+def _num(v):
+    return max(0, v) if isinstance(v, int) and not isinstance(v, bool) else 0
+
+
+def merge_mastery(answers):
+    """Several /mastery/me answers (None skipped) as one: [{"fighter", "name", "points" (summed + the largest veteran),
+    "veteran", "games", "wins"}], highest first; None when no answer was one."""
+    best, any_answer = {}, False
+    for a in answers:
+        if not isinstance(a, dict) or not isinstance(a.get("fighters"), list):
+            continue
+        any_answer = True
+        for f in a["fighters"]:
+            key = fighter_key(f.get("fighter")) if isinstance(f, dict) else ""
+            if not key:
+                continue
+            s = best.setdefault(key, {"points": 0, "veteran": 0, "games": 0, "wins": 0})
+            s["points"] += _num(f.get("points"))
+            s["games"] += _num(f.get("games"))
+            s["wins"] += _num(f.get("wins"))
+            s["veteran"] = max(s["veteran"], min(1000, _num(f.get("veteran"))))
+    if not any_answer:
+        return None
+    rows = [{"fighter": k, "name": fighter_key_name(k), "points": v["points"] + v["veteran"], "veteran": v["veteran"],
+             "games": v["games"], "wins": v["wins"]} for k, v in best.items() if v["points"] + v["veteran"] or v["games"]]
+    return sorted(rows, key=lambda r: (-r["points"], -r["games"], r["fighter"]))
+
+
+def merge_mastery_board(boards, take=5):
+    """/mastery.json "total" lists of several lobbies as one, by the opaque id (the same on every lobby): points summed,
+    the largest veteran; [{"id", "name", "points"}] (points with the veteran), highest first."""
+    rows = {}
+    for b in boards:
+        total = b.get("total") if isinstance(b, dict) else None
+        for r in total if isinstance(total, list) else []:
+            if not isinstance(r, dict) or not isinstance(r.get("id"), str) or not r["id"] or len(r["id"]) > 64:
+                continue
+            s = rows.setdefault(r["id"], {"id": r["id"], "name": "", "p": 0, "v": 0})
+            s["p"] += _num(r.get("points"))
+            s["v"] = max(s["v"], _num(r.get("veteran")))
+            name = r.get("name") if isinstance(r.get("name"), str) else ""
+            if not s["name"] and name:
+                s["name"] = "".join(c for c in name if c.isprintable()).strip()[:32]
+    out = [{"id": s["id"], "name": s["name"] or "Player", "points": s["p"] + s["v"]} for s in rows.values() if s["p"] + s["v"] > 0]
+    return sorted(out, key=lambda r: (-r["points"], r["id"]))[:take]
+
+
+def mastery_me(root, ask=_ask):
+    """The account's mastery from every official lobby (the stored lobby ticket as the proof), summed; None when there is
+    no ticket or no lobby has /mastery/me yet."""
+    ticket = stored_ticket(root)
+    if not ticket:
+        return None
+    return merge_mastery([ask(f"http://{lobby}/mastery/me", {"X-OpenSmash-Ticket": ticket})
+                          for lobby in server_region.official_lobbies(root)])
+
+
+def mastery_board(root, ask=_ask, take=5):
+    """The official lobbies' top mastery (public), merged; None when no lobby has /mastery.json yet."""
+    got = [ask(f"http://{lobby}/mastery.json") for lobby in server_region.official_lobbies(root)]
+    got = [b for b in got if isinstance(b, dict) and isinstance(b.get("total"), list)]
+    return merge_mastery_board(got, take) if got else None
+
+
 def ranks_in(board, pid):
     """The player's (global position, {fighter: position}) in leaderboard.json; (0, {}) when not there."""
     for p in (board or {}).get("players") or []:
@@ -484,6 +596,9 @@ class Account:
         self.mine_at = 0
         self.lock = threading.Lock()
         self.told = False
+        self.mastery_at = 0
+        self.mastery_mine = None   # (mastery_view: the last answers kept while a lobby is down)
+        self.mastery_top = None
 
     def client_id(self):
         return app_id(self.program_dir)
@@ -528,6 +643,25 @@ class Account:
             self.mine_at = time.time()
             self.mine = records(self.root, self.lobbies())
         return self.mine
+
+    def mastery_view(self, me=mastery_me, board=mastery_board):
+        """What the page shows of the mastery points and the SSBU Arena card (asked again at most once a minute)."""
+        out = {"on": switch_on("OPENSMASH_MASTERY_UI"), "arena_card": switch_on("OPENSMASH_ARENA_CARD"),
+               "top_on": switch_on("OPENSMASH_TOP_MASTERY"), "arena_url": ARENA_DOWNLOAD}
+        if not out["on"]:
+            return out
+        if time.time() - self.mastery_at > 60:
+            self.mastery_at = time.time()
+            got = me(self.root)
+            self.mastery_mine = got if got is not None else self.mastery_mine
+            if out["top_on"]:
+                top = board(self.root)
+                self.mastery_top = top if top is not None else self.mastery_top
+        mine = self.mastery_mine
+        out.update({"ticket": stored_ticket(self.root) is not None, "available": mine is not None, "fighters": mine or [],
+                    "total": sum(f["points"] for f in mine or []), "games": sum(f["games"] for f in mine or []),
+                    "wins": sum(f["wins"] for f in mine or []), "top": self.mastery_top})
+        return out
 
     def view(self):
         out = {"available": bool(self.client_id()), "busy": self.busy, "error": self.error}
