@@ -567,11 +567,21 @@ static int rb_fs = -1;
 static u64 rb_born[512];        /* (by slot) when its handle was opened */
 int kernel_rb_switch(void);   /* (kernel.c: SSBU_RB, or run-ahead) */
 static int rb_fs_on(void) { if (rb_fs < 0) rb_fs = kernel_rb_switch(); return rb_fs; }
+/* SSBU_RB_IO_TRACE=1 (test aid, off by default): every handle opened and closed while rollback counts them, with the
+ * guest path and the count, to name the file behind a "LOAD refused: a game file open at the save was closed since" */
+static int rb_io_trace = -1;
+static __declspec(thread) const char *rb_trace_path;   /* (the path the open being made names) */
+static int rb_io_tracing(void) {
+    if (rb_io_trace < 0) { const char *e = getenv("SSBU_RB_IO_TRACE"); rb_io_trace = e && *e == '1'; }
+    return rb_io_trace;
+}
 static void rb_closing(const Handle *h) {   /* (the lock held) */
     if (!rb_fs_on()) return;
     u32 i = (u32)(h - handles);
     u32 k = rb_nclose++ % 256;
     rb_closes[k][0] = ++rb_seq; rb_closes[k][1] = i < 512 ? rb_born[i] : 0;
+    if (rb_io_tracing()) fprintf(stderr, "[rb-io] close: handle %u (opened at #%llu) closed at #%llu\n", i, (unsigned long long)rb_closes[k][1],
+                                 (unsigned long long)rb_seq);
 }
 u64 fs_rb_mark(void) { ready(); EnterCriticalSection(&lock); u64 m = rb_seq; LeaveCriticalSection(&lock); return m; }
 int fs_rb_closed_since(u64 mark) {
@@ -596,6 +606,9 @@ static u64 new_handle(Handle h) {
             handles[i] = h;
             handles[i].used = 1;
             if (rb_fs_on()) rb_born[i] = ++rb_seq;
+            if (rb_fs_on() && rb_io_tracing())
+                fprintf(stderr, "[rb-io] open: handle %u at #%llu: %s %s\n", i, (unsigned long long)rb_seq, h.kind == DIR_ENTRY ? "directory" : "file",
+                        rb_trace_path ? rb_trace_path : "?");
             LeaveCriticalSection(&lock);
             return 0x46530000ull | i;
         }
@@ -1381,6 +1394,7 @@ HLE(_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc) {
 HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     const char *rest;
     ready();
+    rb_trace_path = P(char, c->x[1]);
     struct Mount *m = find_mount(P(char, c->x[1]), &rest);
     int mode = (int)c->x[2];
     if (!m) { c->x[0] = R_NOT_MOUNTED; return; }
@@ -1608,6 +1622,7 @@ static void listing_free(Handle *h) {
 HLE(_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci) {   /* (handle*, path, mode) */
     const char *rest;
     ready();
+    rb_trace_path = P(char, c->x[1]);
     struct Mount *m = find_mount(P(char, c->x[1]), &rest);
     int mode = (int)c->x[2];
     if (!m) { c->x[0] = R_NOT_MOUNTED; return; }

@@ -902,6 +902,13 @@ static KThread *new_thread(u64 entry, u64 arg, u64 stack_top, i32 priority, i32 
     t->mask = (u32)core < 3 ? 1ull << core : CORES;   /* (any core without SSBU_CORE_MASKS) */
     t->processor = (u32)core < 3 ? core : 0;
     t->id = next_thread_id++;
+    {   /* (SSBU_RB_IO_TRACE=1, test aid: the guest threads made and ended, to name the one behind a rollback's "LOAD
+         * refused: another number of guest threads than at the save"; hle_fs.c traces the files) */
+        static int trace = -1;
+        if (trace < 0) { const char *e = getenv("SSBU_RB_IO_TRACE"); trace = e && *e == '1'; }
+        if (trace) fprintf(stderr, "[rb-io] guest thread %u made: entry %#llx, priority %d, core %d (%u threads)\n", (unsigned)t->id,
+                           (unsigned long long)entry, (int)priority, (int)core, (unsigned)nthreads);
+    }
     if (recycle) reap();
     if (nspare_tlrs) {
         t->tlr = spare_tlrs[--nspare_tlrs];
@@ -931,6 +938,10 @@ static __thread jmp_buf *exit_point;
 #endif
 
 static _Noreturn void exit_thread(KThread *t) {
+    {   static int trace = -1;   /* (SSBU_RB_IO_TRACE=1: see new_thread) */
+        if (trace < 0) { const char *e = getenv("SSBU_RB_IO_TRACE"); trace = e && *e == '1'; }
+        if (trace) fprintf(stderr, "[rb-io] guest thread %u ends (entry %#llx)\n", (unsigned)t->id, (unsigned long long)t->entry);
+    }
     EnterCriticalSection(&klock);
     t->exited = 1;
     objects[index_of(t->handle)].signaled = 1;
