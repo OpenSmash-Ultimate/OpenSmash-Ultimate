@@ -1,8 +1,9 @@
 /* Offline checks of Discord's sign-in and Rich Presence without the SDK or an account (runtime/net_discord_core.c,
  * and runtime/net_discord.c with no discord_partner_sdk.dll beside the program): the shared token file, the application
  * id file, the presence's text, the join secret, fighter names, SHA-256 / HMAC and the signed requests to the lobby's
- * GSP pages, reading GET /gsp/me's answer and the position in leaderboard.json, and that the game is untouched without
- * the SDK. tests/test_discord.py builds and runs it (and checks the "sign" lines it prints against the lobby's game server, board.py);
+ * GSP pages, reading GET /gsp/me's answer and the position in leaderboard.json, the fighters' keys and the lobbies'
+ * GET /mastery/me (OpenSmash mastery points) with the presence that shows them, the lobby ticket, and that the game is
+ * untouched without the SDK. tests/test_discord.py builds and runs it (and checks the "sign" lines it prints against the lobby's game server, board.py);
  * exit code 0 when every check passes.
  *   discordtest.exe <a scratch folder> */
 #define _CRT_SECURE_NO_WARNINGS
@@ -22,6 +23,7 @@ int net_means_official_lobby(const char *host) { return host && !strcmp(host, ne
 void net_rooms_pick(unsigned host) { (void)host; }
 void menu_toast(const char *text) { (void)text; }
 int account_nsa_hex(char out[17]) { out[0] = 0; return 0; }
+int net_region_override(char *out, int cap) { (void)out; (void)cap; return 0; }
 
 static int failures, checks;
 #define CHECK(cond, ...) do { checks++; if (!(cond)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -97,6 +99,22 @@ static void presence(void) {
     strcpy(p.target, "K7Q2M");
     CHECK(!discord_join_secret(&p, tiny, sizeof tiny) && !tiny[0], "a secret that does not fit");
 
+    /* (OpenSmash mastery points: the fighter's mastery instead of the GSP and the position; SSBU_MASTERY_PRESENCE=0 the above) */
+    memset(&p, 0, sizeof p); p.stage = -1;
+    p.where = DP_QUICKPLAY; p.fighter = 0; p.gsp = 1460; p.rank = 12; p.players = 2; p.max_players = 2; p.in_match = 1;
+    p.mastery_mode = 1; p.has_mastery = 1; p.mastery = 1460;
+    discord_presence_text(&p, d, sizeof d, s, sizeof s);
+    CHECK(!strcmp(d, "Quickplay - Mario - Mastery 1,460") && !strcmp(s, "In a match"), "mastery: \"%s\" / \"%s\"", d, s);
+    p.has_mastery = 0;
+    discord_presence_text(&p, d, sizeof d, s, sizeof s);
+    CHECK(!strcmp(d, "Quickplay - Mario"), "mastery not known: nothing about points, no GSP, no position: \"%s\"", d);
+    p.has_mastery = 1; p.mastery = 0; p.fighter = 37;
+    discord_presence_text(&p, d, sizeof d, s, sizeof s);
+    CHECK(!strcmp(d, "Quickplay - Pokemon Trainer - Mastery 0"), "a fighter with no points yet: \"%s\"", d);
+    p.where = DP_MENUS;
+    discord_presence_text(&p, d, sizeof d, s, sizeof s);
+    CHECK(!strcmp(d, "In the menus"), "the menus: no fighter, no points: \"%s\"", d);
+
     DiscordJoin j;
     CHECK(discord_join_parse("os2|a|eu.lobby.opensmashultimate.com:39421|abc|K7Q2M", &j) && j.where == DP_ARENA && !strcmp(j.relay, "eu.lobby.opensmashultimate.com:39421")
           && !strcmp(j.code, "abc") && !strcmp(j.target, "K7Q2M"), "parse arena");
@@ -136,6 +154,50 @@ static void names(void) {
     discord_group_digits(1000, g, sizeof g); CHECK(!strcmp(g, "1,000"), "1,000: %s", g);
     discord_group_digits(4294967295u, g, sizeof g); CHECK(!strcmp(g, "4,294,967,295"), "max: %s", g);
     CHECK(!discord_group_digits(1000000, g, 5) && !g[0], "too tiny a buffer");
+    /* (OpenSmash mastery points: the keys, ui_chara_db's names without "ui_chara_", by the same numbers) */
+    CHECK(!strcmp(discord_fighter_key(0), "mario") && !strcmp(discord_fighter_key(37), "ptrainer") && !strcmp(discord_fighter_key(16), "ice_climber"), "keys");
+    CHECK(!strcmp(discord_fighter_key(71), "miifighter") && !strcmp(discord_fighter_key(72), "miiswordsman") && !strcmp(discord_fighter_key(73), "miigunner"), "keys: the Miis");
+    CHECK(!strcmp(discord_fighter_key(29), "gamewatch") && !strcmp(discord_fighter_key(83), "element") && !strcmp(discord_fighter_key(85), "trail"), "keys (2)");
+    CHECK(!discord_fighter_key(-1) && !discord_fighter_key(86), "keys: not playable");
+    int all = 0;
+    for (int i = 0; discord_fighter_key_at(i); i++) all++;
+    CHECK(all == 86 + 12, "every key: %d", all);
+    CHECK(discord_fighter_of_key("pzenigame") == 37 && discord_fighter_of_key("ptrainer") == 37 && discord_fighter_of_key("nana") == 16, "a fighter's parts");
+    CHECK(discord_fighter_of_key("elight_first") == 83 && discord_fighter_of_key("trail") == 85 && discord_fighter_of_key("mario") == 0, "a fighter's parts (2)");
+    CHECK(discord_fighter_of_key("nope") == -1 && discord_fighter_of_key("") == -1 && discord_fighter_of_key(NULL) == -1, "not a key");
+}
+
+/* (OpenSmash mastery points) GET /mastery/me of two regions, summed: points added, the veteran bonus the largest */
+static void mastery(void) {
+    static DiscordMastery m;
+    long long v = -1;
+    memset(&m, 0, sizeof m);
+    CHECK(!discord_mastery_of(&m, 0, &v) && v == 0, "no answer: not known");
+    const char *eu = "{\"region\":\"eu\",\"account\":\"0a1b\",\"total\":2460,\"fighters\":[{\"fighter\":\"mario\",\"points\":460,"
+                     "\"veteran\":1000,\"games\":4,\"wins\":2,\"last_at\":1763700000},{\"fighter\":\"pzenigame\",\"points\":100,\"veteran\":0},"
+                     "{\"fighter\":\"BAD key\",\"points\":5},{\"fighter\":\"ptrainer\",\"points\":50,\"veteran\":1000}]}";
+    const char *na = "{\"region\":\"na-east\",\"fighters\":[{\"points\":30,\"fighter\":\"mario\",\"veteran\":1000},{\"fighter\":\"fox\",\"points\":7000000000}]}";
+    CHECK(discord_mastery_add(eu, &m) && m.answers == 1 && m.n == 3, "a region's answer: %d answers, %d fighters", m.answers, m.n);
+    CHECK(discord_mastery_add(na, &m) && m.answers == 2 && m.n == 4, "and another: %d answers, %d fighters", m.answers, m.n);
+    CHECK(discord_mastery_of(&m, 0, &v) && v == 460 + 30 + 1000, "Mario: the points summed, one veteran bonus: %lld", v);
+    CHECK(discord_mastery_of(&m, 37, &v) && v == 100 + 50 + 1000, "Pokemon Trainer: its Pokemon too: %lld", v);
+    CHECK(discord_mastery_of(&m, 7, &v) && v == 1000000000, "Fox: kept within bounds: %lld", v);
+    CHECK(discord_mastery_of(&m, 42, &v) && v == 0, "a fighter not listed: 0 (known)");
+    CHECK(!discord_mastery_add("{\"fighters\":[{\"fighter\":\"mario\",\"points\":5}", &m) && m.answers == 2 && discord_mastery_of(&m, 0, &v) && v == 1490,
+          "an answer cut short adds nothing");
+    CHECK(!discord_mastery_add("{\"error\":\"no ticket\"}", &m) && !discord_mastery_add("[]", &m) && !discord_mastery_add(NULL, &m) && m.answers == 2, "not an answer");
+    CHECK(discord_mastery_add("{\"region\":\"eu\",\"fighters\":[]}", &m) && m.answers == 3, "an account with no points yet");
+}
+
+/* the lobby ticket (SSBU_ONLINE_TICKET): a header's worth of printable text */
+static void ticket(void) {
+    char t[400];
+    _putenv("SSBU_ONLINE_TICKET=00000000-0000-4000-8000-000000000001|Nelly N|1900000000.ab12  ");
+    CHECK(discord_lobby_ticket(t, sizeof t) && !strcmp(t, "00000000-0000-4000-8000-000000000001|Nelly N|1900000000.ab12"), "a ticket, trailing spaces off: %s", t);
+    _putenv("SSBU_ONLINE_TICKET=a\x01b");
+    CHECK(!discord_lobby_ticket(t, sizeof t) && !t[0], "a control character: none");
+    _putenv("SSBU_ONLINE_TICKET=");
+    CHECK(!discord_lobby_ticket(t, sizeof t), "no ticket");
 }
 
 static void tohex(const uint8_t *b, size_t n, char *out) { for (size_t i = 0; i < n; i++) sprintf(out + 2 * i, "%02x", b[i]); }
@@ -215,6 +277,8 @@ int main(int argc, char **argv) {
     hashing();
     me();
     leaderboard();
+    mastery();
+    ticket();
     without_the_sdk();
     printf("%d checks, %d failed\n", checks, failures);
     return failures != 0;
