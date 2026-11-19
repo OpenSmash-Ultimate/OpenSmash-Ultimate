@@ -46,6 +46,8 @@ int skyline_provides(const char *path) { (void)path; return 0; }
 void skyline_mods_mounted(void) {}
 u64 rt_symbol(const char *name) { (void)name; return 0; }
 int kernel_rb_switch(void) { return 0; }   /* (kernel.c: rollback's savestates, off) */
+int (*kernel_rb_io_enter)(void *kthread, const char *what);   /* (kernel.c: the rollback barrier's hooks, unset here) */
+void (*kernel_rb_io_leave)(int token);
 void rb_guest_writing(void *p, u64 n) { (void)p; (void)n; }   /* (hle_rb_state.c: the state map, off) */
 #ifdef _WIN32
 void rb_map_install(void) {}   /* (hle_rb_map.c: the rollback state map's allocator hooks, off) */

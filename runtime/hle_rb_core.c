@@ -2126,6 +2126,151 @@ static void rb_pin(int on) {
 
 static void net_rollback(Cpu *c, u64 frame, u32 key, u32 m);
 static u32 we_sp_key; static int we_sp_ok;   /* (the last real safe point's logic frame: rb_wait_point) */
+/* ---- (2026-11-20) the barrier before an irreversible event (SSBU_RB_IO_BARRIER, default on; =0: off) ----------------
+ * A load is refused across a guest thread made or ended (the number of threads, "a guest thread was made since the
+ * save") and across a game file closed that was open at the save (hle_fs.c; read-only RomFS files are put back by the
+ * load instead: SSBU_RB_FS_ROM). Such an event can come in the middle of a fight: 30 s before a timed match's end the
+ * game loads resources (rom:/data.arc opened and closed five times) and makes a loader thread. Every state before it
+ * then became unloadable, a wrong guess for a frame just before it found no state ("ROLLBACK IMPOSSIBLE"), and the games
+ * stayed apart (a Local Wireless room, 2:30, desynced at logic frame ~7208 in every run, 2026-11-19). So the event waits
+ * until no rollback can ever need to cross it: until every other player's pads up to the frame after this one are real
+ * and no wrong guess is pending. Then any later wrong guess is at a frame past it, and the state it loads was saved
+ * after it.
+ * - The event on another guest thread (the resource loader's, the usual case): that thread asks (rb_io_enter) and waits,
+ *   parking for any savestate hold as a kernel wait does; the main thread, at its next safe point (rb_io_safe_point),
+ *   waits for the pads - receiving and sending as the wait for pads does - then lets the asking threads go and holds
+ *   until they are past their event (rb_io_leave). The event so happens while the main thread stands at a safe point
+ *   whose next frame's pads are real. A wrong guess found while waiting is rolled back first (the end of that net_step);
+ *   the load puts the asking thread back where it was at the state's save, before its request.
+ * - In a catch-up (frames run again after a rollback): no network there; the threads are let go at a safe point whose
+ *   next frame's pads are already real, else at the first normal safe point.
+ * - The event on the main thread itself (mid-frame): it waits there, receiving pads, for the frame after the last safe
+ *   point's; a wrong guess pending then cannot be rolled back before it (counted as unguarded, said).
+ * Waits are bounded (SSBU_RB_IO_BARRIER_MS, 1000 per side): a main thread that itself waits on the asking thread never
+ * reaches a safe point, and the asking thread then goes on after the bound, as before the barrier (counted, said).
+ * Delaying a resource load by a frame or two is what a slower drive does too: the fight does not depend on its timing. */
+extern int (*kernel_rb_io_enter)(void *kthread, const char *what);   /* (kernel.c's; kernel.c and hle_fs.c call them: set while a networked fight runs) */
+extern void (*kernel_rb_io_leave)(int token);
+void kernel_rb_nap(void *kthread, u32 ms);   /* (kernel.c) */
+static volatile LONG io_want, io_inside, io_open, io_gen;   /* (asking, let in and not past their event yet, the window, loads seen) */
+static SRWLOCK io_lock = SRWLOCK_INIT;
+static volatile double io_sp_ms;   /* (now_ms at the main thread's last fight safe point) */
+static int io_on = -1; static double io_max_ms = 1000;
+static volatile LONG64 io_req, io_t_timeouts;
+static long long io_granted, io_m_timeouts, io_inline, io_unguarded, io_sp_waits;
+static int io_force_save;   /* (a state is saved at this safe point, after the event: the older ones cannot be loaded across it) */
+static double io_wait_sum, io_wait_max;   /* (the main thread's time held for them: at safe points and inline) */
+static int io_enabled(void) {
+    if (io_on < 0) {
+        const char *e = getenv("SSBU_RB_IO_BARRIER"), *m = getenv("SSBU_RB_IO_BARRIER_MS");
+        io_on = !(e && *e == '0');
+        if (m && atof(m) > 0) io_max_ms = atof(m);
+        fprintf(stderr, "[rb] io barrier: %s (SSBU_RB_IO_BARRIER%s), waits bounded at %.0f ms\n", io_on ? "on" : "off", io_on ? "=0 turns it off" : "=0", io_max_ms);
+    }
+    return io_on;
+}
+static int io_fighting(void) { return net_mode == 2 && S.in_fight && io_sp_ms > 0 && now_ms() - io_sp_ms < 250; }
+static void io_note_wait(double ms) { io_wait_sum += ms; if (ms > io_wait_max) io_wait_max = ms; }
+/* (the main thread: every other player's pads real through `upto`, and no wrong guess pending at or before it) */
+static int io_confirmed(u32 upto) {
+    u32 mm = rbn_peek_mismatch();
+    return !(mm && mm <= upto) && net_remote_low() >= upto;
+}
+static int rb_io_enter(void *kthread, const char *what) {
+    if (!io_on || !io_fighting()) return 0;
+    InterlockedIncrement64(&io_req);
+    if (GetCurrentThreadId() == S.thread) {   /* the main thread itself, mid-frame */
+        u32 sp = we_sp_key;
+        double t0 = now_ms(), last = t0;
+        io_inline++;
+        if (rb_fast <= 0)
+            while (!io_confirmed(sp + 1) && now_ms() - t0 < io_max_ms) {
+                u32 mm = rbn_peek_mismatch();
+                if (mm && mm <= sp + 1) break;   /* (a wrong guess: its rollback cannot run mid-frame) */
+                Sleep(1);
+                net_receive(sp);
+                if (now_ms() - last > 16) { net_send(sp); last = now_ms(); }
+            }
+        double w = now_ms() - t0; io_note_wait(w);
+        if (!io_confirmed(sp + 1)) {
+            io_unguarded++;
+            if (io_unguarded <= 5) fprintf(stderr, "[rb] io barrier: %s by the main thread at logic frame %u%s: %s after %.1f ms: unguarded\n", what, ld32(LOGIC_FRAME),
+                                           rb_fast > 0 ? " (a catch-up)" : "", rbn_peek_mismatch() ? "a wrong guess pending" : "pads still guessed", w);
+        }
+        return 0;
+    }
+    AcquireSRWLockExclusive(&io_lock); io_want++; LONG gen = io_gen; ReleaseSRWLockExclusive(&io_lock);
+    double t0 = now_ms();
+    for (;;) {
+        AcquireSRWLockExclusive(&io_lock);
+        if (gen != io_gen) { gen = io_gen; io_want++; }   /* (a load reset the counts and kept this thread here: asked again) */
+        if (io_open) { io_want--; io_inside++; ReleaseSRWLockExclusive(&io_lock); return 2; }   /* (let in: rb_io_leave once past it) */
+        int gone = now_ms() - io_sp_ms > 250, late = now_ms() - t0 > io_max_ms;
+        if (gone || late) io_want--;
+        ReleaseSRWLockExclusive(&io_lock);
+        if (gone || late) {   /* (the fight is over, or the bound: as before the barrier) */
+            if (!gone && InterlockedIncrement64(&io_t_timeouts) <= 5)
+                fprintf(stderr, "[rb] io barrier: %s waited %.0f ms for a safe point and goes on (the main thread did not come: it may wait on this thread)\n", what, now_ms() - t0);
+            return 0;
+        }
+        kernel_rb_nap(kthread, 1);   /* (a kernel wait, as SleepThread's under rollback: a savestate's hold parks this thread there) */
+    }
+}
+static void rb_io_leave(int token) {
+    if (token != 2) return;
+    AcquireSRWLockExclusive(&io_lock); if (io_inside > 0) io_inside--; ReleaseSRWLockExclusive(&io_lock);
+}
+/* the main thread's fight safe point (net_step, before its save): the asking threads let go once nothing can roll back
+ * across their event */
+static void rb_io_safe_point(u32 key) {
+    io_sp_ms = now_ms();
+    if (!kernel_rb_io_enter && io_enabled()) { kernel_rb_io_enter = rb_io_enter; kernel_rb_io_leave = rb_io_leave; }
+    if (!io_want || !io_on) return;
+    int normal = rb_fast <= 0 && net_mode == 2;
+    double t0 = now_ms(), last = t0;
+    while (!io_confirmed(key + 1)) {
+        u32 mm = rbn_peek_mismatch();
+        if (mm && mm <= key + 1) return;   /* (its rollback first, at this net_step's end; the load sets the asking threads back) */
+        if (!normal) return;               /* (a catch-up: at a later safe point) */
+        if (now_ms() - t0 > io_max_ms) {
+            io_m_timeouts++;
+            if (io_m_timeouts <= 5) fprintf(stderr, "[rb] io barrier: logic frame %u: the pads through %u still guessed after %.0f ms: the event goes on unguarded\n", key, key + 1, now_ms() - t0);
+            break;
+        }
+        Sleep(1);
+        net_receive(key);
+        if (now_ms() - last > 16) { net_send(key); last = now_ms(); }
+        net_gone_check(key, now_ms() - t0);
+    }
+    io_granted++;
+    AcquireSRWLockExclusive(&io_lock); io_open = 1; ReleaseSRWLockExclusive(&io_lock);
+    double t1 = now_ms();
+    for (;;) {   /* (until every thread let in is past its event and none still asks; one asking after this waits for the next) */
+        AcquireSRWLockExclusive(&io_lock);
+        int done = io_want <= 0 && io_inside <= 0, late = now_ms() - t1 >= io_max_ms;
+        if (done || late) io_open = 0;
+        ReleaseSRWLockExclusive(&io_lock);
+        if (done || late) break;
+        Sleep(0);
+        if (normal && now_ms() - last > 16) { net_receive(key); net_send(key); last = now_ms(); }
+    }
+    /* (and a state saved here, after the event, whatever the pads: the next wrong guess loads the newest state before it,
+     * and without this one that was a state from before the event - the pads being real, the safe points after it
+     * saved nothing - which the load refused: "another number of guest threads than at the save") */
+    io_force_save = 1;
+    double w = now_ms() - t0;
+    io_sp_waits++; io_note_wait(w);
+    if (normal) pace_excused = 1;
+    if (io_sp_waits <= 20 || w > 50) fprintf(stderr, "[rb] io barrier: logic frame %u: a guest thread's event let go after %.1f ms (pads real through %u)\n", key, w, key + 1);
+}
+static void rb_io_loaded(void) { io_force_save = 0; AcquireSRWLockExclusive(&io_lock); io_want = io_inside = io_open = 0; io_gen++; ReleaseSRWLockExclusive(&io_lock); }
+static void rb_io_summary(void) {
+    if (!io_req && io_on <= 0) return;
+    fprintf(stderr, "[rb] io barrier (%s): %lld events asked in this fight (%lld on the main thread); %lld let go at safe points; waits %.1f ms in all, %.1f at most; "
+            "timeouts: %lld asking thread, %lld main; unguarded %lld\n", io_on > 0 ? "on" : "off", (long long)io_req, io_inline, io_granted, io_wait_sum, io_wait_max,
+            (long long)io_t_timeouts, io_m_timeouts, io_unguarded);
+}
+static void rb_io_reset(void) { io_req = io_t_timeouts = 0; io_granted = io_m_timeouts = io_inline = io_unguarded = io_sp_waits = 0; io_wait_sum = io_wait_max = 0; }
 int rb_load_anyframe;        /* (hle_rb_state.c check: this load comes from the wait for the display, not from a safe point) */
 static void net_step(Cpu *c, u64 frame) {
     int bn_was_real = rb_fast <= 0;
@@ -2186,6 +2331,7 @@ static void net_step(Cpu *c, u64 frame) {
         net_alike_from = net_last_bad = net_resync_min = 0; net_saves_refused = net_resync_impossible = 0; net_desyncs_at_resync = 0;
         net_resync_good_at = 0; net_resync_same = net_resync_off = 0; net_resync_too_deep = 0;   /* (net_resync_deep: read once) */
         net_resync_hopeless = 0; net_resync_hopeless_skipped = 0;
+        rb_io_reset();
         rb_fiber_refused = rb_fiber_retried_ok = 0;
         memset(net_depth, 0, sizeof net_depth);
         net_save_spacing(0, 0, 0, 0, 1);
@@ -2302,6 +2448,7 @@ static void net_step(Cpu *c, u64 frame) {
         memset(net_reads, 0, sizeof net_reads);
         net_work(2, t0);
     }
+    rb_io_safe_point(key);   /* (SSBU_RB_IO_BARRIER: a guest thread's irreversible event let go here) */
     if (rb_fast > 0) {   /* the middle of a catch-up: a save every n-th frame, nothing else */
         LONG done = catch_total - rb_fast;
         /* SSBU_RB_RERUN_REAL=1 (a test): the one save of a catch-up at the newest frame whose pads are all real - the
@@ -2437,6 +2584,7 @@ static void net_step(Cpu *c, u64 frame) {
         }
         catch_last = 0;
     }
+    if (io_force_save && rb_fast <= 0) { skip_save = 0; io_force_save = 0; }   /* (SSBU_RB_IO_BARRIER: the state after the event) */
     if (skip_save) { net_saves_skipped++; rb_save_ms[0] = rb_save_ms[1] = rb_save_ms[2] = 0; bn_mark("nosave", key); }
     else {
         rb_save_tag = key;
@@ -2445,6 +2593,7 @@ static void net_step(Cpu *c, u64 frame) {
         int r = rb_save(c, frame);
         bn_mark(r == 2 ? "loaded" : "saved", key);
         if (r == 2) {
+            rb_io_loaded();
             rb_load_anyframe = 0; lite_in_post = 1;
             logic_frame_loaded(); catch_total = pending_fast; rb_fast = pending_fast; catch_from = ld32(LOGIC_FRAME);
             catch_depth = (int)pending_fast; catch_n = 0; catch_at[0] = now_ms(); catch_load_ms = catch_at[0] - ring_load_t0;
@@ -4079,7 +4228,7 @@ static void savestates(Cpu *c, u64 frame) {
     if (net_mode && S.in_fight && (net_mode != 2 || net_armed)) { net_step(c, frame); return; }
     /* (net mode: a fight that ended before <frames> still gets its report, and the whole fight is checked:
      * the launcher's 7200 is a floor, not a window - twopc8's report never came, its fight ending sooner) */
-    if (net_mode == 2 && !S.in_fight && net_got && pace_pending) { pace_pending = 0; pace_verdict(); }   /* (the whole fight's, not the first <frames> of it that net_report covers) */
+    if (net_mode == 2 && !S.in_fight && net_got && pace_pending) { pace_pending = 0; pace_verdict(); rb_io_summary(); }   /* (the whole fight's, not the first <frames> of it that net_report covers) */
     if (net_mode == 2 && !S.in_fight && net_got && !net_done) {
         net_done = 1; net_report(); ch_have_mine = 0; memset(ch_have_peer, 0, sizeof ch_have_peer);
         rules_have = 0; rules_id = 0; rules_chunks = 0;   /* (the next set-up's rules again: the host's may change) */

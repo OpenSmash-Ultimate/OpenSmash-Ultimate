@@ -937,7 +937,10 @@ static KThread *new_thread(u64 entry, u64 arg, u64 stack_top, i32 priority, i32 
 static __thread jmp_buf *exit_point;
 #endif
 
+extern int (*kernel_rb_io_enter)(void *kthread, const char *what);
+extern void (*kernel_rb_io_leave)(int token);
 static _Noreturn void exit_thread(KThread *t) {
+    int io = kernel_rb_io_enter ? kernel_rb_io_enter(t, "a guest thread ending") : 0;   /* (SSBU_RB_IO_BARRIER) */
     {   static int trace = -1;   /* (SSBU_RB_IO_TRACE=1: see new_thread) */
         if (trace < 0) { const char *e = getenv("SSBU_RB_IO_TRACE"); trace = e && *e == '1'; }
         if (trace) fprintf(stderr, "[rb-io] guest thread %u ends (entry %#llx)\n", (unsigned)t->id, (unsigned long long)t->entry);
@@ -948,6 +951,7 @@ static _Noreturn void exit_thread(KThread *t) {
     notify(&objects[index_of(t->handle)]);
     if (recycle) release(index_of(t->handle));   /* (freed now if its handle was closed already) */
     LeaveCriticalSection(&klock);
+    if (io && kernel_rb_io_leave) kernel_rb_io_leave(io);
 #ifndef _WIN32
     if (exit_point) RT_LONGJMP(*exit_point, 1);
 #endif
@@ -1444,8 +1448,26 @@ static void system_call(Cpu *c, u32 n) {
     if (rt_trace) fprintf(stderr, "[svc %#04x] -> %#llx (x1=%#llx)\n", n, x[0], x[1]);
 }
 
+/* (rollback: hle_rb_core.c's barrier) A guest thread waiting for the barrier's window naps as SleepThread does under
+ * rollback - a kwait nothing wakes but its deadline or a hold - so a savestate's hold parks it there, in the kernel's own
+ * wait, as any sleeping thread. */
+void kernel_rb_nap(void *kthread, u32 ms) {
+    KThread *me = kthread;
+    if (!me) { Sleep(ms); return; }
+    u64 deadline = now_ns() + (u64)ms * 1000000ull;
+    EnterCriticalSection(&klock);
+    while (kwait(me, deadline)) {}
+    LeaveCriticalSection(&klock);
+}
+
+/* (rollback: hle_rb_core.c's barrier before an irreversible event, SSBU_RB_IO_BARRIER - set while a networked fight runs)
+ * A guest thread made: asked before, done after; a thread ending asks in exit_thread. */
+int (*kernel_rb_io_enter)(void *kthread, const char *what);
+void (*kernel_rb_io_leave)(int token);
 void rt_svc(Cpu *c, u32 n) {
+    int io = n == 0x08 && kernel_rb_io_enter ? kernel_rb_io_enter(c->thread, "a guest thread made") : 0;
     system_call(c, n);
+    if (io && kernel_rb_io_leave) kernel_rb_io_leave(io);
     if (host_priorities) follow_priority(c->thread);   /* (a priority changed during the call, its own or by another thread) */
 }
 

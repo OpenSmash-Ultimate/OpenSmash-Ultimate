@@ -602,9 +602,12 @@ static void rb_closing(const Handle *h) {   /* (the lock held) */
 }
 u64 fs_rb_mark(void) { ready(); EnterCriticalSection(&lock); u64 m = rb_seq; LeaveCriticalSection(&lock); return m; }
 /* the RomFS handles open now, for a state (hle_rb_state.c rb_save; NULL: none, or SSBU_RB_FS_ROM=0) */
+static u64 rb_last_save_seq;   /* (the count at the newest state's save: a handle opened after it closes freely) */
 void *fs_rb_save(void) {
-    if (!rb_fs_on() || !rb_fs_rom_on()) return NULL;
+    if (!rb_fs_on()) return NULL;
     ready();
+    EnterCriticalSection(&lock); rb_last_save_seq = rb_seq; LeaveCriticalSection(&lock);
+    if (!rb_fs_rom_on()) return NULL;
     EnterCriticalSection(&lock);
     u32 n = 0;
     for (u32 i = 1; i < 512; i++) n += rb_rom_handle(&handles[i]);
@@ -1585,14 +1588,28 @@ HLE(_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE) {
     st64(c->x[0], file_size(h));
     c->x[0] = 0;
 }
+/* (rollback, SSBU_RB_IO_BARRIER: hle_rb_core.c) A close a load could not undo - a handle open at the newest state's save
+ * that is not a RomFS one put back by the load - waits, in a networked fight, until no rollback can cross it. */
+extern int (*kernel_rb_io_enter)(void *kthread, const char *what);
+extern void (*kernel_rb_io_leave)(int token);
+static int rb_close_barrier(Cpu *c, Handle *h) {
+    if (!kernel_rb_io_enter || !rb_fs_on()) return 0;
+    EnterCriticalSection(&lock);
+    u32 i = (u32)(h - handles);
+    int need = h->used && i < 512 && rb_born[i] <= rb_last_save_seq && !rb_rom_handle(h);
+    LeaveCriticalSection(&lock);
+    return need ? kernel_rb_io_enter(c->thread, "a game file closed") : 0;
+}
 HLE(_ZN2nn2fs9CloseFileENS0_10FileHandleE) {
     Handle *h = get_handle(c->x[0]);
     if (!h) return;
+    int io = rb_close_barrier(c, h);
     if (h->host) CloseHandle(h->host);
     EnterCriticalSection(&lock);
     rb_closing(h);
     memset(h, 0, sizeof *h);
     LeaveCriticalSection(&lock);
+    if (io && kernel_rb_io_leave) kernel_rb_io_leave(io);
 }
 HLE(_ZN2nn2fs10CreateFileEPKcl) {   /* (path, size) */
     const char *rest;
@@ -1793,11 +1810,13 @@ HLE(_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE) {
 HLE(_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE) {
     Handle *h = get_handle(c->x[0]);
     if (!h) return;
+    int io = rb_close_barrier(c, h);
     listing_free(h);
     EnterCriticalSection(&lock);
     rb_closing(h);
     memset(h, 0, sizeof *h);
     LeaveCriticalSection(&lock);
+    if (io && kernel_rb_io_leave) kernel_rb_io_leave(io);
 }
 
 /* ---- what Skyline plugins ask of nn::fs that the game doesn't ----------------------- */
