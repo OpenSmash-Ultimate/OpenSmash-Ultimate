@@ -205,7 +205,11 @@ void gpu_queue_submit(u32 channel, const u64 *entries, u32 count, u32 syncpoint,
     j->syncpoint = syncpoint;
     j->fence = fence;
     j->fast = rb_fast > 0;
-    j->hide = gpu_hide_fast == 2 ? rb_fast > 1 : j->fast && gpu_hide_fast;   /* (2, a net catch-up: all but its last frame, the one shown) */
+    /* (2, a net catch-up: all but its last frames, the ones shown. A load that waits for the end of the frame (WAITEND) shows its
+     * keep picture from the submission after the previous frame's, which runs at rb_fast 2: hiding it left the old buffer on screen.
+     * So frames at rb_fast <= SSBU_RB_HIDE_MIN (default 2) draw; 1 = as before.) */
+    static int hmin = -1; if (hmin < 0) { const char *e = getenv("SSBU_RB_HIDE_MIN"); hmin = e && *e ? atoi(e) : 2; }
+    j->hide = gpu_hide_fast == 2 ? rb_fast > hmin : j->fast && gpu_hide_fast;
     j->entries = count <= INLINE ? j->inline_entries : malloc(sizeof *entries * count);
     if (!j->entries) { j->entries = j->inline_entries; j->count = count = 0; }
     memcpy(j->entries, entries, sizeof *entries * count);   /* (the driver reuses its array) */
