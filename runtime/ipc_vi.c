@@ -150,8 +150,10 @@ static void vi_ready_queued(int slot) {   /* (QUEUE_BUFFER, under the queue's lo
     ready_last_q = slot;
 }
 static int vi_slot_drawn(int slot) {
+    u64 done = gpu_queue_done_count();
+    if (done == ~0ull) return 1;   /* (SSBU_GPU_THREAD=0: no thread, the work has run) */
     u64 m = ready_mark[slot];
-    return m && gpu_queue_done_count() >= m;
+    return m && done >= m;
 }
 /* (vsync thread, at a refresh, before take_oldest) 1: the oldest queued buffer is not drawn yet - show nothing new now */
 static int vi_ready_skip(void) {
