@@ -120,8 +120,9 @@ void vi_lat_poll(u64 buttons) {
  * keep picture is shown at once, the frame after it at the next refresh) and the job is still running: with a
  * natural fight 30-40% of the pictures after a load were stale. With SSBU_VI_READY=1 a refresh shows the oldest
  * queued buffer only once its drawing job (the first submission after its QueueBuffer, else everything before the
- * next QueueBuffer) has run, or it was queued over 50 ms ago. Not drawn: wait up to SSBU_VI_READY_POLL_MS (12; a refresh is 16.7 ms), else
- * this refresh shows nothing new (the old picture stays, as a display does with a buffer whose fence is not signalled). */
+ * next QueueBuffer) has run, or it was queued over 50 ms ago. Not drawn: wait up to SSBU_VI_READY_POLL_MS (12; a
+ * refresh is 16.7 ms), else this refresh shows nothing new (the old picture stays, as a display does with a buffer
+ * whose fence is not signalled). */
 static int ready_on = -1; static double ready_poll_ms = 12;
 static volatile u64 ready_mark[SLOTS];   /* (the done mark of the slot's drawing job; 0 not known yet) */
 static volatile int ready_last_q = -1;
