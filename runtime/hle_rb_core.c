@@ -4283,7 +4283,7 @@ static long long skipf_n[6];
  * it run it as always). SSBU_RB_GC_MS=<ms>: at most that much of it in any real frame of a fight (SSBU Arena's GC_MS). */
 static int gc_catch = -1; static double gc_cap_ms = -1;
 int rb_skipf(Cpu *c, int which) {
-    if (skipf_bits < 0) { const char *e = getenv("SSBU_RB_SKIPF"); skipf_bits = e && *e ? (int)strtol(e, NULL, 0) : 63; }   /* (all six by default since v0.5.0, round 7; 0: none) */
+    if (skipf_bits < 0) { const char *e = getenv("SSBU_RB_SKIPF"); skipf_bits = e && *e ? (int)strtol(e, NULL, 0) : 53; }   /* (53: all but bits 1 and 3. Was all six, 63, since v0.5.0 round 7; 0: none. Skipping bit 3 (7101357e20) in re-run frames made the name tag above the fighter bounce in rollback room matches; bit 1 (71022dec30) also stays running, as skipping it was the v0.5.0 stutter, see #508) */
     if (!(skipf_bits >> which & 1) || rb_fast <= 0 || !S.in_fight || c->thread != rb_main_kthread) return 0;
     skipf_n[which]++;
     return 1;
