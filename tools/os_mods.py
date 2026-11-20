@@ -394,6 +394,7 @@ def main(argv):
         if cmd == "refresh":
             skyline.sync(tree.root, log, skyline.build_jobs())
             skyline.cache_mod_plugins(tree.root, skyline.build_jobs(), log)
+            skyline.probe_and_apply(tree.root, log)
             return result(True)
         if cmd == "build":
             if recomp_busy():
