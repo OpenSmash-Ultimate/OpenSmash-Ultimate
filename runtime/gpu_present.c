@@ -22,12 +22,3 @@ void present_frame(const u8 *graphic_buffer, u32 size) {
     if (!handle || handle >= NVMAP_MAX || !gpu_maps[handle].addr) return;
     gfx_present(gpu_maps[handle].addr + offset, w[26], w[27]);
 }
-
-/* (ipc_vi.c, SSBU_VI_READY) the guest address of the render target a queued buffer shows; 0 if unknown */
-u64 present_guest_of(const u8 *graphic_buffer, u32 size) {
-    const u32 *w = (const u32 *)graphic_buffer;
-    if (size < 34 * 4 || w[3] != 0x47424652) return 0;
-    u32 handle = w[32], offset = w[33];
-    if (!handle || handle >= NVMAP_MAX || !gpu_maps[handle].addr) return 0;
-    return gpu_maps[handle].addr + offset;
-}
