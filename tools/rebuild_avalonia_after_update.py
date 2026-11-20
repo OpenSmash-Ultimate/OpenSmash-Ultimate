@@ -60,7 +60,7 @@ def main():
 
     rid = "osx-arm64" if sys.platform == "darwin" else "linux-x64"
 
-    command = ["open", "-n", str(root / "OpenSmash.Avalonia.app")] if sys.platform == "darwin" else [str(root / "OpenSmash.Avalonia")]
+    command = ["open", "-n", str(root / "OpenSmash.Avalonia.app")] if sys.platform == "darwin" else [str(root / "OpenSmash.Avalonia.bin")]
 
     with log.open("a", encoding="utf-8") as output:
 
@@ -81,6 +81,9 @@ def main():
             # The builder preserves the previous executable on failure. Reopen it
 
             # with the pending marker intact so the user can retry or postpone.
+
+            if sys.platform == "linux" and not Path(command[0]).is_file() and (root / "OpenSmash.Avalonia").is_file():
+                command = [str(root / "OpenSmash.Avalonia")]
 
             subprocess.Popen(command, cwd=root, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
