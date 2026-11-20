@@ -391,7 +391,9 @@ static u32 nvmap(u32 nr, u64 a, u32 request) {
     return NV_OK;
 }
 
+void vi_ready_submit(void);   /* (ipc_vi.c: SSBU_VI_READY) */
 static u32 submit(u32 fd, u64 a, u64 entries, u32 count) {
+    vi_ready_submit();
     u32 flags = ld32(a + 12), id = files[fd].syncpoint;
     u32 incr = 0;
     if (flags & ((1u << 1) | (1u << 8)))   /* increment requested: two for the GPU, plus any extra */
