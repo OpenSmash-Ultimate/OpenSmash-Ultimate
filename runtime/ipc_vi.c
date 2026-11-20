@@ -113,14 +113,14 @@ void vi_lat_poll(u64 buttons) {
     lat_line("P %.3f %llu %lld %llx\n", lat_ms(), (unsigned long long)queue.frames, test_fight_frame, (unsigned long long)buttons);
 }
 
-/* ---- A queued buffer is shown only once the game has drawn it (SSBU_VI_READY=1) ----------------------
+/* ---- A queued buffer is shown only once the game has drawn it (on; SSBU_VI_READY=0 turns it off) ----------------------
  * The game queues a buffer BEFORE the submission that draws its picture: the window texture of the frame queued is
  * drawn by the first submission after the QueueBuffer. A refresh shows the oldest queued buffer after waiting only
  * for the work submitted before the QueueBuffer (gpu_mark), so a picture whose drawing job is still running - or not
  * yet submitted - is shown with the slot's OLD content, the picture of 3 frames before. In steady play the job ends
  * long before the refresh (queued pictures wait 1-2 refreshes); after a rollback's catch-up the queue is short (the
  * keep picture is shown at once, the frame after it at the next refresh) and the job is still running: with a
- * natural fight 30-40% of the pictures after a load were stale. With SSBU_VI_READY=1 a refresh shows the oldest
+ * natural fight 30-40% of the pictures after a load were stale. With this on (the default) a refresh shows the oldest
  * queued buffer only once its drawing job (the first submission after its QueueBuffer, else everything before the
  * next QueueBuffer) has run, or it was queued over 50 ms ago. Not drawn: wait up to SSBU_VI_READY_POLL_MS (12; a
  * refresh is 16.7 ms), else this refresh shows nothing new (the old picture stays, as a display does with a buffer
@@ -131,9 +131,9 @@ static volatile int ready_last_q = -1;
 static void ready_init(void) {
     if (ready_on >= 0) return;
     const char *e = getenv("SSBU_VI_READY"), *p = getenv("SSBU_VI_READY_POLL_MS");
-    ready_on = e && *e == '1';
+    ready_on = !(e && *e == '0');   /* on unless SSBU_VI_READY=0 */
     if (p && *p) ready_poll_ms = atof(p);
-    if (ready_on) fprintf(stderr, "[display] a queued picture waits until it is drawn (SSBU_VI_READY=1, poll %.1f ms)\n", ready_poll_ms);
+    if (ready_on) fprintf(stderr, "[display] a queued picture waits until it is drawn (SSBU_VI_READY on (set SSBU_VI_READY=0 to turn off), poll %.1f ms)\n", ready_poll_ms);
 }
 /* (hle_nv.c, the game's thread, before a submission is queued: its done mark is mark + 1) */
 void vi_ready_submit(void) {
