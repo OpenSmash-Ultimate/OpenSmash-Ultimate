@@ -46,6 +46,8 @@ int skyline_provides(const char *path) { (void)path; return 0; }
 void skyline_mods_mounted(void) {}
 u64 rt_symbol(const char *name) { (void)name; return 0; }
 int kernel_rb_switch(void) { return 0; }   /* (kernel.c: rollback's savestates, off) */
+int (*kernel_rb_io_enter)(void *kthread, const char *what);   /* (kernel.c: the rollback barrier's hooks, unset here) */
+void (*kernel_rb_io_leave)(int token);
 void rb_guest_writing(void *p, u64 n) { (void)p; (void)n; }   /* (hle_rb_state.c: the state map, off) */
 #ifdef _WIN32
 void rb_map_install(void) {}   /* (hle_rb_map.c: the rollback state map's allocator hooks, off) */
@@ -267,13 +269,28 @@ static void checks_all(DWORD live_pid) {
         rb_fs = 1;
         CHECK(t_open("rom:/hello.txt", OPEN_READ, &h1) == 0, "a RomFS file opened");
         u64 mark = fs_rb_mark();
-        CHECK(!fs_rb_closed_since(mark), "rollback: nothing closed since the mark");
+        CHECK(!fs_rb_closed_since(mark, NULL), "rollback: nothing closed since the mark");
         CHECK(t_open("rom:/hello.txt", OPEN_READ, &h2) == 0, "a RomFS file opened again");
         t_close(h2);
-        CHECK(!fs_rb_closed_since(mark), "rollback: a handle opened and closed after the mark counted");
+        CHECK(!fs_rb_closed_since(mark, NULL), "rollback: a handle opened and closed after the mark counted");
         t_close(h1);
-        CHECK(fs_rb_closed_since(mark), "rollback: a handle open at the mark and closed since not seen");
-        CHECK(!fs_rb_closed_since(fs_rb_mark()), "rollback: a close before the mark counted");
+        CHECK(fs_rb_closed_since(mark, NULL), "rollback: a handle open at the mark and closed since not seen");
+        CHECK(!fs_rb_closed_since(fs_rb_mark(), NULL), "rollback: a close before the mark counted");
+        /* (SSBU_RB_FS_ROM) a RomFS handle kept in the state (fs_rb_save) and closed since does not refuse its load, and the
+         * load puts it back in its slot; one opened after the state is freed by the load */
+        u64 h3 = 0, h4 = 0;
+        CHECK(t_open("rom:/hello.txt", OPEN_READ, &h3) == 0, "a RomFS file opened for a state");
+        u64 mark3 = fs_rb_mark();
+        void *fs = fs_rb_save();
+        CHECK(fs != NULL, "rollback: the open RomFS handle kept in the state");
+        t_close(h3);
+        CHECK(get_handle(h3) == NULL, "the RomFS handle closed");
+        CHECK(!fs_rb_closed_since(mark3, fs), "rollback: a RomFS handle kept in the state counted as gone");
+        CHECK(t_open("rom:/hello.txt", OPEN_READ, &h4) == 0, "a RomFS file opened after the state");
+        CHECK(fs_rb_load(fs, mark3) >= 1 && get_handle(h3) != NULL, "rollback: the RomFS handle put back by the load");
+        CHECK(h4 == h3 || get_handle(h4) == NULL, "rollback: the RomFS handle opened after the state freed by the load");
+        t_close(h3);
+        free(fs);
         rb_fs = -1;
     }
     CHECK(call(hle__ZN2nn2fs17MountCacheStorageEPKc, G("cache"), 0, 0, 0, 0) == 0, "MountCacheStorage");
