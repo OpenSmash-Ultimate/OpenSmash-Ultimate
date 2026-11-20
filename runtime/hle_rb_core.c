@@ -4266,7 +4266,7 @@ static int lite_skipped_now(Cpu *c, int grp) {
 int rb_lite_skip(Cpu *c, int group) { return lite_skipped_now(c, group); }
 
 /* ---- SKIPF and the Lua collector (SSBU Arena's 4774203 / f9b673b and 0bde20e, ported as switches; ON by default since
- * v0.5.0, round 7: SSBU_RB_SKIPF=63, SSBU_RB_GC_RERUN=0, SSBU_RB_GC_CATCH=0 - pairs of games stayed identical with them;
+ * v0.5.0, round 7: SSBU_RB_SKIPF=53 (was 63; bits 1 and 3 run, see rb_skipf), SSBU_RB_GC_RERUN=0, SSBU_RB_GC_CATCH=0 - pairs of games stayed identical with them;
  * SSBU_RB_SKIPF=0, SSBU_RB_GC_RERUN=1, SSBU_RB_GC_CATCH=1: as before) ---------------------------------------------------------------------
  * SSBU_RB_SKIPF=<bits>: hle_rb_wraps.c's six functions return at once in a frame run again (a catch-up's, the main
  * thread's, in a fight). Bit n: the n-th of the list. The summary counts the calls left out.
@@ -4283,7 +4283,7 @@ static long long skipf_n[6];
  * it run it as always). SSBU_RB_GC_MS=<ms>: at most that much of it in any real frame of a fight (SSBU Arena's GC_MS). */
 static int gc_catch = -1; static double gc_cap_ms = -1;
 int rb_skipf(Cpu *c, int which) {
-    if (skipf_bits < 0) { const char *e = getenv("SSBU_RB_SKIPF"); skipf_bits = e && *e ? (int)strtol(e, NULL, 0) : 63; }   /* (all six by default since v0.5.0, round 7; 0: none) */
+    if (skipf_bits < 0) { const char *e = getenv("SSBU_RB_SKIPF"); skipf_bits = e && *e ? (int)strtol(e, NULL, 0) : 53; }   /* (53: all but bits 1 and 3. Was all six, 63, since v0.5.0 round 7; 0: none. Skipping bit 3 (7101357e20) in re-run frames made the name tag above the fighter bounce in rollback room matches; bit 1 (71022dec30) also stays running, as skipping it was the v0.5.0 stutter, see #508) */
     if (!(skipf_bits >> which & 1) || rb_fast <= 0 || !S.in_fight || c->thread != rb_main_kthread) return 0;
     skipf_n[which]++;
     return 1;
