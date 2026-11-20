@@ -119,37 +119,35 @@ void vi_lat_poll(u64 buttons) {
  * long before the refresh (queued pictures wait 1-2 refreshes); after a rollback's catch-up the queue is short (the
  * keep picture is shown at once, the frame after it at the next refresh) and the job is still running: with a
  * natural fight 30-40% of the pictures after a load were stale. With SSBU_VI_READY=1 a refresh shows the oldest
- * queued buffer only once it is drawn: the renderer saw >= SSBU_VI_READY_WRITES (2) writes into its surface since it
- * was last shown, or its drawing job (the first submission after its QueueBuffer, else everything before the next
- * QueueBuffer) has run, or it was queued over 50 ms ago. Not drawn: wait up to SSBU_VI_READY_POLL_MS (3), else this
- * refresh shows nothing new (the old picture stays, as a display does with a buffer whose fence is not signalled). */
-static int ready_on = -1, ready_writes = 2; static double ready_poll_ms = 3;
+ * queued buffer only once its drawing job (the first submission after its QueueBuffer, else everything before the
+ * next QueueBuffer) has run, or it was queued over 50 ms ago. Not drawn: wait up to SSBU_VI_READY_POLL_MS (12; a refresh is 16.7 ms), else
+ * this refresh shows nothing new (the old picture stays, as a display does with a buffer whose fence is not signalled). */
+static int ready_on = -1; static double ready_poll_ms = 12;
 static volatile u64 ready_mark[SLOTS];   /* (the done mark of the slot's drawing job; 0 not known yet) */
 static volatile int ready_last_q = -1;
-int gfx_writes_since_present(unsigned long long guest);   /* (gpu_backend.c) */
-u64 present_guest_of(const u8 *graphic_buffer, u32 size); /* (gpu_present.c) */
 static void ready_init(void) {
     if (ready_on >= 0) return;
-    const char *e = getenv("SSBU_VI_READY"), *w = getenv("SSBU_VI_READY_WRITES"), *p = getenv("SSBU_VI_READY_POLL_MS");
+    const char *e = getenv("SSBU_VI_READY"), *p = getenv("SSBU_VI_READY_POLL_MS");
     ready_on = e && *e == '1';
-    if (w && *w) ready_writes = atoi(w);
     if (p && *p) ready_poll_ms = atof(p);
-    if (ready_on) fprintf(stderr, "[display] a queued picture waits until it is drawn (SSBU_VI_READY=1, writes %d, poll %.1f ms)\n", ready_writes, ready_poll_ms);
+    if (ready_on) fprintf(stderr, "[display] a queued picture waits until it is drawn (SSBU_VI_READY=1, poll %.1f ms)\n", ready_poll_ms);
 }
 /* (hle_nv.c, the game's thread, before a submission is queued: its done mark is mark + 1) */
 void vi_ready_submit(void) {
+    ready_init();
+    if (!ready_on) return;
     int s = ready_last_q;
     if (s >= 0 && !ready_mark[s]) ready_mark[s] = gpu_queue_mark() + 1;
 }
 static void vi_ready_queued(int slot) {   /* (QUEUE_BUFFER, under the queue's lock) */
+    ready_init();
+    if (!ready_on) return;
     int s = ready_last_q;
     if (s >= 0 && s != slot && !ready_mark[s]) ready_mark[s] = gpu_queue_mark();
     ready_mark[slot] = 0;
     ready_last_q = slot;
 }
-static int vi_slot_drawn(int slot, const u8 *buf, u32 size) {
-    u64 g = present_guest_of(buf, size);
-    if (g && gfx_writes_since_present(g) >= ready_writes) return 1;
+static int vi_slot_drawn(int slot) {
     u64 m = ready_mark[slot];
     return m && gpu_queue_done_count() >= m;
 }
@@ -157,18 +155,16 @@ static int vi_slot_drawn(int slot, const u8 *buf, u32 size) {
 static int vi_ready_skip(void) {
     ready_init();
     if (!ready_on) return 0;
-    static u8 buf[sizeof queue.slots[0].buffer];
     queue_lock();
     int oldest = -1;
     for (int i = 0; i < SLOTS; i++)
         if (queue.slots[i].state == QUEUED && (oldest < 0 || queue.slots[i].queued_at < queue.slots[oldest].queued_at)) oldest = i;
-    u32 size = 0; u64 at = 0;
-    if (oldest >= 0) { size = queue.slots[oldest].buffer_size; memcpy(buf, queue.slots[oldest].buffer, size); at = queue.slots[oldest].queued_at; }
+    u64 at = oldest >= 0 ? queue.slots[oldest].queued_at : 0;
     queue_unlock();
     if (oldest < 0) return 0;
     LARGE_INTEGER f, q0, q; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&q0);
     for (;;) {
-        if (vi_slot_drawn(oldest, buf, size)) return 0;
+        if (vi_slot_drawn(oldest)) return 0;
         if (rt_now_ns() - at > 50000000ull) return 0;   /* (never hold a picture back for long) */
         QueryPerformanceCounter(&q);
         if ((double)(q.QuadPart - q0.QuadPart) * 1000.0 / (double)f.QuadPart >= ready_poll_ms) return 1;
@@ -420,6 +416,7 @@ void vi_rb_load(const void *p) {
     vi_reacq = reacq_on && rb_vi_catchup() ? on_screen : -1;
     for (int i = 0; i < SLOTS; i++) { queue.slots[i].state = s[i].state; queue.slots[i].queued_at = s[i].queued_at; queue.slots[i].gpu_mark = s[i].gpu_mark; queue.slots[i].keep = 0; }
     keep_pending = 0;
+    if (ready_on > 0) { for (int i = 0; i < SLOTS; i++) ready_mark[i] = 1; ready_last_q = -1; }   /* (SSBU_VI_READY: what the save had queued was drawn long ago) */
     /* (a rollback's load: the frames the save had queued, and the one shown, were shown on the first pass. Let
      * go now - a catch-up presents nothing - rather than left queued: their slots were free again for the
      * catch-up's frames on the first pass, and the oldest of them was shown after the catch-up, a picture

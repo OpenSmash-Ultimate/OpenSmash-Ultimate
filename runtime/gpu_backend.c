@@ -157,10 +157,3 @@ void gfx_warm_hint(unsigned long long key, int pick) { if (vk_drawing()) vk_warm
  * hle_rb_core.c's, online: this game goes on telling the others it is there and still loading) */
 void (*gfx_wait_hook)(void);
 #endif
-
-/* (ipc_vi.c, SSBU_VI_READY) the writes into the render target at `guest` since it was last presented; -1 unknown (no such surface, or not Direct3D 11) */
-int d3d11_writes_since_present(unsigned long long guest);
-int gfx_writes_since_present(unsigned long long guest) {
-    if (gfx_backend.present == d3d11_present) return d3d11_writes_since_present(guest);
-    return -1;
-}
