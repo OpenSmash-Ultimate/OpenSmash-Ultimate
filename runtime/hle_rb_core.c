@@ -4255,7 +4255,9 @@ static int kick_skipped(u64 lr) {
 static int lite_post1 = -1; static volatile int lite_in_post;
 static int lite_skipped_now(Cpu *c, int grp) {
     if (lite_post1 < 0) { const char *e = getenv("SSBU_RB_LITE_POST1"); lite_post1 = e && *e == '1'; }
-    if (rb_fast <= 0 || (rb_fast == 1 && !(lite_post1 && lite_in_post))) return 0;
+    /* frames with rb_fast <= SSBU_RB_LITE_MIN (default 2) run whole: the keep picture's frame is at rb_fast 2; 1 = as before */
+    static int lmin = -1; if (lmin < 0) { const char *e = getenv("SSBU_RB_LITE_MIN"); lmin = e && *e ? atoi(e) : 2; }
+    if (rb_fast <= 0 || (rb_fast <= lmin && !(rb_fast == 1 && lite_post1 && lite_in_post))) return 0;
     if (lite_mask < 0) skip_flags();
     u64 lr = c->x[30];
     if (!(lite_mask & grp) || lr < MAIN_LOOP_LO || lr >= MAIN_LOOP_HI) return 0;
