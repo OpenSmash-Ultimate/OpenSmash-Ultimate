@@ -111,6 +111,71 @@ void vi_lat_poll(u64 buttons) {
     lat_line("P %.3f %llu %lld %llx\n", lat_ms(), (unsigned long long)queue.frames, test_fight_frame, (unsigned long long)buttons);
 }
 
+/* ---- A queued buffer is shown only once the game has drawn it (SSBU_VI_READY=1) ----------------------
+ * The game queues a buffer BEFORE the submission that draws its picture: the window texture of the frame queued is
+ * drawn by the first submission after the QueueBuffer. A refresh shows the oldest queued buffer after waiting only
+ * for the work submitted before the QueueBuffer (gpu_mark), so a picture whose drawing job is still running - or not
+ * yet submitted - is shown with the slot's OLD content, the picture of 3 frames before. In steady play the job ends
+ * long before the refresh (queued pictures wait 1-2 refreshes); after a rollback's catch-up the queue is short (the
+ * keep picture is shown at once, the frame after it at the next refresh) and the job is still running: with a
+ * natural fight 30-40% of the pictures after a load were stale. With SSBU_VI_READY=1 a refresh shows the oldest
+ * queued buffer only once it is drawn: the renderer saw >= SSBU_VI_READY_WRITES (2) writes into its surface since it
+ * was last shown, or its drawing job (the first submission after its QueueBuffer, else everything before the next
+ * QueueBuffer) has run, or it was queued over 50 ms ago. Not drawn: wait up to SSBU_VI_READY_POLL_MS (3), else this
+ * refresh shows nothing new (the old picture stays, as a display does with a buffer whose fence is not signalled). */
+static int ready_on = -1, ready_writes = 2; static double ready_poll_ms = 3;
+static volatile u64 ready_mark[SLOTS];   /* (the done mark of the slot's drawing job; 0 not known yet) */
+static volatile int ready_last_q = -1;
+int gfx_writes_since_present(unsigned long long guest);   /* (gpu_backend.c) */
+u64 present_guest_of(const u8 *graphic_buffer, u32 size); /* (gpu_present.c) */
+static void ready_init(void) {
+    if (ready_on >= 0) return;
+    const char *e = getenv("SSBU_VI_READY"), *w = getenv("SSBU_VI_READY_WRITES"), *p = getenv("SSBU_VI_READY_POLL_MS");
+    ready_on = e && *e == '1';
+    if (w && *w) ready_writes = atoi(w);
+    if (p && *p) ready_poll_ms = atof(p);
+    if (ready_on) fprintf(stderr, "[display] a queued picture waits until it is drawn (SSBU_VI_READY=1, writes %d, poll %.1f ms)\n", ready_writes, ready_poll_ms);
+}
+/* (hle_nv.c, the game's thread, before a submission is queued: its done mark is mark + 1) */
+void vi_ready_submit(void) {
+    int s = ready_last_q;
+    if (s >= 0 && !ready_mark[s]) ready_mark[s] = gpu_queue_mark() + 1;
+}
+static void vi_ready_queued(int slot) {   /* (QUEUE_BUFFER, under the queue's lock) */
+    int s = ready_last_q;
+    if (s >= 0 && s != slot && !ready_mark[s]) ready_mark[s] = gpu_queue_mark();
+    ready_mark[slot] = 0;
+    ready_last_q = slot;
+}
+static int vi_slot_drawn(int slot, const u8 *buf, u32 size) {
+    u64 g = present_guest_of(buf, size);
+    if (g && gfx_writes_since_present(g) >= ready_writes) return 1;
+    u64 m = ready_mark[slot];
+    return m && gpu_queue_done_count() >= m;
+}
+/* (vsync thread, at a refresh, before take_oldest) 1: the oldest queued buffer is not drawn yet - show nothing new now */
+static int vi_ready_skip(void) {
+    ready_init();
+    if (!ready_on) return 0;
+    static u8 buf[sizeof queue.slots[0].buffer];
+    queue_lock();
+    int oldest = -1;
+    for (int i = 0; i < SLOTS; i++)
+        if (queue.slots[i].state == QUEUED && (oldest < 0 || queue.slots[i].queued_at < queue.slots[oldest].queued_at)) oldest = i;
+    u32 size = 0; u64 at = 0;
+    if (oldest >= 0) { size = queue.slots[oldest].buffer_size; memcpy(buf, queue.slots[oldest].buffer, size); at = queue.slots[oldest].queued_at; }
+    queue_unlock();
+    if (oldest < 0) return 0;
+    LARGE_INTEGER f, q0, q; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&q0);
+    for (;;) {
+        if (vi_slot_drawn(oldest, buf, size)) return 0;
+        if (rt_now_ns() - at > 50000000ull) return 0;   /* (never hold a picture back for long) */
+        QueryPerformanceCounter(&q);
+        if ((double)(q.QuadPart - q0.QuadPart) * 1000.0 / (double)f.QuadPart >= ready_poll_ms) return 1;
+        SwitchToThread();
+    }
+}
+
 /* Under the queue's lock: the oldest queued buffer becomes the one shown (copied to `shown`) and
  * the one shown before is free again. Returns its slot, or -1 if none is queued. */
 static int vi_reacq = -1;   /* (rollback: the slot on screen when a catch-up's load freed it - vi_rb_load) */
@@ -269,8 +334,9 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
         int fast = rb_fast > 0 && !keep_pending;
         if (!fast) display_wait_tick();   /* the next refresh (display.ini's pacing) */
         if (!fast && rb_vsync_skip > 0) { InterlockedDecrement(&rb_vsync_skip); InterlockedIncrement64(&rb_vsync_skipped); continue; }
+        int not_drawn = !fast && vi_ready_skip();   /* (SSBU_VI_READY=1: the oldest picture is not drawn yet: show nothing new) */
         queue_lock();
-        int oldest = take_oldest();
+        int oldest = not_drawn ? -1 : take_oldest();
         /* (rollback, fast and nothing queued: wait for the game's next frame - up to 2 ms, then a refresh
          * all the same - rather than signal refreshes in a spin: thousands of them, each through the
          * kernel's lock, and the game counted them as dropped refreshes) */
@@ -482,6 +548,7 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
             ll_queued();
             if (lat_tf && rb_fast <= 0) lat_line("Q %.3f\n", lat_ms());
             queue.slots[slot].gpu_mark = gpu_queue_mark();
+            vi_ready_queued((int)slot);
             /* (rollback build, M4: a frame of a catch-up is not shown. Freed here and the game told at
              * once - buffer free, a refresh - rather than through the vsync thread: the game's frame end
              * waited 0.9 ms a re-run frame for that round trip. SSBU_RB_QFREE=0: through the thread.) */

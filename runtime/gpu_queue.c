@@ -256,3 +256,11 @@ int gpu_syncpt_wait(u32 id, u32 threshold, u32 timeout_ms) {
     ReleaseSRWLockExclusive(&lock);
     return reached;
 }
+
+u64 gpu_queue_done_count(void) {
+    if (enabled != 1) return ~0ull;   /* (no thread: everything submitted has run) */
+    AcquireSRWLockShared(&lock);
+    u64 n = done;
+    ReleaseSRWLockShared(&lock);
+    return n;
+}

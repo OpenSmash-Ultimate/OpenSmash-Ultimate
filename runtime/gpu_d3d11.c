@@ -91,6 +91,7 @@ typedef struct Surface {
     ID3D11ShaderResourceView *srv;
     ID3D11ShaderResourceView *srv_other;  /* 8-bit colour: the other reading of the bytes (sRGB / plain) */
     u64 used;
+    u64 writes, writes_shown;             /* color: clears, draws and blits into it so far, and the count when it was last presented (SSBU_VI_READY) */
 } Surface;
 
 static Surface surfaces[2048];
@@ -934,6 +935,7 @@ void d3d11_clear(const u32 *regs, u32 arg) {
         u64 va = (u64)RT(rt, 0) << 32 | RT(rt, 1);
         Surface *s = surface(gpu_va_to_guest(va), RT(rt, 2), RT(rt, 3), RT(rt, 4), 0);
         if (s) {
+            s->writes++;
             float color[4] = {f32_of(regs[0x360]), f32_of(regs[0x361]), f32_of(regs[0x362]), f32_of(regs[0x363])};
             if (((arg >> 2) & 0xF) == 0xF) ID3D11DeviceContext_ClearRenderTargetView(ctx, s->rtv, color);
             else clear_channels(s, color, (arg >> 2) & 0xF);   /* only some channels: a masked draw */
@@ -6139,6 +6141,7 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
         if (on_dxvk() && prewarm_settling) pipeline_note(pipe_ms);
     }
     standins_back(rts, standin);
+    for (u32 i = 0; i < 8; i++) if (rts[i]) rts[i]->writes++;
     if (first) {
         first_draw_done(rt_clock_ns() - first_t0, first);
         if (!vs->drawn) first_used(vs);
@@ -6731,6 +6734,7 @@ void d3d11_blit2d(const u32 *regs) {
                 regs[0x93], regs[0x8C], src ? "on the host" : "in memory", dst_g, regs[0x86], regs[0x87], regs[0x80], regs[0x22C],
                 regs[0x22D], regs[0x22E], regs[0x22F]);
     if (!src || !dst) { leave(); return; }   /* sources only in guest memory: not yet */
+    dst->writes++;
     double du = regs[0x231] + regs[0x230] / 4294967296.0, dv = regs[0x233] + regs[0x232] / 4294967296.0;
     double sx = regs[0x235] + regs[0x234] / 4294967296.0, sy = (i32)regs[0x237] + regs[0x236] / 4294967296.0;
     u32 dx = regs[0x22C], dy = regs[0x22D], dw = regs[0x22E], dh = regs[0x22F];
@@ -6951,6 +6955,7 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
     Surface *src = NULL;
     for (u32 i = 0; i < nsurfaces; i++)
         if (surfaces[i].tex && !surfaces[i].depth && surfaces[i].guest == guest) src = &surfaces[i];
+    if (src) src->writes_shown = src->writes;
     ID3D11DeviceContext_IASetPrimitiveTopology(ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ID3D11DeviceContext_IASetInputLayout(ctx, NULL);
     ID3D11DeviceContext_VSSetShader(ctx, blit_vs, NULL, 0);
@@ -7283,4 +7288,14 @@ static void capture_textures(const char *dir, int frame) {
         ID3D11RenderTargetView_Release(rtv);
         ID3D11Texture2D_Release(tmp);
     }
+}
+
+/* (ipc_vi.c, SSBU_VI_READY) the draws, clears and blits into the render target at `guest` since it was last presented; -1 if none lives there */
+int d3d11_writes_since_present(unsigned long long guest) {
+    if (!enter()) return -1;
+    int r = -1;
+    for (u32 i = 0; i < nsurfaces; i++)
+        if (surfaces[i].tex && !surfaces[i].depth && surfaces[i].guest == guest) r = (int)(surfaces[i].writes - surfaces[i].writes_shown);
+    leave();
+    return r;
 }
