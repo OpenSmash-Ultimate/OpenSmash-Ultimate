@@ -35,7 +35,10 @@ def install(folder, rid):
         return target
     name = "OpenSmash.Avalonia.exe" if rid.startswith("win") else "OpenSmash.Avalonia"
     target = ROOT / name
-    staging = ROOT / (".OpenSmash-build-" + uuid.uuid4().hex + (".exe" if rid.startswith("win") else ".tmp"))
+    if target.is_dir():
+        target = ROOT / "build" / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.parent / (".OpenSmash-build-" + uuid.uuid4().hex + (".exe" if rid.startswith("win") else ".tmp"))
     try:
         shutil.copy2(folder / name, staging)
         staging.replace(target)
