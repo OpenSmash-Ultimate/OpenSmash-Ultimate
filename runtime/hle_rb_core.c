@@ -3651,7 +3651,8 @@ static int net_pre_take(const u8 *buf, int len) {
     return 1;
 }
 /* (each frame before the fight) this game's count to the others; then, while it is ahead of a player heard from, wait */
-static void net_pre_step(void) {
+static long long pre_refreshed, pre_skipped, pre_last_ok;   /* (pre_last_ok: the frame since the set-up of the last copy taken, 0 none yet) */
+static void net_pre_step(Cpu *c, u64 frame) {
     if (pre_frames == 1) pre_logic0 = ld32(LOGIC_FRAME);
     pre_logic_last = ld32(LOGIC_FRAME);
     if (pre_frames % 30 == 0) {   /* (the timeline: does the logic frame stand still through the loading, and the same on every game?) */
@@ -3670,8 +3671,8 @@ static void net_pre_step(void) {
             for (double s0 = now_ms(); now_ms() - s0 < stall * 1000.0;) { if (!quiet) net_load_keepalive(); Sleep(10); watchdog_present(); }
         }
     }
-    int hold_on = pre_hold_on(), noted = 0;
-    double t0 = now_ms(), last = t0;
+    int hold_on = pre_hold_on(), noted = 0, popped = 0, sm_took = 0, sm_tried = 0;
+    double t0 = now_ms(), last = t0, sm_try_at = 0;
     for (;;) {
         long long low = -1;
         double now = now_ms();
@@ -3681,6 +3682,30 @@ static void net_pre_step(void) {
         Sleep(1);
         net_hello(0);
         if (now_ms() - last > 16) { net_pre_send(); last = now_ms(); watchdog_present(); }
+        {   /* (the wait popup, gpu_display.c: after SSBU_WAIT_POPUP_MS of this wait, default 100; 0: at once) */
+            static int popup_ms = -1;
+            void display_wait_popup(const char *note);
+            if (popup_ms < 0) { const char *e = getenv("SSBU_WAIT_POPUP_MS"); popup_ms = e && *e ? atoi(e) : 100; }
+            if (hold_on && !popped && now_ms() - t0 >= popup_ms) { popped = 1; display_wait_popup("Waiting for the other player's game"); }
+            /* (PC-24: the state map on, and a first refresh of the copy with it, inside this wait where the popup hides the
+             * ~160 ms stall, not in the entrances' frame 60. This game's own loading is done: it is ahead of the others.
+             * SSBU_RB_SM_WAIT=0: as before. Not on the set-up's first frame, which takes the whole copy itself.) */
+            static int sm_wait = -1;
+            if (sm_wait < 0) { const char *e = getenv("SSBU_RB_SM_WAIT"); sm_wait = !(e && *e == '0'); }
+            if (popped && sm_wait && !sm_pre_armed && pre_frames > 1 && sm_pre > 0 && now_ms() >= sm_try_at) {
+                extern double rb_park_quick_ms;
+                void rb_ring_drop(void);
+                double ts = now_ms();
+                rb_state_map_fight(1); sm_tried = 1;
+                rb_park_quick_ms = 50; rb_save_tag = 0xFFFFFFFFu;
+                int saved = rb_save(c, frame);
+                rb_park_quick_ms = 0;
+                if (saved == 1) { rb_ring_drop(); sm_pre_armed = 1; sm_took = 1; pre_last_ok = pre_frames; pre_refreshed++; }   /* (not taken: tried again in 100 ms, the frame-60 fallback stays) */
+                sm_try_at = now_ms() + 100;
+                fprintf(stderr, "[rb] before the fight: the state map on in the wait (frame %lld, %.0f ms into it): copy %s in %.0f ms\n", pre_frames, ts - t0, saved == 1 ? "taken" : "NOT taken, again soon", now_ms() - ts);
+                net_pre_send(); last = now_ms();   /* (said at once after the silence of the save) */
+            }
+        }
         if (hold_on && !noted && now_ms() - t0 > 1000) {   /* (a second in: said, the player sees why the game stands still) */
             void display_loading_note(const char *note);
             noted = 1; display_loading_note("Waiting for the other player's game");
@@ -3688,7 +3713,10 @@ static void net_pre_step(void) {
         }
     }
     if (noted) { void display_loading_note(const char *note); display_loading_note(NULL); }
+    if (popped) { void display_wait_popup(const char *note); display_wait_popup(NULL); }
     double w = now_ms() - t0;
+    if (sm_tried && !sm_took) rb_state_map_fight(0);   /* (asked in the wait, no copy taken: not left wanted for a refresh with no popup; the frame-60 step asks again) */
+    if (sm_took) fprintf(stderr, "[rb] before the fight: that wait lasted %.0f ms in all (state map on inside it)\n", w);
     if (w > 0.5) { pre_waited_ms += w; pre_waits++; }
 }
 static void net_ready_send(int all) {
@@ -3718,10 +3746,10 @@ static int fighters_made(Cpu *c) {
     return id != 0x50000000u && id != 0;
 }
 extern double rb_park_quick_ms;   /* (hle_rb_state.c) */
-static long long pre_refreshed, pre_skipped, pre_last_ok;   /* (pre_last_ok: the frame since the set-up of the last copy taken, 0 none yet) */
+/* (pre_refreshed, pre_skipped, pre_last_ok: declared above net_pre_step) pre_last_ok: the frame since the set-up of the last copy taken, 0 none yet) */
 static void net_pre_fight(Cpu *c, u64 frame) {
     pre_frames++;
-    net_pre_step();   /* (v0.9.4: in step with the others through the loading) */
+    net_pre_step(c, frame);   /* (v0.9.4: in step with the others through the loading) */
     sm_pre_step(pre_frames);   /* (the GO! hitch: the state map on in the entrances) */
     /* (hj2: "fighters not yet" on every frame to GO! - the game gives the players their fighters at GO!, though the
      * fighters do their entrances before - so the barrier never came, and the whole copy stayed at GO!: 358 ms here,

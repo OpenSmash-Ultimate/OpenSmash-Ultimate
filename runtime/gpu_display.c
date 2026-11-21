@@ -1213,6 +1213,76 @@ void display_loading_note(const char *note) {
 #endif
 }
 
+/* (rollback, the wait before a match) The game's thread holds still while the other game finishes loading, and nothing is
+ * drawn: the stage's last picture just stands there for seconds. This puts the loading animation's picture (the figure
+ * and the note in the bottom-right corner) on a black popup over the game window for that wait. The renderer owns the
+ * game window after the first present, so the popup is a window of its own (topmost, never takes the focus), on its own
+ * thread so it keeps moving while the game's thread waits. It needs the animation's pictures; without them nothing
+ * is shown. display_wait_popup("text") shows it, NULL hides it. */
+#ifdef _WIN32
+static HWND wp_hwnd;
+static HANDLE wp_ready;
+#define WP_SHOW (WM_APP + 1)
+static LRESULT CALLBACK wp_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_ERASEBKGND: { RECT r; GetClientRect(h, &r); FillRect((HDC)w, &r, (HBRUSH)GetStockObject(BLACK_BRUSH)); return 1; }
+    case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); la_paint(h, dc); EndPaint(h, &ps); return 0; }
+    case WM_TIMER: InvalidateRect(h, LA.last.right ? &LA.last : NULL, FALSE); return 0;
+    case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+    case WP_SHOW:
+        if (w) {
+            RECT r; POINT tl = {0, 0};
+            if (!game_window || !GetClientRect(game_window, &r) || !ClientToScreen(game_window, &tl)) return 0;   /* (the client area, not the borders) */
+            r.right += tl.x; r.bottom += tl.y; r.left = tl.x; r.top = tl.y;
+            LA.last.right = 0;                                   /* (paint it all the first time) */
+            QueryPerformanceCounter(&LA.t0);
+            SetWindowPos(h, HWND_TOPMOST, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            InvalidateRect(h, NULL, TRUE);
+            SetTimer(h, 1, 33, NULL);
+        } else { KillTimer(h, 1); ShowWindow(h, SW_HIDE); }
+        return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static DWORD WINAPI wp_thread(LPVOID unused) {
+    (void)unused;
+    WNDCLASSW wc = {0};
+    wc.lpfnWndProc = wp_proc; wc.hInstance = GetModuleHandleW(NULL); wc.lpszClassName = L"SsbuWaitPopup";
+    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    RegisterClassW(&wc);
+    wp_hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_LAYERED, wc.lpszClassName, L"", WS_POPUP,
+                              0, 0, 64, 64, NULL, NULL, wc.hInstance, NULL);
+    if (wp_hwnd) {   /* (SSBU_WAIT_POPUP_ALPHA 0..255, default 140, 255: solid; less lets the frozen picture show through, the figure as well) */
+        const char *e = getenv("SSBU_WAIT_POPUP_ALPHA"); int a = e && *e ? atoi(e) : 140;
+        SetLayeredWindowAttributes(wp_hwnd, 0, (BYTE)(a < 0 ? 0 : a > 255 ? 255 : a), LWA_ALPHA);
+    }
+    SetEvent(wp_ready);
+    MSG msg;
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+    return 0;
+}
+#endif
+void display_wait_popup(const char *note) {
+#ifdef _WIN32
+    if (!(LA.kong && LA.arm && LA.back && LA.from_hdc) || getenv("SSBU_WAIT_POPUP_OFF")) return;
+    static int failed;   /* (a popup that could not be made is not tried again) */
+    if (failed) return;
+    if (!wp_hwnd) {
+        if (!note) return;
+        wp_ready = CreateEventW(NULL, TRUE, FALSE, NULL);
+        HANDLE t = wp_ready ? CreateThread(NULL, 0, wp_thread, NULL, 0, NULL) : NULL;
+        if (!t) { failed = 1; return; }
+        CloseHandle(t);
+        WaitForSingleObject(wp_ready, 2000);
+        if (!wp_hwnd) { failed = 1; return; }
+    }
+    la_note(note);
+    PostMessageW(wp_hwnd, WP_SHOW, note != NULL, 0);
+#else
+    (void)note;
+#endif
+}
+
 /* (both renderers, just before each present: the loading animation stops at the first) */
 void display_before_present(void) {
 #ifdef _WIN32
