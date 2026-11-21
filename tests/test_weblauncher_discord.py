@@ -277,5 +277,194 @@ class Lobbies(unittest.TestCase):
         self.assertEqual(da.fighter_name(-1), "Fighter -1")
 
 
+class Mastery(unittest.TestCase):
+    """Mastery points (as OpenSmash.Core/Mastery.cs): the regions summed, the largest veteran bonus, 404 lobbies skipped."""
+    TICKET = "u|n|1800000000." + "f" * 64
+
+    def test_merge(self):
+        eu = {"region": "eu", "fighters": [{"fighter": "mario", "points": 300, "veteran": 1000, "games": 4, "wins": 3},
+                                           {"fighter": "ui_chara_pzenigame", "points": 1000, "games": 9, "wins": 2},
+                                           {"fighter": "bad key!", "points": 5}, {"fighter": 7}]}
+        na = {"region": "na-east", "fighters": [{"fighter": "mario", "points": 200, "veteran": 1000, "games": 2, "wins": 1}]}
+        rows = da.merge_mastery([eu, None, na])
+        self.assertEqual([r["fighter"] for r in rows], ["mario", "pzenigame"])
+        self.assertEqual((rows[0]["points"], rows[0]["veteran"], rows[0]["games"], rows[0]["wins"]), (1500, 1000, 6, 4))
+        self.assertEqual(rows[1]["name"], "Squirtle")
+        self.assertIsNone(da.merge_mastery([None, {"error": "not found"}]))
+        self.assertEqual(da.fighter_key_name("miiswordsman"), "Mii Swordfighter")
+
+    def test_board_merged_by_id(self):
+        top = da.merge_mastery_board([{"total": [{"id": "a", "name": "Ann", "points": 900, "veteran": 1000},
+                                                 {"id": "b", "name": "", "points": 1500, "veteran": 0}]},
+                                      {"total": [{"id": "b", "points": 700, "veteran": 1000}, {"id": "", "points": 9}]}, None])
+        self.assertEqual(top, [{"id": "b", "name": "Player", "points": 3200}, {"id": "a", "name": "Ann", "points": 1900}])
+
+    def test_asked_with_the_stored_ticket_official_lobbies_only(self):
+        with tempfile.TemporaryDirectory() as root:
+            asked = []
+
+            def ask(url, headers=None):
+                asked.append((url, dict(headers or {})))
+                if url.endswith("/mastery/me") and len(asked) == 1:
+                    return {"fighters": [{"fighter": "fox", "points": 120, "veteran": 1000, "games": 1, "wins": 1}]}
+                return None   # (the other lobby is older: 404)
+            self.assertIsNone(da.mastery_me(root, ask))   # (no stored ticket: nothing asked)
+            self.assertEqual(asked, [])
+            os.makedirs(os.path.join(root, "build", "cache"))
+            with open(os.path.join(root, "build", "cache", "online_pass.txt"), "w", encoding="ascii") as f:
+                f.write(self.TICKET)
+            rows = da.mastery_me(root, ask)
+            self.assertEqual(rows[0]["points"], 1120)
+            self.assertTrue(asked and all(h.get("X-OpenSmash-Ticket") == self.TICKET for _, h in asked))
+            self.assertEqual({u.split("/")[2] for u, _ in asked}, {x for x in da.server_region.official_lobbies(root)})
+            self.assertIsNone(da.mastery_board(root, lambda url, headers=None: None))
+
+    def test_view_and_switches(self):
+        with tempfile.TemporaryDirectory() as root:
+            acc = da.Account(root, root)
+            old = os.environ.get("OPENSMASH_MASTERY_UI")
+            try:
+                os.environ["OPENSMASH_MASTERY_UI"] = "0"
+                self.assertEqual(acc.mastery_view(me=lambda r: self.fail("asked"))["on"], False)
+                os.environ.pop("OPENSMASH_MASTERY_UI")
+                v = acc.mastery_view(me=lambda r: None, board=lambda r: None, service=lambda r: None)
+                self.assertTrue(v["on"] and not v["available"] and v["top"] is None and v["arena_url"].startswith("https://www.ssbuarena.com"))
+                acc.mastery_at = 0
+                v = acc.mastery_view(me=lambda r: [{"fighter": "fox", "name": "Fox", "points": 50, "veteran": 0, "games": 1, "wins": 0}],
+                                     board=lambda r: [{"id": "x", "name": "Xia", "points": 5}], service=lambda r: None)
+                self.assertTrue(v["available"] and v["total"] == 50 and v["top"][0]["name"] == "Xia")
+                acc.mastery_at = 0
+                v = acc.mastery_view(me=lambda r: None, board=lambda r: None, service=lambda r: None)   # (all down: the last answers kept)
+                self.assertEqual((v["total"], len(v["top"])), (50, 1))
+                # the accounts service's board first: the lobbies' list not asked when it answers
+                acc.mastery_at = 0
+                v = acc.mastery_view(me=lambda r: None, board=lambda r: self.fail("lobbies asked"),
+                                     service=lambda r: [{"id": "a", "name": "Ann", "points": 5200, "pos": 1}])
+                self.assertEqual(v["top"][0]["name"], "Ann")
+            finally:
+                if old is None:
+                    os.environ.pop("OPENSMASH_MASTERY_UI", None)
+                else:
+                    os.environ["OPENSMASH_MASTERY_UI"] = old
+
+    def _env(self, **values):
+        old = {k: os.environ.get(k) for k in values}
+
+        def back():
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(back)
+        for k, v in values.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_account_service_as_the_launchers_read_it(self):
+        self._env(OPENSMASH_SUPABASE_URL=None, OPENSMASH_SUPABASE_KEY=None)
+        with tempfile.TemporaryDirectory() as root:
+            self.assertIsNone(da.account_service(root))
+            os.makedirs(os.path.join(root, "OpenSmash.Core"))
+            with open(os.path.join(root, "OpenSmash.Core", "account_service.json"), "w", encoding="utf-8") as f:
+                json.dump({"url": "https://built.example/", "publishable_key": "pk-built"}, f)
+            self.assertEqual(da.account_service(root), ("https://built.example", "pk-built"))
+            os.makedirs(os.path.join(root, "config"))
+            with open(os.path.join(root, "config", "account_service.json"), "w", encoding="utf-8") as f:
+                json.dump({"url": "https://own.example"}, f)
+            self.assertEqual(da.account_service(root), ("https://own.example", "pk-built"))
+            self._env(OPENSMASH_SUPABASE_URL="http://127.0.0.1:5555", OPENSMASH_SUPABASE_KEY="test-key")
+            self.assertEqual(da.account_service(root), ("http://127.0.0.1:5555", "test-key"))
+            self._env(OPENSMASH_SUPABASE_URL="http://remote.example")   # (plain http elsewhere than this PC: none)
+            self.assertIsNone(da.account_service(root))
+
+    def test_service_board(self):
+        self._env(OPENSMASH_SUPABASE_URL="http://127.0.0.1:5555", OPENSMASH_SUPABASE_KEY="test-key")
+        asked = []
+
+        def ask(url, headers=None, body=None):
+            asked.append((url, dict(headers or {}), json.loads(body)))
+            return [{"pos": 1, "id": "a", "name": "Ann", "tag": 7, "total": 5200, "games": 40, "total_count": 3},
+                    {"pos": 2, "id": "b", "name": None, "total": 3100}, {"id": "", "total": 1}, "junk"]
+        with tempfile.TemporaryDirectory() as root:
+            top = da.service_board(root, ask, take=5)
+            self.assertEqual(top, [{"id": "a", "name": "Ann", "points": 5200, "pos": 1, "fighter": None}, {"id": "b", "name": "Anonymous", "points": 3100, "pos": 2, "fighter": None}])
+            url, headers, body = asked[0]
+            self.assertEqual(url, "http://127.0.0.1:5555/rest/v1/rpc/opensmash_mastery_board")
+            self.assertEqual((headers["apikey"], headers["Authorization"]), ("test-key", "Bearer test-key"))
+            self.assertEqual(body, {"p_fighter": None, "p_limit": 5, "p_offset": 0})
+            self.assertIsNone(da.service_board(root, lambda url, headers=None, body=None: None))   # (404 / down: the lobbies)
+            self.assertIsNone(da.service_board(root, lambda url, headers=None, body=None: {"message": "x"}))
+
+    def test_fighters_and_icons(self):
+        self.assertEqual([da.fighter_key_any(v) for v in ("Joker", "jack", "ui_chara_jack", "Pyra / Mythra", "R.O.B.", "PT", "nobody")],
+                         ["jack", "jack", "jack", "element", "robot", "ptrainer", None])
+        self.assertEqual(da.fighter_icon("Joker"), {"name": "Joker", "icon": "https://www.ssbuarena.com/fighters/jack/1.webp"})
+        self.assertEqual(da.fighter_icon("Ridley")["icon"], "https://www.ssbuarena.com/fighters/ridley/5.webp")
+        self.assertEqual(da.fighter_icon("element")["icon"], "https://www.ssbuarena.com/fighters/eflame/1.webp")
+        self.assertEqual(da.fighter_icon("nobody")["icon"], "")
+
+    def test_ranked_board(self):
+        self._env(OPENSMASH_SUPABASE_URL="http://127.0.0.1:5555", OPENSMASH_SUPABASE_KEY="test-key")
+        asked = []
+
+        def ask(url, headers=None, body=None):
+            asked.append((url, json.loads(body)))
+            return [{"rank": 1, "username": "Vex", "tag": 7, "rating": 2586.18, "wins": 9, "losses": 2, "tier": "Grandmaster", "tier_color": "#FF5A6A",
+                     "fighters": [{"fighter": "Joker", "games": 9}, {"fighter": "Fox"}, {"fighter": "Ike"}, {"fighter": "Wolf"}]},
+                    {"rank": 2, "username": "", "rating": "1500"}, {"rank": 3, "username": "Ann", "rating": "x", "tier_color": "red"}]
+        with tempfile.TemporaryDirectory() as root:
+            rows = da.ranked_board(root, "eu", 10, ask)
+            self.assertEqual(asked[0][0], "http://127.0.0.1:5555/rest/v1/rpc/ranked_board")
+            self.assertEqual(asked[0][1]["p_region"], "eu")
+            self.assertEqual((rows[0]["name"], rows[0]["tag"], rows[0]["rating"], len(rows[0]["fighters"]), rows[0]["fighters"][0]["name"]), ("Vex", "0007", 2586, 3, "Joker"))
+            self.assertEqual((len(rows), rows[1]["tier_color"], rows[1]["tier"], rows[1]["rating"]), (2, "#8C9AAD", "Unranked", 0))
+            da.ranked_board(root, "moon", 10, ask)
+            self.assertIsNone(asked[1][1]["p_region"])
+            self.assertIsNone(da.ranked_board(root, None, 10, lambda url, headers=None, body=None: None))
+    def test_service_board_against_the_fake_service(self):
+        """tools/dev/fake_accounts.py's board (anyone may read it), and its --no-mastery 404."""
+        import socket as _s
+        import subprocess
+        here = os.path.dirname(os.path.abspath(__file__))
+        fake = os.path.join(here, "..", "tools", "dev", "fake_accounts.py")
+        for extra, want in (([], 4), (["--no-mastery"], None)):
+            with _s.socket() as s0:
+                s0.bind(("127.0.0.1", 0))
+                port = s0.getsockname()[1]
+            p = subprocess.Popen([sys.executable, "-I", fake, "--port", str(port), "--name", "Tester"] + extra,
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            try:
+                self.assertIn("fake accounts service on", p.stdout.readline())
+                self._env(OPENSMASH_SUPABASE_URL="http://127.0.0.1:%d" % port, OPENSMASH_SUPABASE_KEY="test-key")
+                with tempfile.TemporaryDirectory() as root:
+                    top = da.service_board(root, take=10)
+                if want is None:
+                    self.assertIsNone(top)
+                else:
+                    self.assertEqual(len(top), want)
+                    self.assertEqual((top[0]["name"], top[1]["name"], top[2]["name"], top[2]["points"]), ("Ann", "Anonymous", "Tester", 1420))
+            finally:
+                p.kill()
+                p.wait()
+                p.stdout.close()
+
+    def test_view_unchanged_below(self):
+        with tempfile.TemporaryDirectory() as root:
+            acc = da.Account(root, root)
+            old = os.environ.get("OPENSMASH_MASTERY_UI")
+            try:
+                os.environ.pop("OPENSMASH_MASTERY_UI", None)
+                v = acc.mastery_view(me=lambda r: None, board=lambda r: [{"id": "x", "name": "Xia", "points": 5}], service=lambda r: None)
+                self.assertEqual(v["top"][0]["name"], "Xia")   # (the service failing: the lobbies' list)
+            finally:
+                if old is None:
+                    os.environ.pop("OPENSMASH_MASTERY_UI", None)
+                else:
+                    os.environ["OPENSMASH_MASTERY_UI"] = old
+
+
 if __name__ == '__main__':
     unittest.main()

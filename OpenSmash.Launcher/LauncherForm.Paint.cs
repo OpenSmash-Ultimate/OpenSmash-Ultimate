@@ -61,7 +61,7 @@ namespace OpenSmash.Launcher
             ["volume"] = "The game's whole sound (display.ini volume, the same setting as the in-game menu's Volume row). 100 is full. It applies the next time you press Play.",
             ["name"] = "What other players see. Leave it empty and the game picks one.",
             ["lobby"] = "Official lobby: your region's server, every match relayed. Private: only players with the same code. LAN: players on this network. Offline: no network.",
-            ["region"] = "Players on another region are not listed.",   // (one line fits: Auto is said by its own label, "Auto (the closest)")
+            ["region"] = "Players on another region are not listed.",   // (Europe or North America East: OpenSmash.Core.OnlineSettings)
             ["code"] = "A word your friends type too. Capital letters count.",
             ["server"] = "host:port of a lobby you run, for example 192.168.1.20:39420.",
             ["direct"] = "Rooms on this network and private rooms only. On is faster and announces your room. The official lobbies never connect players directly.",
@@ -159,6 +159,7 @@ namespace OpenSmash.Launcher
                 case "nav:home": GoView("home"); return true;
                 case "nav:mods": GoView("mods"); return true;
                 case "nav:settings": GoView("settings"); return true;
+                case "nav:competitive": GoView("competitive"); return true;
                 case "nav:yuzu": OpenYuzuRoom(); return true;
                 case "nav:back": GoBack(); return true;
                 case "nav:play": if (!Busy) StartPlay(); return true;
@@ -529,6 +530,7 @@ namespace OpenSmash.Launcher
                 case "mods_browser": PaintModsBrowser(g, W, H); break;
                 case "setup_modding": PaintSetupModding(g, W, H); break;
                 case "settings": PaintSettings(g, W, H); break;
+                case "competitive": PaintCompetitive(g, W, H); break;   // (LauncherForm.Competitive.cs: SSBU Arena's ranked)
                 case "yuzu": PaintYuzuRoom(g, W, H); break;
                 case "remap": PaintRemap(g, W, H); break;
                 default: PaintHome(g, W, H); break;
@@ -611,9 +613,13 @@ namespace OpenSmash.Launcher
             AddHit("nav:mode-next", nextX, cy - chh / 2, aw, chh);
 
             // Section links with the red skewed underline
-            string active = _view == "home" ? "nav:home" : _view == "settings" || _view == "yuzu" || _view == "remap" ? "nav:settings" : "nav:mods";
+            string active = _view == "home" ? "nav:home" : _view == "settings" || _view == "yuzu" || _view == "remap" ? "nav:settings" : _view == "competitive" ? "nav:competitive" : "nav:mods";
             float lx = prevX - 8 * s;
-            foreach (var (id, label) in new[] { ("nav:settings", "SETTINGS"), ("nav:mods", "MODS"), ("nav:home", "HOME") })
+            // (right to left: SETTINGS, COMPETITIVE - SSBU Arena's ranked, LauncherForm.Competitive.cs - MODS, HOME)
+            var links = CompetitiveOn
+                ? new[] { ("nav:settings", "SETTINGS"), ("nav:competitive", "COMPETITIVE"), ("nav:mods", "MODS"), ("nav:home", "HOME") }
+                : new[] { ("nav:settings", "SETTINGS"), ("nav:mods", "MODS"), ("nav:home", "HOME") };
+            foreach (var (id, label) in links)
             {
                 float tw = Theme.TextWidth(g, label, cf, csp), bw = tw + 24 * s;
                 lx -= bw;
@@ -1666,7 +1672,7 @@ namespace OpenSmash.Launcher
             int tab = _settingsTabs.Length == 0 ? 0 : Math.Clamp(_settingsTab, 0, _settingsTabs.Length - 1);
             _settingsTab = tab;
             int pageStart = SectionStart(tab);
-            int pageCount = tab < _settingsTabs.Length ? _settingsTabs[tab].SettingKeys.Length : 0;
+            int pageCount = tab < _settingsTabs.Length ? _settingsTabs[tab].SettingKeys.Count(SettingVisible) : 0;
             if (pageCount > 0 && (_sel < pageStart || _sel >= pageStart + pageCount)) _sel = pageStart;
             var rowTops = new float[vis.Length];
             float content = headerH;
