@@ -2893,6 +2893,7 @@ static void net_rollback(Cpu *c, u64 frame, u32 key, u32 m) {
  * on. The load does not ask where the main thread's stack is (rb_load_anyframe): the thread moves onto its scratch stack
  * and its whole stack is put back, wherever it was.
  * SSBU_RB_WAITEND=0: off (safe points only, as before). On by default since v0.5.0 (round 7).
+ * SSBU_RB_WAITEND_MAXD=<n>: with it on, only a catch-up of at most n frames is done from here (0, the default: any depth).
  * SSBU_RB_WAITRB=1 (net mode): also while the game waits for the buffer, each time it is told "would block" (at most
  * once every SSBU_RB_WAITRB_US, 250): the load and the frames run again then fall in the frame's idle time. In loop mode
  * (the bench) only with SSBU_RB_WAITRB=2: its pads "come" by frame, and a rollback in the wait would leave the bench's
@@ -2924,6 +2925,10 @@ void rb_wait_point(Cpu *c) {
     if (net_mode == 2) net_receive(we_sp_key); else net_deliver(key, 0);
     u32 m = rbn_peek_mismatch();
     if (!m || m > we_sp_key || net_resync_pending) return;   /* (only a guess a frame already ran on) */
+    {   /* SSBU_RB_WAITEND_MAXD=<n>: roll back from here only when the catch-up is at most n frames; a deeper one is left to the safe point (0: no limit) */
+        static int maxd = -1; if (maxd < 0) { const char *e = getenv("SSBU_RB_WAITEND_MAXD"); maxd = e && *e ? atoi(e) : 0; }
+        if (maxd > 0 && (int)(we_sp_key - m + 1) > maxd) return;
+    }
     m = rbn_take_mismatch();
     if (bn_on_ > 0) { bn_mark(kind == 2 ? "inwait" : "waitend-rb", key); if (kind != 2) bn_real_point(key); }
     rb_we_n[kind == 2]++;
