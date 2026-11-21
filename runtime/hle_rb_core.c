@@ -22,7 +22,9 @@
 /* Rollback netplay is written for Windows (its savestates copy Windows host stacks and fiber
  * blocks): elsewhere the switch is never on, and these stand-ins keep the other files and the
  * wraps (hle_rb_wraps.c) as they are with it off. */
+#include <string.h>
 #include "host.h"
+#include "net_results.h"   /* (MatchMastery: rb_mastery_take) */
 int rb_on, rb_log;
 int rb_lite_skip(Cpu *c, int group) { (void)c; (void)group; return 0; }
 int rb_vi_catchup(void) { return 0; }
@@ -49,6 +51,7 @@ int rb_online_match_now(void) { return 0; }   /* (hle_online_delay.c) */
 int rb_sd_hold_now(void) { return 0; }        /* (hle_online_delay.c) */
 int rb_online_match_reported(void) { return 0; }   /* (hle_online_delay.c) */
 int rb_online_self_cut(void) { return 0; }    /* (hle_online_delay.c) */
+int rb_mastery_take(MatchMastery *out, int me) { (void)me; memset(out, 0, sizeof *out); return 0; }   /* (hle_online_delay.c: no fight read here) */
 #else
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
