@@ -1164,21 +1164,20 @@ static int journal_apply(const char *root) {
         join(a, sizeof a, root, arg);
         if (!strcmp(line, "Dd")) {   /* a folder that goes */
             if (is_dir(a)) remove_tree(a);
-            ok = !is_dir(a);
             parent_of(b, sizeof b, a);
-            flush_dir(b);
+            ok = !is_dir(a) && (!is_dir(b) || flush_dir(b));   /* (an I/O error fails the step: the marker must not go before it is on the disk) */
         } else if (!strcmp(line, "Df")) {   /* a file that goes */
             ok = !is_file(a) || delete_file(a);
             parent_of(b, sizeof b, a);
-            flush_dir(b);
+            ok = ok && (!is_dir(b) || flush_dir(b));
         } else if (!strcmp(line, "M")) {   /* a folder the save has now */
             if (!is_dir(a)) { make_parents(a); CreateDirectoryA(a, NULL); }
-            ok = is_dir(a);
             parent_of(b, sizeof b, a);
-            flush_dir(b);
+            ok = is_dir(a) && flush_dir(b);
         } else if (!strcmp(line, "F")) {   /* a file: the working copy moves over the committed one */
             join(b, sizeof b, work, arg);
             if (!absent(b)) { make_parents(a); ok = move_file(b, a); }   /* (absent: moved already; one that cannot be looked at fails the move) */
+            else { parent_of(b, sizeof b, a); ok = !is_dir(b) || flush_dir(b); }   /* (moved by a try whose flush failed: flushed now, before the marker goes) */
         } else ok = 0;
         crash_point();
     }
@@ -1292,7 +1291,10 @@ static u32 journal_commit(struct Mount *m) {
      * to be on the disk: left pending, not applied now */
     int synced = ok && move_new(journal, marker);
     DWORD move_error = GetLastError();
-    if (ok && !synced) ok = absent(journal) && attributes(marker) != INVALID_FILE_ATTRIBUTES;
+    if (ok && !synced) {   /* (journal_apply above left no marker, and the lock is held: one there now is this decision) */
+        ok = attributes(marker) != INVALID_FILE_ATTRIBUTES;
+        if (ok && !absent(journal)) DeleteFileA(journal);   /* (a link-then-unlink move cut short: one file under both names) */
+    }
     SetLastError(move_error);
     if (!ok) {   /* not decided: the committed save is as it was */
         fprintf(stderr, "[fs] commit of %s failed before it was decided (error %lu)\n", m->root, (unsigned long)GetLastError());
