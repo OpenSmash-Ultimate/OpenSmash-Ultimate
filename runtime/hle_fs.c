@@ -1252,6 +1252,16 @@ static int writer_open(u32 mount) {   /* a file of the mount is open for writing
     return found;
 }
 
+/* Whether the marker is this process's journal: it starts as journal_commit writes one, with this
+ * process's id on its W line. (Not readable: not known to be, so not.) */
+static int marker_is_mine(const char *marker, const char *pid) {
+    char want[64], *text = read_text(marker);
+    snprintf(want, sizeof want, "%s\nW\t%s\n", JOURNAL_FORMAT, pid);
+    int mine = text && !strncmp(text, want, strlen(want));
+    free(text);
+    return mine;
+}
+
 static u32 journal_commit(struct Mount *m) {
     char journal[1024], marker[1024], pid[16];
     if (writer_open(m->id)) return R_WRITE_FILE_OPEN;   /* ([sdk] FileSystemAccessor::Commit refuses too) */
@@ -1291,8 +1301,9 @@ static u32 journal_commit(struct Mount *m) {
      * to be on the disk: left pending, not applied now */
     int synced = ok && move_new(journal, marker);
     DWORD move_error = GetLastError();
-    if (ok && !synced) {   /* (journal_apply above left no marker, and the lock is held: one there now is this decision) */
-        ok = attributes(marker) != INVALID_FILE_ATTRIBUTES;
+    if (ok && !synced) {   /* (journal_apply above left no marker, but without the lock another process may have put its
+                            * own there in between: a marker counts as this decision only if its W line is this process) */
+        ok = marker_is_mine(marker, pid);
         if (ok && !absent(journal)) DeleteFileA(journal);   /* (a link-then-unlink move cut short: one file under both names) */
     }
     SetLastError(move_error);

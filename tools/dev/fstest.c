@@ -35,11 +35,20 @@
 #include "../../runtime/host.h"
 
 /* sync_fails = 1: the next move onto a commit marker is made, then fails as a flush after it
- * would (hle_fs.c's moves go through here) */
-static int sync_fails;
+ * would; marker_squat: just before the next move onto a commit marker, another process (as it
+ * could without the save lock) puts a marker there - 1 an incomplete one, 2 a complete one of
+ * its own (process 999999999, which changes nothing) (hle_fs.c's moves go through here) */
+static int sync_fails, marker_squat;
 static BOOL test_move(LPCSTR from, LPCSTR to, DWORD flags) {
-    BOOL r = MoveFileExA(from, to, flags);
     size_t n = strlen(to);
+    if (marker_squat && n > 7 && !strcmp(to + n - 7, ".commit")) {
+        const char *other = marker_squat == 1 ? "other" : "ssbu-save-journal 1\nW\t999999999\nE\n";
+        marker_squat = 0;
+        HANDLE f = CreateFileA(to, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
+        DWORD w;
+        if (f != INVALID_HANDLE_VALUE) { WriteFile(f, other, (DWORD)strlen(other), &w, NULL); CloseHandle(f); }
+    }
+    BOOL r = MoveFileExA(from, to, flags);
     if (r && sync_fails && n > 7 && !strcmp(to + n - 7, ".commit")) { sync_fails = 0; SetLastError(ERROR_DISK_FULL); return FALSE; }
     return r;
 }
@@ -467,6 +476,15 @@ static void checks_all(DWORD live_pid) {
     break_lock(1);
     CHECK(mount_save() == 0 && t_write("save:/a.bin", 0, "AX", 0, NULL) == 0 && commit("save") == 0 && is(h_save("a.bin"), "AX"),
           "mount and Commit without the lock (not strict)");
+    /* a marker another process made in between is not taken for this commit's decision */
+    CHECK(t_write("save:/a.bin", 0, "AY", 0, NULL) == 0, "a write");
+    marker_squat = 1;
+    CHECK(commit("save") == R_HOST_FAILURE && is(h_save("a.bin"), "AX"), "Commit when another process's marker appears first");
+    CHECK(commit("save") == 0 && is(h_save("a.bin"), "AY") && !h_exists(h_beside("commit")), "the next Commit (its changes kept)");
+    CHECK(t_write("save:/a.bin", 0, "AZ", 0, NULL) == 0, "a write");
+    marker_squat = 2;
+    CHECK(commit("save") == R_HOST_FAILURE && is(h_save("a.bin"), "AY"), "Commit when another process's complete marker appears first");
+    CHECK(commit("save") == 0 && is(h_save("a.bin"), "AZ") && !h_exists(h_beside("commit")), "the next Commit (its changes kept, the other's applied)");
     unmount("save");
     break_lock(0);
 
