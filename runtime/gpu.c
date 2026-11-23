@@ -71,8 +71,8 @@ static void release(u64 va, u32 payload, int four_words) {
 
 static void syncpoint_increment(u32 id) {
     if (id < SYNCPT_MAX) {
-        if ((i32)(gpu_syncpt_max[id] - gpu_syncpt_min[id]) <= 0) gpu_syncpt_max[id]++;
-        gpu_syncpt_min[id]++;
+        u32 value = gpu_syncpt_add(&gpu_syncpt_min[id], 1);
+        gpu_syncpt_advance(&gpu_syncpt_max[id], value);
     }
 }
 

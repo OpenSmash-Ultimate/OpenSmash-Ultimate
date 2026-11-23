@@ -3748,16 +3748,21 @@ static ID3D11ShaderResourceView *upload_raw(int stage, u32 slot, const void *dat
     if (size > u->cap) {
         if (u->srv) ID3D11ShaderResourceView_Release(u->srv);
         if (u->buf) ID3D11Buffer_Release(u->buf);
+        *u = (Upload){0};   /* a failed grow must leave no released object for the next draw */
         u32 cap = 1024;
         while (cap < size) cap *= 2;
         D3D11_BUFFER_DESC bd = {cap, D3D11_USAGE_DYNAMIC, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_WRITE,
                                 D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS, 0};
-        if (FAILED(ID3D11Device_CreateBuffer(dev, &bd, NULL, &u->buf))) { u->cap = 0; u->buf = NULL; return NULL; }
+        if (FAILED(ID3D11Device_CreateBuffer(dev, &bd, NULL, &u->buf))) { u->buf = NULL; return NULL; }
         D3D11_SHADER_RESOURCE_VIEW_DESC sd = {DXGI_FORMAT_R32_TYPELESS, D3D11_SRV_DIMENSION_BUFFEREX};
         sd.BufferEx.FirstElement = 0;
         sd.BufferEx.NumElements = cap / 4;
         sd.BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
-        ID3D11Device_CreateShaderResourceView(dev, (ID3D11Resource *)u->buf, &sd, &u->srv);
+        if (FAILED(ID3D11Device_CreateShaderResourceView(dev, (ID3D11Resource *)u->buf, &sd, &u->srv))) {
+            ID3D11Buffer_Release(u->buf);
+            *u = (Upload){0};
+            return NULL;
+        }
         u->cap = cap;
     }
     D3D11_MAPPED_SUBRESOURCE m;
