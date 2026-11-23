@@ -349,9 +349,9 @@ static void pseudo_device_id(Cpu *c) {
 
 /* The SDK functions plugins call that the game never does, whose SDK code would ask system services
  * that aren't here: their dispatch entries get these when plugins load (plugin_shims). */
-static void show_application_error(Cpu *c) {   /* (ApplicationErrorArg: the dialog's text at 0x10, the full screen's at 0x810) */
+static void show_application_error(Cpu *c) {   /* (ApplicationErrorArg: SDK getters return text at 0x14 and 0x814) */
     u64 arg = c->x[0];   /* (on the console the player closes it and the game goes on: a panic aborts by itself after) */
-    fprintf(stderr, "[skyline] a plugin showed an error: %.1000s\n  %.1500s\n", P(char, arg + 0x10), P(char, arg + 0x810));
+    fprintf(stderr, "[skyline] a plugin showed an error: %.1000s\n  %.1500s\n", P(char, arg + 0x14), P(char, arg + 0x814));
     fflush(stderr);
 }
 static void exit_application(Cpu *c) { (void)c; fprintf(stderr, "[skyline] a plugin exited the game\n"); fflush(stderr); ExitProcess(0); }
