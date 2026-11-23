@@ -157,9 +157,19 @@ static int vi_slot_drawn(int slot) {
     return m && done >= m;
 }
 /* (vsync thread, at a refresh, before take_oldest) 1: the oldest queued buffer is not drawn yet - show nothing new now */
+/* Only while a rollback match is on (rb_online_match_now), and for a few refreshes after a rollback's load (vi_rb_load):
+ * offline, menus, movies and the rest poll nothing and behave as before this option. */
+static volatile int ready_grace;   /* (refreshes left after a vi_rb_load) */
+static int vi_ready_active(void) {
+    int rb_online_match_now(void);   /* (hle_rb_core.c) */
+    if (rb_online_match_now() > 0) return 1;
+    if (ready_grace > 0) { ready_grace--; return 1; }
+    return 0;
+}
 static int vi_ready_skip(void) {
     ready_init();
     if (!ready_on) return 0;
+    if (!vi_ready_active()) return 0;
     queue_lock();
     int oldest = -1;
     for (int i = 0; i < SLOTS; i++)
@@ -428,7 +438,8 @@ void vi_rb_load(const void *p) {
     vi_reacq = reacq_on && rb_vi_catchup() ? on_screen : -1;
     for (int i = 0; i < SLOTS; i++) { queue.slots[i].state = s[i].state; queue.slots[i].queued_at = s[i].queued_at; queue.slots[i].gpu_mark = s[i].gpu_mark; queue.slots[i].keep = 0; }
     keep_pending = 0;
-    if (ready_on > 0) { for (int i = 0; i < SLOTS; i++) ready_mark[i] = 1; ready_last_q = -1; }   /* (SSBU_VI_READY: what the save had queued was drawn long ago) */
+    if (ready_on > 0) { for (int i = 0; i < SLOTS; i++) ready_mark[i] = 1; ready_last_q = -1; }
+    if (ready_on > 0) ready_grace = 8;   /* (SSBU_VI_READY: what the save had queued was drawn long ago) */
     /* (a rollback's load: the frames the save had queued, and the one shown, were shown on the first pass. Let
      * go now - a catch-up presents nothing - rather than left queued: their slots were free again for the
      * catch-up's frames on the first pass, and the oldest of them was shown after the catch-up, a picture
