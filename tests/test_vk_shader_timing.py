@@ -23,7 +23,8 @@ class ShaderTimingTests(unittest.TestCase):
         self.assertIn('job_add(&s->job)', block)
         self.assertIn('if (wait_makes()) wait_for(&s->state)', block)
         self.assertIn('memcpy(in->program + skip, p + skip, size - skip)', block)
-        self.assertIn('read_gpu(stage_cb[i].address, stage_cb[i].size, in->cb[i])', block)
+        self.assertIn('read_gpu(stage_cb[i].address, cb_bytes, in->cb[i])', block)
+        self.assertIn('stage_cb[i].size > 0x10000 ? 0x10000', block)
         start = source.index('static void shader_job(')
         worker = source[start:source.index('static int make_log_left(void);', start)]
         self.assertLess(worker.index('translation_load(s)'), worker.index('shader_translate('))

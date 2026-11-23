@@ -2269,7 +2269,8 @@ static void shader_job(Job *j) {
     WarmShader *w = s->glslang ? warm_find(&(WarmKey){s->hash, s->table_hash, s->vs_outputs, (u32)s->stage}) : NULL;
     if (w && InterlockedCompareExchange(&w->state, WARM_GAME, WARM_LISTED) == WARM_LISTED) s->publish = w;
     else if (w) {
-        while (w->state == WARM_LOADING) SwitchToThread();
+        /* (a warm thread may hold WARM_LOADING for minutes while the prepare tool runs: never spin a maker on it,
+         * make the module here instead) */
         if (w->state == WARM_READY) {
             s->module = w->module;
             s->compute = w->compute;
@@ -2369,10 +2370,11 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
         memcpy(in->program + skip, p + skip, size - skip);
         for (u32 i = 0; i < 18; i++) {
             if (!stage_cb[i].address || !stage_cb[i].size) continue;
-            in->cb[i] = malloc(stage_cb[i].size);
+            u32 cb_bytes = stage_cb[i].size > 0x10000 ? 0x10000 : stage_cb[i].size;   /* (a bank is 64 KB at most, as the draws upload) */
+            in->cb[i] = malloc(cb_bytes);
             if (!in->cb[i]) { translation_input_free(in); in = NULL; break; }
-            in->cb_size[i] = stage_cb[i].size;
-            read_gpu(stage_cb[i].address, stage_cb[i].size, in->cb[i]);
+            in->cb_size[i] = cb_bytes;
+            read_gpu(stage_cb[i].address, cb_bytes, in->cb[i]);
         }
     }
     if (!in) { InterlockedExchange(&s->state, 2); vk_stat_shader_failures++; return s; }
@@ -2382,6 +2384,11 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
     u64 t_translated = t_new, t_wait_start = rt_clock_ns();
     int warm_state = -1;
     if (wait_makes()) wait_for(&s->state);
+    else if (stage == SHADER_COMPUTE) {
+        /* (as before: a compute program is waited for up to 250 ms - a skipped launch leaves its outputs, skinned
+         * vertices and learned stores, unwritten for a frame; draws are not waited for) */
+        for (u64 until = rt_clock_ns() + 250000000ull; !s->state && rt_clock_ns() < until;) SwitchToThread();
+    }
     if (vk_gated) {
         u64 t_done = rt_clock_ns();
         make_note_shader(s, 0, (t_done - t_new) / 1e6, (t_translated - t_new) / 1e6,
@@ -3290,6 +3297,10 @@ static void warm_list_open(void) {
             FILE *saved = fopen(backup, "wbx");
             int backed_up = saved && fwrite(data, 1, size, saved) == size;
             if (saved && fclose(saved)) backed_up = 0;
+            if (!saved) {   /* (a backup from an earlier start whose rewrite failed: the original is kept there already) */
+                FILE *old = fopen(backup, "rb");
+                if (old) { backed_up = 1; fclose(old); }
+            }
             if (!backed_up) {
                 fprintf(stderr, "[vulkan] warm list: cannot back up headerless list; left unchanged\n");
                 free(data);
