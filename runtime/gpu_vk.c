@@ -874,9 +874,19 @@ static Surface *find_color(u64 guest) {
 }
 
 /* ---- the lock --------------------------------------------------------------------------------- */
+static __declspec(thread) u64 pending_wrote_lo, pending_wrote_hi;
+static __declspec(thread) u64 pending_wrote_ghi;   /* (the guest address the pending range ends at; 0: not known, no joining) */
+static void note_wrote(u64 va, u64 bytes);
+static void vk_flush_pending_writes(void) {
+    if (!pending_wrote_hi) return;
+    u64 lo = pending_wrote_lo, hi = pending_wrote_hi;
+    pending_wrote_hi = 0;
+    note_wrote(lo, hi - lo);
+}
 static void enter(void) {
     EnterCriticalSection(&lock);
     last_enter_thread = GetCurrentThreadId();
+    vk_flush_pending_writes();
 }
 static void leave(void) { LeaveCriticalSection(&lock); }
 
@@ -1381,11 +1391,20 @@ static Alloc dummy_image_mem[3];
 static VkImageView dummy_views[8];   /* by TEX_* (TEX_ARRAY_3D: none) */
 static VkSampler default_sampler, default_compare;
 
+/* Return guest address g if [va, va + size) maps contiguously from g; skip the second walk inside one 4 KB page. */
+static inline u64 gpu_va_contig(u64 va, u64 size) {
+    if (!size) return 0;
+    u64 g = gpu_va_to_guest(va);
+    if (!g) return 0;
+    if ((va & 0xFFF) + size <= 0x1000) return g;
+    return gpu_va_to_guest(va + size - 1) == g + size - 1 ? g : 0;
+}
+
 /* Copy guest GPU memory [va, va + size) into dst (zeros where unmapped), as gpu_d3d11.c's read_gpu. */
 static void read_gpu(u64 va, u32 size, void *dst) {
-    u64 g = gpu_va_to_guest(va);
     if (!size) return;
-    if (g && gpu_va_to_guest(va + size - 1) == g + size - 1) { memcpy(dst, P(void, g), size); return; }
+    u64 g = gpu_va_contig(va, size);
+    if (g) { memcpy(dst, P(void, g), size); return; }
     for (u32 done = 0; done < size;) {
         u32 n = 0x1000 - (u32)((va + done) & 0xFFF);
         if (n > size - done) n = size - done;
@@ -1402,11 +1421,30 @@ static void kept_written(u64 lo, u64 hi);
  * gpu_d3d11.c's, overflows: a frame's constant buffer loads are many thousands). */
 static u32 block_gen[1 << 16];
 static u64 any_gen;
+#define WROTE_LOG 256
+static struct { u64 lo, hi; } wrote_log[WROTE_LOG];
+static u64 write_seq, any_wseq;
+static u64 block_wseq[1 << 16];
 #define KEPT_BLOCK(block) ((u32)((u64)(block) * 0x9E3779B97F4A7C15ull >> 48))
 static u64 writes_over(u64 g, u64 size) {
     u64 h = any_gen;
     for (u64 b = g >> 16; b <= (g + size - 1) >> 16; b++) h = h * 0x100000001B3ull + block_gen[KEPT_BLOCK(b)];
     return h;
+}
+static int unwritten_since(u64 seq, u64 g, u64 size) {
+    if (seq == write_seq) return 1;
+    if (seq < any_wseq || !g || !size) return 0;
+    if (write_seq - seq <= WROTE_LOG) {
+        u64 end = g + size;
+        for (u64 s = seq; s < write_seq; s++) {
+            u64 lo = wrote_log[s & (WROTE_LOG - 1)].lo, hi = wrote_log[s & (WROTE_LOG - 1)].hi;
+            if (lo < end && g < hi) return 0;
+        }
+        return 1;
+    }
+    for (u64 b = g >> 16; b <= (g + size - 1) >> 16; b++)
+        if (block_wseq[KEPT_BLOCK(b)] > seq) return 0;
+    return 1;
 }
 static int watched(u64 g, u64 size);
 /* What the GPU's own commands wrote to guest memory (constant buffer loads, inline writes, copies,
@@ -1414,11 +1452,23 @@ static int watched(u64 g, u64 size);
  * changes what its draws read, so the same bytes from the same place are uploaded once unless one of
  * these writes touched them since. */
 static void note_wrote(u64 va, u64 bytes) {   /* bytes == 0: anywhere */
-    u64 lo = 0, hi = ~0ull, g = bytes ? gpu_va_to_guest(va) : 0;
-    if (g && gpu_va_to_guest(va + bytes - 1) == g + bytes - 1) { lo = g; hi = g + bytes; }
+    u64 lo = 0, hi = ~0ull, g = bytes ? gpu_va_contig(va, bytes) : 0;
+    if (g) { lo = g; hi = g + bytes; }
     kept_written(lo, hi);
-    if (hi - lo > (16ull << 20)) any_gen++;   /* (somewhere unknown, or much: everything) */
-    else for (u64 b = lo >> 16; b <= (hi - 1) >> 16; b++) block_gen[KEPT_BLOCK(b)]++;
+    if (hi - lo > (16ull << 20)) {
+        write_seq++;
+        any_gen++;   /* (somewhere unknown, or much: everything) */
+        any_wseq = write_seq;
+    } else {
+        wrote_log[write_seq & (WROTE_LOG - 1)].lo = lo;
+        wrote_log[write_seq & (WROTE_LOG - 1)].hi = hi;
+        write_seq++;
+        for (u64 b = lo >> 16; b <= (hi - 1) >> 16; b++) {
+            u32 idx = KEPT_BLOCK(b);
+            block_gen[idx]++;
+            block_wseq[idx] = write_seq;
+        }
+    }
 }
 
 /* Constant buffers of 4 KB or more stay on the GPU between draws (gpu_d3d11.c's "kept" buffers: NVN binds
@@ -1465,8 +1515,8 @@ static void kept_written(u64 lo, u64 hi) {
 /* The kept buffer for [va, va + size), or NULL (then uploaded with the rest). */
 static VkBufferView kept_cb(u64 va, u32 size) {
     if (size < 0x1000) return VK_NULL_HANDLE;
-    u64 g = gpu_va_to_guest(va);
-    if (!g || gpu_va_to_guest(va + size - 1) != g + size - 1 || !watched(g, size)) return VK_NULL_HANDLE;
+    u64 g = gpu_va_contig(va, size);
+    if (!g || !watched(g, size)) return VK_NULL_HANDLE;
     Kept *set = &kept[((va >> 4) * 0x9E3779B97F4A7C15ull >> 54) * KEPT_WAYS], *e = NULL, *lru = &set[0];
     for (u32 w = 0; w < KEPT_WAYS && !e; w++) {
         if (set[w].va == va && set[w].size == size && set[w].guest == g) e = &set[w];
@@ -1518,7 +1568,7 @@ static VkBufferView kept_cb(u64 va, u32 size) {
 /* Guest GPU memory [va, va + size) as a raw buffer for a shader: copied into the frame's upload memory
  * (the same range again in the same submission, unwritten since: the view made for it). */
 static u64 vk_stat_cb_copies[2], vk_stat_cb_bytes[2];
-typedef struct Upload { u64 va, serial, batch, gen; u32 size; VkBufferView view; } Upload;   /* (gen: writes_over when made) */
+typedef struct Upload { u64 va, g, serial, batch, wseq, gen; u32 size; VkBufferView view; } Upload;   /* (wseq/gen: unwritten_since/writes_over when made) */
 static Upload uploads[8192];
 /* Data a draw reads that upload() could not hand over (no upload memory left, no view): the draw reads zeros instead -
  * geometry gone or black. Said in the log the first times, with why: the cause of a black picture where it happens. */
@@ -1548,15 +1598,16 @@ static VkBufferView upload(u64 va, u32 size) {
     if (!va || !size) return dummy_texels;
     u32 padded = (size + 15) & ~15u;
     if (padded > limits.maxTexelBufferElements * 4ull) padded = size = limits.maxTexelBufferElements * 4u;
-    u64 g = gpu_va_to_guest(va);
-    const u8 *src = g && gpu_va_to_guest(va + size - 1) == g + size - 1 ? P(const u8, g) : NULL;
     Upload *u = &uploads[((va >> 4) * 0x9E3779B97F4A7C15ull ^ size) >> 51 & 8191];
     cmd();
-    if (src && u->view && u->va == va && u->size == size && u->serial == frames[frame_at].serial && u->batch == gpu_stat_batches &&
-        u->gen == writes_over(g, size)) {
+    if (u->view && u->va == va && u->size == size && u->serial == frames[frame_at].serial && u->batch == gpu_stat_batches &&
+        (unwritten_since(u->wseq, u->g, size) || u->gen == writes_over(u->g, size))) {
+        u->wseq = write_seq;
         vk_stat_reused++;
         return u->view;
     }
+    u64 g = gpu_va_contig(va, size);
+    const u8 *src = g ? P(const u8, g) : NULL;
     VkBuffer buf;
     VkDeviceSize off;
     u8 *dst = arena(padded, texel_align, &buf, &off);
@@ -1567,7 +1618,7 @@ static VkBufferView upload(u64 va, u32 size) {
     vk_stat_upload_bytes += padded;
     VkBufferView v = arena_view(buf, off, padded);
     if (!v) return upload_lost(padded, "vkCreateBufferView failed");
-    *u = (Upload){va, frames[frame_at].serial, gpu_stat_batches, src ? writes_over(g, size) : 0, size, src ? v : VK_NULL_HANDLE};
+    *u = (Upload){va, g, frames[frame_at].serial, gpu_stat_batches, write_seq, src ? writes_over(g, size) : 0, size, src ? v : VK_NULL_HANDLE};
     return v;
 }
 
@@ -1850,7 +1901,7 @@ static int memo_on(void) {   /* 0 off, 1 on, 2 checked */
     }
     return on;
 }
-typedef struct LastCb { u64 va, serial, batch, gen, g; u32 size, cap, run; VkBufferView view; u8 *copy; } LastCb;   /* (run: the bytes mapped, the rest zeros;
+typedef struct LastCb { u64 va, serial, batch, wseq, gen, g; u32 size, cap, run; VkBufferView view; u8 *copy; } LastCb;   /* (run: the bytes mapped, the rest zeros;
  * batch, gen: the submission it was last found the same in, and writes_over then) */
 static LastCb last_cb[2][18];
 static u64 vk_stat_cb_compared, vk_stat_cb_same, vk_stat_cb_unchanged;
@@ -1894,7 +1945,8 @@ static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
     /* (found the same in this submission and unwritten since: as below, without looking through its pages first -
      * a mapping that changes meanwhile counts as a write: note_wrote(0, 0)) */
     if (l->view && l->run && l->va == va && l->size == size && l->batch == gpu_stat_batches && l->serial == frames[frame_at].serial && memo_on() == 1 &&
-        l->gen == writes_over(l->g, l->run)) {
+        (unwritten_since(l->wseq, l->g, l->run) || l->gen == writes_over(l->g, l->run))) {
+        l->wseq = write_seq;
         vk_stat_cb_unchanged++;
         return l->view;
     }
@@ -1911,17 +1963,24 @@ static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
     }
     const u8 *src = run ? P(const u8, g) : NULL;
     cmd();
-    u64 gen = src ? writes_over(g, run) : 0;
+    u64 gen = 0;
+    int have_gen = 0;
     if (src && l->view && l->va == va && l->size == size && l->run == run && l->serial == frames[frame_at].serial) {
         /* (in the submission it was found the same in, unwritten by the GPU's commands since: the same bytes,
          * as upload() takes them - not compared again) */
-        if (l->batch == gpu_stat_batches && l->gen == gen && memo_on()) {
+        if (l->batch == gpu_stat_batches && memo_on() &&
+            (unwritten_since(l->wseq, g, run) || ((have_gen = 1, gen = writes_over(g, run)) == l->gen))) {
             if (memo_on() == 2) { vk_stat_memo_checked++; if (memcmp(l->copy, src, run)) vk_stat_memo_wrong[0]++; }
+            l->wseq = write_seq;
             vk_stat_cb_unchanged++;
             return l->view;
         }
         vk_stat_cb_compared++;
-        if (!memcmp(l->copy, src, run)) { vk_stat_cb_same++; l->batch = gpu_stat_batches; l->gen = gen; l->g = g; return l->view; }
+        if (!memcmp(l->copy, src, run)) {
+            vk_stat_cb_same++; l->batch = gpu_stat_batches; l->wseq = write_seq;
+            l->gen = have_gen ? gen : writes_over(g, run); l->g = g;
+            return l->view;
+        }
     }
     VkBufferView v = size >= 0x1000 ? upload_window(va, size) : VK_NULL_HANDLE;
     if (!v) {
@@ -1935,9 +1994,10 @@ static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
         l->cap = size;
         if (!(l->copy = malloc(size))) { l->cap = 0; l->view = VK_NULL_HANDLE; return v; }
     }
+    if (!have_gen) gen = writes_over(g, run);
     memcpy(l->copy, src, run);
     l->va = va; l->size = size; l->run = run; l->serial = frames[frame_at].serial; l->view = v;
-    l->batch = gpu_stat_batches; l->gen = gen; l->g = g;
+    l->batch = gpu_stat_batches; l->wseq = write_seq; l->gen = gen; l->g = g;
     return v;
 }
 
@@ -1980,7 +2040,7 @@ typedef struct VShader {
 } VShader;
 static VShader **vshaders;
 static u32 nvshaders, vshaders_cap;
-typedef struct VSlot { u64 g, key, print; u32 size; VShader *s; u64 tables_at, batch, gen; } VSlot;   /* (batch, gen: the submission
+typedef struct VSlot { u64 g, key, print; u32 size; VShader *s; u64 tables_at, batch, wseq, gen; } VSlot;   /* (batch, gen: the submission
  * its fingerprint was last found the same in, and writes_over then: not taken again in it) */
 #define VSLOTS 16384
 static VSlot vslots[VSLOTS];
@@ -2013,6 +2073,9 @@ static u64 fingerprint(const u8 *p, u32 size) {
     }
     return h;
 }
+
+/* The SPIR-V's version in its names, markers and lists: the exact-f32tof16 translation's on AMD (#353). */
+static unsigned spv_version(void) { return SHADER_CACHE_SPV_VERSION + (shader_exact_f16() ? SHADER_CACHE_SPV_EXACT_F16 : 0); }
 
 static const char *cache_dir(void) {
     static char dir[1024];
@@ -2106,7 +2169,7 @@ typedef struct TranslationHeader {
 } TranslationHeader;
 
 static void translation_path(char *path, size_t size, const VShader *s) {
-    snprintf(path, size, "%s/translation1_g%u.%08x_%d_%016llx_%08x.bin", cache_dir(), SHADER_CACHE_SPV_VERSION,
+    snprintf(path, size, "%s/translation1_g%u.%08x_%d_%016llx_%08x.bin", cache_dir(), spv_version(),
              spirv_glslang_version(), s->stage, (unsigned long long)s->hash, s->vs_outputs);
 }
 
@@ -2177,7 +2240,7 @@ static void translation_save(const VShader *s, const char *hlsl) {
 /* The program's SPIR-V by glslang: the disk cache's (shader_cache_file_spv), else made from the HLSL and kept there. */
 static int spirv_glslang(VShader *s, const char *hlsl, SpirvCode *spv) {
     char path[1200];
-    shader_cache_file_spv(path, sizeof path, cache_dir(), s->stage, s->hash, s->vs_outputs, s->table_hash, spirv_glslang_version());
+    shader_cache_file_spv_v(path, sizeof path, cache_dir(), spv_version(), s->stage, s->hash, s->vs_outputs, s->table_hash, spirv_glslang_version());
     size_t size;
     void *code = read_file(path, &size);
     if (code && size >= 20 && size % 4 == 0 && *(const u32 *)code == 0x07230203) {
@@ -2328,13 +2391,18 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
     u64 key = (u64)stage | (u64)vs_outputs << 4 | (stage == SHADER_COMPUTE ? ((u64)local[0] ^ (u64)local[1] << 11 ^ (u64)local[2] << 22 ^ (u64)shared << 33) << 36 : 0)
             | (u64)(alpha_tested != 0) << 63;
     VSlot *slot = &vslots[((g >> 4) * 0x9E3779B97F4A7C15ull ^ key) >> 50 & (VSLOTS - 1)];
-    u64 gen = slot->s && slot->g == g && slot->key == key ? writes_over(g - skip, slot->size) : 0;
-    int same_batch = slot->s && slot->g == g && slot->key == key && slot->batch == gpu_stat_batches && slot->gen == gen && memo_on();
+    u64 gen = 0;
+    int have_gen = 0, same_batch = 0;
+    if (slot->s && slot->g == g && slot->key == key && slot->batch == gpu_stat_batches && memo_on()) {
+        if (unwritten_since(slot->wseq, g - skip, slot->size)) same_batch = 1;
+        else { gen = writes_over(g - skip, slot->size); have_gen = 1; same_batch = slot->gen == gen; }
+    }
     if (same_batch && memo_on() == 2) { vk_stat_memo_checked++; if (slot->print != fingerprint(p + skip, slot->size - skip)) vk_stat_memo_wrong[1]++; }
     if (slot->s && slot->g == g && slot->key == key && (same_batch || slot->print == fingerprint(p + skip, slot->size - skip))) {
         VShader *s = slot->s;
         slot->batch = gpu_stat_batches;
-        slot->gen = gen;
+        slot->wseq = write_seq;
+        if (!same_batch || have_gen) slot->gen = have_gen ? gen : writes_over(g - skip, slot->size);
         if (!s->translated || !s->info.ntables) return s;
         u64 place = tables_place(&s->info, stage_cb);
         if (place && slot->tables_at == place) return s;
@@ -2860,7 +2928,7 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
  * stays the answer while no texture or render target is made or let go (tex_gen) and no command wrote its bytes
  * (writes_over). Render targets are not kept here: which one an address names follows their use. */
 #define TEX_MEMO 4096
-typedef struct TexMemo { u32 tic[8], type; u64 batch, gen, wgen; Texture *t; VkImageView view; } TexMemo;
+typedef struct TexMemo { u32 tic[8], type; u64 batch, gen, wseq, wgen; Texture *t; VkImageView view; } TexMemo;
 static TexMemo tex_memo[TEX_MEMO];
 static u64 vk_stat_tex_memo;
 static VkImageView texture_of(const u32 *tic, u32 type, float *scale, Surface **rt_out) {
@@ -2869,7 +2937,8 @@ static VkImageView texture_of(const u32 *tic, u32 type, float *scale, Surface **
     TexMemo *m = &tex_memo[(h >> 40) & (TEX_MEMO - 1)];
     if (!memo_on()) return get_texture(tic, type, scale, rt_out);
     if (m->batch == gpu_stat_batches && m->gen == tex_gen && m->type == type && !memcmp(m->tic, tic, 32) && m->t->image &&
-        m->wgen == writes_over(m->t->guest, m->t->size)) {
+        (unwritten_since(m->wseq, m->t->guest, m->t->size) || m->wgen == writes_over(m->t->guest, m->t->size))) {
+        m->wseq = write_seq;
         *scale = 1.0f;
         *rt_out = NULL;
         m->t->used = ++tick;
@@ -2887,6 +2956,7 @@ static VkImageView texture_of(const u32 *tic, u32 type, float *scale, Surface **
     if (v && got_texture && !*rt_out && got_texture->size <= (4u << 20)) {   /* (a bigger one: its sample hashed instead, as before) */
         memcpy(m->tic, tic, 32);
         m->type = type; m->batch = gpu_stat_batches; m->gen = tex_gen; m->t = got_texture; m->view = v;
+        m->wseq = write_seq;
         m->wgen = writes_over(got_texture->guest, got_texture->size);
     } else m->batch = 0;
     return v;
@@ -3136,26 +3206,33 @@ static void make_note_pipe(const Pipe *e, int made, double ms);
 static u64 vk_stat_warm_used;
 static int warm_list_on(void);
 static VkPipeline get_pipeline(const PipeKey *k, const VShader *vs, const VShader *ps) {
-    u32 h = desc_hash(k, sizeof *k) & (PIPE_SLOTS - 1);
+    u32 h0 = desc_hash(k, sizeof *k) & (PIPE_SLOTS - 1), h = h0;
     Pipe *e = NULL;
     int made = 0;
-    AcquireSRWLockExclusive(&pipes_lock);
+    AcquireSRWLockShared(&pipes_lock);
     for (u32 n = 0; n < PIPE_SLOTS && pipes[h]; n++, h = (h + 1) & (PIPE_SLOTS - 1))
         if (!memcmp(&pipes[h]->key, k, sizeof *k)) { e = pipes[h]; break; }
-    if (!e && npipes < PIPE_SLOTS * 3 / 4 && (e = calloc(1, sizeof *e)) != NULL) {   /* (full: 49,152 pipelines) */
-        e->key = *k;
-        e->job.run = pipe_job;
-        e->waited = 1;
-        if (vs->glslang && (!ps || ps->glslang) && warm_list_on()) {
-            e->listable = 1;
-            e->wvs = (WarmKey){vs->hash, vs->table_hash, vs->vs_outputs, SHADER_VERTEX};
-            e->wps = ps ? (WarmKey){ps->hash, ps->table_hash, ps->vs_outputs, SHADER_PIXEL} : (WarmKey){0, 0, 0, ~0u};
+    ReleaseSRWLockShared(&pipes_lock);
+    if (!e) {
+        h = h0;
+        AcquireSRWLockExclusive(&pipes_lock);
+        for (u32 n = 0; n < PIPE_SLOTS && pipes[h]; n++, h = (h + 1) & (PIPE_SLOTS - 1))
+            if (!memcmp(&pipes[h]->key, k, sizeof *k)) { e = pipes[h]; break; }
+        if (!e && npipes < PIPE_SLOTS * 3 / 4 && (e = calloc(1, sizeof *e)) != NULL) {   /* (full: 49,152 pipelines) */
+            e->key = *k;
+            e->job.run = pipe_job;
+            e->waited = 1;
+            if (vs->glslang && (!ps || ps->glslang) && warm_list_on()) {
+                e->listable = 1;
+                e->wvs = (WarmKey){vs->hash, vs->table_hash, vs->vs_outputs, SHADER_VERTEX};
+                e->wps = ps ? (WarmKey){ps->hash, ps->table_hash, ps->vs_outputs, SHADER_PIXEL} : (WarmKey){0, 0, 0, ~0u};
+            }
+            pipes[h] = e;
+            npipes++;
+            made = 1;
         }
-        pipes[h] = e;
-        npipes++;
-        made = 1;
+        ReleaseSRWLockExclusive(&pipes_lock);
     }
-    ReleaseSRWLockExclusive(&pipes_lock);
     if (!e) return VK_NULL_HANDLE;
     if (made) { job_add(&e->job); vk_first_uses++; }
     else if (e->warm && !e->used) { e->used = 1; vk_stat_warm_used++; vk_first_uses++; }
@@ -3297,7 +3374,7 @@ static void warm_list_open(void) {
     if (!use_glslang()) return;
     char path[1100];
     snprintf(path, sizeof path, "%s/vulkan_%04x_%04x.warm", cache_dir(), limits_vendor, limits_device);
-    WarmHeader head = {"OSVKWRM", sizeof(WarmRecord), sizeof(PipeKey), SHADER_CACHE_SPV_VERSION, spirv_glslang_version(), WARM_LIST_VERSION, 0};
+    WarmHeader head = {"OSVKWRM", sizeof(WarmRecord), sizeof(PipeKey), spv_version(), spirv_glslang_version(), WARM_LIST_VERSION, 0};
     size_t size = 0;
     u8 *data = read_file(path, &size);
     int recovered_header = 0;
@@ -3347,7 +3424,12 @@ static void warm_list_open(void) {
     u8 *ship = NULL;
     if (slash) { strcpy(slash + 1, "vulkan_pipelines.warm"); ship = read_file(shipped, &ship_size); }
     if (!ship) ship = read_file("media/vulkan_pipelines.warm", &ship_size);
-    if (ship && (ship_size < sizeof head || memcmp(ship, &head, sizeof head))) { free(ship); ship = NULL; }
+    /* (made on NVIDIA, under the plain SPIR-V version: its records name programs and pipeline states, not SPIR-V,
+     * so it serves the exact-f32tof16 names as well, #353 - taken with this start's header) */
+    WarmHeader plain = head;
+    plain.spv_version = SHADER_CACHE_SPV_VERSION;
+    if (ship && (ship_size < sizeof head || (memcmp(ship, &head, sizeof head) && memcmp(ship, &plain, sizeof head)))) { free(ship); ship = NULL; }
+    if (ship) memcpy(ship, &head, sizeof head);
     int joined = 0, fresh = 0;
     if (ship) {
         if (data && size >= sizeof head && !memcmp(data, &head, sizeof head)) {
@@ -3670,7 +3752,7 @@ static int prep_marker_says(const char *name, const char *want) {
  * in complete.txt, or in vulkan_ready.txt: the SPIR-V is all there, Direct3D 11's shaders may still be being made). */
 static int shader_cache_prepared(void) {
     char want[48];
-    snprintf(want, sizeof want, "g%d.%08x", SHADER_CACHE_SPV_VERSION, spirv_glslang_version());
+    snprintf(want, sizeof want, "g%u.%08x", spv_version(), spirv_glslang_version());
     if (prep_marker_says("complete.txt", want)) return 1;
     return prep_shared() && prep_marker_says("vulkan_ready.txt", want);
 }
@@ -3904,7 +3986,7 @@ static int prep_tries(int add) {
     char path[1200], want[48], have[48] = "";
     int n = 0;
     snprintf(path, sizeof path, "%s/prepare_tries.txt", cache_dir());
-    snprintf(want, sizeof want, "g%d.%08x", SHADER_CACHE_SPV_VERSION, spirv_glslang_version());
+    snprintf(want, sizeof want, "g%u.%08x", spv_version(), spirv_glslang_version());
     FILE *f = fopen(path, "rb");
     if (f) {
         if (fscanf(f, "%47s %d", have, &n) != 2 || strcmp(have, want)) n = 0;   /* (another translator's: from 0 again) */
@@ -3956,7 +4038,7 @@ static void prepare_wait(void) {
 static void warm_load(WarmShader *w) {
     char path[1200];
     prepare_wait();   /* (a cache that is not prepared for this translator is prepared now, before a file is missed) */
-    shader_cache_file_spv(path, sizeof path, cache_dir(), (int)w->k.stage, w->k.hash, w->k.vs_outputs, w->k.table_hash, spirv_glslang_version());
+    shader_cache_file_spv_v(path, sizeof path, cache_dir(), spv_version(), (int)w->k.stage, w->k.hash, w->k.vs_outputs, w->k.table_hash, spirv_glslang_version());
     size_t size;
     void *code = read_file(path, &size);
     int made = 0;
@@ -4623,8 +4705,8 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
     int mstage = stage == SHADER_VERTEX ? STAGE_VERTEX : STAGE_FRAGMENT;
     u64 t0 = vk_timing ? rt_clock_ns() : 0, t1;
     int blend = stage == SHADER_VERTEX && motion_active();   /* (display.ini's motion: the vertex stage's buffers, blended) */
-    for (u32 k = 0; k < 18; k++) {
-        if (!(s->info.cbuf_mask >> k & 1)) continue;
+    for (u32 mask = s->info.cbuf_mask & 0x3FFFFu; mask; mask &= mask - 1) {
+        u32 k = (u32)__builtin_ctz(mask);
         u32 size = cb[mstage][k].size;
         if (size > 0x10000) size = 0x10000;
         if (size > s->info.cbuf_extent[k]) size = s->info.cbuf_extent[k];   /* only what the program can read */
@@ -4667,11 +4749,11 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
     u64 tic_pool = (u64)regs[M_TEX_HEADER_POOL] << 32 | regs[M_TEX_HEADER_POOL + 1];
     u64 tsc_pool = (u64)regs[M_TEX_SAMPLER_POOL] << 32 | regs[M_TEX_SAMPLER_POOL + 1];
     for (u32 k = 0; k < s->info.ntex && k < 32; k++) {
-        u32 handle = 0, tic[8], tsc[8];
+        u32 handle = 0, tic[8], tsc[8] = {0};
         if (tex_cb < 18 && cb[mstage][tex_cb].address) read_gpu(cb[mstage][tex_cb].address + s->info.tex[k].handle_offset, 4, &handle);
         u32 tic_index = handle & 0xFFFFF, tsc_index = regs[M_SAMPLER_BINDING] & 1 ? tic_index : (handle >> 20) & 0xFFF;
         read_gpu(tic_pool + tic_index * 32ull, 32, tic);
-        read_gpu(tsc_pool + tsc_index * 32ull, 32, tsc);
+        if (k < 16 || gpu_time_ms > 0) read_gpu(tsc_pool + tsc_index * 32ull, 32, tsc);
         float scale;
         b->tex[k] = texture_of(tic, s->info.tex[k].type, &scale, &b->sampled[k]);
         if (gpu_time_ms > 0 && k < 4) { draw_tex[stage == SHADER_PIXEL][k] = b->sampled[k] ? NULL : got_texture; draw_tsc[stage == SHADER_PIXEL][k] = tsc[0] ^ tsc[1] << 3; }
@@ -4719,13 +4801,12 @@ static u64 vk_stat_sets_made, vk_stat_sets_kept, vk_stat_index_reused, vk_stat_p
 static VkDescriptorSet stage_set(VShader *s, const StageBinds *b, VkBuffer pbuf) {
     u64 key[SET_KEY];
     u32 nk = 0;
+    u32 cmask = s->info.cbuf_mask & 0x3FFFFu;
+    u32 imask = s->stage == SHADER_VERTEX ? s->info.inputs : 0;
     key[nk++] = (u64)(uintptr_t)s;
     key[nk++] = (u64)(uintptr_t)pbuf;
-    for (u32 k = 0; k < 18; k++)
-        if (s->info.cbuf_mask >> k & 1) key[nk++] = (u64)(uintptr_t)b->cb[k];
-    if (s->stage == SHADER_VERTEX)
-        for (u32 k = 0; k < 32; k++)
-            if (s->info.inputs >> k & 1) key[nk++] = (u64)(uintptr_t)b->vb[k];
+    for (u32 m = cmask; m; m &= m - 1) key[nk++] = (u64)(uintptr_t)b->cb[(u32)__builtin_ctz(m)];
+    for (u32 m = imask; m; m &= m - 1) key[nk++] = (u64)(uintptr_t)b->vb[(u32)__builtin_ctz(m)];
     for (u32 k = 0; k < s->info.sb_count && k < 16; k++) key[nk++] = (u64)(uintptr_t)b->gm[k];
     for (u32 k = 0; k < s->info.ntex && k < 32; k++) { key[nk++] = (u64)(uintptr_t)b->tex[k]; key[nk++] = (u64)(uintptr_t)b->smp[k]; }
     u64 h = 1469598103934665603ull;
@@ -4748,11 +4829,8 @@ static VkDescriptorSet stage_set(VShader *s, const StageBinds *b, VkBuffer pbuf)
         u32 ne = 0;
 #define ENTRY(binding, type) (e[ne] = (VkDescriptorUpdateTemplateEntry){binding, 0, 1, type, ne * sizeof(TmplSlot), sizeof(TmplSlot)}, ne++)
         ENTRY(SPIRV_BINDING_CBV(0), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
-        for (u32 k = 0; k < 18; k++)
-            if (s->info.cbuf_mask >> k & 1) ENTRY(SPIRV_BINDING_SRV(k), VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
-        if (s->stage == SHADER_VERTEX)
-            for (u32 k = 0; k < 32; k++)
-                if (s->info.inputs >> k & 1) ENTRY(SPIRV_BINDING_SRV(18 + k), VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
+        for (u32 m = cmask; m; m &= m - 1) ENTRY(SPIRV_BINDING_SRV((u32)__builtin_ctz(m)), VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
+        for (u32 m = imask; m; m &= m - 1) ENTRY(SPIRV_BINDING_SRV(18 + (u32)__builtin_ctz(m)), VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
         for (u32 k = 0; k < s->info.sb_count && k < 16; k++) ENTRY(SPIRV_BINDING_SRV(96 + k), VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
         for (u32 k = 0; k < s->info.ntex && k < 32; k++) {
             ENTRY(SPIRV_BINDING_SRV(64 + k), VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
@@ -4767,11 +4845,8 @@ static VkDescriptorSet stage_set(VShader *s, const StageBinds *b, VkBuffer pbuf)
         TmplSlot d[1 + 18 + 32 + 16 + 64];
         u32 nd = 0;
         d[nd++].b = (VkDescriptorBufferInfo){pbuf, 0, sizeof(DrawParams)};
-        for (u32 k = 0; k < 18; k++)
-            if (s->info.cbuf_mask >> k & 1) d[nd++].v = b->cb[k] ? b->cb[k] : dummy_texels;
-        if (s->stage == SHADER_VERTEX)
-            for (u32 k = 0; k < 32; k++)
-                if (s->info.inputs >> k & 1) d[nd++].v = b->vb[k] ? b->vb[k] : dummy_texels;
+        for (u32 m = cmask; m; m &= m - 1) { u32 k = (u32)__builtin_ctz(m); d[nd++].v = b->cb[k] ? b->cb[k] : dummy_texels; }
+        for (u32 m = imask; m; m &= m - 1) { u32 k = (u32)__builtin_ctz(m); d[nd++].v = b->vb[k] ? b->vb[k] : dummy_texels; }
         for (u32 k = 0; k < s->info.sb_count && k < 16; k++) d[nd++].v = b->gm[k] ? b->gm[k] : dummy_texels;
         for (u32 k = 0; k < s->info.ntex && k < 32; k++) {
             VkImageView v = b->tex[k] ? b->tex[k] : dummy_views[s->info.tex[k].type & 7];
@@ -4787,15 +4862,16 @@ static VkDescriptorSet stage_set(VShader *s, const StageBinds *b, VkBuffer pbuf)
     u32 n = 0, ni = 0;
     VkDescriptorBufferInfo params = {pbuf, 0, sizeof(DrawParams)};
     w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_CBV(0), 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, NULL, &params, NULL};
-    for (u32 k = 0; k < 18; k++)
-        if (s->info.cbuf_mask >> k & 1)
-            w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_SRV(k), 0, 1,
-                                            VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, NULL, NULL, b->cb[k] ? &b->cb[k] : &dummy_texels};
-    if (s->stage == SHADER_VERTEX)
-        for (u32 k = 0; k < 32; k++)
-            if (s->info.inputs >> k & 1)
-                w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_SRV(18 + k), 0, 1,
-                                                VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, NULL, NULL, b->vb[k] ? &b->vb[k] : &dummy_texels};
+    for (u32 m = cmask; m; m &= m - 1) {
+        u32 k = (u32)__builtin_ctz(m);
+        w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_SRV(k), 0, 1,
+                                        VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, NULL, NULL, b->cb[k] ? &b->cb[k] : &dummy_texels};
+    }
+    for (u32 m = imask; m; m &= m - 1) {
+        u32 k = (u32)__builtin_ctz(m);
+        w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_SRV(18 + k), 0, 1,
+                                        VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, NULL, NULL, b->vb[k] ? &b->vb[k] : &dummy_texels};
+    }
     for (u32 k = 0; k < s->info.sb_count && k < 16; k++)
         w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_SRV(96 + k), 0, 1,
                                         VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, NULL, NULL, b->gm[k] ? &b->gm[k] : &dummy_texels};
@@ -4996,8 +5072,8 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     /* (not cleared, 2.6 KB a draw: each binding a program declares is written below before it is read) */
     VkBufferView stream_view[32] = {0};
     u32 stream_skip[32] = {0};   /* (how far before the stream its view starts: added to its attributes' offsets) */
-    for (u32 n = 0; n < 32; n++) {
-        if (!(vs->info.inputs >> n & 1)) continue;
+    for (u32 mask = vs->info.inputs; mask; mask &= mask - 1) {
+        u32 n = (u32)__builtin_ctz(mask);
         vb.vb[n] = VK_NULL_HANDLE;
         u32 fmt = regs[M_VERTEX_ATTRIBUTE(n)], j = fmt & 0x1F;
         u32 st = regs[M_VERTEX_STREAM(j)];
@@ -5122,24 +5198,26 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         u32 bytes = n * (isz == 1 ? 2 : isz);
         /* the same indices from the same place in one submission (nothing but the GPU's own commands writes
          * memory meanwhile, and writes_over counts those): the copy made for an earlier draw */
-        static struct { u64 va, serial, batch, gen; u32 bytes, isz; VkBuffer buf; VkDeviceSize off; } ix[4096];
-        u64 ig = gpu_va_to_guest(va), raw = (u64)n * isz;
-        int whole = ig && gpu_va_to_guest(va + raw - 1) == ig + raw - 1;
-        u64 gen = whole ? writes_over(ig, raw) : 0;
+        static struct { u64 va, g, serial, batch, wseq, gen; u32 bytes, isz; VkBuffer buf; VkDeviceSize off; } ix[4096];
+        u64 raw = (u64)n * isz;
         cmd();
         u32 slot_i = (u32)(((va >> 1) * 0x9E3779B97F4A7C15ull ^ bytes) >> 52) & 4095;
-        if (whole && ix[slot_i].va == va && ix[slot_i].bytes == bytes && ix[slot_i].isz == isz && ix[slot_i].serial == frames[frame_at].serial &&
-            ix[slot_i].batch == gpu_stat_batches && ix[slot_i].gen == gen) {
+        if (ix[slot_i].buf && ix[slot_i].va == va && ix[slot_i].bytes == bytes && ix[slot_i].isz == isz &&
+            ix[slot_i].serial == frames[frame_at].serial && ix[slot_i].batch == gpu_stat_batches &&
+            (unwritten_since(ix[slot_i].wseq, ix[slot_i].g, raw) || ix[slot_i].gen == writes_over(ix[slot_i].g, raw))) {
+            ix[slot_i].wseq = write_seq;
             ibuf = ix[slot_i].buf;
             ioff = ix[slot_i].off;
             vk_stat_index_reused++;
             goto indices_done;
         }
+        u64 ig = gpu_va_contig(va, raw);
+        int whole = ig != 0;
         u8 *dst = arena(bytes, 4, &ibuf, &ioff);
         if (!dst) { vk_stat_skip_other++; leave(); return; }
         if (whole) {
-            ix[slot_i].va = va; ix[slot_i].bytes = bytes; ix[slot_i].isz = isz; ix[slot_i].serial = frames[frame_at].serial;
-            ix[slot_i].batch = gpu_stat_batches; ix[slot_i].gen = gen; ix[slot_i].buf = ibuf; ix[slot_i].off = ioff;
+            ix[slot_i].va = va; ix[slot_i].g = ig; ix[slot_i].bytes = bytes; ix[slot_i].isz = isz; ix[slot_i].serial = frames[frame_at].serial;
+            ix[slot_i].batch = gpu_stat_batches; ix[slot_i].wseq = write_seq; ix[slot_i].gen = writes_over(ig, raw); ix[slot_i].buf = ibuf; ix[slot_i].off = ioff;
         }
         if (isz == 1) {
             static u8 tmp8[1 << 16];
@@ -5288,6 +5366,21 @@ static void vk_wrote(u64 va, u64 bytes) {
     note_wrote(va, bytes);
     leave();
 }
+/* Coalesce consecutive command-stream writes per thread and flush them under enter() before draws or dispatches. */
+static void vk_stream_wrote(u64 va, u64 bytes) {
+    if (!bytes) { enter(); note_wrote(va, 0); leave(); return; }
+    /* (joined only when the guest side continues too: a range noted at once must map contiguously, as
+     * note_wrote only checks its two ends) */
+    u64 g = gpu_va_contig(va, bytes), gend = g ? g + bytes : 0;
+    if (pending_wrote_hi && pending_wrote_hi == va && g && g == pending_wrote_ghi) { pending_wrote_hi += bytes; pending_wrote_ghi = gend; return; }
+    if (pending_wrote_hi) { enter(); leave(); }
+    pending_wrote_lo = va;
+    pending_wrote_hi = va + bytes;
+    pending_wrote_ghi = gend;
+}
+static void vk_stream_end(void) {
+    if (pending_wrote_hi) { enter(); leave(); }
+}
 /* Memory taken away: textures made from it are made again at their next use (if any). */
 static void vk_guest_unmapped(u64 addr, u64 size) {
     enter();
@@ -5376,8 +5469,8 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
     VkBufferView cbv[18] = {0};
     int blend = motion_active();   /* (display.ini's motion: a skinning launch's bones, blended) */
     if (blend) motion_dispatch(cs->hash);
-    for (u32 b = 0; b < 18; b++) {
-        if (!(cs->info.cbuf_mask >> b & 1)) continue;
+    for (u32 mask = cs->info.cbuf_mask & 0x3FFFFu; mask; mask &= mask - 1) {
+        u32 b = (u32)__builtin_ctz(mask);
         u32 size = cb[b].size > 0x10000 ? 0x10000 : cb[b].size;
         if (size > cs->info.cbuf_extent[b]) size = cs->info.cbuf_extent[b];
         const void *m = blend ? motion_block(1, b, 0xFF, cb[b].address, size, read_gpu) : NULL;
@@ -5928,7 +6021,6 @@ static void vk_resident_written(u64 va, u64 bytes) {
     }
     leave();
 }
-static void vk_nothing(void) {}
 static int vk_draw_logging(void) { return 0; }
 static DWORD vk_lock_owner(void) { return (DWORD)(uintptr_t)lock.OwningThread; }
 static DWORD vk_last_enter_thread(void) { return last_enter_thread; }
@@ -6051,9 +6143,9 @@ static const GfxBackend VULKAN = {
     .copy_resident = vk_copy_resident,
     .resident_flush = vk_resident_flush,
     .resident_written = vk_resident_written,
-    .stream_wrote = vk_wrote,
+    .stream_wrote = vk_stream_wrote,
     .guest_wrote = vk_wrote,
-    .stream_end = vk_nothing,
+    .stream_end = vk_stream_end,
     .gpu_unmapped = vk_gpu_unmapped,
     .guest_unmapped = vk_guest_unmapped,
     .draw_logging = vk_draw_logging,
@@ -6479,6 +6571,16 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
     limits = props.limits;
     limits_vendor = props.vendorID;
     limits_device = props.deviceID;
+    /* AMD: Direct3D's f32tof16 written out in the SPIR-V (glslang's PackHalf2x16 gave NaNs there: stages black, #353),
+     * under SPIR-V names of its own; SSBU_EXACT_F16=0 / 1 decides for any card. Said to the shader preparation this
+     * start may run (shader_aot.py's shaderaot reads the same variable), so it makes the files this start reads. */
+    shader_set_exact_f16(limits_vendor == 0x1002);
+    if (shader_exact_f16() && use_glslang()) {
+#ifdef _WIN32
+        SetEnvironmentVariableA("SSBU_EXACT_F16", "1");   /* (Windows alone prepares SPIR-V ahead: shader_aot.py spirv_names) */
+#endif
+        fprintf(stderr, "[vulkan] f32tof16 written out exactly in the shaders (#353), their SPIR-V under g%u names\n", spv_version());
+    }
     limits_integrated = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
     texel_align = limits.minTexelBufferOffsetAlignment > 16 ? limits.minTexelBufferOffsetAlignment : 16;
     ubo_align = limits.minUniformBufferOffsetAlignment > 16 ? limits.minUniformBufferOffsetAlignment : 16;

@@ -112,6 +112,20 @@ class MarkerTests(unittest.TestCase):
             self.assertTrue(S.forget_vulkan_ready(d, "g1003.0000000b"))
             self.assertFalse(os.path.exists(os.path.join(d, S.VULKAN_READY)))
 
+    def test_vulkan_ready_keeps_the_other_translation(self):
+        """The plain SPIR-V (the launcher's run) and the exact-f32tof16 one (an AMD game's run, #353) share the folder."""
+        header = Path(S.ROOT, "runtime", "gpu_shader_cache.h").read_text(encoding="utf-8")
+        version = S.cache_version() * 100 + int(S.SPV_VERSION.search(header).group(1))
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"SSBU_SHADER_SHARE": "1"}):
+            plain, exact = sorted(S.spirv_siblings("g%d.0000000b" % version))
+            self.assertNotEqual(plain, exact)
+            S.write_vulkan_ready(d, exact)
+            S.write_vulkan_ready(d, plain)
+            self.assertTrue(S.vulkan_ready(d, plain) and S.vulkan_ready(d, exact))
+            self.assertFalse(S.forget_vulkan_ready(d, exact))
+            self.assertTrue(S.vulkan_ready(d, plain) and S.vulkan_ready(d, exact))
+            self.assertTrue(S.forget_vulkan_ready(d, "g1.0000000b"))
+
     def test_not_written_when_not_shared_or_without_spirv(self):
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.dict(os.environ, {"SSBU_SHADER_SHARE": "0"}):

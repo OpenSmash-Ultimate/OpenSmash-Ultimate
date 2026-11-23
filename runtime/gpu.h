@@ -11,6 +11,18 @@ typedef struct GpuMapping { u64 va, size, guest; } GpuMapping;           /* GPU 
 extern NvMap gpu_maps[NVMAP_MAX];
 extern u32 gpu_syncpt_min[SYNCPT_MAX], gpu_syncpt_max[SYNCPT_MAX];
 
+/* Sync points are written by both the device and GPU threads. Keep every access
+ * atomic, including diagnostic reads; a lock local to one reader is insufficient. */
+static inline u32 gpu_syncpt_load(const u32 *p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
+static inline u32 gpu_syncpt_add(u32 *p, u32 value) { return __atomic_add_fetch(p, value, __ATOMIC_ACQ_REL); }
+static inline int gpu_syncpt_reached(u32 current, u32 target) { return (i32)(current - target) >= 0; }
+static inline void gpu_syncpt_advance(u32 *p, u32 value) {
+    u32 old = gpu_syncpt_load(p);
+    while (!gpu_syncpt_reached(old, value) &&
+           !__atomic_compare_exchange_n(p, &old, value, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {}
+}
+u32 gpu_syncpt_read(u32 id);                              /* atomic completed value; invalid id: 0 */
+
 u64 gpu_va_to_guest(u64 va);
 
 /* Work submitted on a channel: `count` GPFIFO entries (each an address/length pair of a
@@ -23,6 +35,7 @@ void gpu_submit(u32 channel, const u64 *entries, u32 count);
 int gpu_threaded(void);                                   /* is there one (SSBU_GPU_THREAD=0: no) */
 void gpu_queue_submit(u32 channel, const u64 *entries, u32 count, u32 syncpoint, u32 fence);
 u64 gpu_queue_mark(void);                                 /* submissions queued so far */
+u64 gpu_queue_done_count(void);                           /* submissions run so far (SSBU_GPU_THREAD=0: ~0) */
 void gpu_queue_wait(u64 mark);                            /* until that many have run */
 u64 gpu_queue_draws(u64 mark);                            /* (SSBU_SEQ) draw calls run once they had */
 void gpu_queue_drain(void);                               /* until everything queued has run */

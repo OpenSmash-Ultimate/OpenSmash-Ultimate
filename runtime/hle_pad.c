@@ -711,8 +711,8 @@ static void kb_ssf2(u64 *buttons, i32 *lx, i32 *ly) {
 }
 
 /* The keyboard as the console's buttons and sticks, with down(vk) saying whether a key is held. A
- * key on a stick direction pushes that stick fully (both of a pair held: right and down win, as
- * before), which the game takes as a flick: a dash, a drop through a platform. While WALK (Shift)
+ * key on a stick direction pushes that stick fully, two keys a diagonal to the circle's edge (both of a
+ * pair held: right and down win, as before), which the game takes as a flick: a dash, a drop through a platform. While WALK (Shift)
  * is held, the left stick goes part way instead: 0.60 sideways walks without dashing and makes tilts,
  * 0.655 down crouches on a platform without dropping through (measured in fights: ssbu-recomp's
  * keyboard ssf2, commit cd366ea). Enter does nothing while Alt is held (Alt+Enter is full screen). */
@@ -737,6 +737,11 @@ u64 pad_keyboard_state(int (*down)(int vk), i32 *lx, i32 *ly, i32 *rx, i32 *ry) 
     if (held[22]) *rx = 32767;
     if (held[21]) *ry = 32767;
     if (held[23]) *ry = -32767;
+    /* (a diagonal: the stick at full reach on the circle, 23170 = 32767 / sqrt 2 each way, as a real stick and yuzu
+     * give it - not the square's corner, whose full x made down+forward a dash, so no crawl and no crouch-cancel: #527;
+     * WALK's part-way push is already inside the circle; ssf2 movement sets its own part-way pushes) */
+    if (!held[24] && !kb_ssf2_on() && (held[16] || held[18]) && (held[17] || held[19])) { *lx = *lx < 0 ? -23170 : 23170; *ly = *ly < 0 ? -23170 : 23170; }
+    if ((held[20] || held[22]) && (held[21] || held[23])) { *rx = *rx < 0 ? -23170 : 23170; *ry = *ry < 0 ? -23170 : 23170; }
     if (kb_ssf2_on() && !held[24]) kb_ssf2(&buttons, lx, ly);   /* (WALK held: its own part-way push) */
     return buttons;
 }

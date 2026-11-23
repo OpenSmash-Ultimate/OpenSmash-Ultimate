@@ -116,6 +116,8 @@ def mark_syncs(s, exact=False):
     s = _RE_TRAP.sub(r"{ @X@ \1 }", s)
     if s == "return;":
         s = "{ @X@ return; }"
+    elif "@X@" not in s and "return;" in s:
+        s = s.replace("return;", "@X@ return;")
     return s
 
 
@@ -218,9 +220,12 @@ class Lifter(SimdMixin):
             name += "_orig"
         self.words = struct.unpack_from(f"<{size // 4}I", self.img, start)
         here = {off: ws for off, ws in self.patches.items() if start <= off < self.fend}
-        # ("switch", words) or ("switch", words, guard): a code patch the game turns on or off at runtime
-        # (rt_code_patches_on by default, or rt_plugin_patches_on for Skyline plugin patches):
-        # both forms are lifted, the original's words analysed, so with it off the code is the unpatched game's
+        # ("switch", words) or ("switch", words, guard): a code patch the game turns on or off at runtime:
+        # rt_code_patches_on() by default; guard ("words", ((offset, word), ...)) (a Skyline plugin's patch): on while
+        # the guest's code holds those words, i.e. while a plugin has written them this run (sky_memcpy writes guest
+        # memory), so a listed patch its plugin did not write - no plugin loaded, or one that patches only in some
+        # set-ups (the CSK Collection's added-character tables) - runs the game's own instructions. Both forms are lifted, the
+        # original's words analysed, so with it off the code is the unpatched game's
         switch = {off: (ws[1], ws[2] if len(ws) > 2 else "rt_code_patches_on")
                   for off, ws in here.items() if isinstance(ws, tuple) and ws[:1] == ("switch",)}
         here = {off: ws for off, ws in here.items() if off not in switch}
@@ -241,7 +246,11 @@ class Lifter(SimdMixin):
                 if pc in switch:
                     swords, guard = switch[pc]
                     alt = [self.insn(x, pc) for x in swords]
-                    stmt = f"if ({guard}()) {{ {' '.join(a for a, _f in alt)} }} else {{ {stmt} }}"
+                    if isinstance(guard, tuple) and guard[:1] == ("words",):
+                        cond = " && ".join(f"ld32({const(self.base + o)}) == 0x{w:08X}u" for o, w in guard[1])
+                    else:
+                        cond = f"{guard}()"
+                    stmt = f"if ({cond}) {{ {' '.join(a for a, _f in alt)} }} else {{ {stmt} }}"
                     falls = falls or alt[-1][1]
                 if pc in self.inline:   # (every register in the context here: no register cache in this function)
                     stmt = (f"{{ extern void rt_inline_hook(Cpu *, u64); rt_inline_hook(c, {const(self.base + pc)}); }} " + stmt)

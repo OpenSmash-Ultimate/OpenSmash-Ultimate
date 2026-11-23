@@ -169,24 +169,24 @@ static u32 ctrl(u32 nr, u64 a, u32 request) {
         /* A value submitted work will reach: wait for the GPU thread to get there (the async
          * form too - it then has nothing to wait for). A timeout past a few seconds is taken
          * as none being meant: whatever is wrong, the game goes on rather than hanging. */
-        if (gpu_threaded() && (i32)(gpu_syncpt_max[id] - value) >= 0 && (i32)(gpu_syncpt_min[id] - value) < 0) {
+        if (gpu_threaded() && gpu_syncpt_reached(gpu_syncpt_load(&gpu_syncpt_max[id]), value) && !gpu_syncpt_reached(gpu_syncpt_read(id), value)) {
             if (!gpu_syncpt_wait(id, value, timeout && timeout < 5000 ? timeout : 5000)) {
                 if (timeout && timeout < 5000) return NV_TIMEOUT;
                 static int warned;
                 if (warned++ < 4) fprintf(stderr, "[nvdrv] sync point %u: still short of %u after 5 s - going on\n", id, value);
             }
-            st32(a + 12, gpu_syncpt_min[id]);
+            st32(a + 12, gpu_syncpt_read(id));
             return NV_OK;
         }
         /* The driver also advances sync points from inside its command lists, and values no
          * submission will reach are taken as reached: the GPU is modelled as finishing
          * everything instantly. */
-        if ((i32)(gpu_syncpt_max[id] - value) < 0) gpu_syncpt_max[id] = value;
-        if ((i32)(gpu_syncpt_min[id] - value) < 0) gpu_syncpt_min[id] = value;
-        st32(a + 12, gpu_syncpt_min[id]);
+        gpu_syncpt_advance(&gpu_syncpt_max[id], value);
+        gpu_syncpt_advance(&gpu_syncpt_min[id], value);
+        st32(a + 12, gpu_syncpt_read(id));
         return NV_OK;
     }
-    case 0x14: st32(a + 4, gpu_syncpt_min[ld32(a) % SYNCPT_MAX]); return NV_OK;   /* SyncptRead */
+    case 0x14: st32(a + 4, gpu_syncpt_read(ld32(a) % SYNCPT_MAX)); return NV_OK;   /* SyncptRead */
     case 0x1F: case 0x20: case 0x21: case 0x1C: return NV_OK;   /* event register / unregister / kill / clear */
     }
     warn_once("nvhost-ctrl", request);
@@ -391,21 +391,24 @@ static u32 nvmap(u32 nr, u64 a, u32 request) {
     return NV_OK;
 }
 
+void vi_ready_submit(void);   /* (ipc_vi.c: SSBU_VI_READY) */
 static u32 submit(u32 fd, u64 a, u64 entries, u32 count) {
+    vi_ready_submit();
     u32 flags = ld32(a + 12), id = files[fd].syncpoint;
     u32 incr = 0;
     if (flags & ((1u << 1) | (1u << 8)))   /* increment requested: two for the GPU, plus any extra */
         incr = 2 + (flags & (1u << 8) ? ld32(a + 20) : 0);
+    u32 value;
     if (gpu_threaded()) {   /* run later, on the GPU thread: the sync point reaches the fence then */
-        gpu_syncpt_max[id] += incr;
-        gpu_queue_submit(fd, P(u64, entries), count, id, gpu_syncpt_max[id]);
+        value = gpu_syncpt_add(&gpu_syncpt_max[id], incr);
+        gpu_queue_submit(fd, P(u64, entries), count, id, value);
     } else {
         gpu_submit(fd, P(u64, entries), count);
-        gpu_syncpt_max[id] += incr;
-        gpu_syncpt_min[id] = gpu_syncpt_max[id];   /* everything completes now */
+        value = gpu_syncpt_add(&gpu_syncpt_max[id], incr);
+        gpu_syncpt_advance(&gpu_syncpt_min[id], value);   /* everything completes now */
     }
     st32(a + 16, id);
-    st32(a + 20, gpu_syncpt_max[id]);
+    st32(a + 20, value);   /* the fence of this submission, even if another thread's work advances max */
     return NV_OK;
 }
 
@@ -419,8 +422,11 @@ static u32 channel(u32 fd, u32 group, u32 nr, u64 a, u32 request, u64 in, u64 in
     }
     case 0x1B: return submit(fd, a, in, ld32(a + 8));                     /* SubmitGpfifo, entries inline */
     case 0x1A:                                                            /* AllocGpfifoEx2 */
-        st32(a + 24, files[fd].syncpoint);
-        st32(a + 28, gpu_syncpt_max[files[fd].syncpoint]);
+        /* 0x20 bytes: {num_entries, num_jobs, flags, fence{id, value}, reserved[3]}. The game's
+         * driver zeroes +12..+31 and reads the fence back from +12 / +16 (sdk 13.0.5, the call at
+         * 0x40798c); nothing reads +24 / +28, so writing there left the channel's fence {0, 0}. */
+        st32(a + 12, files[fd].syncpoint);
+        st32(a + 16, gpu_syncpt_load(&gpu_syncpt_max[files[fd].syncpoint]));
         return NV_OK;
     }
     if (group == 0x47 && (nr == 0x14 || nr == 0x15)) return NV_OK;           /* client data */
@@ -444,9 +450,9 @@ static u32 host1x(u32 fd, u32 group, u32 nr, u64 a, u32 request) {
         }
         for (u32 i = 0; i < incrs; i++) {
             u32 id = ld32(incr + 20ull * i) % SYNCPT_MAX;
-            gpu_syncpt_max[id] += ld32(incr + 20ull * i + 4);
-            gpu_syncpt_min[id] = gpu_syncpt_max[id];
-            if (i < fences) st32(fence + 4ull * i, gpu_syncpt_max[id]);
+            u32 value = gpu_syncpt_add(&gpu_syncpt_max[id], ld32(incr + 20ull * i + 4));
+            gpu_syncpt_advance(&gpu_syncpt_min[id], value);
+            if (i < fences) st32(fence + 4ull * i, value);
         }
         return NV_OK;
     }

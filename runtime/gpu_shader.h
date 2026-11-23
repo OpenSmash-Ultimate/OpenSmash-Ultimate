@@ -165,3 +165,8 @@ u32 shader_size(const u8 *program, u32 max);
 int shader_uses_pixels(const u8 *program, u32 size, int stage);
 /* Does the program use the SSY/PBK stacks (translated without them since)? */
 int shader_uses_stacks(const u8 *program, u32 size);
+/* glslang's HLSL with Direct3D's f32tof16 written out bit by bit (AMD's PackHalf2x16 gave NaNs: #353): off
+ * unless set, SSBU_EXACT_F16=0 / 1 over what is set. Set it before the first translation; the SPIR-V's file
+ * names follow it (gpu_shader_cache.h shader_cache_spv_version). */
+void shader_set_exact_f16(int on);
+int shader_exact_f16(void);
