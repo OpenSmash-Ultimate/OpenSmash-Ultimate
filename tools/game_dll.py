@@ -40,6 +40,7 @@ CORE = (
     ("rt_ticks", "u64 rt_ticks(void)", ""),
     ("rt_unwind_jumpto", "void rt_unwind_jumpto(Cpu *c)", "c"),
     ("rt_code_patches_on", "int rt_code_patches_on(void)", ""),
+    ("rt_plugin_patches_on", "int rt_plugin_patches_on(void)", ""),
 )
 MISSING = "wrapped guest function missing from this build's modules"   # (runtime/host.c rt_wrap_missing's words)
 
