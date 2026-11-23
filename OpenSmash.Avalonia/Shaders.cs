@@ -7,6 +7,9 @@ public sealed partial class MainWindow
     CancellationTokenSource? _shaderCancel;
     bool ShadersDone()
     {
+        // macOS draws with Metal, which makes its own cache as it plays: tools/shader_aot.py prepares Direct3D 11 / Vulkan
+        // programs (fxc on Windows, vkd3d-shader on Linux) and has nothing to do there (#542).
+        if(OperatingSystem.IsMacOS())return true;
         var p=RequireProject();string marker=p.PathIn("dump","shadercache","complete.txt"),header=p.PathIn("runtime","gpu_shader_cache.h");
         if(!File.Exists(marker)||!File.Exists(header))return false;
         string source=File.ReadAllText(header),text=File.ReadAllText(marker);

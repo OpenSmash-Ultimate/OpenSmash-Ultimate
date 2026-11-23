@@ -164,7 +164,7 @@ static DWORD WINAPI gpu_thread(LPVOID unused) {
         gpu_q_busy_ms[j->fast] += (double)(rt_now_ns() - q0) / 1e6; gpu_q_jobs[j->fast]++;
         AcquireSRWLockExclusive(&lock);
         u32 id = j->syncpoint;
-        if (id < SYNCPT_MAX && (i32)(j->fence - gpu_syncpt_min[id]) > 0) gpu_syncpt_min[id] = j->fence;
+        if (id < SYNCPT_MAX) gpu_syncpt_advance(&gpu_syncpt_min[id], j->fence);
         if (j->entries != j->inline_entries) free(j->entries);
         if (count_draws) drawn_by[done % JOBS] = gpu_stat_draws;
         /* (the save's callback runs before this job counts as done: gpu_queue_wait/drain on its mark cover it too) */
@@ -246,12 +246,16 @@ u64 gpu_queue_draws(u64 mark) {
     return n;
 }
 
+u32 gpu_syncpt_read(u32 id) {
+    return id < SYNCPT_MAX ? gpu_syncpt_load(&gpu_syncpt_min[id]) : 0;
+}
+
 int gpu_syncpt_wait(u32 id, u32 threshold, u32 timeout_ms) {
     if (id >= SYNCPT_MAX) return 1;
     u64 until = timeout_ms == ~0u ? ~0ull : GetTickCount64() + timeout_ms;
     AcquireSRWLockExclusive(&lock);
     int reached;
-    while (!(reached = (i32)(gpu_syncpt_min[id] - threshold) >= 0)) {
+    while (!(reached = gpu_syncpt_reached(gpu_syncpt_read(id), threshold))) {
         u64 now = GetTickCount64();
         if (now >= until) break;
         /* (sync point increments inside a command list don't wake this: the end of the
@@ -260,4 +264,12 @@ int gpu_syncpt_wait(u32 id, u32 threshold, u32 timeout_ms) {
     }
     ReleaseSRWLockExclusive(&lock);
     return reached;
+}
+
+u64 gpu_queue_done_count(void) {
+    if (enabled != 1) return ~0ull;   /* (no thread: everything submitted has run) */
+    AcquireSRWLockShared(&lock);
+    u64 n = done;
+    ReleaseSRWLockShared(&lock);
+    return n;
 }
