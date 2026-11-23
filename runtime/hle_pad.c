@@ -1476,12 +1476,12 @@ static void ble_poll(PadState fresh[PAD_SLOTS], char names[PAD_SLOTS][48], PadIn
         d->slot = dev_assign(d);
         if (d->slot >= 0) dev_remember(d);
         log_connect(d);
-        padble_player(p, d->slot);
     }
     for (int i = 0; i < (int)(sizeof devs / sizeof *devs); i++) {
         Dev *d = &devs[i];
         if (!d->used || !d->ble) continue;
-        if (d->slot < 0 && (d->slot = dev_assign(d)) >= 0) { dev_remember(d); log_connect(d); padble_player(d->ble - 1, d->slot); }   /* a player became free */
+        if (d->slot < 0 && (d->slot = dev_assign(d)) >= 0) { dev_remember(d); log_connect(d); }   /* a player became free */
+        padble_player(d->ble - 1, d->slot);   /* (its player lights: also after controllers.ini is read again) */
         if (d->slot < 0) continue;
         Raw raw;
         ble_raw(&ports[d->ble - 1], &raw);
