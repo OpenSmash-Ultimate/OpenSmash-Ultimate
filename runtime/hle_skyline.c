@@ -275,7 +275,9 @@ void rt_inline_hook(Cpu *c, u64 at) {
  * once. A change to code means nothing to the recompiled function until the next build lifts the
  * new instructions: each changed word goes into <data dir>/../skyline/patches.txt, "<module>
  * <offset> <old word> <new word> <plugin>" - the plugin the call came from, so a build drops the
- * patches of a plugin no longer loaded (tools/recomp.py code_patches, tools/skyline.py prune_patches). */
+ * patches of a plugin no longer loaded (tools/recomp.py code_patches, tools/skyline.py prune_patches).
+ * The lifted patch runs only while the guest's code holds its word (tools/lift.py "words" guard): a
+ * listed patch no plugin wrote this run leaves the game's own instruction in place. */
 const char *rt_code_offset(u64 addr, u64 *off);   /* (host.c) */
 /* Smashline's inline hooks in lua2cpp_common: it writes a `bl` at the hooked call to a code cave
  * (the original branch, as a `b`, after some nops) and inline-hooks the cave. Recompiled code runs
@@ -1681,9 +1683,6 @@ static void fighter_setup(Cpu *c) {
 }
 
 /* ---- loading ----------------------------------------------------------------------- */
-static volatile int plugin_patches_on;
-int rt_plugin_patches_on(void) { return __atomic_load_n(&plugin_patches_on, __ATOMIC_ACQUIRE); }
-
 void skyline_load_plugins(Cpu *c) {
     static int done;
     if (done++) return;
@@ -1770,7 +1769,6 @@ void skyline_load_plugins(Cpu *c) {
         fflush(stderr);
         ExitProcess(1);
     }
-    if (count > 0) __atomic_store_n(&plugin_patches_on, 1, __ATOMIC_RELEASE);
     for (int i = 0; i < count; i++) {
         u64 entry = rt_module_export(bases[i], "main");
         fprintf(stderr, "[skyline] plugin %s at %#llx: running main\n", names[i], (unsigned long long)bases[i]);
