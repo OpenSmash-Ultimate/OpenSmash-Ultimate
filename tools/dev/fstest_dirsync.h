@@ -3,6 +3,9 @@
  * SSBU_FS_DIRSYNC=einval or =eio makes every flush of a folder - fsync, and F_FULLFSYNC on macOS -
  * fail with that error: a file system that cannot flush folders, or a disk failing. Files flush
  * as usual. POSIX only (Windows flushes no folder). */
+#ifndef _GNU_SOURCE   /* (as runtime/linux/win32.c has it: this comes first, and glibc's headers read it once) */
+#define _GNU_SOURCE 1
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
