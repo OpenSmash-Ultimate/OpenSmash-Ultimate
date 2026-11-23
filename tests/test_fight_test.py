@@ -273,7 +273,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn(f'key {xxh64(NAME, M64):016x}\n', r.stdout)
         with open(path) as f:
             self.assertEqual(f.read().splitlines(), made_up_hash_lines(3, 2))
-        self.assertIn('[fight] first battle frame (fighter entry 0); input mark "fight" raised', r.stderr)
+        self.assertIn('[fight] first battle frame (fighter entry 0); input marks "fight" and "fight:1" raised', r.stderr)
 
     def test_fight_hash_on_stdout(self):
         r = self.run_scenario('hash', SSBU_FIGHT_HASH='1')

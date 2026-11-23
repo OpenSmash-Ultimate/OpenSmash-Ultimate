@@ -87,8 +87,13 @@ static int ready_go(void);
  * here: the overlay runs on the presenting thread, which must not take the kernel's lock (kernel_read64) - the
  * game's thread holds it while it waits for the renderer, and the first try froze the game that way. */
 static volatile LONG fight_flag;
+/* (the frame line, below: a fight has ended since its fighters were listed - the next fighter seen starts the next fight) */
+static volatile LONG fight_ended;
 int game_fight_on(void) { return (int)fight_flag; }
-static void fight_flag_hook(Cpu *c, const u64 args[8], void *unused) { (void)c; (void)args; (void)unused; InterlockedExchange(&fight_flag, ready_go()); }
+static void fight_flag_hook(Cpu *c, const u64 args[8], void *unused) {
+    (void)c; (void)args; (void)unused;
+    if (InterlockedExchange(&fight_flag, ready_go()) && !fight_flag) InterlockedExchange(&fight_ended, 1);
+}
 static int ready_go(void) {
     static u64 inst;
     u64 mgr, impl, word;
@@ -124,10 +129,14 @@ static void global_rng_fixed(const char *when) {
     fprintf(stderr, "[fight] SSBU_DETERMINISTIC: the game's global generator set to a fixed state (%s)\n", when);
 }
 
+/* (each fight of the process: SSBU_SEQ's "fight" mark, raised at the first, stays raised; "fight:<n>" is the n-th's) */
+static int fights_seen;
 static void first_battle_frame(int entry) {
     u64 rb = rng_base();
-    fprintf(stderr, "[fight] first battle frame (fighter entry %d); input mark \"fight\" raised; script random generators at %llx\n",
-            entry, (unsigned long long)rb);
+    char nth[24];
+    snprintf(nth, sizeof nth, "fight:%d", ++fights_seen);
+    fprintf(stderr, "[fight] first battle frame (fighter entry %d); input marks \"fight\" and \"%s\" raised; script random generators at %llx\n",
+            entry, nth, (unsigned long long)rb);
     if (rb) {
         fprintf(stderr, "[fight] generators before:");
         for (int i = 0; i < FIGHT_RNGS; i++) fprintf(stderr, " %08x.%u", ld32(rb + 0x14ull * i + 12), ld32(rb + 0x14ull * i + 16));
@@ -141,6 +150,7 @@ static void first_battle_frame(int entry) {
     }
     if (det && !(det_off & DET_OFF_RNG)) global_rng_fixed("at the fight");
     input_seq_mark("fight");
+    input_seq_mark(nth);
 }
 
 
@@ -188,6 +198,11 @@ static void frame_line(Cpu *c) {
     int k = 0;
     while (k < fighter_count && fighters[k].boma != boma) k++;
     if (k == fighter_count) {
+        /* A fighter not seen yet after a fight ended (its ready-go cleared): the next fight - the next match of the
+         * process, a sudden death. The list starts again, so that fight has its first battle frame too (the "fight"
+         * mark, the fixed generators) and its frames count from 1. (Before, the list kept the first fight's fighters:
+         * a second fight never raised "fight", and the ninth fighter of a run had no lines.) */
+        if (fight_ended && InterlockedExchange(&fight_ended, 0)) k = fighter_count = 0;
         if (k == 8) return;
         u64 id;
         fighters[k].boma = boma;
@@ -489,9 +504,11 @@ void test_fight_start(void) {
         final_every = comma ? strtoll(comma + 1, NULL, 10) : 0;
         fprintf(stderr, "[fight] SSBU_DEBUG_FINAL: the fighters' Final Smashes in turn, the first at fight frame %lld, then one every %lld\n", final_first, final_every ? final_every : 600);
     } else final_first = 0;
-    if (hash_on || det || final_first) {
-        fprintf(stderr, "[fight] SSBU_FIGHT_HASH %s, SSBU_DETERMINISTIC %d (off mask %d): the fighters' frame line is watched\n",
-                hash_on ? "on" : "off", det, det_off);
+    /* (SSBU_SEQ: its "fight" mark is raised at the first battle frame, so the line is watched for it too - without the
+     * hash or the deterministic mode a sequence's @fight waited for ever) */
+    if (hash_on || det || final_first || input_seq_on()) {
+        fprintf(stderr, "[fight] SSBU_FIGHT_HASH %s, SSBU_DETERMINISTIC %d (off mask %d)%s: the fighters' frame line is watched\n",
+                hash_on ? "on" : "off", det, det_off, input_seq_on() ? ", SSBU_SEQ's fight mark" : "");
         frame_hook_add(FRAME_HOOK_LINE, FRAME_ORDER_FIGHT_TEST, frame_line_hook, NULL, NULL);
     }
     if (det) frame_hook_add(FRAME_HOOK_END, FRAME_ORDER_FIGHT_TEST, NULL, frame_end_hook, NULL);
