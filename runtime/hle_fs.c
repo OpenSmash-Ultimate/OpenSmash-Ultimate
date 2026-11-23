@@ -731,9 +731,10 @@ static const char *data_root(char *out, size_t n, const char *leaf) {   /* nativ
  * Windows a committed file still open for reading is replaced as POSIX does it, and a read-only
  * mark is cleared first.
  * One process at a time commits or recovers: a lock file beside the save (save/<user>.lock),
- * on Windows a named mutex. Without the lock nothing is done: the mount fails, Commit fails
- * and a decided commit waits (another process may be applying it). One process mounts a save
- * once. */
+ * on Windows a named mutex. When the lock cannot be taken the journal goes on without it, as it
+ * always did, and says so in the log; with SSBU_FS_LOCK_STRICT=1 nothing is done without it: the
+ * mount fails, Commit fails and a decided commit waits (another process may be applying it). One
+ * process mounts a save once. */
 #define SHARE_ALL (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)   /* (a commit can move a file someone reads) */
 #define JOURNAL_FORMAT "ssbu-save-journal 1"   /* the journal's first line */
 #ifndef ERROR_SHARING_VIOLATION
@@ -797,6 +798,22 @@ static void flush_dir(const char *path) {   /* the names in a folder: POSIX make
     close(fd);
 }
 #endif
+
+/* Whether to go on when the save lock was not taken (`refused` says what is not done otherwise).
+ * By default yes, as before the lock could fail: one process loses nothing, only two at once
+ * could apply or drop each other's commit. SSBU_FS_LOCK_STRICT=1 refuses instead. It is not the
+ * default because a file system without locks (NFS without its lock daemon: ENOLCK) or a
+ * non-file where the lock file goes would then leave the save unmountable. (Read at each call:
+ * fstest switches it.) */
+static int saves_go_on(SaveLock l, const char *root, const char *refused) {
+    if (saves_locked(l)) return 1;
+    DWORD err = GetLastError();
+    const char *e = getenv("SSBU_FS_LOCK_STRICT");
+    int strict = e && !strcmp(e, "1");
+    fprintf(stderr, "[fs] %s: the save lock could not be taken (error %lu): %s\n", root, (unsigned long)err,
+            strict ? refused : "going on without it (SSBU_FS_LOCK_STRICT=1 refuses)");
+    return !strict;
+}
 
 #ifdef FS_TEST
 /* tools/dev/fstest.c: SSBU_FS_CRASH_AT=n ends the process at the n-th of these, as a crash would */
@@ -1157,9 +1174,7 @@ static void journal_done(struct Mount *m) {
 static int journal_settle(struct Mount *m) {
     if (!m->pending) return 1;
     SaveLock l = lock_saves(m->root);
-    if (!saves_locked(l))
-        fprintf(stderr, "[fs] %s: a decided save waits: the save lock could not be taken (error %lu)\n", m->root, (unsigned long)GetLastError());
-    else if (journal_apply(m->root) >= 0) journal_done(m);
+    if (saves_go_on(l, m->root, "a decided commit waits") && journal_apply(m->root) >= 0) journal_done(m);
     unlock_saves(l);
     return !m->pending;
 }
@@ -1208,10 +1223,7 @@ static u32 journal_commit(struct Mount *m) {
     char journal[1024], marker[1024], pid[16];
     if (writer_open(m->id)) return R_WRITE_FILE_OPEN;   /* ([sdk] FileSystemAccessor::Commit refuses too) */
     SaveLock l = lock_saves(m->root);
-    if (!saves_locked(l)) {
-        fprintf(stderr, "[fs] commit of %s refused: the save lock could not be taken (error %lu)\n", m->root, (unsigned long)GetLastError());
-        return R_HOST_FAILURE;
-    }
+    if (!saves_go_on(l, m->root, "the commit is refused")) return R_HOST_FAILURE;
     if (journal_apply(m->root) < 0) { unlock_saves(l); return R_HOST_FAILURE; }   /* (a decided commit first, whichever process made it) */
     if (m->pending) journal_done(m);
     if (!m->ntomb && folder_empty(m->work)) { unlock_saves(l); return 0; }   /* (nothing changed) */
@@ -1271,7 +1283,7 @@ static u32 journal_mount(const char *name, const char *where) {
     if (!r) {
         make_dirs(root);
         SaveLock l = lock_saves(root);
-        r = saves_locked(l) ? journal_recover(root) : R_HOST_FAILURE;   /* (nothing recovered or dropped without it) */
+        r = saves_go_on(l, root, "the save is not mounted") ? journal_recover(root) : R_HOST_FAILURE;   /* (strict: nothing recovered or dropped without it) */
         if (!r) {   /* (left by a process that had this number before) */
             snprintf(work, sizeof work, "%s.work.%lu", root, (unsigned long)GetCurrentProcessId());
             snprintf(journal, sizeof journal, "%s.journal.%lu", root, (unsigned long)GetCurrentProcessId());

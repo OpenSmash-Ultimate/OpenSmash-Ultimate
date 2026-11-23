@@ -224,6 +224,16 @@ static void break_lock(int on) {   /* (a folder where the lock file goes: open f
 }
 #endif
 
+/* SSBU_FS_LOCK_STRICT: on, nothing is done without the save lock; off (the default), the journal
+ * goes on without it */
+static void lock_strict(int on) {
+#ifdef _WIN32
+    _putenv_s("SSBU_FS_LOCK_STRICT", on ? "1" : "");
+#else
+    if (on) setenv("SSBU_FS_LOCK_STRICT", "1", 1); else unsetenv("SSBU_FS_LOCK_STRICT");
+#endif
+}
+
 /* The scratch folder: SSBU_DATA_ROOT, and a made-up RomFS - one file, hello.txt - in data/. */
 static void setup(const char *dir) {
     char data[600], path[700];
@@ -438,7 +448,16 @@ static void checks_all(DWORD live_pid) {
         unmount("save");
     }
 
-    /* without the save lock nothing is done: no mount, no commit, no recovery */
+    /* without the save lock, by default the journal goes on as it did before the lock could fail */
+    lock_strict(0);
+    break_lock(1);
+    CHECK(mount_save() == 0 && t_write("save:/a.bin", 0, "AX", 0, NULL) == 0 && commit("save") == 0 && is(h_save("a.bin"), "AX"),
+          "mount and Commit without the lock (not strict)");
+    unmount("save");
+    break_lock(0);
+
+    /* SSBU_FS_LOCK_STRICT=1: without the save lock nothing is done: no mount, no commit, no recovery */
+    lock_strict(1);
     char committed[64];
     snprintf(committed, sizeof committed, "%s", h_save("a.bin") ? h_save("a.bin") : "");
     CHECK(mount_save() == 0 && t_write("save:/a.bin", 0, "A5", 0, NULL) == 0, "a write");
@@ -464,6 +483,7 @@ static void checks_all(DWORD live_pid) {
         CHECK(mount_save() == 0 && is(t_read("save:/a.bin"), "A6") && !h_exists(h_beside("commit")), "the next mount with the lock finishes it");
         unmount("save");
     }
+    lock_strict(0);
 #ifndef _WIN32
     {   /* a lock file that cannot be opened for writing (left read-only, or another user's): flock takes it all the same */
         char unix_lock[1024];
