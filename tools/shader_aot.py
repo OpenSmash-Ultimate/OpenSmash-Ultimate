@@ -893,11 +893,35 @@ def vulkan_part_only():
     return bool(os.environ.get("SSBU_AOT_BY_GAME")) and share_on() and spirv_first()
 
 
+def spirv_siblings(spirv):
+    """The names of both translations this build makes for the library of `spirv` ("g<version>.<library>"): the plain
+    one and the exact-f32tof16 one an AMD card's game reads (#353, runtime/gpu_shader_cache.h SHADER_CACHE_SPV_EXACT_F16).
+    A marker for either is current: the launcher's run makes the plain one, an AMD game's run its own."""
+    m = re.fullmatch(r"g(\d+)\.([0-9a-f]{8})", spirv or "")
+    try:
+        text = open(os.path.join(ROOT, "runtime", "gpu_shader_cache.h"), encoding="utf-8").read()
+    except OSError:
+        return {spirv}
+    spv, offset = SPV_VERSION.search(text), EXACT_F16.search(text)
+    if not m or not spv or not offset:
+        return {spirv}
+    base = cache_version() * 100 + int(spv.group(1))
+    both = {f"g{base}.{m.group(2)}", f"g{base + int(offset.group(1))}.{m.group(2)}"}
+    return both if spirv in both else {spirv}   # (another translator's names: on their own)
+
+
 def write_vulkan_ready(cache, spirv):
     if not spirv or not share_on():
         return
-    with open(os.path.join(cache, VULKAN_READY), "w", encoding="utf-8", newline="\n") as f:
-        f.write(f"spirv {spirv}\n")
+    path = os.path.join(cache, VULKAN_READY)
+    keep = []
+    try:   # (the other translation's line stays: the launcher's and an AMD game's runs share the folder)
+        with open(path, encoding="utf-8") as f:
+            keep = [l for l in f.read().splitlines() if l.startswith("spirv ") and l[6:] in spirv_siblings(spirv) and l[6:] != spirv]
+    except OSError:
+        pass
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write("".join(l + "\n" for l in keep) + f"spirv {spirv}\n")
 
 
 def vulkan_ready(cache, spirv):
@@ -915,7 +939,7 @@ def forget_vulkan_ready(cache, spirv):
     """vulkan_ready.txt for other names than this run makes (another translator): removed. One for these names stays
     while this run looks for new keys, so a game started meanwhile does not wait for a cache that is there."""
     path = os.path.join(cache, VULKAN_READY)
-    if os.path.exists(path) and not vulkan_ready(cache, spirv):
+    if os.path.exists(path) and not any(vulkan_ready(cache, s) for s in spirv_siblings(spirv)):
         os.remove(path)
         return True
     return False
@@ -1556,7 +1580,10 @@ def cache_version():
 SPV_VERSION = re.compile(r"#define SHADER_CACHE_SPV_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)")
 
 
-def spirv_expected(root=ROOT):
+EXACT_F16 = re.compile(r"#define SHADER_CACHE_SPV_EXACT_F16 (\d+)")
+
+
+def spirv_expected(root=ROOT, exact=None):
     """The start of the SPIR-V files' names the built game reads, "g<version>.<library>" (runtime/gpu_shader_cache.h's
     shader_cache_file_spv), or None: no build\\ssbu_glslang.dll (no SPIR-V), or a header or DLL this can't read. The
     library is asked of the DLL as the game asks it (gpu_spirv.c: ssbu_glslang_version, 0 for a DLL without it)."""
@@ -1576,7 +1603,12 @@ def spirv_expected(root=ROOT):
         library = ask()
     except AttributeError:
         library = 0
-    return f"g{int(version.group(1)) * 100 + int(spv.group(1))}.{library:08x}"
+    # (exact: the exact-f32tof16 SPIR-V's names, an AMD card's (#353): SSBU_EXACT_F16=1, which that card's game sets for
+    # the preparation it runs, as shaderaot's --spirv-version then says)
+    exact = os.environ.get("SSBU_EXACT_F16") == "1" if exact is None else exact
+    offset = EXACT_F16.search(text)
+    extra = int(offset.group(1)) if exact and offset else 0
+    return f"g{int(version.group(1)) * 100 + int(spv.group(1)) + extra}.{library:08x}"
 
 
 def forget_stale_marker(root=ROOT, expected=None, log=print):
@@ -1591,8 +1623,9 @@ def forget_stale_marker(root=ROOT, expected=None, log=print):
             have = re.search(r"^spirv (\S+)$", f.read(), re.M)
     except OSError:
         return False
+    current = {expected} if expected else {spirv_expected(root, exact=False), spirv_expected(root, exact=True)}
     expected = expected or spirv_expected(root)
-    if not have or not expected or have.group(1) == expected:
+    if not have or not expected or have.group(1) in current:   # (either translation's names: an AMD card's are its own)
         return False
     os.remove(marker)
     log(f"shaders: the prepared Vulkan shaders are {have.group(1)}, the game reads {expected}: "
