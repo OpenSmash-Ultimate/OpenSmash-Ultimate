@@ -603,6 +603,9 @@ def write_if_changed(path, text):
 
 def _init(image_path, entries, base, forward, setjmp=None, pads=None, exact_callees=None, exact_callers=None,
           hookable=None, patches=None, inline=None):
+    import lift
+    lift.REGCACHE = os.environ.get("SSBU_REGCACHE", "1") != "0"
+    lift.DYNAMIC_JUMPS = os.environ.get("SSBU_DYNAMIC_JUMPS") == "1"
     f = open(image_path, "rb")
     _state["img"] = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
     _state["args"] = (entries, base, forward, setjmp, pads, exact_callees, exact_callers, hookable, patches, inline)
@@ -745,15 +748,26 @@ def code_patches(mod, name):
         if now & 0xFC000000 == 0x94000000 and off in inline:
             cave = off + (((now & 0x3FFFFFF) ^ 0x2000000) - 0x2000000) * 4
             caves |= {off} | set(range(cave, cave + 0x18, 4))
+    words = {}
     for off, was, now in sky:
         if off in caves:
             continue
         if off + 4 <= len(mod.image) and mod.u32(off) == was:
-            # Gate Skyline plugin patches at runtime (rt_plugin_patches_on) so running without
-            # loaded plugins executes the original instruction instead of a plugin's NOP/patch.
-            out[off] = ("switch", [now], "rt_plugin_patches_on")
+            words[off] = now
         else:
             print(f"{name}: a plugin's code patch at {off:#x} left out: not {was:08x} there")
+    # On only while the plugin has written its words this run (lift.py "words": the guest's code holds them):
+    # without the plugin, or with one that writes them only in some set-ups (the CSK Collection's added-character
+    # tables), the game's own instructions run. Adjacent words are one patch (an adrp/add pair made mov/nop):
+    # each checks them all, so a pair is never half the plugin's and half the game's.
+    for off in sorted(words):
+        if off - 4 in words:
+            continue
+        run = []
+        while off + 4 * len(run) in words:
+            run.append((off + 4 * len(run), words[off + 4 * len(run)]))
+        for o, w in run:
+            out[o] = ("switch", [w], ("words", tuple(run)))
     for off, was, now in loc:
         if off in caves:
             continue
@@ -1153,6 +1167,9 @@ def build(path, outdir, jobs, per_file, imports=None):
         os.environ["SSBU_REGCACHE"] = "0"
         os.environ["SSBU_DYNAMIC_JUMPS"] = "1"
         os.environ["SSBU_FLAGS_XFER"] = "1"
+    import lift
+    lift.REGCACHE = os.environ.get("SSBU_REGCACHE", "1") != "0"
+    lift.DYNAMIC_JUMPS = os.environ.get("SSBU_DYNAMIC_JUMPS") == "1"
     try:
         _build(mod, found, funcs, path, outdir, jobs, per_file, imports)
     finally:
@@ -1163,6 +1180,8 @@ def build(path, outdir, jobs, per_file, imports=None):
                 del os.environ["SSBU_REGCACHE"]
             else:
                 os.environ["SSBU_REGCACHE"] = regcache_was
+        lift.REGCACHE = os.environ.get("SSBU_REGCACHE", "1") != "0"
+        lift.DYNAMIC_JUMPS = os.environ.get("SSBU_DYNAMIC_JUMPS") == "1"
 
 
 def plugin_modules():

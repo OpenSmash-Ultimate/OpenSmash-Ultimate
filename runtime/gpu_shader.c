@@ -109,10 +109,15 @@ static const struct { const char *name, *pattern; } OPS[] = {
 };
 static struct { u16 mask, value, op, bits; } table[OP_COUNT];
 static u32 table_size;
+static u8 decode_lut[1 << 16];
+static u8 op_form[OP_COUNT];
+_Static_assert(OP_COUNT <= 255, "OP_COUNT exceeds u8");
 
 static int by_specificity(const void *a, const void *b) {
     return (int)((const __typeof__(table[0]) *)b)->bits - (int)((const __typeof__(table[0]) *)a)->bits;
 }
+
+static int form_of_init(u32 op);
 
 static void build_table(void) {
     for (u32 i = 1; i < OP_COUNT; i++) {
@@ -125,6 +130,14 @@ static void build_table(void) {
         table[table_size++] = (__typeof__(table[0])){mask, value, (u16)i, (u16)__builtin_popcount(mask)};
     }
     qsort(table, table_size, sizeof table[0], by_specificity);
+    for (u32 top = 0; top < 65536; top++) {
+        u8 op = OP_UNKNOWN;
+        for (u32 i = 0; i < table_size; i++) {
+            if (((u16)top & table[i].mask) == table[i].value) { op = (u8)table[i].op; break; }
+        }
+        decode_lut[top] = op;
+    }
+    for (u32 i = 0; i < OP_COUNT; i++) op_form[i] = (u8)form_of_init(i);
 }
 
 /* Built once, whichever thread translates first (the Metal renderer translates on several). */
@@ -141,29 +154,39 @@ static pthread_once_t table_once = PTHREAD_ONCE_INIT;
 static void init_table(void) { pthread_once(&table_once, build_table); }
 #endif
 
-static u32 decode(u64 w) {
-    u16 top = (u16)(w >> 48);
-    for (u32 i = 0; i < table_size; i++)
-        if ((top & table[i].mask) == table[i].value) return table[i].op;
-    return OP_UNKNOWN;
-}
+static u32 decode(u64 w) { return decode_lut[(u16)(w >> 48)]; }
 
 /* ---- output text ----------------------------------------------------------------- */
 typedef struct Str { char *s; size_t n, cap; } Str;
 
-static void put(Str *b, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    int need = vsnprintf(NULL, 0, fmt, ap);
-    va_end(ap);
+static void put_reserve(Str *b, size_t need) {
     if (b->n + need + 1 > b->cap) {
         b->cap = (b->n + need + 1) * 2 + 4096;
         b->s = realloc(b->s, b->cap);
     }
+}
+
+static void put_bytes(Str *b, const char *s, size_t len) {
+    put_reserve(b, len);
+    if (len) memcpy(b->s + b->n, s, len);
+    b->n += len;
+    b->s[b->n] = '\0';
+}
+
+static void put(Str *b, const char *fmt, ...) {
+    put_reserve(b, 512);
+    va_list ap;
     va_start(ap, fmt);
-    vsnprintf(b->s + b->n, need + 1, fmt, ap);
+    int need = vsnprintf(b->s + b->n, b->cap - b->n, fmt, ap);
     va_end(ap);
-    b->n += need;
+    if (need < 0) return;
+    if ((size_t)need + 1 > b->cap - b->n) {
+        put_reserve(b, (size_t)need);
+        va_start(ap, fmt);
+        vsnprintf(b->s + b->n, (size_t)need + 1, fmt, ap);
+        va_end(ap);
+    }
+    b->n += (size_t)need;
 }
 
 /* Short-lived strings for operand expressions. */
@@ -216,11 +239,19 @@ typedef struct Ctx {
 
 static void line(Ctx *c, const char *fmt, ...) {
     char text[4096];
+    text[0] = '\0';
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(text, sizeof text, fmt, ap);
+    int n = vsnprintf(text, sizeof text, fmt, ap);
     va_end(ap);
-    put(&c->body, "%*s%s\n", c->indent * 2, "", text);
+    size_t plen = n < 0 ? 0 : (size_t)n >= sizeof text ? sizeof text - 1 : (size_t)n;
+    size_t indent = (size_t)(c->indent > 0 ? c->indent * 2 : 0);
+    put_reserve(&c->body, indent + plen + 1);
+    if (indent) memset(c->body.s + c->body.n, ' ', indent);
+    if (plen) memcpy(c->body.s + c->body.n + indent, text, plen);
+    c->body.s[c->body.n + indent + plen] = '\n';
+    c->body.n += indent + plen + 1;
+    c->body.s[c->body.n] = '\0';
 }
 
 static void unsupported(Ctx *c, const Insn *in, const char *why) {
@@ -309,7 +340,7 @@ static const char *absneg(const char *x, int abs, int neg) {
     return x;
 }
 
-static int form_of(u32 op) {
+static int form_of_init(u32 op) {
     const char *n = OPS[op].name, *u = strrchr(n, '_');
     size_t len = strlen(n);
     if (len > 3 && !strcmp(n + len - 3, "32I")) return FORM_32I;   /* IADD32I, FMUL32I, HADD2_32I, ... */
@@ -322,6 +353,8 @@ static int form_of(u32 op) {
     if (!strcmp(u, "_32I")) return FORM_32I;
     return FORM_REG;
 }
+
+static int form_of(u32 op) { return op_form[op]; }
 
 /* ---- comparisons ------------------------------------------------------------------ */
 static const char *fcompare(u32 op, const char *a, const char *b) {
@@ -1426,8 +1459,18 @@ static void emit_insn(Ctx *c, const Insn *in) {
 }
 
 /* ---- whole programs ------------------------------------------------------------------- */
+/* Instructions sit monotonically at every 8-byte word after 0x50 except word%4 == 0 (scheduling). */
 static int find(Ctx *c, u32 addr) {
-    for (u32 i = 0; i < c->n; i++) if (c->ins[i].addr == addr) return (int)i;
+    if (addr >= 0x58 && (addr & 7) == 0) {
+        u32 word = (addr - 0x50) >> 3;
+        u32 slot = word & 3;
+        if (slot) {
+            u32 i = (word >> 2) * 3 + (slot - 1);
+            if (i < c->n && c->ins[i].addr == addr) return (int)i;
+            return -1;
+        }
+        return -1;
+    }
     return -1;
 }
 
@@ -1438,7 +1481,8 @@ static int is_branchy(u32 op) {
 /* Decode up to the end of the program: the 'BRA to self' padding, or an unconditional EXIT
  * that no branch target lies beyond. */
 static void decode_program(Ctx *c, const u8 *prog, u32 size) {
-    u32 cap = 256, furthest = 0;
+    u32 est = size > 0x50 ? ((size - 0x50 + 31) / 32) * 3 : 16;
+    u32 cap = est < 64 ? 64 : est > 16384 ? 16384 : est, furthest = 0;
     c->ins = malloc(sizeof *c->ins * cap);
     for (u32 a = 0x50; a + 8 <= size; a += 8) {
         if (((a - 0x50) / 8) % 4 == 0) continue;   /* scheduling control word */
@@ -1795,6 +1839,42 @@ static const char F2I_HLSL[] =
 static const char F2U_HLSL[] =
     "uint f2u_(float x) { return !(x > 0.0f) ? 0u : x >= 4294967296.0f ? 0xFFFFFFFFu : (uint)x; }\n";
 
+/* Direct3D's f32tof16, bit by bit (round to nearest even; out of range: infinity; a NaN stays one), for glslang's
+ * SPIR-V on AMD cards. glslang makes f32tof16 a PackHalf2x16, and what that gives for some values is the driver's
+ * own: the stages' pixel programs keep their light in packed halves, and with AMD's driver a NaN came out of them -
+ * stages and backgrounds black on Radeon cards, the fighters drawn (#353, #510). Found and written by fahimbench
+ * (#353). Only where shader_exact_f16 is on (gpu_vk.c: an AMD card, or SSBU_EXACT_F16=1), so every other card's
+ * SPIR-V stays what it was, under its old names (gpu_shader_cache.h: SHADER_CACHE_SPV_EXACT_F16). */
+static const char F32TOF16_HLSL[] =
+    "uint f2h_(float f) {\n"
+    "  uint x = asuint(f), s = (x >> 16) & 0x8000u, a = x & 0x7FFFFFFFu;\n"
+    "  if (a > 0x7F800000u) return s | 0x7E00u;\n"
+    "  if (a >= 0x477FF000u) return s | 0x7C00u;\n"
+    "  if (a < 0x33000001u) return s;\n"
+    "  uint e = a >> 23, m = a & 0x7FFFFFu, r, rem, mid;\n"
+    "  if (e < 113u) { uint sh = 126u - e; m |= 0x800000u; r = m >> sh; rem = m & ((1u << sh) - 1u); mid = 1u << (sh - 1u); }\n"
+    "  else { r = ((e - 112u) << 10) | (m >> 13); rem = m & 0x1FFFu; mid = 0x1000u; }\n"
+    "  if (rem > mid || (rem == mid && (r & 1u) != 0u)) r++;\n"
+    "  return s | r;\n"
+    "}\n"
+    "#define f32tof16 f2h_\n";
+
+static int exact_f16 = -1;   /* -1: not decided yet (SSBU_EXACT_F16, else off) */
+void shader_set_exact_f16(int on) {
+    const char *e = getenv("SSBU_EXACT_F16");
+    __atomic_store_n(&exact_f16, e && *e ? atoi(e) != 0 : on, __ATOMIC_RELEASE);
+}
+int shader_exact_f16(void) {
+    int v = __atomic_load_n(&exact_f16, __ATOMIC_ACQUIRE);
+    if (v < 0) {   /* (not set yet: SSBU_EXACT_F16, else off - unless a set comes first) */
+        const char *e = getenv("SSBU_EXACT_F16");
+        int want = e && *e && atoi(e) != 0, none = -1;
+        __atomic_compare_exchange_n(&exact_f16, &none, want, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+        v = __atomic_load_n(&exact_f16, __ATOMIC_ACQUIRE);
+    }
+    return v;
+}
+
 static const char LOP3[] =
     "uint lop3(uint a, uint b, uint c, uint lut) {\n"
     "  uint r = 0u;\n"
@@ -1966,9 +2046,10 @@ static void hlsl_out(Ctx *c, Str *out) {
         put(out, "%s tex%u : register(t%u);\n", texture_decl(info->tex[k].type, info->tex[k].shadow), k, 64 + k);
         put(out, "%s smp%u : register(s%u);\n", info->tex[k].shadow ? "SamplerComparisonState" : "SamplerState", k, k);
     }
-    if (strstr(c->body.s ? c->body.s : "", "lop3(")) put(out, "%s", LOP3);
-    if (c->texel_bufs && strstr(c->body.s ? c->body.s : "", "f2i_(")) put(out, "%s", F2I_HLSL);
-    if (c->texel_bufs && strstr(c->body.s ? c->body.s : "", "f2u_(")) put(out, "%s", F2U_HLSL);
+    if (strstr(c->body.s ? c->body.s : "", "lop3(")) put_bytes(out, LOP3, sizeof LOP3 - 1);
+    if (c->texel_bufs && strstr(c->body.s ? c->body.s : "", "f2i_(")) put_bytes(out, F2I_HLSL, sizeof F2I_HLSL - 1);
+    if (c->texel_bufs && strstr(c->body.s ? c->body.s : "", "f2u_(")) put_bytes(out, F2U_HLSL, sizeof F2U_HLSL - 1);
+    if (c->texel_bufs && shader_exact_f16() && strstr(c->body.s ? c->body.s : "", "f32tof16(")) put_bytes(out, F32TOF16_HLSL, sizeof F32TOF16_HLSL - 1);
     if (c->uses_gmem) {
         int words = stage == SHADER_COMPUTE && c->sb_words;
         for (u32 k = 0; k < info->sb_count; k++)
@@ -1986,7 +2067,8 @@ static void hlsl_out(Ctx *c, Str *out) {
             c->local[0] ? c->local[0] : 1, c->local[1] ? c->local[1] : 1, c->local[2] ? c->local[2] : 1);
         put_registers(c, out);
         if (c->uses_lmem) put(out, "  uint lmem_[LMEM_WORDS];\n");
-        put(out, "%s}\n", c->body.s ? c->body.s : "");
+        if (c->body.s && c->body.n) put_bytes(out, c->body.s, c->body.n);
+        put_bytes(out, "}\n", 2);
         return;
     }
 
@@ -2031,11 +2113,12 @@ static void hlsl_out(Ctx *c, Str *out) {
             if ((target >> (rt * 4)) & 15) put(out, "  float4 c%u : SV_Target%u;\n", rt, rt);
         if (flags & 2) put(out, "  float depth : SV_Depth;\n");
         put(out, "};\n");
-        if (c->alpha_test) put(out, "%s", ALPHA_PASS);
+        if (c->alpha_test) put_bytes(out, ALPHA_PASS, sizeof ALPHA_PASS - 1);
         put(out, "PSOut main(VSOut i, bool front : SV_IsFrontFace) {\n");
     }
     put_registers(c, out);
-    put(out, "%s}\n", c->body.s ? c->body.s : "");
+    if (c->body.s && c->body.n) put_bytes(out, c->body.s, c->body.n);
+    put_bytes(out, "}\n", 2);
 }
 
 /* ---- Metal Shading Language ------------------------------------------------------------- */
@@ -2182,9 +2265,9 @@ static void msl_out(Ctx *c, Str *out) {
     ShaderInfo *info = c->info;
     int stage = c->stage;
     const char *body = c->body.s ? c->body.s : "";
-    put(out, "%s", MSL_PRELUDE);
+    put_bytes(out, MSL_PRELUDE, sizeof MSL_PRELUDE - 1);
     put(out, "struct Binds_ { Bind_ cb[18]; Bind_ gm[16];%s };\n", stage == SHADER_VERTEX ? " Bind_ vb[32];" : "");
-    if (info->ntex) put(out, "%s", MSL_TEXTURES);
+    if (info->ntex) put_bytes(out, MSL_TEXTURES, sizeof MSL_TEXTURES - 1);
     u32 kinds = 0;
     for (u32 k = 0; k < info->ntex; k++) {
         u32 kind = msl_kind(info->tex[k].type, info->tex[k].shadow);
@@ -2195,7 +2278,7 @@ static void msl_out(Ctx *c, Str *out) {
     for (u32 k = nsmp; k < info->ntex; k++) defaults |= info->tex[k].shadow ? 2u : 1u;
     if (defaults & 1) put(out, "constexpr sampler smp_default_(address::clamp_to_edge, filter::linear, mip_filter::linear);\n");
     if (defaults & 2) put(out, "constexpr sampler smp_default_cmp_(address::clamp_to_edge, filter::linear, mip_filter::linear, compare_func::never);\n");
-    if (strstr(body, "lop3(")) put(out, "%s", LOP3);
+    if (strstr(body, "lop3(")) put_bytes(out, LOP3, sizeof LOP3 - 1);
     if (stage == SHADER_VERTEX) put(out, VERTEX_FETCH, "RawBuf", "");
     if (stage == SHADER_COMPUTE) put(out, "#define SMEM_WORDS %uu\n", c->shared / 4 ? c->shared / 4 : 1);
     if (stage == SHADER_COMPUTE || c->uses_lmem) put(out, "#define LMEM_WORDS 256u\n");
@@ -2299,13 +2382,14 @@ static void msl_out(Ctx *c, Str *out) {
         for (u32 n = 0; n < 32; n++)
             if (info->inputs >> n & 1) put(out, "  uint4 va%u = fetch%u(vid, iid);\n", n, n);
     } else if (stage == SHADER_PIXEL) {
-        if (c->alpha_test) put(out, "%s", ALPHA_PASS);
+        if (c->alpha_test) put_bytes(out, ALPHA_PASS, sizeof ALPHA_PASS - 1);
         put(out, "PSOut run(PSIn i, bool front) {\n");
     }
     else put(out, "void run(uint3 tid_, uint3 cta_) {\n");
     put_registers(c, out);
     if (c->uses_lmem) put(out, "  uint lmem_[LMEM_WORDS];\n");   /* (in every stage: HLSL's has it in compute alone) */
-    put(out, "%s}\n};\n", body);
+    if (c->body.s && c->body.n) put_bytes(out, c->body.s, c->body.n);
+    put_bytes(out, "}\n};\n", 5);
 
     /* the entry point */
     Str args = {0};
@@ -2359,19 +2443,23 @@ static const char GLSLANG_CASTS[] =
 
 static char *glslang_casts(char *text) {
     if (!text) return NULL;
+    size_t len = strlen(text);
     Str out = {0};
-    put(&out, "%s", GLSLANG_CASTS);
-    for (const char *p = text; *p;) {
-        int i = !strncmp(p, "asint(", 6), u = !strncmp(p, "asuint(", 7);
+    put_reserve(&out, sizeof GLSLANG_CASTS - 1 + len);
+    put_bytes(&out, GLSLANG_CASTS, sizeof GLSLANG_CASTS - 1);
+    const char *end = text + len;
+    for (const char *p = text; p < end;) {
+        int i = (size_t)(end - p) >= 6 && !memcmp(p, "asint(", 6);
+        int u = !i && (size_t)(end - p) >= 7 && !memcmp(p, "asuint(", 7);
         /* (not inside a longer name: the character before is not one of a name's) */
         char before = p > text ? p[-1] : ' ';
         int word = !(before == '_' || (before >= '0' && before <= '9') || (before >= 'a' && before <= 'z') || (before >= 'A' && before <= 'Z'));
-        if (word && i) { put(&out, "asi_("); p += 6; }
-        else if (word && u) { put(&out, "asu_("); p += 7; }
+        if (word && i) { put_bytes(&out, "asi_(", 5); p += 6; }
+        else if (word && u) { put_bytes(&out, "asu_(", 5); p += 7; }
         else {
-            const char *q = p + 1;
-            while (*q && *q != 'a') q++;
-            put(&out, "%.*s", (int)(q - p), p);
+            const char *q = memchr(p + 1, 'a', (size_t)(end - (p + 1)));
+            if (!q) q = end;
+            put_bytes(&out, p, (size_t)(q - p));
             p = q;
         }
     }
@@ -2406,6 +2494,7 @@ static char *translate(int lang, const u8 *program, u32 size, int stage, u32 vs_
     finish_info(c);
 
     Str out = {0};
+    put_reserve(&out, c->body.n + 4096);
     put(&out, "// Maxwell %s shader, %u instructions\n", stage == SHADER_VERTEX ? "vertex" : stage == SHADER_PIXEL ? "pixel" : "compute", c->n);
     if (c->msl) msl_out(c, &out);
     else hlsl_out(c, &out);
@@ -2441,48 +2530,60 @@ char *shader_hlsl_cs(const u8 *program, u32 size, const u32 local[3], u32 shared
     return translate(HLSL_DEFAULT, program, size, SHADER_COMPUTE, 0, info, read, user, local, shared, 0);
 }
 
+enum { SCAN_SIZE, SCAN_PIXELS, SCAN_STACKS };
+static u32 scan_program(const u8 *program, u32 size, int stage, int mode) {
+    init_table();
+    u32 furthest = 0, last = 0;
+    int any = 0;
+    for (u32 a = 0x50; a + 8 <= size; a += 8) {
+        if (((a - 0x50) / 8) % 4 == 0) continue;   /* scheduling control word */
+        u64 w = *(const u64 *)(program + a);
+        if (w == 0xE2400FFFFF87000Full) break;
+        u32 op = decode(w);
+        last = a;
+        any = 1;
+        switch (mode) {
+        case SCAN_PIXELS:
+            switch (op) {
+            case OP_IPA: { u32 attr = BITS(w, 30, 8) * 4; if (stage == SHADER_PIXEL && (attr == 0x70 || attr == 0x74)) return 1; break; }
+            case OP_TEX: if (BITS(w, 54, 1) != 0) return 1; break;                              /* AOFFI */
+            case OP_TLD4: if (BITS(w, 54, 2) == 1 || BITS(w, 54, 2) == 2) return 1; break;     /* one offset, or four */
+            case OP_TLD4S: if (BITS(w, 51, 1) != 0) return 1; break;                            /* AOFFI */
+            case OP_TLDS: return 1;
+            default: break;
+            }
+            break;
+        case SCAN_STACKS:
+            if (op == OP_SSY || op == OP_PBK) return 1;
+            break;
+        default:
+            break;
+        }
+        if (op == OP_BRA || op == OP_SSY || op == OP_PBK) {
+            u32 t = align_target(a + 8 + (u32)branch_offset(w));
+            if (t > furthest) furthest = t;
+        }
+        if (op == OP_BRX) furthest = size;
+        if (op == OP_EXIT && BITS(w, 16, 4) == 7 && BITS(w, 0, 5) == 15 && a >= furthest) break;
+    }
+    return mode == SCAN_SIZE ? (any ? last + 8 : 0x50) : 0;
+}
+
 /* Does the program read its pixel's position, or step in the texels of what it samples (texel
  * offsets, texel numbers)? Exactly those instructions take the render scale into account
  * (ps_input, emit_tex, emit_tld4, emit_tlds): their translation differs from the one before
  * render scaling, so they get cache files of their own (gpu_shader_cache.h shader_cache_hash).
  * Very few do: one pixel program of the game reads its position, two gather with offsets. */
 int shader_uses_pixels(const u8 *program, u32 size, int stage) {
-    init_table();
-    Ctx c = {0};
-    decode_program(&c, program, size);
-    int uses = 0;
-    for (u32 i = 0; i < c.n && !uses; i++) {
-        u64 w = c.ins[i].w;
-        switch (c.ins[i].op) {
-        case OP_IPA: { u32 attr = BITS(w, 30, 8) * 4; uses = stage == SHADER_PIXEL && (attr == 0x70 || attr == 0x74); break; }
-        case OP_TEX: uses = BITS(w, 54, 1) != 0; break;                              /* AOFFI */
-        case OP_TLD4: uses = BITS(w, 54, 2) == 1 || BITS(w, 54, 2) == 2; break;     /* one offset, or four */
-        case OP_TLD4S: uses = BITS(w, 51, 1) != 0; break;                            /* AOFFI */
-        case OP_TLDS: uses = 1; break;
-        default: break;
-        }
-    }
-    free(c.ins);
-    return uses;
+    return (int)scan_program(program, size, stage, SCAN_PIXELS);
 }
 
 /* Does the program use the SSY/PBK stacks? Their translation changed (resolve_stacks): such
  * programs get cache files of their own too. */
 int shader_uses_stacks(const u8 *program, u32 size) {
-    init_table();
-    Ctx c = {0};
-    decode_program(&c, program, size);
-    int uses = 0;
-    for (u32 i = 0; i < c.n && !uses; i++) uses = c.ins[i].op == OP_SSY || c.ins[i].op == OP_PBK;
-    free(c.ins);
-    return uses;
+    return (int)scan_program(program, size, 0, SCAN_STACKS);
 }
 
 u32 shader_size(const u8 *program, u32 max) {
-    init_table();
-    Ctx c = {0};
-    decode_program(&c, program, max);
-    u32 end = c.n ? c.ins[c.n - 1].addr + 8 : 0x50;
-    free(c.ins);
-    return end;
+    return scan_program(program, max, 0, SCAN_SIZE);
 }

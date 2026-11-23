@@ -27,6 +27,7 @@ typedef uint64_t u64;
 enum { SHADER_VERTEX, SHADER_PIXEL, SHADER_COMPUTE };
 enum { TEX_ARRAY_CUBE = 7 };
 #define SHADER_CACHE_SPV_VERSION 123
+static unsigned spv_version(void) { return SHADER_CACHE_SPV_VERSION; }   /* (gpu_vk.c's, without the AMD variant) */
 ''' + info + r'''
 typedef struct Job { struct Job *next; void (*run)(struct Job *); } Job;
 static Job *pending;

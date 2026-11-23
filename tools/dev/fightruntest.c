@@ -142,6 +142,7 @@ void input_seq_set_steps(SeqStepsFn *fn) { steps_fn = fn; steps_set++; }
 int rb_ra_predicting(void) { return 0; }   /* (hle_rb_core.c: run-ahead, off here) */
 int net_match_on(void) { return 0; }       /* (hle_rb_core.c: no networked match here) */
 int input_seq2_on(void) { return 0; }      /* (hle_hid.c: player 2's sequence, SSBU_SEQ2: off here) */
+int input_seq_on(void) { return 0; }       /* (hle_hid.c: SSBU_SEQ, off here) */
 int pad_get(u32 slot, PadState *out) { (void)slot; (void)out; return 0; }   /* (hle_pad.c: no pad on any slot here) */
 static LPTHREAD_START_ROUTINE thread_fn;
 static int threads;
@@ -296,7 +297,7 @@ static void hash(void) {
         frame_line(2);   /* a weapon's: not a fighter */
         frame_line(1);
     }
-    CHECK(mark_count == 1 && !strcmp(marks[0], "fight"), "the mark \"fight\", once");
+    CHECK(mark_count == 2 && !strcmp(marks[0], "fight") && !strcmp(marks[1], "fight:1"), "the marks \"fight\" and \"fight:1\", once");
     CHECK(ld32(RNG) == 7 && ld32(RNG + 4) == 0x01010108u && ld32(RNG + 0x14) == 0x0505050cu, "the generators' state left as it was");
     CHECK(key_asked == 1, "the entry constant asked for once: %d", key_asked);
     CHECK(!threads, "no thread");
@@ -339,7 +340,7 @@ static void det(void) {
     int same = 1;
     for (int i = 0; i < FIGHT_RNG_WORDS; i++) same &= ld32(RNG + 4ull * i) == want[i];
     CHECK(same, "the first battle frame: the generators' fixed state");
-    CHECK(mark_count == 1 && !strcmp(marks[0], "fight"), "the mark \"fight\"");
+    CHECK(mark_count == 2 && !strcmp(marks[0], "fight") && !strcmp(marks[1], "fight:1"), "the marks \"fight\" and \"fight:1\"");
     CHECK(calls_made == 2, "the entry id asked for (the constant and WorkModule::get_int), no getter without the hash: %d calls", calls_made);
     for (int i = 0; i < FIGHT_RNG_WORDS; i++) st32(RNG + 4ull * i, 5);
     frame_line(1);
@@ -367,6 +368,26 @@ static void det(void) {
     CHECK(ld64(REPORT_COUNT) == 0 && ld32(REPORT_RESULT) == 0x77u, "another result: the count cleared, the result left");
     frame_end(0, 0xF0044007u);
     CHECK(ld32(REPORT_RESULT) == 0xF0044007u, "none dropped: left");
+    /* the next fight of the process (the next match): its ready-go cleared at a frame end, then a fighter not seen yet */
+    frame_line(0);   /* (the same fighters after the fight, as on the results screen: not a new fight) */
+    CHECK(mark_count == 2, "the fight's own fighters: no new fight");
+    set_ready_go(0);
+    frame_end(0, 0);
+    frame_line(1);
+    CHECK(mark_count == 2, "after the fight, its own fighters again: no new fight");
+    st64(AGENT(0) + 0x40, BOMA(3));
+    st32(BOMA(3) + 8, 0x00000003u);
+    st32(BOMA(3) + B_ENTRY, 0);
+    for (int i = 0; i < FIGHT_RNG_WORDS; i++) st32(RNG + 4ull * i, 5);
+    frame_line(0);
+    same = 1;
+    for (int i = 0; i < FIGHT_RNG_WORDS; i++) same &= ld32(RNG + 4ull * i) == want[i];
+    CHECK(mark_count == 4 && !strcmp(marks[2], "fight") && !strcmp(marks[3], "fight:2") && same, "a new fighter after the fight ended: the next fight's first battle frame");
+    CHECK(steps_fn() == 1, "the next fight, before go: 1 tick");
+    set_ready_go(1);
+    frame_line(0); frame_line(0);
+    CHECK(steps_fn() == 2, "the next fight from go: its fight frames");
+    st64(AGENT(0) + 0x40, BOMA(0));
 }
 
 /* SSBU_DETERMINISTIC=1 SSBU_DET_OFF=7: none of the three. */
@@ -376,7 +397,7 @@ static void off(void) {
     fighter_frame(0, 1);
     u32 rng = rng_words_hash();
     frame_line(0);
-    CHECK(rng_words_hash() == rng && mark_count == 1, "SSBU_DET_OFF=1: the generators left; the mark still raised");
+    CHECK(rng_words_hash() == rng && mark_count == 2, "SSBU_DET_OFF=1: the generators left; the marks still raised");
     frame_end(3, 0xF0044007u);
     CHECK(ld64(REPORT_COUNT) == 3 && ld32(REPORT_RESULT) == 0xF0044007u, "SSBU_DET_OFF=4: the report left");
 }
