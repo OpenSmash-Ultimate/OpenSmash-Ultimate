@@ -407,17 +407,16 @@ static void unavailable(Cpu *c) { c->x[0] = RESULT(123, 1); }   /* (nn::ssl: no 
 static u64 orig_unlock_mutex;
 static void safe_unlock_mutex(Cpu *c) {
     if (!c->x[0]) return;
-    rt_call(c, orig_unlock_mutex);
+    u64 lr = c->x[30];
+    rt_lookup(orig_unlock_mutex)(c);
+    c->x[30] = lr;
 }
 static u64 orig_pthread_mutex_unlock;
 static void safe_pthread_mutex_unlock(Cpu *c) {
     if (!c->x[0]) { c->x[0] = 0; return; }
-    rt_call(c, orig_pthread_mutex_unlock);
-}
-static u64 orig_pthread_mutex_lock;
-static void safe_pthread_mutex_lock(Cpu *c) {
-    if (!c->x[0]) { c->x[0] = 0; return; }
-    rt_call(c, orig_pthread_mutex_lock);
+    u64 lr = c->x[30];
+    rt_lookup(orig_pthread_mutex_unlock)(c);
+    c->x[30] = lr;
 }
 static void plugin_shims(void) {
     static const struct { const char *name; GuestFn *fn; } SHIMS[] = {
@@ -439,11 +438,7 @@ static void plugin_shims(void) {
     u64 p_unlock = rt_symbol("pthread_mutex_unlock");
     if (p_unlock && !orig_pthread_mutex_unlock)
         orig_pthread_mutex_unlock = rt_hook_function(p_unlock, rt_native(safe_pthread_mutex_unlock, "safe pthread_mutex_unlock"));
-    u64 p_lock = rt_symbol("pthread_mutex_lock");
-    if (p_lock && !orig_pthread_mutex_lock)
-        orig_pthread_mutex_lock = rt_hook_function(p_lock, rt_native(safe_pthread_mutex_lock, "safe pthread_mutex_lock"));
     rt_wrap_symbol("pthread_mutex_unlock", safe_pthread_mutex_unlock);
-    rt_wrap_symbol("pthread_mutex_lock", safe_pthread_mutex_lock);
     void fs_plugin_shims(void), rtld_plugin_shims(void);   /* (hle_fs.c, hle_rtld.c) */
     fs_plugin_shims();
     rtld_plugin_shims();
@@ -1711,6 +1706,7 @@ static void fighter_setup(Cpu *c) {
 }
 
 /* ---- loading ----------------------------------------------------------------------- */
+
 void skyline_load_plugins(Cpu *c) {
     static int done;
     if (done++) return;

@@ -116,6 +116,8 @@ def mark_syncs(s, exact=False):
     s = _RE_TRAP.sub(r"{ @X@ \1 }", s)
     if s == "return;":
         s = "{ @X@ return; }"
+    elif "@X@" not in s and "return;" in s:
+        s = s.replace("return;", "@X@ return;")
     return s
 
 
