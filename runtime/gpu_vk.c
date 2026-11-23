@@ -875,6 +875,7 @@ static Surface *find_color(u64 guest) {
 
 /* ---- the lock --------------------------------------------------------------------------------- */
 static __declspec(thread) u64 pending_wrote_lo, pending_wrote_hi;
+static __declspec(thread) u64 pending_wrote_ghi;   /* (the guest address the pending range ends at; 0: not known, no joining) */
 static void note_wrote(u64 va, u64 bytes);
 static void vk_flush_pending_writes(void) {
     if (!pending_wrote_hi) return;
@@ -5360,10 +5361,14 @@ static void vk_wrote(u64 va, u64 bytes) {
 /* Coalesce consecutive command-stream writes per thread and flush them under enter() before draws or dispatches. */
 static void vk_stream_wrote(u64 va, u64 bytes) {
     if (!bytes) { enter(); note_wrote(va, 0); leave(); return; }
-    if (pending_wrote_hi && pending_wrote_hi == va) { pending_wrote_hi += bytes; return; }
+    /* (joined only when the guest side continues too: a range noted at once must map contiguously, as
+     * note_wrote only checks its two ends) */
+    u64 g = gpu_va_contig(va, bytes), gend = g ? g + bytes : 0;
+    if (pending_wrote_hi && pending_wrote_hi == va && g && g == pending_wrote_ghi) { pending_wrote_hi += bytes; pending_wrote_ghi = gend; return; }
     if (pending_wrote_hi) { enter(); leave(); }
     pending_wrote_lo = va;
     pending_wrote_hi = va + bytes;
+    pending_wrote_ghi = gend;
 }
 static void vk_stream_end(void) {
     if (pending_wrote_hi) { enter(); leave(); }
