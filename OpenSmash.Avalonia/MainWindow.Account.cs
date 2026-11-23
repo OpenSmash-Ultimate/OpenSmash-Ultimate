@@ -103,7 +103,7 @@ public sealed partial class MainWindow
                     c.Me = _account.SignedIn ? _account.Me : null;
                 }
                 catch (OperationCanceledException) { c.Error = "Sign-in cancelled."; }
-                catch (AccountException e) { c.Error = e.Message; }
+                catch (AccountException e) { c.Error = e.Message; Updater.Log(root, "sign-in: " + e.Message); }
                 catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or HttpRequestException or System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException or System.ComponentModel.Win32Exception)
                 {
                     c.Error = "The sign-in did not work: " + e.Message; Updater.Log(root, "sign-in: " + e);
