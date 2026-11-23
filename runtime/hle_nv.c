@@ -420,8 +420,11 @@ static u32 channel(u32 fd, u32 group, u32 nr, u64 a, u32 request, u64 in, u64 in
     }
     case 0x1B: return submit(fd, a, in, ld32(a + 8));                     /* SubmitGpfifo, entries inline */
     case 0x1A:                                                            /* AllocGpfifoEx2 */
-        st32(a + 24, files[fd].syncpoint);
-        st32(a + 28, gpu_syncpt_max[files[fd].syncpoint]);
+        /* 0x20 bytes: {num_entries, num_jobs, flags, fence{id, value}, reserved[3]}. The game's
+         * driver zeroes +12..+31 and reads the fence back from +12 / +16 (sdk 13.0.5, the call at
+         * 0x40798c); nothing reads +24 / +28, so writing there left the channel's fence {0, 0}. */
+        st32(a + 12, files[fd].syncpoint);
+        st32(a + 16, gpu_syncpt_load(&gpu_syncpt_max[files[fd].syncpoint]));
         return NV_OK;
     }
     if (group == 0x47 && (nr == 0x14 || nr == 0x15)) return NV_OK;           /* client data */
