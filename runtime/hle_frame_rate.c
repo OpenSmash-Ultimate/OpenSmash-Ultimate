@@ -40,6 +40,9 @@
 #define FR_BUILD "21450C647B8C5940ED5B68218EA128FD3C5D597D"   /* (13.0.5's main) */
 
 extern volatile LONG rt_refresh_mult;   /* (kernel.c; ipc_vi.c's vsync thread sets it) */
+/* The pictures a logic frame lasts at the game's speed now: refreshes a 60 Hz frame x 60 / the speed's step (4 at 240 at
+ * normal speed, 8 at training's 1/2 speed). For gpu_motion.c's blending. */
+volatile float rt_passes_per_logic = 1;
 
 static int ok = -1;             /* the build and the table checked: 1 good, 0 not this game's */
 static int written;             /* the step in the game's memory is ours (a write since the last put back) */
@@ -88,7 +91,7 @@ static void frame_end_after(Cpu *c, const u64 args[8], void *ctx) {
     u32 own = game_step();
     if (m <= 1) {   /* back at 60: the game's own step, once */
         st32(FR_STEP, own);
-        written = 0; rest = 0; mult_was = 1;
+        written = 0; rest = 0; mult_was = 1; rt_passes_per_logic = 1;
         fprintf(stderr, "[frame rate] the game's frame scheduler at its own step again (%u)\n", own);
         return;
     }
@@ -97,6 +100,7 @@ static void frame_end_after(Cpu *c, const u64 args[8], void *ctx) {
                 60 * m, own, m);
         mult_was = m; rest = 0;
     }
+    rt_passes_per_logic = own ? (float)m * 60.0f / (float)own : (float)m;
     u32 total = rest + own, step = total / m;
     rest = total % m;
     st32(FR_STEP, step ? step : 1);   /* (never 0: the scheduler would not run a logic frame again) */

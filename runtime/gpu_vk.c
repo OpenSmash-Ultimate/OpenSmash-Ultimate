@@ -1530,6 +1530,21 @@ static VkBufferView upload_lost(u32 size, const char *why) {
                         "(%llu times so far)\n", size, why, vk_stat_upload_lost);
     return dummy_texels;
 }
+static VkBufferView upload(u64 va, u32 size);
+/* Bytes of the host's (gpu_motion.c's blended constants) as a raw buffer for a shader, in the frame's upload memory. */
+static VkBufferView upload_host(const void *data, u32 size) {
+    u32 padded = (size + 15) & ~15u;
+    VkBuffer buf;
+    VkDeviceSize off;
+    cmd();
+    u8 *dst = arena(padded, texel_align, &buf, &off);
+    if (!dst) return upload_lost(padded, "no upload memory left this frame");
+    memcpy(dst, data, size);
+    if (padded > size) memset(dst + size, 0, padded - size);
+    vk_stat_upload_bytes += padded;
+    VkBufferView v = arena_view(buf, off, padded);
+    return v ? v : upload_lost(padded, "vkCreateBufferView failed");
+}
 static VkBufferView upload(u64 va, u32 size) {
     if (!va || !size) return dummy_texels;
     u32 padded = (size + 15) & ~15u;
@@ -4479,14 +4494,23 @@ static u32 draw_tsc[2][4];
  * take a dozen: timing every draw cost more than some of the parts), the times scaled up. */
 #define TIMING_EVERY 32
 static int vk_timing;
+void motion_draw(u64 vs, u64 ps, u64 data, u32 count, u64 target);   /* (gpu_motion.c: display.ini's motion) */
+void motion_dispatch(u64 program);
+int motion_active(void);
+const void *motion_block(int compute, u32 bank, u32 tex_bank, u64 va, u32 size, void (*read)(u64, u32, void *));
 static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int stage, const VShader *s, DrawParams *params, StageBinds *b) {
     int mstage = stage == SHADER_VERTEX ? STAGE_VERTEX : STAGE_FRAGMENT;
     u64 t0 = vk_timing ? rt_clock_ns() : 0, t1;
+    int blend = stage == SHADER_VERTEX && motion_active();   /* (display.ini's motion: the vertex stage's buffers, blended) */
     for (u32 k = 0; k < 18; k++) {
         if (!(s->info.cbuf_mask >> k & 1)) continue;
         u32 size = cb[mstage][k].size;
         if (size > 0x10000) size = 0x10000;
         if (size > s->info.cbuf_extent[k]) size = s->info.cbuf_extent[k];   /* only what the program can read */
+        if (blend) {
+            const void *m = motion_block(0, k, regs[M_BINDLESS_TEXTURE] & 0x1F, cb[mstage][k].address, size, read_gpu);
+            if (m) { b->cb[k] = upload_host(m, size); continue; }
+        }
         if (!(b->cb[k] = kept_cb(cb[mstage][k].address, size))) b->cb[k] = upload_slot(stage, k, cb[mstage][k].address, size);
     }
     if (vk_timing) { t1 = rt_clock_ns(); vk_ns_res[0] += (t1 - t0) * TIMING_EVERY; t0 = t1; }
@@ -4893,6 +4917,12 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     params.base[1] = regs[M_GLOBAL_BASE_INSTANCE] + instance_counter;
     PHASE(3);
     if (gpu_time_ms > 0) memset(draw_tex, 0, sizeof draw_tex);
+    if (motion_active()) {   /* (gpu_motion.c: the draw, known by what it draws) */
+        u64 ib = ((u64)regs[M_INDEX_BUFFER] << 32 | regs[M_INDEX_BUFFER + 1]) + regs[M_INDEX_BUFFER + 5];
+        u64 vb0 = ((u64)regs[M_VERTEX_STREAM(0) + 1] << 32 | regs[M_VERTEX_STREAM(0) + 2]) + regs[M_VERTEX_ARRAY_START];
+        motion_draw(vs->hash, ps ? ps->hash : 0, indexed ? ib : vb0, indexed ? regs[M_DRAW_INDEX_COUNT] : regs[M_VERTEX_ARRAY_COUNT],
+                    (u64)(uintptr_t)rts[0]);
+    }
     stage_resources(regs, cb, SHADER_VERTEX, vs, &params, &vb);
     if (ps) stage_resources(regs, cb, SHADER_PIXEL, ps, &params, &pb);
 
@@ -5223,11 +5253,14 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
     if (!cs || cs->state != 1 || !cs->compute) { vk_stat_skip_compute++; leave(); return; }
 
     VkBufferView cbv[18] = {0};
+    int blend = motion_active();   /* (display.ini's motion: a skinning launch's bones, blended) */
+    if (blend) motion_dispatch(cs->hash);
     for (u32 b = 0; b < 18; b++) {
         if (!(cs->info.cbuf_mask >> b & 1)) continue;
         u32 size = cb[b].size > 0x10000 ? 0x10000 : cb[b].size;
         if (size > cs->info.cbuf_extent[b]) size = cs->info.cbuf_extent[b];
-        cbv[b] = upload(cb[b].address, size);
+        const void *m = blend ? motion_block(1, b, 0xFF, cb[b].address, size, read_gpu) : NULL;
+        cbv[b] = m ? upload_host(m, size) : upload(cb[b].address, size);
     }
     LAUNCH_PART(1);
     DrawParams params;

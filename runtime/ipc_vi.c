@@ -493,7 +493,9 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
             queue.slots[slot].gpu_mark = gpu_queue_mark();
             {   int interp_probe_on(void); void interp_probe_frame(u64 mark, u32 ticks);
                 /* (SSBU_INTERP_PROBE, gpu_interp_probe.c: the picture's submissions, and the logic frames its pass ran) */
-                if (interp_probe_on() == 1) interp_probe_frame(queue.slots[slot].gpu_mark, *P(u32, 0x710523d000ull)); }
+                if (interp_probe_on() == 1) interp_probe_frame(queue.slots[slot].gpu_mark, *P(u32, 0x710523d000ull));
+                void motion_frame(u64 mark);   /* (gpu_motion.c: the same, for display.ini's motion) */
+                motion_frame(queue.slots[slot].gpu_mark); }
             /* (rollback build, M4: a frame of a catch-up is not shown. Freed here and the game told at
              * once - buffer free, a refresh - rather than through the vsync thread: the game's frame end
              * waited 0.9 ms a re-run frame for that round trip. SSBU_RB_QFREE=0: through the thread.) */

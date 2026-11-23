@@ -97,6 +97,10 @@ void display_set_frame_rate(int fps);
  * thread's last display_wait_tick paced (what the game is shown now). */
 int display_refresh_mult(void);
 int display_tick_mult(void);
+/* motion = off | interpolate | extrapolate (display.ini, SSBU_MOTION; the settings menu changes it at once): with
+ * frame_rate above 60, the pictures between two logic frames drawn with the motion blended (gpu_motion.c). 0, 1, 2. */
+int display_motion(void);
+void display_set_motion(int mode);
 /* SSBU_SPEED (test runs): 1 = normal; else the vsync thread gives one refresh per frame shown,
  * n x 60 a second (display_speed_tick waits for the next one's time), 0 = uncapped. */
 double display_speed(void);

@@ -152,7 +152,9 @@ static DWORD WINAPI gpu_thread(LPVOID unused) {
         u64 number = done;
         ReleaseSRWLockExclusive(&lock);
         {   void interp_probe_job_done(u64 jobs_done);   /* (SSBU_INTERP_PROBE: the pictures whose submissions have all run) */
-            interp_probe_job_done(number); }
+            interp_probe_job_done(number);
+            void motion_job_done(u64 jobs_done);   /* (gpu_motion.c: the pictures whose submissions have all run) */
+            motion_job_done(number); }
         u64 q0 = rt_now_ns();
         gpu_job_hidden = j->hide;
         if (j->hide) gpu_hidden_since_present = 1;

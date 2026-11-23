@@ -72,6 +72,7 @@ static struct {
 
 static int cfg_runahead;   /* display.ini's runahead (display_runahead) */
 static int cfg_frame_rate = 60;   /* display.ini's frame_rate: 60, 120 or 240 (display_frame_rate) */
+static int cfg_motion;             /* display.ini's motion: 0 off, 1 interpolate, 2 extrapolate (display_motion) */
 
 static const char DEFAULT_INI[] =
     "; display.ini: the game's window and the pacing of its frames. Read when the game starts; the\n"
@@ -135,6 +136,11 @@ static const char DEFAULT_INI[] =
     ";   120/240 FPS mods set it), so it plays at its normal speed. Online matches always run at 60.\n"
     ";   The PC has to keep up: a frame it misses is a slowdown. Smoothest on a 120/240 Hz or VRR monitor.\n"
     "frame_rate = 60\n"
+    "; motion = off | interpolate | extrapolate: with frame_rate 120 or 240, the pictures between two logic frames show\n"
+    ";   the characters and the camera moving between them instead of standing still (the logic, and every timing in it,\n"
+    ";   is the same). interpolate: smooth, each logic frame fully shown when a 60 frames a second picture would show it.\n"
+    ";   extrapolate: no later than the game's own picture, guessing ahead (a slight overshoot when something turns at once).\n"
+    "motion = off\n"
     "; latency = 1-3: how many frames the graphics card may work ahead. Lower is more responsive.\n"
     ";   (the Vulkan renderer keeps 2 at least: with 1 the processor and the card wait for each other every frame)\n"
     "latency = 3\n"
@@ -209,6 +215,15 @@ static void parse_window(const char *v) {
     else if (!_stricmp(v, "borderless")) cfg.mode = MODE_BORDERLESS;
     else if (!_stricmp(v, "fullscreen")) cfg.mode = MODE_FULLSCREEN;
     else fprintf(stderr, "[display] window is windowed, borderless or fullscreen, not '%s'\n", v);
+}
+
+/* motion = off | interpolate | extrapolate */
+static int parse_motion(const char *v, const char *where) {
+    if (!_stricmp(v, "off") || !strcmp(v, "0")) return 0;
+    if (!_stricmp(v, "interpolate") || !strcmp(v, "1")) return 1;
+    if (!_stricmp(v, "extrapolate") || !strcmp(v, "2")) return 2;
+    fprintf(stderr, "[display] %s: motion is off, interpolate or extrapolate, not '%s': off it is\n", where, v);
+    return 0;
 }
 
 /* frame_rate = 60 | 120 | 240 */
@@ -306,6 +321,7 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else if (!_stricmp(key, "height")) cfg.height = atoi(value);
         else if (!_stricmp(key, "pacing")) parse_pacing(value);
         else if (!_stricmp(key, "frame_rate")) cfg_frame_rate = parse_frame_rate(value, path);
+        else if (!_stricmp(key, "motion")) cfg_motion = parse_motion(value, path);
         else if (!_stricmp(key, "latency")) cfg.latency = atoi(value);
         else if (!_stricmp(key, "low_latency")) cfg.low_latency = atoi(value) != 0;
         else if (!_stricmp(key, "runahead")) (void)value;   /* (ignored: run-ahead is off for everyone, issue #250; SSBU_RUNAHEAD only) */
@@ -342,6 +358,7 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     if ((env = getenv("SSBU_WINDOW")) && *env) parse_window(env);
     if ((env = getenv("SSBU_PACING")) && *env) parse_pacing(env);
     if ((env = getenv("SSBU_FRAME_RATE")) && *env) cfg_frame_rate = parse_frame_rate(env, "SSBU_FRAME_RATE");
+    if ((env = getenv("SSBU_MOTION")) && *env) cfg_motion = parse_motion(env, "SSBU_MOTION");
     if ((env = getenv("SSBU_LOW_LATENCY")) && *env) cfg.low_latency = atoi(env) != 0;
     if ((env = getenv("SSBU_WINDOW_SIZE")) && *env) sscanf(env, "%dx%d", &cfg.width, &cfg.height);
     if ((env = getenv("SSBU_RENDER_SCALE")) && *env) parse_render_scale(env);
@@ -377,6 +394,9 @@ void display_set_runahead(int frames) { InterlockedExchange(&saved_runahead, fra
 /* frame_rate (display.ini, SSBU_FRAME_RATE over it; the settings menu changes it at once) */
 static volatile LONG saved_frame_rate = -1;
 int display_frame_rate(void) { load(); return saved_frame_rate > 0 ? (int)saved_frame_rate : cfg_frame_rate; }
+static volatile LONG saved_motion = -1;
+int display_motion(void) { load(); return saved_motion >= 0 ? (int)saved_motion : cfg_motion; }
+void display_set_motion(int mode) { InterlockedExchange(&saved_motion, mode < 0 ? 0 : mode > 2 ? 2 : mode); }
 void display_set_frame_rate(int fps) { InterlockedExchange(&saved_frame_rate, fps >= 240 ? 240 : fps >= 120 ? 120 : 60); }
 int net_match_now(void);     /* (host.c: a networked match set up or under way) */
 /* The refreshes the game sees in a 60 Hz frame now: frame_rate / 60, but 1 while a networked match is set up or under way
