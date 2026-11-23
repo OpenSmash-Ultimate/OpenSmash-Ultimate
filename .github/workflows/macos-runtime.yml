@@ -14,7 +14,7 @@ jobs:
   # --dump) installs the tools, setup.py --target macos --tools-only checks every library with a test program, the glslang
   # shim is built as the link step builds it, and collect_logs_mac.sh makes a report that holds no game files.
   setup-macos:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 40
     defaults:
       run:
@@ -75,7 +75,7 @@ jobs:
           if grep -Eq "main\.elf|secret\.c|romfs|exefs|binaries|work/|\.keys|data\.arc" list.txt; then echo "the report holds files it must not"; exit 1; fi
 
   host:
-    runs-on: macos-14            # Apple Silicon (arm64)
+    runs-on: macos-15            # Apple Silicon (arm64)
     timeout-minutes: 30
     defaults:
       run:
@@ -110,7 +110,7 @@ jobs:
   # tests/plat_selftest.c: the Win32 subset of plat_posix.c by itself (threads, events, condition variables, fibers,
   # virtual memory, files, libraries). Runs on the runner: no window, no game.
   plat-selftest:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
     defaults:
       run:
@@ -129,7 +129,7 @@ jobs:
 
   # What MoltenVK (Homebrew) offers on the runner's GPU: API version, portability subset, the extensions nvn_vk.c asks for.
   vulkan-info:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - name: Dependencies (Homebrew)
@@ -142,7 +142,7 @@ jobs:
           vulkaninfo --summary > summary.txt 2>&1 || MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=0 vulkaninfo --summary > summary.txt 2>&1 || true
           cat summary.txt
           vulkaninfo > full.txt 2>/dev/null || MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=0 vulkaninfo > full.txt 2>/dev/null || true
-          echo "### Vulkan on macos-14 (MoltenVK)" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Vulkan on macos-15 (MoltenVK)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           grep -E "apiVersion|driverName|driverInfo|deviceName|conformanceVersion" summary.txt | sort -u >> "$GITHUB_STEP_SUMMARY" || true
           for e in VK_KHR_portability_subset VK_KHR_portability_enumeration VK_EXT_graphics_pipeline_library VK_EXT_extended_dynamic_state3 \
@@ -156,5 +156,5 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
-          name: vulkaninfo-macos-14
+          name: vulkaninfo-macos-15
           path: '*.txt'
