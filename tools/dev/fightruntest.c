@@ -382,7 +382,7 @@ static void det(void) {
     frame_line(0);
     same = 1;
     for (int i = 0; i < FIGHT_RNG_WORDS; i++) same &= ld32(RNG + 4ull * i) == want[i];
-    CHECK(mark_count == 3 && !strcmp(marks[2], "fight:2") && same, "a new fighter after the fight ended: the next fight's first battle frame");
+    CHECK(mark_count == 4 && !strcmp(marks[2], "fight") && !strcmp(marks[3], "fight:2") && same, "a new fighter after the fight ended: the next fight's first battle frame");
     CHECK(steps_fn() == 1, "the next fight, before go: 1 tick");
     set_ready_go(1);
     frame_line(0); frame_line(0);
