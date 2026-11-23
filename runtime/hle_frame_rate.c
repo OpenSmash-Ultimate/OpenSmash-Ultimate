@@ -49,9 +49,11 @@ static int written;             /* the step in the game's memory is ours (a writ
 static u32 rest, mult_was = 1;  /* (the division's remainder, carried: the steps average the entry / refreshes exactly) */
 static u64 missed;              /* (refreshes missed, short of a whole logic frame's) */
 
+extern volatile int display_frame_rate_refused;   /* (gpu_display.c: display_refresh_mult stays 1 then) */
 static int checked(void) {
     if (ok >= 0) return ok;
     ok = 0;
+    display_frame_rate_refused = 1;   /* (until both checks pass) */
     if (!rt_module_main.build_id || strcmp(rt_module_main.build_id, FR_BUILD)) {
         fprintf(stderr, "[frame rate] the game's main module is not 13.0.5's (%s): frame_rate stays at the game's own 60\n",
                 rt_module_main.build_id ? rt_module_main.build_id : "no build id");
@@ -64,6 +66,7 @@ static int checked(void) {
                     ld32(FR_TABLE + 4 * (u64)i));
             return 0;
         }
+    display_frame_rate_refused = 0;
     return ok = 1;
 }
 
@@ -76,6 +79,7 @@ static u32 game_step(void) {
 static void frame_end_after(Cpu *c, const u64 args[8], void *ctx) {
     (void)c; (void)ctx;
     u32 m = (u32)rt_refresh_mult;
+    if (m > 1 && !checked()) return;   /* (not this game's: nothing rewritten; display_refresh_mult goes back to 1) */
     if (m > 1 && args[2]) {   /* the missed refreshes in logic frames (as hle_rb_core.c reads the report: count at x2, result at x0) */
         u64 p1 = args[0], p3 = args[2], n = ld64(p3);
         if (n) {

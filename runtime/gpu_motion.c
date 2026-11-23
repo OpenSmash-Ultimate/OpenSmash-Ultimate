@@ -79,7 +79,7 @@ void motion_frame(u64 mark) {
 static void sweep(void) {   /* entries no draw has read for a while: freed */
     for (u32 i = 0; i < ENTRIES; i++) {
         Entry *e = &table[i];
-        if (e->used && pictures - e->seen > STALE) { free(e->last); free(e->prev); memset(e, 0, sizeof *e); e->used = -1; entries--; }
+        if (e->used == 1 && pictures - e->seen > STALE) { free(e->last); free(e->prev); memset(e, 0, sizeof *e); e->used = -1; entries--; }
     }
 }
 

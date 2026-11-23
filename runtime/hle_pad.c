@@ -31,7 +31,7 @@
  *
  * Switch 2 controllers over Bluetooth (the Pro Controller 2 and Joy-Con 2s, which SDL reads over USB only) come from
  * hle_padble.c on Windows, as ports like the USB GameCube ones (ble_poll), with HD rumble from the game's own values
- * (pad_vibration). [general] switch2_bluetooth = 0 leaves Bluetooth alone. */
+ * (pad_vibration). [general] switch2_bluetooth = 1 turns it on (0, the default, leaves Bluetooth alone). */
 #define _CRT_SECURE_NO_WARNINGS
 #include <ctype.h>
 #include <math.h>
@@ -114,7 +114,7 @@ static struct {
     int kb[PAD_KEYS][PAD_KEY_MAX], nkb[PAD_KEYS];   /* [keyboard]: each binding's keys (virtual-key codes) */
     int kb_ssf2;                  /* [keyboard] movement = ssf2 (pad_keyboard_state) */
     char path[MAX_PATH];
-} cfg = {.keyboard_slot = 0, .background = 1, .rumble = 1, .gc_switch = 1, .switch2 = 1, .def = {"", -1, -1, -1, -1, -1, -1, -1}};
+} cfg = {.keyboard_slot = 0, .background = 1, .rumble = 1, .gc_switch = 1, .switch2 = 0, .def = {"", -1, -1, -1, -1, -1, -1, -1}};
 
 static void kb_defaults(void);
 
@@ -126,7 +126,7 @@ static void config_defaults(void) {
     cfg.background = 1;
     cfg.rumble = 1;
     cfg.gc_switch = 1;
-    cfg.switch2 = 1;
+    cfg.switch2 = 0;   /* (opt-in: its active Bluetooth scan runs for good, a cost with no such controller) */
     cfg.def.layout = cfg.def.style = cfg.def.deadzone = cfg.def.rumble = cfg.def.trigger = cfg.def.outer = cfg.def.invert = cfg.def.dpad_moves = cfg.def.stick_taunts = -1;
     memcpy(cfg.path, path, sizeof path);
     kb_defaults();
@@ -157,8 +157,8 @@ static const char DEFAULT_INI[] =
     ";   hold the controller's Sync button until its lights sweep - no pairing in Windows' settings - and from then on a\n"
     ";   press of any button connects it. Two Joy-Con 2s play as one controller; SL + SR held 3 s on one of them makes\n"
     ";   each its own player (held sideways); L on the left one and R on the right one held 3 s join them again.\n"
-    ";   HD rumble plays the game's own vibration. 0: Bluetooth left alone. 2: also logs every Bluetooth device it sees.\n"
-    "switch2_bluetooth = 1\n"
+    ";   HD rumble plays the game's own vibration. 0 (the default): Bluetooth left alone. 2: also logs every Bluetooth device it sees.\n"
+    "switch2_bluetooth = 0\n"
     "; ignore = <GUID, name or type>: a pad that is never used (one line each), e.g. a wheel or a second driver\n"
     ";          of the same controller.\n"
     "; ignore = 03000000efbe00006d04000000000000\n"

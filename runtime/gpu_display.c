@@ -402,10 +402,14 @@ int net_match_now(void);     /* (host.c: a networked match set up or under way) 
 /* The refreshes the game sees in a 60 Hz frame now: frame_rate / 60, but 1 while a networked match is set up or under way
  * (both games count one main-loop pass a logic frame: rollback's safe points, its fixed clock, the delay netcode's
  * frames), with SSBU_SPEED (its refresh per frame shown) and with run-ahead (SSBU_RUNAHEAD: a pass is a logic frame). */
+volatile int display_frame_rate_refused;   /* (hle_frame_rate.c: not this game's build or speed table: 60 stays) */
 int display_refresh_mult(void) {
     load();
     int fps = display_frame_rate(), m = fps >= 240 ? 4 : fps >= 120 ? 2 : 1;
-    if (m == 1) return 1;
+    if (m == 1 || display_frame_rate_refused) return 1;
+#ifndef _WIN32
+    return 1;   /* (120/240 are Windows-only for now: net_match_now() does not see every networked match elsewhere) */
+#endif
     static int runahead = -1;
     if (runahead < 0) { const char *e = getenv("SSBU_RUNAHEAD"); runahead = e && *e ? atoi(e) > 0 : 0; }
     if (cfg.speed != 1 || runahead || net_match_now()) return 1;
