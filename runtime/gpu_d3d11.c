@@ -5314,8 +5314,8 @@ static int depth_24bit(u32 zeta_format) { return zeta_format == 0x14 || zeta_for
 
 int interp_probe_on(void);   /* (gpu_interp_probe.c, SSBU_INTERP_PROBE) */
 void interp_probe_cb(int kind, u64 program, const char *name, u32 bank, u64 va, u32 size, void (*read)(u64, u32, void *));
-void interp_probe_draw(void);
-void interp_probe_dispatch(void);
+void interp_probe_draw(u64 vs, u64 ps, u64 data, u32 count, u64 target);
+void interp_probe_dispatch(u64 program);
 static int interp_probing = -1;
 
 static void bind_resources(const u32 *regs, const CbBinding cb[STAGES][18], int stage, const Shader *s, DrawParams *params) {
@@ -5939,7 +5939,12 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
 
     draw_reads_wide = 0;
     depth_sampled_now = NULL;
-    if (interp_probing == 1) interp_probe_draw();
+    if (interp_probing == 1) {   /* (the draw, known by what it draws: its programs, its index or vertex data and count, its target) */
+        u64 ib = ((u64)regs[M_INDEX_BUFFER] << 32 | regs[M_INDEX_BUFFER + 1]) + regs[M_INDEX_BUFFER + 5];
+        u64 vb = ((u64)regs[M_VERTEX_STREAM(0) + 1] << 32 | regs[M_VERTEX_STREAM(0) + 2]) + regs[M_VERTEX_ARRAY_START];
+        interp_probe_draw(vs->hash, ps ? ps->hash : 0, indexed ? ib : vb, indexed ? regs[M_DRAW_INDEX_COUNT] : regs[M_VERTEX_ARRAY_COUNT],
+                          (u64)(uintptr_t)rts[0]);
+    }
     if (ps) bind_resources(regs, cb, SHADER_PIXEL, ps, &params);   /* (first: whether it reads the scene decides the vertex stage's) */
     {   /* (SSBU_DEBUG_CAMERA_HUNT: 3D draws on a widened target, 300 of them every 10 s) */
         static int hunting = -1, budget;
@@ -6570,7 +6575,7 @@ void d3d11_dispatch(const u32 *regs, const u32 *q) {
     ID3D11ShaderResourceView *srv[18] = {0};
     static u8 data[0x10000];
     if (interp_probing < 0) interp_probing = interp_probe_on() == 1;
-    if (interp_probing) interp_probe_dispatch();
+    if (interp_probing) interp_probe_dispatch(cs->hash);
     for (u32 b = 0; b < 18; b++) {
         if (!(cs->info.cbuf_mask >> b & 1)) continue;
         u32 size = cb[b].size > 0x10000 ? 0x10000 : cb[b].size;
