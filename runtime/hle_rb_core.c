@@ -2416,12 +2416,12 @@ static void net_step(Cpu *c, u64 frame) {
              * rollbacks still go back RBN_MAX_BACK frames at most. SSBU_RB_RING_STATES=<n>: that many. */
             double worst = 0;
             for (int p = 0; p < RBN_PLAYERS; p++) if (p != net_local && hs_rtt_n[p] > 0 && hs_rtt_min[p] > worst) worst = hs_rtt_min[p];
-            int want = RBN_MAX_BACK + 3 + (int)(worst / 16.6667 + 0.999) + net_delay + 4;
+            int want = rbn_max_back() + 3 + (int)(worst / 16.6667 + 0.999) + net_delay + 4;
             const char *e = getenv("SSBU_RB_RING_STATES");
             if (e && atoi(e) > 0) want = atoi(e);
-            if (want < RBN_MAX_BACK + 3) want = RBN_MAX_BACK + 3;
+            if (want < rbn_max_back() + 3) want = rbn_max_back() + 3;
             if (want > 60) want = 60;
-            static int ring_now = RBN_MAX_BACK + 3;
+            static int ring_now = 0; if (!ring_now) ring_now = rbn_max_back() + 3;
             if (want != ring_now) {
                 rb_ring_size(want); ring_now = want;
                 fprintf(stderr, "[rb] net mode: %d states kept (round trip %.0f ms, input delay %d): a resync reaches back as far as the frames last hashed alike\n",
@@ -2902,6 +2902,7 @@ static void net_rollback(Cpu *c, u64 frame, u32 key, u32 m) {
  * on. The load does not ask where the main thread's stack is (rb_load_anyframe): the thread moves onto its scratch stack
  * and its whole stack is put back, wherever it was.
  * SSBU_RB_WAITEND=0: off (safe points only, as before). On by default since v0.5.0 (round 7).
+ * SSBU_RB_WAITEND_MAXD=<n>: with it on, only a catch-up of at most n frames (counted as we_sp_key - m + 1; the stats' depth can read one more) is done from here (0, the default: any depth).
  * SSBU_RB_WAITRB=1 (net mode): also while the game waits for the buffer, each time it is told "would block" (at most
  * once every SSBU_RB_WAITRB_US, 250): the load and the frames run again then fall in the frame's idle time. In loop mode
  * (the bench) only with SSBU_RB_WAITRB=2: its pads "come" by frame, and a rollback in the wait would leave the bench's
@@ -2933,6 +2934,10 @@ void rb_wait_point(Cpu *c) {
     if (net_mode == 2) net_receive(we_sp_key); else net_deliver(key, 0);
     u32 m = rbn_peek_mismatch();
     if (!m || m > we_sp_key || net_resync_pending) return;   /* (only a guess a frame already ran on) */
+    {   /* SSBU_RB_WAITEND_MAXD=<n>: roll back from here only when the catch-up is at most n frames; a deeper one is left to the safe point (0: no limit) */
+        static int maxd = -1; if (maxd < 0) { const char *e = getenv("SSBU_RB_WAITEND_MAXD"); maxd = e && *e ? atoi(e) : 0; if (maxd < 0) maxd = 0; }
+        if (maxd > 0 && (int)(we_sp_key - m + 1) > maxd) return;
+    }
     m = rbn_take_mismatch();
     if (bn_on_ > 0) { bn_mark(kind == 2 ? "inwait" : "waitend-rb", key); if (kind != 2) bn_real_point(key); }
     rb_we_n[kind == 2]++;
@@ -4315,7 +4320,7 @@ static void savestates(Cpu *c, u64 frame) {
                 net_mode = 0; net_pending = 0;
             } else {
                 if (rerun_save < 0) { const char *r = getenv("SSBU_RB_RERUN_SAVE"); rerun_save = r && *r ? atoi(r) : 3; }
-                rb_ring_size(RBN_MAX_BACK + 3);
+                rb_ring_size(rbn_max_back() + 3);
                 rb_quiet(1);
                 if (net_frames < (1 << 19)) net_frames = 1 << 19;   /* (the whole fight: some 2.4 hours of frames) */
                 /* (#145: players play with their own controllers; the bot only when a test asks for it, SSBU_RB_NET_LIVE=0
@@ -4338,7 +4343,7 @@ static void savestates(Cpu *c, u64 frame) {
         if (net_mode == 1) {
             if (e[4] == ',') sscanf(e + 5, "%d,%d,%d,%d,%d", &net_delay, &net_lag_lo, &net_lag_hi, &net_loss, &net_frames);
             if (rerun_save < 0) { const char *r = getenv("SSBU_RB_RERUN_SAVE"); rerun_save = r && *r ? atoi(r) : 3; }
-            rb_ring_size(RBN_MAX_BACK + 3);
+            rb_ring_size(rbn_max_back() + 3);
             rb_quiet(1);
             fprintf(stderr, "[rb] loop mode (M5): player 2's pads through rb_net, delay %d, lag %d..%d frames, %d%% lost; fight hashes of the first %d frames\n",
                     net_delay, net_lag_lo, net_lag_hi, net_loss, net_frames);

@@ -38,6 +38,7 @@ uint32_t rbn_take_mismatch(void);                      /* the earliest frame run
 void rbn_put_mismatch(uint32_t frame);                 /* (a rollback that could not be done now: again next time) */
 uint32_t rbn_confirmed(void);                          /* the newest frame every player's real pad is known for */
 /* may the game run `frame` now? Not when it would put a guess further back than RBN_MAX_BACK */
+int rbn_max_back(void);   /* the furthest a rollback goes (RBN_MAX_BACK, or SSBU_RB_MAXBACK); the state ring is sized from it */
 int rbn_can_run(uint32_t frame);
 /* (v0.9.2) player p is gone from the fight after frame `after` (the same cutoff on every game: its LEFT, or the host's
  * word): its pads past it are none, nothing waits for them, and frames already run past it with other pads run again */
