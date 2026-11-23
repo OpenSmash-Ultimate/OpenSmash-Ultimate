@@ -403,6 +403,7 @@ int net_match_now(void);     /* (host.c: a networked match set up or under way) 
  * (both games count one main-loop pass a logic frame: rollback's safe points, its fixed clock, the delay netcode's
  * frames), with SSBU_SPEED (its refresh per frame shown) and with run-ahead (SSBU_RUNAHEAD: a pass is a logic frame). */
 volatile int display_frame_rate_refused;   /* (hle_frame_rate.c: not this game's build or speed table: 60 stays) */
+int game_fight_on(void);     /* (hle_fight_test.c) */
 int display_refresh_mult(void) {
     load();
     int fps = display_frame_rate(), m = fps >= 240 ? 4 : fps >= 120 ? 2 : 1;
@@ -412,7 +413,10 @@ int display_refresh_mult(void) {
 #endif
     static int runahead = -1;
     if (runahead < 0) { const char *e = getenv("SSBU_RUNAHEAD"); runahead = e && *e ? atoi(e) > 0 : 0; }
-    if (cfg.speed != 1 || runahead || net_match_now()) return 1;
+    if (cfg.speed != 1 || runahead) return 1;
+    static volatile int net_fight;   /* (a networked match seen: 60 until its fight is over, even if the match flag drops mid-fight) */
+    if (net_match_now()) { net_fight = 1; return 1; }
+    if (net_fight) { if (game_fight_on()) return 1; net_fight = 0; }
     return m;
 }
 Pacing display_pacing(void) { load(); return cfg.pacing; }
