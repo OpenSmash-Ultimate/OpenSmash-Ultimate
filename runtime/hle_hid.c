@@ -417,6 +417,9 @@ HLE(_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14Vibrati
     memcpy(&low, P(void, c->x[1]), 4);
     memcpy(&high, P(void, c->x[1] + 8), 4);
     pad_rumble(rb_slot_phys(id), (int)side + 1, low > high ? low : high);
+    f32 v[4];   /* (and the whole value, both bands' amplitudes and frequencies: HD rumble, hle_padble.c's Switch 2 controllers) */
+    memcpy(v, P(void, c->x[1]), 16);
+    pad_vibration(rb_slot_phys(id), (int)side, v);
 }
 HLE(_ZN2nn3hid23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21VibrationDeviceHandleE) {
     u32 handle = ld32(c->x[1]), id = handle >> 8 & 0xFF;

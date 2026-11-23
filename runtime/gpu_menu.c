@@ -158,6 +158,7 @@ enum {
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
     R_UI_LANGUAGE, R_LANGUAGE, R_VOLUME, R_UW_ONLINE, R_OPEN_LOGS, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
     R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE, R_RUNAHEAD, R_NET_ROLLBACK, R_NET_DELAY, R_NET_REGION,
+    R_FRAMERATE,
     R_PADSEL_FIRST = 300, /* + the controller's place (PAD_SLOTS at most): opens its settings */
     R_REMAP_FIRST = 100,  /* + console button */
     R_MOD_FIRST = 200,    /* + the mod's place in mods.json (MENU_MODS at most) */
@@ -167,7 +168,7 @@ enum {
     R_ASSIGN, R_ASSIGN_BACK, R_ASSIGN_WAIT, R_REMAP_RESET, R_STICKS_RESET, R_RUMBLE_RESET, R_CTRLS, R_CTRLS_BACK,
     R_ROOM_FIRST = 600    /* + the room's place on the page of rooms shown (ROOM_PAGE at most); the plain ids before R_REMAP_FIRST (100) stay under it */
 };
-_Static_assert(R_NET_REGION < R_REMAP_FIRST, "the plain row ids must stay under R_REMAP_FIRST");
+_Static_assert(R_FRAMERATE < R_REMAP_FIRST, "the plain row ids must stay under R_REMAP_FIRST");
 #define IS_KEY(id) ((id) >= R_KEY_FIRST && (id) < R_KEY_FIRST + PAD_KEYS)
 #define IS_REMAP(id) ((id) >= R_REMAP_FIRST && (id) < R_REMAP_FIRST + 16)
 
@@ -936,6 +937,11 @@ static void build(void)
         snprintf(r->value, sizeof r->value, "%s", ds.pacing == PACING_VRR ? "vrr" : ds.pacing == PACING_DISPLAY ? "display"
                                                                                                                 : "clock");
         note_env(r, "SSBU_PACING");
+        r = add(R_FRAMERATE, K_CHOICE, W_NOW, "Frame rate",
+                "How many frames a second the game draws and reads the controllers: 60, 120 or 240. Its logic stays at 60, so it plays at "
+                "its normal speed (240 keeps Steve's NIL timing as at 60). Online matches run at 60. The PC must keep up: a missed frame is a slowdown.");
+        snprintf(r->value, sizeof r->value, "%d", display_frame_rate());
+        note_env(r, "SSBU_FRAME_RATE");
         r = add(R_LATENCY, K_CHOICE, W_NOW, "Frames queued ahead", "How many frames the graphics card may work ahead: 1 is the most responsive, 3 the smoothest on a busy PC. "
                 "Vulkan keeps 2 at least (with 1 the processor and the card wait for each other every frame).");
         snprintf(r->value, sizeof r->value, "%d", ds.latency);
@@ -1417,7 +1423,7 @@ static void build(void)
             {H, "Window"}, {R_WINDOW, 0}, {R_SIZE, 0},
             {H, "Picture"}, {R_SCALE, 0}, {R_ASPECT, 0}, {R_VIEW, 0}, {R_RENDERER, 0}, /* (#429: the renderer in sight, not behind the switch -
                                                                           * Direct3D 11 is the way out when Vulkan draws wrong on a card) */
-            {H, "Smoothness"}, {R_PACING, 0},
+            {H, "Smoothness"}, {R_PACING, 0}, {R_FRAMERATE, 0},
             {H, "Advanced"}, {R_ADVANCED, 0}, /* (the switch, and under it the rows it shows) */
             {R_CURSOR, 0}, {R_TIMER, 0}, {R_LATENCY, 0}, {R_RUNAHEAD, 0}, {R_OVERLAY, 0}, {R_GPU, 0}};
         static unsigned char used[MENU_ROWS];
@@ -1610,6 +1616,15 @@ static void change(const Row *row, int dir)
         display_set_pacing(p);
         set_display("pacing", p == PACING_VRR ? "vrr" : p == PACING_DISPLAY ? "display"
                                                                             : "clock");
+        break;
+    }
+    case R_FRAMERATE:
+    { /* 60, 120, 240: at once (the vsync thread takes it at its next refresh) */
+        static const int RATES[3] = {60, 120, 240};
+        int f = display_frame_rate(), i = cycle(f >= 240 ? 2 : f >= 120 ? 1 : 0, 3, dir);
+        display_set_frame_rate(RATES[i]);
+        snprintf(v, sizeof v, "%d", RATES[i]);
+        set_display("frame_rate", v);
         break;
     }
     case R_LATENCY:

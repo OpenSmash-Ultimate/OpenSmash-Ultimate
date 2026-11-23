@@ -1883,6 +1883,9 @@ void kernel_init(void) {
  * made since that safe point, so a loop that waits for the tick to move still sees it move,
  * the same way in every replay. rb_vtick and the offset go in the savestate (KSnap). */
 volatile int rb_clock_fixed;
+/* The refreshes the game sees in a 60 Hz frame (display.ini's frame_rate / 60: 1, 2 or 4), as ipc_vi.c's vsync thread
+ * paces them now. At 120/240 the main loop - and rollback's safe point with it - runs 2 or 4 times a logic frame. */
+volatile LONG rt_refresh_mult = 1;
 volatile u64 rb_vtick;
 static __declspec(thread) u64 tick_gen, tick_reads;
 static u64 real_ticks(void) { return rt_clock_ns() * 12 / 625; }   /* (19.2 MHz) */
@@ -1908,7 +1911,7 @@ void rb_clock_frame(int fight, u64 gpu_now) {
         rb_vtick = real_ticks() + (u64)rb_clock_off;
         rb_gpu_base = gpu_now + (u64)rb_gpu_off; rb_vtick_base = rb_vtick;
         rb_clock_fixed = 1;
-    } else if (fight) rb_vtick += 320000;
+    } else if (fight) rb_vtick += 320000 / (rt_refresh_mult > 1 ? (u64)rt_refresh_mult : 1);   /* (a pass of the main loop: frame_rate's) */
     else if (rb_clock_fixed) {
         rb_clock_fixed = 0;
         rb_clock_off = (i64)(rb_vtick + 320000 - real_ticks());

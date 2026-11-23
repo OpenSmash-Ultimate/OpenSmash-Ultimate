@@ -624,6 +624,11 @@ void rb_pad(u32 id, u64 *buttons, i32 *lx, i32 *ly, i32 *rx, i32 *ry, i32 *lt, i
 /* In a fight: the logic frame on from a base above every number given before (monotonic). */
 int rb_pad_sampling(u64 *sampling) {
     if (!rb_on) return 0;
+    /* (display.ini's frame_rate 120/240, offline only: several passes of the main loop a logic frame, each reading the
+     * pads, so each read is a new sample - as the console's HID gives the game's 120/240 FPS mods - and the number only
+     * goes up whichever way it is counted next) */
+    {   extern volatile LONG rt_refresh_mult;
+        if (rt_refresh_mult > 1) { *sampling = (u64)InterlockedIncrement64(&rb_sampling); return 1; } }
     if (!S.in_fight) { *sampling = (u64)InterlockedIncrement64(&rb_sampling); return 1; }
     /* (offline, paused: on by one a frame, so the game sees each new press; never back after: the count stays) */
     if (net_mode != 2) rb_paused();
