@@ -1272,7 +1272,8 @@ static LRESULT CALLBACK wp_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WP_SHOW:
         if (w) {
             RECT r; POINT tl = {0, 0};
-            if (!game_window || !GetClientRect(game_window, &r) || !ClientToScreen(game_window, &tl)) return 0;   /* (the client area, not the borders) */
+            if (!game_window || GetForegroundWindow() != game_window) return 0;   /* (a topmost popup would float over whatever the player switched to) */
+            if (!GetClientRect(game_window, &r) || !ClientToScreen(game_window, &tl)) return 0;   /* (the client area, not the borders) */
             wp_vch = r.bottom;
             wp_w = la_popup_dia(wp_vch);
             int margin = (int)((float)wp_vch * LA_MARGIN);      /* (the animation's own distance from the corner) */
@@ -1314,7 +1315,6 @@ void display_wait_popup(const char *note) {
         WaitForSingleObject(wp_ready, 2000);
         if (!wp_hwnd) { failed = 1; return; }
     }
-    la_note(note);
     PostMessageW(wp_hwnd, WP_SHOW, note != NULL, 0);
 #else
     (void)note;
