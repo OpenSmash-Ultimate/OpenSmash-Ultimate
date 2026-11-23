@@ -18,6 +18,13 @@
  * press is seen at most a 240th of a second after it happens, as on the console with the mod: what Steve's NIL
  * techniques - two frames to place the block - need, which 120 breaks and 240 does not (the owner's emulator tests).
  *
+ * Refreshes the game missed: the frame end reports them (FRAME_END's third argument: refreshes counted since the last
+ * frame, less one), and in the scenes that allow it the game catches up with one extra logic frame for each. At 60 a
+ * second that is right - a refresh is a logic frame - but at 240 one missed refresh is a quarter of one, and the game
+ * would run a whole logic frame for it: a pass of the loop slower than 4.2 ms made the game jump ahead. So the report
+ * is counted in logic frames here: missed refreshes are summed, and the game told of one each time they make a whole
+ * 60 Hz frame (4 at 240, 2 at 120), the rest carried. A PC that keeps up misses none, and the game sees none.
+ *
  * Checked once before the first write: the game's build is 13.0.5's (the addresses are its) and the table reads as
  * above; else this file does nothing and says so. */
 #define _CRT_SECURE_NO_WARNINGS
@@ -37,6 +44,7 @@ extern volatile LONG rt_refresh_mult;   /* (kernel.c; ipc_vi.c's vsync thread se
 static int ok = -1;             /* the build and the table checked: 1 good, 0 not this game's */
 static int written;             /* the step in the game's memory is ours (a write since the last put back) */
 static u32 rest, mult_was = 1;  /* (the division's remainder, carried: the steps average the entry / refreshes exactly) */
+static u64 missed;              /* (refreshes missed, short of a whole logic frame's) */
 
 static int checked(void) {
     if (ok >= 0) return ok;
@@ -63,8 +71,18 @@ static u32 game_step(void) {
 }
 
 static void frame_end_after(Cpu *c, const u64 args[8], void *ctx) {
-    (void)c; (void)args; (void)ctx;
+    (void)c; (void)ctx;
     u32 m = (u32)rt_refresh_mult;
+    if (m > 1 && args[2]) {   /* the missed refreshes in logic frames (as hle_rb_core.c reads the report: count at x2, result at x0) */
+        u64 p1 = args[0], p3 = args[2], n = ld64(p3);
+        if (n) {
+            missed += n;
+            u64 frames = missed / m;
+            missed %= m;
+            st64(p3, frames);
+            if (!frames && p1 && (ld32(p1) == 0xF0044007u || ld32(p1) == 0xF0044005u)) st32(p1, 0);
+        }
+    } else missed = 0;
     if (m <= 1 && !written) return;   /* (60 a second and nothing of ours in the game: the game's own, untouched) */
     if (!checked()) return;
     u32 own = game_step();
