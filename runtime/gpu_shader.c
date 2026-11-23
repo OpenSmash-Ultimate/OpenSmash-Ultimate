@@ -1866,7 +1866,12 @@ void shader_set_exact_f16(int on) {
 }
 int shader_exact_f16(void) {
     int v = __atomic_load_n(&exact_f16, __ATOMIC_ACQUIRE);
-    if (v < 0) { shader_set_exact_f16(0); v = __atomic_load_n(&exact_f16, __ATOMIC_ACQUIRE); }
+    if (v < 0) {   /* (not set yet: SSBU_EXACT_F16, else off - unless a set comes first) */
+        const char *e = getenv("SSBU_EXACT_F16");
+        int want = e && *e && atoi(e) != 0, none = -1;
+        __atomic_compare_exchange_n(&exact_f16, &none, want, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+        v = __atomic_load_n(&exact_f16, __ATOMIC_ACQUIRE);
+    }
     return v;
 }
 

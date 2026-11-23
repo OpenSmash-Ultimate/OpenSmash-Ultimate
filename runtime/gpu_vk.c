@@ -4038,7 +4038,7 @@ static void prepare_wait(void) {
 static void warm_load(WarmShader *w) {
     char path[1200];
     prepare_wait();   /* (a cache that is not prepared for this translator is prepared now, before a file is missed) */
-    shader_cache_file_spv(path, sizeof path, cache_dir(), (int)w->k.stage, w->k.hash, w->k.vs_outputs, w->k.table_hash, spirv_glslang_version());
+    shader_cache_file_spv_v(path, sizeof path, cache_dir(), spv_version(), (int)w->k.stage, w->k.hash, w->k.vs_outputs, w->k.table_hash, spirv_glslang_version());
     size_t size;
     void *code = read_file(path, &size);
     int made = 0;
@@ -6575,11 +6575,9 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
      * under SPIR-V names of its own; SSBU_EXACT_F16=0 / 1 decides for any card. Said to the shader preparation this
      * start may run (shader_aot.py's shaderaot reads the same variable), so it makes the files this start reads. */
     shader_set_exact_f16(limits_vendor == 0x1002);
-    if (shader_exact_f16()) {
+    if (shader_exact_f16() && use_glslang()) {
 #ifdef _WIN32
-        SetEnvironmentVariableA("SSBU_EXACT_F16", "1");
-#else
-        setenv("SSBU_EXACT_F16", "1", 1);
+        SetEnvironmentVariableA("SSBU_EXACT_F16", "1");   /* (Windows alone prepares SPIR-V ahead: shader_aot.py spirv_names) */
 #endif
         fprintf(stderr, "[vulkan] f32tof16 written out exactly in the shaders (#353), their SPIR-V under g%u names\n", spv_version());
     }
