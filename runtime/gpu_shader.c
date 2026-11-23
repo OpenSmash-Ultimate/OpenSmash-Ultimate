@@ -1839,6 +1839,37 @@ static const char F2I_HLSL[] =
 static const char F2U_HLSL[] =
     "uint f2u_(float x) { return !(x > 0.0f) ? 0u : x >= 4294967296.0f ? 0xFFFFFFFFu : (uint)x; }\n";
 
+/* Direct3D's f32tof16, bit by bit (round to nearest even; out of range: infinity; a NaN stays one), for glslang's
+ * SPIR-V on AMD cards. glslang makes f32tof16 a PackHalf2x16, and what that gives for some values is the driver's
+ * own: the stages' pixel programs keep their light in packed halves, and with AMD's driver a NaN came out of them -
+ * stages and backgrounds black on Radeon cards, the fighters drawn (#353, #510). Found and written by fahimbench
+ * (#353). Only where shader_exact_f16 is on (gpu_vk.c: an AMD card, or SSBU_EXACT_F16=1), so every other card's
+ * SPIR-V stays what it was, under its old names (gpu_shader_cache.h: SHADER_CACHE_SPV_EXACT_F16). */
+static const char F32TOF16_HLSL[] =
+    "uint f2h_(float f) {\n"
+    "  uint x = asuint(f), s = (x >> 16) & 0x8000u, a = x & 0x7FFFFFFFu;\n"
+    "  if (a > 0x7F800000u) return s | 0x7E00u;\n"
+    "  if (a >= 0x477FF000u) return s | 0x7C00u;\n"
+    "  if (a < 0x33000001u) return s;\n"
+    "  uint e = a >> 23, m = a & 0x7FFFFFu, r, rem, mid;\n"
+    "  if (e < 113u) { uint sh = 126u - e; m |= 0x800000u; r = m >> sh; rem = m & ((1u << sh) - 1u); mid = 1u << (sh - 1u); }\n"
+    "  else { r = ((e - 112u) << 10) | (m >> 13); rem = m & 0x1FFFu; mid = 0x1000u; }\n"
+    "  if (rem > mid || (rem == mid && (r & 1u) != 0u)) r++;\n"
+    "  return s | r;\n"
+    "}\n"
+    "#define f32tof16 f2h_\n";
+
+static int exact_f16 = -1;   /* -1: not decided yet (SSBU_EXACT_F16, else off) */
+void shader_set_exact_f16(int on) {
+    const char *e = getenv("SSBU_EXACT_F16");
+    __atomic_store_n(&exact_f16, e && *e ? atoi(e) != 0 : on, __ATOMIC_RELEASE);
+}
+int shader_exact_f16(void) {
+    int v = __atomic_load_n(&exact_f16, __ATOMIC_ACQUIRE);
+    if (v < 0) { shader_set_exact_f16(0); v = __atomic_load_n(&exact_f16, __ATOMIC_ACQUIRE); }
+    return v;
+}
+
 static const char LOP3[] =
     "uint lop3(uint a, uint b, uint c, uint lut) {\n"
     "  uint r = 0u;\n"
@@ -2013,6 +2044,7 @@ static void hlsl_out(Ctx *c, Str *out) {
     if (strstr(c->body.s ? c->body.s : "", "lop3(")) put_bytes(out, LOP3, sizeof LOP3 - 1);
     if (c->texel_bufs && strstr(c->body.s ? c->body.s : "", "f2i_(")) put_bytes(out, F2I_HLSL, sizeof F2I_HLSL - 1);
     if (c->texel_bufs && strstr(c->body.s ? c->body.s : "", "f2u_(")) put_bytes(out, F2U_HLSL, sizeof F2U_HLSL - 1);
+    if (c->texel_bufs && shader_exact_f16() && strstr(c->body.s ? c->body.s : "", "f32tof16(")) put_bytes(out, F32TOF16_HLSL, sizeof F32TOF16_HLSL - 1);
     if (c->uses_gmem) {
         int words = stage == SHADER_COMPUTE && c->sb_words;
         for (u32 k = 0; k < info->sb_count; k++)

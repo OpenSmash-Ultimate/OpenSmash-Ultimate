@@ -1556,7 +1556,10 @@ def cache_version():
 SPV_VERSION = re.compile(r"#define SHADER_CACHE_SPV_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)")
 
 
-def spirv_expected(root=ROOT):
+EXACT_F16 = re.compile(r"#define SHADER_CACHE_SPV_EXACT_F16 (\d+)")
+
+
+def spirv_expected(root=ROOT, exact=None):
     """The start of the SPIR-V files' names the built game reads, "g<version>.<library>" (runtime/gpu_shader_cache.h's
     shader_cache_file_spv), or None: no build\\ssbu_glslang.dll (no SPIR-V), or a header or DLL this can't read. The
     library is asked of the DLL as the game asks it (gpu_spirv.c: ssbu_glslang_version, 0 for a DLL without it)."""
@@ -1576,7 +1579,12 @@ def spirv_expected(root=ROOT):
         library = ask()
     except AttributeError:
         library = 0
-    return f"g{int(version.group(1)) * 100 + int(spv.group(1))}.{library:08x}"
+    # (exact: the exact-f32tof16 SPIR-V's names, an AMD card's (#353): SSBU_EXACT_F16=1, which that card's game sets for
+    # the preparation it runs, as shaderaot's --spirv-version then says)
+    exact = os.environ.get("SSBU_EXACT_F16") == "1" if exact is None else exact
+    offset = EXACT_F16.search(text)
+    extra = int(offset.group(1)) if exact and offset else 0
+    return f"g{int(version.group(1)) * 100 + int(spv.group(1)) + extra}.{library:08x}"
 
 
 def forget_stale_marker(root=ROOT, expected=None, log=print):
@@ -1591,8 +1599,9 @@ def forget_stale_marker(root=ROOT, expected=None, log=print):
             have = re.search(r"^spirv (\S+)$", f.read(), re.M)
     except OSError:
         return False
+    current = {expected} if expected else {spirv_expected(root, exact=False), spirv_expected(root, exact=True)}
     expected = expected or spirv_expected(root)
-    if not have or not expected or have.group(1) == expected:
+    if not have or not expected or have.group(1) in current:   # (either translation's names: an AMD card's are its own)
         return False
     os.remove(marker)
     log(f"shaders: the prepared Vulkan shaders are {have.group(1)}, the game reads {expected}: "

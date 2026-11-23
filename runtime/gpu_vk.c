@@ -2074,6 +2074,9 @@ static u64 fingerprint(const u8 *p, u32 size) {
     return h;
 }
 
+/* The SPIR-V's version in its names, markers and lists: the exact-f32tof16 translation's on AMD (#353). */
+static unsigned spv_version(void) { return SHADER_CACHE_SPV_VERSION + (shader_exact_f16() ? SHADER_CACHE_SPV_EXACT_F16 : 0); }
+
 static const char *cache_dir(void) {
     static char dir[1024];
     if (!dir[0]) {   /* (gpu_d3d11.c's: SSBU_SHADER_CACHE, else beside the modules) */
@@ -2166,7 +2169,7 @@ typedef struct TranslationHeader {
 } TranslationHeader;
 
 static void translation_path(char *path, size_t size, const VShader *s) {
-    snprintf(path, size, "%s/translation1_g%u.%08x_%d_%016llx_%08x.bin", cache_dir(), SHADER_CACHE_SPV_VERSION,
+    snprintf(path, size, "%s/translation1_g%u.%08x_%d_%016llx_%08x.bin", cache_dir(), spv_version(),
              spirv_glslang_version(), s->stage, (unsigned long long)s->hash, s->vs_outputs);
 }
 
@@ -2237,7 +2240,7 @@ static void translation_save(const VShader *s, const char *hlsl) {
 /* The program's SPIR-V by glslang: the disk cache's (shader_cache_file_spv), else made from the HLSL and kept there. */
 static int spirv_glslang(VShader *s, const char *hlsl, SpirvCode *spv) {
     char path[1200];
-    shader_cache_file_spv(path, sizeof path, cache_dir(), s->stage, s->hash, s->vs_outputs, s->table_hash, spirv_glslang_version());
+    shader_cache_file_spv_v(path, sizeof path, cache_dir(), spv_version(), s->stage, s->hash, s->vs_outputs, s->table_hash, spirv_glslang_version());
     size_t size;
     void *code = read_file(path, &size);
     if (code && size >= 20 && size % 4 == 0 && *(const u32 *)code == 0x07230203) {
@@ -3371,7 +3374,7 @@ static void warm_list_open(void) {
     if (!use_glslang()) return;
     char path[1100];
     snprintf(path, sizeof path, "%s/vulkan_%04x_%04x.warm", cache_dir(), limits_vendor, limits_device);
-    WarmHeader head = {"OSVKWRM", sizeof(WarmRecord), sizeof(PipeKey), SHADER_CACHE_SPV_VERSION, spirv_glslang_version(), WARM_LIST_VERSION, 0};
+    WarmHeader head = {"OSVKWRM", sizeof(WarmRecord), sizeof(PipeKey), spv_version(), spirv_glslang_version(), WARM_LIST_VERSION, 0};
     size_t size = 0;
     u8 *data = read_file(path, &size);
     int recovered_header = 0;
@@ -3421,7 +3424,12 @@ static void warm_list_open(void) {
     u8 *ship = NULL;
     if (slash) { strcpy(slash + 1, "vulkan_pipelines.warm"); ship = read_file(shipped, &ship_size); }
     if (!ship) ship = read_file("media/vulkan_pipelines.warm", &ship_size);
-    if (ship && (ship_size < sizeof head || memcmp(ship, &head, sizeof head))) { free(ship); ship = NULL; }
+    /* (made on NVIDIA, under the plain SPIR-V version: its records name programs and pipeline states, not SPIR-V,
+     * so it serves the exact-f32tof16 names as well, #353 - taken with this start's header) */
+    WarmHeader plain = head;
+    plain.spv_version = SHADER_CACHE_SPV_VERSION;
+    if (ship && (ship_size < sizeof head || (memcmp(ship, &head, sizeof head) && memcmp(ship, &plain, sizeof head)))) { free(ship); ship = NULL; }
+    if (ship) memcpy(ship, &head, sizeof head);
     int joined = 0, fresh = 0;
     if (ship) {
         if (data && size >= sizeof head && !memcmp(data, &head, sizeof head)) {
@@ -3744,7 +3752,7 @@ static int prep_marker_says(const char *name, const char *want) {
  * in complete.txt, or in vulkan_ready.txt: the SPIR-V is all there, Direct3D 11's shaders may still be being made). */
 static int shader_cache_prepared(void) {
     char want[48];
-    snprintf(want, sizeof want, "g%d.%08x", SHADER_CACHE_SPV_VERSION, spirv_glslang_version());
+    snprintf(want, sizeof want, "g%u.%08x", spv_version(), spirv_glslang_version());
     if (prep_marker_says("complete.txt", want)) return 1;
     return prep_shared() && prep_marker_says("vulkan_ready.txt", want);
 }
@@ -3978,7 +3986,7 @@ static int prep_tries(int add) {
     char path[1200], want[48], have[48] = "";
     int n = 0;
     snprintf(path, sizeof path, "%s/prepare_tries.txt", cache_dir());
-    snprintf(want, sizeof want, "g%d.%08x", SHADER_CACHE_SPV_VERSION, spirv_glslang_version());
+    snprintf(want, sizeof want, "g%u.%08x", spv_version(), spirv_glslang_version());
     FILE *f = fopen(path, "rb");
     if (f) {
         if (fscanf(f, "%47s %d", have, &n) != 2 || strcmp(have, want)) n = 0;   /* (another translator's: from 0 again) */
@@ -6563,6 +6571,18 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
     limits = props.limits;
     limits_vendor = props.vendorID;
     limits_device = props.deviceID;
+    /* AMD: Direct3D's f32tof16 written out in the SPIR-V (glslang's PackHalf2x16 gave NaNs there: stages black, #353),
+     * under SPIR-V names of its own; SSBU_EXACT_F16=0 / 1 decides for any card. Said to the shader preparation this
+     * start may run (shader_aot.py's shaderaot reads the same variable), so it makes the files this start reads. */
+    shader_set_exact_f16(limits_vendor == 0x1002);
+    if (shader_exact_f16()) {
+#ifdef _WIN32
+        SetEnvironmentVariableA("SSBU_EXACT_F16", "1");
+#else
+        setenv("SSBU_EXACT_F16", "1", 1);
+#endif
+        fprintf(stderr, "[vulkan] f32tof16 written out exactly in the shaders (#353), their SPIR-V under g%u names\n", spv_version());
+    }
     limits_integrated = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
     texel_align = limits.minTexelBufferOffsetAlignment > 16 ? limits.minTexelBufferOffsetAlignment : 16;
     ubo_align = limits.minUniformBufferOffsetAlignment > 16 ? limits.minUniformBufferOffsetAlignment : 16;

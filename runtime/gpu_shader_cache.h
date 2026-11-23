@@ -60,11 +60,18 @@ static inline void shader_cache_file(char *out, size_t n, const char *dir, int s
  * revision and glslang's version, in hex), so that another ssbu_glslang.dll - a newer glslang, a
  * changed shim - never reads this one's files: it makes its own. */
 #define SHADER_CACHE_SPV_VERSION (SHADER_CACHE_VERSION * 100 + 2)
-static inline void shader_cache_file_spv(char *out, size_t n, const char *dir, int stage, u64 hash, u32 vs_outputs, u64 table_hash,
-                                         unsigned library) {
-    snprintf(out, n, "%s/g%u.%08x_%s_%016llx_%08x_%016llx.spv", dir, SHADER_CACHE_SPV_VERSION, library,
+/* The SPIR-V of the exact-f32tof16 translation (gpu_shader.h shader_exact_f16: AMD cards, #353) is another, under
+ * names of its own: version SHADER_CACHE_SPV_VERSION + this. Every other card's names stay as they are. */
+#define SHADER_CACHE_SPV_EXACT_F16 50
+static inline void shader_cache_file_spv_v(char *out, size_t n, const char *dir, unsigned version, int stage, u64 hash, u32 vs_outputs,
+                                           u64 table_hash, unsigned library) {
+    snprintf(out, n, "%s/g%u.%08x_%s_%016llx_%08x_%016llx.spv", dir, version, library,
              stage == SHADER_VERTEX ? "vs" : stage == SHADER_PIXEL ? "ps" : "cs", (unsigned long long)hash, vs_outputs,
              (unsigned long long)table_hash);
+}
+static inline void shader_cache_file_spv(char *out, size_t n, const char *dir, int stage, u64 hash, u32 vs_outputs, u64 table_hash,
+                                         unsigned library) {
+    shader_cache_file_spv_v(out, n, dir, SHADER_CACHE_SPV_VERSION, stage, hash, vs_outputs, table_hash, library);
 }
 
 static inline void shader_cache_file_msl(char *out, size_t n, const char *dir, int stage, u64 hash, u32 vs_outputs, u64 table_hash) {
