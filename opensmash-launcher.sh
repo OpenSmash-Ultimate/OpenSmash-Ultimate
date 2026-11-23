@@ -16,10 +16,14 @@
 root="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 cd "$root" || exit 1
 mkdir -p build
+launcher="$root/OpenSmash-Launcher"
+if [ ! -f "$launcher" ] && [ -f "$root/OpenSmash.Avalonia" ] && [ -x "$root/OpenSmash.Avalonia" ]; then
+    launcher="$root/OpenSmash.Avalonia"   # (#491) an install from before v0.5.1 put the program there (a file, not the source folder)
+fi
 if [ "${1:-}" = --web ]; then
     shift
-elif [ -f "$root/OpenSmash-Launcher" ] && [ -x "$root/OpenSmash-Launcher" ]; then
-    "$root/OpenSmash-Launcher" --project "$root" "$@" >>build/launcher.log 2>&1 &
+elif [ -f "$launcher" ] && [ -x "$launcher" ]; then
+    "$launcher" --project "$root" "$@" >>build/launcher.log 2>&1 &
     pid=$!
     for _ in 1 2 3 4 5 6; do
         sleep 1
@@ -32,7 +36,7 @@ elif [ -f "$root/OpenSmash-Launcher" ] && [ -x "$root/OpenSmash-Launcher" ]; the
     wait "$pid"
     rc=$?
     [ "$rc" = 0 ] && exit 0
-    echo "OpenSmash-Launcher stopped at once (exit $rc): the web launcher instead" >>build/launcher.log
+    echo "${launcher##*/} stopped at once (exit $rc): the web launcher instead" >>build/launcher.log
     export OPENSMASH_LAUNCHER_FAILED="$rc"   # (the web page says so where it asks to sign in)
 fi
 py=""

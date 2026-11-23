@@ -197,11 +197,14 @@ class LauncherFetch(unittest.TestCase):
             self.assertFalse(lf.ensure(self.root, log=logs.append, get=get))
 
     def test_launch_scripts_prefer_it(self):
-        for path, needle in (("opensmash-launcher.sh", '"$root/OpenSmash-Launcher" --project "$root"'),
+        for path, needle in (("opensmash-launcher.sh", '"$launcher" --project "$root"'),
                              ("OpenSmash Launcher.command", 'open "$root/OpenSmash.Avalonia.app" --args --project "$root"')):
             with open(os.path.join(ROOT, path), encoding="utf-8") as f:
                 text = f.read()
             self.assertIn(needle, text, path)
+            if path == "opensmash-launcher.sh":   # (the new name first; an older install's program file as the fallback)
+                self.assertIn('launcher="$root/OpenSmash-Launcher"', text)
+                self.assertIn('[ ! -f "$launcher" ] && [ -f "$root/OpenSmash.Avalonia" ]', text)
             self.assertIn("--web", text, path)                       # (the web launcher stays, as the fallback)
             self.assertIn("tools/weblauncher/launcher.py", text, path)
         for path in (os.path.join("tools", "linux", "install_linux.py"), os.path.join("tools", "mac", "install_mac.py")):
