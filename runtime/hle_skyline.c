@@ -275,7 +275,9 @@ void rt_inline_hook(Cpu *c, u64 at) {
  * once. A change to code means nothing to the recompiled function until the next build lifts the
  * new instructions: each changed word goes into <data dir>/../skyline/patches.txt, "<module>
  * <offset> <old word> <new word> <plugin>" - the plugin the call came from, so a build drops the
- * patches of a plugin no longer loaded (tools/recomp.py code_patches, tools/skyline.py prune_patches). */
+ * patches of a plugin no longer loaded (tools/recomp.py code_patches, tools/skyline.py prune_patches).
+ * The lifted patch runs only while the guest's code holds its words (tools/lift.py "words" guard): a
+ * listed patch no plugin wrote this run leaves the game's own instructions in place. */
 const char *rt_code_offset(u64 addr, u64 *off);   /* (host.c) */
 /* Smashline's inline hooks in lua2cpp_common: it writes a `bl` at the hooked call to a code cave
  * (the original branch, as a `b`, after some nops) and inline-hooks the cave. Recompiled code runs
@@ -326,6 +328,8 @@ HLE(sky_memcpy) {
 
 HLE(skyline_tcp_send_raw) {   /* (data, size): the plugin's println! */
     fwrite(G2H(c->x[0]), 1, c->x[1], stderr);
+    fflush(stderr);
+    c->x[0] = 0;
 }
 
 HLE(get_program_id) { c->x[0] = PROGRAM_ID; }
@@ -1681,6 +1685,9 @@ static void fighter_setup(Cpu *c) {
 }
 
 /* ---- loading ----------------------------------------------------------------------- */
+/* (rt_plugin_patches_on: what plugin patches lifted before their per-word guard (tools/lift.py "words") ask; C
+ * generated since checks the guest's code words instead. Kept, with its recomp.h declaration, so a game built
+ * before still links and the header - which every object's cache key includes - does not change.) */
 static volatile int plugin_patches_on;
 int rt_plugin_patches_on(void) { return __atomic_load_n(&plugin_patches_on, __ATOMIC_ACQUIRE); }
 

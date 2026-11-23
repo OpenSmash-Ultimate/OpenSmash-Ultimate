@@ -38,6 +38,11 @@ class RegcacheTests(unittest.TestCase):
         self.assertNotIn("X(", "".join(out))
         self.assertEqual(stores(out[2]), {'1', 'sp'})   # what changed, written back before returning
 
+    def test_flags_xfer_return_stores_dirty(self):
+        from lift import FLAGS_OUT
+        _decl, out = run([(0, "X(0) = 0x1ull;", True), (4, f"{{ {FLAGS_OUT} return; }}", False)])
+        self.assertEqual(stores(out[1]), {'0'})
+
     def test_call_spills_dirty_caller_saved_and_reloads_them(self):
         _decl, out = run([(0, "X(0) = X(19);", True), (4, "X(20) = 0x5ull;", True), (8, CALL, True),
                           (12, "X(2) = X(0) + X(20);", True), (16, "return;", False)])

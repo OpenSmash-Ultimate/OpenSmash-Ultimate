@@ -95,14 +95,41 @@ class PrunePatches(unittest.TestCase):
             patches = recomp.code_patches(mod, 'main')
         finally:
             recomp.TREE = old
-        self.assertEqual(patches[0], ('switch', [nop], 'rt_plugin_patches_on'))
+        self.assertEqual(patches[0], ('switch', [nop], ('words', ((0, nop),))))
         self.assertEqual(patches[4], [mov_w0_1])
         text, _reasons, _callees = lift.Lifter(mod.image + bytes(8), {0}, patches=patches, inline={0}).lift_function(0, 12)
         self.assertIn('rt_inline_hook(c, 0x7100000000ull);', text)
-        self.assertIn('if (rt_plugin_patches_on()) { ; } else {', text)
+        # (on while the guest's code holds the plugin's word: what sky_memcpy wrote this run)
+        self.assertIn('if (ld32(0x7100000000ull) == 0xD503201Fu) { ; } else {', text)
         self.assertIn('rt_lookup(', text)
         self.assertIn('X(0) = (u32)(0x1u);', text)
         self.assertNotIn('rt_code_patches_on', text)
+
+    def test_adjacent_plugin_words_are_one_guard(self):
+        """The CSK Collection's added-character patches (main+0x3311ef4: adrp x8 / add x8 made mov x18 / nop, its
+        inline hook setting x8): written only when mods add characters. Each word runs patched only while the
+        guest's code holds both, so a pair never runs half patched, and without the plugin's write the game's own."""
+        class FakeMod:
+            build_id = '00' * 20
+            def __init__(self, words):
+                self.image = struct.pack(f'<{len(words)}I', *words)
+            def u32(self, off):
+                return struct.unpack_from('<I', self.image, off)[0]
+
+        adrp, add, mov_x18, nop, ret = 0xB00091C8, 0x911FA108, 0xD2800052, 0xD503201F, 0xD65F03C0
+        mod = FakeMod((adrp, add, ret))
+        self.write([f'main 0 {adrp:08x} {mov_x18:08x} the_csk_collection', f'main 4 {add:08x} {nop:08x} the_csk_collection'])
+        old = recomp.TREE
+        recomp.TREE = self.tmp.name
+        try:
+            patches = recomp.code_patches(mod, 'main')
+        finally:
+            recomp.TREE = old
+        guard = ('words', ((0, mov_x18), (4, nop)))
+        self.assertEqual(patches, {0: ('switch', [mov_x18], guard), 4: ('switch', [nop], guard)})
+        text, _reasons, _callees = lift.Lifter(mod.image + bytes(8), {0}, patches=patches).lift_function(0, 12)
+        both = 'ld32(0x7100000000ull) == 0xD2800052u && ld32(0x7100000004ull) == 0xD503201Fu'
+        self.assertEqual(text.count(f'if ({both})'), 2)
 
 
 if __name__ == '__main__':
