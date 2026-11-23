@@ -393,7 +393,7 @@ _PRIORITY = {
 def apply_priority(name):
     """This process, and Popen arguments so the compile workers match. Unknown names are low."""
     cls, nice = _PRIORITY.get(name, _PRIORITY["low"])
-    if LINUX:
+    if os.name != "nt":   # (Linux, and macOS where ctypes has no windll: #542)
         try:
             os.nice(nice)
         except OSError:
