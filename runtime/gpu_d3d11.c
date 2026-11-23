@@ -3648,9 +3648,18 @@ static Wrote wrote_log[WROTE_LOG];
 static u64 wrote_seq;   /* writes logged so far (an entry is never changed once there: a check
                          * that has seen it must not miss what is added) */
 
+/* Return guest address g if [va, va + size) maps contiguously from g; skip the second walk inside one 4 KB page. */
+static inline u64 gpu_va_contig(u64 va, u64 size) {
+    if (!size) return 0;
+    u64 g = gpu_va_to_guest(va);
+    if (!g) return 0;
+    if ((va & 0xFFF) + size <= 0x1000) return g;
+    return gpu_va_to_guest(va + size - 1) == g + size - 1 ? g : 0;
+}
+
 static void guest_wrote(u64 va, u64 bytes) {   /* bytes == 0: anywhere */
-    u64 lo = 0, hi = ~0ull, g = bytes ? gpu_va_to_guest(va) : 0;
-    if (g && gpu_va_to_guest(va + bytes - 1) == g + bytes - 1) { lo = g; hi = g + bytes; }
+    u64 lo = 0, hi = ~0ull, g = bytes ? gpu_va_contig(va, bytes) : 0;
+    if (g) { lo = g; hi = g + bytes; }
     wrote_log[wrote_seq % WROTE_LOG] = (Wrote){lo, hi};
     wrote_seq++;
 }
@@ -3674,8 +3683,8 @@ static ID3D11ShaderResourceView *upload_gpu(int stage, u32 slot, u64 va, u32 siz
     u32 padded = (size + 15) & ~15u;
     if (!padded) padded = 16;
     LastUpload *lu = &last_upload[stage][slot];
-    u64 g = size && size <= REUSE_MAX ? gpu_va_to_guest(va) : 0;
-    const u8 *src = g && gpu_va_to_guest(va + size - 1) == g + size - 1 ? P(const u8, g) : NULL;   /* (one mapping) */
+    u64 g = size && size <= REUSE_MAX ? gpu_va_contig(va, size) : 0;
+    const u8 *src = g ? P(const u8, g) : NULL;   /* (one mapping) */
     int keep = src != NULL;   /* compared now, and a copy kept to compare with next time */
     if (lu->frame != gfx_stat_presented) {   /* a new frame: was the last one counted all misses? */
         if (lu->tries >= REUSE_TRIES && !lu->hits) lu->paused_to = gfx_stat_presented + REUSE_PAUSE;
@@ -3775,9 +3784,9 @@ static int params_known;
 
 /* Copy guest GPU memory [va, va + size) into dst (zeros where unmapped). */
 static void read_gpu(u64 va, u32 size, void *dst) {
-    u64 g = gpu_va_to_guest(va);
     if (!size) return;
-    if (g && gpu_va_to_guest(va + size - 1) == g + size - 1) { memcpy(dst, P(void, g), size); return; }
+    u64 g = gpu_va_contig(va, size);
+    if (g) { memcpy(dst, P(void, g), size); return; }
     /* not one contiguous mapping: page by page, zeros where unmapped */
     for (u32 done = 0; done < size;) {
         u32 n = 0x1000 - (u32)((va + done) & 0xFFF);
@@ -5041,8 +5050,8 @@ static void kept_apply(u64 lo, u64 hi) {
         /* Only from the memory it was made from, still mapped there: the guest may have mapped
          * other memory at these addresses since (and unmapped the old: the driver would fault
          * reading it). Otherwise it is taken again, or made again, at its next use. */
-        u64 g = gpu_va_to_guest(a);
-        if (g != e->guest + (a - e->va) || gpu_va_to_guest(z - 1) != g + (z - 1 - a)) { e->stale = 1; continue; }
+        u64 g = gpu_va_contig(a, z - a);
+        if (g != e->guest + (a - e->va)) { e->stale = 1; continue; }
         D3D11_BOX box = {(UINT)(a - e->va), 0, 0, (UINT)(z - e->va), 1, 1};
         ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)e->buf, 0, &box, P(void, e->guest + (a - e->va)), 0, 0);
         if (e->shadow) memcpy(e->shadow + (a - e->va), P(void, e->guest + (a - e->va)), (size_t)(z - a));
@@ -5077,6 +5086,7 @@ void d3d11_stream_end(void) {
 
 /* How much of [va, va + size) maps to guest memory in one piece from g (at va). */
 static u32 kept_mapped(u64 va, u64 g, u32 size) {
+    if ((va & 0xFFF) + size <= 0x1000) return size;
     u32 mapped = 0x1000 - (u32)(va & 0xFFF);   /* (the 64 KB bound may run past what is mapped: that part reads as zeros) */
     while (mapped < size && gpu_va_to_guest(va + mapped) == g + mapped) mapped += 0x1000;
     return mapped > size ? size : mapped;
