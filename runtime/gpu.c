@@ -299,13 +299,17 @@ static u32 mme_step(MmeRun *m, const u32 *code, u32 pc, int delay_slot) {
     u32 kind = op & 7, result = (op >> 4) & 7, dst = (op >> 8) & 7;
     u32 a = m->r[(op >> 11) & 7], b = m->r[(op >> 14) & 7];
     i32 imm = (i32)op >> 14;
-    u32 src_bit = (op >> 17) & 31, size = (op >> 22) & 31, dst_bit = (op >> 27) & 31, mask = (1u << size) - 1;
     switch (kind) {
     case 0: mme_result(m, result, dst, mme_alu(m, (op >> 17) & 31, a, b)); break;
     case 1: mme_result(m, result, dst, a + (u32)imm); break;
-    case 2: mme_result(m, result, dst, (a & ~(mask << dst_bit)) | (((b >> src_bit) & mask) << dst_bit)); break;
-    case 3: mme_result(m, result, dst, ((b >> (a & 31)) & mask) << dst_bit); break;
-    case 4: mme_result(m, result, dst, ((b >> src_bit) & mask) << (a & 31)); break;
+    case 2: case 3: case 4: {
+        u32 src_bit = (op >> 17) & 31, size = (op >> 22) & 31, dst_bit = (op >> 27) & 31, mask = (1u << size) - 1;
+        u32 v = kind == 2 ? (a & ~(mask << dst_bit)) | (((b >> src_bit) & mask) << dst_bit)
+              : kind == 3 ? ((b >> (a & 31)) & mask) << dst_bit
+                          : ((b >> src_bit) & mask) << (a & 31);
+        mme_result(m, result, dst, v);
+        break;
+    }
     case 5: mme_result(m, result, dst, m->e->regs[(a + (u32)imm) & 0xFFF]); break;
     case 7: {
         int taken = ((op >> 4) & 1) ? a != 0 : a == 0;
@@ -349,10 +353,16 @@ static void engine_method(Channel *ch, Engine *e, u32 method, u32 arg) {
     e->regs[method] = arg;
     switch (e->cls) {
     case CLASS_3D:
-        if ((method >= 0x4E0 && method <= 0x4E7) || (method >= 0x3D5 && method <= 0x3D7) || (method >= 0x565 && method <= 0x569)) {
-            static int left = -1;   /* debug: SSBU_LOG_STENCIL=n logs the first n writes to the stencil registers */
-            if (left < 0) left = getenv("SSBU_LOG_STENCIL") ? atoi(getenv("SSBU_LOG_STENCIL")) : 0;
-            if (left > 0 && left--) fprintf(stderr, "[gpu] stencil register %#x = %#x\n", method, arg);
+        {
+            static int stencil_left = -1;   /* debug: SSBU_LOG_STENCIL=n logs the first n writes to the stencil registers */
+            if (__builtin_expect(stencil_left != 0, 0)) {
+                if (stencil_left < 0) stencil_left = getenv("SSBU_LOG_STENCIL") ? atoi(getenv("SSBU_LOG_STENCIL")) : 0;
+                if (stencil_left > 0 &&
+                    ((method >= 0x4E0 && method <= 0x4E7) || (method >= 0x3D5 && method <= 0x3D7) || (method >= 0x565 && method <= 0x569))) {
+                    stencil_left--;
+                    fprintf(stderr, "[gpu] stencil register %#x = %#x\n", method, arg);
+                }
+            }
         }
         switch (method) {
         case 0x046: e->mme->code[e->regs[0x45]++ & 0x1FFF] = arg; break;              /* macro upload */
@@ -435,10 +445,51 @@ static void method(Channel *ch, u32 sub, u32 m, u32 arg, int last) {
 }
 
 /* ---- command lists --------------------------------------------------------------- */
+/* Run a single-packet MME macro call straight from the command stream without staging into x->params. */
+static int try_macro_batch(Channel *ch, Engine *e, u32 mode, u32 m, const u32 *args, u32 avail) {
+    if (!avail || !e || !e->mme || e->mme->calling || m < 0xE00 || m >= 0x1000) return 0;
+    if (mode <= 1 && m + avail > 0x1000) return 0;
+    if (mode == 5 && avail > 1 && m + 1 >= 0x1000) return 0;
+    gpu_stat_methods += avail;
+    mme_call(ch, e, (m - 0xE00) >> 1, args, avail);
+    return 1;
+}
+
+/* Write a contiguous multi-word CB_LOAD burst in one memcpy + write notification when all 4 KB pages map contiguously. */
+static int try_cb_batch(Engine *e, u32 mode, u32 m, const u32 *args, u32 avail) {
+    if (avail <= 1 || !e || e->cls != CLASS_3D || gpu_watch() || m < 0x8E4 || m > 0x8F3) return 0;
+    if ((mode <= 1 && m + avail - 1 > 0x8F3) || (mode == 5 && m + 1 > 0x8F3)) return 0;
+    u64 bytes = (u64)avail * 4;
+    if ((u64)e->regs[0x8E3] + bytes > 0x100000000ull) return 0;
+    u64 cb = ((u64)e->regs[0x8E1] << 32 | e->regs[0x8E2]) + e->regs[0x8E3];
+    u64 g = gpu_va_to_guest(cb);
+    if (!g) return 0;
+    for (u64 off = 0x1000 - (cb & 0xFFF); off < bytes; off += 0x1000)
+        if (gpu_va_to_guest(cb + off) != g + off) return 0;
+    memcpy(P(void, g), args, (size_t)bytes);
+    gpu_rb_wrote(g, bytes);
+    gfx_stream_wrote(cb, bytes);
+    e->regs[0x8E3] += (u32)bytes;
+    if (mode <= 1) memcpy(&e->regs[m], args, (size_t)bytes);
+    else if (mode == 5) { e->regs[m] = args[0]; e->regs[m + 1] = args[avail - 1]; }
+    else e->regs[m] = args[avail - 1];
+    gpu_stat_methods += avail;
+    return 1;
+}
+
 static void run_list(Channel *ch, const u32 *w, u64 n) {
     for (u64 i = 0; i < n;) {
         u32 h = w[i++];
         u32 m = h & 0x1FFF, sub = (h >> 13) & 7, count = (h >> 16) & 0x1FFF, mode = h >> 29;
+        if (mode <= 3 || mode == 5) {
+            u32 rem = n - i < 0x2000 ? (u32)(n - i) : 0x2000;
+            u32 avail = count < rem ? count : rem;
+            Engine *e = ch->sub[sub];
+            if (try_macro_batch(ch, e, mode, m, w + i, avail) || try_cb_batch(e, mode, m, w + i, avail)) {
+                i += avail;
+                continue;
+            }
+        }
         switch (mode) {
         case 1: case 0:   /* increasing */
             for (u32 k = 0; k < count && i < n; k++) method(ch, sub, m + k, w[i++], k + 1 == count || i == n);
@@ -447,7 +498,12 @@ static void run_list(Channel *ch, const u32 *w, u64 n) {
             for (u32 k = 0; k < count && i < n; k++) method(ch, sub, m, w[i++], k + 1 == count || i == n);
             break;
         case 4:           /* inline: the argument is in the header */
-            method(ch, sub, m, count, 1);
+            if (m >= 0xE00 && m < 0x1000 && ch->sub[sub] && ch->sub[sub]->mme && !ch->sub[sub]->mme->calling) {
+                gpu_stat_methods++;
+                mme_call(ch, ch->sub[sub], (m - 0xE00) >> 1, &count, 1);
+            } else {
+                method(ch, sub, m, count, 1);
+            }
             break;
         case 5:           /* increase once */
             for (u32 k = 0; k < count && i < n; k++) method(ch, sub, k ? m + 1 : m, w[i++], k + 1 == count || i == n);
