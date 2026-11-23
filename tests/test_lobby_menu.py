@@ -380,15 +380,16 @@ class Pages(MenuTest):
         m = self.menu()
         m.key('ESC')
         renderer = ['Renderer'] if sys.platform != 'darwin' else []   # (#429: in sight, under Picture)
-        display = ['Window', 'Window size', 'Render scale', 'Aspect ratio', 'Viewtype', *renderer, 'Frame pacing', 'Show advanced settings']
+        display = ['Window', 'Window size', 'Render scale', 'Aspect ratio', 'Viewtype', *renderer, 'Frame pacing', 'Frame rate',
+                   'Motion between frames', 'Show advanced settings']
         self.assertEqual(m.labels(), display)   # (the everyday rows; the rest are behind the switch)
         m.key('DOWN', sum(1 for r in m.rows()[:m.labels().index('Frame pacing')] if r['kind'] != 0))   # (read-only rows are passed over)
         self.assertEqual(m.at()['label'], 'Frame pacing')   # (Viewtype is passed over at 16:9)
-        m.key('DOWN')
+        m.key('DOWN', 3)   # (Frame rate, Motion between frames)
         self.assertEqual(m.at()['label'], 'Show advanced settings')
         m.key('RIGHT')
-        display = ['Window', 'Window size', 'Render scale', 'Aspect ratio', 'Viewtype', *renderer, 'Frame pacing', 'Show advanced settings',
-                   'Hide the mouse pointer', 'Timer position', 'Frames queued ahead', 'Frame rate in the corner'] + (['Graphics card'] if os.name == 'nt' else [])   # (the advanced rows under the switch)
+        display = ['Window', 'Window size', 'Render scale', 'Aspect ratio', 'Viewtype', *renderer, 'Frame pacing', 'Frame rate',
+                   'Motion between frames', 'Show advanced settings', 'Hide the mouse pointer', 'Timer position', 'Frames queued ahead', 'Frame rate in the corner'] + (['Graphics card'] if os.name == 'nt' else [])   # (the advanced rows under the switch)
         self.assertEqual(m.labels(), display)   # (in sections: Window, Picture, Smoothness, Graphics)
         self.assertIn('show_advanced = 1', (m.dir / 'display.ini').read_text())
         m.type('2')

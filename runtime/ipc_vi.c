@@ -6,7 +6,9 @@
  * window through Android's IGraphicBufferProducer protocol, sent as binder transactions to
  * the relay service (IHOSBinderDriver). The queue's consumer is a native vsync thread: 60
  * times a second it presents the oldest queued buffer and returns the previous one, which
- * paces the game exactly as the console's compositor does. */
+ * paces the game exactly as the console's compositor does. With display.ini's frame_rate 120 or
+ * 240 it does so 120 / 240 times a second, as an emulator's compositor does for the game's 120/240
+ * FPS mods (their swap interval 0 / -1); hle_frame_rate.c keeps the game's logic at 60. */
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <string.h>
@@ -218,6 +220,9 @@ static void show_fast(void) {
 static LONG64 ll_freq, ll_spans[64], ll_release, ll_margin;
 static int ll_next, ll_count, ll_backoff, ll_delayed;
 static volatile LONG64 ll_late_frames, ll_delayed_frames, ll_delay_sum;
+/* (kernel.c) the refreshes the game sees in a 60 Hz frame: display_tick_mult as the vsync thread last paced it, for
+ * hle_frame_rate.c, rollback's fixed clock and its pads' sampling numbers */
+extern volatile LONG rt_refresh_mult;
 
 static LONG64 qpc_now(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
 
@@ -245,7 +250,7 @@ static LONG64 ll_delay(void) {   /* ticks to hold the signal past the refresh */
     if (ll_backoff > 0) { ll_backoff--; return 0; }
     LONG64 most = 0;
     for (int i = 0; i < ll_count; i++) if (ll_spans[i] > most) most = ll_spans[i];
-    LONG64 d = ll_freq / 60 - most - ll_margin;
+    LONG64 d = ll_freq / (60 * (LONG64)rt_refresh_mult) - most - ll_margin;   /* (a refresh's period: frame_rate's) */
     return d > ll_freq / 2000 ? d : 0;   /* (under half a millisecond: not worth it) */
 }
 
@@ -267,7 +272,11 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
         /* (rollback build, M4: while rb_fast, the frames a load runs again are neither paced nor
          * shown: each is taken off the queue as soon as it is drawn, and the next refresh is now) */
         int fast = rb_fast > 0 && !keep_pending;
-        if (!fast) display_wait_tick();   /* the next refresh (display.ini's pacing) */
+        if (!fast) {
+            display_wait_tick();   /* the next refresh (display.ini's pacing and frame_rate) */
+            LONG m = display_tick_mult();
+            if (m != rt_refresh_mult) { InterlockedExchange(&rt_refresh_mult, m); queue_lock(); ll_count = ll_next = 0; queue_unlock(); }   /* (low_latency measures again) */
+        }
         if (!fast && rb_vsync_skip > 0) { InterlockedDecrement(&rb_vsync_skip); InterlockedIncrement64(&rb_vsync_skipped); continue; }
         queue_lock();
         int oldest = take_oldest();
@@ -482,6 +491,11 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
             ll_queued();
             if (lat_tf && rb_fast <= 0) lat_line("Q %.3f\n", lat_ms());
             queue.slots[slot].gpu_mark = gpu_queue_mark();
+            {   int interp_probe_on(void); void interp_probe_frame(u64 mark, u32 ticks);
+                /* (SSBU_INTERP_PROBE, gpu_interp_probe.c: the picture's submissions, and the logic frames its pass ran) */
+                if (interp_probe_on() == 1) interp_probe_frame(queue.slots[slot].gpu_mark, *P(u32, 0x710523d000ull));
+                void motion_frame(u64 mark);   /* (gpu_motion.c: the same, for display.ini's motion) */
+                motion_frame(queue.slots[slot].gpu_mark); }
             /* (rollback build, M4: a frame of a catch-up is not shown. Freed here and the game told at
              * once - buffer free, a refresh - rather than through the vsync thread: the game's frame end
              * waited 0.9 ms a re-run frame for that round trip. SSBU_RB_QFREE=0: through the thread.) */
