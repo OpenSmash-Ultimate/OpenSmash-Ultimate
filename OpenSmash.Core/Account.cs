@@ -246,6 +246,9 @@ namespace OpenSmash.Core
         /// <summary>a public read with the publishable key only</summary>
         public Task<string> AnonAsync(string path) => RequestAsync("GET", path, null, Service.Key);
 
+        /// <summary>a public RPC with the publishable key only (POST /rest/v1/rpc/&lt;name&gt;): the answer's text</summary>
+        public Task<string> AnonRpcAsync(string name, string body) => RequestAsync("POST", "/rest/v1/rpc/" + name, body ?? "{}", Service.Key);
+
         public async Task<string> AccessTokenAsync() { await EnsureAccessAsync(); return access; }
 
         async Task EnsureAccessAsync()

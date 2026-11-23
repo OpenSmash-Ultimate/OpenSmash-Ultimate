@@ -53,7 +53,7 @@ public sealed partial class ClassicSurface
     }
     void PaintDetails(Graphics g,int W,int H)
     {
-        if(_view=="settings")PaintSettings(g,W,H);else if(_view=="rooms")PaintRooms(g,W,H);else if(_view=="setup_modding")PaintSetupModding(g,W,H);else if(_view=="mods_browser")PaintMarketplace(g,W,H);else PaintMods(g,W,H);
+        if(_view=="settings")PaintSettings(g,W,H);else if(_view=="competitive")PaintCompetitive(g,W,H);else if(_view=="rooms")PaintRooms(g,W,H);else if(_view=="setup_modding")PaintSetupModding(g,W,H);else if(_view=="mods_browser")PaintMarketplace(g,W,H);else PaintMods(g,W,H);
     }
     GraphicsState PushReveal(Graphics g,int i,bool repeat=true)=>PushFade(g,ArtworkTheme.Ease(Clamp01(((float)(Now-_viewAt)-.2f-(repeat?i%6:i)*.07f)/.9f)),40*_s);
     void FitSettingEdit(Rectangle rect)
@@ -73,8 +73,9 @@ public sealed partial class ClassicSurface
     {
         CommitEdit();if(!_settingsLoaded)LoadSettings();
         string lobby=GetSetting("lobby"),code=GetSetting("code").Replace(" ",""),host=GetSetting("server").Trim();
-        if(lobby=="private"&&code==""){Alert("TYPE A LOBBY CODE","Type a lobby code: a word your friends type too.");return false;}
-        if(lobby=="custom"&&host!=""&&!System.Text.RegularExpressions.Regex.IsMatch(host,@"^\S+:\d+$")){Alert("CHECK YOUR SERVER","Your own server is host:port, for example 192.168.1.20:39420.");return false;}
+        string missing=OpenSmash.Core.OnlineSettings.Missing(lobby,code,host);   // (OpenSmash.Core.OnlineSettings: a code, a host:port)
+        if(missing=="code"){Alert("TYPE A LOBBY CODE","Type a lobby code: a word your friends type too.");return false;}
+        if(missing=="server"){Alert("CHECK YOUR SERVER","Your own server is host:port, for example 192.168.1.20:39420.");return false;}
         try{WriteSettingsFiles();return true;}catch(Exception error){Alert("COULD NOT SAVE",error.Message);return false;}
     }
     public void ChangeSetting(string key,string value)
@@ -89,6 +90,14 @@ public sealed partial class ClassicSurface
         {
             try{SetIni(Project.ConfigFile("display.ini"),"",key,value);}catch(Exception error) when(error is IOException or UnauthorizedAccessException){Alert("COULD NOT SAVE",UiLocale.Format("Could not save interface language: {0}",error.Message));return;}
             _iniValues[key]=value;UiLocale.Select(value);InvalidateVisual();return;
+        }
+        if(key=="lobby")
+        {
+            // (OpenSmash.Core.OnlineSettings: what the new choice does not use is reset, and written with it)
+            _changedSettings.UnionWith(OpenSmash.Core.OnlineSettings.Choose(_iniValues,value));
+            if(_editingKey is "code" or "server"&&!OpenSmash.Core.OnlineSettings.Shown(_editingKey,value)){_editingKey=null;_settingEdit.IsVisible=false;}
+            try { WriteSettingsFiles(); }catch(Exception error){Alert("COULD NOT SAVE",error.Message);}
+            InvalidateVisual();return;
         }
         _changedSettings.Add(key);
         _iniValues[key]=value;

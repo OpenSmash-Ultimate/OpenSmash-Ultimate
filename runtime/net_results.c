@@ -11,7 +11,12 @@
  * sends nothing: the report's NSA id key goes to an official lobby only. SSBU_RESULTS_LOBBY=<host:port> names another
  * lobby instead (tests: a local one); =off sends nothing. Before OpenSmash 0.5.0 this thread also sent a game's fighter records
  * and ranked statistics to the lobby (POST /gsp/sync, /gsp/link, GET /gsp/records) when its game server was its own,
- * Online over Epic Online Services: gone with EOS. */
+ * Online over Epic Online Services: gone with EOS.
+ *
+ * OpenSmash mastery points (SSBU_MASTERY_REPORT, on by default; =0 the report as before): the data gets a "mastery"
+ * object - this game's slot, how the match ended, the stocks it started with, each player's fighter (its ui_chara_db
+ * name without "ui_chara_"), stocks left and place - and the request the account's lobby ticket as X-OpenSmash-Ticket
+ * (as GET /gsp/me sends it: to an official lobby only). The lobby computes the points; the game never says one. */
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,15 +47,76 @@ uint64_t results_match_id_addresses(const uint32_t *ips, int n, int mode) {
         if (!i || s[i] != s[i - 1]) h = mix64(h ^ s[i]);
     return h;
 }
+int results_mastery_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_MASTERY_REPORT"); on = !(e && *e == '0'); }
+    return on;
+}
+static uint64_t hash40(const char *s) {   /* (the game's hash40: CRC-32 of the text, its length above) */
+    uint32_t c = 0xffffffffu;
+    size_t n = 0;
+    for (; s[n]; n++) {
+        c ^= (uint8_t)s[n];
+        for (int k = 0; k < 8; k++) c = c >> 1 ^ (0xedb88320u & (0u - (c & 1)));
+    }
+    return (uint64_t)n << 32 | (uint32_t)~c;
+}
+int results_fighter_key(uint64_t ui_chara, char *out, size_t cap) {
+    if (cap) out[0] = 0;
+    uint64_t want = ui_chara & 0xffffffffffull;
+    for (int i = 0; discord_fighter_key_at(i); i++) {
+        const char *k = discord_fighter_key_at(i);
+        char name[48];
+        snprintf(name, sizeof name, "ui_chara_%s", k);
+        if (hash40(name) == want && strlen(k) < cap) { snprintf(out, cap, "%s", k); return 1; }
+    }
+    return 0;
+}
+/* the "mastery" object, appended at out (cap left): its length, 0 when it does not fit */
+static size_t mastery_json(const MatchMastery *x, char *out, size_t cap) {
+    static const char *const END[3] = {"normal", "time", "left"};
+    int n = x->n < 0 ? 0 : x->n > MASTERY_PLAYERS ? MASTERY_PLAYERS : x->n;
+    size_t k = 0;
+    int w = snprintf(out, cap, ",\"mastery\":{\"v\":1,\"me\":%d,\"end\":\"%s\",\"left\":%d,\"stock_start\":%d,\"players\":[",
+                     x->me, END[x->end >= 0 && x->end <= 2 ? x->end : 2], x->left < 0 || x->left >= n ? -1 : x->left,
+                     x->stock_start < 0 ? 0 : x->stock_start > 99 ? 99 : x->stock_start);
+    if (w <= 0 || (size_t)w >= cap) return 0;
+    k = (size_t)w;
+    for (int i = 0; i < n; i++) {
+        char key[24] = "";
+        for (size_t j = 0; x->p[i].fighter[j] && j + 1 < sizeof key; j++) {   /* (a ui_chara_db name's characters only) */
+            char ch = x->p[i].fighter[j];
+            if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_')) { key[0] = 0; break; }
+            key[j] = ch; key[j + 1] = 0;
+        }
+        int st = x->p[i].stocks < 0 ? 0 : x->p[i].stocks > 99 ? 99 : x->p[i].stocks;
+        int pl = x->p[i].place < 0 || x->p[i].place > n ? 0 : x->p[i].place;
+        w = snprintf(out + k, cap - k, "%s{\"slot\":%d,\"fighter\":\"%s\",\"stocks\":%d,\"place\":%d}", i ? "," : "", i, key, st, pl);
+        if (w <= 0 || (size_t)w >= cap - k) return 0;
+        k += (size_t)w;
+    }
+    w = snprintf(out + k, cap - k, "]}");
+    if (w <= 0 || (size_t)w >= cap - k) return 0;
+    return k + (size_t)w;
+}
 size_t results_match_data(const MatchPlayed *m, char *out, size_t cap) {
     int players = m->players < 2 ? 2 : m->players > 8 ? 8 : m->players;
     int seconds = m->seconds < 0 ? 0 : m->seconds > 3600 ? 3600 : m->seconds;
     const char *mode = m->mode == 14 ? "quickplay" : m->mode == 20 ? "arena" : "room";
     int n = snprintf(out, cap, "{\"id\":\"%016llx\",\"mode\":\"%s\",\"players\":%d,\"seconds\":%d,\"ranked\":%s,\"net\":\"%s\","
-                               "\"via\":\"%s\",\"exact\":%s}",
+                               "\"via\":\"%s\",\"exact\":%s",
                      (unsigned long long)m->id, mode, players, seconds, m->mode == 14 ? "true" : "false",
                      m->rollback ? "rollback" : "game", "lobby", m->exact ? "true" : "false");   /* ("via": "eos" was EOS's) */
-    return n > 0 && (size_t)n < cap ? (size_t)n : 0;
+    if (n <= 0 || (size_t)n >= cap) return 0;
+    if (m->mastery.have && m->mastery.n >= 1) {
+        size_t k = mastery_json(&m->mastery, out + n, cap - (size_t)n);
+        if (!k) return 0;
+        n += (int)k;
+    }
+    if ((size_t)n + 1 >= cap) return 0;
+    out[n++] = '}';
+    out[n] = 0;
+    return (size_t)n;
 }
 
 #ifdef _WIN32
@@ -74,6 +140,7 @@ static SRWLOCK match_lock = SRWLOCK_INIT;
 static MatchPlayed match_q[MATCH_QUEUE];
 static int match_n;
 
+static int lobby_official;        /* (the results' thread's alone) lobby_host is an official lobby: the ticket may go there */
 static char *http(const wchar_t *verb, const wchar_t *path, const char *headers, const char *body, DWORD *status) {
     HINTERNET s = WinHttpOpen(L"OpenSmash", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0), c = NULL, r = NULL;
     char *buf = NULL;
@@ -118,8 +185,11 @@ static void json_string(char *out, size_t cap, const char *s) {   /* a JSON stri
 
 /* POST /match/played: 1 done with it (taken, or not to be sent again), 0 not now */
 static int send_match(const char *nsa, const char *player, const MatchPlayed *m) {
-    char data[512], body[1400];
+    char data[1536], body[4096], head[640] = "Content-Type: application/json\r\n", ticket[400];
     if (!results_match_data(m, data, sizeof data)) return 1;
+    /* (mastery: the account's ticket, as GET /gsp/me sends it - to an official lobby only, it is a credential) */
+    if (m->mastery.have && lobby_official && discord_lobby_ticket(ticket, sizeof ticket))
+        snprintf(head, sizeof head, "Content-Type: application/json\r\nX-OpenSmash-Ticket: %s\r\n", ticket);
     for (int with_key = 0; with_key < 2; with_key++) {
         long long t = (long long)time(NULL);
         char sig[65], key[40] = "", *at = body;
@@ -129,9 +199,10 @@ static int send_match(const char *nsa, const char *player, const MatchPlayed *m)
         json_string(at, sizeof body - (size_t)(at - body) - 2, data);
         strcat(body, "}");
         DWORD status;
-        char *answer = http(L"POST", L"/match/played", "Content-Type: application/json\r\n", body, &status);
+        char *answer = http(L"POST", L"/match/played", head, body, &status);
         int unknown = status == 403 && answer && strstr(answer, "unknown player");
-        fprintf(stderr, "[results] match played (%s): the lobby answered HTTP %lu%s%s\n", data, status, answer ? ": " : "", answer ? answer : "");
+        fprintf(stderr, "[results] match played (%s)%s: the lobby answered HTTP %lu%s%s\n", data, strstr(head, "Ticket") ? " with the account's ticket" : "",
+                status, answer ? ": " : "", answer ? answer : "");
         free(answer);
         if (unknown) continue;   /* (once more, with the NSA id that makes the player known there) */
         return status != 0 && status < 500;   /* (taken, already counted, refused, or a lobby without the count: 404) */
@@ -160,7 +231,7 @@ static int official_target(void) {
         return 0;
     }
     const char *lobby = net_official_lobby();
-    if (lobby && set_lobby(lobby, 39420)) return 1;   /* (NET_DEFAULT_PORT: the relay's own when the name has none) */
+    if (lobby && set_lobby(lobby, 39420)) { lobby_official = 1; return 1; }   /* (NET_DEFAULT_PORT: the relay's own when the name has none) */
     fprintf(stderr, "[results] a match not sent: the official lobby's name (%s) is not host:port\n", lobby ? lobby : "none");
     return 0;
 }
@@ -174,6 +245,10 @@ static void send_matches(const char *nsa, const char *player, uint64_t now, uint
         if (have) m = match_q[0];
         ReleaseSRWLockExclusive(&match_lock);
         if (!have || now < *match_at) return;
+        if (lobby_fixed) {   /* (SSBU_RESULTS_LOBBY: the ticket only when that lobby is the official one - a test's override) */
+            const char *v = getenv("SSBU_RESULTS_LOBBY");
+            lobby_official = v && net_means_official_lobby(v);
+        }
         int done = (!lobby_fixed && !official_target()) || send_match(nsa, player, &m) || ++*tries >= MATCH_TRIES;
         if (!done) { *match_at = now + MATCH_RETRY_MS; return; }
         *tries = 0;
@@ -229,7 +304,9 @@ void results_match_played(const MatchPlayed *m) {
     if (!thread_start()) return;   /* (on no official lobby, nothing to send it to: dropped by the thread) */
     AcquireSRWLockExclusive(&match_lock);
     if (match_n == MATCH_QUEUE) memmove(match_q, match_q + 1, (size_t)--match_n * sizeof *match_q);   /* (the oldest out) */
-    match_q[match_n++] = *m;
+    match_q[match_n] = *m;
+    if (!results_mastery_on()) match_q[match_n].mastery.have = 0;   /* (SSBU_MASTERY_REPORT=0: the report as before) */
+    match_n++;
     ReleaseSRWLockExclusive(&match_lock);
     SetEvent(wake);
 }

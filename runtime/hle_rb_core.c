@@ -22,7 +22,9 @@
 /* Rollback netplay is written for Windows (its savestates copy Windows host stacks and fiber
  * blocks): elsewhere the switch is never on, and these stand-ins keep the other files and the
  * wraps (hle_rb_wraps.c) as they are with it off. */
+#include <string.h>
 #include "host.h"
+#include "net_results.h"   /* (MatchMastery: rb_mastery_take) */
 int rb_on, rb_log;
 int rb_lite_skip(Cpu *c, int group) { (void)c; (void)group; return 0; }
 int rb_vi_catchup(void) { return 0; }
@@ -49,6 +51,7 @@ int rb_online_match_now(void) { return 0; }   /* (hle_online_delay.c) */
 int rb_sd_hold_now(void) { return 0; }        /* (hle_online_delay.c) */
 int rb_online_match_reported(void) { return 0; }   /* (hle_online_delay.c) */
 int rb_online_self_cut(void) { return 0; }    /* (hle_online_delay.c) */
+int rb_mastery_take(MatchMastery *out, int me) { (void)me; memset(out, 0, sizeof *out); return 0; }   /* (hle_online_delay.c: no fight read here) */
 #else
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
@@ -299,11 +302,15 @@ static void sd_hold_arm(Cpu *c);
 static void sd_hold_frame(Cpu *c);
 static void sd_hold_end(const char *why);
 static void sd_hold_fight(void);
+static void ms_fight_start(void);   /* (OpenSmash mastery points: what this game saw of the match, below) */
+static void ms_fight_end(void);
+static void ms_sample(void);
 static void safe_point(Cpu *c, uintptr_t sp) {
     S.points++;
     int on = fight_on();
     if (!on) {
         if (S.in_fight) {
+            ms_fight_end();   /* (before the match's report: online_restore) */
             int hold = sd_hold_begin(c);   /* (a tie: the match goes on with a sudden death, the same match's next fight) */
             summary(hold ? "fight over (a sudden death may follow)" : "fight over"); S.in_fight = 0; rb_pin(0); gc_skipf_summary();
             { void perf_rb_fight(int desyncs); perf_rb_fight(net_mode == 2 ? (int)net_desyncs : 0); }   /* (debug_perf_session.c) */
@@ -343,6 +350,7 @@ static void safe_point(Cpu *c, uintptr_t sp) {
         summary("fight start");   /* (clears the window; its numbers are all zero) */
         if (net_mode == 2) net_gone_reset();
         online_fight_start();
+        ms_fight_start();
         S.sp_same = 0;
     } else if (S.last_t) {
         double g = t - S.last_t;
@@ -358,6 +366,7 @@ static void safe_point(Cpu *c, uintptr_t sp) {
     }
     S.frames++;
     pr_sp_lf = ld32(0x71052c5184ull);   /* (LOGIC_FRAME, defined below) */
+    ms_sample();
     if (GetCurrentThreadId() != S.thread) S.thread_changed = 1;
     if (sp == S.sp_ref) S.sp_same++; else S.sp_other++;
     if (sp < S.sp_lo) S.sp_lo = sp;
@@ -4783,6 +4792,145 @@ static void online_fight_start(void) {
                 display_uw_online() ? " (experimental: ultrawide online)" : "");
     }
 }
+/* ---- OpenSmash mastery points: what this game saw of the match (net_results.h MatchMastery) ---------------------------
+ * Read only, nothing of the fight is written. A match is armed by its set-up (player 1's record built from the match
+ * set-up's call); its first fight reads the players' fighters (the match block's records, + 0 the ui_chara id: the fight
+ * test's record line), the stocks they start with (the match block's + 0x4c, 0 in a time match) and the time limit (+ 0x48,
+ * frames); each fight frame then reads each player's stocks (FighterInformation record + 0xd8, as bn_last_stock above and
+ * SSBU Arena's online_elo.c: the fighter manager's entry + 0xf8, its + 0xd8), and the logic frame a player's last stock
+ * went. At the fight's end: how it ended - a player gone (this game's fight went on past their end: net_gone_show) "left",
+ * one player with stocks left "normal", the time limit reached "time", else "left" with nobody named - and the places:
+ * the players with stocks left by their stocks, then the others by when they went (the later the better); a tie at the
+ * top, a time match's fight, or a fight not decided: no places (0). A fight after the first with no set-up between is
+ * the match's sudden death: it gives the places alone. Both games read the same fight (rollback's), so they say the same.
+ * The match's report takes it (online_report_match; hle_online_delay.c's for a match of the game's own netcode). */
+#define MS_PLAYERS 8
+#define MS_REC(i) (MELEE_INFO + ONLINE_HDR + (u64)(i) * ONLINE_REC)
+static struct {
+    int armed;                    /* a match set up: its next fight is its first */
+    int in_match, fight_sd;       /* a match's fight began; this fight is a sudden death of it */
+    int ready;                    /* a result to report */
+    int n, stock_start;
+    u32 limit;                    /* the time limit, frames (0 none) */
+    u64 chara[MS_PLAYERS];
+    int local_next[MS_PLAYERS], local[MS_PLAYERS];   /* (the panel as the game built it: this game's own human player) */
+    int st[MS_PLAYERS];           /* this fight's stocks, last read; -1 not read */
+    u32 out_lf[MS_PLAYERS];       /* the logic frame the last stock went, 0 still in */
+    int end, left, stocks_end[MS_PLAYERS], place[MS_PLAYERS];
+} MS;
+static void ms_record(int idx, u64 st, u64 caller) {   /* (record_before: the panel as the game left it) */
+    if (idx == 0 && caller == MATCH_SETUP_CALLER) MS.armed = 1;
+    else if (idx == 0) MS.armed = MS.in_match = 0;   /* (another screen's records - the controls screen's test fight: no match's) */
+    if (idx >= 0 && idx < MS_PLAYERS)
+        MS.local_next[idx] = readable(st, 0x460) && ld32(st + 0x78) == 0 && !ld8(st + 0x451);
+}
+static u64 ms_info(int i) {   /* (FighterInformation's record of player i, 0 none) */
+    u64 impl = fm_impl(), entry = impl ? ld64(impl + 0x20 + 8ull * (u64)i) : 0;
+    return entry ? ld64(entry + 0xf0 + 8) : 0;
+}
+static void ms_sample(void) {
+    if (!MS.in_match) return;
+    u32 lf = ld32(LOGIC_FRAME);
+    for (int i = 0; i < MS.n; i++) {
+        u64 rec = ms_info(i);
+        u32 v = rec ? ld32(rec + 0xd8) : 100;
+        if (v >= 100) continue;
+        MS.st[i] = (int)v;
+        if (v) MS.out_lf[i] = 0;
+        else if (!MS.out_lf[i]) MS.out_lf[i] = lf ? lf : 1;
+    }
+}
+static void ms_fight_start(void) {
+    if (MS.armed) {
+        int next[MS_PLAYERS];
+        memcpy(next, MS.local_next, sizeof next);
+        memset(&MS, 0, sizeof MS);   /* (a result not reported - the last match's - goes) */
+        memcpy(MS.local_next, next, sizeof next);
+        memcpy(MS.local, next, sizeof next);
+        MS.in_match = 1;
+        int n = 0;
+        for (int i = 0; i < MS_PLAYERS; i++) {
+            MS.chara[i] = ld64(MS_REC(i));
+            if ((i8)ld8(MS_REC(i) + 8) >= 0) n = i + 1;   /* (+ 8 the fighter kind: -1 no player there) */
+        }
+        MS.n = online_match ? net_n : n;
+        if (MS.n > MS_PLAYERS) MS.n = MS_PLAYERS;
+        MS.stock_start = ld8(MELEE_INFO + 0x4c);
+        MS.limit = ld32(MELEE_INFO + 0x48);
+        MS.end = MASTERY_END_LEFT; MS.left = -1;
+        char fs[160]; size_t k = 0; fs[0] = 0;
+        for (int i = 0; i < MS.n && k < sizeof fs - 30; i++) {
+            char key[24];
+            k += (size_t)snprintf(fs + k, sizeof fs - k, "%s%s", i ? ", " : "", results_fighter_key(MS.chara[i], key, sizeof key) ? key : "?");
+        }
+        fprintf(stderr, "[rb] mastery: a match's first fight: %d players (%s), %d stocks each, time limit %u frames\n", MS.n, fs, MS.stock_start, MS.limit);
+    } else if (MS.in_match) MS.fight_sd = 1;
+    for (int i = 0; i < MS_PLAYERS; i++) { MS.st[i] = -1; MS.out_lf[i] = 0; }
+}
+/* the places of this fight's end, 1 the best: stocks left first, then the later a player went the better; 0 for all when
+ * a stock was not read or the top is shared (no winner) */
+static void ms_places(int *place) {
+    int n = MS.n, top = 0;
+    memset(place, 0, sizeof(int) * MS_PLAYERS);
+    for (int i = 0; i < n; i++) if (MS.st[i] < 0) return;
+    for (int i = 0; i < n; i++) {
+        int better = 0;
+        for (int j = 0; j < n; j++) {
+            if (j == i) continue;
+            int bj = MS.st[j] > 0 ? (MS.st[i] > 0 ? MS.st[j] > MS.st[i] : 1) : (MS.st[i] > 0 ? 0 : MS.out_lf[j] > MS.out_lf[i]);
+            better += bj;
+        }
+        place[i] = better + 1;
+        top += place[i] == 1;
+    }
+    if (top != 1) memset(place, 0, sizeof(int) * MS_PLAYERS);
+}
+static void ms_fight_end(void) {
+    if (!MS.in_match || MS.n <= 0) return;
+    ms_sample();   /* (the very end) */
+    u32 lf = ld32(LOGIC_FRAME);
+    int alive = 0, read = 1, place[MS_PLAYERS];
+    for (int i = 0; i < MS.n; i++) { if (MS.st[i] < 0) read = 0; else if (MS.st[i] > 0) alive++; }
+    ms_places(place);
+    if (!MS.fight_sd) {
+        int gone = -1;
+        if (net_mode == 2) for (int p = 0; p < MS.n && p < RBN_PLAYERS; p++) if (net_gone_after[p] && net_gone_shown[p]) { gone = p; break; }
+        int timeout = MS.limit > 0 && lf + 2 >= MS.limit;
+        MS.left = -1;
+        if (gone >= 0) { MS.end = MASTERY_END_LEFT; MS.left = gone; }
+        else if (MS.stock_start > 0 && read && alive <= 1) MS.end = MASTERY_END_NORMAL;
+        else if (timeout) MS.end = MASTERY_END_TIME;
+        else MS.end = MASTERY_END_LEFT;
+        for (int i = 0; i < MS.n; i++) MS.stocks_end[i] = MS.stock_start > 0 && MS.st[i] > 0 ? MS.st[i] : 0;
+        /* (places: a stock match's fight decided - one left, or the time limit with the stocks apart; a time match's fight
+         * says none here: its score is not read) */
+        int decided = MS.stock_start > 0 && read && (alive <= 1 || MS.end == MASTERY_END_TIME);
+        for (int i = 0; i < MS_PLAYERS; i++) MS.place[i] = decided ? place[i] : 0;
+    } else if (read && alive <= 1) memcpy(MS.place, place, sizeof MS.place);   /* (a sudden death decided: its places) */
+    MS.ready = 1;
+    static const char *const END[3] = {"normal", "time", "left"};
+    char t[200]; size_t k = 0; t[0] = 0;
+    for (int i = 0; i < MS.n && k < sizeof t - 40; i++)
+        k += (size_t)snprintf(t + k, sizeof t - k, "%sP%d %d stocks (last at %u) place %d", i ? ", " : "", i + 1, MS.st[i], MS.out_lf[i], MS.place[i]);
+    fprintf(stderr, "[rb] mastery: %s over at logic frame %u: %s; the match: end %s, left P%d (0 none)\n", MS.fight_sd ? "the sudden death" : "the fight",
+            lf, t, END[MS.end], MS.left + 1);
+}
+/* The match's result for its report (net_results.h): me, this game's slot (-1: the one human panel the game built as
+ * this game's own). 1 filled (and taken: one report a match), 0 nothing to say. */
+int rb_mastery_take(MatchMastery *out, int me) {
+    memset(out, 0, sizeof *out);
+    if (!MS.ready || MS.n < 1) return 0;
+    MS.ready = 0;
+    if (me < 0) for (int i = 0, k = 0; i < MS.n; i++) if (MS.local[i]) { me = k++ ? -2 : i; }
+    if (me < 0 || me >= MS.n) { fprintf(stderr, "[rb] mastery: this game's own player is not known: no mastery in the report\n"); return 0; }
+    out->have = 1; out->me = me; out->end = MS.end; out->left = MS.left; out->stock_start = MS.stock_start; out->n = MS.n;
+    for (int i = 0; i < MS.n && i < MASTERY_PLAYERS; i++) {
+        results_fighter_key(MS.chara[i], out->p[i].fighter, sizeof out->p[i].fighter);
+        out->p[i].stocks = MS.stocks_end[i];
+        out->p[i].place = MS.place[i];
+    }
+    return 1;
+}
 /* (the fight over, no sudden death to follow) the match to the public lobby's count of matches played (net_results.c,
  * tools/nex/matches.py): its id from the handshake's match seed, the same on every game of this match alone, so the
  * lobby counts it once whichever game's report comes first. Quickplay, Battle Arenas and Local Wireless rooms alike. */
@@ -4795,6 +4943,7 @@ static void online_report_match(void) {
     m.players = net_n;
     m.seconds = online_agreed_ms > 0 ? (int)((now_ms() - online_agreed_ms) / 1000.0) : 0;
     m.rollback = 1;
+    rb_mastery_take(&m.mastery, net_local);   /* (OpenSmash mastery points: what this game saw of it) */
     results_match_played(&m);
     online_reported = 1;
     fprintf(stderr, "[rb] online: the match goes to the lobby's count of matches played (id %016llx)\n", (unsigned long long)m.id);
@@ -5069,6 +5218,7 @@ static void record_before(Cpu *c, const u64 args[8], void *ctx) {
     int idx = (int)c->x[1];
     u64 st = c->x[0];
     record_caller = c->x[30];
+    ms_record(idx, st, c->x[30]);   /* (mastery: a match's set-up, and this game's own player as the game built the panel) */
     if (rb_log && readable(st, 0x460))
         fprintf(stderr, "[rb] record %d: panel type %u, slot %d, ui_chara %016llx, colour %u, +0x450 %02x %02x\n", idx, ld32(st + 0x78),
                 (int)ld32(st + 0x210), (unsigned long long)ld64(st + 0x88), ld8(st + 0x90), ld8(st + 0x450), ld8(st + 0x451));

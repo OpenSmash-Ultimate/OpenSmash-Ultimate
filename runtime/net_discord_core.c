@@ -115,6 +115,37 @@ const char *discord_fighter_name(int kind) {
     return kind >= 0 && kind < (int)(sizeof FIGHTERS / sizeof *FIGHTERS) ? FIGHTERS[kind] : NULL;
 }
 
+/* (OpenSmash mastery points) the same fighters' ui_chara_db names without "ui_chara_", by the same number: the select
+ * screen's (tools/dev/pipeline_sweep.py's list, tools/modmanager/describe.py's names) */
+static const char *const KEYS[] = {
+    "mario", "donkey", "link", "samus", "samusd", "yoshi", "kirby", "fox", "pikachu", "luigi",
+    "ness", "captain", "purin", "peach", "daisy", "koopa", "ice_climber", "sheik", "zelda", "mariod",
+    "pichu", "falco", "marth", "lucina", "younglink", "ganon", "mewtwo", "roy", "chrom", "gamewatch",
+    "metaknight", "pit", "pitb", "szerosuit", "wario", "snake", "ike", "ptrainer", "diddy", "lucas",
+    "sonic", "dedede", "pikmin", "lucario", "robot", "toonlink", "wolf", "murabito", "rockman", "wiifit",
+    "rosetta", "littlemac", "gekkouga", "palutena", "pacman", "reflet", "shulk", "koopajr", "duckhunt", "ryu",
+    "ken", "cloud", "kamui", "bayonetta", "richter", "inkling", "ridley", "krool", "simon", "shizue",
+    "gaogaen", "miifighter", "miiswordsman", "miigunner", "packun", "jack", "brave", "buddy", "dolly", "master",
+    "tantan", "pickel", "edge", "element", "demon", "trail"};
+/* (a fighter's other parts, as ui_chara_db names them: the Ice Climbers, the Pokemon Trainer's three, Pyra and Mythra) */
+static const struct { const char *key; int kind; } PARTS[] = {
+    {"popo", 16}, {"nana", 16}, {"pzenigame", 37}, {"pfushigisou", 37}, {"plizardon", 37}, {"ptrainer_low", 37},
+    {"eflame", 83}, {"elight", 83}, {"eflame_first", 83}, {"eflame_only", 83}, {"elight_first", 83}, {"elight_only", 83}};
+#define NKEYS ((int)(sizeof KEYS / sizeof *KEYS))
+#define NPARTS ((int)(sizeof PARTS / sizeof *PARTS))
+
+const char *discord_fighter_key(int kind) { return kind >= 0 && kind < NKEYS ? KEYS[kind] : NULL; }
+const char *discord_fighter_key_at(int i) {
+    if (i >= 0 && i < NKEYS) return KEYS[i];
+    return i >= NKEYS && i < NKEYS + NPARTS ? PARTS[i - NKEYS].key : NULL;
+}
+int discord_fighter_of_key(const char *key) {
+    if (!key) return -1;
+    for (int i = 0; i < NKEYS; i++) if (!strcmp(KEYS[i], key)) return i;
+    for (int i = 0; i < NPARTS; i++) if (!strcmp(PARTS[i].key, key)) return PARTS[i].kind;
+    return -1;
+}
+
 size_t discord_group_digits(uint32_t v, char *out, size_t cap) {
     char raw[16];
     int n = snprintf(raw, sizeof raw, "%u", v);
@@ -169,13 +200,20 @@ void discord_presence_text(const DiscordPresence *p, char *details, size_t dn, c
     snprintf(d, sizeof d, "%s", place_name(p->where));
     const char *fighter = p->where != DP_MENUS ? discord_fighter_name(p->fighter) : NULL;
     if (fighter) { strncat(d, " - ", sizeof d - strlen(d) - 1); strncat(d, fighter, sizeof d - strlen(d) - 1); }
-    if (fighter && p->gsp) {
+    if (p->mastery_mode) {   /* (OpenSmash mastery points: no GSP, no position) */
+        if (fighter && p->has_mastery) {
+            char g[24];
+            discord_group_digits(p->mastery, g, sizeof g);
+            strncat(d, " - Mastery ", sizeof d - strlen(d) - 1);
+            strncat(d, g, sizeof d - strlen(d) - 1);
+        }
+    } else if (fighter && p->gsp) {
         char g[24];
         discord_group_digits(p->gsp, g, sizeof g);
         strncat(d, " - GSP ", sizeof d - strlen(d) - 1);
         strncat(d, g, sizeof d - strlen(d) - 1);
     }
-    if (p->rank > 0) {
+    if (p->rank > 0 && !p->mastery_mode) {
         char r[16];
         snprintf(r, sizeof r, " - #%d", p->rank);
         strncat(d, r, sizeof d - strlen(d) - 1);
@@ -354,7 +392,7 @@ static void hash16(const char *prefix, const char *v, char out[17]) {
 void discord_player_id(const char *nsa_hex, char out[17]) { hash16("opensmash-player\n", nsa_hex, out); }
 void discord_account_hash(const char *user_id, char out[17]) { hash16("opensmash-discord\n", user_id, out); }
 void discord_sign(const char *nsa_hex, const char *what, const char *player, int64_t t, const char *payload, char out[65]) {
-    char msg[512];
+    char msg[4096];   /* (a match report's data with its mastery object: some 1,200 characters at most) */
     int n = snprintf(msg, sizeof msg, "opensmash1\n%s\n%s\n%lld\n%s", what, player, (long long)t, payload ? payload : "");
     if (n < 0 || (size_t)n >= sizeof msg) { out[0] = 0; return; }
     uint8_t mac[32];
@@ -466,4 +504,87 @@ int discord_rank_in_leaderboard(const char *json, const char *player_id) {
     Find f = {player_id, 0, 0, ""};
     members(json, board_member, &f);   /* (a file cut short still gives the rank found before the cut) */
     return f.rank;
+}
+
+/* ---- the lobby ticket ----------------------------------------------------------------------------------------- */
+int discord_lobby_ticket(char *out, size_t cap) {
+    const char *t = getenv("SSBU_ONLINE_TICKET"), *f = getenv("SSBU_ONLINE_TICKET_FILE");
+    size_t n = 0;
+    if (!cap) return 0;
+    out[0] = 0;
+    if (t && *t) snprintf(out, cap, "%s", t);
+    else if (f && *f) {
+        FILE *fp = fopen(f, "rb");
+        if (!fp) return 0;
+        n = fread(out, 1, cap - 1, fp);
+        fclose(fp);
+        out[n] = 0;
+    }
+    n = strlen(out);
+    while (n && (out[n - 1] == '\n' || out[n - 1] == '\r' || out[n - 1] == ' ')) out[--n] = 0;
+    for (size_t i = 0; i < n; i++)
+        if ((unsigned char)out[i] < 0x20 || (unsigned char)out[i] > 0x7e) { out[0] = 0; return 0; }   /* (a space may be in the name) */
+    return n > 0;
+}
+
+/* ---- OpenSmash mastery points: GET /mastery/me ------------------------------------------------------------------ */
+static int key_ok(const char *k) {   /* (a ui_chara_db name: lower-case letters, digits, '_') */
+    if (!*k) return 0;
+    for (; *k; k++) if (!((*k >= 'a' && *k <= 'z') || (*k >= '0' && *k <= '9') || *k == '_')) return 0;
+    return 1;
+}
+typedef struct { char key[24]; long long points, veteran; int have_key; } MRow;
+static long long number64(const char *v) { return (*v == '-' || (*v >= '0' && *v <= '9')) ? strtoll(v, NULL, 10) : 0; }
+static void mrow_member(const char *key, const char *v, void *ctx) {
+    MRow *r = ctx;
+    if (!strcmp(key, "fighter") && *v == '"') {
+        char k[64];
+        if (str(v, k, sizeof k) && strlen(k) < sizeof r->key) { snprintf(r->key, sizeof r->key, "%s", k); r->have_key = 1; }
+    } else if (!strcmp(key, "points")) r->points = number64(v);
+    else if (!strcmp(key, "veteran")) r->veteran = number64(v);
+}
+typedef struct { DiscordMastery *m; int ok; } MAdd;
+static void mastery_member(const char *key, const char *v, void *ctx) {
+    MAdd *a = ctx;
+    if (strcmp(key, "fighters") || *v != '[') return;
+    const char *p = ws(v + 1);
+    if (*p == ']') { a->ok = 1; return; }
+    while (p && *p == '{') {
+        MRow r = {"", 0, 0, 0};
+        if (!(p = members(p, mrow_member, &r))) return;
+        if (r.have_key && key_ok(r.key)) {
+            if (r.points < 0) r.points = 0;
+            if (r.points > 1000000000ll) r.points = 1000000000ll;
+            if (r.veteran < 0) r.veteran = 0;
+            if (r.veteran > 1000000) r.veteran = 1000000;
+            DiscordMastery *m = a->m;
+            int i = 0;
+            while (i < m->n && strcmp(m->f[i].key, r.key)) i++;
+            if (i == m->n && m->n < DISCORD_MASTERY_MAX) { memset(&m->f[i], 0, sizeof m->f[i]); snprintf(m->f[i].key, sizeof m->f[i].key, "%s", r.key); m->n++; }
+            if (i < m->n) {
+                m->f[i].points += r.points;   /* (each region counts its own matches: summed) */
+                if (r.veteran > m->f[i].veteran) m->f[i].veteran = (int)r.veteran;   /* (one bonus, on every region: the largest) */
+            }
+        }
+        p = ws(p);
+        if (*p == ']') { a->ok = 1; return; }
+        if (*p != ',') return;
+        p = ws(p + 1);
+    }
+}
+int discord_mastery_add(const char *json, DiscordMastery *m) {
+    if (!json || !m) return 0;
+    static DiscordMastery was;   /* (the caller's thread alone: the web thread, or a test) */
+    was = *m;
+    MAdd a = {m, 0};
+    if (!members(json, mastery_member, &a) || !a.ok) { *m = was; return 0; }   /* (malformed, or no "fighters": nothing of it) */
+    m->answers++;
+    return 1;
+}
+int discord_mastery_of(const DiscordMastery *m, int kind, long long *out) {
+    *out = 0;
+    if (!m || !m->answers) return 0;
+    for (int i = 0; kind >= 0 && i < m->n; i++)
+        if (discord_fighter_of_key(m->f[i].key) == kind) *out += m->f[i].points + m->f[i].veteran;
+    return 1;
 }

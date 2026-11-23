@@ -321,6 +321,8 @@ namespace OpenSmash.Launcher
                 UpdateMods();
                 ScanForNewMods();
                 _ = CheckUpdatesAtBootAsync();
+                // (an online_server.txt without a line: the official lobby, the default - OpenSmash.Core.OnlineSettings)
+                OpenSmash.Core.OnlineSettings.EnsureLine(WindowSmash.ConfigFile(_repo, "online_server.txt"));
                 DiscordInit();   // (LauncherForm.Discord.cs: the account, refreshed if it expired)
                 CommunityInit();   // (LauncherForm.Community.cs: the home page's right column, and Rich Presence)
                 // The marketplace browser is heavy. Let the boot animation finish before it starts.
@@ -1867,7 +1869,10 @@ namespace OpenSmash.Launcher
             // online_server.txt is the truth (the game's settings menu writes it too); launcher.ini only remembers the
             // code and the server typed here, for when that choice is picked again.
             string serverFile = WindowSmash.ConfigFile(_repo, "online_server.txt");
-            string line = File.Exists(serverFile) ? FirstLine(serverFile) : SettingDefaults.OfFile("online_server.txt");
+            // (no file, or no line: the official lobby, the launchers' default - OpenSmash.Core.OnlineSettings; written below)
+            string line = File.Exists(serverFile) ? FirstLine(serverFile) : "";
+            bool unset = string.IsNullOrWhiteSpace(line);
+            if (unset) line = OpenSmash.Core.OnlineSettings.Official;
             var (lobby, code, server) = SettingDefaults.LobbyFromLine(line);
             string launcherIni = WindowSmash.ConfigFile(_repo, "launcher.ini");
             _iniValues["lobby"] = lobby;
@@ -1885,7 +1890,14 @@ namespace OpenSmash.Launcher
             string direct = File.Exists(directFile) ? FirstLine(directFile) : SettingDefaults.OfFile("online_direct.txt");
             _iniValues["direct"] = direct.StartsWith("off", StringComparison.OrdinalIgnoreCase) ? "off" : "on";
             _iniValues["name"] = FirstLine(WindowSmash.ConfigFile(_repo, "online_name.txt"));
-            _iniValues["region"] = OpenSmash.Core.ServerRegion.Setting(_repo);
+            // (Europe or North America East: "auto" shows as the region it plays on, written only when one is picked)
+            _iniValues["region"] = OpenSmash.Core.OnlineSettings.RegionShown(_repo);
+            // (what the lobby choice does not use, shown reset: an official lobby's leftover code, server or Direct
+            // connections from an older launcher's files - the game's line has none of them; an unset line is written
+            // below as the official lobby)
+            OpenSmash.Core.OnlineSettings.Normalize(_iniValues);
+            if (unset) _changed.Add("lobby");
+            _lobbyShown = _iniValues["lobby"];
             RegionView();
             _iniValues["reports"] = FileSaysOff(Path.Combine(_repo, "config", "crash_reports.txt")) ? "off" : "on";
             _iniValues["telemetry"] = OpenSmash.Core.PerfReport.Enabled(_repo) ? "on" : "off";
@@ -1907,6 +1919,7 @@ namespace OpenSmash.Launcher
                 scale.Values = scale.Values.Append(_iniValues["render_scale"]).ToArray();
                 scale.Labels = scale.Labels.Append(_iniValues["render_scale"]).ToArray();
             }
+            if (_changed.Count > 0) PersistSettings();   // (the official lobby of an unset file, the stale values reset)
         }
 
         // The files the Settings page shows, newest change first: the game's settings menu (Esc) writes the same ones.
@@ -1955,14 +1968,11 @@ namespace OpenSmash.Launcher
 
         bool SettingOn(Setting s)
         {
-            string lobby = _iniValues.GetValueOrDefault("lobby", "offline");
-            if (s.Key == "name") return lobby != "offline";
-            // (online_direct.txt is read for private rooms only, runtime/net_relay.c: of this page's lobbies that is LAN)
-            if (s.Key == "direct") return lobby == "lan";
-            if (s.Key == "code") return lobby is "private" or "custom";
-            if (s.Key == "server") return lobby == "custom";
-            // (the official lobby's region; an install that names its own official server has none)
-            if (s.Key == "region") return lobby is "auto" or "private" && !_regionOverride;
+            string lobby = _iniValues.GetValueOrDefault("lobby", OpenSmash.Core.OnlineSettings.Official);
+            // (the Online rows: OpenSmash.Core.OnlineSettings, the same in every launcher. The official servers are relay
+            // only: no Direct connections; the official lobby has no code and no server of one's own; the region is the
+            // official lobby's - an install that names its own official server has none)
+            if (s.Key is "name" or "direct" or "code" or "server" or "region") return OpenSmash.Core.OnlineSettings.Shown(s.Key, lobby, _regionOverride);
             return true;
         }
 
@@ -1971,7 +1981,7 @@ namespace OpenSmash.Launcher
             string v = _iniValues.GetValueOrDefault(s.Key, s.Text || s.Slider || s.Values.Length == 0 ? "" : s.Values[0]);
             if (s.Slider) return v;
             if (s.Text) return v == "" ? "type here" : v;
-            if (s.Key == "region" && (_regionOverride || v == "auto") && _regionShown != null) return _regionShown;   // ("Auto (EU, 24 ms)")
+            if (s.Key == "region" && _regionOverride && _regionShown != null) return _regionShown;   // (an install's own official server)
             if (s.Labels != null)
             {
                 int i = Array.IndexOf(s.Values, v);
@@ -2016,6 +2026,16 @@ namespace OpenSmash.Launcher
                 catch (Exception ex) { UiLocale.Message(UiLocale.Format("Could not save interface language: {0}", ex.Message), "OpenSmash"); return; }
                 UiLocale.Select(value);
             }
+            if (key == "lobby")
+            {
+                // (OpenSmash.Core.OnlineSettings: what the new choice does not use is reset, and written with it)
+                // (the lists set the value before calling here: the choice shown before is the one remembered)
+                foreach (var k in OpenSmash.Core.OnlineSettings.Choose(_iniValues, value, _lobbyShown)) _changed.Add(k);
+                _lobbyShown = value;
+                if (_editingKey is "code" or "server" && !SettingOn(_settings.First(x => x.Key == _editingKey))) { _settingEdit.Visible = false; _editingKey = null; }
+                PersistSettings();
+                return;
+            }
             _iniValues[key] = value;
             _changed.Add(key);
             if (key == "window_size" && value.Contains('x'))
@@ -2059,12 +2079,12 @@ namespace OpenSmash.Launcher
 
         void WriteSettingsFiles()
         {
-            string lobby = _iniValues.GetValueOrDefault("lobby", "offline");
+            string lobby = _iniValues.GetValueOrDefault("lobby", OpenSmash.Core.OnlineSettings.Official);
             string code = _iniValues.GetValueOrDefault("code", "").Replace(" ", "");
             string host = _iniValues.GetValueOrDefault("server", "").Trim();
-            bool serverReady = lobby != "private" || code != "";
-            if (lobby == "custom" && host != "" && !System.Text.RegularExpressions.Regex.IsMatch(host, @"^\S+:\d+$"))
-                serverReady = false;
+            // (a private lobby needs its code, a server of one's own its host:port: until then the game's file keeps the
+            // last complete choice - never a made-up address)
+            bool serverReady = OpenSmash.Core.OnlineSettings.Missing(lobby, code, host) == null;
             string server = SettingDefaults.LineFromLobby(lobby, code, host);
             // Only what was changed here since the files were read: the game's own settings menu (Esc)
             // writes these files too, while this window waits hidden for the game to close - writing
@@ -2106,9 +2126,10 @@ namespace OpenSmash.Launcher
             // (only when changed here: written at every close, a stale copy once hid the lobby the game's menu had picked)
             if (serverChanged)
             {
+                // (a code or a server reset by the lobby choice is reset in the remembered copy too: none comes back stale)
                 string launcherIni = WindowSmash.ConfigFile(_repo, "launcher.ini");
-                if (code != "") SetIni(launcherIni, "opensmash", "code", code);
-                if (host != "") SetIni(launcherIni, "opensmash", "server", host);
+                if (code != "" || !string.IsNullOrEmpty(IniValue(launcherIni, "opensmash", "code"))) SetIni(launcherIni, "opensmash", "code", code);
+                if (host != "" || !string.IsNullOrEmpty(IniValue(launcherIni, "opensmash", "server"))) SetIni(launcherIni, "opensmash", "server", host);
             }
         }
 
@@ -2117,15 +2138,16 @@ namespace OpenSmash.Launcher
             if (!_settingsLoaded) ReadSettings();
             CommitEdit();
             ReloadSettingsIfChanged();   // (Play checks and starts with what the files say now, plus what was changed here)
-            string lobby = _iniValues.GetValueOrDefault("lobby", "offline");
+            string lobby = _iniValues.GetValueOrDefault("lobby", OpenSmash.Core.OnlineSettings.Official);
             string code = _iniValues.GetValueOrDefault("code", "").Replace(" ", "");
             string host = _iniValues.GetValueOrDefault("server", "").Trim();
-            if (lobby == "private" && code == "")
+            string missing = OpenSmash.Core.OnlineSettings.Missing(lobby, code, host);
+            if (missing == "code")
             {
                 UiLocale.Message("Type a lobby code: a word your friends type too.", "OpenSmash");
                 return false;
             }
-            if (lobby == "custom" && host != "" && !System.Text.RegularExpressions.Regex.IsMatch(host, @"^\S+:\d+$"))
+            if (missing == "server")
             {
                 UiLocale.Message("Your own server is host:port, for example 192.168.1.20:39420.", "OpenSmash");
                 return false;
@@ -2160,6 +2182,7 @@ namespace OpenSmash.Launcher
             
             if (name == "mods" || name == "setup_modding") UpdateMods();
             if (name == "settings") { if (!_settingsLoaded) ReadSettings(); else ReloadSettingsIfChanged(); }
+            if (name == "competitive") _ = RankedRefresh();   // (LauncherForm.Competitive.cs)
 
             // The marketplace caches what is installed (plugins, loaders, mods) so its
             // requirement chips stay accurate; refresh it whenever it is opened.
@@ -2554,7 +2577,7 @@ namespace OpenSmash.Launcher
                             _dropdownHoverIndex = Math.Min(setting.Values.Length - 1, _dropdownHoverIndex + 1);
                         Invalidate();
                     }
-                    else if (_sel < SectionStart(_settingsTab) + (_settingsTab < _settingsTabs.Length ? _settingsTabs[_settingsTab].SettingKeys.Length : 0) - 1)
+                    else if (_sel < SectionStart(_settingsTab) + (_settingsTab < _settingsTabs.Length ? _settingsTabs[_settingsTab].SettingKeys.Count(SettingVisible) : 0) - 1)
                     { _sel++; EnsureSettingsVisible(); Invalidate(); }
                 }
                 if (e.KeyCode == Keys.Enter)
@@ -2609,6 +2632,7 @@ namespace OpenSmash.Launcher
             if (_openDropdownKey != null && _openDropdownKey.StartsWith("modpick:") && !id.StartsWith("modpick:"))
                 _openDropdownKey = null;
             if (ActivateCommunityHit(id)) return;
+            if (ActivateCompetitiveHit(id)) return;   // (LauncherForm.Competitive.cs)
             if (ActivateReportHit(id)) return;
             if (ActivateVerifyHit(id)) return;
             if (ActivateDiscordHit(id)) return;
@@ -2891,9 +2915,15 @@ namespace OpenSmash.Launcher
         {
             int n = 0;
             for (int i = 0; i < tab && i < _settingsTabs.Length; i++)
-                n += _settingsTabs[i].SettingKeys.Length;
+                n += _settingsTabs[i].SettingKeys.Count(SettingVisible);
             return n;
         }
+
+        // The Online rows a lobby choice does not use are not shown at all (OpenSmash.Core.OnlineSettings): the official
+        // lobby has no code, no server of one's own, no Direct connections; a server of one's own has no region.
+        string? _lobbyShown;
+        bool SettingVisible(string key) =>
+            key is not ("code" or "server" or "direct" or "region") || OpenSmash.Core.OnlineSettings.Shown(key, _iniValues.GetValueOrDefault("lobby", OpenSmash.Core.OnlineSettings.Official), _regionOverride);
 
         void ShowSettingsSection(int tab)
         {
@@ -2935,7 +2965,7 @@ namespace OpenSmash.Launcher
                 foreach (var key in tab.SettingKeys)
                 {
                     var set = _settings.FirstOrDefault(s => s.Key == key);
-                    if (set != null) list.Add(set);
+                    if (set != null && SettingVisible(key)) list.Add(set);
                 }
             return list.ToArray();
         }

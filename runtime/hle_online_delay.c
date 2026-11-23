@@ -139,6 +139,11 @@ static void online_match_over(void) {
     m.id = results_match_id_addresses(ips, n + 1, m.mode);
     m.players = n + 1;
     m.seconds = (int)(ld32(0x71052c5184ull) / 60);   /* (the logic frame) */
+    {   /* (OpenSmash mastery points: what this game saw of it - hle_rb_core.c's reading of the fight, this game's player
+         * the human panel the game built as its own; nothing when that is not known) */
+        int rb_mastery_take(MatchMastery *out, int me);
+        rb_mastery_take(&m.mastery, -1);
+    }
     results_match_played(&m);
     fprintf(stderr, "[net] online step: the match goes to the lobby's count of matches played (%d players, the game's own netcode)\n", n + 1);
 }
