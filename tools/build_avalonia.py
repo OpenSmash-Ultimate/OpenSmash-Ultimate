@@ -34,7 +34,7 @@ def install(folder, rid):
                     shutil.rmtree(owned)
         return target
     name = "OpenSmash.Avalonia.exe" if rid.startswith("win") else "OpenSmash.Avalonia"
-    target = ROOT / name
+    target = ROOT / ("OpenSmash.Avalonia.exe" if rid.startswith("win") else "OpenSmash-Launcher")
     staging = ROOT / (".OpenSmash-build-" + uuid.uuid4().hex + (".exe" if rid.startswith("win") else ".tmp"))
     try:
         shutil.copy2(folder / name, staging)
