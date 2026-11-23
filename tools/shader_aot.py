@@ -906,7 +906,8 @@ def spirv_siblings(spirv):
     if not m or not spv or not offset:
         return {spirv}
     base = cache_version() * 100 + int(spv.group(1))
-    return {f"g{base}.{m.group(2)}", f"g{base + int(offset.group(1))}.{m.group(2)}"}
+    both = {f"g{base}.{m.group(2)}", f"g{base + int(offset.group(1))}.{m.group(2)}"}
+    return both if spirv in both else {spirv}   # (another translator's names: on their own)
 
 
 def write_vulkan_ready(cache, spirv):
