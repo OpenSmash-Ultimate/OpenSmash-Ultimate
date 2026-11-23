@@ -26,6 +26,7 @@ import time
 REGIONS = (
     ("eu", "EU", "eu.lobby.opensmashultimate.com:39421"),
     ("na-east", "NA East", "na.lobby.opensmashultimate.com:39421"),
+    ("sa", "South America", "sa.lobby.opensmashultimate.com:39421"),
 )
 AUTO = "auto"
 SETTING_FILE, AUTO_FILE = "server_region.txt", "server_region_auto.txt"

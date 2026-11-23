@@ -44,7 +44,8 @@ $PublicLobby = 'eu.lobby.opensmashultimate.com:39421'   # (the official lobby's 
 # own settings menu (Esc > Online > Server region) or in OpenSmash.exe. Players on another region are not listed.
 $ServerRegions = @(
     @{ Id = 'eu'; Label = 'EU'; Lobby = 'eu.lobby.opensmashultimate.com:39421' },
-    @{ Id = 'na-east'; Label = 'NA East'; Lobby = 'na.lobby.opensmashultimate.com:39421' })
+    @{ Id = 'na-east'; Label = 'NA East'; Lobby = 'na.lobby.opensmashultimate.com:39421' },
+    @{ Id = 'sa'; Label = 'South America'; Lobby = 'sa.lobby.opensmashultimate.com:39421' })
 # The game's own values when a file or key is missing (runtime/gpu_display.c, hle_pad.c).
 $Defaults = @{
     window = 'windowed'; width = '1280'; height = '720'; pacing = 'clock'; latency = '3'

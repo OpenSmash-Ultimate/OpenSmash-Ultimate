@@ -43,13 +43,13 @@ namespace OpenSmash.Launcher
             ["render_scale"] = new[] { "1", "auto", "1.5", "2", "3" },
             ["renderer"] = new[] { "auto", "direct3d11", "vulkan" },
             ["lobby"] = new[] { "auto", "private", "custom", "lan", "offline" },   // (an older "eos" - Epic Online Services, gone in 0.5.0 - reads as "auto": LineFromLobby)
-            // (our regions only: Europe, North America East. "auto" - the game's default, the closest - is shown as the region
+            // (our regions only: Europe, North America East, South America. "auto" - the game's default, the closest - is shown as the region
             // it plays on and written only when the player picks one: OpenSmash.Core.OnlineSettings.RegionShown)
             ["region"] = OpenSmash.Core.ServerRegion.All.Select(r => r.Id).ToArray(),
         };
 
         // The server regions as the list shows them (OpenSmash.Core.ServerRegion: runtime/net.h's NET_REGION_TABLE).
-        public static readonly string[] RegionLabels = OpenSmash.Core.ServerRegion.All.Select(r => r.Id switch { "eu" => "Europe", "na-east" => "North America East", _ => r.Label }).ToArray();
+        public static readonly string[] RegionLabels = OpenSmash.Core.ServerRegion.All.Select(r => r.Id switch { "eu" => "Europe", "na-east" => "North America East", "sa" => "South America", _ => r.Label }).ToArray();
 
         // The region row's value: an install's own official server when it names one; null: the list's own label (the row
         // holds a region's id: OpenSmash.Core.OnlineSettings.RegionShown).

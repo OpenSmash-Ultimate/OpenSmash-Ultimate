@@ -129,8 +129,8 @@ static class SettingsChecks
         Check(s.GetSetting("lobby") == "auto" && s.GetSetting("code") == "" && s.GetSetting("server") == "" && s.GetSetting("direct") == "off",
               "official lobby: an old launcher.ini's code and server and an online_direct.txt 'on' are not shown");
         Check(!On("code") && !On("server") && !On("direct") && On("region") && On("name"), "official lobby: only the name and the server region are shown");
-        Check(Field<string[]>(Setting(s, "region"), "Values").SequenceEqual(new[] { "eu", "na-east" }) && Field<string[]>(Setting(s, "region"), "Labels").SequenceEqual(new[] { "Europe", "North America East" }),
-              "Server region: Europe and North America East");
+        Check(Field<string[]>(Setting(s, "region"), "Values").SequenceEqual(new[] { "eu", "na-east", "sa" }) && Field<string[]>(Setting(s, "region"), "Labels").SequenceEqual(new[] { "Europe", "North America East", "South America" }),
+              "Server region: Europe, North America East and South America");
         Check(File.ReadAllText(server) == "auto\n" && File.ReadAllText(direct) == "on\n", "reading writes nothing");
         s.ChangeSetting("lobby", "custom");
         Check(s.GetSetting("code") == "" && s.GetSetting("server") == "" && s.GetSetting("direct") == "on" && On("code") && On("server") && On("direct") && !On("region"),

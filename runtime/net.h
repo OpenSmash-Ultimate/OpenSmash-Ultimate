@@ -67,8 +67,9 @@ const char *net_lobby_code(void);    /* the lobby code it joins with ("smash": t
  * the fallback (no answer from any). The launchers' copy of the table: OpenSmash.Core/ServerRegion.cs,
  * tools/weblauncher/server_region.py, tools/launcher.ps1 (tests/test_launcher_defaults.py compares them).
  * Each row: the id config/server_region.txt says, the name shown, the lobby (a DNS name and its port). */
-#define NET_REGION_TABLE {"eu", "EU", NET_OFFICIAL_LOBBY}, {"na-east", "NA East", "na.lobby.opensmashultimate.com:39421"}
-#define NET_REGION_COUNT 2
+#define NET_REGION_TABLE {"eu", "EU", NET_OFFICIAL_LOBBY}, {"na-east", "NA East", "na.lobby.opensmashultimate.com:39421"}, \
+                         {"sa", "South America", "sa.lobby.opensmashultimate.com:39421"}
+#define NET_REGION_COUNT 3
 typedef struct NetRegion { const char *id, *label, *lobby; } NetRegion;
 extern const NetRegion NET_REGIONS[NET_REGION_COUNT];
 /* config/server_region.txt (the settings menu's and the launcher's Online > Server region): "auto" (the default: the

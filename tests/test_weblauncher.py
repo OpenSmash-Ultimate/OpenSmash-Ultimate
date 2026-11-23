@@ -78,7 +78,7 @@ class Settings(unittest.TestCase):
         os.remove(os.path.join(self.root, "online_server.txt"))
         s = launcher.read_settings(self.root)
         self.assertEqual((s["region"], s["region_shown"]), ("eu", ""))   # (no file, nothing measured: Europe)
-        self.assertEqual(launcher.CHOICES["region"], [("eu", "Europe"), ("na-east", "North America East")])   # (our two regions only)
+        self.assertEqual(launcher.CHOICES["region"], [("eu", "Europe"), ("na-east", "North America East"), ("sa", "South America")])   # (our regions only)
         s = launcher.write_settings(self.root, {"region": "na-east"})
         self.assertEqual((s["region"], s["region_shown"]), ("na-east", ""))
         self.assertEqual(launcher.first_line(os.path.join(self.root, "config", "server_region.txt")), "na-east")

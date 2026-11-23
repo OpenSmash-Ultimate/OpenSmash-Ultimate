@@ -156,9 +156,9 @@ static class Tests
             Check(SettingDefaults.LobbyFromLine(region.Lobby).Lobby == "auto" && SettingDefaults.LobbyFromLine(region.Lobby + " mine").Lobby == "private", $"{region.Lobby} reads as the official lobby");
             Check(SettingDefaults.Choices["region"].Contains(region.Id), $"{region.Id} is a choice of the page");
         }
-        // (our two regions only, by their names; "auto" stays the game's own default in the file)
-        Check(SettingDefaults.Choices["region"].SequenceEqual(new[] { "eu", "na-east" }) && SettingDefaults.RegionLabels.SequenceEqual(new[] { "Europe", "North America East" })
-              && SettingDefaults.OfFile("server_region.txt") == "auto", "Server region: Europe and North America East");
+        // (our regions only, by their names; "auto" stays the game's own default in the file)
+        Check(SettingDefaults.Choices["region"].SequenceEqual(new[] { "eu", "na-east", "sa" }) && SettingDefaults.RegionLabels.SequenceEqual(new[] { "Europe", "North America East", "South America" })
+              && SettingDefaults.OfFile("server_region.txt") == "auto", "Server region: Europe, North America East and South America");
         string install = Path.Combine(Path.GetTempPath(), "opensmash-region-" + Guid.NewGuid().ToString("n"));
         Directory.CreateDirectory(Path.Combine(install, "config"));
         try

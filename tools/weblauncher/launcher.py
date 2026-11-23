@@ -215,7 +215,7 @@ CHOICES = {
               ("lan", "This network (LAN)"), ("offline", "Offline")],
     # (our regions only, as OpenSmash.Core.OnlineSettings: "auto" in the file - the game's default, the closest - is shown as
     # the region it plays on and written only when one is picked)
-    "region": [(r[0], {"eu": "Europe", "na-east": "North America East"}.get(r[0], r[1])) for r in server_region.REGIONS],
+    "region": [(r[0], {"eu": "Europe", "na-east": "North America East", "sa": "South America"}.get(r[0], r[1])) for r in server_region.REGIONS],
     "direct": [("on", "On"), ("off", "Off")],
     "keyboard_player": [(str(n), f"Player {n}") for n in range(1, 9)] + [("0", "Nobody (no keyboard)")],
     "background": [("1", "Work while another window is in front"), ("0", "Only while the game is in front")],
@@ -279,7 +279,7 @@ def read_settings(root):
         s["server"] = saved["server"]
     s["direct"] = "off" if first_line(config_file(root, "online_direct.txt")).lower().startswith("off") else "on"
     s["name"] = first_line(config_file(root, "online_name.txt"))
-    # the official lobby's region: Europe or North America East ("auto" shows as the region it plays on); region_shown: an
+    # the official lobby's region: Europe, North America East or South America ("auto" shows as the region it plays on); region_shown: an
     # override's server
     s["region"] = region_choice(root)
     s["region_shown"] = server_region.override(root) or ""

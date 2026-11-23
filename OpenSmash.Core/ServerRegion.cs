@@ -36,6 +36,7 @@ namespace OpenSmash.Core
         {
             new ServerRegion("eu", "EU", OfficialLobby.Default),
             new ServerRegion("na-east", "NA East", "na.lobby.opensmashultimate.com:39421"),
+            new ServerRegion("sa", "South America", "sa.lobby.opensmashultimate.com:39421"),
         };
 
         public const string Auto = "auto";

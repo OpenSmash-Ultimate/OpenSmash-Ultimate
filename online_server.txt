@@ -1,8 +1,8 @@
 # The online lobby Play SSBU.bat joins (see docs/MULTIPLAYER.md): the first line that is not a comment,
 # host:port, then an optional lobby code that only your friends use. "off": play offline. "auto": the
-# official lobby of your server region: EU (eu.lobby.opensmashultimate.com:39421) or NA East
-# (na.lobby.opensmashultimate.com:39421). Which one is config/server_region.txt's to say: "auto" (the default: the
-# one that answers soonest), "eu" or "na-east"; the settings (Online > Server region) write it. Players on another
+# official lobby of your server region: EU (eu.lobby.opensmashultimate.com:39421), NA East
+# (na.lobby.opensmashultimate.com:39421) or South America (sa.lobby.opensmashultimate.com:39421). Which one is config/server_region.txt's to say: "auto" (the default: the
+# one that answers soonest), "eu", "na-east" or "sa"; the settings (Online > Server region) write it. Players on another
 # region are not listed. Either lobby's address here means "the official lobby" too.
 # "eos" (Epic Online Services, gone in OpenSmash 0.5.0) means the official lobby too.
 # Port 39421 is the lobby with the game's own Online mode (Quickplay) as well as Local Wireless

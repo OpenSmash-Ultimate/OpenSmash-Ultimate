@@ -93,7 +93,7 @@ static class CommunityChecks
         c.RankedAsked=true;
         surface.Navigate("competitive");surface.FrozenTime=10;
         using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"competitive.png"));}
-        Check(surface.CurrentView=="competitive"&&hits.Any(x=>x.Id=="community:arena")&&hits.Any(x=>x.Id=="community:arena-board")&&hits.Count(x=>x.Id.StartsWith("community:region:"))==3,"the COMPETITIVE page: SSBU Arena's button, its full leaderboard and the region filter");
+        Check(surface.CurrentView=="competitive"&&hits.Any(x=>x.Id=="community:arena")&&hits.Any(x=>x.Id=="community:arena-board")&&hits.Count(x=>x.Id.StartsWith("community:region:"))==4,"the COMPETITIVE page: SSBU Arena's button, its full leaderboard and the region filter");
         c.RankedRows=new();
         surface.InvalidateVisual();using(window.CaptureRenderedFrame()){}
         Check(hits.Any(x=>x.Id=="community:arena"),"an empty ranked board: the page still offers SSBU Arena");

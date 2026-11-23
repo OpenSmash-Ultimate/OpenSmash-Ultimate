@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools", "weblauncher"))
 import server_region as sr  # noqa: E402
 
 EU, NA = "eu.lobby.opensmashultimate.com:39421", "na.lobby.opensmashultimate.com:39421"
+SA = "sa.lobby.opensmashultimate.com:39421"
 
 
 class Region(unittest.TestCase):
@@ -40,7 +41,8 @@ class Region(unittest.TestCase):
         return path
 
     def test_table(self):
-        self.assertEqual(sr.REGIONS, (("eu", "EU", EU), ("na-east", "NA East", NA)))
+        self.assertEqual(sr.REGIONS, (("eu", "EU", EU), ("na-east", "NA East", NA), ("sa", "South America", SA)))
+        self.assertEqual((sr.by_id("SA"), sr.of_lobby(SA), sr.label("sa"), sr.lobby("sa")), ("sa", "sa", "South America", SA))
         self.assertEqual((sr.by_id("NA-East"), sr.by_id(" eu "), sr.by_id("auto"), sr.by_id("na"), sr.by_id(None)), ("na-east", "eu", None, None, None))
         self.assertEqual((sr.of_lobby(NA), sr.of_lobby("NA.lobby.opensmashultimate.com"), sr.of_lobby(EU)), ("na-east", "na-east", "eu"))
         for other in ("", None, "na.lobby.opensmashultimate.com:1", "na.lobby.opensmashultimate.com.evil.example:39421", "auto"):
@@ -60,6 +62,8 @@ class Region(unittest.TestCase):
         self.assertEqual(sr.pick({"eu": 50, "na-east": 60}, "na-east"), "eu")        # (clearly sooner)
         self.assertEqual(sr.pick({"eu": 20, "na-east": -1}, "na-east"), "eu")        # (the last pick does not answer)
         self.assertEqual(sr.pick({"eu": 20, "na-east": 90}, "moon"), "eu")
+        self.assertEqual(sr.pick({"eu": 210, "na-east": 130, "sa": 15}, "eu"), "sa")      # (South America: the closest for a player there)
+        self.assertEqual(sr.pick({"eu": 25, "na-east": 120, "sa": -1}, "sa"), "eu")       # (the last pick unreachable: never kept)
 
     def test_kept_line(self):
         self.assertEqual(sr.parse_kept("na-east 31 1700000000"), ("na-east", 31))
@@ -74,13 +78,13 @@ class Region(unittest.TestCase):
         asked = []
 
         def times(ms):
-            return lambda region: asked.append(region) or ms[region]
+            return lambda region: asked.append(region) or ms.get(region, [])     # (a region not listed: no answer)
         self.assertEqual(sr.measure(self.root, asker=times({"eu": [95, 90, 99], "na-east": [21, 25, 23]})), ("na-east", 23))
-        self.assertEqual(sorted(asked), ["eu", "na-east"])
+        self.assertEqual(sorted(asked), ["eu", "na-east", "sa"])
         with open(os.path.join(self.root, "config", "server_region_auto.txt")) as f:
             self.assertRegex(f.read(), r"^na-east 23 \d+\n$")   # (kept for the game: runtime/net_region.c starts from it)
         self.assertEqual((sr.current(self.root), sr.official_lobby(self.root), sr.shown(self.root)), ("na-east", NA, "Auto (NA East, 23 ms)"))
-        self.assertEqual(sr.official_lobbies(self.root), [NA, EU])
+        self.assertEqual(sr.official_lobbies(self.root), [NA, EU, SA])
         self.assertEqual(sr.measure(self.root, asker=times({"eu": [55], "na-east": [60]})), ("na-east", 60))     # (stays)
         self.assertEqual(sr.measure(self.root, asker=times({"eu": [30, 34], "na-east": [120, 130]})), ("eu", 32))
         self.assertEqual(sr.measure(self.root, asker=times({"eu": [], "na-east": []})), (None, -1))               # (no answer)
@@ -98,7 +102,7 @@ class Region(unittest.TestCase):
                 time.sleep(2)
             return [50]
         start = time.monotonic()
-        self.assertEqual(sr.measure_all(0.2, slow), {"eu": -1, "na-east": 50})
+        self.assertEqual(sr.measure_all(0.2, slow), {"eu": -1, "na-east": 50, "sa": 50})
         self.assertLess(time.monotonic() - start, 1.5)
 
     def test_choice(self):
