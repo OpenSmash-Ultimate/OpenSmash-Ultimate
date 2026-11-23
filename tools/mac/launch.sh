@@ -212,6 +212,49 @@ go_online() {
     return 0
 }
 
+# A lobby ticket's expiry ("<account id>|<name>|<expiry>[|...].<signature>", unix seconds) from the file $1; 0 when
+# there is none
+ticket_expiry() {
+    local t exp
+    t=$(head -c 512 "$1" 2>/dev/null | tr -d '\r\n')
+    t=${t%.*}
+    exp=$(printf '%s\n' "$t" | cut -d '|' -f 3)
+    case "$exp" in
+        '' | *[!0-9]*) echo 0 ;;
+        *) echo "$exp" ;;
+    esac
+}
+
+# (v0.5.0) The official lobbies let in only a signed-in account's game. Play in the OpenSmash launcher names the
+# ticket file itself (SSBU_ONLINE_TICKET_FILE); started without it (the Play SSBU app, Play SSBU.command, the web
+# launcher), the game gets the file the launcher keeps (build/cache/online_pass.txt) - asked of the launcher first,
+# with no window, when it is missing or has less than 10 minutes left (OpenSmash.Avalonia.app --online-pass: the
+# session signed in there). The game reads the file again at each join, so a launcher signed in later still helps.
+online_ticket() {
+    local pass="$root/build/cache/online_pass.txt"
+    local helper="$root/OpenSmash.Avalonia.app/Contents/MacOS/OpenSmash.Avalonia"
+    local said="$root/build/cache/online_pass.say" pid waited=0
+    [ -z "${SSBU_ONLINE_TICKET_FILE:-}" ] || return 0
+    [ -n "${SSBU_NET_RELAY:-}" ] || return 0
+    if [ "$(ticket_expiry "$pass")" -le $(($(date +%s) + 600)) ] && [ -x "$helper" ]; then
+        mkdir -p "$root/build/cache"
+        "$helper" --online-pass --project "$root" > "$said" 2>&1 < /dev/null &
+        pid=$!
+        while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 75 ]; do   # (at most 15 s)
+            sleep 0.2
+            waited=$((waited + 1))
+        done
+        kill "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
+        [ -s "$said" ] && say "$(tail -n 1 "$said")"
+        rm -f "$said"
+    fi
+    if [ "$(ticket_expiry "$pass")" -le "$(date +%s)" ]; then
+        say "No online pass: sign in in the OpenSmash launcher (OpenSmash.Avalonia.app in this folder) to play on the official lobbies."
+    fi
+    export SSBU_ONLINE_TICKET_FILE="$pass"
+}
+
 # Starts the game: open -W, in the background ($opener), waits for it to close. The environment's
 # SSBU_* variables go to the game (open passes those it is given), with where the port is (the game
 # starts in it: its settings, screenshots/ and reports/ are there) and where its log goes.
@@ -278,6 +321,7 @@ mode_play() {
     clear_net SSBU_NET_ROOM SSBU_NET_NAME
     pick_game
     go_online
+    online_ticket
     launch
     say "Starting the game..."
     follow

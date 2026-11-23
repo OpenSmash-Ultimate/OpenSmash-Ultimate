@@ -6,6 +6,7 @@ files, no network, no browser. Runs on Windows, Linux and macOS."""
 import http.client
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -303,6 +304,44 @@ class Commands(unittest.TestCase):
         with open(path, "w", encoding="ascii") as f:   # (a ticket of 10 minutes, as tools/dev/fake_accounts.py makes: used)
             f.write("u|Ann|%d.%s\n" % (now + 600, "f" * 64))
         self.assertEqual(launcher.online_pass(self.root, {"lobby": "public"}, now)[0], {"SSBU_ONLINE_TICKET_FILE": path})
+
+    def test_online_pass_asks_the_launcher(self):
+        """At Play the web launcher asks the OpenSmash launcher (no window: --online-pass) for a fresh ticket when the one
+        left is missing or about to expire, so a player signed in there plays here too; never when there is no launcher
+        program or the ticket is good."""
+        path = os.path.join(self.root, "build", "cache", "online_pass.txt")
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="ascii") as f:
+                f.write("u|Ann|%d.%s\n" % (int(time.time()) + 28800, "f" * 64))
+            return subprocess.CompletedProcess(cmd, 0, "online pass: written for Ann#0001\n", "")
+
+        self.assertEqual(launcher.renew_pass(self.root, "macos", run), "")   # (no launcher program here: not asked)
+        self.assertEqual(calls, [])
+        program = os.path.join(self.root, "OpenSmash.Avalonia.app", "Contents", "MacOS", "OpenSmash.Avalonia")
+        os.makedirs(os.path.dirname(program))
+        with open(program, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(program, 0o755)
+        if not os.access(program, os.X_OK):
+            self.skipTest("no executable bit here")
+        self.assertEqual(launcher.launcher_program(self.root, "macos"), program)
+        self.assertEqual(launcher.renew_pass(self.root, "macos", run), "online pass: written for Ann#0001")
+        self.assertEqual(calls, [[program, "--online-pass", "--project", self.root]])
+        self.assertEqual(launcher.renew_pass(self.root, "macos", run), "")   # (a good ticket now: not asked again)
+        self.assertEqual(len(calls), 1)
+        with open(path, "w", encoding="ascii") as f:                         # (about to expire: asked)
+            f.write("u|Ann|%d.%s\n" % (int(time.time()) + 120, "f" * 64))
+        launcher.renew_pass(self.root, "macos", run)
+        self.assertEqual(len(calls), 2)
+
+        def broken(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, 15)
+        os.remove(path)
+        self.assertIn("did not answer", launcher.renew_pass(self.root, "macos", broken))
 
     def test_programs(self):
         self.assertTrue(launcher.game_program("/r", "linux").endswith(os.path.join("build-linux", "ssbu")))
