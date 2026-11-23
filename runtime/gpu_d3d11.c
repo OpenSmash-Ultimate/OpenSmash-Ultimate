@@ -5312,16 +5312,24 @@ static u32 depth_green_red(u32 swz) {
 }
 static int depth_24bit(u32 zeta_format) { return zeta_format == 0x14 || zeta_format == 0x15 || zeta_format == 0x16; }
 
+int interp_probe_on(void);   /* (gpu_interp_probe.c, SSBU_INTERP_PROBE) */
+void interp_probe_cb(int kind, u64 program, const char *name, u32 bank, u64 va, u32 size, void (*read)(u64, u32, void *));
+void interp_probe_draw(void);
+void interp_probe_dispatch(void);
+static int interp_probing = -1;
+
 static void bind_resources(const u32 *regs, const CbBinding cb[STAGES][18], int stage, const Shader *s, DrawParams *params) {
     int mstage = stage == SHADER_VERTEX ? STAGE_VERTEX : STAGE_FRAGMENT;
     ID3D11ShaderResourceView *srv[18] = {0};
     static u8 data[0x10000];
     (void)regs;
+    if (interp_probing < 0) interp_probing = interp_probe_on() == 1;
     for (u32 b = 0; b < 18; b++) {
         if (!(s->info.cbuf_mask >> b & 1)) continue;
         u32 size = cb[mstage][b].size;
         if (size > 0x10000) size = 0x10000;
         if (size > s->info.cbuf_extent[b]) size = s->info.cbuf_extent[b];   /* only what the program can read */
+        if (interp_probing) interp_probe_cb(stage == SHADER_VERTEX ? 0 : 1, s->hash, s->name, b, cb[mstage][b].address, size, read_gpu);
         if (cam_hunt_draw && stage == SHADER_VERTEX && cb[mstage][b].address && size >= 64) cam_hunt_cb(s, b, cb[mstage][b].address, size);
         if (size >= 0x1000 && cb[mstage][b].address && !draw_logging && (srv[b] = kept_cb(cb[mstage][b].address, size)))
             continue;   /* big ones stay on the GPU */
@@ -5931,6 +5939,7 @@ void d3d11_draw(const u32 *regs, const CbBinding cb[STAGES][18], int indexed) {
 
     draw_reads_wide = 0;
     depth_sampled_now = NULL;
+    if (interp_probing == 1) interp_probe_draw();
     if (ps) bind_resources(regs, cb, SHADER_PIXEL, ps, &params);   /* (first: whether it reads the scene decides the vertex stage's) */
     {   /* (SSBU_DEBUG_CAMERA_HUNT: 3D draws on a widened target, 300 of them every 10 s) */
         static int hunting = -1, budget;
@@ -6560,10 +6569,13 @@ void d3d11_dispatch(const u32 *regs, const u32 *q) {
     /* constant buffers */
     ID3D11ShaderResourceView *srv[18] = {0};
     static u8 data[0x10000];
+    if (interp_probing < 0) interp_probing = interp_probe_on() == 1;
+    if (interp_probing) interp_probe_dispatch();
     for (u32 b = 0; b < 18; b++) {
         if (!(cs->info.cbuf_mask >> b & 1)) continue;
         u32 size = cb[b].size > 0x10000 ? 0x10000 : cb[b].size;
         if (size > cs->info.cbuf_extent[b]) size = cs->info.cbuf_extent[b];
+        if (interp_probing) interp_probe_cb(2, cs->hash, cs->name, b, cb[b].address, size, read_gpu);
         if (cb[b].address && size) read_gpu(cb[b].address, size, data);
         else { size = 16; memset(data, 0, 16); }
         srv[b] = upload_raw(SHADER_COMPUTE, b, data, size);
