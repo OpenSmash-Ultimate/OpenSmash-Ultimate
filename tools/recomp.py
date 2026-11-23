@@ -685,10 +685,9 @@ def local_patches(name):
     return out
 
 
-def plugin_patches(name):
-    """[(offset, old word, new word)] the Skyline plugins write into module `name`'s code
-    (dump/skyline/patches.txt, which the runtime writes: sky_memcpy; a fifth field names the plugin), and this PC's
-    own (local_patches)."""
+def skyline_patches(name):
+    """[(offset, old word, new word)] from dump/skyline/patches.txt only (written by Skyline plugins via
+    sky_memcpy, or seeded from tools/skyline_seed/patches.txt)."""
     path = os.path.join(TREE, "dump", "skyline", "patches.txt")
     out = []
     if os.path.exists(path):
@@ -697,7 +696,14 @@ def plugin_patches(name):
                 p = line.split()
                 if len(p) in (4, 5) and p[0] == name:
                     out.append((int(p[1], 16), int(p[2], 16), int(p[3], 16)))
-    return out + local_patches(name)
+    return out
+
+
+def plugin_patches(name):
+    """[(offset, old word, new word)] the Skyline plugins write into module `name`'s code
+    (dump/skyline/patches.txt, which the runtime writes: sky_memcpy; a fifth field names the plugin), and this PC's
+    own (local_patches)."""
+    return skyline_patches(name) + local_patches(name)
 
 
 ANY_SP = 1 << 62   # (a landing pad that sets its own sp: whatever sp the unwinder resumes it with - lift.py landing)
@@ -726,25 +732,35 @@ def adr_landing_pads(mod, funcs):
 
 
 def code_patches(mod, name):
-    """offset -> [words] of CODE_PATCHES and the plugins' patches for this module, each checked
-    against its code."""
+    """offset -> [words] or ("switch", [words][, guard]) of CODE_PATCHES, Skyline plugins' patches,
+    and local_patches for this module, each checked against its code."""
     out = {}
-    patches = plugin_patches(name)
+    sky = skyline_patches(name)
+    loc = local_patches(name)
     # Smashline's inline hooks: a `bl` to a code cave at the hooked call, the cave nops and a `b` to
     # the original target; the runtime puts the hook before the call instead (hle_skyline.c
     # A64InlineHook), so a call site with an inline point keeps its code and the cave stays as it was
     inline, caves = set(inline_points(name)), set()
-    for off, _was, now in patches:
+    for off, _was, now in sky + loc:
         if now & 0xFC000000 == 0x94000000 and off in inline:
             cave = off + (((now & 0x3FFFFFF) ^ 0x2000000) - 0x2000000) * 4
             caves |= {off} | set(range(cave, cave + 0x18, 4))
-    for off, was, now in patches:
+    for off, was, now in sky:
+        if off in caves:
+            continue
+        if off + 4 <= len(mod.image) and mod.u32(off) == was:
+            # Gate Skyline plugin patches at runtime (rt_plugin_patches_on) so running without
+            # loaded plugins executes the original instruction instead of a plugin's NOP/patch.
+            out[off] = ("switch", [now], "rt_plugin_patches_on")
+        else:
+            print(f"{name}: a plugin's code patch at {off:#x} left out: not {was:08x} there")
+    for off, was, now in loc:
         if off in caves:
             continue
         if off + 4 <= len(mod.image) and mod.u32(off) == was:
             out[off] = [now]
         else:
-            print(f"{name}: a plugin's code patch at {off:#x} left out: not {was:08x} there")
+            print(f"{name}: a local code patch at {off:#x} left out: not {was:08x} there")
     for off, was, words, what in CODE_PATCHES.get(mod.build_id, []):
         if mod.u32(off) == was:
             out[off] = ("switch", words)   # (lift.py: on or off as the game starts, rt_code_patches_on)

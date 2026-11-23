@@ -8,7 +8,7 @@ Usage:
                                  [1:VAR=value] [2:VAR=value]                             (one game only)
 
 What it starts, all on 127.0.0.1 and all stopped at the end (nothing is left running):
-  - tools/ssbu_relay.py --bind 127.0.0.1 --port <free port> --relay-only --ticket-secret-file <a test secret made here>
+  - the lobby server's tools/ssbu_relay.py (OPENSMASH_SERVER_DIR, or ../opensmash-server) --bind 127.0.0.1 --port <free port> --relay-only --ticket-secret-file <a test secret made here>
     --min-client-level 1: the official lobby's rules (relay only, lobby tickets, the online level);
   - two games (build\\ssbu.exe), each with its own copy of the save (SSBU_DATA_ROOT), SSBU_OFFICIAL_LOBBY and
     SSBU_NET_RELAY both that lobby (so each game treats it as the official one: ticket + level in its JOIN, direct paths
@@ -49,7 +49,9 @@ def ticket(secret, uid, name):
 
 def running_games():
     out = subprocess.run(["tasklist", "/NH"], capture_output=True, text=True).stdout
-    return sum(1 for l in out.splitlines() if l.lower().startswith("ssbu"))
+    # (the game's own executables only: ssbu.exe, ssbu_rb.exe, ...; not another program whose name starts so, such as
+    # SSBU Arena's launcher SSBU-Arena.exe, which made this refuse to start)
+    return sum(1 for l in out.splitlines() if re.match(r"ssbu([._]|$)", (l.split() or [""])[0].lower()))
 
 
 def main(argv):
@@ -83,6 +85,12 @@ def main(argv):
     if not os.path.isfile(exe): raise SystemExit("no build\\%s here" % exe_name)
     if not os.path.isdir(save): raise SystemExit("no save folder: " + save)
     if running_games(): raise SystemExit("another ssbu.exe is running")
+    # (the lobby server left this repository with #484: a checkout of it, OPENSMASH_SERVER_DIR or ../opensmash-server
+    # next to this folder, as tests/netproto.py and netlobby.sh find it; a tree from before #484 still has its own)
+    server = os.environ.get("OPENSMASH_SERVER_DIR") or os.path.join(os.path.dirname(ROOT), "opensmash-server")
+    relay = next((r for r in (os.path.join(server, "tools", "ssbu_relay.py"), os.path.join(ROOT, "tools", "ssbu_relay.py"))
+                  if os.path.isfile(r)), None)
+    if not relay: raise SystemExit("no lobby server: set OPENSMASH_SERVER_DIR to a checkout of it (its tools/ssbu_relay.py)")
     out = os.path.join(OUT, tag)
     if os.path.isdir(out): shutil.rmtree(out)
     os.makedirs(out)
@@ -90,7 +98,7 @@ def main(argv):
     with open(os.path.join(out, "secret.txt"), "wb") as f: f.write(secret)
     port = free_port()
     lobby_log = open(os.path.join(out, "lobby.log"), "w")
-    lobby = subprocess.Popen([sys.executable, "-u", os.path.join(ROOT, "tools", "ssbu_relay.py"), "--bind", "127.0.0.1", "--port", str(port),
+    lobby = subprocess.Popen([sys.executable, "-u", relay, "--bind", "127.0.0.1", "--port", str(port),
                               *([] if plain else ["--relay-only", "--ticket-secret-file", os.path.join(out, "secret.txt"), "--min-client-level", "1"])],
                              cwd=out, stdout=lobby_log, stderr=subprocess.STDOUT)
     time.sleep(1.0)

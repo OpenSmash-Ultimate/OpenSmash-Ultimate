@@ -65,7 +65,8 @@ HLE_WRAP(710356dd50) { LITE(710356dd50, 64, 0); }
 
 /* (SSBU Arena's SKIPF, 4774203 + f9b673b; the 13.0.5 addresses from its table) Functions that do nothing a re-run frame
  * needs: with SSBU_RB_SKIPF=<bits> a frame run again returns from them at once (bit 0 the first here, ... bit 5 the last).
- * Off by default: each needs pairs in sync before it is turned on (hle_rb_core.c rb_skipf). */
+ * Default 53: bits 0, 2, 4, 5 are skipped. Bits 1 and 3 are NOT: a re-run frame does need them (skipping bit 1 was the
+ * v0.5.0 stutter, #508; skipping bit 3 made the name tag above the fighter bounce). See hle_rb_core.c rb_skipf. */
 /* signature: 16 words, sha256 c5f6532aa6c3a56a */
 HLE_WRAP(71022df110) { if (rb_skipf(c, 0)) return; f_71022df110_orig(c); }
 /* signature: 1 word, sha256 6b592f583029f628 */

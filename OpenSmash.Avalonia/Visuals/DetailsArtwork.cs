@@ -23,7 +23,7 @@ public sealed partial class ClassicSurface
             ["overlay"] = "The frame rate in the corner. F1 shows or hides it while playing.",
             ["volume"] = "The game's whole sound (display.ini volume, the same setting as the in-game menu's Volume row). 100 is full. It applies the next time you press Play.",
             ["name"] = "What other players see. Leave it empty and the game picks one.",
-            ["lobby"] = "Public: everyone's rooms. Private: only players with the same code. Offline: no network.",
+            ["lobby"] = "Official lobby: your region's server, every match relayed. Private: only players with the same code. LAN: players on this network. Offline: no network.",
             ["code"] = "A word your friends type too. Capital letters count.",
             ["server"] = "host:port of a lobby you run, for example 192.168.1.20:39420.",
             ["direct"] = "On is faster. Off sends everything through the lobby, so your address stays private.",

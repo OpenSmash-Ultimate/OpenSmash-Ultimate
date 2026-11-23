@@ -71,13 +71,49 @@ static class CommunityChecks
             window.Width=w;window.Height=h;surface.InvalidateVisual();
             using var frame=window.CaptureRenderedFrame();
             if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,$"community-{w}.png"));
+            // (mastery: the top mastery's full leaderboard link; SSBU Arena has its own COMPETITIVE page)
             var board=hits.FirstOrDefault(x=>x.Id=="community:board");var signin=hits.FirstOrDefault(x=>x.Id=="community:signin");
             var play=hits.First(x=>x.Id=="menu:3");
             Check(board.Id!=null&&signin.Id!=null&&board.R.Right<=frame!.PixelSize.Width&&signin.R.Left>play.R.Right,$"home right column fits beside the buttons at {w}x{h}");
         }
+        // OPENSMASH_MASTERY_UI=0: the GSP leaderboard as before; mastery, the account's total on the card
+        string? mastery=Environment.GetEnvironmentVariable("OPENSMASH_MASTERY_UI");
+        try
+        {
+            Environment.SetEnvironmentVariable("OPENSMASH_MASTERY_UI","0");
+            surface.InvalidateVisual();using(window.CaptureRenderedFrame()){}
+            Check(hits.Any(x=>x.Id=="community:board")&&!hits.Any(x=>x.Id=="community:arena"),"OPENSMASH_MASTERY_UI=0 brings the GSP leaderboard back");
+        }
+        finally{Environment.SetEnvironmentVariable("OPENSMASH_MASTERY_UI",mastery);}
+        c.TopMastery=[new OpenSmash.Core.MasteryRow{Id="x",Name="Xia",Points=1200,Veteran=1000}];c.TopMasteryAsked=true;
+        surface.InvalidateVisual();using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"community-mastery.png"));}
+        Check(hits.Any(x=>x.Id=="community:board")&&!hits.Any(x=>x.Id=="community:arena")&&hits.Any(x=>x.Id=="nav:competitive"),"the top mastery and its full leaderboard on the home, SSBU Arena in the COMPETITIVE menu (no card on the home)");
+        // the COMPETITIVE page: SSBU Arena's ranked top 10 (fighter icons, name#tag, tier, rating), its button, the full leaderboard, the regions
+        c.RankedRows=OpenSmash.Core.RankedBoard.Parse("[{\"rank\":1,\"username\":\"Vex\",\"tag\":7,\"rating\":2586.2,\"wins\":9,\"losses\":2,\"tier\":\"Grandmaster\",\"tier_color\":\"#FF5A6A\",\"fighters\":[{\"fighter\":\"Joker\",\"games\":9},{\"fighter\":\"Pyra / Mythra\",\"games\":2}]}]");
+        c.RankedAsked=true;
+        surface.Navigate("competitive");surface.FrozenTime=10;
+        using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"competitive.png"));}
+        Check(surface.CurrentView=="competitive"&&hits.Any(x=>x.Id=="community:arena")&&hits.Any(x=>x.Id=="community:arena-board")&&hits.Count(x=>x.Id.StartsWith("community:region:"))==3,"the COMPETITIVE page: SSBU Arena's button, its full leaderboard and the region filter");
+        c.RankedRows=new();
+        surface.InvalidateVisual();using(window.CaptureRenderedFrame()){}
+        Check(hits.Any(x=>x.Id=="community:arena"),"an empty ranked board: the page still offers SSBU Arena");
+        surface.Navigate("home");
         c.Account=new DiscordToken{Access="x",UserId="1",DisplayName="Player"};c.Open=true;c.Records=[new FighterGsp{Fighter=29,Gsp=500000}];
         surface.InvalidateVisual();using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"community-card.png"));}
         Check(hits.Any(x=>x.Id=="community:signout")&&hits.Any(x=>x.Id=="community:shown"),"the account card offers the leaderboard name choice and sign out");
+        // (an account: its card shows the mastery points, the show/hide choice stays)
+        c.Account=null;c.AccountMode=true;c.Me=new OpenSmash.Core.Profile{Username="Tester"};c.Open=true;c.MasteryAsked=true;
+        c.Mastery=OpenSmash.Core.Mastery.Merge([OpenSmash.Core.Mastery.ParseMe("{\"fighters\":[{\"fighter\":\"pzenigame\",\"points\":500,\"veteran\":1000,\"games\":12,\"wins\":7}]}")]);
+        surface.InvalidateVisual();using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"community-mastery-card.png"));}
+        Check(hits.Any(x=>x.Id=="community:signout")&&hits.Any(x=>x.Id=="community:shown")&&c.Mastery.Total==1500,"the account card with mastery keeps the name choice and sign out");
+        // (the accounts service's answer: its own total, the place on the board, a long fighter name wrapped not cut)
+        c.Mastery=OpenSmash.Core.Mastery.ParseServiceMe("[{\"fighter\":\"gamewatch\",\"points\":800,\"veteran\":1000,\"total\":1900,\"games\":9,\"wins\":4}]")!;
+        c.Mastery.Rank=OpenSmash.Core.Mastery.ParseServiceRank("[{\"pos\":12,\"id\":\"me\",\"total\":1900,\"total_count\":340,\"main_fighter\":\"gamewatch\"}]");
+        surface.InvalidateVisual();using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"community-mastery-service-card.png"));}
+        Check(hits.Any(x=>x.Id=="community:signout")&&c.Mastery.FromService&&c.Mastery.Total==1900&&OpenSmash.Core.Mastery.Place(c.Mastery.Rank)=="#12","the account card with the service's mastery and place");
+        c.Open=false;
+        surface.InvalidateVisual();using(var frame=window.CaptureRenderedFrame()){if(screenshotDir!=null)frame!.Save(Path.Combine(screenshotDir,"community-mastery-service-home.png"));}
+        Check(hits.Any(x=>x.Id=="community:me")&&hits.Any(x=>x.Id=="community:board"),"the home with the service's mastery and place");
         window.Close();
     }
 }

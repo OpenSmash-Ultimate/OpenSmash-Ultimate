@@ -97,3 +97,32 @@ html:not(.host-windows) .windows-only { display: none; }
 .dc-gsp td { padding: 3px 0; border-bottom: 1px solid var(--line); }
 .dc-gsp td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
 .dc-shown { display: flex; align-items: center; gap: 8px; margin: 4px 0 10px; font-size: 14px; }
+/* mastery points and the SSBU Arena card (app.js refreshMastery) */
+.ms-total { font-size: 22px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.ms-table th { font-weight: 600; padding: 2px 0; }
+.ms-table th.num { text-align: right; }
+.ms-table td.num:nth-child(2) { color: var(--text); }
+.dc-gsp td.ms-rank { width: 1.8em; padding-right: .7em; }
+.ms-top { margin: 14px 0 4px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+a.button { display: inline-block; text-decoration: none; color: var(--text); background: var(--card); border: 2px solid var(--line);
+  border-radius: var(--radius); padding: 10px 18px; }
+a.button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+a.button.primary:hover { background: var(--accent-2); border-color: var(--accent-2); }
+/* fighter icons, the Competitive page (app.js refreshRanked) */
+.ficon { width: 26px; height: 26px; vertical-align: middle; margin-right: 6px; }
+.ficon.initial { display: inline-grid; place-items: center; border-radius: 50%; background: var(--line); font-size: 12px; color: var(--muted); }
+.ranked-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.seg { display: flex; gap: 6px; }
+.seg button { padding: 6px 14px; font-size: 14px; }
+.seg button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.ranked { width: 100%; border-collapse: collapse; font-size: 15px; }
+.ranked th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .08em; padding: 4px 6px; }
+.ranked td { padding: 6px; border-top: 1px solid var(--line); }
+.ranked td.num, .ranked th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.ranked td.pos { color: var(--muted); width: 2.4em; text-align: right; }
+.ranked tr:nth-child(-n+4) td.pos { color: var(--accent); font-weight: 700; }
+.ranked .tag { color: var(--muted); font-size: 13px; margin-left: 2px; }
+.ranked .rating { font-weight: 700; font-size: 17px; }
+.tier { font-weight: 700; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+.tier::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 7px; background: currentColor; transform: rotate(45deg); }
+.ms-full { display: inline-block; margin-top: 8px; color: var(--muted); font-size: 14px; }

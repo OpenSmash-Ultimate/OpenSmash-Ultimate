@@ -991,6 +991,8 @@ class BuildGameMacTests(unittest.TestCase):
             sys.path[:] = saved[2]
         jobs, extra = seen[0]
         self.assertEqual(extra, ('-fsyntax-only',))
+        flags = jobs[0][3]   # (#488: the check's own overlay_font.h before build-mac/gen's, which may be a stale one)
+        self.assertEqual(flags[:2], ['-I', tmp])
         sources = {os.path.relpath(j[0], ROOT / 'runtime') for j in jobs}
         self.assertIn(os.path.join('macos', 'gpu_metal.m'), sources)
         self.assertIn('host.c', sources)

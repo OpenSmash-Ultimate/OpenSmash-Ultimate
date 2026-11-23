@@ -214,9 +214,13 @@ public sealed partial class ClassicSurface
             AddHit("nav:mode-next", nextX, cy - chh / 2, aw, chh);
 
             // Section links with the red skewed underline
-            string active = _view == "home" ? "nav:home" : _view is "settings" or "remap" or "rooms" ? "nav:settings" : "nav:mods";
+            string active = _view == "home" ? "nav:home" : _view is "settings" or "remap" or "rooms" ? "nav:settings" : _view == "competitive" ? "nav:competitive" : "nav:mods";
             float lx = prevX - 8 * s;
-            foreach (var (id, label) in new[] { ("nav:settings", "SETTINGS"), ("nav:mods", "MODS"), ("nav:home", "HOME") })
+            // (right to left: SETTINGS, COMPETITIVE - SSBU Arena's ranked, CompetitiveArtwork.cs - MODS, HOME)
+            var links = CompetitiveOn
+                ? new[] { ("nav:settings", "SETTINGS"), ("nav:competitive", "COMPETITIVE"), ("nav:mods", "MODS"), ("nav:home", "HOME") }
+                : new[] { ("nav:settings", "SETTINGS"), ("nav:mods", "MODS"), ("nav:home", "HOME") };
+            foreach (var (id, label) in links)
             {
                 float tw = ArtworkTheme.TextWidth(g, label, cf, csp), bw = tw + 24 * s;
                 lx -= bw;
