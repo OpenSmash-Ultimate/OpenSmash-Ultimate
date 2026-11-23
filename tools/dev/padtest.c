@@ -12,6 +12,11 @@
 /* (what hle_pad.c reaches outside itself; the file is not read here, and nothing is converted) */
 const char *config_path(enum ConfigFile file) { (void)file; return "controllers.ini"; }
 int settings_ini_set(const char *path, const char *section, const char *key, const char *value) { (void)path; (void)section; (void)key; (void)value; return 0; }
+/* (hle_padble.c's, not built here: no Switch 2 controller over Bluetooth in a test) */
+int padble_start(int trace) { (void)trace; return 0; }
+void padble_poll(PadBleState out[PADBLE_PORTS]) { memset(out, 0, sizeof(PadBleState) * PADBLE_PORTS); }
+void padble_player(int port, int slot) { (void)port; (void)slot; }
+void padble_vibrate(int port, const float motors[2][4]) { (void)port; (void)motors; }
 
 static int failures, checks;
 #define CHECK(cond, ...) do { checks++; if (!(cond)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)

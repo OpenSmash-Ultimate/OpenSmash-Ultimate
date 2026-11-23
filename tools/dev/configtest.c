@@ -22,6 +22,11 @@ void padusb_poll(PadUsbState out[PADUSB_PORTS]) { memset(out, 0, sizeof(PadUsbSt
 void padusb_rumble(int port, int on) { (void)port; (void)on; }
 void padusb_set_switch(int on) { (void)on; }
 #endif
+/* (hle_padble.c's, not built here: no Switch 2 controller over Bluetooth in a test) */
+int padble_start(int trace) { (void)trace; return 0; }
+void padble_poll(PadBleState out[PADBLE_PORTS]) { memset(out, 0, sizeof(PadBleState) * PADBLE_PORTS); }
+void padble_player(int port, int slot) { (void)port; (void)slot; }
+void padble_vibrate(int port, const float motors[2][4]) { (void)port; (void)motors; }
 
 /* (gpu_display.c's, which is not built here: display.ini's defaults, made up) */
 const char *display_default_ini(void) {
