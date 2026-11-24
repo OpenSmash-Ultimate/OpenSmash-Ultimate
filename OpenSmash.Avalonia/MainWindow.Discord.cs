@@ -39,12 +39,28 @@ public sealed partial class MainWindow
             c.Account = null; c.Avatar = null; c.Rank = 0; c.Records = new(); c.FighterRanks = new(); c.Open = false; c.Error = "";
             AccountInit(_communityRoot);   // (v0.5.0: MainWindow.Account.cs; the account replaces the Discord token)
             c.Shown = AccountMode || DiscordAccount.ShowsName(_communityRoot);   // (a signed-in account is listed by default)
-            if (c.HasApp && !AccountMode) _ = DiscordRefresh(_communityRoot);
-            if (_backgroundActions) _ = RegionMeasure(_communityRoot);
+            bool discord = c.HasApp && !AccountMode, region = _backgroundActions;
             PresenceStop();
+            // (macOS: one after the other. Started together, their HTTP, UDP and DNS calls on the thread pool's workers
+            // crashed the launcher at start on .NET 8 most times (#542, found and tested by volcoice); elsewhere at once)
+            if (OperatingSystem.IsMacOS())
+            {
+                _ = CommunityStartInTurn(_communityRoot, discord, region);
+                PresenceStart();
+                return;
+            }
+            if (discord) _ = DiscordRefresh(_communityRoot);
+            if (region) _ = RegionMeasure(_communityRoot);
         }
         _ = CommunityRefresh();
         PresenceStart();
+    }
+
+    async Task CommunityStartInTurn(string root, bool discord, bool region)
+    {
+        if (discord) await DiscordRefresh(root);
+        if (region) await RegionMeasure(root);
+        await CommunityRefresh();
     }
 
     void CommunityStop()
