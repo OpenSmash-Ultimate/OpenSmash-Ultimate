@@ -5471,6 +5471,7 @@ static double ra_ms[5], ra_ms_max[5]; static long long ra_ms_n;   /* real frame,
 static double ra_shown_t; static long long ra_gaps, ra_gaps_late;
 static int ra_slow;   /* (this fight: too slow with run-ahead, off) */
 static long long ra_ended_ahead;
+static long long ra_unshown; static double ra_show_wait_ms;   /* (loads with the frame shown's picture still queued; time waited for it) */
 static u64 ra_last_buttons = ~0ull;
 
 static int ra_frames(void) {
@@ -5571,6 +5572,9 @@ static void ra_report(const char *why) {
             "%lld paused frames, %lld saves and %lld loads refused (%lld saves waited for a job, %lld of them in vain), %lld fights ended ahead\n",
             ra.n, why, ra.cycles, ra_ms[0] / n, ra_ms_max[0], ra_ms[1] / n, ra_ms_max[1], ra_ms[2] / n, ra_ms_max[2], ra_ms[3] / n, ra_ms_max[3],
             ra_gaps ? ra_ms[4] / (double)ra_gaps : 0, ra_ms_max[4], ra_gaps_late, ra.paused, ra.save_failed, ra.load_refused, rb_save_away_waits, rb_save_away_refused, ra_ended_ahead);
+    fprintf(stderr, "[rb] run-ahead: %lld of %lld loads came before the frame shown's picture was taken (never shown); %.2f ms waited for it per load\n",
+            ra_unshown, ra_ms_n, ra_ms_n ? ra_show_wait_ms / (double)ra_ms_n : 0.0);
+    ra_unshown = 0; ra_show_wait_ms = 0;
     memset(ra_ms, 0, sizeof ra_ms); memset(ra_ms_max, 0, sizeof ra_ms_max); ra_ms_n = 0; ra_gaps = ra_gaps_late = 0;
 }
 static void ra_add(int k, double ms) { ra_ms[k] += ms; if (ms > ra_ms_max[k]) ra_ms_max[k] = ms; }
@@ -5683,6 +5687,19 @@ int runahead_point(Cpu *c, u64 frame) {
         if (r != 1 && (ra.save_failed <= 5 || ra.save_failed % 600 == 0))
             fprintf(stderr, "[rb] run-ahead: save refused at logic frame %u (%lld so far): a normal frame\n", key, ra.save_failed);
     } else if (act == RA_LOAD) {
+        {   /* (the frame shown's picture still queued at the load: the load gives its slot back to the game and it is
+             * never shown, and with no picture shown the game's loop ran unpaced - a cycle every ~11 ms, a present every
+             * 33 ms, the game at half speed (600 of 600 loads, 2026-11-24). So the load waits up to SSBU_RA_SHOW_WAIT ms
+             * (default 20; 0: no wait) for the vsync thread to take it first: a frame shown every 16.7 ms, present gaps
+             * over 25 ms 1274 -> 16 in 1800 frames, press -> present 31.9 -> 26.4 ms against no run-ahead with low_latency
+             * off (with low_latency on, 23.3 without run-ahead and 26.7 with: the two do not add up yet)) */
+            int vi_ra_before_load(int wait_ms, double *waited_ms);
+            static int show_wait = -1;
+            if (show_wait < 0) { const char *e = getenv("SSBU_RA_SHOW_WAIT"); show_wait = e && *e ? atoi(e) : 20; }
+            double w = 0;
+            if (vi_ra_before_load(show_wait, &w)) ra_unshown++;
+            ra_show_wait_ms += w;
+        }
         ra_t_load0 = now_ms();
         ra_add(2, ra_t_load0 - ra_t_save1);
         rb_load(c, frame);   /* (returns only if refused) */
