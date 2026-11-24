@@ -1,8 +1,8 @@
 /* Library applets - the system's own full-screen programs a game can call up: web pages
- * (the electronic manual, news), the software keyboard, the shop. The keyboard is a text box
- * here (on Windows the settings menu's on-screen keyboard over the game, typed with a pad or the
- * keyboard; an alert on macOS, zenity's on Linux); the others don't exist, so each
- * behaves as if the player opened it and immediately backed out. */
+ * (the electronic manual, news), the software keyboard, the shop. The keyboard is the settings
+ * menu's on-screen keyboard over the game, typed with a pad or the keyboard (Windows and Linux),
+ * else a text box (Windows' own dialog; an alert on macOS, zenity's on Linux); the others
+ * don't exist, so each behaves as if the player opened it and immediately backed out. */
 #define _CRT_SECURE_NO_WARNINGS
 #include "host.h"
 #include "gpu_backend.h"
@@ -181,7 +181,8 @@ HLE(_ZN2nn5swkbd12ShowKeyboardEPNS0_6StringERKNS0_15ShowKeyboardArgE) {
 }
 
 #else
-/* Linux: the text box is zenity's (GNOME's dialog tool), else kdialog's, else the terminal's.
+/* Linux: the settings menu's on-screen keyboard, as on Windows; the text box (SSBU_SWKBD=dialog, or
+ * before the first frame) is zenity's (GNOME's dialog tool), else kdialog's, else the terminal's.
  * macOS: an alert over the game's window (macos/window.m: AppKit's, on the main thread; it shows
  * in the game's full-screen space too, and takes the keyboard), else the terminal's. */
 #include <spawn.h>
@@ -347,8 +348,25 @@ HLE(_ZN2nn5swkbd12ShowKeyboardEPNS0_6StringERKNS0_15ShowKeyboardArgE) {
             snprintf(text8, sizeof text8, "%s", how[5] ? how + 5 : init8);
             fprintf(stderr, "[swkbd] answered with SSBU_SWKBD's text (%d bytes)\n", (int)strlen(text8));
             ok = 1;
-        } else
-            ok = ask_text(prompt, init8, multiline, text8, sizeof text8);
+        } else {
+            ok = -1;
+            if (!(how && !strcasecmp(how, "dialog"))) {
+                /* the settings menu's on-screen keyboard over the game, as on Windows (the header and
+                 * sub text as its title, the guide greyed in the empty box); -1 before any frame is
+                 * shown, and always on macOS, whose renderer shows none again: the text box then */
+                char title[600], head8[200], sub8[400], guide8[800];
+                utf8_of(header, count16(header), head8, sizeof head8);
+                utf8_of(sub, count16(sub), sub8, sizeof sub8);
+                utf8_of(guide, count16(guide), guide8, sizeof guide8);
+                snprintf(title, sizeof title, "%s%s%s", head8, head8[0] && sub8[0] ? ": " : "", sub8);
+                watchdog_pause(1);
+                ok = menu_osk_run(title, guide8, init8, min_len, max_len, text8, sizeof text8);
+                watchdog_pause(0);
+                fprintf(stderr, "[swkbd] \"%s\" (%d to %d characters): %s\n", title[0] ? title : guide8, min_len, max_len,
+                        ok == 1 ? "typed on the on-screen keyboard" : ok == 0 ? "cancelled" : "no frame to draw it over: the text box");
+            }
+            if (ok < 0) ok = ask_text(prompt, init8, multiline, text8, sizeof text8);
+        }
         n = utf16_of(ok ? text8 : init8, answer, sizeof answer / sizeof *answer);
         if ((int)n > max_len) answer[n = (size_t)max_len] = 0;
         if (!ok || (int)n >= min_len) break;
