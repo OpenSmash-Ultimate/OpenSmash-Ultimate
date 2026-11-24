@@ -1308,6 +1308,7 @@ static int is_skip_page(const void *p) {
     if (sm_alias(p)) return sm_skip && sm_bit(sm_skip, sm_ap(p));
     return skip_gpu > 0 && is_gpu_page(p);
 }
+int rb_left_out(u64 g) { return is_skip_page(G2H(g)); }   /* (diagnostic: a guest page left out of the states now) */
 /* (a save's sync, the GPU's memory left out) The pages of the semaphores the GPU released since the last look
  * (gpu_rb_semaphore) are kept in from now on: the game waits on what the GPU writes there (NVN's fences and the
  * command memory's tracking; the uploads' and constant buffers' pages, which the GPU writes too, stay out), and with those pages left out a load put the game's side back and not theirs - the main
@@ -2417,6 +2418,8 @@ static int away_from_home(void *self) {
  * makes that frame a normal one, which changes nothing). */
 int rb_save_home_only;
 long long rb_save_away_waits, rb_save_away_refused;
+int (*rb_save_gate)(void);         /* (run-ahead sets it for its saves: 0 = not now, the save refused) */
+long long rb_save_gate_refused;
 static double load_last[5];   /* (the last load: hold, check and scratch stacks, GPU drain, host state, when the stacks went back) */
 __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
     u32 n;
@@ -2460,6 +2463,8 @@ __declspec(noinline) int rb_save(Cpu *c, u64 frame) {
         }
         if (away) { refused++; rb_save_away_refused++; release(); return 0; }
     }
+    /* (run-ahead: the task workers' jobs, hle_rb_core.c ra_jobs_idle - checked with every thread held) */
+    if (rb_save_gate && !rb_save_gate()) { refused++; rb_save_gate_refused++; release(); return 0; }
     /* The GPU's queue: what was submitted before the save writes guest memory (semaphores, uploads, copies) as it
      * runs, and the state is memory with all of it done. It was drained before the copies: 2.5 ms a save on
      * average (14 with the PC busy), the copies waiting for the frame before's drawing. Now the copies run beside it
