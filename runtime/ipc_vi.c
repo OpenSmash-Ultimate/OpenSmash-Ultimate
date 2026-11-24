@@ -411,7 +411,7 @@ static void show_fast(void) {
  * still drawing it) turns the delay off for a second. Not with SSBU_SPEED or in a rollback's catch-up. */
 static LONG64 ll_freq, ll_spans[64], ll_release, ll_margin;
 static int ll_next, ll_count, ll_backoff, ll_delayed;
-static volatile LONG64 ll_late_frames, ll_delayed_frames, ll_delay_sum;
+static volatile LONG64 ll_late_frames, ll_delayed_frames, ll_delay_sum, ll_undrawn_frames;   /* (undrawn: of the late ones, a picture not drawn yet) */
 /* (kernel.c) the refreshes the game sees in a 60 Hz frame: display_tick_mult as the vsync thread last paced it, for
  * hle_frame_rate.c, rollback's fixed clock and its pads' sampling numbers */
 extern volatile LONG rt_refresh_mult;
@@ -556,8 +556,14 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
         if (oldest >= 0) {
             if (fast) show_fast();
             else {
+                /* (the hold's frame queued its window texture, but the job that draws it - the first submission after the
+                 * QueueBuffer, SSBU_VI_READY's mark - has not run: the slot shows its old picture, 3 frames before. Seen on
+                 * Direct3D 11 in a light offline fight: the picture 4 frames behind the game for most of it, press -> present
+                 * 72 ms against 32 with the hold off. Off for a second, as for a late frame; whatever SSBU_VI_READY says) */
+                int undrawn = ll_delayed && ready_on > 0 && !vi_slot_drawn(oldest);
                 show_held(hold);
                 if (ll_delayed && show_waited > ll_freq / 1000) { ll_backoff = 60; ll_late_frames++; d = 0; }   /* (the card was still drawing it) */
+                else if (undrawn) { ll_backoff = 60; ll_late_frames++; ll_undrawn_frames++; d = 0; }
             }
         } else if (!fast && ll_delayed) { ll_backoff = 60; ll_late_frames++; d = 0; }   /* (released late, and not queued in time) */
         /* (d was worked out before the show: a miss seen now releases this refresh at once, as before) */
@@ -566,9 +572,9 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
         if (hold) ll_release_held(oldest >= 0);
         static u64 ll_said;
         if (display_low_latency() && !fast && GetTickCount64() - ll_said >= 60000) {
-            if (ll_said) fprintf(stderr, "[display] low_latency: %lld frames started later than the refresh (%.1f ms on average), %lld missed it and turned it off for a second\n",
+            if (ll_said) fprintf(stderr, "[display] low_latency: %lld frames started later than the refresh (%.1f ms on average), %lld missed it and turned it off for a second (%lld of them a picture not drawn yet)\n",
                                  (long long)ll_delayed_frames, ll_delayed_frames ? (double)ll_delay_sum * 1000 / ll_freq / (double)ll_delayed_frames : 0.0,
-                                 (long long)ll_late_frames);
+                                 (long long)ll_late_frames, (long long)ll_undrawn_frames);
             ll_said = GetTickCount64();
         }
         queue_lock();
