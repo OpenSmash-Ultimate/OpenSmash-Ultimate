@@ -205,9 +205,11 @@ static void static_service(IpcObject *self, Ipc *ipc) {
 }
 
 /* "Create Mii" (Mii Fighters, and the like): the system's Mii editor, a library applet. There
- * is none (hle_applet.c), so it behaves as if the player opened it and backed out: the game
- * keeps its list as it is. Without this, starting the applet reads a null applet creator. */
-HLE(_ZN2nn3mii9AppendMiiEPi) { c->x[0] = RESULT(162, 1); }
+ * is none (hle_applet.c), so it behaves as if the player opened it and backed out. The game
+ * (0x71032e88a4) treats exactly 0xe7e (RESULT(126, 7), "applet cancelled") as "no Mii was
+ * added"; any other result counts as success with index 0, and it then builds a face model for
+ * a Mii that does not exist and reads a null model handle (crash at +0x48b4). */
+HLE(_ZN2nn3mii9AppendMiiEPi) { c->x[0] = RESULT(126, 7); }
 
 IpcObject *service_mii(const char *name) {
     static int loaded;
