@@ -5667,7 +5667,9 @@ static void ra_take_hook(Cpu *c) {   /* main+0x3816350(out, queue): out+0x20 = 1
         if (ra_queues[i] == q) break;
     }
     ra_take_orig(c);
-    if (ld32(out + 0x20) == 1 && !ra_jobs_mine) { ra_jobs_mine = ra_jobs_gen + 1; InterlockedIncrement(&ra_jobs_running); }
+    /* (a batch noted in a generation before the last load counts as none: the load put this worker back to before it,
+     * but not this thread's own variable - left as it was, the batch taken now would go uncounted) */
+    if (ld32(out + 0x20) == 1 && ra_jobs_mine != ra_jobs_gen + 1) { ra_jobs_mine = ra_jobs_gen + 1; InterlockedIncrement(&ra_jobs_running); }
 }
 static void ra_run_hook(Cpu *c) {    /* main+0x3816730: one batch (or the wait for one) */
     ra_run_orig(c);
