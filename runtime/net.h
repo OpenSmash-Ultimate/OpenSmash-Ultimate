@@ -37,6 +37,9 @@
 #define NET_PROTOCOL    2             /* a private room's relay speaks it, and a game falls back to it */
 #define NET_PROTOCOL_V3 3             /* the online lobby's version 3 (tools/ssbu_relay.py): version 2 and more */
 #define NET_PROTOCOL_DEFAULT NET_PROTOCOL   /* what a game asks for without SSBU_NET_PROTOCOL (3 once played with) */
+/* (v0.5.0) the game's online level, "CV" after its JOIN's mod set: the official lobby tells games below its
+ * minimum (tools/ssbu_relay.py --min-client-level) to update. Raise it when online play changes for every game. */
+#define NET_CLIENT_LEVEL 1
 #define NET_LDN_PORT    65511         /* local wireless's own messages (hle_net.c): always through the relay */
 
 int net_configured(void);            /* netplay asked for (host or join) */
@@ -51,7 +54,57 @@ const char *net_player_name(void);
  * with --online; NULL when it hosts a private room or plays offline. */
 const char *net_relay_address(void);
 const char *net_lobby_code(void);    /* the lobby code it joins with ("smash": the public lobby) */
-int net_on_eos(void);                /* 1: online through Epic Online Services (net_eos_net.c), not a lobby server of ours */
+/* OpenSmash's official lobby (relay only, a signed-in player's ticket in every JOIN): always a DNS name, never an
+ * address in numbers, so the server behind it can move. One port: UDP for play, TCP for the read-only pages
+ * (/status.json, /leaderboard.json, /gsp/me: plain HTTP, the lobby has no TLS). The launchers' copy of the name:
+ * OpenSmash.Core/OfficialLobby.cs, tools/weblauncher/launcher.py, tools/launcher.ps1 (tests/test_launcher_defaults.py
+ * compares them). */
+#define NET_OFFICIAL_LOBBY_HOST "eu.lobby.opensmashultimate.com"
+#define NET_OFFICIAL_LOBBY_PORT 39421
+#define NET_OFFICIAL_LOBBY NET_OFFICIAL_LOBBY_HOST ":39421"
+/* The official lobbies, one a region (net_region.c): the same setup and the same accounts on each (one lobby ticket
+ * works on all), but rooms and matchmaking are a lobby's own: players on another region are not listed. The first is
+ * the fallback (no answer from any). The launchers' copy of the table: OpenSmash.Core/ServerRegion.cs,
+ * tools/weblauncher/server_region.py, tools/launcher.ps1 (tests/test_launcher_defaults.py compares them).
+ * Each row: the id config/server_region.txt says, the name shown, the lobby (a DNS name and its port). */
+#define NET_REGION_TABLE {"eu", "EU", NET_OFFICIAL_LOBBY}, {"na-east", "NA East", "na.lobby.opensmashultimate.com:39421"}
+#define NET_REGION_COUNT 2
+typedef struct NetRegion { const char *id, *label, *lobby; } NetRegion;
+extern const NetRegion NET_REGIONS[NET_REGION_COUNT];
+/* config/server_region.txt (the settings menu's and the launcher's Online > Server region): "auto" (the default: the
+ * region whose lobby answers soonest) or a region's id. */
+#define NET_REGION_FILE "config/server_region.txt"
+/* config/server_region_auto.txt: Auto's last pick, "<id> <ms> <unix time>" (the game and the launcher write it after
+ * measuring, and start from it the next time without waiting). */
+#define NET_REGION_AUTO_FILE "config/server_region_auto.txt"
+int net_region_index(const char *id);          /* a region's row by its id (any case); -1: none ("auto" too) */
+int net_region_of_lobby(const char *lobby);    /* the row whose lobby this is ("host:port", or the host alone); -1 */
+int net_region_median(const int *ms, int n);   /* the median of the samples that are >= 0; -1: none */
+/* The row with the lowest time (ms[i] < 0: no answer), the earlier of two the same; `kept` (Auto's last pick, -1
+ * none) stays unless another answers NET_REGION_KEEP_MS sooner (two close regions: no hopping). -1: none answered. */
+#define NET_REGION_KEEP_MS 10
+int net_region_pick(const int *ms, int n, int kept);
+int net_region_auto_parse(const char *line, int *ms);   /* NET_REGION_AUTO_FILE's line: the row (-1: not one), its ms */
+/* Each region's lobby asked a few times at once (a JOIN no lobby lets in: the time to its answer), at most wait_ms
+ * in all: ms[i] the median, -1 no answer. (tests) SSBU_REGION_TEST_PINGS="eu=30,na-east=-1": these times, nothing sent. */
+void net_region_measure(int ms[NET_REGION_COUNT], int wait_ms);
+/* What this start plays on, decided once: SSBU_OFFICIAL_LOBBY, else config/official_lobby.txt (the launcher writes a
+ * release's) - an override: that server, no regions; else the region of config/server_region.txt; else (auto) the last
+ * pick, measured again in the background for the next start, or with none the pick measured now (under a second);
+ * no answer from any: the first region. */
+const char *net_region_lobby(void);
+int net_region_override(char *out, int cap);   /* the override's server (1: there is one); read, nothing decided */
+void net_region_use(int region);               /* this start only: that region (a friend's Join from Discord) */
+/* For the settings menu: the saved choice (-1 auto, else a row; `override` 1 when an override decides instead), and
+ * Auto's pick (-1 not known yet: asked for in the background) with its time in ms (-1 not measured). */
+int net_region_setting(int *override);
+int net_region_auto(int *ms);
+int net_region_save(int region);               /* -1 auto; written to NET_REGION_FILE (the next start plays there) */
+/* The official lobby this game uses (net_region_lobby). */
+const char *net_official_lobby(void);
+/* online_server.txt's first word means the official lobby: "auto", a region's lobby, or an older public lobby's. */
+int net_means_official_lobby(const char *host);
+void net_part_key(char *out, size_t n);   /* who may meet whom: build, lobby code, sim version, mods (net_relay.c) */
 int net_unreachable(void);           /* asked for, but the relay has not answered for a while: offline */
 /* Rollback netplay on by default (kernel.c's kernel_rb_switch when SSBU_RB is not set): started with
  * --online, with a lobby or a private room to play in (SSBU_NET_HOST, SSBU_NET_RELAY, else

@@ -1,0 +1,169 @@
+# An OpenSmash release (v0.5.0 on): a tag vX.Y.Z (or vX.Y.Z-pre for the testing channel) makes a DRAFT release with
+#   OpenSmash.exe                          the launcher, built with the tag's version and the accounts service
+#   OpenSmash-linux-x64.tar.gz,            the launcher for Linux and macOS (OpenSmash.Avalonia, the same account sign-in;
+#   OpenSmash-macos-arm64.tar.gz,          tools/publish_avalonia.py), each built on its own system (a macOS program
+#   OpenSmash-macos-x64.tar.gz             must be signed there); tools/launcher_fetch.py installs it
+#   opensmash-runtime-windows-<isa>.zip    the prebuilt runtime (runtime-release.yml, the same commit)
+#   opensmash-release.json, SHA256SUMS     what the launcher reads (tools/release/make_release.py): versions, SHA-256s,
+#                                          the official lobby, the lowest online level it lets in
+# Nothing in it comes from the game: the whole history is checked first (check_no_game_data.py) and every file of
+# the release is audited again before the draft is made. A person publishes the draft (and marks it Latest for the
+# stable channel); players' launchers only see published releases.
+#
+# Repository settings it reads (Settings > Secrets and variables > Actions > Variables; none of them is a secret):
+#   OPENSMASH_SUPABASE_URL, OPENSMASH_SUPABASE_KEY   the accounts service and its publishable (client) key
+#   OPENSMASH_SIGNIN_PAGE, OPENSMASH_ACCOUNT_PAGE    optional: a site sign-in page, the account page
+#   OPENSMASH_LOBBY                                  the official lobby, HOST:PORT
+#   OPENSMASH_MIN_CLIENT_LEVEL                       the lowest online level the lobby lets in (runtime/net.h)
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'An existing tag vX.Y.Z to build a draft for'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
+      - id: v
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$(python3 tools/release/make_release.py version "$tag")" >> "$GITHUB_OUTPUT"
+      - name: No game data in the history
+        run: python3 .github/scripts/check_no_game_data.py
+      - name: Release tools' own tests
+        run: python3 -I tests/test_make_release.py
+
+  runtime:
+    needs: check
+    uses: ./.github/workflows/runtime-release.yml
+    with:
+      ref: ${{ needs.check.outputs.tag }}   # (workflow_dispatch: the tag's commit, not the branch the run started from)
+
+  launcher:
+    needs: check
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Accounts service for this build (never committed)
+        env:
+          OPENSMASH_SUPABASE_URL: ${{ vars.OPENSMASH_SUPABASE_URL }}
+          OPENSMASH_SUPABASE_KEY: ${{ vars.OPENSMASH_SUPABASE_KEY }}
+          OPENSMASH_SIGNIN_PAGE: ${{ vars.OPENSMASH_SIGNIN_PAGE }}
+          OPENSMASH_ACCOUNT_PAGE: ${{ vars.OPENSMASH_ACCOUNT_PAGE }}
+        run: python tools/release/make_release.py service OpenSmash.Core/account_service.json
+      - name: OpenSmash.Core checks
+        run: dotnet run --project tests/core -c Release
+      - name: Build OpenSmash.exe
+        shell: pwsh
+        run: |
+          dotnet publish OpenSmash.Launcher/OpenSmash.Launcher.csproj -c Release -o publish -p:Version=${{ needs.check.outputs.version }}
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item publish/OpenSmash.exe dist/OpenSmash.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-launcher
+          path: dist/OpenSmash.exe
+
+  launcher-unix:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            rid: linux-x64
+            asset: OpenSmash-linux-x64.tar.gz
+          - os: macos-15
+            rid: osx-arm64
+            asset: OpenSmash-macos-arm64.tar.gz
+          - os: macos-15
+            rid: osx-x64
+            asset: OpenSmash-macos-x64.tar.gz
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Accounts service for this build
+        env:
+          OPENSMASH_SUPABASE_URL: ${{ vars.OPENSMASH_SUPABASE_URL }}
+          OPENSMASH_SUPABASE_KEY: ${{ vars.OPENSMASH_SUPABASE_KEY }}
+          OPENSMASH_SIGNIN_PAGE: ${{ vars.OPENSMASH_SIGNIN_PAGE }}
+          OPENSMASH_ACCOUNT_PAGE: ${{ vars.OPENSMASH_ACCOUNT_PAGE }}
+        run: python tools/release/make_release.py service OpenSmash.Core/account_service.json
+      - name: Build the launcher (${{ matrix.rid }})
+        run: |
+          python tools/publish_avalonia.py --rid ${{ matrix.rid }} --version ${{ needs.check.outputs.version }} --output-root "$RUNNER_TEMP/avalonia"
+          mkdir -p dist
+          cp "$RUNNER_TEMP/avalonia/${{ matrix.rid }}.tar.gz" "dist/${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-launcher-${{ matrix.rid }}
+          path: dist/${{ matrix.asset }}
+
+  draft:
+    needs: [check, runtime, launcher, launcher-unix]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Manifest and audit
+        run: |
+          rm -f dist/*.sha256
+          channel=stable; case "${{ needs.check.outputs.version }}" in *-*) channel=testing;; esac
+          lobby=(); [ -n "${{ vars.OPENSMASH_LOBBY }}" ] && lobby=(--lobby "${{ vars.OPENSMASH_LOBBY }}")
+          python3 tools/release/make_release.py manifest dist --version "${{ needs.check.outputs.version }}" \
+            --commit "$(git rev-parse HEAD)" --channel "$channel" "${lobby[@]}" \
+            --min-client-level "${{ vars.OPENSMASH_MIN_CLIENT_LEVEL || 1 }}"
+          echo "channel=$channel" >> "$GITHUB_ENV"
+          # (the installers of 0.3.x take releases/latest/download/OpenSmash.exe with OpenSmash.exe.sha256 beside it)
+          (cd dist && sha256sum OpenSmash.exe > OpenSmash.exe.sha256)
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ needs.check.outputs.tag }}"
+          pre=(); [ "$channel" = testing ] && pre=(--prerelease)
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft "${pre[@]}" --verify-tag \
+            --title "OpenSmash ${{ needs.check.outputs.version }}" \
+            --notes "OpenSmash ${{ needs.check.outputs.version }}. Windows: download OpenSmash.exe only, it installs and updates everything else. Linux and macOS: the setup (install-windowsmash.sh, Install WindowSmash.command) fetches its OpenSmash launcher from here itself." \
+            dist/*

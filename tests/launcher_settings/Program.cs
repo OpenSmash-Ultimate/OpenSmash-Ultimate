@@ -47,6 +47,7 @@ static class Tests
         try
         {
             Lobby();
+            OnlineRules(Path.Combine(root, "online"));
             FreshFolder(Path.Combine(root, "fresh"));
             GameChangesKept(Path.Combine(root, "game"));
             SameFilesAsTheGame(Path.Combine(root, "sync"));
@@ -55,6 +56,7 @@ static class Tests
             Feed().GetAwaiter().GetResult();
             Presence(Path.Combine(root, "presence"));
             ShaderRebuild(Path.Combine(root, "shaders"));
+            UpdateChannel().GetAwaiter().GetResult();
             // (a real SDL3.dll, when one is given: it loads and lists the pads, none needed)
             string? sdl = Environment.GetEnvironmentVariable("LAUNCHER_TEST_SDL_DIR");
             if (!string.IsNullOrEmpty(sdl))
@@ -128,8 +130,10 @@ static class Tests
         string pub = SettingDefaults.PublicLobby;
         var cases = new (string Line, string Lobby, string Back)[]
         {
-            ("", "offline", "off"), ("off", "offline", "off"), ("auto", "auto", "auto"), ("eos", "auto", "auto"), ("na", "auto", "auto"), ("eu", "auto", "auto"),
+            ("", "offline", "off"), ("off", "offline", "off"), ("auto", "auto", "auto"), ("na", "auto", "auto"), ("eu", "auto", "auto"),
             ("smash.recomps.wtf:39421", "auto", "auto"), ("smash.recomps.wtf:39421 mine", "private", pub + " mine"),
+            ("opensmash-lobby.duckdns.org:39421", "auto", "auto"), ("opensmash-lobby.duckdns.org:39421 mine", "private", pub + " mine"),
+            ("eos", "auto", "auto"), ("EOS", "auto", "auto"), ("eos mine", "private", pub + " mine"),   // (Epic Online Services, gone in 0.5.0: the official lobby)
             ("lan", "lan", "lan"), (pub, "auto", "auto"), (pub + " friends", "private", pub + " friends"),
             ("10.0.0.2:39420", "custom", "10.0.0.2:39420"), ("10.0.0.2:39420 abc", "custom", "10.0.0.2:39420 abc"),
         };
@@ -146,7 +150,99 @@ static class Tests
         Check(SettingDefaults.LineFromLobby("custom", "abc", "smash.recomps.wtf:39421") == pub + " abc", "custom smash.recomps.wtf with a code: the private lobby");
         Check(SettingDefaults.LineFromLobby("custom", "", pub) == "auto", "custom with the public lobby's address: auto");
         Check(SettingDefaults.IsOldLobbyLine("smash.recomps.wtf:39421 x") && !SettingDefaults.IsOldLobbyLine("auto") && !SettingDefaults.IsOldLobbyLine(""), "old lobby lines");
+        // the server region: any region's lobby in the file is "the official lobby" (the region setting says which one)
+        foreach (var region in OpenSmash.Core.ServerRegion.All)
+        {
+            Check(SettingDefaults.LobbyFromLine(region.Lobby).Lobby == "auto" && SettingDefaults.LobbyFromLine(region.Lobby + " mine").Lobby == "private", $"{region.Lobby} reads as the official lobby");
+            Check(SettingDefaults.Choices["region"].Contains(region.Id), $"{region.Id} is a choice of the page");
+        }
+        // (our two regions only, by their names; "auto" stays the game's own default in the file)
+        Check(SettingDefaults.Choices["region"].SequenceEqual(new[] { "eu", "na-east" }) && SettingDefaults.RegionLabels.SequenceEqual(new[] { "Europe", "North America East" })
+              && SettingDefaults.OfFile("server_region.txt") == "auto", "Server region: Europe and North America East");
+        string install = Path.Combine(Path.GetTempPath(), "opensmash-region-" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(Path.Combine(install, "config"));
+        try
+        {
+            Check(SettingDefaults.RegionShown(install, "eu") == null && OpenSmash.Core.OnlineSettings.RegionShown(install) == "eu", "no region chosen, nothing measured: Europe");
+            File.WriteAllText(Path.Combine(install, "config", "server_region_auto.txt"), "na-east 23 1700000000\n");
+            Check(OpenSmash.Core.OnlineSettings.RegionShown(install) == "na-east", "auto: the region it plays on (its pick)");
+            OpenSmash.Core.ServerRegion.SetSetting(install, "eu");
+            Check(OpenSmash.Core.OnlineSettings.RegionShown(install) == "eu" && OpenSmash.Core.OfficialLobby.Current(install) == OpenSmash.Core.ServerRegion.ById("eu").Lobby, "a chosen region over the pick, and its lobby is the one played on");
+            OpenSmash.Core.ServerRegion.SetSetting(install, "na-east");
+            Check(OpenSmash.Core.OnlineSettings.RegionShown(install) == "na-east" && OpenSmash.Core.OfficialLobby.Current(install) == "na.lobby.opensmashultimate.com:39421", "North America East chosen: its lobby");
+            File.WriteAllText(Path.Combine(install, "config", "official_lobby.txt"), "lobby.example:39421\n");
+            Check(SettingDefaults.RegionShown(install, "auto") == "lobby.example:39421" && SettingDefaults.RegionShown(install, "eu") == "lobby.example:39421", "an install's own official server is shown instead");
+        }
+        finally { try { Directory.Delete(install, true); } catch (IOException) { } }
         Check(SettingDefaults.Renderer("d3d11") == "auto" && SettingDefaults.Renderer("DX11") == "direct3d11" && SettingDefaults.Renderer("vk") == "vulkan", "renderer names as runtime/renderer.h");
+    }
+
+    // The Online rows (OpenSmash.Core.OnlineSettings): the official lobby hides AND resets the lobby code, the server of
+    // one's own and Direct connections (off), here and in launcher.ini's remembered copy; a server of one's own shows them
+    // again, empty, Direct connections back on; nothing half-typed reaches online_server.txt; the server region is Europe
+    // or North America East, saved, read back after a restart and the lobby played on. Old files' leftovers included.
+    static void OnlineRules(string repo)
+    {
+        string config = Path.Combine(repo, "config");
+        Directory.CreateDirectory(config);
+        File.WriteAllText(Path.Combine(config, "version.ini"), "version = 1\n");
+        string server = Path.Combine(config, "online_server.txt"), direct = Path.Combine(config, "online_direct.txt"), ini = Path.Combine(config, "launcher.ini");
+        File.WriteAllText(server, "auto\n");
+        File.WriteAllText(direct, "on\n");
+        File.WriteAllText(ini, "[opensmash]\ncode = oldcode\nserver = my.host:39420\n");   // (an older launcher's leftovers)
+        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        string IniOf(string key) => File.ReadAllLines(ini).Select(l => l.Split('=')).Where(p => p.Length == 2 && p[0].Trim() == key).Select(p => p[1].Trim()).FirstOrDefault() ?? "";
+        var (form, call, values) = Open(repo);
+        using (form)
+        {
+            void Write(string key, string value) => typeof(LauncherForm).GetMethod("WriteSetting", flags)!.Invoke(form, new object[] { key, value });
+            var settings = (Setting[])typeof(LauncherForm).GetField("_settings", flags)!.GetValue(form)!;
+            bool On(string key) => (bool)typeof(LauncherForm).GetMethod("SettingOn", flags)!.Invoke(form, new object[] { settings.First(x => x.Key == key) })!;
+            call("ReadSettings");
+            Check(values["lobby"] == "auto" && values["code"] == "" && values["server"] == "" && values["direct"] == "off",
+                  "official lobby: an old launcher.ini's code and server and an online_direct.txt 'on' are not shown");
+            Check(!On("code") && !On("server") && !On("direct") && On("region") && On("name"), "official lobby: only the name and the server region are shown");
+            Check(File.ReadAllText(server) == "auto\n" && File.ReadAllText(direct) == "on\n", "reading writes nothing");
+            Write("lobby", "custom");
+            Check(values["code"] == "" && values["server"] == "" && values["direct"] == "on" && On("code") && On("server") && On("direct") && !On("region"),
+                  "your own server: code, server and direct connections shown again, empty, direct on");
+            Check(File.ReadAllText(server) == "auto\n", "your own server without its address: online_server.txt keeps the last complete choice (no made-up 127.0.0.1)");
+            Check(IniOf("code") == "" && IniOf("server") == "", "launcher.ini's stale code and server reset");
+            Write("server", "my.host:39420");
+            Check(File.ReadAllText(server).Trim() == "my.host:39420", "the server written once it is host:port");
+            Write("code", "abc");
+            Check(File.ReadAllText(server).Trim() == "my.host:39420 abc" && IniOf("code") == "abc", "with its code");
+            Write("lobby", "auto");
+            Check(values["code"] == "" && values["server"] == "" && values["direct"] == "off" && File.ReadAllText(server).Trim() == "auto"
+                  && File.ReadAllText(direct).Trim() == "off" && IniOf("code") == "" && IniOf("server") == "",
+                  "back to the official lobby: code and server reset everywhere, direct connections off");
+            Write("region", "na-east");
+            Check(OpenSmash.Core.ServerRegion.Setting(repo) == "na-east" && OpenSmash.Core.OfficialLobby.Current(repo) == "na.lobby.opensmashultimate.com:39421",
+                  "North America East picked: saved, and its lobby is the one played on");
+        }
+        var (form2, call2, values2) = Open(repo);   // (a restart)
+        using (form2)
+        {
+            void Write(string key, string value) => typeof(LauncherForm).GetMethod("WriteSetting", flags)!.Invoke(form2, new object[] { key, value });
+            call2("ReadSettings");
+            Check(values2["lobby"] == "auto" && values2["region"] == "na-east" && values2["code"] == "" && values2["server"] == "", "after a restart: the official lobby, North America East, nothing stale");
+            Write("region", "eu");
+            Check(File.ReadAllText(Path.Combine(config, "server_region.txt")).Trim() == "eu" && OpenSmash.Core.OfficialLobby.Current(repo) == OpenSmash.Core.ServerRegion.ById("eu").Lobby, "Europe picked: saved and played on");
+            Write("lobby", "private");
+            Check(values2["code"] == "" && values2["direct"] == "off" && File.ReadAllText(server).Trim() == "auto", "private lobby: an empty code, nothing written until it is typed");
+            Write("code", "friends1");
+            Check(File.ReadAllText(server).Trim() == SettingDefaults.PublicLobby + " friends1", "private lobby with its code");
+            Write("lobby", "lan");
+            Check(File.ReadAllText(server).Trim() == "lan" && values2["direct"] == "on" && File.ReadAllText(direct).Trim() == "on", "LAN: direct connections back on");
+            Write("lobby", "auto");
+            Write("lobby", "custom");
+            Write("lobby", "auto");
+            Check(File.ReadAllText(server).Trim() == "auto" && values2["code"] == "" && values2["server"] == "" && File.ReadAllText(direct).Trim() == "off", "back and forth: the official lobby, consistent");
+        }
+        File.WriteAllText(server, "");   // (an online_server.txt without a line: the official lobby)
+        Check(OpenSmash.Core.OnlineSettings.EnsureLine(server) && File.ReadAllText(server).Trim() == "auto" && !OpenSmash.Core.OnlineSettings.EnsureLine(server), "an empty online_server.txt becomes the official lobby, once");
+        File.WriteAllText(server, "# the player's\noff\n");
+        Check(!OpenSmash.Core.OnlineSettings.EnsureLine(server) && File.ReadAllText(server) == "# the player's\noff\n", "an explicit choice (offline) is kept");
     }
 
     static (LauncherForm Form, Func<string, object?> Call, Dictionary<string, string> Values) Open(string repo)
@@ -173,9 +269,12 @@ static class Tests
             foreach (var row in SettingDefaults.Table.Where(r => r.Key != ""))
                 Check(values[row.Key] == row.Default || (row.Key == "renderer" && values[row.Key] == SettingDefaults.Renderer(row.Default)),
                       $"fresh: {row.Key} shows the game's default {row.Default} (shows {values.GetValueOrDefault(row.Key)})");
-            Check(values["lobby"] == "offline" && values["direct"] == "on" && values["name"] == "", "fresh: no online files is offline, direct on");
+            // (the official lobby is the launchers' default: an unset online_server.txt is written "auto", nothing else)
+            Check(values["lobby"] == "auto" && values["direct"] == "off" && values["code"] == "" && values["server"] == "" && values["name"] == "", "fresh: no online file is the official lobby, direct off");
             call("PersistSettings");
-            Check(Files(repo).Length == 0, "fresh: closing writes no file (" + string.Join(", ", Files(repo)) + ")");
+            Check(Files(repo).SequenceEqual(new[] { "online_server.txt" }) && File.ReadAllText(Path.Combine(repo, "online_server.txt")).Trim() == "auto",
+                  "fresh: only the official lobby's line is written (" + string.Join(", ", Files(repo)) + ")");
+            File.Delete(Path.Combine(repo, "online_server.txt"));
         }
         File.WriteAllText(Path.Combine(repo, "online_server.txt"), "# comment\nauto\n");   // (what the download comes with)
         var (form2, call2, values2) = Open(repo);
@@ -277,11 +376,11 @@ static class Tests
             Check(values["lobby"] == "private", "a change made here and not written yet is kept");
             Check(File.ReadAllText(Path.Combine(config, "online_server.txt")) == "auto\n", "the unwritten lobby still not written");
             File.SetLastWriteTimeUtc(display, DateTime.UtcNow.AddSeconds(5));
-            File.WriteAllText(Path.Combine(config, "online_direct.txt"), "on\n");
-            File.SetLastWriteTimeUtc(Path.Combine(config, "online_direct.txt"), DateTime.UtcNow.AddSeconds(10));
-            values["direct"] = "off";   // (a stale copy: only a reload puts it right)
+            File.WriteAllText(Path.Combine(config, "online_name.txt"), "Rel\n");
+            File.SetLastWriteTimeUtc(Path.Combine(config, "online_name.txt"), DateTime.UtcNow.AddSeconds(10));
+            values["name"] = "stale";   // (a stale copy: only a reload puts it right)
             call("ReloadSettingsIfChanged");
-            Check(values["direct"] == "on", "read again on each change");
+            Check(values["name"] == "Rel", "read again on each change");
             call("PersistSettings");
             Check(File.ReadAllText(display).Contains("window = fullscreen") && File.ReadAllText(display).Contains("renderer = vulkan"), "closing keeps the menu's choices");
         }
@@ -356,6 +455,77 @@ static class Tests
         Check(none.StatusText == "no SDL3.dll" && none.Selected == null, "without SDL3.dll the page says why");
     }
 
+    // GitHub's latest release, made up: the API's answer (a status, or no network) and github.com's releases/latest page,
+    // whose redirect lands on the release's tag (or the release list when there is none).
+    sealed class Releases : HttpMessageHandler
+    {
+        public HttpStatusCode Api = HttpStatusCode.OK;
+        public string? ApiTag = "v0.4.1";
+        public bool ApiDown, PageDown;
+        public string PageLands = "/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/tag/v0.4.1";
+        public int PageAsked;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.Host == "api.github.com")
+            {
+                if (ApiDown) throw new HttpRequestException("no network in tests");
+                var answer = new HttpResponseMessage(Api);
+                if (Api == HttpStatusCode.OK) answer.Content = new StringContent(ApiTag == null ? "{}" : "{\"tag_name\":\"" + ApiTag + "\"}");
+                return Task.FromResult(answer);
+            }
+            PageAsked++;
+            if (PageDown) throw new HttpRequestException("no network in tests");
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = new HttpRequestMessage(request.Method, new Uri("https://github.com" + PageLands)),
+            });
+        }
+    }
+
+    // The update check's release channel and the verdict after an update (Discord "Can't update", 2026-11-18): GitHub not
+    // answering is "not known", never main, and a finished update is not called unfinished for it.
+    static async Task UpdateChannel()
+    {
+        async Task<ProjectSetup.LatestRelease> Ask(Releases r) { using var c = new HttpClient(r); return await ProjectSetup.LatestReleaseAsync(c); }
+        var r = new Releases();
+        var got = await Ask(r);
+        Check(got.Tag == "v0.4.1" && got.Known && r.PageAsked == 0, "release channel: the API's tag");
+        r = new Releases { Api = HttpStatusCode.NotFound };
+        got = await Ask(r);
+        Check(got.Tag == null && got.NoRelease && got.Known, "no release yet (the API's 404): main");
+        r = new Releases { Api = HttpStatusCode.Forbidden };
+        got = await Ask(r);
+        Check(got.Tag == "v0.4.1" && r.PageAsked == 1, "the API's hourly limit: github.com's releases/latest page gives the tag");
+        r = new Releases { ApiDown = true, PageLands = "/OpenSmash-Ultimate/OpenSmash-Ultimate/releases" };
+        got = await Ask(r);
+        Check(got.Tag == null && got.NoRelease, "no network to the API, the page lands on the release list: no release");
+        r = new Releases { Api = HttpStatusCode.Forbidden, PageDown = true };
+        got = await Ask(r);
+        Check(!got.Known && got.Problem.Contains("403"), "neither answers: not known, with the API's reason (" + got.Problem + ")");
+        r = new Releases { ApiTag = null, PageLands = "/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/tag/v0.4.2" };
+        got = await Ask(r);
+        Check(got.Tag == "v0.4.2", "an API answer naming no release: the page");
+        Check(ProjectSetup.ReleaseTagFromPath("/O/R/releases/tag/v1.0%2Bx") == "v1.0+x" && ProjectSetup.ReleaseTagFromPath("/O/R/releases") == null,
+            "the tag of a releases/tag/ address");
+
+        Check(LauncherForm.UpdateRefFor(new ProjectSetup.LatestRelease("v0.4.1", false, ""), out string name) == "v0.4.1" && name == "v0.4.1", "a tag is compared with");
+        Check(LauncherForm.UpdateRefFor(new ProjectSetup.LatestRelease(null, true, ""), out name) == "main" && name == "main", "no release: main");
+        bool threw = false;
+        try { LauncherForm.UpdateRefFor(new ProjectSetup.LatestRelease(null, false, "GitHub answered 403"), out name); }
+        catch (Exception e) { threw = LauncherForm.IsUnavailable(e) && e.Message.Contains("403"); }
+        Check(threw, "not known: the check says it could not check, it never compares with main");
+
+        string sha = new string('e', 40), other = new string('f', 40);
+        string output = "launcher: OpenSmash.exe is now v0.4.1's.\r\n__OPENSMASH_SOURCE__ " + sha + "\r\nThe launcher was updated too: close OpenSmash and open it again.";
+        Check(LauncherForm.InstalledCommit(output) == sha && LauncherForm.InstalledCommit("Nothing to update.") == "", "the updater's proof line");
+        Check(LauncherForm.AfterUpdateVerdict("uptodate", false, "", sha) == LauncherForm.UpdateVerdict.Done, "checked up to date: done");
+        Check(LauncherForm.AfterUpdateVerdict("error", true, output, sha) == LauncherForm.UpdateVerdict.Done, "GitHub not answering, the updater's proof matches the copy: done");
+        Check(LauncherForm.AfterUpdateVerdict("available", false, output, sha) == LauncherForm.UpdateVerdict.Done, "the copy is what the updater installed: done");
+        Check(LauncherForm.AfterUpdateVerdict("error", true, "Updated.", sha) == LauncherForm.UpdateVerdict.Unverified, "GitHub not answering, no proof: not known, not a failure");
+        Check(LauncherForm.AfterUpdateVerdict("error", true, output, other) == LauncherForm.UpdateVerdict.Unverified, "proof of another commit, GitHub not answering: not known");
+        Check(LauncherForm.AfterUpdateVerdict("available", false, "Updated.", sha) == LauncherForm.UpdateVerdict.NotFinished, "GitHub says there is still a newer one: did not finish");
+    }
+
     static async Task Feed()
     {
         const string status = "{\"updated\":\"2026-11-16T13:57:58Z\",\"online\":5,\"rooms\":1,\"arenas\":0,\"open_rooms\":1,\"playing\":0,\"ranked\":78}";
@@ -411,7 +581,32 @@ static class Tests
             using var bmp = new System.Drawing.Bitmap(1280, 720); form.DrawToBitmap(bmp, new System.Drawing.Rectangle(0, 0, 1280, 720));
             bmp.Save(Path.Combine(outDir, name));
         }
+        // (the server region: Auto with a pick kept, as after a start; the home page says whose numbers these are)
+        Directory.CreateDirectory(Path.Combine(repo, "config"));
+        File.WriteAllText(Path.Combine(repo, "config", "server_region_auto.txt"), "eu 24 1700000000\n");
+        File.WriteAllText(Path.Combine(repo, "online_server.txt"), "auto\n");
+        type.GetMethod("RegionView", flags)!.Invoke(form, null);
         Shot("home.png", "home");
+        type.GetMethod("ReadSettings", flags)!.Invoke(form, null);
+        Set("_view", "settings");
+        Set("_settingsTab", Array.FindIndex((Array.ConvertAll((object[])type.GetField("_settingsTabs", flags)!.GetValue(form)!, t => (string)t.GetType().GetField("Name")!.GetValue(t)!)), n => n == "Online"));
+        Shot("settings-online.png", "settings");
+        // (Settings > Storage: the Save disk space row above the buttons, REBUILD SHADERS (#449) beside REFRESH - no two hit
+        // areas may cross; the window keeps 16:9 and draws by its height, so one size says it for all)
+        Set("_settingsTab", Array.FindIndex((Array.ConvertAll((object[])type.GetField("_settingsTabs", flags)!.GetValue(form)!, t => (string)t.GetType().GetField("Name")!.GetValue(t)!)), n => n == "Storage"));
+        Set("_storageText", "dump: 17.2 GB on C:\\OpenSmash\\dump. build: 30.4 GB on C:\\OpenSmash\\build. A long status line, as the real one can be, wraps here.");
+        Shot("settings-storage.png", "settings");
+        var hits = ((System.Collections.IList)type.GetField("_hits", flags)!.GetValue(form)!).Cast<object>().Select(h =>
+        {
+            var ht = h.GetType();
+            float F(string n) => (float)(ht.GetField(n)?.GetValue(h) ?? ht.GetProperty(n)!.GetValue(h)!);
+            return (Id: (string)(ht.GetField("Id")?.GetValue(h) ?? ht.GetProperty("Id")!.GetValue(h)!), R: new System.Drawing.RectangleF(F("X"), F("Y"), F("W"), F("H")));
+        }).Where(h => h.Id.StartsWith("storage:")).ToList();
+        Console.WriteLine("Storage hits: " + string.Join("; ", hits.Select(h => $"{h.Id} {h.R.X:0},{h.R.Y:0} {h.R.Width:0}x{h.R.Height:0}")));
+        Check(hits.Any(h => h.Id == "storage:save_disk") && hits.Any(h => h.Id == "storage:shaders"), "Storage: Save disk space and REBUILD SHADERS both drawn");
+        for (int i = 0; i < hits.Count; i++)
+            for (int j = i + 1; j < hits.Count; j++)
+                Check(!hits[i].R.IntersectsWith(hits[j].R), $"Storage: {hits[i].Id} and {hits[j].Id} do not overlap");
         form.Close();
     }
 

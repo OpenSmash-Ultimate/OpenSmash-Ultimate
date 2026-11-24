@@ -34,6 +34,7 @@ if(args.Contains("--game-crash-fixture"))
     while(!File.Exists(args[^1])&&DateTime.UtcNow<deadline)await Task.Delay(30);
     Console.Error.WriteLine("[error] synthetic renderer failure");Environment.ExitCode=23;return;
 }
+if(args.Contains("--ticket-fixture")){Console.Error.WriteLine("[gfx] window ready (synthetic fixture)");Console.WriteLine("TICKET_FILE="+Environment.GetEnvironmentVariable("SSBU_ONLINE_TICKET_FILE"));return;}
 if(args.Contains("--game-fail-fixture")){Console.Error.WriteLine("synthetic startup failure");Environment.ExitCode=9;return;}
 
 if(args.Length==1&&args[0]=="--source-info"){Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(BootstrapSource.Bundled()));return;}
@@ -324,6 +325,8 @@ try
     RemapChecks.Run(root);
     CommunityChecks.Run(root);
     CommunityChecks.Render(root,screenshot==null?null:Path.GetDirectoryName(screenshot));
+    AccountChecks.Run(root,fixture);
+    AccountChecks.Region(root);
     RoomsChecks.Run(root);
     Console.WriteLine("All desktop launcher checks passed.");
 }

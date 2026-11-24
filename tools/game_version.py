@@ -9,7 +9,7 @@ What tells the version, at each point:
     (scan_problem); a renamed file may tell nothing, and then the build's step 4 decides
   - the program (tools/build_game.py step 4): the main module's build id (main_version)
   - the game data (step 6): data.arc's version (tools/arc.py data_version)
-  - the game itself, when it starts (runtime/host.c), and the online lobby (tools/ssbu_relay.py)
+  - the game itself, when it starts (runtime/host.c), and the online lobby (a repository of its own)
     hold their own copy of MAIN_BUILD_ID; tests/test_game_version.py checks that they match
 """
 REQUIRED = "13.0.5"

@@ -77,8 +77,9 @@ namespace OpenSmash.Launcher
     {
         public const string Redirect = "http://127.0.0.1/callback";
         const string Api = "https://discord.com/api";
-        public const string LeaderboardUrl = "http://opensmash-lobby.duckdns.org:39421/leaderboard.json";
-        public static readonly string[] PublicLobbies = { "opensmash-lobby.duckdns.org:39421" };   // (the one public lobby; the North American one is gone)
+        // (the official lobbies by their DNS names, OpenSmash.Core.OfficialLobby, as the WinForms launcher reads them)
+        public static string LeaderboardUrl(string? repo = null) => OpenSmash.Core.OfficialLobby.Page("/leaderboard.json", repo);
+        public static string[] PublicLobbies(string? repo = null) => OpenSmash.Core.OfficialLobby.All(repo);
         static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
 
         public static string TokenPath(string repo) => Path.Combine(repo, "config", "discord_token.txt");
@@ -300,7 +301,7 @@ namespace OpenSmash.Launcher
         // The lobbies to ask: the public ones, and online_server.txt's own when it names another.
         public static List<string> Lobbies(string repo)
         {
-            var list = new List<string>(PublicLobbies);
+            var list = new List<string>(PublicLobbies(repo));
             string server = "";
             try
             {
@@ -309,7 +310,7 @@ namespace OpenSmash.Launcher
             }
             catch (IOException) { }
             string host = server.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
-            if (host != "" && !new[] { "auto", "na", "eu", "off", "lan" }.Contains(host.ToLowerInvariant()) && !host.StartsWith("smash.recomps.wtf", StringComparison.OrdinalIgnoreCase))
+            if (host != "" && !new[] { "off", "lan" }.Contains(host.ToLowerInvariant()) && !OpenSmash.Core.OfficialLobby.Means(host, repo))
             {
                 if (!host.Contains(':')) host += ":39420";
                 if (!list.Contains(host, StringComparer.OrdinalIgnoreCase)) list.Add(host);
@@ -364,7 +365,7 @@ namespace OpenSmash.Launcher
         {
             // (a row's id is the Discord account's hash: one row per account, however many installs are linked to it)
             if (t == null || t.UserId == "") return (0, new Dictionary<int, int>());
-            string text = await Http.GetStringAsync(LeaderboardUrl, cancel);
+            string text = await Http.GetStringAsync(LeaderboardUrl(repo), cancel);
             return RanksIn(text, AccountHash(t.UserId));
         }
 

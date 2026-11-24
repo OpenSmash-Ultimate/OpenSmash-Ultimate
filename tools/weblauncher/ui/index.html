@@ -17,6 +17,7 @@
     <button class="tab active" data-view="play">Play</button>
     <button class="tab" data-view="setup">Setup</button>
     <button class="tab" data-view="mods">Mods</button>
+    <button class="tab" data-view="competitive">Competitive</button>
     <button class="tab" data-view="settings">Settings</button>
     <button class="tab" data-view="update">Update</button>
     <div class="rail-foot">
@@ -41,11 +42,12 @@
         <button id="go-setup" class="big primary">Set up and build</button>
       </div>
       <div class="cards">
-        <div class="card"><h3>Online</h3><p id="play-online"></p></div>
+        <div class="card"><h3>Online</h3><p id="play-online"></p><p id="play-account" class="said bad" hidden></p></div>
         <div class="card"><h3>Mods</h3><p id="play-mods">…</p></div>
         <div class="card"><h3>Help</h3><p>Something wrong? <a id="report-link" href="https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/issues/new?template=bug_report.yml" target="_blank" rel="noopener">Report a problem</a>
           and drag <code>build/play.log</code> (in the OpenSmash folder; crash reports are in <code>reports/</code>) into the form.</p></div>
         <div class="card" id="discord-card" hidden><h3>Discord</h3><div id="discord-box"><p class="muted">…</p></div></div>
+        <div class="card" id="mastery-card" hidden><h3>Mastery</h3><div id="mastery-box"><p class="muted">…</p></div></div>
       </div>
       <div id="game-box" class="card" hidden>
         <h3>The game is running</h3>
@@ -109,6 +111,27 @@
       <ul id="mods-list" class="list"></ul>
     </section>
 
+    <section id="view-competitive" class="view">
+      <h1>Competitive</h1>
+      <p class="lead">SSBU Arena's ranked 1v1: tournament rules, one rating per account, the same account as OpenSmash.</p>
+      <div class="card arena-hero">
+        <h3>SSBU Arena · Ranked 1v1</h3>
+        <p>Tiers from Bronze to Grandmaster. SSBU Arena runs on Windows: here its site opens.</p>
+        <div class="buttons">
+          <a id="arena-get" class="button primary" href="https://www.ssbuarena.com/download" target="_blank" rel="noopener">SSBU Arena site</a>
+          <a id="arena-full" class="button" href="https://www.ssbuarena.com/leaderboard" target="_blank" rel="noopener">Full leaderboard</a>
+        </div>
+      </div>
+      <div class="ranked-head">
+        <h2>Top 10</h2>
+        <div id="ranked-regions" class="seg">
+          <button type="button" data-region="" class="active">All</button><button type="button" data-region="eu">EU</button><button type="button" data-region="na-east">NA East</button>
+        </div>
+      </div>
+      <div id="ranked-box" class="card"><p class="muted">…</p></div>
+      <p class="muted small">Stock icons by Max_Hamm.</p>
+    </section>
+
     <section id="view-settings" class="view">
       <h1>Settings</h1>
       <form id="settings" autocomplete="off">
@@ -127,9 +150,11 @@
         <div class="grid">
           <label>Your name<input name="name" type="text" maxlength="64"></label>
           <label>Lobby<select name="lobby"></select></label>
+          <label class="lobby-region">Server region<select name="region"></select>
+            <small>The official server you play on: Europe or North America East. Players on another region are not listed.</small></label>
           <label class="lobby-code">Lobby code<input name="code" type="text" maxlength="40"></label>
           <label class="lobby-server">Server (host:port)<input name="server" type="text" maxlength="120"></label>
-          <label>Direct connections<select name="direct"></select></label>
+          <label class="lobby-direct" title="Your own server and This network (LAN) only. The official lobbies never connect players directly.">Direct connections<select name="direct"></select></label>
         </div>
         <h2>Controllers</h2>
         <div class="grid">

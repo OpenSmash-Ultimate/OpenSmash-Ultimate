@@ -50,9 +50,24 @@ public sealed partial class MainWindow
         string channel=Environment.GetEnvironmentVariable("OPENSMASH_UPDATE_CHANNEL")??"",file=RequireProject().PathIn("tools","update_channel.txt");
         if(channel.Length==0&&File.Exists(file))channel=File.ReadAllText(file).Trim();
         if(channel.Equals("main",StringComparison.OrdinalIgnoreCase))return "main";
+        string problem="its answer names no release";
         try{using var release=await GitHub("/releases/latest");string tag=release.RootElement.TryGetProperty("tag_name",out var name)?name.GetString()?.Trim()??"":"";if(tag.Length>0)return Uri.EscapeDataString(tag);}
-        catch(Exception error) when(error is HttpRequestException or JsonException or TaskCanceledException){}
-        return "main";
+        catch(HttpRequestException error) when(error.StatusCode==System.Net.HttpStatusCode.NotFound){return "main";}   // (no release yet)
+        catch(Exception error) when(error is HttpRequestException or JsonException or TaskCanceledException){problem=error.Message;}
+        // GitHub's API not answering (no network, its hourly limit) is not main, which a release copy must never be compared
+        // with (Discord "Can't update", 2026-11-18): github.com's releases/latest page, whose redirect names the tag; else unknown.
+        try
+        {
+            using var request=new HttpRequestMessage(HttpMethod.Head,"https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/latest");
+            request.Headers.UserAgent.ParseAdd("OpenSmash-Launcher/1.0");
+            using var response=await Http.SendAsync(request);
+            string path=response.IsSuccessStatusCode?response.RequestMessage?.RequestUri?.AbsolutePath??"":"";
+            int at=path.IndexOf("/releases/tag/",StringComparison.OrdinalIgnoreCase);
+            if(at>=0&&path.Length>at+14)return Uri.EscapeDataString(Uri.UnescapeDataString(path[(at+14)..]).Trim('/'));
+            if(path.TrimEnd('/').EndsWith("/releases",StringComparison.OrdinalIgnoreCase))return "main";   // (no release: the list)
+        }
+        catch(Exception error) when(error is HttpRequestException or TaskCanceledException){}
+        throw new InvalidOperationException("Could not check for updates: GitHub did not say which release is the latest ("+problem+").");
     }
     async Task<string> LocalSourceCommit()
     {
@@ -62,12 +77,19 @@ public sealed partial class MainWindow
         {var lines=new List<string>();if(await ProcessRunner.Run(new Command("git",["rev-parse","HEAD"],p.Root),lines.Add,CancellationToken.None)==0)local=lines.FirstOrDefault()??local;}
         return local;
     }
+    /// <summary>this launcher's program file as it is on disk now (size and time): the update step may replace it</summary>
+    static string LauncherStamp()
+    {
+        try{string? path=Environment.ProcessPath;if(path==null)return "";var f=new FileInfo(path);return f.Exists?f.Length+" "+f.LastWriteTimeUtc.Ticks:"";}
+        catch(Exception error) when(error is IOException or UnauthorizedAccessException){return "";}
+    }
     async Task ApplyUpdate()
     {
         if(_closed||_updateBusy||Surface.OperationRunning||Surface.GameRunning)return;
         _updateBusy=true;Surface.SetOperationLabel("UPDATING OPENSMASH");Surface.OperationRunning=true;Surface.SetUpdateResult("updating","Updating OpenSmash...");
-        string failure="";bool restart=false;
+        string failure="";bool restart=false,launcherReplaced=false;
         var p=RequireProject();
+        string launcherBefore=LauncherStamp();
         try
         {
             string before=await LocalSourceCommit(),fingerprint=UpdateState.LauncherFingerprint(p);
@@ -79,7 +101,10 @@ public sealed partial class MainWindow
             ProjectLayout.Normalize(p.Root);
             string after=await LocalSourceCommit();
             if(!before.Equals(after,StringComparison.OrdinalIgnoreCase))UpdateState.Mark(UpdateState.GameMarker(p),after);
-            if(fingerprint!=UpdateState.LauncherFingerprint(p)&&CanBuildSharedLauncher())UpdateState.Mark(UpdateState.LauncherMarker(p),after);
+            // (v0.5.0: off Windows the update step itself puts the new launcher in place - tools/launcher_fetch.py, built
+            // with the SDK or the newest release's - so it is not built a second time; it is used from the next start)
+            if(p.Platform==DesktopPlatform.Windows&&fingerprint!=UpdateState.LauncherFingerprint(p)&&CanBuildSharedLauncher())UpdateState.Mark(UpdateState.LauncherMarker(p),after);
+            launcherReplaced=p.Platform!=DesktopPlatform.Windows&&LauncherStamp()!=launcherBefore;
             Surface.SetOperationLabel("UPDATING PYTHON PACKAGES");
             if(p.Platform==DesktopPlatform.Windows)await EnsureToolsPython(force:true);
             else await RunUpdateStep(Commands.PythonSetup(p),"python_setup.log");
@@ -93,6 +118,8 @@ public sealed partial class MainWindow
         if(failure.Length>0){Surface.SetUpdateResult("error","Update did not finish: "+failure);Surface.Alert("UPDATE DID NOT FINISH",failure+"\n\nCompleted work is kept. Pending rebuilds will be retried.");return;}
         if(restart){try{ScheduleLauncherBuildAndRestart();return;}catch(Exception error){Surface.Alert("LAUNCHER UPDATE PENDING",error.Message);return;}}
         await CheckUpdates();
-        if(!_closed)Surface.Alert("OPENSMASH UPDATED","Your game files, settings and save were kept. The game rebuild completed. If launcher sources changed, install its new release asset or rebuild it with the .NET SDK.");
+        if(!_closed)Surface.Alert("OPENSMASH UPDATED",launcherReplaced
+            ?"Your game files, settings and save were kept. The game rebuild completed. The launcher was updated too: close it and open it again to use the new one."
+            :"Your game files, settings and save were kept. The game rebuild completed. If launcher sources changed, install its new release asset or rebuild it with the .NET SDK.");
     }
 }

@@ -36,6 +36,9 @@ int pad_gc_switch(void);                                  /* 1: GameCube adapter
 /* Rumble on one side (1 left, 2 right) of a slot's pad, amplitude 0..1. */
 void pad_rumble(u32 slot, int side, float amplitude);
 float pad_rumble_value(u32 slot, int side);               /* what was last sent */
+/* The game's whole vibration value for one side (0 left, 1 right) of a slot's pad: amplitude low, frequency low,
+ * amplitude high, frequency high (nn::hid::VibrationValue). Pads that play HD rumble take it (padble.h). */
+void pad_vibration(u32 slot, int side, const float v[4]);
 int pad_describe(char *buf, int size);                    /* "1 DualSense, 2 Xbox" for the F2 panel */
 
 /* The settings menu (gpu_menu.c). A pad as it is set up now: its settings in effect (from the

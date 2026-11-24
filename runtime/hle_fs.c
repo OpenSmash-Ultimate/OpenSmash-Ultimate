@@ -80,9 +80,167 @@ static int pread_all(HANDLE h, u64 offset, void *buf, u64 size) {
     return 1;
 }
 
+
+/* ---- a source that is the game's own encrypted file, read in place (romfs.crypt) -----------------------------
+ * The game as the Switch stores it has its RomFS section encrypted (AES-128-CTR); the installer used to decrypt
+ * it into a copy (14 GB) for the reads above. With SSBU_DATA_IN_PLACE=1 at install (tools/build_game.py,
+ * tools/nca.py --in-place) there is no copy: romfs.cfg names the game's own file and romfs.crypt, beside it,
+ * lists that file's encrypted bytes: "<file>\t<from>\t<to>\t<nca>\t<key>\t<counter>" for file bytes [from, to),
+ * the counter block of a byte being <counter> (8 bytes) then (offset - <nca>) / 16, big-endian. What is read of
+ * those bytes is decrypted here, with the processor's AES instructions (every x86-64 processor since 2011 has
+ * them; without them the game says so at start and the installer's decrypted copy is the way). Without a
+ * romfs.crypt nothing here runs. */
+typedef struct { u64 from, to, nca; u8 rk[11][16]; u8 ctr[8]; } RomCrypt;
+static struct { RomCrypt *v; u32 n; } rom_crypt[ROM_SOURCES + 1];   /* by source; the last: the plain image's file */
+static char rom_paths[ROM_SOURCES + 1][1024];
+
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#ifdef _WIN32
+#include <intrin.h>
+#else
+#include <cpuid.h>
+#endif
+#define ROM_AES __attribute__((target("aes,sse4.1")))
+static int rom_aes_ok(void) {
+#ifdef _WIN32
+    int r[4];
+    __cpuid(r, 1);
+    return (r[2] >> 25) & 1;
+#else
+    unsigned a, b, c, d;
+    return __get_cpuid(1, &a, &b, &c, &d) && ((c >> 25) & 1);
+#endif
+}
+ROM_AES static __m128i rom_aes_next(__m128i k, __m128i g) {
+    g = _mm_shuffle_epi32(g, 0xFF);
+    k = _mm_xor_si128(k, _mm_slli_si128(k, 4));
+    k = _mm_xor_si128(k, _mm_slli_si128(k, 4));
+    k = _mm_xor_si128(k, _mm_slli_si128(k, 4));
+    return _mm_xor_si128(k, g);
+}
+ROM_AES static void rom_aes_key(const u8 *key, u8 rk[11][16]) {
+    __m128i k = _mm_loadu_si128((const __m128i *)key);
+    _mm_storeu_si128((__m128i *)rk[0], k);
+#define ROM_AES_STEP(i, rcon) k = rom_aes_next(k, _mm_aeskeygenassist_si128(k, rcon)); _mm_storeu_si128((__m128i *)rk[i], k);
+    ROM_AES_STEP(1, 0x01) ROM_AES_STEP(2, 0x02) ROM_AES_STEP(3, 0x04) ROM_AES_STEP(4, 0x08) ROM_AES_STEP(5, 0x10)
+    ROM_AES_STEP(6, 0x20) ROM_AES_STEP(7, 0x40) ROM_AES_STEP(8, 0x80) ROM_AES_STEP(9, 0x1B) ROM_AES_STEP(10, 0x36)
+#undef ROM_AES_STEP
+}
+ROM_AES static __m128i rom_aes_counter(const RomCrypt *c, u64 block) {
+    u8 iv[16];
+    memcpy(iv, c->ctr, 8);
+    for (int i = 0; i < 8; i++) iv[8 + i] = (u8)(block >> (56 - 8 * i));
+    return _mm_loadu_si128((const __m128i *)iv);
+}
+/* p[0..n): the bytes at offset pos of the NCA, decrypted in place (CTR: the same for encrypting). */
+ROM_AES static void rom_aes_ctr(const RomCrypt *c, u64 pos, u8 *p, u64 n) {
+    __m128i rk[11];
+    for (int i = 0; i < 11; i++) rk[i] = _mm_loadu_si128((const __m128i *)c->rk[i]);
+    u64 block = pos >> 4;
+    u32 skip = (u32)(pos & 15);
+    while (n) {
+        if (!skip && n >= 64) {   /* four blocks at a time: the processor runs their rounds side by side */
+            __m128i s0 = _mm_xor_si128(rom_aes_counter(c, block), rk[0]), s1 = _mm_xor_si128(rom_aes_counter(c, block + 1), rk[0]);
+            __m128i s2 = _mm_xor_si128(rom_aes_counter(c, block + 2), rk[0]), s3 = _mm_xor_si128(rom_aes_counter(c, block + 3), rk[0]);
+            for (int i = 1; i < 10; i++) {
+                s0 = _mm_aesenc_si128(s0, rk[i]); s1 = _mm_aesenc_si128(s1, rk[i]);
+                s2 = _mm_aesenc_si128(s2, rk[i]); s3 = _mm_aesenc_si128(s3, rk[i]);
+            }
+            s0 = _mm_aesenclast_si128(s0, rk[10]); s1 = _mm_aesenclast_si128(s1, rk[10]);
+            s2 = _mm_aesenclast_si128(s2, rk[10]); s3 = _mm_aesenclast_si128(s3, rk[10]);
+            __m128i *q = (__m128i *)p;
+            _mm_storeu_si128(q, _mm_xor_si128(_mm_loadu_si128(q), s0));
+            _mm_storeu_si128(q + 1, _mm_xor_si128(_mm_loadu_si128(q + 1), s1));
+            _mm_storeu_si128(q + 2, _mm_xor_si128(_mm_loadu_si128(q + 2), s2));
+            _mm_storeu_si128(q + 3, _mm_xor_si128(_mm_loadu_si128(q + 3), s3));
+            p += 64; n -= 64; block += 4;
+            continue;
+        }
+        __m128i s = _mm_xor_si128(rom_aes_counter(c, block), rk[0]);
+        for (int i = 1; i < 10; i++) s = _mm_aesenc_si128(s, rk[i]);
+        s = _mm_aesenclast_si128(s, rk[10]);
+        u8 ks[16];
+        _mm_storeu_si128((__m128i *)ks, s);
+        u32 m = 16 - skip < n ? 16 - skip : (u32)n;
+        for (u32 i = 0; i < m; i++) p[i] ^= ks[skip + i];
+        p += m; n -= m; skip = 0; block++;
+    }
+}
+#else
+static int rom_aes_ok(void) { return 0; }
+static void rom_aes_key(const u8 *key, u8 rk[11][16]) { (void)key; (void)rk; }
+static void rom_aes_ctr(const RomCrypt *c, u64 pos, u8 *p, u64 n) { (void)c; (void)pos; (void)p; (void)n; }
+#endif
+
+/* pread_all of a RomFS source, with what romfs.crypt says is encrypted of it decrypted. */
+static int rom_src_read(u32 src, HANDLE h, u64 offset, void *buf, u64 size) {
+    if (!pread_all(h, offset, buf, size)) return 0;
+    for (u32 k = 0; k < rom_crypt[src].n; k++) {
+        const RomCrypt *c = &rom_crypt[src].v[k];
+        u64 lo = offset > c->from ? offset : c->from, hi = offset + size < c->to ? offset + size : c->to;
+        if (lo < hi) rom_aes_ctr(c, lo - c->nca, (u8 *)buf + (lo - offset), hi - lo);
+    }
+    return 1;
+}
+
+static int rom_same_path(const char *a, const char *b) {
+    for (;; a++, b++) {
+        char x = *a == '/' ? '\\' : *a, y = *b == '/' ? '\\' : *b;
+        if (x >= 'A' && x <= 'Z') x += 32;
+        if (y >= 'A' && y <= 'Z') y += 32;
+        if (x != y) return 0;
+        if (!x) return 1;
+    }
+}
+
+static int rom_hex(const char *s, u8 *out, u32 n) {
+    for (u32 i = 0; i < n; i++) {
+        unsigned v;
+        if (sscanf(s + 2 * i, "%2x", &v) != 1) return 0;
+        out[i] = (u8)v;
+    }
+    return 1;
+}
+
+/* romfs.crypt beside romfs.cfg, once the sources are open (rom_paths: their names as romfs.cfg has them). */
+static void rom_crypt_open(void) {
+    char path[1100], line[2048];
+    snprintf(path, sizeof path, "%s/romfs.crypt", rt_data_dir);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    u32 found = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *tab = strchr(line, '\t');
+        if (!tab) continue;
+        *tab = 0;
+        unsigned long long from, to, nca;
+        char key[40], ctr[24];
+        if (sscanf(tab + 1, "%llu\t%llu\t%llu\t%32s\t%16s", &from, &to, &nca, key, ctr) != 5 || strlen(key) != 32 || strlen(ctr) != 16) continue;
+        for (u32 s = 0; s <= ROM_SOURCES; s++) {
+            if (!rom_paths[s][0] || !rom_same_path(rom_paths[s], line)) continue;
+            RomCrypt *c;
+            u8 k[16];
+            rom_crypt[s].v = realloc(rom_crypt[s].v, sizeof *c * (rom_crypt[s].n + 1));
+            c = &rom_crypt[s].v[rom_crypt[s].n];
+            c->from = from; c->to = to; c->nca = nca;
+            if (!rom_hex(key, k, 16) || !rom_hex(ctr, c->ctr, 8)) rt_fatal("%s: a line's key cannot be read", path);
+            rom_aes_key(k, c->rk);
+            rom_crypt[s].n++;
+            found++;
+        }
+    }
+    fclose(f);
+    if (!found) return;
+    if (!rom_aes_ok())
+        rt_fatal("the game's data is read in place from the game's own encrypted file (%s), which needs a processor with AES "
+                 "instructions: this one has none. Run the installer again without SSBU_DATA_IN_PLACE (it makes a decrypted copy).", path);
+    fprintf(stderr, "[fs] RomFS: %u encrypted region%s of the game's own file read in place, decrypted as read (%s)\n", found, found == 1 ? "" : "s", path);
+}
+
 /* Read image bytes [at, at + size). */
 static int rom_read(u64 at, void *buf, u64 size) {
-    if (!rom.layers) return pread_all(rom.file, rom.base + at, buf, size);
+    if (!rom.layers) return rom_src_read(ROM_SOURCES, rom.file, rom.base + at, buf, size);
     if (at + size > rom.size) return 0;
     u32 lo = 0, hi = rom.nlayers;   /* the last layer starting at or before `at` */
     while (hi - lo > 1) {
@@ -95,7 +253,7 @@ static int rom_read(u64 at, void *buf, u64 size) {
         u64 end = k + 1 < rom.nlayers ? rom.layers[k + 1].at : rom.size;
         u64 n = end - at < size ? end - at : size;
         if (l->src == LAYER_ZERO) memset(p, 0, n);
-        else if (!pread_all(rom.sources[l->src], l->off + (at - l->at), p, n)) return 0;
+        else if (!rom_src_read(l->src, rom.sources[l->src], l->off + (at - l->at), p, n)) return 0;
         p += n; at += n; size -= n;
     }
     return 1;
@@ -158,8 +316,9 @@ static void rom_open(void) {
         u32 n = 0;
         while (n < ROM_SOURCES && fgets(path, sizeof path, f)) {
             path[strcspn(path, "\r\n")] = 0;
-            if (path[0]) rom.sources[n++] = rom_file_open(path);
+            if (path[0]) { snprintf(rom_paths[n], sizeof rom_paths[n], "%s", path); rom.sources[n++] = rom_file_open(path); }
         }
+        rom_crypt_open();
         HANDLE m = rom_file_open(map);
         u8 head[24];
         if (!pread_all(m, 0, head, sizeof head) || memcmp(head, "SSBUROM1", 8)) rt_fatal("%s: not a layer map", map);
@@ -175,6 +334,8 @@ static void rom_open(void) {
     } else {
         if (fscanf(f, "%llu", &rom.base) != 1) rt_fatal("cannot read %s", cfg);
         rom.file = rom_file_open(path);
+        snprintf(rom_paths[ROM_SOURCES], sizeof rom_paths[ROM_SOURCES], "%s", path);
+        rom_crypt_open();
     }
     fclose(f);
     rom_unverified_note();
@@ -400,20 +561,74 @@ static void host_path(char *out, size_t n, struct Mount *m, const char *rest) {
  * handle that existed at that mark has been closed since (the last 256 such closes are kept; older ones count as
  * yes). Off, nothing is counted. */
 static u64 rb_seq;
-static u64 rb_closes[256][2];   /* (when closed, when opened) */
+static u64 rb_closes[256][3];   /* (when closed, when opened, 1: a read-only RomFS file a state puts back: fs_rb_save) */
 static u32 rb_nclose;
 static int rb_fs = -1;
 static u64 rb_born[512];        /* (by slot) when its handle was opened */
 int kernel_rb_switch(void);   /* (kernel.c: SSBU_RB, or run-ahead) */
 static int rb_fs_on(void) { if (rb_fs < 0) rb_fs = kernel_rb_switch(); return rb_fs; }
+/* SSBU_RB_IO_TRACE=1 (test aid, off by default): every handle opened and closed while rollback counts them, with the
+ * guest path and the count, to name the file behind a "LOAD refused: a game file open at the save was closed since" */
+static int rb_io_trace = -1;
+static __declspec(thread) const char *rb_trace_path;   /* (the path the open being made names) */
+static int rb_io_tracing(void) {
+    if (rb_io_trace < 0) { const char *e = getenv("SSBU_RB_IO_TRACE"); rb_io_trace = e && *e == '1'; }
+    return rb_io_trace;
+}
+/* (2026-11-20) SSBU_RB_FS_ROM (default on; =0: off, every close refuses as before): a read-only file of the game's RomFS
+ * (rom:/data.arc, the resource loader's) is no host state at all - its handle is a slot holding an offset and a size into
+ * the image this file already has open. A state keeps the RomFS handles open at its save (fs_rb_save) and its load puts
+ * them back in their slots (fs_rb_load), and frees the RomFS handles opened since, which belong to the frames the load
+ * undoes. So closing one no longer makes every older state unloadable: the resource loader opens and closes data.arc five
+ * times for a load in the middle of a fight (30 s before a timed match's end), and a wrong guess just before that found no
+ * state it could load (the Local Wireless room desync of 2026-11-19). Other handles (save files, the host's files) keep the
+ * rule above. */
+static int rb_fs_rom = -1;
+static int rb_fs_rom_on(void) { if (rb_fs_rom < 0) { const char *e = getenv("SSBU_RB_FS_ROM"); rb_fs_rom = !(e && *e == '0'); } return rb_fs_rom; }
+static int rb_rom_handle(const Handle *h) {   /* (the lock held) */
+    if (!rb_fs_rom_on() || !h->used || h->kind != FILE_ENTRY || h->host || (h->mode & OPEN_WRITE) || h->system_save || h->names) return 0;
+    for (int m = 0; m < 16; m++) if (mounts[m].id == h->mount) return mounts[m].kind == M_ROM;
+    return 0;
+}
+typedef struct FsRomRec { u32 slot, mount; int mode; u64 born, offset, size; } FsRomRec;
+typedef struct FsRomSave { u32 n; FsRomRec r[]; } FsRomSave;
 static void rb_closing(const Handle *h) {   /* (the lock held) */
     if (!rb_fs_on()) return;
     u32 i = (u32)(h - handles);
     u32 k = rb_nclose++ % 256;
-    rb_closes[k][0] = ++rb_seq; rb_closes[k][1] = i < 512 ? rb_born[i] : 0;
+    rb_closes[k][0] = ++rb_seq; rb_closes[k][1] = i < 512 ? rb_born[i] : 0; rb_closes[k][2] = rb_rom_handle(h);
+    if (rb_io_tracing()) fprintf(stderr, "[rb-io] close: handle %u (opened at #%llu) closed at #%llu\n", i, (unsigned long long)rb_closes[k][1],
+                                 (unsigned long long)rb_seq);
 }
 u64 fs_rb_mark(void) { ready(); EnterCriticalSection(&lock); u64 m = rb_seq; LeaveCriticalSection(&lock); return m; }
-int fs_rb_closed_since(u64 mark) {
+/* the RomFS handles open now, for a state (hle_rb_state.c rb_save; NULL: none, or SSBU_RB_FS_ROM=0) */
+static u64 rb_last_save_seq;   /* (the count at the newest state's save: a handle opened after it closes freely) */
+void *fs_rb_save(void) {
+    if (!rb_fs_on()) return NULL;
+    ready();
+    EnterCriticalSection(&lock); rb_last_save_seq = rb_seq; LeaveCriticalSection(&lock);
+    if (!rb_fs_rom_on()) return NULL;
+    EnterCriticalSection(&lock);
+    u32 n = 0;
+    for (u32 i = 1; i < 512; i++) n += rb_rom_handle(&handles[i]);
+    FsRomSave *f = n ? malloc(sizeof *f + n * sizeof f->r[0]) : NULL;
+    if (f) {
+        f->n = 0;
+        for (u32 i = 1; i < 512; i++)
+            if (rb_rom_handle(&handles[i]))
+                f->r[f->n++] = (FsRomRec){ i, handles[i].mount, handles[i].mode, rb_born[i], handles[i].offset, handles[i].size };
+    }
+    LeaveCriticalSection(&lock);
+    return f;
+}
+static const FsRomRec *rom_saved(const FsRomSave *f, u32 slot, u64 born) {
+    for (u32 j = 0; f && j < f->n; j++) if (f->r[j].slot == slot && f->r[j].born == born) return &f->r[j];
+    return NULL;
+}
+/* Whether a handle open at the save (mark) was closed since and cannot be put back: a RomFS one kept in the state
+ * (fs: fs_rb_save's) can, unless its slot now holds another kind of handle. */
+int fs_rb_closed_since(u64 mark, const void *fs) {
+    const FsRomSave *f = fs;
     int yes = 0;
     ready();
     EnterCriticalSection(&lock);
@@ -421,12 +636,43 @@ int fs_rb_closed_since(u64 mark) {
     for (u32 j = 0; j < n && !yes; j++) {
         const u64 *c = rb_closes[(rb_nclose - 1 - j) % 256];
         if (c[0] <= mark) break;   /* (newest first: the rest are older than the mark) */
-        if (c[1] <= mark) yes = 1;
+        if (c[1] <= mark && !(c[2] && f)) yes = 1;
         if (j == 255) yes = 1;     /* (more closes since than kept) */
+    }
+    for (u32 j = 0; f && j < f->n && !yes; j++) {   /* (a slot kept that a host or save handle took since) */
+        const Handle *h = &handles[f->r[j].slot];
+        if (h->used && rb_born[f->r[j].slot] != f->r[j].born && !rb_rom_handle(h)) yes = 1;
     }
     LeaveCriticalSection(&lock);
     return yes;
 }
+/* A load (after fs_rb_closed_since said no): the state's RomFS handles back in their slots, the RomFS handles opened
+ * since its save freed. Returns how many were put back or freed. */
+static long long rb_fs_put_back, rb_fs_freed;
+int fs_rb_load(const void *fs, u64 mark) {
+    const FsRomSave *f = fs;
+    if (!rb_fs_on() || !rb_fs_rom_on()) return 0;
+    int k = 0;
+    ready();
+    EnterCriticalSection(&lock);
+    for (u32 i = 1; i < 512; i++)
+        if (rb_born[i] > mark && rb_rom_handle(&handles[i]) && !rom_saved(f, i, rb_born[i])) {
+            memset(&handles[i], 0, sizeof handles[i]); rb_born[i] = 0; k++; rb_fs_freed++;
+            if (rb_io_tracing()) fprintf(stderr, "[rb-io] load: RomFS handle %u opened since the state freed\n", i);
+        }
+    for (u32 j = 0; f && j < f->n; j++) {
+        const FsRomRec *r = &f->r[j];
+        Handle *h = &handles[r->slot];
+        if (h->used && rb_born[r->slot] == r->born) continue;   /* (still open) */
+        memset(h, 0, sizeof *h);
+        h->used = 1; h->kind = FILE_ENTRY; h->mode = r->mode; h->mount = r->mount; h->offset = r->offset; h->size = r->size;
+        rb_born[r->slot] = r->born; k++; rb_fs_put_back++;
+        if (rb_io_tracing()) fprintf(stderr, "[rb-io] load: RomFS handle %u (opened at #%llu) put back\n", r->slot, (unsigned long long)r->born);
+    }
+    LeaveCriticalSection(&lock);
+    return k;
+}
+void fs_rb_counts(long long *put_back, long long *freed) { *put_back = rb_fs_put_back; *freed = rb_fs_freed; }
 
 static u64 new_handle(Handle h) {
     EnterCriticalSection(&lock);
@@ -435,6 +681,9 @@ static u64 new_handle(Handle h) {
             handles[i] = h;
             handles[i].used = 1;
             if (rb_fs_on()) rb_born[i] = ++rb_seq;
+            if (rb_fs_on() && rb_io_tracing())
+                fprintf(stderr, "[rb-io] open: handle %u at #%llu: %s %s\n", i, (unsigned long long)rb_seq, h.kind == DIR_ENTRY ? "directory" : "file",
+                        rb_trace_path ? rb_trace_path : "?");
             LeaveCriticalSection(&lock);
             return 0x46530000ull | i;
         }
@@ -1220,6 +1469,7 @@ HLE(_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc) {
 HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     const char *rest;
     ready();
+    rb_trace_path = P(char, c->x[1]);
     struct Mount *m = find_mount(P(char, c->x[1]), &rest);
     int mode = (int)c->x[2];
     if (!m) { c->x[0] = R_NOT_MOUNTED; return; }
@@ -1338,14 +1588,28 @@ HLE(_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE) {
     st64(c->x[0], file_size(h));
     c->x[0] = 0;
 }
+/* (rollback, SSBU_RB_IO_BARRIER: hle_rb_core.c) A close a load could not undo - a handle open at the newest state's save
+ * that is not a RomFS one put back by the load - waits, in a networked fight, until no rollback can cross it. */
+extern int (*kernel_rb_io_enter)(void *kthread, const char *what);
+extern void (*kernel_rb_io_leave)(int token);
+static int rb_close_barrier(Cpu *c, Handle *h) {
+    if (!kernel_rb_io_enter || !rb_fs_on()) return 0;
+    EnterCriticalSection(&lock);
+    u32 i = (u32)(h - handles);
+    int need = h->used && i < 512 && rb_born[i] <= rb_last_save_seq && !rb_rom_handle(h);
+    LeaveCriticalSection(&lock);
+    return need ? kernel_rb_io_enter(c->thread, "a game file closed") : 0;
+}
 HLE(_ZN2nn2fs9CloseFileENS0_10FileHandleE) {
     Handle *h = get_handle(c->x[0]);
     if (!h) return;
+    int io = rb_close_barrier(c, h);
     if (h->host) CloseHandle(h->host);
     EnterCriticalSection(&lock);
     rb_closing(h);
     memset(h, 0, sizeof *h);
     LeaveCriticalSection(&lock);
+    if (io && kernel_rb_io_leave) kernel_rb_io_leave(io);
 }
 HLE(_ZN2nn2fs10CreateFileEPKcl) {   /* (path, size) */
     const char *rest;
@@ -1447,6 +1711,7 @@ static void listing_free(Handle *h) {
 HLE(_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci) {   /* (handle*, path, mode) */
     const char *rest;
     ready();
+    rb_trace_path = P(char, c->x[1]);
     struct Mount *m = find_mount(P(char, c->x[1]), &rest);
     int mode = (int)c->x[2];
     if (!m) { c->x[0] = R_NOT_MOUNTED; return; }
@@ -1545,11 +1810,13 @@ HLE(_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE) {
 HLE(_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE) {
     Handle *h = get_handle(c->x[0]);
     if (!h) return;
+    int io = rb_close_barrier(c, h);
     listing_free(h);
     EnterCriticalSection(&lock);
     rb_closing(h);
     memset(h, 0, sizeof *h);
     LeaveCriticalSection(&lock);
+    if (io && kernel_rb_io_leave) kernel_rb_io_leave(io);
 }
 
 /* ---- what Skyline plugins ask of nn::fs that the game doesn't ----------------------- */

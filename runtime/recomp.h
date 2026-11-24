@@ -110,6 +110,10 @@ u64 rt_ticks(void);                /* the 19.2 MHz system counter */
  * costume-slot fixes, tools/lift.py "switch"): mods/mods.json's code_patches, read once at start
  * (runtime/mod_switch.c). Off: the game's own code, as a build without them. */
 int rt_code_patches_on(void);
+/* Whether Skyline plugin code patches (dump/skyline/patches.txt, lifted with tools/lift.py "switch")
+ * are active: turned on only when skyline_load_plugins() actually loads plugins (runtime/hle_skyline.c).
+ * Off when running without plugins, so stale or seeded plugin patches never skip original instructions. */
+int rt_plugin_patches_on(void);
 
 #define X(n) (c->x[n])
 #define SP (c->sp)

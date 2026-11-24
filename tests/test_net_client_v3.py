@@ -1,6 +1,6 @@
 """The game's netplay client (runtime/net_relay.c) in protocol SN versions 2 and 3, through
 tools/dev/netv3test.c (the client with no game around it, driven line by line), against the real
-lobby (tools/ssbu_relay.py, on 127.0.0.1 with free ports), the lobby as it was before version 3, a
+lobby (the lobby server, on 127.0.0.1 with free ports: tests/netproto.py), the lobby as it was before version 3, a
 private room's relay in another netv3test, and a fake lobby that checks every byte: without
 SSBU_NET_PROTOCOL the client's packets are version 2's, as before; with SSBU_NET_PROTOCOL=3 its JOIN
 says the simulation version (runtime/sim_version.h) and a mod set of none, two games of one key meet
@@ -32,9 +32,14 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(ROOT / 'tests'))
 import cc  # noqa: E402
-import ssbu_relay as R  # noqa: E402
-from test_ssbu_relay import BUILD, Player, Server, info_of  # noqa: E402
-from test_ssbu_relay_v3 import V3Player, mods, until  # noqa: E402
+import netproto as R  # noqa: E402
+from netproto import BUILD, HAVE_LOBBY, NO_LOBBY, info_of, mods, need_lobby, until  # noqa: E402
+if HAVE_LOBBY:   # (the lobby server's own test helpers: a lobby on a thread, fake players)
+    import ssbu_relay  # noqa: E402
+    from test_ssbu_relay import Player, Server  # noqa: E402
+    from test_ssbu_relay_v3 import V3Player  # noqa: E402
+else:
+    ssbu_relay = Player = Server = V3Player = None
 
 if os.name == 'nt':
     HAVE_CLANG = os.path.exists(cc.CLANG) or shutil.which(cc.CLANG) is not None
@@ -43,6 +48,7 @@ else:
 
 SIM = int(re.search(r'#define SIM_VERSION (\d+)u', (ROOT / 'runtime' / 'sim_version.h').read_text()).group(1))
 V2_TAIL = b'WS' + struct.pack('>I', SIM) + b'\0'   # (a JOIN of version 2's end: this game's simulation version, a mod set of none)
+CV = b'CV' + struct.pack('>H', 1)   # (every JOIN's last block: the online level, runtime/net.h NET_CLIENT_LEVEL; lobbies before it ignore it)
 LDN = R.LDN_PORT
 GAME = 12345
 BCAST = R.BROADCASTS[0]
@@ -81,6 +87,9 @@ class Game:
     def __init__(self, exe, relay=None, protocol=None, room='v3client', name='P', **more):
         env = {k: v for k, v in os.environ.items() if not k.upper().startswith('SSBU_NET_') and k.upper() != 'NETV3TEST_BUILD'}
         env.update(SSBU_NET_ROOM=room, SSBU_NET_NAME=name, SSBU_NET_UPNP='0', NETV3TEST_BUILD=BUILD)
+        # (OpenSmash 0.5.0: direct paths are asked for - SSBU_NET_DIRECT=1 - and never taken with the official lobby; these
+        # tests are of the direct paths with a lobby of the player's own, so they ask)
+        env['SSBU_NET_DIRECT'] = '1'
         if relay is not None:
             env['SSBU_NET_RELAY'] = relay
         if protocol is not None:
@@ -190,15 +199,17 @@ class Game:
                 pass
 
 
-class V2OnlyLobby(R.Lobby):
-    """The lobby as it was before version 3: any other version's JOIN is answered with REJECT reason 2,
-    in that version (main's tools/ssbu_relay.py), and nothing else of it is read."""
-    def packet(self, p, at, now):
-        if p[2] != R.PROTOCOL:
-            if p[3] == R.JOIN and len(p) >= R.V1_JOIN_SIZE and self.gate(at, now):
-                self.reject(self.sn, at, p[4:12], 2, f"different netplay version (lobby {R.PROTOCOL}, you {p[2]})", p[2])
-            return
-        super().packet(p, at, now)
+V2OnlyLobby = None
+if HAVE_LOBBY:
+    class V2OnlyLobby(ssbu_relay.Lobby):
+        """The lobby as it was before version 3: any other version's JOIN is answered with REJECT reason 2,
+        in that version, and nothing else of it is read."""
+        def packet(self, p, at, now):
+            if p[2] != R.PROTOCOL:
+                if p[3] == R.JOIN and len(p) >= R.V1_JOIN_SIZE and self.gate(at, now):
+                    self.reject(self.sn, at, p[4:12], 2, f"different netplay version (lobby {R.PROTOCOL}, you {p[2]})", p[2])
+                return
+            super().packet(p, at, now)
 
 
 @unittest.skipUnless(HAVE_CLANG, 'needs clang on x86-64 Linux or an Apple silicon Mac, or clang-cl on Windows (deps\\llvm, or Visual Studio\'s C++ Clang tools)')
@@ -285,6 +296,7 @@ class Bytes(ClientTest):
             want += struct.pack('>I', SIM) + b'\0'   # (the simulation version, a mod set of none)
         else:   # (version 2's tail: 'W' 'S', the same two, which a private room's relay compares; others ignore it)
             want += V2_TAIL
+        want += CV   # (no ticket before it: not the official lobby)
         self.assertEqual(join, want)
         flags = 3 if version == R.PROTOCOL else 31
         lobby.s.sendto(head(R.WELCOME) + nonce + struct.pack('>IQB', FAKE_IP, FAKE_COOKIE, flags) + b'\0', at)
@@ -349,7 +361,7 @@ class Bytes(ClientTest):
         g = self.game(lobby.address, protocol=2)
         g.send('join 1')
         join, _ = lobby.next(R.JOIN)
-        self.assertEqual((join[:4], len(join), join[R.JOIN_SIZE:]), (b'SN\x02\x01', R.JOIN_SIZE + len(V2_TAIL), V2_TAIL))
+        self.assertEqual((join[:4], len(join), join[R.JOIN_SIZE:]), (b'SN\x02\x01', R.JOIN_SIZE + len(V2_TAIL + CV), V2_TAIL + CV))
 
     def test_version_3(self):
         """SSBU_NET_PROTOCOL=3: the same in version 3's header, its JOIN with the simulation version and
@@ -391,7 +403,7 @@ class Bytes(ClientTest):
         reject = b'SN\x03' + bytes((R.REJECT,)) + join[4:12] + b'\2' + b'different netplay version (lobby 2, you 3)'.ljust(64, b'\0')
         lobby.s.sendto(reject, at)
         again, _ = lobby.next(R.JOIN, wait=1.0)   # (no 2 s pause, as after any other REJECT)
-        self.assertEqual(again, b'SN\x02\x01' + join[4:R.JOIN_SIZE] + V2_TAIL)
+        self.assertEqual(again, b'SN\x02\x01' + join[4:R.JOIN_SIZE] + V2_TAIL + CV)
         lobby.s.sendto(reject, at)   # (late)
         self.assertTrue(until(lambda: 'connecting' in g.status()))   # (not refused)
         lobby.s.sendto(b'SN\x02' + bytes((R.WELCOME,)) + join[4:12] + struct.pack('>IQB', FAKE_IP, FAKE_COOKIE, 3) + b'\0', at)
@@ -413,8 +425,9 @@ class Bytes(ClientTest):
         self.assertEqual(lobby.next(R.JOIN, wait=4.0)[0], join)   # (asked again, in version 3)
 
 
+@unittest.skipUnless(HAVE_LOBBY, NO_LOBBY)
 class Lobby(ClientTest):
-    """Games against tools/ssbu_relay.py."""
+    """Games against the real lobby."""
     def setUp(self):
         super().setUp()
         self.server = Server(search_for=30.0, match_for=30.0)
@@ -533,6 +546,7 @@ class Lobby(ClientTest):
 class FallBack(ClientTest):
     """Games of version 3 where version 2 is all there is."""
     def test_lobby_of_version_2(self):
+        need_lobby()
         server = Server(make=V2OnlyLobby)
         self.addCleanup(server.stop)
         relay = f'127.0.0.1:{server.port}'

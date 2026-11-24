@@ -161,15 +161,87 @@ class LauncherDefaultsTests(unittest.TestCase):
         self.assertRegex(load, r'net\.direct = !\(settings_line_read\(config_path\(CONFIG_ONLINE_DIRECT\).*!_strnicmp\(direct, "off", 3\)\)')
         self.assertEqual(self.table[('online_direct.txt', '')], 'on')
         self.assertEqual(self.table[('online_name.txt', '')], '')
-        public = re.search(r'#define PUBLIC_LOBBY "([^"]+)"', self.menu_c).group(1)
-        self.assertIn(f'PublicLobby = "{public}"', read(LAUNCHER / 'SettingDefaults.cs'))
+        # the official lobby: one DNS name (never an address in numbers), the same in the game and in every launcher
+        net_h = read(RUNTIME / 'net.h')
+        host = re.search(r'#define NET_OFFICIAL_LOBBY_HOST "([^"]+)"', net_h).group(1)
+        port = re.search(r'#define NET_OFFICIAL_LOBBY_PORT (\d+)', net_h).group(1)
+        self.assertIn(f'#define NET_OFFICIAL_LOBBY NET_OFFICIAL_LOBBY_HOST ":{port}"', net_h)
+        self.assertRegex(host, r'^(?=.*[a-z])[a-z0-9.-]+\.[a-z]{2,}$')
+        public = f'{host}:{port}'
+        core = read(ROOT / 'OpenSmash.Core' / 'OfficialLobby.cs')
+        self.assertIn(f'Host = "{host}"', core)
+        self.assertIn(f'Port = {port};', core)
+        self.assertIn(f'Default = Host + ":{port}"', core)
+        self.assertIn('PublicLobby = OpenSmash.Core.OfficialLobby.Default', read(LAUNCHER / 'SettingDefaults.cs'))
+        self.assertIn(f'PUBLIC_LOBBY = "{public}"', read(ROOT / 'tools' / 'weblauncher' / 'launcher.py'))
+        self.assertIn(f'OFFICIAL_LOBBY = "{public}"', read(ROOT / 'tools' / 'weblauncher' / 'discord_account.py'))
+        self.assertIn(f"$PublicLobby = '{public}'", read(ROOT / 'tools' / 'launcher.ps1'))
+        self.assertIn('static const char *public_lobby(void) { return net_region_lobby(); }', read(RUNTIME / 'net_relay.c'))
+        for name in ('gpu_menu.c', 'net_discord.c', 'net_relay.c'):   # (no other lobby name is a default in the game)
+            self.assertNotRegex(read(RUNTIME / name), r'#define \w+ L?"[^"]*(duckdns|recomps\.wtf)')
+        # (v0.5.0) the Avalonia launcher takes the official lobby from OpenSmash.Core.OfficialLobby too, no host of its own
+        for name in ('CommunityFeed.cs', 'DiscordAccount.cs'):
+            text = read(ROOT / 'OpenSmash.Avalonia' / name)
+            self.assertNotRegex(text, r'"[^"]*(duckdns|recomps\.wtf)[^"]*"', name)
+            self.assertIn('OpenSmash.Core.OfficialLobby.', text, name)
+
+    def test_server_regions(self):
+        """The official lobbies, one a region: the same table (id, name shown, lobby) in the game and in every launcher,
+        the same files and the same rule for Auto; the first region is the official lobby's default name."""
+        net_h = read(RUNTIME / 'net.h')
+        public = (re.search(r'#define NET_OFFICIAL_LOBBY_HOST "([^"]+)"', net_h).group(1) + ':' +
+                  re.search(r'#define NET_OFFICIAL_LOBBY_PORT (\d+)', net_h).group(1))
+        block = net_h[net_h.index('#define NET_REGION_TABLE'):net_h.index('#define NET_REGION_COUNT')]
+        game = [(i, n, public if l == 'NET_OFFICIAL_LOBBY' else l.strip('"'))
+                for i, n, l in re.findall(r'\{"([^"]+)", "([^"]+)", ("[^"]+"|NET_OFFICIAL_LOBBY)\}', block)]
+        self.assertEqual(len(game), int(re.search(r'#define NET_REGION_COUNT (\d+)', net_h).group(1)))
+        self.assertGreaterEqual(len(game), 2)
+        self.assertEqual(game[0], ('eu', 'EU', public), 'the first region is the fallback: the official lobby\'s default')
+        self.assertEqual(len({i for i, _n, _l in game}), len(game))
+        self.assertEqual(len({l for _i, _n, l in game}), len(game))
+        for rid, _name, lobby in game:   # (ids as the file says them; lobbies by DNS name, never an address in numbers)
+            self.assertRegex(rid, r'^[a-z][a-z0-9-]*$')
+            self.assertNotEqual(rid, 'auto')
+            self.assertRegex(lobby, r'^(?=.*[a-z])[a-z0-9-]+\.lobby\.opensmashultimate\.com:39421$')
+        core = read(ROOT / 'OpenSmash.Core' / 'ServerRegion.cs')
+        launcher = [(i, n, public if l == 'OfficialLobby.Default' else l.strip('"'))
+                    for i, n, l in re.findall(r'new ServerRegion\("([^"]+)", "([^"]+)", ("[^"]+"|OfficialLobby\.Default)\)', core)]
+        self.assertEqual(launcher, game, 'OpenSmash.Core/ServerRegion.cs')
+        import sys
+        sys.path.insert(0, str(ROOT / 'tools' / 'weblauncher'))
+        import server_region
+        self.assertEqual(list(server_region.REGIONS), game, 'tools/weblauncher/server_region.py')
+        ps1 = read(ROOT / 'tools' / 'launcher.ps1')
+        self.assertEqual(re.findall(r"@\{ Id = '([^']+)'; Label = '([^']+)'; Lobby = '([^']+)' \}", ps1), game, 'tools/launcher.ps1')
+        # the files, and Auto's rule
+        self.assertIn('#define NET_REGION_FILE "config/server_region.txt"', net_h)
+        self.assertIn('#define NET_REGION_AUTO_FILE "config/server_region_auto.txt"', net_h)
+        self.assertIn('SettingFile = "server_region.txt", AutoFile = "server_region_auto.txt"', core)
+        self.assertEqual((server_region.SETTING_FILE, server_region.AUTO_FILE), ('server_region.txt', 'server_region_auto.txt'))
+        keep = int(re.search(r'#define NET_REGION_KEEP_MS (\d+)', net_h).group(1))
+        self.assertIn(f'KeepMarginMs = {keep};', core)
+        self.assertEqual(server_region.KEEP_MARGIN_MS, keep)
+        self.assertEqual(self.table[('server_region.txt', '')], 'auto')
+        self.assertIn('return net_region_index(word);   /* ("auto", nothing, a word that is no region: auto) */', read(RUNTIME / 'net_region.c'))
+        choices = read(LAUNCHER / 'SettingDefaults.cs')
+        # (the launchers' list: the regions themselves, Europe and North America East; "auto" stays the game's default in the file,
+        # shown as the region it plays on - OpenSmash.Core/OnlineSettings.cs RegionShown)
+        self.assertIn('["region"] = OpenSmash.Core.ServerRegion.All.Select(r => r.Id).ToArray()', choices)
+        # players are told that regions do not see each other, where the region is chosen
+        told = 'Players on another region are not listed.'
+        self.assertIn(told, self.menu_c)
+        self.assertIn(told, read(LAUNCHER / 'LauncherForm.Paint.cs'))
+        self.assertIn(told, read(ROOT / 'tools' / 'weblauncher' / 'ui' / 'index.html'))
+        self.assertIn(told, ps1)
+        for name in ('net_region.c', 'net.h'):   # (no address in numbers)
+            self.assertNotRegex(read(RUNTIME / name), r'"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}')
 
     def test_lobby_choices(self):
         """The lobby lines the game's menu writes are exactly the launcher's choices (private and custom carry an address)."""
         save = self.menu_c[self.menu_c.index('static void net_save_server(void)'):]
         save = save[:save.index('\n}\n')]
         written = set(re.findall(r'snprintf\(line, sizeof line, "(\w+)"\)', save))
-        self.assertEqual(written, {'off', 'lan', 'auto'})
+        self.assertEqual(written, {'off', 'lan', 'auto'})   # (no 'eos': Epic Online Services, gone in 0.5.0)
         as_choice = {'off': 'offline'}
         self.assertEqual({as_choice.get(w, w) for w in written} | {'private', 'custom'}, set(self.choices['lobby']))
         modes = re.search(r'enum \{ NET_PUBLIC, (.*?), NET_MODE_COUNT \}', self.menu_c).group(1)

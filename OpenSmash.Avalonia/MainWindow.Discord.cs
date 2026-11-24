@@ -24,6 +24,8 @@ public sealed partial class MainWindow
         _communityOn = true;
         var c = Surface.Community;
         c.Enabled = true;
+        // (the fighters' stock icons, downloaded once each: OpenSmash.Core.Fighters; the page is drawn again when one is there)
+        c.IconBytes ??= key => Fighters.Icon(Http, key, () => Dispatcher.UIThread.Post(() => Surface.InvalidateVisual()));
         if (_communityTimer == null)
         {
             _communityTimer = new DispatcherTimer { Interval = CommunityFeed.Every };
@@ -34,9 +36,11 @@ public sealed partial class MainWindow
         {
             _communityRoot = _project.Root;
             c.HasApp = DiscordAccount.AppId(_communityRoot) != "";
-            c.Shown = DiscordAccount.ShowsName(_communityRoot);
             c.Account = null; c.Avatar = null; c.Rank = 0; c.Records = new(); c.FighterRanks = new(); c.Open = false; c.Error = "";
-            if (c.HasApp) _ = DiscordRefresh(_communityRoot);
+            AccountInit(_communityRoot);   // (v0.5.0: MainWindow.Account.cs; the account replaces the Discord token)
+            c.Shown = AccountMode || DiscordAccount.ShowsName(_communityRoot);   // (a signed-in account is listed by default)
+            if (c.HasApp && !AccountMode) _ = DiscordRefresh(_communityRoot);
+            if (_backgroundActions) _ = RegionMeasure(_communityRoot);
             PresenceStop();
         }
         _ = CommunityRefresh();
@@ -57,11 +61,43 @@ public sealed partial class MainWindow
         _communityBusy = true;
         try
         {
-            var (status, board) = await CommunityFeed.Fetch(Http, CancellationToken.None);
+            // (mastery: the top mastery from the accounts service's board, the official lobbies' lists only when it fails;
+            // and Arena's launcher when installed)
+            var c0 = Surface.Community;
+            var top = Mastery.UiOn && Mastery.TopOn && _project != null ? Mastery.TopAsync(_account, Http, OfficialLobby.All(_project.Root), CancellationToken.None, 5) : null;
+            if (Mastery.UiOn && Mastery.ArenaCardOn) c0.ArenaExe = await Task.Run(() => ArenaEdition.Find());
+            var (status, board) = await CommunityFeed.Fetch(Http, CancellationToken.None, _project?.Root);
+            if (top != null) { c0.TopMastery = await top ?? c0.TopMastery; c0.TopMasteryAsked = true; }
             var account = Surface.Community.Account;
-            Surface.Community.Apply(status, board, account?.UserId is { Length: > 0 } id ? DiscordAccount.AccountHash(id) : "");
+            // (v0.5.0: an account's row is the id the lobby gave with the ticket; a Discord token's is its account hash)
+            string mine = AccountMode ? Surface.Community.BoardId ?? "" : account?.UserId is { Length: > 0 } id ? DiscordAccount.AccountHash(id) : "";
+            Surface.Community.Apply(status, board, mine);
         }
         finally { _communityBusy = false; }
+        Surface.InvalidateVisual();
+        if (Surface.CurrentView == "competitive") await RankedRefresh();   // (asked again every minute while shown)
+    }
+
+    // The COMPETITIVE page's board (Visuals/CompetitiveArtwork.cs): SSBU Arena's ranked top 10 for the region picked there.
+    bool _rankedBusy;
+    DateTime _rankedAt = DateTime.MinValue;
+    async Task RankedRefresh(bool force = false)
+    {
+        var c = Surface.Community;
+        if (_rankedBusy || (!force && c.RankedAsked && DateTime.UtcNow - _rankedAt < TimeSpan.FromSeconds(55))) return;
+        _rankedBusy = true;
+        try
+        {
+            int region = c.RankedRegion;
+            c.ArenaExe = await Task.Run(() => ArenaEdition.Find());
+            var rows = await RankedBoard.TopAsync(_account, RankedBoard.Regions[Math.Clamp(region, 0, RankedBoard.Regions.Length - 1)], 10);
+            if (region != c.RankedRegion) return;   // (another region was picked meanwhile: its own answer follows)
+            c.RankedFailed = rows == null;
+            if (rows != null) c.RankedRows = rows;
+            c.RankedAsked = true;
+            _rankedAt = DateTime.UtcNow;
+        }
+        finally { _rankedBusy = false; }
         Surface.InvalidateVisual();
     }
 
@@ -103,13 +139,27 @@ public sealed partial class MainWindow
     {
         var c = Surface.Community;
         string? root = _communityRoot;
+        if (AccountMode && root != null && id is "community:signin" or "community:shown" or "community:manage" or "community:signout")
+        {
+            await AccountAction(id, root);   // (MainWindow.Account.cs)
+            return;
+        }
         switch (id)
         {
             case "community:board": Commands.OpenPath(CommunityFeed.SitePage); break;
+            case "community:competitive": await RankedRefresh(); break;   // (the COMPETITIVE page was opened)
+            case "community:arena-board": Commands.OpenPath(RankedBoard.LeaderboardPage); break;
+            case var region when region.StartsWith("community:region:") && int.TryParse(region["community:region:".Length..], out int r) && r >= 0 && r < RankedBoard.Regions.Length:
+                if (r != c.RankedRegion) { c.RankedRegion = r; c.RankedRows = null; c.RankedAsked = false; Surface.InvalidateVisual(); await RankedRefresh(force: true); }
+                break;
+            case "community:arena":   // (mastery) SSBU Arena's launcher (Windows, installed), else its download page
+                if (root != null) Updater.Log(root, ArenaEdition.Open(Commands.OpenPath));
+                else ArenaEdition.Open(Commands.OpenPath);
+                break;
             case "community:cancel": _discordCancel?.Cancel(); break;
             case "community:me":
                 c.Open = !c.Open; c.Error = "";
-                if (c.Open && root != null) await DiscordLoadGsp(root);
+                if (c.Open && root != null) await (AccountMode ? AccountLoadGsp(root) : DiscordLoadGsp(root));
                 break;
             case "community:signin" when root != null && !c.Busy:
                 c.Busy = true; c.Error = "";
@@ -147,6 +197,28 @@ public sealed partial class MainWindow
                 break;
         }
         Surface.InvalidateVisual();
+    }
+
+    // (v0.5.0) The server region (OpenSmash.Core.ServerRegion, as the WinForms launcher's LauncherForm.Community.cs): with
+    // Auto, every region's lobby is asked at each start and the closest is kept in config/server_region_auto.txt, which
+    // the game starts from; the players online and the leaderboard are then that region's.
+    async Task RegionMeasure(string root)
+    {
+        if (OfficialLobby.Override(root) != null || ServerRegion.Setting(root) != ServerRegion.Auto) return;
+        try { await ServerRegion.Measure(root); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Net.Sockets.SocketException) { return; }
+        if (root != _communityRoot) return;
+        Surface.RegionMeasured();
+        await CommunityRefresh();
+    }
+
+    /// <summary>the region was changed in the settings: measured when Auto, and the lobby's numbers asked again</summary>
+    internal async Task RegionChanged()
+    {
+        if (_communityRoot == null || !_backgroundActions) return;
+        await RegionMeasure(_communityRoot);
+        await CommunityRefresh();
+        if (AccountMode) await AccountLoadGsp(_communityRoot);
     }
 
     // ---- Rich Presence: the launcher's, until the game starts -------------------------------------------------------

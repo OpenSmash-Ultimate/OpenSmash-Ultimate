@@ -47,18 +47,20 @@ TOOLS = os.path.dirname(HERE)
 UI = os.path.join(HERE, "ui")
 sys.path.insert(0, HERE)
 import discord_account   # noqa: E402  (sign-in with Discord: the token the game and OpenSmash.exe share; the GSP)
+import server_region     # noqa: E402  (the official lobbies, one a region: config/server_region.txt)
 SHARED_UI = os.path.join(TOOLS, "modmanager", "ui")   # (gamepad.js, icon.svg: shared with WindowSmash Mods)
 HOST = "linux" if sys.platform.startswith("linux") else "macos" if sys.platform == "darwin" else "windows"
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"}
-PUBLIC_LOBBY = "opensmash-lobby.duckdns.org:39421"   # (OpenSmash.Launcher's Public: the one public lobby)
-OLD_LOBBY = "smash.recomps.wtf"   # (the North American lobby, gone: its address means the public lobby)
+PUBLIC_LOBBY = "eu.lobby.opensmashultimate.com:39421"   # (the official lobby's DNS name: runtime/net.h's NET_OFFICIAL_LOBBY)
+OLDER_LOBBIES = ("opensmash-lobby.duckdns.org", "smash.recomps.wtf")   # (the public lobbies before it, replaced by it: they mean it)
 
 
 def means_public_lobby(host):
-    """A server address that is the public lobby: its own (with or without the port) or the gone North American one's."""
+    """A server address that is the official lobby: a region's (with or without the port), or an older public lobby's
+    (gone: the North American one, the one European one before the regions)."""
     h = (host or "").strip().lower()
-    return bool(h) and (h.startswith(OLD_LOBBY) or h in (PUBLIC_LOBBY, PUBLIC_LOBBY.split(":")[0]))
+    return bool(h) and (h.startswith(OLDER_LOBBIES) or bool(server_region.of_lobby(h)))
 REPO_API = "https://api.github.com/repos/OpenSmash-Ultimate/OpenSmash-Ultimate"
 
 
@@ -209,8 +211,11 @@ CHOICES = {
                      ("2", "2: 3840x2160 (4K)"), ("3", "3: 5760x3240")],
     "overlay": [("1", "Show it in the corner"), ("0", "Hidden")],
     "hide_cursor": [("1", "When it stops moving"), ("0", "Keep it shown")],
-    "lobby": [("public", "Public lobby"), ("private", "Private lobby (a code)"), ("custom", "Your own server"), ("lan", "This network (LAN)"),
-              ("offline", "Offline")],
+    "lobby": [("public", "Official lobby (relay only, EU / NA East)"), ("private", "Private lobby (a code)"), ("custom", "Your own server"),
+              ("lan", "This network (LAN)"), ("offline", "Offline")],
+    # (our regions only, as OpenSmash.Core.OnlineSettings: "auto" in the file - the game's default, the closest - is shown as
+    # the region it plays on and written only when one is picked)
+    "region": [(r[0], {"eu": "Europe", "na-east": "North America East"}.get(r[0], r[1])) for r in server_region.REGIONS],
     "direct": [("on", "On"), ("off", "Off")],
     "keyboard_player": [(str(n), f"Player {n}") for n in range(1, 9)] + [("0", "Nobody (no keyboard)")],
     "background": [("1", "Work while another window is in front"), ("0", "Only while the game is in front")],
@@ -240,7 +245,9 @@ def lobby_from_line(line):
         return "offline", code, ""
     if h == "lan":
         return "lan", code, ""
-    if h in ("auto", "eos", "na", "eu", PUBLIC_LOBBY) or h.startswith(OLD_LOBBY):   # (the North American lobby is gone; "eos": EOS alone)
+    # ("eos": Epic Online Services, gone in 0.5.0 - the official lobby, as the game reads it; #460: read as "your own
+    # server", it stopped Play with "Your own server is eos")
+    if h in ("auto", "eos", "na", "eu") or means_public_lobby(h):   # (any region's lobby: the region says which; the older ones mean it too)
         return ("private" if code else "public"), code, ""
     return "custom", code, host
 
@@ -262,7 +269,8 @@ def read_settings(root):
     s["window_size"] = f"{s['width']}x{s['height']}"
     if HOST == "windows":
         s["renderer"] = renderer_shown(d("renderer", "auto"), ini_value(display, "", "renderer_menu"))
-    s["lobby"], s["code"], s["server"] = lobby_from_line(first_line(config_file(root, "online_server.txt")))
+    # (no line: the official lobby, the launchers' default - ensure_official_line writes it at the start)
+    s["lobby"], s["code"], s["server"] = lobby_from_line(first_line(config_file(root, "online_server.txt")) or "auto")
     launcher_ini = config_file(root, "launcher.ini")
     saved = {k: ini_value(launcher_ini, "opensmash", k) for k in ("code", "server")}
     if not s["code"] and saved["code"]:
@@ -271,7 +279,57 @@ def read_settings(root):
         s["server"] = saved["server"]
     s["direct"] = "off" if first_line(config_file(root, "online_direct.txt")).lower().startswith("off") else "on"
     s["name"] = first_line(config_file(root, "online_name.txt"))
+    # the official lobby's region: Europe or North America East ("auto" shows as the region it plays on); region_shown: an
+    # override's server
+    s["region"] = region_choice(root)
+    s["region_shown"] = server_region.override(root) or ""
+    normalize_online(s)
     return s
+
+
+# ---- the Online rules (OpenSmash.Core/OnlineSettings.cs: the same in every launcher) ---------------------------------
+# The official servers (the official lobby "public", and the private lobby: the official lobby with a code) are relay
+# only: no Direct connections ("off"); the official lobby has no code and no server of one's own (reset, here and in
+# launcher.ini's remembered copy, so no stale code or address reaches the game); the private lobby has no server of one's
+# own. Leaving them for a server of one's own or the LAN brings Direct connections back to its default ("on").
+OFFICIAL_SERVERS = ("public", "private")
+
+
+def normalize_online(s):
+    """What the lobby choice does not use, reset in s; the keys changed."""
+    changed = []
+
+    def put(k, v):
+        if s.get(k) != v:
+            s[k] = v
+            changed.append(k)
+    if s.get("lobby") == "public":
+        put("code", "")
+    if s.get("lobby") in OFFICIAL_SERVERS:
+        put("server", "")
+        put("direct", "off")
+    return changed
+
+
+def region_choice(root):
+    """The region the row shows: the saved one, else (auto, nothing) the one Auto plays on, else the first (Europe)."""
+    saved = server_region.setting(root)
+    if saved != server_region.AUTO:
+        return saved
+    region = server_region.kept(root)[0]
+    return region or server_region.IDS[0]
+
+
+def ensure_official_line(root):
+    """online_server.txt without a line: the official lobby ("auto"), the launchers' default. True when written."""
+    path = config_file(root, "online_server.txt")
+    if first_line(path):
+        return False
+    try:
+        set_first_line(path, "auto")
+        return True
+    except OSError:
+        return False
 
 
 def write_settings(root, values):
@@ -294,14 +352,23 @@ def write_settings(root, values):
             s["volume"] = given["volume"] = str(max(0, min(100, int(float(s["volume"])))))
         except ValueError:
             raise Error("the volume is a number from 0 to 100") from None
+    before = read_settings(root)["lobby"]
     lobby_changed = any(k in given for k in ("lobby", "code", "server"))
     lobby, code, host = s["lobby"], s["code"].replace(" ", ""), s["server"].strip()
     if lobby == "custom" and means_public_lobby(host):   # (the public lobby's address, or the gone NA one's: issue #389)
         lobby, host = ("private" if code else "public"), ""
         s["lobby"], s["server"] = lobby, host
+    # (the Online rules: what the choice does not use reset and written; Direct connections back to "on" when leaving the
+    # official servers for a server of one's own or the LAN)
+    s["code"], s["server"] = code, host
+    for k in normalize_online(s):
+        given[k] = s[k]
+    code, host = s["code"], s["server"]
+    if "lobby" in given and before in OFFICIAL_SERVERS and lobby in ("custom", "lan") and "direct" not in values:
+        s["direct"] = given["direct"] = "on"
     if lobby_changed and lobby == "private" and not code:
         raise Error("Type a lobby code: a word your friends type too.")
-    if lobby_changed and lobby == "custom" and host and not re.fullmatch(r"\S+:\d+", host):
+    if lobby_changed and lobby == "custom" and not re.fullmatch(r"[^\s:]+:\d{1,5}", host):
         raise Error("Your own server is host:port, for example 192.168.1.20:39420.")
     if "name" in given and len(s["name"]) > 64:
         raise Error("The name is 64 letters at most.")
@@ -318,18 +385,21 @@ def write_settings(root, values):
             set_ini(pads, "general", key, s[key])
     if lobby_changed:
         server = {"offline": "off", "lan": "lan", "private": f"{PUBLIC_LOBBY} {code}",
-                  "custom": (host or "127.0.0.1:39420") + (f" {code}" if code else "")}.get(lobby, "auto")
+                  "custom": host + (f" {code}" if code else "")}.get(lobby, "auto")
         set_first_line(config_file(root, "online_server.txt"), server)
         launcher_ini = config_file(root, "launcher.ini")
         set_ini(launcher_ini, "opensmash", "lobby", lobby)
-        if code:
+        # (a code or a server reset by the choice is reset in the remembered copy too: none comes back stale)
+        if code or ini_value(launcher_ini, "opensmash", "code"):
             set_ini(launcher_ini, "opensmash", "code", code)
-        if host:
+        if host or ini_value(launcher_ini, "opensmash", "server"):
             set_ini(launcher_ini, "opensmash", "server", host)
     if "name" in given:
         set_first_line(config_file(root, "online_name.txt"), s["name"].strip())
     if "direct" in given:
         set_first_line(config_file(root, "online_direct.txt"), s["direct"])
+    if "region" in values and s["region"] != server_region.setting(root):
+        server_region.set_setting(root, s["region"])
     return read_settings(root)
 
 
@@ -420,6 +490,31 @@ def play_command(root, mode, host=HOST):
     if host == "macos":
         return ["/bin/bash", os.path.join(root, "tools", "mac", "launch.sh"), "offline" if mode == "offline" else "play"]
     raise Error("On Windows, use OpenSmash.exe")
+
+
+# (v0.5.0) The official lobbies let in only a game that sends a lobby ticket of a signed-in account. This page cannot
+# sign in: the OpenSmash launcher (OpenSmash-Launcher on Linux, OpenSmash.Avalonia.app on macOS, OpenSmash.exe on Windows) does, and writes
+# the ticket to build/cache/online_pass.txt (OpenSmash.Core/OnlinePass.cs). Play here names that file to the game while
+# the ticket it holds is still good for TICKET_MARGIN seconds (as the GSP reads: discord_account.stored_ticket); it
+# cannot renew it (the game rereads the file, so a signed-in launcher running beside it keeps it fresh). The tickets'
+# lifetime is the accounts service's (public.lobby_ticket), not known here.
+TICKET_MARGIN = 60
+SIGN_IN_SAY = ("Sign in with the OpenSmash launcher to play on the official lobbies: open it, press SIGN IN, then Play "
+               "(here or there). Without that the official lobby lets you in to nothing; LAN, your own server and "
+               "Offline still work.")
+
+
+def online_pass(root, settings, now=None):
+    """(the game's variables, what to say) for Play: SSBU_ONLINE_TICKET_FILE when the lobby is an official one and a
+    signed-in launcher left a ticket that is still good, else ({}, SIGN_IN_SAY); other lobbies: ({}, "")."""
+    if settings.get("lobby") not in ("public", "private"):
+        return {}, ""
+    if discord_account.stored_ticket(root, TICKET_MARGIN, now) is None:
+        if os.environ.get("OPENSMASH_LAUNCHER_FAILED"):   # (opensmash-launcher.sh: OpenSmash-Launcher did not start here)
+            return {}, SIGN_IN_SAY + (" The OpenSmash launcher did not start on this computer: its reason is in "
+                                      "build/launcher.log (please report it).")
+        return {}, SIGN_IN_SAY
+    return {"SSBU_ONLINE_TICKET_FILE": os.path.join(root, "build", "cache", "online_pass.txt")}, ""
 
 
 def detect_folders(root):
@@ -626,6 +721,7 @@ class App:
                 "commit": local_commit(self.root)[:7], "game_running": self.game_running(),
                 "job": self.jobs.busy(), "settings": read_settings(self.root), "choices": CHOICES,
                 "name_set": bool(read_settings(self.root)["name"]), "update": self.update_info,
+                "account_say": online_pass(self.root, read_settings(self.root))[1],
                 "steam_game_mode": steam_game_mode()}
 
     def check_update(self):
@@ -670,10 +766,14 @@ class App:
         os.makedirs(os.path.join(self.root, "build"), exist_ok=True)
         out = open(os.path.join(self.root, "build", "launcher-play.log"), "w", encoding="utf-8")
         env = {**os.environ}
+        say = ""
+        if mode != "offline":
+            extra, say = online_pass(self.root, settings)
+            env.update(extra)
         self.game = subprocess.Popen(play_command(self.root, mode), cwd=self.root, stdin=subprocess.DEVNULL, stdout=out,
                                      stderr=subprocess.STDOUT, env=env)
         out.close()
-        return {"started": True, "pid": self.game.pid}
+        return {"started": True, "pid": self.game.pid, "account_say": say}
 
     def play(self, body):
         """Play as OpenSmash.exe's: the mods applied (or the game without them), a plugin build first when one is
@@ -764,6 +864,10 @@ class App:
             return self.check_update()
         if path == "/api/discord" and method == "GET":
             return self.discord.view()
+        if path == "/api/mastery" and method == "GET":   # (mastery points and the SSBU Arena card: discord_account.py)
+            return self.discord.mastery_view()
+        if path == "/api/ranked" and method == "GET":   # (the Competitive page: SSBU Arena's ranked board, discord_account.py)
+            return self.discord.ranked_view(q.get("region") or None)
         if method != "POST":
             raise Error(f"unknown {path}")
         if path == "/api/settings":
@@ -982,7 +1086,11 @@ def main(argv=None):
         print("On Windows, OpenSmash.exe is the launcher.")
     if HOST == "linux":
         install_desktop_entry(root)
+    ensure_official_line(root)   # (no lobby line yet: the official lobby, the launchers' default)
     app = App(root, secrets.token_urlsafe(18))
+    if server_region.setting(root) == server_region.AUTO and not server_region.override(root):
+        # (Auto: every region's lobby asked now, in the background; the pick is kept for the game to start from)
+        threading.Thread(target=server_region.measure, args=(root,), daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(app))
     url = f"http://127.0.0.1:{srv.server_address[1]}/?key={app.key}"
     print(json.dumps({"url": url}), flush=True)

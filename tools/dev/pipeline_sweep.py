@@ -18,6 +18,8 @@ Only keys go into the lists: no game code or data. Re-run it for each release (d
          [--work <folder>] [--jobs 2] [--frames 3600] [--forms] [--only <n>] [--seconds 420]
   python tools/dev/pipeline_sweep.py merge --work <folder> [--into <checkout>]   (run does it at the end)
   python tools/dev/pipeline_sweep.py count <list.warm>                           records, programs
+  python tools/dev/pipeline_sweep.py assign --work <folder> [--add <list.warm>] [--picked <stage>...]
+         groups for the records a sweep added (and the ones it left out, with --add), from its runs
 
 The exe is a test exe of this checkout's runtime (it needs SSBU_DEBUG_FINAL). The tree is the folder
 the game runs in (dump/modules, its save): its save is swapped for the 100% save
@@ -63,9 +65,10 @@ STAGES = list(dict.fromkeys(STAGES))
 
 # Boot to the first battle frame: the movie, the title, the main menu, Smash, the select screen (a fighter
 # picked: SSBU_DEBUG_MATCH replaces it), Ready to fight, the stage screen (replaced too), the fight
-# (as plan/phases/R7_tools/gate2.seq; draw counts of this renderer).
+# (as plan/phases/R7_tools/gate2.seq; draw counts of this renderer. The title is 462 draws, 489-507 with the
+# standard Skyline plugins loaded, hence 430-520: the menus around it are 24 and 940).
 MENUS = """@movie
-@draws:430-485/30
+@draws:430-520/30
 30:A
 @until:400-3000/40:A/150
 300:A
@@ -96,7 +99,7 @@ FINAL_AT = "600,900"   # SSBU_DEBUG_FINAL: the fighters' Final Smashes in turn, 
 
 WARM_HEAD = 32
 WARM_RECORD = 440
-WARM_MAX = 16384       # (gpu_vk.c WARM_RECORDS)
+WARM_MAX = 32768       # (gpu_vk.c WARM_RECORDS)
 STAGE_NAMES = ("vs", "ps", "cs")
 
 
@@ -243,7 +246,7 @@ def menus_env(cache):
     """The main menus and modes, walked through (no fight): Smash's rules, Spirits, Games & More, Vault, Online's
     first screen, Options, and back; a sequence that loses its way only lists less."""
     seq = """@movie
-@draws:430-485/30
+@draws:430-520/30
 30:A
 @until:400-3000/40:A/150
 300
@@ -583,6 +586,130 @@ def groups_write(work, runs, into):
           f"stages' {counts.get('s', 0)}, in no group {len(shipped - grouped)}")
 
 
+# ---- assign: groups for the records a sweep added, from its runs ------------------------------------------------
+def hash40(text):
+    """The game's hash40 of a name, as the records hold it (its low 40 bits: length << 32 | crc32)."""
+    import zlib
+    return ((len(text) << 32) | zlib.crc32(text.encode())) & 0xFFFFFFFFFF
+
+
+def sweep_runs(work):
+    """slot -> [(records listed as its match was set up, run name, its fighters, its stage)] for each run of a sweep
+    work folder that reached its match (from the logs: the job's cache folder, the debug match, the warm list line)."""
+    import re
+    runs = {}
+    for log in sorted(glob.glob(os.path.join(work, "*.log"))):
+        text = open(log, "rb").read().decode("utf-8", "replace")
+        slot = re.search(r"cache(\d+)[\\/]+nvidia", text) or re.search(r"cache(\d+)[\\/]", text)
+        n = re.search(r"warm list: (\d+) records listed as the match was set up", text)
+        dm = re.search(r"\[fight\] debug match: (p1=\S+)", text)
+        if not slot or not n or not dm:
+            continue
+        got = {}
+        for kv in dm.group(1).split(","):   # (the first of each: "p2=mario,p2=cpu" is Mario, played by the CPU)
+            k, _, v = kv.partition("=")
+            if k in ("p1", "p2", "p3", "p4", "stage") and k not in got:
+                got[k] = v
+        if "stage" not in got:
+            continue
+        fighters = frozenset(got[k] for k in ("p1", "p2", "p3", "p4") if k in got)
+        runs.setdefault(int(slot.group(1)), []).append((int(n.group(1)), os.path.basename(log)[:-4], fighters, got["stage"]))
+    return runs
+
+
+def cmd_assign(a):
+    """Gives the shipped records in no group of media/vulkan_pipelines.groups a group from a sweep's runs (`run`'s work
+    folder: each job's per-device list, from empty, and each run's log). Each job's list holds its records in the order
+    they were first drawn, so a record is seen in one run of each job at most: the run whose match drew it first.
+      seen in the menus before any match                    left as it is (in no group)
+      its stage(s) all --picked (Fountain of Dreams)        pair <stage> <fighter> for the fighters every run that drew
+                                                            it had; pair <stage> 0 when none, or when a job drew it first
+                                                            in its first match there (the stage's own): made only for
+                                                            that stage
+      in two runs (two jobs) with one fighter in common     fighter <f>
+      in one run, or two with more fighters in common       maybe <f> for each: made right after a match's groups and
+                                                            common, not waited for (the match would wait for the
+                                                            others' too: a first match on a cold driver cache waited
+                                                            14.4 s instead of 6.8 s with those as fighter lines)
+      in two runs with no fighter but the stage in common   stage <s>
+      in two runs with nothing in common                    left as it is (any match's now and then: the rest)
+    The lines are added after the file's own; the shipped list is read from --into. With --add <list>, those records are
+    joined to media/vulkan_pipelines.warm first (the records a sweep left out: no programs added to shader_prewarm.txt)."""
+    work, into = os.path.abspath(a.work), a.into or REPO
+    warm_path = os.path.join(into, "media", "vulkan_pipelines.warm")
+    groups_path = os.path.join(into, "media", "vulkan_pipelines.groups")
+    for extra in a.add or []:
+        head, ship = read_warm(warm_path)
+        h, recs = read_warm(extra)
+        if h is None or h != head:
+            sys.exit(f"{extra}: not a list of the shipped list's translator")
+        have = {r[8:] for r in ship}
+        new = [r for r in recs if r[8:] not in have and not have.add(r[8:])]
+        if len(ship) + len(new) > WARM_MAX:
+            sys.exit(f"{len(ship) + len(new)} records: the renderer reads {WARM_MAX}")
+        open(warm_path, "wb").write(head + b"".join(ship + new))
+        print(f"{warm_path}: {len(new)} records of {extra} added, {len(ship) + len(new)} now")
+    sums = lambda recs: [struct.unpack_from("<I", r, 4)[0] for r in recs]
+    seen = {}
+    runs = sweep_runs(work)
+    for slot, rs in sorted(runs.items()):
+        lists = glob.glob(os.path.join(work, f"cache{slot}", "vulkan_*.warm"))
+        if not lists:
+            continue
+        listed = sums(read_warm(lists[0])[1])
+        rs.sort()
+        for x in listed[:rs[0][0]]:
+            seen.setdefault(x, []).append(None)
+        stages_before = set()
+        for i, (start, _name, fighters, stage) in enumerate(rs):
+            end = rs[i + 1][0] if i + 1 < len(rs) else len(listed)
+            first = stage not in stages_before   # (the job's first match on this stage: what any match there draws, first)
+            stages_before.add(stage)
+            for x in listed[start:end]:
+                seen.setdefault(x, []).append((fighters, stage, first))
+    print(f"{work}: {sum(len(r) for r in runs.values())} runs in {len(runs)} jobs, {len(seen)} records seen")
+    text = open(groups_path, encoding="utf-8").read()
+    grouped = set()
+    for line in text.splitlines():
+        w = line.split()
+        if not w or w[0].startswith("#"):
+            continue
+        skip = {"boot": 1, "common": 1, "pair": 3}.get(w[0], 2)
+        grouped.update(int(x, 16) for x in w[skip:])
+    picked = set(a.picked or [])
+    out, counts = {}, {}
+    for x in sums(read_warm(warm_path)[1]):
+        if x in grouped or x not in seen or None in seen[x]:
+            continue
+        obs = seen[x]
+        fighters = frozenset.intersection(*[o[0] for o in obs])
+        stages = {o[1] for o in obs}
+        if stages <= picked and len(stages) == 1:
+            s = next(iter(stages))
+            if any(o[2] for o in obs):   # (first drawn in a job's first match there: the stage's own, for any fighter)
+                fighters = frozenset()
+            keys = [("pair", f"{hash40('ui_stage_' + s):010x} {hash40('ui_chara_' + f) if f else 0:010x}") for f in sorted(fighters or {""})]
+        elif fighters:
+            kind = "fighter" if len(obs) > 1 and len(fighters) == 1 else "maybe"
+            keys = [(kind, f"{hash40('ui_chara_' + f):010x}") for f in sorted(fighters)]
+        elif len(stages) == 1:
+            keys = [("stage", f"{hash40('ui_stage_' + next(iter(stages))):010x}")]
+        else:
+            continue   # (drawn first in two matches with nothing in common: any match's, now and then - left to the rest)
+        for k in keys:
+            out.setdefault(k, []).append(x)
+        counts[keys[0][0]] = counts.get(keys[0][0], 0) + 1
+    body = [f"# Added by tools/dev/pipeline_sweep.py assign from {os.path.basename(work)}'s runs (the records the groups runs did not draw)."]
+    for (kind, key), xs in sorted(out.items()):
+        xs = sorted(set(xs))
+        tag = kind + (" " + key if key else "")
+        body += [tag + " " + " ".join(f"{v:x}" for v in xs[i:i + 16]) for i in range(0, len(xs), 16)]
+    with open(groups_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text.rstrip("\n") + "\n" + "\n".join(body) + "\n")
+    left = len([x for x in sums(read_warm(warm_path)[1]) if x not in grouped]) - sum(counts.values())
+    print(f"{groups_path}: records given groups: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())) + f"; {left} still in no group")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -616,13 +743,18 @@ def main():
     g.add_argument("--redo", action="store_true", help="play the runs whose lists the work folder has already, too")
     g.add_argument("--write-only", action="store_true", help="only write the file from the work folder's runs")
     g.add_argument("--into")
+    s = sub.add_parser("assign", help="give the shipped records in no group a group from a sweep's runs (cmd_assign)")
+    s.add_argument("--work", default=os.path.join(REPO, "build", "pipeline_sweep"))
+    s.add_argument("--add", nargs="+", help="lists whose records are joined to the shipped list first")
+    s.add_argument("--picked", nargs="+", help="stages (ui_stage_ names) whose records are made only when they are played")
+    s.add_argument("--into")
     c = sub.add_parser("count")
     c.add_argument("list")
     a = ap.parse_args()
     if a.cmd == "groups" and a.write_only:
         groups_write(os.path.abspath(a.work), groups_runs(), a.into or REPO)
         return
-    {"run": cmd_run, "merge": cmd_merge, "count": cmd_count, "groups": cmd_groups}[a.cmd](a)
+    {"run": cmd_run, "merge": cmd_merge, "count": cmd_count, "groups": cmd_groups, "assign": cmd_assign}[a.cmd](a)
 
 
 if __name__ == "__main__":

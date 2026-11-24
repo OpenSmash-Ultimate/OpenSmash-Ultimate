@@ -22,6 +22,7 @@
 #include "host.h"
 #include "gpu.h"
 #include "gpu_vp9.h"
+#include "gpu_h264.h"
 #ifdef SSBU_HAVE_VPX
 #include <math.h>
 #include <vpx/vpx_decoder.h>
@@ -89,6 +90,7 @@ static u64 dump_size(const Engine *e, u32 m) {
         if (m == 0x101) return 0x400;                   /* picture setup */
         if (m == 0x102) {                               /* bitstream: as much as the picture setup says */
             u64 left, g = to_guest((u64)e->regs[0x101] << 8, &left);
+            if (e->regs[0x80] == 3) return g && left >= H264_SETUP_STREAM_LEN + 4 ? ld32(g + H264_SETUP_STREAM_LEN) : 0;   /* (H.264's setup) */
             return g && left >= 0x34 ? ld32(g + 0x30) : 0;
         }
         if (m == 0x170) return 0x1000;                  /* VP9 probabilities */
@@ -218,25 +220,34 @@ static Picture *picture(u64 luma) {
     return NULL;
 }
 
-static void keep_picture(u64 luma, const vpx_image_t *img) {
+/* A decoded picture kept for VIC under its luma surface: 4:2:0, the chroma planar (cstep 1) or
+ * interleaved (cstep 2: v = u + 1, NV12). */
+static void store_picture(u64 luma, u32 w, u32 h, const u8 *y, u32 ypitch, const u8 *u, const u8 *v, u32 cpitch, u32 cstep) {
     Picture *p = picture(luma);
     if (!p) {
         p = &pictures[0];
         for (u32 i = 1; i < 16; i++) if (pictures[i].used < p->used) p = &pictures[i];
     }
-    u32 w = img->d_w, h = img->d_h, cw = (w + 1) / 2, ch = (h + 1) / 2;
+    u32 cw = (w + 1) / 2, ch = (h + 1) / 2;
     if (!p->y || p->w != w || p->h != h) {
         free(p->y);
         p->y = malloc((size_t)w * h + 2ull * cw * ch);
+        if (!p->y) { p->w = p->h = 0; return; }
         p->u = p->y + (size_t)w * h;
         p->v = p->u + (size_t)cw * ch;
     }
     p->luma = luma; p->w = w; p->h = h; p->used = ++picture_clock;
-    for (u32 r = 0; r < h; r++) memcpy(p->y + (size_t)r * w, img->planes[0] + (size_t)r * img->stride[0], w);
+    for (u32 r = 0; r < h; r++) memcpy(p->y + (size_t)r * w, y + (size_t)r * ypitch, w);
     for (u32 r = 0; r < ch; r++) {
-        memcpy(p->u + (size_t)r * cw, img->planes[1] + (size_t)r * img->stride[1], cw);
-        memcpy(p->v + (size_t)r * cw, img->planes[2] + (size_t)r * img->stride[2], cw);
+        const u8 *ur = u + (size_t)r * cpitch, *vr = v + (size_t)r * cpitch;
+        u8 *ud = p->u + (size_t)r * cw, *vd = p->v + (size_t)r * cw;
+        if (cstep == 1) { memcpy(ud, ur, cw); memcpy(vd, vr, cw); }
+        else for (u32 x = 0; x < cw; x++) { ud[x] = ur[cstep * x]; vd[x] = vr[cstep * x]; }
     }
+}
+
+static void keep_picture(u64 luma, const vpx_image_t *img) {
+    store_picture(luma, img->d_w, img->d_h, img->planes[0], (u32)img->stride[0], img->planes[1], img->planes[2], (u32)img->stride[1], 1);
 }
 
 static void vp9_decode(Vp9Job *j, int show) {
@@ -290,10 +301,90 @@ static void vp9_decode(Vp9Job *j, int show) {
     if (vpx_codec_control(&vpx, VP9_GET_REFERENCE, &ref) == VPX_CODEC_OK && ref.img.fmt == VPX_IMG_FMT_I420) keep_picture(j->current, &ref.img);
 }
 
+/* ---- NVDEC: H.264 ------------------------------------------------------------------ */
+/* Methods: 0x80 the codec (3: H.264), 0x101 the picture setup (gpu_h264.h: the parameter sets'
+ * fields, and flags with the picture's surface index), 0x102 the bitstream (the slices, Annex B),
+ * 0x10C + i / 0x11D + i surface i's luma / chroma. Seen in Sephiroth's Final Smash (a 1280x720
+ * High profile movie with B pictures), which was black before.
+ *
+ * Each job's surface is kept under a tag, and a picture goes to the surface of the job it came
+ * from: the decoder gives each picture as its job is decoded (gpu_h264.c: the SPS asks for no
+ * reordering), as the engine does, and the game asks VIC for them in display order itself,
+ * several jobs later. A decoder that held pictures back would still put them in the right
+ * surfaces, only later: VIC says so when it is asked for one too early. */
+static struct { u64 tag, luma; u32 w, h; } h264_jobs[64];
+static u64 h264_tag;
+
+static void h264_picture(void *user, u64 tag, u32 w, u32 h, const u8 *y, const u8 *uv, u32 pitch) {
+    (void)user;
+    for (u32 i = 0; i < 64; i++)
+        if (h264_jobs[i].luma && h264_jobs[i].tag == tag) {
+            u32 pw = w < h264_jobs[i].w ? w : h264_jobs[i].w, ph = h < h264_jobs[i].h ? h : h264_jobs[i].h;   /* (the decoder's frame is aligned) */
+            store_picture(h264_jobs[i].luma, pw, ph, y, pitch, uv, uv + 1, pitch, 2);
+            h264_jobs[i].luma = 0;
+            return;
+        }
+}
+
+static void h264_execute(Engine *e) {
+    static int off;   /* 1: no decoder here */
+    if (off) return;
+    u64 left, bits_left;
+    u64 pg = to_guest((u64)e->regs[0x101] << 8, &left);
+    if (!pg || left < H264_SETUP_SIZE) return;
+    u64 flags = ld64(pg + 0xB0);
+    u32 idx = h264_surface_index(flags), size = ld32(pg + H264_SETUP_STREAM_LEN);
+    u64 bg = to_guest((u64)e->regs[0x102] << 8, &bits_left);
+    if (!bg || size > bits_left || idx > 16) return;
+    size = h264_strip_end_units(P(u8, bg), size);
+    static u8 *unit;
+    static u32 cap;
+    u32 head = 0, need = size + 256;   /* (room for the parameter sets) */
+    if (need > cap) {
+        u8 *grown = realloc(unit, need);
+        if (!grown) return;
+        unit = grown;
+        cap = need;
+    }
+    static int skipping, fed;   /* skipping: a sequence whose headers could not be written, up to its end */
+    if (h264_starts_idr(P(u8, bg), size)) {   /* a new sequence (or a new movie): the parameter sets first */
+        /* The decoder holds back the last pictures of what came before (a movie that ended: the
+         * game appends end units to every frame, so nothing says so sooner): out with them first. */
+        if (fed) h264_drain(h264_picture, NULL);
+        fed = 0;
+        const char *why = NULL;
+        head = h264_write_headers(P(u8, pg), unit, cap, &why);
+        skipping = !head;
+        if (!head) {
+            static int complaints;
+            if (complaints++ < 10)
+                fprintf(stderr, "[nvdec] H.264: a stream with %s, which is not written here: it stays black\n", why ? why : "a setup too large");
+        }
+    }
+    if (skipping) return;
+    memcpy(unit + head, P(u8, bg), size);
+    u32 slot = (u32)(h264_tag % 64);
+    h264_jobs[slot].tag = h264_tag;
+    h264_jobs[slot].luma = (u64)e->regs[0x10C + idx] << 8;
+    h264_jobs[slot].w = ld32(pg + 0x64) * 16;
+    h264_jobs[slot].h = ld32(pg + 0x68) * 16 * (ld32(pg + 0x60) & 1 ? 1 : 2);
+    int r = h264_decode(unit, head + size, h264_tag++, h264_picture, NULL);
+    fed = 1;
+    if (r < 0) off = 1;
+    else if (!r) {
+        static int complaints;
+        if (complaints++ < 10) fprintf(stderr, "[nvdec] H.264 frame (%u bytes) not decoded\n", size);
+    }
+}
+
 static void nvdec_execute(Engine *e) {
+    if (e->regs[0x80] == 3) {
+        h264_execute(e);
+        return;
+    }
     if (e->regs[0x80] != 9) {
         static int said;
-        if (!said++) fprintf(stderr, "[nvdec] codec %u is not decoded (only VP9)\n", e->regs[0x80]);
+        if (!said++) fprintf(stderr, "[nvdec] codec %u is not decoded (only VP9 and H.264)\n", e->regs[0x80]);
         return;
     }
     u64 left, entropy_left;
@@ -371,6 +462,13 @@ static void vic_execute(Engine *e) {
 #ifdef SSBU_HAVE_VPX
     u64 in = (u64)e->regs[0x100] << 8;
     if (pending.valid && pending.current == in) vp9_decode(&pending, 1);   /* shown, then */
+    for (u32 i = 0; i < 64; i++)
+        if (h264_jobs[i].luma == in) {   /* an H.264 picture the decoder still holds back: this shows what the surface had */
+            static u32 early;
+            if (++early <= 10) fprintf(stderr, "[vic] H.264: the picture of job %llu asked for before the decoder gave it (%u so far)\n",
+                                       (unsigned long long)h264_jobs[i].tag, early);
+            break;
+        }
     Picture *p = picture(in);
     u64 cg = to_guest(((u64)e->regs[0x1C2] << 8) + 0x20, NULL);
     if (!p || !cg) return;

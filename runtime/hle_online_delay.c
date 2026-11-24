@@ -16,7 +16,6 @@
 #include "config_folder.h"
 #include "settings.h"
 #include "net_backend.h"
-#include "net_eos.h"       /* (net_eos_backend) */
 #include "net_results.h"   /* (the lobby's count of matches played) */
 
 #define DELAY_MAX 25
@@ -140,9 +139,125 @@ static void online_match_over(void) {
     m.id = results_match_id_addresses(ips, n + 1, m.mode);
     m.players = n + 1;
     m.seconds = (int)(ld32(0x71052c5184ull) / 60);   /* (the logic frame) */
-    m.eos = net_backend == &net_eos_backend;
+    {   /* (OpenSmash mastery points: what this game saw of it - hle_rb_core.c's reading of the fight, this game's player
+         * the human panel the game built as its own; nothing when that is not known) */
+        int rb_mastery_take(MatchMastery *out, int me);
+        rb_mastery_take(&m.mastery, -1);
+    }
     results_match_played(&m);
     fprintf(stderr, "[net] online step: the match goes to the lobby's count of matches played (%d players, the game's own netcode)\n", n + 1);
+}
+
+/* The game's online penalty (the "unsporting behaviour or disconnected ... temporarily banned" message): a list of
+ * records kept by its online manager, main+0x52c4c58 -> +8 -> +0xa8 (P below): 100 of {i64 network time, u8 kind} at
+ * P+0xd30, newest first. main+0x1705170 (P, kind, replace) drops the expired ones, then writes the record over the
+ * newest one (slot 0, replace 1) or over the last slot (P+0x1360, replace 0: a record added), and sorts the list. The
+ * ban's end, main+0x1705d60, weighs the list's kinds by the game's parameters and adds the minutes to the newest
+ * record's time; main+0x33470f0's popup kind 0x18 shows it. A record's kind is what main+0x16acd30 reads off the
+ * match's penalty evaluator (main+0x52c3940 -> its object: +0x1c 1 idle, +0x20 2, +0x24 3, ... +0x3c 9; main+0x158db70
+ * counts some of them each frame). Logged as they change (SSBU_NET_PENALTY_LOG=0: not). */
+#define PENALTY_MGR 0x71052C4C58ull
+#define PENALTY_EVAL 0x71052C3940ull
+static u64 penalty_obj(void) {
+    u64 g = ld64(PENALTY_MGR), x = g ? ld64(g + 8) : 0;
+    return x ? ld64(x + 0xa8) : 0;
+}
+static int penalty_session_state(void) {   /* (the online session's state; 2 while the game is in its gathering) */
+    u64 g = ld64(PENALTY_MGR), x = g ? ld64(g + 8) : 0, ss = x ? ld64(x + 0x88) : 0;
+    return ss ? (int)ld32(ss + 0x74) : -2;
+}
+static u64 penalty_match_k6;   /* (the time of the kind 6 record this online session added: penalty_settle replaces only it) */
+void online_penalty_watch(const char *where) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_NET_PENALTY_LOG"); on = !(e && *e == '0'); }
+    int st = penalty_session_state();
+    {   /* (the session state the match's end checks before it settles the record: main+0x16acbe0 needs 2) */
+        static int st_was = -1;
+        if (on && st != st_was) fprintf(stderr, "[net] penalty: the online session's state %d (was %d; %s)\n", st, st_was, where);
+        st_was = st;
+    }
+    u64 p = penalty_obj();
+    if (!p) return;
+    static u64 last_p, t0_was;
+    static u8 k0_was;
+    static long calls;
+    u64 t0 = ld64(p + 0xd30);
+    u8 k0 = ld8(p + 0xd38);
+    int changed = p != last_p || t0 != t0_was || k0 != k0_was;
+    if (changed && k0 == 6 && t0 && t0 != t0_was && st == 2) penalty_match_k6 = t0;   /* (a match's start: its provisional record) */
+    t0_was = t0; k0_was = k0; last_p = p;
+    if (!on || (!changed && ++calls % 30)) return;
+    static int n_was = -1;
+    static u64 newest_was;
+    int n = 0, by[16] = {0};
+    u64 newest = 0;
+    u8 newest_k = 0;
+    for (int i = 0; i < 100; i++) {
+        u64 rt = ld64(p + 0xd30 + 16ull * i);
+        u8 rk = ld8(p + 0xd38 + 16ull * i);
+        if (!rt || !rk) continue;
+        n++; by[rk & 15]++;
+        if (rt >= newest) { newest = rt; newest_k = rk; }
+    }
+    if (changed || n != n_was || newest != newest_was) {
+        char s[160]; size_t m = 0;
+        s[0] = 0;
+        for (int i = 1; i < 16 && m < sizeof s; i++) if (by[i]) m += (size_t)snprintf(s + m, sizeof s - m, " kind %d x%d", i, by[i]);
+        fprintf(stderr, "[net] penalty: %d records in the list%s; newest kind %u at %llu (%s)\n", n, s, newest_k,
+                (unsigned long long)newest, where);
+        n_was = n; newest_was = newest;
+    }
+}
+/* A match's penalty record, settled at its end (rollback's Online match). At a match's start the game adds a
+ * provisional record of kind 6 - the "disconnected" one; at the match's end the results flow's main+0x16acbe0 writes
+ * over it what the evaluator says, main+0x16acd30 (0: a clean match, no record), but only while the online session's
+ * state is 2. Rollback asks the step's "over" at the fight's end (below); the step's state 6 then leaves the gathering,
+ * the session's state drops to 0, and on a slow link that came before the results flow got there: the kind 6 record
+ * stayed, one for every clean match, and after a few the game banned the player for "disconnecting" (v0.4.1, 3-player
+ * Quickplay; r1 2026-11-18: 4293 hashes 0 DIFFERENT, the record left). So it is settled here as main+0x16acbe0 settles
+ * it, when "over" is asked - only the kind 6 record this session added, still the newest (no other one written over),
+ * and not on a game cut off from the others in the fight (hle_rb_core.c net_all_gone: its record stays, as the game
+ * keeps it for the one who dropped). The results flow's own settling, if it still runs, writes the same.
+ * SSBU_RB_PENALTY_SETTLE=0: not (as before). */
+#define PENALTY_ADD  0x7101705170ull   /* (P, kind, replace the newest) */
+#define PENALTY_KIND 0x71016acd30ull   /* (): the evaluator's kind, 0 a clean match */
+static void penalty_settle(Cpu *c) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_RB_PENALTY_SETTLE"); on = !(e && *e == '0'); }
+    online_penalty_watch("the match's end");
+    u64 p = penalty_obj(), k6 = penalty_match_k6;
+    penalty_match_k6 = 0;
+    if (!on || !p) return;
+    int rb_online_self_cut(void);
+    u64 e = ld64(PENALTY_EVAL), o = e ? ld64(e) : 0;
+    u64 t0 = ld64(p + 0xd30);
+    u8 k0 = ld8(p + 0xd38);
+    int st = penalty_session_state();
+    if (!k6 || k0 != 6 || t0 != k6 || !o || rb_online_self_cut()) {
+        fprintf(stderr, "[net] penalty: the match's record left as it is (newest kind %u at %llu, this match's kind 6 at %llu%s%s; "
+                        "the session's state %d)\n", k0, (unsigned long long)t0, (unsigned long long)k6, o ? "" : ", no evaluator",
+                rb_online_self_cut() ? ", this game cut off in the fight" : "", st);
+        return;
+    }
+    Cpu keep = *c;
+    rt_call(c, PENALTY_KIND);
+    u32 kind = (u32)(c->x[0] & 0xff);
+    *c = keep;
+    c->x[0] = p; c->x[1] = kind; c->x[2] = 1;
+    rt_call(c, PENALTY_ADD);
+    u32 ok = (u32)(c->x[0] & 1);
+    *c = keep;
+    fprintf(stderr, "[net] penalty: the match's record %s at its end: kind %u%s (the session's state %d)\n", ok ? "settled" : "NOT settled",
+            kind, kind ? "" : " (clean: the provisional record dropped)", st);
+    online_penalty_watch("settled");
+}
+static void penalty_eval_log(const char *where) {
+    u64 e = ld64(PENALTY_EVAL), o = e ? ld64(e) : 0;
+    if (!o) return;
+    fprintf(stderr, "[net] penalty evaluator (%s): flags %03llx, +0x18 %u; idle %u, +0x20 %u, +0x24 %u, +0x28 %u, +0x2c %u, +0x30 %u, "
+                    "+0x34 %u, +0x38 %u, +0x3c %u; players %02x\n", where, (unsigned long long)(ld64(o) & 0x3ff), ld32(o + 0x18),
+            ld32(o + 0x1c), ld32(o + 0x20), ld32(o + 0x24), ld32(o + 0x28), ld32(o + 0x2c), ld32(o + 0x30), ld32(o + 0x34),
+            ld32(o + 0x38), ld32(o + 0x3c), ld8(o + 0xc));
 }
 
 /* FUN 0x71016d7730: the per-frame step of the same object (a state machine at this+0x62, 0..5;
@@ -166,8 +281,10 @@ HLE_WRAP(71016d7730) {
                         "station %u, result %u, end %u/%u\n",
                 state, game, ld8(self + 0x43), ld8(self + 0x3C), want, calls, ld8(self), ld8(0x71052C51B0ull), ld8(0x71052C51B6ull),
                 ld8(self + 1), ld8(self + 0x5E), ld8(self + 0x63), ld16(self + 0x64));
+        if (state >= 5) penalty_eval_log(state == 5 ? "state 5" : "state 6");
     }
     online_pads_local(self, 0);
+    online_penalty_watch("online step");
     {   /* (rollback's Online match: the step's own ends of the match. Its end asked is +0x63 - 1 over, main+0x16d5e50 when
          * main+0x16acd30 says so; 2 cut short, main+0x16ce7c0 - counted down at +0x66 to state 6, the step moving on to
          * state 5 at once. Those come from the game's own netcode, each game on its own and at its own logic frame, not
@@ -257,6 +374,7 @@ HLE_WRAP(71016d7730) {
             if (self == played_self && ld8(self + 0x62) == 4) {
                 if (asked != 1) { st8(self + 0x5F, ld8(self + 0x5F) & ~1); st16(self + 0x64, 0); st16(self + 0x66, 0x1E); st8(self + 0x63, 1); }
                 fprintf(stderr, "[net] online step: rollback's fight is over: the game's own \"over\" asked (was %u; logic frame %u)\n", asked, ld32(0x71052c5184ull));
+                penalty_settle(c);
             }
             played = 0;
         }
@@ -268,6 +386,7 @@ HLE_WRAP(71016d7730) {
         if (end != end_was) {
             end_was = end;
             if (end == 1) online_match_over();
+            if (end) penalty_eval_log(end == 1 ? "the match over" : "the match cut short");
             if (end) fprintf(stderr, "[net] online step: the match's end asked (kind %u: %s, code %u, in %u frames; state %u, logic frame %u; "
                              "relay role %u, heard %u, quiet check %u/%u, last heard %llu, stations apart %u)\n",
                              end, end == 1 ? "over" : end == 2 ? "cut short" : "?", ld16(self + 0x64), ld16(self + 0x66), state, ld32(0x71052c5184ull),

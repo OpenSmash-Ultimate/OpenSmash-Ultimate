@@ -116,6 +116,8 @@ def mark_syncs(s, exact=False):
     s = _RE_TRAP.sub(r"{ @X@ \1 }", s)
     if s == "return;":
         s = "{ @X@ return; }"
+    elif "@X@" not in s and "return;" in s:
+        s = s.replace("return;", "@X@ return;")
     return s
 
 
@@ -218,9 +220,14 @@ class Lifter(SimdMixin):
             name += "_orig"
         self.words = struct.unpack_from(f"<{size // 4}I", self.img, start)
         here = {off: ws for off, ws in self.patches.items() if start <= off < self.fend}
-        # ("switch", words): a code patch the game turns on or off as it starts (rt_code_patches_on, runtime/host.c):
-        # both forms are lifted, the original's words analysed, so with it off the code is the unpatched game's
-        switch = {off: ws[1] for off, ws in here.items() if isinstance(ws, tuple) and ws[:1] == ("switch",)}
+        # ("switch", words) or ("switch", words, guard): a code patch the game turns on or off at runtime:
+        # rt_code_patches_on() by default; guard ("words", ((offset, word), ...)) (a Skyline plugin's patch): on while
+        # the guest's code holds those words, i.e. while a plugin has written them this run (sky_memcpy writes guest
+        # memory), so a listed patch its plugin did not write - no plugin loaded, or one that patches only in some
+        # set-ups (the CSK Collection's added-character tables) - runs the game's own instructions. Both forms are lifted, the
+        # original's words analysed, so with it off the code is the unpatched game's
+        switch = {off: (ws[1], ws[2] if len(ws) > 2 else "rt_code_patches_on")
+                  for off, ws in here.items() if isinstance(ws, tuple) and ws[:1] == ("switch",)}
         here = {off: ws for off, ws in here.items() if off not in switch}
         if here:   # (the last word in the instruction's place, so the jump table analysis sees it)
             self.words = tuple(here[start + i * 4][-1] if start + i * 4 in here else w for i, w in enumerate(self.words))
@@ -237,8 +244,13 @@ class Lifter(SimdMixin):
                 if pc in here:   # the words before the last run first
                     stmt = " ".join([self.insn(x, pc)[0] for x in here[pc][:-1]] + [stmt])
                 if pc in switch:
-                    alt = [self.insn(x, pc) for x in switch[pc]]
-                    stmt = f"if (rt_code_patches_on()) {{ {' '.join(a for a, _f in alt)} }} else {{ {stmt} }}"
+                    swords, guard = switch[pc]
+                    alt = [self.insn(x, pc) for x in swords]
+                    if isinstance(guard, tuple) and guard[:1] == ("words",):
+                        cond = " && ".join(f"ld32({const(self.base + o)}) == 0x{w:08X}u" for o, w in guard[1])
+                    else:
+                        cond = f"{guard}()"
+                    stmt = f"if ({cond}) {{ {' '.join(a for a, _f in alt)} }} else {{ {stmt} }}"
                     falls = falls or alt[-1][1]
                 if pc in self.inline:   # (every register in the context here: no register cache in this function)
                     stmt = (f"{{ extern void rt_inline_hook(Cpu *, u64); rt_inline_hook(c, {const(self.base + pc)}); }} " + stmt)
@@ -921,10 +933,19 @@ class Lifter(SimdMixin):
         else:
             bits, load = 8 << size, opc != 0
             signed, to64 = opc >= 2, opc != 3
-            if opc == 2 and size == 3:   # prfm
-                return ";"
-            if opc == 3 and size >= 2:
-                raise Unsupported("reserved load/store")
+            if opc == 2 and size == 3:   # prfm, and in the same opc: 64-bit LSE acquire forms, ldapr x, ldrab
+                if (w >> 24) & 1 or (w >> 10) & 3 == (2 if (w >> 21) & 1 else 0):   # prfm (imm, reg), prfum
+                    if not (w >> 24) & 1 and (w >> 21) & 1 and not (w >> 14) & 1:
+                        raise Unsupported("reserved register-offset extend")   # (as for every other load)
+                    return ";"
+                if not (w >> 21) & 1:
+                    raise Unsupported("reserved load/store")
+                raise Unsupported("atomic memory operation (LSE)" if (w >> 10) & 3 == 0 else "pointer-auth load")
+            if opc == 3 and size >= 2:   # (32- and 64-bit LSE acquire-release forms there, ldrab with a negative offset, the rest reserved)
+                mode, idx = (w >> 10) & 3, not (w >> 24) & 1 and (w >> 21) & 1
+                if idx and mode == 0:
+                    raise Unsupported("atomic memory operation (LSE)")
+                raise Unsupported("pointer-auth load" if idx and size == 3 and mode & 1 else "reserved load/store")
         scale = bits.bit_length() - 4
         if (w >> 24) & 1:
             return self.access(vec, load, bits, signed, to64, rt, f"{base} + {const(((w >> 10) & 0xFFF) << scale)}")

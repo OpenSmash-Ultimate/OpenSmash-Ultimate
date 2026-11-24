@@ -124,8 +124,12 @@ class OnlineMatch(unittest.TestCase):
 
 class NexServer(unittest.TestCase):
     def test_close_reason_logged(self):
-        prudp = (ROOT / 'tools' / 'nex' / 'prudp.py').read_text(encoding='utf-8')
-        server = (ROOT / 'tools' / 'nex' / 'server.py').read_text(encoding='utf-8')
+        import sys
+        sys.path.insert(0, str(ROOT / 'tests'))
+        import netproto   # (tools/nex is the lobby server's: skipped without a checkout of it)
+        netproto.need_lobby()
+        prudp = (netproto.SERVER_DIR / 'tools' / 'nex' / 'prudp.py').read_text(encoding='utf-8')
+        server = (netproto.SERVER_DIR / 'tools' / 'nex' / 'server.py').read_text(encoding='utf-8')
         self.assertIn('c.why = why', prudp)
         self.assertIn('self.info(f"{self.name(conn)} left" + (f" ({why})" if why else ""))', server)
 

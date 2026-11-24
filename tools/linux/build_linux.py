@@ -264,7 +264,7 @@ def runtime_jobs():
                                     + ([font] if os.path.exists(font) else []))
     record, why = objcache.Record(rt_out), Counter()
     sources = [os.path.join(RUNTIME, n) for n in sorted(os.listdir(RUNTIME))
-               if re.fullmatch(r"(host|kernel|gpu\w*|hle\w*|ipc\w*|net\w*|debug_watchdog)\.c", n)]
+               if re.fullmatch(r"(host|kernel|gpu\w*|hle\w*|ipc\w*|net\w*|debug_watchdog|debug_perf_session)\.c", n)]
     sources += [os.path.join(RUNTIME, "linux", n) for n in sorted(os.listdir(os.path.join(RUNTIME, "linux")))
                 if n.endswith((".c", ".cpp"))]
     # ssbu-recomp's block-texture decoder (gpu_d3d11.c's tex_decode_rgba8), as tools/recomp.py links it

@@ -33,7 +33,11 @@ static void root_from(const char *data_dir) {
 #ifdef _WIN32
     if (!GetFullPathNameA(rel, sizeof root, root, NULL)) snprintf(root, sizeof root, "%s", rel);
 #else
-    if (!realpath(rel, root)) snprintf(root, sizeof root, "%s", rel);
+    /* (realpath with its own buffer: a caller's must hold PATH_MAX, and glibc's _FORTIFY_SOURCE - Gentoo's and others'
+     * default - aborts the game with "buffer overflow detected" when it is smaller, as root's 1024 is: #516) */
+    char *full = realpath(rel, NULL);
+    snprintf(root, sizeof root, "%s", full ? full : rel);
+    free(full);
 #endif
     size_t n = strlen(root);
     while (n > 1 && (root[n - 1] == '/' || root[n - 1] == '\\')) root[--n] = 0;

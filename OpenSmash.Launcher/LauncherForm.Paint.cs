@@ -60,10 +60,11 @@ namespace OpenSmash.Launcher
             ["ui_language"] = "The launcher and external menu share this language. The game language is set separately.",
             ["volume"] = "The game's whole sound (display.ini volume, the same setting as the in-game menu's Volume row). 100 is full. It applies the next time you press Play.",
             ["name"] = "What other players see. Leave it empty and the game picks one.",
-            ["lobby"] = "Public: everyone's rooms on the one public lobby. Private: only players with the same code. LAN: players on this network. Offline: no network.",
+            ["lobby"] = "Official lobby: your region's server, every match relayed. Private: only players with the same code. LAN: players on this network. Offline: no network.",
+            ["region"] = "Players on another region are not listed.",   // (Europe or North America East: OpenSmash.Core.OnlineSettings)
             ["code"] = "A word your friends type too. Capital letters count.",
             ["server"] = "host:port of a lobby you run, for example 192.168.1.20:39420.",
-            ["direct"] = "On is faster. Off sends everything through the lobby, so your address stays private.",
+            ["direct"] = "Rooms on this network and private rooms only. On is faster and announces your room. The official lobbies never connect players directly.",
             ["keyboard_player"] = "The keyboard adds to that player's controller.",
             ["background"] = "Off: controllers work only while the game's window is in front.",
             ["remap"] = "Pick a connected controller, then press the button you want for each of the game's buttons. Saved for that model of controller, on any port.",
@@ -158,6 +159,7 @@ namespace OpenSmash.Launcher
                 case "nav:home": GoView("home"); return true;
                 case "nav:mods": GoView("mods"); return true;
                 case "nav:settings": GoView("settings"); return true;
+                case "nav:competitive": GoView("competitive"); return true;
                 case "nav:yuzu": OpenYuzuRoom(); return true;
                 case "nav:back": GoBack(); return true;
                 case "nav:play": if (!Busy) StartPlay(); return true;
@@ -528,6 +530,7 @@ namespace OpenSmash.Launcher
                 case "mods_browser": PaintModsBrowser(g, W, H); break;
                 case "setup_modding": PaintSetupModding(g, W, H); break;
                 case "settings": PaintSettings(g, W, H); break;
+                case "competitive": PaintCompetitive(g, W, H); break;   // (LauncherForm.Competitive.cs: SSBU Arena's ranked)
                 case "yuzu": PaintYuzuRoom(g, W, H); break;
                 case "remap": PaintRemap(g, W, H); break;
                 default: PaintHome(g, W, H); break;
@@ -577,7 +580,7 @@ namespace OpenSmash.Launcher
             float ww = Theme.Label(g, "OPENSMASH", FD(21 * s), A(Theme.Text), wx, 0, HeaderH * s, 0.84f * s);
             float ww2 = Theme.Label(g, "-ULTIMATE", FD(21 * s), A(Theme.Dim), wx + ww + 0.84f * s, 0, HeaderH * s, 0.84f * s);
             AddHit("brand", mx, my, mark + 10 * s + ww + ww2, mark);
-            if (_view != "home") PaintDiscordHeader(g, wx + ww + 0.84f * s + ww2 + 36 * s, HeaderH * s / 2);   // (LauncherForm.Discord.cs; home: the right column's)
+            if (_view != "home" || AccountMode) PaintDiscordHeader(g, wx + ww + 0.84f * s + ww2 + 36 * s, HeaderH * s / 2);   // (LauncherForm.Discord.cs; home: the right column's; the v0.5.0 account: on every page)
 
             // Window buttons
             float cx = W - 40 * s, cy = HeaderH * s / 2, a = 7 * s;
@@ -610,9 +613,13 @@ namespace OpenSmash.Launcher
             AddHit("nav:mode-next", nextX, cy - chh / 2, aw, chh);
 
             // Section links with the red skewed underline
-            string active = _view == "home" ? "nav:home" : _view == "settings" || _view == "yuzu" || _view == "remap" ? "nav:settings" : "nav:mods";
+            string active = _view == "home" ? "nav:home" : _view == "settings" || _view == "yuzu" || _view == "remap" ? "nav:settings" : _view == "competitive" ? "nav:competitive" : "nav:mods";
             float lx = prevX - 8 * s;
-            foreach (var (id, label) in new[] { ("nav:settings", "SETTINGS"), ("nav:mods", "MODS"), ("nav:home", "HOME") })
+            // (right to left: SETTINGS, COMPETITIVE - SSBU Arena's ranked, LauncherForm.Competitive.cs - MODS, HOME)
+            var links = CompetitiveOn
+                ? new[] { ("nav:settings", "SETTINGS"), ("nav:competitive", "COMPETITIVE"), ("nav:mods", "MODS"), ("nav:home", "HOME") }
+                : new[] { ("nav:settings", "SETTINGS"), ("nav:mods", "MODS"), ("nav:home", "HOME") };
+            foreach (var (id, label) in links)
             {
                 float tw = Theme.TextWidth(g, label, cf, csp), bw = tw + 24 * s;
                 lx -= bw;
@@ -717,6 +724,15 @@ namespace OpenSmash.Launcher
                 float rh = Hov("report", _hover == "report");
                 Theme.Label(g, rl, rf, A(Theme.Mix(Theme.Muted, Theme.Text, rh)), rx, y, h, sp);
                 AddHit("report", rx - 6 * s, y, rw + 12 * s, h);
+                // "Verify game files": the install checked, a repair offered (LauncherForm.FileCheck.cs).
+                if (OpenSmash.Core.FileCheck.Shown)
+                {
+                    string vl = UiLocale.Text("VERIFY GAME FILES");
+                    float vw = Theme.TextWidth(g, vl, rf, sp), vx = rx - 28 * s - vw;
+                    float vh = Hov("verify", _hover == "verify");
+                    Theme.Label(g, vl, rf, A(Theme.Mix(Theme.Muted, Theme.Text, vh)), vx, y, h, sp);
+                    AddHit("verify", vx - 6 * s, y, vw + 12 * s, h);
+                }
             }
 
             PopFade(g, st);
@@ -1656,7 +1672,7 @@ namespace OpenSmash.Launcher
             int tab = _settingsTabs.Length == 0 ? 0 : Math.Clamp(_settingsTab, 0, _settingsTabs.Length - 1);
             _settingsTab = tab;
             int pageStart = SectionStart(tab);
-            int pageCount = tab < _settingsTabs.Length ? _settingsTabs[tab].SettingKeys.Length : 0;
+            int pageCount = tab < _settingsTabs.Length ? _settingsTabs[tab].SettingKeys.Count(SettingVisible) : 0;
             if (pageCount > 0 && (_sel < pageStart || _sel >= pageStart + pageCount)) _sel = pageStart;
             var rowTops = new float[vis.Length];
             float content = headerH;
@@ -1990,7 +2006,8 @@ namespace OpenSmash.Launcher
             float s = _s;
             var st = PushFade(g, Up((float)(Now - _viewAt), 0.2f), 16 * s);
             float cwIn = Math.Min(cw, 720 * s);
-            float ch = Math.Min(viewH, 420 * s);
+            float saveH = 78 * s;   // (the Save disk space row, between the text and the buttons)
+            float ch = Math.Min(viewH, 420 * s + saveH);
             float pad = 30 * s;
             using (var p = Theme.CutCorners(x, listTop, cwIn, ch, 18 * s))
             {
@@ -2003,10 +2020,22 @@ namespace OpenSmash.Launcher
             float rule = x + pad + Theme.TextWidth(g, "STORAGE", hf, hsp) + 14 * s;
             if (rule < x + cwIn - pad) HLine(g, rule, x + cwIn - pad, listTop + 26 * s);
             string text = _storageText.Length > 0 ? _storageText : "The game's files (dump) and the compiled game (build) take tens of GB. They can live on another drive: the move leaves a link in their place.";
-            Theme.DrawWrapped(g, text, FB(14 * s), A(Theme.Muted), x + pad, listTop + 50 * s, cwIn - pad * 2, ch - 140 * s);
+            Theme.DrawWrapped(g, text, FB(14 * s), A(Theme.Muted), x + pad, listTop + 50 * s, cwIn - pad * 2, Math.Max(0, ch - 140 * s - saveH));
             float bh = 44 * s, by = listTop + ch - bh - 28 * s, wMove = 260 * s, wRef = 150 * s;
             float xMove = x + cwIn - pad - wMove, xRef = xMove - 12 * s - wRef;
             bool can = !_storageBusy;
+            {
+                // Save disk space: one switch (config\save_disk.txt, OpenSmash.Core DiskSpace.cs), read by the installer and
+                // every update's build. Off by default.
+                if (!_settingsLoaded) ReadSettings();
+                float sy = by - saveH, wSw = 110 * s, hSw = 38 * s, xSw = x + cwIn - pad - wSw;
+                HLine(g, x + pad, x + cwIn - pad, sy);
+                Theme.DrawText(g, "Save disk space", FB(15 * s), A(Theme.Text), x + pad, sy + 8 * s, xSw - x - pad - 16 * s, 22 * s, StringAlignment.Near, StringAlignment.Near);
+                Theme.DrawWrapped(g, "About 14 GB less: the game data is read from your game files, which must stay where they are. Counts from the next set-up or update.",
+                    FB(12 * s), A(Theme.Muted), x + pad, sy + 32 * s, xSw - x - pad - 16 * s, saveH - 36 * s);
+                Theme.ButtonAnimated(g, _saveDisk ? "ON" : "OFF", xSw, sy + (saveH - hSw) / 2, wSw, hSw, s, _saveDisk, Hov("storage:save_disk", _hover == "storage:save_disk"), true, 12 * s, _alpha, press: Press("storage:save_disk"));
+                AddHit("storage:save_disk", xSw, sy + (saveH - hSw) / 2, wSw, hSw);
+            }
             Theme.ButtonAnimated(g, "REFRESH", xRef, by, wRef, bh, s, false, Hov("storage:refresh", can && _hover == "storage:refresh"), can, 12 * s, _alpha, press: Press("storage:refresh"));
             if (can) AddHit("storage:refresh", xRef, by, wRef, bh);
             Theme.ButtonAnimated(g, _storageBusy ? "WORKING…" : "MOVE TO ANOTHER DRIVE", xMove, by, wMove, bh, s, true, Hov("storage:move", can && _hover == "storage:move"), can, 13 * s, _alpha, press: Press("storage:move"));

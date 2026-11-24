@@ -152,4 +152,8 @@ int gfx_present_again(void) {
 static int vk_drawing(void) { return gfx_backend.present != start_present && gfx_backend.present != d3d11_present; }
 void gfx_match_want(unsigned long long key, int first) { if (vk_drawing()) vk_match_want(key, first); }
 void gfx_match_wait(void) { if (vk_drawing()) vk_match_wait(); }
+void gfx_warm_hint(unsigned long long key, int pick) { if (vk_drawing()) vk_warm_hint(key, pick); }
+/* (a wait of seconds on the game's thread - the match's shaders, gpu_vk.c vk_match_wait: called every few ms of it.
+ * hle_rb_core.c's, online: this game goes on telling the others it is there and still loading) */
+void (*gfx_wait_hook)(void);
 #endif

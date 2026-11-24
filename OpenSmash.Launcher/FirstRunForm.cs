@@ -133,7 +133,8 @@ namespace OpenSmash.Launcher
             string folder = _target;
             try
             {
-                string source = await ProjectSetup.ProjectZipUrlAsync(_cts.Token);   // (the latest release; main while there is none)
+                // (the stable release's sources - the commit its manifest names - else the latest release's tag, else main: ProjectSetup)
+                string source = await ProjectSetup.ProjectZipUrlAsync(_cts.Token);
                 await ProjectSetup.InstallAsync(folder, source, (phase, done, total) =>
                 {
                     _phase = phase; _done = done; _total = total;

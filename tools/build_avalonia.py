@@ -34,7 +34,7 @@ def install(folder, rid):
                     shutil.rmtree(owned)
         return target
     name = "OpenSmash.Avalonia.exe" if rid.startswith("win") else "OpenSmash.Avalonia"
-    target = ROOT / name
+    target = ROOT / ("OpenSmash.Avalonia.exe" if rid.startswith("win") else "OpenSmash-Launcher")
     staging = ROOT / (".OpenSmash-build-" + uuid.uuid4().hex + (".exe" if rid.startswith("win") else ".tmp"))
     try:
         shutil.copy2(folder / name, staging)
@@ -47,7 +47,7 @@ def install(folder, rid):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--rid", required=True, choices=("win-x64", "linux-x64", "osx-arm64"))
+    parser.add_argument("--rid", required=True, choices=("win-x64", "linux-x64", "osx-arm64", "osx-x64"))
     parser.add_argument("--configuration", default="Release", choices=("Release", "Debug"))
     args = parser.parse_args()
     if not shutil.which("dotnet"):

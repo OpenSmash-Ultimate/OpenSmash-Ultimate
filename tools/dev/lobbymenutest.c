@@ -53,15 +53,7 @@
 static char build_text[41];
 const char *rt_data_dir = ".";
 const RtModule rt_module_main = {.build_id = build_text};
-/* (net_eos_net.c, net_eos_lobby.c and the NEX server's: Online over EOS; never reached here) */
 #include "../../runtime/net_backend.h"
-#include "../../runtime/net_eos.h"
-const NetBackend net_eos_backend;
-void net_eos_net_packet(const char *from, const u8 *p, u32 n) { (void)from; (void)p; (void)n; }
-void nexeos_tick(void) {}
-void nexeos_packet(const char *from, const u8 *data, u32 len) { (void)from; (void)data; (void)len; }
-int nexeos_lobbies(char ids[][16], int max) { (void)ids; (void)max; return 0; }
-uint64_t nex_pid_of(const char *key) { (void)key; return 0; }
 static const char *const FILES[CONFIG_FILES] = {"display.ini", "controllers.ini", "launcher.ini", "online_server.txt",
                                                 "online_name.txt", "online_direct.txt", "online_protocol.txt",
                                                 "online_rollback.txt", "online_delay.txt"};
@@ -107,6 +99,11 @@ void display_set_hide_cursor(int on) { (void)on; }
 void display_set_latency(int frames) { (void)frames; }
 int display_runahead(void) { return 0; }                     /* (run-ahead: gpu_display.c, hle_rb_core.c) */
 void display_set_runahead(int frames) { (void)frames; }
+static int frame_rate_saved = 60, motion_saved;                /* (frame rate and motion between frames: gpu_display.c) */
+int display_frame_rate(void) { return frame_rate_saved; }
+void display_set_frame_rate(int fps) { frame_rate_saved = fps; }
+int display_motion(void) { return motion_saved; }
+void display_set_motion(int mode) { motion_saved = mode; }
 int kernel_rb_switch(void) { return 0; }
 void display_set_render_scale(float scale) { (void)scale; }
 void display_set_renderer(int renderer) { renderer_saved = renderer; }

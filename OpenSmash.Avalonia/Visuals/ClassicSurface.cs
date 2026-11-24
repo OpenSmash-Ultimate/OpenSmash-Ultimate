@@ -218,6 +218,7 @@ public sealed partial class ClassicSurface : Control
         _viewAt=Now; if(view=="home") _heroAt=Now;
         if(view=="settings")LoadSettings();
         if(view=="mods")ActionRequested?.Invoke("mods:refresh");
+        if(view=="competitive")ActionRequested?.Invoke("community:competitive");   // (MainWindow.Discord.cs asks the ranked board)
         _modal=null; InvalidateVisual();
         UpdateNativeControls();
     }
@@ -413,6 +414,7 @@ public sealed partial class ClassicSurface : Control
         else if(id is "nav:home" or "brand")Navigate("home");
         else if(id is "nav:mods" or "menu:1")Navigate("mods");
         else if(id is "nav:settings" or "menu:2")Navigate("settings");
+        else if(id=="nav:competitive")Navigate("competitive");   // (CompetitiveArtwork.cs)
         else if(id is "menu:3")ActionRequested?.Invoke("close");
         else if(id is "menu:0" or "nav:play")ActionRequested?.Invoke("play");
         else if(id=="act:back")Navigate("setup");

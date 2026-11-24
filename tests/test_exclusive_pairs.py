@@ -132,6 +132,32 @@ class LiftTests(unittest.TestCase):
                 self.assertIn('rt_trap(c, 0x7100000000ull, "unsupported");', text)
                 self.assertEqual(dict(reasons), {('compare-and-swap (LSE)', word): 1})
 
+    def test_atomic_memory_operations_trap(self):
+        """The other LSE instructions (ldadd, ldclr, ldeor, ldset, ld{s,u}{max,min}, swp) and ldapr (ARMv8.3) trap
+        in every size and ordering, as cas does: the 64-bit acquire forms share their opc with prfm, which is
+        lifted as nothing. ldrab (pointer authentication, ARMv8.3) there traps too."""
+        words = []
+        for size in range(4):
+            for a in (0, 1):
+                for r in (0, 1):
+                    words += [size << 30 | 0x38200000 | a << 23 | r << 22 | 2 << 16 | o3 << 15 | opc << 12 | 1 << 5
+                              for o3, opc in [(0, op) for op in range(8)] + [(1, 0)]]
+            words.append(size << 30 | 0x38BFC000 | 1 << 5)   # ldapr(b, h) w0 / x0, [x1]
+        for word in words:
+            with self.subTest(f'{word:08x}'):
+                text, reasons = lifted(word)
+                self.assertIn('rt_trap(c, 0x7100000000ull, "unsupported");', text)
+                self.assertEqual(dict(reasons), {('atomic memory operation (LSE)', word): 1})
+        for word in (0xF8A00C20, 0xF8E00C20):   # ldrab x0, [x1]!; ldrab x0, [x1, #-0x1000]!
+            self.assertEqual(dict(lifted(word)[1]), {('pointer-auth load', word): 1})
+
+    def test_prefetch_is_nothing(self):
+        """prfm (unsigned offset, register offset, literal) and prfum are hints: no code."""
+        for word in (0xF9800020, 0xF9BFFC31, 0xF8A26820, 0xF8BF7820, 0xF88F0020, 0xF89FF031, 0xD8000060):
+            with self.subTest(f'{word:08x}'):
+                self.assertEqual(body(word), ';')
+                self.assertFalse(lifted(word)[1])
+
     def test_second_doubleword_only_where_used(self):
         """ex_w, the second doubleword an X pair's load read, is a local of the functions that have one; every
         other function's locals are as they were."""

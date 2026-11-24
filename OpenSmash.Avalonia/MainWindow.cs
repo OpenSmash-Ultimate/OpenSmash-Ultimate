@@ -41,6 +41,7 @@ public sealed partial class MainWindow : Window
         ScalingChanged+=(_,_)=>{if(!_moving)Dispatcher.UIThread.Post(FitToScreen);};
         if(OperatingSystem.IsWindows())Win32Properties.AddWndProcHookCallback(this,KeepAspectWhileSizing);
         else Resized+=(_,e)=>{if(e.Reason==WindowResizeReason.User)Dispatcher.UIThread.Post(KeepAspect);};
+        if(enableBackgroundActions)Surface.RegionChangedRequested+=()=>_=RegionChanged();   // (MainWindow.Discord.cs)
         if(enableBackgroundActions)Surface.MarketplaceMessage+=async message=>await MarketplaceMessage(message);
         Surface.InputRequested+=answer=> {if(_shaderPriority!=null){_shaderPriority.TrySetResult(answer);return;}try{_installerInput?.WriteLine(answer);}catch(IOException error){Surface.Alert("INPUT FAILED",error.Message);} };
         Closing+=(_,e)=>
@@ -124,7 +125,10 @@ public sealed partial class MainWindow : Window
 
     void SetProject(string root,bool forceInstaller=false)
     {
-        _project=new Project(root,Project.CurrentPlatform);ProjectLayout.Normalize(_project.Root);Surface.SetProject(_project,forceInstaller);
+        _project=new Project(root,Project.CurrentPlatform);ProjectLayout.Normalize(_project.Root);
+        // (an online_server.txt without a line: the official lobby, the default - OpenSmash.Core.OnlineSettings)
+        if(_backgroundActions)OpenSmash.Core.OnlineSettings.EnsureLine(_project.ConfigFile("online_server.txt"));
+        Surface.SetProject(_project,forceInstaller);
         if(_opened&&_backgroundActions){_=CheckExternalChanges(atBoot:true);CommunityStart();}   // (CommunityStart: MainWindow.Discord.cs)
     }
     Project RequireProject()=>_project??throw new InvalidOperationException("Choose an OpenSmash project folder first.");
@@ -262,9 +266,16 @@ public sealed partial class MainWindow : Window
             Directory.CreateDirectory(p.PathIn("build"));
             await EnsureOnlineFiles();   // #394: OnlineFiles.cs
             string log=p.PathIn("build","opensmash-play.log");
+            // (v0.5.0: the account's lobby ticket for the official lobbies, renewed while the game runs; MainWindow.Account.cs)
+            var ticket=await AccountPassForGame(p.Root);
             PresenceStop();   // (the game's own Rich Presence takes over; MainWindow.Discord.cs)
-            int exit=await GameLaunch.Monitor(Commands.Play(p,true),log,()=>{Surface.StartingGame=false;Hide();},
-                nativeLog:p.Platform==DesktopPlatform.MacOS?p.PathIn("build","play.log"):null);
+            int exit;
+            try
+            {
+                exit=await GameLaunch.Monitor(Commands.Play(p,true) with {Environment=ticket},log,()=>{Surface.StartingGame=false;AccountGameStarted();Hide();},
+                    nativeLog:p.Platform==DesktopPlatform.MacOS?p.PathIn("build","play.log"):null);
+            }
+            finally{AccountGameEnded(p.Root);}
             RestoreAfterGame(exit,log,p.PathIn("build"));
         }
         catch(Exception error)

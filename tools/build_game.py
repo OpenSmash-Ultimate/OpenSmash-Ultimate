@@ -172,6 +172,19 @@ def jobs_for_ram(gb):
     return 16 if gb >= 32 else 8 if gb >= 16 else 4
 
 
+def jobs_for_pc(gb, cpus, budget=True):
+    """(compilers at a time, processes writing the C at a time) for this much RAM and this many processor
+    threads. The writers are jobs_for_ram's, as before. The compilers too without tools/ladder.py's memory
+    budget (SSBU_COMPILE_MEMORY_MB=0); with it they are as many as the processor has threads, up to 16 and to
+    what the RAM less 3 GB holds of usual files (0.6 GB each): the budget keeps the few files with very long
+    functions from being compiled all at once, which is what the old numbers left room for. Measured on 6
+    cores / 12 threads, 16 GB: 12 compilers finish the same files 17 % sooner than 8."""
+    old = jobs_for_ram(gb)
+    if not budget:
+        return old, old
+    return max(old, min(cpus or old, 16, int((gb * 1024 - 3072) // 600))), old
+
+
 def romfs_cfg_ok(cfg):
     """romfs.cfg is there, and so are the files it reads (plain: the file, then the offset;
     layered: the layer map, then its sources - nca.RomfsImage)."""
@@ -506,7 +519,9 @@ def check_mac_runtime(tc, tmp):
     import build_mac
     with open(os.path.join(tmp, "overlay_font.h"), "w") as f:   # (build_mac.py makes it: its fallback)
         f.write("static const unsigned char overlay_font[%d] = {0};\n" % build_mac.OVERLAY_FONT_SIZE)
-    flags = build_mac.RUNTIME_INCLUDES + ["-I", tmp] + build_mac.RUNTIME_DEFINES
+    # (#488) tmp first: a stale build-mac/gen/overlay_font.h of another size (an update that changed the atlas) is on
+    # RUNTIME_INCLUDES too, and the first -I wins; it failed this check before build_mac.py could draw it again (#384)
+    flags = ["-I", tmp] + build_mac.RUNTIME_INCLUDES + build_mac.RUNTIME_DEFINES
     jobs = [(src, os.path.join(tmp, "syntax.o"), "-O0", flags) for src, _obj in build_mac.runtime_sources()
             if not src.endswith(".S")]
     failures = tc.compile_each(jobs, max(4, os.cpu_count() or 4), extra=("-fsyntax-only",))
@@ -603,11 +618,41 @@ def typed_folder(text):
     return text.strip('"')
 
 
+NO_INPUT = False   # --no-input: nobody is there to answer a question (the launcher's build)
+
+
+def can_ask():
+    """Whether a question can be answered here: not with --no-input, and only from a terminal. The launcher runs this
+    build with its output read and no window to type in; input() there waited forever at "Press Enter to keep the
+    folder in [brackets]" (Discord, 2026-11-18)."""
+    if NO_INPUT:
+        return False
+    try:
+        return bool(sys.stdin) and sys.stdin.isatty()
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def unattended_hint(key):
+    setup = ("the setup (tools/install_windowsmash.ps1)" if HOST == "windows" else
+             "the setup (install-windowsmash.sh)" if LINUX else "the setup (Install WindowSmash.command)")
+    return (f" Nobody can answer here, so the build stops: run {setup} once, or tools/build_game.py in a terminal, "
+            f"and give the folder (it is remembered in dump/build_folders.txt); or pass --{key} FOLDER.")
+
+
 def ask_folder(key, given, saved):
     """A folder from the command line, or asked, with last time's answer as the default. The
-    firmware's may be "none": None, no firmware."""
+    firmware's may be "none": None, no firmware. With nobody to answer (can_ask), last time's
+    answer is taken as given (the firmware: none), and without one the build stops, naming the folder."""
     label, default, check = FOLDERS[key]
     default = saved.get(key, default)
+    unattended = not given and not can_ask()
+    if unattended:
+        # (as an Enter would: last time's folder, else the default when it is one - the firmware's "none" always is)
+        problem = None if key == "firmware" or key in saved else check(os.path.expanduser(default))
+        if problem:
+            raise Failed(f"{label}: none was given and none is saved from last time ({problem})" + unattended_hint(key))
+        given = default
     while True:
         if given:
             answer = given
@@ -630,7 +675,7 @@ def ask_folder(key, given, saved):
                 f.writelines(f"{k}={v}\n" for k, v in saved.items() if k in FOLDERS)
             return saved[key]
         if given:
-            raise Failed(problem)
+            raise Failed(problem + (unattended_hint(key) if unattended else ""))
         log(f"  {problem} Try again, or close this window to stop.")
 
 
@@ -899,6 +944,12 @@ def write_romfs_cfg(game, keys, the_program):
         run([sys.executable, os.path.join("tools", "nca.py"), "romfs-cfg", *nca_ref(program), "--keys", keys, "--out", cfg],
             f"The game data inside {gamefiles.where(program)} can't be read in place (see above). Put the game's data in "
             f"{game} as romfs.bin: unencrypted, with the 13.0.5 update applied (setup guide part 2).")
+    elif state == "encrypted" and data_in_place():   # (no decrypted copy: read where it is, decrypted as read)
+        log(f"  {gamefiles.where(program)}: the game's data read in place, decrypted as it is read (SSBU_DATA_IN_PLACE=1: "
+            "no copy; the file must stay where it is)")
+        run([sys.executable, os.path.join("tools", "nca.py"), "romfs-cfg", *nca_ref(program), "--keys", keys, "--out", cfg, "--in-place"],
+            f"The game data inside {gamefiles.where(program)} can't be read in place (see above); without SSBU_DATA_IN_PLACE a "
+            "decrypted copy is made instead.")
     elif state == "encrypted":   # the game (or a release with its update merged in), as the Switch stores it
         plain = decrypt_once(program, keys)
         run([sys.executable, os.path.join("tools", "nca.py"), "romfs-cfg", plain, "--keys", keys, "--out", cfg],
@@ -909,7 +960,12 @@ def write_romfs_cfg(game, keys, the_program):
             raise Failed(f"{gamefiles.where(program)} is the game's update, whose data is a patch over the game's own: "
                          f"WindowSmash also needs the game itself (its program .nca, or its .nsp) in {game}, next to it.")
         base_cfg = os.path.join("dump", "modules", "romfs_base.cfg")
-        base_ref = nca_ref(base) if base["romfs"] == "plain" else [decrypt_once(base, keys)]
+        if base["romfs"] != "plain" and data_in_place():   # (the base read where it is: no decrypted copy of it)
+            log(f"  {gamefiles.where(base)}: the game's own data read in place, decrypted as it is read (SSBU_DATA_IN_PLACE=1: "
+                "no copy; the file must stay where it is)")
+            base_ref = [*nca_ref(base), "--in-place"]
+        else:
+            base_ref = nca_ref(base) if base["romfs"] == "plain" else [decrypt_once(base, keys)]
         run([sys.executable, os.path.join("tools", "nca.py"), "romfs-cfg", *base_ref, "--keys", keys, "--out", base_cfg],
             f"The game data inside {gamefiles.where(base)} can't be read (see above).")
         log("  applying the update over the game's data (a few minutes; every block of the result is checked)")
@@ -925,6 +981,42 @@ def write_romfs_cfg(game, keys, the_program):
     else:
         raise Failed(f"There is no romfs.bin in {game}, and {gamefiles.where(program)} holds no game data. Put the game's "
                      "data there as romfs.bin: unencrypted, with the 13.0.5 update applied (setup guide part 2).")
+
+
+SAVE_DISK_FILE = os.path.join("config", "save_disk.txt")
+SAVE_DISK = {"SSBU_DATA_IN_PLACE": "1", "SSBU_TRIM": "c,nsp,map"}
+
+
+def save_disk_setting(root=ROOT):
+    """The launcher's "Save disk space" (Settings > Storage; OpenSmash.Core DiskSpace.cs): config/save_disk.txt
+    says "on". Off when the file is missing."""
+    try:
+        with open(os.path.join(root, SAVE_DISK_FILE), encoding="utf-8") as f:
+            return f.read().strip().lower().startswith("on")
+    except OSError:
+        return False
+
+
+def save_disk_apply(root=ROOT, env=None):
+    """With the setting on, the build runs as with SSBU_DATA_IN_PLACE=1 (the game's data read from the game's own
+    file: about 14 GB less, the game files must stay where they are) and SSBU_TRIM=c,nsp,map (the disk a finished
+    build no longer needs given back). A variable already set, to anything, is left as it is: by hand wins.
+    Returns what it set."""
+    env = os.environ if env is None else env
+    if not save_disk_setting(root):
+        return {}
+    made = {k: v for k, v in SAVE_DISK.items() if k not in env}
+    env.update(made)
+    return made
+
+
+def data_in_place():
+    """SSBU_DATA_IN_PLACE=1 (off unless set; Windows and Linux on x86-64): the game's encrypted data is not
+    decrypted into a copy in dump/modules (14 GB and over a minute of a first install) but read from the game's own
+    file, decrypted as it is read (tools/nca.py romfs.crypt, runtime/hle_fs.c). The price: the game's file must
+    stay where it was at install (as a romfs.bin read in place must), and each read costs its decryption (AES
+    instructions: measured per GB in the handoff)."""
+    return os.environ.get("SSBU_DATA_IN_PLACE", "").strip() == "1" and not MACOS
 
 
 def unverified_warning(report):
@@ -1087,6 +1179,41 @@ def in_use(path):
         return e.errno == errno.ETXTBSY
 
 
+PLUGINS_FIRST_STAMP = os.path.join(DUMP, "skyline", "plugins_first.txt")
+
+
+def plugins_first(jobs=None):
+    """(--std-plugins, the installer's way; SSBU_PLUGINS_FIRST=0: not here, after the build as before) The
+    standard Skyline plugins fetched and listed BEFORE the game is built (tools/std_plugins.py fetch, tools/skyline.py
+    sync), so the build writes main, the SDK and the shared scripts once, with the plugins' hook points and code
+    patches in them (tools/skyline_seed). Fetched after it, as the installer did, the first build wrote and compiled
+    them without, and the plugin build wrote them all again: 16 minutes of a first install, about 1 this way. A stamp
+    (dump/skyline/plugins_first.txt) tells the installer the fetch is done. Never a reason to stop the build: on
+    any failure the plugins are fetched after it, as before."""
+    if os.environ.get("SSBU_PLUGINS_FIRST", "1").strip() == "0":
+        return False
+    try:
+        if os.path.exists(PLUGINS_FIRST_STAMP):
+            os.remove(PLUGINS_FIRST_STAMP)
+        log("  the standard Skyline plugins first, so the game's C is written once with their hooks in it")
+        # (first the game's own fighter modules get their addresses, dump/nro/bases.txt, as the build has always
+        # given them: before any plugin's. Listed after a plugin they would each sit one slot higher than in every
+        # install made the old way, and two players' games must lay their modules out alike.)
+        for cmd in ([sys.executable, os.path.join("tools", "recomp.py"), "check", os.path.join("dump", "exefs")],
+                    [sys.executable, os.path.join("tools", "std_plugins.py"), "fetch"],
+                    [sys.executable, os.path.join("tools", "skyline.py"), "sync", *(["--jobs", str(jobs)] if jobs else [])]):
+            if subprocess.run(cmd, cwd=ROOT).returncode:
+                log("  (that did not work: the plugins are fetched and built in after the game, as before)")
+                return False
+        os.makedirs(os.path.dirname(PLUGINS_FIRST_STAMP), exist_ok=True)
+        with open(PLUGINS_FIRST_STAMP, "w", newline="\n") as f:
+            f.write("the standard plugins were fetched and listed before the build\n")
+        return True
+    except OSError as e:
+        log(f"  (the plugins could not be fetched first: {e}; after the game, as before)")
+        return False
+
+
 def build(a):
     log("[1/9] Check the tools")
     compiler = check_tools()   # (a CompilerDownload when there is no compiler yet: it downloads during steps 3-8)
@@ -1230,13 +1357,17 @@ def build(a):
     else:
         if in_use(EXE):
             raise Failed(f"The game is running from {exe}: close it, then run this again.")
+        if getattr(a, "std_plugins", False) and not LINUX and not MACOS:
+            plugins_first(a.jobs)
         if not MACOS:
             log("  for {}: {}".format(*instruction_set()))
-        jobs = a.jobs
+        jobs = gen_jobs = a.jobs
         if not jobs:
             gb = installed_ram_gb()
-            jobs = jobs_for_ram(gb) if gb else 4
-            log(f"  {jobs} jobs at a time, for {gb:.0f} GB of RAM" if gb else f"  {jobs} jobs at a time (the RAM size is unknown)")
+            budget = os.environ.get("SSBU_COMPILE_MEMORY_MB", "").strip() != "0" and not LINUX and not MACOS
+            jobs, gen_jobs = jobs_for_pc(gb, os.cpu_count(), budget) if gb else (4, 4)
+            log(f"  {jobs} jobs at a time, for {gb:.0f} GB of RAM" + (f" and {os.cpu_count()} processor threads" if jobs != gen_jobs else "")
+                if gb else f"  {jobs} jobs at a time (the RAM size is unknown)")
         if LINUX:
             build_linux_program(jobs, dll)
         elif MACOS:
@@ -1248,7 +1379,8 @@ def build(a):
             log("  the first build takes from 30 minutes to a few hours, later ones minutes unless the compiler, its flags or "
                 "runtime/recomp.h changed; if it stops, run this again to carry on")
             run([sys.executable, os.path.join("tools", "recomp.py"), "all", os.path.join("dump", "exefs"),
-                 "--out", "build", "--jobs", str(jobs), *(["--game-dll"] if dll else [])],
+                 "--out", "build", "--jobs", str(jobs), *(["--gen-jobs", str(gen_jobs)] if gen_jobs != jobs else []),
+                 *(["--game-dll"] if dll else [])],
                 "The build failed (see above). If the PC ran out of memory, build with fewer jobs at a time: open "
                 "OpenSmash.exe, set Compiler jobs to 4, and press Set up and build again.")
     if not LINUX and not MACOS:
@@ -1256,6 +1388,20 @@ def build(a):
         # made again when stale; without it Vulkan does not start and Direct3D 11 draws, so a failure is not fatal
         import glslang_lib
         glslang_lib.ensure(os.path.join(os.path.dirname(EXE), glslang_lib.DLL_NAME), log=log)
+    if not LINUX and not MACOS and os.environ.get("SSBU_TRIM", "").strip():
+        # (SSBU_TRIM=c,nsp,map - the installer's -Slim: the disk a finished build no longer needs, tools/trim.py;
+        # never a reason to fail a build that worked)
+        try:
+            import trim
+            what = {w for w in os.environ["SSBU_TRIM"].replace(",", " ").split()}
+            what = set(trim.WHAT) if "all" in what else what & set(trim.WHAT)
+            if what and os.path.isfile(EXE):
+                log("  giving back the disk the build no longer needs (SSBU_TRIM: " + ", ".join(sorted(what)) + ")")
+                freed = trim.trim(ROOT, what, log=log)
+                log(f"  {freed / 2**30:.1f} GB freed")
+        except Exception as e:
+            log(f"  (nothing trimmed: {e})")
+    # (Discord's files: tools/online_files.py)
     online_files(log)
     if LINUX:
         log(f"\nDone: {exe} is ready. Start the game with ./play-ssbu.sh, or WindowSmash in your applications menu.")
@@ -1266,8 +1412,7 @@ def build(a):
 
 
 def online_files(log):
-    """Epic Online Services' files (runtime/net_eos.c, Windows: online through Epic; without them, the public lobby alone)
-    and Discord's (runtime/net_discord.c: sign-in and Rich Presence; off Windows the id alone, for the web launcher's
+    """Discord's files (runtime/net_discord.c: sign-in and Rich Presence; off Windows the id alone, for the web launcher's
     sign-in), beside the program: tools/online_files.py, which the updates and the launchers' Play run too. Never fatal."""
     import online_files as of
     of.ensure(os.path.dirname(EXE), log=log)
@@ -1340,9 +1485,20 @@ def main():
     ap.add_argument("--game-dll", action="store_true",
                     help="link the game's modules into a library of their own beside the program, which the program "
                          "loads at start, rather than into the program (tools/game_dll.py)")
+    ap.add_argument("--std-plugins", action="store_true",
+                    help="fetch and list the standard Skyline plugins before the build, so the game's C is written once "
+                         "(the installer's way; SSBU_PLUGINS_FIRST=0 turns it off)")
+    ap.add_argument("--no-input", action="store_true",
+                    help="never ask (the launcher's build): last time's folders (dump/build_folders.txt) are used, and "
+                         "a folder still needed and not saved stops the build with a message instead of a question")
     ap.add_argument("--check-ready", action="store_true",
                     help="only say (exit status 0) whether steps 3 to 8 are done, so that no game files are needed")
     a = ap.parse_args()
+    global NO_INPUT
+    NO_INPUT = a.no_input
+    saving = save_disk_apply()
+    if saving:
+        log("Save disk space is on (the launcher's Settings > Storage): " + ", ".join(f"{k}={v}" for k, v in sorted(saving.items())))
     if a.check_ready:
         return 0 if prepared() else 1
     try:

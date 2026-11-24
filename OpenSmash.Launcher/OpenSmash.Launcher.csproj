@@ -20,9 +20,10 @@
     <ApplicationIcon>..\media\opensmash.ico</ApplicationIcon>
     <AssemblyName>OpenSmash</AssemblyName>
     <RootNamespace>OpenSmash.Launcher</RootNamespace>
-    <Version>1.0.0</Version>
-    <FileVersion>1.0.0.0</FileVersion>
-    <InformationalVersion>1.0.0</InformationalVersion>
+    <!-- (v0.5.0) the release workflow builds with -p:Version=X.Y.Z; a local build is 0.0.0-dev (older than any
+         release: OpenSmash.Core.Updater compares it with the release channel's) -->
+    <Version Condition="'$(Version)' == '' or '$(Version)' == '1.0.0'">0.0.0-dev</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Product>OpenSmash-Ultimate</Product>
     <Description>Super Smash Bros. Ultimate native PC port launcher</Description>
     <Copyright>GPL-3.0</Copyright>
@@ -38,6 +39,10 @@
     <!-- The site's display face (SIL OFL, Assets\Anton-OFL.txt) and its white emblem. -->
     <EmbeddedResource Include="Assets\Anton-Regular.ttf" LogicalName="Anton-Regular.ttf" />
     <EmbeddedResource Include="Assets\emblem-white.png" LogicalName="emblem.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenSmash.Core\OpenSmash.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>

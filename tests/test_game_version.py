@@ -9,6 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
+sys.path.insert(0, str(ROOT / 'tests'))
 import game_version as gv  # noqa: E402
 import modcache  # noqa: E402
 
@@ -92,9 +93,12 @@ class BuildIdTests(unittest.TestCase):
             'tools/Unlock-All-Fighters.ps1': r"\$knownLayouts = @\{\s*'([0-9A-F]+)'",
             'tools/mac/boottest/main/g_module.c': r'relocs, 4, "([0-9A-F]+)"',
         }
-        relay = (ROOT / 'tools' / 'ssbu_relay.py').read_text(encoding='utf-8')
-        if want in relay or 'REQUIRED_BUILD' in relay:   # (the lobby's own check, where it has one)
-            copies['tools/ssbu_relay.py'] = r'REQUIRED_BUILD = b?"([0-9A-F]+)"'
+        import netproto   # (the lobby's own check, where it has one: the lobby server is in a repository of its own)
+        relay_file = netproto.SERVER_DIR / 'tools' / 'ssbu_relay.py'
+        relay = relay_file.read_text(encoding='utf-8') if netproto.HAVE_LOBBY else ''
+        if want in relay or 'REQUIRED_BUILD' in relay:
+            copies[str(relay_file)] = r'REQUIRED_BUILD = b?"([0-9A-F]+)"'
+        copies['tests/netproto.py'] = r'(?m)^BUILD = "([0-9A-F]+)"'
         for name, pattern in copies.items():
             with self.subTest(name):
                 found = re.findall(pattern, (ROOT / name).read_text(encoding='utf-8'))

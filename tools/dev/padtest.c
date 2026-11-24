@@ -12,6 +12,11 @@
 /* (what hle_pad.c reaches outside itself; the file is not read here, and nothing is converted) */
 const char *config_path(enum ConfigFile file) { (void)file; return "controllers.ini"; }
 int settings_ini_set(const char *path, const char *section, const char *key, const char *value) { (void)path; (void)section; (void)key; (void)value; return 0; }
+/* (hle_padble.c's, not built here: no Switch 2 controller over Bluetooth in a test) */
+int padble_start(int trace) { (void)trace; return 0; }
+void padble_poll(PadBleState out[PADBLE_PORTS]) { memset(out, 0, sizeof(PadBleState) * PADBLE_PORTS); }
+void padble_player(int port, int slot) { (void)port; (void)slot; }
+void padble_vibrate(int port, const float motors[2][4]) { (void)port; (void)motors; }
 
 static int failures, checks;
 #define CHECK(cond, ...) do { checks++; if (!(cond)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -525,9 +530,11 @@ static void test_keyboard(void) {
     CHECK(keys(&lx, &ly, &rx, &ry, 4, 'A', 'S', 'Q', 'W') == (1ull << N_L | 1ull << N_R | 1ull << N_ZL | 1ull << N_ZR), "A S Q W are L R ZL ZR");
     CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_RETURN, VK_BACK) == (1ull << N_PLUS | 1ull << N_MINUS), "Enter, Backspace");
     CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_RETURN, VK_MENU) == 0, "Alt+Enter is not +");
-    CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_LEFT, VK_UP) == 0 && lx == -32767 && ly == 32767 && !rx && !ry, "arrows: the left stick");
-    CHECK(keys(&lx, &ly, &rx, &ry, 2, 'L', 'K') == 0 && rx == 32767 && ry == -32767 && !lx && !ly, "L K: the right stick");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_LEFT, VK_UP) == 0 && lx == -23170 && ly == 23170 && !rx && !ry, "arrows: the left stick, a diagonal on the circle (#527)");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, 'L', 'K') == 0 && rx == 23170 && ry == -23170 && !lx && !ly, "L K: the right stick");
     CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_LEFT, VK_RIGHT) == 0 && lx == 32767, "left and right: right, as before");
+    CHECK(keys(&lx, &ly, &rx, &ry, 1, VK_DOWN) == 0 && ly == -32767 && !lx, "one direction: fully");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_DOWN, VK_RIGHT) == 0 && lx == 23170 && ly == -23170, "down + forward: x under a dash, a crawl (#527)");
     CHECK(keys(&lx, &ly, &rx, &ry, 1, 'E') == 0, "E: nothing");
 
     load_text("[keyboard]\nA = Space, j\nB = x ; a comment\nLSTICK_LEFT = a\nLSTICK_RIGHT = D\nLSTICK_UP = w\nLSTICK_DOWN = s\nL = none\n"
@@ -535,7 +542,7 @@ static void test_keyboard(void) {
     CHECK(keys(&lx, &ly, &rx, &ry, 1, VK_SPACE) == 1ull << N_A && keys(&lx, &ly, &rx, &ry, 1, 'J') == 1ull << N_A, "A = Space, J");
     CHECK(keys(&lx, &ly, &rx, &ry, 1, 'Z') == 0, "Z no longer A");
     CHECK(keys(&lx, &ly, &rx, &ry, 1, 'X') == 1ull << N_B, "B = x (any case, comment after)");
-    CHECK(keys(&lx, &ly, &rx, &ry, 2, 'A', 'W') == 0 && lx == -32767 && ly == 32767, "WASD movement");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, 'A', 'W') == 0 && lx == -23170 && ly == 23170, "WASD movement");
     CHECK(keys(&lx, &ly, &rx, &ry, 1, VK_LEFT) == 0 && lx == 0, "the arrows no longer move");
     CHECK(keys(&lx, &ly, &rx, &ry, 1, 'J') == 1ull << N_A && rx == -32767, "a key on two bindings: both (J is A and still the right stick's left)");
     CHECK(keys(&lx, &ly, &rx, &ry, 2, 0x68, 0x62) == (1ull << N_UP | 1ull << N_DOWN), "the d-pad on Num8, 0x62");

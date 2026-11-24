@@ -355,7 +355,7 @@ static inline void _aligned_free(void *p) { free(p); }
 #define FILE_BEGIN 0
 #define FILE_CURRENT 1
 #define FILE_END 2
-#define MOVEFILE_REPLACE_EXISTING 0x1   /* (rename always replaces) */
+#define MOVEFILE_REPLACE_EXISTING 0x1   /* without it, a move onto an existing name fails (ERROR_ALREADY_EXISTS) */
 #define MOVEFILE_WRITE_THROUGH 0x8      /* the move is on the disk when MoveFileExA returns */
 typedef struct OVERLAPPED {
     ULONG_PTR Internal, InternalHigh;

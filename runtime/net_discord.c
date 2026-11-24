@@ -15,18 +15,22 @@
  * the SDK's authorization with PKCE (the app is a Public Client, redirect http://127.0.0.1/callback), through the
  * Discord app when it runs, else the browser. Rich Presence works without signing in while the Discord app runs.
  *
+ * OpenSmash mastery points (SSBU_MASTERY_PRESENCE, on by default; =0 the GSP and the position as before): the fighter's
+ * mastery instead of its GSP and the leaderboard position, "Quickplay - Mario - Mastery 1,460": GET /mastery/me on each
+ * region's official lobby (the account's lobby ticket as X-OpenSmash-Ticket; an override's server alone when there is
+ * one), the points summed over the regions and the largest veteran bonus added. No answer: nothing about points.
+ *
  * Where the player is and their GSP. The game's Online mode talks to the lobby's own game server (tools/nex), which
  * keeps each player's GSP (DataStore 82 / 84) and their gatherings: GET /gsp/me on the lobby (tools/nex/board.py),
  * signed with the install's NSA id, says where the player plays and with which fighter, every so often. The position
  * is the one public lobby's leaderboard.json (every GSP result goes through its game server), found by the player's id. Local Wireless rooms are this
  * game's own (hle_net.c notes them).
  *
- * Joining. The join secret is the lobby ("eos" online through Epic Online Services, else the lobby server's address),
- * its lobby code and the arena's ID or the room host's (virtual) address (net_discord_core.c). A friend's accepted
- * "Join" on the same lobby lists the room first in Local Wireless's Rooms List (net_rooms_pick; over EOS too: hle_net.c's
- * scan) or shows the arena's ID; on another lobby it is kept in config/discord_join.txt, and the next start joins that
- * lobby (net_relay.c's discord_join_at_start; "eos": EOS alone). Over EOS the lobby server's /gsp/me does not see the
- * player's gatherings, so only Local Wireless rooms get a join secret there, not Battle Arenas. */
+ * Joining. The join secret is the lobby (the lobby server's address), its lobby code and the arena's ID or the room
+ * host's (virtual) address (net_discord_core.c). A friend's accepted "Join" on the same lobby lists the room first in
+ * Local Wireless's Rooms List (net_rooms_pick) or shows the arena's ID; on another lobby it is kept in
+ * config/discord_join.txt, and the next start joins that lobby (net_relay.c's discord_join_at_start: the official one
+ * only; an older game's "eos" secret means it too). */
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdbool.h>
 #include <stdio.h>
@@ -49,12 +53,13 @@ int account_nsa_hex(char out[17]);   /* (hle_env.c) */
 #define REDIRECT "http://127.0.0.1/callback"
 #define TOKEN_PATH "config\\" DISCORD_TOKEN_FILE
 #define JOIN_PATH "config\\discord_join.txt"
-#define BOARD_HOST L"opensmash-lobby.duckdns.org"   /* (the one public lobby's game server: every GSP result is there) */
-#define BOARD_PORT 39421
 #define BOARD_PATH L"/leaderboard.json"
 #define ME_EVERY_MS (45 * 1000)
 #define BOARD_EVERY_MS (10 * 60 * 1000)
 #define ME_FRESH_MS (3 * 60 * 1000)
+#define MASTERY_PATH L"/mastery/me"
+#define MASTERY_EVERY_MS (3 * 60 * 1000)
+#define MASTERY_FRESH_MS (10 * 60 * 1000)
 
 /* ---- the SDK's C interface (cdiscord.h), as much as is used ---------------------------------------------- */
 typedef struct { uint8_t *ptr; size_t size; } DStr;      /* Discord_String */
@@ -145,6 +150,14 @@ static struct { int in, players, max; uint32_t host; } room;
 static DiscordMe me;
 static uint64_t me_at;                          /* GetTickCount64 of the last answer, 0 none */
 static volatile LONG rank;                      /* the global position (the site's leaderboard.json), 0 none */
+static DiscordMastery mastery;                  /* the lobbies' GET /mastery/me, summed (under lock) */
+static uint64_t mastery_at;                     /* GetTickCount64 of the last answer, 0 none */
+/* (OpenSmash mastery points) SSBU_MASTERY_PRESENCE=0: the GSP and the leaderboard position as before */
+static int mastery_presence_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_MASTERY_PRESENCE"); on = !(e && *e == '0'); }
+    return on;
+}
 
 static DStr S(const char *s) { DStr d = {(uint8_t *)s, strlen(s)}; return d; }
 static void copy_dstr(char *out, size_t cap, DStr s) { size_t n = s.size < cap - 1 ? s.size : cap - 1; memcpy(out, s.ptr, n); out[n] = 0; }
@@ -252,10 +265,9 @@ static void sign_in(void) {   /* the SDK's authorization, PKCE (a Public Client:
 }
 
 /* ---- joining -------------------------------------------------------------------------------------------- */
-/* where this game is online now, as a join secret names it ("eos", the lobby's address), or NULL */
+/* where this game is online now, as a join secret names it (the lobby's address), or NULL */
 static const char *join_lobby(void) {
-    int eos = net_on_eos();
-    return discord_join_lobby(eos, !eos && net_lobby() ? net_relay_address() : NULL);
+    return discord_join_lobby(net_lobby() ? net_relay_address() : NULL);
 }
 static int same_lobby(const DiscordJoin *j) { return discord_join_same(j, join_lobby(), net_lobby_code()); }
 static void on_join(DStr secret, void *ud) {
@@ -314,14 +326,22 @@ static void presence_now(DiscordPresence *p) {
     } else if (room.in) {
         p->where = DP_ROOM; p->players = room.players; p->max_players = room.max;
         snprintf(p->target, sizeof p->target, "%u.%u.%u.%u", room.host >> 24, room.host >> 16 & 255, room.host >> 8 & 255, room.host & 255);
-        if (!strcmp(p->relay, "eos"))   /* (EOS's virtual addresses are per lobby code: the code keeps two parties apart) */
-            snprintf(p->party, sizeof p->party, "os-r-%s-eos-%.32s", p->target, p->code);
-        else
-            snprintf(p->party, sizeof p->party, "os-r-%s-%.40s", p->target, p->relay);
+        snprintf(p->party, sizeof p->party, "os-r-%s-%.40s", p->target, p->relay);
     }
     if (fresh) { p->fighter = me.fighter; p->gsp = me.gsp; }
+    p->mastery_mode = mastery_presence_on();
+    if (p->mastery_mode && mastery_at && GetTickCount64() - mastery_at < MASTERY_FRESH_MS) {
+        long long pts = 0;
+        if (p->fighter >= 0 && discord_mastery_of(&mastery, p->fighter, &pts)) {
+            p->has_mastery = 1;
+            p->mastery = pts > 4294967295ll ? 4294967295u : (uint32_t)pts;
+        }
+    }
+    /* (v0.5.0: /gsp/me's own place - by the ticket, the account's, whose row may be no Discord token's or install's -
+     * else the place found in leaderboard.json) */
+    int own = fresh ? me.rank : 0;
     ReleaseSRWLockShared(&lock);
-    p->rank = (int)rank;
+    p->rank = own > 0 ? own : (int)rank;
 }
 static void presence_push(void) {
     static char last[512];
@@ -392,27 +412,48 @@ static char *http_get(const wchar_t *host, INTERNET_PORT port, int secure, const
     WinHttpCloseHandle(s);
     return buf;
 }
-/* GET /gsp/me on the lobby the game joined (its game server's port answers HTTP: tools/ssbu_online_lobby.py) */
-static int ask_me(const char *nsa, const char *player) {
-    const char *relay = net_lobby() ? net_relay_address() : NULL;
-    if (!relay) {   /* (online over EOS: the public lobby keeps the player's results - net_results.c) */
-        const char *r = getenv("SSBU_RESULTS_LOBBY");
-        relay = r && *r && _stricmp(r, "off") ? r : "opensmash-lobby.duckdns.org:39421";
-    }
+/* "host:port" as WinHTTP wants it: the host in `whost` (256), the port returned; 0 when it is not one */
+static int lobby_host(const char *lobby, wchar_t *whost) {
     char host[256];
-    snprintf(host, sizeof host, "%s", relay);
+    snprintf(host, sizeof host, "%s", lobby);
     char *colon = strrchr(host, ':');
     int port = colon ? atoi(colon + 1) : 0;
-    if (!colon || port <= 0 || port > 65535) return 0;
+    if (!colon || colon == host || port <= 0 || port > 65535) return 0;
     *colon = 0;
-    int64_t t = now_s();
-    char sig[65], head[512];
-    discord_sign(nsa, "me", player, t, "", sig);
-    snprintf(head, sizeof head, "X-OpenSmash-Player: %s\r\nX-OpenSmash-Time: %lld\r\nX-OpenSmash-Sig: %s\r\n", player, (long long)t, sig);
-    wchar_t whost[256], whead[512];
-    MultiByteToWideChar(CP_UTF8, 0, host, -1, whost, 256);
-    MultiByteToWideChar(CP_UTF8, 0, head, -1, whead, 512);
-    char *json = http_get(whost, (INTERNET_PORT)port, 0, L"/gsp/me", whead, 64 * 1024);
+    return MultiByteToWideChar(CP_UTF8, 0, host, -1, whost, 256) ? port : 0;
+}
+/* (v0.5.0) the signed-in account's lobby ticket, read here on this thread into its own buffer (net_relay.c keeps its
+ * copy on the network thread): net_discord_core.c's discord_lobby_ticket. */
+static int lobby_ticket(char *out, size_t cap) { return discord_lobby_ticket(out, cap); }
+
+/* GET /gsp/me on the lobby the game joined (its game server's port answers HTTP: tools/ssbu_online_lobby.py). On an
+ * official lobby a signed-in player's records are the account's (tools/nex/board.py): asked with the lobby ticket as the
+ * proof (X-OpenSmash-Ticket alone), so Rich Presence shows the account's GSP; elsewhere, or with no ticket, signed with
+ * the install's NSA id as before. The ticket goes to an official lobby only: it is a credential. */
+static int ask_me(const char *nsa, const char *player) {
+    const char *relay = net_lobby() ? net_relay_address() : NULL;
+    if (!relay) return 0;   /* (no lobby: no GSP to show) */
+    wchar_t whost[256];
+    int port = lobby_host(relay, whost);
+    if (!port) return 0;
+    char ticket[400], head[640];
+    wchar_t whead[640];
+    char *json = NULL;
+    /* (a ticket the lobby refuses - expired, or a server of the install's own with no ticket secret - falls back to the
+     * install's signature at once, so Rich Presence keeps its GSP) */
+    if (net_means_official_lobby(relay) && lobby_ticket(ticket, sizeof ticket)) {
+        snprintf(head, sizeof head, "X-OpenSmash-Ticket: %s\r\n", ticket);
+        if (MultiByteToWideChar(CP_UTF8, 0, head, -1, whead, 640))
+            json = http_get(whost, (INTERNET_PORT)port, 0, L"/gsp/me", whead, 64 * 1024);
+    }
+    if (!json) {
+        int64_t t = now_s();
+        char sig[65];
+        discord_sign(nsa, "me", player, t, "", sig);
+        snprintf(head, sizeof head, "X-OpenSmash-Player: %s\r\nX-OpenSmash-Time: %lld\r\nX-OpenSmash-Sig: %s\r\n", player, (long long)t, sig);
+        if (!MultiByteToWideChar(CP_UTF8, 0, head, -1, whead, 640)) return 0;
+        json = http_get(whost, (INTERNET_PORT)port, 0, L"/gsp/me", whead, 64 * 1024);
+    }
     if (!json) return 0;
     DiscordMe m;
     int ok = discord_me_parse(json, &m);
@@ -425,21 +466,65 @@ static int ask_me(const char *nsa, const char *player) {
     }
     return ok;
 }
+/* (OpenSmash mastery points) GET /mastery/me with the ticket on each region's official lobby - the override's server
+ * alone when there is one (net_region_override: a test lobby) - summed; 1: one answered at least. The ticket goes to
+ * those lobbies only: it is a credential. */
+static int ask_mastery(void) {
+    char ticket[400], head[640], one[256];
+    wchar_t whead[640];
+    if (!lobby_ticket(ticket, sizeof ticket)) return 0;
+    snprintf(head, sizeof head, "X-OpenSmash-Ticket: %s\r\n", ticket);
+    if (!MultiByteToWideChar(CP_UTF8, 0, head, -1, whead, 640)) return 0;
+    static const NetRegion regions[NET_REGION_COUNT] = {NET_REGION_TABLE};
+    const char *lobbies[NET_REGION_COUNT];
+    int n = 0;
+    if (net_region_override(one, sizeof one)) lobbies[n++] = one;
+    else for (int i = 0; i < NET_REGION_COUNT; i++) lobbies[n++] = regions[i].lobby;
+    static DiscordMastery sum;   /* (this thread's alone) */
+    memset(&sum, 0, sizeof sum);
+    for (int i = 0; i < n; i++) {
+        wchar_t whost[256];
+        int port = lobby_host(lobbies[i], whost);
+        char *json = port ? http_get(whost, (INTERNET_PORT)port, 0, MASTERY_PATH, whead, 256 * 1024) : NULL;
+        if (json && !discord_mastery_add(json, &sum)) fprintf(stderr, "[discord] %s's /mastery/me: not an answer as known\n", lobbies[i]);
+        free(json);
+    }
+    if (!sum.answers) return 0;
+    AcquireSRWLockExclusive(&lock);
+    mastery = sum;
+    mastery_at = GetTickCount64();
+    ReleaseSRWLockExclusive(&lock);
+    return 1;
+}
 static DWORD WINAPI web_thread(LPVOID unused) {
     (void)unused;
-    uint64_t next_board = 0;
+    uint64_t next_board = 0, next_mastery = 0;
     for (;;) {
         char nsa[17], player[17];
         if (net_configured() && account_nsa_hex(nsa)) {
             discord_player_id(nsa, player);
             ask_me(nsa, player);
-            if (GetTickCount64() >= next_board) {
-                char *json = http_get(BOARD_HOST, BOARD_PORT, 0, BOARD_PATH, NULL, 16u << 20);
-                DiscordToken t;   /* (the leaderboard's rows are Discord accounts: tools/nex/board.py) */
-                char who[17];
+            if (mastery_presence_on() && GetTickCount64() >= next_mastery) {
+                int got = ask_mastery();
+                next_mastery = GetTickCount64() + (got ? MASTERY_EVERY_MS : 60 * 1000);
+            }
+            if (!mastery_presence_on() && GetTickCount64() >= next_board) {   /* (the position: shown with the GSP alone) */
+                /* (the official lobby's read-only page, by its DNS name: net.h. Plain HTTP: the lobby serves no TLS) */
+                wchar_t board_host[256];
+                int board_port = lobby_host(net_official_lobby(), board_host);
+                char *json = board_port ? http_get(board_host, (INTERNET_PORT)board_port, 0, BOARD_PATH, NULL, 16u << 20) : NULL;
+                /* (the leaderboard's rows are Discord accounts: tools/nex/board.py; a lobby before that keeps a row per
+                 * install, so that id is looked for when the account's is not there) */
+                DiscordToken t;
+                char who[17] = "";
                 if (discord_token_load(TOKEN_PATH, &t) && t.user_id[0]) discord_account_hash(t.user_id, who);
-                else snprintf(who, sizeof who, "%s", player);
-                if (json) { InterlockedExchange(&rank, discord_rank_in_leaderboard(json, who)); free(json); next_board = GetTickCount64() + BOARD_EVERY_MS; }
+                if (json) {
+                    int place = who[0] ? discord_rank_in_leaderboard(json, who) : 0;
+                    if (!place) place = discord_rank_in_leaderboard(json, player);
+                    InterlockedExchange(&rank, place);
+                    free(json);
+                    next_board = GetTickCount64() + BOARD_EVERY_MS;
+                }
                 else next_board = GetTickCount64() + 60 * 1000;
             }
         }

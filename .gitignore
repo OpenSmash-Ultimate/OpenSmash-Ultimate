@@ -99,8 +99,17 @@ tools/modmanager/installed.json
 /tests/launcher_settings/bin/
 /tests/launcher_settings/obj/
 
+# OpenSmash.Core and its checks (dotnet)
+OpenSmash.Core/bin/
+OpenSmash.Core/obj/
+tests/core/bin/
+tests/core/obj/
+
 /OpenSmash.Avalonia/bin/
 /OpenSmash.Avalonia/obj/
+/OpenSmash-Launcher
+/OpenSmash.Avalonia.app/
+/OpenSmash.Avalonia.exe
 /tests/desktop/bin/
 /tests/desktop/obj/
 /tests/desktop-native/bin/

@@ -26,6 +26,8 @@ namespace OpenSmash.Launcher
 
         void DiscordInit()
         {
+            AccountInit();   // (v0.5.0: the account replaces the Discord token when the service is set up)
+            if (AccountMode) return;
             _discordHasApp = DiscordAccount.AppId(_repo) != "";
             _discordShown = DiscordAccount.ShowsName(_repo);
             if (_discordHasApp) _ = DiscordRefresh();
@@ -114,6 +116,7 @@ namespace OpenSmash.Launcher
 
         bool ActivateDiscordHit(string id)
         {
+            if (AccountMode) return ActivateAccountHit(id);
             switch (id)
             {
                 case "discord:signin": DiscordSignIn(); return true;
@@ -131,6 +134,7 @@ namespace OpenSmash.Launcher
         // In the header, right of the brand.
         void PaintDiscordHeader(Graphics g, float x, float cy)
         {
+            if (AccountMode) { PaintAccountHeader(g, x, cy); return; }
             if (!_discordHasApp) return;
             float s = _s;
             var f = FB(13 * s, true);
@@ -170,6 +174,7 @@ namespace OpenSmash.Launcher
         // The account card under the header (on top of the view).
         void PaintDiscordCard(Graphics g, int W, int H)
         {
+            if (AccountMode) { PaintAccountCard(g, W, H); return; }
             if (!_discordOpen || _discord == null) return;
             float s = _s, x = 40 * s, y = HeaderH * s + 8 * s, w = 400 * s;
             var rows = _discordRecords.Take(10).ToList();

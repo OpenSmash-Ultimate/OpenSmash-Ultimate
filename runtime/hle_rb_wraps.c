@@ -12,6 +12,8 @@ int rb_lite_skip(Cpu *c, int group);                    /* a re-run frame leaves
 void rb_job_kick(Cpu *c, GuestFn *orig);                /* the task workers' kick: the safe point */
 void rb_tree_node(Cpu *c, GuestFn *orig);               /* the task tree's walk (SSBU_RB_TREE) */
 void rb_rand_draw(Cpu *c, GuestFn *orig, int which);    /* the script random generators (0 rand, 1 randf) */
+int rb_skipf(Cpu *c, int which);                        /* a re-run frame leaves this function out (SSBU_RB_SKIPF) */
+void rb_gc_step(Cpu *c, GuestFn *orig);                 /* the Lua collector's step (SSBU_RB_GC_RERUN) */
 
 /* FUN 0x7103549720: kicks the task workers. Right after the main loop's call to it returns is
  * the safe point where states are saved and loaded. */
@@ -60,6 +62,28 @@ HLE_WRAP(71036f79c0) { LITE(71036f79c0, 16, 1); }
 HLE_WRAP(71036194a0) { LITE(71036194a0, 32, 0); }
 /* signature: 16 words, sha256 3f29e611e32ef3b3 */
 HLE_WRAP(710356dd50) { LITE(710356dd50, 64, 0); }
+
+/* (SSBU Arena's SKIPF, 4774203 + f9b673b; the 13.0.5 addresses from its table) Functions that do nothing a re-run frame
+ * needs: with SSBU_RB_SKIPF=<bits> a frame run again returns from them at once (bit 0 the first here, ... bit 5 the last).
+ * Default 53: bits 0, 2, 4, 5 are skipped. Bits 1 and 3 are NOT: a re-run frame does need them (skipping bit 1 was the
+ * v0.5.0 stutter, #508; skipping bit 3 made the name tag above the fighter bounce). See hle_rb_core.c rb_skipf. */
+/* signature: 16 words, sha256 c5f6532aa6c3a56a */
+HLE_WRAP(71022df110) { if (rb_skipf(c, 0)) return; f_71022df110_orig(c); }
+/* signature: 1 word, sha256 6b592f583029f628 */
+HLE_WRAP(71022dec30) { if (rb_skipf(c, 1)) return; f_71022dec30_orig(c); }
+/* signature: 16 words, sha256 7286db578fc2228c */
+HLE_WRAP(71022dc3d0) { if (rb_skipf(c, 2)) return; f_71022dc3d0_orig(c); }
+/* signature: 7 words, sha256 532479222ac7108a */
+HLE_WRAP(7101357e20) { if (rb_skipf(c, 3)) return; f_7101357e20_orig(c); }
+/* signature: 7 words, sha256 532479222ac7108a */
+HLE_WRAP(7101358ef0) { if (rb_skipf(c, 4)) return; f_7101358ef0_orig(c); }
+/* signature: 16 words, sha256 f39684531b855964 */
+HLE_WRAP(710375f020) { if (rb_skipf(c, 5)) return; f_710375f020_orig(c); }
+
+/* FUN 0x71038fec40: one step of the Lua garbage collector. The main loop calls it again and again (return address
+ * 0x71037480c0) while its frame has time left: hle_rb_core.c rb_gc_step times it, and can leave it out of re-run frames. */
+/* signature: 16 words, sha256 cf7b0b812eb864d3 */
+HLE_WRAP(71038fec40) { rb_gc_step(c, f_71038fec40_orig); }
 
 /* FUN 0x7103725030: walks the game's task tree once per logic step (SSBU_RB_TREE=1 times it). */
 /* signature: 16 words, sha256 de9e1982b7c954d4 */

@@ -7,8 +7,8 @@ set "SSBU_NET_HOST="
 set "SSBU_NET_RELAY="
 set "SSBU_NET_BIND="
 @echo off
-rem Starts the game as a netplay player joining a host's relay (or a standalone relay,
-rem tools\ssbu_relay.py). No port forwarding needed here. See docs\MULTIPLAYER.md. The log goes to
+rem Starts the game as a netplay player joining a host's relay (or an online lobby).
+rem No port forwarding needed here. See docs\MULTIPLAYER.md. The log goes to
 rem build\play.log. The host needs game version 13.0.5 too.
 cd /d "%~dp0.."
 setlocal

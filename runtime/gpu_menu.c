@@ -47,7 +47,6 @@ void gfx_closing(void); /* (gpu_d3d11.c) the game is about to end */
 int gfx_adapter_names(char names[][64], int max); /* (gpu_d3d11.c) the graphics cards, fastest first */
 #endif
 
-#define PUBLIC_LOBBY "opensmash-lobby.duckdns.org:39421" /* (the one public lobby: net_relay.c) */
 
 static volatile int open_, releasing;
 int menu_is_open(void) { return open_; }
@@ -66,12 +65,8 @@ void menu_toast(const char *text)
     ReleaseSRWLockExclusive(&toast_lock);
 }
 
-const char *net_notice_take(void);   /* (net_relay.c: a message for the screen, once) */
 int menu_visible(void)
 {
-    const char *notice = net_notice_take();
-    if (notice)
-        menu_toast(notice);
     return open_ || (toast_until && (toast_until == 1 || GetTickCount64() < toast_until)); }
 
 /* ---- keys from the window's thread ---------------------------------------------------- */
@@ -162,7 +157,8 @@ enum {
     R_NET_STATUS, R_NET_MODE, R_NET_CODE, R_NET_SERVER, R_NET_NAME, R_NET_DIRECT, R_NET_PROTOCOL,
     R_LOBBY, R_MATCH_FIND, R_MATCH_CANCEL, R_ROOMS,
     R_UI_LANGUAGE, R_LANGUAGE, R_VOLUME, R_UW_ONLINE, R_OPEN_LOGS, R_RESTART, R_QUIT, R_REMAP_BACK, R_MODS_STATE, R_MOD_CODE, R_MODS_OFF, R_LAN_ROOMS,
-    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE, R_RUNAHEAD, R_NET_ROLLBACK, R_NET_DELAY,
+    R_KEYS, R_KEYS_BACK, R_KEYS_RESET, R_RENDERER, R_ROOMS_PREV, R_ROOMS_NEXT, R_ROOMS_GAME_PAGE, R_RUNAHEAD, R_NET_ROLLBACK, R_NET_DELAY, R_NET_REGION,
+    R_FRAMERATE, R_MOTION,
     R_PADSEL_FIRST = 300, /* + the controller's place (PAD_SLOTS at most): opens its settings */
     R_REMAP_FIRST = 100,  /* + console button */
     R_MOD_FIRST = 200,    /* + the mod's place in mods.json (MENU_MODS at most) */
@@ -172,7 +168,7 @@ enum {
     R_ASSIGN, R_ASSIGN_BACK, R_ASSIGN_WAIT, R_REMAP_RESET, R_STICKS_RESET, R_RUMBLE_RESET, R_CTRLS, R_CTRLS_BACK,
     R_ROOM_FIRST = 600    /* + the room's place on the page of rooms shown (ROOM_PAGE at most); the plain ids before R_REMAP_FIRST (100) stay under it */
 };
-_Static_assert(R_NET_DELAY < R_REMAP_FIRST, "the plain row ids must stay under R_REMAP_FIRST");
+_Static_assert(R_MOTION < R_REMAP_FIRST, "the plain row ids must stay under R_REMAP_FIRST");
 #define IS_KEY(id) ((id) >= R_KEY_FIRST && (id) < R_KEY_FIRST + PAD_KEYS)
 #define IS_REMAP(id) ((id) >= R_REMAP_FIRST && (id) < R_REMAP_FIRST + 16)
 
@@ -256,7 +252,9 @@ static int osk_max = 32, osk_min, osk_scripted; /* (osk_scripted: SSBU_MENU_OSK'
 
 static struct { int mode; char custom[128], code[40], name[40]; int direct, protocol, rollback; } net;
 enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_MODE_COUNT };
-static const char *const NET_MODES[NET_MODE_COUNT] = {"public (worldwide, Epic)", "private lobby (a code)", "your own server", "offline",
+/* (the first choice is the official lobby: relay only, one server a region - net_region.c. OpenSmash 0.5.0: Epic Online
+ * Services are gone, and an "eos" line in online_server.txt reads as the official lobby, net_relay.c) */
+static const char *const NET_MODES[NET_MODE_COUNT] = {"official lobby (relay only, EU / NA East)", "private lobby (a code)", "your own server", "offline",
                                                       "this network (LAN)"};
 
 static void net_load(void)
@@ -270,9 +268,8 @@ static void net_load(void)
         net.mode = NET_OFFLINE;
     else if (!_stricmp(host, "lan"))
         net.mode = NET_LAN; /* (net_relay.c's LAN discovery) */
-    else if (!_stricmp(host, "auto") || !_stricmp(host, "eos") || !_stricmp(host, "na") || !_stricmp(host, "eu") || !_strnicmp(host, "smash.recomps.wtf", 17) ||
-             !_stricmp(host, PUBLIC_LOBBY))
-        net.mode = code[0] ? NET_PRIVATE : NET_PUBLIC; /* (the one public lobby; the North American one is gone: net_relay.c) */
+    else if (net_means_official_lobby(host)) /* ("auto", the official lobby's name, an older public lobby's, "eos": net_relay.c) */
+        net.mode = code[0] ? NET_PRIVATE : NET_PUBLIC; /* (the official lobby; which region's: net_region.c) */
     else
     {
         net.mode = NET_CUSTOM;
@@ -301,7 +298,7 @@ static void net_save_server(void)
     {
         if (!net.code[0])
             snprintf(net.code, sizeof net.code, "friends");
-        snprintf(line, sizeof line, "%s %s", PUBLIC_LOBBY, net.code);
+        snprintf(line, sizeof line, "auto %s", net.code);   /* (v0.5.0: "auto" is the official lobby, net_relay.c) */
     }
     else
         snprintf(line, sizeof line, "%s%s%s", net.custom[0] ? net.custom : "127.0.0.1:39420", net.code[0] ? " " : "", net.code);
@@ -746,8 +743,7 @@ static void room_rows(void)
 }
 
 /* The Lobby page's rows (fresh: the page shows anew, so the rooms are asked for again). */
-/* The yuzu-compatible client (net_yuzu.c, SSBU_NET_BACKEND=yuzu): its backend is net_backend_candidate. Online through
- * Epic Online Services net_backend is net_eos_backend (net_relay.c), which keeps every OpenSmash page: issue #389. */
+/* The yuzu-compatible client (net_yuzu.c, SSBU_NET_BACKEND=yuzu): its backend is net_backend_candidate. */
 static int yuzu_client(void) { return net_backend && net_backend == net_backend_candidate; }
 
 static void build_lobby(int fresh)
@@ -941,6 +937,17 @@ static void build(void)
         snprintf(r->value, sizeof r->value, "%s", ds.pacing == PACING_VRR ? "vrr" : ds.pacing == PACING_DISPLAY ? "display"
                                                                                                                 : "clock");
         note_env(r, "SSBU_PACING");
+        r = add(R_FRAMERATE, K_CHOICE, W_NOW, "Frame rate",
+                "How many frames a second the game draws and reads the controllers: 60, 120 or 240. Its logic stays at 60, so it plays at "
+                "its normal speed (240 keeps Steve's NIL timing as at 60). Online matches run at 60. The PC must keep up: a missed frame is a slowdown.");
+        snprintf(r->value, sizeof r->value, "%d", display_frame_rate());
+        note_env(r, "SSBU_FRAME_RATE");
+        r = add(R_MOTION, K_CHOICE, W_NOW, "Motion between frames",
+                "With 120 or 240 frames a second: the pictures between two game frames show the characters and the camera moving "
+                "instead of standing still. The game and its timing are the same. Interpolate: smooth, as delayed as 60 frames a "
+                "second at most. Extrapolate: no delay, may overshoot a little when something turns at once. Off: as the game draws it.");
+        { int mo = display_motion(); snprintf(r->value, sizeof r->value, "%s", mo == 2 ? "extrapolate" : mo == 1 ? "interpolate" : "off"); }
+        note_env(r, "SSBU_MOTION");
         r = add(R_LATENCY, K_CHOICE, W_NOW, "Frames queued ahead", "How many frames the graphics card may work ahead: 1 is the most responsive, 3 the smoothest on a busy PC. "
                 "Vulkan keeps 2 at least (with 1 the processor and the card wait for each other every frame).");
         snprintf(r->value, sizeof r->value, "%d", ds.latency);
@@ -1287,7 +1294,7 @@ static void build(void)
             break;
         }
         r = add(R_NET_MODE, K_CHOICE, W_RESTART, "Play online in",
-                "Public: everyone online through Epic Online Services, worldwide; matches connect straight to the opponent (the Europe lobby only if Epic can't be reached). "
+                "Official lobby: everyone's rooms on your region's server (EU / NA East); every match is relayed, so no player's address reaches another. "
                 "Private: only players with the same code. Your own server: host:port. "
                 "Offline: no netplay. This network: a private room hosted on your local network, found by itself.");
         snprintf(r->value, sizeof r->value, "%s", ui_text(NET_MODES[net.mode]));
@@ -1301,10 +1308,27 @@ static void build(void)
             r = add(R_NET_SERVER, K_TEXT, W_RESTART, "Server", "The lobby server's address and port, e.g. 192.168.1.20:39420.");
             snprintf(r->value, sizeof r->value, "%s", net.custom[0] ? net.custom : "(none)");
         }
+        if (net.mode == NET_PUBLIC || net.mode == NET_PRIVATE)
+        { /* (the official lobbies, one a region: net_region.c; config/server_region.txt, the launcher's too) */
+            int other = 0, region = net_region_setting(&other), ms = -1, pick = other || region >= 0 ? -1 : net_region_auto(&ms);
+            r = add(R_NET_REGION, other ? K_INFO : K_CHOICE, other ? W_NONE : W_RESTART, "Server region",
+                    other ? "This install names its own official server (config/official_lobby.txt or SSBU_OFFICIAL_LOBBY): no regions."
+                          : "The official server you play on. Auto: the closest one (the lowest ping). Players on another region are not listed.");
+            if (other)
+                snprintf(r->value, sizeof r->value, "%.60s", net_official_lobby());
+            else if (region >= 0)
+                snprintf(r->value, sizeof r->value, "%s", NET_REGIONS[region].label);
+            else if (pick >= 0 && ms >= 0)
+                snprintf(r->value, sizeof r->value, "Auto (%s, %d ms)", NET_REGIONS[pick].label, ms);
+            else if (pick >= 0)
+                snprintf(r->value, sizeof r->value, "Auto (%s)", NET_REGIONS[pick].label);
+            else
+                snprintf(r->value, sizeof r->value, "%s", ui_text("Auto"));
+        }
         r = add(R_NET_NAME, K_TEXT, W_RESTART, "Your name", "What other players see (up to 32 letters).");
         snprintf(r->value, sizeof r->value, "%s", net.name[0] ? net.name : "(picked at the first online start)");
         r = add(R_NET_DIRECT, K_CHOICE, W_RESTART, "Direct connections",
-                "On: rooms connect players directly when they can (less lag). Off: everything goes through the lobby, so other players never learn your internet address.");
+                "Private rooms and This network (LAN) only. On: players connect to each other directly (less lag), and a room on this network is announced. Off: everything goes through the host's game. The official lobbies never use direct connections.");
         snprintf(r->value, sizeof r->value, "%s", on_off(net.direct));
         r = add(R_NET_DELAY, K_CHOICE, W_NOW, "Input delay",
                 "The frames the game's own netcode waits before your inputs count online (Auto: its own choice, from the connection). Fewer frames answer sooner but stutter on a slow connection. Counts from the next match.");
@@ -1405,7 +1429,7 @@ static void build(void)
             {H, "Window"}, {R_WINDOW, 0}, {R_SIZE, 0},
             {H, "Picture"}, {R_SCALE, 0}, {R_ASPECT, 0}, {R_VIEW, 0}, {R_RENDERER, 0}, /* (#429: the renderer in sight, not behind the switch -
                                                                           * Direct3D 11 is the way out when Vulkan draws wrong on a card) */
-            {H, "Smoothness"}, {R_PACING, 0},
+            {H, "Smoothness"}, {R_PACING, 0}, {R_FRAMERATE, 0}, {R_MOTION, 0},
             {H, "Advanced"}, {R_ADVANCED, 0}, /* (the switch, and under it the rows it shows) */
             {R_CURSOR, 0}, {R_TIMER, 0}, {R_LATENCY, 0}, {R_RUNAHEAD, 0}, {R_OVERLAY, 0}, {R_GPU, 0}};
         static unsigned char used[MENU_ROWS];
@@ -1598,6 +1622,23 @@ static void change(const Row *row, int dir)
         display_set_pacing(p);
         set_display("pacing", p == PACING_VRR ? "vrr" : p == PACING_DISPLAY ? "display"
                                                                             : "clock");
+        break;
+    }
+    case R_FRAMERATE:
+    { /* 60, 120, 240: at once (the vsync thread takes it at its next refresh) */
+        static const int RATES[3] = {60, 120, 240};
+        int f = display_frame_rate(), i = cycle(f >= 240 ? 2 : f >= 120 ? 1 : 0, 3, dir);
+        display_set_frame_rate(RATES[i]);
+        snprintf(v, sizeof v, "%d", RATES[i]);
+        set_display("frame_rate", v);
+        break;
+    }
+    case R_MOTION:
+    { /* off, interpolate, extrapolate: at once (gpu_motion.c takes it at the next picture) */
+        static const char *const MODES[3] = {"off", "interpolate", "extrapolate"};
+        int mo = cycle(display_motion(), 3, dir);
+        display_set_motion(mo);
+        set_display("motion", MODES[mo]);
         break;
     }
     case R_LATENCY:
@@ -1851,6 +1892,12 @@ static void change(const Row *row, int dir)
         net.mode = cycle(net.mode, NET_MODE_COUNT, dir);
         net_save_server();
         break;
+    case R_NET_REGION: /* Auto, then each region */
+    {
+        int v = net_region_setting(NULL) + 1; /* (0 auto, 1.. the regions) */
+        net_region_save(cycle(v, NET_REGION_COUNT + 1, dir) - 1);
+        break;
+    }
     case R_NET_DIRECT:
         net.direct = !net.direct;
         settings_line_write(config_path(CONFIG_ONLINE_DIRECT), net.direct ? "on" : "off");

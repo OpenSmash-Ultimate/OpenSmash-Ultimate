@@ -12,7 +12,7 @@
 #   host     the game as the host of a private room: it runs the relay the others join (UDP port
 #            39420, opened on the router with UPnP when the router allows it); the address to give
 #            them shows here, from netplay_address.txt, and in the overlay (F2)
-#   join     the game joining a host's room (or a standalone relay, tools/ssbu_relay.py)
+#   join     the game joining a host's room (or an online lobby)
 #   unlock   tools/unlock_all.py on the game's save, with the game closed
 #   miis     tools/miis.py import: your own Miis into miis/ (launchers/Import Miis.command)
 #   build    tools/build_game.py with WindowSmash's Python (launchers\Build WindowSmash.bat)
@@ -218,6 +218,11 @@ launch() {
     opened="$tree/build/open.txt"
     mkdir -p "$tree/build"
     rm -f "$log" "$opened"
+    # (v0.5.0) the official lobbies let in only a signed-in account's game: started without the launcher, the lobby
+    # ticket the OpenSmash launcher wrote last (build/cache/online_pass.txt; good while it has not expired)
+    if [ -z "${SSBU_ONLINE_TICKET_FILE:-}" ] && [ -f "$root/build/cache/online_pass.txt" ]; then
+        export SSBU_ONLINE_TICKET_FILE="$root/build/cache/online_pass.txt"
+    fi
     args=(-n -W --env "SSBU_CWD=$root" --env "SSBU_LOG=$log")
     for name in $(compgen -e); do
         case "$name" in
