@@ -1,4 +1,4 @@
-"""tools/game_version.py: WindowSmash builds and plays game version 13.0.5 only. What a game
+"""tools/game_version.py: OpenSmash builds and plays game version 13.0.5 only. What a game
 folder's files say about the version (scan_problem: the installers' window), a main module's
 build id, and the places that keep their own copy of 13.0.5's build id. No game files."""
 from pathlib import Path
@@ -28,7 +28,7 @@ class ScanTests(unittest.TestCase):
 
     def test_another_update(self):
         text = gv.scan_problem(program('update', version=30 << 16, display_version='13.0.4'))
-        self.assertEqual(text, "WindowSmash needs version 13.0.5, and this is the game's update 13.0.4: put the 13.0.5 "
+        self.assertEqual(text, "OpenSmash needs version 13.0.5, and this is the game's update 13.0.4: put the 13.0.5 "
                                "update (.nsp) in this folder instead.")
         self.assertLessEqual(len(text), 130)   # (the installer's window has two lines for it, with "Problem: ")
         self.assertIn("update v12:", gv.scan_problem(program('update', version=12 << 16)))
@@ -37,7 +37,7 @@ class ScanTests(unittest.TestCase):
 
     def test_a_game_without_the_update(self):
         text = gv.scan_problem(program('base', version=0, data_version='11.0.0', display_version='1.0.0'))
-        self.assertEqual(text, 'WindowSmash needs version 13.0.5, and this is the game at 11.0.0 without its 13.0.5 '
+        self.assertEqual(text, 'OpenSmash needs version 13.0.5, and this is the game at 11.0.0 without its 13.0.5 '
                                'update: put that update (.nsp) in this folder.')   # (data.arc's version first)
         self.assertLessEqual(len(text), 130)
         self.assertIn('the game at 1.0.0 without', gv.scan_problem(program('base', data_version='', display_version='1.0.0')))
@@ -55,7 +55,7 @@ class ScanTests(unittest.TestCase):
 
     def test_message_names_the_folder(self):
         self.assertEqual(gv.needs('the program in p.nca is version 11.0.0', 'D:\\MyDump'),
-                         "WindowSmash needs version 13.0.5 of the game, and the program in p.nca is version 11.0.0. "
+                         "OpenSmash needs version 13.0.5 of the game, and the program in p.nca is version 11.0.0. "
                          "Put the game's 13.0.5 update (an .nsp file) in D:\\MyDump, next to the game.")
 
 

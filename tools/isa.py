@@ -131,7 +131,7 @@ def choose(env, features, record):
     if features is not None and best(features) != "avx2":
         lacks = ", ".join(missing("avx2", features))
         if best(features) is None:
-            return "x86-64-v2", False, f"this processor lacks {', '.join(missing('x86-64-v2', features))}: WindowSmash cannot run on it"
+            return "x86-64-v2", False, f"this processor lacks {', '.join(missing('x86-64-v2', features))}: OpenSmash cannot run on it"
         return "x86-64-v2", False, f"this processor lacks {lacks}: the build for older processors, expected to be slower"
     if told and not want:
         return last, True, f"as SSBU_ISA chose for the last build ({RECORD}; SSBU_ISA=auto chooses by the processor)"

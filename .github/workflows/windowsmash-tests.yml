@@ -1,8 +1,8 @@
-# WindowSmash's source-only tests (README.md, "For developers") on Windows, Linux and macOS: the unit tests in tests/
+# OpenSmash's source-only tests (README.md, "For developers") on Windows, Linux and macOS: the unit tests in tests/
 # and the NEX server's offline self-test. Made-up data only: no dump, no game files, nothing derived from the game.
 # Every package a test needs is installed here, so a test skips only where it can't run at all (Windows PowerShell
 # and clang-cl outside Windows).
-name: WindowSmash tests
+name: OpenSmash tests
 
 on:
   push:

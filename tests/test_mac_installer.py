@@ -100,17 +100,17 @@ class CheckTests(unittest.TestCase):
     def test_location_warnings(self):
         home = '/Users/me'
         synced = {'/Users/me/Library/Mobile Documents/com~apple~CloudDocs/Desktop'}
-        self.assertEqual(im.location_warnings('/Users/me/WindowSmash', home, synced.__contains__, 'apfs'), [])
-        self.assertEqual(im.location_warnings('/Users/me/Documents/WindowSmash', home, synced.__contains__, 'apfs'), [])
-        one = im.location_warnings('/Users/me/Desktop/WindowSmash', home, synced.__contains__, 'apfs')
+        self.assertEqual(im.location_warnings('/Users/me/OpenSmash', home, synced.__contains__, 'apfs'), [])
+        self.assertEqual(im.location_warnings('/Users/me/Documents/OpenSmash', home, synced.__contains__, 'apfs'), [])
+        one = im.location_warnings('/Users/me/Desktop/OpenSmash', home, synced.__contains__, 'apfs')
         self.assertEqual(len(one), 1)
         self.assertIn('iCloud Drive', one[0])
         self.assertIn('iCloud Drive', im.location_warnings('/Users/me/Library/Mobile Documents/com~apple~CloudDocs/WS', home,
                                                            lambda p: False)[0])
-        self.assertIn('Downloads', im.location_warnings('/Users/me/Downloads/WindowSmash-main', home, lambda p: False)[0])
-        self.assertIn('exfat', im.location_warnings('/Volumes/Games/WindowSmash', home, lambda p: False, 'exfat')[0])
-        self.assertEqual(im.location_warnings('/Volumes/Games/WindowSmash', home, lambda p: False, 'hfs'), [])
-        self.assertEqual(im.location_warnings('/Users/me/Desktops/WindowSmash', home, lambda p: True, None), [])
+        self.assertIn('Downloads', im.location_warnings('/Users/me/Downloads/OpenSmash-main', home, lambda p: False)[0])
+        self.assertIn('exfat', im.location_warnings('/Volumes/Games/OpenSmash', home, lambda p: False, 'exfat')[0])
+        self.assertEqual(im.location_warnings('/Volumes/Games/OpenSmash', home, lambda p: False, 'hfs'), [])
+        self.assertEqual(im.location_warnings('/Users/me/Desktops/OpenSmash', home, lambda p: True, None), [])
 
     def test_names(self):
         self.assertEqual(im.clean_name('  Mario   Bros \n'), 'Mario Bros')
@@ -135,7 +135,7 @@ class CheckTests(unittest.TestCase):
             im.il.step_update = real
         self.assertEqual(seen, [im.BRANCH])   # (this installer's branch)
         self.assertEqual((im.il.BRANCH, im.il.step), (linux_branch, im.step))   # (and install_linux as it was)
-        self.assertIn(f'[1/{im.STEPS}] Get the newest WindowSmash', out.getvalue())
+        self.assertIn(f'[1/{im.STEPS}] Get the newest OpenSmash', out.getvalue())
         self.assertIn('not checking (--no-update)', out.getvalue())
         self.assertNotIn('[1/8]', out.getvalue())   # (install_linux's own heading)
 
@@ -188,7 +188,7 @@ class StepTests(unittest.TestCase):
         with mock.patch.object(im, 'VENV', str(venv)), mock.patch.object(im.il, 'VENV', str(venv)), \
                 mock.patch.object(im.sys, 'executable', str(maker)):
             im.step_python(a)
-            self.assertTrue(any(m.startswith('WOULD make a Python of WindowSmash') for m in self.said), self.said)
+            self.assertTrue(any(m.startswith('WOULD make a Python of OpenSmash') for m in self.said), self.said)
             a.dry_run = False
             im.step_python(a)
             self.assertIsNone(im.python_problem(str(venv / 'bin' / 'python')))
@@ -822,7 +822,7 @@ class LauncherAppTests(unittest.TestCase):
                                capture_output=True, text=True, env={**os.environ, **fake.env})
             self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
             argv = fake.calls[0][0]
-            self.assertEqual(argv[0], 'WindowSmash is not where it was')
+            self.assertEqual(argv[0], 'OpenSmash is not where it was')
             self.assertIn(f'starts the game from {root}, which is not there any more.', argv[1])
             os.makedirs(os.path.join(tmp, 'tools', 'mac'))
             write(os.path.join(tmp, 'tools', 'mac', 'launch.sh'), 'echo "LAUNCH $*"\n')
@@ -902,7 +902,7 @@ class BootstrapTests(unittest.TestCase):
         if os.path.exists('/usr/bin/python3'):
             self.assertNotEqual(self.finder(root, '/usr/bin:/bin'), '/usr/bin/python3')
         own = self.fake_python(root / 'deps' / 'python' / 'bin' / 'python3')
-        self.assertEqual(self.finder(root, f'{new.parent}:/usr/bin:/bin'), str(own))   # (WindowSmash's own first)
+        self.assertEqual(self.finder(root, f'{new.parent}:/usr/bin:/bin'), str(own))   # (OpenSmash's own first)
         funcs = shell_function(INSTALL, 'usable_python')
         for p in ('/usr/bin/python3', '/usr/bin/python', ''):
             r = subprocess.run([BASH, '-c', funcs + 'usable_python "$1"', 'x', p], capture_output=True)
@@ -926,7 +926,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(r.returncode, 7, r.stdout + r.stderr)   # (the installer's exit code)
         self.assertIn(f'RAN {py} -u tools/mac/install_mac.py --dry-run --game /My Games', r.stdout)
         log = (root / 'install.log').read_text()
-        self.assertIn('WindowSmash setup: ', log)
+        self.assertIn('OpenSmash setup: ', log)
         self.assertIn('RAN ', log)
         self.assertNotIn('Press Return', r.stdout)   # (no one to press it)
 
@@ -1135,7 +1135,7 @@ class LaunchScriptTests(unittest.TestCase):
         r = subprocess.run([BASH, str(self.top / 'launchers/Build WindowSmash.command')], capture_output=True, text=True,
                            stdin=subprocess.DEVNULL, cwd='/', timeout=60)
         self.assertEqual(r.returncode, 1)
-        self.assertIn("WindowSmash's Python (deps/venv) is not set up yet: double-click Install WindowSmash.command", r.stdout)
+        self.assertIn("OpenSmash's Python (deps/venv) is not set up yet: double-click Install WindowSmash.command", r.stdout)
 
     def test_unlock(self):
         make_tree(self.top, '.', '13.0.5')
@@ -1161,7 +1161,7 @@ class LaunchScriptTests(unittest.TestCase):
         r = subprocess.run([BASH, str(self.top / 'launchers/Build WindowSmash.command')], capture_output=True, text=True,
                            stdin=subprocess.DEVNULL, cwd='/', timeout=60)
         self.assertEqual(r.returncode, 1)
-        self.assertIn("WindowSmash's Python (deps/venv) is one the tools cannot use (they need Python 3.10 or newer, as "
+        self.assertIn("OpenSmash's Python (deps/venv) is one the tools cannot use (they need Python 3.10 or newer, as "
                       "arm64): double-click Install WindowSmash.command, which makes it again.", r.stdout)
         self.assertNotIn('PY ', r.stdout)
 

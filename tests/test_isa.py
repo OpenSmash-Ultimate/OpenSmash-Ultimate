@@ -47,7 +47,7 @@ class ChooseTests(unittest.TestCase):
         self.assertEqual((target, why.split(':')[0]), ('x86-64-v2', 'this processor lacks bmi2'))
         target, _told, why = isa.choose({}, OLD, None)
         self.assertEqual(target, 'x86-64-v2')
-        self.assertIn('lacks sse4.2, popcnt: WindowSmash cannot run on it', why)
+        self.assertIn('lacks sse4.2, popcnt: OpenSmash cannot run on it', why)
         # not known: x86-64-v2, saying how to build for AVX2
         target, told, why = isa.choose({}, None, None)
         self.assertEqual((target, told), ('x86-64-v2', False))
@@ -221,7 +221,7 @@ class BuildIsCurrentTests(unittest.TestCase):
         with mock.patch.object(isa, 'cpu_features', lambda: V2):
             self.assertEqual(instruction_set()[0], 'x86-64-v2')
         with mock.patch.object(isa, 'cpu_features', lambda: OLD), \
-                self.assertRaisesRegex(failed, "this PC's processor lacks sse4.2, popcnt, which WindowSmash needs"):
+                self.assertRaisesRegex(failed, "this PC's processor lacks sse4.2, popcnt, which OpenSmash needs"):
             instruction_set()
         os.environ['SSBU_ISA'] = 'x86-64-v2'   # (told: built anyway, say for another PC)
         with mock.patch.object(isa, 'cpu_features', lambda: OLD):
@@ -512,14 +512,14 @@ class CpuCheckTests(unittest.TestCase):
     def test_made_up_processors(self):
         code, out, err = self.run_check('check_v2', 'avx2')
         self.assertEqual((code, out), (5, ''), err)   # (stopped before main)
-        self.assertTrue(err.startswith('[boot] This copy of WindowSmash was built for processors with AVX2, and this processor '
+        self.assertTrue(err.startswith('[boot] This copy of OpenSmash was built for processors with AVX2, and this processor '
                                        'lacks AVX, AVX2, FMA'), err)
         self.assertIn('If this message comes back, build it with SSBU_ISA=x86-64-v2 set', err)
         self.assertEqual(self.run_check('check_everything', 'avx2'), (0, 'main', ''))
         self.assertEqual(self.run_check('check_v2', 'x86-64-v2'), (0, 'main', ''))
         code, out, err = self.run_check('check_old', 'x86-64-v2')
         self.assertEqual((code, out), (5, ''), err)
-        self.assertIn('[boot] This processor lacks SSE4.2, POPCNT, which WindowSmash needs', err)
+        self.assertIn('[boot] This processor lacks SSE4.2, POPCNT, which OpenSmash needs', err)
         self.assertIn('It cannot run on this PC.', err)
 
     def test_this_processor(self):

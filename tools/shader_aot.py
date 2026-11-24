@@ -282,7 +282,7 @@ def read_error_text(errors, tree=None):
              "well, or a damaged copy of that file. The game can stop with the same error when it needs those files."]
     dump = os.path.join(os.path.abspath(tree or ROOT), "dump") + os.sep
     if any(os.path.abspath(f).startswith(dump) for f in files):
-        lines.append("That file is a copy WindowSmash made: delete it and run the installer again to make it afresh.")
+        lines.append("That file is a copy OpenSmash made: delete it and run the installer again to make it afresh.")
     if LINUX:
         lines.append("The system's own record of the error: sudo dmesg | grep -i error")
     return "\n".join(lines)

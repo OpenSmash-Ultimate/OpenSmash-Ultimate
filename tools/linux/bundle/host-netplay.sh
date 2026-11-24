@@ -4,7 +4,7 @@
 # The address to give the other players appears in the game's overlay (F2) and in
 # netplay_address.txt; the log goes to build/play.log.
 here="$(dirname "$(readlink -f "$0")")"
-cd "${SSBU_GAME_DIR:-$here}" || exit 1   # (a WindowSmash folder built on Linux: see scripts/common.sh)
+cd "${SSBU_GAME_DIR:-$here}" || exit 1   # (an OpenSmash folder built on Linux: see scripts/common.sh)
 . "$here/scripts/common.sh"
 find_game_data || exit 1
 check_libraries || exit 1

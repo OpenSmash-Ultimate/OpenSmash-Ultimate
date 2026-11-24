@@ -1805,7 +1805,7 @@ def build_all(exefs, out, jobs, compile_c=True, gen_jobs=None):
                     return False
                 # (a mod's plugin that doesn't compile: the game is built without it, not stopped)
                 print(f"{names[d]}: this plugin did not compile (above): the game is built without it, so its mod's "
-                      "moves or character won't work - send the message above to WindowSmash")
+                      "moves or character won't work - send the message above to OpenSmash")
                 left_out.append(names[d])
             shown.begin("link")
             ok = link([t for n, t in targets.items() if n not in left_out], exe, steps=steps)

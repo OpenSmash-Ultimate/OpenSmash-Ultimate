@@ -8,7 +8,7 @@ Usage:
   std_plugins.py list  [--tree <dir>]            each plugin: version, whether it is fetched, whether it runs here
   std_plugins.py fetch [--tree <dir>] [names...]  download (the ones that run here, or the named ones) and check them
 
-They are downloaded, not shipped in WindowSmash: none of the GitHub ones declares a licence, and
+They are downloaded, not shipped in OpenSmash: none of the GitHub ones declares a licence, and
 GameBanana's pages don't allow re-uploads. Each download is checked against the SHA-256 recorded
 here, so a changed release is noticed (update the entry after checking the new one runs)."""
 import hashlib
@@ -64,7 +64,7 @@ def folder(tree):
 
 
 def download(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "WindowSmash"})
+    req = urllib.request.Request(url, headers={"User-Agent": "OpenSmash"})
     with urllib.request.urlopen(req, timeout=120) as r:
         return r.read()
 

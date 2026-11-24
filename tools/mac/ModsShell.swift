@@ -1,4 +1,4 @@
-// WindowSmash Mods on macOS: a window around the mod manager's page. tools/modmanager/server.py
+// OpenSmash Mods on macOS: a window around the mod manager's page. tools/modmanager/server.py
 // is the app (the same on Windows, where it opens in Edge's app mode); this starts it, shows its
 // page in a web view, gives the page what a browser would (file pickers, confirm dialogs, saving a
 // modpack file, links opened in the browser) and stops the server when the window closes.
@@ -17,7 +17,7 @@ enum Port {
         }
         return NSHomeDirectory() + "/WindowSmash"
     }()
-    /// WindowSmash's own Python (the installer's venv), else one on the Mac
+    /// OpenSmash's own Python (the installer's venv), else one on the Mac
     static var python: String {
         for p in [root + "/deps/venv/bin/python", root + "/deps/python/bin/python3", "/opt/homebrew/bin/python3",
                   "/usr/local/bin/python3", "/Library/Frameworks/Python.framework/Versions/Current/bin/python3"]
@@ -43,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
-        window.title = "WindowSmash Mods"
+        window.title = "OpenSmash Mods"
         window.titlebarAppearsTransparent = true
         window.appearance = NSAppearance(named: .darkAqua)
         window.backgroundColor = NSColor(red: 0.043, green: 0.039, blue: 0.141, alpha: 1)
@@ -67,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         p.standardOutput = out
         p.standardError = err
         do { try p.run() } catch {
-            fail("Can't start WindowSmash's Python (\(py)): run Install WindowSmash.command first.\n\n\(error.localizedDescription)")
+            fail("Can't start OpenSmash's Python (\(py)): run Install WindowSmash.command first.\n\n\(error.localizedDescription)")
             return
         }
         server = p
@@ -92,7 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
     func fail(_ text: String) {
         let a = NSAlert()
-        a.messageText = "WindowSmash Mods"
+        a.messageText = "OpenSmash Mods"
         a.informativeText = text
         a.runModal()
         NSApp.terminate(nil)
@@ -112,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         let main = NSMenu()
         let app = NSMenuItem(); main.addItem(app)
         let am = NSMenu()
-        am.addItem(withTitle: "Quit WindowSmash Mods", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        am.addItem(withTitle: "Quit OpenSmash Mods", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         app.submenu = am
         let edit = NSMenuItem(); main.addItem(edit)
         let em = NSMenu(title: "Edit")

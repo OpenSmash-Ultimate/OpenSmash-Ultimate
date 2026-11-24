@@ -23,7 +23,7 @@ namespace OpenSmash.Launcher
     // build exists. Same chrome as LauncherForm (Theme): it finds the user's game
     // files, keys and firmware (DetectFolders, tools\gamefiles.py --json) and runs
     // the repository's own installer, tools\install_windowsmash.ps1 -NoWizard (the
-    // same flow as Install WindowSmash.bat), which sets up Python, the compiler
+    // same flow as the setup window it replaces), which sets up Python, the compiler
     // and SDL3 and builds the game with tools\build_game.py.
     // The ssbu-recomp scans (scripts\find_inputs.py, scripts\precheck.py) run
     // only when those scripts are present at the root; this repo does not have them.
@@ -104,7 +104,7 @@ namespace OpenSmash.Launcher
         // estimates from the start: a step's estimate counts in the time left until it says its own.
         static readonly string[] InstallerSteps =
         {
-            "Get the newest WindowSmash", "Check this PC", "Python", "The compiler", "SDL3",
+            "Get the newest OpenSmash", "Check this PC", "Python", "The compiler", "SDL3",
             "Music and movie codecs", "Your game files", "Shortcut and firewall", "Build the game", "Shaders"
         };
 
@@ -1327,7 +1327,7 @@ namespace OpenSmash.Launcher
             return x + w + 12 * s;
         }
 
-        // ---- the folders the WindowSmash setup window asked for, drawn in this screen's style
+        // ---- the folders the OpenSmash setup window asked for, drawn in this screen's style
         void DetectFolders()
         {
             var saved = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -1548,7 +1548,7 @@ namespace OpenSmash.Launcher
             _ = CheckGameAsync();
         }
 
-        // ---- setup view: the WindowSmash questions, in this window's cards
+        // ---- setup view: the OpenSmash questions, in this window's cards
         void PaintSetup(Graphics g, int W, int H)
         {
             float s = _s, left = 96 * s, right = W - 96 * s;
@@ -1607,7 +1607,7 @@ namespace OpenSmash.Launcher
             using (var f = Theme.Body(11.5f * s))
                 Theme.DrawText(g, "fewer = PC stays usable", f, Theme.Dim, jx + 98 * s, oy, rightW - (jx - rx) - 110 * s, 28 * s);
             _tips["jobs:-"] = _tips["jobs:+"] = jobsTip;
-            PaintOption(g, "opt:updates", "Check for updates first", _optUpdates, rx, oy + 32 * s, rightW, 32 * s, "Looks for a newer WindowSmash on GitHub before building.");
+            PaintOption(g, "opt:updates", "Check for updates first", _optUpdates, rx, oy + 32 * s, rightW, 32 * s, "Looks for a newer OpenSmash on GitHub before building.");
             PaintOption(g, "opt:license", "Accept Microsoft's license terms for the C runtime and Windows SDK (the compiler download, about 570 MB)", _optLicense, rx, oy + 64 * s, rightW, 72 * s, "Read them first: https://go.microsoft.com/fwlink/?LinkId=2327714");
 
             float ay = 574 * s;

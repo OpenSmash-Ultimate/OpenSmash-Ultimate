@@ -72,7 +72,7 @@ def main_build_id(root):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default=ROOT, help=argparse.SUPPRESS)   # (the WindowSmash folder: tests)
+    ap.add_argument("--root", default=ROOT, help=argparse.SUPPRESS)   # (the OpenSmash folder: tests)
     ap.add_argument("--save", help="the save to change (default: " + SAVE.replace(os.sep, "/") + ")")
     ap.add_argument("--dry-run", action="store_true", help="list what would be unlocked, change nothing")
     a = ap.parse_args()

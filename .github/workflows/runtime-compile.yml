@@ -1,4 +1,4 @@
-# The whole WindowSmash runtime (runtime/ and its platform layer) compiled and linked into the game's program on
+# The whole OpenSmash runtime (runtime/ and its platform layer) compiled and linked into the game's program on
 # Windows, Linux and macOS, by the build a player's runs (tools/dev/runtime_compile_check.py): tools/recomp.py's
 # compile and link, tools/linux/build_linux.py, tools/mac/build_mac.py. The game is tools/mac/boottest's made-up one:
 # no dump, no game files, nothing derived from the game. On Windows and Linux for both instruction sets players'

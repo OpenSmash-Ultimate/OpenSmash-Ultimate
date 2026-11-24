@@ -11,13 +11,13 @@
 root="$(dirname "$(dirname "$(readlink -f "$0")")")"   # (the folder above this one)
 py="$root/deps/venv/bin/python"
 if [ ! -x "$py" ] || [ ! -f "$root/dump/modules/romfs.cfg" ]; then
-    echo "WindowSmash is not set up here yet: run  bash install-windowsmash.sh  first."
+    echo "OpenSmash is not set up here yet: run  bash install-windowsmash.sh  first."
     exit 1
 fi
 cd "$root" || exit 1
 # (keeps the PC from going to sleep meanwhile: a Steam Deck does after a few minutes)
 if command -v systemd-inhibit >/dev/null 2>&1; then
-    exec systemd-inhibit --what=idle:sleep --who=WindowSmash --why="Compiling the game's shaders" \
+    exec systemd-inhibit --what=idle:sleep --who=OpenSmash --why="Compiling the game's shaders" \
         "$py" -u tools/shader_aot.py "$@"
 fi
 exec "$py" -u tools/shader_aot.py "$@"

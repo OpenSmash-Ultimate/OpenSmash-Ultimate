@@ -337,7 +337,7 @@ namespace OpenSmash.Launcher
         // (OpenSmash.exe --play: the game straight away, or the installer while it is not built). Into the desktop
         // and a Start menu folder named OpenSmash, each left out when its folder is "". An older installer's
         // OpenSmash / Play SSBU shortcuts there that point at this folder's OpenSmash.exe are removed (Play SSBU
-        // had WindowSmash's icon). Returns the files made.
+        // had OpenSmash's icon). Returns the files made.
         public static List<string> MakeShortcuts(string folder, string desktop, string startMenu)
         {
             folder = Path.GetFullPath(folder).TrimEnd('\\');

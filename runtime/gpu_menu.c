@@ -459,7 +459,7 @@ static void lan_row(int looking)
             snprintf(r->value + strlen(r->value), sizeof r->value - strlen(r->value), ui_text(" (and %d of another version)"), others);
         help_set(r, "Private rooms hosted on this network by games of your version, heard now. The game joins the first one by itself "
                     "(Online > Now says which), and the next one if that host leaves.%s",
-                 others ? "\nThe others are of another game or WindowSmash version, or of another room code: they can't be joined." : "");
+                 others ? "\nThe others are of another game or OpenSmash version, or of another room code: they can't be joined." : "");
     }
     else if (lan == NET_LAN_ANNOUNCING)
     {
@@ -536,7 +536,7 @@ static void match_rows(void)
             snprintf(r->value, sizeof r->value, "asking the lobby...");
         else
             snprintf(r->value, sizeof r->value, "searching... %d:%02d", waited / 60, waited % 60);
-        help_set(r, "Searching for another player of your game, WindowSmash and mods, with your lobby code. You can close this menu "
+        help_set(r, "Searching for another player of your game, OpenSmash and mods, with your lobby code. You can close this menu "
                     "and play meanwhile: a message says when a match is found.");
         break;
     case NET_MATCH_MATCHED:
@@ -560,7 +560,7 @@ static void match_rows(void)
         break;
     case NET_MATCH_TIMEOUT:
         snprintf(r->value, sizeof r->value, "no opponent found in time");
-        help_set(r, "Nobody of your game, WindowSmash, mods and lobby code searched in time. A: search again.");
+        help_set(r, "Nobody of your game, OpenSmash, mods and lobby code searched in time. A: search again.");
         break;
     case NET_MATCH_LEFT:
         snprintf(r->value, sizeof r->value, "%.32s cancelled or left", other);
@@ -576,7 +576,7 @@ static void match_rows(void)
         break;
     default:
         snprintf(r->value, sizeof r->value, "not searching");
-        help_set(r, "Pairs you with another player of your game, WindowSmash and mods, with your lobby code, and says who hosts. A: "
+        help_set(r, "Pairs you with another player of your game, OpenSmash and mods, with your lobby code, and says who hosts. A: "
                     "search. You can close this menu meanwhile: a message says when a match is found.");
     }
     if (m->state == NET_MATCH_ASKING || m->state == NET_MATCH_SEARCHING || m->state == NET_MATCH_MATCHED)
@@ -669,7 +669,7 @@ static const char *room_short(const NetRoom *x)
     if (x->why_kind == NET_WHY_BUILD)
         return "another game version";
     if (x->why_kind == NET_WHY_SIM)
-        return x->sim > SIM_VERSION ? "update your WindowSmash" : "their WindowSmash is older";
+        return x->sim > SIM_VERSION ? "update your OpenSmash" : "their OpenSmash is older";
     return "other mods";
 }
 
@@ -707,7 +707,7 @@ static void room_rows(void)
         if (!x->joinable)
         {
             snprintf(r->value, sizeof r->value, ui_text("can't join: %s"), room_short(x));
-            help_set(r, "%s%s\n%s", x->why, x->why_kind != NET_WHY_SIM ? "" : x->sim > SIM_VERSION ? "\nYours is the older one: update WindowSmash to join."
+            help_set(r, "%s%s\n%s", x->why, x->why_kind != NET_WHY_SIM ? "" : x->sim > SIM_VERSION ? "\nYours is the older one: update OpenSmash to join."
                                                                                                    : "\nTheirs is the older one: the host needs to update.",
                      x->details);
             continue;
@@ -819,7 +819,7 @@ static void build_lobby(int fresh)
             snprintf(r->value, sizeof r->value, ui_text(match.players == 1 ? "%d player, %d searching" : "%d players, %d searching"), match.players, match.searching);
         else
             snprintf(r->value, sizeof r->value, ui_text("version 3"));
-        r->help = "The players of your lobby code who can play with you (the same game, WindowSmash and mods), and how many of them "
+        r->help = "The players of your lobby code who can play with you (the same game, OpenSmash and mods), and how many of them "
                   "are searching for a match.";
     }
     if (st == LB_ON)

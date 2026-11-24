@@ -185,7 +185,7 @@ class BuildStepsTests(unittest.TestCase):
         with self.assertRaises(self.ns['Failed']) as e:
             self.ns['build'](self.args)
         text = str(e.exception)
-        self.assertIn("WindowSmash needs version 13.0.5 of the game, and the game data connected in step 6 is an early "
+        self.assertIn("OpenSmash needs version 13.0.5 of the game, and the game data connected in step 6 is an early "
                       "release's", text)
         self.assertIn(f"Put the game's 13.0.5 update (an .nsp file) in {self.game}, next to the game.", text)
         self.assertNotIn('romfs.bin', text)
@@ -257,7 +257,7 @@ class BuildStepsTests(unittest.TestCase):
         with self.assertRaises(self.ns['Failed']) as e:
             self.ns['build'](self.args)
         text = str(e.exception)
-        self.assertIn('WindowSmash needs version 13.0.5 of the game, and the program in prog.nca in update.nsp is '
+        self.assertIn('OpenSmash needs version 13.0.5 of the game, and the program in prog.nca in update.nsp is '
                       'version 11.0.0', text)
         self.assertFalse(self.exefs.exists())   # (the folder is not left set up from it)
         self.assertFalse((self.top / 'port' / 'dump' / 'game_source.txt').exists())
@@ -278,7 +278,7 @@ class BuildStepsTests(unittest.TestCase):
         self.args.game = None   # (not named: asked, as the folders' answers are there)
         self.ns['build'](self.args)
         shown = '\n'.join(self.logged)
-        self.assertIn('This folder was set up from version 11.0.0 of the game. WindowSmash needs 13.0.5 now: setting it '
+        self.assertIn('This folder was set up from version 11.0.0 of the game. OpenSmash needs 13.0.5 now: setting it '
                       f'up again from {self.game}. Your save, settings and prepared shaders stay.', shown)
         self.assertIn(f"v13.0.5{os.sep} is not used any more", shown)
         self.assertEqual([c[0] for c in self.calls[:2]], ['extract', 'romfs'])
@@ -338,7 +338,7 @@ class BuildStepsTests(unittest.TestCase):
         before = sorted(str(p) for p in port.rglob('*'))
         with self.assertRaises(self.ns['Failed']) as e:
             self.ns['build'](self.args)
-        self.assertIn('This WindowSmash folder was set up from version 11.0.0 of the game. WindowSmash needs version '
+        self.assertIn('This OpenSmash folder was set up from version 11.0.0 of the game. OpenSmash needs version '
                       '13.0.5, and this is the game at 11.0.0 without its 13.0.5 update: put that update (.nsp) in '
                       'this folder.', str(e.exception))
         self.assertEqual(sorted(str(p) for p in port.rglob('*')), before)   # (nothing cleared)

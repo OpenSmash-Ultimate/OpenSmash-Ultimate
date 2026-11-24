@@ -21,7 +21,7 @@ class Busy(unittest.TestCase):
         self.assertTrue(os_mods.recomp_line_busy(self.line(self.root), self.root))
 
     def test_another_install_building(self):
-        other = os.path.normcase(os.path.abspath(os.path.join(os.sep, "games", "WindowSmash")))
+        other = os.path.normcase(os.path.abspath(os.path.join(os.sep, "games", "OtherCopy")))
         self.assertFalse(os_mods.recomp_line_busy(self.line(other), self.root))
 
     def test_not_a_build(self):

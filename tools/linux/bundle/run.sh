@@ -6,7 +6,7 @@
 # (--online: the game reads those files itself too, so the settings menu's changes count when it
 # starts itself again.)
 here="$(dirname "$(readlink -f "$0")")"
-cd "${SSBU_GAME_DIR:-$here}" || exit 1   # (a WindowSmash folder built on Linux: see scripts/common.sh)
+cd "${SSBU_GAME_DIR:-$here}" || exit 1   # (an OpenSmash folder built on Linux: see scripts/common.sh)
 . "$here/scripts/common.sh"
 find_game_data || exit 1
 check_libraries || exit 1

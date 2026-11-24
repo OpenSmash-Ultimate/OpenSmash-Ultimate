@@ -44,6 +44,8 @@ static class ReferenceImages
             // The Online tab's rows follow OpenSmash.Core.OnlineSettings: the official lobby by default, its rows only (the
             // name and the server region: Europe, North America East).
             if(reference=="settings-online"&&x>=100&&x<1360&&y>=246&&y<760)continue;
+            // The plugins page's description names the mod manager by its name now, not the one captured here.
+            if(reference=="plugins"&&x>=100&&x<1340&&y>=196&&y<266)continue;
             // Upstream's Remap a controller row comes after controllers.ini.
             if(reference=="settings-controllers"&&x>=100&&x<1340&&y>=553)continue;
             if(!a.Slice(y*expected.RowBytes+x*4,4).SequenceEqual(b.Slice(y*actual.RowBytes+x*4,4)))differences++;

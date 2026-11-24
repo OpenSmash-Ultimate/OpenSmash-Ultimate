@@ -23,7 +23,7 @@ program loads at start (tools/game_dll.py): the program is then the runtime alon
   <out>/codecs/    libopus.a, libvpx.a
 Incremental: a file is compiled again when its source is newer than its object, and a game object
 also when its C is not the file it was compiled from (obj/game_sources.tsv records each one's size
-and time: a module dir can hold older C than its objects, as one an earlier WindowSmash filled
+and time: a module dir can hold older C than its objects, as one an earlier OpenSmash filled
 with another folder's did) or the
 game's compile command changed (the runtime's: obj/rt/cflags.txt). <out> holds one tree's game
 (port.txt; a tree's own build-mac goes with it when the tree is moved or copied): build another
@@ -214,7 +214,7 @@ def game_command():
 def source_id(path):
     """What tells one version of a generated file from another: its size and time, to the second
     (as kept by a copy to a disk that keeps times to the second). A file of a module dir an earlier
-    WindowSmash filled from another folder's (a hard link, or a copy with its times) can be older
+    OpenSmash filled from another folder's (a hard link, or a copy with its times) can be older
     than the folder's objects, so being newer than the object is not enough."""
     st = os.stat(path)
     return f"{st.st_size}\t{int(st.st_mtime)}"
@@ -637,7 +637,7 @@ def codecs():
     missing = [n for n, ok in (("third_party/opus", codec_libs.have_opus()),
                                ("third_party/libvpx", codec_libs.have_vpx("config-arm64"))) if not ok]
     if missing:
-        raise SystemExit(f"{' and '.join(missing)} not found: this checkout of WindowSmash is incomplete")
+        raise SystemExit(f"{' and '.join(missing)} not found: this checkout of OpenSmash is incomplete")
     return codec_libs.build_static(OUT, CLANG, CFLAGS, AR, jobs=JOBS, log=lambda m: print(m, flush=True))
 
 
@@ -645,12 +645,12 @@ def info_plist(version=None):
     """The app's Info.plist: what macOS knows it by (Game Mode, the network, the screen's resolution)."""
     return {
         "CFBundleDevelopmentRegion": "en",
-        "CFBundleDisplayName": "WindowSmash",
+        "CFBundleDisplayName": "OpenSmash",
         "CFBundleExecutable": "ssbu",
         "CFBundleIconFile": "windowsmash",
         "CFBundleIdentifier": BUNDLE_ID,
         "CFBundleInfoDictionaryVersion": "6.0",
-        "CFBundleName": "WindowSmash",
+        "CFBundleName": "OpenSmash",
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": version or "1.0",
         "CFBundleVersion": version or "1.0",
@@ -658,7 +658,7 @@ def info_plist(version=None):
         "LSMinimumSystemVersion": MIN_MACOS,
         "LSSupportsGameMode": True,
         "NSHighResolutionCapable": True,
-        "NSLocalNetworkUsageDescription": "WindowSmash finds the players of local and online matches on your network, "
+        "NSLocalNetworkUsageDescription": "OpenSmash finds the players of local and online matches on your network, "
                                           "and asks your router (UPnP) to let the other players reach you.",
     }
 

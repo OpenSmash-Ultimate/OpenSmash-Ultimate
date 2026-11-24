@@ -102,11 +102,11 @@ int rt_cpu_message(unsigned needs, unsigned has, char *out, size_t size) {
      * about AVX2, and the installer then goes by the processor's name, which may say AVX2 where a virtual machine
      * has none) */
     if ((has & RT_CPU_V2) == RT_CPU_V2)
-        snprintf(out, size, "This copy of WindowSmash was built for processors with AVX2, and this processor lacks %s. "
+        snprintf(out, size, "This copy of OpenSmash was built for processors with AVX2, and this processor lacks %s. "
                  RT_CPU_AGAIN " (the build for older processors, x86-64-v2). If this message comes back, build it with "
                  "SSBU_ISA=x86-64-v2 set (docs/BUILDING.md, The instruction set).", list);
     else
-        snprintf(out, size, "This processor lacks %s, which WindowSmash needs (at the least SSE4.2 and POPCNT: "
+        snprintf(out, size, "This processor lacks %s, which OpenSmash needs (at the least SSE4.2 and POPCNT: "
                  "x86-64-v2, Intel processors since 2008 and AMD since 2011). It cannot run on this PC.", list);
     return 1;
 }
@@ -123,7 +123,7 @@ void rt_cpu_check(void) {
     if (n > 0 && err && err != INVALID_HANDLE_VALUE)
         WriteFile(err, line, (DWORD)((size_t)n < sizeof line ? (size_t)n : sizeof line - 1), &wrote, NULL);
 #ifndef RT_CPU_TEST   /* (and no box for a test to click away) */
-    MessageBoxA(NULL, text, "WindowSmash", MB_OK | MB_ICONERROR);
+    MessageBoxA(NULL, text, "OpenSmash", MB_OK | MB_ICONERROR);
 #endif
     ExitProcess(5);
 #else   /* (before the C library's own constructors: write, not stdio's stderr) */

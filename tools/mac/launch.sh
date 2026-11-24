@@ -15,7 +15,7 @@
 #   join     the game joining a host's room (or an online lobby)
 #   unlock   tools/unlock_all.py on the game's save, with the game closed
 #   miis     tools/miis.py import: your own Miis into miis/ (launchers/Import Miis.command)
-#   build    tools/build_game.py with WindowSmash's Python (launchers\Build WindowSmash.bat)
+#   build    tools/build_game.py with OpenSmash's Python (as OpenSmash.exe builds on Windows)
 #
 # The game is build-mac/WindowSmash.app, started with open (so macOS treats it as the app it is: its
 # own Dock icon, privacy permissions and Game Mode) from this folder, with dump/modules; its log goes
@@ -31,7 +31,7 @@ gui=0
 # Something to say: in this window, or in a dialog (--gui)
 message() {
     if [ "$gui" = 1 ]; then
-        osascript - "${2:-WindowSmash}" "$1" >/dev/null 2>&1 <<'EOF'
+        osascript - "${2:-OpenSmash}" "$1" >/dev/null 2>&1 <<'EOF'
 on run argv
     activate
     display alert (item 1 of argv) message (item 2 of argv) buttons {"OK"} default button "OK"
@@ -56,7 +56,7 @@ ask() {
 on run argv
     activate
     try
-        set r to display dialog (item 1 of argv) default answer (item 2 of argv) with title "WindowSmash" buttons {"Cancel", "OK"} default button "OK" cancel button "Cancel"
+        set r to display dialog (item 1 of argv) default answer (item 2 of argv) with title "OpenSmash" buttons {"Cancel", "OK"} default button "OK" cancel button "Cancel"
         return "=" & text returned of r
     on error number -128
         return ""
@@ -78,7 +78,7 @@ choose_one() {
     answer=$(osascript - "$@" 2>/dev/null <<'EOF'
 on run argv
     activate
-    set r to choose from list (items 3 thru -1 of argv) with prompt (item 1 of argv) with title "WindowSmash" default items {item 2 of argv}
+    set r to choose from list (items 3 thru -1 of argv) with prompt (item 1 of argv) with title "OpenSmash" default items {item 2 of argv}
     if r is false then return ""
     return "=" & item 1 of r
 end run
@@ -338,7 +338,7 @@ mode_join() {
     follow
 }
 
-# $py: WindowSmash's Python (deps/venv, which the installer makes: 3.10 or newer, as arm64), or a
+# $py: OpenSmash's Python (deps/venv, which the installer makes: 3.10 or newer, as arm64), or a
 # message saying how to get it
 tools_python() {
     py=deps/venv/bin/python
@@ -346,9 +346,9 @@ tools_python() {
         return 0
     fi
     if [ -x "$py" ]; then
-        fail "WindowSmash's Python (deps/venv) is one the tools cannot use (they need Python 3.10 or newer, as arm64): double-click Install WindowSmash.command, which makes it again."
+        fail "OpenSmash's Python (deps/venv) is one the tools cannot use (they need Python 3.10 or newer, as arm64): double-click Install WindowSmash.command, which makes it again."
     fi
-    fail "WindowSmash's Python (deps/venv) is not set up yet: double-click Install WindowSmash.command, which sets everything up."
+    fail "OpenSmash's Python (deps/venv) is not set up yet: double-click Install WindowSmash.command, which sets everything up."
 }
 
 mode_unlock() {

@@ -66,7 +66,7 @@ def sdk_version(sdk):
 
 def old_sdk(version, sdk):
     """What to do about an SDK older than MIN_SDK."""
-    return (f"the macOS SDK is {version[0]}.{version[1]} ({sdk}), and WindowSmash needs the macOS {MIN_SDK[0]} SDK or newer: "
+    return (f"the macOS SDK is {version[0]}.{version[1]} ({sdk}), and OpenSmash needs the macOS {MIN_SDK[0]} SDK or newer: "
             "update the Command Line Tools in System Settings > General > Software Update (on macOS 14, update macOS to "
             "14.5 or newer first), or install Command Line Tools for Xcode 16 or newer from "
             "https://developer.apple.com/download/all/"

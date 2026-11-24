@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WindowSmash on Linux in one go: it gets the newest WindowSmash, installs what the build needs
+# OpenSmash on Linux in one go: it gets the newest OpenSmash, installs what the build needs
 # from your distribution (sudo asks for your password), finds your game files, and builds the
 # game (an hour to a few, the first time). Run it from a terminal in this folder:
 #
@@ -23,7 +23,7 @@
     }
     py=$(find_python)
     if [ -z "$py" ]; then
-        echo "Setting up WindowSmash needs Python 3.10 or newer: installing it (sudo asks for your password)."
+        echo "Setting up OpenSmash needs Python 3.10 or newer: installing it (sudo asks for your password)."
         if [ -e /run/ostree-booted ] && command -v rpm-ostree >/dev/null 2>&1; then   # (an image-based system)
             sudo rpm-ostree install --idempotent --allow-inactive --apply-live python3
         elif command -v apt-get >/dev/null 2>&1; then

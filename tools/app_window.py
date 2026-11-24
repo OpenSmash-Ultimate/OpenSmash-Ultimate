@@ -1,4 +1,4 @@
-"""How a local page (WindowSmash Mods, the OpenSmash Launcher for Linux and macOS) opens as a window of its own on
+"""How a local page (OpenSmash Mods, the OpenSmash Launcher for Linux and macOS) opens as a window of its own on
 Linux and macOS: a Chromium-family browser's app mode (--app=: no address bar, no tabs), installed from the
 distribution or as a Flatpak (Bazzite's, SteamOS's and Fedora Atomic's browsers are Flatpaks, not on PATH); full
 screen in Steam's Game Mode, where Firefox's kiosk mode will do too. None: the default browser, in a tab

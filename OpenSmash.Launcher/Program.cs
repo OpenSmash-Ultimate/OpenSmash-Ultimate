@@ -101,7 +101,7 @@ namespace OpenSmash.Launcher
 
             UiLocale.Initialize(repo);
 
-            // No build yet (or --installer): Install WindowSmash comes first.
+            // No build yet (or --installer): Install OpenSmash comes first.
             if (!WindowSmash.IsBuilt(repo) || args.Contains("--installer", StringComparer.OrdinalIgnoreCase))
             {
                 LauncherForm.NameReleaseForInstaller(repo);   // (v0.5.0: a release's install takes its prebuilt runtime)
@@ -147,7 +147,7 @@ namespace OpenSmash.Launcher
 
     }
 
-    // What Install WindowSmash.bat and Play SSBU.bat do, so the window and those files start the same game.
+    // What the setup and Play SSBU.bat do, so the window and those files start the same game.
     static class WindowSmash
     {
         static readonly string[] ClearedVars =

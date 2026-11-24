@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Sets WindowSmash up on this PC in one go: what "OpenSmash.exe" runs.
+Sets OpenSmash up on this PC in one go: what "OpenSmash.exe" runs.
 
 .DESCRIPTION
 Steps, each skipped when it is already done, so running it again carries on where it stopped:
@@ -76,12 +76,12 @@ Prepare the game files (program, fonts, data, DLC, fighters) but stop before the
 .PARAMETER Jobs
 Passed to the build: how many files to compile at a time (default: by the installed RAM).
 .PARAMETER NoUpdate
-Do not look for a newer WindowSmash (the updated installer is started with it).
+Do not look for a newer OpenSmash (the updated installer is started with it).
 .PARAMETER UpdateOnly
 Only bring this folder to the newest commit, then stop. The launcher's Update button uses this so
 setup steps (compiler, game files, build) are not run again.
 .PARAMETER PythonOnly
-Only step 3: WindowSmash's own Python (deps\venv) and its packages, then stop. The launcher uses this
+Only step 3: OpenSmash's own Python (deps\venv) and its packages, then stop. The launcher uses this
 for an install from before deps\venv, one whose venv no longer runs, and after an update.
 .PARAMETER BuildAfterUpdate
 Check build prerequisites and incrementally rebuild the game from the folders saved by the last build.
@@ -159,7 +159,7 @@ if ([string]$env:SSBU_DATA_IN_PLACE -eq '1') { $NeedDiskGb = 45 }
 $MinRamGb = 4        # (below 8 GB the build runs one compile at a time and the game is told to use less memory)
 $LowRamGb = 8
 $FirewallRuleName = 'WindowSmash (ssbu.exe)'
-$UserAgent = 'WindowSmash-installer'
+$UserAgent = 'OpenSmash-installer'
 # Python code that exits 0 when tools\arc.py has a zstd: the zstandard package (any Python), or
 # compression.zstd (3.14 and newer). zstandard is asked first: before 3.14, asking for
 # compression.zstd raises an error instead of answering no (there is no compression package).
@@ -566,7 +566,7 @@ function Get-FirewallRuleCommand {
 }
 
 function Test-PythonVersionText {
-    <# Whether "3.14.6"-like text names a Python WindowSmash can use (3.10 or newer, 3.x). #>
+    <# Whether "3.14.6"-like text names a Python OpenSmash can use (3.10 or newer, 3.x). #>
     param([string]$Text)
     $m = [regex]::Match($Text, '(\d+)\.(\d+)')
     if (-not $m.Success) { return $false }
@@ -606,7 +606,7 @@ function Invoke-Download {
 
 function Expand-Zip {
     <# Expand-Archive, unpacking into a folder that is not there yet, about ten times faster: Windows
-       PowerShell 5.1's took 12.6 s for WindowSmash's ZIP (1,541 files), this 1.1 s. #>
+       PowerShell 5.1's took 12.6 s for OpenSmash's ZIP (1,541 files), this 1.1 s. #>
     param([string]$Zip, [string]$Dest)
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::ExtractToDirectory($Zip, $Dest)
@@ -687,7 +687,7 @@ function Test-PythonCommand {
     }
 }
 
-# ---- step 1: the newest WindowSmash -----------------------------------------------------------------
+# ---- step 1: the newest OpenSmash -----------------------------------------------------------------
 function Invoke-Http {
     <# A GET that answers with its status instead of throwing (a 404 is an answer here, and a thrown
        one would land in install.log as an error): @{Code; Body; Error}. #>
@@ -755,7 +755,7 @@ function Update-GitCheckout {
 }
 
 function Update-FromZip {
-    <# Replaces this folder's WindowSmash files with those of commit $New (GitHub's ZIP of it).
+    <# Replaces this folder's OpenSmash files with those of commit $New (GitHub's ZIP of it).
        Only files whose content changed are written; they get the current time, so the build redoes
        what they feed. Files of commit $Old that $New dropped are removed. Nothing else is touched:
        dump\, build\, save\, deps\, settings and the like are not in the ZIP. #>
@@ -763,13 +763,13 @@ function Update-FromZip {
     $work = Join-Path $Root 'deps\update'
     if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
     New-Item -ItemType Directory -Path $work -Force | Out-Null
-    $zip = Join-Path $work "WindowSmash-$New.zip"
-    Invoke-Download "https://codeload.github.com/$RepoOwner/$RepoName/zip/$New" $zip "WindowSmash $($New.Substring(0, 7))"
+    $zip = Join-Path $work "OpenSmash-$New.zip"
+    Invoke-Download "https://codeload.github.com/$RepoOwner/$RepoName/zip/$New" $zip "OpenSmash $($New.Substring(0, 7))"
     $extract = Join-Path $work 'extract'
     Expand-Zip $zip $extract
     $top = @(Get-ChildItem -LiteralPath $extract -Directory)
     if ($top.Count -ne 1 -or -not (Test-Path -LiteralPath (Join-Path $top[0].FullName 'tools\recomp.py'))) {
-        throw 'The downloaded WindowSmash does not look complete; nothing was changed. Run this again.'
+        throw 'The downloaded OpenSmash does not look complete; nothing was changed. Run this again.'
     }
     $src = $top[0].FullName
     $newFiles = @(Get-ChildItem -LiteralPath $src -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($src.Length + 1).Replace('\', '/') })
@@ -824,7 +824,7 @@ function Update-FromZip {
 
 function Step-Update {
     <# Brings this folder to the newest commit of GitHub's branch. $true when files changed. #>
-    Write-Step '[1/10] Get the newest WindowSmash'
+    Write-Step '[1/10] Get the newest OpenSmash'
     if ($NoUpdate) { Write-Info 'not checking (-NoUpdate)'; return $false }
     if (Test-Path -LiteralPath (Join-Path $Root '.git')) { return (Update-GitCheckout) }
     $local = Get-LocalCommit
@@ -874,12 +874,12 @@ function Step-Update {
     $n = [int]$cmp.Data.ahead_by
     $plural = ''
     if ($n -ne 1) { $plural = 's' }
-    Write-Info "a newer WindowSmash is on GitHub: $n new commit$plural ($short to $($headSha.Substring(0, 7)), $headDate)"
+    Write-Info "a newer OpenSmash is on GitHub: $n new commit$plural ($short to $($headSha.Substring(0, 7)), $headDate)"
     $titles = @($cmp.Data.commits | ForEach-Object { ([string]$_.commit.message -split "`n")[0] } | Where-Object { $_ -notmatch '^Merge (pull request|branch) ' })
     [array]::Reverse($titles)
     foreach ($t in ($titles | Select-Object -First 8)) { Write-Info "  - $t" }
     if ($titles.Count -gt 8) { Write-Info "  ... and $($titles.Count - 8) more" }
-    if ($DryRun) { Write-Would "download it and replace this folder's WindowSmash files (your game files, settings, save and builds stay)"; return $false }
+    if ($DryRun) { Write-Would "download it and replace this folder's OpenSmash files (your game files, settings, save and builds stay)"; return $false }
     return (Update-FromZip $local $headSha $headDate)
 }
 
@@ -889,8 +889,8 @@ function Step-CheckPc {
     $os = Get-CimInstance Win32_OperatingSystem
     $build = [int]$os.BuildNumber
     Write-Info "$($os.Caption) ($($os.Version), $($os.OSArchitecture))"
-    if ($os.OSArchitecture -notmatch '64') { throw 'WindowSmash needs 64-bit Windows; this Windows is not 64-bit.' }
-    if ([version]$os.Version -lt [version]'10.0') { throw 'WindowSmash needs Windows 10 or 11.' }
+    if ($os.OSArchitecture -notmatch '64') { throw 'OpenSmash needs 64-bit Windows; this Windows is not 64-bit.' }
+    if ([version]$os.Version -lt [version]'10.0') { throw 'OpenSmash needs Windows 10 or 11.' }
 
     $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
     $name = ($cpu.Name -replace '\s+', ' ').Trim()
@@ -902,7 +902,7 @@ function Step-CheckPc {
     }
     if ($null -eq $sse42) { $sse42 = Test-Sse42ByName $name }
     if ($sse42 -eq $false) {
-        throw "The processor ($name) has no SSE4.2, which the game needs at the least (x86-64-v2: Intel processors since 2008, AMD since 2011): WindowSmash cannot run on it."
+        throw "The processor ($name) has no SSE4.2, which the game needs at the least (x86-64-v2: Intel processors since 2008, AMD since 2011): OpenSmash cannot run on it."
     }
     $byName = $null -eq $avx2
     if ($byName) { $avx2 = Test-Avx2ByName $name }
@@ -928,7 +928,7 @@ function Step-CheckPc {
     else { Write-Warn "$name - whether it has AVX2 is unknown: the game is built for older processors (x86-64-v2), expected to be slower (with AVX2: docs\BUILDING.md, SSBU_ISA)" }
 
     $ramGb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
-    if ($ramGb -lt $MinRamGb) { throw "This PC has $ramGb GB of RAM; WindowSmash needs at least $MinRamGb GB (8 GB is the least that is comfortable to build with, 16 GB is comfortable)." }
+    if ($ramGb -lt $MinRamGb) { throw "This PC has $ramGb GB of RAM; OpenSmash needs at least $MinRamGb GB (8 GB is the least that is comfortable to build with, 16 GB is comfortable)." }
     if ($ramGb -lt $LowRamGb) {
         # Low memory: one compile at a time (each can take 1-2 GB), so the build fits; slower, but it finishes.
         if (-not $Jobs) { $script:Jobs = 1 }
@@ -948,7 +948,7 @@ function Step-CheckPc {
         $need = Get-DiskNeedGb $NeedDiskGb $already
         Write-Info ("{0:N1} GB free on {1}, {2:N1} GB still needed for the build" -f $free, $drive, $need)
         if ($free -lt $need) {
-            throw ("Only {0:N1} GB are free on {1}, and the build still needs {2:N1} GB there: free at least {3:N1} GB more, or move WindowSmash to a drive with room." -f $free, $drive, $need, [Math]::Max(0.1, $need - $free))
+            throw ("Only {0:N1} GB are free on {1}, and the build still needs {2:N1} GB there: free at least {3:N1} GB more, or move OpenSmash to a drive with room." -f $free, $drive, $need, [Math]::Max(0.1, $need - $free))
         }
     } else {
         Write-Warn "the free space on $drive could not be read; the build needs about $NeedDiskGb GB"
@@ -970,7 +970,7 @@ function Test-VenvBase {
 }
 
 function Find-OwnPython {
-    <# WindowSmash's own Python, if it runs: deps\venv, else deps\python (a PC that had no Python). #>
+    <# OpenSmash's own Python, if it runs: deps\venv, else deps\python (a PC that had no Python). #>
     $venvPy = Join-Path $Root 'deps\venv\Scripts\python.exe'
     if (Test-Path -LiteralPath $venvPy) {
         $v = Test-PythonCommand @($venvPy)
@@ -1018,7 +1018,7 @@ function Test-PythonPackages {
 
 function Step-Python {
     Write-Step '[3/10] Python'
-    # The tools' packages go into a Python of WindowSmash's own (deps\venv, as on Linux and macOS), not into one
+    # The tools' packages go into a Python of OpenSmash's own (deps\venv, as on Linux and macOS), not into one
     # installed on the PC: pip there can need administrator rights, and the launcher could later pick another.
     $found = Find-OwnPython
     if (-not $found) {
@@ -1297,7 +1297,7 @@ function Step-Codecs {
     if ((Test-Path -LiteralPath $opus) -and (Test-Path -LiteralPath $vpx)) {
         Write-Info 'libopus and libvpx are in third_party and are built during the game build: nothing to download'
     } else {
-        Write-Warn 'third_party\opus or third_party\libvpx is missing: the game will build without music or movies (download WindowSmash again to get them)'
+        Write-Warn 'third_party\opus or third_party\libvpx is missing: the game will build without music or movies (download OpenSmash again to get them)'
     }
 }
 
@@ -1384,7 +1384,7 @@ function Show-Wizard {
     [Windows.Forms.Application]::EnableVisualStyles()
 
     $form = New-Object Windows.Forms.Form
-    $form.Text = 'WindowSmash setup'
+    $form.Text = 'OpenSmash setup'
     $form.AutoScaleMode = [Windows.Forms.AutoScaleMode]::Dpi
     $form.AutoScaleDimensions = New-Object Drawing.SizeF(96, 96)
     $form.ClientSize = New-Object Drawing.Size(760, 560)
@@ -1514,7 +1514,7 @@ function Show-Wizard {
         $bad = @()
         foreach ($k in @('Game', 'Keys', 'Firmware')) { if (-not $results[$k].Ok) { $bad += $k } }
         if ($bad.Count -gt 0) {
-            [Windows.Forms.MessageBox]::Show($form, "Please fix: $($bad -join ', ') (see the line under each folder).", 'WindowSmash setup', 'OK', 'Warning') | Out-Null
+            [Windows.Forms.MessageBox]::Show($form, "Please fix: $($bad -join ', ') (see the line under each folder).", 'OpenSmash setup', 'OK', 'Warning') | Out-Null
             return
         }
         if (-not $nameBox.Text.Trim()) { $nameBox.Text = $DefaultName }
@@ -1625,7 +1625,7 @@ function Get-DesktopFolder {
 }
 
 function Test-FirewallRule {
-    <# Whether the rule is there for this folder's ssbu.exe (another WindowSmash folder has its own). #>
+    <# Whether the rule is there for this folder's ssbu.exe (another OpenSmash folder has its own). #>
     param([string]$Exe)
     foreach ($r in @(Get-NetFirewallRule -DisplayName $FirewallRuleName -ErrorAction SilentlyContinue)) {
         $f = $r | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue
@@ -1880,7 +1880,7 @@ function Main {
     $log = Join-Path $Root 'install.log'
     try { Start-Transcript -Path $log -Append | Out-Null } catch { }
     try {
-        Write-Host 'WindowSmash setup' -ForegroundColor Cyan
+        Write-Host 'OpenSmash setup' -ForegroundColor Cyan
         Write-Host "  $Root"
         if ($DryRun) { Write-Host '  dry run: saying what each step would do, doing nothing' -ForegroundColor DarkGray }
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12

@@ -25,7 +25,7 @@
 #define RT_CPU_COUNT  15
 #define RT_CPU_NAMES {"SSE3", "SSSE3", "SSE4.1", "SSE4.2", "POPCNT", "CMPXCHG16B", "LAHF-SAHF", "AVX", "AVX2", "FMA", \
                       "F16C", "BMI1", "BMI2", "LZCNT", "MOVBE"}
-/* x86-64-v2: what WindowSmash needs at the least */
+/* x86-64-v2: what OpenSmash needs at the least */
 #define RT_CPU_V2 (RT_CPU_SSE3 | RT_CPU_SSSE3 | RT_CPU_SSE41 | RT_CPU_SSE42 | RT_CPU_POPCNT | RT_CPU_CX16 | RT_CPU_LAHF)
 
 #endif

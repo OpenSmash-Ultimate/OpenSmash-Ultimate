@@ -1,7 +1,7 @@
 /* Addresses in the game's main module that the test-run tools use (docs/TESTING-RUNS.md): the
  * fight hash, the deterministic mode and the debug match, ported from ssbu-recomp.
  *
- * WindowSmash builds game version 13.0.5 only (host.c game_version_ok, tools/game_version.py),
+ * OpenSmash builds game version 13.0.5 only (host.c game_version_ok, tools/game_version.py),
  * so 13.0.5's addresses are the ones used. Each is written beside its 13.0.4 address because it
  * comes from ssbu-recomp, which ran both versions and wrote every address as 13.0.4's: its GA()
  * gives the running build's address of a 13.0.4 one (ssbu-recomp/runtime/hostrt.c,
@@ -81,14 +81,14 @@ static const GameAddress game_addresses[GA_COUNT] = {
 #undef GAME_ADDR_ROW
 };
 
-/* The address of one of the above in the build WindowSmash runs: GAME_ADDR(FRAME_END). */
+/* The address of one of the above in the build OpenSmash runs: GAME_ADDR(FRAME_END). */
 #define GAME_ADDR(name) (game_addresses[GA_##name].at_13_0_5)
 
 enum { GAME_13_0_4, GAME_13_0_5 };
-#define GAME_BUILD GAME_13_0_5   /* the one WindowSmash builds (tools/game_version.py) */
+#define GAME_BUILD GAME_13_0_5   /* the one OpenSmash builds (tools/game_version.py) */
 
 /* In build `build`, the address of what is at `a` in 13.0.4 (ssbu-recomp's GA()); 0 when that is
- * not known: a code address that is not in the list above. Outside main nothing moved. WindowSmash
+ * not known: a code address that is not in the list above. Outside main nothing moved. OpenSmash
  * runs 13.0.5 only; 13.0.4 maps every address to itself, should it ever take that build too. */
 static inline uint64_t game_addr_in(int build, uint64_t a) {
     if (build == GAME_13_0_4 || a < GAME_MAIN_BASE || a - GAME_MAIN_BASE >= GAME_IMAGE_SIZE) return a;
@@ -97,5 +97,5 @@ static inline uint64_t game_addr_in(int build, uint64_t a) {
         if (game_addresses[i].at_13_0_4 == a) return game_addresses[i].at_13_0_5;
     return 0;
 }
-/* The same in the build WindowSmash runs: for porting ssbu-recomp's GA(0x71...) as it is written. */
+/* The same in the build OpenSmash runs: for porting ssbu-recomp's GA(0x71...) as it is written. */
 static inline uint64_t game_addr(uint64_t at_13_0_4) { return game_addr_in(GAME_BUILD, at_13_0_4); }

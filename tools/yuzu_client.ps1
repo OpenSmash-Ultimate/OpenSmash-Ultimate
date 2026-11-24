@@ -18,7 +18,7 @@ try {
     # GUI passes the password in this child's environment, never in command arguments.
     $guiPassword = if ($Gui) { [string]$env:SSBU_YUZU_PASSWORD } else { '' }
     Remove-Item Env:SSBU_YUZU_PASSWORD -ErrorAction SilentlyContinue
-    if (!(Test-Path -LiteralPath $gameExe)) { throw 'Build OpenSmash first (Build WindowSmash.bat).' }
+    if (!(Test-Path -LiteralPath $gameExe)) { throw 'Build OpenSmash first (run OpenSmash.exe).' }
     # Use the same clock settings for the feature check and the game process.
     $env:SSBU_RB='0'
     $env:SSBU_RUNAHEAD='0'

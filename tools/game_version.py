@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The one game version WindowSmash builds and plays: Super Smash Bros. Ultimate 13.0.5, the
+"""The one game version OpenSmash builds and plays: Super Smash Bros. Ultimate 13.0.5, the
 game's last update. One version for everyone: players can always play together (the online
 lobby groups players by the game's build), and a bug is found and fixed in one game.
 
@@ -49,7 +49,7 @@ def main_build_id(path):
 def needs(what, where=None):
     """The one message for a game that isn't 13.0.5: what was found, and what to do."""
     place = f"in {where}, next to the game" if where else "next to the game"
-    return (f"WindowSmash needs version {REQUIRED} of the game, and {what}. Put the game's {REQUIRED} update "
+    return (f"OpenSmash needs version {REQUIRED} of the game, and {what}. Put the game's {REQUIRED} update "
             f"(an .nsp file) {place}.")
 
 
@@ -78,8 +78,8 @@ def scan_problem(program):
     if version is None or version == REQUIRED:
         return None
     if program.get("kind") == "update":
-        return (f"WindowSmash needs version {REQUIRED}, and this is the game's update {version}: put the {REQUIRED} "
+        return (f"OpenSmash needs version {REQUIRED}, and this is the game's update {version}: put the {REQUIRED} "
                 "update (.nsp) in this folder instead.")
     what = "an early release of the game" if version == EARLY else f"the game at {version}"
-    return (f"WindowSmash needs version {REQUIRED}, and this is {what} without its {REQUIRED} update: put that "
+    return (f"OpenSmash needs version {REQUIRED}, and this is {what} without its {REQUIRED} update: put that "
             "update (.nsp) in this folder.")

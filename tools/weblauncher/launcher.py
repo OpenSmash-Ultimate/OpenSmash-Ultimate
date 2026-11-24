@@ -2,10 +2,10 @@
 """OpenSmash Launcher for Linux (Steam Deck / SteamOS / Bazzite Game Mode too) and macOS: what OpenSmash.exe
 (OpenSmash.Launcher/, Windows only) does, as a page in the browser - a small web server on this computer
 (127.0.0.1 only, a random port and key), Python's standard library only, so it runs before the setup has
-made WindowSmash's own Python.
+made OpenSmash's own Python.
 
 Usage:
-  launcher.py [--tree <WindowSmash folder>] [--port N] [--no-window] [--fullscreen]
+  launcher.py [--tree <OpenSmash folder>] [--port N] [--no-window] [--fullscreen]
 
 opensmash-launcher.sh (Linux) and OpenSmash Launcher.command (macOS) start it. The page asks /api/...; the
 work is done by the same programs the Windows launcher and the command-line guides run:
@@ -19,7 +19,7 @@ work is done by the same programs the Windows launcher and the command-line guid
                     turned-on mods need one (os_mods.py build)
   settings          display.ini, controllers.ini, online_server.txt, online_name.txt, online_direct.txt,
                     launcher.ini: the files and values OpenSmash.exe writes (runtime/config_folder.h's folder)
-  mods              WindowSmash Mods, tools/modmanager/server.py, started with WindowSmash's Python: its
+  mods              OpenSmash Mods, tools/modmanager/server.py, started with OpenSmash's Python: its
                     page opens from here, with a way back
 
 The page works with a mouse, a keyboard (arrows, Enter, Escape) and a game pad (tools/modmanager/ui/gamepad.js:
@@ -48,7 +48,7 @@ UI = os.path.join(HERE, "ui")
 sys.path.insert(0, HERE)
 import discord_account   # noqa: E402  (sign-in with Discord: the token the game and OpenSmash.exe share; the GSP)
 import server_region     # noqa: E402  (the official lobbies, one a region: config/server_region.txt)
-SHARED_UI = os.path.join(TOOLS, "modmanager", "ui")   # (gamepad.js, icon.svg: shared with WindowSmash Mods)
+SHARED_UI = os.path.join(TOOLS, "modmanager", "ui")   # (gamepad.js, icon.svg: shared with OpenSmash Mods)
 HOST = "linux" if sys.platform.startswith("linux") else "macos" if sys.platform == "darwin" else "windows"
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"}
@@ -405,7 +405,7 @@ def write_settings(root, values):
 
 # ---- where things are -------------------------------------------------------------------------------------------
 def venv_python(root):
-    """WindowSmash's own Python (the setup makes it: deps/venv; macOS's installer can also unpack one into
+    """OpenSmash's own Python (the setup makes it: deps/venv; macOS's installer can also unpack one into
     deps/python), or None before the setup."""
     for p in (os.path.join(root, "deps", "venv", "bin", "python"), os.path.join(root, "deps", "venv", "Scripts", "python.exe"),
               os.path.join(root, "deps", "python", "bin", "python3")):
@@ -684,10 +684,10 @@ class App:
         return venv_python(self.root) or sys.executable
 
     def os_mods(self, *args, timeout=600):
-        """tools/os_mods.py with WindowSmash's Python: (exit code, its output)."""
+        """tools/os_mods.py with OpenSmash's Python: (exit code, its output)."""
         py = venv_python(self.root)
         if not py:
-            raise Error("The mods need WindowSmash's Python: run the setup first")
+            raise Error("The mods need OpenSmash's Python: run the setup first")
         r = subprocess.run([py, os.path.join(self.root, "tools", "os_mods.py"), *args], cwd=self.root, capture_output=True,
                            text=True, encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL)
         return r.returncode, r.stdout + r.stderr
@@ -806,10 +806,10 @@ class App:
         return self.start_game("online" if mode == "vanilla" else mode)
 
     def open_mods(self, back):
-        """WindowSmash Mods' server (one per folder: a running one is reused), its page's address with a way back here."""
+        """OpenSmash Mods' server (one per folder: a running one is reused), its page's address with a way back here."""
         py = venv_python(self.root)
         if not py:
-            raise Error("The mod manager needs WindowSmash's Python: run the setup first")
+            raise Error("The mod manager needs OpenSmash's Python: run the setup first")
         info = None
         try:
             with open(os.path.join(self.root, "dump", "mods", "server.json"), encoding="utf-8") as f:
@@ -831,7 +831,7 @@ class App:
             try:
                 info = json.loads(line)
             except ValueError:
-                raise Error("WindowSmash Mods did not start: dump/mods/manager.log says why") from None
+                raise Error("OpenSmash Mods did not start: dump/mods/manager.log says why") from None
         url = info["url"]
         if back:
             url += "&back=" + urllib.parse.quote(back, safe="")

@@ -2,7 +2,7 @@
 
 [← README](../README.md) · [Setup guide](BUILDING.md) · [Multiplayer](MULTIPLAYER.md) · [DLC and unlocks](DLC-AND-UNLOCKS.md)
 
-Everything about playing once the game is built: how to start it, the controls, the settings, and where WindowSmash keeps your save, screenshots and problem reports.
+Everything about playing once the game is built: how to start it, the controls, the settings, and where OpenSmash keeps your save, screenshots and problem reports.
 
 ## Contents
 
@@ -20,19 +20,19 @@ Everything about playing once the game is built: how to start it, the controls, 
 
 ## Starting the game
 
-Everything starts from a launcher. `OpenSmash.exe` is in the WindowSmash folder; the others are in its `launchers` folder. Double-click the one you want:
+Everything starts from a launcher. `OpenSmash.exe` is in the OpenSmash folder; the others are in its `launchers` folder. Double-click the one you want:
 
 | Launcher | What it does |
 | :--- | :--- |
-| **`OpenSmash.exe`** | Opens the WindowSmash window (below), then starts the game and joins the online lobby, so Local Wireless shows everyone's rooms. Quickplay and Local Wireless room matches are played with rollback netcode when the other player has it too ([how](MULTIPLAYER.md#rollback-in-online-mode)). If the lobby doesn't answer, the game plays offline. |
-| **`OpenSmash.exe`** with <kbd>Shift</kbd> held | Opens the WindowSmash window even when you've ticked **Start the game directly next time**. |
+| **`OpenSmash.exe`** | Opens the OpenSmash window (below), then starts the game and joins the online lobby, so Local Wireless shows everyone's rooms. Quickplay and Local Wireless room matches are played with rollback netcode when the other player has it too ([how](MULTIPLAYER.md#rollback-in-online-mode)). If the lobby doesn't answer, the game plays offline. |
+| **`OpenSmash.exe`** with <kbd>Shift</kbd> held | Opens the OpenSmash window even when you've ticked **Start the game directly next time**. |
 | the launcher's **Lobby: Offline** setting | Starts the game without going online. |
 | **`launchers\Host SSBU Netplay.bat`** | Starts the game as the host of a private room ([multiplayer guide](MULTIPLAYER.md#private-room)). |
 | **`launchers\Join SSBU Netplay.bat`** | Starts the game and joins someone's private room. |
 | **`launchers\Unlock All Fighters.bat`** | Unlocks every base-game fighter on your save. Close the game first ([DLC and unlocks](DLC-AND-UNLOCKS.md#unlock-every-base-game-fighter)). |
 | **`python tools\shader_aot.py`** (the launcher also offers it after the install) | Prepares all of the game's shaders ahead of time ([below](#shaders-and-first-time-stutter)). |
 | **`python tools\build_game.py`** | Builds the game from your files, when the tools are already installed ([setup guide](BUILDING.md#shortcut-build_gamepy)). |
-| **`launchers\Configure Game Data.bat`** | Points WindowSmash at your game data and fonts ([setup guide, step 10](BUILDING.md#step-10-connect-your-game-data)). |
+| **`launchers\Configure Game Data.bat`** | Points OpenSmash at your game data and fonts ([setup guide, step 10](BUILDING.md#step-10-connect-your-game-data)). |
 
 `OpenSmash.exe` first opens a small window that shows the game version (13.0.5) and changes the most used settings: your online name and lobby, the window and frame pacing, the render scale, the graphics card, and which player the keyboard is. **Play** saves what you changed and starts the game; **Close** changes nothing. It edits the same files as the in-game [settings](#settings), keeping their comments. Tick **Start the game directly next time** to skip the window; hold <kbd>Shift</kbd> while you start `OpenSmash.exe` to see it again.
 
@@ -68,7 +68,7 @@ The **Mods** page lists every installed mod with its own switch: the same switch
 
 **Reloading a mod's files in training** (for mod makers) is off by default. Turn it on with `hot_reload_mod_assets = 1` in the `[opensmash]` section of `config\launcher.ini` before the game starts. In training mode, **L + R + A** (the training reset) then also copies the mod files you changed on disk into the match: animations, parameters and material values change at once. A file that grew past the size the match loaded, and a model or texture the graphics card already has, need a new match.
 
-The settings are kept in files: `display.ini`, `controllers.ini` and the `online_*.txt` files in the **`config`** folder inside the WindowSmash folder. (Older versions kept them in the WindowSmash folder itself; the first start of a newer one copies them into `config` once, and from then on the copies left in the WindowSmash folder are not read.) You can still edit those files by hand, and the settings keep your comments in them. Some things are only in the files, such as settings for a whole kind of controller ([below](#controllersini)).
+The settings are kept in files: `display.ini`, `controllers.ini` and the `online_*.txt` files in the **`config`** folder inside the OpenSmash folder. (Older versions kept them in the OpenSmash folder itself; the first start of a newer one copies them into `config` once, and from then on the copies left in the OpenSmash folder are not read.) You can still edit those files by hand, and the settings keep your comments in them. Some things are only in the files, such as settings for a whole kind of controller ([below](#controllersini)).
 
 ## Controls
 
@@ -113,7 +113,7 @@ Up to **eight players** can use pads at once: Xbox, PlayStation, Switch Pro, Gam
 
 - Each pad that connects becomes the **next free player**. A pad that's unplugged and plugged back in gets its player back.
 - Buttons go by **position**, as on a Switch controller. On an Xbox controller, the right-hand button (**B**) is the Switch's **A**, and the bottom one (**A**) is the Switch's **B**. To use the printed letters instead, or to change any button, open the [settings](#settings) and go to **Controllers**.
-- The settings' **Controllers** page, or <kbd>F2</kbd> in the game, shows which pads WindowSmash found and which player each one is.
+- The settings' **Controllers** page, or <kbd>F2</kbd> in the game, shows which pads OpenSmash found and which player each one is.
 
 > [!NOTE]
 > PlayStation, Switch Pro and most other pads need `SDL3.dll` next to `build\ssbu.exe`. [Step 12 of the setup guide](BUILDING.md#step-12-optional-support-more-kinds-of-controllers) adds it. Without it, only Xbox (XInput) pads work, as players 1–4.
@@ -124,7 +124,7 @@ These work, each port or controller as its own player:
 
 - **Nintendo's GameCube controller adapter** (the one for Wii U and Switch), or another brand's adapter (Mayflash and others) set to its **Wii U** mode. Windows' own driver and the WinUSB driver Dolphin's setup installs with Zadig both work.
 - Another brand's adapter in its **PC** mode.
-- The **Nintendo Switch Online GameCube controller** (the one for Switch 2), on a **USB cable**. Its Bluetooth doesn't work with WindowSmash.
+- The **Nintendo Switch Online GameCube controller** (the one for Switch 2), on a **USB cable**. Its Bluetooth doesn't work with OpenSmash.
 
 They play as GameCube controllers, as they do on a Switch:
 
@@ -148,7 +148,7 @@ Any other pad can use the game's GameCube controls too: set `style = gamecube` f
 
 ### controllers.ini
 
-The first time the game starts, it writes **`controllers.ini`** into the WindowSmash folder's `config` folder (`config\controllers.ini`: a `controllers.ini` left beside `OpenSmash.exe` by an older version is no longer read). The [settings](#settings) change it for you; you can also open it in Notepad (**Controllers → Open controllers.ini** opens it). Every setting is explained inside the file. Changes made by hand apply the next time the game starts, and deleting the file brings back the defaults.
+The first time the game starts, it writes **`controllers.ini`** into the OpenSmash folder's `config` folder (`config\controllers.ini`: a `controllers.ini` left beside `OpenSmash.exe` by an older version is no longer read). The [settings](#settings) change it for you; you can also open it in Notepad (**Controllers → Open controllers.ini** opens it). Every setting is explained inside the file. Changes made by hand apply the next time the game starts, and deleting the file brings back the defaults.
 
 | Setting | What it does | Default |
 | :--- | :--- | :--- |
@@ -205,14 +205,14 @@ To start the game from Steam (Big Picture, or Steam Input for a controller the g
 
 1. In Steam, choose **Games → Add a Non-Steam Game to My Library**, tick any program and click **Add Selected Programs**.
 2. Right-click it in your library and choose **Properties**. Set:
-   - **Target:** the game itself, with quotes: `"C:\WindowSmash\build\ssbu.exe"`
-   - **Start In:** the WindowSmash folder: `"C:\WindowSmash"`
+   - **Target:** the game itself, with quotes: `"C:\OpenSmash\build\ssbu.exe"`
+   - **Start In:** the OpenSmash folder: `"C:\OpenSmash"`
    - **Launch options:** `dump\modules --status 30 --online` (leave out `--online` to play offline)
 3. Rename it to *Super Smash Bros. Ultimate* if you like.
 
-Use your own folder in place of `C:\WindowSmash`. Started this way the game skips the small WindowSmash window, and its log is not written to `build\play.log`. Steam's keyboard settings can't change the keyboard's keys: change them in the game ([Controls](#controls)).
+Use your own folder in place of `C:\OpenSmash`. Started this way the game skips the small OpenSmash window, and its log is not written to `build\play.log`. Steam's keyboard settings can't change the keyboard's keys: change them in the game ([Controls](#controls)).
 
-On a Steam Deck or another Linux PC, add `run.sh` the same way, with **Start In** set to the WindowSmash folder ([Linux](LINUX.md)).
+On a Steam Deck or another Linux PC, add `run.sh` the same way, with **Start In** set to the OpenSmash folder ([Linux](LINUX.md)).
 
 ## Window and display
 
@@ -240,11 +240,11 @@ The first start also writes **`display.ini`**, which sets how the game starts. T
 | `timer` | Where a fight's timer is drawn: `right` (the game's own place, the top-right corner of the picture), `center`, `left` or `hidden`, at any picture shape. Display page: **Timer position**, without a restart; `SSBU_TIMER` overrides it. | `right` |
 | `renderer` | `auto`: Vulkan on an AMD, NVIDIA or Intel graphics card (every pipeline made behind the loading screen and kept in its own cache: no stutter the first time each effect shows), Direct3D 11 on any other. `direct3d11` or `vulkan`: that one on any card. If Vulkan cannot start, or stopped the game in its first seconds twice in a row, Direct3D 11 draws and `build\play.log` says why (a `[gfx] renderer = ...` line). Vulkan's shaders come from `ssbu_glslang.dll` beside the game, which the build makes and which needs the Visual C++ runtime. `d3d11` in an older `display.ini` means `auto`. The settings' Display page has it as **Renderer**; `SSBU_RENDERER` overrides it. Read when the game starts. | `auto` |
 
-A `display.ini` written by an older WindowSmash has no `gpu`, `render_scale` or `renderer` line; the game then uses `auto`, `1` and `auto`. Add the line yourself to use it, or delete `display.ini` to get a new one with every setting. `render_scale` is read when the game starts: change it, then start the game again.
+A `display.ini` written by an older OpenSmash has no `gpu`, `render_scale` or `renderer` line; the game then uses `auto`, `1` and `auto`. Add the line yourself to use it, or delete `display.ini` to get a new one with every setting. `render_scale` is read when the game starts: change it, then start the game again.
 
 ## Shaders and first-time stutter
 
-The game's graphics programs (*shaders*) are prepared the first time each one is used, so a new effect can show a moment late, or stutter, the first time you see it. WindowSmash keeps every prepared shader in `dump\shadercache\` and loads them in the background each time the game starts, so each stutter happens only once.
+The game's graphics programs (*shaders*) are prepared the first time each one is used, so a new effect can show a moment late, or stutter, the first time you see it. OpenSmash keeps every prepared shader in `dump\shadercache\` and loads them in the background each time the game starts, so each stutter happens only once.
 
 To prepare them all before playing, double-click **`python tools\shader_aot.py`** (the launcher also offers it after the install). It runs at low priority so the PC stays usable, and shows a progress bar with the time left. A first run compiles about 40,000 shaders: about half an hour on a 16-thread processor, an hour or two on a 4- to 8-thread one. You can close it at any time and start it again later; what's done stays done, so a later run takes minutes. It needs Python and Visual Studio, as for [building](BUILDING.md).
 
@@ -260,11 +260,11 @@ If matches run slowly on a PC that should manage them (press <kbd>F1</kbd> for t
 - **A laptop is drawing with its processor's graphics.** With two graphics chips, the game takes the NVIDIA or AMD one by itself. Check the `[gfx] drawing with` line near the top of `build\play.log`, and see `gpu` in [`display.ini`](#window-and-display).
 - **Prepare Shaders is still running.** It uses most of the processor; let it finish, or close it while you play.
 - **NVIDIA's shader cache is off, or full.** In NVIDIA Control Panel → *Manage 3D settings*, set **Shader Cache Size** to *Driver default* or larger (not *Disabled*). Without it, the graphics driver redoes its part of every shader each time the game starts. The game prepares more than ten thousand shaders: if the start's preparation stays slow from one start to the next, set it to *10 GB* or *Unlimited* - a cache file that is nearly full loses entries it already had (measured by the SCSKiller project on NVIDIA's D3D12 cache: a 4 GiB file at 94-97 % full).
-- **Windows uses a slow system timer.** Some "gaming tweaks" set Windows to time everything with an old, slow timer (the HPET). WindowSmash notices and works around it, and says so near the top of `build\play.log`: a `[clock]` line ending in *slow*. Other programs stay slower, though; to undo the tweak, run `bcdedit /deletevalue useplatformclock` in a Command Prompt opened as administrator, then restart the PC.
+- **Windows uses a slow system timer.** Some "gaming tweaks" set Windows to time everything with an old, slow timer (the HPET). OpenSmash notices and works around it, and says so near the top of `build\play.log`: a `[clock]` line ending in *slow*. Other programs stay slower, though; to undo the tweak, run `bcdedit /deletevalue useplatformclock` in a Command Prompt opened as administrator, then restart the PC.
 
 ## Your own Miis
 
-The game lists your own Miis wherever it lists Miis, such as **Games & More → Mii Fighters**, after its six default ones. WindowSmash has no Mii editor of its own, so you make them somewhere else and import them:
+The game lists your own Miis wherever it lists Miis, such as **Games & More → Mii Fighters**, after its six default ones. OpenSmash has no Mii editor of its own, so you make them somewhere else and import them:
 
 1. Make your Miis in an emulator's Mii editor (Ryujinx's **Mii Edit Applet**, yuzu's or its forks' **Open Mii Editor**, in their menus), or on Mii Studio, or bring a Mii file.
 2. Double-click **`launchers\Import Miis.bat`** (on a Mac, `launchers/Import Miis.command`). It imports the Miis of every emulator it finds on this PC, then lets you paste Mii Studio links: on Mii Studio, right-click your Mii's picture, choose **Copy image address**, and paste it. To import Mii files instead, drop them on `Import Miis.bat`: `.charinfo`, `.nfsd` and `.nfcd` from a Switch, `.ffsd` and `.cfsd` from a 3DS or Wii U (not QR codes), or an emulator's `MiiDatabase.dat`.
@@ -280,7 +280,7 @@ Videos made from replays are not kept yet: the game can't make one.
 
 ## Where your files are
 
-All of these are in the WindowSmash folder:
+All of these are in the OpenSmash folder:
 
 | What | Where |
 | :--- | :--- |
@@ -298,14 +298,14 @@ Your save is written as the console writes it: what the game saves reaches the `
 
 If `build\play.log` says *could not finish applying a save*, your PC would not let the game change a file in the `save` folder: another program holds it open, or the folder belongs to another user (after running the game with `sudo`, say), or your save's own folder is a link to another drive. Nothing is lost, but the game can't save, or load its save, until that is fixed. Close the game, fix it (make the `save` folder and everything in it yours; to keep your save on another drive, link the whole `save` folder, not the folder inside it), then start the game: it finishes the save first.
 
-The game's own files (`dump\`, with the shader cache) and the compiled game (`build\`) take tens of GB. To put them on another drive, close the game and the launcher, then run `python tools\data_location.py --move D:\OpenSmash` (any empty folder). They move there, and a link stays in their place, so nothing else changes. `python tools\data_location.py` says where they are; the same `--move` with the WindowSmash folder brings them back.
+The game's own files (`dump\`, with the shader cache) and the compiled game (`build\`) take tens of GB. To put them on another drive, close the game and the launcher, then run `python tools\data_location.py --move D:\OpenSmash` (any empty folder). They move there, and a link stays in their place, so nothing else changes. `python tools\data_location.py` says where they are; the same `--move` with the OpenSmash folder brings them back.
 
 > [!TIP]
 > **Back up your save** now and then: copy the `save` folder somewhere safe while the game is closed. To restore it, close the game and put the copy in place of the `save` folder.
 
 ## Problem reports
 
-When the game crashes, or freezes with no new picture for five seconds, WindowSmash writes a report into the **`reports\`** folder:
+When the game crashes, or freezes with no new picture for five seconds, OpenSmash writes a report into the **`reports\`** folder:
 
 | File | Written when |
 | :--- | :--- |
@@ -318,4 +318,4 @@ When you report a problem, attach the `.txt` report and the end of `build\play.l
 
 If the game doesn't start at all, check, in this order: the game data path ([step 10](BUILDING.md#step-10-connect-your-game-data)), that the game is version 13.0.5 (a game built from another version says so when it starts: [what to do](UPDATES.md#a-folder-built-from-another-version)), the six font files, that your processor has SSE4.2 at the least (a game built for AVX2 says so when it starts on a processor without it, and what to do: [the instruction set](BUILDING.md#the-instruction-set)), and your graphics driver.
 
-WindowSmash is experimental. That it starts doesn't mean every fighter, stage, mode or online match works.
+OpenSmash is experimental. That it starts doesn't mean every fighter, stage, mode or online match works.

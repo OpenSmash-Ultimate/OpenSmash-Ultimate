@@ -81,7 +81,7 @@ def load_record(p):
         return {}
 
 
-STANDARD = ("skyline", "plugins")   # (<tree>/skyline/plugins: the community plugins WindowSmash ships, run as they are)
+STANDARD = ("skyline", "plugins")   # (<tree>/skyline/plugins: the community plugins OpenSmash ships, run as they are)
 
 
 def standard(tree):
@@ -492,7 +492,7 @@ def nro_build_id(path):
 def plugin_state(tree, mod, rels):
     """[{"file", "module", "built"}] of a mod's code plugins (`rels`: paths in its folder) the game
     runs: built is whether the game's program has it compiled in (None: never recompiled - the mod
-    was not turned on and applied yet). The plugins WindowSmash provides itself are left out."""
+    was not turned on and applied yet). The plugins OpenSmash provides itself are left out."""
     record = load_record(Paths(tree))
     out = []
     for rel in rels:

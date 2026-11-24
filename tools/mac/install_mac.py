@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""WindowSmash on a Mac in one go: what Install WindowSmash.command runs (the macOS counterpart of
-Install WindowSmash.bat, tools/install_windowsmash.ps1, and of tools/linux/install_linux.py, whose
+"""OpenSmash on a Mac in one go: what Install WindowSmash.command runs (the macOS counterpart of
+OpenSmash.exe, tools/install_windowsmash.ps1, and of tools/linux/install_linux.py, whose
 platform-neutral helpers it uses: the update, the downloads, the folder checks).
 
 Usage: Install WindowSmash.command [--game <dir>] [--keys <dir>] [--firmware <dir> | --no-firmware] [--online-name <name>]
                                    [--jobs N] [--skip-build] [--no-update] [--no-wizard] [--yes] [--dry-run]
 
-  1. update     the newest WindowSmash from GitHub (the BRANCH below): a git checkout of it is
+  1. update     the newest OpenSmash from GitHub (the BRANCH below): a git checkout of it is
                 pulled; a ZIP download gets the files of the newer commit (tools/source_version.txt
                 says which commit it is), then this installer starts again as the new version
   2. this Mac   Apple silicon (not under Rosetta), macOS 14 or newer, the memory, the free space,
@@ -14,7 +14,7 @@ Usage: Install WindowSmash.command [--game <dir>] [--keys <dir>] [--firmware <di
                 is not APFS)
   3. tools      Apple's Command Line Tools (clang, the macOS SDK, git): when they are missing,
                 macOS's own window installs them (xcode-select --install) and this waits
-  4. Python     a Python of WindowSmash's own in deps/venv, with requirements.txt
+  4. Python     a Python of OpenSmash's own in deps/venv, with requirements.txt
   5. SDL3       deps/SDL3/SDL3.framework, out of the newest SDL3-<version>.dmg of SDL's releases
                 on GitHub, checked against the SHA-256 the release lists (window, pads, sound);
                 then tools/build_game.py --check tries everything the build needs
@@ -86,7 +86,7 @@ LAUNCHERS = ["Install WindowSmash.command", "Play SSBU.command", "launchers/Play
 EMULATORS = ("yuzu", "eden", "sudachi", "citron", "suyu", "torzu")   # yuzu and the forks with its layout
 SSBU_TITLES = "01006a800016"   # (Super Smash Bros. Ultimate's title ids: the game's, its update's and DLC's)
 NAME_MAX = 32   # (as the Windows setup window's box)
-TITLE = "WindowSmash setup"
+TITLE = "OpenSmash setup"
 OPTION_LAUNCHER = "Put Play SSBU in ~/Applications (your own Applications folder) and on the Desktop"
 OPTION_FIREWALL = "Let the game through the Application Firewall (asks for your password)"
 
@@ -200,14 +200,14 @@ def location_warnings(root, home, exists=os.path.exists, filesystem=None):
     for name in ("Desktop", "Documents"):
         if inside(root, os.path.join(home, name)) and exists(os.path.join(cloud, "com~apple~CloudDocs", name)):
             out.append(f"this folder is in {name}, which iCloud Drive keeps in sync: it would upload the build too "
-                       "(around 30 GB). Better: move WindowSmash to your home folder (for example ~/WindowSmash) and "
+                       "(around 30 GB). Better: move OpenSmash to your home folder (for example ~/OpenSmash) and "
                        "run it there.")
     if inside(root, cloud):
         out.append("this folder is in iCloud Drive, which would upload the build too (around 30 GB). Better: move "
-                   "WindowSmash to your home folder (for example ~/WindowSmash) and run it there.")
+                   "OpenSmash to your home folder (for example ~/OpenSmash) and run it there.")
     if inside(root, os.path.join(home, "Downloads")):
         out.append("this folder is in Downloads: macOS asks the game (and Terminal) for access to that folder, and "
-                   "cleaning it up would take WindowSmash with it. Better: your home folder, for example ~/WindowSmash.")
+                   "cleaning it up would take OpenSmash with it. Better: your home folder, for example ~/OpenSmash.")
     if filesystem and filesystem.lower() not in ("apfs", "hfs"):
         out.append(f"this disk is formatted {filesystem}, not APFS: the build relies on hard links, file modes and "
                    "case, which it may not keep. An APFS disk (the Mac's own) is better.")
@@ -255,12 +255,12 @@ def launcher_script(root):
     """Contents/MacOS/play: tools/mac/launch.sh of this folder, asking in dialogs instead of in a
     Terminal window (--gui); or, when the folder has gone, a message saying so."""
     return f"""#!/bin/bash
-# {LAUNCHER_NAME}: starts WindowSmash's game, online, from the folder below, as Play SSBU.command does but
+# {LAUNCHER_NAME}: starts OpenSmash's game, online, from the folder below, as Play SSBU.command does but
 # asking in dialogs. Made by Install WindowSmash.command; running that again makes this anew.
 root={shlex.quote(root)}
 if [ ! -f "$root/tools/mac/launch.sh" ]; then
-    osascript - "WindowSmash is not where it was" "{LAUNCHER_NAME} starts the game from $root, which is not there \\
-any more. Double-click Install WindowSmash.command in WindowSmash's folder to make {LAUNCHER_NAME} again." <<'EOF'
+    osascript - "OpenSmash is not where it was" "{LAUNCHER_NAME} starts the game from $root, which is not there \\
+any more. Double-click Install WindowSmash.command in OpenSmash's folder to make {LAUNCHER_NAME} again." <<'EOF'
 on run argv
     activate
     display alert (item 1 of argv) message (item 2 of argv) as critical
@@ -460,7 +460,7 @@ def alert(title, message):
     osascript(ALERT, title, message)
 
 
-# ---- step 1: the newest WindowSmash ------------------------------------------------------------------
+# ---- step 1: the newest OpenSmash ------------------------------------------------------------------
 def make_executable():
     """The launchers runnable by a double-click (a ZIP opened by something other than Archive
     Utility may not keep their modes, and the update keeps those of .sh files only)."""
@@ -471,7 +471,7 @@ def make_executable():
 
 
 def step_update(a):
-    step_header(1, "Get the newest WindowSmash")
+    step_header(1, "Get the newest OpenSmash")
     if os.path.isdir(os.path.join(ROOT, ".git")) and not a.no_update and not developer_dir():
         info("this folder is a git checkout, and git comes with the Command Line Tools (step 3): not updating this time")
         return False
@@ -520,16 +520,16 @@ def step_check_mac():
         raise Stop("This runs under Rosetta (as an Intel program), so the build would be one too. Start Install "
                    "WindowSmash.command again from Finder, or in Terminal with: arch -arm64 /bin/bash \"Install WindowSmash.command\"")
     if machine != "arm64":
-        raise Stop(f"WindowSmash needs a Mac with Apple silicon (M1 or newer); this one has {chip}.")
+        raise Stop(f"OpenSmash needs a Mac with Apple silicon (M1 or newer); this one has {chip}.")
     if version and version < MIN_MACOS:
-        raise Stop(f"WindowSmash needs macOS {MIN_MACOS[0]} (Sonoma) or newer; this Mac has macOS {product}. Update it in "
+        raise Stop(f"OpenSmash needs macOS {MIN_MACOS[0]} (Sonoma) or newer; this Mac has macOS {product}. Update it in "
                    "System Settings > General > Software Update, then run this again.")
     try:
         ram = int(sysctl("hw.memsize")) / 2**30
     except ValueError:
         ram = None
     if ram is not None and ram < MIN_RAM_GB - 0.5:
-        raise Stop(f"This Mac has {ram:.0f} GB of memory; WindowSmash needs at least {MIN_RAM_GB} GB (16 GB is comfortable).")
+        raise Stop(f"This Mac has {ram:.0f} GB of memory; OpenSmash needs at least {MIN_RAM_GB} GB (16 GB is comfortable).")
     if ram is not None:
         info(f"{ram:.0f} GB of memory" + (": enough, but the build will be slow (16 GB is comfortable)" if ram < 15.5 else ""))
     already = sum(il.folder_gb(os.path.join(ROOT, d)) for d in ("dump", "build", "build-mac")
@@ -540,7 +540,7 @@ def step_check_mac():
     if free < need:
         raise Stop(f"Only {free:,.1f} GB are free on the disk with {ROOT}, and the build still needs {need:,.1f} GB there: "
                    f"free at least {max(0.1, need - free):,.1f} GB more (System Settings > General > Storage), or move "
-                   "WindowSmash to a disk with room.")
+                   "OpenSmash to a disk with room.")
     for text in location_warnings(os.path.realpath(ROOT), os.path.realpath(os.path.expanduser("~")),
                                   filesystem=filesystem_of(ROOT)):
         info("note: " + text)
@@ -688,15 +688,15 @@ def step_python(a):
     problem = python_problem(py)
     if problem:
         if a.dry_run:
-            would(f"make a Python of WindowSmash's own in {os.path.relpath(VENV, ROOT)} from {sys.executable}, with requirements.txt")
+            would(f"make a Python of OpenSmash's own in {os.path.relpath(VENV, ROOT)} from {sys.executable}, with requirements.txt")
             return
         if problem != "missing":   # (one made by hand from Apple's /usr/bin/python3 (3.9), say, or an Intel one)
             info(f"{os.path.relpath(VENV, ROOT)} is a Python the tools cannot use ({problem}; they need 3.10 or newer, as arm64): "
                  "making it again")
-        info(f"making a Python of WindowSmash's own in {os.path.relpath(VENV, ROOT)}, from {sys.executable} (touches nothing else)")
+        info(f"making a Python of OpenSmash's own in {os.path.relpath(VENV, ROOT)}, from {sys.executable} (touches nothing else)")
         shutil.rmtree(VENV, ignore_errors=True)
         if subprocess.run([sys.executable, "-m", "venv", VENV]).returncode:
-            raise Stop(f"Python ({sys.executable}) could not make WindowSmash's own in deps/venv (see above). Fix what it "
+            raise Stop(f"Python ({sys.executable}) could not make OpenSmash's own in deps/venv (see above). Fix what it "
                        "says, then run this again.")
         problem = python_problem(py)
         if problem:
@@ -881,7 +881,7 @@ FIRMWARE_OPTIONAL = ("The firmware is optional: the game takes your console's ow
 
 
 def summary(f, checks, name, options, firewall):
-    lines = ["WindowSmash builds the game from these folders. Choose Change… for any that is wrong or empty.", ""]
+    lines = ["OpenSmash builds the game from these folders. Choose Change… for any that is wrong or empty.", ""]
     for key in ("game", "keys", "firmware"):
         ok, text = checks[key]
         none = "(none)" if key == "firmware" else "(none yet)"
@@ -1219,7 +1219,7 @@ def step_firewall(a, files, state):
         return
     info("letting the game through: macOS now asks for an administrator's password")
     try:
-        done = osascript(ADMIN, FIREWALL, APP, "WindowSmash wants to let its game take incoming connections "
+        done = osascript(ADMIN, FIREWALL, APP, "OpenSmash wants to let its game take incoming connections "
                                                "(for hosting a private room).")
     except NoDialogs as e:
         info(f"that did not work ({e}). To do it in Terminal: sudo {FIREWALL} --add {shlex.quote(APP)} && sudo {FIREWALL} "
@@ -1235,7 +1235,7 @@ def step_firewall(a, files, state):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="Install WindowSmash.command", description="Set up WindowSmash on this Mac in one go.")
+    ap = argparse.ArgumentParser(prog="Install WindowSmash.command", description="Set up OpenSmash on this Mac in one go.")
     ap.add_argument("--game", help="the folder with the game's files (found or asked)")
     ap.add_argument("--keys", help="the folder with prod.keys and title.keys (found or asked)")
     ap.add_argument("--firmware", help="the folder with the firmware's .nca files, for your console's own fonts (optional: "
@@ -1245,13 +1245,13 @@ def main(argv=None):
     ap.add_argument("--online-name", help="the name other players see online (asked; kept in online_name.txt)")
     ap.add_argument("--jobs", type=int, help="how many files to compile at a time (default: by the memory)")
     ap.add_argument("--skip-build", action="store_true", help="everything but compiling the game")
-    ap.add_argument("--no-update", action="store_true", help="don't look for a newer WindowSmash")
-    ap.add_argument("--update-only", action="store_true", help="only get the newest WindowSmash (the launcher's Update)")
+    ap.add_argument("--no-update", action="store_true", help="don't look for a newer OpenSmash")
+    ap.add_argument("--update-only", action="store_true", help="only get the newest OpenSmash (the launcher's Update)")
     ap.add_argument("--no-wizard", action="store_true", help="ask in this window instead of in dialogs")
     ap.add_argument("--yes", action="store_true", help="take the folders found or given, without asking")
     ap.add_argument("--dry-run", action="store_true", help="say what each step would do, do nothing")
     a = ap.parse_args(argv)
-    print("WindowSmash setup (macOS)")
+    print("OpenSmash setup (macOS)")
     print(f"  {ROOT}")
     if a.dry_run:
         print("  dry run: saying what each step would do, doing nothing")
@@ -1270,7 +1270,7 @@ def main(argv=None):
         step_tools(a)
         step_python(a)
         if a.dry_run and not os.path.isfile(venv_python()):
-            print("\n(dry run) the later steps need WindowSmash's Python; stopping here")
+            print("\n(dry run) the later steps need OpenSmash's Python; stopping here")
             return 0
         step_sdl3(a)
         _code, said = output([FIREWALL, "--getglobalstate"])
@@ -1289,7 +1289,7 @@ def main(argv=None):
                                               "Spotlight finds it)" + (" or on the Desktop" if desktop else "")
                                               + ", or " if app else "") + "Play SSBU.command in this folder.")
         print(f"  the game: {os.path.relpath(APP, ROOT)}; its log: build/play.log; the other launchers are in launchers/")
-        print("  the first time, macOS asks whether WindowSmash may find devices on your local network: Allow lets it "
+        print("  the first time, macOS asks whether OpenSmash may find devices on your local network: Allow lets it "
               "open your router's port and play with players at home (docs/MACOS.md)")
         return 0
     except Stop as e:

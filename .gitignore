@@ -33,7 +33,7 @@
 /mods/
 # Third-party packages as downloaded (SDL3 for controllers: docs/BUILDING.md)
 /deps/
-# The game version this folder was built from (tools/build_game.py); and what WindowSmash before
+# The game version this folder was built from (tools/build_game.py); and what OpenSmash before
 # 13.0.5 only made: game version folders, the modules they shared, the version picked last
 /version.txt
 /v[0-9]*/

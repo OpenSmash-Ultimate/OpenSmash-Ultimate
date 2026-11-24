@@ -86,7 +86,7 @@ static void show(const struct sockaddr_in *a, char *s, size_t n) {
 }
 
 /* ---- M6: the waiting game asks its router to send its port here (UPnP) ---------------------------
- * Windows' own UPnP NAT API, as WindowSmash's netplay relay opens its port (runtime/net_relay.c): on a
+ * Windows' own UPnP NAT API, as OpenSmash's netplay relay opens its port (runtime/net_relay.c): on a
  * thread of its own (finding the router takes seconds), the mapping UDP <port> -> this PC, and the router's
  * outside address, which is what the other player types. Said in the log and in build\rollback_address.txt
  * A mapping left by an earlier run is replaced; this one is removed at exit.

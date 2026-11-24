@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""WindowSmash on Linux in one go: what install-windowsmash.sh runs (the Linux counterpart of
-Install WindowSmash.bat, tools/install_windowsmash.ps1).
+"""OpenSmash on Linux in one go: what install-windowsmash.sh runs (the Linux counterpart of
+OpenSmash.exe, tools/install_windowsmash.ps1).
 
 Usage: bash install-windowsmash.sh [--game <dir>] [--keys <dir>] [--firmware <dir> | --no-firmware] [--online-name <name>]
                                    [--jobs N] [--skip-build] [--no-update] [--no-packages] [--yes] [--dry-run]
 
-  1. update     the newest WindowSmash from GitHub: a git checkout of main is pulled; a ZIP
+  1. update     the newest OpenSmash from GitHub: a git checkout of main is pulled; a ZIP
                 download gets the files of the newer commit (tools/source_version.txt says which
                 commit it is), then this installer starts again as the new version
   2. this PC    x86-64 with SSE4.2 (x86-64-v2; with AVX2 the game is built for AVX2, without it for
@@ -13,14 +13,14 @@ Usage: bash install-windowsmash.sh [--game <dir>] [--keys <dir>] [--firmware <di
   3. packages   from the distribution, through sudo (apt, dnf, pacman or zypper): clang, lld and
                 llvm, bison and flex, SDL2, libopus and libvpx, Vulkan, zenity, Python's venv; and
                 the headers the build needs, put back where a package is installed without them
-  4. Python     a Python of WindowSmash's own in deps/venv, with requirements.txt and Pillow
+  4. Python     a Python of OpenSmash's own in deps/venv, with requirements.txt and Pillow
   5. parts      DXVK 3.1.1 and its headers, vkd3d 2.1 and SPIRV-Headers, downloaded into
                 deps/linux-toolchain (each checked against its SHA-256)
   6. your files the folders with the game, the keys and the firmware (found in yuzu's, its forks'
                 and Ryujinx's folders, then asked), and the name other players see online. The
                 firmware is optional, for your console's own fonts: without it the game uses the
                 open fonts of third_party/fonts_open (no Chinese, Japanese or Korean text)
-  7. launchers  WindowSmash in the applications menu (play-ssbu.sh)
+  7. launchers  OpenSmash in the applications menu (play-ssbu.sh)
   8. build      tools/build_game.py with those folders: the game's program, fonts, data, DLC and
                 fighters, then build-linux/ssbu, which compiles the whole game the first time
 
@@ -52,7 +52,7 @@ import isa  # noqa: E402
 REPO_OWNER, REPO_NAME, BRANCH = "OpenSmash-Ultimate", "OpenSmash-Ultimate", "main"
 REPO_API = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}"
 SOURCE_VERSION = os.path.join("tools", "source_version.txt")   # "<commit> <date>": GitHub's ZIP fills it in
-USER_AGENT = "WindowSmash-installer"
+USER_AGENT = "OpenSmash-installer"
 DEPS = os.path.join(ROOT, "deps")
 VENV = os.path.join(DEPS, "venv")
 TOOLCHAIN = os.path.join(DEPS, "linux-toolchain")
@@ -280,10 +280,10 @@ def desktop_quote(arg):
 
 
 def desktop_entry(root):
-    """WindowSmash's entry in the applications menu: play-ssbu.sh in a terminal (it shows the log,
+    """OpenSmash's entry in the applications menu: play-ssbu.sh in a terminal (it shows the log,
     and asks for the online name the first time)."""
     exec_line = " ".join(desktop_quote(a) for a in ("bash", posixpath.join(root, "play-ssbu.sh")))
-    return ("[Desktop Entry]\nType=Application\nName=WindowSmash\nGenericName=Super Smash Bros. Ultimate\n"
+    return ("[Desktop Entry]\nType=Application\nName=OpenSmash\nGenericName=Super Smash Bros. Ultimate\n"
             "Comment=Super Smash Bros. Ultimate, recompiled from your own copy\n"
             f"Exec={exec_line}\nPath={root}\nIcon={posixpath.join(root, 'docs', 'assets', 'windowsmash.ico')}\n"
             "Terminal=true\nCategories=Game;\n")
@@ -366,7 +366,7 @@ def check_firmware(folder):
     return True, f"{n} .nca files (the game's fonts are taken out of them)"
 
 
-# ---- step 1: the newest WindowSmash ---------------------------------------------------------------
+# ---- step 1: the newest OpenSmash ---------------------------------------------------------------
 def http(url, accept="*/*"):
     """(status, body bytes or None, error text or None): a 404 is an answer here, not an error."""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": accept})
@@ -476,18 +476,18 @@ def write_atomic(path, data):
 
 
 def update_from_zip(old, new, new_date):
-    """This folder's WindowSmash files replaced by those of commit `new` (GitHub's ZIP of it): only
+    """This folder's OpenSmash files replaced by those of commit `new` (GitHub's ZIP of it): only
     files whose content changed are written; the old commit's files the new one dropped are removed.
     Nothing else is touched: dump/, build/, save/, deps/ and the settings are not in the ZIP."""
     work = os.path.join(DEPS, "update")
     shutil.rmtree(work, ignore_errors=True)
-    zip_path = os.path.join(work, f"WindowSmash-{new}.zip")
-    download(f"https://codeload.github.com/{REPO_OWNER}/{REPO_NAME}/zip/{new}", zip_path, f"WindowSmash {new[:7]}")
+    zip_path = os.path.join(work, f"OpenSmash-{new}.zip")
+    download(f"https://codeload.github.com/{REPO_OWNER}/{REPO_NAME}/zip/{new}", zip_path, f"OpenSmash {new[:7]}")
     with zipfile.ZipFile(zip_path) as z:
         names = [n for n in z.namelist() if not n.endswith("/")]
         tops = {n.split("/", 1)[0] for n in z.namelist()}
         if len(tops) != 1 or f"{next(iter(tops))}/tools/recomp.py" not in names:
-            raise Stop("The downloaded WindowSmash does not look complete; nothing was changed. Run this again.")
+            raise Stop("The downloaded OpenSmash does not look complete; nothing was changed. Run this again.")
         top = next(iter(tops)) + "/"
         files = {n[len(top):]: n for n in names if n.startswith(top) and n != top}
         tree, _err = api(f"{REPO_API}/git/trees/{old}?recursive=1")
@@ -535,7 +535,7 @@ def update_from_zip(old, new, new_date):
 
 
 def step_update(a):
-    step("[1/8] Get the newest WindowSmash")
+    step("[1/8] Get the newest OpenSmash")
     if a.no_update:
         info("not checking (--no-update)")
         return False
@@ -566,7 +566,7 @@ def step_update(a):
             decision, f"GitHub's answer ({cmp.get('status')}) was not understood: not updating"))
         return False
     n = int(cmp.get("ahead_by", 0))
-    info(f"a newer WindowSmash is on GitHub: {n} new commit{'s' if n != 1 else ''} ({local[:7]} to {sha[:7]}, {date})")
+    info(f"a newer OpenSmash is on GitHub: {n} new commit{'s' if n != 1 else ''} ({local[:7]} to {sha[:7]}, {date})")
     titles = [c["commit"]["message"].split("\n")[0] for c in cmp.get("commits", [])]
     titles = [t for t in reversed(titles) if not re.match(r"Merge (pull request|branch) ", t)]
     for t in titles[:8]:
@@ -574,7 +574,7 @@ def step_update(a):
     if len(titles) > 8:
         info(f"  ... and {len(titles) - 8} more")
     if a.dry_run:
-        would("download it and replace this folder's WindowSmash files (your game files, settings, save and builds stay)")
+        would("download it and replace this folder's OpenSmash files (your game files, settings, save and builds stay)")
         return False
     return update_from_zip(local, sha, date)
 
@@ -618,11 +618,11 @@ def step_check_pc():
     fields = os_release(read_text("/etc/os-release"))
     info(f"{fields.get('PRETTY_NAME', 'Linux')}, kernel {platform.release()}, {platform.machine()}")
     if platform.machine() not in ("x86_64", "AMD64"):
-        raise Stop(f"WindowSmash needs an x86-64 (64-bit Intel or AMD) PC; this one is {platform.machine()}.")
+        raise Stop(f"OpenSmash needs an x86-64 (64-bit Intel or AMD) PC; this one is {platform.machine()}.")
     name, best, lacks = cpu_info(read_text("/proc/cpuinfo"))
     if best is None:
         raise Stop(f"The processor ({name}) lacks {', '.join(lacks)}, which the game needs at the least (x86-64-v2: Intel "
-                   "processors since 2008, AMD since 2011): WindowSmash cannot run on it. (In a virtual machine, the host's "
+                   "processors since 2008, AMD since 2011): OpenSmash cannot run on it. (In a virtual machine, the host's "
                    "processor must have them and pass them through.)")
     if best == "avx2":
         info(f"{name} - has AVX2")
@@ -634,7 +634,7 @@ def step_check_pc():
              "slower (with AVX2: docs/LINUX.md, SSBU_ISA)")
     ram = mem_total_gb(read_text("/proc/meminfo"))
     if ram is not None and ram < MIN_RAM_GB:
-        raise Stop(f"This PC has {ram:.1f} GB of RAM; WindowSmash needs at least 8 GB (16 GB is comfortable).")
+        raise Stop(f"This PC has {ram:.1f} GB of RAM; OpenSmash needs at least 8 GB (16 GB is comfortable).")
     if ram is not None:
         info(f"{ram:.0f} GB of RAM" + (": enough, but the build will be slow (16 GB is comfortable)" if ram < 15 else ""))
     already = sum(folder_gb(os.path.join(ROOT, d)) for d in ("dump", "build", "build-linux") if os.path.isdir(os.path.join(ROOT, d)))
@@ -643,7 +643,7 @@ def step_check_pc():
     info(f"{free:,.1f} GB free here, {need:,.1f} GB still needed for the build")
     if free < need:
         raise Stop(f"Only {free:,.1f} GB are free in {ROOT}, and the build still needs {need:,.1f} GB there: free at least "
-                   f"{max(0.1, need - free):,.1f} GB more, or move WindowSmash to a disk with room.")
+                   f"{max(0.1, need - free):,.1f} GB more, or move OpenSmash to a disk with room.")
     libc = platform.libc_ver()
     if libc[0]:
         info(f"{libc[0]} {libc[1]}")
@@ -859,9 +859,9 @@ def step_python(a):
     py = venv_python()
     if not os.path.isfile(py) or subprocess.run([py, "-c", "import sys"], capture_output=True).returncode:
         if a.dry_run:
-            would(f"make a Python of WindowSmash's own in {os.path.relpath(VENV, ROOT)}, with requirements.txt and Pillow")
+            would(f"make a Python of OpenSmash's own in {os.path.relpath(VENV, ROOT)}, with requirements.txt and Pillow")
             return
-        info(f"making a Python of WindowSmash's own in {os.path.relpath(VENV, ROOT)} (touches nothing else)")
+        info(f"making a Python of OpenSmash's own in {os.path.relpath(VENV, ROOT)} (touches nothing else)")
         shutil.rmtree(VENV, ignore_errors=True)
         r = subprocess.run([sys.executable, "-m", "venv", VENV])
         if r.returncode:
@@ -1092,15 +1092,15 @@ def step_launchers(a):
     entry = os.path.join(apps, "windowsmash.desktop")
     text = desktop_entry(ROOT)
     if read_text(entry) == text:
-        info(f"applications menu: WindowSmash ({entry})")
+        info(f"applications menu: OpenSmash ({entry})")
     elif a.dry_run:
-        would(f"add WindowSmash to the applications menu ({entry})")
+        would(f"add OpenSmash to the applications menu ({entry})")
     else:
         os.makedirs(apps, exist_ok=True)
         with open(entry, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
         os.chmod(entry, 0o755)
-        info(f"applications menu: WindowSmash ({entry})")
+        info(f"applications menu: OpenSmash ({entry})")
     launcher = os.path.join(apps, "opensmash-launcher.desktop")
     if a.dry_run:
         would(f"add the OpenSmash Launcher to the applications menu ({launcher})")
@@ -1144,7 +1144,7 @@ def step_build(a, files):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="install-windowsmash.sh", description="Set up WindowSmash on Linux in one go.")
+    ap = argparse.ArgumentParser(prog="install-windowsmash.sh", description="Set up OpenSmash on Linux in one go.")
     ap.add_argument("--game", help="the folder with the game's files (found or asked)")
     ap.add_argument("--keys", help="the folder with prod.keys and title.keys (found or asked)")
     ap.add_argument("--firmware", help="the folder with the firmware's .nca files, for your console's own fonts (optional: "
@@ -1154,13 +1154,13 @@ def main(argv=None):
     ap.add_argument("--online-name", help="the name other players see online (asked; kept in online_name.txt)")
     ap.add_argument("--jobs", type=int, help="how many files to compile at a time (default: by the RAM)")
     ap.add_argument("--skip-build", action="store_true", help="everything but compiling the game")
-    ap.add_argument("--no-update", action="store_true", help="don't look for a newer WindowSmash")
-    ap.add_argument("--update-only", action="store_true", help="only get the newest WindowSmash (the launcher's Update)")
+    ap.add_argument("--no-update", action="store_true", help="don't look for a newer OpenSmash")
+    ap.add_argument("--update-only", action="store_true", help="only get the newest OpenSmash (the launcher's Update)")
     ap.add_argument("--no-packages", action="store_true", help="don't install packages from the distribution")
     ap.add_argument("--yes", action="store_true", help="take the folders found or given, without asking")
     ap.add_argument("--dry-run", action="store_true", help="say what each step would do, do nothing")
     a = ap.parse_args(argv)
-    print("WindowSmash setup (Linux)")
+    print("OpenSmash setup (Linux)")
     print(f"  {ROOT}")
     if a.dry_run:
         print("  dry run: saying what each step would do, doing nothing")
@@ -1178,14 +1178,14 @@ def main(argv=None):
         step_packages(a)
         step_python(a)
         if a.dry_run and not os.path.isfile(venv_python()):
-            print("\n(dry run) the later steps need WindowSmash's Python; stopping here")
+            print("\n(dry run) the later steps need OpenSmash's Python; stopping here")
             return 0
         step_parts(a)
         files = step_files(a)
         step_launchers(a)
         built = step_build(a, files)
         print()
-        print("Done. Start the game with ./play-ssbu.sh, or WindowSmash in your applications menu." if built else "Setup done.")
+        print("Done. Start the game with ./play-ssbu.sh, or OpenSmash in your applications menu." if built else "Setup done.")
         if built:
             print("To make the game's shaders in advance (no hitch when an effect shows first): bash launchers/prepare-shaders.sh")
         return 0

@@ -14,7 +14,7 @@ where both change a file; ultimate/stage-alts goes on the plugins' SD card (dump
 plugins (stage_config, stage_alts) are kept in dump/hdr/plugins and put among the standard plugins
 (skyline/plugins) while HDR is on. The package's ARCropolis, Smashline and nro_hook are the standard
 plugins' own builds (std_plugins.py), and hdr-launcher (the console's updater) isn't used: left out.
-HDR isn't shipped with WindowSmash: each user downloads it from HDR's releases."""
+HDR isn't shipped with OpenSmash: each user downloads it from HDR's releases."""
 import argparse
 import hashlib
 import json
@@ -83,7 +83,7 @@ def fetch(target, progress=None, log=print, tries=6):
     for attempt in range(1, tries + 1):
         have = os.path.getsize(target) if os.path.exists(target) else 0
         if have < SIZE:
-            headers = {"User-Agent": "WindowSmash mod manager", **({"Range": f"bytes={have}-"} if have else {})}
+            headers = {"User-Agent": "OpenSmash mod manager", **({"Range": f"bytes={have}-"} if have else {})}
             try:
                 with urllib.request.urlopen(urllib.request.Request(URL, headers=headers), timeout=60, context=ctx) as r:
                     resumed = have and r.status == 206
@@ -111,7 +111,7 @@ def fetch(target, progress=None, log=print, tries=6):
             return
         os.remove(target)   # (not the release checked here: downloaded again from the start)
         if attempt == tries:
-            raise Error("HDR's download isn't the release WindowSmash checked (its checksum differs): try again later")
+            raise Error("HDR's download isn't the release OpenSmash checked (its checksum differs): try again later")
         log("the download isn't whole; downloading it again")
 
 
@@ -146,7 +146,7 @@ def download(tree, progress=None, log=print):
     for m in MODS:   # (a version there already: replaced)
         src = os.path.join(stage, "ultimate", "mods", m)
         if not os.path.isdir(src):
-            raise Error(f"HDR's package has no {m} folder: not the layout WindowSmash knows")
+            raise Error(f"HDR's package has no {m} folder: not the layout OpenSmash knows")
         shutil.rmtree(os.path.join(tree.mods, m), ignore_errors=True)
         shutil.move(src, os.path.join(tree.mods, m))
     sd = os.path.join(tree.root, "dump", "skyline", "sd")

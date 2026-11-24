@@ -237,7 +237,7 @@ static void *presence(void *unused) {
         json_string(s, sizeof s, state);
         snprintf(activity, sizeof activity,
                  "{\"details\":\"%.127s\",\"state\":\"%.127s\",\"timestamps\":{\"start\":%lld},"
-                 "\"assets\":{\"large_image\":\"logo\",\"large_text\":\"WindowSmash on macOS\"}}", d, s, since);
+                 "\"assets\":{\"large_image\":\"logo\",\"large_text\":\"OpenSmash on macOS\"}}", d, s, since);
         if (!strcmp(activity, last) && rt_now_ns() - sent_at < 60000000000ull) continue;
         char cmd[1400];
         snprintf(cmd, sizeof cmd, "{\"cmd\":\"SET_ACTIVITY\",\"args\":{\"pid\":%d,\"activity\":%s},\"nonce\":\"%d\"}",

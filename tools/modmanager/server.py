@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""WindowSmash Mods: the mod manager's app, for Windows and macOS - a small web server on this
+"""OpenSmash Mods: the mod manager's app, for Windows and macOS - a small web server on this
 computer (127.0.0.1 only, a random port and key) that the window talks to, over tools/mods.py.
 
 Usage:
   server.py [--tree <port folder>] [--no-window] [--port N]
 
-The window: on macOS the WindowSmash Mods app (tools/mac/ModsShell.swift, a web view) starts this
+The window: on macOS the OpenSmash Mods app (tools/mac/ModsShell.swift, a web view) starts this
 and shows its page; elsewhere this opens it in Edge's or Chrome's app mode (a window of its own),
 else the default browser. Started that way, the server ends when the window has been closed for a
 while (the page pings it every few seconds).
@@ -231,7 +231,7 @@ def download(url, progress, log):
     m = re.search(r"dropbox\.com/.+", url)
     if m:
         url = re.sub(r"[?&]dl=0", "", url) + ("&" if "?" in url else "?") + "dl=1"
-    req = urllib.request.Request(url, headers={"User-Agent": "WindowSmash mod manager"})
+    req = urllib.request.Request(url, headers={"User-Agent": "OpenSmash mod manager"})
     tmp = tempfile.mkdtemp(prefix="windowsmash-dl-")
     try:
         ctx = ssl.create_default_context()
@@ -529,7 +529,7 @@ class App:
                 reveal(out)
                 return {"path": out, "size": os.path.getsize(out)}
             return self.jobs.start("Making the installer", make)
-        if path == "/api/uninstall":   # (WindowSmash as it was: install_mods.py --uninstall)
+        if path == "/api/uninstall":   # (OpenSmash as it was: install_mods.py --uninstall)
             if game_running():
                 raise mods.Error("the game is open: close it first")
             import install_mods
@@ -545,7 +545,7 @@ class App:
                     raise mods.Error(out.getvalue().strip().splitlines()[-1])
                 threading.Timer(8, lambda: os._exit(0)).start()   # (nothing left to serve)
                 return {"done": True}
-            return self.jobs.start("Removing WindowSmash Mods", gone)
+            return self.jobs.start("Removing OpenSmash Mods", gone)
         if path == "/api/pack/delete":
             packs.delete_pack(t, body["id"])
             return {"packs": packs.saved_packs(t)}
@@ -739,12 +739,12 @@ def main():
     # one server for a tree: a second start (the app opened again) shows the running one's page
     running = running_server(a.tree)
     if running:
-        note(f"WindowSmash Mods already running (process {running['pid']}): its window opened again")
+        note(f"OpenSmash Mods already running (process {running['pid']}): its window opened again")
         print(json.dumps({"url": running["url"]}), flush=True)
         if not a.no_window:
             open_window(running["url"])
         return
-    note(f"WindowSmash Mods started ({sys.platform}, Python {sys.version.split()[0]}, {a.tree})")
+    note(f"OpenSmash Mods started ({sys.platform}, Python {sys.version.split()[0]}, {a.tree})")
     key = secrets.token_urlsafe(18)
     app = App(a.tree, key, watch=True)
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(app))
@@ -766,7 +766,7 @@ def main():
                     os.remove(marker)
         except (OSError, ValueError):
             pass
-        note("WindowSmash Mods closed")
+        note("OpenSmash Mods closed")
         os._exit(0)   # (nothing is left to wait for: no thread keeps the process, and so the log, alive)
 
     def watchdog():   # (the window closed: it said bye, or nothing pings; jobs still running are let finish)
