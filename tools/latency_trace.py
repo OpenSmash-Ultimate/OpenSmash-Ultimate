@@ -39,7 +39,9 @@ import sys
 
 FRAME_MS = 1000.0 / 60
 GAME_FRAMES = 2     # (no C lines: the game's part, Mario's jab from standing)
-RENDER_FRAMES = 0   # (--calibrate: the picture drawn in the frame whose logic changed the status shows it)
+RENDER_FRAMES = 0   # (the picture drawn in the frame whose logic changed the status: the first that can show it. Measured
+                    # 2026-11-24 with --calibrate, Mario's jab from standing: the status changes 1 frame after the read and
+                    # the 16 x 9 brightness grid first sees the jab 2 frames later - its first poses, not the pipeline)
 
 
 def read_trace(path):
