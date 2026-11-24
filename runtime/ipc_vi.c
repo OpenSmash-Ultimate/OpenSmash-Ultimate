@@ -418,6 +418,90 @@ extern volatile LONG rt_refresh_mult;
 
 static LONG64 qpc_now(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
 
+/* ---- the GPU's time per frame shown (display.h: gpu_frame_time_push) --------------------------------------------
+ * Measuring only (input-lag plan, section 5: low_latency's margin made adaptive later needs the card's real time, and
+ * the only "drawn" mark here, gpu_queue's, is the CPU-side translation). The renderers time each presented frame's GPU
+ * work with timestamp queries - Direct3D 11 from the first command after the previous present to the present, Vulkan
+ * each submission's command buffer - read back a few frames later without waiting, and hand it here; the last 120
+ * frames' p50 / p95 go in low_latency's once-a-minute line. Vulkan with VK_EXT_calibrated_timestamps also gives the
+ * work's end on this clock: how long after its submit, and after the refresh before that submit, the card finished.
+ * SSBU_GPU_TIMESTAMPS=0: none. */
+#define GFT_N 120
+static SRWLOCK gft_lock = SRWLOCK_INIT;
+static double gft_work[GFT_N], gft_tail[GFT_N], gft_after[GFT_N], gft_last = -1;
+static int gft_count, gft_next, gft_ntail, gft_nafter;   /* (gft_tail / gft_after: their own rings, only calibrated frames) */
+static int gft_tail_next, gft_after_next;
+static LONG64 gft_refresh[16];   /* (the vsync thread's last refreshes, for gft_after) */
+static int gft_refresh_next;
+static u64 gft_total;
+int gpu_timestamps_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_GPU_TIMESTAMPS"); on = !(e && *e && atoi(e) == 0); }
+    return on;
+}
+static void gft_refreshed(LONG64 at) {
+    AcquireSRWLockExclusive(&gft_lock);
+    gft_refresh[gft_refresh_next] = at; gft_refresh_next = (gft_refresh_next + 1) % 16;
+    ReleaseSRWLockExclusive(&gft_lock);
+}
+void gpu_frame_time_push(double work_ms, long long submit_qpc, long long end_qpc) {
+    static LONG64 freq;
+    if (!freq) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); freq = f.QuadPart; }
+    if (!(work_ms >= 0) || work_ms > 10000) return;
+    AcquireSRWLockExclusive(&gft_lock);
+    gft_last = work_ms;
+    gft_work[gft_next] = work_ms; gft_next = (gft_next + 1) % GFT_N;
+    if (gft_count < GFT_N) gft_count++;
+    gft_total++;
+    if (end_qpc && submit_qpc) {
+        gft_tail[gft_tail_next] = (double)(end_qpc - submit_qpc) * 1000.0 / (double)freq; gft_tail_next = (gft_tail_next + 1) % GFT_N;
+        if (gft_ntail < GFT_N) gft_ntail++;
+        LONG64 at = 0;   /* (the last refresh at or before the submit: the vsync thread's present comes just after it) */
+        for (int i = 0; i < 16; i++) if (gft_refresh[i] && gft_refresh[i] <= submit_qpc && gft_refresh[i] > at) at = gft_refresh[i];
+        if (at && submit_qpc - at < freq / 10) {
+            gft_after[gft_after_next] = (double)(end_qpc - at) * 1000.0 / (double)freq; gft_after_next = (gft_after_next + 1) % GFT_N;
+            if (gft_nafter < GFT_N) gft_nafter++;
+        }
+    }
+    ReleaseSRWLockExclusive(&gft_lock);
+}
+double gpu_frame_ms_last(void) {
+    AcquireSRWLockShared(&gft_lock);
+    double v = gft_last;
+    ReleaseSRWLockShared(&gft_lock);
+    return v;
+}
+static int gft_cmp(const void *a, const void *b) { double x = *(const double *)a, y = *(const double *)b; return x < y ? -1 : x > y; }
+static int gft_pct(const double *ring, int n, double *p50, double *p95) {   /* (under the lock) */
+    double v[GFT_N];
+    if (n <= 0) { *p50 = *p95 = 0; return 0; }
+    memcpy(v, ring, sizeof *v * (size_t)n);
+    qsort(v, (size_t)n, sizeof *v, gft_cmp);
+    *p50 = v[(n - 1) / 2];
+    *p95 = v[(int)((n - 1) * 0.95 + 0.5)];
+    return n;
+}
+int gpu_frame_ms_stats(double *p50, double *p95) {
+    AcquireSRWLockShared(&gft_lock);
+    int n = gft_pct(gft_work, gft_count, p50, p95);
+    ReleaseSRWLockShared(&gft_lock);
+    return n;
+}
+static void gft_say(void) {   /* (low_latency's once-a-minute line) */
+    if (!gpu_timestamps_on()) return;
+    double w50, w95, t50, t95, a50, a95;
+    AcquireSRWLockShared(&gft_lock);
+    int n = gft_pct(gft_work, gft_count, &w50, &w95), nt = gft_pct(gft_tail, gft_ntail, &t50, &t95), na = gft_pct(gft_after, gft_nafter, &a50, &a95);
+    u64 total = gft_total;
+    ReleaseSRWLockShared(&gft_lock);
+    if (!n) { fprintf(stderr, "[display] low_latency: GPU time per frame: none measured yet\n"); return; }
+    char end[200] = "its end: not on this clock (no calibrated timestamps)";
+    if (nt) snprintf(end, sizeof end, "its end %.2f / %.2f ms after the submit, %.2f / %.2f ms after the refresh before its submit (%d frames)",
+                     t50, t95, a50, a95, na);
+    fprintf(stderr, "[display] low_latency: GPU time per frame p50 %.2f ms, p95 %.2f ms (last %d frames, %llu timed); %s\n",
+            w50, w95, n, (unsigned long long)total, end);
+}
+
 /* Rollback (net fights, where the hold is on with savestates): a catch-up starts after the release (at the wait for the
  * buffer, or the safe point) and its last picture must still be queued before the refresh. The time from the release
  * before its load (vi_rb_load: ll_rb_from) to the queue of that last picture (ll_rb_kept) is kept for
@@ -531,6 +615,7 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
         if (!fast) {
             display_wait_tick();   /* the next refresh (display.ini's pacing and frame_rate) */
             refresh_at = qpc_now();
+            gft_refreshed(refresh_at);
             if (lat_tf) lat_tick_ms = lat_ms();
             LONG m = display_tick_mult();
             if (m != rt_refresh_mult) { InterlockedExchange(&rt_refresh_mult, m); queue_lock(); ll_count = ll_next = 0; queue_unlock(); }   /* (low_latency measures again) */
@@ -575,6 +660,7 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
             if (ll_said) fprintf(stderr, "[display] low_latency: %lld frames started later than the refresh (%.1f ms on average), %lld missed it and turned it off for a second (%lld of them a picture not drawn yet)\n",
                                  (long long)ll_delayed_frames, ll_delayed_frames ? (double)ll_delay_sum * 1000 / ll_freq / (double)ll_delayed_frames : 0.0,
                                  (long long)ll_late_frames, (long long)ll_undrawn_frames);
+            if (ll_said) gft_say();
             ll_said = GetTickCount64();
         }
         queue_lock();

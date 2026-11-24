@@ -133,3 +133,12 @@ int display_uw_online_saved(void);   /* the one saved for the next start */
 void display_set_uw_online(int on);
 void display_set_renderer(int renderer);      /* (the same: RENDERER_*, which back end draws from the next start) */
 void display_set_gpu(const char *gpu);          /* (the same: the graphics card, "auto" or its name, picked at the next start) */
+
+/* The GPU's time per frame shown (ipc_vi.c keeps them; the renderers' timestamp queries hand them over a few frames
+ * late, never waiting for them; SSBU_GPU_TIMESTAMPS=0: not measured). Measuring only: low_latency's once-a-minute
+ * line says them. end_qpc and submit_qpc (QueryPerformanceCounter): the work's end on the CPU's clock and the submit
+ * of its last part, both 0 when the renderer cannot put the GPU's clock on the CPU's (Direct3D 11). */
+int gpu_timestamps_on(void);
+void gpu_frame_time_push(double work_ms, long long submit_qpc, long long end_qpc);
+double gpu_frame_ms_last(void);                    /* the last frame timed, ms; -1 before any */
+int gpu_frame_ms_stats(double *p50, double *p95);  /* the last 120 frames timed: their count, p50 and p95 in ms */
