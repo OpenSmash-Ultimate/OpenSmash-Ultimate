@@ -87,8 +87,26 @@ static class AccountChecks
             Check(c.SignedIn && c.Error == "" && c.ShownName == "Tester#1234", "sign-in in the browser (PKCE through the loopback address): the account card shows name#tag (" + c.ShownName + ")");
             string session = Path.Combine(root, "config", "session.dat");
             Check(File.Exists(session) && OwnerOnly(session), "the session is kept for this user only (DPAPI on Windows, a 0600 file elsewhere)");
+            string pass = Path.Combine(root, "build", "cache", "online_pass.txt");
+            Check(File.Exists(pass) && OwnerOnly(pass) && OnlinePass.Expiry(File.ReadAllText(pass).Trim()) > DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                  "signed in: the lobby ticket is written at once, not only at Play (a game started without the launcher - Play SSBU, the web launcher - has one)");
             var again = new Account(root);
             Check(Task.Run(() => again.ResumeAsync()).GetAwaiter().GetResult() && again.Me?.Display == "Tester#1234", "a new launcher resumes the session");
+            // (another program renewed the session - the refresh token rotated, the old one refused from now on: the
+            // launcher's next renewal takes the newer token from the session file instead of using its own old one)
+            typeof(Account).GetField("accessUntil", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(account, DateTime.MinValue);
+            string renewed = Task.Run(() => account.LobbyTicketAsync()).GetAwaiter().GetResult();
+            Check(renewed.StartsWith("00000000-0000-4000-8000-0000000000aa|Tester|"), "the session renewed by another program: this launcher goes on with the newer token");
+
+            // --online-pass (no window, Program.cs): what tools/mac/launch.sh and the web launcher ask before a game they start
+            File.Delete(pass);
+            var said = new List<string>();
+            int code = Task.Run(() => OnlinePass.WriteForStartAsync(root, said.Add)).GetAwaiter().GetResult();
+            Check(code == 0 && File.Exists(pass) && OwnerOnly(pass) && File.ReadAllText(pass).StartsWith("00000000-0000-4000-8000-0000000000aa|Tester|") && said.Last() == "online pass: written for Tester#1234",
+                  "--online-pass: the session resumed and a fresh ticket written for the game (" + string.Join("; ", said) + ")");
+            said.Clear();
+            code = Task.Run(() => OnlinePass.WriteForStartAsync(root, said.Add, 60)).GetAwaiter().GetResult();
+            Check(code == 0 && said.Single() == "online pass: the one there is still good", "--online-pass: a ticket still good is left as it is (the accounts service not asked)");
 
             c.Open = true; surface.InvalidateVisual();
             using (window.CaptureRenderedFrame()) { }
@@ -100,7 +118,6 @@ static class AccountChecks
 
             // Play: a fresh ticket in build/cache/online_pass.txt, named to the game
             var env = OnUi(() => window.AccountPassForGame(root));
-            string pass = Path.Combine(root, "build", "cache", "online_pass.txt");
             Check(env != null && env["SSBU_ONLINE_TICKET_FILE"] == pass && File.Exists(pass) && OwnerOnly(pass), "Play: the lobby ticket written for the game (this user only), SSBU_ONLINE_TICKET_FILE names it");
             string ticket = File.ReadAllText(pass).Trim();
             long exp = OnlinePass.Expiry(ticket), now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -116,6 +133,9 @@ static class AccountChecks
             OnUi(async () => { await window.AccountAction("community:signout", root); return 0; });
             Check(!c.SignedIn && !File.Exists(session) && !File.Exists(pass), "sign-out forgets the session and removes the game's ticket");
             Check(OnUi(() => window.AccountPassForGame(root)) == null, "signed out: Play names no ticket (the game stays off the official lobbies and says why)");
+            said.Clear();
+            code = Task.Run(() => OnlinePass.WriteForStartAsync(root, said.Add)).GetAwaiter().GetResult();
+            Check(code == 2 && !File.Exists(pass) && said.Single().Contains("not signed in"), "signed out: --online-pass writes nothing and says so (exit 2)");
             window.Close();
         }
         finally

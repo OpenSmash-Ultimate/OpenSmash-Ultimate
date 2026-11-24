@@ -1011,6 +1011,13 @@ def copy_launchers(top):
         shutil.copy2(ROOT / name, Path(top) / name)
 
 
+class OnlineTicketFile:
+    @staticmethod
+    def expiry(path):
+        t = Path(path).read_text().strip().rpartition('.')[0].split('|')
+        return int(t[2])
+
+
 @unittest.skipUnless(BASH, 'needs bash')
 class LaunchScriptTests(unittest.TestCase):
     """tools/mac/launch.sh's parts (sourced: its functions only), on a folder laid out as a build leaves it."""
@@ -1084,6 +1091,66 @@ class LaunchScriptTests(unittest.TestCase):
         self.assertEqual((self.top / 'online_name.txt').read_text(), 'Old Name\n')
         (self.top / 'config' / 'online_server.txt').write_text('off\n')
         self.assertEqual(self.sh(self.ONLINE).stdout.splitlines()[0], 'R=|C=|N=|D=')
+
+    # (v0.5.0) the lobby ticket for a game started without the OpenSmash launcher: online_ticket
+    def ticket(self, expiry):
+        return f'00000000-0000-4000-8000-0000000000aa|Tester|{expiry}.' + 'ab' * 32 + '\n'
+
+    def helper(self, writes):
+        """a stand-in OpenSmash.Avalonia.app whose --online-pass records how it was asked and writes the ticket given"""
+        exe = self.top / 'OpenSmash.Avalonia.app' / 'Contents' / 'MacOS' / 'OpenSmash.Avalonia'
+        source = Path(self.temp.name) / 'fresh_ticket.txt'
+        if writes:
+            source.write_text(writes)
+        write(exe, textwrap.dedent(f"""\
+            #!/bin/bash
+            echo "$*" >> "{self.top}/helper.txt"
+            {f'cp "{source}" "$3/build/cache/online_pass.txt"' if writes else ':'}
+            echo "online pass: written for Tester#1234"
+            """), 0o755)
+
+    TICKET = 'online_ticket; echo "F=$SSBU_ONLINE_TICKET_FILE"'
+
+    def test_ticket_asked_of_the_launcher(self):
+        now = int(time.time())
+        pass_file = self.top / 'build' / 'cache' / 'online_pass.txt'
+        self.helper(self.ticket(now + 28800))
+        r = self.sh(self.TICKET, env={'SSBU_NET_RELAY': 'eu.lobby.example:39421'})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f'F={self.top}/build/cache/online_pass.txt', r.stdout)
+        self.assertIn('online pass: written for Tester#1234', r.stdout)
+        self.assertNotIn('No online pass', r.stdout)
+        self.assertEqual((self.top / 'helper.txt').read_text(), f'--online-pass --project {self.top}\n')
+        self.assertEqual(OnlineTicketFile.expiry(pass_file), now + 28800)
+        # a ticket with more than 10 minutes left: the launcher is not asked again
+        (self.top / 'helper.txt').unlink()
+        r = self.sh(self.TICKET, env={'SSBU_NET_RELAY': 'eu.lobby.example:39421'})
+        self.assertIn(f'F={self.top}/build/cache/online_pass.txt', r.stdout)
+        self.assertFalse((self.top / 'helper.txt').exists())
+        # one about to expire: asked again
+        pass_file.write_text(self.ticket(now + 120))
+        r = self.sh(self.TICKET, env={'SSBU_NET_RELAY': 'eu.lobby.example:39421'})
+        self.assertTrue((self.top / 'helper.txt').exists())
+        self.assertEqual(OnlineTicketFile.expiry(pass_file), now + 28800)
+
+    def test_ticket_not_signed_in(self):
+        self.helper(None)   # (the launcher has no session: it writes nothing)
+        r = self.sh(self.TICKET, env={'SSBU_NET_RELAY': 'eu.lobby.example:39421'})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('No online pass: sign in in the OpenSmash launcher', r.stdout)
+        # (named even so: the game reads it again at each join, so a launcher signed in later still lets it in)
+        self.assertIn(f'F={self.top}/build/cache/online_pass.txt', r.stdout)
+        (self.top / 'OpenSmash.Avalonia.app').rename(self.top / 'gone.app')   # (no launcher here: nothing asked)
+        r = self.sh(self.TICKET, env={'SSBU_NET_RELAY': 'eu.lobby.example:39421'})
+        self.assertIn('No online pass', r.stdout)
+
+    def test_ticket_left_alone(self):
+        self.helper(self.ticket(4102444800))
+        r = self.sh(self.TICKET, env={'SSBU_ONLINE_TICKET_FILE': '/elsewhere/pass.txt', 'SSBU_NET_RELAY': 'a.example:1'})
+        self.assertIn('F=/elsewhere/pass.txt', r.stdout)            # (Play in the launcher named its own)
+        r = self.sh(self.TICKET)                                      # (offline: no lobby)
+        self.assertEqual(r.stdout.strip(), 'F=')
+        self.assertFalse((self.top / 'helper.txt').exists())
 
     def test_name_dialog(self):
         fake = FakeOsascript(self, ['=Zelda'])
@@ -1213,7 +1280,8 @@ class OpenTests(unittest.TestCase):
         # (what Play SSBU.bat clears is gone, SSBU_LOG and SSBU_CWD are the launcher's, the rest passes on)
         self.assertEqual(env, {'SSBU_CWD': str(self.top), 'SSBU_LOG': f'{tree}/build/play.log', 'SSBU_HITCH': '40',
                                'SSBU_NET_RELAY': 'lobby.example:39421', 'SSBU_NET_ROOM': 'FRIENDS',
-                               'SSBU_NET_NAME': 'Tester', 'SSBU_NET_DIRECT': '0'})
+                               'SSBU_NET_NAME': 'Tester', 'SSBU_NET_DIRECT': '0',
+                               'SSBU_ONLINE_TICKET_FILE': f'{self.top}/build/cache/online_pass.txt'})
         self.assertIn('Online: lobby lobby.example:39421 (lobby code FRIENDS), as Tester.', r.stdout)
         self.assertIn('stand-in game: running', r.stdout)   # (the log, shown as it goes)
         self.assertEqual((tree / 'build' / 'play.log').read_text(), 'stand-in game: running\n')
