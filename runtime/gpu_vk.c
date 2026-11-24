@@ -4807,6 +4807,10 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
             for (int i = 0; i < 4; i++) { u32 c = (sw >> (3 * i)) & 7; out |= (c == 3 ? 2u : c == 2 ? 3u : c) << (3 * i); }
             params->swz[stage][k] = out;
         }
+        if (z && !z->depth && z->format == 0xE8) {   /* a B5G6R5 target read through a B5G6R5 header (gpu_texture.h) */
+            TextureDesc td;
+            if (tic_decode(tic, &td) && rt565_read_swaps(z->format, td.format)) params->swz[stage][k] = swz_swap_rb(params->swz[stage][k]);
+        }
         if (scale != 1.0f) params->swz[stage][k] |= (u32)(scale * 4096.0f + 0.5f) << 16;
     }
     if (vk_timing) vk_ns_res[2] += (rt_clock_ns() - t0) * TIMING_EVERY;
