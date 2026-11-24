@@ -132,8 +132,15 @@ class RunAhead(unittest.TestCase):
         self.assertIn('if ((rb_save_home_only || save_home) && away_from_home(c->thread)) {', state)
         self.assertIn('getenv("SSBU_RB_SAVE_HOME")', state, 'net rollback saves wait for the jobs too (off: =0)')
         self.assertIn('getenv("SSBU_RB_SAVE_RETRY_MS")', state)
-        self.assertIn('rb_save_home_only = 1;\n        int r = rb_save(c, frame);\n        rb_save_home_only = 0;', core,
-                      'run-ahead\'s saves only')
+        self.assertIn('rb_save_home_only = 1;\n        if (jobs) rb_save_gate = ra_jobs_idle;\n        int r = rb_save(c, frame);\n'
+                      '        rb_save_home_only = 0;\n        rb_save_gate = NULL;', core, 'run-ahead\'s saves only')
+
+    def test_runahead_save_waits_for_the_task_jobs(self):
+        state, core = src('hle_rb_state.c'), src('hle_rb_core.c')
+        self.assertIn('rb_save_gate', state, 'checked again with every thread held')
+        self.assertIn('getenv("SSBU_RA_JOBS")', core)
+        self.assertIn('ra_jobs_mine != ra_jobs_gen + 1', core, 'a batch noted before the last load counts as none')
+        self.assertIn('ra_jobs_loaded();', core, 'the counts start again after each load')
 
 
 if __name__ == '__main__':
