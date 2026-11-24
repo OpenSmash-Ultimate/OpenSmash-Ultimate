@@ -4787,7 +4787,7 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
             for (int i = 0; i < 4; i++) { u32 c = (sw >> (3 * i)) & 7; out |= (c == 3 ? 2u : c == 2 ? 3u : c) << (3 * i); }
             params->swz[stage][k] = out;
         }
-        if (z && !z->depth) {   /* a B5G6R5 target read through a B5G6R5 header (gpu_texture.h) */
+        if (z && !z->depth && z->format == 0xE8) {   /* a B5G6R5 target read through a B5G6R5 header (gpu_texture.h) */
             TextureDesc td;
             if (tic_decode(tic, &td) && rt565_read_swaps(z->format, td.format)) params->swz[stage][k] = swz_swap_rb(params->swz[stage][k]);
         }
