@@ -5471,7 +5471,7 @@ static double ra_ms[5], ra_ms_max[5]; static long long ra_ms_n;   /* real frame,
 static double ra_shown_t; static long long ra_gaps, ra_gaps_late;
 static int ra_slow;   /* (this fight: too slow with run-ahead, off) */
 static long long ra_ended_ahead;
-static long long ra_unshown; static double ra_show_wait_ms;   /* (loads with the frame shown's picture still queued; time waited for it) */
+static long long ra_unshown; static double ra_show_wait_ms; static double ra_ll_ms; static long long ra_ll_n;   /* (SSBU_RA_LL: the cycles started later, and by how much) */   /* (loads with the frame shown's picture still queued; time waited for it) */
 static u64 ra_last_buttons = ~0ull;
 
 static int ra_frames(void) {
@@ -5580,6 +5580,8 @@ static void ra_report(const char *why) {
         ra_jobs_waits = ra_jobs_late = 0; ra_jobs_wait_ms = ra_jobs_wait_max = 0; }
     fprintf(stderr, "[rb] run-ahead: %lld of %lld loads came before the frame shown's picture was taken (never shown); %.2f ms waited for it per load\n",
             ra_unshown, ra_ms_n, ra_ms_n ? ra_show_wait_ms / (double)ra_ms_n : 0.0);
+    if (ra_ll_n) fprintf(stderr, "[rb] run-ahead, low_latency: %lld cycles started %.2f ms after the refresh on average\n", ra_ll_n, ra_ll_ms / (double)ra_ll_n);
+    ra_ll_ms = 0; ra_ll_n = 0;
     ra_unshown = 0; ra_show_wait_ms = 0;
     memset(ra_ms, 0, sizeof ra_ms); memset(ra_ms_max, 0, sizeof ra_ms_max); ra_ms_n = 0; ra_gaps = ra_gaps_late = 0;
 }
@@ -5792,9 +5794,35 @@ int runahead_point(Cpu *c, u64 frame) {
             int vi_ra_before_load(int wait_ms, double *waited_ms);
             static int show_wait = -1;
             if (show_wait < 0) { const char *e = getenv("SSBU_RA_SHOW_WAIT"); show_wait = e && *e ? atoi(e) : 20; }
-            double w = 0;
+            double w = 0, t_in = now_ms();
+            /* (low_latency with run-ahead: its hold is off under savestates, so the next cycle - load, R, save, S - began
+             * at the refresh and S's picture then waited most of a frame for the next one. With the picture just taken
+             * (this call waited: the refresh is now), the cycle starts as late as its measured length allows, so R's
+             * controller read is that much closer to the refresh that shows it. SSBU_RA_LL=0: off; SSBU_RA_LL_MARGIN ms) */
+            static double ra_cycle_ms, ra_cycle_t;   /* (the cycle's length: from the end of this wait to the next load) */
+            static int ll_on = -1; static double ll_margin;
+            if (ll_on < 0) {
+                const char *e = getenv("SSBU_RA_LL"), *m = getenv("SSBU_RA_LL_MARGIN");
+                int display_low_latency(void);
+                ll_on = !(e && *e == '0') && display_low_latency();
+                ll_margin = m && *m ? atof(m) : 4.0;
+            }
+            if (ra_cycle_t) {
+                double len = t_in - ra_cycle_t;
+                ra_cycle_ms = len > ra_cycle_ms ? len : ra_cycle_ms * 0.95 + len * 0.05;   /* (up at once, down slowly) */
+            }
             if (vi_ra_before_load(show_wait, &w)) ra_unshown++;
             ra_show_wait_ms += w;
+            int display_frame_rate(void); double display_speed(void);
+            if (ll_on && w > 0.5 && ra_cycle_ms > 0 && display_frame_rate() == 60 && display_speed() == 1) {
+                double d = 1000.0 / 60 - ra_cycle_ms - ll_margin, until = now_ms() + d;
+                if (d > 0.5) {
+                    if (d > 2) Sleep((DWORD)(d - 1.5));
+                    while (now_ms() < until) SwitchToThread();
+                    ra_ll_ms += d; ra_ll_n++;
+                }
+            }
+            ra_cycle_t = now_ms();
         }
         ra_t_load0 = now_ms();
         ra_add(2, ra_t_load0 - ra_t_save1);
