@@ -618,6 +618,31 @@ void *vi_rb_save(void) {
     return s;
 }
 
+/* (run-ahead, hle_rb_core.c, just before its load) The load puts the buffers back as at the save, where the slot of
+ * the frame shown is still the game's (DEQUEUED): a picture still queued at the load - not yet taken by the vsync
+ * thread - is never shown. Waits up to wait_ms (0: not at all) for the vsync thread to take it, asleep on the queue's
+ * "freed" (take_oldest_held wakes it). 1: still queued at the end (the picture is lost), 0: taken or none queued. */
+int vi_ra_before_load(int wait_ms, double *waited_ms) {
+    if (!queue.started) return 0;
+    LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+    LONG64 t0 = qpc_now();
+    int queued;
+    queue_lock();
+    for (;;) {
+        queued = 0;
+        for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == QUEUED) queued = 1;
+        DWORD left = (DWORD)wait_ms - (DWORD)((qpc_now() - t0) * 1000 / f.QuadPart);
+        if (!queued || wait_ms <= 0 || (LONG)left <= 0) break;
+        queue_holder = 0;   /* (asleep, not holding it) */
+        SleepConditionVariableSRW(&queue.freed, &queue.lock, left, 0);
+        queue_held_since = GetTickCount64();
+        queue_holder = GetCurrentThreadId();
+    }
+    queue_unlock();
+    if (waited_ms) *waited_ms = (double)(qpc_now() - t0) * 1000.0 / (double)f.QuadPart;
+    return queued;
+}
+
 void vi_rb_load(const void *p) {
     const ViSlot *s = p;
     if (!s) return;
