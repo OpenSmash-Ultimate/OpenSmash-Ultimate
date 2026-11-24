@@ -201,7 +201,7 @@ static int vi_slot_drawn(int slot) {
 }
 /* (vsync thread, at a refresh, before take_oldest) 1: the oldest queued buffer is not drawn yet - show nothing new now */
 /* While a rollback match is on (rb_online_match_now), in any fight (offline too), and for a few refreshes after a rollback's
- * load (vi_rb_load): menus, movies and the rest poll nothing and behave as before this option. In an offline fight on
+ * load (vi_rb_load); an offline fight (not rollback's net mode) at 60 refreshes a second only (frame_rate 60). Menus, movies and the rest poll nothing and behave as before this option. In an offline fight on
  * Direct3D 11 the drawing job often ran after the refresh, so the picture shown was the slot's old one, 3 frames before:
  * press -> present 72 ms median against 23 on Vulkan (Mario vs idle DK, 30 presses; with this: 25 ms, the picture 1 frame
  * behind the game as on Vulkan, 24 of 1,800 refreshes showing nothing new; Vulkan unchanged). */
@@ -209,7 +209,9 @@ static volatile int ready_grace;   /* (refreshes left after a vi_rb_load) */
 static int vi_ready_active(void) {
     int rb_online_match_now(void);   /* (hle_rb_core.c) */
     int game_fight_on(void);   /* (hle_fight_test.c) */
-    if (rb_online_match_now() > 0 || ready_on == 2 || game_fight_on()) return 1;
+    int display_refresh_mult(void);   /* (gpu_display.c: frame_rate 120 / 240 refresh every 8.3 / 4.2 ms, under the poll's 12) */
+    int rb_net_mode_on(void);   /* (hle_rb_core.c: rollback's net mode - relay pairs ran 5x the gaps over 25 ms with this on) */
+    if (rb_online_match_now() > 0 || ready_on == 2 || (game_fight_on() && !rb_net_mode_on() && display_refresh_mult() == 1)) return 1;
     if (ready_grace > 0) { ready_grace--; return 1; }
     return 0;
 }
