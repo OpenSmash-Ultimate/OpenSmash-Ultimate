@@ -4744,7 +4744,7 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
         static int async_decode;
         if (!async_decode)
             async_decode = on_dxvk() && (!getenv("SSBU_ASYNC_DECODE") || atoi(getenv("SSBU_ASYNC_DECODE")) != 0) ? 1 : -1;
-        int decode_here = async_decode <= 0;
+        int decode_here = async_decode <= 0 || d.astc;   /* (ASTC: never the async job, always here - its blocks are no D3D format) */
         if (async_decode > 0 && !d.astc) {
             adec = calloc(1, sizeof *adec);
             if (adec) {
