@@ -200,16 +200,20 @@ static int vi_slot_drawn(int slot) {
     return m && done >= m;
 }
 /* (vsync thread, at a refresh, before take_oldest) 1: the oldest queued buffer is not drawn yet - show nothing new now */
-/* Only while a rollback match is on (rb_online_match_now), and for a few refreshes after a rollback's load (vi_rb_load):
- * offline, menus, movies and the rest poll nothing and behave as before this option. */
+/* On offline (no savestates, or outside a net fight: low_latency can release late enough that the card is still
+ * drawing it), in an Online match (rb_online_match_now), for a few refreshes after a rollback's load (vi_rb_load),
+ * and everywhere with SSBU_VI_READY=2. */
+extern int rb_on;   /* (hle_rb_core.c) */
 static volatile int ready_grace;   /* (refreshes left after a vi_rb_load) */
+static LONG64 vi_ready_waited;   /* (the last refresh's wait for the card to finish drawing the oldest slot) */
 static int vi_ready_active(void) {
-    int rb_online_match_now(void);   /* (hle_rb_core.c) */
-    if (rb_online_match_now() > 0 || ready_on == 2) return 1;
+    int rb_online_match_now(void), rb_net_fight_now(void);   /* (hle_rb_core.c) */
+    if (!rb_on || !rb_net_fight_now() || rb_online_match_now() > 0 || ready_on == 2) return 1;
     if (ready_grace > 0) { ready_grace--; return 1; }
     return 0;
 }
 static int vi_ready_skip(void) {
+    vi_ready_waited = 0;
     ready_init();
     if (!ready_on) return 0;
     if (!vi_ready_active()) return 0;
@@ -220,12 +224,24 @@ static int vi_ready_skip(void) {
     u64 at = oldest >= 0 ? queue.slots[oldest].queued_at : 0;
     queue_unlock();
     if (oldest < 0) return 0;
+    if (vi_slot_drawn(oldest)) return 0;
     LARGE_INTEGER f, q0, q; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&q0);
     for (;;) {
-        if (vi_slot_drawn(oldest)) return 0;
-        if (rt_now_ns() - at > 50000000ull) return 0;   /* (never hold a picture back for long) */
+        if (vi_slot_drawn(oldest)) {
+            QueryPerformanceCounter(&q);
+            vi_ready_waited = q.QuadPart - q0.QuadPart;
+            return 0;
+        }
+        if (rt_now_ns() - at > 50000000ull) {
+            QueryPerformanceCounter(&q);
+            vi_ready_waited = q.QuadPart - q0.QuadPart;
+            return 0;   /* (never hold a picture back for long) */
+        }
         QueryPerformanceCounter(&q);
-        if ((double)(q.QuadPart - q0.QuadPart) * 1000.0 / (double)f.QuadPart >= ready_poll_ms) return 1;
+        if ((double)(q.QuadPart - q0.QuadPart) * 1000.0 / (double)f.QuadPart >= ready_poll_ms) {
+            vi_ready_waited = q.QuadPart - q0.QuadPart;
+            return 1;
+        }
         SwitchToThread();
     }
 }
@@ -409,8 +425,8 @@ static void show_fast(void) {
  * refresh that shows the frame. The refresh count the game reads is the same, so its logic does not
  * change. A frame that was released late and then missed its refresh (nothing queued, or the card
  * still drawing it) turns the delay off for a second. Not with SSBU_SPEED or in a rollback's catch-up. */
-static LONG64 ll_freq, ll_spans[64], ll_release, ll_margin;
-static int ll_next, ll_count, ll_backoff, ll_delayed;
+static LONG64 ll_freq, ll_spans[64], ll_draw_spans[64], ll_prev_release, ll_release, ll_margin;
+static int ll_next, ll_count, ll_draw_next, ll_draw_count, ll_backoff, ll_delayed;
 static volatile LONG64 ll_late_frames, ll_delayed_frames, ll_delay_sum, ll_undrawn_frames;   /* (undrawn: of the late ones, a picture not drawn yet) */
 /* (kernel.c) the refreshes the game sees in a 60 Hz frame: display_tick_mult as the vsync thread last paced it, for
  * hle_frame_rate.c, rollback's fixed clock and its pads' sampling numbers */
@@ -456,6 +472,7 @@ static LONG64 ll_delay(void) {   /* ticks to hold the signal past the refresh */
     if (ll_backoff > 0) { ll_backoff--; return 0; }
     LONG64 most = 0;
     for (int i = 0; i < ll_count; i++) if (ll_spans[i] > most) most = ll_spans[i];
+    for (int i = 0; i < ll_draw_count; i++) if (ll_draw_spans[i] > most) most = ll_draw_spans[i];
     {   static LONG64 keep = -1;   /* (the rollbacks' spans: see ll_queued) */
         if (keep < 0) {
             const char *e = getenv("SSBU_LOW_LATENCY_RB_MS");
@@ -533,14 +550,15 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
             refresh_at = qpc_now();
             if (lat_tf) lat_tick_ms = lat_ms();
             LONG m = display_tick_mult();
-            if (m != rt_refresh_mult) { InterlockedExchange(&rt_refresh_mult, m); queue_lock(); ll_count = ll_next = 0; queue_unlock(); }   /* (low_latency measures again) */
+            if (m != rt_refresh_mult) { InterlockedExchange(&rt_refresh_mult, m); queue_lock(); ll_count = ll_next = ll_draw_count = ll_draw_next = 0; queue_unlock(); }   /* (low_latency measures again) */
         }
-        if (!fast && rb_vsync_skip > 0) { InterlockedDecrement(&rb_vsync_skip); InterlockedIncrement64(&rb_vsync_skipped); continue; }
+        if (!fast && rb_vsync_skip > 0) { InterlockedDecrement(&rb_vsync_skip); InterlockedIncrement64(&rb_vsync_skipped); ll_prev_release = 0; continue; }
         int not_drawn = !fast && vi_ready_skip();   /* (SSBU_VI_READY=1: the oldest picture is not drawn yet: show nothing new) */
         LONG64 d = fast ? 0 : ll_delay();
         int hold = d > 0 && ll_hold_on();
         queue_lock();
         int oldest = not_drawn ? -1 : take_oldest_held(hold);
+        u64 draw_mark = !fast && oldest >= 0 ? ready_mark[oldest] : 0;
         /* (rollback, fast and nothing queued: wait for the game's next frame - up to 2 ms, then a refresh
          * all the same - rather than signal refreshes in a spin: thousands of them, each through the
          * kernel's lock, and the game counted them as dropped refreshes) */
@@ -552,20 +570,27 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
             if (woken) { queue_unlock(); continue; }
         }
         queue_unlock();
+        if (ll_prev_release && draw_mark && ll_freq && ready_on > 0) {
+            i64 dq = gpu_queue_done_qpc(draw_mark);
+            if (dq > ll_prev_release && dq - ll_prev_release < ll_freq) {
+                ll_draw_spans[ll_draw_next] = dq - ll_prev_release;
+                ll_draw_next = (ll_draw_next + 1) % 64;
+                if (ll_draw_count < 64) ll_draw_count++;
+            }
+        }
         LONG64 tick = refresh_at ? refresh_at : qpc_now();
         if (oldest >= 0) {
             if (fast) show_fast();
             else {
                 /* (the hold's frame queued its window texture, but the job that draws it - the first submission after the
-                 * QueueBuffer, SSBU_VI_READY's mark - has not run: the slot shows its old picture, 3 frames before. Seen on
-                 * Direct3D 11 in a light offline fight: the picture 4 frames behind the game for most of it, press -> present
-                 * 72 ms against 32 with the hold off. Off for a second, as for a late frame; whatever SSBU_VI_READY says) */
-                int undrawn = ll_delayed && ready_on > 0 && !vi_slot_drawn(oldest);
+                 * QueueBuffer, SSBU_VI_READY's mark - was still running at the refresh, so polling waited or polling was
+                 * off and the buffer showed its old 3-frames-before picture. Off for a second, as for a late frame) */
+                int undrawn = ll_delayed && ready_on > 0 && (!vi_slot_drawn(oldest) || vi_ready_waited > ll_freq / 1000);
                 show_held(hold);
                 if (ll_delayed && show_waited > ll_freq / 1000) { ll_backoff = 60; ll_late_frames++; d = 0; }   /* (the card was still drawing it) */
                 else if (undrawn) { ll_backoff = 60; ll_late_frames++; ll_undrawn_frames++; d = 0; }
             }
-        } else if (!fast && ll_delayed) { ll_backoff = 60; ll_late_frames++; d = 0; }   /* (released late, and not queued in time) */
+        } else if (!fast && ll_delayed) { ll_backoff = 60; if (not_drawn) ll_undrawn_frames++; ll_late_frames++; d = 0; }   /* (released late, and not queued in time) */
         /* (d was worked out before the show: a miss seen now releases this refresh at once, as before) */
         ll_delayed = d > 0;
         if (d) { ll_wait_until(tick + d); ll_delayed_frames++; ll_delay_sum += d; }
@@ -578,7 +603,7 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
             ll_said = GetTickCount64();
         }
         queue_lock();
-        ll_release = fast ? 0 : qpc_now();
+        ll_release = ll_prev_release = fast ? 0 : qpc_now();
         queue_unlock();
         if (lat_tf && !fast) lat_line("R %.3f %.3f\n", lat_ms(), lat_tick_ms);   /* (the signal; the refresh it is for: low_latency's hold between) */
         kernel_signal_event(queue.vsync_event);

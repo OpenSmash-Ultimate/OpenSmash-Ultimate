@@ -43,6 +43,7 @@ static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
 extern u64 gpu_stat_draws;   /* (gpu.c) */
 static int count_draws;      /* SSBU_SEQ: drawn_by[n % JOBS] = draw calls run once submission n had */
 static u64 drawn_by[JOBS];
+static i64 done_qpc[JOBS];   /* QPC timestamp when submission n + 1 finished */
 
 /* (gpu.h, gpu_rb_wrote) The GPU thread's guest writes, as runs of pages: the run being built is the GPU thread's
  * own; it is published (rbw_n, release) when a write goes elsewhere and at the end of every submission, so a run
@@ -179,6 +180,8 @@ static DWORD WINAPI gpu_thread(LPVOID unused) {
             AcquireSRWLockExclusive(&lock);
             after_busy = 0;
         }
+        LARGE_INTEGER done_at; QueryPerformanceCounter(&done_at);
+        done_qpc[done % JOBS] = (i64)done_at.QuadPart;
         done++;
         WakeAllConditionVariable(&progress);
         ReleaseSRWLockExclusive(&lock);
@@ -276,4 +279,12 @@ u64 gpu_queue_done_count(void) {
     u64 n = done;
     ReleaseSRWLockShared(&lock);
     return n;
+}
+
+i64 gpu_queue_done_qpc(u64 mark) {
+    if (enabled != 1 || !mark) return 0;
+    AcquireSRWLockShared(&lock);
+    i64 q = done >= mark && done - mark < JOBS ? done_qpc[(mark - 1) % JOBS] : 0;
+    ReleaseSRWLockShared(&lock);
+    return q;
 }
