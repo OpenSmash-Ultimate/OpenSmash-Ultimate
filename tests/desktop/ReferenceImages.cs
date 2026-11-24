@@ -23,7 +23,9 @@ static class ReferenceImages
             // The appended Game tab is new. Keep comparing every existing tab and row.
             if(reference.StartsWith("settings")&&x>=828&&x<1024&&y>=202&&y<246)continue;
             // Update adds BUILD GAME + LAUNCHER at the left of the button row, moving CHECK FOR UPDATE beside it.
-            if(reference=="settings-update"&&x>=136&&x<660&&y>=620&&y<712)continue;
+            if(reference=="settings-update"&&x>=136&&x<660&&y>=650&&y<712)continue;
+            // The versions line (LAUNCHER / RECOMP / GAME: OpenSmash.Core.VersionInfo) above it, in the card's empty space.
+            if(reference=="settings-update"&&x>=136&&x<900&&y>=620&&y<650)continue;
             // Windows appends the Advanced tab (rooms: RoomsArtwork.cs) after them.
             if(reference.StartsWith("settings")&&x>=1024&&x<1340&&y>=202&&y<246)continue;
             // Display now appends Preload shaders below the original three rows.
