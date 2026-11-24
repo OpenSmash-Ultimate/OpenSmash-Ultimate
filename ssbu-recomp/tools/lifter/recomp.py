@@ -13,11 +13,30 @@ import struct
 import sys
 import collections
 
-ELF = os.path.join(os.environ['RECOMP_BIN'], 'main.elf') if os.environ.get('RECOMP_BIN') else r'..\binaries\13.0.4\main.elf'   # RECOMP_BIN: scripts/setup.py
+# Relative to the current directory, as before (was the Windows-only literal r'..\binaries\13.0.4\main.elf').
+# RECOMP_ELF overrides it; RECOMP_BIN (scripts/setup.py) names the folder that holds main.elf.
+ELF = os.environ.get('RECOMP_ELF') or (os.path.join(os.environ['RECOMP_BIN'], 'main.elf') if os.environ.get('RECOMP_BIN') else os.path.join('..', 'binaries', '13.0.4', 'main.elf'))
 BASE = 0x7100000000
 FILE_OFF = 0x1000
 
-IMG = open(ELF, 'rb').read()
+# The image is read at import, as before, and without it the import stops, as before: the layout below is read from it,
+# and an all-0 layout would let importers (gen_imports.py, eh_census*.py, gen_eh_tests.py, tests/blrefs.py) loop over
+# empty tables and write empty output without an error. RECOMP_NO_IMAGE=1 (unit tests of the instruction decoder,
+# tests/arm_host) imports without it: IMG is None, and everything that needs the binary fails with a clear message.
+if os.path.exists(ELF):
+    IMG = open(ELF, 'rb').read()
+else:
+    IMG = None
+
+
+def need_img():
+    if IMG is None:
+        raise FileNotFoundError('recomp.py: game binary not found: %s (run from the directory the lifter expects, '
+                                'or set RECOMP_ELF)' % os.path.abspath(ELF))
+
+
+if IMG is None and os.environ.get('RECOMP_NO_IMAGE') != '1':
+    need_img()
 
 
 def _layout(img):
@@ -41,7 +60,8 @@ def _layout(img):
     return text, tags[7], tags[8], tags[23], tags[2], tags[6], tags[5]
 
 
-TEXT_SIZE, RELA, RELASZ, JMPREL, PLTRELSZ, SYMTAB, STRTAB = _layout(IMG)
+# Without the image (RECOMP_NO_IMAGE=1: decoder unit tests) the layout is all 0, as in tools/nro/recomp_nro.py; need_img() guards every use.
+TEXT_SIZE, RELA, RELASZ, JMPREL, PLTRELSZ, SYMTAB, STRTAB = _layout(IMG) if IMG is not None else (0,) * 7
 
 
 # Instruction patch list (N3, plan\phases\N3_new_kind.md): DEFAULT OFF. A patch replaces one instruction word of the
@@ -54,6 +74,7 @@ PATCHES = {}
 
 
 def load_patches(path):
+    need_img()
     out = {}
     with open(path) as f:
         for line in f:
@@ -68,13 +89,15 @@ def load_patches(path):
     return out
 
 
-if __import__('os').environ.get('RECOMP_PATCHES'):
-    PATCHES = load_patches(__import__('os').environ['RECOMP_PATCHES'])
+if os.environ.get('RECOMP_PATCHES'):
+    PATCHES = load_patches(os.environ['RECOMP_PATCHES'])
 
 
 def word(addr):
     if PATCHES and addr in PATCHES:
         return PATCHES[addr]
+    if IMG is None:
+        need_img()
     return struct.unpack_from('<I', IMG, FILE_OFF + addr - BASE)[0]
 
 
@@ -900,6 +923,7 @@ class Env:
         self.full = False
 
     def load_plt(self):
+        need_img()
         self.plt_syms = {}
         self.plt_info = {}
         for i in range(PLTRELSZ // 24):
@@ -949,6 +973,7 @@ class Env:
 
     def compute_starts(self):
         """Function entries: every BL target plus every code address stored in data (relative relocs)."""
+        need_img()
         starts = set()
         text = IMG[FILE_OFF:FILE_OFF + TEXT_SIZE]
         for i, (w,) in enumerate(struct.iter_unpack('<I', text)):
@@ -1305,6 +1330,7 @@ def cmd_cover():
 
 
 if __name__ == '__main__':
+    need_img()
     if sys.argv[1] == 'cover':
         cmd_cover()
     elif sys.argv[1] == 'full':
