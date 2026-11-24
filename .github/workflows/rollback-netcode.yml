@@ -39,12 +39,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 3.14, as windowsmash-tests.yml (the test needs the standard library only)
+      # 3.14, as opensmash-tests.yml (the test needs the standard library only)
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
 
-      # clang as windowsmash-tests.yml installs it. macOS: Apple's clang. Windows: clang-cl, which tools/cc.py finds
+      # clang as opensmash-tests.yml installs it. macOS: Apple's clang. Windows: clang-cl, which tools/cc.py finds
       # (Visual Studio's C++ Clang tools, or LLVM's installer: the runner has both)
       - name: Linux packages
         if: runner.os == 'Linux'

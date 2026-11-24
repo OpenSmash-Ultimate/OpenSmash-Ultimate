@@ -39,7 +39,7 @@ public static class Commands
     {
         if(p.Platform==DesktopPlatform.Windows)
         {
-            var args=new List<string>{"-NoProfile","-ExecutionPolicy","Bypass","-File",p.PathIn("tools","install_windowsmash.ps1"),
+            var args=new List<string>{"-NoProfile","-ExecutionPolicy","Bypass","-File",p.Installer,
                 "-NoWizard","-Game",options.Game,"-Keys",options.Keys,"-OnlineName",options.Name,"-Jobs",options.Jobs.ToString()};
             if(options.Firmware=="")args.Add("-NoFirmware");else args.AddRange(["-Firmware",options.Firmware]);
             if(options.Shortcuts)args.Add("-Shortcut");if(options.Firewall)args.Add("-Firewall");if(options.Shaders)args.Add("-Shaders");

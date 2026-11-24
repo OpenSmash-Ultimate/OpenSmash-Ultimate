@@ -19,7 +19,7 @@ public sealed partial class MainWindow
         var p=RequireProject();string marker=UpdateState.GameMarker(p);if(!File.Exists(marker))return;
         Surface.SetOperationLabel("REBUILDING THE GAME");
         Command command=p.Platform==DesktopPlatform.Windows
-            ?new("powershell.exe",["-NoProfile","-ExecutionPolicy","Bypass","-File",p.PathIn("tools","install_windowsmash.ps1"),"-BuildAfterUpdate"],p.Root)
+            ?new("powershell.exe",["-NoProfile","-ExecutionPolicy","Bypass","-File",p.Installer,"-BuildAfterUpdate"],p.Root)
             :new("/bin/bash",new[]{p.PathIn("tools",p.Platform==DesktopPlatform.MacOS?"mac":"linux","install.sh"),"--yes","--no-update"}.Concat(p.Platform==DesktopPlatform.MacOS?new[]{"--no-wizard"}:Array.Empty<string>()).ToArray(),p.Root);
         await RunUpdateStep(command,"update_game_build.log");
         File.Delete(marker);

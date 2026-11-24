@@ -41,7 +41,7 @@ jobs:
         with:
           python-version: '3.14'
 
-      # SDL3 3.4.18's VC package (the SHA-256 tools/install_windowsmash.ps1 pins), as runtime-compile.yml
+      # SDL3 3.4.18's VC package (the SHA-256 tools/install_opensmash.ps1 pins), as runtime-compile.yml
       - name: Windows packages
         shell: pwsh
         run: |

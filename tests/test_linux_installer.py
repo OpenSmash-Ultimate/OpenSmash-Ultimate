@@ -1,4 +1,4 @@
-"""The Linux installer (install-windowsmash.sh, tools/linux/install_linux.py), the Linux build on a
+"""The Linux installer (install-opensmash.sh, tools/linux/install_linux.py), the Linux build on a
 Linux host (tools/linux/toolchain.py, build_game.py's step 9, recomp.py all --generate-only) and the
 launchers of a folder built on Linux. What runs only on Linux is stood in for; no game files."""
 from pathlib import Path
@@ -728,7 +728,7 @@ class LauncherTests(unittest.TestCase):
         (self.top / 'build-linux' / 'ssbu').unlink()
         r = self.run_launcher('launchers/play-ssbu-offline.sh')
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn('The game is not built yet (build-linux/ssbu): run  bash install-windowsmash.sh', r.stdout)
+        self.assertIn('The game is not built yet (build-linux/ssbu): run  bash install-opensmash.sh', r.stdout)
 
 
 @unittest.skipUnless(BASH, 'needs bash')

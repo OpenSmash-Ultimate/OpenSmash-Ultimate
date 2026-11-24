@@ -186,7 +186,7 @@ final class Model: ObservableObject {
         p.standardOutput = out
         p.standardError = Pipe()
         do { try p.run() } catch {
-            self.error = "Can't run OpenSmash's Python (\(Port.python)): run Install WindowSmash.command first."
+            self.error = "Can't run OpenSmash's Python (\(Port.python)): run Install OpenSmash.command first."
             return false
         }
         var failed = false

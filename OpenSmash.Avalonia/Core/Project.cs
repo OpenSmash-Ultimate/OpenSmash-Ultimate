@@ -29,6 +29,13 @@ public sealed class Project
     }
 
     public string PathIn(params string[] parts) => Path.Combine(new[] { Root }.Concat(parts).ToArray());
+    // The Windows setup; a copy from before the rename has it as install_windowsmash.ps1 (the same installer).
+    public string Installer => InstallerIn(Root);
+    public static string InstallerIn(string root)
+    {
+        string now = Path.Combine(root, "tools", "install_opensmash.ps1"), old = Path.Combine(root, "tools", "install_windowsmash.ps1");
+        return File.Exists(now) || !File.Exists(old) ? now : old;
+    }
     public string GameExecutable => Platform switch
     {
         DesktopPlatform.Windows => PathIn("build", "ssbu.exe"),

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""OpenSmash on Linux in one go: what install-windowsmash.sh runs (the Linux counterpart of
-OpenSmash.exe, tools/install_windowsmash.ps1).
+"""OpenSmash on Linux in one go: what install-opensmash.sh runs (the Linux counterpart of
+OpenSmash.exe, tools/install_opensmash.ps1).
 
-Usage: bash install-windowsmash.sh [--game <dir>] [--keys <dir>] [--firmware <dir> | --no-firmware] [--online-name <name>]
+Usage: bash install-opensmash.sh [--game <dir>] [--keys <dir>] [--firmware <dir> | --no-firmware] [--online-name <name>]
                                    [--jobs N] [--skip-build] [--no-update] [--no-packages] [--yes] [--dry-run]
 
   1. update     the newest OpenSmash from GitHub: a git checkout of main is pulled; a ZIP
@@ -60,7 +60,7 @@ NEED_DISK_GB = 30   # (the C, the objects and the program: 7 GB; the update's da
 MIN_RAM_GB = 7   # (8 GB machines report a little less)
 PY7ZR = "py7zr==1.1.4"   # (the Windows installer's pin)
 PYTHON_EXTRA = ["pillow"]   # (the overlay font: tools/linux/make_overlay_font.py)
-LAUNCHERS = ["install-windowsmash.sh", "play-ssbu.sh", "opensmash-launcher.sh", "tools/linux/askpass.sh",
+LAUNCHERS = ["install-opensmash.sh", "install-windowsmash.sh", "play-ssbu.sh", "opensmash-launcher.sh", "tools/linux/askpass.sh",
              "launchers/play-ssbu-offline.sh", "launchers/host-ssbu-netplay.sh", "launchers/join-ssbu-netplay.sh",
              "launchers/unlock-all-fighters.sh", "launchers/prepare-shaders.sh", "tools/linux/rebuild-all.sh"]   # (made runnable: chmod 755)
 # The third-party parts of the build (tools/linux/toolchain.py): (what, URL, SHA-256, file, where it goes,
@@ -285,7 +285,7 @@ def desktop_entry(root):
     exec_line = " ".join(desktop_quote(a) for a in ("bash", posixpath.join(root, "play-ssbu.sh")))
     return ("[Desktop Entry]\nType=Application\nName=OpenSmash\nGenericName=Super Smash Bros. Ultimate\n"
             "Comment=Super Smash Bros. Ultimate, recompiled from your own copy\n"
-            f"Exec={exec_line}\nPath={root}\nIcon={posixpath.join(root, 'docs', 'assets', 'windowsmash.ico')}\n"
+            f"Exec={exec_line}\nPath={root}\nIcon={posixpath.join(root, 'docs', 'assets', 'opensmash.ico')}\n"
             "Terminal=true\nCategories=Game;\n")
 
 
@@ -295,7 +295,7 @@ def launcher_desktop_entry(root):
     exec_line = " ".join(desktop_quote(a) for a in ("bash", posixpath.join(root, "opensmash-launcher.sh")))
     return ("[Desktop Entry]\nType=Application\nName=OpenSmash Launcher\nGenericName=Super Smash Bros. Ultimate\n"
             "Comment=Set up, update, play and mod OpenSmash (Super Smash Bros. Ultimate, recompiled from your own copy)\n"
-            f"Exec={exec_line}\nPath={root}\nIcon={posixpath.join(root, 'docs', 'assets', 'windowsmash.ico')}\n"
+            f"Exec={exec_line}\nPath={root}\nIcon={posixpath.join(root, 'docs', 'assets', 'opensmash.ico')}\n"
             "Terminal=false\nCategories=Game;\n")
 
 
@@ -465,7 +465,7 @@ def update_git(dry):
 
 def write_atomic(path, data):
     """A file replaced whole (a new file renamed over the old): a running script, such as
-    install-windowsmash.sh itself, keeps reading the old one."""
+    install-opensmash.sh itself, keeps reading the old one."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".new"
     with open(tmp, "wb") as f:
@@ -727,7 +727,7 @@ def read_only(path="/usr"):
 def need_writable_system():
     if read_only():
         raise Stop("The system's folders are read-only, so packages can't be added or put back. Make them writable "
-                   "(on SteamOS: sudo steamos-readonly disable), then run bash install-windowsmash.sh again.")
+                   "(on SteamOS: sudo steamos-readonly disable), then run bash install-opensmash.sh again.")
 
 
 def debian_cxx_headers(manager, dry):
@@ -781,7 +781,7 @@ def step_headers(manager, a):
         return
     if manager == "rpm-ostree":
         raise Stop(f"{names} not there yet (they come with {', '.join(pkgs)}). If rpm-ostree added them for the next "
-                   "start, restart the PC, then run bash install-windowsmash.sh again.")
+                   "start, restart the PC, then run bash install-opensmash.sh again.")
     what = (f"the package{'s' if len(pkgs) != 1 else ''} they come with: {', '.join(pkgs)}" if pkgs else
             "your distribution's packages for them (Debian calls them "
             f"{', '.join(dict.fromkeys(HEADERS[h]['apt'] for h, _ in gone))})")
@@ -839,7 +839,7 @@ def step_packages(a):
         still = still_missing(wanted, lambda p: installed(manager, p))
         if still and manager == "rpm-ostree":
             raise Stop("The packages are added to the system for its next start (they could not be applied to the "
-                       "running one): restart the PC, then run bash install-windowsmash.sh again.")
+                       "running one): restart the PC, then run bash install-opensmash.sh again.")
         if still:
             raise Stop(f"These packages are still not installed: {', '.join(still)} (see above). Install them (or what "
                        "your distribution calls them) yourself, then run this again with --no-packages.")
@@ -1005,7 +1005,7 @@ def ask_folder(label, value, check, interactive):
             return os.path.abspath(value) if value else None
         if not interactive:
             other = " (or --no-firmware: the open fonts)" if label == "firmware" else ""
-            raise Stop(f"The {label} folder is not usable ({text}). Name it with --{label}{other} (see bash install-windowsmash.sh "
+            raise Stop(f"The {label} folder is not usable ({text}). Name it with --{label}{other} (see bash install-opensmash.sh "
                        "--help).")
         value = ask(f"{label.capitalize()} folder", value, True)
 
@@ -1022,7 +1022,7 @@ def step_files(a):
     step("[6/8] Your game files")
     if not (a.game or a.keys or a.firmware) and not a.dry_run and os.path.isfile(venv_python()) and files_ready():
         info("already read from your game files (dump/): not asking for them again. To build from other game files, "
-             "run: bash install-windowsmash.sh --game <folder>")
+             "run: bash install-opensmash.sh --game <folder>")
         name_file = config_file("online_name.txt")
         name = a.online_name or read_text(name_file).strip()
         if name and name != read_text(name_file).strip():
@@ -1138,13 +1138,13 @@ def step_build(a, files):
          ", then the build: one to a few hours the first time"))
     env = {**os.environ, "SSBU_LINUX_TOOLCHAIN": TOOLCHAIN}
     if subprocess.run(cmd, cwd=ROOT, env=env).returncode:
-        raise Stop("The build stopped (the message above says why). Fix that, then run bash install-windowsmash.sh again: it "
+        raise Stop("The build stopped (the message above says why). Fix that, then run bash install-opensmash.sh again: it "
                    "carries on where it stopped.")
     return not a.skip_build
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="install-windowsmash.sh", description="Set up OpenSmash on Linux in one go.")
+    ap = argparse.ArgumentParser(prog="install-opensmash.sh", description="Set up OpenSmash on Linux in one go.")
     ap.add_argument("--game", help="the folder with the game's files (found or asked)")
     ap.add_argument("--keys", help="the folder with prod.keys and title.keys (found or asked)")
     ap.add_argument("--firmware", help="the folder with the firmware's .nca files, for your console's own fonts (optional: "
@@ -1193,7 +1193,7 @@ def main(argv=None):
         print(f"\nERROR: {e}")
         return 1
     except KeyboardInterrupt:
-        print("\nStopped. Run bash install-windowsmash.sh again to carry on from here.")
+        print("\nStopped. Run bash install-opensmash.sh again to carry on from here.")
         return 1
 
 

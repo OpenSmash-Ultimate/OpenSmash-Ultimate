@@ -3,7 +3,7 @@
 // - a newer launcher: its file is downloaded, checked against its SHA-256 and put in place of the running one (renamed
 //   to .old, which Windows allows), then started again with --updated. No .NET SDK needed on the player's PC;
 // - another commit than the installed one (tools/source_version.txt, which the installer's updater writes): the
-//   installer brings the sources to the release's commit (install_windowsmash.ps1 -UpdateOnly -UpdateCommit <sha>) and
+//   installer brings the sources to the release's commit (install_opensmash.ps1 -UpdateOnly -UpdateCommit <sha>) and
 //   rebuilds what the change needs (-BuildAfterUpdate);
 // - not installed yet: the release commit's sources are unpacked beside the launcher (FirstInstallAsync).
 // A git checkout (a developer's copy) is never changed; OPENSMASH_UPDATE=off skips everything, =force checks a git checkout too.

@@ -96,7 +96,7 @@ int rt_cpu_message(unsigned needs, unsigned has, char *out, size_t size) {
 #ifdef _WIN32
 #define RT_CPU_AGAIN "Run OpenSmash.exe again: it builds the game for this processor"
 #else
-#define RT_CPU_AGAIN "Run install-windowsmash.sh again: it builds the game for this processor"
+#define RT_CPU_AGAIN "Run install-opensmash.sh again: it builds the game for this processor"
 #endif
     /* (the second sentence for when the first does not help: a Windows older than 10 version 2004 cannot be asked
      * about AVX2, and the installer then goes by the processor's name, which may say AVX2 where a virtual machine

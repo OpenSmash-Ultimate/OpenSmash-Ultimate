@@ -17,7 +17,7 @@ while (Get-Process -Id $WaitForProcessId -ErrorAction SilentlyContinue) {
 function Invoke-ReleaseLauncherFallback {
     <# The release's OpenSmash.exe through the installer (-LauncherOnly): $true when OpenSmash.exe is the release's now. #>
     param([string]$Repo)
-    $installer = Join-Path $Repo 'tools\install_windowsmash.ps1'
+    $installer = Join-Path $Repo 'tools\install_opensmash.ps1'
     if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { return $false }
     if (-not (Select-String -LiteralPath $installer -Pattern 'LauncherOnly' -SimpleMatch -Quiet)) { return $false }
     try {
@@ -43,7 +43,7 @@ try {
 catch {
     $reason = $_.Exception.Message
     # The rebuild failed ("dotnet publish failed", a broken or missing .NET SDK): the latest release's OpenSmash.exe,
-    # checked against its published SHA-256, as on a PC without the SDK (install_windowsmash.ps1 -LauncherOnly,
+    # checked against its published SHA-256, as on a PC without the SDK (install_opensmash.ps1 -LauncherOnly,
     # Update-LauncherExe). A git checkout, a copy following main, or no download: the error below, as before.
     if (Invoke-ReleaseLauncherFallback -Repo $Repo) {
         if (Test-Path -LiteralPath $PendingMarker) { Remove-Item -LiteralPath $PendingMarker -Force }

@@ -123,8 +123,8 @@ public sealed class ProjectBootstrap(HttpClient client)
         }
         progress(new("extract", done, zip.Entries.Count));
         string root = Project.IsProject(destination) ? destination : Directory.GetDirectories(destination) is [var only] && Directory.GetFiles(destination).Length == 0 ? only : "";
-        if(root!=""&&Project.IsProject(root)&&File.Exists(Path.Combine(root,"tools","recomp.py"))&&File.Exists(Path.Combine(root,"tools","install_windowsmash.ps1")))ProjectLayout.Normalize(root);
-        if (root == "" || !Project.IsProject(root) || !File.Exists(Path.Combine(root, "tools", "recomp.py")) || !File.Exists(Path.Combine(root, "tools", "install_windowsmash.ps1")) || !File.Exists(Path.Combine(root, "tools/linux/install.sh")) || !File.Exists(Path.Combine(root, "tools/mac/install.sh")))
+        if(root!=""&&Project.IsProject(root)&&File.Exists(Path.Combine(root,"tools","recomp.py"))&&File.Exists(Project.InstallerIn(root)))ProjectLayout.Normalize(root);
+        if (root == "" || !Project.IsProject(root) || !File.Exists(Path.Combine(root, "tools", "recomp.py")) || !File.Exists(Project.InstallerIn(root)) || !File.Exists(Path.Combine(root, "tools/linux/install.sh")) || !File.Exists(Path.Combine(root, "tools/mac/install.sh")))
             throw new InvalidDataException("The download does not contain a complete OpenSmash project. Nothing was installed.");
         return root;
     }

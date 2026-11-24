@@ -1,5 +1,5 @@
 # The OpenSmash launcher (OpenSmash.Launcher, OpenSmash.exe), built here so players need no .NET SDK: the
-# installer (tools/install_windowsmash.ps1, Step-Launcher) downloads releases/latest/download/OpenSmash.exe and
+# installer (tools/install_opensmash.ps1, Step-Launcher) downloads releases/latest/download/OpenSmash.exe and
 # checks it against OpenSmash.exe.sha256 beside it. Nothing in it comes from the game. A tag v<n> or
 # launcher-v<n> publishes both to that tag's release (a plain v<major>.<minor>.<patch> tag is the real release that becomes
 # "latest"; a tag with a suffix such as -alpha.1 is a prerelease and never takes "latest", so the download URL above keeps working); a manual run keeps them as the run's artifact.

@@ -47,7 +47,7 @@ for p in "$root/deps/venv/bin/python" python3 python3.14 python3.13 python3.12 p
     fi
 done
 if [ -z "$py" ]; then
-    msg="The OpenSmash Launcher needs Python 3.10 or newer. Install it from your distribution (python3), or run  bash install-windowsmash.sh  in a terminal."
+    msg="The OpenSmash Launcher needs Python 3.10 or newer. Install it from your distribution (python3), or run  bash install-opensmash.sh  in a terminal."
     if command -v zenity >/dev/null 2>&1; then zenity --error --title=OpenSmash --text="$msg" 2>/dev/null
     elif command -v kdialog >/dev/null 2>&1; then kdialog --title OpenSmash --error "$msg" 2>/dev/null
     else echo "$msg"; fi

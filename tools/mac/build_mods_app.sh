@@ -11,7 +11,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 swiftc -parse-as-library -O -swift-version 5 -target arm64-apple-macos14.0 \
     "$root/tools/mac/ModsShell.swift" -o "$app/Contents/MacOS/OpenSmash Mods"
 # its icon, from the mod manager's own (tools/modmanager/ui/icon.png)
-set_dir="$(mktemp -d)/windowsmash.iconset"
+set_dir="$(mktemp -d)/opensmash.iconset"
 mkdir -p "$set_dir"
 for s in 16 32 128 256 512; do
     sips -z $s $s "$root/tools/modmanager/ui/icon.png" --out "$set_dir/icon_${s}x${s}.png" >/dev/null

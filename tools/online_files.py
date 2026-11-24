@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The online files beside the program, made current: Discord's SDK and discord.txt (tools/discord_fetch.py). Run by
-every update (tools/install_windowsmash.ps1, even when nothing is built), by tools/build_game.py, and by the launchers
+every update (tools/install_opensmash.ps1, even when nothing is built), by tools/build_game.py, and by the launchers
 before the game starts: issue #389, where an update left them out.
 
     python tools/online_files.py [build folder]

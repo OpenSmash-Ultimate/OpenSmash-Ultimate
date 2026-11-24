@@ -22,7 +22,7 @@ for p in "$root/deps/venv/bin/python" "$root/deps/python/bin/python3" python3; d
     fi
 done
 if [ -z "$py" ]; then
-    echo "The OpenSmash Launcher needs Python 3.10 or newer: run Install WindowSmash.command once (it gets one),"
+    echo "The OpenSmash Launcher needs Python 3.10 or newer: run Install OpenSmash.command once (it gets one),"
     echo "or install Python from python.org."
     read -r -p "Press Return to close this window. " _
     exit 1

@@ -108,7 +108,7 @@ class OnlineFilesTests(unittest.TestCase):
         def read(*p):
             with open(os.path.join(root, *p), encoding='utf-8') as f:
                 return f.read()
-        ps1 = read('tools', 'install_windowsmash.ps1')
+        ps1 = read('tools', 'install_opensmash.ps1')
         early = ps1[ps1.index("nothing that goes into the game changed: no build"):]
         early = early[:early.index('return $true')]
         self.assertIn('online_files.py', early)   # (Step-Build's early return: issue #389)

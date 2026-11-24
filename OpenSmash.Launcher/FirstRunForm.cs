@@ -172,11 +172,11 @@ namespace OpenSmash.Launcher
 
         void UseExisting()
         {
-            using var dlg = new FolderBrowserDialog { Description = "The OpenSmash folder you already have (with tools\\install_windowsmash.ps1)", UseDescriptionForTitle = true };
+            using var dlg = new FolderBrowserDialog { Description = "The OpenSmash folder you already have (with tools\\install_opensmash.ps1)", UseDescriptionForTitle = true };
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
             if (!ProjectSetup.IsProject(dlg.SelectedPath))
             {
-                _modal = new Prompt { Title = "NOT AN OPENSMASH FOLDER", Body = dlg.SelectedPath + " has no tools\\install_windowsmash.ps1. Choose the folder you downloaded or cloned OpenSmash into." };
+                _modal = new Prompt { Title = "NOT AN OPENSMASH FOLDER", Body = dlg.SelectedPath + " has no tools\\install_opensmash.ps1. Choose the folder you downloaded or cloned OpenSmash into." };
                 return;
             }
             Finish(dlg.SelectedPath);

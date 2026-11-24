@@ -6,7 +6,7 @@ it installs, or carried in the zip).
 Usage:
   make_installer.py [--tree <port folder>] [--pack <pack name or .wsmodpack>] [--bundle-all] [--out <dir>]
 
-The zip: "Install WindowSmash Mods.command" (macOS) and ".bat" (Windows), which find the
+The zip: "Install OpenSmash Mods.command" (macOS) and ".bat" (Windows), which find the
 OpenSmash folder and its Python and run installer/install_mods.py; payload/ (the mod manager's
 files, at their places in an OpenSmash folder); modpack/ (the pack, and the files of its mods
 that can't be downloaded - or, with --bundle-all, of every mod in it); READ ME.txt.
@@ -30,8 +30,8 @@ PAYLOAD = ["tools/mods.py", "tools/prc.py", "tools/msbt.py",
            "tools/modmanager/server.py", "tools/modmanager/packs.py", "tools/modmanager/arc_mods.py",
            "tools/modmanager/install_mods.py", "tools/modmanager/make_installer.py", "tools/modmanager/code_fixes.py",
            "tools/mac/ModsShell.swift", "tools/mac/build_mods_app.sh",
-           "launchers/WindowSmash Mods.bat", "launchers/WindowSmash Mods.command",
-           "launchers/Uninstall WindowSmash Mods.bat", "launchers/Uninstall WindowSmash Mods.command"]
+           "launchers/OpenSmash Mods.bat", "launchers/OpenSmash Mods.command",
+           "launchers/Uninstall OpenSmash Mods.bat", "launchers/Uninstall OpenSmash Mods.command"]
 
 MAC = r'''#!/bin/bash
 # Installs OpenSmash Mods (the mod manager) into your OpenSmash folder, and the modpack this
@@ -51,7 +51,7 @@ for p in "$target/deps/venv/bin/python" "$target/deps/python/bin/python3" python
     if command -v "$p" >/dev/null 2>&1 && "$p" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then py="$p"; break; fi
 done
 if [ -z "$py" ]; then
-    echo "OpenSmash's Python wasn't found: install OpenSmash first (Install WindowSmash.command)."
+    echo "OpenSmash's Python wasn't found: install OpenSmash first (Install OpenSmash.command)."
     read -r -p "Press Return to close." _; exit 1
 fi
 "$py" "$here/installer/install_mods.py" --target "$target"
@@ -82,7 +82,7 @@ pushd "%TARGET%"
 %PY% "%HERE%installer\install_mods.py" --target "%TARGET%"
 set "RESULT=%ERRORLEVEL%"
 popd
-if "%RESULT%"=="0" start "" "%TARGET%\launchers\WindowSmash Mods.bat"
+if "%RESULT%"=="0" start "" "%TARGET%\launchers\OpenSmash Mods.bat"
 echo.
 pause
 exit /b %RESULT%
@@ -96,7 +96,7 @@ MAC_UNINSTALL = (MAC.replace("# Installs OpenSmash Mods (the mod manager) into y
 WIN_UNINSTALL = (WIN.replace("rem Installs OpenSmash Mods (the mod manager) into your OpenSmash folder, and the modpack this\n"
                              "rem installer carries, if it has one.", "rem Removes OpenSmash Mods from your OpenSmash folder and puts the game back as it was.")
                  .replace('--target "%TARGET%"\n', '--target "%TARGET%" --uninstall\n')
-                 .replace('if "%RESULT%"=="0" start "" "%TARGET%\\launchers\\WindowSmash Mods.bat"\n', ""))
+                 .replace('if "%RESULT%"=="0" start "" "%TARGET%\\launchers\\OpenSmash Mods.bat"\n', ""))
 assert MAC_UNINSTALL.count("--uninstall") == 1 and WIN_UNINSTALL.count("--uninstall") == 1 and "start" not in WIN_UNINSTALL.split("--uninstall")[1]
 
 README = """OpenSmash Mods {what}
@@ -110,8 +110,8 @@ Tourney Mode and for Inkling, Terry and Pyra/Mythra, and builds the game again w
 minutes the first time; mods work meanwhile).
 
 To install (OpenSmash must already be installed and set up):
-  Windows: unzip this, then double-click "Install WindowSmash Mods.bat".
-  macOS:   unzip this, then double-click "Install WindowSmash Mods.command"
+  Windows: unzip this, then double-click "Install OpenSmash Mods.bat".
+  macOS:   unzip this, then double-click "Install OpenSmash Mods.command"
            (if macOS says it can't be opened: right-click it, choose Open, then Open).
 
 It finds your OpenSmash folder (or asks where it is), adds the mod manager to it and opens it.
@@ -163,10 +163,10 @@ def build(tree, pack_ref=None, bundle_all=False, out_dir=None, log=print):
                 info.external_attr = 0o100755 << 16
             with open(src, "rb") as f:
                 z.writestr(info, f.read())
-        text("Install WindowSmash Mods.command", MAC, exe=True)
-        text("Install WindowSmash Mods.bat", WIN)
-        text("Uninstall WindowSmash Mods.command", MAC_UNINSTALL, exe=True)
-        text("Uninstall WindowSmash Mods.bat", WIN_UNINSTALL)
+        text("Install OpenSmash Mods.command", MAC, exe=True)
+        text("Install OpenSmash Mods.bat", WIN)
+        text("Uninstall OpenSmash Mods.command", MAC_UNINSTALL, exe=True)
+        text("Uninstall OpenSmash Mods.bat", WIN_UNINSTALL)
         what = f"- modpack \"{pack['name']}\"" if pack else ""
         about = ""
         if pack:

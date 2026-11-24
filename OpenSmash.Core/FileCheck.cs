@@ -12,7 +12,7 @@
 //   - the build (build\ssbu.exe, the Vulkan shader translator beside it), the plugins built in
 //     (dump\skyline\plugins.txt), and whether the shaders are prepared (dump\shadercache\complete.txt).
 // Each problem says how it is repaired: Build (the installer's build step, which makes again only what is missing:
-// tools\install_windowsmash.ps1 -BuildAfterUpdate), Plugins (the plugins built in again), Shaders (Prepare Shaders),
+// tools\install_opensmash.ps1 -BuildAfterUpdate), Plugins (the plugins built in again), Shaders (Prepare Shaders),
 // Setup (the game files are not where they were: the set-up asks for them again), or None (a note).
 // A repair removes only files of the installer's own that were found broken (RemoveBroken), never one outside dump\.
 // OPENSMASH_FILE_CHECK=0: the launcher does not show the button.

@@ -4,10 +4,10 @@ RecompLauncher's setup step (recomplauncher.json "prepare"): the whole install, 
 
 .DESCRIPTION
 RecompLauncher (https://recomplauncher.com) runs this without a window after the player picked their copy of the game
-and their Switch keys. It runs tools\install_windowsmash.ps1 -NoWizard with those folders, never asks anything, and
+and their Switch keys. It runs tools\install_opensmash.ps1 -NoWizard with those folders, never asks anything, and
 turns its steps ("[N/10] ...") and the build's percentages into the lines RecompLauncher reads:
     progress <0..1> <text>
-Exit 0 when the game is built. A second run with nothing changed is quick (install_windowsmash.ps1 skips the build
+Exit 0 when the game is built. A second run with nothing changed is quick (install_opensmash.ps1 skips the build
 when nothing that goes into the game changed) and ends with "progress 1 Already built".
 
 .PARAMETER Game
@@ -38,7 +38,7 @@ function Say([double]$Fraction, [string]$Text) {
     [Console]::Out.Flush()
 }
 
-# install_windowsmash.ps1 wants one folder with prod.keys and title.keys: RecompLauncher may give two files.
+# install_opensmash.ps1 wants one folder with prod.keys and title.keys: RecompLauncher may give two files.
 $keys = $ProdKeys
 if (Test-Path -LiteralPath $ProdKeys -PathType Leaf) {
     $keys = Join-Path $Root 'dump\recomplauncher_keys'
@@ -50,7 +50,7 @@ if (Test-Path -LiteralPath $ProdKeys -PathType Leaf) {
     }
 }
 
-$install = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'tools\install_windowsmash.ps1'),
+$install = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'tools\install_opensmash.ps1'),
              '-NoWizard', '-NoUpdate', '-Game', $Game, '-Keys', $keys, '-NoFirmware')
 if ($AcceptLicense) { $install += '-AcceptLicense' }
 if ($DryRun) { $install += '-DryRun' }

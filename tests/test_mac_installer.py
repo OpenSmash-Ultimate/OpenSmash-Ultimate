@@ -1,4 +1,4 @@
-"""The macOS installer (Install WindowSmash.command, tools/mac/install_mac.py) and launchers
+"""The macOS installer (Install OpenSmash.command, tools/mac/install_mac.py) and launchers
 (Play SSBU.command, launchers/*.command, tools/mac/launch.sh, the Play SSBU app the
 installer makes). What decides is tested on any POSIX system with bash; what needs macOS (open,
 osacompile, hdiutil, sips, codesign) only on a Mac, where a stand-in game app records how it was
@@ -30,7 +30,7 @@ import install_mac as im  # noqa: E402
 
 BASH = '/bin/bash' if os.path.exists('/bin/bash') else shutil.which('bash')
 DARWIN = sys.platform == 'darwin'
-INSTALL = ROOT / 'Install WindowSmash.command'
+INSTALL = ROOT / 'Install OpenSmash.command'
 SCRIPTS = [ROOT / n for n in im.LAUNCHERS]
 
 
@@ -831,7 +831,7 @@ class LauncherAppTests(unittest.TestCase):
             self.assertEqual(r.stdout, 'LAUNCH --gui play\n')
 
     def test_ico_png(self):
-        png = im.ico_png((ROOT / 'docs' / 'assets' / 'windowsmash.ico').read_bytes())
+        png = im.ico_png((ROOT / 'docs' / 'assets' / 'opensmash.ico').read_bytes())
         self.assertTrue(png.startswith(b'\x89PNG\r\n\x1a\n'))
         self.assertEqual(int.from_bytes(png[16:20], 'big'), 256)   # (the IHDR's width)
         self.assertIsNone(im.ico_png(b''))
@@ -852,7 +852,7 @@ class LauncherAppTests(unittest.TestCase):
             with open(plist, 'rb') as f:
                 self.assertEqual(plistlib.load(f)['CFBundleIdentifier'], 'io.github.sno2207.windowsmash.test-launcher')
             icns = Path(app, 'Contents', 'Resources', 'windowsmash.icns').read_bytes()
-            self.assertEqual(icns[:4], b'icns')   # (the game's, or made from docs/assets/windowsmash.ico)
+            self.assertEqual(icns[:4], b'icns')   # (the game's, or made from docs/assets/opensmash.ico)
             self.assertEqual(Path(app, 'Contents', 'PkgInfo').read_text(), 'APPL????')
             r = subprocess.run(['codesign', '--verify', app], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
@@ -865,7 +865,7 @@ class LauncherAppTests(unittest.TestCase):
 
 @unittest.skipUnless(BASH, 'needs bash')
 class BootstrapTests(unittest.TestCase):
-    """Install WindowSmash.command: which Python it runs the installer with, and the Python it
+    """Install OpenSmash.command: which Python it runs the installer with, and the Python it
     downloads when there is none (stood in for: curl copies a local file)."""
 
     def setUp(self):
@@ -1006,7 +1006,7 @@ def make_tree(top, tree='.', version=None, data=True, built=True):
 def copy_launchers(top):
     for name in ('Play SSBU.command', 'launchers/Play SSBU Offline.command', 'launchers/Host SSBU Netplay.command',
                  'launchers/Join SSBU Netplay.command', 'launchers/Unlock All Fighters.command',
-                 'launchers/Build WindowSmash.command', 'tools/mac/launch.sh'):
+                 'launchers/Build OpenSmash.command', 'tools/mac/launch.sh'):
         (Path(top) / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / name, Path(top) / name)
 
@@ -1102,7 +1102,7 @@ class LaunchScriptTests(unittest.TestCase):
     def test_game_checks(self):
         r = self.sh('pick_game; echo "not here"')
         self.assertEqual(r.returncode, 1)
-        self.assertIn("The game isn't built here yet: double-click Install WindowSmash.command", r.stdout)
+        self.assertIn("The game isn't built here yet: double-click Install OpenSmash.command", r.stdout)
         self.assertNotIn('not here', r.stdout)
         make_tree(self.top, '.', '13.0.5')
         r = self.sh('pick_game >/dev/null; echo "tree=$tree"')
@@ -1131,11 +1131,11 @@ class LaunchScriptTests(unittest.TestCase):
             r = subprocess.run([BASH, str(self.top / name)], capture_output=True, text=True, stdin=subprocess.DEVNULL,
                                cwd='/', timeout=60)
             self.assertEqual(r.returncode, 1, name)
-            self.assertIn("The game isn't built here yet: double-click Install WindowSmash.command", r.stdout, name)
-        r = subprocess.run([BASH, str(self.top / 'launchers/Build WindowSmash.command')], capture_output=True, text=True,
+            self.assertIn("The game isn't built here yet: double-click Install OpenSmash.command", r.stdout, name)
+        r = subprocess.run([BASH, str(self.top / 'launchers/Build OpenSmash.command')], capture_output=True, text=True,
                            stdin=subprocess.DEVNULL, cwd='/', timeout=60)
         self.assertEqual(r.returncode, 1)
-        self.assertIn("OpenSmash's Python (deps/venv) is not set up yet: double-click Install WindowSmash.command", r.stdout)
+        self.assertIn("OpenSmash's Python (deps/venv) is not set up yet: double-click Install OpenSmash.command", r.stdout)
 
     def test_unlock(self):
         make_tree(self.top, '.', '13.0.5')
@@ -1158,18 +1158,18 @@ class LaunchScriptTests(unittest.TestCase):
         """A deps/venv the tools cannot use (one made by hand from Apple's Python 3.9, or an Intel
         one): the launcher says to run the installer, which makes it again."""
         write(self.top / 'deps' / 'venv' / 'bin' / 'python', '#!/bin/bash\n[ "$1" = -c ] && exit 1\necho "PY $*"\n', 0o755)
-        r = subprocess.run([BASH, str(self.top / 'launchers/Build WindowSmash.command')], capture_output=True, text=True,
+        r = subprocess.run([BASH, str(self.top / 'launchers/Build OpenSmash.command')], capture_output=True, text=True,
                            stdin=subprocess.DEVNULL, cwd='/', timeout=60)
         self.assertEqual(r.returncode, 1)
         self.assertIn("OpenSmash's Python (deps/venv) is one the tools cannot use (they need Python 3.10 or newer, as "
-                      "arm64): double-click Install WindowSmash.command, which makes it again.", r.stdout)
+                      "arm64): double-click Install OpenSmash.command, which makes it again.", r.stdout)
         self.assertNotIn('PY ', r.stdout)
 
     def test_build(self):
         write(self.top / 'deps' / 'venv' / 'bin' / 'python', '#!/bin/bash\n[ "$1" = -c ] && exit 0\necho "PY $PWD | $*"\nexit 4\n', 0o755)
         fake = Path(self.temp.name) / 'bin'
         write(fake / 'caffeinate', '#!/bin/bash\necho "AWAKE $1"\nshift\nexec "$@"\n', 0o755)
-        r = subprocess.run([BASH, str(self.top / 'launchers/Build WindowSmash.command'), '--jobs', '4'], capture_output=True,
+        r = subprocess.run([BASH, str(self.top / 'launchers/Build OpenSmash.command'), '--jobs', '4'], capture_output=True,
                            text=True, stdin=subprocess.DEVNULL, cwd='/', timeout=60,
                            env={**os.environ, 'PATH': f'{fake}:{os.environ["PATH"]}'})
         self.assertEqual(r.returncode, 4)
@@ -1301,7 +1301,7 @@ class OpenTests(unittest.TestCase):
 class ScriptSyntaxTests(unittest.TestCase):
     def test_bash_syntax(self):
         scripts = SCRIPTS + sorted((ROOT / 'launchers').glob('*.command'))
-        self.assertEqual(len({s.name for s in scripts}), 15)   # (v0.5.0: + "Build Launcher macOS.command")
+        self.assertEqual(len({s.name for s in scripts}), 16)   # (v0.5.0: + "Build Launcher macOS.command"; + the old "Install WindowSmash.command")
         for s in scripts:
             with self.subTest(s.name):
                 r = subprocess.run([BASH, '-n', str(s)], capture_output=True, text=True)

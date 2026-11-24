@@ -370,10 +370,10 @@ class BuildMacTests(unittest.TestCase):
         self.assertIsNone(self.ns['tree_version']())
 
     def test_icon_picture(self):
-        png = self.ns['ico_png'](str(ROOT / 'docs' / 'assets' / 'windowsmash.ico'))
+        png = self.ns['ico_png'](str(ROOT / 'docs' / 'assets' / 'opensmash.ico'))
         self.assertTrue(png.startswith(b'\x89PNG\r\n\x1a\n'))
         self.assertEqual(struct.unpack('>II', png[16:24]), (256, 256))   # (its IHDR)
-        self.assertIsNone(self.ns['ico_png'](str(ROOT / 'docs' / 'assets' / 'windowsmash.ico'), 512))
+        self.assertIsNone(self.ns['ico_png'](str(ROOT / 'docs' / 'assets' / 'opensmash.ico'), 512))
 
     def test_use_tree(self):
         out = Path(self.ns['OUT'])

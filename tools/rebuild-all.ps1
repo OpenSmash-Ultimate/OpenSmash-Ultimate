@@ -51,10 +51,10 @@ if ($Jobs -gt 0) { $buildArgs += @("--jobs", $Jobs.ToString()) }
 if ($LASTEXITCODE -ne 0) { throw "The game build failed ($LASTEXITCODE)." }
 
 function Invoke-ReleaseLauncher {
-    <# The latest release's OpenSmash.exe, checked against its published SHA-256 (install_windowsmash.ps1 -LauncherOnly):
+    <# The latest release's OpenSmash.exe, checked against its published SHA-256 (install_opensmash.ps1 -LauncherOnly):
        $true when OpenSmash.exe is the release's now. A running exe is renamed, not overwritten, so this works with the
        launcher still open. #>
-    $installer = Join-Path $PSScriptRoot "install_windowsmash.ps1"
+    $installer = Join-Path $PSScriptRoot "install_opensmash.ps1"
     if (-not (Test-Path -LiteralPath $installer)) { return $false }
     $p = Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -Wait -PassThru -ArgumentList @(
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$installer`"", "-LauncherOnly")

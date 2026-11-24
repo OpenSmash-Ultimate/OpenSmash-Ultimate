@@ -11,7 +11,7 @@ public sealed partial class MainWindow
     async Task PrepareToolsPython(bool force)
     {
         var p=RequireProject();if(p.Platform!=DesktopPlatform.Windows)return;
-        string script=p.PathIn("tools","install_windowsmash.ps1");
+        string script=p.Installer;
         if(!File.Exists(script)||!File.ReadAllText(script).Contains("[switch]$PythonOnly"))return;
         string own=p.PathIn("deps","venv","Scripts","python.exe");
         if(!force&&File.Exists(p.PathIn("deps","venv",".opensmash-ready"))&&File.Exists(own))return;

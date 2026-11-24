@@ -5,7 +5,7 @@ RecompLauncher (https://recomplauncher.com, issue #543) installs a release from 
 its top, next to the program. This zip is the project's source at the release's tag (git archive), the release's
 OpenSmash.exe and recomplauncher.json, all at the top (no folder around them). recomplauncher.json gets the tag as
 prepare's OPENSMASH_RELEASE_TAG, so the setup step builds the game the way a release install does (the game as its own
-library, the release's prebuilt runtime: tools/install_windowsmash.ps1).
+library, the release's prebuilt runtime: tools/install_opensmash.ps1).
 
     python tools/make_recomplauncher_zip.py --tag v0.5.0 --exe dist/OpenSmash.exe [--out dist]
 """

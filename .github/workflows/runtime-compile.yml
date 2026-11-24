@@ -50,7 +50,7 @@ jobs:
           python-version: '3.14'
 
       # clang-cl is Visual Studio's (tools/cc.py finds it). SDL3 3.4.18's VC package (the SHA-256
-      # tools/install_windowsmash.ps1 pins) in deps\SDL3, as the installer puts it: without it the runtime is
+      # tools/install_opensmash.ps1 pins) in deps\SDL3, as the installer puts it: without it the runtime is
       # compiled without its SDL3 controllers.
       - name: Windows packages
         if: runner.os == 'Windows'
@@ -69,7 +69,7 @@ jobs:
           if (-not $inner) { throw "$zip does not hold include\SDL3" }
           Move-Item -LiteralPath $inner.FullName -Destination deps\SDL3
 
-      # what install-windowsmash.sh installs for the build (tools/linux/install_linux.py's apt packages), and Pillow
+      # what install-opensmash.sh installs for the build (tools/linux/install_linux.py's apt packages), and Pillow
       # for the overlay's font (tools/linux/make_overlay_font.py)
       - name: Linux packages
         if: runner.os == 'Linux'
@@ -95,7 +95,7 @@ jobs:
         run: python -c "import sys, types; sys.path.insert(0, 'tools/linux'); import install_linux; install_linux.step_parts(types.SimpleNamespace(dry_run=False))"
 
       # SDL3 3.4.18's DMG (the SHA-256 tools/mac/install_mac.py pins) and the framework in it, as Install
-      # WindowSmash.command puts them; clang and the macOS SDK are the runner's Xcode
+      # OpenSmash.command puts them; clang and the macOS SDK are the runner's Xcode
       - name: macOS packages
         if: runner.os == 'macOS'
         run: |
