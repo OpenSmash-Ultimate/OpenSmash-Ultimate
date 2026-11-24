@@ -646,7 +646,12 @@ function Invoke-Python {
     $exe = $Script:Python[0]
     $pre = @()
     if ($Script:Python.Count -gt 1) { $pre = @($Script:Python[1..($Script:Python.Count - 1)]) }
-    & $exe @pre @Arguments | Out-Host   # (to the window, not into this function's result)
+    # stderr too, as text: the transcript (install.log) does not take a program's own stderr, so a tool's error
+    # and its traceback were only in the window (issue #493: "The build failed (see above)" with nothing above)
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'   # (stderr lines arrive as error records; they must not stop the script)
+    try { & $exe @pre @Arguments 2>&1 | ForEach-Object { "$_" } | Out-Host }   # (to the window and install.log, not into this function's result)
+    finally { $ErrorActionPreference = $old }
     return $LASTEXITCODE
 }
 
