@@ -530,9 +530,11 @@ static void test_keyboard(void) {
     CHECK(keys(&lx, &ly, &rx, &ry, 4, 'A', 'S', 'Q', 'W') == (1ull << N_L | 1ull << N_R | 1ull << N_ZL | 1ull << N_ZR), "A S Q W are L R ZL ZR");
     CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_RETURN, VK_BACK) == (1ull << N_PLUS | 1ull << N_MINUS), "Enter, Backspace");
     CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_RETURN, VK_MENU) == 0, "Alt+Enter is not +");
-    CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_LEFT, VK_UP) == 0 && lx == -32767 && ly == 32767 && !rx && !ry, "arrows: the left stick");
-    CHECK(keys(&lx, &ly, &rx, &ry, 2, 'L', 'K') == 0 && rx == 32767 && ry == -32767 && !lx && !ly, "L K: the right stick");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_LEFT, VK_UP) == 0 && lx == -23170 && ly == 23170 && !rx && !ry, "arrows: the left stick, a diagonal on the circle (#527)");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, 'L', 'K') == 0 && rx == 23170 && ry == -23170 && !lx && !ly, "L K: the right stick");
     CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_LEFT, VK_RIGHT) == 0 && lx == 32767, "left and right: right, as before");
+    CHECK(keys(&lx, &ly, &rx, &ry, 1, VK_DOWN) == 0 && ly == -32767 && !lx, "one direction: fully");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, VK_DOWN, VK_RIGHT) == 0 && lx == 23170 && ly == -23170, "down + forward: x under a dash, a crawl (#527)");
     CHECK(keys(&lx, &ly, &rx, &ry, 1, 'E') == 0, "E: nothing");
 
     load_text("[keyboard]\nA = Space, j\nB = x ; a comment\nLSTICK_LEFT = a\nLSTICK_RIGHT = D\nLSTICK_UP = w\nLSTICK_DOWN = s\nL = none\n"
@@ -540,7 +542,7 @@ static void test_keyboard(void) {
     CHECK(keys(&lx, &ly, &rx, &ry, 1, VK_SPACE) == 1ull << N_A && keys(&lx, &ly, &rx, &ry, 1, 'J') == 1ull << N_A, "A = Space, J");
     CHECK(keys(&lx, &ly, &rx, &ry, 1, 'Z') == 0, "Z no longer A");
     CHECK(keys(&lx, &ly, &rx, &ry, 1, 'X') == 1ull << N_B, "B = x (any case, comment after)");
-    CHECK(keys(&lx, &ly, &rx, &ry, 2, 'A', 'W') == 0 && lx == -32767 && ly == 32767, "WASD movement");
+    CHECK(keys(&lx, &ly, &rx, &ry, 2, 'A', 'W') == 0 && lx == -23170 && ly == 23170, "WASD movement");
     CHECK(keys(&lx, &ly, &rx, &ry, 1, VK_LEFT) == 0 && lx == 0, "the arrows no longer move");
     CHECK(keys(&lx, &ly, &rx, &ry, 1, 'J') == 1ull << N_A && rx == -32767, "a key on two bindings: both (J is A and still the right stick's left)");
     CHECK(keys(&lx, &ly, &rx, &ry, 2, 0x68, 0x62) == (1ull << N_UP | 1ull << N_DOWN), "the d-pad on Num8, 0x62");

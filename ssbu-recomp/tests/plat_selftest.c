@@ -106,7 +106,7 @@ int main(void) {
     QueryPerformanceCounter(&q1);
     double ms = (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)f.QuadPart;
     printf("     waitable timer: %.1f ms\n", ms);
-    #ifdef __APPLE__                 /* the macos-14 runner VM coalesces timers: up to ~95 ms seen for Sleep(20) (plan MAC1 "Timing") */
+    #ifdef __APPLE__                 /* GitHub's macOS runner VMs coalesce timers: up to ~95 ms seen for Sleep(20) on macos-14 (plan MAC1 "Timing"); not yet measured on macos-15 */
     CHECK(ms >= 19 && ms < 150, "waitable timer ~20 ms (macOS VM: < 150 ms)");
 #else
     CHECK(ms >= 19 && ms < 60, "waitable timer ~20 ms");

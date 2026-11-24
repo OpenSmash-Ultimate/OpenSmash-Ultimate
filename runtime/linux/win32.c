@@ -1329,12 +1329,49 @@ BOOL RemoveDirectoryA(LPCSTR path) {
     return rmdir(rt_unix_path(path, buf, sizeof buf)) ? fail_errno() : TRUE;
 }
 
-/* rename(): atomic, and it replaces an existing file whatever the flags say. With
- * MOVEFILE_WRITE_THROUGH the file and the folder now holding its name are flushed before it
- * returns, so the move survives a power cut (the folder to the disk itself on macOS). */
+/* rename() without replacing what is at `b` (Windows' MoveFileEx without MOVEFILE_REPLACE_EXISTING
+ * fails there with ERROR_ALREADY_EXISTS): renameat2's RENAME_NOREPLACE on Linux, renamex_np's
+ * RENAME_EXCL on macOS. On a file system without those, a file gets its new name by link, which
+ * never replaces, then loses the old; a folder (or a file on a file system without links: FAT)
+ * is looked for first and then renamed, which another process creating `b` in between could
+ * race. A change of case only, which a case-insensitive file system sees as `b` being there
+ * already, is a rename. -1 with errno if not done. */
+static int rename_noreplace(const char *a, const char *b) {
+    struct stat sa, sb;
+#ifdef __APPLE__
+    if (!renamex_np(a, b, RENAME_EXCL)) return 0;
+    if (errno != ENOTSUP && errno != EINVAL) goto failed;
+#elif defined SYS_renameat2
+    if (!syscall(SYS_renameat2, AT_FDCWD, a, AT_FDCWD, b, 1 /* RENAME_NOREPLACE */)) return 0;
+    if (errno != ENOSYS && errno != EINVAL) goto failed;
+#endif
+    if (lstat(a, &sa)) return -1;
+    if (!S_ISDIR(sa.st_mode)) {
+        if (!link(a, b)) {
+            if (!unlink(a)) return 0;
+            int err = errno;
+            unlink(b);
+            errno = err;
+            return -1;
+        }
+        if (errno == EEXIST) goto failed;
+    }
+    if (!lstat(b, &sb)) { errno = EEXIST; goto failed; }
+    return rename(a, b);
+failed:
+    if (errno == EEXIST && !strcasecmp(a, b) && !lstat(a, &sa) && !lstat(b, &sb) && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino)
+        return rename(a, b);
+    return -1;
+}
+
+/* rename() is atomic. Without MOVEFILE_REPLACE_EXISTING nothing at `to` is replaced, as on
+ * Windows. With MOVEFILE_WRITE_THROUGH the file and the folder now holding its name are flushed
+ * before it returns, so the move survives a power cut (the folder to the disk itself on macOS). */
 BOOL MoveFileExA(LPCSTR from, LPCSTR to, DWORD flags) {
     char a[4096], b[4096];
-    if (rename(rt_unix_path(from, a, sizeof a), rt_unix_path(to, b, sizeof b))) return fail_errno();
+    rt_unix_path(from, a, sizeof a);
+    rt_unix_path(to, b, sizeof b);
+    if (flags & MOVEFILE_REPLACE_EXISTING ? rename(a, b) : rename_noreplace(a, b)) return fail_errno();
     if (!(flags & MOVEFILE_WRITE_THROUGH)) return TRUE;
     int fd = open(b, O_RDONLY | O_CLOEXEC), ok = fd >= 0 && !fsync(fd);
     if (fd >= 0) close(fd);

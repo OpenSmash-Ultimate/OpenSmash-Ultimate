@@ -988,6 +988,7 @@ static _Noreturn void exit_thread(KThread *t) {
         if (trace < 0) { const char *e = getenv("SSBU_RB_IO_TRACE"); trace = e && *e == '1'; }
         if (trace) fprintf(stderr, "[rb-io] guest thread %u ends (entry %#llx)\n", (unsigned)t->id, (unsigned long long)t->entry);
     }
+    sleep_thread_cleanup();
     EnterCriticalSection(&klock);
     t->exited = 1;
     objects[index_of(t->handle)].signaled = 1;
