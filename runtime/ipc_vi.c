@@ -29,6 +29,7 @@ void test_fight_presented(void);   /* (hle_fight_test.c) SSBU_DEBUG_END's count 
 #define WIDTH 1920
 #define HEIGHT 1080
 #define SLOTS 64
+_Static_assert(SLOTS <= 64, "the slot masks (freemask, ll_held) are u64");
 
 enum { FREE, DEQUEUED, QUEUED, ACQUIRED };
 enum {   /* IGraphicBufferProducer transactions */
@@ -229,17 +230,23 @@ static int vi_ready_skip(void) {
 }
 
 /* Under the queue's lock: the oldest queued buffer becomes the one shown (copied to `shown`) and
- * the one shown before is free again. Returns its slot, or -1 if none is queued. */
+ * the one shown before is free again - or, hold (low_latency), kept until ll_release_held: the game's
+ * next frame starts when a buffer comes free. Returns its slot, or -1 if none is queued. */
 static int vi_reacq = -1;   /* (rollback: the slot on screen when a catch-up's load freed it - vi_rb_load) */
-static int take_oldest(void) {
+static u64 ll_held;   /* (slots shown before, still held: freed at low_latency's release) */
+static int take_oldest_held(int hold);
+static int take_oldest(void) { return take_oldest_held(0); }
+static int take_oldest_held(int hold) {
     int oldest = -1;
     for (int i = 0; i < SLOTS; i++)
         if (queue.slots[i].state == QUEUED && (oldest < 0 || queue.slots[i].queued_at < queue.slots[oldest].queued_at)) oldest = i;
     if (oldest >= 0) {
         vi_reacq = -1;   /* (another picture is on screen now) */
-        for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == ACQUIRED) queue.slots[i].state = FREE;
+        for (int i = 0; i < SLOTS; i++)
+            if (queue.slots[i].state == ACQUIRED) { if (hold) ll_held |= 1ull << i; else queue.slots[i].state = FREE; }
+        ll_held &= ~(1ull << oldest);
         queue.slots[oldest].state = ACQUIRED;
-        WakeAllConditionVariable(&queue.freed);   /* (a buffer came free: DEQUEUE_BUFFER's wait, SSBU_VI_DEQUEUE_WAIT_MS) */
+        if (!hold) WakeAllConditionVariable(&queue.freed);   /* (a buffer came free: DEQUEUE_BUFFER's wait, SSBU_VI_DEQUEUE_WAIT_MS) */
         if (queue.slots[oldest].keep) { queue.slots[oldest].keep = 0; keep_pending = 0; }
         queue.frames++;
         shown_size = queue.slots[oldest].buffer_size;
@@ -252,7 +259,9 @@ static int take_oldest(void) {
 /* Shown outside the queue's lock: a present can wait for the graphics card (frames behind), and
  * meanwhile the game queues its next frame and goes on with the one after. */
 static LONG64 show_waited;   /* (low_latency: the last show's wait for the card, in performance-counter ticks) */
-static void show(void) {
+static void show_held(int hold);
+static void show(void) { show_held(0); }
+static void show_held(int hold) {   /* (hold: the buffer event is left to ll_release_held) */
     LARGE_INTEGER w0, w1;
     QueryPerformanceCounter(&w0);
     gpu_queue_wait(shown_mark);   /* the frame drawn: what was submitted before it was queued has run */
@@ -267,8 +276,10 @@ static void show(void) {
     { void perf_frame_shown(void); perf_frame_shown(); }   /* (debug_perf_session.c: the session's summary) */
     if (lat_tf) lat_line("S %.3f %.3f %llu %lld %u %u %d\n", p0, lat_ms(), (unsigned long long)queue.frames, test_fight_frame,
                          vi_lat_tick(), gpu_lat_shown_tick, gpu_lat_shown_known);
-    kernel_signal_event(queue.buffer_event);
-    WakeAllConditionVariable(&queue.freed);
+    if (!hold) {
+        kernel_signal_event(queue.buffer_event);
+        WakeAllConditionVariable(&queue.freed);
+    }
     if (lat_tf) { AcquireSRWLockExclusive(&lat_lock); fflush(lat_tf); ReleaseSRWLockExclusive(&lat_lock); }   /* (after the game has its buffer) */
 }
 
@@ -329,7 +340,12 @@ static void show_fast(void) {
 }
 
 /* ---- low_latency (display.ini; ssbu-recomp's latency = low) -----------------------------
- * The game starts a frame when the refresh is signalled, reads the controller, and queues the frame.
+ * The game starts a frame when a buffer comes free - the one shown before, freed as the refresh shows
+ * the next (SSBU_LAT_TRACE: the pad read 0.5-1 ms after the present, whatever the refresh signal did) -
+ * reads the controller, draws and queues the frame, and waits for the next. Holding only the refresh
+ * signal (as until 2026-11-24) changed nothing: the game read its pad at the present and queued its
+ * frame before the held signal. So offline (no savestates: rb_on 0) the buffer shown before is held
+ * too, and both are released together (ll_release_held); SSBU_LOW_LATENCY_HOLD=0: the signal only.
  * With low_latency the signal comes later than the refresh, by what the frame doesn't need: a frame
  * period less the longest release-to-queue time of the last 64 frames and a margin for the graphics
  * card (SSBU_LOW_LATENCY_MARGIN ms, default 4). The controller is read that much closer to the
@@ -373,6 +389,28 @@ static LONG64 ll_delay(void) {   /* ticks to hold the signal past the refresh */
     return d > ll_freq / 2000 ? d : 0;   /* (under half a millisecond: not worth it) */
 }
 
+extern int rb_on;   /* (hle_rb_core.c: rollback netplay or run-ahead, fixed at boot) */
+static int ll_hold_on(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("SSBU_LOW_LATENCY_HOLD");
+        v = !(e && *e == '0') && !rb_on;
+        fprintf(stderr, "[display] low_latency: %s\n", v ? "the game's next frame starts at the held signal (its buffer held too)"
+                                                        : rb_on ? "the signal only (savestates on: rollback or run-ahead)" : "the signal only (SSBU_LOW_LATENCY_HOLD=0)");
+    }
+    return v;
+}
+static void ll_release_held(int shown_now) {   /* (the vsync thread, at the release: what show() and take_oldest left) */
+    queue_lock();
+    int any = ll_held != 0 || shown_now;
+    for (int i = 0; i < SLOTS; i++)
+        if ((ll_held >> i & 1) && queue.slots[i].state == ACQUIRED) queue.slots[i].state = FREE;
+    ll_held = 0;
+    if (any) WakeAllConditionVariable(&queue.freed);
+    queue_unlock();
+    if (any) kernel_signal_event(queue.buffer_event);
+}
+
 static void ll_wait_until(LONG64 at) {
     for (;;) {
         LONG64 left = at - qpc_now();
@@ -400,8 +438,10 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
         }
         if (!fast && rb_vsync_skip > 0) { InterlockedDecrement(&rb_vsync_skip); InterlockedIncrement64(&rb_vsync_skipped); continue; }
         int not_drawn = !fast && vi_ready_skip();   /* (SSBU_VI_READY=1: the oldest picture is not drawn yet: show nothing new) */
+        LONG64 d = fast ? 0 : ll_delay();
+        int hold = d > 0 && ll_hold_on();
         queue_lock();
-        int oldest = not_drawn ? -1 : take_oldest();
+        int oldest = not_drawn ? -1 : take_oldest_held(hold);
         /* (rollback, fast and nothing queued: wait for the game's next frame - up to 2 ms, then a refresh
          * all the same - rather than signal refreshes in a spin: thousands of them, each through the
          * kernel's lock, and the game counted them as dropped refreshes) */
@@ -417,13 +457,14 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
         if (oldest >= 0) {
             if (fast) show_fast();
             else {
-                show();
-                if (ll_delayed && show_waited > ll_freq / 1000) { ll_backoff = 60; ll_late_frames++; }   /* (the card was still drawing it) */
+                show_held(hold);
+                if (ll_delayed && show_waited > ll_freq / 1000) { ll_backoff = 60; ll_late_frames++; d = 0; }   /* (the card was still drawing it) */
             }
-        } else if (!fast && ll_delayed) { ll_backoff = 60; ll_late_frames++; }   /* (released late, and not queued in time) */
-        LONG64 d = fast ? 0 : ll_delay();
+        } else if (!fast && ll_delayed) { ll_backoff = 60; ll_late_frames++; d = 0; }   /* (released late, and not queued in time) */
+        /* (d was worked out before the show: a miss seen now releases this refresh at once, as before) */
         ll_delayed = d > 0;
         if (d) { ll_wait_until(tick + d); ll_delayed_frames++; ll_delay_sum += d; }
+        if (hold) ll_release_held(oldest >= 0);
         static u64 ll_said;
         if (display_low_latency() && !fast && GetTickCount64() - ll_said >= 60000) {
             if (ll_said) fprintf(stderr, "[display] low_latency: %lld frames started later than the refresh (%.1f ms on average), %lld missed it and turned it off for a second\n",
