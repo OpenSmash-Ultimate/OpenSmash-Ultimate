@@ -120,7 +120,7 @@ public sealed partial class ClassicSurface
             using (var f = ArtworkTheme.Body(11.5f * s))
                 ArtworkTheme.DrawText(g, "fewer = PC stays usable", f, ArtworkTheme.Dim, jx + 98 * s, oy, rightW - (jx - rx) - 110 * s, 28 * s);
             _tips["jobs:-"] = _tips["jobs:+"] = jobsTip;
-            PaintOption(g, "opt:updates", "Check for updates first", _optUpdates, rx, oy + 32 * s, rightW, 32 * s, "Looks for a newer WindowSmash on GitHub before building.");
+            PaintOption(g, "opt:updates", "Check for updates first", _optUpdates, rx, oy + 32 * s, rightW, 32 * s, "Looks for a newer OpenSmash on GitHub before building.");
             if (Project?.Platform == OpenSmash.Core.DesktopPlatform.Windows)
                 PaintOption(g, "opt:license", "Accept Microsoft's license terms for the C runtime and Windows SDK (the compiler download, about 570 MB)", _optLicense, rx, oy + 64 * s, rightW, 72 * s, "Read them first: https://go.microsoft.com/fwlink/?LinkId=2327714");
             else using (var f = ArtworkTheme.Body(12.5f * s)) ArtworkTheme.DrawWrapped(g, "The platform installer checks and installs the build dependencies. System authorization is handled by your desktop; completed work is kept if setup stops.", f, ArtworkTheme.Muted, rx + 16 * s, oy + 70 * s, rightW - 32 * s, 68 * s);

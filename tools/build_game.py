@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the game from your own files in one go: what launchers\\Build WindowSmash.bat runs.
+"""Build the game from your own files in one go: what OpenSmash.exe runs to build it.
 
 Usage:
   build_game.py [--game <dir>] [--keys <dir>] [--firmware <dir> | --no-firmware] [--jobs N] [--prepare-only]
@@ -274,7 +274,7 @@ def check_tools(fetch=True):
     CompilerDownload returned downloads it while the game files are prepared (its start() after
     step 2, its finish() at step 9). Otherwise None."""
     if sys.version_info < (3, 10):
-        raise Failed(f"this is Python {sys.version.split()[0]}: WindowSmash needs Python 3.10 or newer "
+        raise Failed(f"this is Python {sys.version.split()[0]}: OpenSmash needs Python 3.10 or newer "
                      + ("(Install WindowSmash.command makes deps/venv with one: docs/MACOS.md)." if MACOS else "(setup guide step 3)."))
     log(f"  Python {sys.version.split()[0]}: {sys.executable}")
     if not MACOS:
@@ -305,7 +305,7 @@ def instruction_set():
         raise Failed(str(e))
     features = isa.cpu_features()
     if not told and features is not None and isa.best(features) is None:
-        raise Failed(f"this PC's processor lacks {', '.join(isa.missing('x86-64-v2', features))}, which WindowSmash needs "
+        raise Failed(f"this PC's processor lacks {', '.join(isa.missing('x86-64-v2', features))}, which OpenSmash needs "
                      "(at the least SSE4.2 and POPCNT: x86-64-v2, Intel processors since 2008 and AMD since 2011).")
     return target, why
 
@@ -545,7 +545,7 @@ def check_mac_tools():
         raise Failed(f"SDL3.framework is not in {tc.SDL3_DIR}. Run Install WindowSmash.command: it downloads it.")
     import codec_libs
     if not codec_libs.have_opus() or not codec_libs.have_vpx("config-arm64"):
-        raise Failed("third_party/opus or third_party/libvpx is missing: this WindowSmash folder is incomplete. "
+        raise Failed("third_party/opus or third_party/libvpx is missing: this OpenSmash folder is incomplete. "
                      "Download it again.")
     includes = ["-F", tc.SDL3_DIR, "-I", os.path.join(codec_libs.OPUS, "include"), "-I", codec_libs.VPX]
     with tempfile.TemporaryDirectory(prefix="windowsmash-check-") as tmp:
@@ -585,8 +585,8 @@ def install_packages():
         return
     run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
         "pip could not install " + ", ".join(missing) + " (see above)."
-        + (" On Linux, install-windowsmash.sh installs them in a Python of WindowSmash's own (deps/venv)." if LINUX else
-           " On macOS, Install WindowSmash.command installs them in a Python of WindowSmash's own (deps/venv)." if MACOS
+        + (" On Linux, install-windowsmash.sh installs them in a Python of OpenSmash's own (deps/venv)." if LINUX else
+           " On macOS, Install WindowSmash.command installs them in a Python of OpenSmash's own (deps/venv)." if MACOS
            else ""))
     importlib.invalidate_caches()
 
@@ -749,9 +749,9 @@ def check_same_game(rec):
         was_display = f.readline().split("\t")[0].strip()
     now = game_identity(rec)
     if was and not same_game(was, now):
-        raise Failed(f"This WindowSmash folder was set up from {describe_identity(was, was_display)}, but the game "
+        raise Failed(f"This OpenSmash folder was set up from {describe_identity(was, was_display)}, but the game "
                      f"folder now has {describe_identity(now, rec['display_version'])} to build from. One folder is "
-                     "set up from one copy of the game: set up the other one in a new WindowSmash folder.")
+                     "set up from one copy of the game: set up the other one in a new OpenSmash folder.")
 
 
 def write_game_source(rec):
@@ -779,10 +779,10 @@ def upgrade_old_folder(old, game, program, keys):
         finally:
             shutil.rmtree(probe, ignore_errors=True)
     if problem:
-        raise Failed(f"This WindowSmash folder was set up from {old} of the game. {problem}")
+        raise Failed(f"This OpenSmash folder was set up from {old} of the game. {problem}")
     if in_use(EXE):
         raise Failed(f"The game is running from {shown(os.path.relpath(EXE, ROOT))}: close it, then run this again.")
-    log(f"\n  This folder was set up from {old} of the game. WindowSmash needs {game_version.REQUIRED} now: "
+    log(f"\n  This folder was set up from {old} of the game. OpenSmash needs {game_version.REQUIRED} now: "
         f"setting it up again from {game}. Your save, settings and prepared shaders stay.")
     try:
         reset_game_files()
@@ -790,7 +790,7 @@ def upgrade_old_folder(old, game, program, keys):
         raise Failed(f"The old game files could not all be cleared ({e}). Close the game and anything else using "
                      "this folder's files, then run this again: it carries on where it stopped.")
     trees = sorted(n for n in os.listdir(ROOT) if re.fullmatch(r"v\d+(\.\d+)*", n) and os.path.isdir(os.path.join(ROOT, n)))
-    for tree in trees:   # (made by the version tool WindowSmash had before)
+    for tree in trees:   # (made by the version tool OpenSmash had before)
         log(f"  {tree}{os.sep} is not used any more. To play on from the save in it, copy {os.path.join(tree, 'save')} "
             f"over this folder's save{os.sep} before starting the game; then {tree}{os.sep} can be deleted.")
 
@@ -919,7 +919,7 @@ def write_romfs_cfg(game, keys, the_program):
         from nca import is_plain_romfs
         if not is_plain_romfs(romfs_bin):
             raise Failed(f"{romfs_bin} is not the game's data as a plain RomFS image (unencrypted, with the 13.0.5 "
-                         "update applied). Remove it, and WindowSmash reads the data from the game's own files instead.")
+                         "update applied). Remove it, and OpenSmash reads the data from the game's own files instead.")
         os.makedirs(MODULES, exist_ok=True)
         with open(os.path.join(MODULES, "romfs.cfg"), "w", newline="\n") as f:
             f.write(f"{os.path.abspath(romfs_bin)}\n0\n")
@@ -958,7 +958,7 @@ def write_romfs_cfg(game, keys, the_program):
         base = gamefiles.base_program(result["contents"], program)
         if not base:
             raise Failed(f"{gamefiles.where(program)} is the game's update, whose data is a patch over the game's own: "
-                         f"WindowSmash also needs the game itself (its program .nca, or its .nsp) in {game}, next to it.")
+                         f"OpenSmash also needs the game itself (its program .nca, or its .nsp) in {game}, next to it.")
         base_cfg = os.path.join("dump", "modules", "romfs_base.cfg")
         if base["romfs"] != "plain" and data_in_place():   # (the base read where it is: no decrypted copy of it)
             log(f"  {gamefiles.where(base)}: the game's own data read in place, decrypted as it is read (SSBU_DATA_IN_PLACE=1: "
@@ -1404,7 +1404,7 @@ def build(a):
     # (Discord's files: tools/online_files.py)
     online_files(log)
     if LINUX:
-        log(f"\nDone: {exe} is ready. Start the game with ./play-ssbu.sh, or WindowSmash in your applications menu.")
+        log(f"\nDone: {exe} is ready. Start the game with ./play-ssbu.sh, or OpenSmash in your applications menu.")
     elif MACOS:
         log(f"\nDone: {exe} is ready. Start the game with Play SSBU.command, or Play SSBU in ~/Applications (Spotlight finds it).")
     else:

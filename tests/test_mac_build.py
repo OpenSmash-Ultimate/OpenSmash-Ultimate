@@ -120,7 +120,7 @@ class ToolchainTests(unittest.TestCase):
                 with self.assertRaises(SystemExit) as e:
                     real_toolchain()
         text = str(e.exception)
-        self.assertIn(f'the macOS SDK is 14.4 ({tmp}), and WindowSmash needs the macOS 15 SDK or newer', text)
+        self.assertIn(f'the macOS SDK is 14.4 ({tmp}), and OpenSmash needs the macOS 15 SDK or newer', text)
         self.assertIn('System Settings > General > Software Update', text)
         self.assertIn('SDKROOT names this SDK', text)
         sdks = Path(self.tc.SDK).parent
@@ -251,7 +251,7 @@ class BuildMacTests(unittest.TestCase):
 
     def test_older_c_of_another_module(self):
         """The C of another build of the module put in its place, older than the objects (as an
-        earlier WindowSmash's sharing between folders did: hard links keep the other folder's times):
+        earlier OpenSmash's sharing between folders did: hard links keep the other folder's times):
         every file it changed is compiled again, though none is newer than its object."""
         self.compile(self.ns['game_jobs']())
         main = self.tree / 'build' / 'main'
@@ -354,7 +354,7 @@ class BuildMacTests(unittest.TestCase):
         p = plistlib.loads(plistlib.dumps(self.ns['info_plist']('13.0.5')))
         self.assertEqual(p['CFBundleExecutable'], 'ssbu')
         self.assertEqual(p['CFBundleIdentifier'], 'io.github.sno2207.windowsmash')
-        self.assertEqual((p['CFBundleName'], p['CFBundleDisplayName']), ('WindowSmash', 'WindowSmash'))
+        self.assertEqual((p['CFBundleName'], p['CFBundleDisplayName']), ('OpenSmash', 'OpenSmash'))
         self.assertEqual(p['CFBundleIconFile'], 'windowsmash')
         self.assertEqual(p['CFBundlePackageType'], 'APPL')
         self.assertEqual(p['LSMinimumSystemVersion'], '14.0')
@@ -382,7 +382,7 @@ class BuildMacTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.ns['use_tree']()
         self.assertEqual((out / 'port.txt').read_text().strip(), str(self.tree))
-        copied_from = self.top / 'WindowSmash-before'   # (this tree a copy of one that is still there: still its own build-mac)
+        copied_from = self.top / 'OpenSmash-before'   # (this tree a copy of one that is still there: still its own build-mac)
         (copied_from / 'build').mkdir(parents=True)
         write(out / 'port.txt', f'{copied_from}\n')
         with contextlib.redirect_stdout(io.StringIO()) as said:

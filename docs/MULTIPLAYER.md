@@ -2,7 +2,7 @@
 
 [← README](../README.md) · [Setup guide](BUILDING.md) · [Playing](PLAYING.md) · [Linux](LINUX.md) · [Technical guide](TECHNICAL.md)
 
-WindowSmash plays the game's **Local Wireless** mode over the internet. To the game, the other players look like Switches nearby. The game's own **Online** mode works too, for Quickplay against WindowSmash's own game server ([Online mode](#online-mode-quickplay)). Nintendo's online service isn't used.
+OpenSmash plays the game's **Local Wireless** mode over the internet. To the game, the other players look like Switches nearby. The game's own **Online** mode works too, for Quickplay against OpenSmash's own game server ([Online mode](#online-mode-quickplay)). Nintendo's online service isn't used.
 
 > [!NOTE]
 > **Tested so far:** connecting and finding rooms, including the online lobby with several games on one PC, through the public lobby, and between a Windows and a Linux PC. Full matches between two PCs, every DLC fighter online, and every kind of home network haven't been fully verified yet. Online mode is newer still: see [what works](#online-mode-quickplay).
@@ -39,14 +39,14 @@ On Linux ([Linux guide](LINUX.md)), `run.sh`, `run-offline.sh`, `host-netplay.sh
 
 Whichever way you choose:
 
-1. **Everyone uses the same WindowSmash, with the game at version 13.0.5.** WindowSmash builds no other version, so every player can play with every other. The online lobby turns away a game an older WindowSmash built from another version: its overlay says `Netplay: WindowSmash needs game 13.0.5: run the installer again` ([what to do](UPDATES.md#a-folder-built-from-another-version)).
+1. **Everyone uses the same OpenSmash, with the game at version 13.0.5.** OpenSmash builds no other version, so every player can play with every other. The online lobby turns away a game an older OpenSmash built from another version: its overlay says `Netplay: OpenSmash needs game 13.0.5: run the installer again` ([what to do](UPDATES.md#a-folder-built-from-another-version)).
 2. **Every PC is set up with its own game data**, following the [setup guide](BUILDING.md). Match the DLC between players too.
 3. **Every PC keeps its own save and its own `netplay_id.txt`.** Never copy `netplay_id.txt` to another PC: two PCs with the same one look like one player.
 4. **Check the game works offline first** with the launcher's Offline lobby setting, then close it.
 
 A wider picture shape (`display.ini`'s `aspect`, [Playing](PLAYING.md)) goes back to 16:9 for each online match and returns after it: a wider picture is not yet proven safe online ([why](adr/0002-online-held-at-16-9.md)).
 
-Each WindowSmash window is one player. A private room holds up to eight members, and the game's own room rules decide how many can play a match.
+Each OpenSmash window is one player. A private room holds up to eight members, and the game's own room rules decide how many can play a match.
 
 ## Online lobby
 
@@ -59,7 +59,7 @@ This is what `OpenSmash.exe` does by default. Every Local Wireless room that any
    - **To join:** open **Rooms List** and pick a room. Open rooms come first, fuller ones before emptier ones. The list shows up to 24 rooms (the game on its own stops at 10); scroll down for the rest. With more rooms than that in the lobby, any of them can be reached from the settings' **Lobby** page (version 3, below): pick a room there and it comes first in your Rooms List, or page the Rooms List 24 rooms at a time.
 4. Press <kbd>F1</kbd> to see the connection, for example `Online: 37 players, 4 rooms - you are Alpha, ping 48 ms`. A second line lists the other players in your room and how each one is reached ([see below](#direct-connections-and-your-internet-address)).
 
-`online_server.txt`, in the WindowSmash folder, names the lobby. Its first line that doesn't start with `#` is the lobby's address. The default, `auto`, joins the official lobby of your **server region**: EU (`eu.lobby.opensmashultimate.com:39421`) or NA East (`na.lobby.opensmashultimate.com:39421`). The region is its own setting (Online > Server region in the launcher and in the game's settings menu, kept in `config/server_region.txt`): `auto`, the default, asks both lobbies when the launcher or the game starts and plays on the one that answers soonest (shown as "Auto (EU, 24 ms)"); `eu` or `na-east` picks one. One account works on both, but matchmaking, rooms, the players online and the GSP leaderboard (`/leaderboard.json`) are each lobby's own: **players on another region are not listed**, so friends who want to meet pick the same region (a Discord invite carries the region, and the friend's game joins it). Either lobby's address in `online_server.txt` means "the official lobby" as `auto` does; the older public lobbies' (`smash.recomps.wtf`, `opensmash-lobby.duckdns.org`), `na` and `eu` (a lobby code after them is kept) mean it too. Port 39421 is the lobby with the game server for [Online mode](#online-mode-quickplay); port 39420 is the older lobby without it, which older WindowSmash versions use. Rooms on one don't show up on the other, so everyone in a group should use the same one.
+`online_server.txt`, in the OpenSmash folder, names the lobby. Its first line that doesn't start with `#` is the lobby's address. The default, `auto`, joins the official lobby of your **server region**: EU (`eu.lobby.opensmashultimate.com:39421`) or NA East (`na.lobby.opensmashultimate.com:39421`). The region is its own setting (Online > Server region in the launcher and in the game's settings menu, kept in `config/server_region.txt`): `auto`, the default, asks both lobbies when the launcher or the game starts and plays on the one that answers soonest (shown as "Auto (EU, 24 ms)"); `eu` or `na-east` picks one. One account works on both, but matchmaking, rooms, the players online and the GSP leaderboard (`/leaderboard.json`) are each lobby's own: **players on another region are not listed**, so friends who want to meet pick the same region (a Discord invite carries the region, and the friend's game joins it). Either lobby's address in `online_server.txt` means "the official lobby" as `auto` does; the older public lobbies' (`smash.recomps.wtf`, `opensmash-lobby.duckdns.org`), `na` and `eu` (a lobby code after them is kept) mean it too. Port 39421 is the lobby with the game server for [Online mode](#online-mode-quickplay); port 39420 is the older lobby without it, which older OpenSmash versions use. Rooms on one don't show up on the other, so everyone in a group should use the same one.
 
 **Epic Online Services (EOS) are gone (OpenSmash 0.5.0).** The official lobbies relay every match and take only signed-in players (a lobby ticket from the launcher's account), so no player's internet address reaches another game. An `eos` line in `online_server.txt` (from an older version, a lobby code may follow), `SSBU_NET_RELAY=eos` or an older game's Discord invite naming `eos` now means the official lobby. With a lobby of your own, `SSBU_NET_DIRECT=1` allows direct paths.
 
@@ -91,8 +91,8 @@ Netplay version 3 adds two things to the online lobby, on the **Lobby** page of 
 2. Set **Netplay version** to **3**, then choose **Restart now**.
 3. Open the settings again and go to the **Lobby** page (the number key <kbd>5</kbd>).
 
-- **Rooms** lists each room's host, players, and whether it is open. A room you can't join says why: another game version, another WindowSmash version (and whose is older), or other mods. With the cursor on a room, the help under the list shows its game build, WindowSmash (simulation) version and netplay version next to yours, and its mods, each marked **you don't have it** or **yours differs**; for a room you can't join, the mods only you have too (turn them off on the **Mods** page to join). ARCropolis' code patches count as a mod here. The list is asked for each time the page opens; select **Rooms** to ask again. It shows 30 rooms at a time: **More rooms** and **Earlier rooms** move through the rest, however many there are. To join a room, select it (it says **picked: first in your Rooms List**), close the settings and pick it in **Local Wireless → Rooms List**, where it now comes first. With more than 24 rooms you can join, **Game's Rooms List shows** pages that list too, 24 rooms at a time.
-- **Find a match** searches for another player with the same game, WindowSmash, mods and lobby code. You can close the settings while it searches: a message says when a match is found and who hosts. The host creates a room (**Local Wireless → Create a Room**), and the other player finds it first in their **Rooms List**. **Stop searching** or **Leave the match** ends it.
+- **Rooms** lists each room's host, players, and whether it is open. A room you can't join says why: another game version, another OpenSmash version (and whose is older), or other mods. With the cursor on a room, the help under the list shows its game build, OpenSmash (simulation) version and netplay version next to yours, and its mods, each marked **you don't have it** or **yours differs**; for a room you can't join, the mods only you have too (turn them off on the **Mods** page to join). ARCropolis' code patches count as a mod here. The list is asked for each time the page opens; select **Rooms** to ask again. It shows 30 rooms at a time: **More rooms** and **Earlier rooms** move through the rest, however many there are. To join a room, select it (it says **picked: first in your Rooms List**), close the settings and pick it in **Local Wireless → Rooms List**, where it now comes first. With more than 24 rooms you can join, **Game's Rooms List shows** pages that list too, 24 rooms at a time.
+- **Find a match** searches for another player with the same game, OpenSmash, mods and lobby code. You can close the settings while it searches: a message says when a match is found and who hosts. The host creates a room (**Local Wireless → Create a Room**), and the other player finds it first in their **Rooms List**. **Stop searching** or **Leave the match** ends it.
 
 With version 3 set, a lobby or private room of version 2 still works: the game joins it in version 2, and the Lobby page says why it has no rooms to show. Hosting a private room always uses version 2. `SSBU_NET_PROTOCOL=3` ([below](#reference-environment-variables)) or `3` in `online_protocol.txt` does the same as the setting.
 
@@ -104,7 +104,7 @@ With version 3 set, a lobby or private room of version 2 still works: the game j
 
 ## Online mode (Quickplay)
 
-The game's own **Online** menu works with WindowSmash's game server, which runs inside the online lobby. **Quickplay** matches you with other WindowSmash players who are searching at the same time.
+The game's own **Online** menu works with OpenSmash's game server, which runs inside the online lobby. **Quickplay** matches you with other OpenSmash players who are searching at the same time.
 
 > [!WARNING]
 > Online mode is new. Tested on one PC (two games, a lobby of their own): logging in, the Online menus, Quickplay's search, two players matched, the whole match with the game's own netcode and with [rollback](#rollback-in-online-mode), the results with GSP, and both games back in Quickplay for the next search. Not tested yet: two PCs, more than two players. The Linux version has Online mode built in, but it hasn't been tried there.
@@ -195,9 +195,9 @@ The overlay's second line shows each player in your room, for example `Room: Bra
 | `relayed (their router changes ports)` | The same for that player's router. |
 | `relayed (direct off)` | That player turned direct connections off. |
 | `relayed (direct off here)` | You turned them off. |
-| `relayed (older game)` | That player's WindowSmash is too old for direct connections. |
+| `relayed (older game)` | That player's OpenSmash is too old for direct connections. |
 
-Direct connections need a lobby of this version (the public lobby is). With an older lobby, or a player with an older WindowSmash, play goes through the lobby as before.
+Direct connections need a lobby of this version (the public lobby is). With an older lobby, or a player with an older OpenSmash, play goes through the lobby as before.
 
 > [!NOTE]
 > **Your internet address.** The players in a room with you learn your internet (IP) address, as they would when playing online on a console. The lobby introduces only players whose games are already playing together in a room, and introduces each player in at most 20 rooms an hour.
@@ -236,7 +236,7 @@ The address above is only an example. Use the one your own launcher shows, or a 
 
 Joining players don't need to change anything on their routers.
 
-The host's game only lets in players whose game matches its own: the same game build, the same WindowSmash, and the same mods (ARCropolis' code patches included). A player who doesn't match is told why, in the overlay (<kbd>F2</kbd>), on the settings' **Online → Now** row and in the log: which build each side has, or which mods only one side has or has in another copy, or that the code patches are on for one and off for the other. A player on an older WindowSmash, which doesn't say its mods, is let in as before.
+The host's game only lets in players whose game matches its own: the same game build, the same OpenSmash, and the same mods (ARCropolis' code patches included). A player who doesn't match is told why, in the overlay (<kbd>F2</kbd>), on the settings' **Online → Now** row and in the log: which build each side has, or which mods only one side has or has in another copy, or that the code patches are on for one and off for the other. A player on an older OpenSmash, which doesn't say its mods, is let in as before.
 
 ### On the same network: no address needed
 
@@ -246,7 +246,7 @@ Players on the host's own network (the same home router, or one PC running two g
 2. Each other player sets the settings' **Online → Play online in** to **this network (LAN)** and restarts the game (or writes `lan` in `online_server.txt`, or starts the game with `SSBU_NET_RELAY=lan`).
 3. The game listens for about a second and a half, then joins the first room it heard from a game of the same version, in that host's room. The overlay (<kbd>F2</kbd>) and **Online → Now** say which, and the **Lobby** page shows **Rooms on this network** with the count. If no host has started yet, it says `no room on this network yet (still looking)` and keeps listening: it joins as soon as a host starts, and moves to the next host if its host leaves.
 
-To join only one room among several hosts, give the room name too: `lan ourroom` in `online_server.txt`, or `SSBU_NET_ROOM=ourroom`. A room of another game build or WindowSmash version is heard but not joined (the Lobby page counts it apart). The host's game still checks the mods as for any joining player.
+To join only one room among several hosts, give the room name too: `lan ourroom` in `online_server.txt`, or `SSBU_NET_ROOM=ourroom`. A room of another game build or OpenSmash version is heard but not joined (the Lobby page counts it apart). The host's game still checks the mods as for any joining player.
 
 The announcement is a small UDP packet to the multicast group `239.255.13.13` and to the broadcast address, port **39501**, that routers don't pass on. The host's firewall must let in UDP on its relay port (39420), as for any player on its network; the looking game listens on port 39501, so Windows Security may ask about `ssbu.exe` the first time. The host doesn't announce its room while **Direct connections** is off (the player keeps their address to themselves) or with `SSBU_NET_LAN=0`: players on its network then use the room code for this network in `netplay_address.txt`, or its address.
 
@@ -271,8 +271,8 @@ If your internet provider uses carrier-grade NAT, or your router sits behind ano
 | The overlay stays on `connecting` | The host's address and port, that the host's game is still running, the host's firewall rule for incoming UDP, the router's port mapping, and whether the relay can be reached. |
 | `Netplay: no room on this network yet (still looking)` | Set to this network, the game hasn't heard a host of its version yet. Check that the host's game is hosting, that both PCs are on the same network (not a guest Wi-Fi that keeps devices apart), and that the host's **Direct connections** is on. With `SSBU_NET_LOG=1` the log names every room heard. |
 | `no answer from … - playing offline` | The lobby in `online_server.txt` hasn't answered for five seconds. Check the address, and that the lobby is running. |
-| `Netplay: WindowSmash needs game 13.0.5: run the installer again` | Your game was built from another version of the game, by an older WindowSmash. Put the game's 13.0.5 update in your game folder and run `OpenSmash.exe` again: it sets the folder up again as 13.0.5, keeping your save and settings ([how](UPDATES.md#a-folder-built-from-another-version)). |
-| `Netplay: the host runs other mods` (or `another game version`, `another WindowSmash version`) | The lines under it say what differs: the mods only the room has, the ones you have in another copy, the ones only you have, or the code patches on one side only. Turn mods on or off on the settings' **Mods** page (or in the launcher) to match, and restart. |
+| `Netplay: OpenSmash needs game 13.0.5: run the installer again` | Your game was built from another version of the game, by an older OpenSmash. Put the game's 13.0.5 update in your game folder and run `OpenSmash.exe` again: it sets the folder up again as 13.0.5, keeping your save and settings ([how](UPDATES.md#a-folder-built-from-another-version)). |
+| `Netplay: the host runs other mods` (or `another game version`, `another OpenSmash version`) | The lines under it say what differs: the mods only the room has, the ones you have in another copy, the ones only you have, or the code patches on one side only. Turn mods on or off on the settings' **Mods** page (or in the launcher) to match, and restart. |
 | Online, a room is missing from the list | Both players need the same lobby code (or none), and both overlays must say `Online`. The list refreshes every few seconds. |
 | Both are connected, but in different groups | Private-room names must match exactly. |
 | The relay count is right, but no Local Wireless room | The host must create a room in the game: being connected doesn't create one. Wait for the list to refresh. |

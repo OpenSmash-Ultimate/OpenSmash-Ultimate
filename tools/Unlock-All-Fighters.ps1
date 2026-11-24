@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 try {
-    # The WindowSmash folder (-Root: tests). The save layout is 13.0.5's, known by the main
+    # The OpenSmash folder (-Root: tests). The save layout is 13.0.5's, known by the main
     # module's build id (the same table as tools/unlock_all.py).
     $Folder = if ($Root) { $Root } else { Split-Path -Parent $PSScriptRoot }
     # build id = game version, save size, FLAGS, RECORDS

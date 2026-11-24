@@ -7,13 +7,13 @@ GameBanana's moveset mods and new characters for Super Smash Bros. Ultimate are 
 download:
 
 - **files** for ARCropolis (models, animations, effects, sounds, UI, `config.json` for new costume
-  slots), which WindowSmash already installs (`tools/mods.py`, the Mods app), and
+  slots), which OpenSmash already installs (`tools/mods.py`, the Mods app), and
 - **code**: a Skyline plugin, `plugin.nro`, Switch arm64 code built with skyline-rs. It replaces the
   fighter's scripts through **Smashline 2** and often uses **lib_paramconfig** (fighter params),
   and, for new characters, the **CSK Collection** (new character-select entries) and ARCropolis'
   API.
 
-WindowSmash already recompiles the game's own NROs (the `lua2cpp_*` fighter modules) to C ahead
+OpenSmash already recompiles the game's own NROs (the `lua2cpp_*` fighter modules) to C ahead
 of time and loads them natively (`tools/recomp.py`, `runtime/hle_ro.c`). A plugin is the same
 kind of file, so the plan is: recompile each plugin the same way, and provide what Skyline,
 Smashline and the other dependency plugins provide on the console natively in the runtime.
@@ -95,7 +95,7 @@ that compares its clone's weapon kind with the original's (the clone has a new k
 original owner a 1.6 `clone_weapon` names, when it isn't the article's own (2.0 takes the
 article's); a 1.6 `update_weapon_count` reaches clones the 1.6 plugins made, not 2.0 plugins'.
 
-## How plugins run in WindowSmash (prototype)
+## How plugins run in OpenSmash (prototype)
 
 1. **Recompile the plugin** like a game NRO: copy `plugin.nro` into `dump/nro/`
    (`recomp.py` names and places it, `bases.txt`), then `recomp.py image` and `recomp.py build`

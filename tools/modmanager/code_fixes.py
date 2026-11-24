@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """The game-code fixes new costume slots (c08 and up) need outside regular matches - Classic Mode,
 Tourney Mode, Inkling, Terry, Pyra/Mythra (patch 0011, branch mac-costume-slot-fixes: ARCropolis'
-src/fixes.rs and three more checks) - as exact edits to a WindowSmash folder's tools/recomp.py and
+src/fixes.rs and three more checks) - as exact edits to an OpenSmash folder's tools/recomp.py and
 tools/lift.py, and the rebuild that puts them in the game. Used by install_mods.py.
 
-An edit is made only when every one finds its text exactly once (a WindowSmash whose recompiler
+An edit is made only when every one finds its text exactly once (an OpenSmash whose recompiler
 has moved on is left as it is, and said so); recomp.py with CODE_PATCHES has them already.
 """
 import os
@@ -68,7 +68,7 @@ def state(target):
         return "there"
     for f, old, _new in CODE_FIXES:
         if texts[f].count(old) != 1:
-            return f"this WindowSmash's {f} isn't the one the fixes were made for"
+            return f"this OpenSmash's {f} isn't the one the fixes were made for"
     return "ready"
 
 
@@ -106,7 +106,7 @@ def needs_build(target):
     try:
         return os.path.getmtime(exe) < os.path.getmtime(os.path.join(target, "tools", "recomp.py"))
     except OSError:
-        return False   # (not built here at all: the installer of WindowSmash builds it)
+        return False   # (not built here at all: the installer of OpenSmash builds it)
 
 
 def memory_gb():

@@ -267,7 +267,7 @@ $("#mods-open").onclick = async () => {
   try {
     const r = await api("/api/mods/open", { back: location.href.split("#")[0] });
     location.href = r.url;
-  } catch (e) { await ask("WindowSmash Mods didn't open", e.message, [["ok", "OK", true]]); }
+  } catch (e) { await ask("OpenSmash Mods didn't open", e.message, [["ok", "OK", true]]); }
 };
 $("#mods-build").onclick = () => run("/api/mods/build");
 

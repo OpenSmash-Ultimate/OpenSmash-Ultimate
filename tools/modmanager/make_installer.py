@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Makes the WindowSmash Mods installer: one .zip for Windows and macOS that adds the mod manager
-to a WindowSmash folder - and, with a modpack, that pack's mods too (downloaded from GameBanana as
+"""Makes the OpenSmash Mods installer: one .zip for Windows and macOS that adds the mod manager
+to an OpenSmash folder - and, with a modpack, that pack's mods too (downloaded from GameBanana as
 it installs, or carried in the zip).
 
 Usage:
   make_installer.py [--tree <port folder>] [--pack <pack name or .wsmodpack>] [--bundle-all] [--out <dir>]
 
 The zip: "Install WindowSmash Mods.command" (macOS) and ".bat" (Windows), which find the
-WindowSmash folder and its Python and run installer/install_mods.py; payload/ (the mod manager's
-files, at their places in a WindowSmash folder); modpack/ (the pack, and the files of its mods
+OpenSmash folder and its Python and run installer/install_mods.py; payload/ (the mod manager's
+files, at their places in an OpenSmash folder); modpack/ (the pack, and the files of its mods
 that can't be downloaded - or, with --bundle-all, of every mod in it); READ ME.txt.
 """
 import argparse
@@ -34,7 +34,7 @@ PAYLOAD = ["tools/mods.py", "tools/prc.py", "tools/msbt.py",
            "launchers/Uninstall WindowSmash Mods.bat", "launchers/Uninstall WindowSmash Mods.command"]
 
 MAC = r'''#!/bin/bash
-# Installs WindowSmash Mods (the mod manager) into your WindowSmash folder, and the modpack this
+# Installs OpenSmash Mods (the mod manager) into your OpenSmash folder, and the modpack this
 # installer carries, if it has one. Double-click it (the first time macOS may ask: right-click > Open).
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 here="$PWD"
@@ -43,7 +43,7 @@ for d in "$here/.." "$here/../.." "$HOME/WindowSmash" "$HOME/Desktop/WindowSmash
     [ -f "$d/tools/build_game.py" ] && { target="$(cd "$d" && pwd -P)"; break; }
 done
 if [ -z "$target" ]; then
-    target=$(osascript -e 'POSIX path of (choose folder with prompt "Where is your WindowSmash folder?")' 2>/dev/null) || exit 1
+    target=$(osascript -e 'POSIX path of (choose folder with prompt "Where is your OpenSmash folder?")' 2>/dev/null) || exit 1
 fi
 target="${target%/}"
 py=""
@@ -51,7 +51,7 @@ for p in "$target/deps/venv/bin/python" "$target/deps/python/bin/python3" python
     if command -v "$p" >/dev/null 2>&1 && "$p" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then py="$p"; break; fi
 done
 if [ -z "$py" ]; then
-    echo "WindowSmash's Python wasn't found: install WindowSmash first (Install WindowSmash.command)."
+    echo "OpenSmash's Python wasn't found: install OpenSmash first (Install WindowSmash.command)."
     read -r -p "Press Return to close." _; exit 1
 fi
 "$py" "$here/installer/install_mods.py" --target "$target"
@@ -62,7 +62,7 @@ exit $status
 '''
 
 WIN = r'''@echo off
-rem Installs WindowSmash Mods (the mod manager) into your WindowSmash folder, and the modpack this
+rem Installs OpenSmash Mods (the mod manager) into your OpenSmash folder, and the modpack this
 rem installer carries, if it has one. Double-click it.
 setlocal
 cd /d "%~dp0"
@@ -72,9 +72,9 @@ for %%D in ("%~dp0.." "%~dp0..\.." "%USERPROFILE%\WindowSmash" "%USERPROFILE%\De
     if not defined TARGET if exist "%%~D\tools\build_game.py" set "TARGET=%%~fD"
 )
 if not defined TARGET (
-    for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description='Where is your WindowSmash folder?'; if($d.ShowDialog() -eq 'OK'){$d.SelectedPath}"`) do set "TARGET=%%P"
+    for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description='Where is your OpenSmash folder?'; if($d.ShowDialog() -eq 'OK'){$d.SelectedPath}"`) do set "TARGET=%%P"
 )
-if not defined TARGET (echo No WindowSmash folder chosen. & pause & exit /b 1)
+if not defined TARGET (echo No OpenSmash folder chosen. & pause & exit /b 1)
 pushd "%TARGET%"
 call tools\find_python.bat || (popd & pause & exit /b 1)
 popd
@@ -88,36 +88,36 @@ pause
 exit /b %RESULT%
 '''
 
-# the same, the other way: WindowSmash as it was (install_mods.py --uninstall)
-MAC_UNINSTALL = (MAC.replace("# Installs WindowSmash Mods (the mod manager) into your WindowSmash folder, and the modpack this\n"
-                             "# installer carries, if it has one.", "# Removes WindowSmash Mods from your WindowSmash folder and puts the game back as it was.")
+# the same, the other way: OpenSmash as it was (install_mods.py --uninstall)
+MAC_UNINSTALL = (MAC.replace("# Installs OpenSmash Mods (the mod manager) into your OpenSmash folder, and the modpack this\n"
+                             "# installer carries, if it has one.", "# Removes OpenSmash Mods from your OpenSmash folder and puts the game back as it was.")
                  .replace('--target "$target"\n', '--target "$target" --uninstall\n')
                  .replace('[ $status -eq 0 ] && [ -d "$HOME/Applications/WindowSmash Mods.app" ] && open "$HOME/Applications/WindowSmash Mods.app"\n', ""))
-WIN_UNINSTALL = (WIN.replace("rem Installs WindowSmash Mods (the mod manager) into your WindowSmash folder, and the modpack this\n"
-                             "rem installer carries, if it has one.", "rem Removes WindowSmash Mods from your WindowSmash folder and puts the game back as it was.")
+WIN_UNINSTALL = (WIN.replace("rem Installs OpenSmash Mods (the mod manager) into your OpenSmash folder, and the modpack this\n"
+                             "rem installer carries, if it has one.", "rem Removes OpenSmash Mods from your OpenSmash folder and puts the game back as it was.")
                  .replace('--target "%TARGET%"\n', '--target "%TARGET%" --uninstall\n')
                  .replace('if "%RESULT%"=="0" start "" "%TARGET%\\launchers\\WindowSmash Mods.bat"\n', ""))
 assert MAC_UNINSTALL.count("--uninstall") == 1 and WIN_UNINSTALL.count("--uninstall") == 1 and "start" not in WIN_UNINSTALL.split("--uninstall")[1]
 
-README = """WindowSmash Mods {what}
+README = """OpenSmash Mods {what}
 ==================
 
-WindowSmash Mods finds Smash Ultimate mods on GameBanana, installs them, turns them on and off,
+OpenSmash Mods finds Smash Ultimate mods on GameBanana, installs them, turns them on and off,
 checks that they go together, and shares them as modpacks.{pack}
 
 It also adds the game-code fixes mods with new costume slots (c08 and up) need in Classic Mode,
 Tourney Mode and for Inkling, Terry and Pyra/Mythra, and builds the game again with them (10 to 30
 minutes the first time; mods work meanwhile).
 
-To install (WindowSmash must already be installed and set up):
+To install (OpenSmash must already be installed and set up):
   Windows: unzip this, then double-click "Install WindowSmash Mods.bat".
   macOS:   unzip this, then double-click "Install WindowSmash Mods.command"
            (if macOS says it can't be opened: right-click it, choose Open, then Open).
 
-It finds your WindowSmash folder (or asks where it is), adds the mod manager to it and opens it.
+It finds your OpenSmash folder (or asks where it is), adds the mod manager to it and opens it.
 Nothing of the game or your save is changed; files it replaces are kept as *.before-modmanager.
 
-To go back to the game as it was: "Uninstall WindowSmash Mods" (here, in WindowSmash's launchers
+To go back to the game as it was: "Uninstall OpenSmash Mods" (here, in OpenSmash's launchers
 folder, or the button in the app). It turns the mods off in the game, deletes the modded data and
 removes the mod manager; it asks whether to delete your downloaded mods too.
 """
@@ -145,7 +145,7 @@ def build(tree, pack_ref=None, bundle_all=False, out_dir=None, log=print):
             if not found:
                 raise packs.PackError(f"no saved modpack called {pack_ref}")
             pack = {k: v for k, v in found[0].items() if k not in ("id", "code")}
-    name = "WindowSmash Mods Installer" + (f" - {mods.safe_name(pack['name'])}" if pack else "") + ".zip"
+    name = "OpenSmash Mods Installer" + (f" - {mods.safe_name(pack['name'])}" if pack else "") + ".zip"
     out = os.path.join(out_dir or tree.root, name)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     tmp = out + ".partial"

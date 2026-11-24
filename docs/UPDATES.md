@@ -2,7 +2,7 @@
 
 [← README](../README.md) · [Setup guide](BUILDING.md) · [DLC and unlocks](DLC-AND-UNLOCKS.md) · [Technical guide](TECHNICAL.md)
 
-WindowSmash builds and plays one version of the game: **13.0.5**, its last update. Among other things, 13.0.5 adds **Kazuya and Sora** (Challenger Packs 10 and 11), so it has every DLC fighter.
+OpenSmash builds and plays one version of the game: **13.0.5**, its last update. Among other things, 13.0.5 adds **Kazuya and Sora** (Challenger Packs 10 and 11), so it has every DLC fighter.
 
 One version for everyone means that anyone can play with anyone (the online lobby and Quickplay only put players of the same game together), and that a bug is found and fixed in one game rather than several.
 
@@ -29,10 +29,10 @@ Anything else is refused, with what to do:
 
 | Where | What you see |
 | :--- | :--- |
-| The installer's window | The line under **Game files** turns red: *WindowSmash needs version 13.0.5, and this is …*, followed by what to add. **Set up and build** doesn't go on until the line is fixed: put the 13.0.5 update in the game folder and click **Check files**. |
-| The build | Step 4 checks the game's program and step 6 its data. Another version stops the build with *WindowSmash needs version 13.0.5 …* and what to do. |
-| The game | A game built from another version doesn't start: it says *This WindowSmash was built from another version of the game*, and what to do. |
-| The online lobby | It turns away a game built from another version, such as one an older WindowSmash built from 11.0.0. The overlay (<kbd>F1</kbd>) says *Netplay: WindowSmash needs game 13.0.5: run the installer again*. |
+| The installer's window | The line under **Game files** turns red: *OpenSmash needs version 13.0.5, and this is …*, followed by what to add. **Set up and build** doesn't go on until the line is fixed: put the 13.0.5 update in the game folder and click **Check files**. |
+| The build | Step 4 checks the game's program and step 6 its data. Another version stops the build with *OpenSmash needs version 13.0.5 …* and what to do. |
+| The game | A game built from another version doesn't start: it says *This OpenSmash was built from another version of the game*, and what to do. |
+| The online lobby | It turns away a game built from another version, such as one an older OpenSmash built from 11.0.0. The overlay (<kbd>F1</kbd>) says *Netplay: OpenSmash needs game 13.0.5: run the installer again*. |
 
 The answer is the same each time: put the game's 13.0.5 update (an `.nsp` file) in your game folder, next to the game, and run `OpenSmash.exe` again. If you made `romfs.bin` by hand, make it again with the 13.0.5 update applied.
 
@@ -53,10 +53,10 @@ Leave your game files where they are afterwards: the game reads its data from th
 
 ## A folder built from another version
 
-WindowSmash used to build other versions of the game too, and many WindowSmash folders were set up from 11.0.0. Such a folder is **set up again as 13.0.5** the next time you run the installer (`OpenSmash.exe`; on Linux `install-windowsmash.sh`, on a Mac `Install WindowSmash.command`), once your game folder has the 13.0.5 update:
+OpenSmash used to build other versions of the game too, and many OpenSmash folders were set up from 11.0.0. Such a folder is **set up again as 13.0.5** the next time you run the installer (`OpenSmash.exe`; on Linux `install-windowsmash.sh`, on a Mac `Install WindowSmash.command`), once your game folder has the 13.0.5 update:
 
 1. Put the game's 13.0.5 update `.nsp` in your game folder, next to the game. (With yuzu or Ryujinx, install the update there.)
-2. Run the installer. It says *This folder was set up from version 11.0.0 of the game. WindowSmash needs 13.0.5 now*, and sets the folder up again from your game folder.
+2. Run the installer. It says *This folder was set up from version 11.0.0 of the game. OpenSmash needs 13.0.5 now*, and sets the folder up again from your game folder.
 3. It clears what your old game files made: the game's program, the game data's settings and the update's files, the DLC list, the fighters and the built game. A decrypted copy of the game, if the installer made one, stays, and the update is applied over it. Then it builds the game again, as 13.0.5.
 
 **What stays:** your save, your settings (`controllers.ini`, `display.ini`, the `online_*.txt` files), your multiplayer identity (`netplay_id.txt`), the fonts, and the shaders already prepared. The first time 13.0.5 loads an 11.0.0 save, it upgrades it itself ([13.0.5's save](DLC-AND-UNLOCKS.md#1305s-save)).
@@ -64,11 +64,11 @@ WindowSmash used to build other versions of the game too, and many WindowSmash f
 Without the update in the game folder, the installer stops before it clears anything and says what to add. The game built before stays as it was until then, but the online lobby turns it away.
 
 > [!TIP]
-> **Had a `v13.0.5` folder?** The version tool WindowSmash had before put 13.0.5 in a folder of its own, `v13.0.5\`, with a save of its own. WindowSmash doesn't use that folder any more, and the installer says so when it sets your folder up again. To play on from the save in it, close the game and copy `v13.0.5\save` over the WindowSmash folder's `save\` (keep a copy of the old `save\` if you may want it back). Then `v13.0.5\` can be deleted.
+> **Had a `v13.0.5` folder?** The version tool OpenSmash had before put 13.0.5 in a folder of its own, `v13.0.5\`, with a save of its own. OpenSmash doesn't use that folder any more, and the installer says so when it sets your folder up again. To play on from the save in it, close the game and copy `v13.0.5\save` over the OpenSmash folder's `save\` (keep a copy of the old `save\` if you may want it back). Then `v13.0.5\` can be deleted.
 
 ## Doing it by hand
 
-For the [step-by-step setup](BUILDING.md), when you have the game's data without the update (its `romfs.bin`, or a decrypted program `.nca`) and the update's `.nsp`, apply the update yourself, from the WindowSmash folder:
+For the [step-by-step setup](BUILDING.md), when you have the game's data without the update (its `romfs.bin`, or a decrypted program `.nca`) and the update's `.nsp`, apply the update yourself, from the OpenSmash folder:
 
 1. Do steps 1 to 9 of the setup guide. In [step 10](BUILDING.md#step-10-connect-your-game-data), connect the game's own data, without the update: its `romfs.bin`, or, with the decrypted `.nca` way, the game's own program `.nca` (not the update's).
 2. Keep that configuration under another name, as the update's base:

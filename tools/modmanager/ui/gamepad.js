@@ -1,4 +1,4 @@
-/* Game pad and keyboard navigation for the OpenSmash pages (the Linux/macOS launcher, WindowSmash Mods), so they
+/* Game pad and keyboard navigation for the OpenSmash pages (the Linux/macOS launcher, OpenSmash Mods), so they
  * work from the couch and in Steam's Game Mode, where a pad is all there is.
  *
  *   D-pad / left stick / arrow keys   move to the nearest button, field or link that way
@@ -87,7 +87,7 @@
   }
 
   /* B: what Escape does on the page (its handlers close its overlays; a <dialog> closes itself); only with nothing
-   * open, the page's own back (window.gpBack: the launcher's Play tab, WindowSmash Mods' way back to the launcher). */
+   * open, the page's own back (window.gpBack: the launcher's Play tab, OpenSmash Mods' way back to the launcher). */
   function back() {
     const open = scope() !== document;
     const target = document.activeElement || document.body;

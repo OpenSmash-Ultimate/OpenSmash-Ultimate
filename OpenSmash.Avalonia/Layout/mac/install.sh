@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sets WindowSmash up on this Mac in one go (as OpenSmash.exe does on Windows): brings this
+# Sets OpenSmash up on this Mac in one go (as OpenSmash.exe does on Windows): brings this
 # folder up to date from GitHub, checks the Mac, installs what is missing (Apple's Command Line Tools,
 # Python, SDL3), asks where your game files, keys and firmware are (found by itself when Ryujinx or one
 # of yuzu's forks has them), builds the game, and puts Play SSBU in ~/Applications and on the Desktop.
@@ -8,7 +8,7 @@
 #   bash "tools/mac/install.sh"
 #
 # A step that is already done is skipped, so running it again carries on where it stopped, and run
-# later it updates WindowSmash and builds again. tools/mac/install_mac.py does the work; options such
+# later it updates OpenSmash and builds again. tools/mac/install_mac.py does the work; options such
 # as --dry-run are passed on to it (--help lists them). Everything it says also goes to install.log.
 # (Written for macOS's own bash, 3.2.)
 {
@@ -37,7 +37,7 @@
             export WINDOWSMASH_ARM64=1
             exec arch -arm64 /bin/bash "$self" "$@"
         fi
-        echo "WindowSmash needs a Mac with Apple silicon (M1 or newer); this one has $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m)."
+        echo "OpenSmash needs a Mac with Apple silicon (M1 or newer); this one has $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m)."
         pause
         exit 1
     fi
@@ -56,7 +56,7 @@
         esac
         [ -x "$1" ] && "$1" -c 'import platform, sys; sys.exit(not (sys.version_info >= (3, 10) and platform.machine() == "arm64"))' >/dev/null 2>&1
     }
-    # where to look, in order, one per line: WindowSmash's own, then each name on the PATH and where
+    # where to look, in order, one per line: OpenSmash's own, then each name on the PATH and where
     # Homebrew and python.org's installer put it (a Terminal's PATH may lack them)
     python_candidates() {
         local name
@@ -80,7 +80,7 @@
     }
     get_python() {
         local tgz="deps/downloads/$PY_FILE" got
-        echo "Setting up WindowSmash needs Python 3.10 or newer, and this Mac has none that fits: putting Python"
+        echo "Setting up OpenSmash needs Python 3.10 or newer, and this Mac has none that fits: putting Python"
         echo "$PY_VERSION into deps/python (this touches nothing else on the Mac)."
         mkdir -p deps/downloads || return 1
         if [ ! -f "$tgz" ] || [ "$(shasum -a 256 "$tgz" | cut -d ' ' -f 1)" != "$PY_SHA256" ]; then
@@ -112,7 +112,7 @@
 
     setup() {
         local py f
-        echo "WindowSmash setup: $(date '+%Y-%m-%d %H:%M')"
+        echo "OpenSmash setup: $(date '+%Y-%m-%d %H:%M')"
         # Files downloaded from the internet are marked, and macOS asks about each one it runs: take
         # the mark off this folder's (what the build and the game make has none)
         for f in * .[!.]*; do

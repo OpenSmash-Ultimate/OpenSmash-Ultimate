@@ -1,4 +1,4 @@
-// WindowSmash Mods: the mod manager for the macOS build - GameBanana's Smash Ultimate mods found,
+// OpenSmash Mods: the mod manager for the macOS build - GameBanana's Smash Ultimate mods found,
 // installed, turned on and off. tools/mods.py does the work (installing, and making the game read
 // the mods: see its header); this app shows it, and talks to GameBanana's API for browsing.
 // Built by tools/mac/build_mods_app.sh into build-mac/WindowSmash Mods.app.
@@ -87,7 +87,7 @@ enum GameBanana {
 
     static func get(_ path: String) async throws -> Any {
         var req = URLRequest(url: URL(string: "https://gamebanana.com/apiv11" + path)!)
-        req.setValue("WindowSmash mod manager", forHTTPHeaderField: "User-Agent")
+        req.setValue("OpenSmash mod manager", forHTTPHeaderField: "User-Agent")
         let (data, _) = try await URLSession.shared.data(for: req)
         return try JSONSerialization.jsonObject(with: data)
     }
@@ -186,7 +186,7 @@ final class Model: ObservableObject {
         p.standardOutput = out
         p.standardError = Pipe()
         do { try p.run() } catch {
-            self.error = "Can't run WindowSmash's Python (\(Port.python)): run Install WindowSmash.command first."
+            self.error = "Can't run OpenSmash's Python (\(Port.python)): run Install WindowSmash.command first."
             return false
         }
         var failed = false
@@ -563,7 +563,7 @@ struct ModSheet: View {
                 HStack { ForEach(images.isEmpty ? [mod.image].compactMap { $0 } : images, id: \.self) { u in Thumbnail(url: u).frame(width: 320, height: 180) } }
             }
             if mod.category == "Skyline" {
-                Label("Skyline plugins are code made for a Switch: WindowSmash can't run them.", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Label("Skyline plugins are code made for a Switch: OpenSmash can't run them.", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             }
             ScrollView { Text(text.isEmpty ? "…" : text).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
                 .frame(maxHeight: 160)
@@ -612,7 +612,7 @@ struct ModSheet: View {
 struct ModsApp: App {
     @StateObject private var model = Model()
     var body: some Scene {
-        WindowGroup("WindowSmash Mods") {
+        WindowGroup("OpenSmash Mods") {
             ContentView().environmentObject(model).frame(minWidth: 960, minHeight: 620)
         }
         .windowToolbarStyle(.unified)

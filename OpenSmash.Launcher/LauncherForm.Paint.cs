@@ -1555,7 +1555,7 @@ namespace OpenSmash.Launcher
 
             {
                 var st = PushReveal(g, 0);
-                Theme.DrawWrapped(g, "The community plugins movesets and new characters are built on. Downloading them here is the same list WindowSmash Mods keeps under Settings.",
+                Theme.DrawWrapped(g, "The community plugins movesets and new characters are built on. Downloading them here is the same list OpenSmash Mods keeps under Settings.",
                     FB(16 * s), A(Theme.Muted), x, ContentTop * s - 4 * s, cw, 52 * s);
                 PopFade(g, st);
             }

@@ -136,7 +136,7 @@ static void load_database(void) {
         int extra = f && fgetc(f) != EOF;
         if (f) fclose(f);
         if (got != sizeof m || extra || !valid(&m)) {
-            fprintf(stderr, "[mii] %s/%s is not a Mii WindowSmash can use: skipped\n", MIIS_DIR, names[i]);
+            fprintf(stderr, "[mii] %s/%s is not a Mii OpenSmash can use: skipped\n", MIIS_DIR, names[i]);
             continue;
         }
         int dup = 0;

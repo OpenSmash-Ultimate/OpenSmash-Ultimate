@@ -1,6 +1,6 @@
 # Compile and run a known 13.0.5 main-module function against prepared local inputs (runtime/smoke.c).
 $ErrorActionPreference = 'Stop'
-$here = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))   # the WindowSmash folder (this is tools\dev\)
+$here = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))   # the OpenSmash folder (this is tools\dev\)
 $tools = Join-Path $here 'tools'
 $exefs = Join-Path $here 'dump\exefs'
 $build = Join-Path $here 'build'

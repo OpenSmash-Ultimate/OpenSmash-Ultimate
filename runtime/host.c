@@ -2246,11 +2246,11 @@ static void mac_start(int argc, char **argv, const char **dir, int *options) {
 /* The game library cannot be used: why (detail, for the log), and what a player does about it. */
 static int game_refused(int quiet, const char *path, const char *detail) {
     static const char text[] =
-        "This WindowSmash's game library (" RT_GAME_LIBRARY ") is missing, or was built for another version of "
-        "WindowSmash. Run OpenSmash.exe again: it builds the game for this version.";
+        "This OpenSmash's game library (" RT_GAME_LIBRARY ") is missing, or was built for another version of "
+        "OpenSmash. Run OpenSmash.exe again: it builds the game for this version.";
     fprintf(stderr, "[boot] cannot use the game library %s: %s\n%s\n", path, detail, text);
 #ifdef _WIN32
-    if (!quiet) MessageBoxA(NULL, text, "WindowSmash", MB_OK | MB_ICONERROR);
+    if (!quiet) MessageBoxA(NULL, text, "OpenSmash", MB_OK | MB_ICONERROR);
 #else
     (void)quiet;
 #endif
@@ -2373,13 +2373,13 @@ static int game_version_ok(void) {
     const char *id = rt_module_main.build_id;
     if (id && !_stricmp(id, REQUIRED_MAIN_BUILD)) return 1;
     static const char text[] =
-        "This WindowSmash was built from another version of the game, and WindowSmash needs version "
+        "This OpenSmash was built from another version of the game, and OpenSmash needs version "
         REQUIRED_VERSION ". Put the game's " REQUIRED_VERSION " update (an .nsp file) in your game folder, next to the "
         "game, and run OpenSmash.exe again: it sets this folder up again, keeping your save and settings.";
     fprintf(stderr, "[boot] the game's main module is %s, not %s's (%s)\n%s\n", id ? id : "unknown",
             REQUIRED_VERSION, REQUIRED_MAIN_BUILD, text);
 #ifdef _WIN32
-    MessageBoxA(NULL, text, "WindowSmash", MB_OK | MB_ICONERROR);
+    MessageBoxA(NULL, text, "OpenSmash", MB_OK | MB_ICONERROR);
 #endif
     return 0;
 }

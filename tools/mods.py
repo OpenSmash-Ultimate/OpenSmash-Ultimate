@@ -427,7 +427,7 @@ def gamebanana_get(path):
         ctx = ssl.create_default_context(cafile=certifi.where())
     except ImportError:
         pass
-    req = urllib.request.Request(GAMEBANANA + path, headers={"User-Agent": "WindowSmash mod manager"})
+    req = urllib.request.Request(GAMEBANANA + path, headers={"User-Agent": "OpenSmash mod manager"})
     with urllib.request.urlopen(req, timeout=30, context=ctx) as r:
         return json.load(r), ctx
 
@@ -446,7 +446,7 @@ def gamebanana_install(tree, mod_id, file_id=None, progress=None):
     image = f"{images[0]['_sBaseUrl']}/{images[0].get('_sFile530') or images[0]['_sFile']}" if images else ""
     with tempfile.TemporaryDirectory(prefix="windowsmash-dl-") as tmp:
         target = os.path.join(tmp, os.path.basename(f["_sFile"]))
-        req = urllib.request.Request(f["_sDownloadUrl"], headers={"User-Agent": "WindowSmash mod manager"})
+        req = urllib.request.Request(f["_sDownloadUrl"], headers={"User-Agent": "OpenSmash mod manager"})
         md5 = hashlib.md5()
         with urllib.request.urlopen(req, timeout=60, context=ctx) as r, open(target, "wb") as out:
             total, done = int(r.headers.get("Content-Length") or f.get("_nFilesize") or 0), 0
@@ -603,7 +603,7 @@ def replace_file(tmp, path):
     try:
         os.replace(tmp, path)
     except PermissionError:
-        raise Error(f"{os.path.basename(path)} is open in another program (the game, or another WindowSmash Mods window): "
+        raise Error(f"{os.path.basename(path)} is open in another program (the game, or another OpenSmash Mods window): "
                     "close it and apply again")
 
 

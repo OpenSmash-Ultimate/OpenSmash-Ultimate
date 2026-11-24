@@ -62,9 +62,9 @@ def pack_from_mods(tree, names, name, author="", description=""):
 
 def validate(pack):
     if not isinstance(pack, dict) or pack.get("format") != FORMAT:
-        raise PackError("that isn't a WindowSmash modpack")
+        raise PackError("that isn't an OpenSmash modpack")
     if pack.get("version", 1) > 1:
-        raise PackError("this modpack was made by a newer WindowSmash Mods: update it first")
+        raise PackError("this modpack was made by a newer OpenSmash Mods: update it first")
     if not isinstance(pack.get("mods"), list) or not pack["mods"]:
         raise PackError("the modpack has no mods")
     for m in pack["mods"]:
@@ -263,7 +263,7 @@ CAUTION_CATEGORIES = {"Animation", "Final Smash", "Stages", "Modpacks"}
 
 
 def listing_works(category="", text="", root_category=""):
-    """Whether a GameBanana mod can work in WindowSmash at all (what's known before downloading it):
+    """Whether a GameBanana mod can work in OpenSmash at all (what's known before downloading it):
     None, or {"level": "no" | "partly", "text"}. Movesets and new characters do: their Skyline
     plugins are recompiled into the game when they're applied (tools/skyline.py), and once one is
     installed the clash check says if it isn't built in yet."""

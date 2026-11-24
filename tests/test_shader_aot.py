@@ -75,7 +75,7 @@ class ReadErrorTests(unittest.TestCase):
         self.assertEqual([e.filename for e in errors], ['/media/card/base.romfs'])
         text = shader_aot.read_error_text(errors, '/somewhere')
         self.assertIn('Input/output error, in /media/card/base.romfs', text)
-        self.assertNotIn('copy WindowSmash made', text)
+        self.assertNotIn('copy OpenSmash made', text)
 
     def test_a_second_try_can_read_it(self):
         arc, tries = self.arc({200}, fail_times=1)
@@ -93,7 +93,7 @@ class ReadErrorTests(unittest.TestCase):
     def test_a_copy_of_its_own(self):
         tree = str(ROOT)
         e = OSError(5, 'Input/output error', str(ROOT / 'dump' / 'modules' / 'base.romfs'))
-        self.assertIn('copy WindowSmash made', shader_aot.read_error_text([e], tree))
+        self.assertIn('copy OpenSmash made', shader_aot.read_error_text([e], tree))
 
 
 VS_WORD = 1 | 3 << 5 | 1 << 10 | 3 << 17   # a vertex program's first word (is_header's)

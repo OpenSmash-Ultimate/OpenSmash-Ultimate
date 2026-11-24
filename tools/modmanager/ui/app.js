@@ -1,4 +1,4 @@
-// WindowSmash Mods: the page. It asks the app's own server (server.py) for everything.
+// OpenSmash Mods: the page. It asks the app's own server (server.py) for everything.
 "use strict";
 const KEY = new URLSearchParams(location.search).get("key") || "";
 const $ = (s, el = document) => el.querySelector(s);
@@ -455,9 +455,9 @@ async function openMod(id) {
     d.innerHTML = `<div class="detail">
       <h2>${esc(m.name)}</h2>
       <div class="by">${esc(m.category)}${m.author ? " · by " + esc(m.author) : ""} · ♥ ${short(m.likes)} · ⬇ ${short(m.downloads)} ${have ? '<span class="badge green">installed</span>' : ""}</div>
-      ${m.works ? `<div class="online-banner ${m.works.level === "no" ? "" : "caution"}"><div class="ic">🧩</div><div><b>${m.works.level === "no" ? "Won't work in WindowSmash" : "Only partly works in WindowSmash"}</b><span>${esc(m.works.text)}</span></div></div>` : ""}
+      ${m.works ? `<div class="online-banner ${m.works.level === "no" ? "" : "caution"}"><div class="ic">🧩</div><div><b>${m.works.level === "no" ? "Won't work in OpenSmash" : "Only partly works in OpenSmash"}</b><span>${esc(m.works.text)}</span></div></div>` : ""}
       ${onlineBanner(m.online)}
-      ${m.smash ? "" : '<div class="issue warn"><div class="ic">⚠️</div><div><b>Not a Smash Ultimate mod</b><span>It won\'t work in WindowSmash.</span></div></div>'}
+      ${m.smash ? "" : '<div class="issue warn"><div class="ic">⚠️</div><div><b>Not a Smash Ultimate mod</b><span>It won\'t work in OpenSmash.</span></div></div>'}
       <div class="gallery">${m.images.map((u) => `<img src="${esc(u)}" alt="" loading="lazy">`).join("")}</div>
       <h3>Files</h3>
       <div class="files">${m.files.map((f) => `<div class="file"><div><b>${esc(f.name)}</b> ${onlineBadge(f.online, true)}<small>${mb(f.size)} · ⬇ ${short(f.downloads)}${f.description ? " · " + esc(f.description) : ""}${f.scan && f.scan !== "clean" ? " · virus scan: " + esc(f.scan) : ""}</small></div>
@@ -489,7 +489,7 @@ $("#url-go").addEventListener("click", async () => {
 $("#inst-plain").addEventListener("click", () => makeInstaller(null));
 $("#uninstall").addEventListener("click", () => {
   const n = state.lib ? state.lib.mods.length : 0;
-  const d = dialog(`<h2>Uninstall WindowSmash Mods?</h2>
+  const d = dialog(`<h2>Uninstall OpenSmash Mods?</h2>
     <p class="hint">The game goes back to its own files, the modded game data is deleted and this app is removed. Your save isn't touched.</p>
     <label><input type="checkbox" id="un-mods"> Also delete my ${n} downloaded mod${n === 1 ? "" : "s"} (the mods folder)</label>
     <div class="dialog-actions"><button class="ghost" data-close>Cancel</button><button class="big" id="un-go">Uninstall</button></div>`);
@@ -499,7 +499,7 @@ $("#uninstall").addEventListener("click", () => {
       closeOverlays();
       runJob(job, (j) => {
         if (j.error) return;
-        document.body.innerHTML = `<div class="empty" style="height:100vh;display:grid;place-content:center"><h2>WindowSmash Mods is uninstalled</h2><p>${esc(j.log.slice(-6).join(" · "))}</p><p>You can close this window.</p></div>`;
+        document.body.innerHTML = `<div class="empty" style="height:100vh;display:grid;place-content:center"><h2>OpenSmash Mods is uninstalled</h2><p>${esc(j.log.slice(-6).join(" · "))}</p><p>You can close this window.</p></div>`;
       });
     } catch (e) { fail(e); }
   });
@@ -557,7 +557,7 @@ function packTile(p) {
       <button data-use>Use</button>
       <button class="ghost" data-share>Share</button>
       <button class="ghost" data-file>Save file</button>
-      <button class="ghost" data-inst title="One download that installs WindowSmash Mods and this pack">Installer</button>
+      <button class="ghost" data-inst title="One download that installs OpenSmash Mods and this pack">Installer</button>
       <button class="ghost danger" data-del>Delete</button>
     </div></div>`;
   $("[data-use]", el).addEventListener("click", () => openPack({ pack: p }));
@@ -611,7 +611,7 @@ async function sharePack(p) {
     return;
   }
   const d = dialog(`<h2>Share ${esc(p.name)}</h2>
-    <p class="hint">Send this code (Discord, a message…). Your friend pastes it into Modpacks; WindowSmash Mods downloads the same files, in the same order.</p>
+    <p class="hint">Send this code (Discord, a message…). Your friend pastes it into Modpacks; OpenSmash Mods downloads the same files, in the same order.</p>
     ${p.unsafe && p.unsafe.length ? onlineBanner({ level: "unsafe", reasons: [p.unsafe.join(", ") + (p.unsafe.length > 1 ? " aren't" : " isn't") + " online safe: play this pack offline, or online only with friends who have it"] }) : ""}
     <div class="code">${esc(code)}</div>
     <div class="dialog-actions"><button class="ghost" data-close>Close</button><button id="copy">Copy code</button></div>`);
@@ -636,8 +636,8 @@ function savePackFile(p) {
 }
 
 function makeInstaller(p) {
-  const d = dialog(`<h2>${p ? "Installer for " + esc(p.name) : "WindowSmash Mods installer"}</h2>
-    <p class="hint">One .zip for Windows and Mac. Your friend unzips it and double-clicks <b>Install WindowSmash Mods</b>: it adds this mod manager to their WindowSmash${p ? " and sets up the pack's mods, turned on and applied" : ""}.</p>
+  const d = dialog(`<h2>${p ? "Installer for " + esc(p.name) : "OpenSmash Mods installer"}</h2>
+    <p class="hint">One .zip for Windows and Mac. Your friend unzips it and double-clicks <b>Install WindowSmash Mods</b>: it adds this mod manager to their OpenSmash${p ? " and sets up the pack's mods, turned on and applied" : ""}.</p>
     ${p ? '<label><input type="checkbox" id="mi-all"> Carry every mod\'s files in the zip (bigger, but nothing to download while installing)</label>' : ""}
     <div class="dialog-actions"><button class="ghost" data-close>Cancel</button><button class="big" id="mi-go">Make it</button></div>`);
   $("#mi-go", d).addEventListener("click", async () => {
@@ -697,8 +697,8 @@ matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => set
 function showSettings() {
   setTheme(document.documentElement.dataset.theme || "dark");
   const lib = state.lib || {};
-  $("#about").innerHTML = `WindowSmash Mods · ${esc(({ darwin: "macOS", win32: "Windows", linux: "Linux" })[lib.platform] || lib.platform || "")}<br>
-    WindowSmash folder: <code>${esc(lib.root || "")}</code><br>
+  $("#about").innerHTML = `OpenSmash Mods · ${esc(({ darwin: "macOS", win32: "Windows", linux: "Linux" })[lib.platform] || lib.platform || "")}<br>
+    OpenSmash folder: <code>${esc(lib.root || "")}</code><br>
     Log (send it if something goes wrong): <code>${esc(lib.log || "")}</code>`;
   showPlugins();
 }
@@ -708,7 +708,7 @@ async function showPlugins() {
   try {
     const { plugins } = await api("/api/plugins/standard");
     $("#std-plugins").innerHTML = plugins.map((p) => `<div><b>${esc(PLUGIN_NAME[p.name] || p.name)}</b> <small>${esc(p.version)}${
-      p.ported ? " · ported to 13.0.5" : ""}</small><span>${p.status !== "runs" ? '<span class="badge">built into WindowSmash</span>'
+      p.ported ? " · ported to 13.0.5" : ""}</small><span>${p.status !== "runs" ? '<span class="badge">built into OpenSmash</span>'
       : p.have ? '<span class="badge green">installed</span>' : '<span class="badge gold">downloaded when you build plugins</span>'}</span></div>`).join("");
   } catch (e) { $("#std-plugins").textContent = ""; }
 }

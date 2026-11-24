@@ -751,7 +751,7 @@ public sealed partial class ClassicSurface
 
             {
                 var st = PushReveal(g, 0);
-                ArtworkTheme.DrawWrapped(g, "The community plugins movesets and new characters are built on. Downloading them here is the same list WindowSmash Mods keeps under Settings.",
+                ArtworkTheme.DrawWrapped(g, "The community plugins movesets and new characters are built on. Downloading them here is the same list OpenSmash Mods keeps under Settings.",
                     FB(16 * s), A(ArtworkTheme.Muted), x, ContentTop * s - 4 * s, cw, 52 * s);
                 PopFade(g, st);
             }

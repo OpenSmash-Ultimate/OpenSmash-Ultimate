@@ -1,4 +1,4 @@
-# WindowSmash on Linux
+# OpenSmash on Linux
 
 [← README](../README.md) · [Setup guide](BUILDING.md) · [Playing](PLAYING.md) · [Multiplayer](MULTIPLAYER.md) · [Technical guide](TECHNICAL.md)
 
@@ -16,7 +16,7 @@ There are two ways to get it:
   `bash opensmash-launcher.sh`. Setup, updates, Play, settings and the mod manager in a window, with a
   mouse or a game pad, no terminal. It works in Steam's Game Mode too. See
   [The OpenSmash Launcher](#the-opensmash-launcher).
-- **Install it on Linux.** `install-windowsmash.sh` sets up WindowSmash on the Linux machine and
+- **Install it on Linux.** `install-windowsmash.sh` sets up OpenSmash on the Linux machine and
   builds the game there from your own files, as `OpenSmash.exe` does on Windows. See
   [Installing on Linux](#installing-on-linux).
 - **Copy over a package from Windows.** A Windows PC that has built the game can make an
@@ -45,7 +45,7 @@ As on Windows, the game must be version 13.0.5, its last update
 ## The OpenSmash Launcher
 
 **Since v0.5.0** the launcher on Linux is the same program as Windows': `OpenSmash-Launcher` in the
-WindowSmash folder, with the account sign-in the official lobbies need (they let in only a signed-in
+OpenSmash folder, with the account sign-in the official lobbies need (they let in only a signed-in
 player's game). The setup puts it there (`tools/launcher_fetch.py`: built from the folder with the .NET 8
 SDK when it is installed, else the newest release's `OpenSmash-linux-x64.tar.gz`, checked against the
 SHA-256 the release names), and `OpenSmash Launcher` / `opensmash-launcher.sh` start it. Press **SIGN IN**
@@ -61,7 +61,7 @@ in: on the official lobbies it uses a ticket a signed-in launcher left, and says
 launcher is a small server on your own computer (`tools/weblauncher/launcher.py`, Python's standard
 library only, reachable from this computer alone and only with the key it opens the page with).
 
-To start it, double-click **`OpenSmash Launcher`** in the WindowSmash folder. On KDE (SteamOS's and
+To start it, double-click **`OpenSmash Launcher`** in the OpenSmash folder. On KDE (SteamOS's and
 Bazzite's Desktop Mode) choose *Continue* when it asks. On GNOME, right-click it and choose *Allow
 Launching*. You can also run `bash opensmash-launcher.sh`. It needs Python 3.10 or newer, which
 almost every distribution has. The first start adds **OpenSmash Launcher** to your applications menu.
@@ -72,7 +72,7 @@ or as a Flatpak). Without one, the launcher opens in your default browser.
 | :--- | :--- | :--- |
 | **Play** | *Play* (online, the lobby in Settings), *Play offline*, *Play without mods*. Before the game starts, it applies the turned-on mods, and asks to build the mods' plugins into the game when they need it. It then shows the game's log while the game runs. | `play-ssbu.sh`, `launchers/play-ssbu-offline.sh`; `tools/os_mods.py apply`, `vanilla`, `build` |
 | **Setup** | The first-run setup: your game, keys and firmware folders (found by themselves when an emulator has them; *Browse…* picks another), your online name, then the whole install and build with its log. *Build again* builds what changed; *Build game + launcher* also checks the Python launcher's syntax. | `tools/linux/install_linux.py`, `tools/build_game.py`, `tools/linux/rebuild-all.sh` |
-| **Mods** | Opens WindowSmash Mods (GameBanana's mods: browse, install, turn on and off, modpacks) in the same window. *Back to the launcher* (or B) returns. *Build plugins into the game* compiles movesets' and new characters' code into the game. | `tools/modmanager/server.py`, `tools/os_mods.py build` |
+| **Mods** | Opens OpenSmash Mods (GameBanana's mods: browse, install, turn on and off, modpacks) in the same window. *Back to the launcher* (or B) returns. *Build plugins into the game* compiles movesets' and new characters' code into the game. | `tools/modmanager/server.py`, `tools/os_mods.py build` |
 | **Settings** | Display, online (name, public or private lobby, lobby code, your own server, direct connections) and controllers. These are the same files and values `OpenSmash.exe` and the game's own settings menu write. | `display.ini`, `controllers.ini`, `online_*.txt`, `launcher.ini` |
 | **Update** | Checks GitHub for a newer OpenSmash and installs it (a `git pull`, or the newer files of a ZIP download). Your game files, save, settings and builds stay. | `install_linux.py --update-only` |
 
@@ -136,7 +136,7 @@ The mod manager is the same as on Windows and macOS. These fixes make it work fu
 
 ## Installing on Linux
 
-`install-windowsmash.sh` does everything in one go: it gets the newest WindowSmash, installs what
+`install-windowsmash.sh` does everything in one go: it gets the newest OpenSmash, installs what
 the build needs, finds your game files, and builds the game. It needs:
 
 - **An x86-64 PC with AVX2** (recommended) **or at the least SSE4.2** (x86-64-v2: the game is built for it, and is
@@ -159,8 +159,8 @@ the build needs, finds your game files, and builds the game. It needs:
   (`prod.keys` and `title.keys`); and your firmware's `.nca` files. An emulator's own folders work
   as they are, with the game updated to 13.0.5 there.
 
-1. **Download WindowSmash.** On the [GitHub page](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate), click
-   **Code > Download ZIP**, then unpack it in your home folder, for example as `~/WindowSmash`.
+1. **Download OpenSmash.** On the [GitHub page](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate), click
+   **Code > Download ZIP**, then unpack it in your home folder, for example as `~/OpenSmash`.
 2. **Open a terminal in that folder.** Open the folder in your file manager, right-click an empty
    area, and choose **Open in Terminal**.
 3. **Run the installer:**
@@ -187,23 +187,23 @@ the build needs, finds your game files, and builds the game. It needs:
    goes to `install.log`. While it writes the game's code as C, then while it compiles it, a line
    now and then shows how far it has got and the time left. The time left appears once the first
    files are compiled. Most terminals also show it in the window's title.
-6. **Play:** run `./play-ssbu.sh` in the folder, or choose **WindowSmash** in your applications
+6. **Play:** run `./play-ssbu.sh` in the folder, or choose **OpenSmash** in your applications
    menu.
 
 The installer's steps:
 
 | Step | What it does |
 | :--- | :--- |
-| 1. Update | Gets the newest WindowSmash from GitHub. Your game files, settings, save and build stay. |
+| 1. Update | Gets the newest OpenSmash from GitHub. Your game files, settings, save and build stay. |
 | 2. This PC | Checks the processor, the memory and the free space. |
 | 3. Packages | Installs clang, lld, bison, flex, SDL2, libopus, libvpx, the Vulkan loader and zenity from your distribution. |
-| 4. Python | Makes a Python of WindowSmash's own in `deps/venv`, with the packages the tools use. |
+| 4. Python | Makes a Python of OpenSmash's own in `deps/venv`, with the packages the tools use. |
 | 5. DXVK and vkd3d | Downloads DXVK 3.1.1, vkd3d 2.1 and their headers into `deps/linux-toolchain`, each checked against its SHA-256. |
 | 6. Your files | Asks for the three folders and the online name. |
-| 7. Launchers | Adds WindowSmash to the applications menu. |
+| 7. Launchers | Adds OpenSmash to the applications menu. |
 | 8. Build | Takes the program, fonts, data, DLC and fighters out of your files, then builds `build-linux/ssbu`. |
 
-Running it again later updates WindowSmash and builds again what the update changed. Its options:
+Running it again later updates OpenSmash and builds again what the update changed. Its options:
 
 | Option | What it does |
 | :--- | :--- |
@@ -212,7 +212,7 @@ Running it again later updates WindowSmash and builds again what the update chan
 | `--online-name <name>` | The name other players see. |
 | `--jobs <n>` | How many files to compile at a time. The default goes by the memory: 4 under 16 GB, 8 with 16 GB, 16 with 32 GB or more. |
 | `--skip-build` | Everything but compiling the game. |
-| `--no-update` | Don't look for a newer WindowSmash. |
+| `--no-update` | Don't look for a newer OpenSmash. |
 | `--no-packages` | Don't install packages: for a distribution it doesn't know, install them yourself first. |
 | `--dry-run` | Say what each step would do, and do nothing. |
 
@@ -235,7 +235,7 @@ folder that isn't mounted, the launchers say so. The [Controls](#controls), [Set
 
 ### Updating
 
-Run `bash install-windowsmash.sh` again whenever you want the newest WindowSmash. It looks at
+Run `bash install-windowsmash.sh` again whenever you want the newest OpenSmash. It looks at
 what changed and builds only that: your game files aren't asked for again (they are read once,
 into `dump/`), and the game's code is compiled again only when the update changes it. An update
 of the program's own parts (the graphics, the audio, the kernel: the files in `runtime/`) compiles
@@ -245,7 +245,7 @@ code includes (`runtime/recomp.h`) or the compile flags, or a new compiler, comp
 code again, once: about as long as the first build. To build from other
 game files, name them: `bash install-windowsmash.sh --game <folder>`.
 
-A folder an older WindowSmash built from another game version, such as 11.0.0, is set up again
+A folder an older OpenSmash built from another game version, such as 11.0.0, is set up again
 as 13.0.5 once your game folder has the 13.0.5 update; your save and settings stay
 ([a folder built from another version](UPDATES.md#a-folder-built-from-another-version)).
 

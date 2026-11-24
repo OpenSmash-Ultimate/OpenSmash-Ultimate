@@ -109,7 +109,7 @@ class OpenTests(unittest.TestCase):
         """(What a player's other update did: level 5 partly the original release's.)"""
         with self.assertRaises(SystemExit) as e:
             self.open([(4, 12)])
-        self.assertIn('WindowSmash needs version 13.0.5 of the game, and this update takes some of its hashes from '
+        self.assertIn('OpenSmash needs version 13.0.5 of the game, and this update takes some of its hashes from '
                       'the original release', str(e.exception.code))
 
 

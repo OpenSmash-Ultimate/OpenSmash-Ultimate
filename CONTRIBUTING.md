@@ -2,7 +2,7 @@
 
 Thanks for wanting to help. OpenSmash-Ultimate is a static recompilation of *Super Smash Bros. Ultimate* to a native PC program: the tools that translate the game, the runtime that replaces the console, and the tooling around them. It is the merge of two projects, WindowSmash and ssbu-recomp, and the merge is still going on:
 
-- **The repository root is WindowSmash**: its recompiler, runtime, installer, tests and guides, at their original paths. This is the base, and the version that players install today.
+- **The repository root was WindowSmash**: its recompiler, runtime, installer, tests and guides, at their original paths. This is the base, and the version that players install today.
 - **[`ssbu-recomp/`](ssbu-recomp/) is ssbu-recomp**, staged with its history. Its parts get ported into the base one area at a time (renderer, installer, menus, modding, rollback), and each moves out of the folder when it is ported.
 
 It is early, it moves fast, and there is a lot that a few people cannot test alone.

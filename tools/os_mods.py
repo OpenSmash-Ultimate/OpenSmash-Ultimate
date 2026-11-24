@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""What the OpenSmash launcher asks the WindowSmash mod manager to do.
+"""What the OpenSmash launcher asks the OpenSmash mod manager to do.
 
     os_mods.py status
     os_mods.py enable|disable|remove <folder>   (":code_patches": ARCropolis' code patches, enable/disable only)
@@ -138,7 +138,7 @@ def url_thumb(url, cache, name):
 
 
 def annotate(tree, m):
-    """The row details WindowSmash Mods shows: what the mod is, online safety, new costume slots,
+    """The row details OpenSmash Mods shows: what the mod is, online safety, new costume slots,
     and whether its code plugin is compiled into the game."""
     folder = os.path.join(tree.mods, m["name"])
     sys.path.insert(0, os.path.join(HERE, "modmanager"))

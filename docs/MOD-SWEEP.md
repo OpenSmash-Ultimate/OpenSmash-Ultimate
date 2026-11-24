@@ -4,7 +4,7 @@ What was checked: tonight's two problems in `logs/game-log-20261023-012352.txt`,
 in a test copy of the game (muted, offline, its own copy of the save and of `romfs.cfg`; your own mod
 state and save weren't touched), and the mod menu.
 
-**To do when you're back:** open WindowSmash Mods and press **Apply to game** once (with the game closed).
+**To do when you're back:** open OpenSmash Mods and press **Apply to game** once (with the game closed).
 The fixed `mods.py` is installed but your game still reads the last apply, so the Pyra/Mythra freeze is
 still there until you apply. Your mods are on and off exactly as you left them. (The Skyline session
 applied once at 08:55 to add the Shadow moveset, the two "shadow - ..." mods. Shadow's tile sits next to
@@ -86,7 +86,7 @@ each other forever. Offline nothing waits on another game, which is why it worke
 does: a test match with it loaded and played fine). You confirmed tonight's online errors came from
 mismatched mods.
 
-## The mod menu (WindowSmash Mods)
+## The mod menu (OpenSmash Mods)
 
 - **"Everyone needs it online" (new, orange 👥 badge):** mods that change more than the fighter's look get
   this badge, a clash-check entry and a line in the sidebar notice while they're on. That covers
@@ -114,7 +114,7 @@ mismatched mods.
 
 Backups of every changed file: `<file>.before-sweep` (tools/mods.py, tools/modmanager/packs.py,
 server.py, ui/app.js, ui/app.css, mods/Jotaro Kujo/config.json). The Mods app's Swift window didn't
-change, so it wasn't rebuilt; the new menu shows the next time WindowSmash Mods opens (quit it first if it's
+change, so it wasn't rebuilt; the new menu shows the next time OpenSmash Mods opens (quit it first if it's
 open). Patch for teammates: `~/Downloads/windowsmash-mac-patches/0014-Mods-sweep-*.patch` (made against patch 0012, without the Skyline session's 0013; where both change `tools/mods.py`, apply 0013 first and merge by hand if a hunk doesn't fit).
 
 ## Each mod (test copy, offline, your 14 mods on, fixed mods.py unless it says old)

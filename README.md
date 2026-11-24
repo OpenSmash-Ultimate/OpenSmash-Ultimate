@@ -84,7 +84,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Its three rules hold for every ch
 
 Much of OpenSmash-Ultimate was written with AI coding assistants, directed and checked by its maintainers: reading the game's code in a disassembler, writing the runtime and the tools, running the game headless to prove each change with its own logs and counters, and reviewing pull requests. That lowers the bar to contribute: you don't need to know ARM64, Direct3D or the Switch's services before you start. Describe the problem, let an assistant read the code with you, and hold it to the same rules as anyone else: [CONTRIBUTING.md](CONTRIBUTING.md)'s three rules, a measurement for every claim, and a test that fails without the fix. Say in your pull request what you checked yourself.
 
-WindowSmash's source-only tests use made-up data and need no game files. Run them from the repository root, in PowerShell or a Unix shell:
+OpenSmash's source-only tests use made-up data and need no game files. Run them from the repository root, in PowerShell or a Unix shell:
 
 ```
 python -m pip install -r tests/requirements-dev.txt
@@ -95,7 +95,7 @@ CI runs these workflows from [`.github/workflows/`](.github/workflows/):
 
 | Workflow | Runs on | What it checks |
 | :--- | :--- | :--- |
-| WindowSmash tests | Windows, Linux, macOS | The unit tests. |
+| OpenSmash tests | Windows, Linux, macOS | The unit tests. |
 | Runtime compile | Windows, Linux, macOS | The whole runtime, with its platform layer, compiles and links into the game's program as a player's build makes it, on a made-up game (`tools/dev/runtime_compile_check.py`); on Windows and Linux for both instruction sets. Every runtime source is in the program unless the script lists it as left out on purpose, and none is in a subfolder no build looks in. |
 | ssbu-recomp Linux runtime | Linux | ssbu-recomp's host runtime compiles; its synthetic differential test, platform self-test and compile-scheduler test pass; `setup.py --tools-only` finds every tool and library the build needs; its log collector leaves game files out of a report. Its installer script, `install_deps.sh`, is only checked for syntax: the workflow installs the packages itself. |
 | ssbu-recomp macOS runtime | macOS (Apple silicon) | The same on macOS, where `install_mac.sh` does run. It also builds the glslang shim, checks that `setup.py` stops at the dump check when given an empty dump, and reports what MoltenVK offers on the runner. |

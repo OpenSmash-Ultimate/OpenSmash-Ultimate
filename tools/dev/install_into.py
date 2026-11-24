@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install this tree's plugin work into a WindowSmash tree (the playable one, ~/WindowSmash): the code
+"""Install this tree's plugin work into an OpenSmash tree (the playable one, ~/WindowSmash): the code
 changed since the tree was copied from it (git: the "baseline" commit), the standard plugins
 (skyline/plugins), and the mods given; then the mods applied and the game built for the plugins.
 

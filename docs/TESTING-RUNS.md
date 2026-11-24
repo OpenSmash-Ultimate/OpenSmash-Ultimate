@@ -2,9 +2,9 @@
 
 [← Technical guide](TECHNICAL.md) · [Contributing](../CONTRIBUTING.md)
 
-These switches make a scripted run of the game quicker and less dependent on the PC it runs on, and they are meant to make a fight repeat exactly. They are test aids, not settings for playing. Each one is off unless its environment variable is set, and with it unset the game runs exactly as before. They were ported from ssbu-recomp (`ssbu-recomp/tests/DEBUG_MODE.md` and `ssbu-recomp/fighter_sdk/fighter_host.c`). WindowSmash builds game version 13.0.5 only.
+These switches make a scripted run of the game quicker and less dependent on the PC it runs on, and they are meant to make a fight repeat exactly. They are test aids, not settings for playing. Each one is off unless its environment variable is set, and with it unset the game runs exactly as before. They were ported from ssbu-recomp (`ssbu-recomp/tests/DEBUG_MODE.md` and `ssbu-recomp/fighter_sdk/fighter_host.c`). OpenSmash builds game version 13.0.5 only.
 
-**Status: not yet run with the game.** The sequence parser, the step machine and the arithmetic of the speed and the movie count were tested offline on made-up input (`tests/test_test_runs.py`). So were the fight switches' logic and their hooks, on made-up guest memory (`tests/test_fight_test.py`), and the hash log comparison (`tests/test_fight_hash_diff.py`). The runtime files compile against the macOS shims. None of these switches has run with the game in WindowSmash, on any platform. Their Windows and Linux builds were not compiled either. This guide says what each switch is built to do. Where that rests on something ssbu-recomp measured, it says so. Each section ends with what a run still has to check.
+**Status: not yet run with the game.** The sequence parser, the step machine and the arithmetic of the speed and the movie count were tested offline on made-up input (`tests/test_test_runs.py`). So were the fight switches' logic and their hooks, on made-up guest memory (`tests/test_fight_test.py`), and the hash log comparison (`tests/test_fight_hash_diff.py`). The runtime files compile against the macOS shims. None of these switches has run with the game in OpenSmash, on any platform. Their Windows and Linux builds were not compiled either. This guide says what each switch is built to do. Where that rests on something ssbu-recomp measured, it says so. Each section ends with what a run still has to check.
 
 | Variable | What it does |
 | :--- | :--- |
@@ -47,7 +47,7 @@ With `n` other than 1 there is no refresh clock:
 
 What it does not guarantee: the game counts refreshes on a thread of its own and compares the count at the end of each frame. If that thread runs late, one frame can still see two refreshes and run two logic frames. ssbu-recomp waited until the game had counted each refresh; this runtime does not read that count yet. The deterministic mode ([`SSBU_DETERMINISTIC`](#ssbu_deterministic)) removes those extra steps.
 
-**Audio is not touched.** The sound device still sets the pace of the game's mixer ([`ipc_audio.c`](../runtime/ipc_audio.c)), so the sound does not speed up with the picture. WindowSmash has no switch to mute it (`SSBU_AUDIO` only picks the Windows output; ssbu-recomp's scripts used an `SSBU_AUDIO_MUTE` that WindowSmash doesn't have). Turn the volume down.
+**Audio is not touched.** The sound device still sets the pace of the game's mixer ([`ipc_audio.c`](../runtime/ipc_audio.c)), so the sound does not speed up with the picture. OpenSmash has no switch to mute it (`SSBU_AUDIO` only picks the Windows output; ssbu-recomp's scripts used an `SSBU_AUDIO_MUTE` that OpenSmash doesn't have). Turn the volume down.
 
 Not yet checked in a run:
 
@@ -58,7 +58,7 @@ Not yet checked in a run:
 
 ## `SSBU_SEQ`
 
-ssbu-recomp found that the game reads player 1's controller once per frame (`ssbu-recomp/runtime/nnhid.c`). That has not been checked in WindowSmash yet. Each read (a *poll*) moves the sequence on by one *tick*. A hook can change that: `input_seq_set_steps` in [`input_seq.h`](../runtime/input_seq.h), which [`SSBU_DETERMINISTIC`](#ssbu_deterministic) uses to count fight frames instead. Fight frames stop while the game is paused, so after 30 polls of a pause the count goes back to one tick a poll, and a sequence can work the pause menu (and its camera controls) and resume.
+ssbu-recomp found that the game reads player 1's controller once per frame (`ssbu-recomp/runtime/nnhid.c`). That has not been checked in OpenSmash yet. Each read (a *poll*) moves the sequence on by one *tick*. A hook can change that: `input_seq_set_steps` in [`input_seq.h`](../runtime/input_seq.h), which [`SSBU_DETERMINISTIC`](#ssbu_deterministic) uses to count fight frames instead. Fight frames stop while the game is paused, so after 30 polls of a pause the count goes back to one tick a poll, and a sequence can work the pause menu (and its camera controls) and resume.
 
 Steps are separated by spaces or new lines, and `#` starts a comment that runs to the end of the line. Keys are the names `SSBU_INPUT` takes, joined by `+`: `A B X Y L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN LSTICK RSTICK`, and `SLEFT SUP SRIGHT SDOWN` for the left stick.
 
@@ -160,7 +160,7 @@ Where the game seeds its random numbers from the clock or from random bytes, the
 
 - **Clock reads.** ssbu-recomp found four clock reads whose results the game turns into Mersenne-twister seeds: two of the tick count and two of the time of day. `CLOCK_READ_1` to `CLOCK_READ_4` in [`game_addr.h`](../runtime/game_addr.h) are their return addresses. There, `nn::os::GetSystemTick` and its C name `nnosGetSystemTick` (each wrapped by its exported name) give 0x123456789, and the time of day (`hle_env.c`) gives 1700000000. If the SDK has the two names on one function, that function gets both wraps, one inside the other, and they answer alike. Every other clock read is untouched. The log says the first time each of the four gave its constant.
 - **Random bytes.** `nn::os::GenerateRandomBytes` (wrapped by its exported name) and `nn::crypto::GenerateCryptographicallyRandomBytes` (`hle_offline.c`) fill their buffers from a splitmix64 stream that starts from n, as ssbu-recomp's did. The log lists the first 16 calls.
-- **The kernel's entropy** (`svcGetInfo` 11, in `kernel.c`) is a function of n and the sub-id. That part is WindowSmash's own: here the SDK's code runs as the game's, where ssbu-recomp replaced those SDK functions.
+- **The kernel's entropy** (`svcGetInfo` 11, in `kernel.c`) is a function of n and the sub-id. That part is OpenSmash's own: here the SDK's code runs as the game's, where ssbu-recomp replaced those SDK functions.
 
 What ssbu-recomp found: it fixed the random bytes so that a scripted match meets the same random stage and CPU fighter in every run, and it found the clock reads by logging every clock read's caller. A fixed seed alone did not make the fight repeat: the fight still went apart after about 15 seconds (`ssbu-recomp/tests/DEBUG_MODE.md`). That is what `SSBU_DETERMINISTIC` is for.
 

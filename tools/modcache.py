@@ -11,7 +11,7 @@ fingerprint>", written once its C is generated and compiled (by a build that com
 elsewhere - Linux, macOS: recomp.py all --generate-only - once it is generated). With the same
 build id, base and tools fingerprint (the generator's sources and the runtime's native-function
 set) the C is not generated again. recomp.py replaces a file rather than writing into it
-(write_if_changed, compile_dir): a file can be a hard link that an earlier WindowSmash, which
+(write_if_changed, compile_dir): a file can be a hard link that an earlier OpenSmash, which
 shared build dirs between game versions, made to another folder's.
 """
 import hashlib

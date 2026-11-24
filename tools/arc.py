@@ -57,7 +57,7 @@ LOW40 = (1 << 40) - 1
 ZSTD_TABLE = 0x10             # the table header's first field when the table is zstd-compressed
 V1_FILE_DATA = 0x8824AF68     # file data starting before this: the original release's layout (1.0.0)
 V3_TABLE_SIZE = 0x2992DD4     # a table this long or longer has the version field (13.0.5's is 0x31EA858)
-NOT_13 = ("This game data is not version 13.0.5's ({}): WindowSmash needs version 13.0.5 of the game. Put the "
+NOT_13 = ("This game data is not version 13.0.5's ({}): OpenSmash needs version 13.0.5 of the game. Put the "
           "game's 13.0.5 update (an .nsp file) next to the game and set it up again.")
 VERSION_FIELD = 60            # the table's version field (Arc: after the counts and the region count)
 DAMAGED = "This copy of the game looks damaged or incomplete ({}). Copy the game's files again."

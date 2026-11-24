@@ -26,7 +26,7 @@ typedef unsigned short u16;
 static void refused(const char *where, int err) {
     static int told;
     if ((err == EHOSTUNREACH || err == EPERM) && !__atomic_exchange_n(&told, 1, __ATOMIC_RELAXED))
-        fprintf(stderr, "[net] UPnP: macOS keeps the game off your local network (%s: %s): allow WindowSmash in System Settings > "
+        fprintf(stderr, "[net] UPnP: macOS keeps the game off your local network (%s: %s): allow OpenSmash in System Settings > "
                         "Privacy & Security > Local Network\n", where, strerror(err));
 }
 #define REFUSED(where) refused(where, errno)

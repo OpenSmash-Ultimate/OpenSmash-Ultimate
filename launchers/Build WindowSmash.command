@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds the game from your own files in one go (as launchers\Build WindowSmash.bat): the setup
+# Builds the game from your own files in one go (as tools\build_game.py does on Windows): the setup
 # guide's steps from the Python packages to the build itself, one after the other. It asks where your
 # game files, keys and firmware are, and stops with a message at the first step that fails. A step
 # that is already done is skipped, so running it again carries on where it stopped. Needs what

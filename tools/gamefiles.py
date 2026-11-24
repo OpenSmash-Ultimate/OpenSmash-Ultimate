@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """What a folder of game files holds, for the build and the installer: the game's NCAs - which
 one is the program, the base, the update, the DLC - and the version; and whether that is the
-version WindowSmash needs, 13.0.5 (tools/game_version.py scan_problem).
+version OpenSmash needs, 13.0.5 (tools/game_version.py scan_problem).
 
 Usage:
   gamefiles.py <folder> --keys <dir> [--json]
