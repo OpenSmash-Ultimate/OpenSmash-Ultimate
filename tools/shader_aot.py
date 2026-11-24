@@ -1383,7 +1383,9 @@ def serve(exe, pack, cache, todo, jobs, times, show, every=1.0, popen=None, out=
         main = threading.main_thread()
         last = time.monotonic()
         while not stop.is_set() and main.is_alive():
-            stop.wait(min(1.0, save_every))
+            # (the time left, not a whole save_every: on Windows a wait may come back a few ms early - the timer's 15.6 ms
+            # steps - and the save then waited one more round; a test of three saves in a second failed so, #567's CI)
+            stop.wait(min(1.0, max(0.01, save_every - (time.monotonic() - last))))
             if not stop.is_set() and time.monotonic() - last >= save_every:
                 with lock:
                     snapshot = dict(times)
