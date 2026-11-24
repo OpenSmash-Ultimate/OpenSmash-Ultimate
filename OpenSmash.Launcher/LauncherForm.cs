@@ -4055,7 +4055,8 @@ namespace OpenSmash.Launcher
             var ver = Regex.Match(header, @"#define SHADER_CACHE_VERSION (\d+)");
             if (!ver.Success) return false;
             string text = File.ReadAllText(marker);
-            if (!text.Contains("version " + ver.Groups[1].Value)) return false;
+            var dxbc = Regex.Match(header, @"#define SHADER_CACHE_DXBC_VERSION (\d+)");   // (the Direct3D 11 files' version; the SPIR-V names use ver)
+            if (!text.Contains("version " + (dxbc.Success ? dxbc : ver).Groups[1].Value)) return false;
             // Vulkan draws from SPIR-V, which a Prepare Shaders run without ssbu_glslang.dll (every run before
             // Vulkan was the default) did not make: without it each new shader and pipeline is made in play
             // (a minute of waits in a first session). Nor did a run before the SPIR-V version went up (#330: 1001 to 1002):

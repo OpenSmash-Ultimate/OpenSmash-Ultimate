@@ -1574,7 +1574,8 @@ def marker_text(version, spirv):
 
 def cache_version():
     text = open(os.path.join(ROOT, "runtime", "gpu_shader_cache.h"), encoding="utf-8").read()
-    return int(re.search(r"#define SHADER_CACHE_VERSION (\d+)", text).group(1))
+    m = re.search(r"#define SHADER_CACHE_DXBC_VERSION (\d+)", text) or re.search(r"#define SHADER_CACHE_VERSION (\d+)", text)
+    return int(m.group(1))   # (the Direct3D 11 files' and the marker's version; the SPIR-V names use SHADER_CACHE_VERSION)
 
 
 SPV_VERSION = re.compile(r"#define SHADER_CACHE_SPV_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)")

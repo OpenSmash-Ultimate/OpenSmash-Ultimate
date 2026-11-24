@@ -14,7 +14,8 @@ public sealed partial class MainWindow
         if(!File.Exists(marker)||!File.Exists(header))return false;
         string source=File.ReadAllText(header),text=File.ReadAllText(marker);
         var version=Regex.Match(source,@"#define SHADER_CACHE_VERSION (\d+)");
-        if(!version.Success||!Regex.IsMatch(text,@"\bversion "+version.Groups[1].Value+@"\b"))return false;
+        var dxbc=Regex.Match(source,@"#define SHADER_CACHE_DXBC_VERSION (\d+)");
+        if(!version.Success||!Regex.IsMatch(text,@"\bversion "+(dxbc.Success?dxbc:version).Groups[1].Value+@"\b"))return false;
         // An older SPIR-V version's files have other names (#330), so only this version's "spirv g<version>." counts.
         var spv=Regex.Match(source,@"#define SHADER_CACHE_SPV_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)");
         string want=spv.Success?"\nspirv g"+(int.Parse(version.Groups[1].Value)*100+int.Parse(spv.Groups[1].Value))+".":"\nspirv ";
