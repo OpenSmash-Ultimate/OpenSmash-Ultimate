@@ -31,6 +31,52 @@ static Channel channels[256];
 volatile int gpu_job_hidden;   /* (gpu_queue.c, run-ahead: a submission of a frame never shown: its draws and clears left out) */
 u64 gpu_stat_lists, gpu_stat_batches, gpu_stat_draws, gpu_stat_methods, gpu_stat_dispatches;
 
+/* SSBU_LAT_TRACE (ipc_vi.c, tools/latency_trace.py): which of the game's logic frames drew each colour target last - the
+ * picture's own frame. A submission carries the logic frame the game was on when it submitted it (gpu_lat_job_tick:
+ * gpu_queue.c, hle_nv.c); each draw, clear and 2D blit that ran (not a hidden one) notes it on its targets once it is
+ * recorded (also one the back end then left out: that frame meant to draw there), and the back end's present asks for the target it shows (gpu_lat_shown_note, under its own lock: what the
+ * picture holds when it is composed). Off (gpu_lat_on 0): one branch a draw. */
+volatile int gpu_lat_on;
+volatile u32 gpu_lat_job_tick;
+volatile u32 gpu_lat_shown_tick;
+volatile int gpu_lat_shown_known;
+#define LATT 64
+static u64 latt_g[LATT];
+static u32 latt_tick[LATT], latt_next;
+static SRWLOCK latt_lock = SRWLOCK_INIT;
+static void lat_note(u64 g) {
+    if (!g) return;
+    u32 t = gpu_lat_job_tick;
+    AcquireSRWLockExclusive(&latt_lock);
+    u32 i = 0;
+    while (i < LATT && latt_g[i] != g) i++;
+    if (i == LATT) { i = latt_next; latt_next = (latt_next + 1) % LATT; latt_g[i] = g; }
+    latt_tick[i] = t;
+    ReleaseSRWLockExclusive(&latt_lock);
+}
+static void lat_note_draw(const u32 *regs) {
+    u32 sel = regs[M_CT_SELECT], count = sel & 15;
+    for (u32 i = 0; i < count && i < 8; i++) {
+        u32 ct = (sel >> (4 + 3 * i)) & 7;
+        u64 va = (u64)regs[M_CT(ct)] << 32 | regs[M_CT(ct) + 1];
+        if (va && regs[M_CT(ct) + 4]) lat_note(gpu_va_to_guest(va));
+    }
+}
+static void lat_note_clear(const u32 *regs, u32 arg) {
+    u32 rt = (arg >> 6) & 0xF;
+    if ((arg & 0x3C) && rt < 8) lat_note(gpu_va_to_guest((u64)regs[M_CT(rt)] << 32 | regs[M_CT(rt) + 1]));
+}
+void gpu_lat_shown_note(u64 guest_addr) {
+    if (!gpu_lat_on) return;
+    int known = 0;
+    u32 t = 0;
+    AcquireSRWLockShared(&latt_lock);
+    for (u32 i = 0; i < LATT; i++) if (latt_g[i] == guest_addr) { t = latt_tick[i]; known = 1; break; }
+    ReleaseSRWLockShared(&latt_lock);
+    gpu_lat_shown_tick = t;
+    gpu_lat_shown_known = known;
+}
+
 static u64 guest(u64 va) {
     u64 g = gpu_va_to_guest(va);
     if (!g) {
@@ -394,10 +440,10 @@ static void engine_method(Channel *ch, Engine *e, u32 method, u32 arg) {
             e->regs[0x8E3] += 4;
             break;
         }
-        case 0x585: gpu_stat_draws++; if (!gpu_job_hidden) gfx_draw(e->regs, e->cb, e->indexed); break;
+        case 0x585: gpu_stat_draws++; if (!gpu_job_hidden) { gfx_draw(e->regs, e->cb, e->indexed); if (gpu_lat_on) lat_note_draw(e->regs); } break;
         case M_DRAW_INDEX_COUNT: e->indexed = 1; break;                                /* indexed draw follows */
         case M_VERTEX_ARRAY_COUNT: e->indexed = 0; break;
-        case 0x674: if (!gpu_job_hidden) gfx_clear(e->regs, arg); break;             /* clear surface */
+        case 0x674: if (!gpu_job_hidden) { gfx_clear(e->regs, arg); if (gpu_lat_on) lat_note_clear(e->regs, arg); } break;             /* clear surface */
         }
         break;
     case CLASS_COMPUTE:
@@ -418,7 +464,7 @@ static void engine_method(Channel *ch, Engine *e, u32 method, u32 arg) {
         if (method == 0x0C0) dma_launch(e, arg);
         break;
     case CLASS_2D:
-        if (method == 0x237) gfx_blit2d(e->regs);   /* PIXELS_FROM_MEMORY_SRC_Y0_INT: blit */
+        if (method == 0x237) { gfx_blit2d(e->regs); if (gpu_lat_on && !gpu_job_hidden) lat_note(gpu_va_to_guest((u64)e->regs[0x88] << 32 | e->regs[0x89])); }   /* PIXELS_FROM_MEMORY_SRC_Y0_INT: blit */
         break;
     case CLASS_I2M:
         if (method == 0x06C) e->i2m_pos = 0;

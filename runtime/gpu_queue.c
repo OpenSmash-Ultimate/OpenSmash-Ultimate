@@ -24,11 +24,13 @@
 #define JOBS 4096        /* submissions queued at most (the submitter waits beyond) */
 #define INLINE 16        /* GPFIFO entries kept in the job itself; more are allocated */
 
-typedef struct Job { u32 channel, count, syncpoint, fence; int fast, hide; u64 *entries; u64 inline_entries[INLINE]; } Job;
+typedef struct Job { u32 channel, count, syncpoint, fence, tick; int fast, hide; u64 *entries; u64 inline_entries[INLINE]; } Job;
 extern volatile LONG rb_fast;   /* (kernel.c) */
 /* (run-ahead's profile, hle_rb_core.c: the GPU thread's time in submissions, those made in hidden frames [1] and the others [0]) */
 double gpu_q_busy_ms[2]; long long gpu_q_jobs[2];
 extern volatile int gpu_job_hidden;   /* (gpu.c) */
+extern volatile int gpu_lat_on; extern volatile u32 gpu_lat_job_tick;   /* (gpu.c, SSBU_LAT_TRACE) */
+u32 vi_lat_tick(void);   /* (ipc_vi.c) */
 volatile int gpu_hidden_since_present;   /* (SSBU_PRESENT_HASH: a hidden submission ran since the last picture shown) */
 volatile int gpu_hide_fast;          /* (hle_rb_core.c, run-ahead: the submissions of hidden frames draw nothing; 2: those of a net catch-up's frames but the last) */
 
@@ -157,6 +159,7 @@ static DWORD WINAPI gpu_thread(LPVOID unused) {
             motion_job_done(number); }
         u64 q0 = rt_now_ns();
         gpu_job_hidden = j->hide;
+        gpu_lat_job_tick = j->tick;   /* (SSBU_LAT_TRACE: the logic frame it was submitted in, gpu.c) */
         if (j->hide) gpu_hidden_since_present = 1;
         gpu_submit(j->channel, j->entries, j->count);   /* (the job stays put until `done` passes it) */
         gpu_job_hidden = 0;
@@ -210,6 +213,7 @@ void gpu_queue_submit(u32 channel, const u64 *entries, u32 count, u32 syncpoint,
     j->syncpoint = syncpoint;
     j->fence = fence;
     j->fast = rb_fast > 0;
+    j->tick = gpu_lat_on ? vi_lat_tick() : 0;
     j->hide = gpu_hide_fast == 2 ? rb_fast > 1 : j->fast && gpu_hide_fast;   /* (2, a net catch-up: all but its last frame, the one shown) */
     j->entries = count <= INLINE ? j->inline_entries : malloc(sizeof *entries * count);
     if (!j->entries) { j->entries = j->inline_entries; j->count = count = 0; }

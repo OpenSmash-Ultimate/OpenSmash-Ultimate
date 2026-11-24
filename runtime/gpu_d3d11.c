@@ -6412,7 +6412,9 @@ static void present_hash(ID3D11Texture2D *tex) {
     char gs[16 * 9 * 2 + 1];
     u64 cell = (u64)(sw / 16) * (sh / 9) * 3;
     for (int i = 0; i < 16 * 9; i++) snprintf(gs + i * 2, 3, "%02x", (unsigned)(cell ? (grid[i] / cell > 255 ? 255 : grid[i] / cell) : 0));
-    fprintf(out, "%llu %lld %d %016llx %s\n", (unsigned long long)n++, test_fight_frame, hid, (unsigned long long)h, gs);
+    extern volatile u32 gpu_lat_shown_tick; extern volatile int gpu_lat_shown_known;   /* (SSBU_LAT_TRACE: the picture's logic frame) */
+    fprintf(out, "%llu %lld %d %016llx %s %u %d\n", (unsigned long long)n++, test_fight_frame, hid, (unsigned long long)h, gs,
+            gpu_lat_shown_tick, gpu_lat_shown_known);
     fflush(out);
 }
 
@@ -6917,6 +6919,7 @@ static volatile LONG presented_once;
 void d3d11_present(u64 guest, u32 width, u32 height) {
     (void)width; (void)height;
     if (!enter()) return;
+    { void gpu_lat_shown_note(u64 g); gpu_lat_shown_note(guest); }   /* (SSBU_LAT_TRACE: the picture's logic frame, gpu.c) */
     last_present_guest = guest;
     presented_once = 1;
     watchdog_present();
