@@ -11,7 +11,8 @@ import sys
 
 PLAYED = 1009843200   # (2002-01-01: runtime/gpu_shader_cache.h SHADER_CACHE_PLAYED_UNIX; Prepare Shaders dates its files before it)
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "runtime", "gpu_shader_cache.h"), encoding="utf-8") as _h:
-    VERSION = int(re.search(r"#define SHADER_CACHE_VERSION (\d+)", _h.read()).group(1))
+    _t = _h.read()
+VERSION = int((re.search(r"#define SHADER_CACHE_DXBC_VERSION (\d+)", _t) or re.search(r"#define SHADER_CACHE_VERSION (\d+)", _t)).group(1))
 
 
 def main():
