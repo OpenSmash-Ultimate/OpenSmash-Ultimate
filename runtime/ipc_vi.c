@@ -83,11 +83,12 @@ static volatile int keep_pending;
 static u8 shown[sizeof queue.slots[0].buffer];
 static u32 shown_size;
 static u64 shown_mark;
+static int shown_slot = -1, shown_left;   /* (SSBU_LAT_TRACE: the slot shown, the pictures still queued behind it) */
 static int speed_mode, report_draws;   /* SSBU_SPEED (not 1), SSBU_SEQ: decided at start */
 
 /* SSBU_LAT_TRACE=<file> (tests: tools/latency_trace.py): the times, in ms, of each refresh signalled to
- * the game ("R <the signal> <the refresh it is for>": low_latency holds the signal between), each frame it queues ("Q <ms> <logic frame> <fight on>"), each frame shown ("S <ms before
- * the present> <ms after> <frames shown> <fight frame> <logic frame now> <the picture's logic frame> <1: known>"),
+ * the game ("R <the signal> <the refresh it is for>": low_latency holds the signal between), each frame it queues ("Q <ms> <logic frame> <fight on> <buffer> <the ring entry it draws into, hle_latency.c>"), each frame shown ("S <ms before
+ * the present> <ms after> <frames shown> <fight frame> <logic frame now> <the picture's logic frame> <1: known> <buffers still queued> <buffer>"),
  * player 1's first pad read of each logic frame ("I <ms> <logic frame>") and each change of player 1's buttons
  * as the game reads them ("P <ms> <frames shown> <fight frame> <buttons> <logic frame>").
  * The logic frame is a count of the game's frame ends (FRAME_HOOK_END, the graphics module's, once a pass of its main
@@ -233,6 +234,60 @@ static int vi_ready_skip(void) {
  * the one shown before is free again - or, hold (low_latency), kept until ll_release_held: the game's
  * next frame starts when a buffer comes free. Returns its slot, or -1 if none is queued. */
 static int vi_reacq = -1;   /* (rollback: the slot on screen when a catch-up's load freed it - vi_rb_load) */
+/* ---- Buffers handed out in turn (SSBU_VI_ORDER; =0: the lowest free one, as before 2026-11-24) ----------------------
+ * The game draws each frame into one of its three window textures chosen by its own frame count (hle_latency.c: entry
+ * (count + 2 - shift) % 3 of its ring) and presents the buffer DequeueBuffer handed it: the two agree only while the
+ * buffers are handed out in turn, 0 1 2 0 1 2, as the console's window does. The lowest free one is that same turn while
+ * the game waits for each buffer, but when two were free at once (menus, loads, the frames before a fight) it could
+ * start the other way round, 1 0 2 1 0 2, and keep to it: from then on every picture went into the buffer presented a
+ * frame later - SSBU_LAT_TRACE 2 logic frames behind instead of 1, the buffer shown holding the picture of the frame
+ * before the one that queued it - +16.7 ms from press to picture for the whole fight (2026-11-24: 4 of the 22 games of
+ * relay pairs at SSBU_NET_SIM 20 and 60 ms, each from a turn reversed in the menus to the end of the fight). Now the
+ * next buffer is the one after the last handed out: if it is not free yet (still shown or queued) the answer is "would
+ * block" until it is - in a rollback's catch-up the lowest free one, which rb_dequeue_pick then sets to the first
+ * pass's. The turn is part of the queue's savestate (vi_rb_save). */
+static int vi_last_dq = -1;   /* (the slot handed out last; -1: none yet, or the buffers registered again) */
+static long long vi_order_waits, vi_order_moved, vi_order_loads, vi_order_fallbacks;
+static int vi_order_on(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("SSBU_VI_ORDER");
+        v = !(e && *e == '0');
+        fprintf(stderr, "[display] window buffers handed out %s\n", v ? "in turn, as the console does (SSBU_VI_ORDER=0: the lowest free one)" : "lowest free first (SSBU_VI_ORDER=0)");
+    }
+    return v;
+}
+static int vi_next_slot(int last) {   /* (under the queue's lock) the registered slot after `last`, in turn */
+    for (int k = 1; k <= SLOTS; k++) { int j = (last + k) % SLOTS; if (queue.slots[j].has_buffer) return j; }
+    return -1;
+}
+static int vi_prev_dq = -1;   /* (vi_last_dq before the last hand-out: a CANCEL_BUFFER puts it back) */
+/* (DEQUEUE_BUFFER, under the queue's lock) The buffer to hand out, given the free ones and the lowest of them: the one in
+ * turn if it is free; -1 ("would block") while the one in turn will come free without the game - queued, or shown with
+ * a picture queued behind it that will replace it; else, and in a rollback's catch-up, the lowest free one (a catch-up
+ * cut short by the fight's end, or a turn whose buffer nothing will free, must not leave the game waiting for good). */
+static int vi_turn_pick(u64 freemask, int lowest) {
+    if (lowest < 0 || !vi_order_on() || vi_last_dq < 0) return lowest;
+    int nx = vi_next_slot(vi_last_dq);
+    if (nx < 0) return lowest;
+    if (freemask >> nx & 1) {
+        if (nx != lowest && (++vi_order_moved <= 4 || vi_order_moved % 1000 == 0))   /* (the lowest free one was out of turn) */
+            fprintf(stderr, "[display] buffer %d handed out in its turn, not %d, the lowest free (%lld times so far)\n", nx, lowest, vi_order_moved);
+        return nx;
+    }
+    if (rb_fast > 0) return lowest;
+    int st = queue.slots[nx].state, behind = 0;
+    for (int i = 0; i < SLOTS; i++) behind |= queue.slots[i].state == QUEUED;
+    if (st == QUEUED || (st == ACQUIRED && behind)) {   /* (its turn's buffer still queued or shown: the game waits for it, as on the console) */
+        if (++vi_order_waits <= 4 || vi_order_waits % 100000 == 0)
+            fprintf(stderr, "[display] buffer %d free but buffer %d's turn: the game waits for it (%lld times so far)\n", lowest, nx, vi_order_waits);
+        return -1;
+    }
+    if (++vi_order_fallbacks <= 4 || vi_order_fallbacks % 1000 == 0)
+        fprintf(stderr, "[display] buffer %d's turn, but nothing will free it (state %d): buffer %d, the lowest free, instead (%lld times so far)\n",
+                nx, st, lowest, vi_order_fallbacks);
+    return lowest;
+}
 static u64 ll_held;   /* (slots shown before, still held: freed at low_latency's release) */
 static int take_oldest_held(int hold);
 static int take_oldest(void) { return take_oldest_held(0); }
@@ -252,6 +307,8 @@ static int take_oldest_held(int hold) {
         shown_size = queue.slots[oldest].buffer_size;
         memcpy(shown, queue.slots[oldest].buffer, shown_size);
         shown_mark = queue.slots[oldest].gpu_mark;
+        shown_slot = oldest; shown_left = 0;
+        for (int i = 0; i < SLOTS; i++) shown_left += queue.slots[i].state == QUEUED;   /* (SSBU_LAT_TRACE: still queued behind it) */
     }
     return oldest;
 }
@@ -274,8 +331,8 @@ static void show_held(int hold) {   /* (hold: the buffer event is left to ll_rel
     present_frame(shown, shown_size);
     test_fight_presented();
     { void perf_frame_shown(void); perf_frame_shown(); }   /* (debug_perf_session.c: the session's summary) */
-    if (lat_tf) lat_line("S %.3f %.3f %llu %lld %u %u %d\n", p0, lat_ms(), (unsigned long long)queue.frames, test_fight_frame,
-                         vi_lat_tick(), gpu_lat_shown_tick, gpu_lat_shown_known);
+    if (lat_tf) lat_line("S %.3f %.3f %llu %lld %u %u %d %d %d\n", p0, lat_ms(), (unsigned long long)queue.frames, test_fight_frame,
+                         vi_lat_tick(), gpu_lat_shown_tick, gpu_lat_shown_known, shown_left, shown_slot);
     if (!hold) {
         kernel_signal_event(queue.buffer_event);
         WakeAllConditionVariable(&queue.freed);
@@ -501,16 +558,23 @@ static void start(void) {
  * stale queued ones are shown between new frames. The registered buffers themselves don't change. */
 typedef struct ViSlot { int state; u64 queued_at, gpu_mark; } ViSlot;
 void *vi_rb_save(void) {
-    ViSlot *s = malloc(sizeof *s * SLOTS);
+    ViSlot *s = malloc(sizeof *s * (SLOTS + 1));   /* (+1: the turn, vi_last_dq) */
+    if (!s) { fprintf(stderr, "[display] a savestate of the buffer queue: out of memory, a load will leave the queue as it is\n"); return NULL; }
     queue_lock();
     for (int i = 0; i < SLOTS; i++) { s[i].state = queue.slots[i].state; s[i].queued_at = queue.slots[i].queued_at; s[i].gpu_mark = queue.slots[i].gpu_mark; }
+    s[SLOTS].state = vi_last_dq; s[SLOTS].queued_at = s[SLOTS].gpu_mark = 0;
     queue_unlock();
     return s;
 }
 
 void vi_rb_load(const void *p) {
     const ViSlot *s = p;
+    if (!s) return;
     queue_lock();
+    if (vi_last_dq != s[SLOTS].state && (++vi_order_loads <= 4 || vi_order_loads % 100 == 0))
+        fprintf(stderr, "[display] a load put the buffers' turn back: after %d, was after %d (%lld times so far)\n", s[SLOTS].state, vi_last_dq, vi_order_loads);
+    vi_last_dq = s[SLOTS].state;   /* (the turn as at the save: the frames run again take the buffers they had) */
+    vi_prev_dq = -1;
     /* (round 6) The slot on screen now. The catch-up needs every slot free, to give its frames the slots of their first
      * pass (rb_dequeue_pick), so the one on screen is let go below with the queued ones. But it stayed free after the
      * catch-up: the first real frame after a rollback found a buffer at once, did not wait for the display, and the
@@ -589,6 +653,7 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
             memcpy(s->buffer, in->d + in->pos, s->buffer_size);
             s->has_buffer = s->buffer_size >= 4 && *(u32 *)s->buffer != 0;
             s->state = FREE;
+            vi_last_dq = vi_prev_dq = -1;   /* (the turn starts again from the lowest free one) */
             kernel_signal_event(queue.buffer_event);   /* a buffer is available */
         }
         w32(out, 0);
@@ -610,6 +675,7 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
         }
         for (int i = 0; i < SLOTS; i++)
             if (queue.slots[i].has_buffer && queue.slots[i].state == FREE) { freemask |= 1ull << i; if (slot < 0) slot = i; }
+        slot = vi_turn_pick(freemask, slot);   /* (in turn: see vi_last_dq) */
         /* (round 4, SSBU_VI_DEQUEUE_WAIT_MS=<ms>, off unless set: with no free buffer the answer was "would block" at
          * once, and the buffer event stays signalled, so the game's main thread asked again some 3200 times a frame -
          * 8-9 ms of every frame at full speed on one core, measured by the rollback bench. With a wait, the call sleeps
@@ -621,10 +687,13 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
             extern void (*kernel_pace_hook)(int phase);
             if (kernel_pace_hook) kernel_pace_hook(2);   /* (the bench: the wait for the display begins here) */
             SleepConditionVariableSRW(&queue.freed, &queue.lock, (DWORD)wait_ms, 0);
+            freemask = 0; slot = -1;
             for (int i = 0; i < SLOTS; i++)
                 if (queue.slots[i].has_buffer && queue.slots[i].state == FREE) { freemask |= 1ull << i; if (slot < 0) slot = i; }
+            slot = vi_turn_pick(freemask, slot);
         }
         if (slot >= 0) slot = rb_dequeue_pick(freemask, slot);   /* (a catch-up's frame: its first pass's slot) */
+        if (slot >= 0) { vi_prev_dq = vi_last_dq; vi_last_dq = slot; }
         {   /* (the rollback bench: the game waits for a buffer from the first "would block" to the next buffer handed out) */
             extern void (*kernel_pace_hook)(int phase);
             if (kernel_pace_hook) kernel_pace_hook(slot < 0 ? 2 : 3);
@@ -654,7 +723,8 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
             queue.slots[slot].state = QUEUED;
             queue.slots[slot].queued_at = rt_now_ns();
             ll_queued();
-            if (lat_tf && rb_fast <= 0) { int game_fight_on(void); lat_line("Q %.3f %u %d\n", lat_ms(), vi_lat_tick(), game_fight_on()); }
+            if (lat_tf && rb_fast <= 0) { int game_fight_on(void); extern volatile int lat_draw_entry;   /* (hle_latency.c) */
+                          lat_line("Q %.3f %u %d %u %d\n", lat_ms(), vi_lat_tick(), game_fight_on(), slot, lat_draw_entry); }
             queue.slots[slot].gpu_mark = gpu_queue_mark();
             {   int interp_probe_on(void); void interp_probe_frame(u64 mark, u32 ticks);
                 /* (SSBU_INTERP_PROBE, gpu_interp_probe.c: the picture's submissions, and the logic frames its pass ran) */
@@ -686,6 +756,7 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
     case CANCEL_BUFFER: {
         u32 slot = rd32(in);
         if (slot < SLOTS) queue.slots[slot].state = FREE;
+        if (slot < SLOTS && (int)slot == vi_last_dq) { vi_last_dq = vi_prev_dq; vi_prev_dq = -1; }   /* (given back unused: the turn as before it) */
         kernel_signal_event(queue.buffer_event);
         w32(out, 0);
         break;
