@@ -17,6 +17,8 @@ typedef struct TextureDesc {
     u32 block_height, block_depth;
     u32 bytes, bw, bh;            /* bytes per block, block width/height in texels */
     DXGI_FORMAT dxgi;
+    u32 astc;                     /* (not macOS) ASTC: the NVN format tex_decode_rgba8 decodes it as (0x79 + block size, 0x87 + for sRGB), else 0;
+                                     dxgi is then the RGBA8 the CPU decode produces, bytes/bw/bh still those of the blocks */
 } TextureDesc;
 
 /* Texture types in a header. */

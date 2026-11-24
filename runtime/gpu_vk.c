@@ -2872,7 +2872,9 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
     u8 **rgba = NULL;
     int nvn = want1d ? 0 : d.dxgi == DXGI_FORMAT_BC1_UNORM_SRGB ? 0x46 : d.dxgi == DXGI_FORMAT_BC2_UNORM_SRGB ? 0x47
             : d.dxgi == DXGI_FORMAT_BC3_UNORM_SRGB ? 0x48 : d.dxgi == DXGI_FORMAT_BC7_UNORM_SRGB ? 0x4E : 0;
-    if (nvn && !is3d && d.width <= 1024 && d.height <= 1024 && (rgba = calloc(levels * layers, sizeof *rgba)) != NULL) {
+    /* ASTC (Mii eyes, eyebrows, mouths): no format on a PC GPU, always decoded here, never punched */
+    if (d.astc && !is3d && !want1d) nvn = (int)d.astc;
+    if (nvn && !is3d && (d.astc || (d.width <= 1024 && d.height <= 1024)) && (rgba = calloc(levels * layers, sizeof *rgba)) != NULL) {
         int ok = 1, punched = 0;
         for (u32 i = 0; i < levels * layers && ok; i++) {
             u32 l = i % levels, w = (d.width >> l) ? d.width >> l : 1, h = (d.height >> l) ? d.height >> l : 1;
@@ -2882,19 +2884,25 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
             else {
                 texture_read(&d, g, i / levels, l, blk);
                 if (tex_decode_rgba8(nvn, blk, (int)w, (int)h, rgba[i])) ok = 0;
-                else punched += punch_clear_texels(rgba[i], w * h);
+                else if (!d.astc) punched += punch_clear_texels(rgba[i], w * h);
             }
             free(blk);
         }
-        if (!ok || ((d.width > 512 || d.height > 512) && !punched)) {
+        if (!ok || (!d.astc && (d.width > 512 || d.height > 512) && !punched)) {
             for (u32 i = 0; i < levels * layers; i++) free(rgba[i]);
             free(rgba);
             rgba = NULL;
         } else {
-            format = VK_FORMAT_R8G8B8A8_SRGB;
+            format = d.astc && !d.srgb ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB;
             map = (VkComponentMapping){VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
             vk_stat_cpu_decoded++;
         }
+    }
+    if (d.astc && !rgba) {   /* (the blocks are no RGBA8 image: nothing to show) */
+        t->image = VK_NULL_HANDLE;
+        t->guest = 0;
+        warn_texture(&d);
+        return VK_NULL_HANDLE;
     }
     if (want1d) cube = 0;
     VkImageCreateInfo ici = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,

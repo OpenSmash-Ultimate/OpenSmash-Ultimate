@@ -4632,6 +4632,7 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
     if (rt && rt->depth) depth_sampled_now = rt;
     rt565_swapped_now = rt && !rt->depth && ok && rt565_read_swaps(rt->format, d.format);
     if (rt) { *scale = rt->sx; return surface_srv(rt, (int)d.srgb); }
+    if (ok && d.astc && d.type == TIC_3D) ok = 0;
     if (!ok || d.type == TIC_1D_BUFFER || d.bytes == 0) { warn_texture(&d); return NULL; }
     u32 layers = d.type == TIC_CUBE ? 6 : d.type == TIC_CUBE_ARRAY ? 6 * d.depth : d.type == TIC_2D_ARRAY || d.type == TIC_1D_ARRAY ? d.depth : 1;
     if (d.type == TIC_3D) layers = 1;
@@ -4694,7 +4695,7 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
     if (d.type != TIC_CUBE && d.type != TIC_CUBE_ARRAY) td.MiscFlags = 0;
     Unpacked unpacked;
     int unpack = 0;
-    if (d.bw > 1 && ((d.width % 4) || (d.height % 4))) {   /* block-compressed sizes must be multiples of 4 at level 0 */
+    if (d.bw > 1 && !d.astc && ((d.width % 4) || (d.height % 4))) {   /* block-compressed sizes must be multiples of 4 at level 0 */
         td.Width = (d.width + 3) & ~3u; td.Height = (d.height + 3) & ~3u;
         if (!(gfx_debug() & 128) && (unpack = unpacked_formats(d.dxgi, &unpacked))) td.Format = unpacked.bc;
     }
@@ -4705,7 +4706,8 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
      * uncompressed copy is kept only when a clear texel had to be repaired: a whole scene of
      * untouched sRGB blocks would be a lot of texture. */
     int cpu_bc = 0, punch_only = 0;
-    if (!unpack && d.srgb && d.bw > 1 && d.width <= 1024 && d.height <= 1024 && !(gfx_debug() & 128)) {
+    if (d.astc) cpu_bc = (int)d.astc;   /* ASTC (Mii parts): no Direct3D format, always decoded here, no punching */
+    else if (!unpack && d.srgb && d.bw > 1 && d.width <= 1024 && d.height <= 1024 && !(gfx_debug() & 128)) {
         cpu_bc = srgb_bc_nvn(d.dxgi);
         punch_only = d.width > 512 || d.height > 512;
     }
@@ -4731,6 +4733,7 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
             mem[layer * levels + l] = buf;
         }
     AsyncDecode *adec = NULL;
+    int astc_failed = 0;
     if (cpu_bc) {
         /* The decode (and the punch it is for) off the render thread: a compiler thread decodes
          * into its own buffers (decode_job_run), and a later get_texture swaps the decoded copy
@@ -4743,8 +4746,8 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
         static int async_decode;
         if (!async_decode)
             async_decode = on_dxvk() && (!getenv("SSBU_ASYNC_DECODE") || atoi(getenv("SSBU_ASYNC_DECODE")) != 0) ? 1 : -1;
-        int decode_here = async_decode <= 0;
-        if (async_decode > 0) {
+        int decode_here = async_decode <= 0 || d.astc;   /* (ASTC: never the async job, always here - its blocks are no D3D format) */
+        if (async_decode > 0 && !d.astc) {
             adec = calloc(1, sizeof *adec);
             if (adec) {
                 *adec = (AsyncDecode){AD_LOAD, d, levels, layers, td.MiscFlags, (int)shader_type, punch_only, 0, mem, NULL};
@@ -4765,7 +4768,7 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
             for (u32 i = 0; i < levels * layers; i++) {
                 u32 l = i % levels;
                 u32 tw = (d.width >> l) ? d.width >> l : 1, th = (d.height >> l) ? d.height >> l : 1;
-                punched += punch_clear_texels(rgba[i], tw * th);
+                if (!d.astc) punched += punch_clear_texels(rgba[i], tw * th);
             }
         if (decoded && !(punch_only && !punched)) {
             for (u32 i = 0; i < levels * layers; i++) {
@@ -4780,11 +4783,12 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
         } else {
             if (rgba) for (u32 i = 0; i < levels * layers; i++) free(rgba[i]);
             cpu_bc = 0;
+            if (d.astc) astc_failed = 1;   /* (the blocks are no RGBA8 texture) */
         }
         free(rgba);
         }
     }
-    HRESULT hr = ID3D11Device_CreateTexture2D(dev, &td, init, &t->tex);
+    HRESULT hr = astc_failed ? E_FAIL : ID3D11Device_CreateTexture2D(dev, &td, init, &t->tex);
     if (adec) {
         if (SUCCEEDED(hr)) {
             /* CreateTexture2D has read the blocks: the worker may free them from here on. */
@@ -4819,7 +4823,7 @@ static ID3D11ShaderResourceView *get_texture(const u32 *tic, u32 shader_type, fl
                   : unpacked.read != d.dxgi ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
         gfx_stat_unpacked++;
     }
-    if (cpu_bc) sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    if (cpu_bc) sd.Format = d.astc && !d.srgb ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
     switch (shader_type) {
     case TEX_ARRAY_2D: sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY; sd.Texture2DArray.MipLevels = levels; sd.Texture2DArray.ArraySize = layers; break;
     case TEX_CUBE: sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE; sd.TextureCube.MipLevels = levels; break;
