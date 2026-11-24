@@ -262,7 +262,7 @@ def warm(exe, pack, cache):
     """Every key of the pack whose file is in the cache dated now (the runtime's prewarm makes the files
     the game has used, newest first: gpu_d3d11.c prewarm_main). -> (dated, keys)."""
     keys, _untranslated = discover(exe, pack, cache)
-    version, now, dated = cache_version(), time.time(), 0
+    version, now, dated = dxbc_version(), time.time(), 0
     for k in keys:
         path = os.path.join(cache, cache_file_name(k, version))
         if os.path.exists(path):
@@ -580,7 +580,7 @@ def prepare(a, tree, cache, t0):
         return 0
     if not a.dry and ok:
         with open(marker, "w", encoding="utf-8", newline="\n") as f:
-            f.write(marker_text(cache_version(), SPIRV))
+            f.write(marker_text(cache_version(), SPIRV, dxbc_version()))
         write_vulkan_ready(cache, SPIRV)
     state = "skipped"
     if a.dry:
@@ -1154,7 +1154,7 @@ def cache_file_name(key, version):
 def cached_keys(cache, version=None, spirv=None):
     """The keys of this version's files in the cache folder; with `spirv` (the start of the SPIR-V files'
     names: spirv_names), the keys that have that file as well."""
-    version = cache_version() if version is None else version
+    version = dxbc_version() if version is None else version
     have, have_spirv = set(), set()
     for name in os.listdir(cache):
         k = parse_cache_file_name(name, version)
@@ -1566,15 +1566,29 @@ def summary(totals):
     return text
 
 
-def marker_text(version, spirv):
-    """complete.txt: the cache's version, and "spirv <names>" when the Vulkan renderer's SPIR-V was made too
-    (the launcher asks for Prepare Shaders again when Vulkan may draw and the marker lacks it)."""
-    return f"version {version}\n" + (f"spirv {spirv}\n" if spirv else "")
+def marker_text(version, spirv, dxbc=None):
+    """complete.txt: the cache's version, "dxbc v<version>" for the D3D11 HLSL revision, and "spirv <names>"
+    when the Vulkan renderer's SPIR-V was made too (the launcher asks for Prepare Shaders again when a
+    required part is missing or older)."""
+    return (f"version {version}\n"
+            + (f"dxbc v{dxbc}\n" if dxbc is not None else "")
+            + (f"spirv {spirv}\n" if spirv else ""))
 
 
 def cache_version():
     text = open(os.path.join(ROOT, "runtime", "gpu_shader_cache.h"), encoding="utf-8").read()
     return int(re.search(r"#define SHADER_CACHE_VERSION (\d+)", text).group(1))
+
+
+DXBC_VERSION = re.compile(r"#define SHADER_CACHE_DXBC_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)")
+
+
+def dxbc_version(root=ROOT):
+    with open(os.path.join(root, "runtime", "gpu_shader_cache.h"), encoding="utf-8") as f:
+        text = f.read()
+    ver = int(re.search(r"#define SHADER_CACHE_VERSION (\d+)", text).group(1))
+    dxbc = DXBC_VERSION.search(text)
+    return ver * 100 + int(dxbc.group(1)) if dxbc else ver
 
 
 SPV_VERSION = re.compile(r"#define SHADER_CACHE_SPV_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)")

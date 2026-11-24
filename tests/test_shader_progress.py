@@ -45,9 +45,22 @@ class ProgressTests(unittest.TestCase):
                 self.assertEqual(marker.exists(), not removed)
             self.assertFalse(S.forget_stale_marker(root, 'g1002.01100600', log=said.append))   # (no marker at all)
             self.assertIn('g1001.01100600', said[0])
-        # (the header's SPIR-V version is read as the game's file name has it)
+        # (the header's SPIR-V and DXBC versions are read as the game's file names have them)
         header = (ROOT / 'runtime' / 'gpu_shader_cache.h').read_text(encoding='utf-8')
         self.assertIsNotNone(S.SPV_VERSION.search(header))
+        self.assertIsNotNone(S.DXBC_VERSION.search(header))
+
+    def test_dxbc_version_only_bumps_dxbc_cache(self):
+        header = (ROOT / 'runtime' / 'gpu_shader_cache.h').read_text(encoding='utf-8')
+        self.assertEqual(S.cache_version(), 10)
+        self.assertEqual(S.dxbc_version(), 1001)
+        spv = S.SPV_VERSION.search(header)
+        self.assertEqual(S.cache_version() * 100 + int(spv.group(1)), 1002)
+        self.assertEqual(S.marker_text(10, None, 1001), 'version 10\ndxbc v1001\n')
+        self.assertEqual(S.marker_text(10, 'g1002.01100600', 1001),
+                         'version 10\ndxbc v1001\nspirv g1002.01100600\n')
+        for rel in (('OpenSmash.Launcher', 'LauncherForm.cs'), ('OpenSmash.Avalonia', 'Shaders.cs')):
+            self.assertIn('SHADER_CACHE_DXBC_VERSION', (ROOT / Path(*rel)).read_text(encoding='utf-8'))
 
     def test_parse(self):
         self.assertEqual(S.parse_progress('progress 16 11601\n'), (16, 11601))

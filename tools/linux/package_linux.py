@@ -77,7 +77,10 @@ def fonts_left_out(fonts, open_fonts):
 
 def shader_cache_version():
     with open(os.path.join(REPO, "runtime", "gpu_shader_cache.h"), encoding="utf-8") as f:
-        return int(re.search(r"#define SHADER_CACHE_VERSION (\d+)", f.read()).group(1))
+        text = f.read()
+    ver = int(re.search(r"#define SHADER_CACHE_VERSION (\d+)", text).group(1))
+    dxbc = re.search(r"#define SHADER_CACHE_DXBC_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)", text)
+    return ver * 100 + int(dxbc.group(1)) if dxbc else ver
 
 
 # A cache file dated before 2002 is the ahead-of-time compiler's (tools/shader_aot.py), not yet used
