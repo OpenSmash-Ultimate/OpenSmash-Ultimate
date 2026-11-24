@@ -243,7 +243,8 @@ def status(tree):
         if g:
             m["group_title"] = g["title"]
             m["group_thumb"] = g["thumb"]
-    data["needs_build"] = skyline.game_link_reason(tree.root) or ""
+    with skyline.cached_inlining_only():   # (the page never waits on the compiler: the build asks it)
+        data["needs_build"] = skyline.game_link_reason(tree.root) or ""
     # (Play without mods asks only for this one: 30 mods turned on but not built don't hold up the plain game)
     data["needs_build_vanilla"] = data["needs_build"] and (skyline.game_link_reason(tree.root, mods=False) or "")
     data["needs_refresh"] = skyline.plugin_refresh_reason(tree.root) or ""
