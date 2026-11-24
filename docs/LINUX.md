@@ -293,6 +293,13 @@ for a shader that is already in the cache, instead of skipping the first draw th
 new move's effect appears at once rather than a frame or two late; a shader that is not in the
 cache is still skipped rather than waiting for a full compile.
 
+On an NVIDIA card, the driver's compiled GPU code goes in `dump/shadercache/nvidia` (both the warm pass
+and the game set `__GL_SHADER_DISK_CACHE_PATH` there), not in `~/.cache/nvidia/GLCache`. That shared folder is
+capped as a whole by `__GL_SHADER_DISK_CACHE_SIZE` (the driver's default is small): when other programs had
+filled it, the driver kept almost nothing the warm pass compiled, and new moves stuttered as if no shaders were
+prepared. With no size set, `__GL_SHADER_DISK_CACHE_SKIP_CLEANUP=1` keeps the driver from trimming the game's
+folder. Setting `__GL_SHADER_DISK_CACHE_PATH` yourself, or `SSBU_NV_CACHE=0`, keeps the driver's own folder.
+
 The rest of this guide is about the package from Windows, apart from those sections.
 
 ## What you need
