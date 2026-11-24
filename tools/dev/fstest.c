@@ -13,7 +13,8 @@
  *       entry types of the merged save; deleting and making again, files becoming folders and
  *       back; leftovers of dead processes dropped (not a running one's); an incomplete journal
  *       ignored; a commit decided but not applied (a file the PC will not replace), finished
- *       later; read-only files; the cache and the RomFS read and written directly
+ *       later; nothing mounted, committed or recovered without the save lock; read-only files;
+ *       the cache and the RomFS read and written directly
  *   fstest <folder> old       puts the old save in the committed folder, nothing else
  *   fstest <folder> new       mounts it and changes it into the new save (files new, changed,
  *                             deleted, made again; folders new, deleted, made again), commits
@@ -197,6 +198,14 @@ static void block(int on) {
     CHECK(blocker != INVALID_HANDLE_VALUE, "test set-up: a.bin held open (error %lu)", (unsigned long)GetLastError());
 }
 static void read_only(const char *path) { SetFileAttributesA(path, FILE_ATTRIBUTE_READONLY); }
+/* break_lock(1): the save lock cannot be taken until break_lock(0) - another kind of object holds
+ * the mutex's name, so CreateMutexA fails */
+static void break_lock(int on) {
+    static HANDLE squatter;
+    if (!on) { CloseHandle(squatter); return; }
+    squatter = CreateEventA(NULL, TRUE, FALSE, "Local\\ssbu-save-journal");
+    CHECK(squatter != NULL, "test set-up: the lock's name taken (error %lu)", (unsigned long)GetLastError());
+}
 #else
 static int can_block(void) { return geteuid() != 0; }
 static void block(int on) {
@@ -207,7 +216,23 @@ static void read_only(const char *path) {
     char unix_path[1024];
     chmod(rt_unix_path(path, unix_path, sizeof unix_path), 0444);
 }
+static void break_lock(int on) {   /* (a folder where the lock file goes: open fails, for root too) */
+    char unix_path[1024];
+    rt_unix_path(h_beside("lock"), unix_path, sizeof unix_path);
+    if (on) { unlink(unix_path); CHECK(mkdir(unix_path, 0755) == 0, "test set-up: the lock file's path taken (%s)", strerror(errno)); }
+    else rmdir(unix_path);
+}
 #endif
+
+/* SSBU_FS_LOCK_STRICT: on, nothing is done without the save lock; off (the default), the journal
+ * goes on without it */
+static void lock_strict(int on) {
+#ifdef _WIN32
+    _putenv_s("SSBU_FS_LOCK_STRICT", on ? "1" : "");
+#else
+    if (on) setenv("SSBU_FS_LOCK_STRICT", "1", 1); else unsetenv("SSBU_FS_LOCK_STRICT");
+#endif
+}
 
 /* The scratch folder: SSBU_DATA_ROOT, and a made-up RomFS - one file, hello.txt - in data/. */
 static void setup(const char *dir) {
@@ -422,6 +447,55 @@ static void checks_all(DWORD live_pid) {
         CHECK(mount_save() == 0 && is(t_read("save:/a.bin"), "A4") && !h_exists(h_beside("commit")), "the next mount finishes it");
         unmount("save");
     }
+
+    /* without the save lock, by default the journal goes on as it did before the lock could fail */
+    lock_strict(0);
+    break_lock(1);
+    CHECK(mount_save() == 0 && t_write("save:/a.bin", 0, "AX", 0, NULL) == 0 && commit("save") == 0 && is(h_save("a.bin"), "AX"),
+          "mount and Commit without the lock (not strict)");
+    unmount("save");
+    break_lock(0);
+
+    /* SSBU_FS_LOCK_STRICT=1: without the save lock nothing is done: no mount, no commit, no recovery */
+    lock_strict(1);
+    char committed[64];
+    snprintf(committed, sizeof committed, "%s", h_save("a.bin") ? h_save("a.bin") : "");
+    CHECK(mount_save() == 0 && t_write("save:/a.bin", 0, "A5", 0, NULL) == 0, "a write");
+    break_lock(1);
+    CHECK(commit("save") == R_HOST_FAILURE && is(h_save("a.bin"), committed) && !h_exists(h_beside("commit")), "Commit without the lock");
+    break_lock(0);
+    CHECK(commit("save") == 0 && is(h_save("a.bin"), "A5"), "Commit with the lock again");
+    unmount("save");
+    break_lock(1);
+    CHECK(mount_save() == R_HOST_FAILURE && t_type("save:/") == -1, "MountSaveData without the lock");
+    break_lock(0);
+    if (can_block()) {   /* a decided commit is not applied without the lock, by the mount's calls or by the next mount */
+        CHECK(mount_save() == 0 && t_write("save:/a.bin", 0, "A6", 0, NULL) == 0, "a write");
+        block(1);
+        CHECK(commit("save") == R_HOST_FAILURE && h_exists(h_beside("commit")), "a commit not applied");
+        block(0);
+        break_lock(1);
+        CHECK(t_read("save:/a.bin") == NULL && is(h_save("a.bin"), "A5") && h_exists(h_beside("commit")), "a decided commit applied without the lock");
+        unmount("save");
+        CHECK(mount_save() == R_HOST_FAILURE && is(h_save("a.bin"), "A5") && h_exists(h_beside("commit")) && is_dir(own("work")),
+              "a decided commit recovered without the lock");
+        break_lock(0);
+        CHECK(mount_save() == 0 && is(t_read("save:/a.bin"), "A6") && !h_exists(h_beside("commit")), "the next mount with the lock finishes it");
+        unmount("save");
+    }
+    lock_strict(0);
+#ifndef _WIN32
+    {   /* a lock file that cannot be opened for writing (left read-only, or another user's): flock takes it all the same */
+        char unix_lock[1024];
+        rt_unix_path(h_beside("lock"), unix_lock, sizeof unix_lock);
+        h_write(h_beside("lock"), "");
+        chmod(unix_lock, 0444);
+        CHECK(mount_save() == 0 && t_write("save:/a.bin", 0, "A8", 0, NULL) == 0 && commit("save") == 0 && is(h_save("a.bin"), "A8"),
+              "a read-only lock file");
+        unmount("save");
+        chmod(unix_lock, 0644);
+    }
+#endif
 
     /* files marked read-only in the committed save are replaced and deleted all the same */
     h_put("ro1.bin", "RO1-old"); h_put("ro2.bin", "RO2-old");

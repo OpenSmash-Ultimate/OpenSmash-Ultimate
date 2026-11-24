@@ -60,10 +60,12 @@ class SaveJournalTests(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.dir, ignore_errors=True)
 
-    def fstest(self, folder, *args, crash_at=None):
-        env = {k: v for k, v in os.environ.items() if k not in ('SSBU_FS_CRASH_AT', 'SSBU_DATA_ROOT')}
+    def fstest(self, folder, *args, crash_at=None, strict=False):
+        env = {k: v for k, v in os.environ.items() if k not in ('SSBU_FS_CRASH_AT', 'SSBU_DATA_ROOT', 'SSBU_FS_LOCK_STRICT')}
         if crash_at:
             env['SSBU_FS_CRASH_AT'] = str(crash_at)
+        if strict:
+            env['SSBU_FS_LOCK_STRICT'] = '1'
         return subprocess.run([self.exe, folder, *args], capture_output=True, text=True, env=env, timeout=120)
 
     def folder(self):
@@ -118,6 +120,49 @@ class SaveJournalTests(unittest.TestCase):
             self.assertEqual(r.returncode, CRASHED, r.stdout + r.stderr)
             found.append(self.verify(folder))
         self.assertEqual(found, ['old'] * 2 + ['new'] * (steps - 2))
+
+    @unittest.skipIf(os.name == 'nt', 'the lock is a named mutex on Windows (fstest checks makes it fail there)')
+    def test_no_recovery_without_the_lock(self):
+        """A commit cut short after it was decided, and a lock file that cannot be opened (a folder
+        in its place): with SSBU_FS_LOCK_STRICT=1 the next mount fails and touches nothing; once the
+        lock can be taken, it finishes the commit."""
+        folder = self.folder()
+        self.assertEqual(self.fstest(folder, 'old').returncode, 0)
+        self.assertEqual(self.fstest(folder, 'new', crash_at=3).returncode, CRASHED)
+        save = Path(folder) / 'save'
+        before = sorted(p.name for p in save.iterdir())
+        marker = [p for p in save.iterdir() if p.name.endswith('.commit')]
+        self.assertEqual(len(marker), 1, before)
+        lock = marker[0].with_suffix('.lock')
+        if lock.exists():
+            lock.unlink()
+        lock.mkdir()
+        r = self.fstest(folder, 'verify', strict=True)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('MountSaveData', r.stdout)
+        self.assertEqual({p.name for p in save.iterdir()} | {lock.name}, set(before) | {lock.name})   # (marker and working folder kept)
+        lock.rmdir()
+        self.assertEqual(self.verify(folder), 'new')
+
+    @unittest.skipIf(os.name == 'nt', 'the lock is a named mutex on Windows (fstest checks makes it fail there)')
+    def test_recovery_without_the_lock_by_default(self):
+        """The same without SSBU_FS_LOCK_STRICT: the mount goes on without the lock, as before the
+        lock could fail, and finishes the commit."""
+        folder = self.folder()
+        self.assertEqual(self.fstest(folder, 'old').returncode, 0)
+        self.assertEqual(self.fstest(folder, 'new', crash_at=3).returncode, CRASHED)
+        save = Path(folder) / 'save'
+        marker = [p for p in save.iterdir() if p.name.endswith('.commit')]
+        self.assertEqual(len(marker), 1)
+        lock = marker[0].with_suffix('.lock')
+        if lock.exists():
+            lock.unlink()
+        lock.mkdir()
+        r = self.fstest(folder, 'verify')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.split()[0], 'new')
+        self.assertIn('going on without it', r.stderr)
+        lock.rmdir()
 
     def test_crash_while_recovering(self):
         """A commit cut short after it was decided (right after the rename, and before the marker
