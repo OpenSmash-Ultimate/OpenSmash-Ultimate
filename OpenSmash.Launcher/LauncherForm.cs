@@ -207,6 +207,7 @@ namespace OpenSmash.Launcher
         {
             _workDir = workDir;
             _repo = repo;
+            if (!preview) OpenSmash.Core.VersionInfo.Note(repo);   // (the game's Esc menu shows it)
             UiLocale.Initialize(repo);
             UiLocale.Changed += OnUiLanguageChanged;
             Disposed += (_, _) => UiLocale.Changed -= OnUiLanguageChanged;
