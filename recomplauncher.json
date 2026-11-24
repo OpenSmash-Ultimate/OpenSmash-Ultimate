@@ -1,0 +1,101 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "name": "OpenSmash-Ultimate",
+  "inputs": [
+    {
+      "id": "game",
+      "label": "Super Smash Bros. Ultimate: a folder with the game (.xci, .nsp or .nca), its 13.0.5 update .nsp and any DLC .nsp",
+      "role": "game",
+      "formats": [
+        {
+          "type": "folder"
+        }
+      ]
+    },
+    {
+      "id": "prodkeys",
+      "label": "Your Switch's prod.keys",
+      "role": "key",
+      "shared": "switch.prod-keys"
+    },
+    {
+      "id": "titlekeys",
+      "label": "Your Switch's title.keys",
+      "role": "key",
+      "shared": "switch.title-keys"
+    }
+  ],
+  "prepare": {
+    "program": [
+      "recomplauncher-prepare.cmd"
+    ],
+    "label": "Build OpenSmash from your copy of the game (about 40-45 minutes the first time)",
+    "args": [
+      "-Game",
+      "{input:game}",
+      "-ProdKeys",
+      "{input:prodkeys}",
+      "-TitleKeys",
+      "{input:titlekeys}"
+    ],
+    "options": [
+      {
+        "id": "msvc_license",
+        "label": "Download Microsoft's C runtime and Windows SDK for the compiler (accept Microsoft's license terms)",
+        "note": "Needed to build the game unless Visual Studio with C++ and Clang tools is installed.",
+        "args": [
+          "-AcceptLicense"
+        ],
+        "os": [
+          "windows"
+        ],
+        "license": {
+          "name": "Microsoft Visual Studio Build Tools license terms",
+          "url": "https://visualstudio.microsoft.com/license-terms/"
+        },
+        "required": true
+      }
+    ]
+  },
+  "start": {
+    "program": [
+      "OpenSmash.exe"
+    ],
+    "args": [
+      "--play"
+    ]
+  },
+  "folders": {
+    "saves": [
+      {
+        "path": "{install}/save"
+      }
+    ],
+    "logs": [
+      {
+        "path": "{install}/build"
+      }
+    ]
+  },
+  "saves": [
+    "{install}/save",
+    "{install}/miis"
+  ],
+  "actions": [
+    {
+      "id": "logs",
+      "label": "Open the logs folder",
+      "open": "logs"
+    }
+  ],
+  "system": {
+    "windows": {
+      "version": "10",
+      "graphics": {
+        "vulkan": "1.3",
+        "d3d11": "11.0"
+      }
+    }
+  }
+}
