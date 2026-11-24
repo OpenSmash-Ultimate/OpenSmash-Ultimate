@@ -127,6 +127,16 @@ static void lat_line(const char *fmt, ...) {
     ReleaseSRWLockExclusive(&lat_lock);
     va_end(a);
 }
+/* (hle_fight_test.c, the fighters' frame line with SSBU_FIGHT_HASH: the first fighter's status and motion) "C <ms> <frame>
+ * <status> <motion>" at each change, frames run again included (run-ahead's predicted frames are where a press shows
+ * first; a frame's count is the real-time frame it stands in for) */
+void vi_lat_status(int st, unsigned long long mot) {
+    static int last_st = -1;
+    static unsigned long long last_mot = ~0ull;
+    if (!lat_tf || (st == last_st && mot == last_mot)) return;
+    last_st = st; last_mot = mot;
+    lat_line("C %.3f %u %d %llx\n", lat_ms(), vi_lat_tick(), st, mot);
+}
 /* (hle_hid.c: player 1's buttons as the game reads them) */
 void vi_lat_poll(u64 buttons) {
     static u64 last = ~0ull;

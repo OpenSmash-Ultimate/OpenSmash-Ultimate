@@ -11,6 +11,7 @@ ends or two display modes are compared frame for frame whatever their pacing:
   P <ms> <shown> <fight frame> <buttons> <logic frame>   player 1's buttons changed (as the game reads them)
   Q <ms> <logic frame> <fight on>            a frame queued
   S <ms before present> <ms after> <shown> <fight frame> <logic frame now> <picture's logic frame> <known>
+  C <ms> <logic frame> <status> <motion>     the first fighter's status or motion changed (with SSBU_FIGHT_HASH)
 A picture's logic frame is the frame the game was on when it submitted the last draw into the target shown
 (runtime/gpu.c), noted when the back end composes it: how old what is on screen is, measured, not inferred.
 
@@ -18,10 +19,12 @@ What it gives (fight frames only):
 - picture age: present time minus the pad read of the picture's logic frame, in ms and in frames of 1/60 s, and how
   many logic frames behind the game the picture is. Anything the runtime adds or removes between the read and the
   present (frame index, queue depth, pacing, waits) moves this number; the game's own part does not.
-- press -> picture: for each press (player 1's buttons from none to some, read at logic frame a), the first picture
-  presented after it whose logic frame is a + G or later, and the time from the read to that present. G is the game's
-  own part: the logic frames from the read of a press to the first submission whose picture shows it. It is the game's,
-  the same for every back end and display mode, and found once with --calibrate (default GAME_FRAMES below).
+- press -> picture: for each press (player 1's buttons from none to some, read at logic frame a), the first change of
+  the first fighter's status or motion after it (C, at logic frame s: the game's part, s - a, which online delay and
+  run-ahead move), then the first picture presented after it whose logic frame is s + RENDER_FRAMES or later (the frame
+  whose draws show that state: found once with --calibrate), and the time from the read to that present. Frames run again
+  (run-ahead, rollback) keep the count of the real-time frame they stand in for, so a press that run-ahead shows a
+  frame early is found in the picture of an earlier frame. Without C lines (no SSBU_FIGHT_HASH): a + --game G.
   A picture is on the monitor at its next refresh after the present: up to one refresh more, which a hidden window
   cannot see.
 
@@ -35,11 +38,12 @@ import statistics
 import sys
 
 FRAME_MS = 1000.0 / 60
-GAME_FRAMES = 2   # (--calibrate, Direct3D 11, Mario's jab from standing: see docs/TESTING-RUNS.md)
+GAME_FRAMES = 2     # (no C lines: the game's part, Mario's jab from standing)
+RENDER_FRAMES = 0   # (--calibrate: the picture drawn in the frame whose logic changed the status shows it)
 
 
 def read_trace(path):
-    t = {'R': [], 'T': [], 'Q': [], 'I': {}, 'P': [], 'S': []}
+    t = {'R': [], 'T': [], 'Q': [], 'I': {}, 'P': [], 'S': [], 'C': []}
     with open(path, encoding='utf-8', errors='replace') as f:
         for line in f:
             p = line.split()
@@ -55,6 +59,8 @@ def read_trace(path):
                     t['I'].setdefault(int(p[2]), float(p[1]))
                 elif k == 'P' and len(p) >= 6:
                     t['P'].append((float(p[1]), int(p[4], 16), int(p[5])))
+                elif k == 'C' and len(p) >= 5:
+                    t['C'].append((float(p[1]), int(p[2]), int(p[3]), p[4]))
                 elif k == 'S' and len(p) >= 8:
                     t['S'].append((float(p[1]), float(p[2]), int(p[5]), int(p[6]), int(p[7])))
             except (ValueError, IndexError):
@@ -77,7 +83,7 @@ def stats(xs):
             'min': xs[0], 'max': xs[-1], 'sd': statistics.pstdev(xs)}
 
 
-def analyse(t, game=GAME_FRAMES):
+def analyse(t, game=GAME_FRAMES, render=RENDER_FRAMES):
     span = fight_span(t)
     res = {'refreshes': len(t['R']), 'queued': len(t['Q']), 'shown': len(t['S']), 'pad_changes': len(t['P'])}
     if not span:
@@ -101,12 +107,20 @@ def analyse(t, game=GAME_FRAMES):
         prev = buttons
         if not pressed or not lo <= tick <= hi:
             continue
-        target = tick + game
-        s = next((s for s in shown if s[0] > ms and s[3] >= target), None)
+        if t['C']:
+            ch = next((c for c in t['C'] if c[0] > ms and c[1] >= tick), None)
+            if ch is None:
+                continue
+            part, target, after = ch[1] - tick, ch[1] + render, ch[0]
+        else:
+            part, target, after = game, tick + game, ms
+        s = next((s for s in shown if s[0] > after and s[3] >= target), None)
         if s:
-            presses.append({'tick': tick, 'ms': s[0] - ms, 'picture_tick': s[3]})
+            presses.append({'tick': tick, 'ms': s[0] - ms, 'picture_tick': s[3], 'game': part})
     res['presses'] = presses
     res['press_ms'] = stats([p['ms'] for p in presses])
+    res['game_frames'] = stats([p['game'] for p in presses])
+    res['status_lines'] = len(t['C'])
     gaps = [b[0] - a[0] for a, b in zip(shown, shown[1:])]
     if gaps:
         res['present_gap_ms'] = stats(gaps)
@@ -159,7 +173,11 @@ def report(path, r, game):
     print(f"  fight pictures with a known logic frame: {r['fight_pictures']} ({100 * r['known']:.1f} % of the fight's)")
     print(f"  picture age (pad read of its logic frame -> present): {fmt(r['age_ms'])}")
     print(f"  picture behind the game: {fmt(r['behind_frames'], 'logic frames', False)}")
-    print(f"  press -> present (game part {game} logic frames + the runtime's): {fmt(r['press_ms'])}")
+    if r['status_lines']:
+        print(f"  press -> first status change (the game's part): {fmt(r['game_frames'], 'logic frames', False)}")
+    else:
+        print(f"  (no C lines: the game's part taken as {game} logic frames)")
+    print(f"  press -> present: {fmt(r['press_ms'])}")
     if r.get('present_gap_ms'):
         print(f"  present gaps: {fmt(r['present_gap_ms'], frames=False)}; over 1.5 frames: {r['gaps_over_1_5_frames']}")
     print(f"  present call: {fmt(r['present_call_ms'], frames=False)}")
@@ -213,7 +231,10 @@ def calibrate(trace, pics, rtrace, rpics):
     if c is None:
         print('no picture differs within 30 logic frames')
         return 1
-    print(f'first picture that shows it: logic frame {c}: the game part G = {c - press} logic frames')
+    print(f'first picture that shows it: logic frame {c}: {c - press} logic frames after the read')
+    ch = next((x for x in t['C'] if x[1] - s[0] >= press), None)
+    if ch:
+        print(f'first status change after the read: logic frame {ch[1] - s[0]}: RENDER_FRAMES = {c - (ch[1] - s[0])}')
     return 0
 
 

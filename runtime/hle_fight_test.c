@@ -238,6 +238,7 @@ static void frame_line(Cpu *c) {
     if (!hash_out) return;
     fr.st = (int)getter(c, FD("30StatusModule__status_kind_impl"), boma, 0, NULL);
     fr.mot = getter(c, FD("30MotionModule__motion_kind_impl"), boma, 0, NULL);
+    if (k == 0) { void vi_lat_status(int st, unsigned long long mot); vi_lat_status(fr.st, fr.mot); }   /* (SSBU_LAT_TRACE: ipc_vi.c) */
     getter(c, FD("24MotionModule__frame_impl"), boma, 0, &fr.mf);
     getter(c, FD("25PostureModule__pos_x_impl"), boma, 0, &fr.x);
     getter(c, FD("25PostureModule__pos_y_impl"), boma, 0, &fr.y);
