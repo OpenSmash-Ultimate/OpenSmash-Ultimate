@@ -18,7 +18,8 @@ rm -rf "$RUN"; mkdir -p "$RUN/root" "$RUN/shots" "$RUN/cache"
 cp -r "$PORT/save" "$RUN/root/save"
 # (as the Linux package ships it: what the game has used, dated as it is - the start's prewarm
 # makes every file dated after 2002, and the ahead-of-time compiler's are dated 2001)
-[ "$CACHE" = copy ] && find "$PORT/dump/shadercache" -maxdepth 1 -name 'v11_*' -newermt 2002-01-01 -exec cp -p -t "$RUN/cache/" {} + 2>/dev/null
+DXBC_VER=$(grep -oE 'SHADER_CACHE_DXBC_VERSION [0-9]+' "$HERE/../../runtime/gpu_shader_cache.h" | grep -oE '[0-9]+$')   # (the Direct3D 11 files' version)
+[ "$CACHE" = copy ] && find "$PORT/dump/shadercache" -maxdepth 1 -name "v${DXBC_VER}_*" -newermt 2002-01-01 -exec cp -p -t "$RUN/cache/" {} + 2>/dev/null
 cd "$RUN"
 export SSBU_DATA_ROOT="$(cygpath -w "$RUN/root")" SSBU_SHADER_CACHE="$(cygpath -w "$RUN/cache")" SSBU_CAPTURE="$(cygpath -w "$RUN/shots")"
 export SSBU_CAPTURE_EVERY=3 SSBU_CAPTURE_MAX=16 SSBU_INPUT="9:A,12:X,14:X,17:A,19.5:A,22.5:A,25.5:A" SSBU_NET_UPNP=0
