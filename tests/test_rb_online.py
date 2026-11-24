@@ -106,7 +106,10 @@ class OnlineMatch(unittest.TestCase):
 
     def test_online_delay(self):
         core = src('hle_rb_core.c')
-        self.assertIn('net_delay = net_online ? rbn_online_delay_for_rtt(worst) : rbn_delay_for_rtt(worst);', core)
+        self.assertIn('net_delay = rbn_online_delay_for_rtt(worst);', core)   # (every mode, since 2026-11-24)
+        self.assertNotIn('rbn_delay_for_rtt(worst)', core)
+        # relay / host-join with no delay given measure it too (a fixed 2 waited every frame at 130 ms one way)
+        self.assertRegex(core, r'int ok;\s+net_delay = -1;[^\n]*\n(?:\s+\*[^\n]*\n)*\s+if \(net_online\) \{')
 
     def test_report(self):
         core = src('hle_rb_core.c')

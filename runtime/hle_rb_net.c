@@ -248,13 +248,18 @@ int rbn_online_delay_for_rtt(double rtt_ms) {
      * once, catch-ups 22 ms - pair runs 2026-11-10), and 1 under 15 ms (a home network). 2 at the least: at a 40 ms
      * round trip, delay 1 made 1263 rollbacks in a fight, about 50 frames a second and a desync; delay 2 made 15 in two
      * fights, 60 a second, in sync */
-    /* From 100 ms one way, the whole trip in frames, not less one, at most RBN_ONLINE_DELAY_MAX: a frame less made
+    /* (Before 2026-11-24, with costlier catch-ups:) from 100 ms one way, the whole trip in frames, not less one, at most RBN_ONLINE_DELAY_MAX: a frame less made
      * rollbacks of 4-6 frames there, and with the load each over the 16.7 ms frame - pair runs 2026-11-11, catch-ups over
      * a frame at 120 ms one way, delay 6 -> 7: 25 % / 18 % -> 4.6 % / 2.1 %; at 150, 8 -> 9: 27 % / 14 % -> 3.5 % / 4.3 %.
      * The frame more is 17 ms of input delay, where the trip is already 100 ms or more. */
+    /* 2026-11-24 (NET130 sweep, plan/INPUT_LAG_2026-11-24.md): catch-ups now cost ~3 ms to load + ~1.8 ms a frame (depth
+     * 4 ~10 ms), so the one-way trip in frames less TWO everywhere: at 141 ms one way delay 6 had 0-18 waits, 1-3 % of
+     * catch-ups over the frame, 17-32 refreshes over 25 ms a side in a fight, against delay 8's 0 and 0-11 - two frames
+     * (33 ms) of input delay back for that; delay 5 there: up to 18 % over the frame; 4 and less waited for pads hundreds
+     * of times. At 72 ms one way delay 2: no waits, under 1 % over the frame. */
     if (rtt_ms < 15) return 1;
     double one_way = rtt_ms / 2;
-    int d = (int)(one_way / (1000.0 / 60) + 0.5) - (one_way >= 100 ? 0 : 1);
+    int d = (int)(one_way / (1000.0 / 60) + 0.5) - 2;
     return d < 2 ? 2 : d > RBN_ONLINE_DELAY_MAX ? RBN_ONLINE_DELAY_MAX : d;
 }
 int rbn_hello_parse(const uint8_t *b, size_t len, RbnHello *h) {

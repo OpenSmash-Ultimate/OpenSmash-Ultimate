@@ -3073,7 +3073,9 @@ static void net_hello(int now) {
         }
         if (ready) {
             if (net_delay < 0) {
-                net_delay = net_online ? rbn_online_delay_for_rtt(worst) : rbn_delay_for_rtt(worst);
+                /* (every mode the same rule since 2026-11-24: the one-way trip less two, hle_rb_net.c - the old per-30 ms
+                 * rule, rbn_delay_for_rtt, gave 8 at 130 ms one way where 6 plays without waits, NET130 sweep) */
+                net_delay = rbn_online_delay_for_rtt(worst);
                 {   /* (SSBU_RB_DELAY_RULE=online, tests: the Online mode's rule on the direct link or the relay too - two games
                      * on one PC under SSBU_NET_SIM choose their delay as an Online match would) */
                     const char *r = getenv("SSBU_RB_DELAY_RULE");
@@ -4327,6 +4329,8 @@ static void savestates(Cpu *c, u64 frame) {
             const char *np = getenv("SSBU_RB_NET_PLAYERS");
             if (np && atoi(np) >= 2 && atoi(np) <= 4) net_n = atoi(np);
             int ok;
+            net_delay = -1;   /* (no delay given: chosen at the handshake from the measured round trip, in every mode; a fixed 2
+                               * waited for the peer's pads almost every frame at 130 ms one way - NET130, 2026-11-24) */
             if (net_online) {
                 /* (the game's Online mode: online[,<delay>[,<frames>]]; each match's players come from its set-up, online_setup) */
                 net_delay = -1;
