@@ -33,12 +33,17 @@ static int frame_index_shift(void) {
     return v;
 }
 
+/* (SSBU_LAT_TRACE, ipc_vi.c's Q lines) the ring entry the game draws its last frame into, -1 not known: with the window
+ * buffer queued beside it, the two must keep one offset for good (buffers handed out in turn: ipc_vi.c vi_last_dq) */
+volatile int lat_draw_entry = -1;
+
 /* signature: 16 words, sha256 e5a536ff7e787dcd */
 HLE_WRAP(710386b0c0) {
     int shift = frame_index_shift();
     u64 ring = shift ? ld64(c->x[0] + 0xa0) : 0;
     if (!ring) { f_710386b0c0_orig(c); return; }
     u32 count = ld32(ring + 0x30);
+    lat_draw_entry = (int)((count + 2 - (u32)shift) % 3);
     st32(ring + 0x30, count + 3 - (u32)shift);   /* ((count + 3 - shift + 2) % 3 = (count + 2 - shift) % 3) */
     f_710386b0c0_orig(c);
     if (ld32(ring + 0x30) == count + 3 - (u32)shift) st32(ring + 0x30, count);
