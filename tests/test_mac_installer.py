@@ -408,7 +408,7 @@ class SdlTests(unittest.TestCase):
             r = subprocess.run(['codesign', '--verify', fw], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
         mounted = subprocess.run(['hdiutil', 'info'], capture_output=True, text=True).stdout
-        self.assertNotIn('windowsmash-sdl3-', mounted)
+        self.assertNotIn('opensmash-sdl3-', mounted)
 
 
 FAKE_OSASCRIPT = r'''#!/bin/bash
@@ -493,11 +493,11 @@ class OptionalFirmwareChecks(StubChecks):
 
 class DialogTests(unittest.TestCase):
     def test_arguments_never_in_the_script(self):
-        quoted = 'x" & (do shell script "touch /tmp/windowsmash-quoted") & "'
+        quoted = 'x" & (do shell script "touch /tmp/opensmash-quoted") & "'
         cmd, script = im.osascript_command(im.DIALOG, [quoted, 'Title', 7])
         self.assertEqual(cmd, ['osascript', '-', quoted, 'Title', '7'])
         self.assertEqual(script, im.DIALOG)
-        self.assertNotIn('windowsmash-quoted', script)
+        self.assertNotIn('opensmash-quoted', script)
         for name in ('DIALOG', 'ASK', 'CHOOSE', 'FOLDER', 'ALERT', 'ADMIN'):
             text = getattr(im, name)
             self.assertTrue(text.startswith('on run argv\n'), name)
@@ -748,7 +748,7 @@ class FirewallTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='firewall test ')
         self.addCleanup(self.temp.cleanup)
         top = Path(self.temp.name).resolve()
-        self.app = str(make_tree(top, '.', data=False) / 'build-mac' / 'WindowSmash.app')
+        self.app = str(make_tree(top, '.', data=False) / 'build-mac' / 'OpenSmash.app')
         self.assertEqual(subprocess.run(['codesign', '--force', '--sign', '-', self.app], capture_output=True).returncode, 0)
         self.tool = write(top / 'socketfilterfw', f'#!/bin/bash\n[ "$1" = --listapps ] && cat "{top}/listed.txt" 2>/dev/null\n'
                                                   'exit 0\n', 0o755)
@@ -771,7 +771,7 @@ class FirewallTests(unittest.TestCase):
         self.assertIn('hosting a private room needs that turned off', self.step('all')[0])
         self.assertIn('no rule wanted', self.step('on', wanted=False)[0])
         said, calls = self.step('on', dry=True)
-        self.assertIn('(dry run) would let build-mac/WindowSmash.app through the firewall', said)
+        self.assertIn('(dry run) would let build-mac/OpenSmash.app through the firewall', said)
         self.assertEqual(calls, [])
 
     def test_rule(self):
@@ -797,7 +797,7 @@ class LauncherAppTests(unittest.TestCase):
         info = im.launcher_info()
         self.assertEqual(info['CFBundleExecutable'], 'play')
         self.assertEqual(info['CFBundleIdentifier'], 'io.github.sno2207.windowsmash.play')
-        self.assertEqual(info['CFBundleIconFile'], 'windowsmash')
+        self.assertEqual(info['CFBundleIconFile'], 'opensmash')
         self.assertEqual(info['CFBundlePackageType'], 'APPL')
         self.assertEqual(info['LSMinimumSystemVersion'], '14.0')
         self.assertIs(info['LSUIElement'], True)   # (no Dock icon of its own: the game has one)
@@ -851,7 +851,7 @@ class LauncherAppTests(unittest.TestCase):
             self.assertEqual(subprocess.run(['plutil', '-lint', plist], capture_output=True).returncode, 0)
             with open(plist, 'rb') as f:
                 self.assertEqual(plistlib.load(f)['CFBundleIdentifier'], 'io.github.sno2207.windowsmash.test-launcher')
-            icns = Path(app, 'Contents', 'Resources', 'windowsmash.icns').read_bytes()
+            icns = Path(app, 'Contents', 'Resources', 'opensmash.icns').read_bytes()
             self.assertEqual(icns[:4], b'icns')   # (the game's, or made from docs/assets/opensmash.ico)
             self.assertEqual(Path(app, 'Contents', 'PkgInfo').read_text(), 'APPL????')
             r = subprocess.run(['codesign', '--verify', app], capture_output=True, text=True)
@@ -988,7 +988,7 @@ def make_tree(top, tree='.', version=None, data=True, built=True):
     if version:
         (t / 'version.txt').write_text(version + '\n')
     if built:
-        app = t / 'build-mac' / 'WindowSmash.app' / 'Contents'
+        app = t / 'build-mac' / 'OpenSmash.app' / 'Contents'
         with open(write(app / 'Info.plist', '').as_posix(), 'wb') as f:
             plistlib.dump({'CFBundleExecutable': 'ssbu', 'CFBundleIdentifier': 'io.github.sno2207.windowsmash.test-stub',
                            'CFBundlePackageType': 'APPL', 'LSBackgroundOnly': True}, f)
@@ -1228,10 +1228,19 @@ class OpenTests(unittest.TestCase):
         self.assertEqual(args, [f'{tree}/dump/modules', '--status', '30'])
         self.assertEqual(env, {'SSBU_CWD': str(self.top), 'SSBU_LOG': f'{tree}/build/play.log'})
 
+    def test_built_before_the_rename(self):
+        # (a folder built before the rename has the game as build-mac/WindowSmash.app until its next build)
+        tree = make_tree(self.top, '.', '13.0.5')
+        (tree / 'build-mac' / 'OpenSmash.app').rename(tree / 'build-mac' / 'WindowSmash.app')
+        r = self.run_launcher('launchers/Play SSBU Offline.command', SSBU_NET_RELAY='lobby.example:1', SSBU_NET_NAME='x')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _cwd, args, _env = self.record()
+        self.assertEqual(args, [f'{tree}/dump/modules', '--status', '30'])
+
     def test_host(self):
         tree = make_tree(self.top, '.', '13.0.5')
         # (the stand-in writes the address where the runtime does: the folder's netplay_address.txt)
-        exe = tree / 'build-mac' / 'WindowSmash.app' / 'Contents' / 'MacOS' / 'ssbu'
+        exe = tree / 'build-mac' / 'OpenSmash.app' / 'Contents' / 'MacOS' / 'ssbu'
         exe.write_text(exe.read_text().replace('sleep 1', 'echo "203.0.113.7:$SSBU_NET_PORT" > "$(dirname "$(dirname "$1")")/'
                                                           'netplay_address.txt"\nsleep 1'))
         (self.top / 'netplay_address.txt').write_text('stale, from the last time\n')   # (removed before the game starts)
@@ -1259,7 +1268,7 @@ class OpenTests(unittest.TestCase):
 
     def test_stopped_with_an_error(self):
         tree = make_tree(self.top, '.', '13.0.5')
-        exe = tree / 'build-mac' / 'WindowSmash.app' / 'Contents' / 'MacOS' / 'ssbu'
+        exe = tree / 'build-mac' / 'OpenSmash.app' / 'Contents' / 'MacOS' / 'ssbu'
         exe.write_text(exe.read_text().replace('sleep 1', 'echo "*** stopped during boot: cannot open x" >> "$SSBU_LOG"\nsleep 1'))
         (self.top / 'online_server.txt').write_text('off\n')
         r = self.run_launcher('Play SSBU.command')
@@ -1269,7 +1278,7 @@ class OpenTests(unittest.TestCase):
     def test_did_not_start(self):
         """A game that exits at once, writing no log: open's status is 0 even so (or it cannot block on it)."""
         tree = make_tree(self.top, '.', '13.0.5')
-        exe = tree / 'build-mac' / 'WindowSmash.app' / 'Contents' / 'MacOS' / 'ssbu'
+        exe = tree / 'build-mac' / 'OpenSmash.app' / 'Contents' / 'MacOS' / 'ssbu'
         exe.write_text(exe.read_text().replace('echo "stand-in game: running" >> "$SSBU_LOG"\nsleep 1\n', 'exit 0\n'))
         (self.top / 'online_server.txt').write_text('off\n')
         r = self.run_launcher('Play SSBU.command')

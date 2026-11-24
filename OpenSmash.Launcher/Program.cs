@@ -22,10 +22,10 @@ namespace OpenSmash.Launcher
 
             // The Play SSBU shortcut: the game straight away once it is built (the launcher waits, hidden, for it).
             if (args.Contains("--play", StringComparer.OrdinalIgnoreCase) && ProjectSetup.FindProject(AppContext.BaseDirectory) is string built
-                && WindowSmash.IsBuilt(built))
+                && GameFolder.IsBuilt(built))
             {
                 // (no lobby line yet: the official lobby, the launchers' default - OpenSmash.Core.OnlineSettings)
-                OpenSmash.Core.OnlineSettings.EnsureLine(WindowSmash.ConfigFile(built, "online_server.txt"));
+                OpenSmash.Core.OnlineSettings.EnsureLine(GameFolder.ConfigFile(built, "online_server.txt"));
                 // (v0.5.0) the signed-in account's lobby ticket, kept fresh while the game runs
                 string? pass = null;
                 OpenSmash.Core.OnlinePass? keeper = null;
@@ -39,7 +39,7 @@ namespace OpenSmash.Launcher
                     }
                 }
                 catch { }
-                using var game = WindowSmash.StartGame(built, pass);
+                using var game = GameFolder.StartGame(built, pass);
                 game?.WaitForExit();
                 keeper?.Dispose();
                 return;
@@ -102,15 +102,15 @@ namespace OpenSmash.Launcher
             UiLocale.Initialize(repo);
 
             // No build yet (or --installer): Install OpenSmash comes first.
-            if (!WindowSmash.IsBuilt(repo) || args.Contains("--installer", StringComparer.OrdinalIgnoreCase))
+            if (!GameFolder.IsBuilt(repo) || args.Contains("--installer", StringComparer.OrdinalIgnoreCase))
             {
                 LauncherForm.NameReleaseForInstaller(repo);   // (v0.5.0: a release's install takes its prebuilt runtime)
                 using var installer = new InstallerForm(workDir, repo);
                 UiLocale.Attach(installer);
                 Application.Run(installer);
-                if (!installer.Installed || !WindowSmash.IsBuilt(repo)) return;
+                if (!installer.Installed || !GameFolder.IsBuilt(repo)) return;
             }
-            using var launcher = new LauncherForm(workDir, repo, WindowSmash.BuildDir(repo));
+            using var launcher = new LauncherForm(workDir, repo, GameFolder.BuildDir(repo));
             UiLocale.Attach(launcher);
             Application.Run(launcher);
         }
@@ -148,7 +148,7 @@ namespace OpenSmash.Launcher
     }
 
     // What the setup and Play SSBU.bat do, so the window and those files start the same game.
-    static class WindowSmash
+    static class GameFolder
     {
         static readonly string[] ClearedVars =
         {

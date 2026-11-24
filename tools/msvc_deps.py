@@ -452,7 +452,7 @@ def repair_crt_libs(log=log):
     if not p or not p.get("payloads"):
         raise Failed(f"Microsoft's manifest has no {name}.")
     payload = p["payloads"][0]
-    work = tempfile.mkdtemp(prefix="windowsmash-crt-")
+    work = tempfile.mkdtemp(prefix="opensmash-crt-")
     try:
         archive = os.path.join(work, payload_name(payload))
         download(payload["url"], archive, payload.get("sha256"), payload.get("size"), payload_name(payload))
@@ -665,7 +665,7 @@ def install_msvc(channel, keep_downloads=False):
     folder = unpack_vsix([local(p) for p in vc], partial)
     # (into a short folder: the SDK's deepest files are over 100 characters below it, and msiexec
     # cannot write past Windows' 260-character path limit, which a deep OpenSmash folder reaches)
-    unpacked = tempfile.mkdtemp(prefix="windowsmash-sdk-")
+    unpacked = tempfile.mkdtemp(prefix="opensmash-sdk-")
     log("  unpacking them (msiexec /a: files only)")
     try:
         for p in msis:

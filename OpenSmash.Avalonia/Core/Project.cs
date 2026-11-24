@@ -39,7 +39,9 @@ public sealed class Project
     public string GameExecutable => Platform switch
     {
         DesktopPlatform.Windows => PathIn("build", "ssbu.exe"),
-        DesktopPlatform.MacOS => PathIn("build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu"),
+        DesktopPlatform.MacOS => File.Exists(PathIn("build-mac", "OpenSmash.app", "Contents", "MacOS", "ssbu")) || !File.Exists(PathIn("build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu"))
+            ? PathIn("build-mac", "OpenSmash.app", "Contents", "MacOS", "ssbu")
+            : PathIn("build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu"),   // (built before the rename, until the next build)
         _ => PathIn("build-linux", "ssbu")
     };
     public bool IsBuilt => File.Exists(GameExecutable);

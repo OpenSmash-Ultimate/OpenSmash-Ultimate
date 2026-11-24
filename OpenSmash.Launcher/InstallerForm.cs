@@ -735,7 +735,7 @@ namespace OpenSmash.Launcher
             string t = title.ToLowerInvariant();
             // (a first build is 30 minutes to a few hours; after that, what changed: minutes, mostly the link.
             // one guess each: the build's own bar replaces it as soon as it has a time left)
-            if (t.Contains("build the game")) return WindowSmash.IsBuilt(_repo) ? 300 : 5400;
+            if (t.Contains("build the game")) return GameFolder.IsBuilt(_repo) ? 300 : 5400;
             // (65,000 shaders took 1.5 hours on a fast PC at low priority; none when not wanted)
             if (t.Contains("shader")) return _optShaders ? 3600 : 5;
             if (t.Contains("compiler") || t.Contains("python package")) return 180;
@@ -939,7 +939,7 @@ namespace OpenSmash.Launcher
                 Alert("FIX THESE FOLDERS", UiLocale.Text("Please fix: ") + string.Join(", ", bad) + UiLocale.Text(".\n\nThe line under each folder says what is wrong. Press Check files after you change one."));
                 return;
             }
-            string ps1 = WindowSmash.Installer(_repo);
+            string ps1 = GameFolder.Installer(_repo);
             if (!File.Exists(ps1))
             {
                 Alert("INSTALLER NOT FOUND", "tools\\install_opensmash.ps1 is not in this folder. This copy of OpenSmash is incomplete.");
@@ -1057,7 +1057,7 @@ namespace OpenSmash.Launcher
 
             if (_jobKind == "install" && !_jobDry)
             {
-                if (ok) Installed = WindowSmash.IsBuilt(_repo);
+                if (ok) Installed = GameFolder.IsBuilt(_repo);
             }
             if (_jobKind == "bootstrap" && ok)
             {
@@ -1611,7 +1611,7 @@ namespace OpenSmash.Launcher
             PaintOption(g, "opt:license", "Accept Microsoft's license terms for the C runtime and Windows SDK (the compiler download, about 570 MB)", _optLicense, rx, oy + 64 * s, rightW, 72 * s, "Read them first: https://go.microsoft.com/fwlink/?LinkId=2327714");
 
             float ay = 574 * s;
-            string label = _failedBefore || WindowSmash.IsBuilt(_repo) ? "RESUME"
+            string label = _failedBefore || GameFolder.IsBuilt(_repo) ? "RESUME"
                 : _succeeded && _jobKind == "install" && !_jobDry ? "BUILD AGAIN"
                 : "SET UP AND BUILD";
             float ax = ActionButton(g, "act:check", "CHECK FILES", left, ay, primary: false);

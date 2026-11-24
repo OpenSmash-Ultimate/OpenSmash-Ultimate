@@ -36,14 +36,15 @@ KNOWN = ["tools/mods.py", "tools/prc.py", "tools/msbt.py", "tools/modmanager", "
          # (their names before the rename)
          "launchers/WindowSmash Mods.bat", "launchers/WindowSmash Mods.command",
          "launchers/Uninstall WindowSmash Mods.bat", "launchers/Uninstall WindowSmash Mods.command"]
-APP = "WindowSmash Mods.app"
+APP = "OpenSmash Mods.app"
+OLD_APP = "WindowSmash Mods.app"   # (its name before the rename)
 
 
 def say(text=""):
     print(text, flush=True)
 
 
-def is_windowsmash(folder):
+def is_opensmash_folder(folder):
     return os.path.isfile(os.path.join(folder, "tools", "build_game.py"))
 
 
@@ -283,6 +284,7 @@ def uninstall(target, delete_mods):
         mine = os.path.join(os.path.expanduser("~"), "Applications", APP)
         remove(mine)
         remove(built)
+        remove(os.path.join(os.path.expanduser("~"), "Applications", OLD_APP))
         if os.path.exists(before):
             os.replace(before, built)
             shutil.copytree(built, mine, symlinks=True)
@@ -308,7 +310,7 @@ def main():
     ap.add_argument("--keep-mods", action="store_true", help="with --uninstall: keep them (don't ask)")
     a = ap.parse_args()
     target = os.path.abspath(a.target)
-    if not is_windowsmash(target):
+    if not is_opensmash_folder(target):
         say(f"{target} isn't an OpenSmash folder (it has no tools/build_game.py).")
         return 1
     if a.uninstall:

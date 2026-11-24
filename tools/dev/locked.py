@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""locked.py <command...>: run a command holding the shared test lock (/tmp/windowsmash-test.lock,
+"""locked.py <command...>: run a command holding the shared test lock (/tmp/opensmash-test.lock,
 bench.py's), and never while the user's own copy of the game runs (builds and probe boots)."""
 import os
 import subprocess

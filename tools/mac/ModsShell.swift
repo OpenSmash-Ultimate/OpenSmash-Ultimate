@@ -2,20 +2,21 @@
 // is the app (the same on Windows, where it opens in Edge's app mode); this starts it, shows its
 // page in a web view, gives the page what a browser would (file pickers, confirm dialogs, saving a
 // modpack file, links opened in the browser) and stops the server when the window closes.
-// Built by tools/mac/build_mods_app.sh into build-mac/WindowSmash Mods.app.
+// Built by tools/mac/build_mods_app.sh into build-mac/OpenSmash Mods.app.
 import AppKit
 import WebKit
 
 enum Port {
     static let root: String = {
-        if let r = Bundle.main.object(forInfoDictionaryKey: "WindowSmashRoot") as? String, !r.isEmpty,
+        if let r = Bundle.main.object(forInfoDictionaryKey: "OpenSmashRoot") as? String, !r.isEmpty,
            FileManager.default.fileExists(atPath: r + "/tools/modmanager/server.py") { return r }
         var url = Bundle.main.bundleURL
         for _ in 0..<4 {
             url.deleteLastPathComponent()
             if FileManager.default.fileExists(atPath: url.appendingPathComponent("tools/modmanager/server.py").path) { return url.path }
         }
-        return NSHomeDirectory() + "/WindowSmash"
+        let home = NSHomeDirectory() + "/OpenSmash", old = NSHomeDirectory() + "/WindowSmash"   // (the name before the rename)
+        return FileManager.default.fileExists(atPath: home) || !FileManager.default.fileExists(atPath: old) ? home : old
     }()
     /// OpenSmash's own Python (the installer's venv), else one on the Mac
     static var python: String {
@@ -50,7 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         window.minSize = NSSize(width: 720, height: 520)
         window.contentView = web
         window.center()
-        window.setFrameAutosaveName("WindowSmashMods")
+        window.setFrameAutosaveName("OpenSmashMods")
         window.makeKeyAndOrderFront(nil)
         menus()
         web.loadHTMLString("<body style='background:#0b0a24;color:#a69fd2;font:15px system-ui;display:grid;place-items:center;height:90vh'>Starting…</body>", baseURL: nil)

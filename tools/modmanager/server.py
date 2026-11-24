@@ -232,7 +232,7 @@ def download(url, progress, log):
     if m:
         url = re.sub(r"[?&]dl=0", "", url) + ("&" if "?" in url else "?") + "dl=1"
     req = urllib.request.Request(url, headers={"User-Agent": "OpenSmash mod manager"})
-    tmp = tempfile.mkdtemp(prefix="windowsmash-dl-")
+    tmp = tempfile.mkdtemp(prefix="opensmash-dl-")
     try:
         ctx = ssl.create_default_context()
         try:
@@ -629,7 +629,7 @@ def make_handler(app):
             if path == "/api/upload" and method == "POST":   # (a file dropped on the window)
                 name = mods.safe_name(q.get("name", "mod.zip"))
                 n = int(self.headers.get("Content-Length") or 0)
-                tmp = tempfile.mkdtemp(prefix="windowsmash-up-")
+                tmp = tempfile.mkdtemp(prefix="opensmash-up-")
                 target = os.path.join(tmp, name)
                 with open(target, "wb") as f:
                     left = n

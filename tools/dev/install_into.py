@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install this tree's plugin work into an OpenSmash tree (the playable one, ~/WindowSmash): the code
+"""Install this tree's plugin work into an OpenSmash tree (the playable one): the code
 changed since the tree was copied from it (git: the "baseline" commit), the standard plugins
 (skyline/plugins), and the mods given; then the mods applied and the game built for the plugins.
 
@@ -12,7 +12,7 @@ Without --go it only lists what it would do. With --go:
   - the hook and patch lists (dump/skyline/hooks.txt, patches.txt: 13.0.5 addresses the plugins
     asked for here) are merged into the tree's, so the first build already has them;
   - mods.py apply, then skyline.py build --jobs 2 twice (the second bakes in what the first boot
-    recorded), holding /tmp/windowsmash-test.lock and never while the tree's game is running.
+    recorded), holding /tmp/opensmash-test.lock and never while the tree's game is running.
 Undo: copy each *.before-realplugins back and delete <tree>/skyline/plugins."""
 import json
 import os
@@ -41,7 +41,7 @@ def changed_code():
 
 def game_running(tree):
     r = subprocess.run(["pgrep", "-fl", "MacOS/ssbu"], capture_output=True, text=True)
-    return [line for line in r.stdout.splitlines() if tree in line or "WindowSmash.app" in line]
+    return [line for line in r.stdout.splitlines() if tree in line or "OpenSmash.app" in line]
 
 
 def merge_lines(src, dst):

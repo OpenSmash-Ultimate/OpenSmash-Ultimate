@@ -193,7 +193,7 @@ class BuildMacTests(unittest.TestCase):
     def test_paths(self):
         out = self.tree / 'build-mac'
         self.assertEqual(self.ns['OUT'], str(out))
-        self.assertEqual(self.ns['EXE'], str(out / 'WindowSmash.app' / 'Contents' / 'MacOS' / 'ssbu'))
+        self.assertEqual(self.ns['EXE'], str(out / 'OpenSmash.app' / 'Contents' / 'MacOS' / 'ssbu'))
         inc = self.ns['RUNTIME_INCLUDES']
         self.assertEqual(inc, ['-I', str(ROOT / 'runtime' / 'macos' / 'include'), '-I', str(ROOT / 'runtime' / 'linux' / 'include'),
                                '-I', str(ROOT / 'runtime'), '-I', str(out / 'gen'), '-F', str(ROOT / 'deps' / 'SDL3'),
@@ -355,7 +355,7 @@ class BuildMacTests(unittest.TestCase):
         self.assertEqual(p['CFBundleExecutable'], 'ssbu')
         self.assertEqual(p['CFBundleIdentifier'], 'io.github.sno2207.windowsmash')
         self.assertEqual((p['CFBundleName'], p['CFBundleDisplayName']), ('OpenSmash', 'OpenSmash'))
-        self.assertEqual(p['CFBundleIconFile'], 'windowsmash')
+        self.assertEqual(p['CFBundleIconFile'], 'opensmash')
         self.assertEqual(p['CFBundlePackageType'], 'APPL')
         self.assertEqual(p['LSMinimumSystemVersion'], '14.0')
         self.assertIs(p['NSHighResolutionCapable'], True)
@@ -402,7 +402,7 @@ class BuildMacTests(unittest.TestCase):
         """--replace starts this tree's own build over too (not with --link-only)."""
         out = Path(self.ns['OUT'])
         for p in ('obj/main/g0000.o', 'obj/nro/fighter/g0000.o', 'obj/rt/host.o', 'obj/game_sources.tsv', 'ssbu.syms',
-                  'WindowSmash.app/Contents/MacOS/ssbu'):
+                  'OpenSmash.app/Contents/MacOS/ssbu'):
             write(out / p)
         write(out / 'port.txt', f'{self.tree}\n')
         saved = sys.argv
@@ -415,7 +415,7 @@ class BuildMacTests(unittest.TestCase):
                 self.ns['use_tree']()
         finally:
             sys.argv = saved
-        for p in ('obj/main', 'obj/nro', 'obj/game_sources.tsv', 'ssbu.syms', 'WindowSmash.app'):
+        for p in ('obj/main', 'obj/nro', 'obj/game_sources.tsv', 'ssbu.syms', 'OpenSmash.app'):
             self.assertFalse((out / p).exists(), p)
         self.assertTrue((out / 'obj' / 'rt' / 'host.o').exists())   # (the runtime has its own flags stamp)
 
@@ -562,7 +562,7 @@ class BuildMacOnMacTests(unittest.TestCase):
         plist = plistlib.loads((app / 'Contents' / 'Info.plist').read_bytes())
         self.assertEqual(plist['CFBundleExecutable'], 'ssbu')
         self.assertTrue((app / 'Contents' / 'Frameworks' / 'SDL3.framework' / 'Versions' / 'Current').is_symlink())
-        self.assertTrue((app / 'Contents' / 'Resources' / 'windowsmash.icns').is_file())
+        self.assertTrue((app / 'Contents' / 'Resources' / 'opensmash.icns').is_file())
         r = subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         r = subprocess.run(['codesign', '-dv', str(app)], capture_output=True, text=True)
@@ -818,7 +818,7 @@ class BuildOnMacTests(unittest.TestCase):
         self.ns = runpy.run_path(str(ROOT / 'tools/build_game.py'), run_name='build_game_mac')['build'].__globals__
         fake_subprocess = types.SimpleNamespace(**{k: getattr(subprocess, k) for k in dir(subprocess) if not k.startswith('_')})
         fake_subprocess.Popen = lambda args, **kw: self.popens.append(args)
-        self.exe = self.port / 'build-mac' / 'WindowSmash.app' / 'Contents' / 'MacOS' / 'ssbu'
+        self.exe = self.port / 'build-mac' / 'OpenSmash.app' / 'Contents' / 'MacOS' / 'ssbu'
         self.ns.update(
             HOST='macos', LINUX=False, MACOS=True, ROOT=str(self.port), TOOLS=str(self.port / 'tools'), DUMP=str(dump),
             EXEFS=str(dump / 'exefs'), FONTS=str(dump / 'fonts'), MODULES=str(dump / 'modules'),
@@ -845,7 +845,7 @@ class BuildOnMacTests(unittest.TestCase):
         self.assertEqual(Path(mac[1]).relative_to('tools'), Path('mac', 'build_mac.py'))
         self.assertEqual(self.popens, [['caffeinate', '-i', '-w', str(os.getpid())]])   # (kept awake while it builds)
         text = '\n'.join(self.logged)
-        self.assertIn(f"[9/9] Build the game ({os.path.join('build-mac', 'WindowSmash.app')})", text)
+        self.assertIn(f"[9/9] Build the game ({os.path.join('build-mac', 'OpenSmash.app')})", text)
         self.assertIn('Play SSBU.command', text)
         self.assertNotIn('.bat', text)
 

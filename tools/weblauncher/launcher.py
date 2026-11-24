@@ -415,8 +415,10 @@ def venv_python(root):
 
 
 def game_program(root, host=HOST):
+    mac = os.path.join(root, "build-mac", "OpenSmash.app", "Contents", "MacOS", "ssbu")
+    old = os.path.join(root, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu")   # (built before the rename)
     return {"linux": os.path.join(root, "build-linux", "ssbu"),
-            "macos": os.path.join(root, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu")}.get(
+            "macos": mac if os.path.isfile(mac) or not os.path.isfile(old) else old}.get(
         host, os.path.join(root, "build", "ssbu.exe"))
 
 

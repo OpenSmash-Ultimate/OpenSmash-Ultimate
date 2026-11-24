@@ -94,7 +94,7 @@ namespace OpenSmash.Launcher
         {
             try
             {
-                string path = Path.Combine(WindowSmash.BuildDir(repo), "discord.txt");
+                string path = Path.Combine(GameFolder.BuildDir(repo), "discord.txt");
                 return File.Exists(path) ? ParseAppId(File.ReadAllText(path)) : "";
             }
             catch (IOException) { return ""; }
@@ -305,7 +305,7 @@ namespace OpenSmash.Launcher
             string server = "";
             try
             {
-                string path = WindowSmash.ConfigFile(repo, "online_server.txt");
+                string path = GameFolder.ConfigFile(repo, "online_server.txt");
                 if (File.Exists(path)) server = File.ReadAllLines(path).Select(l => l.Trim()).FirstOrDefault(l => l != "" && !l.StartsWith("#")) ?? "";
             }
             catch (IOException) { }

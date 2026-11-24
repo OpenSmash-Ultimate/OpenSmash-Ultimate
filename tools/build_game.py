@@ -61,7 +61,7 @@ On macOS (what Install OpenSmash.command runs), step 1 checks the Command Line T
 (tools/mac/toolchain.py), SDL3.framework in deps/SDL3 and the codecs' sources, and builds and runs
 a test program as the game is built: C++ exceptions through C, SDL3, a Metal device, then compiles
 the runtime's sources for their errors against the SDK (an older SDK lacks parts of them); step 9
-builds build-mac/WindowSmash.app: the C generated into build/ (tools/recomp.py all
+builds build-mac/OpenSmash.app: the C generated into build/ (tools/recomp.py all
 --generate-only), compiled and linked for macOS (tools/mac/build_mac.py), with the Mac kept awake
 meanwhile.
 """
@@ -90,7 +90,7 @@ EXEFS = os.path.join(DUMP, "exefs")
 FONTS = os.path.join(DUMP, "fonts")
 MODULES = os.path.join(DUMP, "modules")
 EXE = os.path.join(ROOT, "build-linux", "ssbu") if LINUX else \
-    os.path.join(ROOT, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu") if MACOS else os.path.join(ROOT, "build", "ssbu.exe")
+    os.path.join(ROOT, "build-mac", "OpenSmash.app", "Contents", "MacOS", "ssbu") if MACOS else os.path.join(ROOT, "build", "ssbu.exe")
 SAVED = os.path.join(DUMP, "build_folders.txt")
 SOURCE = os.path.join(DUMP, "game_source.txt")   # which game and version dump/ was set up from
 EXEFS_FILES = ("main", "main.npdm", "rtld", "sdk", "subsdk0")
@@ -324,7 +324,7 @@ def windows_compiler_problem(cc):
     else:
         fix = ("Check that Visual Studio has Desktop development with C++ (with a Windows SDK) and C++ Clang tools "
                "for Windows (setup guide step 4).")
-    with tempfile.TemporaryDirectory(prefix="windowsmash-check-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="opensmash-check-") as tmp:
         src, obj, rsp, exe = (os.path.join(tmp, "check" + ext) for ext in (".c", ".obj", ".rsp", ".exe"))
         with open(src, "w") as f:
             f.write("#include <windows.h>\n#include <stdio.h>\n#include <d3d11.h>\n#include <d3dcompiler.h>\n"
@@ -451,7 +451,7 @@ def check_linux_tools():
     if gone:
         raise Failed(f"{', '.join(gone)} missing from {install_linux.INCLUDE}, and the build needs them (a package can be "
                      "installed without its headers). Run install-opensmash.sh: it puts back the packages they come with.")
-    with tempfile.TemporaryDirectory(prefix="windowsmash-check-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="opensmash-check-") as tmp:
         src, exe = os.path.join(tmp, "check.cpp"), os.path.join(tmp, "check")
         with open(src, "w") as f:
             f.write(LINUX_CHECK)
@@ -548,7 +548,7 @@ def check_mac_tools():
         raise Failed("third_party/opus or third_party/libvpx is missing: this OpenSmash folder is incomplete. "
                      "Download it again.")
     includes = ["-F", tc.SDL3_DIR, "-I", os.path.join(codec_libs.OPUS, "include"), "-I", codec_libs.VPX]
-    with tempfile.TemporaryDirectory(prefix="windowsmash-check-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="opensmash-check-") as tmp:
         jobs = []
         for name, text in MAC_CHECK.items():
             with open(os.path.join(tmp, name), "w") as f:
@@ -1088,7 +1088,7 @@ def game_library():
 def build_is_current(dll=False):
     """build/ssbu.exe is newer than the runtime, the tools and the modules it is built from, and
     has SDL3.dll beside it if SDL3 is there to build with (on Linux: build-linux/ssbu, also newer
-    than the Linux runtime and tools; on macOS: build-mac/WindowSmash.app's program, also newer
+    than the Linux runtime and tools; on macOS: build-mac/OpenSmash.app's program, also newer
     than the platform layers it is made with and the macOS tools, with SDL3.framework in the app). Not
     on Windows and Linux when it was compiled for another instruction set than today's (tools/isa.py).
     dll (--game-dll): with game_library(), which is newer than all of that too; without it, with
@@ -1444,7 +1444,7 @@ def build_linux_program(jobs, dll=False):
 
 
 def build_mac_program(jobs, dll=False):
-    """build-mac/WindowSmash.app: the game's C generated into build/, then compiled and linked for
+    """build-mac/OpenSmash.app: the game's C generated into build/, then compiled and linked for
     macOS, with the Mac kept from sleeping while this runs (an idle Mac would stop the build). dll:
     --game-dll."""
     rebuild = '"launchers/Build OpenSmash.command"'

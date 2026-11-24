@@ -50,7 +50,7 @@ class LinkCommandTests(unittest.TestCase):
         return [folder(a[len('-libpath:'):]) for a in args if a.lower().startswith('-libpath:')]
 
     def test_libraries_come_from_the_system_root(self):
-        with tempfile.TemporaryDirectory(prefix='windowsmash-root-') as root:
+        with tempfile.TemporaryDirectory(prefix='opensmash-root-') as root:
             for d in FOLDERS:
                 os.makedirs(os.path.join(root, *d.split('/')))
             found = self.linker_folders(root)

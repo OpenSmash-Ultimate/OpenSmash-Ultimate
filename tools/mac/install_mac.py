@@ -24,7 +24,7 @@ Usage: Install OpenSmash.command [--game <dir>] [--keys <dir>] [--firmware <dir>
                 console's own fonts: without it the game uses the open fonts of
                 third_party/fonts_open (no Chinese, Japanese or Korean text)
   7. build      tools/build_game.py with those folders, kept awake (caffeinate): the game's
-                program, fonts, data, DLC and fighters, then build-mac/WindowSmash.app, which
+                program, fonts, data, DLC and fighters, then build-mac/OpenSmash.app, which
                 compiles the whole game the first time
   8. launchers  Play SSBU in ~/Applications (and on the Desktop): it starts the game
   9. firewall   only when the Application Firewall is on: a rule letting the game take incoming
@@ -62,7 +62,7 @@ VENV = il.VENV
 DOWNLOADS = os.path.join(DEPS, "downloads")
 SDL_DIR = os.path.join(DEPS, "SDL3")
 FRAMEWORK = os.path.join(SDL_DIR, "SDL3.framework")
-APP = os.path.join(ROOT, "build-mac", "WindowSmash.app")   # the game (tools/mac/build_mac.py)
+APP = os.path.join(ROOT, "build-mac", "OpenSmash.app")   # the game (tools/mac/build_mac.py)
 STEPS = 9
 MIN_MACOS = (14, 0)
 MIN_SDK = (15, 0)   # (the oldest macOS SDK the runtime compiles with: tools/mac/toolchain.py's MIN_SDK)
@@ -245,7 +245,7 @@ def launcher_info(bundle_id=LAUNCHER_ID, name=LAUNCHER_NAME):
     """Info.plist of the Play SSBU app: a script (Contents/MacOS/play) that starts the game, with no
     Dock icon of its own (LSUIElement: the game has its own)."""
     return {"CFBundleDevelopmentRegion": "en", "CFBundleDisplayName": name, "CFBundleExecutable": "play",
-            "CFBundleIconFile": "windowsmash", "CFBundleIdentifier": bundle_id, "CFBundleInfoDictionaryVersion": "6.0",
+            "CFBundleIconFile": "opensmash", "CFBundleIdentifier": bundle_id, "CFBundleInfoDictionaryVersion": "6.0",
             "CFBundleName": name, "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "1.0", "CFBundleVersion": "1",
             "LSApplicationCategoryType": "public.app-category.action-games", "LSMinimumSystemVersion": "%d.%d" % MIN_MACOS,
             "LSUIElement": True, "NSHighResolutionCapable": True}
@@ -571,7 +571,7 @@ def developer_dir():
 def try_compiler():
     """(None, what it says) when xcrun's clang builds and runs a C++ test program for this Mac, as
     the game is built; else (the problem, the compiler's output)."""
-    with tempfile.TemporaryDirectory(prefix="windowsmash-check-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="opensmash-check-") as tmp:
         exe = os.path.join(tmp, "check")
         try:
             r = subprocess.run(["xcrun", "clang", "-arch", "arm64", "-mmacosx-version-min=%d.%d" % MIN_MACOS, "-x", "c++",
@@ -742,7 +742,7 @@ def sha256_of(path):
 def install_sdl3_framework(dmg, dest):
     """SDL3.framework (the macOS one of the DMG's SDL3.xcframework, symbolic links and signature
     kept by ditto) and SDL's licence into dest, made afresh."""
-    mount = tempfile.mkdtemp(prefix="windowsmash-sdl3-")
+    mount = tempfile.mkdtemp(prefix="opensmash-sdl3-")
     code, said = output(["hdiutil", "attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mount, dmg])
     if code != 0:
         os.rmdir(mount)
@@ -1066,12 +1066,12 @@ def step_build(a, files):
 
 # ---- step 8: launchers -----------------------------------------------------------------------------------
 def make_icns(ico, out):
-    """windowsmash.icns from the .ico's 256-pixel picture (sips scales it, iconutil packs it)."""
+    """opensmash.icns from the .ico's 256-pixel picture (sips scales it, iconutil packs it)."""
     with open(ico, "rb") as f:
         png = ico_png(f.read())
     if not png:
         return False
-    with tempfile.TemporaryDirectory(prefix="windowsmash-icon-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="opensmash-icon-") as tmp:
         src = os.path.join(tmp, "icon.png")
         with open(src, "wb") as f:
             f.write(png)
@@ -1090,7 +1090,7 @@ def make_icns(ico, out):
 
 def launcher_icns():
     """The game's own icon (the build makes it), else made from docs/assets/opensmash.ico."""
-    built = os.path.join(APP, "Contents", "Resources", "windowsmash.icns")
+    built = os.path.join(APP, "Contents", "Resources", "opensmash.icns")
     return built if os.path.isfile(built) else None
 
 
@@ -1109,7 +1109,7 @@ def make_launcher_app(app, root=ROOT, bundle_id=LAUNCHER_ID, icns=None):
     plist = plistlib.dumps(launcher_info(bundle_id), sort_keys=True)
     script = launcher_script(root).encode()
     icon = read_bytes(icns or launcher_icns() or "")
-    old_icon = read_bytes(os.path.join(contents, "Resources", "windowsmash.icns"))
+    old_icon = read_bytes(os.path.join(contents, "Resources", "opensmash.icns"))
     if (read_bytes(os.path.join(contents, "Info.plist")) == plist and read_bytes(os.path.join(contents, "MacOS", "play")) == script
             and old_icon is not None and icon in (None, old_icon)):
         return False
@@ -1125,7 +1125,7 @@ def make_launcher_app(app, root=ROOT, bundle_id=LAUNCHER_ID, icns=None):
     with open(exe, "wb") as f:
         f.write(script)
     os.chmod(exe, 0o755)
-    path = os.path.join(tmp, "Contents", "Resources", "windowsmash.icns")
+    path = os.path.join(tmp, "Contents", "Resources", "opensmash.icns")
     if icon is not None:
         with open(path, "wb") as f:
             f.write(icon)

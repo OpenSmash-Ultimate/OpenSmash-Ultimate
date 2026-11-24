@@ -322,7 +322,7 @@ namespace OpenSmash.Launcher
                 ScanForNewMods();
                 _ = CheckUpdatesAtBootAsync();
                 // (an online_server.txt without a line: the official lobby, the default - OpenSmash.Core.OnlineSettings)
-                OpenSmash.Core.OnlineSettings.EnsureLine(WindowSmash.ConfigFile(_repo, "online_server.txt"));
+                OpenSmash.Core.OnlineSettings.EnsureLine(GameFolder.ConfigFile(_repo, "online_server.txt"));
                 DiscordInit();   // (LauncherForm.Discord.cs: the account, refreshed if it expired)
                 CommunityInit();   // (LauncherForm.Community.cs: the home page's right column, and Rich Presence)
                 // The marketplace browser is heavy. Let the boot animation finish before it starts.
@@ -415,8 +415,8 @@ namespace OpenSmash.Launcher
         // Data refresh
         void RefreshInfo()
         {
-            _version = WindowSmash.Version(_repo);
-            _built = WindowSmash.IsBuilt(_repo);
+            _version = GameFolder.Version(_repo);
+            _built = GameFolder.IsBuilt(_repo);
             _plugins = 0;
             if (Directory.Exists(_pluginsDir))
                 _plugins = Directory.GetFiles(_pluginsDir, "*.nro").Length;
@@ -428,7 +428,7 @@ namespace OpenSmash.Launcher
         {
             try
             {
-                string display = WindowSmash.ConfigFile(_repo, "display.ini");
+                string display = GameFolder.ConfigFile(_repo, "display.ini");
                 _rendererIni = SettingDefaults.RendererShown(IniValue(display, "", "renderer"), IniValue(display, "", "renderer_menu"));
             }
             catch { _rendererIni = ""; }
@@ -727,7 +727,7 @@ namespace OpenSmash.Launcher
 
         async Task RunPythonStepAsync(string label)
         {
-            string script = WindowSmash.Installer(_repo);
+            string script = GameFolder.Installer(_repo);
             if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_opensmash.ps1 is missing.");
             SetLoad(label, -1);
             try
@@ -1013,13 +1013,13 @@ namespace OpenSmash.Launcher
 
         bool UpdatePromptEnabled()
         {
-            try { string v = IniValue(WindowSmash.ConfigFile(_repo, "launcher.ini"), "opensmash", "update_prompt"); return !string.Equals(v, "off", StringComparison.OrdinalIgnoreCase); }
+            try { string v = IniValue(GameFolder.ConfigFile(_repo, "launcher.ini"), "opensmash", "update_prompt"); return !string.Equals(v, "off", StringComparison.OrdinalIgnoreCase); }
             catch { return true; }
         }
 
         void SaveUpdatePromptPreference(bool show)
         {
-            try { SetIni(WindowSmash.ConfigFile(_repo, "launcher.ini"), "opensmash", "update_prompt", show ? "on" : "off"); }
+            try { SetIni(GameFolder.ConfigFile(_repo, "launcher.ini"), "opensmash", "update_prompt", show ? "on" : "off"); }
             catch { }
         }
 
@@ -1121,7 +1121,7 @@ namespace OpenSmash.Launcher
 
         async Task<(int Code, string Output)> BuildGameAfterUpdateAsync()
         {
-            string script = WindowSmash.Installer(_repo);
+            string script = GameFolder.Installer(_repo);
             if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_opensmash.ps1 is missing.");
             SetLoad("REBUILDING THE GAME", -1);
             try { return await Task.Run(() => RunPowerShellUpdate(script, "-BuildAfterUpdate", NoteGameBuildLine)); }
@@ -1190,7 +1190,7 @@ namespace OpenSmash.Launcher
                 beforeCommit = await Task.Run(FindLocalCommit);
                 if (beforeCommit.Length == 0) throw new InvalidOperationException("This copy does not identify its source version.");
                 beforeLauncherFingerprint = ReleaseMode ? "" : await Task.Run(() => LauncherBuildInputsFingerprint(_repo));   // (a release brings its launcher built: no sources needed)
-                string script = WindowSmash.Installer(_repo);
+                string script = GameFolder.Installer(_repo);
                 if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_opensmash.ps1 is missing.");
                 if (!InstallerTakesUpdateOnly(File.ReadAllText(script))) await RefreshOldInstallerAsync(script);
                 var result = await Task.Run(() => RunPowerShellUpdate(script));
@@ -1854,8 +1854,8 @@ namespace OpenSmash.Launcher
         {
             _iniValues.Clear();
             _changed.Clear();
-            string display = WindowSmash.ConfigFile(_repo, "display.ini");
-            string pads = WindowSmash.ConfigFile(_repo, "controllers.ini");
+            string display = GameFolder.ConfigFile(_repo, "display.ini");
+            string pads = GameFolder.ConfigFile(_repo, "controllers.ini");
             // A value the files don't have is the game's own default (SettingDefaults.cs, checked against the runtime).
             string D(string key) => IniValue(display, "", key) ?? SettingDefaults.Of(key);
             _iniValues["ui_language"] = D("ui_language");
@@ -1868,13 +1868,13 @@ namespace OpenSmash.Launcher
             _iniValues["background"] = IniValue(pads, "general", "background") ?? SettingDefaults.Of("background");
             // online_server.txt is the truth (the game's settings menu writes it too); launcher.ini only remembers the
             // code and the server typed here, for when that choice is picked again.
-            string serverFile = WindowSmash.ConfigFile(_repo, "online_server.txt");
+            string serverFile = GameFolder.ConfigFile(_repo, "online_server.txt");
             // (no file, or no line: the official lobby, the launchers' default - OpenSmash.Core.OnlineSettings; written below)
             string line = File.Exists(serverFile) ? FirstLine(serverFile) : "";
             bool unset = string.IsNullOrWhiteSpace(line);
             if (unset) line = OpenSmash.Core.OnlineSettings.Official;
             var (lobby, code, server) = SettingDefaults.LobbyFromLine(line);
-            string launcherIni = WindowSmash.ConfigFile(_repo, "launcher.ini");
+            string launcherIni = GameFolder.ConfigFile(_repo, "launcher.ini");
             _iniValues["lobby"] = lobby;
             _iniValues["code"] = code != "" ? code : IniValue(launcherIni, "opensmash", "code") ?? "";
             string savedServer = IniValue(launcherIni, "opensmash", "server") ?? "";
@@ -1886,10 +1886,10 @@ namespace OpenSmash.Launcher
             {
                 try { SetFirstLine(serverFile, SettingDefaults.LineFromLobby(lobby, code, server)); } catch { }
             }
-            string directFile = WindowSmash.ConfigFile(_repo, "online_direct.txt");
+            string directFile = GameFolder.ConfigFile(_repo, "online_direct.txt");
             string direct = File.Exists(directFile) ? FirstLine(directFile) : SettingDefaults.OfFile("online_direct.txt");
             _iniValues["direct"] = direct.StartsWith("off", StringComparison.OrdinalIgnoreCase) ? "off" : "on";
-            _iniValues["name"] = FirstLine(WindowSmash.ConfigFile(_repo, "online_name.txt"));
+            _iniValues["name"] = FirstLine(GameFolder.ConfigFile(_repo, "online_name.txt"));
             // (Europe or North America East: "auto" shows as the region it plays on, written only when one is picked)
             _iniValues["region"] = OpenSmash.Core.OnlineSettings.RegionShown(_repo);
             // (what the lobby choice does not use, shown reset: an official lobby's leftover code, server or Direct
@@ -1933,7 +1933,7 @@ namespace OpenSmash.Launcher
             {
                 try
                 {
-                    string path = WindowSmash.ConfigFile(_repo, name);
+                    string path = GameFolder.ConfigFile(_repo, name);
                     if (File.Exists(path) && File.GetLastWriteTimeUtc(path) > newest) newest = File.GetLastWriteTimeUtc(path);
                 }
                 catch { }
@@ -2022,7 +2022,7 @@ namespace OpenSmash.Launcher
             // Write only on a user change: closing after a game must not overwrite its language choice.
             if (key == "ui_language")
             {
-                try { SetIni(WindowSmash.ConfigFile(_repo, "display.ini"), "", key, value); }
+                try { SetIni(GameFolder.ConfigFile(_repo, "display.ini"), "", key, value); }
                 catch (Exception ex) { UiLocale.Message(UiLocale.Format("Could not save interface language: {0}", ex.Message), "OpenSmash"); return; }
                 UiLocale.Select(value);
             }
@@ -2090,7 +2090,7 @@ namespace OpenSmash.Launcher
             // writes these files too, while this window waits hidden for the game to close - writing
             // every value back when it closed put the game's changes (the renderer, the window...) back
             // to what they were before the game started.
-            string display = WindowSmash.ConfigFile(_repo, "display.ini"), pads = WindowSmash.ConfigFile(_repo, "controllers.ini");
+            string display = GameFolder.ConfigFile(_repo, "display.ini"), pads = GameFolder.ConfigFile(_repo, "controllers.ini");
             foreach (string key in new[] { "window", "width", "height", "pacing", "render_scale", "gpu", "renderer", "hide_cursor", "overlay", "volume" })
                 if (_changed.Contains(key)) SetIni(display, "", key, _iniValues.GetValueOrDefault(key, SettingDefaults.Of(key)));
             // (the renderer as the in-game menu writes it: renderer_menu too, so an older launcher's "renderer = d3d11"
@@ -2100,11 +2100,11 @@ namespace OpenSmash.Launcher
                 if (_changed.Contains(key)) SetIni(pads, "general", key, _iniValues.GetValueOrDefault(key, SettingDefaults.Of(key)));
             bool serverChanged = _changed.Contains("lobby") || _changed.Contains("code") || _changed.Contains("server");
             if (serverReady && serverChanged)
-                SetFirstLine(WindowSmash.ConfigFile(_repo, "online_server.txt"), server);
+                SetFirstLine(GameFolder.ConfigFile(_repo, "online_server.txt"), server);
             if (_changed.Contains("name"))
-                SetFirstLine(WindowSmash.ConfigFile(_repo, "online_name.txt"), _iniValues.GetValueOrDefault("name", "").Trim());
+                SetFirstLine(GameFolder.ConfigFile(_repo, "online_name.txt"), _iniValues.GetValueOrDefault("name", "").Trim());
             if (_changed.Contains("direct"))
-                SetFirstLine(WindowSmash.ConfigFile(_repo, "online_direct.txt"), _iniValues.GetValueOrDefault("direct", "on"));
+                SetFirstLine(GameFolder.ConfigFile(_repo, "online_direct.txt"), _iniValues.GetValueOrDefault("direct", "on"));
             try
             {
                 if (_changed.Contains("reports"))
@@ -2127,7 +2127,7 @@ namespace OpenSmash.Launcher
             if (serverChanged)
             {
                 // (a code or a server reset by the lobby choice is reset in the remembered copy too: none comes back stale)
-                string launcherIni = WindowSmash.ConfigFile(_repo, "launcher.ini");
+                string launcherIni = GameFolder.ConfigFile(_repo, "launcher.ini");
                 if (code != "" || !string.IsNullOrEmpty(IniValue(launcherIni, "opensmash", "code"))) SetIni(launcherIni, "opensmash", "code", code);
                 if (host != "" || !string.IsNullOrEmpty(IniValue(launcherIni, "opensmash", "server"))) SetIni(launcherIni, "opensmash", "server", host);
             }
@@ -2867,7 +2867,7 @@ namespace OpenSmash.Launcher
                     if (set.Key == "remap") { OpenRemap(); return; }
                     if (set.Key == "pads")
                     {
-                        string pads = WindowSmash.ConfigFile(_repo, "controllers.ini");
+                        string pads = GameFolder.ConfigFile(_repo, "controllers.ini");
                         if (File.Exists(pads)) Process.Start(new ProcessStartInfo("notepad.exe", "\"" + pads + "\"") { UseShellExecute = true });
                         else UiLocale.Message("controllers.ini is written the first time the game starts.", "OpenSmash");
                         return;
@@ -4384,7 +4384,7 @@ namespace OpenSmash.Launcher
             {
                 string script = Path.Combine(_repo, "tools", "online_files.py");
                 if (string.IsNullOrEmpty(_pythonExe) || !File.Exists(script)) return;
-                RunPython(new[] { script, WindowSmash.BuildDir(_repo) }, out _);
+                RunPython(new[] { script, GameFolder.BuildDir(_repo) }, out _);
             }
             catch { }
         }
@@ -4393,7 +4393,7 @@ namespace OpenSmash.Launcher
         {
             try
             {
-                if (!WindowSmash.IsBuilt(_repo))
+                if (!GameFolder.IsBuilt(_repo))
                 {
                     UiLocale.Message("The game isn't built here yet.", "OpenSmash");
                     return;
@@ -4402,7 +4402,7 @@ namespace OpenSmash.Launcher
                 await Task.Run(EnsureOnlineFiles);
                 // Same start as Play SSBU.bat: build\ssbu.exe dump\modules --status 30 --online
                 string? pass = await AccountPassForGame();   // (v0.5.0: the lobby ticket, LauncherForm.Account.cs)
-                _gameProcess = WindowSmash.StartGame(_repo, pass);
+                _gameProcess = GameFolder.StartGame(_repo, pass);
                 AccountWatchGame(_gameProcess);
                 _gameLaunched = true;
                 if (_gameProcess != null)

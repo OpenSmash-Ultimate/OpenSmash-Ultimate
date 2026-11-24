@@ -13,13 +13,13 @@ sites (guest C++ try/catch) are compiled as C++ (see recomp.h). The runtime is r
 the Direct3D 11 renderer, the POSIX parts of the Linux platform layer (runtime/linux) and the
 macOS one (runtime/macos: memory, fibers, window, the Metal renderer); it links against
 SDL3.framework (deps/SDL3) and libopus and libvpx, built from third_party/ (tools/codec_libs.py).
-The program is an app: <out>/WindowSmash.app, with SDL3.framework in it, signed (ad hoc) as a
+The program is an app: <out>/OpenSmash.app, with SDL3.framework in it, signed (ad hoc) as a
 whole; <out>/ssbu.syms names its functions for the profiler. With --game-dll the game's modules are
 linked into a library of their own instead, the app's Contents/Frameworks/ssbu_game.dylib, which the
 program loads at start (tools/game_dll.py): the program is then the runtime alone.
   <out>/obj/       the objects: rt/ (the runtime), main/, subsdk0/, sdk/, nro/<module>/
   <out>/gen/       the files made for the build: hle_table.c, wrap_missing.c, nro_table.c,
-                   overlay_font.h (tools/mac/make_overlay_font.m), windowsmash.icns
+                   overlay_font.h (tools/mac/make_overlay_font.m), opensmash.icns
   <out>/codecs/    libopus.a, libvpx.a
 Incremental: a file is compiled again when its source is newer than its object, and a game object
 also when its C is not the file it was compiled from (obj/game_sources.tsv records each one's size
@@ -64,7 +64,8 @@ JOBS = int(arg("--jobs", str(max(4, (os.cpu_count() or 8) - 2))))
 OBJ = os.path.join(OUT, "obj")
 GAME_SOURCES = os.path.join(OBJ, "game_sources.tsv")
 GEN = os.path.join(OUT, "gen")
-APP = os.path.join(OUT, "WindowSmash.app")
+APP = os.path.join(OUT, "OpenSmash.app")
+OLD_APP = "WindowSmash.app"   # (the app's name before the rename: removed when this one is made)
 EXE = os.path.join(APP, "Contents", "MacOS", "ssbu")
 BUNDLE_ID = "io.github.sno2207.windowsmash"
 ICON = os.path.join(REPO, "docs", "assets", "opensmash.ico")
@@ -450,10 +451,10 @@ ICONSET = (("icon_16x16", 16), ("icon_16x16@2x", 32), ("icon_32x32", 32), ("icon
 
 
 def app_icon():
-    """gen/windowsmash.icns, the app's icon: docs/assets/opensmash.ico's 256-pixel picture at
+    """gen/opensmash.icns, the app's icon: docs/assets/opensmash.ico's 256-pixel picture at
     each size (sips), made into an .icns (iconutil); made once. None without one (the app then
     has the system's icon)."""
-    icns = os.path.join(GEN, "windowsmash.icns")
+    icns = os.path.join(GEN, "opensmash.icns")
     if not needs(icns, ICON, os.path.abspath(__file__)):
         return icns
     png = ico_png(ICON)
@@ -461,7 +462,7 @@ def app_icon():
         print(f"no 256-pixel picture in {ICON}: the app has no icon of its own")
         return None
     os.makedirs(GEN, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="windowsmash-icon-", dir=GEN) as tmp:
+    with tempfile.TemporaryDirectory(prefix="opensmash-icon-", dir=GEN) as tmp:
         src = os.path.join(tmp, "icon.png")
         with open(src, "wb") as f:
             f.write(png)
@@ -476,7 +477,7 @@ def app_icon():
             if r.returncode:
                 print(f"sips could not scale the icon: the app has no icon of its own\n{(r.stdout + r.stderr)[:1000]}")
                 return None
-        partial = os.path.join(tmp, "windowsmash.icns")
+        partial = os.path.join(tmp, "opensmash.icns")
         r = subprocess.run(["iconutil", "-c", "icns", iconset, "-o", partial], capture_output=True, text=True)
         if r.returncode:
             print(f"iconutil could not make the icon: the app has no icon of its own\n{(r.stdout + r.stderr)[:1000]}")
@@ -647,7 +648,7 @@ def info_plist(version=None):
         "CFBundleDevelopmentRegion": "en",
         "CFBundleDisplayName": "OpenSmash",
         "CFBundleExecutable": "ssbu",
-        "CFBundleIconFile": "windowsmash",
+        "CFBundleIconFile": "opensmash",
         "CFBundleIdentifier": BUNDLE_ID,
         "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundleName": "OpenSmash",
@@ -706,7 +707,7 @@ def bundle():
         return False
     icns = app_icon()
     if icns:
-        shutil.copyfile(icns, os.path.join(contents, "Resources", "windowsmash.icns"))
+        shutil.copyfile(icns, os.path.join(contents, "Resources", "opensmash.icns"))
     r = subprocess.run([CODESIGN, "--force", "--deep", "--sign", "-", APP], capture_output=True, text=True)
     if r.returncode:
         print(f"could not sign {APP}:\n{(r.stdout + r.stderr)[:2000]}")
@@ -769,6 +770,9 @@ def link():
     if not bundle():
         os.remove(EXE)   # (not a finished app: the next build makes it again, and no launcher starts it)
         return False
+    old = os.path.join(OUT, OLD_APP)
+    if os.path.isdir(old):   # (the same game, made before the rename: this one replaces it)
+        shutil.rmtree(old, ignore_errors=True)
     print(f"linked {len(objs)} objects into {EXE} ({os.path.getsize(EXE) / 1048576:,.0f} MB) in {time.time() - t0:,.0f}s")
     return True
 

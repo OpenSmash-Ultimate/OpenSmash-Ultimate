@@ -94,7 +94,7 @@ def apply(target, record):
 
 def game_binary(target):
     if sys.platform == "darwin":
-        return os.path.join(target, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu")
+        return os.path.join(target, "build-mac", "OpenSmash.app", "Contents", "MacOS", "ssbu")
     if os.name == "nt":
         return os.path.join(target, "build", "ssbu.exe")
     return os.path.join(target, "build-linux", "ssbu")

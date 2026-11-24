@@ -17,7 +17,7 @@
 #   miis     tools/miis.py import: your own Miis into miis/ (launchers/Import Miis.command)
 #   build    tools/build_game.py with OpenSmash's Python (as OpenSmash.exe builds on Windows)
 #
-# The game is build-mac/WindowSmash.app, started with open (so macOS treats it as the app it is: its
+# The game is build-mac/OpenSmash.app, started with open (so macOS treats it as the app it is: its
 # own Dock icon, privacy permissions and Game Mode) from this folder, with dump/modules; its log goes
 # to build/play.log, which the Terminal window shows as it goes. --gui (the Play SSBU app): questions
 # and messages in dialogs, and no log window. SSBU_TREE names another folder laid out like this one
@@ -111,14 +111,18 @@ clear_net() {
     unset SSBU_DATA_ROOT SSBU_INPUT SSBU_NET_HOST SSBU_NET_RELAY SSBU_NET_BIND "$@"
 }
 
-# The folder of the game to start ($tree: this one, or SSBU_TREE's), with the game built in it
+# The folder of the game to start ($tree: this one, or SSBU_TREE's), with the game built in it ($app; one built
+# before the rename has it as WindowSmash.app until the next build)
 game_folder() {
     case "${SSBU_TREE:-.}" in
         .) tree=$root ;;
         /*) tree=$SSBU_TREE ;;
         *) tree="$root/$SSBU_TREE" ;;
     esac
-    [ -x "$tree/build-mac/WindowSmash.app/Contents/MacOS/ssbu" ] ||
+    app="$tree/build-mac/OpenSmash.app"
+    [ -x "$app/Contents/MacOS/ssbu" ] || [ ! -x "$tree/build-mac/WindowSmash.app/Contents/MacOS/ssbu" ] ||
+        app="$tree/build-mac/WindowSmash.app"
+    [ -x "$app/Contents/MacOS/ssbu" ] ||
         fail "The game isn't built here yet: double-click Install OpenSmash.command (in $root) to build it."
 }
 
@@ -212,7 +216,7 @@ go_online() {
 # SSBU_* variables go to the game (open passes those it is given), with where the port is (the game
 # starts in it: its settings, screenshots/ and reports/ are there) and where its log goes.
 launch() {
-    local app="$tree/build-mac/WindowSmash.app" name
+    local name
     local args
     log="$tree/build/play.log"
     opened="$tree/build/open.txt"

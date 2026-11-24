@@ -39,7 +39,7 @@ MAC = r'''#!/bin/bash
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 here="$PWD"
 target=""
-for d in "$here/.." "$here/../.." "$HOME/WindowSmash" "$HOME/Desktop/WindowSmash" "$HOME/Downloads/WindowSmash" "$HOME/Documents/WindowSmash"; do
+for d in "$here/.." "$here/../.." "$HOME/OpenSmash" "$HOME/Desktop/OpenSmash" "$HOME/Downloads/OpenSmash" "$HOME/Documents/OpenSmash" "$HOME/WindowSmash" "$HOME/Desktop/WindowSmash" "$HOME/Downloads/WindowSmash" "$HOME/Documents/WindowSmash"; do
     [ -f "$d/tools/build_game.py" ] && { target="$(cd "$d" && pwd -P)"; break; }
 done
 if [ -z "$target" ]; then
@@ -56,7 +56,7 @@ if [ -z "$py" ]; then
 fi
 "$py" "$here/installer/install_mods.py" --target "$target"
 status=$?
-[ $status -eq 0 ] && [ -d "$HOME/Applications/WindowSmash Mods.app" ] && open "$HOME/Applications/WindowSmash Mods.app"
+[ $status -eq 0 ] && [ -d "$HOME/Applications/OpenSmash Mods.app" ] && open "$HOME/Applications/OpenSmash Mods.app"
 read -r -p "Press Return to close." _
 exit $status
 '''
@@ -68,7 +68,7 @@ setlocal
 cd /d "%~dp0"
 set "HERE=%~dp0"
 set "TARGET="
-for %%D in ("%~dp0.." "%~dp0..\.." "%USERPROFILE%\WindowSmash" "%USERPROFILE%\Desktop\WindowSmash" "%USERPROFILE%\Downloads\WindowSmash" "%USERPROFILE%\Documents\WindowSmash" "C:\WindowSmash") do (
+for %%D in ("%~dp0.." "%~dp0..\.." "%USERPROFILE%\OpenSmash" "%USERPROFILE%\Desktop\OpenSmash" "%USERPROFILE%\Downloads\OpenSmash" "%USERPROFILE%\Documents\OpenSmash" "C:\OpenSmash" "%USERPROFILE%\WindowSmash" "%USERPROFILE%\Desktop\WindowSmash" "%USERPROFILE%\Downloads\WindowSmash" "%USERPROFILE%\Documents\WindowSmash" "C:\WindowSmash") do (
     if not defined TARGET if exist "%%~D\tools\build_game.py" set "TARGET=%%~fD"
 )
 if not defined TARGET (
@@ -92,7 +92,7 @@ exit /b %RESULT%
 MAC_UNINSTALL = (MAC.replace("# Installs OpenSmash Mods (the mod manager) into your OpenSmash folder, and the modpack this\n"
                              "# installer carries, if it has one.", "# Removes OpenSmash Mods from your OpenSmash folder and puts the game back as it was.")
                  .replace('--target "$target"\n', '--target "$target" --uninstall\n')
-                 .replace('[ $status -eq 0 ] && [ -d "$HOME/Applications/WindowSmash Mods.app" ] && open "$HOME/Applications/WindowSmash Mods.app"\n', ""))
+                 .replace('[ $status -eq 0 ] && [ -d "$HOME/Applications/OpenSmash Mods.app" ] && open "$HOME/Applications/OpenSmash Mods.app"\n', ""))
 WIN_UNINSTALL = (WIN.replace("rem Installs OpenSmash Mods (the mod manager) into your OpenSmash folder, and the modpack this\n"
                              "rem installer carries, if it has one.", "rem Removes OpenSmash Mods from your OpenSmash folder and puts the game back as it was.")
                  .replace('--target "%TARGET%"\n', '--target "%TARGET%" --uninstall\n')

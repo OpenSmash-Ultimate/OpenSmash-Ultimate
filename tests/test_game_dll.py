@@ -465,7 +465,7 @@ class MacBuild(unittest.TestCase):
 
     def test_settings(self):
         self.assertEqual(self.ns['RUNTIME_DEFINES'], self.default['RUNTIME_DEFINES'] + ['-DSSBU_GAME_DLL'])
-        self.assertEqual(self.ns['LIBRARY'], str(self.tree / 'build-mac' / 'WindowSmash.app' / 'Contents' / 'Frameworks' /
+        self.assertEqual(self.ns['LIBRARY'], str(self.tree / 'build-mac' / 'OpenSmash.app' / 'Contents' / 'Frameworks' /
                                                  'ssbu_game.dylib'))
         self.assertEqual((self.ns['CXX_LANG'], self.default['CXX_LANG']), ('c++dll', 'c++'))
 
@@ -529,8 +529,8 @@ class BuildGame(unittest.TestCase):
 
     def test_the_library_beside_the_program(self):
         for linux, macos, exe, library in ((True, False, ('build-linux', 'ssbu'), ('build-linux', 'ssbu_game.so')),
-                                           (False, True, ('build-mac', 'WindowSmash.app', 'Contents', 'MacOS', 'ssbu'),
-                                            ('build-mac', 'WindowSmash.app', 'Contents', 'Frameworks', 'ssbu_game.dylib')),
+                                           (False, True, ('build-mac', 'OpenSmash.app', 'Contents', 'MacOS', 'ssbu'),
+                                            ('build-mac', 'OpenSmash.app', 'Contents', 'Frameworks', 'ssbu_game.dylib')),
                                            (False, False, ('build', 'ssbu.exe'), ('build', 'ssbu_game.dll'))):
             self.ns.update(LINUX=linux, MACOS=macos, EXE=str(self.port.joinpath(*exe)))
             self.assertEqual(self.ns['game_library'](), str(self.port.joinpath(*library)))
@@ -560,7 +560,7 @@ class BuildGame(unittest.TestCase):
         dump = self.port / 'dump'
         for n in ('runtime/host.c', 'tools/recomp.py', 'tools/mac/build_mac.py', 'dump/exefs/main'):
             made_up.write(self.port / n, '', age=100)
-        exe = self.port / 'build-mac' / 'WindowSmash.app' / 'Contents' / 'MacOS' / 'ssbu'
+        exe = self.port / 'build-mac' / 'OpenSmash.app' / 'Contents' / 'MacOS' / 'ssbu'
         made_up.write(exe, '', age=0)
         made_up.write(exe.parent.parent / 'Frameworks' / 'SDL3.framework' / 'SDL3', '')
         self.ns.update(LINUX=False, MACOS=True, EXE=str(exe), TOOLS=str(self.port / 'tools'), DUMP=str(dump),
@@ -592,7 +592,7 @@ class CompileCheck(unittest.TestCase):
         t = self.tree
         self.assertEqual(check.library(t, 'windows'), os.path.join(t, 'build', 'ssbu_game.dll'))
         self.assertEqual(check.library(t, 'linux'), os.path.join(t, 'build-linux', 'ssbu_game.so'))
-        self.assertEqual(check.library(t, 'macos'), os.path.join(t, 'build-mac', 'WindowSmash.app', 'Contents', 'Frameworks',
+        self.assertEqual(check.library(t, 'macos'), os.path.join(t, 'build-mac', 'OpenSmash.app', 'Contents', 'Frameworks',
                                                                  'ssbu_game.dylib'))
         with tempfile.TemporaryDirectory(prefix='runtime check ') as top:
             tree = os.path.join(top, 'made-up game')

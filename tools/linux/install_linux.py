@@ -1089,7 +1089,10 @@ def step_launchers(a):
         if os.path.isfile(path) and not a.dry_run:
             os.chmod(path, 0o755)
     apps = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "applications")
-    entry = os.path.join(apps, "windowsmash.desktop")
+    entry = os.path.join(apps, "opensmash.desktop")
+    old_entry = os.path.join(apps, "windowsmash.desktop")   # (its name before the rename)
+    if os.path.isfile(old_entry) and not a.dry_run:
+        os.remove(old_entry)
     text = desktop_entry(ROOT)
     if read_text(entry) == text:
         info(f"applications menu: OpenSmash ({entry})")

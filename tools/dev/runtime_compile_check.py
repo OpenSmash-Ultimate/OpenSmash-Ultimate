@@ -6,7 +6,7 @@ laid out as a game tree. What .github/workflows/runtime-compile.yml runs on Wind
   Windows  tools/recomp.py compile for each module, then tools/recomp.py link: <tree>/build/ssbu.exe
   Linux    tools/linux/build_vkd3d.py linux when vkd3d-shader is not built for this instruction set
            (as build_game.py), then tools/linux/build_linux.py: <tree>/build-linux/ssbu
-  macOS    tools/mac/build_mac.py: <tree>/build-mac/WindowSmash.app
+  macOS    tools/mac/build_mac.py: <tree>/build-mac/OpenSmash.app
 The program is not started (tools/mac/boottest/boottest.py starts it on a Mac), except with
 --game-dll, to load its library (below). SSBU_ISA chooses the instruction set on Windows and
 Linux, as for a player's build (tools/isa.py).
@@ -24,7 +24,7 @@ runtime function the game's C calls found, the interface's version, structures a
 set the same.
 
 Usage: runtime_compile_check.py [--tree <dir>] [--jobs N] [--game-dll]
-  --tree      the made-up game's folder (default: windowsmash-runtime-check in the system's
+  --tree      the made-up game's folder (default: opensmash-runtime-check in the system's
               temporary folder; not this checkout, whose build/ is the real game's). Kept: a
               second run compiles only what changed
   --jobs      files compiled at a time (default: each build's own)
@@ -50,7 +50,7 @@ import game_dll  # noqa: E402
 RUNTIME = os.path.join(REPO, "runtime")
 BOOTTEST = os.path.join(TOOLS, "mac", "boottest", "boottest.py")
 MODULES = ("main", "subsdk0", "sdk")
-TREE = os.path.join(tempfile.gettempdir(), "windowsmash-runtime-check")
+TREE = os.path.join(tempfile.gettempdir(), "opensmash-runtime-check")
 SOURCES = (".c", ".m", ".mm", ".cpp", ".S")
 # The platform layers, each a folder of runtime/: Linux's program is built with runtime/linux, macOS's
 # with runtime/macos and parts of runtime/linux; Windows' layer is in runtime/ itself. The builds take
@@ -103,7 +103,7 @@ def program(tree, host):
     """Where the build puts the program: where a player's build puts it in its tree."""
     return {"windows": os.path.join(tree, "build", "ssbu.exe"),
             "linux": os.path.join(tree, "build-linux", "ssbu"),
-            "macos": os.path.join(tree, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu")}[host]
+            "macos": os.path.join(tree, "build-mac", "OpenSmash.app", "Contents", "MacOS", "ssbu")}[host]
 
 
 def runtime_folder(tree, host):
@@ -115,7 +115,7 @@ def runtime_folder(tree, host):
 def library(tree, host):
     """Where a --game-dll build puts the game's library: beside the program (macOS: in the app's Frameworks)."""
     return {"windows": os.path.join(tree, "build", game_dll.DLL), "linux": os.path.join(tree, "build-linux", game_dll.SO),
-            "macos": os.path.join(tree, "build-mac", "WindowSmash.app", "Contents", "Frameworks", game_dll.DYLIB)}[host]
+            "macos": os.path.join(tree, "build-mac", "OpenSmash.app", "Contents", "Frameworks", game_dll.DYLIB)}[host]
 
 
 def module_folder(tree, host, module):
