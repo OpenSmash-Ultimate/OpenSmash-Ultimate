@@ -387,8 +387,8 @@ class Fn:
                 else:
                     body = 'wrv(a, &c->v[%d], %d);' % (rt, nbytes)
                 return '{ %s uint64_t a = %s; %s %s }' % (pre, a, body, post)
-            if size == 3 and opc == 2:
-                return ';'                               # prfm
+            if size == 3 and opc == 2 and not (bits(w, 24, 24) == 0 and bits(w, 21, 21) == 1 and bits(w, 11, 10) == 0):
+                return ';'                               # prfm (not the 64-bit LSE / LDAPR encodings: Unimpl below)
             pre, a, post = self.addr_mode(w, size)
             nb = 8 << size
             if opc == 0:
