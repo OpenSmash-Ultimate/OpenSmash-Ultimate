@@ -125,7 +125,7 @@ public sealed partial class MainWindow : Window
 
     void SetProject(string root,bool forceInstaller=false)
     {
-        _project=new Project(root,Project.CurrentPlatform);ProjectLayout.Normalize(_project.Root);OpenSmash.Core.VersionInfo.Note(_project.Root);
+        _project=new Project(root,Project.CurrentPlatform);ProjectLayout.Normalize(_project.Root);
         // (an online_server.txt without a line: the official lobby, the default - OpenSmash.Core.OnlineSettings)
         if(_backgroundActions)OpenSmash.Core.OnlineSettings.EnsureLine(_project.ConfigFile("online_server.txt"));
         Surface.SetProject(_project,forceInstaller);

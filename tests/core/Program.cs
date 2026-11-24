@@ -228,8 +228,6 @@ static class Program
             File.WriteAllText(Path.Combine(vr, "tools", "source_version.txt"), "f3a7466e0123456789abcdef0123456789abcdef 2026-11-24\n");
             File.WriteAllText(Path.Combine(vr, "version.txt"), "13.0.5\n# game version\n");
             Check(VersionInfo.Line(vr) == "LAUNCHER 0.5.0-test   ·   RECOMP f3a7466 2026-11-24   ·   GAME 13.0.5", "versions: " + VersionInfo.Line(vr));
-            VersionInfo.Note(vr);
-            Check(File.ReadAllText(Path.Combine(vr, "config", "launcher_version.txt")) == "0.5.0-test\n", "config/launcher_version.txt for the game's menu");
             Directory.Delete(vr, true);
         }
 

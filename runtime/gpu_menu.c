@@ -353,7 +353,8 @@ static void load_version(void)
                 snprintf(source_version, sizeof source_version, "git, %.40s", line + 16);
         }
     }
-    first_line("config/launcher_version.txt", launcher_version, sizeof launcher_version);   /* (the launchers write it: OpenSmash.Core.VersionInfo) */
+    const char *lv = getenv("OPENSMASH_LAUNCHER_VERSION");   /* (the launchers set it at Play: OpenSmash.Core.VersionInfo.EnvName) */
+    snprintf(launcher_version, sizeof launcher_version, "%s", lv && *lv ? lv : "");
 }
 
 static void load_pins(void);
@@ -1457,8 +1458,8 @@ static void build(void)
         snprintf(r->value, sizeof r->value, "%s", version[0] ? version : "unknown (no version.txt)");
         r = add(R_NONE, K_INFO, W_NONE, "OpenSmash (recomp)", "The OpenSmash commit this folder's sources are at, and its date (tools/source_version.txt).");
         snprintf(r->value, sizeof r->value, "%s", source_version[0] ? source_version : "unknown");
-        r = add(R_NONE, K_INFO, W_NONE, "Launcher", "The version of the OpenSmash launcher last opened for this folder.");
-        snprintf(r->value, sizeof r->value, "%s", launcher_version[0] ? launcher_version : "unknown");
+        r = add(R_NONE, K_INFO, W_NONE, "Launcher", "The version of the OpenSmash launcher that started the game.");
+        snprintf(r->value, sizeof r->value, "%s", launcher_version[0] ? launcher_version : "not started from the launcher");
         break;
     }
     static Row packed[MENU_ROWS];
