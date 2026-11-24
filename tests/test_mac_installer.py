@@ -1301,7 +1301,7 @@ class OpenTests(unittest.TestCase):
 class ScriptSyntaxTests(unittest.TestCase):
     def test_bash_syntax(self):
         scripts = SCRIPTS + sorted((ROOT / 'launchers').glob('*.command'))
-        self.assertEqual(len({s.name for s in scripts}), 15)   # (v0.5.0: + "Build Launcher macOS.command")
+        self.assertEqual(len({s.name for s in scripts}), 16)   # (v0.5.0: + "Build Launcher macOS.command"; + the old "Install WindowSmash.command")
         for s in scripts:
             with self.subTest(s.name):
                 r = subprocess.run([BASH, '-n', str(s)], capture_output=True, text=True)
