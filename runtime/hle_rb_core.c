@@ -3689,9 +3689,9 @@ static void net_pre_step(Cpu *c, u64 frame) {
             if (hold_on && !popped && now_ms() - t0 >= popup_ms) { popped = 1; display_wait_popup("Waiting for the other player's game"); }
             /* (PC-24: the state map on, and a first refresh of the copy with it, inside this wait where the popup hides the
              * ~160 ms stall, not in the entrances' frame 60. This game's own loading is done: it is ahead of the others.
-             * SSBU_RB_SM_WAIT=0: as before. Not on the set-up's first frame, which takes the whole copy itself.) */
+             * SSBU_RB_SM_WAIT=1 turns it on (off by default: it did not make the entrances measurably smoother). Not on the set-up's first frame, which takes the whole copy itself.) */
             static int sm_wait = -1;
-            if (sm_wait < 0) { const char *e = getenv("SSBU_RB_SM_WAIT"); sm_wait = !(e && *e == '0'); }
+            if (sm_wait < 0) { const char *e = getenv("SSBU_RB_SM_WAIT"); sm_wait = e && *e == '1'; }   /* (off unless SSBU_RB_SM_WAIT=1: measured no smoother entrances, #528) */
             if (popped && sm_wait && !sm_pre_armed && pre_frames > 1 && sm_pre > 0 && now_ms() >= sm_try_at) {
                 extern double rb_park_quick_ms;
                 void rb_ring_drop(void);
