@@ -544,9 +544,9 @@ function Test-CpuFeature {
     param([int]$Feature)
     try {
         if (-not $Script:Kernel32) {
-            $name = New-Object Reflection.AssemblyName 'WindowSmashSetup.Native'
+            $name = New-Object Reflection.AssemblyName 'OpenSmashSetup.Native'
             $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly($name, [Reflection.Emit.AssemblyBuilderAccess]::Run)
-            $type = $assembly.DefineDynamicModule('WindowSmashSetup.Native').DefineType('WindowSmashSetup.Kernel32', 'Public, Class')
+            $type = $assembly.DefineDynamicModule('OpenSmashSetup.Native').DefineType('OpenSmashSetup.Kernel32', 'Public, Class')
             $method = $type.DefinePInvokeMethod('IsProcessorFeaturePresent', 'kernel32.dll',
                 [Reflection.MethodAttributes]'Public, Static, PinvokeImpl', [Reflection.CallingConventions]::Standard,
                 [bool], [Type[]]@([int]), [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Auto)

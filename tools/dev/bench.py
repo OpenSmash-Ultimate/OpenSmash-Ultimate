@@ -9,10 +9,10 @@ pass/fail table.
 
 Each run: <tree>/bench/<tag>/ holds log.txt, a few frames (shot_*.jpg) and result.json; the table is
 <tree>/bench/results.md (and results.json). A run takes the shared test lock
-(/tmp/windowsmash-test.lock), never starts while a copy of the game that isn't a test copy runs
+(/tmp/opensmash-test.lock), never starts while a copy of the game that isn't a test copy runs
 (the user's), and closes only its own copy (by its SSBU_TESTRUN tag).
 
-macOS only for now (open -n of build-mac/WindowSmash.app)."""
+macOS only for now (open -n of build-mac/OpenSmash.app)."""
 import glob
 import json
 import os
@@ -23,9 +23,9 @@ import sys
 import time
 
 TREE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-APP = os.path.join(TREE, "build-mac", "WindowSmash.app")
+APP = os.path.join(TREE, "build-mac", "OpenSmash.app")
 OUT = os.path.join(TREE, "bench")
-LOCK = "/tmp/windowsmash-test.lock"
+LOCK = "/tmp/opensmash-test.lock"
 SECONDS = 20
 TIMEOUT = 330          # a run's whole time (boot ~35 s, menus to ~60 s, load, play, slack)
 

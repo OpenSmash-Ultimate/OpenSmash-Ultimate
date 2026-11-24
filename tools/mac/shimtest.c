@@ -1544,10 +1544,10 @@ static void test_host(void) {
     CHECK(strstr(out, "main+0x600"), "an abort's guest backtrace (want main+0x600):\n%s", out);
 
     /* started as `open` starts the app: from /, output to SSBU_LOG, no directory given - the
-     * tree's modules (<tree>/build-mac/WindowSmash.app/Contents/MacOS/ssbu), the root (the
+     * tree's modules (<tree>/build-mac/OpenSmash.app/Contents/MacOS/ssbu), the root (the
      * nearest folder up with tools/recomp.py) the working folder */
     char app[700], exe[800], cmd[2000];
-    snprintf(app, sizeof app, "%s/root/v13/build-mac/WindowSmash.app/Contents/MacOS", dir);
+    snprintf(app, sizeof app, "%s/root/v13/build-mac/OpenSmash.app/Contents/MacOS", dir);
     snprintf(cmd, sizeof cmd, "mkdir -p '%s' '%s/root/tools' && cp '%s' '%s/ssbu' && touch '%s/root/tools/recomp.py'", app, dir, rt_exe_path(), app, dir);
     CHECK(!system(cmd), "an app to start: %s", cmd);
     snprintf(path, sizeof path, "%s/root/v13/dump", dir);
@@ -1560,7 +1560,7 @@ static void test_host(void) {
     status = spawn_game(exe, app_args, "/", "crash", path, 1, NULL, out, sizeof out);
     char root[600], want[1200];
     snprintf(root, sizeof root, "%s/root", dir);
-    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 5 && strstr(out, "loaded 3 modules") && strstr(out, "/root/v13/build-mac/WindowSmash.app/Contents/MacOS/ssbu, built"),
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 5 && strstr(out, "loaded 3 modules") && strstr(out, "/root/v13/build-mac/OpenSmash.app/Contents/MacOS/ssbu, built"),
           "the app, started from / (status %#x), its SSBU_LOG:\n%s", status, out);
     CHECK(newest_report(root, want, sizeof want), "the app's crash report not in the root's reports/: %s", root);
     /* SSBU_CWD: the working folder given (and SSBU_FIXED_SEED: the kernel's entropy the seed's) */

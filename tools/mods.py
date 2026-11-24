@@ -372,7 +372,7 @@ def install(tree, archive, name=None, meta=None):
     os.makedirs(tree.mods, exist_ok=True)
     state = tree.load()
     added = []
-    with tempfile.TemporaryDirectory(prefix="windowsmash-mod-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="opensmash-mod-") as tmp:
         if os.path.isdir(archive):
             shutil.copytree(archive, os.path.join(tmp, "x"))
         else:
@@ -444,7 +444,7 @@ def gamebanana_install(tree, mod_id, file_id=None, progress=None):
         raise Error(f"GameBanana's virus scan of {f.get('_sFile')} says: {f.get('_sAvResult')}. Not installed.")
     images = (data.get("_aPreviewMedia") or {}).get("_aImages") or []
     image = f"{images[0]['_sBaseUrl']}/{images[0].get('_sFile530') or images[0]['_sFile']}" if images else ""
-    with tempfile.TemporaryDirectory(prefix="windowsmash-dl-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="opensmash-dl-") as tmp:
         target = os.path.join(tmp, os.path.basename(f["_sFile"]))
         req = urllib.request.Request(f["_sDownloadUrl"], headers={"User-Agent": "OpenSmash mod manager"})
         md5 = hashlib.md5()

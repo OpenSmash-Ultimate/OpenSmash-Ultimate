@@ -3,9 +3,13 @@
 # Built by tools/mac/build_mods_app.sh; this builds it first if it isn't there. Without Apple's
 # Command Line Tools (no app can be built), it opens in the browser instead.
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-app="$HOME/Applications/WindowSmash Mods.app"
+app="$HOME/Applications/OpenSmash Mods.app"
+old="$HOME/Applications/WindowSmash Mods.app"   # (its name before the rename: build_mods_app.sh replaces it)
 if [ -d "$app" ] || bash "$root/tools/mac/build_mods_app.sh" >/dev/null 2>&1; then
     open "$app"
+    exit 0
+elif [ -d "$old" ]; then
+    open "$old"
     exit 0
 fi
 py=""

@@ -5,8 +5,8 @@ rem whether to delete your downloaded mods too. (tools\modmanager\install_mods.p
 rem It runs from a copy in %TEMP%, as it removes this file.
 setlocal
 if not "%~1"=="--from-temp" (
-    copy /y "%~f0" "%TEMP%\windowsmash-mods-uninstall.bat" >nul
-    "%TEMP%\windowsmash-mods-uninstall.bat" --from-temp "%~dp0.."
+    copy /y "%~f0" "%TEMP%\opensmash-mods-uninstall.bat" >nul
+    "%TEMP%\opensmash-mods-uninstall.bat" --from-temp "%~dp0.."
     exit /b
 )
 cd /d "%~2"

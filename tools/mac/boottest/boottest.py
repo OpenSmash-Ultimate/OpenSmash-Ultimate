@@ -11,7 +11,7 @@ through a hook slot and caught at its landing pad - and the process leaving clea
 svcExitProcess. No game files.
 
 Usage: boottest.py [--tree <dir>] [--jobs N] [--only direct|open|launcher|library|refusal] [--show] [--game-dll]
-  --tree  the made-up game's folder (default: ~/Library/Caches/WindowSmash/boottest - not in the
+  --tree  the made-up game's folder (default: ~/Library/Caches/OpenSmash/boottest - not in the
           repository, whose own game it is not), laid out as a game tree: build/<module>/ (the C), dump/modules/ (the images), build-mac/
           (what build_mac.py makes: kept, so a second run only links)
   --show  print each start's log
@@ -21,7 +21,7 @@ Usage: boottest.py [--tree <dir>] [--jobs N] [--only direct|open|launcher|librar
             refusal  in a copy of the app, without the library and then with one built for
                      another interface (runtime/game_dll.h's RT_GAME_ABI): each refused (exit 4)
 The starts, each showing the game's window for a moment:
-  direct    the app's program, <tree>/build-mac/WindowSmash.app/Contents/MacOS/ssbu <tree>/dump/modules,
+  direct    the app's program, <tree>/build-mac/OpenSmash.app/Contents/MacOS/ssbu <tree>/dump/modules,
             run in <tree>
   open      open -n -W -a <app>, with no arguments, as Finder starts it: the program finds the tree's
             dump/modules and the port's root (the nearest folder up with tools/recomp.py: here the
@@ -41,7 +41,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 MODULES = ("main", "subsdk0", "sdk")
 # (outside the repository: its own dump/ and build/ are the real game's)
-TREE = os.path.join(os.path.expanduser("~"), "Library", "Caches", "WindowSmash", "boottest")
+TREE = os.path.join(os.path.expanduser("~"), "Library", "Caches", "OpenSmash", "boottest")
 # A string the guest code uses, at the address before it: "= 0x<address>ull; X(n) = <length>; /* "<text>" */"
 STRING = re.compile(r'= 0x([0-9A-Fa-f]+)ull; X\(\d+\) = (\d+);\s*/\* "([^"]*)" \*/')
 TABLE = re.compile(r'"(\w+)", 0x([0-9A-Fa-f]+)ull, 0x([0-9A-Fa-f]+)ull, 0x([0-9A-Fa-f]+)ull')
@@ -181,7 +181,7 @@ def library_check(how, tree, app, exe):
         if code:
             return out, f"exit status {code}"
         return out, check(out, [library_line(app)])
-    copy = os.path.join(tree, "build", "refusal", "WindowSmash.app")   # (the app itself stays as built)
+    copy = os.path.join(tree, "build", "refusal", "OpenSmash.app")   # (the app itself stays as built)
     shutil.rmtree(os.path.dirname(copy), ignore_errors=True)
     subprocess.run(["ditto", app, copy], check=True)
     library = os.path.join(copy, "Contents", "Frameworks", "ssbu_game.dylib")
@@ -270,7 +270,7 @@ def main():
         print(f"build: FAILED (exit {r.returncode})")
         return 1
     print(f"build: ok, {time.time() - t0:.0f} s ({r.stdout.strip().splitlines()[-1]})")
-    app = os.path.join(tree, "build-mac", "WindowSmash.app")
+    app = os.path.join(tree, "build-mac", "OpenSmash.app")
     exe = os.path.join(app, "Contents", "MacOS", "ssbu")
     failed = 0
     for how in hows:

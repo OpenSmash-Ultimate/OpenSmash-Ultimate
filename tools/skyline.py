@@ -468,7 +468,7 @@ def built_in(tree, name):
     c = os.path.join(tree, "build", "nro", name, "g_module.c")
     if c_stale(c):
         return False
-    programs = [os.path.join(tree, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu"), os.path.join(tree, "build", "ssbu.exe"),
+    programs = [os.path.join(tree, "build-mac", "OpenSmash.app", "Contents", "MacOS", "ssbu"), os.path.join(tree, "build", "ssbu.exe"),
                 os.path.join(tree, "build-linux", "ssbu")]
     built = max((os.path.getmtime(x) for x in programs if os.path.exists(x)), default=0)
     if os.path.getmtime(c) > built:
@@ -775,7 +775,7 @@ def programs(tree, platform=None):
     """The game's programs a tree can hold, this system's first (a folder can hold another system's
     build too: a Windows build cross-compiled for Linux keeps build/ssbu.exe beside build-linux/ssbu)."""
     platform = platform or sys.platform
-    mac = os.path.join(tree, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu")
+    mac = os.path.join(tree, "build-mac", "OpenSmash.app", "Contents", "MacOS", "ssbu")
     win = os.path.join(tree, "build", "ssbu.exe")
     linux = os.path.join(tree, "build-linux", "ssbu")
     if platform.startswith("linux"):
@@ -1214,7 +1214,7 @@ def needs_build(tree):
     """Why the game's program needs building again, or None: it's missing, a file that goes into it
     (the runtime, the recompiler, the build's tools, the plugins' hook lists) is newer than it, a
     standard plugin isn't fetched, or a plugin that runs isn't compiled in (current)."""
-    programs = [os.path.join(tree, "build-mac", "WindowSmash.app", "Contents", "MacOS", "ssbu"), os.path.join(tree, "build", "ssbu.exe"),
+    programs = [os.path.join(tree, "build-mac", "OpenSmash.app", "Contents", "MacOS", "ssbu"), os.path.join(tree, "build", "ssbu.exe"),
                 os.path.join(tree, "build-linux", "ssbu")]
     built = max((os.path.getmtime(x) for x in programs if os.path.exists(x)), default=0)
     if not built:

@@ -131,7 +131,7 @@ Each step is skipped when it is already done, so running it again never repeats 
 | 4. Python | Makes a Python of OpenSmash's own in `deps/venv`, with the packages the tools use. When the Mac has no Python 3.10 or newer, `Install OpenSmash.command` first puts one into `deps/python` (a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) Python 3.14, checked against its SHA-256). Nothing else on the Mac changes. |
 | 5. SDL3 | Copies `SDL3.framework` out of SDL's own release (`SDL3-<version>.dmg`) into `deps/SDL3`, checked against the SHA-256 the release lists. Then it builds and runs a test program as the game is built (`tools/build_game.py --check`), so a missing piece shows before the questions. |
 | 6. Your files | Finds your keys, firmware and game in Ryujinx's folders (and the folders Ryujinx lists its games in) and in those of yuzu's forks (Eden, Citron, Sudachi, Suyu, Torzu), and asks for the folders, your online name and the options. |
-| 7. Build | Takes the program, fonts, data, DLC and fighters out of your files, then builds `build-mac/WindowSmash.app`, with the Mac kept awake. |
+| 7. Build | Takes the program, fonts, data, DLC and fighters out of your files, then builds `build-mac/OpenSmash.app`, with the Mac kept awake. |
 | 8. Launchers | Puts **Play SSBU** in `~/Applications`, with a link to it on the Desktop. |
 | 9. Firewall | Only when the macOS firewall is on and you left that option ticked: lets the game take incoming connections, for hosting a private room. macOS asks for your password. With the firewall off (macOS's default) nothing is needed. |
 
@@ -242,7 +242,7 @@ OpenSmash may meet:
 | *"OpenSmash" would like to find and connect to devices on your local network* | The first time the game goes online. | **Allow.** The game then can open your router's port for a private room (UPnP), and connect straight to players on your own network. The online lobby works either way. Changed your mind? System Settings → Privacy & Security → Local Network. |
 | *… would like to access files in your Desktop / Documents / Downloads folder*, or *on a removable volume* | The game reads its data where your game files are; Terminal makes the Desktop link. | **Allow**, or keep your game files elsewhere, for example in a folder in your home folder. |
 | *… would like to receive keystrokes from any application* (Input Monitoring) | Some controllers are read through macOS's input devices, and macOS may ask for that. | **Allow** for those controllers; the keyboard and most pads work without it. System Settings → Privacy & Security → Input Monitoring. |
-| *Do you want the application "WindowSmash.app" to accept incoming network connections?* | Hosting a private room with the macOS firewall on. | **Allow**, or let the installer add the rule (its firewall option). |
+| *Do you want the application "OpenSmash.app" to accept incoming network connections?* | Hosting a private room with the macOS firewall on. | **Allow**, or let the installer add the rule (its firewall option). |
 
 ## Where things are
 
@@ -250,7 +250,7 @@ All of these are in the OpenSmash folder, unless the table says otherwise:
 
 | What | Where |
 | :--- | :--- |
-| The game | `build-mac/WindowSmash.app` |
+| The game | `build-mac/OpenSmash.app` |
 | Its log | `build/play.log` |
 | Your save | `save/`. Back it up now and then, with the game closed. |
 | Screenshots | `screenshots/` |
@@ -319,7 +319,7 @@ the OpenSmash folder:
 
 `tools/build_game.py` prepares the game tree as on Windows ([setup guide](BUILDING.md)), then generates
 the game's C (`tools/recomp.py all --generate-only`) and compiles and links it with Apple's clang
-(`tools/mac/build_mac.py`) into `build-mac/WindowSmash.app`, signed for this Mac. The installer itself is
+(`tools/mac/build_mac.py`) into `build-mac/OpenSmash.app`, signed for this Mac. The installer itself is
 `tools/mac/install_mac.py`; the launchers share `tools/mac/launch.sh`.
 
 ## For developers
@@ -327,7 +327,7 @@ the game's C (`tools/recomp.py all --generate-only`) and compiles and links it w
 - **The build:** `tools/mac/build_mac.py [--port <tree>] [--out <dir>] [--jobs N] [--runtime-only]
   [--link-only] [--replace]` compiles the C that `tools/recomp.py all --generate-only` wrote into
   `<tree>/build/` (on a Mac, `recomp.py all` only generates it), with the runtime, and links
-  `<tree>/build-mac/WindowSmash.app` (the program is `Contents/MacOS/ssbu`). It compiles again a
+  `<tree>/build-mac/OpenSmash.app` (the program is `Contents/MacOS/ssbu`). It compiles again a
   file whose source changed, a game object whose C is not the file it was compiled from
   (`obj/game_sources.tsv`), and everything
   when the compile flags change; `--replace` starts the game's objects over. A file the compiler
@@ -347,7 +347,7 @@ the game's C (`tools/recomp.py all --generate-only`) and compiles and links it w
   off screen), which `tests/test_mac_build.py` builds and runs, and `tools/mac/boottest/` (the whole
   program on a small made-up game, started as the launchers start it, its window shown a moment:
   `deps/venv/bin/python tools/mac/boottest/boottest.py`, which builds it in
-  `~/Library/Caches/WindowSmash/boottest`, outside the OpenSmash folder).
+  `~/Library/Caches/OpenSmash/boottest`, outside the OpenSmash folder).
 - **Debugging:** the variables of the [Technical guide](TECHNICAL.md), and the Metal renderer's own
   forms: `SSBU_DUMP_MSL=<folder>` (or `SSBU_DUMP_HLSL`) saves each shader as compiled, as
   `<name>.metal`; `SSBU_GFX_PS_FILE` takes Metal source with a `fragment ... ps_main`;

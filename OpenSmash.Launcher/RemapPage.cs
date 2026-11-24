@@ -65,7 +65,7 @@ internal sealed class RemapPage : UserControl
         timer.Tick += (_, _) => Poll();
     }
 
-    string IniPath => WindowSmash.ConfigFile(repo, "controllers.ini");
+    string IniPath => GameFolder.ConfigFile(repo, "controllers.ini");
     string IniText() { try { return File.Exists(IniPath) ? File.ReadAllText(IniPath) : ""; } catch (IOException) { return ""; } }
 
     // Shown: SDL opened (the game's own SDL3.dll) and the pads listed; hidden: closed again, so the game gets them.

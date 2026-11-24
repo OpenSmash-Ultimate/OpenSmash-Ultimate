@@ -42,7 +42,7 @@
 # Linux build outputs (tools/linux)
 /build-linux*/
 /dist-linux*/
-# macOS build outputs (tools/mac: build-mac/ in each game tree, with WindowSmash.app)
+# macOS build outputs (tools/mac: build-mac/ in each game tree, with OpenSmash.app)
 /build-mac*/
 *.keys
 *.nca

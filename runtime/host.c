@@ -2183,7 +2183,7 @@ static DWORD WINAPI status_thread(LPVOID unused) {
  * files than macOS's 256 by default (the game's own, RomFS sources, sockets), and what a start
  * from Finder or `open` needs - no terminal and / as the working folder: SSBU_LOG=<file> takes
  * stdout and stderr, SSBU_CWD=<dir> the working folder. Run as the app
- * (<tree>/build-mac/WindowSmash.app/Contents/MacOS/ssbu) with no directory given, the tree's
+ * (<tree>/build-mac/OpenSmash.app/Contents/MacOS/ssbu) with no directory given, the tree's
  * dump/modules is the one, and (without SSBU_CWD) the port's root - the nearest folder up from
  * the tree with tools/recomp.py - the working folder, where reports/ goes as everywhere. *dir
  * and *options: the directory, and where options start. */

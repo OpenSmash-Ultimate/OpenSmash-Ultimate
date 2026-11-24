@@ -75,7 +75,7 @@ class Steps(unittest.TestCase):
         self.assertEqual(check.steps(self.tree, 'macos', 3, python='py'),
                          [('compile and link', ['py', os.path.join(TOOLS, 'mac', 'build_mac.py'), '--port', self.tree,
                                                 '--out', out, '--jobs', '3'])])
-        self.assertEqual(check.program(self.tree, 'macos'), os.path.join(out, 'WindowSmash.app', 'Contents', 'MacOS', 'ssbu'))
+        self.assertEqual(check.program(self.tree, 'macos'), os.path.join(out, 'OpenSmash.app', 'Contents', 'MacOS', 'ssbu'))
 
     def test_without_jobs_each_build_takes_its_own(self):
         for host in ('windows', 'linux', 'macos'):

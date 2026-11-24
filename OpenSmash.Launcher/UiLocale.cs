@@ -43,7 +43,7 @@ public static class UiLocale
     public static void Initialize(string repo)
     {
         string preference = "auto";
-        string file = WindowSmash.ConfigFile(repo, "display.ini");
+        string file = GameFolder.ConfigFile(repo, "display.ini");
         if (File.Exists(file))
             foreach (string raw in File.ReadLines(file))
             {

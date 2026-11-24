@@ -1,20 +1,21 @@
 // OpenSmash Mods: the mod manager for the macOS build - GameBanana's Smash Ultimate mods found,
 // installed, turned on and off. tools/mods.py does the work (installing, and making the game read
 // the mods: see its header); this app shows it, and talks to GameBanana's API for browsing.
-// Built by tools/mac/build_mods_app.sh into build-mac/WindowSmash Mods.app.
+// Built by tools/mac/build_mods_app.sh into build-mac/OpenSmash Mods.app.
 import AppKit
 import SwiftUI
 
 // ---- the port's folder and its Python ------------------------------------------------------------
 enum Port {
     static let root: String = {
-        if let r = Bundle.main.object(forInfoDictionaryKey: "WindowSmashRoot") as? String, !r.isEmpty { return r }
+        if let r = Bundle.main.object(forInfoDictionaryKey: "OpenSmashRoot") as? String, !r.isEmpty { return r }
         var url = Bundle.main.bundleURL
         for _ in 0..<4 {
             url.deleteLastPathComponent()
             if FileManager.default.fileExists(atPath: url.appendingPathComponent("tools/mods.py").path) { return url.path }
         }
-        return NSHomeDirectory() + "/WindowSmash"
+        let home = NSHomeDirectory() + "/OpenSmash", old = NSHomeDirectory() + "/WindowSmash"   // (the name before the rename)
+        return FileManager.default.fileExists(atPath: home) || !FileManager.default.fileExists(atPath: old) ? home : old
     }()
     static var python: String { root + "/deps/venv/bin/python" }
     static var script: String { root + "/tools/mods.py" }

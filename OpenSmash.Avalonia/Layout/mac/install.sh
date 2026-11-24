@@ -33,8 +33,8 @@
     # Apple silicon only; a Terminal running under Rosetta (Open using Rosetta, or an Intel shell)
     # would make every program after it an Intel one: start again as arm64
     if [ "$(uname -m)" != arm64 ]; then
-        if [ "$(sysctl -in sysctl.proc_translated 2>/dev/null)" = 1 ] && [ -z "$WINDOWSMASH_ARM64" ]; then
-            export WINDOWSMASH_ARM64=1
+        if [ "$(sysctl -in sysctl.proc_translated 2>/dev/null)" = 1 ] && [ -z "$OPENSMASH_ARM64" ]; then
+            export OPENSMASH_ARM64=1
             exec arch -arm64 /bin/bash "$self" "$@"
         fi
         echo "OpenSmash needs a Mac with Apple silicon (M1 or newer); this one has $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m)."
