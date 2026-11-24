@@ -35,6 +35,7 @@ static const GfxBackend D3D11 = {
     .gpu_unmapped = d3d11_gpu_unmapped,
     .guest_unmapped = d3d11_guest_unmapped,
     .draw_logging = d3d11_draw_logging,
+    .surface_pixels = d3d11_surface_pixels,
     .status_lines = d3d11_status_lines,
     .closing = d3d11_closing,
     .lock_owner = d3d11_lock_owner,

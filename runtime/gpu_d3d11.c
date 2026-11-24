@@ -6771,6 +6771,44 @@ static void clear_channels(Surface *s, const float color[4], u32 mask) {
 u64 gfx_stat_blits;
 static ID3D11SamplerState *point_sampler;
 
+/* (gpu.c's copy engine) a 4-byte colour surface starting at `guest`, read back to the game's size
+ * (render scale's larger texture sampled down): a picture the GPU drew that the game then copies
+ * out of memory (a Mii fighter's icon, saved with the fighter). */
+int d3d11_surface_pixels(u64 guest, u32 *width, u32 *height, u8 **pixels) {
+    if (!enter()) return 0;
+    Surface *s = NULL;
+    for (u32 i = 0; i < nsurfaces && !s; i++)
+        if (surfaces[i].tex && !surfaces[i].depth && surfaces[i].guest == guest) s = &surfaces[i];
+    int four = s && (s->storage == DXGI_FORMAT_R8G8B8A8_UNORM || s->storage == DXGI_FORMAT_R8G8B8A8_TYPELESS ||
+                     s->storage == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || s->storage == DXGI_FORMAT_B8G8R8A8_UNORM ||
+                     s->storage == DXGI_FORMAT_B8G8R8A8_TYPELESS || s->storage == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
+    if (!four) { leave(); return 0; }
+    forget_draw_state();
+    D3D11_TEXTURE2D_DESC td;
+    ID3D11Texture2D_GetDesc(s->tex, &td);
+    td.Usage = D3D11_USAGE_STAGING; td.BindFlags = 0; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ; td.MiscFlags = 0;
+    td.MipLevels = 1; td.ArraySize = 1; td.SampleDesc.Count = 1; td.SampleDesc.Quality = 0;
+    ID3D11Texture2D *staging = NULL;
+    if (td.Width != s->hw || td.Height != s->hh || FAILED(ID3D11Device_CreateTexture2D(dev, &td, NULL, &staging))) { leave(); return 0; }
+    ID3D11DeviceContext_CopyResource(ctx, (ID3D11Resource *)staging, (ID3D11Resource *)s->tex);
+    D3D11_MAPPED_SUBRESOURCE m;
+    u32 hw = s->hw, hh = s->hh, w = s->width, h = s->height;
+    u8 *out = malloc((size_t)w * h * 4);
+    if (!out || FAILED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)staging, 0, D3D11_MAP_READ, 0, &m))) {
+        free(out); ID3D11Texture2D_Release(staging); leave(); return 0;
+    }
+    for (u32 y = 0; y < h; y++)
+        for (u32 x = 0; x < w; x++) {   /* (the texel nearest each of the game's pixels) */
+            u32 sx = (u32)(((u64)x * 2 + 1) * hw / (2ull * w)), sy = (u32)(((u64)y * 2 + 1) * hh / (2ull * h));
+            memcpy(out + ((u64)y * w + x) * 4, (const u8 *)m.pData + (size_t)sy * m.RowPitch + (size_t)sx * 4, 4);
+        }
+    ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)staging, 0);
+    ID3D11Texture2D_Release(staging);
+    *width = w; *height = h; *pixels = out;
+    leave();
+    return 1;
+}
+
 void d3d11_blit2d(const u32 *regs) {
     if (!enter()) return;
     if (draw_logging) save_sampled();

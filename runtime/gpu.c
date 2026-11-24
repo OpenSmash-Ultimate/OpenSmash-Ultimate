@@ -195,7 +195,6 @@ static void dma_surface(Engine *e, DmaSurface *s, u64 base, int pitch_linear, u3
     if (s->bd > 5) s->bd = 5;
 }
 
-#ifdef __APPLE__
 /* A picture the GPU drew where a copy reads (a Mii fighter's icon, shrunk by the 2D engine, then
  * copied out to be saved): only the host has it, so it is written into guest memory first, in the
  * copy's layout of its source (the surface's own, from its start). */
@@ -216,7 +215,6 @@ static void surface_to_guest(const DmaSurface *src) {
     free(px);
     if (told++ < 8) fprintf(stderr, "[gpu] copy engine: read the GPU's %ux%u picture at %#llx back first\n", w, h, g);
 }
-#endif
 
 static void dma_launch(Engine *e, u32 arg) {
     u64 src_va = (u64)e->regs[0x100] << 32 | e->regs[0x101], dst_va = (u64)e->regs[0x102] << 32 | e->regs[0x103];
@@ -232,9 +230,7 @@ static void dma_launch(Engine *e, u32 arg) {
         DmaSurface src, dst;
         dma_surface(e, &src, src_va, (arg >> 7) & 1, e->regs[0x104], 0x1CA);
         dma_surface(e, &dst, dst_va, (arg >> 8) & 1, e->regs[0x105], 0x1C3);
-#ifdef __APPLE__
         surface_to_guest(&src);
-#endif
         u32 comps = e->regs[0x1C2], csize = ((comps >> 16) & 3) + 1, nsrc = ((comps >> 20) & 3) + 1, ndst = ((comps >> 24) & 3) + 1;
         u32 src_bpe = remap ? csize * nsrc : 1, dst_bpe = remap ? csize * ndst : 1;
         int identity = !remap || (nsrc == ndst && (comps & 0x7777) == (0x3210 & ((1u << (4 * ndst)) - 1)));
