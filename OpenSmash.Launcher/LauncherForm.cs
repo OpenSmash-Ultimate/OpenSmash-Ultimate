@@ -4064,7 +4064,14 @@ namespace OpenSmash.Launcher
             // a newer glslang's library part is not checked: the game makes those in play.
             var spv = Regex.Match(header, @"#define SHADER_CACHE_SPV_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)");
             string want = spv.Success ? "\nspirv g" + (int.Parse(ver.Groups[1].Value) * 100 + int.Parse(spv.Groups[1].Value)) + "." : "\nspirv ";
-            if (RendererAsked() != "direct3d11" && File.Exists(Path.Combine(_repo, "build", "ssbu_glslang.dll"))) return text.Contains(want);
+            // Auto may fall back from Vulkan to Direct3D 11 (no Vulkan device, or one that fails): its programs must be this
+            // DXBC revision's too (#567 raised it), so only an explicit Vulkan asks for the SPIR-V alone.
+            string renderer = RendererAsked();
+            if (renderer != "direct3d11" && File.Exists(Path.Combine(_repo, "build", "ssbu_glslang.dll")))
+            {
+                if (!text.Contains(want)) return false;
+                if (renderer == "vulkan") return true;
+            }
             var dxbc = Regex.Match(header, @"#define SHADER_CACHE_DXBC_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)");
             return !dxbc.Success || Regex.IsMatch(text, @"(?m)^dxbc v" + (int.Parse(ver.Groups[1].Value) * 100 + int.Parse(dxbc.Groups[1].Value)) + @"\r?$");
         }

@@ -57,7 +57,15 @@ static class UpstreamChecks
         File.WriteAllText(project.PathIn("build","ssbu_glslang.dll"),"fixture");string marker=project.PathIn("dump","shadercache","complete.txt");File.WriteAllText(marker,"version 9\n");
         surface.ChangeSetting("renderer","auto");bool Done()=>(bool)typeof(MainWindow).GetMethod("ShadersDone",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(window,null)!;
         if(OperatingSystem.IsMacOS())Check(Done(),"macOS needs no prepared shaders (Metal caches its own, #542)");
-        else{Check(!Done(),"Vulkan-capable shader cache is unfinished until SPIR-V is recorded");Check(surface.ShadersPending(),"preload button remains available for unfinished shaders");File.AppendAllText(marker,"spirv fixture\n");Check(Done(),"complete SPIR-V marker satisfies shader readiness");Check(!surface.ShadersPending(),"preload button disappears when shaders are complete");File.WriteAllText(marker,"version 9\n");surface.ChangeSetting("renderer","direct3d11");Check(Done(),"explicit Direct3D does not demand a SPIR-V cache");}
+        else{Check(!Done(),"Vulkan-capable shader cache is unfinished until SPIR-V is recorded");Check(surface.ShadersPending(),"preload button remains available for unfinished shaders");File.AppendAllText(marker,"spirv fixture\n");Check(Done(),"complete SPIR-V marker satisfies shader readiness");Check(!surface.ShadersPending(),"preload button disappears when shaders are complete");File.WriteAllText(marker,"version 9\n");surface.ChangeSetting("renderer","direct3d11");Check(Done(),"explicit Direct3D does not demand a SPIR-V cache");
+            if(OperatingSystem.IsWindows())
+            {
+                // (auto may fall back to Direct3D 11: this DXBC revision's programs too, #567; an explicit Vulkan needs only SPIR-V)
+                File.WriteAllText(project.PathIn("runtime","gpu_shader_cache.h"),"#define SHADER_CACHE_VERSION 9\n#define SHADER_CACHE_DXBC_VERSION (SHADER_CACHE_VERSION * 100 + 1)\n");
+                File.WriteAllText(marker,"version 9\nspirv fixture\n");surface.ChangeSetting("renderer","auto");Check(!Done(),"auto needs the Direct3D 11 programs it may fall back to");
+                File.WriteAllText(marker,"version 9\ndxbc v901\nspirv fixture\n");Check(Done(),"auto with SPIR-V and this DXBC revision is ready");
+                File.WriteAllText(marker,"version 9\nspirv fixture\n");surface.ChangeSetting("renderer","vulkan");Check(Done(),"explicit Vulkan needs only SPIR-V");
+            }}
         Directory.CreateDirectory(project.PathIn("OpenSmash.Avalonia","bin"));File.WriteAllText(project.PathIn("OpenSmash.Avalonia","source.cs"),"source");string fingerprint=UpdateState.LauncherFingerprint(project);File.WriteAllText(project.PathIn("OpenSmash.Avalonia","bin","generated.dll"),"ignored");Check(UpdateState.LauncherFingerprint(project)==fingerprint,"launcher update fingerprint ignores build outputs");File.AppendAllText(project.PathIn("OpenSmash.Avalonia","source.cs"),"changed");Check(UpdateState.LauncherFingerprint(project)!=fingerprint,"launcher update fingerprint detects source changes");
         if(OperatingSystem.IsWindows())
         {
