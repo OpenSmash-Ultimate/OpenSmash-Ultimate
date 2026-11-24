@@ -903,6 +903,25 @@ static void test_files(void) {
     memset(buf, 0, sizeof buf);
     CHECK(h != INVALID_HANDLE_VALUE && ReadFile(h, buf, sizeof buf, &n, NULL) && n == 3 && !memcmp(buf, "new", 3), "the moved file replaced the other");
     CloseHandle(h);
+    h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);   /* without MOVEFILE_REPLACE_EXISTING, as Windows: nothing replaced */
+    CHECK(h != INVALID_HANDLE_VALUE && WriteFile(h, "third", 5, &n, NULL), "a third file");
+    CloseHandle(h);
+    CHECK(!MoveFileExA(path, win, 0) && GetLastError() == ERROR_ALREADY_EXISTS, "MoveFileExA onto a file, not replacing: %u", GetLastError());
+    CHECK(!MoveFileExA(path, win, MOVEFILE_WRITE_THROUGH) && GetLastError() == ERROR_ALREADY_EXISTS, "the same, written through");
+    h = CreateFileA(win, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+    memset(buf, 0, sizeof buf);
+    CHECK(h != INVALID_HANDLE_VALUE && ReadFile(h, buf, sizeof buf, &n, NULL) && n == 3 && !memcmp(buf, "new", 3) &&
+          GetFileAttributesA(path) == FILE_ATTRIBUTE_NORMAL, "a refused move changed either file");
+    CloseHandle(h);
+    char other2[256];
+    snprintf(other, sizeof other, "%s\\e1", dir);
+    snprintf(other2, sizeof other2, "%s\\e2", dir);
+    CHECK(CreateDirectoryA(other, NULL) && CreateDirectoryA(other2, NULL) && !MoveFileExA(other, other2, 0) && GetLastError() == ERROR_ALREADY_EXISTS &&
+          GetFileAttributesA(other) == FILE_ATTRIBUTE_DIRECTORY && RemoveDirectoryA(other) && RemoveDirectoryA(other2), "MoveFileExA of a folder onto an empty folder");
+    snprintf(other, sizeof other, "%s\\A.txt", dir);
+    CHECK(MoveFileExA(path, other, 0) && GetFileAttributesA(other) == FILE_ATTRIBUTE_NORMAL, "MoveFileExA to another case of the same name");
+    CHECK(MoveFileExA(other, path, 0) && DeleteFileA(path), "and back");
+    snprintf(other, sizeof other, "%s\\sub", dir);
     for (int i = 0; i < 3; i++) {
         snprintf(path, sizeof path, "%s/sub/%c.dat", dir, 'x' + i);
         HANDLE f = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);

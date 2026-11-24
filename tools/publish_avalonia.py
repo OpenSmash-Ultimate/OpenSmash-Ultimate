@@ -15,10 +15,40 @@ import tarfile
 import tempfile
 import re
 import platform
+import struct
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 RIDS = ("win-x64", "linux-x64", "osx-arm64", "osx-x64")
 
+
+
+# (.icns name, pixels) of the macOS app's icon, each an exact PNG picture of media/opensmash.ico
+ICONSET = (("icon_16x16", 16), ("icon_16x16@2x", 32), ("icon_32x32", 32), ("icon_32x32@2x", 64),
+           ("icon_128x128", 128), ("icon_128x128@2x", 256), ("icon_256x256", 256))
+
+
+def mac_icon(resources):
+    """Contents/Resources/OpenSmash.icns from media/opensmash.ico's PNG pictures (iconutil, on a Mac only);
+    False without iconutil or a picture: the app then has the system's icon (#542)."""
+    iconutil = shutil.which("iconutil")
+    if not iconutil:
+        return False
+    data = (ROOT / "media" / "opensmash.ico").read_bytes()
+    pictures = {}
+    for i in range(struct.unpack_from("<H", data, 4)[0]):
+        w, h, _c, _r, _planes, _bpp, length, offset = struct.unpack_from("<BBBBHHII", data, 6 + 16 * i)
+        png = data[offset:offset + length]
+        if (w or 256) == (h or 256) and png.startswith(b"\x89PNG\r\n\x1a\n"):
+            pictures[w or 256] = png
+    if any(px not in pictures for _name, px in ICONSET):
+        return False
+    with tempfile.TemporaryDirectory(prefix="opensmash-icon-") as temporary:
+        iconset = pathlib.Path(temporary) / "OpenSmash.iconset"
+        iconset.mkdir()
+        for name, px in ICONSET:
+            (iconset / (name + ".png")).write_bytes(pictures[px])
+        resources.mkdir(parents=True, exist_ok=True)
+        return subprocess.run([iconutil, "-c", "icns", str(iconset), "-o", str(resources / "OpenSmash.icns")]).returncode == 0
 
 def copy_notices(output):
     """Keep dependency notices from the exact NuGet packages that were restored."""
@@ -128,8 +158,9 @@ def main():
         shutil.copytree(notices, legal, dirs_exist_ok=True)
     if rid.startswith("osx"):
         contents = target.parent
+        icon = {"CFBundleIconFile": "OpenSmash"} if mac_icon(contents / "Resources") else {}
         with (contents / "Info.plist").open("wb") as stream:
-            plistlib.dump({
+            plistlib.dump({**icon,
                 "CFBundleName": "OpenSmash.Avalonia", "CFBundleDisplayName": "OpenSmash.Avalonia",
                 "CFBundleIdentifier": "org.opensmash.launcher",
                 "CFBundleExecutable": "OpenSmash.Avalonia", "CFBundlePackageType": "APPL",

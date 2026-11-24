@@ -189,7 +189,7 @@ namespace OpenSmash.Core
                     prepared = File.Exists(done) && File.ReadAllLines(done).Any(l => l.StartsWith("spirv ") || l.StartsWith("dxbc ") || l.Trim() == "complete");
                 }
                 catch (IOException) { }
-                if (!prepared) Add("Shaders", "the shaders are not prepared yet (the game makes each at its first use, or prepares them at its start)", FileRepair.Shaders);
+                if (!prepared && !OperatingSystem.IsMacOS()) Add("Shaders", "the shaders are not prepared yet (the game makes each at its first use, or prepares them at its start)", FileRepair.Shaders);
             }
 
             if (bad.Any(b => b.Repair == FileRepair.Build) && !gameThere && File.Exists(folders))

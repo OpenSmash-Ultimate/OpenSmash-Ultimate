@@ -7,9 +7,9 @@ static class Tests
     static int count;
     static void Check(bool ok, string name) { if (!ok) throw new Exception(name); count++; Console.WriteLine("PASS " + name); }
     static Control Find(Control c, string name) => c.Controls.Find(name, true).Single();
-    static void Until(Func<bool> condition, string message)
+    static void Until(Func<bool> condition, string message, int seconds = 10)
     {
-        var until = DateTime.UtcNow.AddSeconds(10);
+        var until = DateTime.UtcNow.AddSeconds(seconds);
         while (!condition() && DateTime.UtcNow < until) { Application.DoEvents(); Thread.Sleep(20); }
         Check(condition(), message);
     }
@@ -107,9 +107,10 @@ static class Tests
         try
         {
             var environment = Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(null, cache);
-            Until(() => environment.IsCompleted, "browser environment completes");
+            Until(() => environment.IsCompleted, "browser environment completes", 60);
             var initialize = view.EnsureCoreWebView2Async(environment.GetAwaiter().GetResult());
-            Until(() => initialize.IsCompleted, "browser control initializes");
+            // (a cold CI runner starts WebView2's browser process in 10-30 s: 10 s failed the Windows job now and then)
+            Until(() => initialize.IsCompleted, "browser control initializes", 60);
             initialize.GetAwaiter().GetResult();
             var core = view.CoreWebView2;
             core.AddWebResourceRequestedFilter("*", Microsoft.Web.WebView2.Core.CoreWebView2WebResourceContext.All);

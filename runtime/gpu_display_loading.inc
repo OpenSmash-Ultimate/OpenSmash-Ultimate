@@ -179,6 +179,40 @@ static void la_paint(HWND h, HDC dc) {
     SelectObject(m, old); DeleteObject(bm); DeleteDC(m);
 }
 
+/* The wait popup (display_wait_popup): just Kong and his turning arm in a circle, drawn by the popup's window thread into
+ * a dia x dia picture (dc: a 32-bit bitmap's, black). The window size and place come from la_popup_dia; the circle itself
+ * (dark ground, ring, anti-aliased edge) is made by the caller from the picture's pixels. Scaled down to 85% of the
+ * corner animation; Kong's visible figure (not his picture frame) is centred, and nudged a little down. */
+#define LA_POP_SCALE 0.85f
+#define LA_VIS_CX 0.4359f                  /* the centre of Kong's visible figure in his picture frame (media/loading_kong_back.png: x 80..648 of 835, y 142..712 of 841) */
+#define LA_VIS_CY 0.5077f
+static int la_popup_dia(int vch) {
+    float s = (float)vch * LA_SIZE / LA_KONG_H * LA_POP_SCALE;
+    return (int)((LA_KONG_H * s + 1) * 1.45f);
+}
+static void la_paint_popup(HDC dc, int dia, int vch) {
+    float s = (float)vch * LA_SIZE / LA_KONG_H * LA_POP_SCALE;
+    float iw = LA_KONG_W * s + 1, ih = LA_KONG_H * s + 1;
+    float ox = (float)dia / 2 - LA_VIS_CX * iw, oy = (float)dia / 2 - LA_VIS_CY * ih + (float)(vch / 180);
+    LARGE_INTEGER now, fq; QueryPerformanceCounter(&now); QueryPerformanceFrequency(&fq);
+    double ms = (double)(now.QuadPart - LA.t0.QuadPart) * 1000.0 / (double)fq.QuadPart;
+    float turn = (float)fmod(ms, (double)LA_TURN_MS) / (float)LA_TURN_MS;
+    void *g = NULL;
+    if (LA.from_hdc(dc, &g) == 0 && g) {
+        LA.smoothing(g, 4); LA.interp(g, 7); LA.pixoff(g, 4);
+        LA.translate(g, ox, oy, 0); LA.scale(g, s, s, 0);
+        LA.translate(g, LA_KONG_PIN_X, LA_KONG_PIN_Y, 0);
+        LA.rotate(g, -360.0f * turn, 0);
+        LA.translate(g, -LA_ARM_PIN_X, -LA_ARM_PIN_Y, 0);
+        LA.draw(g, LA.arm, 0, 0, LA_ARM_W, LA_ARM_H);
+        LA.reset(g);
+        LA.translate(g, ox, oy, 0); LA.scale(g, s, s, 0);
+        LA.draw(g, LA.back, 0, 0, LA_KONG_W, LA_KONG_H);
+        LA.draw(g, LA.kong, 0, 0, LA_KONG_W, LA_KONG_H);
+        LA.del(g);
+    }
+}
+
 /* wndproc: WM_PAINT and the timer while the animation runs; returns 1 when it handled the message */
 static int la_wndproc(HWND h, UINT msg, WPARAM w) {
     if (!LA.on) return 0;
