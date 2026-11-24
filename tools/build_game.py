@@ -93,6 +93,14 @@ EXE = os.path.join(ROOT, "build-linux", "ssbu") if LINUX else \
     os.path.join(ROOT, "build-mac", "OpenSmash.app", "Contents", "MacOS", "ssbu") if MACOS else os.path.join(ROOT, "build", "ssbu.exe")
 SAVED = os.path.join(DUMP, "build_folders.txt")
 SOURCE = os.path.join(DUMP, "game_source.txt")   # which game and version dump/ was set up from
+
+
+def check_dir():
+    """Where the tool checks build and run their test programs: in this folder (build/), not the system's temporary
+    folder, which can be mounted noexec (a Docker container's /tmp: the test program could not run, #560)."""
+    d = os.path.join(ROOT, "build", "checks")
+    os.makedirs(d, exist_ok=True)
+    return d
 EXEFS_FILES = ("main", "main.npdm", "rtld", "sdk", "subsdk0")
 FONT_FILES = ("nintendo_udsg-r_std_003.bfttf", "nintendo_udsg-r_org_zh-cn_003.bfttf",
               "nintendo_udsg-r_ext_zh-cn_003.bfttf", "nintendo_udjxh-db_zh-tw_003.bfttf",
@@ -324,7 +332,7 @@ def windows_compiler_problem(cc):
     else:
         fix = ("Check that Visual Studio has Desktop development with C++ (with a Windows SDK) and C++ Clang tools "
                "for Windows (setup guide step 4).")
-    with tempfile.TemporaryDirectory(prefix="opensmash-check-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="opensmash-check-", dir=check_dir()) as tmp:
         src, obj, rsp, exe = (os.path.join(tmp, "check" + ext) for ext in (".c", ".obj", ".rsp", ".exe"))
         with open(src, "w") as f:
             f.write("#include <windows.h>\n#include <stdio.h>\n#include <d3d11.h>\n#include <d3dcompiler.h>\n"
@@ -451,7 +459,7 @@ def check_linux_tools():
     if gone:
         raise Failed(f"{', '.join(gone)} missing from {install_linux.INCLUDE}, and the build needs them (a package can be "
                      "installed without its headers). Run install-opensmash.sh: it puts back the packages they come with.")
-    with tempfile.TemporaryDirectory(prefix="opensmash-check-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="opensmash-check-", dir=check_dir()) as tmp:
         src, exe = os.path.join(tmp, "check.cpp"), os.path.join(tmp, "check")
         with open(src, "w") as f:
             f.write(LINUX_CHECK)
@@ -548,7 +556,7 @@ def check_mac_tools():
         raise Failed("third_party/opus or third_party/libvpx is missing: this OpenSmash folder is incomplete. "
                      "Download it again.")
     includes = ["-F", tc.SDL3_DIR, "-I", os.path.join(codec_libs.OPUS, "include"), "-I", codec_libs.VPX]
-    with tempfile.TemporaryDirectory(prefix="opensmash-check-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="opensmash-check-", dir=check_dir()) as tmp:
         jobs = []
         for name, text in MAC_CHECK.items():
             with open(os.path.join(tmp, name), "w") as f:

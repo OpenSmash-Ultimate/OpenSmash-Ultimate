@@ -1956,7 +1956,9 @@ function Main {
         Write-Host ''
         Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
         if ($_.ScriptStackTrace) { Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray }
-        Write-Host "(everything above is also in $log)"
+        # (the launcher's installer window keeps its own copy, build\logs\installer_window.log; the transcript may be off)
+        if (Test-Path -LiteralPath $log) { Write-Host "(everything above is also in $log)" }
+        else { Write-Host "(everything above is also in the installer window's log: build\logs\installer_window.log)" }
         return 1
     } finally {
         try { Stop-Transcript | Out-Null } catch { }
