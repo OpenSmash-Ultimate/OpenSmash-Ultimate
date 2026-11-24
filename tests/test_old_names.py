@@ -56,6 +56,26 @@ class OldNames(unittest.TestCase):
             self.assertEqual(got[1], got[0], args)
             self.assertIn('bound=', got[1][1], args)
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows PowerShell')
+    def test_the_old_installer_as_older_launchers_start_it(self):
+        # (OpenSmash.exe v0.4's setup window: -Command "& '<root>/tools/install_windowsmash.ps1' -NoWizard -Game '...'",
+        # no console window, stdin closed; its Update: -File with the same)
+        tools = self.dir / "it's here" / 'tools'
+        tools.mkdir(parents=True)
+        shutil.copy2(ROOT / 'tools' / 'install_windowsmash.ps1', tools)
+        (tools / 'install_opensmash.ps1').write_text(FAKE_PS1)
+        quoted = lambda s: "'" + s.replace("'", "''") + "'"
+        got = []
+        for script in ('install_opensmash.ps1', 'install_windowsmash.ps1'):
+            line = f"& {quoted(str(tools / script))} -UpdateOnly -Game {quoted('C:/My Games/x y')} -Code 3"
+            r = subprocess.run(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', line],
+                               capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+            got.append((r.returncode, r.stdout.strip()))
+        self.assertEqual(got[1], got[0])
+        self.assertEqual(got[1][1], 'UpdateOnly=True Game=[C:/My Games/x y] bound=UpdateOnly,Game,Code')
+        self.assertNotEqual(got[1][0], 0)   # (-Command: 1 for a script that ended with exit 3, both ways)
+
     @unittest.skipUnless(BASH, 'needs bash')
     def test_the_old_shell_setups_run_the_new_ones(self):
         for old, new in (('install-windowsmash.sh', 'install-opensmash.sh'),
