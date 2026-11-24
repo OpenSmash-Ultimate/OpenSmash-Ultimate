@@ -19,7 +19,9 @@ public sealed partial class MainWindow
         var spv=Regex.Match(source,@"#define SHADER_CACHE_SPV_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)");
         string want=spv.Success?"\nspirv g"+(int.Parse(version.Groups[1].Value)*100+int.Parse(spv.Groups[1].Value))+".":"\nspirv ";
         string renderer=Surface.GetSetting("renderer");
-        return renderer=="direct3d11"||!File.Exists(p.PathIn("build","ssbu_glslang.dll"))||text.Contains(want);
+        if(renderer!="direct3d11"&&File.Exists(p.PathIn("build","ssbu_glslang.dll")))return text.Contains(want);
+        var dxbc=Regex.Match(source,@"#define SHADER_CACHE_DXBC_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)");
+        return !dxbc.Success||Regex.IsMatch(text,@"(?m)^dxbc v"+(int.Parse(version.Groups[1].Value)*100+int.Parse(dxbc.Groups[1].Value))+@"\r?$");
     }
     async Task AskShaders()
     {

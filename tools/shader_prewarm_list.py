@@ -6,10 +6,22 @@ The Direct3D 11 prewarm (runtime/gpu_d3d11.c, prewarm_queue_list) also makes the
 """
 import glob
 import os
+import re
 import sys
 
 PLAYED = 1009843200   # (2002-01-01: runtime/gpu_shader_cache.h SHADER_CACHE_PLAYED_UNIX; Prepare Shaders dates its files before it)
-VERSION = 10          # (gpu_shader_cache.h SHADER_CACHE_VERSION)
+
+
+def dxbc_version():
+    """gpu_shader_cache.h's SHADER_CACHE_DXBC_VERSION, the Direct3D 11 files' names (as tools/shader_aot.py reads it)."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "runtime", "gpu_shader_cache.h"), encoding="utf-8") as f:
+        text = f.read()
+    ver = int(re.search(r"#define SHADER_CACHE_VERSION (\d+)", text).group(1))
+    dxbc = re.search(r"#define SHADER_CACHE_DXBC_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)", text)
+    return ver * 100 + int(dxbc.group(1)) if dxbc else ver
+
+
+VERSION = dxbc_version()
 
 
 def main():

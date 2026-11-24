@@ -4064,7 +4064,9 @@ namespace OpenSmash.Launcher
             // a newer glslang's library part is not checked: the game makes those in play.
             var spv = Regex.Match(header, @"#define SHADER_CACHE_SPV_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)");
             string want = spv.Success ? "\nspirv g" + (int.Parse(ver.Groups[1].Value) * 100 + int.Parse(spv.Groups[1].Value)) + "." : "\nspirv ";
-            return RendererAsked() == "direct3d11" || !File.Exists(Path.Combine(_repo, "build", "ssbu_glslang.dll")) || text.Contains(want);
+            if (RendererAsked() != "direct3d11" && File.Exists(Path.Combine(_repo, "build", "ssbu_glslang.dll"))) return text.Contains(want);
+            var dxbc = Regex.Match(header, @"#define SHADER_CACHE_DXBC_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)");
+            return !dxbc.Success || Regex.IsMatch(text, @"(?m)^dxbc v" + (int.Parse(ver.Groups[1].Value) * 100 + int.Parse(dxbc.Groups[1].Value)) + @"\r?$");
         }
 
         void StartShaders(string priority)

@@ -1173,7 +1173,7 @@ static int create_noted(struct Compiler *me, Shader *s, const void *code, size_t
 }
 
 /* ---- prewarm: the disk cache made ready while the game starts --------------------------
- * Every DXBC file of this SHADER_CACHE_VERSION the game has used before (gpu_shader_cache.h),
+ * Every DXBC file of this SHADER_CACHE_DXBC_VERSION the game has used before (gpu_shader_cache.h),
  * newest first, is created on the rendering device by the compiler threads (queue 2, below the
  * game's own shaders) into a table by the cache's key. (The compile device is for a full compile
  * on a compiler thread; a warmed cache's object is all the prewarm needs.)
@@ -1584,14 +1584,14 @@ static int newest_first(const void *a, const void *b) {
     return x < y ? 1 : x > y ? -1 : 0;
 }
 
-/* The disk cache's files of this SHADER_CACHE_VERSION that the game has used (not the ahead-of-time
+/* The disk cache's files of this SHADER_CACHE_DXBC_VERSION that the game has used (not the ahead-of-time
  * compiler's it never asked for; with all, those too), newest first: the shaders of what was
  * played last, first, and the ahead-of-time compiler's (dated 2001) after every played one. */
 static u32 cache_files(const char *dir, Found **out, int all) {
     Found *found = NULL;
     u32 n = 0, cap = 0;
     char pattern[1100];
-    snprintf(pattern, sizeof pattern, "%s/v%u_*.dxbc", dir, SHADER_CACHE_VERSION);
+    snprintf(pattern, sizeof pattern, "%s/v%u_*.dxbc", dir, SHADER_CACHE_DXBC_VERSION);
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pattern, &fd);
     for (BOOL more = h != INVALID_HANDLE_VALUE; more; more = FindNextFileA(h, &fd)) {
@@ -1706,7 +1706,7 @@ static u32 prewarm_queue_named(const char *list, u32 total, Shader **head, Shade
         if (!m || line[0] == '#') continue;
         (*listed)++;
         if (*queued >= total) continue;
-        snprintf(fname, sizeof fname, "v%u_%s.dxbc", SHADER_CACHE_VERSION, line);
+        snprintf(fname, sizeof fname, "v%u_%s.dxbc", SHADER_CACHE_DXBC_VERSION, line);
         snprintf(file, sizeof file, "%s/%s", cache_dir(), fname);
         if (GetFileAttributesA(file) == INVALID_FILE_ATTRIBUTES) continue;   /* (not made by Prepare Shaders here) */
         if (*queued == *cap) {
@@ -2382,7 +2382,7 @@ static u32 warm_order_listed(Found *files, u32 n) {
             if (!more) break;
             names = more;
         }
-        snprintf(fname, sizeof fname, "v%u_%s.dxbc", SHADER_CACHE_VERSION, line);
+        snprintf(fname, sizeof fname, "v%u_%s.dxbc", SHADER_CACHE_DXBC_VERSION, line);
         names[count++] = name_hash(fname);
     }
     fclose(f);
@@ -2838,7 +2838,7 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
     if (rewarm) fprintf(stderr, "[warm] rewarm: drawing every shader again\n");
     else if (before) fprintf(stderr, "[warm] %u shaders drawn by an earlier run\n", before);
     if (!r.n) {
-        fprintf(stderr, "[warm] no v%u shaders in %s\n", SHADER_CACHE_VERSION, dir);
+        fprintf(stderr, "[warm] no v%u shaders in %s\n", SHADER_CACHE_DXBC_VERSION, dir);
         free(r.done);
         free(r.files);
         if (r.adapter) IDXGIAdapter1_Release(r.adapter);
