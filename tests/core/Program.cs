@@ -380,6 +380,227 @@ static class Program
                   "board: show/hide sent with the ticket alone (\"\" hides, a name shows)");
             Check(await LobbyBoard.SetShownAsync(hc, new[] { "127.0.0.1:1" }, "", true, default) == 0, "board: no ticket, no show/hide sent");
         }
+        // ---- mastery points (Mastery.cs; the lobby's /mastery/me and /mastery.json): regions summed, the largest veteran
+        {
+            var eu = Mastery.ParseMe("{\"region\":\"eu\",\"total\":2300,\"fighters\":[{\"fighter\":\"mario\",\"points\":300,\"veteran\":1000,\"games\":4,\"wins\":3}," +
+                                     "{\"fighter\":\"ui_chara_pzenigame\",\"points\":1000,\"veteran\":0,\"games\":9,\"wins\":2},{\"fighter\":\"bad key!\",\"points\":5},{\"fighter\":7}]}");
+            var na = Mastery.ParseMe("{\"region\":\"na-east\",\"fighters\":[{\"fighter\":\"mario\",\"points\":200,\"veteran\":1000,\"games\":2,\"wins\":1}," +
+                                     "{\"fighter\":\"miigunner\",\"points\":50,\"veteran\":0,\"games\":1,\"wins\":0}]}");
+            Check(eu != null && eu.Fighters.Count == 2 && eu.Fighters[0].Fighter == "mario" && eu.Fighters[0].Total == 1300 &&
+                  eu.Fighters[1].Fighter == "pzenigame", "mastery: /mastery/me read (bad keys skipped, ui_chara_ cut)");
+            var sum = Mastery.Merge(new[] { eu, null, na });
+            var mario = sum.Fighters.First(f => f.Fighter == "mario");
+            Check(sum.Regions == 2 && mario.Points == 500 && mario.Veteran == 1000 && mario.Total == 1500 && mario.Games == 6 && mario.Wins == 4 &&
+                  sum.Fighters[0].Fighter == "mario" && sum.Total == 1500 + 1000 + 50, "mastery: regions summed, veteran the largest (not summed)");
+            Check(Mastery.ParseMe("{\"region\":\"eu\"}") == null && Mastery.ParseMe("[]") == null && Mastery.ParseMe("<html>") == null, "mastery: not an answer");
+            Check(Mastery.FighterName("pzenigame") == "Squirtle" && Mastery.FighterName("miiswordsman") == "Mii Swordfighter" &&
+                  Mastery.FighterName("newcomer_x") == "Newcomer x", "mastery: fighter keys' names");
+            var b1 = Mastery.ParseBoard("{\"region\":\"eu\",\"total\":[{\"id\":\"a1\",\"name\":\"Ann\",\"points\":900,\"veteran\":1000},{\"id\":\"b2\",\"name\":\"\",\"points\":1500,\"veteran\":0}]}");
+            var b2 = Mastery.ParseBoard("{\"region\":\"na-east\",\"total\":[{\"id\":\"b2\",\"points\":700,\"veteran\":1000},{\"id\":\"\",\"points\":9}]}");
+            var top = Mastery.MergeBoard(new[] { b1, null, b2 }, 5);
+            Check(top.Count == 2 && top[0].Id == "b2" && top[0].Total == 3200 && top[1].Total == 1900 && Mastery.Who(top[0]) == "Player" && Mastery.Who(top[1]) == "Ann",
+                  "mastery: top lists merged by id");
+            Check(await Mastery.MeAsync(new System.Net.Http.HttpClient(), new[] { "127.0.0.1:1" }, "", default) == null, "mastery: no ticket, nothing asked");
+
+            // two lobbies answer, an older one says 404: summed, the ticket header sent
+            var lobbyAnswers = new Dictionary<string, string>
+            {
+                ["A /mastery/me"] = "{\"region\":\"eu\",\"fighters\":[{\"fighter\":\"fox\",\"points\":120,\"veteran\":1000,\"games\":1,\"wins\":1}]}",
+                ["B /mastery/me"] = "{\"region\":\"na-east\",\"fighters\":[{\"fighter\":\"fox\",\"points\":80,\"veteran\":1000,\"games\":1,\"wins\":0}]}",
+                ["A /mastery.json"] = "{\"total\":[{\"id\":\"x\",\"name\":\"Xia\",\"points\":5,\"veteran\":0}]}",
+            };
+            var seenM = new List<string>();
+            async Task<(System.Net.Sockets.TcpListener L, int Port, Task Run)> Lobby(string tag, int requests)
+            {
+                var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+                l.Start();
+                int port = ((System.Net.IPEndPoint)l.LocalEndpoint).Port;
+                var run = Task.Run(async () =>
+                {
+                    for (int i = 0; i < requests; i++)
+                    {
+                        using var cl = await l.AcceptTcpClientAsync();
+                        using var st = cl.GetStream();
+                        var buf = new byte[8192]; int n = 0, got; string text = "";
+                        while ((got = await st.ReadAsync(buf.AsMemory(n, buf.Length - n))) > 0) { n += got; text = System.Text.Encoding.UTF8.GetString(buf, 0, n); if (text.Contains("\r\n\r\n")) break; }
+                        lock (seenM) seenM.Add(tag + " " + text);
+                        string path = text.Split(' ').ElementAtOrDefault(1) ?? "";
+                        byte[] body = lobbyAnswers.TryGetValue(tag + " " + path, out var ans) ? System.Text.Encoding.UTF8.GetBytes(ans) : System.Text.Encoding.UTF8.GetBytes("{\"error\":\"not found\"}");
+                        string status = ans != null ? "200 OK" : "404 Not Found";
+                        await st.WriteAsync(System.Text.Encoding.ASCII.GetBytes($"HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n"));
+                        await st.WriteAsync(body);
+                    }
+                });
+                await Task.Yield();
+                return (l, port, run);
+            }
+            var la = await Lobby("A", 2); var lb = await Lobby("B", 2); var lc = await Lobby("C", 2);
+            using var mh = new System.Net.Http.HttpClient();
+            string[] three = { "127.0.0.1:" + la.Port, "127.0.0.1:" + lb.Port, "127.0.0.1:" + lc.Port };
+            var mm = await Mastery.MeAsync(mh, three, "u|n|1800000000." + new string('f', 64), default);
+            var mt = await Mastery.BoardAsync(mh, three, default, 5);
+            await Task.WhenAll(la.Run, lb.Run, lc.Run); la.L.Stop(); lb.L.Stop(); lc.L.Stop();
+            Check(mm != null && mm.Regions == 2 && mm.Fighters.Count == 1 && mm.Fighters[0].Total == 1200 && mm.Games == 2 && mm.Wins == 1,
+                  "mastery: /mastery/me of two lobbies summed, the older one's 404 ignored");
+            Check(seenM.Where(t => t.Contains("GET /mastery/me ")).All(t => t.Contains("X-OpenSmash-Ticket: u|n|1800000000.")) &&
+                  seenM.Where(t => t.Contains("GET /mastery.json ")).All(t => !t.Contains("X-OpenSmash-Ticket")), "mastery: the ticket on /mastery/me only");
+            Check(mt != null && mt.Count == 1 && mt[0].Name == "Xia", "mastery: the top list from the lobby that has one");
+            var none = await Lobby("C", 1);
+            Check(await Mastery.MeAsync(mh, new[] { "127.0.0.1:" + none.Port }, "t|n|1800000000." + new string('f', 64), default) == null, "mastery: only older lobbies: null (not available)");
+            await none.Run; none.L.Stop();
+
+            // ---- the accounts service is the source (my_opensmash_mastery, my_opensmash_mastery_rank, opensmash_mastery_board);
+            // the lobbies are the fallback when it fails. Against tools/dev/fake_accounts.py (no real service).
+            var sm = Mastery.ParseServiceMe("[{\"fighter\":\"mario\",\"points\":300,\"veteran\":1000,\"total\":1450,\"games\":4,\"wins\":3,\"points_opensmash\":300,\"points_arena\":150}," +
+                                            "{\"fighter\":\"bad key!\",\"points\":5},{\"fighter\":\"ike\",\"points\":0,\"veteran\":0,\"total\":0,\"games\":0}]");
+            Check(sm != null && sm.FromService && sm.Fighters.Count == 1 && sm.Fighters[0].Total == 1450 && sm.Total == 1450,
+                  "mastery service: my_opensmash_mastery read (its own total kept, bad keys and empty rows skipped)");
+            Check(Mastery.ParseServiceMe("{\"error\":1}") == null && Mastery.ParseServiceMe("[]")?.Fighters.Count == 0, "mastery service: not an answer / no points yet");
+            var sr = Mastery.ParseServiceRank("[{\"pos\":12,\"id\":\"x\",\"total\":900,\"total_count\":340,\"main_fighter\":\"fox\"}]");
+            Check(sr != null && sr.Pos == 12 && sr.TotalCount == 340 && Mastery.Place(sr) == "#12" && Mastery.ParseServiceRank("[]") == null &&
+                  Mastery.ParseServiceRank("[{\"pos\":null}]") == null && Mastery.Place(null) == "", "mastery service: the place (none without points)");
+            var sb = Mastery.ParseServiceBoard("[{\"pos\":1,\"id\":\"a\",\"name\":\"Ann\",\"tag\":7,\"total\":5200,\"main_fighter\":\"fox\"},{\"pos\":2,\"id\":\"b\",\"name\":null,\"total\":3100},{\"id\":\"\",\"total\":9}]");
+            Check(sb != null && sb.Count == 2 && sb[0].Total == 5200 && sb[0].Tag == 7 && sb[0].MainFighter == "fox" && sb[1].Name == "Anonymous" && Mastery.Who(sb[1]) == "Anonymous",
+                  "mastery service: the board read (a hidden name is Anonymous)");
+
+            string repoDir = AppContext.BaseDirectory;
+            while (repoDir != null && !File.Exists(Path.Combine(repoDir, "tools", "dev", "fake_accounts.py"))) repoDir = Path.GetDirectoryName(repoDir.TrimEnd(Path.DirectorySeparatorChar));
+            if (repoDir == null) throw new Exception("tools/dev/fake_accounts.py not found");
+            async Task<(System.Diagnostics.Process P, AccountService S)> FakeService(params string[] extra)
+            {
+                var l0 = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0); l0.Start(); int port = ((System.Net.IPEndPoint)l0.LocalEndpoint).Port; l0.Stop();
+                var info = new System.Diagnostics.ProcessStartInfo(OperatingSystem.IsWindows() ? "python" : "python3") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+                foreach (var a in new[] { "-I", Path.Combine(repoDir, "tools", "dev", "fake_accounts.py"), "--port", port.ToString(), "--name", "Tester" }.Concat(extra)) info.ArgumentList.Add(a);
+                var p = System.Diagnostics.Process.Start(info)!;
+                string first = await p.StandardOutput.ReadLineAsync() ?? "";
+                if (!first.Contains("fake accounts service on")) throw new Exception("fake_accounts.py did not start: " + await p.StandardError.ReadToEndAsync());
+                _ = p.StandardOutput.ReadToEndAsync(); _ = p.StandardError.ReadToEndAsync();
+                return (p, new AccountService { Url = "http://127.0.0.1:" + port, Key = "test-key" });
+            }
+            async Task<Account> SignedIn(AccountService service, string dir)
+            {
+                var acc = new Account(dir, service)
+                {
+                    OpenBrowser = url => _ = Task.Run(async () =>
+                    {
+                        using var b = new System.Net.Http.HttpClient(new System.Net.Http.HttpClientHandler { AllowAutoRedirect = true }) { Timeout = TimeSpan.FromSeconds(20) };
+                        try { using var _r = await b.GetAsync(url); } catch (System.Net.Http.HttpRequestException) { } catch (TaskCanceledException) { }
+                    }),
+                };
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await acc.SignInWithBrowserAsync(cts.Token);
+                return acc;
+            }
+            string accDir = Path.Combine(Path.GetTempPath(), "os-core-mastery-" + Guid.NewGuid().ToString("N"));
+            var (fake, svcOk) = await FakeService();
+            var (fake404, svc404) = await FakeService("--no-mastery");
+            try
+            {
+                var anon = new Account(accDir, svcOk);
+                Check(await Mastery.ServiceMeAsync(anon) == null, "mastery service: signed out, my points not asked");
+                var board = await Mastery.ServiceBoardAsync(anon, 5);
+                Check(board != null && board.Count == 4 && board[0].Name == "Ann" && board[0].Pos == 1 && board[1].Name == "Anonymous" && board[2].Name == "Tester" && board[2].Total == 1420,
+                      "mastery service: the board read with the publishable key alone (anyone)");
+                Check((await Mastery.ServiceBoardAsync(anon, 2))?.Count == 2, "mastery service: p_limit sent");
+                var acc = await SignedIn(svcOk, Path.Combine(accDir, "a"));
+                var mine = await Mastery.ServiceMeAsync(acc);
+                Check(mine != null && mine.FromService && mine.Total == 1420 && mine.Fighters[0].Fighter == "mario" && mine.Rank?.Pos == 3 && mine.Rank.TotalCount == 4,
+                      "mastery service: my points and my place, signed in");
+                // the lobbies are not asked when the service answers
+                var unused = await Mastery.MineAsync(acc, mh, new[] { "127.0.0.1:1" }, "u|n|1800000000." + new string('f', 64), default);
+                Check(unused != null && unused.FromService && unused.Total == 1420, "mastery: the service first (the lobbies not needed)");
+
+                // a service without the functions (404): the lobbies with the ticket, as before
+                var acc404 = await SignedIn(svc404, Path.Combine(accDir, "b"));
+                Check(await Mastery.ServiceMeAsync(acc404) == null && await Mastery.ServiceBoardAsync(acc404, 5) == null, "mastery service: 404 (not applied yet) is no answer");
+                var fa = await Lobby("A", 2);
+                string[] one = { "127.0.0.1:" + fa.Port };
+                var fbMe = await Mastery.MineAsync(acc404, mh, one, "u|n|1800000000." + new string('f', 64), default);
+                var fbTop = await Mastery.TopAsync(acc404, mh, one, default, 5);
+                await fa.Run; fa.L.Stop();
+                Check(fbMe != null && !fbMe.FromService && fbMe.Total == 1120 && fbMe.Rank == null && fbTop?.Count == 1 && fbTop[0].Name == "Xia",
+                      "mastery: the service failing, the lobbies' /mastery/me and /mastery.json are the fallback");
+                // no service at all (a build without one): the lobbies
+                var fb = await Lobby("A", 1);
+                var noSvc = await Mastery.TopAsync(null, mh, new[] { "127.0.0.1:" + fb.Port }, default, 5);
+                await fb.Run; fb.L.Stop();
+                Check(noSvc?.Count == 1, "mastery: no accounts service, the lobbies' top list");
+            }
+            finally
+            {
+                try { fake.Kill(true); } catch (InvalidOperationException) { }
+                try { fake404.Kill(true); } catch (InvalidOperationException) { }
+                try { Directory.Delete(accDir, true); } catch { }
+            }
+        }
+        // ---- fighters by any spelling and their icons (Fighters); SSBU Arena's ranked board (RankedBoard)
+        {
+            Check(Fighters.Key("Joker") == "jack" && Fighters.Key("jack") == "jack" && Fighters.Key("ui_chara_jack") == "jack" && Fighters.Key("Pyra / Mythra") == "element"
+                  && Fighters.Key("R.O.B.") == "robot" && Fighters.Key("Mr. Game & Watch") == "gamewatch" && Fighters.Key("PT") == "ptrainer" && Fighters.Key("ics") == "ice_climber"
+                  && Fighters.Key("Pokémon Trainer") == "ptrainer" && Fighters.Key("nobody here") == null, "fighters: any spelling to the game key");
+            Check(Fighters.IconUrl("Joker") == "https://www.ssbuarena.com/fighters/jack/1.png" && Fighters.IconUrl("element") == "https://www.ssbuarena.com/fighters/eflame/1.png"
+                  && Fighters.IconUrl("popo") == "https://www.ssbuarena.com/fighters/ice_climber/1.png" && Fighters.IconUrl("Ridley") != null && Fighters.IconUrl("nobody") == null,
+                  "fighters: SSBU Arena's icon folders");
+            Check(Fighters.Name("jack") == "Joker" && Fighters.Name("Pyra / Mythra") == Mastery.FighterName("element") && Fighters.Name("??") == "??", "fighters: names");
+            var rb = RankedBoard.Parse("[{\"rank\":1,\"username\":\"Vex\",\"tag\":7,\"rating\":2586.18,\"games\":11,\"wins\":9,\"losses\":2,\"placed\":true,\"tier\":\"Grandmaster\"," +
+                                       "\"tier_family\":\"Grandmaster\",\"tier_division\":null,\"tier_color\":\"#ff5a6a\",\"region\":\"eu\",\"region_rank\":1,\"total\":2," +
+                                       "\"fighters\":[{\"fighter\":\"Joker\",\"games\":9,\"wins\":7},{\"fighter\":\"Fox\",\"games\":1},{\"fighter\":\"Ike\"},{\"fighter\":\"Wolf\"}]}," +
+                                       "{\"rank\":2,\"username\":\"\",\"rating\":\"1500.5\"},{\"rank\":3,\"username\":\"Ann\",\"rating\":\"1499.4\",\"tier_color\":\"red\",\"tier_division\":2}]");
+            Check(rb != null && rb.Count == 2 && rb[0].Shown == "Vex#0007" && RankedBoard.RatingShown(rb[0]) == "2,586" && rb[0].TierColor == "#FF5A6A" && rb[0].Fighters.Count == 3
+                  && rb[0].Fighters[0].Fighter == "Joker" && rb[0].Region == "eu" && rb[1].Rating > 1499 && rb[1].TierColor == null && rb[1].TierDivision == 2,
+                  "ranked board: rows read (no name skipped, 3 fighters at most, colours checked, numeric ratings)");
+            Check(RankedBoard.Parse("{\"message\":\"x\"}") == null && RankedBoard.Parse("[]")?.Count == 0, "ranked board: an error is no answer, an empty board is one");
+            Check(await RankedBoard.TopAsync(null, null) == null, "ranked board: no accounts service, no answer");
+        }
+        // ---- the Online rules (OnlineSettings): the same in every launcher
+        {
+            var v = new Dictionary<string, string> { ["lobby"] = "auto", ["code"] = "old", ["server"] = "my.host:1", ["direct"] = "on" };
+            var och = OnlineSettings.Normalize(v);
+            Check(v["code"] == "" && v["server"] == "" && v["direct"] == "off" && och.Count == 3, "online: the official lobby resets code, server and direct connections");
+            och = OnlineSettings.Choose(v, "custom");
+            Check(v["lobby"] == "custom" && v["direct"] == "on" && v["code"] == "" && och.Contains("lobby") && och.Contains("direct"), "online: a server of one's own, direct connections back on");
+            v["code"] = "abc"; v["server"] = "my.host:39420";
+            OnlineSettings.Choose(v, "private");
+            Check(v["code"] == "abc" && v["server"] == "" && v["direct"] == "off", "online: the private lobby keeps its code, no server of one's own, relay only");
+            OnlineSettings.Choose(v, "auto");
+            Check(v["code"] == "" && v["server"] == "", "online: back to the official lobby, the code reset");
+            OnlineSettings.Choose(v, "offline");
+            Check(v["direct"] == "off", "online: offline leaves direct connections as they were");
+            Check(OnlineSettings.Shown("region", "auto") && OnlineSettings.Shown("region", "private") && !OnlineSettings.Shown("region", "auto", true) && !OnlineSettings.Shown("region", "custom")
+                  && !OnlineSettings.Shown("code", "auto") && OnlineSettings.Shown("code", "private") && !OnlineSettings.Shown("direct", "auto") && !OnlineSettings.Shown("direct", "private")
+                  && OnlineSettings.Shown("direct", "lan") && OnlineSettings.Shown("server", "custom") && !OnlineSettings.Shown("name", "offline"), "online: the rows each choice shows");
+            Check(OnlineSettings.Missing("private", "", "") == "code" && OnlineSettings.Missing("custom", "", "") == "server" && OnlineSettings.Missing("custom", "", "host") == "server"
+                  && OnlineSettings.Missing("custom", "", "my.host:39420") == null && OnlineSettings.Missing("auto", "", "") == null, "online: what a choice still needs");
+            string reg = Path.Combine(Path.GetTempPath(), "os-core-online-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(Path.Combine(reg, "config"));
+                Check(OnlineSettings.RegionShown(reg) == "eu", "online: no region and nothing measured: Europe");
+                ServerRegion.SetSetting(reg, "na-east");
+                Check(OnlineSettings.RegionShown(reg) == "na-east" && OfficialLobby.Current(reg) == "na.lobby.opensmashultimate.com:39421", "online: North America East chosen, its lobby played on");
+                string sf = Path.Combine(reg, "config", "online_server.txt");
+                Check(OnlineSettings.EnsureLine(sf) && File.ReadAllText(sf).Trim() == "auto" && !OnlineSettings.EnsureLine(sf), "online: no lobby line, the official lobby, once");
+            }
+            finally { try { Directory.Delete(reg, true); } catch { } }
+        }
+        // ---- SSBU Arena's launcher, from the install_path.txt it writes (ArenaEdition)
+        {
+            string ar = Path.Combine(Path.GetTempPath(), "os-core-arena-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                string file = Path.Combine(ar, "SSBU Arena", "install_path.txt"), game = Path.Combine(ar, "Arena Game");
+                Check(ArenaEdition.Find(file, true) == null, "arena: no file, not found");
+                Directory.CreateDirectory(Path.GetDirectoryName(file)!); Directory.CreateDirectory(game);
+                File.WriteAllText(file, game + "\r\n");
+                Check(ArenaEdition.Find(file, true) == null, "arena: the folder without SSBU-Arena.exe, not found");
+                File.WriteAllText(Path.Combine(game, "SSBU-Arena.exe"), "");
+                Check(ArenaEdition.Find(file, true) == Path.GetFullPath(Path.Combine(game, "SSBU-Arena.exe")), "arena: found by install_path.txt");
+                Check(ArenaEdition.Find(file, false) == null, "arena: not on Linux or macOS (link only)");
+                File.WriteAllText(file, "relative\\path\r\n");
+                Check(ArenaEdition.Find(file, true) == null, "arena: a relative path is not used");
+            }
+            finally { try { Directory.Delete(ar, true); } catch { } }
+        }
         string tkroot = Path.Combine(Path.GetTempPath(), "os-core-ticket-" + Guid.NewGuid().ToString("N"));
         try
         {

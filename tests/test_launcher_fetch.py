@@ -65,14 +65,28 @@ class LauncherFetch(unittest.TestCase):
 
     def test_linux_program_only(self):
         path = lf.unpack(LINUX, "linux-x64", self.root)
-        self.assertEqual(path, os.path.join(self.root, "OpenSmash.Avalonia"))
-        self.assertEqual(self.read("OpenSmash.Avalonia"), b"ELF launcher")
+        self.assertEqual(path, os.path.join(self.root, "OpenSmash-Launcher"))
+        self.assertEqual(self.read("OpenSmash-Launcher"), b"ELF launcher")
         self.assertEqual(self.read("LICENSE"), b"the repository's own")   # (nothing else of the archive)
         if os.name != "nt":
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o755)
         lf.unpack(archive([("./OpenSmash.Avalonia", b"newer", 0o755)]), "linux-x64", self.root)
-        self.assertEqual(self.read("OpenSmash.Avalonia"), b"newer")
+        self.assertEqual(self.read("OpenSmash-Launcher"), b"newer")
         self.assertEqual([n for n in os.listdir(self.root) if n.startswith(".OpenSmash")], [])
+
+    def test_linux_source_folder_kept(self):
+        src = os.path.join(self.root, "OpenSmash.Avalonia")
+        os.makedirs(src)
+        with open(os.path.join(src, "OpenSmash.csproj"), "w") as f:
+            f.write("<Project/>")
+        lf.unpack(LINUX, "linux-x64", self.root)
+        self.assertEqual(self.read("OpenSmash.Avalonia", "OpenSmash.csproj"), b"<Project/>")
+        self.assertEqual(self.read("OpenSmash-Launcher"), b"ELF launcher")
+        os.remove(os.path.join(self.root, "OpenSmash-Launcher"))
+        os.makedirs(os.path.join(self.root, "OpenSmash-Launcher", "keep"))
+        with self.assertRaises(lf.Error):
+            lf.unpack(LINUX, "linux-x64", self.root)
+        self.assertTrue(os.path.isdir(os.path.join(self.root, "OpenSmash-Launcher", "keep")))
 
     def test_mac_app_replaced_whole(self):
         old = os.path.join(self.root, "OpenSmash.Avalonia.app", "Contents", "stale.txt")
@@ -101,7 +115,7 @@ class LauncherFetch(unittest.TestCase):
             lf.unpack(buf.getvalue(), "linux-x64", self.root)
         with self.assertRaises(lf.Error):
             lf.unpack(archive([("./README.md", b"x", 0o644)]), "linux-x64", self.root)   # (no program in it)
-        self.assertFalse(os.path.exists(os.path.join(self.root, "OpenSmash.Avalonia")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "OpenSmash-Launcher")))
 
     def release(self, data, sha=None, key="linux-x64", name="OpenSmash-linux-x64.tar.gz"):
         manifest = {"schema": 1, "version": "0.5.0", "commit": "0" * 40, "channel": "stable",
@@ -121,8 +135,8 @@ class LauncherFetch(unittest.TestCase):
         get, asked = self.release(LINUX)
         logs = []
         path = lf.fetch_release(self.root, "linux-x64", get, log=logs.append)
-        self.assertEqual(self.read("OpenSmash.Avalonia"), b"ELF launcher")
-        self.assertEqual(path, os.path.join(self.root, "OpenSmash.Avalonia"))
+        self.assertEqual(self.read("OpenSmash-Launcher"), b"ELF launcher")
+        self.assertEqual(path, os.path.join(self.root, "OpenSmash-Launcher"))
         self.assertEqual(len(asked), 2)
         self.assertIsNone(lf.fetch_release(self.root, "linux-x64", get, log=logs.append))   # (already this release)
         self.assertEqual(len(asked), 3)   # (only the manifest asked again)
@@ -132,7 +146,7 @@ class LauncherFetch(unittest.TestCase):
         get, _ = self.release(LINUX, sha="f" * 64)
         with self.assertRaises(lf.Error):
             lf.fetch_release(self.root, "linux-x64", get, log=lambda s: None)
-        self.assertFalse(os.path.exists(os.path.join(self.root, "OpenSmash.Avalonia")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "OpenSmash-Launcher")))
 
     def test_release_without_this_platform(self):
         get, _ = self.release(MAC, key="macos-arm64", name="OpenSmash-macos-arm64.tar.gz")
@@ -178,16 +192,19 @@ class LauncherFetch(unittest.TestCase):
         with mock.patch.object(lf, "platform_key", return_value="linux-x64"), mock.patch.object(lf, "can_build", return_value=False):
             self.assertFalse(lf.ensure(self.root, dry_run=True, log=logs.append, get=get))
         self.assertIn("the newest release's", logs[0])
-        self.assertFalse(os.path.exists(os.path.join(self.root, "OpenSmash.Avalonia")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "OpenSmash-Launcher")))
         with mock.patch.object(lf, "platform_key", return_value=None):   # (no build for this computer: the web launcher)
             self.assertFalse(lf.ensure(self.root, log=logs.append, get=get))
 
     def test_launch_scripts_prefer_it(self):
-        for path, needle in (("opensmash-launcher.sh", '"$root/OpenSmash.Avalonia" --project "$root"'),
+        for path, needle in (("opensmash-launcher.sh", '"$launcher" --project "$root"'),
                              ("OpenSmash Launcher.command", 'open "$root/OpenSmash.Avalonia.app" --args --project "$root"')):
             with open(os.path.join(ROOT, path), encoding="utf-8") as f:
                 text = f.read()
             self.assertIn(needle, text, path)
+            if path == "opensmash-launcher.sh":   # (the new name first; an older install's program file as the fallback)
+                self.assertIn('launcher="$root/OpenSmash-Launcher"', text)
+                self.assertIn('[ ! -f "$launcher" ] && [ -f "$root/OpenSmash.Avalonia" ]', text)
             self.assertIn("--web", text, path)                       # (the web launcher stays, as the fallback)
             self.assertIn("tools/weblauncher/launcher.py", text, path)
         for path in (os.path.join("tools", "linux", "install_linux.py"), os.path.join("tools", "mac", "install_mac.py")):

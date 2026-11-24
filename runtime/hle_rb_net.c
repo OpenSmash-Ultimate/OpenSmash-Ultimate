@@ -142,8 +142,15 @@ uint32_t rbn_confirmed(void) {
     for (int p = 0; p < nplayers; p++) if (p != local_player && known_up_to(p) < c) c = known_up_to(p);
     return c;
 }
+/* SSBU_RB_MAXBACK=<n> (1..16): how far past a peer's newest pad the game runs before it waits (default RBN_MAX_BACK) */
+int rbn_max_back(void) {
+    static int max_back = -1;
+    if (max_back < 0) { const char *e = getenv("SSBU_RB_MAXBACK"); int v = e && *e ? atoi(e) : 0; max_back = v >= 1 && v <= 16 ? v : RBN_MAX_BACK; }
+    return max_back;
+}
 int rbn_can_run(uint32_t frame) {
-    for (int p = 0; p < nplayers; p++) if (p != local_player && frame > known_up_to(p) + RBN_MAX_BACK) return 0;
+    const uint32_t mb = (uint32_t)rbn_max_back();
+    for (int p = 0; p < nplayers; p++) if (p != local_player && frame > known_up_to(p) + mb) return 0;
     return 1;
 }
 void rbn_gone(int p, uint32_t after, uint32_t ran) {

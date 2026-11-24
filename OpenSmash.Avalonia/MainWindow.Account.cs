@@ -35,7 +35,7 @@ public sealed partial class MainWindow
         var c = Surface.Community;
         c.AccountMode = AccountMode;
         c.AccountPage = _account?.Service.AccountPage != null;
-        c.Me = null; c.BoardId = null;
+        c.Me = null; c.BoardId = null; c.Mastery = null; c.MasteryAsked = false;
         if (AccountMode && _backgroundActions) _accountResume = AccountResume(root);
     }
 
@@ -64,8 +64,19 @@ public sealed partial class MainWindow
     {
         if (!AccountMode || _account == null || !_account.SignedIn) return;
         string? ticket = await AccountTicket(root);
-        if (string.IsNullOrEmpty(ticket)) return;
-        var me = await LobbyBoard.MeAsync(Http, OfficialLobby.All(root), ticket, CancellationToken.None);
+        var lobbies = OfficialLobby.All(root);
+        // (mastery: the accounts service, the source, with the account's place; /mastery/me of the lobbies summed only when
+        // it fails. Asked together; OPENSMASH_MASTERY_UI=0 asks nothing)
+        var mastery = Mastery.UiOn ? Mastery.MineAsync(_account, Http, lobbies, ticket ?? "", CancellationToken.None) : null;
+        var me = string.IsNullOrEmpty(ticket) ? null : await LobbyBoard.MeAsync(Http, lobbies, ticket, CancellationToken.None);
+        if (mastery != null)
+        {
+            var m = await mastery;
+            if (root != _accountRoot) return;
+            Surface.Community.Mastery = m ?? Surface.Community.Mastery;   // (a lobby down for a while: the last answer kept)
+            Surface.Community.MasteryAsked = true;
+            Surface.InvalidateVisual();
+        }
         if (me == null || root != _accountRoot) return;
         var c = Surface.Community;
         c.Records = me.Fighters.Where(f => f.Gsp > 0).Select(f => new FighterGsp { Fighter = f.Fighter, Gsp = f.Gsp, Rank = f.Rank }).ToList();
@@ -92,7 +103,7 @@ public sealed partial class MainWindow
                     c.Me = _account.SignedIn ? _account.Me : null;
                 }
                 catch (OperationCanceledException) { c.Error = "Sign-in cancelled."; }
-                catch (AccountException e) { c.Error = e.Message; }
+                catch (AccountException e) { c.Error = e.Message; Updater.Log(root, "sign-in: " + e.Message); }
                 catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or HttpRequestException or System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException or System.ComponentModel.Win32Exception)
                 {
                     c.Error = "The sign-in did not work: " + e.Message; Updater.Log(root, "sign-in: " + e);
@@ -116,6 +127,7 @@ public sealed partial class MainWindow
                 await _account.SignOutAsync();
                 new OnlinePass(_account, root).Remove();
                 c.Me = null; c.BoardId = null; c.Rank = 0; c.FighterRanks = new(); c.Records = new(); c.Open = false; c.Error = ""; c.Shown = true;
+                c.Mastery = null; c.MasteryAsked = false;
                 _ = CommunityRefresh();
                 break;
         }

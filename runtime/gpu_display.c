@@ -15,6 +15,12 @@
  *   display  the monitor's own refreshes (every 1st/2nd/4th at 60/120/240 Hz): every frame is
  *            on screen equally long, but the game then runs at the monitor's real rate (59.94
  *            frames a second on a 59.94 Hz monitor). Falls back to the clock on other rates.
+ * frame_rate (60, 120 or 240) multiplies the refreshes the game sees: 120 or 240 a second, the game's
+ * main loop running once at each and its logic still 60 times a second (hle_frame_rate.c sets the
+ * game's frame scheduler for it, as Smash Ultimate's 120/240 FPS exefs mods do on the console). The
+ * clock then ticks 120/240 times a second; `display` pacing follows a monitor whose rate is that
+ * many refreshes or a multiple of it, else the clock; the renderers never block on the monitor
+ * (FIFO / sync interval 1) then. Online matches, SSBU_SPEED and run-ahead stay at 60 (display_refresh_mult).
  * SSBU_WINDOW, SSBU_WINDOW_SIZE (WxH) and SSBU_PACING override the file (test runs).
  *
  * Linux: the window is SDL's, made and run by linux/window.c with this file's settings
@@ -65,6 +71,8 @@ static struct {
 } cfg = {MODE_WINDOWED, 1280, 720, 3, 1, 1, 1, PACING_CLOCK, 0, "auto", 1.0f, 1.0, RENDERER_DEFAULT, "16:9", VIEW_HYBRID, 0, TIMER_RIGHT};
 
 static int cfg_runahead;   /* display.ini's runahead (display_runahead) */
+static int cfg_frame_rate = 60;   /* display.ini's frame_rate: 60, 120 or 240 (display_frame_rate) */
+static int cfg_motion;             /* display.ini's motion: 0 off, 1 interpolate, 2 extrapolate (display_motion) */
 
 static const char DEFAULT_INI[] =
     "; display.ini: the game's window and the pacing of its frames. Read when the game starts; the\n"
@@ -123,6 +131,16 @@ static const char DEFAULT_INI[] =
     ";   display: as clock (Linux has no wait for the monitor's refresh here).\n"
 #endif
     "pacing = clock\n"
+    "; frame_rate = 60 | 120 | 240: how many frames a second the game draws and reads the controllers.\n"
+    ";   Its logic stays at 60 frames a second (the game's own frame scheduler, set as Smash Ultimate's\n"
+    ";   120/240 FPS mods set it), so it plays at its normal speed. Online matches always run at 60.\n"
+    ";   The PC has to keep up: a frame it misses is a slowdown. Smoothest on a 120/240 Hz or VRR monitor.\n"
+    "frame_rate = 60\n"
+    "; motion = off | interpolate | extrapolate: with frame_rate 120 or 240, the pictures between two logic frames show\n"
+    ";   the characters and the camera moving between them instead of standing still (the logic, and every timing in it,\n"
+    ";   is the same). interpolate: smooth, each logic frame fully shown when a 60 frames a second picture would show it.\n"
+    ";   extrapolate: no later than the game's own picture, guessing ahead (a slight overshoot when something turns at once).\n"
+    "motion = off\n"
     "; latency = 1-3: how many frames the graphics card may work ahead. Lower is more responsive.\n"
     ";   (the Vulkan renderer keeps 2 at least: with 1 the processor and the card wait for each other every frame)\n"
     "latency = 3\n"
@@ -197,6 +215,23 @@ static void parse_window(const char *v) {
     else if (!_stricmp(v, "borderless")) cfg.mode = MODE_BORDERLESS;
     else if (!_stricmp(v, "fullscreen")) cfg.mode = MODE_FULLSCREEN;
     else fprintf(stderr, "[display] window is windowed, borderless or fullscreen, not '%s'\n", v);
+}
+
+/* motion = off | interpolate | extrapolate */
+static int parse_motion(const char *v, const char *where) {
+    if (!_stricmp(v, "off") || !strcmp(v, "0")) return 0;
+    if (!_stricmp(v, "interpolate") || !strcmp(v, "1")) return 1;
+    if (!_stricmp(v, "extrapolate") || !strcmp(v, "2")) return 2;
+    fprintf(stderr, "[display] %s: motion is off, interpolate or extrapolate, not '%s': off it is\n", where, v);
+    return 0;
+}
+
+/* frame_rate = 60 | 120 | 240 */
+static int parse_frame_rate(const char *v, const char *where) {
+    int fps = atoi(v);
+    if (fps == 60 || fps == 120 || fps == 240) return fps;
+    fprintf(stderr, "[display] %s: frame_rate is 60, 120 or 240, not '%s': 60 it is\n", where, v);
+    return 60;
 }
 
 static void parse_pacing(const char *v) {
@@ -285,6 +320,8 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else if (!_stricmp(key, "width")) cfg.width = atoi(value);
         else if (!_stricmp(key, "height")) cfg.height = atoi(value);
         else if (!_stricmp(key, "pacing")) parse_pacing(value);
+        else if (!_stricmp(key, "frame_rate")) cfg_frame_rate = parse_frame_rate(value, path);
+        else if (!_stricmp(key, "motion")) cfg_motion = parse_motion(value, path);
         else if (!_stricmp(key, "latency")) cfg.latency = atoi(value);
         else if (!_stricmp(key, "low_latency")) cfg.low_latency = atoi(value) != 0;
         else if (!_stricmp(key, "runahead")) (void)value;   /* (ignored: run-ahead is off for everyone, issue #250; SSBU_RUNAHEAD only) */
@@ -320,6 +357,8 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     if ((env = getenv("SSBU_GPU")) && *env) snprintf(cfg.gpu, sizeof cfg.gpu, "%s", env);
     if ((env = getenv("SSBU_WINDOW")) && *env) parse_window(env);
     if ((env = getenv("SSBU_PACING")) && *env) parse_pacing(env);
+    if ((env = getenv("SSBU_FRAME_RATE")) && *env) cfg_frame_rate = parse_frame_rate(env, "SSBU_FRAME_RATE");
+    if ((env = getenv("SSBU_MOTION")) && *env) cfg_motion = parse_motion(env, "SSBU_MOTION");
     if ((env = getenv("SSBU_LOW_LATENCY")) && *env) cfg.low_latency = atoi(env) != 0;
     if ((env = getenv("SSBU_WINDOW_SIZE")) && *env) sscanf(env, "%dx%d", &cfg.width, &cfg.height);
     if ((env = getenv("SSBU_RENDER_SCALE")) && *env) parse_render_scale(env);
@@ -352,6 +391,34 @@ int display_runahead(void) {
     return n < 0 ? 0 : n > 3 ? 3 : n;
 }
 void display_set_runahead(int frames) { InterlockedExchange(&saved_runahead, frames < 0 ? 0 : frames > 3 ? 3 : frames); }
+/* frame_rate (display.ini, SSBU_FRAME_RATE over it; the settings menu changes it at once) */
+static volatile LONG saved_frame_rate = -1;
+int display_frame_rate(void) { load(); return saved_frame_rate > 0 ? (int)saved_frame_rate : cfg_frame_rate; }
+static volatile LONG saved_motion = -1;
+int display_motion(void) { load(); return saved_motion >= 0 ? (int)saved_motion : cfg_motion; }
+void display_set_motion(int mode) { InterlockedExchange(&saved_motion, mode < 0 ? 0 : mode > 2 ? 2 : mode); }
+void display_set_frame_rate(int fps) { InterlockedExchange(&saved_frame_rate, fps >= 240 ? 240 : fps >= 120 ? 120 : 60); }
+int net_match_now(void);     /* (host.c: a networked match set up or under way) */
+/* The refreshes the game sees in a 60 Hz frame now: frame_rate / 60, but 1 while a networked match is set up or under way
+ * (both games count one main-loop pass a logic frame: rollback's safe points, its fixed clock, the delay netcode's
+ * frames), with SSBU_SPEED (its refresh per frame shown) and with run-ahead (SSBU_RUNAHEAD: a pass is a logic frame). */
+volatile int display_frame_rate_refused;   /* (hle_frame_rate.c: not this game's build or speed table: 60 stays) */
+int game_fight_on(void);     /* (hle_fight_test.c) */
+int display_refresh_mult(void) {
+    load();
+    int fps = display_frame_rate(), m = fps >= 240 ? 4 : fps >= 120 ? 2 : 1;
+    if (m == 1 || display_frame_rate_refused) return 1;
+#ifndef _WIN32
+    return 1;   /* (120/240 are Windows-only for now: net_match_now() does not see every networked match elsewhere) */
+#endif
+    static int runahead = -1;
+    if (runahead < 0) { const char *e = getenv("SSBU_RUNAHEAD"); runahead = e && *e ? atoi(e) > 0 : 0; }
+    if (cfg.speed != 1 || runahead) return 1;
+    static volatile int net_fight;   /* (a networked match seen: 60 until its fight is over, even if the match flag drops mid-fight) */
+    if (net_match_now()) { net_fight = 1; return 1; }
+    if (net_fight) { if (game_fight_on()) return 1; net_fight = 0; }
+    return m;
+}
 Pacing display_pacing(void) { load(); return cfg.pacing; }
 const char *display_gpu(void) { load(); return cfg.gpu; }
 float display_render_scale(void) { load(); return cfg.render_scale; }
@@ -884,13 +951,16 @@ int display_present_sync(void) {   /* (only while `display` pacing is chosen and
                                      * 124 ms stutters where mailbox shows the newest frame at the next refresh instead -
                                      * owner's log, 2026-11-17: avg 17.45 ms, worst 107 ms off a 60 Hz frame) */
     load();
+    /* (frame_rate 120/240: never a present that waits for the monitor - the game's refreshes would follow its rate, and
+     * its logic with them; the clock paces the frames, mailbox / sync interval 0 shows the newest) */
+    if (display_refresh_mult() > 1) return 0;
     return cfg.pacing == PACING_DISPLAY && cfg.speed == 1 && vblank_failed_flag != 0;
 }
 
 int display_pacing_vrr(void) { load(); return cfg.pacing == PACING_VRR && cfg.speed == 1; }
 /* (`display` pacing on a monitor whose rate 60 does not divide: the renderer presents without blocking, but only where that
  * is tear-free - mailbox. A card without mailbox gets FIFO there, as before, rather than immediate's tearing) */
-int display_present_odd_rate(void) { load(); return cfg.pacing == PACING_DISPLAY && cfg.speed == 1 && vblank_odd_rate != 0; }
+int display_present_odd_rate(void) { load(); return cfg.pacing == PACING_DISPLAY && cfg.speed == 1 && vblank_odd_rate != 0 && display_refresh_mult() == 1; }
 
 void *gfx_display_output(void);   /* gpu_d3d11.c: the swap chain's output (IDXGIOutput, referenced), or NULL */
 
@@ -906,19 +976,23 @@ static int monitor_hz(void) {
     return (int)dm.dmDisplayFrequency;
 }
 
-/* `display` pacing: the next vblank the game should see, or 0 to use the clock this time. */
-static int vblank_tick(void) {
+/* `display` pacing: the next vblank the game should see, or 0 to use the clock this time. mult: the game's refreshes in a
+ * 60 Hz frame (frame_rate / 60, display_refresh_mult): a tick every per60 / mult of the monitor's, when that is whole. */
+static int vblank_tick(int mult) {
     static IDXGIOutput *output;
-    static int divisor, failed, hz_now;
+    static int per60, failed, hz_now, mult_was = 1, told;
     static LONGLONG last;   /* (the refresh the last tick returned at, performance counter; 0 none) */
     if (failed) { InterlockedExchange(&vblank_hz, 0); return 0; }
+    if (mult != mult_was) { mult_was = mult; last = 0; told = 0; }
     if (InterlockedExchange(&monitor_changed, 0) || !output) {
         if (output) IDXGIOutput_Release(output);
         output = (IDXGIOutput *)gfx_display_output();
         int hz = monitor_hz();
         hz_now = hz;
         last = 0;
-        divisor = hz >= 58 && hz <= 61 ? 1 : hz >= 118 && hz <= 121 ? 2 : hz >= 238 && hz <= 241 ? 4 : 0;
+        told = 0;
+        per60 = hz >= 58 && hz <= 61 ? 1 : hz >= 118 && hz <= 121 ? 2 : hz >= 238 && hz <= 241 ? 4 : 0;
+        int divisor = per60;
         static int logged_hz = -1;
         if (hz != logged_hz && output) {
             logged_hz = hz;
@@ -930,8 +1004,17 @@ static int vblank_tick(void) {
                                 "refresh; a 60/120/240 Hz mode or VRR is evenly paced\n", hz, hz / 60.0);
         }
     }
+    /* (frame_rate 120/240: the monitor's refreshes per tick of the game's; none whole - 240 frames on a 120 Hz monitor -
+     * and the clock paces them, the newest shown at each refresh) */
+    int divisor = per60 && per60 % mult == 0 ? per60 / mult : 0;
+    if (mult > 1 && !told && output) {
+        told = 1;
+        fprintf(stderr, divisor ? "[display] %d frames a second on a %d Hz monitor: display pacing, a frame every %d refresh%s\n"
+                                : "[display] %d frames a second on a %d Hz monitor: clock pacing (display pacing needs a monitor of that rate or a multiple)\n",
+                60 * mult, hz_now, divisor, divisor == 1 ? "" : "es");
+    }
     /* (again at each monitor change: a window moved to a 60 Hz one. Kept for the log: it no longer changes the present mode.) */
-    InterlockedExchange(&vblank_odd_rate, !divisor && hz_now > 61 ? 1 : 0);
+    InterlockedExchange(&vblank_odd_rate, !per60 && hz_now > 61 ? 1 : 0);
     InterlockedExchange(&vblank_hz, output && divisor ? hz_now : 0);
     if (!output || !divisor) { last = 0; return 0; }
     int extra = vblank_extra > 0 && InterlockedDecrement(&vblank_extra) >= 0;   /* (one refresh more this tick, at most: a 120 Hz monitor's 8 ms) */
@@ -981,10 +1064,11 @@ static int monitor_hz(void) { return (int)refresh_hz; }
 /* `display` pacing: the next refresh the game should see - every 1st/2nd/4th of a 60/120/240 Hz
  * display's (a display link's) - or 0 to use the clock this time: at other rates, and for a
  * second after the display stopped refreshing (asleep). */
-static int vblank_tick(void) {
+static int vblank_tick(int mult) {
     static int logged_hz = -1, quiet;
     static ULONGLONG retry_at;
     int hz = monitor_hz(), divisor = hz >= 58 && hz <= 61 ? 1 : hz >= 118 && hz <= 121 ? 2 : hz >= 238 && hz <= 241 ? 4 : 0;
+    divisor = divisor && divisor % mult == 0 ? divisor / mult : 0;   /* (frame_rate 120/240: per tick of the game's) */
     if (hz != logged_hz) {
         logged_hz = hz;
         fprintf(stderr, "[display] %d Hz display: %s\n", hz, divisor ? "display pacing" : "clock pacing (display pacing needs 60, 120 or 240 Hz)");
@@ -998,8 +1082,9 @@ static int vblank_tick(void) {
 #else
 static int monitor_hz(void) { return (int)refresh_hz; }
 
-static int vblank_tick(void) {
+static int vblank_tick(int mult) {
     static int logged;
+    (void)mult;
     if (!logged++) fprintf(stderr, "[display] display pacing: no wait for the monitor's refresh on Linux, clock pacing instead\n");
     return 0;
 }
@@ -1032,12 +1117,25 @@ void display_tick_stretch_reset(void) {   /* (a fight starts: nothing owed from 
     InterlockedExchange(&vblank_extra, 0);
 }
 
+static volatile LONG tick_mult = 1;   /* (the refreshes per 60 Hz frame the last wait was for: display_tick_mult) */
+int display_tick_mult(void) { return (int)tick_mult; }
+
 void display_wait_tick(void) {
     static LARGE_INTEGER freq, base;
     static long long ticks;
     static HANDLE timer;
-    static int logged;
+    static int logged, mult_was = 1;
     load();
+    /* frame_rate: 60, 120 or 240 refreshes a second (1, 2 or 4 a 60 Hz frame); a change starts the clock again from now */
+    int mult = display_refresh_mult();
+    long long rate = 60LL * mult;
+    if (mult != mult_was) {
+        fprintf(stderr, "[display] the game now runs %lld frames a second%s\n", rate,
+                mult > 1 ? " (its logic at 60)" : display_frame_rate() > 60 ? " (frame_rate is for offline play: online, SSBU_SPEED and run-ahead run at 60)" : "");
+        mult_was = mult;
+        if (freq.QuadPart) { QueryPerformanceCounter(&base); ticks = 0; }
+    }
+    InterlockedExchange(&tick_mult, mult);
     if (!freq.QuadPart) {
         QueryPerformanceFrequency(&freq);
         QueryPerformanceCounter(&base);
@@ -1053,25 +1151,25 @@ void display_wait_tick(void) {
     }
     /* (`display` at a rate 60 does not divide - 165 Hz: vblank_tick notes it and returns 0 until the monitor changes, and
      * this is the clock's own path, as clock pacing is, with the renderer presenting in sync instead of this wait) */
-    if (cfg.pacing == PACING_DISPLAY && vblank_tick()) {   /* the clock restarts from here if it is needed later */
+    if (cfg.pacing == PACING_DISPLAY && vblank_tick(mult)) {   /* the clock restarts from here if it is needed later */
         QueryPerformanceCounter(&base);
         ticks = 0;
         return;
     }
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
-    long long period = freq.QuadPart / 60;
+    long long period = freq.QuadPart / rate;
     /* (late by two refreshes: skip, don't burst. With the renderer presenting in sync (display_present_sync) a present that
      * waited for the monitor is what made it late: the clock starts again from here at once, so it neither sends refreshes
      * back to back nor stays behind - rollback's time sync below, which moves the clock later, then still slows the game) */
-    if (now.QuadPart - (base.QuadPart + ticks * freq.QuadPart / 60) > (display_present_sync() ? period / 8 : 2 * period)) {
+    if (now.QuadPart - (base.QuadPart + ticks * freq.QuadPart / rate) > (display_present_sync() ? period / 8 : 2 * period)) {
         base = now;
         ticks = 0;
     }
     ticks++;
     {   LONG64 st = InterlockedExchange64(&tick_stretch_us, 0);   /* (rollback's time sync: this refresh and the next ones later) */
         if (st > 0) base.QuadPart += st * freq.QuadPart / 1000000; }
-    long long due = base.QuadPart + ticks * freq.QuadPart / 60;
+    long long due = base.QuadPart + ticks * freq.QuadPart / rate;
     for (;;) {
         QueryPerformanceCounter(&now);
         long long left = due - now.QuadPart;
@@ -1110,6 +1208,114 @@ void display_speed_tick(void) {
 void display_loading_note(const char *note) {
 #ifdef _WIN32
     la_note(note);
+#else
+    (void)note;
+#endif
+}
+
+/* (rollback, the wait before a match) The game's thread holds still while the other game finishes loading, and nothing is
+ * drawn: the stage's last picture just stands there for seconds. This puts the loading animation's picture (the figure
+ * and the note in the bottom-right corner) on a black popup over the game window for that wait. The renderer owns the
+ * game window after the first present, so the popup is a window of its own (topmost, never takes the focus), on its own
+ * thread so it keeps moving while the game's thread waits. It needs the animation's pictures; without them nothing
+ * is shown. display_wait_popup("text") shows it, NULL hides it. */
+#ifdef _WIN32
+static HWND wp_hwnd;
+static HANDLE wp_ready;
+static int wp_vch;                  /* the game window's client height the popup is sized from */
+static int wp_x, wp_y, wp_w;        /* the popup's place on the screen and its size (a square) */
+#define WP_SHOW (WM_APP + 1)
+/* One picture of the popup: Kong and his arm drawn into a 32-bit bitmap, then every pixel given its alpha - a translucent dark
+ * circle with a thin light ring, an anti-aliased edge, Kong and the arm at full strength - and put on the screen with
+ * UpdateLayeredWindow (a window region would have a jagged edge). */
+static void wp_render(HWND h) {
+    if (wp_w <= 0) return;
+    HDC sdc = GetDC(NULL), mdc = CreateCompatibleDC(sdc);
+    BITMAPINFO bi; memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader; bi.bmiHeader.biWidth = wp_w; bi.bmiHeader.biHeight = -wp_w;
+    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+    void *bits = NULL;
+    HBITMAP bm = CreateDIBSection(sdc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    if (bm && bits) {
+        HBITMAP old = (HBITMAP)SelectObject(mdc, bm);
+        memset(bits, 0, (size_t)wp_w * wp_w * 4);
+        la_paint_popup(mdc, wp_w, wp_vch);
+        const char *e = getenv("SSBU_WAIT_POPUP_ALPHA"); int base = e && *e ? atoi(e) : 165;
+        base = base < 0 ? 0 : base > 255 ? 255 : base;
+        float R = (float)wp_w / 2, ring = wp_vch / 360 < 2 ? 2.0f : (float)(wp_vch / 360);
+        unsigned char *px = (unsigned char *)bits;
+        for (int y = 0; y < wp_w; y++) for (int x = 0; x < wp_w; x++, px += 4) {
+            float dx = (float)x + 0.5f - R, dy = (float)y + 0.5f - R, d = sqrtf(dx * dx + dy * dy);
+            float outer = R - d + 0.5f; outer = outer < 0 ? 0 : outer > 1 ? 1 : outer;      /* (the circle's edge) */
+            float rc = d - (R - ring) + 0.5f; rc = rc < 0 ? 0 : rc > 1 ? 1 : rc;           /* (the ring: the outer `ring` pixels) */
+            int m = px[0] > px[1] ? px[0] : px[1]; if (px[2] > m) m = px[2];
+            float a = (float)(base + (255 - base) * m / 255);   /* (what is drawn brighter than black gets opaque: Kong stays clear) */
+            float c0 = px[0], c1 = px[1], c2 = px[2];
+            a = a * (1 - rc) + 255.0f * rc; c0 = c0 * (1 - rc) + 200.0f * rc; c1 = c1 * (1 - rc) + 200.0f * rc; c2 = c2 * (1 - rc) + 200.0f * rc;
+            px[0] = (unsigned char)(c0 * outer); px[1] = (unsigned char)(c1 * outer); px[2] = (unsigned char)(c2 * outer);
+            px[3] = (unsigned char)(a * outer);
+        }
+        POINT pd = {wp_x, wp_y}, ps = {0, 0}; SIZE sz = {wp_w, wp_w};
+        BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        UpdateLayeredWindow(h, sdc, &pd, &sz, mdc, &ps, 0, &bf, ULW_ALPHA);
+        SelectObject(mdc, old);
+    }
+    if (bm) DeleteObject(bm);
+    DeleteDC(mdc); ReleaseDC(NULL, sdc);
+}
+static LRESULT CALLBACK wp_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); EndPaint(h, &ps); return 0; }   /* (drawn by wp_render only) */
+    case WM_TIMER: wp_render(h); return 0;
+    case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+    case WP_SHOW:
+        if (w) {
+            RECT r; POINT tl = {0, 0};
+            if (!game_window || GetForegroundWindow() != game_window) return 0;   /* (a topmost popup would float over whatever the player switched to) */
+            if (!GetClientRect(game_window, &r) || !ClientToScreen(game_window, &tl)) return 0;   /* (the client area, not the borders) */
+            wp_vch = r.bottom;
+            wp_w = la_popup_dia(wp_vch);
+            int margin = (int)((float)wp_vch * LA_MARGIN);      /* (the animation's own distance from the corner) */
+            wp_x = tl.x + r.right - margin - wp_w; wp_y = tl.y + r.bottom - margin - wp_w;
+            QueryPerformanceCounter(&LA.t0);
+            SetWindowPos(h, HWND_TOPMOST, wp_x, wp_y, wp_w, wp_w, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            wp_render(h);
+            SetTimer(h, 1, 33, NULL);
+        } else { KillTimer(h, 1); ShowWindow(h, SW_HIDE); }
+        return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static DWORD WINAPI wp_thread(LPVOID unused) {
+    (void)unused;
+    WNDCLASSW wc = {0};
+    wc.lpfnWndProc = wp_proc; wc.hInstance = GetModuleHandleW(NULL); wc.lpszClassName = L"SsbuWaitPopup";
+    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    RegisterClassW(&wc);
+    wp_hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_LAYERED, wc.lpszClassName, L"", WS_POPUP,
+                              0, 0, 64, 64, NULL, NULL, wc.hInstance, NULL);
+    SetEvent(wp_ready);
+    MSG msg;
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+    return 0;
+}
+#endif
+void display_wait_popup(const char *note) {
+#ifdef _WIN32
+    if (!(LA.kong && LA.arm && LA.back && LA.from_hdc) || getenv("SSBU_WAIT_POPUP_OFF")) return;
+    static int failed;   /* (a popup that could not be made is not tried again) */
+    if (failed) return;
+    if (!wp_hwnd) {
+        if (!note) return;
+        wp_ready = CreateEventW(NULL, TRUE, FALSE, NULL);
+        HANDLE t = wp_ready ? CreateThread(NULL, 0, wp_thread, NULL, 0, NULL) : NULL;
+        if (!t) { failed = 1; return; }
+        CloseHandle(t);
+        WaitForSingleObject(wp_ready, 2000);
+        if (!wp_hwnd) { failed = 1; return; }
+    }
+    PostMessageW(wp_hwnd, WP_SHOW, note != NULL, 0);
 #else
     (void)note;
 #endif

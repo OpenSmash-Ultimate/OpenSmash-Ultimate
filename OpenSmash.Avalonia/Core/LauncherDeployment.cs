@@ -15,7 +15,7 @@ public sealed record LauncherDeployment(string Executable, DesktopPlatform Platf
             CopyApp(dir.FullName, destination);
             return Path.Combine(destination, "Contents", "MacOS", Path.GetFileName(Executable));
         }
-        string target = Path.Combine(project, Platform == DesktopPlatform.Windows ? "OpenSmash.Avalonia.exe" : "OpenSmash.Avalonia");
+        string target = Path.Combine(project, Platform == DesktopPlatform.Windows ? "OpenSmash.Avalonia.exe" : "OpenSmash-Launcher");
         File.Copy(Executable, target, overwrite:true);
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(target, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
         return target;

@@ -120,6 +120,8 @@ namespace OpenSmash.Core
             Service = service ?? AccountService.Load(root);
             string dir = Path.Combine(root ?? Path.GetDirectoryName(Updater.ExePath), "config");
             sessionFile = Path.Combine(dir, "session.dat");
+            // (#507) some hosts in front of the accounts server refuse requests without a User-Agent
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("OpenSmash-Launcher/" + Updater.Current);
         }
 
         /// <summary>the last session of this PC: refreshed and its profile read. false (no exception) when there is none or
@@ -246,6 +248,9 @@ namespace OpenSmash.Core
         /// <summary>a public read with the publishable key only</summary>
         public Task<string> AnonAsync(string path) => RequestAsync("GET", path, null, Service.Key);
 
+        /// <summary>a public RPC with the publishable key only (POST /rest/v1/rpc/&lt;name&gt;): the answer's text</summary>
+        public Task<string> AnonRpcAsync(string name, string body) => RequestAsync("POST", "/rest/v1/rpc/" + name, body ?? "{}", Service.Key);
+
         public async Task<string> AccessTokenAsync() { await EnsureAccessAsync(); return access; }
 
         async Task EnsureAccessAsync()
@@ -302,7 +307,10 @@ namespace OpenSmash.Core
             if (body != null) rq.Content = new StringContent(body, Encoding.UTF8, "application/json");
             HttpResponseMessage rs;
             try { rs = await http.SendAsync(rq); }
-            catch (Exception e) when (e is HttpRequestException || e is TaskCanceledException) { throw new AccountException("Cannot reach the accounts server: " + e.Message); }
+            catch (Exception e) when (e is HttpRequestException || e is TaskCanceledException)
+            {   // (#507) the inner exception names the real cause (DNS, TLS, refused)
+                throw new AccountException("Cannot reach the accounts server: " + e.Message + (e.InnerException != null ? " (" + e.InnerException.Message + ")" : ""));
+            }
             using (rs)
             {
                 string text = await rs.Content.ReadAsStringAsync();

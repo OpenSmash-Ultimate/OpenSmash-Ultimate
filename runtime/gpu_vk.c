@@ -39,7 +39,6 @@
 #include "gpu_spirv.h"
 #include "gpu_texture.h"
 #include "gpu_vulkan.h"
-#include "gpu_wait_budget.h"
 #include "gpu_watch.h"
 #include "gpu_window.h"
 #include "debug_profile.h"
@@ -875,9 +874,19 @@ static Surface *find_color(u64 guest) {
 }
 
 /* ---- the lock --------------------------------------------------------------------------------- */
+static __declspec(thread) u64 pending_wrote_lo, pending_wrote_hi;
+static __declspec(thread) u64 pending_wrote_ghi;   /* (the guest address the pending range ends at; 0: not known, no joining) */
+static void note_wrote(u64 va, u64 bytes);
+static void vk_flush_pending_writes(void) {
+    if (!pending_wrote_hi) return;
+    u64 lo = pending_wrote_lo, hi = pending_wrote_hi;
+    pending_wrote_hi = 0;
+    note_wrote(lo, hi - lo);
+}
 static void enter(void) {
     EnterCriticalSection(&lock);
     last_enter_thread = GetCurrentThreadId();
+    vk_flush_pending_writes();
 }
 static void leave(void) { LeaveCriticalSection(&lock); }
 
@@ -1208,9 +1217,13 @@ static void vk_present(u64 guest, u32 width, u32 height) {
     InterlockedAdd64((volatile LONG64 *)&vk_ns_present, (LONG64)(rt_clock_ns() - t0));
 }
 void hitch_present(void);   /* debug_profile.c (SSBU_HITCH's frame accounting, as gpu_d3d11.c's present) */
+void watchdog_frame(void);   /* debug_watchdog.c (the freeze watchdog's "a frame was shown", without starting it: once the rollback
+                              * code had started it, a Vulkan game that kept drawing wrote freeze reports and minidumps 5, 30 and
+                              * 120 s into every online match; offline it stays off on Vulkan, as before) */
 static void vk_present_(u64 guest, u32 width, u32 height) {
     (void)width; (void)height;
     enter();
+    watchdog_frame();
     hitch_present();
     gfx_stat_presented++;
     if (gfx_stat_presented == 600) trial_passed();   /* (renderer = auto: past its first seconds) */
@@ -1378,11 +1391,20 @@ static Alloc dummy_image_mem[3];
 static VkImageView dummy_views[8];   /* by TEX_* (TEX_ARRAY_3D: none) */
 static VkSampler default_sampler, default_compare;
 
+/* Return guest address g if [va, va + size) maps contiguously from g; skip the second walk inside one 4 KB page. */
+static inline u64 gpu_va_contig(u64 va, u64 size) {
+    if (!size) return 0;
+    u64 g = gpu_va_to_guest(va);
+    if (!g) return 0;
+    if ((va & 0xFFF) + size <= 0x1000) return g;
+    return gpu_va_to_guest(va + size - 1) == g + size - 1 ? g : 0;
+}
+
 /* Copy guest GPU memory [va, va + size) into dst (zeros where unmapped), as gpu_d3d11.c's read_gpu. */
 static void read_gpu(u64 va, u32 size, void *dst) {
-    u64 g = gpu_va_to_guest(va);
     if (!size) return;
-    if (g && gpu_va_to_guest(va + size - 1) == g + size - 1) { memcpy(dst, P(void, g), size); return; }
+    u64 g = gpu_va_contig(va, size);
+    if (g) { memcpy(dst, P(void, g), size); return; }
     for (u32 done = 0; done < size;) {
         u32 n = 0x1000 - (u32)((va + done) & 0xFFF);
         if (n > size - done) n = size - done;
@@ -1399,11 +1421,30 @@ static void kept_written(u64 lo, u64 hi);
  * gpu_d3d11.c's, overflows: a frame's constant buffer loads are many thousands). */
 static u32 block_gen[1 << 16];
 static u64 any_gen;
+#define WROTE_LOG 256
+static struct { u64 lo, hi; } wrote_log[WROTE_LOG];
+static u64 write_seq, any_wseq;
+static u64 block_wseq[1 << 16];
 #define KEPT_BLOCK(block) ((u32)((u64)(block) * 0x9E3779B97F4A7C15ull >> 48))
 static u64 writes_over(u64 g, u64 size) {
     u64 h = any_gen;
     for (u64 b = g >> 16; b <= (g + size - 1) >> 16; b++) h = h * 0x100000001B3ull + block_gen[KEPT_BLOCK(b)];
     return h;
+}
+static int unwritten_since(u64 seq, u64 g, u64 size) {
+    if (seq == write_seq) return 1;
+    if (seq < any_wseq || !g || !size) return 0;
+    if (write_seq - seq <= WROTE_LOG) {
+        u64 end = g + size;
+        for (u64 s = seq; s < write_seq; s++) {
+            u64 lo = wrote_log[s & (WROTE_LOG - 1)].lo, hi = wrote_log[s & (WROTE_LOG - 1)].hi;
+            if (lo < end && g < hi) return 0;
+        }
+        return 1;
+    }
+    for (u64 b = g >> 16; b <= (g + size - 1) >> 16; b++)
+        if (block_wseq[KEPT_BLOCK(b)] > seq) return 0;
+    return 1;
 }
 static int watched(u64 g, u64 size);
 /* What the GPU's own commands wrote to guest memory (constant buffer loads, inline writes, copies,
@@ -1411,11 +1452,23 @@ static int watched(u64 g, u64 size);
  * changes what its draws read, so the same bytes from the same place are uploaded once unless one of
  * these writes touched them since. */
 static void note_wrote(u64 va, u64 bytes) {   /* bytes == 0: anywhere */
-    u64 lo = 0, hi = ~0ull, g = bytes ? gpu_va_to_guest(va) : 0;
-    if (g && gpu_va_to_guest(va + bytes - 1) == g + bytes - 1) { lo = g; hi = g + bytes; }
+    u64 lo = 0, hi = ~0ull, g = bytes ? gpu_va_contig(va, bytes) : 0;
+    if (g) { lo = g; hi = g + bytes; }
     kept_written(lo, hi);
-    if (hi - lo > (16ull << 20)) any_gen++;   /* (somewhere unknown, or much: everything) */
-    else for (u64 b = lo >> 16; b <= (hi - 1) >> 16; b++) block_gen[KEPT_BLOCK(b)]++;
+    if (hi - lo > (16ull << 20)) {
+        write_seq++;
+        any_gen++;   /* (somewhere unknown, or much: everything) */
+        any_wseq = write_seq;
+    } else {
+        wrote_log[write_seq & (WROTE_LOG - 1)].lo = lo;
+        wrote_log[write_seq & (WROTE_LOG - 1)].hi = hi;
+        write_seq++;
+        for (u64 b = lo >> 16; b <= (hi - 1) >> 16; b++) {
+            u32 idx = KEPT_BLOCK(b);
+            block_gen[idx]++;
+            block_wseq[idx] = write_seq;
+        }
+    }
 }
 
 /* Constant buffers of 4 KB or more stay on the GPU between draws (gpu_d3d11.c's "kept" buffers: NVN binds
@@ -1462,8 +1515,8 @@ static void kept_written(u64 lo, u64 hi) {
 /* The kept buffer for [va, va + size), or NULL (then uploaded with the rest). */
 static VkBufferView kept_cb(u64 va, u32 size) {
     if (size < 0x1000) return VK_NULL_HANDLE;
-    u64 g = gpu_va_to_guest(va);
-    if (!g || gpu_va_to_guest(va + size - 1) != g + size - 1 || !watched(g, size)) return VK_NULL_HANDLE;
+    u64 g = gpu_va_contig(va, size);
+    if (!g || !watched(g, size)) return VK_NULL_HANDLE;
     Kept *set = &kept[((va >> 4) * 0x9E3779B97F4A7C15ull >> 54) * KEPT_WAYS], *e = NULL, *lru = &set[0];
     for (u32 w = 0; w < KEPT_WAYS && !e; w++) {
         if (set[w].va == va && set[w].size == size && set[w].guest == g) e = &set[w];
@@ -1515,7 +1568,7 @@ static VkBufferView kept_cb(u64 va, u32 size) {
 /* Guest GPU memory [va, va + size) as a raw buffer for a shader: copied into the frame's upload memory
  * (the same range again in the same submission, unwritten since: the view made for it). */
 static u64 vk_stat_cb_copies[2], vk_stat_cb_bytes[2];
-typedef struct Upload { u64 va, serial, batch, gen; u32 size; VkBufferView view; } Upload;   /* (gen: writes_over when made) */
+typedef struct Upload { u64 va, g, serial, batch, wseq, gen; u32 size; VkBufferView view; } Upload;   /* (wseq/gen: unwritten_since/writes_over when made) */
 static Upload uploads[8192];
 /* Data a draw reads that upload() could not hand over (no upload memory left, no view): the draw reads zeros instead -
  * geometry gone or black. Said in the log the first times, with why: the cause of a black picture where it happens. */
@@ -1526,19 +1579,35 @@ static VkBufferView upload_lost(u32 size, const char *why) {
                         "(%llu times so far)\n", size, why, vk_stat_upload_lost);
     return dummy_texels;
 }
+static VkBufferView upload(u64 va, u32 size);
+/* Bytes of the host's (gpu_motion.c's blended constants) as a raw buffer for a shader, in the frame's upload memory. */
+static VkBufferView upload_host(const void *data, u32 size) {
+    u32 padded = (size + 15) & ~15u;
+    VkBuffer buf;
+    VkDeviceSize off;
+    cmd();
+    u8 *dst = arena(padded, texel_align, &buf, &off);
+    if (!dst) return upload_lost(padded, "no upload memory left this frame");
+    memcpy(dst, data, size);
+    if (padded > size) memset(dst + size, 0, padded - size);
+    vk_stat_upload_bytes += padded;
+    VkBufferView v = arena_view(buf, off, padded);
+    return v ? v : upload_lost(padded, "vkCreateBufferView failed");
+}
 static VkBufferView upload(u64 va, u32 size) {
     if (!va || !size) return dummy_texels;
     u32 padded = (size + 15) & ~15u;
     if (padded > limits.maxTexelBufferElements * 4ull) padded = size = limits.maxTexelBufferElements * 4u;
-    u64 g = gpu_va_to_guest(va);
-    const u8 *src = g && gpu_va_to_guest(va + size - 1) == g + size - 1 ? P(const u8, g) : NULL;
     Upload *u = &uploads[((va >> 4) * 0x9E3779B97F4A7C15ull ^ size) >> 51 & 8191];
     cmd();
-    if (src && u->view && u->va == va && u->size == size && u->serial == frames[frame_at].serial && u->batch == gpu_stat_batches &&
-        u->gen == writes_over(g, size)) {
+    if (u->view && u->va == va && u->size == size && u->serial == frames[frame_at].serial && u->batch == gpu_stat_batches &&
+        (unwritten_since(u->wseq, u->g, size) || u->gen == writes_over(u->g, size))) {
+        u->wseq = write_seq;
         vk_stat_reused++;
         return u->view;
     }
+    u64 g = gpu_va_contig(va, size);
+    const u8 *src = g ? P(const u8, g) : NULL;
     VkBuffer buf;
     VkDeviceSize off;
     u8 *dst = arena(padded, texel_align, &buf, &off);
@@ -1549,7 +1618,7 @@ static VkBufferView upload(u64 va, u32 size) {
     vk_stat_upload_bytes += padded;
     VkBufferView v = arena_view(buf, off, padded);
     if (!v) return upload_lost(padded, "vkCreateBufferView failed");
-    *u = (Upload){va, frames[frame_at].serial, gpu_stat_batches, src ? writes_over(g, size) : 0, size, src ? v : VK_NULL_HANDLE};
+    *u = (Upload){va, g, frames[frame_at].serial, gpu_stat_batches, write_seq, src ? writes_over(g, size) : 0, size, src ? v : VK_NULL_HANDLE};
     return v;
 }
 
@@ -1817,19 +1886,6 @@ static int wait_makes(void) {
 static void wait_for(volatile LONG *state) {
     while (!*state) SwitchToThread();
 }
-/* SSBU_VK_WAIT_BUDGET=<ms>: what a frame may spend waiting for new pipelines and graphics programs, all
- * together (default 6; 0: never wait). Most are ready in a few ms; the rest were not ready after the 100 ms
- * the wait used to last either, so each of those was a 100 ms hitch for a skipped draw (2026-11-13's log:
- * 47 of 58). Past the budget the draw is skipped and the maker carries on: the effect draws from its next use. */
-static WaitBudget wait_budget = {~0ull, 0, ~0ull};
-static u64 budget_until(u32 cap_ms) {
-    if (wait_budget.budget_ns == ~0ull) {
-        const char *v = getenv("SSBU_VK_WAIT_BUDGET");
-        wait_budget.budget_ns = (v && *v ? (u64)atoi(v) : 6) * 1000000ull;
-    }
-    return wait_budget_until(&wait_budget, gfx_stat_presented, rt_clock_ns(), cap_ms * 1000000ull);
-}
-
 /* What each stage's constant buffer slot was given last in this frame, with a copy of the bytes (gpu_d3d11.c's
  * last_upload): the same bytes from the same place again - most of a frame's 64 KB program constants, outside
  * the write-watched area, so not kept - get the same view, compared rather than copied again. */
@@ -1845,7 +1901,7 @@ static int memo_on(void) {   /* 0 off, 1 on, 2 checked */
     }
     return on;
 }
-typedef struct LastCb { u64 va, serial, batch, gen, g; u32 size, cap, run; VkBufferView view; u8 *copy; } LastCb;   /* (run: the bytes mapped, the rest zeros;
+typedef struct LastCb { u64 va, serial, batch, wseq, gen, g; u32 size, cap, run; VkBufferView view; u8 *copy; } LastCb;   /* (run: the bytes mapped, the rest zeros;
  * batch, gen: the submission it was last found the same in, and writes_over then) */
 static LastCb last_cb[2][18];
 static u64 vk_stat_cb_compared, vk_stat_cb_same, vk_stat_cb_unchanged;
@@ -1889,7 +1945,8 @@ static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
     /* (found the same in this submission and unwritten since: as below, without looking through its pages first -
      * a mapping that changes meanwhile counts as a write: note_wrote(0, 0)) */
     if (l->view && l->run && l->va == va && l->size == size && l->batch == gpu_stat_batches && l->serial == frames[frame_at].serial && memo_on() == 1 &&
-        l->gen == writes_over(l->g, l->run)) {
+        (unwritten_since(l->wseq, l->g, l->run) || l->gen == writes_over(l->g, l->run))) {
+        l->wseq = write_seq;
         vk_stat_cb_unchanged++;
         return l->view;
     }
@@ -1906,17 +1963,24 @@ static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
     }
     const u8 *src = run ? P(const u8, g) : NULL;
     cmd();
-    u64 gen = src ? writes_over(g, run) : 0;
+    u64 gen = 0;
+    int have_gen = 0;
     if (src && l->view && l->va == va && l->size == size && l->run == run && l->serial == frames[frame_at].serial) {
         /* (in the submission it was found the same in, unwritten by the GPU's commands since: the same bytes,
          * as upload() takes them - not compared again) */
-        if (l->batch == gpu_stat_batches && l->gen == gen && memo_on()) {
+        if (l->batch == gpu_stat_batches && memo_on() &&
+            (unwritten_since(l->wseq, g, run) || ((have_gen = 1, gen = writes_over(g, run)) == l->gen))) {
             if (memo_on() == 2) { vk_stat_memo_checked++; if (memcmp(l->copy, src, run)) vk_stat_memo_wrong[0]++; }
+            l->wseq = write_seq;
             vk_stat_cb_unchanged++;
             return l->view;
         }
         vk_stat_cb_compared++;
-        if (!memcmp(l->copy, src, run)) { vk_stat_cb_same++; l->batch = gpu_stat_batches; l->gen = gen; l->g = g; return l->view; }
+        if (!memcmp(l->copy, src, run)) {
+            vk_stat_cb_same++; l->batch = gpu_stat_batches; l->wseq = write_seq;
+            l->gen = have_gen ? gen : writes_over(g, run); l->g = g;
+            return l->view;
+        }
     }
     VkBufferView v = size >= 0x1000 ? upload_window(va, size) : VK_NULL_HANDLE;
     if (!v) {
@@ -1930,16 +1994,36 @@ static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
         l->cap = size;
         if (!(l->copy = malloc(size))) { l->cap = 0; l->view = VK_NULL_HANDLE; return v; }
     }
+    if (!have_gen) gen = writes_over(g, run);
     memcpy(l->copy, src, run);
     l->va = va; l->size = size; l->run = run; l->serial = frames[frame_at].serial; l->view = v;
-    l->batch = gpu_stat_batches; l->gen = gen; l->g = g;
+    l->batch = gpu_stat_batches; l->wseq = write_seq; l->gen = gen; l->g = g;
     return v;
 }
 
 /* ---- shaders ---------------------------------------------------------------------------------------- */
+typedef struct TranslationInput {
+    u8 *program, *cb[18];
+    u32 size, cb_size[18], local[3], shared;
+    int alpha;
+} TranslationInput;
+static void translation_input_free(TranslationInput *in) {
+    if (!in) return;
+    free(in->program);
+    for (u32 i = 0; i < 18; i++) free(in->cb[i]);
+    free(in);
+}
+static u32 translation_input_read(void *user, u32 bank, u32 offset) {
+    const TranslationInput *in = user;
+    u32 v = 0;
+    if (bank < 18 && in->cb_size[bank] >= 4 && offset <= in->cb_size[bank] - 4)
+        memcpy(&v, in->cb[bank] + offset, 4);
+    return v;
+}
 typedef struct VShader {
     Job job;            /* (first: the job is the shader) */
-    char *hlsl;         /* (while it is made) */
+    TranslationInput *input;
+    volatile LONG translated;
     u64 hash, table_hash;
     u32 vs_outputs;
     int stage;
@@ -1950,13 +2034,13 @@ typedef struct VShader {
     VkDescriptorUpdateTemplate tmpl;   /* (stage_set's writes for this program, made at its first set; 0 with tmpl_failed: none) */
     int tmpl_failed;
     int glslang;        /* its SPIR-V is glslang's: SV_VertexID is the vertex index itself (see vk_draw) */
-    struct WarmShader *adopt, *publish;   /* the warm start's (below): its module taken once loaded; ours given to it */
+    struct WarmShader *publish;   /* our module given to the warm start */
     char name[64];
     ShaderInfo info;
 } VShader;
 static VShader **vshaders;
 static u32 nvshaders, vshaders_cap;
-typedef struct VSlot { u64 g, key, print; u32 size; VShader *s; u64 tables_at, batch, gen; } VSlot;   /* (batch, gen: the submission
+typedef struct VSlot { u64 g, key, print; u32 size; VShader *s; u64 tables_at, batch, wseq, gen; } VSlot;   /* (batch, gen: the submission
  * its fingerprint was last found the same in, and writes_over then: not taken again in it) */
 #define VSLOTS 16384
 static VSlot vslots[VSLOTS];
@@ -1989,6 +2073,9 @@ static u64 fingerprint(const u8 *p, u32 size) {
     }
     return h;
 }
+
+/* The SPIR-V's version in its names, markers and lists: the exact-f32tof16 translation's on AMD (#353). */
+static unsigned spv_version(void) { return SHADER_CACHE_SPV_VERSION + (shader_exact_f16() ? SHADER_CACHE_SPV_EXACT_F16 : 0); }
 
 static const char *cache_dir(void) {
     static char dir[1024];
@@ -2076,10 +2163,84 @@ static WarmShader *warm_find(const WarmKey *k) {
 }
 static void warm_list_compute(const WarmKey *k);
 
+typedef struct TranslationHeader {
+    u32 magic, version, info_size, bytes, checksum;
+    ShaderInfo info;
+} TranslationHeader;
+
+static void translation_path(char *path, size_t size, const VShader *s) {
+    snprintf(path, size, "%s/translation1_g%u.%08x_%d_%016llx_%08x.bin", cache_dir(), spv_version(),
+             spirv_glslang_version(), s->stage, (unsigned long long)s->hash, s->vs_outputs);
+}
+
+static int translation_info_ok(const ShaderInfo *info, int stage) {
+    if (info->stage != stage || info->ntables || info->ntex > 32 || info->sb_count > 16 ||
+        info->cbuf_mask >> 18 || !memchr(info->unsupported, 0, sizeof info->unsupported)) return 0;
+    for (u32 i = 0; i < info->ntex; i++)
+        if (info->tex[i].type > TEX_ARRAY_CUBE || info->tex[i].shadow > 1) return 0;
+    return 1;
+}
+
+static char *translation_load(VShader *s) {
+    char path[1200];
+    translation_path(path, sizeof path, s);
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    TranslationHeader head;
+    char *hlsl = NULL;
+    if (fread(&head, 1, sizeof head, f) == sizeof head && head.magic == 0x54564b4f && head.version == 1 &&
+        head.info_size == sizeof(ShaderInfo) && head.bytes > 1 && head.bytes <= 16 * 1024 * 1024 &&
+        translation_info_ok(&head.info, s->stage)) {
+        hlsl = malloc(head.bytes);
+        if (hlsl && (fread(hlsl, 1, head.bytes, f) != head.bytes || fgetc(f) != EOF ||
+                     hlsl[head.bytes - 1] || memchr(hlsl, 0, head.bytes - 1) ||
+                     (desc_hash(&head.info, sizeof head.info) ^ desc_hash(hlsl, head.bytes)) != head.checksum)) {
+            free(hlsl);
+            hlsl = NULL;
+        }
+        if (hlsl) s->info = head.info;
+    }
+    fclose(f);
+    return hlsl;
+}
+
+typedef struct TranslationSaveJob {
+    Job job;
+    char path[1200];
+    size_t size;
+    u8 data[];
+} TranslationSaveJob;
+
+static void translation_save_job(Job *job) {
+    TranslationSaveJob *save = (TranslationSaveJob *)job;
+    write_file(save->path, save->data, save->size);
+    free(save);
+}
+
+static void translation_save(const VShader *s, const char *hlsl) {
+    /* Jump-table translations depend on live constant buffers; never reuse those by program alone. */
+    if (!hlsl || !translation_info_ok(&s->info, s->stage)) return;
+    size_t bytes = strlen(hlsl) + 1;
+    if (bytes <= 1 || bytes > 16 * 1024 * 1024) return;
+    TranslationHeader head = {0};
+    head.magic = 0x54564b4f; head.version = 1; head.info_size = sizeof(ShaderInfo); head.bytes = (u32)bytes;
+    head.info = s->info;
+    head.checksum = desc_hash(&head.info, sizeof head.info) ^ desc_hash(hlsl, bytes);
+    TranslationSaveJob *save = malloc(sizeof *save + sizeof head + bytes);
+    if (!save) return;
+    save->job.run = translation_save_job;
+    save->size = sizeof head + bytes;
+    memcpy(save->data, &head, sizeof head);
+    memcpy(save->data + sizeof head, hlsl, bytes);
+    translation_path(save->path, sizeof save->path, s);
+    job_add(&save->job);
+}
+
+
 /* The program's SPIR-V by glslang: the disk cache's (shader_cache_file_spv), else made from the HLSL and kept there. */
 static int spirv_glslang(VShader *s, const char *hlsl, SpirvCode *spv) {
     char path[1200];
-    shader_cache_file_spv(path, sizeof path, cache_dir(), s->stage, s->hash, s->vs_outputs, s->table_hash, spirv_glslang_version());
+    shader_cache_file_spv_v(path, sizeof path, cache_dir(), spv_version(), s->stage, s->hash, s->vs_outputs, s->table_hash, spirv_glslang_version());
     size_t size;
     void *code = read_file(path, &size);
     if (code && size >= 20 && size % 4 == 0 && *(const u32 *)code == 0x07230203) {
@@ -2153,46 +2314,72 @@ static int spirv_vkd3d(VShader *s, const char *hlsl, SpirvCode *spv) {
 
 static void shader_job(Job *j) {
     VShader *s = (VShader *)j;
-    shader_make(s, s->hlsl);
-    free(s->hlsl);
-    s->hlsl = NULL;
+    TranslationInput *in = s->input;
+    char *hlsl = s->glslang ? translation_load(s) : NULL;
+    int hit = hlsl != NULL;
+    if (!hlsl && s->glslang) hlsl = in->alpha
+        ? shader_translate_alpha_tested(SHADER_HLSL_GLSLANG, in->program, in->size, s->vs_outputs, &s->info, translation_input_read, in)
+        : shader_translate(SHADER_HLSL_GLSLANG, in->program, in->size, s->stage, s->vs_outputs, in->local, in->shared, &s->info, translation_input_read, in);
+    else if (!hlsl) hlsl = s->stage == SHADER_COMPUTE
+        ? shader_hlsl_cs(in->program, in->size, in->local, in->shared, &s->info, translation_input_read, in)
+        : in->alpha ? shader_hlsl_alpha_tested(in->program, in->size, s->vs_outputs, &s->info, translation_input_read, in)
+                    : shader_hlsl_ex(in->program, in->size, s->stage, s->vs_outputs, &s->info, translation_input_read, in);
+    for (u32 t = 0; t < s->info.ntables; t++)
+        for (u32 e = 0; e < s->info.table[t].count; e++)
+            s->table_hash = (s->table_hash ^ translation_input_read(in, s->info.table[t].bank, s->info.table[t].offset + 4 * e)) * 1099511628211ull;
+    translation_input_free(in);
+    s->input = NULL;
+    InterlockedExchange(&s->translated, 1);
+    if (s->info.unsupported[0]) fprintf(stderr, "[gfx] %s: %s\n", s->name, s->info.unsupported);
+    if (!hlsl) {
+        InterlockedExchange(&s->state, 2);
+        InterlockedIncrement64((volatile LONG64 *)&vk_stat_shader_failures);
+        return;
+    }
+    if (s->glslang && !hit) translation_save(s, hlsl);
+    const char *dump = getenv("SSBU_DUMP_HLSL");
+    if (dump) {
+        char path[1024];
+        snprintf(path, sizeof path, "%s/%s%s.hlsl", dump, s->name, s->glslang ? "_glslang" : "");
+        FILE *f = fopen(path, "w");
+        if (f) { fputs(hlsl, f); fclose(f); }
+    }
+    WarmShader *w = s->glslang ? warm_find(&(WarmKey){s->hash, s->table_hash, s->vs_outputs, (u32)s->stage}) : NULL;
+    if (w && InterlockedCompareExchange(&w->state, WARM_GAME, WARM_LISTED) == WARM_LISTED) s->publish = w;
+    else if (w) {
+        /* (a warm thread may hold WARM_LOADING for minutes while the prepare tool runs: never spin a maker on it,
+         * make the module here instead) */
+        if (w->state == WARM_READY) {
+            s->module = w->module;
+            s->compute = w->compute;
+            InterlockedIncrement64((volatile LONG64 *)&vk_stat_warm_taken);
+            InterlockedExchange(&s->state, 1);
+        }
+    }
+    if (!s->state) shader_make(s, hlsl);
+    free(hlsl);
     InterlockedIncrement64((volatile LONG64 *)(s->state == 1 ? &vk_stat_shaders : &vk_stat_shader_failures));
-    if (s->publish) {   /* (a listed program the game asked for before the warm threads came to it: they use this one) */
+    if (s->publish) {
         s->publish->module = s->module;
         s->publish->compute = s->compute;
         InterlockedExchange(&s->publish->state, s->state == 1 ? WARM_READY : WARM_NONE);
     }
-    if (s->state == 1 && s->stage == SHADER_COMPUTE && s->glslang) warm_list_compute(&(WarmKey){s->hash, s->table_hash, s->vs_outputs, SHADER_COMPUTE});
-}
-
-/* A new program the warm start has listed: its module (and a compute program's pipeline) taken from the warm
- * table once a warm thread has loaded it - asked again at each draw until then (find_shader_ex); made by a
- * maker after all if the warm thread found no file for it. The drawing thread's. */
-static void warm_adopt(VShader *s) {
-    WarmShader *w = s->adopt;
-    LONG state = w->state;
-    if (state == WARM_LOADING) return;
-    s->adopt = NULL;
-    if (state != WARM_READY) { job_add(&s->job); return; }
-    s->module = w->module;
-    s->compute = w->compute;
-    free(s->hlsl);
-    s->hlsl = NULL;
-    vk_stat_warm_taken++;
-    InterlockedIncrement64((volatile LONG64 *)&vk_stat_shaders);
-    InterlockedExchange(&s->state, 1);
+    if (s->state == 1 && s->stage == SHADER_COMPUTE && s->glslang)
+        warm_list_compute(&(WarmKey){s->hash, s->table_hash, s->vs_outputs, SHADER_COMPUTE});
 }
 
 static int make_log_left(void);
 static u64 vk_stat_play_shaders, vk_stat_play_shaders_listed;
 static double vk_play_shader_ms;
-static void make_note_shader(const VShader *s, int listed, double ms) {   /* (a new program during play: make_note_pipe) */
+static void make_note_shader(const VShader *s, int listed, double ms, double translate_ms, double setup_ms, double wait_ms, int warm_state) {   /* (a new program during play: make_note_pipe) */
     vk_stat_play_shaders++;
     vk_stat_play_shaders_listed += listed != 0;
     vk_play_shader_ms += ms;
     if ((listed && ms < 2.0) || !make_log_left()) return;
     fprintf(stderr, "[vulkan] made in play: program %s %016llx took %.1f ms (%s; %s) at %.2f s\n", s->name, (unsigned long long)s->hash, ms,
             !s->glslang ? "not listable" : listed ? "LISTED" : "not listed", s->state == 1 ? "ready" : s->state == 2 ? "failed" : "not ready", rt_now_ns() / 1e9);
+    fprintf(stderr, "[vulkan] program cost: translate %.3f ms, setup %.3f ms, wait %.3f ms; warm state %d; frame %llu; clock %.3f ms\n",
+            translate_ms, setup_ms, wait_ms, warm_state, (unsigned long long)gfx_stat_presented, rt_clock_ns() / 1e6);
 }
 
 /* The shader for the program at guest address g (as gpu_d3d11.c's find_shader_ex), made by a maker if it
@@ -2204,14 +2391,19 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
     u64 key = (u64)stage | (u64)vs_outputs << 4 | (stage == SHADER_COMPUTE ? ((u64)local[0] ^ (u64)local[1] << 11 ^ (u64)local[2] << 22 ^ (u64)shared << 33) << 36 : 0)
             | (u64)(alpha_tested != 0) << 63;
     VSlot *slot = &vslots[((g >> 4) * 0x9E3779B97F4A7C15ull ^ key) >> 50 & (VSLOTS - 1)];
-    u64 gen = slot->s && slot->g == g && slot->key == key ? writes_over(g - skip, slot->size) : 0;
-    int same_batch = slot->s && slot->g == g && slot->key == key && slot->batch == gpu_stat_batches && slot->gen == gen && memo_on();
+    u64 gen = 0;
+    int have_gen = 0, same_batch = 0;
+    if (slot->s && slot->g == g && slot->key == key && slot->batch == gpu_stat_batches && memo_on()) {
+        if (unwritten_since(slot->wseq, g - skip, slot->size)) same_batch = 1;
+        else { gen = writes_over(g - skip, slot->size); have_gen = 1; same_batch = slot->gen == gen; }
+    }
     if (same_batch && memo_on() == 2) { vk_stat_memo_checked++; if (slot->print != fingerprint(p + skip, slot->size - skip)) vk_stat_memo_wrong[1]++; }
     if (slot->s && slot->g == g && slot->key == key && (same_batch || slot->print == fingerprint(p + skip, slot->size - skip))) {
         VShader *s = slot->s;
         slot->batch = gpu_stat_batches;
-        slot->gen = gen;
-        if (!s->info.ntables) return s;
+        slot->wseq = write_seq;
+        if (!same_batch || have_gen) slot->gen = have_gen ? gen : writes_over(g - skip, slot->size);
+        if (!s->translated || !s->info.ntables) return s;
         u64 place = tables_place(&s->info, stage_cb);
         if (place && slot->tables_at == place) return s;
         CbufSource src = {stage_cb};
@@ -2227,7 +2419,7 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
     for (u32 i = 0; i < nvshaders; i++) {
         VShader *s = vshaders[i];
         if (s->hash != h || s->stage != stage || (stage == SHADER_PIXEL && s->vs_outputs != vs_outputs)) continue;
-        if (s->info.ntables && s->table_hash != table_hash(&s->info, &src)) continue;
+        if (s->translated && s->info.ntables && s->table_hash != table_hash(&s->info, &src)) continue;
         *slot = (VSlot){g, key, fingerprint(p + skip, size - skip), size, s, 0};
         return s;
     }
@@ -2247,53 +2439,48 @@ static VShader *find_shader_new(u64 g, int stage, u32 vs_outputs, const CbBindin
     u64 t_new = rt_clock_ns();
     int glslang = glslang_for(stage);   /* (its own dialect of the HLSL: gpu_shader.h) */
     s->glslang = glslang;
-    char *hlsl = glslang ? (alpha_tested ? shader_translate_alpha_tested(SHADER_HLSL_GLSLANG, p, size, vs_outputs, &s->info, read_cbuf_word, &src)
-                                         : shader_translate(SHADER_HLSL_GLSLANG, p, size, stage, vs_outputs, local, shared, &s->info, read_cbuf_word, &src))
-               : stage == SHADER_COMPUTE ? shader_hlsl_cs(p, size, local, shared, &s->info, read_cbuf_word, &src)
-               : alpha_tested            ? shader_hlsl_alpha_tested(p, size, vs_outputs, &s->info, read_cbuf_word, &src)
-                                         : shader_hlsl_ex(p, size, stage, vs_outputs, &s->info, read_cbuf_word, &src);
-    s->table_hash = table_hash(&s->info, &src);
-    if (s->info.unsupported[0]) fprintf(stderr, "[gfx] %s: %s\n", s->name, s->info.unsupported);
-    if (!hlsl) { s->state = 2; vk_stat_shader_failures++; return s; }
-    static const char *dump;   /* SSBU_DUMP_HLSL=<dir>: each program's HLSL, as gpu_d3d11.c writes it (debugging) */
-    static int dump_checked;
-    if (!dump_checked++) dump = getenv("SSBU_DUMP_HLSL");
-    if (dump) {
-        char path[1024];
-        snprintf(path, sizeof path, "%s/%s%s.hlsl", dump, s->name, glslang ? "_glslang" : "");
-        FILE *f = fopen(path, "w");
-        if (f) { fputs(hlsl, f); fclose(f); }
+    cache_dir();
+    TranslationInput *in = calloc(1, sizeof *in);
+    if (in) {
+        in->size = size; in->alpha = alpha_tested; in->shared = shared;
+        if (local) memcpy(in->local, local, sizeof in->local);
+        in->program = malloc(size);
+        if (!in->program) { translation_input_free(in); in = NULL; }
     }
-    s->hlsl = hlsl;
+    if (in) {
+        /* Compute has no header: never read before its allocation. */
+        memset(in->program, 0, skip);
+        memcpy(in->program + skip, p + skip, size - skip);
+        for (u32 i = 0; i < 18; i++) {
+            if (!stage_cb[i].address || !stage_cb[i].size) continue;
+            u32 cb_bytes = stage_cb[i].size > 0x10000 ? 0x10000 : stage_cb[i].size;   /* (a bank is 64 KB at most, as the draws upload) */
+            in->cb[i] = malloc(cb_bytes);
+            if (!in->cb[i]) { translation_input_free(in); in = NULL; break; }
+            in->cb_size[i] = cb_bytes;
+            read_gpu(stage_cb[i].address, cb_bytes, in->cb[i]);
+        }
+    }
+    if (!in) { InterlockedExchange(&s->state, 2); vk_stat_shader_failures++; return s; }
+    s->input = in;
     s->job.run = shader_job;
-    char cached_path[1200];
-    shader_cache_file(cached_path, sizeof cached_path, cache_dir(), s->stage, s->hash, s->vs_outputs, s->table_hash);
-    int cached = glslang || GetFileAttributesA(cached_path) != INVALID_FILE_ATTRIBUTES;
-    /* (a program of the warm list: a warm thread's module, or ours given to the warm threads) */
-    WarmShader *w = glslang ? warm_find(&(WarmKey){s->hash, s->table_hash, s->vs_outputs, (u32)s->stage}) : NULL;
-    if (w && InterlockedCompareExchange(&w->state, WARM_GAME, WARM_LISTED) == WARM_LISTED) s->publish = w;
-    else if (w && (w->state == WARM_LOADING || w->state == WARM_READY)) s->adopt = w;
-    if (s->adopt) warm_adopt(s);
-    else job_add(&s->job);
-    if (wait_makes())
-        while (!s->state) { if (s->adopt) warm_adopt(s); SwitchToThread(); }
-    /* a program compiled before (its DXBC in the disk cache: only the SPIR-V and the module to make, milliseconds) is
-     * waited for a little, as gpu_d3d11.c does: a skipped draw is an effect missing the first time it is used (the
-     * owner's report 2026-11-09), a skipped launch leaves its outputs (skinned vertices) unwritten for a frame.
-     * Compute programs were waited for already; every stage now. One compiled from scratch (fxc) is not waited for;
-     * with glslang there is no fxc (its SPIR-V is made from the HLSL in milliseconds): every program is waited for. */
-    if (cached || stage == SHADER_COMPUTE) {
-        /* (a compute program's whole wait: a skipped launch is a frame of unwritten vertices, not a missing effect) */
-        u64 t0 = rt_clock_ns(), until = stage == SHADER_COMPUTE ? t0 + 250000000ull : budget_until(250);
-        for (; s->state == 0 && rt_clock_ns() < until;) { if (s->adopt) warm_adopt(s); SwitchToThread(); }
-        wait_budget_spend(&wait_budget, rt_clock_ns() - t0);
+    job_add(&s->job);
+    u64 t_translated = t_new, t_wait_start = rt_clock_ns();
+    int warm_state = -1;
+    if (wait_makes()) wait_for(&s->state);
+    else if (stage == SHADER_COMPUTE) {
+        /* (as before: a compute program is waited for up to 250 ms - a skipped launch leaves its outputs, skinned
+         * vertices and learned stores, unwritten for a frame; draws are not waited for) */
+        for (u64 until = rt_clock_ns() + 250000000ull; !s->state && rt_clock_ns() < until;) SwitchToThread();
     }
-    if (vk_gated) make_note_shader(s, w != NULL, (rt_clock_ns() - t_new) / 1e6);
+    if (vk_gated) {
+        u64 t_done = rt_clock_ns();
+        make_note_shader(s, 0, (t_done - t_new) / 1e6, (t_translated - t_new) / 1e6,
+                         (t_wait_start - t_translated) / 1e6, (t_done - t_wait_start) / 1e6, warm_state);
+    }
     return s;
 }
 static VShader *find_shader_ex(u64 g, int stage, u32 vs_outputs, const CbBinding *stage_cb, int alpha_tested, const u32 *local, u32 shared) {
     VShader *s = find_shader_new(g, stage, vs_outputs, stage_cb, alpha_tested, local, shared);
-    if (s && s->adopt && !s->state) warm_adopt(s);
     return s;
 }
 static VShader *find_shader(u64 g, int stage, u32 vs_outputs, const CbBinding *stage_cb, int alpha_tested) {
@@ -2741,7 +2928,7 @@ static VkImageView get_texture(const u32 *tic, u32 shader_type, float *scale, Su
  * stays the answer while no texture or render target is made or let go (tex_gen) and no command wrote its bytes
  * (writes_over). Render targets are not kept here: which one an address names follows their use. */
 #define TEX_MEMO 4096
-typedef struct TexMemo { u32 tic[8], type; u64 batch, gen, wgen; Texture *t; VkImageView view; } TexMemo;
+typedef struct TexMemo { u32 tic[8], type; u64 batch, gen, wseq, wgen; Texture *t; VkImageView view; } TexMemo;
 static TexMemo tex_memo[TEX_MEMO];
 static u64 vk_stat_tex_memo;
 static VkImageView texture_of(const u32 *tic, u32 type, float *scale, Surface **rt_out) {
@@ -2750,7 +2937,8 @@ static VkImageView texture_of(const u32 *tic, u32 type, float *scale, Surface **
     TexMemo *m = &tex_memo[(h >> 40) & (TEX_MEMO - 1)];
     if (!memo_on()) return get_texture(tic, type, scale, rt_out);
     if (m->batch == gpu_stat_batches && m->gen == tex_gen && m->type == type && !memcmp(m->tic, tic, 32) && m->t->image &&
-        m->wgen == writes_over(m->t->guest, m->t->size)) {
+        (unwritten_since(m->wseq, m->t->guest, m->t->size) || m->wgen == writes_over(m->t->guest, m->t->size))) {
+        m->wseq = write_seq;
         *scale = 1.0f;
         *rt_out = NULL;
         m->t->used = ++tick;
@@ -2768,6 +2956,7 @@ static VkImageView texture_of(const u32 *tic, u32 type, float *scale, Surface **
     if (v && got_texture && !*rt_out && got_texture->size <= (4u << 20)) {   /* (a bigger one: its sample hashed instead, as before) */
         memcpy(m->tic, tic, 32);
         m->type = type; m->batch = gpu_stat_batches; m->gen = tex_gen; m->t = got_texture; m->view = v;
+        m->wseq = write_seq;
         m->wgen = writes_over(got_texture->guest, got_texture->size);
     } else m->batch = 0;
     return v;
@@ -3017,41 +3206,39 @@ static void make_note_pipe(const Pipe *e, int made, double ms);
 static u64 vk_stat_warm_used;
 static int warm_list_on(void);
 static VkPipeline get_pipeline(const PipeKey *k, const VShader *vs, const VShader *ps) {
-    u32 h = desc_hash(k, sizeof *k) & (PIPE_SLOTS - 1);
+    u32 h0 = desc_hash(k, sizeof *k) & (PIPE_SLOTS - 1), h = h0;
     Pipe *e = NULL;
     int made = 0;
-    AcquireSRWLockExclusive(&pipes_lock);
+    AcquireSRWLockShared(&pipes_lock);
     for (u32 n = 0; n < PIPE_SLOTS && pipes[h]; n++, h = (h + 1) & (PIPE_SLOTS - 1))
         if (!memcmp(&pipes[h]->key, k, sizeof *k)) { e = pipes[h]; break; }
-    if (!e && npipes < PIPE_SLOTS * 3 / 4 && (e = calloc(1, sizeof *e)) != NULL) {   /* (full: 49,152 pipelines) */
-        e->key = *k;
-        e->job.run = pipe_job;
-        e->waited = 1;
-        if (vs->glslang && (!ps || ps->glslang) && warm_list_on()) {
-            e->listable = 1;
-            e->wvs = (WarmKey){vs->hash, vs->table_hash, vs->vs_outputs, SHADER_VERTEX};
-            e->wps = ps ? (WarmKey){ps->hash, ps->table_hash, ps->vs_outputs, SHADER_PIXEL} : (WarmKey){0, 0, 0, ~0u};
+    ReleaseSRWLockShared(&pipes_lock);
+    if (!e) {
+        h = h0;
+        AcquireSRWLockExclusive(&pipes_lock);
+        for (u32 n = 0; n < PIPE_SLOTS && pipes[h]; n++, h = (h + 1) & (PIPE_SLOTS - 1))
+            if (!memcmp(&pipes[h]->key, k, sizeof *k)) { e = pipes[h]; break; }
+        if (!e && npipes < PIPE_SLOTS * 3 / 4 && (e = calloc(1, sizeof *e)) != NULL) {   /* (full: 49,152 pipelines) */
+            e->key = *k;
+            e->job.run = pipe_job;
+            e->waited = 1;
+            if (vs->glslang && (!ps || ps->glslang) && warm_list_on()) {
+                e->listable = 1;
+                e->wvs = (WarmKey){vs->hash, vs->table_hash, vs->vs_outputs, SHADER_VERTEX};
+                e->wps = ps ? (WarmKey){ps->hash, ps->table_hash, ps->vs_outputs, SHADER_PIXEL} : (WarmKey){0, 0, 0, ~0u};
+            }
+            pipes[h] = e;
+            npipes++;
+            made = 1;
         }
-        pipes[h] = e;
-        npipes++;
-        made = 1;
+        ReleaseSRWLockExclusive(&pipes_lock);
     }
-    ReleaseSRWLockExclusive(&pipes_lock);
     if (!e) return VK_NULL_HANDLE;
     if (made) { job_add(&e->job); vk_first_uses++; }
     else if (e->warm && !e->used) { e->used = 1; vk_stat_warm_used++; vk_first_uses++; }
     u64 t_wait = rt_clock_ns();
     int first_wait = e->state == 0 && (made || !e->waited);
     if (e->state == 0 && wait_makes()) wait_for(&e->state);
-    /* a new pipeline is waited for a little (its shaders are ready: the driver makes it in milliseconds, less with the
-     * pipeline cache warm), rather than its first draws skipped - an effect missing the first time (2026-11-09); so is
-     * one a warm thread is making now, once. Within the frame's budget (budget_until). */
-    if (e->state == 0 && (made || !e->waited)) {
-        e->waited = 1;
-        u64 t0 = rt_clock_ns();
-        for (u64 until = budget_until(100); e->state == 0 && rt_clock_ns() < until;) SwitchToThread();
-        wait_budget_spend(&wait_budget, rt_clock_ns() - t0);
-    }
     if (vk_gated && (made || first_wait)) make_note_pipe(e, made, (rt_clock_ns() - t_wait) / 1e6);
     return e->state == 1 ? e->pipe : VK_NULL_HANDLE;
 }
@@ -3187,9 +3374,41 @@ static void warm_list_open(void) {
     if (!use_glslang()) return;
     char path[1100];
     snprintf(path, sizeof path, "%s/vulkan_%04x_%04x.warm", cache_dir(), limits_vendor, limits_device);
-    WarmHeader head = {"OSVKWRM", sizeof(WarmRecord), sizeof(PipeKey), SHADER_CACHE_SPV_VERSION, spirv_glslang_version(), WARM_LIST_VERSION, 0};
+    WarmHeader head = {"OSVKWRM", sizeof(WarmRecord), sizeof(PipeKey), spv_version(), spirv_glslang_version(), WARM_LIST_VERSION, 0};
     size_t size = 0;
     u8 *data = read_file(path, &size);
+    int recovered_header = 0;
+    /* Older builds appended records without a header: recover only complete, checksummed lists. */
+    if (data && size && size % sizeof(WarmRecord) == 0 && memcmp(data, head.magic, sizeof head.magic)) {
+        size_t count = size / sizeof(WarmRecord), valid = 0;
+        WarmRecord *records = (WarmRecord *)(void *)data;
+        while (valid < count && warm_record_ok(&records[valid])) valid++;
+        if (valid == count) {
+            char backup[1200];
+            snprintf(backup, sizeof backup, "%s.headerless.bak", path);
+            FILE *saved = fopen(backup, "wbx");
+            int backed_up = saved && fwrite(data, 1, size, saved) == size;
+            if (saved && fclose(saved)) backed_up = 0;
+            if (!saved) {   /* (a backup from an earlier start whose rewrite failed: the original is kept there already) */
+                FILE *old = fopen(backup, "rb");
+                if (old) { backed_up = 1; fclose(old); }
+            }
+            if (!backed_up) {
+                fprintf(stderr, "[vulkan] warm list: cannot back up headerless list; left unchanged\n");
+                free(data);
+                return;
+            }
+            u8 *recovered = malloc(sizeof head + size);
+            if (!recovered) { free(data); return; }
+            memcpy(recovered, &head, sizeof head);
+            memcpy(recovered + sizeof head, data, size);
+            free(data);
+            data = recovered;
+            size += sizeof head;
+            recovered_header = 1;
+            fprintf(stderr, "[vulkan] warm list: recovered %zu headerless records (backup: %s)\n", count, backup);
+        }
+    }
     /* The shipped list (beside the exe or media/: the pipelines of normal play, from runs over every stage and fighter)
      * is read every start and joined to this card's list: a card's list that was started again or cut short (a start
      * closed during the shader loading, tests) left most pipelines to their first draw - the owner's play.log 2026-11-11:
@@ -3205,7 +3424,12 @@ static void warm_list_open(void) {
     u8 *ship = NULL;
     if (slash) { strcpy(slash + 1, "vulkan_pipelines.warm"); ship = read_file(shipped, &ship_size); }
     if (!ship) ship = read_file("media/vulkan_pipelines.warm", &ship_size);
-    if (ship && (ship_size < sizeof head || memcmp(ship, &head, sizeof head))) { free(ship); ship = NULL; }
+    /* (made on NVIDIA, under the plain SPIR-V version: its records name programs and pipeline states, not SPIR-V,
+     * so it serves the exact-f32tof16 names as well, #353 - taken with this start's header) */
+    WarmHeader plain = head;
+    plain.spv_version = SHADER_CACHE_SPV_VERSION;
+    if (ship && (ship_size < sizeof head || (memcmp(ship, &head, sizeof head) && memcmp(ship, &plain, sizeof head)))) { free(ship); ship = NULL; }
+    if (ship) memcpy(ship, &head, sizeof head);
     int joined = 0, fresh = 0;
     if (ship) {
         if (data && size >= sizeof head && !memcmp(data, &head, sizeof head)) {
@@ -3230,14 +3454,12 @@ static void warm_list_open(void) {
             fprintf(stderr, "[vulkan] warm start: the shipped list of pipelines, %u records (none for this card yet)\n", (u32)((size - sizeof head) / sizeof(WarmRecord)));
         }
     }
-    int rewrite = !data || joined;
+    int rewrite = !data || joined || recovered_header;
     u32 n = 0;
     if (data && (size < sizeof head || memcmp(data, &head, sizeof head))) { size = 0; rewrite = 1; }
     else if (data) {
         u32 listed = (u32)((size - sizeof head) / sizeof(WarmRecord));
-        /* (A card's first list - the shipped one alone - is written out whole: left unwritten, the file "ab" opens below
-         * was made empty, the pipelines it then gained had no header, and the next start threw them away.) */
-        rewrite = fresh || (size - sizeof head) % sizeof(WarmRecord) != 0;
+        rewrite |= (size - sizeof head) % sizeof(WarmRecord) != 0;
         WarmRecord *rec = (WarmRecord *)(void *)(data + sizeof head);   /* (malloc's alignment, and a header of 32 bytes) */
         for (u32 i = 0; i < listed; i++)
             if (warm_record_ok(&rec[i]) && warm_see(&rec[i])) rec[n++] = rec[i];
@@ -3530,7 +3752,7 @@ static int prep_marker_says(const char *name, const char *want) {
  * in complete.txt, or in vulkan_ready.txt: the SPIR-V is all there, Direct3D 11's shaders may still be being made). */
 static int shader_cache_prepared(void) {
     char want[48];
-    snprintf(want, sizeof want, "g%d.%08x", SHADER_CACHE_SPV_VERSION, spirv_glslang_version());
+    snprintf(want, sizeof want, "g%u.%08x", spv_version(), spirv_glslang_version());
     if (prep_marker_says("complete.txt", want)) return 1;
     return prep_shared() && prep_marker_says("vulkan_ready.txt", want);
 }
@@ -3764,7 +3986,7 @@ static int prep_tries(int add) {
     char path[1200], want[48], have[48] = "";
     int n = 0;
     snprintf(path, sizeof path, "%s/prepare_tries.txt", cache_dir());
-    snprintf(want, sizeof want, "g%d.%08x", SHADER_CACHE_SPV_VERSION, spirv_glslang_version());
+    snprintf(want, sizeof want, "g%u.%08x", spv_version(), spirv_glslang_version());
     FILE *f = fopen(path, "rb");
     if (f) {
         if (fscanf(f, "%47s %d", have, &n) != 2 || strcmp(have, want)) n = 0;   /* (another translator's: from 0 again) */
@@ -3816,7 +4038,7 @@ static void prepare_wait(void) {
 static void warm_load(WarmShader *w) {
     char path[1200];
     prepare_wait();   /* (a cache that is not prepared for this translator is prepared now, before a file is missed) */
-    shader_cache_file_spv(path, sizeof path, cache_dir(), (int)w->k.stage, w->k.hash, w->k.vs_outputs, w->k.table_hash, spirv_glslang_version());
+    shader_cache_file_spv_v(path, sizeof path, cache_dir(), spv_version(), (int)w->k.stage, w->k.hash, w->k.vs_outputs, w->k.table_hash, spirv_glslang_version());
     size_t size;
     void *code = read_file(path, &size);
     int made = 0;
@@ -4475,14 +4697,23 @@ static u32 draw_tsc[2][4];
  * take a dozen: timing every draw cost more than some of the parts), the times scaled up. */
 #define TIMING_EVERY 32
 static int vk_timing;
+void motion_draw(u64 vs, u64 ps, u64 data, u32 count, u64 target);   /* (gpu_motion.c: display.ini's motion) */
+void motion_dispatch(u64 program);
+int motion_active(void);
+const void *motion_block(int compute, u32 bank, u32 tex_bank, u64 va, u32 size, void (*read)(u64, u32, void *));
 static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int stage, const VShader *s, DrawParams *params, StageBinds *b) {
     int mstage = stage == SHADER_VERTEX ? STAGE_VERTEX : STAGE_FRAGMENT;
     u64 t0 = vk_timing ? rt_clock_ns() : 0, t1;
-    for (u32 k = 0; k < 18; k++) {
-        if (!(s->info.cbuf_mask >> k & 1)) continue;
+    int blend = stage == SHADER_VERTEX && motion_active();   /* (display.ini's motion: the vertex stage's buffers, blended) */
+    for (u32 mask = s->info.cbuf_mask & 0x3FFFFu; mask; mask &= mask - 1) {
+        u32 k = (u32)__builtin_ctz(mask);
         u32 size = cb[mstage][k].size;
         if (size > 0x10000) size = 0x10000;
         if (size > s->info.cbuf_extent[k]) size = s->info.cbuf_extent[k];   /* only what the program can read */
+        if (blend) {
+            const void *m = motion_block(0, k, regs[M_BINDLESS_TEXTURE] & 0x1F, cb[mstage][k].address, size, read_gpu);
+            if (m) { b->cb[k] = upload_host(m, size); continue; }
+        }
         if (!(b->cb[k] = kept_cb(cb[mstage][k].address, size))) b->cb[k] = upload_slot(stage, k, cb[mstage][k].address, size);
     }
     if (vk_timing) { t1 = rt_clock_ns(); vk_ns_res[0] += (t1 - t0) * TIMING_EVERY; t0 = t1; }
@@ -4518,11 +4749,11 @@ static void stage_resources(const u32 *regs, const CbBinding cb[STAGES][18], int
     u64 tic_pool = (u64)regs[M_TEX_HEADER_POOL] << 32 | regs[M_TEX_HEADER_POOL + 1];
     u64 tsc_pool = (u64)regs[M_TEX_SAMPLER_POOL] << 32 | regs[M_TEX_SAMPLER_POOL + 1];
     for (u32 k = 0; k < s->info.ntex && k < 32; k++) {
-        u32 handle = 0, tic[8], tsc[8];
+        u32 handle = 0, tic[8], tsc[8] = {0};
         if (tex_cb < 18 && cb[mstage][tex_cb].address) read_gpu(cb[mstage][tex_cb].address + s->info.tex[k].handle_offset, 4, &handle);
         u32 tic_index = handle & 0xFFFFF, tsc_index = regs[M_SAMPLER_BINDING] & 1 ? tic_index : (handle >> 20) & 0xFFF;
         read_gpu(tic_pool + tic_index * 32ull, 32, tic);
-        read_gpu(tsc_pool + tsc_index * 32ull, 32, tsc);
+        if (k < 16 || gpu_time_ms > 0) read_gpu(tsc_pool + tsc_index * 32ull, 32, tsc);
         float scale;
         b->tex[k] = texture_of(tic, s->info.tex[k].type, &scale, &b->sampled[k]);
         if (gpu_time_ms > 0 && k < 4) { draw_tex[stage == SHADER_PIXEL][k] = b->sampled[k] ? NULL : got_texture; draw_tsc[stage == SHADER_PIXEL][k] = tsc[0] ^ tsc[1] << 3; }
@@ -4570,13 +4801,12 @@ static u64 vk_stat_sets_made, vk_stat_sets_kept, vk_stat_index_reused, vk_stat_p
 static VkDescriptorSet stage_set(VShader *s, const StageBinds *b, VkBuffer pbuf) {
     u64 key[SET_KEY];
     u32 nk = 0;
+    u32 cmask = s->info.cbuf_mask & 0x3FFFFu;
+    u32 imask = s->stage == SHADER_VERTEX ? s->info.inputs : 0;
     key[nk++] = (u64)(uintptr_t)s;
     key[nk++] = (u64)(uintptr_t)pbuf;
-    for (u32 k = 0; k < 18; k++)
-        if (s->info.cbuf_mask >> k & 1) key[nk++] = (u64)(uintptr_t)b->cb[k];
-    if (s->stage == SHADER_VERTEX)
-        for (u32 k = 0; k < 32; k++)
-            if (s->info.inputs >> k & 1) key[nk++] = (u64)(uintptr_t)b->vb[k];
+    for (u32 m = cmask; m; m &= m - 1) key[nk++] = (u64)(uintptr_t)b->cb[(u32)__builtin_ctz(m)];
+    for (u32 m = imask; m; m &= m - 1) key[nk++] = (u64)(uintptr_t)b->vb[(u32)__builtin_ctz(m)];
     for (u32 k = 0; k < s->info.sb_count && k < 16; k++) key[nk++] = (u64)(uintptr_t)b->gm[k];
     for (u32 k = 0; k < s->info.ntex && k < 32; k++) { key[nk++] = (u64)(uintptr_t)b->tex[k]; key[nk++] = (u64)(uintptr_t)b->smp[k]; }
     u64 h = 1469598103934665603ull;
@@ -4599,11 +4829,8 @@ static VkDescriptorSet stage_set(VShader *s, const StageBinds *b, VkBuffer pbuf)
         u32 ne = 0;
 #define ENTRY(binding, type) (e[ne] = (VkDescriptorUpdateTemplateEntry){binding, 0, 1, type, ne * sizeof(TmplSlot), sizeof(TmplSlot)}, ne++)
         ENTRY(SPIRV_BINDING_CBV(0), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
-        for (u32 k = 0; k < 18; k++)
-            if (s->info.cbuf_mask >> k & 1) ENTRY(SPIRV_BINDING_SRV(k), VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
-        if (s->stage == SHADER_VERTEX)
-            for (u32 k = 0; k < 32; k++)
-                if (s->info.inputs >> k & 1) ENTRY(SPIRV_BINDING_SRV(18 + k), VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
+        for (u32 m = cmask; m; m &= m - 1) ENTRY(SPIRV_BINDING_SRV((u32)__builtin_ctz(m)), VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
+        for (u32 m = imask; m; m &= m - 1) ENTRY(SPIRV_BINDING_SRV(18 + (u32)__builtin_ctz(m)), VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
         for (u32 k = 0; k < s->info.sb_count && k < 16; k++) ENTRY(SPIRV_BINDING_SRV(96 + k), VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
         for (u32 k = 0; k < s->info.ntex && k < 32; k++) {
             ENTRY(SPIRV_BINDING_SRV(64 + k), VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
@@ -4618,11 +4845,8 @@ static VkDescriptorSet stage_set(VShader *s, const StageBinds *b, VkBuffer pbuf)
         TmplSlot d[1 + 18 + 32 + 16 + 64];
         u32 nd = 0;
         d[nd++].b = (VkDescriptorBufferInfo){pbuf, 0, sizeof(DrawParams)};
-        for (u32 k = 0; k < 18; k++)
-            if (s->info.cbuf_mask >> k & 1) d[nd++].v = b->cb[k] ? b->cb[k] : dummy_texels;
-        if (s->stage == SHADER_VERTEX)
-            for (u32 k = 0; k < 32; k++)
-                if (s->info.inputs >> k & 1) d[nd++].v = b->vb[k] ? b->vb[k] : dummy_texels;
+        for (u32 m = cmask; m; m &= m - 1) { u32 k = (u32)__builtin_ctz(m); d[nd++].v = b->cb[k] ? b->cb[k] : dummy_texels; }
+        for (u32 m = imask; m; m &= m - 1) { u32 k = (u32)__builtin_ctz(m); d[nd++].v = b->vb[k] ? b->vb[k] : dummy_texels; }
         for (u32 k = 0; k < s->info.sb_count && k < 16; k++) d[nd++].v = b->gm[k] ? b->gm[k] : dummy_texels;
         for (u32 k = 0; k < s->info.ntex && k < 32; k++) {
             VkImageView v = b->tex[k] ? b->tex[k] : dummy_views[s->info.tex[k].type & 7];
@@ -4638,15 +4862,16 @@ static VkDescriptorSet stage_set(VShader *s, const StageBinds *b, VkBuffer pbuf)
     u32 n = 0, ni = 0;
     VkDescriptorBufferInfo params = {pbuf, 0, sizeof(DrawParams)};
     w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_CBV(0), 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, NULL, &params, NULL};
-    for (u32 k = 0; k < 18; k++)
-        if (s->info.cbuf_mask >> k & 1)
-            w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_SRV(k), 0, 1,
-                                            VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, NULL, NULL, b->cb[k] ? &b->cb[k] : &dummy_texels};
-    if (s->stage == SHADER_VERTEX)
-        for (u32 k = 0; k < 32; k++)
-            if (s->info.inputs >> k & 1)
-                w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_SRV(18 + k), 0, 1,
-                                                VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, NULL, NULL, b->vb[k] ? &b->vb[k] : &dummy_texels};
+    for (u32 m = cmask; m; m &= m - 1) {
+        u32 k = (u32)__builtin_ctz(m);
+        w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_SRV(k), 0, 1,
+                                        VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, NULL, NULL, b->cb[k] ? &b->cb[k] : &dummy_texels};
+    }
+    for (u32 m = imask; m; m &= m - 1) {
+        u32 k = (u32)__builtin_ctz(m);
+        w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_SRV(18 + k), 0, 1,
+                                        VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, NULL, NULL, b->vb[k] ? &b->vb[k] : &dummy_texels};
+    }
     for (u32 k = 0; k < s->info.sb_count && k < 16; k++)
         w[n++] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, SPIRV_BINDING_SRV(96 + k), 0, 1,
                                         VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, NULL, NULL, b->gm[k] ? &b->gm[k] : &dummy_texels};
@@ -4688,11 +4913,11 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     u64 ps_g = regs[M_PIPELINE(5)] & 1 ? gpu_va_to_guest(region + regs[M_PIPELINE(5) + 1]) : 0;
     VShader *vs = vs_g ? find_shader(vs_g, SHADER_VERTEX, 0, cb[STAGE_VERTEX], 0) : NULL;
     /* (the pixel shader asked for once the vertex shader is translated: both are made at the same time) */
-    VShader *ps_e = vs && vs->state != 2 && ps_g ? find_shader(ps_g, SHADER_PIXEL, vs->info.outputs, cb[STAGE_FRAGMENT], 0) : NULL;
+    VShader *ps_e = vs && vs->state == 1 && ps_g ? find_shader(ps_g, SHADER_PIXEL, vs->info.outputs, cb[STAGE_FRAGMENT], 0) : NULL;
     /* alpha to coverage on targets of one sample: the alpha test >= 0.5 (gpu_d3d11.c) */
     int a2c = (regs[M_ANTI_ALIAS_ALPHA_CONTROL] & 1) && !(regs[M_ALPHA_TEST] & 1) && !(vk_debug() & 64);
     u32 alpha_func = regs[M_ALPHA_TEST] & 1 && !(vk_debug() & 64) ? compare_func(regs[M_ALPHA_FUNC]) : a2c ? 7 : 8;
-    VShader *pa_e = alpha_func != 8 && ps_e && ps_e->state != 2 && (ps_e->info.color_mask & 1)
+    VShader *pa_e = alpha_func != 8 && ps_e && ps_e->state == 1 && (ps_e->info.color_mask & 1)
                   ? find_shader(ps_g, SHADER_PIXEL, vs->info.outputs, cb[STAGE_FRAGMENT], 1) : NULL;
     VShader *ps = pa_e && pa_e->state == 1 ? pa_e : ps_e && ps_e->state == 1 ? ps_e : NULL;
     if (!vs || vs->state != 1 || (ps_g && !ps) || topo < 0) {
@@ -4847,8 +5072,8 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     /* (not cleared, 2.6 KB a draw: each binding a program declares is written below before it is read) */
     VkBufferView stream_view[32] = {0};
     u32 stream_skip[32] = {0};   /* (how far before the stream its view starts: added to its attributes' offsets) */
-    for (u32 n = 0; n < 32; n++) {
-        if (!(vs->info.inputs >> n & 1)) continue;
+    for (u32 mask = vs->info.inputs; mask; mask &= mask - 1) {
+        u32 n = (u32)__builtin_ctz(mask);
         vb.vb[n] = VK_NULL_HANDLE;
         u32 fmt = regs[M_VERTEX_ATTRIBUTE(n)], j = fmt & 0x1F;
         u32 st = regs[M_VERTEX_STREAM(j)];
@@ -4889,6 +5114,12 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
     params.base[1] = regs[M_GLOBAL_BASE_INSTANCE] + instance_counter;
     PHASE(3);
     if (gpu_time_ms > 0) memset(draw_tex, 0, sizeof draw_tex);
+    if (motion_active()) {   /* (gpu_motion.c: the draw, known by what it draws) */
+        u64 ib = ((u64)regs[M_INDEX_BUFFER] << 32 | regs[M_INDEX_BUFFER + 1]) + regs[M_INDEX_BUFFER + 5];
+        u64 vb0 = ((u64)regs[M_VERTEX_STREAM(0) + 1] << 32 | regs[M_VERTEX_STREAM(0) + 2]) + regs[M_VERTEX_ARRAY_START];
+        motion_draw(vs->hash, ps ? ps->hash : 0, indexed ? ib : vb0, indexed ? regs[M_DRAW_INDEX_COUNT] : regs[M_VERTEX_ARRAY_COUNT],
+                    (u64)(uintptr_t)rts[0]);
+    }
     stage_resources(regs, cb, SHADER_VERTEX, vs, &params, &vb);
     if (ps) stage_resources(regs, cb, SHADER_PIXEL, ps, &params, &pb);
 
@@ -4967,24 +5198,26 @@ static void vk_draw_(const u32 *regs, const CbBinding cb[STAGES][18], int indexe
         u32 bytes = n * (isz == 1 ? 2 : isz);
         /* the same indices from the same place in one submission (nothing but the GPU's own commands writes
          * memory meanwhile, and writes_over counts those): the copy made for an earlier draw */
-        static struct { u64 va, serial, batch, gen; u32 bytes, isz; VkBuffer buf; VkDeviceSize off; } ix[4096];
-        u64 ig = gpu_va_to_guest(va), raw = (u64)n * isz;
-        int whole = ig && gpu_va_to_guest(va + raw - 1) == ig + raw - 1;
-        u64 gen = whole ? writes_over(ig, raw) : 0;
+        static struct { u64 va, g, serial, batch, wseq, gen; u32 bytes, isz; VkBuffer buf; VkDeviceSize off; } ix[4096];
+        u64 raw = (u64)n * isz;
         cmd();
         u32 slot_i = (u32)(((va >> 1) * 0x9E3779B97F4A7C15ull ^ bytes) >> 52) & 4095;
-        if (whole && ix[slot_i].va == va && ix[slot_i].bytes == bytes && ix[slot_i].isz == isz && ix[slot_i].serial == frames[frame_at].serial &&
-            ix[slot_i].batch == gpu_stat_batches && ix[slot_i].gen == gen) {
+        if (ix[slot_i].buf && ix[slot_i].va == va && ix[slot_i].bytes == bytes && ix[slot_i].isz == isz &&
+            ix[slot_i].serial == frames[frame_at].serial && ix[slot_i].batch == gpu_stat_batches &&
+            (unwritten_since(ix[slot_i].wseq, ix[slot_i].g, raw) || ix[slot_i].gen == writes_over(ix[slot_i].g, raw))) {
+            ix[slot_i].wseq = write_seq;
             ibuf = ix[slot_i].buf;
             ioff = ix[slot_i].off;
             vk_stat_index_reused++;
             goto indices_done;
         }
+        u64 ig = gpu_va_contig(va, raw);
+        int whole = ig != 0;
         u8 *dst = arena(bytes, 4, &ibuf, &ioff);
         if (!dst) { vk_stat_skip_other++; leave(); return; }
         if (whole) {
-            ix[slot_i].va = va; ix[slot_i].bytes = bytes; ix[slot_i].isz = isz; ix[slot_i].serial = frames[frame_at].serial;
-            ix[slot_i].batch = gpu_stat_batches; ix[slot_i].gen = gen; ix[slot_i].buf = ibuf; ix[slot_i].off = ioff;
+            ix[slot_i].va = va; ix[slot_i].g = ig; ix[slot_i].bytes = bytes; ix[slot_i].isz = isz; ix[slot_i].serial = frames[frame_at].serial;
+            ix[slot_i].batch = gpu_stat_batches; ix[slot_i].wseq = write_seq; ix[slot_i].gen = writes_over(ig, raw); ix[slot_i].buf = ibuf; ix[slot_i].off = ioff;
         }
         if (isz == 1) {
             static u8 tmp8[1 << 16];
@@ -5133,6 +5366,21 @@ static void vk_wrote(u64 va, u64 bytes) {
     note_wrote(va, bytes);
     leave();
 }
+/* Coalesce consecutive command-stream writes per thread and flush them under enter() before draws or dispatches. */
+static void vk_stream_wrote(u64 va, u64 bytes) {
+    if (!bytes) { enter(); note_wrote(va, 0); leave(); return; }
+    /* (joined only when the guest side continues too: a range noted at once must map contiguously, as
+     * note_wrote only checks its two ends) */
+    u64 g = gpu_va_contig(va, bytes), gend = g ? g + bytes : 0;
+    if (pending_wrote_hi && pending_wrote_hi == va && g && g == pending_wrote_ghi) { pending_wrote_hi += bytes; pending_wrote_ghi = gend; return; }
+    if (pending_wrote_hi) { enter(); leave(); }
+    pending_wrote_lo = va;
+    pending_wrote_hi = va + bytes;
+    pending_wrote_ghi = gend;
+}
+static void vk_stream_end(void) {
+    if (pending_wrote_hi) { enter(); leave(); }
+}
 /* Memory taken away: textures made from it are made again at their next use (if any). */
 static void vk_guest_unmapped(u64 addr, u64 size) {
     enter();
@@ -5219,11 +5467,14 @@ static void vk_dispatch_(const u32 *regs, const u32 *q) {
     if (!cs || cs->state != 1 || !cs->compute) { vk_stat_skip_compute++; leave(); return; }
 
     VkBufferView cbv[18] = {0};
-    for (u32 b = 0; b < 18; b++) {
-        if (!(cs->info.cbuf_mask >> b & 1)) continue;
+    int blend = motion_active();   /* (display.ini's motion: a skinning launch's bones, blended) */
+    if (blend) motion_dispatch(cs->hash);
+    for (u32 mask = cs->info.cbuf_mask & 0x3FFFFu; mask; mask &= mask - 1) {
+        u32 b = (u32)__builtin_ctz(mask);
         u32 size = cb[b].size > 0x10000 ? 0x10000 : cb[b].size;
         if (size > cs->info.cbuf_extent[b]) size = cs->info.cbuf_extent[b];
-        cbv[b] = upload(cb[b].address, size);
+        const void *m = blend ? motion_block(1, b, 0xFF, cb[b].address, size, read_gpu) : NULL;
+        cbv[b] = m ? upload_host(m, size) : upload(cb[b].address, size);
     }
     LAUNCH_PART(1);
     DrawParams params;
@@ -5770,7 +6021,6 @@ static void vk_resident_written(u64 va, u64 bytes) {
     }
     leave();
 }
-static void vk_nothing(void) {}
 static int vk_draw_logging(void) { return 0; }
 static DWORD vk_lock_owner(void) { return (DWORD)(uintptr_t)lock.OwningThread; }
 static DWORD vk_last_enter_thread(void) { return last_enter_thread; }
@@ -5893,9 +6143,9 @@ static const GfxBackend VULKAN = {
     .copy_resident = vk_copy_resident,
     .resident_flush = vk_resident_flush,
     .resident_written = vk_resident_written,
-    .stream_wrote = vk_wrote,
+    .stream_wrote = vk_stream_wrote,
     .guest_wrote = vk_wrote,
-    .stream_end = vk_nothing,
+    .stream_end = vk_stream_end,
     .gpu_unmapped = vk_gpu_unmapped,
     .guest_unmapped = vk_guest_unmapped,
     .draw_logging = vk_draw_logging,
@@ -6321,6 +6571,16 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
     limits = props.limits;
     limits_vendor = props.vendorID;
     limits_device = props.deviceID;
+    /* AMD: Direct3D's f32tof16 written out in the SPIR-V (glslang's PackHalf2x16 gave NaNs there: stages black, #353),
+     * under SPIR-V names of its own; SSBU_EXACT_F16=0 / 1 decides for any card. Said to the shader preparation this
+     * start may run (shader_aot.py's shaderaot reads the same variable), so it makes the files this start reads. */
+    shader_set_exact_f16(limits_vendor == 0x1002);
+    if (shader_exact_f16() && use_glslang()) {
+#ifdef _WIN32
+        SetEnvironmentVariableA("SSBU_EXACT_F16", "1");   /* (Windows alone prepares SPIR-V ahead: shader_aot.py spirv_names) */
+#endif
+        fprintf(stderr, "[vulkan] f32tof16 written out exactly in the shaders (#353), their SPIR-V under g%u names\n", spv_version());
+    }
     limits_integrated = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
     texel_align = limits.minTexelBufferOffsetAlignment > 16 ? limits.minTexelBufferOffsetAlignment : 16;
     ubo_align = limits.minUniformBufferOffsetAlignment > 16 ? limits.minUniformBufferOffsetAlignment : 16;

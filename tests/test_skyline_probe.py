@@ -189,6 +189,44 @@ class ProbeTests(unittest.TestCase):
 @unittest.skipUnless(os.name == "nt" and (os.path.isfile(cc.CLANG) or shutil.which(cc.CLANG)),
                      "needs Windows clang-cl")
 class DeviceIdTests(unittest.TestCase):
+    def test_application_error_uses_the_sdk_message_offsets(self):
+        text = (ROOT / "runtime/hle_skyline.c").read_text(encoding="utf-8")
+        start = text.index("static void show_application_error(Cpu *c) {")
+        function = text[start:text.index("\n}", start) + 2]
+        source = r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+typedef uint64_t u64;
+typedef struct { u64 x[31]; } Cpu;
+static unsigned char memory[0x1000];
+#define P(type, address) ((type *)(memory + (address)))
+""" + function + r"""
+int main(void) {
+    Cpu c = {0};
+    c.x[0] = 32;
+    memcpy(memory + 32 + 0x10, "BAD", 4);
+    memcpy(memory + 32 + 0x810, "BAD", 4);
+    strcpy((char *)memory + 32 + 0x14, "Synthetic plugin failure");
+    strcpy((char *)memory + 32 + 0x814, "range end index 42 out of range for slice of length 12");
+    show_application_error(&c);
+    return 0;
+}
+"""
+        with tempfile.TemporaryDirectory(prefix="skyline error ") as folder:
+            path = Path(folder) / "test.c"
+            exe = Path(folder) / "test.exe"
+            path.write_text(source, encoding="utf-8")
+            command = [cc.CLANG, "/nologo", "/O1", *cc.BASE_CFLAGS, str(path), "/Fe" + str(exe),
+                       *cc.LINK_FLAGS, "/link", *cc.LINK_OPTIONS]
+            ran = subprocess.run(command, cwd=folder, capture_output=True, text=True)
+            self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+            ran = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertEqual(ran.returncode, 0)
+            self.assertIn("Synthetic plugin failure", ran.stderr)
+            self.assertIn("range end index 42 out of range for slice of length 12", ran.stderr)
+            self.assertNotIn("BAD", ran.stderr)
+
     def test_actual_shim_writes_one_stable_uuid_and_returns_success(self):
         # Compile the actual function, not a Python reimplementation, with a synthetic
         # guest mapping so using the raw guest pointer would fail this test.

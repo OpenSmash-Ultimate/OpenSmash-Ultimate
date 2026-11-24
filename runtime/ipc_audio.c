@@ -337,7 +337,9 @@ static int start_output(void) {
     HANDLE opened = CreateEventA(NULL, FALSE, FALSE, NULL);
     int ok = 0, none = want && !_stricmp(want, "none");   /* (none: TEST ONLY, as a PC with no device) */
     for (int waveout = want && !_stricmp(want, "waveout"); waveout < 2 && !ok && !none; waveout++) {
-        CloseHandle(CreateThread(NULL, 0, waveout ? waveout_thread : wasapi_thread, opened, 0, NULL));
+        HANDLE thread = CreateThread(NULL, 0, waveout ? waveout_thread : wasapi_thread, opened, 0, NULL);
+        if (!thread) continue;   /* nobody can signal opened: do not wait forever */
+        CloseHandle(thread);
         WaitForSingleObject(opened, INFINITE);
         ok = (int)wasapi_ok;
     }
@@ -346,9 +348,12 @@ static int start_output(void) {
          * (headphones plugged in, the monitor awake again); where even that cannot start, the plain one. */
         if (!none) {
             InterlockedExchange(&wasapi_stay, 1);
-            CloseHandle(CreateThread(NULL, 0, wasapi_thread, opened, 0, NULL));
-            WaitForSingleObject(opened, INFINITE);
-            ok = (int)wasapi_ok;
+            HANDLE thread = CreateThread(NULL, 0, wasapi_thread, opened, 0, NULL);
+            if (thread) {
+                CloseHandle(thread);
+                WaitForSingleObject(opened, INFINITE);
+                ok = (int)wasapi_ok;
+            }
         }
         if (!ok) { CloseHandle(CreateThread(NULL, 0, null_thread, NULL, 0, NULL)); ok = 1; }
         fprintf(stderr, "[audio] no audio device: the sound is dropped at the device's pace%s\n", none ? "" : " until there is one");

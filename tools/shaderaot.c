@@ -69,6 +69,7 @@ static unsigned long long clock_ms(void) {
 #endif
 
 u32 shader_size(const u8 *program, u32 max);
+int shader_exact_f16(void);   /* (gpu_shader.c: SSBU_EXACT_F16, #353) */
 #define MAX_SIZE 0x40000   /* (what the renderer reads of a program at most) */
 
 static jmp_buf on_fatal;
@@ -178,6 +179,9 @@ static int compile_to(const char *hlsl, const char *name, int stage, const char 
 /* ---- --spirv: the Vulkan back end's file of a key ------------------------------------------------- */
 static int spirv_on;   /* --spirv, and glslang's library is there */
 static int spirv_only; /* --spirv-only: no DXBC is compiled (serve mode) */
+/* The SPIR-V's version in its names: with SSBU_EXACT_F16=1 (set by an AMD card's game for the preparation it runs,
+ * gpu_vk.c) the exact-f32tof16 translation's, under names of its own (#353), as the game's spv_version. */
+static inline unsigned spv_version(void) { return SHADER_CACHE_SPV_VERSION + (shader_exact_f16() ? SHADER_CACHE_SPV_EXACT_F16 : 0); }
 enum { SPV_OFF, SPV_EXISTING, SPV_MADE, SPV_TABLES, SPV_FAILED };
 
 #ifdef _WIN32
@@ -187,7 +191,7 @@ enum { SPV_OFF, SPV_EXISTING, SPV_MADE, SPV_TABLES, SPV_FAILED };
 static int spirv_to(Program *p, int stage, u32 vs_outputs, int alpha, u64 file_hash, const char *name, const char *dir) {
     if (!spirv_on) return SPV_OFF;
     char path[1200], tmp[1300], err[600];
-    shader_cache_file_spv(path, sizeof path, dir, stage, file_hash, vs_outputs, 0, spirv_glslang_version());
+    shader_cache_file_spv_v(path, sizeof path, dir, spv_version(), stage, file_hash, vs_outputs, 0, spirv_glslang_version());
     if (exists(path)) return SPV_EXISTING;
     ShaderInfo info;
     char *volatile hlsl = NULL;
@@ -345,7 +349,7 @@ int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--spirv-version")) {
         char why[300];
         if (!spirv_have_glslang(why, sizeof why)) { fprintf(stderr, "%s\n", why); return 3; }
-        printf("g%u.%08x\n", SHADER_CACHE_SPV_VERSION, spirv_glslang_version());
+        printf("g%u.%08x\n", spv_version(), spirv_glslang_version());
         return 0;
     }
 #endif

@@ -125,7 +125,10 @@ public sealed partial class MainWindow : Window
 
     void SetProject(string root,bool forceInstaller=false)
     {
-        _project=new Project(root,Project.CurrentPlatform);ProjectLayout.Normalize(_project.Root);Surface.SetProject(_project,forceInstaller);
+        _project=new Project(root,Project.CurrentPlatform);ProjectLayout.Normalize(_project.Root);
+        // (an online_server.txt without a line: the official lobby, the default - OpenSmash.Core.OnlineSettings)
+        if(_backgroundActions)OpenSmash.Core.OnlineSettings.EnsureLine(_project.ConfigFile("online_server.txt"));
+        Surface.SetProject(_project,forceInstaller);
         if(_opened&&_backgroundActions){_=CheckExternalChanges(atBoot:true);CommunityStart();}   // (CommunityStart: MainWindow.Discord.cs)
     }
     Project RequireProject()=>_project??throw new InvalidOperationException("Choose an OpenSmash project folder first.");

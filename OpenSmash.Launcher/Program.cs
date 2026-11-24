@@ -24,6 +24,8 @@ namespace OpenSmash.Launcher
             if (args.Contains("--play", StringComparer.OrdinalIgnoreCase) && ProjectSetup.FindProject(AppContext.BaseDirectory) is string built
                 && WindowSmash.IsBuilt(built))
             {
+                // (no lobby line yet: the official lobby, the launchers' default - OpenSmash.Core.OnlineSettings)
+                OpenSmash.Core.OnlineSettings.EnsureLine(WindowSmash.ConfigFile(built, "online_server.txt"));
                 // (v0.5.0) the signed-in account's lobby ticket, kept fresh while the game runs
                 string? pass = null;
                 OpenSmash.Core.OnlinePass? keeper = null;

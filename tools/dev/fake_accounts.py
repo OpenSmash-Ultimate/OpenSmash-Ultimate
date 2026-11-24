@@ -16,6 +16,10 @@ What it answers (the calls OpenSmash.Core makes):
        --secret-file (the same file tools/ssbu_relay.py --ticket-secret-file reads: its tickets are accepted there)
   POST /rest/v1/rpc/crash_report_add, /rest/v1/rpc/perf_session_add           -> 1 (the body goes to the log)
   POST /storage/v1/object/crashes/<name>                                      -> {"Key": ...} (its size goes to the log)
+  POST /rest/v1/rpc/opensmash_mastery_board  {p_fighter, p_limit, p_offset}   -> the mastery board (anyone: apikey only)
+  POST /rest/v1/rpc/my_opensmash_mastery                                      -> the test account's points per fighter
+  POST /rest/v1/rpc/my_opensmash_mastery_rank                                 -> its place on the board
+       (--no-mastery: the three answer 404 as a service without them, for the launchers' fallback to the lobbies)
 Every request needs the header apikey; the calls of a signed-in player their bearer token."""
 import argparse
 import base64
@@ -31,6 +35,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 UID = "00000000-0000-4000-8000-0000000000aa"
 state = {"challenges": {}, "refresh": set(), "access": set(), "n": 0}
 opts = None
+# the mastery points the fake service has (the test account is "acc_me", 3rd of 4 with a name hidden)
+MINE = [{"fighter": "mario", "points": 300, "veteran": 1000, "total": 1300, "games": 4, "wins": 3, "updated_at": "2026-11-21T10:00:00Z",
+         "points_opensmash": 300, "points_arena": 0},
+        {"fighter": "pzenigame", "points": 120, "veteran": 0, "total": 120, "games": 2, "wins": 1, "updated_at": "2026-11-21T10:00:00Z",
+         "points_opensmash": 120, "points_arena": 0}]
+BOARD = [("acc_a1", "Ann", 1, "fox", 5200, 40), ("acc_b2", None, 2, "kirby", 3100, 22), ("acc_me", None, 1234, "mario", 1420, 6),
+         ("acc_d4", "Dee", 7, "ike", 300, 3)]
+
+
+def board_rows(fighter=None, limit=50, offset=0):
+    rows = [{"pos": i + 1, "id": pid, "name": (opts.name if pid == "acc_me" else name), "tag": tag, "avatar": None,
+             "main_fighter": main, "total": total, "games": games, "total_count": len(BOARD)}
+            for i, (pid, name, tag, main, total, games) in enumerate(BOARD) if fighter in (None, main)]
+    return rows[offset:offset + limit]
 
 
 def log(text):
@@ -102,7 +120,21 @@ class H(BaseHTTPRequestHandler):
                 log("token (refresh): session renewed")
                 return self.send(200, session())
             return self.send(400, {"error": "unsupported grant"})
+        if u.path.startswith("/rest/v1/rpc/") and "mastery" in u.path and opts.no_mastery:
+            log("%s: 404 (--no-mastery)" % u.path); return self.send(404, {"code": "PGRST202", "message": "function not found"})
+        if u.path == "/rest/v1/rpc/opensmash_mastery_board":   # (anyone: the publishable key alone)
+            try: a = json.loads(raw or b"{}")
+            except ValueError: a = {}
+            limit = a.get("p_limit") if isinstance(a.get("p_limit"), int) else 50
+            offset = a.get("p_offset") if isinstance(a.get("p_offset"), int) else 0
+            log("mastery board (limit %d, offset %d)" % (limit, offset))
+            return self.send(200, board_rows(a.get("p_fighter"), max(0, min(limit, 100)), max(0, offset)))
         if not self.bearer_ok(): return self.send(401, {"error": "no session"})
+        if u.path == "/rest/v1/rpc/my_opensmash_mastery":
+            log("my mastery read"); return self.send(200, MINE)
+        if u.path == "/rest/v1/rpc/my_opensmash_mastery_rank":
+            log("my mastery place read")
+            return self.send(200, [{"pos": 3, "id": "acc_me", "total": 1420, "total_count": len(BOARD), "main_fighter": "mario"}])
         if u.path == "/auth/v1/logout":
             log("logout"); return self.send(204, b"")
         if u.path == "/rest/v1/rpc/lobby_ticket":
@@ -127,6 +159,7 @@ def main():
     ap.add_argument("--name", default="Tester")
     ap.add_argument("--uid", default=UID, help="the test account's id (two instances: two accounts, e.g. a game pair)")
     ap.add_argument("--discord", help="a Discord id put in the ticket as |d=<id> (the board links the account to it)")
+    ap.add_argument("--no-mastery", action="store_true", help="the mastery functions answer 404 (a service without them)")
     ap.add_argument("--log")
     opts = ap.parse_args()
     srv = ThreadingHTTPServer(("127.0.0.1", opts.port), H)

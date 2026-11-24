@@ -98,6 +98,14 @@ void watchdog_present(void) {
     }
 }
 
+/* (Vulkan's present, #498 review) a frame shown, without starting the watchdog: Vulkan never started it before, and still
+ * does not offline; once something else started it (the rollback code's waits, online), its frames keep it quiet. */
+void watchdog_frame(void) {
+    if (started <= 0) return;
+    last_present = GetTickCount64();
+    presented++;
+}
+
 /* A dialog the game waits on (the software keyboard): not a freeze. */
 void watchdog_pause(int on) {
     InterlockedAdd(&paused, on ? 1 : -1);

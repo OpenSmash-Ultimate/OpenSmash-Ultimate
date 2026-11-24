@@ -519,7 +519,9 @@ def check_mac_runtime(tc, tmp):
     import build_mac
     with open(os.path.join(tmp, "overlay_font.h"), "w") as f:   # (build_mac.py makes it: its fallback)
         f.write("static const unsigned char overlay_font[%d] = {0};\n" % build_mac.OVERLAY_FONT_SIZE)
-    flags = build_mac.RUNTIME_INCLUDES + ["-I", tmp] + build_mac.RUNTIME_DEFINES
+    # (#488) tmp first: a stale build-mac/gen/overlay_font.h of another size (an update that changed the atlas) is on
+    # RUNTIME_INCLUDES too, and the first -I wins; it failed this check before build_mac.py could draw it again (#384)
+    flags = ["-I", tmp] + build_mac.RUNTIME_INCLUDES + build_mac.RUNTIME_DEFINES
     jobs = [(src, os.path.join(tmp, "syntax.o"), "-O0", flags) for src, _obj in build_mac.runtime_sources()
             if not src.endswith(".S")]
     failures = tc.compile_each(jobs, max(4, os.cpu_count() or 4), extra=("-fsyntax-only",))

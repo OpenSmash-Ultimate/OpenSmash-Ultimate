@@ -65,9 +65,10 @@ STAGES = list(dict.fromkeys(STAGES))
 
 # Boot to the first battle frame: the movie, the title, the main menu, Smash, the select screen (a fighter
 # picked: SSBU_DEBUG_MATCH replaces it), Ready to fight, the stage screen (replaced too), the fight
-# (as plan/phases/R7_tools/gate2.seq; draw counts of this renderer).
+# (as plan/phases/R7_tools/gate2.seq; draw counts of this renderer. The title is 462 draws, 489-507 with the
+# standard Skyline plugins loaded, hence 430-520: the menus around it are 24 and 940).
 MENUS = """@movie
-@draws:430-485/30
+@draws:430-520/30
 30:A
 @until:400-3000/40:A/150
 300:A
@@ -245,7 +246,7 @@ def menus_env(cache):
     """The main menus and modes, walked through (no fight): Smash's rules, Spirits, Games & More, Vault, Online's
     first screen, Options, and back; a sequence that loses its way only lists less."""
     seq = """@movie
-@draws:430-485/30
+@draws:430-520/30
 30:A
 @until:400-3000/40:A/150
 300

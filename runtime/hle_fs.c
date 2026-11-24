@@ -561,20 +561,74 @@ static void host_path(char *out, size_t n, struct Mount *m, const char *rest) {
  * handle that existed at that mark has been closed since (the last 256 such closes are kept; older ones count as
  * yes). Off, nothing is counted. */
 static u64 rb_seq;
-static u64 rb_closes[256][2];   /* (when closed, when opened) */
+static u64 rb_closes[256][3];   /* (when closed, when opened, 1: a read-only RomFS file a state puts back: fs_rb_save) */
 static u32 rb_nclose;
 static int rb_fs = -1;
 static u64 rb_born[512];        /* (by slot) when its handle was opened */
 int kernel_rb_switch(void);   /* (kernel.c: SSBU_RB, or run-ahead) */
 static int rb_fs_on(void) { if (rb_fs < 0) rb_fs = kernel_rb_switch(); return rb_fs; }
+/* SSBU_RB_IO_TRACE=1 (test aid, off by default): every handle opened and closed while rollback counts them, with the
+ * guest path and the count, to name the file behind a "LOAD refused: a game file open at the save was closed since" */
+static int rb_io_trace = -1;
+static __declspec(thread) const char *rb_trace_path;   /* (the path the open being made names) */
+static int rb_io_tracing(void) {
+    if (rb_io_trace < 0) { const char *e = getenv("SSBU_RB_IO_TRACE"); rb_io_trace = e && *e == '1'; }
+    return rb_io_trace;
+}
+/* (2026-11-20) SSBU_RB_FS_ROM (default on; =0: off, every close refuses as before): a read-only file of the game's RomFS
+ * (rom:/data.arc, the resource loader's) is no host state at all - its handle is a slot holding an offset and a size into
+ * the image this file already has open. A state keeps the RomFS handles open at its save (fs_rb_save) and its load puts
+ * them back in their slots (fs_rb_load), and frees the RomFS handles opened since, which belong to the frames the load
+ * undoes. So closing one no longer makes every older state unloadable: the resource loader opens and closes data.arc five
+ * times for a load in the middle of a fight (30 s before a timed match's end), and a wrong guess just before that found no
+ * state it could load (the Local Wireless room desync of 2026-11-19). Other handles (save files, the host's files) keep the
+ * rule above. */
+static int rb_fs_rom = -1;
+static int rb_fs_rom_on(void) { if (rb_fs_rom < 0) { const char *e = getenv("SSBU_RB_FS_ROM"); rb_fs_rom = !(e && *e == '0'); } return rb_fs_rom; }
+static int rb_rom_handle(const Handle *h) {   /* (the lock held) */
+    if (!rb_fs_rom_on() || !h->used || h->kind != FILE_ENTRY || h->host || (h->mode & OPEN_WRITE) || h->system_save || h->names) return 0;
+    for (int m = 0; m < 16; m++) if (mounts[m].id == h->mount) return mounts[m].kind == M_ROM;
+    return 0;
+}
+typedef struct FsRomRec { u32 slot, mount; int mode; u64 born, offset, size; } FsRomRec;
+typedef struct FsRomSave { u32 n; FsRomRec r[]; } FsRomSave;
 static void rb_closing(const Handle *h) {   /* (the lock held) */
     if (!rb_fs_on()) return;
     u32 i = (u32)(h - handles);
     u32 k = rb_nclose++ % 256;
-    rb_closes[k][0] = ++rb_seq; rb_closes[k][1] = i < 512 ? rb_born[i] : 0;
+    rb_closes[k][0] = ++rb_seq; rb_closes[k][1] = i < 512 ? rb_born[i] : 0; rb_closes[k][2] = rb_rom_handle(h);
+    if (rb_io_tracing()) fprintf(stderr, "[rb-io] close: handle %u (opened at #%llu) closed at #%llu\n", i, (unsigned long long)rb_closes[k][1],
+                                 (unsigned long long)rb_seq);
 }
 u64 fs_rb_mark(void) { ready(); EnterCriticalSection(&lock); u64 m = rb_seq; LeaveCriticalSection(&lock); return m; }
-int fs_rb_closed_since(u64 mark) {
+/* the RomFS handles open now, for a state (hle_rb_state.c rb_save; NULL: none, or SSBU_RB_FS_ROM=0) */
+static u64 rb_last_save_seq;   /* (the count at the newest state's save: a handle opened after it closes freely) */
+void *fs_rb_save(void) {
+    if (!rb_fs_on()) return NULL;
+    ready();
+    EnterCriticalSection(&lock); rb_last_save_seq = rb_seq; LeaveCriticalSection(&lock);
+    if (!rb_fs_rom_on()) return NULL;
+    EnterCriticalSection(&lock);
+    u32 n = 0;
+    for (u32 i = 1; i < 512; i++) n += rb_rom_handle(&handles[i]);
+    FsRomSave *f = n ? malloc(sizeof *f + n * sizeof f->r[0]) : NULL;
+    if (f) {
+        f->n = 0;
+        for (u32 i = 1; i < 512; i++)
+            if (rb_rom_handle(&handles[i]))
+                f->r[f->n++] = (FsRomRec){ i, handles[i].mount, handles[i].mode, rb_born[i], handles[i].offset, handles[i].size };
+    }
+    LeaveCriticalSection(&lock);
+    return f;
+}
+static const FsRomRec *rom_saved(const FsRomSave *f, u32 slot, u64 born) {
+    for (u32 j = 0; f && j < f->n; j++) if (f->r[j].slot == slot && f->r[j].born == born) return &f->r[j];
+    return NULL;
+}
+/* Whether a handle open at the save (mark) was closed since and cannot be put back: a RomFS one kept in the state
+ * (fs: fs_rb_save's) can, unless its slot now holds another kind of handle. */
+int fs_rb_closed_since(u64 mark, const void *fs) {
+    const FsRomSave *f = fs;
     int yes = 0;
     ready();
     EnterCriticalSection(&lock);
@@ -582,12 +636,43 @@ int fs_rb_closed_since(u64 mark) {
     for (u32 j = 0; j < n && !yes; j++) {
         const u64 *c = rb_closes[(rb_nclose - 1 - j) % 256];
         if (c[0] <= mark) break;   /* (newest first: the rest are older than the mark) */
-        if (c[1] <= mark) yes = 1;
+        if (c[1] <= mark && !(c[2] && f)) yes = 1;
         if (j == 255) yes = 1;     /* (more closes since than kept) */
+    }
+    for (u32 j = 0; f && j < f->n && !yes; j++) {   /* (a slot kept that a host or save handle took since) */
+        const Handle *h = &handles[f->r[j].slot];
+        if (h->used && rb_born[f->r[j].slot] != f->r[j].born && !rb_rom_handle(h)) yes = 1;
     }
     LeaveCriticalSection(&lock);
     return yes;
 }
+/* A load (after fs_rb_closed_since said no): the state's RomFS handles back in their slots, the RomFS handles opened
+ * since its save freed. Returns how many were put back or freed. */
+static long long rb_fs_put_back, rb_fs_freed;
+int fs_rb_load(const void *fs, u64 mark) {
+    const FsRomSave *f = fs;
+    if (!rb_fs_on() || !rb_fs_rom_on()) return 0;
+    int k = 0;
+    ready();
+    EnterCriticalSection(&lock);
+    for (u32 i = 1; i < 512; i++)
+        if (rb_born[i] > mark && rb_rom_handle(&handles[i]) && !rom_saved(f, i, rb_born[i])) {
+            memset(&handles[i], 0, sizeof handles[i]); rb_born[i] = 0; k++; rb_fs_freed++;
+            if (rb_io_tracing()) fprintf(stderr, "[rb-io] load: RomFS handle %u opened since the state freed\n", i);
+        }
+    for (u32 j = 0; f && j < f->n; j++) {
+        const FsRomRec *r = &f->r[j];
+        Handle *h = &handles[r->slot];
+        if (h->used && rb_born[r->slot] == r->born) continue;   /* (still open) */
+        memset(h, 0, sizeof *h);
+        h->used = 1; h->kind = FILE_ENTRY; h->mode = r->mode; h->mount = r->mount; h->offset = r->offset; h->size = r->size;
+        rb_born[r->slot] = r->born; k++; rb_fs_put_back++;
+        if (rb_io_tracing()) fprintf(stderr, "[rb-io] load: RomFS handle %u (opened at #%llu) put back\n", r->slot, (unsigned long long)r->born);
+    }
+    LeaveCriticalSection(&lock);
+    return k;
+}
+void fs_rb_counts(long long *put_back, long long *freed) { *put_back = rb_fs_put_back; *freed = rb_fs_freed; }
 
 static u64 new_handle(Handle h) {
     EnterCriticalSection(&lock);
@@ -596,6 +681,9 @@ static u64 new_handle(Handle h) {
             handles[i] = h;
             handles[i].used = 1;
             if (rb_fs_on()) rb_born[i] = ++rb_seq;
+            if (rb_fs_on() && rb_io_tracing())
+                fprintf(stderr, "[rb-io] open: handle %u at #%llu: %s %s\n", i, (unsigned long long)rb_seq, h.kind == DIR_ENTRY ? "directory" : "file",
+                        rb_trace_path ? rb_trace_path : "?");
             LeaveCriticalSection(&lock);
             return 0x46530000ull | i;
         }
@@ -1381,6 +1469,7 @@ HLE(_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc) {
 HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     const char *rest;
     ready();
+    rb_trace_path = P(char, c->x[1]);
     struct Mount *m = find_mount(P(char, c->x[1]), &rest);
     int mode = (int)c->x[2];
     if (!m) { c->x[0] = R_NOT_MOUNTED; return; }
@@ -1499,14 +1588,28 @@ HLE(_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE) {
     st64(c->x[0], file_size(h));
     c->x[0] = 0;
 }
+/* (rollback, SSBU_RB_IO_BARRIER: hle_rb_core.c) A close a load could not undo - a handle open at the newest state's save
+ * that is not a RomFS one put back by the load - waits, in a networked fight, until no rollback can cross it. */
+extern int (*kernel_rb_io_enter)(void *kthread, const char *what);
+extern void (*kernel_rb_io_leave)(int token);
+static int rb_close_barrier(Cpu *c, Handle *h) {
+    if (!kernel_rb_io_enter || !rb_fs_on()) return 0;
+    EnterCriticalSection(&lock);
+    u32 i = (u32)(h - handles);
+    int need = h->used && i < 512 && rb_born[i] <= rb_last_save_seq && !rb_rom_handle(h);
+    LeaveCriticalSection(&lock);
+    return need ? kernel_rb_io_enter(c->thread, "a game file closed") : 0;
+}
 HLE(_ZN2nn2fs9CloseFileENS0_10FileHandleE) {
     Handle *h = get_handle(c->x[0]);
     if (!h) return;
+    int io = rb_close_barrier(c, h);
     if (h->host) CloseHandle(h->host);
     EnterCriticalSection(&lock);
     rb_closing(h);
     memset(h, 0, sizeof *h);
     LeaveCriticalSection(&lock);
+    if (io && kernel_rb_io_leave) kernel_rb_io_leave(io);
 }
 HLE(_ZN2nn2fs10CreateFileEPKcl) {   /* (path, size) */
     const char *rest;
@@ -1608,6 +1711,7 @@ static void listing_free(Handle *h) {
 HLE(_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci) {   /* (handle*, path, mode) */
     const char *rest;
     ready();
+    rb_trace_path = P(char, c->x[1]);
     struct Mount *m = find_mount(P(char, c->x[1]), &rest);
     int mode = (int)c->x[2];
     if (!m) { c->x[0] = R_NOT_MOUNTED; return; }
@@ -1706,11 +1810,13 @@ HLE(_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE) {
 HLE(_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE) {
     Handle *h = get_handle(c->x[0]);
     if (!h) return;
+    int io = rb_close_barrier(c, h);
     listing_free(h);
     EnterCriticalSection(&lock);
     rb_closing(h);
     memset(h, 0, sizeof *h);
     LeaveCriticalSection(&lock);
+    if (io && kernel_rb_io_leave) kernel_rb_io_leave(io);
 }
 
 /* ---- what Skyline plugins ask of nn::fs that the game doesn't ----------------------- */

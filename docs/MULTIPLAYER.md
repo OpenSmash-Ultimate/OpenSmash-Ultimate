@@ -294,7 +294,7 @@ The lobby checks where messages come from, limits how fast each player can send,
 
 ## Rollback in Local Wireless rooms
 
-Started with `OpenSmash.exe` (or the launcher), a Local Wireless room's 1-on-1 match is played with rollback too when both players have turned it on: the room is made and joined as usual (in the lobby, or in a private room), and as the match is set up the two games agree on rollback within 15 seconds, exactly as a [Quickplay match](#rollback-in-online-mode) does. The character screen, the stage and the results stay the room's own. When the other game has rollback off (or is an older build), or the room has three or four players, the match is played with the game's own netcode. The same switch turns it on: **Online > Rollback netcode** in the settings (off by default).
+Started with `OpenSmash.exe` (or the launcher), a Local Wireless room's 1-on-1 match is played with rollback too, as long as both players have it on (the default): the room is made and joined as usual (in the lobby, or in a private room), and as the match is set up the two games agree on rollback within 15 seconds, exactly as a [Quickplay match](#rollback-in-online-mode) does. The character screen, the stage and the results stay the room's own. When the other game has rollback off (or is an older build), or the room has three or four players, the match is played with the game's own netcode. The same switch turns it off: **Online > Rollback netcode** in the settings (on by default since 2026-11-11; off writes `off` in `online_rollback.txt`, as for Quickplay).
 
 ## Rollback netplay through the lobby or a private room
 

@@ -99,6 +99,11 @@ void display_set_hide_cursor(int on) { (void)on; }
 void display_set_latency(int frames) { (void)frames; }
 int display_runahead(void) { return 0; }                     /* (run-ahead: gpu_display.c, hle_rb_core.c) */
 void display_set_runahead(int frames) { (void)frames; }
+static int frame_rate_saved = 60, motion_saved;                /* (frame rate and motion between frames: gpu_display.c) */
+int display_frame_rate(void) { return frame_rate_saved; }
+void display_set_frame_rate(int fps) { frame_rate_saved = fps; }
+int display_motion(void) { return motion_saved; }
+void display_set_motion(int mode) { motion_saved = mode; }
 int kernel_rb_switch(void) { return 0; }
 void display_set_render_scale(float scale) { (void)scale; }
 void display_set_renderer(int renderer) { renderer_saved = renderer; }

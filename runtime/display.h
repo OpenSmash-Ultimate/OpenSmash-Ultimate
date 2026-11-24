@@ -88,6 +88,19 @@ int display_pacing_vrr(void);
 int display_present_odd_rate(void);
 /* The vsync thread: returns when the next refresh the game sees is due. */
 void display_wait_tick(void);
+/* frame_rate = 60 | 120 | 240 (display.ini, SSBU_FRAME_RATE; the settings menu changes it at once): how many times a
+ * second the game's main loop runs, draws and reads the controllers; its logic stays at 60 a second (hle_frame_rate.c). */
+int display_frame_rate(void);
+void display_set_frame_rate(int fps);
+/* The game's refreshes in a 60 Hz frame now: frame_rate / 60, but 1 while a networked match is set up or under way, with
+ * SSBU_SPEED and with run-ahead (each counts one main-loop pass a logic frame). display_tick_mult: the one the vsync
+ * thread's last display_wait_tick paced (what the game is shown now). */
+int display_refresh_mult(void);
+int display_tick_mult(void);
+/* motion = off | interpolate | extrapolate (display.ini, SSBU_MOTION; the settings menu changes it at once): with
+ * frame_rate above 60, the pictures between two logic frames drawn with the motion blended (gpu_motion.c). 0, 1, 2. */
+int display_motion(void);
+void display_set_motion(int mode);
 /* SSBU_SPEED (test runs): 1 = normal; else the vsync thread gives one refresh per frame shown,
  * n x 60 a second (display_speed_tick waits for the next one's time), 0 = uncapped. */
 double display_speed(void);
