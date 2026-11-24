@@ -204,9 +204,9 @@ static void surface_to_guest(const DmaSurface *src) {
     u8 *px;
     u64 g = guest(src->base);
     if (!g || !gfx_surface_pixels(g, &w, &h, &px)) return;
-    /* (a picture the host kept for this address long ago, the memory since used for something else: only a copy of the
+    /* (block linear only; width in bytes, or in elements for a remapped copy. A picture the host kept for this address long ago, the memory since used for something else: only a copy of the
      * surface's own size is a copy of that picture) */
-    if ((!src->pitch_linear && src->width != w * 4) || (src->height && src->height != h)) {
+    if (!src->pitch_linear && ((src->width != w * 4 && src->width != w) || (src->height && src->height != h))) {
         static int skipped;
         if (skipped++ < 8) fprintf(stderr, "[gpu] copy engine: %ux%u picture at %#llx not read back: the copy's source is %ux%u (%s)\n", w, h, g,
                                    src->width, src->height, src->pitch_linear ? "pitch linear" : "block linear");
