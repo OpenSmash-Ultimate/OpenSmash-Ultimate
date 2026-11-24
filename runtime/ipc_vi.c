@@ -457,7 +457,13 @@ static LONG64 ll_delay(void) {   /* ticks to hold the signal past the refresh */
     LONG64 most = 0;
     for (int i = 0; i < ll_count; i++) if (ll_spans[i] > most) most = ll_spans[i];
     {   static LONG64 keep = -1;   /* (the rollbacks' spans: see ll_queued) */
-        if (keep < 0) { const char *e = getenv("SSBU_LOW_LATENCY_RB_MS"); keep = (LONG64)((e && atof(e) >= 0 ? atof(e) : 10000.0) * ll_freq / 1000); }
+        if (keep < 0) {
+            const char *e = getenv("SSBU_LOW_LATENCY_RB_MS");
+            double ms = e && *e ? atof(e) : 10000.0;
+            if (!(ms >= 0)) ms = 10000.0;
+            if (ms > 600000.0) ms = 600000.0;   /* (10 minutes at most: no overflow of the ticks) */
+            keep = (LONG64)(ms * ll_freq / 1000);
+        }
         LONG64 now = qpc_now();
         queue_lock();
         for (int i = 0; i < 16; i++) if (ll_rb_at[i] && now - ll_rb_at[i] < keep && ll_rb_spans[i] > most) most = ll_rb_spans[i];
@@ -470,8 +476,8 @@ static LONG64 ll_delay(void) {   /* ticks to hold the signal past the refresh */
 extern int rb_on;   /* (hle_rb_core.c: rollback netplay or run-ahead, fixed at boot) */
 /* With savestates on (rb_on) the hold is taken only in a fight of net mode (rb_net_fight_now: Online, a relay's, a direct
  * link's; not run-ahead, not the menus): a rollback's save and load see a held buffer as free (vi_rb_save, vi_rb_load), and
- * the frames a catch-up runs again are never held (d is 0 while rb_fast). SSBU_LOW_LATENCY_HOLD_NET=0: online, the signal
- * only, as before 2026-11-24. */
+ * the frames a catch-up runs again are never held (the refresh showing its kept last picture may be: ll_rb_kept times it).
+ * SSBU_LOW_LATENCY_HOLD_NET=0: online, the signal only (the rollbacks' timing still shortens it). */
 static int ll_hold_on(void) {
     static int v = -1, net = -1, said = -1;
     if (v < 0) {
