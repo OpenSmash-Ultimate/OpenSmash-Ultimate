@@ -320,11 +320,28 @@ static inline uint64_t sdiv64(uint64_t a, uint64_t b) {
     return (uint64_t)((int64_t)a / (int64_t)b);
 }
 
-/* float -> integer with AArch64 saturation semantics */
-static inline uint32_t f2s32(double v) { if (v != v) return 0; if (v >= 2147483647.0) return 0x7fffffffu; if (v <= -2147483648.0) return 0x80000000u; return (uint32_t)(int32_t)v; }
-static inline uint32_t f2u32(double v) { if (v != v || v <= 0) return 0; if (v >= 4294967295.0) return 0xffffffffu; return (uint32_t)v; }
-static inline uint64_t f2s64(double v) { if (v != v) return 0; if (v >= 9223372036854775807.0) return 0x7fffffffffffffffull; if (v <= -9223372036854775808.0) return 0x8000000000000000ull; return (uint64_t)(int64_t)v; }
-static inline uint64_t f2u64(double v) { if (v != v || v <= 0) return 0; if (v >= 18446744073709551615.0) return ~0ull; return (uint64_t)v; }
+/* RT_SOFT(name): the name of a software (portable) helper that has an instruction on an AArch64 host. With
+ * RECOMP_A64_NATIVE it is name_soft (kept for tests/arm_host/fp_native_test.c, which checks it against the instruction)
+ * and `name` is the instruction; on every other host the software version is `name` itself, as before. */
+#if RECOMP_A64_NATIVE
+#define RT_SOFT(name) name##_soft
+#else
+#define RT_SOFT(name) name
+#endif
+
+/* float -> integer with AArch64 saturation semantics (the callers round first: trunc / rint / floor / ...) */
+static inline uint32_t RT_SOFT(f2s32)(double v) { if (v != v) return 0; if (v >= 2147483647.0) return 0x7fffffffu; if (v <= -2147483648.0) return 0x80000000u; return (uint32_t)(int32_t)v; }
+static inline uint32_t RT_SOFT(f2u32)(double v) { if (v != v || v <= 0) return 0; if (v >= 4294967295.0) return 0xffffffffu; return (uint32_t)v; }
+static inline uint64_t RT_SOFT(f2s64)(double v) { if (v != v) return 0; if (v >= 9223372036854775807.0) return 0x7fffffffffffffffull; if (v <= -9223372036854775808.0) return 0x8000000000000000ull; return (uint64_t)(int64_t)v; }
+static inline uint64_t RT_SOFT(f2u64)(double v) { if (v != v || v <= 0) return 0; if (v >= 18446744073709551615.0) return ~0ull; return (uint64_t)v; }
+#if RECOMP_A64_NATIVE
+/* FCVTZS / FCVTZU saturate and give 0 for NaN by themselves (tests/arm_host/fp_native_test.c checks them against the
+ * versions above). */
+static inline uint32_t f2s32(double v) { uint32_t r; __asm__("fcvtzs %w0, %d1" : "=r"(r) : "w"(v)); return r; }
+static inline uint32_t f2u32(double v) { uint32_t r; __asm__("fcvtzu %w0, %d1" : "=r"(r) : "w"(v)); return r; }
+static inline uint64_t f2s64(double v) { uint64_t r; __asm__("fcvtzs %x0, %d1" : "=r"(r) : "w"(v)); return r; }
+static inline uint64_t f2u64(double v) { uint64_t r; __asm__("fcvtzu %x0, %d1" : "=r"(r) : "w"(v)); return r; }
+#endif
 
 #include "fpexact.h"
 #include "neon.h"

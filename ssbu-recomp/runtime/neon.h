@@ -46,8 +46,13 @@ static inline float f3s(int op, float acc, float a, float b, uint32_t *mask, int
     case F_MAXNM: return fp_maxmin32(a, b, 0, 1);
     case F_MINNM: return fp_maxmin32(a, b, 1, 1);
     case F_ABD: return fabsf(a - b);
-    case F_RECPS: return fmaf(-a, b, 2.0f);
+#if RECOMP_A64_NATIVE
+    case F_RECPS: return fp_recps32(a, b);                 /* fpexact.h: the instruction (0 x inf = 2.0, Arm NaN rules) */
+    case F_RSQRTS: return fp_rsqrts32(a, b);               /* 0 x inf = 1.5 */
+#else
+    case F_RECPS: return fmaf(-a, b, 2.0f);                /* other hosts: as before (0 x inf, NaN operands differ) */
     case F_RSQRTS: return fmaf(-a, b, 3.0f) / 2.0f;
+#endif
     case F_CMEQ: *is_mask = 1; *mask = a == b ? ~0u : 0; return 0;
     case F_CMGE: *is_mask = 1; *mask = a >= b ? ~0u : 0; return 0;
     case F_CMGT: *is_mask = 1; *mask = a > b ? ~0u : 0; return 0;
@@ -67,8 +72,13 @@ static inline double f3d(int op, double acc, double a, double b, uint64_t *mask,
     case F_MAXNM: return fp_maxmin64(a, b, 0, 1);
     case F_MINNM: return fp_maxmin64(a, b, 1, 1);
     case F_ABD: return fabs(a - b);
+#if RECOMP_A64_NATIVE
+    case F_RECPS: return fp_recps64(a, b);
+    case F_RSQRTS: return fp_rsqrts64(a, b);
+#else
     case F_RECPS: return fma(-a, b, 2.0);
     case F_RSQRTS: return fma(-a, b, 3.0) / 2.0;
+#endif
     case F_CMEQ: *is_mask = 1; *mask = a == b ? ~0ull : 0; return 0;
     case F_CMGE: *is_mask = 1; *mask = a >= b ? ~0ull : 0; return 0;
     case F_CMGT: *is_mask = 1; *mask = a > b ? ~0ull : 0; return 0;
