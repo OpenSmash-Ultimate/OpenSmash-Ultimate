@@ -11,14 +11,17 @@ namespace OpenSmash;
 // made 0600 before anything is written to it, readable by this user alone). At Play a lobby ticket goes to
 // build/cache/online_pass.txt (OnlinePass: 0600 off Windows too) and SSBU_ONLINE_TICKET_FILE names it to the game, which
 // reads it again while it runs; the launcher renews it at half its life until the game exits. The official lobbies let in
-// only a game that sends one. The account's GSP, place and leaderboard choice are asked of the official lobbies with the
-// ticket as the proof (OpenSmash.Core.LobbyBoard), as the WinForms launcher does. With no service in the build (a build
+// only a game that sends one. The ticket is also written as soon as the player is signed in (sign-in, or the session
+// resumed when the launcher opens) and kept fresh while the launcher is open, for a game started without it (macOS's
+// Play SSBU app and .command files, the web launcher, which also ask `--online-pass` for one: Program.cs). The
+// account's GSP, place and leaderboard choice are asked of the official lobbies with the ticket as the proof (OpenSmash.Core.LobbyBoard), as the WinForms launcher does. With no service in the build (a build
 // without OpenSmash.Core/account_service.json values) the older Discord sign-in (MainWindow.Discord.cs) stays.
 public sealed partial class MainWindow
 {
     Account? _account;
     string? _accountRoot;
     OnlinePass? _pass;
+    OnlinePass? _standingPass;   // (the ticket written at sign-in and kept fresh while the launcher is open)
     Task? _accountResume;
 
     bool AccountMode => _account != null && _account.Service.Configured;
@@ -30,6 +33,7 @@ public sealed partial class MainWindow
     {
         if (_accountRoot == root && _account != null) return;
         _accountRoot = root;
+        _standingPass?.Dispose(); _standingPass = null;
         try { _account = new Account(root) { OpenBrowser = Commands.OpenPath }; }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or ArgumentException) { _account = null; }
         var c = Surface.Community;
@@ -48,6 +52,7 @@ public sealed partial class MainWindow
         Surface.Community.Me = _account.SignedIn ? _account.Me : null;
         if (err != "") Surface.Community.Error = "Offline: " + err;
         Surface.InvalidateVisual();
+        _ = AccountStandingPass(root);
         _ = AccountLoadGsp(root);   // (not awaited: Play waits for the session only, never for the lobbies' answers)
     }
 
@@ -101,6 +106,7 @@ public sealed partial class MainWindow
                 {
                     await _account.SignInWithBrowserAsync(_discordCancel.Token);
                     c.Me = _account.SignedIn ? _account.Me : null;
+                    await AccountStandingPass(root);
                 }
                 catch (OperationCanceledException) { c.Error = "Sign-in cancelled."; }
                 catch (AccountException e) { c.Error = e.Message; Updater.Log(root, "sign-in: " + e.Message); }
@@ -125,6 +131,7 @@ public sealed partial class MainWindow
                 break;
             case "community:signout" when _account != null:
                 await _account.SignOutAsync();
+                _standingPass?.Dispose(); _standingPass = null;
                 new OnlinePass(_account, root).Remove();
                 c.Me = null; c.BoardId = null; c.Rank = 0; c.FighterRanks = new(); c.Records = new(); c.Open = false; c.Error = ""; c.Shown = true;
                 c.Mastery = null; c.MasteryAsked = false;
@@ -144,6 +151,18 @@ public sealed partial class MainWindow
         _pass = new OnlinePass(_account, root) { Log = s => Updater.Log(root, s) };
         if (!_account.SignedIn) { _pass.Remove(); return null; }
         return await _pass.WriteAsync() ? new Dictionary<string, string> { ["SSBU_ONLINE_TICKET_FILE"] = _pass.File } : null;
+    }
+
+    /// <summary>signed in: the ticket written now and kept fresh while the launcher is open, so a game started without the
+    /// launcher has one too (before this, only Play here wrote it: a player signed in here and starting Play SSBU had
+    /// none, "the relay refused: sign in to OpenSmash (the launcher)")</summary>
+    internal async Task AccountStandingPass(string root)
+    {
+        _standingPass?.Dispose(); _standingPass = null;
+        if (!AccountMode || _account == null || !_account.SignedIn || root != _accountRoot) return;
+        var pass = new OnlinePass(_account, root) { Log = s => Updater.Log(root, s) };
+        _standingPass = pass;
+        if (await pass.WriteAsync() && _standingPass == pass) pass.KeepFresh();
     }
 
     /// <summary>the game's window opened: the ticket kept fresh while it runs</summary>

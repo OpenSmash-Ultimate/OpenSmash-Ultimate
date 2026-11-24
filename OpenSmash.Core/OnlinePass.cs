@@ -50,6 +50,28 @@ namespace OpenSmash.Core
 
         public void Remove() { try { System.IO.File.Delete(File); } catch { } }
 
+        /// <summary>the launcher's --online-pass, with no window: for a game started without the launcher (macOS's Play
+        /// SSBU app and .command files, the web launcher), the session this launcher keeps for root resumed and a fresh
+        /// ticket written, unless the one there has more than margin seconds left. 0: a good ticket in the file;
+        /// 2: not signed in (or no accounts service in this build); 1: the accounts server could not give one.</summary>
+        public static async Task<int> WriteForStartAsync(string root, Action<string> say, long margin = 600)
+        {
+            if (LobbyBoard.StoredTicket(root, margin) != null) { say("online pass: the one there is still good"); return 0; }
+            var account = new Account(root);
+            if (!account.Service.Configured) { say("online pass: no accounts service in this build"); return 2; }
+            string error = "";
+            if (!await account.ResumeAsync(e => error = e) || !account.SignedIn)
+            {
+                say(error != "" ? "online pass: the accounts server could not be reached: " + error
+                                : "online pass: not signed in (sign in in the OpenSmash launcher)");
+                return error != "" ? 1 : 2;
+            }
+            var pass = new OnlinePass(account, root) { Log = say };
+            if (!await pass.WriteAsync()) return 1;
+            say("online pass: written for " + account.Me.Display);
+            return 0;
+        }
+
         /// <summary>renews the ticket at half its life until Dispose (the game exited)</summary>
         public void KeepFresh()
         {

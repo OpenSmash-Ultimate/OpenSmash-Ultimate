@@ -14,6 +14,15 @@ internal static class Program
     {
         if(args.Contains("--licenses")) { Core.LegalNotices.Open(); return; }
         if(args.Contains("--source-info")) { Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(Core.BootstrapSource.Bundled())); return; }
+        // (no window) --online-pass --project <folder>: a fresh lobby ticket in <folder>/build/cache/online_pass.txt from
+        // the session signed in here, for a game started without this launcher (tools/mac/launch.sh, the web launcher)
+        if(args.Contains("--online-pass"))
+        {
+            int at=Array.IndexOf(args,"--project");
+            string root=Path.GetFullPath(at>=0&&at+1<args.Length?args[at+1]:Environment.CurrentDirectory);
+            Environment.ExitCode=Core.OnlinePass.WriteForStartAsync(root,Console.WriteLine).GetAwaiter().GetResult();
+            return;
+        }
         Arguments = args;
         AppBuilder.Configure<App>().UsePlatformDetect().WithInterFont().LogToTrace()
             .StartWithClassicDesktopLifetime(args);
