@@ -943,6 +943,34 @@ static void test_files(void) {
     found = 0;
     if (s != INVALID_HANDLE_VALUE) { do found++; while (FindNextFileA(s, &fd)); FindClose(s); }
     CHECK(found == 6, "*.* lists . and .. too: %d", found);
+    {   /* NTFS's order (the names in upper case: "_" after the letters), and Windows' matching, ignoring case */
+        static const char *const made[] = {"b.dll", "_c.dll", "z.txt", "A.DLL", "-d.dll", "[e].dll",
+                                           "\xEF\xBC\xA1.txt", "\xF0\x9F\x98\x80.txt"};   /* (U+FF21; U+1F600, a surrogate pair: before it in UTF-16) */
+        char sub2[300], list[512];
+        snprintf(sub2, sizeof sub2, "%s/order", dir);
+        CHECK(CreateDirectoryA(sub2, NULL), "a folder for the order");
+        for (int i = 0; i < 8; i++) {
+            snprintf(path, sizeof path, "%s/%s", sub2, made[i]);
+            CloseHandle(CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL));
+        }
+        static const char *const want[][2] = {{"*.dll", "-d.dll A.DLL b.dll [e].dll _c.dll"}, {"*", ". .. -d.dll A.DLL b.dll z.txt [e].dll _c.dll \xF0\x9F\x98\x80.txt \xEF\xBC\xA1.txt"},
+                                             {"?.dll", "A.DLL b.dll"}, {"*.DLL", "-d.dll A.DLL b.dll [e].dll _c.dll"}, {"[e]*", "[e].dll"},
+                                             {"*c*", "_c.dll"}, {"*.d?l", "-d.dll A.DLL b.dll [e].dll _c.dll"}};
+        for (int k = 0; k < 7; k++) {
+            snprintf(path, sizeof path, "%s\\%s", sub2, want[k][0]);
+            list[0] = 0;
+            s = FindFirstFileA(path, &fd);
+            if (s != INVALID_HANDLE_VALUE) {
+                do snprintf(list + strlen(list), sizeof list - strlen(list), "%s%s", list[0] ? " " : "", fd.cFileName); while (FindNextFileA(s, &fd));
+                FindClose(s);
+            }
+            CHECK(!strcmp(list, want[k][1]), "FindFirstFileA %s: %s", want[k][0], list);
+        }
+        snprintf(path, sizeof path, "%s\\*.none", sub2);
+        CHECK(FindFirstFileA(path, &fd) == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND, "a search that matches nothing");
+        for (int i = 0; i < 8; i++) { snprintf(path, sizeof path, "%s/%s", sub2, made[i]); DeleteFileA(path); }
+        RemoveDirectoryA(sub2);
+    }
     snprintf(path, sizeof path, "%s/none/*", dir);
     CHECK(FindFirstFileA(path, &fd) == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PATH_NOT_FOUND, "a search in no folder: %lu", (unsigned long)GetLastError());
     CHECK(!RemoveDirectoryA(other) && GetLastError() == ERROR_DIR_NOT_EMPTY, "removing a full folder");
