@@ -393,6 +393,8 @@ typedef struct Handle {
     int system_save;          /* the game's system save (system_data.bin): its text language is the chosen one */
     u64 offset, size;         /* rom file: data offset in the RomFS image and length */
     char **names; u8 *types; u64 *sizes; i64 count, next;   /* directory listing */
+    size_t list_cap;
+    int list_failed;
 } Handle;
 static Handle handles[512];
 static CRITICAL_SECTION lock;      /* the mount and handle tables */
@@ -1329,7 +1331,7 @@ static int listing_host(Handle *h, const char *dir, int mode, struct Mount *m, c
         while (k < h->count && _stricmp(h->names[k], fd.cFileName)) k++;
         if (k < h->count) { h->types[k] = isdir ? DIR_ENTRY : FILE_ENTRY; h->sizes[k] = size; }
         else listing_add(h, fd.cFileName, strlen(fd.cFileName), isdir ? DIR_ENTRY : FILE_ENTRY, size);
-    } while (FindNextFileA(fh, &fd));
+    } while (!h->list_failed && FindNextFileA(fh, &fd));
     FindClose(fh);
     return 1;
 }
@@ -1342,7 +1344,7 @@ static u32 save_list(struct Mount *m, const char *rest, int mode, Handle *h) {  
     if (!tomb_hides(m, rel)) { join(path, sizeof path, m->root, rel); listing_host(h, path, mode, m, rel, 0); }
     join(path, sizeof path, m->work, rel);
     listing_host(h, path, mode, NULL, NULL, 1);
-    return 0;
+    return h->list_failed ? R_HOST_FAILURE : 0;
 }
 
 static u32 save_delete(struct Mount *m, const char *rest, int dir) {
@@ -1352,9 +1354,10 @@ static u32 save_delete(struct Mount *m, const char *rest, int dir) {
     if (!rel[0] || view(m, rel, path, sizeof path) != (dir ? 2 : 1)) return R_PATH_NOT_FOUND;
     if (dir) {   /* only an empty folder, as the host's own RemoveDirectory */
         Handle h = {0};
-        save_list(m, rest, LIST_DIRS | LIST_FILES, &h);
+        r = save_list(m, rest, LIST_DIRS | LIST_FILES, &h);
         i64 n = h.count;
         listing_free(&h);
+        if (r) return r;
         if (n) return R_PATH_NOT_FOUND;
     }
     join(path, sizeof path, m->work, rel);
@@ -1694,18 +1697,37 @@ HLE(_ZN2nn2fs15DeleteDirectoryEPKc) {
 
 /* ---- directories ----------------------------------------------------------------- */
 static void listing_add(Handle *h, const char *name, size_t len, int type, u64 size) {
-    h->names = realloc(h->names, sizeof *h->names * (h->count + 1));
-    h->types = realloc(h->types, h->count + 1);
-    h->sizes = realloc(h->sizes, sizeof *h->sizes * (h->count + 1));
-    h->names[h->count] = malloc(len + 1);
-    memcpy(h->names[h->count], name, len);
-    h->names[h->count][len] = 0;
+    if (h->list_failed) return;
+    if ((size_t)h->count == h->list_cap) {
+        /* Large mod directories used to resize all three arrays for every entry. Grow
+         * geometrically; keep every successful allocation owned if a later one fails. */
+        if (h->list_cap > SIZE_MAX / 2 / sizeof *h->names) { h->list_failed = 1; return; }
+        size_t cap = h->list_cap ? h->list_cap * 2 : 32;
+        char **names = realloc(h->names, cap * sizeof *names);
+        if (!names) { h->list_failed = 1; return; }
+        h->names = names;
+        u8 *types = realloc(h->types, cap * sizeof *types);
+        if (!types) { h->list_failed = 1; return; }
+        h->types = types;
+        u64 *sizes = realloc(h->sizes, cap * sizeof *sizes);
+        if (!sizes) { h->list_failed = 1; return; }
+        h->sizes = sizes;
+        h->list_cap = cap;
+    }
+    if (len == SIZE_MAX) { h->list_failed = 1; return; }
+    char *copy = malloc(len + 1);
+    if (!copy) { h->list_failed = 1; return; }
+    memcpy(copy, name, len);
+    copy[len] = 0;
+    h->names[h->count] = copy;
     h->types[h->count] = (u8)type;
     h->sizes[h->count++] = size;
 }
 static void listing_free(Handle *h) {
     for (i64 i = 0; i < h->count; i++) free(h->names[i]);
     free(h->names); free(h->types); free(h->sizes);
+    h->names = NULL; h->types = NULL; h->sizes = NULL;
+    h->count = h->next = 0; h->list_cap = 0; h->list_failed = 0;
 }
 
 HLE(_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci) {   /* (handle*, path, mode) */
@@ -1722,16 +1744,16 @@ HLE(_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci) {   /* (handle*, path,
         u32 d, f;
         if (!rom_lookup(rest, &d, &f) || f != NONE) { c->x[0] = R_PATH_NOT_FOUND; return; }
         if (mode & LIST_DIRS)
-            for (u32 k = rom_dir(d)->child_dir; k != NONE; k = rom_dir(k)->sibling)
+            for (u32 k = rom_dir(d)->child_dir; k != NONE && !h.list_failed; k = rom_dir(k)->sibling)
                 listing_add(&h, rom_dir(k)->name, rom_dir(k)->name_len, DIR_ENTRY, 0);
         if (mode & LIST_FILES)
-            for (u32 k = rom_dir(d)->child_file; k != NONE; k = rom_file(k)->sibling)
+            for (u32 k = rom_dir(d)->child_file; k != NONE && !h.list_failed; k = rom_file(k)->sibling)
                 listing_add(&h, rom_file(k)->name, rom_file(k)->name_len, FILE_ENTRY, rom_file(k)->size);
     } else if (!strcmp(m->name, "sd") && !_strnicmp(rest + strspn(rest, "/"), "ultimate/mods", 13) &&
                (!rest[strspn(rest, "/") + 13] || !strcmp(rest + strspn(rest, "/") + 13, "/"))) {
         load_mods_list();   /* (the turned-on mods only) */
         char flat[4200];
-        for (int i = 0; i < mods_count && (mode & LIST_DIRS); i++) {
+        for (int i = 0; i < mods_count && (mode & LIST_DIRS) && !h.list_failed; i++) {
             mod_folder_name(flat, sizeof flat, mods_list[i]);
             listing_add(&h, flat, strlen(flat), DIR_ENTRY, 0);
         }
@@ -1739,7 +1761,7 @@ HLE(_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci) {   /* (handle*, path,
         /* every turned-on mod's files as one tree: a later mod's entry over an earlier one's */
         load_mods_list();
         int found = 0;
-        for (int i = 0; i < mods_count; i++) {
+        for (int i = 0; i < mods_count && !h.list_failed; i++) {
             char path[4400];
             snprintf(path, sizeof path, "%s/../../mods/%s/%s", rt_data_dir, mods_list[i], rest + strspn(rest, "/"));
             for (char *q = path; *q; q++) if (*q == '/') *q = '\\';
@@ -1757,7 +1779,7 @@ HLE(_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci) {   /* (handle*, path,
                 while (k < h.count && _stricmp(h.names[k], fd.cFileName)) k++;
                 if (k < h.count) { h.types[k] = dir ? DIR_ENTRY : FILE_ENTRY; h.sizes[k] = size; }
                 else listing_add(&h, fd.cFileName, strlen(fd.cFileName), dir ? DIR_ENTRY : FILE_ENTRY, size);
-            } while (FindNextFileA(fh, &fd));
+            } while (!h.list_failed && FindNextFileA(fh, &fd));
             FindClose(fh);
         }
         if (!found) { listing_free(&h); c->x[0] = R_PATH_NOT_FOUND; return; }
@@ -1769,7 +1791,7 @@ HLE(_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci) {   /* (handle*, path,
     } else {
         char path[1024];
         host_path(path, sizeof path, m, rest);
-        if (!listing_host(&h, path, mode, NULL, NULL, 0)) { c->x[0] = R_PATH_NOT_FOUND; return; }
+        if (!listing_host(&h, path, mode, NULL, NULL, 0)) { listing_free(&h); c->x[0] = R_PATH_NOT_FOUND; return; }
         if (!strcmp(m->name, "sd")) {   /* a mod's own copy of a file .characters provides is not shown to ARCropolis */
             for (i64 k = 0; k < h.count; ) {
                 if (h.types[k] == FILE_ENTRY && hidden_from_arcropolis(rest, h.names[k])) {
@@ -1782,6 +1804,7 @@ HLE(_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci) {   /* (handle*, path,
             }
         }
     }
+    if (h.list_failed) { listing_free(&h); c->x[0] = R_HOST_FAILURE; return; }
     u64 v = new_handle(h);
     if (!v) { listing_free(&h); c->x[0] = R_TOO_MANY_HANDLES; return; }
     st64(c->x[0], v);

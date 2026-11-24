@@ -544,6 +544,9 @@ static u8 *arena(VkDeviceSize size, VkDeviceSize align, VkBuffer *buf, VkDeviceS
 /* A view of upload memory as the shaders' raw buffers (ByteAddressBuffer: a uniform texel buffer of
  * 32-bit words in SPIR-V), destroyed with the frame. */
 static VkBufferView texel_view(VkBuffer buf, VkDeviceSize off, VkDeviceSize size) {
+    /* Start the slot before adding this view: cmd() retires its previous views. A resident
+     * vertex stream may be the first resource of a frame, before any arena upload does this. */
+    cmd();
     Frame *f = &frames[frame_at];
     if (f->nviews == f->views_cap) {
         u32 cap = f->views_cap * 2 + 1024;
@@ -564,29 +567,38 @@ static VkBufferView texel_view(VkBuffer buf, VkDeviceSize off, VkDeviceSize size
  * order), so a view made once is used again instead of made per draw. A view pushed out of its slot is
  * destroyed with this frame (frames before it that used it are done by then: the queue runs in order). */
 #define ARENA_VIEWS (1u << 16)
-static struct { VkBuffer buf; VkDeviceSize off, size; VkBufferView view; } arena_views[ARENA_VIEWS];
+#define ARENA_VIEW_WAYS 4
+static struct { VkBuffer buf; VkDeviceSize off, size; VkBufferView view; u64 used; } arena_views[ARENA_VIEWS];
+static u64 arena_view_use;
 static u64 vk_stat_views_made, vk_stat_views_kept;
 static VkBufferView arena_view(VkBuffer buf, VkDeviceSize off, VkDeviceSize size) {
     u64 h = ((u64)(uintptr_t)buf * 0x9E3779B97F4A7C15ull) ^ (off * 0xC2B2AE3D27D4EB4Full) ^ (size * 0x165667B19E3779F9ull);
-    u32 k = (u32)(h >> 48) & (ARENA_VIEWS - 1);
-    if (arena_views[k].view && arena_views[k].buf == buf && arena_views[k].off == off && arena_views[k].size == size) {
-        vk_stat_views_kept++;
-        return arena_views[k].view;
+    /* Four choices per bucket prevent two frequently used views from continually evicting
+     * each other. Keep the same total capacity, and replace the least recently used choice. */
+    u32 base = (u32)(h >> 48) & (ARENA_VIEWS - ARENA_VIEW_WAYS), k = base;
+    for (u32 i = base; i < base + ARENA_VIEW_WAYS; i++) {
+        if (arena_views[i].view && arena_views[i].buf == buf && arena_views[i].off == off && arena_views[i].size == size) {
+            arena_views[i].used = ++arena_view_use;
+            vk_stat_views_kept++;
+            return arena_views[i].view;
+        }
+        if (arena_views[i].used < arena_views[k].used) k = i;
+    }
+    Frame *f = &frames[frame_at];
+    if (arena_views[k].view && f->nviews == f->views_cap) {
+        u32 cap = f->views_cap * 2 + 1024;
+        VkBufferView *n = realloc(f->views, sizeof *n * cap);
+        if (!n) return VK_NULL_HANDLE;   /* keep the old view; no untracked replacement to leak */
+        f->views = n;
+        f->views_cap = cap;
     }
     VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, buf, VK_FORMAT_R32_UINT, off, size};
     VkBufferView v;
     if (vkCreateBufferView(device, &ci, NULL, &v) != VK_SUCCESS) return VK_NULL_HANDLE;
     vk_stat_views_made++;
-    if (arena_views[k].view) {   /* (the old one: destroyed with this frame, as texel_view's are) */
-        Frame *f = &frames[frame_at];
-        if (f->nviews == f->views_cap) {
-            u32 cap = f->views_cap * 2 + 1024;
-            VkBufferView *n = realloc(f->views, sizeof *n * cap);
-            if (n) { f->views = n; f->views_cap = cap; }
-        }
-        if (f->nviews < f->views_cap) f->views[f->nviews++] = arena_views[k].view;   /* (else leaked, never freed in use) */
-    }
+    if (arena_views[k].view) f->views[f->nviews++] = arena_views[k].view;
     arena_views[k].buf = buf; arena_views[k].off = off; arena_views[k].size = size; arena_views[k].view = v;
+    arena_views[k].used = ++arena_view_use;
     return v;
 }
 
@@ -1852,6 +1864,8 @@ static DWORD WINAPI maker_main(void *unused) {
 }
 
 static void job_add(Job *j) {
+    /* Thread creation can fail under memory pressure. Do not leave jobs queued forever. */
+    if (!nmakers) { j->run(j); return; }
     j->next = NULL;
     InterlockedIncrement(&jobs_pending);
     AcquireSRWLockExclusive(&jobs_lock);
@@ -1865,15 +1879,18 @@ static void job_add(Job *j) {
 static void makers_start(void) {
     SYSTEM_INFO si;
     GetSystemInfo(&si);
-    nmakers = si.dwNumberOfProcessors / 2;
-    if (nmakers < 1) nmakers = 1;
-    if (nmakers > 6) nmakers = 6;
-    for (u32 i = 0; i < nmakers; i++) {
+    u32 want = si.dwNumberOfProcessors / 2;
+    if (want < 1) want = 1;
+    if (want > 6) want = 6;
+    nmakers = 0;
+    for (u32 i = 0; i < want; i++) {
         HANDLE t = CreateThread(NULL, 64ull << 20, maker_main, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
         if (!t) continue;
+        nmakers++;
         SetThreadPriority(t, THREAD_PRIORITY_BELOW_NORMAL);
         CloseHandle(t);
     }
+    if (!nmakers) fprintf(stderr, "[vulkan] no compiler workers could start; compiling synchronously\n");
 }
 
 /* SSBU_VK_WAIT=1: draws wait for their shaders and pipelines instead (every draw drawn: pictures to
@@ -1940,6 +1957,9 @@ static VkBufferView upload_window(u64 va, u32 size) {
 #define BIG_CBS 1024
 static LastCb big_cb[BIG_CBS];
 static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
+    /* The slot still has its previous serial until cmd() begins it. Do not reuse a view
+     * against that old serial just before cmd() destroys the previous frame's views. */
+    cmd();
     LastCb *l = size >= 0x1000 ? &big_cb[((va >> 4) * 0x9E3779B97F4A7C15ull ^ size) >> 54 & (BIG_CBS - 1)]
                                : &last_cb[stage == SHADER_VERTEX ? 0 : 1][slot];
     /* (found the same in this submission and unwritten since: as below, without looking through its pages first -
@@ -1962,7 +1982,6 @@ static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
             if (gpu_va_to_guest(va + o)) run = 0;   /* (mapped elsewhere: not compared) */
     }
     const u8 *src = run ? P(const u8, g) : NULL;
-    cmd();
     u64 gen = 0;
     int have_gen = 0;
     if (src && l->view && l->va == va && l->size == size && l->run == run && l->serial == frames[frame_at].serial) {
@@ -6096,7 +6115,9 @@ static void *vk_display_output(void) {
 }
 
 /* The pipeline cache to its file (written aside, then put in place): by a maker at most once a minute while
- * new pipelines are made, and at the end. */
+ * new pipelines are made, never during a fight (the driver's export of a 100 MB cache competes with the
+ * fight's own pipeline making), and at the end. */
+int game_fight_on(void);   /* (hle_fight_test.c) */
 static void pipeline_cache_save(void) {
     u64 t0 = rt_clock_ns();
     size_t size = 0;
@@ -6122,6 +6143,7 @@ static void pipeline_cache_tick(void) {
     static Job job = {NULL, save_job};
     u64 made = vk_stat_pipelines + (u64)vk_stat_warm_pipelines, now = rt_now_ns();   /* (the warm threads' too: a lost cache file made again) */
     if (made == saved || now - last < 60000000000ull || saving) return;   /* (a minute apart: the file is 100 MB and more) */
+    if (game_fight_on() || !nmakers) return;   /* (after the fight; with no maker thread the job would run here, on the renderer) */
     saved = made;
     last = now;
     InterlockedExchange(&saving, 1);
