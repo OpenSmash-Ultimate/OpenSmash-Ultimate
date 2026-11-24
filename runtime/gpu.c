@@ -440,10 +440,10 @@ static void engine_method(Channel *ch, Engine *e, u32 method, u32 arg) {
             e->regs[0x8E3] += 4;
             break;
         }
-        case 0x585: gpu_stat_draws++; if (!gpu_job_hidden) { gfx_draw(e->regs, e->cb, e->indexed); if (gpu_lat_on) lat_note_draw(e->regs); } break;
+        case 0x585: gpu_stat_draws++; if (!gpu_job_hidden) gfx_draw(e->regs, e->cb, e->indexed); if (gpu_lat_on && !gpu_job_hidden) lat_note_draw(e->regs); break;
         case M_DRAW_INDEX_COUNT: e->indexed = 1; break;                                /* indexed draw follows */
         case M_VERTEX_ARRAY_COUNT: e->indexed = 0; break;
-        case 0x674: if (!gpu_job_hidden) { gfx_clear(e->regs, arg); if (gpu_lat_on) lat_note_clear(e->regs, arg); } break;             /* clear surface */
+        case 0x674: if (!gpu_job_hidden) gfx_clear(e->regs, arg); if (gpu_lat_on && !gpu_job_hidden) lat_note_clear(e->regs, arg); break;             /* clear surface */
         }
         break;
     case CLASS_COMPUTE:

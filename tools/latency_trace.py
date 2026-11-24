@@ -224,10 +224,23 @@ def calibrate(trace, pics, rtrace, rpics):
     if press is None:
         print('no press in the fight')
         return 1
-    common = [k for k in range(press - 120, press) if k in first and k in ref]
-    noise = max((gdiff(first[k], ref[k]) for k in common), default=0)
-    c = next((k for k in range(press, press + 30) if k in first and k in ref and gdiff(first[k], ref[k]) > noise + 2), None)
-    print(f'first press read at fight logic frame {press}; {len(common)} pictures before it compared, noise {noise}')
+    # (the fight's start is seen at a frame end, which two runs can place a frame apart: the reference is shifted to
+    # the alignment whose pictures before the press agree best)
+    best = None
+    for shift in range(-6, 7):
+        common = [k for k in range(press - 120, press) if k in first and k + shift in ref]
+        if len(common) < 30:
+            continue
+        noise = max(gdiff(first[k], ref[k + shift]) for k in common)
+        if best is None or noise < best[0]:
+            best = (noise, shift, len(common))
+    if best is None:
+        print('too few pictures before the press in both runs')
+        return 1
+    noise, shift, n = best
+    c = next((k for k in range(press, press + 30) if k in first and k + shift in ref
+              and gdiff(first[k], ref[k + shift]) > noise + 2), None)
+    print(f'first press read at fight logic frame {press}; {n} pictures before it compared (reference shifted {shift}), noise {noise}')
     if c is None:
         print('no picture differs within 30 logic frames')
         return 1

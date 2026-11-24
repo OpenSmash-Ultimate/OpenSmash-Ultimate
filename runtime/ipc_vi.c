@@ -110,7 +110,12 @@ static void lat_open(void) {
     if (t && *t && !(lat_tf = fopen(t, "w"))) fprintf(stderr, "[latency] SSBU_LAT_TRACE: cannot write %s\n", t);
     if (lat_tf) {
         extern volatile int gpu_lat_on;
-        if (frame_hook_add(FRAME_HOOK_END, 300, lat_frame_end, NULL, NULL)) gpu_lat_on = 1;
+        if (frame_hook_add(FRAME_HOOK_END, 300, lat_frame_end, NULL, NULL)) {
+            extern void (*fight_lat_status)(int st, unsigned long long mot);   /* (hle_fight_test.c) */
+            void vi_lat_status(int st, unsigned long long mot);
+            fight_lat_status = vi_lat_status;
+            gpu_lat_on = 1;
+        }
         else {   /* (every frame would read 0: no trace rather than a wrong one) */
             fprintf(stderr, "[latency] SSBU_LAT_TRACE: no room for a frame-end hook (%d in use): no trace\n", frame_hook_count(FRAME_HOOK_END));
             fclose(lat_tf);
