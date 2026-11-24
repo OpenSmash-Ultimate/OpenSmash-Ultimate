@@ -18,7 +18,7 @@
 #include "gpu_shader.h"
 
 /* Bump when the translator changes what it generates: older files are then ignored. */
-#define SHADER_CACHE_VERSION 10
+#define SHADER_CACHE_VERSION 11
 /* MSL files' version: the translator's, and the MSL dialect's own revision (bump the last
  * digits for a change to MSL alone). */
 #define SHADER_CACHE_MSL_VERSION (SHADER_CACHE_VERSION * 100 + 3)
@@ -102,15 +102,17 @@ static inline int shader_cache_unplayed(const char *path) {
     return utimes(path, t);
 }
 #else
-/* fxc as the renderer runs it: dispatch-loop programs ("npc_") without fxc's optimiser (they
- * compile much faster, and the driver optimises the bytecode anyway); any other program again
- * without it when the optimiser fails (it has internal errors on some). */
+/* fxc as the renderer runs it: dispatch-loop programs ("npc_") at optimisation level 0 (they
+ * compile much faster than with the optimiser, and the driver optimises the bytecode anyway);
+ * not with D3DCOMPILE_SKIP_OPTIMIZATION, which miscompiles the Battlefield pond's vertex shader
+ * (wrong point-light colour: the water turns purple). Any other program, or one that fails at
+ * these levels, again without the optimiser (it has internal errors on some). */
 static inline HRESULT shader_cache_compile(const char *hlsl, const char *name, int stage, ID3DBlob **code, ID3DBlob **errors) {
     const char *target = stage == SHADER_VERTEX ? "vs_5_0" : stage == SHADER_PIXEL ? "ps_5_0" : "cs_5_0";
-    UINT flags = strstr(hlsl, "npc_") ? D3DCOMPILE_SKIP_OPTIMIZATION : D3DCOMPILE_OPTIMIZATION_LEVEL1;
+    UINT flags = strstr(hlsl, "npc_") ? D3DCOMPILE_OPTIMIZATION_LEVEL0 : D3DCOMPILE_OPTIMIZATION_LEVEL1;
     *code = *errors = NULL;
     HRESULT hr = D3DCompile(hlsl, strlen(hlsl), name, NULL, NULL, "main", target, flags, 0, code, errors);
-    if (FAILED(hr) && flags != D3DCOMPILE_SKIP_OPTIMIZATION) {
+    if (FAILED(hr)) {
         if (*errors) (*errors)->lpVtbl->Release(*errors);
         *errors = NULL;
         hr = D3DCompile(hlsl, strlen(hlsl), name, NULL, NULL, "main", target, D3DCOMPILE_SKIP_OPTIMIZATION, 0, code, errors);
