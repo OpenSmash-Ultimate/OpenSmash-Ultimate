@@ -126,6 +126,22 @@ int tic_decode(const u32 *tic, TextureDesc *d) {
             d->dxgi = d->srgb && FORMATS[i].srgb ? FORMATS[i].srgb : typed(FORMATS[i].dxgi, (tic[0] >> 7) & 7);
             return 1;
         }
+#ifndef __APPLE__
+    /* ASTC (Mii eyes, eyebrows and mouths are 4x4): Direct3D and Vulkan on a PC have no format
+     * for it, so the backends decode the blocks on the CPU (tex_decode.c) to RGBA8. Index into
+     * tex_decode's ASTC order: 4x4 5x4 5x5 6x5 6x6 8x5 8x6 8x8 10x5 10x6 10x8 10x10 12x10 12x12. */
+    static const struct { u8 format, index, bw, bh; } ASTC[] = {
+        {0x40, 0, 4, 4}, {0x50, 1, 5, 4}, {0x41, 2, 5, 5}, {0x51, 3, 6, 5}, {0x42, 4, 6, 6}, {0x55, 5, 8, 5}, {0x52, 6, 8, 6},
+        {0x44, 7, 8, 8}, {0x56, 8, 10, 5}, {0x57, 9, 10, 6}, {0x53, 10, 10, 8}, {0x45, 11, 10, 10}, {0x54, 12, 12, 10}, {0x46, 13, 12, 12},
+    };
+    for (u32 i = 0; i < sizeof ASTC / sizeof *ASTC; i++)
+        if (ASTC[i].format == format) {
+            d->bytes = 16; d->bw = ASTC[i].bw; d->bh = ASTC[i].bh;
+            d->astc = (d->srgb ? 0x87u : 0x79u) + ASTC[i].index;
+            d->dxgi = d->srgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
+            return 1;
+        }
+#endif
     return 0;
 }
 
