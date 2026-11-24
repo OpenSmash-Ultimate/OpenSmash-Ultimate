@@ -1,0 +1,76 @@
+# The OpenSmash launcher (OpenSmash.exe) built from main, for copies that follow main (tools\update_channel.txt, issue
+# #329) on a PC without the .NET SDK: the installer (tools/install_opensmash.ps1, Update-LauncherExe, $MainLauncherTag)
+# takes releases/download/launcher-main/OpenSmash.exe and checks it against OpenSmash.exe.sha256 beside it. Without it
+# those copies kept the v0.4.1 launcher, which cannot sign in, while main's game needs the account's lobby ticket on the
+# official lobbies (#510). Built as tools/build_launcher.ps1 builds it on a player's PC (version 0.0.0-dev, the
+# accounts service committed in OpenSmash.Core/account_service.json). Runs when the launcher's sources change on main.
+# launcher-main is a prerelease that never takes "latest" and has no opensmash-release.json, so neither the stable
+# channel (releases/latest) nor the testing channel (OpenSmash.Core.Releases skips releases without the manifest) sees it.
+name: Launcher (main)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'OpenSmash.Launcher/**'
+      - 'OpenSmash.Core/**'
+      - 'locales/*.json'
+      - 'media/opensmash.ico'
+      - 'tools/build_launcher.ps1'
+      - '.github/workflows/launcher-main.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: launcher-main
+  cancel-in-progress: true
+
+jobs:
+  launcher:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build OpenSmash.exe
+        shell: pwsh
+        run: |
+          ./tools/build_launcher.ps1
+          $h = (Get-FileHash OpenSmash.exe -Algorithm SHA256).Hash.ToLower()
+          "$h  OpenSmash.exe" | Set-Content -Encoding ascii OpenSmash.exe.sha256
+          Get-Content OpenSmash.exe.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenSmash-launcher-main
+          path: |
+            OpenSmash.exe
+            OpenSmash.exe.sha256
+
+      # The tag follows main's commit; the two files are replaced. While they are replaced an installer may read a
+      # checksum that is not the exe's: it then keeps the launcher it has and tries again at the next update.
+      - name: Publish to the launcher-main prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = 'launcher-main'
+          $notes = "OpenSmash.exe built from main ($env:GITHUB_SHA), for copies that follow main (tools\update_channel.txt) without the .NET SDK. The installer takes it and checks it against OpenSmash.exe.sha256. Not a release: the versioned releases are the others."
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "OpenSmash launcher (main)" --prerelease --latest=false --notes $notes
+            if ($LASTEXITCODE -ne 0) { throw 'the launcher-main release was not made' }
+          } else {
+            gh api -X PATCH "repos/$env:GITHUB_REPOSITORY/git/refs/tags/$tag" -f sha=$env:GITHUB_SHA -F force=true | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'the launcher-main tag was not moved' }
+            gh release edit $tag --repo $env:GITHUB_REPOSITORY --notes $notes | Out-Null
+          }
+          gh release upload $tag --repo $env:GITHUB_REPOSITORY OpenSmash.exe OpenSmash.exe.sha256 --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'OpenSmash.exe was not uploaded' }

@@ -268,6 +268,20 @@ static void ticket_refresh(void) {
         memcpy(name, a + 1, (size_t)(b - a - 1));
     }
 }
+/* (#510) the official lobby and no ticket: net_status says so, and what to do. A launcher that signs in names itself
+ * (OPENSMASH_LAUNCHER_VERSION, OpenSmash.Core.VersionInfo.EnvName) or the ticket's file; neither, on Windows, is an
+ * OpenSmash.exe from before the account sign-in (v0.4.x: a copy that follows main keeps it without the .NET SDK) or
+ * no launcher at all, and "sign in in the launcher" cannot be done there. */
+static volatile LONG no_ticket;
+static const char *no_ticket_hint(void) {
+    const char *lv = getenv("OPENSMASH_LAUNCHER_VERSION"), *f = getenv("SSBU_ONLINE_TICKET_FILE");
+    if ((lv && *lv) || (f && *f)) return "SIGN IN in the OpenSmash launcher, then join again";
+#ifdef _WIN32
+    return "this launcher is too old to sign in: get the new OpenSmash.exe (tools\\build_launcher.ps1 with the .NET 8 SDK, or an update), then SIGN IN";
+#else
+    return "start the game from the OpenSmash launcher and SIGN IN there";
+#endif
+}
 
 static void configure_from_files(void) {
     char line[256], host[256] = "", code[NAME_LEN + 1] = "";
@@ -419,7 +433,8 @@ static BOOL CALLBACK configure_once(PINIT_ONCE once, void *param, void **ctx) {
         if (direct_ok) fprintf(stderr, "[net] direct paths stay off with the official lobby\n");
         direct_ok = 0;
         ticket_refresh();
-        if (!ticket[0]) fprintf(stderr, "[net] no lobby ticket: sign in in the launcher to play online\n");
+        InterlockedExchange(&no_ticket, !ticket[0]);
+        if (!ticket[0]) fprintf(stderr, "[net] no lobby ticket, the official lobby takes signed-in players only: %s\n", no_ticket_hint());
     }
     return TRUE;
 }
@@ -2019,6 +2034,7 @@ static void send_join(void) {
     mod_set_make();
     int official = official_relay();
     if (official) ticket_refresh();   /* (a renewed ticket, and its name) */
+    InterlockedExchange(&no_ticket, official && !ticket[0]);   /* (a sign-in after the start: the file's ticket, said at once) */
     header(p, T_JOIN);
     put64(p + 4, nonce);
     memcpy(p + 12, room, strlen(room));
@@ -2937,6 +2953,7 @@ void net_status(char *out, size_t n) {
     start();
     if (net_backend) { net_backend->status(out,n); return; }
     if (!configured) { if (n) out[0] = 0; return; }
+    if (no_ticket && !joined) { snprintf(out, n, "Netplay: not signed in, the official lobby takes signed-in players only\n%s", no_ticket_hint()); return; }
     if (reject_text[0] && !joined) { snprintf(out, n, "Netplay: %s%s%s", reject_text, reject_detail[0] ? "\n" : "", reject_detail); return; }
     if (lan_mode && !joined && lan_state != NET_LAN_FOUND) { snprintf(out, n, "Netplay: looking for a room on this network..."); return; }
     if (!joined && net_unreachable()) { snprintf(out, n, "Netplay: no answer from %s - playing offline (still trying)", relay_text); return; }

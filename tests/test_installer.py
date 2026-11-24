@@ -577,7 +577,21 @@ class InstallerDecisionTests(unittest.TestCase):
             out, exe, old = run('v0.5.0', new)
             self.assertIn('swapped=False', out)
             self.assertIn("OpenSmash.exe is v0.5.0's", out)
-            out, exe, _ = run('main', b'MZ old launcher')
+            # following main: main's build, the prerelease launcher-main (.github/workflows/launcher-main.yml), so a copy
+            # on main without the .NET SDK does not keep a launcher that cannot sign in (#510)
+            Path(root, 'urls.txt').unlink()
+            out, exe, old = run('main', b'MZ old launcher')
+            self.assertIn('swapped=True', out)
+            self.assertIn("OpenSmash.exe is now main's", out)
+            self.assertEqual((exe, old), (new, True))
+            self.assertIn('/releases/download/launcher-main/OpenSmash.exe.sha256', Path(root, 'urls.txt').read_text('utf-16'))
+            out, exe, _ = run('main', new)
+            self.assertIn('swapped=False', out)
+            self.assertIn("OpenSmash.exe is main's", out)
+            out, exe, _ = run('main', b'MZ old launcher', download=b'MZ tampered')
+            self.assertIn('swapped=False', out)
+            self.assertEqual(exe, b'MZ old launcher')
+            out, exe, _ = run('main', b'MZ old launcher', rebuilds=True)   # a launcher with the SDK rebuilds its own
             self.assertIn('swapped=False', out)
             self.assertEqual(exe, b'MZ old launcher')
             out, exe, _ = run('v0.5.0', b'MZ old launcher', git=True)
@@ -597,6 +611,17 @@ class InstallerDecisionTests(unittest.TestCase):
             self.assertEqual((exe, old), (new, False))
             out, exe, old = run('v0.5.0', None, old_left=b'MZ old launcher', text="throw 'no network'")
             self.assertEqual((exe, old), (b'MZ old launcher', False))
+
+    def test_main_launcher_tag_is_the_workflows(self):
+        # The tag the installer downloads main's OpenSmash.exe from is the one the workflow publishes, as a prerelease
+        # that never takes "latest" (the stable channel's releases/latest), with the checksum beside the exe.
+        tag = re.search(r"^\$MainLauncherTag = '([^']+)'", SCRIPT.read_text(encoding='utf-8'), re.M).group(1)
+        flow = (ROOT / '.github/workflows/launcher-main.yml').read_text(encoding='utf-8')
+        self.assertIn(f"$tag = '{tag}'", flow)
+        self.assertIn('--prerelease --latest=false', flow)
+        self.assertIn('OpenSmash.exe OpenSmash.exe.sha256 --clobber', flow)
+        self.assertIn('branches: [main]', flow)
+        self.assertNotRegex(tag, r'^v\d|^launcher-v')   # (release.yml's v* and launcher-release.yml's launcher-v* tags)
 
     def test_update_ref_never_main_by_mistake(self):
         # The release channel: the API's tag; its 404 (no release) is main; the API failing (no network, its hourly limit)
@@ -661,7 +686,7 @@ class InstallerDecisionTests(unittest.TestCase):
                 return ps_text(mocks + "[void](Update-LauncherExe); 'release=' + $Script:LauncherIsRelease")
             self.assertIn('release=True', run("'v0.4.1'", b'MZ old launcher'))   # swapped
             self.assertIn('release=True', run("'v0.4.1'", new))                  # already the release's
-            self.assertIn('release=False', run("'main'", b'MZ old launcher'))    # following main: nothing to take
+            self.assertIn('release=True', run("'main'", b'MZ old launcher'))     # following main: main's build
             out = run('$null', b'MZ old launcher')                                 # GitHub not saying: nothing done
             self.assertIn('release=False', out)
             self.assertEqual(Path(root, 'OpenSmash.exe').read_bytes(), b'MZ old launcher')
