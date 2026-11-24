@@ -48,6 +48,7 @@ int net_match_on(void) { return 0; }
 void rb_shadow_note(u64 at, u64 size) { (void)at; (void)size; }
 int rb_net_fixed_clock(void) { return 0; }
 int rb_online_match_now(void) { return 0; }   /* (hle_online_delay.c) */
+int rb_net_fight_now(void) { return 0; }      /* (ipc_vi.c: low_latency's hold) */
 int rb_sd_hold_now(void) { return 0; }        /* (hle_online_delay.c) */
 int rb_online_match_reported(void) { return 0; }   /* (hle_online_delay.c) */
 int rb_online_self_cut(void) { return 0; }    /* (hle_online_delay.c) */
@@ -4804,6 +4805,9 @@ static u64 fm_impl(void) {
 /* (hle_online_delay.c) an Online match set up as rollback's now, every player local on both games (a Local Wireless
  * room's too): its number of players, else 0 */
 int rb_online_match_now(void) { return net_mode == 2 && net_online && online_match ? net_n : 0; }
+/* (ipc_vi.c, low_latency's hold) a fight of net mode under way - Online, a relay's or a direct link's - with no run-ahead:
+ * the frames before its first safe point and after its end are left out (rb_on is fixed at boot, the hold follows this) */
+int rb_net_fight_now(void) { return net_mode == 2 && net_armed && S.in_fight && !ra_engaged; }
 static void online_fight_start(void) {
     if (!online_match) return;
     u64 impl = fm_impl();

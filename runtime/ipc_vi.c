@@ -174,7 +174,7 @@ static volatile int ready_last_q = -1;
 static void ready_init(void) {
     if (ready_on >= 0) return;
     const char *e = getenv("SSBU_VI_READY"), *p = getenv("SSBU_VI_READY_POLL_MS");
-    ready_on = !(e && *e == '0');   /* on unless SSBU_VI_READY=0 */
+    ready_on = e && *e == '2' ? 2 : !(e && *e == '0');   /* on unless SSBU_VI_READY=0; 2 (tests): in every frame, not only an Online match's */
     if (p && *p) ready_poll_ms = atof(p);
     if (ready_on) fprintf(stderr, "[display] a queued picture waits until it is drawn (SSBU_VI_READY on (set SSBU_VI_READY=0 to turn off), poll %.1f ms)\n", ready_poll_ms);
 }
@@ -205,7 +205,7 @@ static int vi_slot_drawn(int slot) {
 static volatile int ready_grace;   /* (refreshes left after a vi_rb_load) */
 static int vi_ready_active(void) {
     int rb_online_match_now(void);   /* (hle_rb_core.c) */
-    if (rb_online_match_now() > 0) return 1;
+    if (rb_online_match_now() > 0 || ready_on == 2) return 1;
     if (ready_grace > 0) { ready_grace--; return 1; }
     return 0;
 }
@@ -261,6 +261,7 @@ static int vi_next_slot(int last) {   /* (under the queue's lock) the registered
     for (int k = 1; k <= SLOTS; k++) { int j = (last + k) % SLOTS; if (queue.slots[j].has_buffer) return j; }
     return -1;
 }
+static u64 ll_held;   /* (slots shown before, still held: freed at low_latency's release, below) */
 static int vi_prev_dq = -1;   /* (vi_last_dq before the last hand-out: a CANCEL_BUFFER puts it back) */
 /* (DEQUEUE_BUFFER, under the queue's lock) The buffer to hand out, given the free ones and the lowest of them: the one in
  * turn if it is free; -1 ("would block") while the one in turn will come free without the game - queued, or shown with
@@ -278,7 +279,7 @@ static int vi_turn_pick(u64 freemask, int lowest) {
     if (rb_fast > 0) return lowest;
     int st = queue.slots[nx].state, behind = 0;
     for (int i = 0; i < SLOTS; i++) behind |= queue.slots[i].state == QUEUED;
-    if (st == QUEUED || (st == ACQUIRED && behind)) {   /* (its turn's buffer still queued or shown: the game waits for it, as on the console) */
+    if (st == QUEUED || (st == ACQUIRED && (behind || (ll_held >> nx & 1)))) {   /* (its turn's buffer still queued, shown, or held by low_latency: the game waits for it, as on the console) */
         if (++vi_order_waits <= 4 || vi_order_waits % 100000 == 0)
             fprintf(stderr, "[display] buffer %d free but buffer %d's turn: the game waits for it (%lld times so far)\n", lowest, nx, vi_order_waits);
         return -1;
@@ -288,7 +289,6 @@ static int vi_turn_pick(u64 freemask, int lowest) {
                 nx, st, lowest, vi_order_fallbacks);
     return lowest;
 }
-static u64 ll_held;   /* (slots shown before, still held: freed at low_latency's release) */
 static int take_oldest_held(int hold);
 static int take_oldest(void) { return take_oldest_held(0); }
 static int take_oldest_held(int hold) {
@@ -401,8 +401,8 @@ static void show_fast(void) {
  * the next (SSBU_LAT_TRACE: the pad read 0.5-1 ms after the present, whatever the refresh signal did) -
  * reads the controller, draws and queues the frame, and waits for the next. Holding only the refresh
  * signal (as until 2026-11-24) changed nothing: the game read its pad at the present and queued its
- * frame before the held signal. So offline (no savestates: rb_on 0) the buffer shown before is held
- * too, and both are released together (ll_release_held); SSBU_LOW_LATENCY_HOLD=0: the signal only.
+ * frame before the held signal. So offline (no savestates: rb_on 0), and in a net fight (ll_hold_on), the buffer
+ * shown before is held too, and both are released together (ll_release_held); SSBU_LOW_LATENCY_HOLD=0: the signal only.
  * With low_latency the signal comes later than the refresh, by what the frame doesn't need: a frame
  * period less the longest release-to-queue time of the last 64 frames and a margin for the graphics
  * card (SSBU_LOW_LATENCY_MARGIN ms, default 4). The controller is read that much closer to the
@@ -418,12 +418,26 @@ extern volatile LONG rt_refresh_mult;
 
 static LONG64 qpc_now(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
 
+/* Rollback (net fights, where the hold is on with savestates): a catch-up starts after the release (at the wait for the
+ * buffer, or the safe point) and its last picture must still be queued before the refresh. The time from the release
+ * before its load (vi_rb_load: ll_rb_from) to the queue of that last picture (ll_rb_kept) is kept for
+ * SSBU_LOW_LATENCY_RB_MS (10 s) beside the last 64 frames' spans: a rollback is rarer than one in 64 frames, and the
+ * next one must fit too. One that overran the refresh is kept as more than a period: no hold for those 10 s. The
+ * catch-up's own queues are not frames' spans. */
+static LONG64 ll_rb_spans[16], ll_rb_at[16], ll_rb_from;
+static int ll_rb_next;
 static void ll_queued(void) {   /* (QUEUE_BUFFER, under the queue's lock) */
-    if (!ll_release) return;
+    if (rb_fast > 0 || !ll_release) return;   /* (a catch-up's frame: ll_rb_kept) */
     ll_spans[ll_next] = qpc_now() - ll_release;
     ll_next = (ll_next + 1) % 64;
     if (ll_count < 64) ll_count++;
     ll_release = 0;
+}
+static void ll_rb_kept(void) {   /* (QUEUE_BUFFER, under the queue's lock: a catch-up's last picture, the one shown) */
+    if (!ll_rb_from) return;
+    LONG64 now = qpc_now();
+    ll_rb_spans[ll_rb_next] = now - ll_rb_from; ll_rb_at[ll_rb_next] = now; ll_rb_next = (ll_rb_next + 1) % 16;
+    ll_rb_from = 0;
 }
 
 static LONG64 ll_delay(void) {   /* ticks to hold the signal past the refresh */
@@ -442,20 +456,46 @@ static LONG64 ll_delay(void) {   /* ticks to hold the signal past the refresh */
     if (ll_backoff > 0) { ll_backoff--; return 0; }
     LONG64 most = 0;
     for (int i = 0; i < ll_count; i++) if (ll_spans[i] > most) most = ll_spans[i];
+    {   static LONG64 keep = -1;   /* (the rollbacks' spans: see ll_queued) */
+        if (keep < 0) {
+            const char *e = getenv("SSBU_LOW_LATENCY_RB_MS");
+            double ms = e && *e ? atof(e) : 10000.0;
+            if (!(ms >= 0)) ms = 10000.0;
+            if (ms > 600000.0) ms = 600000.0;   /* (10 minutes at most: no overflow of the ticks) */
+            keep = (LONG64)(ms * ll_freq / 1000);
+        }
+        LONG64 now = qpc_now();
+        queue_lock();
+        for (int i = 0; i < 16; i++) if (ll_rb_at[i] && now - ll_rb_at[i] < keep && ll_rb_spans[i] > most) most = ll_rb_spans[i];
+        queue_unlock();
+    }
     LONG64 d = ll_freq / (60 * (LONG64)rt_refresh_mult) - most - ll_margin;   /* (a refresh's period: frame_rate's) */
     return d > ll_freq / 2000 ? d : 0;   /* (under half a millisecond: not worth it) */
 }
 
 extern int rb_on;   /* (hle_rb_core.c: rollback netplay or run-ahead, fixed at boot) */
+/* With savestates on (rb_on) the hold is taken only in a fight of net mode (rb_net_fight_now: Online, a relay's, a direct
+ * link's; not run-ahead, not the menus): a rollback's save and load see a held buffer as free (vi_rb_save, vi_rb_load), and
+ * the frames a catch-up runs again are never held (the refresh showing its kept last picture may be: ll_rb_kept times it).
+ * SSBU_LOW_LATENCY_HOLD_NET=0: online, the signal only (the rollbacks' timing still shortens it). */
 static int ll_hold_on(void) {
-    static int v = -1;
+    static int v = -1, net = -1, said = -1;
     if (v < 0) {
-        const char *e = getenv("SSBU_LOW_LATENCY_HOLD");
-        v = !(e && *e == '0') && !rb_on;
-        fprintf(stderr, "[display] low_latency: %s\n", v ? "the game's next frame starts at the held signal (its buffer held too)"
-                                                        : rb_on ? "the signal only (savestates on: rollback or run-ahead)" : "the signal only (SSBU_LOW_LATENCY_HOLD=0)");
+        const char *e = getenv("SSBU_LOW_LATENCY_HOLD"), *n = getenv("SSBU_LOW_LATENCY_HOLD_NET");
+        v = !(e && *e == '0');
+        net = !(n && *n == '0');
     }
-    return v;
+    int rb_net_fight_now(void);   /* (hle_rb_core.c) */
+    int now = v && (!rb_on || (net && rb_net_fight_now()));
+    if (now != said) {   /* (said at the first refresh, and at each change: a net fight's start and end) */
+        said = now;
+        fprintf(stderr, "[display] low_latency: %s\n", now ? (rb_on ? "the game's next frame starts at the held signal (its buffer held too; a net fight)"
+                                                                : "the game's next frame starts at the held signal (its buffer held too)")
+                                                      : !v ? "the signal only (SSBU_LOW_LATENCY_HOLD=0)"
+                                                      : !net ? "the signal only (savestates on; SSBU_LOW_LATENCY_HOLD_NET=0)"
+                                                      : "the signal only (savestates on: run-ahead, or not in a net fight)");
+    }
+    return now;
 }
 static void ll_release_held(int shown_now) {   /* (the vsync thread, at the release: what show() and take_oldest left) */
     queue_lock();
@@ -487,8 +527,10 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
          * shown: each is taken off the queue as soon as it is drawn, and the next refresh is now) */
         int fast = rb_fast > 0 && !keep_pending;
         double lat_tick_ms = 0;
+        LONG64 refresh_at = 0;   /* (low_latency: the release is timed from the refresh, not from after SSBU_VI_READY's wait and the take) */
         if (!fast) {
             display_wait_tick();   /* the next refresh (display.ini's pacing and frame_rate) */
+            refresh_at = qpc_now();
             if (lat_tf) lat_tick_ms = lat_ms();
             LONG m = display_tick_mult();
             if (m != rt_refresh_mult) { InterlockedExchange(&rt_refresh_mult, m); queue_lock(); ll_count = ll_next = 0; queue_unlock(); }   /* (low_latency measures again) */
@@ -510,7 +552,7 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
             if (woken) { queue_unlock(); continue; }
         }
         queue_unlock();
-        LONG64 tick = qpc_now();
+        LONG64 tick = refresh_at ? refresh_at : qpc_now();
         if (oldest >= 0) {
             if (fast) show_fast();
             else {
@@ -563,6 +605,9 @@ void *vi_rb_save(void) {
     queue_lock();
     for (int i = 0; i < SLOTS; i++) { s[i].state = queue.slots[i].state; s[i].queued_at = queue.slots[i].queued_at; s[i].gpu_mark = queue.slots[i].gpu_mark; }
     s[SLOTS].state = vi_last_dq; s[SLOTS].queued_at = s[SLOTS].gpu_mark = 0;
+    /* (low_latency's hold: a slot shown before and held until the release is free for the game - its memory has it
+     * neither dequeued nor queued - so a load must not bring it back as on screen) */
+    for (int i = 0; i < SLOTS; i++) if ((ll_held >> i & 1) && s[i].state == ACQUIRED) s[i].state = FREE;
     queue_unlock();
     return s;
 }
@@ -586,7 +631,9 @@ void vi_rb_load(const void *p) {
     static int reacq_on = -1;
     if (reacq_on < 0) { const char *e = getenv("SSBU_RB_VI_REACQ"); reacq_on = e && *e ? atoi(e) : 1; }   /* (on by default since v0.5.0, round 7) */
     int on_screen = -1;
-    for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == ACQUIRED) on_screen = i;
+    for (int i = 0; i < SLOTS; i++) if (queue.slots[i].state == ACQUIRED && !(ll_held >> i & 1)) on_screen = i;
+    ll_held = 0;   /* (low_latency's hold: what it held is let go with the load's states; the release finds nothing to free) */
+    if (rb_vi_catchup()) ll_rb_from = ll_release ? ll_release : qpc_now();   /* (low_latency: the catch-up timed from the release before it, ll_rb_kept) */
     vi_reacq = reacq_on && rb_vi_catchup() ? on_screen : -1;
     for (int i = 0; i < SLOTS; i++) { queue.slots[i].state = s[i].state; queue.slots[i].queued_at = s[i].queued_at; queue.slots[i].gpu_mark = s[i].gpu_mark; queue.slots[i].keep = 0; }
     keep_pending = 0;
@@ -739,6 +786,7 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
             if (qfree < 0) { const char *e = getenv("SSBU_RB_QFREE"); qfree = !(e && *e == '0'); }
             queue.slots[slot].keep = 0;
             if (rb_fast == 1 && rb_vi_catchup()) {   /* (a catch-up's last frame: shown at the next refresh) */
+                ll_rb_kept();
                 queue.slots[slot].keep = 1;
                 keep_pending = 1;
                 WakeConditionVariable(&queue.queued);
