@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""OpenSmash on a Mac in one go: what Install WindowSmash.command runs (the macOS counterpart of
-OpenSmash.exe, tools/install_windowsmash.ps1, and of tools/linux/install_linux.py, whose
+"""OpenSmash on a Mac in one go: what Install OpenSmash.command runs (the macOS counterpart of
+OpenSmash.exe, tools/install_opensmash.ps1, and of tools/linux/install_linux.py, whose
 platform-neutral helpers it uses: the update, the downloads, the folder checks).
 
-Usage: Install WindowSmash.command [--game <dir>] [--keys <dir>] [--firmware <dir> | --no-firmware] [--online-name <name>]
+Usage: Install OpenSmash.command [--game <dir>] [--keys <dir>] [--firmware <dir> | --no-firmware] [--online-name <name>]
                                    [--jobs N] [--skip-build] [--no-update] [--no-wizard] [--yes] [--dry-run]
 
   1. update     the newest OpenSmash from GitHub (the BRANCH below): a git checkout of it is
@@ -76,11 +76,11 @@ SDL_IN_DMG = os.path.join("SDL3.xcframework", "macos-arm64_x86_64", "SDL3.framew
 FIREWALL = "/usr/libexec/ApplicationFirewall/socketfilterfw"
 LAUNCHER_NAME = "Play SSBU"
 LAUNCHER_ID = "io.github.sno2207.windowsmash.play"
-ICON = os.path.join(ROOT, "docs", "assets", "windowsmash.ico")
-LAUNCHERS = ["Install WindowSmash.command", "Play SSBU.command", "launchers/Play SSBU Offline.command",
+ICON = os.path.join(ROOT, "docs", "assets", "opensmash.ico")
+LAUNCHERS = ["Install OpenSmash.command", "Install WindowSmash.command", "Play SSBU.command", "launchers/Play SSBU Offline.command",
              "launchers/Host SSBU Netplay.command", "launchers/Join SSBU Netplay.command",
-             "launchers/Unlock All Fighters.command", "launchers/Build WindowSmash.command",
-             "Mods.command", "launchers/WindowSmash Mods.command", "launchers/Uninstall WindowSmash Mods.command",
+             "launchers/Unlock All Fighters.command", "launchers/Build OpenSmash.command",
+             "Mods.command", "launchers/OpenSmash Mods.command", "launchers/Uninstall OpenSmash Mods.command",
              "launchers/Import Miis.command", "OpenSmash Launcher.command", "tools/mac/launch.sh",
              "tools/mac/rebuild-all.command", "Build Launcher macOS.command"]
 EMULATORS = ("yuzu", "eden", "sudachi", "citron", "suyu", "torzu")   # yuzu and the forks with its layout
@@ -226,7 +226,7 @@ def osascript_command(script, args):
 
 
 def ico_png(data):
-    """The biggest PNG picture in an .ico file (docs/assets/windowsmash.ico holds a 256-pixel one), or None."""
+    """The biggest PNG picture in an .ico file (docs/assets/opensmash.ico holds a 256-pixel one), or None."""
     if len(data) < 6:
         return None
     _reserved, kind, count = struct.unpack_from("<HHH", data, 0)
@@ -256,11 +256,11 @@ def launcher_script(root):
     Terminal window (--gui); or, when the folder has gone, a message saying so."""
     return f"""#!/bin/bash
 # {LAUNCHER_NAME}: starts OpenSmash's game, online, from the folder below, as Play SSBU.command does but
-# asking in dialogs. Made by Install WindowSmash.command; running that again makes this anew.
+# asking in dialogs. Made by Install OpenSmash.command; running that again makes this anew.
 root={shlex.quote(root)}
 if [ ! -f "$root/tools/mac/launch.sh" ]; then
     osascript - "OpenSmash is not where it was" "{LAUNCHER_NAME} starts the game from $root, which is not there \\
-any more. Double-click Install WindowSmash.command in OpenSmash's folder to make {LAUNCHER_NAME} again." <<'EOF'
+any more. Double-click Install OpenSmash.command in OpenSmash's folder to make {LAUNCHER_NAME} again." <<'EOF'
 on run argv
     activate
     display alert (item 1 of argv) message (item 2 of argv) as critical
@@ -518,7 +518,7 @@ def step_check_mac():
     info(f"macOS {product or '?'}, {chip}, {machine}")
     if sysctl("sysctl.proc_translated") == "1":
         raise Stop("This runs under Rosetta (as an Intel program), so the build would be one too. Start Install "
-                   "WindowSmash.command again from Finder, or in Terminal with: arch -arm64 /bin/bash \"Install WindowSmash.command\"")
+                   "OpenSmash.command again from Finder, or in Terminal with: arch -arm64 /bin/bash \"Install OpenSmash.command\"")
     if machine != "arm64":
         raise Stop(f"OpenSmash needs a Mac with Apple silicon (M1 or newer); this one has {chip}.")
     if version and version < MIN_MACOS:
@@ -614,12 +614,12 @@ def wait_for_tools(minutes=60, grace=15, gone_for=10):
         now = time.time()
         if now - t0 > minutes * 60:
             raise Stop("The Command Line Tools are not installed yet. When macOS's window says the software was installed, "
-                       "run Install WindowSmash.command again; it carries on from here.")
+                       "run Install OpenSmash.command again; it carries on from here.")
         if now - t0 > grace and clt_installer_open() is False:
             gone = gone or now
             if now - gone >= gone_for and not developer_dir():
                 raise Stop("macOS's window installing the Command Line Tools was closed (Cancel or Not Now?) before they were "
-                           "installed. Run Install WindowSmash.command again to open it again, or install them from System "
+                           "installed. Run Install OpenSmash.command again to open it again, or install them from System "
                            "Settings > General > Software Update.")
         else:
             gone = None
@@ -701,7 +701,7 @@ def step_python(a):
         problem = python_problem(py)
         if problem:
             raise Stop(f"The Python this runs with ({sys.executable}: {problem}) cannot run the tools: they need Python 3.10 or "
-                       "newer, as arm64. Start Install WindowSmash.command from Finder: it finds or downloads one.")
+                       "newer, as arm64. Start Install OpenSmash.command from Finder: it finds or downloads one.")
     version = subprocess.run([py, "-c", "import sys; print(sys.version.split()[0])"], capture_output=True, text=True).stdout.strip()
     info(f"Python {version}: {os.path.relpath(py, ROOT)}")
     need = subprocess.run([py, "-c", "import Cryptodome; import sys, importlib.util as u; sys.exit(0 if u.find_spec('zstandard') "
@@ -904,7 +904,7 @@ def wizard(found, name, options, firewall, checks):
         button = dialog(summary(f, c, name, options, firewall), ["Cancel", "Change…", "Set up and build"],
                         "Set up and build", "Cancel")
         if button is None:
-            raise Stop("Cancelled. Run Install WindowSmash.command again when you are ready.")
+            raise Stop("Cancelled. Run Install OpenSmash.command again when you are ready.")
         if button == "Set up and build":
             bad = [key for key in ("keys", "firmware", "game") if not c[key][0]]
             if not bad:
@@ -951,7 +951,7 @@ def ask_folder(label, key, value, check, interactive):
             return os.path.abspath(value) if value else None
         if not interactive:
             other = " (or --no-firmware: the open fonts)" if key == "firmware" else ""
-            raise Stop(f"The {label} folder is not usable ({text}). Name it with --{key}{other} (see Install WindowSmash.command "
+            raise Stop(f"The {label} folder is not usable ({text}). Name it with --{key}{other} (see Install OpenSmash.command "
                        "--help).")
         value = ask(f"{label.capitalize()} folder", value, True)
 
@@ -1059,7 +1059,7 @@ def step_build(a, files):
          ", then the build: one to a few hours the first time, minutes after an update. The Mac stays awake meanwhile; "
          "it can be used, but more slowly"))
     if subprocess.run(cmd, cwd=ROOT).returncode:
-        raise Stop("The build stopped (the message above says why). Fix that, then run Install WindowSmash.command again: "
+        raise Stop("The build stopped (the message above says why). Fix that, then run Install OpenSmash.command again: "
                    "it carries on where it stopped.")
     return not a.skip_build and os.path.isdir(APP)
 
@@ -1075,7 +1075,7 @@ def make_icns(ico, out):
         src = os.path.join(tmp, "icon.png")
         with open(src, "wb") as f:
             f.write(png)
-        iconset = os.path.join(tmp, "windowsmash.iconset")
+        iconset = os.path.join(tmp, "opensmash.iconset")
         os.makedirs(iconset)
         for size in (16, 32, 128, 256):
             for scale in (1, 2):
@@ -1089,7 +1089,7 @@ def make_icns(ico, out):
 
 
 def launcher_icns():
-    """The game's own icon (the build makes it), else made from docs/assets/windowsmash.ico."""
+    """The game's own icon (the build makes it), else made from docs/assets/opensmash.ico."""
     built = os.path.join(APP, "Contents", "Resources", "windowsmash.icns")
     return built if os.path.isfile(built) else None
 
@@ -1160,7 +1160,7 @@ def step_launchers(a, files):
         make_executable()
     step_opensmash_launcher(a)
     info("in this folder: Play SSBU.command (online); in launchers/: Play SSBU Offline, Host SSBU Netplay, "
-         "Join SSBU Netplay, Unlock All Fighters, Build WindowSmash (.command)")
+         "Join SSBU Netplay, Unlock All Fighters, Build OpenSmash (.command)")
     if not files.get("launcher"):
         info(f"{LAUNCHER_NAME} in ~/Applications: not wanted")
         return None
@@ -1235,7 +1235,7 @@ def step_firewall(a, files, state):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="Install WindowSmash.command", description="Set up OpenSmash on this Mac in one go.")
+    ap = argparse.ArgumentParser(prog="Install OpenSmash.command", description="Set up OpenSmash on this Mac in one go.")
     ap.add_argument("--game", help="the folder with the game's files (found or asked)")
     ap.add_argument("--keys", help="the folder with prod.keys and title.keys (found or asked)")
     ap.add_argument("--firmware", help="the folder with the firmware's .nca files, for your console's own fonts (optional: "
@@ -1281,7 +1281,7 @@ def main(argv=None):
         step_firewall(a, files, firewall)
         print()
         if not built:
-            print("Setup done." + (" Run Install WindowSmash.command again without --skip-build to build the game."
+            print("Setup done." + (" Run Install OpenSmash.command again without --skip-build to build the game."
                                    if a.skip_build and not a.dry_run else ""))
             return 0
         desktop = app and os.path.islink(os.path.join(os.path.expanduser("~"), "Desktop", LAUNCHER_NAME + ".app"))
@@ -1297,7 +1297,7 @@ def main(argv=None):
         print("(everything above is also in install.log)")
         return 1
     except KeyboardInterrupt:
-        print("\nStopped. Run Install WindowSmash.command again to carry on from here.")
+        print("\nStopped. Run Install OpenSmash.command again to carry on from here.")
         return 1
 
 

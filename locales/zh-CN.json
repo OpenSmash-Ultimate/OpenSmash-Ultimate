@@ -928,7 +928,7 @@
     "this lobby speaks version 2 only": "此大厅仅支持版本 2",
     "this menu (or hold - and + for a second)": "打开此菜单（或同时按住 - 和 + 一秒）",
     "this network (LAN)": "局域网",
-    "tools\\install_windowsmash.ps1 is not in this folder. This copy of OpenSmash is incomplete.": "此文件夹中缺少 tools\\install_windowsmash.ps1，当前 OpenSmash 副本不完整。",
+    "tools\\install_opensmash.ps1 is not in this folder. This copy of OpenSmash is incomplete.": "此文件夹中缺少 tools\\install_opensmash.ps1，当前 OpenSmash 副本不完整。",
     "unknown (no version.txt)": "未知（缺少 version.txt）",
     "unpacked game {0:N0} GB": "解包游戏 {0:N0} GB",
     "update your OpenSmash": "请更新你的 OpenSmash",

@@ -61,7 +61,7 @@ static class UpstreamChecks
         Directory.CreateDirectory(project.PathIn("OpenSmash.Avalonia","bin"));File.WriteAllText(project.PathIn("OpenSmash.Avalonia","source.cs"),"source");string fingerprint=UpdateState.LauncherFingerprint(project);File.WriteAllText(project.PathIn("OpenSmash.Avalonia","bin","generated.dll"),"ignored");Check(UpdateState.LauncherFingerprint(project)==fingerprint,"launcher update fingerprint ignores build outputs");File.AppendAllText(project.PathIn("OpenSmash.Avalonia","source.cs"),"changed");Check(UpdateState.LauncherFingerprint(project)!=fingerprint,"launcher update fingerprint detects source changes");
         if(OperatingSystem.IsWindows())
         {
-            File.WriteAllText(project.PathIn("tools","install_windowsmash.ps1"),"param([switch]$BuildAfterUpdate)\nif(-not $BuildAfterUpdate -or $env:SSBU_GUI_INSTALL -ne '1'){exit 3}\nif(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'fail')){exit 7}\nexit 0\n");
+            File.WriteAllText(project.PathIn("tools","install_opensmash.ps1"),"param([switch]$BuildAfterUpdate)\nif(-not $BuildAfterUpdate -or $env:SSBU_GUI_INSTALL -ne '1'){exit 3}\nif(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'fail')){exit 7}\nexit 0\n");
             var method=typeof(MainWindow).GetMethod("FinishPendingGameUpdate",BindingFlags.Instance|BindingFlags.NonPublic)!;
             UpdateState.Mark(UpdateState.GameMarker(project),"fixture");File.WriteAllText(project.PathIn("tools","fail"),"");bool failed=false;
             try{Finish((Task)method.Invoke(window,null)!);}catch(InvalidOperationException){failed=true;}

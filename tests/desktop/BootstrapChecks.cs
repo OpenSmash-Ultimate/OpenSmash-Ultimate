@@ -14,8 +14,8 @@ static class BootstrapChecks
             using var bytes=new MemoryStream();
             using(var zip=new ZipArchive(bytes,ZipArchiveMode.Create,true))
             {
-                string[] files=incomplete?["readme.txt"]:["runtime/fixture.txt","tools/os_mods.py","tools/recomp.py","tools/install_windowsmash.ps1","tools/linux/install.sh","tools/mac/install.sh"];
-                if(legacy)files=files.Select(f=>f.Replace("tools/linux/install.sh","install-windowsmash.sh").Replace("tools/mac/install.sh","Install WindowSmash.command")).ToArray();
+                string[] files=incomplete?["readme.txt"]:["runtime/fixture.txt","tools/os_mods.py","tools/recomp.py","tools/install_opensmash.ps1","tools/linux/install.sh","tools/mac/install.sh"];
+                if(legacy)files=files.Select(f=>f.Replace("tools/install_opensmash.ps1","tools/install_windowsmash.ps1").Replace("tools/linux/install.sh","install-windowsmash.sh").Replace("tools/mac/install.sh","Install WindowSmash.command")).ToArray();
                 if(legacy)files=files.Concat(["tools/linux/install_linux.py","tools/mac/install_mac.py","opensmash-launcher.sh","OpenSmash Launcher.command","OpenSmash Launcher.desktop"]).ToArray();
                 foreach(string file in files)
                 {

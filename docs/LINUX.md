@@ -16,7 +16,7 @@ There are two ways to get it:
   `bash opensmash-launcher.sh`. Setup, updates, Play, settings and the mod manager in a window, with a
   mouse or a game pad, no terminal. It works in Steam's Game Mode too. See
   [The OpenSmash Launcher](#the-opensmash-launcher).
-- **Install it on Linux.** `install-windowsmash.sh` sets up OpenSmash on the Linux machine and
+- **Install it on Linux.** `install-opensmash.sh` sets up OpenSmash on the Linux machine and
   builds the game there from your own files, as `OpenSmash.exe` does on Windows. See
   [Installing on Linux](#installing-on-linux).
 - **Copy over a package from Windows.** A Windows PC that has built the game can make an
@@ -136,7 +136,7 @@ The mod manager is the same as on Windows and macOS. These fixes make it work fu
 
 ## Installing on Linux
 
-`install-windowsmash.sh` does everything in one go: it gets the newest OpenSmash, installs what
+`install-opensmash.sh` does everything in one go: it gets the newest OpenSmash, installs what
 the build needs, finds your game files, and builds the game. It needs:
 
 - **An x86-64 PC with AVX2** (recommended) **or at the least SSE4.2** (x86-64-v2: the game is built for it, and is
@@ -166,7 +166,7 @@ the build needs, finds your game files, and builds the game. It needs:
 3. **Run the installer:**
 
    ```bash
-   bash install-windowsmash.sh
+   bash install-opensmash.sh
    ```
 
 4. **Answer its questions.** It asks for three folders, and fills in yuzu's, its forks' (Eden,
@@ -183,7 +183,7 @@ the build needs, finds your game files, and builds the game. It needs:
    game that isn't version 13.0.5 is refused, with what to add.
 5. **Wait for the build.** The first one compiles the whole game: from one to a few hours,
    depending on the processor and the memory. Later ones redo only what changed. If it stops, run
-   `bash install-windowsmash.sh` again: it carries on where it stopped. Everything it says also
+   `bash install-opensmash.sh` again: it carries on where it stopped. Everything it says also
    goes to `install.log`. While it writes the game's code as C, then while it compiles it, a line
    now and then shows how far it has got and the time left. The time left appears once the first
    files are compiled. Most terminals also show it in the window's title.
@@ -235,7 +235,7 @@ folder that isn't mounted, the launchers say so. The [Controls](#controls), [Set
 
 ### Updating
 
-Run `bash install-windowsmash.sh` again whenever you want the newest OpenSmash. It looks at
+Run `bash install-opensmash.sh` again whenever you want the newest OpenSmash. It looks at
 what changed and builds only that: your game files aren't asked for again (they are read once,
 into `dump/`), and the game's code is compiled again only when the update changes it. An update
 of the program's own parts (the graphics, the audio, the kernel: the files in `runtime/`) compiles
@@ -243,7 +243,7 @@ those files and links the program again, which takes minutes. An update that cha
 game's code is translated (a performance change to the translator, say), the header the game's
 code includes (`runtime/recomp.h`) or the compile flags, or a new compiler, compiles the game's
 code again, once: about as long as the first build. To build from other
-game files, name them: `bash install-windowsmash.sh --game <folder>`.
+game files, name them: `bash install-opensmash.sh --game <folder>`.
 
 A folder an older OpenSmash built from another game version, such as 11.0.0, is set up again
 as 13.0.5 once your game folder has the 13.0.5 update; your save and settings stay
@@ -516,7 +516,7 @@ back.
 | What you see | What to do |
 | :--- | :--- |
 | *Some libraries the game needs are not installed* | Run `bash install-deps.sh`. |
-| *`SDL.h` file not found*, or another `.h` file, while building | The package is installed without its header files (SteamOS does this). Run `bash install-windowsmash.sh` again: it puts them back. |
+| *`SDL.h` file not found*, or another `.h` file, while building | The package is installed without its header files (SteamOS does this). Run `bash install-opensmash.sh` again: it puts them back. |
 | A black window, or `cannot create the window` / DXVK errors in the log | Run `vulkaninfo --summary`. If it lists no device, install `mesa-vulkan-drivers`. |
 | No sound | SDL uses PulseAudio or PipeWire. Check the log for `[audio]` lines. |
 | A crash | It writes `reports/crash_<date>_<time>.txt`: the guest function and host frames (`*** host exception`), also at the end of the log. Send it with `build/play.log`. When the port stops the game itself (something it can't do yet), it writes `reports/stopped_*.txt`. |
@@ -526,7 +526,7 @@ back.
 
 ## Building it
 
-On Linux, `install-windowsmash.sh` builds it ([Installing on Linux](#installing-on-linux)). By hand:
+On Linux, `install-opensmash.sh` builds it ([Installing on Linux](#installing-on-linux)). By hand:
 `tools/build_game.py` prepares the game tree and then, on Linux, generates the game's C
 (`tools/recomp.py all --generate-only`) and runs `build_vkd3d.py` and `build_linux.py` below with
 the system's clang and lld. The third-party parts then live in `deps/linux-toolchain`, where the

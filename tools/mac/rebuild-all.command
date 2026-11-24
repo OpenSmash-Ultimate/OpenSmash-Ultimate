@@ -13,7 +13,7 @@ for candidate in "$root/deps/venv/bin/python" "$root/deps/python/bin/python3" py
     fi
 done
 if [ -z "$py" ]; then
-    echo "Python 3.10 or newer was not found. Run Install WindowSmash.command first." >&2
+    echo "Python 3.10 or newer was not found. Run Install OpenSmash.command first." >&2
     read -r -p "Press Return to close this window. " _
     exit 1
 fi

@@ -156,6 +156,14 @@ namespace OpenSmash.Launcher
             "SSBU_NET_ROOM", "SSBU_NET_NAME", "SSBU_NET_DIRECT", "SSBU_NET_PORT"
         };
 
+        // The setup: tools\install_opensmash.ps1, else tools\install_windowsmash.ps1 in a copy from before the rename
+        // (the same installer; this launcher can be newer than the folder it updates).
+        public static string Installer(string repo)
+        {
+            string now = Path.Combine(repo, "tools", "install_opensmash.ps1"), old = Path.Combine(repo, "tools", "install_windowsmash.ps1");
+            return File.Exists(now) || !File.Exists(old) ? now : old;
+        }
+
         public static string BuildDir(string repo) => Path.GetFullPath(Path.Combine(repo, "build"));
         public static bool IsBuilt(string repo) => File.Exists(Path.Combine(BuildDir(repo), "ssbu.exe"));
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Installs OpenSmash Mods (the mod manager) into an OpenSmash folder, from the installer zip
 make_installer.py makes - and, when the zip carries a modpack, that pack's mods too, turned on and
-applied. Run by the zip's "Install WindowSmash Mods" (.command on macOS, .bat on Windows), with
+applied. Run by the zip's "Install OpenSmash Mods" (.command on macOS, .bat on Windows), with
 OpenSmash's own Python:
 
   install_mods.py --target <OpenSmash folder> [--no-apply] [--no-app] [--no-build]
@@ -31,7 +31,10 @@ PACK = os.path.join(os.path.dirname(HERE), "modpack")
 MANIFEST = os.path.join("tools", "modmanager", "installed.json")
 # the mod manager's files, for an OpenSmash set up before installs kept a record of them
 KNOWN = ["tools/mods.py", "tools/prc.py", "tools/msbt.py", "tools/modmanager", "tools/mac/ModsShell.swift",
-         "tools/mac/build_mods_app.sh", "launchers/WindowSmash Mods.bat", "launchers/WindowSmash Mods.command",
+         "tools/mac/build_mods_app.sh", "launchers/OpenSmash Mods.bat", "launchers/OpenSmash Mods.command",
+         "launchers/Uninstall OpenSmash Mods.bat", "launchers/Uninstall OpenSmash Mods.command",
+         # (their names before the rename)
+         "launchers/WindowSmash Mods.bat", "launchers/WindowSmash Mods.command",
          "launchers/Uninstall WindowSmash Mods.bat", "launchers/Uninstall WindowSmash Mods.command"]
 APP = "WindowSmash Mods.app"
 
@@ -89,7 +92,7 @@ def copy_payload(target):
 def mac_app(target):
     if subprocess.run(["xcrun", "--find", "swiftc"], capture_output=True).returncode:
         say("  (the app needs Apple's Command Line Tools to build: run  xcode-select --install  then open")
-        say("   launchers/WindowSmash Mods.command; until then it opens in your browser)")
+        say("   launchers/OpenSmash Mods.command; until then it opens in your browser)")
         return False
     r = subprocess.run(["bash", os.path.join(target, "tools", "mac", "build_mods_app.sh")], capture_output=True, text=True)
     if r.returncode:
@@ -99,19 +102,23 @@ def mac_app(target):
     return True
 
 
-def desktop_shortcut():
-    return os.path.join(os.environ.get("USERPROFILE", os.path.expanduser("~")), "Desktop", "WindowSmash Mods.lnk")
+def desktop_shortcut(name="OpenSmash Mods.lnk"):
+    return os.path.join(os.environ.get("USERPROFILE", os.path.expanduser("~")), "Desktop", name)
+
+
+OLD_SHORTCUT = "WindowSmash Mods.lnk"   # (the name before the rename: replaced by the new one, removed on uninstall)
 
 
 def windows_shortcut(target):
     q = lambda path: path.replace("'", "''")   # (PowerShell's single-quoted strings)
-    bat = q(os.path.join(target, "launchers", "WindowSmash Mods.bat"))
+    bat = q(os.path.join(target, "launchers", "OpenSmash Mods.bat"))
     ico = os.path.join(target, "tools", "modmanager", "ui", "icon.ico")
-    ps = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut([Environment]::GetFolderPath('Desktop')+'\\WindowSmash Mods.lnk');"
+    ps = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut([Environment]::GetFolderPath('Desktop')+'\\OpenSmash Mods.lnk');"
           f"$s.TargetPath='{bat}';$s.WorkingDirectory='{q(target)}';$s.WindowStyle=7;"
           + (f"$s.IconLocation='{q(ico)}';" if os.path.exists(ico) else "") + "$s.Save()")
     r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], capture_output=True, text=True)
     if r.returncode == 0:
+        remove(desktop_shortcut(OLD_SHORTCUT))
         say("  A \"OpenSmash Mods\" shortcut is on your desktop.")
 
 
@@ -138,7 +145,7 @@ def rebuild(target, code_fixes):
     """The game built again, when the recompiler changed since it was built."""
     if not code_fixes or not code_fixes.needs_build(target):
         return
-    retry = "launchers/Build WindowSmash" + (".bat" if os.name == "nt" else ".command")
+    retry = "launchers/Build OpenSmash" + (".bat" if os.name == "nt" else ".command")
     if game_open():
         say(f"\nThe game is open: close it, then run {retry} to build it with the new fixes.")
         return
@@ -284,6 +291,7 @@ def uninstall(target, delete_mods):
             say("  the OpenSmash Mods app is removed")
     elif os.name == "nt":
         remove(desktop_shortcut())
+        remove(desktop_shortcut(OLD_SHORTCUT))
         say("  the desktop shortcut is removed")
     say("\nDone: OpenSmash is the game as it was.")
     return 0

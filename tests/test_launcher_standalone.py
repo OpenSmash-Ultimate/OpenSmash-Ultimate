@@ -25,7 +25,7 @@ def make_zip(path, files):
 
 
 GOOD = {TOP + 'README.md': 'readme', TOP + 'tools/recomp.py': '# recomp',
-        TOP + 'tools/install_windowsmash.ps1': '# installer', TOP + 'docs/assets/windowsmash.ico': '',
+        TOP + 'tools/install_opensmash.ps1': '# installer', TOP + 'docs/assets/opensmash.ico': '',
         TOP + 'media/opensmash.ico': ''}
 
 
@@ -52,7 +52,7 @@ class StandaloneLauncherTests(unittest.TestCase):
         code, out = self.fetch(target, GOOD)
         self.assertEqual(code, 0, out)
         self.assertEqual(out[-1], 'ok ' + str(target))
-        self.assertTrue((target / 'tools' / 'install_windowsmash.ps1').is_file())
+        self.assertTrue((target / 'tools' / 'install_opensmash.ps1').is_file())
         self.assertEqual((target / 'README.md').read_text(), 'readme')
         self.assertTrue((target / 'OpenSmash.exe').is_file())            # the launcher copied in
         self.assertFalse((target / '.opensmash-download').exists())      # no leftovers
@@ -110,10 +110,10 @@ class StandaloneLauncherTests(unittest.TestCase):
     def test_existing_project_is_kept_as_it_is(self):
         target = self.dir / 'clone'
         (target / 'tools').mkdir(parents=True)
-        (target / 'tools' / 'install_windowsmash.ps1').write_text('# mine')
+        (target / 'tools' / 'install_opensmash.ps1').write_text('# mine')
         code, out = self.fetch(target, GOOD)
         self.assertEqual(code, 0, out)
-        self.assertEqual((target / 'tools' / 'install_windowsmash.ps1').read_text(), '# mine')
+        self.assertEqual((target / 'tools' / 'install_opensmash.ps1').read_text(), '# mine')
 
     def test_shortcuts_point_into_the_folder_with_their_icons(self):
         target = self.dir / 'OpenSmash'

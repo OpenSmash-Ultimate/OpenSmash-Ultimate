@@ -17,7 +17,7 @@ namespace OpenSmash.Launcher
     // download) instead of from a copy of the project. It finds the project folder
     // (the exe's own, or the one remembered from the first start) and gets a new
     // one: GitHub's ZIP of the latest release (main while there is none), as the Update button's installer step
-    // makes (tools\install_windowsmash.ps1, Update-FromZip), checked the same way,
+    // makes (tools\install_opensmash.ps1, Update-FromZip), checked the same way,
     // unpacked into an empty folder. Its download is the one the mod browser uses.
     // ============================================================================
     static class ProjectSetup
@@ -147,7 +147,7 @@ namespace OpenSmash.Launcher
         // Where the project is
         public static bool IsProject(string dir)
         {
-            try { return dir != "" && File.Exists(Path.Combine(dir, "tools", "install_windowsmash.ps1")); }
+            try { return dir != "" && File.Exists(Path.Combine(dir, "tools", "install_opensmash.ps1")); }
             catch { return false; }
         }
 

@@ -58,7 +58,7 @@ Press <kbd>Esc</kbd> in the game to open the settings. On a controller, press it
 
 ### Mods on and off
 
-**To install mods** (skins, stages, music, movesets and new characters from GameBanana, or a mod's `.zip` you have), close the game and double-click **`launchers\WindowSmash Mods.bat`**: the mod manager finds GameBanana's Smash Ultimate mods, installs them, turns them on and off and applies them to the game. Mods made for ARCropolis and Skyline plugins work; the runtime provides ARCropolis, Smashline 2, lib_paramconfig and the CSK Collection itself, so don't install those. How plugins run: [Mods and Skyline plugins](SKYLINE.md).
+**To install mods** (skins, stages, music, movesets and new characters from GameBanana, or a mod's `.zip` you have), close the game and double-click **`launchers\OpenSmash Mods.bat`**: the mod manager finds GameBanana's Smash Ultimate mods, installs them, turns them on and off and applies them to the game. Mods made for ARCropolis and Skyline plugins work; the runtime provides ARCropolis, Smashline 2, lib_paramconfig and the CSK Collection itself, so don't install those. How plugins run: [Mods and Skyline plugins](SKYLINE.md).
 
 In the OpenSmash launcher's **Mods** view, **Check** lists the files two turned-on mods both change (the game reads the later one's) and the GameBanana mods that have a newer file, and installs those on a yes; **Share** saves your mods as a list file, or installs the mods of a list a friend sent you (from GameBanana; mods that aren't there are named). These are TRLLZR's mod manager ideas (NOTICE.md); `tools/mods.py conflicts`, `updates`, `export-list` and `import-list` do the same from a terminal.
 

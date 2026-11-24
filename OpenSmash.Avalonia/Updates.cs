@@ -43,7 +43,7 @@ public sealed partial class MainWindow
             if(choice=="update"&&!_closed)await ApplyUpdate();
         }
     }
-    // Update channel (issue #329, as tools/install_windowsmash.ps1): the newest versioned release by default; main commit
+    // Update channel (issue #329, as tools/install_opensmash.ps1): the newest versioned release by default; main commit
     // by commit is opt-in for testers (OPENSMASH_UPDATE_CHANNEL=main, or "main" in tools/update_channel.txt). No release yet: main.
     async Task<string> UpdateRef()
     {
@@ -95,7 +95,7 @@ public sealed partial class MainWindow
             string before=await LocalSourceCommit(),fingerprint=UpdateState.LauncherFingerprint(p);
             if(!Regex.IsMatch(before,@"^[0-9a-fA-F]{40}$"))throw new InvalidOperationException("This copy does not identify its source version.");
             Command command=p.Platform==DesktopPlatform.Windows
-                ?new("powershell.exe",["-NoProfile","-ExecutionPolicy","Bypass","-File",p.PathIn("tools","install_windowsmash.ps1"),"-UpdateOnly"],p.Root)
+                ?new("powershell.exe",["-NoProfile","-ExecutionPolicy","Bypass","-File",p.Installer,"-UpdateOnly"],p.Root)
                 :new("/bin/bash",[p.PathIn("tools",p.Platform==DesktopPlatform.MacOS?"mac":"linux","install.sh"),"--update-only","--yes"],p.Root);
             await RunUpdateStep(command,"source_update.log");
             ProjectLayout.Normalize(p.Root);

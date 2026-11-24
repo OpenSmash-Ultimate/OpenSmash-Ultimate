@@ -165,5 +165,5 @@ jobs:
           pre=(); [ "$channel" = testing ] && pre=(--prerelease)
           gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft "${pre[@]}" --verify-tag \
             --title "OpenSmash ${{ needs.check.outputs.version }}" \
-            --notes "OpenSmash ${{ needs.check.outputs.version }}. Windows: download OpenSmash.exe only, it installs and updates everything else. Linux and macOS: the setup (install-windowsmash.sh, Install WindowSmash.command) fetches its OpenSmash launcher from here itself." \
+            --notes "OpenSmash ${{ needs.check.outputs.version }}. Windows: download OpenSmash.exe only, it installs and updates everything else. Linux and macOS: the setup (install-opensmash.sh, Install OpenSmash.command) fetches its OpenSmash launcher from here itself." \
             dist/*

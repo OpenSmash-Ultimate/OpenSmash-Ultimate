@@ -1,5 +1,5 @@
 """The launcher's "Save disk space" setting (config/save_disk.txt, OpenSmash.Core DiskSpace.cs) as the build reads it
-(tools/build_game.py save_disk_apply; tools/install_windowsmash.ps1 reads the same file for the disk it asks for)."""
+(tools/build_game.py save_disk_apply; tools/install_opensmash.ps1 reads the same file for the disk it asks for)."""
 from pathlib import Path
 import os
 import sys
@@ -51,7 +51,7 @@ class SaveDiskTests(unittest.TestCase):
         self.assertEqual(set(B.SAVE_DISK["SSBU_TRIM"].split(",")), set(trim.WHAT))
 
     def test_the_installer_and_the_launcher_read_the_same_file(self):
-        ps1 = (ROOT / "tools" / "install_windowsmash.ps1").read_text(encoding="utf-8-sig")
+        ps1 = (ROOT / "tools" / "install_opensmash.ps1").read_text(encoding="utf-8-sig")
         core = (ROOT / "OpenSmash.Core" / "DiskSpace.cs").read_text(encoding="utf-8")
         self.assertEqual(B.SAVE_DISK_FILE.replace("\\", "/"), "config/save_disk.txt")
         self.assertIn("'save_disk.txt'", ps1)

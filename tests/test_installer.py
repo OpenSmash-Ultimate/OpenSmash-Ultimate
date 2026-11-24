@@ -1,4 +1,4 @@
-"""The installer's decisions (tools/install_windowsmash.ps1): its pure functions, run in Windows
+"""The installer's decisions (tools/install_opensmash.ps1): its pure functions, run in Windows
 PowerShell with made-up inputs. No downloads, no installs, no game files."""
 from pathlib import Path
 import json
@@ -11,7 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 PS = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
-SCRIPT = ROOT / 'tools/install_windowsmash.ps1'
+SCRIPT = ROOT / 'tools/install_opensmash.ps1'
 
 
 def ps_text(script):

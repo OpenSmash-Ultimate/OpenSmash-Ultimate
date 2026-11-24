@@ -637,7 +637,7 @@ function savePackFile(p) {
 
 function makeInstaller(p) {
   const d = dialog(`<h2>${p ? "Installer for " + esc(p.name) : "OpenSmash Mods installer"}</h2>
-    <p class="hint">One .zip for Windows and Mac. Your friend unzips it and double-clicks <b>Install WindowSmash Mods</b>: it adds this mod manager to their OpenSmash${p ? " and sets up the pack's mods, turned on and applied" : ""}.</p>
+    <p class="hint">One .zip for Windows and Mac. Your friend unzips it and double-clicks <b>Install OpenSmash Mods</b>: it adds this mod manager to their OpenSmash${p ? " and sets up the pack's mods, turned on and applied" : ""}.</p>
     ${p ? '<label><input type="checkbox" id="mi-all"> Carry every mod\'s files in the zip (bigger, but nothing to download while installing)</label>' : ""}
     <div class="dialog-actions"><button class="ghost" data-close>Cancel</button><button class="big" id="mi-go">Make it</button></div>`);
   $("#mi-go", d).addEventListener("click", async () => {

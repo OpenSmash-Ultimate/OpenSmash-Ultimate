@@ -1,10 +1,5 @@
 @echo off
-rem Opens OpenSmash Mods, the mod manager (tools\modmanager\server.py): GameBanana's Smash Ultimate
-rem mods found, installed, turned on and off, and shared as modpacks. It opens in a window of its own
-rem (Edge's app mode); closing that window ends it.
-setlocal
-cd /d "%~dp0.."
-call tools\find_python.bat || (pause & exit /b 1)
-set "PYW=%PY%"
-if exist "deps\python\pythonw.exe" set "PYW=deps\python\pythonw.exe"
-start "OpenSmash Mods" %PYW% tools\modmanager\server.py
+rem The mod manager's old name, kept for desktop shortcuts made before the rename: it opens
+rem "OpenSmash Mods.bat", next to it.
+call "%~dp0OpenSmash Mods.bat" %*
+exit /b %ERRORLEVEL%

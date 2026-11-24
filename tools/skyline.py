@@ -1188,7 +1188,7 @@ def build(tree, jobs, log=print, again=True):
 # app's files are read as it runs; the tools here run as they are)
 NOT_BUILT = ("tools/modmanager/", "tools/weblauncher/", "tools/app_window.py", "tools/linux/askpass.sh",
              "tools/dev/", "tools/mods.py", "tools/os_mods.py", "tools/progress.py", "tools/std_plugins.py",
-             "tools/csk.py", "tools/miis.py", "tools/unlock_all.py", "tools/install_windowsmash.ps1",
+             "tools/csk.py", "tools/miis.py", "tools/unlock_all.py", "tools/install_opensmash.ps1", "tools/install_windowsmash.ps1",
              "tools/update.py", "tools/arc.py", "tools/prc.py", "tools/msbt.py",
              "tools/skyline.py", "tools/shader_aot.py", "tools/find_python.bat")
 

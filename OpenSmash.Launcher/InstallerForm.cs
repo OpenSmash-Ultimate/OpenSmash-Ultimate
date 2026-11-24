@@ -22,7 +22,7 @@ namespace OpenSmash.Launcher
     // InstallerForm: the first-run window, shown instead of the launcher while no
     // build exists. Same chrome as LauncherForm (Theme): it finds the user's game
     // files, keys and firmware (DetectFolders, tools\gamefiles.py --json) and runs
-    // the repository's own installer, tools\install_windowsmash.ps1 -NoWizard (the
+    // the repository's own installer, tools\install_opensmash.ps1 -NoWizard (the
     // same flow as the setup window it replaces), which sets up Python, the compiler
     // and SDL3 and builds the game with tools\build_game.py.
     // The ssbu-recomp scans (scripts\find_inputs.py, scripts\precheck.py) run
@@ -100,7 +100,7 @@ namespace OpenSmash.Launcher
         string _errMsg = "", _errHint = "", _errAction = "", _doneMsg = "";
         bool? _doneOk;
 
-        // tools\install_windowsmash.ps1's ten steps, so the steps not reached yet have their names and
+        // tools\install_opensmash.ps1's ten steps, so the steps not reached yet have their names and
         // estimates from the start: a step's estimate counts in the time left until it says its own.
         static readonly string[] InstallerSteps =
         {
@@ -939,10 +939,10 @@ namespace OpenSmash.Launcher
                 Alert("FIX THESE FOLDERS", UiLocale.Text("Please fix: ") + string.Join(", ", bad) + UiLocale.Text(".\n\nThe line under each folder says what is wrong. Press Check files after you change one."));
                 return;
             }
-            string ps1 = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
+            string ps1 = WindowSmash.Installer(_repo);
             if (!File.Exists(ps1))
             {
-                Alert("INSTALLER NOT FOUND", "tools\\install_windowsmash.ps1 is not in this folder. This copy of OpenSmash is incomplete.");
+                Alert("INSTALLER NOT FOUND", "tools\\install_opensmash.ps1 is not in this folder. This copy of OpenSmash is incomplete.");
                 return;
             }
             if (string.IsNullOrWhiteSpace(_onlineName))
@@ -953,7 +953,7 @@ namespace OpenSmash.Launcher
             string root = PsQuote(_repo);
             var cmd = new StringBuilder();
             cmd.Append("Get-ChildItem -LiteralPath '").Append(root).Append("' -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue; ");
-            cmd.Append("& '").Append(root).Append("\\tools\\install_windowsmash.ps1'");
+            cmd.Append("& '").Append(PsQuote(ps1)).Append("'");
             cmd.Append(" -NoWizard -Game '").Append(PsQuote(_gamePath)).Append("' -Keys '").Append(PsQuote(_keysPath)).Append("'");
             if (string.IsNullOrWhiteSpace(_fwPath)) cmd.Append(" -NoFirmware");
             else cmd.Append(" -Firmware '").Append(PsQuote(_fwPath)).Append("'");
@@ -979,7 +979,7 @@ namespace OpenSmash.Launcher
             StartInstall(_optDry);
         }
 
-        // Python comes with the root installer (tools\install_windowsmash.ps1 step 3 puts
+        // Python comes with the root installer (tools\install_opensmash.ps1 step 3 puts
         // one into deps\python when the PC has none), so "set up Python" runs it.
         void StartBootstrap()
         {
@@ -1458,7 +1458,7 @@ namespace OpenSmash.Launcher
 
         // The Python that reads the game folder, and the arguments before the script: the installer's own (deps/venv,
         // deps/python), else a Python 3.10 or newer on the PATH or from the py launcher - the versions the installer
-        // accepts (tools/install_windowsmash.ps1). (#424: an older python.exe on the PATH - a 2.7, a 3.6 - read the tools'
+        // accepts (tools/install_opensmash.ps1). (#424: an older python.exe on the PATH - a 2.7, a 3.6 - read the tools'
         // newer syntax as "SyntaxError: invalid syntax" and the folder was reported unreadable.)
         (string? Exe, string Args) PythonExe()
         {

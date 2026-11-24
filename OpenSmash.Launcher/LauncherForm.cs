@@ -710,7 +710,7 @@ namespace OpenSmash.Launcher
 
         // The tools' own Python (deps\venv): an install from before it has none, one whose venv's Python was
         // uninstalled has one that no longer runs, and one whose pip failed (offline) has no packages. The installer's
-        // Python step makes it or adds them (tools\install_windowsmash.ps1 -PythonOnly); a PC with deps\python (it had
+        // Python step makes it or adds them (tools\install_opensmash.ps1 -PythonOnly); a PC with deps\python (it had
         // no Python) keeps that.
         async Task EnsureOwnPythonAsync()
         {
@@ -727,8 +727,8 @@ namespace OpenSmash.Launcher
 
         async Task RunPythonStepAsync(string label)
         {
-            string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
-            if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_windowsmash.ps1 is missing.");
+            string script = WindowSmash.Installer(_repo);
+            if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_opensmash.ps1 is missing.");
             SetLoad(label, -1);
             try
             {
@@ -832,7 +832,7 @@ namespace OpenSmash.Launcher
 
         // Commits only the old WindowSmash repository has (its README saying it moved), each with the last commit both
         // repositories share: GitHub does not know them here, so a copy on one is compared as the shared commit
-        // (tools\install_windowsmash.ps1 updates it the same way, $ForeignCommits).
+        // (tools\install_opensmash.ps1 updates it the same way, $ForeignCommits).
         static readonly Dictionary<string, string> ForeignCommits = new(StringComparer.OrdinalIgnoreCase)
         {
             ["598d05240fc146f7184b3450653e2eec2ee97312"] = "8025b483b0443adb5668395eca31f9250e8c8efb",
@@ -1121,8 +1121,8 @@ namespace OpenSmash.Launcher
 
         async Task<(int Code, string Output)> BuildGameAfterUpdateAsync()
         {
-            string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
-            if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_windowsmash.ps1 is missing.");
+            string script = WindowSmash.Installer(_repo);
+            if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_opensmash.ps1 is missing.");
             SetLoad("REBUILDING THE GAME", -1);
             try { return await Task.Run(() => RunPowerShellUpdate(script, "-BuildAfterUpdate", NoteGameBuildLine)); }
             finally { ClearLoad(); }
@@ -1190,8 +1190,8 @@ namespace OpenSmash.Launcher
                 beforeCommit = await Task.Run(FindLocalCommit);
                 if (beforeCommit.Length == 0) throw new InvalidOperationException("This copy does not identify its source version.");
                 beforeLauncherFingerprint = ReleaseMode ? "" : await Task.Run(() => LauncherBuildInputsFingerprint(_repo));   // (a release brings its launcher built: no sources needed)
-                string script = Path.Combine(_repo, "tools", "install_windowsmash.ps1");
-                if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_windowsmash.ps1 is missing.");
+                string script = WindowSmash.Installer(_repo);
+                if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_opensmash.ps1 is missing.");
                 if (!InstallerTakesUpdateOnly(File.ReadAllText(script))) await RefreshOldInstallerAsync(script);
                 var result = await Task.Run(() => RunPowerShellUpdate(script));
                 output = result.Output;
@@ -1326,7 +1326,7 @@ namespace OpenSmash.Launcher
                     + "git remote set-url origin https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate.git, git fetch origin, then git reset --hard origin/main "
                     + "(WindowSmash's last commits are not in OpenSmash-Ultimate, so git pull cannot fast-forward; files git does not track, such as your game files, builds and save, stay).");
             string at = Regex.IsMatch(_updateHead, "^[0-9a-fA-F]{40}$") ? _updateHead : "main";
-            byte[] body = await _httpClient.GetByteArrayAsync($"https://raw.githubusercontent.com/{UpdateRepo}/{at}/tools/install_windowsmash.ps1");
+            byte[] body = await _httpClient.GetByteArrayAsync($"https://raw.githubusercontent.com/{UpdateRepo}/{at}/tools/install_opensmash.ps1");
             string text = Encoding.UTF8.GetString(body);
             if (!InstallerTakesUpdateOnly(text) || !text.Contains("$RepoName = 'OpenSmash-Ultimate'"))
                 throw new InvalidOperationException("The installer GitHub sent is not the one expected; nothing was changed.");

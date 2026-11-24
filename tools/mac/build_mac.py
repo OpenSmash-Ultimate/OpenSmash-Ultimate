@@ -67,7 +67,7 @@ GEN = os.path.join(OUT, "gen")
 APP = os.path.join(OUT, "WindowSmash.app")
 EXE = os.path.join(APP, "Contents", "MacOS", "ssbu")
 BUNDLE_ID = "io.github.sno2207.windowsmash"
-ICON = os.path.join(REPO, "docs", "assets", "windowsmash.ico")
+ICON = os.path.join(REPO, "docs", "assets", "opensmash.ico")
 
 RUNTIME_INCLUDES = ["-I", os.path.join(RUNTIME, "macos", "include"), "-I", os.path.join(RUNTIME, "linux", "include"),
                     "-I", RUNTIME, "-I", GEN, "-F", SDL3_DIR, "-I", os.path.join(REPO, "third_party", "libvpx")]
@@ -450,7 +450,7 @@ ICONSET = (("icon_16x16", 16), ("icon_16x16@2x", 32), ("icon_32x32", 32), ("icon
 
 
 def app_icon():
-    """gen/windowsmash.icns, the app's icon: docs/assets/windowsmash.ico's 256-pixel picture at
+    """gen/windowsmash.icns, the app's icon: docs/assets/opensmash.ico's 256-pixel picture at
     each size (sips), made into an .icns (iconutil); made once. None without one (the app then
     has the system's icon)."""
     icns = os.path.join(GEN, "windowsmash.icns")
@@ -465,7 +465,7 @@ def app_icon():
         src = os.path.join(tmp, "icon.png")
         with open(src, "wb") as f:
             f.write(png)
-        iconset = os.path.join(tmp, "windowsmash.iconset")
+        iconset = os.path.join(tmp, "opensmash.iconset")
         os.makedirs(iconset)
         for name, px in ICONSET:
             dst = os.path.join(iconset, name + ".png")
@@ -798,7 +798,7 @@ def main():
     ladder.settings()   # (SSBU_COMPILE_LIMIT, SSBU_OPTNONE_ABOVE, SSBU_LONGEST_FIRST: one that is not a number stops the build now)
     os.makedirs(OUT, exist_ok=True)
     if not os.path.isfile(os.path.join(SDL3_FRAMEWORK, "Headers", "SDL.h")):
-        raise SystemExit(f"SDL3.framework is not in {SDL3_DIR}: Install WindowSmash.command downloads it "
+        raise SystemExit(f"SDL3.framework is not in {SDL3_DIR}: Install OpenSmash.command downloads it "
                          "(SSBU_SDL3_DIR names another folder holding one)")
     if not modules() and "--runtime-only" not in sys.argv:
         raise SystemExit(f"no recompiled game in {os.path.join(PORT, 'build')} (tools/recomp.py all --generate-only)")

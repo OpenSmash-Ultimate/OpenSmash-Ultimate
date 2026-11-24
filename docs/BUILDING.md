@@ -8,14 +8,14 @@ This guide takes you from a fresh download to playing. No programming knowledge 
 > OpenSmash doesn't include the game. You need your own copy of Super Smash Bros. Ultimate, dumped from your own Nintendo Switch, together with your console's keys and firmware. Your copy must be **version 13.0.5**, the game's last update ([which copies count](UPDATES.md#what-counts-as-1305)). This guide starts once you have those files.
 
 > [!NOTE]
-> **On a Mac** with Apple silicon, `Install WindowSmash.command` does what this guide's installer does: see [OpenSmash on a Mac](MACOS.md).
+> **On a Mac** with Apple silicon, `Install OpenSmash.command` does what this guide's installer does: see [OpenSmash on a Mac](MACOS.md).
 
 ## Install in one go
 
 **What you need:** a Windows 10 or 11 PC (64-bit, a processor with AVX2 or at the least SSE4.2 ([which](#the-instruction-set)), 16 GB of RAM is comfortable, about 60 GB free) and your own game files: the game as dumped from your Switch, with its **13.0.5 update** (OpenSmash needs version 13.0.5), your console's keys (`prod.keys` and `title.keys`) and its firmware. If you have played the game in **yuzu or Ryujinx on this PC, updated to 13.0.5, you already have all three**, and the installer finds them by itself. Otherwise, put the game (its `.xci`, `.nsp` or `.nca` files), its 13.0.5 update `.nsp` and your DLC `.nsp` files in one folder; [Part 2](#part-2-gather-your-game-files) below says what the files are.
 
 1. On **<https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate>**, click the green **Code** button, then **Download ZIP**. Extract the ZIP somewhere with room, for example to `C:\OpenSmash`. Keep it out of the Desktop and Documents folders: OneDrive may try to upload them, and the finished build is around 30 GB.
-2. Download **`OpenSmash.exe`** from the [latest release](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/latest) into that folder and double-click it (the first start opens the installer; `tools\install_windowsmash.ps1` is what it runs). Windows asks whether to run it (**The publisher could not be verified**): click **Run**. On some PCs a blue **Windows protected your PC** box comes up instead: click **More info**, then **Run anyway**. Windows asks this about anything downloaded that isn't signed; the installer takes that mark off OpenSmash's other files, so it asks only this once.
+2. Download **`OpenSmash.exe`** from the [latest release](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/releases/latest) into that folder and double-click it (the first start opens the installer; `tools\install_opensmash.ps1` is what it runs). Windows asks whether to run it (**The publisher could not be verified**): click **Run**. On some PCs a blue **Windows protected your PC** box comes up instead: click **More info**, then **Run anyway**. Windows asks this about anything downloaded that isn't signed; the installer takes that mark off OpenSmash's other files, so it asks only this once.
 3. A window opens with the folders it found for your game files, keys and firmware, and a line under each saying what is in it. Change a folder with **Browse…** if it is wrong or empty. If the game isn't version 13.0.5, the line under it says so in red: put the 13.0.5 update `.nsp` in the game folder and click **Check files**. Type the online name other players will see, and click **Set up and build**.
 4. Wait. The installer gets what is missing (Python, a compiler, SDL3), prepares your game files, and builds the game: **30 minutes to a few hours**, depending on your PC. You can keep using the PC meanwhile. If it stops, run `OpenSmash.exe` again: it carries on where it stopped.
 5. Play: double-click **`OpenSmash.exe`** (or the **OpenSmash-Launcher** shortcut) and press **Play**, or use the **OpenSmash-Ultimate** shortcut to start the game without the launcher.
@@ -37,7 +37,7 @@ Each step is skipped when it is already done, so running it again never repeats 
 - **Afterwards:** writes `online_name.txt`, puts a shortcut on the desktop, adds a Windows Firewall rule for the game if you leave that ticked (it asks for administrator rights once), runs the build ([`python tools\build_game.py`](#shortcut-build_gamepy)'s steps), and if ticked starts ``python tools\shader_aot.py`` in a window of its own.
 - Everything it prints also goes to `install.log` in the OpenSmash folder.
 
-Options for a PowerShell window: `tools\install_windowsmash.ps1 -DryRun` says what each step would do without doing it; `-NoWizard` asks in the window instead; `-Game`, `-Keys` and `-Firmware` give the folders; `-NoUpdate` skips the update check; `-BuildTools` installs the Visual Studio Build Tools for the compiler instead of downloading it into `deps`.
+Options for a PowerShell window: `tools\install_opensmash.ps1 -DryRun` says what each step would do without doing it; `-NoWizard` asks in the window instead; `-Game`, `-Keys` and `-Firmware` give the folders; `-NoUpdate` skips the update check; `-BuildTools` installs the Visual Studio Build Tools for the compiler instead of downloading it into `deps`.
 
 </details>
 
