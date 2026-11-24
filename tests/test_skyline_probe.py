@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import cc
 import skyline
 import mods
+import os_mods
 
 
 class ProbeTests(unittest.TestCase):
@@ -28,6 +29,16 @@ class ProbeTests(unittest.TestCase):
 
     def probe(self):
         return skyline.probe(str(self.tree), lambda _line: None)
+
+    def test_quick_refresh_rediscovers_slots_after_translation(self):
+        calls = mock.Mock()
+        with mock.patch.object(os_mods, "ROOT", str(self.tree)),              mock.patch.object(skyline, "sync", calls.sync),              mock.patch.object(skyline, "cache_mod_plugins", calls.cache),              mock.patch.object(skyline, "probe_and_apply", calls.probe),              mock.patch.object(skyline, "build_jobs", return_value=1),              mock.patch.object(os_mods, "result", return_value=0):
+            self.assertEqual(os_mods.main(["os_mods.py", "refresh"]), 0)
+        self.assertEqual(calls.mock_calls, [
+            mock.call.sync(str(self.tree), os_mods.log, 1),
+            mock.call.cache(str(self.tree), 1, os_mods.log),
+            mock.call.probe(str(self.tree), os_mods.log),
+        ])
 
     def test_empty_list_does_not_start_a_probe(self):
         (self.sky / "plugins.txt").write_text("", encoding="utf-8")
