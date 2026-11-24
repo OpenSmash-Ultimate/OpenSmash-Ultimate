@@ -1213,6 +1213,114 @@ void display_loading_note(const char *note) {
 #endif
 }
 
+/* (rollback, the wait before a match) The game's thread holds still while the other game finishes loading, and nothing is
+ * drawn: the stage's last picture just stands there for seconds. This puts the loading animation's picture (the figure
+ * and the note in the bottom-right corner) on a black popup over the game window for that wait. The renderer owns the
+ * game window after the first present, so the popup is a window of its own (topmost, never takes the focus), on its own
+ * thread so it keeps moving while the game's thread waits. It needs the animation's pictures; without them nothing
+ * is shown. display_wait_popup("text") shows it, NULL hides it. */
+#ifdef _WIN32
+static HWND wp_hwnd;
+static HANDLE wp_ready;
+static int wp_vch;                  /* the game window's client height the popup is sized from */
+static int wp_x, wp_y, wp_w;        /* the popup's place on the screen and its size (a square) */
+#define WP_SHOW (WM_APP + 1)
+/* One picture of the popup: Kong and his arm drawn into a 32-bit bitmap, then every pixel given its alpha - a translucent dark
+ * circle with a thin light ring, an anti-aliased edge, Kong and the arm at full strength - and put on the screen with
+ * UpdateLayeredWindow (a window region would have a jagged edge). */
+static void wp_render(HWND h) {
+    if (wp_w <= 0) return;
+    HDC sdc = GetDC(NULL), mdc = CreateCompatibleDC(sdc);
+    BITMAPINFO bi; memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader; bi.bmiHeader.biWidth = wp_w; bi.bmiHeader.biHeight = -wp_w;
+    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+    void *bits = NULL;
+    HBITMAP bm = CreateDIBSection(sdc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    if (bm && bits) {
+        HBITMAP old = (HBITMAP)SelectObject(mdc, bm);
+        memset(bits, 0, (size_t)wp_w * wp_w * 4);
+        la_paint_popup(mdc, wp_w, wp_vch);
+        const char *e = getenv("SSBU_WAIT_POPUP_ALPHA"); int base = e && *e ? atoi(e) : 165;
+        base = base < 0 ? 0 : base > 255 ? 255 : base;
+        float R = (float)wp_w / 2, ring = wp_vch / 360 < 2 ? 2.0f : (float)(wp_vch / 360);
+        unsigned char *px = (unsigned char *)bits;
+        for (int y = 0; y < wp_w; y++) for (int x = 0; x < wp_w; x++, px += 4) {
+            float dx = (float)x + 0.5f - R, dy = (float)y + 0.5f - R, d = sqrtf(dx * dx + dy * dy);
+            float outer = R - d + 0.5f; outer = outer < 0 ? 0 : outer > 1 ? 1 : outer;      /* (the circle's edge) */
+            float rc = d - (R - ring) + 0.5f; rc = rc < 0 ? 0 : rc > 1 ? 1 : rc;           /* (the ring: the outer `ring` pixels) */
+            int m = px[0] > px[1] ? px[0] : px[1]; if (px[2] > m) m = px[2];
+            float a = (float)(base + (255 - base) * m / 255);   /* (what is drawn brighter than black gets opaque: Kong stays clear) */
+            float c0 = px[0], c1 = px[1], c2 = px[2];
+            a = a * (1 - rc) + 255.0f * rc; c0 = c0 * (1 - rc) + 200.0f * rc; c1 = c1 * (1 - rc) + 200.0f * rc; c2 = c2 * (1 - rc) + 200.0f * rc;
+            px[0] = (unsigned char)(c0 * outer); px[1] = (unsigned char)(c1 * outer); px[2] = (unsigned char)(c2 * outer);
+            px[3] = (unsigned char)(a * outer);
+        }
+        POINT pd = {wp_x, wp_y}, ps = {0, 0}; SIZE sz = {wp_w, wp_w};
+        BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        UpdateLayeredWindow(h, sdc, &pd, &sz, mdc, &ps, 0, &bf, ULW_ALPHA);
+        SelectObject(mdc, old);
+    }
+    if (bm) DeleteObject(bm);
+    DeleteDC(mdc); ReleaseDC(NULL, sdc);
+}
+static LRESULT CALLBACK wp_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); EndPaint(h, &ps); return 0; }   /* (drawn by wp_render only) */
+    case WM_TIMER: wp_render(h); return 0;
+    case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+    case WP_SHOW:
+        if (w) {
+            RECT r; POINT tl = {0, 0};
+            if (!game_window || GetForegroundWindow() != game_window) return 0;   /* (a topmost popup would float over whatever the player switched to) */
+            if (!GetClientRect(game_window, &r) || !ClientToScreen(game_window, &tl)) return 0;   /* (the client area, not the borders) */
+            wp_vch = r.bottom;
+            wp_w = la_popup_dia(wp_vch);
+            int margin = (int)((float)wp_vch * LA_MARGIN);      /* (the animation's own distance from the corner) */
+            wp_x = tl.x + r.right - margin - wp_w; wp_y = tl.y + r.bottom - margin - wp_w;
+            QueryPerformanceCounter(&LA.t0);
+            SetWindowPos(h, HWND_TOPMOST, wp_x, wp_y, wp_w, wp_w, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            wp_render(h);
+            SetTimer(h, 1, 33, NULL);
+        } else { KillTimer(h, 1); ShowWindow(h, SW_HIDE); }
+        return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static DWORD WINAPI wp_thread(LPVOID unused) {
+    (void)unused;
+    WNDCLASSW wc = {0};
+    wc.lpfnWndProc = wp_proc; wc.hInstance = GetModuleHandleW(NULL); wc.lpszClassName = L"SsbuWaitPopup";
+    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    RegisterClassW(&wc);
+    wp_hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_LAYERED, wc.lpszClassName, L"", WS_POPUP,
+                              0, 0, 64, 64, NULL, NULL, wc.hInstance, NULL);
+    SetEvent(wp_ready);
+    MSG msg;
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+    return 0;
+}
+#endif
+void display_wait_popup(const char *note) {
+#ifdef _WIN32
+    if (!(LA.kong && LA.arm && LA.back && LA.from_hdc) || getenv("SSBU_WAIT_POPUP_OFF")) return;
+    static int failed;   /* (a popup that could not be made is not tried again) */
+    if (failed) return;
+    if (!wp_hwnd) {
+        if (!note) return;
+        wp_ready = CreateEventW(NULL, TRUE, FALSE, NULL);
+        HANDLE t = wp_ready ? CreateThread(NULL, 0, wp_thread, NULL, 0, NULL) : NULL;
+        if (!t) { failed = 1; return; }
+        CloseHandle(t);
+        WaitForSingleObject(wp_ready, 2000);
+        if (!wp_hwnd) { failed = 1; return; }
+    }
+    PostMessageW(wp_hwnd, WP_SHOW, note != NULL, 0);
+#else
+    (void)note;
+#endif
+}
+
 /* (both renderers, just before each present: the loading animation stops at the first) */
 void display_before_present(void) {
 #ifdef _WIN32
