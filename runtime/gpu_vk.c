@@ -6181,6 +6181,36 @@ static void vk_closing(void) {
     if (!saving) pipeline_cache_save();
 }
 
+/* (gpu.c's copy engine) a 4-byte colour surface starting at `guest`, read back to the game's size (render scale's
+ * larger image sampled down), as gpu_d3d11.c's d3d11_surface_pixels: a picture the GPU drew that the game then copies out
+ * of memory (a Mii fighter's icon, saved with the fighter). Waits for the GPU. */
+static int vk_surface_pixels(u64 guest, u32 *width, u32 *height, u8 **pixels) {
+    enter();
+    Surface *s = NULL;
+    for (u32 i = 0; i < nsurfaces && !s; i++)
+        if (surfaces[i].image && !surfaces[i].depth && surfaces[i].guest == guest) s = &surfaces[i];
+    if (!s || (s->storage != VK_FORMAT_R8G8B8A8_UNORM && s->storage != VK_FORMAT_B8G8R8A8_UNORM)) { leave(); return 0; }
+    u32 hw = s->hw, hh = s->hh, w = s->width, h = s->height;
+    VkDeviceSize need = (VkDeviceSize)hw * hh * 4;
+    u8 *rb = readback_space(need);
+    u8 *out = rb ? malloc((size_t)w * h * 4) : NULL;
+    if (!out) { leave(); return 0; }
+    VkCommandBuffer c = outside();
+    VkBufferImageCopy region = {0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {hw, hh, 1}};
+    vkCmdCopyImageToBuffer(c, s->image, VK_IMAGE_LAYOUT_GENERAL, rb_buf, 1, &region);
+    VkMemoryBarrier hb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
+    vkCmdPipelineBarrier(c, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &hb, 0, NULL, 0, NULL);
+    flush_wait();
+    for (u32 y = 0; y < h; y++)
+        for (u32 x = 0; x < w; x++) {   /* (the texel nearest each of the game's pixels) */
+            u32 sx = (u32)(((u64)x * 2 + 1) * hw / (2ull * w)), sy = (u32)(((u64)y * 2 + 1) * hh / (2ull * h));
+            memcpy(out + ((u64)y * w + x) * 4, rb + ((u64)sy * hw + sx) * 4, 4);
+        }
+    *width = w; *height = h; *pixels = out;
+    leave();
+    return 1;
+}
+
 static const GfxBackend VULKAN = {
     .clear = vk_clear,
     .draw = vk_draw,
@@ -6196,6 +6226,7 @@ static const GfxBackend VULKAN = {
     .gpu_unmapped = vk_gpu_unmapped,
     .guest_unmapped = vk_guest_unmapped,
     .draw_logging = vk_draw_logging,
+    .surface_pixels = vk_surface_pixels,
     .status_lines = vk_status_lines,
     .closing = vk_closing,
     .lock_owner = vk_lock_owner,

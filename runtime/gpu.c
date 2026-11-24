@@ -204,6 +204,15 @@ static void surface_to_guest(const DmaSurface *src) {
     u8 *px;
     u64 g = guest(src->base);
     if (!g || !gfx_surface_pixels(g, &w, &h, &px)) return;
+    /* (a picture the host kept for this address long ago, the memory since used for something else: only a copy of the
+     * surface's own size is a copy of that picture) */
+    if ((!src->pitch_linear && src->width != w) || (src->height && src->height != h)) {
+        static int skipped;
+        if (skipped++ < 8) fprintf(stderr, "[gpu] copy engine: %ux%u picture at %#llx not read back: the copy's source is %ux%u (%s)\n", w, h, g,
+                                   src->width, src->height, src->pitch_linear ? "pitch linear" : "block linear");
+        free(px);
+        return;
+    }
     DmaSurface s = *src;
     s.ox = s.oy = 0;
     if (!s.pitch_linear && s.width < w * 4) s.width = w * 4;
@@ -213,7 +222,7 @@ static void surface_to_guest(const DmaSurface *src) {
             if (d) { memcpy(P(void, d), px + ((u64)y * w + x) * 4, 4); gpu_rb_wrote(d, 4); }
         }
     free(px);
-    if (told++ < 8) fprintf(stderr, "[gpu] copy engine: read the GPU's %ux%u picture at %#llx back first\n", w, h, g);
+    if (told++ < 8) fprintf(stderr, "[gpu] copy engine: read the GPU's %ux%u picture at %#llx back first (copy source %ux%u)\n", w, h, g, src->width, src->height);
 }
 
 static void dma_launch(Engine *e, u32 arg) {
