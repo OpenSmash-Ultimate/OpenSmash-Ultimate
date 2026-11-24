@@ -6,6 +6,7 @@
 <trace>: SSBU_LAT_TRACE of a run (runtime/ipc_vi.c). Every line carries the game's own logic frame (its frame counter,
 read on the thread that reads the pads or submits the work), never a count of pictures shown, so two runs, two back
 ends or two display modes are compared frame for frame whatever their pacing:
+  R <ms> <ms of the refresh>                 a refresh signalled to the game (low_latency holds it after the refresh)
   I <ms> <logic frame>                       player 1's first pad read of a logic frame
   P <ms> <shown> <fight frame> <buttons> <logic frame>   player 1's buttons changed (as the game reads them)
   Q <ms> <logic frame> <fight on>            a frame queued
@@ -38,7 +39,7 @@ GAME_FRAMES = 2   # (--calibrate, Direct3D 11, Mario's jab from standing: see do
 
 
 def read_trace(path):
-    t = {'R': [], 'Q': [], 'I': {}, 'P': [], 'S': []}
+    t = {'R': [], 'T': [], 'Q': [], 'I': {}, 'P': [], 'S': []}
     with open(path, encoding='utf-8', errors='replace') as f:
         for line in f:
             p = line.split()
@@ -46,6 +47,8 @@ def read_trace(path):
                 k = p[0]
                 if k == 'R':
                     t['R'].append(float(p[1]))
+                    if len(p) >= 3 and float(p[2]) > 0:
+                        t['T'].append(float(p[2]))
                 elif k == 'Q' and len(p) >= 4:
                     t['Q'].append((float(p[1]), int(p[2]), int(p[3])))
                 elif k == 'I' and len(p) >= 3:
@@ -125,6 +128,14 @@ def analyse(t, game=GAME_FRAMES):
             rq.append(qt[j] - r)
             qs.append(s[0] - qt[j])
     res['refresh_to_read_ms'], res['read_to_queued_ms'], res['queued_to_present_ms'] = stats(rr), stats(rq), stats(qs)
+    # (newer traces: the refresh's own tick, before low_latency's hold of the signal)
+    tr = []
+    for s in shown:
+        r = t['I'].get(s[3])
+        i = bisect.bisect_right(t['T'], r) if r is not None else 0
+        if i:
+            tr.append(r - t['T'][i - 1])
+    res['tick_to_read_ms'] = stats(tr)
     return res
 
 
@@ -152,7 +163,9 @@ def report(path, r, game):
     if r.get('present_gap_ms'):
         print(f"  present gaps: {fmt(r['present_gap_ms'], frames=False)}; over 1.5 frames: {r['gaps_over_1_5_frames']}")
     print(f"  present call: {fmt(r['present_call_ms'], frames=False)}")
-    print(f"  spread: refresh -> pad read {fmt(r['refresh_to_read_ms'], frames=False)}")
+    if r.get('tick_to_read_ms'):
+        print(f"  spread: refresh tick -> pad read (low_latency's hold in it) {fmt(r['tick_to_read_ms'], frames=False)}")
+    print(f"  spread: signal -> pad read {fmt(r['refresh_to_read_ms'], frames=False)}")
     print(f"          pad read -> frame queued {fmt(r['read_to_queued_ms'], frames=False)}")
     print(f"          queued -> present {fmt(r['queued_to_present_ms'], frames=False)}")
 

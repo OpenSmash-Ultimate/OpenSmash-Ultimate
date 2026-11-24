@@ -85,13 +85,13 @@ static u64 shown_mark;
 static int speed_mode, report_draws;   /* SSBU_SPEED (not 1), SSBU_SEQ: decided at start */
 
 /* SSBU_LAT_TRACE=<file> (tests: tools/latency_trace.py): the times, in ms, of each refresh signalled to
- * the game ("R"), each frame it queues ("Q <ms> <logic frame> <fight on>"), each frame shown ("S <ms before
+ * the game ("R <the signal> <the refresh it is for>": low_latency holds the signal between), each frame it queues ("Q <ms> <logic frame> <fight on>"), each frame shown ("S <ms before
  * the present> <ms after> <frames shown> <fight frame> <logic frame now> <the picture's logic frame> <1: known>"),
  * player 1's first pad read of each logic frame ("I <ms> <logic frame>") and each change of player 1's buttons
  * as the game reads them ("P <ms> <frames shown> <fight frame> <buttons> <logic frame>").
  * The logic frame is a count of the game's frame ends (FRAME_HOOK_END, the graphics module's, once a pass of its main
- * loop: a logic frame at 60 a second with frame_rate 60; frame_rate 120/240 count passes, and run-ahead's and rollback's
- * frames run again count too), counted on the game's thread; a picture's logic frame is the one the game was
+ * loop: a logic frame at 60 a second with frame_rate 60; frame_rate 120/240 count passes; run-ahead's and rollback's
+ * frames run again are not counted), counted on the game's thread; a picture's logic frame is the one the game was
  * on when it submitted the last draw into the target shown (gpu.c, gpu_lat_shown_note): how old the picture is,
  * whatever pacing, queue or back end showed it. The file is written out at every frame shown (a run ends with
  * ExitProcess, which writes nothing out). */
@@ -100,7 +100,10 @@ static FILE *lat_tf;
 static SRWLOCK lat_lock = SRWLOCK_INIT;
 static volatile u32 lat_pass;
 u32 vi_lat_tick(void) { return lat_pass; }
-static void lat_frame_end(Cpu *c, const u64 args[8], void *ctx) { (void)c; (void)args; (void)ctx; lat_pass++; }
+/* (only the frames run at the clock's pace: a rollback's or run-ahead's frames run again (rb_fast) keep the count of the
+ * frame they stand in for, so a picture's frame is the real-time frame it was shown for, and its content may be logic
+ * frames ahead (run-ahead) or behind (online delay) of it - which is what press -> picture measures) */
+static void lat_frame_end(Cpu *c, const u64 args[8], void *ctx) { (void)c; (void)args; (void)ctx; if (rb_fast <= 0) lat_pass++; }
 static double lat_ms(void) { LARGE_INTEGER t, f; QueryPerformanceCounter(&t); QueryPerformanceFrequency(&f); return (double)t.QuadPart * 1000.0 / (double)f.QuadPart; }
 static void lat_open(void) {
     const char *t = getenv("SSBU_LAT_TRACE");
@@ -128,7 +131,7 @@ static void lat_line(const char *fmt, ...) {
 void vi_lat_poll(u64 buttons) {
     static u64 last = ~0ull;
     static u32 last_tick = ~0u;
-    if (!lat_tf) return;
+    if (!lat_tf || rb_fast > 0) return;   /* (a frame run again reads the pads it had) */
     u32 tick = vi_lat_tick();
     if (tick != last_tick) { last_tick = tick; lat_line("I %.3f %u\n", lat_ms(), tick); }
     if (buttons == last) return;
@@ -373,8 +376,10 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
         /* (rollback build, M4: while rb_fast, the frames a load runs again are neither paced nor
          * shown: each is taken off the queue as soon as it is drawn, and the next refresh is now) */
         int fast = rb_fast > 0 && !keep_pending;
+        double lat_tick_ms = 0;
         if (!fast) {
             display_wait_tick();   /* the next refresh (display.ini's pacing and frame_rate) */
+            if (lat_tf) lat_tick_ms = lat_ms();
             LONG m = display_tick_mult();
             if (m != rt_refresh_mult) { InterlockedExchange(&rt_refresh_mult, m); queue_lock(); ll_count = ll_next = 0; queue_unlock(); }   /* (low_latency measures again) */
         }
@@ -414,7 +419,7 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
         queue_lock();
         ll_release = fast ? 0 : qpc_now();
         queue_unlock();
-        if (lat_tf && !fast) lat_line("R %.3f\n", lat_ms());
+        if (lat_tf && !fast) lat_line("R %.3f %.3f\n", lat_ms(), lat_tick_ms);   /* (the signal; the refresh it is for: low_latency's hold between) */
         kernel_signal_event(queue.vsync_event);
     }
 }
