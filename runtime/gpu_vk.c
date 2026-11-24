@@ -1235,6 +1235,7 @@ void watchdog_frame(void);   /* debug_watchdog.c (the freeze watchdog's "a frame
 static void vk_present_(u64 guest, u32 width, u32 height) {
     (void)width; (void)height;
     enter();
+    { void gpu_lat_shown_note(u64 g); gpu_lat_shown_note(guest); }   /* (SSBU_LAT_TRACE: the picture's logic frame, gpu.c) */
     watchdog_frame();
     hitch_present();
     gfx_stat_presented++;

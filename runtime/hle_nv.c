@@ -403,6 +403,8 @@ static u32 submit(u32 fd, u64 a, u64 entries, u32 count) {
         value = gpu_syncpt_add(&gpu_syncpt_max[id], incr);
         gpu_queue_submit(fd, P(u64, entries), count, id, value);
     } else {
+        {   extern volatile int gpu_lat_on; extern volatile u32 gpu_lat_job_tick; u32 vi_lat_tick(void);   /* (SSBU_LAT_TRACE, gpu.c) */
+            if (gpu_lat_on) gpu_lat_job_tick = vi_lat_tick(); }
         gpu_submit(fd, P(u64, entries), count);
         value = gpu_syncpt_add(&gpu_syncpt_max[id], incr);
         gpu_syncpt_advance(&gpu_syncpt_min[id], value);   /* everything completes now */

@@ -24,7 +24,7 @@
 #include "recomp.h"
 
 enum { FRAME_HOOK_END, FRAME_HOOK_LINE, FRAME_HOOK_RECORD, FRAME_HOOK_POINTS };
-enum { FRAME_HOOKS_MAX = 8 };   /* registrations a point holds */
+enum { FRAME_HOOKS_MAX = 16 };   /* registrations a point holds (the frame end had 8 with run-ahead and SSBU_DETERMINISTIC) */
 
 /* The orders in use, lowest outermost. The rollback ring is outside the fight test, so that it
  * saves the frame end's report as SSBU_DETERMINISTIC leaves it; rollback netplay (never on with

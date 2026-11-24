@@ -19,6 +19,7 @@
 #include "display.h"
 #include "gpu.h"   /* (gpu_queue_mark / gpu_queue_wait) */
 #include "input_seq.h"
+#include "frame_hooks.h"   /* (SSBU_LAT_TRACE: the game's frame ends) */
 
 void test_fight_presented(void);   /* (hle_fight_test.c) SSBU_DEBUG_END's count of fight frames */
 
@@ -84,17 +85,43 @@ static u64 shown_mark;
 static int speed_mode, report_draws;   /* SSBU_SPEED (not 1), SSBU_SEQ: decided at start */
 
 /* SSBU_LAT_TRACE=<file> (tests: tools/latency_trace.py): the times, in ms, of each refresh signalled to
- * the game ("R"), each frame it queues ("Q"), each frame shown ("S <ms before the present> <ms after>
- * <frames shown> <fight frame>") and each change of player 1's buttons as the game reads them ("P <ms>
- * <frames shown> <fight frame> <buttons>"): with SSBU_PRESENT_HASH of the same run and of one without
- * the press, the delay from a press to the first picture that shows it. */
+ * the game ("R <the signal> <the refresh it is for>": low_latency holds the signal between), each frame it queues ("Q <ms> <logic frame> <fight on>"), each frame shown ("S <ms before
+ * the present> <ms after> <frames shown> <fight frame> <logic frame now> <the picture's logic frame> <1: known>"),
+ * player 1's first pad read of each logic frame ("I <ms> <logic frame>") and each change of player 1's buttons
+ * as the game reads them ("P <ms> <frames shown> <fight frame> <buttons> <logic frame>").
+ * The logic frame is a count of the game's frame ends (FRAME_HOOK_END, the graphics module's, once a pass of its main
+ * loop: a logic frame at 60 a second with frame_rate 60; frame_rate 120/240 count passes; run-ahead's and rollback's
+ * frames run again are not counted), counted on the game's thread; a picture's logic frame is the one the game was
+ * on when it submitted the last draw into the target shown (gpu.c, gpu_lat_shown_note): how old the picture is,
+ * whatever pacing, queue or back end showed it. The file is written out at every frame shown (a run ends with
+ * ExitProcess, which writes nothing out). */
 extern volatile long long test_fight_frame;
 static FILE *lat_tf;
 static SRWLOCK lat_lock = SRWLOCK_INIT;
+static volatile u32 lat_pass;
+u32 vi_lat_tick(void) { return lat_pass; }
+/* (only the frames run at the clock's pace: a rollback's or run-ahead's frames run again (rb_fast) keep the count of the
+ * frame they stand in for, so a picture's frame is the real-time frame it was shown for, and its content may be logic
+ * frames ahead (run-ahead) or behind (online delay) of it - which is what press -> picture measures) */
+static void lat_frame_end(Cpu *c, const u64 args[8], void *ctx) { (void)c; (void)args; (void)ctx; if (rb_fast <= 0) lat_pass++; }
 static double lat_ms(void) { LARGE_INTEGER t, f; QueryPerformanceCounter(&t); QueryPerformanceFrequency(&f); return (double)t.QuadPart * 1000.0 / (double)f.QuadPart; }
 static void lat_open(void) {
     const char *t = getenv("SSBU_LAT_TRACE");
     if (t && *t && !(lat_tf = fopen(t, "w"))) fprintf(stderr, "[latency] SSBU_LAT_TRACE: cannot write %s\n", t);
+    if (lat_tf) {
+        extern volatile int gpu_lat_on;
+        if (frame_hook_add(FRAME_HOOK_END, 300, lat_frame_end, NULL, NULL)) {
+            extern void (*fight_lat_status)(int st, unsigned long long mot);   /* (hle_fight_test.c) */
+            void vi_lat_status(int st, unsigned long long mot);
+            fight_lat_status = vi_lat_status;
+            gpu_lat_on = 1;
+        }
+        else {   /* (every frame would read 0: no trace rather than a wrong one) */
+            fprintf(stderr, "[latency] SSBU_LAT_TRACE: no room for a frame-end hook (%d in use): no trace\n", frame_hook_count(FRAME_HOOK_END));
+            fclose(lat_tf);
+            lat_tf = NULL;
+        }
+    }
 }
 static void lat_line(const char *fmt, ...) {
     if (!lat_tf) return;
@@ -105,12 +132,26 @@ static void lat_line(const char *fmt, ...) {
     ReleaseSRWLockExclusive(&lat_lock);
     va_end(a);
 }
+/* (hle_fight_test.c, the fighters' frame line with SSBU_FIGHT_HASH: the first fighter's status and motion) "C <ms> <frame>
+ * <status> <motion>" at each change, frames run again included (run-ahead's predicted frames are where a press shows
+ * first; a frame's count is the real-time frame it stands in for) */
+void vi_lat_status(int st, unsigned long long mot) {
+    static int last_st = -1;
+    static unsigned long long last_mot = ~0ull;
+    if (!lat_tf || (st == last_st && mot == last_mot)) return;
+    last_st = st; last_mot = mot;
+    lat_line("C %.3f %u %d %llx\n", lat_ms(), vi_lat_tick(), st, mot);
+}
 /* (hle_hid.c: player 1's buttons as the game reads them) */
 void vi_lat_poll(u64 buttons) {
     static u64 last = ~0ull;
-    if (!lat_tf || buttons == last) return;
+    static u32 last_tick = ~0u;
+    if (!lat_tf || rb_fast > 0) return;   /* (a frame run again reads the pads it had) */
+    u32 tick = vi_lat_tick();
+    if (tick != last_tick) { last_tick = tick; lat_line("I %.3f %u\n", lat_ms(), tick); }
+    if (buttons == last) return;
     last = buttons;
-    lat_line("P %.3f %llu %lld %llx\n", lat_ms(), (unsigned long long)queue.frames, test_fight_frame, (unsigned long long)buttons);
+    lat_line("P %.3f %llu %lld %llx %u\n", lat_ms(), (unsigned long long)queue.frames, test_fight_frame, (unsigned long long)buttons, tick);
 }
 
 /* ---- A queued buffer is shown only once the game has drawn it (on; SSBU_VI_READY=0 turns it off) ----------------------
@@ -219,12 +260,16 @@ static void show(void) {
     show_waited = w1.QuadPart - w0.QuadPart;
     if (report_draws) input_seq_presented(gpu_queue_draws(shown_mark));
     double p0 = lat_tf ? lat_ms() : 0;
+    extern volatile int gpu_lat_shown_known; extern volatile u32 gpu_lat_shown_tick;
+    gpu_lat_shown_known = 0;
     present_frame(shown, shown_size);
     test_fight_presented();
     { void perf_frame_shown(void); perf_frame_shown(); }   /* (debug_perf_session.c: the session's summary) */
-    if (lat_tf) lat_line("S %.3f %.3f %llu %lld\n", p0, lat_ms(), (unsigned long long)queue.frames, test_fight_frame);
+    if (lat_tf) lat_line("S %.3f %.3f %llu %lld %u %u %d\n", p0, lat_ms(), (unsigned long long)queue.frames, test_fight_frame,
+                         vi_lat_tick(), gpu_lat_shown_tick, gpu_lat_shown_known);
     kernel_signal_event(queue.buffer_event);
     WakeAllConditionVariable(&queue.freed);
+    if (lat_tf) { AcquireSRWLockExclusive(&lat_lock); fflush(lat_tf); ReleaseSRWLockExclusive(&lat_lock); }   /* (after the game has its buffer) */
 }
 
 /* SSBU_SPEED (docs/TESTING-RUNS.md): no clock of refreshes. Each frame the game queues is shown
@@ -346,8 +391,10 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
         /* (rollback build, M4: while rb_fast, the frames a load runs again are neither paced nor
          * shown: each is taken off the queue as soon as it is drawn, and the next refresh is now) */
         int fast = rb_fast > 0 && !keep_pending;
+        double lat_tick_ms = 0;
         if (!fast) {
             display_wait_tick();   /* the next refresh (display.ini's pacing and frame_rate) */
+            if (lat_tf) lat_tick_ms = lat_ms();
             LONG m = display_tick_mult();
             if (m != rt_refresh_mult) { InterlockedExchange(&rt_refresh_mult, m); queue_lock(); ll_count = ll_next = 0; queue_unlock(); }   /* (low_latency measures again) */
         }
@@ -387,7 +434,7 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
         queue_lock();
         ll_release = fast ? 0 : qpc_now();
         queue_unlock();
-        if (lat_tf && !fast) lat_line("R %.3f\n", lat_ms());
+        if (lat_tf && !fast) lat_line("R %.3f %.3f\n", lat_ms(), lat_tick_ms);   /* (the signal; the refresh it is for: low_latency's hold between) */
         kernel_signal_event(queue.vsync_event);
     }
 }
@@ -566,7 +613,7 @@ static void transact(u32 code, In *in, Out *out, Cpu *c) {
             queue.slots[slot].state = QUEUED;
             queue.slots[slot].queued_at = rt_now_ns();
             ll_queued();
-            if (lat_tf && rb_fast <= 0) lat_line("Q %.3f\n", lat_ms());
+            if (lat_tf && rb_fast <= 0) { int game_fight_on(void); lat_line("Q %.3f %u %d\n", lat_ms(), vi_lat_tick(), game_fight_on()); }
             queue.slots[slot].gpu_mark = gpu_queue_mark();
             {   int interp_probe_on(void); void interp_probe_frame(u64 mark, u32 ticks);
                 /* (SSBU_INTERP_PROBE, gpu_interp_probe.c: the picture's submissions, and the logic frames its pass ran) */

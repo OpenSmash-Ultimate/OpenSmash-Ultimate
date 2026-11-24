@@ -4510,6 +4510,7 @@ static int make_final(u32 w, u32 h) {
 void gfx_present(u64 guest, u32 width, u32 height) {
     (void)width; (void)height;
     if (!enter()) return;
+    { void gpu_lat_shown_note(u64 g); gpu_lat_shown_note(guest); }   /* (SSBU_LAT_TRACE: the picture's logic frame, gpu.c) */
     watchdog_present();
     hitch_present();
     if (draw_logging) save_sampled();

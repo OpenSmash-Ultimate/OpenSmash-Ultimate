@@ -119,6 +119,7 @@ static u64 rng_base(void) {
 /* ---- SSBU_FIGHT_HASH, SSBU_DETERMINISTIC --------------------------------------------------- */
 static int hash_on, det, det_off;
 static FILE *hash_out;
+void (*fight_lat_status)(int st, unsigned long long mot);   /* (SSBU_LAT_TRACE, ipc_vi.c: the first fighter's status and motion) */
 static u64 hash_run = FIGHT_FNV_BASIS;
 static struct { u64 boma; int entry; volatile long long frame; } fighters[8];
 static volatile int fighter_count;
@@ -238,6 +239,7 @@ static void frame_line(Cpu *c) {
     if (!hash_out) return;
     fr.st = (int)getter(c, FD("30StatusModule__status_kind_impl"), boma, 0, NULL);
     fr.mot = getter(c, FD("30MotionModule__motion_kind_impl"), boma, 0, NULL);
+    if (k == 0 && fight_lat_status) fight_lat_status(fr.st, fr.mot);   /* (SSBU_LAT_TRACE: ipc_vi.c sets it) */
     getter(c, FD("24MotionModule__frame_impl"), boma, 0, &fr.mf);
     getter(c, FD("25PostureModule__pos_x_impl"), boma, 0, &fr.x);
     getter(c, FD("25PostureModule__pos_y_impl"), boma, 0, &fr.y);
