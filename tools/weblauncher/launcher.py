@@ -211,7 +211,7 @@ CHOICES = {
                      ("2", "2: 3840x2160 (4K)"), ("3", "3: 5760x3240")],
     "overlay": [("1", "Show it in the corner"), ("0", "Hidden")],
     "hide_cursor": [("1", "When it stops moving"), ("0", "Keep it shown")],
-    "lobby": [("public", "Official lobby (relay only, EU / NA East)"), ("private", "Private lobby (a code)"), ("custom", "Your own server"),
+    "lobby": [("public", "Official lobby (relay only, EU / NA East / SA)"), ("private", "Private lobby (a code)"), ("custom", "Your own server"),
               ("lan", "This network (LAN)"), ("offline", "Offline")],
     # (our regions only, as OpenSmash.Core.OnlineSettings: "auto" in the file - the game's default, the closest - is shown as
     # the region it plays on and written only when one is picked)

@@ -110,7 +110,7 @@ void InitializeSettings() {
                 new Setting { Key = "overlay", Label = "Frame rate", Values = new[] { "1", "0" }, Labels = new[] { "Show it in the corner", "Hidden" } },
                 new Setting { Key = "volume", Label = "Volume", Slider = true },
                 new Setting { Key = "name", Label = "Your name", Text = true },
-                new Setting { Key = "lobby", Label = "Lobby", Values = SettingDefaults.Choices["lobby"], Labels = new[] { "Official lobby (relay only, EU / NA East)", "Private lobby (a code)", "Your own server", "This network (LAN)", "Offline" } },   // (one label a value of SettingDefaults.Choices["lobby"]; as OpenSmash.Launcher/LauncherForm.cs)
+                new Setting { Key = "lobby", Label = "Lobby", Values = SettingDefaults.Choices["lobby"], Labels = new[] { "Official lobby (relay only, EU / NA East / SA)", "Private lobby (a code)", "Your own server", "This network (LAN)", "Offline" } },   // (one label a value of SettingDefaults.Choices["lobby"]; as OpenSmash.Launcher/LauncherForm.cs)
                 new Setting { Key = "code", Label = "Lobby code", Text = true },
                 new Setting { Key = "server", Label = "Server", Text = true },
                 new Setting { Key = "direct", Label = "Direct connections", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
@@ -316,7 +316,7 @@ void InitializeSettings() {
             string direct = File.Exists(directFile) ? FirstLine(directFile) : SettingDefaults.OfFile("online_direct.txt");
             _iniValues["direct"] = direct.StartsWith("off", StringComparison.OrdinalIgnoreCase) ? "off" : "on";
             _iniValues["name"] = FirstLine(Project.ConfigFile("online_name.txt"));
-            // (Europe or North America East: "auto" shows as the region it plays on, written only when one is picked)
+            // (Europe, North America East or South America: "auto" shows as the region it plays on, written only when one is picked)
             _iniValues["region"] = OpenSmash.Core.OnlineSettings.RegionShown(Project.Root);
             // (what the lobby choice does not use, shown reset: an official lobby's leftover code, server or Direct
             // connections from an older launcher's files - the game's line has none of them; an unset line is written

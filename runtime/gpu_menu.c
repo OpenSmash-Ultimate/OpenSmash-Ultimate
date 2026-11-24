@@ -254,7 +254,7 @@ static struct { int mode; char custom[128], code[40], name[40]; int direct, prot
 enum { NET_PUBLIC, NET_PRIVATE, NET_CUSTOM, NET_OFFLINE, NET_LAN, NET_MODE_COUNT };
 /* (the first choice is the official lobby: relay only, one server a region - net_region.c. OpenSmash 0.5.0: Epic Online
  * Services are gone, and an "eos" line in online_server.txt reads as the official lobby, net_relay.c) */
-static const char *const NET_MODES[NET_MODE_COUNT] = {"official lobby (relay only, EU / NA East)", "private lobby (a code)", "your own server", "offline",
+static const char *const NET_MODES[NET_MODE_COUNT] = {"official lobby (relay only, EU / NA East / SA)", "private lobby (a code)", "your own server", "offline",
                                                       "this network (LAN)"};
 
 static void net_load(void)
@@ -1294,7 +1294,7 @@ static void build(void)
             break;
         }
         r = add(R_NET_MODE, K_CHOICE, W_RESTART, "Play online in",
-                "Official lobby: everyone's rooms on your region's server (EU / NA East); every match is relayed, so no player's address reaches another. "
+                "Official lobby: everyone's rooms on your region's server (EU / NA East / SA); every match is relayed, so no player's address reaches another. "
                 "Private: only players with the same code. Your own server: host:port. "
                 "Offline: no netplay. This network: a private room hosted on your local network, found by itself.");
         snprintf(r->value, sizeof r->value, "%s", ui_text(NET_MODES[net.mode]));

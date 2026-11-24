@@ -878,10 +878,10 @@ class Region(MenuTest):
         """(#448 on main named the default 'public (worldwide, Epic)'. Here "auto" is the official lobby, relay only, and
         its label says so. Epic Online Services are gone (0.5.0): an "eos" line reads as the official lobby.)"""
         m = self.online()
-        self.assertEqual(m.row('Play online in')['value'], 'official lobby (relay only, EU / NA East)')
+        self.assertEqual(m.row('Play online in')['value'], 'official lobby (relay only, EU / NA East / SA)')
         self.assertIn('Server region', m.labels())
         e = self.online('eos')
-        self.assertEqual(e.row('Play online in')['value'], 'official lobby (relay only, EU / NA East)')
+        self.assertEqual(e.row('Play online in')['value'], 'official lobby (relay only, EU / NA East / SA)')
         self.assertIn('Server region', e.labels())
         self.assertNotIn('Epic', ' '.join(e.labels()))
         e.go_to('Play online in')

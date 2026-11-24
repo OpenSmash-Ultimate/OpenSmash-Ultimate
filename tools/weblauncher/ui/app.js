@@ -434,7 +434,7 @@ async function refreshMastery() {
   clearTimeout(masteryTimer);
   masteryTimer = setTimeout(refreshMastery, 60000);
 }
-/* ---- the Competitive page: SSBU Arena's ranked top 10 (discord_account.py ranked_view), All / EU / NA East ---- */
+/* ---- the Competitive page: SSBU Arena's ranked top 10 (discord_account.py ranked_view), All / EU / NA East / SA ---- */
 let rankedRegion = "", rankedTimer = null;
 async function refreshRanked() {
   let r;

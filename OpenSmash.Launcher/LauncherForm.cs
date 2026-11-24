@@ -360,7 +360,7 @@ namespace OpenSmash.Launcher
                 new Setting { Key = "volume", Label = "Volume", Slider = true },
                 new Setting { Key = "name", Label = "Your name", Text = true },
                 // (the official lobby is relay only, one server a region)
-                new Setting { Key = "lobby", Label = "Lobby", Values = SettingDefaults.Choices["lobby"], Labels = new[] { "Official lobby (relay only, EU / NA East)", "Private lobby (a code)", "Your own server", "This network (LAN)", "Offline" } },
+                new Setting { Key = "lobby", Label = "Lobby", Values = SettingDefaults.Choices["lobby"], Labels = new[] { "Official lobby (relay only, EU / NA East / SA)", "Private lobby (a code)", "Your own server", "This network (LAN)", "Offline" } },
                 // (the official lobbies, one a region: OpenSmash.Core.ServerRegion; config\server_region.txt, the game's menu writes it too)
                 new Setting { Key = "region", Label = "Server region", Values = SettingDefaults.Choices["region"], Labels = SettingDefaults.RegionLabels },
                 new Setting { Key = "code", Label = "Lobby code", Text = true },
@@ -1890,7 +1890,7 @@ namespace OpenSmash.Launcher
             string direct = File.Exists(directFile) ? FirstLine(directFile) : SettingDefaults.OfFile("online_direct.txt");
             _iniValues["direct"] = direct.StartsWith("off", StringComparison.OrdinalIgnoreCase) ? "off" : "on";
             _iniValues["name"] = FirstLine(GameFolder.ConfigFile(_repo, "online_name.txt"));
-            // (Europe or North America East: "auto" shows as the region it plays on, written only when one is picked)
+            // (Europe, North America East or South America: "auto" shows as the region it plays on, written only when one is picked)
             _iniValues["region"] = OpenSmash.Core.OnlineSettings.RegionShown(_repo);
             // (what the lobby choice does not use, shown reset: an official lobby's leftover code, server or Direct
             // connections from an older launcher's files - the game's line has none of them; an unset line is written
